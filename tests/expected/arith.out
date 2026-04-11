@@ -1,0 +1,16 @@
+a+b = 13
+a-b = 7
+a*b = 30
+a/b = 3
+a%b = 1
+a|b = 11
+a&b = 2
+a^b = 9
+a<<1 = 20
+a>>1 = 5
+a = 10
+a != b
+a >= b
+both hold
+one holds
+a not negative

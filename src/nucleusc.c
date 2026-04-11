@@ -318,8 +318,11 @@ static Node **read_program(int *out_len) {
 typedef enum {
     TY_VOID,
     TY_I1,
+    TY_I8,
+    TY_I16,
     TY_I32,
-    TY_I8PTR,
+    TY_I64,
+    TY_PTR,
     TY_FN,
 } TypeKind;
 
@@ -329,9 +332,10 @@ typedef struct Type {
     struct Type  **params;
     int            num_params;
     bool           variadic;
+    struct Type   *elem;   // TY_PTR pointee (NULL for untyped `ptr`)
 } Type;
 
-static Type *ty_void, *ty_i1, *ty_i32, *ty_i8ptr;
+static Type *ty_void, *ty_i1, *ty_i8, *ty_i16, *ty_i32, *ty_i64, *ty_ptr;
 
 static Type *make_type(TypeKind k) {
     Type *t = arena_alloc(sizeof(Type));
@@ -340,25 +344,67 @@ static Type *make_type(TypeKind k) {
 }
 
 static void types_init(void) {
-    ty_void  = make_type(TY_VOID);
-    ty_i1    = make_type(TY_I1);
-    ty_i32   = make_type(TY_I32);
-    ty_i8ptr = make_type(TY_I8PTR);
+    ty_void = make_type(TY_VOID);
+    ty_i1   = make_type(TY_I1);
+    ty_i8   = make_type(TY_I8);
+    ty_i16  = make_type(TY_I16);
+    ty_i32  = make_type(TY_I32);
+    ty_i64  = make_type(TY_I64);
+    ty_ptr  = make_type(TY_PTR);
 }
 
 static const char *type_to_ir(Type *t) {
     switch (t->kind) {
-        case TY_VOID:  return "void";
-        case TY_I1:    return "i1";
-        case TY_I32:   return "i32";
-        case TY_I8PTR: return "ptr";
-        case TY_FN:    return "<fn>";
+        case TY_VOID: return "void";
+        case TY_I1:   return "i1";
+        case TY_I8:   return "i8";
+        case TY_I16:  return "i16";
+        case TY_I32:  return "i32";
+        case TY_I64:  return "i64";
+        case TY_PTR:  return "ptr";
+        case TY_FN:   return "<fn>";
     }
     return "?";
 }
 
+static bool is_int_type(Type *t) {
+    switch (t->kind) {
+        case TY_I1: case TY_I8: case TY_I16: case TY_I32: case TY_I64:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Natural alignment in bytes for primitive types. Used in alloca/load/store.
+static int type_align(Type *t) {
+    switch (t->kind) {
+        case TY_I1:  return 1;
+        case TY_I8:  return 1;
+        case TY_I16: return 2;
+        case TY_I32: return 4;
+        case TY_I64: return 8;
+        case TY_PTR: return 8;
+        default:     return 1;
+    }
+}
+
 static Type *parse_type_name(const char *name, int line) {
-    if (strcmp(name, "int") == 0) return ty_i32;
+    if (name[0] == '*') {
+        Type *inner = parse_type_name(name + 1, line);
+        Type *p = make_type(TY_PTR);
+        p->elem = inner;
+        return p;
+    }
+    if (strcmp(name, "int")  == 0) return ty_i32;
+    if (strcmp(name, "i1")   == 0) return ty_i1;
+    if (strcmp(name, "i8")   == 0) return ty_i8;
+    if (strcmp(name, "i16")  == 0) return ty_i16;
+    if (strcmp(name, "i32")  == 0) return ty_i32;
+    if (strcmp(name, "i64")  == 0) return ty_i64;
+    if (strcmp(name, "bool") == 0) return ty_i1;
+    if (strcmp(name, "ptr")  == 0) return ty_ptr;
+    if (strcmp(name, "void") == 0) return ty_void;
     die_at(line, "unknown type: %s", name);
 }
 
@@ -559,7 +605,7 @@ static Val emit_string(Node *n) {
     const char *tmp = new_tmp();
     body_emit("  %s = getelementptr inbounds [%d x i8], ptr @.str.%d, i64 0, i64 0\n",
               tmp, ir_len, id);
-    Val v = { ty_i8ptr, tmp };
+    Val v = { ty_ptr, tmp };
     return v;
 }
 
@@ -568,33 +614,218 @@ static Val emit_symbol_ref(Node *n, Scope *scope) {
     if (!sym) die_at(n->line, "undefined: %s", n->s);
     if (!sym->is_local) die_at(n->line, "cannot use function '%s' as value", n->s);
     const char *tmp = new_tmp();
-    body_emit("  %s = load %s, ptr %s, align 4\n",
-              tmp, type_to_ir(sym->type), sym->ir_name);
+    body_emit("  %s = load %s, ptr %s, align %d\n",
+              tmp, type_to_ir(sym->type), sym->ir_name, type_align(sym->type));
     Val v = { sym->type, tmp };
     return v;
 }
 
-static Val emit_builtin_lt(Node *call, Scope *scope) {
-    if (call->len != 3) die_at(call->line, "< expects 2 args");
+// Binary integer operators (arithmetic, bitwise, comparison). `is_cmp` means
+// the instruction is `icmp <pred>` and the result type is i1.
+typedef struct {
+    const char *name;
+    const char *instr;
+    bool        is_cmp;
+} BinOp;
+
+static const BinOp g_binops[] = {
+    { "+",       "add nsw",  false },
+    { "-",       "sub nsw",  false },
+    { "*",       "mul nsw",  false },
+    { "/",       "sdiv",     false },
+    { "%",       "srem",     false },
+    { "bit-and", "and",      false },
+    { "bit-or",  "or",       false },
+    { "bit-xor", "xor",      false },
+    { "bit-shl", "shl",      false },
+    { "bit-shr", "ashr",     false },
+    { "=",       "icmp eq",  true  },
+    { "!=",      "icmp ne",  true  },
+    { "<",       "icmp slt", true  },
+    { "<=",      "icmp sle", true  },
+    { ">",       "icmp sgt", true  },
+    { ">=",      "icmp sge", true  },
+};
+
+static const BinOp *lookup_binop(const char *name) {
+    for (size_t i = 0; i < sizeof(g_binops) / sizeof(g_binops[0]); i++) {
+        if (strcmp(g_binops[i].name, name) == 0) return &g_binops[i];
+    }
+    return NULL;
+}
+
+static Val emit_binop(Node *call, Scope *scope, const BinOp *op) {
+    if (call->len != 3)
+        die_at(call->line, "%s expects 2 args", op->name);
     Val a = emit_node(call->items[1], scope);
     Val b = emit_node(call->items[2], scope);
-    if (a.type->kind != TY_I32 || b.type->kind != TY_I32)
-        die_at(call->line, "< expects i32 operands");
+    if (!is_int_type(a.type) || !is_int_type(b.type))
+        die_at(call->line, "%s expects integer operands", op->name);
+    if (a.type->kind != b.type->kind)
+        die_at(call->line, "%s operand type mismatch", op->name);
     const char *tmp = new_tmp();
-    body_emit("  %s = icmp slt i32 %s, %s\n", tmp, a.val, b.val);
+    body_emit("  %s = %s %s %s, %s\n",
+              tmp, op->instr, type_to_ir(a.type), a.val, b.val);
+    Val v = { op->is_cmp ? ty_i1 : a.type, tmp };
+    return v;
+}
+
+// (cast TargetType expr) — explicit integer/pointer conversion.
+static int int_width(Type *t) {
+    switch (t->kind) {
+        case TY_I1:  return 1;
+        case TY_I8:  return 8;
+        case TY_I16: return 16;
+        case TY_I32: return 32;
+        case TY_I64: return 64;
+        default:     return 0;
+    }
+}
+
+static Val emit_cast(Node *call, Scope *scope) {
+    if (call->len != 3) die_at(call->line, "cast expects 2 args");
+    Node *type_node = call->items[1];
+    if (type_node->kind != NODE_SYM)
+        die_at(type_node->line, "cast: target type must be a symbol");
+    Type *dst = parse_type_name(type_node->s, type_node->line);
+    Val v = emit_node(call->items[2], scope);
+    Type *src = v.type;
+
+    if (src->kind == dst->kind) return v;
+
+    const char *instr = NULL;
+    if (is_int_type(src) && is_int_type(dst)) {
+        int sw = int_width(src), dw = int_width(dst);
+        instr = (dw < sw) ? "trunc" : "sext";
+    } else if (is_int_type(src) && dst->kind == TY_PTR) {
+        instr = "inttoptr";
+    } else if (src->kind == TY_PTR && is_int_type(dst)) {
+        instr = "ptrtoint";
+    } else {
+        die_at(call->line, "cast: unsupported conversion");
+    }
+    const char *tmp = new_tmp();
+    body_emit("  %s = %s %s %s to %s\n",
+              tmp, instr, type_to_ir(src), v.val, type_to_ir(dst));
+    Val r = { dst, tmp };
+    return r;
+}
+
+static Val emit_addr_of(Node *call, Scope *scope) {
+    if (call->len != 2) die_at(call->line, "addr-of expects 1 arg");
+    Node *target = call->items[1];
+    if (target->kind != NODE_SYM)
+        die_at(target->line, "addr-of: target must be symbol");
+    Sym *sym = scope_lookup(scope, target->s);
+    if (!sym || !sym->is_local)
+        die_at(target->line, "addr-of: undefined local '%s'", target->s);
+    Type *pt = make_type(TY_PTR);
+    pt->elem = sym->type;
+    Val r = { pt, sym->ir_name };
+    return r;
+}
+
+static Val emit_deref(Node *call, Scope *scope) {
+    if (call->len != 2) die_at(call->line, "deref expects 1 arg");
+    Val p = emit_node(call->items[1], scope);
+    if (p.type->kind != TY_PTR || !p.type->elem)
+        die_at(call->line, "deref: operand must be typed pointer");
+    Type *elem = p.type->elem;
+    const char *tmp = new_tmp();
+    body_emit("  %s = load %s, ptr %s, align %d\n",
+              tmp, type_to_ir(elem), p.val, type_align(elem));
+    Val r = { elem, tmp };
+    return r;
+}
+
+static Val emit_ptr_set(Node *call, Scope *scope) {
+    if (call->len != 3) die_at(call->line, "ptr-set! expects 2 args");
+    Val p = emit_node(call->items[1], scope);
+    if (p.type->kind != TY_PTR || !p.type->elem)
+        die_at(call->line, "ptr-set!: operand must be typed pointer");
+    Type *elem = p.type->elem;
+    Val v = emit_node(call->items[2], scope);
+    if (v.type->kind != elem->kind)
+        die_at(call->line, "ptr-set!: value type mismatch");
+    body_emit("  store %s %s, ptr %s, align %d\n",
+              type_to_ir(elem), v.val, p.val, type_align(elem));
+    Val r = { ty_void, NULL };
+    return r;
+}
+
+static Val emit_ptr_add(Node *call, Scope *scope) {
+    if (call->len != 3) die_at(call->line, "ptr+ expects 2 args");
+    Val p = emit_node(call->items[1], scope);
+    if (p.type->kind != TY_PTR || !p.type->elem)
+        die_at(call->line, "ptr+: operand must be typed pointer");
+    Val n = emit_node(call->items[2], scope);
+    if (!is_int_type(n.type))
+        die_at(call->line, "ptr+: offset must be integer");
+    const char *idx = n.val;
+    if (n.type->kind != TY_I64) {
+        const char *t = new_tmp();
+        body_emit("  %s = sext %s %s to i64\n",
+                  t, type_to_ir(n.type), n.val);
+        idx = t;
+    }
+    Type *elem = p.type->elem;
+    const char *tmp = new_tmp();
+    body_emit("  %s = getelementptr inbounds %s, ptr %s, i64 %s\n",
+              tmp, type_to_ir(elem), p.val, idx);
+    Val r = { p.type, tmp };
+    return r;
+}
+
+static Val emit_not(Node *call, Scope *scope) {
+    if (call->len != 2) die_at(call->line, "not expects 1 arg");
+    Val a = emit_node(call->items[1], scope);
+    if (a.type->kind != TY_I1)
+        die_at(call->line, "not expects i1 operand");
+    const char *tmp = new_tmp();
+    body_emit("  %s = xor i1 %s, 1\n", tmp, a.val);
     Val v = { ty_i1, tmp };
     return v;
 }
 
-static Val emit_builtin_mul(Node *call, Scope *scope) {
-    if (call->len != 3) die_at(call->line, "* expects 2 args");
-    Val a = emit_node(call->items[1], scope);
-    Val b = emit_node(call->items[2], scope);
-    if (a.type->kind != TY_I32 || b.type->kind != TY_I32)
-        die_at(call->line, "* expects i32 operands");
+// Short-circuit `and` / `or`. Result lives in a per-site i1 alloca so we
+// don't need phi nodes (matches the rest of the codegen's alloca style).
+static Val emit_short_circuit(Node *call, Scope *scope, bool is_and) {
+    if (call->len != 3)
+        die_at(call->line, "%s expects 2 args", is_and ? "and" : "or");
+    int id = new_label_id();
+    const char *rhs_lbl = arena_printf("%s.rhs%d", is_and ? "and" : "or", id);
+    const char *end_lbl = arena_printf("%s.end%d", is_and ? "and" : "or", id);
+    const char *slot    = arena_printf("%%%s.val%d", is_and ? "and" : "or", id);
+
+    entry_emit("  %s = alloca i1, align 1\n", slot);
+
+    Val lhs = emit_node(call->items[1], scope);
+    if (lhs.type->kind != TY_I1)
+        die_at(call->items[1]->line,
+               "%s expects i1 operands", is_and ? "and" : "or");
+    body_emit("  store i1 %s, ptr %s, align 1\n", lhs.val, slot);
+    if (is_and) {
+        body_emit("  br i1 %s, label %%%s, label %%%s\n",
+                  lhs.val, rhs_lbl, end_lbl);
+    } else {
+        body_emit("  br i1 %s, label %%%s, label %%%s\n",
+                  lhs.val, end_lbl, rhs_lbl);
+    }
+
+    body_emit("%s:\n", rhs_lbl);
+    g_block_term = false;
+    Val rhs = emit_node(call->items[2], scope);
+    if (rhs.type->kind != TY_I1)
+        die_at(call->items[2]->line,
+               "%s expects i1 operands", is_and ? "and" : "or");
+    body_emit("  store i1 %s, ptr %s, align 1\n", rhs.val, slot);
+    body_emit("  br label %%%s\n", end_lbl);
+
+    body_emit("%s:\n", end_lbl);
+    g_block_term = false;
     const char *tmp = new_tmp();
-    body_emit("  %s = mul nsw i32 %s, %s\n", tmp, a.val, b.val);
-    Val v = { ty_i32, tmp };
+    body_emit("  %s = load i1, ptr %s, align 1\n", tmp, slot);
+    Val v = { ty_i1, tmp };
     return v;
 }
 
@@ -688,13 +919,14 @@ static Val emit_let(Node *call, Scope *scope) {
         Type *ty = parse_type_name(type_name, bname->line);
 
         const char *slot = arena_printf("%%%s.addr", name);
-        entry_emit("  %s = alloca %s, align 4\n", slot, type_to_ir(ty));
+        int align = type_align(ty);
+        entry_emit("  %s = alloca %s, align %d\n", slot, type_to_ir(ty), align);
 
         Val v = emit_node(bval, inner);
         if (v.type->kind != ty->kind)
             die_at(bval->line, "let: init type mismatch for '%s'", name);
-        body_emit("  store %s %s, ptr %s, align 4\n",
-                  type_to_ir(ty), v.val, slot);
+        body_emit("  store %s %s, ptr %s, align %d\n",
+                  type_to_ir(ty), v.val, slot, align);
 
         scope_define(inner, name, ty, slot, true);
     }
@@ -703,6 +935,40 @@ static Val emit_let(Node *call, Scope *scope) {
         last = emit_node(call->items[i], inner);
     }
     return last;
+}
+
+static Val emit_if(Node *call, Scope *scope) {
+    // (if cond then) or (if cond then else)
+    if (call->len != 3 && call->len != 4)
+        die_at(call->line, "if: expects 2 or 3 args");
+    bool has_else = (call->len == 4);
+    int id = new_label_id();
+    const char *then_lbl = arena_printf("if.then%d", id);
+    const char *else_lbl = arena_printf("if.else%d", id);
+    const char *end_lbl  = arena_printf("if.end%d",  id);
+
+    Val cond = emit_node(call->items[1], scope);
+    if (cond.type->kind != TY_I1)
+        die_at(call->items[1]->line, "if condition must be i1");
+    body_emit("  br i1 %s, label %%%s, label %%%s\n",
+              cond.val, then_lbl, has_else ? else_lbl : end_lbl);
+
+    body_emit("%s:\n", then_lbl);
+    g_block_term = false;
+    emit_node(call->items[2], scope);
+    if (!g_block_term) body_emit("  br label %%%s\n", end_lbl);
+
+    if (has_else) {
+        body_emit("%s:\n", else_lbl);
+        g_block_term = false;
+        emit_node(call->items[3], scope);
+        if (!g_block_term) body_emit("  br label %%%s\n", end_lbl);
+    }
+
+    body_emit("%s:\n", end_lbl);
+    g_block_term = false;
+    Val r = { ty_void, NULL };
+    return r;
 }
 
 static Val emit_while(Node *call, Scope *scope) {
@@ -745,8 +1011,8 @@ static Val emit_set(Node *call, Scope *scope) {
     Val v = emit_node(call->items[2], scope);
     if (v.type->kind != sym->type->kind)
         die_at(call->line, "set!: type mismatch for '%s'", target->s);
-    body_emit("  store %s %s, ptr %s, align 4\n",
-              type_to_ir(sym->type), v.val, sym->ir_name);
+    body_emit("  store %s %s, ptr %s, align %d\n",
+              type_to_ir(sym->type), v.val, sym->ir_name, type_align(sym->type));
     Val r = { ty_void, NULL };
     return r;
 }
@@ -759,13 +1025,15 @@ static Val emit_inc(Node *call, Scope *scope) {
     Sym *sym = scope_lookup(scope, target->s);
     if (!sym || !sym->is_local)
         die_at(target->line, "inc!: undefined local '%s'", target->s);
-    if (sym->type->kind != TY_I32)
-        die_at(call->line, "inc!: must be int");
+    if (!is_int_type(sym->type) || sym->type->kind == TY_I1)
+        die_at(call->line, "inc!: must be integer");
+    const char *ir = type_to_ir(sym->type);
+    int align = type_align(sym->type);
     const char *t1 = new_tmp();
-    body_emit("  %s = load i32, ptr %s, align 4\n", t1, sym->ir_name);
+    body_emit("  %s = load %s, ptr %s, align %d\n", t1, ir, sym->ir_name, align);
     const char *t2 = new_tmp();
-    body_emit("  %s = add nsw i32 %s, 1\n", t2, t1);
-    body_emit("  store i32 %s, ptr %s, align 4\n", t2, sym->ir_name);
+    body_emit("  %s = add nsw %s %s, 1\n", t2, ir, t1);
+    body_emit("  store %s %s, ptr %s, align %d\n", ir, t2, sym->ir_name, align);
     Val r = { ty_void, NULL };
     return r;
 }
@@ -778,11 +1046,21 @@ static Val emit_list(Node *n, Scope *scope) {
 
     if (strcmp(h, "return") == 0) return emit_return(n, scope);
     if (strcmp(h, "let")    == 0) return emit_let(n, scope);
+    if (strcmp(h, "if")     == 0) return emit_if(n, scope);
     if (strcmp(h, "while")  == 0) return emit_while(n, scope);
     if (strcmp(h, "set!")   == 0) return emit_set(n, scope);
     if (strcmp(h, "inc!")   == 0) return emit_inc(n, scope);
-    if (strcmp(h, "<")      == 0) return emit_builtin_lt(n, scope);
-    if (strcmp(h, "*")      == 0) return emit_builtin_mul(n, scope);
+    if (strcmp(h, "not")     == 0) return emit_not(n, scope);
+    if (strcmp(h, "and")     == 0) return emit_short_circuit(n, scope, true);
+    if (strcmp(h, "or")      == 0) return emit_short_circuit(n, scope, false);
+    if (strcmp(h, "cast")    == 0) return emit_cast(n, scope);
+    if (strcmp(h, "addr-of") == 0) return emit_addr_of(n, scope);
+    if (strcmp(h, "deref")   == 0) return emit_deref(n, scope);
+    if (strcmp(h, "ptr-set!") == 0) return emit_ptr_set(n, scope);
+    if (strcmp(h, "ptr+")    == 0) return emit_ptr_add(n, scope);
+
+    const BinOp *op = lookup_binop(h);
+    if (op) return emit_binop(n, scope, op);
 
     Sym *sym = scope_lookup(scope, h);
     if (!sym) die_at(head->line, "unknown: %s", h);
@@ -813,7 +1091,7 @@ static void emit_include(Node *call) {
         ft->ret = ty_i32;
         ft->num_params = 1;
         ft->params = arena_alloc(sizeof(Type *));
-        ft->params[0] = ty_i8ptr;
+        ft->params[0] = ty_ptr;
         ft->variadic = true;
         scope_define(g_globals, "printf", ft, "@printf", false);
         fprintf(g_out, "declare i32 @printf(ptr, ...)\n\n");
@@ -837,11 +1115,48 @@ static void emit_defn(Node *call) {
     if (!ret_name) die_at(name_node->line, "defn: missing :type on '%s'", fname);
     Type *ret = parse_type_name(ret_name, name_node->line);
 
-    if (params_node->len != 0)
-        die_at(params_node->line, "defn: params not yet supported");
+    int nparams = params_node->len;
+    Type **param_types = NULL;
+    char **param_names = NULL;
+    if (nparams > 0) {
+        param_types = arena_alloc((size_t)nparams * sizeof(Type *));
+        param_names = arena_alloc((size_t)nparams * sizeof(char *));
+    }
+    for (int i = 0; i < nparams; i++) {
+        Node *p = params_node->items[i];
+        if (p->kind != NODE_SYM)
+            die_at(p->line, "defn: param must be symbol");
+        char *pname, *ptype_name;
+        split_typed(p->s, &pname, &ptype_name);
+        if (!ptype_name)
+            die_at(p->line, "defn: missing :type on param '%s'", pname);
+        param_types[i] = parse_type_name(ptype_name, p->line);
+        param_names[i] = pname;
+    }
+
+    // Register the function in globals before body emission so recursive
+    // calls can resolve the name.
+    Type *ft = make_type(TY_FN);
+    ft->ret = ret;
+    ft->num_params = nparams;
+    ft->params = param_types;
+    ft->variadic = false;
+    scope_define(g_globals, fname, ft, arena_printf("@%s", fname), false);
 
     reset_function_state();
     Scope *fn_scope = scope_new(g_globals);
+
+    // Entry allocas + store of incoming argument for each parameter.
+    for (int i = 0; i < nparams; i++) {
+        const char *slot = arena_printf("%%%s.addr", param_names[i]);
+        const char *arg  = arena_printf("%%%s.arg",  param_names[i]);
+        int palign = type_align(param_types[i]);
+        entry_emit("  %s = alloca %s, align %d\n",
+                   slot, type_to_ir(param_types[i]), palign);
+        entry_emit("  store %s %s, ptr %s, align %d\n",
+                   type_to_ir(param_types[i]), arg, slot, palign);
+        scope_define(fn_scope, param_names[i], param_types[i], slot, true);
+    }
 
     for (int i = 3; i < call->len; i++) {
         emit_node(call->items[i], fn_scope);
@@ -851,15 +1166,18 @@ static void emit_defn(Node *call) {
         else body_emit("  ret %s 0\n", type_to_ir(ret));
     }
 
-    fprintf(g_out, "define %s @%s() {\n", type_to_ir(ret), fname);
+    fprintf(g_out, "define %s @%s(", type_to_ir(ret), fname);
+    for (int i = 0; i < nparams; i++) {
+        fprintf(g_out, "%s%s %%%s.arg",
+                i ? ", " : "",
+                type_to_ir(param_types[i]),
+                param_names[i]);
+    }
+    fprintf(g_out, ") {\n");
     fprintf(g_out, "entry:\n");
     if (g_entry_buf && g_entry_buf[0]) fputs(g_entry_buf, g_out);
     if (g_body_buf  && g_body_buf[0])  fputs(g_body_buf,  g_out);
     fprintf(g_out, "}\n\n");
-
-    Type *ft = make_type(TY_FN);
-    ft->ret = ret;
-    scope_define(g_globals, fname, ft, arena_printf("@%s", fname), false);
 }
 
 // ------------------------------------------------------------

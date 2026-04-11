@@ -1,0 +1,10 @@
+(include stdio)
+
+(defn main:int ()
+  (let (i:int 1)
+    (while (< i 5)
+      (if (< i 3)
+        (printf "small: %d\n" i)
+        (printf "big:   %d\n" i))
+      (inc! i)))
+  (return 0))

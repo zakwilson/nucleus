@@ -1,0 +1,10 @@
+(include stdio)
+
+(defn show:int (a:int b:int)
+  (printf "a = %d b = %d\n" a b)
+  (return 0))
+
+(defn main:int ()
+  (show 3 4)
+  (show 10 20)
+  (return 0))

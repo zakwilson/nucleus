@@ -1,0 +1,14 @@
+(include stdio)
+
+(defn sum-i64:i64 (a:i64 b:i64)
+  (return (+ a b)))
+
+(defn main:int ()
+  (let (big:i64 (cast i64 1000000000)
+        bump:i64 (cast i64 42))
+    (let (total:i64 (sum-i64 big bump))
+      (printf "total = %lld\n" total)
+      (printf "narrow = %d\n" (cast i32 total))))
+  (let (byte:i8 (cast i8 200))
+    (printf "byte = %d\n" (cast i32 byte)))
+  (return 0))
