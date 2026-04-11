@@ -1,0 +1,10 @@
+(include stdio)
+
+(defn main:int ()
+  (let (i:int 1
+        j:int 2)
+    (while (< i 5)
+      (printf "i = %d j = %d\n" i j)
+      (inc! i)
+      (set! j (* 2 i))))
+  (return 0))

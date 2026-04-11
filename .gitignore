@@ -1,1 +1,6 @@
 context/local.md
+build/
+*.ll
+*.o
+/hello
+/empty

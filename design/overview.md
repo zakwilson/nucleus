@@ -1,7 +1,46 @@
 Nucleus is a replacement for C using Lisp style syntax and macros with LLVM as its target. It is a low level systems programming language meant to manipulate memory directly, and when required, unsafely.
 
-It uses colons for type declarations, for example:
+## Goals
 
-    (defn square:int (x:int)
-      (return (* x x)))
+### True drop-in substitute for C
 
+- Zero mandatory runtime overhead relative to C
+- C interop - include C libraries and call C functions with no overhead
+- Use C structs and arrays natively
+
+### Lisp syntax
+
+- The language is written as a direct representation of linked lists of symbols, numbers, and strings
+- Reader macros add syntactic sugar for things like dereferencing pointers
+- User-defined reader macros will be possible
+- A vector type like Clojure could be useful, or at least improve readability
+- Member access for arrays and structs by calling them like functions - maybe provide a way to overload this
+
+### Full language at compile time
+
+- Macros run at compile time have full access to the Nucleus language, as in most Lisps
+- Language features and libraries required for macro expansion may not be necessary at runtime
+- Something like Common Lisp's eval-when or a compile-time-only include form is probably required for some advanced macros
+
+### Optional compiler at runtime
+
+- It must be possible to compile and load code at runtime
+- Because it adds overhead, the compiler is available as a library
+- This allows eval, a REPL, and the ability to interrogate compile-time metadata during development
+- For development, a REPL harness can load code files so the developer can use the REPL without the code including it
+
+### Macros are the killer feature
+
+- Macros allow significant abstraction at compile time without requiring runtime overhead
+- Reader macros allow sugar for common syntactic patterns
+
+### TODO/undecided:
+
+- Syntax for storage class specifiers
+- Other metadata or compiler hints
+
+## Design documents
+
+- [initial.md](initial.md) — the stage-0 target program and expected output
+- [stage0-plan.md](stage0-plan.md) — implementation plan for the stage-0 compiler (C host, LLVM IR backend)
+- [syntax.md](syntax.md) — notes on syntax
