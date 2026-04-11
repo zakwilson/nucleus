@@ -10,7 +10,7 @@ for src in examples/*.nuc; do
 
     ./build.sh "$src" >/dev/null 2>&1
     actual_file="$(mktemp)"
-    ./"$name" > "$actual_file" || true
+    ./build/out/"$name" > "$actual_file" || true
 
     if diff -u "$expected" "$actual_file" >/dev/null; then
         echo "PASS  $name"

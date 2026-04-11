@@ -13,6 +13,6 @@ test: $(BIN)
 	./tests/run-tests.sh
 
 clean:
-	rm -rf $(BUILD) *.ll hello empty
+	rm -rf $(BUILD)
 
 .PHONY: test clean

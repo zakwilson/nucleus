@@ -1,6 +1,5 @@
 context/local.md
 build/
+build/out/
 *.ll
 *.o
-/hello
-/empty

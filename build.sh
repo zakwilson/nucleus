@@ -9,8 +9,10 @@ fi
 root="$(cd "$(dirname "$0")" && pwd)"
 src="$1"
 base="$(basename "$src" .nuc)"
-ll="${base}.ll"
-bin="${base}"
+out_dir="$root/build/out"
+mkdir -p "$out_dir"
+ll="$out_dir/${base}.ll"
+bin="$out_dir/${base}"
 
 make -s -C "$root" build/nucleusc
 "$root/build/nucleusc" "$src" > "$ll"
