@@ -1,4 +1,4 @@
-CC      := gcc
+CC      := clang
 CFLAGS  := -std=c11 -Wall -Wextra -Wpedantic -O0 -g
 BUILD   := build
 BOOT    := $(BUILD)/nucleusc-boot
