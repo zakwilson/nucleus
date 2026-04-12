@@ -1,9 +1,9 @@
 (include stdio)
 
 (defn main:int ()
-  (let (x:int 42)
-    (let (p:*int (addr-of x))
-      (printf "before = %d\n" (deref p))
-      (ptr-set! p 99)
-      (printf "after  = %d\n" x)))
+  (let (x:int 42
+        p:*int (addr-of x))
+    (printf "before = %d\n" (deref p))
+    (ptr-set! p 99)
+    (printf "after  = %d\n" x))
   (return 0))

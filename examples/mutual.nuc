@@ -1,0 +1,19 @@
+(include stdio)
+
+(defn is-even:int (n:int)
+  (if (= n 0)
+    (return 1)
+    (return (is-odd (- n 1)))))
+
+(defn is-odd:int (n:int)
+  (if (= n 0)
+    (return 0)
+    (return (is-even (- n 1)))))
+
+(defn main:int ()
+  (let (i:int 0)
+    (while (< i 6)
+      (do
+        (printf "%d: even=%d odd=%d\n" i (is-even i) (is-odd i))
+        (inc! i))))
+  (return 0))

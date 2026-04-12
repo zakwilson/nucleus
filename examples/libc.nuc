@@ -1,0 +1,15 @@
+(include stdio)
+(include stdlib)
+(include string)
+
+(defn main:int ()
+  (let (s:ptr "hello"
+        n:i64 (strlen s))
+    (printf "len = %lld\n" n)
+    (if (= (strcmp s "hello") 0)
+      (printf "match\n")))
+  (let (p:*i32 (cast *i32 (malloc (cast i64 16))))
+    (ptr-set! p 42)
+    (printf "val = %d\n" (deref p))
+    (free (cast ptr p)))
+  (return 0))

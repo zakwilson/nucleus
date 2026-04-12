@@ -1099,12 +1099,27 @@ static Val emit_call(Node *call, Scope *scope, Sym *sym) {
 // ------------------------------------------------------------
 
 static Val emit_return(Node *call, Scope *scope) {
-    if (call->len != 2) die_at(call->line, "return expects 1 arg");
+    if (call->len == 1) {
+        body_emit("  ret void\n");
+        g_block_term = true;
+        Val r = { ty_void, NULL };
+        return r;
+    }
+    if (call->len != 2) die_at(call->line, "return expects 0 or 1 args");
     Val v = emit_node(call->items[1], scope);
     body_emit("  ret %s %s\n", type_to_ir(v.type), v.val);
     g_block_term = true;
     Val r = { ty_void, NULL };
     return r;
+}
+
+// (do expr1 expr2 ...) — evaluate in order, return last
+static Val emit_do(Node *call, Scope *scope) {
+    Val last = { ty_void, NULL };
+    for (int i = 1; i < call->len; i++) {
+        last = emit_node(call->items[i], scope);
+    }
+    return last;
 }
 
 static Val emit_let(Node *call, Scope *scope) {
@@ -1254,6 +1269,7 @@ static Val emit_list(Node *n, Scope *scope) {
     const char *h = head->s;
 
     if (strcmp(h, "return") == 0) return emit_return(n, scope);
+    if (strcmp(h, "do")     == 0) return emit_do(n, scope);
     if (strcmp(h, "let")    == 0) return emit_let(n, scope);
     if (strcmp(h, "if")     == 0) return emit_if(n, scope);
     if (strcmp(h, "while")  == 0) return emit_while(n, scope);
@@ -1619,6 +1635,39 @@ int main(int argc, char **argv) {
     if (!type_stream || !decl_stream || !def_stream) {
         perror("open_memstream");
         return 1;
+    }
+
+    // Pre-scan: register all defn signatures so forward/mutual recursion works.
+    for (int i = 0; i < nforms; i++) {
+        Node *f = forms[i];
+        if (f->kind != NODE_LIST || f->len < 4 ||
+            f->items[0]->kind != NODE_SYM ||
+            strcmp(f->items[0]->s, "defn") != 0)
+            continue;
+        Node *name_node = f->items[1];
+        Node *params_node = f->items[2];
+        if (name_node->kind != NODE_SYM || params_node->kind != NODE_LIST)
+            continue;
+        char *fname, *ret_name;
+        split_typed(name_node->s, &fname, &ret_name);
+        if (!ret_name) continue;
+        Type *ret = parse_type_name(ret_name, name_node->line);
+        int nparams = params_node->len;
+        Type **ptypes = nparams
+            ? arena_alloc((size_t)nparams * sizeof(Type *)) : NULL;
+        for (int j = 0; j < nparams; j++) {
+            Node *p = params_node->items[j];
+            if (p->kind != NODE_SYM) continue;
+            char *pn, *pt;
+            split_typed(p->s, &pn, &pt);
+            ptypes[j] = pt ? parse_type_name(pt, p->line) : ty_i32;
+        }
+        Type *ft = make_type(TY_FN);
+        ft->ret = ret;
+        ft->num_params = nparams;
+        ft->params = ptypes;
+        scope_define(g_globals, fname, ft,
+                     arena_printf("@%s", fname), false);
     }
 
     for (int i = 0; i < nforms; i++) {
