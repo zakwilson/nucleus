@@ -14,7 +14,7 @@ mkdir -p "$out_dir"
 ll="$out_dir/${base}.ll"
 bin="$out_dir/${base}"
 
-make -s -C "$root" build/nucleusc
+make -s -C "$root"
 "$root/build/nucleusc" "$src" > "$ll"
 clang "$ll" -o "$bin"
 echo "built: $bin"

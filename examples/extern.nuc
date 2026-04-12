@@ -1,0 +1,6 @@
+(include stdio)
+(extern stderr:ptr)
+
+(defn main:int ()
+  (fprintf stderr "hello from stderr\n")
+  (return 0))

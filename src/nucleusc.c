@@ -707,6 +707,12 @@ static Val emit_binop(Node *call, Scope *scope, const BinOp *op) {
         die_at(call->line, "%s expects 2 args", op->name);
     Val a = emit_node(call->items[1], scope);
     Val b = emit_node(call->items[2], scope);
+    if (a.type->kind == TY_PTR && b.type->kind == TY_PTR && op->is_cmp) {
+        const char *tmp = new_tmp();
+        body_emit("  %s = %s ptr %s, %s\n", tmp, op->instr, a.val, b.val);
+        Val v = { ty_i1, tmp };
+        return v;
+    }
     if (!is_int_type(a.type) || !is_int_type(b.type))
         die_at(call->line, "%s expects integer operands", op->name);
     if (a.type->kind != b.type->kind)
@@ -1142,7 +1148,7 @@ static Val emit_let(Node *call, Scope *scope) {
             die_at(bname->line, "let: missing :type on '%s'", name);
         Type *ty = parse_type_name(type_name, bname->line);
 
-        const char *slot = arena_printf("%%%s.addr", name);
+        const char *slot = arena_printf("%%%s.addr.%d", name, g_tmp++);
         int align = type_align(ty);
         entry_emit("  %s = alloca %s, align %d\n", slot, type_to_ir(ty), align);
 
@@ -1455,6 +1461,20 @@ static Type *kind_to_type(TypeKind k) {
     }
 }
 
+static void emit_extern(Node *call) {
+    // (extern name:type) — declare an external global (e.g. stderr)
+    if (call->len != 2 || call->items[1]->kind != NODE_SYM)
+        die_at(call->line, "extern: expects name:type");
+    char *name, *type_name;
+    split_typed(call->items[1]->s, &name, &type_name);
+    if (!type_name)
+        die_at(call->items[1]->line, "extern: missing :type on '%s'", name);
+    Type *ty = parse_type_name(type_name, call->items[1]->line);
+    const char *ir_name = arena_printf("@%s", name);
+    fprintf(g_out, "%s = external global %s\n\n", ir_name, type_to_ir(ty));
+    scope_define(g_globals, name, ty, ir_name, true);
+}
+
 static void emit_include(Node *call) {
     if (call->len != 2 || call->items[1]->kind != NODE_SYM)
         die_at(call->line, "include: expects one symbol");
@@ -1549,7 +1569,10 @@ static void emit_defn(Node *call) {
     }
     if (!g_block_term) {
         if (ret->kind == TY_VOID) body_emit("  ret void\n");
-        else body_emit("  ret %s 0\n", type_to_ir(ret));
+        else {
+            const char *zero = (ret->kind == TY_PTR) ? "null" : "0";
+            body_emit("  ret %s %s\n", type_to_ir(ret), zero);
+        }
     }
 
     fprintf(g_out, "define %s @%s(", type_to_ir(ret), fname);
@@ -1688,6 +1711,9 @@ int main(int argc, char **argv) {
         } else if (strcmp(h, "include") == 0) {
             g_out = decl_stream;
             emit_include(f);
+        } else if (strcmp(h, "extern") == 0) {
+            g_out = decl_stream;
+            emit_extern(f);
         } else if (strcmp(h, "defn") == 0) {
             g_out = def_stream;
             emit_defn(f);
