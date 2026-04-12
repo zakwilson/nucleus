@@ -21,7 +21,7 @@
   '("defn" "defvar" "defconst" "defenum" "defstruct" "include" "extern"))
 
 (defvar nucleus-special-forms
-  '("let" "if" "while" "do" "return" "set!" "inc!"
+  '("let" "cond" "while" "do" "return" "set!" "inc!"
     "cast" "sizeof" "alloca" "char" "addr-of" "deref"
     "ptr-set!" "ptr+" "aref" "aset!" "and" "or" "not"
     "." ".set!"))

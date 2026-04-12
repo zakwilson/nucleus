@@ -59,7 +59,7 @@
       ]
     },
     "keyword": {
-      "match": "(?<=\\()(?:defn|defvar|defconst|defenum|defstruct|include|extern|let|if|while|do|return|set!|inc!|cast|sizeof|alloca|char|addr-of|deref|ptr-set!|ptr\\+|aref|aset!|and|or|not|\\.set!|\\.)(?=[\\s)])",
+      "match": "(?<=\\()(?:defn|defvar|defconst|defenum|defstruct|include|extern|let|cond|while|do|return|set!|inc!|cast|sizeof|alloca|char|addr-of|deref|ptr-set!|ptr\\+|aref|aset!|and|or|not|\\.set!|\\.)(?=[\\s)])",
       "name": "keyword.control.nucleus"
     },
     "type": {

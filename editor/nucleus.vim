@@ -8,7 +8,7 @@ endif
 setlocal iskeyword+=-,!,?,.,*
 
 syn keyword nucleusTopLevel defn defvar defconst defenum defstruct include extern
-syn keyword nucleusSpecial let if while do return set! inc!
+syn keyword nucleusSpecial let cond while do return set! inc!
 syn keyword nucleusSpecial cast sizeof alloca char addr-of deref
 syn keyword nucleusSpecial ptr-set! ptr+ aref aset! and or not
 syn keyword nucleusSpecial contained . .set!
