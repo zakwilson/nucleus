@@ -1167,32 +1167,35 @@ static Val emit_let(Node *call, Scope *scope) {
     return last;
 }
 
-static Val emit_if(Node *call, Scope *scope) {
-    // (if cond then) or (if cond then else)
-    if (call->len != 3 && call->len != 4)
-        die_at(call->line, "if: expects 2 or 3 args");
-    bool has_else = (call->len == 4);
+static Val emit_cond(Node *call, Scope *scope) {
+    int nargs = call->len - 1;
+    if (nargs < 2 || nargs % 2 != 0)
+        die_at(call->line, "cond: expects pairs of (test body)");
+    int npairs = nargs / 2;
     int id = new_label_id();
-    const char *then_lbl = arena_printf("if.then%d", id);
-    const char *else_lbl = arena_printf("if.else%d", id);
-    const char *end_lbl  = arena_printf("if.end%d",  id);
+    const char *end_lbl = arena_printf("cond.end%d", id);
 
-    Val cond = emit_node(call->items[1], scope);
-    if (cond.type->kind != TY_I1)
-        die_at(call->items[1]->line, "if condition must be i1");
-    body_emit("  br i1 %s, label %%%s, label %%%s\n",
-              cond.val, then_lbl, has_else ? else_lbl : end_lbl);
+    for (int i = 0; i < npairs; i++) {
+        const char *then_lbl = arena_printf("cond.then%d.%d", id, i);
+        const char *next_lbl = (i < npairs - 1)
+            ? arena_printf("cond.test%d.%d", id, i + 1) : end_lbl;
 
-    body_emit("%s:\n", then_lbl);
-    g_block_term = false;
-    emit_node(call->items[2], scope);
-    if (!g_block_term) body_emit("  br label %%%s\n", end_lbl);
+        Val test = emit_node(call->items[1 + i * 2], scope);
+        if (test.type->kind != TY_I1)
+            die_at(call->items[1 + i * 2]->line, "cond: test must be i1");
+        body_emit("  br i1 %s, label %%%s, label %%%s\n",
+                  test.val, then_lbl, next_lbl);
 
-    if (has_else) {
-        body_emit("%s:\n", else_lbl);
+        body_emit("%s:\n", then_lbl);
         g_block_term = false;
-        emit_node(call->items[3], scope);
-        if (!g_block_term) body_emit("  br label %%%s\n", end_lbl);
+        emit_node(call->items[2 + i * 2], scope);
+        if (!g_block_term)
+            body_emit("  br label %%%s\n", end_lbl);
+
+        if (i < npairs - 1) {
+            body_emit("%s:\n", next_lbl);
+            g_block_term = false;
+        }
     }
 
     body_emit("%s:\n", end_lbl);
@@ -1277,7 +1280,7 @@ static Val emit_list(Node *n, Scope *scope) {
     if (strcmp(h, "return") == 0) return emit_return(n, scope);
     if (strcmp(h, "do")     == 0) return emit_do(n, scope);
     if (strcmp(h, "let")    == 0) return emit_let(n, scope);
-    if (strcmp(h, "if")     == 0) return emit_if(n, scope);
+    if (strcmp(h, "cond")   == 0) return emit_cond(n, scope);
     if (strcmp(h, "while")  == 0) return emit_while(n, scope);
     if (strcmp(h, "set!")   == 0) return emit_set(n, scope);
     if (strcmp(h, "inc!")   == 0) return emit_inc(n, scope);

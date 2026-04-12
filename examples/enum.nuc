@@ -5,6 +5,6 @@
 
 (defn main:int ()
   (printf "RED=%d GREEN=%d BLUE=%d MAX=%d\n" RED GREEN BLUE MAX_VAL)
-  (if (= GREEN 1)
+  (cond (= GREEN 1)
     (printf "GREEN is 1\n"))
   (return 0))

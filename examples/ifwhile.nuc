@@ -3,8 +3,9 @@
 (defn main:int ()
   (let (i:int 1)
     (while (< i 5)
-      (if (< i 3)
+      (cond (< i 3)
         (printf "small: %d\n" i)
+        true
         (printf "big:   %d\n" i))
       (inc! i)))
   (return 0))

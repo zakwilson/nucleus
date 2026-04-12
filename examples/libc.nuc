@@ -6,7 +6,7 @@
   (let (s:ptr "hello"
         n:i64 (strlen s))
     (printf "len = %lld\n" n)
-    (if (= (strcmp s "hello") 0)
+    (cond (= (strcmp s "hello") 0)
       (printf "match\n")))
   (let (p:*i32 (cast *i32 (malloc (cast i64 16))))
     (ptr-set! p 42)

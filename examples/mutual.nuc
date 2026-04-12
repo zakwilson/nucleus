@@ -1,13 +1,15 @@
 (include stdio)
 
 (defn is-even:int (n:int)
-  (if (= n 0)
+  (cond (= n 0)
     (return 1)
+    true
     (return (is-odd (- n 1)))))
 
 (defn is-odd:int (n:int)
-  (if (= n 0)
+  (cond (= n 0)
     (return 0)
+    true
     (return (is-even (- n 1)))))
 
 (defn main:int ()
