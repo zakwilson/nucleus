@@ -1,0 +1,13 @@
+(defvar counter:int 0)
+
+(include stdio)
+
+(defn bump:int ()
+  (set! counter (+ counter 1))
+  (return counter))
+
+(defn main:int ()
+  (printf "%d\n" (bump))
+  (printf "%d\n" (bump))
+  (printf "%d\n" (bump))
+  (return 0))

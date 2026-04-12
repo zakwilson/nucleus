@@ -466,8 +466,10 @@ static void split_typed(const char *sym, char **out_name, char **out_type_name) 
 typedef struct Sym {
     const char *name;
     Type       *type;
-    const char *ir_name;  // "%i.addr" for locals, "@printf" for globals
+    const char *ir_name;    // "%i.addr" for locals, "@printf" for globals
     bool        is_local;
+    bool        is_const;
+    const char *const_val;  // literal value for compile-time constants
 } Sym;
 
 typedef struct Scope {
@@ -654,6 +656,10 @@ static Val emit_symbol_ref(Node *n, Scope *scope) {
     if (strcmp(n->s, "false") == 0) { Val v = { ty_i1,  "0" };    return v; }
     Sym *sym = scope_lookup(scope, n->s);
     if (!sym) die_at(n->line, "undefined: %s", n->s);
+    if (sym->is_const) {
+        Val v = { sym->type, sym->const_val };
+        return v;
+    }
     if (!sym->is_local) die_at(n->line, "cannot use function '%s' as value", n->s);
     const char *tmp = new_tmp();
     body_emit("  %s = load %s, ptr %s, align %d\n",
@@ -825,19 +831,92 @@ static Val emit_sizeof(Node *call, Scope *scope) {
     return r;
 }
 
-// (alloca TypeName) — stack-allocate and return typed pointer
+// (alloca T) or (alloca T N) — stack-allocate and return typed pointer
 static Val emit_alloca_form(Node *call, Scope *scope) {
-    (void)scope;
-    if (call->len != 2) die_at(call->line, "alloca expects 1 arg");
+    if (call->len != 2 && call->len != 3)
+        die_at(call->line, "alloca expects 1 or 2 args");
     Node *tn = call->items[1];
-    if (tn->kind != NODE_SYM) die_at(tn->line, "alloca: arg must be type name");
+    if (tn->kind != NODE_SYM) die_at(tn->line, "alloca: first arg must be type name");
     Type *ty = parse_type_name(tn->s, tn->line);
     const char *slot = new_tmp();
-    entry_emit("  %s = alloca %s, align %d\n",
-               slot, type_to_ir(ty), type_align(ty));
+    if (call->len == 3) {
+        Val n = emit_node(call->items[2], scope);
+        body_emit("  %s = alloca %s, i32 %s, align %d\n",
+                  slot, type_to_ir(ty), n.val, type_align(ty));
+    } else {
+        entry_emit("  %s = alloca %s, align %d\n",
+                   slot, type_to_ir(ty), type_align(ty));
+    }
     Type *pt = make_type(TY_PTR);
     pt->elem = ty;
     Val r = { pt, slot };
+    return r;
+}
+
+// (aref p i) — indexed element load
+static Val emit_aref(Node *call, Scope *scope) {
+    if (call->len != 3) die_at(call->line, "aref expects 2 args");
+    Val p = emit_node(call->items[1], scope);
+    if (p.type->kind != TY_PTR || !p.type->elem)
+        die_at(call->line, "aref: operand must be typed pointer");
+    Val idx = emit_node(call->items[2], scope);
+    if (!is_int_type(idx.type))
+        die_at(call->line, "aref: index must be integer");
+    const char *idx64 = idx.val;
+    if (idx.type->kind != TY_I64) {
+        const char *t = new_tmp();
+        body_emit("  %s = sext %s %s to i64\n",
+                  t, type_to_ir(idx.type), idx.val);
+        idx64 = t;
+    }
+    Type *elem = p.type->elem;
+    const char *gep = new_tmp();
+    body_emit("  %s = getelementptr inbounds %s, ptr %s, i64 %s\n",
+              gep, type_to_ir(elem), p.val, idx64);
+    const char *val = new_tmp();
+    body_emit("  %s = load %s, ptr %s, align %d\n",
+              val, type_to_ir(elem), gep, type_align(elem));
+    Val r = { elem, val };
+    return r;
+}
+
+// (aset! p i v) — indexed element store
+static Val emit_aset(Node *call, Scope *scope) {
+    if (call->len != 4) die_at(call->line, "aset! expects 3 args");
+    Val p = emit_node(call->items[1], scope);
+    if (p.type->kind != TY_PTR || !p.type->elem)
+        die_at(call->line, "aset!: operand must be typed pointer");
+    Val idx = emit_node(call->items[2], scope);
+    if (!is_int_type(idx.type))
+        die_at(call->line, "aset!: index must be integer");
+    const char *idx64 = idx.val;
+    if (idx.type->kind != TY_I64) {
+        const char *t = new_tmp();
+        body_emit("  %s = sext %s %s to i64\n",
+                  t, type_to_ir(idx.type), idx.val);
+        idx64 = t;
+    }
+    Type *elem = p.type->elem;
+    Val v = emit_node(call->items[3], scope);
+    if (v.type->kind != elem->kind)
+        die_at(call->line, "aset!: value type mismatch");
+    const char *gep = new_tmp();
+    body_emit("  %s = getelementptr inbounds %s, ptr %s, i64 %s\n",
+              gep, type_to_ir(elem), p.val, idx64);
+    body_emit("  store %s %s, ptr %s, align %d\n",
+              type_to_ir(elem), v.val, gep, type_align(elem));
+    Val r = { ty_void, NULL };
+    return r;
+}
+
+// (char "x") — returns i8 value of a single character
+static Val emit_char(Node *call, Scope *scope) {
+    (void)scope;
+    if (call->len != 2) die_at(call->line, "char expects 1 arg");
+    Node *arg = call->items[1];
+    if (arg->kind != NODE_STR || strlen(arg->s) != 1)
+        die_at(arg->line, "char: arg must be single-char string");
+    Val r = { ty_i8, arena_printf("%d", (unsigned char)arg->s[0]) };
     return r;
 }
 
@@ -967,7 +1046,7 @@ static Val emit_call(Node *call, Scope *scope, Sym *sym) {
         args[i] = emit_node(call->items[i + 1], scope);
     }
     // Build comma-separated argument list
-    char arglist[2048];
+    char arglist[2048] = "";
     size_t apos = 0;
     for (int i = 0; i < nargs; i++) {
         int w = snprintf(arglist + apos, sizeof(arglist) - apos, "%s%s %s",
@@ -1192,6 +1271,9 @@ static Val emit_list(Node *n, Scope *scope) {
     if (strcmp(h, ".set!")   == 0) return emit_field_set(n, scope);
     if (strcmp(h, "sizeof")  == 0) return emit_sizeof(n, scope);
     if (strcmp(h, "alloca")  == 0) return emit_alloca_form(n, scope);
+    if (strcmp(h, "char")    == 0) return emit_char(n, scope);
+    if (strcmp(h, "aref")    == 0) return emit_aref(n, scope);
+    if (strcmp(h, "aset!")   == 0) return emit_aset(n, scope);
 
     const BinOp *op = lookup_binop(h);
     if (op) return emit_binop(n, scope, op);
@@ -1215,6 +1297,62 @@ static Val emit_node(Node *n, Scope *scope) {
 // ------------------------------------------------------------
 // Top-level forms
 // ------------------------------------------------------------
+
+static void emit_defvar(Node *call) {
+    // (defvar name:type) or (defvar name:type init)
+    if (call->len < 2 || call->len > 3)
+        die_at(call->line, "defvar: expects name and optional init");
+    Node *name_node = call->items[1];
+    if (name_node->kind != NODE_SYM)
+        die_at(name_node->line, "defvar: name must be symbol");
+    char *name, *type_name;
+    split_typed(name_node->s, &name, &type_name);
+    if (!type_name)
+        die_at(name_node->line, "defvar: missing :type on '%s'", name);
+    Type *ty = parse_type_name(type_name, name_node->line);
+    const char *ir_name = arena_printf("@%s", name);
+    int align = type_align(ty);
+    if (call->len == 3) {
+        Node *init = call->items[2];
+        if (init->kind != NODE_INT)
+            die_at(init->line, "defvar: init must be integer literal");
+        fprintf(g_out, "%s = global %s %ld, align %d\n\n",
+                ir_name, type_to_ir(ty), init->i, align);
+    } else {
+        const char *zero = (ty->kind == TY_PTR) ? "null" : "0";
+        fprintf(g_out, "%s = global %s %s, align %d\n\n",
+                ir_name, type_to_ir(ty), zero, align);
+    }
+    // is_local=true so load/store via symbol ref and set! work on the @global addr
+    scope_define(g_globals, name, ty, ir_name, true);
+}
+
+static void emit_defconst(Node *call) {
+    // (defconst NAME integer-literal)
+    if (call->len != 3) die_at(call->line, "defconst: expects name and value");
+    Node *name = call->items[1];
+    Node *val  = call->items[2];
+    if (name->kind != NODE_SYM)
+        die_at(name->line, "defconst: name must be symbol");
+    if (val->kind != NODE_INT)
+        die_at(val->line, "defconst: value must be integer literal");
+    Sym *sym = scope_define(g_globals, name->s, ty_i32, NULL, false);
+    sym->is_const = true;
+    sym->const_val = arena_printf("%ld", val->i);
+}
+
+static void emit_defenum(Node *call) {
+    // (defenum EnumName VAL0 VAL1 ...) — defines VALi = i
+    if (call->len < 2) die_at(call->line, "defenum: missing name");
+    for (int i = 2; i < call->len; i++) {
+        Node *name = call->items[i];
+        if (name->kind != NODE_SYM)
+            die_at(name->line, "defenum: value must be symbol");
+        Sym *sym = scope_define(g_globals, name->s, ty_i32, NULL, false);
+        sym->is_const = true;
+        sym->const_val = arena_printf("%d", i - 2);
+    }
+}
 
 static void emit_defstruct(Node *call) {
     // (defstruct Name field1:type1 field2:type2 ...)
@@ -1246,22 +1384,90 @@ static void emit_defstruct(Node *call) {
     fprintf(g_out, " }\n\n");
 }
 
+typedef struct {
+    const char *module;
+    const char *name;
+    TypeKind    ret;
+    TypeKind    params[6];
+    int         num_params;
+    bool        variadic;
+} LibcDecl;
+
+static const LibcDecl g_libc[] = {
+    // stdio
+    {"stdio", "printf",   TY_I32,  {TY_PTR},                         1, true },
+    {"stdio", "fprintf",  TY_I32,  {TY_PTR, TY_PTR},                 2, true },
+    {"stdio", "snprintf", TY_I32,  {TY_PTR, TY_I64, TY_PTR},         3, true },
+    {"stdio", "fputc",    TY_I32,  {TY_I32, TY_PTR},                 2, false},
+    {"stdio", "fputs",    TY_I32,  {TY_PTR, TY_PTR},                 2, false},
+    {"stdio", "fopen",    TY_PTR,  {TY_PTR, TY_PTR},                 2, false},
+    {"stdio", "fclose",   TY_I32,  {TY_PTR},                         1, false},
+    {"stdio", "fread",    TY_I64,  {TY_PTR, TY_I64, TY_I64, TY_PTR}, 4, false},
+    {"stdio", "fwrite",   TY_I64,  {TY_PTR, TY_I64, TY_I64, TY_PTR}, 4, false},
+    {"stdio", "fseek",    TY_I32,  {TY_PTR, TY_I64, TY_I32},         3, false},
+    {"stdio", "ftell",    TY_I64,  {TY_PTR},                         1, false},
+    {"stdio", "rewind",   TY_VOID, {TY_PTR},                         1, false},
+    {"stdio", "perror",   TY_VOID, {TY_PTR},                         1, false},
+    {"stdio", "open_memstream", TY_PTR, {TY_PTR, TY_PTR},            2, false},
+    // stdlib
+    {"stdlib", "malloc",  TY_PTR,  {TY_I64},                         1, false},
+    {"stdlib", "realloc", TY_PTR,  {TY_PTR, TY_I64},                 2, false},
+    {"stdlib", "free",    TY_VOID, {TY_PTR},                         1, false},
+    {"stdlib", "exit",    TY_VOID, {TY_I32},                         1, false},
+    {"stdlib", "strtol",  TY_I64,  {TY_PTR, TY_PTR, TY_I32},         3, false},
+    // string
+    {"string", "memcpy",  TY_PTR, {TY_PTR, TY_PTR, TY_I64},         3, false},
+    {"string", "memset",  TY_PTR, {TY_PTR, TY_I32, TY_I64},         3, false},
+    {"string", "memcmp",  TY_I32, {TY_PTR, TY_PTR, TY_I64},         3, false},
+    {"string", "strlen",  TY_I64, {TY_PTR},                          1, false},
+    {"string", "strcmp",   TY_I32, {TY_PTR, TY_PTR},                 2, false},
+    {"string", "strncmp", TY_I32,  {TY_PTR, TY_PTR, TY_I64},         3, false},
+    {"string", "strchr",  TY_PTR,  {TY_PTR, TY_I32},                 2, false},
+    {"string", "strndup", TY_PTR,  {TY_PTR, TY_I64},                 2, false},
+    // ctype
+    {"ctype", "isspace", TY_I32, {TY_I32}, 1, false},
+    {"ctype", "isdigit", TY_I32, {TY_I32}, 1, false},
+};
+
+static Type *kind_to_type(TypeKind k) {
+    switch (k) {
+        case TY_VOID: return ty_void;
+        case TY_I32:  return ty_i32;
+        case TY_I64:  return ty_i64;
+        case TY_PTR:  return ty_ptr;
+        default:      return ty_void;
+    }
+}
+
 static void emit_include(Node *call) {
     if (call->len != 2 || call->items[1]->kind != NODE_SYM)
         die_at(call->line, "include: expects one symbol");
-    const char *name = call->items[1]->s;
-    if (strcmp(name, "stdio") == 0) {
+    const char *mod = call->items[1]->s;
+    bool found = false;
+    for (size_t i = 0; i < sizeof(g_libc) / sizeof(g_libc[0]); i++) {
+        const LibcDecl *d = &g_libc[i];
+        if (strcmp(d->module, mod) != 0) continue;
+        found = true;
         Type *ft = make_type(TY_FN);
-        ft->ret = ty_i32;
-        ft->num_params = 1;
-        ft->params = arena_alloc(sizeof(Type *));
-        ft->params[0] = ty_ptr;
-        ft->variadic = true;
-        scope_define(g_globals, "printf", ft, "@printf", false);
-        fprintf(g_out, "declare i32 @printf(ptr, ...)\n\n");
-        return;
+        ft->ret = kind_to_type(d->ret);
+        ft->num_params = d->num_params;
+        ft->params = arena_alloc((size_t)d->num_params * sizeof(Type *));
+        for (int j = 0; j < d->num_params; j++)
+            ft->params[j] = kind_to_type(d->params[j]);
+        ft->variadic = d->variadic;
+        scope_define(g_globals, d->name, ft,
+                     arena_printf("@%s", d->name), false);
+        fprintf(g_out, "declare %s @%s(", type_to_ir(ft->ret), d->name);
+        for (int j = 0; j < d->num_params; j++) {
+            if (j) fprintf(g_out, ", ");
+            fprintf(g_out, "%s", type_to_ir(ft->params[j]));
+        }
+        if (d->variadic)
+            fprintf(g_out, "%s...", d->num_params ? ", " : "");
+        fprintf(g_out, ")\n");
     }
-    die_at(call->line, "unknown include: %s", name);
+    if (found) fprintf(g_out, "\n");
+    if (!found) die_at(call->line, "unknown include: %s", mod);
 }
 
 static void emit_defn(Node *call) {
@@ -1420,7 +1626,14 @@ int main(int argc, char **argv) {
         if (f->kind != NODE_LIST || f->len == 0 || f->items[0]->kind != NODE_SYM)
             die_at(f->line, "top-level form must be a list starting with a symbol");
         const char *h = f->items[0]->s;
-        if (strcmp(h, "defstruct") == 0) {
+        if (strcmp(h, "defconst") == 0) {
+            emit_defconst(f);
+        } else if (strcmp(h, "defenum") == 0) {
+            emit_defenum(f);
+        } else if (strcmp(h, "defvar") == 0) {
+            g_out = decl_stream;
+            emit_defvar(f);
+        } else if (strcmp(h, "defstruct") == 0) {
             g_out = type_stream;
             emit_defstruct(f);
         } else if (strcmp(h, "include") == 0) {
