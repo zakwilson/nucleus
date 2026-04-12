@@ -187,15 +187,16 @@ The macro author extracts the atom's value explicitly when they need it: `(. arg
 
 ### Suggested implementation order
 
-Given the dependencies:
+Given the dependencies resolved above, the real ordering is:
 
 1. ~~**`cond`** — no prerequisites, immediate quality-of-life improvement, good warmup~~ done
-2. **`quote` and `'`** — hardcoded in the reader, introduces quoted values to the language
-3. **Compile-time list representation** — cons cells, `first`, `rest`, `cons`, `append` as compile-time builtins
-4. **Quasiquote and splicing** — enables readable macro bodies
-5. **`defmacro`** — single-pass expansion, unhygienic, with `gensym`
-6. **Use macros to simplify the compiler** — `if`, `when`, und `unless` become macros on `cond`, add `let`, etc.
-7. **Reader macros** — generalize the hardcoded `'` to user-defined reader transformations
-8. **`eval-when` / compile-time control** — fine-grained control over what's available when
+2. ~~**AST unification** — internal refactor: replace `Node.items[]` arrays with cons cells (`car`/`cdr`/`line`). Atoms remain a separate allocation per 1a. `null` is the empty list. No user-visible language change; every test must still pass. Prerequisite for everything below.~~ done (stage1.ll == stage2.ll fixed-point holds; all 13 tests pass)
+3. ~~**`quote` and `'`** — hardcode `'x` → `(quote x)` in the reader; add `quote` as a special form that evaluates to its argument as a node at compile time.~~ done (`'x` expands in the reader; `quote` emits private Node-struct globals — `{i32 kind, i32 line, i64 i, ptr s, ptr car, ptr cdr}` — and yields a pointer to the root. Runtime-visible only for now; will be reused by the JIT in step 6.)
+4. **List manipulation primitives** — `cons`, `first`, `rest`, `append` as Nucleus functions over the unified cons/node type. `list` is a convenience wrapper over `cons`.
+5. **Quasiquote and splicing** — `` `x ``, `~x`, `~@x` as hardcoded reader shortcuts for `quasiquote` / `unquote` / `unquote-splice`, with special-form support for each.
+6. **libLLVM JIT + `compile-time` special form** — link `libLLVM`, reuse `emit_*` to compile code into an in-process module, execute it. `(compile-time body…)` is the user-facing entry point.
+7. **`defmacro`** — new special form. Body runs via the JIT; result is a node that replaces the call site. Iterative expansion with a hardcoded recursion bound (~1024). Unhygienic, with `gensym`. Single global macro registry.
+8. **Use macros to simplify the compiler** — `if`, `when`, `unless` become macros over `cond`; `let` gets a macro form; etc.
+9. **Reader macros** — generalize the hardcoded `'` / `` ` `` / `~` / `~@` to entries in a user-extensible reader macro table.
 
-Each step is independently useful and testable. Steps 1-2 are small. Steps 3-5 are the heavy lift. Steps 6-8 are the payoff and polish.
+Steps 2 and 6 are the heaviest. Steps 3-5 are mechanical once 2 is done. Step 7 is the payoff; 8-9 are polish.

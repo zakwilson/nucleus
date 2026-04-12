@@ -94,6 +94,7 @@ static void die_at(int line, const char *fmt, ...) {
 typedef enum {
     TOK_LPAREN,
     TOK_RPAREN,
+    TOK_QUOTE,
     TOK_INT,
     TOK_STRING,
     TOK_SYMBOL,
@@ -208,6 +209,7 @@ static Tok next_tok(void) {
     if (c == 0) { Tok t = { .kind = TOK_EOF, .line = line }; return t; }
     if (c == '(') { next_char(); Tok t = { .kind = TOK_LPAREN, .line = line }; return t; }
     if (c == ')') { next_char(); Tok t = { .kind = TOK_RPAREN, .line = line }; return t; }
+    if (c == '\'') { next_char(); Tok t = { .kind = TOK_QUOTE, .line = line }; return t; }
     if (c == '"') { next_char(); return lex_string(line); }
     return lex_atom();
 }
@@ -220,17 +222,34 @@ typedef enum {
     NODE_INT,
     NODE_STR,
     NODE_SYM,
-    NODE_LIST,
+    NODE_CELL,
 } NodeKind;
 
 typedef struct Node {
     NodeKind       kind;
     int            line;
-    long           i;    // NODE_INT
-    char          *s;    // NODE_STR, NODE_SYM
-    struct Node  **items;
-    int            len;  // NODE_LIST
+    union {
+        long       i;                           // NODE_INT
+        char      *s;                           // NODE_STR, NODE_SYM
+        struct { struct Node *car, *cdr; };     // NODE_CELL (cdr=NULL terminates)
+    };
 } Node;
+
+// A list is a chain of NODE_CELL nodes terminated by NULL. The empty list is NULL.
+static int node_len(Node *n) {
+    int k = 0;
+    while (n && n->kind == NODE_CELL) { k++; n = n->cdr; }
+    return k;
+}
+
+static Node *node_at(Node *n, int i) {
+    while (n && n->kind == NODE_CELL && i > 0) { n = n->cdr; i--; }
+    return (n && n->kind == NODE_CELL) ? n->car : NULL;
+}
+
+static bool node_is_list(Node *n) {
+    return n == NULL || n->kind == NODE_CELL;
+}
 
 static Tok  g_peek;
 static bool g_peek_valid;
@@ -248,33 +267,27 @@ static Tok eat_tok(void) {
 
 static Node *read_form(void);
 
-static void push_node(Node ***items, int *len, int *cap, Node *n) {
-    if (*len == *cap) {
-        int nc = *cap ? *cap * 2 : 4;
-        Node **ni = arena_alloc((size_t)nc * sizeof(Node *));
-        for (int i = 0; i < *len; i++) ni[i] = (*items)[i];
-        *items = ni;
-        *cap = nc;
-    }
-    (*items)[(*len)++] = n;
+static Node *make_cell(Node *car, Node *cdr, int line) {
+    Node *c = arena_alloc(sizeof(Node));
+    c->kind = NODE_CELL;
+    c->line = line;
+    c->car = car;
+    c->cdr = cdr;
+    return c;
 }
 
 static Node *read_list(int line) {
-    Node **items = NULL;
-    int len = 0, cap = 0;
+    Node *head = NULL, *tail = NULL;
     for (;;) {
         Tok t = peek_tok();
         if (t.kind == TOK_EOF) die_at(line, "unterminated list");
         if (t.kind == TOK_RPAREN) { eat_tok(); break; }
         Node *child = read_form();
-        push_node(&items, &len, &cap, child);
+        Node *cell = make_cell(child, NULL, line);
+        if (tail) tail->cdr = cell; else head = cell;
+        tail = cell;
     }
-    Node *n = arena_alloc(sizeof(Node));
-    n->kind = NODE_LIST;
-    n->line = line;
-    n->items = items;
-    n->len = len;
-    return n;
+    return head;
 }
 
 static Node *read_form(void) {
@@ -283,6 +296,12 @@ static Node *read_form(void) {
     switch (t.kind) {
         case TOK_LPAREN: return read_list(t.line);
         case TOK_RPAREN: die_at(t.line, "unexpected )");
+        case TOK_QUOTE: {
+            Node *quoted = read_form();
+            Node *sym = arena_alloc(sizeof(Node));
+            sym->kind = NODE_SYM; sym->line = t.line; sym->s = arena_strndup("quote", 5);
+            return make_cell(sym, make_cell(quoted, NULL, t.line), t.line);
+        }
         case TOK_INT:
             n = arena_alloc(sizeof(Node));
             n->kind = NODE_INT; n->line = t.line; n->i = t.i;
@@ -301,14 +320,15 @@ static Node *read_form(void) {
     return NULL;
 }
 
-static Node **read_program(int *out_len) {
-    Node **forms = NULL;
-    int len = 0, cap = 0;
+static Node *read_program(void) {
+    Node *head = NULL, *tail = NULL;
     while (peek_tok().kind != TOK_EOF) {
-        push_node(&forms, &len, &cap, read_form());
+        Node *form = read_form();
+        Node *cell = make_cell(form, NULL, form ? form->line : 0);
+        if (tail) tail->cdr = cell; else head = cell;
+        tail = cell;
     }
-    *out_len = len;
-    return forms;
+    return head;
 }
 
 // ============================================================
@@ -554,7 +574,9 @@ typedef struct {
 } Val;
 
 static FILE  *g_out;      // current emit destination for top-level (declares or defines stream)
+static FILE  *g_decl_out; // decl stream, used for quote globals
 static Scope *g_globals;
+static int    g_quote_id;
 
 // Per-function state
 static int    g_tmp;
@@ -640,6 +662,52 @@ static Val emit_int(Node *n) {
     return v;
 }
 
+// Emits Node-typed global constants for a quoted form tree.
+// Returns an LLVM-IR reference (global name or "null") pointing to the root.
+static const char *emit_quote_tree(Node *n) {
+    if (n == NULL) return "null";
+    if (n->kind == NODE_INT) {
+        int id = g_quote_id++;
+        fprintf(g_decl_out,
+                "@.q%d = private unnamed_addr constant "
+                "{ i32, i32, i64, ptr, ptr, ptr } "
+                "{ i32 0, i32 %d, i64 %ld, ptr null, ptr null, ptr null }, align 8\n",
+                id, n->line, n->i);
+        return arena_printf("@.q%d", id);
+    }
+    if (n->kind == NODE_STR || n->kind == NODE_SYM) {
+        int kind = (n->kind == NODE_STR) ? 1 : 2;
+        int sid = intern_string(n->s, (int)strlen(n->s));
+        int ir_len = g_strs[sid].len + 1;
+        int id = g_quote_id++;
+        fprintf(g_decl_out,
+                "@.q%d = private unnamed_addr constant "
+                "{ i32, i32, i64, ptr, ptr, ptr } "
+                "{ i32 %d, i32 %d, i64 0, "
+                "ptr getelementptr inbounds ([%d x i8], ptr @.str.%d, i64 0, i64 0), "
+                "ptr null, ptr null }, align 8\n",
+                id, kind, n->line, ir_len, sid);
+        return arena_printf("@.q%d", id);
+    }
+    // NODE_CELL: emit children first, then self
+    const char *car_ref = emit_quote_tree(n->car);
+    const char *cdr_ref = emit_quote_tree(n->cdr);
+    int id = g_quote_id++;
+    fprintf(g_decl_out,
+            "@.q%d = private unnamed_addr constant "
+            "{ i32, i32, i64, ptr, ptr, ptr } "
+            "{ i32 3, i32 %d, i64 0, ptr null, ptr %s, ptr %s }, align 8\n",
+            id, n->line, car_ref, cdr_ref);
+    return arena_printf("@.q%d", id);
+}
+
+static Val emit_quote(Node *call) {
+    if (node_len(call) != 2) die_at(call->line, "quote: expects 1 arg");
+    const char *ref = emit_quote_tree(node_at(call, 1));
+    Val v = { ty_ptr, ref };
+    return v;
+}
+
 static Val emit_string(Node *n) {
     int id = intern_string(n->s, (int)strlen(n->s));
     int ir_len = g_strs[id].len + 1; // + NUL terminator
@@ -703,10 +771,10 @@ static const BinOp *lookup_binop(const char *name) {
 }
 
 static Val emit_binop(Node *call, Scope *scope, const BinOp *op) {
-    if (call->len != 3)
+    if (node_len(call) != 3)
         die_at(call->line, "%s expects 2 args", op->name);
-    Val a = emit_node(call->items[1], scope);
-    Val b = emit_node(call->items[2], scope);
+    Val a = emit_node(node_at(call, 1), scope);
+    Val b = emit_node(node_at(call, 2), scope);
     if (a.type->kind == TY_PTR && b.type->kind == TY_PTR && op->is_cmp) {
         const char *tmp = new_tmp();
         body_emit("  %s = %s ptr %s, %s\n", tmp, op->instr, a.val, b.val);
@@ -737,12 +805,12 @@ static int int_width(Type *t) {
 }
 
 static Val emit_cast(Node *call, Scope *scope) {
-    if (call->len != 3) die_at(call->line, "cast expects 2 args");
-    Node *type_node = call->items[1];
+    if (node_len(call) != 3) die_at(call->line, "cast expects 2 args");
+    Node *type_node = node_at(call, 1);
     if (type_node->kind != NODE_SYM)
         die_at(type_node->line, "cast: target type must be a symbol");
     Type *dst = parse_type_name(type_node->s, type_node->line);
-    Val v = emit_node(call->items[2], scope);
+    Val v = emit_node(node_at(call, 2), scope);
     Type *src = v.type;
 
     if (src->kind == dst->kind) { Val r = { dst, v.val }; return r; }
@@ -767,12 +835,12 @@ static Val emit_cast(Node *call, Scope *scope) {
 
 // (. ptr field) — struct field access via pointer
 static Val emit_field_get(Node *call, Scope *scope) {
-    if (call->len != 3) die_at(call->line, ". expects 2 args");
-    Val p = emit_node(call->items[1], scope);
+    if (node_len(call) != 3) die_at(call->line, ". expects 2 args");
+    Val p = emit_node(node_at(call, 1), scope);
     if (p.type->kind != TY_PTR || !p.type->elem ||
         p.type->elem->kind != TY_STRUCT)
         die_at(call->line, ".: operand must be pointer to struct");
-    Node *fn = call->items[2];
+    Node *fn = node_at(call, 2);
     if (fn->kind != NODE_SYM) die_at(fn->line, ".: field name must be symbol");
     StructDef *sd = p.type->elem->sdef;
     int idx = -1;
@@ -794,12 +862,12 @@ static Val emit_field_get(Node *call, Scope *scope) {
 
 // (.set! ptr field value) — struct field set via pointer
 static Val emit_field_set(Node *call, Scope *scope) {
-    if (call->len != 4) die_at(call->line, ".set! expects 3 args");
-    Val p = emit_node(call->items[1], scope);
+    if (node_len(call) != 4) die_at(call->line, ".set! expects 3 args");
+    Val p = emit_node(node_at(call, 1), scope);
     if (p.type->kind != TY_PTR || !p.type->elem ||
         p.type->elem->kind != TY_STRUCT)
         die_at(call->line, ".set!: operand must be pointer to struct");
-    Node *fn = call->items[2];
+    Node *fn = node_at(call, 2);
     if (fn->kind != NODE_SYM) die_at(fn->line, ".set!: field name must be symbol");
     StructDef *sd = p.type->elem->sdef;
     int idx = -1;
@@ -809,7 +877,7 @@ static Val emit_field_set(Node *call, Scope *scope) {
     if (idx < 0) die_at(fn->line, ".set!: no field '%s' on struct '%s'",
                         fn->s, sd->name);
     Type *ftype = sd->field_types[idx];
-    Val v = emit_node(call->items[3], scope);
+    Val v = emit_node(node_at(call, 3), scope);
     if (v.type->kind != ftype->kind)
         die_at(call->line, ".set!: type mismatch for field '%s'", fn->s);
     const char *gep = new_tmp();
@@ -824,8 +892,8 @@ static Val emit_field_set(Node *call, Scope *scope) {
 // (sizeof TypeName) — size of a type at runtime via GEP trick
 static Val emit_sizeof(Node *call, Scope *scope) {
     (void)scope;
-    if (call->len != 2) die_at(call->line, "sizeof expects 1 arg");
-    Node *tn = call->items[1];
+    if (node_len(call) != 2) die_at(call->line, "sizeof expects 1 arg");
+    Node *tn = node_at(call, 1);
     if (tn->kind != NODE_SYM) die_at(tn->line, "sizeof: arg must be type name");
     Type *ty = parse_type_name(tn->s, tn->line);
     const char *gep = new_tmp();
@@ -839,14 +907,14 @@ static Val emit_sizeof(Node *call, Scope *scope) {
 
 // (alloca T) or (alloca T N) — stack-allocate and return typed pointer
 static Val emit_alloca_form(Node *call, Scope *scope) {
-    if (call->len != 2 && call->len != 3)
+    if (node_len(call) != 2 && node_len(call) != 3)
         die_at(call->line, "alloca expects 1 or 2 args");
-    Node *tn = call->items[1];
+    Node *tn = node_at(call, 1);
     if (tn->kind != NODE_SYM) die_at(tn->line, "alloca: first arg must be type name");
     Type *ty = parse_type_name(tn->s, tn->line);
     const char *slot = new_tmp();
-    if (call->len == 3) {
-        Val n = emit_node(call->items[2], scope);
+    if (node_len(call) == 3) {
+        Val n = emit_node(node_at(call, 2), scope);
         body_emit("  %s = alloca %s, i32 %s, align %d\n",
                   slot, type_to_ir(ty), n.val, type_align(ty));
     } else {
@@ -861,11 +929,11 @@ static Val emit_alloca_form(Node *call, Scope *scope) {
 
 // (aref p i) — indexed element load
 static Val emit_aref(Node *call, Scope *scope) {
-    if (call->len != 3) die_at(call->line, "aref expects 2 args");
-    Val p = emit_node(call->items[1], scope);
+    if (node_len(call) != 3) die_at(call->line, "aref expects 2 args");
+    Val p = emit_node(node_at(call, 1), scope);
     if (p.type->kind != TY_PTR || !p.type->elem)
         die_at(call->line, "aref: operand must be typed pointer");
-    Val idx = emit_node(call->items[2], scope);
+    Val idx = emit_node(node_at(call, 2), scope);
     if (!is_int_type(idx.type))
         die_at(call->line, "aref: index must be integer");
     const char *idx64 = idx.val;
@@ -888,11 +956,11 @@ static Val emit_aref(Node *call, Scope *scope) {
 
 // (aset! p i v) — indexed element store
 static Val emit_aset(Node *call, Scope *scope) {
-    if (call->len != 4) die_at(call->line, "aset! expects 3 args");
-    Val p = emit_node(call->items[1], scope);
+    if (node_len(call) != 4) die_at(call->line, "aset! expects 3 args");
+    Val p = emit_node(node_at(call, 1), scope);
     if (p.type->kind != TY_PTR || !p.type->elem)
         die_at(call->line, "aset!: operand must be typed pointer");
-    Val idx = emit_node(call->items[2], scope);
+    Val idx = emit_node(node_at(call, 2), scope);
     if (!is_int_type(idx.type))
         die_at(call->line, "aset!: index must be integer");
     const char *idx64 = idx.val;
@@ -903,7 +971,7 @@ static Val emit_aset(Node *call, Scope *scope) {
         idx64 = t;
     }
     Type *elem = p.type->elem;
-    Val v = emit_node(call->items[3], scope);
+    Val v = emit_node(node_at(call, 3), scope);
     if (v.type->kind != elem->kind)
         die_at(call->line, "aset!: value type mismatch");
     const char *gep = new_tmp();
@@ -918,8 +986,8 @@ static Val emit_aset(Node *call, Scope *scope) {
 // (char "x") — returns i8 value of a single character
 static Val emit_char(Node *call, Scope *scope) {
     (void)scope;
-    if (call->len != 2) die_at(call->line, "char expects 1 arg");
-    Node *arg = call->items[1];
+    if (node_len(call) != 2) die_at(call->line, "char expects 1 arg");
+    Node *arg = node_at(call, 1);
     if (arg->kind != NODE_STR || strlen(arg->s) != 1)
         die_at(arg->line, "char: arg must be single-char string");
     Val r = { ty_i8, arena_printf("%d", (unsigned char)arg->s[0]) };
@@ -927,8 +995,8 @@ static Val emit_char(Node *call, Scope *scope) {
 }
 
 static Val emit_addr_of(Node *call, Scope *scope) {
-    if (call->len != 2) die_at(call->line, "addr-of expects 1 arg");
-    Node *target = call->items[1];
+    if (node_len(call) != 2) die_at(call->line, "addr-of expects 1 arg");
+    Node *target = node_at(call, 1);
     if (target->kind != NODE_SYM)
         die_at(target->line, "addr-of: target must be symbol");
     Sym *sym = scope_lookup(scope, target->s);
@@ -941,8 +1009,8 @@ static Val emit_addr_of(Node *call, Scope *scope) {
 }
 
 static Val emit_deref(Node *call, Scope *scope) {
-    if (call->len != 2) die_at(call->line, "deref expects 1 arg");
-    Val p = emit_node(call->items[1], scope);
+    if (node_len(call) != 2) die_at(call->line, "deref expects 1 arg");
+    Val p = emit_node(node_at(call, 1), scope);
     if (p.type->kind != TY_PTR || !p.type->elem)
         die_at(call->line, "deref: operand must be typed pointer");
     Type *elem = p.type->elem;
@@ -954,12 +1022,12 @@ static Val emit_deref(Node *call, Scope *scope) {
 }
 
 static Val emit_ptr_set(Node *call, Scope *scope) {
-    if (call->len != 3) die_at(call->line, "ptr-set! expects 2 args");
-    Val p = emit_node(call->items[1], scope);
+    if (node_len(call) != 3) die_at(call->line, "ptr-set! expects 2 args");
+    Val p = emit_node(node_at(call, 1), scope);
     if (p.type->kind != TY_PTR || !p.type->elem)
         die_at(call->line, "ptr-set!: operand must be typed pointer");
     Type *elem = p.type->elem;
-    Val v = emit_node(call->items[2], scope);
+    Val v = emit_node(node_at(call, 2), scope);
     if (v.type->kind != elem->kind)
         die_at(call->line, "ptr-set!: value type mismatch");
     body_emit("  store %s %s, ptr %s, align %d\n",
@@ -969,11 +1037,11 @@ static Val emit_ptr_set(Node *call, Scope *scope) {
 }
 
 static Val emit_ptr_add(Node *call, Scope *scope) {
-    if (call->len != 3) die_at(call->line, "ptr+ expects 2 args");
-    Val p = emit_node(call->items[1], scope);
+    if (node_len(call) != 3) die_at(call->line, "ptr+ expects 2 args");
+    Val p = emit_node(node_at(call, 1), scope);
     if (p.type->kind != TY_PTR || !p.type->elem)
         die_at(call->line, "ptr+: operand must be typed pointer");
-    Val n = emit_node(call->items[2], scope);
+    Val n = emit_node(node_at(call, 2), scope);
     if (!is_int_type(n.type))
         die_at(call->line, "ptr+: offset must be integer");
     const char *idx = n.val;
@@ -992,8 +1060,8 @@ static Val emit_ptr_add(Node *call, Scope *scope) {
 }
 
 static Val emit_not(Node *call, Scope *scope) {
-    if (call->len != 2) die_at(call->line, "not expects 1 arg");
-    Val a = emit_node(call->items[1], scope);
+    if (node_len(call) != 2) die_at(call->line, "not expects 1 arg");
+    Val a = emit_node(node_at(call, 1), scope);
     if (a.type->kind != TY_I1)
         die_at(call->line, "not expects i1 operand");
     const char *tmp = new_tmp();
@@ -1005,7 +1073,7 @@ static Val emit_not(Node *call, Scope *scope) {
 // Short-circuit `and` / `or`. Result lives in a per-site i1 alloca so we
 // don't need phi nodes (matches the rest of the codegen's alloca style).
 static Val emit_short_circuit(Node *call, Scope *scope, bool is_and) {
-    if (call->len != 3)
+    if (node_len(call) != 3)
         die_at(call->line, "%s expects 2 args", is_and ? "and" : "or");
     int id = new_label_id();
     const char *rhs_lbl = arena_printf("%s.rhs%d", is_and ? "and" : "or", id);
@@ -1014,9 +1082,9 @@ static Val emit_short_circuit(Node *call, Scope *scope, bool is_and) {
 
     entry_emit("  %s = alloca i1, align 1\n", slot);
 
-    Val lhs = emit_node(call->items[1], scope);
+    Val lhs = emit_node(node_at(call, 1), scope);
     if (lhs.type->kind != TY_I1)
-        die_at(call->items[1]->line,
+        die_at(node_at(call, 1)->line,
                "%s expects i1 operands", is_and ? "and" : "or");
     body_emit("  store i1 %s, ptr %s, align 1\n", lhs.val, slot);
     if (is_and) {
@@ -1029,9 +1097,9 @@ static Val emit_short_circuit(Node *call, Scope *scope, bool is_and) {
 
     body_emit("%s:\n", rhs_lbl);
     g_block_term = false;
-    Val rhs = emit_node(call->items[2], scope);
+    Val rhs = emit_node(node_at(call, 2), scope);
     if (rhs.type->kind != TY_I1)
-        die_at(call->items[2]->line,
+        die_at(node_at(call, 2)->line,
                "%s expects i1 operands", is_and ? "and" : "or");
     body_emit("  store i1 %s, ptr %s, align 1\n", rhs.val, slot);
     body_emit("  br label %%%s\n", end_lbl);
@@ -1046,10 +1114,10 @@ static Val emit_short_circuit(Node *call, Scope *scope, bool is_and) {
 
 // Function call (handles variadic)
 static Val emit_call(Node *call, Scope *scope, Sym *sym) {
-    int nargs = call->len - 1;
+    int nargs = node_len(call) - 1;
     Val *args = arena_alloc((size_t)nargs * sizeof(Val));
     for (int i = 0; i < nargs; i++) {
-        args[i] = emit_node(call->items[i + 1], scope);
+        args[i] = emit_node(node_at(call, i + 1), scope);
     }
     // Build comma-separated argument list
     char arglist[2048] = "";
@@ -1105,14 +1173,14 @@ static Val emit_call(Node *call, Scope *scope, Sym *sym) {
 // ------------------------------------------------------------
 
 static Val emit_return(Node *call, Scope *scope) {
-    if (call->len == 1) {
+    if (node_len(call) == 1) {
         body_emit("  ret void\n");
         g_block_term = true;
         Val r = { ty_void, NULL };
         return r;
     }
-    if (call->len != 2) die_at(call->line, "return expects 0 or 1 args");
-    Val v = emit_node(call->items[1], scope);
+    if (node_len(call) != 2) die_at(call->line, "return expects 0 or 1 args");
+    Val v = emit_node(node_at(call, 1), scope);
     body_emit("  ret %s %s\n", type_to_ir(v.type), v.val);
     g_block_term = true;
     Val r = { ty_void, NULL };
@@ -1122,24 +1190,24 @@ static Val emit_return(Node *call, Scope *scope) {
 // (do expr1 expr2 ...) — evaluate in order, return last
 static Val emit_do(Node *call, Scope *scope) {
     Val last = { ty_void, NULL };
-    for (int i = 1; i < call->len; i++) {
-        last = emit_node(call->items[i], scope);
+    for (int i = 1; i < node_len(call); i++) {
+        last = emit_node(node_at(call, i), scope);
     }
     return last;
 }
 
 static Val emit_let(Node *call, Scope *scope) {
     // (let (name:type val ...) body...)
-    if (call->len < 2 || call->items[1]->kind != NODE_LIST)
+    if (node_len(call) < 2 || node_at(call, 1)->kind != NODE_CELL)
         die_at(call->line, "let: bad form");
-    Node *binds = call->items[1];
-    if (binds->len % 2 != 0)
+    Node *binds = node_at(call, 1);
+    if (node_len(binds) % 2 != 0)
         die_at(binds->line, "let: binding list must be even");
 
     Scope *inner = scope_new(scope);
-    for (int i = 0; i < binds->len; i += 2) {
-        Node *bname = binds->items[i];
-        Node *bval  = binds->items[i + 1];
+    for (int i = 0; i < node_len(binds); i += 2) {
+        Node *bname = node_at(binds, i);
+        Node *bval  = node_at(binds, i + 1);
         if (bname->kind != NODE_SYM)
             die_at(bname->line, "let: binding name must be symbol");
         char *name, *type_name;
@@ -1161,14 +1229,14 @@ static Val emit_let(Node *call, Scope *scope) {
         scope_define(inner, name, ty, slot, true);
     }
     Val last = { ty_void, NULL };
-    for (int i = 2; i < call->len; i++) {
-        last = emit_node(call->items[i], inner);
+    for (int i = 2; i < node_len(call); i++) {
+        last = emit_node(node_at(call, i), inner);
     }
     return last;
 }
 
 static Val emit_cond(Node *call, Scope *scope) {
-    int nargs = call->len - 1;
+    int nargs = node_len(call) - 1;
     if (nargs < 2 || nargs % 2 != 0)
         die_at(call->line, "cond: expects pairs of (test body)");
     int npairs = nargs / 2;
@@ -1180,15 +1248,15 @@ static Val emit_cond(Node *call, Scope *scope) {
         const char *next_lbl = (i < npairs - 1)
             ? arena_printf("cond.test%d.%d", id, i + 1) : end_lbl;
 
-        Val test = emit_node(call->items[1 + i * 2], scope);
+        Val test = emit_node(node_at(call, 1 + i * 2), scope);
         if (test.type->kind != TY_I1)
-            die_at(call->items[1 + i * 2]->line, "cond: test must be i1");
+            die_at(node_at(call, 1 + i * 2)->line, "cond: test must be i1");
         body_emit("  br i1 %s, label %%%s, label %%%s\n",
                   test.val, then_lbl, next_lbl);
 
         body_emit("%s:\n", then_lbl);
         g_block_term = false;
-        emit_node(call->items[2 + i * 2], scope);
+        emit_node(node_at(call, 2 + i * 2), scope);
         if (!g_block_term)
             body_emit("  br label %%%s\n", end_lbl);
 
@@ -1205,7 +1273,7 @@ static Val emit_cond(Node *call, Scope *scope) {
 }
 
 static Val emit_while(Node *call, Scope *scope) {
-    if (call->len < 2) die_at(call->line, "while: missing condition");
+    if (node_len(call) < 2) die_at(call->line, "while: missing condition");
     int id = new_label_id();
     const char *cond_lbl = arena_printf("while.cond%d", id);
     const char *body_lbl = arena_printf("while.body%d", id);
@@ -1214,16 +1282,16 @@ static Val emit_while(Node *call, Scope *scope) {
     body_emit("  br label %%%s\n", cond_lbl);
     body_emit("%s:\n", cond_lbl);
     g_block_term = false;
-    Val cond = emit_node(call->items[1], scope);
+    Val cond = emit_node(node_at(call, 1), scope);
     if (cond.type->kind != TY_I1)
-        die_at(call->items[1]->line, "while condition must be i1");
+        die_at(node_at(call, 1)->line, "while condition must be i1");
     body_emit("  br i1 %s, label %%%s, label %%%s\n",
               cond.val, body_lbl, end_lbl);
 
     body_emit("%s:\n", body_lbl);
     g_block_term = false;
-    for (int i = 2; i < call->len; i++) {
-        emit_node(call->items[i], scope);
+    for (int i = 2; i < node_len(call); i++) {
+        emit_node(node_at(call, i), scope);
     }
     if (!g_block_term) body_emit("  br label %%%s\n", cond_lbl);
 
@@ -1234,14 +1302,14 @@ static Val emit_while(Node *call, Scope *scope) {
 }
 
 static Val emit_set(Node *call, Scope *scope) {
-    if (call->len != 3) die_at(call->line, "set! expects 2 args");
-    Node *target = call->items[1];
+    if (node_len(call) != 3) die_at(call->line, "set! expects 2 args");
+    Node *target = node_at(call, 1);
     if (target->kind != NODE_SYM)
         die_at(target->line, "set!: target must be symbol");
     Sym *sym = scope_lookup(scope, target->s);
     if (!sym || !sym->is_local)
         die_at(target->line, "set!: undefined local '%s'", target->s);
-    Val v = emit_node(call->items[2], scope);
+    Val v = emit_node(node_at(call, 2), scope);
     if (v.type->kind != sym->type->kind)
         die_at(call->line, "set!: type mismatch for '%s'", target->s);
     body_emit("  store %s %s, ptr %s, align %d\n",
@@ -1251,8 +1319,8 @@ static Val emit_set(Node *call, Scope *scope) {
 }
 
 static Val emit_inc(Node *call, Scope *scope) {
-    if (call->len != 2) die_at(call->line, "inc! expects 1 arg");
-    Node *target = call->items[1];
+    if (node_len(call) != 2) die_at(call->line, "inc! expects 1 arg");
+    Node *target = node_at(call, 1);
     if (target->kind != NODE_SYM)
         die_at(target->line, "inc!: target must be symbol");
     Sym *sym = scope_lookup(scope, target->s);
@@ -1272,8 +1340,8 @@ static Val emit_inc(Node *call, Scope *scope) {
 }
 
 static Val emit_list(Node *n, Scope *scope) {
-    if (n->len == 0) die_at(n->line, "empty list");
-    Node *head = n->items[0];
+    if (node_len(n) == 0) die_at(n->line, "empty list");
+    Node *head = node_at(n, 0);
     if (head->kind != NODE_SYM) die_at(head->line, "list head must be symbol");
     const char *h = head->s;
 
@@ -1281,6 +1349,7 @@ static Val emit_list(Node *n, Scope *scope) {
     if (strcmp(h, "do")     == 0) return emit_do(n, scope);
     if (strcmp(h, "let")    == 0) return emit_let(n, scope);
     if (strcmp(h, "cond")   == 0) return emit_cond(n, scope);
+    if (strcmp(h, "quote")  == 0) return emit_quote(n);
     if (strcmp(h, "while")  == 0) return emit_while(n, scope);
     if (strcmp(h, "set!")   == 0) return emit_set(n, scope);
     if (strcmp(h, "inc!")   == 0) return emit_inc(n, scope);
@@ -1313,7 +1382,7 @@ static Val emit_node(Node *n, Scope *scope) {
         case NODE_INT:  return emit_int(n);
         case NODE_STR:  return emit_string(n);
         case NODE_SYM:  return emit_symbol_ref(n, scope);
-        case NODE_LIST: return emit_list(n, scope);
+        case NODE_CELL: return emit_list(n, scope);
     }
     Val r = { ty_void, NULL };
     return r;
@@ -1325,9 +1394,9 @@ static Val emit_node(Node *n, Scope *scope) {
 
 static void emit_defvar(Node *call) {
     // (defvar name:type) or (defvar name:type init)
-    if (call->len < 2 || call->len > 3)
+    if (node_len(call) < 2 || node_len(call) > 3)
         die_at(call->line, "defvar: expects name and optional init");
-    Node *name_node = call->items[1];
+    Node *name_node = node_at(call, 1);
     if (name_node->kind != NODE_SYM)
         die_at(name_node->line, "defvar: name must be symbol");
     char *name, *type_name;
@@ -1337,8 +1406,8 @@ static void emit_defvar(Node *call) {
     Type *ty = parse_type_name(type_name, name_node->line);
     const char *ir_name = arena_printf("@%s", name);
     int align = type_align(ty);
-    if (call->len == 3) {
-        Node *init = call->items[2];
+    if (node_len(call) == 3) {
+        Node *init = node_at(call, 2);
         if (init->kind != NODE_INT)
             die_at(init->line, "defvar: init must be integer literal");
         fprintf(g_out, "%s = global %s %ld, align %d\n\n",
@@ -1354,9 +1423,9 @@ static void emit_defvar(Node *call) {
 
 static void emit_defconst(Node *call) {
     // (defconst NAME integer-literal)
-    if (call->len != 3) die_at(call->line, "defconst: expects name and value");
-    Node *name = call->items[1];
-    Node *val  = call->items[2];
+    if (node_len(call) != 3) die_at(call->line, "defconst: expects name and value");
+    Node *name = node_at(call, 1);
+    Node *val  = node_at(call, 2);
     if (name->kind != NODE_SYM)
         die_at(name->line, "defconst: name must be symbol");
     if (val->kind != NODE_INT)
@@ -1368,9 +1437,9 @@ static void emit_defconst(Node *call) {
 
 static void emit_defenum(Node *call) {
     // (defenum EnumName VAL0 VAL1 ...) — defines VALi = i
-    if (call->len < 2) die_at(call->line, "defenum: missing name");
-    for (int i = 2; i < call->len; i++) {
-        Node *name = call->items[i];
+    if (node_len(call) < 2) die_at(call->line, "defenum: missing name");
+    for (int i = 2; i < node_len(call); i++) {
+        Node *name = node_at(call, i);
         if (name->kind != NODE_SYM)
             die_at(name->line, "defenum: value must be symbol");
         Sym *sym = scope_define(g_globals, name->s, ty_i32, NULL, false);
@@ -1381,17 +1450,17 @@ static void emit_defenum(Node *call) {
 
 static void emit_defstruct(Node *call) {
     // (defstruct Name field1:type1 field2:type2 ...)
-    if (call->len < 2) die_at(call->line, "defstruct: missing name");
-    Node *name_node = call->items[1];
+    if (node_len(call) < 2) die_at(call->line, "defstruct: missing name");
+    Node *name_node = node_at(call, 1);
     if (name_node->kind != NODE_SYM)
         die_at(name_node->line, "defstruct: name must be symbol");
     StructDef *sd = register_struct(name_node->s);
-    int nfields = call->len - 2;
+    int nfields = node_len(call) - 2;
     sd->field_names = arena_alloc((size_t)nfields * sizeof(char *));
     sd->field_types = arena_alloc((size_t)nfields * sizeof(Type *));
     sd->num_fields = nfields;
     for (int i = 0; i < nfields; i++) {
-        Node *field = call->items[i + 2];
+        Node *field = node_at(call, i + 2);
         if (field->kind != NODE_SYM)
             die_at(field->line, "defstruct: field must be typed symbol");
         char *fname, *ftype_name;
@@ -1466,22 +1535,22 @@ static Type *kind_to_type(TypeKind k) {
 
 static void emit_extern(Node *call) {
     // (extern name:type) — declare an external global (e.g. stderr)
-    if (call->len != 2 || call->items[1]->kind != NODE_SYM)
+    if (node_len(call) != 2 || node_at(call, 1)->kind != NODE_SYM)
         die_at(call->line, "extern: expects name:type");
     char *name, *type_name;
-    split_typed(call->items[1]->s, &name, &type_name);
+    split_typed(node_at(call, 1)->s, &name, &type_name);
     if (!type_name)
-        die_at(call->items[1]->line, "extern: missing :type on '%s'", name);
-    Type *ty = parse_type_name(type_name, call->items[1]->line);
+        die_at(node_at(call, 1)->line, "extern: missing :type on '%s'", name);
+    Type *ty = parse_type_name(type_name, node_at(call, 1)->line);
     const char *ir_name = arena_printf("@%s", name);
     fprintf(g_out, "%s = external global %s\n\n", ir_name, type_to_ir(ty));
     scope_define(g_globals, name, ty, ir_name, true);
 }
 
 static void emit_include(Node *call) {
-    if (call->len != 2 || call->items[1]->kind != NODE_SYM)
+    if (node_len(call) != 2 || node_at(call, 1)->kind != NODE_SYM)
         die_at(call->line, "include: expects one symbol");
-    const char *mod = call->items[1]->s;
+    const char *mod = node_at(call, 1)->s;
     bool found = false;
     for (size_t i = 0; i < sizeof(g_libc) / sizeof(g_libc[0]); i++) {
         const LibcDecl *d = &g_libc[i];
@@ -1511,20 +1580,20 @@ static void emit_include(Node *call) {
 
 static void emit_defn(Node *call) {
     // (defn name:type (params...) body...)
-    if (call->len < 4) die_at(call->line, "defn: bad form");
-    Node *name_node = call->items[1];
-    Node *params_node = call->items[2];
+    if (node_len(call) < 4) die_at(call->line, "defn: bad form");
+    Node *name_node = node_at(call, 1);
+    Node *params_node = node_at(call, 2);
     if (name_node->kind != NODE_SYM)
         die_at(name_node->line, "defn: name must be symbol");
-    if (params_node->kind != NODE_LIST)
-        die_at(params_node->line, "defn: params must be list");
+    if (!node_is_list(params_node))
+        die_at(name_node->line, "defn: params must be list");
 
     char *fname, *ret_name;
     split_typed(name_node->s, &fname, &ret_name);
     if (!ret_name) die_at(name_node->line, "defn: missing :type on '%s'", fname);
     Type *ret = parse_type_name(ret_name, name_node->line);
 
-    int nparams = params_node->len;
+    int nparams = node_len(params_node);
     Type **param_types = NULL;
     char **param_names = NULL;
     if (nparams > 0) {
@@ -1532,7 +1601,7 @@ static void emit_defn(Node *call) {
         param_names = arena_alloc((size_t)nparams * sizeof(char *));
     }
     for (int i = 0; i < nparams; i++) {
-        Node *p = params_node->items[i];
+        Node *p = node_at(params_node, i);
         if (p->kind != NODE_SYM)
             die_at(p->line, "defn: param must be symbol");
         char *pname, *ptype_name;
@@ -1567,8 +1636,8 @@ static void emit_defn(Node *call) {
         scope_define(fn_scope, param_names[i], param_types[i], slot, true);
     }
 
-    for (int i = 3; i < call->len; i++) {
-        emit_node(call->items[i], fn_scope);
+    for (int i = 3; i < node_len(call); i++) {
+        emit_node(node_at(call, i), fn_scope);
     }
     if (!g_block_term) {
         if (ret->kind == TY_VOID) body_emit("  ret void\n");
@@ -1645,8 +1714,7 @@ int main(int argc, char **argv) {
     types_init();
     lex_init(src);
 
-    int nforms;
-    Node **forms = read_program(&nforms);
+    Node *forms = read_program();
 
     g_globals = scope_new(NULL);
 
@@ -1662,27 +1730,28 @@ int main(int argc, char **argv) {
         perror("open_memstream");
         return 1;
     }
+    g_decl_out = decl_stream;
 
     // Pre-scan: register all defn signatures so forward/mutual recursion works.
-    for (int i = 0; i < nforms; i++) {
-        Node *f = forms[i];
-        if (f->kind != NODE_LIST || f->len < 4 ||
-            f->items[0]->kind != NODE_SYM ||
-            strcmp(f->items[0]->s, "defn") != 0)
+    for (Node *fc = forms; fc; fc = fc->cdr) {
+        Node *f = fc->car;
+        if (!f || f->kind != NODE_CELL || node_len(f) < 4 ||
+            node_at(f, 0)->kind != NODE_SYM ||
+            strcmp(node_at(f, 0)->s, "defn") != 0)
             continue;
-        Node *name_node = f->items[1];
-        Node *params_node = f->items[2];
-        if (name_node->kind != NODE_SYM || params_node->kind != NODE_LIST)
+        Node *name_node = node_at(f, 1);
+        Node *params_node = node_at(f, 2);
+        if (name_node->kind != NODE_SYM || !node_is_list(params_node))
             continue;
         char *fname, *ret_name;
         split_typed(name_node->s, &fname, &ret_name);
         if (!ret_name) continue;
         Type *ret = parse_type_name(ret_name, name_node->line);
-        int nparams = params_node->len;
+        int nparams = node_len(params_node);
         Type **ptypes = nparams
             ? arena_alloc((size_t)nparams * sizeof(Type *)) : NULL;
         for (int j = 0; j < nparams; j++) {
-            Node *p = params_node->items[j];
+            Node *p = node_at(params_node, j);
             if (p->kind != NODE_SYM) continue;
             char *pn, *pt;
             split_typed(p->s, &pn, &pt);
@@ -1696,11 +1765,11 @@ int main(int argc, char **argv) {
                      arena_printf("@%s", fname), false);
     }
 
-    for (int i = 0; i < nforms; i++) {
-        Node *f = forms[i];
-        if (f->kind != NODE_LIST || f->len == 0 || f->items[0]->kind != NODE_SYM)
-            die_at(f->line, "top-level form must be a list starting with a symbol");
-        const char *h = f->items[0]->s;
+    for (Node *fc = forms; fc; fc = fc->cdr) {
+        Node *f = fc->car;
+        if (!f || f->kind != NODE_CELL || node_at(f, 0) == NULL || node_at(f, 0)->kind != NODE_SYM)
+            die_at(f ? f->line : 0, "top-level form must be a list starting with a symbol");
+        const char *h = node_at(f, 0)->s;
         if (strcmp(h, "defconst") == 0) {
             emit_defconst(f);
         } else if (strcmp(h, "defenum") == 0) {
