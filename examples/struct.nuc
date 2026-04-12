@@ -1,0 +1,11 @@
+(defstruct Point x:int y:int)
+
+(include stdio)
+
+(defn main:int ()
+  (let (p:*Point (alloca Point))
+    (.set! p x 10)
+    (.set! p y 20)
+    (printf "x=%d y=%d sum=%d\n" (. p x) (. p y) (+ (. p x) (. p y)))
+    (printf "sizeof Point = %lld\n" (sizeof Point)))
+  (return 0))

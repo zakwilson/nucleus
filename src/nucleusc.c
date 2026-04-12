@@ -324,18 +324,49 @@ typedef enum {
     TY_I64,
     TY_PTR,
     TY_FN,
+    TY_STRUCT,
 } TypeKind;
 
-typedef struct Type {
+typedef struct Type Type;
+typedef struct StructDef {
+    const char  *name;
+    char       **field_names;
+    Type       **field_types;
+    int          num_fields;
+} StructDef;
+
+struct Type {
     TypeKind       kind;
     struct Type   *ret;
     struct Type  **params;
     int            num_params;
     bool           variadic;
     struct Type   *elem;   // TY_PTR pointee (NULL for untyped `ptr`)
-} Type;
+    StructDef     *sdef;   // TY_STRUCT definition
+};
 
 static Type *ty_void, *ty_i1, *ty_i8, *ty_i16, *ty_i32, *ty_i64, *ty_ptr;
+
+#define MAX_STRUCTS 64
+static StructDef g_structs[MAX_STRUCTS];
+static int g_structs_len;
+
+static StructDef *register_struct(const char *name) {
+    if (g_structs_len >= MAX_STRUCTS) {
+        fprintf(stderr, "nucleusc: too many structs\n");
+        exit(1);
+    }
+    StructDef *sd = &g_structs[g_structs_len++];
+    sd->name = name;
+    return sd;
+}
+
+static StructDef *lookup_struct(const char *name) {
+    for (int i = 0; i < g_structs_len; i++) {
+        if (strcmp(g_structs[i].name, name) == 0) return &g_structs[i];
+    }
+    return NULL;
+}
 
 static Type *make_type(TypeKind k) {
     Type *t = arena_alloc(sizeof(Type));
@@ -355,14 +386,15 @@ static void types_init(void) {
 
 static const char *type_to_ir(Type *t) {
     switch (t->kind) {
-        case TY_VOID: return "void";
-        case TY_I1:   return "i1";
-        case TY_I8:   return "i8";
-        case TY_I16:  return "i16";
-        case TY_I32:  return "i32";
-        case TY_I64:  return "i64";
-        case TY_PTR:  return "ptr";
-        case TY_FN:   return "<fn>";
+        case TY_VOID:   return "void";
+        case TY_I1:     return "i1";
+        case TY_I8:     return "i8";
+        case TY_I16:    return "i16";
+        case TY_I32:    return "i32";
+        case TY_I64:    return "i64";
+        case TY_PTR:    return "ptr";
+        case TY_FN:     return "<fn>";
+        case TY_STRUCT: return arena_printf("%%%s", t->sdef->name);
     }
     return "?";
 }
@@ -384,8 +416,9 @@ static int type_align(Type *t) {
         case TY_I16: return 2;
         case TY_I32: return 4;
         case TY_I64: return 8;
-        case TY_PTR: return 8;
-        default:     return 1;
+        case TY_PTR:    return 8;
+        case TY_STRUCT: return 8;
+        default:        return 1;
     }
 }
 
@@ -405,6 +438,12 @@ static Type *parse_type_name(const char *name, int line) {
     if (strcmp(name, "bool") == 0) return ty_i1;
     if (strcmp(name, "ptr")  == 0) return ty_ptr;
     if (strcmp(name, "void") == 0) return ty_void;
+    StructDef *sd = lookup_struct(name);
+    if (sd) {
+        Type *t = make_type(TY_STRUCT);
+        t->sdef = sd;
+        return t;
+    }
     die_at(line, "unknown type: %s", name);
 }
 
@@ -610,6 +649,9 @@ static Val emit_string(Node *n) {
 }
 
 static Val emit_symbol_ref(Node *n, Scope *scope) {
+    if (strcmp(n->s, "null") == 0)  { Val v = { ty_ptr, "null" }; return v; }
+    if (strcmp(n->s, "true") == 0)  { Val v = { ty_i1,  "1" };    return v; }
+    if (strcmp(n->s, "false") == 0) { Val v = { ty_i1,  "0" };    return v; }
     Sym *sym = scope_lookup(scope, n->s);
     if (!sym) die_at(n->line, "undefined: %s", n->s);
     if (!sym->is_local) die_at(n->line, "cannot use function '%s' as value", n->s);
@@ -691,7 +733,7 @@ static Val emit_cast(Node *call, Scope *scope) {
     Val v = emit_node(call->items[2], scope);
     Type *src = v.type;
 
-    if (src->kind == dst->kind) return v;
+    if (src->kind == dst->kind) { Val r = { dst, v.val }; return r; }
 
     const char *instr = NULL;
     if (is_int_type(src) && is_int_type(dst)) {
@@ -708,6 +750,94 @@ static Val emit_cast(Node *call, Scope *scope) {
     body_emit("  %s = %s %s %s to %s\n",
               tmp, instr, type_to_ir(src), v.val, type_to_ir(dst));
     Val r = { dst, tmp };
+    return r;
+}
+
+// (. ptr field) — struct field access via pointer
+static Val emit_field_get(Node *call, Scope *scope) {
+    if (call->len != 3) die_at(call->line, ". expects 2 args");
+    Val p = emit_node(call->items[1], scope);
+    if (p.type->kind != TY_PTR || !p.type->elem ||
+        p.type->elem->kind != TY_STRUCT)
+        die_at(call->line, ".: operand must be pointer to struct");
+    Node *fn = call->items[2];
+    if (fn->kind != NODE_SYM) die_at(fn->line, ".: field name must be symbol");
+    StructDef *sd = p.type->elem->sdef;
+    int idx = -1;
+    for (int i = 0; i < sd->num_fields; i++) {
+        if (strcmp(sd->field_names[i], fn->s) == 0) { idx = i; break; }
+    }
+    if (idx < 0) die_at(fn->line, ".: no field '%s' on struct '%s'",
+                        fn->s, sd->name);
+    Type *ftype = sd->field_types[idx];
+    const char *gep = new_tmp();
+    body_emit("  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n",
+              gep, sd->name, p.val, idx);
+    const char *val = new_tmp();
+    body_emit("  %s = load %s, ptr %s, align %d\n",
+              val, type_to_ir(ftype), gep, type_align(ftype));
+    Val r = { ftype, val };
+    return r;
+}
+
+// (.set! ptr field value) — struct field set via pointer
+static Val emit_field_set(Node *call, Scope *scope) {
+    if (call->len != 4) die_at(call->line, ".set! expects 3 args");
+    Val p = emit_node(call->items[1], scope);
+    if (p.type->kind != TY_PTR || !p.type->elem ||
+        p.type->elem->kind != TY_STRUCT)
+        die_at(call->line, ".set!: operand must be pointer to struct");
+    Node *fn = call->items[2];
+    if (fn->kind != NODE_SYM) die_at(fn->line, ".set!: field name must be symbol");
+    StructDef *sd = p.type->elem->sdef;
+    int idx = -1;
+    for (int i = 0; i < sd->num_fields; i++) {
+        if (strcmp(sd->field_names[i], fn->s) == 0) { idx = i; break; }
+    }
+    if (idx < 0) die_at(fn->line, ".set!: no field '%s' on struct '%s'",
+                        fn->s, sd->name);
+    Type *ftype = sd->field_types[idx];
+    Val v = emit_node(call->items[3], scope);
+    if (v.type->kind != ftype->kind)
+        die_at(call->line, ".set!: type mismatch for field '%s'", fn->s);
+    const char *gep = new_tmp();
+    body_emit("  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n",
+              gep, sd->name, p.val, idx);
+    body_emit("  store %s %s, ptr %s, align %d\n",
+              type_to_ir(ftype), v.val, gep, type_align(ftype));
+    Val r = { ty_void, NULL };
+    return r;
+}
+
+// (sizeof TypeName) — size of a type at runtime via GEP trick
+static Val emit_sizeof(Node *call, Scope *scope) {
+    (void)scope;
+    if (call->len != 2) die_at(call->line, "sizeof expects 1 arg");
+    Node *tn = call->items[1];
+    if (tn->kind != NODE_SYM) die_at(tn->line, "sizeof: arg must be type name");
+    Type *ty = parse_type_name(tn->s, tn->line);
+    const char *gep = new_tmp();
+    body_emit("  %s = getelementptr %s, ptr null, i32 1\n",
+              gep, type_to_ir(ty));
+    const char *sz = new_tmp();
+    body_emit("  %s = ptrtoint ptr %s to i64\n", sz, gep);
+    Val r = { ty_i64, sz };
+    return r;
+}
+
+// (alloca TypeName) — stack-allocate and return typed pointer
+static Val emit_alloca_form(Node *call, Scope *scope) {
+    (void)scope;
+    if (call->len != 2) die_at(call->line, "alloca expects 1 arg");
+    Node *tn = call->items[1];
+    if (tn->kind != NODE_SYM) die_at(tn->line, "alloca: arg must be type name");
+    Type *ty = parse_type_name(tn->s, tn->line);
+    const char *slot = new_tmp();
+    entry_emit("  %s = alloca %s, align %d\n",
+               slot, type_to_ir(ty), type_align(ty));
+    Type *pt = make_type(TY_PTR);
+    pt->elem = ty;
+    Val r = { pt, slot };
     return r;
 }
 
@@ -1058,6 +1188,10 @@ static Val emit_list(Node *n, Scope *scope) {
     if (strcmp(h, "deref")   == 0) return emit_deref(n, scope);
     if (strcmp(h, "ptr-set!") == 0) return emit_ptr_set(n, scope);
     if (strcmp(h, "ptr+")    == 0) return emit_ptr_add(n, scope);
+    if (strcmp(h, ".")       == 0) return emit_field_get(n, scope);
+    if (strcmp(h, ".set!")   == 0) return emit_field_set(n, scope);
+    if (strcmp(h, "sizeof")  == 0) return emit_sizeof(n, scope);
+    if (strcmp(h, "alloca")  == 0) return emit_alloca_form(n, scope);
 
     const BinOp *op = lookup_binop(h);
     if (op) return emit_binop(n, scope, op);
@@ -1081,6 +1215,36 @@ static Val emit_node(Node *n, Scope *scope) {
 // ------------------------------------------------------------
 // Top-level forms
 // ------------------------------------------------------------
+
+static void emit_defstruct(Node *call) {
+    // (defstruct Name field1:type1 field2:type2 ...)
+    if (call->len < 2) die_at(call->line, "defstruct: missing name");
+    Node *name_node = call->items[1];
+    if (name_node->kind != NODE_SYM)
+        die_at(name_node->line, "defstruct: name must be symbol");
+    StructDef *sd = register_struct(name_node->s);
+    int nfields = call->len - 2;
+    sd->field_names = arena_alloc((size_t)nfields * sizeof(char *));
+    sd->field_types = arena_alloc((size_t)nfields * sizeof(Type *));
+    sd->num_fields = nfields;
+    for (int i = 0; i < nfields; i++) {
+        Node *field = call->items[i + 2];
+        if (field->kind != NODE_SYM)
+            die_at(field->line, "defstruct: field must be typed symbol");
+        char *fname, *ftype_name;
+        split_typed(field->s, &fname, &ftype_name);
+        if (!ftype_name)
+            die_at(field->line, "defstruct: field '%s' missing :type", fname);
+        sd->field_names[i] = fname;
+        sd->field_types[i] = parse_type_name(ftype_name, field->line);
+    }
+    fprintf(g_out, "%%%s = type { ", name_node->s);
+    for (int i = 0; i < nfields; i++) {
+        if (i) fprintf(g_out, ", ");
+        fprintf(g_out, "%s", type_to_ir(sd->field_types[i]));
+    }
+    fprintf(g_out, " }\n\n");
+}
 
 static void emit_include(Node *call) {
     if (call->len != 2 || call->items[1]->kind != NODE_SYM)
@@ -1238,13 +1402,15 @@ int main(int argc, char **argv) {
 
     g_globals = scope_new(NULL);
 
-    // Buffer declares and defines separately so we can emit:
-    //   header -> string table -> declares -> defines
+    // Buffer type defs, declares, and defines separately so we can emit:
+    //   header -> type defs -> string table -> declares -> defines
+    char  *type_buf = NULL;  size_t type_size = 0;
     char  *decl_buf = NULL;  size_t decl_size = 0;
     char  *def_buf  = NULL;  size_t def_size  = 0;
+    FILE  *type_stream = open_memstream(&type_buf, &type_size);
     FILE  *decl_stream = open_memstream(&decl_buf, &decl_size);
     FILE  *def_stream  = open_memstream(&def_buf,  &def_size);
-    if (!decl_stream || !def_stream) {
+    if (!type_stream || !decl_stream || !def_stream) {
         perror("open_memstream");
         return 1;
     }
@@ -1254,7 +1420,10 @@ int main(int argc, char **argv) {
         if (f->kind != NODE_LIST || f->len == 0 || f->items[0]->kind != NODE_SYM)
             die_at(f->line, "top-level form must be a list starting with a symbol");
         const char *h = f->items[0]->s;
-        if (strcmp(h, "include") == 0) {
+        if (strcmp(h, "defstruct") == 0) {
+            g_out = type_stream;
+            emit_defstruct(f);
+        } else if (strcmp(h, "include") == 0) {
             g_out = decl_stream;
             emit_include(f);
         } else if (strcmp(h, "defn") == 0) {
@@ -1264,16 +1433,19 @@ int main(int argc, char **argv) {
             die_at(f->line, "unknown top-level form: %s", h);
         }
     }
+    fclose(type_stream);
     fclose(decl_stream);
     fclose(def_stream);
 
     printf("; ModuleID = '%s'\n", argv[1]);
     printf("source_filename = \"%s\"\n", argv[1]);
     printf("target triple = \"x86_64-pc-linux-gnu\"\n\n");
+    if (type_buf && type_buf[0]) fputs(type_buf, stdout);
     emit_string_table(stdout);
     if (decl_buf && decl_buf[0]) fputs(decl_buf, stdout);
     if (def_buf  && def_buf[0])  fputs(def_buf,  stdout);
 
+    free(type_buf);
     free(decl_buf);
     free(def_buf);
     return 0;
