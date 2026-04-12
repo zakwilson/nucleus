@@ -50,7 +50,7 @@
       (":\\([^ )\n]+\\)" 1 font-lock-type-face))))
 
 (defvar nucleus-indent-specials
-  '(("defn" . 2) ("let" . 2) ("if" . 2) ("while" . 2)
+  '(("defn" . 2) ("let" . 2) ("cond" . 2) ("while" . 2)
     ("do" . 1) ("defstruct" . 2) ("defenum" . 2))
   "Alist of form names to their special body indent offset.")
 
