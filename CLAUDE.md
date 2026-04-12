@@ -6,6 +6,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 The design documents for this project are in the design directory. Any additional plans or design documents should be placed there and noted in overview.md.
 
+## Plans
+
+When making plans, add them to the design documents directory.
+
+## Language documentation
+
+Documentation for the current state of the language lives in the docs directory.
+
+**Before finishing a task**, review what has changed and update the language documentation.
+
 ## Context files
 
 - [context/local-env.md](context/local-env.md) — VM setup, SDK paths, emulator workflow, MCP server *(local only, not in git)*
@@ -21,3 +31,7 @@ The design documents for this project are in the design directory. Any additiona
 If you hit a bug or gotcha during a task, **fix the root cause** (in code, config, or build scripts) rather than documenting a workaround. Only add context for things that can't be fixed — inherent platform constraints, upstream limitations, or architectural tradeoffs that future sessions need to understand.
 
 Update the appropriate context file inline (add to an existing section or create a new one). Keep entries concise. Check for duplicates first. This is a **required step** in the session close protocol, not optional.
+
+## Testing
+
+Upon completing work on a feature, ensure the compiler can compile itself and pass all the tests.

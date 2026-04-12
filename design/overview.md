@@ -39,8 +39,18 @@ Nucleus is a replacement for C using Lisp style syntax and macros with LLVM as i
 - Syntax for storage class specifiers
 - Other metadata or compiler hints
 
+## Design principles
+
+- Simplicity of implementation is prioritized over design purity ("worse is better")
+- Small core - it's better to have few builtins and more libraries
+- Few special forms - it's especially better to have few builtins with special behavior
+- Many macros - where ergonomics or expressiveness require special behavior, macros are the preferred implementation
+- Macros vs functions - In Lisp, it is conventional to prefer functions over macros wherever possible. In Nucleus, runtime overhead is is equally important.
+
 ## Design documents
 
 - [initial.md](initial.md) — the stage-0 target program and expected output
 - [stage0-plan.md](stage0-plan.md) — implementation plan for the stage-0 compiler (C host, LLVM IR backend)
+- [stage1-self-host.md](stage1-self-host.md) — implementation plan for self-hosting the compiler
 - [syntax.md](syntax.md) — notes on syntax
+- [stage2-features.md](stage2-features.md) - early features following successful self-hosting
