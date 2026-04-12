@@ -1,0 +1,94 @@
+{
+  "scopeName": "source.nucleus",
+  "name": "Nucleus",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#definition" },
+    { "include": "#keyword" },
+    { "include": "#type" },
+    { "include": "#constant" },
+    { "include": "#number" },
+    { "include": "#char-literal" },
+    { "include": "#type-annotation" }
+  ],
+  "repository": {
+    "comment": {
+      "match": ";.*$",
+      "name": "comment.line.semicolon.nucleus"
+    },
+    "string": {
+      "begin": "\"",
+      "end": "\"",
+      "name": "string.quoted.double.nucleus",
+      "patterns": [{
+        "match": "\\\\.",
+        "name": "constant.character.escape.nucleus"
+      }]
+    },
+    "definition": {
+      "patterns": [
+        {
+          "match": "(\\()(defn)\\s+([^ :)]+)",
+          "captures": {
+            "2": { "name": "keyword.control.nucleus" },
+            "3": { "name": "entity.name.function.nucleus" }
+          }
+        },
+        {
+          "match": "(\\()(defstruct|defenum)\\s+([^ :)]+)",
+          "captures": {
+            "2": { "name": "keyword.control.nucleus" },
+            "3": { "name": "entity.name.type.nucleus" }
+          }
+        },
+        {
+          "match": "(\\()(defvar|defconst)\\s+([^ :)]+)",
+          "captures": {
+            "2": { "name": "keyword.control.nucleus" },
+            "3": { "name": "variable.other.nucleus" }
+          }
+        },
+        {
+          "match": "(\\()(include|extern)\\s+([^ :)]+)",
+          "captures": {
+            "2": { "name": "keyword.control.nucleus" },
+            "3": { "name": "entity.name.nucleus" }
+          }
+        }
+      ]
+    },
+    "keyword": {
+      "match": "(?<=\\()(?:defn|defvar|defconst|defenum|defstruct|include|extern|let|if|while|do|return|set!|inc!|cast|sizeof|alloca|char|addr-of|deref|ptr-set!|ptr\\+|aref|aset!|and|or|not|\\.set!|\\.)(?=[\\s)])",
+      "name": "keyword.control.nucleus"
+    },
+    "type": {
+      "match": "\\b(?:i1|i8|i16|i32|i64|ptr|void|int|bool)\\b",
+      "name": "storage.type.nucleus"
+    },
+    "constant": {
+      "patterns": [
+        {
+          "match": "\\b(?:null|true|false)\\b",
+          "name": "constant.language.nucleus"
+        },
+        {
+          "match": "\\b[A-Z][A-Z0-9_-]*\\b",
+          "name": "constant.other.nucleus"
+        }
+      ]
+    },
+    "number": {
+      "match": "(?<=[\\s(])-?\\d+\\b",
+      "name": "constant.numeric.nucleus"
+    },
+    "char-literal": {
+      "match": "\\\\\\S",
+      "name": "constant.character.nucleus"
+    },
+    "type-annotation": {
+      "match": "(?<=:)[^ )\\n]+",
+      "name": "storage.type.annotation.nucleus"
+    }
+  }
+}

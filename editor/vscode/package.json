@@ -1,0 +1,21 @@
+{
+  "name": "nucleus-lang",
+  "displayName": "Nucleus",
+  "description": "Syntax highlighting for the Nucleus programming language",
+  "version": "0.1.0",
+  "engines": { "vscode": "^1.75.0" },
+  "categories": ["Programming Languages"],
+  "contributes": {
+    "languages": [{
+      "id": "nucleus",
+      "aliases": ["Nucleus", "nucleus"],
+      "extensions": [".nuc"],
+      "configuration": "./language-configuration.json"
+    }],
+    "grammars": [{
+      "language": "nucleus",
+      "scopeName": "source.nucleus",
+      "path": "./syntaxes/nucleus.tmLanguage.json"
+    }]
+  }
+}
