@@ -95,6 +95,9 @@ typedef enum {
     TOK_LPAREN,
     TOK_RPAREN,
     TOK_QUOTE,
+    TOK_QUASI,
+    TOK_UNQUOTE,
+    TOK_UNQUOTE_SPLICE,
     TOK_INT,
     TOK_STRING,
     TOK_SYMBOL,
@@ -210,6 +213,17 @@ static Tok next_tok(void) {
     if (c == '(') { next_char(); Tok t = { .kind = TOK_LPAREN, .line = line }; return t; }
     if (c == ')') { next_char(); Tok t = { .kind = TOK_RPAREN, .line = line }; return t; }
     if (c == '\'') { next_char(); Tok t = { .kind = TOK_QUOTE, .line = line }; return t; }
+    if (c == '`')  { next_char(); Tok t = { .kind = TOK_QUASI, .line = line }; return t; }
+    if (c == '~') {
+        next_char();
+        if (peek_char() == '@') {
+            next_char();
+            Tok t = { .kind = TOK_UNQUOTE_SPLICE, .line = line };
+            return t;
+        }
+        Tok t = { .kind = TOK_UNQUOTE, .line = line };
+        return t;
+    }
     if (c == '"') { next_char(); return lex_string(line); }
     return lex_atom();
 }
@@ -296,10 +310,17 @@ static Node *read_form(void) {
     switch (t.kind) {
         case TOK_LPAREN: return read_list(t.line);
         case TOK_RPAREN: die_at(t.line, "unexpected )");
-        case TOK_QUOTE: {
+        case TOK_QUOTE:
+        case TOK_QUASI:
+        case TOK_UNQUOTE:
+        case TOK_UNQUOTE_SPLICE: {
+            const char *op = t.kind == TOK_QUOTE ? "quote"
+                           : t.kind == TOK_QUASI ? "quasiquote"
+                           : t.kind == TOK_UNQUOTE ? "unquote"
+                           : "unquote-splice";
             Node *quoted = read_form();
             Node *sym = arena_alloc(sizeof(Node));
-            sym->kind = NODE_SYM; sym->line = t.line; sym->s = arena_strndup("quote", 5);
+            sym->kind = NODE_SYM; sym->line = t.line; sym->s = arena_strndup(op, (int)strlen(op));
             return make_cell(sym, make_cell(quoted, NULL, t.line), t.line);
         }
         case TOK_INT:
@@ -577,6 +598,7 @@ static FILE  *g_out;      // current emit destination for top-level (declares or
 static FILE  *g_decl_out; // decl stream, used for quote globals
 static Scope *g_globals;
 static int    g_quote_id;
+static bool   g_qq_used;  // quasiquote helpers needed
 
 // Per-function state
 static int    g_tmp;
@@ -706,6 +728,54 @@ static Val emit_quote(Node *call) {
     const char *ref = emit_quote_tree(node_at(call, 1));
     Val v = { ty_ptr, ref };
     return v;
+}
+
+static Val emit_qq_form(Node *form, Scope *scope);
+
+static bool is_tagged(Node *n, const char *tag) {
+    if (!n || n->kind != NODE_CELL || node_len(n) != 2) return false;
+    Node *h = n->car;
+    return h && h->kind == NODE_SYM && strcmp(h->s, tag) == 0;
+}
+
+static Val emit_qq_list(Node *list, Scope *scope) {
+    if (list == NULL) { Val v = { ty_ptr, "null" }; return v; }
+    Node *elem = list->car;
+    g_qq_used = true;
+    if (is_tagged(elem, "unquote-splice")) {
+        Val a = emit_node(node_at(elem, 1), scope);
+        Val rest = emit_qq_list(list->cdr, scope);
+        const char *tmp = new_tmp();
+        body_emit("  %s = call ptr @__append(ptr %s, ptr %s)\n",
+                  tmp, a.val, rest.val);
+        Val v = { ty_ptr, tmp }; return v;
+    }
+    Val head = emit_qq_form(elem, scope);
+    Val tail = emit_qq_list(list->cdr, scope);
+    const char *tmp = new_tmp();
+    body_emit("  %s = call ptr @__cons(ptr %s, ptr %s)\n",
+              tmp, head.val, tail.val);
+    Val v = { ty_ptr, tmp }; return v;
+}
+
+static Val emit_qq_form(Node *form, Scope *scope) {
+    if (form == NULL) { Val v = { ty_ptr, "null" }; return v; }
+    if (form->kind != NODE_CELL) {
+        const char *ref = emit_quote_tree(form);
+        Val v = { ty_ptr, ref }; return v;
+    }
+    if (is_tagged(form, "unquote")) {
+        return emit_node(node_at(form, 1), scope);
+    }
+    if (is_tagged(form, "unquote-splice")) {
+        die_at(form->line, "unquote-splice outside list");
+    }
+    return emit_qq_list(form, scope);
+}
+
+static Val emit_quasiquote(Node *call, Scope *scope) {
+    if (node_len(call) != 2) die_at(call->line, "quasiquote: expects 1 arg");
+    return emit_qq_form(node_at(call, 1), scope);
 }
 
 static Val emit_string(Node *n) {
@@ -1350,6 +1420,7 @@ static Val emit_list(Node *n, Scope *scope) {
     if (strcmp(h, "let")    == 0) return emit_let(n, scope);
     if (strcmp(h, "cond")   == 0) return emit_cond(n, scope);
     if (strcmp(h, "quote")  == 0) return emit_quote(n);
+    if (strcmp(h, "quasiquote") == 0) return emit_quasiquote(n, scope);
     if (strcmp(h, "while")  == 0) return emit_while(n, scope);
     if (strcmp(h, "set!")   == 0) return emit_set(n, scope);
     if (strcmp(h, "inc!")   == 0) return emit_inc(n, scope);
@@ -1792,6 +1863,42 @@ int main(int argc, char **argv) {
         } else {
             die_at(f->line, "unknown top-level form: %s", h);
         }
+    }
+    if (g_qq_used) {
+        // Runtime helpers for quasiquote. Match lib/list.nuc cons semantics.
+        fprintf(decl_stream, "declare ptr @malloc(i64)\n");
+        fprintf(def_stream,
+            "define ptr @__cons(ptr %%a, ptr %%b) {\n"
+            "  %%c = call ptr @malloc(i64 40)\n"
+            "  %%p0 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 0\n"
+            "  store i32 3, ptr %%p0, align 8\n"
+            "  %%p1 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 1\n"
+            "  store i32 0, ptr %%p1, align 4\n"
+            "  %%p2 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 2\n"
+            "  store i64 0, ptr %%p2, align 8\n"
+            "  %%p3 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 3\n"
+            "  store ptr null, ptr %%p3, align 8\n"
+            "  %%p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 4\n"
+            "  store ptr %%a, ptr %%p4, align 8\n"
+            "  %%p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 5\n"
+            "  store ptr %%b, ptr %%p5, align 8\n"
+            "  ret ptr %%c\n"
+            "}\n\n"
+            "define ptr @__append(ptr %%a, ptr %%b) {\n"
+            "entry:\n"
+            "  %%z = icmp eq ptr %%a, null\n"
+            "  br i1 %%z, label %%nil, label %%rec\n"
+            "nil:\n"
+            "  ret ptr %%b\n"
+            "rec:\n"
+            "  %%p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%a, i32 0, i32 4\n"
+            "  %%car = load ptr, ptr %%p4, align 8\n"
+            "  %%p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%a, i32 0, i32 5\n"
+            "  %%cdr = load ptr, ptr %%p5, align 8\n"
+            "  %%rest = call ptr @__append(ptr %%cdr, ptr %%b)\n"
+            "  %%c = call ptr @__cons(ptr %%car, ptr %%rest)\n"
+            "  ret ptr %%c\n"
+            "}\n\n");
     }
     fclose(type_stream);
     fclose(decl_stream);

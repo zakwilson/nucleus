@@ -1,0 +1,56 @@
+; Demonstrates list manipulation primitives over the unified Node type.
+; The definitions here mirror lib/list.nuc; a proper import mechanism is TBD.
+
+(include stdio)
+(include stdlib)
+
+(defstruct Node
+  kind:i32
+  line:i32
+  i:i64
+  s:ptr
+  car:ptr
+  cdr:ptr)
+
+(defn cons:ptr (car:ptr cdr:ptr)
+  (let (c:*Node (cast *Node (malloc (sizeof Node))))
+    (.set! c kind 3)
+    (.set! c line 0)
+    (.set! c i (cast i64 0))
+    (.set! c s null)
+    (.set! c car car)
+    (.set! c cdr cdr)
+    (return (cast ptr c))))
+
+(defn first:ptr (n:ptr)
+  (cond (= n null) (return null))
+  (return (. (cast *Node n) car)))
+
+(defn rest:ptr (n:ptr)
+  (cond (= n null) (return null))
+  (return (. (cast *Node n) cdr)))
+
+(defn append:ptr (a:ptr b:ptr)
+  (cond (= a null) (return b))
+  (return (cons (first a) (append (rest a) b))))
+
+(defn print-list:void (n:ptr)
+  (let (cur:ptr n)
+    (printf "(")
+    (while (!= cur null)
+      (let (node:*Node (cast *Node (first cur)))
+        (cond (= (. node kind) 0) (printf "%ld" (. node i))
+              (= (. node kind) 2) (printf "%s" (. node s))
+              true                 (printf "?")))
+      (set! cur (rest cur))
+      (cond (!= cur null) (printf " ")))
+    (printf ")\n")))
+
+(defn main:int ()
+  (let (xs:ptr '(a b c)
+        ys:ptr '(1 2))
+    (print-list xs)
+    (print-list ys)
+    (print-list (cons (first ys) xs))
+    (print-list (append xs ys)))
+  (return 0))

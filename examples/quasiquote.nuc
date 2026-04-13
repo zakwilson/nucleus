@@ -1,0 +1,30 @@
+; Quasiquote / unquote / unquote-splice demo.
+; Under the hood these use builtin @__cons and @__append runtime helpers.
+
+(include stdio)
+
+(defstruct Node
+  kind:i32 line:i32 i:i64 s:ptr car:ptr cdr:ptr)
+
+(defn first:ptr (n:ptr) (return (. (cast *Node n) car)))
+(defn rest:ptr  (n:ptr) (return (. (cast *Node n) cdr)))
+
+(defn print-list:void (n:ptr)
+  (let (cur:ptr n)
+    (printf "(")
+    (while (!= cur null)
+      (let (node:*Node (cast *Node (first cur)))
+        (cond (= (. node kind) 0) (printf "%ld" (. node i))
+              (= (. node kind) 2) (printf "%s" (. node s))
+              true                 (printf "?")))
+      (set! cur (rest cur))
+      (cond (!= cur null) (printf " ")))
+    (printf ")\n")))
+
+(defn main:int ()
+  (let (x:ptr 'hello
+        xs:ptr '(a b c))
+    (print-list `(1 2 3))
+    (print-list `(pre ~x post))
+    (print-list `(before ~@xs after)))
+  (return 0))

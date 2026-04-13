@@ -1,0 +1,44 @@
+; List manipulation primitives over the unified Node/cons-cell type.
+;
+; Every value the reader/compiler produces is a Node with one of four kinds:
+;   0 = INT   (leaf, value in .i)
+;   1 = STR   (leaf, bytes in .s)
+;   2 = SYM   (leaf, name in .s)
+;   3 = CELL  (pair, .car and .cdr)
+;
+; A "list" is a chain of CELL nodes terminated by null. The empty list is null.
+;
+; These functions allocate with malloc. Cleanup is the caller's responsibility.
+; Programs that don't use lists don't pay for them.
+
+(include stdlib)
+
+(defstruct Node
+  kind:i32
+  line:i32
+  i:i64
+  s:ptr
+  car:ptr
+  cdr:ptr)
+
+(defn cons:ptr (car:ptr cdr:ptr)
+  (let (c:*Node (cast *Node (malloc (sizeof Node))))
+    (.set! c kind 3)
+    (.set! c line 0)
+    (.set! c i (cast i64 0))
+    (.set! c s null)
+    (.set! c car car)
+    (.set! c cdr cdr)
+    (return (cast ptr c))))
+
+(defn first:ptr (n:ptr)
+  (cond (= n null) (return null))
+  (return (. (cast *Node n) car)))
+
+(defn rest:ptr (n:ptr)
+  (cond (= n null) (return null))
+  (return (. (cast *Node n) cdr)))
+
+(defn append:ptr (a:ptr b:ptr)
+  (cond (= a null) (return b))
+  (return (cons (first a) (append (rest a) b))))
