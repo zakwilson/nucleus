@@ -106,7 +106,8 @@
 (defstruct MacroDef
   name:ptr
   jit-name:ptr
-  num-params:i32)
+  num-params:i32
+  variadic:i32)
 
 ; ============================================================
 ; Standard macros (inlined from lib/macros.nuc)
@@ -164,6 +165,40 @@
      (while ~test
        ~body
        ~step)))
+
+; (-> x form ...) — thread-first.
+; Threads x through each form as the first argument after the function.
+; (-> x (f a b) (g c)) expands to (g (f x a b) c).
+; Forms may be bare symbols: (-> x f g) expands to (g (f x)).
+; With no forms, returns x unchanged.
+(defmacro -> (x &rest forms)
+  (let (result:ptr x
+        current:ptr forms)
+    (while (!= current null)
+      (let (form:ptr (. (cast *Node current) car))
+        (if (= (. (cast *Node form) kind) NODE-CELL)
+          (let (head:ptr (. (cast *Node form) car)
+                tail:ptr (. (cast *Node form) cdr))
+            (set! result `(~head ~result ~@tail)))
+          (set! result `(~form ~result))))
+      (set! current (. (cast *Node current) cdr)))
+    result))
+
+; (->> x form ...) — thread-last.
+; Threads x through each form as the last argument.
+; (->> x (f a b) (g c)) expands to (g c (f a b x)).
+; Forms may be bare symbols: (->> x f g) expands to (g (f x)).
+; With no forms, returns x unchanged.
+(defmacro ->> (x &rest forms)
+  (let (result:ptr x
+        current:ptr forms)
+    (while (!= current null)
+      (let (form:ptr (. (cast *Node current) car))
+        (if (= (. (cast *Node form) kind) NODE-CELL)
+          (set! result `(~@form ~result))
+          (set! result `(~form ~result))))
+      (set! current (. (cast *Node current) cdr)))
+    result))
 
 ; ============================================================
 ; Global variables
@@ -1658,15 +1693,32 @@
 (defn emit-macro-expand:ptr (call:ptr scope:ptr macro-def:ptr)
   (let (mdef:*MacroDef (cast *MacroDef macro-def)
         nargs:i32 (- (node-len (cast *Node call)) 1))
-    (when (!= nargs (. mdef num-params))
-      (die-at (. (cast *Node call) line)
-              (fmt-s "macro: wrong number of args" (cast i64 0))))
-    ; Build a stack array of Node* args (use malloc for simplicity).
-    (let (args-arr:ptr (malloc (* (cast i64 nargs) (cast i64 8)))
+    ; Arity check: variadic allows >= (num-params - 1) args; fixed requires exact match.
+    (when (!= (. mdef variadic) 0)
+      (when (< nargs (- (. mdef num-params) 1))
+        (die-at (. (cast *Node call) line)
+                (fmt-s "macro: not enough args" (cast i64 0)))))
+    (when (= (. mdef variadic) 0)
+      (when (!= nargs (. mdef num-params))
+        (die-at (. (cast *Node call) line)
+                (fmt-s "macro: wrong number of args" (cast i64 0)))))
+    ; Build a stack array of Node* args (num-params slots).
+    (let (args-arr:ptr (malloc (* (cast i64 (. mdef num-params)) (cast i64 8)))
+          regular-params:i32 (. mdef num-params)
           i:i32 0)
-      (while (< i nargs)
+      (when (!= (. mdef variadic) 0)
+        (set! regular-params (- (. mdef num-params) 1)))
+      (while (< i regular-params)
         (aset! (cast *ptr args-arr) i (node-at (cast *Node call) (+ i 1)))
         (inc! i))
+      ; Build rest cons list for variadic param, then store in last slot.
+      (when (!= (. mdef variadic) 0)
+        (let (rest-list:ptr null
+              rj:i32 nargs)
+          (while (> rj regular-params)
+            (set! rj (- rj 1))
+            (set! rest-list (make-cell (node-at (cast *Node call) (+ rj 1)) rest-list 0)))
+          (aset! (cast *ptr args-arr) regular-params rest-list)))
       ; Look up the JIT function.
       (let (addr:i64 (cast i64 0)
             err:ptr (LLVMOrcLLJITLookup g-jit (addr-of addr) (. mdef jit-name)))
@@ -2378,16 +2430,33 @@
       (let (macro-name:ptr (. name-node s)
             num-params:i32 (node-len params-node)
             jit-name:ptr (fmt-s "__macro_%s" (sanitize-for-ir macro-name)))
-        ; Collect param names
+        ; Detect &rest variadic parameter (must be second-to-last in param list).
+        (let (variadic:i32 0
+              pcount:i32 num-params)
+          (let (vi:i32 0)
+            (while (< vi num-params)
+              (let (vp:*Node (cast *Node (node-at params-node vi)))
+                (when (= (strcmp (. vp s) "&rest") 0)
+                  (do
+                    (when (!= vi (- num-params 2))
+                      (die-at (. vp line) "defmacro: &rest must be second-to-last param"))
+                    (set! variadic 1)
+                    (set! pcount (- num-params 1)))))
+              (inc! vi)))
+        ; Collect param names, skipping &rest keyword.
         (let (pnames:ptr null
-              pi:i32 0)
-          (when (> num-params 0)
-            (set! pnames (arena-alloc (* (i64 num-params) (i64 8)))))
+              pi:i32 0
+              ai:i32 0)
+          (when (> pcount 0)
+            (set! pnames (arena-alloc (* (i64 pcount) (i64 8)))))
           (while (< pi num-params)
             (let (p:*Node (cast *Node (node-at params-node pi)))
               (when (!= (. p kind) NODE-SYM)
                 (die-at (. p line) "defmacro: param must be a symbol"))
-              (aset! (cast *ptr pnames) pi (. p s)))
+              (when (!= (strcmp (. p s) "&rest") 0)
+                (do
+                  (aset! (cast *ptr pnames) ai (. p s))
+                  (inc! ai))))
             (inc! pi))
           ; Register in macro table
           (when (>= g-num-macros 256)
@@ -2395,7 +2464,8 @@
           (let (mdef:*MacroDef (cast *MacroDef (ptr+ (cast *MacroDef g-macros) g-num-macros)))
             (.set! mdef name macro-name)
             (.set! mdef jit-name jit-name)
-            (.set! mdef num-params num-params)
+            (.set! mdef num-params pcount)
+            (.set! mdef variadic variadic)
             (inc! g-num-macros))
 
           ; Flush main streams
@@ -2424,7 +2494,7 @@
                 (fprintf g-entry-stream "  %%__args.addr = alloca ptr, align 8\n")
                 (fprintf g-entry-stream "  store ptr %%__args.arg, ptr %%__args.addr, align 8\n")
                 (let (ei:i32 0)
-                  (while (< ei num-params)
+                  (while (< ei pcount)
                     (let (pname:ptr (aref (cast *ptr pnames) ei))
                       (fprintf g-entry-stream "  %%%s.addr = alloca ptr, align 8\n" pname)
                       (fprintf g-entry-stream "  %%__ap%d = load ptr, ptr %%__args.addr, align 8\n" ei)
@@ -2529,7 +2599,7 @@
                     (jit-add-module ir-bufp (. ff line))
                     (free ct-decl-bufp)
                     (free ct-def-bufp)
-                    (free ir-bufp)))))))))))
+                    (free ir-bufp))))))))))))
 
 ; ============================================================
 ; String table emission
