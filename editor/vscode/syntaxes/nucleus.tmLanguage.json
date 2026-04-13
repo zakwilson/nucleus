@@ -50,6 +50,13 @@
           }
         },
         {
+          "match": "(\\()(defmacro)\\s+([^ :)]+)",
+          "captures": {
+            "2": { "name": "keyword.control.nucleus" },
+            "3": { "name": "entity.name.function.nucleus" }
+          }
+        },
+        {
           "match": "(\\()(include|extern)\\s+([^ :)]+)",
           "captures": {
             "2": { "name": "keyword.control.nucleus" },
@@ -59,7 +66,7 @@
       ]
     },
     "keyword": {
-      "match": "(?<=\\()(?:defn|defvar|defconst|defenum|defstruct|include|extern|let|cond|while|do|return|set!|inc!|cast|sizeof|alloca|char|addr-of|deref|ptr-set!|ptr\\+|aref|aset!|and|or|not|\\.set!|\\.)(?=[\\s)])",
+      "match": "(?<=\\()(?:defn|defmacro|defvar|defconst|defenum|defstruct|include|extern|let|cond|while|do|return|set!|inc!|cast|sizeof|alloca|char|addr-of|deref|ptr-set!|ptr\\+|aref|aset!|and|or|not|quote|quasiquote|compile-time|funcall-void|funcall-ptr-1|gensym|\\.set!|\\.)(?=[\\s)])",
       "name": "keyword.control.nucleus"
     },
     "type": {

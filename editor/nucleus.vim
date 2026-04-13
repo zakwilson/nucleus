@@ -7,10 +7,11 @@ endif
 
 setlocal iskeyword+=-,!,?,.,*
 
-syn keyword nucleusTopLevel defn defvar defconst defenum defstruct include extern
+syn keyword nucleusTopLevel defn defvar defconst defenum defstruct include extern defmacro
 syn keyword nucleusSpecial let cond while do return set! inc!
 syn keyword nucleusSpecial cast sizeof alloca char addr-of deref
 syn keyword nucleusSpecial ptr-set! ptr+ aref aset! and or not
+syn keyword nucleusSpecial quote quasiquote compile-time funcall-void funcall-ptr-1 gensym
 syn keyword nucleusSpecial contained . .set!
 syn keyword nucleusType i1 i8 i16 i32 i64 ptr void int bool
 syn keyword nucleusConstant null true false
@@ -18,6 +19,7 @@ syn keyword nucleusConstant null true false
 syn match nucleusConstant "\<[A-Z][A-Z0-9_-]*\>"
 syn match nucleusTypeAnnot ":\zs[^ )\n]\+" contained
 syn match nucleusDefName "(defn\s\+\zs[^ :)]\+"
+syn match nucleusDefName "(defmacro\s\+\zs[^ :)]\+"
 syn match nucleusDefType "(defstruct\s\+\zs[^ :)]\+"
 syn match nucleusDefType "(defenum\s\+\zs[^ :)]\+"
 syn match nucleusDefVar "(defvar\s\+\zs[^ :)]\+"

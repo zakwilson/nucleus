@@ -18,12 +18,13 @@
     table))
 
 (defvar nucleus-toplevel-keywords
-  '("defn" "defvar" "defconst" "defenum" "defstruct" "include" "extern"))
+  '("defn" "defvar" "defconst" "defenum" "defstruct" "include" "extern" "defmacro"))
 
 (defvar nucleus-special-forms
   '("let" "cond" "while" "do" "return" "set!" "inc!"
     "cast" "sizeof" "alloca" "char" "addr-of" "deref"
     "ptr-set!" "ptr+" "aref" "aset!" "and" "or" "not"
+    "quote" "quasiquote" "compile-time" "funcall-void" "funcall-ptr-1" "gensym"
     "." ".set!"))
 
 (defvar nucleus-builtin-types
@@ -43,6 +44,7 @@
       (,const-re . font-lock-constant-face)
       ("\\<[A-Z][A-Z0-9_-]*\\>" . font-lock-constant-face)
       ("(defn\\s-+\\([^ :)]+\\)" 1 font-lock-function-name-face)
+      ("(defmacro\\s-+\\([^ :)]+\\)" 1 font-lock-function-name-face)
       ("(defstruct\\s-+\\([^ :)]+\\)" 1 font-lock-type-face)
       ("(defenum\\s-+\\([^ :)]+\\)" 1 font-lock-type-face)
       ("(defvar\\s-+\\([^ :)]+\\)" 1 font-lock-variable-name-face)
@@ -50,8 +52,8 @@
       (":\\([^ )\n]+\\)" 1 font-lock-type-face))))
 
 (defvar nucleus-indent-specials
-  '(("defn" . 2) ("let" . 2) ("cond" . 2) ("while" . 2)
-    ("do" . 1) ("defstruct" . 2) ("defenum" . 2))
+  '(("defn" . 2) ("defmacro" . 2) ("let" . 2) ("cond" . 2) ("while" . 2)
+    ("do" . 1) ("defstruct" . 2) ("defenum" . 2) ("compile-time" . 1))
   "Alist of form names to their special body indent offset.")
 
 (defun nucleus-indent-function (indent-point state)
