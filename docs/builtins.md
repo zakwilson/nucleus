@@ -41,6 +41,7 @@ Built-in forms and functions as implemented in `src/nucleusc.nuc`.
 | `aref` | Array element access | `arr[i]` |
 | `aset!` | Array element assignment | `arr[i] = val` |
 | `quote` | Yields its argument as a `Node*` constant (reader sugar: `'x` → `(quote x)`) | — |
+| `quasiquote` | Like `quote` but `~expr` splices a runtime value and `~@list` splices a list (reader: `` `x ``, `~x`, `~@x`) | — |
 
 ## Binary Operators
 
