@@ -1,0 +1,17 @@
+; Demonstrate (compile-time ...) — code that runs during compilation.
+(include stdio)
+
+; Simple expression at compile time
+(compile-time
+  (printf "step 1: compile-time printf\n"))
+
+; Compile-time function definition and call
+(compile-time
+  (defn greet:void (name:ptr)
+    (printf "step 2: hello, %s!\n" name))
+  (greet "world"))
+
+; Runtime main — compile-time output has already happened
+(defn main:int ()
+  (printf "step 3: runtime\n")
+  0)

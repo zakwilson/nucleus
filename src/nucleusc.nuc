@@ -5,6 +5,8 @@
 (include stdlib)
 (include string)
 (include ctype)
+(include unistd)
+(include llvm)
 
 (extern stderr:ptr)
 (extern stdout:ptr)
@@ -155,6 +157,22 @@
 (defvar g-decl-out:ptr)
 (defvar g-quote-id:i32 0)
 (defvar g-qq-used:i32 0)
+
+; Main module streams (global so emit-compile-time can access them mid-compilation)
+(defvar g-type-stream:ptr)
+(defvar g-decl-stream:ptr)
+(defvar g-def-stream:ptr)
+(defvar g-type-bufp:ptr)
+(defvar g-decl-bufp:ptr)
+(defvar g-def-bufp:ptr)
+(defvar g-type-sizep:i64 0)
+(defvar g-decl-sizep:i64 0)
+(defvar g-def-sizep:i64 0)
+
+; JIT state
+(defvar g-jit:ptr)
+(defvar g-jit-dylib:ptr)
+(defvar g-ct-id:i32 0)
 
 ; BinOp table
 (defvar g-binops:ptr)
@@ -1153,11 +1171,22 @@
       (cond (!= (. target kind) NODE-SYM)
         (die-at (. target line) "addr-of: target must be symbol"))
       (let (sym:*Sym (cast *Sym (scope-lookup scope (. target s))))
-        (cond (or (= (cast ptr sym) null) (= (. sym is-local) 0))
-          (die-at (. target line) (fmt-s "addr-of: undefined local '%s'" (. target s))))
+        (cond (= (cast ptr sym) null)
+          (die-at (. target line) (fmt-s "addr-of: undefined '%s'" (. target s))))
+        (cond (= (. (cast *Type (. sym type)) kind) TY-FN)
+          (die-at (. target line) (fmt-s "addr-of: cannot take address of function '%s'" (. target s))))
         (let (pt:*Type (cast *Type (make-type TY-PTR)))
           (.set! pt elem (. sym type))
           (return (alloc-val (cast ptr pt) (. sym ir-name))))))))
+
+(defn emit-funcall-void:ptr (call:ptr scope:ptr)
+  (let (cc:*Node (cast *Node call))
+    (cond (!= (node-len cc) 2) (die-at (. cc line) "funcall-void expects 1 arg"))
+    (let (fn:*Val (cast *Val (emit-node (node-at cc 1) scope)))
+      (cond (!= (. (cast *Type (. fn type)) kind) TY-PTR)
+        (die-at (. cc line) "funcall-void: arg must be ptr"))
+      (fprintf g-body-stream "  call void %s()\n" (. fn val))
+      (return (alloc-val ty-void null)))))
 
 (defn emit-deref:ptr (call:ptr scope:ptr)
   (let (cc:*Node (cast *Node call))
@@ -1521,6 +1550,7 @@
         (cond (= (strcmp h "or") 0) (return (emit-short-circuit n scope 0)))
         (cond (= (strcmp h "cast") 0) (return (emit-cast n scope)))
         (cond (= (strcmp h "addr-of") 0) (return (emit-addr-of n scope)))
+        (cond (= (strcmp h "funcall-void") 0) (return (emit-funcall-void n scope)))
         (cond (= (strcmp h "deref") 0) (return (emit-deref n scope)))
         (cond (= (strcmp h "ptr-set!") 0) (return (emit-ptr-set n scope)))
         (cond (= (strcmp h "ptr+") 0) (return (emit-ptr-add n scope)))
@@ -1668,6 +1698,7 @@
 
 (defn kind-to-type:ptr (k:i32)
   (cond (= k TY-VOID) (return ty-void))
+  (cond (= k TY-I8)   (return ty-i8))
   (cond (= k TY-I32)  (return ty-i32))
   (cond (= k TY-I64)  (return ty-i64))
   (cond (= k TY-PTR)  (return ty-ptr))
@@ -1682,7 +1713,7 @@
     (return TY-VOID)))
 
 (defn init-libc:void ()
-  (set! g-libc (arena-alloc (* (cast i64 40) (sizeof LibcDecl))))
+  (set! g-libc (arena-alloc (* (cast i64 80) (sizeof LibcDecl))))
   ; stdio
   (add-libc "stdio" "printf"   TY-I32  TY-PTR 0 0 0 1 1)
   (add-libc "stdio" "fprintf"  TY-I32  TY-PTR TY-PTR 0 0 2 1)
@@ -1698,6 +1729,7 @@
   (add-libc "stdio" "rewind"   TY-VOID TY-PTR 0 0 0 1 0)
   (add-libc "stdio" "perror"   TY-VOID TY-PTR 0 0 0 1 0)
   (add-libc "stdio" "open_memstream" TY-PTR TY-PTR TY-PTR 0 0 2 0)
+  (add-libc "stdio" "fflush"        TY-I32 TY-PTR 0 0 0 1 0)
   ; stdlib
   (add-libc "stdlib" "malloc"  TY-PTR  TY-I64 0 0 0 1 0)
   (add-libc "stdlib" "realloc" TY-PTR  TY-PTR TY-I64 0 0 2 0)
@@ -1715,7 +1747,34 @@
   (add-libc "string" "strndup" TY-PTR  TY-PTR TY-I64 0 0 2 0)
   ; ctype
   (add-libc "ctype" "isspace" TY-I32  TY-I32 0 0 0 1 0)
-  (add-libc "ctype" "isdigit" TY-I32  TY-I32 0 0 0 1 0))
+  (add-libc "ctype" "isdigit" TY-I32  TY-I32 0 0 0 1 0)
+  ; unistd — POSIX fd helpers for CT stdout redirect
+  (add-libc "unistd" "dup"   TY-I32 TY-I32 0 0 0 1 0)
+  (add-libc "unistd" "dup2"  TY-I32 TY-I32 TY-I32 0 0 2 0)
+  (add-libc "unistd" "close" TY-I32 TY-I32 0 0 0 1 0)
+  ; llvm — LLVM C API for compile-time JIT
+  (add-libc "llvm" "LLVMInitializeX86TargetInfo" TY-VOID 0 0 0 0 0 0)
+  (add-libc "llvm" "LLVMInitializeX86Target"     TY-VOID 0 0 0 0 0 0)
+  (add-libc "llvm" "LLVMInitializeX86TargetMC"   TY-VOID 0 0 0 0 0 0)
+  (add-libc "llvm" "LLVMInitializeX86AsmPrinter" TY-VOID 0 0 0 0 0 0)
+  (add-libc "llvm" "LLVMOrcCreateLLJIT"          TY-PTR  TY-PTR TY-PTR 0 0 2 0)
+  (add-libc "llvm" "LLVMOrcLLJITGetMainJITDylib" TY-PTR  TY-PTR 0 0 0 1 0)
+  (add-libc "llvm" "LLVMOrcLLJITGetGlobalPrefix"             TY-I8 TY-PTR 0 0 0 1 0)
+  (add-libc "llvm" "LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess"
+                                                 TY-PTR  TY-PTR TY-I8 TY-PTR TY-PTR 4 0)
+  (add-libc "llvm" "LLVMOrcJITDylibAddGenerator" TY-VOID TY-PTR TY-PTR 0 0 2 0)
+  (add-libc "llvm" "LLVMContextCreate"                   TY-PTR 0 0 0 0 0 0)
+  (add-libc "llvm" "LLVMOrcCreateNewThreadSafeContext"   TY-PTR 0 0 0 0 0 0)
+  (add-libc "llvm" "LLVMOrcDisposeThreadSafeContext"     TY-VOID TY-PTR 0 0 0 1 0)
+  (add-libc "llvm" "LLVMOrcCreateNewThreadSafeModule"    TY-PTR TY-PTR TY-PTR 0 0 2 0)
+  (add-libc "llvm" "LLVMCreateMemoryBufferWithMemoryRangeCopy"
+                                                 TY-PTR TY-PTR TY-I64 TY-PTR 0 3 0)
+  (add-libc "llvm" "LLVMParseIRInContext"         TY-I32 TY-PTR TY-PTR TY-PTR TY-PTR 4 0)
+  (add-libc "llvm" "LLVMOrcLLJITAddLLVMIRModule" TY-PTR TY-PTR TY-PTR TY-PTR 0 3 0)
+  (add-libc "llvm" "LLVMOrcLLJITLookup"          TY-PTR TY-PTR TY-PTR TY-PTR 0 3 0)
+  (add-libc "llvm" "LLVMGetErrorMessage"          TY-PTR TY-PTR 0 0 0 1 0)
+  (add-libc "llvm" "LLVMDisposeErrorMessage"      TY-VOID TY-PTR 0 0 0 1 0)
+  (add-libc "llvm" "LLVMConsumeError"             TY-VOID TY-PTR 0 0 0 1 0))
 
 (defn emit-include:void (call:ptr)
   (let (cc:*Node (cast *Node call))
@@ -1858,6 +1917,277 @@
             (set! g-body-bufp null)))))))
 
 ; ============================================================
+; Compile-time JIT helpers
+; ============================================================
+
+(defn jit-ensure-init:void (line:i32)
+  (cond (!= g-jit null) (return))
+  ; Initialize x86 target (expands LLVMInitializeNativeTarget)
+  (LLVMInitializeX86TargetInfo)
+  (LLVMInitializeX86Target)
+  (LLVMInitializeX86TargetMC)
+  (LLVMInitializeX86AsmPrinter)
+  ; Create LLJIT
+  (let (jit-ref:ptr null
+        err:ptr (LLVMOrcCreateLLJIT (addr-of jit-ref) null))
+    (cond (!= err null)
+      (do (fprintf stderr "%s:%d: JIT error in LLVMOrcCreateLLJIT: %s\n"
+                   g-source-path line (LLVMGetErrorMessage err))
+          (exit 1)))
+    (set! g-jit jit-ref))
+  (set! g-jit-dylib (LLVMOrcLLJITGetMainJITDylib g-jit))
+  ; Expose host process symbols so CT code can call printf, malloc, etc.
+  (let (prefix:i8 (LLVMOrcLLJITGetGlobalPrefix g-jit)
+        gen:ptr null
+        err:ptr (LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess
+                   (addr-of gen) prefix null null))
+    (cond (!= err null)
+      (do (fprintf stderr "%s:%d: JIT error in CreateDynLibSearchGen: %s\n"
+                   g-source-path line (LLVMGetErrorMessage err))
+          (exit 1)))
+    (LLVMOrcJITDylibAddGenerator g-jit-dylib gen)))
+
+(defn jit-add-module:void (ir:ptr line:i32)
+  (jit-ensure-init line)
+  ; LLVMOrcThreadSafeContextGetContext was removed in LLVM 20+. Create the
+  ; parsing context directly. tsctx is only used for ThreadSafeModule locking
+  ; which is irrelevant in single-threaded compilation. ctx leaks (fine).
+  (let (ctx:ptr (LLVMContextCreate)
+        ir-len:i64 (strlen ir)
+        mb:ptr (LLVMCreateMemoryBufferWithMemoryRangeCopy ir ir-len "<compile-time>")
+        mod:ptr null
+        errmsg:ptr null
+        parse-err:i32 (LLVMParseIRInContext ctx mb (addr-of mod) (addr-of errmsg)))
+    (cond (!= parse-err 0)
+      (do (fprintf stderr "%s:%d: compile-time: IR parse error: %s\n"
+                   g-source-path line errmsg)
+          (exit 1)))
+    (let (tsctx:ptr (LLVMOrcCreateNewThreadSafeContext)
+          tsmod:ptr (LLVMOrcCreateNewThreadSafeModule mod tsctx))
+      (LLVMOrcDisposeThreadSafeContext tsctx)
+      (let (err:ptr (LLVMOrcLLJITAddLLVMIRModule g-jit g-jit-dylib tsmod))
+        (cond (!= err null)
+          (do (fprintf stderr "%s:%d: JIT error in AddLLVMIRModule: %s\n"
+                       g-source-path line (LLVMGetErrorMessage err))
+              (exit 1)))))))
+
+(defn jit-call-ct-main-sym:void (line:i32 sym:ptr)
+  (let (addr:i64 (cast i64 0))
+    (let (err:ptr (LLVMOrcLLJITLookup g-jit (cast ptr (addr-of addr)) sym))
+      (cond (!= err null)
+        (do (LLVMConsumeError err) (return)))
+      (cond (= addr (cast i64 0)) (return))
+      ; Redirect stdout -> stderr so CT printf does not corrupt the IR output
+      (fflush (cast ptr stdout))
+      (let (saved-fd:i32 (dup 1))
+        (dup2 2 1)
+        (funcall-void (cast ptr addr))
+        (fflush (cast ptr stdout))
+        (dup2 saved-fd 1)
+        (close saved-fd)))))
+
+; ============================================================
+; compile-time special form
+; ============================================================
+
+(defn emit-compile-time:void (form:ptr)
+  ; (compile-time body-form...)
+  (let (nforms:i32 (node-len (cast *Node form))
+        ff:*Node   (cast *Node form))
+    (cond (< nforms 2)
+      (die-at (. ff line) "compile-time: expected at least one body form"))
+
+    ; Flush the main streams so g-type-bufp / g-decl-bufp are current.
+    (fflush g-type-stream)
+    (fflush g-decl-stream)
+
+    ; Open fresh CT streams.
+    (let (ct-type-bufp:ptr null
+          ct-type-sizep:i64 (cast i64 0)
+          ct-decl-bufp:ptr null
+          ct-decl-sizep:i64 (cast i64 0)
+          ct-def-bufp:ptr null
+          ct-def-sizep:i64 (cast i64 0)
+          ct-type:ptr (open_memstream (addr-of ct-type-bufp) (cast ptr (addr-of ct-type-sizep)))
+          ct-decl:ptr (open_memstream (addr-of ct-decl-bufp) (cast ptr (addr-of ct-decl-sizep)))
+          ct-def:ptr  (open_memstream (addr-of ct-def-bufp)  (cast ptr (addr-of ct-def-sizep))))
+
+      ; Redirect global state to CT streams.
+      (let (saved-g-out:ptr g-out
+            saved-decl-out:ptr g-decl-out
+            saved-qq-used:i32 g-qq-used)
+        (set! g-qq-used 0)
+        (set! g-decl-out ct-decl)
+
+        ; Pre-scan: register defn signatures from CT body.
+        (let (bi:i32 1)
+          (while (< bi nforms)
+            (let (bf:*Node (cast *Node (node-at ff bi)))
+              (cond (and (!= (cast ptr bf) null)
+                       (and (= (. bf kind) NODE-CELL)
+                            (and (>= (node-len bf) 4)
+                                 (and (= (. (cast *Node (node-at bf 0)) kind) NODE-SYM)
+                                      (= (strcmp (. (cast *Node (node-at bf 0)) s) "defn") 0)))))
+                (let (name-node:*Node (cast *Node (node-at bf 1))
+                      params-node:ptr (node-at bf 2))
+                  (cond (and (= (. name-node kind) NODE-SYM) (!= (node-is-list params-node) 0))
+                    (let (fname:ptr null  ret-name:ptr null)
+                      (split-typed (. name-node s) (cast *ptr (addr-of fname))
+                                                   (cast *ptr (addr-of ret-name)))
+                      (cond (!= ret-name null)
+                        (let (ret:ptr (parse-type-name ret-name (. name-node line))
+                              nparams:i32 (node-len params-node)
+                              ptypes:ptr null)
+                          (cond (> nparams 0)
+                            (set! ptypes (arena-alloc (* (i64 nparams) (i64 8)))))
+                          (let (j:i32 0)
+                            (while (< j nparams)
+                              (let (p:*Node (cast *Node (node-at params-node j)))
+                                (cond (= (. p kind) NODE-SYM)
+                                  (let (pn:ptr null  pt-name:ptr null)
+                                    (split-typed (. p s) (cast *ptr (addr-of pn))
+                                                         (cast *ptr (addr-of pt-name)))
+                                    (cond (!= pt-name null)
+                                      (aset! (cast *ptr ptypes) j (parse-type-name pt-name (. p line)))
+                                      true
+                                      (aset! (cast *ptr ptypes) j ty-i32)))))
+                              (inc! j)))
+                          (let (ft:*Type (cast *Type (make-type TY-FN)))
+                            (.set! ft ret ret)
+                            (.set! ft num-params nparams)
+                            (.set! ft params ptypes)
+                            (scope-define g-globals fname (cast ptr ft)
+                                          (fmt-s "@%s" fname) 0)))))))))
+            (inc! bi)))
+
+        ; Collect expression forms (non-top-level) for __compile_time_main.
+        (let (expr-forms:ptr (arena-alloc (* (cast i64 256) (cast i64 8)))
+              nexpr:i32 0
+              bi:i32 1)
+          (while (< bi nforms)
+            (let (bf:*Node (cast *Node (node-at ff bi))
+                  is-tl:i32 0)
+              (cond (and (!= (cast ptr bf) null)
+                       (and (= (. bf kind) NODE-CELL)
+                            (and (!= (node-len bf) 0)
+                                 (= (. (cast *Node (node-at bf 0)) kind) NODE-SYM))))
+                (let (bh:ptr (. (cast *Node (node-at bf 0)) s))
+                  (cond (= (strcmp bh "defstruct") 0)
+                    (do (set! is-tl 1) (set! g-out ct-type) (emit-defstruct (cast ptr bf))))
+                  (cond (= (strcmp bh "defconst") 0)
+                    (do (set! is-tl 1) (emit-defconst (cast ptr bf))))
+                  (cond (= (strcmp bh "defenum") 0)
+                    (do (set! is-tl 1) (emit-defenum (cast ptr bf))))
+                  (cond (= (strcmp bh "defvar") 0)
+                    (do (set! is-tl 1) (set! g-out ct-decl) (emit-defvar (cast ptr bf))))
+                  (cond (= (strcmp bh "include") 0)
+                    (do (set! is-tl 1) (set! g-out ct-decl) (emit-include (cast ptr bf))))
+                  (cond (= (strcmp bh "extern") 0)
+                    (do (set! is-tl 1) (set! g-out ct-decl) (emit-extern (cast ptr bf))))
+                  (cond (= (strcmp bh "defn") 0)
+                    (do (set! is-tl 1) (set! g-out ct-def) (emit-defn (cast ptr bf))))))
+              (cond (and (= is-tl 0) (< nexpr 256))
+                (do (aset! (cast *ptr expr-forms) nexpr (cast ptr bf))
+                    (inc! nexpr))))
+            (inc! bi))
+
+          ; Emit unique @__compile_time_main_N wrapping the expression forms.
+          (let (ct-sym:ptr (fmt-i64 "__compile_time_main_%ld" (cast i64 g-ct-id)))
+          (inc! g-ct-id)
+          (set! g-out ct-def)
+          (reset-function-state)
+          (let (fn-scope:ptr (scope-new g-globals)
+                ei:i32 0)
+            (while (< ei nexpr)
+              (emit-node (aref (cast *ptr expr-forms) ei) fn-scope)
+              (inc! ei)))
+          (cond (= g-block-term 0)
+            (fprintf g-body-stream "  ret void\n"))
+          ; Flush streams so bufp pointers are populated
+          (fclose g-entry-stream)
+          (fclose g-body-stream)
+          (fprintf ct-def "define void @%s() {\n" ct-sym)
+          (fprintf ct-def "entry:\n")
+          (cond (and (!= g-entry-bufp null) (!= (char-at g-entry-bufp (cast i64 0)) 0))
+            (fputs g-entry-bufp ct-def))
+          (cond (and (!= g-body-bufp null) (!= (char-at g-body-bufp (cast i64 0)) 0))
+            (fputs g-body-bufp ct-def))
+          (fprintf ct-def "}\n\n")
+          (free g-entry-bufp)
+          (free g-body-bufp)
+          (set! g-entry-bufp null)
+          (set! g-body-bufp null)
+
+          (let (ct-qq:i32 g-qq-used)
+            ; Restore global state.
+            (set! g-out saved-g-out)
+            (set! g-decl-out saved-decl-out)
+            (set! g-qq-used saved-qq-used)
+
+            ; If CT used quasiquote, add private helpers.
+            (cond (!= ct-qq 0)
+              (do (fprintf ct-decl "declare ptr @malloc(i64)\n")
+                  (fprintf ct-def "define private ptr @__cons(ptr %%a, ptr %%b) {\n")
+                  (fprintf ct-def "  %%c = call ptr @malloc(i64 40)\n")
+                  (fprintf ct-def "  %%p0 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 0\n")
+                  (fprintf ct-def "  store i32 3, ptr %%p0, align 8\n")
+                  (fprintf ct-def "  %%p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 4\n")
+                  (fprintf ct-def "  store ptr %%a, ptr %%p4, align 8\n")
+                  (fprintf ct-def "  %%p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 5\n")
+                  (fprintf ct-def "  store ptr %%b, ptr %%p5, align 8\n")
+                  (fprintf ct-def "  ret ptr %%c\n")
+                  (fprintf ct-def "}\n\n")
+                  (fprintf ct-def "define private ptr @__append(ptr %%a, ptr %%b) {\n")
+                  (fprintf ct-def "entry:\n")
+                  (fprintf ct-def "  %%z = icmp eq ptr %%a, null\n")
+                  (fprintf ct-def "  br i1 %%z, label %%nil, label %%rec\n")
+                  (fprintf ct-def "nil:\n")
+                  (fprintf ct-def "  ret ptr %%b\n")
+                  (fprintf ct-def "rec:\n")
+                  (fprintf ct-def "  %%p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%a, i32 0, i32 4\n")
+                  (fprintf ct-def "  %%car = load ptr, ptr %%p4, align 8\n")
+                  (fprintf ct-def "  %%p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%a, i32 0, i32 5\n")
+                  (fprintf ct-def "  %%cdr = load ptr, ptr %%p5, align 8\n")
+                  (fprintf ct-def "  %%rest = call ptr @__append(ptr %%cdr, ptr %%b)\n")
+                  (fprintf ct-def "  %%c = call ptr @__cons(ptr %%car, ptr %%rest)\n")
+                  (fprintf ct-def "  ret ptr %%c\n")
+                  (fprintf ct-def "}\n\n")))
+
+            (fclose ct-type)
+            (fclose ct-decl)
+            (fclose ct-def)
+
+            ; Assemble full CT module IR in a memstream.
+            (let (ir-bufp:ptr null  ir-sizep:i64 (cast i64 0)
+                  irs:ptr (open_memstream (addr-of ir-bufp) (cast ptr (addr-of ir-sizep))))
+              (fprintf irs "; ModuleID = '<compile-time>'\n")
+              (fprintf irs "target triple = \"x86_64-pc-linux-gnu\"\n\n")
+              ; Type defs: main-so-far + CT-specific
+              (cond (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
+                (fputs g-type-bufp irs))
+              (cond (and (!= ct-type-bufp null) (!= (char-at ct-type-bufp (cast i64 0)) 0))
+                (fputs ct-type-bufp irs))
+              ; String constants (shared)
+              (emit-string-table irs)
+              ; Declarations: main-so-far + CT-specific
+              (cond (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp (cast i64 0)) 0))
+                (fputs g-decl-bufp irs))
+              (cond (and (!= ct-decl-bufp null) (!= (char-at ct-decl-bufp (cast i64 0)) 0))
+                (fputs ct-decl-bufp irs))
+              ; Definitions from CT body + @__compile_time_main
+              (cond (and (!= ct-def-bufp null) (!= (char-at ct-def-bufp (cast i64 0)) 0))
+                (fputs ct-def-bufp irs))
+              (fclose irs)
+
+              (jit-add-module ir-bufp (. ff line))
+              (jit-call-ct-main-sym (. ff line) ct-sym)
+
+              (free ct-type-bufp)
+              (free ct-decl-bufp)
+              (free ct-def-bufp)
+              (free ir-bufp)))))))))
+
+; ============================================================
 ; String table emission
 ; ============================================================
 
@@ -1921,15 +2251,14 @@
         (set! g-globals (scope-new null))
 
         ; Open three memstreams for type defs, declares, defines
-        (let (type-bufp:ptr null
-              type-sizep:i64 (cast i64 0)
-              decl-bufp:ptr null
-              decl-sizep:i64 (cast i64 0)
-              def-bufp:ptr null
-              def-sizep:i64 (cast i64 0)
-              type-stream:ptr (open_memstream (addr-of type-bufp) (cast ptr (addr-of type-sizep)))
-              decl-stream:ptr (open_memstream (addr-of decl-bufp) (cast ptr (addr-of decl-sizep)))
-              def-stream:ptr (open_memstream (addr-of def-bufp) (cast ptr (addr-of def-sizep))))
+        ; Use global vars so emit-compile-time can access them mid-compilation.
+        (do
+          (set! g-type-stream (open_memstream (addr-of g-type-bufp) (cast ptr (addr-of g-type-sizep))))
+          (set! g-decl-stream (open_memstream (addr-of g-decl-bufp) (cast ptr (addr-of g-decl-sizep))))
+          (set! g-def-stream  (open_memstream (addr-of g-def-bufp)  (cast ptr (addr-of g-def-sizep)))))
+        (let (type-stream:ptr g-type-stream
+              decl-stream:ptr g-decl-stream
+              def-stream:ptr  g-def-stream)
           (set! g-decl-out decl-stream)
 
           ; Pre-scan: register all defn signatures
@@ -1999,6 +2328,8 @@
                           (do (set! g-out decl-stream) (emit-extern (cast ptr f)))
                         (= (strcmp h "defn") 0)
                           (do (set! g-out def-stream) (emit-defn (cast ptr f)))
+                        (= (strcmp h "compile-time") 0)
+                          (emit-compile-time (cast ptr f))
                         true
                           (die-at (. f line) (fmt-s "unknown top-level form: %s" h)))))
               (set! fc (. (cast *Node fc) cdr))))
@@ -2047,15 +2378,15 @@
           (printf "; ModuleID = '%s'\n" source-file)
           (printf "source_filename = \"%s\"\n" source-file)
           (printf "target triple = \"x86_64-pc-linux-gnu\"\n\n")
-          (cond (and (!= type-bufp null) (!= (char-at type-bufp (cast i64 0)) 0))
-            (fputs type-bufp (cast ptr stdout)))
+          (cond (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
+            (fputs g-type-bufp (cast ptr stdout)))
           (emit-string-table (cast ptr stdout))
-          (cond (and (!= decl-bufp null) (!= (char-at decl-bufp (cast i64 0)) 0))
-            (fputs decl-bufp (cast ptr stdout)))
-          (cond (and (!= def-bufp null) (!= (char-at def-bufp (cast i64 0)) 0))
-            (fputs def-bufp (cast ptr stdout)))
+          (cond (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp (cast i64 0)) 0))
+            (fputs g-decl-bufp (cast ptr stdout)))
+          (cond (and (!= g-def-bufp null) (!= (char-at g-def-bufp (cast i64 0)) 0))
+            (fputs g-def-bufp (cast ptr stdout)))
 
-          (free type-bufp)
-          (free decl-bufp)
-          (free def-bufp)))))
+          (free g-type-bufp)
+          (free g-decl-bufp)
+          (free g-def-bufp)))))
   (return 0))

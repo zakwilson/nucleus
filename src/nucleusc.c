@@ -12,6 +12,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+
+// LLVM C API for compile-time JIT
+#include <llvm-c/Core.h>
+#include <llvm-c/IRReader.h>
+#include <llvm-c/LLJIT.h>
+#include <llvm-c/Orc.h>
+#include <llvm-c/Target.h>
 
 // ============================================================
 // Arena allocator (fixed-size, no free)
@@ -599,6 +607,22 @@ static FILE  *g_decl_out; // decl stream, used for quote globals
 static Scope *g_globals;
 static int    g_quote_id;
 static bool   g_qq_used;  // quasiquote helpers needed
+static int    g_ct_id;    // counter for unique compile-time module names
+
+// Main module streams — promoted from main() so emit_compile_time can access them.
+static FILE  *g_type_stream;
+static FILE  *g_decl_stream; // same FILE* as g_decl_out
+static FILE  *g_def_stream;
+static char  *g_type_buf;    // updated by open_memstream / fflush
+static char  *g_decl_buf;
+static char  *g_def_buf;
+static size_t g_type_sz;
+static size_t g_decl_sz;
+static size_t g_def_sz;
+
+// Compile-time JIT state (LLVM ORC LLJIT)
+static LLVMOrcLLJITRef    g_jit;
+static LLVMOrcJITDylibRef g_jit_dylib;
 
 // Per-function state
 static int    g_tmp;
@@ -1070,11 +1094,24 @@ static Val emit_addr_of(Node *call, Scope *scope) {
     if (target->kind != NODE_SYM)
         die_at(target->line, "addr-of: target must be symbol");
     Sym *sym = scope_lookup(scope, target->s);
-    if (!sym || !sym->is_local)
-        die_at(target->line, "addr-of: undefined local '%s'", target->s);
+    if (!sym) die_at(target->line, "addr-of: undefined '%s'", target->s);
+    if (sym->type->kind == TY_FN)
+        die_at(target->line, "addr-of: cannot take address of function '%s'", target->s);
+    // For locals, sym->ir_name is the alloca slot (%x.addr).
+    // For globals, sym->ir_name is @x, which in LLVM IR IS the address.
     Type *pt = make_type(TY_PTR);
     pt->elem = sym->type;
     Val r = { pt, sym->ir_name };
+    return r;
+}
+
+// (funcall-void fn) — call fn() as void() via pointer
+static Val emit_funcall_void(Node *call, Scope *scope) {
+    if (node_len(call) != 2) die_at(call->line, "funcall-void expects 1 arg");
+    Val fn = emit_node(node_at(call, 1), scope);
+    if (fn.type->kind != TY_PTR) die_at(call->line, "funcall-void: arg must be ptr");
+    body_emit("  call void %s()\n", fn.val);
+    Val r = { ty_void, NULL };
     return r;
 }
 
@@ -1429,6 +1466,7 @@ static Val emit_list(Node *n, Scope *scope) {
     if (strcmp(h, "or")      == 0) return emit_short_circuit(n, scope, false);
     if (strcmp(h, "cast")    == 0) return emit_cast(n, scope);
     if (strcmp(h, "addr-of") == 0) return emit_addr_of(n, scope);
+    if (strcmp(h, "funcall-void") == 0) return emit_funcall_void(n, scope);
     if (strcmp(h, "deref")   == 0) return emit_deref(n, scope);
     if (strcmp(h, "ptr-set!") == 0) return emit_ptr_set(n, scope);
     if (strcmp(h, "ptr+")    == 0) return emit_ptr_add(n, scope);
@@ -1574,6 +1612,7 @@ static const LibcDecl g_libc[] = {
     {"stdio", "rewind",   TY_VOID, {TY_PTR},                         1, false},
     {"stdio", "perror",   TY_VOID, {TY_PTR},                         1, false},
     {"stdio", "open_memstream", TY_PTR, {TY_PTR, TY_PTR},            2, false},
+    {"stdio", "fflush",  TY_I32, {TY_PTR},                          1, false},
     // stdlib
     {"stdlib", "malloc",  TY_PTR,  {TY_I64},                         1, false},
     {"stdlib", "realloc", TY_PTR,  {TY_PTR, TY_I64},                 2, false},
@@ -1592,11 +1631,45 @@ static const LibcDecl g_libc[] = {
     // ctype
     {"ctype", "isspace", TY_I32, {TY_I32}, 1, false},
     {"ctype", "isdigit", TY_I32, {TY_I32}, 1, false},
+    // unistd — POSIX fd helpers needed for CT stdout redirect
+    {"unistd", "dup",   TY_I32,  {TY_I32},         1, false},
+    {"unistd", "dup2",  TY_I32,  {TY_I32, TY_I32}, 2, false},
+    {"unistd", "close", TY_I32,  {TY_I32},         1, false},
+    // llvm — LLVM C API for compile-time JIT (used by nucleusc.nuc self-hosted compiler)
+    // X86 target initialization (concrete functions behind LLVMInitializeNativeTarget macro)
+    {"llvm", "LLVMInitializeX86TargetInfo", TY_VOID, {0}, 0, false},
+    {"llvm", "LLVMInitializeX86Target",     TY_VOID, {0}, 0, false},
+    {"llvm", "LLVMInitializeX86TargetMC",   TY_VOID, {0}, 0, false},
+    {"llvm", "LLVMInitializeX86AsmPrinter", TY_VOID, {0}, 0, false},
+    // ORC LLJIT
+    {"llvm", "LLVMOrcCreateLLJIT",          TY_PTR,  {TY_PTR, TY_PTR}, 2, false},
+    {"llvm", "LLVMOrcLLJITGetMainJITDylib", TY_PTR,  {TY_PTR}, 1, false},
+    {"llvm", "LLVMOrcLLJITGetGlobalPrefix", TY_I8,   {TY_PTR}, 1, false},
+    {"llvm", "LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess",
+                                            TY_PTR,  {TY_PTR, TY_I8, TY_PTR, TY_PTR}, 4, false},
+    {"llvm", "LLVMOrcJITDylibAddGenerator", TY_VOID, {TY_PTR, TY_PTR}, 2, false},
+    // Thread-safe context / module
+    {"llvm", "LLVMContextCreate",                    TY_PTR, {0}, 0, false},
+    {"llvm", "LLVMOrcCreateNewThreadSafeContext",    TY_PTR, {0}, 0, false},
+    {"llvm", "LLVMOrcDisposeThreadSafeContext",      TY_VOID, {TY_PTR}, 1, false},
+    {"llvm", "LLVMOrcCreateNewThreadSafeModule",     TY_PTR, {TY_PTR, TY_PTR}, 2, false},
+    // Memory buffer / IR parsing
+    {"llvm", "LLVMCreateMemoryBufferWithMemoryRangeCopy",
+                                            TY_PTR, {TY_PTR, TY_I64, TY_PTR}, 3, false},
+    {"llvm", "LLVMParseIRInContext",        TY_I32, {TY_PTR, TY_PTR, TY_PTR, TY_PTR}, 4, false},
+    // Add module and lookup
+    {"llvm", "LLVMOrcLLJITAddLLVMIRModule",TY_PTR, {TY_PTR, TY_PTR, TY_PTR}, 3, false},
+    {"llvm", "LLVMOrcLLJITLookup",         TY_PTR, {TY_PTR, TY_PTR, TY_PTR}, 3, false},
+    // Error handling
+    {"llvm", "LLVMGetErrorMessage",         TY_PTR, {TY_PTR}, 1, false},
+    {"llvm", "LLVMDisposeErrorMessage",     TY_VOID, {TY_PTR}, 1, false},
+    {"llvm", "LLVMConsumeError",            TY_VOID, {TY_PTR}, 1, false},
 };
 
 static Type *kind_to_type(TypeKind k) {
     switch (k) {
         case TY_VOID: return ty_void;
+        case TY_I8:   return ty_i8;
         case TY_I32:  return ty_i32;
         case TY_I64:  return ty_i64;
         case TY_PTR:  return ty_ptr;
@@ -1732,6 +1805,261 @@ static void emit_defn(Node *call) {
     fprintf(g_out, "}\n\n");
 }
 
+// ============================================================
+// compile-time special form
+// ============================================================
+
+// Forward declarations for functions defined later in this file.
+static void emit_string_table(FILE *out);
+static void jit_add_module(const char *ir, int line);
+static void jit_call_ct_main_sym(int line, const char *sym);
+
+// Shared QQ helper IR (using private linkage to avoid conflicts between CT modules)
+static const char *k_qq_helpers =
+    "define private ptr @__cons(ptr %a, ptr %b) {\n"
+    "  %c = call ptr @malloc(i64 40)\n"
+    "  %p0 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %c, i32 0, i32 0\n"
+    "  store i32 3, ptr %p0, align 8\n"
+    "  %p1 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %c, i32 0, i32 1\n"
+    "  store i32 0, ptr %p1, align 4\n"
+    "  %p2 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %c, i32 0, i32 2\n"
+    "  store i64 0, ptr %p2, align 8\n"
+    "  %p3 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %c, i32 0, i32 3\n"
+    "  store ptr null, ptr %p3, align 8\n"
+    "  %p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %c, i32 0, i32 4\n"
+    "  store ptr %a, ptr %p4, align 8\n"
+    "  %p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %c, i32 0, i32 5\n"
+    "  store ptr %b, ptr %p5, align 8\n"
+    "  ret ptr %c\n"
+    "}\n\n"
+    "define private ptr @__append(ptr %a, ptr %b) {\n"
+    "entry:\n"
+    "  %z = icmp eq ptr %a, null\n"
+    "  br i1 %z, label %nil, label %rec\n"
+    "nil:\n"
+    "  ret ptr %b\n"
+    "rec:\n"
+    "  %p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %a, i32 0, i32 4\n"
+    "  %car = load ptr, ptr %p4, align 8\n"
+    "  %p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %a, i32 0, i32 5\n"
+    "  %cdr = load ptr, ptr %p5, align 8\n"
+    "  %rest = call ptr @__append(ptr %cdr, ptr %b)\n"
+    "  %c = call ptr @__cons(ptr %car, ptr %rest)\n"
+    "  ret ptr %c\n"
+    "}\n\n";
+
+static void emit_compile_time(Node *form) {
+    // (compile-time body-form...)
+    int nforms = node_len(form);
+    if (nforms < 2)
+        die_at(form->line, "compile-time: expected at least one body form");
+
+    // Snapshot current main streams so the CT module can use their content as preamble.
+    fflush(g_type_stream);
+    fflush(g_decl_stream);
+
+    // Fresh streams for the compile-time module.
+    char *ct_type_buf = NULL, *ct_decl_buf = NULL, *ct_def_buf = NULL;
+    size_t ct_type_sz = 0, ct_decl_sz = 0, ct_def_sz = 0;
+    FILE *ct_type = open_memstream(&ct_type_buf, &ct_type_sz);
+    FILE *ct_decl = open_memstream(&ct_decl_buf, &ct_decl_sz);
+    FILE *ct_def  = open_memstream(&ct_def_buf,  &ct_def_sz);
+
+    // Redirect global state to CT streams.
+    FILE *saved_g_out    = g_out;
+    FILE *saved_decl_out = g_decl_out;
+    bool  saved_qq_used  = g_qq_used;
+    g_qq_used  = false;
+    g_decl_out = ct_decl; // quote globals go into CT decl
+
+    // Pre-scan: register defn signatures from CT body so mutual/forward calls work.
+    for (int i = 1; i < nforms; i++) {
+        Node *bf = node_at(form, i);
+        if (!bf || bf->kind != NODE_CELL || node_len(bf) < 4) continue;
+        Node *head = node_at(bf, 0);
+        if (!head || head->kind != NODE_SYM || strcmp(head->s, "defn") != 0) continue;
+        Node *name_node   = node_at(bf, 1);
+        Node *params_node = node_at(bf, 2);
+        if (!name_node || name_node->kind != NODE_SYM || !node_is_list(params_node)) continue;
+        char *fname, *ret_name;
+        split_typed(name_node->s, &fname, &ret_name);
+        if (!ret_name) continue;
+        Type *ret = parse_type_name(ret_name, name_node->line);
+        int nparams = node_len(params_node);
+        Type **ptypes = nparams ? arena_alloc((size_t)nparams * sizeof(Type *)) : NULL;
+        for (int j = 0; j < nparams; j++) {
+            Node *p = node_at(params_node, j);
+            if (p->kind != NODE_SYM) continue;
+            char *pn, *pt;
+            split_typed(p->s, &pn, &pt);
+            ptypes[j] = pt ? parse_type_name(pt, p->line) : ty_i32;
+        }
+        Type *ft = make_type(TY_FN);
+        ft->ret = ret; ft->num_params = nparams; ft->params = ptypes;
+        scope_define(g_globals, fname, ft, arena_printf("@%s", fname), false);
+    }
+
+    // Collect non-top-level expression forms for @__compile_time_main.
+    Node *expr_forms[256];
+    int   nexpr = 0;
+
+    for (int i = 1; i < nforms; i++) {
+        Node *bf = node_at(form, i);
+        if (!bf) continue;
+        bool is_toplevel = false;
+        if (bf->kind == NODE_CELL && node_at(bf, 0) &&
+            node_at(bf, 0)->kind == NODE_SYM) {
+            const char *h = node_at(bf, 0)->s;
+            if (strcmp(h, "defstruct") == 0) {
+                is_toplevel = true;
+                g_out = ct_type; emit_defstruct(bf);
+            } else if (strcmp(h, "defconst") == 0) {
+                is_toplevel = true; emit_defconst(bf);
+            } else if (strcmp(h, "defenum") == 0) {
+                is_toplevel = true; emit_defenum(bf);
+            } else if (strcmp(h, "defvar") == 0) {
+                is_toplevel = true;
+                g_out = ct_decl; emit_defvar(bf);
+            } else if (strcmp(h, "include") == 0) {
+                is_toplevel = true;
+                g_out = ct_decl; emit_include(bf);
+            } else if (strcmp(h, "extern") == 0) {
+                is_toplevel = true;
+                g_out = ct_decl; emit_extern(bf);
+            } else if (strcmp(h, "defn") == 0) {
+                is_toplevel = true;
+                g_out = ct_def; emit_defn(bf);
+            }
+        }
+        if (!is_toplevel) {
+            if (nexpr < 256) expr_forms[nexpr++] = bf;
+        }
+    }
+
+    // Emit @__compile_time_main_N (unique per compile-time block) to call the collected expression forms.
+    int ct_id = g_ct_id++;
+    char ct_main_sym[64];
+    snprintf(ct_main_sym, sizeof(ct_main_sym), "__compile_time_main_%d", ct_id);
+    g_out = ct_def;
+    reset_function_state();
+    Scope *fn_scope = scope_new(g_globals);
+    for (int i = 0; i < nexpr; i++)
+        emit_node(expr_forms[i], fn_scope);
+    if (!g_block_term) body_emit("  ret void\n");
+    fprintf(ct_def, "define void @%s() {\n", ct_main_sym);
+    fprintf(ct_def, "entry:\n");
+    if (g_entry_buf && g_entry_buf[0]) fputs(g_entry_buf, ct_def);
+    if (g_body_buf  && g_body_buf[0])  fputs(g_body_buf,  ct_def);
+    fprintf(ct_def, "}\n\n");
+
+    bool ct_qq = g_qq_used;
+
+    // Restore global state.
+    g_out      = saved_g_out;
+    g_decl_out = saved_decl_out;
+    g_qq_used  = saved_qq_used;
+
+    // If CT body used quasiquote, add private helpers.
+    if (ct_qq) {
+        fprintf(ct_decl, "declare ptr @malloc(i64)\n");
+        fputs(k_qq_helpers, ct_def);
+    }
+
+    fclose(ct_type);
+    fclose(ct_decl);
+    fclose(ct_def);
+
+    // Assemble the full CT module IR.
+    char  *ir_buf = NULL;
+    size_t ir_sz  = 0;
+    FILE  *irs    = open_memstream(&ir_buf, &ir_sz);
+    fprintf(irs, "; ModuleID = '<compile-time>'\n");
+    fprintf(irs, "target triple = \"x86_64-pc-linux-gnu\"\n\n");
+    // Type definitions: main-so-far + any new ones from CT body
+    if (g_type_buf && g_type_buf[0]) fputs(g_type_buf, irs);
+    if (ct_type_buf && ct_type_buf[0]) fputs(ct_type_buf, irs);
+    // String constants
+    emit_string_table(irs);
+    // External declarations: main-so-far + CT-specific ones
+    if (g_decl_buf && g_decl_buf[0]) fputs(g_decl_buf, irs);
+    if (ct_decl_buf && ct_decl_buf[0]) fputs(ct_decl_buf, irs);
+    // Function definitions from CT body + @__compile_time_main
+    if (ct_def_buf && ct_def_buf[0]) fputs(ct_def_buf, irs);
+    fclose(irs);
+
+    jit_add_module(ir_buf, form->line);
+    jit_call_ct_main_sym(form->line, ct_main_sym);
+
+    free(ct_type_buf);
+    free(ct_decl_buf);
+    free(ct_def_buf);
+    free(ir_buf);
+}
+
+// ============================================================
+// JIT implementation (LLVM ORC LLJIT) — called by emit_compile_time above
+// ============================================================
+
+static void jit_check(LLVMErrorRef err, int line, const char *msg) {
+    if (!err) return;
+    char *errmsg = LLVMGetErrorMessage(err);
+    fprintf(stderr, "%s:%d: JIT error in %s: %s\n",
+            g_source_path, line, msg, errmsg);
+    LLVMDisposeErrorMessage(errmsg);
+    exit(1);
+}
+
+static void jit_ensure_init(int line) {
+    if (g_jit) return;
+    LLVMInitializeNativeTarget();
+    LLVMInitializeNativeAsmPrinter();
+    LLVMErrorRef err = LLVMOrcCreateLLJIT(&g_jit, NULL);
+    jit_check(err, line, "LLVMOrcCreateLLJIT");
+    g_jit_dylib = LLVMOrcLLJITGetMainJITDylib(g_jit);
+    char prefix = LLVMOrcLLJITGetGlobalPrefix(g_jit);
+    LLVMOrcDefinitionGeneratorRef gen = NULL;
+    err = LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess(&gen, prefix, NULL, NULL);
+    jit_check(err, line, "LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess");
+    LLVMOrcJITDylibAddGenerator(g_jit_dylib, gen);
+}
+
+static void jit_add_module(const char *ir, int line) {
+    jit_ensure_init(line);
+    // LLVMOrcThreadSafeContextGetContext was removed in LLVM 20+. Create the
+    // parsing context directly; tsctx is only used for ThreadSafeModule locking
+    // which is irrelevant in our single-threaded compiler. ctx leaks, which is
+    // fine for a compiler process.
+    LLVMContextRef ctx = LLVMContextCreate();
+    LLVMMemoryBufferRef mb =
+        LLVMCreateMemoryBufferWithMemoryRangeCopy(ir, strlen(ir), "<compile-time>");
+    LLVMModuleRef mod = NULL;
+    char *errmsg = NULL;
+    if (LLVMParseIRInContext(ctx, mb, &mod, &errmsg))
+        die_at(line, "compile-time: IR parse error: %s", errmsg ? errmsg : "(null)");
+    LLVMOrcThreadSafeContextRef tsctx = LLVMOrcCreateNewThreadSafeContext();
+    LLVMOrcThreadSafeModuleRef tsmod = LLVMOrcCreateNewThreadSafeModule(mod, tsctx);
+    LLVMOrcDisposeThreadSafeContext(tsctx);
+    LLVMErrorRef err = LLVMOrcLLJITAddLLVMIRModule(g_jit, g_jit_dylib, tsmod);
+    jit_check(err, line, "LLVMOrcLLJITAddLLVMIRModule");
+}
+
+static void jit_call_ct_main_sym(int line, const char *sym) {
+    (void)line;
+    LLVMOrcJITTargetAddress addr = 0;
+    LLVMErrorRef err = LLVMOrcLLJITLookup(g_jit, &addr, sym);
+    if (err) { LLVMConsumeError(err); return; } // symbol not found — OK
+    if (!addr) return;
+    // Redirect stdout → stderr so CT printf output doesn't contaminate the IR
+    // output written to stdout after compilation finishes.
+    fflush(stdout);
+    int saved_fd1 = dup(1);
+    dup2(2, 1);
+    ((void(*)(void))addr)();
+    fflush(stdout);
+    dup2(saved_fd1, 1);
+    close(saved_fd1);
+}
+
 // ------------------------------------------------------------
 // String table emission
 // ------------------------------------------------------------
@@ -1791,17 +2119,18 @@ int main(int argc, char **argv) {
 
     // Buffer type defs, declares, and defines separately so we can emit:
     //   header -> type defs -> string table -> declares -> defines
-    char  *type_buf = NULL;  size_t type_size = 0;
-    char  *decl_buf = NULL;  size_t decl_size = 0;
-    char  *def_buf  = NULL;  size_t def_size  = 0;
-    FILE  *type_stream = open_memstream(&type_buf, &type_size);
-    FILE  *decl_stream = open_memstream(&decl_buf, &decl_size);
-    FILE  *def_stream  = open_memstream(&def_buf,  &def_size);
-    if (!type_stream || !decl_stream || !def_stream) {
+    // Use global stream/buf vars so emit_compile_time can access them.
+    g_type_buf = NULL; g_type_sz = 0;
+    g_decl_buf = NULL; g_decl_sz = 0;
+    g_def_buf  = NULL; g_def_sz  = 0;
+    g_type_stream = open_memstream(&g_type_buf, &g_type_sz);
+    g_decl_stream = open_memstream(&g_decl_buf, &g_decl_sz);
+    g_def_stream  = open_memstream(&g_def_buf,  &g_def_sz);
+    if (!g_type_stream || !g_decl_stream || !g_def_stream) {
         perror("open_memstream");
         return 1;
     }
-    g_decl_out = decl_stream;
+    g_decl_out = g_decl_stream;
 
     // Pre-scan: register all defn signatures so forward/mutual recursion works.
     for (Node *fc = forms; fc; fc = fc->cdr) {
@@ -1846,28 +2175,30 @@ int main(int argc, char **argv) {
         } else if (strcmp(h, "defenum") == 0) {
             emit_defenum(f);
         } else if (strcmp(h, "defvar") == 0) {
-            g_out = decl_stream;
+            g_out = g_decl_stream;
             emit_defvar(f);
         } else if (strcmp(h, "defstruct") == 0) {
-            g_out = type_stream;
+            g_out = g_type_stream;
             emit_defstruct(f);
         } else if (strcmp(h, "include") == 0) {
-            g_out = decl_stream;
+            g_out = g_decl_stream;
             emit_include(f);
         } else if (strcmp(h, "extern") == 0) {
-            g_out = decl_stream;
+            g_out = g_decl_stream;
             emit_extern(f);
         } else if (strcmp(h, "defn") == 0) {
-            g_out = def_stream;
+            g_out = g_def_stream;
             emit_defn(f);
+        } else if (strcmp(h, "compile-time") == 0) {
+            emit_compile_time(f);
         } else {
             die_at(f->line, "unknown top-level form: %s", h);
         }
     }
     if (g_qq_used) {
         // Runtime helpers for quasiquote. Match lib/list.nuc cons semantics.
-        fprintf(decl_stream, "declare ptr @malloc(i64)\n");
-        fprintf(def_stream,
+        fprintf(g_decl_stream, "declare ptr @malloc(i64)\n");
+        fprintf(g_def_stream,
             "define ptr @__cons(ptr %%a, ptr %%b) {\n"
             "  %%c = call ptr @malloc(i64 40)\n"
             "  %%p0 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 0\n"
@@ -1900,20 +2231,20 @@ int main(int argc, char **argv) {
             "  ret ptr %%c\n"
             "}\n\n");
     }
-    fclose(type_stream);
-    fclose(decl_stream);
-    fclose(def_stream);
+    fclose(g_type_stream);
+    fclose(g_decl_stream);
+    fclose(g_def_stream);
 
     printf("; ModuleID = '%s'\n", argv[1]);
     printf("source_filename = \"%s\"\n", argv[1]);
     printf("target triple = \"x86_64-pc-linux-gnu\"\n\n");
-    if (type_buf && type_buf[0]) fputs(type_buf, stdout);
+    if (g_type_buf && g_type_buf[0]) fputs(g_type_buf, stdout);
     emit_string_table(stdout);
-    if (decl_buf && decl_buf[0]) fputs(decl_buf, stdout);
-    if (def_buf  && def_buf[0])  fputs(def_buf,  stdout);
+    if (g_decl_buf && g_decl_buf[0]) fputs(g_decl_buf, stdout);
+    if (g_def_buf  && g_def_buf[0])  fputs(g_def_buf,  stdout);
 
-    free(type_buf);
-    free(decl_buf);
-    free(def_buf);
+    free(g_type_buf);
+    free(g_decl_buf);
+    free(g_def_buf);
     return 0;
 }

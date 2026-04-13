@@ -42,6 +42,8 @@ Built-in forms and functions as implemented in `src/nucleusc.nuc`.
 | `aset!` | Array element assignment | `arr[i] = val` |
 | `quote` | Yields its argument as a `Node*` constant (reader sugar: `'x` → `(quote x)`) | — |
 | `quasiquote` | Like `quote` but `~expr` splices a runtime value and `~@list` splices a list (reader: `` `x ``, `~x`, `~@x`) | — |
+| `compile-time` | Execute body forms at compile time via LLVM JIT; output goes to stderr | — |
+| `funcall-void` | Call a function pointer with no arguments and no return value | `fn()` |
 
 ## Binary Operators
 
@@ -106,6 +108,7 @@ Pre-declared C standard library functions, available without `extern`.
 | `rewind` | `(ptr) -> void` | `<stdio.h>` |
 | `perror` | `(ptr) -> void` | `<stdio.h>` |
 | `open_memstream` | `(ptr, ptr) -> ptr` | `<stdio.h>` |
+| `fflush` | `(ptr) -> i32` | `<stdio.h>` |
 
 ### stdlib
 
@@ -136,3 +139,11 @@ Pre-declared C standard library functions, available without `extern`.
 |----------|-----------|----------|
 | `isspace` | `(i32) -> i32` | `<ctype.h>` |
 | `isdigit` | `(i32) -> i32` | `<ctype.h>` |
+
+### unistd
+
+| Function | Signature | C Header |
+|----------|-----------|----------|
+| `dup` | `(i32) -> i32` | `<unistd.h>` |
+| `dup2` | `(i32, i32) -> i32` | `<unistd.h>` |
+| `close` | `(i32) -> i32` | `<unistd.h>` |
