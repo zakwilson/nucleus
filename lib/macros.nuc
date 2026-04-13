@@ -1,0 +1,52 @@
+; Standard macro library for Nucleus.
+;
+; These macros require defmacro and quasiquote support (stage-2 compiler).
+; Until a proper (include "file.nuc") mechanism exists, copy this section
+; verbatim into any program that needs these forms.
+
+; (if test then else) — binary conditional over cond.
+(defmacro if (test then else)
+  `(cond ~test ~then true ~else))
+
+; (when condition body) — one-armed conditional; body only if condition is true.
+; For multiple body forms, wrap them in (do ...).
+(defmacro when (condition body)
+  `(cond ~condition ~body))
+
+; (unless condition body) — one-armed conditional; body only if condition is false.
+; For multiple body forms, wrap them in (do ...).
+(defmacro unless (condition body)
+  `(cond (not ~condition) ~body))
+
+; (zero? x) — true if x equals 0.
+(defmacro zero? (x)
+  `(= ~x 0))
+
+; (null? x) — true if x equals null.
+(defmacro null? (x)
+  `(= ~x null))
+
+; (for (var:type init) test step body) — counted loop.
+; Expands to (let (var:type init) (while test body step)).
+; var:type appears as the let binding name (type annotation required).
+; The step expression is placed after body so break-via-return is natural.
+; Example: (for (i:i32 0) (< i:i32 n) (inc! i:i32) (foo i:i32))
+(defmacro for (init test step body)
+  `(let ~init
+     (while ~test
+       ~body
+       ~step)))
+
+; (dotimes (var:type n) body) — loop from 0 to n-1.
+; var:type is the loop variable with type annotation; n is the upper bound.
+; Expands to a for loop initialised to 0, incrementing by 1 each iteration.
+; Example: (dotimes (i:i32 n) (process (node-at items i:i32)))
+; Uses struct field access to extract elements from spec so this macro works
+; even in programs that have not yet included stdlib (no node-at dependency).
+(defmacro dotimes (spec body)
+  (let (var-node:ptr (. (cast *Node spec) car)
+        n-node:ptr   (. (cast *Node (. (cast *Node spec) cdr)) car))
+    `(let (~var-node 0)
+       (while (< ~var-node ~n-node)
+         ~body
+         (inc! ~var-node)))))

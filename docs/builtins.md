@@ -15,6 +15,20 @@ Built-in forms and functions as implemented in `src/nucleusc.nuc`.
 | `extern` | Declare an external (foreign) function | `extern` declaration |
 | `defmacro` | Define a compile-time macro `(defmacro name (params...) body...)` | macro |
 
+## Standard Macros (`lib/macros.nuc`)
+
+Defined via `defmacro`; inlined into programs until `include` is implemented.
+
+| Name | Signature | Expands To |
+|------|-----------|------------|
+| `if` | `(if test then else)` | `(cond test then true else)` |
+| `when` | `(when condition body)` | `(cond condition body)` |
+| `unless` | `(unless condition body)` | `(cond (not condition) body)` |
+| `zero?` | `(zero? x)` | `(= x 0)` |
+| `null?` | `(null? x)` | `(= x null)` |
+| `for` | `(for (var:type init) test step body)` | `(let (var:type init) (while test body step))` |
+| `dotimes` | `(dotimes (var:type n) body)` | `(let (var:type 0) (while (< var n) body (inc! var)))` |
+
 ## Special Forms
 
 | Name | Description | C Equivalent |

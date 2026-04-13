@@ -195,8 +195,78 @@ Given the dependencies resolved above, the real ordering is:
 4. ~~**List manipulation primitives** — `cons`, `first`, `rest`, `append` as Nucleus functions over the unified cons/node type. `list` is a convenience wrapper over `cons`.~~ done (definitions live in `lib/list.nuc`; `examples/list.nuc` exercises them; a `load`/import mechanism is deferred, so consumers currently inline the definitions). `list` deferred until quasiquote lands — `(list a b c)` is just `` `(~a ~b ~c) ``, so waiting for step 5 avoids duplicate work.
 5. ~~**Quasiquote and splicing** — `` `x ``, `~x`, `~@x` as hardcoded reader shortcuts for `quasiquote` / `unquote` / `unquote-splice`, with special-form support for each.~~ done. Atoms and static sublists expand to private Node globals (same as `quote`). Unquoted expressions splice runtime values. Unquote-splice calls the builtin `@__append`. When any of these are used the compiler emits `@__cons`/`@__append` LLVM IR helpers into the output module — no link-time dependency required.
 6. ~~**libLLVM JIT + `compile-time` special form**~~ done. `(compile-time body…)` executes forms at compile time via LLVM ORC LLJIT. Top-level forms (`defn`, `defstruct`, `include`, etc.) are processed as declarations; expression forms are wrapped in a unique `@__compile_time_main_N` function that runs in-process. The JIT is lazily initialized (one shared LLJIT instance per compiler invocation). CT output goes to stderr so it doesn't corrupt the IR emitted to stdout. `(include llvm)` exposes the LLVM C API; `(include unistd)` exposes `dup`/`dup2`/`close`. The `funcall-void` special form was added to call function pointers with void signatures (needed by the CT executor). Fixed-point holds; all 16 tests pass.
-7. **`defmacro`** — new special form. Body runs via the JIT; result is a node that replaces the call site. Iterative expansion with a hardcoded recursion bound (~1024). Unhygienic, with `gensym`. Single global macro registry.
-8. **Use macros to simplify the compiler** — `if`, `when`, `unless` become macros over `cond`; `let` gets a macro form; etc.
+7. ~~**`defmacro`**~~ done - new special form. Body runs via the JIT; result is a node that replaces the call site. Iterative expansion with a hardcoded recursion bound (~1024). Unhygienic, with `gensym`. Single global macro registry.
+8. **Use macros to simplify the compiler** — Now that `defmacro` works, a standard library of macros can be written in Nucleus and used to clean up the compiler's own source. The macros below are listed in implementation order — each group depends on the group above it. **Group 1–5 macros implemented; compiler source updated.** `cond` now appears only inside macro bodies and the multi-way top-level dispatch; all single-branch guards use `when`, binary conditions use `if`.
+
+   **Group 1 — Binary and one-armed conditionals** (no dependencies; immediate payoff)
+
+   - `if` — `(if test then else)` expands to `(cond test then true else)`. The compiler currently has `cond` as the sole conditional builtin; `if` was removed early to keep the core small. Restoring it as a macro reclaims the familiar two-branch form for the many places in the compiler where exactly one alternative exists. Without this, every binary choice requires the noise of the `true` fallthrough arm.
+
+   - `when` — `(when condition body...)` expands to `(cond condition (do body...))`. One-armed conditional: "do this if true, nothing otherwise." Already written in `examples/defmacro.nuc`; needs to move into a standard library file consumed by the compiler itself. The compiler has dozens of guard-and-continue patterns (`cond (< nargs 2) (die-at ...)`) that read more clearly as `(when (< nargs 2) (die-at ...))`.
+
+   - `unless` — `(unless condition body...)` expands to `(cond (not condition) (do body...))`. Negated `when`. Common in the compiler for "proceed unless something is wrong" guards. Implemented alongside `when`; both are trivial once `if` exists.
+
+   **Group 2 — N-ary boolean operators** (depends only on Group 1)
+
+   - `and` (n-ary) — `(and a b c ...)` expands recursively to `(and a (and b c ...))`. The built-in `and` is a strict 2-arg short-circuit operator because `emit-short-circuit` enforces `(node-len cc) == 3`. A macro wrapper allows n-ary calls by nesting. This unblocks compound conditions like `(and (>= i 0) (< i len) (not= p null))` that currently require nesting by hand. The base case `(and a b)` falls through to the built-in.
+
+   - `or` (n-ary) — same approach as n-ary `and`. Base case `(or a b)` falls through to the built-in.
+
+   **Group 3 — Iteration** (depends on Group 1; `dolist` also depends on list primitives from step 4)
+
+   - `for` — `(for (var:type init) test step body...)` expands to a `let`+`while` combination:
+     ```
+     (let (var:type init)
+       (while test
+         body...
+         step))
+     ```
+     The compiler is full of the pattern `(let (i:i32 0) (while (< i n) ... (inc! i)))`. The `for` macro collapses this to `(for (i:i32 0) (< i n) (inc! i) ...)`, making the loop variable, bound, and increment visible at a glance. The step expression is placed at the end of the body so `return`/`continue` semantics are natural.
+
+   - `dotimes` — `(dotimes (i:i32 n) body...)` expands to `(for (i:i32 0) (< i n) (inc! i) body...)`. Specialises `for` for the overwhelmingly common counted loop from 0 to n−1. The compiler has roughly 20 such loops — `dotimes` would replace all of them.
+
+   - `dolist` — `(dolist (x:ptr list) body...)` expands to a `while` loop that walks a cons-cell list via `(first ...)` and `(rest ...)`. Requires the list primitives from step 4. Useful for any macro or compiler pass that iterates over a node list.
+
+   **Group 4 — Mutation helpers** (depends on `gensym`, already available)
+
+   - `swap!` — `(swap! a b)` introduces a gensym'd temporary and emits:
+     ```
+     (let (tmp:T (gensym))
+       (set! tmp a)
+       (set! a b)
+       (set! b tmp))
+     ```
+     Because gensym'd names cannot be used as typed `let` binding names (the `sym:type` token is read as a single atom — see `context/local.md`), this macro requires the typed temp to be spelled out explicitly or the type to be inferred — which means `swap!` may be deferred until type inference exists, or implemented with an explicit type parameter: `(swap! a b :i32)`.
+
+   - `push!` — `(push! val head)` expands to `(set! head (cons val head))`. Builds a cons list by prepending. Depends on `cons` from step 4.
+
+   **Group 5 — Predicates** (no dependencies; can be added any time)
+
+   - `zero?` — `(zero? x)` → `(= x 0)`. Reads more clearly than the comparison form in boolean contexts.
+   - `null?` — `(null? x)` → `(= x null)`. Replaces the pervasive `(= foo null)` null-checks throughout the compiler.
+   - `pos?` / `neg?` — `(pos? x)` → `(> x 0)`, `(neg? x)` → `(< x 0)`. Lower priority; add if the compiler has enough uses to justify them.
+
+   **Group 6 — Threading** (depends on quasiquote/splicing for the recursive expansion)
+
+   - `->` (thread-first) — `(-> x (f a b) (g c))` expands to `(g (f x a b) c)`. Each form threads the previous result in as the *first* argument. Useful for chains of transformations where the data flows left-to-right: `(-> node (cast *Node) (. kind) (= NODE-SYM))` instead of `(= (. (cast *Node node) kind) NODE-SYM)`.
+
+   - `->>` (thread-last) — `(->> x (f a) (g b c))` expands to `(g b c (f a x))`. Threads as the *last* argument. Common when the interesting value is a list being processed by higher-order operations.
+
+   The threading macros require recursive quasiquote expansion to build up the nested call. They are non-trivial to implement but have a large readability payoff for the deeply-nested cast chains that appear throughout the compiler's emit functions.
+
+   **Ordering summary**
+
+   All Group 1–3 macros should be written first and the compiler source updated to use them before moving on. Group 4–6 are incrementally useful but the compiler can ship without them. The suggested commit order:
+
+   1. `if`, `when`, `unless` (one commit; update all call sites in `nucleusc.nuc`)
+   2. n-ary `and` / `or` (one commit; update compound conditions)
+   3. `dotimes` and `for` (one commit; replace all indexed while loops)
+   4. `dolist` (depends on step-4 list primitives being available in the compiler)
+   5. Predicates (`zero?`, `null?`) — low cost, add alongside any of the above
+   6. Threading macros (`->`, `->>`) — deferred, done when complexity is justified by use cases
+   7. `push!`, `swap!` — deferred until a clear need arises in the compiler or stdlib
+
+   After each group, run `make test` and `make bootstrap` to verify the fixed-point holds.
 9. **Reader macros** — generalize the hardcoded `'` / `` ` `` / `~` / `~@` to entries in a user-extensible reader macro table.
 
 Steps 2 and 6 are the heaviest. Steps 3-5 are mechanical once 2 is done. Step 7 is the payoff; 8-9 are polish.
