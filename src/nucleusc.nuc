@@ -104,6 +104,11 @@
   len:i32
   cap:i32)
 
+(defstruct MacroDef
+  name:ptr
+  jit-name:ptr
+  num-params:i32)
+
 ; ============================================================
 ; Global variables
 ; ============================================================
@@ -182,6 +187,11 @@
 (defvar g-libc:ptr)
 (defvar g-num-libc:i32 0)
 
+; Macro registry
+(defvar g-macros:ptr)
+(defvar g-num-macros:i32 0)
+(defvar g-gensym-id:i32 0)
+
 ; ============================================================
 ; Arena allocator
 ; ============================================================
@@ -252,6 +262,26 @@
         n:i32 (snprintf buf (cast i64 512) fmt s1 s2 d))
     (return (arena-strndup buf (i64 n)))))
 
+; Replace chars invalid in LLVM IR identifiers with underscores.
+(defn sanitize-for-ir:ptr (name:ptr)
+  (let (n:i64 (strlen name)
+        s:ptr (arena-alloc (+ n (cast i64 1)))
+        i:i64 (cast i64 0))
+    (while (< i n)
+      (let (c:i32 (bit-and (cast i32 (aref (cast *i8 name) i)) 255)
+            is-digit:i1 (!= (isdigit c) 0)
+            is-lower:i1 (and (>= c 97) (<= c 122))
+            is-upper:i1 (and (>= c 65) (<= c 90))
+            is-safe:i1  (or (= c 95) (= c 46))
+            ok:i1       (or is-digit (or is-lower (or is-upper is-safe))))
+        (cond ok
+          (aset! (cast *i8 s) i (cast i8 c))
+          true
+          (aset! (cast *i8 s) i (cast i8 95))))
+      (set! i (+ i (cast i64 1))))
+    (aset! (cast *i8 s) n (cast i8 0))
+    (return s)))
+
 ; ============================================================
 ; Allocation helpers
 ; ============================================================
@@ -261,6 +291,17 @@
 
 (defn alloc-node:ptr ()
   (return (arena-alloc (sizeof Node))))
+
+(defn nucleus_gensym:ptr ()
+  (let (id:i32 g-gensym-id)
+    (inc! g-gensym-id)
+    (let (buf:ptr (malloc (cast i64 32))
+          n:*Node (cast *Node (malloc (cast i64 (sizeof Node)))))
+      (snprintf buf (cast i64 32) "__gs_%d" id)
+      (memset (cast ptr n) 0 (cast i64 (sizeof Node)))
+      (.set! n kind (cast i32 NODE-SYM))
+      (.set! n s buf)
+      (return (cast ptr n)))))
 
 (defn alloc-type:ptr ()
   (let (t:ptr (arena-alloc (sizeof Type)))
@@ -1188,6 +1229,21 @@
       (fprintf g-body-stream "  call void %s()\n" (. fn val))
       (return (alloc-val ty-void null)))))
 
+; (funcall-ptr-1 fn arg) — call fn(arg) as ptr(ptr) via pointer, return ptr
+(defn emit-funcall-ptr-1:ptr (call:ptr scope:ptr)
+  (let (cc:*Node (cast *Node call))
+    (cond (!= (node-len cc) 3) (die-at (. cc line) "funcall-ptr-1 expects 2 args"))
+    (let (fn:*Val  (cast *Val (emit-node (node-at cc 1) scope))
+          arg:*Val (cast *Val (emit-node (node-at cc 2) scope)))
+      (cond (!= (. (cast *Type (. fn type)) kind) TY-PTR)
+        (die-at (. cc line) "funcall-ptr-1: fn must be ptr"))
+      (cond (!= (. (cast *Type (. arg type)) kind) TY-PTR)
+        (die-at (. cc line) "funcall-ptr-1: arg must be ptr"))
+      (let (tmp:ptr (new-tmp))
+        (fprintf g-body-stream "  %s = call ptr %s(ptr %s)\n"
+          tmp (. fn val) (. arg val))
+        (return (alloc-val ty-ptr tmp))))))
+
 (defn emit-deref:ptr (call:ptr scope:ptr)
   (let (cc:*Node (cast *Node call))
     (cond (!= (node-len cc) 2) (die-at (. cc line) "deref expects 1 arg"))
@@ -1526,6 +1582,42 @@
             (return (alloc-val ty-void null))))))))
 
 ; ============================================================
+; Macro expansion (calls JIT-compiled macro functions at compiler runtime)
+; ============================================================
+
+(defn emit-macro-expand:ptr (call:ptr scope:ptr macro-def:ptr)
+  (let (mdef:*MacroDef (cast *MacroDef macro-def)
+        nargs:i32 (- (node-len (cast *Node call)) 1))
+    (cond (!= nargs (. mdef num-params))
+      (die-at (. (cast *Node call) line)
+              (fmt-s "macro: wrong number of args" (cast i64 0))))
+    ; Build a stack array of Node* args (use malloc for simplicity).
+    (let (args-arr:ptr (malloc (* (cast i64 nargs) (cast i64 8)))
+          i:i32 0)
+      (while (< i nargs)
+        (aset! (cast *ptr args-arr) i (node-at (cast *Node call) (+ i 1)))
+        (inc! i))
+      ; Look up the JIT function.
+      (let (addr:i64 (cast i64 0)
+            err:ptr (LLVMOrcLLJITLookup g-jit (addr-of addr) (. mdef jit-name)))
+        (cond (!= err null)
+          (do (fprintf stderr "%s: macro '%s': JIT lookup failed\n"
+                       g-source-path (. mdef name))
+              (exit 1)))
+        (cond (= (cast ptr addr) null)
+          (do (fprintf stderr "%s: macro '%s': JIT function not found\n"
+                       g-source-path (. mdef name))
+              (exit 1)))
+        ; Call the macro JIT function: ptr fn(ptr args_array)
+        (let (result:ptr (funcall-ptr-1 (cast ptr addr) args-arr))
+          (free args-arr)
+          (cond (= result null)
+            (do (fprintf stderr "%s: macro '%s': returned null\n"
+                         g-source-path (. mdef name))
+                (exit 1)))
+          (return (emit-node result scope)))))))
+
+; ============================================================
 ; List dispatch
 ; ============================================================
 
@@ -1536,6 +1628,18 @@
       (cond (!= (. head kind) NODE-SYM)
         (die-at (. head line) "list head must be symbol"))
       (let (h:ptr (. head s))
+        ; Check macro table before special forms.
+        (let (mi:i32 0)
+          (while (< mi g-num-macros)
+            (let (mdef:*MacroDef (cast *MacroDef (ptr+ (cast *MacroDef g-macros) mi)))
+              (cond (= (strcmp (. mdef name) h) 0)
+                (return (emit-macro-expand n scope (cast ptr mdef)))))
+            (inc! mi)))
+        (cond (and (= (strcmp h "gensym") 0) (= (node-len nn) 1))
+          (let (tmp:ptr (new-tmp))
+            (fprintf g-body-stream "  %s = call ptr @nucleus_gensym()\n" tmp)
+            (return (alloc-val ty-ptr tmp))))
+        (cond (= (strcmp h "funcall-ptr-1") 0) (return (emit-funcall-ptr-1 n scope)))
         (cond (= (strcmp h "return") 0) (return (emit-return n scope)))
         (cond (= (strcmp h "do") 0) (return (emit-do n scope)))
         (cond (= (strcmp h "let") 0) (return (emit-let n scope)))
@@ -2188,6 +2292,174 @@
               (free ir-bufp)))))))))
 
 ; ============================================================
+; defmacro top-level form
+; ============================================================
+
+(defn emit-defmacro:void (form:ptr)
+  ; (defmacro name (params...) body...)
+  (let (ff:*Node (cast *Node form))
+    (cond (< (node-len ff) 4)
+      (die-at (. ff line) "defmacro: expects name, params, and body"))
+    (let (name-node:*Node (cast *Node (node-at ff 1))
+          params-node:ptr (node-at ff 2))
+      (cond (!= (. name-node kind) NODE-SYM)
+        (die-at (. name-node line) "defmacro: name must be symbol"))
+      (cond (= (node-is-list params-node) 0)
+        (die-at (. name-node line) "defmacro: params must be a list"))
+      (let (macro-name:ptr (. name-node s)
+            num-params:i32 (node-len params-node)
+            jit-name:ptr (fmt-s "__macro_%s" (sanitize-for-ir macro-name)))
+        ; Collect param names
+        (let (pnames:ptr null
+              pi:i32 0)
+          (cond (> num-params 0)
+            (set! pnames (arena-alloc (* (i64 num-params) (i64 8)))))
+          (while (< pi num-params)
+            (let (p:*Node (cast *Node (node-at params-node pi)))
+              (cond (!= (. p kind) NODE-SYM)
+                (die-at (. p line) "defmacro: param must be a symbol"))
+              (aset! (cast *ptr pnames) pi (. p s)))
+            (inc! pi))
+          ; Register in macro table
+          (cond (>= g-num-macros 256)
+            (die-at (. ff line) "defmacro: macro table full"))
+          (let (mdef:*MacroDef (cast *MacroDef (ptr+ (cast *MacroDef g-macros) g-num-macros)))
+            (.set! mdef name macro-name)
+            (.set! mdef jit-name jit-name)
+            (.set! mdef num-params num-params)
+            (inc! g-num-macros))
+
+          ; Flush main streams
+          (fflush g-type-stream)
+          (fflush g-decl-stream)
+
+          ; Open fresh CT streams
+          (let (ct-decl-bufp:ptr null  ct-decl-sizep:i64 (cast i64 0)
+                ct-def-bufp:ptr null   ct-def-sizep:i64  (cast i64 0)
+                ct-decl:ptr (open_memstream (addr-of ct-decl-bufp) (cast ptr (addr-of ct-decl-sizep)))
+                ct-def:ptr  (open_memstream (addr-of ct-def-bufp)  (cast ptr (addr-of ct-def-sizep))))
+
+            ; Redirect global state
+            (let (saved-g-out:ptr g-out
+                  saved-decl-out:ptr g-decl-out
+                  saved-qq-used:i32 g-qq-used)
+              (set! g-qq-used 0)
+              (set! g-decl-out ct-decl)
+              (set! g-out ct-def)
+
+              ; Set up function codegen state
+              (reset-function-state)
+              (let (fn-scope:ptr (scope-new g-globals))
+
+                ; Entry prologue: alloca for args pointer, then load each param
+                (fprintf g-entry-stream "  %%__args.addr = alloca ptr, align 8\n")
+                (fprintf g-entry-stream "  store ptr %%__args.arg, ptr %%__args.addr, align 8\n")
+                (let (ei:i32 0)
+                  (while (< ei num-params)
+                    (let (pname:ptr (aref (cast *ptr pnames) ei))
+                      (fprintf g-entry-stream "  %%%s.addr = alloca ptr, align 8\n" pname)
+                      (fprintf g-entry-stream "  %%__ap%d = load ptr, ptr %%__args.addr, align 8\n" ei)
+                      (fprintf g-entry-stream "  %%__ag%d = getelementptr ptr, ptr %%__ap%d, i32 %d\n" ei ei ei)
+                      (fprintf g-entry-stream "  %%__av%d = load ptr, ptr %%__ag%d, align 8\n" ei ei)
+                      (fprintf g-entry-stream "  store ptr %%__av%d, ptr %%%s.addr, align 8\n" ei pname)
+                      (scope-define fn-scope pname ty-ptr (fmt-s "%%%s.addr" pname) 1))
+                    (inc! ei)))
+
+                ; Compile body forms; last result is return value
+                (let (last-val:ptr "null"
+                      bi:i32 3)
+                  (while (< bi (node-len ff))
+                    (let (bv:*Val (cast *Val (emit-node (node-at ff bi) fn-scope)))
+                      (cond (and (!= (cast ptr bv) null)
+                               (and (!= (. bv val) null)
+                                    (= (. (cast *Type (. bv type)) kind) TY-PTR)))
+                        (set! last-val (. bv val))))
+                    (inc! bi))
+                  (fprintf g-body-stream "  ret ptr %s\n" last-val))
+
+                (let (macro-qq:i32 g-qq-used)
+                  ; Restore global state
+                  (set! g-out saved-g-out)
+                  (set! g-decl-out saved-decl-out)
+                  (set! g-qq-used saved-qq-used)
+
+                  ; Finalize the function
+                  (fclose g-entry-stream)
+                  (fclose g-body-stream)
+                  (fprintf ct-def "define ptr @%s(ptr %%__args.arg) {\n" jit-name)
+                  (fprintf ct-def "entry:\n")
+                  (cond (and (!= g-entry-bufp null) (!= (char-at g-entry-bufp (cast i64 0)) 0))
+                    (fputs g-entry-bufp ct-def))
+                  (cond (and (!= g-body-bufp null) (!= (char-at g-body-bufp (cast i64 0)) 0))
+                    (fputs g-body-bufp ct-def))
+                  (fprintf ct-def "}\n\n")
+                  (free g-entry-bufp)
+                  (free g-body-bufp)
+                  (set! g-entry-bufp null)
+                  (set! g-body-bufp null)
+
+                  ; Add QQ helpers if needed
+                  (cond (!= macro-qq 0)
+                    (do (fprintf ct-decl "declare ptr @malloc(i64)\n")
+                        (fprintf ct-def "define private ptr @__cons(ptr %%a, ptr %%b) {\n")
+                        (fprintf ct-def "  %%c = call ptr @malloc(i64 40)\n")
+                        (fprintf ct-def "  %%p0 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 0\n")
+                        (fprintf ct-def "  store i32 3, ptr %%p0, align 8\n")
+                        (fprintf ct-def "  %%p1 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 1\n")
+                        (fprintf ct-def "  store i32 0, ptr %%p1, align 4\n")
+                        (fprintf ct-def "  %%p2 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 2\n")
+                        (fprintf ct-def "  store i64 0, ptr %%p2, align 8\n")
+                        (fprintf ct-def "  %%p3 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 3\n")
+                        (fprintf ct-def "  store ptr null, ptr %%p3, align 8\n")
+                        (fprintf ct-def "  %%p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 4\n")
+                        (fprintf ct-def "  store ptr %%a, ptr %%p4, align 8\n")
+                        (fprintf ct-def "  %%p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 5\n")
+                        (fprintf ct-def "  store ptr %%b, ptr %%p5, align 8\n")
+                        (fprintf ct-def "  ret ptr %%c\n")
+                        (fprintf ct-def "}\n\n")
+                        (fprintf ct-def "define private ptr @__append(ptr %%a, ptr %%b) {\n")
+                        (fprintf ct-def "entry:\n")
+                        (fprintf ct-def "  %%z = icmp eq ptr %%a, null\n")
+                        (fprintf ct-def "  br i1 %%z, label %%nil, label %%rec\n")
+                        (fprintf ct-def "nil:\n")
+                        (fprintf ct-def "  ret ptr %%b\n")
+                        (fprintf ct-def "rec:\n")
+                        (fprintf ct-def "  %%p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%a, i32 0, i32 4\n")
+                        (fprintf ct-def "  %%car = load ptr, ptr %%p4, align 8\n")
+                        (fprintf ct-def "  %%p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%a, i32 0, i32 5\n")
+                        (fprintf ct-def "  %%cdr = load ptr, ptr %%p5, align 8\n")
+                        (fprintf ct-def "  %%rest = call ptr @__append(ptr %%cdr, ptr %%b)\n")
+                        (fprintf ct-def "  %%c = call ptr @__cons(ptr %%car, ptr %%rest)\n")
+                        (fprintf ct-def "  ret ptr %%c\n")
+                        (fprintf ct-def "}\n\n")))
+
+                  ; Always declare nucleus_gensym
+                  (fprintf ct-decl "declare ptr @nucleus_gensym()\n")
+
+                  (fclose ct-decl)
+                  (fclose ct-def)
+
+                  ; Assemble the macro JIT module IR
+                  (let (ir-bufp:ptr null  ir-sizep:i64 (cast i64 0)
+                        irs:ptr (open_memstream (addr-of ir-bufp) (cast ptr (addr-of ir-sizep))))
+                    (fprintf irs "; ModuleID = '<defmacro %s>'\n" macro-name)
+                    (fprintf irs "target triple = \"x86_64-pc-linux-gnu\"\n\n")
+                    (cond (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
+                      (fputs g-type-bufp irs))
+                    (emit-string-table irs)
+                    (cond (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp (cast i64 0)) 0))
+                      (fputs g-decl-bufp irs))
+                    (cond (and (!= ct-decl-bufp null) (!= (char-at ct-decl-bufp (cast i64 0)) 0))
+                      (fputs ct-decl-bufp irs))
+                    (cond (and (!= ct-def-bufp null) (!= (char-at ct-def-bufp (cast i64 0)) 0))
+                      (fputs ct-def-bufp irs))
+                    (fclose irs)
+                    (jit-add-module ir-bufp (. ff line))
+                    (free ct-decl-bufp)
+                    (free ct-def-bufp)
+                    (free ir-bufp)))))))))))
+
+; ============================================================
 ; String table emission
 ; ============================================================
 
@@ -2241,6 +2513,7 @@
       (init-binops)
       (init-libc)
       (set! g-structs (arena-alloc (* (cast i64 MAX-STRUCTS) (sizeof StructDef))))
+      (set! g-macros (arena-alloc (* (cast i64 256) (sizeof MacroDef))))
 
       ; Lex/parse
       (set! g-src src)
@@ -2330,6 +2603,8 @@
                           (do (set! g-out def-stream) (emit-defn (cast ptr f)))
                         (= (strcmp h "compile-time") 0)
                           (emit-compile-time (cast ptr f))
+                        (= (strcmp h "defmacro") 0)
+                          (emit-defmacro (cast ptr f))
                         true
                           (die-at (. f line) (fmt-s "unknown top-level form: %s" h)))))
               (set! fc (. (cast *Node fc) cdr))))

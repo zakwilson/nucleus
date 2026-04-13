@@ -13,6 +13,7 @@ Built-in forms and functions as implemented in `src/nucleusc.nuc`.
 | `defstruct` | Define a struct type | `struct` |
 | `include` | Include another Nucleus source file | `#include` |
 | `extern` | Declare an external (foreign) function | `extern` declaration |
+| `defmacro` | Define a compile-time macro `(defmacro name (params...) body...)` | macro |
 
 ## Special Forms
 
@@ -44,6 +45,8 @@ Built-in forms and functions as implemented in `src/nucleusc.nuc`.
 | `quasiquote` | Like `quote` but `~expr` splices a runtime value and `~@list` splices a list (reader: `` `x ``, `~x`, `~@x`) | — |
 | `compile-time` | Execute body forms at compile time via LLVM JIT; output goes to stderr | — |
 | `funcall-void` | Call a function pointer with no arguments and no return value | `fn()` |
+| `funcall-ptr-1` | Call a `ptr` function pointer with one `ptr` argument, returning `ptr` | `fn(arg)` |
+| `gensym` | Return a fresh unique symbol `Node*` (e.g. `__gs_0`); for use in macro bodies to avoid variable capture | — |
 
 ## Binary Operators
 

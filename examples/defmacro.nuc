@@ -1,0 +1,29 @@
+(include stdio)
+
+; Basic macro: when (one-armed if)
+(defmacro when (condition body)
+  `(cond ~condition ~body))
+
+; Basic macro: unless (negated when)
+(defmacro unless (condition body)
+  `(cond (not ~condition) ~body))
+
+; Macro with arithmetic
+(defmacro square (x)
+  `(* ~x ~x))
+
+; Macro using gensym to avoid variable capture
+; The gensym'd name ensures no collision with user variables
+(defmacro assert-eq (a b)
+  (let (tmp:ptr (gensym))
+    `(cond (!= ~a ~b)
+       (printf "FAIL: expected equal\n"))))
+
+(defn main:i32 ()
+  (let (x:i32 5)
+    (when (> x 3) (printf "when: ok\n"))
+    (unless (> x 10) (printf "unless: ok\n"))
+    (printf "square(4) = %d\n" (square 4))
+    (assert-eq 42 42)
+    (assert-eq (+ 1 2) 3))
+  (return 0))

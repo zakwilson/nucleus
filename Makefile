@@ -9,11 +9,11 @@ BIN          := $(BUILD)/nucleusc
 
 # Bootstrap: C compiler builds the Nucleus compiler from source
 $(BOOT): src/nucleusc.c | $(BUILD)
-	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -o $@ $< $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -rdynamic -o $@ $< $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl
 
 $(BIN): $(BOOT) src/nucleusc.nuc | $(BUILD)
 	$(BOOT) src/nucleusc.nuc > $(BUILD)/nucleusc.ll
-	clang $(BUILD)/nucleusc.ll $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl -o $@
+	clang $(BUILD)/nucleusc.ll $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl -rdynamic -o $@
 
 $(BUILD) $(BUILD)/out:
 	mkdir -p $@
@@ -24,7 +24,7 @@ test: $(BIN)
 bootstrap: $(BIN) | $(BUILD)/out
 	@echo "=== Stage 2: self-hosted compiler -> nucleusc.nuc ==="
 	$(BIN) src/nucleusc.nuc > $(BUILD)/stage2.ll
-	clang $(BUILD)/stage2.ll $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl -o $(BUILD)/nucleusc-stage2
+	clang $(BUILD)/stage2.ll $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl -rdynamic -o $(BUILD)/nucleusc-stage2
 	@echo "=== Fixed-point test ==="
 	diff $(BUILD)/nucleusc.ll $(BUILD)/stage2.ll
 	@echo "PASS: stage1.ll == stage2.ll"

@@ -78,6 +78,16 @@ static char *arena_printf(const char *fmt, ...) {
     return s;
 }
 
+// Replace characters invalid in LLVM IR identifiers with underscores.
+static char *sanitize_for_ir(const char *name) {
+    size_t n = strlen(name);
+    char  *s = arena_alloc(n + 1);
+    for (size_t i = 0; i < n; i++)
+        s[i] = (isalnum((unsigned char)name[i]) || name[i] == '_' || name[i] == '.') ? name[i] : '_';
+    s[n] = '\0';
+    return s;
+}
+
 // ============================================================
 // Error reporting
 // ============================================================
@@ -247,14 +257,16 @@ typedef enum {
     NODE_CELL,
 } NodeKind;
 
+// Node layout must match the Nucleus defstruct Node { kind:i32 line:i32 i:i64 s:ptr car:ptr cdr:ptr }
+// i.e. { i32, i32, i64, ptr, ptr, ptr } = 40 bytes.  This is required so that nodes created by
+// JIT-compiled macro functions (using the LLVM struct layout) can be read back by the C bootstrap.
 typedef struct Node {
-    NodeKind       kind;
-    int            line;
-    union {
-        long       i;                           // NODE_INT
-        char      *s;                           // NODE_STR, NODE_SYM
-        struct { struct Node *car, *cdr; };     // NODE_CELL (cdr=NULL terminates)
-    };
+    NodeKind       kind;  // offset  0
+    int            line;  // offset  4
+    long           i;     // offset  8  (NODE_INT)
+    char          *s;     // offset 16  (NODE_STR, NODE_SYM)
+    struct Node   *car;   // offset 24  (NODE_CELL)
+    struct Node   *cdr;   // offset 32  (NODE_CELL, cdr=NULL terminates)
 } Node;
 
 // A list is a chain of NODE_CELL nodes terminated by NULL. The empty list is NULL.
@@ -527,6 +539,34 @@ typedef struct Scope {
     int           len, cap;
 } Scope;
 
+// ============================================================
+// Macro registry
+// ============================================================
+
+typedef struct {
+    const char *name;      // Nucleus symbol name (e.g. "my-macro")
+    const char *jit_name;  // JIT function name   (e.g. "__macro_my-macro")
+    int         num_params;
+} MacroDef;
+
+#define MAX_MACROS 256
+static MacroDef g_macros[MAX_MACROS];
+static int      g_num_macros = 0;
+static int      g_gensym_id  = 0;
+
+// nucleus_gensym — exported (not static) so JIT macro bodies can call it
+// via LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess.
+Node *nucleus_gensym(void) {
+    char *buf = malloc(32);
+    if (!buf) { perror("malloc"); exit(1); }
+    snprintf(buf, 32, "__gs_%d", g_gensym_id++);
+    Node *n = calloc(1, sizeof(Node));
+    if (!n) { perror("calloc"); exit(1); }
+    n->kind = NODE_SYM;
+    n->s    = buf;
+    return n;
+}
+
 static Scope *scope_new(Scope *parent) {
     Scope *s = arena_alloc(sizeof(Scope));
     s->parent = parent;
@@ -702,6 +742,7 @@ static void reset_function_state(void) {
 // ------------------------------------------------------------
 
 static Val emit_node(Node *n, Scope *scope);
+static Val emit_macro_call(Node *call, Scope *scope, int macro_idx);
 
 static Val emit_int(Node *n) {
     Val v = { ty_i32, arena_printf("%ld", n->i) };
@@ -1115,6 +1156,19 @@ static Val emit_funcall_void(Node *call, Scope *scope) {
     return r;
 }
 
+// (funcall-ptr-1 fn arg) — call fn(arg) as ptr(ptr) via pointer, return ptr
+static Val emit_funcall_ptr_1(Node *call, Scope *scope) {
+    if (node_len(call) != 3) die_at(call->line, "funcall-ptr-1 expects 2 args");
+    Val fn  = emit_node(node_at(call, 1), scope);
+    Val arg = emit_node(node_at(call, 2), scope);
+    if (fn.type->kind != TY_PTR)  die_at(call->line, "funcall-ptr-1: fn must be ptr");
+    if (arg.type->kind != TY_PTR) die_at(call->line, "funcall-ptr-1: arg must be ptr");
+    const char *tmp = new_tmp();
+    body_emit("  %s = call ptr %s(ptr %s)\n", tmp, fn.val, arg.val);
+    Val r = { ty_ptr, tmp };
+    return r;
+}
+
 static Val emit_deref(Node *call, Scope *scope) {
     if (node_len(call) != 2) die_at(call->line, "deref expects 1 arg");
     Val p = emit_node(node_at(call, 1), scope);
@@ -1451,6 +1505,21 @@ static Val emit_list(Node *n, Scope *scope) {
     Node *head = node_at(n, 0);
     if (head->kind != NODE_SYM) die_at(head->line, "list head must be symbol");
     const char *h = head->s;
+
+    // Check macro table before special forms.
+    for (int i = 0; i < g_num_macros; i++) {
+        if (strcmp(g_macros[i].name, h) == 0)
+            return emit_macro_call(n, scope, i);
+    }
+
+    if (strcmp(h, "gensym") == 0) {
+        if (node_len(n) != 1) die_at(n->line, "gensym: expects no args");
+        const char *tmp = new_tmp();
+        body_emit("  %s = call ptr @nucleus_gensym()\n", tmp);
+        Val r = { ty_ptr, tmp };
+        return r;
+    }
+    if (strcmp(h, "funcall-ptr-1") == 0) return emit_funcall_ptr_1(n, scope);
 
     if (strcmp(h, "return") == 0) return emit_return(n, scope);
     if (strcmp(h, "do")     == 0) return emit_do(n, scope);
@@ -1813,6 +1882,7 @@ static void emit_defn(Node *call) {
 static void emit_string_table(FILE *out);
 static void jit_add_module(const char *ir, int line);
 static void jit_call_ct_main_sym(int line, const char *sym);
+static void emit_defmacro(Node *form);
 
 // Shared QQ helper IR (using private linkage to avoid conflicts between CT modules)
 static const char *k_qq_helpers =
@@ -1994,6 +2064,174 @@ static void emit_compile_time(Node *form) {
     free(ct_decl_buf);
     free(ct_def_buf);
     free(ir_buf);
+}
+
+// ============================================================
+// defmacro top-level form + macro expansion
+// ============================================================
+
+static void emit_defmacro(Node *form) {
+    // (defmacro name (params...) body...)
+    if (node_len(form) < 4)
+        die_at(form->line, "defmacro: expects name, params, and body");
+    Node *name_node = node_at(form, 1);
+    if (name_node->kind != NODE_SYM)
+        die_at(name_node->line, "defmacro: name must be symbol");
+    const char *name = name_node->s;
+    Node *params_node = node_at(form, 2);
+    if (!node_is_list(params_node))
+        die_at(name_node->line, "defmacro: params must be a list");
+    int num_params = node_len(params_node);
+    if (num_params > 8)
+        die_at(name_node->line, "defmacro: maximum 8 parameters");
+
+    // Collect param names.
+    const char **pnames = num_params
+        ? arena_alloc((size_t)num_params * sizeof(char *)) : NULL;
+    for (int i = 0; i < num_params; i++) {
+        Node *p = node_at(params_node, i);
+        if (p->kind != NODE_SYM)
+            die_at(p->line, "defmacro: param must be a symbol");
+        pnames[i] = p->s;
+    }
+
+    // Register in macro table.
+    if (g_num_macros >= MAX_MACROS)
+        die_at(form->line, "defmacro: macro table full");
+    const char *jit_name = arena_printf("__macro_%s", sanitize_for_ir(name));
+    g_macros[g_num_macros].name       = name;
+    g_macros[g_num_macros].jit_name   = jit_name;
+    g_macros[g_num_macros].num_params = num_params;
+    g_num_macros++;
+
+    // Compile the macro body to a JIT module.
+    fflush(g_type_stream);
+    fflush(g_decl_stream);
+
+    char  *ct_decl_buf = NULL, *ct_def_buf = NULL;
+    size_t ct_decl_sz  = 0,     ct_def_sz  = 0;
+    FILE  *ct_decl = open_memstream(&ct_decl_buf, &ct_decl_sz);
+    FILE  *ct_def  = open_memstream(&ct_def_buf,  &ct_def_sz);
+
+    FILE *saved_g_out    = g_out;
+    FILE *saved_decl_out = g_decl_out;
+    bool  saved_qq_used  = g_qq_used;
+    g_qq_used  = false;
+    g_decl_out = ct_decl;
+    g_out      = ct_def;
+
+    // Build the macro function.
+    // Signature: ptr @__macro_name(ptr %__args.arg)
+    // where %__args.arg is a Node*[] pointer.
+    reset_function_state();
+    Scope *fn_scope = scope_new(g_globals);
+
+    // Alloca for the args pointer.
+    entry_emit("  %%__args.addr = alloca ptr, align 8\n");
+    entry_emit("  store ptr %%__args.arg, ptr %%__args.addr, align 8\n");
+
+    // Load each named param from args[i].
+    for (int i = 0; i < num_params; i++) {
+        entry_emit("  %%%s.addr = alloca ptr, align 8\n", pnames[i]);
+        entry_emit("  %%__argsptr.%d = load ptr, ptr %%__args.addr, align 8\n", i);
+        entry_emit("  %%__argsgep.%d = getelementptr ptr, ptr %%__argsptr.%d, i32 %d\n",
+                   i, i, i);
+        entry_emit("  %%__argsval.%d = load ptr, ptr %%__argsgep.%d, align 8\n", i, i);
+        entry_emit("  store ptr %%__argsval.%d, ptr %%%s.addr, align 8\n", i, pnames[i]);
+        scope_define(fn_scope, pnames[i], ty_ptr, arena_printf("%%%s.addr", pnames[i]), true);
+    }
+
+    // Emit body; last expression is the return value.
+    Val last = { ty_ptr, "null" };
+    for (int i = 3; i < node_len(form); i++)
+        last = emit_node(node_at(form, i), fn_scope);
+
+    // Return the ptr result.
+    const char *ret_val = "null";
+    if (last.val && last.type && last.type->kind == TY_PTR)
+        ret_val = last.val;
+    body_emit("  ret ptr %s\n", ret_val);
+
+    bool macro_qq = g_qq_used;
+    g_out      = saved_g_out;
+    g_decl_out = saved_decl_out;
+    g_qq_used  = saved_qq_used;
+
+    // Finalize the function definition.
+    fprintf(ct_def, "define ptr @%s(ptr %%__args.arg) {\n", jit_name);
+    fprintf(ct_def, "entry:\n");
+    if (g_entry_buf && g_entry_buf[0]) fputs(g_entry_buf, ct_def);
+    if (g_body_buf  && g_body_buf[0])  fputs(g_body_buf,  ct_def);
+    fprintf(ct_def, "}\n\n");
+
+    if (macro_qq) {
+        fprintf(ct_decl, "declare ptr @malloc(i64)\n");
+        fputs(k_qq_helpers, ct_def);
+    }
+    // Always declare nucleus_gensym so macro bodies can call (gensym).
+    fprintf(ct_decl, "declare ptr @nucleus_gensym()\n");
+
+    fclose(ct_decl);
+    fclose(ct_def);
+
+    // Assemble the macro JIT module IR.
+    char  *ir_buf = NULL;
+    size_t ir_sz  = 0;
+    FILE  *irs    = open_memstream(&ir_buf, &ir_sz);
+    fprintf(irs, "; ModuleID = '<defmacro %s>'\n", name);
+    fprintf(irs, "target triple = \"x86_64-pc-linux-gnu\"\n\n");
+    if (g_type_buf && g_type_buf[0]) fputs(g_type_buf, irs);
+    emit_string_table(irs);
+    if (g_decl_buf && g_decl_buf[0]) fputs(g_decl_buf, irs);
+    if (ct_decl_buf && ct_decl_buf[0]) fputs(ct_decl_buf, irs);
+    if (ct_def_buf  && ct_def_buf[0])  fputs(ct_def_buf,  irs);
+    fclose(irs);
+
+    jit_add_module(ir_buf, form->line);
+
+    free(ct_decl_buf);
+    free(ct_def_buf);
+    free(ir_buf);
+}
+
+static Val emit_macro_call(Node *call, Scope *scope, int macro_idx) {
+    static int depth = 0;
+    if (depth >= 1024)
+        die_at(call->line, "macro expansion limit exceeded (max 1024)");
+
+    MacroDef *macro = &g_macros[macro_idx];
+    int nargs = node_len(call) - 1;
+    if (nargs != macro->num_params)
+        die_at(call->line, "macro '%s': expected %d arg(s), got %d",
+               macro->name, macro->num_params, nargs);
+
+    // Look up the JIT function.
+    LLVMOrcJITTargetAddress addr = 0;
+    LLVMErrorRef err = LLVMOrcLLJITLookup(g_jit, &addr, macro->jit_name);
+    if (err) {
+        char *msg = LLVMGetErrorMessage(err);
+        fprintf(stderr, "%s:%d: macro '%s': JIT lookup error: %s\n",
+                g_source_path, call->line, macro->name, msg);
+        LLVMDisposeErrorMessage(msg);
+        exit(1);
+    }
+    if (!addr)
+        die_at(call->line, "macro '%s': JIT function not found", macro->name);
+
+    // Collect unevaluated argument nodes into a stack array.
+    Node *args[8] = {NULL};
+    for (int i = 0; i < nargs && i < 8; i++)
+        args[i] = node_at(call, i + 1);
+
+    // Call the macro function: ptr __macro_name(ptr args[])
+    depth++;
+    Node *result = ((Node *(*)(Node **))addr)(args);
+    depth--;
+
+    if (!result)
+        die_at(call->line, "macro '%s': expansion returned NULL", macro->name);
+
+    return emit_node(result, scope);
 }
 
 // ============================================================
@@ -2191,6 +2429,8 @@ int main(int argc, char **argv) {
             emit_defn(f);
         } else if (strcmp(h, "compile-time") == 0) {
             emit_compile_time(f);
+        } else if (strcmp(h, "defmacro") == 0) {
+            emit_defmacro(f);
         } else {
             die_at(f->line, "unknown top-level form: %s", h);
         }

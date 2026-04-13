@@ -1,0 +1,3 @@
+when: ok
+unless: ok
+square(4) = 16
