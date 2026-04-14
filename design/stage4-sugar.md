@@ -12,7 +12,7 @@ The hardcoded `'` / `` ` `` / `~` / `~@` should be converted to entries in a use
 
 ### Designer:
 
-Types have a non-sexp syntax that's currently treated as part of a symbol's name. `(defn main:int () ...)` offers a familiar syntax for many developers, but it means macros don't have a clean way to interact with types. I'm imagining a sugar/desugar mechanism something like this (perhaps with different quoting:
+Types have a non-sexp syntax that's currently treated as part of a symbol's name. `(defn main:int () ...)` offers a familiar syntax for many developers, but it means macros don't have a clean way to interact with types. I'm imagining a sugar/desugar mechanism something like this (perhaps with different quoting):
 
     (desugar-var 'main:int) --> '(var-type 'main 'int)
     
