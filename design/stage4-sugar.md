@@ -2,17 +2,15 @@
 
 ## Reader macros
 
-Designer
-========
+### Designer:
+
 The hardcoded `'` / `` ` `` / `~` / `~@` should be converted to entries in a user-extensible reader macro table with `def-rchar` being analogous to Common Lisp `set-macro-character`.
 
-Robot
-=====
+### Robot:
 
 ## Syntactic sugar
 
-Designer
-========
+### Designer:
 
 Types have a non-sexp syntax that's currently treated as part of a symbol's name. `(defn main:int () ...)` offers a familiar syntax for many developers, but it means macros don't have a clean way to interact with types. I'm imagining a sugar/desugar mechanism something like this (perhaps with different quoting:
 
