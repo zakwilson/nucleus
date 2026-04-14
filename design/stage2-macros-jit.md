@@ -1,4 +1,4 @@
-## Post-toy features
+## Macros and JIT
 
 Now that Nucleus is self-hosted (stage-1 == stage-2, all tests green), these are the features that move the language from "compiler that can compile itself" to "language worth writing programs in."
 
@@ -6,6 +6,8 @@ The ordering here is deliberate: list manipulation and quoting are prerequisites
 
 ### cond (implemented)
 
+Designer
+========
 `cond` is the conditional form found in most lisps. It replaces `if` as the sole conditional builtin. It takes an arbitrary number of test-result pairs:
 
     (cond (= foo 1) "one"
@@ -27,12 +29,16 @@ From a linguistic or mathematical perspective, `cond` is the general form and `i
 
 From an implementation perspective, it's possible that the binary branch of `if` maps better to the underlying primitives. Simplicity of implementation is more important than purity of design. It is acceptable for `if` to be the builtin if `cond` has a much more complex implementation.
 
-**Commentary:** In practice, `cond` is straightforward to implement as a chain of conditional branches in LLVM IR — each test-result pair becomes a compare-and-branch to either the result block or the next test. This is the same structure you'd get from nested `if`s, just generated from a flat list of pairs. The implementation complexity is comparable to `if`, so `cond` as the builtin with `if` as a macro (once macros exist) is viable. In the interim, `cond` can be a special form alongside `if` — the compiler already handles `if` with two branches, and `cond` is a loop over pairs emitting the same pattern. This is a good candidate for the *first* feature to add: it requires no new infrastructure and immediately improves the compiler's own source (the `emit_node` dispatch is full of nested `if`s).
+Robot
+=====
+In practice, `cond` is straightforward to implement as a chain of conditional branches in LLVM IR — each test-result pair becomes a compare-and-branch to either the result block or the next test. This is the same structure you'd get from nested `if`s, just generated from a flat list of pairs. The implementation complexity is comparable to `if`, so `cond` as the builtin with `if` as a macro (once macros exist) is viable. In the interim, `cond` can be a special form alongside `if` — the compiler already handles `if` with two branches, and `cond` is a loop over pairs emitting the same pattern. This is a good candidate for the *first* feature to add: it requires no new infrastructure and immediately improves the compiler's own source (the `emit_node` dispatch is full of nested `if`s).
 
 **Status:** Implemented. `if` has been removed; `cond` is the sole conditional builtin. `if` will return as a macro once the macro system exists. The nested if-else chain in the top-level dispatch (formerly 7 nested `if`s) is now a single flat `cond`, demonstrating the readability improvement.
 
 ### list manipulation
 
+Designer
+========
 Macros will need list manipulation primitives:
 
 * cons
@@ -48,7 +54,9 @@ And quoting:
 * eval-splice (~)
 * flattening-eval-splice (~@)
 
-**Commentary:** This is where the design gets interesting and deserves careful thought. The current compiler represents the AST as C-style structs allocated from an arena. For macros to manipulate code, we need actual list values at compile time. There are two paths:
+Robot
+=====
+This is where the design gets interesting and deserves careful thought. The current compiler represents the AST as C-style structs allocated from an arena. For macros to manipulate code, we need actual list values at compile time. There are two paths:
 
 1. **Compile-time interpreter.** The compiler interprets macro bodies at compile time using a list representation that exists only during compilation. The compiled output never contains list operations unless the program explicitly uses them at runtime. This is the traditional Lisp approach and aligns with "zero mandatory runtime overhead."
 
@@ -60,23 +68,33 @@ The quoting syntax also interacts with reader macros (mentioned in overview.md).
 
 Suggested ordering: hardcode `quote` and `'` in the reader → implement the compile-time list representation → add `cons`/`first`/`rest`/`append` as compile-time builtins → implement quasiquote/splicing → then macros become possible. `list` is just a convenience wrapper over `cons`.
 
-**Followup:** A separate compiler and interpreter could increase complexity exponentially over time and should only be considered as a last resort. Lists as a runtime type *library* could keep the core small. The compiler would always require it, but that's not a runtime cost.
+Designer
+========
+A separate compiler and interpreter could increase complexity exponentially over time and should only be considered as a last resort. Lists as a runtime type *library* could keep the core small. The compiler would always require it, but that's not a runtime cost.
 
 I'd like to have reader macros for [' quote], [` quasiquote], [~ unquote], and [~@ unquote-splice] eventually, but it would be convenient to have the shortcuts before reader macros are implemented. Adding both the special forms and hardcoded syntactic sugar for them could work as a temporary solution until we have real reader macros.
 
-**Commentary on the followup:** The library-based lists approach is a clever middle ground. The implementation shape: cons cells are a `defstruct` with `car` and `kind` tag fields (or a tagged union), and `cons`/`first`/`rest`/`append` are ordinary Nucleus functions. The compiler `include`s this library and uses it internally — since the compiler is itself a Nucleus program, whatever the compiler uses *must* be expressible in the language. Programs that don't touch lists don't pay for them. This preserves "drop-in substitute for C" at the language level while giving the compiler what it needs.
+Robot
+=====
+The library-based lists approach is a clever middle ground. The implementation shape: cons cells are a `defstruct` with `car` and `kind` tag fields (or a tagged union), and `cons`/`first`/`rest`/`append` are ordinary Nucleus functions. The compiler `include`s this library and uses it internally — since the compiler is itself a Nucleus program, whatever the compiler uses *must* be expressible in the language. Programs that don't touch lists don't pay for them. This preserves "drop-in substitute for C" at the language level while giving the compiler what it needs.
 
 One wrinkle: if the compile-time interpreter executes Nucleus code that manipulates cons cells, those cons cells need to exist in the compiler's address space at compile time. Either the interpreter shares its heap with the running compiler (easy, but means compile-time allocations leak into the compiler's memory), or there's a separate compile-time arena that gets discarded after expansion (cleaner, but more plumbing). The arena approach matches the existing stage-0 "leak on exit" model the compiler already uses.
 
 Hardcoding `'` / `` ` `` / `~` / `~@` in the reader as a transitional step is low-risk: they become a handful of cases in the tokenizer, similar to how `;` comments are handled today. When reader macros land, those cases get replaced by entries in the reader macro table. The user-visible syntax doesn't change, so no code needs updating.
 
-**Followup:** Leaking memory during compilation is OK for now. I noted it in long-term-issues.md
+Designer
+========
+Leaking memory during compilation is OK for now. I noted it in long-term-issues.md
 
 ### macros
 
+Designer
+========
 Macros are what makes Nucleus special. By making the full power of the language available to manipulate code during compilation, abstractions without runtime overhead are possible in Nucleus that are impossible in other languages.
 
-**Commentary:** The macro system design needs to address several concrete questions:
+Robot
+=====
+The macro system design needs to address several concrete questions:
 
 **Expansion model.** Do macros expand in a single pass (top-down, each macro sees unexpanded code) or iteratively (expand until no more macros remain)? Single-pass is simpler but means macros can't compose as freely. Iterative is more powerful but needs a termination check. Most Lisps use iterative expansion. Given the "worse is better" principle, starting with single-pass and upgrading later is reasonable.
 
@@ -94,13 +112,17 @@ Macros are what makes Nucleus special. By making the full power of the language 
 
 This is the payoff: each macro replaces what would otherwise be a new special form in the compiler. The compiler stays small and the language grows through libraries.
 
-**Followup:** Macros must expand iteratively by the time phase 2 is complete. Single-pass as an intermediate step is fine. Unhygenic macros with gensym are the correct choice for Nucleus.
+Designer
+========
+Macros must expand iteratively by the time phase 2 is complete. Single-pass as an intermediate step is fine. Unhygenic macros with gensym are the correct choice for Nucleus.
 
 Nucleus needs something like eval-when, though probably with less verbose syntax. A single special form like (compile-time &body) might be sufficient, especially early on. Macros shouldn't be restricted from using any parts of the language arbitrarily even if using a certain feature seems unwise. Excluding features long-term due to implementation complexity *may* be acceptable on a case-by-case basis.
 
 Excluding features to simplify implementation is acceptable during phase 2.
 
-**Commentary on the followup:** Iterative expansion needs a termination rule. The two common approaches: (1) expand a form, if it's still a macro call, expand again, and bound total expansions per form at some large constant (e.g. 1024) to catch runaway recursion; (2) mark each form with its expansion history and refuse to re-expand a macro that's already in its ancestry. Option 1 is simpler and matches "worse is better" — a programmer who hits the bound has almost certainly written infinite recursion, and the error message can point them at it.
+Robot
+=====
+Iterative expansion needs a termination rule. The two common approaches: (1) expand a form, if it's still a macro call, expand again, and bound total expansions per form at some large constant (e.g. 1024) to catch runaway recursion; (2) mark each form with its expansion history and refuse to re-expand a macro that's already in its ancestry. Option 1 is simpler and matches "worse is better" — a programmer who hits the bound has almost certainly written infinite recursion, and the error message can point them at it.
 
 `(compile-time &body)` is much nicer than Common Lisp's `eval-when` triple of `:compile-toplevel`, `:load-toplevel`, `:execute`. That distinction exists for a file-loading model Nucleus doesn't have. For Nucleus, the only meaningful axis is "does this code run at compile time or runtime?" — a single form captures that. If a use case later emerges that needs finer control, it can be added without breaking existing code.
 
@@ -108,12 +130,16 @@ Excluding features to simplify implementation is acceptable during phase 2.
 
 The "excluding features in phase 2 is OK" line is important context: it signals that the phase 2 implementation doesn't need to be the final design. A simpler subset can ship, and restrictions can be lifted as the implementation matures.
 
-**Followup:** A hardcoded expansion limit is fine for phase 2, and may be fine long-term.
+Designer
+========
+A hardcoded expansion limit is fine for phase 2, and may be fine long-term.
 
 Long-term, a compiler-only approach is strongly preferred, i.e. a just-in-time compilation step that shares most of its code path with the ahead-of-time compilation. During phase 2, the compiler-only approach is weakly preferred, but adding a throwaway interpreter is acceptable.
 
 ### Open questions before implementation
 
+Robot
+=====
 The followups above resolve the major design questions (lists-as-library, no restrictions on macros, leak-OK, iterative-by-end-of-phase-2, compiler-only preferred). Three concrete implementation questions remain before step 2 (quote) can begin — they all revolve around the *representation* macros operate on, which ripples through everything after:
 
 **1. AST nodes vs. cons cells — same type or two types?**
@@ -135,15 +161,17 @@ When a macro function returns, how is the result spliced back? The simplest cont
 
 Answering (1) unblocks (3); answering (2) is independent. Once these three are settled, steps 2–5 in the implementation order become mechanical.
 
-**Followup:**
-
+Designer
+========
 1. Unify AST nodes with cons cells. Manipulating the AST at compile time is the core lispiness value that Nucleus is trying to create. Early implementation details must not constrain the later design; refactoring the compiler is always OK during these early phases.
 
 2. Attempt the JIT approach now.
 
 3. Macros return our unified cons/node unless that proves unworkable.
 
-**Commentary on the followup:** Each answer settles direction but opens a concrete sub-question before implementation can start:
+Robot
+=====
+Each answer settles direction but opens a concrete sub-question before implementation can start:
 
 **On (1) unify:** The unified type needs a layout. Classical cons is `(car, cdr)` — two pointers. Atoms (int/sym/str) are distinct from cells: `(a b c)` is `cons(a, cons(b, cons(c, nil)))` where `a b c` are atom values in car slots. So "unified" really means "one graph built from cons cells pointing to atoms or other cells." Two sub-questions:
 
@@ -165,8 +193,8 @@ Answering (1) unblocks (3); answering (2) is independent. Once these three are s
 
 Once these six (1a, 1b, 2, 3a, 3b, 3c) are settled, implementation is mechanical.
 
-**Followup:**
-
+Designer
+========
 1a. Separate is fine. Let's not prematurely optimize the compiler.
 
 1b. Tag every cell, at least for now.
@@ -177,7 +205,9 @@ Once these six (1a, 1b, 2, 3a, 3b, 3c) are settled, implementation is mechanical
 
 3c. A single global table is fine at this phase.
 
-**Commentary on 3a:** The framing of 3a had a false premise. I said "macro args are passed unevaluated as cons structure," but atoms like `5` aren't cons cells — they're leaves. Under our unified design, though, `5` is still a *node*: one with `kind=INT` and an `i64` field. Same as how `x` is a node with `kind=SYM` and a string field, and `(+ 1 2)` is a cons cell. The macro body inspects the tag to figure out what it got.
+Robot
+=====
+The framing of 3a had a false premise. I said "macro args are passed unevaluated as cons structure," but atoms like `5` aren't cons cells — they're leaves. Under our unified design, though, `5` is still a *node*: one with `kind=INT` and an `i64` field. Same as how `x` is a node with `kind=SYM` and a string field, and `(+ 1 2)` is a cons cell. The macro body inspects the tag to figure out what it got.
 
 So every macro parameter has the *same* type regardless of what was written at the call site: always `node` (our unified cons/atom type). That uniformity is exactly what makes typing trivial — there's only one possibility, so the param type is either implicit (no annotation needed, `defmacro` knows) or a redundant `:node` for consistency with `defn`. No type inference or call-site-dependent typing required.
 
@@ -263,10 +293,12 @@ Given the dependencies resolved above, the real ordering is:
    3. `dotimes` and `for` (one commit; replace all indexed while loops)
    4. `dolist` (depends on step-4 list primitives being available in the compiler)
    5. Predicates (`zero?`, `null?`) — low cost, add alongside any of the above
-   6. Threading macros (`->`, `->>`) — deferred, done when complexity is justified by use cases
+   6. Threading macros (`->`, `->>`) — done
    7. `push!`, `swap!` — deferred until a clear need arises in the compiler or stdlib
 
    After each group, run `make test` and `make bootstrap` to verify the fixed-point holds.
-9. **Reader macros** — generalize the hardcoded `'` / `` ` `` / `~` / `~@` to entries in a user-extensible reader macro table.
 
-Steps 2 and 6 are the heaviest. Steps 3-5 are mechanical once 2 is done. Step 7 is the payoff; 8-9 are polish.
+Designer
+========
+Threading macros are particularly useful. Racket has a version where the threaded value is in position 1 by default, but can be placed elsewhere arbitrarily with the placeholder `_`. Clojure has `as->`, which binds a symbol to the threaded value.
+
