@@ -74,7 +74,7 @@ A separate compiler and interpreter could increase complexity exponentially over
 
 I'd like to have reader macros for [' quote], [` quasiquote], [~ unquote], and [~@ unquote-splice] eventually, but it would be convenient to have the shortcuts before reader macros are implemented. Adding both the special forms and hardcoded syntactic sugar for them could work as a temporary solution until we have real reader macros.
 
-####Robot:
+#### Robot:
 
 The library-based lists approach is a clever middle ground. The implementation shape: cons cells are a `defstruct` with `car` and `kind` tag fields (or a tagged union), and `cons`/`first`/`rest`/`append` are ordinary Nucleus functions. The compiler `include`s this library and uses it internally — since the compiler is itself a Nucleus program, whatever the compiler uses *must* be expressible in the language. Programs that don't touch lists don't pay for them. This preserves "drop-in substitute for C" at the language level while giving the compiler what it needs.
 
