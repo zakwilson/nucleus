@@ -55,3 +55,7 @@ Nucleus is a replacement for C using Lisp style syntax and macros with LLVM as i
 - [syntax.md](syntax.md) — notes on syntax
 - [stage2-features.md](stage2-features.md) - early features following successful self-hosting
 - [long-term-issues.md](long-term-issues.md) - potential problems for a mature implementation, deferred during early phases of development
+
+## Agent feedback
+
+Some design documents are structured as a conversation between a designer and a robot. Agents tasked with responding to a design document should add their feedback to the robot sections.
