@@ -13,7 +13,7 @@ Built-in forms and functions as implemented in `src/nucleusc.nuc`.
 | `defstruct` | Define a struct type | `struct` |
 | `include` | Include another Nucleus source file | `#include` |
 | `extern` | Declare an external (foreign) function | `extern` declaration |
-| `defmacro` | Define a compile-time macro `(defmacro name (params...) body...)` | macro |
+| `defmacro` | Define a compile-time macro `(defmacro name (params...) body...)`. Supports `&rest` for variadic macros: `(defmacro name (a b &rest rest) ...)` — `rest` receives a cons list of remaining args. | macro |
 
 ## Standard Macros (`lib/macros.nuc`)
 
@@ -28,6 +28,7 @@ Defined via `defmacro`; inlined into programs until `include` is implemented.
 | `null?` | `(null? x)` | `(= x null)` |
 | `for` | `(for (var:type init) test step body)` | `(let (var:type init) (while test body step))` |
 | `dotimes` | `(dotimes (var:type n) body)` | `(let (var:type 0) (while (< var n) body (inc! var)))` |
+| `->` | `(-> x form ...)` | Threads `x` through each form. If a form contains `_`, the value replaces `_`; otherwise inserts as first arg (thread-first). Bare symbols wrap as `(sym value)`. `_` is only special inside `->`. |
 
 ## Special Forms
 

@@ -293,7 +293,7 @@ Given the dependencies resolved above, the real ordering is:
    3. `dotimes` and `for` (one commit; replace all indexed while loops)
    4. `dolist` (depends on step-4 list primitives being available in the compiler)
    5. Predicates (`zero?`, `null?`) — low cost, add alongside any of the above
-   6. Threading macros (`->`, `->>`) — done
+   6. Threading macro (`->` with `_` placeholder) — done. Unified `->` replaces both thread-first and thread-last; `->>` removed.
    7. `push!`, `swap!` — deferred until a clear need arises in the compiler or stdlib
 
    After each group, run `make test` and `make bootstrap` to verify the fixed-point holds.
@@ -302,3 +302,35 @@ Given the dependencies resolved above, the real ordering is:
 
 Threading macros are particularly useful. Racket has a version where the threaded value is in position 1 by default, but can be placed elsewhere arbitrarily with the placeholder `_`. Clojure has `as->`, which binds a symbol to the threaded value.
 
+It's simpler to implement `as->`, but Racket's version is more ergonomic. I would like to replace the current thread-first and thread-last with a single `->` which binds `_`.
+
+#### Robot:
+
+A unified `->` with `_` placement is strictly more expressive than separate thread-first/thread-last. The implementation is straightforward: for each form, scan for a `_` symbol node. If found, substitute the accumulated value at that position. If no `_` is present, default to thread-first (insert after the head). Bare symbols still wrap as `(form value)`.
+
+This subsumes both `->` and `->>`:
+
+    ; thread-first (no placeholder — default position 1)
+    (-> node (cast *Node) (. kind))
+
+    ; thread-last (explicit placement)
+    (-> items (map transform _) (filter pred _))
+
+    ; arbitrary position — impossible with separate ->/->>
+    (-> val (aset! buf idx _))
+
+The main design question is what `_` means elsewhere in the language. Two options:
+
+1. **`_` is only special inside `->`** — the macro scans for it; outside threading contexts `_` is an ordinary symbol. This is Racket's approach and avoids reserving a global name.
+
+2. **`_` is a language-wide "don't care" pattern** — threading uses it, but so could future destructuring, match expressions, etc. This is more principled but means `_` can never be a variable name.
+
+Option 1 is simpler for now and doesn't foreclose option 2 later — if `_` becomes a language-wide pattern, the threading macro just happens to agree with the convention.
+
+Implementation-wise, the change to the existing `->` macro is small: before building the quasiquoted form, walk the form's children looking for `(= (. (cast *Node child) kind) NODE-SYM)` with `(= (strcmp (. (cast *Node child) s) "_") 0)`. If found, substitute; if not, fall through to the current thread-first insertion. `->>` can be removed entirely, or kept as an alias that always places `_` last (for readability in pipelines where every form threads last).
+
+One edge case worth noting: nested `->` forms. If the user writes `(-> x (-> y (f _)))`, the inner `->` is itself a macro call and expands first during iterative expansion, so its `_` refers to `y`, not `x`. This is the correct behavior — each `->` owns its own `_` scope — but it's worth documenting.
+
+#### Designer:
+
+Go with option 1 for now. `_` is only special inside `->`. Document it in builtins.md.
