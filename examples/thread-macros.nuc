@@ -1,0 +1,29 @@
+; Threading macro examples.
+;
+; The -> macro inspects AST Node types (NODE-CELL, NODE-SYM) to decide how
+; to thread the value, so it can only be used in programs that define the
+; Node type — currently just the compiler itself.
+;
+; See the -> definition in lib/macros.nuc and its use in src/nucleusc.nuc.
+;
+; Examples (as they would appear inside the compiler):
+;
+;   ; Thread-first (default, no _ placeholder):
+;   (-> node (cast *Node) (. kind))
+;   ;; expands to: (. (cast *Node node) kind)
+;
+;   ; Thread with _ placeholder:
+;   (-> items (map transform _) (filter pred _))
+;   ;; expands to: (filter pred (map transform items))
+;
+;   ; Arbitrary position via _:
+;   (-> val (aset! buf idx _))
+;   ;; expands to: (aset! buf idx val)
+;
+;   ; Bare symbols:
+;   (-> x f g)
+;   ;; expands to: (g (f x))
+;
+;   ; Identity:
+;   (-> x)
+;   ;; expands to: x
