@@ -34,3 +34,10 @@ C obviously can't use Nucleus macros, so they should not be exposed in .h header
 
 #### Robot:
 
+### Compiler refactor
+
+#### Designer:
+
+Once libraries work, the compiler should be refactored to use them. Its data structures and functions for manipulating code should be a library usable by other code. The inlined macros are already in a separate file, but not yet usable as a library.
+
+#### Robot:
