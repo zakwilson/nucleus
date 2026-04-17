@@ -24,3 +24,5 @@ The Right Thing is probably making the sugar/desugar mechanism extensible. Users
 Worse may be better here: types are a special case and users have to start any special syntax of their own with a reader macro.
 
 A middle way: types get a reader macro like `(defn $main:int () ...)`. Right now, I think it's ugly, but accepting something ugly to simplify implementation fits the worse is better philosophy.
+
+### Robot:
