@@ -166,36 +166,48 @@
        ~body
        ~step)))
 
-; (-> x form ...) — thread-first.
-; Threads x through each form as the first argument after the function.
-; (-> x (f a b) (g c)) expands to (g (f x a b) c).
-; Forms may be bare symbols: (-> x f g) expands to (g (f x)).
-; With no forms, returns x unchanged.
+; (-> x form ...) — threading macro with _ placeholder.
+; If a form contains _, the threaded value replaces _. Otherwise thread-first.
+; Bare symbols wrap as (form value). _ is only special inside ->.
 (defmacro -> (x &rest forms)
   (let (result:ptr x
         current:ptr forms)
     (while (!= current null)
       (let (form:ptr (. (cast *Node current) car))
         (if (= (. (cast *Node form) kind) NODE-CELL)
-          (let (head:ptr (. (cast *Node form) car)
-                tail:ptr (. (cast *Node form) cdr))
-            (set! result `(~head ~result ~@tail)))
-          (set! result `(~form ~result))))
-      (set! current (. (cast *Node current) cdr)))
-    result))
-
-; (->> x form ...) — thread-last.
-; Threads x through each form as the last argument.
-; (->> x (f a b) (g c)) expands to (g c (f a b x)).
-; Forms may be bare symbols: (->> x f g) expands to (g (f x)).
-; With no forms, returns x unchanged.
-(defmacro ->> (x &rest forms)
-  (let (result:ptr x
-        current:ptr forms)
-    (while (!= current null)
-      (let (form:ptr (. (cast *Node current) car))
-        (if (= (. (cast *Node form) kind) NODE-CELL)
-          (set! result `(~@form ~result))
+          (do
+            ; Scan arguments (skip head) for _ symbol.
+            (let (has-placeholder:i32 0
+                  scan:ptr (. (cast *Node form) cdr))
+              (while (!= scan null)
+                (let (child:ptr (. (cast *Node scan) car))
+                  (when (= (. (cast *Node child) kind) NODE-SYM)
+                    (when (= (strcmp (. (cast *Node child) s) "_") 0)
+                      (set! has-placeholder 1))))
+                (set! scan (. (cast *Node scan) cdr)))
+              (if (!= has-placeholder 0)
+                ; Has _: rebuild list, substituting result for each _.
+                ; Pass 1: build reversed list with substitutions.
+                (let (rev:ptr null
+                      src:ptr form)
+                  (while (!= src null)
+                    (let (elem:ptr (. (cast *Node src) car)
+                          replacement:ptr elem)
+                      (when (= (. (cast *Node elem) kind) NODE-SYM)
+                        (when (= (strcmp (. (cast *Node elem) s) "_") 0)
+                          (set! replacement result)))
+                      (set! rev `(~replacement ~@rev)))
+                    (set! src (. (cast *Node src) cdr)))
+                  ; Pass 2: reverse to restore order.
+                  (let (final:ptr null)
+                    (while (!= rev null)
+                      (set! final `(~(. (cast *Node rev) car) ~@final))
+                      (set! rev (. (cast *Node rev) cdr)))
+                    (set! result final)))
+                ; No _: thread-first (insert after head).
+                (let (head:ptr (. (cast *Node form) car)
+                      tail:ptr (. (cast *Node form) cdr))
+                  (set! result `(~head ~result ~@tail))))))
           (set! result `(~form ~result))))
       (set! current (. (cast *Node current) cdr)))
     result))
