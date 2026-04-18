@@ -220,93 +220,22 @@
 (include stdlib)
 
 ; ============================================================
-; Arena allocator
+; Arena allocator — imported from lib/arena.nuc
 ; ============================================================
 
-(defn arena-init:void ()
-  (set! g-arena (malloc (cast i64 ARENA-SIZE)))
-  (when (= g-arena null)
-    (do (perror "arena malloc") (exit 1)))
-  (set! g-arena-used (cast i64 0)))
-
-(defn arena-alloc:ptr (n:i64)
-  (set! n (bit-and (+ n (cast i64 7)) (cast i64 -8)))
-  (when (> (+ g-arena-used n) (cast i64 ARENA-SIZE))
-    (do (fprintf stderr "nucleusc: arena exhausted\n") (exit 1)))
-  (let (p:ptr (ptr+ (cast *i8 g-arena) g-arena-used))
-    (set! g-arena-used (+ g-arena-used n))
-    (memset p 0 n)
-    (return p)))
-
-(defn arena-strndup:ptr (s:ptr n:i64)
-  (let (p:ptr (arena-alloc (+ n (cast i64 1))))
-    (memcpy p s n)
-    (aset! (cast *i8 p) n (cast i8 0))
-    (return p)))
-
-(defn arena-strdup:ptr (s:ptr)
-  (return (arena-strndup s (strlen s))))
+(import arena)
 
 ; ============================================================
-; Formatting helpers (replace variadic arena_printf)
+; Formatting helpers — imported from lib/format.nuc
 ; ============================================================
 
-(defn i64:i64 (n:i32)
-  (return (cast i64 n)))
+(import format)
 
-(defn fmt-i32:ptr (fmt:ptr d:i32)
-  (let (buf:ptr (alloca i8 256)
-        n:i32 (snprintf buf (cast i64 256) fmt d))
-    (return (arena-strndup buf (i64 n)))))
+; ============================================================
+; Node utilities — imported from lib/node.nuc
+; ============================================================
 
-(defn fmt-i32-i32:ptr (fmt:ptr a:i32 b:i32)
-  (let (buf:ptr (alloca i8 256)
-        n:i32 (snprintf buf (cast i64 256) fmt a b))
-    (return (arena-strndup buf (i64 n)))))
-
-(defn fmt-i64:ptr (fmt:ptr d:i64)
-  (let (buf:ptr (alloca i8 256)
-        n:i32 (snprintf buf (cast i64 256) fmt d))
-    (return (arena-strndup buf (i64 n)))))
-
-(defn fmt-s:ptr (fmt:ptr s:ptr)
-  (let (buf:ptr (alloca i8 512)
-        n:i32 (snprintf buf (cast i64 512) fmt s))
-    (return (arena-strndup buf (i64 n)))))
-
-(defn fmt-sd:ptr (fmt:ptr s:ptr d:i32)
-  (let (buf:ptr (alloca i8 512)
-        n:i32 (snprintf buf (cast i64 512) fmt s d))
-    (return (arena-strndup buf (i64 n)))))
-
-(defn fmt-2s:ptr (fmt:ptr s1:ptr s2:ptr)
-  (let (buf:ptr (alloca i8 512)
-        n:i32 (snprintf buf (cast i64 512) fmt s1 s2))
-    (return (arena-strndup buf (i64 n)))))
-
-(defn fmt-2s-i:ptr (fmt:ptr s1:ptr s2:ptr d:i32)
-  (let (buf:ptr (alloca i8 512)
-        n:i32 (snprintf buf (cast i64 512) fmt s1 s2 d))
-    (return (arena-strndup buf (i64 n)))))
-
-; Replace chars invalid in LLVM IR identifiers with underscores.
-(defn sanitize-for-ir:ptr (name:ptr)
-  (let (n:i64 (strlen name)
-        s:ptr (arena-alloc (+ n (cast i64 1)))
-        i:i64 (cast i64 0))
-    (while (< i n)
-      (let (c:i32 (bit-and (cast i32 (aref (cast *i8 name) i)) 255)
-            is-digit:i1 (!= (isdigit c) 0)
-            is-lower:i1 (and (>= c 97) (<= c 122))
-            is-upper:i1 (and (>= c 65) (<= c 90))
-            is-safe:i1  (or (= c 95) (= c 46))
-            ok:i1       (or is-digit (or is-lower (or is-upper is-safe))))
-        (if ok
-          (aset! (cast *i8 s) i (cast i8 c))
-          (aset! (cast *i8 s) i (cast i8 95))))
-      (set! i (+ i (cast i64 1))))
-    (aset! (cast *i8 s) n (cast i8 0))
-    (return s)))
+(import node)
 
 ; ============================================================
 ; Allocation helpers
@@ -314,9 +243,6 @@
 
 (defn alloc-tok:ptr ()
   (return (arena-alloc (sizeof Tok))))
-
-(defn alloc-node:ptr ()
-  (return (arena-alloc (sizeof Node))))
 
 (defn nucleus_gensym:ptr ()
   (let (id:i32 g-gensym-id)
@@ -360,280 +286,10 @@
     (.set! vv len (+ (. vv len) 1))))
 
 ; ============================================================
-; Character access helper
+; Reader — imported from lib/reader.nuc
 ; ============================================================
 
-(defn char-at:i32 (s:ptr pos:i64)
-  (return (bit-and (cast i32 (aref (cast *i8 s) pos)) 255)))
-
-(defn node-at:ptr (n:ptr i:i32)
-  (let (nn:*Node (cast *Node n))
-    (while (and (and (!= n null) (= (. nn kind) NODE-CELL)) (> i 0))
-      (set! n (. nn cdr))
-      (set! nn (cast *Node n))
-      (set! i (- i 1)))
-    (when (and (!= n null) (= (. nn kind) NODE-CELL)) (return (. nn car)))
-    (return null)))
-
-(defn node-len:i32 (n:ptr)
-  (let (k:i32 0
-        nn:*Node (cast *Node n))
-    (while (and (!= n null) (= (. nn kind) NODE-CELL))
-      (set! k (+ k 1))
-      (set! n (. nn cdr))
-      (set! nn (cast *Node n)))
-    (return k)))
-
-(defn node-is-list:i32 (n:ptr)
-  (when (= n null) (return 1))
-  (when (= (. (cast *Node n) kind) NODE-CELL) (return 1))
-  (return 0))
-
-(defn make-cell:ptr (car:ptr cdr:ptr line:i32)
-  (let (c:*Node (cast *Node (alloc-node)))
-    (.set! c kind NODE-CELL)
-    (.set! c line line)
-    (.set! c car car)
-    (.set! c cdr cdr)
-    (return (cast ptr c))))
-
-; ============================================================
-; Error reporting
-; ============================================================
-
-(defn die-at:void (line:i32 msg:ptr)
-  (fprintf stderr "%s:%d: error: %s\n" g-source-path line msg)
-  (exit 1))
-
-; ============================================================
-; Lexer
-; ============================================================
-
-(defn peek-char:i32 ()
-  (return (char-at g-src g-pos)))
-
-(defn next-char:i32 ()
-  (let (c:i32 (peek-char))
-    (when (= c 0) (return 0))
-    (set! g-pos (+ g-pos (cast i64 1)))
-    (when (= c 10) (inc! g-line))
-    (return c)))
-
-(defn skip-ws:void ()
-  (while (!= 0 1)
-    (let (c:i32 (peek-char))
-      (when (= c 0) (return))
-      (if (!= (isspace c) 0)
-        (do (next-char))
-        (if (= c 59)
-          (do
-            (while (and (!= (peek-char) 0) (!= (peek-char) 10))
-              (next-char)))
-          (return))))))
-
-(defn is-sym-char:i32 (c:i32)
-  (when (= c 0) (return 0))
-  (when (!= (isspace c) 0) (return 0))
-  (when (= c 40) (return 0))
-  (when (= c 41) (return 0))
-  (when (= c 34) (return 0))
-  (when (= c 59) (return 0))
-  (return 1))
-
-(defn lex-string:ptr (open-line:i32)
-  (let (buf:ptr (alloca i8 4096)
-        n:i64 (cast i64 0)
-        done:i32 0)
-    (while (= done 0)
-      (let (c:i32 (next-char))
-        (when (= c 0) (die-at open-line "unterminated string literal"))
-        (if (= c 34)
-          (set! done 1)
-          (do
-            (when (= c 92)
-              (let (e:i32 (next-char)
-                    handled:i32 0)
-                (when (= e 110) (do (set! c 10) (set! handled 1)))
-                (when (= e 116) (do (set! c 9)  (set! handled 1)))
-                (when (= e 114) (do (set! c 13) (set! handled 1)))
-                (when (= e 48)  (do (set! c 0)  (set! handled 1)))
-                (when (= e 92)  (do (set! c 92) (set! handled 1)))
-                (when (= e 34)  (do (set! c 34) (set! handled 1)))
-                (when (= handled 0)
-                  (die-at g-line (fmt-i32 "unknown escape \\%c" e)))))
-            (when (>= n (cast i64 4095))
-              (die-at open-line "string literal too long"))
-            (aset! (cast *i8 buf) n (cast i8 c))
-            (set! n (+ n (cast i64 1)))))))
-    (let (t:*Tok (cast *Tok (alloc-tok)))
-      (.set! t kind TOK-STRING)
-      (.set! t line open-line)
-      (.set! t s (arena-strndup buf n))
-      (return (cast ptr t)))))
-
-(defn lex-atom:ptr ()
-  (let (start-line:i32 g-line
-        start:i64 g-pos)
-    (while (!= (is-sym-char (peek-char)) 0)
-      (next-char))
-    (let (len:i64 (- g-pos start)
-          text:ptr (ptr+ (cast *i8 g-src) start)
-          is-int:i32 1
-          i0:i64 (cast i64 0))
-      (when (= len (cast i64 0)) (set! is-int 0))
-      (when (and (> len (cast i64 0))
-               (or (= (char-at text (cast i64 0)) 45)
-                   (= (char-at text (cast i64 0)) 43)))
-        (set! i0 (cast i64 1)))
-      (when (= i0 len) (set! is-int 0))
-      (let (i:i64 i0)
-        (while (< i len)
-          (if (= (isdigit (char-at text i)) 0)
-            (do (set! is-int 0) (set! i len))
-            (set! i (+ i (cast i64 1))))))
-      (when (!= is-int 0)
-        (let (buf:ptr (alloca i8 64))
-          (when (>= len (cast i64 64))
-            (die-at start-line "integer literal too long"))
-          (memcpy buf text len)
-          (aset! (cast *i8 buf) len (cast i8 0))
-          (let (t:*Tok (cast *Tok (alloc-tok)))
-            (.set! t kind TOK-INT)
-            (.set! t line start-line)
-            (.set! t i (strtol buf null 10))
-            (return (cast ptr t)))))
-      (let (ts:*Tok (cast *Tok (alloc-tok)))
-        (.set! ts kind TOK-SYMBOL)
-        (.set! ts line start-line)
-        (.set! ts s (arena-strndup text len))
-        (return (cast ptr ts))))))
-
-(defn next-tok:ptr ()
-  (skip-ws)
-  (let (c:i32 (peek-char)
-        line:i32 g-line)
-    (when (= c 0)
-      (let (te:*Tok (cast *Tok (alloc-tok)))
-        (.set! te kind TOK-EOF)
-        (.set! te line line)
-        (return (cast ptr te))))
-    (when (= c 40)
-      (do (next-char)
-        (let (tl:*Tok (cast *Tok (alloc-tok)))
-          (.set! tl kind TOK-LPAREN)
-          (.set! tl line line)
-          (return (cast ptr tl)))))
-    (when (= c 41)
-      (do (next-char)
-        (let (tr:*Tok (cast *Tok (alloc-tok)))
-          (.set! tr kind TOK-RPAREN)
-          (.set! tr line line)
-          (return (cast ptr tr)))))
-    (when (= c 39)
-      (do (next-char)
-        (let (tq:*Tok (cast *Tok (alloc-tok)))
-          (.set! tq kind TOK-QUOTE)
-          (.set! tq line line)
-          (return (cast ptr tq)))))
-    (when (= c 96)
-      (do (next-char)
-        (let (tq:*Tok (cast *Tok (alloc-tok)))
-          (.set! tq kind TOK-QUASI)
-          (.set! tq line line)
-          (return (cast ptr tq)))))
-    (when (= c 126)
-      (do (next-char)
-        (let (kind:i32 TOK-UNQUOTE)
-          (when (= (peek-char) 64)
-            (do (next-char) (set! kind TOK-UNQUOTE-SPLICE)))
-          (let (tq:*Tok (cast *Tok (alloc-tok)))
-            (.set! tq kind kind)
-            (.set! tq line line)
-            (return (cast ptr tq))))))
-    (when (= c 34)
-      (do (next-char) (return (lex-string line))))
-    (return (lex-atom))))
-
-; ============================================================
-; Reader / AST
-; ============================================================
-
-(defn peek-tok:ptr ()
-  (when (= g-peek-valid 0)
-    (do (set! g-peek (next-tok))
-        (set! g-peek-valid 1)))
-  (return g-peek))
-
-(defn eat-tok:ptr ()
-  (let (t:ptr (peek-tok))
-    (set! g-peek-valid 0)
-    (return t)))
-
-(defn read-form:ptr ()
-  (let (t:*Tok (cast *Tok (eat-tok)))
-    (when (= (. t kind) TOK-LPAREN) (return (read-list (. t line))))
-    (when (= (. t kind) TOK-RPAREN) (die-at (. t line) "unexpected )"))
-    (when (or (or (= (. t kind) TOK-QUOTE) (= (. t kind) TOK-QUASI))
-              (or (= (. t kind) TOK-UNQUOTE) (= (. t kind) TOK-UNQUOTE-SPLICE)))
-      (let (op:ptr "quote")
-        (when (= (. t kind) TOK-QUASI) (set! op "quasiquote"))
-        (when (= (. t kind) TOK-UNQUOTE) (set! op "unquote"))
-        (when (= (. t kind) TOK-UNQUOTE-SPLICE) (set! op "unquote-splice"))
-        (let (quoted:ptr (read-form)
-              sym:*Node (cast *Node (alloc-node)))
-          (.set! sym kind NODE-SYM)
-          (.set! sym line (. t line))
-          (.set! sym s op)
-          (return (make-cell (cast ptr sym)
-                             (make-cell quoted null (. t line))
-                             (. t line))))))
-    (when (= (. t kind) TOK-INT)
-      (let (n:*Node (cast *Node (alloc-node)))
-        (.set! n kind NODE-INT)
-        (.set! n line (. t line))
-        (.set! n i (. t i))
-        (return (cast ptr n))))
-    (when (= (. t kind) TOK-STRING)
-      (let (n:*Node (cast *Node (alloc-node)))
-        (.set! n kind NODE-STR)
-        (.set! n line (. t line))
-        (.set! n s (. t s))
-        (return (cast ptr n))))
-    (when (= (. t kind) TOK-SYMBOL)
-      (let (n:*Node (cast *Node (alloc-node)))
-        (.set! n kind NODE-SYM)
-        (.set! n line (. t line))
-        (.set! n s (. t s))
-        (return (cast ptr n))))
-    (die-at (. t line) "unexpected end of input")))
-
-(defn read-list:ptr (line:i32)
-  (let (head:ptr null
-        tail:ptr null)
-    (while (!= 0 1)
-      (let (t:*Tok (cast *Tok (peek-tok)))
-        (when (= (. t kind) TOK-EOF) (die-at line "unterminated list"))
-        (when (= (. t kind) TOK-RPAREN)
-          (do (eat-tok) (return head)))
-        (let (child:ptr (read-form)
-              cell:ptr (make-cell child null line))
-          (when (= tail null) (set! head cell))
-          (when (!= tail null) (.set! (cast *Node tail) cdr cell))
-          (set! tail cell))))
-    (return head)))
-
-(defn read-program:ptr ()
-  (let (head:ptr null
-        tail:ptr null)
-    (while (!= (. (cast *Tok (peek-tok)) kind) TOK-EOF)
-      (let (form:ptr (read-form)
-            line:i32 0)
-        (when (!= form null) (set! line (. (cast *Node form) line)))
-        (let (cell:ptr (make-cell form null line))
-          (when (= tail null) (set! head cell))
-          (when (!= tail null) (.set! (cast *Node tail) cdr cell))
-          (set! tail cell))))
-    (return head)))
+(import reader)
 
 ; ============================================================
 ; Types
