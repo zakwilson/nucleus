@@ -210,6 +210,9 @@
 ; Guards against emitting a duplicate malloc declaration in macro JIT modules.
 (defvar g-malloc-decl-done:i32 0)
 
+; Compiler mode flags.
+(defvar g-emit-nuch:i32 0)  ; when 1, output .nuch header instead of LLVM IR
+
 ; Import tracking — duplicate guard and cycle detection.
 ; Each is a linked list of (path-string . next) pairs using Node cells.
 (defvar g-imported:ptr)     ; already-imported resolved paths (null = empty)
@@ -290,6 +293,49 @@
 ; ============================================================
 
 (import reader)
+
+; ============================================================
+; AST printer — inverse of the reader, serializes nodes to stdout
+; ============================================================
+
+(defn print-node:void (n:ptr)
+  (when (= n null) (do (printf "()") (return)))
+  (let (nn:*Node (cast *Node n))
+    (when (= (. nn kind) NODE-INT)
+      (do (printf "%ld" (. nn i)) (return)))
+    (when (= (. nn kind) NODE-SYM)
+      (do (fputs (. nn s) (cast ptr stdout)) (return)))
+    (when (= (. nn kind) NODE-STR)
+      (do
+        (fputc 34 (cast ptr stdout))
+        (let (s:ptr (. nn s)
+              i:i64 (cast i64 0)
+              len:i64 (strlen s))
+          (while (< i len)
+            (let (c:i32 (char-at s i))
+              (cond (= c 10) (do (fputc 92 (cast ptr stdout)) (fputc 110 (cast ptr stdout)))
+                    (= c 9)  (do (fputc 92 (cast ptr stdout)) (fputc 116 (cast ptr stdout)))
+                    (= c 13) (do (fputc 92 (cast ptr stdout)) (fputc 114 (cast ptr stdout)))
+                    (= c 92) (do (fputc 92 (cast ptr stdout)) (fputc 92 (cast ptr stdout)))
+                    (= c 34) (do (fputc 92 (cast ptr stdout)) (fputc 34 (cast ptr stdout)))
+                    (= c 0)  (do (fputc 92 (cast ptr stdout)) (fputc 48 (cast ptr stdout)))
+                    true     (fputc c (cast ptr stdout))))
+            (set! i (+ i (cast i64 1)))))
+        (fputc 34 (cast ptr stdout))
+        (return)))
+    (when (= (. nn kind) NODE-CELL)
+      (do
+        (fputc 40 (cast ptr stdout))
+        (let (cur:ptr n
+              first:i32 1)
+          (while (and (!= cur null)
+                      (= (. (cast *Node cur) kind) NODE-CELL))
+            (when (= first 0) (fputc 32 (cast ptr stdout)))
+            (set! first 0)
+            (print-node (. (cast *Node cur) car))
+            (set! cur (. (cast *Node cur) cdr))))
+        (fputc 41 (cast ptr stdout))
+        (return)))))
 
 ; ============================================================
 ; Types
@@ -2340,29 +2386,36 @@
     (fclose f)
     (return 1)))
 
-; Resolve an import name to a .nuc file path.
+; Try to find a file by name in the import search path.
 ; Search order: directory of current source file, lib/ relative to cwd.
-; Returns null if not found.
+(defn try-import-path:ptr (filename:ptr)
+  ; Try directory of the current source file
+  (let (pathlen:i64 (strlen g-source-path)
+        last-slash:i64 (cast i64 -1)
+        i:i64 (cast i64 0))
+    (while (< i pathlen)
+      (when (= (char-at g-source-path i) 47)
+        (set! last-slash i))
+      (set! i (+ i (cast i64 1))))
+    (when (>= last-slash (cast i64 0))
+      (let (dir:ptr (strndup g-source-path last-slash)
+            candidate:ptr (fmt-2s "%s/%s" dir filename))
+        (when (!= (file-exists candidate) 0)
+          (return candidate)))))
+  ; Try lib/ relative to cwd
+  (let (candidate:ptr (fmt-s "lib/%s" filename))
+    (when (!= (file-exists candidate) 0)
+      (return candidate)))
+  (return null))
+
+; Resolve an import name to a .nuc or .nuch file path.
+; Tries .nuc first, then .nuch. Returns null if neither found.
 (defn resolve-import:ptr (name:ptr line:i32)
-  (let (filename:ptr (fmt-s "%s.nuc" name))
-    ; Try directory of the current source file
-    (let (pathlen:i64 (strlen g-source-path)
-          last-slash:i64 (cast i64 -1)
-          i:i64 (cast i64 0))
-      (while (< i pathlen)
-        (when (= (char-at g-source-path i) 47)
-          (set! last-slash i))
-        (set! i (+ i (cast i64 1))))
-      (when (>= last-slash (cast i64 0))
-        (let (dir:ptr (strndup g-source-path last-slash)
-              candidate:ptr (fmt-2s "%s/%s" dir filename))
-          (when (!= (file-exists candidate) 0)
-            (return candidate)))))
-    ; Try lib/ relative to cwd
-    (let (candidate:ptr (fmt-s "lib/%s" filename))
-      (when (!= (file-exists candidate) 0)
-        (return candidate)))
-    (return null)))
+  (let (nuc-path:ptr (try-import-path (fmt-s "%s.nuc" name)))
+    (when (!= nuc-path null) (return nuc-path)))
+  (let (nuch-path:ptr (try-import-path (fmt-s "%s.nuch" name)))
+    (when (!= nuch-path null) (return nuch-path)))
+  (return null))
 
 ; Import a Nucleus source file. Reads, parses, and processes all top-level
 ; forms from the imported file into the current compilation.
@@ -2399,9 +2452,12 @@
             (set! g-pos (cast i64 0))
             (set! g-line 1)
             (set! g-peek-valid 0)
-            (let (forms:ptr (read-program))
+            (let (forms:ptr (read-program)
+                  is-nuch:i32 (str-ends-with path ".nuch"))
               ; Process imported forms
-              (emit-toplevel-forms forms)
+              (if (!= is-nuch 0)
+                (emit-nuch-import-forms forms)
+                (emit-toplevel-forms forms))
               ; Free imported source buffer
               (free src)))
           ; Pop from importing stack, add to imported set
@@ -2415,11 +2471,187 @@
           (set! g-peek save-peek)
           (set! g-peek-valid save-peek-valid))))))
 
+; ============================================================
+; .nuch header emission
+; ============================================================
+
+(defn emit-nuch-list:void (form:ptr)
+  (let (i:i32 0
+        n:i32 (node-len form))
+    (while (< i n)
+      (when (!= i 0) (fputc 32 (cast ptr stdout)))
+      (print-node (node-at form i))
+      (inc! i))))
+
+(defn emit-nuch-defstruct:void (form:ptr)
+  (printf "(defstruct ")
+  (let (i:i32 1
+        n:i32 (node-len form))
+    (while (< i n)
+      (when (!= i 1) (fputc 32 (cast ptr stdout)))
+      (print-node (node-at form i))
+      (inc! i)))
+  (printf ")\n"))
+
+(defn emit-nuch-declare:void (form:ptr)
+  (printf "(declare ")
+  ; index 1 is name:rettype, index 2 is param list
+  (print-node (node-at form 1))
+  (printf " (")
+  (let (params:ptr (node-at form 2)
+        i:i32 0
+        n:i32 (node-len params))
+    (while (< i n)
+      (when (!= i 0) (fputc 32 (cast ptr stdout)))
+      (print-node (node-at params i))
+      (inc! i)))
+  (printf "))\n"))
+
+(defn emit-nuch-defconst:void (form:ptr)
+  (printf "(defconst ")
+  (print-node (node-at form 1))
+  (printf " ")
+  (print-node (node-at form 2))
+  (printf ")\n"))
+
+(defn emit-nuch-defenum:void (form:ptr)
+  (printf "(defenum")
+  (let (i:i32 1
+        n:i32 (node-len form))
+    (while (< i n)
+      (fputc 32 (cast ptr stdout))
+      (print-node (node-at form i))
+      (inc! i)))
+  (printf ")\n"))
+
+(defn emit-nuch-defmacro:void (form:ptr)
+  (print-node form)
+  (printf "\n"))
+
+(defn emit-nuch-header:void (forms:ptr source-file:ptr)
+  (printf "; .nuch header for %s\n" source-file)
+  (let (fc:ptr forms)
+    (while (!= fc null)
+      (let (f:*Node (cast *Node (. (cast *Node fc) car)))
+        (when (and (and (!= (cast ptr f) null) (= (. f kind) NODE-CELL))
+                   (and (> (node-len (cast ptr f)) 0)
+                        (-> f (node-at _ 0) (cast *Node _) (. kind) (= _ NODE-SYM))))
+          (let (h:ptr (-> f (node-at _ 0) (cast *Node _) (. s)))
+            (cond (= (strcmp h "defstruct") 0) (emit-nuch-defstruct (cast ptr f))
+                  (= (strcmp h "defn") 0)      (emit-nuch-declare (cast ptr f))
+                  (= (strcmp h "defconst") 0)  (emit-nuch-defconst (cast ptr f))
+                  (= (strcmp h "defenum") 0)   (emit-nuch-defenum (cast ptr f))
+                  (= (strcmp h "defmacro") 0)  (emit-nuch-defmacro (cast ptr f))
+                  true                         0))))
+      (set! fc (. (cast *Node fc) cdr)))))
+
+; ============================================================
+; .nuch import processing
+; ============================================================
+
+(defn str-ends-with:i32 (s:ptr suffix:ptr)
+  (let (slen:i64 (strlen s)
+        suflen:i64 (strlen suffix))
+    (when (> suflen slen) (return 0))
+    (when (= (strcmp (ptr+ (cast *i8 s) (- slen suflen)) suffix) 0)
+      (return 1))
+    (return 0)))
+
+(defn emit-nuch-declare-import:void (form:ptr)
+  (let (ff:*Node (cast *Node form))
+    (when (or (< (node-len form) 2) (> (node-len form) 3))
+      (die-at (. ff line) "declare: expected (declare name:rettype (params...))"))
+    (let (name-node:*Node (cast *Node (node-at form 1))
+          params-node:ptr null)
+      (when (= (node-len form) 3)
+        (set! params-node (node-at form 2)))
+      (when (!= (. name-node kind) NODE-SYM)
+        (die-at (. name-node line) "declare: name must be symbol"))
+      (let (fname:ptr null
+            ret-name:ptr null)
+        (split-typed (. name-node s) (cast *ptr (addr-of fname))
+                                     (cast *ptr (addr-of ret-name)))
+        (when (= ret-name null)
+          (die-at (. name-node line) (fmt-s "declare: missing :type on '%s'" fname)))
+        (let (ret:ptr (parse-type-name ret-name (. name-node line))
+              nparams:i32 0
+              ptypes:ptr null
+              j:i32 0)
+          (when (!= params-node null)
+            (set! nparams (node-len params-node)))
+          (when (> nparams 0)
+            (set! ptypes (arena-alloc (* (i64 nparams) (i64 8)))))
+          (while (< j nparams)
+            (let (p:*Node (cast *Node (node-at params-node j)))
+              (when (= (. p kind) NODE-SYM)
+                (let (pn:ptr null
+                      pt-name:ptr null)
+                  (split-typed (. p s) (cast *ptr (addr-of pn))
+                                       (cast *ptr (addr-of pt-name)))
+                  (if (!= pt-name null)
+                    (aset! (cast *ptr ptypes) j
+                           (parse-type-name pt-name (. p line)))
+                    (aset! (cast *ptr ptypes) j ty-i32)))))
+            (inc! j))
+          (let (ft:*Type (cast *Type (make-type TY-FN)))
+            (.set! ft ret ret)
+            (.set! ft num-params nparams)
+            (.set! ft params ptypes)
+            (.set! ft variadic 0)
+            (scope-define g-globals fname (cast ptr ft)
+                          (fmt-s "@%s" fname) 0)
+            ; Emit LLVM declare
+            (fprintf g-out "declare %s @%s(" (type-to-ir ret) fname)
+            (set! j 0)
+            (while (< j nparams)
+              (when (!= j 0) (fprintf g-out ", "))
+              (fprintf g-out "%s"
+                (type-to-ir (aref (cast *ptr ptypes) j)))
+              (inc! j))
+            (fprintf g-out ")\n")))))))
+
+(defn emit-nuch-import-forms:void (forms:ptr)
+  (let (fc:ptr forms)
+    (while (!= fc null)
+      (let (f:*Node (cast *Node (. (cast *Node fc) car)))
+        (when (and (and (!= (cast ptr f) null) (= (. f kind) NODE-CELL))
+                   (and (> (node-len (cast ptr f)) 0)
+                        (-> f (node-at _ 0) (cast *Node _) (. kind) (= _ NODE-SYM))))
+          (let (h:ptr (-> f (node-at _ 0) (cast *Node _) (. s)))
+            (cond (= (strcmp h "defstruct") 0)
+                    (do (set! g-out g-type-stream) (emit-defstruct (cast ptr f)))
+                  (= (strcmp h "declare") 0)
+                    (do (set! g-out g-decl-stream) (emit-nuch-declare-import (cast ptr f)))
+                  (= (strcmp h "defconst") 0)
+                    (emit-defconst (cast ptr f))
+                  (= (strcmp h "defenum") 0)
+                    (emit-defenum (cast ptr f))
+                  (= (strcmp h "defmacro") 0)
+                    (emit-defmacro (cast ptr f))
+                  true
+                    0))))
+      (set! fc (. (cast *Node fc) cdr)))))
+
+; ============================================================
+; Main entry point
+; ============================================================
+
 (defn main:int (argc:i32 argv:ptr)
-  (when (!= argc 2)
-    (do (fprintf stderr "usage: nucleusc <file.nuc>\n")
-        (return 2)))
-  (let (source-file:ptr (aref (cast *ptr argv) 1))
+  (let (source-file:ptr null
+        i:i32 1)
+    (while (< i argc)
+      (let (arg:ptr (aref (cast *ptr argv) i))
+        (cond (= (strcmp arg "--emit-nuch") 0)
+                (set! g-emit-nuch 1)
+              (= (char-at arg (cast i64 0)) 45)
+                (do (fprintf stderr "unknown flag: %s\n" arg) (return 2))
+              true
+                (if (= source-file null)
+                  (set! source-file arg)
+                  (do (fprintf stderr "unexpected argument: %s\n" arg) (return 2)))))
+      (inc! i))
+    (when (= source-file null)
+      (do (fprintf stderr "usage: nucleusc [--emit-nuch] <file.nuc>\n") (return 2)))
     (set! g-source-path source-file)
     (let (src:ptr (read-file source-file))
       (arena-init)
@@ -2435,6 +2667,12 @@
       (set! g-line 1)
 
       (let (forms:ptr (read-program))
+
+        ; .nuch header mode — emit declarations and exit
+        (when (!= g-emit-nuch 0)
+          (do (emit-nuch-header forms source-file)
+              (return 0)))
+
         (set! g-globals (scope-new null))
 
         ; Open three memstreams for type defs, declares, defines
@@ -2503,5 +2741,5 @@
 
           (free g-type-bufp)
           (free g-decl-bufp)
-          (free g-def-bufp))))
-  (return 0))
+          (free g-def-bufp)))
+    (return 0)))
