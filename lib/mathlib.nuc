@@ -1,0 +1,7 @@
+; Simple math library for testing import.
+
+(defn square:i32 (x:i32)
+  (return (* x x)))
+
+(defn cube:i32 (x:i32)
+  (return (* x (* x x))))

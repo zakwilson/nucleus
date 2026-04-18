@@ -17,3 +17,12 @@ Run `make update-bootstrap` **only at a stable milestone**:
 - The compiler must be in a usable, non-broken state
 
 This updates both `boot/nucleusc.ll` (IR) and `bin/nucleusc` (binary) from the current `build/nucleusc`. Never update them with failing tests or mid-feature work.
+
+## Import system
+
+- `(import name)` resolves `name.nuc` by searching: (1) directory of the importing source file, (2) `lib/` relative to cwd.
+- Imports are source inlines — the imported file's forms are read, parsed, and processed into the current compilation's IR streams.
+- Duplicate imports (same resolved path) are silently skipped.
+- Circular imports are detected and produce an error.
+- Reader state (`g-src`, `g-pos`, `g-line`, `g-source-path`, `g-peek`, `g-peek-valid`) is saved/restored around each import.
+- New libc functions (e.g. `getenv`, `realpath`) cannot be used in compiler source until the bootstrap binary is updated, because the bootstrap compiler's libc table won't know them. Use workarounds with existing libc functions, then add the proper versions after `make update-bootstrap`.

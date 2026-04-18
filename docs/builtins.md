@@ -11,13 +11,14 @@ Built-in forms and functions as implemented in `src/nucleusc.nuc`.
 | `defenum` | Define an enumeration | `enum` |
 | `defvar` | Define a global variable | global variable definition |
 | `defstruct` | Define a struct type | `struct` |
-| `include` | Include another Nucleus source file | `#include` |
-| `extern` | Declare an external (foreign) function | `extern` declaration |
+| `include` | Include a C standard library module | `#include` |
+| `import` | Import a Nucleus library `(import name)`. Resolves `name.nuc` from source directory or `lib/`. Includes all definitions and macros. Duplicate imports are silently skipped. | — |
+| `extern` | Declare an external (foreign) global variable | `extern` declaration |
 | `defmacro` | Define a compile-time macro `(defmacro name (params...) body...)`. Supports `&rest` for variadic macros: `(defmacro name (a b &rest rest) ...)` — `rest` receives a cons list of remaining args. | macro |
 
 ## Standard Macros (`lib/macros.nuc`)
 
-Defined via `defmacro`; inlined into programs until `include` is implemented.
+Defined via `defmacro`. Use `(import macros)` to include them (note: `dotimes` and `->` require the `Node` struct to be defined, as they introspect the AST at macro expansion time).
 
 | Name | Signature | Expands To |
 |------|-----------|------------|
