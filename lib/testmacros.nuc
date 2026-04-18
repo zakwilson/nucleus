@@ -1,0 +1,10 @@
+; Test macro library — simple macros that don't depend on the Node struct.
+
+(defmacro my-if (test then else)
+  `(cond ~test ~then true ~else))
+
+(defmacro my-when (condition body)
+  `(cond ~condition ~body))
+
+(defmacro my-unless (condition body)
+  `(cond (not ~condition) ~body))
