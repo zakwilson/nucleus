@@ -6,9 +6,11 @@
 (include ctype)
 (include unistd)
 (include llvm)
+(include repl)
 
 (extern stderr:ptr)
 (extern stdout:ptr)
+(extern stdin:ptr)
 
 ; ============================================================
 ; Constants
@@ -129,6 +131,7 @@
 
 (defvar g-arena:ptr)
 (defvar g-arena-used:i64 0)
+(defvar g-arena-cap:i64 0)
 
 (defvar g-source-path:ptr)
 
@@ -212,6 +215,16 @@
 
 ; Compiler mode flags.
 (defvar g-emit-nuch:i32 0)  ; when 1, output .nuch header instead of LLVM IR
+(defvar g-interactive:i32 0) ; when 1, run in REPL mode (-i / --interactive)
+
+; REPL eval counter (for unique __repl_eval_N symbols).
+(defvar g-repl-id:i32 0)
+
+; REPL declarations preamble — accumulated declarations and type defs
+; that get prepended to each JIT module.
+(defvar g-repl-preamble:ptr)
+(defvar g-repl-preamble-bufp:ptr)
+(defvar g-repl-preamble-sizep:i64 0)
 
 ; Import tracking — duplicate guard and cycle detection.
 ; Each is a linked list of (path-string . next) pairs using Node cells.
@@ -972,6 +985,39 @@
           tmp (. fn val) (. arg val))
         (return (alloc-val ty-ptr tmp))))))
 
+; (funcall-ptr-i32 fn) — call fn() as i32() via pointer, return i32
+(defn emit-funcall-ptr-i32:ptr (call:ptr scope:ptr)
+  (let (cc:*Node (cast *Node call))
+    (when (!= (node-len cc) 2) (die-at (. cc line) "funcall-ptr-i32 expects 1 arg"))
+    (let (fn:*Val (cast *Val (emit-node (node-at cc 1) scope)))
+      (when (-> fn (. type) (cast *Type _) (. kind) (!= _ TY-PTR))
+        (die-at (. cc line) "funcall-ptr-i32: arg must be ptr"))
+      (let (tmp:ptr (new-tmp))
+        (fprintf g-body-stream "  %s = call i32 %s()\n" tmp (. fn val))
+        (return (alloc-val ty-i32 tmp))))))
+
+; (funcall-ptr-i64 fn) — call fn() as i64() via pointer, return i64
+(defn emit-funcall-ptr-i64:ptr (call:ptr scope:ptr)
+  (let (cc:*Node (cast *Node call))
+    (when (!= (node-len cc) 2) (die-at (. cc line) "funcall-ptr-i64 expects 1 arg"))
+    (let (fn:*Val (cast *Val (emit-node (node-at cc 1) scope)))
+      (when (-> fn (. type) (cast *Type _) (. kind) (!= _ TY-PTR))
+        (die-at (. cc line) "funcall-ptr-i64: arg must be ptr"))
+      (let (tmp:ptr (new-tmp))
+        (fprintf g-body-stream "  %s = call i64 %s()\n" tmp (. fn val))
+        (return (alloc-val ty-i64 tmp))))))
+
+; (funcall-ptr-ptr fn) — call fn() as ptr() via pointer, return ptr
+(defn emit-funcall-ptr-ptr:ptr (call:ptr scope:ptr)
+  (let (cc:*Node (cast *Node call))
+    (when (!= (node-len cc) 2) (die-at (. cc line) "funcall-ptr-ptr expects 1 arg"))
+    (let (fn:*Val (cast *Val (emit-node (node-at cc 1) scope)))
+      (when (-> fn (. type) (cast *Type _) (. kind) (!= _ TY-PTR))
+        (die-at (. cc line) "funcall-ptr-ptr: arg must be ptr"))
+      (let (tmp:ptr (new-tmp))
+        (fprintf g-body-stream "  %s = call ptr %s()\n" tmp (. fn val))
+        (return (alloc-val ty-ptr tmp))))))
+
 (defn emit-deref:ptr (call:ptr scope:ptr)
   (let (cc:*Node (cast *Node call))
     (when (!= (node-len cc) 2) (die-at (. cc line) "deref expects 1 arg"))
@@ -1393,6 +1439,9 @@
             (fprintf g-body-stream "  %s = call ptr @nucleus_gensym()\n" tmp)
             (return (alloc-val ty-ptr tmp))))
         (when (= (strcmp h "funcall-ptr-1") 0) (return (emit-funcall-ptr-1 n scope)))
+        (when (= (strcmp h "funcall-ptr-i32") 0) (return (emit-funcall-ptr-i32 n scope)))
+        (when (= (strcmp h "funcall-ptr-i64") 0) (return (emit-funcall-ptr-i64 n scope)))
+        (when (= (strcmp h "funcall-ptr-ptr") 0) (return (emit-funcall-ptr-ptr n scope)))
         (when (= (strcmp h "return") 0) (return (emit-return n scope)))
         (when (= (strcmp h "do") 0) (return (emit-do n scope)))
         (when (= (strcmp h "let") 0) (return (emit-let n scope)))
@@ -1586,6 +1635,7 @@
   (add-libc "stdio" "perror"   TY-VOID TY-PTR 0 0 0 1 0)
   (add-libc "stdio" "open_memstream" TY-PTR TY-PTR TY-PTR 0 0 2 0)
   (add-libc "stdio" "fflush"        TY-I32 TY-PTR 0 0 0 1 0)
+  (add-libc "stdio" "fgets"         TY-PTR TY-PTR TY-I32 TY-PTR 0 3 0)
   ; stdlib
   (add-libc "stdlib" "malloc"  TY-PTR  TY-I64 0 0 0 1 0)
   (add-libc "stdlib" "realloc" TY-PTR  TY-PTR TY-I64 0 0 2 0)
@@ -1630,7 +1680,10 @@
   (add-libc "llvm" "LLVMOrcLLJITLookup"          TY-PTR TY-PTR TY-PTR TY-PTR 0 3 0)
   (add-libc "llvm" "LLVMGetErrorMessage"          TY-PTR TY-PTR 0 0 0 1 0)
   (add-libc "llvm" "LLVMDisposeErrorMessage"      TY-VOID TY-PTR 0 0 0 1 0)
-  (add-libc "llvm" "LLVMConsumeError"             TY-VOID TY-PTR 0 0 0 1 0))
+  (add-libc "llvm" "LLVMConsumeError"             TY-VOID TY-PTR 0 0 0 1 0)
+  ; repl shim — setjmp/longjmp wrapper (linked via repl_shim.o)
+  (add-libc "repl" "repl_try"   TY-I32  0 0 0 0 0 0)
+  (add-libc "repl" "repl_throw" TY-VOID 0 0 0 0 0 0))
 
 (defn emit-include:void (call:ptr)
   (let (cc:*Node (cast *Node call))
@@ -2633,6 +2686,435 @@
       (set! fc (. (cast *Node fc) cdr)))))
 
 ; ============================================================
+; Compiler initialization — shared by batch and REPL modes
+; ============================================================
+
+(defn compiler-init:void ()
+  (arena-init)
+  (types-init)
+  (init-binops)
+  (init-libc)
+  (set! g-structs (arena-alloc (* (cast i64 MAX-STRUCTS) (sizeof StructDef))))
+  (set! g-macros (arena-alloc (* (cast i64 256) (sizeof MacroDef))))
+  (set! g-globals (scope-new null)))
+
+; ============================================================
+; Emit quasiquote helpers (__cons / __append) into the given streams
+; ============================================================
+
+(defn emit-qq-helpers:void (decl:ptr def:ptr)
+  (fprintf decl "declare ptr @malloc(i64)\n")
+  (fprintf def "define ptr @__cons(ptr %%a, ptr %%b) {\n")
+  (fprintf def "  %%c = call ptr @malloc(i64 40)\n")
+  (fprintf def "  %%p0 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 0\n")
+  (fprintf def "  store i32 3, ptr %%p0, align 8\n")
+  (fprintf def "  %%p1 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 1\n")
+  (fprintf def "  store i32 0, ptr %%p1, align 4\n")
+  (fprintf def "  %%p2 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 2\n")
+  (fprintf def "  store i64 0, ptr %%p2, align 8\n")
+  (fprintf def "  %%p3 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 3\n")
+  (fprintf def "  store ptr null, ptr %%p3, align 8\n")
+  (fprintf def "  %%p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 4\n")
+  (fprintf def "  store ptr %%a, ptr %%p4, align 8\n")
+  (fprintf def "  %%p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 5\n")
+  (fprintf def "  store ptr %%b, ptr %%p5, align 8\n")
+  (fprintf def "  ret ptr %%c\n")
+  (fprintf def "}\n\n")
+  (fprintf def "define ptr @__append(ptr %%a, ptr %%b) {\n")
+  (fprintf def "entry:\n")
+  (fprintf def "  %%z = icmp eq ptr %%a, null\n")
+  (fprintf def "  br i1 %%z, label %%nil, label %%rec\n")
+  (fprintf def "nil:\n")
+  (fprintf def "  ret ptr %%b\n")
+  (fprintf def "rec:\n")
+  (fprintf def "  %%p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%a, i32 0, i32 4\n")
+  (fprintf def "  %%car = load ptr, ptr %%p4, align 8\n")
+  (fprintf def "  %%p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%a, i32 0, i32 5\n")
+  (fprintf def "  %%cdr = load ptr, ptr %%p5, align 8\n")
+  (fprintf def "  %%rest = call ptr @__append(ptr %%cdr, ptr %%b)\n")
+  (fprintf def "  %%c = call ptr @__cons(ptr %%car, ptr %%rest)\n")
+  (fprintf def "  ret ptr %%c\n")
+  (fprintf def "}\n\n"))
+
+; ============================================================
+; Open fresh memstreams for a compilation unit
+; ============================================================
+
+(defn open-module-streams:void ()
+  (set! g-type-stream (open_memstream (addr-of g-type-bufp) (cast ptr (addr-of g-type-sizep))))
+  (set! g-decl-stream (open_memstream (addr-of g-decl-bufp) (cast ptr (addr-of g-decl-sizep))))
+  (set! g-def-stream  (open_memstream (addr-of g-def-bufp)  (cast ptr (addr-of g-def-sizep))))
+  (set! g-decl-out g-decl-stream))
+
+; ============================================================
+; Close module streams, output IR to stdout (batch mode)
+; ============================================================
+
+(defn flush-module-ir:void (source-file:ptr)
+  (when (!= g-qq-used 0)
+    (emit-qq-helpers g-decl-stream g-def-stream))
+  (fclose g-type-stream)
+  (fclose g-decl-stream)
+  (fclose g-def-stream)
+  (printf "; ModuleID = '%s'\n" source-file)
+  (printf "source_filename = \"%s\"\n" source-file)
+  (printf "target triple = \"x86_64-pc-linux-gnu\"\n\n")
+  (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
+    (fputs g-type-bufp (cast ptr stdout)))
+  (emit-string-table (cast ptr stdout))
+  (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp (cast i64 0)) 0))
+    (fputs g-decl-bufp (cast ptr stdout)))
+  (when (and (!= g-def-bufp null) (!= (char-at g-def-bufp (cast i64 0)) 0))
+    (fputs g-def-bufp (cast ptr stdout)))
+  (free g-type-bufp)
+  (free g-decl-bufp)
+  (free g-def-bufp))
+
+; ============================================================
+; REPL — interactive Read-Eval-Print Loop
+; ============================================================
+
+; Read lines from stdin until parens are balanced, return the accumulated buffer.
+; Returns null on EOF.
+(defn repl-read-input:ptr ()
+  (let (buf:ptr (malloc (cast i64 4096))
+        buf-len:i64 (cast i64 0)
+        buf-cap:i64 (cast i64 4096)
+        depth:i32 0
+        got-input:i32 0
+        in-string:i32 0
+        in-comment:i32 0
+        first-line:i32 1)
+    (when (= buf null) (do (perror "malloc") (exit 1)))
+    (aset! (cast *i8 buf) (cast i64 0) (cast i8 0))
+    (let (done:i32 0)
+      (while (= done 0)
+        ; Print prompt
+        (if (!= first-line 0)
+          (fprintf stderr "nuc> ")
+          (fprintf stderr "...> "))
+        (fflush stderr)
+        ; Read a line
+        (let (line-buf:ptr (malloc (cast i64 4096)))
+          (when (= line-buf null) (do (perror "malloc") (exit 1)))
+          (when (= (fgets line-buf (cast i32 4096) (cast ptr stdin)) null)
+            (do (free line-buf)
+                (if (= got-input 0)
+                  (do (free buf) (return null))
+                  (do (set! done 1)))))
+          (when (= done 0)
+            (let (line-len:i64 (strlen line-buf))
+              ; Grow buffer if needed
+              (when (> (+ buf-len line-len) (- buf-cap (cast i64 1)))
+                (let (new-cap:i64 (* buf-cap (cast i64 2)))
+                  (while (> (+ buf-len line-len) (- new-cap (cast i64 1)))
+                    (set! new-cap (* new-cap (cast i64 2))))
+                  (set! buf (realloc buf new-cap))
+                  (when (= buf null) (do (perror "realloc") (exit 1)))
+                  (set! buf-cap new-cap)))
+              (memcpy (ptr+ (cast *i8 buf) buf-len) line-buf line-len)
+              (set! buf-len (+ buf-len line-len))
+              (aset! (cast *i8 buf) buf-len (cast i8 0))
+              (set! got-input 1)
+              (set! first-line 0)
+              ; Scan the line for paren balance, respecting strings and comments
+              (let (li:i64 (cast i64 0))
+                (while (< li line-len)
+                  (let (c:i32 (bit-and (cast i32 (aref (cast *i8 line-buf) li)) 255))
+                    (cond (!= in-comment 0)
+                            (when (= c 10) (set! in-comment 0))
+                          (!= in-string 0)
+                            (cond (= c 92)  ; backslash — skip next char
+                                    (set! li (+ li (cast i64 1)))
+                                  (= c 34)  ; closing quote
+                                    (set! in-string 0)
+                                  true (do))
+                          (= c 59)  ; semicolon — start comment
+                            (set! in-comment 1)
+                          (= c 34)  ; opening quote
+                            (set! in-string 1)
+                          (= c 40)  ; open paren
+                            (set! depth (+ depth 1))
+                          (= c 41)  ; close paren
+                            (set! depth (- depth 1))
+                          true (do)))
+                  (set! li (+ li (cast i64 1)))))
+              (free line-buf)
+              ; Done when parens are balanced and we have input
+              (when (and (<= depth 0) (!= got-input 0))
+                (set! done 1)))))))
+    (return buf)))
+
+; Process a single REPL form: parse, compile to IR, JIT, and call.
+; Returns the result type kind (TY-VOID, TY-I32, etc.) or -1 on error.
+(defn repl-eval-form:void (form:ptr)
+  (let (f:*Node (cast *Node form))
+    (when (= (cast ptr f) null) (return))
+    ; Check if it's a list starting with a known keyword
+    (let (h:ptr null
+          is-expr:i32 1)
+      (when (and (= (. f kind) NODE-CELL)
+                 (and (!= (node-len (cast ptr f)) 0)
+                      (-> f (node-at _ 0) (cast *Node _) (. kind) (= _ NODE-SYM))))
+        (set! h (-> f (node-at _ 0) (cast *Node _) (. s))))
+      ; Top-level defining forms
+      (cond (and (!= h null) (= (strcmp h "defconst") 0))
+              (do (emit-defconst (cast ptr f)) (set! is-expr 0))
+            (and (!= h null) (= (strcmp h "defenum") 0))
+              (do (emit-defenum (cast ptr f)) (set! is-expr 0))
+            (and (!= h null) (= (strcmp h "defvar") 0))
+              (do (open-module-streams)
+                  (set! g-out g-decl-stream)
+                  (emit-defvar (cast ptr f))
+                  ; Add external global reference to preamble
+                  (let (var-node:*Node (cast *Node (node-at form 1)))
+                    (when (and (!= (cast ptr var-node) null) (= (. var-node kind) NODE-SYM))
+                      (let (vname:ptr null  vtype-name:ptr null)
+                        (split-typed (. var-node s) (cast *ptr (addr-of vname))
+                                                    (cast *ptr (addr-of vtype-name)))
+                        (when (!= vtype-name null)
+                          (let (vty:ptr (parse-type-name vtype-name (. var-node line)))
+                            (fprintf g-repl-preamble "@%s = external global %s\n"
+                              (sanitize-for-ir vname) (type-to-ir vty)))))))
+                  (repl-jit-module (. f line))
+                  (fprintf stderr "  defined\n"))
+            (and (!= h null) (= (strcmp h "defstruct") 0))
+              (do (open-module-streams)
+                  (set! g-out g-type-stream)
+                  (emit-defstruct (cast ptr f))
+                  ; Append type def to preamble for future modules
+                  (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
+                  (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
+                    (fputs g-type-bufp g-repl-preamble))
+                  (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
+                  (fprintf stderr "  defined\n"))
+            (and (!= h null) (= (strcmp h "include") 0))
+              (do (open-module-streams)
+                  (set! g-out g-decl-stream)
+                  (emit-include (cast ptr f))
+                  ; Append declarations to preamble for future modules
+                  (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
+                  (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp (cast i64 0)) 0))
+                    (fputs g-decl-bufp g-repl-preamble))
+                  (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp))
+            (and (!= h null) (= (strcmp h "extern") 0))
+              (do (open-module-streams)
+                  (set! g-out g-decl-stream)
+                  (emit-extern (cast ptr f))
+                  (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
+                  (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp (cast i64 0)) 0))
+                    (fputs g-decl-bufp g-repl-preamble))
+                  (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp))
+            (and (!= h null) (= (strcmp h "defn") 0))
+              (do ; Check for redefinition
+                  (let (name-node:*Node (cast *Node (node-at form 1)))
+                    (when (and (!= (cast ptr name-node) null) (= (. name-node kind) NODE-SYM))
+                      (let (fname:ptr null  ret-name:ptr null)
+                        (split-typed (. name-node s) (cast *ptr (addr-of fname))
+                                                     (cast *ptr (addr-of ret-name)))
+                        (when (!= (scope-lookup g-globals fname) null)
+                          (fprintf stderr "  warning: redefining '%s'\n" fname)))))
+                  (open-module-streams)
+                  ; Pre-scan for forward declaration
+                  (let (one-form:ptr (make-cell form null (. f line)))
+                    (prescan-defn-signatures one-form))
+                  (set! g-out g-def-stream)
+                  (emit-defn (cast ptr f))
+                  (when (!= g-qq-used 0)
+                    (emit-qq-helpers g-decl-stream g-def-stream))
+                  (repl-jit-module (. f line))
+                  (set! g-qq-used 0)
+                  ; Add function declaration to preamble for future modules
+                  (let (name-node2:*Node (cast *Node (node-at form 1)))
+                    (when (and (!= (cast ptr name-node2) null) (= (. name-node2 kind) NODE-SYM))
+                      (let (fname2:ptr null  ret-name2:ptr null)
+                        (split-typed (. name-node2 s) (cast *ptr (addr-of fname2))
+                                                      (cast *ptr (addr-of ret-name2)))
+                        (let (sym:*Sym (cast *Sym (scope-lookup g-globals fname2)))
+                          (when (!= (cast ptr sym) null)
+                            (let (ft:*Type (cast *Type (. sym type)))
+                              (when (= (. ft kind) TY-FN)
+                                (do (fprintf g-repl-preamble "declare %s @%s("
+                                      (type-to-ir (. ft ret))
+                                      (sanitize-for-ir fname2))
+                                    (let (pi:i32 0)
+                                      (while (< pi (. ft num-params))
+                                        (when (!= pi 0) (fprintf g-repl-preamble ", "))
+                                        (fprintf g-repl-preamble "%s"
+                                          (type-to-ir (aref (cast *ptr (. ft params)) pi)))
+                                        (inc! pi)))
+                                    (when (!= (. ft variadic) 0)
+                                      (let (sep:ptr "")
+                                        (when (!= (. ft num-params) 0) (set! sep ", "))
+                                        (fprintf g-repl-preamble "%s..." sep)))
+                                    (fprintf g-repl-preamble ")\n")))))))))
+                  (fprintf stderr "  defined\n"))
+            (and (!= h null) (= (strcmp h "compile-time") 0))
+              (emit-compile-time (cast ptr f))
+            (and (!= h null) (= (strcmp h "defmacro") 0))
+              (do (emit-defmacro (cast ptr f))
+                  (fprintf stderr "  defined\n"))
+            (and (!= h null) (= (strcmp h "import") 0))
+              (do (open-module-streams)
+                  (emit-import (cast ptr f))
+                  (repl-jit-module (. f line)))
+            true
+              ; Expression — wrap in __repl_eval_N and JIT
+              (do (open-module-streams)
+                  (let (eval-sym:ptr (fmt-i64 "__repl_eval_%ld" (cast i64 g-repl-id)))
+                    (inc! g-repl-id)
+                    (set! g-out g-def-stream)
+                    (reset-function-state)
+                    (let (fn-scope:ptr (scope-new g-globals)
+                          result:*Val (cast *Val (emit-node (cast ptr f) fn-scope))
+                          result-kind:i32 (. (cast *Type (. result type)) kind))
+                      ; Generate the return based on result type
+                      (when (= g-block-term 0)
+                        (cond (= result-kind TY-VOID)
+                                (fprintf g-body-stream "  ret void\n")
+                              (or (= result-kind TY-I32) (or (= result-kind TY-I1)
+                                  (or (= result-kind TY-I8) (= result-kind TY-I16))))
+                                (do (let (ret-val:ptr (. result val))
+                                      (when (!= result-kind TY-I32)
+                                        (let (ext-tmp:ptr (new-tmp))
+                                          (cond (= result-kind TY-I1)
+                                                  (fprintf g-body-stream "  %s = zext i1 %s to i32\n"
+                                                           ext-tmp (. result val))
+                                                (= result-kind TY-I8)
+                                                  (fprintf g-body-stream "  %s = sext i8 %s to i32\n"
+                                                           ext-tmp (. result val))
+                                                (= result-kind TY-I16)
+                                                  (fprintf g-body-stream "  %s = sext i16 %s to i32\n"
+                                                           ext-tmp (. result val))
+                                                true (do))
+                                          (set! ret-val ext-tmp)))
+                                      (fprintf g-body-stream "  ret i32 %s\n" ret-val)))
+                              (= result-kind TY-I64)
+                                (fprintf g-body-stream "  ret i64 %s\n" (. result val))
+                              (= result-kind TY-PTR)
+                                (fprintf g-body-stream "  ret ptr %s\n" (. result val))
+                              true
+                                (fprintf g-body-stream "  ret void\n")))
+                      ; Build function definition
+                      (fclose g-entry-stream)
+                      (fclose g-body-stream)
+                      (let (ret-ir:ptr "void")
+                        (when (or (= result-kind TY-I32) (or (= result-kind TY-I1)
+                                  (or (= result-kind TY-I8) (= result-kind TY-I16))))
+                          (set! ret-ir "i32"))
+                        (when (= result-kind TY-I64) (set! ret-ir "i64"))
+                        (when (= result-kind TY-PTR) (set! ret-ir "ptr"))
+                        (fprintf g-def-stream "define %s @%s() {\n" ret-ir eval-sym)
+                        (fprintf g-def-stream "entry:\n")
+                        (when (and (!= g-entry-bufp null) (!= (char-at g-entry-bufp (cast i64 0)) 0))
+                          (fputs g-entry-bufp g-def-stream))
+                        (when (and (!= g-body-bufp null) (!= (char-at g-body-bufp (cast i64 0)) 0))
+                          (fputs g-body-bufp g-def-stream))
+                        (fprintf g-def-stream "}\n\n")
+                        (free g-entry-bufp)
+                        (free g-body-bufp)
+                        (set! g-entry-bufp null)
+                        (set! g-body-bufp null)
+                        ; Build and JIT module
+                        (when (!= g-qq-used 0)
+                          (emit-qq-helpers g-decl-stream g-def-stream))
+                        (repl-jit-module (. f line))
+                        (set! g-qq-used 0)
+                        ; Look up and call the eval function
+                        (let (addr:i64 (cast i64 0))
+                          (let (err:ptr (LLVMOrcLLJITLookup g-jit (cast ptr (addr-of addr)) eval-sym))
+                            (when (!= err null)
+                              (do (fprintf stderr "  JIT lookup error: %s\n" (LLVMGetErrorMessage err))
+                                  (return)))
+                            (when (!= addr (cast i64 0))
+                              ; Call and print result based on type
+                              (cond (or (= result-kind TY-I32) (or (= result-kind TY-I1)
+                                       (or (= result-kind TY-I8) (= result-kind TY-I16))))
+                                      (let (fn:ptr (cast ptr addr)
+                                            rv:i32 (funcall-ptr-i32 fn))
+                                        (fprintf stderr "  %d\n" rv))
+                                    (= result-kind TY-I64)
+                                      (let (fn:ptr (cast ptr addr)
+                                            rv:i64 (funcall-ptr-i64 fn))
+                                        (fprintf stderr "  %ld\n" rv))
+                                    (= result-kind TY-PTR)
+                                      (let (fn:ptr (cast ptr addr)
+                                            rv:ptr (funcall-ptr-ptr fn))
+                                        (if (!= rv null)
+                                          (fprintf stderr "  %p\n" rv)
+                                          (fprintf stderr "  null\n")))
+                                    (= result-kind TY-VOID)
+                                      (do)
+                                    true
+                                      (do)))))))))))))
+
+; Build a JIT module from the current module streams and add it to the JIT.
+; Includes the REPL preamble (accumulated declarations/types) in the module.
+(defn repl-jit-module:void (line:i32)
+  (fflush g-type-stream)
+  (fflush g-decl-stream)
+  (fflush g-def-stream)
+  (fclose g-type-stream)
+  (fclose g-decl-stream)
+  (fclose g-def-stream)
+  (let (ir-bufp:ptr null  ir-sizep:i64 (cast i64 0)
+        irs:ptr (open_memstream (addr-of ir-bufp) (cast ptr (addr-of ir-sizep))))
+    (fprintf irs "; ModuleID = '<repl>'\n")
+    (fprintf irs "target triple = \"x86_64-pc-linux-gnu\"\n\n")
+    ; Preamble (accumulated types + declarations from includes)
+    (fflush g-repl-preamble)
+    (when (and (!= g-repl-preamble-bufp null) (!= (char-at g-repl-preamble-bufp (cast i64 0)) 0))
+      (fputs g-repl-preamble-bufp irs))
+    ; This module's types
+    (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
+      (fputs g-type-bufp irs))
+    (emit-string-table irs)
+    ; This module's declarations
+    (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp (cast i64 0)) 0))
+      (fputs g-decl-bufp irs))
+    ; This module's definitions
+    (when (and (!= g-def-bufp null) (!= (char-at g-def-bufp (cast i64 0)) 0))
+      (fputs g-def-bufp irs))
+    (fclose irs)
+    (when (and (!= ir-bufp null) (!= (char-at ir-bufp (cast i64 0)) 0))
+      (jit-add-module ir-bufp line))
+    (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
+    (free ir-bufp)))
+
+; REPL main loop
+(defn repl-main:void ()
+  (fprintf stderr "Nucleus REPL (type Ctrl-D to exit)\n")
+  (set! g-source-path "<repl>")
+  (compiler-init)
+  ; Initialize preamble stream
+  (set! g-repl-preamble (open_memstream (addr-of g-repl-preamble-bufp)
+                                         (cast ptr (addr-of g-repl-preamble-sizep))))
+  (let (running:i32 1)
+    (while (!= running 0)
+      (let (input:ptr (repl-read-input))
+        (when (= input null)
+          (do (fprintf stderr "\n") (set! running 0)))
+        (when (!= input null)
+          (when (!= running 0)
+            (do
+              ; Parse the input
+              (set! g-src input)
+              (set! g-pos (cast i64 0))
+              (set! g-line 1)
+              (set! g-peek-valid 0)
+              (let (forms:ptr (read-program))
+                ; Process each form
+                (let (fc:ptr forms)
+                  (while (!= fc null)
+                    (let (f:ptr (. (cast *Node fc) car))
+                      (when (!= (repl_try) 0)
+                        (fprintf stderr "  error (recovered)\n"))
+                      (when (= (repl_try) 0)
+                        (repl-eval-form f)))
+                    (set! fc (. (cast *Node fc) cdr)))))
+              (free input))))))))
+
+; ============================================================
 ; Main entry point
 ; ============================================================
 
@@ -2643,6 +3125,8 @@
       (let (arg:ptr (aref (cast *ptr argv) i))
         (cond (= (strcmp arg "--emit-nuch") 0)
                 (set! g-emit-nuch 1)
+              (or (= (strcmp arg "-i") 0) (= (strcmp arg "--interactive") 0))
+                (set! g-interactive 1)
               (= (char-at arg (cast i64 0)) 45)
                 (do (fprintf stderr "unknown flag: %s\n" arg) (return 2))
               true
@@ -2650,16 +3134,17 @@
                   (set! source-file arg)
                   (do (fprintf stderr "unexpected argument: %s\n" arg) (return 2)))))
       (inc! i))
+
+    ; REPL mode
+    (when (!= g-interactive 0)
+      (do (repl-main) (return 0)))
+
+    ; Batch mode — require source file
     (when (= source-file null)
-      (do (fprintf stderr "usage: nucleusc [--emit-nuch] <file.nuc>\n") (return 2)))
+      (do (fprintf stderr "usage: nucleusc [--emit-nuch] [-i] <file.nuc>\n") (return 2)))
     (set! g-source-path source-file)
     (let (src:ptr (read-file source-file))
-      (arena-init)
-      (types-init)
-      (init-binops)
-      (init-libc)
-      (set! g-structs (arena-alloc (* (cast i64 MAX-STRUCTS) (sizeof StructDef))))
-      (set! g-macros (arena-alloc (* (cast i64 256) (sizeof MacroDef))))
+      (compiler-init)
 
       ; Lex/parse
       (set! g-src src)
@@ -2673,73 +3158,8 @@
           (do (emit-nuch-header forms source-file)
               (return 0)))
 
-        (set! g-globals (scope-new null))
-
-        ; Open three memstreams for type defs, declares, defines
-        ; Use global vars so emit-compile-time can access them mid-compilation.
-        (do
-          (set! g-type-stream (open_memstream (addr-of g-type-bufp) (cast ptr (addr-of g-type-sizep))))
-          (set! g-decl-stream (open_memstream (addr-of g-decl-bufp) (cast ptr (addr-of g-decl-sizep))))
-          (set! g-def-stream  (open_memstream (addr-of g-def-bufp)  (cast ptr (addr-of g-def-sizep)))))
-        (set! g-decl-out g-decl-stream)
-
-          ; Process all top-level forms
-          (emit-toplevel-forms forms)
-
-          ; Emit quasiquote helpers if used
-          (when (!= g-qq-used 0)
-            (do
-              (fprintf g-decl-stream "declare ptr @malloc(i64)\n")
-              (fprintf g-def-stream "define ptr @__cons(ptr %%a, ptr %%b) {\n")
-              (fprintf g-def-stream "  %%c = call ptr @malloc(i64 40)\n")
-              (fprintf g-def-stream "  %%p0 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 0\n")
-              (fprintf g-def-stream "  store i32 3, ptr %%p0, align 8\n")
-              (fprintf g-def-stream "  %%p1 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 1\n")
-              (fprintf g-def-stream "  store i32 0, ptr %%p1, align 4\n")
-              (fprintf g-def-stream "  %%p2 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 2\n")
-              (fprintf g-def-stream "  store i64 0, ptr %%p2, align 8\n")
-              (fprintf g-def-stream "  %%p3 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 3\n")
-              (fprintf g-def-stream "  store ptr null, ptr %%p3, align 8\n")
-              (fprintf g-def-stream "  %%p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 4\n")
-              (fprintf g-def-stream "  store ptr %%a, ptr %%p4, align 8\n")
-              (fprintf g-def-stream "  %%p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 5\n")
-              (fprintf g-def-stream "  store ptr %%b, ptr %%p5, align 8\n")
-              (fprintf g-def-stream "  ret ptr %%c\n")
-              (fprintf g-def-stream "}\n\n")
-              (fprintf g-def-stream "define ptr @__append(ptr %%a, ptr %%b) {\n")
-              (fprintf g-def-stream "entry:\n")
-              (fprintf g-def-stream "  %%z = icmp eq ptr %%a, null\n")
-              (fprintf g-def-stream "  br i1 %%z, label %%nil, label %%rec\n")
-              (fprintf g-def-stream "nil:\n")
-              (fprintf g-def-stream "  ret ptr %%b\n")
-              (fprintf g-def-stream "rec:\n")
-              (fprintf g-def-stream "  %%p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%a, i32 0, i32 4\n")
-              (fprintf g-def-stream "  %%car = load ptr, ptr %%p4, align 8\n")
-              (fprintf g-def-stream "  %%p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%a, i32 0, i32 5\n")
-              (fprintf g-def-stream "  %%cdr = load ptr, ptr %%p5, align 8\n")
-              (fprintf g-def-stream "  %%rest = call ptr @__append(ptr %%cdr, ptr %%b)\n")
-              (fprintf g-def-stream "  %%c = call ptr @__cons(ptr %%car, ptr %%rest)\n")
-              (fprintf g-def-stream "  ret ptr %%c\n")
-              (fprintf g-def-stream "}\n\n")))
-
-          ; Close streams
-          (fclose g-type-stream)
-          (fclose g-decl-stream)
-          (fclose g-def-stream)
-
-          ; Output
-          (printf "; ModuleID = '%s'\n" source-file)
-          (printf "source_filename = \"%s\"\n" source-file)
-          (printf "target triple = \"x86_64-pc-linux-gnu\"\n\n")
-          (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
-            (fputs g-type-bufp (cast ptr stdout)))
-          (emit-string-table (cast ptr stdout))
-          (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp (cast i64 0)) 0))
-            (fputs g-decl-bufp (cast ptr stdout)))
-          (when (and (!= g-def-bufp null) (!= (char-at g-def-bufp (cast i64 0)) 0))
-            (fputs g-def-bufp (cast ptr stdout)))
-
-          (free g-type-bufp)
-          (free g-decl-bufp)
-          (free g-def-bufp)))
+        ; Open module streams and compile
+        (open-module-streams)
+        (emit-toplevel-forms forms)
+        (flush-module-ir source-file)))
     (return 0)))

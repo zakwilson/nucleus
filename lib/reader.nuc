@@ -20,6 +20,8 @@
 
 (defn die-at:void (line:i32 msg:ptr)
   (fprintf stderr "%s:%d: error: %s\n" g-source-path line msg)
+  (when (!= g-interactive 0)
+    (repl_throw))
   (exit 1))
 
 ; ============================================================
