@@ -1,18 +1,34 @@
 ; Arena allocator.
 ;
-; Requires: ARENA-SIZE constant, g-arena and g-arena-used globals,
-; and (include stdlib) / (include string) for malloc/memset/memcpy/strlen.
+; Requires: ARENA-SIZE constant, g-arena, g-arena-used, and g-arena-cap
+; globals, and (include stdlib) / (include string) for malloc/memset/memcpy/strlen.
+;
+; The arena is growable: when the current block is full, a new block is
+; allocated.  Old blocks remain valid (pointers into them are never
+; invalidated).
 
 (defn arena-init:void ()
   (set! g-arena (malloc (cast i64 ARENA-SIZE)))
   (when (= g-arena null)
     (do (perror "arena malloc") (exit 1)))
-  (set! g-arena-used (cast i64 0)))
+  (set! g-arena-used (cast i64 0))
+  (set! g-arena-cap (cast i64 ARENA-SIZE)))
+
+(defn arena-grow:void (min-size:i64)
+  (let (new-cap:i64 g-arena-cap)
+    (while (< new-cap min-size)
+      (set! new-cap (* new-cap (cast i64 2))))
+    (let (new-arena:ptr (malloc new-cap))
+      (when (= new-arena null)
+        (do (perror "arena grow") (exit 1)))
+      (set! g-arena new-arena)
+      (set! g-arena-used (cast i64 0))
+      (set! g-arena-cap new-cap))))
 
 (defn arena-alloc:ptr (n:i64)
   (set! n (bit-and (+ n (cast i64 7)) (cast i64 -8)))
-  (when (> (+ g-arena-used n) (cast i64 ARENA-SIZE))
-    (do (fprintf stderr "nucleusc: arena exhausted\n") (exit 1)))
+  (when (> (+ g-arena-used n) g-arena-cap)
+    (arena-grow n))
   (let (p:ptr (ptr+ (cast *i8 g-arena) g-arena-used))
     (set! g-arena-used (+ g-arena-used n))
     (memset p 0 n)
