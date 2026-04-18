@@ -1,0 +1,28 @@
+; Arena allocator.
+;
+; Requires: ARENA-SIZE constant, g-arena and g-arena-used globals,
+; and (include stdlib) / (include string) for malloc/memset/memcpy/strlen.
+
+(defn arena-init:void ()
+  (set! g-arena (malloc (cast i64 ARENA-SIZE)))
+  (when (= g-arena null)
+    (do (perror "arena malloc") (exit 1)))
+  (set! g-arena-used (cast i64 0)))
+
+(defn arena-alloc:ptr (n:i64)
+  (set! n (bit-and (+ n (cast i64 7)) (cast i64 -8)))
+  (when (> (+ g-arena-used n) (cast i64 ARENA-SIZE))
+    (do (fprintf stderr "nucleusc: arena exhausted\n") (exit 1)))
+  (let (p:ptr (ptr+ (cast *i8 g-arena) g-arena-used))
+    (set! g-arena-used (+ g-arena-used n))
+    (memset p 0 n)
+    (return p)))
+
+(defn arena-strndup:ptr (s:ptr n:i64)
+  (let (p:ptr (arena-alloc (+ n (cast i64 1))))
+    (memcpy p s n)
+    (aset! (cast *i8 p) n (cast i8 0))
+    (return p)))
+
+(defn arena-strdup:ptr (s:ptr)
+  (return (arena-strndup s (strlen s))))

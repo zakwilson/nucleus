@@ -1,0 +1,60 @@
+; Formatting helpers — arena-backed sprintf wrappers.
+;
+; Requires: arena (arena-strndup, arena-alloc), snprintf, strlen, isdigit.
+
+(defn i64:i64 (n:i32)
+  (return (cast i64 n)))
+
+(defn fmt-i32:ptr (fmt:ptr d:i32)
+  (let (buf:ptr (alloca i8 256)
+        n:i32 (snprintf buf (cast i64 256) fmt d))
+    (return (arena-strndup buf (i64 n)))))
+
+(defn fmt-i32-i32:ptr (fmt:ptr a:i32 b:i32)
+  (let (buf:ptr (alloca i8 256)
+        n:i32 (snprintf buf (cast i64 256) fmt a b))
+    (return (arena-strndup buf (i64 n)))))
+
+(defn fmt-i64:ptr (fmt:ptr d:i64)
+  (let (buf:ptr (alloca i8 256)
+        n:i32 (snprintf buf (cast i64 256) fmt d))
+    (return (arena-strndup buf (i64 n)))))
+
+(defn fmt-s:ptr (fmt:ptr s:ptr)
+  (let (buf:ptr (alloca i8 512)
+        n:i32 (snprintf buf (cast i64 512) fmt s))
+    (return (arena-strndup buf (i64 n)))))
+
+(defn fmt-sd:ptr (fmt:ptr s:ptr d:i32)
+  (let (buf:ptr (alloca i8 512)
+        n:i32 (snprintf buf (cast i64 512) fmt s d))
+    (return (arena-strndup buf (i64 n)))))
+
+(defn fmt-2s:ptr (fmt:ptr s1:ptr s2:ptr)
+  (let (buf:ptr (alloca i8 512)
+        n:i32 (snprintf buf (cast i64 512) fmt s1 s2))
+    (return (arena-strndup buf (i64 n)))))
+
+(defn fmt-2s-i:ptr (fmt:ptr s1:ptr s2:ptr d:i32)
+  (let (buf:ptr (alloca i8 512)
+        n:i32 (snprintf buf (cast i64 512) fmt s1 s2 d))
+    (return (arena-strndup buf (i64 n)))))
+
+; Replace chars invalid in LLVM IR identifiers with underscores.
+(defn sanitize-for-ir:ptr (name:ptr)
+  (let (n:i64 (strlen name)
+        s:ptr (arena-alloc (+ n (cast i64 1)))
+        i:i64 (cast i64 0))
+    (while (< i n)
+      (let (c:i32 (bit-and (cast i32 (aref (cast *i8 name) i)) 255)
+            is-digit:i1 (!= (isdigit c) 0)
+            is-lower:i1 (and (>= c 97) (<= c 122))
+            is-upper:i1 (and (>= c 65) (<= c 90))
+            is-safe:i1  (or (= c 95) (= c 46))
+            ok:i1       (or is-digit (or is-lower (or is-upper is-safe))))
+        (if ok
+          (aset! (cast *i8 s) i (cast i8 c))
+          (aset! (cast *i8 s) i (cast i8 95))))
+      (set! i (+ i (cast i64 1))))
+    (aset! (cast *i8 s) n (cast i8 0))
+    (return s)))

@@ -1,0 +1,38 @@
+; Node utilities — allocation and list operations on the AST Node type.
+;
+; Requires: Node struct (with kind, line, car, cdr fields),
+; NODE-CELL constant, and arena (arena-alloc).
+
+(defn alloc-node:ptr ()
+  (return (arena-alloc (sizeof Node))))
+
+(defn make-cell:ptr (car:ptr cdr:ptr line:i32)
+  (let (c:*Node (cast *Node (alloc-node)))
+    (.set! c kind NODE-CELL)
+    (.set! c line line)
+    (.set! c car car)
+    (.set! c cdr cdr)
+    (return (cast ptr c))))
+
+(defn node-at:ptr (n:ptr i:i32)
+  (let (nn:*Node (cast *Node n))
+    (while (and (and (!= n null) (= (. nn kind) NODE-CELL)) (> i 0))
+      (set! n (. nn cdr))
+      (set! nn (cast *Node n))
+      (set! i (- i 1)))
+    (when (and (!= n null) (= (. nn kind) NODE-CELL)) (return (. nn car)))
+    (return null)))
+
+(defn node-len:i32 (n:ptr)
+  (let (k:i32 0
+        nn:*Node (cast *Node n))
+    (while (and (!= n null) (= (. nn kind) NODE-CELL))
+      (set! k (+ k 1))
+      (set! n (. nn cdr))
+      (set! nn (cast *Node n)))
+    (return k)))
+
+(defn node-is-list:i32 (n:ptr)
+  (when (= n null) (return 1))
+  (when (= (. (cast *Node n) kind) NODE-CELL) (return 1))
+  (return 0))
