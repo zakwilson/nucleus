@@ -47,7 +47,34 @@ update-bootstrap: $(BIN)
 	cp $(BIN) bin/nucleusc
 	@echo "DONE: boot/nucleusc.ll and bin/nucleusc updated"
 
+# ---- Library compilation ----
+
+$(BUILD)/lib:
+	mkdir -p $@
+
+# Generate .nuch header from .nuc source
+lib/%.nuch: lib/%.nuc $(BIN)
+	$(BIN) --emit-nuch $< > $@
+
+# Compile library .nuc to .ll
+$(BUILD)/lib/%.ll: lib/%.nuc $(BIN) | $(BUILD)/lib
+	$(BIN) $< > $@
+
+# Compile .ll to position-independent .o
+$(BUILD)/lib/%.o: $(BUILD)/lib/%.ll
+	llc -filetype=obj -relocation-model=pic $< -o $@
+
+# Build all library headers
+LIB_NUCS  := $(wildcard lib/*.nuc)
+LIB_NUCHS := $(LIB_NUCS:.nuc=.nuch)
+LIB_LLS   := $(patsubst lib/%.nuc,$(BUILD)/lib/%.ll,$(LIB_NUCS))
+LIB_OBJS  := $(patsubst lib/%.nuc,$(BUILD)/lib/%.o,$(LIB_NUCS))
+
+lib-headers: $(LIB_NUCHS)
+lib-objs: $(LIB_OBJS)
+lib: lib-headers lib-objs
+
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: test clean bootstrap boot-binary update-bootstrap
+.PHONY: test clean bootstrap boot-binary update-bootstrap lib-headers lib-objs lib

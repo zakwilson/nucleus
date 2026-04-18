@@ -1,0 +1,3 @@
+; .nuch header for lib/mathlib.nuc
+(declare square:i32 (x:i32))
+(declare cube:i32 (x:i32))

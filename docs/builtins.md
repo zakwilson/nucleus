@@ -2,6 +2,24 @@
 
 Built-in forms and functions as implemented in `src/nucleusc.nuc`.
 
+## Compiler Flags
+
+| Flag | Description |
+|------|-------------|
+| `--emit-nuch` | Output a `.nuch` header instead of LLVM IR. Extracts function signatures, struct definitions, constants, enums, and macros. |
+
+## .nuch Header Format
+
+A `.nuch` file is an S-expression file containing declarations extracted from a Nucleus source file. It allows importing a library's interface without its source code — function bodies are resolved at link time from the corresponding `.o` file.
+
+```lisp
+; .nuch header for lib/mathlib.nuc
+(declare square:i32 (x:i32))
+(declare cube:i32 (x:i32))
+```
+
+Supported forms: `declare` (function signatures), `defstruct`, `defconst`, `defenum`, `defmacro` (full body preserved).
+
 ## Top-Level Forms
 
 | Name | Description | C Equivalent |
@@ -12,7 +30,8 @@ Built-in forms and functions as implemented in `src/nucleusc.nuc`.
 | `defvar` | Define a global variable | global variable definition |
 | `defstruct` | Define a struct type | `struct` |
 | `include` | Include a C standard library module | `#include` |
-| `import` | Import a Nucleus library `(import name)`. Resolves `name.nuc` from source directory or `lib/`. Includes all definitions and macros. Duplicate imports are silently skipped. | — |
+| `import` | Import a Nucleus library `(import name)`. Resolves `name.nuc` (source) or `name.nuch` (header) from source directory or `lib/`. Source imports inline all definitions; header imports emit `declare` (extern) for functions. Duplicate imports are silently skipped. | — |
+| `declare` | Declare an external function signature `(declare name:rettype (params...))`. Used in `.nuch` header files. | function prototype |
 | `extern` | Declare an external (foreign) global variable | `extern` declaration |
 | `defmacro` | Define a compile-time macro `(defmacro name (params...) body...)`. Supports `&rest` for variadic macros: `(defmacro name (a b &rest rest) ...)` — `rest` receives a cons list of remaining args. | macro |
 
