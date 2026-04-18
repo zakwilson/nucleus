@@ -7,6 +7,22 @@ Built-in forms and functions as implemented in `src/nucleusc.nuc`.
 | Flag | Description |
 |------|-------------|
 | `--emit-nuch` | Output a `.nuch` header instead of LLVM IR. Extracts function signatures, struct definitions, constants, enums, and macros. |
+| `-i` / `--interactive` | Start the REPL (interactive Read-Eval-Print Loop). |
+
+## REPL
+
+Start with `nucleusc -i`. The REPL reads one form at a time, JIT-compiles it, and prints the result. Multi-line input is supported (the REPL detects unbalanced parentheses and prompts for continuation lines with `...>`).
+
+Supported top-level forms in the REPL: `defn`, `defvar`, `defconst`, `defenum`, `defstruct`, `include`, `extern`, `import`, `defmacro`, `compile-time`. Any other form (including bare symbols, integers, and function calls) is evaluated as an expression.
+
+Functions defined in the REPL persist across inputs and can call each other. Use `(include stdio)` to access printf and other libc functions.
+
+Errors in the REPL are caught and recovered; the REPL continues after an error. Redefining a function emits a warning.
+
+Limitations:
+- Functions need explicit `(return ...)` to return values (same as batch mode).
+- `set!` only works on local variables, not globals.
+- stdout output from JIT'd code may be buffered when the REPL is driven by a pipe; in interactive terminal use, line-buffered output appears immediately.
 
 ## .nuch Header Format
 
@@ -81,6 +97,9 @@ Defined via `defmacro`. Use `(import macros)` to include them (note: `dotimes` a
 | `compile-time` | Execute body forms at compile time via LLVM JIT; output goes to stderr | — |
 | `funcall-void` | Call a function pointer with no arguments and no return value | `fn()` |
 | `funcall-ptr-1` | Call a `ptr` function pointer with one `ptr` argument, returning `ptr` | `fn(arg)` |
+| `funcall-ptr-i32` | Call a `ptr` function pointer with no arguments, returning `i32` | `((int(*)())fn)()` |
+| `funcall-ptr-i64` | Call a `ptr` function pointer with no arguments, returning `i64` | `((long(*)())fn)()` |
+| `funcall-ptr-ptr` | Call a `ptr` function pointer with no arguments, returning `ptr` | `((void*(*)())fn)()` |
 | `gensym` | Return a fresh unique symbol `Node*` (e.g. `__gs_0`); for use in macro bodies to avoid variable capture | — |
 
 ## Binary Operators
@@ -147,6 +166,7 @@ Pre-declared C standard library functions, available without `extern`.
 | `perror` | `(ptr) -> void` | `<stdio.h>` |
 | `open_memstream` | `(ptr, ptr) -> ptr` | `<stdio.h>` |
 | `fflush` | `(ptr) -> i32` | `<stdio.h>` |
+| `fgets` | `(ptr, i32, ptr) -> ptr` | `<stdio.h>` |
 
 ### stdlib
 

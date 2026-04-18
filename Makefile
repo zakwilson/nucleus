@@ -10,9 +10,15 @@ BIN          := $(BUILD)/nucleusc
 # To rebuild it from the committed IR:  make boot-binary
 BOOT         := bin/nucleusc
 
-$(BIN): $(BOOT) src/nucleusc.nuc | $(BUILD)
+# REPL shim (setjmp/longjmp wrapper)
+REPL_SHIM_O  := $(BUILD)/repl_shim.o
+
+$(BIN): $(BOOT) src/nucleusc.nuc $(REPL_SHIM_O) | $(BUILD)
 	$(BOOT) src/nucleusc.nuc > $(BUILD)/nucleusc.ll
-	clang $(BUILD)/nucleusc.ll $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl -rdynamic -o $@
+	clang $(BUILD)/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl -rdynamic -o $@
+
+$(REPL_SHIM_O): src/repl_shim.c | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD) $(BUILD)/out:
 	mkdir -p $@
@@ -28,7 +34,7 @@ test: $(BIN)
 bootstrap: $(BIN) | $(BUILD)/out
 	@echo "=== Stage 2: self-hosted compiler -> nucleusc.nuc ==="
 	$(BIN) src/nucleusc.nuc > $(BUILD)/stage2.ll
-	clang $(BUILD)/stage2.ll $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl -rdynamic -o $(BUILD)/nucleusc-stage2
+	clang $(BUILD)/stage2.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl -rdynamic -o $(BUILD)/nucleusc-stage2
 	@echo "=== Fixed-point test ==="
 	diff $(BUILD)/nucleusc.ll $(BUILD)/stage2.ll
 	@echo "PASS: stage1.ll == stage2.ll"
