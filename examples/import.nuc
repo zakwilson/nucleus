@@ -1,0 +1,10 @@
+; Test native imports.
+
+(include stdio)
+(import mathlib)
+(import mathlib)  ; duplicate import — should be a no-op
+
+(defn main:int ()
+  (printf "square(5) = %d\n" (square 5))
+  (printf "cube(3) = %d\n" (cube 3))
+  (return 0))
