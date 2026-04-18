@@ -49,10 +49,6 @@ A compiler flag `--emit-cheader` is simpler than a separate tool, since the comp
 
 - **Variadic functions.** The libc table already marks variadic functions. The C header parser needs to recognize `...` in parameter lists and propagate this to the internal representation. The compiler's call emission must continue using the correct LLVM `call` vs variadic call convention.
 
-#### Designer:
-
-YAGNI, worse is better, etc.... Simpler approaches are preferred here, except that users of the language will expect to be able to use any C library. Correctness is therefore required when it comes to C interop.
-
 ## Completion criteria
 
 This stage is complete when Nucleus can do all of the following:
