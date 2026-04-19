@@ -46,6 +46,8 @@ Nucleus is a replacement for C using Lisp style syntax and macros with LLVM as i
 - Few special forms - it's especially better to have few builtins with special behavior
 - Many macros - where ergonomics or expressiveness require special behavior, macros are the preferred implementation
 - Macros vs functions - In Lisp, it is conventional to prefer functions over macros wherever possible. In Nucleus, runtime overhead is is equally important.
+- LLVM native - Nucleus targets LLVM and relies on its infrastructure to simplify implementation when possible.
+- C-compatible - Nucleus is a drop-in replacement for C with a superset of C's functionality. It must be able to use any C library's functions and data structures, but not its macros. Likewise, any functions and data structures from a Nucleus library must be consumable from C.
 
 ## Design documents
 
@@ -59,3 +61,5 @@ Nucleus is a replacement for C using Lisp style syntax and macros with LLVM as i
 ## Agent feedback
 
 Some design documents are structured as a conversation between a designer and a robot. Agents tasked with responding to a design document should add their feedback to the robot sections.
+
+Agents encountering new design documents should add them to the above list.
