@@ -15,13 +15,18 @@ Start with `nucleusc -i`. The REPL reads one form at a time, JIT-compiles it, an
 
 Supported top-level forms in the REPL: `defn`, `defvar`, `defconst`, `defenum`, `defstruct`, `include`, `extern`, `import`, `defmacro`, `compile-time`. Any other form (including bare symbols, integers, and function calls) is evaluated as an expression.
 
-Functions defined in the REPL persist across inputs and can call each other. Use `(include stdio)` to access printf and other libc functions.
+Functions defined in the REPL persist across inputs and can call each other. All libc functions (stdio, stdlib, string, ctype, unistd) are pre-loaded — no `(include ...)` needed.
 
-Errors in the REPL are caught and recovered; the REPL continues after an error. Redefining a function emits a warning.
+Imported libraries work: `(import mathlib)` makes `square`, `cube`, etc. available. `(import macros)` loads the standard macros (`if`, `when`, `unless`, `for`, `dotimes`, `->`). The `Node` struct and `NODE-*` constants are pre-registered for macro support.
+
+Errors in the REPL are caught and recovered; the REPL continues after an error (including IR parse errors and JIT errors). Redefining an already-defined function is refused with an error.
 
 Limitations:
 - Functions need explicit `(return ...)` to return values (same as batch mode).
+- Functions cannot be redefined once defined (JIT limitation).
 - `set!` only works on local variables, not globals.
+- `defvar` initializers must be integer literals (no expressions).
+- `(import node)` is not supported — `node.nuc` depends on compiler-internal allocator functions.
 - stdout output from JIT'd code may be buffered when the REPL is driven by a pipe; in interactive terminal use, line-buffered output appears immediately.
 
 ## .nuch Header Format
