@@ -25,4 +25,6 @@ Worse may be better here: types are a special case and users have to start any s
 
 A middle way: types get a reader macro like `(defn $main:int () ...)`. Right now, I think it's ugly, but accepting something ugly to simplify implementation fits the worse is better philosophy.
 
+Sidestep the problem: types could just be a positional argument to anything that introduces a variable.
+
 ### Robot:

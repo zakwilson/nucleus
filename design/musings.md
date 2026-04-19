@@ -67,4 +67,3 @@ Macro definitions added some code to the compiler
  Total                     1         2737         2306          209          222
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-then it started to shrink.
