@@ -20,7 +20,7 @@
 (defconst MAX-STRUCTS 64)
 
 ; Token kinds
-(defenum TokKind TOK-LPAREN TOK-RPAREN TOK-QUOTE TOK-QUASI TOK-UNQUOTE TOK-UNQUOTE-SPLICE TOK-INT TOK-STRING TOK-SYMBOL TOK-EOF)
+(defenum TokKind TOK-LPAREN TOK-RPAREN TOK-RMACRO TOK-INT TOK-STRING TOK-SYMBOL TOK-EOF)
 
 ; Node kinds
 (defenum NodeKind NODE-INT NODE-STR NODE-SYM NODE-CELL)
@@ -110,6 +110,11 @@
   jit-name:ptr
   num-params:i32
   variadic:i32)
+
+(defstruct RMacro
+  prefix:ptr
+  prefix-len:i32
+  wrap-sym:ptr)
 
 ; ============================================================
 ; Standard macros — imported from lib/macros.nuc.
@@ -208,6 +213,10 @@
 (defvar g-macros:ptr)
 (defvar g-num-macros:i32 0)
 (defvar g-gensym-id:i32 0)
+
+; Reader macro table
+(defvar g-rmacros:ptr)
+(defvar g-num-rmacros:i32 0)
 
 ; Set to 1 once @malloc has been declared via emit-include (e.g. from (include stdlib)).
 ; Guards against emitting a duplicate malloc declaration in macro JIT modules.
@@ -459,6 +468,31 @@
       (let (name-len:i64 (- (cast i64 colon) (cast i64 sym)))
         (ptr-set! out-name (arena-strndup sym name-len))
         (ptr-set! out-type-name (arena-strdup (ptr+ (cast *i8 colon) (cast i64 1))))))))
+
+; Extract name and type-name from a node that is either:
+;   - a symbol node (possibly containing :) — uses split-typed
+;   - a list node (name type ...) from desugar — extracts car/cadr strings
+; Sets out-name and out-type-name.  out-type-name is null if untyped.
+(defn extract-name-type:void (node:ptr out-name:*ptr out-type-name:*ptr)
+  (let (n:*Node (cast *Node node))
+    (when (= (. n kind) NODE-SYM)
+      (do (split-typed (. n s) out-name out-type-name)
+          (return)))
+    (when (= (. n kind) NODE-CELL)
+      (let (car-node:*Node (cast *Node (. n car)))
+        (when (and (!= (cast ptr car-node) null) (= (. car-node kind) NODE-SYM))
+          (do (ptr-set! out-name (. car-node s))
+              (let (rest:ptr (. n cdr))
+                (if (!= rest null)
+                  (let (type-node:*Node (cast *Node (. (cast *Node rest) car)))
+                    (when (and (!= (cast ptr type-node) null) (= (. type-node kind) NODE-SYM))
+                      (ptr-set! out-type-name (. type-node s)))
+                    (return))
+                  (do (ptr-set! out-type-name null)
+                      (return))))))))
+    ; Fallback: treat as untyped
+    (ptr-set! out-name null)
+    (ptr-set! out-type-name null)))
 
 ; ============================================================
 ; Symbol table
@@ -1220,17 +1254,15 @@
       (let (inner:ptr (scope-new scope)
             i:i32 0)
         (while (< i (node-len binds))
-          (let (bname:*Node (cast *Node (node-at binds i))
+          (let (bname:ptr (node-at binds i)
                 bval-node:ptr (node-at binds (+ i 1)))
-            (when (!= (. bname kind) NODE-SYM)
-              (die-at (. bname line) "let: binding name must be symbol"))
             (let (name:ptr null
                   type-name:ptr null)
-              (split-typed (. bname s) (cast *ptr (addr-of name))
+              (extract-name-type bname (cast *ptr (addr-of name))
                                        (cast *ptr (addr-of type-name)))
               (when (= type-name null)
-                (die-at (. bname line) (fmt-s "let: missing :type on '%s'" name)))
-              (let (ty:ptr (parse-type-name type-name (. bname line))
+                (die-at (. (cast *Node bname) line) (fmt-s "let: missing :type on '%s'" name)))
+              (let (ty:ptr (parse-type-name type-name (. (cast *Node bname) line))
                     slot:ptr (fmt-sd "%%%s.addr.%d" name g-tmp)
                     align:i32 (type-size ty))
                 (inc! g-tmp)
@@ -1414,7 +1446,7 @@
             (do (fprintf stderr "%s: macro '%s': returned null\n"
                          g-source-path (. mdef name))
                 (exit 1)))
-          (return (emit-node result scope)))))))
+          (return (emit-node (desugar result) scope)))))))
 
 ; ============================================================
 ; List dispatch
@@ -1482,16 +1514,14 @@
   (let (cc:*Node (cast *Node call))
     (when (or (< (node-len cc) 2) (> (node-len cc) 3))
       (die-at (. cc line) "defvar: expects name and optional init"))
-    (let (name-node:*Node (cast *Node (node-at cc 1)))
-      (when (!= (. name-node kind) NODE-SYM)
-        (die-at (. name-node line) "defvar: name must be symbol"))
+    (let (name-node:ptr (node-at cc 1))
       (let (name:ptr null
             type-name:ptr null)
-        (split-typed (. name-node s) (cast *ptr (addr-of name))
+        (extract-name-type name-node (cast *ptr (addr-of name))
                                      (cast *ptr (addr-of type-name)))
         (when (= type-name null)
-          (die-at (. name-node line) (fmt-s "defvar: missing :type on '%s'" name)))
-        (let (ty:ptr (parse-type-name type-name (. name-node line))
+          (die-at (. (cast *Node name-node) line) (fmt-s "defvar: missing :type on '%s'" name)))
+        (let (ty:ptr (parse-type-name type-name (. (cast *Node name-node) line))
               ir-name:ptr (fmt-s "@%s" name)
               align:i32 (type-size ty))
           (if (= (node-len cc) 3)
@@ -1545,18 +1575,16 @@
         (.set! sd num-fields nfields)
         (let (i:i32 0)
           (while (< i nfields)
-            (let (field:*Node (cast *Node (node-at cc (+ i 2))))
-              (when (!= (. field kind) NODE-SYM)
-                (die-at (. field line) "defstruct: field must be typed symbol"))
-              (let (fname:ptr null
-                    ftype-name:ptr null)
-                (split-typed (. field s) (cast *ptr (addr-of fname))
-                                         (cast *ptr (addr-of ftype-name)))
-                (when (= ftype-name null)
-                  (die-at (. field line) (fmt-s "defstruct: field '%s' missing :type" fname)))
-                (aset! (cast *ptr (. sd field-names)) i fname)
-                (aset! (cast *ptr (. sd field-types)) i
-                       (parse-type-name ftype-name (. field line)))))
+            (let (field:ptr (node-at cc (+ i 2))
+                  fname:ptr null
+                  ftype-name:ptr null)
+              (extract-name-type field (cast *ptr (addr-of fname))
+                                       (cast *ptr (addr-of ftype-name)))
+              (when (= ftype-name null)
+                (die-at (. (cast *Node field) line) (fmt-s "defstruct: field '%s' missing :type" fname)))
+              (aset! (cast *ptr (. sd field-names)) i fname)
+              (aset! (cast *ptr (. sd field-types)) i
+                     (parse-type-name ftype-name (. (cast *Node field) line))))
             (inc! i)))
         (fprintf g-out "%%%s = type { " (. name-node s))
         (let (i:i32 0)
@@ -1568,18 +1596,18 @@
 
 (defn emit-extern:void (call:ptr)
   (let (cc:*Node (cast *Node call))
-    (when (or (!= (node-len cc) 2) (-> cc (node-at _ 1) (cast *Node _) (. kind) (!= _ NODE-SYM)))
+    (when (!= (node-len cc) 2)
       (die-at (. cc line) "extern: expects name:type"))
-    (let (arg1:*Node (cast *Node (node-at cc 1))
+    (let (arg1:ptr (node-at cc 1)
           name:ptr null
           type-name:ptr null)
-      (split-typed (. arg1 s)
+      (extract-name-type arg1
                    (cast *ptr (addr-of name))
                    (cast *ptr (addr-of type-name)))
       (when (= type-name null)
-        (die-at (. arg1 line)
+        (die-at (. (cast *Node arg1) line)
           (fmt-s "extern: missing :type on '%s'" name)))
-      (let (ty:ptr (parse-type-name type-name (. arg1 line))
+      (let (ty:ptr (parse-type-name type-name (. (cast *Node arg1) line))
             ir-name:ptr (fmt-s "@%s" name))
         (fprintf g-out "%s = external global %s\n\n" ir-name (type-to-ir ty))
         (scope-define g-globals name ty ir-name 1)))))
@@ -1735,19 +1763,17 @@
 (defn emit-defn:void (call:ptr)
   (let (cc:*Node (cast *Node call))
     (when (< (node-len cc) 4) (die-at (. cc line) "defn: bad form"))
-    (let (name-node:*Node (cast *Node (node-at cc 1))
+    (let (name-node:ptr (node-at cc 1)
           params-node:ptr (node-at cc 2))
-      (when (!= (. name-node kind) NODE-SYM)
-        (die-at (. name-node line) "defn: name must be symbol"))
       (when (= (node-is-list params-node) 0)
-        (die-at (. name-node line) "defn: params must be list"))
+        (die-at (. (cast *Node name-node) line) "defn: params must be list"))
       (let (fname:ptr null
             ret-name:ptr null)
-        (split-typed (. name-node s) (cast *ptr (addr-of fname))
+        (extract-name-type name-node (cast *ptr (addr-of fname))
                                      (cast *ptr (addr-of ret-name)))
         (when (= ret-name null)
-          (die-at (. name-node line) (fmt-s "defn: missing :type on '%s'" fname)))
-        (let (ret:ptr (parse-type-name ret-name (. name-node line))
+          (die-at (. (cast *Node name-node) line) (fmt-s "defn: missing :type on '%s'" fname)))
+        (let (ret:ptr (parse-type-name ret-name (. (cast *Node name-node) line))
               nparams:i32 (node-len params-node)
               param-types:ptr null
               param-names:ptr null)
@@ -1757,16 +1783,14 @@
               (set! param-names (arena-alloc (* (i64 nparams) (i64 8))))))
           (let (i:i32 0)
             (while (< i nparams)
-              (let (p:*Node (cast *Node (node-at params-node i))
+              (let (p:ptr (node-at params-node i)
                     pname:ptr null
                     ptype-name:ptr null)
-                (when (!= (. p kind) NODE-SYM)
-                  (die-at (. p line) "defn: param must be symbol"))
-                (split-typed (. p s) (cast *ptr (addr-of pname))
+                (extract-name-type p (cast *ptr (addr-of pname))
                                      (cast *ptr (addr-of ptype-name)))
                 (when (= ptype-name null)
-                  (die-at (. p line) (fmt-s "defn: missing :type on param '%s'" pname)))
-                (aset! (cast *ptr param-types) i (parse-type-name ptype-name (. p line)))
+                  (die-at (. (cast *Node p) line) (fmt-s "defn: missing :type on param '%s'" pname)))
+                (aset! (cast *ptr param-types) i (parse-type-name ptype-name (. (cast *Node p) line)))
                 (aset! (cast *ptr param-names) i pname))
               (inc! i)))
           ; Register function in globals
@@ -1942,28 +1966,27 @@
                             (and (>= (node-len bf) 4)
                                  (and (-> bf (node-at _ 0) (cast *Node _) (. kind) (= _ NODE-SYM))
                                       (-> bf (node-at _ 0) (cast *Node _) (. s) (strcmp _ "defn") (= _ 0))))))
-                (let (name-node:*Node (cast *Node (node-at bf 1))
+                (let (name-node:ptr (node-at bf 1)
                       params-node:ptr (node-at bf 2))
-                  (when (and (= (. name-node kind) NODE-SYM) (!= (node-is-list params-node) 0))
+                  (when (!= (node-is-list params-node) 0)
                     (let (fname:ptr null  ret-name:ptr null)
-                      (split-typed (. name-node s) (cast *ptr (addr-of fname))
+                      (extract-name-type name-node (cast *ptr (addr-of fname))
                                                    (cast *ptr (addr-of ret-name)))
                       (when (!= ret-name null)
-                        (let (ret:ptr (parse-type-name ret-name (. name-node line))
+                        (let (ret:ptr (parse-type-name ret-name (. (cast *Node name-node) line))
                               nparams:i32 (node-len params-node)
                               ptypes:ptr null)
                           (when (> nparams 0)
                             (set! ptypes (arena-alloc (* (i64 nparams) (i64 8)))))
                           (let (j:i32 0)
                             (while (< j nparams)
-                              (let (p:*Node (cast *Node (node-at params-node j)))
-                                (when (= (. p kind) NODE-SYM)
-                                  (let (pn:ptr null  pt-name:ptr null)
-                                    (split-typed (. p s) (cast *ptr (addr-of pn))
-                                                         (cast *ptr (addr-of pt-name)))
-                                    (if (!= pt-name null)
-                                      (aset! (cast *ptr ptypes) j (parse-type-name pt-name (. p line)))
-                                      (aset! (cast *ptr ptypes) j ty-i32)))))
+                              (let (p:ptr (node-at params-node j)
+                                    pn:ptr null  pt-name:ptr null)
+                                (extract-name-type p (cast *ptr (addr-of pn))
+                                                     (cast *ptr (addr-of pt-name)))
+                                (if (!= pt-name null)
+                                  (aset! (cast *ptr ptypes) j (parse-type-name pt-name (. (cast *Node p) line)))
+                                  (aset! (cast *ptr ptypes) j ty-i32)))
                               (inc! j)))
                           (let (ft:*Type (cast *Type (make-type TY-FN)))
                             (.set! ft ret ret)
@@ -2342,6 +2365,197 @@
           (fclose f)
           (return buf))))))
 
+; ============================================================
+; Desugar pass — split colon-typed symbols into lists
+; ============================================================
+
+; Split a symbol string containing : into a list of symbol nodes.
+; "foo:int" → (foo int),  "bar:ptr:fn:Sym" → (bar ptr fn Sym)
+(defn desugar-symbol:ptr (sym:ptr line:i32)
+  (let (s:ptr (. (cast *Node sym) s)
+        result:ptr null
+        tail:ptr null
+        start:i64 (cast i64 0)
+        i:i64 (cast i64 0)
+        slen:i64 (strlen s))
+    (while (<= i slen)
+      (when (or (= i slen) (= (char-at s i) 58))
+        (do (let (seg-len:i64 (- i start)
+                  seg:ptr (arena-strndup (ptr+ (cast *i8 s) start) seg-len)
+                  n:*Node (cast *Node (alloc-node)))
+              (.set! n kind NODE-SYM)
+              (.set! n line line)
+              (.set! n s seg)
+              (let (cell:ptr (make-cell (cast ptr n) null line))
+                (when (= tail null) (set! result cell))
+                (when (!= tail null) (.set! (cast *Node tail) cdr cell))
+                (set! tail cell)))
+            (set! start (+ i (cast i64 1)))))
+      (set! i (+ i (cast i64 1))))
+    (return result)))
+
+; Desugar a single typed-name node (symbol with :).
+; Returns the node unchanged if it has no colon.
+(defn desugar-typed:ptr (node:ptr)
+  (when (= node null) (return null))
+  (let (n:*Node (cast *Node node))
+    (when (and (= (. n kind) NODE-SYM) (!= (strchr (. n s) 58) null))
+      (return (desugar-symbol node (. n line))))
+    (return node)))
+
+; Desugar a parameter list: each element that is a typed symbol gets split.
+(defn desugar-params:ptr (params:ptr)
+  (when (= params null) (return null))
+  (let (n:*Node (cast *Node params))
+    (when (!= (. n kind) NODE-CELL) (return params))
+    (let (new-car:ptr (desugar-typed (. n car))
+          new-cdr:ptr (desugar-params (. n cdr)))
+      (when (and (= new-car (. n car)) (= new-cdr (. n cdr)))
+        (return params))
+      (let (c:*Node (cast *Node (alloc-node)))
+        (.set! c kind NODE-CELL)
+        (.set! c line (. n line))
+        (.set! c car new-car)
+        (.set! c cdr new-cdr)
+        (return (cast ptr c))))))
+
+; Desugar a let binding list: pairs of (name val) where name may be typed.
+(defn desugar-let-bindings:ptr (binds:ptr)
+  (when (= binds null) (return null))
+  (let (n:*Node (cast *Node binds))
+    (when (!= (. n kind) NODE-CELL) (return binds))
+    ; Even-indexed children are binding names, odd are values — desugar names only.
+    (let (result:ptr null
+          tail:ptr null
+          cur:ptr binds
+          idx:i32 0
+          changed:i32 0)
+      (while (!= cur null)
+        (let (cn:*Node (cast *Node cur)
+              elem:ptr (. cn car)
+              new-elem:ptr elem)
+          (when (= (% idx 2) 0)
+            (set! new-elem (desugar-typed elem)))
+          (when (!= new-elem elem) (set! changed 1))
+          (let (cell:ptr (make-cell new-elem null (. cn line)))
+            (when (= tail null) (set! result cell))
+            (when (!= tail null) (.set! (cast *Node tail) cdr cell))
+            (set! tail cell)))
+        (set! cur (. (cast *Node cur) cdr))
+        (inc! idx))
+      (when (= changed 0) (return binds))
+      (return result))))
+
+; Desugar a top-level form list.  Recognises defn, defvar, defstruct,
+; extern, declare, and let, and desugars only the binding-position symbols.
+; Expression bodies are NOT desugared (they may contain typed symbols from
+; macro expansion that should stay as symbols for split-typed in value position).
+(defn desugar:ptr (forms:ptr)
+  (when (= forms null) (return null))
+  (let (n:*Node (cast *Node forms))
+    (when (!= (. n kind) NODE-CELL) (return forms))
+    (let (new-car:ptr (desugar-form (. n car))
+          new-cdr:ptr (desugar (. n cdr)))
+      (when (and (= new-car (. n car)) (= new-cdr (. n cdr)))
+        (return forms))
+      (let (c:*Node (cast *Node (alloc-node)))
+        (.set! c kind NODE-CELL)
+        (.set! c line (. n line))
+        (.set! c car new-car)
+        (.set! c cdr new-cdr)
+        (return (cast ptr c))))))
+
+; Desugar a single form.  Only touches binding positions of known forms.
+(defn desugar-form:ptr (form:ptr)
+  (when (= form null) (return null))
+  (let (f:*Node (cast *Node form))
+    (when (!= (. f kind) NODE-CELL) (return form))
+    (when (= (node-len form) 0) (return form))
+    (let (head:*Node (cast *Node (node-at form 0)))
+      (when (!= (. head kind) NODE-SYM) (return form))
+      (let (h:ptr (. head s))
+        ; (defn name:type (params...) body...)
+        (when (= (strcmp h "defn") 0)
+          (when (>= (node-len form) 3)
+            (let (new-name:ptr (desugar-typed (node-at form 1))
+                  new-params:ptr (desugar-params (node-at form 2)))
+              (when (and (= new-name (node-at form 1))
+                         (= new-params (node-at form 2)))
+                (return form))
+              ; Rebuild: (defn new-name new-params body...)
+              (return (make-cell (cast ptr head)
+                       (make-cell new-name
+                         (make-cell new-params
+                           (. (cast *Node (. (cast *Node (. f cdr)) cdr)) cdr)
+                           (. f line))
+                         (. f line))
+                       (. f line))))))
+        ; (defvar name:type [init])
+        (when (= (strcmp h "defvar") 0)
+          (when (>= (node-len form) 2)
+            (let (new-name:ptr (desugar-typed (node-at form 1)))
+              (when (= new-name (node-at form 1)) (return form))
+              (return (make-cell (cast ptr head)
+                       (make-cell new-name
+                         (. (cast *Node (. f cdr)) cdr)
+                         (. f line))
+                       (. f line))))))
+        ; (defstruct name field:type ...)
+        (when (= (strcmp h "defstruct") 0)
+          (when (>= (node-len form) 2)
+            ; Desugar fields (positions 2+)
+            (let (new-rest:ptr (desugar-params (. (cast *Node (. f cdr)) cdr)))
+              (when (= new-rest (. (cast *Node (. f cdr)) cdr))
+                (return form))
+              (return (make-cell (cast ptr head)
+                       (make-cell (node-at form 1)
+                         new-rest
+                         (. f line))
+                       (. f line))))))
+        ; (extern name:type)
+        (when (= (strcmp h "extern") 0)
+          (when (= (node-len form) 2)
+            (let (new-name:ptr (desugar-typed (node-at form 1)))
+              (when (= new-name (node-at form 1)) (return form))
+              (return (make-cell (cast ptr head)
+                       (make-cell new-name null (. f line))
+                       (. f line))))))
+        ; (declare name:type (params...))
+        (when (= (strcmp h "declare") 0)
+          (when (>= (node-len form) 2)
+            (let (new-name:ptr (desugar-typed (node-at form 1))
+                  new-params:ptr null)
+              (when (= (node-len form) 3)
+                (set! new-params (desugar-params (node-at form 2))))
+              (when (and (= new-name (node-at form 1))
+                         (or (= (node-len form) 2) (= new-params (node-at form 2))))
+                (return form))
+              (when (= (node-len form) 3)
+                (return (make-cell (cast ptr head)
+                         (make-cell new-name
+                           (make-cell new-params null (. f line))
+                           (. f line))
+                         (. f line))))
+              (return (make-cell (cast ptr head)
+                       (make-cell new-name null (. f line))
+                       (. f line))))))
+        ; (let (bindings...) body...) — desugar binding names
+        (when (= (strcmp h "let") 0)
+          (when (>= (node-len form) 2)
+            (let (new-binds:ptr (desugar-let-bindings (node-at form 1)))
+              (when (= new-binds (node-at form 1)) (return form))
+              (return (make-cell (cast ptr head)
+                       (make-cell new-binds
+                         (. (cast *Node (. f cdr)) cdr)
+                         (. f line))
+                       (. f line))))))
+        ; Recurse into body of compile-time and do blocks
+        (when (or (= (strcmp h "compile-time") 0) (= (strcmp h "do") 0))
+          (let (new-body:ptr (desugar (. f cdr)))
+            (when (= new-body (. f cdr)) (return form))
+            (return (make-cell (cast ptr head) new-body (. f line)))))
+        (return form)))))
+
 ; Pre-scan a form list and forward-declare all defn signatures in g-globals.
 (defn prescan-defn-signatures:void (forms:ptr)
   (let (fc:ptr forms)
@@ -2351,31 +2565,30 @@
                    (and (>= (node-len (cast ptr f)) 4)
                         (and (-> f (node-at _ 0) (cast *Node _) (. kind) (= _ NODE-SYM))
                              (-> f (node-at _ 0) (cast *Node _) (. s) (strcmp _ "defn") (= _ 0)))))
-          (let (name-node:*Node (cast *Node (node-at (cast ptr f) 1))
+          (let (name-node:ptr (node-at (cast ptr f) 1)
                 params-node:ptr (node-at (cast ptr f) 2))
-            (when (and (= (. name-node kind) NODE-SYM) (!= (node-is-list params-node) 0))
+            (when (!= (node-is-list params-node) 0)
               (let (fname:ptr null
                     ret-name:ptr null)
-                (split-typed (. name-node s) (cast *ptr (addr-of fname))
+                (extract-name-type name-node (cast *ptr (addr-of fname))
                                              (cast *ptr (addr-of ret-name)))
                 (when (!= ret-name null)
-                  (let (ret:ptr (parse-type-name ret-name (. name-node line))
+                  (let (ret:ptr (parse-type-name ret-name (. (cast *Node name-node) line))
                         nparams:i32 (node-len params-node)
                         ptypes:ptr null)
                     (when (> nparams 0)
                       (set! ptypes (arena-alloc (* (i64 nparams) (i64 8)))))
                     (let (j:i32 0)
                       (while (< j nparams)
-                        (let (p:*Node (cast *Node (node-at params-node j)))
-                          (when (= (. p kind) NODE-SYM)
-                            (let (pn:ptr null
-                                  pt-name:ptr null)
-                              (split-typed (. p s) (cast *ptr (addr-of pn))
-                                                   (cast *ptr (addr-of pt-name)))
-                              (if (!= pt-name null)
-                                (aset! (cast *ptr ptypes) j
-                                       (parse-type-name pt-name (. p line)))
-                                (aset! (cast *ptr ptypes) j ty-i32)))))
+                        (let (p:ptr (node-at params-node j)
+                              pn:ptr null
+                              pt-name:ptr null)
+                          (extract-name-type p (cast *ptr (addr-of pn))
+                                               (cast *ptr (addr-of pt-name)))
+                          (if (!= pt-name null)
+                            (aset! (cast *ptr ptypes) j
+                                   (parse-type-name pt-name (. (cast *Node p) line)))
+                            (aset! (cast *ptr ptypes) j ty-i32)))
                         (inc! j)))
                     (let (ft:*Type (cast *Type (make-type TY-FN)))
                       (.set! ft ret ret)
@@ -2384,6 +2597,18 @@
                       (scope-define g-globals fname (cast ptr ft)
                                     (fmt-s "@%s" fname) 0)))))))))
       (set! fc (. (cast *Node fc) cdr)))))
+
+(defn emit-def-rmacro:void (call:ptr)
+  (let (cc:*Node (cast *Node call))
+    (when (!= (node-len cc) 3)
+      (die-at (. cc line) "def-rmacro: expects (def-rmacro \"prefix\" symbol)"))
+    (let (prefix-node:*Node (cast *Node (node-at cc 1))
+          sym-node:*Node (cast *Node (node-at cc 2)))
+      (when (!= (. prefix-node kind) NODE-STR)
+        (die-at (. prefix-node line) "def-rmacro: prefix must be a string"))
+      (when (!= (. sym-node kind) NODE-SYM)
+        (die-at (. sym-node line) "def-rmacro: wrap symbol must be a symbol"))
+      (register-rmacro (. prefix-node s) (. sym-node s)))))
 
 ; Emit a list of top-level forms (pre-scan + dispatch loop).
 ; Used by main and by emit-import for recursive processing.
@@ -2416,6 +2641,8 @@
                   (emit-compile-time (cast ptr f))
                 (= (strcmp h "defmacro") 0)
                   (emit-defmacro (cast ptr f))
+                (= (strcmp h "def-rmacro") 0)
+                  (emit-def-rmacro (cast ptr f))
                 (= (strcmp h "import") 0)
                   (emit-import (cast ptr f))
                 true
@@ -2521,7 +2748,7 @@
             (set! g-pos (cast i64 0))
             (set! g-line 1)
             (set! g-peek-valid 0)
-            (let (forms:ptr (read-program)
+            (let (forms:ptr (desugar (read-program))
                   is-nuch:i32 (str-ends-with path ".nuch"))
               ; Process imported forms
               (if (!= is-nuch 0)
@@ -2630,19 +2857,17 @@
   (let (ff:*Node (cast *Node form))
     (when (or (< (node-len form) 2) (> (node-len form) 3))
       (die-at (. ff line) "declare: expected (declare name:rettype (params...))"))
-    (let (name-node:*Node (cast *Node (node-at form 1))
+    (let (name-node:ptr (node-at form 1)
           params-node:ptr null)
       (when (= (node-len form) 3)
         (set! params-node (node-at form 2)))
-      (when (!= (. name-node kind) NODE-SYM)
-        (die-at (. name-node line) "declare: name must be symbol"))
       (let (fname:ptr null
             ret-name:ptr null)
-        (split-typed (. name-node s) (cast *ptr (addr-of fname))
+        (extract-name-type name-node (cast *ptr (addr-of fname))
                                      (cast *ptr (addr-of ret-name)))
         (when (= ret-name null)
-          (die-at (. name-node line) (fmt-s "declare: missing :type on '%s'" fname)))
-        (let (ret:ptr (parse-type-name ret-name (. name-node line))
+          (die-at (. (cast *Node name-node) line) (fmt-s "declare: missing :type on '%s'" fname)))
+        (let (ret:ptr (parse-type-name ret-name (. (cast *Node name-node) line))
               nparams:i32 0
               ptypes:ptr null
               j:i32 0)
@@ -2651,16 +2876,15 @@
           (when (> nparams 0)
             (set! ptypes (arena-alloc (* (i64 nparams) (i64 8)))))
           (while (< j nparams)
-            (let (p:*Node (cast *Node (node-at params-node j)))
-              (when (= (. p kind) NODE-SYM)
-                (let (pn:ptr null
-                      pt-name:ptr null)
-                  (split-typed (. p s) (cast *ptr (addr-of pn))
-                                       (cast *ptr (addr-of pt-name)))
-                  (if (!= pt-name null)
-                    (aset! (cast *ptr ptypes) j
-                           (parse-type-name pt-name (. p line)))
-                    (aset! (cast *ptr ptypes) j ty-i32)))))
+            (let (p:ptr (node-at params-node j)
+                  pn:ptr null
+                  pt-name:ptr null)
+              (extract-name-type p (cast *ptr (addr-of pn))
+                                   (cast *ptr (addr-of pt-name)))
+              (if (!= pt-name null)
+                (aset! (cast *ptr ptypes) j
+                       (parse-type-name pt-name (. (cast *Node p) line)))
+                (aset! (cast *ptr ptypes) j ty-i32)))
             (inc! j))
           (let (ft:*Type (cast *Type (make-type TY-FN)))
             (.set! ft ret ret)
@@ -2697,6 +2921,8 @@
                     (emit-defenum (cast ptr f))
                   (= (strcmp h "defmacro") 0)
                     (emit-defmacro (cast ptr f))
+                  (= (strcmp h "def-rmacro") 0)
+                    (emit-def-rmacro (cast ptr f))
                   true
                     0))))
       (set! fc (. (cast *Node fc) cdr)))))
@@ -2705,11 +2931,28 @@
 ; Compiler initialization — shared by batch and REPL modes
 ; ============================================================
 
+(defn register-rmacro:void (prefix:ptr wrap-sym:ptr)
+  (let (rm:*RMacro (cast *RMacro (ptr+ (cast *RMacro g-rmacros) g-num-rmacros)))
+    (.set! rm prefix prefix)
+    (.set! rm prefix-len (cast i32 (strlen prefix)))
+    (.set! rm wrap-sym wrap-sym))
+  (inc! g-num-rmacros))
+
+(defn init-rmacros:void ()
+  (set! g-rmacros (arena-alloc (* (cast i64 64) (sizeof RMacro))))
+  ; Register longest prefixes first for correct matching.
+  (register-rmacro "~@" "unquote-splice")
+  (register-rmacro "~" "unquote")
+  (register-rmacro "'" "quote")
+  (register-rmacro "`" "quasiquote")
+  (register-rmacro "@" "deref"))
+
 (defn compiler-init:void ()
   (arena-init)
   (types-init)
   (init-binops)
   (init-libc)
+  (init-rmacros)
   (set! g-structs (arena-alloc (* (cast i64 MAX-STRUCTS) (sizeof StructDef))))
   (set! g-macros (arena-alloc (* (cast i64 256) (sizeof MacroDef))))
   (set! g-globals (scope-new null)))
@@ -2884,13 +3127,13 @@
                   (emit-defvar (cast ptr f))
                   (repl-jit-module (. f line))
                   ; Add external global reference to preamble AFTER successful JIT
-                  (let (var-node:*Node (cast *Node (node-at form 1)))
-                    (when (and (!= (cast ptr var-node) null) (= (. var-node kind) NODE-SYM))
+                  (let (var-node:ptr (node-at form 1))
+                    (when (!= var-node null)
                       (let (vname:ptr null  vtype-name:ptr null)
-                        (split-typed (. var-node s) (cast *ptr (addr-of vname))
+                        (extract-name-type var-node (cast *ptr (addr-of vname))
                                                     (cast *ptr (addr-of vtype-name)))
                         (when (!= vtype-name null)
-                          (let (vty:ptr (parse-type-name vtype-name (. var-node line)))
+                          (let (vty:ptr (parse-type-name vtype-name (. (cast *Node var-node) line)))
                             (fprintf g-repl-preamble "@%s = external global %s\n"
                               (sanitize-for-ir vname) (type-to-ir vty)))))))
                   (fprintf stderr "  defined\n"))
@@ -2924,10 +3167,10 @@
             (and (!= h null) (= (strcmp h "defn") 0))
               (do ; Check for redefinition — refuse in REPL (JIT can't redefine symbols)
                   (let (redef:i32 0)
-                    (let (name-node:*Node (cast *Node (node-at form 1)))
-                      (when (and (!= (cast ptr name-node) null) (= (. name-node kind) NODE-SYM))
+                    (let (name-node:ptr (node-at form 1))
+                      (when (!= name-node null)
                         (let (fname:ptr null  ret-name:ptr null)
-                          (split-typed (. name-node s) (cast *ptr (addr-of fname))
+                          (extract-name-type name-node (cast *ptr (addr-of fname))
                                                        (cast *ptr (addr-of ret-name)))
                           (when (!= (scope-lookup g-globals fname) null)
                             (do (fprintf stderr "  error: cannot redefine '%s' in REPL\n" fname)
@@ -2944,10 +3187,10 @@
                           (repl-jit-module (. f line))
                           (set! g-qq-used 0)
                           ; Add function declaration to preamble for future modules
-                          (let (name-node2:*Node (cast *Node (node-at form 1)))
-                            (when (and (!= (cast ptr name-node2) null) (= (. name-node2 kind) NODE-SYM))
+                          (let (name-node2:ptr (node-at form 1))
+                            (when (!= name-node2 null)
                               (let (fname2:ptr null  ret-name2:ptr null)
-                                (split-typed (. name-node2 s) (cast *ptr (addr-of fname2))
+                                (extract-name-type name-node2 (cast *ptr (addr-of fname2))
                                                               (cast *ptr (addr-of ret-name2)))
                                 (let (sym:*Sym (cast *Sym (scope-lookup g-globals fname2)))
                                   (when (!= (cast ptr sym) null)
@@ -2973,6 +3216,9 @@
                   (emit-compile-time (cast ptr f)))
             (and (!= h null) (= (strcmp h "defmacro") 0))
               (do (emit-defmacro (cast ptr f))
+                  (fprintf stderr "  defined\n"))
+            (and (!= h null) (= (strcmp h "def-rmacro") 0))
+              (do (emit-def-rmacro (cast ptr f))
                   (fprintf stderr "  defined\n"))
             (and (!= h null) (= (strcmp h "import") 0))
               (do (let (pre-len:i32 (. (cast *Scope g-globals) len))
@@ -3228,7 +3474,7 @@
               (set! g-pos (cast i64 0))
               (set! g-line 1)
               (set! g-peek-valid 0)
-              (let (forms:ptr (read-program))
+              (let (forms:ptr (desugar (read-program)))
                 ; Process each form
                 (let (fc:ptr forms)
                   (while (!= fc null)
@@ -3277,7 +3523,7 @@
       (set! g-pos (cast i64 0))
       (set! g-line 1)
 
-      (let (forms:ptr (read-program))
+      (let (forms:ptr (desugar (read-program)))
 
         ; .nuch header mode — emit declarations and exit
         (when (!= g-emit-nuch 0)
