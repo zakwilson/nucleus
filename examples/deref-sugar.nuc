@@ -1,0 +1,9 @@
+(include stdio)
+
+(defn main:int ()
+  (let (x:int 42
+        p:*int (addr-of x))
+    (printf "deref = %d\n" @p)
+    (ptr-set! p 99)
+    (printf "at    = %d\n" @p))
+  (return 0))

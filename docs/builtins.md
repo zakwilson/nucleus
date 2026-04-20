@@ -13,7 +13,7 @@ Built-in forms and functions as implemented in `src/nucleusc.nuc`.
 
 Start with `nucleusc -i`. The REPL reads one form at a time, JIT-compiles it, and prints the result. Multi-line input is supported (the REPL detects unbalanced parentheses and prompts for continuation lines with `...>`).
 
-Supported top-level forms in the REPL: `defn`, `defvar`, `defconst`, `defenum`, `defstruct`, `include`, `extern`, `import`, `defmacro`, `compile-time`. Any other form (including bare symbols, integers, and function calls) is evaluated as an expression.
+Supported top-level forms in the REPL: `defn`, `defvar`, `defconst`, `defenum`, `defstruct`, `include`, `extern`, `import`, `defmacro`, `def-rmacro`, `compile-time`. Any other form (including bare symbols, integers, and function calls) is evaluated as an expression.
 
 Functions defined in the REPL persist across inputs and can call each other. All libc functions (stdio, stdlib, string, ctype, unistd) are pre-loaded — no `(include ...)` needed.
 
@@ -55,6 +55,20 @@ Supported forms: `declare` (function signatures), `defstruct`, `defconst`, `defe
 | `declare` | Declare an external function signature `(declare name:rettype (params...))`. Used in `.nuch` header files. | function prototype |
 | `extern` | Declare an external (foreign) global variable | `extern` declaration |
 | `defmacro` | Define a compile-time macro `(defmacro name (params...) body...)`. Supports `&rest` for variadic macros: `(defmacro name (a b &rest rest) ...)` — `rest` receives a cons list of remaining args. | macro |
+| `def-rmacro` | Define a reader macro `(def-rmacro "prefix" symbol)`. When `prefix` appears at the start of a token, the reader wraps the next form: `(symbol form)`. Built-in reader macros: `'` (quote), `` ` `` (quasiquote), `~` (unquote), `~@` (unquote-splice), `@` (deref). | — |
+
+## Type Syntax and Desugar
+
+Types are attached to names with `:` syntax: `name:type` (e.g., `x:i32`, `main:int`). A desugar pass runs before compilation, splitting colon-typed symbols in binding positions into canonical list form:
+
+- `foo:int` → `(foo int)` — name and type as separate symbols
+- `bar:ptr:fn:Sym` → `(bar ptr fn Sym)` — multi-segment types
+
+Desugar operates on binding positions in `defn`, `defvar`, `defstruct`, `extern`, `declare`, and `let`. Expression bodies are not desugared; typed symbols in value position (e.g., from macro expansion) are handled by the compiler directly.
+
+Both the sugared `:` syntax and the canonical list form are accepted in all binding positions. Macros that manipulate types can work with the canonical list form; macros that don't care about types can use the `:` sugar and it will be desugared before compilation.
+
+Macro output is desugared before compilation, so macro-generated code can use either form.
 
 ## Standard Macros (`lib/macros.nuc`)
 
@@ -87,7 +101,7 @@ Defined via `defmacro`. Use `(import macros)` to include them (note: `dotimes` a
 | `or` | Short-circuit logical OR | `\|\|` |
 | `cast` | Type cast | `(type)x` |
 | `addr-of` | Take address of a variable | `&x` |
-| `deref` | Dereference a pointer | `*p` |
+| `deref` | Dereference a pointer (reader sugar: `@p` → `(deref p)`) | `*p` |
 | `ptr-set!` | Write through a pointer | `*p = val` |
 | `ptr+` | Pointer arithmetic | `p + n` |
 | `.` | Struct field access | `s.field` |

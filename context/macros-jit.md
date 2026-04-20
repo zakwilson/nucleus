@@ -9,6 +9,7 @@
 - The `->` threading macro uses `_` as a positional placeholder inside forms. `_` is only special within `->` — it's an ordinary symbol elsewhere. If no `_` appears in a form, thread-first (insert after head). Implementation rebuilds the form using quasiquote reverse-and-rebuild (not `make-cell`) so it works at JIT time.
 - Macros that reference `*Node`, `NODE-CELL`, `NODE-SYM` etc. (like `->` and `dotimes`) can only be used in programs that define the Node type — currently just the compiler itself. Simple macros (like `if`, `when`) work in any program.
 - Note: gensym'd symbols cannot be used as typed `let` binding names with the `~sym:type` quasiquote syntax — the reader parses `sym:type` as a single token. Workaround: use gensym-free macros where possible, or use `~sym` only in value position.
+- Macro output is desugared before compilation: any colon-typed symbols in binding positions (defn name, let bindings, params, etc.) are split into canonical list form `(name type)`. Typed symbols in value/expression positions are NOT desugared — they stay as symbols and are handled by `split-typed` in the compiler.
 - The C `Node` struct uses separate fields (not a union) to match the LLVM/Nucleus `{ i32, i32, i64, ptr, ptr, ptr }` 40-byte layout. This is required for JIT-created nodes to be readable by the C bootstrap.
 
 ## compile-time JIT
