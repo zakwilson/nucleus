@@ -7,7 +7,9 @@ Built-in forms and functions as implemented in `src/nucleusc.nuc`.
 | Flag | Description |
 |------|-------------|
 | `--emit-nuch` | Output a `.nuch` header instead of LLVM IR. Extracts function signatures, struct definitions, constants, enums, and macros. |
+| `--emit-cheader` | Output a C header (`.h`) instead of LLVM IR. Emits `#pragma once`, `#include <stdint.h>`, typedefs for structs, extern function declarations, `#define` constants, and enums. |
 | `-i` / `--interactive` | Start the REPL (interactive Read-Eval-Print Loop). |
+| `-I<path>` / `-I <path>` | Add a directory to the import search path. Searched after the source file's directory and `lib/`. |
 
 ## REPL
 
@@ -77,8 +79,8 @@ Defined via `defmacro`. Use `(import macros)` to include them (note: `dotimes` a
 | Name | Signature | Expands To |
 |------|-----------|------------|
 | `if` | `(if test then else)` | `(cond test then true else)` |
-| `when` | `(when condition body)` | `(cond condition body)` |
-| `unless` | `(unless condition body)` | `(cond (not condition) body)` |
+| `when` | `(when condition body)` | `(cond condition (do body))` |
+| `unless` | `(unless condition body)` | `(cond (not condition) (do body))` |
 | `zero?` | `(zero? x)` | `(= x 0)` |
 | `null?` | `(null? x)` | `(= x null)` |
 | `for` | `(for (var:type init) test step body)` | `(let (var:type init) (while test body step))` |
@@ -114,6 +116,7 @@ Defined via `defmacro`. Use `(import macros)` to include them (note: `dotimes` a
 | `quote` | Yields its argument as a `Node*` constant (reader sugar: `'x` → `(quote x)`) | — |
 | `quasiquote` | Like `quote` but `~expr` splices a runtime value and `~@list` splices a list (reader: `` `x ``, `~x`, `~@x`) | — |
 | `compile-time` | Execute body forms at compile time via LLVM JIT; output goes to stderr | — |
+| `funcall` | Call a typed function pointer: `(funcall fn args...)`. The function pointer must have a `TY-FN` type with known return type and parameter types. | `fn(args...)` |
 | `funcall-void` | Call a function pointer with no arguments and no return value | `fn()` |
 | `funcall-ptr-1` | Call a `ptr` function pointer with one `ptr` argument, returning `ptr` | `fn(arg)` |
 | `funcall-ptr-i32` | Call a `ptr` function pointer with no arguments, returning `i32` | `((int(*)())fn)()` |
@@ -128,19 +131,21 @@ Defined via `defmacro`. Use `(import macros)` to include them (note: `dotimes` a
 | `+` | Addition | `a + b` |
 | `-` | Subtraction | `a - b` |
 | `*` | Multiplication | `a * b` |
-| `/` | Division (signed) | `a / b` |
-| `%` | Remainder (signed) | `a % b` |
+| `/` | Division (signed: `sdiv`, unsigned: `udiv`) | `a / b` |
+| `%` | Remainder (signed: `srem`, unsigned: `urem`) | `a % b` |
 | `bit-and` | Bitwise AND | `a & b` |
 | `bit-or` | Bitwise OR | `a \| b` |
 | `bit-xor` | Bitwise XOR | `a ^ b` |
 | `bit-shl` | Shift left | `a << b` |
-| `bit-shr` | Arithmetic shift right | `a >> b` |
+| `bit-shr` | Shift right (signed: arithmetic `ashr`, unsigned: logical `lshr`) | `a >> b` |
 | `=` | Equal | `a == b` |
 | `!=` | Not equal | `a != b` |
-| `<` | Less than | `a < b` |
-| `<=` | Less or equal | `a <= b` |
-| `>` | Greater than | `a > b` |
-| `>=` | Greater or equal | `a >= b` |
+| `<` | Less than (signed: `slt`, unsigned: `ult`) | `a < b` |
+| `<=` | Less or equal (signed: `sle`, unsigned: `ule`) | `a <= b` |
+| `>` | Greater than (signed: `sgt`, unsigned: `ugt`) | `a > b` |
+| `>=` | Greater or equal (signed: `sge`, unsigned: `uge`) | `a >= b` |
+
+Binary operators require both operands to have the same sign. Mixed-sign operations are rejected at compile time.
 
 ## Literal Values
 
@@ -159,8 +164,47 @@ Defined via `defmacro`. Use `(import macros)` to include them (note: `dotimes` a
 | `i8` | 8-bit signed integer | `int8_t` / `char` |
 | `i16` | 16-bit signed integer | `int16_t` |
 | `i64` | 64-bit signed integer | `int64_t` |
+| `ui8` | 8-bit unsigned integer | `uint8_t` |
+| `ui16` | 16-bit unsigned integer | `uint16_t` |
+| `ui32` | 32-bit unsigned integer | `uint32_t` |
+| `ui64` | 64-bit unsigned integer | `uint64_t` |
 | `ptr` | Opaque pointer | `void*` |
 | `void` | No value | `void` |
+
+### Function Pointer Types
+
+Function pointer types are written as `(fn:rettype (param-types...))` in sugared form, or `((fn rettype) (param-types...))` in desugared/canonical form.
+
+In parameter position (where `(` would terminate the symbol for colon sugar), use the canonical list form:
+
+```lisp
+(defn apply:i32 ((f (fn i32) (i32 i32)) a:i32 b:i32)
+  (return (funcall f a b)))
+```
+
+In `let` bindings, the binding name is also a list:
+
+```lisp
+(let ((f (fn i32) (i32 i32)) some-function)
+  (funcall f 1 2))
+```
+
+A `defn` function name used in value position decays to a function pointer, matching C semantics:
+
+```lisp
+(defn add:i32 (a:i32 b:i32) (return (+ a b)))
+(apply add 3 4)  ; passes add as a function pointer
+```
+
+### Integer Type Coercion
+
+Integer types are implicitly coerced in assignment contexts (`let`, `set!`, `.set!`, `aset!`, `ptr-set!`):
+- Same type: no conversion needed
+- Same width, different sign (e.g. `i32` ↔ `ui32`): reinterpret (no IR instruction)
+- Widening: `sext` for signed source, `zext` for unsigned source
+- Narrowing: `trunc`
+
+Mixed-sign binary operations (e.g. `i32 + ui32`) are rejected with a compile error. Use explicit `(cast ...)` to resolve.
 
 ## Libc Bindings
 

@@ -10,13 +10,13 @@
 
 ; (when condition body) — one-armed conditional; body only if condition is true.
 ; For multiple body forms, wrap them in (do ...).
-(defmacro when (condition body)
-  `(cond ~condition ~body))
+(defmacro when (condition &rest body)
+  `(cond ~condition (do ~@body)))
 
 ; (unless condition body) — one-armed conditional; body only if condition is false.
 ; For multiple body forms, wrap them in (do ...).
-(defmacro unless (condition body)
-  `(cond (not ~condition) ~body))
+(defmacro unless (condition &rest body)
+  `(cond (not ~condition) (do ~@body)))
 
 ; (zero? x) — true if x equals 0.
 (defmacro zero? (x)
