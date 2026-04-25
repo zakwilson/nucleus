@@ -1,0 +1,11 @@
+(import "stdio.h")
+(import "stdlib.h")
+(import "string.h")
+
+(defn main:i32 ()
+  (let (s:ptr (malloc (cast i64 64)))
+    (memcpy s "C header import works" (cast i64 22))
+    (printf "%s\n" s)
+    (printf "len = %ld\n" (strlen s))
+    (free s))
+  (return 0))
