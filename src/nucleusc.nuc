@@ -5,8 +5,10 @@
 (include string)
 (include ctype)
 (include unistd)
-(include llvm)
-(include repl)
+(import llvm)
+(import repl)
+
+(import cparse-ffi)
 
 (extern stderr:ptr)
 (extern stdout:ptr)
@@ -26,7 +28,9 @@
 (defenum NodeKind NODE-INT NODE-STR NODE-SYM NODE-CELL)
 
 ; Type kinds
-(defenum TypeKind TY-VOID TY-I1 TY-I8 TY-I16 TY-I32 TY-I64 TY-PTR TY-FN TY-STRUCT)
+(defenum TypeKind TY-VOID TY-I1 TY-I8 TY-I16 TY-I32 TY-I64
+                  TY-UI8 TY-UI16 TY-UI32 TY-UI64
+                  TY-PTR TY-FN TY-STRUCT)
 
 ; ============================================================
 ; Struct definitions (ordered by dependency)
@@ -87,6 +91,7 @@
 (defstruct BinOp
   name:ptr
   instr:ptr
+  instr-u:ptr
   is-cmp:i32)
 
 (defstruct LibcDecl
@@ -155,6 +160,10 @@
 (defvar ty-i32:ptr)
 (defvar ty-i64:ptr)
 (defvar ty-ptr:ptr)
+(defvar ty-ui8:ptr)
+(defvar ty-ui16:ptr)
+(defvar ty-ui32:ptr)
+(defvar ty-ui64:ptr)
 
 ; Struct registry
 (defvar g-structs:ptr)
@@ -223,8 +232,9 @@
 (defvar g-malloc-decl-done:i32 0)
 
 ; Compiler mode flags.
-(defvar g-emit-nuch:i32 0)  ; when 1, output .nuch header instead of LLVM IR
-(defvar g-interactive:i32 0) ; when 1, run in REPL mode (-i / --interactive)
+(defvar g-emit-nuch:i32 0)    ; when 1, output .nuch header instead of LLVM IR
+(defvar g-emit-cheader:i32 0) ; when 1, output C header instead of LLVM IR
+(defvar g-interactive:i32 0)  ; when 1, run in REPL mode (-i / --interactive)
 
 ; REPL eval counter (for unique __repl_eval_N symbols).
 (defvar g-repl-id:i32 0)
@@ -239,6 +249,10 @@
 ; Each is a linked list of (path-string . next) pairs using Node cells.
 (defvar g-imported:ptr)     ; already-imported resolved paths (null = empty)
 (defvar g-importing:ptr)   ; currently-importing stack for cycle detection (null = empty)
+
+; Include path list for -I flag
+(defvar g-include-paths:ptr)
+(defvar g-num-include-paths:i32 0)
 
 ; stdlib (malloc/free/exit) is included here — after defmacro and defvar —
 ; so that g-decl-bufp is free of malloc when macro JIT modules are assembled.
@@ -375,6 +389,10 @@
   (set! ty-i16  (make-type TY-I16))
   (set! ty-i32  (make-type TY-I32))
   (set! ty-i64  (make-type TY-I64))
+  (set! ty-ui8  (make-type TY-UI8))
+  (set! ty-ui16 (make-type TY-UI16))
+  (set! ty-ui32 (make-type TY-UI32))
+  (set! ty-ui64 (make-type TY-UI64))
   (set! ty-ptr  (make-type TY-PTR)))
 
 (defn type-to-ir:ptr (t:ptr)
@@ -385,20 +403,50 @@
     (when (= (. tt kind) TY-I16)    (return "i16"))
     (when (= (. tt kind) TY-I32)    (return "i32"))
     (when (= (. tt kind) TY-I64)    (return "i64"))
+    (when (= (. tt kind) TY-UI8)    (return "i8"))
+    (when (= (. tt kind) TY-UI16)   (return "i16"))
+    (when (= (. tt kind) TY-UI32)   (return "i32"))
+    (when (= (. tt kind) TY-UI64)   (return "i64"))
     (when (= (. tt kind) TY-PTR)    (return "ptr"))
-    (when (= (. tt kind) TY-FN)     (return "<fn>"))
+    (when (= (. tt kind) TY-FN)     (return "ptr"))
     (when (= (. tt kind) TY-STRUCT)
       (return (fmt-s "%%%s" (. (cast *StructDef (. tt sdef)) name))))
     (return "?")))
 
+; Map a Nucleus type to its C representation string.
+; For function pointer types, returns a simplified "void*" — the full
+; C function pointer syntax (with return type and params) is handled
+; separately in emit-cheader-declare where we have the param names.
+(defn type-to-c:ptr (t:ptr)
+  (let (tt:*Type (cast *Type t))
+    (when (= (. tt kind) TY-VOID)   (return "void"))
+    (when (= (. tt kind) TY-I1)     (return "_Bool"))
+    (when (= (. tt kind) TY-I8)     (return "int8_t"))
+    (when (= (. tt kind) TY-I16)    (return "int16_t"))
+    (when (= (. tt kind) TY-I32)    (return "int32_t"))
+    (when (= (. tt kind) TY-I64)    (return "int64_t"))
+    (when (= (. tt kind) TY-UI8)    (return "uint8_t"))
+    (when (= (. tt kind) TY-UI16)   (return "uint16_t"))
+    (when (= (. tt kind) TY-UI32)   (return "uint32_t"))
+    (when (= (. tt kind) TY-UI64)   (return "uint64_t"))
+    (when (= (. tt kind) TY-PTR)    (return "void*"))
+    (when (= (. tt kind) TY-FN)     (return "void*"))
+    (when (= (. tt kind) TY-STRUCT)
+      (return (fmt-s "struct %s" (. (cast *StructDef (. tt sdef)) name))))
+    (return "/* unknown */")))
+
 (defn type-size:i32 (t:ptr)
   (let (tt:*Type (cast *Type t))
-    (when (= (. tt kind) TY-I1)  (return 1))
-    (when (= (. tt kind) TY-I8)  (return 1))
-    (when (= (. tt kind) TY-I16) (return 2))
-    (when (= (. tt kind) TY-I32) (return 4))
-    (when (= (. tt kind) TY-I64) (return 8))
-    (when (= (. tt kind) TY-PTR) (return 8))
+    (when (= (. tt kind) TY-I1)   (return 1))
+    (when (= (. tt kind) TY-I8)   (return 1))
+    (when (= (. tt kind) TY-I16)  (return 2))
+    (when (= (. tt kind) TY-I32)  (return 4))
+    (when (= (. tt kind) TY-I64)  (return 8))
+    (when (= (. tt kind) TY-UI8)  (return 1))
+    (when (= (. tt kind) TY-UI16) (return 2))
+    (when (= (. tt kind) TY-UI32) (return 4))
+    (when (= (. tt kind) TY-UI64) (return 8))
+    (when (= (. tt kind) TY-PTR)  (return 8))
     (when (= (. tt kind) TY-STRUCT) (return 8))
     (return 1)))
 
@@ -409,6 +457,10 @@
     (when (= k TY-I16) (return 1))
     (when (= k TY-I32) (return 1))
     (when (= k TY-I64) (return 1))
+    (when (= k TY-UI8) (return 1))
+    (when (= k TY-UI16) (return 1))
+    (when (= k TY-UI32) (return 1))
+    (when (= k TY-UI64) (return 1))
     (return 0)))
 
 (defn int-width:i32 (t:ptr)
@@ -418,7 +470,47 @@
     (when (= k TY-I16) (return 16))
     (when (= k TY-I32) (return 32))
     (when (= k TY-I64) (return 64))
+    (when (= k TY-UI8) (return 8))
+    (when (= k TY-UI16) (return 16))
+    (when (= k TY-UI32) (return 32))
+    (when (= k TY-UI64) (return 64))
     (return 0)))
+
+(defn is-unsigned:i32 (t:ptr)
+  (let (k:i32 (. (cast *Type t) kind))
+    (when (= k TY-UI8) (return 1))
+    (when (= k TY-UI16) (return 1))
+    (when (= k TY-UI32) (return 1))
+    (when (= k TY-UI64) (return 1))
+    (return 0)))
+
+; Try to coerce a value to a target type. Returns a Val* or null on failure.
+; Handles: same kind (identity), int-to-int (trunc/sext/zext), same-width sign change.
+(defn coerce-int-val:ptr (v:ptr target:ptr line:i32)
+  (let (vv:*Val (cast *Val v)
+        src:ptr (. vv type)
+        sk:i32 (-> src (cast *Type _) (. kind))
+        dk:i32 (-> target (cast *Type _) (. kind)))
+    ; Same kind — identity
+    (when (= sk dk) (return v))
+    ; Both integers — emit cast if needed
+    (when (and (!= (is-int-type src) 0) (!= (is-int-type target) 0))
+      (let (sw:i32 (int-width src) dw:i32 (int-width target))
+        (when (= sw dw)
+          ; Same width, different signedness — reinterpret (no IR needed)
+          (return (alloc-val target (. vv val))))
+        (let (tmp:ptr (new-tmp)
+              instr:ptr null)
+          (if (< dw sw)
+            (set! instr "trunc")
+            (if (!= (is-unsigned src) 0)
+              (set! instr "zext")
+              (set! instr "sext")))
+          (fprintf g-body-stream "  %s = %s %s %s to %s\n"
+            tmp instr (type-to-ir src) (. vv val) (type-to-ir target))
+          (return (alloc-val target tmp)))))
+    ; Not compatible
+    (return null)))
 
 (defn register-struct:ptr (name:ptr)
   (when (>= g-structs-len MAX-STRUCTS)
@@ -452,12 +544,86 @@
   (when (= (strcmp name "bool") 0) (return ty-i1))
   (when (= (strcmp name "ptr")  0) (return ty-ptr))
   (when (= (strcmp name "void") 0) (return ty-void))
+  (when (= (strcmp name "ui8")  0) (return ty-ui8))
+  (when (= (strcmp name "ui16") 0) (return ty-ui16))
+  (when (= (strcmp name "ui32") 0) (return ty-ui32))
+  (when (= (strcmp name "ui64") 0) (return ty-ui64))
   (let (sd:ptr (lookup-struct name))
     (when (!= sd null)
       (let (t:*Type (cast *Type (make-type TY-STRUCT)))
         (.set! t sdef sd)
         (return (cast ptr t)))))
   (die-at line (fmt-s "unknown type: %s" name)))
+
+; Parse a type from an AST node. Handles:
+;   - symbol node: delegates to parse-type-name
+;   - list node ((fn ret-type) (param-types...)) or (fn ret-type): builds TY-FN
+(defn parse-type-from-node:ptr (node:ptr line:i32)
+  (let (n:*Node (cast *Node node))
+    (when (= (. n kind) NODE-SYM)
+      (return (parse-type-name (. n s) line)))
+    (when (= (. n kind) NODE-CELL)
+      ; Check for function pointer type: ((fn ret) (param-types...))
+      (let (head:ptr (. n car))
+        (when (!= head null)
+         (do
+          ; Head is a list (fn ret-type) — function pointer with params
+          (when (= (. (cast *Node head) kind) NODE-CELL)
+            (let (fn-head:*Node (cast *Node (. (cast *Node head) car)))
+              (when (and (!= (cast ptr fn-head) null)
+                         (and (= (. fn-head kind) NODE-SYM)
+                              (= (strcmp (. fn-head s) "fn") 0)))
+                ; Parse return type from (fn ret-type)
+                (let (ret-node:ptr (. (cast *Node head) cdr)
+                      ret-type:ptr ty-void)
+                  (when (and (!= ret-node null)
+                             (!= (. (cast *Node ret-node) car) null))
+                    (set! ret-type (parse-type-from-node (. (cast *Node ret-node) car) line)))
+                  ; Parse parameter types from the second element (param-types...)
+                  (let (params-node:ptr (. n cdr)
+                        num-p:i32 0
+                        param-arr:ptr null
+                        is-va:i32 0)
+                    (when (!= params-node null)
+                      (let (plist:ptr (. (cast *Node params-node) car))
+                        (when (!= plist null)
+                          ; Count params
+                          (let (cur:ptr plist
+                                count:i32 0)
+                            (while (!= cur null)
+                              (inc! count)
+                              (set! cur (. (cast *Node cur) cdr)))
+                            (set! num-p count)
+                            (set! param-arr (arena-alloc (* (cast i64 count) (cast i64 8))))
+                            ; Parse each param type
+                            (set! cur plist)
+                            (let (pi:i32 0)
+                              (while (!= cur null)
+                                (aset! (cast *ptr param-arr) pi
+                                       (parse-type-from-node (. (cast *Node cur) car) line))
+                                (inc! pi)
+                                (set! cur (. (cast *Node cur) cdr))))))))
+                    (let (ft:*Type (cast *Type (make-type TY-FN)))
+                      (.set! ft ret ret-type)
+                      (.set! ft params param-arr)
+                      (.set! ft num-params num-p)
+                      (.set! ft variadic is-va)
+                      (return (cast ptr ft))))))))
+          ; Head is a symbol "fn" — function pointer with no params: (fn ret-type)
+          (when (= (. (cast *Node head) kind) NODE-SYM)
+            (when (= (strcmp (. (cast *Node head) s) "fn") 0)
+              (let (ret-node:ptr (. n cdr)
+                    ret-type:ptr ty-void)
+                (when (and (!= ret-node null)
+                           (!= (. (cast *Node ret-node) car) null))
+                  (set! ret-type (parse-type-from-node (. (cast *Node ret-node) car) line)))
+                (let (ft:*Type (cast *Type (make-type TY-FN)))
+                  (.set! ft ret ret-type)
+                  (.set! ft params null)
+                  (.set! ft num-params 0)
+                  (.set! ft variadic 0)
+                  (return (cast ptr ft))))))))))
+    (die-at line "unable to parse type expression")))
 
 (defn split-typed:void (sym:ptr out-name:*ptr out-type-name:*ptr)
   (let (colon:ptr (strchr sym 58))
@@ -493,6 +659,40 @@
     ; Fallback: treat as untyped
     (ptr-set! out-name null)
     (ptr-set! out-type-name null)))
+
+; Extract name and parsed Type* from a node. Handles function pointer types.
+; Returns the Type* or null if untyped. Sets out-name.
+; For simple types: (name type-sym) → parse-type-name
+; For function pointer types: (name (fn ret) (param-types)) → parse-type-from-node on rest
+(defn extract-name-and-type:ptr (node:ptr out-name:*ptr line:i32)
+  (let (n:*Node (cast *Node node))
+    ; Simple symbol: name:type — use split-typed then parse-type-name
+    (when (= (. n kind) NODE-SYM)
+      (let (tname:ptr null)
+        (split-typed (. n s) out-name (cast *ptr (addr-of tname)))
+        (when (!= tname null)
+          (return (parse-type-name tname line)))
+        (return null)))
+    ; List node from desugar: (name type-info...)
+    (when (= (. n kind) NODE-CELL)
+      (let (car-node:*Node (cast *Node (. n car)))
+        (when (and (!= (cast ptr car-node) null) (= (. car-node kind) NODE-SYM))
+         (do
+          (ptr-set! out-name (. car-node s))
+          (let (rest:ptr (. n cdr))
+            (when (= rest null) (return null))
+            (let (type-node:ptr (. (cast *Node rest) car))
+              (when (= type-node null) (return null))
+              ; If type is a symbol, parse simply
+              (when (= (. (cast *Node type-node) kind) NODE-SYM)
+                (return (parse-type-name (. (cast *Node type-node) s) line)))
+              ; If type is a list — could be a function pointer type or nested type
+              ; Pass the rest of the binding as the type node: ((fn ret) (params...))
+              (when (= (. (cast *Node type-node) kind) NODE-CELL)
+                (return (parse-type-from-node rest line)))
+              (return null)))))))
+    (ptr-set! out-name null)
+    (return null)))
 
 ; ============================================================
 ; Symbol table
@@ -709,7 +909,10 @@
         (when (!= (. sym is-const) 0)
           (return (alloc-val (. sym type) (. sym const-val))))
         (when (= (. sym is-local) 0)
-          (die-at (. nn line) (fmt-s "cannot use function '%s' as value" (. nn s))))
+         (do
+          (when (-> sym (. type) (cast *Type _) (. kind) (= _ TY-FN))
+            (return (alloc-val (. sym type) (. sym ir-name))))
+          (die-at (. nn line) (fmt-s "cannot use '%s' as value" (. nn s)))))
         (let (tmp:ptr (new-tmp))
           (fprintf g-body-stream "  %s = load %s, ptr %s, align %d\n"
             tmp (type-to-ir (. sym type)) (. sym ir-name) (type-size (. sym type)))
@@ -719,31 +922,32 @@
 ; Binary operations
 ; ============================================================
 
-(defn add-binop:void (name:ptr instr:ptr is-cmp:i32)
+(defn add-binop:void (name:ptr instr:ptr instr-u:ptr is-cmp:i32)
   (let (op:*BinOp (cast *BinOp (ptr+ (cast *BinOp g-binops) g-num-binops)))
     (.set! op name name)
     (.set! op instr instr)
+    (.set! op instr-u instr-u)
     (.set! op is-cmp is-cmp)
     (inc! g-num-binops)))
 
 (defn init-binops:void ()
   (set! g-binops (arena-alloc (* (cast i64 16) (sizeof BinOp))))
-  (add-binop "+"       "add nsw"  0)
-  (add-binop "-"       "sub nsw"  0)
-  (add-binop "*"       "mul nsw"  0)
-  (add-binop "/"       "sdiv"     0)
-  (add-binop "%"       "srem"     0)
-  (add-binop "bit-and" "and"      0)
-  (add-binop "bit-or"  "or"       0)
-  (add-binop "bit-xor" "xor"      0)
-  (add-binop "bit-shl" "shl"      0)
-  (add-binop "bit-shr" "ashr"     0)
-  (add-binop "="       "icmp eq"  1)
-  (add-binop "!="      "icmp ne"  1)
-  (add-binop "<"       "icmp slt" 1)
-  (add-binop "<="      "icmp sle" 1)
-  (add-binop ">"       "icmp sgt" 1)
-  (add-binop ">="      "icmp sge" 1))
+  (add-binop "+"       "add nsw"  "add"      0)
+  (add-binop "-"       "sub nsw"  "sub"      0)
+  (add-binop "*"       "mul nsw"  "mul"      0)
+  (add-binop "/"       "sdiv"     "udiv"     0)
+  (add-binop "%"       "srem"     "urem"     0)
+  (add-binop "bit-and" "and"      "and"      0)
+  (add-binop "bit-or"  "or"       "or"       0)
+  (add-binop "bit-xor" "xor"      "xor"      0)
+  (add-binop "bit-shl" "shl"      "shl"      0)
+  (add-binop "bit-shr" "ashr"     "lshr"     0)
+  (add-binop "="       "icmp eq"  "icmp eq"  1)
+  (add-binop "!="      "icmp ne"  "icmp ne"  1)
+  (add-binop "<"       "icmp slt" "icmp ult" 1)
+  (add-binop "<="      "icmp sle" "icmp ule" 1)
+  (add-binop ">"       "icmp sgt" "icmp ugt" 1)
+  (add-binop ">="      "icmp sge" "icmp uge" 1))
 
 (defn lookup-binop:ptr (name:ptr)
   (let (i:i32 0)
@@ -771,12 +975,16 @@
             (return (alloc-val ty-i1 tmp)))))
       (when (or (= (is-int-type (. a type)) 0) (= (is-int-type (. b type)) 0))
         (die-at (. cc line) (fmt-s "%s expects integer operands" (. bop name))))
+      (when (!= (is-unsigned (. a type)) (is-unsigned (. b type)))
+        (die-at (. cc line) (fmt-s "%s: mixed signed/unsigned operands — use explicit cast" (. bop name))))
       (when (!= (-> a (. type) (cast *Type _) (. kind))
                (-> b (. type) (cast *Type _) (. kind)))
         (die-at (. cc line) (fmt-s "%s operand type mismatch" (. bop name))))
-      (let (tmp:ptr (new-tmp))
+      (let (tmp:ptr (new-tmp)
+            instr:ptr (. bop instr))
+        (when (!= (is-unsigned (. a type)) 0) (set! instr (. bop instr-u)))
         (fprintf g-body-stream "  %s = %s %s %s, %s\n"
-          tmp (. bop instr) (type-to-ir (. a type)) (. a val) (. b val))
+          tmp instr (type-to-ir (. a type)) (. a val) (. b val))
         (let (rtype:ptr (. a type))
           (when (!= (. bop is-cmp) 0) (set! rtype ty-i1))
           (return (alloc-val rtype tmp)))))))
@@ -800,7 +1008,14 @@
         (let (instr:ptr null)
           (when (and (!= (is-int-type src) 0) (!= (is-int-type dst) 0))
             (let (sw:i32 (int-width src) dw:i32 (int-width dst))
-              (if (< dw sw) (set! instr "trunc") (set! instr "sext"))))
+              (when (= sw dw)
+                ; Same width, different signedness — reinterpret (no IR needed)
+                (return (alloc-val dst (. v val))))
+              (if (< dw sw)
+                (set! instr "trunc")
+                (if (!= (is-unsigned src) 0)
+                  (set! instr "zext")
+                  (set! instr "sext")))))
           (when (and (!= (is-int-type src) 0) (-> dst (cast *Type _) (. kind) (= _ TY-PTR)))
             (set! instr "inttoptr"))
           (when (and (-> src (cast *Type _) (. kind) (= _ TY-PTR)) (!= (is-int-type dst) 0))
@@ -871,15 +1086,17 @@
             (die-at (. fn-node line)
               (fmt-2s ".set!: no field '%s' on struct '%s'" (. fn-node s) (. sd name))))
           (let (ftype:ptr (aref (cast *ptr (. sd field-types)) idx)
-                v:*Val (cast *Val (emit-node (node-at cc 3) scope)))
-            (when (!= (-> v (. type) (cast *Type _) (. kind)) (-> ftype (cast *Type _) (. kind)))
+                v:ptr (emit-node (node-at cc 3) scope)
+                coerced:ptr (coerce-int-val v ftype (. cc line)))
+            (when (= coerced null)
               (die-at (. cc line) (fmt-s ".set!: type mismatch for field '%s'" (. fn-node s))))
-            (let (gep:ptr (new-tmp))
+            (let (cv:*Val (cast *Val coerced)
+                  gep:ptr (new-tmp))
               (fprintf g-body-stream
                 "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
                 gep (. sd name) (. p val) idx)
               (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
-                (type-to-ir ftype) (. v val) gep (type-size ftype))
+                (type-to-ir ftype) (. cv val) gep (type-size ftype))
               (return (alloc-val ty-void null)))))))))
 
 ; ============================================================
@@ -961,15 +1178,17 @@
                 t (type-to-ir (. idx type)) (. idx val))
               (set! idx64 t)))
           (let (elem:ptr (-> p (. type) (cast *Type _) (. elem))
-                v:*Val (cast *Val (emit-node (node-at cc 3) scope)))
-            (when (!= (-> v (. type) (cast *Type _) (. kind)) (-> elem (cast *Type _) (. kind)))
+                v:ptr (emit-node (node-at cc 3) scope)
+                coerced:ptr (coerce-int-val v elem (. cc line)))
+            (when (= coerced null)
               (die-at (. cc line) "aset!: value type mismatch"))
-            (let (gep:ptr (new-tmp))
+            (let (cv:*Val (cast *Val coerced)
+                  gep:ptr (new-tmp))
               (fprintf g-body-stream
                 "  %s = getelementptr inbounds %s, ptr %s, i64 %s\n"
                 gep (type-to-ir elem) (. p val) idx64)
               (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
-                (type-to-ir elem) (. v val) gep (type-size elem))
+                (type-to-ir elem) (. cv val) gep (type-size elem))
               (return (alloc-val ty-void null)))))))))
 
 (defn emit-char:ptr (call:ptr scope:ptr)
@@ -1052,6 +1271,53 @@
         (fprintf g-body-stream "  %s = call ptr %s()\n" tmp (. fn val))
         (return (alloc-val ty-ptr tmp))))))
 
+; (funcall fn-ptr args...) — general typed function pointer call
+; fn-ptr must have TY-FN type. Emits call with proper LLVM IR signature.
+(defn emit-funcall:ptr (call:ptr scope:ptr)
+  (let (cc:*Node (cast *Node call))
+    (when (< (node-len cc) 2)
+      (die-at (. cc line) "funcall expects at least 1 arg"))
+    (let (fn-val:*Val (cast *Val (emit-node (node-at cc 1) scope))
+          fn-type:*Type (cast *Type (. fn-val type)))
+      (when (!= (. fn-type kind) TY-FN)
+        (die-at (. cc line) "funcall: first arg must be a function pointer"))
+      (let (ret-type:ptr (. fn-type ret)
+            np:i32 (. fn-type num-params)
+            nargs:i32 (- (node-len cc) 2))
+        (when (!= nargs np)
+          (die-at (. cc line)
+            (fmt-s "funcall: expected %d args, got %d"
+              (cast i64 np) (cast i64 nargs))))
+        ; Emit arguments
+        (let (arg-vals:ptr (arena-alloc (* (cast i64 nargs) (cast i64 8)))
+              i:i32 0)
+          (while (< i nargs)
+            (aset! (cast *ptr arg-vals) i (emit-node (node-at cc (+ i 2)) scope))
+            (inc! i))
+          ; Build call instruction
+          (let (ret-ir:ptr (type-to-ir ret-type))
+            (if (= (-> ret-type (cast *Type _) (. kind)) TY-VOID)
+              (do
+                (fprintf g-body-stream "  call void %s(" (. fn-val val))
+                (set! i 0)
+                (while (< i nargs)
+                  (when (!= i 0) (fprintf g-body-stream ", "))
+                  (let (av:*Val (cast *Val (aref (cast *ptr arg-vals) i)))
+                    (fprintf g-body-stream "%s %s" (type-to-ir (. av type)) (. av val)))
+                  (inc! i))
+                (fprintf g-body-stream ")\n")
+                (return (alloc-val ty-void null)))
+              (let (tmp:ptr (new-tmp))
+                (fprintf g-body-stream "  %s = call %s %s(" tmp ret-ir (. fn-val val))
+                (set! i 0)
+                (while (< i nargs)
+                  (when (!= i 0) (fprintf g-body-stream ", "))
+                  (let (av:*Val (cast *Val (aref (cast *ptr arg-vals) i)))
+                    (fprintf g-body-stream "%s %s" (type-to-ir (. av type)) (. av val)))
+                  (inc! i))
+                (fprintf g-body-stream ")\n")
+                (return (alloc-val ret-type tmp))))))))))
+
 (defn emit-deref:ptr (call:ptr scope:ptr)
   (let (cc:*Node (cast *Node call))
     (when (!= (node-len cc) 2) (die-at (. cc line) "deref expects 1 arg"))
@@ -1073,12 +1339,14 @@
               (-> p (. type) (cast *Type _) (. elem) (= _ null)))
         (die-at (. cc line) "ptr-set!: operand must be typed pointer"))
       (let (elem:ptr (-> p (. type) (cast *Type _) (. elem))
-            v:*Val (cast *Val (emit-node (node-at cc 2) scope)))
-        (when (!= (-> v (. type) (cast *Type _) (. kind)) (-> elem (cast *Type _) (. kind)))
+            v:ptr (emit-node (node-at cc 2) scope)
+            coerced:ptr (coerce-int-val v elem (. cc line)))
+        (when (= coerced null)
           (die-at (. cc line) "ptr-set!: value type mismatch"))
-        (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
-          (type-to-ir elem) (. v val) (. p val) (type-size elem))
-        (return (alloc-val ty-void null))))))
+        (let (cv:*Val (cast *Val coerced))
+          (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
+            (type-to-ir elem) (. cv val) (. p val) (type-size elem))
+          (return (alloc-val ty-void null)))))))
 
 (defn emit-ptr-add:ptr (call:ptr scope:ptr)
   (let (cc:*Node (cast *Node call))
@@ -1257,24 +1525,24 @@
           (let (bname:ptr (node-at binds i)
                 bval-node:ptr (node-at binds (+ i 1)))
             (let (name:ptr null
-                  type-name:ptr null)
-              (extract-name-type bname (cast *ptr (addr-of name))
-                                       (cast *ptr (addr-of type-name)))
-              (when (= type-name null)
+                  ty:ptr (extract-name-and-type bname (cast *ptr (addr-of name))
+                                                (. (cast *Node bname) line)))
+              (when (= ty null)
                 (die-at (. (cast *Node bname) line) (fmt-s "let: missing :type on '%s'" name)))
-              (let (ty:ptr (parse-type-name type-name (. (cast *Node bname) line))
-                    slot:ptr (fmt-sd "%%%s.addr.%d" name g-tmp)
+              (let (slot:ptr (fmt-sd "%%%s.addr.%d" name g-tmp)
                     align:i32 (type-size ty))
                 (inc! g-tmp)
                 (fprintf g-entry-stream "  %s = alloca %s, align %d\n"
                   slot (type-to-ir ty) align)
-                (let (v:*Val (cast *Val (emit-node bval-node inner)))
-                  (when (!= (-> v (. type) (cast *Type _) (. kind)) (-> ty (cast *Type _) (. kind)))
+                (let (v:*Val (cast *Val (emit-node bval-node inner))
+                      coerced:ptr (coerce-int-val v ty (. (cast *Node bval-node) line)))
+                  (when (= coerced null)
                     (die-at (. (cast *Node bval-node) line)
                       (fmt-s "let: init type mismatch for '%s'" name)))
-                  (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
-                    (type-to-ir ty) (. v val) slot align)
-                  (scope-define inner name ty slot 1)))))
+                  (let (cv:*Val (cast *Val coerced))
+                    (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
+                      (type-to-ir ty) (. cv val) slot align)
+                    (scope-define inner name ty slot 1))))))
           (set! i (+ i 2)))
         (let (last:ptr (alloc-val ty-void null)
               j:i32 2)
@@ -1360,12 +1628,14 @@
         (let (sym:*Sym (cast *Sym (scope-lookup scope set-name)))
           (when (or (= (cast ptr sym) null) (= (. sym is-local) 0))
             (die-at (. target line) (fmt-s "set!: undefined local '%s'" (. target s))))
-          (let (v:*Val (cast *Val (emit-node (node-at cc 2) scope)))
-            (when (!= (-> v (. type) (cast *Type _) (. kind)) (-> sym (. type) (cast *Type _) (. kind)))
+          (let (v:ptr (emit-node (node-at cc 2) scope)
+                coerced:ptr (coerce-int-val v (. sym type) (. cc line)))
+            (when (= coerced null)
               (die-at (. cc line) (fmt-s "set!: type mismatch for '%s'" (. target s))))
-            (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
-              (type-to-ir (. sym type)) (. v val) (. sym ir-name) (type-size (. sym type)))
-            (return (alloc-val ty-void null))))))))
+            (let (cv:*Val (cast *Val coerced))
+              (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
+                (type-to-ir (. sym type)) (. cv val) (. sym ir-name) (type-size (. sym type)))
+              (return (alloc-val ty-void null)))))))))
 
 (defn emit-inc:ptr (call:ptr scope:ptr)
   (let (cc:*Node (cast *Node call))
@@ -1489,6 +1759,7 @@
         (when (= (strcmp h "cast") 0) (return (emit-cast n scope)))
         (when (= (strcmp h "addr-of") 0) (return (emit-addr-of n scope)))
         (when (= (strcmp h "funcall-void") 0) (return (emit-funcall-void n scope)))
+        (when (= (strcmp h "funcall") 0) (return (emit-funcall n scope)))
         (when (= (strcmp h "deref") 0) (return (emit-deref n scope)))
         (when (= (strcmp h "ptr-set!") 0) (return (emit-ptr-set n scope)))
         (when (= (strcmp h "ptr+") 0) (return (emit-ptr-add n scope)))
@@ -1577,14 +1848,12 @@
           (while (< i nfields)
             (let (field:ptr (node-at cc (+ i 2))
                   fname:ptr null
-                  ftype-name:ptr null)
-              (extract-name-type field (cast *ptr (addr-of fname))
-                                       (cast *ptr (addr-of ftype-name)))
-              (when (= ftype-name null)
+                  fty:ptr (extract-name-and-type field (cast *ptr (addr-of fname))
+                                                  (. (cast *Node field) line)))
+              (when (= fty null)
                 (die-at (. (cast *Node field) line) (fmt-s "defstruct: field '%s' missing :type" fname)))
               (aset! (cast *ptr (. sd field-names)) i fname)
-              (aset! (cast *ptr (. sd field-types)) i
-                     (parse-type-name ftype-name (. (cast *Node field) line))))
+              (aset! (cast *ptr (. sd field-types)) i fty))
             (inc! i)))
         (fprintf g-out "%%%s = type { " (. name-node s))
         (let (i:i32 0)
@@ -1664,6 +1933,7 @@
   (add-libc "stdio" "open_memstream" TY-PTR TY-PTR TY-PTR 0 0 2 0)
   (add-libc "stdio" "fflush"        TY-I32 TY-PTR 0 0 0 1 0)
   (add-libc "stdio" "fgets"         TY-PTR TY-PTR TY-I32 TY-PTR 0 3 0)
+  ; popen/pclose provided via lib/cparse-ffi.nuch import
   ; stdlib
   (add-libc "stdlib" "malloc"  TY-PTR  TY-I64 0 0 0 1 0)
   (add-libc "stdlib" "realloc" TY-PTR  TY-PTR TY-I64 0 0 2 0)
@@ -1686,32 +1956,7 @@
   (add-libc "unistd" "dup"   TY-I32 TY-I32 0 0 0 1 0)
   (add-libc "unistd" "dup2"  TY-I32 TY-I32 TY-I32 0 0 2 0)
   (add-libc "unistd" "close" TY-I32 TY-I32 0 0 0 1 0)
-  ; llvm — LLVM C API for compile-time JIT
-  (add-libc "llvm" "LLVMInitializeX86TargetInfo" TY-VOID 0 0 0 0 0 0)
-  (add-libc "llvm" "LLVMInitializeX86Target"     TY-VOID 0 0 0 0 0 0)
-  (add-libc "llvm" "LLVMInitializeX86TargetMC"   TY-VOID 0 0 0 0 0 0)
-  (add-libc "llvm" "LLVMInitializeX86AsmPrinter" TY-VOID 0 0 0 0 0 0)
-  (add-libc "llvm" "LLVMOrcCreateLLJIT"          TY-PTR  TY-PTR TY-PTR 0 0 2 0)
-  (add-libc "llvm" "LLVMOrcLLJITGetMainJITDylib" TY-PTR  TY-PTR 0 0 0 1 0)
-  (add-libc "llvm" "LLVMOrcLLJITGetGlobalPrefix"             TY-I8 TY-PTR 0 0 0 1 0)
-  (add-libc "llvm" "LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess"
-                                                 TY-PTR  TY-PTR TY-I8 TY-PTR TY-PTR 4 0)
-  (add-libc "llvm" "LLVMOrcJITDylibAddGenerator" TY-VOID TY-PTR TY-PTR 0 0 2 0)
-  (add-libc "llvm" "LLVMContextCreate"                   TY-PTR 0 0 0 0 0 0)
-  (add-libc "llvm" "LLVMOrcCreateNewThreadSafeContext"   TY-PTR 0 0 0 0 0 0)
-  (add-libc "llvm" "LLVMOrcDisposeThreadSafeContext"     TY-VOID TY-PTR 0 0 0 1 0)
-  (add-libc "llvm" "LLVMOrcCreateNewThreadSafeModule"    TY-PTR TY-PTR TY-PTR 0 0 2 0)
-  (add-libc "llvm" "LLVMCreateMemoryBufferWithMemoryRangeCopy"
-                                                 TY-PTR TY-PTR TY-I64 TY-PTR 0 3 0)
-  (add-libc "llvm" "LLVMParseIRInContext"         TY-I32 TY-PTR TY-PTR TY-PTR TY-PTR 4 0)
-  (add-libc "llvm" "LLVMOrcLLJITAddLLVMIRModule" TY-PTR TY-PTR TY-PTR TY-PTR 0 3 0)
-  (add-libc "llvm" "LLVMOrcLLJITLookup"          TY-PTR TY-PTR TY-PTR TY-PTR 0 3 0)
-  (add-libc "llvm" "LLVMGetErrorMessage"          TY-PTR TY-PTR 0 0 0 1 0)
-  (add-libc "llvm" "LLVMDisposeErrorMessage"      TY-VOID TY-PTR 0 0 0 1 0)
-  (add-libc "llvm" "LLVMConsumeError"             TY-VOID TY-PTR 0 0 0 1 0)
-  ; repl shim — setjmp/longjmp wrapper (linked via repl_shim.o)
-  (add-libc "repl" "repl_try"   TY-I32  0 0 0 0 0 0)
-  (add-libc "repl" "repl_throw" TY-VOID 0 0 0 0 0 0))
+  )
 
 (defn emit-include:void (call:ptr)
   (let (cc:*Node (cast *Node call))
@@ -1757,6 +2002,410 @@
         (die-at (. cc line) (fmt-s "unknown include: %s" mod))))))
 
 ; ============================================================
+; C header parsing (clang -E)
+; ============================================================
+
+; Skip whitespace in buffer, returning new position.
+(defn c-skip-ws:i64 (buf:ptr pos:i64 len:i64)
+  (while (and (< pos len) (!= (isspace (cast i32 (char-at buf pos))) 0))
+    (set! pos (+ pos (cast i64 1))))
+  (return pos))
+
+; Read a C identifier or keyword from buffer. Returns the token as a string.
+; Sets out-end to the position after the token.
+(defn c-read-ident:ptr (buf:ptr pos:i64 len:i64 out-end:*i64)
+  (let (start:i64 pos)
+    (while (and (< pos len)
+                (or (!= (isdigit (cast i32 (char-at buf pos))) 0)
+                    (or (and (>= (cast i32 (char-at buf pos)) 65)
+                             (<= (cast i32 (char-at buf pos)) 90))
+                        (or (and (>= (cast i32 (char-at buf pos)) 97)
+                                 (<= (cast i32 (char-at buf pos)) 122))
+                            (= (cast i32 (char-at buf pos)) 95)))))
+      (set! pos (+ pos (cast i64 1))))
+    (ptr-set! out-end pos)
+    (return (arena-strndup (ptr+ (cast *i8 buf) start) (- pos start)))))
+
+; Map a C type name to a Nucleus type.
+; Returns the Type* or null if unknown/skipped.
+(defn c-type-to-nucleus:ptr (name:ptr is-unsigned:i32 is-long:i32 is-short:i32)
+  ; Handle base types
+  (when (= (strcmp name "void") 0)  (return ty-void))
+  (when (= (strcmp name "_Bool") 0) (return ty-i1))
+  (when (= (strcmp name "char") 0)
+    (if (!= is-unsigned 0) (return ty-ui8) (return ty-i8)))
+  (when (= (strcmp name "short") 0)
+    (if (!= is-unsigned 0) (return ty-ui16) (return ty-i16)))
+  (when (= (strcmp name "int") 0)
+    (do
+      (when (!= is-short 0)
+        (if (!= is-unsigned 0) (return ty-ui16) (return ty-i16)))
+      (when (!= is-long 0)
+        (if (!= is-unsigned 0) (return ty-ui64) (return ty-i64)))
+      (if (!= is-unsigned 0) (return ty-ui32) (return ty-i32))))
+  (when (= (strcmp name "long") 0)
+    (if (!= is-unsigned 0) (return ty-ui64) (return ty-i64)))
+  ; size_t, ssize_t
+  (when (= (strcmp name "size_t") 0) (return ty-ui64))
+  (when (= (strcmp name "ssize_t") 0) (return ty-i64))
+  ; __gnuc_va_list / va_list — treat as ptr
+  (when (= (strcmp name "__gnuc_va_list") 0) (return ty-ptr))
+  (when (= (strcmp name "va_list") 0) (return ty-ptr))
+  ; FILE* — opaque struct, treated as ptr
+  (when (= (strcmp name "FILE") 0) (return ty-ptr))
+  ; Fallback: if unknown, return ptr
+  (return null))
+
+; Skip balanced parentheses in __attribute__((...)) or similar.
+; pos should point to the opening '('. Returns position after the matching ')'.
+(defn c-skip-parens:i64 (buf:ptr pos:i64 len:i64)
+  (let (depth:i32 0)
+    (while (< pos len)
+      (when (= (char-at buf pos) 40) (inc! depth))
+      (when (= (char-at buf pos) 41)
+        (do (set! depth (- depth 1))
+            (when (= depth 0)
+              (return (+ pos (cast i64 1))))))
+      (set! pos (+ pos (cast i64 1))))
+    (return pos)))
+
+; Parse a C type from the buffer. Handles qualifiers (const, restrict, volatile,
+; unsigned, signed, long, short, struct), pointer stars.
+; Returns the Nucleus Type*. Sets out-end to position after the type.
+(defn c-parse-type:ptr (buf:ptr pos:i64 len:i64 out-end:*i64)
+  (let (is-unsigned:i32 0
+        is-long:i32 0
+        is-short:i32 0
+        base-name:ptr null
+        ptr-depth:i32 0
+        is-struct:i32 0)
+    ; Parse type qualifiers and specifiers
+    (let (done:i32 0)
+      (while (= done 0)
+        (set! pos (c-skip-ws buf pos len))
+        (when (>= pos len) (set! done 1) (set! pos len))
+        (when (= done 0)
+          (let (tok-end:i64 (cast i64 0)
+                tok:ptr (c-read-ident buf pos len (cast *i64 (addr-of tok-end))))
+            (when (= (strlen tok) (cast i64 0)) (set! done 1))
+            (when (= done 0)
+              (cond
+                (= (strcmp tok "const") 0)      (set! pos tok-end)
+                (= (strcmp tok "volatile") 0)   (set! pos tok-end)
+                (= (strcmp tok "restrict") 0)   (set! pos tok-end)
+                (= (strcmp tok "__restrict") 0) (set! pos tok-end)
+                (= (strcmp tok "_Atomic") 0)    (set! pos tok-end)
+                (= (strcmp tok "extern") 0)     (set! pos tok-end)
+                (= (strcmp tok "static") 0)     (set! pos tok-end)
+                (= (strcmp tok "inline") 0)     (set! pos tok-end)
+                (= (strcmp tok "__inline") 0)   (set! pos tok-end)
+                (= (strcmp tok "__inline__") 0) (set! pos tok-end)
+                (= (strcmp tok "__extension__") 0) (set! pos tok-end)
+                (= (strcmp tok "unsigned") 0)
+                  (do (set! is-unsigned 1) (set! pos tok-end))
+                (= (strcmp tok "signed") 0)     (set! pos tok-end)
+                (= (strcmp tok "long") 0)
+                  (do (set! is-long 1)
+                      (set! pos tok-end)
+                      ; Check if this is the base type itself (no further type follows)
+                      ; by peeking at what comes next
+                      (let (peek-pos:i64 (c-skip-ws buf tok-end len)
+                            peek-end:i64 (cast i64 0)
+                            peek-tok:ptr (c-read-ident buf peek-pos len (cast *i64 (addr-of peek-end))))
+                        ; If next token is "long", consume it (long long)
+                        (when (= (strcmp peek-tok "long") 0)
+                          (set! pos peek-end))
+                        ; If next token is "int", that will be consumed as base-name
+                        ; If next token is something else or a '*', "long" is the base type
+                        (when (and (!= (strcmp peek-tok "int") 0)
+                                   (and (!= (strcmp peek-tok "long") 0)
+                                        (!= (strcmp peek-tok "char") 0)))
+                          (do (set! base-name "long") (set! done 1)))))
+                (= (strcmp tok "short") 0)
+                  (do (set! is-short 1) (set! pos tok-end))
+                (= (strcmp tok "struct") 0)
+                  (do (set! is-struct 1) (set! pos tok-end))
+                (= (strcmp tok "__attribute__") 0)
+                  (do (set! pos (c-skip-ws buf tok-end len))
+                      (when (and (< pos len) (= (char-at buf pos) 40))
+                        (set! pos (c-skip-parens buf pos len))))
+                true
+                  (do (set! base-name tok) (set! pos tok-end) (set! done 1))))))))
+    ; Count pointer stars
+    (set! pos (c-skip-ws buf pos len))
+    (while (and (< pos len) (= (char-at buf pos) 42))
+      (inc! ptr-depth)
+      (set! pos (+ pos (cast i64 1)))
+      (set! pos (c-skip-ws buf pos len))
+      ; Skip const/restrict after *
+      (let (check:i32 1)
+        (while (!= check 0)
+          (set! check 0)
+          (let (te:i64 (cast i64 0)
+                t:ptr (c-read-ident buf pos len (cast *i64 (addr-of te))))
+            (when (or (= (strcmp t "const") 0)
+                      (or (= (strcmp t "restrict") 0)
+                          (= (strcmp t "__restrict") 0)))
+               (set! pos te)
+               (set! pos (c-skip-ws buf pos len))
+               (set! check 1))))))
+    (ptr-set! out-end pos)
+    ; If it's a struct, treat as pointer (opaque)
+    (when (!= is-struct 0) (return ty-ptr))
+    ; Resolve base type
+    (when (= base-name null)
+        ; bare "unsigned" or "signed" with no base → int
+        (when (or (!= is-unsigned 0) (or (!= is-short 0) (!= is-long 0)))
+          (set! base-name "int"))
+        (when (= base-name null) (return ty-ptr)))
+    (let (base-type:ptr (c-type-to-nucleus base-name is-unsigned is-long is-short))
+      (when (= base-type null) (set! base-type ty-ptr))
+      ; Apply pointer depth
+      (when (> ptr-depth 0) (return ty-ptr))
+      (return base-type))))
+
+; Parse one C function declaration from the buffer.
+; Expects pos to be at the start of a declaration (after leading whitespace).
+; Returns 1 if a function declaration was parsed, 0 otherwise.
+; On success, registers the function in g-globals and emits LLVM declare.
+(defn c-parse-func-decl:i32 (buf:ptr pos:i64 len:i64 out-end:*i64 line:i32)
+  ; Parse the return type
+  (let (ret-end:i64 (cast i64 0)
+        ret-type:ptr (c-parse-type buf pos len (cast *i64 (addr-of ret-end))))
+    (set! pos ret-end)
+    (set! pos (c-skip-ws buf pos len))
+    ; Read the function name
+    (let (name-end:i64 (cast i64 0)
+          fname:ptr (c-read-ident buf pos len (cast *i64 (addr-of name-end))))
+      (when (= (strlen fname) (cast i64 0))
+         (ptr-set! out-end pos) (return 0))
+      (set! pos name-end)
+      (set! pos (c-skip-ws buf pos len))
+      ; Expect '('
+      (when (or (>= pos len) (!= (char-at buf pos) 40))
+         (ptr-set! out-end pos) (return 0))
+      (set! pos (+ pos (cast i64 1)))
+      ; Parse parameters
+      (let (param-types:ptr (arena-alloc (* (cast i64 16) (cast i64 8)))
+            num-params:i32 0
+            is-variadic:i32 0
+            pdone:i32 0)
+        (while (= pdone 0)
+          (set! pos (c-skip-ws buf pos len))
+          (when (>= pos len) (set! pdone 1))
+          (when (= pdone 0)
+            ; Check for ')'
+            (when (= (char-at buf pos) 41)
+               (set! pos (+ pos (cast i64 1))) (set! pdone 1))
+            (when (= pdone 0)
+              ; Check for '...'
+              (when (and (< (+ pos (cast i64 2)) len)
+                         (and (= (char-at buf pos) 46)
+                              (and (= (char-at buf (+ pos (cast i64 1))) 46)
+                                   (= (char-at buf (+ pos (cast i64 2))) 46))))
+                 (set! is-variadic 1)
+                 (set! pos (+ pos (cast i64 3)))
+                 (set! pos (c-skip-ws buf pos len))
+                 (when (and (< pos len) (= (char-at buf pos) 41))
+                   (set! pos (+ pos (cast i64 1))))
+                 (set! pdone 1))
+              (when (= pdone 0)
+                ; Check for void param (no-arg function)
+                (let (void-check-end:i64 (cast i64 0)
+                      void-check:ptr (c-read-ident buf pos len (cast *i64 (addr-of void-check-end))))
+                  (when (= (strcmp void-check "void") 0)
+                    (let (after-void:i64 (c-skip-ws buf void-check-end len))
+                      (when (and (< after-void len) (= (char-at buf after-void) 41))
+                         (set! pos (+ after-void (cast i64 1)))
+                         (set! pdone 1)))))
+                (when (= pdone 0)
+                  ; Parse parameter type
+                  (let (ptype-end:i64 (cast i64 0)
+                        ptype:ptr (c-parse-type buf pos len (cast *i64 (addr-of ptype-end))))
+                    (set! pos ptype-end)
+                    (set! pos (c-skip-ws buf pos len))
+                    ; Handle function pointer params: void (*name)(args)
+                    (when (and (< pos len) (= (char-at buf pos) 40))
+                      (set! pos (c-skip-parens buf pos len))
+                      (set! pos (c-skip-ws buf pos len))
+                      ; Skip second paren group (arg types)
+                      (when (and (< pos len) (= (char-at buf pos) 40))
+                        (set! pos (c-skip-parens buf pos len)))
+                      (set! ptype ty-ptr))
+                    ; Skip parameter name (if present)
+                    (when (and (< pos len)
+                               (or (and (>= (cast i32 (char-at buf pos)) 65)
+                                        (<= (cast i32 (char-at buf pos)) 90))
+                                   (or (and (>= (cast i32 (char-at buf pos)) 97)
+                                            (<= (cast i32 (char-at buf pos)) 122))
+                                       (= (cast i32 (char-at buf pos)) 95))))
+                      (let (skip-end:i64 (cast i64 0)
+                            skip:ptr (c-read-ident buf pos len (cast *i64 (addr-of skip-end))))
+                        (set! pos skip-end)))
+                    ; Skip array brackets if present: [N]
+                    (set! pos (c-skip-ws buf pos len))
+                    (while (and (< pos len) (= (char-at buf pos) 91))
+                      (while (and (< pos len) (!= (char-at buf pos) 93))
+                        (set! pos (+ pos (cast i64 1))))
+                      (when (< pos len) (set! pos (+ pos (cast i64 1))))
+                      (set! pos (c-skip-ws buf pos len))
+                      (set! ptype ty-ptr))
+                    ; Store parameter type
+                    (when (< num-params 16)
+                      (aset! (cast *ptr param-types) num-params ptype))
+                    (inc! num-params)
+                    (set! pos (c-skip-ws buf pos len))
+                    ; Expect ',' or ')'
+                    (when (and (< pos len) (= (char-at buf pos) 44))
+                      (set! pos (+ pos (cast i64 1))))))))))
+        ; Skip any __attribute__ after closing paren
+        (set! pos (c-skip-ws buf pos len))
+        (let (attr-check:i32 1)
+          (while (!= attr-check 0)
+            (set! attr-check 0)
+            (let (ae:i64 (cast i64 0)
+                  at:ptr (c-read-ident buf pos len (cast *i64 (addr-of ae))))
+              (when (= (strcmp at "__attribute__") 0)
+                 (set! pos (c-skip-ws buf ae len))
+                 (when (and (< pos len) (= (char-at buf pos) 40))
+                   (set! pos (c-skip-parens buf pos len)))
+                 (set! pos (c-skip-ws buf pos len))
+                 (set! attr-check 1))
+              (when (= (strcmp at "__asm__") 0)
+                 (set! pos (c-skip-ws buf ae len))
+                 (when (and (< pos len) (= (char-at buf pos) 40))
+                   (set! pos (c-skip-parens buf pos len)))
+                 (set! pos (c-skip-ws buf pos len))
+                 (set! attr-check 1)))))
+        ; Skip semicolon
+        (when (and (< pos len) (= (char-at buf pos) 59))
+          (set! pos (+ pos (cast i64 1))))
+        (ptr-set! out-end pos)
+        ; Register the function
+        (let (ft:*Type (cast *Type (make-type TY-FN)))
+          (.set! ft ret ret-type)
+          (.set! ft num-params num-params)
+          (.set! ft params (arena-alloc (* (i64 num-params) (i64 8))))
+          (let (j:i32 0)
+            (while (< j num-params)
+              (aset! (cast *ptr (. ft params)) j (aref (cast *ptr param-types) j))
+              (inc! j)))
+          (.set! ft variadic is-variadic)
+          ; Only register if not already defined
+          (when (= (scope-lookup g-globals fname) null)
+              (scope-define g-globals fname (cast ptr ft)
+                            (fmt-s "@%s" fname) 0)
+              (when (= (strcmp fname "malloc") 0)
+                (set! g-malloc-decl-done 1))
+              ; Emit LLVM declare
+
+              (fprintf g-out "declare %s @%s(" (type-to-ir ret-type) fname)
+              (let (j:i32 0)
+              (while (< j num-params)
+                (when (!= j 0) (fprintf g-out ", "))
+                (fprintf g-out "%s" (type-to-ir (aref (cast *ptr (. ft params)) j)))
+                (inc! j)))
+              (when (!= is-variadic 0)
+                (let (sep:ptr "")
+                  (when (!= num-params 0) (set! sep ", "))
+                  (fprintf g-out "%s..." sep)))
+              (fprintf g-out ")\n")))
+        (return 1)))))
+
+; Read all output from a popen'd command into a malloc'd buffer.
+; Returns the buffer (null-terminated). Sets out-len to the length.
+(defn read-pipe-output:ptr (cmd:ptr out-len:*i64)
+  (let (fp:ptr (popen cmd "r"))
+    (when (= fp null) (ptr-set! out-len (cast i64 0)) (return null))
+    (let (bufsz:i64 (cast i64 65536)
+          buf:ptr (malloc bufsz)
+          total:i64 (cast i64 0))
+      (let (chunk:i64 (fread (ptr+ (cast *i8 buf) total) (cast i64 1) (- (- bufsz total) (cast i64 1)) fp))
+        (set! total (+ total chunk))
+        (while (> chunk (cast i64 0))
+          (when (>= (+ total (cast i64 1)) bufsz)
+             (set! bufsz (* bufsz (cast i64 2)))
+             (set! buf (realloc buf bufsz)))
+          (set! chunk (fread (ptr+ (cast *i8 buf) total) (cast i64 1) (- (- bufsz total) (cast i64 1)) fp))
+          (set! total (+ total chunk))))
+      (ptr-set! (cast *i8 (ptr+ (cast *i8 buf) total)) 0)
+      (pclose fp)
+      (ptr-set! out-len total)
+      (return buf))))
+
+; Process a C header file: run clang -E, parse function declarations.
+; header-path is e.g. "stdio.h" or "/usr/include/mylib.h".
+(defn emit-c-include:void (header-path:ptr line:i32)
+  (set! g-out g-decl-stream)
+  ; Build clang -E command
+  (let (cmd:ptr (alloca i8 512))
+    (snprintf cmd (cast i64 512) "clang -E -x c -include %s /dev/null 2>/dev/null" header-path)
+    (let (buf-len:i64 (cast i64 0)
+          buf:ptr (read-pipe-output cmd (cast *i64 (addr-of buf-len))))
+      (when (= buf null)
+        (die-at line (fmt-s "c-include: failed to preprocess '%s'" header-path)))
+      ; Parse declarations
+      (let (pos:i64 (cast i64 0)
+            prev-pos:i64 (cast i64 -1))
+        (while (< pos buf-len)
+          (set! prev-pos pos)
+          ; Skip whitespace
+          (set! pos (c-skip-ws buf pos buf-len))
+          (when (< pos buf-len)
+            (if (= (char-at buf pos) 35)
+              ; Skip # line directives
+              (do (while (and (< pos buf-len) (!= (char-at buf pos) 10))
+                    (set! pos (+ pos (cast i64 1))))
+                  (when (< pos buf-len)
+                    (set! pos (+ pos (cast i64 1)))))
+              ; Try to read an identifier to check what kind of declaration
+              (let (tok-end:i64 (cast i64 0)
+                    tok:ptr (c-read-ident buf pos buf-len (cast *i64 (addr-of tok-end))))
+                ; Skip typedefs, static inline functions, etc.
+                ; Only process extern declarations and top-level type declarations
+                (cond
+                  (= (strcmp tok "extern") 0)
+                    ; Extern declaration — try to parse as function
+                    (let (decl-end:i64 (cast i64 0)
+                          ok:i32 (c-parse-func-decl buf pos buf-len
+                                                    (cast *i64 (addr-of decl-end)) line))
+                      (if (!= ok 0)
+                        (set! pos decl-end)
+                        (do ; Not a function — skip to semicolon
+                         (while (and (< pos buf-len) (!= (char-at buf pos) 59))
+                           (set! pos (+ pos (cast i64 1))))
+                         (when (< pos buf-len)
+                              (set! pos (+ pos (cast i64 1))))))))
+                  true
+                    ; Skip to semicolon or next line
+                    (do (while (and (< pos buf-len)
+                                    (and (!= (char-at buf pos) 59)
+                                         (!= (char-at buf pos) 10)))
+                          ; Skip balanced braces (struct/enum bodies)
+                          (when (= (char-at buf pos) 123)
+                            (let (brace-depth:i32 1)
+                              (set! pos (+ pos (cast i64 1)))
+                              (while (and (< pos buf-len) (> brace-depth 0))
+                                (when (= (char-at buf pos) 123) (inc! brace-depth))
+                                (when (= (char-at buf pos) 125)
+                                  (set! brace-depth (- brace-depth 1)))
+                                (set! pos (+ pos (cast i64 1))))))
+                          (when (and (< pos buf-len)
+                                     (and (!= (char-at buf pos) 123)
+                                          (and (!= (char-at buf pos) 59)
+                                               (!= (char-at buf pos) 10))))
+                            (set! pos (+ pos (cast i64 1)))))
+                        (when (< pos buf-len)
+                          (set! pos (+ pos (cast i64 1))))))))
+          ; Safety: if pos didn't advance, force it forward to avoid infinite loop
+          (when (= pos prev-pos)
+            (set! pos (+ pos (cast i64 1))))))  ; closes when, while
+      (free buf))                               ; let(pos) close + free in let(buf-len)
+    (fprintf g-out "\n")))                      ; let(cmd), defn
+
+
+
+; ============================================================
 ; defn
 ; ============================================================
 
@@ -1778,19 +2427,17 @@
               param-types:ptr null
               param-names:ptr null)
           (when (> nparams 0)
-            (do
               (set! param-types (arena-alloc (* (i64 nparams) (i64 8))))
-              (set! param-names (arena-alloc (* (i64 nparams) (i64 8))))))
+              (set! param-names (arena-alloc (* (i64 nparams) (i64 8)))))
           (let (i:i32 0)
             (while (< i nparams)
               (let (p:ptr (node-at params-node i)
                     pname:ptr null
-                    ptype-name:ptr null)
-                (extract-name-type p (cast *ptr (addr-of pname))
-                                     (cast *ptr (addr-of ptype-name)))
-                (when (= ptype-name null)
+                    pty:ptr (extract-name-and-type p (cast *ptr (addr-of pname))
+                                                   (. (cast *Node p) line)))
+                (when (= pty null)
                   (die-at (. (cast *Node p) line) (fmt-s "defn: missing :type on param '%s'" pname)))
-                (aset! (cast *ptr param-types) i (parse-type-name ptype-name (. (cast *Node p) line)))
+                (aset! (cast *ptr param-types) i pty)
                 (aset! (cast *ptr param-names) i pname))
               (inc! i)))
           ; Register function in globals
@@ -1865,10 +2512,10 @@
   (let (jit-ref:ptr null
         err:ptr (LLVMOrcCreateLLJIT (addr-of jit-ref) null))
     (when (!= err null)
-      (do (fprintf stderr "%s:%d: JIT error in LLVMOrcCreateLLJIT: %s\n"
+       (fprintf stderr "%s:%d: JIT error in LLVMOrcCreateLLJIT: %s\n"
                    g-source-path line (LLVMGetErrorMessage err))
           (when (!= g-interactive 0) (repl_throw))
-          (exit 1)))
+          (exit 1))
     (set! g-jit jit-ref))
   (set! g-jit-dylib (LLVMOrcLLJITGetMainJITDylib g-jit))
   ; Expose host process symbols so CT code can call printf, malloc, etc.
@@ -1877,10 +2524,10 @@
         err:ptr (LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess
                    (addr-of gen) prefix null null))
     (when (!= err null)
-      (do (fprintf stderr "%s:%d: JIT error in CreateDynLibSearchGen: %s\n"
+       (fprintf stderr "%s:%d: JIT error in CreateDynLibSearchGen: %s\n"
                    g-source-path line (LLVMGetErrorMessage err))
           (when (!= g-interactive 0) (repl_throw))
-          (exit 1)))
+          (exit 1))
     (LLVMOrcJITDylibAddGenerator g-jit-dylib gen)))
 
 (defn jit-add-module:void (ir:ptr line:i32)
@@ -1895,25 +2542,25 @@
         errmsg:ptr null
         parse-err:i32 (LLVMParseIRInContext ctx mb (addr-of mod) (addr-of errmsg)))
     (when (!= parse-err 0)
-      (do (fprintf stderr "%s:%d: compile-time: IR parse error: %s\n"
+       (fprintf stderr "%s:%d: compile-time: IR parse error: %s\n"
                    g-source-path line errmsg)
           (when (!= g-interactive 0) (repl_throw))
-          (exit 1)))
+          (exit 1))
     (let (tsctx:ptr (LLVMOrcCreateNewThreadSafeContext)
           tsmod:ptr (LLVMOrcCreateNewThreadSafeModule mod tsctx))
       (LLVMOrcDisposeThreadSafeContext tsctx)
       (let (err:ptr (LLVMOrcLLJITAddLLVMIRModule g-jit g-jit-dylib tsmod))
         (when (!= err null)
-          (do (fprintf stderr "%s:%d: JIT error in AddLLVMIRModule: %s\n"
+           (fprintf stderr "%s:%d: JIT error in AddLLVMIRModule: %s\n"
                        g-source-path line (LLVMGetErrorMessage err))
               (when (!= g-interactive 0) (repl_throw))
-              (exit 1)))))))
+              (exit 1))))))
 
 (defn jit-call-ct-main-sym:void (line:i32 sym:ptr)
   (let (addr:i64 (cast i64 0))
     (let (err:ptr (LLVMOrcLLJITLookup g-jit (cast ptr (addr-of addr)) sym))
       (when (!= err null)
-        (do (LLVMConsumeError err) (return)))
+         (LLVMConsumeError err) (return))
       (when (= addr (cast i64 0)) (return))
       ; Redirect stdout -> stderr so CT printf does not corrupt the IR output
       (fflush (cast ptr stdout))
@@ -2009,22 +2656,22 @@
                                  (-> bf (node-at _ 0) (cast *Node _) (. kind) (= _ NODE-SYM)))))
                 (let (bh:ptr (-> bf (node-at _ 0) (cast *Node _) (. s)))
                   (when (= (strcmp bh "defstruct") 0)
-                    (do (set! is-tl 1) (set! g-out ct-type) (emit-defstruct (cast ptr bf))))
+                     (set! is-tl 1) (set! g-out ct-type) (emit-defstruct (cast ptr bf)))
                   (when (= (strcmp bh "defconst") 0)
-                    (do (set! is-tl 1) (emit-defconst (cast ptr bf))))
+                     (set! is-tl 1) (emit-defconst (cast ptr bf)))
                   (when (= (strcmp bh "defenum") 0)
-                    (do (set! is-tl 1) (emit-defenum (cast ptr bf))))
+                     (set! is-tl 1) (emit-defenum (cast ptr bf)))
                   (when (= (strcmp bh "defvar") 0)
-                    (do (set! is-tl 1) (set! g-out ct-decl) (emit-defvar (cast ptr bf))))
+                     (set! is-tl 1) (set! g-out ct-decl) (emit-defvar (cast ptr bf)))
                   (when (= (strcmp bh "include") 0)
-                    (do (set! is-tl 1) (set! g-out ct-decl) (emit-include (cast ptr bf))))
+                     (set! is-tl 1) (set! g-out ct-decl) (emit-include (cast ptr bf)))
                   (when (= (strcmp bh "extern") 0)
-                    (do (set! is-tl 1) (set! g-out ct-decl) (emit-extern (cast ptr bf))))
+                     (set! is-tl 1) (set! g-out ct-decl) (emit-extern (cast ptr bf)))
                   (when (= (strcmp bh "defn") 0)
-                    (do (set! is-tl 1) (set! g-out ct-def) (emit-defn (cast ptr bf))))))
+                     (set! is-tl 1) (set! g-out ct-def) (emit-defn (cast ptr bf)))))
               (when (and (= is-tl 0) (< nexpr 256))
-                (do (aset! (cast *ptr expr-forms) nexpr (cast ptr bf))
-                    (inc! nexpr))))
+                 (aset! (cast *ptr expr-forms) nexpr (cast ptr bf))
+                    (inc! nexpr)))
             (inc! bi))
 
           ; Emit unique @__compile_time_main_N wrapping the expression forms.
@@ -2062,7 +2709,7 @@
 
             ; If CT used quasiquote, add private helpers.
             (when (!= ct-qq 0)
-              (do (fprintf ct-decl "declare ptr @malloc(i64)\n")
+               (fprintf ct-decl "declare ptr @malloc(i64)\n")
                   (fprintf ct-def "define private ptr @__cons(ptr %%a, ptr %%b) {\n")
                   (fprintf ct-def "  %%c = call ptr @malloc(i64 40)\n")
                   (fprintf ct-def "  %%p0 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 0\n")
@@ -2087,7 +2734,7 @@
                   (fprintf ct-def "  %%rest = call ptr @__append(ptr %%cdr, ptr %%b)\n")
                   (fprintf ct-def "  %%c = call ptr @__cons(ptr %%car, ptr %%rest)\n")
                   (fprintf ct-def "  ret ptr %%c\n")
-                  (fprintf ct-def "}\n\n")))
+                  (fprintf ct-def "}\n\n"))
 
             (fclose ct-type)
             (fclose ct-decl)
@@ -2100,10 +2747,10 @@
               (fprintf irs "target triple = \"x86_64-pc-linux-gnu\"\n\n")
               ; In REPL mode, include the accumulated preamble
               (when (!= g-interactive 0)
-                (do (fflush g-repl-preamble)
+                 (fflush g-repl-preamble)
                     (when (and (!= g-repl-preamble-bufp null)
                                (!= (char-at g-repl-preamble-bufp (cast i64 0)) 0))
-                      (fputs g-repl-preamble-bufp irs))))
+                      (fputs g-repl-preamble-bufp irs)))
               ; Type defs: main-so-far + CT-specific
               (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
                 (fputs g-type-bufp irs))
@@ -2154,11 +2801,10 @@
             (while (< vi num-params)
               (let (vp:*Node (cast *Node (node-at params-node vi)))
                 (when (= (strcmp (. vp s) "&rest") 0)
-                  (do
                     (when (!= vi (- num-params 2))
                       (die-at (. vp line) "defmacro: &rest must be second-to-last param"))
                     (set! variadic 1)
-                    (set! pcount (- num-params 1)))))
+                    (set! pcount (- num-params 1))))
               (inc! vi)))
         ; Collect param names, skipping &rest keyword.
         (let (pnames:ptr null
@@ -2171,9 +2817,8 @@
               (when (!= (. p kind) NODE-SYM)
                 (die-at (. p line) "defmacro: param must be a symbol"))
               (when (!= (strcmp (. p s) "&rest") 0)
-                (do
                   (aset! (cast *ptr pnames) ai (. p s))
-                  (inc! ai))))
+                  (inc! ai)))
             (inc! pi))
           ; Register in macro table
           (when (>= g-num-macros 256)
@@ -2258,7 +2903,7 @@
                   ; Only emit malloc declaration if it's not already in g-decl-bufp
                   ; (e.g. from an earlier (include stdlib)).
                   (when (!= macro-qq 0)
-                    (do (when (= g-malloc-decl-done 0)
+                     (when (= g-malloc-decl-done 0)
                           (fprintf ct-decl "declare ptr @malloc(i64)\n"))
                         (fprintf ct-def "define private ptr @__cons(ptr %%a, ptr %%b) {\n")
                         (fprintf ct-def "  %%c = call ptr @malloc(i64 40)\n")
@@ -2290,7 +2935,7 @@
                         (fprintf ct-def "  %%rest = call ptr @__append(ptr %%cdr, ptr %%b)\n")
                         (fprintf ct-def "  %%c = call ptr @__cons(ptr %%car, ptr %%rest)\n")
                         (fprintf ct-def "  ret ptr %%c\n")
-                        (fprintf ct-def "}\n\n")))
+                        (fprintf ct-def "}\n\n"))
 
                   ; Always declare nucleus_gensym
                   (fprintf ct-decl "declare ptr @nucleus_gensym()\n")
@@ -2305,10 +2950,10 @@
                     (fprintf irs "target triple = \"x86_64-pc-linux-gnu\"\n\n")
                     ; In REPL mode, include the accumulated preamble
                     (when (!= g-interactive 0)
-                      (do (fflush g-repl-preamble)
+                       (fflush g-repl-preamble)
                           (when (and (!= g-repl-preamble-bufp null)
                                      (!= (char-at g-repl-preamble-bufp (cast i64 0)) 0))
-                            (fputs g-repl-preamble-bufp irs))))
+                            (fputs g-repl-preamble-bufp irs)))
                     (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
                       (fputs g-type-bufp irs))
                     (emit-string-table irs)
@@ -2353,13 +2998,13 @@
 
 (defn read-file:ptr (path:ptr)
   (let (f:ptr (fopen path "rb"))
-    (when (= f null) (do (perror path) (exit 1)))
-    (when (!= (fseek f (cast i64 0) 2) 0) (do (perror "fseek") (exit 1)))
+    (when (= f null) (perror path) (exit 1))
+    (when (!= (fseek f (cast i64 0) 2) 0) (perror "fseek") (exit 1))
     (let (sz:i64 (ftell f))
-      (when (< sz (cast i64 0)) (do (perror "ftell") (exit 1)))
+      (when (< sz (cast i64 0)) (perror "ftell") (exit 1))
       (rewind f)
       (let (buf:ptr (malloc (+ sz (cast i64 1))))
-        (when (= buf null) (do (perror "malloc") (exit 1)))
+        (when (= buf null) (perror "malloc") (exit 1))
         (let (nr:i64 (fread buf (cast i64 1) sz f))
           (aset! (cast *i8 buf) nr (cast i8 0))
           (fclose f)
@@ -2380,7 +3025,7 @@
         slen:i64 (strlen s))
     (while (<= i slen)
       (when (or (= i slen) (= (char-at s i) 58))
-        (do (let (seg-len:i64 (- i start)
+         (let (seg-len:i64 (- i start)
                   seg:ptr (arena-strndup (ptr+ (cast *i8 s) start) seg-len)
                   n:*Node (cast *Node (alloc-node)))
               (.set! n kind NODE-SYM)
@@ -2390,7 +3035,7 @@
                 (when (= tail null) (set! result cell))
                 (when (!= tail null) (.set! (cast *Node tail) cdr cell))
                 (set! tail cell)))
-            (set! start (+ i (cast i64 1)))))
+            (set! start (+ i (cast i64 1))))
       (set! i (+ i (cast i64 1))))
     (return result)))
 
@@ -2582,12 +3227,10 @@
                       (while (< j nparams)
                         (let (p:ptr (node-at params-node j)
                               pn:ptr null
-                              pt-name:ptr null)
-                          (extract-name-type p (cast *ptr (addr-of pn))
-                                               (cast *ptr (addr-of pt-name)))
-                          (if (!= pt-name null)
-                            (aset! (cast *ptr ptypes) j
-                                   (parse-type-name pt-name (. (cast *Node p) line)))
+                              pty:ptr (extract-name-and-type p (cast *ptr (addr-of pn))
+                                                              (. (cast *Node p) line)))
+                          (if (!= pty null)
+                            (aset! (cast *ptr ptypes) j pty)
                             (aset! (cast *ptr ptypes) j ty-i32)))
                         (inc! j)))
                     (let (ft:*Type (cast *Type (make-type TY-FN)))
@@ -2645,6 +3288,8 @@
                   (emit-def-rmacro (cast ptr f))
                 (= (strcmp h "import") 0)
                   (emit-import (cast ptr f))
+                (= (strcmp h "declare") 0)
+                  (do (set! g-out g-decl-stream) (emit-nuch-declare-import (cast ptr f)))
                 true
                   (die-at (. f line) (fmt-s "unknown top-level form: %s" h)))))
       (set! fc (. (cast *Node fc) cdr)))))
@@ -2702,6 +3347,13 @@
   (let (candidate:ptr (fmt-s "lib/%s" filename))
     (when (!= (file-exists candidate) 0)
       (return candidate)))
+  ; Try -I include paths
+  (let (j:i32 0)
+    (while (< j g-num-include-paths)
+      (let (candidate:ptr (fmt-2s "%s/%s" (aref (cast *ptr g-include-paths) j) filename))
+        (when (!= (file-exists candidate) 0)
+          (return candidate)))
+      (inc! j)))
   (return null))
 
 ; Resolve an import name to a .nuc or .nuch file path.
@@ -2720,6 +3372,10 @@
     (when (!= (node-len form) 2)
       (die-at (. ff line) "import: expected (import name)"))
     (let (name-node:*Node (cast *Node (node-at form 1)))
+      ; Handle string imports: (import "stdio.h") → C header parsing
+      (when (= (. name-node kind) NODE-STR)
+        (emit-c-include (. name-node s) (. ff line))
+        (return))
       (when (!= (. name-node kind) NODE-SYM)
         (die-at (. ff line) "import: name must be a symbol"))
       (let (name:ptr (. name-node s)
@@ -2770,6 +3426,110 @@
 ; ============================================================
 ; .nuch header emission
 ; ============================================================
+
+; ============================================================
+; C header emission (--emit-cheader)
+; ============================================================
+
+(defn type-name-to-c:ptr (name:ptr)
+  (when (= (strcmp name "void") 0)  (return "void"))
+  (when (= (strcmp name "i1") 0)    (return "_Bool"))
+  (when (= (strcmp name "i8") 0)    (return "int8_t"))
+  (when (= (strcmp name "i16") 0)   (return "int16_t"))
+  (when (= (strcmp name "i32") 0)   (return "int32_t"))
+  (when (= (strcmp name "int") 0)   (return "int32_t"))
+  (when (= (strcmp name "i64") 0)   (return "int64_t"))
+  (when (= (strcmp name "ui8") 0)   (return "uint8_t"))
+  (when (= (strcmp name "ui16") 0)  (return "uint16_t"))
+  (when (= (strcmp name "ui32") 0)  (return "uint32_t"))
+  (when (= (strcmp name "ui64") 0)  (return "uint64_t"))
+  (when (= (strcmp name "ptr") 0)   (return "void*"))
+  ; Pointer type: *Foo → struct Foo*
+  (when (= (char-at name (cast i64 0)) 42)
+    (return (fmt-s "%s*" (type-name-to-c (ptr+ (cast *i8 name) (cast i64 1))))))
+  ; Assume struct type
+  (return (fmt-s "struct %s" name)))
+
+(defn emit-cheader-defstruct:void (form:ptr)
+  (let (name:ptr (. (cast *Node (node-at form 1)) s)
+        nfields:i32 (- (node-len form) 2))
+    (printf "typedef struct {\n")
+    (let (i:i32 0)
+      (while (< i nfields)
+        (let (field:ptr (node-at form (+ i 2))
+              fname:ptr null
+              tname:ptr null)
+          (extract-name-type field (cast *ptr (addr-of fname)) (cast *ptr (addr-of tname)))
+          (when (!= tname null)
+            (printf "    %s %s;\n" (type-name-to-c tname) fname)))
+        (inc! i)))
+    (printf "} %s;\n\n" name)))
+
+(defn emit-cheader-declare:void (form:ptr)
+  ; (defn name:rettype (params...) ...)
+  (let (name-node:ptr (node-at form 1)
+        fname:ptr null
+        ret-name:ptr null)
+    (extract-name-type name-node (cast *ptr (addr-of fname)) (cast *ptr (addr-of ret-name)))
+    (when (= ret-name null) (set! ret-name "void"))
+    (printf "%s %s(" (type-name-to-c ret-name) fname)
+    (let (params:ptr (node-at form 2)
+          n:i32 (node-len params)
+          i:i32 0)
+      (when (= n 0) (printf "void"))
+      (while (< i n)
+        (when (!= i 0) (printf ", "))
+        (let (p:ptr (node-at params i)
+              pname:ptr null
+              ptname:ptr null)
+          (extract-name-type p (cast *ptr (addr-of pname)) (cast *ptr (addr-of ptname)))
+          (if (!= ptname null)
+            (printf "%s %s" (type-name-to-c ptname) pname)
+            ; Complex type (e.g. function pointer) — emit as void*
+            (when (!= pname null)
+              (printf "void* %s" pname))))
+        (inc! i)))
+    (printf ");\n")))
+
+(defn emit-cheader-defconst:void (form:ptr)
+  (let (name:ptr (. (cast *Node (node-at form 1)) s)
+        val-node:*Node (cast *Node (node-at form 2)))
+    (when (= (. val-node kind) NODE-INT)
+      (printf "#define %s %ld\n" name (. val-node i)))
+    (when (= (. val-node kind) NODE-STR)
+      (printf "#define %s \"%s\"\n" name (. val-node s)))))
+
+(defn emit-cheader-defenum:void (form:ptr)
+  (let (name:ptr (. (cast *Node (node-at form 1)) s)
+        n:i32 (- (node-len form) 2))
+    (printf "enum %s {\n" name)
+    (let (i:i32 0)
+      (while (< i n)
+        (let (variant:ptr (. (cast *Node (node-at form (+ i 2))) s))
+          (printf "    %s_%s = %d" name variant i)
+          (when (< i (- n 1)) (printf ","))
+          (printf "\n"))
+        (inc! i)))
+    (printf "};\n\n")))
+
+(defn emit-cheader-header:void (forms:ptr source-file:ptr)
+  (printf "#pragma once\n")
+  (printf "#include <stdint.h>\n")
+  (printf "#include <stdbool.h>\n\n")
+  (printf "/* Generated from %s by nucleusc --emit-cheader */\n\n" source-file)
+  (let (fc:ptr forms)
+    (while (!= fc null)
+      (let (f:*Node (cast *Node (. (cast *Node fc) car)))
+        (when (and (and (!= (cast ptr f) null) (= (. f kind) NODE-CELL))
+                   (and (> (node-len (cast ptr f)) 0)
+                        (-> f (node-at _ 0) (cast *Node _) (. kind) (= _ NODE-SYM))))
+          (let (h:ptr (-> f (node-at _ 0) (cast *Node _) (. s)))
+            (cond (= (strcmp h "defstruct") 0) (emit-cheader-defstruct (cast ptr f))
+                  (= (strcmp h "defn") 0)      (emit-cheader-declare (cast ptr f))
+                  (= (strcmp h "defconst") 0)  (emit-cheader-defconst (cast ptr f))
+                  (= (strcmp h "defenum") 0)   (emit-cheader-defenum (cast ptr f))
+                  true                         0))))
+      (set! fc (. (cast *Node fc) cdr)))))
 
 (defn emit-nuch-list:void (form:ptr)
   (let (i:i32 0
@@ -2867,6 +3627,8 @@
                                      (cast *ptr (addr-of ret-name)))
         (when (= ret-name null)
           (die-at (. (cast *Node name-node) line) (fmt-s "declare: missing :type on '%s'" fname)))
+        ; Skip if already defined (e.g. from init-libc)
+        (when (!= (scope-lookup g-globals fname) null) (return))
         (let (ret:ptr (parse-type-name ret-name (. (cast *Node name-node) line))
               nparams:i32 0
               ptypes:ptr null
@@ -3044,7 +3806,7 @@
         in-string:i32 0
         in-comment:i32 0
         first-line:i32 1)
-    (when (= buf null) (do (perror "malloc") (exit 1)))
+    (when (= buf null) (perror "malloc") (exit 1))
     (aset! (cast *i8 buf) (cast i64 0) (cast i8 0))
     (let (done:i32 0)
       (while (= done 0)
@@ -3057,10 +3819,10 @@
         (let (line-buf:ptr (malloc (cast i64 4096)))
           (when (= line-buf null) (do (perror "malloc") (exit 1)))
           (when (= (fgets line-buf (cast i32 4096) (cast ptr stdin)) null)
-            (do (free line-buf)
+             (free line-buf)
                 (if (= got-input 0)
                   (do (free buf) (return null))
-                  (do (set! done 1)))))
+                  (set! done 1)))
           (when (= done 0)
             (let (line-len:i64 (strlen line-buf))
               ; Grow buffer if needed
@@ -3069,7 +3831,7 @@
                   (while (> (+ buf-len line-len) (- new-cap (cast i64 1)))
                     (set! new-cap (* new-cap (cast i64 2))))
                   (set! buf (realloc buf new-cap))
-                  (when (= buf null) (do (perror "realloc") (exit 1)))
+                  (when (= buf null) (perror "realloc") (exit 1))
                   (set! buf-cap new-cap)))
               (memcpy (ptr+ (cast *i8 buf) buf-len) line-buf line-len)
               (set! buf-len (+ buf-len line-len))
@@ -3465,10 +4227,9 @@
     (while (!= running 0)
       (let (input:ptr (repl-read-input))
         (when (= input null)
-          (do (fprintf stderr "\n") (set! running 0)))
+          (fprintf stderr "\n") (set! running 0))
         (when (!= input null)
           (when (!= running 0)
-            (do
               ; Parse the input
               (set! g-src input)
               (set! g-pos (cast i64 0))
@@ -3484,11 +4245,17 @@
                       (when (= (repl_try) 0)
                         (repl-eval-form f)))
                     (set! fc (. (cast *Node fc) cdr)))))
-              (free input))))))))
+              (free input)))))))
 
 ; ============================================================
 ; Main entry point
 ; ============================================================
+
+(defn add-include-path:void (path:ptr)
+  (when (= g-include-paths null)
+    (set! g-include-paths (malloc (* (cast i64 64) (cast i64 8)))))
+  (aset! (cast *ptr g-include-paths) g-num-include-paths path)
+  (inc! g-num-include-paths))
 
 (defn main:int (argc:i32 argv:ptr)
   (let (source-file:ptr null
@@ -3497,8 +4264,19 @@
       (let (arg:ptr (aref (cast *ptr argv) i))
         (cond (= (strcmp arg "--emit-nuch") 0)
                 (set! g-emit-nuch 1)
+              (= (strcmp arg "--emit-cheader") 0)
+                (set! g-emit-cheader 1)
               (or (= (strcmp arg "-i") 0) (= (strcmp arg "--interactive") 0))
                 (set! g-interactive 1)
+              (= (strncmp arg "-I" (cast i64 2)) 0)
+                (if (> (strlen arg) (cast i64 2))
+                  ; -I/path/to/dir (no space)
+                  (add-include-path (ptr+ (cast *i8 arg) (cast i64 2)))
+                  ; -I /path/to/dir (next arg)
+                  (do (inc! i)
+                      (when (>= i argc)
+                        (do (fprintf stderr "-I requires an argument\n") (return 2)))
+                      (add-include-path (aref (cast *ptr argv) i))))
               (= (char-at arg (cast i64 0)) 45)
                 (do (fprintf stderr "unknown flag: %s\n" arg) (return 2))
               true
@@ -3509,11 +4287,11 @@
 
     ; REPL mode
     (when (!= g-interactive 0)
-      (do (repl-main) (return 0)))
+       (repl-main) (return 0))
 
     ; Batch mode — require source file
     (when (= source-file null)
-      (do (fprintf stderr "usage: nucleusc [--emit-nuch] [-i] <file.nuc>\n") (return 2)))
+       (fprintf stderr "usage: nucleusc [--emit-nuch] [--emit-cheader] [-i] [-I<path>] <file.nuc>\n") (return 2))
     (set! g-source-path source-file)
     (let (src:ptr (read-file source-file))
       (compiler-init)
@@ -3527,8 +4305,13 @@
 
         ; .nuch header mode — emit declarations and exit
         (when (!= g-emit-nuch 0)
-          (do (emit-nuch-header forms source-file)
-              (return 0)))
+           (emit-nuch-header forms source-file)
+              (return 0))
+
+        ; C header mode — emit C declarations and exit
+        (when (!= g-emit-cheader 0)
+           (emit-cheader-header forms source-file)
+              (return 0))
 
         ; Open module streams and compile
         (open-module-streams)

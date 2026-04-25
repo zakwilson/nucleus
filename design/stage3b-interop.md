@@ -118,7 +118,7 @@ All of these? Some subset? Is `-I` required at this stage?
 
 10. Go with a subset, but create a stage3c document to address remaining potential incompatibilities.
 
-11. TODO - the whole type syntax needs a revision before I pick a syntax for function pointers.
+11. `(fn:i32 (i32 ptr))` is the sugared form, `((fn i32) (i32 ptr))` is desugared (see stage5-syntax.md)
 
 12. Keep the current convention of searching relative to the source file, then `$(pwd)/lib` by default, but add th `-I` flag.
 
