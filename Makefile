@@ -7,13 +7,13 @@ BUILD        := build
 BIN          := $(BUILD)/nucleusc
 
 # Bootstrap binary: use the committed pre-built binary.
-# To rebuild it from the committed IR:  make boot-binary
+# Auto-rebuilt from boot/nucleusc.ll if it can't execute (e.g. LLVM version mismatch).
 BOOT         := bin/nucleusc
 
 # REPL shim (setjmp/longjmp wrapper)
 REPL_SHIM_O  := $(BUILD)/repl_shim.o
 
-$(BIN): $(BOOT) src/nucleusc.nuc $(REPL_SHIM_O) | $(BUILD)
+$(BIN): src/nucleusc.nuc $(REPL_SHIM_O) | $(BUILD) ensure-boot
 	$(BOOT) src/nucleusc.nuc > $(BUILD)/nucleusc.ll
 	clang $(BUILD)/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl -rdynamic -o $@
 
@@ -23,10 +23,16 @@ $(REPL_SHIM_O): src/repl_shim.c | $(BUILD)
 $(BUILD) $(BUILD)/out:
 	mkdir -p $@
 
-# Rebuild the bootstrap binary from the committed IR (boot/nucleusc.ll).
-# Use this if bin/nucleusc is missing or stale on a clean checkout.
-boot-binary: | $(BUILD)
-	clang boot/nucleusc.ll $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl -rdynamic -o bin/nucleusc
+# Auto-rebuild boot binary if it can't run (wrong LLVM shared lib, etc.)
+ensure-boot: $(REPL_SHIM_O) | $(BUILD)
+	@if ! $(BOOT) /dev/null >/dev/null 2>&1; then \
+		echo "bin/nucleusc: cannot execute, rebuilding from boot/nucleusc.ll ..."; \
+		clang boot/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl -rdynamic -o $(BOOT); \
+	fi
+
+# Force-rebuild the bootstrap binary from the committed IR (boot/nucleusc.ll).
+boot-binary: $(REPL_SHIM_O) | $(BUILD)
+	clang boot/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl -rdynamic -o bin/nucleusc
 
 test: $(BIN)
 	./tests/run-tests.sh
@@ -95,4 +101,4 @@ lib: lib-headers lib-objs
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: test clean bootstrap boot-binary update-bootstrap lib-headers lib-cheaders lib-objs lib-so lib
+.PHONY: test clean bootstrap boot-binary update-bootstrap ensure-boot lib-headers lib-cheaders lib-objs lib-so lib

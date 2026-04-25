@@ -14,8 +14,8 @@
 
 ## compile-time JIT
 
-- The `(compile-time body…)` form links `libLLVM-19` via the LLVM ORC LLJIT C API.
+- The `(compile-time body…)` form links the system LLVM (19+) via the LLVM ORC LLJIT C API.
 - A single LLJIT instance is shared across all `compile-time` blocks in one compilation run (lazy init on first use).
 - Each `compile-time` block generates a uniquely-named entry function `@__compile_time_main_N` to avoid symbol collisions.
 - CT printf output goes to stderr (via a `dup`/`dup2` redirect) so it doesn't corrupt the IR emitted to stdout.
-- The `llvm-19-dev` package must be installed in the container for the LLVM C API headers; `llvm-config` provides the right `--cflags`/`--ldflags`/`--libs`.
+- An `llvm-dev` package (version 19+) must be installed for the LLVM C API headers; `llvm-config` provides the right `--cflags`/`--ldflags`/`--libs`.

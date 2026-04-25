@@ -2,12 +2,12 @@
 
 - `make` compiles `src/nucleusc.nuc` using the committed bootstrap binary `bin/nucleusc`, producing `build/nucleusc` (the self-hosted compiler). The build also compiles `src/repl_shim.c` (setjmp/longjmp wrapper for REPL error recovery) and links it with the compiler.
 - `bin/nucleusc` is a pre-built ELF binary committed to the repo. `boot/nucleusc.ll` is the corresponding LLVM IR.
-- If `bin/nucleusc` is missing or broken, rebuild it: `make boot-binary` (compiles `boot/nucleusc.ll` with clang).
+- If `bin/nucleusc` is missing or can't execute (e.g. LLVM version mismatch), `make` auto-rebuilds it from `boot/nucleusc.ll`. You can also force a rebuild with `make boot-binary`.
 - `./build.sh examples/foo.nuc` runs `make`, then compiles the source file with `build/nucleusc`. Compile-time output goes to **stderr**; IR to **stdout**.
 - `make test` runs `tests/run-tests.sh`, which diffs each example's **runtime** output against `tests/expected/<name>.out`. Compile-time stderr is ignored by the test harness.
 - `make bootstrap` does the fixed-point test: stage1.ll == stage2.ll.
 - The compiler emits **opaque-pointer** LLVM IR (`ptr`, not `i8*`/`i32*`) and hardcodes `target triple = "x86_64-pc-linux-gnu"`. If the dev environment ever moves off x86_64 Linux the triple will need updating.
-- The self-hosted compiler and its bootstrap artifacts are linked with `-lLLVM-19 -ldl`. The Makefile uses `llvm-config` for flags.
+- The self-hosted compiler and its bootstrap artifacts are linked against the system LLVM (19+). The Makefile uses `llvm-config` for flags; no version is hardcoded.
 
 ## Updating bootstrap artifacts
 
