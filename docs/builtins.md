@@ -53,8 +53,8 @@ Supported forms: `declare` (function signatures), `defstruct`, `defconst`, `defe
 | `defvar` | Define a global variable | global variable definition |
 | `defstruct` | Define a struct type | `struct` |
 | `include` | Include a C standard library module | `#include` |
-| `import` | Import a Nucleus library `(import name)`. Resolves `name.nuc` (source) or `name.nuch` (header) from source directory or `lib/`. Source imports inline all definitions; header imports emit `declare` (extern) for functions. Duplicate imports are silently skipped. | — |
-| `declare` | Declare an external function signature `(declare name:rettype (params...))`. Used in `.nuch` header files. | function prototype |
+| `import` | Import a Nucleus library or C header. `(import name)` resolves `name.nuc` (source) or `name.nuch` (header) from source directory, `lib/`, or `-I` paths. `(import "stdio.h")` preprocesses a C header with `clang -E` and imports extern function declarations. Source imports inline all definitions; header imports emit `declare` (extern) for functions. Duplicate imports are silently skipped. | — |
+| `declare` | Declare an external function signature `(declare name:rettype (params...))`. Used in `.nuch` header files and at the top level. | function prototype |
 | `extern` | Declare an external (foreign) global variable | `extern` declaration |
 | `defmacro` | Define a compile-time macro `(defmacro name (params...) body...)`. Supports `&rest` for variadic macros: `(defmacro name (a b &rest rest) ...)` — `rest` receives a cons list of remaining args. | macro |
 | `def-rmacro` | Define a reader macro `(def-rmacro "prefix" symbol)`. When `prefix` appears at the start of a token, the reader wraps the next form: `(symbol form)`. Built-in reader macros: `'` (quote), `` ` `` (quasiquote), `~` (unquote), `~@` (unquote-splice), `@` (deref). | — |

@@ -62,6 +62,10 @@ $(BUILD)/lib:
 lib/%.nuch: lib/%.nuc $(BIN)
 	$(BIN) --emit-nuch $< > $@
 
+# Generate C header from .nuc source
+lib/%.h: lib/%.nuc $(BIN)
+	$(BIN) --emit-cheader $< > $@
+
 # Compile library .nuc to .ll
 $(BUILD)/lib/%.ll: lib/%.nuc $(BIN) | $(BUILD)/lib
 	$(BIN) $< > $@
@@ -73,14 +77,22 @@ $(BUILD)/lib/%.o: $(BUILD)/lib/%.ll
 # Build all library headers
 LIB_NUCS  := $(wildcard lib/*.nuc)
 LIB_NUCHS := $(LIB_NUCS:.nuc=.nuch)
+LIB_HS    := $(LIB_NUCS:.nuc=.h)
 LIB_LLS   := $(patsubst lib/%.nuc,$(BUILD)/lib/%.ll,$(LIB_NUCS))
 LIB_OBJS  := $(patsubst lib/%.nuc,$(BUILD)/lib/%.o,$(LIB_NUCS))
 
 lib-headers: $(LIB_NUCHS)
+lib-cheaders: $(LIB_HS)
 lib-objs: $(LIB_OBJS)
+
+# Build shared library from all library .o files
+$(BUILD)/lib/libnucleus.so: $(LIB_OBJS)
+	$(CC) -shared $^ -o $@
+
+lib-so: $(BUILD)/lib/libnucleus.so
 lib: lib-headers lib-objs
 
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: test clean bootstrap boot-binary update-bootstrap lib-headers lib-objs lib
+.PHONY: test clean bootstrap boot-binary update-bootstrap lib-headers lib-cheaders lib-objs lib-so lib
