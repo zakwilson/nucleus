@@ -1,4 +1,4 @@
 ; FFI declarations for C header parsing (popen/pclose)
-; These will be in init-libc after the next bootstrap update.
+; These must be declared before any C header parsing since the parser itself uses popen/pclose.
 (declare popen:ptr (cmd:ptr mode:ptr))
 (declare pclose:i32 (stream:ptr))
