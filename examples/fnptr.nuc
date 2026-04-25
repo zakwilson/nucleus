@@ -1,0 +1,24 @@
+(include stdio)
+
+(defn add:i32 (a:i32 b:i32) (return (+ a b)))
+(defn mul:i32 (a:i32 b:i32) (return (* a b)))
+(defn neg:i32 (x:i32) (return (- 0 x)))
+
+(defn apply-binop:i32 ((op (fn i32) (i32 i32)) a:i32 b:i32)
+  (return (funcall op a b)))
+
+(defn apply-unop:i32 ((op (fn i32) (i32)) x:i32)
+  (return (funcall op x)))
+
+(defn main:i32 ()
+  (printf "add: %d\n" (apply-binop add 3 4))
+  (printf "mul: %d\n" (apply-binop mul 3 4))
+  (printf "neg: %d\n" (apply-unop neg 5))
+
+  ; Store function pointer in local variable
+  (let ((f (fn i32) (i32 i32)) add)
+    (printf "f(10,20): %d\n" (funcall f 10 20))
+    (set! f mul)
+    (printf "f(10,20): %d\n" (funcall f 10 20)))
+
+  (return 0))

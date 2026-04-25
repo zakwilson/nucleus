@@ -1,0 +1,3 @@
+; REPL shim declarations (linked via repl_shim.o)
+(declare repl_try:i32 ())
+(declare repl_throw:void ())

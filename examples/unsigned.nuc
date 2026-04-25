@@ -1,0 +1,32 @@
+(include stdio)
+
+(defn main:int ()
+  ; Basic unsigned arithmetic
+  (let (a:ui32 10
+        b:ui32 3)
+    (printf "add: %u\n" (+ a b))
+    (printf "sub: %u\n" (- a b))
+    (printf "mul: %u\n" (* a b))
+    (printf "div: %u\n" (/ a b))
+    (printf "mod: %u\n" (% a b)))
+
+  ; Unsigned comparisons
+  (let (x:ui32 5
+        y:ui32 10)
+    (printf "lt: %d\n" (< x y))
+    (printf "gt: %d\n" (> x y))
+    (printf "eq: %d\n" (= x y)))
+
+  ; Unsigned bitwise
+  (let (v:ui32 255)
+    (printf "shr: %u\n" (bit-shr v (cast ui32 2))))
+
+  ; Cast unsigned to wider unsigned (zext)
+  (let (s:ui8 200)
+    (printf "zext: %lu\n" (cast ui64 s)))
+
+  ; Cast signed to unsigned (same width, reinterpret)
+  (let (n:i32 -1)
+    (printf "reinterpret: %u\n" (cast ui32 n)))
+
+  (return 0))
