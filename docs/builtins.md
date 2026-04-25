@@ -52,7 +52,7 @@ Supported forms: `declare` (function signatures), `defstruct`, `defconst`, `defe
 | `defenum` | Define an enumeration | `enum` |
 | `defvar` | Define a global variable | global variable definition |
 | `defstruct` | Define a struct type | `struct` |
-| `include` | Include a C standard library module | `#include` |
+| `include` | Include a C standard library module. `(include stdio)` preprocesses `stdio.h` with `clang -E` and imports all extern function declarations. Any C header can be used: `(include math)` includes `math.h`. | `#include` |
 | `import` | Import a Nucleus library or C header. `(import name)` resolves `name.nuc` (source) or `name.nuch` (header) from source directory, `lib/`, or `-I` paths. `(import "stdio.h")` preprocesses a C header with `clang -E` and imports extern function declarations. Source imports inline all definitions; header imports emit `declare` (extern) for functions. Duplicate imports are silently skipped. | — |
 | `declare` | Declare an external function signature `(declare name:rettype (params...))`. Used in `.nuch` header files and at the top level. | function prototype |
 | `extern` | Declare an external (foreign) global variable | `extern` declaration |
@@ -79,8 +79,8 @@ Defined via `defmacro`. Use `(import macros)` to include them (note: `dotimes` a
 | Name | Signature | Expands To |
 |------|-----------|------------|
 | `if` | `(if test then else)` | `(cond test then true else)` |
-| `when` | `(when condition body)` | `(cond condition (do body))` |
-| `unless` | `(unless condition body)` | `(cond (not condition) (do body))` |
+| `when` | `(when condition body...)` | `(cond condition (do body...))` |
+| `unless` | `(unless condition body...)` | `(cond (not condition) (do body...))` |
 | `zero?` | `(zero? x)` | `(= x 0)` |
 | `null?` | `(null? x)` | `(= x null)` |
 | `for` | `(for (var:type init) test step body)` | `(let (var:type init) (while test body step))` |

@@ -26,8 +26,9 @@ This updates both `boot/nucleusc.ll` (IR) and `bin/nucleusc` (binary) from the c
 - Duplicate imports (same resolved path) are silently skipped.
 - Circular imports are detected and produce an error.
 - Reader state (`g-src`, `g-pos`, `g-line`, `g-source-path`, `g-peek`, `g-peek-valid`) is saved/restored around each import.
-- C header imports: `(import "stdio.h")` runs `clang -E -x c -include stdio.h /dev/null`, parses extern function declarations from the preprocessed output, registers them in `g-globals`, and emits LLVM `declare` statements. Handles function pointer parameters, `__attribute__`, `__asm__`, variadic functions, and struct/typedef skipping. C headers are an alternative to `(include stdio)` for accessing libc functions.
-- New libc functions (e.g. `getenv`, `realpath`) cannot be used in compiler source until the bootstrap binary is updated, because the bootstrap compiler's libc table won't know them. Use workarounds with existing libc functions, then add the proper versions after `make update-bootstrap`.
+- C header imports: `(import "stdio.h")` runs `clang -E -x c -include stdio.h /dev/null`, parses extern function declarations from the preprocessed output, registers them in `g-globals`, and emits LLVM `declare` statements. Handles function pointer parameters, `__attribute__`, `__asm__`, variadic functions, and struct/typedef skipping.
+- `(include stdio)` is syntactic sugar for `(import "stdio.h")` — both use C header parsing via `clang -E`. All functions from the header are imported, not just a hardcoded subset.
+- The REPL pre-loads stdio.h, stdlib.h, string.h, ctype.h, and unistd.h via C header parsing at startup.
 
 ## .nuch headers and library compilation
 
