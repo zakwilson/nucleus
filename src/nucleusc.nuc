@@ -94,17 +94,6 @@
   instr-u:ptr
   is-cmp:i32)
 
-(defstruct LibcDecl
-  module:ptr
-  name:ptr
-  ret-kind:i32
-  p0:i32
-  p1:i32
-  p2:i32
-  p3:i32
-  num-params:i32
-  variadic:i32)
-
 (defstruct Vec
   data:ptr
   len:i32
@@ -213,10 +202,6 @@
 ; BinOp table
 (defvar g-binops:ptr)
 (defvar g-num-binops:i32 0)
-
-; LibcDecl table
-(defvar g-libc:ptr)
-(defvar g-num-libc:i32 0)
 
 ; Macro registry
 (defvar g-macros:ptr)
@@ -346,7 +331,7 @@
         (fputc 34 (cast ptr stdout))
         (let (s:ptr (. nn s)
               i:i64 (cast i64 0)
-              len:i64 (strlen s))
+              len:i64 (cast i64 (strlen s)))
           (while (< i len)
             (let (c:i32 (char-at s i))
               (cond (= c 10) (do (fputc 92 (cast ptr stdout)) (fputc 110 (cast ptr stdout)))
@@ -1195,7 +1180,7 @@
   (let (cc:*Node (cast *Node call))
     (when (!= (node-len cc) 2) (die-at (. cc line) "char expects 1 arg"))
     (let (arg:*Node (cast *Node (node-at cc 1)))
-      (when (or (!= (. arg kind) NODE-STR) (!= (strlen (. arg s)) (cast i64 1)))
+      (when (or (!= (. arg kind) NODE-STR) (!= (cast i64 (strlen (. arg s))) (cast i64 1)))
         (die-at (. arg line) "char: arg must be single-char string"))
       (return (alloc-val ty-i8 (fmt-i32 "%d" (char-at (. arg s) (cast i64 0))))))))
 
@@ -1882,124 +1867,16 @@
         (scope-define g-globals name ty ir-name 1)))))
 
 ; ============================================================
-; Libc include
+; Libc include (via C header parsing)
 ; ============================================================
-
-(defn add-libc:void (module:ptr name:ptr ret:i32 p0:i32 p1:i32 p2:i32 p3:i32 np:i32 va:i32)
-  (let (d:*LibcDecl (cast *LibcDecl (ptr+ (cast *LibcDecl g-libc) g-num-libc)))
-    (.set! d module module)
-    (.set! d name name)
-    (.set! d ret-kind ret)
-    (.set! d p0 p0)
-    (.set! d p1 p1)
-    (.set! d p2 p2)
-    (.set! d p3 p3)
-    (.set! d num-params np)
-    (.set! d variadic va)
-    (inc! g-num-libc)))
-
-(defn kind-to-type:ptr (k:i32)
-  (when (= k TY-VOID) (return ty-void))
-  (when (= k TY-I8)   (return ty-i8))
-  (when (= k TY-I32)  (return ty-i32))
-  (when (= k TY-I64)  (return ty-i64))
-  (when (= k TY-PTR)  (return ty-ptr))
-  (return ty-void))
-
-(defn libc-param-kind:i32 (d:ptr idx:i32)
-  (let (dd:*LibcDecl (cast *LibcDecl d))
-    (when (= idx 0) (return (. dd p0)))
-    (when (= idx 1) (return (. dd p1)))
-    (when (= idx 2) (return (. dd p2)))
-    (when (= idx 3) (return (. dd p3)))
-    (return TY-VOID)))
-
-(defn init-libc:void ()
-  (set! g-libc (arena-alloc (* (cast i64 80) (sizeof LibcDecl))))
-  ; stdio
-  (add-libc "stdio" "printf"   TY-I32  TY-PTR 0 0 0 1 1)
-  (add-libc "stdio" "fprintf"  TY-I32  TY-PTR TY-PTR 0 0 2 1)
-  (add-libc "stdio" "snprintf" TY-I32  TY-PTR TY-I64 TY-PTR 0 3 1)
-  (add-libc "stdio" "fputc"    TY-I32  TY-I32 TY-PTR 0 0 2 0)
-  (add-libc "stdio" "fputs"    TY-I32  TY-PTR TY-PTR 0 0 2 0)
-  (add-libc "stdio" "fopen"    TY-PTR  TY-PTR TY-PTR 0 0 2 0)
-  (add-libc "stdio" "fclose"   TY-I32  TY-PTR 0 0 0 1 0)
-  (add-libc "stdio" "fread"    TY-I64  TY-PTR TY-I64 TY-I64 TY-PTR 4 0)
-  (add-libc "stdio" "fwrite"   TY-I64  TY-PTR TY-I64 TY-I64 TY-PTR 4 0)
-  (add-libc "stdio" "fseek"    TY-I32  TY-PTR TY-I64 TY-I32 0 3 0)
-  (add-libc "stdio" "ftell"    TY-I64  TY-PTR 0 0 0 1 0)
-  (add-libc "stdio" "rewind"   TY-VOID TY-PTR 0 0 0 1 0)
-  (add-libc "stdio" "perror"   TY-VOID TY-PTR 0 0 0 1 0)
-  (add-libc "stdio" "open_memstream" TY-PTR TY-PTR TY-PTR 0 0 2 0)
-  (add-libc "stdio" "fflush"        TY-I32 TY-PTR 0 0 0 1 0)
-  (add-libc "stdio" "fgets"         TY-PTR TY-PTR TY-I32 TY-PTR 0 3 0)
-  ; popen/pclose provided via lib/cparse-ffi.nuch import
-  ; stdlib
-  (add-libc "stdlib" "malloc"  TY-PTR  TY-I64 0 0 0 1 0)
-  (add-libc "stdlib" "realloc" TY-PTR  TY-PTR TY-I64 0 0 2 0)
-  (add-libc "stdlib" "free"    TY-VOID TY-PTR 0 0 0 1 0)
-  (add-libc "stdlib" "exit"    TY-VOID TY-I32 0 0 0 1 0)
-  (add-libc "stdlib" "strtol"  TY-I64  TY-PTR TY-PTR TY-I32 0 3 0)
-  ; string
-  (add-libc "string" "memcpy"  TY-PTR  TY-PTR TY-PTR TY-I64 0 3 0)
-  (add-libc "string" "memset"  TY-PTR  TY-PTR TY-I32 TY-I64 0 3 0)
-  (add-libc "string" "memcmp"  TY-I32  TY-PTR TY-PTR TY-I64 0 3 0)
-  (add-libc "string" "strlen"  TY-I64  TY-PTR 0 0 0 1 0)
-  (add-libc "string" "strcmp"  TY-I32  TY-PTR TY-PTR 0 0 2 0)
-  (add-libc "string" "strncmp" TY-I32  TY-PTR TY-PTR TY-I64 0 3 0)
-  (add-libc "string" "strchr"  TY-PTR  TY-PTR TY-I32 0 0 2 0)
-  (add-libc "string" "strndup" TY-PTR  TY-PTR TY-I64 0 0 2 0)
-  ; ctype
-  (add-libc "ctype" "isspace" TY-I32  TY-I32 0 0 0 1 0)
-  (add-libc "ctype" "isdigit" TY-I32  TY-I32 0 0 0 1 0)
-  ; unistd — POSIX fd helpers for CT stdout redirect
-  (add-libc "unistd" "dup"   TY-I32 TY-I32 0 0 0 1 0)
-  (add-libc "unistd" "dup2"  TY-I32 TY-I32 TY-I32 0 0 2 0)
-  (add-libc "unistd" "close" TY-I32 TY-I32 0 0 0 1 0)
-  )
 
 (defn emit-include:void (call:ptr)
   (let (cc:*Node (cast *Node call))
     (when (or (!= (node-len cc) 2) (-> cc (node-at _ 1) (cast *Node _) (. kind) (!= _ NODE-SYM)))
       (die-at (. cc line) "include: expects one symbol"))
     (let (mod:ptr (-> cc (node-at _ 1) (cast *Node _) (. s))
-          found:i32 0
-          i:i32 0)
-      (while (< i g-num-libc)
-        (let (d:*LibcDecl (cast *LibcDecl (ptr+ (cast *LibcDecl g-libc) i)))
-          (when (= (strcmp (. d module) mod) 0)
-            (do
-              (set! found 1)
-              (let (ft:*Type (cast *Type (make-type TY-FN))
-                    j:i32 0)
-                (.set! ft ret (kind-to-type (. d ret-kind)))
-                (.set! ft num-params (. d num-params))
-                (.set! ft params (arena-alloc (* (i64 (. d num-params)) (i64 8))))
-                (while (< j (. d num-params))
-                  (aset! (cast *ptr (. ft params)) j
-                         (kind-to-type (libc-param-kind (cast ptr d) j)))
-                  (inc! j))
-                (.set! ft variadic (. d variadic))
-                (scope-define g-globals (. d name) (cast ptr ft)
-                              (fmt-s "@%s" (. d name)) 0)
-                (when (= (strcmp (. d name) "malloc") 0)
-                  (set! g-malloc-decl-done 1))
-                (fprintf g-out "declare %s @%s(" (type-to-ir (. ft ret)) (. d name))
-                (set! j 0)
-                (while (< j (. d num-params))
-                  (when (!= j 0) (fprintf g-out ", "))
-                  (fprintf g-out "%s"
-                    (type-to-ir (aref (cast *ptr (. ft params)) j)))
-                  (inc! j))
-                (when (!= (. d variadic) 0)
-                  (let (sep:ptr "")
-                    (when (!= (. d num-params) 0) (set! sep ", "))
-                    (fprintf g-out "%s..." sep)))
-                (fprintf g-out ")\n")))))
-        (inc! i))
-      (when (!= found 0) (fprintf g-out "\n"))
-      (when (= found 0)
-        (die-at (. cc line) (fmt-s "unknown include: %s" mod))))))
+          header:ptr (fmt-s "%s.h" mod))
+      (emit-c-include header (. cc line)))))
 
 ; ============================================================
 ; C header parsing (clang -E)
@@ -2087,7 +1964,7 @@
         (when (= done 0)
           (let (tok-end:i64 (cast i64 0)
                 tok:ptr (c-read-ident buf pos len (cast *i64 (addr-of tok-end))))
-            (when (= (strlen tok) (cast i64 0)) (set! done 1))
+            (when (= (cast i64 (strlen tok)) (cast i64 0)) (set! done 1))
             (when (= done 0)
               (cond
                 (= (strcmp tok "const") 0)      (set! pos tok-end)
@@ -2177,7 +2054,7 @@
     ; Read the function name
     (let (name-end:i64 (cast i64 0)
           fname:ptr (c-read-ident buf pos len (cast *i64 (addr-of name-end))))
-      (when (= (strlen fname) (cast i64 0))
+      (when (= (cast i64 (strlen fname)) (cast i64 0))
          (ptr-set! out-end pos) (return 0))
       (set! pos name-end)
       (set! pos (c-skip-ws buf pos len))
@@ -2336,7 +2213,6 @@
 ; Process a C header file: run clang -E, parse function declarations.
 ; header-path is e.g. "stdio.h" or "/usr/include/mylib.h".
 (defn emit-c-include:void (header-path:ptr line:i32)
-  (set! g-out g-decl-stream)
   ; Build clang -E command
   (let (cmd:ptr (alloca i8 512))
     (snprintf cmd (cast i64 512) "clang -E -x c -include %s /dev/null 2>/dev/null" header-path)
@@ -2536,7 +2412,7 @@
   ; parsing context directly. tsctx is only used for ThreadSafeModule locking
   ; which is irrelevant in single-threaded compilation. ctx leaks (fine).
   (let (ctx:ptr (LLVMContextCreate)
-        ir-len:i64 (strlen ir)
+        ir-len:i64 (cast i64 (strlen ir))
         mb:ptr (LLVMCreateMemoryBufferWithMemoryRangeCopy ir ir-len "<compile-time>")
         mod:ptr null
         errmsg:ptr null
@@ -3022,7 +2898,7 @@
         tail:ptr null
         start:i64 (cast i64 0)
         i:i64 (cast i64 0)
-        slen:i64 (strlen s))
+        slen:i64 (cast i64 (strlen s)))
     (while (<= i slen)
       (when (or (= i slen) (= (char-at s i) 58))
          (let (seg-len:i64 (- i start)
@@ -3331,7 +3207,7 @@
 ; Search order: directory of current source file, lib/ relative to cwd.
 (defn try-import-path:ptr (filename:ptr)
   ; Try directory of the current source file
-  (let (pathlen:i64 (strlen g-source-path)
+  (let (pathlen:i64 (cast i64 (strlen g-source-path))
         last-slash:i64 (cast i64 -1)
         i:i64 (cast i64 0))
     (while (< i pathlen)
@@ -3374,6 +3250,7 @@
     (let (name-node:*Node (cast *Node (node-at form 1)))
       ; Handle string imports: (import "stdio.h") → C header parsing
       (when (= (. name-node kind) NODE-STR)
+        (set! g-out g-decl-stream)
         (emit-c-include (. name-node s) (. ff line))
         (return))
       (when (!= (. name-node kind) NODE-SYM)
@@ -3606,8 +3483,8 @@
 ; ============================================================
 
 (defn str-ends-with:i32 (s:ptr suffix:ptr)
-  (let (slen:i64 (strlen s)
-        suflen:i64 (strlen suffix))
+  (let (slen:i64 (cast i64 (strlen s))
+        suflen:i64 (cast i64 (strlen suffix)))
     (when (> suflen slen) (return 0))
     (when (= (strcmp (ptr+ (cast *i8 s) (- slen suflen)) suffix) 0)
       (return 1))
@@ -3627,7 +3504,7 @@
                                      (cast *ptr (addr-of ret-name)))
         (when (= ret-name null)
           (die-at (. (cast *Node name-node) line) (fmt-s "declare: missing :type on '%s'" fname)))
-        ; Skip if already defined (e.g. from init-libc)
+        ; Skip if already defined (e.g. from include or c-include)
         (when (!= (scope-lookup g-globals fname) null) (return))
         (let (ret:ptr (parse-type-name ret-name (. (cast *Node name-node) line))
               nparams:i32 0
@@ -3713,7 +3590,6 @@
   (arena-init)
   (types-init)
   (init-binops)
-  (init-libc)
   (init-rmacros)
   (set! g-structs (arena-alloc (* (cast i64 MAX-STRUCTS) (sizeof StructDef))))
   (set! g-macros (arena-alloc (* (cast i64 256) (sizeof MacroDef))))
@@ -3824,7 +3700,7 @@
                   (do (free buf) (return null))
                   (set! done 1)))
           (when (= done 0)
-            (let (line-len:i64 (strlen line-buf))
+            (let (line-len:i64 (cast i64 (strlen line-buf)))
               ; Grow buffer if needed
               (when (> (+ buf-len line-len) (- buf-cap (cast i64 1)))
                 (let (new-cap:i64 (* buf-cap (cast i64 2)))
@@ -4145,40 +4021,20 @@
     (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
     (free ir-bufp)))
 
-; Pre-include all libc modules into the REPL preamble and global scope.
+; Pre-include standard libc headers into the REPL preamble and global scope.
 (defn repl-include-all-libc:void ()
-  (let (i:i32 0)
-    (while (< i g-num-libc)
-      (let (d:*LibcDecl (cast *LibcDecl (ptr+ (cast *LibcDecl g-libc) i)))
-        (let (ft:*Type (cast *Type (make-type TY-FN))
-              j:i32 0)
-          (.set! ft ret (kind-to-type (. d ret-kind)))
-          (.set! ft num-params (. d num-params))
-          (.set! ft params (arena-alloc (* (i64 (. d num-params)) (i64 8))))
-          (while (< j (. d num-params))
-            (aset! (cast *ptr (. ft params)) j
-                   (kind-to-type (libc-param-kind (cast ptr d) j)))
-            (inc! j))
-          (.set! ft variadic (. d variadic))
-          (scope-define g-globals (. d name) (cast ptr ft)
-                        (fmt-s "@%s" (. d name)) 0)
-          (when (= (strcmp (. d name) "malloc") 0)
-            (set! g-malloc-decl-done 1))
-          (fprintf g-repl-preamble "declare %s @%s("
-            (type-to-ir (. ft ret)) (. d name))
-          (set! j 0)
-          (while (< j (. d num-params))
-            (when (!= j 0) (fprintf g-repl-preamble ", "))
-            (fprintf g-repl-preamble "%s"
-              (type-to-ir (aref (cast *ptr (. ft params)) j)))
-            (inc! j))
-          (when (!= (. d variadic) 0)
-            (let (sep:ptr "")
-              (when (!= (. d num-params) 0) (set! sep ", "))
-              (fprintf g-repl-preamble "%s..." sep)))
-          (fprintf g-repl-preamble ")\n")))
-      (inc! i))
-    (fprintf g-repl-preamble "\n")))
+  (open-module-streams)
+  (set! g-out g-decl-stream)
+  (emit-c-include "stdio.h" 0)
+  (emit-c-include "stdlib.h" 0)
+  (emit-c-include "string.h" 0)
+  (emit-c-include "ctype.h" 0)
+  (emit-c-include "unistd.h" 0)
+  (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
+  (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp (cast i64 0)) 0))
+    (fputs g-decl-bufp g-repl-preamble))
+  (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
+  (fprintf g-repl-preamble "\n"))
 
 ; Pre-register the Node struct and NODE-* constants for macros support in REPL.
 (defn repl-register-node:void ()
@@ -4269,7 +4125,7 @@
               (or (= (strcmp arg "-i") 0) (= (strcmp arg "--interactive") 0))
                 (set! g-interactive 1)
               (= (strncmp arg "-I" (cast i64 2)) 0)
-                (if (> (strlen arg) (cast i64 2))
+                (if (> (cast i64 (strlen arg)) (cast i64 2))
                   ; -I/path/to/dir (no space)
                   (add-include-path (ptr+ (cast *i8 arg) (cast i64 2)))
                   ; -I /path/to/dir (next arg)
