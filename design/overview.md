@@ -58,6 +58,12 @@ Nucleus is a replacement for C using Lisp style syntax and macros with LLVM as i
 - [stage2-features.md](stage2-features.md) - early features following successful self-hosting
 - [stage3b-interop.md](stage3b-interop.md) — C interop: unsigned types, function pointers, C header parsing, `--emit-cheader`
 - [stage3c.md](stage3c.md) — deferred C interop issues: unions, bit-fields, struct ABI, platform portability
+- [stage6-cleanup.md](stage6-cleanup.md) — REPL, printing, macroexpand, n-ary arithmetic, modularization
+- [stage6-plan.md](stage6-plan.md) — implementation plan for the non-blocked items in stage6-cleanup.md
+- [stage6-floats.md](stage6-floats.md) — design for `f32` / `f64` types (deferred from stage 6)
+- [stage6-redefinition.md](stage6-redefinition.md) — design for REPL function redefinition (deferred from stage 6)
+- [stage6-rest-optional.md](stage6-rest-optional.md) — design for `&rest` / `&optional` parameters in `defn`
+- [stage6-expressions.md](stage6-expressions.md) — design for expressions-as-values and implicit return
 - [long-term-issues.md](long-term-issues.md) - potential problems for a mature implementation, deferred during early phases of development
 
 ## Agent feedback

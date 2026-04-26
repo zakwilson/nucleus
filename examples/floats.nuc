@@ -1,0 +1,39 @@
+(include stdio)
+
+(defn add-f64:f64 (a:f64 b:f64)
+  (return (+ a b)))
+
+(defn lt-f64:i32 (a:f64 b:f64)
+  (cond (< a b) (return 1)
+        true    (return 0)))
+
+(defn main:int ()
+  ; Basic literal + arithmetic.
+  (let (x:f64 1.5
+        y:f64 2.5
+        z:f64 (add-f64 x y))
+    (printf "1.5 + 2.5 = %.1f\n" z))
+  ; Subtraction, multiplication, division.
+  (printf "10.0 - 0.25 = %.2f\n" (- 10.0 0.25))
+  (printf "1.5 * 4.0 = %.1f\n" (* 1.5 4.0))
+  (printf "1.0 / 4.0 = %.2f\n" (/ 1.0 4.0))
+  ; Scientific notation, leading-dot literal.
+  (printf "1e3 = %.1f\n" 1e3)
+  (printf ".5 = %.1f\n" .5)
+  ; Comparison.
+  (printf "1.0 < 2.0 = %d\n" (lt-f64 1.0 2.0))
+  (printf "2.0 < 1.0 = %d\n" (lt-f64 2.0 1.0))
+  ; Int <-> float casts.
+  (let (n:i32 (cast i32 (* 3.7 2.0)))
+    (printf "(i32) (3.7 * 2.0) = %d\n" n))
+  (let (f:f64 (cast f64 7))
+    (printf "(f64) 7 = %.1f\n" f))
+  ; f64 -> f32 narrowing and widening back.
+  (let (a:f32 (cast f32 1.5)
+        b:f64 (cast f64 a))
+    (printf "round f64->f32->f64 = %.1f\n" b))
+  ; Special values: +inf.0, -inf.0, +nan.0.
+  (printf "+inf.0 = %f\n" +inf.0)
+  (printf "-inf.0 = %f\n" -inf.0)
+  (printf "nan = %f\n" +nan.0)
+  (return 0))
