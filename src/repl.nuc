@@ -276,10 +276,27 @@
                           (when (and (= (. qh kind) NODE-SYM)
                                      (= (strcmp (. qh s) "quote") 0))
                             (set! arg (node-at (cast *Node arg) 1)))))
-                      (let (expanded:ptr (macroexpand-form arg depth))
-                        (fprintf stderr "  ")
-                        (fprint-node stderr expanded)
-                        (fprintf stderr "\n")))))
+                      ; Detect whether the form is actually a macro call. If
+                      ; not, macroexpand-form would silently return the input
+                      ; unchanged, which looks identical to a successful
+                      ; expansion that produced the same form. Report it
+                      ; explicitly so the user isn't misled.
+                      (let (head-name:ptr null)
+                        (when (and (!= arg null)
+                                   (and (= (. (cast *Node arg) kind) NODE-CELL)
+                                        (!= (node-len (cast *Node arg)) 0)))
+                          (let (ah:*Node (cast *Node (node-at (cast *Node arg) 0)))
+                            (when (= (. ah kind) NODE-SYM)
+                              (set! head-name (. ah s)))))
+                        (if (or (= head-name null)
+                                (= (find-macro head-name) null))
+                          (do (fprintf stderr "  not a macro call: ")
+                              (fprint-node stderr arg)
+                              (fprintf stderr "\n"))
+                          (let (expanded:ptr (macroexpand-form arg depth))
+                            (fprintf stderr "  ")
+                            (fprint-node stderr expanded)
+                            (fprintf stderr "\n")))))))
             (and (!= h null) (= (strcmp h "import") 0))
               (do (let (pre-len:i32 (. (cast *Scope g-globals) len))
                     (open-module-streams)
@@ -504,6 +521,33 @@
   (let (sym:*Sym (cast *Sym (scope-define g-globals "NODE-CELL" (cast ptr ty-i32) null 0)))
     (.set! sym is-const 1) (.set! sym const-val "3")))
 
+; Auto-import lib/macros.nuc so the standard macros (if, when, unless, for,
+; dotimes, ->) are available at the REPL without an explicit (import macros).
+; Errors are tolerated via repl_try so the session still starts if the library
+; can't be found or fails to JIT.
+(defn repl-preload-macros:void ()
+  (let (save-src:ptr g-src
+        save-pos:i64 g-pos
+        save-line:i32 g-line
+        save-peek:ptr g-peek
+        save-peek-valid:i32 g-peek-valid)
+    (set! g-src "(import macros)")
+    (set! g-pos (cast i64 0))
+    (set! g-line 1)
+    (set! g-peek-valid 0)
+    (when (= (repl_try) 0)
+      (let (forms:ptr (desugar (read-program)))
+        (let (fc:ptr forms)
+          (while (!= fc null)
+            (let (f:ptr (. (cast *Node fc) car))
+              (repl-eval-form f))
+            (set! fc (. (cast *Node fc) cdr))))))
+    (set! g-src save-src)
+    (set! g-pos save-pos)
+    (set! g-line save-line)
+    (set! g-peek save-peek)
+    (set! g-peek-valid save-peek-valid)))
+
 ; REPL main loop
 (defn repl-main:void ()
   (fprintf stderr "Nucleus REPL (type Ctrl-D to exit)\n")
@@ -520,6 +564,10 @@
   (repl-include-all-libc)
   ; Pre-register Node struct and constants for macro support
   (repl-register-node)
+  ; Auto-import the standard macro library (if, when, unless, for, dotimes, ->).
+  ; Failures are tolerated so a session still starts if lib/macros.nuc is
+  ; unavailable; the user will just get "not a macro call" for those forms.
+  (repl-preload-macros)
   (let (running:i32 1)
     (while (!= running 0)
       (let (input:ptr (repl-read-input))
