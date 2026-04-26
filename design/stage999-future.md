@@ -4,10 +4,6 @@
 
 Nucleus is a replacement for C, but it should bring in as much Lisp goodness as it can without compromising C interop or adding runtime overhead.
 
-### Variadic functions
-
-Arithmetic functions in Lisp usually take arbitrarily many arguments. That would be nice. Optional or rest parameters for user-defined functions would also be nice.
-
 ### Lambda
 
 Obviously
@@ -28,25 +24,10 @@ The ability to redefine vars and fns in the REPL would be helpful. We don't have
 
 Lexical closures are a huge win for abstraction. Representing them in C may be tricky, but maybe there's a workaround or a way to give C a limited interface. Lifecycle could also be tricky.
 
-### Macro expansion
-
-`macroexpand` and `macroexapnd1` (or maybe an optional depth arg) need to be available in the REPL
 
 ### Gensym reader macro
 
 Probably `#`, semantics like Clojure but not the postfix syntax
-
-### Read/Print
-
-Most things should be printable at the REPL and the printed representation should be readable. Right now even a quoted list just prints a bare address.
-
-### Expressions
-
-In Lisp, everything is an expression that returns a value. C has statements which do not.
-
-Expressions are better if they don't add overhead. If they do, perhaps the compiler can optimize it away if the return value isn't used.
-
-The last expression in a form should usually be the return value of the enclosing form if there's no explicit `return`.
 
 ## Data structures
 
