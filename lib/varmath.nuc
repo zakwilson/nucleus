@@ -1,0 +1,68 @@
+; Variadic arithmetic — n-ary forms expand to nested binary calls.
+;
+; The binary primitives __+ __- __* __/ are aliases for the builtin
+; binary operators; the variadic macros expand to them to avoid
+; infinite macro recursion on the binary case.
+;
+; Requires the Node struct to be defined (these macros inspect their
+; argument list at expansion time). The REPL pre-registers Node;
+; batch programs must (defstruct Node ...) before importing varmath.
+
+;   (+)            => 0
+;   (+ x)          => x
+;   (+ x y z ...)  => (__+ x (+ y z ...))   [right-fold; associative]
+(defmacro + (&rest args)
+  (let (result:ptr null)
+    (cond (= args null)
+            (set! result `0)
+          (= (. (cast *Node args) cdr) null)
+            (set! result (. (cast *Node args) car))
+          true
+            (set! result `(__+ ~(. (cast *Node args) car)
+                               (+ ~@(. (cast *Node args) cdr)))))
+    result))
+
+(defmacro * (&rest args)
+  (let (result:ptr null)
+    (cond (= args null)
+            (set! result `1)
+          (= (. (cast *Node args) cdr) null)
+            (set! result (. (cast *Node args) car))
+          true
+            (set! result `(__* ~(. (cast *Node args) car)
+                               (* ~@(. (cast *Node args) cdr)))))
+    result))
+
+; Subtraction: unary negates; n-ary left-folds (matches Common Lisp).
+(defmacro - (&rest args)
+  (let (result:ptr null)
+    (cond (= args null)
+            (set! result `0)
+          (= (. (cast *Node args) cdr) null)
+            (set! result `(__- 0 ~(. (cast *Node args) car)))
+          (= (. (cast *Node (. (cast *Node args) cdr)) cdr) null)
+            (set! result `(__- ~(. (cast *Node args) car)
+                               ~(. (cast *Node (. (cast *Node args) cdr)) car)))
+          true
+            (set! result
+              `(- (__- ~(. (cast *Node args) car)
+                       ~(. (cast *Node (. (cast *Node args) cdr)) car))
+                  ~@(. (cast *Node (. (cast *Node args) cdr)) cdr))))
+    result))
+
+; Division: unary is reciprocal (integer: 1/x); n-ary left-folds.
+(defmacro / (&rest args)
+  (let (result:ptr null)
+    (cond (= args null)
+            (set! result `1)
+          (= (. (cast *Node args) cdr) null)
+            (set! result `(__/ 1 ~(. (cast *Node args) car)))
+          (= (. (cast *Node (. (cast *Node args) cdr)) cdr) null)
+            (set! result `(__/ ~(. (cast *Node args) car)
+                               ~(. (cast *Node (. (cast *Node args) cdr)) car)))
+          true
+            (set! result
+              `(/ (__/ ~(. (cast *Node args) car)
+                       ~(. (cast *Node (. (cast *Node args) cdr)) car))
+                  ~@(. (cast *Node (. (cast *Node args) cdr)) cdr))))
+    result))

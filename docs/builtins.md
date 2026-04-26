@@ -10,18 +10,23 @@ Built-in forms and functions as implemented in `src/nucleusc.nuc`.
 | `--emit-cheader` | Output a C header (`.h`) instead of LLVM IR. Emits `#pragma once`, `#include <stdint.h>`, typedefs for structs, extern function declarations, `#define` constants, and enums. |
 | `-i` / `--interactive` | Start the REPL (interactive Read-Eval-Print Loop). |
 | `-I<path>` / `-I <path>` | Add a directory to the import search path. Searched after the source file's directory and `lib/`. |
+| `--repl-format=text\|json` | Format for REPL error output. Default `text` (legacy `  error: <msg>` lines). With `json`, each error is emitted as a single-line JSON object: `{"file":..,"line":..,"message":..}`. Suitable for agent-driven REPL sessions. |
 
 ## REPL
 
 Start with `nucleusc -i`. The REPL reads one form at a time, JIT-compiles it, and prints the result. Multi-line input is supported (the REPL detects unbalanced parentheses and prompts for continuation lines with `...>`).
 
-Supported top-level forms in the REPL: `defn`, `defvar`, `defconst`, `defenum`, `defstruct`, `include`, `extern`, `import`, `defmacro`, `def-rmacro`, `compile-time`. Any other form (including bare symbols, integers, and function calls) is evaluated as an expression.
+Supported top-level forms in the REPL: `defn`, `defvar`, `defconst`, `defenum`, `defstruct`, `include`, `extern`, `import`, `defmacro`, `def-rmacro`, `compile-time`, `macroexpand`, `macroexpand-1`. Any other form (including bare symbols, integers, and function calls) is evaluated as an expression.
+
+Result printing is type-aware: integer kinds print as decimal, string literals print as `"..."` with escapes, quoted forms (`'foo`, `(quote ...)`) print using the AST printer, and other pointer values print as `#<ptr 0x...>`. The reader rejects `#<...>` syntax with a clear error so a printed unreadable value can't silently round-trip as input.
+
+`macroexpand` / `macroexpand-1` print the expansion of a quoted form. `(macroexpand '(when c b))` expands to fixpoint; `(macroexpand-1 '(when c b))` expands one step. An optional integer second arg overrides the depth: `(macroexpand 'form 2)` expands at most twice; `(macroexpand 'form -1)` expands to fixpoint. Subforms are not recursed into (matches Common Lisp `macroexpand`).
 
 Functions defined in the REPL persist across inputs and can call each other. All libc functions (stdio, stdlib, string, ctype, unistd) are pre-loaded — no `(include ...)` needed.
 
 Imported libraries work: `(import mathlib)` makes `square`, `cube`, etc. available. `(import macros)` loads the standard macros (`if`, `when`, `unless`, `for`, `dotimes`, `->`). The `Node` struct and `NODE-*` constants are pre-registered for macro support.
 
-Errors in the REPL are caught and recovered; the REPL continues after an error (including IR parse errors and JIT errors). Redefining an already-defined function is refused with an error.
+Errors in the REPL are caught and recovered; the REPL continues after an error (including IR parse errors and JIT errors). Redefining an already-defined function is refused with an error. With `--repl-format=json`, each REPL-level error (redefinition, missing form arg, JIT lookup failure, recovered error) is emitted as a single-line JSON object on stderr.
 
 Limitations:
 - Functions need explicit `(return ...)` to return values (same as batch mode).
@@ -29,7 +34,7 @@ Limitations:
 - `set!` only works on local variables, not globals.
 - `defvar` initializers must be integer literals (no expressions).
 - `(import node)` is not supported — `node.nuc` depends on compiler-internal allocator functions.
-- stdout output from JIT'd code may be buffered when the REPL is driven by a pipe; in interactive terminal use, line-buffered output appears immediately.
+- stdout from JIT'd code is line-buffered (`setvbuf(stdout, NULL, _IOLBF, 0)` is called on REPL startup) so printf output appears immediately in both terminal and pipe-driven sessions.
 
 ## .nuch Header Format
 
@@ -86,6 +91,23 @@ Defined via `defmacro`. Use `(import macros)` to include them (note: `dotimes` a
 | `for` | `(for (var:type init) test step body)` | `(let (var:type init) (while test body step))` |
 | `dotimes` | `(dotimes (var:type n) body)` | `(let (var:type 0) (while (< var n) body (inc! var)))` |
 | `->` | `(-> x form ...)` | Threads `x` through each form. If a form contains `_`, the value replaces `_`; otherwise inserts as first arg (thread-first). Bare symbols wrap as `(sym value)`. `_` is only special inside `->`. |
+
+## Variadic Arithmetic (`lib/varmath.nuc`)
+
+`(import varmath)` provides n-ary `+ - * /` macros that expand to nested binary calls. The binary primitives `__+ __- __* __/` are aliases for the builtin binary operators and exist to break the macro-expansion cycle. Like `dotimes`, these macros require the `Node` struct to be defined (the REPL pre-registers it; batch programs must `(defstruct Node ...)` before importing `varmath`).
+
+| Form          | Expansion                                       |
+|---------------|-------------------------------------------------|
+| `(+)`         | `0`                                             |
+| `(+ x)`       | `x`                                             |
+| `(+ a b ...)` | `(__+ a (+ b ...))` — right-fold                |
+| `(*)`         | `1`                                             |
+| `(* a b ...)` | `(__* a (* b ...))` — right-fold                |
+| `(- x)`       | `(__- 0 x)` — unary negation                    |
+| `(- a b)`     | `(__- a b)`                                     |
+| `(- a b ...)` | `(- (__- a b) ...)` — left-fold                 |
+| `(/ x)`       | `(__/ 1 x)` — integer reciprocal                |
+| `(/ a b ...)` | `(/ (__/ a b) ...)` — left-fold                 |
 
 ## Special Forms
 
@@ -168,8 +190,12 @@ Binary operators require both operands to have the same sign. Mixed-sign operati
 | `ui16` | 16-bit unsigned integer | `uint16_t` |
 | `ui32` | 32-bit unsigned integer | `uint32_t` |
 | `ui64` | 64-bit unsigned integer | `uint64_t` |
+| `f32` / `float` | IEEE-754 binary32 | `float` |
+| `f64` / `double` | IEEE-754 binary64 | `double` |
 | `ptr` | Opaque pointer | `void*` |
 | `void` | No value | `void` |
+
+Float literals: `1.5`, `-0.25`, `1e10`, `1.5e-3`, `.5`. Default type is `f64`; narrow with `(cast f32 ...)`. Widen `f32`→`f64` and convert int↔float with `cast`. Special values use Scheme syntax: `+inf.0`, `-inf.0`, `+nan.0`. Float arithmetic uses `+ - * / %` and comparisons use `= != < <= > >=` (LLVM `fadd`/`fcmp`); operands must have the same float width — promote with explicit `cast`. Mixing float and integer operands without a cast is a compile error.
 
 ### Function Pointer Types
 

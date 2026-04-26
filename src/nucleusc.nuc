@@ -22,15 +22,16 @@
 (defconst MAX-STRUCTS 64)
 
 ; Token kinds
-(defenum TokKind TOK-LPAREN TOK-RPAREN TOK-RMACRO TOK-INT TOK-STRING TOK-SYMBOL TOK-EOF)
+(defenum TokKind TOK-LPAREN TOK-RPAREN TOK-RMACRO TOK-INT TOK-STRING TOK-SYMBOL TOK-FLOAT TOK-EOF)
 
 ; Node kinds
-(defenum NodeKind NODE-INT NODE-STR NODE-SYM NODE-CELL)
+(defenum NodeKind NODE-INT NODE-STR NODE-SYM NODE-CELL NODE-FLOAT)
 
 ; Type kinds
 (defenum TypeKind TY-VOID TY-I1 TY-I8 TY-I16 TY-I32 TY-I64
                   TY-UI8 TY-UI16 TY-UI32 TY-UI64
-                  TY-PTR TY-FN TY-STRUCT)
+                  TY-PTR TY-FN TY-STRUCT
+                  TY-F32 TY-F64)
 
 ; ============================================================
 ; Struct definitions (ordered by dependency)
@@ -153,6 +154,8 @@
 (defvar ty-ui16:ptr)
 (defvar ty-ui32:ptr)
 (defvar ty-ui64:ptr)
+(defvar ty-f32:ptr)
+(defvar ty-f64:ptr)
 
 ; Struct registry
 (defvar g-structs:ptr)
@@ -220,6 +223,7 @@
 (defvar g-emit-nuch:i32 0)    ; when 1, output .nuch header instead of LLVM IR
 (defvar g-emit-cheader:i32 0) ; when 1, output C header instead of LLVM IR
 (defvar g-interactive:i32 0)  ; when 1, run in REPL mode (-i / --interactive)
+(defvar g-repl-format:i32 0)  ; 0 = text (default), 1 = json (one JSON object per error)
 
 ; REPL eval counter (for unique __repl_eval_N symbols).
 (defvar g-repl-id:i32 0)
@@ -319,42 +323,47 @@
 ; AST printer — inverse of the reader, serializes nodes to stdout
 ; ============================================================
 
-(defn print-node:void (n:ptr)
-      (when (= n null)  (printf "()") (return))
+(defn fprint-node:void (out:ptr n:ptr)
+  (when (= n null) (fputs "()" out) (return))
   (let (nn:*Node (cast *Node n))
     (when (= (. nn kind) NODE-INT)
-      (printf "%ld" (. nn i)) (return))
+      (fprintf out "%ld" (. nn i)) (return))
+    (when (= (. nn kind) NODE-FLOAT)
+       (fputs (. nn s) out) (return))
     (when (= (. nn kind) NODE-SYM)
-       (fputs (. nn s) (cast ptr stdout)) (return))
+       (fputs (. nn s) out) (return))
     (when (= (. nn kind) NODE-STR)
-      (fputc 34 (cast ptr stdout))
+      (fputc 34 out)
       (let (s:ptr (. nn s)
                   i:i64 (cast i64 0)
                   len:i64 (strlen s))
         (while (< i len)
           (let (c:i32 (char-at s i))
-            (cond (= c 10) (do (fputc 92 (cast ptr stdout)) (fputc 110 (cast ptr stdout)))
-                  (= c 9)  (do (fputc 92 (cast ptr stdout)) (fputc 116 (cast ptr stdout)))
-                  (= c 13) (do (fputc 92 (cast ptr stdout)) (fputc 114 (cast ptr stdout)))
-                  (= c 92) (do (fputc 92 (cast ptr stdout)) (fputc 92 (cast ptr stdout)))
-                  (= c 34) (do (fputc 92 (cast ptr stdout)) (fputc 34 (cast ptr stdout)))
-                  (= c 0)  (do (fputc 92 (cast ptr stdout)) (fputc 48 (cast ptr stdout)))
-                  true     (fputc c (cast ptr stdout))))
+            (cond (= c 10) (do (fputc 92 out) (fputc 110 out))
+                  (= c 9)  (do (fputc 92 out) (fputc 116 out))
+                  (= c 13) (do (fputc 92 out) (fputc 114 out))
+                  (= c 92) (do (fputc 92 out) (fputc 92 out))
+                  (= c 34) (do (fputc 92 out) (fputc 34 out))
+                  (= c 0)  (do (fputc 92 out) (fputc 48 out))
+                  true     (fputc c out)))
           (set! i (+ i (cast i64 1)))))
-      (fputc 34 (cast ptr stdout))
+      (fputc 34 out)
       (return))
     (when (= (. nn kind) NODE-CELL)
-      (fputc 40 (cast ptr stdout))
+      (fputc 40 out)
       (let (cur:ptr n
                     first:i32 1)
         (while (and (!= cur null)
                     (= (. (cast *Node cur) kind) NODE-CELL))
-          (when (= first 0) (fputc 32 (cast ptr stdout)))
+          (when (= first 0) (fputc 32 out))
           (set! first 0)
-          (print-node (. (cast *Node cur) car))
+          (fprint-node out (. (cast *Node cur) car))
           (set! cur (. (cast *Node cur) cdr))))
-      (fputc 41 (cast ptr stdout))
+      (fputc 41 out)
       (return))))
+
+(defn print-node:void (n:ptr)
+  (fprint-node (cast ptr stdout) n))
 
 ; ============================================================
 ; Types
@@ -376,6 +385,8 @@
   (set! ty-ui16 (make-type TY-UI16))
   (set! ty-ui32 (make-type TY-UI32))
   (set! ty-ui64 (make-type TY-UI64))
+  (set! ty-f32  (make-type TY-F32))
+  (set! ty-f64  (make-type TY-F64))
   (set! ty-ptr  (make-type TY-PTR)))
 
 (defn type-to-ir:ptr (t:ptr)
@@ -392,6 +403,8 @@
     (when (= (. tt kind) TY-UI64)   (return "i64"))
     (when (= (. tt kind) TY-PTR)    (return "ptr"))
     (when (= (. tt kind) TY-FN)     (return "ptr"))
+    (when (= (. tt kind) TY-F32)    (return "float"))
+    (when (= (. tt kind) TY-F64)    (return "double"))
     (when (= (. tt kind) TY-STRUCT)
       (return (fmt-s "%%%s" (. (cast *StructDef (. tt sdef)) name))))
     (return "?")))
@@ -414,6 +427,8 @@
     (when (= (. tt kind) TY-UI64)   (return "uint64_t"))
     (when (= (. tt kind) TY-PTR)    (return "void*"))
     (when (= (. tt kind) TY-FN)     (return "void*"))
+    (when (= (. tt kind) TY-F32)    (return "float"))
+    (when (= (. tt kind) TY-F64)    (return "double"))
     (when (= (. tt kind) TY-STRUCT)
       (return (fmt-s "struct %s" (. (cast *StructDef (. tt sdef)) name))))
     (return "/* unknown */")))
@@ -430,6 +445,8 @@
     (when (= (. tt kind) TY-UI32) (return 4))
     (when (= (. tt kind) TY-UI64) (return 8))
     (when (= (. tt kind) TY-PTR)  (return 8))
+    (when (= (. tt kind) TY-F32)  (return 4))
+    (when (= (. tt kind) TY-F64)  (return 8))
     (when (= (. tt kind) TY-STRUCT) (return 8))
     (return 1)))
 
@@ -444,6 +461,12 @@
     (when (= k TY-UI16) (return 1))
     (when (= k TY-UI32) (return 1))
     (when (= k TY-UI64) (return 1))
+    (return 0)))
+
+(defn is-float-type:i32 (t:ptr)
+  (let (k:i32 (. (cast *Type t) kind))
+    (when (= k TY-F32) (return 1))
+    (when (= k TY-F64) (return 1))
     (return 0)))
 
 (defn int-width:i32 (t:ptr)
@@ -531,6 +554,10 @@
   (when (= (strcmp name "ui16") 0) (return ty-ui16))
   (when (= (strcmp name "ui32") 0) (return ty-ui32))
   (when (= (strcmp name "ui64") 0) (return ty-ui64))
+  (when (= (strcmp name "f32")  0) (return ty-f32))
+  (when (= (strcmp name "f64")  0) (return ty-f64))
+  (when (= (strcmp name "float")  0) (return ty-f32))
+  (when (= (strcmp name "double") 0) (return ty-f64))
   (let (sd:ptr (lookup-struct name))
     (when (!= sd null)
       (let (t:*Type (cast *Type (make-type TY-STRUCT)))
@@ -768,14 +795,78 @@
 
 (defn emit-node:ptr (n:ptr scope:ptr)
   (let (nn:*Node (cast *Node n))
-    (when (= (. nn kind) NODE-INT)  (return (emit-int n)))
-    (when (= (. nn kind) NODE-STR)  (return (emit-string n)))
-    (when (= (. nn kind) NODE-SYM)  (return (emit-symbol-ref n scope)))
-    (when (= (. nn kind) NODE-CELL) (return (emit-list n scope)))
+    (when (= (. nn kind) NODE-INT)   (return (emit-int n)))
+    (when (= (. nn kind) NODE-FLOAT) (return (emit-float n)))
+    (when (= (. nn kind) NODE-STR)   (return (emit-string n)))
+    (when (= (. nn kind) NODE-SYM)   (return (emit-symbol-ref n scope)))
+    (when (= (. nn kind) NODE-CELL)  (return (emit-list n scope)))
     (return (alloc-val ty-void null))))
 
 (defn emit-int:ptr (n:ptr)
   (return (alloc-val ty-i32 (fmt-i64 "%ld" (. (cast *Node n) i)))))
+
+; Translate a float literal lexeme to an LLVM IR floating-point
+; constant. Hex bit-patterns for the Scheme-style special tokens
+; `+inf.0`, `-inf.0`, `+nan.0`. Otherwise normalize to LLVM's
+; required form: a leading digit, an explicit `.` with at least
+; one fractional digit, and optional exponent. So `1e3` -> `1.0e3`,
+; `.5` -> `0.5`, `2.` -> `2.0`.
+(defn float-literal-ir:ptr (lex:ptr)
+  (when (= (strcmp lex "+inf.0") 0) (return "0x7FF0000000000000"))
+  (when (= (strcmp lex "-inf.0") 0) (return "0xFFF0000000000000"))
+  (when (= (strcmp lex "+nan.0") 0) (return "0x7FF8000000000000"))
+  (let (len:i64 (cast i64 (strlen lex))
+        buf:ptr (malloc (cast i64 96))
+        out:i64 (cast i64 0)
+        in:i64 (cast i64 0))
+    ; Optional sign.
+    (when (and (> len (cast i64 0))
+               (or (= (char-at lex (cast i64 0)) 43)
+                   (= (char-at lex (cast i64 0)) 45)))
+      (aset! (cast *i8 buf) out (cast i8 (char-at lex (cast i64 0))))
+      (set! out (+ out (cast i64 1)))
+      (set! in (cast i64 1)))
+    ; Integer part: insert leading 0 if absent.
+    (let (had-int-digit:i32 0)
+      (while (and (< in len)
+                  (!= (isdigit (char-at lex in)) 0))
+        (aset! (cast *i8 buf) out (cast i8 (char-at lex in)))
+        (set! out (+ out (cast i64 1)))
+        (set! in (+ in (cast i64 1)))
+        (set! had-int-digit 1))
+      (when (= had-int-digit 0)
+        (aset! (cast *i8 buf) out (cast i8 48))
+        (set! out (+ out (cast i64 1)))))
+    ; Decimal point + fraction. Synthesize a `.0` if missing.
+    (cond (and (< in len) (= (char-at lex in) 46))
+            (do (aset! (cast *i8 buf) out (cast i8 46))
+                (set! out (+ out (cast i64 1)))
+                (set! in (+ in (cast i64 1)))
+                (let (had-frac-digit:i32 0)
+                  (while (and (< in len)
+                              (!= (isdigit (char-at lex in)) 0))
+                    (aset! (cast *i8 buf) out (cast i8 (char-at lex in)))
+                    (set! out (+ out (cast i64 1)))
+                    (set! in (+ in (cast i64 1)))
+                    (set! had-frac-digit 1))
+                  (when (= had-frac-digit 0)
+                    (aset! (cast *i8 buf) out (cast i8 48))
+                    (set! out (+ out (cast i64 1))))))
+          true
+            (do (aset! (cast *i8 buf) out (cast i8 46))
+                (aset! (cast *i8 buf) (+ out (cast i64 1)) (cast i8 48))
+                (set! out (+ out (cast i64 2)))))
+    ; Exponent (verbatim).
+    (while (< in len)
+      (aset! (cast *i8 buf) out (cast i8 (char-at lex in)))
+      (set! out (+ out (cast i64 1)))
+      (set! in (+ in (cast i64 1))))
+    (aset! (cast *i8 buf) out (cast i8 0))
+    (return buf)))
+
+(defn emit-float:ptr (n:ptr)
+  (let (nn:*Node (cast *Node n))
+    (return (alloc-val ty-f64 (float-literal-ir (. nn s))))))
 
 (defn emit-string:ptr (n:ptr)
   (let (nn:*Node (cast *Node n)
@@ -797,9 +888,11 @@
           "@.q%d = private unnamed_addr constant { i32, i32, i64, ptr, ptr, ptr } { i32 0, i32 %d, i64 %ld, ptr null, ptr null, ptr null }, align 8\n"
           id (. nn line) (. nn i))
         (return (fmt-i64 "@.q%ld" (cast i64 id)))))
-    (when (or (= (. nn kind) NODE-STR) (= (. nn kind) NODE-SYM))
+    (when (or (= (. nn kind) NODE-STR)
+              (or (= (. nn kind) NODE-SYM) (= (. nn kind) NODE-FLOAT)))
       (let (k:i32 2)
         (when (= (. nn kind) NODE-STR) (set! k 1))
+        (when (= (. nn kind) NODE-FLOAT) (set! k 4))
         (let (sid:i32 (intern-string (. nn s) (cast i32 (strlen (. nn s))))
               ir-len:i32 (+ (. (cast *StrLit (ptr+ (cast *StrLit g-strs) sid)) len) 1)
               id:i32 g-quote-id)
@@ -912,11 +1005,16 @@
     (inc! g-num-binops)))
 
 (defn init-binops:void ()
-  (set! g-binops (arena-alloc (* (cast i64 16) (sizeof BinOp))))
+  (set! g-binops (arena-alloc (* (cast i64 24) (sizeof BinOp))))
   (add-binop "+"       "add nsw"  "add"      0)
   (add-binop "-"       "sub nsw"  "sub"      0)
   (add-binop "*"       "mul nsw"  "mul"      0)
   (add-binop "/"       "sdiv"     "udiv"     0)
+  ; Aliases used by the variadic arithmetic macros to break expansion cycles.
+  (add-binop "__+"     "add nsw"  "add"      0)
+  (add-binop "__-"     "sub nsw"  "sub"      0)
+  (add-binop "__*"     "mul nsw"  "mul"      0)
+  (add-binop "__/"     "sdiv"     "udiv"     0)
   (add-binop "%"       "srem"     "urem"     0)
   (add-binop "bit-and" "and"      "and"      0)
   (add-binop "bit-or"  "or"       "or"       0)
@@ -954,6 +1052,39 @@
             (fprintf g-body-stream "  %s = %s ptr %s, %s\n"
               tmp (. bop instr) (. a val) (. b val))
             (return (alloc-val ty-i1 tmp)))))
+      ; Float arithmetic / comparison
+      (when (or (!= (is-float-type (. a type)) 0) (!= (is-float-type (. b type)) 0))
+        (when (or (= (is-float-type (. a type)) 0) (= (is-float-type (. b type)) 0))
+          (die-at (. cc line) (fmt-s "%s: mixed float and non-float operands — use explicit cast" (. bop name))))
+        (when (!= (-> a (. type) (cast *Type _) (. kind))
+                 (-> b (. type) (cast *Type _) (. kind)))
+          (die-at (. cc line) (fmt-s "%s float operand width mismatch — use explicit cast" (. bop name))))
+        (let (finstr:ptr null
+              op-name:ptr (. bop name))
+          (cond (or (= (strcmp op-name "+") 0) (= (strcmp op-name "__+") 0))
+                  (set! finstr "fadd")
+                (or (= (strcmp op-name "-") 0) (= (strcmp op-name "__-") 0))
+                  (set! finstr "fsub")
+                (or (= (strcmp op-name "*") 0) (= (strcmp op-name "__*") 0))
+                  (set! finstr "fmul")
+                (or (= (strcmp op-name "/") 0) (= (strcmp op-name "__/") 0))
+                  (set! finstr "fdiv")
+                (= (strcmp op-name "%") 0)  (set! finstr "frem")
+                (= (strcmp op-name "=") 0)  (set! finstr "fcmp oeq")
+                (= (strcmp op-name "!=") 0) (set! finstr "fcmp one")
+                (= (strcmp op-name "<") 0)  (set! finstr "fcmp olt")
+                (= (strcmp op-name "<=") 0) (set! finstr "fcmp ole")
+                (= (strcmp op-name ">") 0)  (set! finstr "fcmp ogt")
+                (= (strcmp op-name ">=") 0) (set! finstr "fcmp oge")
+                true (do))
+          (when (= finstr null)
+            (die-at (. cc line) (fmt-s "%s does not apply to floats" op-name)))
+          (let (tmp:ptr (new-tmp))
+            (fprintf g-body-stream "  %s = %s %s %s, %s\n"
+              tmp finstr (type-to-ir (. a type)) (. a val) (. b val))
+            (let (rtype:ptr (. a type))
+              (when (!= (. bop is-cmp) 0) (set! rtype ty-i1))
+              (return (alloc-val rtype tmp))))))
       (when (or (= (is-int-type (. a type)) 0) (= (is-int-type (. b type)) 0))
         (die-at (. cc line) (fmt-s "%s expects integer operands" (. bop name))))
       (when (!= (is-unsigned (. a type)) (is-unsigned (. b type)))
@@ -1001,6 +1132,23 @@
             (set! instr "inttoptr"))
           (when (and (-> src (cast *Type _) (. kind) (= _ TY-PTR)) (!= (is-int-type dst) 0))
             (set! instr "ptrtoint"))
+          ; Float-to-float (different widths): fpext or fptrunc.
+          (when (and (!= (is-float-type src) 0) (!= (is-float-type dst) 0))
+            (let (sk:i32 (-> src (cast *Type _) (. kind))
+                  dk:i32 (-> dst (cast *Type _) (. kind)))
+              (cond (and (= sk TY-F32) (= dk TY-F64)) (set! instr "fpext")
+                    (and (= sk TY-F64) (= dk TY-F32)) (set! instr "fptrunc")
+                    true (do))))
+          ; Int-to-float: sitofp or uitofp depending on src signedness.
+          (when (and (!= (is-int-type src) 0) (!= (is-float-type dst) 0))
+            (if (!= (is-unsigned src) 0)
+              (set! instr "uitofp")
+              (set! instr "sitofp")))
+          ; Float-to-int: fptosi or fptoui depending on dst signedness.
+          (when (and (!= (is-float-type src) 0) (!= (is-int-type dst) 0))
+            (if (!= (is-unsigned dst) 0)
+              (set! instr "fptoui")
+              (set! instr "fptosi")))
           (when (= instr null)
             (die-at (. cc line) "cast: unsupported conversion"))
           (let (tmp:ptr (new-tmp))
@@ -1648,10 +1796,21 @@
 ; Macro expansion (calls JIT-compiled macro functions at compiler runtime)
 ; ============================================================
 
-(defn emit-macro-expand:ptr (call:ptr scope:ptr macro-def:ptr)
+; Find a macro definition by name, or null.
+(defn find-macro:ptr (name:ptr)
+  (let (mi:i32 0)
+    (while (< mi g-num-macros)
+      (let (mdef:*MacroDef (cast *MacroDef (ptr+ (cast *MacroDef g-macros) mi)))
+        (when (= (strcmp (. mdef name) name) 0)
+          (return (cast ptr mdef))))
+      (inc! mi)))
+  (return null))
+
+; Run one expansion of a macro call: invoke the JIT-compiled macro function
+; and return the resulting *Node. Does not desugar or emit IR.
+(defn expand-macro-call:ptr (call:ptr macro-def:ptr)
   (let (mdef:*MacroDef (cast *MacroDef macro-def)
         nargs:i32 (- (node-len (cast *Node call)) 1))
-    ; Arity check: variadic allows >= (num-params - 1) args; fixed requires exact match.
     (when (!= (. mdef variadic) 0)
       (when (< nargs (- (. mdef num-params) 1))
         (die-at (. (cast *Node call) line)
@@ -1660,7 +1819,6 @@
       (when (!= nargs (. mdef num-params))
         (die-at (. (cast *Node call) line)
                 (fmt-s "macro: wrong number of args" (cast i64 0)))))
-    ; Build a stack array of Node* args (num-params slots).
     (let (args-arr:ptr (malloc (* (cast i64 (. mdef num-params)) (cast i64 8)))
           regular-params:i32 (. mdef num-params)
           i:i32 0)
@@ -1669,7 +1827,6 @@
       (while (< i regular-params)
         (aset! (cast *ptr args-arr) i (node-at (cast *Node call) (+ i 1)))
         (inc! i))
-      ; Build rest cons list for variadic param, then store in last slot.
       (when (!= (. mdef variadic) 0)
         (let (rest-list:ptr null
               rj:i32 nargs)
@@ -1677,7 +1834,6 @@
             (set! rj (- rj 1))
             (set! rest-list (make-cell (node-at (cast *Node call) (+ rj 1)) rest-list 0)))
           (aset! (cast *ptr args-arr) regular-params rest-list)))
-      ; Look up the JIT function.
       (let (addr:i64 (cast i64 0)
             err:ptr (LLVMOrcLLJITLookup g-jit (addr-of addr) (. mdef jit-name)))
         (when (!= err null)
@@ -1688,14 +1844,39 @@
           (fprintf stderr "%s: macro '%s': JIT function not found\n"
                         g-source-path (. mdef name))
           (exit 1))
-        ; Call the macro JIT function: ptr fn(ptr args_array)
         (let (result:ptr (funcall-ptr-1 (cast ptr addr) args-arr))
           (free args-arr)
           (when (= result null)
             (fprintf stderr "%s: macro '%s': returned null\n"
                           g-source-path (. mdef name))
             (exit 1))
-          (return (emit-node (desugar result) scope)))))))
+          (return result))))))
+
+; Expand a form by macros. depth=1 expands once; depth<0 expands until the
+; head is no longer a macro (fixpoint). Subforms are not recursed into,
+; matching Common Lisp macroexpand semantics.
+(defn macroexpand-form:ptr (form:ptr depth:i32)
+  (let (cur:ptr form
+        steps:i32 0
+        keep-going:i32 1)
+    (while (!= keep-going 0)
+      (set! keep-going 0)
+      (when (and (!= cur null)
+                 (and (= (. (cast *Node cur) kind) NODE-CELL)
+                      (!= (node-len (cast *Node cur)) 0)))
+        (let (head:*Node (cast *Node (node-at (cast *Node cur) 0)))
+          (when (= (. head kind) NODE-SYM)
+            (let (mdef:ptr (find-macro (. head s)))
+              (when (!= mdef null)
+                (when (or (< depth 0) (< steps depth))
+                  (set! cur (expand-macro-call cur mdef))
+                  (inc! steps)
+                  (set! keep-going 1))))))))
+    (return cur)))
+
+(defn emit-macro-expand:ptr (call:ptr scope:ptr macro-def:ptr)
+  (let (result:ptr (expand-macro-call call macro-def))
+    (return (emit-node (desugar result) scope))))
 
 ; ============================================================
 ; List dispatch
@@ -1915,6 +2096,11 @@
     (if (!= is-unsigned 0) (return ty-ui32) (return ty-i32)))
   (when (= (strcmp name "long") 0)
     (if (!= is-unsigned 0) (return ty-ui64) (return ty-i64)))
+  (when (= (strcmp name "float") 0)  (return ty-f32))
+  (when (= (strcmp name "double") 0)
+    ; `long double` is platform-specific (80-bit on x86-64) — skip.
+    (when (!= is-long 0) (return null))
+    (return ty-f64))
   ; size_t, ssize_t
   (when (= (strcmp name "size_t") 0) (return ty-ui64))
   (when (= (strcmp name "ssize_t") 0) (return ty-i64))
@@ -2662,7 +2848,7 @@
         (die-at (. name-node line) "defmacro: params must be a list"))
       (let (macro-name:ptr (. name-node s)
             num-params:i32 (node-len params-node)
-            jit-name:ptr (fmt-s "__macro_%s" (sanitize-for-ir macro-name)))
+            jit-name:ptr (fmt-sd "__macro_%s_%d" (sanitize-for-ir macro-name) g-num-macros))
         ; Detect &rest variadic parameter (must be second-to-last in param list).
         (let (variadic:i32 0
               pcount:i32 num-params)
@@ -3664,6 +3850,36 @@
 ; REPL — interactive Read-Eval-Print Loop
 ; ============================================================
 
+; Print a single character to stderr, JSON-escaping if needed.
+(defn repl-error-json-putc:void (c:i32)
+  (cond (= c 34)  (fprintf stderr "\\\"")        ; "
+        (= c 92)  (fprintf stderr "\\\\")        ; \
+        (= c 10)  (fprintf stderr "\\n")
+        (= c 13)  (fprintf stderr "\\r")
+        (= c 9)   (fprintf stderr "\\t")
+        (< c 32)  (fprintf stderr "\\u%04x" c)
+        true      (fprintf stderr "%c" c)))
+
+(defn repl-error-json-puts:void (s:ptr)
+  (when (= s null) (return))
+  (let (i:i64 (cast i64 0))
+    (while (!= (char-at s i) 0)
+      (repl-error-json-putc (bit-and (cast i32 (char-at s i)) 255))
+      (set! i (+ i (cast i64 1))))))
+
+; Emit a structured REPL error. In text mode, prints the legacy
+; "  error: <msg>\n" form. In JSON mode, prints a single JSON object on
+; one line: {"file":..,"line":..,"message":..}. line of 0 is omitted.
+(defn repl-error:void (line:i32 msg:ptr)
+  (cond (= g-repl-format 1)
+          (do (fprintf stderr "{\"file\":\"")
+              (repl-error-json-puts g-source-path)
+              (fprintf stderr "\",\"line\":%d,\"message\":\"" line)
+              (repl-error-json-puts msg)
+              (fprintf stderr "\"}\n"))
+        true
+          (fprintf stderr "  error: %s\n" msg)))
+
 ; Read lines from stdin until parens are balanced, return the accumulated buffer.
 ; Returns null on EOF.
 (defn repl-read-input:ptr ()
@@ -3740,6 +3956,21 @@
 (defn repl-eval-form:void (form:ptr)
   (let (f:*Node (cast *Node form))
     (when (= (cast ptr f) null) (return))
+    ; Short-circuit: a bare string literal prints as itself.
+    (when (= (. f kind) NODE-STR)
+      (fprintf stderr "  ")
+      (fprint-node stderr form)
+      (fprintf stderr "\n")
+      (return))
+    ; Short-circuit: '(form) — print the quoted AST without JIT.
+    (when (and (= (. f kind) NODE-CELL)
+               (and (!= (node-len form) 0)
+                    (and (-> f (node-at _ 0) (cast *Node _) (. kind) (= _ NODE-SYM))
+                         (= (strcmp (-> f (node-at _ 0) (cast *Node _) (. s)) "quote") 0))))
+      (fprintf stderr "  ")
+      (fprint-node stderr (node-at form 1))
+      (fprintf stderr "\n")
+      (return))
     ; Check if it's a list starting with a known keyword
     (let (h:ptr null
           is-expr:i32 1)
@@ -3796,7 +4027,9 @@
                     (fputs g-decl-bufp g-repl-preamble))
                   (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp))
             (and (!= h null) (= (strcmp h "defn") 0))
-              (do ; Check for redefinition — refuse in REPL (JIT can't redefine symbols)
+              (do ; Refuse redefinition: ORC's main JITDylib doesn't allow
+                  ; symbol replacement without resource tracker support, which
+                  ; isn't currently exposed via our LLVM C bindings.
                   (let (redef:i32 0)
                     (let (name-node:ptr (node-at form 1))
                       (when (!= name-node null)
@@ -3804,7 +4037,11 @@
                           (extract-name-type name-node (cast *ptr (addr-of fname))
                                                        (cast *ptr (addr-of ret-name)))
                           (when (!= (scope-lookup g-globals fname) null)
-                            (fprintf stderr "  error: cannot redefine '%s' in REPL\n" fname)
+                            (let (msg:ptr (malloc (cast i64 256)))
+                              (snprintf msg (cast i64 256)
+                                        "cannot redefine '%s' in REPL" fname)
+                              (repl-error (. f line) msg)
+                              (free msg))
                             (set! redef 1)))))
                     (when (= redef 0)
                       (open-module-streams)
@@ -3853,6 +4090,38 @@
             (and (!= h null) (= (strcmp h "def-rmacro") 0))
               (do (emit-def-rmacro (cast ptr f))
                   (fprintf stderr "  defined\n"))
+            (and (!= h null)
+                 (or (= (strcmp h "macroexpand") 0)
+                     (= (strcmp h "macroexpand-1") 0)))
+              (do (set! is-expr 0)
+                  ; Default depth: -1 (fixpoint) for macroexpand, 1 for macroexpand-1.
+                  (let (depth:i32 (cast i32 -1))
+                    (when (= (strcmp h "macroexpand-1") 0) (set! depth 1))
+                    ; Optional second arg overrides the default depth.
+                    (when (>= (node-len f) 3)
+                      (let (d-node:*Node (cast *Node (node-at form 2)))
+                        (when (= (. d-node kind) NODE-INT)
+                          (set! depth (cast i32 (. d-node i))))))
+                    (when (< (node-len f) 2)
+                      (let (msg:ptr (malloc (cast i64 128)))
+                        (snprintf msg (cast i64 128)
+                                  "%s requires a form argument" h)
+                        (repl-error (. f line) msg)
+                        (free msg))
+                      (return))
+                    (let (arg:ptr (node-at form 1))
+                      ; Peel a leading (quote X) so the user can write 'form.
+                      (when (and (!= arg null)
+                                 (and (= (. (cast *Node arg) kind) NODE-CELL)
+                                      (!= (node-len (cast *Node arg)) 0)))
+                        (let (qh:*Node (cast *Node (node-at (cast *Node arg) 0)))
+                          (when (and (= (. qh kind) NODE-SYM)
+                                     (= (strcmp (. qh s) "quote") 0))
+                            (set! arg (node-at (cast *Node arg) 1)))))
+                      (let (expanded:ptr (macroexpand-form arg depth))
+                        (fprintf stderr "  ")
+                        (fprint-node stderr expanded)
+                        (fprintf stderr "\n")))))
             (and (!= h null) (= (strcmp h "import") 0))
               (do (let (pre-len:i32 (. (cast *Scope g-globals) len))
                     (open-module-streams)
@@ -3928,6 +4197,10 @@
                                 (fprintf g-body-stream "  ret i64 %s\n" (. result val))
                               (= result-kind TY-PTR)
                                 (fprintf g-body-stream "  ret ptr %s\n" (. result val))
+                              (= result-kind TY-F32)
+                                (fprintf g-body-stream "  ret float %s\n" (. result val))
+                              (= result-kind TY-F64)
+                                (fprintf g-body-stream "  ret double %s\n" (. result val))
                               true
                                 (fprintf g-body-stream "  ret void\n")))
                       ; Build function definition
@@ -3939,6 +4212,8 @@
                           (set! ret-ir "i32"))
                         (when (= result-kind TY-I64) (set! ret-ir "i64"))
                         (when (= result-kind TY-PTR) (set! ret-ir "ptr"))
+                        (when (= result-kind TY-F32) (set! ret-ir "float"))
+                        (when (= result-kind TY-F64) (set! ret-ir "double"))
                         (fprintf g-def-stream "define %s @%s() {\n" ret-ir eval-sym)
                         (fprintf g-def-stream "entry:\n")
                         (when (and (!= g-entry-bufp null) (!= (char-at g-entry-bufp (cast i64 0)) 0))
@@ -3959,7 +4234,12 @@
                         (let (addr:i64 (cast i64 0))
                           (let (err:ptr (LLVMOrcLLJITLookup g-jit (cast ptr (addr-of addr)) eval-sym))
                             (when (!= err null)
-                              (fprintf stderr "  JIT lookup error: %s\n" (LLVMGetErrorMessage err))
+                              (let (em:ptr (LLVMGetErrorMessage err)
+                                    msg:ptr (malloc (cast i64 512)))
+                                (snprintf msg (cast i64 512)
+                                          "JIT lookup error: %s" em)
+                                (repl-error (. f line) msg)
+                                (free msg))
                               (return))
                             (when (!= addr (cast i64 0))
                               ; Call and print result based on type
@@ -3976,8 +4256,12 @@
                                       (let (fn:ptr (cast ptr addr)
                                             rv:ptr (funcall-ptr-ptr fn))
                                         (if (!= rv null)
-                                          (fprintf stderr "  %p\n" rv)
+                                          (fprintf stderr "  #<ptr %p>\n" rv)
                                           (fprintf stderr "  null\n")))
+                                    (= result-kind TY-F64)
+                                      (repl_print_f64 (cast ptr addr))
+                                    (= result-kind TY-F32)
+                                      (repl_print_f32 (cast ptr addr))
                                     (= result-kind TY-VOID)
                                       (do)
                                     true
@@ -4065,6 +4349,10 @@
 ; REPL main loop
 (defn repl-main:void ()
   (fprintf stderr "Nucleus REPL (type Ctrl-D to exit)\n")
+  ; Line-buffer stdout so JIT'd printf output is visible immediately even when
+  ; the REPL is driven by a pipe (stdin not a tty makes stdout block-buffered
+  ; by default). _IOLBF == 1 on glibc.
+  (setvbuf stdout null 1 (cast i64 0))
   (set! g-source-path "<repl>")
   (compiler-init)
   ; Initialize preamble stream
@@ -4092,7 +4380,7 @@
                   (while (!= fc null)
                     (let (f:ptr (. (cast *Node fc) car))
                       (when (!= (repl_try) 0)
-                        (fprintf stderr "  error (recovered)\n"))
+                        (repl-error (. (cast *Node f) line) "error (recovered)"))
                       (when (= (repl_try) 0)
                         (repl-eval-form f)))
                     (set! fc (. (cast *Node fc) cdr)))))
@@ -4119,6 +4407,10 @@
                 (set! g-emit-cheader 1)
               (or (= (strcmp arg "-i") 0) (= (strcmp arg "--interactive") 0))
                 (set! g-interactive 1)
+              (= (strcmp arg "--repl-format=text") 0)
+                (set! g-repl-format 0)
+              (= (strcmp arg "--repl-format=json") 0)
+                (set! g-repl-format 1)
               (= (strncmp arg "-I" (cast i64 2)) 0)
                 (if (> (cast i64 (strlen arg)) (cast i64 2))
                   ; -I/path/to/dir (no space)
@@ -4142,7 +4434,7 @@
 
     ; Batch mode — require source file
     (when (= source-file null)
-       (fprintf stderr "usage: nucleusc [--emit-nuch] [--emit-cheader] [-i] [-I<path>] <file.nuc>\n") (return 2))
+       (fprintf stderr "usage: nucleusc [--emit-nuch] [--emit-cheader] [-i] [--repl-format=text|json] [-I<path>] <file.nuc>\n") (return 2))
     (set! g-source-path source-file)
     (let (src:ptr (read-file source-file))
       (compiler-init)
