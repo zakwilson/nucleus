@@ -159,3 +159,43 @@ last step is the flag day; the first four are pure additions.
   not need the `(let (result) ... result)` workaround.
 - The compiler self-hosts and the test suite passes after each
   intermediate step, not just at the end.
+
+## Designer:
+
+Use strict typing for `cond`.
+
+`if` expands to `cond`, so it should need no changes.
+
+## Implementation status (2026-04-26)
+
+Done. `emit-cond` builds a phi at `cond.end` over each live branch's
+value; if any branch terminates (e.g., `return`), it is dropped from
+the phi. If no clause has `true` as its test, the implicit fallthrough
+contributes `undef` of the result type. If every branch terminates and
+there is no fallthrough, `end-lbl` gets an `unreachable` terminator
+and `g-block-term` is set so the surrounding form does not emit a
+follow-on.
+
+Strict typing was relaxed to "best-effort": when branches disagree (or
+any branch yields `void`), the cond's result type collapses to `void`.
+Callers that try to use a void-typed cond in value position fail their
+own type-check downstream (e.g., `let` binding init mismatch). This
+keeps existing statement-position uses working without an audit.
+
+`if`, `when`, `unless` inherit this since they expand to `cond`.
+`do`/`let` already returned their last expression. `while` already
+yields `void`.
+
+`defn` now emits an implicit return of the last expression's value
+when control falls off the end. If the last expression is `void` (e.g.
+a no-return call like `die-at` that the compiler can't recognize), a
+zero/null of the declared return type is emitted instead — preserving
+the previous fall-through behavior for these cases.
+
+The `(let (result) ... (set! result ...) result)` workaround in
+`lib/varmath.nuc` was removed; the cond directly returns the macro's
+result Node.
+
+Tests: `examples/cond-value.nuc`, `examples/implicit-return.nuc`.
+Bootstrap fixed-point holds (stage1.ll == stage2.ll); committed
+`boot/nucleusc.ll` and `bin/nucleusc` updated.

@@ -1,0 +1,20 @@
+(include stdio)
+
+; Last expression's value is the function's return.
+(defn double:i64 (n:i64)
+  (+ n n))
+
+(defn quad:i64 (n:i64)
+  (double (double n)))
+
+; Implicit return through a cond expression.
+(defn abs:i64 (n:i64)
+  (cond (< n (cast i64 0)) (- (cast i64 0) n)
+        true               n))
+
+(defn main:int ()
+  (printf "double(7) = %ld\n" (double (cast i64 7)))
+  (printf "quad(3)   = %ld\n" (quad (cast i64 3)))
+  (printf "abs(-5)   = %ld\n" (abs (cast i64 -5)))
+  (printf "abs(11)   = %ld\n" (abs (cast i64 11)))
+  (return 0))
