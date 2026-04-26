@@ -12,57 +12,47 @@
 ;   (+ x)          => x
 ;   (+ x y z ...)  => (__+ x (+ y z ...))   [right-fold; associative]
 (defmacro + (&rest args)
-  (let (result:ptr null)
-    (cond (= args null)
-            (set! result `0)
-          (= (. (cast *Node args) cdr) null)
-            (set! result (. (cast *Node args) car))
-          true
-            (set! result `(__+ ~(. (cast *Node args) car)
-                               (+ ~@(. (cast *Node args) cdr)))))
-    result))
+  (cond (= args null)
+          `0
+        (= (. (cast *Node args) cdr) null)
+          (. (cast *Node args) car)
+        true
+          `(__+ ~(. (cast *Node args) car)
+                (+ ~@(. (cast *Node args) cdr)))))
 
 (defmacro * (&rest args)
-  (let (result:ptr null)
-    (cond (= args null)
-            (set! result `1)
-          (= (. (cast *Node args) cdr) null)
-            (set! result (. (cast *Node args) car))
-          true
-            (set! result `(__* ~(. (cast *Node args) car)
-                               (* ~@(. (cast *Node args) cdr)))))
-    result))
+  (cond (= args null)
+          `1
+        (= (. (cast *Node args) cdr) null)
+          (. (cast *Node args) car)
+        true
+          `(__* ~(. (cast *Node args) car)
+                (* ~@(. (cast *Node args) cdr)))))
 
 ; Subtraction: unary negates; n-ary left-folds (matches Common Lisp).
 (defmacro - (&rest args)
-  (let (result:ptr null)
-    (cond (= args null)
-            (set! result `0)
-          (= (. (cast *Node args) cdr) null)
-            (set! result `(__- 0 ~(. (cast *Node args) car)))
-          (= (. (cast *Node (. (cast *Node args) cdr)) cdr) null)
-            (set! result `(__- ~(. (cast *Node args) car)
-                               ~(. (cast *Node (. (cast *Node args) cdr)) car)))
-          true
-            (set! result
-              `(- (__- ~(. (cast *Node args) car)
-                       ~(. (cast *Node (. (cast *Node args) cdr)) car))
-                  ~@(. (cast *Node (. (cast *Node args) cdr)) cdr))))
-    result))
+  (cond (= args null)
+          `0
+        (= (. (cast *Node args) cdr) null)
+          `(__- 0 ~(. (cast *Node args) car))
+        (= (. (cast *Node (. (cast *Node args) cdr)) cdr) null)
+          `(__- ~(. (cast *Node args) car)
+                ~(. (cast *Node (. (cast *Node args) cdr)) car))
+        true
+          `(- (__- ~(. (cast *Node args) car)
+                   ~(. (cast *Node (. (cast *Node args) cdr)) car))
+              ~@(. (cast *Node (. (cast *Node args) cdr)) cdr))))
 
 ; Division: unary is reciprocal (integer: 1/x); n-ary left-folds.
 (defmacro / (&rest args)
-  (let (result:ptr null)
-    (cond (= args null)
-            (set! result `1)
-          (= (. (cast *Node args) cdr) null)
-            (set! result `(__/ 1 ~(. (cast *Node args) car)))
-          (= (. (cast *Node (. (cast *Node args) cdr)) cdr) null)
-            (set! result `(__/ ~(. (cast *Node args) car)
-                               ~(. (cast *Node (. (cast *Node args) cdr)) car)))
-          true
-            (set! result
-              `(/ (__/ ~(. (cast *Node args) car)
-                       ~(. (cast *Node (. (cast *Node args) cdr)) car))
-                  ~@(. (cast *Node (. (cast *Node args) cdr)) cdr))))
-    result))
+  (cond (= args null)
+          `1
+        (= (. (cast *Node args) cdr) null)
+          `(__/ 1 ~(. (cast *Node args) car))
+        (= (. (cast *Node (. (cast *Node args) cdr)) cdr) null)
+          `(__/ ~(. (cast *Node args) car)
+                ~(. (cast *Node (. (cast *Node args) cdr)) car))
+        true
+          `(/ (__/ ~(. (cast *Node args) car)
+                   ~(. (cast *Node (. (cast *Node args) cdr)) car))
+              ~@(. (cast *Node (. (cast *Node args) cdr)) cdr))))
