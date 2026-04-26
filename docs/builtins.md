@@ -20,11 +20,11 @@ Supported top-level forms in the REPL: `defn`, `defvar`, `defconst`, `defenum`, 
 
 Result printing is type-aware: integer kinds print as decimal, string literals print as `"..."` with escapes, quoted forms (`'foo`, `(quote ...)`) print using the AST printer, and other pointer values print as `#<ptr 0x...>`. The reader rejects `#<...>` syntax with a clear error so a printed unreadable value can't silently round-trip as input.
 
-`macroexpand` / `macroexpand-1` print the expansion of a quoted form. `(macroexpand '(when c b))` expands to fixpoint; `(macroexpand-1 '(when c b))` expands one step. An optional integer second arg overrides the depth: `(macroexpand 'form 2)` expands at most twice; `(macroexpand 'form -1)` expands to fixpoint. Subforms are not recursed into (matches Common Lisp `macroexpand`).
+`macroexpand` / `macroexpand-1` print the expansion of a quoted form. `(macroexpand '(when c b))` expands to fixpoint; `(macroexpand-1 '(when c b))` expands one step. An optional integer second arg overrides the depth: `(macroexpand 'form 2)` expands at most twice; `(macroexpand 'form -1)` expands to fixpoint. Subforms are not recursed into (matches Common Lisp `macroexpand`). If the form is not a macro call (head is missing or not a registered macro), the REPL prints `not a macro call: <form>` rather than echoing the input unchanged.
 
 Functions defined in the REPL persist across inputs and can call each other. All libc functions (stdio, stdlib, string, ctype, unistd) are pre-loaded — no `(include ...)` needed.
 
-Imported libraries work: `(import mathlib)` makes `square`, `cube`, etc. available. `(import macros)` loads the standard macros (`if`, `when`, `unless`, `for`, `dotimes`, `->`). The `Node` struct and `NODE-*` constants are pre-registered for macro support.
+Imported libraries work: `(import mathlib)` makes `square`, `cube`, etc. available. The standard macros (`if`, `when`, `unless`, `for`, `dotimes`, `->`) are auto-imported at REPL startup, so they're usable without `(import macros)`. The `Node` struct and `NODE-*` constants are pre-registered for macro support.
 
 Errors in the REPL are caught and recovered; the REPL continues after an error (including IR parse errors and JIT errors). Redefining an already-defined function is refused with an error. With `--repl-format=json`, each REPL-level error (redefinition, missing form arg, JIT lookup failure, recovered error) is emitted as a single-line JSON object on stderr.
 

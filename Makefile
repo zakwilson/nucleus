@@ -13,7 +13,7 @@ BOOT         := bin/nucleusc
 # REPL shim (setjmp/longjmp wrapper)
 REPL_SHIM_O  := $(BUILD)/repl_shim.o
 
-$(BIN): src/nucleusc.nuc $(REPL_SHIM_O) | $(BUILD) ensure-boot
+$(BIN): src/nucleusc.nuc src/repl.nuc src/cheader.nuc $(REPL_SHIM_O) | $(BUILD) ensure-boot
 	$(BOOT) src/nucleusc.nuc > $(BUILD)/nucleusc.ll
 	clang $(BUILD)/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl -rdynamic -o $@
 
