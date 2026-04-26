@@ -90,6 +90,59 @@
       (.set! t s (arena-strndup buf n))
       (return (cast ptr t)))))
 
+; Returns 1 if `text` (length `len`) is a float literal in the syntactic
+; sense: optional sign, at least one digit, contains either `.` or
+; `e`/`E`, and consists otherwise of digits and at most one exponent
+; with optional sign. Also accepts the special tokens `+inf.0`,
+; `-inf.0`, `+nan.0` (Scheme convention).
+(defn is-float-literal:i32 (text:ptr len:i64)
+  (when (<= len (cast i64 0)) (return 0))
+  ; Special tokens.
+  (when (and (= len (cast i64 6))
+             (or (= (strncmp text "+inf.0" (cast i64 6)) 0)
+                 (or (= (strncmp text "-inf.0" (cast i64 6)) 0)
+                     (= (strncmp text "+nan.0" (cast i64 6)) 0))))
+    (return 1))
+  (let (i:i64 (cast i64 0)
+        c0:i32 (char-at text (cast i64 0)))
+    (when (or (= c0 43) (= c0 45)) (set! i (cast i64 1)))
+    (let (start:i64 i
+          digits-before:i32 0
+          digits-after:i32 0
+          digits-exp:i32 0
+          saw-dot:i32 0
+          saw-e:i32 0)
+      (while (and (< i len)
+                  (!= (isdigit (char-at text i)) 0))
+        (set! digits-before 1)
+        (set! i (+ i (cast i64 1))))
+      (when (and (< i len) (= (char-at text i) 46))
+        (set! saw-dot 1)
+        (set! i (+ i (cast i64 1)))
+        (while (and (< i len)
+                    (!= (isdigit (char-at text i)) 0))
+          (set! digits-after 1)
+          (set! i (+ i (cast i64 1)))))
+      (when (and (< i len)
+                 (or (= (char-at text i) 101) (= (char-at text i) 69)))
+        (set! saw-e 1)
+        (set! i (+ i (cast i64 1)))
+        (when (and (< i len)
+                   (or (= (char-at text i) 43) (= (char-at text i) 45)))
+          (set! i (+ i (cast i64 1))))
+        (while (and (< i len)
+                    (!= (isdigit (char-at text i)) 0))
+          (set! digits-exp 1)
+          (set! i (+ i (cast i64 1)))))
+      (when (!= i len) (return 0))
+      ; Must contain a `.` or `e`/`E` to be a float (otherwise it's an int).
+      (when (and (= saw-dot 0) (= saw-e 0)) (return 0))
+      ; Must have some digits somewhere.
+      (when (and (= digits-before 0) (= digits-after 0)) (return 0))
+      ; If there's an exponent, must have exponent digits.
+      (when (and (!= saw-e 0) (= digits-exp 0)) (return 0))
+      (return 1))))
+
 (defn lex-atom:ptr ()
   (let (start-line:i32 g-line
         start:i64 g-pos)
@@ -121,6 +174,12 @@
             (.set! t line start-line)
             (.set! t i (strtol buf null 10))
             (return (cast ptr t)))))
+      (when (!= (is-float-literal text len) 0)
+        (let (tf:*Tok (cast *Tok (alloc-tok)))
+          (.set! tf kind TOK-FLOAT)
+          (.set! tf line start-line)
+          (.set! tf s (arena-strndup text len))
+          (return (cast ptr tf))))
       (let (ts:*Tok (cast *Tok (alloc-tok)))
         (.set! ts kind TOK-SYMBOL)
         (.set! ts line start-line)
@@ -216,6 +275,12 @@
         (.set! n kind NODE-INT)
         (.set! n line (. t line))
         (.set! n i (. t i))
+        (return (cast ptr n))))
+    (when (= (. t kind) TOK-FLOAT)
+      (let (n:*Node (cast *Node (alloc-node)))
+        (.set! n kind NODE-FLOAT)
+        (.set! n line (. t line))
+        (.set! n s (. t s))
         (return (cast ptr n))))
     (when (= (. t kind) TOK-STRING)
       (let (n:*Node (cast *Node (alloc-node)))

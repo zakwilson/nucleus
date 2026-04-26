@@ -1,3 +1,5 @@
 ; REPL shim declarations (linked via repl_shim.o)
 (declare repl_try:i32 ())
 (declare repl_throw:void ())
+(declare repl_print_f64:void (ptr))
+(declare repl_print_f32:void (ptr))

@@ -21,6 +21,7 @@ Documentation for the current state of the language lives in the docs directory.
 - [context/local.md](context/local.md) — VM setup, SDK paths, emulator workflow, MCP server *(local only, not in git)*
 - [context/build.md](context/build.md) - build flow and bootstrap artifacts
 - [context/macros-jit.md](context/macros-jit.md) - macros and JIT
+- [context/repl.md](context/repl.md) - when (and when not) to use `nucleusc -i` during development
 - [context](context) directory - create additional files here as appropriate
 
 ## Self-Improving Context
