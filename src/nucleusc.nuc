@@ -1685,6 +1685,12 @@
             (inc! j))
           (return last))))))
 
+; cond is an expression: each branch's last value contributes to a phi at
+; cond.end. If all live branches agree on a non-void type, that's the cond's
+; type. On any disagreement (or any void branch), fall back to void — the
+; cond is then statement-shaped and any caller that uses it in value position
+; will fail its own type-check downstream. If no clause has `true` as its
+; test, the implicit fallthrough contributes `undef` of the result type.
 (defn emit-cond:ptr (call:ptr scope:ptr)
   (let (cc:*Node (cast *Node call)
         nargs:i32 (- (node-len cc) 1))
@@ -1693,30 +1699,91 @@
     (let (npairs:i32 (/ nargs 2)
           id:i32 (new-label-id)
           end-lbl:ptr (fmt-i32 "cond.end%d" id)
+          fall-lbl:ptr (fmt-i32 "cond.fall%d" id)
+          vals:ptr (make-vec)
+          preds:ptr (make-vec)
+          result-type:ptr null
+          has-fallthrough:i32 0
           i:i32 0)
       (while (< i npairs)
-        (let (then-lbl:ptr (fmt-i32-i32 "cond.then%d.%d" id i)
-              next-lbl:ptr end-lbl)
-          (when (< i (- npairs 1))
-            (set! next-lbl (fmt-i32-i32 "cond.test%d.%d" id (+ i 1))))
-          (let (test:*Val (cast *Val (emit-node (node-at cc (+ 1 (* i 2))) scope)))
-            (when (-> test (. type) (cast *Type _) (. kind) (!= _ TY-I1))
-              (die-at (. (cast *Node (node-at cc (+ 1 (* i 2)))) line)
-                "cond: test must be i1"))
-            (fprintf g-body-stream "  br i1 %s, label %%%s, label %%%s\n"
-              (. test val) then-lbl next-lbl)
-            (fprintf g-body-stream "%s:\n" then-lbl)
-            (set! g-block-term 0)
-            (emit-node (node-at cc (+ 2 (* i 2))) scope)
+        (let (test-node:*Node (cast *Node (node-at cc (+ 1 (* i 2))))
+              body-node:ptr (node-at cc (+ 2 (* i 2)))
+              is-last:i32 0
+              is-final-true:i32 0
+              then-lbl:ptr (fmt-i32-i32 "cond.then%d.%d" id i)
+              next-lbl:ptr null)
+          (when (= i (- npairs 1)) (set! is-last 1))
+          (when (and (= is-last 1) (= (. test-node kind) NODE-SYM))
+            (when (= (strcmp (. test-node s) "true") 0)
+              (set! is-final-true 1)))
+          (if (= is-final-true 1)
+            (do
+              (fprintf g-body-stream "  br label %%%s\n" then-lbl)
+              (fprintf g-body-stream "%s:\n" then-lbl)
+              (set! g-block-term 0))
+            (do
+              (if (= is-last 1)
+                (do
+                  (set! next-lbl fall-lbl)
+                  (set! has-fallthrough 1))
+                (set! next-lbl (fmt-i32-i32 "cond.test%d.%d" id (+ i 1))))
+              (let (test:*Val (cast *Val (emit-node (cast ptr test-node) scope)))
+                (when (!= (. (cast *Type (. test type)) kind) TY-I1)
+                  (die-at (. test-node line) "cond: test must be i1"))
+                (fprintf g-body-stream "  br i1 %s, label %%%s, label %%%s\n"
+                  (. test val) then-lbl next-lbl))
+              (fprintf g-body-stream "%s:\n" then-lbl)
+              (set! g-block-term 0)))
+          (let (bv:*Val (cast *Val (emit-node body-node scope)))
             (when (= g-block-term 0)
-              (fprintf g-body-stream "  br label %%%s\n" end-lbl))
-            (when (< i (- npairs 1))
-              (fprintf g-body-stream "%s:\n" next-lbl)
-              (set! g-block-term 0))))
+              (let (join-lbl:ptr (fmt-i32-i32 "cond.join%d.%d" id i)
+                    bty:ptr (. bv type))
+                (if (= result-type null)
+                  (set! result-type bty)
+                  (when (and (!= bty result-type)
+                             (!= (. (cast *Type result-type) kind) TY-VOID))
+                    (set! result-type ty-void)))
+                (when (= (. (cast *Type bty) kind) TY-VOID)
+                  (set! result-type ty-void))
+                (fprintf g-body-stream "  br label %%%s\n" join-lbl)
+                (fprintf g-body-stream "%s:\n" join-lbl)
+                (fprintf g-body-stream "  br label %%%s\n" end-lbl)
+                (vec-push vals (. bv val))
+                (vec-push preds join-lbl))))
+          (when (and (= is-last 0) (= is-final-true 0))
+            (fprintf g-body-stream "%s:\n" next-lbl)
+            (set! g-block-term 0)))
         (inc! i))
+      (when (= has-fallthrough 1)
+        (fprintf g-body-stream "%s:\n" fall-lbl)
+        (fprintf g-body-stream "  br label %%%s\n" end-lbl))
       (fprintf g-body-stream "%s:\n" end-lbl)
       (set! g-block-term 0)
-      (return (alloc-val ty-void null)))))
+      ; If every branch terminated (no live phi incomings) and there is no
+      ; fallthrough, end-lbl is unreachable — terminate it so callers know
+      ; control does not flow past the cond.
+      (when (and (= (. (cast *Vec vals) len) 0) (= has-fallthrough 0))
+        (fprintf g-body-stream "  unreachable\n")
+        (set! g-block-term 1))
+      (if (or (= result-type null)
+              (= (. (cast *Type result-type) kind) TY-VOID))
+        (return (alloc-val ty-void null))
+        (let (tmp:ptr (new-tmp)
+              ty-ir:ptr (type-to-ir result-type)
+              vv:*Vec (cast *Vec vals)
+              pv:*Vec (cast *Vec preds)
+              k:i32 0)
+          (fprintf g-body-stream "  %s = phi %s " tmp ty-ir)
+          (while (< k (. vv len))
+            (when (> k 0) (fprintf g-body-stream ", "))
+            (fprintf g-body-stream "[ %s, %%%s ]"
+              (aref (cast *ptr (. vv data)) k)
+              (aref (cast *ptr (. pv data)) k))
+            (inc! k))
+          (when (= has-fallthrough 1)
+            (fprintf g-body-stream ", [ undef, %%%s ]" fall-lbl))
+          (fprintf g-body-stream "\n")
+          (return (alloc-val result-type tmp)))))))
 
 (defn emit-while:ptr (call:ptr scope:ptr)
   (let (cc:*Node (cast *Node call))
@@ -2114,15 +2181,31 @@
                 (scope-define fn-scope pname ptype slot 1))
               (inc! i))
             (set! i 3)
-            (while (< i (node-len cc))
-              (emit-node (node-at cc i) fn-scope)
-              (inc! i))
-            (when (= g-block-term 0)
-              (if (= (. (cast *Type ret) kind) TY-VOID)
-                (fprintf g-body-stream "  ret void\n")
-                (let (zero:ptr "0")
-                  (when (= (. (cast *Type ret) kind) TY-PTR) (set! zero "null"))
-                  (fprintf g-body-stream "  ret %s %s\n" (type-to-ir ret) zero))))
+            (let (last-val:ptr (alloc-val ty-void null))
+              (while (< i (node-len cc))
+                (set! last-val (emit-node (node-at cc i) fn-scope))
+                (inc! i))
+              (when (= g-block-term 0)
+                (if (= (. (cast *Type ret) kind) TY-VOID)
+                  (fprintf g-body-stream "  ret void\n")
+                  ; Implicit return: if the last expression yielded a value
+                  ; matching the declared return type, return it. If the last
+                  ; expression was void (e.g., a side-effect or a no-return
+                  ; call like die-at the compiler can't recognize), fall back
+                  ; to a zero/null return so the function has a well-typed
+                  ; terminator.
+                  (if (= (. (cast *Type (. (cast *Val last-val) type)) kind) TY-VOID)
+                    (let (zero:ptr "0")
+                      (when (= (. (cast *Type ret) kind) TY-PTR) (set! zero "null"))
+                      (fprintf g-body-stream "  ret %s %s\n" (type-to-ir ret) zero))
+                    (let (coerced:ptr (coerce-int-val last-val ret (. cc line)))
+                      (when (= coerced null)
+                        (die-at (. cc line)
+                          (fmt-s "%s: implicit return type mismatch — last expression does not match declared return type"
+                                 fname)))
+                      (let (cv:*Val (cast *Val coerced))
+                        (fprintf g-body-stream "  ret %s %s\n"
+                          (type-to-ir ret) (. cv val))))))))
             ; Close streams and emit function
             (fclose g-entry-stream)
             (fclose g-body-stream)

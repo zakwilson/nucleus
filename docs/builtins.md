@@ -111,12 +111,26 @@ Defined via `defmacro`. Use `(import macros)` to include them (note: `dotimes` a
 
 ## Special Forms
 
+`do`, `let`, and `cond` are *expressions*: each yields the value of its
+last evaluated sub-expression. For `cond`, every live branch must
+produce the same type, otherwise the form's value is `void` (which is
+fine for statement position but rejects use in value position). If a
+`cond` has no `true` final clause, the implicit fallthrough contributes
+`undef` of the result type. `if` (which expands to `cond`) inherits
+this behavior. `while` is statement-shaped: it always yields `void`.
+
+`defn` implicitly returns its last expression's value when control
+reaches the end of the body without an explicit `return`. The last
+expression's type must match the declared return type; if the last
+expression yields `void` (e.g., a side-effect or no-return call like
+`die-at`), a default zero/null of the return type is emitted.
+
 | Name | Description | C Equivalent |
 |------|-------------|--------------|
-| `do` | Sequence multiple expressions | `{ ... }` block |
-| `let` | Bind local variables | local variable declaration |
-| `cond` | Multi-way conditional | `if` / `else if` / `else` chain |
-| `while` | Loop | `while` |
+| `do` | Sequence multiple expressions; yields the last | `{ ... }` block |
+| `let` | Bind local variables; yields the body's last expression | local variable declaration |
+| `cond` | Multi-way conditional; yields the matched branch's value (strict-typed across branches) | `if` / `else if` / `else` chain |
+| `while` | Loop; yields `void` | `while` |
 | `set!` | Assign to a variable | `x = val` |
 | `inc!` | Increment a variable | `x++` / `x += 1` |
 | `return` | Return from function | `return` |
