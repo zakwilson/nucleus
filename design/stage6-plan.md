@@ -13,8 +13,8 @@ Implementation plan for the items in [stage6-cleanup.md](stage6-cleanup.md) that
 | 5 | Line-buffered REPL stdout                           | DONE      | `setvbuf(stdout, NULL, _IOLBF, 0)` in `repl-main`.                                     |
 | 6 | Loosen REPL redefinition rule                       | DEFERRED  | LLVM C bindings lack resource tracker; ORC main JITDylib rejects redefinition. Design lives in [stage6-redefinition.md](stage6-redefinition.md). |
 | 7 | N-ary arithmetic via macros                         | DONE      | Lives in `lib/varmath.nuc` (not `lib/macros.nuc`) to avoid bootstrap collision.        |
-| 8 | Extract REPL into its own source file               | TODO      |                                                                                        |
-| 9 | Extract C header handling into its own source file  | TODO      |                                                                                        |
+| 8 | Extract REPL into its own source file               | DONE      | Lives in `src/repl.nuc`, source-imported by `src/nucleusc.nuc`. Shim FFI declares stay in `nucleusc.nuc` so non-REPL error sites can `repl_throw`. |
+| 9 | Extract C header handling into its own source file  | DONE      | Lives in `src/cheader.nuc`. Bundles `popen`/`pclose` declares (was `lib/cparse-ffi.nuch`), the parser, `emit-include`, `emit-c-include`, and the `--emit-cheader` emitters. |
 |10 | Fix `macroexapnd1` typo                             | DONE      |                                                                                        |
 
 ## Discoveries during implementation
