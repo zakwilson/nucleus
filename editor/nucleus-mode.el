@@ -18,7 +18,8 @@
     table))
 
 (defvar nucleus-toplevel-keywords
-  '("defn" "defvar" "defconst" "defenum" "defstruct" "include" "extern" "defmacro"))
+  '("defn" "defvar" "defconst" "defenum" "defstruct" "include" "extern" "defmacro"
+    "import" "declare" "if" "when" "unless"))
 
 (defvar nucleus-special-forms
   '("let" "cond" "while" "do" "return" "set!" "inc!"
@@ -52,9 +53,33 @@
       (":\\([^ )\n]+\\)" 1 font-lock-type-face))))
 
 (defvar nucleus-indent-specials
-  '(("defn" . 2) ("defmacro" . 2) ("let" . 2) ("cond" . 2) ("while" . 2)
+  '(("defn" . 2) ("defmacro" . 2) ("let" . 2) ("while" . 2)
     ("do" . 1) ("defstruct" . 2) ("defenum" . 2) ("compile-time" . 1))
   "Alist of form names to their special body indent offset.")
+
+(defun nucleus-indent-cond (indent-point state)
+  "Indent a Nucleus cond form.
+Nucleus cond clauses are flat (test result test result ...), not wrapped
+in parens. Test clauses align with the first test; result clauses sit two
+columns to the right of the test column."
+  (save-excursion
+    (let ((containing-col (save-excursion
+                            (goto-char (elt state 1))
+                            (current-column))))
+      (goto-char (1+ (elt state 1)))
+      (forward-sexp 1)
+      (forward-comment (point-max))
+      (if (>= (point) indent-point)
+          (+ containing-col 2)
+        (let ((test-col (current-column))
+              (count 0))
+          (while (and (< (point) indent-point)
+                      (ignore-errors (forward-sexp 1) t))
+            (setq count (1+ count))
+            (forward-comment (point-max)))
+          (if (zerop (mod count 2))
+              test-col
+            (+ test-col 2)))))))
 
 (defun nucleus-indent-function (indent-point state)
   "Indent like common Lisp but with Nucleus-specific overrides.
@@ -63,11 +88,13 @@ Returns nil for non-special forms so the default Lisp indenter handles them."
     (goto-char (1+ (elt state 1)))
     (let ((head (and (looking-at "\\(?:\\sw\\|\\s_\\)+")
                      (match-string 0))))
-      (when-let ((entry (and head (assoc head nucleus-indent-specials))))
-        (let ((containing-col (save-excursion
-                                (goto-char (elt state 1))
-                                (current-column))))
-          (+ containing-col (cdr entry)))))))
+      (cond ((equal head "cond")
+             (nucleus-indent-cond indent-point state))
+            ((when-let ((entry (and head (assoc head nucleus-indent-specials))))
+               (let ((containing-col (save-excursion
+                                       (goto-char (elt state 1))
+                                       (current-column))))
+                 (+ containing-col (cdr entry)))))))))
 
 ;;;###autoload
 (define-derived-mode nucleus-mode prog-mode "Nucleus"
