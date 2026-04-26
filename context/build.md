@@ -1,6 +1,7 @@
 ## Nucleus build flow
 
 - `make` compiles `src/nucleusc.nuc` using the committed bootstrap binary `bin/nucleusc`, producing `build/nucleusc` (the self-hosted compiler). The build also compiles `src/repl_shim.c` (setjmp/longjmp wrapper for REPL error recovery) and links it with the compiler.
+- `src/nucleusc.nuc` source-imports `src/repl.nuc` (REPL implementation) and `src/cheader.nuc` (C header parsing + `--emit-cheader`). These are pure file moves: the REPL and cheader code depend on compiler internals (`g-globals`, `emit-*`, type registry), and source imports inline forms into the same translation unit. The repl shim FFI (`repl_try`/`repl_throw`/`repl_print_f*`) is declared in `nucleusc.nuc` itself rather than in `repl.nuc`, because non-REPL sites (e.g. `lib/reader.nuc`, `jit-*` in `nucleusc.nuc`) call `repl_throw` and need the declaration before `(import repl)` is reached.
 - `bin/nucleusc` is a pre-built ELF binary committed to the repo. `boot/nucleusc.ll` is the corresponding LLVM IR.
 - If `bin/nucleusc` is missing or can't execute (e.g. LLVM version mismatch), `make` auto-rebuilds it from `boot/nucleusc.ll`. You can also force a rebuild with `make boot-binary`.
 - `./build.sh examples/foo.nuc` runs `make`, then compiles the source file with `build/nucleusc`. Compile-time output goes to **stderr**; IR to **stdout**.
