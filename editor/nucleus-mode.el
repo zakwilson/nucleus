@@ -57,17 +57,17 @@
   "Alist of form names to their special body indent offset.")
 
 (defun nucleus-indent-function (indent-point state)
-  "Indent like common Lisp but with Nucleus-specific overrides."
-  (let ((normal-indent (current-column)))
+  "Indent like common Lisp but with Nucleus-specific overrides.
+Returns nil for non-special forms so the default Lisp indenter handles them."
+  (save-excursion
     (goto-char (1+ (elt state 1)))
     (let ((head (and (looking-at "\\(?:\\sw\\|\\s_\\)+")
                      (match-string 0))))
-      (if-let ((entry (and head (assoc head nucleus-indent-specials))))
-          (let ((containing-col (save-excursion
-                                  (goto-char (elt state 1))
-                                  (current-column))))
-            (+ containing-col (cdr entry)))
-        (lisp-indent-calcmethod 1 indent-point state)))))
+      (when-let ((entry (and head (assoc head nucleus-indent-specials))))
+        (let ((containing-col (save-excursion
+                                (goto-char (elt state 1))
+                                (current-column))))
+          (+ containing-col (cdr entry)))))))
 
 ;;;###autoload
 (define-derived-mode nucleus-mode prog-mode "Nucleus"
