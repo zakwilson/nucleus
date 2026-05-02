@@ -170,3 +170,63 @@ parity with the existing "defined" notice at `:3826`.
   wherever LLVM bindings live).
 - A REPL session demonstrating redefinition is captured in the
   test suite.
+
+## Result
+
+Path A as originally specified — per-form modules + resource trackers —
+isn't sufficient on its own. LLJIT's eager linker patches each call
+site to a direct address when the calling module is materialized; once
+`bar` has been JIT'd against `foo` v1, removing `foo` v1's tracker and
+adding `foo` v2 leaves `bar`'s call dangling. (`(foo)` works on its own
+because the lookup re-resolves on each invocation; the failure is
+*cross-module* calls, which is exactly the case the design needs to
+handle.)
+
+The shipped implementation is Path A *plus* a thunk indirection — the
+fallback the design hinted at without naming. For each `defn` the REPL
+emits two modules:
+
+- A **thunk module** for `@<fname>` containing
+  `@<fname>.tgt = global ptr null` and a tiny `@<fname>(args)` that
+  loads `@<fname>.tgt` and tail-calls through it. Added to the JIT
+  *without* a resource tracker — this is the stable public symbol
+  callers (and `(addr-of fname)`) bind to. Emitted only on first sight.
+- An **impl module** containing `define ret @<fname>.impl.<N>(args)
+  { body }`, JIT'd under a fresh `LLVMOrcResourceTracker`. After JIT,
+  the REPL looks up `@<fname>.impl.<N>` and `@<fname>.tgt` and stores
+  the impl address into the global. Self-recursive calls in the body
+  reference `@<fname>` (the thunk), so they pick up future
+  redefinitions automatically.
+
+On redefinition the old impl tracker is removed (
+`LLVMOrcResourceTrackerRemove` + `LLVMOrcReleaseResourceTracker`), the
+new impl is JIT'd under a new tracker as `@<fname>.impl.<N+1>`, and
+`@<fname>.tgt` is repointed. Existing callers — already-JIT'd `bar`,
+captured `(addr-of foo)` pointers — all see the latest impl
+transparently, going beyond the design's stated semantics where
+captured pointers were expected to go stale.
+
+Cost: every cross-module call to a REPL-defined function pays a load +
+indirect call instead of a direct call. Acceptable for an interactive
+REPL and not present in batch-compiled output (the thunk machinery is
+gated on the REPL path; batch `defn` still emits a direct
+`define @fname` with no indirection).
+
+LLVM bindings exposed in `lib/llvm.nuch`:
+
+- `LLVMOrcLLJITAddLLVMIRModuleWithRT`
+- `LLVMOrcJITDylibCreateResourceTracker` (used in place of
+  `LLVMOrcCreateNewResourceTracker` — both exist in the C API, the
+  former is what we need)
+- `LLVMOrcResourceTrackerRemove`
+- `LLVMOrcReleaseResourceTracker`
+
+Test: `tests/repl/redefinition.in` →
+`tests/expected/repl-redefinition.out`, run via the REPL section of
+`tests/run-tests.sh`. Covers redefinition with a separate caller,
+multiple redefinitions, and self-recursive redefinition.
+
+Macros are still rejected — the macro JIT module has its own lifecycle
+(Discovery #3) and reuses the compile-time JIT context, so the same
+machinery doesn't apply directly. Filed as the "redefining a macro"
+follow-up.

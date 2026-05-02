@@ -26,11 +26,13 @@ Functions defined in the REPL persist across inputs and can call each other. All
 
 Imported libraries work: `(import mathlib)` makes `square`, `cube`, etc. available. The standard macros (`if`, `when`, `unless`, `for`, `dotimes`, `->`) are auto-imported at REPL startup, so they're usable without `(import macros)`. The `Node` struct and `NODE-*` constants are pre-registered for macro support.
 
-Errors in the REPL are caught and recovered; the REPL continues after an error (including IR parse errors and JIT errors). Redefining an already-defined function is refused with an error. With `--repl-format=json`, each REPL-level error (redefinition, missing form arg, JIT lookup failure, recovered error) is emitted as a single-line JSON object on stderr.
+Errors in the REPL are caught and recovered; the REPL continues after an error (including IR parse errors and JIT errors). With `--repl-format=json`, each REPL-level error (missing form arg, JIT lookup failure, recovered error) is emitted as a single-line JSON object on stderr.
+
+Functions can be redefined. Redefining a `defn` confirms with `redefined` (vs. `defined` for first sight) and the new body wins for **all** callers, including ones JIT'd before the redefinition. This is implemented by routing every call through a stable `@<name>` thunk that loads the latest impl pointer from `@<name>.tgt`; each definition is JIT'd as `@<name>.impl.<N>` under its own LLVM ORC resource tracker, and the previous tracker is removed on redefinition. `(addr-of foo)` returns the thunk address, so captured pointers also see the latest impl.
 
 Limitations:
 - Functions need explicit `(return ...)` to return values (same as batch mode).
-- Functions cannot be redefined once defined (JIT limitation).
+- Redefining a function with a different signature is allowed by the REPL but existing callers were compiled against the old signature; calls through them have undefined behavior. Restart the session if the type changes.
 - `set!` only works on local variables, not globals.
 - `defvar` initializers must be integer literals (no expressions).
 - `(import node)` is not supported — `node.nuc` depends on compiler-internal allocator functions.

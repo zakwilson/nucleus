@@ -78,7 +78,8 @@
   ir-name:ptr
   is-local:i32
   is-const:i32
-  const-val:ptr)
+  const-val:ptr
+  tracker:ptr)
 
 (defstruct Scope
   parent:ptr
@@ -233,6 +234,10 @@
 
 ; REPL eval counter (for unique __repl_eval_N symbols).
 (defvar g-repl-id:i32 0)
+
+; REPL defn impl counter (for unique <fname>.impl.N symbols when wrapping a
+; user-defined function with a thunk so that callers see redefinitions).
+(defvar g-defn-impl-counter:i64 0)
 
 ; REPL declarations preamble — accumulated declarations and type defs
 ; that get prepended to each JIT module.
@@ -2263,6 +2268,13 @@
     (LLVMOrcJITDylibAddGenerator g-jit-dylib gen)))
 
 (defn jit-add-module:void (ir:ptr line:i32)
+  (jit-add-module-rt ir line null))
+
+; Add a module to the JIT, optionally under a resource tracker. Pass rt=null to
+; add to the main JITDylib without a tracker (used by compile-time and macro JIT).
+; Pass a tracker to add under it so the module's symbols can be removed later
+; via LLVMOrcResourceTrackerRemove (used by the REPL for redefinition).
+(defn jit-add-module-rt:void (ir:ptr line:i32 rt:ptr)
   (jit-ensure-init line)
   ; LLVMOrcThreadSafeContextGetContext was removed in LLVM 20+. Create the
   ; parsing context directly. tsctx is only used for ThreadSafeModule locking
@@ -2279,14 +2291,17 @@
           (when (!= g-interactive 0) (repl_throw))
           (exit 1))
     (let (tsctx:ptr (LLVMOrcCreateNewThreadSafeContext)
-          tsmod:ptr (LLVMOrcCreateNewThreadSafeModule mod tsctx))
+          tsmod:ptr (LLVMOrcCreateNewThreadSafeModule mod tsctx)
+          err:ptr null)
       (LLVMOrcDisposeThreadSafeContext tsctx)
-      (let (err:ptr (LLVMOrcLLJITAddLLVMIRModule g-jit g-jit-dylib tsmod))
-        (when (!= err null)
-           (fprintf stderr "%s:%d: JIT error in AddLLVMIRModule: %s\n"
-                       g-source-path line (LLVMGetErrorMessage err))
-              (when (!= g-interactive 0) (repl_throw))
-              (exit 1))))))
+      (if (= rt null)
+        (set! err (LLVMOrcLLJITAddLLVMIRModule g-jit g-jit-dylib tsmod))
+        (set! err (LLVMOrcLLJITAddLLVMIRModuleWithRT g-jit rt tsmod)))
+      (when (!= err null)
+         (fprintf stderr "%s:%d: JIT error in AddLLVMIRModule: %s\n"
+                     g-source-path line (LLVMGetErrorMessage err))
+            (when (!= g-interactive 0) (repl_throw))
+            (exit 1)))))
 
 (defn jit-call-ct-main-sym:void (line:i32 sym:ptr)
   (let (addr:i64 (cast i64 0))

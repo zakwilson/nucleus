@@ -49,9 +49,13 @@ Prefer the REPL when iteration speed matters more than reproducibility:
   with `2>&1` if you want to see results in the tool output.
 - Each session is fresh — there is no persisted history between Bash calls.
   Bundle the setup and the probe into one heredoc.
-- Redefining a function emits a warning and the *new* definition wins for new
-  callers, but already-JIT'd callers keep the old one. If results look stale,
-  start a new session rather than debugging the redefinition.
+- Redefining a `defn` is supported. The new body wins for every caller —
+  including ones JIT'd before the redefinition — because calls go through a
+  stable thunk that dispatches to the latest impl. The REPL prints
+  `redefined` to confirm. Captured pointers from `(addr-of foo)` also see
+  the latest. Redefining with a different signature is unsafe (existing
+  callers were compiled against the old type); restart the session if the
+  signature changes.
 - The REPL is effectively a giant `compile-time` block, so `(compile-time
   ...)` forms run normally — don't strip them when pasting code.
 - Errors don't kill the session; on error the partial form's IR is discarded
