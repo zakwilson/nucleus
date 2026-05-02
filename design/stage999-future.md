@@ -35,7 +35,16 @@ Probably `#`, semantics like Clojure but not the postfix syntax
 
 Clojure uses these well. Not included by default at runtime of course, but good general-purpose implementations people would want to import if they don't need something purpose-built.
 
-### Cleanup
+## REPL documentation
+
+It should be possible to add a docstring to anything that can be defined. .nuch headers should include them. They should be added to C headers as comments.
+
+There should be `docstring` and `signature` functions for tool use, and probably a `doc` function for human use at the REPL that gets the docstring, signature, and anything else that might be interesting about a symbol for the developer.
+
+## Cleanup
 
 `set!` should take multiple pairs like `let`.
 
+## Memory management
+
+`(let (... (malloc ...)))` should automatically free when out of scope. An additional form, perhaps `let*` should exist for when that is not desired.

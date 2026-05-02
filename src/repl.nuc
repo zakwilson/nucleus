@@ -185,60 +185,86 @@
                     (fputs g-decl-bufp g-repl-preamble))
                   (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp))
             (and (!= h null) (= (strcmp h "defn") 0))
-              (do ; Refuse redefinition: ORC's main JITDylib doesn't allow
-                  ; symbol replacement without resource tracker support, which
-                  ; isn't currently exposed via our LLVM C bindings.
-                  (let (redef:i32 0)
-                    (let (name-node:ptr (node-at form 1))
-                      (when (!= name-node null)
-                        (let (fname:ptr null  ret-name:ptr null)
-                          (extract-name-type name-node (cast *ptr (addr-of fname))
-                                                       (cast *ptr (addr-of ret-name)))
-                          (when (!= (scope-lookup g-globals fname) null)
-                            (let (msg:ptr (malloc (cast i64 256)))
-                              (snprintf msg (cast i64 256)
-                                        "cannot redefine '%s' in REPL" fname)
-                              (repl-error (. f line) msg)
-                              (free msg))
-                            (set! redef 1)))))
-                    (when (= redef 0)
-                      (open-module-streams)
-                          ; Pre-scan for forward declaration
-
-                      (let (one-form:ptr (make-cell form null (. f line)))
-                        (prescan-defn-signatures one-form))
-                      (set! g-out g-def-stream)
-                      (emit-defn (cast ptr f))
-                      (when (!= g-qq-used 0)
-                        (emit-qq-helpers g-decl-stream g-def-stream))
-                      (repl-jit-module (. f line))
-                      (set! g-qq-used 0)
-                          ; Add function declaration to preamble for future modules
-
-                      (let (name-node2:ptr (node-at form 1))
-                        (when (!= name-node2 null)
-                          (let (fname2:ptr null  ret-name2:ptr null)
-                            (extract-name-type name-node2 (cast *ptr (addr-of fname2))
-                                               (cast *ptr (addr-of ret-name2)))
-                            (let (sym:*Sym (cast *Sym (scope-lookup g-globals fname2)))
+              ; Redefinition strategy: each defn produces a stable thunk
+              ; @<fname> (defined once on first sight) that loads its current
+              ; impl from @<fname>.tgt and dispatches. The function body is
+              ; JIT'd under a fresh resource tracker as @<fname>.impl.<N>, and
+              ; @<fname>.tgt is updated to point at it. On redefinition, the
+              ; old impl tracker is removed, a new impl is JIT'd as
+              ; @<fname>.impl.<N+1>, and @<fname>.tgt is repointed. Existing
+              ; callers and (addr-of foo) bind to the thunk and pick up the
+              ; new impl transparently.
+              (let (name-node:ptr (node-at form 1)
+                    fname:ptr null  ret-name:ptr null)
+                (when (!= name-node null)
+                  (extract-name-type name-node (cast *ptr (addr-of fname))
+                                               (cast *ptr (addr-of ret-name))))
+                (cond
+                  (= fname null)
+                    (repl-error (. f line) "defn: missing name")
+                  true
+                    (let (fname-ir:ptr (sanitize-for-ir fname)
+                          is-redef:i32 0
+                          old-sym:*Sym (cast *Sym (scope-lookup g-globals fname)))
+                      (when (!= (cast ptr old-sym) null)
+                        (set! is-redef 1)
+                        (let (old-rt:ptr (. old-sym tracker))
+                          (when (!= old-rt null)
+                            (let (rerr:ptr (LLVMOrcResourceTrackerRemove old-rt))
+                              (when (!= rerr null)
+                                (let (msg:ptr (malloc (cast i64 512)))
+                                  (snprintf msg (cast i64 512)
+                                            "redefinition: tracker remove failed: %s"
+                                            (LLVMGetErrorMessage rerr))
+                                  (repl-error (. f line) msg)
+                                  (free msg))))
+                            (LLVMOrcReleaseResourceTracker old-rt)
+                            (.set! old-sym tracker null))))
+                      (let (impl-id:i32 (cast i32 g-defn-impl-counter)
+                            impl-name:ptr null)
+                        (set! g-defn-impl-counter (+ g-defn-impl-counter (cast i64 1)))
+                        (set! impl-name (fmt-sd "%s.impl.%d" fname-ir impl-id))
+                        (open-module-streams)
+                        (let (one-form:ptr (make-cell form null (. f line)))
+                          (prescan-defn-signatures one-form))
+                        (set! g-out g-def-stream)
+                        (emit-defn (cast ptr f))
+                        (when (!= g-qq-used 0)
+                          (emit-qq-helpers g-decl-stream g-def-stream))
+                        (jit-ensure-init (. f line))
+                        ; First definition: JIT the thunk module and add a
+                        ; declare for @fname-ir to the preamble so subsequent
+                        ; modules can call it.
+                        (when (= is-redef 0)
+                          (let (sym:*Sym (cast *Sym (scope-lookup g-globals fname)))
+                            (when (!= (cast ptr sym) null)
+                              (let (ft:*Type (cast *Type (. sym type)))
+                                (when (= (. ft kind) TY-FN)
+                                  (jit-thunk-module (. f line) fname-ir (cast ptr ft))
+                                  (fprintf g-repl-preamble "declare %s @%s("
+                                                (type-to-ir (. ft ret)) fname-ir)
+                                  (let (pi:i32 0)
+                                    (while (< pi (. ft num-params))
+                                      (when (!= pi 0) (fprintf g-repl-preamble ", "))
+                                      (fprintf g-repl-preamble "%s"
+                                               (type-to-ir (aref (cast *ptr (. ft params)) pi)))
+                                      (inc! pi)))
+                                  (fprintf g-repl-preamble ")\n"))))))
+                        ; JIT the impl module under a fresh tracker, renaming
+                        ; the captured "@fname-ir(" to "@impl-name(".
+                        (let (rt:ptr (LLVMOrcJITDylibCreateResourceTracker g-jit-dylib))
+                          (repl-jit-module-rt-rewrite (. f line) rt fname-ir impl-name)
+                          (set! g-qq-used 0)
+                          ; Patch @fname-ir.tgt to point at @impl-name. Stash
+                          ; the tracker on the latest Sym for the next
+                          ; redefinition to remove.
+                          (when (= (update-fn-tgt (. f line) fname-ir impl-name) 0)
+                            (let (sym:*Sym (cast *Sym (scope-lookup g-globals fname)))
                               (when (!= (cast ptr sym) null)
-                                (let (ft:*Type (cast *Type (. sym type)))
-                                  (when (= (. ft kind) TY-FN)
-                                    (fprintf g-repl-preamble "declare %s @%s("
-                                                  (type-to-ir (. ft ret))
-                                                  (sanitize-for-ir fname2))
-                                    (let (pi:i32 0)
-                                      (while (< pi (. ft num-params))
-                                        (when (!= pi 0) (fprintf g-repl-preamble ", "))
-                                        (fprintf g-repl-preamble "%s"
-                                                 (type-to-ir (aref (cast *ptr (. ft params)) pi)))
-                                        (inc! pi)))
-                                    (when (!= (. ft variadic) 0)
-                                      (let (sep:ptr "")
-                                        (when (!= (. ft num-params) 0) (set! sep ", "))
-                                        (fprintf g-repl-preamble "%s..." sep)))
-                                    (fprintf g-repl-preamble ")\n"))))))))
-                      (fprintf stderr "  defined\n"))))
+                                (.set! sym tracker rt))))))
+                      (if (!= is-redef 0)
+                        (fprintf stderr "  redefined\n")
+                        (fprintf stderr "  defined\n")))))
             (and (!= h null) (= (strcmp h "compile-time") 0))
               (do (open-module-streams)
                   (emit-compile-time (cast ptr f)))
@@ -442,9 +468,132 @@
                                     true
                                       (do)))))))))))))
 
+; Replace the first "@<fname>(" in buf with "@<impl-name>(" and write the
+; result to out. Used when wrapping a user-defined REPL function in a thunk:
+; the captured IR `define <ret> @<fname>(...) { ... }` becomes
+; `define <ret> @<impl-name>(...) { ... }`. Subsequent occurrences of
+; `@<fname>(` (self-recursion call sites in the body) are left intact so they
+; go through the thunk.
+(defn rewrite-first-fname:void (buf:ptr fname:ptr impl-name:ptr out:ptr)
+  (when (= buf null) (return))
+  (let (pat:ptr (fmt-s "@%s(" fname)
+        rep:ptr (fmt-s "@%s(" impl-name)
+        n:i64 (cast i64 (strlen buf))
+        i:i64 (cast i64 0)
+        done:i32 0)
+    (let (pat-len:i64 (cast i64 (strlen pat)))
+      (while (and (= done 0) (<= (+ i pat-len) n))
+        (when (= (memcmp (ptr+ (cast *i8 buf) i) pat pat-len) 0)
+          (fwrite buf (cast i64 1) i out)
+          (fputs rep out)
+          (let (rest-start:i64 (+ i pat-len))
+            (fwrite (ptr+ (cast *i8 buf) rest-start) (cast i64 1)
+                    (- n rest-start) out))
+          (set! done 1))
+        (set! i (+ i (cast i64 1))))
+      (when (= done 0)
+        (fwrite buf (cast i64 1) n out)))))
+
+; Emit a "thunk" function `@<fname>` that loads the current implementation
+; pointer from `@<fname>.tgt` and calls it. The thunk is what callers (and
+; (addr-of foo)) bind to; the tgt global is updated on every redefinition so
+; callers transparently dispatch to the latest implementation.
+;
+; ft is a *Type with kind=TY-FN; type-to-ir handles each parameter and return.
+(defn emit-fn-thunk:void (out:ptr fname:ptr ft:ptr)
+  (let (ftt:*Type (cast *Type ft)
+        ret-ir:ptr (type-to-ir (. ftt ret))
+        nparams:i32 (. ftt num-params)
+        i:i32 0)
+    ; Global pointer holding the address of the current implementation.
+    (fprintf out "@%s.tgt = global ptr null\n" fname)
+    (fprintf out "define %s @%s(" ret-ir fname)
+    (set! i 0)
+    (while (< i nparams)
+      (when (!= i 0) (fprintf out ", "))
+      (fprintf out "%s %%a%d" (type-to-ir (aref (cast *ptr (. ftt params)) i)) i)
+      (inc! i))
+    (fprintf out ") {\nentry:\n")
+    (fprintf out "  %%fp = load ptr, ptr @%s.tgt, align 8\n" fname)
+    (if (= (. (cast *Type (. ftt ret)) kind) TY-VOID)
+      (do (fprintf out "  call void %%fp(")
+          (set! i 0)
+          (while (< i nparams)
+            (when (!= i 0) (fprintf out ", "))
+            (fprintf out "%s %%a%d"
+                     (type-to-ir (aref (cast *ptr (. ftt params)) i)) i)
+            (inc! i))
+          (fprintf out ")\n  ret void\n}\n\n"))
+      (do (fprintf out "  %%r = call %s %%fp(" ret-ir)
+          (set! i 0)
+          (while (< i nparams)
+            (when (!= i 0) (fprintf out ", "))
+            (fprintf out "%s %%a%d"
+                     (type-to-ir (aref (cast *ptr (. ftt params)) i)) i)
+            (inc! i))
+          (fprintf out ")\n  ret %s %%r\n}\n\n" ret-ir)))))
+
+; Build a tiny module containing the @fname thunk + @fname.tgt global, and add
+; it to the JIT permanently (no resource tracker). This is the stable public
+; symbol callers see; on each redefinition, only @fname.tgt is updated.
+(defn jit-thunk-module:void (line:i32 fname-ir:ptr ft:ptr)
+  (let (buf:ptr null  szp:i64 (cast i64 0)
+        s:ptr (open_memstream (addr-of buf) (cast ptr (addr-of szp))))
+    (fprintf s "; ModuleID = '<repl-thunk>'\n")
+    (fprintf s "target triple = \"x86_64-pc-linux-gnu\"\n\n")
+    (emit-fn-thunk s fname-ir ft)
+    (fclose s)
+    (when (and (!= buf null) (!= (char-at buf (cast i64 0)) 0))
+      (when (!= (getenv "NUC_REPL_DUMP_IR") null)
+        (fprintf stderr "----- THUNK IR -----\n%s----- END -----\n" buf))
+      (jit-add-module-rt buf line null))
+    (free buf)))
+
+; After JIT'ing an impl module, look up @<impl-name> and @<fname-ir>.tgt and
+; store impl-addr into *tgt-addr so subsequent calls through @<fname-ir>
+; dispatch to this impl. Returns 0 on success, -1 on error.
+(defn update-fn-tgt:i32 (line:i32 fname-ir:ptr impl-name:ptr)
+  (let (impl-addr:i64 (cast i64 0)
+        tgt-addr:i64 (cast i64 0)
+        err1:ptr (LLVMOrcLLJITLookup g-jit (cast ptr (addr-of impl-addr)) impl-name))
+    (when (!= err1 null)
+      (let (msg:ptr (malloc (cast i64 256)))
+        (snprintf msg (cast i64 256)
+                  "redefinition: lookup of %s failed: %s"
+                  impl-name (LLVMGetErrorMessage err1))
+        (repl-error line msg)
+        (free msg))
+      (return -1))
+    (let (tgt-name:ptr (fmt-s "%s.tgt" fname-ir)
+          err2:ptr (LLVMOrcLLJITLookup g-jit (cast ptr (addr-of tgt-addr)) tgt-name))
+      (when (!= err2 null)
+        (let (msg:ptr (malloc (cast i64 256)))
+          (snprintf msg (cast i64 256)
+                    "redefinition: lookup of %s failed: %s"
+                    tgt-name (LLVMGetErrorMessage err2))
+          (repl-error line msg)
+          (free msg))
+        (return -1)))
+    (aset! (cast *ptr (cast ptr tgt-addr)) (cast i64 0) (cast ptr impl-addr))
+    (return 0)))
+
 ; Build a JIT module from the current module streams and add it to the JIT.
 ; Includes the REPL preamble (accumulated declarations/types) in the module.
 (defn repl-jit-module:void (line:i32)
+  (repl-jit-module-rt-rewrite line null null null))
+
+; Same as repl-jit-module but adds the module under the given resource tracker
+; so its symbols can later be removed via LLVMOrcResourceTrackerRemove.
+; Pass rt=null to use the main JITDylib without a tracker.
+(defn repl-jit-module-rt:void (line:i32 rt:ptr)
+  (repl-jit-module-rt-rewrite line rt null null))
+
+; Like repl-jit-module-rt but additionally rewrites the first occurrence of
+; "@<fname>(" in the captured def buffer to "@<impl-name>(". Used by the defn
+; redefinition path: the user's "(defn foo ...)" is captured as
+; "define ... @foo(...) { ... }" but JIT'd as "@foo.impl.N" so the stable
+; @foo thunk symbol can dispatch to the latest impl on each redefinition.
+(defn repl-jit-module-rt-rewrite:void (line:i32 rt:ptr fname:ptr impl-name:ptr)
   (fflush g-type-stream)
   (fflush g-decl-stream)
   (fflush g-def-stream)
@@ -466,12 +615,17 @@
     ; This module's declarations
     (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp (cast i64 0)) 0))
       (fputs g-decl-bufp irs))
-    ; This module's definitions
+    ; This module's definitions — optionally renaming the first "@<fname>("
+    ; to "@<impl-name>(" so the def is JIT'd under a unique impl symbol.
     (when (and (!= g-def-bufp null) (!= (char-at g-def-bufp (cast i64 0)) 0))
-      (fputs g-def-bufp irs))
+      (if (and (!= fname null) (!= impl-name null))
+        (rewrite-first-fname g-def-bufp fname impl-name irs)
+        (fputs g-def-bufp irs)))
     (fclose irs)
     (when (and (!= ir-bufp null) (!= (char-at ir-bufp (cast i64 0)) 0))
-      (jit-add-module ir-bufp line))
+      (when (!= (getenv "NUC_REPL_DUMP_IR") null)
+        (fprintf stderr "----- IR -----\n%s----- END -----\n" ir-bufp))
+      (jit-add-module-rt ir-bufp line rt))
     (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
     (free ir-bufp)))
 

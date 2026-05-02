@@ -11,7 +11,7 @@ Implementation plan for the items in [stage6-cleanup.md](stage6-cleanup.md) that
 | 3 | `macroexpand` / `macroexpand-1`                     | DONE      | REPL forms with optional depth arg.                                                    |
 | 4 | Structured REPL error output                        | DONE      | `--repl-format=text\|json`. JSON form: `{"file":..,"line":..,"message":..}` per error. |
 | 5 | Line-buffered REPL stdout                           | DONE      | `setvbuf(stdout, NULL, _IOLBF, 0)` in `repl-main`.                                     |
-| 6 | Loosen REPL redefinition rule                       | DEFERRED  | LLVM C bindings lack resource tracker; ORC main JITDylib rejects redefinition. Design lives in [stage6-redefinition.md](stage6-redefinition.md). |
+| 6 | Loosen REPL redefinition rule                       | DONE      | Thunk + ORC resource tracker. Cross-module callers see new impl through `@foo.tgt`. See [stage6-redefinition.md](stage6-redefinition.md) "Result". |
 | 7 | N-ary arithmetic via macros                         | DONE      | Lives in `lib/varmath.nuc` (not `lib/macros.nuc`) to avoid bootstrap collision.        |
 | 8 | Extract REPL into its own source file               | DONE      | Lives in `src/repl.nuc`, source-imported by `src/nucleusc.nuc`. Shim FFI declares stay in `nucleusc.nuc` so non-REPL error sites can `repl_throw`. |
 | 9 | Extract C header handling into its own source file  | DONE      | Lives in `src/cheader.nuc`. Bundles `popen`/`pclose` declares (was `lib/cparse-ffi.nuch`), the parser, `emit-include`, `emit-c-include`, and the `--emit-cheader` emitters. |
@@ -29,7 +29,7 @@ These are constraints/bugs that were not apparent from the design and that futur
 
 **4. `bin/nucleusc` (committed bootstrap) cannot compile a source tree that uses the variadic macros directly via `(import macros)`.** The bootstrap predates the macro-name uniqueness fix. Worked around by putting variadic arithmetic in `lib/varmath.nuc` (not imported by the compiler itself). A bootstrap update would let us move them into `lib/macros.nuc`.
 
-**5. Step 6 (redefinition) needs new LLVM bindings.** The current `lib/llvm.nuch` doesn't expose `LLVMOrcCreateNewResourceTracker` / `LLVMOrcResourceTrackerRemove` / `LLVMOrcLLJITAddLLVMIRModuleWithRT`. Without those, ORC's main JITDylib rejects symbol redefinition. The alternative is per-redef IR-renaming, which requires plumbing an `ir-name` parameter through `emit-defn`.
+**5. Step 6 (redefinition) needs new LLVM bindings.** The current `lib/llvm.nuch` doesn't expose `LLVMOrcCreateNewResourceTracker` / `LLVMOrcResourceTrackerRemove` / `LLVMOrcLLJITAddLLVMIRModuleWithRT`. Without those, ORC's main JITDylib rejects symbol redefinition. The alternative is per-redef IR-renaming, which requires plumbing an `ir-name` parameter through `emit-defn`. *(Resolved: bindings added; pure tracker swap was insufficient because LLJIT bakes call-site addresses, so the implementation also routes calls through a stable `@foo` thunk that loads `@foo.tgt`. See `stage6-redefinition.md`.)*
 
 ## Scope
 
