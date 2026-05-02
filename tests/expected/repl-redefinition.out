@@ -1,0 +1,15 @@
+Nucleus REPL (type Ctrl-D to exit)
+nuc>   defined
+nuc>   1
+nuc>   defined
+nuc>   1
+nuc>   redefined
+nuc>   2
+nuc>   2
+nuc>   redefined
+nuc>   3
+nuc>   defined
+nuc>   120
+nuc>   redefined
+nuc>   12000
+nuc> 
