@@ -55,6 +55,7 @@
   params:ptr
   num-params:i32
   variadic:i32
+  has-rest:i32
   elem:ptr
   sdef:ptr)
 
@@ -1566,17 +1567,51 @@
   (let (cc:*Node (cast *Node call)
         ss:*Sym (cast *Sym sym)
         nargs:i32 (- (node-len cc) 1)
-        args:ptr (arena-alloc (* (i64 nargs) (sizeof Val)))
+        args:ptr (arena-alloc (* (i64 (+ nargs 1)) (sizeof Val)))
         i:i32 0)
     (while (< i nargs)
       (let (v:ptr (emit-node (node-at cc (+ i 1)) scope))
         (memcpy (ptr+ (cast *Val args) i) v (sizeof Val)))
       (inc! i))
-    (let (arglist:ptr (alloca i8 2048)
-          apos:i64 (cast i64 0))
-      (aset! (cast *i8 arglist) (cast i64 0) (cast i8 0))
-      (set! i 0)
-      (while (< i nargs)
+    ; If the callee has &rest, fold trailing args into a runtime Node cons
+    ; list and replace them with a single ptr arg pointing at the list.
+    (let (eff-nargs:i32 nargs
+          ft0:*Type (cast *Type (. ss type)))
+      (when (and (= (. ft0 kind) TY-FN) (!= (. ft0 has-rest) 0))
+        (let (fixed:i32 (- (. ft0 num-params) 1))
+          (when (< nargs fixed)
+            (die-at (. cc line)
+              (fmt-s "%s: too few args for &rest function" (. ss name))))
+          ; Build list right-to-left: prev = null; for i = nargs-1..fixed:
+          ;   cell = make-cell(arg-as-ptr, prev, 0); prev = cell.
+          (let (prev-name:ptr "null"
+                ri:i32 nargs)
+            (while (> ri fixed)
+              (set! ri (- ri 1))
+              (let (av:*Val (cast *Val (ptr+ (cast *Val args) ri))
+                    av-val:ptr (. av val)
+                    aty:*Type (cast *Type (. av type)))
+                ; Coerce non-ptr values to ptr so they fit in Node.car.
+                (when (!= (. aty kind) TY-PTR)
+                  (let (tmp:ptr (new-tmp))
+                    (fprintf g-body-stream "  %s = inttoptr %s %s to ptr\n"
+                      tmp (type-to-ir (cast ptr aty)) av-val)
+                    (set! av-val tmp)))
+                (let (cell:ptr (new-tmp))
+                  (fprintf g-body-stream
+                    "  %s = call ptr @make-cell(ptr %s, ptr %s, i32 0)\n"
+                    cell av-val prev-name)
+                  (set! prev-name cell))))
+            ; Place list ptr as the trailing arg slot at index `fixed`.
+            (let (slot:*Val (cast *Val (ptr+ (cast *Val args) fixed)))
+              (.set! slot type ty-ptr)
+              (.set! slot val prev-name))
+            (set! eff-nargs (+ fixed 1)))))
+      (let (arglist:ptr (alloca i8 2048)
+            apos:i64 (cast i64 0))
+        (aset! (cast *i8 arglist) (cast i64 0) (cast i8 0))
+        (set! i 0)
+        (while (< i eff-nargs)
         (let (av:*Val (cast *Val (ptr+ (cast *Val args) i))
               sep:ptr "")
           (when (!= i 0) (set! sep ", "))
@@ -1623,7 +1658,7 @@
                 (fprintf g-body-stream "  %s = call %s %s(%s)\n"
                   tmp (type-to-ir (. ft ret)) (. ss ir-name) arglist)
                 (return (alloc-val (. ft ret) tmp))))))
-        (return (alloc-val ty-void null))))))
+        (return (alloc-val ty-void null)))))))
 
 ; ============================================================
 ; Special forms
@@ -2144,29 +2179,56 @@
         (when (= ret-name null)
           (die-at (. (cast *Node name-node) line) (fmt-s "defn: missing :type on '%s'" fname)))
         (let (ret:ptr (parse-type-name ret-name (. (cast *Node name-node) line))
-              nparams:i32 (node-len params-node)
-              param-types:ptr null
-              param-names:ptr null)
-          (when (> nparams 0)
-              (set! param-types (arena-alloc (* (i64 nparams) (i64 8))))
-              (set! param-names (arena-alloc (* (i64 nparams) (i64 8)))))
-          (let (i:i32 0)
-            (while (< i nparams)
-              (let (p:ptr (node-at params-node i)
-                    pname:ptr null
-                    pty:ptr (extract-name-and-type p (cast *ptr (addr-of pname))
-                                                   (. (cast *Node p) line)))
-                (when (= pty null)
-                  (die-at (. (cast *Node p) line) (fmt-s "defn: missing :type on param '%s'" pname)))
-                (aset! (cast *ptr param-types) i pty)
-                (aset! (cast *ptr param-names) i pname))
-              (inc! i)))
+              raw-nparams:i32 (node-len params-node)
+              has-rest:i32 0
+              rest-idx:i32 -1)
+          ; Scan for &rest. Must be at position (raw-nparams - 2) so the rest
+          ; param itself is the trailing entry.
+          (let (si:i32 0)
+            (while (< si raw-nparams)
+              (let (sp:*Node (cast *Node (node-at params-node si)))
+                (when (and (= (. sp kind) NODE-SYM)
+                           (= (strcmp (. sp s) "&rest") 0))
+                  (when (!= si (- raw-nparams 2))
+                    (die-at (. sp line) "defn: &rest must be second-to-last param"))
+                  (when (!= has-rest 0)
+                    (die-at (. sp line) "defn: multiple &rest in params"))
+                  (set! has-rest 1)
+                  (set! rest-idx si)))
+              (inc! si)))
+          (let (nparams:i32 raw-nparams)
+            (when (!= has-rest 0) (set! nparams (- raw-nparams 1)))
+            (let (param-types:ptr null
+                  param-names:ptr null)
+              (when (> nparams 0)
+                  (set! param-types (arena-alloc (* (i64 nparams) (i64 8))))
+                  (set! param-names (arena-alloc (* (i64 nparams) (i64 8)))))
+              (let (i:i32 0
+                    di:i32 0)
+                (while (< i raw-nparams)
+                  (when (or (= has-rest 0) (!= i rest-idx))
+                    (let (p:ptr (node-at params-node i)
+                          pname:ptr null
+                          pty:ptr (extract-name-and-type p (cast *ptr (addr-of pname))
+                                                         (. (cast *Node p) line)))
+                      (when (= pty null)
+                        (die-at (. (cast *Node p) line) (fmt-s "defn: missing :type on param '%s'" pname)))
+                      ; The &rest parameter receives a Node* cons-list head.
+                      ; The user's declared type annotates element type only;
+                      ; the actual param is always ptr.
+                      (when (and (!= has-rest 0) (= di (- nparams 1)))
+                        (set! pty ty-ptr))
+                      (aset! (cast *ptr param-types) di pty)
+                      (aset! (cast *ptr param-names) di pname))
+                    (inc! di))
+                  (inc! i)))
           ; Register function in globals
           (let (ft:*Type (cast *Type (make-type TY-FN)))
             (.set! ft ret ret)
             (.set! ft num-params nparams)
             (.set! ft params param-types)
             (.set! ft variadic 0)
+            (.set! ft has-rest has-rest)
             (scope-define g-globals fname (cast ptr ft)
                           (fmt-s "@%s" fname) 0))
           ; Codegen
@@ -2232,7 +2294,7 @@
             (free g-entry-bufp)
             (free g-body-bufp)
             (set! g-entry-bufp null)
-            (set! g-body-bufp null)))))))
+            (set! g-body-bufp null)))))))))
 
 ; ============================================================
 ; Compile-time JIT helpers

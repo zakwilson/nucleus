@@ -28,13 +28,7 @@ Current branch: `stage6-cleanup`
 | `cond` intent / Emacs mode keywords | Done |
 | Expressions as values: `cond`/`if` yield branch value; `do`/`let` yield last; `while` is `void`; `defn` implicit return | Done (`design/stage6-expressions.md`) |
 | REPL function redefinition (thunk + ORC resource tracker; cross-module callers see new impl) | Done (`design/stage6-redefinition.md`) |
-
----
-
-## Pending (designed, not yet implemented)
-
-### `&rest` for `defn` (`design/stage6-rest-optional.md`)
-Macro-style (Node list, call-site rewrite). `&optional` deferred after `&rest`.
+| `&rest` for `defn` (macro-style: cons list built at call site via `@make-cell`) | Done (`design/stage6-rest-optional.md`) |
 
 ---
 
