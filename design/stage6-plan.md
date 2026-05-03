@@ -191,6 +191,6 @@ This stage is complete when:
 These items appear in `stage6-cleanup.md` but the implementation choice depends on a design call that should be made before coding starts.
 
 - **Polymorphic print/read.** The honest minimum is a hash table from type-id to printer fn, populated by `def-print-method`. That's not a real generic-function system. Whether to ship it as a stopgap or wait for a designed polymorphism mechanism is a designer call.
-- **`&rest` / `&optional` for `defn`.** Three reasonable designs (Node-list rest matching `defmacro`, C-style `...` for interop, named optional with default expression). Each constrains the others. Worth its own design pass.
+- **`&rest` / `&optional` for `defn`.** `&rest` shipped as macro-style (Node-list built at the call site via `@make-cell`). See [stage6-rest-optional.md](stage6-rest-optional.md). `&optional` and C-style `...` for non-extern functions still deferred.
 - **Implicit-return / expressions-as-values.** Largest semantic change in the section. Touches every `defn` that relies on falling off the end. Needs a designer decision on `return` semantics in nested expressions and a flag-day plan for the bootstrap.
 - **External-library form of cheader split.** Step 9 above does an internal source split. Promoting `cheader` to a real `.so` loaded at compiler startup is a separate decision tied to the broader question of whether the compiler should depend on runtime libraries.
