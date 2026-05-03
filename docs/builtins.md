@@ -54,7 +54,7 @@ Supported forms: `declare` (function signatures), `defstruct`, `defconst`, `defe
 
 | Name | Description | C Equivalent |
 |------|-------------|--------------|
-| `defn` | Define a function | function definition |
+| `defn` | Define a function. Supports `&rest` for variadic functions: `(defn name (a:t &rest xs:elem) ...)`. The rest parameter receives a `Node*` cons-list head built at the call site (so each call site emits `@make-cell` calls and the program must define a compatible `make-cell`). The element type annotation is documentation only — non-`ptr` args are `inttoptr`'d into `Node.car`. `&rest` functions are not directly C-callable; calling through a function pointer requires manually constructing the rest list. `&rest` must be the second-to-last param. | function definition |
 | `defconst` | Define a compile-time constant | `#define` / `enum` constant |
 | `defenum` | Define an enumeration | `enum` |
 | `defvar` | Define a global variable | global variable definition |

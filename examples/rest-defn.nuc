@@ -1,0 +1,51 @@
+; &rest parameters for defn. The compiler folds trailing args at the call
+; site into a Node cons list and passes a pointer to it.
+;
+; Calling a &rest function emits code that calls @make-cell, so any program
+; that uses such a function must define a make-cell. (In the compiler itself
+; it comes from lib/node.nuc.)
+
+(include stdio)
+(include stdlib)
+
+(defstruct Node
+  kind:i32
+  line:i32
+  i:i64
+  s:ptr
+  car:ptr
+  cdr:ptr)
+
+(defn make-cell:ptr (car:ptr cdr:ptr line:i32)
+  (let (c:*Node (cast *Node (malloc (sizeof Node))))
+    (.set! c kind 3)
+    (.set! c line line)
+    (.set! c car car)
+    (.set! c cdr cdr)
+    (return (cast ptr c))))
+
+; Sum any number of i64 args. The compiler inttoptr's each into Node.car.
+(defn sum:i64 (&rest args:i64)
+  (let (total:i64 0
+        cur:ptr args)
+    (while (!= cur null)
+      (let (cell:*Node (cast *Node cur))
+        (set! total (+ total (cast i64 (. cell car))))
+        (set! cur (. cell cdr))))
+    (return total)))
+
+; Mix of fixed positional + &rest.
+(defn print-each:void (prefix:ptr &rest args:ptr)
+  (let (cur:ptr args)
+    (while (!= cur null)
+      (let (cell:*Node (cast *Node cur))
+        (printf "%s%s\n" prefix (cast ptr (. cell car)))
+        (set! cur (. cell cdr))))))
+
+(defn main:i32 ()
+  (printf "%ld\n" (sum 1 2 3 4))
+  (printf "%ld\n" (sum))
+  (printf "%ld\n" (sum 10))
+  (print-each "> " "a" "b" "c")
+  (print-each "= ")
+  (return 0))

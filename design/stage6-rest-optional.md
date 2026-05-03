@@ -9,6 +9,27 @@ The space has three reasonable implementations with different cost
 models, so the deferral is a real design call rather than just an
 implementation oversight.
 
+## Status
+
+`&rest` for `defn` shipped — macro-style implementation per the
+recommendation below. `&optional` still deferred.
+
+- `Type` gained a `has-rest:i32` field. `emit-defn` detects `&rest`,
+  validates it's second-to-last, and registers `has-rest=1` on the
+  function type. The rest parameter compiles to a single trailing
+  `ptr` regardless of its declared element type.
+- `emit-call` checks `has-rest` and folds trailing args into a runtime
+  cons list with inlined `@make-cell` calls (right-to-left, terminated
+  by `null`). Non-`ptr` args are `inttoptr`'d into `Node.car`.
+- Caveat: programs using `&rest` functions must provide a `make-cell`
+  callable as `@make-cell(ptr, ptr, i32)`. The compiler itself gets
+  this via `lib/node.nuc`. Programs without that import must define
+  one inline (see `examples/rest-defn.nuc`).
+- Test coverage: `examples/rest-defn.nuc` exercises sum-of-i64 with
+  `(sum 1 2 3 4)`, the empty case `(sum)`, and a fixed+rest
+  `(print-each prefix &rest args:ptr)` form. Self-host fixed-point
+  holds; full test suite passes.
+
 ## Designer:
 
 (Not yet written.)
