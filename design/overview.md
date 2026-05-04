@@ -65,6 +65,7 @@ Nucleus is a replacement for C using Lisp style syntax and macros with LLVM as i
 - [progress.md](progress.md) — terse summary of done / pending / deferred work
 - [stage6-rest-optional.md](stage6-rest-optional.md) — design for `&rest` / `&optional` parameters in `defn`
 - [stage6-expressions.md](stage6-expressions.md) — design for expressions-as-values and implicit return
+- [stage6-pointer-syntax.md](stage6-pointer-syntax.md) — replace `*T` pointer syntax with `(ptr T)` constructor
 - [long-term-issues.md](long-term-issues.md) - potential problems for a mature implementation, deferred during early phases of development
 
 ## Agent feedback
