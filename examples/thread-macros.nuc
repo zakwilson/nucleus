@@ -9,8 +9,8 @@
 ; Examples (as they would appear inside the compiler):
 ;
 ;   ; Thread-first (default, no _ placeholder):
-;   (-> node (cast *Node) (. kind))
-;   ;; expands to: (. (cast *Node node) kind)
+;   (-> node (cast (ptr Node)) (. kind))
+;   ;; expands to: (. (cast (ptr Node) node) kind)
 ;
 ;   ; Thread with _ placeholder:
 ;   (-> items (map transform _) (filter pred _))

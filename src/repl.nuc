@@ -50,7 +50,7 @@
         in-comment:i32 0
         first-line:i32 1)
     (when (= buf null) (perror "malloc") (exit 1))
-    (aset! (cast *i8 buf) (cast i64 0) (cast i8 0))
+    (aset! (cast (ptr i8) buf) (cast i64 0) (cast i8 0))
     (let (done:i32 0)
       (while (= done 0)
         ; Print prompt
@@ -76,15 +76,15 @@
                   (set! buf (realloc buf new-cap))
                   (when (= buf null) (perror "realloc") (exit 1))
                   (set! buf-cap new-cap)))
-              (memcpy (ptr+ (cast *i8 buf) buf-len) line-buf line-len)
+              (memcpy (ptr+ (cast (ptr i8) buf) buf-len) line-buf line-len)
               (set! buf-len (+ buf-len line-len))
-              (aset! (cast *i8 buf) buf-len (cast i8 0))
+              (aset! (cast (ptr i8) buf) buf-len (cast i8 0))
               (set! got-input 1)
               (set! first-line 0)
               ; Scan the line for paren balance, respecting strings and comments
               (let (li:i64 (cast i64 0))
                 (while (< li line-len)
-                  (let (c:i32 (bit-and (cast i32 (aref (cast *i8 line-buf) li)) 255))
+                  (let (c:i32 (bit-and (cast i32 (aref (cast (ptr i8) line-buf) li)) 255))
                     (cond (!= in-comment 0)
                             (when (= c 10) (set! in-comment 0))
                           (!= in-string 0)
@@ -112,7 +112,7 @@
 ; Process a single REPL form: parse, compile to IR, JIT, and call.
 ; Returns the result type kind (TY-VOID, TY-I32, etc.) or -1 on error.
 (defn repl-eval-form:void (form:ptr)
-  (let (f:*Node (cast *Node form))
+  (let (f:ptr:Node (cast (ptr Node) form))
     (when (= (cast ptr f) null) (return))
     ; Short-circuit: a bare string literal prints as itself.
     (when (= (. f kind) NODE-STR)
@@ -123,8 +123,8 @@
     ; Short-circuit: '(form) — print the quoted AST without JIT.
     (when (and (= (. f kind) NODE-CELL)
                (and (!= (node-len form) 0)
-                    (and (-> f (node-at _ 0) (cast *Node _) (. kind) (= _ NODE-SYM))
-                         (= (strcmp (-> f (node-at _ 0) (cast *Node _) (. s)) "quote") 0))))
+                    (and (-> f (node-at _ 0) (cast (ptr Node) _) (. kind) (= _ NODE-SYM))
+                         (= (strcmp (-> f (node-at _ 0) (cast (ptr Node) _) (. s)) "quote") 0))))
       (fprintf stderr "  ")
       (fprint-node stderr (node-at form 1))
       (fprintf stderr "\n")
@@ -134,8 +134,8 @@
           is-expr:i32 1)
       (when (and (= (. f kind) NODE-CELL)
                  (and (!= (node-len (cast ptr f)) 0)
-                      (-> f (node-at _ 0) (cast *Node _) (. kind) (= _ NODE-SYM))))
-        (set! h (-> f (node-at _ 0) (cast *Node _) (. s))))
+                      (-> f (node-at _ 0) (cast (ptr Node) _) (. kind) (= _ NODE-SYM))))
+        (set! h (-> f (node-at _ 0) (cast (ptr Node) _) (. s))))
       ; Top-level defining forms
       (cond (and (!= h null) (= (strcmp h "defconst") 0))
               (do (emit-defconst (cast ptr f)) (set! is-expr 0))
@@ -149,13 +149,12 @@
                   ; Add external global reference to preamble AFTER successful JIT
                   (let (var-node:ptr (node-at form 1))
                     (when (!= var-node null)
-                      (let (vname:ptr null  vtype-name:ptr null)
-                        (extract-name-type var-node (cast *ptr (addr-of vname))
-                                                    (cast *ptr (addr-of vtype-name)))
-                        (when (!= vtype-name null)
-                          (let (vty:ptr (parse-type-name vtype-name (. (cast *Node var-node) line)))
-                            (fprintf g-repl-preamble "@%s = external global %s\n"
-                              (sanitize-for-ir vname) (type-to-ir vty)))))))
+                      (let (vname:ptr null
+                            vty:ptr (extract-name-and-type var-node (cast (ptr ptr) (addr-of vname))
+                                                            (. (cast (ptr Node) var-node) line)))
+                        (when (!= vty null)
+                          (fprintf g-repl-preamble "@%s = external global %s\n"
+                            (sanitize-for-ir vname) (type-to-ir vty))))))
                   (fprintf stderr "  defined\n"))
             (and (!= h null) (= (strcmp h "defstruct") 0))
               (do (open-module-streams)
@@ -197,15 +196,15 @@
               (let (name-node:ptr (node-at form 1)
                     fname:ptr null  ret-name:ptr null)
                 (when (!= name-node null)
-                  (extract-name-type name-node (cast *ptr (addr-of fname))
-                                               (cast *ptr (addr-of ret-name))))
+                  (extract-name-type name-node (cast (ptr ptr) (addr-of fname))
+                                               (cast (ptr ptr) (addr-of ret-name))))
                 (cond
                   (= fname null)
                     (repl-error (. f line) "defn: missing name")
                   true
                     (let (fname-ir:ptr (sanitize-for-ir fname)
                           is-redef:i32 0
-                          old-sym:*Sym (cast *Sym (scope-lookup g-globals fname)))
+                          old-sym:ptr:Sym (cast (ptr Sym) (scope-lookup g-globals fname)))
                       (when (!= (cast ptr old-sym) null)
                         (set! is-redef 1)
                         (let (old-rt:ptr (. old-sym tracker))
@@ -236,9 +235,9 @@
                         ; declare for @fname-ir to the preamble so subsequent
                         ; modules can call it.
                         (when (= is-redef 0)
-                          (let (sym:*Sym (cast *Sym (scope-lookup g-globals fname)))
+                          (let (sym:ptr:Sym (cast (ptr Sym) (scope-lookup g-globals fname)))
                             (when (!= (cast ptr sym) null)
-                              (let (ft:*Type (cast *Type (. sym type)))
+                              (let (ft:ptr:Type (cast (ptr Type) (. sym type)))
                                 (when (= (. ft kind) TY-FN)
                                   (jit-thunk-module (. f line) fname-ir (cast ptr ft))
                                   (fprintf g-repl-preamble "declare %s @%s("
@@ -247,7 +246,7 @@
                                     (while (< pi (. ft num-params))
                                       (when (!= pi 0) (fprintf g-repl-preamble ", "))
                                       (fprintf g-repl-preamble "%s"
-                                               (type-to-ir (aref (cast *ptr (. ft params)) pi)))
+                                               (type-to-ir (aref (cast (ptr ptr) (. ft params)) pi)))
                                       (inc! pi)))
                                   (fprintf g-repl-preamble ")\n"))))))
                         ; JIT the impl module under a fresh tracker, renaming
@@ -259,7 +258,7 @@
                           ; the tracker on the latest Sym for the next
                           ; redefinition to remove.
                           (when (= (update-fn-tgt (. f line) fname-ir impl-name) 0)
-                            (let (sym:*Sym (cast *Sym (scope-lookup g-globals fname)))
+                            (let (sym:ptr:Sym (cast (ptr Sym) (scope-lookup g-globals fname)))
                               (when (!= (cast ptr sym) null)
                                 (.set! sym tracker rt))))))
                       (if (!= is-redef 0)
@@ -283,7 +282,7 @@
                     (when (= (strcmp h "macroexpand-1") 0) (set! depth 1))
                     ; Optional second arg overrides the default depth.
                     (when (>= (node-len f) 3)
-                      (let (d-node:*Node (cast *Node (node-at form 2)))
+                      (let (d-node:ptr:Node (cast (ptr Node) (node-at form 2)))
                         (when (= (. d-node kind) NODE-INT)
                           (set! depth (cast i32 (. d-node i))))))
                     (when (< (node-len f) 2)
@@ -296,12 +295,12 @@
                     (let (arg:ptr (node-at form 1))
                       ; Peel a leading (quote X) so the user can write 'form.
                       (when (and (!= arg null)
-                                 (and (= (. (cast *Node arg) kind) NODE-CELL)
-                                      (!= (node-len (cast *Node arg)) 0)))
-                        (let (qh:*Node (cast *Node (node-at (cast *Node arg) 0)))
+                                 (and (= (. (cast (ptr Node) arg) kind) NODE-CELL)
+                                      (!= (node-len (cast (ptr Node) arg)) 0)))
+                        (let (qh:ptr:Node (cast (ptr Node) (node-at (cast (ptr Node) arg) 0)))
                           (when (and (= (. qh kind) NODE-SYM)
                                      (= (strcmp (. qh s) "quote") 0))
-                            (set! arg (node-at (cast *Node arg) 1)))))
+                            (set! arg (node-at (cast (ptr Node) arg) 1)))))
                       ; Detect whether the form is actually a macro call. If
                       ; not, macroexpand-form would silently return the input
                       ; unchanged, which looks identical to a successful
@@ -309,9 +308,9 @@
                       ; explicitly so the user isn't misled.
                       (let (head-name:ptr null)
                         (when (and (!= arg null)
-                                   (and (= (. (cast *Node arg) kind) NODE-CELL)
-                                        (!= (node-len (cast *Node arg)) 0)))
-                          (let (ah:*Node (cast *Node (node-at (cast *Node arg) 0)))
+                                   (and (= (. (cast (ptr Node) arg) kind) NODE-CELL)
+                                        (!= (node-len (cast (ptr Node) arg)) 0)))
+                          (let (ah:ptr:Node (cast (ptr Node) (node-at (cast (ptr Node) arg) 0)))
                             (when (= (. ah kind) NODE-SYM)
                               (set! head-name (. ah s)))))
                         (if (or (= head-name null)
@@ -324,7 +323,7 @@
                             (fprint-node stderr expanded)
                             (fprintf stderr "\n")))))))
             (and (!= h null) (= (strcmp h "import") 0))
-              (do (let (pre-len:i32 (. (cast *Scope g-globals) len))
+              (do (let (pre-len:i32 (. (cast (ptr Scope) g-globals) len))
                     (open-module-streams)
                     (emit-import (cast ptr f))
                     ; Append type definitions to preamble before JIT
@@ -335,15 +334,15 @@
                     ; Add declares for newly imported functions to preamble
                     ; Skip duplicate scope entries (prescan + emit-defn both register)
                     (let (si:i32 pre-len)
-                      (while (< si (. (cast *Scope g-globals) len))
-                        (let (sym:*Sym (cast *Sym (ptr+ (cast *Sym (. (cast *Scope g-globals) syms)) si))
-                              ft:*Type (cast *Type (. sym type)))
+                      (while (< si (. (cast (ptr Scope) g-globals) len))
+                        (let (sym:ptr:Sym (cast (ptr Sym) (ptr+ (cast (ptr Sym) (. (cast (ptr Scope) g-globals) syms)) si))
+                              ft:ptr:Type (cast (ptr Type) (. sym type)))
                           (when (= (. ft kind) TY-FN)
                             ; Only emit if no later entry has the same name (dedup)
                             (let (is-dup:i32 0
                                   dj:i32 (+ si 1))
-                              (while (< dj (. (cast *Scope g-globals) len))
-                                (let (nxt:*Sym (cast *Sym (ptr+ (cast *Sym (. (cast *Scope g-globals) syms)) dj)))
+                              (while (< dj (. (cast (ptr Scope) g-globals) len))
+                                (let (nxt:ptr:Sym (cast (ptr Sym) (ptr+ (cast (ptr Sym) (. (cast (ptr Scope) g-globals) syms)) dj)))
                                   (when (= (strcmp (. nxt name) (. sym name)) 0)
                                     (set! is-dup 1)))
                                 (inc! dj))
@@ -355,7 +354,7 @@
                                   (while (< pi (. ft num-params))
                                     (when (!= pi 0) (fprintf g-repl-preamble ", "))
                                     (fprintf g-repl-preamble "%s"
-                                             (type-to-ir (aref (cast *ptr (. ft params)) pi)))
+                                             (type-to-ir (aref (cast (ptr ptr) (. ft params)) pi)))
                                     (inc! pi)))
                                 (when (!= (. ft variadic) 0)
                                   (let (sep:ptr "")
@@ -371,8 +370,8 @@
                     (set! g-out g-def-stream)
                     (reset-function-state)
                     (let (fn-scope:ptr (scope-new g-globals)
-                          result:*Val (cast *Val (emit-node (cast ptr f) fn-scope))
-                          result-kind:i32 (. (cast *Type (. result type)) kind))
+                          result:ptr:Val (cast (ptr Val) (emit-node (cast ptr f) fn-scope))
+                          result-kind:i32 (. (cast (ptr Type) (. result type)) kind))
                       ; Generate the return based on result type
                       (when (= g-block-term 0)
                         (cond (= result-kind TY-VOID)
@@ -483,11 +482,11 @@
         done:i32 0)
     (let (pat-len:i64 (cast i64 (strlen pat)))
       (while (and (= done 0) (<= (+ i pat-len) n))
-        (when (= (memcmp (ptr+ (cast *i8 buf) i) pat pat-len) 0)
+        (when (= (memcmp (ptr+ (cast (ptr i8) buf) i) pat pat-len) 0)
           (fwrite buf (cast i64 1) i out)
           (fputs rep out)
           (let (rest-start:i64 (+ i pat-len))
-            (fwrite (ptr+ (cast *i8 buf) rest-start) (cast i64 1)
+            (fwrite (ptr+ (cast (ptr i8) buf) rest-start) (cast i64 1)
                     (- n rest-start) out))
           (set! done 1))
         (set! i (+ i (cast i64 1))))
@@ -499,9 +498,9 @@
 ; (addr-of foo)) bind to; the tgt global is updated on every redefinition so
 ; callers transparently dispatch to the latest implementation.
 ;
-; ft is a *Type with kind=TY-FN; type-to-ir handles each parameter and return.
+; ft is a (ptr Type) with kind=TY-FN; type-to-ir handles each parameter and return.
 (defn emit-fn-thunk:void (out:ptr fname:ptr ft:ptr)
-  (let (ftt:*Type (cast *Type ft)
+  (let (ftt:ptr:Type (cast (ptr Type) ft)
         ret-ir:ptr (type-to-ir (. ftt ret))
         nparams:i32 (. ftt num-params)
         i:i32 0)
@@ -511,17 +510,17 @@
     (set! i 0)
     (while (< i nparams)
       (when (!= i 0) (fprintf out ", "))
-      (fprintf out "%s %%a%d" (type-to-ir (aref (cast *ptr (. ftt params)) i)) i)
+      (fprintf out "%s %%a%d" (type-to-ir (aref (cast (ptr ptr) (. ftt params)) i)) i)
       (inc! i))
     (fprintf out ") {\nentry:\n")
     (fprintf out "  %%fp = load ptr, ptr @%s.tgt, align 8\n" fname)
-    (if (= (. (cast *Type (. ftt ret)) kind) TY-VOID)
+    (if (= (. (cast (ptr Type) (. ftt ret)) kind) TY-VOID)
       (do (fprintf out "  call void %%fp(")
           (set! i 0)
           (while (< i nparams)
             (when (!= i 0) (fprintf out ", "))
             (fprintf out "%s %%a%d"
-                     (type-to-ir (aref (cast *ptr (. ftt params)) i)) i)
+                     (type-to-ir (aref (cast (ptr ptr) (. ftt params)) i)) i)
             (inc! i))
           (fprintf out ")\n  ret void\n}\n\n"))
       (do (fprintf out "  %%r = call %s %%fp(" ret-ir)
@@ -529,7 +528,7 @@
           (while (< i nparams)
             (when (!= i 0) (fprintf out ", "))
             (fprintf out "%s %%a%d"
-                     (type-to-ir (aref (cast *ptr (. ftt params)) i)) i)
+                     (type-to-ir (aref (cast (ptr ptr) (. ftt params)) i)) i)
             (inc! i))
           (fprintf out ")\n  ret %s %%r\n}\n\n" ret-ir)))))
 
@@ -550,7 +549,7 @@
     (free buf)))
 
 ; After JIT'ing an impl module, look up @<impl-name> and @<fname-ir>.tgt and
-; store impl-addr into *tgt-addr so subsequent calls through @<fname-ir>
+; store impl-addr into (ptr tgt-addr) so subsequent calls through @<fname-ir>
 ; dispatch to this impl. Returns 0 on success, -1 on error.
 (defn update-fn-tgt:i32 (line:i32 fname-ir:ptr impl-name:ptr)
   (let (impl-addr:i64 (cast i64 0)
@@ -574,7 +573,7 @@
           (repl-error line msg)
           (free msg))
         (return -1)))
-    (aset! (cast *ptr (cast ptr tgt-addr)) (cast i64 0) (cast ptr impl-addr))
+    (aset! (cast (ptr ptr) (cast ptr tgt-addr)) (cast i64 0) (cast ptr impl-addr))
     (return 0)))
 
 ; Build a JIT module from the current module streams and add it to the JIT.
@@ -647,32 +646,32 @@
 ; Pre-register the Node struct and NODE-* constants for macros support in REPL.
 (defn repl-register-node:void ()
   ; Register Node struct: kind:i32, line:i32, i:i64, s:ptr, car:ptr, cdr:ptr
-  (let (sd:*StructDef (cast *StructDef (register-struct "Node")))
+  (let (sd:ptr:StructDef (cast (ptr StructDef) (register-struct "Node")))
     (.set! sd num-fields 6)
     (.set! sd field-names (arena-alloc (* (cast i64 6) (cast i64 8))))
     (.set! sd field-types (arena-alloc (* (cast i64 6) (cast i64 8))))
-    (aset! (cast *ptr (. sd field-names)) 0 "kind")
-    (aset! (cast *ptr (. sd field-names)) 1 "line")
-    (aset! (cast *ptr (. sd field-names)) 2 "i")
-    (aset! (cast *ptr (. sd field-names)) 3 "s")
-    (aset! (cast *ptr (. sd field-names)) 4 "car")
-    (aset! (cast *ptr (. sd field-names)) 5 "cdr")
-    (aset! (cast *ptr (. sd field-types)) 0 ty-i32)
-    (aset! (cast *ptr (. sd field-types)) 1 ty-i32)
-    (aset! (cast *ptr (. sd field-types)) 2 ty-i64)
-    (aset! (cast *ptr (. sd field-types)) 3 ty-ptr)
-    (aset! (cast *ptr (. sd field-types)) 4 ty-ptr)
-    (aset! (cast *ptr (. sd field-types)) 5 ty-ptr))
+    (aset! (cast (ptr ptr) (. sd field-names)) 0 "kind")
+    (aset! (cast (ptr ptr) (. sd field-names)) 1 "line")
+    (aset! (cast (ptr ptr) (. sd field-names)) 2 "i")
+    (aset! (cast (ptr ptr) (. sd field-names)) 3 "s")
+    (aset! (cast (ptr ptr) (. sd field-names)) 4 "car")
+    (aset! (cast (ptr ptr) (. sd field-names)) 5 "cdr")
+    (aset! (cast (ptr ptr) (. sd field-types)) 0 ty-i32)
+    (aset! (cast (ptr ptr) (. sd field-types)) 1 ty-i32)
+    (aset! (cast (ptr ptr) (. sd field-types)) 2 ty-i64)
+    (aset! (cast (ptr ptr) (. sd field-types)) 3 ty-ptr)
+    (aset! (cast (ptr ptr) (. sd field-types)) 4 ty-ptr)
+    (aset! (cast (ptr ptr) (. sd field-types)) 5 ty-ptr))
   ; Add Node IR type to preamble
   (fprintf g-repl-preamble "%%Node = type { i32, i32, i64, ptr, ptr, ptr }\n\n")
   ; Register NODE-* constants
-  (let (sym:*Sym (cast *Sym (scope-define g-globals "NODE-INT" (cast ptr ty-i32) null 0)))
+  (let (sym:ptr:Sym (cast (ptr Sym) (scope-define g-globals "NODE-INT" (cast ptr ty-i32) null 0)))
     (.set! sym is-const 1) (.set! sym const-val "0"))
-  (let (sym:*Sym (cast *Sym (scope-define g-globals "NODE-STR" (cast ptr ty-i32) null 0)))
+  (let (sym:ptr:Sym (cast (ptr Sym) (scope-define g-globals "NODE-STR" (cast ptr ty-i32) null 0)))
     (.set! sym is-const 1) (.set! sym const-val "1"))
-  (let (sym:*Sym (cast *Sym (scope-define g-globals "NODE-SYM" (cast ptr ty-i32) null 0)))
+  (let (sym:ptr:Sym (cast (ptr Sym) (scope-define g-globals "NODE-SYM" (cast ptr ty-i32) null 0)))
     (.set! sym is-const 1) (.set! sym const-val "2"))
-  (let (sym:*Sym (cast *Sym (scope-define g-globals "NODE-CELL" (cast ptr ty-i32) null 0)))
+  (let (sym:ptr:Sym (cast (ptr Sym) (scope-define g-globals "NODE-CELL" (cast ptr ty-i32) null 0)))
     (.set! sym is-const 1) (.set! sym const-val "3")))
 
 ; Auto-import lib/macros.nuc so the standard macros (if, when, unless, for,
@@ -693,9 +692,9 @@
       (let (forms:ptr (desugar (read-program)))
         (let (fc:ptr forms)
           (while (!= fc null)
-            (let (f:ptr (. (cast *Node fc) car))
+            (let (f:ptr (. (cast (ptr Node) fc) car))
               (repl-eval-form f))
-            (set! fc (. (cast *Node fc) cdr))))))
+            (set! fc (. (cast (ptr Node) fc) cdr))))))
     (set! g-src save-src)
     (set! g-pos save-pos)
     (set! g-line save-line)
@@ -738,10 +737,10 @@
                 ; Process each form
                 (let (fc:ptr forms)
                   (while (!= fc null)
-                    (let (f:ptr (. (cast *Node fc) car))
+                    (let (f:ptr (. (cast (ptr Node) fc) car))
                       (when (!= (repl_try) 0)
-                        (repl-error (. (cast *Node f) line) "error (recovered)"))
+                        (repl-error (. (cast (ptr Node) f) line) "error (recovered)"))
                       (when (= (repl_try) 0)
                         (repl-eval-form f)))
-                    (set! fc (. (cast *Node fc) cdr)))))
+                    (set! fc (. (cast (ptr Node) fc) cdr)))))
               (free input)))))))

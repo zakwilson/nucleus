@@ -71,7 +71,12 @@ Supported forms: `declare` (function signatures), `defstruct`, `defconst`, `defe
 Types are attached to names with `:` syntax: `name:type` (e.g., `x:i32`, `main:int`). A desugar pass runs before compilation, splitting colon-typed symbols in binding positions into canonical list form:
 
 - `foo:int` → `(foo int)` — name and type as separate symbols
-- `bar:ptr:fn:Sym` → `(bar ptr fn Sym)` — multi-segment types
+- `node:ptr:Node` → `(node (ptr Node))` — pointer-to-Node
+- `pp:ptr:ptr:Node` → `(pp (ptr ptr Node))` — pointer-to-pointer-to-Node
+
+Pointers to a typed element use the `ptr` constructor: `(ptr T)` is a pointer to `T`, and `(ptr ptr T)` chains. Bare `ptr` (with no element) remains the opaque `void*` pointer.
+
+In inline type positions (the type argument of `cast`, `sizeof`, `alloca`), either the canonical list form or the colon sugar works: `(cast (ptr Node) x)` and `(cast ptr:Node x)` are equivalent.
 
 Desugar operates on binding positions in `defn`, `defvar`, `defstruct`, `extern`, `declare`, and `let`. Expression bodies are not desugared; typed symbols in value position (e.g., from macro expansion) are handled by the compiler directly.
 

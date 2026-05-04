@@ -29,7 +29,7 @@
   (set! n (bit-and (+ n (cast i64 7)) (cast i64 -8)))
   (when (> (+ g-arena-used n) g-arena-cap)
     (arena-grow n))
-  (let (p:ptr (ptr+ (cast *i8 g-arena) g-arena-used))
+  (let (p:ptr (ptr+ (cast (ptr i8) g-arena) g-arena-used))
     (set! g-arena-used (+ g-arena-used n))
     (memset p 0 n)
     (return p)))
@@ -37,7 +37,7 @@
 (defn arena-strndup:ptr (s:ptr n:i64)
   (let (p:ptr (arena-alloc (+ n (cast i64 1))))
     (memcpy p s n)
-    (aset! (cast *i8 p) n (cast i8 0))
+    (aset! (cast (ptr i8) p) n (cast i8 0))
     (return p)))
 
 (defn arena-strdup:ptr (s:ptr)
