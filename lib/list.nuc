@@ -22,7 +22,7 @@
   cdr:ptr)
 
 (defn cons:ptr (car:ptr cdr:ptr)
-  (let (c:*Node (cast *Node (malloc (sizeof Node))))
+  (let (c:ptr:Node (cast (ptr Node) (malloc (sizeof Node))))
     (.set! c kind 3)
     (.set! c line 0)
     (.set! c i (cast i64 0))
@@ -33,11 +33,11 @@
 
 (defn first:ptr (n:ptr)
   (cond (= n null) (return null))
-  (return (. (cast *Node n) car)))
+  (return (. (cast (ptr Node) n) car)))
 
 (defn rest:ptr (n:ptr)
   (cond (= n null) (return null))
-  (return (. (cast *Node n) cdr)))
+  (return (. (cast (ptr Node) n) cdr)))
 
 (defn append:ptr (a:ptr b:ptr)
   (cond (= a null) (return b))
