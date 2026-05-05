@@ -102,20 +102,20 @@ Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defin
 
 ## Variadic Arithmetic
 
-`+ - * /` are macros that expand to nested binary primitive calls. They live in `lib/macros.nuc` and are available in every program via the auto-imported prelude. The binary primitives `_+ _- _* _/` (and the legacy `__+ __- __* __/` aliases) are the actual binops; the macros exist to break the expansion cycle.
+`+ - * /` are macros that expand to nested binary primitive calls. They live in `lib/macros.nuc` and are available in every program via the auto-imported prelude. The binary primitives `_+ _- _* _/` are the actual binops; the macros exist to break the expansion cycle.
 
 | Form          | Expansion                                       |
 |---------------|-------------------------------------------------|
 | `(+)`         | `0`                                             |
 | `(+ x)`       | `x`                                             |
-| `(+ a b ...)` | `(__+ a (+ b ...))` — right-fold                |
+| `(+ a b ...)` | `(_+ a (+ b ...))` — right-fold                |
 | `(*)`         | `1`                                             |
-| `(* a b ...)` | `(__* a (* b ...))` — right-fold                |
-| `(- x)`       | `(__- 0 x)` — unary negation                    |
-| `(- a b)`     | `(__- a b)`                                     |
-| `(- a b ...)` | `(- (__- a b) ...)` — left-fold                 |
-| `(/ x)`       | `(__/ 1 x)` — integer reciprocal                |
-| `(/ a b ...)` | `(/ (__/ a b) ...)` — left-fold                 |
+| `(* a b ...)` | `(_* a (* b ...))` — right-fold                |
+| `(- x)`       | `(_- 0 x)` — unary negation                    |
+| `(- a b)`     | `(_- a b)`                                     |
+| `(- a b ...)` | `(- (_- a b) ...)` — left-fold                 |
+| `(/ x)`       | `(_/ 1 x)` — integer reciprocal                |
+| `(/ a b ...)` | `(/ (_/ a b) ...)` — left-fold                 |
 
 ## Special Forms
 
