@@ -1,7 +1,9 @@
 ; Node utilities — allocation and list operations on the AST Node type.
 ;
-; Requires: Node struct (with kind, line, car, cdr fields),
-; NODE-CELL constant, and arena (arena-alloc).
+; The Node struct and NODE-* constants are defined in lib/prelude.nuc, which
+; is auto-imported into every program. arena-alloc comes from lib/arena.nuc.
+
+(import arena)
 
 (defn alloc-node:ptr ()
   (return (arena-alloc (sizeof Node))))

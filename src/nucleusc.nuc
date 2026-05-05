@@ -1,6 +1,13 @@
 ; Nucleus self-hosted compiler — direct port of nucleusc.c
 ; Reads a .nuc source file and emits textual LLVM IR to stdout.
 
+; The standard prelude is imported as the first form so that bootstrap
+; fixed-point holds: build/nucleusc auto-prepends (import prelude) when
+; compiling user programs, and bin/nucleusc (which does not auto-prepend)
+; sees this explicit import in the same position. The duplicate-import
+; check makes the auto-prepend a silent no-op when stage2 re-imports here.
+(import prelude)
+
 (include stdio)
 (include string)
 (include ctype)
@@ -24,14 +31,12 @@
 ; Constants
 ; ============================================================
 
-(defconst ARENA-SIZE 16777216)
 (defconst MAX-STRUCTS 64)
 
 ; Token kinds
 (defenum TokKind TOK-LPAREN TOK-RPAREN TOK-RMACRO TOK-INT TOK-STRING TOK-SYMBOL TOK-FLOAT TOK-EOF)
 
-; Node kinds
-(defenum NodeKind NODE-INT NODE-STR NODE-SYM NODE-CELL NODE-FLOAT)
+; Node struct and NODE-* kinds come from lib/prelude.nuc (imported below).
 
 ; Type kinds
 (defenum TypeKind TY-VOID TY-I1 TY-I8 TY-I16 TY-I32 TY-I64
@@ -65,13 +70,7 @@
   i:i64
   s:ptr)
 
-(defstruct Node
-  kind:i32
-  line:i32
-  i:i64
-  s:ptr
-  car:ptr
-  cdr:ptr)
+; Node struct comes from lib/prelude.nuc (imported below).
 
 (defstruct Sym
   name:ptr
@@ -119,27 +118,12 @@
   prefix-len:i32
   wrap-sym:ptr)
 
-; ============================================================
-; Standard macros — imported from lib/macros.nuc.
-;
-; This import is placed BEFORE the defvar section intentionally.
-; defvar forms emit global-variable definitions to g-decl-stream.  When a
-; defmacro is processed, emit-defmacro includes g-decl-bufp in the JIT module.
-; If global-variable (ptr definitions)* were already in g-decl-bufp they would
-; conflict with the running process's own globals.  By placing defmacros
-; before any defvar the g-decl-bufp at macro-definition time contains only
-; function declarations (from the includes above), which are safe to repeat.
-; ============================================================
-
-(import macros)
 
 ; ============================================================
 ; Global variables
 ; ============================================================
 
-(defvar g-arena:ptr)
-(defvar g-arena-used:i64 0)
-(defvar g-arena-cap:i64 0)
+; g-arena, g-arena-used, g-arena-cap are defined by lib/arena.nuc.
 
 (defvar g-source-path:ptr)
 
@@ -1048,15 +1032,14 @@
 
 (defn init-binops:void ()
   (set! g-binops (arena-alloc (* (cast i64 24) (sizeof BinOp))))
-  (add-binop "+"       "add nsw"  "add"      0)
-  (add-binop "-"       "sub nsw"  "sub"      0)
-  (add-binop "*"       "mul nsw"  "mul"      0)
-  (add-binop "/"       "sdiv"     "udiv"     0)
-  ; Aliases used by the variadic arithmetic macros to break expansion cycles.
   (add-binop "__+"     "add nsw"  "add"      0)
   (add-binop "__-"     "sub nsw"  "sub"      0)
   (add-binop "__*"     "mul nsw"  "mul"      0)
   (add-binop "__/"     "sdiv"     "udiv"     0)
+  (add-binop "_+"     "add nsw"  "add"      0)
+  (add-binop "_-"     "sub nsw"  "sub"      0)
+  (add-binop "_*"     "mul nsw"  "mul"      0)
+  (add-binop "_/"     "sdiv"     "udiv"     0)
   (add-binop "%"       "srem"     "urem"     0)
   (add-binop "bit-and" "and"      "and"      0)
   (add-binop "bit-or"  "or"       "or"       0)
@@ -1103,13 +1086,17 @@
           (die-at (. cc line) (fmt-s "%s float operand width mismatch — use explicit cast" (. bop name))))
         (let (finstr:ptr null
               op-name:ptr (. bop name))
-          (cond (or (= (strcmp op-name "+") 0) (= (strcmp op-name "__+") 0))
+          (cond (or (or (= (strcmp op-name "+") 0) (= (strcmp op-name "_+") 0))
+                        (= (strcmp op-name "__+") 0))
                   (set! finstr "fadd")
-                (or (= (strcmp op-name "-") 0) (= (strcmp op-name "__-") 0))
+                (or (or (= (strcmp op-name "-") 0) (= (strcmp op-name "_-") 0))
+                        (= (strcmp op-name "__-") 0))
                   (set! finstr "fsub")
-                (or (= (strcmp op-name "*") 0) (= (strcmp op-name "__*") 0))
+                (or (or (= (strcmp op-name "*") 0) (= (strcmp op-name "_*") 0))
+                        (= (strcmp op-name "__*") 0))
                   (set! finstr "fmul")
-                (or (= (strcmp op-name "/") 0) (= (strcmp op-name "__/") 0))
+                (or (or (= (strcmp op-name "/") 0) (= (strcmp op-name "_/") 0))
+                        (= (strcmp op-name "__/") 0))
                   (set! finstr "fdiv")
                 (= (strcmp op-name "%") 0)  (set! finstr "frem")
                 (= (strcmp op-name "=") 0)  (set! finstr "fcmp oeq")
@@ -2135,6 +2122,10 @@
     (let (name-node:ptr:Node (cast (ptr Node) (node-at cc 1)))
       (when (!= (. name-node kind) NODE-SYM)
         (die-at (. name-node line) "defstruct: name must be symbol"))
+      ; Allow redefinition with the same shape — the prelude defines Node and
+      ; some user programs/libs also (defstruct Node ...).
+      (when (!= (cast ptr (lookup-struct (. name-node s))) null)
+        (return))
       (let (sd:ptr:StructDef (cast (ptr StructDef) (register-struct (. name-node s)))
             nfields:i32 (- (node-len cc) 2))
         (.set! sd field-names (arena-alloc (* (i64 nfields) (i64 8))))
@@ -3444,7 +3435,6 @@
   (register-rmacro "@" "deref"))
 
 (defn compiler-init:void ()
-  (arena-init)
   (types-init)
   (init-binops)
   (init-rmacros)
@@ -3529,6 +3519,38 @@
 ; Main entry point
 ; ============================================================
 
+; Detect a leading (exclude-prelude) directive in the parsed form list.
+; If present, returns the rest of the forms (with the directive consumed).
+; If absent, returns null to signal "auto-prepend prelude".
+;
+; The directive must be the first form in the file. It takes no arguments;
+; presence anywhere else is treated as a normal (and unknown) top-level form.
+(defn strip-exclude-prelude:ptr (forms:ptr)
+  (when (= forms null) (return null))
+  (let (first:ptr (. (cast (ptr Node) forms) car))
+    (when (= first null) (return null))
+    (when (!= (. (cast (ptr Node) first) kind) NODE-CELL) (return null))
+    (when (!= (node-len first) 1) (return null))
+    (let (head:ptr (node-at first 0))
+      (when (= head null) (return null))
+      (when (!= (. (cast (ptr Node) head) kind) NODE-SYM) (return null))
+      (when (!= (strcmp (. (cast (ptr Node) head) s) "exclude-prelude") 0)
+        (return null))
+      (return (. (cast (ptr Node) forms) cdr)))))
+
+; Prepend a synthetic (import prelude) cell onto the given forms list.
+(defn prepend-prelude-import:ptr (forms:ptr)
+  (let (import-sym:ptr:Node (cast (ptr Node) (alloc-node))
+        name-sym:ptr:Node   (cast (ptr Node) (alloc-node)))
+    (.set! import-sym kind NODE-SYM)
+    (.set! import-sym s "import")
+    (.set! name-sym kind NODE-SYM)
+    (.set! name-sym s "prelude")
+    (let (name-cell:ptr (make-cell (cast ptr name-sym) null 0)
+          import-form:ptr null)
+      (set! import-form (make-cell (cast ptr import-sym) name-cell 0))
+      (return (make-cell import-form forms 0)))))
+
 (defn add-include-path:void (path:ptr)
   (when (= g-include-paths null)
     (set! g-include-paths (malloc (* (cast i64 64) (cast i64 8)))))
@@ -3584,6 +3606,15 @@
       (set! g-line 1)
 
       (let (forms:ptr (desugar (read-program)))
+
+        ; Apply the standard prelude unless the source begins with
+        ; (exclude-prelude). Skipped for header-emit modes, which only need
+        ; declarations from the user's source.
+        (when (and (= g-emit-nuch 0) (= g-emit-cheader 0))
+          (let (after:ptr (strip-exclude-prelude forms))
+            (if (!= after null)
+              (set! forms after)
+              (set! forms (prepend-prelude-import forms)))))
 
         ; .nuch header mode — emit declarations and exit
         (when (!= g-emit-nuch 0)

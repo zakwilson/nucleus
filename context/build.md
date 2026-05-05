@@ -21,6 +21,8 @@ This updates both `boot/nucleusc.ll` (IR) and `bin/nucleusc` (binary) from the c
 
 ## Import system
 
+- The compiler auto-imports `lib/prelude.nuc` at the top of every batch compilation. The prelude provides the `Node` struct, the `NODE-*` enum, and `(import macros)`, so variadic `+ - * /`, `if`, `when`, `dotimes`, etc. are available without explicit imports. To opt out, make `(exclude-prelude)` the first top-level form in the file.
+- The compiler source itself starts with an explicit `(import prelude)` so that the bootstrap fixed-point holds: `bin/nucleusc` (no auto-prepend) processes the explicit import in the same source position as `build/nucleusc` (auto-prepend, dedup'd against the explicit one).
 - `(import name)` resolves `name.nuc` or `name.nuch` by searching: (1) directory of the importing source file, (2) `lib/` relative to cwd, (3) directories specified with `-I`. `.nuc` is tried first.
 - Source imports (`.nuc`) are source inlines — the imported file's forms are read, parsed, and processed into the current compilation's IR streams.
 - Header imports (`.nuch`) emit LLVM `declare` for functions (resolved at link time from `.o` files), and process `defstruct`, `defconst`, `defenum`, and `defmacro` normally.
@@ -40,5 +42,5 @@ This updates both `boot/nucleusc.ll` (IR) and `bin/nucleusc` (binary) from the c
 - `make lib-objs` compiles all `lib/*.nuc` to `.o` via `nucleusc` → `llc -filetype=obj -relocation-model=pic`.
 - `make lib-so` builds `build/lib/libnucleus.so` shared library from all library `.o` files.
 - `make lib` does both headers and objects.
-- Only self-contained libraries (e.g. `mathlib.nuc`) can be compiled to standalone `.o` files. Libraries that reference external globals (e.g. `arena.nuc` needs `g-arena`) are designed for source inlining via `import` and cannot be compiled independently.
+- Self-contained libraries (e.g. `mathlib.nuc`, `arena.nuc`, `node.nuc`) can be compiled to standalone `.o` files. `arena.nuc` declares its own globals (`g-arena`, `g-arena-used`, `g-arena-cap`) and lazily initializes on first allocation; `node.nuc` imports `arena` and uses the prelude-provided `Node` struct.
 - To use a header-only import: generate `lib/foo.nuch` and `build/lib/foo.o`, then programs using `(import foo)` will find the `.nuch` and emit `declare` statements. Link the program's `.ll` against `foo.o` with clang.
