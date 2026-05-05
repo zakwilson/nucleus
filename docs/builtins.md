@@ -4,10 +4,17 @@ Built-in forms and functions as implemented in `src/nucleusc.nuc`.
 
 ## Compiler Flags
 
+By default `nucleusc <file.nuc>` produces a linked native executable (`a.out` unless `-o` is given). The compiler embeds LLVM: it parses its own generated IR, emits an object file via `LLVMTargetMachineEmitToFile`, and shells out to `clang` for the final link step.
+
 | Flag | Description |
 |------|-------------|
-| `--emit-nuch` | Output a `.nuch` header instead of LLVM IR. Extracts function signatures, struct definitions, constants, enums, and macros. |
-| `--emit-cheader` | Output a C header (`.h`) instead of LLVM IR. Emits `#pragma once`, `#include <stdint.h>`, typedefs for structs, extern function declarations, `#define` constants, and enums. |
+| `-o <path>` | Output path. For binary mode the default is `a.out`; with `-c` the default is `out.o`; with `--emit-llvm` output still goes to stdout. |
+| `-c` | Emit a `.o` object file instead of linking a binary. |
+| `--emit-llvm` / `-S` | Output textual LLVM IR to stdout (the legacy default). Required when the consumer wants `.ll` text — bootstrap, library `.ll` rules, and the `make bootstrap` fixed-point check all pass this flag. |
+| `-l<lib>` / `-L<dir>` | Forwarded to `clang` at the link step. |
+| `-O0` / `-O1` / `-O2` / `-O3` (or bare `-O` = `-O2`) | LLVM backend codegen optimization level. Default is `-O0`; higher levels make the build noticeably slower. |
+| `--emit-nuch` | Output a `.nuch` header instead of compiling. Extracts function signatures, struct definitions, constants, enums, and macros. |
+| `--emit-cheader` | Output a C header (`.h`) instead of compiling. Emits `#pragma once`, `#include <stdint.h>`, typedefs for structs, extern function declarations, `#define` constants, and enums. |
 | `-i` / `--interactive` | Start the REPL (interactive Read-Eval-Print Loop). |
 | `-I<path>` / `-I <path>` | Add a directory to the import search path. Searched after the source file's directory and `lib/`. |
 | `--repl-format=text\|json` | Format for REPL error output. Default `text` (legacy `  error: <msg>` lines). With `json`, each error is emitted as a single-line JSON object: `{"file":..,"line":..,"message":..}`. Suitable for agent-driven REPL sessions. |
