@@ -35,7 +35,7 @@ Limitations:
 - Redefining a function with a different signature is allowed by the REPL but existing callers were compiled against the old signature; calls through them have undefined behavior. Restart the session if the type changes.
 - `set!` only works on local variables, not globals.
 - `defvar` initializers must be integer literals (no expressions).
-- `(import node)` is not supported — `node.nuc` depends on compiler-internal allocator functions.
+- `(import node)` brings in the AST utilities (`make-cell`, `node-at`, `node-len`, `node-is-list`); they allocate via `arena-alloc` and the arena initializes lazily on first call.
 - stdout from JIT'd code is line-buffered (`setvbuf(stdout, NULL, _IOLBF, 0)` is called on REPL startup) so printf output appears immediately in both terminal and pipe-driven sessions.
 
 ## .nuch Header Format
@@ -65,6 +65,7 @@ Supported forms: `declare` (function signatures), `defstruct`, `defconst`, `defe
 | `extern` | Declare an external (foreign) global variable | `extern` declaration |
 | `defmacro` | Define a compile-time macro `(defmacro name (params...) body...)`. Supports `&rest` for variadic macros: `(defmacro name (a b &rest rest) ...)` — `rest` receives a cons list of remaining args. | macro |
 | `def-rmacro` | Define a reader macro `(def-rmacro "prefix" symbol)`. When `prefix` appears at the start of a token, the reader wraps the next form: `(symbol form)`. Built-in reader macros: `'` (quote), `` ` `` (quasiquote), `~` (unquote), `~@` (unquote-splice), `@` (deref). | — |
+| `exclude-prelude` | Suppress the implicit `(import prelude)` for this source file. Must be the first top-level form; takes no arguments. Use when a file should compile against the bare language without the standard macros, `Node` struct, or `(include string)` declarations. | — |
 
 ## Type Syntax and Desugar
 
@@ -86,7 +87,7 @@ Macro output is desugared before compilation, so macro-generated code can use ei
 
 ## Standard Macros (`lib/macros.nuc`)
 
-Defined via `defmacro`. Use `(import macros)` to include them (note: `dotimes` and `->` require the `Node` struct to be defined, as they introspect the AST at macro expansion time).
+Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defines the `Node` struct, the `NODE-*` enum, and `(import macros)`) into every program, so all of these are available without an explicit `(import macros)`. To opt out — e.g. when a source file should compile against the bare language with no macros, no `Node` type, and no `string` libc declarations — make `(exclude-prelude)` the first form in the file.
 
 | Name | Signature | Expands To |
 |------|-----------|------------|
@@ -99,9 +100,9 @@ Defined via `defmacro`. Use `(import macros)` to include them (note: `dotimes` a
 | `dotimes` | `(dotimes (var:type n) body)` | `(let (var:type 0) (while (< var n) body (inc! var)))` |
 | `->` | `(-> x form ...)` | Threads `x` through each form. If a form contains `_`, the value replaces `_`; otherwise inserts as first arg (thread-first). Bare symbols wrap as `(sym value)`. `_` is only special inside `->`. |
 
-## Variadic Arithmetic (`lib/varmath.nuc`)
+## Variadic Arithmetic
 
-`(import varmath)` provides n-ary `+ - * /` macros that expand to nested binary calls. The binary primitives `__+ __- __* __/` are aliases for the builtin binary operators and exist to break the macro-expansion cycle. Like `dotimes`, these macros require the `Node` struct to be defined (the REPL pre-registers it; batch programs must `(defstruct Node ...)` before importing `varmath`).
+`+ - * /` are macros that expand to nested binary primitive calls. They live in `lib/macros.nuc` and are available in every program via the auto-imported prelude. The binary primitives `_+ _- _* _/` (and the legacy `__+ __- __* __/` aliases) are the actual binops; the macros exist to break the expansion cycle.
 
 | Form          | Expansion                                       |
 |---------------|-------------------------------------------------|

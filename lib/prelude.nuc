@@ -1,0 +1,23 @@
+; Standard prelude — auto-imported into every program unless the source
+; begins with (exclude-prelude).
+;
+; Provides:
+;   - The Node struct and NODE-* enum, so AST-aware macros (variadic +,
+;     dotimes, ->) can introspect their arguments.
+;   - Standard macros from lib/macros.nuc (variadic +, -, *, /; if, when,
+;     unless, zero?, null?, for, dotimes, ->).
+;   - libc string functions (needed by the macros' JIT'd bodies).
+
+(include string)
+
+(defstruct Node
+  kind:i32
+  line:i32
+  i:i64
+  s:ptr
+  car:ptr
+  cdr:ptr)
+
+(defenum NodeKind NODE-INT NODE-STR NODE-SYM NODE-CELL NODE-FLOAT)
+
+(import macros)
