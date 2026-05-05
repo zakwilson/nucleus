@@ -207,8 +207,14 @@
 ; Compiler mode flags.
 (defvar g-emit-nuch:i32 0)    ; when 1, output .nuch header instead of LLVM IR
 (defvar g-emit-cheader:i32 0) ; when 1, output C header instead of LLVM IR
+(defvar g-emit-llvm:i32 0)    ; when 1, output textual LLVM IR to stdout instead of a binary
+(defvar g-emit-obj:i32 0)     ; when 1 (-c), emit a .o file instead of linking a binary
+(defvar g-output-path:ptr)    ; -o <path>; null = default ("a.out")
+(defvar g-link-args:ptr)      ; argv-style array of pass-through args appended to the link line
+(defvar g-num-link-args:i32 0)
 (defvar g-interactive:i32 0)  ; when 1, run in REPL mode (-i / --interactive)
 (defvar g-repl-format:i32 0)  ; 0 = text (default), 1 = json (one JSON object per error)
+(defvar g-opt-level:i32 0)    ; -O0..-O3; LLVMCodeGenOptLevel: None=0, Less=1, Default=2, Aggressive=3
 
 ; REPL eval counter (for unique __repl_eval_N symbols).
 (defvar g-repl-id:i32 0)
@@ -3483,25 +3489,106 @@
 ; Close module streams, output IR to stdout (batch mode)
 ; ============================================================
 
+; Assemble the full module IR into a heap-allocated buffer. Caller must free
+; the returned pointer (g-type-bufp/g-decl-bufp/g-def-bufp are also freed).
+; Stores the buffer length through `len-out` (pointer to i64).
+(defn assemble-module-ir:ptr (source-file:ptr len-out:ptr)
+  (let (ir-bufp:ptr null  ir-sizep:i64 (cast i64 0)
+        irs:ptr (open_memstream (addr-of ir-bufp) (cast ptr (addr-of ir-sizep))))
+    (fprintf irs "; ModuleID = '%s'\n" source-file)
+    (fprintf irs "source_filename = \"%s\"\n" source-file)
+    (fprintf irs "target triple = \"x86_64-pc-linux-gnu\"\n\n")
+    (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
+      (fputs g-type-bufp irs))
+    (emit-string-table irs)
+    (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp (cast i64 0)) 0))
+      (fputs g-decl-bufp irs))
+    (when (and (!= g-def-bufp null) (!= (char-at g-def-bufp (cast i64 0)) 0))
+      (fputs g-def-bufp irs))
+    (fclose irs)
+    (free g-type-bufp)
+    (free g-decl-bufp)
+    (free g-def-bufp)
+    (aset! (cast (ptr i64) len-out) 0 ir-sizep)
+    (return ir-bufp)))
+
+; Parse the in-memory IR, emit an object file, and (unless -c) invoke clang
+; to link a final binary. Exits with a non-zero status on failure.
+(defn compile-and-link:void (ir:ptr ir-len:i64 source-file:ptr)
+  ; Initialize the x86 target — same set as the JIT path.
+  (LLVMInitializeX86TargetInfo)
+  (LLVMInitializeX86Target)
+  (LLVMInitializeX86TargetMC)
+  (LLVMInitializeX86AsmPrinter)
+
+  (let (ctx:ptr (LLVMContextCreate)
+        mb:ptr  (LLVMCreateMemoryBufferWithMemoryRangeCopy ir ir-len source-file)
+        mod:ptr null
+        parse-err:ptr null
+        rc:i32 (LLVMParseIRInContext ctx mb (addr-of mod) (addr-of parse-err)))
+    (when (!= rc 0)
+      (fprintf stderr "nucleusc: failed to parse generated IR: %s\n" parse-err)
+      (LLVMDisposeMessage parse-err)
+      (exit 1))
+
+    (let (target:ptr null
+          terr:ptr null
+          tres:i32 (LLVMGetTargetFromTriple "x86_64-pc-linux-gnu" (addr-of target) (addr-of terr)))
+      (when (!= tres 0)
+        (fprintf stderr "nucleusc: target lookup failed: %s\n" terr)
+        (LLVMDisposeMessage terr)
+        (exit 1))
+      ; CodeGenLevel = Default(2), Reloc = PIC(2), CodeModel = Default(0)
+      (let (tm:ptr (LLVMCreateTargetMachine target "x86_64-pc-linux-gnu" "" "" g-opt-level 2 0))
+        (let (out-path:ptr g-output-path
+              obj-path:ptr null
+              keep-obj:i32 g-emit-obj)
+          (when (= out-path null)
+            (set! out-path (if (!= g-emit-obj 0) "out.o" "a.out")))
+          (if (!= g-emit-obj 0)
+            (set! obj-path out-path)
+            (set! obj-path (fmt-s "%s.o" out-path)))
+          (let (emit-err:ptr null
+                eres:i32 (LLVMTargetMachineEmitToFile tm mod obj-path 1 (addr-of emit-err)))
+            (when (!= eres 0)
+              (fprintf stderr "nucleusc: failed to emit object file '%s': %s\n"
+                obj-path emit-err)
+              (LLVMDisposeMessage emit-err)
+              (exit 1)))
+          (LLVMDisposeTargetMachine tm)
+          (when (= keep-obj 0)
+            ; Build a clang command: clang <obj> -o <out> [link-args...]
+            (let (cmd-bufp:ptr null  cmd-sizep:i64 (cast i64 0)
+                  cmds:ptr (open_memstream (addr-of cmd-bufp) (cast ptr (addr-of cmd-sizep))))
+              (fprintf cmds "clang %s -o %s" obj-path out-path)
+              (let (j:i32 0)
+                (while (< j g-num-link-args)
+                  (fprintf cmds " %s" (aref (cast (ptr ptr) g-link-args) j))
+                  (inc! j)))
+              (fclose cmds)
+              (let (rc2:i32 (system cmd-bufp))
+                (free cmd-bufp)
+                (when (!= rc2 0)
+                  (fprintf stderr "nucleusc: link step failed (clang exit %d)\n" rc2)
+                  (exit 1))))
+            (unlink obj-path)))))))
+
+; Close module streams; emit either textual IR (--emit-llvm) or an object/binary.
 (defn flush-module-ir:void (source-file:ptr)
   (when (!= g-qq-used 0)
     (emit-qq-helpers g-decl-stream g-def-stream))
   (fclose g-type-stream)
   (fclose g-decl-stream)
   (fclose g-def-stream)
-  (printf "; ModuleID = '%s'\n" source-file)
-  (printf "source_filename = \"%s\"\n" source-file)
-  (printf "target triple = \"x86_64-pc-linux-gnu\"\n\n")
-  (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
-    (fputs g-type-bufp (cast ptr stdout)))
-  (emit-string-table (cast ptr stdout))
-  (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp (cast i64 0)) 0))
-    (fputs g-decl-bufp (cast ptr stdout)))
-  (when (and (!= g-def-bufp null) (!= (char-at g-def-bufp (cast i64 0)) 0))
-    (fputs g-def-bufp (cast ptr stdout)))
-  (free g-type-bufp)
-  (free g-decl-bufp)
-  (free g-def-bufp))
+  (let (ir-len:i64 (cast i64 0)
+        ir:ptr (assemble-module-ir source-file (cast ptr (addr-of ir-len))))
+    (if (!= g-emit-llvm 0)
+      (do
+        (fputs ir (cast ptr stdout))
+        (free ir))
+      (do
+        (compile-and-link ir ir-len source-file)
+        (free ir)))))
 
 
 ; ============================================================
@@ -3546,6 +3633,12 @@
   (aset! (cast (ptr ptr) g-include-paths) g-num-include-paths path)
   (inc! g-num-include-paths))
 
+(defn add-link-arg:void (arg:ptr)
+  (when (= g-link-args null)
+    (set! g-link-args (malloc (* (cast i64 64) (cast i64 8)))))
+  (aset! (cast (ptr ptr) g-link-args) g-num-link-args arg)
+  (inc! g-num-link-args))
+
 (defn main:int (argc:i32 argv:ptr)
   (let (source-file:ptr null
         i:i32 1)
@@ -3555,12 +3648,29 @@
                 (set! g-emit-nuch 1)
               (= (strcmp arg "--emit-cheader") 0)
                 (set! g-emit-cheader 1)
+              (or (= (strcmp arg "--emit-llvm") 0) (= (strcmp arg "-S") 0))
+                (set! g-emit-llvm 1)
+              (= (strcmp arg "-c") 0)
+                (set! g-emit-obj 1)
+              (= (strcmp arg "-o") 0)
+                (do (inc! i)
+                    (when (>= i argc)
+                      (do (fprintf stderr "-o requires an argument\n") (return 2)))
+                    (set! g-output-path (aref (cast (ptr ptr) argv) i)))
               (or (= (strcmp arg "-i") 0) (= (strcmp arg "--interactive") 0))
                 (set! g-interactive 1)
               (= (strcmp arg "--repl-format=text") 0)
                 (set! g-repl-format 0)
               (= (strcmp arg "--repl-format=json") 0)
                 (set! g-repl-format 1)
+              (= (strcmp arg "-O0") 0)
+                (set! g-opt-level 0)
+              (= (strcmp arg "-O1") 0)
+                (set! g-opt-level 1)
+              (or (= (strcmp arg "-O") 0) (= (strcmp arg "-O2") 0))
+                (set! g-opt-level 2)
+              (= (strcmp arg "-O3") 0)
+                (set! g-opt-level 3)
               (= (strncmp arg "-I" (cast i64 2)) 0)
                 (if (> (cast i64 (strlen arg)) (cast i64 2))
                   ; -I/path/to/dir (no space)
@@ -3570,6 +3680,9 @@
                       (when (>= i argc)
                         (do (fprintf stderr "-I requires an argument\n") (return 2)))
                       (add-include-path (aref (cast (ptr ptr) argv) i))))
+              (or (= (strncmp arg "-l" (cast i64 2)) 0)
+                  (= (strncmp arg "-L" (cast i64 2)) 0))
+                (add-link-arg arg)
               (= (char-at arg (cast i64 0)) 45)
                 (do (fprintf stderr "unknown flag: %s\n" arg) (return 2))
               true
@@ -3584,7 +3697,7 @@
 
     ; Batch mode — require source file
     (when (= source-file null)
-       (fprintf stderr "usage: nucleusc [--emit-nuch] [--emit-cheader] [-i] [--repl-format=text|json] [-I<path>] <file.nuc>\n") (return 2))
+       (fprintf stderr "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3] [-o <path>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [-i] [--repl-format=text|json] [-I<path>] <file.nuc>\n") (return 2))
     (set! g-source-path source-file)
     (let (src:ptr (read-file source-file))
       (compiler-init)
