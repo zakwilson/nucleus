@@ -14,7 +14,7 @@
     (= (. (cast (ptr Node) args) cdr) null)
     (. (cast (ptr Node) args) car)
     true
-    `(__+ ~(. (cast (ptr Node) args) car)
+    `(_+ ~(. (cast (ptr Node) args) car)
            (+ ~@(. (cast (ptr Node) args) cdr)))))
 
 (defmacro * (&rest args)
@@ -23,7 +23,7 @@
         (= (. (cast (ptr Node) args) cdr) null)
           (. (cast (ptr Node) args) car)
         true
-          `(__* ~(. (cast (ptr Node) args) car)
+          `(_* ~(. (cast (ptr Node) args) car)
                 (* ~@(. (cast (ptr Node) args) cdr)))))
 
 ; Subtraction: unary negates; n-ary left-folds (matches Common Lisp).
@@ -31,12 +31,12 @@
   (cond (= args null)
           `0
         (= (. (cast (ptr Node) args) cdr) null)
-          `(__- 0 ~(. (cast (ptr Node) args) car))
+          `(_- 0 ~(. (cast (ptr Node) args) car))
         (= (. (cast (ptr Node) (. (cast (ptr Node) args) cdr)) cdr) null)
-          `(__- ~(. (cast (ptr Node) args) car)
+          `(_- ~(. (cast (ptr Node) args) car)
                 ~(. (cast (ptr Node) (. (cast (ptr Node) args) cdr)) car))
         true
-          `(- (__- ~(. (cast (ptr Node) args) car)
+          `(- (_- ~(. (cast (ptr Node) args) car)
                    ~(. (cast (ptr Node) (. (cast (ptr Node) args) cdr)) car))
               ~@(. (cast (ptr Node) (. (cast (ptr Node) args) cdr)) cdr))))
 
@@ -45,12 +45,12 @@
   (cond (= args null)
           `1
         (= (. (cast (ptr Node) args) cdr) null)
-          `(__/ 1 ~(. (cast (ptr Node) args) car))
+          `(_/ 1 ~(. (cast (ptr Node) args) car))
         (= (. (cast (ptr Node) (. (cast (ptr Node) args) cdr)) cdr) null)
-          `(__/ ~(. (cast (ptr Node) args) car)
+          `(_/ ~(. (cast (ptr Node) args) car)
                 ~(. (cast (ptr Node) (. (cast (ptr Node) args) cdr)) car))
         true
-          `(/ (__/ ~(. (cast (ptr Node) args) car)
+          `(/ (_/ ~(. (cast (ptr Node) args) car)
                    ~(. (cast (ptr Node) (. (cast (ptr Node) args) cdr)) car))
               ~@(. (cast (ptr Node) (. (cast (ptr Node) args) cdr)) cdr))))
 
