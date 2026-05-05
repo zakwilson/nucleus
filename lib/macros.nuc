@@ -4,6 +4,56 @@
 ; Until a proper (include "file.nuc") mechanism exists, copy this section
 ; verbatim into any program that needs these forms.
 
+; variadic math
+;   (+)            => 0
+;   (+ x)          => x
+;   (+ x y z ...)  => (_+ x (+ y z ...))   [right-fold; associative]
+(defmacro + (&rest args)
+  (cond (= args null)
+    `0
+    (= (. (cast (ptr Node) args) cdr) null)
+    (. (cast (ptr Node) args) car)
+    true
+    `(__+ ~(. (cast (ptr Node) args) car)
+           (+ ~@(. (cast (ptr Node) args) cdr)))))
+
+(defmacro * (&rest args)
+  (cond (= args null)
+          `1
+        (= (. (cast (ptr Node) args) cdr) null)
+          (. (cast (ptr Node) args) car)
+        true
+          `(__* ~(. (cast (ptr Node) args) car)
+                (* ~@(. (cast (ptr Node) args) cdr)))))
+
+; Subtraction: unary negates; n-ary left-folds (matches Common Lisp).
+(defmacro - (&rest args)
+  (cond (= args null)
+          `0
+        (= (. (cast (ptr Node) args) cdr) null)
+          `(__- 0 ~(. (cast (ptr Node) args) car))
+        (= (. (cast (ptr Node) (. (cast (ptr Node) args) cdr)) cdr) null)
+          `(__- ~(. (cast (ptr Node) args) car)
+                ~(. (cast (ptr Node) (. (cast (ptr Node) args) cdr)) car))
+        true
+          `(- (__- ~(. (cast (ptr Node) args) car)
+                   ~(. (cast (ptr Node) (. (cast (ptr Node) args) cdr)) car))
+              ~@(. (cast (ptr Node) (. (cast (ptr Node) args) cdr)) cdr))))
+
+; Division: unary is reciprocal (integer: 1/x); n-ary left-folds.
+(defmacro / (&rest args)
+  (cond (= args null)
+          `1
+        (= (. (cast (ptr Node) args) cdr) null)
+          `(__/ 1 ~(. (cast (ptr Node) args) car))
+        (= (. (cast (ptr Node) (. (cast (ptr Node) args) cdr)) cdr) null)
+          `(__/ ~(. (cast (ptr Node) args) car)
+                ~(. (cast (ptr Node) (. (cast (ptr Node) args) cdr)) car))
+        true
+          `(/ (__/ ~(. (cast (ptr Node) args) car)
+                   ~(. (cast (ptr Node) (. (cast (ptr Node) args) cdr)) car))
+              ~@(. (cast (ptr Node) (. (cast (ptr Node) args) cdr)) cdr))))
+
 ; (if test then else) — binary conditional over cond.
 (defmacro if (test then else)
   `(cond ~test ~then true ~else))

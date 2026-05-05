@@ -2,7 +2,7 @@
 
 (defn main:int ()
   (let (i:int 1
-        j:int 2)
+              j:int 2)
     (while (< i 5)
       (printf "i = %d j = %d\n" i j)
       (inc! i)

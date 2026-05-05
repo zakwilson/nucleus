@@ -1,16 +1,27 @@
 ; Arena allocator.
 ;
-; Requires: ARENA-SIZE constant, g-arena, g-arena-used, and g-arena-cap
-; globals, and (include stdlib) / (include string) for malloc/memset/memcpy/strlen.
+; Self-contained: declares its own globals and includes the libc functions it
+; needs. Initialization is lazy — the first call to arena-alloc allocates the
+; first block, so programs that never allocate from the arena pay no malloc
+; cost.
 ;
 ; The arena is growable: when the current block is full, a new block is
-; allocated.  Old blocks remain valid (pointers into them are never
+; allocated. Old blocks remain valid (pointers into them are never
 ; invalidated).
+
+(include stdlib)
+(include string)
+
+(defconst ARENA-SIZE 16777216)
+
+(defvar g-arena:ptr)
+(defvar g-arena-used:i64 0)
+(defvar g-arena-cap:i64 0)
 
 (defn arena-init:void ()
   (set! g-arena (malloc (cast i64 ARENA-SIZE)))
   (when (= g-arena null)
-    (do (perror "arena malloc") (exit 1)))
+        (do (perror "arena malloc") (exit 1)))
   (set! g-arena-used (cast i64 0))
   (set! g-arena-cap (cast i64 ARENA-SIZE)))
 
@@ -26,6 +37,8 @@
       (set! g-arena-cap new-cap))))
 
 (defn arena-alloc:ptr (n:i64)
+  (when (= g-arena-cap (cast i64 0))
+    (arena-init))
   (set! n (bit-and (+ n (cast i64 7)) (cast i64 -8)))
   (when (> (+ g-arena-used n) g-arena-cap)
     (arena-grow n))
