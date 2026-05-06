@@ -17,7 +17,7 @@
   cdr:ptr)
 
 (defn make-cell:ptr (car:ptr cdr:ptr line:i32)
-  (let (c:ptr:Node (cast (ptr Node) (malloc (sizeof Node))))
+  (let (c:ptr:Node (cast ptr:Node (malloc (sizeof Node))))
     (.set! c kind 3)
     (.set! c line line)
     (.set! c car car)
@@ -29,7 +29,7 @@
   (let (total:i64 0
         cur:ptr args)
     (while (!= cur null)
-      (let (cell:ptr:Node (cast (ptr Node) cur))
+      (let (cell:ptr:Node (cast ptr:Node cur))
         (set! total (+ total (cast i64 (. cell car))))
         (set! cur (. cell cdr))))
     (return total)))
@@ -38,7 +38,7 @@
 (defn print-each:void (prefix:ptr &rest args:ptr)
   (let (cur:ptr args)
     (while (!= cur null)
-      (let (cell:ptr:Node (cast (ptr Node) cur))
+      (let (cell:ptr:Node (cast ptr:Node cur))
         (printf "%s%s\n" prefix (cast ptr (. cell car)))
         (set! cur (. cell cdr))))))
 
