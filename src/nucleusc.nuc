@@ -1994,6 +1994,32 @@
                   (set! keep-going 1))))))))
     (return cur)))
 
+; Like macroexpand-form but recursively expands subforms after the head
+; reaches fixpoint. Quoted/quasiquoted forms are left untouched.
+(defn macroexpand-all-form:ptr (form:ptr)
+  (let (cur:ptr (macroexpand-form form (cast i32 -1)))
+    (when (or (= cur null)
+              (!= (. (cast (ptr Node) cur) kind) NODE-CELL))
+      (return cur))
+    (when (= (node-len (cast (ptr Node) cur)) 0) (return cur))
+    (let (head:ptr:Node (cast (ptr Node) (node-at (cast (ptr Node) cur) 0)))
+      (when (and (= (. head kind) NODE-SYM)
+                 (or (= (strcmp (. head s) "quote") 0)
+                     (= (strcmp (. head s) "quasiquote") 0)))
+        (return cur)))
+    (let (out:ptr null
+          tail:ptr null
+          it:ptr:Node (cast (ptr Node) cur))
+      (while (and (!= (cast ptr it) null) (= (. it kind) NODE-CELL))
+        (let (child:ptr (macroexpand-all-form (. it car))
+              new:ptr (make-cell child null (. it line)))
+          (if (= out null)
+            (do (set! out new) (set! tail new))
+            (do (.set! (cast (ptr Node) tail) cdr new)
+                (set! tail new))))
+        (set! it (cast (ptr Node) (. it cdr))))
+      (return out))))
+
 (defn emit-macro-expand:ptr (call:ptr scope:ptr macro-def:ptr)
   (let (result:ptr (expand-macro-call call macro-def))
     (return (emit-node (desugar result) scope))))
