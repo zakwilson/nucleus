@@ -11,48 +11,48 @@
 (defmacro + (&rest args)
   (cond (= args null)
     `0
-    (= (. (cast (ptr Node) args) cdr) null)
-    (. (cast (ptr Node) args) car)
+    (= (. (cast ptr:Node args) cdr) null)
+    (. (cast ptr:Node args) car)
     true
-    `(_+ ~(. (cast (ptr Node) args) car)
-           (+ ~@(. (cast (ptr Node) args) cdr)))))
+    `(_+ ~(. (cast ptr:Node args) car)
+           (+ ~@(. (cast ptr:Node args) cdr)))))
 
 (defmacro * (&rest args)
   (cond (= args null)
           `1
-        (= (. (cast (ptr Node) args) cdr) null)
-          (. (cast (ptr Node) args) car)
+        (= (. (cast ptr:Node args) cdr) null)
+          (. (cast ptr:Node args) car)
         true
-          `(_* ~(. (cast (ptr Node) args) car)
-                (* ~@(. (cast (ptr Node) args) cdr)))))
+          `(_* ~(. (cast ptr:Node args) car)
+                (* ~@(. (cast ptr:Node args) cdr)))))
 
 ; Subtraction: unary negates; n-ary left-folds (matches Common Lisp).
 (defmacro - (&rest args)
   (cond (= args null)
           `0
-        (= (. (cast (ptr Node) args) cdr) null)
-          `(_- 0 ~(. (cast (ptr Node) args) car))
-        (= (. (cast (ptr Node) (. (cast (ptr Node) args) cdr)) cdr) null)
-          `(_- ~(. (cast (ptr Node) args) car)
-                ~(. (cast (ptr Node) (. (cast (ptr Node) args) cdr)) car))
+        (= (. (cast ptr:Node args) cdr) null)
+          `(_- 0 ~(. (cast ptr:Node args) car))
+        (= (. (cast ptr:Node (. (cast ptr:Node args) cdr)) cdr) null)
+          `(_- ~(. (cast ptr:Node args) car)
+                ~(. (cast ptr:Node (. (cast ptr:Node args) cdr)) car))
         true
-          `(- (_- ~(. (cast (ptr Node) args) car)
-                   ~(. (cast (ptr Node) (. (cast (ptr Node) args) cdr)) car))
-              ~@(. (cast (ptr Node) (. (cast (ptr Node) args) cdr)) cdr))))
+          `(- (_- ~(. (cast ptr:Node args) car)
+                   ~(. (cast ptr:Node (. (cast ptr:Node args) cdr)) car))
+              ~@(. (cast ptr:Node (. (cast ptr:Node args) cdr)) cdr))))
 
 ; Division: unary is reciprocal (integer: 1/x); n-ary left-folds.
 (defmacro / (&rest args)
   (cond (= args null)
           `1
-        (= (. (cast (ptr Node) args) cdr) null)
-          `(_/ 1 ~(. (cast (ptr Node) args) car))
-        (= (. (cast (ptr Node) (. (cast (ptr Node) args) cdr)) cdr) null)
-          `(_/ ~(. (cast (ptr Node) args) car)
-                ~(. (cast (ptr Node) (. (cast (ptr Node) args) cdr)) car))
+        (= (. (cast ptr:Node args) cdr) null)
+          `(_/ 1 ~(. (cast ptr:Node args) car))
+        (= (. (cast ptr:Node (. (cast ptr:Node args) cdr)) cdr) null)
+          `(_/ ~(. (cast ptr:Node args) car)
+                ~(. (cast ptr:Node (. (cast ptr:Node args) cdr)) car))
         true
-          `(/ (_/ ~(. (cast (ptr Node) args) car)
-                   ~(. (cast (ptr Node) (. (cast (ptr Node) args) cdr)) car))
-              ~@(. (cast (ptr Node) (. (cast (ptr Node) args) cdr)) cdr))))
+          `(/ (_/ ~(. (cast ptr:Node args) car)
+                   ~(. (cast ptr:Node (. (cast ptr:Node args) cdr)) car))
+              ~@(. (cast ptr:Node (. (cast ptr:Node args) cdr)) cdr))))
 
 ; (if test then else) — binary conditional over cond.
 (defmacro if (test then else)
@@ -94,8 +94,8 @@
 ; Uses struct field access to extract elements from spec so this macro works
 ; even in programs that have not yet included stdlib (no node-at dependency).
 (defmacro dotimes (spec body)
-  (let (var-node:ptr (. (cast (ptr Node) spec) car)
-        n-node:ptr   (. (cast (ptr Node) (. (cast (ptr Node) spec) cdr)) car))
+  (let (var-node:ptr (. (cast ptr:Node spec) car)
+        n-node:ptr   (. (cast ptr:Node (. (cast ptr:Node spec) cdr)) car))
     `(let (~var-node 0)
        (while (< ~var-node ~n-node)
          ~body
@@ -116,41 +116,41 @@
   (let (result:ptr x
         current:ptr forms)
     (while (!= current null)
-      (let (form:ptr (. (cast (ptr Node) current) car))
-        (if (= (. (cast (ptr Node) form) kind) NODE-CELL)
+      (let (form:ptr (. (cast ptr:Node current) car))
+        (if (= (. (cast ptr:Node form) kind) NODE-CELL)
           (do
             ; Scan arguments (skip head) for _ symbol.
             (let (has-placeholder:i32 0
-                  scan:ptr (. (cast (ptr Node) form) cdr))
+                  scan:ptr (. (cast ptr:Node form) cdr))
               (while (!= scan null)
-                (let (child:ptr (. (cast (ptr Node) scan) car))
-                  (when (= (. (cast (ptr Node) child) kind) NODE-SYM)
-                    (when (= (strcmp (. (cast (ptr Node) child) s) "_") 0)
+                (let (child:ptr (. (cast ptr:Node scan) car))
+                  (when (= (. (cast ptr:Node child) kind) NODE-SYM)
+                    (when (= (strcmp (. (cast ptr:Node child) s) "_") 0)
                       (set! has-placeholder 1))))
-                (set! scan (. (cast (ptr Node) scan) cdr)))
+                (set! scan (. (cast ptr:Node scan) cdr)))
               (if (!= has-placeholder 0)
                 ; Has _: rebuild list, substituting result for each _.
                 ; Pass 1: build reversed list with substitutions.
                 (let (rev:ptr null
                       src:ptr form)
                   (while (!= src null)
-                    (let (elem:ptr (. (cast (ptr Node) src) car)
+                    (let (elem:ptr (. (cast ptr:Node src) car)
                           replacement:ptr elem)
-                      (when (= (. (cast (ptr Node) elem) kind) NODE-SYM)
-                        (when (= (strcmp (. (cast (ptr Node) elem) s) "_") 0)
+                      (when (= (. (cast ptr:Node elem) kind) NODE-SYM)
+                        (when (= (strcmp (. (cast ptr:Node elem) s) "_") 0)
                           (set! replacement result)))
                       (set! rev `(~replacement ~@rev)))
-                    (set! src (. (cast (ptr Node) src) cdr)))
+                    (set! src (. (cast ptr:Node src) cdr)))
                   ; Pass 2: reverse to restore order.
                   (let (final:ptr null)
                     (while (!= rev null)
-                      (set! final `(~(. (cast (ptr Node) rev) car) ~@final))
-                      (set! rev (. (cast (ptr Node) rev) cdr)))
+                      (set! final `(~(. (cast ptr:Node rev) car) ~@final))
+                      (set! rev (. (cast ptr:Node rev) cdr)))
                     (set! result final)))
                 ; No _: thread-first (insert after head).
-                (let (head:ptr (. (cast (ptr Node) form) car)
-                      tail:ptr (. (cast (ptr Node) form) cdr))
+                (let (head:ptr (. (cast ptr:Node form) car)
+                      tail:ptr (. (cast ptr:Node form) cdr))
                   (set! result `(~head ~result ~@tail))))))
           (set! result `(~form ~result))))
-      (set! current (. (cast (ptr Node) current) cdr)))
+      (set! current (. (cast ptr:Node current) cdr)))
     result))
