@@ -47,4 +47,12 @@ There should be `docstring` and `signature` functions for tool use, and probably
 
 ## Memory management
 
-`(let (... (malloc ...)))` should automatically free when out of scope. An additional form, perhaps `let*` should exist for when that is not desired.
+The `with` form (added in stage6) is `let` plus auto-free for any binding
+whose init expression is a libc allocator (`malloc`/`calloc`/`realloc`/`strdup`,
+including through `cast`). Cleanups fire on fall-through and on early `return`
+inside the body. Disarming a single binding is done by storing `null` to it,
+since `free(NULL)` is a no-op.
+
+Open question: whether to flip the default so plain `let` itself auto-frees,
+with `let*` as the opt-out (the original shape proposed here). `with` exists
+alongside `let` for now; revisit once it has wider use.

@@ -1,0 +1,7 @@
+fall-through: 7
+early(1) = 42
+early(0) = 43
+nested: 10 20
+hello world
+realloc ok
+mixed: 99
