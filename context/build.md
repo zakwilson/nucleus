@@ -8,6 +8,7 @@
 - `make test` runs `tests/run-tests.sh`, which diffs each example's **runtime** output against `tests/expected/<name>.out`. Compile-time stderr is ignored by the test harness.
 - `make bootstrap` does the fixed-point test: stage1.ll == stage2.ll.
 - The compiler emits **opaque-pointer** LLVM IR (`ptr`, not `i8*`/`i32*`) and hardcodes `target triple = "x86_64-pc-linux-gnu"`. If the dev environment ever moves off x86_64 Linux the triple will need updating.
+- Top-level `defvar` globals are emitted to `g-def-stream` (def-bufp), not `g-decl-stream` (decl-bufp). CT and macro JIT modules concatenate `g-decl-bufp` plus their own private decls/defs; if defvars went to decl-bufp they would be redefined in every JIT module and collide with the host process's symbols (which the dylib generator also exposes). External calls from JIT modules into host-defined globals (e.g. `g-intern-cap`) resolve through the dylib search generator instead. Adding new global state that lives in code reachable from CT/macro bodies must follow this same routing.
 - The self-hosted compiler and its bootstrap artifacts are linked against the system LLVM (19+). The Makefile uses `llvm-config` for flags; no version is hardcoded.
 
 ## Updating bootstrap artifacts

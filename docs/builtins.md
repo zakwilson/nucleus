@@ -164,7 +164,7 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `char` | Character literal | `'c'` |
 | `aref` | Array element access | `arr[i]` |
 | `aset!` | Array element assignment | `arr[i] = val` |
-| `quote` | Yields its argument as a `Node*` constant (reader sugar: `'x` → `(quote x)`) | — |
+| `quote` | Yields its argument as a `Node*` (reader sugar: `'x` → `(quote x)`). Quoted symbols are interned — see [Symbols](#symbols). | — |
 | `quasiquote` | Like `quote` but `~expr` splices a runtime value and `~@list` splices a list (reader: `` `x ``, `~x`, `~@x`) | — |
 | `compile-time` | Execute body forms at compile time via LLVM JIT; output goes to stderr | — |
 | `funcall` | Call a typed function pointer: `(funcall fn args...)`. The function pointer must have a `TY-FN` type with known return type and parameter types. | `fn(args...)` |
@@ -205,6 +205,22 @@ Binary operators require both operands to have the same sign. Mixed-sign operati
 | `null` | ptr | `NULL` |
 | `true` | bool (i1) | `1` / `true` |
 | `false` | bool (i1) | `0` / `false` |
+
+## Symbols
+
+A symbol is a `Node*` with `kind = NODE-SYM` and `s` pointing to its spelling. Symbols are **interned**: any two symbols with the same spelling are the same `Node*`, so identity is comparable with plain `=`.
+
+```lisp
+(= 'foo 'foo)              ; true — both forms read to the same Node*
+(let (h (head form))
+  (= h 'defn))             ; true iff the head symbol of `form` spells "defn"
+```
+
+The interning is global to the process. The reader interns at lex time, and `quote` of a symbol calls `intern-symbol` at runtime so a quoted symbol and a reader-produced symbol with the same spelling are bit-identical pointers. The intern table lives in `lib/node.nuc` (auto-imported via `lib/prelude.nuc`); user code never has to touch it directly.
+
+`gensym` deliberately bypasses the intern table — `(gensym)` always returns a fresh unique `Node*` whose spelling (e.g. `__gs_0`) does not collide with anything else, so it is safe in hygienic macros.
+
+Symbol identity replaces `strcmp` for matching known spellings. Prefer `(= h 'defn)` over `(= (strcmp (. h s) "defn") 0)`.
 
 ## Built-in Types
 
