@@ -9,6 +9,7 @@
 ; allocated. Old blocks remain valid (pointers into them are never
 ; invalidated).
 
+(include stdio)
 (include stdlib)
 (include string)
 

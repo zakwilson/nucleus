@@ -1,0 +1,4 @@
+'foo = 'foo: yes
+let-bound 'bar pair : yes
+'foo = 'bar: no
+(car '(foo bar)) = 'foo: yes
