@@ -78,7 +78,10 @@
   parent:ptr
   syms:ptr
   len:i32
-  cap:i32)
+  cap:i32
+  cleanup-slots:ptr
+  ncleanups:i32
+  ccleanups:i32)
 
 (defstruct StrLit
   bytes:ptr
@@ -760,6 +763,22 @@
           (set! i (- i 1)))
         (set! cur (. sc parent)))))
   (return null))
+
+; Record an alloca-slot pointer (e.g. "%foo.addr.7") on a scope for autofree
+; on scope exit. The cleanup load+free is emitted by emit-scope-cleanups.
+(defn scope-push-cleanup:void (s:ptr slot:ptr)
+  (let (sc:ptr:Scope (cast ptr:Scope s))
+    (when (= (. sc ncleanups) (. sc ccleanups))
+      (let (nc:i32 4)
+        (when (!= (. sc ccleanups) 0) (set! nc (* (. sc ccleanups) 2)))
+        (let (ns:ptr (arena-alloc (* (i64 nc) (i64 8))))
+          (when (!= (. sc ncleanups) 0)
+            (memcpy ns (. sc cleanup-slots) (* (i64 (. sc ncleanups)) (i64 8))))
+          (.set! sc cleanup-slots ns)
+          (.set! sc ccleanups nc))))
+    (let (slots:ptr:ptr (cast ptr:ptr (. sc cleanup-slots)))
+      (aset! slots (. sc ncleanups) slot)
+      (.set! sc ncleanups (+ (. sc ncleanups) 1)))))
 
 ; ============================================================
 ; String literal table
@@ -1686,15 +1705,62 @@
 ; Special forms
 ; ============================================================
 
+; Recognize a libc allocator call as a binding init for `with`. Walks past
+; (cast T <inner>) so that the typical (cast ptr:Node (malloc N)) idiom is
+; detected. Purely syntactic — no type inference.
+(defn is-libc-alloc:i32 (node:ptr)
+  (when (= node null) (return 0))
+  (let (n:ptr:Node (cast ptr:Node node))
+    (when (!= (. n kind) NODE-CELL) (return 0))
+    (when (< (node-len node) 1) (return 0))
+    (let (head:ptr:Node (cast ptr:Node (node-at node 0)))
+      (when (!= (. head kind) NODE-SYM) (return 0))
+      (let (hp:ptr (cast ptr head))
+        (when (= hp 'cast)
+          (when (>= (node-len node) 3)
+            (return (is-libc-alloc (node-at node 2))))
+          (return 0))
+        (when (or (= hp 'malloc) (= hp 'calloc)) (return 1))
+        (when (or (= hp 'realloc) (= hp 'strdup)) (return 1))
+        (return 0)))))
+
+; Emit `load + call @free` for every armed cleanup slot in this scope, in
+; reverse order of registration (innermost binding frees first, matching
+; C++/RAII intuition). free(NULL) is a libc no-op, so a slot the user has
+; manually disarmed via `(set! name null)` is safe.
+(defn emit-scope-cleanups:void (scope:ptr)
+  (when (= g-block-term 1) (return))
+  (let (sc:ptr:Scope (cast ptr:Scope scope))
+    (when (= (. sc ncleanups) 0) (return))
+    (let (slots:ptr:ptr (cast ptr:ptr (. sc cleanup-slots))
+          i:i32 (- (. sc ncleanups) 1))
+      (while (>= i 0)
+        (let (slot:ptr (aref slots i)
+              tmp:ptr (new-tmp))
+          (fprintf g-body-stream "  %s = load ptr, ptr %s, align 8\n" tmp slot)
+          (fprintf g-body-stream "  call void @free(ptr %s)\n" tmp))
+        (set! i (- i 1))))))
+
+; Walk the lexical scope chain emitting cleanups at every level. Used by
+; emit-return so an early return inside nested `with` bodies still frees
+; bound resources before terminating the basic block.
+(defn emit-walk-cleanups:void (scope:ptr)
+  (let (cur:ptr scope)
+    (while (!= cur null)
+      (emit-scope-cleanups cur)
+      (set! cur (. (cast ptr:Scope cur) parent)))))
+
 (defn emit-return:ptr (call:ptr scope:ptr)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (= (node-len cc) 1)
+      (emit-walk-cleanups scope)
       (fprintf g-body-stream "  ret void\n")
       (set! g-block-term 1)
       (return (alloc-val ty-void null)))
     (when (!= (node-len cc) 2)
       (die-at (. cc line) "return expects 0 or 1 args"))
     (let (v:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope)))
+      (emit-walk-cleanups scope)
       (fprintf g-body-stream "  ret %s %s\n" (type-to-ir (. v type)) (. v val))
       (set! g-block-term 1)
       (return (alloc-val ty-void null)))))
@@ -1745,6 +1811,53 @@
           (while (< j (node-len cc))
             (set! last (emit-node (node-at cc j) inner))
             (inc! j))
+          (return last))))))
+
+; `with` is `let` plus auto-free for any binding whose init expression is a
+; libc allocator call (malloc/calloc/realloc/strdup, optionally wrapped in
+; cast). Frees fire on fall-through (after the body) and on early `return`
+; via emit-walk-cleanups in emit-return.
+(defn emit-with:ptr (call:ptr scope:ptr)
+  (let (cc:ptr:Node (cast ptr:Node call))
+    (when (or (< (node-len cc) 2) (-> cc (node-at _ 1) (cast ptr:Node _) (. kind) (!= _ NODE-CELL)))
+      (die-at (. cc line) "with: bad form"))
+    (let (binds:ptr:Node (cast ptr:Node (node-at cc 1)))
+      (when (!= (% (node-len binds) 2) 0)
+        (die-at (. binds line) "with: binding list must be even"))
+      (let (inner:ptr (scope-new scope)
+            i:i32 0)
+        (while (< i (node-len binds))
+          (let (bname:ptr (node-at binds i)
+                bval-node:ptr (node-at binds (+ i 1)))
+            (let (name:ptr null
+                  ty:ptr (extract-name-and-type bname (cast ptr:ptr (addr-of name))
+                                                (. (cast ptr:Node bname) line)))
+              (when (= ty null)
+                (die-at (. (cast ptr:Node bname) line) (fmt-s "with: missing :type on '%s'" name)))
+              (let (slot:ptr (fmt-sd "%%%s.addr.%d" name g-tmp)
+                    align:i32 (type-size ty)
+                    autofree:i32 (is-libc-alloc bval-node))
+                (inc! g-tmp)
+                (fprintf g-entry-stream "  %s = alloca %s, align %d\n"
+                  slot (type-to-ir ty) align)
+                (let (v:ptr:Val (cast ptr:Val (emit-node bval-node inner))
+                      coerced:ptr (coerce-int-val v ty (. (cast ptr:Node bval-node) line)))
+                  (when (= coerced null)
+                    (die-at (. (cast ptr:Node bval-node) line)
+                      (fmt-s "with: init type mismatch for '%s'" name)))
+                  (let (cv:ptr:Val (cast ptr:Val coerced))
+                    (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
+                      (type-to-ir ty) (. cv val) slot align)
+                    (scope-define inner name ty slot 1)
+                    (when (= autofree 1)
+                      (scope-push-cleanup inner slot)))))))
+          (set! i (+ i 2)))
+        (let (last:ptr (alloc-val ty-void null)
+              j:i32 2)
+          (while (< j (node-len cc))
+            (set! last (emit-node (node-at cc j) inner))
+            (inc! j))
+          (emit-scope-cleanups inner)
           (return last))))))
 
 ; cond is an expression: each branch's last value contributes to a phi at
@@ -2069,6 +2182,7 @@
         (when (= hp 'return) (return (emit-return n scope)))
         (when (= hp 'do) (return (emit-do n scope)))
         (when (= hp 'let) (return (emit-let n scope)))
+        (when (= hp 'with) (return (emit-with n scope)))
         (when (= hp 'cond) (return (emit-cond n scope)))
         (when (= hp 'quote) (return (emit-quote n)))
         (when (= hp 'quasiquote) (return (emit-quasiquote n scope)))
@@ -3060,7 +3174,8 @@
                        (make-cell new-name null (. f line))
                        (. f line))))))
         ; (let (bindings...) body...) — desugar binding names
-        (when (= (strcmp h "let") 0)
+        ; (with (bindings...) body...) — same shape; auto-frees libc-alloc'd bindings
+        (when (or (= (strcmp h "let") 0) (= (strcmp h "with") 0))
           (when (>= (node-len form) 2)
             (let (new-binds:ptr (desugar-let-bindings (node-at form 1)))
               (when (= new-binds (node-at form 1)) (return form))
