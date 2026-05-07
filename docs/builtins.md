@@ -144,6 +144,7 @@ expression yields `void` (e.g., a side-effect or no-return call like
 |------|-------------|--------------|
 | `do` | Sequence multiple expressions; yields the last | `{ ... }` block |
 | `let` | Bind local variables; yields the body's last expression | local variable declaration |
+| `with` | Like `let`, but auto-frees any binding whose init expression is a libc allocator (`malloc`/`calloc`/`realloc`/`strdup`, possibly through `cast`). Frees fire on fall-through and on early `return` from inside the body. Disarm a single binding by storing `null` to it (`free(NULL)` is a no-op) — useful when the pointer escapes via the body. | `let` + scoped `free` |
 | `cond` | Multi-way conditional; yields the matched branch's value (strict-typed across branches) | `if` / `else if` / `else` chain |
 | `while` | Loop; yields `void` | `while` |
 | `set!` | Assign to a variable | `x = val` |
