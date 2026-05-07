@@ -16,6 +16,91 @@
     (.set! c cdr cdr)
     (return (cast ptr c))))
 
+; ============================================================
+; Symbol intern table
+; ============================================================
+;
+; Two reads of the same spelling return the same Node*: identical symbols
+; are =-equal as pointers. The reader interns at lex time; quoted symbols
+; (`'foo`) emit a runtime call to `intern-symbol` so that a quoted symbol
+; and a reader-produced symbol of the same spelling are bit-identical.
+;
+; gensym deliberately bypasses interning — gensym-produced symbols are
+; unique by construction and never collide with anything else.
+
+(defstruct InternEntry
+  spelling:ptr
+  node:ptr)
+
+(defvar g-intern-table:ptr)
+(defvar g-intern-cap:i32 0)
+(defvar g-intern-len:i32 0)
+
+(defn intern-hash:i64 (s:ptr)
+  (let (h:i64 (cast i64 -2128831035)
+        i:i64 (cast i64 0)
+        c:i32 (bit-and (cast i32 (aref (cast ptr:i8 s) (cast i64 0))) 255))
+    (while (!= c 0)
+      (set! h (bit-xor h (cast i64 c)))
+      (set! h (* h (cast i64 16777619)))
+      (set! i (+ i (cast i64 1)))
+      (set! c (bit-and (cast i32 (aref (cast ptr:i8 s) i)) 255)))
+    (return h)))
+
+(defn intern-raw-insert:void (table:ptr cap:i32 sp:ptr nd:ptr)
+  (let (mask:i64 (cast i64 (- cap 1))
+        j:i64 (bit-and (intern-hash sp) mask))
+    (while (!= 0 1)
+      (let (e:ptr:InternEntry (cast ptr:InternEntry
+                                    (ptr+ (cast ptr:InternEntry table) (cast i32 j))))
+        (when (= (. e spelling) null)
+          (.set! e spelling sp)
+          (.set! e node nd)
+          (return)))
+      (set! j (bit-and (+ j (cast i64 1)) mask)))))
+
+(defn intern-grow:void ()
+  (let (old-cap:i32 g-intern-cap
+        old-table:ptr g-intern-table
+        new-cap:i32 (* g-intern-cap 2)
+        new-table:ptr (arena-alloc (* (cast i64 new-cap)
+                                      (sizeof InternEntry))))
+    (set! g-intern-cap new-cap)
+    (set! g-intern-table new-table)
+    (let (i:i32 0)
+      (while (< i old-cap)
+        (let (e:ptr:InternEntry (cast ptr:InternEntry
+                                      (ptr+ (cast ptr:InternEntry old-table) i)))
+          (when (!= (. e spelling) null)
+            (intern-raw-insert new-table new-cap (. e spelling) (. e node))))
+        (inc! i)))))
+
+(defn intern-symbol:ptr (s:ptr)
+  (when (= g-intern-cap 0)
+    (set! g-intern-cap 1024)
+    (set! g-intern-table (arena-alloc (* (cast i64 g-intern-cap)
+                                         (sizeof InternEntry)))))
+  (when (>= (* g-intern-len 2) g-intern-cap)
+    (intern-grow))
+  (let (mask:i64 (cast i64 (- g-intern-cap 1))
+        j:i64 (bit-and (intern-hash s) mask))
+    (while (!= 0 1)
+      (let (e:ptr:InternEntry (cast ptr:InternEntry
+                                    (ptr+ (cast ptr:InternEntry g-intern-table) (cast i32 j))))
+        (when (= (. e spelling) null)
+          (let (canon:ptr (arena-strdup s)
+                nd:ptr:Node (cast ptr:Node (alloc-node)))
+            (.set! nd kind NODE-SYM)
+            (.set! nd line 0)
+            (.set! nd s canon)
+            (.set! e spelling canon)
+            (.set! e node (cast ptr nd))
+            (inc! g-intern-len)
+            (return (cast ptr nd))))
+        (when (= (strcmp (. e spelling) s) 0)
+          (return (. e node))))
+      (set! j (bit-and (+ j (cast i64 1)) mask)))))
+
 (defn node-at:ptr (n:ptr i:i32)
   (let (nn:ptr:Node (cast ptr:Node n))
     (while (and (and (!= n null) (= (. nn kind) NODE-CELL)) (> i 0))

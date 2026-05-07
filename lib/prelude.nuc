@@ -21,3 +21,9 @@
 (defenum NodeKind NODE-INT NODE-STR NODE-SYM NODE-CELL NODE-FLOAT)
 
 (import macros)
+
+; Brings in alloc-node, make-cell, and intern-symbol — needed by any
+; program that uses 'X or `(...) so that quoted symbols share identity
+; with reader-produced ones. Imported after macros because node.nuc
+; (and the arena it pulls in) use `when`/`if` from macros.nuc.
+(import node)

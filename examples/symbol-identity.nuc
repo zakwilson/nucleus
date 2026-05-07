@@ -1,0 +1,17 @@
+; Symbol identity: two symbols with the same spelling are the same Node*.
+
+(include stdio)
+
+(defn show:void (label:ptr eq:bool)
+  (if eq (printf "%s: yes\n" label) (printf "%s: no\n" label)))
+
+(defn main:int ()
+  (show "'foo = 'foo"           (= 'foo 'foo))
+  (let (a:ptr 'bar
+        b:ptr 'bar)
+    (show "let-bound 'bar pair " (= a b)))
+  (show "'foo = 'bar"           (= 'foo 'bar))
+  (let (xs:ptr '(foo bar)
+        head:ptr (. (cast ptr:Node xs) car))
+    (show "(car '(foo bar)) = 'foo" (= head 'foo)))
+  0)
