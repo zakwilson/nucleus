@@ -183,6 +183,38 @@ Landed. Highlights of what changed vs. the proposal above:
 - **Bootstrap fixed-point holds.** `make bootstrap` passes; all 31
   tests pass.
 
+#### Robot — cleanup pass
+
+Followed up by a bulk pass through `src/`, `lib/`, and `examples/` to
+strip casts the new coercion rules now make redundant. Total change:
+`src/nucleusc.nuc` 717→397 casts, `src/cheader.nuc` 117→94,
+`src/repl.nuc` 154→130, plus assorted reductions in `lib/` and the
+example programs. Bootstrap fixed-point and all 31 tests still pass.
+
+Patterns that were stripped:
+- `let`/`set!`/`.set!` bindings where the binding type and cast type
+  literally match (`x:ptr:Node (cast ptr:Node y)` → `x:ptr:Node y`).
+- `(return (cast ptr <symbol>))` on `:ptr`-returning functions —
+  emit-return doesn't re-coerce, but identity casts emit identical IR.
+- Call-site casts widening or sign-flipping integers (e.g.
+  `(snprintf buf (cast i64 256) ...)` → `(snprintf buf 256 ...)`).
+- `(cast ptr stdout)` and similar where the source is already a
+  pointer.
+
+Patterns that *stayed* (still required):
+- Member access / typed-pointer ops: `(. (cast ptr:Node n) car)`,
+  `(aref (cast ptr:i8 buf) i)`, `(ptr+ (cast ptr:T x) k)`,
+  `(deref (cast ptr:T p))`. These need the elem type at compile time.
+- Binop operands across widths or signs: `(+ i64-x (cast i64 1))`,
+  `(< len (cast i64 0))`. emit-binop demands matching kinds.
+- Cross-kind conversions: `int ↔ ptr`, `int ↔ float`, `f64 → f32`.
+
+Gap noticed during the pass (deferred): `emit-return` does not run
+`coerce-int-val`, so `(return n)` from an `i32` value in an `:i64`
+function still requires an explicit cast even though the implicit
+return path at end-of-body does coerce. Worth fixing for symmetry but
+out of scope for this cleanup.
+
 Deferred:
 - Tightening assignment-context narrowing to require `(cast ...)` —
   separate change, the policy unification kept that out of scope here.

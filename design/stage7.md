@@ -1,4 +1,4 @@
-# Stage 7 - enhancements
+# Stage 7 - ergonomics
 
 This stage enhances the language in preparation for the next major feature: polymorphism.
 
