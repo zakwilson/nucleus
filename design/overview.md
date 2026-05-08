@@ -73,3 +73,7 @@ Nucleus is a replacement for C using Lisp style syntax and macros with LLVM as i
 Some design documents are structured as a conversation between a designer and a robot. Agents tasked with responding to a design document should add their feedback to the robot sections.
 
 Agents encountering new design documents should add them to the above list.
+
+## Breaking changes
+
+At this point, Nucleus is only used for its own compiler. It is acceptable to make breaking changes without regard to other projects using Nuclelus because there are none. 
