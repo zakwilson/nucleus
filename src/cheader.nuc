@@ -20,7 +20,7 @@
 ; ============================================================
 
 (defn emit-include:void (call:ptr)
-  (let (cc:ptr:Node (cast ptr:Node call))
+  (let (cc:ptr:Node call)
     (when (or (!= (node-len cc) 2) (-> cc (node-at _ 1) (cast ptr:Node _) (. kind) (!= _ NODE-SYM)))
       (die-at (. cc line) "include: expects one symbol"))
     (let (mod:ptr (-> cc (node-at _ 1) (cast ptr:Node _) (. s))
@@ -115,7 +115,7 @@
         (set! pos (c-skip-ws buf pos len))
         (when (>= pos len) (set! done 1) (set! pos len))
         (when (= done 0)
-          (let (tok-end:i64 (cast i64 0)
+          (let (tok-end:i64 0
                 tok:ptr (c-read-ident buf pos len (cast ptr:i64 (addr-of tok-end))))
             (when (= (cast i64 (strlen tok)) (cast i64 0)) (set! done 1))
             (when (= done 0)
@@ -140,7 +140,7 @@
                       ; Check if this is the base type itself (no further type follows)
                       ; by peeking at what comes next
                       (let (peek-pos:i64 (c-skip-ws buf tok-end len)
-                            peek-end:i64 (cast i64 0)
+                            peek-end:i64 0
                             peek-tok:ptr (c-read-ident buf peek-pos len (cast ptr:i64 (addr-of peek-end))))
                         ; If next token is "long", consume it (long long)
                         (when (= (strcmp peek-tok "long") 0)
@@ -171,7 +171,7 @@
       (let (check:i32 1)
         (while (!= check 0)
           (set! check 0)
-          (let (te:i64 (cast i64 0)
+          (let (te:i64 0
                 t:ptr (c-read-ident buf pos len (cast ptr:i64 (addr-of te))))
             (when (or (= (strcmp t "const") 0)
                       (or (= (strcmp t "restrict") 0)
@@ -200,12 +200,12 @@
 ; On success, registers the function in g-globals and emits LLVM declare.
 (defn c-parse-func-decl:i32 (buf:ptr pos:i64 len:i64 out-end:ptr:i64 line:i32)
   ; Parse the return type
-  (let (ret-end:i64 (cast i64 0)
+  (let (ret-end:i64 0
         ret-type:ptr (c-parse-type buf pos len (cast ptr:i64 (addr-of ret-end))))
     (set! pos ret-end)
     (set! pos (c-skip-ws buf pos len))
     ; Read the function name
-    (let (name-end:i64 (cast i64 0)
+    (let (name-end:i64 0
           fname:ptr (c-read-ident buf pos len (cast ptr:i64 (addr-of name-end))))
       (when (= (cast i64 (strlen fname)) (cast i64 0))
          (ptr-set! out-end pos) (return 0))
@@ -241,7 +241,7 @@
                  (set! pdone 1))
               (when (= pdone 0)
                 ; Check for void param (no-arg function)
-                (let (void-check-end:i64 (cast i64 0)
+                (let (void-check-end:i64 0
                       void-check:ptr (c-read-ident buf pos len (cast ptr:i64 (addr-of void-check-end))))
                   (when (= (strcmp void-check "void") 0)
                     (let (after-void:i64 (c-skip-ws buf void-check-end len))
@@ -250,7 +250,7 @@
                          (set! pdone 1)))))
                 (when (= pdone 0)
                   ; Parse parameter type
-                  (let (ptype-end:i64 (cast i64 0)
+                  (let (ptype-end:i64 0
                         ptype:ptr (c-parse-type buf pos len (cast ptr:i64 (addr-of ptype-end))))
                     (set! pos ptype-end)
                     (set! pos (c-skip-ws buf pos len))
@@ -269,7 +269,7 @@
                                    (or (and (>= (cast i32 (char-at buf pos)) 97)
                                             (<= (cast i32 (char-at buf pos)) 122))
                                        (= (cast i32 (char-at buf pos)) 95))))
-                      (let (skip-end:i64 (cast i64 0)
+                      (let (skip-end:i64 0
                             skip:ptr (c-read-ident buf pos len (cast ptr:i64 (addr-of skip-end))))
                         (set! pos skip-end)))
                     ; Skip array brackets if present: [N]
@@ -293,7 +293,7 @@
         (let (attr-check:i32 1)
           (while (!= attr-check 0)
             (set! attr-check 0)
-            (let (ae:i64 (cast i64 0)
+            (let (ae:i64 0
                   at:ptr (c-read-ident buf pos len (cast ptr:i64 (addr-of ae))))
               (when (= (strcmp at "__attribute__") 0)
                  (set! pos (c-skip-ws buf ae len))
@@ -312,7 +312,7 @@
           (set! pos (+ pos (cast i64 1))))
         (ptr-set! out-end pos)
         ; Register the function
-        (let (ft:ptr:Type (cast ptr:Type (make-type TY-FN)))
+        (let (ft:ptr:Type (make-type TY-FN))
           (.set! ft ret ret-type)
           (.set! ft num-params num-params)
           (.set! ft params (arena-alloc (* (i64 num-params) (i64 8))))
@@ -347,9 +347,9 @@
 (defn read-pipe-output:ptr (cmd:ptr out-len:ptr:i64)
   (let (fp:ptr (popen cmd "r"))
     (when (= fp null) (ptr-set! out-len (cast i64 0)) (return null))
-    (let (bufsz:i64 (cast i64 65536)
+    (let (bufsz:i64 65536
           buf:ptr (malloc bufsz)
-          total:i64 (cast i64 0))
+          total:i64 0)
       (let (chunk:i64 (fread (ptr+ (cast ptr:i8 buf) total) (cast i64 1) (- (- bufsz total) (cast i64 1)) fp))
         (set! total (+ total chunk))
         (while (> chunk (cast i64 0))
@@ -369,13 +369,13 @@
   ; Build clang -E command
   (let (cmd:ptr (alloca i8 512))
     (snprintf cmd (cast i64 512) "clang -E -x c -include %s /dev/null 2>/dev/null" header-path)
-    (let (buf-len:i64 (cast i64 0)
+    (let (buf-len:i64 0
           buf:ptr (read-pipe-output cmd (cast ptr:i64 (addr-of buf-len))))
       (when (= buf null)
         (die-at line (fmt-s "c-include: failed to preprocess '%s'" header-path)))
       ; Parse declarations
-      (let (pos:i64 (cast i64 0)
-            prev-pos:i64 (cast i64 -1))
+      (let (pos:i64 0
+            prev-pos:i64 -1)
         (while (< pos buf-len)
           (set! prev-pos pos)
           ; Skip whitespace
@@ -388,14 +388,14 @@
                   (when (< pos buf-len)
                     (set! pos (+ pos (cast i64 1)))))
               ; Try to read an identifier to check what kind of declaration
-              (let (tok-end:i64 (cast i64 0)
+              (let (tok-end:i64 0
                     tok:ptr (c-read-ident buf pos buf-len (cast ptr:i64 (addr-of tok-end))))
                 ; Skip typedefs, static inline functions, etc.
                 ; Only process extern declarations and top-level type declarations
                 (cond
                   (= (strcmp tok "extern") 0)
                     ; Extern declaration — try to parse as function
-                    (let (decl-end:i64 (cast i64 0)
+                    (let (decl-end:i64 0
                           ok:i32 (c-parse-func-decl buf pos buf-len
                                                     (cast ptr:i64 (addr-of decl-end)) line))
                       (if (!= ok 0)
@@ -456,7 +456,7 @@
 ; (ptr T) / (ptr ptr T) ... lists.
 (defn type-node-to-c:ptr (tn:ptr)
   (when (= tn null) (return "void"))
-  (let (n:ptr:Node (cast ptr:Node tn))
+  (let (n:ptr:Node tn)
     (when (= (. n kind) NODE-SYM)
       (return (type-name-to-c (. n s))))
     (when (= (. n kind) NODE-CELL)
@@ -480,16 +480,16 @@
 ;   - null if no type
 (defn extract-type-node:ptr (binding:ptr line:i32)
   (when (= binding null) (return null))
-  (let (n:ptr:Node (cast ptr:Node binding))
+  (let (n:ptr:Node binding)
     (when (= (. n kind) NODE-SYM)
       (let (tname:ptr null  bname:ptr null)
         (split-typed (. n s) (cast ptr:ptr (addr-of bname)) (cast ptr:ptr (addr-of tname)))
         (when (= tname null) (return null))
-        (let (tn:ptr:Node (cast ptr:Node (alloc-node)))
+        (let (tn:ptr:Node (alloc-node))
           (.set! tn kind NODE-SYM)
           (.set! tn line line)
           (.set! tn s tname)
-          (return (cast ptr tn)))))
+          (return tn))))
     (when (= (. n kind) NODE-CELL)
       (let (rest:ptr (. n cdr))
         (when (= rest null) (return null))
@@ -543,7 +543,7 @@
 
 (defn emit-cheader-defconst:void (form:ptr)
   (let (name:ptr (. (cast ptr:Node (node-at form 1)) s)
-        val-node:ptr:Node (cast ptr:Node (node-at form 2)))
+        val-node:ptr:Node (node-at form 2))
     (when (= (. val-node kind) NODE-INT)
       (printf "#define %s %ld\n" name (. val-node i)))
     (when (= (. val-node kind) NODE-STR)
@@ -569,7 +569,7 @@
   (printf "/* Generated from %s by nucleusc --emit-cheader */\n\n" source-file)
   (let (fc:ptr forms)
     (while (!= fc null)
-      (let (f:ptr:Node (cast ptr:Node (. (cast ptr:Node fc) car)))
+      (let (f:ptr:Node (. (cast ptr:Node fc) car))
         (when (and (and (!= (cast ptr f) null) (= (. f kind) NODE-CELL))
                    (and (> (node-len (cast ptr f)) 0)
                         (-> f (node-at _ 0) (cast ptr:Node _) (. kind) (= _ NODE-SYM))))

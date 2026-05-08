@@ -269,19 +269,21 @@ A `defn` function name used in value position decays to a function pointer, matc
 (apply add 3 4)  ; passes add as a function pointer
 ```
 
-### Integer Type Coercion
+### Implicit Type Coercion
 
-Integer types are implicitly coerced in assignment contexts (`let`, `set!`, `.set!`, `aset!`, `ptr-set!`) **and at function call sites** (both direct calls and `funcall`):
-- Same type: no conversion needed
-- Same width, different sign (e.g. `i32` ↔ `ui32`): reinterpret (no IR instruction)
-- Widening: `sext` for signed source, `zext` for unsigned source
-- Narrowing: `trunc`
+The following conversions are applied automatically in assignment contexts (`let`, `set!`, `.set!`, `aset!`, `ptr-set!`, implicit return) **and at function call sites** (both direct calls and `funcall`):
 
-`f32` → `f64` is also implicit (`fpext`) at the same positions. Mixing float and integer operands without a cast remains a compile error.
+- **Pointer ↔ pointer** (any element types): identity, no IR. `ptr`, `ptr:Node`, `ptr:i8` are interchangeable at boundaries; the cast only matters when the result feeds a typed-pointer-only operation (`.`, `aref`, `aset!`, `ptr+`, `deref`).
+- **Integer ↔ integer**:
+  - Same width, different sign (e.g. `i32` ↔ `ui32`): reinterpret, no IR.
+  - Widening: `sext` for signed source, `zext` for unsigned source.
+  - Narrowing: `trunc`.
+- **`f32` → `f64`**: `fpext`.
+- **User-registered**: any pair declared with `(defcast From To conv-fn)` (see top-level forms). The compiler emits a call to `conv-fn`. Built-in coercion always wins; `defcast` cannot shadow `sext`/`zext`/`fpext`.
 
-Mixed-sign binary operations (e.g. `i32 + ui32`) are rejected with a compile error. Use explicit `(cast ...)` to resolve.
+Binary operators do *not* coerce — both operands must already match in kind. Mixing float and integer operands, or mixed-sign integer operands (e.g. `i32 + ui32`), or operands of different integer widths (e.g. `i64 + i32-literal`) are compile errors at the operator. Use explicit `(cast ...)` on the binop side.
 
-User-asserted conversions between any other type pair can be registered with `(defcast From To conv-fn)`; once registered, the compiler emits a call to `conv-fn` whenever a `From` is supplied where a `To` is expected. Built-in coercion always wins for primitive pairs, so `defcast` cannot shadow `sext`/`zext`/`fpext`.
+Explicit `(cast ...)` is also still required for cross-kind conversions: `int ↔ ptr`, `int ↔ float`, `ptr ↔ float`, and `f64 → f32` narrowing.
 
 ## Libc Bindings
 

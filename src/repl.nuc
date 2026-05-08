@@ -20,7 +20,7 @@
 
 (defn repl-error-json-puts:void (s:ptr)
   (when (= s null) (return))
-  (let (i:i64 (cast i64 0))
+  (let (i:i64 0)
     (while (!= (char-at s i) 0)
       (repl-error-json-putc (bit-and (cast i32 (char-at s i)) 255))
       (set! i (+ i (cast i64 1))))))
@@ -42,8 +42,8 @@
 ; Returns null on EOF.
 (defn repl-read-input:ptr ()
   (let (buf:ptr (malloc (cast i64 4096))
-        buf-len:i64 (cast i64 0)
-        buf-cap:i64 (cast i64 4096)
+        buf-len:i64 0
+        buf-cap:i64 4096
         depth:i32 0
         got-input:i32 0
         in-string:i32 0
@@ -67,7 +67,7 @@
                   (do (free buf) (return null))
                   (set! done 1)))
           (when (= done 0)
-            (let (line-len:i64 (cast i64 (strlen line-buf)))
+            (let (line-len:i64 (strlen line-buf))
               ; Grow buffer if needed
               (when (> (+ buf-len line-len) (- buf-cap (cast i64 1)))
                 (let (new-cap:i64 (* buf-cap (cast i64 2)))
@@ -82,7 +82,7 @@
               (set! got-input 1)
               (set! first-line 0)
               ; Scan the line for paren balance, respecting strings and comments
-              (let (li:i64 (cast i64 0))
+              (let (li:i64 0)
                 (while (< li line-len)
                   (let (c:i32 (bit-and (cast i32 (aref (cast ptr:i8 line-buf) li)) 255))
                     (cond (!= in-comment 0)
@@ -112,7 +112,7 @@
 ; Process a single REPL form: parse, compile to IR, JIT, and call.
 ; Returns the result type kind (TY-VOID, TY-I32, etc.) or -1 on error.
 (defn repl-eval-form:void (form:ptr)
-  (let (f:ptr:Node (cast ptr:Node form))
+  (let (f:ptr:Node form)
     (when (= (cast ptr f) null) (return))
     ; Short-circuit: a bare string literal prints as itself.
     (when (= (. f kind) NODE-STR)
@@ -204,7 +204,7 @@
                   true
                     (let (fname-ir:ptr (sanitize-for-ir fname)
                           is-redef:i32 0
-                          old-sym:ptr:Sym (cast ptr:Sym (scope-lookup g-globals fname)))
+                          old-sym:ptr:Sym (scope-lookup g-globals fname))
                       (when (!= (cast ptr old-sym) null)
                         (set! is-redef 1)
                         (let (old-rt:ptr (. old-sym tracker))
@@ -219,7 +219,7 @@
                                   (free msg))))
                             (LLVMOrcReleaseResourceTracker old-rt)
                             (.set! old-sym tracker null))))
-                      (let (impl-id:i32 (cast i32 g-defn-impl-counter)
+                      (let (impl-id:i32 g-defn-impl-counter
                             impl-name:ptr null)
                         (set! g-defn-impl-counter (+ g-defn-impl-counter (cast i64 1)))
                         (set! impl-name (fmt-sd "%s.impl.%d" fname-ir impl-id))
@@ -235,9 +235,9 @@
                         ; declare for @fname-ir to the preamble so subsequent
                         ; modules can call it.
                         (when (= is-redef 0)
-                          (let (sym:ptr:Sym (cast ptr:Sym (scope-lookup g-globals fname)))
+                          (let (sym:ptr:Sym (scope-lookup g-globals fname))
                             (when (!= (cast ptr sym) null)
-                              (let (ft:ptr:Type (cast ptr:Type (. sym type)))
+                              (let (ft:ptr:Type (. sym type))
                                 (when (= (. ft kind) TY-FN)
                                   (jit-thunk-module (. f line) fname-ir (cast ptr ft))
                                   (fprintf g-repl-preamble "declare %s @%s("
@@ -258,7 +258,7 @@
                           ; the tracker on the latest Sym for the next
                           ; redefinition to remove.
                           (when (= (update-fn-tgt (. f line) fname-ir impl-name) 0)
-                            (let (sym:ptr:Sym (cast ptr:Sym (scope-lookup g-globals fname)))
+                            (let (sym:ptr:Sym (scope-lookup g-globals fname))
                               (when (!= (cast ptr sym) null)
                                 (.set! sym tracker rt))))))
                       (if (!= is-redef 0)
@@ -280,12 +280,12 @@
               (do (set! is-expr 0)
                   ; Default depth: -1 (fixpoint) for macroexpand, 1 for macroexpand-1.
                   ; macroexpand-all uses recursive expansion (depth ignored).
-                  (let (depth:i32 (cast i32 -1)
+                  (let (depth:i32 -1
                         is-all:i32 (= (strcmp h "macroexpand-all") 0))
                     (when (= (strcmp h "macroexpand-1") 0) (set! depth 1))
                     ; Optional second arg overrides the default depth.
                     (when (>= (node-len f) 3)
-                      (let (d-node:ptr:Node (cast ptr:Node (node-at form 2)))
+                      (let (d-node:ptr:Node (node-at form 2))
                         (when (= (. d-node kind) NODE-INT)
                           (set! depth (cast i32 (. d-node i))))))
                     (when (< (node-len f) 2)
@@ -300,7 +300,7 @@
                       (when (and (!= arg null)
                                  (and (= (. (cast ptr:Node arg) kind) NODE-CELL)
                                       (!= (node-len (cast ptr:Node arg)) 0)))
-                        (let (qh:ptr:Node (cast ptr:Node (node-at (cast ptr:Node arg) 0)))
+                        (let (qh:ptr:Node (node-at (cast ptr:Node arg) 0))
                           (when (and (= (. qh kind) NODE-SYM)
                                      (= (strcmp (. qh s) "quote") 0))
                             (set! arg (node-at (cast ptr:Node arg) 1)))))
@@ -313,7 +313,7 @@
                         (when (and (!= arg null)
                                    (and (= (. (cast ptr:Node arg) kind) NODE-CELL)
                                         (!= (node-len (cast ptr:Node arg)) 0)))
-                          (let (ah:ptr:Node (cast ptr:Node (node-at (cast ptr:Node arg) 0)))
+                          (let (ah:ptr:Node (node-at (cast ptr:Node arg) 0))
                             (when (= (. ah kind) NODE-SYM)
                               (set! head-name (. ah s)))))
                         (if (and (= is-all 0)
@@ -341,14 +341,14 @@
                     ; Skip duplicate scope entries (prescan + emit-defn both register)
                     (let (si:i32 pre-len)
                       (while (< si (. (cast ptr:Scope g-globals) len))
-                        (let (sym:ptr:Sym (cast ptr:Sym (ptr+ (cast ptr:Sym (. (cast ptr:Scope g-globals) syms)) si))
-                              ft:ptr:Type (cast ptr:Type (. sym type)))
+                        (let (sym:ptr:Sym (ptr+ (cast ptr:Sym (. (cast ptr:Scope g-globals) syms)) si)
+                              ft:ptr:Type (. sym type))
                           (when (= (. ft kind) TY-FN)
                             ; Only emit if no later entry has the same name (dedup)
                             (let (is-dup:i32 0
                                   dj:i32 (+ si 1))
                               (while (< dj (. (cast ptr:Scope g-globals) len))
-                                (let (nxt:ptr:Sym (cast ptr:Sym (ptr+ (cast ptr:Sym (. (cast ptr:Scope g-globals) syms)) dj)))
+                                (let (nxt:ptr:Sym (ptr+ (cast ptr:Sym (. (cast ptr:Scope g-globals) syms)) dj))
                                   (when (= (strcmp (. nxt name) (. sym name)) 0)
                                     (set! is-dup 1)))
                                 (inc! dj))
@@ -376,7 +376,7 @@
                     (set! g-out g-def-stream)
                     (reset-function-state)
                     (let (fn-scope:ptr (scope-new g-globals)
-                          result:ptr:Val (cast ptr:Val (emit-node (cast ptr f) fn-scope))
+                          result:ptr:Val (emit-node (cast ptr f) fn-scope)
                           result-kind:i32 (. (cast ptr:Type (. result type)) kind))
                       ; Generate the return based on result type
                       (when (= g-block-term 0)
@@ -437,7 +437,7 @@
                         (repl-jit-module (. f line))
                         (set! g-qq-used 0)
                         ; Look up and call the eval function
-                        (let (addr:i64 (cast i64 0))
+                        (let (addr:i64 0)
                           (let (err:ptr (LLVMOrcLLJITLookup g-jit (cast ptr (addr-of addr)) eval-sym))
                             (when (!= err null)
                               (let (em:ptr (LLVMGetErrorMessage err)
@@ -483,10 +483,10 @@
   (when (= buf null) (return))
   (let (pat:ptr (fmt-s "@%s(" fname)
         rep:ptr (fmt-s "@%s(" impl-name)
-        n:i64 (cast i64 (strlen buf))
-        i:i64 (cast i64 0)
+        n:i64 (strlen buf)
+        i:i64 0
         done:i32 0)
-    (let (pat-len:i64 (cast i64 (strlen pat)))
+    (let (pat-len:i64 (strlen pat))
       (while (and (= done 0) (<= (+ i pat-len) n))
         (when (= (memcmp (ptr+ (cast ptr:i8 buf) i) pat pat-len) 0)
           (fwrite buf (cast i64 1) i out)
@@ -506,7 +506,7 @@
 ;
 ; ft is a (ptr Type) with kind=TY-FN; type-to-ir handles each parameter and return.
 (defn emit-fn-thunk:void (out:ptr fname:ptr ft:ptr)
-  (let (ftt:ptr:Type (cast ptr:Type ft)
+  (let (ftt:ptr:Type ft
         ret-ir:ptr (type-to-ir (. ftt ret))
         nparams:i32 (. ftt num-params)
         i:i32 0)
@@ -542,7 +542,7 @@
 ; it to the JIT permanently (no resource tracker). This is the stable public
 ; symbol callers see; on each redefinition, only @fname.tgt is updated.
 (defn jit-thunk-module:void (line:i32 fname-ir:ptr ft:ptr)
-  (let (buf:ptr null  szp:i64 (cast i64 0)
+  (let (buf:ptr null  szp:i64 0
         s:ptr (open_memstream (addr-of buf) (cast ptr (addr-of szp))))
     (fprintf s "; ModuleID = '<repl-thunk>'\n")
     (fprintf s "target triple = \"x86_64-pc-linux-gnu\"\n\n")
@@ -558,8 +558,8 @@
 ; store impl-addr into (ptr tgt-addr) so subsequent calls through @<fname-ir>
 ; dispatch to this impl. Returns 0 on success, -1 on error.
 (defn update-fn-tgt:i32 (line:i32 fname-ir:ptr impl-name:ptr)
-  (let (impl-addr:i64 (cast i64 0)
-        tgt-addr:i64 (cast i64 0)
+  (let (impl-addr:i64 0
+        tgt-addr:i64 0
         err1:ptr (LLVMOrcLLJITLookup g-jit (cast ptr (addr-of impl-addr)) impl-name))
     (when (!= err1 null)
       (let (msg:ptr (malloc (cast i64 256)))
@@ -579,7 +579,7 @@
           (repl-error line msg)
           (free msg))
         (return -1)))
-    (aset! (cast ptr:ptr (cast ptr tgt-addr)) (cast i64 0) (cast ptr impl-addr))
+    (aset! (cast ptr:ptr tgt-addr) (cast i64 0) (cast ptr impl-addr))
     (return 0)))
 
 ; Build a JIT module from the current module streams and add it to the JIT.
@@ -605,7 +605,7 @@
   (fclose g-type-stream)
   (fclose g-decl-stream)
   (fclose g-def-stream)
-  (let (ir-bufp:ptr null  ir-sizep:i64 (cast i64 0)
+  (let (ir-bufp:ptr null  ir-sizep:i64 0
         irs:ptr (open_memstream (addr-of ir-bufp) (cast ptr (addr-of ir-sizep))))
     (fprintf irs "; ModuleID = '<repl>'\n")
     (fprintf irs "target triple = \"x86_64-pc-linux-gnu\"\n\n")
@@ -652,7 +652,7 @@
 ; Pre-register the Node struct and NODE-* constants for macros support in REPL.
 (defn repl-register-node:void ()
   ; Register Node struct: kind:i32, line:i32, i:i64, s:ptr, car:ptr, cdr:ptr
-  (let (sd:ptr:StructDef (cast ptr:StructDef (register-struct "Node")))
+  (let (sd:ptr:StructDef (register-struct "Node"))
     (.set! sd num-fields 6)
     (.set! sd field-names (arena-alloc (* (cast i64 6) (cast i64 8))))
     (.set! sd field-types (arena-alloc (* (cast i64 6) (cast i64 8))))
@@ -671,13 +671,13 @@
   ; Add Node IR type to preamble
   (fprintf g-repl-preamble "%%Node = type { i32, i32, i64, ptr, ptr, ptr }\n\n")
   ; Register NODE-* constants
-  (let (sym:ptr:Sym (cast ptr:Sym (scope-define g-globals "NODE-INT" (cast ptr ty-i32) null 0)))
+  (let (sym:ptr:Sym (scope-define g-globals "NODE-INT" (cast ptr ty-i32) null 0))
     (.set! sym is-const 1) (.set! sym const-val "0"))
-  (let (sym:ptr:Sym (cast ptr:Sym (scope-define g-globals "NODE-STR" (cast ptr ty-i32) null 0)))
+  (let (sym:ptr:Sym (scope-define g-globals "NODE-STR" (cast ptr ty-i32) null 0))
     (.set! sym is-const 1) (.set! sym const-val "1"))
-  (let (sym:ptr:Sym (cast ptr:Sym (scope-define g-globals "NODE-SYM" (cast ptr ty-i32) null 0)))
+  (let (sym:ptr:Sym (scope-define g-globals "NODE-SYM" (cast ptr ty-i32) null 0))
     (.set! sym is-const 1) (.set! sym const-val "2"))
-  (let (sym:ptr:Sym (cast ptr:Sym (scope-define g-globals "NODE-CELL" (cast ptr ty-i32) null 0)))
+  (let (sym:ptr:Sym (scope-define g-globals "NODE-CELL" (cast ptr ty-i32) null 0))
     (.set! sym is-const 1) (.set! sym const-val "3")))
 
 ; Auto-import lib/macros.nuc so the standard macros (if, when, unless, for,
