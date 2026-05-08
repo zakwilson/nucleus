@@ -1,0 +1,38 @@
+(include stdio)
+(include stdlib)
+
+; Built-in implicit cast: i32 literal → ui64 (size_t) for malloc.
+; No (cast i64 ...) wrapper required.
+(defn try-malloc:i32 ()
+  (let (p:ptr (malloc 16))
+    (when (= p null) (return 0))
+    (free p)
+    (return 1)))
+
+; Built-in implicit cast: f32 → f64 (fpext) at call site.
+(defn show-f64:void (x:f64)
+  (printf "f64=%.2f\n" x))
+
+; Built-in: i32 → i64 widening at call site.
+(defn show-i64:void (x:i64)
+  (printf "i64=%lld\n" x))
+
+; defcast: user-asserted conversion from i64 to ptr.
+; The conversion function provides the actual reinterpretation.
+(defn id_to_ptr:ptr (x:i64)
+  (return (cast ptr x)))
+
+(defcast i64 ptr id_to_ptr)
+
+(defn show-ptr:void (p:ptr)
+  (printf "ptr=%p\n" p))
+
+(defn main:int ()
+  (printf "malloc-ok=%d\n" (try-malloc))
+  ; i32 literal widens to i64 implicitly.
+  (show-i64 42)
+  ; f32 widens to f64 implicitly.
+  (show-f64 (cast f32 2.5))
+  ; defcast fires: i64 → ptr via id_to_ptr.
+  (show-ptr (cast i64 0))
+  (return 0))
