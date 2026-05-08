@@ -46,7 +46,9 @@
   name:ptr
   field-names:ptr
   field-types:ptr
-  num-fields:i32)
+  num-fields:i32
+  src-file:ptr
+  src-line:i32)
 
 (defstruct Type
   kind:i32
@@ -75,7 +77,11 @@
   is-local:i32
   is-const:i32
   const-val:ptr
-  tracker:ptr)
+  tracker:ptr
+  src-file:ptr
+  src-line:i32
+  trace-tracker:ptr
+  trace-saved:ptr)
 
 (defstruct Scope
   parent:ptr
@@ -110,7 +116,9 @@
   name:ptr
   jit-name:ptr
   num-params:i32
-  variadic:i32)
+  variadic:i32
+  src-file:ptr
+  src-line:i32)
 
 (defstruct RMacro
   prefix:ptr
@@ -245,6 +253,12 @@
 (defvar g-repl-preamble-bufp:ptr)
 (defvar g-repl-preamble-sizep:i64 0)
 
+; Last recovered REPL error — populated by repl-error so (last-error)
+; can return the most recent message after a failed eval. Both fields
+; are reset to null/0 at startup; msg is malloc'd via strdup.
+(defvar g-last-error-msg:ptr)
+(defvar g-last-error-line:i32 0)
+
 ; Import tracking — duplicate guard and cycle detection.
 ; Each is a linked list of (path-string . next) pairs using Node cells.
 (defvar g-imported:ptr)     ; already-imported resolved paths (null = empty)
@@ -257,6 +271,10 @@
 ; stdlib (malloc/free/exit) is included here — after defmacro and defvar —
 ; so that g-decl-bufp is free of malloc when macro JIT modules are assembled.
 (include stdlib)
+
+; Forward-declare clock() from <time.h> for the REPL `time` form. clock_t is
+; typedef'd to long (i64) on Linux x86-64; CLOCKS_PER_SEC is 1000000.
+(declare clock:i64 ())
 
 ; ============================================================
 ; Arena allocator — imported from lib/arena.nuc
@@ -841,6 +859,16 @@
       (.set! sym is-local is-local)
       (.set! sc len (+ (. sc len) 1))
       (return sym))))
+
+; Stamp a freshly-defined Sym with its source location. Called from
+; emit-defn/defvar/defconst/etc. so `(locate foo)` can recall where a
+; definition lives. Callers pass the source line; the file is read from
+; the current g-source-path (set at parse-time by emit-import etc.).
+(defn sym-set-src-loc:void (sym:ptr line:i32)
+  (when (= sym null) (return))
+  (let (s:ptr:Sym sym)
+    (.set! s src-file g-source-path)
+    (.set! s src-line line)))
 
 (defn scope-lookup:ptr (s:ptr name:ptr)
   (let (cur:ptr s)
@@ -2396,7 +2424,8 @@
               (when (= (. (cast ptr:Type ty) kind) TY-PTR) (set! zero "null"))
               (fprintf g-out "%s = global %s %s, align %d\n\n"
                 ir-name (type-to-ir ty) zero align)))
-          (scope-define g-globals name ty ir-name 1))))))
+          (sym-set-src-loc (scope-define g-globals name ty ir-name 1)
+                           (. (cast ptr:Node call) line)))))))
 
 (defn emit-defconst:void (call:ptr)
   (let (cc:ptr:Node call)
@@ -2409,7 +2438,8 @@
         (die-at (. val line) "defconst: value must be integer literal"))
       (let (sym:ptr:Sym (scope-define g-globals (. name s) ty-i32 null 0))
         (.set! sym is-const 1)
-        (.set! sym const-val (fmt-i64 "%ld" (. val i)))))))
+        (.set! sym const-val (fmt-i64 "%ld" (. val i)))
+        (sym-set-src-loc sym (. cc line))))))
 
 (defn emit-defenum:void (call:ptr)
   (let (cc:ptr:Node call)
@@ -2421,7 +2451,8 @@
             (die-at (. name line) "defenum: value must be symbol"))
           (let (sym:ptr:Sym (scope-define g-globals (. name s) ty-i32 null 0))
             (.set! sym is-const 1)
-            (.set! sym const-val (fmt-i32 "%d" (- i 2)))))
+            (.set! sym const-val (fmt-i32 "%d" (- i 2)))
+            (sym-set-src-loc sym (. name line))))
         (inc! i)))))
 
 (defn emit-defstruct:void (call:ptr)
@@ -2439,6 +2470,8 @@
         (.set! sd field-names (arena-alloc (* (i64 nfields) (i64 8))))
         (.set! sd field-types (arena-alloc (* (i64 nfields) (i64 8))))
         (.set! sd num-fields nfields)
+        (.set! sd src-file g-source-path)
+        (.set! sd src-line (. cc line))
         (let (i:i32 0)
           (while (< i nfields)
             (let (field:ptr (node-at cc (+ i 2))
@@ -2538,7 +2571,8 @@
           (fmt-s "extern: missing :type on '%s'" name)))
       (let (ir-name:ptr (fmt-s "@%s" name))
         (fprintf g-out "%s = external global %s\n\n" ir-name (type-to-ir ty))
-        (scope-define g-globals name ty ir-name 1)))))
+        (sym-set-src-loc (scope-define g-globals name ty ir-name 1)
+                         (. cc line))))))
 
 ; ============================================================
 ; C header handling — imported from src/cheader.nuc
@@ -2660,8 +2694,9 @@
             (.set! ft has-rest has-rest)
             (.set! ft nopt nopt)
             (.set! ft opt-defaults opt-defaults)
-            (scope-define g-globals fname ft
-                          (fmt-s "@%s" fname) 0))
+            (sym-set-src-loc (scope-define g-globals fname ft
+                                            (fmt-s "@%s" fname) 0)
+                             (. (cast ptr:Node call) line)))
           ; Codegen
           (reset-function-state)
           (let (fn-scope:ptr (scope-new g-globals)
@@ -2892,8 +2927,10 @@
                             (.set! ft ret ret)
                             (.set! ft num-params nparams)
                             (.set! ft params ptypes)
-                            (scope-define g-globals fname ft
-                                          (fmt-s "@%s" fname) 0)))))))))
+                            (sym-set-src-loc
+                              (scope-define g-globals fname ft
+                                            (fmt-s "@%s" fname) 0)
+                              (. (cast ptr:Node bf) line))))))))))
             (inc! bi)))
 
         ; Collect expression forms (non-top-level) for __compile_time_main.
@@ -3085,6 +3122,8 @@
             (.set! mdef jit-name jit-name)
             (.set! mdef num-params pcount)
             (.set! mdef variadic variadic)
+            (.set! mdef src-file g-source-path)
+            (.set! mdef src-line (. ff line))
             (inc! g-num-macros))
 
           ; Flush main streams
@@ -3537,8 +3576,10 @@
                       (.set! ft ret ret)
                       (.set! ft num-params nparams)
                       (.set! ft params ptypes)
-                      (scope-define g-globals fname ft
-                                    (fmt-s "@%s" fname) 0)))))))))
+                      (sym-set-src-loc
+                        (scope-define g-globals fname ft
+                                      (fmt-s "@%s" fname) 0)
+                        (. f line))))))))))
       (set! fc (. (cast ptr:Node fc) cdr)))))
 
 (defn emit-def-rmacro:void (call:ptr)
@@ -3860,8 +3901,9 @@
             (.set! ft num-params nparams)
             (.set! ft params ptypes)
             (.set! ft variadic 0)
-            (scope-define g-globals fname ft
-                          (fmt-s "@%s" fname) 0)
+            (sym-set-src-loc (scope-define g-globals fname ft
+                                            (fmt-s "@%s" fname) 0)
+                             (. ff line))
             ; Emit LLVM declare
             (fprintf g-out "declare %s @%s(" (type-to-ir ret) fname)
             (set! j 0)
