@@ -101,15 +101,6 @@ JSON frames are made navigable via `compilation-shell-minor-mode'."
 
 ;;; -------- Synchronous request/response helper ------------------------------
 
-(defvar-local nucleus-repl--capture nil
-  "Accumulator used by `nucleus-repl--query' while a query is in flight.")
-
-(defun nucleus-repl--capture-filter (output)
-  "Comint output filter that appends OUTPUT to `nucleus-repl--capture'."
-  (when (stringp nucleus-repl--capture)
-    (setq nucleus-repl--capture
-          (concat nucleus-repl--capture output))))
-
 (defun nucleus-repl--strip-echo (text form)
   "Remove a leading line equal to FORM from TEXT, if present.
 Pty echo can prepend the dispatched form to the captured output."
@@ -122,38 +113,59 @@ Pty echo can prepend the dispatched form to the captured output."
   "Send FORM (a string, no trailing newline) to the REPL and return its output.
 The trailing prompt line is stripped.  Signals a `user-error' if no
 REPL is running or the response does not arrive within
-`nucleus-repl-query-timeout' seconds."
+`nucleus-repl-query-timeout' seconds.
+
+Installs a lightweight temporary process filter for the duration of the
+query so each PTY chunk does not run through the full comint filter
+chain (compilation, prompt detection, read-only properties, etc.) — for
+short introspection forms that filter chain dominated end-to-end time.
+Captured output is replayed through the original filter at the end so
+the REPL buffer reflects the exchange."
   (let ((proc (nucleus-repl--process)))
     (unless proc
       (user-error "No Nucleus REPL is running (M-x run-nucleus)"))
-    (with-current-buffer (process-buffer proc)
-      (let ((nucleus-repl--capture "")
-            (deadline (+ (float-time) nucleus-repl-query-timeout)))
-        (add-hook 'comint-output-filter-functions
-                  #'nucleus-repl--capture-filter nil t)
-        (unwind-protect
-            (progn
-              (comint-send-string proc (concat form "\n"))
-              (while (and (< (float-time) deadline)
-                          (not (string-match-p
-                                (concat "\n" nucleus-repl-prompt-regexp)
-                                nucleus-repl--capture)))
-                (accept-process-output proc 0.05))
-              (let* ((raw nucleus-repl--capture)
-                     (stripped (nucleus-repl--strip-echo raw form))
-                     (without-prompt
-                      (replace-regexp-in-string
-                       (concat "\n?" nucleus-repl-prompt-regexp "\\'")
-                       "" stripped)))
-                without-prompt))
-          (remove-hook 'comint-output-filter-functions
-                       #'nucleus-repl--capture-filter t))))))
+    (let* ((orig-filter (process-filter proc))
+           (capture "")
+           (done nil)
+           ;; Match prompt at end of capture, anchored either to string
+           ;; start or to a preceding newline.  Cannot reuse
+           ;; `nucleus-repl-prompt-regexp' verbatim: it begins with `^',
+           ;; which `string-match-p' treats as "start of string only" —
+           ;; not "after a newline" — so the prompt tail would never
+           ;; match and every query waited the full timeout.
+           (tail-regexp
+            "\\(?:\\`\\|\n\\)\\(?:nuc\\|\\.\\.\\.\\)> \\'")
+           (deadline (+ (float-time) nucleus-repl-query-timeout)))
+      (set-process-filter
+       proc
+       (lambda (_p chunk)
+         (setq capture (concat capture chunk))
+         (when (string-match-p tail-regexp capture)
+           (setq done t))))
+      (unwind-protect
+          (progn
+            (process-send-string proc (concat form "\n"))
+            (while (and (not done) (< (float-time) deadline))
+              (accept-process-output proc 1.0 nil t)))
+        (set-process-filter proc orig-filter)
+        (when (and orig-filter (not (string-empty-p capture)))
+          (funcall orig-filter proc capture)))
+      (let* ((stripped (nucleus-repl--strip-echo capture form))
+             (without-prompt
+              (replace-regexp-in-string
+               "\n?\\(?:nuc\\|\\.\\.\\.\\)> \\'" "" stripped)))
+        without-prompt))))
 
 
 ;;; -------- Source-buffer command implementations ----------------------------
 
 (defun nucleus-repl--ensure-running ()
-  "Start the REPL if not already running.  Block briefly for the first prompt."
+  "Start the REPL if not already running.  Block briefly for the first prompt.
+Detects the prompt by inspecting the last few characters of the REPL
+buffer rather than `looking-back': comint installs a `field' text
+property on the prompt, which makes `line-beginning-position' return
+point itself (the field boundary), giving `looking-back' a zero-width
+search range that never matches."
   (unless (nucleus-repl--process)
     (save-window-excursion (nucleus-repl)))
   (let ((proc (nucleus-repl--process))
@@ -161,11 +173,13 @@ REPL is running or the response does not arrive within
     (unless proc (user-error "Failed to start Nucleus REPL"))
     (with-current-buffer (process-buffer proc)
       (while (and (< (float-time) deadline)
-                  (save-excursion
-                    (goto-char (point-max))
-                    (not (looking-back nucleus-repl-prompt-regexp
-                                       (line-beginning-position)))))
-        (accept-process-output proc 0.05)))))
+                  (let ((tail (buffer-substring-no-properties
+                               (max (point-min) (- (point-max) 8))
+                               (point-max))))
+                    (not (string-match-p
+                          "\\(?:\\`\\|\n\\)\\(?:nuc\\|\\.\\.\\.\\)> \\'"
+                          tail))))
+        (accept-process-output proc 1.0 nil t)))))
 
 (defun nucleus-repl--send (text)
   "Send TEXT to the REPL, ensuring it is running and adding a trailing newline."
