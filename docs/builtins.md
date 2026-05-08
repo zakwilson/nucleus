@@ -70,7 +70,7 @@ Supported forms: `declare` (function signatures), `defstruct`, `defconst`, `defe
 | `import` | Import a Nucleus library or C header. `(import name)` resolves `name.nuc` (source) or `name.nuch` (header) from source directory, `lib/`, or `-I` paths. `(import "stdio.h")` preprocesses a C header with `clang -E` and imports extern function declarations. Source imports inline all definitions; header imports emit `declare` (extern) for functions. Duplicate imports are silently skipped. | — |
 | `declare` | Declare an external function signature `(declare name:rettype (params...))`. Used in `.nuch` header files and at the top level. | function prototype |
 | `extern` | Declare an external (foreign) global variable | `extern` declaration |
-| `defmacro` | Define a compile-time macro `(defmacro name (params...) body...)`. Supports `&rest` for variadic macros: `(defmacro name (a b &rest rest) ...)` — `rest` receives a cons list of remaining args. | macro |
+| `defmacro` | Define a compile-time macro `(defmacro name (params...) body...)`. Supports `&rest` for variadic macros: `(defmacro name (a b &rest rest) ...)` — `rest` receives a cons list of remaining args. Parameters (and the `&rest` list) are typed `ptr:Node` inside the body, so `(. p car)`, `(. p cdr)`, `(. p kind)`, and `(. p s)` work directly with no `(cast ptr:Node ...)`. The macro can splice a parameter into a quasiquote regardless of the value type the user-supplied expression evaluates to at the call site — see [Macros and pass-through arguments](#macros-and-pass-through-arguments) below. | macro |
 | `defcast` | Register an implicit conversion `(defcast From To conv-fn)`. `conv-fn` must be a unary function with signature `To (From)` already in scope; the compiler emits a call to it whenever an arg of `From` is supplied where `To` is expected. Pairs already covered by built-in coercion (identity, int↔int, `f32`→`f64`) are rejected at registration. Rules are unidirectional and non-transitive — declare each direction explicitly, and chain through an intermediate type by writing the chain yourself. Exported in `.nuch` headers. | implicit conversion |
 | `def-rmacro` | Define a reader macro `(def-rmacro "prefix" symbol)`. When `prefix` appears at the start of a token, the reader wraps the next form: `(symbol form)`. Built-in reader macros: `'` (quote), `` ` `` (quasiquote), `~` (unquote), `~@` (unquote-splice), `@` (deref). | — |
 | `exclude-prelude` | Suppress the implicit `(import prelude)` for this source file. Must be the first top-level form; takes no arguments. Use when a file should compile against the bare language without the standard macros, `Node` struct, or `(include string)` declarations. | — |
@@ -107,6 +107,38 @@ Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defin
 | `for` | `(for (var:type init) test step body)` | `(let (var:type init) (while test body step))` |
 | `dotimes` | `(dotimes (var:type n) body)` | `(let (var:type 0) (while (< var n) body (inc! var)))` |
 | `->` | `(-> x form ...)` | Threads `x` through each form. If a form contains `_`, the value replaces `_`; otherwise inserts as first arg (thread-first). Bare symbols wrap as `(sym value)`. `_` is only special inside `->`. |
+
+## Macros and pass-through arguments
+
+Macro parameters are typed `ptr:Node` — the macro sees AST. When the macro
+splices a parameter into its expansion via `~param`, the resulting form is
+compiled as if the user had written that expression directly at the call site,
+so the *value* type the parameter evaluates to in the expansion is whatever
+the user wrote — `i32`, `ptr:i8`, `f64`, `Foo`, etc.
+
+This means a single macro can take, inspect, and splice arguments of different
+value types — there is no value-level `T` to keep consistent across calls;
+only the AST representation is uniform.
+
+```
+; Pick a printf format from the literal kind, then splice the original
+; expression in. The macro inspects (. x kind) at expansion time; the
+; spliced ~x is compiled at the call site with whatever type it has.
+(defmacro tprint (x)
+  (cond (= (. x kind) NODE-INT) `(printf "%d\n" ~x)
+        (= (. x kind) NODE-STR) `(printf "%s\n" ~x)
+        (= (. x kind) NODE-FLOAT) `(printf "%f\n" ~x)
+        true                    `(printf "%p\n" ~x)))
+
+(tprint 42)        ; → (printf "%d\n" 42)        — i32 at the call site
+(tprint "hi")      ; → (printf "%s\n" "hi")      — ptr:i8 at the call site
+(tprint 3.14)      ; → (printf "%f\n" 3.14)      — f64 at the call site
+(tprint some-ptr)  ; → (printf "%p\n" some-ptr)  — ptr at the call site
+```
+
+Inside the macro `x` is `ptr:Node`; the spliced `~x` carries no type
+constraint into the expansion. The host compiler types the resulting form
+using its normal rules.
 
 ## Variadic Arithmetic
 

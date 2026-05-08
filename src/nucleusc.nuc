@@ -2074,7 +2074,7 @@
                     bty:ptr (. bv type))
                 (if (= result-type null)
                   (set! result-type bty)
-                  (when (and (!= bty result-type)
+                  (when (and (= (type-eq bty result-type) 0)
                              (!= (. (cast ptr:Type result-type) kind) TY-VOID))
                     (set! result-type ty-void)))
                 (when (= (. (cast ptr:Type bty) kind) TY-VOID)
@@ -3112,16 +3112,31 @@
                 ; Entry prologue: alloca for args pointer, then load each param
                 (fprintf g-entry-stream "  %%__args.addr = alloca ptr, align 8\n")
                 (fprintf g-entry-stream "  store ptr %%__args.arg, ptr %%__args.addr, align 8\n")
-                (let (ei:i32 0)
-                  (while (< ei pcount)
-                    (let (pname:ptr (aref (cast ptr:ptr pnames) ei))
-                      (fprintf g-entry-stream "  %%%s.addr = alloca ptr, align 8\n" pname)
-                      (fprintf g-entry-stream "  %%__ap%d = load ptr, ptr %%__args.addr, align 8\n" ei)
-                      (fprintf g-entry-stream "  %%__ag%d = getelementptr ptr, ptr %%__ap%d, i32 %d\n" ei ei ei)
-                      (fprintf g-entry-stream "  %%__av%d = load ptr, ptr %%__ag%d, align 8\n" ei ei)
-                      (fprintf g-entry-stream "  store ptr %%__av%d, ptr %%%s.addr, align 8\n" ei pname)
-                      (scope-define fn-scope pname ty-ptr (fmt-s "%%%s.addr" pname) 1))
-                    (inc! ei)))
+                ; Macro params and the &rest list are bound as ptr:Node so
+                ; macro bodies can do (. p car), (. p cdr), (. p kind), etc.
+                ; on AST nodes without writing (cast ptr:Node ...) everywhere.
+                ; A macro that wants to pass an argument through to a position
+                ; that takes a different pointer element type (e.g. ptr:i8) can
+                ; just splice it into a quasiquote — the resulting expansion is
+                ; a Node whose meaning is decided when the host compiler types
+                ; it; the inner ptr:Node typing is only seen by the macro body.
+                (let (node-sd:ptr (lookup-struct "Node"))
+                  (when (= node-sd null)
+                    (die-at (. ff line) "defmacro: Node struct not in scope"))
+                  (let (node-ty:ptr:Type (make-type TY-STRUCT)
+                        ptr-node-ty:ptr:Type (make-type TY-PTR))
+                    (.set! node-ty sdef node-sd)
+                    (.set! ptr-node-ty elem node-ty)
+                    (let (ei:i32 0)
+                      (while (< ei pcount)
+                        (let (pname:ptr (aref (cast ptr:ptr pnames) ei))
+                          (fprintf g-entry-stream "  %%%s.addr = alloca ptr, align 8\n" pname)
+                          (fprintf g-entry-stream "  %%__ap%d = load ptr, ptr %%__args.addr, align 8\n" ei)
+                          (fprintf g-entry-stream "  %%__ag%d = getelementptr ptr, ptr %%__ap%d, i32 %d\n" ei ei ei)
+                          (fprintf g-entry-stream "  %%__av%d = load ptr, ptr %%__ag%d, align 8\n" ei ei)
+                          (fprintf g-entry-stream "  store ptr %%__av%d, ptr %%%s.addr, align 8\n" ei pname)
+                          (scope-define fn-scope pname ptr-node-ty (fmt-s "%%%s.addr" pname) 1))
+                        (inc! ei)))))
 
                 ; Compile body forms; last result is return value
                 (let (last-val:ptr "null"
