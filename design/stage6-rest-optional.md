@@ -126,10 +126,10 @@ Edge case: `&optional` parameters with no default. Decision: require a
 default. Without one, the parameter is morally `&rest`-of-zero-or-one
 and that's a different feature.
 
-`&rest` and `&optional` can coexist in one signature, with
-`&optional` first: `(defn f (a &optional b &rest c) ...)`. The
-rewrite fills in `&optional` defaults, then collects everything left
-into the `&rest` list.
+**Retracted (stage 7):** combining `&rest` and `&optional` in one
+signature is now an error. See `stage7/optional.md`. Common Lisp
+allows the combination; we don't, on the "fewest features needed"
+principle.
 
 ### Test plan
 

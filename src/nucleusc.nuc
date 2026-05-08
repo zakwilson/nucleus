@@ -55,6 +55,8 @@
   num-params:i32
   variadic:i32
   has-rest:i32
+  nopt:i32
+  opt-defaults:ptr
   elem:ptr
   sdef:ptr)
 
@@ -1713,16 +1715,41 @@
   (let (cc:ptr:Node call
         ss:ptr:Sym sym
         nargs:i32 (- (node-len cc) 1)
-        args:ptr (arena-alloc (* (i64 (+ nargs 1)) (sizeof Val)))
-        i:i32 0)
+        ft0:ptr:Type (. ss type)
+        max-args:i32 nargs)
+    ; If callee has &optional, slots may need to grow up to num-params.
+    (when (and (!= ft0 null) (= (. ft0 kind) TY-FN))
+      (when (> (. ft0 num-params) max-args)
+        (set! max-args (. ft0 num-params))))
+    (let (args:ptr (arena-alloc (* (i64 (+ max-args 1)) (sizeof Val)))
+          i:i32 0)
     (while (< i nargs)
       (let (v:ptr (emit-node (node-at cc (+ i 1)) scope))
         (memcpy (ptr+ (cast ptr:Val args) i) v (sizeof Val)))
       (inc! i))
+    ; If the callee has &optional, fill in defaults for missing trailing
+    ; args by emitting the default expressions in the caller's scope.
+    (when (and (= (. ft0 kind) TY-FN) (!= (. ft0 nopt) 0))
+      (let (np:i32 (. ft0 num-params)
+            nopt:i32 (. ft0 nopt)
+            required:i32 (- (. ft0 num-params) (. ft0 nopt)))
+        (when (< nargs required)
+          (die-at (. cc line)
+            (fmt-s "%s: too few args" (. ss name))))
+        (when (> nargs np)
+          (die-at (. cc line)
+            (fmt-s "%s: too many args" (. ss name))))
+        (let (oi:i32 nargs)
+          (while (< oi np)
+            (let (default-node:ptr (aref (cast ptr:ptr (. ft0 opt-defaults))
+                                         (- oi required))
+                  v:ptr (emit-node default-node scope))
+              (memcpy (ptr+ (cast ptr:Val args) oi) v (sizeof Val)))
+            (inc! oi))
+          (set! nargs np))))
     ; If the callee has &rest, fold trailing args into a runtime Node cons
     ; list and replace them with a single ptr arg pointing at the list.
-    (let (eff-nargs:i32 nargs
-          ft0:ptr:Type (. ss type))
+    (let (eff-nargs:i32 nargs)
       (when (and (= (. ft0 kind) TY-FN) (!= (. ft0 has-rest) 0))
         (let (fixed:i32 (- (. ft0 num-params) 1))
           (when (< nargs fixed)
@@ -1831,7 +1858,7 @@
                 (fprintf g-body-stream "  %s = call %s %s(%s)\n"
                   tmp (type-to-ir (. ft ret)) (. ss ir-name) arglist)
                 (return (alloc-val (. ft ret) tmp))))))
-        (return (alloc-val ty-void null)))))))
+        (return (alloc-val ty-void null))))))))
 
 ; ============================================================
 ; Special forms
@@ -2539,46 +2566,90 @@
         (let (
               raw-nparams:i32 (node-len params-node)
               has-rest:i32 0
-              rest-idx:i32 -1)
-          ; Scan for &rest. Must be at position (raw-nparams - 2) so the rest
-          ; param itself is the trailing entry.
+              rest-idx:i32 -1
+              opt-idx:i32 -1
+              nopt:i32 0)
+          ; Scan for &rest and &optional. &rest must be second-to-last so
+          ; the rest param itself is the trailing entry. &optional must
+          ; come after all required params; everything after it (until end
+          ; or &rest) is an optional param spec.
           (let (si:i32 0)
             (while (< si raw-nparams)
               (let (sp:ptr:Node (node-at params-node si))
-                (when (and (= (. sp kind) NODE-SYM)
-                           (= (strcmp (. sp s) "&rest") 0))
-                  (when (!= si (- raw-nparams 2))
-                    (die-at (. sp line) "defn: &rest must be second-to-last param"))
-                  (when (!= has-rest 0)
-                    (die-at (. sp line) "defn: multiple &rest in params"))
-                  (set! has-rest 1)
-                  (set! rest-idx si)))
+                (when (= (. sp kind) NODE-SYM)
+                  (when (= (strcmp (. sp s) "&rest") 0)
+                    (when (!= si (- raw-nparams 2))
+                      (die-at (. sp line) "defn: &rest must be second-to-last param"))
+                    (when (!= has-rest 0)
+                      (die-at (. sp line) "defn: multiple &rest in params"))
+                    (set! has-rest 1)
+                    (set! rest-idx si))
+                  (when (= (strcmp (. sp s) "&optional") 0)
+                    (when (!= opt-idx -1)
+                      (die-at (. sp line) "defn: multiple &optional in params"))
+                    (set! opt-idx si))))
               (inc! si)))
+          (when (and (!= opt-idx -1) (!= has-rest 0))
+            (die-at (. (cast ptr:Node (node-at params-node opt-idx)) line)
+                    "defn: &optional cannot be combined with &rest"))
+          (when (!= opt-idx -1)
+            (when (= opt-idx (- raw-nparams 1))
+              (die-at (. (cast ptr:Node (node-at params-node opt-idx)) line)
+                      "defn: &optional must be followed by at least one param"))
+            (set! nopt (- (- raw-nparams 1) opt-idx)))
           (let (nparams:i32 raw-nparams)
-            (when (!= has-rest 0) (set! nparams (- raw-nparams 1)))
+            (when (!= has-rest 0) (set! nparams (- nparams 1)))
+            (when (!= opt-idx -1) (set! nparams (- nparams 1)))
             (let (param-types:ptr null
-                  param-names:ptr null)
+                  param-names:ptr null
+                  opt-defaults:ptr null)
               (when (> nparams 0)
                   (set! param-types (arena-alloc (* (i64 nparams) (i64 8))))
                   (set! param-names (arena-alloc (* (i64 nparams) (i64 8)))))
+              (when (> nopt 0)
+                  (set! opt-defaults (arena-alloc (* (i64 nopt) (i64 8)))))
               (let (i:i32 0
                     di:i32 0)
                 (while (< i raw-nparams)
-                  (when (or (= has-rest 0) (!= i rest-idx))
-                    (let (p:ptr (node-at params-node i)
-                          pname:ptr null
-                          pty:ptr (extract-name-and-type p (cast ptr:ptr (addr-of pname))
-                                                         (. (cast ptr:Node p) line)))
-                      (when (= pty null)
-                        (die-at (. (cast ptr:Node p) line) (fmt-s "defn: missing :type on param '%s'" pname)))
-                      ; The &rest parameter receives a Node* cons-list head.
-                      ; The user's declared type annotates element type only;
-                      ; the actual param is always ptr.
-                      (when (and (!= has-rest 0) (= di (- nparams 1)))
-                        (set! pty ty-ptr))
-                      (aset! (cast ptr:ptr param-types) di pty)
-                      (aset! (cast ptr:ptr param-names) di pname))
-                    (inc! di))
+                  (let (skip:i32 0)
+                    (when (and (!= has-rest 0) (= i rest-idx)) (set! skip 1))
+                    (when (= i opt-idx) (set! skip 1))
+                    (when (= skip 0)
+                      (let (p:ptr (node-at params-node i)
+                            pname:ptr null
+                            is-opt:i32 0)
+                        (when (and (!= opt-idx -1) (> i opt-idx)) (set! is-opt 1))
+                        (let (spec:ptr p
+                              default-node:ptr null)
+                          (when (!= is-opt 0)
+                            ; Optional param: must be a 2-element list
+                            ; (name:type default-expr).
+                            (when (= (node-is-list p) 0)
+                              (die-at (. (cast ptr:Node p) line)
+                                "defn: &optional param must be (name:type default)"))
+                            (when (!= (node-len p) 2)
+                              (die-at (. (cast ptr:Node p) line)
+                                "defn: &optional param must be (name:type default)"))
+                            (set! spec (node-at p 0))
+                            (set! default-node (node-at p 1)))
+                          (let (pty:ptr (extract-name-and-type spec
+                                          (cast ptr:ptr (addr-of pname))
+                                          (. (cast ptr:Node spec) line)))
+                            (when (= pty null)
+                              (die-at (. (cast ptr:Node p) line)
+                                (fmt-s "defn: missing :type on param '%s'" pname)))
+                            ; The &rest parameter receives a Node* cons-list head.
+                            ; The user's declared type annotates element type only;
+                            ; the actual param is always ptr.
+                            (when (and (!= has-rest 0) (= di (- nparams 1)))
+                              (set! pty ty-ptr))
+                            (aset! (cast ptr:ptr param-types) di pty)
+                            (aset! (cast ptr:ptr param-names) di pname)
+                            (when (!= is-opt 0)
+                              (aset! (cast ptr:ptr opt-defaults)
+                                     (- di (- nparams nopt))
+                                     default-node)))))
+                      (inc! di)))
                   (inc! i)))
           ; Register function in globals
           (let (ft:ptr:Type (make-type TY-FN))
@@ -2587,6 +2658,8 @@
             (.set! ft params param-types)
             (.set! ft variadic 0)
             (.set! ft has-rest has-rest)
+            (.set! ft nopt nopt)
+            (.set! ft opt-defaults opt-defaults)
             (scope-define g-globals fname ft
                           (fmt-s "@%s" fname) 0))
           ; Codegen
@@ -2791,15 +2864,29 @@
                               ptypes:ptr null)
                           (when (> nparams 0)
                             (set! ptypes (arena-alloc (* (i64 nparams) (i64 8)))))
-                          (let (j:i32 0)
+                          (let (j:i32 0
+                                past-opt:i32 0)
                             (while (< j nparams)
                               (let (p:ptr (node-at params-node j)
                                     pn:ptr null
-                                    pty:ptr (extract-name-and-type p (cast ptr:ptr (addr-of pn))
-                                                                    (. (cast ptr:Node p) line)))
-                                (if (!= pty null)
-                                  (aset! (cast ptr:ptr ptypes) j pty)
-                                  (aset! (cast ptr:ptr ptypes) j ty-i32)))
+                                    spec:ptr (node-at params-node j)
+                                    is-kw:i32 0)
+                                (when (and (= (. (cast ptr:Node p) kind) NODE-SYM)
+                                           (or (= (strcmp (. (cast ptr:Node p) s) "&optional") 0)
+                                               (= (strcmp (. (cast ptr:Node p) s) "&rest") 0)))
+                                  (set! is-kw 1)
+                                  (when (= (strcmp (. (cast ptr:Node p) s) "&optional") 0)
+                                    (set! past-opt 1)))
+                                (when (and (!= past-opt 0) (= (node-is-list p) 1))
+                                  (when (>= (node-len p) 1) (set! spec (node-at p 0))))
+                                (let (pty:ptr null)
+                                  (when (= is-kw 0)
+                                    (set! pty (extract-name-and-type spec
+                                                (cast ptr:ptr (addr-of pn))
+                                                (. (cast ptr:Node spec) line))))
+                                  (if (!= pty null)
+                                    (aset! (cast ptr:ptr ptypes) j pty)
+                                    (aset! (cast ptr:ptr ptypes) j ty-i32))))
                               (inc! j)))
                           (let (ft:ptr:Type (make-type TY-FN))
                             (.set! ft ret ret)
@@ -3407,15 +3494,29 @@
                         ptypes:ptr null)
                     (when (> nparams 0)
                       (set! ptypes (arena-alloc (* (i64 nparams) (i64 8)))))
-                    (let (j:i32 0)
+                    (let (j:i32 0
+                          past-opt:i32 0)
                       (while (< j nparams)
                         (let (p:ptr (node-at params-node j)
                               pn:ptr null
-                              pty:ptr (extract-name-and-type p (cast ptr:ptr (addr-of pn))
-                                                              (. (cast ptr:Node p) line)))
-                          (if (!= pty null)
-                            (aset! (cast ptr:ptr ptypes) j pty)
-                            (aset! (cast ptr:ptr ptypes) j ty-i32)))
+                              spec:ptr (node-at params-node j)
+                              is-kw:i32 0)
+                          (when (and (= (. (cast ptr:Node p) kind) NODE-SYM)
+                                     (or (= (strcmp (. (cast ptr:Node p) s) "&optional") 0)
+                                         (= (strcmp (. (cast ptr:Node p) s) "&rest") 0)))
+                            (set! is-kw 1)
+                            (when (= (strcmp (. (cast ptr:Node p) s) "&optional") 0)
+                              (set! past-opt 1)))
+                          (when (and (!= past-opt 0) (= (node-is-list p) 1))
+                            (when (>= (node-len p) 1) (set! spec (node-at p 0))))
+                          (let (pty:ptr null)
+                            (when (= is-kw 0)
+                              (set! pty (extract-name-and-type spec
+                                          (cast ptr:ptr (addr-of pn))
+                                          (. (cast ptr:Node spec) line))))
+                            (if (!= pty null)
+                              (aset! (cast ptr:ptr ptypes) j pty)
+                              (aset! (cast ptr:ptr ptypes) j ty-i32))))
                         (inc! j)))
                     (let (ft:ptr:Type (make-type TY-FN))
                       (.set! ft ret ret)
