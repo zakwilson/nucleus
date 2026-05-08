@@ -55,7 +55,7 @@ A `.nuch` file is an S-expression file containing declarations extracted from a 
 (declare cube:i32 (x:i32))
 ```
 
-Supported forms: `declare` (function signatures), `defstruct`, `defconst`, `defenum`, `defmacro` (full body preserved).
+Supported forms: `declare` (function signatures), `defstruct`, `defconst`, `defenum`, `defmacro` (full body preserved), `defcast` (full form preserved — the conv-fn must already be `declare`d in the same header).
 
 ## Top-Level Forms
 
@@ -71,6 +71,7 @@ Supported forms: `declare` (function signatures), `defstruct`, `defconst`, `defe
 | `declare` | Declare an external function signature `(declare name:rettype (params...))`. Used in `.nuch` header files and at the top level. | function prototype |
 | `extern` | Declare an external (foreign) global variable | `extern` declaration |
 | `defmacro` | Define a compile-time macro `(defmacro name (params...) body...)`. Supports `&rest` for variadic macros: `(defmacro name (a b &rest rest) ...)` — `rest` receives a cons list of remaining args. | macro |
+| `defcast` | Register an implicit conversion `(defcast From To conv-fn)`. `conv-fn` must be a unary function with signature `To (From)` already in scope; the compiler emits a call to it whenever an arg of `From` is supplied where `To` is expected. Pairs already covered by built-in coercion (identity, int↔int, `f32`→`f64`) are rejected at registration. Rules are unidirectional and non-transitive — declare each direction explicitly, and chain through an intermediate type by writing the chain yourself. Exported in `.nuch` headers. | implicit conversion |
 | `def-rmacro` | Define a reader macro `(def-rmacro "prefix" symbol)`. When `prefix` appears at the start of a token, the reader wraps the next form: `(symbol form)`. Built-in reader macros: `'` (quote), `` ` `` (quasiquote), `~` (unquote), `~@` (unquote-splice), `@` (deref). | — |
 | `exclude-prelude` | Suppress the implicit `(import prelude)` for this source file. Must be the first top-level form; takes no arguments. Use when a file should compile against the bare language without the standard macros, `Node` struct, or `(include string)` declarations. | — |
 
@@ -270,13 +271,17 @@ A `defn` function name used in value position decays to a function pointer, matc
 
 ### Integer Type Coercion
 
-Integer types are implicitly coerced in assignment contexts (`let`, `set!`, `.set!`, `aset!`, `ptr-set!`):
+Integer types are implicitly coerced in assignment contexts (`let`, `set!`, `.set!`, `aset!`, `ptr-set!`) **and at function call sites** (both direct calls and `funcall`):
 - Same type: no conversion needed
 - Same width, different sign (e.g. `i32` ↔ `ui32`): reinterpret (no IR instruction)
 - Widening: `sext` for signed source, `zext` for unsigned source
 - Narrowing: `trunc`
 
+`f32` → `f64` is also implicit (`fpext`) at the same positions. Mixing float and integer operands without a cast remains a compile error.
+
 Mixed-sign binary operations (e.g. `i32 + ui32`) are rejected with a compile error. Use explicit `(cast ...)` to resolve.
+
+User-asserted conversions between any other type pair can be registered with `(defcast From To conv-fn)`; once registered, the compiler emits a call to `conv-fn` whenever a `From` is supplied where a `To` is expected. Built-in coercion always wins for primitive pairs, so `defcast` cannot shadow `sext`/`zext`/`fpext`.
 
 ## Libc Bindings
 

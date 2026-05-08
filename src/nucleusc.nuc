@@ -13,8 +13,8 @@
 ; src/repl.nuc, source-imported below.
 (declare repl_try:i32 ())
 (declare repl_throw:void ())
-(declare repl_print_f64:void (ptr))
-(declare repl_print_f32:void (ptr))
+(declare repl_print_f64:void (p:ptr))
+(declare repl_print_f32:void (p:ptr))
 
 (extern stderr:ptr)
 (extern stdout:ptr)
@@ -25,6 +25,7 @@
 ; ============================================================
 
 (defconst MAX-STRUCTS 64)
+(defconst MAX-CAST-RULES 256)
 
 ; Token kinds
 (defenum TokKind TOK-LPAREN TOK-RPAREN TOK-RMACRO TOK-INT TOK-STRING TOK-SYMBOL TOK-FLOAT TOK-EOF)
@@ -114,6 +115,13 @@
   prefix-len:i32
   wrap-sym:ptr)
 
+; defcast rule: implicit conversion from `from` to `to` via the
+; user-supplied function `ir-name`. Registered by (defcast From To fn).
+(defstruct CastRule
+  from:ptr
+  to:ptr
+  ir-name:ptr)
+
 
 ; ============================================================
 ; Global variables
@@ -148,6 +156,10 @@
 ; Struct registry
 (defvar g-structs:ptr)
 (defvar g-structs-len:i32 0)
+
+; defcast rule table
+(defvar g-cast-rules:ptr)
+(defvar g-cast-rules-len:i32 0)
 
 ; Global scope
 (defvar g-globals:ptr)
@@ -487,6 +499,43 @@
     (when (= k TY-UI64) (return 1))
     (return 0)))
 
+; Coerce a value to a target type at a call site (or any context that
+; treats arguments as assignments to typed slots). Built-in conversions:
+;   - identity (same kind)
+;   - any integer ↔ integer transformation that `coerce-int-val` permits
+;     (trunc / sext / zext / same-width sign reinterpret) — this matches
+;     the policy already used for assignment positions
+;   - f32 → f64 (fpext)
+; Falls back to the `defcast` registry (user-asserted safe conversions),
+; which is consulted last so built-ins always win for primitive pairs.
+; Returns a Val* on success, null when no rule applies.
+(defn safe-coerce-val:ptr (v:ptr target:ptr line:i32)
+  (let (vv:ptr:Val (cast ptr:Val v)
+        src:ptr (. vv type)
+        sk:i32 (-> src (cast ptr:Type _) (. kind))
+        dk:i32 (-> target (cast ptr:Type _) (. kind)))
+    ; Same kind — identity
+    (when (= sk dk) (return v))
+    ; Integer ↔ integer — delegate to the established policy.
+    (when (and (!= (is-int-type src) 0) (!= (is-int-type target) 0))
+      (return (coerce-int-val v target line)))
+    ; f32 → f64 — fpext
+    (when (and (= sk TY-F32) (= dk TY-F64))
+      (let (tmp:ptr (new-tmp))
+        (fprintf g-body-stream "  %s = fpext float %s to double\n"
+          tmp (. vv val))
+        (return (alloc-val target tmp))))
+    ; defcast registry — user-asserted safe conversion
+    (let (rule:ptr (lookup-cast-rule src target))
+      (when (!= rule null)
+        (let (cr:ptr:CastRule (cast ptr:CastRule rule)
+              tmp:ptr (new-tmp))
+          (fprintf g-body-stream "  %s = call %s %s(%s %s)\n"
+            tmp (type-to-ir target) (. cr ir-name)
+            (type-to-ir src) (. vv val))
+          (return (alloc-val target tmp)))))
+    (return null)))
+
 ; Try to coerce a value to a target type. Returns a Val* or null on failure.
 ; Handles: same kind (identity), int-to-int (trunc/sext/zext), same-width sign change.
 (defn coerce-int-val:ptr (v:ptr target:ptr line:i32)
@@ -531,6 +580,46 @@
           (return (cast ptr sd))))
       (inc! i)))
   (return null))
+
+; Type-equality test used by the defcast registry. Singleton primitive
+; types (ty-i32, ty-f64, …) compare by pointer identity. Struct types
+; compare by their underlying StructDef pointer, since parse-type-name
+; allocates a fresh Type wrapper on each call.
+(defn type-eq:i32 (a:ptr b:ptr)
+  (when (= a b) (return 1))
+  (when (or (= a null) (= b null)) (return 0))
+  (let (ak:i32 (-> a (cast ptr:Type _) (. kind))
+        bk:i32 (-> b (cast ptr:Type _) (. kind)))
+    (when (!= ak bk) (return 0))
+    (when (= ak TY-STRUCT)
+      (let (as:ptr (-> a (cast ptr:Type _) (. sdef))
+            bs:ptr (-> b (cast ptr:Type _) (. sdef)))
+        (when (= as bs) (return 1)))
+      (return 0))
+    ; Non-struct kinds with matching kind are equal (primitives are
+    ; singletons; ptr/void are kind-only; TY-FN equality is not used here).
+    (return 1)))
+
+(defn lookup-cast-rule:ptr (from:ptr to:ptr)
+  (let (i:i32 0)
+    (while (< i g-cast-rules-len)
+      (let (cr:ptr:CastRule (cast ptr:CastRule
+                              (ptr+ (cast ptr:CastRule g-cast-rules) i)))
+        (when (and (!= (type-eq (. cr from) from) 0)
+                   (!= (type-eq (. cr to) to) 0))
+          (return (cast ptr cr))))
+      (inc! i)))
+  (return null))
+
+(defn register-cast-rule:void (from:ptr to:ptr ir-name:ptr)
+  (when (>= g-cast-rules-len MAX-CAST-RULES)
+    (fprintf stderr "nucleusc: too many defcast rules\n") (exit 1))
+  (let (cr:ptr:CastRule (cast ptr:CastRule
+                          (ptr+ (cast ptr:CastRule g-cast-rules) g-cast-rules-len)))
+    (.set! cr from from)
+    (.set! cr to to)
+    (.set! cr ir-name ir-name)
+    (inc! g-cast-rules-len)))
 
 (defn parse-type-name:ptr (name:ptr line:i32)
   (when (= (strcmp name "int")  0) (return ty-i32))
@@ -1468,13 +1557,29 @@
             nargs:i32 (- (node-len cc) 2))
         (when (!= nargs np)
           (die-at (. cc line)
-            (fmt-s "funcall: expected %d args, got %d"
-              (cast i64 np) (cast i64 nargs))))
+            (fmt-sd "funcall: expected %s args, got %d"
+              (fmt-i32 "%d" np) nargs)))
         ; Emit arguments
         (let (arg-vals:ptr (arena-alloc (* (cast i64 nargs) (cast i64 8)))
               i:i32 0)
           (while (< i nargs)
             (aset! (cast ptr:ptr arg-vals) i (emit-node (node-at cc (+ i 2)) scope))
+            (inc! i))
+          ; Apply implicit safe casts against the function-pointer's
+          ; declared parameter types.
+          (set! i 0)
+          (while (< i nargs)
+            (let (av:ptr (aref (cast ptr:ptr arg-vals) i)
+                  ptype:ptr (aref (cast ptr:ptr (. fn-type params)) i)
+                  coerced:ptr (safe-coerce-val av ptype (. cc line)))
+              (when (= coerced null)
+                (let (msg1:ptr (fmt-i32 "funcall: arg %d" (+ i 1))
+                      msg2:ptr (fmt-2s "%s: cannot implicitly cast %s"
+                                       msg1 (type-to-ir (. (cast ptr:Val av) type)))
+                      msg3:ptr (fmt-2s "%s to %s; add (cast ...)"
+                                       msg2 (type-to-ir ptype)))
+                  (die-at (. cc line) msg3)))
+              (aset! (cast ptr:ptr arg-vals) i coerced))
             (inc! i))
           ; Build call instruction
           (let (ret-ir:ptr (type-to-ir ret-type))
@@ -1648,6 +1753,33 @@
               (.set! slot type ty-ptr)
               (.set! slot val prev-name))
             (set! eff-nargs (+ fixed 1)))))
+      ; Apply implicit safe casts to fixed-arity arguments. Variadic-tail
+      ; args (printf-style) and the &rest slot (already a ptr from the
+      ; cons-list fold above) are skipped.
+      (when (= (. ft0 kind) TY-FN)
+        (let (np:i32 (. ft0 num-params)
+              has-rest:i32 (. ft0 has-rest)
+              ci:i32 0)
+          (while (< ci np)
+            (when (< ci eff-nargs)
+              (let (skip-rest:i32 0)
+                (when (and (!= has-rest 0) (= ci (- np 1)))
+                  (set! skip-rest 1))
+                (when (= skip-rest 0)
+                  (let (av:ptr:Val (cast ptr:Val (ptr+ (cast ptr:Val args) ci))
+                        ptype:ptr (aref (cast ptr:ptr (. ft0 params)) ci)
+                        coerced:ptr (safe-coerce-val (cast ptr av) ptype (. cc line)))
+                    (when (= coerced null)
+                      (let (msg1:ptr (fmt-sd "%s: arg %d" (. ss name) (+ ci 1))
+                            msg2:ptr (fmt-2s "%s: cannot implicitly cast %s"
+                                             msg1 (type-to-ir (. av type)))
+                            msg3:ptr (fmt-2s "%s to %s; add (cast ...)"
+                                             msg2 (type-to-ir ptype)))
+                        (die-at (. cc line) msg3)))
+                    (let (cv:ptr:Val (cast ptr:Val coerced))
+                      (.set! av type (. cv type))
+                      (.set! av val  (. cv val)))))))
+            (inc! ci))))
       (let (arglist:ptr (alloca i8 2048)
             apos:i64 (cast i64 0))
         (aset! (cast ptr:i8 arglist) (cast i64 0) (cast i8 0))
@@ -2061,12 +2193,10 @@
         nargs:i32 (- (node-len (cast ptr:Node call)) 1))
     (when (!= (. mdef variadic) 0)
       (when (< nargs (- (. mdef num-params) 1))
-        (die-at (. (cast ptr:Node call) line)
-                (fmt-s "macro: not enough args" (cast i64 0)))))
+        (die-at (. (cast ptr:Node call) line) "macro: not enough args")))
     (when (= (. mdef variadic) 0)
       (when (!= nargs (. mdef num-params))
-        (die-at (. (cast ptr:Node call) line)
-                (fmt-s "macro: wrong number of args" (cast i64 0)))))
+        (die-at (. (cast ptr:Node call) line) "macro: wrong number of args")))
     (let (args-arr:ptr (malloc (* (cast i64 (. mdef num-params)) (cast i64 8)))
           regular-params:i32 (. mdef num-params)
           i:i32 0)
@@ -2300,6 +2430,72 @@
             (fprintf g-out "%s" (type-to-ir (aref (cast ptr:ptr (. sd field-types)) i)))
             (inc! i)))
         (fprintf g-out " }\n\n")))))
+
+; (defcast From To conv-fn)
+;
+; Register an implicit conversion from `From` to `To` that runs the
+; user-supplied unary function `conv-fn`. The function must already be
+; in scope and have signature `To (From)`. Rules are unidirectional and
+; non-transitive — declare both directions explicitly if you need them,
+; and chain through an intermediate type by writing the chain yourself.
+;
+; The pair must NOT be one that the built-in safe-coerce rules already
+; cover (identity, int↔int, f32→f64); duplicating a built-in rule is
+; an error so the registry doesn't silently shadow primitive casts.
+(defn emit-defcast:void (call:ptr)
+  (let (cc:ptr:Node (cast ptr:Node call))
+    (when (!= (node-len cc) 4)
+      (die-at (. cc line) "defcast: expects (defcast From To conv-fn)"))
+    (let (from-node:ptr (node-at cc 1)
+          to-node:ptr   (node-at cc 2)
+          fn-node:ptr:Node (cast ptr:Node (node-at cc 3))
+          from:ptr (parse-type-from-node from-node (. cc line))
+          to:ptr   (parse-type-from-node to-node   (. cc line)))
+      (when (!= (. fn-node kind) NODE-SYM)
+        (die-at (. fn-node line) "defcast: conv-fn must be a symbol"))
+      ; Reject pairs already covered by built-in safe-coerce rules.
+      (let (fk:i32 (-> from (cast ptr:Type _) (. kind))
+            tk:i32 (-> to   (cast ptr:Type _) (. kind)))
+        (when (= fk tk)
+          (die-at (. cc line) "defcast: identity cast is implicit; rule rejected"))
+        (when (and (!= (is-int-type from) 0) (!= (is-int-type to) 0))
+          (die-at (. cc line)
+            "defcast: integer↔integer pairs are handled by built-in coercion; rule rejected"))
+        (when (and (= fk TY-F32) (= tk TY-F64))
+          (die-at (. cc line)
+            "defcast: f32→f64 is handled by built-in coercion; rule rejected")))
+      ; Reject duplicates of an already-registered defcast.
+      (when (!= (lookup-cast-rule from to) null)
+        (die-at (. cc line) "defcast: a rule for this pair is already registered"))
+      ; Resolve the conversion function and validate its signature.
+      (let (sym:ptr (scope-lookup g-globals (. fn-node s)))
+        (when (= sym null)
+          (die-at (. fn-node line)
+            (fmt-s "defcast: unknown function '%s'" (. fn-node s))))
+        (let (ss:ptr:Sym (cast ptr:Sym sym)
+              ft:ptr:Type (cast ptr:Type (. ss type)))
+          (when (!= (. ft kind) TY-FN)
+            (die-at (. fn-node line)
+              (fmt-s "defcast: '%s' is not a function" (. fn-node s))))
+          (when (!= (. ft num-params) 1)
+            (die-at (. fn-node line)
+              (fmt-s "defcast: '%s' must take exactly one argument" (. fn-node s))))
+          (when (!= (. ft variadic) 0)
+            (die-at (. fn-node line)
+              (fmt-s "defcast: '%s' must not be variadic" (. fn-node s))))
+          (when (!= (. ft has-rest) 0)
+            (die-at (. fn-node line)
+              (fmt-s "defcast: '%s' must not use &rest" (. fn-node s))))
+          (let (param0:ptr (aref (cast ptr:ptr (. ft params)) 0))
+            (when (= (type-eq param0 from) 0)
+              (die-at (. fn-node line)
+                (fmt-2s "defcast: '%s' parameter type does not match From; expected %s"
+                  (. fn-node s) (type-to-ir from)))))
+          (when (= (type-eq (. ft ret) to) 0)
+            (die-at (. fn-node line)
+              (fmt-2s "defcast: '%s' return type does not match To; expected %s"
+                (. fn-node s) (type-to-ir to))))
+          (register-cast-rule from to (. ss ir-name)))))))
 
 (defn emit-extern:void (call:ptr)
   (let (cc:ptr:Node (cast ptr:Node call))
@@ -3285,6 +3481,8 @@
                   (emit-import (cast ptr f))
                 (= hp 'declare)
                   (do (set! g-out g-decl-stream) (emit-nuch-declare-import (cast ptr f)))
+                (= hp 'defcast)
+                  (emit-defcast (cast ptr f))
                 true
                   (die-at (. f line) (fmt-s "unknown top-level form: %s" h)))))
       (set! fc (. (cast ptr:Node fc) cdr)))))
@@ -3476,6 +3674,10 @@
   (print-node form)
   (printf "\n"))
 
+(defn emit-nuch-defcast:void (form:ptr)
+  (print-node form)
+  (printf "\n"))
+
 (defn emit-nuch-header:void (forms:ptr source-file:ptr)
   (printf "; .nuch header for %s\n" source-file)
   (let (fc:ptr forms)
@@ -3490,6 +3692,7 @@
                   (= (strcmp h "defconst") 0)  (emit-nuch-defconst (cast ptr f))
                   (= (strcmp h "defenum") 0)   (emit-nuch-defenum (cast ptr f))
                   (= (strcmp h "defmacro") 0)  (emit-nuch-defmacro (cast ptr f))
+                  (= (strcmp h "defcast") 0)   (emit-nuch-defcast (cast ptr f))
                   true                         0))))
       (set! fc (. (cast ptr:Node fc) cdr)))))
 
@@ -3602,6 +3805,7 @@
   (init-binops)
   (init-rmacros)
   (set! g-structs (arena-alloc (* (cast i64 MAX-STRUCTS) (sizeof StructDef))))
+  (set! g-cast-rules (arena-alloc (* (cast i64 MAX-CAST-RULES) (sizeof CastRule))))
   (set! g-macros (arena-alloc (* (cast i64 256) (sizeof MacroDef))))
   (set! g-globals (scope-new null)))
 
