@@ -20,11 +20,11 @@
 (defvar g-arena-cap:i64 0)
 
 (defn arena-init:void ()
-  (set! g-arena (malloc (cast i64 ARENA-SIZE)))
+  (set! g-arena (malloc ARENA-SIZE))
   (when (= g-arena null)
         (do (perror "arena malloc") (exit 1)))
-  (set! g-arena-used (cast i64 0))
-  (set! g-arena-cap (cast i64 ARENA-SIZE)))
+  (set! g-arena-used 0)
+  (set! g-arena-cap ARENA-SIZE))
 
 (defn arena-grow:void (min-size:i64)
   (let (new-cap:i64 g-arena-cap)
@@ -34,7 +34,7 @@
       (when (= new-arena null)
         (do (perror "arena grow") (exit 1)))
       (set! g-arena new-arena)
-      (set! g-arena-used (cast i64 0))
+      (set! g-arena-used 0)
       (set! g-arena-cap new-cap))))
 
 (defn arena-alloc:ptr (n:i64)
@@ -51,7 +51,7 @@
 (defn arena-strndup:ptr (s:ptr n:i64)
   (let (p:ptr (arena-alloc (+ n (cast i64 1))))
     (memcpy p s n)
-    (aset! (cast ptr:i8 p) n (cast i8 0))
+    (aset! (cast ptr:i8 p) n 0)
     (return p)))
 
 (defn arena-strdup:ptr (s:ptr)

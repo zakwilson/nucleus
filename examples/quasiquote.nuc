@@ -13,7 +13,7 @@
   (let (cur:ptr n)
     (printf "(")
     (while (!= cur null)
-      (let (node:ptr:Node (cast ptr:Node (first cur)))
+      (let (node:ptr:Node (first cur))
         (cond (= (. node kind) 0) (printf "%ld" (. node i))
               (= (. node kind) 2) (printf "%s" (. node s))
               true                 (printf "?")))
