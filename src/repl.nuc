@@ -228,6 +228,21 @@
         (when (= (strcmp h "dir") 0)
           (repl-walk-names 0)
           (return 1))
+        ; doc: classification + signature/type summary for a single name.
+        ; Output uses the same indented "  ..." style as dir/apropos so
+        ; editor parsers stay uniform. Reader macros (kind "rmacro") have
+        ; no name-info line; the kind line alone is the response.
+        (when (= (strcmp h "doc") 0)
+          (let (n:ptr (repl-meta-sym-arg form "doc"))
+            (when (!= n null)
+              (let (k:ptr (repl-classify n))
+                (cond (= k null)
+                        (fprintf stderr "  <unbound>\n")
+                      true
+                        (do
+                          (fprintf stderr "  kind: %s\n" k)
+                          (repl-print-name-info n))))))
+          (return 1))
         ; apropos: substring search across names.
         (when (= (strcmp h "apropos") 0)
           (when (< (node-len f) 2)
