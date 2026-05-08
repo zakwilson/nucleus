@@ -96,6 +96,29 @@ Returns nil for non-special forms so the default Lisp indenter handles them."
                                        (current-column))))
                  (+ containing-col (cdr entry)))))))))
 
+(defcustom nucleus-mode-enable-interaction t
+  "If non-nil, enable `nucleus-interaction-mode' in `nucleus-mode' buffers.
+The interaction mode binds eval / completion / describe / locate /
+macroexpand commands that talk to an inferior `nucleusc -i' REPL."
+  :type 'boolean
+  :group 'nucleus)
+
+(autoload 'nucleus-repl "nucleus-repl"
+  "Start (or visit) the inferior Nucleus REPL." t)
+(autoload 'run-nucleus "nucleus-repl"
+  "Start (or visit) the inferior Nucleus REPL." t)
+(autoload 'nucleus-interaction-mode "nucleus-repl"
+  "Minor mode layering REPL-driven commands onto a Nucleus source buffer." t)
+
+(defvar nucleus-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c C-z") #'nucleus-switch-to-repl)
+    map)
+  "Base keymap for `nucleus-mode'.  `nucleus-interaction-mode' adds more.")
+
+(declare-function nucleus-switch-to-repl "nucleus-repl")
+(autoload 'nucleus-switch-to-repl "nucleus-repl" nil t)
+
 ;;;###autoload
 (define-derived-mode nucleus-mode prog-mode "Nucleus"
   "Major mode for editing Nucleus (.nuc) files."
@@ -105,7 +128,9 @@ Returns nil for non-special forms so the default Lisp indenter handles them."
   (setq-local font-lock-defaults '(nucleus-font-lock-keywords))
   (setq-local indent-line-function #'lisp-indent-line)
   (setq-local lisp-indent-function #'nucleus-indent-function)
-  (setq-local parse-sexp-ignore-comments t))
+  (setq-local parse-sexp-ignore-comments t)
+  (when nucleus-mode-enable-interaction
+    (nucleus-interaction-mode 1)))
 
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("\\.nuc\\'" . nucleus-mode))
