@@ -3678,7 +3678,9 @@
     (return 1)))
 
 ; Try to find a file by name in the import search path.
-; Search order: directory of current source file, lib/ relative to cwd.
+; Search order: directory of current source file, lib/ relative to cwd,
+; -I include paths, $NUCLEUS_LIB, then the install-time default
+; /usr/local/share/nucleus/lib.
 (defn try-import-path:ptr (filename:ptr)
   ; Try directory of the current source file
   (let (pathlen:i64 (strlen g-source-path)
@@ -3704,6 +3706,16 @@
         (when (!= (file-exists candidate) 0)
           (return candidate)))
       (inc! j)))
+  ; Try $NUCLEUS_LIB
+  (let (nuclib:ptr (getenv "NUCLEUS_LIB"))
+    (when (!= nuclib null)
+      (let (candidate:ptr (fmt-2s "%s/%s" nuclib filename))
+        (when (!= (file-exists candidate) 0)
+          (return candidate)))))
+  ; Try install-time default
+  (let (candidate:ptr (fmt-s "/usr/local/share/nucleus/lib/%s" filename))
+    (when (!= (file-exists candidate) 0)
+      (return candidate)))
   (return null))
 
 ; Resolve an import name to a .nuc or .nuch file path.

@@ -102,4 +102,36 @@ lib: lib-headers lib-objs
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: test clean bootstrap boot-binary update-bootstrap ensure-boot lib-headers lib-cheaders lib-objs lib-so lib
+# ---- Install ----
+#
+# Installs the compiler binary plus the lib/ source files needed at import
+# time (macros, prelude, etc.). The compiler searches for imports in:
+#   1. directory of current source file
+#   2. ./lib relative to cwd
+#   3. -I paths
+#   4. $NUCLEUS_LIB
+#   5. /usr/local/share/nucleus/lib   (compiled-in default)
+#
+# So a default-prefix install just works; for a custom PREFIX, set
+# NUCLEUS_LIB=$(PREFIX)/share/nucleus/lib in the environment.
+
+PREFIX  ?= /usr/local
+DESTDIR ?=
+BINDIR  := $(DESTDIR)$(PREFIX)/bin
+LIBDIR  := $(DESTDIR)$(PREFIX)/share/nucleus/lib
+
+install: $(BIN)
+	install -d $(BINDIR) $(LIBDIR)
+	install -m 755 $(BIN) $(BINDIR)/nucleusc
+	install -m 644 lib/*.nuc $(LIBDIR)/
+	@echo "Installed nucleusc to $(BINDIR)/nucleusc"
+	@echo "Installed lib files to $(LIBDIR)/"
+	@if [ "$(PREFIX)" != "/usr/local" ]; then \
+		echo "Note: PREFIX != /usr/local — set NUCLEUS_LIB=$(PREFIX)/share/nucleus/lib"; \
+	fi
+
+uninstall:
+	rm -f $(BINDIR)/nucleusc
+	rm -rf $(DESTDIR)$(PREFIX)/share/nucleus
+
+.PHONY: test clean bootstrap boot-binary update-bootstrap ensure-boot lib-headers lib-cheaders lib-objs lib-so lib install uninstall
