@@ -34,6 +34,7 @@ Current branch: `stage6-cleanup`
 | Expressions as values: `cond`/`if` yield branch value; `do`/`let` yield last; `while` is `void`; `defn` implicit return | Done (`design/stage6-expressions.md`) |
 | REPL function redefinition (thunk + ORC resource tracker; cross-module callers see new impl) | Done (`design/stage6-redefinition.md`) |
 | `&rest` for `defn` (macro-style: cons list built at call site via `@make-cell`) | Done (`design/stage6-rest-optional.md`) |
+| `&optional` for `defn` (defaults evaluated at call site, fixed-arity ABI) | Done (`design/stage7/optional.md`) |
 | Pointer syntax: `*Node` → `(ptr Node)` / `ptr:Node` sugar; `*` syntax removed | Done (`design/stage6-pointer-syntax.md`) |
 | Symbol interning: `(= 'foo 'foo)` is true; reader and `quote` share a process-global intern table; special-form dispatch uses identity instead of `strcmp` | Done (`design/stage6-symbols.md`) |
 
@@ -43,7 +44,6 @@ Current branch: `stage6-cleanup`
 
 | Item | Blocker / Note |
 |---|---|
-| `&optional` for `defn` | After `&rest` |
 | Polymorphic print/read (`def-print-method`) | Needs polymorphism mechanism |
 | C header library as external `.so` | Separate from internal split already done |
 | Stage 3c: unions, bit-fields, struct ABI, `long double`, `_Complex` | Deferred per `design/stage3c.md` |
