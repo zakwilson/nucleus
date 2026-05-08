@@ -35,6 +35,27 @@ Imported libraries work: `(import mathlib)` makes `square`, `cube`, etc. availab
 
 Errors in the REPL are caught and recovered; the REPL continues after an error (including IR parse errors and JIT errors). With `--repl-format=json`, each REPL-level error (missing form arg, JIT lookup failure, recovered error) is emitted as a single-line JSON object on stderr.
 
+### REPL meta forms
+
+For tooling and interactive use, the REPL recognizes these forms in addition to top-level forms:
+
+| Form | Description |
+|------|-------------|
+| `(defined? sym)` | Print `1` if the symbol is bound (fn / var / const / macro / struct), else `0`. |
+| `(kind-of sym)` | Print one of `fn`, `macro`, `rmacro`, `var`, `const`, `struct`, or `<unbound>`. |
+| `(type-of expr)` | Print the static type of an expression in Nucleus syntax (e.g. `i32`, `ptr:Node`). Routes through the type-checker without committing IR to the JIT. |
+| `(dir)` | List every known name (globals, macros, structs) with a one-line summary. Functions show signatures; consts show values. |
+| `(apropos "needle")` | Substring search across known names; prints summaries for matches. The arg may be a string or symbol. |
+| `(complete "prefix")` | Prefix search; prints just the matching names — useful for editor completion. |
+| `(imports)` | Print resolved paths of all `(import name)` entries, one per line. |
+| `(casts)` | Print every registered `defcast` rule as `from -> to via fn`. |
+| `(expansion-of form)` | Like `(macroexpand-all 'form)` but takes the form unquoted. |
+| `(last-error)` | Print the most recent recovered REPL error (line + message), or `(none)`. JSON-formatted under `--repl-format=json`. |
+| `(time form)` | Evaluate `form` via the normal eval path and print elapsed CPU time in microseconds. |
+| `(locate sym)` | Print `<file>:<line>` of the symbol's definition. Reports `<unbound>` or `(no source recorded)` for built-in primitives and prelude-registered struct/consts. |
+| `(forget sym)` / `(reset! sym)` | Drop a REPL-local definition so the name becomes unbound. For functions, also tears down the impl resource-tracker; the thunk module persists, so the function's signature is locked for the rest of the session (a redefinition with a different signature still requires a session restart). |
+| `(trace fn)` / `(untrace fn)` | Toggle entry/exit logging for a function. `trace` JITs a `@<name>.trace` shim with the same ABI, copies the current impl pointer into `@<name>.trace.impl`, and repoints `@<name>.tgt` at the shim. Args/returns are not pretty-printed — only `[trace] enter <name>` / `[trace] exit <name>`. Redefining a traced function silently disables tracing (the redef path overwrites `@<name>.tgt` with the new impl directly). |
+
 Functions can be redefined. Redefining a `defn` confirms with `redefined` (vs. `defined` for first sight) and the new body wins for **all** callers, including ones JIT'd before the redefinition. This is implemented by routing every call through a stable `@<name>` thunk that loads the latest impl pointer from `@<name>.tgt`; each definition is JIT'd as `@<name>.impl.<N>` under its own LLVM ORC resource tracker, and the previous tracker is removed on redefinition. `(addr-of foo)` returns the thunk address, so captured pointers also see the latest impl.
 
 Limitations:
