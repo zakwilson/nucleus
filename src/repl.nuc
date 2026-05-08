@@ -321,7 +321,7 @@
                       (!= (. sym trace-tracker) null)
                         (fprintf stderr "  trace: %s already traced\n" n)
                       true
-                        (let (fname-ir:ptr (sanitize-for-ir n)
+                        (let (fname-ir:ptr n
                               ft:ptr (. sym type))
                           (let (rt:ptr (jit-trace-module (. f line) fname-ir ft)
                                 trace-fn-addr:i64 0
@@ -366,7 +366,7 @@
                       (= (. sym trace-tracker) null)
                         (fprintf stderr "  untrace: %s is not traced\n" n)
                       true
-                        (let (fname-ir:ptr (sanitize-for-ir n)
+                        (let (fname-ir:ptr n
                               tgt-addr:i64 0)
                           (let (e:ptr (LLVMOrcLLJITLookup g-jit
                                         (cast ptr (addr-of tgt-addr))
@@ -628,7 +628,7 @@
                                                             (. (cast ptr:Node var-node) line)))
                         (when (!= vty null)
                           (fprintf g-repl-preamble "@%s = external global %s\n"
-                            (sanitize-for-ir vname) (type-to-ir vty))))))
+                            vname (type-to-ir vty))))))
                   (fprintf stderr "  defined\n"))
             (and (!= h null) (= (strcmp h "defstruct") 0))
               (do (open-module-streams)
@@ -676,7 +676,13 @@
                   (= fname null)
                     (repl-error (. f line) "defn: missing name")
                   true
-                    (let (fname-ir:ptr (sanitize-for-ir fname)
+                    ; Use fname directly (no sanitization): emit-defn writes
+                    ; "@<fname>(" verbatim, and LLVM IR identifiers allow
+                    ; '-'. Sanitizing here would mismatch the captured IR
+                    ; for hyphenated names (just-default, etc.) so the
+                    ; rewrite-first-fname pattern would miss and the impl
+                    ; symbol would be defined under the wrong name.
+                    (let (fname-ir:ptr fname
                           is-redef:i32 0
                           old-sym:ptr:Sym (scope-lookup g-globals fname))
                       (when (!= (cast ptr old-sym) null)
