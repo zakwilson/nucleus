@@ -21,7 +21,16 @@
 (defn die-at:void (line:i32 msg:ptr)
   (fprintf stderr "%s:%d: error: %s\n" g-source-path line msg)
   (when (!= g-interactive 0)
-    (repl_throw))
+    ; Stash the error so (last-error) at the REPL can recall it. The
+    ; existing "error (recovered)" path in repl-main doesn't reliably fire
+    ; (the loop calls repl_try twice, the second call overwrites the first
+    ; jmp_buf), so recording it here is the only way to reflect die-at
+    ; errors in g-last-error-msg.
+    (do (when (!= g-last-error-msg null) (free g-last-error-msg))
+        (set! g-last-error-msg null)
+        (when (!= msg null) (set! g-last-error-msg (strdup msg)))
+        (set! g-last-error-line line)
+        (repl_throw)))
   (exit 1))
 
 ; ============================================================

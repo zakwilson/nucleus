@@ -29,6 +29,13 @@
 ; "  error: <msg>\n" form. In JSON mode, prints a single JSON object on
 ; one line: {"file":..,"line":..,"message":..}. line of 0 is omitted.
 (defn repl-error:void (line:i32 msg:ptr)
+  ; Stash the message so (last-error) can recall it. strdup since msg
+  ; may live in a malloc'd buffer that the caller frees, or in arena
+  ; memory that future allocations could reset.
+  (when (!= g-last-error-msg null) (free g-last-error-msg))
+  (set! g-last-error-msg null)
+  (when (!= msg null) (set! g-last-error-msg (strdup msg)))
+  (set! g-last-error-line line)
   (cond (= g-repl-format 1)
           (do (fprintf stderr "{\"file\":\"")
               (repl-error-json-puts g-source-path)
@@ -37,6 +44,456 @@
               (fprintf stderr "\"}\n"))
         true
           (fprintf stderr "  error: %s\n" msg)))
+
+; Render a Type as Nucleus surface syntax: `i32`, `ptr`, `ptr:Foo`, `f64`,
+; `(fn ret (params...))`. Used by `type-of`, `kind-of`, and `dir` to print
+; types the user can copy into source code rather than raw LLVM IR.
+(defn repl-type-to-nuc:ptr (t:ptr)
+  (when (= t null) (return "?"))
+  (let (tt:ptr:Type t  k:i32 (. tt kind))
+    (when (= k TY-VOID) (return "void"))
+    (when (= k TY-I1)   (return "i1"))
+    (when (= k TY-I8)   (return "i8"))
+    (when (= k TY-I16)  (return "i16"))
+    (when (= k TY-I32)  (return "i32"))
+    (when (= k TY-I64)  (return "i64"))
+    (when (= k TY-UI8)  (return "ui8"))
+    (when (= k TY-UI16) (return "ui16"))
+    (when (= k TY-UI32) (return "ui32"))
+    (when (= k TY-UI64) (return "ui64"))
+    (when (= k TY-F32)  (return "f32"))
+    (when (= k TY-F64)  (return "f64"))
+    (when (= k TY-PTR)
+      (let (e:ptr (. tt elem))
+        (when (= e null) (return "ptr"))
+        (let (ek:i32 (-> e (cast ptr:Type _) (. kind)))
+          (when (= ek TY-STRUCT)
+            (return (fmt-s "ptr:%s"
+                           (. (cast ptr:StructDef
+                                (-> e (cast ptr:Type _) (. sdef))) name)))))
+        (return (fmt-s "ptr:%s" (repl-type-to-nuc e)))))
+    (when (= k TY-STRUCT)
+      (return (. (cast ptr:StructDef (. tt sdef)) name)))
+    (when (= k TY-FN)
+      ; Render as "(fn ret p1 p2 ...)". Variadic / &rest / &optional are not
+      ; reflected here — full sig printing lives in repl-print-fn-sig.
+      (return (fmt-s "(fn %s ...)" (repl-type-to-nuc (. tt ret)))))
+    (return "?")))
+
+; Print a function-shape signature `(name:ret (p0:t0 p1:t1 ...))`. Doesn't
+; have access to the original parameter names (the compiler discards them
+; after emit-defn), so it numbers them p0/p1/... — adequate for tooling.
+(defn repl-print-fn-sig:void (out:ptr name:ptr ft:ptr)
+  (let (ftt:ptr:Type ft  np:i32 (. ftt num-params)  i:i32 0)
+    (fprintf out "(%s:%s (" name (repl-type-to-nuc (. ftt ret)))
+    (while (< i np)
+      (when (!= i 0) (fprintf out " "))
+      (fprintf out "p%d:%s" i
+               (repl-type-to-nuc (aref (cast ptr:ptr (. ftt params)) i)))
+      (inc! i))
+    (when (!= (. ftt has-rest) 0) (fprintf out " &rest"))
+    (when (!= (. ftt nopt) 0) (fprintf out " &optional"))
+    (when (!= (. ftt variadic) 0)
+      (when (!= np 0) (fprintf out " "))
+      (fprintf out "..."))
+    (fprintf out "))")))
+
+; Classify a bound name. Returns one of: "fn", "macro", "rmacro", "var",
+; "const", "struct", or null if no binding exists. Searched in priority
+; order: macro > rmacro > struct > scope sym (fn/var/const). Reader-macro
+; entries are keyed by prefix (e.g. "'") rather than by symbol; use the
+; literal prefix string with `kind-of`.
+(defn repl-classify:ptr (name:ptr)
+  (when (!= (find-macro name) null) (return "macro"))
+  (let (ri:i32 0)
+    (while (< ri g-num-rmacros)
+      (let (rm:ptr:RMacro (ptr+ (cast ptr:RMacro g-rmacros) ri))
+        (when (= (strcmp (. rm prefix) name) 0) (return "rmacro")))
+      (inc! ri)))
+  (when (!= (cast ptr (lookup-struct name)) null) (return "struct"))
+  (let (sym:ptr:Sym (scope-lookup g-globals name))
+    (when (!= (cast ptr sym) null)
+      (when (!= (. sym is-const) 0) (return "const"))
+      (let (ty:ptr:Type (. sym type))
+        (when (and (!= (cast ptr ty) null) (= (. ty kind) TY-FN))
+          (return "fn")))
+      (return "var")))
+  (return null))
+
+; Print a single-line summary of a name suitable for `dir`/`apropos` output.
+; For functions, prints the signature; otherwise prints kind:type.
+(defn repl-print-name-info:void (name:ptr)
+  (let (mdef:ptr:MacroDef (find-macro name))
+    (when (!= mdef null)
+      (fprintf stderr "  %s : macro" name)
+      (when (!= (. mdef variadic) 0) (fprintf stderr " &rest"))
+      (fprintf stderr "\n")
+      (return)))
+  (let (sym:ptr:Sym (scope-lookup g-globals name))
+    (when (!= (cast ptr sym) null)
+      (let (ty:ptr:Type (. sym type))
+        (cond (and (!= (cast ptr ty) null) (= (. ty kind) TY-FN))
+                (do (fprintf stderr "  ")
+                    (repl-print-fn-sig stderr name (cast ptr ty))
+                    (fprintf stderr "\n"))
+              (!= (. sym is-const) 0)
+                (fprintf stderr "  %s : const = %s\n" name
+                         (if (!= (. sym const-val) null) (. sym const-val) "?"))
+              true
+                (fprintf stderr "  %s : %s\n" name (repl-type-to-nuc (cast ptr ty))))))))
+
+; Visit each known name (globals, macros, structs) and call one of three
+; actions selected by mode: 0=dir (print info), 1=apropos (substring match
+; → print info), 2=complete (prefix match → print name only). The needle
+; is taken from g-repl-search-needle / g-repl-search-needle-len. Reader
+; macros are not iterated — they're keyed by prefix string, not by name.
+(defvar g-repl-search-needle:ptr)
+(defvar g-repl-search-needle-len:i64 0)
+
+(defn repl-visit-name:void (name:ptr mode:i32)
+  (cond (= mode 0)
+          (repl-print-name-info name)
+        (= mode 1)
+          (when (!= (strstr name g-repl-search-needle) null)
+            (repl-print-name-info name))
+        (= mode 2)
+          (let (n:i64 g-repl-search-needle-len
+                slen:i64 (cast i64 (strlen name)))
+            (when (>= slen n)
+              (when (= (strncmp name g-repl-search-needle n) 0)
+                (fprintf stderr "  %s\n" name))))))
+
+(defn repl-walk-names:void (mode:i32)
+  (let (sc:ptr:Scope g-globals  i:i32 0)
+    (while (< i (. sc len))
+      (let (sym:ptr:Sym (ptr+ (cast ptr:Sym (. sc syms)) i))
+        (repl-visit-name (. sym name) mode))
+      (inc! i)))
+  (let (mi:i32 0)
+    (while (< mi g-num-macros)
+      (let (md:ptr:MacroDef (ptr+ (cast ptr:MacroDef g-macros) mi))
+        ; Skip macros that already appear in g-globals (some macros
+        ; register both — dedup so output isn't doubled).
+        (when (= (cast ptr (scope-lookup g-globals (. md name))) null)
+          (repl-visit-name (. md name) mode)))
+      (inc! mi)))
+  (let (si:i32 0)
+    (while (< si g-structs-len)
+      (let (sd:ptr:StructDef (ptr+ (cast ptr:StructDef g-structs) si))
+        (repl-visit-name (. sd name) mode))
+      (inc! si))))
+
+; Print an arg-name from a meta form. Returns the symbol's string, or null
+; if the arg isn't a NODE-SYM (after emitting an error to repl-error).
+(defn repl-meta-sym-arg:ptr (form:ptr cmd:ptr)
+  (let (ff:ptr:Node form)
+    (when (< (node-len ff) 2)
+      (with (msg:ptr (malloc (cast i64 128)))
+        (snprintf msg (cast i64 128) "%s: missing symbol argument" cmd)
+        (repl-error (. ff line) msg))
+      (return null))
+    (let (a:ptr:Node (node-at ff 1))
+      (when (!= (. a kind) NODE-SYM)
+        (with (msg:ptr (malloc (cast i64 128)))
+          (snprintf msg (cast i64 128) "%s: argument must be a symbol" cmd)
+          (repl-error (. ff line) msg))
+        (return null))
+      (return (. a s)))))
+
+; Try to handle `form` as one of the REPL-builtin meta commands (defined?,
+; dir, apropos, complete, kind-of, imports, casts, expansion-of, last-error,
+; type-of, time). Returns 1 if handled, 0 otherwise. Errors are reported via
+; repl-error and still return 1.
+(defn repl-handle-builtin:i32 (form:ptr)
+  (let (f:ptr:Node form)
+    (when (or (!= (. f kind) NODE-CELL) (= (node-len f) 0)) (return 0))
+    (let (h0:ptr:Node (node-at f 0))
+      (when (!= (. h0 kind) NODE-SYM) (return 0))
+      (let (h:ptr (. h0 s))
+        ; defined?: prints 1 or 0 for the named symbol's binding existence.
+        (when (= (strcmp h "defined?") 0)
+          (let (n:ptr (repl-meta-sym-arg form "defined?"))
+            (when (!= n null)
+              (fprintf stderr "  %d\n"
+                       (if (!= (repl-classify n) null) 1 0))))
+          (return 1))
+        ; kind-of: prints classification or "<unbound>".
+        (when (= (strcmp h "kind-of") 0)
+          (let (n:ptr (repl-meta-sym-arg form "kind-of"))
+            (when (!= n null)
+              (let (k:ptr (repl-classify n))
+                (fprintf stderr "  %s\n" (if (!= k null) k "<unbound>")))))
+          (return 1))
+        ; dir: list every known name with a one-line summary.
+        (when (= (strcmp h "dir") 0)
+          (repl-walk-names 0)
+          (return 1))
+        ; apropos: substring search across names.
+        (when (= (strcmp h "apropos") 0)
+          (when (< (node-len f) 2)
+            (repl-error (. f line) "apropos: missing string argument")
+            (return 1))
+          (let (a:ptr:Node (node-at f 1))
+            (when (and (!= (. a kind) NODE-STR) (!= (. a kind) NODE-SYM))
+              (repl-error (. f line) "apropos: argument must be a string or symbol")
+              (return 1))
+            (set! g-repl-search-needle (. a s))
+            (repl-walk-names 1))
+          (return 1))
+        ; complete: prefix search (string or symbol arg).
+        (when (= (strcmp h "complete") 0)
+          (when (< (node-len f) 2)
+            (repl-error (. f line) "complete: missing prefix argument")
+            (return 1))
+          (let (a:ptr:Node (node-at f 1))
+            (when (and (!= (. a kind) NODE-STR) (!= (. a kind) NODE-SYM))
+              (repl-error (. f line) "complete: argument must be a string or symbol")
+              (return 1))
+            (set! g-repl-search-needle (. a s))
+            (set! g-repl-search-needle-len (strlen (. a s)))
+            (repl-walk-names 2))
+          (return 1))
+        ; imports: print the linked list of resolved import paths.
+        (when (= (strcmp h "imports") 0)
+          (let (cur:ptr g-imported  any:i32 0)
+            (while (!= cur null)
+              (let (e:ptr:Node cur)
+                (fprintf stderr "  %s\n" (. e s))
+                (set! any 1)
+                (set! cur (. e cdr))))
+            (when (= any 0) (fprintf stderr "  (none)\n")))
+          (return 1))
+        ; casts: print every registered defcast rule.
+        (when (= (strcmp h "casts") 0)
+          (when (= g-cast-rules-len 0) (fprintf stderr "  (none)\n"))
+          (let (i:i32 0)
+            (while (< i g-cast-rules-len)
+              (let (cr:ptr:CastRule (ptr+ (cast ptr:CastRule g-cast-rules) i))
+                (fprintf stderr "  %s -> %s via %s\n"
+                         (repl-type-to-nuc (. cr from))
+                         (repl-type-to-nuc (. cr to))
+                         (. cr ir-name)))
+              (inc! i)))
+          (return 1))
+        ; expansion-of: like macroexpand-all, but takes the form unquoted.
+        (when (= (strcmp h "expansion-of") 0)
+          (when (< (node-len f) 2)
+            (repl-error (. f line) "expansion-of: missing form argument")
+            (return 1))
+          (let (arg:ptr (node-at f 1)
+                expanded:ptr (macroexpand-all-form arg))
+            (fprintf stderr "  ")
+            (fprint-node stderr expanded)
+            (fprintf stderr "\n"))
+          (return 1))
+        ; trace / untrace: toggle entry/exit logging for a function. trace
+        ; JITs a `@<name>.trace` shim with the same ABI, copies the current
+        ; impl pointer (loaded from @<name>.tgt) into @<name>.trace.impl,
+        ; and repoints @<name>.tgt at the shim. untrace restores the saved
+        ; impl pointer and removes the shim's resource tracker. Caveat: a
+        ; redefinition while traced overwrites @<name>.tgt with the new
+        ; impl directly (see emit-defn redef path) — tracing silently turns
+        ; off; the user must re-trace.
+        (when (= (strcmp h "trace") 0)
+          (let (n:ptr (repl-meta-sym-arg form "trace"))
+            (when (!= n null)
+              (let (sym:ptr:Sym (scope-lookup g-globals n))
+                (cond (= (cast ptr sym) null)
+                        (fprintf stderr "  trace: <unbound>\n")
+                      (or (= (cast ptr (. sym type)) null)
+                          (!= (. (cast ptr:Type (. sym type)) kind) TY-FN))
+                        (fprintf stderr "  trace: %s is not a function\n" n)
+                      (!= (. sym trace-tracker) null)
+                        (fprintf stderr "  trace: %s already traced\n" n)
+                      true
+                        (let (fname-ir:ptr (sanitize-for-ir n)
+                              ft:ptr (. sym type))
+                          (let (rt:ptr (jit-trace-module (. f line) fname-ir ft)
+                                trace-fn-addr:i64 0
+                                trace-impl-addr:i64 0
+                                tgt-addr:i64 0
+                                cur-impl:ptr null)
+                            (let (e1:ptr (LLVMOrcLLJITLookup g-jit
+                                            (cast ptr (addr-of trace-fn-addr))
+                                            (fmt-s "%s.trace" fname-ir)))
+                              (when (!= e1 null) (LLVMConsumeError e1)))
+                            (let (e2:ptr (LLVMOrcLLJITLookup g-jit
+                                            (cast ptr (addr-of trace-impl-addr))
+                                            (fmt-s "%s.trace.impl" fname-ir)))
+                              (when (!= e2 null) (LLVMConsumeError e2)))
+                            (let (e3:ptr (LLVMOrcLLJITLookup g-jit
+                                            (cast ptr (addr-of tgt-addr))
+                                            (fmt-s "%s.tgt" fname-ir)))
+                              (when (!= e3 null) (LLVMConsumeError e3)))
+                            (cond (or (= trace-fn-addr (cast i64 0))
+                                      (or (= trace-impl-addr (cast i64 0))
+                                          (= tgt-addr (cast i64 0))))
+                                    (fprintf stderr "  trace: JIT lookup failed\n")
+                                  true
+                                    (do
+                                      (set! cur-impl
+                                            (aref (cast ptr:ptr tgt-addr) 0))
+                                      (aset! (cast ptr:ptr trace-impl-addr)
+                                             (cast i64 0) cur-impl)
+                                      (aset! (cast ptr:ptr tgt-addr)
+                                             (cast i64 0)
+                                             (cast ptr trace-fn-addr))
+                                      (.set! sym trace-tracker rt)
+                                      (.set! sym trace-saved cur-impl)
+                                      (fprintf stderr "  traced\n")))))))))
+          (return 1))
+        (when (= (strcmp h "untrace") 0)
+          (let (n:ptr (repl-meta-sym-arg form "untrace"))
+            (when (!= n null)
+              (let (sym:ptr:Sym (scope-lookup g-globals n))
+                (cond (= (cast ptr sym) null)
+                        (fprintf stderr "  untrace: <unbound>\n")
+                      (= (. sym trace-tracker) null)
+                        (fprintf stderr "  untrace: %s is not traced\n" n)
+                      true
+                        (let (fname-ir:ptr (sanitize-for-ir n)
+                              tgt-addr:i64 0)
+                          (let (e:ptr (LLVMOrcLLJITLookup g-jit
+                                        (cast ptr (addr-of tgt-addr))
+                                        (fmt-s "%s.tgt" fname-ir)))
+                            (when (!= e null) (LLVMConsumeError e)))
+                          (when (!= tgt-addr (cast i64 0))
+                            (aset! (cast ptr:ptr tgt-addr) (cast i64 0)
+                                   (. sym trace-saved)))
+                          (let (rt:ptr (. sym trace-tracker))
+                            (let (rerr:ptr (LLVMOrcResourceTrackerRemove rt))
+                              (when (!= rerr null) (LLVMConsumeError rerr)))
+                            (LLVMOrcReleaseResourceTracker rt))
+                          (.set! sym trace-tracker null)
+                          (.set! sym trace-saved null)
+                          (fprintf stderr "  untraced\n"))))))
+          (return 1))
+        ; forget / reset!: drop a REPL-local definition. Works by renaming
+        ; the registry entry's name field to "" so future lookups miss it.
+        ; For functions: also removes the impl resource-tracker so the JIT
+        ; reclaims its memory. The associated thunk module persists (the
+        ; thunk is added to the JIT without a tracker on first defn), so
+        ; redefining a function with a *different* signature still requires
+        ; restarting the session — we say so explicitly.
+        (when (or (= (strcmp h "forget") 0) (= (strcmp h "reset!") 0))
+          (let (n:ptr (repl-meta-sym-arg form h))
+            (when (!= n null)
+              (let (handled:i32 0)
+                ; Walk every Sym in g-globals — the REPL adds duplicates
+                ; (prescan-defn-signatures + emit-defn both register), and
+                ; renaming only the latest leaves earlier copies findable.
+                (let (sc:ptr:Scope g-globals  i:i32 0  warn-thunk:i32 0)
+                  (while (< i (. sc len))
+                    (let (sym:ptr:Sym (ptr+ (cast ptr:Sym (. sc syms)) i))
+                      (when (= (strcmp (. sym name) n) 0)
+                        (set! handled 1)
+                        (let (ty:ptr:Type (. sym type))
+                          (when (and (!= (cast ptr ty) null) (= (. ty kind) TY-FN))
+                            (let (rt:ptr (. sym tracker))
+                              (when (!= rt null)
+                                (let (rerr:ptr (LLVMOrcResourceTrackerRemove rt))
+                                  (when (!= rerr null) (LLVMConsumeError rerr)))
+                                (LLVMOrcReleaseResourceTracker rt)
+                                (.set! sym tracker null)))
+                            (set! warn-thunk 1)))
+                        (.set! sym name "")))
+                    (inc! i))
+                  (when (!= handled 0)
+                    (cond (!= warn-thunk 0)
+                            (fprintf stderr "  forgotten (function thunk persists; signature is locked for this session)\n")
+                          true
+                            (fprintf stderr "  forgotten\n"))))
+                (when (= handled 0)
+                  (let (md:ptr:MacroDef (find-macro n))
+                    (when (!= md null)
+                      (.set! md name "")
+                      (fprintf stderr "  forgotten\n")
+                      (set! handled 1))))
+                (when (= handled 0)
+                  (let (sd:ptr:StructDef (lookup-struct n))
+                    (when (!= (cast ptr sd) null)
+                      (.set! sd name "")
+                      (fprintf stderr "  forgotten\n")
+                      (set! handled 1))))
+                (when (= handled 0) (fprintf stderr "  <unbound>\n")))))
+          (return 1))
+        ; locate: print the source file:line of a symbol's definition.
+        ; Searches scope syms (fn/var/const), macros, and structs in that
+        ; order. Reader macros and built-in primitives have no recorded
+        ; location and print "(no source recorded)".
+        (when (= (strcmp h "locate") 0)
+          (let (n:ptr (repl-meta-sym-arg form "locate"))
+            (when (!= n null)
+              (let (sym:ptr:Sym (scope-lookup g-globals n)
+                    file:ptr null  ln:i32 0  found:i32 0)
+                (when (!= (cast ptr sym) null)
+                  (set! file (. sym src-file))
+                  (set! ln (. sym src-line))
+                  (set! found 1))
+                (when (= found 0)
+                  (let (md:ptr:MacroDef (find-macro n))
+                    (when (!= md null)
+                      (set! file (. md src-file))
+                      (set! ln (. md src-line))
+                      (set! found 1))))
+                (when (= found 0)
+                  (let (sd:ptr:StructDef (lookup-struct n))
+                    (when (!= (cast ptr sd) null)
+                      (set! file (. sd src-file))
+                      (set! ln (. sd src-line))
+                      (set! found 1))))
+                (cond (= found 0)
+                        (fprintf stderr "  <unbound>\n")
+                      (= file null)
+                        (fprintf stderr "  (no source recorded)\n")
+                      true
+                        (fprintf stderr "  %s:%d\n" file ln)))))
+          (return 1))
+        ; last-error: print the most recent recovered error, or "(none)".
+        (when (= (strcmp h "last-error") 0)
+          (cond (= g-last-error-msg null)
+                  (fprintf stderr "  (none)\n")
+                (= g-repl-format 1)
+                  (do (fprintf stderr "  {\"line\":%d,\"message\":\""
+                               g-last-error-line)
+                      (repl-error-json-puts g-last-error-msg)
+                      (fprintf stderr "\"}\n"))
+                true
+                  (fprintf stderr "  line %d: %s\n"
+                           g-last-error-line g-last-error-msg))
+          (return 1))
+        ; type-of: print the static type of an expression. Routes through
+        ; emit-node so arbitrary expressions work, but JIT is skipped — the
+        ; module streams are opened, used to satisfy emit-node's writers,
+        ; then closed and freed without being parsed by LLVM.
+        (when (= (strcmp h "type-of") 0)
+          (when (< (node-len f) 2)
+            (repl-error (. f line) "type-of: missing expression argument")
+            (return 1))
+          (let (arg:ptr (node-at f 1))
+            (open-module-streams)
+            (set! g-out g-def-stream)
+            (reset-function-state)
+            (let (fn-scope:ptr (scope-new g-globals)
+                  saved-qq:i32 g-qq-used
+                  result:ptr:Val (emit-node arg fn-scope))
+              (when (!= (cast ptr result) null)
+                (fprintf stderr "  %s\n"
+                         (repl-type-to-nuc (cast ptr (. result type)))))
+              ; Discard the IR — we only wanted the type.
+              (fclose g-entry-stream)
+              (fclose g-body-stream)
+              (free g-entry-bufp) (free g-body-bufp)
+              (set! g-entry-bufp null) (set! g-body-bufp null)
+              (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
+              (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
+              (set! g-qq-used saved-qq)))
+          (return 1))
+        ; `time` is intentionally NOT handled here — it needs to recurse
+        ; into repl-eval-form to evaluate its inner form, so it lives as a
+        ; branch inside the eval-form cond chain itself (same-function
+        ; recursion sidesteps the forward-decl problem).
+        (return 0)))))
 
 ; Read lines from stdin until parens are balanced, return the accumulated buffer.
 ; Returns null on EOF.
@@ -127,6 +584,10 @@
       (fprint-node stderr (node-at form 1))
       (fprintf stderr "\n")
       (return))
+    ; REPL-only meta forms (defined?, dir, apropos, complete, kind-of,
+    ; imports, casts, expansion-of, last-error, type-of). `time` recurses
+    ; into this function and so is handled as its own cond branch below.
+    (when (!= (repl-handle-builtin form) 0) (return))
     ; Check if it's a list starting with a known keyword
     (let (h:ptr null
           is-expr:i32 1)
@@ -364,6 +825,18 @@
                                     (fprintf g-repl-preamble "%s..." sep)))
                                 (fprintf g-repl-preamble ")\n")))))
                         (inc! si)))))
+            (and (!= h null) (= (strcmp h "time") 0))
+              ; (time form) — evaluate form via the normal repl-eval-form path
+              ; and print elapsed CPU time. CLOCKS_PER_SEC is 1000000 on Linux
+              ; so the clock() difference is already in microseconds.
+              (cond (< (node-len f) 2)
+                      (repl-error (. f line) "time: missing form argument")
+                    true
+                      (let (inner:ptr (node-at form 1)
+                            t0:i64 (clock))
+                        (repl-eval-form inner)
+                        (let (t1:i64 (clock))
+                          (fprintf stderr "  ; elapsed: %ld us\n" (- t1 t0)))))
             true
               ; Expression — wrap in __repl_eval_N and JIT
               (do (open-module-streams)
@@ -532,6 +1005,75 @@
                      (type-to-ir (aref (cast ptr:ptr (. ftt params)) i)) i)
             (inc! i))
           (fprintf out ")\n  ret %s %%r\n}\n\n" ret-ir)))))
+
+; Emit a tracing shim function `@<fname>.trace` that prints "[trace] enter
+; <fname>" on entry, calls the saved real impl pointer (held in
+; `@<fname>.trace.impl`), prints "[trace] exit <fname>", and returns. The
+; shim has the same ABI as the real function so swapping `@<fname>.tgt` to
+; point at it is transparent to callers.
+;
+; Args/returns are NOT pretty-printed — the shim only marks entry/exit. A
+; signature-aware printer would need to know each type's printf specifier.
+(defn emit-fn-trace-shim:void (out:ptr fname:ptr ft:ptr)
+  (let (ftt:ptr:Type ft
+        ret-ir:ptr (type-to-ir (. ftt ret))
+        nparams:i32 (. ftt num-params)
+        i:i32 0
+        is-void:i1 (= (. (cast ptr:Type (. ftt ret)) kind) TY-VOID))
+    (fprintf out "@%s.trace.impl = global ptr null\n" fname)
+    (fprintf out "@%s.trace.fmt-enter = private constant [%d x i8] c\"[trace] enter %s\\0A\\00\"\n"
+             fname (+ (cast i32 (strlen fname)) 16) fname)
+    (fprintf out "@%s.trace.fmt-exit = private constant [%d x i8] c\"[trace] exit %s\\0A\\00\"\n"
+             fname (+ (cast i32 (strlen fname)) 15) fname)
+    (fprintf out "declare i32 @printf(ptr, ...)\n")
+    (fprintf out "define %s @%s.trace(" ret-ir fname)
+    (set! i 0)
+    (while (< i nparams)
+      (when (!= i 0) (fprintf out ", "))
+      (fprintf out "%s %%a%d"
+               (type-to-ir (aref (cast ptr:ptr (. ftt params)) i)) i)
+      (inc! i))
+    (fprintf out ") {\nentry:\n")
+    (fprintf out "  call i32 (ptr, ...) @printf(ptr @%s.trace.fmt-enter)\n" fname)
+    (fprintf out "  %%fp = load ptr, ptr @%s.trace.impl, align 8\n" fname)
+    (if (cast i1 is-void)
+      (do (fprintf out "  call void %%fp(")
+          (set! i 0)
+          (while (< i nparams)
+            (when (!= i 0) (fprintf out ", "))
+            (fprintf out "%s %%a%d"
+                     (type-to-ir (aref (cast ptr:ptr (. ftt params)) i)) i)
+            (inc! i))
+          (fprintf out ")\n")
+          (fprintf out "  call i32 (ptr, ...) @printf(ptr @%s.trace.fmt-exit)\n" fname)
+          (fprintf out "  ret void\n}\n\n"))
+      (do (fprintf out "  %%r = call %s %%fp(" ret-ir)
+          (set! i 0)
+          (while (< i nparams)
+            (when (!= i 0) (fprintf out ", "))
+            (fprintf out "%s %%a%d"
+                     (type-to-ir (aref (cast ptr:ptr (. ftt params)) i)) i)
+            (inc! i))
+          (fprintf out ")\n")
+          (fprintf out "  call i32 (ptr, ...) @printf(ptr @%s.trace.fmt-exit)\n" fname)
+          (fprintf out "  ret %s %%r\n}\n\n" ret-ir)))))
+
+; Build a JIT module containing the trace shim under a fresh resource
+; tracker; returns the tracker so untrace can remove it.
+(defn jit-trace-module:ptr (line:i32 fname-ir:ptr ft:ptr)
+  (let (rt:ptr (LLVMOrcJITDylibCreateResourceTracker g-jit-dylib)
+        buf:ptr null  szp:i64 0
+        s:ptr (open_memstream (addr-of buf) (cast ptr (addr-of szp))))
+    (fprintf s "; ModuleID = '<repl-trace>'\n")
+    (fprintf s "target triple = \"x86_64-pc-linux-gnu\"\n\n")
+    (emit-fn-trace-shim s fname-ir ft)
+    (fclose s)
+    (when (and (!= buf null) (!= (char-at buf (cast i64 0)) 0))
+      (when (!= (getenv "NUC_REPL_DUMP_IR") null)
+        (fprintf stderr "----- TRACE IR -----\n%s----- END -----\n" buf))
+      (jit-add-module-rt buf line rt))
+    (free buf)
+    (return rt)))
 
 ; Build a tiny module containing the @fname thunk + @fname.tgt global, and add
 ; it to the JIT permanently (no resource tracker). This is the stable public
