@@ -52,13 +52,24 @@ the captured output with the trailing prompt stripped.
 ## REPL-side support: `(doc 'sym)`
 
 `src/repl.nuc` exposes a `doc` meta-command alongside `dir`, `apropos`,
-`kind-of`, etc. It prints two indented lines:
+`kind-of`, etc. It prints two indented lines (plus, if a docstring was
+captured at definition time, the docstring indented one extra step):
 
 ```
 nuc> (doc malloc)
   kind: fn
-  (malloc:ptr (p0:ui64))
+  (malloc:ptr (size:ui64))
+
+nuc> (defn add:i32 (a:i32 b:i32) "Add two integers." (return (+ a b)))
+nuc> (doc add)
+  kind: fn
+  (add:i32 (a:i32 b:i32))
+    Add two integers.
 ```
+
+Function signatures use real parameter names captured at `defn` time;
+function-pointer types and other sources without preserved names fall
+back to positional `pN`. Docstrings are also matched by `apropos`.
 
 The argument is a bare symbol, not a quoted form — `(doc 'malloc)` is
 rejected by `repl-meta-sym-arg` because the parsed argument is a cell
