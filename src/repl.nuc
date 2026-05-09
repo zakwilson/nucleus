@@ -75,21 +75,52 @@
     (when (= k TY-STRUCT)
       (return (. (cast ptr:StructDef (. tt sdef)) name)))
     (when (= k TY-FN)
-      ; Render as "(fn ret p1 p2 ...)". Variadic / &rest / &optional are not
-      ; reflected here — full sig printing lives in repl-print-fn-sig.
-      (return (fmt-s "(fn %s ...)" (repl-type-to-nuc (. tt ret)))))
+      ; Render the full signature: "(fn ret name0:t0 name1:t1 ... &rest &optional ...)".
+      ; Uses real param names if the Type carries them (set by emit-defn);
+      ; falls back to positional `pN` for function-pointer types and other
+      ; sources that don't preserve names.
+      (let (buf:ptr null  szp:i64 0
+            s:ptr (open_memstream (addr-of buf) (cast ptr (addr-of szp)))
+            np:i32 (. tt num-params)  i:i32 0
+            pnames:ptr (. tt param-names))
+        (fprintf s "(fn %s" (repl-type-to-nuc (. tt ret)))
+        (while (< i np)
+          (let (pty:ptr (aref (cast ptr:ptr (. tt params)) i)
+                pname:ptr (if (!= pnames null)
+                            (aref (cast ptr:ptr pnames) i)
+                            null))
+            (if (!= pname null)
+              (fprintf s " %s:%s" pname (repl-type-to-nuc pty))
+              (fprintf s " p%d:%s" i (repl-type-to-nuc pty))))
+          (inc! i))
+        (when (!= (. tt has-rest) 0) (fprintf s " &rest"))
+        (when (!= (. tt nopt) 0) (fprintf s " &optional"))
+        (when (!= (. tt variadic) 0)
+          (when (!= np 0) (fprintf s " "))
+          (fprintf s "..."))
+        (fprintf s ")")
+        (fclose s)
+        (let (result:ptr (arena-strndup buf szp))
+          (free buf)
+          (return result))))
     (return "?")))
 
-; Print a function-shape signature `(name:ret (p0:t0 p1:t1 ...))`. Doesn't
-; have access to the original parameter names (the compiler discards them
-; after emit-defn), so it numbers them p0/p1/... — adequate for tooling.
+; Print a function-shape signature `(name:ret (n0:t0 n1:t1 ...))`. Uses
+; the param names captured on Type by emit-defn when present; falls back
+; to positional `pN` for types whose names weren't preserved.
 (defn repl-print-fn-sig:void (out:ptr name:ptr ft:ptr)
-  (let (ftt:ptr:Type ft  np:i32 (. ftt num-params)  i:i32 0)
+  (let (ftt:ptr:Type ft  np:i32 (. ftt num-params)  i:i32 0
+        pnames:ptr (. ftt param-names))
     (fprintf out "(%s:%s (" name (repl-type-to-nuc (. ftt ret)))
     (while (< i np)
       (when (!= i 0) (fprintf out " "))
-      (fprintf out "p%d:%s" i
-               (repl-type-to-nuc (aref (cast ptr:ptr (. ftt params)) i)))
+      (let (pty:ptr (aref (cast ptr:ptr (. ftt params)) i)
+            pname:ptr (if (!= pnames null)
+                        (aref (cast ptr:ptr pnames) i)
+                        null))
+        (if (!= pname null)
+          (fprintf out "%s:%s" pname (repl-type-to-nuc pty))
+          (fprintf out "p%d:%s" i (repl-type-to-nuc pty))))
       (inc! i))
     (when (!= (. ftt has-rest) 0) (fprintf out " &rest"))
     (when (!= (. ftt nopt) 0) (fprintf out " &optional"))
@@ -120,14 +151,69 @@
       (return "var")))
   (return null))
 
+; Print a macro's full signature `(name (p0 p1 ... &rest))` using the
+; param names captured at defmacro time. Falls back to positional `pN`
+; if names weren't preserved.
+(defn repl-print-macro-sig:void (out:ptr mdef:ptr)
+  (let (md:ptr:MacroDef mdef
+        np:i32 (. md num-params)
+        pnames:ptr (. md param-names)
+        i:i32 0)
+    (fprintf out "(%s (" (. md name))
+    (while (< i np)
+      (when (!= i 0) (fprintf out " "))
+      (let (pname:ptr (if (!= pnames null)
+                        (aref (cast ptr:ptr pnames) i)
+                        null))
+        (if (!= pname null)
+          (fprintf out "%s" pname)
+          (fprintf out "p%d" i)))
+      (inc! i))
+    (when (!= (. md variadic) 0)
+      (when (!= np 0) (fprintf out " "))
+      (fprintf out "&rest"))
+    (fprintf out "))")))
+
+
+; Look up the docstring associated with a name. Returns null if the name
+; isn't bound or has no docstring. Macros and functions are checked; the
+; macro table wins (matching repl-classify priority).
+(defn repl-docstring-of:ptr (name:ptr)
+  (let (mdef:ptr:MacroDef (find-macro name))
+    (when (!= mdef null) (return (. mdef docstring))))
+  (let (sym:ptr:Sym (scope-lookup g-globals name))
+    (when (!= (cast ptr sym) null) (return (. sym docstring))))
+  (return null))
+
+; Print a docstring with each line indented to align with the rest of the
+; "  ..." REPL output. No-op if ds is null or empty.
+(defn repl-print-docstring:void (ds:ptr)
+  (when (or (= ds null) (= (char-at ds (cast i64 0)) 0)) (return))
+  (let (n:i64 (strlen ds)
+        i:i64 0
+        line-start:i64 0)
+    (while (< i n)
+      (when (= (char-at ds i) 10)
+        (fprintf stderr "    ")
+        (fwrite (ptr+ (cast ptr:i8 ds) line-start)
+                (cast i64 1) (- i line-start) stderr)
+        (fprintf stderr "\n")
+        (set! line-start (+ i (cast i64 1))))
+      (set! i (+ i (cast i64 1))))
+    (when (< line-start n)
+      (fprintf stderr "    ")
+      (fwrite (ptr+ (cast ptr:i8 ds) line-start)
+              (cast i64 1) (- n line-start) stderr)
+      (fprintf stderr "\n"))))
+
 ; Print a single-line summary of a name suitable for `dir`/`apropos` output.
 ; For functions, prints the signature; otherwise prints kind:type.
 (defn repl-print-name-info:void (name:ptr)
   (let (mdef:ptr:MacroDef (find-macro name))
     (when (!= mdef null)
-      (fprintf stderr "  %s : macro" name)
-      (when (!= (. mdef variadic) 0) (fprintf stderr " &rest"))
-      (fprintf stderr "\n")
+      (fprintf stderr "  ")
+      (repl-print-macro-sig stderr (cast ptr mdef))
+      (fprintf stderr " : macro\n")
       (return)))
   (let (sym:ptr:Sym (scope-lookup g-globals name))
     (when (!= (cast ptr sym) null)
@@ -154,8 +240,19 @@
   (cond (= mode 0)
           (repl-print-name-info name)
         (= mode 1)
-          (when (!= (strstr name g-repl-search-needle) null)
-            (repl-print-name-info name))
+          ; apropos: match needle against the name OR the docstring. When
+          ; a hit is found, print the name-info line followed by the full
+          ; docstring (if any) so editor consumers can render previews.
+          (let (ds:ptr (repl-docstring-of name)
+                hit:i32 0)
+            (when (!= (strstr name g-repl-search-needle) null) (set! hit 1))
+            (when (and (= hit 0)
+                       (and (!= ds null)
+                            (!= (strstr ds g-repl-search-needle) null)))
+              (set! hit 1))
+            (when (!= hit 0)
+              (repl-print-name-info name)
+              (repl-print-docstring ds)))
         (= mode 2)
           (let (n:i64 g-repl-search-needle-len
                 slen:i64 (cast i64 (strlen name)))
@@ -241,7 +338,8 @@
                       true
                         (do
                           (fprintf stderr "  kind: %s\n" k)
-                          (repl-print-name-info n))))))
+                          (repl-print-name-info n)
+                          (repl-print-docstring (repl-docstring-of n)))))))
           (return 1))
         ; apropos: substring search across names.
         (when (= (strcmp h "apropos") 0)

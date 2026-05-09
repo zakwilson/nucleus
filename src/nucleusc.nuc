@@ -60,7 +60,14 @@
   nopt:i32
   opt-defaults:ptr
   elem:ptr
-  sdef:ptr)
+  sdef:ptr
+  ; Parallel array to `params`: each entry is a `ptr` to the param's
+  ; declared name (arena-owned C string), or null if unknown. Populated
+  ; for defn-defined functions; null for function-pointer types and
+  ; declares (where names aren't always present in the source form).
+  ; Used by repl-type-to-nuc and repl-print-fn-sig to render real names
+  ; instead of positional `pN`.
+  param-names:ptr)
 
 (defstruct Tok
   kind:i32
@@ -81,7 +88,11 @@
   src-file:ptr
   src-line:i32
   trace-tracker:ptr
-  trace-saved:ptr)
+  trace-saved:ptr
+  ; Docstring captured from a defn whose body's first form is a string
+  ; literal (with at least one form following it). null otherwise. Used
+  ; by the REPL `doc` and `apropos` commands.
+  docstring:ptr)
 
 (defstruct Scope
   parent:ptr
@@ -118,7 +129,13 @@
   num-params:i32
   variadic:i32
   src-file:ptr
-  src-line:i32)
+  src-line:i32
+  ; Docstring captured from a defmacro whose body's first form is a
+  ; string literal (with at least one form following it). null otherwise.
+  docstring:ptr
+  ; Parameter names array (parallel to the user-declared param list,
+  ; minus &rest/&optional keywords) for tooling. null if not captured.
+  param-names:ptr)
 
 (defstruct RMacro
   prefix:ptr
@@ -2690,13 +2707,21 @@
             (.set! ft ret ret)
             (.set! ft num-params nparams)
             (.set! ft params param-types)
+            (.set! ft param-names param-names)
             (.set! ft variadic 0)
             (.set! ft has-rest has-rest)
             (.set! ft nopt nopt)
             (.set! ft opt-defaults opt-defaults)
-            (sym-set-src-loc (scope-define g-globals fname ft
-                                            (fmt-s "@%s" fname) 0)
-                             (. (cast ptr:Node call) line)))
+            (let (new-sym:ptr (scope-define g-globals fname ft
+                                            (fmt-s "@%s" fname) 0))
+              (sym-set-src-loc new-sym (. (cast ptr:Node call) line))
+              ; Docstring: first body form is a string literal AND there's
+              ; at least one more form after it (so the string isn't the
+              ; sole expression — that would be a string-returning fn).
+              (when (and (> (node-len cc) 4)
+                         (= (. (cast ptr:Node (node-at cc 3)) kind) NODE-STR))
+                (.set! (cast ptr:Sym new-sym) docstring
+                       (. (cast ptr:Node (node-at cc 3)) s)))))
           ; Codegen
           (reset-function-state)
           (let (fn-scope:ptr (scope-new g-globals)
@@ -2713,7 +2738,13 @@
                   (type-to-ir ptype) arg slot palign)
                 (scope-define fn-scope pname ptype slot 1))
               (inc! i))
+            ; Start body emission after the params node. If a docstring
+            ; was captured (string literal at position 3 with at least one
+            ; form following it), skip past it.
             (set! i 3)
+            (when (and (> (node-len cc) 4)
+                       (= (. (cast ptr:Node (node-at cc 3)) kind) NODE-STR))
+              (set! i 4))
             (let (last-val:ptr (alloc-val ty-void null))
               (while (< i (node-len cc))
                 (set! last-val (emit-node (node-at cc i) fn-scope))
@@ -3124,6 +3155,12 @@
             (.set! mdef variadic variadic)
             (.set! mdef src-file g-source-path)
             (.set! mdef src-line (. ff line))
+            (.set! mdef param-names pnames)
+            ; Docstring: first body form is a string literal AND there's
+            ; at least one more form after it.
+            (when (and (> (node-len ff) 4)
+                       (= (. (cast ptr:Node (node-at ff 3)) kind) NODE-STR))
+              (.set! mdef docstring (. (cast ptr:Node (node-at ff 3)) s)))
             (inc! g-num-macros))
 
           ; Flush main streams
@@ -3177,9 +3214,14 @@
                           (scope-define fn-scope pname ptr-node-ty (fmt-s "%%%s.addr" pname) 1))
                         (inc! ei)))))
 
-                ; Compile body forms; last result is return value
+                ; Compile body forms; last result is return value.
+                ; Skip a leading docstring (string literal at position 3
+                ; with at least one form following it).
                 (let (last-val:ptr "null"
                       bi:i32 3)
+                  (when (and (> (node-len ff) 4)
+                             (= (. (cast ptr:Node (node-at ff 3)) kind) NODE-STR))
+                    (set! bi 4))
                   (while (< bi (node-len ff))
                     (let (bv:ptr:Val (emit-node (node-at ff bi) fn-scope))
                       (when (and (!= bv null)
