@@ -200,9 +200,15 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `let` | Bind local variables; yields the body's last expression | local variable declaration |
 | `with` | Like `let`, but auto-frees any binding whose init expression is a libc allocator (`malloc`/`calloc`/`realloc`/`strdup`, possibly through `cast`). Frees fire on fall-through and on early `return` from inside the body. Disarm a single binding by storing `null` to it (`free(NULL)` is a no-op) — useful when the pointer escapes via the body. | `let` + scoped `free` |
 | `cond` | Multi-way conditional; yields the matched branch's value (strict-typed across branches) | `if` / `else if` / `else` chain |
+| `case` | Integer-keyed dispatch; lowers to LLVM `switch`. Each clause is `(KEY body...)` where KEY is an integer literal, a list of integer literals, or the symbol `_` (default). With no `_` clause, an unmatched scrutinee hits `unreachable` (UB). Yields the matched branch's value (strict-typed across branches), like `cond`. | `switch` / `default:` |
 | `while` | Loop; yields `void` | `while` |
-| `set!` | Assign to a variable | `x = val` |
-| `inc!` | Increment a variable | `x++` / `x += 1` |
+| `set!` | Assign to a variable; yields the assigned value | `x = val` |
+| `inc!` | Increment a variable by 1 (or by an optional delta). Yields the new value. | `x++` / `x += n` |
+| `dec!` | Decrement a variable by 1 (or by an optional delta). Yields the new value. | `x--` / `x -= n` |
+| `label` | Declare a function-scoped label. Forward and backward gotos both resolve. Duplicate declarations of the same name are allowed — the last one in textual order is the canonical target. | label: |
+| `goto` | Unconditional jump to a label declared anywhere in the current function. | `goto label` |
+| `label-addr` | Yields a `ptr` to a label (for computed gotos). | `&&label` (GCC) |
+| `goto-ptr` | Indirect branch to a label address. The IR lists every label declared in the current function as a possible destination. | `goto *p` (GCC) |
 | `return` | Return from function | `return` |
 | `not` | Logical negation | `!x` |
 | `and` | Short-circuit logical AND | `&&` |
@@ -210,15 +216,17 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `cast` | Type cast | `(type)x` |
 | `addr-of` | Take address of a variable | `&x` |
 | `deref` | Dereference a pointer (reader sugar: `@p` → `(deref p)`) | `*p` |
-| `ptr-set!` | Write through a pointer | `*p = val` |
+| `ptr-set!` | Write through a pointer; yields the stored value | `*p = val` |
 | `ptr+` | Pointer arithmetic | `p + n` |
 | `.` | Struct field access | `s.field` |
-| `.set!` | Struct field assignment | `s.field = val` |
+| `.set!` | Struct field assignment; yields the stored value | `s.field = val` |
 | `sizeof` | Size of a type | `sizeof(T)` |
 | `alloca` | Stack-allocate memory | `alloca()` / VLA |
 | `char` | Character literal | `'c'` |
 | `aref` | Array element access | `arr[i]` |
-| `aset!` | Array element assignment | `arr[i] = val` |
+| `aset!` | Array element assignment; yields the stored value | `arr[i] = val` |
+| `(StructName init...)` | Compound struct literal. Each `init` is either `(field val)` for a designated initializer or a bare value for a positional one (positional inits fill the next field that has not been designated). Unspecified fields are zero-initialized. Yields `ptr:StructName`, alloca-backed (stack lifetime is the enclosing function). Defining a function with the same name as a struct is a compile-time error (the function would shadow the constructor). | `(struct S){.f = v, ...}` |
+| `array` | `(array ElemType init...)` — array compound literal. Each `init` is either `(index val)` (designated) or a bare value (positional). Length is implicit: `max(positional-count, max-designated-index + 1)`. Unspecified slots are zero-initialized. Yields `ptr:ElemType`, alloca-backed. | `(T[]){1, 2, [3] = 99}` |
 | `quote` | Yields its argument as a `Node*` (reader sugar: `'x` → `(quote x)`). Quoted symbols are interned — see [Symbols](#symbols). | — |
 | `quasiquote` | Like `quote` but `~expr` splices a runtime value and `~@list` splices a list (reader: `` `x ``, `~x`, `~@x`) | — |
 | `compile-time` | Execute body forms at compile time via LLVM JIT; output goes to stderr | — |
