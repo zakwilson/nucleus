@@ -199,6 +199,17 @@
 ; Per-function codegen state
 (defvar g-tmp:i32 0)
 (defvar g-label:i32 0)
+; Per-function label table for (label ...)/(goto ...) special forms.
+; g-lbl-tbl is a Vec of LabelEntry* — name, total occurrence count from
+; pre-scan, seen counter incremented at emit time. Canonical BB name for a
+; label `foo` is `lbl.foo`; earlier (non-last) declarations emit a unique
+; dead BB to satisfy LLVM's no-duplicate-label rule.
+(defstruct LabelEntry
+  name:ptr
+  total:i32
+  seen:i32)
+(defvar g-lbl-tbl:ptr)
+(defvar g-cur-fname:ptr)
 (defvar g-entry-stream:ptr)
 (defvar g-entry-bufp:ptr)
 (defvar g-entry-sizep:i64 0)
@@ -956,6 +967,8 @@
 (defn reset-function-state:void ()
   (set! g-tmp 0)
   (set! g-label 0)
+  (set! g-lbl-tbl (make-vec))
+  (set! g-cur-fname null)
   (set! g-block-term 0)
   (set! g-entry-stream (open_memstream (addr-of g-entry-bufp)
                                        (cast ptr (addr-of g-entry-sizep))))
@@ -1034,7 +1047,7 @@
       (aset! (cast ptr:i8 buf) out (cast i8 (char-at lex in)))
       (set! out (+ out (cast i64 1)))
       (set! in (+ in (cast i64 1))))
-    (aset! (cast ptr:i8 buf) out (cast i8 0))
+    (aset! (cast ptr:i8 buf) out (cast i32 0))
     (return buf)))
 
 (defn emit-float:ptr (n:ptr)
@@ -1418,7 +1431,7 @@
                 gep (. sd name) (. p val) idx)
               (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
                 (type-to-ir ftype) (. cv val) gep (type-size ftype))
-              (return (alloc-val ty-void null)))))))))
+              (return (alloc-val ftype (. cv val))))))))))
 
 ; ============================================================
 ; sizeof, alloca, array ops, char, pointer ops
@@ -1507,7 +1520,7 @@
                 gep (type-to-ir elem) (. p val) idx64)
               (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
                 (type-to-ir elem) (. cv val) gep (type-size elem))
-              (return (alloc-val ty-void null)))))))))
+              (return (alloc-val elem (. cv val))))))))))
 
 (defn emit-char:ptr (call:ptr scope:ptr)
   (let (cc:ptr:Node call)
@@ -1680,7 +1693,7 @@
         (let (cv:ptr:Val coerced)
           (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
             (type-to-ir elem) (. cv val) (. p val) (type-size elem))
-          (return (alloc-val ty-void null)))))))
+          (return (alloc-val elem (. cv val))))))))
 
 (defn emit-ptr-add:ptr (call:ptr scope:ptr)
   (let (cc:ptr:Node call)
@@ -1854,7 +1867,7 @@
             (inc! ci))))
       (let (arglist:ptr (alloca i8 2048)
             apos:i64 0)
-        (aset! (cast ptr:i8 arglist) (cast i64 0) (cast i8 0))
+        (aset! (cast ptr:i8 arglist) (cast i64 0) (cast i32 0))
         (set! i 0)
         (while (< i eff-nargs)
         (let (av:ptr:Val (ptr+ (cast ptr:Val args) i)
@@ -2164,6 +2177,484 @@
           (fprintf g-body-stream "\n")
           (return (alloc-val result-type tmp)))))))
 
+; ============================================================
+; Labels and goto (function-scoped, last-decl-wins)
+; ============================================================
+
+(defn lbl-find:ptr (name:ptr)
+  (let (v:ptr:Vec g-lbl-tbl
+        i:i32 0)
+    (while (< i (. v len))
+      (let (e:ptr:LabelEntry (aref (cast ptr:ptr (. v data)) i))
+        (when (= (strcmp (. e name) name) 0)
+          (return e)))
+      (inc! i))
+    (return null)))
+
+(defn lbl-add-occurrence:void (name:ptr)
+  (let (e:ptr:LabelEntry (lbl-find name))
+    (when (= (cast ptr e) null)
+      (let (ne:ptr:LabelEntry (arena-alloc (sizeof LabelEntry)))
+        (.set! ne name name)
+        (.set! ne total 0)
+        (.set! ne seen 0)
+        (vec-push g-lbl-tbl ne)
+        (set! e ne)))
+    (.set! e total (+ (. e total) 1))))
+
+; Walk a form tree to count (label NAME) occurrences. Skips quoted data.
+(defn prescan-labels:void (form:ptr)
+  (when (= form null) (return))
+  (let (n:ptr:Node form)
+    (when (!= (. n kind) NODE-CELL) (return))
+    (when (= (node-len n) 0) (return))
+    (let (head:ptr:Node (node-at n 0))
+      (when (= (. head kind) NODE-SYM)
+        (when (or (= (strcmp (. head s) "quote") 0)
+                  (= (strcmp (. head s) "quasiquote") 0))
+          (return))
+        (when (and (= (strcmp (. head s) "label") 0)
+                   (= (node-len n) 2))
+          (let (nm:ptr:Node (node-at n 1))
+            (when (= (. nm kind) NODE-SYM)
+              (lbl-add-occurrence (. nm s)))))))
+    (let (it:ptr:Node n)
+      (while (and (!= it null) (= (. it kind) NODE-CELL))
+        (prescan-labels (. it car))
+        (set! it (cast ptr:Node (. it cdr)))))))
+
+(defn emit-label:ptr (call:ptr scope:ptr)
+  (let (cc:ptr:Node call)
+    (when (!= (node-len cc) 2)
+      (die-at (. cc line) "label: expects 1 name"))
+    (let (nm:ptr:Node (node-at cc 1))
+      (when (!= (. nm kind) NODE-SYM)
+        (die-at (. nm line) "label: name must be symbol"))
+      (let (e:ptr:LabelEntry (lbl-find (. nm s)))
+        (when (= (cast ptr e) null)
+          ; Pre-scan missed this label (e.g. from a macro expansion). Treat as
+          ; a single decl; computed gotos may miss this label in the indirectbr
+          ; destination list.
+          (lbl-add-occurrence (. nm s))
+          (set! e (lbl-find (. nm s))))
+        (.set! e seen (+ (. e seen) 1))
+        (let (bb-name:ptr null)
+          (if (= (. e seen) (. e total))
+            (set! bb-name (fmt-s "lbl.%s" (. nm s)))
+            (set! bb-name (fmt-sd "lbl.%s.dead%d" (. nm s) (. e seen))))
+          (when (= g-block-term 0)
+            (fprintf g-body-stream "  br label %%%s\n" bb-name))
+          (fprintf g-body-stream "%s:\n" bb-name)
+          (set! g-block-term 0)
+          (return (alloc-val ty-void null)))))))
+
+(defn emit-goto:ptr (call:ptr scope:ptr)
+  (let (cc:ptr:Node call)
+    (when (!= (node-len cc) 2)
+      (die-at (. cc line) "goto: expects 1 label name"))
+    (let (nm:ptr:Node (node-at cc 1))
+      (when (!= (. nm kind) NODE-SYM)
+        (die-at (. nm line) "goto: name must be symbol"))
+      (let (e:ptr:LabelEntry (lbl-find (. nm s)))
+        (when (= (cast ptr e) null)
+          (die-at (. nm line) (fmt-s "goto: no such label '%s' in function" (. nm s))))
+        (fprintf g-body-stream "  br label %%lbl.%s\n" (. nm s))
+        ; Start a fresh dead BB so subsequent forms in a `do`/`let` body have a
+        ; valid insertion point. LLVM eliminates it (no predecessors).
+        (let (dead:ptr (fmt-i32 "goto.dead%d" (new-label-id)))
+          (fprintf g-body-stream "%s:\n" dead))
+        (set! g-block-term 0)
+        (return (alloc-val ty-void null))))))
+
+(defn emit-label-addr:ptr (call:ptr scope:ptr)
+  (let (cc:ptr:Node call)
+    (when (!= (node-len cc) 2)
+      (die-at (. cc line) "label-addr: expects 1 label name"))
+    (let (nm:ptr:Node (node-at cc 1))
+      (when (!= (. nm kind) NODE-SYM)
+        (die-at (. nm line) "label-addr: name must be symbol"))
+      (let (e:ptr:LabelEntry (lbl-find (. nm s)))
+        (when (= (cast ptr e) null)
+          (die-at (. nm line) (fmt-s "label-addr: no such label '%s' in function" (. nm s)))))
+      (when (= g-cur-fname null)
+        (die-at (. cc line) "label-addr: not inside a function"))
+      (let (tmp:ptr (new-tmp))
+        ; getelementptr with offset 0 is a no-op that lets us bind the
+        ; blockaddress constant to an SSA name.
+        (fprintf g-body-stream
+          "  %s = getelementptr i8, ptr blockaddress(@%s, %%lbl.%s), i64 0\n"
+          tmp g-cur-fname (. nm s))
+        (return (alloc-val ty-ptr tmp))))))
+
+(defn emit-goto-ptr:ptr (call:ptr scope:ptr)
+  (let (cc:ptr:Node call)
+    (when (!= (node-len cc) 2)
+      (die-at (. cc line) "goto-ptr: expects 1 ptr arg"))
+    (let (v:ptr:Val (emit-node (node-at cc 1) scope))
+      (when (-> v (. type) (cast ptr:Type _) (. kind) (!= _ TY-PTR))
+        (die-at (. cc line) "goto-ptr: arg must be ptr"))
+      (let (tbl:ptr:Vec g-lbl-tbl)
+        (when (= (. tbl len) 0)
+          (die-at (. cc line) "goto-ptr: no labels declared in function"))
+        (fprintf g-body-stream "  indirectbr ptr %s, [" (. v val))
+        (let (i:i32 0
+              first:i32 1)
+          (while (< i (. tbl len))
+            (let (e:ptr:LabelEntry (aref (cast ptr:ptr (. tbl data)) i))
+              (when (= first 0) (fprintf g-body-stream ","))
+              (set! first 0)
+              (fprintf g-body-stream " label %%lbl.%s" (. e name)))
+            (inc! i)))
+        (fprintf g-body-stream " ]\n"))
+      (let (dead:ptr (fmt-i32 "goto-ptr.dead%d" (new-label-id)))
+        (fprintf g-body-stream "%s:\n" dead))
+      (set! g-block-term 0)
+      (return (alloc-val ty-void null)))))
+
+; (case scrutinee (key body...) ...)
+; Scheme-style case: each clause's key is either a bare integer literal, a list
+; of integer literals, or the symbol `_` (default clause). Lowers to an LLVM
+; `switch` instruction. If no `_` clause is given and no key matches, the
+; default block is `unreachable` (UB).
+(defn emit-case:ptr (call:ptr scope:ptr)
+  (let (cc:ptr:Node call
+        nargs:i32 (- (node-len cc) 1))
+    (when (< nargs 2)
+      (die-at (. cc line) "case: expects scrutinee and at least one clause"))
+    (let (vexpr:ptr:Val (emit-node (node-at cc 1) scope))
+      (when (= (is-int-type (. vexpr type)) 0)
+        (die-at (. cc line) "case: scrutinee must be integer"))
+      (let (vty:ptr (. vexpr type)
+            vty-ir:ptr (type-to-ir vty)
+            id:i32 (new-label-id)
+            end-lbl:ptr (fmt-i32 "case.end%d" id)
+            dflt-lbl:ptr (fmt-i32 "case.dflt%d" id)
+            nclauses:i32 (- nargs 1)
+            body-lbls:ptr (make-vec)
+            dflt-idx:i32 -1
+            i:i32 0)
+        ; Pass 1: assign body labels and find the default clause (key == `_`).
+        (while (< i nclauses)
+          (let (clause:ptr:Node (node-at cc (+ 2 i)))
+            (when (or (!= (. clause kind) NODE-CELL) (< (node-len clause) 2))
+              (die-at (. clause line) "case: clause must be (key body...)"))
+            (let (key-node:ptr:Node (node-at clause 0)
+                  body-lbl:ptr (fmt-i32-i32 "case.body%d.%d" id i))
+              (vec-push body-lbls body-lbl)
+              (when (and (= (. key-node kind) NODE-SYM)
+                         (= (strcmp (. key-node s) "_") 0))
+                (when (!= dflt-idx -1)
+                  (die-at (. key-node line) "case: multiple `_` default clauses"))
+                (set! dflt-idx i))))
+          (inc! i))
+        ; Emit switch header. Default target is `_`'s body if present, else
+        ; dflt-lbl (which we make `unreachable`).
+        (let (dflt-target:ptr dflt-lbl)
+          (when (>= dflt-idx 0)
+            (set! dflt-target (aref (cast ptr:ptr (. (cast ptr:Vec body-lbls) data)) dflt-idx)))
+          (fprintf g-body-stream "  switch %s %s, label %%%s [\n"
+            vty-ir (. vexpr val) dflt-target))
+        ; Pass 2: emit switch entries (skip the `_` clause).
+        (set! i 0)
+        (while (< i nclauses)
+          (when (!= i dflt-idx)
+            (let (clause:ptr:Node (node-at cc (+ 2 i))
+                  body-lbl:ptr (aref (cast ptr:ptr (. (cast ptr:Vec body-lbls) data)) i)
+                  key-node:ptr:Node (node-at (cast ptr:Node (node-at cc (+ 2 i))) 0))
+              (if (= (. key-node kind) NODE-INT)
+                (fprintf g-body-stream "    %s %ld, label %%%s\n"
+                  vty-ir (. key-node i) body-lbl)
+                (if (= (. key-node kind) NODE-CELL)
+                  (let (it:ptr:Node key-node)
+                    (while (and (!= it null) (= (. it kind) NODE-CELL))
+                      (let (k:ptr:Node (cast ptr:Node (. it car)))
+                        (when (!= (. k kind) NODE-INT)
+                          (die-at (. k line) "case: keys must be integer literals"))
+                        (fprintf g-body-stream "    %s %ld, label %%%s\n"
+                          vty-ir (. k i) body-lbl))
+                      (set! it (cast ptr:Node (. it cdr)))))
+                  (die-at (. key-node line)
+                    "case: key must be integer literal, list of integer literals, or `_`")))))
+          (inc! i))
+        (fprintf g-body-stream "  ]\n")
+        ; Emit each clause body.
+        (let (vals:ptr (make-vec)
+              preds:ptr (make-vec)
+              result-type:ptr null
+              has-undef:i32 0
+              j:i32 0)
+          (while (< j nclauses)
+            (let (clause:ptr:Node (node-at cc (+ 2 j))
+                  body-lbl:ptr (aref (cast ptr:ptr (. (cast ptr:Vec body-lbls) data)) j)
+                  nforms:i32 (- (node-len clause) 1))
+              (fprintf g-body-stream "%s:\n" body-lbl)
+              (set! g-block-term 0)
+              (let (last-val:ptr (alloc-val ty-void null)
+                    k:i32 1)
+                (while (<= k nforms)
+                  (set! last-val (emit-node (node-at clause k) scope))
+                  (inc! k))
+                (when (= g-block-term 0)
+                  (let (join-lbl:ptr (fmt-i32-i32 "case.join%d.%d" id j)
+                        bty:ptr (. (cast ptr:Val last-val) type))
+                    (if (= result-type null)
+                      (set! result-type bty)
+                      (when (and (= (type-eq bty result-type) 0)
+                                 (!= (. (cast ptr:Type result-type) kind) TY-VOID))
+                        (set! result-type ty-void)))
+                    (when (= (. (cast ptr:Type bty) kind) TY-VOID)
+                      (set! result-type ty-void))
+                    (fprintf g-body-stream "  br label %%%s\n" join-lbl)
+                    (fprintf g-body-stream "%s:\n" join-lbl)
+                    (fprintf g-body-stream "  br label %%%s\n" end-lbl)
+                    (vec-push vals (. (cast ptr:Val last-val) val))
+                    (vec-push preds join-lbl)))))
+            (inc! j))
+          ; Default block — only needed if no `_` clause was provided. With a
+          ; `_` clause, the switch's default target is that clause's body BB
+          ; and no separate dflt-lbl is referenced.
+          (when (< dflt-idx 0)
+            (fprintf g-body-stream "%s:\n" dflt-lbl)
+            (fprintf g-body-stream "  unreachable\n"))
+          (fprintf g-body-stream "%s:\n" end-lbl)
+          (set! g-block-term 0)
+          ; If every clause terminated and there are no live phi incomings,
+          ; the end block is unreachable.
+          (when (= (. (cast ptr:Vec vals) len) 0)
+            (fprintf g-body-stream "  unreachable\n")
+            (set! g-block-term 1)
+            (return (alloc-val ty-void null)))
+          (if (or (= result-type null)
+                  (= (. (cast ptr:Type result-type) kind) TY-VOID))
+            (return (alloc-val ty-void null))
+            (let (tmp:ptr (new-tmp)
+                  ty-ir:ptr (type-to-ir result-type)
+                  vv:ptr:Vec vals
+                  pv:ptr:Vec preds
+                  k:i32 0)
+              (fprintf g-body-stream "  %s = phi %s " tmp ty-ir)
+              (while (< k (. vv len))
+                (when (> k 0) (fprintf g-body-stream ", "))
+                (fprintf g-body-stream "[ %s, %%%s ]"
+                  (aref (cast ptr:ptr (. vv data)) k)
+                  (aref (cast ptr:ptr (. pv data)) k))
+                (inc! k))
+              (fprintf g-body-stream "\n")
+              (return (alloc-val result-type tmp)))))))))
+
+; Find a field's index in a struct by name; -1 if not present.
+(defn struct-field-idx:i32 (sd:ptr name:ptr)
+  (let (sdef:ptr:StructDef sd
+        i:i32 0)
+    (while (< i (. sdef num-fields))
+      (when (= (strcmp (aref (cast ptr:ptr (. sdef field-names)) i) name) 0)
+        (return i))
+      (inc! i))
+    (return -1)))
+
+; Emit a zero-initialization store for a single field of `field-type` at the
+; getelementptr-produced address `gep`.
+(defn emit-zero-store:void (field-type:ptr gep:ptr)
+  (let (ft:ptr:Type field-type
+        ir:ptr (type-to-ir field-type)
+        sz:i32 (type-size field-type)
+        zero:ptr "0")
+    (when (= (. ft kind) TY-PTR) (set! zero "null"))
+    (when (= (. ft kind) TY-F32) (set! zero "0.000000e+00"))
+    (when (= (. ft kind) TY-F64) (set! zero "0.000000e+00"))
+    (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n" ir zero gep sz)))
+
+; (StructName init...) — compound literal yielding ptr:StructName, alloca-backed.
+; Each init is either `(field val)` for designated, or a bare value for
+; positional (fills the next field not yet designated). Unspecified fields are
+; zero-initialized.
+(defn emit-struct-lit:ptr (call:ptr scope:ptr sd:ptr)
+  (let (cc:ptr:Node call
+        sdef:ptr:StructDef sd
+        nargs:i32 (- (node-len cc) 1)
+        nfields:i32 (. sdef num-fields))
+    (when (> nargs nfields)
+      (die-at (. cc line)
+        (fmt-s "struct literal: too many initializers for struct" (. sdef name))))
+    (let (vals:ptr (arena-alloc (* (i64 nfields) (i64 8)))
+          seen:ptr (arena-alloc (* (i64 nfields) (i64 4)))
+          pos-idx:i32 0
+          i:i32 0)
+      (while (< i nfields)
+        (aset! (cast ptr:ptr vals) i null)
+        (aset! (cast ptr:i32 seen) i (cast i32 0))
+        (inc! i))
+      (set! i 0)
+      (while (< i nargs)
+        (let (arg:ptr:Node (node-at cc (+ 1 i))
+              is-designated:i32 0)
+          (when (= (. arg kind) NODE-CELL)
+            (when (and (= (node-len arg) 2)
+                       (= (. (cast ptr:Node (node-at arg 0)) kind) NODE-SYM))
+              (set! is-designated 1)))
+          (if (!= is-designated 0)
+            (let (fname-node:ptr:Node (node-at arg 0)
+                  vexpr:ptr (node-at arg 1)
+                  fidx:i32 (struct-field-idx sd (. fname-node s)))
+              (when (< fidx 0)
+                (die-at (. fname-node line)
+                  (fmt-s "struct literal: no field '%s'" (. fname-node s))))
+              (when (!= (aref (cast ptr:i32 seen) fidx) 0)
+                (die-at (. fname-node line)
+                  (fmt-s "struct literal: field '%s' specified twice" (. fname-node s))))
+              (aset! (cast ptr:i32 seen) fidx (cast i32 1))
+              (let (ftype:ptr (aref (cast ptr:ptr (. sdef field-types)) fidx)
+                    v:ptr (emit-node vexpr scope)
+                    coerced:ptr (coerce-int-val v ftype (. cc line)))
+                (when (= coerced null)
+                  (die-at (. cc line)
+                    (fmt-s "struct literal: type mismatch for field '%s'" (. fname-node s))))
+                (aset! (cast ptr:ptr vals) fidx coerced)))
+            (do
+              (while (and (< pos-idx nfields)
+                          (!= (aref (cast ptr:i32 seen) pos-idx) 0))
+                (inc! pos-idx))
+              (when (>= pos-idx nfields)
+                (die-at (. arg line) "struct literal: too many positional initializers"))
+              (let (ftype:ptr (aref (cast ptr:ptr (. sdef field-types)) pos-idx)
+                    v:ptr (emit-node arg scope)
+                    coerced:ptr (coerce-int-val v ftype (. cc line)))
+                (when (= coerced null)
+                  (die-at (. cc line) "struct literal: type mismatch for positional initializer"))
+                (aset! (cast ptr:i32 seen) pos-idx (cast i32 1))
+                (aset! (cast ptr:ptr vals) pos-idx coerced)
+                (inc! pos-idx)))))
+        (inc! i))
+      (let (slot:ptr (new-tmp)
+            sname:ptr (. sdef name))
+        (fprintf g-entry-stream "  %s = alloca %%%s, align 8\n" slot sname)
+        (let (k:i32 0)
+          (while (< k nfields)
+            (let (ftype:ptr (aref (cast ptr:ptr (. sdef field-types)) k)
+                  ftype-ir:ptr (type-to-ir ftype)
+                  fsz:i32 (type-size ftype)
+                  gep:ptr (new-tmp))
+              (fprintf g-body-stream
+                "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
+                gep sname slot k)
+              (let (vp:ptr (aref (cast ptr:ptr vals) k))
+                (if (= vp null)
+                  (emit-zero-store ftype gep)
+                  (let (cv:ptr:Val vp)
+                    (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
+                      ftype-ir (. cv val) gep fsz)))))
+            (inc! k)))
+        (let (pt:ptr:Type (make-type TY-PTR)
+              st:ptr:Type (make-type TY-STRUCT))
+          (.set! st sdef sd)
+          (.set! pt elem st)
+          (return (alloc-val pt slot)))))))
+
+; (array ElemType init...) — compound literal yielding ptr:ElemType pointing
+; at an alloca-backed array. Each init is either `(index val)` for designated
+; or a bare value for positional. Length is implicit: max(positional-count,
+; max-designated-index + 1). Unspecified slots are zero-initialized.
+(defn emit-array-lit:ptr (call:ptr scope:ptr)
+  (let (cc:ptr:Node call
+        nargs:i32 (- (node-len cc) 1))
+    (when (< nargs 1)
+      (die-at (. cc line) "array: expects element type and 0+ initializers"))
+    (let (etype-node:ptr (node-at cc 1)
+          etype:ptr (parse-type-from-node etype-node (. (cast ptr:Node etype-node) line))
+          ninits:i32 (- nargs 1))
+      ; Pass 1: scan inits to compute length and parse keys.
+      (let (max-idx:i32 -1
+            pos-count:i32 0
+            keys:ptr (arena-alloc (* (i64 ninits) (i64 4))) ; i32 per init: -1 if positional
+            i:i32 0)
+        (while (< i ninits)
+          (let (arg:ptr:Node (node-at cc (+ 2 i))
+                is-designated:i32 0)
+            (when (and (= (. arg kind) NODE-CELL)
+                       (and (= (node-len arg) 2)
+                            (= (. (cast ptr:Node (node-at arg 0)) kind) NODE-INT)))
+              (set! is-designated 1))
+            (if (!= is-designated 0)
+              (let (k:i64 (. (cast ptr:Node (node-at arg 0)) i))
+                (when (< k (cast i64 0))
+                  (die-at (. arg line) "array: designated index must be non-negative"))
+                (when (> (cast i32 k) max-idx) (set! max-idx (cast i32 k)))
+                (aset! (cast ptr:i32 keys) i (cast i32 k)))
+              (do
+                (aset! (cast ptr:i32 keys) i (cast i32 -1))
+                (inc! pos-count))))
+          (inc! i))
+        (let (length:i32 pos-count)
+          (when (> (+ max-idx 1) length) (set! length (+ max-idx 1)))
+          (when (= length 0)
+            (die-at (. cc line) "array: at least one initializer required"))
+          ; Resolve each init to an array slot.
+          (let (vals:ptr (arena-alloc (* (i64 length) (i64 8)))
+                seen:ptr (arena-alloc (* (i64 length) (i64 4)))
+                pos-cursor:i32 0
+                j:i32 0)
+            (while (< j length)
+              (aset! (cast ptr:ptr vals) j null)
+              (aset! (cast ptr:i32 seen) j (cast i32 0))
+              (inc! j))
+            ; First, place designated inits.
+            (set! j 0)
+            (while (< j ninits)
+              (let (k:i32 (aref (cast ptr:i32 keys) j))
+                (when (>= k 0)
+                  (when (!= (aref (cast ptr:i32 seen) k) 0)
+                    (die-at (. (cast ptr:Node (node-at cc (+ 2 j))) line)
+                      (fmt-i32 "array: index %d specified twice" k)))
+                  (aset! (cast ptr:i32 seen) k (cast i32 1))
+                  (let (vexpr:ptr (node-at (cast ptr:Node (node-at cc (+ 2 j))) 1)
+                        v:ptr (emit-node vexpr scope)
+                        coerced:ptr (coerce-int-val v etype (. cc line)))
+                    (when (= coerced null)
+                      (die-at (. cc line) "array: type mismatch in designated initializer"))
+                    (aset! (cast ptr:ptr vals) k coerced))))
+              (inc! j))
+            ; Then positional inits fill the next unspecified slots.
+            (set! j 0)
+            (while (< j ninits)
+              (let (k:i32 (aref (cast ptr:i32 keys) j))
+                (when (< k 0)
+                  (while (and (< pos-cursor length)
+                              (!= (aref (cast ptr:i32 seen) pos-cursor) 0))
+                    (inc! pos-cursor))
+                  (when (>= pos-cursor length)
+                    (die-at (. cc line) "array: positional initializer overflows length"))
+                  (let (arg:ptr (node-at cc (+ 2 j))
+                        v:ptr (emit-node arg scope)
+                        coerced:ptr (coerce-int-val v etype (. cc line)))
+                    (when (= coerced null)
+                      (die-at (. cc line) "array: type mismatch in positional initializer"))
+                    (aset! (cast ptr:i32 seen) pos-cursor (cast i32 1))
+                    (aset! (cast ptr:ptr vals) pos-cursor coerced)
+                    (inc! pos-cursor))))
+              (inc! j))
+            ; Emit alloca in entry stream.
+            (let (slot:ptr (new-tmp)
+                  etype-ir:ptr (type-to-ir etype)
+                  esz:i32 (type-size etype))
+              (fprintf g-entry-stream "  %s = alloca %s, i32 %d, align %d\n"
+                slot etype-ir length esz)
+              (let (k:i32 0)
+                (while (< k length)
+                  (let (gep:ptr (new-tmp))
+                    (fprintf g-body-stream
+                      "  %s = getelementptr inbounds %s, ptr %s, i64 %d\n"
+                      gep etype-ir slot k)
+                    (let (vp:ptr (aref (cast ptr:ptr vals) k))
+                      (if (= vp null)
+                        (emit-zero-store etype gep)
+                        (let (cv:ptr:Val vp)
+                          (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
+                            etype-ir (. cv val) gep esz)))))
+                  (inc! k)))
+              (let (pt:ptr:Type (make-type TY-PTR))
+                (.set! pt elem etype)
+                (return (alloc-val pt slot))))))))))
+
 (defn emit-while:ptr (call:ptr scope:ptr)
   (let (cc:ptr:Node call)
     (when (< (node-len cc) 2) (die-at (. cc line) "while: missing condition"))
@@ -2214,35 +2705,52 @@
             (let (cv:ptr:Val coerced)
               (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
                 (type-to-ir (. sym type)) (. cv val) (. sym ir-name) (type-size (. sym type)))
-              (return (alloc-val ty-void null)))))))))
+              (return (alloc-val (. sym type) (. cv val))))))))))
 
-(defn emit-inc:ptr (call:ptr scope:ptr)
-  (let (cc:ptr:Node call)
-    (when (!= (node-len cc) 2) (die-at (. cc line) "inc! expects 1 arg"))
+; Shared codegen for (inc! TARGET [DELTA]) / (dec! TARGET [DELTA]).
+; op-instr is "add" or "sub". Default delta is the literal 1.
+(defn emit-inc-dec:ptr (call:ptr scope:ptr op-instr:ptr op-name:ptr)
+  (let (cc:ptr:Node call
+        nargs:i32 (- (node-len cc) 1))
+    (when (or (< nargs 1) (> nargs 2))
+      (die-at (. cc line) (fmt-s "%s expects 1 or 2 args" op-name)))
     (let (target:ptr:Node (node-at cc 1))
       (when (!= (. target kind) NODE-SYM)
-        (die-at (. target line) "inc!: target must be symbol"))
-      ; Strip any :type annotation so typed names from macro expansions resolve.
-      (let (inc-name:ptr null
-            inc-type-ignored:ptr null)
+        (die-at (. target line) (fmt-s "%s: target must be symbol" op-name)))
+      (let (name:ptr null
+            type-ignored:ptr null)
         (split-typed (. target s)
-                     (cast ptr:ptr (addr-of inc-name))
-                     (cast ptr:ptr (addr-of inc-type-ignored)))
-        (let (sym:ptr:Sym (scope-lookup scope inc-name))
+                     (cast ptr:ptr (addr-of name))
+                     (cast ptr:ptr (addr-of type-ignored)))
+        (let (sym:ptr:Sym (scope-lookup scope name))
           (when (or (= sym null) (= (. sym is-local) 0))
-            (die-at (. target line) (fmt-s "inc!: undefined local '%s'" (. target s))))
+            (die-at (. target line) (fmt-s "%s: undefined local" op-name)))
           (when (= (is-int-type (. sym type)) 0)
-            (die-at (. cc line) "inc!: must be integer"))
+            (die-at (. cc line) (fmt-s "%s: must be integer" op-name)))
           (let (ir:ptr (type-to-ir (. sym type))
                 align:i32 (type-size (. sym type))
-                t1:ptr (new-tmp))
-            (fprintf g-body-stream "  %s = load %s, ptr %s, align %d\n"
-              t1 ir (. sym ir-name) align)
-            (let (t2:ptr (new-tmp))
-              (fprintf g-body-stream "  %s = add nsw %s %s, 1\n" t2 ir t1)
-              (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
-                ir t2 (. sym ir-name) align)
-              (return (alloc-val ty-void null)))))))))
+                delta-ir:ptr "1")
+            (when (= nargs 2)
+              (let (dv:ptr (emit-node (node-at cc 2) scope)
+                    coerced:ptr (coerce-int-val dv (. sym type) (. cc line)))
+                (when (= coerced null)
+                  (die-at (. cc line) (fmt-s "%s: delta type mismatch" op-name)))
+                (set! delta-ir (. (cast ptr:Val coerced) val))))
+            (let (t1:ptr (new-tmp))
+              (fprintf g-body-stream "  %s = load %s, ptr %s, align %d\n"
+                t1 ir (. sym ir-name) align)
+              (let (t2:ptr (new-tmp))
+                (fprintf g-body-stream "  %s = %s nsw %s %s, %s\n"
+                  t2 op-instr ir t1 delta-ir)
+                (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
+                  ir t2 (. sym ir-name) align)
+                (return (alloc-val (. sym type) t2))))))))))
+
+(defn emit-inc:ptr (call:ptr scope:ptr)
+  (return (emit-inc-dec call scope "add" "inc!")))
+
+(defn emit-dec:ptr (call:ptr scope:ptr)
+  (return (emit-inc-dec call scope "sub" "dec!")))
 
 ; ============================================================
 ; Macro expansion (calls JIT-compiled macro functions at compiler runtime)
@@ -2386,11 +2894,18 @@
         (when (= hp 'let) (return (emit-let n scope)))
         (when (= hp 'with) (return (emit-with n scope)))
         (when (= hp 'cond) (return (emit-cond n scope)))
+        (when (= hp 'case) (return (emit-case n scope)))
         (when (= hp 'quote) (return (emit-quote n)))
         (when (= hp 'quasiquote) (return (emit-quasiquote n scope)))
         (when (= hp 'while) (return (emit-while n scope)))
         (when (= hp 'set!) (return (emit-set n scope)))
         (when (= hp 'inc!) (return (emit-inc n scope)))
+        (when (= hp 'dec!) (return (emit-dec n scope)))
+        (when (= hp 'label) (return (emit-label n scope)))
+        (when (= hp 'goto) (return (emit-goto n scope)))
+        (when (= hp 'label-addr) (return (emit-label-addr n scope)))
+        (when (= hp 'goto-ptr) (return (emit-goto-ptr n scope)))
+        (when (= hp 'array) (return (emit-array-lit n scope)))
         (when (= hp 'not) (return (emit-not n scope)))
         (when (= hp 'and) (return (emit-short-circuit n scope 1)))
         (when (= hp 'or) (return (emit-short-circuit n scope 0)))
@@ -2412,6 +2927,10 @@
           (when (!= op null) (return (emit-binop n scope op)))
           (let (sym:ptr (scope-lookup scope h))
             (when (= sym null)
+              ; Struct-name-as-constructor: (S init...) -> ptr:S compound literal.
+              (let (sd:ptr (lookup-struct h))
+                (when (!= sd null)
+                  (return (emit-struct-lit n scope sd))))
               (die-at (. head line) (fmt-s "unknown: %s" h)))
             (return (emit-call n scope sym))))))))
 
@@ -2614,6 +3133,9 @@
                                            (. (cast ptr:Node name-node) line)))
         (when (= ret null)
           (die-at (. (cast ptr:Node name-node) line) (fmt-s "defn: missing :type on '%s'" fname)))
+        (when (!= (cast ptr (lookup-struct fname)) null)
+          (die-at (. cc line)
+            (fmt-s "defn: '%s' shadows a struct constructor of the same name" fname)))
         (let (
               raw-nparams:i32 (node-len params-node)
               has-rest:i32 0
@@ -2724,6 +3246,7 @@
                        (. (cast ptr:Node (node-at cc 3)) s)))))
           ; Codegen
           (reset-function-state)
+          (set! g-cur-fname fname)
           (let (fn-scope:ptr (scope-new g-globals)
                 i:i32 0)
             (while (< i nparams)
@@ -2745,6 +3268,12 @@
             (when (and (> (node-len cc) 4)
                        (= (. (cast ptr:Node (node-at cc 3)) kind) NODE-STR))
               (set! i 4))
+            ; Pre-scan body for (label NAME) declarations so forward gotos
+            ; and last-decl-wins resolution work.
+            (let (psi:i32 i)
+              (while (< psi (node-len cc))
+                (prescan-labels (node-at cc psi))
+                (inc! psi)))
             (let (last-val:ptr (alloc-val ty-void null))
               (while (< i (node-len cc))
                 (set! last-val (emit-node (node-at cc i) fn-scope))
@@ -3362,7 +3891,7 @@
       (let (buf:ptr (malloc (+ sz (cast i64 1))))
         (when (= buf null) (perror "malloc") (exit 1))
         (let (nr:i64 (fread buf (cast i64 1) sz f))
-          (aset! (cast ptr:i8 buf) nr (cast i8 0))
+          (aset! (cast ptr:i8 buf) nr (cast i32 0))
           (fclose f)
           (return buf))))))
 
