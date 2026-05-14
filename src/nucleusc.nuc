@@ -67,7 +67,12 @@
   ; declares (where names aren't always present in the source form).
   ; Used by repl-type-to-nuc and repl-print-fn-sig to render real names
   ; instead of positional `pN`.
-  param-names:ptr)
+  param-names:ptr
+  ; Volatile qualifier: when set, loads/stores of a value held at this
+  ; type's storage site are emitted as `load volatile` / `store volatile`.
+  ; Primitive singletons (ty-i32 etc.) are shared, so volatility is
+  ; represented by cloning the Type via type-with-volatile.
+  is-volatile:i32)
 
 (defstruct Tok
   kind:i32
@@ -431,6 +436,27 @@
     (.set! t kind k)
     (return t)))
 
+; Return a copy of `t` with is-volatile=1. Don't mutate `t` — primitive
+; types (ty-i32, ty-f64, ...) are shared singletons. Idempotent: if `t`
+; is already volatile, returns it unchanged.
+(defn type-with-volatile:ptr (t:ptr)
+  (let (src:ptr:Type t)
+    (when (!= (. src is-volatile) 0) (return t))
+    (let (dst:ptr:Type (alloc-type))
+      (.set! dst kind        (. src kind))
+      (.set! dst ret         (. src ret))
+      (.set! dst params      (. src params))
+      (.set! dst num-params  (. src num-params))
+      (.set! dst variadic    (. src variadic))
+      (.set! dst has-rest    (. src has-rest))
+      (.set! dst nopt        (. src nopt))
+      (.set! dst opt-defaults (. src opt-defaults))
+      (.set! dst elem        (. src elem))
+      (.set! dst sdef        (. src sdef))
+      (.set! dst param-names (. src param-names))
+      (.set! dst is-volatile 1)
+      (return dst))))
+
 (defn types-init:void ()
   (set! ty-void (make-type TY-VOID))
   (set! ty-i1   (make-type TY-I1))
@@ -706,6 +732,32 @@
         (return (parse-type-from-node (split-colon-segments (. n s) line) line)))
       (return (parse-type-name (. n s) line)))
     (when (= (. n kind) NODE-CELL)
+      ; Postfix volatile: (T volatile) or (T1 T2 ... volatile).
+      ; Strip the trailing 'volatile and recurse on the head, then mark.
+      ; Placed before ptr/fn so (ptr i32 volatile) ≡ volatile (ptr i32).
+      (let (nlen:i32 (node-len n))
+        (when (>= nlen 2)
+          (let (last:ptr:Node (node-at n (- nlen 1)))
+            (when (and (!= last null)
+                       (and (= (. last kind) NODE-SYM)
+                            (= (strcmp (. last s) "volatile") 0)))
+              (let (head-len:i32 (- nlen 1)
+                    inner:ptr null)
+                (if (= head-len 1)
+                  (set! inner (. n car))
+                  (let (cur:ptr n
+                        new-head:ptr null
+                        new-tail:ptr null
+                        i:i32 0)
+                    (while (< i head-len)
+                      (let (cell:ptr (make-cell (. (cast ptr:Node cur) car) null line))
+                        (when (= new-head null) (set! new-head cell))
+                        (when (!= new-tail null) (.set! (cast ptr:Node new-tail) cdr cell))
+                        (set! new-tail cell))
+                      (set! cur (. (cast ptr:Node cur) cdr))
+                      (inc! i))
+                    (set! inner new-head)))
+                (return (type-with-volatile (parse-type-from-node inner line))))))))
       ; Check for pointer constructor: (ptr T) or (ptr ptr T) ...
       (let (head:ptr (. n car))
         (when (= head 'ptr)
@@ -975,6 +1027,26 @@
   (set! g-body-stream (open_memstream (addr-of g-body-bufp)
                                       (cast ptr (addr-of g-body-sizep)))))
 
+; Emit a load instruction. `ty` is the Nucleus Type* of the value being
+; loaded; when its is-volatile flag is set, emits `load volatile`. Pass
+; null when volatility cannot apply (e.g., compiler-internal scratch).
+(defn emit-load:void (dst-tmp:ptr ir-type:ptr ptr-name:ptr align:i32 ty:ptr)
+  (let (vol:ptr "")
+    (when (and (!= ty null) (!= (. (cast ptr:Type ty) is-volatile) 0))
+      (set! vol "volatile "))
+    (fprintf g-body-stream "  %s = load %s%s, ptr %s, align %d\n"
+      dst-tmp vol ir-type ptr-name align)))
+
+; Emit a store instruction. `ty` is the Nucleus Type* of the destination
+; storage; volatile-qualified types emit `store volatile`. Pass null when
+; volatility cannot apply.
+(defn emit-store:void (ir-type:ptr val:ptr ptr-name:ptr align:i32 ty:ptr)
+  (let (vol:ptr "")
+    (when (and (!= ty null) (!= (. (cast ptr:Type ty) is-volatile) 0))
+      (set! vol "volatile "))
+    (fprintf g-body-stream "  store %s%s %s, ptr %s, align %d\n"
+      vol ir-type val ptr-name align)))
+
 ; ============================================================
 ; Expression codegen
 ; ============================================================
@@ -1196,8 +1268,8 @@
            (return (alloc-val (. sym type) (. sym ir-name))))
          (die-at (. nn line) (fmt-s "cannot use '%s' as value" (. nn s))))
         (let (tmp:ptr (new-tmp))
-          (fprintf g-body-stream "  %s = load %s, ptr %s, align %d\n"
-            tmp (type-to-ir (. sym type)) (. sym ir-name) (type-size (. sym type)))
+          (emit-load tmp (type-to-ir (. sym type)) (. sym ir-name)
+                     (type-size (. sym type)) (. sym type))
           (return (alloc-val (. sym type) tmp)))))))
 
 ; ============================================================
@@ -1393,8 +1465,7 @@
               "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
               gep (. sd name) (. p val) idx)
             (let (val:ptr (new-tmp))
-              (fprintf g-body-stream "  %s = load %s, ptr %s, align %d\n"
-                val (type-to-ir ftype) gep (type-size ftype))
+              (emit-load val (type-to-ir ftype) gep (type-size ftype) ftype)
               (return (alloc-val ftype val)))))))))
 
 (defn emit-field-set:ptr (call:ptr scope:ptr)
@@ -1429,8 +1500,7 @@
               (fprintf g-body-stream
                 "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
                 gep (. sd name) (. p val) idx)
-              (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
-                (type-to-ir ftype) (. cv val) gep (type-size ftype))
+              (emit-store (type-to-ir ftype) (. cv val) gep (type-size ftype) ftype)
               (return (alloc-val ftype (. cv val))))))))))
 
 ; ============================================================
@@ -1488,8 +1558,7 @@
               "  %s = getelementptr inbounds %s, ptr %s, i64 %s\n"
               gep (type-to-ir elem) (. p val) idx64)
             (let (val:ptr (new-tmp))
-              (fprintf g-body-stream "  %s = load %s, ptr %s, align %d\n"
-                val (type-to-ir elem) gep (type-size elem))
+              (emit-load val (type-to-ir elem) gep (type-size elem) elem)
               (return (alloc-val elem val)))))))))
 
 (defn emit-aset:ptr (call:ptr scope:ptr)
@@ -1518,8 +1587,7 @@
               (fprintf g-body-stream
                 "  %s = getelementptr inbounds %s, ptr %s, i64 %s\n"
                 gep (type-to-ir elem) (. p val) idx64)
-              (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
-                (type-to-ir elem) (. cv val) gep (type-size elem))
+              (emit-store (type-to-ir elem) (. cv val) gep (type-size elem) elem)
               (return (alloc-val elem (. cv val))))))))))
 
 (defn emit-char:ptr (call:ptr scope:ptr)
@@ -1674,8 +1742,7 @@
         (die-at (. cc line) "deref: operand must be typed pointer"))
       (let (elem:ptr (-> p (. type) (cast ptr:Type _) (. elem))
             tmp:ptr (new-tmp))
-        (fprintf g-body-stream "  %s = load %s, ptr %s, align %d\n"
-          tmp (type-to-ir elem) (. p val) (type-size elem))
+        (emit-load tmp (type-to-ir elem) (. p val) (type-size elem) elem)
         (return (alloc-val elem tmp))))))
 
 (defn emit-ptr-set:ptr (call:ptr scope:ptr)
@@ -1691,8 +1758,7 @@
         (when (= coerced null)
           (die-at (. cc line) "ptr-set!: value type mismatch"))
         (let (cv:ptr:Val coerced)
-          (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
-            (type-to-ir elem) (. cv val) (. p val) (type-size elem))
+          (emit-store (type-to-ir elem) (. cv val) (. p val) (type-size elem) elem)
           (return (alloc-val elem (. cv val))))))))
 
 (defn emit-ptr-add:ptr (call:ptr scope:ptr)
@@ -2019,8 +2085,7 @@
                     (die-at (. (cast ptr:Node bval-node) line)
                       (fmt-s "let: init type mismatch for '%s'" name)))
                   (let (cv:ptr:Val coerced)
-                    (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
-                      (type-to-ir ty) (. cv val) slot align)
+                    (emit-store (type-to-ir ty) (. cv val) slot align ty)
                     (scope-define inner name ty slot 1))))))
           (set! i (+ i 2)))
         (let (last:ptr (alloc-val ty-void null)
@@ -2063,8 +2128,7 @@
                     (die-at (. (cast ptr:Node bval-node) line)
                       (fmt-s "with: init type mismatch for '%s'" name)))
                   (let (cv:ptr:Val coerced)
-                    (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
-                      (type-to-ir ty) (. cv val) slot align)
+                    (emit-store (type-to-ir ty) (. cv val) slot align ty)
                     (scope-define inner name ty slot 1)
                     (when (= autofree 1)
                       (scope-push-cleanup inner slot)))))))
@@ -2703,8 +2767,8 @@
             (when (= coerced null)
               (die-at (. cc line) (fmt-s "set!: type mismatch for '%s'" (. target s))))
             (let (cv:ptr:Val coerced)
-              (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
-                (type-to-ir (. sym type)) (. cv val) (. sym ir-name) (type-size (. sym type)))
+              (emit-store (type-to-ir (. sym type)) (. cv val) (. sym ir-name)
+                          (type-size (. sym type)) (. sym type))
               (return (alloc-val (. sym type) (. cv val))))))))))
 
 ; Shared codegen for (inc! TARGET [DELTA]) / (dec! TARGET [DELTA]).
@@ -2737,13 +2801,11 @@
                   (die-at (. cc line) (fmt-s "%s: delta type mismatch" op-name)))
                 (set! delta-ir (. (cast ptr:Val coerced) val))))
             (let (t1:ptr (new-tmp))
-              (fprintf g-body-stream "  %s = load %s, ptr %s, align %d\n"
-                t1 ir (. sym ir-name) align)
+              (emit-load t1 ir (. sym ir-name) align (. sym type))
               (let (t2:ptr (new-tmp))
                 (fprintf g-body-stream "  %s = %s nsw %s %s, %s\n"
                   t2 op-instr ir t1 delta-ir)
-                (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
-                  ir t2 (. sym ir-name) align)
+                (emit-store ir t2 (. sym ir-name) align (. sym type))
                 (return (alloc-val (. sym type) t2))))))))))
 
 (defn emit-inc:ptr (call:ptr scope:ptr)
