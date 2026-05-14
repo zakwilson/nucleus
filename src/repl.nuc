@@ -276,7 +276,7 @@
       (inc! mi)))
   (let (si:i32 0)
     (while (< si g-structs-len)
-      (let (sd:ptr:StructDef (ptr+ (cast ptr:StructDef g-structs) si))
+      (let (sd:ptr:StructDef (aref (cast ptr:ptr g-structs) si))
         (repl-visit-name (. sd name) mode))
       (inc! si))))
 
