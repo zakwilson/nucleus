@@ -24,7 +24,6 @@
 ; Constants
 ; ============================================================
 
-(defconst MAX-STRUCTS 64)
 (defconst MAX-CAST-RULES 256)
 
 ; Token kinds
@@ -185,9 +184,13 @@
 (defvar ty-f32:ptr)
 (defvar ty-f64:ptr)
 
-; Struct registry
+; Struct registry — growable array of StructDef* pointers. Each
+; StructDef is arena-allocated so its address is stable; only the
+; pointer table here is reallocated on growth. Capacity-based growth
+; (start 8, double) mirrors the string intern table.
 (defvar g-structs:ptr)
 (defvar g-structs-len:i32 0)
+(defvar g-structs-cap:i32 0)
 
 ; defcast rule table
 (defvar g-cast-rules:ptr)
@@ -639,21 +642,111 @@
     (return null)))
 
 (defn register-struct:ptr (name:ptr)
-  (when (>= g-structs-len MAX-STRUCTS)
-    (fprintf stderr "nucleusc: too many structs\n") (exit 1))
-  (let (sd:ptr:StructDef (ptr+ (cast ptr:StructDef g-structs) g-structs-len))
+  (when (= g-structs-len g-structs-cap)
+    (let (nc:i32 8)
+      (when (!= g-structs-cap 0) (set! nc (* g-structs-cap 2)))
+      (let (ns:ptr (malloc (* (i64 nc) (i64 8))))
+        (when (= ns null) (perror "malloc") (exit 1))
+        (when (!= g-structs null)
+          (memcpy ns g-structs (* (i64 g-structs-len) (i64 8)))
+          (free g-structs))
+        (set! g-structs ns)
+        (set! g-structs-cap nc))))
+  (let (sd:ptr:StructDef (arena-alloc (sizeof StructDef)))
     (.set! sd name name)
+    (aset! (cast ptr:ptr g-structs) g-structs-len sd)
     (inc! g-structs-len)
     (return sd)))
 
 (defn lookup-struct:ptr (name:ptr)
   (let (i:i32 0)
     (while (< i g-structs-len)
-      (let (sd:ptr:StructDef (ptr+ (cast ptr:StructDef g-structs) i))
+      (let (sd:ptr:StructDef (aref (cast ptr:ptr g-structs) i))
         (when (= (strcmp (. sd name) name) 0)
           (return sd)))
       (inc! i)))
   (return null))
+
+; ----------------------------------------------------------------
+; Anonymous struct memoization
+; ----------------------------------------------------------------
+; Two `(struct ...)` literals with the same field-name+type list share
+; a single StructDef. The synthetic name is derived from a 64-bit
+; FNV-1a hash over the field shape so the IR type name carries the
+; identity and the memoization key.
+
+(defn fnv-byte:i64 (h:i64 b:i64)
+  (set! h (bit-xor h b))
+  (set! h (* h (cast i64 1099511628211)))
+  (return h))
+
+(defn fnv-str:i64 (h:i64 s:ptr)
+  (let (i:i64 0
+        c:i32 (bit-and (cast i32 (aref (cast ptr:i8 s) 0)) 255))
+    (while (!= c 0)
+      (set! h (fnv-byte h (cast i64 c)))
+      (set! i (+ i (cast i64 1)))
+      (set! c (bit-and (cast i32 (aref (cast ptr:i8 s) i)) 255)))
+    (return h)))
+
+; Fold a Type's identity into the running hash. Recursion terminates
+; for struct types because (named or anonymous) StructDefs carry a
+; unique name string — anonymous structs are already hashed-named by
+; the time they appear as a nested field type.
+(defn hash-type:i64 (h:i64 t:ptr)
+  (when (= t null) (return (fnv-byte h (cast i64 255))))
+  (let (tt:ptr:Type t
+        k:i32 (. tt kind))
+    (set! h (fnv-byte h (cast i64 k)))
+    (set! h (fnv-byte h (cast i64 (. tt is-volatile))))
+    (when (= k TY-PTR)
+      (set! h (hash-type h (. tt elem))))
+    (when (= k TY-STRUCT)
+      (set! h (fnv-str h (. (cast ptr:StructDef (. tt sdef)) name))))
+    (when (= k TY-FN)
+      (set! h (hash-type h (. tt ret)))
+      (set! h (fnv-byte h (cast i64 (. tt num-params))))
+      (let (i:i32 0)
+        (while (< i (. tt num-params))
+          (set! h (hash-type h (aref (cast ptr:ptr (. tt params)) i)))
+          (inc! i))))
+    (return h)))
+
+; FNV-1a 64 offset basis 0xcbf29ce484222325 = -3750763034362895579 as signed.
+(defn hash-struct-shape:i64 (field-names:ptr field-types:ptr nfields:i32)
+  (let (h:i64 -3750763034362895579
+        i:i32 0)
+    (while (< i nfields)
+      (set! h (fnv-str h (aref (cast ptr:ptr field-names) i)))
+      (set! h (fnv-byte h (cast i64 0)))
+      (set! h (hash-type h (aref (cast ptr:ptr field-types) i)))
+      (inc! i))
+    (return h)))
+
+; Look up or build an anonymous struct with the given shape. Emits
+; the LLVM `%name = type { ... }` definition to g-type-stream on
+; first creation.
+(defn lookup-or-make-anon-struct:ptr (field-names:ptr field-types:ptr nfields:i32)
+  (let (hash:i64 (hash-struct-shape field-names field-types nfields)
+        synth:ptr (fmt-i64 "__anon_struct_h%016lx" hash)
+        sd:ptr (lookup-struct synth))
+    (when (= sd null)
+      (set! sd (register-struct synth))
+      (let (sd2:ptr:StructDef sd)
+        (.set! sd2 field-names field-names)
+        (.set! sd2 field-types field-types)
+        (.set! sd2 num-fields nfields)
+        (.set! sd2 src-file g-source-path)
+        (.set! sd2 src-line 0))
+      (fprintf g-type-stream "%%%s = type { " synth)
+      (let (i:i32 0)
+        (while (< i nfields)
+          (when (!= i 0) (fprintf g-type-stream ", "))
+          (fprintf g-type-stream "%s"
+            (type-to-ir (aref (cast ptr:ptr field-types) i)))
+          (inc! i)))
+      (fprintf g-type-stream " }\n\n"))
+    (return sd)))
 
 ; Type-equality test used by the defcast registry. Singleton primitive
 ; types (ty-i32, ty-f64, …) compare by pointer identity. Struct types
@@ -758,6 +851,35 @@
                       (inc! i))
                     (set! inner new-head)))
                 (return (type-with-volatile (parse-type-from-node inner line))))))))
+      ; Anonymous struct: (struct field:type ...) — memoized by content
+      ; hash. Returns a TY-STRUCT wrapping a shared StructDef.
+      (let (head:ptr (. n car))
+        (when (= head 'struct)
+          (let (rest:ptr (. n cdr)
+                nfields:i32 0
+                cur:ptr null)
+            (set! cur rest)
+            (while (!= cur null)
+              (inc! nfields)
+              (set! cur (. (cast ptr:Node cur) cdr)))
+            (let (fnames:ptr (arena-alloc (* (cast i64 nfields) (cast i64 8)))
+                  ftypes:ptr (arena-alloc (* (cast i64 nfields) (cast i64 8)))
+                  i:i32 0)
+              (set! cur rest)
+              (while (!= cur null)
+                (let (field:ptr (. (cast ptr:Node cur) car)
+                      fname:ptr null
+                      fty:ptr (extract-name-and-type field (cast ptr:ptr (addr-of fname)) line))
+                  (when (= fty null)
+                    (die-at line (fmt-s "struct: field '%s' missing :type" fname)))
+                  (aset! (cast ptr:ptr fnames) i fname)
+                  (aset! (cast ptr:ptr ftypes) i fty))
+                (inc! i)
+                (set! cur (. (cast ptr:Node cur) cdr)))
+              (let (sd:ptr (lookup-or-make-anon-struct fnames ftypes nfields)
+                    t:ptr:Type (make-type TY-STRUCT))
+                (.set! t sdef sd)
+                (return t))))))
       ; Check for pointer constructor: (ptr T) or (ptr ptr T) ...
       (let (head:ptr (. n car))
         (when (= head 'ptr)
@@ -4607,7 +4729,6 @@
   (types-init)
   (init-binops)
   (init-rmacros)
-  (set! g-structs (arena-alloc (* (cast i64 MAX-STRUCTS) (sizeof StructDef))))
   (set! g-cast-rules (arena-alloc (* (cast i64 MAX-CAST-RULES) (sizeof CastRule))))
   (set! g-macros (arena-alloc (* (cast i64 256) (sizeof MacroDef))))
   (set! g-globals (scope-new null)))
