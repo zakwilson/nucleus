@@ -48,15 +48,19 @@ where they exist (notably `stage3c.md` for C interop gaps and
 
 ## Globals / storage
 
-- **`set!` on globals** — explicitly unsupported in the REPL and batch
-  compiler.
-- **`defvar` with non-integer-literal initializers** — only integer
-  literals are accepted. String/array/struct globals with initializers
-  effectively aren't available.
+- ~~**`set!` on globals**~~ — works in both batch and REPL. See
+  `design/stage8/globals.md`.
+- ~~**`defvar` with non-integer-literal initializers**~~ — integer,
+  float, string, `null`, `true`/`false`, `(char "x")`, and `defconst`
+  names are accepted in initializer position. Array / struct compound
+  literals remain expression-only.
 - **Storage class specifiers** — no `static` (file-local linkage), no
-  `register`, no `thread_local` / `_Thread_local`.
-- **Extern variables in Nucleus-defined modules** — `extern` exists for
-  consuming C globals, but the producing side is limited.
+  `register`, no `thread_local` / `_Thread_local`. Deferred; see
+  `design/stage888-deferred.md`.
+- ~~**Extern variables in Nucleus-defined modules**~~ — `defvar` is
+  externally linkable from C and from other Nucleus modules. The
+  producing side of `--emit-cheader` and `--emit-nuch` re-exports
+  globals as `extern` declarations.
 
 ## C interop boundaries
 
