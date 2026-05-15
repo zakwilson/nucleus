@@ -1590,6 +1590,40 @@
               (emit-load val (type-to-ir ftype) gep (type-size ftype) ftype)
               (return (alloc-val ftype val)))))))))
 
+; (.& ptr-to-struct field) — return a pointer to the named field
+; without loading. Result is typed (ptr field-type), so it can flow
+; into .set!, deref, .&, etc. for nested writes.
+(defn emit-field-addr:ptr (call:ptr scope:ptr)
+  (let (cc:ptr:Node call)
+    (when (!= (node-len cc) 3)
+      (die-at (. cc line) ".& expects 2 args"))
+    (let (p:ptr:Val (emit-node (node-at cc 1) scope)
+          pt:ptr:Type (. p type))
+      (when (or (or (!= (. pt kind) TY-PTR) (= (. pt elem) null))
+              (-> pt (. elem) (cast ptr:Type _) (. kind) (!= _ TY-STRUCT)))
+        (die-at (. cc line) ".&: operand must be pointer to struct"))
+      (let (fn-node:ptr:Node (node-at cc 2))
+        (when (!= (. fn-node kind) NODE-SYM)
+          (die-at (. fn-node line) ".&: field name must be symbol"))
+        (let (sd:ptr:StructDef (-> pt (. elem) (cast ptr:Type _) (. sdef))
+              idx:i32 -1
+              i:i32 0)
+          (while (< i (. sd num-fields))
+            (when (= (strcmp (aref (cast ptr:ptr (. sd field-names)) i) (. fn-node s)) 0)
+              (set! idx i) (set! i (. sd num-fields)))
+            (inc! i))
+          (when (< idx 0)
+            (die-at (. fn-node line)
+              (fmt-2s ".&: no field '%s' on struct '%s'" (. fn-node s) (. sd name))))
+          (let (ftype:ptr (aref (cast ptr:ptr (. sd field-types)) idx)
+                gep:ptr (new-tmp))
+            (fprintf g-body-stream
+              "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
+              gep (. sd name) (. p val) idx)
+            (let (rt:ptr:Type (make-type TY-PTR))
+              (.set! rt elem ftype)
+              (return (alloc-val rt gep)))))))))
+
 (defn emit-field-set:ptr (call:ptr scope:ptr)
   (let (cc:ptr:Node call)
     (when (!= (node-len cc) 4)
@@ -3101,6 +3135,7 @@
         (when (= hp 'ptr-set!) (return (emit-ptr-set n scope)))
         (when (= hp 'ptr+) (return (emit-ptr-add n scope)))
         (when (= hp '.) (return (emit-field-get n scope)))
+        (when (= hp '.&) (return (emit-field-addr n scope)))
         (when (= hp '.set!) (return (emit-field-set n scope)))
         (when (= hp 'sizeof) (return (emit-sizeof n scope)))
         (when (= hp 'alloca) (return (emit-alloca-form n scope)))

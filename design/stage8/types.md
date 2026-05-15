@@ -7,7 +7,7 @@
 * Unions, both anonymous `union` and named `defunion`. `(defunion Foo bar:int (baz (defunion Qux quux:f32)) (union corge:i64))`
 * Bit fields as (name type size) canonical and name:type:size sugared.
 * ~~Anonymous structs with the `struct` form~~ (done — `(struct field:type ...)` is a type expression, memoized by content-hash)
-* ~~Nested structs~~ (done — nested *by reference*; `(defstruct Outer (pt (struct ...)))` or `(defstruct Outer (pt (ptr (struct ...))))` both work. Value-typed nested-struct *writes* still need a field-address operator that doesn't exist yet — see open item below.)
+* ~~Nested structs~~ (done — both `(defstruct Outer (pt (struct ...)))` and `(defstruct Outer (pt (ptr (struct ...))))` work; value-typed nested-struct writes use the new `.&` field-address operator: `(.set! (.& o pt) x 10)`)
 * Packed and alligned structs usin the `&attributes` special symbol after the members in the struct definition
 * `long double` as `f80` - Nucleus types should be concrete rather than system-dependent.
 * Complex numbers as `cf32` and `cf64` with list syntax `(3.0 4.0)` representing 3.0+4.0i.
@@ -149,3 +149,8 @@ BEEP BOOP. Nucleus-side `(struct ...)` is live with memoization:
 2. **Value-typed nested struct field writes are awkward.** With `(defstruct Outer (pt (struct x:i32 y:i32)) ...)` there's no way to write `(. o pt) .x = 10` directly — `addr-of` only takes symbols, and `.set!` requires a pointer. Workarounds today: use `(ptr (struct ...))` instead, or write through a helper function. Designer item #6 (the `..` macro) hints at the path forward; I'd suggest adding a complementary `.&` (field-address) operator. Want me to land `.&` as a follow-on, or defer?
 
 END TRANSMISSION.
+
+#### Designer
+
+1. Do it now. It's OK to lean on LLVM/clang libs if that helps, but don't shell out.
+2. Add `.&` for now. A later stage may add a more programmable set facility like Common Lisp's `setf`.

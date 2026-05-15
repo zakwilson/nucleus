@@ -7,21 +7,18 @@
     (.set! p y 4)
     (return (+ (. p x) (. p y)))))
 
-; Nested anonymous struct as a defstruct field type — pointer-typed,
-; so we can write through it. (A value-typed nested struct field
-; would need a field-address operator that doesn't exist yet.)
+; Nested anonymous struct as a value-typed defstruct field. Use .&
+; to obtain a pointer to the nested field and .set! through it.
 (defstruct Outer
-  (point (ptr (struct x:i32 y:i32)))
+  (point (struct x:i32 y:i32))
   tag:i32)
 
 (defn nested-field:i32 ()
-  (let (o:ptr:Outer                          (alloca Outer)
-        (pt (ptr (struct x:i32 y:i32)))      (alloca (struct x:i32 y:i32)))
-    (.set! pt x 10)
-    (.set! pt y 20)
-    (.set! o point pt)
+  (let (o:ptr:Outer (alloca Outer))
+    (.set! (.& o point) x 10)
+    (.set! (.& o point) y 20)
     (.set! o tag 7)
-    (return (+ (. (. o point) x) (+ (. (. o point) y) (. o tag))))))
+    (return (+ (. (.& o point) x) (+ (. (.& o point) y) (. o tag))))))
 
 ; Anonymous struct via pointer as function parameter type. Two call
 ; sites must resolve to the same StructDef (memoization).
