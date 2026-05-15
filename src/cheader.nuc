@@ -234,9 +234,9 @@
   ; Expect '{' at pos.
   (when (or (>= pos len) (!= (char-at buf pos) 123))
     (ptr-set! out-end pos) (return null))
-  ; First, locate the matching '}' so out-end is always correct on
-  ; any failure path. Track this as body-end so we can jump pos there
-  ; if anything goes wrong mid-parse.
+  ; Pre-scan: locate the matching '}' so out-end is set ONCE here.
+  ; All failure paths can simply `return null` and the caller's pos is
+  ; correctly positioned past the body.
   (let (body-end:i64 (+ pos (cast i64 1))
         depth:i32 1)
     (while (and (< body-end len) (> depth 0))
@@ -252,88 +252,53 @@
         ftypes:ptr (arena-alloc (* (cast i64 64) (cast i64 8)))
         nfields:i32 0
         bad:i32 0
-        done:i32 0)
+        done:i32 0
+        ; Field-loop state, kept at this scope so the loop body can be
+        ; flat and use `when` guards rather than deep nesting.
+        fty:ptr null
+        fname:ptr null
+        te:i64 0
+        ne:i64 0)
+    ; Per-field loop. On any anomaly we set bad=1 done=1 and abandon
+    ; the struct (out-end is already past `}`, so the caller is fine).
     (while (= done 0)
       (set! pos (c-skip-ws buf pos len))
-      (when (>= pos len) (set! done 1) (set! bad 1))
+      (when (>= pos len) (set! bad 1) (set! done 1))
+      (when (and (= done 0) (= (char-at buf pos) 125))
+        (set! pos (+ pos (cast i64 1))) (set! done 1))
       (when (= done 0)
-        ; Closing brace?
-        (when (= (char-at buf pos) 125)
-          (set! pos (+ pos (cast i64 1)))
-          (set! done 1))
-        (when (= done 0)
-          ; Peek the first identifier to detect union fields (skip them).
-          (let (peek-end:i64 0
-                peek:ptr (c-read-ident buf pos len (cast ptr:i64 (addr-of peek-end))))
-            (when (= (strcmp peek "union") 0)
-              ; Skip to matching '}' then ';'
-              (set! pos (c-skip-ws buf peek-end len))
-              (when (and (< pos len) (= (char-at buf pos) 123))
-                (set! pos (c-skip-parens buf pos len)))  ; reused: skips balanced (..)
-              ; c-skip-parens only skips parens; for braces we need our own:
-              ; rewind and use a brace-aware skip.
-              (set! bad 1) (set! done 1))
-            (when (and (= done 0) (= bad 0))
-              ; Parse the field type.
-              (let (te:i64 0
-                    fty:ptr (c-parse-type buf pos len (cast ptr:i64 (addr-of te))))
-                (set! pos te)
-                (set! pos (c-skip-ws buf pos len))
-                ; Read one or more comma-separated declarators.
-                (let (declarator-done:i32 0)
-                  (while (= declarator-done 0)
-                    (set! pos (c-skip-ws buf pos len))
-                    ; Function pointer field: type (*name)(args)
-                    (when (and (< pos len) (= (char-at buf pos) 40))
-                      (set! pos (c-skip-parens buf pos len))
-                      (set! pos (c-skip-ws buf pos len))
-                      (when (and (< pos len) (= (char-at buf pos) 40))
-                        (set! pos (c-skip-parens buf pos len)))
-                      (set! fty ty-ptr))
-                    ; Field name.
-                    (let (ne:i64 0
-                          fname:ptr (c-read-ident buf pos len (cast ptr:i64 (addr-of ne))))
-                      (when (= (cast i64 (strlen fname)) (cast i64 0))
-                        (set! bad 1) (set! declarator-done 1) (set! done 1))
-                      (when (= bad 0)
-                        (set! pos ne)
-                        (set! pos (c-skip-ws buf pos len))
-                        ; Array suffix [N] → skip field (defer inline arrays)
-                        (when (and (< pos len) (= (char-at buf pos) 91))
-                          (while (and (< pos len) (!= (char-at buf pos) 93))
-                            (set! pos (+ pos (cast i64 1))))
-                          (when (< pos len) (set! pos (+ pos (cast i64 1))))
-                          (set! pos (c-skip-ws buf pos len))
-                          (set! bad 1))
-                        ; Bitfield : N → skip field
-                        (when (and (= bad 0) (and (< pos len) (= (char-at buf pos) 58)))
-                          (set! pos (+ pos (cast i64 1)))
-                          (while (and (< pos len)
-                                      (and (!= (char-at buf pos) 44)
-                                           (!= (char-at buf pos) 59)))
-                            (set! pos (+ pos (cast i64 1))))
-                          (set! bad 1))
-                        (when (= bad 0)
-                          (when (>= nfields max-fields) (set! bad 1) (set! done 1))
-                          (when (= bad 0)
-                            (aset! (cast ptr:ptr fnames) nfields (arena-strdup fname))
-                            (aset! (cast ptr:ptr ftypes) nfields fty)
-                            (inc! nfields))))
-                      ; ',' continues, ';' ends declarator group, else give up.
-                      (when (< pos len)
-                        (cond
-                          (= (char-at buf pos) 44)
-                            (do (set! pos (+ pos (cast i64 1)))
-                                (set! pos (c-skip-ws buf pos len)))
-                          (= (char-at buf pos) 59)
-                            (do (set! pos (+ pos (cast i64 1)))
-                                (set! declarator-done 1))
-                          true
-                            (do (set! bad 1) (set! declarator-done 1) (set! done 1))))
-                      (when (>= pos len)
-                        (set! bad 1) (set! declarator-done 1) (set! done 1)))))))))))
-    ; out-end was set at entry to point past the matching '}'; don't
-    ; clobber it with mid-body pos here.
+        (set! fty (c-parse-type buf pos len (cast ptr:i64 (addr-of te))))
+        (when (= fty null) (set! bad 1) (set! done 1)))
+      (when (= done 0)
+        (set! pos te)
+        (set! pos (c-skip-ws buf pos len))
+        ; Function-pointer field: type (*name)(args...). Collapse to ptr.
+        (when (and (< pos len) (= (char-at buf pos) 40))
+          (set! pos (c-skip-parens buf pos len))
+          (set! pos (c-skip-ws buf pos len))
+          (when (and (< pos len) (= (char-at buf pos) 40))
+            (set! pos (c-skip-parens buf pos len)))
+          (set! fty ty-ptr)
+          (set! pos (c-skip-ws buf pos len))))
+      (when (= done 0)
+        (set! fname (c-read-ident buf pos len (cast ptr:i64 (addr-of ne))))
+        (when (= (cast i64 (strlen fname)) (cast i64 0))
+          (set! bad 1) (set! done 1)))
+      (when (= done 0)
+        (set! pos ne)
+        (set! pos (c-skip-ws buf pos len))
+        ; Reject array `[`, bitfield `:`, and multi-decl `,` — abandon
+        ; the whole struct on any of them. Anything but `;` is bad.
+        (when (>= pos len) (set! bad 1) (set! done 1))
+        (when (and (= done 0) (!= (char-at buf pos) 59))
+          (set! bad 1) (set! done 1)))
+      (when (= done 0)
+        (when (>= nfields max-fields) (set! bad 1) (set! done 1)))
+      (when (= done 0)
+        (aset! (cast ptr:ptr fnames) nfields (arena-strdup fname))
+        (aset! (cast ptr:ptr ftypes) nfields fty)
+        (inc! nfields)
+        (set! pos (+ pos (cast i64 1)))))
     (when (!= bad 0) (return null))
     ; Build StructDef. Anonymous → memoize via content hash; tagged
     ; → register by tag (if not already present).
@@ -656,15 +621,12 @@
                            (set! pos (+ pos (cast i64 1))))
                          (when (< pos buf-len)
                               (set! pos (+ pos (cast i64 1))))))))
-                  ; TOP-LEVEL STRUCT/TYPEDEF DISPATCH DISABLED.
-                  ; c-parse-struct-decl + c-parse-struct-body are defined
-                  ; above but produce infinite-loop / corrupted-pos behavior
-                  ; on real libc headers (string.h's __locale_struct chain,
-                  ; bare `typedef long unsigned int size_t;` etc.). The
-                  ; failure mode is hard to reproduce in small tests but
-                  ; reliable on string.h. See design/stage8/cheader-struct-plan.md
-                  ; for the follow-up plan. Enabling these two branches breaks
-                  ; the prelude's `(include string)`, causing `unknown: strcmp`.
+                  (or (= (strcmp tok "struct") 0)
+                      (= (strcmp tok "typedef") 0))
+                    (let (decl-end:i64 0
+                          ok:i32 (c-parse-struct-decl buf pos buf-len
+                                                     (cast ptr:i64 (addr-of decl-end)) line))
+                      (set! pos decl-end))
                   true
                     ; Skip to semicolon or next line
                     (do (while (and (< pos buf-len)

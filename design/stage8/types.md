@@ -6,8 +6,8 @@
 
 * Unions, both anonymous `union` and named `defunion`. `(defunion Foo bar:int (baz (defunion Qux quux:f32)) (union corge:i64))`
 * Bit fields as (name type size) canonical and name:type:size sugared.
-* ~~Anonymous structs with the `struct` form~~ (done — `(struct field:type ...)` is a type expression, memoized by content-hash)
-* ~~Nested structs~~ (done — both `(defstruct Outer (pt (struct ...)))` and `(defstruct Outer (pt (ptr (struct ...))))` work; value-typed nested-struct writes use the new `.&` field-address operator: `(.set! (.& o pt) x 10)`)
+* ~~Anonymous structs with the `struct` form~~ (done — `(struct field:type ...)` is a type expression, memoized by content-hash. Also ingested from C headers: anonymous inline `struct { ... }` fields and tagged `struct Foo { ... }`/`typedef struct { ... } Foo` definitions are now registered.)
+* ~~Nested structs~~ (done — both `(defstruct Outer (pt (struct ...)))` and `(defstruct Outer (pt (ptr (struct ...))))` work; value-typed nested-struct writes use the new `.&` field-address operator: `(.set! (.& o pt) x 10)`. Same support extends to C-header-imported structs.)
 * Packed and alligned structs usin the `&attributes` special symbol after the members in the struct definition
 * `long double` as `f80` - Nucleus types should be concrete rather than system-dependent.
 * Complex numbers as `cf32` and `cf64` with list syntax `(3.0 4.0)` representing 3.0+4.0i.
