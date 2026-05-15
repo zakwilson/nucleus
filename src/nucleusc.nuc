@@ -3157,6 +3157,68 @@
 ; Top-level forms
 ; ============================================================
 
+; Resolve a defvar initializer node to its LLVM IR constant form. The
+; returned string is spliced directly into the `<type> <value>` slot of
+; a `@name = global <type> <value>` line, so it must be a valid LLVM
+; constant for `ty`. Dies on a type mismatch or unsupported init shape.
+(defn defvar-init-ir:ptr (init:ptr ty:ptr)
+  (let (nn:ptr:Node init
+        ty-kind:i32 (. (cast ptr:Type ty) kind))
+    ; Integer literal: any int type (signed or unsigned).
+    (when (= (. nn kind) NODE-INT)
+      (when (= (is-int-type ty) 0)
+        (die-at (. nn line)
+          (fmt-s "defvar: integer literal incompatible with type %s" (type-to-ir ty))))
+      (return (fmt-i64 "%ld" (. nn i))))
+    ; Float literal: f32 or f64. LLVM accepts the same decimal/hex form
+    ; for both — single precision narrows at parse time.
+    (when (= (. nn kind) NODE-FLOAT)
+      (when (= (is-float-type ty) 0)
+        (die-at (. nn line)
+          (fmt-s "defvar: float literal incompatible with type %s" (type-to-ir ty))))
+      (return (float-literal-ir (. nn s))))
+    ; String literal: ptr type. Intern into the string table and refer
+    ; to it as @.str.N (decays to a byte pointer for `printf` consumers).
+    (when (= (. nn kind) NODE-STR)
+      (when (!= ty-kind TY-PTR)
+        (die-at (. nn line) "defvar: string literal requires ptr type"))
+      (let (sid:i32 (intern-string (. nn s) (cast i32 (strlen (. nn s)))))
+        (return (fmt-i32 "@.str.%d" sid))))
+    ; Symbol literal: null, true, false, or a defconst/defenum name.
+    (when (= (. nn kind) NODE-SYM)
+      (when (= (strcmp (. nn s) "null") 0)
+        (when (!= ty-kind TY-PTR)
+          (die-at (. nn line) "defvar: null requires ptr type"))
+        (return "null"))
+      (when (= (strcmp (. nn s) "true") 0)
+        (when (!= ty-kind TY-I1)
+          (die-at (. nn line) "defvar: true requires i1/bool type"))
+        (return "true"))
+      (when (= (strcmp (. nn s) "false") 0)
+        (when (!= ty-kind TY-I1)
+          (die-at (. nn line) "defvar: false requires i1/bool type"))
+        (return "false"))
+      (let (sym:ptr:Sym (scope-lookup g-globals (. nn s)))
+        (when (and (!= (cast ptr sym) null) (!= (. sym is-const) 0))
+          (when (= (is-int-type ty) 0)
+            (die-at (. nn line)
+              (fmt-s "defvar: constant '%s' incompatible with non-integer type" (. nn s))))
+          (return (. sym const-val))))
+      (die-at (. nn line) (fmt-s "defvar: unsupported init symbol '%s'" (. nn s))))
+    ; (char "x") — char literal, one byte stored in an int field.
+    (when (and (= (. nn kind) NODE-CELL) (= (node-len nn) 2))
+      (let (head:ptr:Node (node-at nn 0))
+        (when (and (= (. head kind) NODE-SYM) (= (strcmp (. head s) "char") 0))
+          (let (arg:ptr:Node (node-at nn 1))
+            (when (or (!= (. arg kind) NODE-STR)
+                      (!= (cast i64 (strlen (. arg s))) (cast i64 1)))
+              (die-at (. arg line) "defvar: (char ...) requires a single-char string"))
+            (when (= (is-int-type ty) 0)
+              (die-at (. nn line) "defvar: char literal requires integer type"))
+            (return (fmt-i32 "%d" (char-at (. arg s) (cast i64 0))))))))
+    (die-at (. nn line) "defvar: init must be a literal")
+    (return null)))
+
 (defn emit-defvar:void (call:ptr)
   (let (cc:ptr:Node call)
     (when (or (< (node-len cc) 2) (> (node-len cc) 3))
@@ -3168,17 +3230,17 @@
         (when (= ty null)
           (die-at (. (cast ptr:Node name-node) line) (fmt-s "defvar: missing :type on '%s'" name)))
         (let (ir-name:ptr (fmt-s "@%s" name)
-              align:i32 (type-size ty))
+              align:i32 (type-size ty)
+              ty-kind:i32 (. (cast ptr:Type ty) kind)
+              init-ir:ptr null)
           (if (= (node-len cc) 3)
-            (let (init:ptr:Node (node-at cc 2))
-              (when (!= (. init kind) NODE-INT)
-                (die-at (. init line) "defvar: init must be integer literal"))
-              (fprintf g-out "%s = global %s %ld, align %d\n\n"
-                ir-name (type-to-ir ty) (. init i) align))
-            (let (zero:ptr "0")
-              (when (= (. (cast ptr:Type ty) kind) TY-PTR) (set! zero "null"))
-              (fprintf g-out "%s = global %s %s, align %d\n\n"
-                ir-name (type-to-ir ty) zero align)))
+            (set! init-ir (defvar-init-ir (node-at cc 2) ty))
+            (cond (= ty-kind TY-PTR) (set! init-ir "null")
+                  (or (= ty-kind TY-F32) (= ty-kind TY-F64)) (set! init-ir "0.0")
+                  (= ty-kind TY-I1) (set! init-ir "false")
+                  true (set! init-ir "0")))
+          (fprintf g-out "%s = global %s %s, align %d\n\n"
+            ir-name (type-to-ir ty) init-ir align)
           (sym-set-src-loc (scope-define g-globals name ty ir-name 1)
                            (. (cast ptr:Node call) line)))))))
 
@@ -4637,6 +4699,18 @@
   (print-node form)
   (printf "\n"))
 
+; (defvar name:type [init]) — re-export as (extern name:type) so an
+; importer sees the foreign symbol without the local initializer.
+(defn emit-nuch-defvar:void (form:ptr)
+  (printf "(extern ")
+  (print-node (node-at form 1))
+  (printf ")\n"))
+
+(defn emit-nuch-extern:void (form:ptr)
+  (printf "(extern ")
+  (print-node (node-at form 1))
+  (printf ")\n"))
+
 (defn emit-nuch-header:void (forms:ptr source-file:ptr)
   (printf "; .nuch header for %s\n" source-file)
   (let (fc:ptr forms)
@@ -4652,6 +4726,8 @@
                   (= (strcmp h "defenum") 0)   (emit-nuch-defenum f)
                   (= (strcmp h "defmacro") 0)  (emit-nuch-defmacro f)
                   (= (strcmp h "defcast") 0)   (emit-nuch-defcast f)
+                  (= (strcmp h "defvar") 0)    (emit-nuch-defvar f)
+                  (= (strcmp h "extern") 0)    (emit-nuch-extern f)
                   true                         0))))
       (set! fc (. (cast ptr:Node fc) cdr)))))
 
@@ -4728,6 +4804,8 @@
                     (do (set! g-out g-type-stream) (emit-defstruct f))
                   (= (strcmp h "declare") 0)
                     (do (set! g-out g-decl-stream) (emit-nuch-declare-import f))
+                  (= (strcmp h "extern") 0)
+                    (do (set! g-out g-decl-stream) (emit-extern f))
                   (= (strcmp h "defconst") 0)
                     (emit-defconst f)
                   (= (strcmp h "defenum") 0)

@@ -661,6 +661,7 @@
 (defn type-name-to-c:ptr (name:ptr)
   (when (= (strcmp name "void") 0)  (return "void"))
   (when (= (strcmp name "i1") 0)    (return "_Bool"))
+  (when (= (strcmp name "bool") 0)  (return "_Bool"))
   (when (= (strcmp name "i8") 0)    (return "int8_t"))
   (when (= (strcmp name "i16") 0)   (return "int16_t"))
   (when (= (strcmp name "i32") 0)   (return "int32_t"))
@@ -670,6 +671,10 @@
   (when (= (strcmp name "ui16") 0)  (return "uint16_t"))
   (when (= (strcmp name "ui32") 0)  (return "uint32_t"))
   (when (= (strcmp name "ui64") 0)  (return "uint64_t"))
+  (when (= (strcmp name "f32") 0)   (return "float"))
+  (when (= (strcmp name "float") 0) (return "float"))
+  (when (= (strcmp name "f64") 0)   (return "double"))
+  (when (= (strcmp name "double") 0) (return "double"))
   (when (= (strcmp name "ptr") 0)   (return "void*"))
   ; Assume struct type
   (return (fmt-s "struct %s" name)))
@@ -784,6 +789,24 @@
         (inc! i)))
     (printf "};\n\n")))
 
+; (defvar name:type [init]) — emit `extern <ctype> <name>;` so a C
+; consumer can link against the Nucleus-defined global. The initializer
+; is not emitted; the .o file carries the storage and value.
+(defn emit-cheader-defvar:void (form:ptr)
+  (let (name-node:ptr (node-at form 1)
+        gname:ptr null
+        tname:ptr null)
+    (extract-name-type name-node (cast ptr:ptr (addr-of gname))
+                                 (cast ptr:ptr (addr-of tname)))
+    (let (tnode:ptr (extract-type-node name-node (. (cast ptr:Node name-node) line)))
+      (when (!= tnode null)
+        (printf "extern %s %s;\n" (type-node-to-c tnode) gname)))))
+
+; (extern name:type) — re-export the foreign declaration as an extern
+; in the generated C header.
+(defn emit-cheader-extern:void (form:ptr)
+  (emit-cheader-defvar form))
+
 (defn emit-cheader-header:void (forms:ptr source-file:ptr)
   (printf "#pragma once\n")
   (printf "#include <stdint.h>\n")
@@ -800,5 +823,7 @@
                   (= (strcmp h "defn") 0)      (emit-cheader-declare (cast ptr f))
                   (= (strcmp h "defconst") 0)  (emit-cheader-defconst (cast ptr f))
                   (= (strcmp h "defenum") 0)   (emit-cheader-defenum (cast ptr f))
+                  (= (strcmp h "defvar") 0)    (emit-cheader-defvar (cast ptr f))
+                  (= (strcmp h "extern") 0)    (emit-cheader-extern (cast ptr f))
                   true                         0))))
       (set! fc (. (cast ptr:Node fc) cdr)))))
