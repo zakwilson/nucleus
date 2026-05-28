@@ -256,12 +256,139 @@ The required LLVM backends (AArch64, ARM, X86) are all present in a
 standard LLVM build (`llvm-config --targets-built`); no LLVM rebuild is
 needed.
 
+## Phase C — ABI lowering (spec + acceptance gate landed; codegen pending)
+
+### The bug
+
+Nucleus emits aggregate parameters and returns as first-class LLVM
+values with no `byval` / `sret` and no register coercion — e.g.
+`declare i32 @pair_sum(%Pair)` and `call i32 @pair_sum(%Pair %t8)`. That
+is **not** the platform C ABI. clang lowers the same signatures per its
+`TargetInfo`/`ABIInfo`, and LLVM does not reconstruct the C ABI from a
+by-value aggregate on its own. Result: struct-by-value interop is broken
+**even on the host (x86_64-linux)**. Empirically (verified this stage):
+
+```
+pair_sum({3,4})  -> 3     (want 7)     ; wrong register
+big_sum(24-byte) -> garbage / segfault ; MEMORY class mishandled
+```
+
+This is the primary deliverable of item 8 ("port clang's
+TargetInfo/ABIInfo").
+
+### What lands now
+
+* **Acceptance gate** — `tests/abi/` + `tests/run-abi-test.sh`, run via
+  `make abi-test` (deliberately **not** in `make test` until the codegen
+  lands, so the green build is preserved). A C callee (`clib.c`) is built
+  with the system `cc`; the Nucleus caller (`interop.nuc`) must
+  pass/return the structs using the platform ABI; output is diffed
+  against `expected.out` (an all-C reference). It currently fails (and
+  segfaults on the 24-byte case), pinning the gap. When Phase C codegen
+  lands, wire this into `make test` per item 15 (mismatch = build
+  failure).
+* This validated spec, below.
+
+### x86_64 System V coercion (reverse-engineered from clang 19)
+
+Per-eightbyte classification, then a coercion type per eightbyte:
+
+| struct (x86_64)          | size | clang lowering          |
+|--------------------------|------|-------------------------|
+| `{i8}`                   | 1    | `i8`                    |
+| `{i8,i8}`                | 2    | `i16`                   |
+| `{i8,i8,i8}`             | 3    | `i24`                   |
+| `{i32}`                  | 4    | `i32`                   |
+| `{i32,i8}`               | 5    | `i64`                   |
+| `{i32,i16}`              | 6    | `i64`                   |
+| `{i64}`                  | 8    | `i64`                   |
+| `{i64,i8}`               | 9    | `i64, i8`               |
+| `{i64,i16}`              | 10   | `i64, i16`              |
+| `{i64,i32}`              | 12   | `i64, i32`              |
+| `{i64,i32,i8}`           | 13   | `i64, i64`              |
+| `{i64,i64}`              | 16   | `i64, i64`              |
+| `{i64,i64,i64}`          | 24   | `ptr byval(%T)` (MEMORY)|
+| `{double}`               | 8    | `double`                |
+| `{double,double}`        | 16   | `double, double`        |
+| `{float,float}`          | 8    | `<2 x float>`           |
+| `{float,float,float}`    | 12   | `<2 x float>, float`    |
+| `{float}`                | 4    | `float`                 |
+| `{i32,float}`/`{float,i32}` | 8 | `i64` (INTEGER wins)    |
+| `{double,i64}`           | 16   | `double, i64`           |
+
+Derived rules:
+
+1. **Whole struct > 16 bytes → MEMORY.** Param: `ptr byval(%T) align A`.
+   Return: `sret` — hidden first param `ptr sret(%T) align A`, function
+   returns `void`, caller allocates the result slot. (Also MEMORY if a
+   field is unaligned, but Nucleus aligns everything naturally, so skip.)
+2. **≤ 16 bytes → 1 or 2 eightbytes**, each classified by the fields that
+   overlap it (recurse into nested structs by absolute offset; Nucleus
+   has no array-in-struct fields). Per eightbyte:
+   - any integer/pointer field overlaps → **INTEGER**;
+   - else any `f64` → **SSE/double**;
+   - else `f32` only → **SSE/float**.
+3. **Coercion type per eightbyte** holding `n` bytes (`n = min(8, size −
+   8·k)`):
+   - INTEGER: `i(8·n)` for `n ≤ 4`, else `i64`. (`i8/i16/i24/i32/i64`.)
+   - SSE/double: `double`.
+   - SSE/float: `<2 x float>` when `n == 8`, else `float`.
+4. **Return type:** one eightbyte → that reg type; two → the anonymous
+   struct `{T0, T1}` (built with `insertvalue`); MEMORY → `void` + sret.
+
+This is machine-ABI compatible with clang (data lands in the same
+GPR/XMM registers). The narrow integer widths (`i24`, etc.) also keep
+loads from reading past the struct's storage.
+
+### Codegen plan (the three sites are coupled)
+
+`emit-call`, the `defn` emitter, and the `declare` emitter must change
+**together** — there is one ABI, used uniformly, so a Nucleus caller and
+a Nucleus callee agree (changing only one breaks Nucleus↔Nucleus struct
+calls, which work today only because both currently use LLVM's default).
+
+* **Classifier** — `abi-classify(type) -> AbiInfo{kind, reg0, reg1}` with
+  `kind ∈ {DIRECT, MEMORY, COERCE1, COERCE2}`. Only `TY-STRUCT` is ever
+  non-`DIRECT`, so every scalar/pointer path is untouched. Eightbyte
+  marking reuses the Phase-A layout walk (`type-size`/`align-up`) for
+  field offsets.
+* **Shared signature printer** — emits the param list + return for both
+  `declare` and `defn` from `AbiInfo` (byval/sret attributes, coercion
+  types, the leading sret param).
+* **`emit-call`** — for each struct arg: COERCE → `load`(s) of reg
+  type(s) from the arg's storage, passed positionally; MEMORY → pass a
+  pointer to a caller-owned copy with `byval`. For a struct return:
+  COERCE → receive the reg value, `store` to a temp, hand back a Val
+  whose storage is that temp; MEMORY → `alloca` a result slot, pass it as
+  the leading `sret` arg, hand back that slot.
+* **`defn`** — signature via the shared printer; **prologue** reconstructs
+  each struct param into its `%name.addr` slot (COERCE: `store` the reg
+  args at the right offsets; MEMORY: the `byval` pointer *is* the slot, so
+  bind it directly), preserving today's "struct param ref = load from
+  `.addr`" behavior. Stash the function's return `AbiInfo` in a global so
+  returns can see it.
+* **Return** — both `emit-return` and the implicit tail return route
+  struct returns through one helper: COERCE → `store` the value to a
+  temp, `load` the reg type(s), `ret` the reg / `{T0,T1}`; MEMORY →
+  `store` to the `sret` pointer, `ret void`.
+
+### Scope / deferrals
+
+* This phase's codegen targets **x86_64 System V** (the only
+  host-verifiable ABI; `make abi-test` runs against the system `cc`).
+* **Win64** (structs > 8 bytes always by hidden pointer; ≤ 8 coerced to
+  one integer), **AArch64 AAPCS** (HFA/HVA, ≤ 16 in regs else byref),
+  **ARM AAPCS**, and **i386 cdecl** (all aggregates on the stack) plug in
+  behind the same `abi-classify` dispatch, selected on `g-target`.
+  Deferred until they can be tested (no host).
+* Bit-fields, `long double`/`_Complex`, and unions remain out of scope
+  per `design/stage3c.md`.
+* The bootstrap is unaffected: `nucleusc.nuc` passes every aggregate by
+  pointer, so the fixed-point test never exercises this path — `make
+  abi-test` is the real gate.
+
 ### Carried into later phases
 
-* **Phase C — ABI lowering.** Today aggregate parameters / returns are
-  passed by whatever LLVM defaults to with no `byval` / `sret`, which is
-  not ABI-correct on any platform once aggregates appear in signatures.
-  Port clang's `TargetInfo` / `ABIInfo` per item 8 above.
 * **Phase D — cross-platform C interop.** `long`'s ABI model, plus
   `__darwin_size_t`, `_Bool` on MSVC, MS SAL annotations (`_In_`,
   `_Out_`), `__int64`. Currently `cheader.nuc` only knows the GNU/Linux
