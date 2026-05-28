@@ -502,6 +502,30 @@
   (set! ty-f64  (make-type TY-F64))
   (set! ty-ptr  (make-type TY-PTR)))
 
+; Register every LLVM backend Nucleus can emit for. The native target (X86
+; on this host) is required for the in-process JIT; the others enable
+; cross-compilation via --target=<triple>. Idempotent: LLVM's per-target
+; init functions are safe to call more than once, and both target-init and
+; jit-ensure-init route through here so whichever runs first wins.
+;
+; LLVMInitializeAll*/LLVMInitializeNativeTarget are static-inline macros in
+; the C headers (no exported symbol), so we expand them by calling the
+; per-target entry points directly. Covers the Phase-B target matrix:
+; x86_64/i386 (X86), aarch64 (AArch64), arm (ARM).
+(defn targets-init-all:void ()
+  (LLVMInitializeX86TargetInfo)
+  (LLVMInitializeX86Target)
+  (LLVMInitializeX86TargetMC)
+  (LLVMInitializeX86AsmPrinter)
+  (LLVMInitializeAArch64TargetInfo)
+  (LLVMInitializeAArch64Target)
+  (LLVMInitializeAArch64TargetMC)
+  (LLVMInitializeAArch64AsmPrinter)
+  (LLVMInitializeARMTargetInfo)
+  (LLVMInitializeARMTarget)
+  (LLVMInitializeARMTargetMC)
+  (LLVMInitializeARMAsmPrinter))
+
 ; Build a Target descriptor for the given triple by asking LLVM for the
 ; matching datalayout and pointer size. Exits with a diagnostic if the
 ; triple's backend isn't registered.
@@ -543,10 +567,7 @@
 ; do that here); cross-target overrides are limited to the targets
 ; registered by Phase B.
 (defn target-init:void ()
-  (LLVMInitializeX86TargetInfo)
-  (LLVMInitializeX86Target)
-  (LLVMInitializeX86TargetMC)
-  (LLVMInitializeX86AsmPrinter)
+  (targets-init-all)
   (let (host-triple:ptr (LLVMGetDefaultTargetTriple))
     (set! g-host-target (make-target-for-triple host-triple))
     (if (= g-target-triple-override null)
@@ -3735,11 +3756,9 @@
 
 (defn jit-ensure-init:void (line:i32)
   (when (!= g-jit null) (return))
-  ; Initialize x86 target (expands LLVMInitializeNativeTarget)
-  (LLVMInitializeX86TargetInfo)
-  (LLVMInitializeX86Target)
-  (LLVMInitializeX86TargetMC)
-  (LLVMInitializeX86AsmPrinter)
+  ; Register all backends (the JIT only needs the host, but this is shared
+  ; with the cross-compilation path and is idempotent).
+  (targets-init-all)
   ; Create LLJIT
   (let (jit-ref:ptr null
         err:ptr (LLVMOrcCreateLLJIT (addr-of jit-ref) null))

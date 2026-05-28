@@ -48,6 +48,13 @@ Current branch: `stage8-c-parity`
 | `size_t` / `ssize_t` / `ptrdiff_t` / `intptr_t` / `uintptr_t` resolved against `g-target.ptr-size` at C-header parse time | Done (`src/cheader.nuc`) |
 | `type-size` for `TY-STRUCT` computes real ABI size via a layout walk over fields; `type-size` / `type-align` for `TY-PTR` use `g-target.ptr-size`/`ptr-align`; added `align-up` helper | Done |
 
+### Stage 8 Phase B — multi-target backends
+| Item | Status |
+|---|---|
+| `targets-init-all` registers X86 / AArch64 / ARM backends (Info/Target/TargetMC/AsmPrinter); both `target-init` and `jit-ensure-init` route through it | Done (`design/stage8/platform.md`) |
+| `--target=<triple>` now resolves for the full matrix: `x86_64`/`i386`-linux, `x86_64`/`aarch64`-darwin, `x86_64`-windows-msvc/gnu, `aarch64`/`arm`-linux — each emits correct `target datalayout` (incl. 32-bit `p:32:32`) | Done |
+| Cross-target emission regression test added to `tests/run-tests.sh` | Done |
+
 ---
 
 ## Deferred (needs design decision or blocked on above)
