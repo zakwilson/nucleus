@@ -24,8 +24,13 @@
 (declare LLVMDisposeErrorMessage:void (msg:ptr))
 (declare LLVMConsumeError:void (err:ptr))
 ; Target-machine APIs used by the binary (object-file) compilation path.
+(declare LLVMGetDefaultTargetTriple:ptr ())
 (declare LLVMGetTargetFromTriple:i32 (triple:ptr target:ptr msg:ptr))
 (declare LLVMCreateTargetMachine:ptr (target:ptr triple:ptr cpu:ptr features:ptr level:i32 reloc:i32 model:i32))
 (declare LLVMDisposeTargetMachine:void (tm:ptr))
+(declare LLVMCreateTargetDataLayout:ptr (tm:ptr))
+(declare LLVMCopyStringRepOfTargetData:ptr (td:ptr))
+(declare LLVMDisposeTargetData:void (td:ptr))
+(declare LLVMPointerSize:i32 (td:ptr))
 (declare LLVMTargetMachineEmitToFile:i32 (tm:ptr mod:ptr filename:ptr filetype:i32 msg:ptr))
 (declare LLVMDisposeMessage:void (msg:ptr))

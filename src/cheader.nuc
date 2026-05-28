@@ -75,9 +75,20 @@
     ; `long double` is platform-specific (80-bit on x86-64) — skip.
     (when (!= is-long 0) (return null))
     (return ty-f64))
-  ; size_t, ssize_t
-  (when (= (strcmp name "size_t") 0) (return ty-ui64))
-  (when (= (strcmp name "ssize_t") 0) (return ty-i64))
+  ; Pointer-sized integer typedefs — resolved against the configured target's
+  ; pointer width so that `(include "stdio.h")` cross-compiles correctly to
+  ; 32-bit targets (i386, armv7). On a 64-bit target they're i64/ui64; on a
+  ; 32-bit target they're i32/ui32.
+  (when (= (strcmp name "size_t") 0)
+    (if (= (. (cast ptr:Target g-target) ptr-size) 4) (return ty-ui32) (return ty-ui64)))
+  (when (= (strcmp name "ssize_t") 0)
+    (if (= (. (cast ptr:Target g-target) ptr-size) 4) (return ty-i32) (return ty-i64)))
+  (when (= (strcmp name "ptrdiff_t") 0)
+    (if (= (. (cast ptr:Target g-target) ptr-size) 4) (return ty-i32) (return ty-i64)))
+  (when (= (strcmp name "intptr_t") 0)
+    (if (= (. (cast ptr:Target g-target) ptr-size) 4) (return ty-i32) (return ty-i64)))
+  (when (= (strcmp name "uintptr_t") 0)
+    (if (= (. (cast ptr:Target g-target) ptr-size) 4) (return ty-ui32) (return ty-ui64)))
   ; __gnuc_va_list / va_list — treat as ptr
   (when (= (strcmp name "__gnuc_va_list") 0) (return ty-ptr))
   (when (= (strcmp name "va_list") 0) (return ty-ptr))
