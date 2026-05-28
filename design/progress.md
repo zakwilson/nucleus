@@ -1,6 +1,6 @@
 # Nucleus — Progress Summary
 
-Current branch: `stage6-cleanup`
+Current branch: `stage8-c-parity`
 
 ---
 
@@ -37,6 +37,16 @@ Current branch: `stage6-cleanup`
 | `&optional` for `defn` (defaults evaluated at call site, fixed-arity ABI) | Done (`design/stage7/optional.md`) |
 | Pointer syntax: `*Node` → `(ptr Node)` / `ptr:Node` sugar; `*` syntax removed | Done (`design/stage6-pointer-syntax.md`) |
 | Symbol interning: `(= 'foo 'foo)` is true; reader and `quote` share a process-global intern table; special-form dispatch uses identity instead of `strcmp` | Done (`design/stage6-symbols.md`) |
+
+### Stage 8 Phase A — Target descriptor foundation
+| Item | Status |
+|---|---|
+| `Target` struct (triple/datalayout/ptr-size/ptr-align) populated from LLVM at startup; `g-target` (output, --target-aware) and `g-host-target` (JIT, always host) globals | Done (`design/stage8/platform.md`) |
+| Hardcoded `target triple = "x86_64-pc-linux-gnu"` removed — 8 emission sites route through `emit-output-module-target` / `emit-jit-module-target`; output module also gets `target datalayout` line for the first time | Done |
+| `--target=<triple>` CLI flag — overrides output triple; JIT modules stay on host | Done (x86 backend only until Phase B) |
+| Hardcoded `align 8` / `align 4` removed from all `load` / `store` / `alloca` emissions; LLVM now infers alignment from datalayout; `emit-load`/`emit-store` lost their unused `align:i32` parameter | Done |
+| `size_t` / `ssize_t` / `ptrdiff_t` / `intptr_t` / `uintptr_t` resolved against `g-target.ptr-size` at C-header parse time | Done (`src/cheader.nuc`) |
+| `type-size` for `TY-STRUCT` computes real ABI size via a layout walk over fields; `type-size` / `type-align` for `TY-PTR` use `g-target.ptr-size`/`ptr-align`; added `align-up` helper | Done |
 
 ---
 

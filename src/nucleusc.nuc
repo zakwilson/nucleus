@@ -153,6 +153,20 @@
   to:ptr
   ir-name:ptr)
 
+; Target descriptor — populated once at compiler-init from LLVM's view of
+; the configured triple. All sites that previously hardcoded
+; "x86_64-pc-linux-gnu" or `align 8` for pointers route through this.
+;
+;   triple      — LLVM-style target triple string (heap-owned by LLVM)
+;   datalayout  — LLVM datalayout string for `triple` (heap-owned by LLVM)
+;   ptr-size    — sizeof(void*) in bytes (4 on i386/armv7, 8 on x86_64/aarch64)
+;   ptr-align   — alignof(void*) in bytes (usually == ptr-size)
+(defstruct Target
+  triple:ptr
+  datalayout:ptr
+  ptr-size:i32
+  ptr-align:i32)
+
 
 ; ============================================================
 ; Global variables
@@ -198,6 +212,19 @@
 
 ; Global scope
 (defvar g-globals:ptr)
+
+; Output-module target descriptor (Target*). Used by the final batch IR
+; emission and by `compile-and-link` to construct the LLVM TargetMachine.
+; May differ from the host when --target=<triple> is supplied for
+; cross-compilation. Populated by target-init during compiler-init.
+(defvar g-target:ptr)
+; JIT-module target descriptor (Target*). Always the host triple: the
+; compile-time / defmacro / REPL JIT runs in this process, so its modules
+; must match the host's datalayout regardless of --target. Populated by
+; target-init alongside g-target.
+(defvar g-host-target:ptr)
+; --target=<triple> override; null means use LLVM's host default triple.
+(defvar g-target-triple-override:ptr)
 
 ; String literal table
 (defvar g-strs:ptr)
@@ -475,6 +502,57 @@
   (set! ty-f64  (make-type TY-F64))
   (set! ty-ptr  (make-type TY-PTR)))
 
+; Build a Target descriptor for the given triple by asking LLVM for the
+; matching datalayout and pointer size. Exits with a diagnostic if the
+; triple's backend isn't registered.
+(defn make-target-for-triple:ptr (triple:ptr)
+  (let (target:ptr null
+        terr:ptr null
+        tres:i32 (LLVMGetTargetFromTriple triple (addr-of target) (addr-of terr)))
+    (when (!= tres 0)
+      (fprintf stderr "nucleusc: target lookup failed for '%s': %s\n" triple terr)
+      (LLVMDisposeMessage terr)
+      (exit 1))
+    (let (tm:ptr (LLVMCreateTargetMachine target triple "" "" 0 2 0))
+      (when (= tm null)
+        (fprintf stderr "nucleusc: failed to create TargetMachine for '%s'\n" triple)
+        (exit 1))
+      (let (td:ptr (LLVMCreateTargetDataLayout tm)
+            dl-str:ptr (LLVMCopyStringRepOfTargetData td)
+            psize:i32 (LLVMPointerSize td)
+            tgt:ptr:Target (arena-alloc (sizeof Target)))
+        (.set! tgt triple triple)
+        (.set! tgt datalayout dl-str)
+        (.set! tgt ptr-size psize)
+        (.set! tgt ptr-align psize)
+        ; The datalayout *string* survives, owned by the Target struct;
+        ; the temporary TargetData and TargetMachine handles do not.
+        (LLVMDisposeTargetData td)
+        (LLVMDisposeTargetMachine tm)
+        (return tgt)))))
+
+; Populate g-host-target (always native) and g-target (==host unless
+; --target=<triple> was supplied for cross-compilation).
+;
+; The host descriptor is used for all JIT-bound modules (compile-time
+; bodies, defmacro, REPL) because the JIT runs in this process. The
+; output descriptor is used for the final batch IR and the LLVM
+; TargetMachine that emits the object file.
+;
+; Requires that LLVMInitialize*Target* have been called for the host (we
+; do that here); cross-target overrides are limited to the targets
+; registered by Phase B.
+(defn target-init:void ()
+  (LLVMInitializeX86TargetInfo)
+  (LLVMInitializeX86Target)
+  (LLVMInitializeX86TargetMC)
+  (LLVMInitializeX86AsmPrinter)
+  (let (host-triple:ptr (LLVMGetDefaultTargetTriple))
+    (set! g-host-target (make-target-for-triple host-triple))
+    (if (= g-target-triple-override null)
+      (set! g-target g-host-target)
+      (set! g-target (make-target-for-triple g-target-triple-override)))))
+
 (defn type-to-ir:ptr (t:ptr)
   (let (tt:ptr:Type t)
     (when (= (. tt kind) TY-VOID)   (return "void"))
@@ -519,21 +597,79 @@
       (return (fmt-s "struct %s" (. (cast ptr:StructDef (. tt sdef)) name))))
     (return "/* unknown */")))
 
+; Round `offset` up to the next multiple of `align`. Assumes `align` is a
+; positive power of two; `(- 0 align)` is the two's-complement mask that
+; clears the low log2(align) bits.
+(defn align-up:i32 (offset:i32 align:i32)
+  (return (bit-and (+ offset (- align 1)) (- 0 align))))
+
+; ABI alignment in bytes for a Nucleus type. For aggregate types (struct),
+; the alignment is the max alignment of the constituent fields. Pointer
+; alignment comes from g-target.ptr-align.
+(defn type-align:i32 (t:ptr)
+  (let (tt:ptr:Type t
+        k:i32 (. tt kind))
+    (when (= k TY-I1)   (return 1))
+    (when (= k TY-I8)   (return 1))
+    (when (= k TY-I16)  (return 2))
+    (when (= k TY-I32)  (return 4))
+    (when (= k TY-I64)  (return 8))
+    (when (= k TY-UI8)  (return 1))
+    (when (= k TY-UI16) (return 2))
+    (when (= k TY-UI32) (return 4))
+    (when (= k TY-UI64) (return 8))
+    (when (= k TY-PTR)  (return (. (cast ptr:Target g-target) ptr-align)))
+    (when (= k TY-FN)   (return (. (cast ptr:Target g-target) ptr-align)))
+    (when (= k TY-F32)  (return 4))
+    (when (= k TY-F64)  (return 8))
+    (when (= k TY-STRUCT)
+      (let (sd:ptr:StructDef (. tt sdef)
+            n:i32 (. sd num-fields)
+            i:i32 0
+            best:i32 1)
+        (while (< i n)
+          (let (fa:i32 (type-align (aref (cast ptr:ptr (. sd field-types)) i)))
+            (when (> fa best) (set! best fa)))
+          (inc! i))
+        (return best)))
+    (return 1)))
+
+; ABI size in bytes for a Nucleus type. Struct size is computed by a layout
+; walk over the fields, rounding offsets up to each field's alignment and
+; the final size up to the struct's own alignment — matching the layout
+; LLVM would compute for `%name = type { f1, f2, ... }` under the configured
+; target's datalayout.
 (defn type-size:i32 (t:ptr)
-  (let (tt:ptr:Type t)
-    (when (= (. tt kind) TY-I1)   (return 1))
-    (when (= (. tt kind) TY-I8)   (return 1))
-    (when (= (. tt kind) TY-I16)  (return 2))
-    (when (= (. tt kind) TY-I32)  (return 4))
-    (when (= (. tt kind) TY-I64)  (return 8))
-    (when (= (. tt kind) TY-UI8)  (return 1))
-    (when (= (. tt kind) TY-UI16) (return 2))
-    (when (= (. tt kind) TY-UI32) (return 4))
-    (when (= (. tt kind) TY-UI64) (return 8))
-    (when (= (. tt kind) TY-PTR)  (return 8))
-    (when (= (. tt kind) TY-F32)  (return 4))
-    (when (= (. tt kind) TY-F64)  (return 8))
-    (when (= (. tt kind) TY-STRUCT) (return 8))
+  (let (tt:ptr:Type t
+        k:i32 (. tt kind))
+    (when (= k TY-I1)   (return 1))
+    (when (= k TY-I8)   (return 1))
+    (when (= k TY-I16)  (return 2))
+    (when (= k TY-I32)  (return 4))
+    (when (= k TY-I64)  (return 8))
+    (when (= k TY-UI8)  (return 1))
+    (when (= k TY-UI16) (return 2))
+    (when (= k TY-UI32) (return 4))
+    (when (= k TY-UI64) (return 8))
+    (when (= k TY-PTR)  (return (. (cast ptr:Target g-target) ptr-size)))
+    (when (= k TY-FN)   (return (. (cast ptr:Target g-target) ptr-size)))
+    (when (= k TY-F32)  (return 4))
+    (when (= k TY-F64)  (return 8))
+    (when (= k TY-STRUCT)
+      (let (sd:ptr:StructDef (. tt sdef)
+            n:i32 (. sd num-fields)
+            i:i32 0
+            offset:i32 0
+            struct-align:i32 1)
+        (while (< i n)
+          (let (ft:ptr (aref (cast ptr:ptr (. sd field-types)) i)
+                fa:i32 (type-align ft)
+                fs:i32 (type-size ft))
+            (when (> fa struct-align) (set! struct-align fa))
+            (set! offset (align-up offset fa))
+            (set! offset (+ offset fs)))
+          (inc! i))
+        (return (align-up offset struct-align))))
     (return 1)))
 
 (defn is-int-type:i32 (t:ptr)
@@ -1152,22 +1288,24 @@
 ; Emit a load instruction. `ty` is the Nucleus Type* of the value being
 ; loaded; when its is-volatile flag is set, emits `load volatile`. Pass
 ; null when volatility cannot apply (e.g., compiler-internal scratch).
-(defn emit-load:void (dst-tmp:ptr ir-type:ptr ptr-name:ptr align:i32 ty:ptr)
+(defn emit-load:void (dst-tmp:ptr ir-type:ptr ptr-name:ptr ty:ptr)
   (let (vol:ptr "")
     (when (and (!= ty null) (!= (. (cast ptr:Type ty) is-volatile) 0))
       (set! vol "volatile "))
-    (fprintf g-body-stream "  %s = load %s%s, ptr %s, align %d\n"
-      dst-tmp vol ir-type ptr-name align)))
+    (fprintf g-body-stream "  %s = load %s%s, ptr %s\n"
+      dst-tmp vol ir-type ptr-name)))
 
 ; Emit a store instruction. `ty` is the Nucleus Type* of the destination
 ; storage; volatile-qualified types emit `store volatile`. Pass null when
-; volatility cannot apply.
-(defn emit-store:void (ir-type:ptr val:ptr ptr-name:ptr align:i32 ty:ptr)
+; volatility cannot apply. Alignment is implied from the type via the
+; module's datalayout — explicit `align N` is omitted on purpose so that
+; cross-target code generation stays correct on i386/aarch64/etc.
+(defn emit-store:void (ir-type:ptr val:ptr ptr-name:ptr ty:ptr)
   (let (vol:ptr "")
     (when (and (!= ty null) (!= (. (cast ptr:Type ty) is-volatile) 0))
       (set! vol "volatile "))
-    (fprintf g-body-stream "  store %s%s %s, ptr %s, align %d\n"
-      vol ir-type val ptr-name align)))
+    (fprintf g-body-stream "  store %s%s %s, ptr %s\n"
+      vol ir-type val ptr-name)))
 
 ; ============================================================
 ; Expression codegen
@@ -1292,18 +1430,18 @@
           (fprintf g-body-stream
             "  %s = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %s, i32 0, i32 0\n"
             kp tmp)
-          (fprintf g-body-stream "  store i32 %d, ptr %s, align 4\n" k kp)))
+          (fprintf g-body-stream "  store i32 %d, ptr %s\n" k kp)))
       (let (lp:ptr (new-tmp))
         (fprintf g-body-stream
           "  %s = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %s, i32 0, i32 1\n"
           lp tmp)
-        (fprintf g-body-stream "  store i32 %d, ptr %s, align 4\n" (. nn line) lp))
+        (fprintf g-body-stream "  store i32 %d, ptr %s\n" (. nn line) lp))
       (when (= (. nn kind) NODE-INT)
         (let (ip:ptr (new-tmp))
           (fprintf g-body-stream
             "  %s = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %s, i32 0, i32 2\n"
             ip tmp)
-          (fprintf g-body-stream "  store i64 %ld, ptr %s, align 8\n" (. nn i) ip)))
+          (fprintf g-body-stream "  store i64 %ld, ptr %s\n" (. nn i) ip)))
       (when (or (= (. nn kind) NODE-STR) (= (. nn kind) NODE-FLOAT))
         (let (sid:i32 (intern-string (. nn s) (cast i32 (strlen (. nn s))))
               ir-len:i32 (+ (. (cast ptr:StrLit (ptr+ (cast ptr:StrLit g-strs) sid)) len) 1)
@@ -1312,7 +1450,7 @@
             "  %s = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %s, i32 0, i32 3\n"
             sp tmp)
           (fprintf g-body-stream
-            "  store ptr getelementptr inbounds ([%d x i8], ptr @.str.%d, i64 0, i64 0), ptr %s, align 8\n"
+            "  store ptr getelementptr inbounds ([%d x i8], ptr @.str.%d, i64 0, i64 0), ptr %s\n"
             ir-len sid sp)))
       (return tmp))))
 
@@ -1390,8 +1528,7 @@
            (return (alloc-val (. sym type) (. sym ir-name))))
          (die-at (. nn line) (fmt-s "cannot use '%s' as value" (. nn s))))
         (let (tmp:ptr (new-tmp))
-          (emit-load tmp (type-to-ir (. sym type)) (. sym ir-name)
-                     (type-size (. sym type)) (. sym type))
+          (emit-load tmp (type-to-ir (. sym type)) (. sym ir-name) (. sym type))
           (return (alloc-val (. sym type) tmp)))))))
 
 ; ============================================================
@@ -1587,7 +1724,7 @@
               "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
               gep (. sd name) (. p val) idx)
             (let (val:ptr (new-tmp))
-              (emit-load val (type-to-ir ftype) gep (type-size ftype) ftype)
+              (emit-load val (type-to-ir ftype) gep ftype)
               (return (alloc-val ftype val)))))))))
 
 ; (.& ptr-to-struct field) — return a pointer to the named field
@@ -1656,7 +1793,7 @@
               (fprintf g-body-stream
                 "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
                 gep (. sd name) (. p val) idx)
-              (emit-store (type-to-ir ftype) (. cv val) gep (type-size ftype) ftype)
+              (emit-store (type-to-ir ftype) (. cv val) gep ftype)
               (return (alloc-val ftype (. cv val))))))))))
 
 ; ============================================================
@@ -1686,10 +1823,10 @@
         (.set! pt elem ty)
         (if (= (node-len cc) 3)
           (let (nv:ptr:Val (emit-node (node-at cc 2) scope))
-            (fprintf g-body-stream "  %s = alloca %s, i32 %s, align %d\n"
-              slot (type-to-ir ty) (. nv val) (type-size ty)))
-          (fprintf g-entry-stream "  %s = alloca %s, align %d\n"
-            slot (type-to-ir ty) (type-size ty)))
+            (fprintf g-body-stream "  %s = alloca %s, i32 %s\n"
+              slot (type-to-ir ty) (. nv val)))
+          (fprintf g-entry-stream "  %s = alloca %s\n"
+            slot (type-to-ir ty)))
         (return (alloc-val pt slot))))))
 
 (defn emit-aref:ptr (call:ptr scope:ptr)
@@ -1714,7 +1851,7 @@
               "  %s = getelementptr inbounds %s, ptr %s, i64 %s\n"
               gep (type-to-ir elem) (. p val) idx64)
             (let (val:ptr (new-tmp))
-              (emit-load val (type-to-ir elem) gep (type-size elem) elem)
+              (emit-load val (type-to-ir elem) gep elem)
               (return (alloc-val elem val)))))))))
 
 (defn emit-aset:ptr (call:ptr scope:ptr)
@@ -1743,7 +1880,7 @@
               (fprintf g-body-stream
                 "  %s = getelementptr inbounds %s, ptr %s, i64 %s\n"
                 gep (type-to-ir elem) (. p val) idx64)
-              (emit-store (type-to-ir elem) (. cv val) gep (type-size elem) elem)
+              (emit-store (type-to-ir elem) (. cv val) gep elem)
               (return (alloc-val elem (. cv val))))))))))
 
 (defn emit-char:ptr (call:ptr scope:ptr)
@@ -1898,7 +2035,7 @@
         (die-at (. cc line) "deref: operand must be typed pointer"))
       (let (elem:ptr (-> p (. type) (cast ptr:Type _) (. elem))
             tmp:ptr (new-tmp))
-        (emit-load tmp (type-to-ir elem) (. p val) (type-size elem) elem)
+        (emit-load tmp (type-to-ir elem) (. p val) elem)
         (return (alloc-val elem tmp))))))
 
 (defn emit-ptr-set:ptr (call:ptr scope:ptr)
@@ -1914,7 +2051,7 @@
         (when (= coerced null)
           (die-at (. cc line) "ptr-set!: value type mismatch"))
         (let (cv:ptr:Val coerced)
-          (emit-store (type-to-ir elem) (. cv val) (. p val) (type-size elem) elem)
+          (emit-store (type-to-ir elem) (. cv val) (. p val) elem)
           (return (alloc-val elem (. cv val))))))))
 
 (defn emit-ptr-add:ptr (call:ptr scope:ptr)
@@ -1960,12 +2097,12 @@
           rhs-lbl:ptr (fmt-sd "%s.rhs%d" tag id)
           end-lbl:ptr (fmt-sd "%s.end%d" tag id)
           slot:ptr (fmt-sd "%%%s.val%d" tag id))
-      (fprintf g-entry-stream "  %s = alloca i1, align 1\n" slot)
+      (fprintf g-entry-stream "  %s = alloca i1\n" slot)
       (let (lhs:ptr:Val (emit-node (node-at cc 1) scope))
         (when (-> lhs (. type) (cast ptr:Type _) (. kind) (!= _ TY-I1))
           (die-at (. (cast ptr:Node (node-at cc 1)) line)
             (fmt-s "%s expects i1 operands" tag)))
-        (fprintf g-body-stream "  store i1 %s, ptr %s, align 1\n"
+        (fprintf g-body-stream "  store i1 %s, ptr %s\n"
           (. lhs val) slot)
         (if (!= is-and 0)
           (fprintf g-body-stream "  br i1 %s, label %%%s, label %%%s\n"
@@ -1978,13 +2115,13 @@
           (when (-> rhs (. type) (cast ptr:Type _) (. kind) (!= _ TY-I1))
             (die-at (. (cast ptr:Node (node-at cc 2)) line)
               (fmt-s "%s expects i1 operands" tag)))
-          (fprintf g-body-stream "  store i1 %s, ptr %s, align 1\n"
+          (fprintf g-body-stream "  store i1 %s, ptr %s\n"
             (. rhs val) slot)
           (fprintf g-body-stream "  br label %%%s\n" end-lbl)
           (fprintf g-body-stream "%s:\n" end-lbl)
           (set! g-block-term 0)
           (let (tmp:ptr (new-tmp))
-            (fprintf g-body-stream "  %s = load i1, ptr %s, align 1\n" tmp slot)
+            (fprintf g-body-stream "  %s = load i1, ptr %s\n" tmp slot)
             (return (alloc-val ty-i1 tmp))))))))
 
 ; ============================================================
@@ -2176,7 +2313,7 @@
       (while (>= i 0)
         (let (slot:ptr (aref slots i)
               tmp:ptr (new-tmp))
-          (fprintf g-body-stream "  %s = load ptr, ptr %s, align 8\n" tmp slot)
+          (fprintf g-body-stream "  %s = load ptr, ptr %s\n" tmp slot)
           (fprintf g-body-stream "  call void @free(ptr %s)\n" tmp))
         (set! i (- i 1))))))
 
@@ -2230,18 +2367,16 @@
                                                 (. (cast ptr:Node bname) line)))
               (when (= ty null)
                 (die-at (. (cast ptr:Node bname) line) (fmt-s "let: missing :type on '%s'" name)))
-              (let (slot:ptr (fmt-sd "%%%s.addr.%d" name g-tmp)
-                    align:i32 (type-size ty))
+              (let (slot:ptr (fmt-sd "%%%s.addr.%d" name g-tmp))
                 (inc! g-tmp)
-                (fprintf g-entry-stream "  %s = alloca %s, align %d\n"
-                  slot (type-to-ir ty) align)
+                (fprintf g-entry-stream "  %s = alloca %s\n" slot (type-to-ir ty))
                 (let (v:ptr:Val (emit-node bval-node inner)
                       coerced:ptr (coerce-int-val v ty (. (cast ptr:Node bval-node) line)))
                   (when (= coerced null)
                     (die-at (. (cast ptr:Node bval-node) line)
                       (fmt-s "let: init type mismatch for '%s'" name)))
                   (let (cv:ptr:Val coerced)
-                    (emit-store (type-to-ir ty) (. cv val) slot align ty)
+                    (emit-store (type-to-ir ty) (. cv val) slot ty)
                     (scope-define inner name ty slot 1))))))
           (set! i (+ i 2)))
         (let (last:ptr (alloc-val ty-void null)
@@ -2273,18 +2408,16 @@
               (when (= ty null)
                 (die-at (. (cast ptr:Node bname) line) (fmt-s "with: missing :type on '%s'" name)))
               (let (slot:ptr (fmt-sd "%%%s.addr.%d" name g-tmp)
-                    align:i32 (type-size ty)
                     autofree:i32 (is-libc-alloc bval-node))
                 (inc! g-tmp)
-                (fprintf g-entry-stream "  %s = alloca %s, align %d\n"
-                  slot (type-to-ir ty) align)
+                (fprintf g-entry-stream "  %s = alloca %s\n" slot (type-to-ir ty))
                 (let (v:ptr:Val (emit-node bval-node inner)
                       coerced:ptr (coerce-int-val v ty (. (cast ptr:Node bval-node) line)))
                   (when (= coerced null)
                     (die-at (. (cast ptr:Node bval-node) line)
                       (fmt-s "with: init type mismatch for '%s'" name)))
                   (let (cv:ptr:Val coerced)
-                    (emit-store (type-to-ir ty) (. cv val) slot align ty)
+                    (emit-store (type-to-ir ty) (. cv val) slot ty)
                     (scope-define inner name ty slot 1)
                     (when (= autofree 1)
                       (scope-push-cleanup inner slot)))))))
@@ -2677,12 +2810,11 @@
 (defn emit-zero-store:void (field-type:ptr gep:ptr)
   (let (ft:ptr:Type field-type
         ir:ptr (type-to-ir field-type)
-        sz:i32 (type-size field-type)
         zero:ptr "0")
     (when (= (. ft kind) TY-PTR) (set! zero "null"))
     (when (= (. ft kind) TY-F32) (set! zero "0.000000e+00"))
     (when (= (. ft kind) TY-F64) (set! zero "0.000000e+00"))
-    (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n" ir zero gep sz)))
+    (fprintf g-body-stream "  store %s %s, ptr %s\n" ir zero gep)))
 
 ; (StructName init...) — compound literal yielding ptr:StructName, alloca-backed.
 ; Each init is either `(field val)` for designated, or a bare value for
@@ -2747,12 +2879,11 @@
         (inc! i))
       (let (slot:ptr (new-tmp)
             sname:ptr (. sdef name))
-        (fprintf g-entry-stream "  %s = alloca %%%s, align 8\n" slot sname)
+        (fprintf g-entry-stream "  %s = alloca %%%s\n" slot sname)
         (let (k:i32 0)
           (while (< k nfields)
             (let (ftype:ptr (aref (cast ptr:ptr (. sdef field-types)) k)
                   ftype-ir:ptr (type-to-ir ftype)
-                  fsz:i32 (type-size ftype)
                   gep:ptr (new-tmp))
               (fprintf g-body-stream
                 "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
@@ -2761,8 +2892,8 @@
                 (if (= vp null)
                   (emit-zero-store ftype gep)
                   (let (cv:ptr:Val vp)
-                    (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
-                      ftype-ir (. cv val) gep fsz)))))
+                    (fprintf g-body-stream "  store %s %s, ptr %s\n"
+                      ftype-ir (. cv val) gep)))))
             (inc! k)))
         (let (pt:ptr:Type (make-type TY-PTR)
               st:ptr:Type (make-type TY-STRUCT))
@@ -2854,10 +2985,9 @@
               (inc! j))
             ; Emit alloca in entry stream.
             (let (slot:ptr (new-tmp)
-                  etype-ir:ptr (type-to-ir etype)
-                  esz:i32 (type-size etype))
-              (fprintf g-entry-stream "  %s = alloca %s, i32 %d, align %d\n"
-                slot etype-ir length esz)
+                  etype-ir:ptr (type-to-ir etype))
+              (fprintf g-entry-stream "  %s = alloca %s, i32 %d\n"
+                slot etype-ir length)
               (let (k:i32 0)
                 (while (< k length)
                   (let (gep:ptr (new-tmp))
@@ -2868,8 +2998,8 @@
                       (if (= vp null)
                         (emit-zero-store etype gep)
                         (let (cv:ptr:Val vp)
-                          (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
-                            etype-ir (. cv val) gep esz)))))
+                          (fprintf g-body-stream "  store %s %s, ptr %s\n"
+                            etype-ir (. cv val) gep)))))
                   (inc! k)))
               (let (pt:ptr:Type (make-type TY-PTR))
                 (.set! pt elem etype)
@@ -2923,8 +3053,7 @@
             (when (= coerced null)
               (die-at (. cc line) (fmt-s "set!: type mismatch for '%s'" (. target s))))
             (let (cv:ptr:Val coerced)
-              (emit-store (type-to-ir (. sym type)) (. cv val) (. sym ir-name)
-                          (type-size (. sym type)) (. sym type))
+              (emit-store (type-to-ir (. sym type)) (. cv val) (. sym ir-name) (. sym type))
               (return (alloc-val (. sym type) (. cv val))))))))))
 
 ; Shared codegen for (inc! TARGET [DELTA]) / (dec! TARGET [DELTA]).
@@ -2948,7 +3077,6 @@
           (when (= (is-int-type (. sym type)) 0)
             (die-at (. cc line) (fmt-s "%s: must be integer" op-name)))
           (let (ir:ptr (type-to-ir (. sym type))
-                align:i32 (type-size (. sym type))
                 delta-ir:ptr "1")
             (when (= nargs 2)
               (let (dv:ptr (emit-node (node-at cc 2) scope)
@@ -2957,11 +3085,11 @@
                   (die-at (. cc line) (fmt-s "%s: delta type mismatch" op-name)))
                 (set! delta-ir (. (cast ptr:Val coerced) val))))
             (let (t1:ptr (new-tmp))
-              (emit-load t1 ir (. sym ir-name) align (. sym type))
+              (emit-load t1 ir (. sym ir-name) (. sym type))
               (let (t2:ptr (new-tmp))
                 (fprintf g-body-stream "  %s = %s nsw %s %s, %s\n"
                   t2 op-instr ir t1 delta-ir)
-                (emit-store ir t2 (. sym ir-name) align (. sym type))
+                (emit-store ir t2 (. sym ir-name) (. sym type))
                 (return (alloc-val (. sym type) t2))))))))))
 
 (defn emit-inc:ptr (call:ptr scope:ptr)
@@ -3230,7 +3358,6 @@
         (when (= ty null)
           (die-at (. (cast ptr:Node name-node) line) (fmt-s "defvar: missing :type on '%s'" name)))
         (let (ir-name:ptr (fmt-s "@%s" name)
-              align:i32 (type-size ty)
               ty-kind:i32 (. (cast ptr:Type ty) kind)
               init-ir:ptr null)
           (if (= (node-len cc) 3)
@@ -3239,8 +3366,8 @@
                   (or (= ty-kind TY-F32) (= ty-kind TY-F64)) (set! init-ir "0.0")
                   (= ty-kind TY-I1) (set! init-ir "false")
                   true (set! init-ir "0")))
-          (fprintf g-out "%s = global %s %s, align %d\n\n"
-            ir-name (type-to-ir ty) init-ir align)
+          (fprintf g-out "%s = global %s %s\n\n"
+            ir-name (type-to-ir ty) init-ir)
           (sym-set-src-loc (scope-define g-globals name ty ir-name 1)
                            (. (cast ptr:Node call) line)))))))
 
@@ -3534,12 +3661,11 @@
               (let (pname:ptr (aref (cast ptr:ptr param-names) i)
                     ptype:ptr (aref (cast ptr:ptr param-types) i)
                     slot:ptr (fmt-s "%%%s.addr" pname)
-                    arg:ptr (fmt-s "%%%s.arg" pname)
-                    palign:i32 (type-size ptype))
-                (fprintf g-entry-stream "  %s = alloca %s, align %d\n"
-                  slot (type-to-ir ptype) palign)
-                (fprintf g-entry-stream "  store %s %s, ptr %s, align %d\n"
-                  (type-to-ir ptype) arg slot palign)
+                    arg:ptr (fmt-s "%%%s.arg" pname))
+                (fprintf g-entry-stream "  %s = alloca %s\n"
+                  slot (type-to-ir ptype))
+                (fprintf g-entry-stream "  store %s %s, ptr %s\n"
+                  (type-to-ir ptype) arg slot)
                 (scope-define fn-scope pname ptype slot 1))
               (inc! i))
             ; Start body emission after the params node. If a docstring
@@ -3848,11 +3974,11 @@
                   (fprintf ct-def "define private ptr @__cons(ptr %%a, ptr %%b) {\n")
                   (fprintf ct-def "  %%c = call ptr @malloc(i64 40)\n")
                   (fprintf ct-def "  %%p0 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 0\n")
-                  (fprintf ct-def "  store i32 3, ptr %%p0, align 8\n")
+                  (fprintf ct-def "  store i32 3, ptr %%p0\n")
                   (fprintf ct-def "  %%p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 4\n")
-                  (fprintf ct-def "  store ptr %%a, ptr %%p4, align 8\n")
+                  (fprintf ct-def "  store ptr %%a, ptr %%p4\n")
                   (fprintf ct-def "  %%p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 5\n")
-                  (fprintf ct-def "  store ptr %%b, ptr %%p5, align 8\n")
+                  (fprintf ct-def "  store ptr %%b, ptr %%p5\n")
                   (fprintf ct-def "  ret ptr %%c\n")
                   (fprintf ct-def "}\n\n")
                   (fprintf ct-def "define private ptr @__append(ptr %%a, ptr %%b) {\n")
@@ -3863,9 +3989,9 @@
                   (fprintf ct-def "  ret ptr %%b\n")
                   (fprintf ct-def "rec:\n")
                   (fprintf ct-def "  %%p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%a, i32 0, i32 4\n")
-                  (fprintf ct-def "  %%car = load ptr, ptr %%p4, align 8\n")
+                  (fprintf ct-def "  %%car = load ptr, ptr %%p4\n")
                   (fprintf ct-def "  %%p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%a, i32 0, i32 5\n")
-                  (fprintf ct-def "  %%cdr = load ptr, ptr %%p5, align 8\n")
+                  (fprintf ct-def "  %%cdr = load ptr, ptr %%p5\n")
                   (fprintf ct-def "  %%rest = call ptr @__append(ptr %%cdr, ptr %%b)\n")
                   (fprintf ct-def "  %%c = call ptr @__cons(ptr %%car, ptr %%rest)\n")
                   (fprintf ct-def "  ret ptr %%c\n")
@@ -3879,7 +4005,7 @@
             (let (ir-bufp:ptr null  ir-sizep:i64 0
                   irs:ptr (open_memstream (addr-of ir-bufp) (cast ptr (addr-of ir-sizep))))
               (fprintf irs "; ModuleID = '<compile-time>'\n")
-              (fprintf irs "target triple = \"x86_64-pc-linux-gnu\"\n\n")
+              (emit-jit-module-target irs)
               ; In REPL mode, include the accumulated preamble
               (when (!= g-interactive 0)
                  (fflush g-repl-preamble)
@@ -3996,8 +4122,8 @@
               (let (fn-scope:ptr (scope-new g-globals))
 
                 ; Entry prologue: alloca for args pointer, then load each param
-                (fprintf g-entry-stream "  %%__args.addr = alloca ptr, align 8\n")
-                (fprintf g-entry-stream "  store ptr %%__args.arg, ptr %%__args.addr, align 8\n")
+                (fprintf g-entry-stream "  %%__args.addr = alloca ptr\n")
+                (fprintf g-entry-stream "  store ptr %%__args.arg, ptr %%__args.addr\n")
                 ; Macro params and the &rest list are bound as ptr:Node so
                 ; macro bodies can do (. p car), (. p cdr), (. p kind), etc.
                 ; on AST nodes without writing (cast ptr:Node ...) everywhere.
@@ -4016,11 +4142,11 @@
                     (let (ei:i32 0)
                       (while (< ei pcount)
                         (let (pname:ptr (aref (cast ptr:ptr pnames) ei))
-                          (fprintf g-entry-stream "  %%%s.addr = alloca ptr, align 8\n" pname)
-                          (fprintf g-entry-stream "  %%__ap%d = load ptr, ptr %%__args.addr, align 8\n" ei)
+                          (fprintf g-entry-stream "  %%%s.addr = alloca ptr\n" pname)
+                          (fprintf g-entry-stream "  %%__ap%d = load ptr, ptr %%__args.addr\n" ei)
                           (fprintf g-entry-stream "  %%__ag%d = getelementptr ptr, ptr %%__ap%d, i32 %d\n" ei ei ei)
-                          (fprintf g-entry-stream "  %%__av%d = load ptr, ptr %%__ag%d, align 8\n" ei ei)
-                          (fprintf g-entry-stream "  store ptr %%__av%d, ptr %%%s.addr, align 8\n" ei pname)
+                          (fprintf g-entry-stream "  %%__av%d = load ptr, ptr %%__ag%d\n" ei ei)
+                          (fprintf g-entry-stream "  store ptr %%__av%d, ptr %%%s.addr\n" ei pname)
                           (scope-define fn-scope pname ptr-node-ty (fmt-s "%%%s.addr" pname) 1))
                         (inc! ei)))))
 
@@ -4074,17 +4200,17 @@
                         (fprintf ct-def "define private ptr @__cons(ptr %%a, ptr %%b) {\n")
                         (fprintf ct-def "  %%c = call ptr @malloc(i64 40)\n")
                         (fprintf ct-def "  %%p0 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 0\n")
-                        (fprintf ct-def "  store i32 3, ptr %%p0, align 8\n")
+                        (fprintf ct-def "  store i32 3, ptr %%p0\n")
                         (fprintf ct-def "  %%p1 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 1\n")
-                        (fprintf ct-def "  store i32 0, ptr %%p1, align 4\n")
+                        (fprintf ct-def "  store i32 0, ptr %%p1\n")
                         (fprintf ct-def "  %%p2 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 2\n")
-                        (fprintf ct-def "  store i64 0, ptr %%p2, align 8\n")
+                        (fprintf ct-def "  store i64 0, ptr %%p2\n")
                         (fprintf ct-def "  %%p3 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 3\n")
-                        (fprintf ct-def "  store ptr null, ptr %%p3, align 8\n")
+                        (fprintf ct-def "  store ptr null, ptr %%p3\n")
                         (fprintf ct-def "  %%p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 4\n")
-                        (fprintf ct-def "  store ptr %%a, ptr %%p4, align 8\n")
+                        (fprintf ct-def "  store ptr %%a, ptr %%p4\n")
                         (fprintf ct-def "  %%p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 5\n")
-                        (fprintf ct-def "  store ptr %%b, ptr %%p5, align 8\n")
+                        (fprintf ct-def "  store ptr %%b, ptr %%p5\n")
                         (fprintf ct-def "  ret ptr %%c\n")
                         (fprintf ct-def "}\n\n")
                         (fprintf ct-def "define private ptr @__append(ptr %%a, ptr %%b) {\n")
@@ -4095,9 +4221,9 @@
                         (fprintf ct-def "  ret ptr %%b\n")
                         (fprintf ct-def "rec:\n")
                         (fprintf ct-def "  %%p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%a, i32 0, i32 4\n")
-                        (fprintf ct-def "  %%car = load ptr, ptr %%p4, align 8\n")
+                        (fprintf ct-def "  %%car = load ptr, ptr %%p4\n")
                         (fprintf ct-def "  %%p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%a, i32 0, i32 5\n")
-                        (fprintf ct-def "  %%cdr = load ptr, ptr %%p5, align 8\n")
+                        (fprintf ct-def "  %%cdr = load ptr, ptr %%p5\n")
                         (fprintf ct-def "  %%rest = call ptr @__append(ptr %%cdr, ptr %%b)\n")
                         (fprintf ct-def "  %%c = call ptr @__cons(ptr %%car, ptr %%rest)\n")
                         (fprintf ct-def "  ret ptr %%c\n")
@@ -4113,7 +4239,7 @@
                   (let (ir-bufp:ptr null  ir-sizep:i64 0
                         irs:ptr (open_memstream (addr-of ir-bufp) (cast ptr (addr-of ir-sizep))))
                     (fprintf irs "; ModuleID = '<defmacro %s>'\n" macro-name)
-                    (fprintf irs "target triple = \"x86_64-pc-linux-gnu\"\n\n")
+                    (emit-jit-module-target irs)
                     ; In REPL mode, include the accumulated preamble
                     (when (!= g-interactive 0)
                        (fflush g-repl-preamble)
@@ -4840,6 +4966,7 @@
 
 (defn compiler-init:void ()
   (types-init)
+  (target-init)
   (init-binops)
   (init-rmacros)
   (set! g-cast-rules (arena-alloc (* (cast i64 MAX-CAST-RULES) (sizeof CastRule))))
@@ -4856,17 +4983,17 @@
   (fprintf def "define ptr @__cons(ptr %%a, ptr %%b) {\n")
   (fprintf def "  %%c = call ptr @malloc(i64 40)\n")
   (fprintf def "  %%p0 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 0\n")
-  (fprintf def "  store i32 3, ptr %%p0, align 8\n")
+  (fprintf def "  store i32 3, ptr %%p0\n")
   (fprintf def "  %%p1 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 1\n")
-  (fprintf def "  store i32 0, ptr %%p1, align 4\n")
+  (fprintf def "  store i32 0, ptr %%p1\n")
   (fprintf def "  %%p2 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 2\n")
-  (fprintf def "  store i64 0, ptr %%p2, align 8\n")
+  (fprintf def "  store i64 0, ptr %%p2\n")
   (fprintf def "  %%p3 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 3\n")
-  (fprintf def "  store ptr null, ptr %%p3, align 8\n")
+  (fprintf def "  store ptr null, ptr %%p3\n")
   (fprintf def "  %%p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 4\n")
-  (fprintf def "  store ptr %%a, ptr %%p4, align 8\n")
+  (fprintf def "  store ptr %%a, ptr %%p4\n")
   (fprintf def "  %%p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 5\n")
-  (fprintf def "  store ptr %%b, ptr %%p5, align 8\n")
+  (fprintf def "  store ptr %%b, ptr %%p5\n")
   (fprintf def "  ret ptr %%c\n")
   (fprintf def "}\n\n")
   (fprintf def "define ptr @__append(ptr %%a, ptr %%b) {\n")
@@ -4877,13 +5004,31 @@
   (fprintf def "  ret ptr %%b\n")
   (fprintf def "rec:\n")
   (fprintf def "  %%p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%a, i32 0, i32 4\n")
-  (fprintf def "  %%car = load ptr, ptr %%p4, align 8\n")
+  (fprintf def "  %%car = load ptr, ptr %%p4\n")
   (fprintf def "  %%p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%a, i32 0, i32 5\n")
-  (fprintf def "  %%cdr = load ptr, ptr %%p5, align 8\n")
+  (fprintf def "  %%cdr = load ptr, ptr %%p5\n")
   (fprintf def "  %%rest = call ptr @__append(ptr %%cdr, ptr %%b)\n")
   (fprintf def "  %%c = call ptr @__cons(ptr %%car, ptr %%rest)\n")
   (fprintf def "  ret ptr %%c\n")
   (fprintf def "}\n\n"))
+
+; Emit `target datalayout = "..."` and `target triple = "..."` lines into
+; the given module IR stream, using the supplied Target descriptor.
+(defn emit-target-lines:void (out:ptr tgt:ptr)
+  (let (t:ptr:Target tgt)
+    (fprintf out "target datalayout = \"%s\"\n" (. t datalayout))
+    (fprintf out "target triple = \"%s\"\n\n"   (. t triple))))
+
+; Triple/datalayout for the final batch output module (honors --target).
+(defn emit-output-module-target:void (out:ptr)
+  (emit-target-lines out g-target))
+
+; Triple/datalayout for an in-process JIT module (CT body, defmacro,
+; REPL eval, trace/thunk). Always the host descriptor — the JIT runs in
+; this process, so its modules must match host layout regardless of
+; --target.
+(defn emit-jit-module-target:void (out:ptr)
+  (emit-target-lines out g-host-target))
 
 ; ============================================================
 ; Open fresh memstreams for a compilation unit
@@ -4907,7 +5052,7 @@
         irs:ptr (open_memstream (addr-of ir-bufp) (cast ptr (addr-of ir-sizep))))
     (fprintf irs "; ModuleID = '%s'\n" source-file)
     (fprintf irs "source_filename = \"%s\"\n" source-file)
-    (fprintf irs "target triple = \"x86_64-pc-linux-gnu\"\n\n")
+    (emit-output-module-target irs)
     (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
       (fputs g-type-bufp irs))
     (emit-string-table irs)
@@ -4925,11 +5070,7 @@
 ; Parse the in-memory IR, emit an object file, and (unless -c) invoke clang
 ; to link a final binary. Exits with a non-zero status on failure.
 (defn compile-and-link:void (ir:ptr ir-len:i64 source-file:ptr)
-  ; Initialize the x86 target — same set as the JIT path.
-  (LLVMInitializeX86TargetInfo)
-  (LLVMInitializeX86Target)
-  (LLVMInitializeX86TargetMC)
-  (LLVMInitializeX86AsmPrinter)
+  ; X86 target is initialized in target-init during compiler-init.
 
   (let (ctx:ptr (LLVMContextCreate)
         mb:ptr  (LLVMCreateMemoryBufferWithMemoryRangeCopy ir ir-len source-file)
@@ -4941,15 +5082,16 @@
       (LLVMDisposeMessage parse-err)
       (exit 1))
 
-    (let (target:ptr null
+    (let (triple:ptr (. (cast ptr:Target g-target) triple)
+          target:ptr null
           terr:ptr null
-          tres:i32 (LLVMGetTargetFromTriple "x86_64-pc-linux-gnu" (addr-of target) (addr-of terr)))
+          tres:i32 (LLVMGetTargetFromTriple triple (addr-of target) (addr-of terr)))
       (when (!= tres 0)
-        (fprintf stderr "nucleusc: target lookup failed: %s\n" terr)
+        (fprintf stderr "nucleusc: target lookup failed for '%s': %s\n" triple terr)
         (LLVMDisposeMessage terr)
         (exit 1))
       ; CodeGenLevel = Default(2), Reloc = PIC(2), CodeModel = Default(0)
-      (let (tm:ptr (LLVMCreateTargetMachine target "x86_64-pc-linux-gnu" "" "" g-opt-level 2 0))
+      (let (tm:ptr (LLVMCreateTargetMachine target triple "" "" g-opt-level 2 0))
         (let (out-path:ptr g-output-path
               obj-path:ptr null
               keep-obj:i32 g-emit-obj)
@@ -5076,6 +5218,8 @@
                 (set! g-opt-level 2)
               (= (strcmp arg "-O3") 0)
                 (set! g-opt-level 3)
+              (= (strncmp arg "--target=" (cast i64 9)) 0)
+                (set! g-target-triple-override (ptr+ (cast ptr:i8 arg) (cast i64 9)))
               (= (strncmp arg "-I" (cast i64 2)) 0)
                 (if (> (cast i64 (strlen arg)) (cast i64 2))
                   ; -I/path/to/dir (no space)
@@ -5102,7 +5246,7 @@
 
     ; Batch mode — require source file
     (when (= source-file null)
-       (fprintf stderr "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3] [-o <path>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [-i] [--repl-format=text|json] [-I<path>] <file.nuc>\n") (return 2))
+       (fprintf stderr "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3] [-o <path>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [--target=<triple>] [-i] [--repl-format=text|json] [-I<path>] <file.nuc>\n") (return 2))
     (set! g-source-path source-file)
     (let (src:ptr (read-file source-file))
       (compiler-init)
