@@ -43,4 +43,25 @@ for src in tests/repl/*.in; do
     rm -f "$actual_file"
 done
 
+# Cross-target emission: each triple in the Phase-B matrix must produce IR
+# carrying the matching `target triple` line. Guards against a backend not
+# being registered (which makes --target reject the triple).
+for triple in \
+    x86_64-pc-linux-gnu \
+    x86_64-apple-darwin \
+    aarch64-apple-darwin \
+    aarch64-unknown-linux-gnu \
+    arm-unknown-linux-gnueabihf \
+    x86_64-pc-windows-msvc \
+    x86_64-pc-windows-gnu \
+    i386-pc-linux-gnu; do
+    ir="$(./build/nucleusc --target="$triple" --emit-llvm examples/hello.nuc 2>/dev/null || true)"
+    if printf '%s' "$ir" | grep -q "target triple = \"$triple\""; then
+        echo "PASS  target-$triple"
+    else
+        echo "FAIL  target-$triple"
+        fail=1
+    fi
+done
+
 exit $fail
