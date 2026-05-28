@@ -1890,6 +1890,14 @@ declare void @LLVMInitializeX86TargetInfo()
 declare void @LLVMInitializeX86Target()
 declare void @LLVMInitializeX86TargetMC()
 declare void @LLVMInitializeX86AsmPrinter()
+declare void @LLVMInitializeAArch64TargetInfo()
+declare void @LLVMInitializeAArch64Target()
+declare void @LLVMInitializeAArch64TargetMC()
+declare void @LLVMInitializeAArch64AsmPrinter()
+declare void @LLVMInitializeARMTargetInfo()
+declare void @LLVMInitializeARMTarget()
+declare void @LLVMInitializeARMTargetMC()
+declare void @LLVMInitializeARMAsmPrinter()
 declare ptr @LLVMOrcCreateLLJIT(ptr, ptr)
 declare ptr @LLVMOrcLLJITGetMainJITDylib(ptr)
 declare i8 @LLVMOrcLLJITGetGlobalPrefix(ptr)
@@ -5304,6 +5312,23 @@ entry:
   ret void
 }
 
+define void @targets-init-all() {
+entry:
+  call void @LLVMInitializeX86TargetInfo()
+  call void @LLVMInitializeX86Target()
+  call void @LLVMInitializeX86TargetMC()
+  call void @LLVMInitializeX86AsmPrinter()
+  call void @LLVMInitializeAArch64TargetInfo()
+  call void @LLVMInitializeAArch64Target()
+  call void @LLVMInitializeAArch64TargetMC()
+  call void @LLVMInitializeAArch64AsmPrinter()
+  call void @LLVMInitializeARMTargetInfo()
+  call void @LLVMInitializeARMTarget()
+  call void @LLVMInitializeARMTargetMC()
+  call void @LLVMInitializeARMAsmPrinter()
+  ret void
+}
+
 define ptr @make-target-for-triple(ptr %triple.arg) {
 entry:
   %triple.addr = alloca ptr
@@ -5400,10 +5425,7 @@ cond.end1:
 define void @target-init() {
 entry:
   %host-triple.addr.0 = alloca ptr
-  call void @LLVMInitializeX86TargetInfo()
-  call void @LLVMInitializeX86Target()
-  call void @LLVMInitializeX86TargetMC()
-  call void @LLVMInitializeX86AsmPrinter()
+  call void @targets-init-all()
   %t1 = call ptr @LLVMGetDefaultTargetTriple()
   store ptr %t1, ptr %host-triple.addr.0
   %t2 = load ptr, ptr %host-triple.addr.0
@@ -35058,10 +35080,7 @@ cond.then0.0:
 cond.fall0:
   br label %cond.end0
 cond.end0:
-  call void @LLVMInitializeX86TargetInfo()
-  call void @LLVMInitializeX86Target()
-  call void @LLVMInitializeX86TargetMC()
-  call void @LLVMInitializeX86AsmPrinter()
+  call void @targets-init-all()
   store ptr null, ptr %jit-ref.addr.2
   %t4 = call ptr @LLVMOrcCreateLLJIT(ptr %jit-ref.addr.2, ptr null)
   store ptr %t4, ptr %err.addr.3

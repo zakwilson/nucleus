@@ -228,13 +228,36 @@ on; all tests + bootstrap fixed-point hold on x86_64-linux.
   `type-size` into `align N` emissions were dropped during the align
   cleanup, so this is only used for future memcpy/sizeof scenarios.
 
+## Phase B — multi-target backends (done)
+
+Landed in `stage8-c-parity`. Registers every backend Nucleus can emit for
+so `--target=<triple>` resolves instead of erroring at
+`LLVMGetTargetFromTriple`.
+
+* New `targets-init-all` helper expands the static-inline
+  `LLVMInitializeAll*` macros by calling the per-target entry points
+  directly for X86, AArch64, and ARM (Info / Target / TargetMC /
+  AsmPrinter each). Declarations added to `src/llvm.nuch`.
+* Both registration sites — `target-init` (output path) and
+  `jit-ensure-init` (in-process JIT) — now route through
+  `targets-init-all`. It is idempotent; whichever runs first wins.
+* Covers the full Phase-B target matrix: `x86_64`/`i386` (X86),
+  `aarch64` (AArch64), `arm` (ARM) — Linux, Darwin, and Windows
+  (msvc/gnu) triples all emit IR with the correct `target datalayout`
+  obtained from LLVM. 32-bit triples (`i386`, `arm`) correctly produce
+  `p:32:32` layouts and 4-byte pointer sizing.
+* `tests/run-tests.sh` gained a cross-target emission guard: each triple
+  in the matrix must emit IR carrying its own `target triple` line.
+* The native (host) target is still what the JIT uses; cross-target only
+  affects the final batch IR / object emission, so JIT data-layout
+  compatibility is preserved.
+
+The required LLVM backends (AArch64, ARM, X86) are all present in a
+standard LLVM build (`llvm-config --targets-built`); no LLVM rebuild is
+needed.
+
 ### Carried into later phases
 
-* **Phase B — multi-target backends.** Register
-  `LLVMInitializeAArch64*` / `LLVMInitializeARM*` so `--target=aarch64-*`
-  / `--target=arm-*` actually emit IR. Probably register all the
-  initialized targets at startup; the cost is module init + a slightly
-  larger binary.
 * **Phase C — ABI lowering.** Today aggregate parameters / returns are
   passed by whatever LLVM defaults to with no `byval` / `sret`, which is
   not ABI-correct on any platform once aggregates appear in signatures.
