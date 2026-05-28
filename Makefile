@@ -39,6 +39,11 @@ boot-binary: $(REPL_SHIM_O) | $(BUILD)
 test: $(BIN)
 	./tests/run-tests.sh
 
+# Struct-ABI interop acceptance test (Phase C gate). Not part of `make test`
+# until aggregate ABI lowering lands; see design/stage8/platform.md.
+abi-test: $(BIN)
+	NUCLEUSC=$(BIN) ./tests/run-abi-test.sh
+
 bootstrap: $(BIN) | $(BUILD)/out
 	@echo "=== Stage 2: self-hosted compiler -> nucleusc.nuc ==="
 	$(BIN) --emit-llvm src/nucleusc.nuc > $(BUILD)/stage2.ll
@@ -134,4 +139,4 @@ uninstall:
 	rm -f $(BINDIR)/nucleusc
 	rm -rf $(DESTDIR)$(PREFIX)/share/nucleus
 
-.PHONY: test clean bootstrap boot-binary update-bootstrap ensure-boot lib-headers lib-cheaders lib-objs lib-so lib install uninstall
+.PHONY: test abi-test clean bootstrap boot-binary update-bootstrap ensure-boot lib-headers lib-cheaders lib-objs lib-so lib install uninstall
