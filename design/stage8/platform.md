@@ -218,9 +218,7 @@ on; all tests + bootstrap fixed-point hold on x86_64-linux.
   dropped their now-unused `align:i32` parameter.
 * `size_t` / `ssize_t` / `ptrdiff_t` / `intptr_t` / `uintptr_t` resolved
   against `g-target.ptr-size` at C-header parse time in
-  `src/cheader.nuc`. (Note: `long` is still mapped unconditionally to
-  64-bit — fixing it properly requires modeling the LP64 vs LLP64 vs
-  ILP32 ABI per platform, deferred to Phase D.)
+  `src/cheader.nuc`. (`long`'s data model was handled later, in Phase D.)
 * `type-size` and new `type-align` are now target-aware: `TY-PTR` /
   `TY-FN` use `g-target.ptr-size` / `ptr-align`; `TY-STRUCT` walks
   fields with proper padding via the new `align-up` helper and returns
@@ -426,13 +424,38 @@ calls, which work today only because both currently use LLVM's default).
   pointer, so the fixed-point test never exercises this path — `make
   abi-test` is the real gate.
 
+## Phase D — `long` data model (done)
+
+Landed in `stage8-c-parity`. C `long` / `unsigned long` now resolve to the
+right width for the configured target's data model, instead of always
+64-bit:
+
+* **`target-long-size`** (`src/cheader.nuc`) returns 4 for ILP32
+  (`g-target.ptr-size == 4`: i386, armv7) and for LLP64 (Windows x64,
+  detected via `"windows"` in the triple), 8 for LP64 (Linux/macOS
+  x86_64/aarch64).
+* `c-parse-type` now tracks the `long` *count* (0 / 1 / 2) instead of a
+  flag, so `long` and `long long` are distinguished; `long long` is always
+  64-bit. `long double` is still skipped.
+* On the host (LP64) `long` → i64 exactly as before, so the bootstrap is
+  unchanged.
+* Tested in `tests/run-tests.sh` (`long-abi-*`): a header with
+  `long`/`long long`/`unsigned long` functions is parsed under four
+  targets and the emitted declares checked (LP64 → i64; ILP32 & LLP64 →
+  i32 for `long`, i64 for `long long`).
+
+Carried forward (the rest of cross-platform C interop): macOS/MSVC header
+*flavors* — `__darwin_size_t`, `_Bool` on MSVC, MS SAL annotations
+(`_In_`, `_Out_`), `__int64`. `cheader.nuc` still assumes GNU/Linux system
+headers; these need the corresponding SDK headers to test, so they're
+deferred.
+
 ### Carried into later phases
 
-* **Phase D — cross-platform C interop.** `long`'s ABI model, plus
-  `__darwin_size_t`, `_Bool` on MSVC, MS SAL annotations (`_In_`,
-  `_Out_`), `__int64`. Currently `cheader.nuc` only knows the GNU/Linux
-  flavor.
-* **Phase E — struct ABI verification.** Generate-and-compare-against-cc
-  harness from question 13(a).
+* **Phase E — struct ABI verification.** A layout (sizeof/offsetof)
+  harness from question 13(a). Note: the calling-convention half is
+  already covered by Phase C's `tests/abi/` (Nucleus↔C round-trips vs
+  `cc`); Phase E would add field-offset/size comparison over the
+  question-14 corpus.
 * **Phase F — Windows build.** `build.ps1`, MSVC vs MinGW link path,
   `.bat` bootstrap.
