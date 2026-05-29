@@ -484,7 +484,64 @@ platform `cc`); the calling-convention half was already covered by Phase C's
   headers never used implicit-int `short`, so no previously-successful parse
   changed).
 
+## Phase F — Windows build (done)
+
+Landed in `stage8-c-parity`. Adds the Windows build path — the PowerShell /
+`.bat` counterpart of the POSIX Makefile / `build.sh` flow (designer answers
+10 and 11: ship *both* an entirely open-source toolchain and the platform
+default, and offer both `make` and `build.ps1`).
+
+* **`build.ps1`** mirrors the Linux build step for step: compile the REPL
+  shim → ensure a runnable boot compiler → self-host (`--emit-llvm` →
+  link). Two toolchains via `-Toolchain`:
+  * `mingw` (default) — triple `x86_64-pc-windows-gnu`, clang + LLD/GNU, no
+    Visual Studio required (the fully-open-source path). Links with
+    `-Wl,--export-all-symbols` so the in-process ORC JIT can resolve the
+    `repl_shim` symbols (the GNU analogue of Linux `-rdynamic`).
+  * `msvc` — triple `x86_64-pc-windows-msvc`, clang driving `link.exe` /
+    `lld-link`; needs the MSVC libraries on `PATH`.
+  Both use `clang` as the compile/link driver and `llvm-config` (which ships
+  on Windows) for the `orcjit core irreader` component set + `--system-libs`;
+  only the triple, boot IR, and export flag differ. `-Bootstrap` runs the
+  fixed-point self-host check; `-UpdateBootstrap` refreshes the Windows boot
+  IR; `-Clean` removes `build\`.
+* **`bootstrap.bat`** — thin cmd.exe wrapper over `build.ps1 -Bootstrap`
+  (prefers `pwsh`, falls back to `powershell`) for users who don't drive
+  PowerShell directly. `bootstrap.bat [mingw|msvc]`.
+* **Committed Windows boot IR.** A fresh Windows checkout has no `nucleusc.exe`
+  to bootstrap from — the same chicken-and-egg the Linux repo solves with
+  `boot/nucleusc.ll`. The Windows analogue is committed
+  `boot/nucleusc-x86_64-windows-gnu.ll` and `…-msvc.ll`, **cross-emitted on
+  the Linux host** (`--target=…`, validated with `llvm-as`). `build.ps1`
+  compiles the matching flavor into the first `bin\nucleusc.exe`. To keep the
+  fixed-point check honest regardless of how the host LLVM names itself,
+  `build.ps1` passes `--target=<triple>` on every self-host step so the
+  emitted triple is deterministic and matches the committed boot IR.
+* **Boot IRs stay in lock-step.** `make update-bootstrap` now also runs
+  `make windows-boot`, regenerating both Windows boot IRs from the same
+  milestone compiler as the Linux `boot/nucleusc.ll` — so they can't silently
+  rot across compiler changes.
+* **Why the boot IR is ABI-clean on Win64 despite no Win64 ABI lowering:**
+  Phase C implemented x86_64 *System V* aggregate lowering only — Win64 is not
+  yet ported. But the compiler's own functions pass **only pointers** (the sole
+  `byval`/`sret` occurrences in its IR are string literals in its own emitter
+  and `sret-slot` variable names — zero real aggregate-by-value). So the
+  cross-emitted Windows IR has no aggregate parameters/returns to mis-lower,
+  and the compiler bootstraps correctly on Win64.
+
 ### Carried into later phases
 
-* **Phase F — Windows build.** `build.ps1`, MSVC vs MinGW link path,
-  `.bat` bootstrap.
+* **Win64 aggregate ABI at the C boundary.** Phase C's SysV lowering is not
+  correct for Win64 (structs >8 bytes pass by hidden pointer; different
+  register/return rules). The compiler itself never trips this (pointers
+  only), but Nucleus↔C interop that passes/returns aggregates by value on
+  Windows will be ABI-wrong until a Win64 `ABIInfo` port lands. AArch64
+  HFA/HVA likewise.
+* **REPL/JIT symbol export under MSVC.** `link.exe`/`lld-link` have no blanket
+  `-rdynamic`; the `mingw` path uses `--export-all-symbols`, but the REPL on
+  the `msvc` path may need an explicit export list. Batch compilation
+  (`nucleusc file.nuc -o out`) is unaffected.
+* **Untested on real hardware.** Per the designer, Windows/macOS testing is
+  out of scope for this container (Linux). `build.ps1` is faithful to the
+  Linux flow and the boot IRs are LLVM-valid, but neither has been executed on
+  Windows.
