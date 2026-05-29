@@ -450,12 +450,41 @@ Carried forward (the rest of cross-platform C interop): macOS/MSVC header
 headers; these need the corresponding SDK headers to test, so they're
 deferred.
 
+## Phase E — struct layout verification (done)
+
+Landed in `stage8-c-parity`. Adds the field-offset/size half of ABI
+verification (question 13(a), option (a) — generate-and-compare against the
+platform `cc`); the calling-convention half was already covered by Phase C's
+`tests/abi/`.
+
+* `tests/layout/structs.h` is the single source of truth for the corpus
+  (question 14): every primitive alone in a one-field struct; mixed-size
+  pairs in both orders (`{i8;i64}`, `{i32;i8}`, `{i8;i32}`, `{i16;i64}`,
+  `{i8;i16;i8}`, `{i64;i8}`) for padding/tail-padding; a named nested
+  struct by value (`Outer{Inner; char}`); an anonymous inline struct field;
+  a timespec-shaped struct; and a larger mixed record. It is **imported** by
+  `tests/layout/layout.nuc` and **`#include`d** by `tests/layout/layout.c`,
+  so both sides verify the *same* structs with no two-language drift.
+* `layout.nuc` prints `sizeof` (Nucleus's `type-size` walk) and per-field
+  byte offsets — computed as `(cast i64 (.& p field)) - (cast i64 p)` — for
+  each struct; `layout.c` prints the identical lines via `sizeof` /
+  `offsetof`. `tests/run-layout-test.sh` diffs them; a mismatch is a build
+  failure (question 15). Wired into `make test` and exposed as
+  `make layout-test`.
+* Arrays/unions/bitfields stay out of scope: the C-header parser skips a
+  struct containing one (registers it as opaque `ptr`), and `defstruct` has
+  no array field type — consistent with the documented limitation.
+* **Parser fix surfaced by this harness:** a bare `short` field (implicit-int
+  `short` ≡ `short int`) was mis-parsed — `c-parse-type` set `is-short` and
+  then consumed the *declarator name* as the base type, yielding `null` and
+  silently skipping the whole struct (and equally breaking any `short`-returning
+  declaration). `c-parse-type` now peeks past `short` exactly as it does for
+  `long`: if `int` doesn't follow, `short` itself is the base type. Fixed at
+  the root in `src/cheader.nuc`; bootstrap unaffected (the compiler's own
+  headers never used implicit-int `short`, so no previously-successful parse
+  changed).
+
 ### Carried into later phases
 
-* **Phase E — struct ABI verification.** A layout (sizeof/offsetof)
-  harness from question 13(a). Note: the calling-convention half is
-  already covered by Phase C's `tests/abi/` (Nucleus↔C round-trips vs
-  `cc`); Phase E would add field-offset/size comparison over the
-  question-14 corpus.
 * **Phase F — Windows build.** `build.ps1`, MSVC vs MinGW link path,
   `.bat` bootstrap.

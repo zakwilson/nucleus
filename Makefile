@@ -44,6 +44,11 @@ test: $(BIN)
 abi-test: $(BIN)
 	NUCLEUSC=$(BIN) ./tests/run-abi-test.sh
 
+# Struct-layout verification (Phase E gate): sizeof/offsetof vs the platform
+# C compiler over the question-14 corpus. See design/stage8/platform.md.
+layout-test: $(BIN)
+	NUCLEUSC=$(BIN) ./tests/run-layout-test.sh
+
 bootstrap: $(BIN) | $(BUILD)/out
 	@echo "=== Stage 2: self-hosted compiler -> nucleusc.nuc ==="
 	$(BIN) --emit-llvm src/nucleusc.nuc > $(BUILD)/stage2.ll
@@ -139,4 +144,4 @@ uninstall:
 	rm -f $(BINDIR)/nucleusc
 	rm -rf $(DESTDIR)$(PREFIX)/share/nucleus
 
-.PHONY: test abi-test clean bootstrap boot-binary update-bootstrap ensure-boot lib-headers lib-cheaders lib-objs lib-so lib install uninstall
+.PHONY: test abi-test layout-test clean bootstrap boot-binary update-bootstrap ensure-boot lib-headers lib-cheaders lib-objs lib-so lib install uninstall
