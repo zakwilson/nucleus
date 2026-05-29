@@ -80,6 +80,15 @@ Current branch: `stage8-c-parity`
 | Wired into `make test` (gates the build) and `make layout-test`; mismatch = build failure | Done |
 | Root-cause parser fix surfaced by the harness: implicit-int `short` (`short` ≡ `short int`) was mis-parsed in `c-parse-type` (declarator consumed as base type → struct silently skipped); now peeks past `short` like `long`. Bootstrap unaffected | Done (`src/cheader.nuc`) |
 
+### Stage 8 Phase F — Windows build
+| Item | Status |
+|---|---|
+| `build.ps1` — PowerShell mirror of the Linux build (shim → ensure-boot → self-host → link); `-Toolchain mingw` (default, open-source: `x86_64-pc-windows-gnu`, clang+LLD, `--export-all-symbols`) and `-Toolchain msvc` (`x86_64-pc-windows-msvc`, clang→link.exe/lld-link); `-Bootstrap`/`-UpdateBootstrap`/`-Clean`. Byte-clean stdout via `Start-Process` (avoids PS 5.1 UTF-16 BOM) | Done (`design/stage8/platform.md`) |
+| `bootstrap.bat` — cmd.exe wrapper over `build.ps1 -Bootstrap` (prefers `pwsh`) | Done |
+| Committed Windows boot IR (`boot/nucleusc-x86_64-windows-{gnu,msvc}.ll`), cross-emitted on Linux, `llvm-as`-validated; `make windows-boot` regenerates them and `make update-bootstrap` keeps all boot flavors in lock-step | Done |
+| Boot IR is ABI-clean on Win64 (compiler's own IR has zero real aggregate-by-value), so it bootstraps despite Win64 ABI lowering not being ported | Verified |
+| Win64 aggregate ABI at the C boundary; REPL symbol export under MSVC; on-hardware testing | Deferred (untestable on Linux host) |
+
 ---
 
 ## Deferred (needs design decision or blocked on above)

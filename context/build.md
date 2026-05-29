@@ -12,6 +12,14 @@
 - Top-level `defvar` globals are emitted to `g-def-stream` (def-bufp), not `g-decl-stream` (decl-bufp). CT and macro JIT modules concatenate `g-decl-bufp` plus their own private decls/defs; if defvars went to decl-bufp they would be redefined in every JIT module and collide with the host process's symbols (which the dylib generator also exposes). External calls from JIT modules into host-defined globals (e.g. `g-intern-cap`) resolve through the dylib search generator instead. Adding new global state that lives in code reachable from CT/macro bodies must follow this same routing.
 - The self-hosted compiler and its bootstrap artifacts are linked against the system LLVM (19+). The Makefile uses `llvm-config` for flags; no version is hardcoded.
 
+## Windows build (Phase F, untested on this Linux host)
+
+- `build.ps1` is the PowerShell counterpart of the Makefile/`build.sh` flow: compile `repl_shim` → ensure a boot compiler exists (build from committed Windows boot IR if `bin\nucleusc.exe` is missing) → self-host (`--emit-llvm` → clang link). `bootstrap.bat [mingw|msvc]` is a cmd.exe wrapper over `build.ps1 -Bootstrap`.
+- `-Toolchain mingw` (default, fully open source: `x86_64-pc-windows-gnu`, clang+LLD, links `-Wl,--export-all-symbols` for the JIT) and `-Toolchain msvc` (`x86_64-pc-windows-msvc`, clang → `link.exe`/`lld-link`). Both drive `clang` and use `llvm-config` (`orcjit core irreader` + `--system-libs`); only triple, boot IR, and export flag differ.
+- `build.ps1` passes `--target=<triple>` on every self-host step so the emitted triple is deterministic (independent of how the host LLVM names itself) and matches the committed boot IR, keeping the fixed-point check honest.
+- **Do not redirect native stdout with PowerShell `>`** — Windows PowerShell 5.1 re-encodes it as UTF-16-with-BOM, corrupting the `.ll`. `build.ps1` uses `Start-Process -RedirectStandardOutput`, which preserves the child's raw bytes.
+- Win64 aggregate ABI at the C boundary is **not** correct yet (Phase C did SysV only); the compiler itself never hits this because its own IR passes only pointers (no real `byval`/`sret`), so it still bootstraps on Win64.
+
 ## Updating bootstrap artifacts
 
 Run `make update-bootstrap` **only at a stable milestone**:
@@ -19,7 +27,7 @@ Run `make update-bootstrap` **only at a stable milestone**:
 - Bootstrap fixed-point must hold (`make bootstrap`)
 - The compiler must be in a usable, non-broken state
 
-This updates both `boot/nucleusc.ll` (IR) and `bin/nucleusc` (binary) from the current `build/nucleusc`. Never update them with failing tests or mid-feature work.
+This updates `boot/nucleusc.ll` (IR), `bin/nucleusc` (binary), **and** the Windows boot IRs `boot/nucleusc-x86_64-windows-{gnu,msvc}.ll` (via `make windows-boot`) from the current `build/nucleusc`. Never update them with failing tests or mid-feature work. The Windows IRs are regenerated together with the Linux one so all boot flavors stay in lock-step (cross-emitted on this Linux host with `--target=`; a fresh Windows checkout has no compiler to bootstrap from, so it needs committed Windows IR exactly as Linux needs `boot/nucleusc.ll`).
 
 **After a codegen change, `make bootstrap` reports a spurious diff until the boot binary is converged.** `make bootstrap` diffs `build/nucleusc.ll` (emitted by the *old* `bin/nucleusc`) against `build/stage2.ll` (emitted by the *new* `build/nucleusc`); if your change alters emitted IR, these differ by construction even though the new compiler is self-consistent. To converge: `make clean && make && make update-bootstrap && make clean && make && make bootstrap`. The first round builds + installs the new compiler as the boot binary; the second round rebuilds both `.ll`s from it so they match. To check self-consistency directly without touching committed artifacts, compile `src/nucleusc.nuc` with `build/nucleusc`, build that IR into a stage2 binary, recompile, and diff the two IRs (they must be identical — codegen is deterministic).
 
