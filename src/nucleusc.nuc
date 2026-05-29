@@ -253,6 +253,14 @@
 (defvar g-body-sizep:i64 0)
 (defvar g-block-term:i32 0)
 
+; ABI of the current function's return value (an AbiInfo), set per-defn so
+; `return` and the implicit tail return know how to lower a struct result.
+; g-fn-sret-name is the IR name of the hidden sret pointer when the return is
+; ABI-MEMORY, else null.
+(defvar g-fn-ret-abi:ptr null)
+(defvar g-fn-ret-type:ptr null)
+(defvar g-fn-sret-name:ptr null)
+
 ; Current output stream for top-level emission
 (defvar g-out:ptr)
 (defvar g-decl-out:ptr)
@@ -326,6 +334,7 @@
 ; Each is a linked list of (path-string . next) pairs using Node cells.
 (defvar g-imported:ptr)     ; already-imported resolved paths (null = empty)
 (defvar g-importing:ptr)   ; currently-importing stack for cycle detection (null = empty)
+(defvar g-struct-prescan-visited:ptr null)  ; imports already struct-prescanned
 
 ; Include path list for -I flag
 (defvar g-include-paths:ptr)
@@ -692,6 +701,227 @@
           (inc! i))
         (return (align-up offset struct-align))))
     (return 1)))
+
+; ============================================================
+; ABI lowering (aggregate parameters / returns)
+; ============================================================
+;
+; Scalars and pointers pass/return as their own IR type (ABI-DIRECT) — the
+; legacy path, byte-identical to before. Only TY-STRUCT is ever classified
+; into a non-DIRECT kind:
+;   ABI-MEMORY  — param: `ptr byval(%T) align A`; return: `sret` (hidden
+;                 leading pointer, function returns void).
+;   ABI-COERCE1 — passed/returned in one register of IR type reg0.
+;   ABI-COERCE2 — two registers, reg0 then reg1 (return as `{reg0, reg1}`).
+;
+; The classification is the x86_64 System V algorithm (the only ABI tested
+; against the host `cc`; other targets plug in here later). See
+; design/stage8/platform.md for the empirical clang coercion table.
+(defenum AbiKind ABI-DIRECT ABI-MEMORY ABI-COERCE1 ABI-COERCE2)
+
+(defstruct AbiInfo
+  kind:i32
+  reg0:ptr
+  reg1:ptr)
+
+; OR the SysV class of each scalar leaf into its eightbyte slot. flags is a
+; 2-int array; bit 0 = INTEGER (int/ptr), bit 1 = SSE-double, bit 2 =
+; SSE-float. Nested structs recurse at their absolute byte offset; fields are
+; naturally aligned so no scalar straddles an eightbyte boundary.
+(defn abi-mark-eightbytes:void (t:ptr base:i32 flags:ptr)
+  (let (tt:ptr:Type t
+        k:i32 (. tt kind))
+    (when (= k TY-STRUCT)
+      (let (sd:ptr:StructDef (. tt sdef)
+            n:i32 (. sd num-fields)
+            i:i32 0
+            offset:i32 0)
+        (while (< i n)
+          (let (ft:ptr (aref (cast ptr:ptr (. sd field-types)) i)
+                fa:i32 (type-align ft))
+            (set! offset (align-up offset fa))
+            (abi-mark-eightbytes ft (+ base offset) flags)
+            (set! offset (+ offset (type-size ft))))
+          (inc! i))
+        (return)))
+    (let (idx:i32 (/ base 8)
+          bit:i32 1)
+    (when (= k TY-F64) (set! bit 2))
+    (when (= k TY-F32) (set! bit 4))
+    (aset! (cast ptr:i32 flags) idx
+      (bit-or (aref (cast ptr:i32 flags) idx) bit)))))
+
+; IR register type for one eightbyte holding `n` bytes, given its class flags.
+; INTEGER wins over SSE when both overlap the eightbyte (SysV merge rule).
+(defn abi-eightbyte-reg:ptr (flags:i32 n:i32)
+  (when (!= (bit-and flags 1) 0)
+    (when (<= n 1) (return "i8"))
+    (when (<= n 2) (return "i16"))
+    (when (<= n 3) (return "i24"))
+    (when (<= n 4) (return "i32"))
+    (return "i64"))
+  (when (!= (bit-and flags 2) 0) (return "double"))
+  (when (!= (bit-and flags 4) 0)
+    (when (>= n 8) (return "<2 x float>"))
+    (return "float"))
+  (return "i64"))
+
+; Classify a type for use as a parameter or return value. Returns an AbiInfo.
+(defn abi-classify:ptr (t:ptr)
+  (let (info:ptr:AbiInfo (arena-alloc (sizeof AbiInfo)))
+    (.set! info kind ABI-DIRECT)
+    (.set! info reg0 null)
+    (.set! info reg1 null)
+    (let (tt:ptr:Type t)
+      (when (!= (. tt kind) TY-STRUCT) (return info))
+      (let (size:i32 (type-size t))
+        (when (> size 16)
+          (.set! info kind ABI-MEMORY)
+          (return info))
+        (let (flags:ptr (alloca i32 2))
+          (aset! (cast ptr:i32 flags) 0 (cast i32 0))
+          (aset! (cast ptr:i32 flags) 1 (cast i32 0))
+          (abi-mark-eightbytes t 0 flags)
+          (let (n0:i32 size)
+            (when (> n0 8) (set! n0 8))
+            (.set! info reg0 (abi-eightbyte-reg (aref (cast ptr:i32 flags) 0) n0))
+            (if (<= size 8)
+              (.set! info kind ABI-COERCE1)
+              (do
+                (.set! info kind ABI-COERCE2)
+                (.set! info reg1
+                  (abi-eightbyte-reg (aref (cast ptr:i32 flags) 1) (- size 8)))))
+            (return info)))))))
+
+; The IR type a struct return lowers to: the single reg, the `{r0, r1}` pair,
+; or — for ABI-DIRECT / ABI-MEMORY callers shouldn't ask — falls through.
+(defn abi-return-ir:ptr (info:ptr ret-ty:ptr)
+  (let (ai:ptr:AbiInfo info)
+    (when (= (. ai kind) ABI-COERCE1) (return (. ai reg0)))
+    (when (= (. ai kind) ABI-COERCE2)
+      (return (fmt-2s "{ %s, %s }" (. ai reg0) (. ai reg1))))
+    (return (type-to-ir ret-ty))))
+
+; The IR struct type name for a TY-STRUCT.
+(defn abi-struct-name:ptr (t:ptr)
+  (return (. (cast ptr:StructDef (. (cast ptr:Type t) sdef)) name)))
+
+; Emit a leading ", " on g-out when this isn't the first item. `firstp` is a
+; pointer to an i32 flag (0 = nothing emitted yet) shared across one list.
+(defn abi-sep:void (firstp:ptr)
+  (when (!= (aref (cast ptr:i32 firstp) 0) 0) (fprintf g-out ", "))
+  (aset! (cast ptr:i32 firstp) 0 (cast i32 1)))
+
+; Emit one source-level parameter's LLVM lowering to g-out. `name` is the SSA
+; base including '%' (e.g. "%p") or null for a nameless declare. DIRECT is
+; byte-identical to the legacy "<type> %name.arg" form.
+(defn emit-abi-param:void (ptype:ptr name:ptr firstp:ptr)
+  (let (info:ptr:AbiInfo (abi-classify ptype)
+        k:i32 (. (cast ptr:AbiInfo info) kind))
+    (when (= k ABI-DIRECT)
+      (abi-sep firstp)
+      (if (= name null)
+        (fprintf g-out "%s" (type-to-ir ptype))
+        (fprintf g-out "%s %s.arg" (type-to-ir ptype) name))
+      (return))
+    (when (= k ABI-MEMORY)
+      (abi-sep firstp)
+      (if (= name null)
+        (fprintf g-out "ptr byval(%%%s) align %d"
+          (abi-struct-name ptype) (type-align ptype))
+        (fprintf g-out "ptr byval(%%%s) align %d %s.arg"
+          (abi-struct-name ptype) (type-align ptype) name))
+      (return))
+    (when (= k ABI-COERCE1)
+      (abi-sep firstp)
+      (if (= name null)
+        (fprintf g-out "%s" (. info reg0))
+        (fprintf g-out "%s %s.arg0" (. info reg0) name))
+      (return))
+    ; ABI-COERCE2: two registers.
+    (abi-sep firstp)
+    (if (= name null)
+      (fprintf g-out "%s" (. info reg0))
+      (fprintf g-out "%s %s.arg0" (. info reg0) name))
+    (abi-sep firstp)
+    (if (= name null)
+      (fprintf g-out "%s" (. info reg1))
+      (fprintf g-out "%s %s.arg1" (. info reg1) name))))
+
+; Append one already-formatted "<type> <val>" LLVM argument to the call's
+; arglist buffer, inserting ", " before all but the first. `firstp` is a
+; pointer to a shared i32 flag. Returns the updated write offset.
+(defn arg-frag:i64 (arglist:ptr apos:i64 firstp:ptr text:ptr)
+  (let (sep:ptr "")
+    (when (!= (aref (cast ptr:i32 firstp) 0) 0) (set! sep ", "))
+    (aset! (cast ptr:i32 firstp) 0 (cast i32 1))
+    (let (w:i32 (snprintf (ptr+ (cast ptr:i8 arglist) apos)
+                          (- (cast i64 2048) apos) "%s%s" sep text))
+      (return (+ apos (i64 w))))))
+
+; Lower a struct-typed argument into the call's arglist, emitting any needed
+; materialization (store the aggregate to a temp, load the coercion
+; registers). Returns the updated write offset.
+(defn abi-append-struct-arg:i64 (arglist:ptr apos:i64 firstp:ptr av:ptr)
+  (let (ty:ptr (. (cast ptr:Val av) type)
+        info:ptr:AbiInfo (abi-classify ty)
+        k:i32 (. (cast ptr:AbiInfo info) kind)
+        sn:ptr (abi-struct-name ty)
+        tmp:ptr (new-tmp))
+    (fprintf g-body-stream "  %s = alloca %%%s\n" tmp sn)
+    (fprintf g-body-stream "  store %%%s %s, ptr %s\n" sn (. (cast ptr:Val av) val) tmp)
+    (when (= k ABI-MEMORY)
+      (let (bv:ptr (fmt-sd "ptr byval(%%%s) align %d" sn (type-align ty)))
+        (return (arg-frag arglist apos firstp (fmt-2s "%s %s" bv tmp)))))
+    (when (= k ABI-COERCE1)
+      (let (r:ptr (new-tmp))
+        (fprintf g-body-stream "  %s = load %s, ptr %s\n" r (. info reg0) tmp)
+        (return (arg-frag arglist apos firstp (fmt-2s "%s %s" (. info reg0) r)))))
+    ; ABI-COERCE2
+    (let (r0:ptr (new-tmp)
+          hi:ptr (new-tmp)
+          r1:ptr (new-tmp))
+      (fprintf g-body-stream "  %s = load %s, ptr %s\n" r0 (. info reg0) tmp)
+      (fprintf g-body-stream "  %s = getelementptr i8, ptr %s, i64 8\n" hi tmp)
+      (fprintf g-body-stream "  %s = load %s, ptr %s\n" r1 (. info reg1) hi)
+      (set! apos (arg-frag arglist apos firstp (fmt-2s "%s %s" (. info reg0) r0)))
+      (return (arg-frag arglist apos firstp (fmt-2s "%s %s" (. info reg1) r1))))))
+
+; Emit a struct `ret` for the current function, honoring g-fn-ret-abi. `v` is
+; a Val whose .val holds the struct aggregate (or the constant
+; "zeroinitializer"). Writes to g-body-stream and terminates the block.
+(defn emit-struct-ret:void (v:ptr)
+  (let (info:ptr:AbiInfo g-fn-ret-abi
+        k:i32 (. (cast ptr:AbiInfo g-fn-ret-abi) kind)
+        sn:ptr (abi-struct-name g-fn-ret-type)
+        vv:ptr (. (cast ptr:Val v) val))
+    (when (= k ABI-MEMORY)
+      (fprintf g-body-stream "  store %%%s %s, ptr %s\n" sn vv g-fn-sret-name)
+      (fprintf g-body-stream "  ret void\n")
+      (return))
+    (let (tmp:ptr (new-tmp))
+      (fprintf g-body-stream "  %s = alloca %%%s\n" tmp sn)
+      (fprintf g-body-stream "  store %%%s %s, ptr %s\n" sn vv tmp)
+      (when (= k ABI-COERCE1)
+        (let (r:ptr (new-tmp))
+          (fprintf g-body-stream "  %s = load %s, ptr %s\n" r (. info reg0) tmp)
+          (fprintf g-body-stream "  ret %s %s\n" (. info reg0) r)
+          (return)))
+      ; ABI-COERCE2
+      (let (r0:ptr (new-tmp)
+            hi:ptr (new-tmp)
+            r1:ptr (new-tmp)
+            a0:ptr (new-tmp)
+            a1:ptr (new-tmp)
+            rty:ptr (fmt-2s "{ %s, %s }" (. info reg0) (. info reg1)))
+        (fprintf g-body-stream "  %s = load %s, ptr %s\n" r0 (. info reg0) tmp)
+        (fprintf g-body-stream "  %s = getelementptr i8, ptr %s, i64 8\n" hi tmp)
+        (fprintf g-body-stream "  %s = load %s, ptr %s\n" r1 (. info reg1) hi)
+        (fprintf g-body-stream "  %s = insertvalue %s undef, %s %s, 0\n"
+          a0 rty (. info reg0) r0)
+        (fprintf g-body-stream "  %s = insertvalue %s %s, %s %s, 1\n"
+          a1 rty a0 (. info reg1) r1)
+        (fprintf g-body-stream "  ret %s %s\n" rty a1)))))
 
 (defn is-int-type:i32 (t:ptr)
   (let (k:i32 (. (cast ptr:Type t) kind))
@@ -2245,23 +2475,35 @@
                       (.set! av type (. cv type))
                       (.set! av val  (. cv val)))))))
             (inc! ci))))
-      (let (arglist:ptr (alloca i8 2048)
-            apos:i64 0)
-        (aset! (cast ptr:i8 arglist) (cast i64 0) (cast i32 0))
-        (set! i 0)
-        (while (< i eff-nargs)
-        (let (av:ptr:Val (ptr+ (cast ptr:Val args) i)
-              sep:ptr "")
-          (when (!= i 0) (set! sep ", "))
-          (let (w:i32 (snprintf (ptr+ (cast ptr:i8 arglist) apos)
-                                (- (cast i64 2048) apos)
-                                "%s%s %s" sep
-                                (type-to-ir (. av type)) (. av val)))
-            (set! apos (+ apos (i64 w)))))
-        (inc! i))
       (let (ft:ptr:Type (. ss type))
         (when (!= (. ft kind) TY-FN)
           (die-at (. cc line) (fmt-s "not a function: %s" (. ss name))))
+       (let (ret-abi:ptr (abi-classify (. ft ret))
+             ret-k:i32 (. (cast ptr:AbiInfo ret-abi) kind)
+             sret-slot:ptr null
+             arglist:ptr (alloca i8 2048)
+             apos:i64 0
+             first:ptr (alloca i32 1))
+        (aset! (cast ptr:i8 arglist) (cast i64 0) (cast i32 0))
+        (aset! (cast ptr:i32 first) 0 (cast i32 0))
+        ; MEMORY return: caller allocates the result slot and passes it as
+        ; the hidden leading sret argument.
+        (when (= ret-k ABI-MEMORY)
+          (set! sret-slot (new-tmp))
+          (fprintf g-body-stream "  %s = alloca %%%s\n"
+            sret-slot (abi-struct-name (. ft ret)))
+          (let (sr:ptr (fmt-sd "ptr sret(%%%s) align %d"
+                          (abi-struct-name (. ft ret)) (type-align (. ft ret))))
+            (set! apos (arg-frag arglist apos first (fmt-2s "%s %s" sr sret-slot)))))
+        ; User arguments: structs lower per the ABI, scalars unchanged.
+        (set! i 0)
+        (while (< i eff-nargs)
+          (let (av:ptr:Val (ptr+ (cast ptr:Val args) i))
+            (if (= (. (cast ptr:Type (. av type)) kind) TY-STRUCT)
+              (set! apos (abi-append-struct-arg arglist apos first av))
+              (set! apos (arg-frag arglist apos first
+                           (fmt-2s "%s %s" (type-to-ir (. av type)) (. av val))))))
+          (inc! i))
         (if (!= (. ft variadic) 0)
           (do
             (let (sig:ptr (alloca i8 512)
@@ -2289,13 +2531,37 @@
                     tmp sig (. ss ir-name) arglist)
                   (return (alloc-val (. ft ret) tmp))))))
           (do
-            (if (-> ft (. ret) (cast ptr:Type _) (. kind) (= _ TY-VOID))
-              (fprintf g-body-stream "  call %s %s(%s)\n"
-                (type-to-ir (. ft ret)) (. ss ir-name) arglist)
-              (let (tmp:ptr (new-tmp))
+            ; Scalar/void return: unchanged.
+            (when (= ret-k ABI-DIRECT)
+              (if (-> ft (. ret) (cast ptr:Type _) (. kind) (= _ TY-VOID))
+                (fprintf g-body-stream "  call %s %s(%s)\n"
+                  (type-to-ir (. ft ret)) (. ss ir-name) arglist)
+                (let (tmp:ptr (new-tmp))
+                  (fprintf g-body-stream "  %s = call %s %s(%s)\n"
+                    tmp (type-to-ir (. ft ret)) (. ss ir-name) arglist)
+                  (return (alloc-val (. ft ret) tmp)))))
+            ; MEMORY return: call is void; read the struct back from the slot.
+            (when (= ret-k ABI-MEMORY)
+              (fprintf g-body-stream "  call void %s(%s)\n" (. ss ir-name) arglist)
+              (let (s:ptr (new-tmp))
+                (fprintf g-body-stream "  %s = load %%%s, ptr %s\n"
+                  s (abi-struct-name (. ft ret)) sret-slot)
+                (return (alloc-val (. ft ret) s))))
+            ; Register-coerced return: call yields the coercion type; round
+            ; it through memory to recover the struct aggregate.
+            (when (or (= ret-k ABI-COERCE1) (= ret-k ABI-COERCE2))
+              (let (rty:ptr (abi-return-ir ret-abi (. ft ret))
+                    tmp:ptr (new-tmp)
+                    slot:ptr (new-tmp)
+                    s:ptr (new-tmp))
                 (fprintf g-body-stream "  %s = call %s %s(%s)\n"
-                  tmp (type-to-ir (. ft ret)) (. ss ir-name) arglist)
-                (return (alloc-val (. ft ret) tmp))))))
+                  tmp rty (. ss ir-name) arglist)
+                (fprintf g-body-stream "  %s = alloca %%%s\n"
+                  slot (abi-struct-name (. ft ret)))
+                (fprintf g-body-stream "  store %s %s, ptr %s\n" rty tmp slot)
+                (fprintf g-body-stream "  %s = load %%%s, ptr %s\n"
+                  s (abi-struct-name (. ft ret)) slot)
+                (return (alloc-val (. ft ret) s))))))
         (return (alloc-val ty-void null))))))))
 
 ; ============================================================
@@ -2358,7 +2624,12 @@
       (die-at (. cc line) "return expects 0 or 1 args"))
     (let (v:ptr:Val (emit-node (node-at cc 1) scope))
       (emit-walk-cleanups scope)
-      (fprintf g-body-stream "  ret %s %s\n" (type-to-ir (. v type)) (. v val))
+      ; Struct returns lower through the ABI (sret store / register coercion);
+      ; everything else returns its value directly as before.
+      (if (and (!= g-fn-ret-abi null)
+               (!= (. (cast ptr:AbiInfo g-fn-ret-abi) kind) ABI-DIRECT))
+        (emit-struct-ret v)
+        (fprintf g-body-stream "  ret %s %s\n" (type-to-ir (. v type)) (. v val)))
       (set! g-block-term 1)
       (return (alloc-val ty-void null)))))
 
@@ -3676,18 +3947,48 @@
           ; Codegen
           (reset-function-state)
           (set! g-cur-fname fname)
+          ; Classify the return for the ABI; `return` / implicit-return use it.
+          (set! g-fn-ret-type ret)
+          (set! g-fn-ret-abi (abi-classify ret))
+          (if (= (. (cast ptr:AbiInfo g-fn-ret-abi) kind) ABI-MEMORY)
+            (set! g-fn-sret-name "%agg.result")
+            (set! g-fn-sret-name null))
           (let (fn-scope:ptr (scope-new g-globals)
                 i:i32 0)
             (while (< i nparams)
               (let (pname:ptr (aref (cast ptr:ptr param-names) i)
                     ptype:ptr (aref (cast ptr:ptr param-types) i)
                     slot:ptr (fmt-s "%%%s.addr" pname)
-                    arg:ptr (fmt-s "%%%s.arg" pname))
-                (fprintf g-entry-stream "  %s = alloca %s\n"
-                  slot (type-to-ir ptype))
-                (fprintf g-entry-stream "  store %s %s, ptr %s\n"
-                  (type-to-ir ptype) arg slot)
-                (scope-define fn-scope pname ptype slot 1))
+                    info:ptr (abi-classify ptype)
+                    k:i32 (. (cast ptr:AbiInfo info) kind))
+                ; ABI-DIRECT: legacy path (byte-identical to before).
+                (when (= k ABI-DIRECT)
+                  (fprintf g-entry-stream "  %s = alloca %s\n"
+                    slot (type-to-ir ptype))
+                  (fprintf g-entry-stream "  store %s %%%s.arg, ptr %s\n"
+                    (type-to-ir ptype) pname slot)
+                  (scope-define fn-scope pname ptype slot 1))
+                ; ABI-MEMORY: the byval pointer *is* the struct's storage.
+                (when (= k ABI-MEMORY)
+                  (scope-define fn-scope pname ptype (fmt-s "%%%s.arg" pname) 1))
+                ; Register-coerced: reconstruct the struct into its addr slot.
+                (when (= k ABI-COERCE1)
+                  (fprintf g-entry-stream "  %s = alloca %%%s\n"
+                    slot (abi-struct-name ptype))
+                  (fprintf g-entry-stream "  store %s %%%s.arg0, ptr %s\n"
+                    (. (cast ptr:AbiInfo info) reg0) pname slot)
+                  (scope-define fn-scope pname ptype slot 1))
+                (when (= k ABI-COERCE2)
+                  (fprintf g-entry-stream "  %s = alloca %%%s\n"
+                    slot (abi-struct-name ptype))
+                  (fprintf g-entry-stream "  store %s %%%s.arg0, ptr %s\n"
+                    (. (cast ptr:AbiInfo info) reg0) pname slot)
+                  (let (hi:ptr (new-tmp))
+                    (fprintf g-entry-stream "  %s = getelementptr i8, ptr %s, i64 8\n"
+                      hi slot)
+                    (fprintf g-entry-stream "  store %s %%%s.arg1, ptr %s\n"
+                      (. (cast ptr:AbiInfo info) reg1) pname hi))
+                  (scope-define fn-scope pname ptype slot 1)))
               (inc! i))
             ; Start body emission after the params node. If a docstring
             ; was captured (string literal at position 3 with at least one
@@ -3709,6 +4010,12 @@
               (when (= g-block-term 0)
                 (if (= (. (cast ptr:Type ret) kind) TY-VOID)
                   (fprintf g-body-stream "  ret void\n")
+                  (if (!= (. (cast ptr:AbiInfo g-fn-ret-abi) kind) ABI-DIRECT)
+                    ; Struct return: lower via the ABI. A void last expression
+                    ; falls back to a zeroinitializer so the block terminates.
+                    (if (= (. (cast ptr:Type (. (cast ptr:Val last-val) type)) kind) TY-VOID)
+                      (emit-struct-ret (alloc-val ret "zeroinitializer"))
+                      (emit-struct-ret last-val))
                   ; Implicit return: if the last expression yielded a value
                   ; matching the declared return type, return it. If the last
                   ; expression was void (e.g., a side-effect or a no-return
@@ -3726,18 +4033,24 @@
                                  fname)))
                       (let (cv:ptr:Val coerced)
                         (fprintf g-body-stream "  ret %s %s\n"
-                          (type-to-ir ret) (. cv val))))))))
+                          (type-to-ir ret) (. cv val)))))))))
             ; Close streams and emit function
             (fclose g-entry-stream)
             (fclose g-body-stream)
-            (fprintf g-out "define %s @%s(" (type-to-ir ret) fname)
-            (set! i 0)
-            (while (< i nparams)
-              (when (!= i 0) (fprintf g-out ", "))
-              (fprintf g-out "%s %%%s.arg"
-                (type-to-ir (aref (cast ptr:ptr param-types) i))
-                (aref (cast ptr:ptr param-names) i))
-              (inc! i))
+            (if (= (. (cast ptr:AbiInfo g-fn-ret-abi) kind) ABI-MEMORY)
+              (fprintf g-out "define void @%s(" fname)
+              (fprintf g-out "define %s @%s(" (abi-return-ir g-fn-ret-abi ret) fname))
+            (let (first:ptr (alloca i32 1))
+              (aset! (cast ptr:i32 first) 0 (cast i32 0))
+              (when (= (. (cast ptr:AbiInfo g-fn-ret-abi) kind) ABI-MEMORY)
+                (abi-sep first)
+                (fprintf g-out "ptr sret(%%%s) align %d %s"
+                  (abi-struct-name ret) (type-align ret) g-fn-sret-name))
+              (set! i 0)
+              (while (< i nparams)
+                (emit-abi-param (aref (cast ptr:ptr param-types) i)
+                  (fmt-s "%%%s" (aref (cast ptr:ptr param-names) i)) first)
+                (inc! i)))
             (fprintf g-out ") {\n")
             (fprintf g-out "entry:\n")
             (when (and (!= g-entry-bufp null) (!= (char-at g-entry-bufp (cast i64 0)) 0))
@@ -4526,6 +4839,64 @@
         (return form)))))
 
 ; Pre-scan a form list and forward-declare all defn signatures in g-globals.
+; Read an imported unit's forms and recurse `prescan-all-structs` into them so
+; its struct definitions are registered before the importing unit's. Mirrors
+; emit-import's file-read with reader-state save/restore, but only registers
+; structs (a separate visited set, since the import isn't fully processed
+; here). Symbol imports only — C-header (string) imports are handled later.
+(defn prescan-import-structs:void (form:ptr)
+  (let (ff:ptr:Node form)
+    (when (!= (node-len form) 2) (return))
+    (let (name-node:ptr:Node (node-at form 1))
+      (when (!= (. name-node kind) NODE-SYM) (return))
+      (let (path:ptr (resolve-import (. name-node s) (. ff line)))
+        (when (= path null) (return))
+        (when (!= (import-list-has g-struct-prescan-visited path) 0) (return))
+        (set! g-struct-prescan-visited (import-list-push g-struct-prescan-visited path))
+        (let (save-src:ptr g-src
+              save-pos:i64 g-pos
+              save-line:i32 g-line
+              save-path:ptr g-source-path
+              save-peek:ptr g-peek
+              save-peek-valid:i32 g-peek-valid
+              src:ptr (read-file path))
+          (when (!= src null)
+            (set! g-source-path path)
+            (set! g-src src)
+            (set! g-pos (cast i64 0))
+            (set! g-line 1)
+            (set! g-peek-valid 0)
+            (prescan-all-structs (desugar (read-program))))
+          (set! g-src save-src)
+          (set! g-pos save-pos)
+          (set! g-line save-line)
+          (set! g-source-path save-path)
+          (set! g-peek save-peek)
+          (set! g-peek-valid save-peek-valid))))))
+
+; Register (and emit the IR `type` line for) every defstruct reachable from
+; `forms`, recursing into imports in dispatch order, before any defn signature
+; is prescanned — so a function may take or return a struct defined later in
+; the unit or in an import. emit-defstruct is idempotent (first definition of a
+; given name wins, matching dispatch-order redefinition precedence: an import's
+; struct beats a later same-named one in the importing unit), so the later
+; dispatch-loop call is a no-op and the type-stream output is unchanged. Run
+; once from main over the whole (prelude-prepended) form tree.
+(defn prescan-all-structs:void (forms:ptr)
+  (let (fc:ptr forms)
+    (while (!= fc null)
+      (let (f:ptr:Node (. (cast ptr:Node fc) car))
+        (when (and (and (!= f null) (= (. f kind) NODE-CELL))
+                   (and (> (node-len f) 0)
+                        (-> f (node-at _ 0) (cast ptr:Node _) (. kind) (= _ NODE-SYM))))
+          (let (h:ptr (-> f (node-at _ 0) (cast ptr:Node _) (. s)))
+            (when (= (strcmp h "defstruct") 0)
+              (set! g-out g-type-stream)
+              (emit-defstruct f))
+            (when (= (strcmp h "import") 0)
+              (prescan-import-structs f)))))
+      (set! fc (. (cast ptr:Node fc) cdr)))))
+
 (defn prescan-defn-signatures:void (forms:ptr)
   (let (fc:ptr forms)
     (while (!= fc null)
@@ -4927,15 +5298,23 @@
             (sym-set-src-loc (scope-define g-globals fname ft
                                             (fmt-s "@%s" fname) 0)
                              (. ff line))
-            ; Emit LLVM declare
-            (fprintf g-out "declare %s @%s(" (type-to-ir ret) fname)
-            (set! j 0)
-            (while (< j nparams)
-              (when (!= j 0) (fprintf g-out ", "))
-              (fprintf g-out "%s"
-                (type-to-ir (aref (cast ptr:ptr ptypes) j)))
-              (inc! j))
-            (fprintf g-out ")\n")))))))
+            ; Emit LLVM declare, lowering aggregate params/returns per the
+            ; platform ABI (byval / sret / register coercion).
+            (let (ret-abi:ptr (abi-classify ret)
+                  first:ptr (alloca i32 1))
+              (aset! (cast ptr:i32 first) 0 (cast i32 0))
+              (if (= (. (cast ptr:AbiInfo ret-abi) kind) ABI-MEMORY)
+                (fprintf g-out "declare void @%s(" fname)
+                (fprintf g-out "declare %s @%s(" (abi-return-ir ret-abi ret) fname))
+              (when (= (. (cast ptr:AbiInfo ret-abi) kind) ABI-MEMORY)
+                (abi-sep first)
+                (fprintf g-out "ptr sret(%%%s) align %d"
+                  (abi-struct-name ret) (type-align ret)))
+              (set! j 0)
+              (while (< j nparams)
+                (emit-abi-param (aref (cast ptr:ptr ptypes) j) null first)
+                (inc! j))
+              (fprintf g-out ")\n"))))))))
 
 (defn emit-nuch-import-forms:void (forms:ptr)
   (let (fc:ptr forms)
@@ -5298,6 +5677,9 @@
 
         ; Open module streams and compile
         (open-module-streams)
+        ; Register all structs (recursing imports in dispatch order) before
+        ; defn signatures are prescanned, so functions can take/return structs.
+        (prescan-all-structs forms)
         (emit-toplevel-forms forms)
         (flush-module-ir source-file)))
     (return 0)))
