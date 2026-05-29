@@ -64,4 +64,12 @@ for triple in \
     fi
 done
 
+# Struct ABI interop: Nucleus<->C aggregate passing/returning must match the
+# platform C ABI (Phase C). A mismatch is silently catastrophic, so it gates.
+if NUCLEUSC=./build/nucleusc ./tests/run-abi-test.sh; then
+    :
+else
+    fail=1
+fi
+
 exit $fail

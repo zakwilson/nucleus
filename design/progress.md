@@ -55,14 +55,15 @@ Current branch: `stage8-c-parity`
 | `--target=<triple>` now resolves for the full matrix: `x86_64`/`i386`-linux, `x86_64`/`aarch64`-darwin, `x86_64`-windows-msvc/gnu, `aarch64`/`arm`-linux — each emits correct `target datalayout` (incl. 32-bit `p:32:32`) | Done |
 | Cross-target emission regression test added to `tests/run-tests.sh` | Done |
 
-### Stage 8 Phase C — ABI lowering (spec + acceptance gate; codegen pending)
+### Stage 8 Phase C — ABI lowering (x86_64 System V)
 | Item | Status |
 |---|---|
-| Diagnosed: struct-by-value C interop is ABI-broken even on x86_64 (no `byval`/`sret`/register coercion); `pair_sum`→3 not 7, 24-byte struct segfaults | Done |
-| Reverse-engineered clang 19 x86_64 SysV coercion table + classification rules into `design/stage8/platform.md` | Done |
-| Codegen plan for the three coupled sites (`emit-call`/`defn`/`declare`) + return helper documented | Done |
-| Acceptance gate `tests/abi/` + `make abi-test` (Nucleus caller ↔ C callee via system `cc`, diffed vs all-C reference); not in `make test` until codegen lands | Done |
-| **ABI codegen** (`abi-classify` + the three sites + return helper) | **Pending — next phase** |
+| Diagnosed: struct-by-value C interop was ABI-broken even on x86_64 (no `byval`/`sret`/register coercion); `pair_sum`→3 not 7, 24-byte struct segfaulted | Done |
+| Reverse-engineered clang 19 x86_64 SysV coercion table + classification rules (`design/stage8/platform.md`) | Done |
+| `abi-classify` + helpers (eightbyte classification → `byval`/`sret`/register coercion); only `TY-STRUCT` leaves the DIRECT path so scalar IR is byte-identical | Done |
+| Wired the three coupled sites — `declare`, `emit-call` (arg coercion + sret/coerce return reconstruction), `defn` (signature + prologue param reconstruction + `emit-struct-ret`) | Done |
+| `prescan-all-structs` (run once from `main`, recurses imports in dispatch order) so `defn` can take/return structs defined later or in imports; preserves redefinition precedence + type-stream order (bootstrap holds) | Done |
+| Acceptance gate `tests/abi/` covers all 3 directions (Nucleus→C, C→Nucleus, Nucleus→Nucleus) vs system `cc`; folded into `make test` | Done |
 
 ---
 
