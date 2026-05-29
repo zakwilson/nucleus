@@ -73,6 +73,13 @@ Current branch: `stage8-c-parity`
 | `long-abi-*` regression test (4 targets) in `tests/run-tests.sh`; host (LP64) output unchanged so bootstrap holds | Done |
 | Remaining cross-platform interop (macOS/MSVC header flavors: `__darwin_size_t`, MSVC `_Bool`, SAL `_In_`/`_Out_`, `__int64`) | Deferred (needs SDK headers to test) |
 
+### Stage 8 Phase E — struct layout verification
+| Item | Status |
+|---|---|
+| `tests/layout/` harness (q13a option a): shared `structs.h` imported by `layout.nuc` and `#include`d by `layout.c`; diffs Nucleus `sizeof`/field-offset vs platform `cc` over the q14 corpus (primitives, mixed-size padding pairs, nested + anonymous struct fields, timespec-shaped, mixed record) | Done (`design/stage8/platform.md`) |
+| Wired into `make test` (gates the build) and `make layout-test`; mismatch = build failure | Done |
+| Root-cause parser fix surfaced by the harness: implicit-int `short` (`short` ≡ `short int`) was mis-parsed in `c-parse-type` (declarator consumed as base type → struct silently skipped); now peeks past `short` like `long`. Bootstrap unaffected | Done (`src/cheader.nuc`) |
+
 ---
 
 ## Deferred (needs design decision or blocked on above)

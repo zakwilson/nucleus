@@ -93,4 +93,13 @@ else
     fail=1
 fi
 
+# Struct layout: Nucleus's sizeof/field-offset computation must match the
+# platform C ABI for the question-14 corpus (Phase E). Also silently
+# catastrophic at the C boundary, so it gates.
+if NUCLEUSC=./build/nucleusc ./tests/run-layout-test.sh; then
+    :
+else
+    fail=1
+fi
+
 exit $fail

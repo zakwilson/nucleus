@@ -182,7 +182,15 @@
                                    (!= (strcmp peek-tok "double") 0))
                           (set! base-name "long") (set! done 1))))
                 (= (strcmp tok "short") 0)
-                  (do (set! is-short 1) (set! pos tok-end))
+                  (do (set! is-short 1) (set! pos tok-end)
+                      ; `short` alone (or `unsigned short`) is an implicit
+                      ; `short int`: if `int` does not follow, the next token is
+                      ; the declarator, so `short` itself is the base type.
+                      (let (peek-pos:i64 (c-skip-ws buf tok-end len)
+                            peek-end:i64 0
+                            peek-tok:ptr (c-read-ident buf peek-pos len (cast ptr:i64 (addr-of peek-end))))
+                        (when (!= (strcmp peek-tok "int") 0)
+                          (set! base-name "short") (set! done 1))))
                 (= (strcmp tok "struct") 0)
                   (do (set! is-struct 1) (set! pos tok-end))
                 (= (strcmp tok "__attribute__") 0)
