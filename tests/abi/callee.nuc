@@ -1,0 +1,16 @@
+; Nucleus-defined struct-by-value functions called from C (tests/abi/driver.c).
+; Validates the defn side of the ABI — struct parameter reconstruction and
+; sret / register-coerced returns — against what the system cc expects.
+; No main: compiled with `-c` and linked into the C driver.
+
+(defstruct Pair a:int b:int)
+(defstruct Big  x:i64 y:i64 z:i64)
+
+(defn nuc_pair_make:Pair (a:int b:int)
+  (let (q:ptr:Pair (alloca Pair)) (.set! q a a) (.set! q b b) @q))
+(defn nuc_pair_sum:int (p:Pair)
+  (let (q:ptr:Pair (alloca Pair)) (ptr-set! q p) (+ (. q a) (. q b))))
+(defn nuc_big_make:Big (x:i64 y:i64 z:i64)
+  (let (q:ptr:Big (alloca Big)) (.set! q x x) (.set! q y y) (.set! q z z) @q))
+(defn nuc_big_sum:i64 (b:Big)
+  (let (q:ptr:Big (alloca Big)) (ptr-set! q b) (+ (+ (. q x) (. q y)) (. q z))))

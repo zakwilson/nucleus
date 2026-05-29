@@ -256,9 +256,46 @@ The required LLVM backends (AArch64, ARM, X86) are all present in a
 standard LLVM build (`llvm-config --targets-built`); no LLVM rebuild is
 needed.
 
-## Phase C — ABI lowering (spec + acceptance gate landed; codegen pending)
+## Phase C — ABI lowering (x86_64 System V: done)
 
-### The bug
+Landed in `stage8-c-parity`. Struct-by-value parameters and returns now
+follow the platform C ABI on x86_64 System V, verified against the system
+`cc` in all three directions (Nucleus→C, C→Nucleus, Nucleus→Nucleus) by
+`tests/abi/` — now gating in `make test`. Bootstrap fixed-point and all 50
+tests pass.
+
+What was implemented (see the spec below for the algorithm):
+
+* **`abi-classify`** + helpers (`abi-mark-eightbytes`, `abi-eightbyte-reg`,
+  `abi-return-ir`, `abi-struct-name`) implementing the SysV eightbyte
+  classification and coercion-type rules. Only `TY-STRUCT` is ever
+  non-`DIRECT`, so every scalar/pointer path is byte-identical to before.
+* **`declare`** lowers aggregate params/returns to `byval` / `sret` /
+  register coercion.
+* **`emit-call`** coerces struct arguments (materialize → load reg(s), or
+  `byval` pointer copy) and reconstructs struct returns (read back from the
+  `sret` slot, or round the coercion value through memory). Shared
+  `arg-frag` / `abi-append-struct-arg` helpers; scalar arg formatting is
+  unchanged.
+* **`defn`** emits the ABI signature (shared `emit-abi-param`; leading
+  `sret` param when MEMORY), reconstructs struct params into their `.addr`
+  slot in the prologue (or binds the `byval` pointer directly), and routes
+  both `return` and the implicit tail return through `emit-struct-ret`
+  (sret store / register coercion). The current function's return `AbiInfo`
+  and sret name live in `g-fn-ret-abi` / `g-fn-sret-name`.
+* **`prescan-all-structs`** (run once from `main`, recursing imports in
+  dispatch order via `prescan-import-structs`) registers every struct
+  before defn signatures are prescanned, so a function may take/return a
+  struct defined later in the unit or in an import. emit-defstruct is
+  idempotent, so dispatch-order redefinition precedence (and the
+  type-stream output) is unchanged — bootstrap holds.
+
+Carried forward: the non-x86_64 ABIs (Win64, AArch64 AAPCS, ARM AAPCS,
+i386 cdecl) plug in behind `abi-classify` keyed on `g-target`, deferred
+until host-testable. Bit-fields / `long double` / `_Complex` / unions
+remain out of scope per `design/stage3c.md`.
+
+### The bug (now fixed)
 
 Nucleus emits aggregate parameters and returns as first-class LLVM
 values with no `byval` / `sret` and no register coercion — e.g.
@@ -276,18 +313,20 @@ big_sum(24-byte) -> garbage / segfault ; MEMORY class mishandled
 This is the primary deliverable of item 8 ("port clang's
 TargetInfo/ABIInfo").
 
-### What lands now
+### Acceptance gate
 
-* **Acceptance gate** — `tests/abi/` + `tests/run-abi-test.sh`, run via
-  `make abi-test` (deliberately **not** in `make test` until the codegen
-  lands, so the green build is preserved). A C callee (`clib.c`) is built
-  with the system `cc`; the Nucleus caller (`interop.nuc`) must
-  pass/return the structs using the platform ABI; output is diffed
-  against `expected.out` (an all-C reference). It currently fails (and
-  segfaults on the 24-byte case), pinning the gap. When Phase C codegen
-  lands, wire this into `make test` per item 15 (mismatch = build
-  failure).
-* This validated spec, below.
+`tests/abi/` + `tests/run-abi-test.sh` (also `make abi-test`; folded into
+`make test` per item 15, mismatch = build failure). Three directions:
+
+* **Nucleus→C** and **Nucleus→Nucleus** — `interop.nuc` (Nucleus caller)
+  links against `clib.c` (C callee, system `cc`) and also calls its own
+  `nuc_*` struct functions.
+* **C→Nucleus** — `driver.c` (C caller) links against `callee.nuc`
+  (Nucleus-defined struct functions), exercising the defn-side ABI.
+
+Output is diffed against `expected.out` (an all-C reference). Covers small
+INTEGER-class coercion (`pair_*`), an INTEGER eightbyte containing a float
+(`mixed_get`), and the >16-byte MEMORY case (`big_*`, byval + sret).
 
 ### x86_64 System V coercion (reverse-engineered from clang 19)
 
