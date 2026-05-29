@@ -52,7 +52,19 @@
     (ptr-set! out-end pos)
     (return (arena-strndup (ptr+ (cast ptr:i8 buf) start) (- pos start)))))
 
-; Map a C type name to a Nucleus type.
+; Size in bytes of C `long` for the configured target's data model:
+;   ILP32 (ptr-size 4: i386, armv7)        -> 4
+;   LLP64 (Windows x64: ptr-size 8)        -> 4
+;   LP64  (Linux/macOS x86_64, aarch64)    -> 8
+; `long long` is always 8 and is handled separately by the long-count.
+(defn target-long-size:i32 ()
+  (when (= (. (cast ptr:Target g-target) ptr-size) 4) (return 4))
+  (when (!= (strstr (. (cast ptr:Target g-target) triple) "windows") null) (return 4))
+  (return 8))
+
+; Map a C type name to a Nucleus type. `is-long` is the count of `long`
+; specifiers (0 = none, 1 = long, 2 = long long); `name` may be "long" when
+; the base is an implicit int ("long" / "long long" with no trailing "int").
 ; Returns the Type* or null if unknown/skipped.
 (defn c-type-to-nucleus:ptr (name:ptr is-unsigned:i32 is-long:i32 is-short:i32)
   ; Handle base types
@@ -62,14 +74,19 @@
     (if (!= is-unsigned 0) (return ty-ui8) (return ty-i8)))
   (when (= (strcmp name "short") 0)
     (if (!= is-unsigned 0) (return ty-ui16) (return ty-i16)))
-  (when (= (strcmp name "int") 0)
-    (when (!= is-short 0)
-      (if (!= is-unsigned 0) (return ty-ui16) (return ty-i16)))
-    (when (!= is-long 0)
-      (if (!= is-unsigned 0) (return ty-ui64) (return ty-i64)))
-    (if (!= is-unsigned 0) (return ty-ui32) (return ty-i32)))
-  (when (= (strcmp name "long") 0)
-    (if (!= is-unsigned 0) (return ty-ui64) (return ty-i64)))
+  (when (or (= (strcmp name "int") 0) (= (strcmp name "long") 0))
+    ; A "long" base type implies at least one `long` specifier.
+    (let (lc:i32 is-long)
+      (when (and (= (strcmp name "long") 0) (< lc 1)) (set! lc 1))
+      (when (!= is-short 0)
+        (if (!= is-unsigned 0) (return ty-ui16) (return ty-i16)))
+      (when (>= lc 2)   ; long long — always 64-bit
+        (if (!= is-unsigned 0) (return ty-ui64) (return ty-i64)))
+      (when (= lc 1)    ; long — depends on the target's data model
+        (if (= (target-long-size) 8)
+          (if (!= is-unsigned 0) (return ty-ui64) (return ty-i64))
+          (if (!= is-unsigned 0) (return ty-ui32) (return ty-i32))))
+      (if (!= is-unsigned 0) (return ty-ui32) (return ty-i32))))
   (when (= (strcmp name "float") 0)  (return ty-f32))
   (when (= (strcmp name "double") 0)
     ; `long double` is platform-specific (80-bit on x86-64) — skip.
@@ -146,21 +163,23 @@
                   (do (set! is-unsigned 1) (set! pos tok-end))
                 (= (strcmp tok "signed") 0)     (set! pos tok-end)
                 (= (strcmp tok "long") 0)
-                  (do (set! is-long 1)
+                  (do (set! is-long (+ is-long 1))
                       (set! pos tok-end)
-                      ; Check if this is the base type itself (no further type follows)
-                      ; by peeking at what comes next
+                      ; Peek at what follows to distinguish `long`, `long long`,
+                      ; `long int`, `long double`, and `long` as a base type.
                       (let (peek-pos:i64 (c-skip-ws buf tok-end len)
                             peek-end:i64 0
                             peek-tok:ptr (c-read-ident buf peek-pos len (cast ptr:i64 (addr-of peek-end))))
-                        ; If next token is "long", consume it (long long)
+                        ; Consume a second "long" (long long) and re-peek.
                         (when (= (strcmp peek-tok "long") 0)
-                          (set! pos peek-end))
-                        ; If next token is "int", that will be consumed as base-name
-                        ; If next token is something else or a '*', "long" is the base type
+                          (set! is-long (+ is-long 1))
+                          (set! pos peek-end)
+                          (set! peek-pos (c-skip-ws buf peek-end len))
+                          (set! peek-tok (c-read-ident buf peek-pos len (cast ptr:i64 (addr-of peek-end)))))
+                        ; "int"/"double" follow as the base; otherwise the base
+                        ; is an implicit int and "long" is the (long-counted) base.
                         (when (and (!= (strcmp peek-tok "int") 0)
-                                   (and (!= (strcmp peek-tok "long") 0)
-                                        (!= (strcmp peek-tok "char") 0)))
+                                   (!= (strcmp peek-tok "double") 0))
                           (set! base-name "long") (set! done 1))))
                 (= (strcmp tok "short") 0)
                   (do (set! is-short 1) (set! pos tok-end))

@@ -65,6 +65,14 @@ Current branch: `stage8-c-parity`
 | `prescan-all-structs` (run once from `main`, recurses imports in dispatch order) so `defn` can take/return structs defined later or in imports; preserves redefinition precedence + type-stream order (bootstrap holds) | Done |
 | Acceptance gate `tests/abi/` covers all 3 directions (Nucleus→C, C→Nucleus, Nucleus→Nucleus) vs system `cc`; folded into `make test` | Done |
 
+### Stage 8 Phase D — `long` data model
+| Item | Status |
+|---|---|
+| C `long`/`unsigned long` resolve per target data model via `target-long-size` (ILP32 + LLP64/Windows → 32-bit, LP64 → 64-bit); was hardcoded 64-bit | Done |
+| `c-parse-type` tracks `long` count so `long` vs `long long` differ (`long long` always 64-bit) | Done |
+| `long-abi-*` regression test (4 targets) in `tests/run-tests.sh`; host (LP64) output unchanged so bootstrap holds | Done |
+| Remaining cross-platform interop (macOS/MSVC header flavors: `__darwin_size_t`, MSVC `_Bool`, SAL `_In_`/`_Out_`, `__int64`) | Deferred (needs SDK headers to test) |
+
 ---
 
 ## Deferred (needs design decision or blocked on above)
