@@ -309,7 +309,9 @@
 (defvar g-num-link-args:i32 0)
 (defvar g-interactive:i32 0)  ; when 1, run in REPL mode (-i / --interactive)
 (defvar g-repl-format:i32 0)  ; 0 = text (default), 1 = json (one JSON object per error)
-(defvar g-opt-level:i32 0)    ; -O0..-O3; LLVMCodeGenOptLevel: None=0, Less=1, Default=2, Aggressive=3
+(defvar g-opt-level:i32 0)    ; -O0..-O3; drives both the middle-end pass pipeline and LLVMCodeGenOptLevel (None=0, Less=1, Default=2, Aggressive=3)
+(defvar g-fast-math:i32 0)    ; -ffast-math / -Ofast: emit `fast` flags on FP arithmetic (allows reassoc/vectorized reductions)
+(defvar g-march-native:i32 0) ; -march=native: target the host CPU + features instead of the generic baseline
 
 ; REPL eval counter (for unique __repl_eval_N symbols).
 (defvar g-repl-id:i32 0)
@@ -1868,9 +1870,14 @@
                 true (do))
           (when (= finstr null)
             (die-at (. cc line) (fmt-s "%s does not apply to floats" op-name)))
-          (let (tmp:ptr (new-tmp))
-            (fprintf g-body-stream "  %s = %s %s %s, %s\n"
-              tmp finstr (type-to-ir (. a type)) (. a val) (. b val))
+          ; Under -ffast-math, tag FP *arithmetic* with `fast` so the middle-end
+          ; may reassociate (the key to vectorizing FP reductions). Comparisons
+          ; are left unflagged — fast-math on fcmp would change NaN semantics for
+          ; little perf benefit, and `fast` must precede the predicate token.
+          (let (tmp:ptr (new-tmp)
+                fm:ptr (if (and (!= g-fast-math 0) (= (. bop is-cmp) 0)) "fast " ""))
+            (fprintf g-body-stream "  %s = %s %s%s %s, %s\n"
+              tmp finstr fm (type-to-ir (. a type)) (. a val) (. b val))
             (let (rtype:ptr (. a type))
               (when (!= (. bop is-cmp) 0) (set! rtype ty-i1))
               (return (alloc-val rtype tmp))))))
@@ -5488,8 +5495,31 @@
         (fprintf stderr "nucleusc: target lookup failed for '%s': %s\n" triple terr)
         (LLVMDisposeMessage terr)
         (exit 1))
-      ; CodeGenLevel = Default(2), Reloc = PIC(2), CodeModel = Default(0)
-      (let (tm:ptr (LLVMCreateTargetMachine target triple "" "" g-opt-level 2 0))
+      ; CodeGenLevel = g-opt-level, Reloc = PIC(2), CodeModel = Default(0).
+      ; -march=native targets the host CPU + features (wider vectors); otherwise
+      ; the generic baseline is used so objects stay portable. Native only makes
+      ; sense for host builds — combining it with --target is user error.
+      (let (cpu:ptr ""
+            features:ptr "")
+        (when (!= g-march-native 0)
+          (set! cpu (LLVMGetHostCPUName))
+          (set! features (LLVMGetHostCPUFeatures)))
+      (let (tm:ptr (LLVMCreateTargetMachine target triple cpu features g-opt-level 2 0))
+        ; Run the LLVM middle-end optimization pipeline (mem2reg, instcombine,
+        ; LICM, GVN, LoopVectorize, SLPVectorize, ...) before codegen. Without
+        ; this, emission goes straight to the backend and only codegen-level
+        ; optimizations run — none of the IR-level passes. Gated on -O1+ so the
+        ; default -O0 build stays fast and predictable.
+        (when (> g-opt-level 0)
+          (let (pbo:ptr     (LLVMCreatePassBuilderOptions)
+                pipeline:ptr (fmt-i32 "default<O%d>" g-opt-level)
+                perr:ptr     (LLVMRunPasses mod pipeline tm pbo))
+            (when (!= perr null)
+              (let (pmsg:ptr (LLVMGetErrorMessage perr))
+                (fprintf stderr "nucleusc: optimization pipeline failed: %s\n" pmsg)
+                (LLVMDisposeErrorMessage pmsg)
+                (exit 1)))
+            (LLVMDisposePassBuilderOptions pbo)))
         (let (out-path:ptr g-output-path
               obj-path:ptr null
               keep-obj:i32 g-emit-obj)
@@ -5521,7 +5551,7 @@
                 (when (!= rc2 0)
                   (fprintf stderr "nucleusc: link step failed (clang exit %d)\n" rc2)
                   (exit 1))))
-            (unlink obj-path)))))))
+            (unlink obj-path))))))))
 
 ; Close module streams; emit either textual IR (--emit-llvm) or an object/binary.
 (defn flush-module-ir:void (source-file:ptr)
@@ -5616,6 +5646,12 @@
                 (set! g-opt-level 2)
               (= (strcmp arg "-O3") 0)
                 (set! g-opt-level 3)
+              (= (strcmp arg "-Ofast") 0)
+                (do (set! g-opt-level 3) (set! g-fast-math 1))
+              (= (strcmp arg "-ffast-math") 0)
+                (set! g-fast-math 1)
+              (= (strcmp arg "-march=native") 0)
+                (set! g-march-native 1)
               (= (strncmp arg "--target=" (cast i64 9)) 0)
                 (set! g-target-triple-override (ptr+ (cast ptr:i8 arg) (cast i64 9)))
               (= (strncmp arg "-I" (cast i64 2)) 0)
@@ -5644,7 +5680,7 @@
 
     ; Batch mode — require source file
     (when (= source-file null)
-       (fprintf stderr "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3] [-o <path>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [--target=<triple>] [-i] [--repl-format=text|json] [-I<path>] <file.nuc>\n") (return 2))
+       (fprintf stderr "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3|-Ofast] [-ffast-math] [-march=native] [-o <path>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [--target=<triple>] [-i] [--repl-format=text|json] [-I<path>] <file.nuc>\n") (return 2))
     (set! g-source-path source-file)
     (let (src:ptr (read-file source-file))
       (compiler-init)
