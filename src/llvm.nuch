@@ -42,3 +42,11 @@
 (declare LLVMPointerSize:i32 (td:ptr))
 (declare LLVMTargetMachineEmitToFile:i32 (tm:ptr mod:ptr filename:ptr filetype:i32 msg:ptr))
 (declare LLVMDisposeMessage:void (msg:ptr))
+; Host CPU detection for -march=native (return strdup'd strings owned by caller).
+(declare LLVMGetHostCPUName:ptr ())
+(declare LLVMGetHostCPUFeatures:ptr ())
+; New PassBuilder API: run the LLVM middle-end optimization pipeline on a module.
+; LLVMRunPasses returns an LLVMErrorRef (null on success).
+(declare LLVMCreatePassBuilderOptions:ptr ())
+(declare LLVMDisposePassBuilderOptions:void (options:ptr))
+(declare LLVMRunPasses:ptr (mod:ptr passes:ptr tm:ptr options:ptr))
