@@ -1,0 +1,5 @@
+id i32   = 42
+id f64   = 2.75
+first2   = 10
+id ptr.x = 5
+boxed    = 1

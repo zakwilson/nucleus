@@ -279,6 +279,18 @@
 (defvar g-conformances:ptr)
 (defvar g-num-conformances:i32 0)
 (defvar g-cap-conformances:i32 0)
+; Protocol inheritance edges (Stage 9 §10.3): `(extend Ord Eq)` records that
+; conforming to Ord additionally requires conforming to Eq. Reuses the
+; Conformance layout: type-name = sub-protocol, proto-name = required super.
+(defvar g-proto-supers:ptr)
+(defvar g-num-proto-supers:i32 0)
+(defvar g-cap-proto-supers:i32 0)
+
+; Blanket protocols (Stage 9 §10.1): built-in protocols with automatic
+; conformance — `Any` (every type) and `Struct` (every struct type). Stored as a
+; small set of names plus a per-name predicate baked into blanket-conforms.
+(defvar g-blanket:ptr)
+(defvar g-num-blanket:i32 0)
 
 ; Macro registry
 (defvar g-macros:ptr)
@@ -793,9 +805,11 @@
            (when (= rest null) (return null))
            (let (type-node:ptr (. (cast ptr:Node rest) car))
              (when (= type-node null) (return null))
-              ; If type is a symbol, parse simply
+              ; If type is a symbol, parse it — parse-type-from-node also handles
+              ; colon-sugar (`ptr:M7`), which arises when a generic instantiation
+              ; substitutes a pointer type's spelling into a desugared (name T) head.
               (when (= (. (cast ptr:Node type-node) kind) NODE-SYM)
-                (return (parse-type-name (. (cast ptr:Node type-node) s) line)))
+                (return (parse-type-from-node type-node line)))
               ; If type is a list — (ptr T) or function-pointer type.
               ; Legacy fn-pointer form ((fn ret) (params)) was spread across
               ; the rest; for that case we still pass the whole rest.
@@ -1017,15 +1031,33 @@
             (inc! i))
           (return null))))))
 
-; A call head (not a special form): mirror emit-dispatch. Intrinsic operator →
-; i1 for comparisons else the first operand's type; overloaded set → the exactly
-; matched method's return type; solitary/extern → the bound function's return.
+; A call head (not a special form): mirror emit-dispatch. Operator → a matching
+; user overload's return type, else i1 for comparisons / the first operand's type
+; (the intrinsic peephole result); overloaded set → the exactly matched method's
+; return type; solitary/extern → the bound function's return.
 (defn node-type-call:ptr (n:ptr scope:ptr h:ptr)
   (let (g:ptr (generic-lookup h))
     (when (!= g null)
       (let (gg:ptr:Generic (cast ptr:Generic g)
             m0:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (. gg methods)) 0)))
         (when (= (. m0 kind) METHOD-INTRINSIC)
+          ; A user overload of this operator, if any, wins (mirror emit).
+          (when (!= (. gg mangled) 0)
+            (let (nargs:i32 (- (node-len n) 1)
+                  argtypes:ptr (arena-alloc (* (i64 (+ nargs 1)) (i64 8)))
+                  arg-nodes:ptr (arena-alloc (* (i64 (+ nargs 1)) (i64 8)))
+                  i:i32 0
+                  ok:i32 1)
+              (while (< i nargs)
+                (let (anode:ptr (node-at n (+ i 1))
+                      at:ptr (node-type anode scope))
+                  (when (= at null) (set! ok 0))
+                  (aset! (cast ptr:ptr argtypes) i at)
+                  (aset! (cast ptr:ptr arg-nodes) i anode))
+                (inc! i))
+              (when (!= ok 0)
+                (let (um:ptr (operator-user-resolve (cast ptr gg) argtypes arg-nodes nargs))
+                  (when (!= um null) (return (-> um (cast ptr:Method _) (. ret-type))))))))
           (let (bop:ptr:BinOp (cast ptr:BinOp (. m0 binop)))
             (when (!= (. bop is-cmp) 0) (return ty-i1))
             (return (node-type (node-at n 1) scope))))
@@ -1363,73 +1395,173 @@
   (add-binop ">"       "icmp sgt" "icmp ugt" 1)
   (add-binop ">="      "icmp sge" "icmp uge" 1))
 
+; True if a node denotes an untyped integer literal, so it may adapt to the type
+; of the other operand in a binary operation (Stage 9 §10.1). Sees through the
+; variadic operator macros' single-arg wrappers (`(+ 7)` → `7`) by expanding a
+; cell head; cheap for the symbol/field/call operands that dominate (no macro).
+(defn node-is-int-literal:i32 (n:ptr)
+  (when (= n null) (return 0))
+  (let (nn:ptr:Node (cast ptr:Node n))
+    (when (= (. nn kind) NODE-INT) (return 1))
+    (when (= (. nn kind) NODE-CELL)
+      (let (e:ptr (macroexpand-form n (cast i32 -1)))
+        (when (and (!= e null) (= (. (cast ptr:Node e) kind) NODE-INT)) (return 1))))
+    (return 0)))
+
+(defn float-width:i32 (t:ptr)
+  (let (k:i32 (. (cast ptr:Type t) kind))
+    (when (= k TY-F32) (return 32))
+    (when (= k TY-F64) (return 64))
+    (return 0)))
+
+; Coerce a numeric Val to a target numeric type: int→int (trunc/sext/zext),
+; int→float (sitofp/uitofp), float→float (fpext/fptrunc). Identity when already
+; the target; null when the source is not numeric.
+(defn coerce-num-val:ptr (v:ptr target:ptr line:i32)
+  (let (vv:ptr:Val (cast ptr:Val v)
+        src:ptr (. vv type))
+    (when (!= (type-eq src target) 0) (return v))
+    (when (and (!= (is-int-type src) 0) (!= (is-int-type target) 0))
+      (return (coerce-int-val v target line)))
+    (when (and (!= (is-int-type src) 0) (!= (is-float-type target) 0))
+      (let (tmp:ptr (new-tmp)
+            instr:ptr "sitofp")
+        (when (!= (is-unsigned src) 0) (set! instr "uitofp"))
+        (fprintf g-body-stream "  %s = %s %s %s to %s\n"
+          tmp instr (type-to-ir src) (. vv val) (type-to-ir target))
+        (return (alloc-val target tmp))))
+    (when (and (!= (is-float-type src) 0) (!= (is-float-type target) 0))
+      (let (tmp:ptr (new-tmp)
+            instr:ptr "fpext")
+        (when (< (float-width target) (float-width src)) (set! instr "fptrunc"))
+        (fprintf g-body-stream "  %s = %s %s %s to %s\n"
+          tmp instr (type-to-ir src) (. vv val) (type-to-ir target))
+        (return (alloc-val target tmp))))
+    (return null)))
+
+; The widen / untyped-int-literal resolution tier for a binary operator
+; (Stage 9 §10.3). Untyped int literals (a-node/b-node denoting an int literal)
+; adopt the other operand's numeric type; otherwise the narrower int/float widens
+; to the wider. Returns a 2-element Val* array [a' b'] sharing a type, or null
+; when no adaptation applies (operands already match, or can't be reconciled
+; here — the caller's checks then fire). Literalness is probed only after the
+; types are known to differ, so the same-type hot path costs nothing.
+(defn binop-coerce:ptr (a:ptr b:ptr a-node:ptr b-node:ptr line:i32)
+  (let (at:ptr (. (cast ptr:Val a) type)
+        bt:ptr (. (cast ptr:Val b) type))
+    (when (!= (type-eq at bt) 0) (return null))
+    (let (a-num:i32 (or (!= (is-int-type at) 0) (!= (is-float-type at) 0))
+          b-num:i32 (or (!= (is-int-type bt) 0) (!= (is-float-type bt) 0)))
+      (when (or (= a-num 0) (= b-num 0)) (return null)))
+    (let (a-lit:i32 (node-is-int-literal a-node)
+          b-lit:i32 (node-is-int-literal b-node))
+    (let (target:ptr null)
+      (cond (and (!= a-lit 0) (= b-lit 0)) (set! target bt)
+            (and (!= b-lit 0) (= a-lit 0)) (set! target at)
+            true
+              (do
+                ; Both typed: int+float (non-literal) needs an explicit cast.
+                (when (and (!= (is-float-type at) 0) (!= (is-int-type bt) 0)) (return null))
+                (when (and (!= (is-int-type at) 0) (!= (is-float-type bt) 0)) (return null))
+                (if (!= (is-float-type at) 0)
+                  (if (>= (float-width at) (float-width bt)) (set! target at) (set! target bt))
+                  (do
+                    (when (!= (is-unsigned at) (is-unsigned bt)) (return null))
+                    (if (>= (int-width at) (int-width bt)) (set! target at) (set! target bt))))))
+      (when (= target null) (return null))
+      (let (na:ptr (coerce-num-val a target line)
+            nb:ptr (coerce-num-val b target line))
+        (when (or (= na null) (= nb null)) (return null))
+        (let (pair:ptr (arena-alloc (* (i64 2) (i64 8))))
+          (aset! (cast ptr:ptr pair) 0 na)
+          (aset! (cast ptr:ptr pair) 1 nb)
+          (return pair)))))))
+
+; Emit an operator's inline instruction given already-emitted operand Vals. This
+; is the front-end inline peephole (§10.3): a built-in numeric/pointer operator
+; lowers to a single `add nsw`/`icmp slt`/`fadd`/… instruction, never a call.
+; a-node/b-node are the operand source nodes (or null), consulted only to flag
+; untyped int literals for the widen/adapt tier when the operand types differ. For
+; operands that already share a type, the IR is byte-identical to the pre-Stage-9
+; emit-binop (binop-coerce returns null and nothing is inserted).
+(defn emit-binop-vals:ptr (a:ptr b:ptr a-node:ptr b-node:ptr op:ptr line:i32)
+  (let (bop:ptr:BinOp (cast ptr:BinOp op)
+        av:ptr:Val (cast ptr:Val a)
+        bv:ptr:Val (cast ptr:Val b))
+    ; Pointer comparison
+    (when (and (-> av (. type) (cast ptr:Type _) (. kind) (= _ TY-PTR))
+             (-> bv (. type) (cast ptr:Type _) (. kind) (= _ TY-PTR)))
+      (when (!= (. bop is-cmp) 0)
+        (let (tmp:ptr (new-tmp))
+          (fprintf g-body-stream "  %s = %s ptr %s, %s\n"
+            tmp (. bop instr) (. av val) (. bv val))
+          (return (alloc-val ty-i1 tmp)))))
+    ; Widen / adapt mixed numeric operands (untyped int literals + int/float widening).
+    (let (adapted:ptr (binop-coerce a b a-node b-node line))
+      (when (!= adapted null)
+        (set! av (cast ptr:Val (aref (cast ptr:ptr adapted) 0)))
+        (set! bv (cast ptr:Val (aref (cast ptr:ptr adapted) 1)))))
+    ; Float arithmetic / comparison
+    (when (or (!= (is-float-type (. av type)) 0) (!= (is-float-type (. bv type)) 0))
+      (when (or (= (is-float-type (. av type)) 0) (= (is-float-type (. bv type)) 0))
+        (die-at line (fmt-s "%s: mixed float and non-float operands — use explicit cast" (. bop name))))
+      (when (!= (-> av (. type) (cast ptr:Type _) (. kind))
+               (-> bv (. type) (cast ptr:Type _) (. kind)))
+        (die-at line (fmt-s "%s float operand width mismatch — use explicit cast" (. bop name))))
+      (let (finstr:ptr null
+            op-name:ptr (. bop name))
+        (cond (or (or (= (strcmp op-name "+") 0) (= (strcmp op-name "_+") 0))
+                      (= (strcmp op-name "_+") 0))
+                (set! finstr "fadd")
+              (or (or (= (strcmp op-name "-") 0) (= (strcmp op-name "_-") 0))
+                      (= (strcmp op-name "_-") 0))
+                (set! finstr "fsub")
+              (or (or (= (strcmp op-name "*") 0) (= (strcmp op-name "_*") 0))
+                      (= (strcmp op-name "_*") 0))
+                (set! finstr "fmul")
+              (or (or (= (strcmp op-name "/") 0) (= (strcmp op-name "_/") 0))
+                      (= (strcmp op-name "_/") 0))
+                (set! finstr "fdiv")
+              (= (strcmp op-name "%") 0)  (set! finstr "frem")
+              (= (strcmp op-name "=") 0)  (set! finstr "fcmp oeq")
+              (= (strcmp op-name "!=") 0) (set! finstr "fcmp one")
+              (= (strcmp op-name "<") 0)  (set! finstr "fcmp olt")
+              (= (strcmp op-name "<=") 0) (set! finstr "fcmp ole")
+              (= (strcmp op-name ">") 0)  (set! finstr "fcmp ogt")
+              (= (strcmp op-name ">=") 0) (set! finstr "fcmp oge")
+              true (do))
+        (when (= finstr null)
+          (die-at line (fmt-s "%s does not apply to floats" op-name)))
+        (let (tmp:ptr (new-tmp))
+          (fprintf g-body-stream "  %s = %s %s %s, %s\n"
+            tmp finstr (type-to-ir (. av type)) (. av val) (. bv val))
+          (let (rtype:ptr (. av type))
+            (when (!= (. bop is-cmp) 0) (set! rtype ty-i1))
+            (return (alloc-val rtype tmp))))))
+    (when (or (= (is-int-type (. av type)) 0) (= (is-int-type (. bv type)) 0))
+      (die-at line (fmt-s "%s expects integer operands" (. bop name))))
+    (when (!= (is-unsigned (. av type)) (is-unsigned (. bv type)))
+      (die-at line (fmt-s "%s: mixed signed/unsigned operands — use explicit cast" (. bop name))))
+    (when (!= (-> av (. type) (cast ptr:Type _) (. kind))
+             (-> bv (. type) (cast ptr:Type _) (. kind)))
+      (die-at line (fmt-s "%s operand type mismatch" (. bop name))))
+    (let (tmp:ptr (new-tmp)
+          instr:ptr (. bop instr))
+      (when (!= (is-unsigned (. av type)) 0) (set! instr (. bop instr-u)))
+      (fprintf g-body-stream "  %s = %s %s %s, %s\n"
+        tmp instr (type-to-ir (. av type)) (. av val) (. bv val))
+      (let (rtype:ptr (. av type))
+        (when (!= (. bop is-cmp) 0) (set! rtype ty-i1))
+        (return (alloc-val rtype tmp))))))
+
 (defn emit-binop:ptr (call:ptr scope:ptr op:ptr)
   (let (cc:ptr:Node (cast ptr:Node call)
         bop:ptr:BinOp (cast ptr:BinOp op))
     (when (!= (node-len cc) 3)
       (die-at (. cc line) (fmt-s "%s expects 2 args" (. bop name))))
-    (let (a:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope))
-          b:ptr:Val (cast ptr:Val (emit-node (node-at cc 2) scope)))
-      ; Pointer comparison
-      (when (and (-> a (. type) (cast ptr:Type _) (. kind) (= _ TY-PTR))
-               (-> b (. type) (cast ptr:Type _) (. kind) (= _ TY-PTR)))
-        (when (!= (. bop is-cmp) 0)
-          (let (tmp:ptr (new-tmp))
-            (fprintf g-body-stream "  %s = %s ptr %s, %s\n"
-              tmp (. bop instr) (. a val) (. b val))
-            (return (alloc-val ty-i1 tmp)))))
-      ; Float arithmetic / comparison
-      (when (or (!= (is-float-type (. a type)) 0) (!= (is-float-type (. b type)) 0))
-        (when (or (= (is-float-type (. a type)) 0) (= (is-float-type (. b type)) 0))
-          (die-at (. cc line) (fmt-s "%s: mixed float and non-float operands — use explicit cast" (. bop name))))
-        (when (!= (-> a (. type) (cast ptr:Type _) (. kind))
-                 (-> b (. type) (cast ptr:Type _) (. kind)))
-          (die-at (. cc line) (fmt-s "%s float operand width mismatch — use explicit cast" (. bop name))))
-        (let (finstr:ptr null
-              op-name:ptr (. bop name))
-          (cond (or (or (= (strcmp op-name "+") 0) (= (strcmp op-name "_+") 0))
-                        (= (strcmp op-name "_+") 0))
-                  (set! finstr "fadd")
-                (or (or (= (strcmp op-name "-") 0) (= (strcmp op-name "_-") 0))
-                        (= (strcmp op-name "_-") 0))
-                  (set! finstr "fsub")
-                (or (or (= (strcmp op-name "*") 0) (= (strcmp op-name "_*") 0))
-                        (= (strcmp op-name "_*") 0))
-                  (set! finstr "fmul")
-                (or (or (= (strcmp op-name "/") 0) (= (strcmp op-name "_/") 0))
-                        (= (strcmp op-name "_/") 0))
-                  (set! finstr "fdiv")
-                (= (strcmp op-name "%") 0)  (set! finstr "frem")
-                (= (strcmp op-name "=") 0)  (set! finstr "fcmp oeq")
-                (= (strcmp op-name "!=") 0) (set! finstr "fcmp one")
-                (= (strcmp op-name "<") 0)  (set! finstr "fcmp olt")
-                (= (strcmp op-name "<=") 0) (set! finstr "fcmp ole")
-                (= (strcmp op-name ">") 0)  (set! finstr "fcmp ogt")
-                (= (strcmp op-name ">=") 0) (set! finstr "fcmp oge")
-                true (do))
-          (when (= finstr null)
-            (die-at (. cc line) (fmt-s "%s does not apply to floats" op-name)))
-          (let (tmp:ptr (new-tmp))
-            (fprintf g-body-stream "  %s = %s %s %s, %s\n"
-              tmp finstr (type-to-ir (. a type)) (. a val) (. b val))
-            (let (rtype:ptr (. a type))
-              (when (!= (. bop is-cmp) 0) (set! rtype ty-i1))
-              (return (alloc-val rtype tmp))))))
-      (when (or (= (is-int-type (. a type)) 0) (= (is-int-type (. b type)) 0))
-        (die-at (. cc line) (fmt-s "%s expects integer operands" (. bop name))))
-      (when (!= (is-unsigned (. a type)) (is-unsigned (. b type)))
-        (die-at (. cc line) (fmt-s "%s: mixed signed/unsigned operands — use explicit cast" (. bop name))))
-      (when (!= (-> a (. type) (cast ptr:Type _) (. kind))
-               (-> b (. type) (cast ptr:Type _) (. kind)))
-        (die-at (. cc line) (fmt-s "%s operand type mismatch" (. bop name))))
-      (let (tmp:ptr (new-tmp)
-            instr:ptr (. bop instr))
-        (when (!= (is-unsigned (. a type)) 0) (set! instr (. bop instr-u)))
-        (fprintf g-body-stream "  %s = %s %s %s, %s\n"
-          tmp instr (type-to-ir (. a type)) (. a val) (. b val))
-        (let (rtype:ptr (. a type))
-          (when (!= (. bop is-cmp) 0) (set! rtype ty-i1))
-          (return (alloc-val rtype tmp)))))))
+    (let (a:ptr (emit-node (node-at cc 1) scope)
+          b:ptr (emit-node (node-at cc 2) scope))
+      (return (emit-binop-vals a b (node-at cc 1) (node-at cc 2) op (. cc line))))))
 
 ; ============================================================
 ; Generic (polymorphism) registry
@@ -1550,9 +1682,33 @@
     (when (= k TY-FN) (return "fn"))
     (return "x")))
 
+; A safe, distinct IR token for a generic name. Operators (whose source symbols
+; — `=`, `<`, `_+`, … — are not valid LLVM identifier characters and would
+; collide under blanket underscore-sanitizing) map to readable mnemonics; other
+; names pass through sanitize-for-ir unchanged. Used when a name carrying an
+; operator method is overloaded and its methods must take mangled symbols (§10.3).
+(defn op-name-token:ptr (name:ptr)
+  (when (= (strcmp name "_+") 0) (return "add"))
+  (when (= (strcmp name "_-") 0) (return "sub"))
+  (when (= (strcmp name "_*") 0) (return "mul"))
+  (when (= (strcmp name "_/") 0) (return "div"))
+  (when (= (strcmp name "%") 0)  (return "rem"))
+  (when (= (strcmp name "=") 0)  (return "eq"))
+  (when (= (strcmp name "!=") 0) (return "ne"))
+  (when (= (strcmp name "<") 0)  (return "lt"))
+  (when (= (strcmp name "<=") 0) (return "le"))
+  (when (= (strcmp name ">") 0)  (return "gt"))
+  (when (= (strcmp name ">=") 0) (return "ge"))
+  (when (= (strcmp name "bit-and") 0) (return "band"))
+  (when (= (strcmp name "bit-or") 0)  (return "bor"))
+  (when (= (strcmp name "bit-xor") 0) (return "bxor"))
+  (when (= (strcmp name "bit-shl") 0) (return "bshl"))
+  (when (= (strcmp name "bit-shr") 0) (return "bshr"))
+  (return (sanitize-for-ir name)))
+
 ; "@name.tok1.tok2..." for an overloaded method.
 (defn mangle-fn-name:ptr (fname:ptr param-types:ptr nparams:i32)
-  (let (acc:ptr (fmt-s "@%s" fname)
+  (let (acc:ptr (fmt-s "@%s" (op-name-token fname))
         i:i32 0)
     (while (< i nparams)
       (set! acc (fmt-2s "%s.%s" acc (type-mangle-token (aref (cast ptr:ptr param-types) i))))
@@ -1682,49 +1838,81 @@
     (while (< gi g-num-generics)
       (let (gg:ptr:Generic (cast ptr:Generic (ptr+ (cast ptr:Generic g-generics) gi)))
         (when (and (= (. gg finalized) 0) (> (. gg num-methods) 0))
-          (let (m0:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (. gg methods)) 0)))
-            (when (!= (. m0 kind) METHOD-INTRINSIC)
-              ; Detect whether the name carries a bounded-generic template.
-              (let (has-generic:i32 0
-                    gk:i32 0)
-                (while (< gk (. gg num-methods))
-                  (let (mk:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (. gg methods)) gk)))
-                    (when (= (. mk kind) METHOD-GENERIC) (set! has-generic 1)))
-                  (inc! gk))
-                (if (and (= has-generic 0) (= (. gg num-methods) 1))
-                  (do
-                    (.set! gg mangled 0)
-                    (.set! m0 ir-name (fmt-s "@%s" (. gg name)))
-                    (scope-define g-globals (. gg name) (. m0 fn-type) (. m0 ir-name) 0))
-                  (do
-                    (.set! gg mangled 1)
-                    (let (i:i32 0)
-                      (while (< i (. gg num-methods))
-                        (let (mi:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (. gg methods)) i)))
-                          (when (= (. mi kind) METHOD-USER)
-                            (let (j:i32 0)
-                              (while (< j i)
-                                (let (mj:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (. gg methods)) j)))
-                                  (when (and (= (. mj kind) METHOD-USER)
-                                             (and (= (. mi num-params) (. mj num-params))
-                                                  (!= (params-type-eq (. mi param-types) (. mj param-types)
-                                                                      (. mi num-params)) 0)))
-                                    (die-at (-> mi (. body) (cast ptr:Node _) (. line))
-                                      (fmt-s "duplicate method signature for overloaded '%s'" (. gg name)))))
-                                (inc! j)))
-                            (.set! mi ir-name
-                              (mangle-fn-name (. gg name) (. mi param-types) (. mi num-params)))))
-                        (inc! i)))))
-                (.set! gg finalized 1)))))
-        (inc! gi)))))
+          ; Tally the method kinds. An operator name carries an intrinsic seed
+          ; method (§9.2); a user overload of that operator adds METHOD-USER
+          ; methods alongside it (§10.3 operators-as-functions).
+          (let (has-generic:i32 0
+                has-intrinsic:i32 0
+                n-user:i32 0
+                gk:i32 0)
+            (while (< gk (. gg num-methods))
+              (let (mk:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (. gg methods)) gk)))
+                (cond (= (. mk kind) METHOD-GENERIC)   (set! has-generic 1)
+                      (= (. mk kind) METHOD-INTRINSIC) (set! has-intrinsic 1)
+                      true                              (inc! n-user)))
+              (inc! gk))
+            ; A pure operator (only intrinsic seeds, no user/generic methods) needs
+            ; no mangling and dispatches via the emit-binop peephole. Leave it
+            ; unfinalized so a later user overload (possibly from an import) is
+            ; picked up; everything else finalizes now.
+            (when (or (> n-user 0) (!= has-generic 0))
+              (if (and (= has-intrinsic 0) (and (= has-generic 0) (= n-user 1)))
+                (let (m0:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (. gg methods)) 0)))
+                  (.set! gg mangled 0)
+                  (.set! m0 ir-name (fmt-s "@%s" (. gg name)))
+                  (scope-define g-globals (. gg name) (. m0 fn-type) (. m0 ir-name) 0))
+                (do
+                  (.set! gg mangled 1)
+                  (let (i:i32 0)
+                    (while (< i (. gg num-methods))
+                      (let (mi:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (. gg methods)) i)))
+                        (when (= (. mi kind) METHOD-USER)
+                          (let (j:i32 0)
+                            (while (< j i)
+                              (let (mj:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (. gg methods)) j)))
+                                (when (and (= (. mj kind) METHOD-USER)
+                                           (and (= (. mi num-params) (. mj num-params))
+                                                (!= (params-type-eq (. mi param-types) (. mj param-types)
+                                                                    (. mi num-params)) 0)))
+                                  (die-at (-> mi (. body) (cast ptr:Node _) (. line))
+                                    (fmt-s "duplicate method signature for overloaded '%s'" (. gg name)))))
+                              (inc! j)))
+                          (.set! mi ir-name
+                            (mangle-fn-name (. gg name) (. mi param-types) (. mi num-params)))))
+                      (inc! i)))))
+              (.set! gg finalized 1)))))
+      (inc! gi))))
+
+; Can an argument of type `at` (an untyped int literal when is-lit≠0) be passed
+; to a parameter of type `pt` by exact match or a safe widen / literal adaptation
+; (§10.3 resolution tiers)? Widening never narrows a typed value; an untyped int
+; literal adapts to any integer (and to a float) since its value is known.
+(defn arg-adapts:i32 (at:ptr pt:ptr is-lit:i32)
+  (when (= at null) (return 0))
+  (when (!= (type-eq at pt) 0) (return 1))
+  (let (a-int:i32 (is-int-type at)   a-flt:i32 (is-float-type at)
+        p-int:i32 (is-int-type pt)   p-flt:i32 (is-float-type pt))
+    (when (and (!= a-int 0) (!= p-int 0))
+      (when (!= is-lit 0) (return 1))
+      (when (and (>= (int-width pt) (int-width at)) (= (is-unsigned at) (is-unsigned pt)))
+        (return 1))
+      (return 0))
+    (when (and (!= a-flt 0) (!= p-flt 0))
+      (if (>= (float-width pt) (float-width at)) (return 1) (return 0)))
+    (when (and (!= a-int 0) (!= p-flt 0))
+      (if (!= is-lit 0) (return 1) (return 0))))
+  (return 0))
 
 ; Select the method of a generic for a concrete argument-type tuple.
 ; Tier 0: an exact concrete method (type-eq on every param) — concrete beats
 ; generic (§8.6). Tier 1: a bounded-generic template whose type variables bind
 ; consistently and whose bound types satisfy the &where protocol constraints;
 ; on a unique tier-1 match the template is monomorphized (stamped + cached) and
-; the resulting concrete method returned. Widen/cast tiers come later.
-(defn generic-resolve:ptr (g:ptr argtypes:ptr nargs:i32 line:i32)
+; the resulting concrete method returned. Tier 2: a concrete method reachable by
+; a safe widen / untyped-int-literal adaptation on every argument (§10.3); the
+; caller (emit-generic-call) coerces the args to the chosen params. arg-nodes is
+; the parallel array of argument source nodes (or null) used to spot literals.
+(defn generic-resolve:ptr (g:ptr argtypes:ptr arg-nodes:ptr nargs:i32 line:i32)
   (let (gg:ptr:Generic (cast ptr:Generic g)
         found:ptr null
         i:i32 0)
@@ -1755,6 +1943,29 @@
         (die-at line (fmt-s "ambiguous generic match for '%s'" (. gg name))))
       (when (= ncand 1)
         (return (generic-instantiate g cand cand-bound argtypes nargs line)))
+      ; tier 2: widen / untyped-int-literal adaptation on a concrete method.
+      (let (wcand:ptr null
+            wn:i32 0
+            k:i32 0)
+        (while (< k (. gg num-methods))
+          (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (. gg methods)) k)))
+            (when (and (= (. m kind) METHOD-USER)
+                       (and (= (. m has-rest) 0) (= (. m num-params) nargs)))
+              (let (ok:i32 1
+                    a:i32 0)
+                (while (< a nargs)
+                  (let (is-lit:i32 0)
+                    (when (!= arg-nodes null)
+                      (set! is-lit (node-is-int-literal (aref (cast ptr:ptr arg-nodes) a))))
+                    (when (= (arg-adapts (aref (cast ptr:ptr argtypes) a)
+                                         (aref (cast ptr:ptr (. m param-types)) a) is-lit) 0)
+                      (set! ok 0)))
+                  (inc! a))
+                (when (!= ok 0) (set! wcand (cast ptr m)) (inc! wn)))))
+          (inc! k))
+        (when (> wn 1)
+          (die-at line (fmt-s "ambiguous overload for '%s' under argument widening" (. gg name))))
+        (when (= wn 1) (return wcand)))
       (when (!= constraint-fail 0)
         (die-at line
           (fmt-s "no matching method for '%s': arguments do not satisfy the required protocol constraint"
@@ -1762,6 +1973,43 @@
       (die-at line (fmt-s "no matching method for overloaded '%s' with given argument types"
                           (. gg name)))
       (return null))))
+
+; Resolve an operator call to a USER overload (exact, then a unique widen/literal
+; match), or null to fall back to the built-in numeric/pointer peephole. Unlike
+; generic-resolve this never dies — an unmatched operator is the common case and
+; simply uses its intrinsic seed. Shared by emit (call vs inline) and node-type
+; (the overload's return type vs the intrinsic's) so the two cannot drift.
+(defn operator-user-resolve:ptr (g:ptr argtypes:ptr arg-nodes:ptr nargs:i32)
+  (let (gg:ptr:Generic (cast ptr:Generic g)
+        i:i32 0)
+    (while (< i (. gg num-methods))
+      (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (. gg methods)) i)))
+        (when (and (= (. m kind) METHOD-USER)
+                   (and (= (. m num-params) nargs)
+                        (!= (params-type-eq (. m param-types) argtypes nargs) 0)))
+          (return (cast ptr m))))
+      (inc! i))
+    (let (wcand:ptr null
+          wn:i32 0
+          k:i32 0)
+      (while (< k (. gg num-methods))
+        (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (. gg methods)) k)))
+          (when (and (= (. m kind) METHOD-USER)
+                     (and (= (. m has-rest) 0) (= (. m num-params) nargs)))
+            (let (ok:i32 1
+                  a:i32 0)
+              (while (< a nargs)
+                (let (is-lit:i32 0)
+                  (when (!= arg-nodes null)
+                    (set! is-lit (node-is-int-literal (aref (cast ptr:ptr arg-nodes) a))))
+                  (when (= (arg-adapts (aref (cast ptr:ptr argtypes) a)
+                                       (aref (cast ptr:ptr (. m param-types)) a) is-lit) 0)
+                    (set! ok 0)))
+                (inc! a))
+              (when (!= ok 0) (set! wcand (cast ptr m)) (inc! wn)))))
+        (inc! k))
+      (when (= wn 1) (return wcand)))
+    (return null)))
 
 ; The emitted symbol for a defn being codegen'd: the mangled name for an
 ; overloaded method, else the unmangled @name (also the fallback when no
@@ -1977,13 +2225,10 @@
                   (die-at (. ff line)
                     (fmt-s "defn: type variable '%s' is not determined by any parameter (return-only generics need dyn, deferred)" tvname))))
               (inc! ti)))
-          ; Each constraint must name a known protocol (catches typos at the defn).
-          (let (ci2:i32 0)
-            (while (< ci2 nc)
-              (let (pnm:ptr (aref (cast ptr:ptr con-protos) ci2))
-                (when (= (protocol-lookup pnm) null)
-                  (die-at (. ff line) (fmt-s "defn: &where names unknown protocol '%s'" pnm))))
-              (inc! ci2)))
+          ; Constraint protocols are validated in the A2 pass (check-generic-
+          ; template), which runs after all imports — so a &where may name a
+          ; protocol that an `import` provides, while a genuine typo is still
+          ; caught (just at the outermost top-level rather than at the prescan).
           ; Register the template.
           (let (g:ptr (generic-lookup fname))
             (when (= g null) (set! g (generic-new fname)))
@@ -2052,7 +2297,12 @@
             var:ptr   (aref (cast ptr:ptr (. mm con-vars)) i)
             idx:i32 (tyvar-index-of var (. mm tyvars) (. mm num-tyvars))
             bt:ptr (aref (cast ptr:ptr bound) idx))
-        (when (= (conformance-lookup (type-spelling bt) proto) 0)
+        ; Blanket protocols (§10.1) conform automatically; Valid (§10.2) matches
+        ; here and is checked structurally at the call site; otherwise require a
+        ; nominal conformance recorded by `extend`.
+        (when (and (= (blanket-conforms bt proto) 0)
+                   (and (!= (strcmp proto "Valid") 0)
+                        (= (conformance-lookup (type-spelling bt) proto) 0)))
           (return 0)))
       (inc! i))
     (return 1)))
@@ -2098,6 +2348,10 @@
                                           (. (cast ptr:Node (node-at stamped 1)) line)))
       (when (= sret null)
         (die-at line (fmt-s "generic '%s': cannot resolve instantiated return type" (. gg name))))
+      ; Valid bound (§10.2): dry-run the concrete body before committing it, so an
+      ; operation C can't support is reported at this call site, not at stamp time.
+      (when (!= (method-has-valid m) 0)
+        (valid-check-instance m stamped bound line))
       (let (ptypes:ptr null)
         (when (> nargs 0)
           (set! ptypes (arena-alloc (* (i64 nargs) (i64 8))))
@@ -2425,6 +2679,15 @@
         scope:ptr (scope-new g-globals)
         nparams:i32 (. mm num-params)
         i:i32 0)
+    ; Every &where constraint must name a known protocol/blanket/Valid — checked
+    ; here (not at prescan) so an imported protocol is already registered.
+    (let (ci:i32 0)
+      (while (< ci (. mm num-constraints))
+        (let (pnm:ptr (aref (cast ptr:ptr (. mm con-protos)) ci))
+          (when (= (constraint-proto-known pnm) 0)
+            (die-at (. (cast ptr:Node form) line)
+              (fmt-s "defn: &where names unknown protocol '%s'" pnm))))
+        (inc! ci)))
     (while (< i nparams)
       (let (pnode:ptr (node-at params-node i)
             pty:ptr (gbind-decl-type pnode m (. (cast ptr:Node form) line))
@@ -2453,6 +2716,207 @@
               (check-generic-template (cast ptr m))))
           (inc! mi)))
       (inc! gi))))
+
+; ============================================================
+; Valid: inferred structural bounds (Stage 9 §10.2)
+; ============================================================
+; `&where (Valid T)` bounds T structurally: instead of naming a protocol, the
+; required interface is whatever the body does to T-typed values. Per the
+; designer (open Q3), this is realized as a per-call-site non-emitting stamp —
+; at each instantiation (T := C known) the body is substituted and the rung-3
+; type pass is run over it WITHOUT emitting, so any operation the concrete type C
+; cannot support is reported at the call site (ahead of, and clearer than, the
+; A1 stamp-time emit error), and derived-value chains are handled by the same
+; concrete walk (no associated-type solver).
+
+; Does this template carry a Valid constraint?
+(defn method-has-valid:i32 (m:ptr)
+  (let (mm:ptr:Method (cast ptr:Method m) i:i32 0)
+    (while (< i (. mm num-constraints))
+      (when (= (strcmp (aref (cast ptr:ptr (. mm con-protos)) i) "Valid") 0) (return 1))
+      (inc! i)))
+  (return 0))
+
+; The concrete declared type of a binding in a stamped (substituted) body, or
+; null when untyped (the caller infers it from the value).
+(defn valid-decl-type:ptr (bind-node:ptr line:i32)
+  (let (n:ptr:Node (cast ptr:Node bind-node))
+    (when (= (. n kind) NODE-SYM)
+      (let (nm:ptr null tail:ptr null)
+        (split-typed (. n s) (cast ptr:ptr (addr-of nm)) (cast ptr:ptr (addr-of tail)))
+        (when (= tail null) (return null))
+        (return (parse-type-spelling-str tail line))))
+    (when (= (. n kind) NODE-CELL)
+      (let (tnode:ptr (node-at bind-node 1))
+        (when (= tnode null) (return null))
+        (return (parse-type-from-node tnode line))))
+    (return null)))
+
+; The result type of a generic template `m2` for a concrete binding, or null:
+; a bare-tyvar return is the bound type; anything else is parsed concretely.
+(defn template-result-type:ptr (m2:ptr bound:ptr line:i32)
+  (let (mm:ptr:Method (cast ptr:Method m2)
+        rnode:ptr (binding-type-node (node-at (. mm body) 1)))
+    (when (= rnode null) (return ty-void))
+    (when (= (-> rnode (cast ptr:Node _) (. kind)) NODE-SYM)
+      (let (ridx:i32 (tyvar-index-of (-> rnode (cast ptr:Node _) (. s))
+                                     (. mm tyvars) (. mm num-tyvars)))
+        (when (>= ridx 0) (return (aref (cast ptr:ptr bound) ridx)))))
+    (return (parse-type-from-node rnode line))))
+
+; Non-dying resolution of a concrete call against generic `g`: returns the call's
+; result type if it resolves (exact method, built-in operator, user-operator or
+; user-method widen, or a bounded-generic template), else null. The Valid walk
+; turns a null here into a localized call-site error.
+(defn valid-resolve-type:ptr (g:ptr argtypes:ptr arg-nodes:ptr nargs:i32 line:i32)
+  (let (gg:ptr:Generic (cast ptr:Generic g))
+    (let (m:ptr (generic-find-method-exact g argtypes nargs))
+      (when (!= m null) (return (-> m (cast ptr:Method _) (. ret-type)))))
+    (let (rt:ptr (builtin-op-result-type g argtypes nargs))
+      (when (!= rt null) (return rt)))
+    (let (m:ptr (operator-user-resolve g argtypes arg-nodes nargs))
+      (when (!= m null) (return (-> m (cast ptr:Method _) (. ret-type)))))
+    ; widen on a concrete user method
+    (let (i:i32 0 wcand:ptr null wn:i32 0)
+      (while (< i (. gg num-methods))
+        (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (. gg methods)) i)))
+          (when (and (= (. m kind) METHOD-USER)
+                     (and (= (. m has-rest) 0) (= (. m num-params) nargs)))
+            (let (ok:i32 1 a:i32 0)
+              (while (< a nargs)
+                (let (is-lit:i32 0)
+                  (when (!= arg-nodes null)
+                    (set! is-lit (node-is-int-literal (aref (cast ptr:ptr arg-nodes) a))))
+                  (when (= (arg-adapts (aref (cast ptr:ptr argtypes) a)
+                                       (aref (cast ptr:ptr (. m param-types)) a) is-lit) 0)
+                    (set! ok 0)))
+                (inc! a))
+              (when (!= ok 0) (set! wcand (cast ptr m)) (inc! wn)))))
+        (inc! i))
+      (when (= wn 1) (return (-> wcand (cast ptr:Method _) (. ret-type)))))
+    ; bounded-generic template
+    (let (j:i32 0)
+      (while (< j (. gg num-methods))
+        (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (. gg methods)) j)))
+          (when (= (. m kind) METHOD-GENERIC)
+            (let (bound:ptr (arena-alloc (* (i64 (+ (. m num-tyvars) 1)) (i64 8))))
+              (when (and (!= (generic-method-bind (cast ptr m) argtypes nargs bound) 0)
+                         (!= (generic-constraints-ok (cast ptr m) bound line) 0))
+                (return (template-result-type (cast ptr m) bound line))))))
+        (inc! j)))
+    (return null)))
+
+(defn valid-walk-children:void (n:ptr scope:ptr gname:ptr cty:ptr line:i32)
+  (let (cl:i32 (node-len n) i:i32 1)
+    (while (< i cl)
+      (let (c:ptr (node-at n i))
+        (when (and (!= c null) (= (-> c (cast ptr:Node _) (. kind)) NODE-CELL))
+          (valid-walk c scope gname cty line)))
+      (inc! i))))
+
+; Walk one node of a stamped (concrete) Valid body, returning its type and
+; aborting at any direct generic/operator call the concrete type can't satisfy.
+; gname is the generic being instantiated and cty its concrete spelling, used
+; only in the diagnostic. line is the requesting call site.
+(defn valid-walk:ptr (n:ptr scope:ptr gname:ptr cty:ptr line:i32)
+  (when (= n null) (return ty-void))
+  (let (nn:ptr:Node (cast ptr:Node n))
+    (when (= (. nn kind) NODE-INT)   (return ty-i32))
+    (when (= (. nn kind) NODE-FLOAT) (return ty-f64))
+    (when (= (. nn kind) NODE-STR)   (return ty-ptr))
+    (when (= (. nn kind) NODE-SYM)   (return (node-type-sym n scope)))
+    (when (!= (. nn kind) NODE-CELL) (return ty-void))
+    (when (= (node-len n) 0) (return null))
+    (let (head:ptr:Node (cast ptr:Node (node-at n 0)))
+      (when (!= (. head kind) NODE-SYM)
+        (valid-walk-children n scope gname cty line)
+        (return null))
+      (let (h:ptr (. head s)
+            hp:ptr (cast ptr head))
+        (when (!= (find-macro h) null)
+          (let (ex:ptr (macroexpand-form n 1))
+            (when (!= ex n) (return (valid-walk ex scope gname cty line)))))
+        (when (or (= hp 'quote) (= hp 'quasiquote)) (return ty-ptr))
+        (when (or (= hp 'let) (= hp 'with))
+          (let (binds:ptr (node-at n 1)
+                inner:ptr (scope-new scope)
+                bl:i32 (node-len binds)
+                i:i32 0)
+            (while (< i bl)
+              (let (bname:ptr (node-at binds i)
+                    bval:ptr (node-at binds (+ i 1))
+                    vty:ptr (valid-walk bval inner gname cty line)
+                    dty:ptr (valid-decl-type bname (. nn line))
+                    nm:ptr (gbind-name bname))
+                (when (= dty null) (set! dty vty))
+                (when (and (!= nm null) (!= dty null))
+                  (scope-define inner nm dty nm 1)))
+              (set! i (+ i 2)))
+            (let (last:ptr null j:i32 2 cl:i32 (node-len n))
+              (while (< j cl) (set! last (valid-walk (node-at n j) inner gname cty line)) (inc! j))
+              (return last))))
+        (when (= hp 'do)
+          (let (last:ptr null j:i32 1 cl:i32 (node-len n))
+            (while (< j cl) (set! last (valid-walk (node-at n j) scope gname cty line)) (inc! j))
+            (return last)))
+        (when (!= (gcheck-special-form hp) 0)
+          (valid-walk-children n scope gname cty line)
+          (return (node-type n scope)))
+        ; A genuine call: type the arguments, then require it to resolve.
+        (let (nargs:i32 (- (node-len n) 1)
+              argtypes:ptr (arena-alloc (* (i64 (+ nargs 1)) (i64 8)))
+              arg-nodes:ptr (arena-alloc (* (i64 (+ nargs 1)) (i64 8)))
+              all-known:i32 1
+              i:i32 0)
+          (while (< i nargs)
+            (let (anode:ptr (node-at n (+ i 1))
+                  at:ptr (valid-walk anode scope gname cty line))
+              (aset! (cast ptr:ptr argtypes) i at)
+              (aset! (cast ptr:ptr arg-nodes) i anode)
+              (when (= at null) (set! all-known 0)))
+            (inc! i))
+          (let (g:ptr (generic-lookup h))
+            (when (!= g null)
+              ; Only verify when every argument type is known; an unknown
+              ; (e.g. a macro/cond result) defers, matching node-type's frontier.
+              (when (!= all-known 0)
+                (let (rt:ptr (valid-resolve-type g argtypes arg-nodes nargs line))
+                  (when (!= rt null) (return rt))
+                  (die-at line
+                    (fmt-2s "type '%s' does not satisfy the Valid bound of '%s'"
+                            cty gname))))
+              (return null))
+            ; A non-generic name: it must at least be in scope (catches a typo);
+            ; its own arg typing is deferred to that function's own emission.
+            (when (= (scope-lookup scope h) null)
+              (die-at line
+                (fmt-2s "type '%s' does not satisfy the Valid bound of '%s'" cty gname)))
+            (return (node-type-call n scope h))))))))
+
+; Run the per-call-site Valid check on a stamped instantiation `stamped` whose
+; type variables were bound to the concrete types in `bound`. Builds a scope from
+; the (now concrete) parameters and walks the body.
+(defn valid-check-instance:void (m:ptr stamped:ptr bound:ptr line:i32)
+  (let (mm:ptr:Method (cast ptr:Method m)
+        params-node:ptr (node-at stamped 2)
+        scope:ptr (scope-new g-globals)
+        gname:ptr (defn-name-only (node-at stamped 1))
+        cty:ptr "?"
+        nparams:i32 (. mm num-params)
+        i:i32 0)
+    (when (> (. mm num-tyvars) 0)
+      (set! cty (type-spelling (aref (cast ptr:ptr bound) 0))))
+    (while (< i nparams)
+      (let (pnode:ptr (node-at params-node i)
+            pty:ptr (valid-decl-type pnode line)
+            pnm:ptr (gbind-name pnode))
+        (when (and (!= pnm null) (!= pty null))
+          (scope-define scope pnm pty pnm 1)))
+      (inc! i))
+    (let (cl:i32 (node-len stamped) j:i32 3)
+      (while (< j cl)
+        (valid-walk (node-at stamped j) scope gname cty line)
+        (inc! j)))))
 
 ; Emit the bodies of every stamped generic instantiation queued so far. Runs at
 ; the end of the top-level loop, when no function emission is in progress. The
@@ -2501,6 +2965,42 @@
     (inc! g-num-protocols)
     (return (cast ptr p))))
 
+; Is `name` one of the built-in blanket protocols (§10.1)? Blanket protocols have
+; automatic conformance — no `extend` is written — so they are consulted before
+; the nominal conformance registry.
+(defn blanket-lookup:i32 (name:ptr)
+  (let (i:i32 0)
+    (while (< i g-num-blanket)
+      (when (= (strcmp (aref (cast ptr:ptr g-blanket) i) name) 0) (return 1))
+      (inc! i)))
+  (return 0))
+
+; A name usable as a `&where` constraint: a declared protocol, a blanket protocol
+; (Any/Struct, §10.1), or the structural bound Valid (§10.2). Used to reject typos
+; once all imports have registered their protocols (the A2 pass).
+(defn constraint-proto-known:i32 (name:ptr)
+  (when (!= (protocol-lookup name) null) (return 1))
+  (when (!= (blanket-lookup name) 0) (return 1))
+  (when (= (strcmp name "Valid") 0) (return 1))
+  (return 0))
+
+; Automatic conformance for a blanket protocol (§10.1). `Any` holds for every
+; type (the no-constraint constraint); `Struct` holds for any struct type or
+; pointer-to-struct (its required `get` member-access method is supplied by a
+; built-in once callable-values lands). Blanket conformance is structural and
+; consulted directly, so it is never recorded in g-conformances.
+(defn blanket-conforms:i32 (ty:ptr proto-name:ptr)
+  (when (= (strcmp proto-name "Any") 0) (return 1))
+  (when (= (strcmp proto-name "Struct") 0)
+    (let (k:i32 (-> ty (cast ptr:Type _) (. kind)))
+      (when (= k TY-STRUCT) (return 1))
+      (when (and (= k TY-PTR)
+                 (and (!= (-> ty (cast ptr:Type _) (. elem)) null)
+                      (= (-> ty (cast ptr:Type _) (. elem) (cast ptr:Type _) (. kind)) TY-STRUCT)))
+        (return 1))
+      (return 0)))
+  (return 0))
+
 (defn conformance-lookup:i32 (type-name:ptr proto-name:ptr)
   (let (i:i32 0)
     (while (< i g-num-conformances)
@@ -2525,6 +3025,27 @@
     (.set! c type-name type-name)
     (.set! c proto-name proto-name)
     (inc! g-num-conformances)))
+
+; Record a protocol-inheritance edge: conforming to `sub` requires `super`.
+(defn proto-super-add:void (sub:ptr super:ptr)
+  (let (i:i32 0)
+    (while (< i g-num-proto-supers)
+      (let (e:ptr:Conformance (cast ptr:Conformance (ptr+ (cast ptr:Conformance g-proto-supers) i)))
+        (when (and (= (strcmp (. e type-name) sub) 0) (= (strcmp (. e proto-name) super) 0))
+          (return)))
+      (inc! i)))
+  (when (= g-num-proto-supers g-cap-proto-supers)
+    (let (nc:i32 16)
+      (when (!= g-cap-proto-supers 0) (set! nc (* g-cap-proto-supers 2)))
+      (let (ne:ptr (arena-alloc (* (cast i64 nc) (sizeof Conformance))))
+        (when (!= g-num-proto-supers 0)
+          (memcpy ne g-proto-supers (* (cast i64 g-num-proto-supers) (sizeof Conformance))))
+        (set! g-proto-supers ne)
+        (set! g-cap-proto-supers nc))))
+  (let (e:ptr:Conformance (cast ptr:Conformance (ptr+ (cast ptr:Conformance g-proto-supers) g-num-proto-supers)))
+    (.set! e type-name sub)
+    (.set! e proto-name super)
+    (inc! g-num-proto-supers)))
 
 ; Substitute the type variable `Self` in a colon-typed symbol spelling: split
 ; on ':' and replace any segment that is exactly "Self" with the concrete type
@@ -2594,61 +3115,132 @@
           (protocol-register-form (cast ptr f))))
       (set! fc (. (cast ptr:Node fc) cdr)))))
 
-; (extend Type Protocol): post-prescan conformance check. For each required
-; signature, substitute Self→Type, then require a concrete method at the exact
-; tier. Missing methods are all reported before failing.
+; Built-in result type of an operator generic `g` applied to a same-typed pair
+; of operands, or null if the operator does not apply. Comparisons yield i1;
+; arithmetic yields the operand type. This is what lets numeric/pointer built-ins
+; satisfy operator protocol requirements (Num/Eq/Ord) with no user method (§10.3).
+(defn builtin-op-result-type:ptr (g:ptr ptypes:ptr nparams:i32)
+  (let (gg:ptr:Generic (cast ptr:Generic g))
+    (when (= (. gg num-methods) 0) (return null))
+    (let (m0:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (. gg methods)) 0)))
+      (when (!= (. m0 kind) METHOD-INTRINSIC) (return null))
+      (when (!= nparams 2) (return null))
+      (let (at:ptr (aref (cast ptr:ptr ptypes) 0)
+            bt:ptr (aref (cast ptr:ptr ptypes) 1)
+            bop:ptr:BinOp (cast ptr:BinOp (. m0 binop)))
+        (when (= (type-eq at bt) 0) (return null))
+        (if (!= (. bop is-cmp) 0)
+          (do
+            (when (or (or (!= (is-int-type at) 0) (!= (is-float-type at) 0))
+                      (= (-> at (cast ptr:Type _) (. kind)) TY-PTR))
+              (return ty-i1))
+            (return null))
+          (do
+            (when (or (!= (is-int-type at) 0) (!= (is-float-type at) 0))
+              (return at))
+            (return null)))))))
+
+; Does a method named `mname` satisfy a required signature (param types `ptypes`,
+; return `ret`; ret=null means "any")? Either a user/concrete method at the exact
+; tier, or a built-in operator whose result type matches. Shared by `extend`
+; conformance and the `Valid` call-site check (§10.2).
+(defn method-satisfies-sig:i32 (mname:ptr ptypes:ptr nparams:i32 ret:ptr)
+  (let (g:ptr (generic-lookup mname))
+    (when (= g null) (return 0))
+    (when (!= (generic-find-method-exact g ptypes nparams) null) (return 1))
+    (let (rt:ptr (builtin-op-result-type g ptypes nparams))
+      (when (and (!= rt null) (or (= ret null) (!= (type-eq rt ret) 0))) (return 1)))
+    (return 0)))
+
+; Verify (when check≠0) and record that `typename` conforms to protocol
+; `proto-name`, then recurse into the protocol's super-protocols (§10.3). In
+; check mode every required signature (Self→typename) must resolve to a concrete
+; method or a satisfying built-in operator; missing methods are reported and the
+; compile aborts. The conformance-lookup guard makes this idempotent and safe
+; against cyclic inheritance. Import side passes check=0 (trust the exporter).
+(defn verify-conformance:void (typename:ptr proto-name:ptr line:i32 check:i32)
+  (when (!= (conformance-lookup typename proto-name) 0) (return))
+  (let (proto:ptr (protocol-lookup proto-name))
+    (when (= proto null)
+      (when (!= check 0)
+        (die-at line (fmt-s "extend: unknown protocol '%s'" proto-name)))
+      (return))
+    (when (!= check 0)
+      (let (pp:ptr:Protocol (cast ptr:Protocol proto)
+            i:i32 0
+            missing:i32 0)
+        (while (< i (. pp num-sigs))
+          (let (sig:ptr (aref (cast ptr:ptr (. pp sigs)) i)
+                csig:ptr (subst-self-node sig typename)
+                name-node:ptr (node-at csig 0)
+                params-node:ptr (node-at csig 1)
+                mname:ptr null
+                ret:ptr (extract-name-and-type name-node (cast ptr:ptr (addr-of mname))
+                                               (. (cast ptr:Node name-node) line)))
+            (let (nparams:i32 (defn-params-count params-node)
+                  ptypes:ptr (defn-params-to-types params-node))
+              (when (= (method-satisfies-sig mname ptypes nparams ret) 0)
+                (set! missing 1)
+                (fprintf (cast ptr stderr)
+                  "  %s does not implement %s.%s\n" typename proto-name mname))))
+          (inc! i))
+        (when (!= missing 0)
+          (die-at line
+            (fmt-2s "type '%s' does not conform to protocol '%s'" typename proto-name)))))
+    (conformance-add typename proto-name)
+    ; Conforming to `proto-name` requires conforming to each declared super.
+    (let (si:i32 0)
+      (while (< si g-num-proto-supers)
+        (let (e:ptr:Conformance (cast ptr:Conformance (ptr+ (cast ptr:Conformance g-proto-supers) si)))
+          (when (= (strcmp (. e type-name) proto-name) 0)
+            (verify-conformance typename (. e proto-name) line check)))
+        (inc! si)))))
+
+; (extend Subject Protocol): post-prescan conformance check (§9.2/§10.3). When
+; Subject is a *protocol*, this declares protocol inheritance (Subject requires
+; Protocol). Otherwise Subject is a type whose conformance is verified and
+; recorded, recursing into the protocol's supers.
 (defn emit-extend:void (form:ptr)
   (let (ff:ptr:Node (cast ptr:Node form))
     (when (< (node-len form) 3)
-      (die-at (. ff line) "extend: expected (extend Type Protocol)"))
+      (die-at (. ff line) "extend: expected (extend Subject Protocol)"))
     (let (type-node:ptr:Node (cast ptr:Node (node-at form 1))
           proto-node:ptr:Node (cast ptr:Node (node-at form 2)))
       (when (!= (. type-node kind) NODE-SYM)
-        (die-at (. type-node line) "extend: type must be a symbol"))
+        (die-at (. type-node line) "extend: subject must be a symbol"))
       (when (!= (. proto-node kind) NODE-SYM)
         (die-at (. proto-node line) "extend: protocol must be a symbol"))
       (let (typename:ptr (. type-node s)
-            proto-name:ptr (. proto-node s)
-            proto:ptr (protocol-lookup proto-name))
-        (when (= proto null)
+            proto-name:ptr (. proto-node s))
+        ; Protocol-on-protocol: declare inheritance, no per-type check.
+        (when (!= (protocol-lookup typename) null)
+          (when (= (protocol-lookup proto-name) null)
+            (die-at (. proto-node line)
+              (fmt-s "extend: '%s' is a protocol, so its supertype '%s' must be a protocol too"
+                     typename proto-name)))
+          (proto-super-add typename proto-name)
+          (return))
+        ; Extending to a blanket protocol (Any/Struct) is redundant — conformance
+        ; is automatic and structural — so accept it as a no-op.
+        (when (!= (blanket-lookup proto-name) 0) (return))
+        (when (= (protocol-lookup proto-name) null)
           (die-at (. proto-node line) (fmt-s "extend: unknown protocol '%s'" proto-name)))
         ; Validate single-token subject types eagerly for a clean diagnostic.
         (when (= (strchr typename 58) null)
           (parse-type-name typename (. type-node line)))
-        (let (pp:ptr:Protocol (cast ptr:Protocol proto)
-              i:i32 0
-              missing:i32 0)
-          (while (< i (. pp num-sigs))
-            (let (sig:ptr (aref (cast ptr:ptr (. pp sigs)) i)
-                  csig:ptr (subst-self-node sig typename)
-                  name-node:ptr (node-at csig 0)
-                  params-node:ptr (node-at csig 1)
-                  mname:ptr null)
-              (extract-name-and-type name-node (cast ptr:ptr (addr-of mname))
-                                     (. (cast ptr:Node name-node) line))
-              (let (nparams:i32 (defn-params-count params-node)
-                    ptypes:ptr (defn-params-to-types params-node)
-                    g:ptr (generic-lookup mname)
-                    m:ptr null)
-                (when (!= g null)
-                  (set! m (generic-find-method-exact g ptypes nparams)))
-                (when (= m null)
-                  (set! missing 1)
-                  (fprintf (cast ptr stderr)
-                    "  %s does not implement %s.%s\n" typename proto-name mname))))
-            (inc! i))
-          (when (!= missing 0)
-            (die-at (. ff line)
-              (fmt-s "type '%s' does not conform to the requested protocol" typename)))
-          (conformance-add typename proto-name))))))
+        (verify-conformance typename proto-name (. ff line) 1)))))
 
-; Import side: trust the exporting unit's check; just record the fact.
+; Import side: trust the exporting unit's check; record the fact (and recurse
+; supers), or re-register a protocol-inheritance edge.
 (defn register-imported-conformance:void (form:ptr)
   (when (>= (node-len form) 3)
     (let (type-node:ptr:Node (cast ptr:Node (node-at form 1))
           proto-node:ptr:Node (cast ptr:Node (node-at form 2)))
       (when (and (= (. type-node kind) NODE-SYM) (= (. proto-node kind) NODE-SYM))
-        (conformance-add (. type-node s) (. proto-node s))))))
+        (if (!= (protocol-lookup (. type-node s)) null)
+          (proto-super-add (. type-node s) (. proto-node s))
+          (verify-conformance (. type-node s) (. proto-node s)
+                              (. (cast ptr:Node form) line) 0))))))
 
 ; ============================================================
 ; Cast
@@ -3415,7 +4007,7 @@
                     bty:ptr (. bv type))
                 (if (= result-type null)
                   (set! result-type bty)
-                  (when (and (!= bty result-type)
+                  (when (and (= (type-eq bty result-type) 0)
                              (!= (. (cast ptr:Type result-type) kind) TY-VOID))
                     (set! result-type ty-void)))
                 (when (= (. (cast ptr:Type bty) kind) TY-VOID)
@@ -3656,6 +4248,28 @@
 ; List dispatch
 ; ============================================================
 
+; Emit a call to a resolved method `m` of generic `gname`, given the argument
+; Vals already emitted into `args`. Coerces each argument to the method's
+; parameter type (identity for an exact match, so the IR is unchanged) then
+; emits the call to the selected symbol. Shared by ordinary overloaded dispatch
+; and the operator user-overload path.
+(defn emit-resolved-call:ptr (n:ptr scope:ptr gname:ptr m:ptr args:ptr nargs:i32 line:i32)
+  (let (mm:ptr:Method (cast ptr:Method m)
+        ss:ptr:Sym (cast ptr:Sym (arena-alloc (sizeof Sym))))
+    (when (and (!= (. mm param-types) null) (and (= (. mm has-rest) 0) (= (. mm num-params) nargs)))
+      (let (ci:i32 0)
+        (while (< ci nargs)
+          (let (slot:ptr (ptr+ (cast ptr:Val args) ci)
+                pt:ptr (aref (cast ptr:ptr (. mm param-types)) ci)
+                na:ptr (coerce-num-val slot pt line))
+            (when (and (!= na null) (!= na slot)) (memcpy slot na (sizeof Val))))
+          (inc! ci))))
+    (.set! ss name gname)
+    (.set! ss type (. mm fn-type))
+    (.set! ss ir-name (. mm ir-name))
+    (.set! ss is-local 0)
+    (return (emit-call-with-args n scope (cast ptr ss) args nargs))))
+
 ; Emit a call to an overloaded generic: emit the arguments, resolve the method
 ; from their concrete types, then emit the call to the selected mangled symbol.
 (defn emit-generic-call:ptr (n:ptr scope:ptr g:ptr)
@@ -3663,32 +4277,63 @@
         nargs:i32 (- (node-len nn) 1)
         args:ptr (arena-alloc (* (i64 (+ nargs 1)) (sizeof Val)))
         argtypes:ptr (arena-alloc (* (i64 (+ nargs 1)) (i64 8)))
+        arg-nodes:ptr (arena-alloc (* (i64 (+ nargs 1)) (i64 8)))
         i:i32 0)
     (while (< i nargs)
-      (let (v:ptr (emit-node (node-at nn (+ i 1)) scope))
+      (let (anode:ptr (node-at nn (+ i 1))
+            v:ptr (emit-node anode scope))
         (memcpy (ptr+ (cast ptr:Val args) i) v (sizeof Val))
-        (aset! (cast ptr:ptr argtypes) i (. (cast ptr:Val v) type)))
+        (aset! (cast ptr:ptr argtypes) i (. (cast ptr:Val v) type))
+        (aset! (cast ptr:ptr arg-nodes) i anode))
       (inc! i))
-    (let (m:ptr:Method (cast ptr:Method (generic-resolve g argtypes nargs (. nn line)))
-          ss:ptr:Sym (cast ptr:Sym (arena-alloc (sizeof Sym))))
-      (.set! ss name (-> g (cast ptr:Generic _) (. name)))
-      (.set! ss type (. m fn-type))
-      (.set! ss ir-name (. m ir-name))
-      (.set! ss is-local 0)
-      (return (emit-call-with-args n scope (cast ptr ss) args nargs)))))
+    (let (m:ptr:Method (cast ptr:Method (generic-resolve g argtypes arg-nodes nargs (. nn line))))
+      (return (emit-resolved-call n scope (-> g (cast ptr:Generic _) (. name)) (cast ptr m)
+                                  args nargs (. nn line))))))
+
+; Emit an operator that carries user overloads (§10.3). Emit the operands, then
+; resolve a user method on the operator's argument types; if one matches, emit a
+; call to it, otherwise fall back to the built-in numeric/pointer inline peephole
+; (emit-binop-vals). A pure operator (no user overloads) never reaches here — it
+; short-circuits to emit-binop in emit-dispatch, preserving byte-identical IR.
+(defn emit-operator-dispatch:ptr (n:ptr scope:ptr g:ptr binop:ptr)
+  (let (nn:ptr:Node (cast ptr:Node n)
+        nargs:i32 (- (node-len nn) 1)
+        args:ptr (arena-alloc (* (i64 (+ nargs 1)) (sizeof Val)))
+        argtypes:ptr (arena-alloc (* (i64 (+ nargs 1)) (i64 8)))
+        arg-nodes:ptr (arena-alloc (* (i64 (+ nargs 1)) (i64 8)))
+        i:i32 0)
+    (while (< i nargs)
+      (let (anode:ptr (node-at nn (+ i 1))
+            v:ptr (emit-node anode scope))
+        (memcpy (ptr+ (cast ptr:Val args) i) v (sizeof Val))
+        (aset! (cast ptr:ptr argtypes) i (. (cast ptr:Val v) type))
+        (aset! (cast ptr:ptr arg-nodes) i anode))
+      (inc! i))
+    (let (m:ptr (operator-user-resolve g argtypes arg-nodes nargs))
+      (when (!= m null)
+        (return (emit-resolved-call n scope (-> g (cast ptr:Generic _) (. name)) m
+                                    args nargs (. nn line))))
+      (when (!= nargs 2)
+        (die-at (. nn line) (fmt-s "%s expects 2 args" (. (cast ptr:BinOp binop) name))))
+      (return (emit-binop-vals (ptr+ (cast ptr:Val args) 0) (ptr+ (cast ptr:Val args) 1)
+                               (aref (cast ptr:ptr arg-nodes) 0) (aref (cast ptr:ptr arg-nodes) 1)
+                               binop (. nn line))))))
 
 ; Unified dispatch tail for emit-list: the head symbol `h` is neither a macro
-; nor a special form. Resolve it through the generic registry — operators are
-; intrinsic generics (routed to emit-binop, byte-identical IR); overloaded sets
-; dispatch on argument types; solitary names and C/extern functions fall through
-; to the ordinary scope-bound call (also byte-identical).
+; nor a special form. Resolve it through the generic registry — a pure operator
+; routes to emit-binop (byte-identical IR); an operator carrying user overloads
+; resolves user-method-or-inline; overloaded sets dispatch on argument types;
+; solitary names and C/extern functions fall through to the ordinary scope-bound
+; call (also byte-identical).
 (defn emit-dispatch:ptr (n:ptr scope:ptr h:ptr head:ptr)
   (let (g:ptr (generic-lookup h))
     (when (!= g null)
       (let (gg:ptr:Generic (cast ptr:Generic g)
             m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (. gg methods)) 0)))
         (when (= (. m kind) METHOD-INTRINSIC)
-          (return (emit-binop n scope (. m binop))))
+          (if (= (. gg mangled) 0)
+            (return (emit-binop n scope (. m binop)))
+            (return (emit-operator-dispatch n scope (cast ptr gg) (. m binop)))))
         (when (!= (. gg mangled) 0)
           (return (emit-generic-call n scope (cast ptr gg)))))))
   (let (sym:ptr (scope-lookup scope h))
@@ -5271,10 +5916,19 @@
   (register-rmacro "`" "quasiquote")
   (register-rmacro "@" "deref"))
 
+; Register the built-in blanket protocols (§10.1). Hardcoded for now; a
+; user-declarable blanket facility is parked in design/stage999-future.md.
+(defn init-blanket:void ()
+  (set! g-blanket (arena-alloc (* (cast i64 8) (cast i64 8))))
+  (aset! (cast ptr:ptr g-blanket) 0 "Any")
+  (aset! (cast ptr:ptr g-blanket) 1 "Struct")
+  (set! g-num-blanket 2))
+
 (defn compiler-init:void ()
   (types-init)
   (init-binops)
   (init-generics)
+  (init-blanket)
   (set! g-mono-worklist (make-vec))
   (init-rmacros)
   (set! g-structs (arena-alloc (* (cast i64 MAX-STRUCTS) (sizeof StructDef))))

@@ -16,6 +16,10 @@ Ideally polymorphic
 
 With static typing and compile-time dispatch, this should have no runtime cost. I'm imagining a protocol/interface system in addition to concrete types
 
+### Declarable blanket protocols
+
+Stage 9 hardcodes the two blanket (auto-conforming) protocols `Any` (every type) and `Struct` (every struct) — see `design/stage9/polymorphism.md` §10.1. A general, *declarable* facility — letting a library define its own blanket protocol with a compiler-checkable conformance predicate — is deferred here. It would generalize the hardcoded pair into one mechanism, at the cost of a way to express "which types conform" in source.
+
 ### Redefinition
 
 The ability to redefine vars and fns in the REPL would be helpful. We don't have dynamic scope and probably shouldn't add it, so that implies recompiling everything depending on the var in question. The time to do that is acceptable, but the implementation complexity may not be.
@@ -56,12 +60,13 @@ since `free(NULL)` is a no-op.
 Open question: whether to flip the default so plain `let` itself auto-frees,
 with `let*` as the opt-out (the original shape proposed here). `with` exists
 alongside `let` for now; revisit once it has wider use.
-<<<<<<< Updated upstream
-=======
 
 ## Safe constructs
 
 Nucleus isn't trying to be Rust, but it should provide the option of safe constructs where it's practical to do so, and move things that should be avoided when possible to an unsafe/ namespace.
 
 The `with` special form is a target for improvement. It should enforce a lexical *lifetime* rather than just preventing memory leaks. Attempting to return variables bound to pointers using `with` should be a compile-time error. That includes binding a second variable with a nested `let`. Returning the dereferenced value is permissible.
->>>>>>> Stashed changes
+
+## Nullability
+
+It would be **great** if most types and pointers could be non-nullable with a `Maybe` or `Option` type to provide nullability where it's desired. Even better would be safe pointers by default which cannot point to anything but a valid instance of the declared type, with raw pointers relegated to an `unsafe` namespace.

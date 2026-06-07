@@ -1,0 +1,7 @@
+clamp 5 1 9   = 5
+clamp 12 1 9  = 9
+clamp f64     = 2
+twice i32     = 42
+twice f64     = 2.5
+clamp Q       = 5
+twice Q       = 6
