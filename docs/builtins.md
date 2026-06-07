@@ -206,9 +206,21 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `>` | Greater than (signed: `sgt`, unsigned: `ugt`) | `a > b` |
 | `>=` | Greater or equal (signed: `sge`, unsigned: `uge`) | `a >= b` |
 
-Binary operators require both operands to have the same sign. Mixed-sign operations are rejected at compile time.
+Operators are **ordinary generic functions** (§10.3). Each built-in operator is a generic; when the operands are built-in numerics (or pointers, for comparisons) the resolver selects the built-in method, which emits its inline instruction (`add nsw`, `icmp slt`, …) directly — a **front-end peephole**, not an LLVM pass — so there is no `call` and the IR is byte-identical to a non-polymorphic compiler even at `-O0`.
 
-Operators are dispatched through the same generic mechanism as overloaded functions (see below): each built-in operator is a pre-registered *intrinsic* method. When the operands are built-in numerics the intrinsic emits its inline instruction (`add nsw`, `icmp slt`, …) exactly as before — there is no `call` and the IR is byte-identical to a non-polymorphic compiler. (User-defined operator overloads are not yet supported.)
+**Mixed operands now resolve** (§10.3): an untyped integer literal adapts to the other operand's type (`(+ x 1)` with `x:i64`), and a narrower integer/float widens to the wider (`(+ i32 i64)`, `(+ f32 f64)`). Genuinely mismatched operands (e.g. two different typed pointers in arithmetic, or mixed signedness) are still rejected.
+
+**User operator overloading.** Because operators are generics, a type becomes "addable"/"comparable" by defining a method. The variadic `+ - * /` macros fold to the binary primitives `_+ _- _* _/`, so arithmetic is overloaded on those names; the comparison operators are overloaded directly:
+
+```lisp
+(defstruct V2 x:i32 y:i32)
+(defn _+:ptr:V2 (a:ptr:V2 b:ptr:V2) …)   ; (+ u v) now dispatches here
+(defn =:i1     (a:ptr:V2 b:ptr:V2) …)    ; (= u v) dispatches here
+```
+
+A user operator method is emitted under a mangled symbol (`@add.pV2.pV2`, `@eq.pV2.pV2` — the symbols `+`/`=` are mapped to IR-safe mnemonics). A call with operand types that match no user method falls back to the built-in inline peephole.
+
+The **standard numeric protocols** live in `lib/numeric.nuc`: `Eq` (`= !=`), `Ord` (`< <= > >=`, a superset of `Eq` via `(extend Ord Eq)`), and `Num` (`_+ _- _* _/`). Built-in numeric types conform automatically (their intrinsic operators satisfy the requirements); a user type conforms by defining the methods and asserting `(extend ptr:MyType Ord)`. See [Bounded generic `defn`](#bounded-generic-defn).
 
 ## Polymorphism: overloaded `defn` (multimethods)
 
@@ -230,7 +242,7 @@ A `defn` whose name already exists but whose **parameter types differ** does not
 
 **Symbol mangling.** A name with a single method keeps its unmangled symbol `@name` and stays C-callable. A name with two or more methods becomes an overload set: each method is emitted under a mangled symbol `@name.<tok>...` where each `<tok>` names a parameter type (`i32`, `f64`, `pCircle` for `ptr:Circle`, the struct name for a by-value struct, …). The mangle decision is made after a whole-file prescan, so all methods of a name agree.
 
-**Resolution.** A call resolves to the method whose parameter types match the argument types exactly (by structural type equality: primitives by identity, structs by definition, pointers by pointee). No match, or a call to an overloaded name that fits none of its methods, is a compile error listing the offending name. *(Widening/coercion tiers — e.g. accepting an `i32` argument where an `i64` method exists — are not yet implemented; arguments must match a method exactly.)*
+**Resolution (tiers).** A call resolves in order: **(0)** an exact match (structural type equality: primitives by identity, structs by definition, pointers by pointee); **(1)** a bounded-generic template whose constraints the arguments satisfy; **(2)** a safe **widen / untyped-int-literal** adaptation — an `i32` argument supplied where an `i64` method exists, or a literal `1` supplied where the parameter is `i8`/`f64` (the chosen arguments are coerced to the parameter types). A unique match wins; an ambiguous or absent match is a compile error listing the offending name. *(A `defcast`-based coercion tier is not implemented — no cast-rule registry exists in-tree.)*
 
 **Return types may differ per method** (`(defn parse:i32 …)` vs `(defn parse:f64 …)` is fine since they dispatch on arguments). A return type bound only by no argument (no way to choose from the call) is out of scope.
 
@@ -265,7 +277,9 @@ If a required method is missing, compilation fails with a diagnostic naming each
 
 **No code, multiple protocols per implementation.** Because `extend` adds no methods, one concrete function can satisfy several protocols at once — the protocol is a *predicate over the method set*, not the owner of an implementation.
 
-**Cross-unit.** `defprotocol` and `extend` export verbatim through `.nuch`; an importing unit re-registers the protocol and trusts the recorded conformance (it does not re-check). See [.nuch Header Format](#nuch-header-format).
+**Protocol inheritance.** `extend`'s subject may itself be a protocol: `(extend Ord Eq)` declares that conforming to `Ord` additionally requires conforming to `Eq`, so `(extend i32 Ord)` records `(i32, Eq)` too. Operators satisfy protocol requirements for built-in numerics with no user method, so `lib/numeric.nuc`'s `Eq`/`Ord`/`Num` apply to `i32`/`i64`/`f32`/`f64` out of the box.
+
+**Cross-unit.** `defprotocol` and `extend` (type-conformance and protocol-inheritance) export verbatim through `.nuch`; an importing unit re-registers the protocol and trusts the recorded conformance (it does not re-check). See [.nuch Header Format](#nuch-header-format).
 
 *Not yet implemented (within protocols):* inline-`defn` sugar inside `extend`, and the dynamic `(dyn Protocol)` form. Conformance currently requires a concrete (non-generic) implementation.
 
@@ -278,20 +292,17 @@ substituted by concrete types — once per distinct instantiation, and cached.
 Statically dispatched, zero runtime overhead.
 
 ```lisp
-(defprotocol Ord (less:i1 (a:Self b:Self)))
-(defn less:i1 (a:i32 b:i32) (return (< a b)))
-(defn less:i1 (a:f64 b:f64) (return (< a b)))
-(extend i32 Ord)
-(extend f64 Ord)
+(import numeric)                          ; Eq / Ord / Num over the operators
 
 (defn maxv:T (a:T b:T &where (Ord T))     ; T is a type variable bounded by Ord
-  (let (r:T a)
-    (when (less a b) (set! r b))
-    (return r)))
+  (if (< a b) b a))                       ; operators dispatch on T directly
 
-(maxv 3 9)        ; → stamps @maxv.i32.i32; (less a b) resolves to less.i32.i32
-(maxv 2.5 1.5)    ; → stamps @maxv.f64.f64; (less a b) resolves to less.f64.f64
+(maxv 3 9)        ; → stamps @maxv.i32.i32; (< a b) is an inline icmp
+(maxv 2.5 1.5)    ; → stamps @maxv.f64.f64; (< a b) is an inline fcmp
 ```
+
+Because operators are generic methods (§10.3), the body uses `<` directly and the
+constraint is the standard `Ord`; built-in numeric types conform automatically.
 
 - **`&where`** follows all value parameters; each constraint is single-variable
   `(Protocol Var)`. Multiple constraints are allowed (e.g. `&where (Ord T) (Show U)`).
@@ -346,6 +357,39 @@ the body on a worklist drained at the end of the top-level loop. The A2 check
 names/protocols/conformances are registered, typing the body with parameters
 bound to abstract `TY-TYVAR` types — which never reach codegen, since templates
 emit only after monomorphization.
+
+### Bound kinds: named protocols, blanket (`Any`/`Struct`), and `Valid`
+
+A `&where` constraint names one of three kinds of bound (a name is still a type
+variable iff it appears in a constraint, so every kind keeps tyvars declared-only
+and typos caught):
+
+| Bound | Conformance | Checked |
+|---|---|---|
+| named protocol (`Ord`, `Num`, …) | nominal, via `extend` | def-site (A2) + at the call |
+| **blanket** `Any` / `Struct` (§10.1) | automatic / structural | nothing (`Any`); is-a-struct (`Struct`) |
+| **`Valid`** (§10.2) | structural, **inferred from the body** | at the call site |
+
+- **`Any`** is the no-constraint constraint — every type conforms, no methods
+  required. It lets a fully generic function name its variable: `(defn id:T (x:T
+  &where (Any T)) (return x))`. Operations on an `Any`-bound value are deferred to
+  stamp time.
+- **`Struct`** holds for any struct type or pointer-to-struct. (Its member-access
+  `get` method is supplied by callable-values; see `design/stage9/callable-values.md`.)
+  Both are **hardcoded** built-ins; a user-declarable blanket facility is parked in
+  `design/stage999-future.md`.
+- **`Valid`** does not name a protocol — the required interface is *inferred* from
+  the body. At each call site the concrete type is substituted and the body is
+  type-checked **without emitting** (the per-call-site non-emitting stamp), so a
+  type that can't support an operation is rejected **at the call site**, and so are
+  uses of values *derived* from `T`:
+  ```lisp
+  (defn twice:T (x:T &where (Valid T)) (+ x x))
+  (twice 21)        ; ok — i32 supports +
+  (twice some-ptr)  ; error at this call: 'ptr:Blob' does not satisfy the Valid bound of 'twice'
+  ```
+  `Valid` is itself written explicitly (it *nominates* structural checking); a bare
+  `&where (T)` with no protocol remains an error.
 
 *Not yet implemented:* same-name overloading that mixes imported and
 locally-defined methods; `&rest` together with `&where`; REPL generic

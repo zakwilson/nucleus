@@ -62,7 +62,8 @@ Nucleus is a replacement for C using Lisp style syntax and macros with LLVM as i
 - [stage6-plan.md](stage6-plan.md) — implementation plan for the non-blocked items in stage6-cleanup.md
 - [stage6-floats.md](stage6-floats.md) — design for `f32` / `f64` types (deferred from stage 6)
 - [stage6-redefinition.md](stage6-redefinition.md) — design for REPL function redefinition (deferred from stage 6)
-- [stage9/polymorphism.md](stage9/polymorphism.md) — Stage 9: survey of how dispatch works today and four options for a polymorphism mechanism (open multimethods, protocols/traits, parametric generics, type-directed macros); §8 develops the chosen direction — a hybrid of Option 1 (overloaded `defn` multimethods) plus protocols as a thin checked abstraction layer
+- [stage9/polymorphism.md](stage9/polymorphism.md) — Stage 9 polymorphism: the dispatch engine. §§1–8 survey the options and the chosen hybrid (overloaded `defn` multimethods + protocols as a thin checked layer); §9 is the authoritative build spec with landed implementation status (rungs 1–4); §10 specifies the planned **engine extensions** — blanket protocols + `Any`, inferred structural bounds (`Valid`), and operators-as-ordinary-functions (`Num`/`Eq`/`Ord` + user operator overloading); design decisions resolved at the end
+- [stage9/callable-values.md](stage9/callable-values.md) — Stage 9: what happens when a non-function is in the call position. Committed design — `(callee …)` desugars by argument type to `get` (symbol selector → member access, the struct default via the `Struct` blanket protocol) or `invoke` (general call; `Seq`/`Callable` library protocols, e.g. integer → element). Field selectors are symbol *values* (literal → zero-overhead static GEP; computed → runtime field dispatch). Builds on the engine extensions in polymorphism.md §10; open questions at the end
 - [progress.md](progress.md) — terse summary of done / pending / deferred work
 - [stage6-rest-optional.md](stage6-rest-optional.md) — design for `&rest` / `&optional` parameters in `defn`
 - [stage6-expressions.md](stage6-expressions.md) — design for expressions-as-values and implicit return
@@ -74,3 +75,7 @@ Nucleus is a replacement for C using Lisp style syntax and macros with LLVM as i
 Some design documents are structured as a conversation between a designer and a robot. Agents tasked with responding to a design document should add their feedback to the robot sections.
 
 Agents encountering new design documents should add them to the above list.
+
+## Pre-release
+
+Nucleus is currently in pre-release development. Breaking changes are expected without warning.

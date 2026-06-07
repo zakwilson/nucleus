@@ -831,3 +831,293 @@ T)`); blanket-generic conformance; and exact value-position typing of
 known-but-unconfirmable operations to A1); a strict mode that rejects any
 operation the constraints don't prove is possible later but was judged too
 restrictive for everyday generics.
+
+---
+
+## 10. Stage 9 extensions — planned (2026-06-07)
+
+Three further **engine / generics** features are committed (designer direction;
+this section carries the same build-spec authority as §9). The call-position work
+that motivated two of them lives in [callable-values.md](callable-values.md),
+which depends on this section. Together they **supersede several items previously
+parked** in §9.5/§9.7 — user-defined operator overloads, the widen/`defcast`
+resolution tiers, untyped-int-literal adaptation for user calls, and
+blanket-generic conformance are now *planned here*, not deferred.
+
+Unifying theme: remove the last constructs that are *not* ordinary generic
+methods, so generic bodies, `Valid` inference, and protocol bounds see one uniform
+world.
+
+### 10.1 Blanket protocols + `Any`
+
+A **blanket protocol** is a built-in protocol with **automatic conformance** — the
+compiler records `(T, Protocol)` for every qualifying `T` without an `extend`. It
+remains a *pure predicate* (§8.1): it provides no method bodies; it only asserts
+required signatures, satisfied by methods that already exist (intrinsic or user).
+This is the one mechanism the §9-era model lacked, and it is strictly smaller than
+"protocols that provide methods" (Rust-style defaults), which stays out of scope.
+
+Two ship:
+
+- **`Any`** — requires no methods; every type conforms. It introduces a **type
+  variable with no obligations** while keeping tyvars *declared-only* (§9.1):
+  `(defn id:T (x:T &where (Any T)) (return x))`. Without it, declared-only forces
+  every generic to name a constraining protocol; `Any` is the no-constraint
+  constraint, so typos (`x:Circel`) still error rather than silently becoming
+  tyvars. `generic-constraints-ok` short-circuits `(any-type, Any)` to true. Under
+  lenient A2, operations on an `Any`-bound value defer to stamp time (A1) and error
+  only on a concrete type that can't support them — C++-template-quality.
+- **`Struct`** — requires the field-access method (`get`); every struct type
+  conforms because the built-in `get` intrinsic already satisfies it. Its
+  *semantics* (member access by symbol selector) are specified in
+  [callable-values.md](callable-values.md); it is listed here only as the second
+  instance of the blanket mechanism.
+
+Implementation: a `g-blanket` set (or a flag on `Protocol`) consulted by
+`generic-constraints-ok` and `emit-extend` *before* the nominal `g-conformances`
+lookup. Exported in `.nuch` as built-in (importers re-derive, don't re-check).
+**`Any` and `Struct` are hardcoded** for now; a *declarable* blanket-protocol facility
+(libraries defining their own) is parked in `design/stage999-future.md`.
+
+### 10.2 Inferred structural bounds — `Valid`
+
+`&where (Valid T)` bounds a tyvar **structurally** (`Valid` chosen over `Duck`; the
+name *nominates structural* checking): rather than naming a protocol,
+the compiler **infers** the required interface from the body — every operation
+applied to a `T`-typed value becomes a required signature, an *anonymous protocol
+synthesized from usage*. It completes the spectrum of how a tyvar's obligations
+are fixed:
+
+| bound | obligations | conformance | checked |
+|---|---|---|---|
+| `Any` (§10.1) | none | trivial (blanket) | nothing — ops defer to stamp (A1) |
+| **`Valid`** | inferred from body | structural | call site, vs. the inferred set |
+| named protocol | declared | nominal (`extend`) | def site (A2) + `extend` |
+
+Reuses the rung-4 A2 walk, reorganized: A2 walks the macro-expanded body with the
+tyvar as abstract `TY-TYVAR` and *checks* each operation against declared
+constraints; `Valid` instead **collects** each operation as a required signature.
+The **call-site check is an automatic, anonymous `extend`** — for the concrete
+argument type, confirm every collected signature resolves, exactly what
+`emit-extend` (src:2600) does against a named protocol (substitute the tyvar,
+require each resolves). Checking at the **call site** (not stamp time) is what
+makes it beat plain A1: the error reads "`Circle` has no `less:i1(Circle,Circle)`,
+required by `f`", localized before instantiation.
+
+Frontier (same as lenient A2): cleanly inferable = *named* generic/protocol calls
+directly on `T`-typed values (incl. call-position `get`/`invoke`). Operators become
+inferable **once §10.3 lands** (they turn into ordinary calls); foreign/variadic
+calls and requirements on values *derived* from `T` defer to stamp. First cut:
+direct operations on `T`.
+
+**Derived values — why "direct only" is a real boundary.** A *direct* operation has a
+`T`-typed operand (`(less x x)` ⇒ require `less:(T,T)`). A **derived** value is the
+*result* of such an operation, used further:
+
+```lisp
+(defn g:T (x:T &where (Valid T))
+  (bar (foo x)))        ; (foo x):σ  — σ = foo's return for T, unknown at def time
+                        ; ⇒ (bar (foo x)) requires  bar:(σ)→_
+```
+
+`σ` is **a function of `T`**, so the obligation is not a flat signature over `T` but an
+**associated-type constraint** ("foo maps `T` to some `σ`; `bar` must exist on `σ`").
+The anonymous protocol stops being a *set* and becomes a *constraint graph* with
+type-level edges (`foo:T→σ₁`, `bar:σ₁→σ₂`, …). Three rungs of ambition:
+
+- **Direct-only (first cut).** Infer a flat signature over `T`; a derived value's further
+  use is **deferred to stamp** (lenient-A2 style). Cheap, no associated types — but the
+  call-site guarantee covers only direct ops; derived misuse still surfaces at stamp.
+- **Per-call-site non-emitting stamp (locality without a solver).** At each call site,
+  with `T := C` known, substitute (`subst-tyvars-node`) and run the rung-3
+  `node-type`/`gcheck` pass over the whole body *without emitting*, attributing any
+  unresolved op to the call. Localizes derived-value errors by reusing the
+  monomorphizer's substitution + the existing type pass. Cost: re-checks per concrete
+  type (no reusable signature), and completeness is bounded by `node-type`'s coverage
+  (null for macro/`cond`/quasiquote results — the rung-3 frontier). Converges toward A1
+  but runs *before* emission and points at the call site.
+- **Closed associated-type signature (the fixpoint).** Compute an
+  instantiation-independent description: introduce a fresh tyvar per derived result and
+  take the **least fixpoint** of "collect ops → discover derived types → collect their
+  ops" until stable. Recursion ties the graph onto itself
+  (`(h (next x))` ⇒ "next: Self→Self′ where Self′ satisfies P") and needs **cycle
+  detection / coinduction** — the same hazard as recursive trait/typeclass resolution
+  (Rust's recursion-overflow, Haskell `UndecidableInstances`). This is associated types
+  + unification, i.e. the **deferred parametric-generics rung (Option 3 / rung 5)**, not
+  a `Valid` increment.
+
+**Plan:** ship direct-only; handle derived values by deferral *or* the per-call-site
+stamp; reserve the closed-signature fixpoint for the parametric-generics rung.
+
+Trade-off (acknowledged, not blocking): a structural bound is *implicit*, so
+editing a body silently changes a generic's public requirements and loses the
+documentation a named protocol carries. But **`Valid` is itself nominal** — you write
+`&where (Valid T)` explicitly; it merely *nominates structural* checking rather than a
+named interface. The default stays **always nominal** (§8.11): a bare `&where (T)` with
+no protocol remains an error, never an implicit `Valid`. So `Valid` is an opt-in
+structural bound beside the nominal default — as C++20 concepts are optional over bare
+templates — not a replacement.
+
+### 10.3 Operators as ordinary functions (supersedes §9.2's intrinsic *category*)
+
+Arithmetic and comparison operators (`+ - * / %`, `bit-*`, `= != < <= > >=`) become
+**ordinary generic methods**, retiring the distinct `METHOD-INTRINSIC` *category*
+at the dispatch surface. This is the natural completion of §9.2 (operators already
+route through dispatch) and removes the standing exception that complicates A2,
+`Valid`, and protocol bounds: `(+ a b)` on a tyvar is now a clean required signature
+`(+:T (T T))`, so **`Num`/`Eq`/`Ord` protocols are expressible** and `&where (Num
+T)` works, and **user operator overloading falls out** of the multimethod
+substrate.
+
+**Protocol membership (resolved).** `Num` = `{+ - * /}` only — *not* `%` or `bit-*`,
+which live in a **superset** protocol (e.g. `Integral`/`Bits`). `Ord` is a **superset
+of `Eq`**: every `Ord` type is an `Eq` type but not vice-versa, declared as protocol
+inheritance with **`(extend Ord Eq)`** — i.e. `extend`'s subject may be a *protocol*,
+so conformance to `Ord` additionally requires conformance to `Eq`. This
+protocol-on-protocol `extend` is the one small new mechanism the numeric hierarchy
+needs (it also expresses the `Num`→superset relation).
+
+Zero-overhead is preserved by a **front-end inline peephole**, *not* the optimizer:
+the built-in numeric methods still emit their inline instruction (`add nsw`, `icmp
+slt`, …) exactly as `emit-binop` does today. A plain function would emit `call
+@+.i32.i32` at `-O0` (LLVM inlines nothing there), regressing dev/bootstrap builds
+and breaking the byte-identical-IR invariant the `make bootstrap` fixed point
+depends on — so the peephole is the **long-term default** (in code, not stone: not
+planned to change, though not framed as an immutable invariant). The
+special-casing **migrates** from a method *kind* (dispatch surface) to an *inlining
+rule* (emission); it shrinks but does not disappear. Operators are the compiler's
+hottest path, so the §9.2 fast path stays for compile speed.
+
+This **requires finishing the deferred resolution work** (no longer optional): the
+**widen/`defcast` tiers and untyped-int-literal adaptation** move into the shared
+resolver so `(+ i32 i64)` and `(+ x 1)` resolve to the same result `emit-binop`
+picks today — arithmetic fidelity and the bootstrap depend on byte-exact promotion.
+`addr-of` of an operator needs an out-of-line copy emitted on demand. Short-circuit
+`and`/`or`/`not` **stay special forms** (they don't evaluate all arguments).
+
+Variadic arithmetic stays a **compile-time fold** (a function's arity is fixed;
+`&rest`/varargs are runtime, not zero-overhead). The fold (today `lib/macros.nuc`,
+or recast as a compiler-internal n-ary→binary expansion) now targets the
+**polymorphic binary method**, so `(+ v1 v2 v3)` works over a user `Num` type. The
+binary primitives `_+ _- _* _/` stop being special; the n-ary surface stays
+expansion-based.
+
+### 10.4 Staging (extends the §9.5 ladder)
+
+Each step keeps `make bootstrap` green and is pure compile-time / C-ABI-neutral
+(like rungs 1–4); only `dyn` (original rung 5) adds a runtime artifact.
+
+1. **Resolution tiers** — widen/`defcast` + untyped-int-literal in the shared
+   resolver. Prerequisite for §10.3; independently closes the rung-1 deferral.
+2. **Operators as functions** (§10.3) — reclassify operators as methods + the
+   front-end inline peephole; ship `Num`/`Eq`/`Ord` + user operator overloading.
+   **Highest-risk step** (byte-identical-IR invariant, hottest path).
+3. **Blanket protocols + `Any`** (§10.1) — `g-blanket`; trivial conformance path.
+   *Prerequisite for the `Struct` member-access default in callable-values.md.*
+4. **`Valid`** (§10.2) — collect-mode A2 + call-site auto-`extend`.
+
+The call-position feature (callable-values.md) slots after step 3 (it needs the
+`Struct` blanket protocol) and benefits from steps 1–2 (operator/`Num` uniformity)
+but does not block on them.
+
+## Open questions (Stage 9 extensions) — resolved 2026-06-07
+
+1. **Operator peephole permanence (§10.3).** Confirm the front-end inline peephole
+   is a permanent part of the model (my position — `-O0` byte-identical is
+   non-negotiable), vs. a stopgap behind an always-on inlining pass (simpler front
+   end, but `-O0` semantics then depend on a pass).
+2. **`Num`/`Eq`/`Ord` membership.** Which operators each standard numeric protocol
+   requires (does `Num` include `%` / `bit-*`? is ordering `Ord` separate from
+   equality `Eq`?), and whether they ship in the prelude or an importable library.
+3. **`Duck` naming & frontier (§10.2).** `Duck` vs `Valid` vs `Structural`; and
+   whether the first cut also infers requirements on values *derived* from `T`
+   (needs a fixpoint) or strictly direct operations only.
+4. **Blanket mechanism generality (§10.1).** Expose blanket conformance as a
+   declarable facility (libraries define their own blanket protocols) or keep
+   `Any`/`Struct` as the only two, hard-coded?
+5. **Structural-vs-nominal default.** With `Duck` available, keep nominal `extend`
+   as the default (my recommendation), or let a bare `&where (T)` with no named
+   protocol imply `Duck`?
+
+
+#### Designer
+
+1. Let's say long-term, not permanent. It's written in code, not stone, but I don't plan to change it.
+2. `Num` does not include `%` or `bit-and`. There could be a superset protocol which does. `Ord` is a superset of `Eq`. Something can be `Eq` without being `Ord`, but nothing can be `Ord` without being `Eq`. We can presumably just `(extend Ord Eq)`.
+3. Cute as `Duck` is, I think `Valid` is the best name. Implement Per-call-site non-emitting stamp (locality without a solver).
+4. Hardcode `Any`/`Struct` for now. The possibility of a declarable facility is added to stage999.
+5. Always nominal. Even `Valid` is nominal in a sense; it just nominates structural.
+
+---
+
+## 11. Implementation status — §10 extensions landed (2026-06-07)
+
+All four rungs of the §10.4 ladder are implemented in `src/nucleusc.nuc`; `make
+test` (36 cases) and `make bootstrap` (stage1.ll == stage2.ll, byte-identical)
+are green. As with §9.7, this section is authoritative where it refines §10.
+
+**Step 1 — resolution tiers (§10.4.1).** The widen and untyped-int-literal tiers
+are in the shared resolver. `binop-coerce` / `coerce-num-val` adapt mixed operands
+for operators (`emit-binop-vals` is the split-out inline core; `emit-binop` is the
+arg-emitting wrapper); `arg-adapts` + a tier-2 search in `generic-resolve` (and the
+parallel `operator-user-resolve`) do the same for user calls, with
+`emit-generic-call`/`emit-resolved-call` coercing the arguments to the chosen
+parameter types. So `(+ i32 i64)`, `(+ x 1)`, and a `(foo i32)` call resolving to an
+`i64` overload all work. **`defcast` was found absent from the current tree** (the
+§1 references are stale); the cast tier is therefore *not* implemented (no
+cast-rule registry exists). The widen + literal tiers are what §10.3 actually
+requires; literalness is probed (via a bounded `macroexpand` that sees through the
+variadic-operator wrappers) only after operand types are known to differ, so the
+same-type hot path costs nothing and stays byte-identical.
+
+**Step 2 — operators as ordinary functions (§10.3).** `METHOD-INTRINSIC` is kept
+as the *emission* marker (the inline peephole) rather than deleted, exactly the
+"special-casing migrates to an inlining rule" the section describes. A pure
+operator (no user overloads) short-circuits to `emit-binop` (byte-identical); an
+operator that has gained user methods routes through `emit-operator-dispatch`,
+which resolves a user method (call) or falls back to the inline peephole.
+`finalize-generics` now mangles user methods on operator names (`op-name-token`
+maps `=`/`<`/`_+`/… to IR-safe mnemonics — `eq`/`lt`/`add` — since the raw symbols
+are illegal LLVM identifiers and collide under blanket sanitizing). Built-in
+numeric/pointer types satisfy operator protocol requirements via
+`builtin-op-result-type` (consulted by `method-satisfies-sig`), so `(extend i32
+Ord)` holds with no user method. **`Num`/`Eq`/`Ord` ship in `lib/numeric.nuc`**;
+protocol-on-protocol `(extend Ord Eq)` records an inheritance edge (`g-proto-supers`)
+that `verify-conformance` recurses. `node-type-call` mirrors the operator dispatch
+(shared `operator-user-resolve`) so the rung-3 no-drift invariant holds.
+Two latent bugs surfaced and were fixed at the root (both byte-identical for the
+bootstrap): `emit-cond` compared branch types by pointer instead of `type-eq` (so
+a cond/`if` returning a typed pointer silently yielded void); and
+`extract-name-and-type`'s desugared-cell branch called the single-token
+`parse-type-name` on a colon-bearing type symbol (which a pointer-typed generic
+instantiation produces). Example: `examples/operators.nuc`.
+
+**Step 3 — blanket protocols + `Any` (§10.1).** A hardcoded `g-blanket` set
+(`Any`, `Struct`) with `blanket-conforms` (structural: `Any` ⇒ every type;
+`Struct` ⇒ struct or pointer-to-struct). `generic-constraints-ok` consults it
+before the nominal registry; `constraint-proto-known` lets `&where (Any T)` /
+`(Struct T)` name a valid bound while keeping tyvars declared-only (typos still
+error). Explicit `extend` to a blanket is a no-op (conformance is automatic).
+Constraint-protocol typo checking moved from the prescan into the A2 pass so an
+*imported* protocol can be named in a `&where`. Example: `examples/blanket.nuc`.
+
+**Step 4 — `Valid` (§10.2).** Realized as the **per-call-site non-emitting stamp**
+(designer decision 3). At each instantiation of a `Valid`-bounded template,
+`valid-check-instance` walks the substituted concrete body (`valid-walk`) without
+emitting; each generic/operator call is resolved non-destructively
+(`valid-resolve-type`), and a call the concrete type can't satisfy aborts *at the
+call site* (`type 'C' does not satisfy the Valid bound of 'g'`). Because the walk
+carries concrete types throughout, **derived values** (`(bar (foo x))`) are checked
+without an associated-type solver — the chain types `(foo x)` concretely and then
+checks `bar` on that. The def-time A2 walk stays lenient for `Valid` bodies
+(operations defer to the call-site stamp). Example: `examples/valid.nuc`.
+
+**Still deferred:** `defcast` and a cast resolution tier (no registry in-tree);
+the `(dyn Protocol)` fat pointer (B2 returns / heterogeneous collections); nested /
+multiple type-variable positions and a real unifier (full Option 3); REPL
+per-method redefinition; `(addr-of overloaded-name)` disambiguation; `extend`'s
+inline-`defn` sugar; bare-`x:Show` parameter sugar; a user-declarable blanket
+facility (parked in stage999-future.md); and exact value-position typing of
+`cond`/`if`/macro results in `node-type` (the rung-3 frontier `Valid` and A2
+inherit). The `Struct` blanket's `get` member-access method is specified in
+callable-values.md and not part of this section.

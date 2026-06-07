@@ -1,0 +1,40 @@
+; Standard numeric protocols (Stage 9 §10.3).
+;
+; Operators are ordinary generic methods, so a type "is comparable / ordered /
+; numeric" by satisfying these protocols' signatures. Built-in numeric types do
+; so automatically (their intrinsic operators satisfy the requirements); a user
+; type conforms by defining the binary primitives (the comparison operators
+; `= != < <= > >=` directly, and the arithmetic primitives `_+ _- _* _/` that the
+; variadic `+ - * /` macros fold to) and asserting conformance with `extend`.
+;
+; A protocol's `Self` is substituted wholesale, so by-value types extend by name
+; (`(extend i32 Ord)`) and by-pointer types extend their pointer spelling
+; (`(extend ptr:MyStruct Ord)`).
+
+; Equality.
+(defprotocol Eq
+  (=:i1  (a:Self b:Self))
+  (!=:i1 (a:Self b:Self)))
+
+; Ordering. Every Ord type is also an Eq type (protocol inheritance).
+(defprotocol Ord
+  (<:i1  (a:Self b:Self))
+  (<=:i1 (a:Self b:Self))
+  (>:i1  (a:Self b:Self))
+  (>=:i1 (a:Self b:Self)))
+(extend Ord Eq)
+
+; Arithmetic. Num is {+ - * /} — not % or the bit operators, which belong to a
+; superset protocol a program can declare separately.
+(defprotocol Num
+  (_+:Self (a:Self b:Self))
+  (_-:Self (a:Self b:Self))
+  (_*:Self (a:Self b:Self))
+  (_/:Self (a:Self b:Self)))
+
+; Built-in conformances (signed integers and doubles). `(extend T Ord)` records
+; `(T, Eq)` too, via the Ord→Eq inheritance edge.
+(extend i32 Ord) (extend i32 Num)
+(extend i64 Ord) (extend i64 Num)
+(extend f64 Ord) (extend f64 Num)
+(extend f32 Ord) (extend f32 Num)

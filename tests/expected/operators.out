@@ -1,0 +1,10 @@
+max i32  = 9
+max f64  = 2.5
+sum3 i32 = 6
+sum3 f64 = 7
+cents sum   = 400
+cents max   = 220
+cents a+b   = 370
+cents a*b   = 330
+cents a<b   = 1
+i64 + lit   = 1000000005
