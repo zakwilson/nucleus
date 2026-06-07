@@ -1,0 +1,64 @@
+; Stage 9 §10.3: operators as ordinary generic functions.
+;
+; Arithmetic and comparison operators are now multimethods. Built-in numeric
+; types keep their zero-overhead inline instructions (the front-end peephole);
+; user types add operator methods, and generics can be bounded by the standard
+; Num/Eq/Ord protocols and use operators directly on the abstract type variable.
+
+(include stdio)
+(import numeric)
+
+; ---- A user numeric type: rationals reduced to a common scale (here /100). ----
+(defstruct Cents v:i32)
+
+(defn mk:ptr:Cents (n:i32)
+  (let (r:ptr:Cents (cast ptr:Cents (malloc (cast i64 (sizeof Cents)))))
+    (.set! r v n)
+    (return r)))
+
+; Operator overloads. (+ a b) folds to (_+ a b), so the arithmetic primitive is
+; the overload point; comparisons dispatch on the operator name directly.
+(defn _+:ptr:Cents (a:ptr:Cents b:ptr:Cents) (return (mk (+ (. a v) (. b v)))))
+(defn _-:ptr:Cents (a:ptr:Cents b:ptr:Cents) (return (mk (- (. a v) (. b v)))))
+(defn _*:ptr:Cents (a:ptr:Cents b:ptr:Cents) (return (mk (/ (* (. a v) (. b v)) 100))))
+(defn _/:ptr:Cents (a:ptr:Cents b:ptr:Cents) (return (mk (/ (* (. a v) 100) (. b v)))))
+(defn <:i1  (a:ptr:Cents b:ptr:Cents) (return (< (. a v) (. b v))))
+(defn <=:i1 (a:ptr:Cents b:ptr:Cents) (return (<= (. a v) (. b v))))
+(defn >:i1  (a:ptr:Cents b:ptr:Cents) (return (> (. a v) (. b v))))
+(defn >=:i1 (a:ptr:Cents b:ptr:Cents) (return (>= (. a v) (. b v))))
+(defn =:i1  (a:ptr:Cents b:ptr:Cents) (return (= (. a v) (. b v))))
+(defn !=:i1 (a:ptr:Cents b:ptr:Cents) (return (!= (. a v) (. b v))))
+
+; Cents satisfies the library protocols; both assertions are code-free checks.
+(extend ptr:Cents Ord)
+(extend ptr:Cents Num)
+
+; ---- Generics bounded by the standard protocols, using operators directly. ----
+
+; Max over any Ord type — returns the abstract type variable (B1 return).
+(defn maxv:T (a:T b:T &where (Ord T))
+  (if (< a b) b a))
+
+; Sum of three over any Num type.
+(defn sum3:T (a:T b:T c:T &where (Num T))
+  (+ a (+ b c)))
+
+(defn main:i32 ()
+  ; Built-in numerics flow through the same generics with inline operators.
+  (printf "max i32  = %d\n" (maxv 3 9))
+  (printf "max f64  = %g\n" (maxv 2.5 1.5))
+  (printf "sum3 i32 = %d\n" (sum3 1 2 3))
+  (printf "sum3 f64 = %g\n" (sum3 1.5 2.5 3.0))
+  ; The user type Cents dispatches to its own operator methods.
+  (let (a:ptr:Cents (mk 150)
+        b:ptr:Cents (mk 220)
+        c:ptr:Cents (mk 30))
+    (printf "cents sum   = %d\n" (. (sum3 a b c) v))
+    (printf "cents max   = %d\n" (. (maxv a b) v))
+    (printf "cents a+b   = %d\n" (. (+ a b) v))
+    (printf "cents a*b   = %d\n" (. (* a b) v))
+    (printf "cents a<b   = %d\n" (< a b)))
+  ; Mixed-width arithmetic: untyped literal adapts; i32 widens to i64.
+  (let (big:i64 1000000000)
+    (printf "i64 + lit   = %ld\n" (+ big 5)))
+  (return 0))

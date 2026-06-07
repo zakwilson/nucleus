@@ -1,0 +1,39 @@
+; Stage 9 §10.2: Valid — inferred structural bounds.
+;
+; `&where (Valid T)` does not name a protocol; instead the required interface is
+; inferred from the body. At each call site the concrete type is substituted and
+; the body is type-checked without emitting (the per-call-site non-emitting
+; stamp), so a type that cannot support an operation is rejected at the call site
+; — including operations on values *derived* from T — with no protocol declared.
+
+(include stdio)
+(import numeric)
+
+; clampv uses only < and >, so it is valid for any ordered/comparable type.
+(defn clampv:T (x:T lo:T hi:T &where (Valid T))
+  (if (< x lo) lo (if (> x hi) hi x)))
+
+; A user numeric type, to show Valid is not limited to built-ins.
+(defstruct Q v:i32)
+(defn mkq:ptr:Q (n:i32)
+  (let (r:ptr:Q (cast ptr:Q (malloc (cast i64 (sizeof Q))))) (.set! r v n) (return r)))
+(defn _+:ptr:Q (a:ptr:Q b:ptr:Q) (return (mkq (+ (. a v) (. b v)))))
+(defn <:i1  (a:ptr:Q b:ptr:Q) (return (< (. a v) (. b v))))
+(defn >:i1  (a:ptr:Q b:ptr:Q) (return (> (. a v) (. b v))))
+
+; A derived-value chain: (twice x) is a value derived from T whose own use must
+; also resolve. For i32, twice→i32 then + → i32; the whole chain is checked.
+(defn twice:T (x:T &where (Valid T)) (+ x x))
+
+(defn main:i32 ()
+  ; Built-in numerics.
+  (printf "clamp 5 1 9   = %d\n" (clampv 5 1 9))
+  (printf "clamp 12 1 9  = %d\n" (clampv 12 1 9))
+  (printf "clamp f64     = %g\n" (clampv 2.5 0.0 2.0))
+  (printf "twice i32     = %d\n" (twice 21))
+  (printf "twice f64     = %g\n" (twice 1.25))
+  ; The user type Q satisfies the inferred interface (<, >, _+).
+  (let (a:ptr:Q (mkq 3) lo:ptr:Q (mkq 5) hi:ptr:Q (mkq 9))
+    (printf "clamp Q       = %d\n" (. (clampv a lo hi) v))
+    (printf "twice Q       = %d\n" (. (twice a) v)))
+  (return 0))

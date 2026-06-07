@@ -1,0 +1,36 @@
+; Stage 9 §10.1: blanket protocols with automatic conformance.
+;
+; `Any` is the no-constraint constraint: a type variable with no obligations.
+; Type variables stay declared-only (a name is a tyvar iff it is bound in a
+; &where), so `Any` is how a fully generic function names its variable while a
+; misspelled type (e.g. `x:Circel`) still errors instead of silently becoming a
+; tyvar. `Struct` holds for any struct type (its member-access `get` method is
+; supplied once callable-values lands); here it just gates a generic to structs.
+
+(include stdio)
+
+; Identity over any type at all.
+(defn id:T (x:T &where (Any T))
+  (return x))
+
+; Pick the first of two same-typed values — again over any type.
+(defn first2:T (a:T b:T &where (Any T))
+  (return a))
+
+(defstruct Point x:i32 y:i32)
+
+; Gated to struct (pointer) types via the Struct blanket protocol.
+(defn boxed:i32 (s:T &where (Struct T))
+  (return 1))
+
+(defn main:i32 ()
+  (printf "id i32   = %d\n" (id 42))
+  (printf "id f64   = %g\n" (id 2.75))
+  (printf "first2   = %d\n" (first2 10 20))
+  (let (p:ptr:Point (cast ptr:Point (malloc (cast i64 (sizeof Point)))))
+    (.set! p x 5)
+    (.set! p y 6)
+    ; id returns the same pointer; Struct gate accepts it.
+    (printf "id ptr.x = %d\n" (. (id p) x))
+    (printf "boxed    = %d\n" (boxed p)))
+  (return 0))

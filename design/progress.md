@@ -37,6 +37,19 @@ Current branch: `stage6-cleanup`
 | Pointer syntax: `*Node` → `(ptr Node)` / `ptr:Node` sugar; `*` syntax removed | Done (`design/stage6-pointer-syntax.md`) |
 | Symbol interning: `(= 'foo 'foo)` is true; reader and `quote` share a process-global intern table; special-form dispatch uses identity instead of `strcmp` | Done (`design/stage6-symbols.md`) |
 
+### Stage 9 — Polymorphism (`design/stage9/polymorphism.md`)
+| Item | Status |
+|---|---|
+| Rung 1: overloaded `defn` multimethods — `g-generics` registry, mangling, resolver, prescan, `.nuch` `defmethod` | Done (§9.7) |
+| Rung 2: `defprotocol` / `extend` — `g-protocols` / `g-conformances`, checked code-free conformance | Done (§9.7) |
+| Rung 3: non-emitting `node-type` pass (shared with `emit-node`, no drift) | Done (§9.7) |
+| Rung 4: bounded generic `defn` (`&where`, named tyvars), monomorphizer, A2 def-time check | Done (§9.7) |
+| §10.1: resolution tiers — widen + untyped-int-literal adaptation in the shared resolver | Done (§11) |
+| §10.3: operators as ordinary generic functions; inline peephole; user operator overloading; `Num`/`Eq`/`Ord` (`lib/numeric.nuc`); protocol-on-protocol `(extend Ord Eq)` | Done (§11) |
+| §10.1: blanket protocols `Any` / `Struct` (`g-blanket`, automatic/structural conformance) | Done (§11) |
+| §10.2: `Valid` inferred structural bound (per-call-site non-emitting stamp; derived values) | Done (§11) |
+| Examples: `overload`, `protocol`, `generic`, `operators`, `blanket`, `valid` | Done |
+
 ---
 
 ## Deferred (needs design decision or blocked on above)
@@ -44,12 +57,13 @@ Current branch: `stage6-cleanup`
 | Item | Blocker / Note |
 |---|---|
 | `&optional` for `defn` | After `&rest` |
-| Polymorphic print/read (`def-print-method`) | Needs polymorphism mechanism |
+| Polymorphic print/read (`def-print-method`) | Now expressible via Stage 9 multimethods/protocols |
 | C header library as external `.so` | Separate from internal split already done |
 | Stage 3c: unions, bit-fields, struct ABI, `long double`, `_Complex` | Deferred per `design/stage3c.md` |
 | Lambda / closures | `design/stage999-future.md` |
 | Map/reduce/filter | `design/stage999-future.md` |
-| Polymorphism / protocol system | `design/stage999-future.md` |
+| Polymorphism / protocol system | Done — Stage 9 (`design/stage9/polymorphism.md`) |
+| `dyn`, parametric generics (nested tyvars), `defcast` tier, callable values | Deferred — see `design/stage9/` §11 / `callable-values.md` |
 | Vectors/hashes | `design/stage999-future.md` |
 | Gensym reader macro | `design/stage999-future.md` |
 
