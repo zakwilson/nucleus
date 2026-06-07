@@ -1,0 +1,33 @@
+; Stage 9 rung 2: protocols (defprotocol) + conformance (extend).
+; A protocol names a capability as a set of required signatures whose types may
+; mention Self. `extend Type Protocol` is a checked, code-free assertion that
+; the concrete methods satisfying the protocol (with Self->Type) exist.
+
+(defstruct Circle rad:i32)
+(defstruct Square side:i32)
+
+(include stdio)
+
+(defprotocol Shape
+  (area:i32 (self:ptr:Self))
+  (label:ptr (self:ptr:Self)))
+
+; Concrete implementations are ordinary overloaded defns (Option 1 substrate).
+(defn area:i32 (s:ptr:Circle) (return (* (* (. s rad) (. s rad)) 3)))
+(defn label:ptr (s:ptr:Circle) (return "circle"))
+
+(defn area:i32 (s:ptr:Square) (return (* (. s side) (. s side))))
+(defn label:ptr (s:ptr:Square) (return "square"))
+
+; Code-free conformance assertions; fail to compile if a method is missing.
+(extend Circle Shape)
+(extend Square Shape)
+
+(defn main:int ()
+  (let (c:ptr:Circle (alloca Circle)
+        sq:ptr:Square (alloca Square))
+    (.set! c rad 5)
+    (.set! sq side 4)
+    (printf "%s area=%d\n" (label c) (area c))
+    (printf "%s area=%d\n" (label sq) (area sq)))
+  (return 0))

@@ -1,0 +1,37 @@
+; Stage 9 rung 1: overloaded defn (multimethods).
+; A defn whose name already exists but whose parameter types differ adds a
+; method; calls dispatch on the concrete argument tuple.
+
+(defstruct Circle rad:i32)
+(defstruct Rect w:i32 h:i32)
+
+(include stdio)
+
+; Overload on pointer-to-struct argument type.
+(defn area:i32 (c:ptr:Circle)
+  (return (* (* (. c rad) (. c rad)) 3)))
+
+(defn area:i32 (s:ptr:Rect)
+  (return (* (. s w) (. s h))))
+
+; Overload on primitive argument type (and different return types — B1).
+(defn kind:i32 (x:i32) (return 1))
+(defn kind:i32 (x:f64) (return 2))
+
+; Overload on arity.
+(defn sum:i32 (a:i32) (return a))
+(defn sum:i32 (a:i32 b:i32) (return (+ a b)))
+
+(defn main:int ()
+  (let (c:ptr:Circle (alloca Circle)
+        s:ptr:Rect (alloca Rect))
+    (.set! c rad 5)
+    (.set! s w 4)
+    (.set! s h 6)
+    (printf "circle area=%d\n" (area c))
+    (printf "rect area=%d\n" (area s))
+    (printf "kind i32=%d\n" (kind 7))
+    (printf "kind f64=%d\n" (kind 2.5))
+    (printf "sum/1=%d\n" (sum 10))
+    (printf "sum/2=%d\n" (sum 10 20)))
+  (return 0))

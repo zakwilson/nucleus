@@ -20,6 +20,10 @@
 
 (defn die-at:void (line:i32 msg:ptr)
   (fprintf stderr "%s:%d: error: %s\n" g-source-path line msg)
+  ; If a generic instantiation is being emitted, point back to it (and its call
+  ; site). g-mono-context is null except during the monomorphization drain.
+  (when (!= g-mono-context null)
+    (fprintf stderr "  note: %s\n" g-mono-context))
   (when (!= g-interactive 0)
     (repl_throw))
   (exit 1))

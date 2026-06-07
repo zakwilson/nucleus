@@ -1,0 +1,5 @@
+max i32 = 9
+max i32 = 20
+max f64 = 2.5
+clamp i32 = 5
+clamp f64 = 9.5
