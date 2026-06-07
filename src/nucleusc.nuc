@@ -31,11 +31,13 @@
 
 ; Node struct and NODE-* kinds come from lib/prelude.nuc (imported below).
 
-; Type kinds
+; Type kinds. TY-TYVAR is an abstract type variable used only by the Stage 9
+; rung-4 A2 def-time check of generic bodies; it never reaches codegen (generic
+; templates emit only after monomorphization, where every type is concrete).
 (defenum TypeKind TY-VOID TY-I1 TY-I8 TY-I16 TY-I32 TY-I64
                   TY-UI8 TY-UI16 TY-UI32 TY-UI64
                   TY-PTR TY-FN TY-STRUCT
-                  TY-F32 TY-F64)
+                  TY-F32 TY-F64 TY-TYVAR)
 
 ; ============================================================
 ; Struct definitions (ordered by dependency)
@@ -45,7 +47,8 @@
   name:ptr
   field-names:ptr
   field-types:ptr
-  num-fields:i32)
+  num-fields:i32
+  emitted:i32)      ; type definition already written to IR (vs. name-only pre-registration)
 
 (defstruct Type
   kind:i32
@@ -97,6 +100,61 @@
   instr:ptr
   instr-u:ptr
   is-cmp:i32)
+
+; ---- Polymorphism (Stage 9) ----
+; A Generic is a named set of Methods sharing one source name. Operators are
+; seeded as intrinsic generics (see init-generics); user defns add methods.
+; Dispatch among concrete methods is on the whole argument tuple.
+(defenum MethodKind METHOD-INTRINSIC METHOD-USER METHOD-GENERIC)
+
+(defstruct Method
+  param-types:ptr   ; ptr to array of ptr:Type (length num-params); null for intrinsic
+  num-params:i32
+  ret-type:ptr      ; ptr:Type; null for intrinsic
+  has-rest:i32
+  variadic:i32
+  kind:i32          ; one of MethodKind
+  ir-name:ptr       ; emitted symbol "@name..." (user methods); null otherwise
+  fn-type:ptr       ; ptr:Type (TY-FN) for user methods; null otherwise
+  binop:ptr         ; ptr:BinOp (intrinsic operators); null otherwise
+  body:ptr          ; retained defn form (generic methods); null otherwise
+  ; --- METHOD-GENERIC only (Stage 9 rung 4): a bounded generic defn template ---
+  tyvars:ptr        ; array of ptr (distinct type-variable name strings)
+  num-tyvars:i32
+  con-protos:ptr    ; array of ptr (protocol name per &where constraint)
+  con-vars:ptr      ; array of ptr (type-variable name per constraint; parallel)
+  num-constraints:i32
+  checked:i32)      ; A2 def-time check done (so it runs once per template)
+
+(defstruct Generic
+  name:ptr
+  methods:ptr       ; ptr to array of ptr:Method
+  num-methods:i32
+  cap:i32
+  finalized:i32     ; mangling decided + solitary scope binding established
+  mangled:i32)      ; 0 = solitary, unmangled @name (C-callable); 1 = mangled set
+
+; A Protocol names a capability: a set of required method signatures whose
+; parameter/return types may mention `Self`. It is purely compile-time and
+; emits no code. `extend Type Protocol` substitutes Self→Type in each signature
+; and verifies a matching concrete method exists (see emit-extend).
+(defstruct Protocol
+  name:ptr
+  sigs:ptr          ; ptr to array of ptr:Node, each a (name:ret (params...)) form
+  num-sigs:i32)
+
+; A recorded (Type, Protocol) conformance fact. No code; consulted by the
+; resolver (protocol-bound tier, later) and exported in .nuch.
+(defstruct Conformance
+  type-name:ptr
+  proto-name:ptr)
+
+; A queued generic instantiation: the stamped concrete defn form awaiting body
+; emission, plus a human-readable context ("while instantiating @name.toks…
+; requested at file:line") attached to any compile error raised while emitting it.
+(defstruct MonoJob
+  form:ptr
+  context:ptr)
 
 (defstruct Vec
   data:ptr
@@ -192,6 +250,35 @@
 ; BinOp table
 (defvar g-binops:ptr)
 (defvar g-num-binops:i32 0)
+
+; Generic (polymorphism) registry
+(defvar g-generics:ptr)
+(defvar g-num-generics:i32 0)
+(defvar g-cap-generics:i32 0)
+
+; Monomorphization worklist (Stage 9 rung 4): stamped concrete defn forms
+; awaiting emission. Generic calls resolve + register an instantiation eagerly
+; (so the call site can name its symbol) but defer the body emission until the
+; current function finishes; the worklist is drained at the end of the top-level
+; loop. g-mono-drained is a persistent cursor so recursive drains never re-emit.
+(defvar g-mono-worklist:ptr)
+(defvar g-mono-drained:i32 0)
+; Set to the current instantiation's context string while a stamped generic body
+; is being emitted; die-at appends it as a note so a stamp-time error points back
+; to the instantiation (and its requesting call site). Null otherwise.
+(defvar g-mono-context:ptr)
+; Nesting depth of emit-toplevel-forms (imports recurse). The A2 generic-body
+; check runs only at the outermost level — after every import has registered its
+; names and with g-source-path restored to the unit being compiled.
+(defvar g-toplevel-depth:i32 0)
+
+; Protocol / conformance registries (Stage 9 rung 2)
+(defvar g-protocols:ptr)
+(defvar g-num-protocols:i32 0)
+(defvar g-cap-protocols:i32 0)
+(defvar g-conformances:ptr)
+(defvar g-num-conformances:i32 0)
+(defvar g-cap-conformances:i32 0)
 
 ; Macro registry
 (defvar g-macros:ptr)
@@ -520,6 +607,8 @@
     (fprintf stderr "nucleusc: too many structs\n") (exit 1))
   (let (sd:ptr:StructDef (cast ptr:StructDef (ptr+ (cast ptr:StructDef g-structs) g-structs-len)))
     (.set! sd name name)
+    (.set! sd num-fields 0)
+    (.set! sd emitted 0)
     (inc! g-structs-len)
     (return (cast ptr sd))))
 
@@ -827,17 +916,209 @@
                                       (cast ptr (addr-of g-body-sizep)))))
 
 ; ============================================================
+; node-type: non-emitting expression typing (Stage 9 rung 3)
+; ============================================================
+; node-type(n, scope) computes the Type an expression contributes to its parent
+; WITHOUT emitting IR. emit-node sets the type it propagates from this function,
+; so the type pass and codegen share one rule per node kind and cannot drift —
+; any divergence corrupts the self-hosting bootstrap and is caught immediately.
+;
+; It is total over the language's value forms. The few forms whose emit-time
+; type depends on control-flow/expansion that can't be reproduced purely (`cond`
+; phi typing, `quasiquote` of a bare unquote, macro calls) return null, meaning
+; "not modeled — keep the emit-computed type"; callers treat null as unknown.
+; node-type never emits and never aborts: ambiguous lookups yield null.
+
+(defn node-type-sym:ptr (n:ptr scope:ptr)
+  (when (= n 'null)  (return ty-ptr))
+  (when (= n 'true)  (return ty-i1))
+  (when (= n 'false) (return ty-i1))
+  (let (lookup-name:ptr null
+        ignored:ptr null)
+    (split-typed (. (cast ptr:Node n) s)
+                 (cast ptr:ptr (addr-of lookup-name)) (cast ptr:ptr (addr-of ignored)))
+    (let (sym:ptr:Sym (cast ptr:Sym (scope-lookup scope lookup-name)))
+      (when (= (cast ptr sym) null) (return null))
+      (return (. sym type)))))
+
+; let / with: the type of the last body expression, evaluated in a child scope
+; carrying the binding types (values are irrelevant to typing).
+(defn node-type-block:ptr (n:ptr scope:ptr)
+  (let (binds:ptr:Node (cast ptr:Node (node-at n 1)))
+    (when (or (= (cast ptr binds) null) (!= (. binds kind) NODE-CELL)) (return null))
+    (let (inner:ptr (scope-new scope)
+          i:i32 0
+          bl:i32 (node-len (cast ptr binds)))
+      (while (< i bl)
+        (let (bname:ptr (node-at (cast ptr binds) i)
+              name:ptr null
+              ty:ptr (extract-name-and-type bname (cast ptr:ptr (addr-of name))
+                                            (. (cast ptr:Node bname) line)))
+          (when (!= ty null) (scope-define inner name ty name 1)))
+        (set! i (+ i 2)))
+      (let (last:ptr null
+            j:i32 2
+            cl:i32 (node-len n))
+        (while (< j cl)
+          (set! last (node-at n j))
+          (inc! j))
+        (when (= last null) (return ty-void))
+        (return (node-type last inner))))))
+
+(defn node-type-cast:ptr (n:ptr)
+  (let (tn:ptr:Node (cast ptr:Node (node-at n 1)))
+    (return (parse-type-from-node (cast ptr tn) (. tn line)))))
+
+(defn node-type-alloca:ptr (n:ptr)
+  (let (tn:ptr:Node (cast ptr:Node (node-at n 1)))
+    (let (ty:ptr (parse-type-from-node (cast ptr tn) (. tn line))
+          pt:ptr:Type (cast ptr:Type (make-type TY-PTR)))
+      (.set! pt elem ty)
+      (return (cast ptr pt)))))
+
+(defn node-type-addr-of:ptr (n:ptr scope:ptr)
+  (let (target:ptr:Node (cast ptr:Node (node-at n 1)))
+    (when (!= (. target kind) NODE-SYM) (return null))
+    (let (sym:ptr:Sym (cast ptr:Sym (scope-lookup scope (. target s))))
+      (when (= (cast ptr sym) null) (return null))
+      (let (pt:ptr:Type (cast ptr:Type (make-type TY-PTR)))
+        (.set! pt elem (. sym type))
+        (return (cast ptr pt))))))
+
+(defn node-type-funcall:ptr (n:ptr scope:ptr)
+  (let (t:ptr (node-type (node-at n 1) scope))
+    (when (= t null) (return null))
+    (let (tt:ptr:Type (cast ptr:Type t))
+      (when (!= (. tt kind) TY-FN) (return null))
+      (return (. tt ret)))))
+
+; deref / aref: the pointee type of the first operand's pointer.
+(defn node-type-deref-elem:ptr (n:ptr scope:ptr)
+  (let (t:ptr (node-type (node-at n 1) scope))
+    (when (= t null) (return null))
+    (let (tt:ptr:Type (cast ptr:Type t))
+      (when (or (!= (. tt kind) TY-PTR) (= (. tt elem) null)) (return null))
+      (return (. tt elem)))))
+
+(defn node-type-field:ptr (n:ptr scope:ptr)
+  (let (t:ptr (node-type (node-at n 1) scope))
+    (when (= t null) (return null))
+    (let (tt:ptr:Type (cast ptr:Type t))
+      (when (or (or (!= (. tt kind) TY-PTR) (= (. tt elem) null))
+                (-> tt (. elem) (cast ptr:Type _) (. kind) (!= _ TY-STRUCT)))
+        (return null))
+      (let (fn-node:ptr:Node (cast ptr:Node (node-at n 2)))
+        (when (!= (. fn-node kind) NODE-SYM) (return null))
+        (let (sd:ptr:StructDef (cast ptr:StructDef (-> tt (. elem) (cast ptr:Type _) (. sdef)))
+              i:i32 0)
+          (while (< i (. sd num-fields))
+            (when (= (strcmp (aref (cast ptr:ptr (. sd field-names)) i) (. fn-node s)) 0)
+              (return (aref (cast ptr:ptr (. sd field-types)) i)))
+            (inc! i))
+          (return null))))))
+
+; A call head (not a special form): mirror emit-dispatch. Intrinsic operator →
+; i1 for comparisons else the first operand's type; overloaded set → the exactly
+; matched method's return type; solitary/extern → the bound function's return.
+(defn node-type-call:ptr (n:ptr scope:ptr h:ptr)
+  (let (g:ptr (generic-lookup h))
+    (when (!= g null)
+      (let (gg:ptr:Generic (cast ptr:Generic g)
+            m0:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (. gg methods)) 0)))
+        (when (= (. m0 kind) METHOD-INTRINSIC)
+          (let (bop:ptr:BinOp (cast ptr:BinOp (. m0 binop)))
+            (when (!= (. bop is-cmp) 0) (return ty-i1))
+            (return (node-type (node-at n 1) scope))))
+        (when (!= (. gg mangled) 0)
+          (let (nargs:i32 (- (node-len n) 1)
+                argtypes:ptr (arena-alloc (* (i64 (+ nargs 1)) (i64 8)))
+                i:i32 0
+                ok:i32 1)
+            (while (< i nargs)
+              (let (at:ptr (node-type (node-at n (+ i 1)) scope))
+                (when (= at null) (set! ok 0))
+                (aset! (cast ptr:ptr argtypes) i at))
+              (inc! i))
+            (when (= ok 0) (return null))
+            (let (m:ptr (generic-find-method-exact (cast ptr gg) argtypes nargs))
+              (when (= m null) (return null))
+              (return (-> m (cast ptr:Method _) (. ret-type))))))))
+    (let (sym:ptr:Sym (cast ptr:Sym (scope-lookup scope h)))
+      (when (= (cast ptr sym) null) (return null))
+      (let (ft:ptr:Type (cast ptr:Type (. sym type)))
+        (when (!= (. ft kind) TY-FN) (return null))
+        (return (. ft ret))))))
+
+(defn node-type:ptr (n:ptr scope:ptr)
+  (when (= n null) (return ty-void))
+  (let (nn:ptr:Node (cast ptr:Node n))
+    (when (= (. nn kind) NODE-INT)   (return ty-i32))
+    (when (= (. nn kind) NODE-FLOAT) (return ty-f64))
+    (when (= (. nn kind) NODE-STR)   (return ty-ptr))
+    (when (= (. nn kind) NODE-SYM)   (return (node-type-sym n scope)))
+    (when (!= (. nn kind) NODE-CELL) (return ty-void))
+    (when (= (node-len n) 0) (return null))
+    (let (head:ptr:Node (cast ptr:Node (node-at n 0)))
+      (when (!= (. head kind) NODE-SYM) (return null))
+      (let (h:ptr (. head s)
+            hp:ptr (cast ptr head))
+        (when (!= (find-macro h) null) (return null))
+        (when (= hp 'gensym) (return ty-ptr))
+        (when (= hp 'funcall-ptr-1) (return ty-ptr))
+        (when (= hp 'funcall-ptr-i32) (return ty-i32))
+        (when (= hp 'funcall-ptr-i64) (return ty-i64))
+        (when (= hp 'funcall-ptr-ptr) (return ty-ptr))
+        (when (= hp 'return) (return ty-void))
+        (when (= hp 'do)
+          (if (> (node-len n) 1)
+            (return (node-type (node-at n (- (node-len n) 1)) scope))
+            (return ty-void)))
+        (when (= hp 'let) (return (node-type-block n scope)))
+        (when (= hp 'with) (return (node-type-block n scope)))
+        (when (= hp 'cond) (return null))
+        (when (= hp 'quote) (return ty-ptr))
+        (when (= hp 'quasiquote) (return null))
+        (when (= hp 'while) (return ty-void))
+        (when (= hp 'set!) (return ty-void))
+        (when (= hp 'inc!) (return ty-void))
+        (when (= hp 'not) (return ty-i1))
+        (when (= hp 'and) (return ty-i1))
+        (when (= hp 'or) (return ty-i1))
+        (when (= hp 'cast) (return (node-type-cast n)))
+        (when (= hp 'addr-of) (return (node-type-addr-of n scope)))
+        (when (= hp 'funcall-void) (return ty-void))
+        (when (= hp 'funcall) (return (node-type-funcall n scope)))
+        (when (= hp 'deref) (return (node-type-deref-elem n scope)))
+        (when (= hp 'ptr-set!) (return ty-void))
+        (when (= hp 'ptr+) (return (node-type (node-at n 1) scope)))
+        (when (= hp '.) (return (node-type-field n scope)))
+        (when (= hp '.set!) (return ty-void))
+        (when (= hp 'sizeof) (return ty-i64))
+        (when (= hp 'alloca) (return (node-type-alloca n)))
+        (when (= hp 'char) (return ty-i8))
+        (when (= hp 'aref) (return (node-type-deref-elem n scope)))
+        (when (= hp 'aset!) (return ty-void))
+        (return (node-type-call n scope h))))))
+
+; ============================================================
 ; Expression codegen
 ; ============================================================
 
 (defn emit-node:ptr (n:ptr scope:ptr)
-  (let (nn:ptr:Node (cast ptr:Node n))
-    (when (= (. nn kind) NODE-INT)   (return (emit-int n)))
-    (when (= (. nn kind) NODE-FLOAT) (return (emit-float n)))
-    (when (= (. nn kind) NODE-STR)   (return (emit-string n)))
-    (when (= (. nn kind) NODE-SYM)   (return (emit-symbol-ref n scope)))
-    (when (= (. nn kind) NODE-CELL)  (return (emit-list n scope)))
-    (return (alloc-val ty-void null))))
+  (let (nn:ptr:Node (cast ptr:Node n)
+        v:ptr (alloc-val ty-void null))
+    (when (= (. nn kind) NODE-INT)   (set! v (emit-int n)))
+    (when (= (. nn kind) NODE-FLOAT) (set! v (emit-float n)))
+    (when (= (. nn kind) NODE-STR)   (set! v (emit-string n)))
+    (when (= (. nn kind) NODE-SYM)   (set! v (emit-symbol-ref n scope)))
+    (when (= (. nn kind) NODE-CELL)  (set! v (emit-list n scope)))
+    ; Rung 3: the type a node contributes to its parent is the shared node-type
+    ; rule's answer, so codegen and the (non-emitting) type pass cannot drift —
+    ; a mismatch corrupts the next bootstrap and is caught at once. node-type
+    ; returns null for the forms it does not model; those keep emit's own type.
+    (let (t:ptr (node-type n scope))
+      (when (!= t null) (.set! (cast ptr:Val v) type t)))
+    (return v)))
 
 (defn emit-int:ptr (n:ptr)
   (return (alloc-val ty-i32 (fmt-i64 "%ld" (. (cast ptr:Node n) i)))))
@@ -1082,15 +1363,6 @@
   (add-binop ">"       "icmp sgt" "icmp ugt" 1)
   (add-binop ">="      "icmp sge" "icmp uge" 1))
 
-(defn lookup-binop:ptr (name:ptr)
-  (let (i:i32 0)
-    (while (< i g-num-binops)
-      (let (op:ptr:BinOp (cast ptr:BinOp (ptr+ (cast ptr:BinOp g-binops) i)))
-        (when (= (strcmp (. op name) name) 0)
-          (return (cast ptr op))))
-      (inc! i)))
-  (return null))
-
 (defn emit-binop:ptr (call:ptr scope:ptr op:ptr)
   (let (cc:ptr:Node (cast ptr:Node call)
         bop:ptr:BinOp (cast ptr:BinOp op))
@@ -1158,6 +1430,1225 @@
         (let (rtype:ptr (. a type))
           (when (!= (. bop is-cmp) 0) (set! rtype ty-i1))
           (return (alloc-val rtype tmp)))))))
+
+; ============================================================
+; Generic (polymorphism) registry
+; ============================================================
+
+(defn generic-lookup:ptr (name:ptr)
+  (let (i:i32 0)
+    (while (< i g-num-generics)
+      (let (g:ptr:Generic (cast ptr:Generic (ptr+ (cast ptr:Generic g-generics) i)))
+        (when (= (strcmp (. g name) name) 0)
+          (return (cast ptr g))))
+      (inc! i)))
+  (return null))
+
+(defn generic-new:ptr (name:ptr)
+  (when (= g-num-generics g-cap-generics)
+    (let (nc:i32 64)
+      (when (!= g-cap-generics 0) (set! nc (* g-cap-generics 2)))
+      (let (ng:ptr (arena-alloc (* (cast i64 nc) (sizeof Generic))))
+        (when (!= g-num-generics 0)
+          (memcpy ng g-generics (* (cast i64 g-num-generics) (sizeof Generic))))
+        (set! g-generics ng)
+        (set! g-cap-generics nc))))
+  (let (g:ptr:Generic (cast ptr:Generic (ptr+ (cast ptr:Generic g-generics) g-num-generics)))
+    (.set! g name name)
+    (.set! g methods (arena-alloc (* (cast i64 4) (cast i64 8))))
+    (.set! g num-methods 0)
+    (.set! g cap 4)
+    (.set! g finalized 0)
+    (.set! g mangled 0)
+    (inc! g-num-generics)
+    (return (cast ptr g))))
+
+(defn generic-add-method:void (g:ptr m:ptr)
+  (let (gg:ptr:Generic (cast ptr:Generic g))
+    (when (= (. gg num-methods) (. gg cap))
+      (let (nc:i32 (* (. gg cap) 2)
+            nm:ptr (arena-alloc (* (cast i64 nc) (cast i64 8))))
+        (memcpy nm (. gg methods) (* (cast i64 (. gg num-methods)) (cast i64 8)))
+        (.set! gg methods nm)
+        (.set! gg cap nc)))
+    (aset! (cast ptr:ptr (. gg methods)) (. gg num-methods) m)
+    (.set! gg num-methods (+ (. gg num-methods) 1))))
+
+; Seed the operator family as intrinsic generics. Each intrinsic method defers
+; to emit-binop (which performs the numeric type selection), so operator IR is
+; byte-identical to the pre-dispatch compiler.
+(defn init-generics:void ()
+  (let (i:i32 0)
+    (while (< i g-num-binops)
+      (let (bop:ptr:BinOp (cast ptr:BinOp (ptr+ (cast ptr:BinOp g-binops) i))
+            g:ptr (generic-new (. bop name))
+            m:ptr:Method (cast ptr:Method (arena-alloc (sizeof Method))))
+        (.set! m param-types null)
+        (.set! m num-params 2)
+        (.set! m ret-type null)
+        (.set! m has-rest 0)
+        (.set! m variadic 0)
+        (.set! m kind METHOD-INTRINSIC)
+        (.set! m ir-name null)
+        (.set! m fn-type null)
+        (.set! m binop (cast ptr bop))
+        (.set! m body null)
+        (generic-add-method g (cast ptr m)))
+      (inc! i))))
+
+; Structural type equality. Primitive types are singletons, so pointer equality
+; handles them; structs are equal iff they share a StructDef; pointers compare
+; their pointee (untyped ptr has elem=null, distinct from typed ptr).
+(defn type-eq:i32 (a:ptr b:ptr)
+  (when (= a b) (return 1))
+  (when (or (= a null) (= b null)) (return 0))
+  (let (aa:ptr:Type (cast ptr:Type a)
+        bb:ptr:Type (cast ptr:Type b))
+    (when (!= (. aa kind) (. bb kind)) (return 0))
+    (when (= (. aa kind) TY-STRUCT)
+      (if (= (. aa sdef) (. bb sdef)) (return 1) (return 0)))
+    (when (= (. aa kind) TY-PTR)
+      (return (type-eq (. aa elem) (. bb elem))))
+    ; Abstract type variables (A2 check only): equal iff the same variable of the
+    ; same template (sdef = owning Method*, num-params = tyvar index).
+    (when (= (. aa kind) TY-TYVAR)
+      (if (and (= (. aa sdef) (. bb sdef)) (= (. aa num-params) (. bb num-params)))
+        (return 1) (return 0)))
+    (return 1)))
+
+(defn params-type-eq:i32 (pa:ptr pb:ptr n:i32)
+  (let (i:i32 0)
+    (while (< i n)
+      (when (= (type-eq (aref (cast ptr:ptr pa) i) (aref (cast ptr:ptr pb) i)) 0)
+        (return 0))
+      (inc! i)))
+  (return 1))
+
+; A short, dot-free token naming a type for use in mangled symbols. Pointers
+; get a "p" prefix on their pointee so ptr:Circle and Circle stay distinct.
+(defn type-mangle-token:ptr (t:ptr)
+  (let (tt:ptr:Type (cast ptr:Type t)
+        k:i32 (. tt kind))
+    (when (= k TY-VOID) (return "void"))
+    (when (= k TY-I1)   (return "i1"))
+    (when (= k TY-I8)   (return "i8"))
+    (when (= k TY-I16)  (return "i16"))
+    (when (= k TY-I32)  (return "i32"))
+    (when (= k TY-I64)  (return "i64"))
+    (when (= k TY-UI8)  (return "u8"))
+    (when (= k TY-UI16) (return "u16"))
+    (when (= k TY-UI32) (return "u32"))
+    (when (= k TY-UI64) (return "u64"))
+    (when (= k TY-F32)  (return "f32"))
+    (when (= k TY-F64)  (return "f64"))
+    (when (= k TY-PTR)
+      (if (= (. tt elem) null)
+        (return "ptr")
+        (return (fmt-s "p%s" (type-mangle-token (. tt elem))))))
+    (when (= k TY-STRUCT)
+      (return (-> tt (. sdef) (cast ptr:StructDef _) (. name))))
+    (when (= k TY-FN) (return "fn"))
+    (return "x")))
+
+; "@name.tok1.tok2..." for an overloaded method.
+(defn mangle-fn-name:ptr (fname:ptr param-types:ptr nparams:i32)
+  (let (acc:ptr (fmt-s "@%s" fname)
+        i:i32 0)
+    (while (< i nparams)
+      (set! acc (fmt-2s "%s.%s" acc (type-mangle-token (aref (cast ptr:ptr param-types) i))))
+      (inc! i))
+    (return acc)))
+
+; A type's source spelling as a colon-joined string: the inverse of the type
+; parser. Serves two roles — the key into the conformance registry (matching the
+; subject spelling of `extend`), and the replacement text when substituting a
+; concrete type for a type variable's occurrences in a retained generic body.
+; Pointers nest as ptr:elem; structs/primitives are their bare names.
+(defn type-spelling:ptr (t:ptr)
+  (let (tt:ptr:Type (cast ptr:Type t)
+        k:i32 (. tt kind))
+    (when (= k TY-VOID) (return "void"))
+    (when (= k TY-I1)   (return "i1"))
+    (when (= k TY-I8)   (return "i8"))
+    (when (= k TY-I16)  (return "i16"))
+    (when (= k TY-I32)  (return "i32"))
+    (when (= k TY-I64)  (return "i64"))
+    (when (= k TY-UI8)  (return "ui8"))
+    (when (= k TY-UI16) (return "ui16"))
+    (when (= k TY-UI32) (return "ui32"))
+    (when (= k TY-UI64) (return "ui64"))
+    (when (= k TY-F32)  (return "f32"))
+    (when (= k TY-F64)  (return "f64"))
+    (when (= k TY-STRUCT) (return (-> tt (. sdef) (cast ptr:StructDef _) (. name))))
+    (when (= k TY-PTR)
+      (if (= (. tt elem) null)
+        (return "ptr")
+        (return (fmt-s "ptr:%s" (type-spelling (. tt elem))))))
+    (return "ptr")))
+
+(defn generic-find-method-exact:ptr (g:ptr param-types:ptr nparams:i32)
+  (let (gg:ptr:Generic (cast ptr:Generic g)
+        i:i32 0)
+    (while (< i (. gg num-methods))
+      (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (. gg methods)) i)))
+        (when (and (= (. m kind) METHOD-USER)
+                   (and (= (. m num-params) nparams)
+                        (!= (params-type-eq (. m param-types) param-types nparams) 0)))
+          (return (cast ptr m))))
+      (inc! i))
+    (return null)))
+
+; Fixed parameter count of a defn param list: the raw count, minus one if a
+; &rest marker is present (the marker itself is not a parameter).
+(defn defn-params-count:i32 (params-node:ptr)
+  (let (raw:i32 (node-len params-node)
+        i:i32 0)
+    (while (< i raw)
+      (let (sp:ptr:Node (cast ptr:Node (node-at params-node i)))
+        (when (and (= (. sp kind) NODE-SYM) (= (strcmp (. sp s) "&rest") 0))
+          (return (- raw 1))))
+      (inc! i))
+    (return raw)))
+
+; The fixed parameter types of a defn param list as a ptr-array (&rest-aware:
+; the &rest marker is skipped and the rest parameter is typed ptr). Shared by
+; prescan, .nuch export, and method lookup so the three stay consistent.
+(defn defn-params-to-types:ptr (params-node:ptr)
+  (let (raw:i32 (node-len params-node)
+        has-rest:i32 0
+        rest-idx:i32 -1)
+    (let (si:i32 0)
+      (while (< si raw)
+        (let (sp:ptr:Node (cast ptr:Node (node-at params-node si)))
+          (when (and (= (. sp kind) NODE-SYM) (= (strcmp (. sp s) "&rest") 0))
+            (set! has-rest 1)
+            (set! rest-idx si)))
+        (inc! si)))
+    (let (nparams:i32 raw)
+      (when (!= has-rest 0) (set! nparams (- raw 1)))
+      (let (ptypes:ptr null)
+        (when (> nparams 0)
+          (set! ptypes (arena-alloc (* (i64 nparams) (i64 8)))))
+        (let (i:i32 0
+              di:i32 0)
+          (while (< i raw)
+            (when (or (= has-rest 0) (!= i rest-idx))
+              (let (p:ptr (node-at params-node i)
+                    pn:ptr null
+                    pty:ptr (extract-name-and-type p (cast ptr:ptr (addr-of pn))
+                                                    (. (cast ptr:Node p) line)))
+                (when (= pty null) (set! pty ty-i32))
+                (when (and (!= has-rest 0) (= di (- nparams 1)))
+                  (set! pty ty-ptr))
+                (aset! (cast ptr:ptr ptypes) di pty)
+                (inc! di)))
+            (inc! i)))
+        (return ptypes)))))
+
+; Register one defn signature as a USER method of its name's generic. Called
+; from prescan-defn-signatures; mangling/scope binding is decided later by
+; finalize-generics once the full method set per name is known.
+(defn generic-register-method:ptr (fname:ptr ret:ptr param-types:ptr nparams:i32
+                                   has-rest:i32 variadic:i32 body:ptr)
+  (let (g:ptr (generic-lookup fname))
+    (when (= g null) (set! g (generic-new fname)))
+    (let (ft:ptr:Type (cast ptr:Type (make-type TY-FN)))
+      (.set! ft ret ret)
+      (.set! ft num-params nparams)
+      (.set! ft params param-types)
+      (.set! ft variadic variadic)
+      (.set! ft has-rest has-rest)
+      (let (m:ptr:Method (cast ptr:Method (arena-alloc (sizeof Method))))
+        (.set! m param-types param-types)
+        (.set! m num-params nparams)
+        (.set! m ret-type ret)
+        (.set! m has-rest has-rest)
+        (.set! m variadic variadic)
+        (.set! m kind METHOD-USER)
+        (.set! m ir-name null)
+        (.set! m fn-type (cast ptr ft))
+        (.set! m binop null)
+        (.set! m body body)
+        (generic-add-method g (cast ptr m))
+        (return (cast ptr m))))))
+
+; Decide mangling for every not-yet-finalized user generic. A solitary concrete
+; name keeps its unmangled @name and is bound in g-globals (so forward references
+; and the byte-identical single-function path keep working). An overloaded set —
+; or any name carrying a bounded-generic template — gets mangled per-method names
+; and dispatches through the registry (templates are stamped on demand).
+(defn finalize-generics:void ()
+  (let (gi:i32 0)
+    (while (< gi g-num-generics)
+      (let (gg:ptr:Generic (cast ptr:Generic (ptr+ (cast ptr:Generic g-generics) gi)))
+        (when (and (= (. gg finalized) 0) (> (. gg num-methods) 0))
+          (let (m0:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (. gg methods)) 0)))
+            (when (!= (. m0 kind) METHOD-INTRINSIC)
+              ; Detect whether the name carries a bounded-generic template.
+              (let (has-generic:i32 0
+                    gk:i32 0)
+                (while (< gk (. gg num-methods))
+                  (let (mk:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (. gg methods)) gk)))
+                    (when (= (. mk kind) METHOD-GENERIC) (set! has-generic 1)))
+                  (inc! gk))
+                (if (and (= has-generic 0) (= (. gg num-methods) 1))
+                  (do
+                    (.set! gg mangled 0)
+                    (.set! m0 ir-name (fmt-s "@%s" (. gg name)))
+                    (scope-define g-globals (. gg name) (. m0 fn-type) (. m0 ir-name) 0))
+                  (do
+                    (.set! gg mangled 1)
+                    (let (i:i32 0)
+                      (while (< i (. gg num-methods))
+                        (let (mi:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (. gg methods)) i)))
+                          (when (= (. mi kind) METHOD-USER)
+                            (let (j:i32 0)
+                              (while (< j i)
+                                (let (mj:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (. gg methods)) j)))
+                                  (when (and (= (. mj kind) METHOD-USER)
+                                             (and (= (. mi num-params) (. mj num-params))
+                                                  (!= (params-type-eq (. mi param-types) (. mj param-types)
+                                                                      (. mi num-params)) 0)))
+                                    (die-at (-> mi (. body) (cast ptr:Node _) (. line))
+                                      (fmt-s "duplicate method signature for overloaded '%s'" (. gg name)))))
+                                (inc! j)))
+                            (.set! mi ir-name
+                              (mangle-fn-name (. gg name) (. mi param-types) (. mi num-params)))))
+                        (inc! i)))))
+                (.set! gg finalized 1)))))
+        (inc! gi)))))
+
+; Select the method of a generic for a concrete argument-type tuple.
+; Tier 0: an exact concrete method (type-eq on every param) — concrete beats
+; generic (§8.6). Tier 1: a bounded-generic template whose type variables bind
+; consistently and whose bound types satisfy the &where protocol constraints;
+; on a unique tier-1 match the template is monomorphized (stamped + cached) and
+; the resulting concrete method returned. Widen/cast tiers come later.
+(defn generic-resolve:ptr (g:ptr argtypes:ptr nargs:i32 line:i32)
+  (let (gg:ptr:Generic (cast ptr:Generic g)
+        found:ptr null
+        i:i32 0)
+    (while (< i (. gg num-methods))
+      (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (. gg methods)) i)))
+        (when (and (= (. m kind) METHOD-USER)
+                   (and (= (. m num-params) nargs)
+                        (!= (params-type-eq (. m param-types) argtypes nargs) 0)))
+          (set! found (cast ptr m))))
+      (inc! i))
+    (when (!= found null) (return found))
+    ; tier 1: bounded-generic templates.
+    (let (cand:ptr null
+          cand-bound:ptr null
+          ncand:i32 0
+          constraint-fail:i32 0
+          j:i32 0)
+      (while (< j (. gg num-methods))
+        (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (. gg methods)) j)))
+          (when (= (. m kind) METHOD-GENERIC)
+            (let (bound:ptr (arena-alloc (* (i64 (+ (. m num-tyvars) 1)) (i64 8))))
+              (when (!= (generic-method-bind (cast ptr m) argtypes nargs bound) 0)
+                (if (!= (generic-constraints-ok (cast ptr m) bound line) 0)
+                  (do (set! cand (cast ptr m)) (set! cand-bound bound) (inc! ncand))
+                  (set! constraint-fail 1))))))
+        (inc! j))
+      (when (> ncand 1)
+        (die-at line (fmt-s "ambiguous generic match for '%s'" (. gg name))))
+      (when (= ncand 1)
+        (return (generic-instantiate g cand cand-bound argtypes nargs line)))
+      (when (!= constraint-fail 0)
+        (die-at line
+          (fmt-s "no matching method for '%s': arguments do not satisfy the required protocol constraint"
+                 (. gg name))))
+      (die-at line (fmt-s "no matching method for overloaded '%s' with given argument types"
+                          (. gg name)))
+      (return null))))
+
+; The emitted symbol for a defn being codegen'd: the mangled name for an
+; overloaded method, else the unmangled @name (also the fallback when no
+; generic was registered, e.g. compile-time/REPL defns).
+(defn defn-ir-name:ptr (fname:ptr param-types:ptr nparams:i32)
+  (let (g:ptr (generic-lookup fname))
+    (when (!= g null)
+      (let (m:ptr (generic-find-method-exact g param-types nparams))
+        (when (and (!= m null) (!= (-> m (cast ptr:Method _) (. ir-name)) null))
+          (return (-> m (cast ptr:Method _) (. ir-name)))))))
+  (return (fmt-s "@%s" fname)))
+
+(defn defn-is-mangled:i32 (fname:ptr)
+  (let (g:ptr (generic-lookup fname))
+    (when (!= g null)
+      (return (-> g (cast ptr:Generic _) (. mangled)))))
+  (return 0))
+
+; If a defn form's name is overloaded, return that method's mangled @-symbol;
+; else null. Used by .nuch export to declare overloads under their real symbols.
+(defn defn-form-mangled-name:ptr (form:ptr)
+  (let (fname:ptr null
+        ret:ptr (extract-name-and-type (node-at form 1) (cast ptr:ptr (addr-of fname))
+                                        (. (cast ptr:Node (node-at form 1)) line)))
+    (when (= ret null) (return null))
+    (let (g:ptr (generic-lookup fname))
+      (when (= g null) (return null))
+      (when (= (-> g (cast ptr:Generic _) (. mangled)) 0) (return null))
+      (let (params-node:ptr (node-at form 2)
+            m:ptr (generic-find-method-exact g (defn-params-to-types params-node)
+                                             (defn-params-count params-node)))
+        (when (= m null) (return null))
+        (return (-> m (cast ptr:Method _) (. ir-name)))))))
+
+; ============================================================
+; Bounded generic defn (Stage 9 rung 4)
+; ============================================================
+; A generic defn carries a `&where` clause in its parameter list:
+;   (defn max:T (a:T b:T &where (Ord T)) ...)
+; Type variables are declared-only (named in a constraint). The template body is
+; retained and monomorphized — substitute concrete types, stamp, cache — at each
+; call site whose argument types bind the variables and satisfy the constraints.
+
+; Index of the `&where` marker in a (desugared) parameter list, or -1.
+(defn params-where-index:i32 (params-node:ptr)
+  (let (raw:i32 (node-len params-node) i:i32 0)
+    (while (< i raw)
+      (let (e:ptr:Node (cast ptr:Node (node-at params-node i)))
+        (when (and (= (. e kind) NODE-SYM) (= (strcmp (. e s) "&where") 0))
+          (return i)))
+      (inc! i)))
+  (return -1))
+
+; The bare function name from a defn name node, without parsing its return type
+; (which may mention a type variable). Handles both `name:T` and desugared
+; `(name T)` forms.
+(defn defn-name-only:ptr (name-node:ptr)
+  (let (n:ptr:Node (cast ptr:Node name-node))
+    (when (= (. n kind) NODE-SYM)
+      (let (nm:ptr null tn:ptr null)
+        (split-typed (. n s) (cast ptr:ptr (addr-of nm)) (cast ptr:ptr (addr-of tn)))
+        (return nm)))
+    (when (= (. n kind) NODE-CELL)
+      (let (c:ptr:Node (cast ptr:Node (. n car)))
+        (when (= (. c kind) NODE-SYM) (return (. c s)))))
+    (return null)))
+
+; The type node of a desugared binding `(name type)`, or null if untyped.
+(defn binding-type-node:ptr (bind-node:ptr)
+  (let (n:ptr:Node (cast ptr:Node bind-node))
+    (when (= (. n kind) NODE-CELL) (return (node-at bind-node 1)))
+    (return null)))
+
+(defn tyvar-index-of:i32 (name:ptr tyvars:ptr ntv:i32)
+  (let (i:i32 0)
+    (while (< i ntv)
+      (when (= (strcmp (aref (cast ptr:ptr tyvars) i) name) 0) (return i))
+      (inc! i)))
+  (return -1))
+
+; Does any symbol anywhere in this node name a declared type variable?
+(defn node-mentions-tyvar:i32 (node:ptr tyvars:ptr ntv:i32)
+  (when (= node null) (return 0))
+  (let (n:ptr:Node (cast ptr:Node node))
+    (when (= (. n kind) NODE-SYM)
+      (if (>= (tyvar-index-of (. n s) tyvars ntv) 0) (return 1) (return 0)))
+    (when (= (. n kind) NODE-CELL)
+      (when (!= (node-mentions-tyvar (. n car) tyvars ntv) 0) (return 1))
+      (return (node-mentions-tyvar (. n cdr) tyvars ntv)))
+    (return 0)))
+
+; Substitute type variables inside one symbol's colon spelling: split on ':',
+; replace any segment that names a tyvar with that tyvar's concrete spelling,
+; rejoin. Handles both desugared standalone type symbols ("T" → "i32") and the
+; colon-typed symbols left in un-desugared bodies ("r:T" → "r:i32",
+; "x:ptr:T" → "x:ptr:Circle").
+(defn subst-tyvars-sym:ptr (s:ptr tyvars:ptr spellings:ptr ntv:i32 line:i32)
+  (when (= (strchr s 58) null)
+    (let (idx:i32 (tyvar-index-of s tyvars ntv))
+      (when (>= idx 0) (return (aref (cast ptr:ptr spellings) idx)))
+      (return s)))
+  (let (segs:ptr (split-colon-segments s line)
+        acc:ptr null
+        cur:ptr segs)
+    (while (!= cur null)
+      (let (seg:ptr (-> cur (cast ptr:Node _) (. car) (cast ptr:Node _) (. s))
+            piece:ptr null
+            idx:i32 0)
+        (set! piece seg)
+        (set! idx (tyvar-index-of seg tyvars ntv))
+        (when (>= idx 0) (set! piece (aref (cast ptr:ptr spellings) idx)))
+        (if (= acc null) (set! acc piece) (set! acc (fmt-2s "%s:%s" acc piece))))
+      (set! cur (. (cast ptr:Node cur) cdr)))
+    (when (= acc null) (return s))
+    (return acc)))
+
+; Deep-copy a node, substituting type variables (by colon-spelling) in every
+; symbol. Used to stamp a concrete instance from a generic template.
+(defn subst-tyvars-node:ptr (node:ptr tyvars:ptr spellings:ptr ntv:i32)
+  (when (= node null) (return null))
+  (let (n:ptr:Node (cast ptr:Node node))
+    (when (= (. n kind) NODE-SYM)
+      (let (ns:ptr (subst-tyvars-sym (. n s) tyvars spellings ntv (. n line)))
+        (when (= ns (. n s)) (return node))
+        (let (new:ptr:Node (cast ptr:Node (alloc-node)))
+          (.set! new kind NODE-SYM)
+          (.set! new line (. n line))
+          (.set! new s ns)
+          (return (cast ptr new)))))
+    (when (= (. n kind) NODE-CELL)
+      (return (make-cell (subst-tyvars-node (. n car) tyvars spellings ntv)
+                         (subst-tyvars-node (. n cdr) tyvars spellings ntv)
+                         (. n line))))
+    (return node)))
+
+; The first n cells of a list as a freshly-consed list (drops the tail).
+(defn take-first-n:ptr (list:ptr n:i32 line:i32)
+  (when (<= n 0) (return null))
+  (when (= list null) (return null))
+  (let (l:ptr:Node (cast ptr:Node list))
+    (return (make-cell (. l car) (take-first-n (. l cdr) (- n 1) line) line))))
+
+; Register a bounded-generic defn as a METHOD-GENERIC template. Validates the
+; &where constraints, that every type variable is bound by a bare parameter
+; (no return-only / B2), and that no tyvar appears in a nested position.
+(defn register-generic-defn:void (form:ptr trusted:i32)
+  (let (ff:ptr:Node (cast ptr:Node form)
+        name-node:ptr (node-at form 1)
+        params-node:ptr (node-at form 2)
+        fname:ptr (defn-name-only name-node)
+        wi:i32 (params-where-index params-node))
+    (when (= fname null) (die-at (. ff line) "defn: malformed generic name"))
+    (let (nparams:i32 wi
+          i:i32 0)
+      (while (< i nparams)
+        (let (p:ptr:Node (cast ptr:Node (node-at params-node i)))
+          (when (and (= (. p kind) NODE-SYM) (= (strcmp (. p s) "&rest") 0))
+            (die-at (. p line) "defn: &rest combined with &where is not supported yet")))
+        (inc! i))
+      (let (raw:i32 (node-len params-node)
+            nc:i32 (- raw (+ wi 1)))
+        (when (< nc 1)
+          (die-at (. ff line) "defn: &where requires at least one (Protocol Var) constraint"))
+        (let (con-protos:ptr (arena-alloc (* (i64 nc) (i64 8)))
+              con-vars:ptr   (arena-alloc (* (i64 nc) (i64 8)))
+              tyvars:ptr     (arena-alloc (* (i64 nc) (i64 8)))
+              ntv:i32 0
+              ci:i32 0)
+          (while (< ci nc)
+            (let (cnode:ptr (node-at params-node (+ (+ wi 1) ci)))
+              (when (or (= (node-is-list cnode) 0) (!= (node-len cnode) 2))
+                (die-at (. ff line) "defn: each &where constraint must be (Protocol Var)"))
+              (let (pn:ptr:Node (cast ptr:Node (node-at cnode 0))
+                    vn:ptr:Node (cast ptr:Node (node-at cnode 1)))
+                (when (or (!= (. pn kind) NODE-SYM) (!= (. vn kind) NODE-SYM))
+                  (die-at (. ff line) "defn: &where constraint must name a protocol and a variable"))
+                (aset! (cast ptr:ptr con-protos) ci (. pn s))
+                (aset! (cast ptr:ptr con-vars) ci (. vn s))
+                (when (< (tyvar-index-of (. vn s) tyvars ntv) 0)
+                  (aset! (cast ptr:ptr tyvars) ntv (. vn s))
+                  (inc! ntv))))
+            (inc! ci))
+          ; Reject nested tyvar positions in params and return (deferred to Option 3).
+          (let (j:i32 0)
+            (while (< j nparams)
+              (let (ptn:ptr (binding-type-node (node-at params-node j)))
+                (when (and (!= ptn null)
+                           (and (!= (. (cast ptr:Node ptn) kind) NODE-SYM)
+                                (!= (node-mentions-tyvar ptn tyvars ntv) 0)))
+                  (die-at (. ff line)
+                    "defn: nested type variable in a parameter type is not supported (deferred to Option 3)")))
+              (inc! j)))
+          (let (rtn:ptr (binding-type-node name-node))
+            (when (and (!= rtn null)
+                       (and (!= (. (cast ptr:Node rtn) kind) NODE-SYM)
+                            (!= (node-mentions-tyvar rtn tyvars ntv) 0)))
+              (die-at (. ff line)
+                "defn: nested type variable in the return type is not supported (deferred to Option 3)")))
+          ; Every declared tyvar must be determined by a bare parameter type.
+          (let (ti:i32 0)
+            (while (< ti ntv)
+              (let (tvname:ptr (aref (cast ptr:ptr tyvars) ti)
+                    bnd:i32 0
+                    j:i32 0)
+                (while (< j nparams)
+                  (let (ptn:ptr (binding-type-node (node-at params-node j)))
+                    (when (and (!= ptn null)
+                               (and (= (. (cast ptr:Node ptn) kind) NODE-SYM)
+                                    (= (strcmp (. (cast ptr:Node ptn) s) tvname) 0)))
+                      (set! bnd 1)))
+                  (inc! j))
+                (when (= bnd 0)
+                  (die-at (. ff line)
+                    (fmt-s "defn: type variable '%s' is not determined by any parameter (return-only generics need dyn, deferred)" tvname))))
+              (inc! ti)))
+          ; Each constraint must name a known protocol (catches typos at the defn).
+          (let (ci2:i32 0)
+            (while (< ci2 nc)
+              (let (pnm:ptr (aref (cast ptr:ptr con-protos) ci2))
+                (when (= (protocol-lookup pnm) null)
+                  (die-at (. ff line) (fmt-s "defn: &where names unknown protocol '%s'" pnm))))
+              (inc! ci2)))
+          ; Register the template.
+          (let (g:ptr (generic-lookup fname))
+            (when (= g null) (set! g (generic-new fname)))
+            (let (m:ptr:Method (cast ptr:Method (arena-alloc (sizeof Method))))
+              (.set! m param-types null)
+              (.set! m num-params nparams)
+              (.set! m ret-type null)
+              (.set! m has-rest 0)
+              (.set! m variadic 0)
+              (.set! m kind METHOD-GENERIC)
+              (.set! m ir-name null)
+              (.set! m fn-type null)
+              (.set! m binop null)
+              (.set! m body form)
+              (.set! m tyvars tyvars)
+              (.set! m num-tyvars ntv)
+              (.set! m con-protos con-protos)
+              (.set! m con-vars con-vars)
+              (.set! m num-constraints nc)
+              ; Imported templates were checked by the exporting unit; skip A2.
+              (.set! m checked trusted)
+              (generic-add-method g (cast ptr m)))))))))
+
+; Try to bind a generic template's type variables from a concrete argument
+; tuple. Bare-tyvar params bind (and must agree on repeats); concrete params
+; must match exactly. On success fills out-bound[tyvar-index] = Type* and
+; returns 1; on any mismatch returns 0.
+(defn generic-method-bind:i32 (m:ptr argtypes:ptr nargs:i32 out-bound:ptr)
+  (let (mm:ptr:Method (cast ptr:Method m))
+    (when (!= (. mm num-params) nargs) (return 0))
+    (let (params-node:ptr (node-at (. mm body) 2)
+          ntv:i32 (. mm num-tyvars)
+          k:i32 0)
+      (while (< k ntv) (aset! (cast ptr:ptr out-bound) k null) (inc! k))
+      (let (i:i32 0)
+        (while (< i nargs)
+          (let (ptn:ptr (binding-type-node (node-at params-node i))
+                at:ptr (aref (cast ptr:ptr argtypes) i))
+            (when (or (= ptn null) (= at null)) (return 0))
+            (let (pn:ptr:Node (cast ptr:Node ptn)
+                  idx:i32 -1)
+              (when (= (. pn kind) NODE-SYM)
+                (set! idx (tyvar-index-of (. pn s) (. mm tyvars) ntv)))
+              (if (>= idx 0)
+                (let (cur:ptr (aref (cast ptr:ptr out-bound) idx))
+                  (if (= cur null)
+                    (aset! (cast ptr:ptr out-bound) idx at)
+                    (when (= (type-eq cur at) 0) (return 0))))
+                (let (cty:ptr (parse-type-from-node ptn (. pn line)))
+                  (when (= (type-eq cty at) 0) (return 0))))))
+          (inc! i)))
+      (let (k:i32 0)
+        (while (< k ntv)
+          (when (= (aref (cast ptr:ptr out-bound) k) null) (return 0))
+          (inc! k)))
+      (return 1))))
+
+; Check that each &where constraint is satisfied: the type bound to its variable
+; must conform (nominally, via `extend`) to the named protocol.
+(defn generic-constraints-ok:i32 (m:ptr bound:ptr line:i32)
+  (let (mm:ptr:Method (cast ptr:Method m)
+        nc:i32 (. mm num-constraints)
+        i:i32 0)
+    (while (< i nc)
+      (let (proto:ptr (aref (cast ptr:ptr (. mm con-protos)) i)
+            var:ptr   (aref (cast ptr:ptr (. mm con-vars)) i)
+            idx:i32 (tyvar-index-of var (. mm tyvars) (. mm num-tyvars))
+            bt:ptr (aref (cast ptr:ptr bound) idx))
+        (when (= (conformance-lookup (type-spelling bt) proto) 0)
+          (return 0)))
+      (inc! i))
+    (return 1)))
+
+; Build a concrete defn form from a generic template + a type-variable binding:
+; substitute the variables throughout, then drop the &where clause.
+(defn monomorphize-form:ptr (form:ptr tyvars:ptr spellings:ptr ntv:i32 nparams:i32)
+  (let (ff:ptr:Node (cast ptr:Node form)
+        line:i32 (. ff line)
+        defn-sym:ptr (node-at form 0)
+        name-node:ptr (subst-tyvars-node (node-at form 1) tyvars spellings ntv)
+        params-src:ptr (subst-tyvars-node (node-at form 2) tyvars spellings ntv)
+        new-params:ptr null
+        body-src:ptr (subst-tyvars-node
+                       (. (cast ptr:Node (. (cast ptr:Node (. ff cdr)) cdr)) cdr)
+                       tyvars spellings ntv))
+    (set! new-params (take-first-n params-src nparams line))
+    (return (make-cell defn-sym
+              (make-cell name-node
+                (make-cell new-params body-src line)
+                line)
+              line))))
+
+; Monomorphize a generic template for a concrete argument tuple: reuse a cached
+; instantiation if present, else stamp a concrete method (registered now so the
+; call site can name its symbol; its body is queued for later emission).
+(defn generic-instantiate:ptr (g:ptr m:ptr bound:ptr argtypes:ptr nargs:i32 line:i32)
+  (let (gg:ptr:Generic (cast ptr:Generic g)
+        mm:ptr:Method (cast ptr:Method m))
+    (let (existing:ptr (generic-find-method-exact g argtypes nargs))
+      (when (!= existing null) (return existing)))
+    ; Concrete spelling for each bound type variable, used to stamp the body.
+    (let (ntv:i32 (. mm num-tyvars)
+          spellings:ptr (arena-alloc (* (i64 (+ ntv 1)) (i64 8)))
+          si:i32 0)
+      (while (< si ntv)
+        (aset! (cast ptr:ptr spellings) si (type-spelling (aref (cast ptr:ptr bound) si)))
+        (inc! si))
+    (let (stamped:ptr (monomorphize-form (. mm body) (. mm tyvars) spellings
+                                         (. mm num-tyvars) (. mm num-params))
+          sname:ptr null
+          sret:ptr (extract-name-and-type (node-at stamped 1) (cast ptr:ptr (addr-of sname))
+                                          (. (cast ptr:Node (node-at stamped 1)) line)))
+      (when (= sret null)
+        (die-at line (fmt-s "generic '%s': cannot resolve instantiated return type" (. gg name))))
+      (let (ptypes:ptr null)
+        (when (> nargs 0)
+          (set! ptypes (arena-alloc (* (i64 nargs) (i64 8))))
+          (let (i:i32 0)
+            (while (< i nargs)
+              (aset! (cast ptr:ptr ptypes) i (aref (cast ptr:ptr argtypes) i))
+              (inc! i))))
+        (let (newm:ptr (generic-register-method (. gg name) sret ptypes nargs 0 0 stamped)
+              mangled:ptr (mangle-fn-name (. gg name) ptypes nargs)
+              job:ptr:MonoJob (cast ptr:MonoJob (arena-alloc (sizeof MonoJob))))
+          (.set! (cast ptr:Method newm) ir-name mangled)
+          ; Record where this instantiation was requested, so a stamp-time emit
+          ; error in the body points back here (g-source-path is the call site's).
+          (.set! job form stamped)
+          (.set! job context
+                 (fmt-2s-i "while instantiating %s (requested at %s:%d)"
+                           mangled g-source-path line))
+          (vec-push g-mono-worklist (cast ptr job))
+          (return newm)))))))
+
+; ============================================================
+; A2: def-time checking of bounded-generic bodies
+; ============================================================
+; Type-check a generic template body ONCE at its definition against the abstract
+; protocol interface: a value of type variable T (an abstract `TY-TYVAR`) admits
+; only the operations its `&where` protocols declare (with Self → T) — plus calls
+; to other generics whose own constraints T's constraints satisfy. A use the
+; constraints don't provide errors at the `defn`, not at the first instantiation.
+; This never emits and only ever manufactures TY-TYVAR types, which codegen never
+; sees (templates emit only after monomorphization).
+
+(defn make-tyvar-type:ptr (m:ptr idx:i32)
+  (let (t:ptr:Type (cast ptr:Type (make-type TY-TYVAR)))
+    (.set! t sdef m)         ; owning template Method*
+    (.set! t num-params idx) ; tyvar index within that template
+    (return (cast ptr t))))
+
+(defn tyvar-type-name:ptr (t:ptr)
+  (let (m:ptr:Method (cast ptr:Method (-> t (cast ptr:Type _) (. sdef)))
+        idx:i32 (-> t (cast ptr:Type _) (. num-params)))
+    (return (aref (cast ptr:ptr (. m tyvars)) idx))))
+
+(defn is-tyvar-type:i32 (t:ptr)
+  (when (= t null) (return 0))
+  (if (= (-> t (cast ptr:Type _) (. kind)) TY-TYVAR) (return 1) (return 0)))
+
+; The type-spelling tail of a colon symbol ("a:Self" → "Self"), or null.
+(defn colon-tail:ptr (s:ptr)
+  (let (nm:ptr null tail:ptr null)
+    (split-typed s (cast ptr:ptr (addr-of nm)) (cast ptr:ptr (addr-of tail)))
+    (return tail)))
+
+; Parse a concrete type from a colon spelling string (no Self/tyvars).
+(defn parse-type-spelling-str:ptr (s:ptr line:i32)
+  (when (= (strchr s 58) null) (return (parse-type-name s line)))
+  (return (parse-type-from-node (split-colon-segments s line) line)))
+
+; Does a colon spelling mention "Self" as a segment other than being exactly Self?
+(defn spelling-nests-self:i32 (s:ptr)
+  (when (= (strcmp s "Self") 0) (return 0))
+  (let (segs:ptr (split-colon-segments s 0)
+        cur:ptr segs)
+    (while (!= cur null)
+      (when (= (strcmp (-> cur (cast ptr:Node _) (. car) (cast ptr:Node _) (. s)) "Self") 0)
+        (return 1))
+      (set! cur (. (cast ptr:Node cur) cdr))))
+  (return 0))
+
+(defn caller-has-constraint:i32 (m:ptr tyvar-name:ptr proto:ptr)
+  (let (mm:ptr:Method (cast ptr:Method m) i:i32 0)
+    (while (< i (. mm num-constraints))
+      (when (and (= (strcmp (aref (cast ptr:ptr (. mm con-vars)) i) tyvar-name) 0)
+                 (= (strcmp (aref (cast ptr:ptr (. mm con-protos)) i) proto) 0))
+        (return 1))
+      (inc! i)))
+  (return 0))
+
+; Does protocol signature `sig` provide the call `head(argtypes)` for tyvar `ti`
+; of template `m` (Self → that tyvar)? Returns the call's result type or null.
+(defn sig-provides-call:ptr (sig:ptr head:ptr ti:i32 m:ptr argtypes:ptr nargs:i32 line:i32)
+  (let (name-node:ptr (node-at sig 0)
+        params:ptr (node-at sig 1)
+        nm:ptr null
+        rettail:ptr null)
+    (split-typed (-> name-node (cast ptr:Node _) (. s))
+                 (cast ptr:ptr (addr-of nm)) (cast ptr:ptr (addr-of rettail)))
+    (when (= (strcmp nm head) 0)
+      (when (= (node-len params) nargs)
+        (let (i:i32 0 ok:i32 1)
+          (while (< i nargs)
+            (let (pn:ptr:Node (cast ptr:Node (node-at params i))
+                  pspell:ptr (colon-tail (. pn s))
+                  at:ptr (aref (cast ptr:ptr argtypes) i))
+              (if (and (!= pspell null) (= (strcmp pspell "Self") 0))
+                (when (or (= (is-tyvar-type at) 0)
+                          (or (!= (-> at (cast ptr:Type _) (. num-params)) ti)
+                              (!= (-> at (cast ptr:Type _) (. sdef)) m)))
+                  (set! ok 0))
+                (if (or (= pspell null) (!= (spelling-nests-self pspell) 0))
+                  (set! ok 0)
+                  (when (= (type-eq (parse-type-spelling-str pspell line) at) 0)
+                    (set! ok 0)))))
+            (inc! i))
+          (when (!= ok 0)
+            (when (and (!= rettail null) (= (strcmp rettail "Self") 0))
+              (return (make-tyvar-type m ti)))
+            (when (= rettail null) (return ty-void))
+            (return (parse-type-spelling-str rettail line))))))
+    (return null)))
+
+; Resolve a call with at least one abstract argument against the protocol methods
+; provided by the constraints on the call's tyvar arguments. Result type or null.
+(defn abstract-call-via-protocol:ptr (head:ptr argtypes:ptr nargs:i32 m:ptr line:i32)
+  (let (mm:ptr:Method (cast ptr:Method m) ti:i32 0)
+    (while (< ti (. mm num-tyvars))
+      (let (tvname:ptr (aref (cast ptr:ptr (. mm tyvars)) ti) ci:i32 0)
+        (while (< ci (. mm num-constraints))
+          (when (= (strcmp (aref (cast ptr:ptr (. mm con-vars)) ci) tvname) 0)
+            (let (proto:ptr (protocol-lookup (aref (cast ptr:ptr (. mm con-protos)) ci)))
+              (when (!= proto null)
+                (let (pp:ptr:Protocol (cast ptr:Protocol proto) si:i32 0)
+                  (while (< si (. pp num-sigs))
+                    (let (rt:ptr (sig-provides-call (aref (cast ptr:ptr (. pp sigs)) si)
+                                                    head ti m argtypes nargs line))
+                      (when (!= rt null) (return rt)))
+                    (inc! si))))))
+          (inc! ci)))
+      (inc! ti)))
+  (return null))
+
+; Resolve an abstract-argument call against another generic template whose own
+; constraints are satisfied by the caller's tyvar constraints. Result type or null.
+(defn abstract-call-via-generic:ptr (head:ptr argtypes:ptr nargs:i32 m:ptr line:i32)
+  (let (g:ptr (generic-lookup head))
+    (when (= g null) (return null))
+    (let (gg:ptr:Generic (cast ptr:Generic g) gi:i32 0)
+      (while (< gi (. gg num-methods))
+        (let (m2:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (. gg methods)) gi)))
+          (when (= (. m2 kind) METHOD-GENERIC)
+            (let (bound:ptr (arena-alloc (* (i64 (+ (. m2 num-tyvars) 1)) (i64 8))))
+              (when (!= (generic-method-bind (cast ptr m2) argtypes nargs bound) 0)
+                (let (ok:i32 1 ci:i32 0)
+                  (while (< ci (. m2 num-constraints))
+                    (let (uidx:i32 (tyvar-index-of (aref (cast ptr:ptr (. m2 con-vars)) ci)
+                                                   (. m2 tyvars) (. m2 num-tyvars))
+                          proto:ptr (aref (cast ptr:ptr (. m2 con-protos)) ci)
+                          bt:ptr (aref (cast ptr:ptr bound) uidx))
+                      (if (!= (is-tyvar-type bt) 0)
+                        (when (= (caller-has-constraint m (tyvar-type-name bt) proto) 0)
+                          (set! ok 0))
+                        (when (= (conformance-lookup (type-spelling bt) proto) 0)
+                          (set! ok 0))))
+                    (inc! ci))
+                  (when (!= ok 0)
+                    ; result = m2's return spelling, its tyvars substituted by `bound`
+                    (let (rnode:ptr (binding-type-node (node-at (. m2 body) 1)))
+                      (when (= rnode null) (return ty-void))
+                      (when (= (-> rnode (cast ptr:Node _) (. kind)) NODE-SYM)
+                        (let (ridx:i32 (tyvar-index-of (-> rnode (cast ptr:Node _) (. s))
+                                                       (. m2 tyvars) (. m2 num-tyvars)))
+                          (when (>= ridx 0) (return (aref (cast ptr:ptr bound) ridx)))))
+                      (return (parse-type-from-node rnode line)))))))))
+        (inc! gi)))
+    (return null)))
+
+; Is this head one of the core special forms (mirrors emit-list's dispatch)?
+; Such forms are handled structurally by gcheck, never as function calls.
+(defn gcheck-special-form:i32 (hp:ptr)
+  (when (or (= hp 'let) (= hp 'with)) (return 1))
+  (when (or (= hp 'do) (= hp 'cond)) (return 1))
+  (when (or (= hp 'return) (= hp 'while)) (return 1))
+  (when (or (= hp 'set!) (= hp 'inc!)) (return 1))
+  (when (or (= hp 'quote) (= hp 'quasiquote)) (return 1))
+  (when (or (= hp 'not) (or (= hp 'and) (= hp 'or))) (return 1))
+  (when (or (= hp 'cast) (= hp 'addr-of)) (return 1))
+  (when (or (= hp 'deref) (or (= hp 'ptr-set!) (= hp 'ptr+))) (return 1))
+  (when (or (= hp '.) (= hp '.set!)) (return 1))
+  (when (or (= hp 'sizeof) (or (= hp 'alloca) (= hp 'char))) (return 1))
+  (when (or (= hp 'aref) (or (= hp 'aset!) (= hp 'gensym))) (return 1))
+  (when (or (= hp 'funcall) (= hp 'funcall-void)) (return 1))
+  (when (or (= hp 'funcall-ptr-1) (= hp 'funcall-ptr-i32)) (return 1))
+  (when (or (= hp 'funcall-ptr-i64) (= hp 'funcall-ptr-ptr)) (return 1))
+  (return 0))
+
+; Declared type of a let/with binding name in a generic body. Handles both the
+; un-desugared colon symbol ("r:T") and the desugared (name type) cell. Returns
+; null for an untyped binding (caller infers from the value).
+(defn gbind-decl-type:ptr (bind-node:ptr m:ptr line:i32)
+  (let (n:ptr:Node (cast ptr:Node bind-node))
+    (when (= (. n kind) NODE-SYM)
+      (let (tail:ptr (colon-tail (. n s)))
+        (when (= tail null) (return null))
+        (let (idx:i32 (tyvar-index-of tail (. (cast ptr:Method m) tyvars)
+                                      (. (cast ptr:Method m) num-tyvars)))
+          (when (>= idx 0) (return (make-tyvar-type m idx)))
+          (return (parse-type-spelling-str tail line)))))
+    (when (= (. n kind) NODE-CELL)
+      (let (tnode:ptr (node-at bind-node 1))
+        (when (= tnode null) (return null))
+        (when (= (-> tnode (cast ptr:Node _) (. kind)) NODE-SYM)
+          (let (idx:i32 (tyvar-index-of (-> tnode (cast ptr:Node _) (. s))
+                                        (. (cast ptr:Method m) tyvars)
+                                        (. (cast ptr:Method m) num-tyvars)))
+            (when (>= idx 0) (return (make-tyvar-type m idx)))))
+        (return (parse-type-from-node tnode line))))
+    (return null)))
+
+(defn gbind-name:ptr (bind-node:ptr)
+  (let (n:ptr:Node (cast ptr:Node bind-node))
+    (when (= (. n kind) NODE-SYM)
+      (let (nm:ptr null tail:ptr null)
+        (split-typed (. n s) (cast ptr:ptr (addr-of nm)) (cast ptr:ptr (addr-of tail)))
+        (return nm)))
+    (when (= (. n kind) NODE-CELL)
+      (return (-> n (. car) (cast ptr:Node _) (. s))))
+    (return null)))
+
+; Type-check one node of a generic body in `scope`, against template `m`.
+; Returns the node's (possibly abstract) type, or null when not modeled. Aborts
+; with a def-time diagnostic on an operation the constraints do not provide.
+(defn gcheck:ptr (n:ptr scope:ptr m:ptr)
+  (when (= n null) (return ty-void))
+  (let (nn:ptr:Node (cast ptr:Node n))
+    (when (= (. nn kind) NODE-INT)   (return ty-i32))
+    (when (= (. nn kind) NODE-FLOAT) (return ty-f64))
+    (when (= (. nn kind) NODE-STR)   (return ty-ptr))
+    (when (= (. nn kind) NODE-SYM)   (return (node-type-sym n scope)))
+    (when (!= (. nn kind) NODE-CELL) (return ty-void))
+    (when (= (node-len n) 0) (return null))
+    (let (head:ptr:Node (cast ptr:Node (node-at n 0)))
+      (when (!= (. head kind) NODE-SYM)
+        ; non-symbol head: just walk compound children for nested calls.
+        (gcheck-walk-children n scope m)
+        (return null))
+      (let (h:ptr (. head s)
+            hp:ptr (cast ptr head))
+        ; Expand macros (if/when/-> …) so the body is core forms.
+        (when (!= (find-macro h) null)
+          (let (ex:ptr (macroexpand-form n 1))
+            (when (!= ex n) (return (gcheck ex scope m)))))
+        (when (or (= hp 'quote) (= hp 'quasiquote)) (return ty-ptr))
+        ; let / with: bind names (possibly abstract), then check the body.
+        (when (or (= hp 'let) (= hp 'with))
+          (let (binds:ptr (node-at n 1)
+                inner:ptr (scope-new scope)
+                bl:i32 (node-len binds)
+                i:i32 0)
+            (while (< i bl)
+              (let (bname:ptr (node-at binds i)
+                    bval:ptr (node-at binds (+ i 1))
+                    vty:ptr (gcheck bval inner m)
+                    dty:ptr (gbind-decl-type bname m (. nn line))
+                    nm:ptr (gbind-name bname))
+                (when (= dty null) (set! dty vty))
+                (when (and (!= nm null) (!= dty null))
+                  (scope-define inner nm dty nm 1)))
+              (set! i (+ i 2)))
+            (let (last:ptr null j:i32 2 cl:i32 (node-len n))
+              (while (< j cl) (set! last (gcheck (node-at n j) inner m)) (inc! j))
+              (return last))))
+        (when (= hp 'do)
+          (let (last:ptr null j:i32 1 cl:i32 (node-len n))
+            (while (< j cl) (set! last (gcheck (node-at n j) scope m)) (inc! j))
+            (return last)))
+        ; cond / and / or / not / set! / inc! / return / while and the structural
+        ; special forms: walk compound children; result type is not modeled.
+        (when (!= (gcheck-special-form hp) 0)
+          (gcheck-walk-children n scope m)
+          (return null))
+        ; A genuine call: type the arguments (catching nested abstract calls),
+        ; then resolve the head. Lenient model: resolve protocol-method and
+        ; generic calls precisely (good types for nested checking); for anything
+        ; else, only a genuinely unknown name is an error — a known operation
+        ; (operator, foreign/concrete function) on an abstract value is deferred
+        ; to stamp-time (A1), since it may well be valid for the concrete type.
+        (let (nargs:i32 (- (node-len n) 1)
+              argtypes:ptr (arena-alloc (* (i64 (+ nargs 1)) (i64 8)))
+              any-abstract:i32 0
+              i:i32 0)
+          (while (< i nargs)
+            (let (at:ptr (gcheck (node-at n (+ i 1)) scope m))
+              (aset! (cast ptr:ptr argtypes) i at)
+              (when (!= (is-tyvar-type at) 0) (set! any-abstract 1)))
+            (inc! i))
+          ; Protocol-method resolution (Self → tyvar) takes priority — a required
+          ; method need not have a concrete impl in this unit to be a valid call.
+          (when (!= any-abstract 0)
+            (let (rt:ptr (abstract-call-via-protocol h argtypes nargs m (. nn line)))
+              (when (!= rt null) (return rt))
+              (set! rt (abstract-call-via-generic h argtypes nargs m (. nn line)))
+              (when (!= rt null) (return rt))))
+          (let (g:ptr (generic-lookup h))
+            ; Intrinsic operator: best-effort type (i1 for comparisons, else the
+            ; first operand's type — possibly the abstract tyvar). Deferred, no error.
+            (when (!= g null)
+              (let (m0:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (-> g (cast ptr:Generic _) (. methods))) 0)))
+                (when (= (. m0 kind) METHOD-INTRINSIC)
+                  (when (!= (. (cast ptr:BinOp (. m0 binop)) is-cmp) 0) (return ty-i1))
+                  (return (gcheck (node-at n 1) scope m)))))
+            ; A name that is neither a generic nor scope-bound is a typo — error
+            ; whether or not an argument is abstract.
+            (when (and (= g null) (= (scope-lookup scope h) null))
+              (die-at (. nn line) (fmt-s "in generic body: unknown function '%s'" h)))
+            ; Known name, unresolved here: defer to stamp-time. Concrete calls get
+            ; a best-effort type; abstract ones stay unknown (null).
+            (when (!= any-abstract 0) (return null))
+            (return (node-type-call n scope h))))))))
+
+; Walk only the compound (list) children of a node, checking nested calls but
+; ignoring bare symbols (which may be type names, field names, or places).
+(defn gcheck-walk-children:void (n:ptr scope:ptr m:ptr)
+  (let (cl:i32 (node-len n) i:i32 1)
+    (while (< i cl)
+      (let (c:ptr (node-at n i))
+        (when (and (!= c null) (= (-> c (cast ptr:Node _) (. kind)) NODE-CELL))
+          (gcheck c scope m)))
+      (inc! i))))
+
+; Run the A2 check on one generic template: bind its parameters to their abstract
+; (or concrete) types, then check each body form.
+(defn check-generic-template:void (m:ptr)
+  (let (mm:ptr:Method (cast ptr:Method m)
+        form:ptr (. mm body)
+        params-node:ptr (node-at form 2)
+        scope:ptr (scope-new g-globals)
+        nparams:i32 (. mm num-params)
+        i:i32 0)
+    (while (< i nparams)
+      (let (pnode:ptr (node-at params-node i)
+            pty:ptr (gbind-decl-type pnode m (. (cast ptr:Node form) line))
+            pnm:ptr (gbind-name pnode))
+        (when (and (!= pnm null) (!= pty null))
+          (scope-define scope pnm pty pnm 1)))
+      (inc! i))
+    (let (cl:i32 (node-len form) j:i32 3)
+      (while (< j cl)
+        (gcheck (node-at form j) scope m)
+        (inc! j)))))
+
+; Check every not-yet-checked bounded-generic template. Runs after the top-level
+; loop (so includes/imports/protocols/conformances are all registered) and before
+; the worklist drain (so a body error surfaces at the defn, before any A1
+; stamp-time error from instantiation).
+(defn check-generic-templates:void ()
+  (let (gi:i32 0)
+    (while (< gi g-num-generics)
+      (let (gg:ptr:Generic (cast ptr:Generic (ptr+ (cast ptr:Generic g-generics) gi))
+            mi:i32 0)
+        (while (< mi (. gg num-methods))
+          (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (. gg methods)) mi)))
+            (when (and (= (. m kind) METHOD-GENERIC) (= (. m checked) 0))
+              (.set! m checked 1)
+              (check-generic-template (cast ptr m))))
+          (inc! mi)))
+      (inc! gi))))
+
+; Emit the bodies of every stamped generic instantiation queued so far. Runs at
+; the end of the top-level loop, when no function emission is in progress. The
+; persistent cursor makes recursive drains (during imports) never re-emit, and
+; stamping inside a drained body simply extends the worklist this loop consumes.
+(defn drain-mono-worklist:void ()
+  (let (vv:ptr:Vec (cast ptr:Vec g-mono-worklist))
+    (while (< g-mono-drained (. vv len))
+      (let (job:ptr:MonoJob (cast ptr:MonoJob (aref (cast ptr:ptr (. vv data)) g-mono-drained)))
+        (set! g-mono-drained (+ g-mono-drained 1))
+        (set! g-out g-def-stream)
+        ; Attach the instantiation context to any error raised while emitting.
+        (set! g-mono-context (. job context))
+        (emit-defn (. job form))
+        (set! g-mono-context null)))))
+
+; ============================================================
+; Protocols & conformances (Stage 9 rung 2)
+; ============================================================
+; defprotocol/extend are entirely compile-time and emit no code. A protocol is
+; a named set of required signatures (types may mention Self); `extend Type P`
+; verifies, after the whole-file prescan, that each required signature resolves
+; to a concrete method with Self→Type substituted, and records the conformance.
+
+(defn protocol-lookup:ptr (name:ptr)
+  (let (i:i32 0)
+    (while (< i g-num-protocols)
+      (let (p:ptr:Protocol (cast ptr:Protocol (ptr+ (cast ptr:Protocol g-protocols) i)))
+        (when (= (strcmp (. p name) name) 0) (return (cast ptr p))))
+      (inc! i)))
+  (return null))
+
+(defn protocol-new:ptr (name:ptr sigs:ptr num-sigs:i32)
+  (when (= g-num-protocols g-cap-protocols)
+    (let (nc:i32 16)
+      (when (!= g-cap-protocols 0) (set! nc (* g-cap-protocols 2)))
+      (let (np:ptr (arena-alloc (* (cast i64 nc) (sizeof Protocol))))
+        (when (!= g-num-protocols 0)
+          (memcpy np g-protocols (* (cast i64 g-num-protocols) (sizeof Protocol))))
+        (set! g-protocols np)
+        (set! g-cap-protocols nc))))
+  (let (p:ptr:Protocol (cast ptr:Protocol (ptr+ (cast ptr:Protocol g-protocols) g-num-protocols)))
+    (.set! p name name)
+    (.set! p sigs sigs)
+    (.set! p num-sigs num-sigs)
+    (inc! g-num-protocols)
+    (return (cast ptr p))))
+
+(defn conformance-lookup:i32 (type-name:ptr proto-name:ptr)
+  (let (i:i32 0)
+    (while (< i g-num-conformances)
+      (let (c:ptr:Conformance (cast ptr:Conformance (ptr+ (cast ptr:Conformance g-conformances) i)))
+        (when (and (= (strcmp (. c type-name) type-name) 0)
+                   (= (strcmp (. c proto-name) proto-name) 0))
+          (return 1)))
+      (inc! i)))
+  (return 0))
+
+(defn conformance-add:void (type-name:ptr proto-name:ptr)
+  (when (!= (conformance-lookup type-name proto-name) 0) (return))
+  (when (= g-num-conformances g-cap-conformances)
+    (let (nc:i32 16)
+      (when (!= g-cap-conformances 0) (set! nc (* g-cap-conformances 2)))
+      (let (ncf:ptr (arena-alloc (* (cast i64 nc) (sizeof Conformance))))
+        (when (!= g-num-conformances 0)
+          (memcpy ncf g-conformances (* (cast i64 g-num-conformances) (sizeof Conformance))))
+        (set! g-conformances ncf)
+        (set! g-cap-conformances nc))))
+  (let (c:ptr:Conformance (cast ptr:Conformance (ptr+ (cast ptr:Conformance g-conformances) g-num-conformances)))
+    (.set! c type-name type-name)
+    (.set! c proto-name proto-name)
+    (inc! g-num-conformances)))
+
+; Substitute the type variable `Self` in a colon-typed symbol spelling: split
+; on ':' and replace any segment that is exactly "Self" with the concrete type
+; name, rejoining with ':'. "self:ptr:Self" with Circle → "self:ptr:Circle".
+(defn subst-self-sym:ptr (s:ptr typename:ptr line:i32)
+  (let (segs:ptr (split-colon-segments s line)
+        acc:ptr null
+        cur:ptr segs)
+    (while (!= cur null)
+      (let (seg-node:ptr (. (cast ptr:Node cur) car)
+            seg:ptr (. (cast ptr:Node seg-node) s)
+            piece:ptr seg)
+        (when (= (strcmp seg "Self") 0) (set! piece typename))
+        (if (= acc null)
+          (set! acc piece)
+          (set! acc (fmt-2s "%s:%s" acc piece))))
+      (set! cur (. (cast ptr:Node cur) cdr)))
+    (when (= acc null) (return s))
+    (return acc)))
+
+; Deep-copy a signature AST with Self→typename in every symbol, yielding a
+; concrete signature parseable by the ordinary defn helpers.
+(defn subst-self-node:ptr (node:ptr typename:ptr)
+  (when (= node null) (return null))
+  (let (n:ptr:Node (cast ptr:Node node))
+    (when (= (. n kind) NODE-SYM)
+      (let (ns:ptr:Node (cast ptr:Node (alloc-node)))
+        (.set! ns kind NODE-SYM)
+        (.set! ns line (. n line))
+        (.set! ns s (subst-self-sym (. n s) typename (. n line)))
+        (return (cast ptr ns))))
+    (when (= (. n kind) NODE-CELL)
+      (return (make-cell (subst-self-node (. n car) typename)
+                         (subst-self-node (. n cdr) typename)
+                         (. n line))))
+    (return node)))
+
+; Register a (defprotocol Name (sig...) ...) form. Idempotent on name.
+(defn protocol-register-form:void (form:ptr)
+  (let (ff:ptr:Node (cast ptr:Node form))
+    (when (< (node-len form) 2)
+      (die-at (. ff line) "defprotocol: expected (defprotocol Name (sig...) ...)"))
+    (let (name-node:ptr:Node (cast ptr:Node (node-at form 1)))
+      (when (!= (. name-node kind) NODE-SYM)
+        (die-at (. name-node line) "defprotocol: name must be a symbol"))
+      (let (pname:ptr (. name-node s))
+        (when (!= (protocol-lookup pname) null) (return))
+        (let (nsigs:i32 (- (node-len form) 2)
+              sigs:ptr null)
+          (when (> nsigs 0)
+            (set! sigs (arena-alloc (* (cast i64 nsigs) (cast i64 8))))
+            (let (i:i32 0)
+              (while (< i nsigs)
+                (aset! (cast ptr:ptr sigs) i (node-at form (+ i 2)))
+                (inc! i))))
+          (protocol-new pname sigs nsigs))))))
+
+(defn prescan-protocols:void (forms:ptr)
+  (let (fc:ptr forms)
+    (while (!= fc null)
+      (let (f:ptr:Node (cast ptr:Node (. (cast ptr:Node fc) car)))
+        (when (and (and (!= (cast ptr f) null) (= (. f kind) NODE-CELL))
+                   (and (>= (node-len (cast ptr f)) 2)
+                        (and (-> f (node-at _ 0) (cast ptr:Node _) (. kind) (= _ NODE-SYM))
+                             (-> f (node-at _ 0) (cast ptr:Node _) (. s)
+                                 (strcmp _ "defprotocol") (= _ 0)))))
+          (protocol-register-form (cast ptr f))))
+      (set! fc (. (cast ptr:Node fc) cdr)))))
+
+; (extend Type Protocol): post-prescan conformance check. For each required
+; signature, substitute Self→Type, then require a concrete method at the exact
+; tier. Missing methods are all reported before failing.
+(defn emit-extend:void (form:ptr)
+  (let (ff:ptr:Node (cast ptr:Node form))
+    (when (< (node-len form) 3)
+      (die-at (. ff line) "extend: expected (extend Type Protocol)"))
+    (let (type-node:ptr:Node (cast ptr:Node (node-at form 1))
+          proto-node:ptr:Node (cast ptr:Node (node-at form 2)))
+      (when (!= (. type-node kind) NODE-SYM)
+        (die-at (. type-node line) "extend: type must be a symbol"))
+      (when (!= (. proto-node kind) NODE-SYM)
+        (die-at (. proto-node line) "extend: protocol must be a symbol"))
+      (let (typename:ptr (. type-node s)
+            proto-name:ptr (. proto-node s)
+            proto:ptr (protocol-lookup proto-name))
+        (when (= proto null)
+          (die-at (. proto-node line) (fmt-s "extend: unknown protocol '%s'" proto-name)))
+        ; Validate single-token subject types eagerly for a clean diagnostic.
+        (when (= (strchr typename 58) null)
+          (parse-type-name typename (. type-node line)))
+        (let (pp:ptr:Protocol (cast ptr:Protocol proto)
+              i:i32 0
+              missing:i32 0)
+          (while (< i (. pp num-sigs))
+            (let (sig:ptr (aref (cast ptr:ptr (. pp sigs)) i)
+                  csig:ptr (subst-self-node sig typename)
+                  name-node:ptr (node-at csig 0)
+                  params-node:ptr (node-at csig 1)
+                  mname:ptr null)
+              (extract-name-and-type name-node (cast ptr:ptr (addr-of mname))
+                                     (. (cast ptr:Node name-node) line))
+              (let (nparams:i32 (defn-params-count params-node)
+                    ptypes:ptr (defn-params-to-types params-node)
+                    g:ptr (generic-lookup mname)
+                    m:ptr null)
+                (when (!= g null)
+                  (set! m (generic-find-method-exact g ptypes nparams)))
+                (when (= m null)
+                  (set! missing 1)
+                  (fprintf (cast ptr stderr)
+                    "  %s does not implement %s.%s\n" typename proto-name mname))))
+            (inc! i))
+          (when (!= missing 0)
+            (die-at (. ff line)
+              (fmt-s "type '%s' does not conform to the requested protocol" typename)))
+          (conformance-add typename proto-name))))))
+
+; Import side: trust the exporting unit's check; just record the fact.
+(defn register-imported-conformance:void (form:ptr)
+  (when (>= (node-len form) 3)
+    (let (type-node:ptr:Node (cast ptr:Node (node-at form 1))
+          proto-node:ptr:Node (cast ptr:Node (node-at form 2)))
+      (when (and (= (. type-node kind) NODE-SYM) (= (. proto-node kind) NODE-SYM))
+        (conformance-add (. type-node s) (. proto-node s))))))
 
 ; ============================================================
 ; Cast
@@ -1606,7 +3097,6 @@
 
 (defn emit-call:ptr (call:ptr scope:ptr sym:ptr)
   (let (cc:ptr:Node (cast ptr:Node call)
-        ss:ptr:Sym (cast ptr:Sym sym)
         nargs:i32 (- (node-len cc) 1)
         args:ptr (arena-alloc (* (i64 (+ nargs 1)) (sizeof Val)))
         i:i32 0)
@@ -1614,6 +3104,16 @@
       (let (v:ptr (emit-node (node-at cc (+ i 1)) scope))
         (memcpy (ptr+ (cast ptr:Val args) i) v (sizeof Val)))
       (inc! i))
+    (return (emit-call-with-args call scope sym args nargs))))
+
+; Emit a call given already-emitted argument Vals. Shared by the ordinary call
+; path and the multimethod dispatch path (which must resolve the method from
+; argument types before the call can be emitted). Handles &rest folding, the
+; variadic signature, and void/non-void returns.
+(defn emit-call-with-args:ptr (call:ptr scope:ptr sym:ptr args:ptr nargs:i32)
+  (let (cc:ptr:Node (cast ptr:Node call)
+        ss:ptr:Sym (cast ptr:Sym sym)
+        i:i32 0)
     ; If the callee has &rest, fold trailing args into a runtime Node cons
     ; list and replace them with a single ptr arg pointing at the list.
     (let (eff-nargs:i32 nargs
@@ -2156,6 +3656,46 @@
 ; List dispatch
 ; ============================================================
 
+; Emit a call to an overloaded generic: emit the arguments, resolve the method
+; from their concrete types, then emit the call to the selected mangled symbol.
+(defn emit-generic-call:ptr (n:ptr scope:ptr g:ptr)
+  (let (nn:ptr:Node (cast ptr:Node n)
+        nargs:i32 (- (node-len nn) 1)
+        args:ptr (arena-alloc (* (i64 (+ nargs 1)) (sizeof Val)))
+        argtypes:ptr (arena-alloc (* (i64 (+ nargs 1)) (i64 8)))
+        i:i32 0)
+    (while (< i nargs)
+      (let (v:ptr (emit-node (node-at nn (+ i 1)) scope))
+        (memcpy (ptr+ (cast ptr:Val args) i) v (sizeof Val))
+        (aset! (cast ptr:ptr argtypes) i (. (cast ptr:Val v) type)))
+      (inc! i))
+    (let (m:ptr:Method (cast ptr:Method (generic-resolve g argtypes nargs (. nn line)))
+          ss:ptr:Sym (cast ptr:Sym (arena-alloc (sizeof Sym))))
+      (.set! ss name (-> g (cast ptr:Generic _) (. name)))
+      (.set! ss type (. m fn-type))
+      (.set! ss ir-name (. m ir-name))
+      (.set! ss is-local 0)
+      (return (emit-call-with-args n scope (cast ptr ss) args nargs)))))
+
+; Unified dispatch tail for emit-list: the head symbol `h` is neither a macro
+; nor a special form. Resolve it through the generic registry — operators are
+; intrinsic generics (routed to emit-binop, byte-identical IR); overloaded sets
+; dispatch on argument types; solitary names and C/extern functions fall through
+; to the ordinary scope-bound call (also byte-identical).
+(defn emit-dispatch:ptr (n:ptr scope:ptr h:ptr head:ptr)
+  (let (g:ptr (generic-lookup h))
+    (when (!= g null)
+      (let (gg:ptr:Generic (cast ptr:Generic g)
+            m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (. gg methods)) 0)))
+        (when (= (. m kind) METHOD-INTRINSIC)
+          (return (emit-binop n scope (. m binop))))
+        (when (!= (. gg mangled) 0)
+          (return (emit-generic-call n scope (cast ptr gg)))))))
+  (let (sym:ptr (scope-lookup scope h))
+    (when (= sym null)
+      (die-at (. (cast ptr:Node head) line) (fmt-s "unknown: %s" h)))
+    (return (emit-call n scope sym))))
+
 (defn emit-list:ptr (n:ptr scope:ptr)
   (let (nn:ptr:Node (cast ptr:Node n))
     (when (= (node-len nn) 0) (die-at (. nn line) "empty list"))
@@ -2206,12 +3746,7 @@
         (when (= hp 'char) (return (emit-char n scope)))
         (when (= hp 'aref) (return (emit-aref n scope)))
         (when (= hp 'aset!) (return (emit-aset n scope)))
-        (let (op:ptr (lookup-binop h))
-          (when (!= op null) (return (emit-binop n scope op)))
-          (let (sym:ptr (scope-lookup scope h))
-            (when (= sym null)
-              (die-at (. head line) (fmt-s "unknown: %s" h)))
-            (return (emit-call n scope sym))))))))
+        (return (emit-dispatch n scope h (cast ptr head)))))))
 
 ; ============================================================
 ; Top-level forms
@@ -2273,11 +3808,16 @@
     (let (name-node:ptr:Node (cast ptr:Node (node-at cc 1)))
       (when (!= (. name-node kind) NODE-SYM)
         (die-at (. name-node line) "defstruct: name must be symbol"))
-      ; Allow redefinition with the same shape — the prelude defines Node and
-      ; some user programs/libs also (defstruct Node ...).
-      (when (!= (cast ptr (lookup-struct (. name-node s))) null)
-        (return))
-      (let (sd:ptr:StructDef (cast ptr:StructDef (register-struct (. name-node s)))
+      ; Reuse a StructDef pre-registered by prescan-struct-names (name only), or
+      ; register fresh. Skip if its definition was already written to IR — covers
+      ; redefinition (the prelude defines Node and some programs also do).
+      (let (existing:ptr (lookup-struct (. name-node s)))
+        (when (and (!= existing null)
+                   (!= (-> existing (cast ptr:StructDef _) (. emitted)) 0))
+          (return)))
+      (let (existing:ptr (lookup-struct (. name-node s))
+            sd:ptr:StructDef (cast ptr:StructDef
+                               (if (!= existing null) existing (register-struct (. name-node s))))
             nfields:i32 (- (node-len cc) 2))
         (.set! sd field-names (arena-alloc (* (i64 nfields) (i64 8))))
         (.set! sd field-types (arena-alloc (* (i64 nfields) (i64 8))))
@@ -2299,7 +3839,8 @@
             (when (!= i 0) (fprintf g-out ", "))
             (fprintf g-out "%s" (type-to-ir (aref (cast ptr:ptr (. sd field-types)) i)))
             (inc! i)))
-        (fprintf g-out " }\n\n")))))
+        (fprintf g-out " }\n\n")
+        (.set! sd emitted 1)))))
 
 (defn emit-extern:void (call:ptr)
   (let (cc:ptr:Node (cast ptr:Node call))
@@ -2335,6 +3876,9 @@
           params-node:ptr (node-at cc 2))
       (when (= (node-is-list params-node) 0)
         (die-at (. (cast ptr:Node name-node) line) "defn: params must be list"))
+      ; A bounded-generic template (carries `&where`) emits no code itself; it is
+      ; registered in prescan and monomorphized per call site.
+      (when (>= (params-where-index params-node) 0) (return))
       (let (fname:ptr null
             ret:ptr (extract-name-and-type name-node (cast ptr:ptr (addr-of fname))
                                            (. (cast ptr:Node name-node) line)))
@@ -2391,8 +3935,12 @@
             (.set! ft params param-types)
             (.set! ft variadic 0)
             (.set! ft has-rest has-rest)
-            (scope-define g-globals fname (cast ptr ft)
-                          (fmt-s "@%s" fname) 0))
+            ; Solitary names (and fallback defns with no registered generic) keep
+            ; their scope binding under @name. Overloaded methods dispatch through
+            ; the generic registry, so no bare-name binding is installed.
+            (when (= (defn-is-mangled fname) 0)
+              (scope-define g-globals fname (cast ptr ft)
+                            (defn-ir-name fname param-types nparams) 0)))
           ; Codegen
           (reset-function-state)
           (let (fn-scope:ptr (scope-new g-globals)
@@ -2438,7 +3986,7 @@
             ; Close streams and emit function
             (fclose g-entry-stream)
             (fclose g-body-stream)
-            (fprintf g-out "define %s @%s(" (type-to-ir ret) fname)
+            (fprintf g-out "define %s %s(" (type-to-ir ret) (defn-ir-name fname param-types nparams))
             (set! i 0)
             (while (< i nparams)
               (when (!= i 0) (fprintf g-out ", "))
@@ -3191,6 +4739,25 @@
             (return (make-cell (cast ptr head) new-body (. f line)))))
         (return form)))))
 
+; Pre-register the names of all top-level structs so that defn signatures
+; mentioning a struct type (e.g. a param typed ptr:Circle) resolve during
+; prescan-defn-signatures, which runs before any defstruct is emitted. Only the
+; name is registered here; fields and the IR type are filled by emit-defstruct.
+(defn prescan-struct-names:void (forms:ptr)
+  (let (fc:ptr forms)
+    (while (!= fc null)
+      (let (f:ptr:Node (cast ptr:Node (. (cast ptr:Node fc) car)))
+        (when (and (and (!= (cast ptr f) null) (= (. f kind) NODE-CELL))
+                   (and (>= (node-len (cast ptr f)) 2)
+                        (and (-> f (node-at _ 0) (cast ptr:Node _) (. kind) (= _ NODE-SYM))
+                             (-> f (node-at _ 0) (cast ptr:Node _) (. s)
+                                 (strcmp _ "defstruct") (= _ 0)))))
+          (let (nn:ptr:Node (cast ptr:Node (node-at (cast ptr f) 1)))
+            (when (and (= (. nn kind) NODE-SYM)
+                       (= (cast ptr (lookup-struct (. nn s))) null))
+              (register-struct (. nn s))))))
+      (set! fc (. (cast ptr:Node fc) cdr)))))
+
 ; Pre-scan a form list and forward-declare all defn signatures in g-globals.
 (defn prescan-defn-signatures:void (forms:ptr)
   (let (fc:ptr forms)
@@ -3203,31 +4770,22 @@
           (let (name-node:ptr (node-at (cast ptr f) 1)
                 params-node:ptr (node-at (cast ptr f) 2))
             (when (!= (node-is-list params-node) 0)
-              (let (fname:ptr null
-                    ret:ptr (extract-name-and-type name-node (cast ptr:ptr (addr-of fname))
-                                                    (. (cast ptr:Node name-node) line)))
-                (when (!= ret null)
-                  (let (nparams:i32 (node-len params-node)
-                        ptypes:ptr null)
-                    (when (> nparams 0)
-                      (set! ptypes (arena-alloc (* (i64 nparams) (i64 8)))))
-                    (let (j:i32 0)
-                      (while (< j nparams)
-                        (let (p:ptr (node-at params-node j)
-                              pn:ptr null
-                              pty:ptr (extract-name-and-type p (cast ptr:ptr (addr-of pn))
-                                                              (. (cast ptr:Node p) line)))
-                          (if (!= pty null)
-                            (aset! (cast ptr:ptr ptypes) j pty)
-                            (aset! (cast ptr:ptr ptypes) j ty-i32)))
-                        (inc! j)))
-                    (let (ft:ptr:Type (cast ptr:Type (make-type TY-FN)))
-                      (.set! ft ret ret)
-                      (.set! ft num-params nparams)
-                      (.set! ft params ptypes)
-                      (scope-define g-globals fname (cast ptr ft)
-                                    (fmt-s "@%s" fname) 0)))))))))
-      (set! fc (. (cast ptr:Node fc) cdr)))))
+              ; A `&where` clause marks a bounded-generic template: retain it for
+              ; on-demand monomorphization rather than parsing its tyvar types.
+              (if (>= (params-where-index params-node) 0)
+                (register-generic-defn (cast ptr f) 0)
+                (let (fname:ptr null
+                      ret:ptr (extract-name-and-type name-node (cast ptr:ptr (addr-of fname))
+                                                      (. (cast ptr:Node name-node) line)))
+                  (when (!= ret null)
+                    (let (nparams:i32 (defn-params-count params-node)
+                          ptypes:ptr (defn-params-to-types params-node)
+                          has-rest:i32 (if (< (defn-params-count params-node)
+                                              (node-len params-node)) 1 0))
+                      (generic-register-method fname ret ptypes nparams has-rest 0
+                                               (cast ptr f))))))))))
+      (set! fc (. (cast ptr:Node fc) cdr)))
+    (finalize-generics)))
 
 (defn emit-def-rmacro:void (call:ptr)
   (let (cc:ptr:Node (cast ptr:Node call))
@@ -3244,6 +4802,9 @@
 ; Emit a list of top-level forms (pre-scan + dispatch loop).
 ; Used by main and by emit-import for recursive processing.
 (defn emit-toplevel-forms:void (forms:ptr)
+  (set! g-toplevel-depth (+ g-toplevel-depth 1))
+  (prescan-struct-names forms)
+  (prescan-protocols forms)
   (prescan-defn-signatures forms)
   (let (fc:ptr forms)
     (while (!= fc null)
@@ -3275,6 +4836,11 @@
                   (do (set! g-out g-decl-stream) (emit-extern (cast ptr f)))
                 (= hp 'defn)
                   (do (set! g-out g-def-stream) (emit-defn (cast ptr f)))
+                (= hp 'defprotocol)
+                  ; Registered in prescan-protocols; emits no code.
+                  0
+                (= hp 'extend)
+                  (emit-extend (cast ptr f))
                 (= hp 'compile-time)
                   (emit-compile-time (cast ptr f))
                 (= hp 'defmacro)
@@ -3287,7 +4853,17 @@
                   (do (set! g-out g-decl-stream) (emit-nuch-declare-import (cast ptr f)))
                 true
                   (die-at (. f line) (fmt-s "unknown top-level form: %s" h)))))
-      (set! fc (. (cast ptr:Node fc) cdr)))))
+      (set! fc (. (cast ptr:Node fc) cdr))))
+  ; A2: type-check generic template bodies against their abstract protocol
+  ; interface. Only at the outermost level — every import has now registered its
+  ; names/protocols/conformances and g-source-path is back to this unit — and
+  ; before the worklist drain, so a body error lands at the defn (ahead of any A1
+  ; stamp-time error from instantiation).
+  (when (= g-toplevel-depth 1)
+    (check-generic-templates))
+  ; Emit the bodies of any generic instantiations these forms triggered.
+  (drain-mono-worklist)
+  (set! g-toplevel-depth (- g-toplevel-depth 1)))
 
 ; Check if a path is in a Node-based string list.
 (defn import-list-has:i32 (list:ptr path:ptr)
@@ -3476,7 +5052,54 @@
   (print-node form)
   (printf "\n"))
 
+; Export one overloaded method, carrying its mangled symbol explicitly so the
+; importer can declare it and register it for dispatch:
+;   (defmethod "@area.pCircle" area:i32 ((c (ptr Circle))))
+(defn emit-nuch-defmethod:void (form:ptr mangled:ptr)
+  (printf "(defmethod \"%s\" " mangled)
+  (print-node (node-at form 1))
+  (printf " (")
+  (let (params:ptr (node-at form 2)
+        i:i32 0
+        n:i32 (node-len params))
+    (while (< i n)
+      (when (!= i 0) (fputc 32 (cast ptr stdout)))
+      (print-node (node-at params i))
+      (inc! i)))
+  (printf "))\n"))
+
+; A solitary function exports as a plain (declare ...); an overloaded one
+; exports a (defmethod ...) per method so each keeps its distinct symbol. A
+; bounded-generic template exports verbatim so importers can monomorphize it.
+(defn emit-nuch-defn:void (form:ptr)
+  (when (>= (params-where-index (node-at form 2)) 0)
+    (print-node form)
+    (printf "\n")
+    (return))
+  (let (mangled:ptr (defn-form-mangled-name form))
+    (if (!= mangled null)
+      (emit-nuch-defmethod form mangled)
+      (emit-nuch-declare form))))
+
+; Protocols and conformances export verbatim — the importer re-registers them
+; (and trusts the recorded conformance rather than re-checking).
+(defn emit-nuch-defprotocol:void (form:ptr)
+  (print-node form)
+  (printf "\n"))
+
+(defn emit-nuch-extend:void (form:ptr)
+  (printf "(extend ")
+  (print-node (node-at form 1))
+  (printf " ")
+  (print-node (node-at form 2))
+  (printf ")\n"))
+
 (defn emit-nuch-header:void (forms:ptr source-file:ptr)
+  ; Populate the registries so overloaded names, mangled symbols, and protocols
+  ; are known before emitting declarations.
+  (prescan-struct-names forms)
+  (prescan-protocols forms)
+  (prescan-defn-signatures forms)
   (printf "; .nuch header for %s\n" source-file)
   (let (fc:ptr forms)
     (while (!= fc null)
@@ -3485,12 +5108,14 @@
                    (and (> (node-len (cast ptr f)) 0)
                         (-> f (node-at _ 0) (cast ptr:Node _) (. kind) (= _ NODE-SYM))))
           (let (h:ptr (-> f (node-at _ 0) (cast ptr:Node _) (. s)))
-            (cond (= (strcmp h "defstruct") 0) (emit-nuch-defstruct (cast ptr f))
-                  (= (strcmp h "defn") 0)      (emit-nuch-declare (cast ptr f))
-                  (= (strcmp h "defconst") 0)  (emit-nuch-defconst (cast ptr f))
-                  (= (strcmp h "defenum") 0)   (emit-nuch-defenum (cast ptr f))
-                  (= (strcmp h "defmacro") 0)  (emit-nuch-defmacro (cast ptr f))
-                  true                         0))))
+            (cond (= (strcmp h "defstruct") 0)    (emit-nuch-defstruct (cast ptr f))
+                  (= (strcmp h "defn") 0)         (emit-nuch-defn (cast ptr f))
+                  (= (strcmp h "defprotocol") 0)  (emit-nuch-defprotocol (cast ptr f))
+                  (= (strcmp h "extend") 0)       (emit-nuch-extend (cast ptr f))
+                  (= (strcmp h "defconst") 0)     (emit-nuch-defconst (cast ptr f))
+                  (= (strcmp h "defenum") 0)      (emit-nuch-defenum (cast ptr f))
+                  (= (strcmp h "defmacro") 0)     (emit-nuch-defmacro (cast ptr f))
+                  true                            0))))
       (set! fc (. (cast ptr:Node fc) cdr)))))
 
 ; ============================================================
@@ -3553,6 +5178,41 @@
               (inc! j))
             (fprintf g-out ")\n")))))))
 
+; Import one exported overloaded method: register it (with its mangled symbol)
+; in the generic registry so calls in the importing unit dispatch to it, and
+; emit an LLVM declare under the mangled symbol (resolved at link time).
+(defn emit-nuch-defmethod-import:void (form:ptr)
+  (let (ff:ptr:Node (cast ptr:Node form))
+    (when (!= (node-len form) 4)
+      (die-at (. ff line) "defmethod: expected (defmethod \"@sym\" name:rettype (params...))"))
+    (let (sym-node:ptr:Node (cast ptr:Node (node-at form 1))
+          name-node:ptr (node-at form 2)
+          params-node:ptr (node-at form 3))
+      (when (!= (. sym-node kind) NODE-STR)
+        (die-at (. sym-node line) "defmethod: first element must be the mangled symbol string"))
+      (let (mangled:ptr (. sym-node s)
+            fname:ptr null
+            ret:ptr (extract-name-and-type name-node (cast ptr:ptr (addr-of fname))
+                                            (. (cast ptr:Node name-node) line)))
+        (when (= ret null)
+          (die-at (. (cast ptr:Node name-node) line) "defmethod: missing return type"))
+        (let (nparams:i32 (defn-params-count params-node)
+              ptypes:ptr (defn-params-to-types params-node)
+              has-rest:i32 (if (< (defn-params-count params-node)
+                                  (node-len params-node)) 1 0)
+              m:ptr (generic-register-method fname ret ptypes nparams has-rest 0 null))
+          (.set! (cast ptr:Method m) ir-name mangled)
+          (let (g:ptr (generic-lookup fname))
+            (.set! (cast ptr:Generic g) mangled 1)
+            (.set! (cast ptr:Generic g) finalized 1))
+          (fprintf g-out "declare %s %s(" (type-to-ir ret) mangled)
+          (let (j:i32 0)
+            (while (< j nparams)
+              (when (!= j 0) (fprintf g-out ", "))
+              (fprintf g-out "%s" (type-to-ir (aref (cast ptr:ptr ptypes) j)))
+              (inc! j)))
+          (fprintf g-out ")\n"))))))
+
 (defn emit-nuch-import-forms:void (forms:ptr)
   (let (fc:ptr forms)
     (while (!= fc null)
@@ -3565,6 +5225,17 @@
                     (do (set! g-out g-type-stream) (emit-defstruct (cast ptr f)))
                   (= (strcmp h "declare") 0)
                     (do (set! g-out g-decl-stream) (emit-nuch-declare-import (cast ptr f)))
+                  (= (strcmp h "defmethod") 0)
+                    (do (set! g-out g-decl-stream) (emit-nuch-defmethod-import (cast ptr f)))
+                  (= (strcmp h "defn") 0)
+                    ; Only bounded-generic templates are exported as whole defns;
+                    ; register (exporter-verified, so trusted) so calls in this
+                    ; unit can instantiate them.
+                    (register-generic-defn (cast ptr f) 1)
+                  (= (strcmp h "defprotocol") 0)
+                    (protocol-register-form (cast ptr f))
+                  (= (strcmp h "extend") 0)
+                    (register-imported-conformance (cast ptr f))
                   (= (strcmp h "defconst") 0)
                     (emit-defconst (cast ptr f))
                   (= (strcmp h "defenum") 0)
@@ -3575,7 +5246,10 @@
                     (emit-def-rmacro (cast ptr f))
                   true
                     0))))
-      (set! fc (. (cast ptr:Node fc) cdr)))))
+      (set! fc (. (cast ptr:Node fc) cdr))))
+  ; Finalize any newly-imported generic templates so their names dispatch
+  ; through the registry (imported concrete methods finalize themselves).
+  (finalize-generics))
 
 ; ============================================================
 ; Compiler initialization — shared by batch and REPL modes
@@ -3600,6 +5274,8 @@
 (defn compiler-init:void ()
   (types-init)
   (init-binops)
+  (init-generics)
+  (set! g-mono-worklist (make-vec))
   (init-rmacros)
   (set! g-structs (arena-alloc (* (cast i64 MAX-STRUCTS) (sizeof StructDef))))
   (set! g-macros (arena-alloc (* (cast i64 256) (sizeof MacroDef))))

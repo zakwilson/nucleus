@@ -55,17 +55,26 @@ A `.nuch` file is an S-expression file containing declarations extracted from a 
 (declare cube:i32 (x:i32))
 ```
 
-Supported forms: `declare` (function signatures), `defstruct`, `defconst`, `defenum`, `defmacro` (full body preserved).
+Supported forms: `declare` (function signatures), `defstruct`, `defconst`, `defenum`, `defmacro` (full body preserved), `defmethod` (one overloaded method, carrying its mangled symbol explicitly), and `defprotocol` / `extend` (protocol definitions and conformance facts, exported verbatim). A solitary function exports as `declare`; an overloaded one exports a `defmethod` per method so each keeps its distinct symbol:
+
+```lisp
+(defmethod "@area.pCircle" (area i32) ((c (ptr Circle))))
+(defmethod "@area.pRect"   (area i32) ((s (ptr Rect))))
+```
+
+Importing a `.nuch` with `defmethod` forms registers the methods for dispatch in the importing unit and emits an LLVM `declare` under each mangled symbol (resolved at link time). Imported `defprotocol` forms re-register the protocol; imported `extend` forms record the conformance fact without re-checking it (the exporting unit already verified it). See [Polymorphism](#polymorphism-overloaded-defn-multimethods) and [Protocols](#protocols-defprotocol-and-extend).
 
 ## Top-Level Forms
 
 | Name | Description | C Equivalent |
 |------|-------------|--------------|
-| `defn` | Define a function. Supports `&rest` for variadic functions: `(defn name (a:t &rest xs:elem) ...)`. The rest parameter receives a `Node*` cons-list head built at the call site (so each call site emits `@make-cell` calls and the program must define a compatible `make-cell`). The element type annotation is documentation only — non-`ptr` args are `inttoptr`'d into `Node.car`. `&rest` functions are not directly C-callable; calling through a function pointer requires manually constructing the rest list. `&rest` must be the second-to-last param. | function definition |
+| `defn` | Define a function. Supports `&rest` for variadic functions: `(defn name (a:t &rest xs:elem) ...)`. The rest parameter receives a `Node*` cons-list head built at the call site (so each call site emits `@make-cell` calls and the program must define a compatible `make-cell`). The element type annotation is documentation only — non-`ptr` args are `inttoptr`'d into `Node.car`. `&rest` functions are not directly C-callable; calling through a function pointer requires manually constructing the rest list. `&rest` must be the second-to-last param. **Overloadable:** defining `defn` again with the same name but different parameter types adds a method — see [Polymorphism](#polymorphism-overloaded-defn-multimethods). | function definition |
 | `defconst` | Define a compile-time constant | `#define` / `enum` constant |
 | `defenum` | Define an enumeration | `enum` |
 | `defvar` | Define a global variable | global variable definition |
 | `defstruct` | Define a struct type | `struct` |
+| `defprotocol` | Define a protocol: a named set of required method signatures (types may mention `Self`). Compile-time only; emits no code. See [Protocols](#protocols-defprotocol-and-extend). | — (concept: interface/trait) |
+| `extend` | Assert conformance `(extend Type Protocol)`: checks that each required signature resolves to a concrete method with `Self → Type`, then records the fact. Code-free. See [Protocols](#protocols-defprotocol-and-extend). | — |
 | `include` | Include a C standard library module. `(include stdio)` preprocesses `stdio.h` with `clang -E` and imports all extern function declarations. Any C header can be used: `(include math)` includes `math.h`. | `#include` |
 | `import` | Import a Nucleus library or C header. `(import name)` resolves `name.nuc` (source) or `name.nuch` (header) from source directory, `lib/`, or `-I` paths. `(import "stdio.h")` preprocesses a C header with `clang -E` and imports extern function declarations. Source imports inline all definitions; header imports emit `declare` (extern) for functions. Duplicate imports are silently skipped. | — |
 | `declare` | Declare an external function signature `(declare name:rettype (params...))`. Used in `.nuch` header files and at the top level. | function prototype |
@@ -198,6 +207,150 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `>=` | Greater or equal (signed: `sge`, unsigned: `uge`) | `a >= b` |
 
 Binary operators require both operands to have the same sign. Mixed-sign operations are rejected at compile time.
+
+Operators are dispatched through the same generic mechanism as overloaded functions (see below): each built-in operator is a pre-registered *intrinsic* method. When the operands are built-in numerics the intrinsic emits its inline instruction (`add nsw`, `icmp slt`, …) exactly as before — there is no `call` and the IR is byte-identical to a non-polymorphic compiler. (User-defined operator overloads are not yet supported.)
+
+## Polymorphism: overloaded `defn` (multimethods)
+
+A `defn` whose name already exists but whose **parameter types differ** does not redefine — it adds a *method* to that name. Calls dispatch on the whole argument tuple (multiple dispatch).
+
+```lisp
+(defstruct Circle rad:i32)
+(defstruct Rect w:i32 h:i32)
+
+(defn area:i32 (c:ptr:Circle) (return (* (* (. c rad) (. c rad)) 3)))
+(defn area:i32 (s:ptr:Rect)   (return (* (. s w) (. s h))))
+
+(defn kind:i32 (x:i32) (return 1))   ; overload on primitive type
+(defn kind:i32 (x:f64) (return 2))
+
+(defn sum:i32 (a:i32) (return a))            ; overload on arity
+(defn sum:i32 (a:i32 b:i32) (return (+ a b)))
+```
+
+**Symbol mangling.** A name with a single method keeps its unmangled symbol `@name` and stays C-callable. A name with two or more methods becomes an overload set: each method is emitted under a mangled symbol `@name.<tok>...` where each `<tok>` names a parameter type (`i32`, `f64`, `pCircle` for `ptr:Circle`, the struct name for a by-value struct, …). The mangle decision is made after a whole-file prescan, so all methods of a name agree.
+
+**Resolution.** A call resolves to the method whose parameter types match the argument types exactly (by structural type equality: primitives by identity, structs by definition, pointers by pointee). No match, or a call to an overloaded name that fits none of its methods, is a compile error listing the offending name. *(Widening/coercion tiers — e.g. accepting an `i32` argument where an `i64` method exists — are not yet implemented; arguments must match a method exactly.)*
+
+**Return types may differ per method** (`(defn parse:i32 …)` vs `(defn parse:f64 …)` is fine since they dispatch on arguments). A return type bound only by no argument (no way to choose from the call) is out of scope.
+
+**Cross-unit.** Overloaded functions export through `.nuch` as `defmethod` forms and dispatch correctly from an importing translation unit (link the importer against the library's `.o`). See [.nuch Header Format](#nuch-header-format).
+
+**Struct-typed parameters.** Because overloading on struct types is a primary use case, a `defn` parameter may be typed as a (pointer to a) struct defined later in the same file; struct names are pre-registered before signatures are scanned.
+
+Implementation: a generic registry (`g-generics`) holds each name's method set; `emit-defn` emits each method under its resolved symbol; `emit-dispatch` routes a call head to an intrinsic operator, an overloaded set, or an ordinary scope-bound function. Solitary functions and C/extern calls take the ordinary path and emit byte-identical IR.
+
+## Protocols: `defprotocol` and `extend`
+
+A **protocol** names a capability — a set of required method signatures — and is purely compile-time: it emits no code. The signatures may mention the type variable `Self`.
+
+```lisp
+(defprotocol Shape
+  (area:i32  (self:ptr:Self))
+  (label:ptr (self:ptr:Self)))
+```
+
+`extend Type Protocol` is a **checked, code-free conformance assertion**. It runs after the whole-file prescan: for each required signature it substitutes `Self → Type` and requires that a concrete method already resolves at the exact tier (the implementations are ordinary overloaded `defn`s). It records the `(Type, Protocol)` fact and emits nothing.
+
+```lisp
+(defn area:i32  (s:ptr:Circle) (return (* (* (. s rad) (. s rad)) 3)))
+(defn label:ptr (s:ptr:Circle) (return "circle"))
+
+(extend Circle Shape)   ; OK — both methods exist for Circle
+```
+
+If a required method is missing, compilation fails with a diagnostic naming each absent method (e.g. `Square does not implement Shape.label`) — the precise error an overload set alone cannot give.
+
+**`Self` and pointer-ness.** Conformance matching is by exact type, so the protocol signature's pointer-ness must match the implementation's. Since structs are conventionally passed by pointer, write `(self:ptr:Self)` to match `(defn … (s:ptr:Circle) …)`; a by-value `(self:Self)` would require a by-value `(s:Circle)` implementation.
+
+**No code, multiple protocols per implementation.** Because `extend` adds no methods, one concrete function can satisfy several protocols at once — the protocol is a *predicate over the method set*, not the owner of an implementation.
+
+**Cross-unit.** `defprotocol` and `extend` export verbatim through `.nuch`; an importing unit re-registers the protocol and trusts the recorded conformance (it does not re-check). See [.nuch Header Format](#nuch-header-format).
+
+*Not yet implemented (within protocols):* inline-`defn` sugar inside `extend`, and the dynamic `(dyn Protocol)` form. Conformance currently requires a concrete (non-generic) implementation.
+
+## Bounded generic `defn`
+
+A `defn` whose parameter list carries a `&where` clause is a **bounded generic
+template**: it is generic over one or more named type variables, each constrained
+to a protocol. The body is *monomorphized* — re-emitted with the variables
+substituted by concrete types — once per distinct instantiation, and cached.
+Statically dispatched, zero runtime overhead.
+
+```lisp
+(defprotocol Ord (less:i1 (a:Self b:Self)))
+(defn less:i1 (a:i32 b:i32) (return (< a b)))
+(defn less:i1 (a:f64 b:f64) (return (< a b)))
+(extend i32 Ord)
+(extend f64 Ord)
+
+(defn maxv:T (a:T b:T &where (Ord T))     ; T is a type variable bounded by Ord
+  (let (r:T a)
+    (when (less a b) (set! r b))
+    (return r)))
+
+(maxv 3 9)        ; → stamps @maxv.i32.i32; (less a b) resolves to less.i32.i32
+(maxv 2.5 1.5)    ; → stamps @maxv.f64.f64; (less a b) resolves to less.f64.f64
+```
+
+- **`&where`** follows all value parameters; each constraint is single-variable
+  `(Protocol Var)`. Multiple constraints are allowed (e.g. `&where (Ord T) (Show U)`).
+- **Type variables are declared-only:** a name is a type variable iff it is bound
+  in a `&where` constraint. Any other unknown type identifier is still an
+  `unknown type` error, so typos stay caught.
+- **Binding** gathers the concrete type at every bare occurrence of a variable
+  among the arguments and requires they agree; the bound type must conform
+  (nominally, via `extend`) to the variable's protocol(s). There is no unifier:
+  variables appear only in **bare** parameter/return positions. A nested position
+  (`(ptr T)`, etc.) is rejected (deferred to full parametric generics).
+- **Abstract return (B1).** The return type may be a type variable bound by a
+  parameter (`maxv:T` above); the concrete return is known per instantiation.
+  A return variable bound by *no* parameter (Haskell `read`) is rejected — it
+  needs the deferred `(dyn …)` form.
+- **Resolution: concrete beats generic.** An exact concrete method always wins
+  over a generic template for the same name (tier 0 ≫ tier 1).
+- **Def-time checking (A2).** A template body is type-checked **once at its
+  definition** against the abstract protocol interface, *before* any call. A value
+  of type variable `T` is typed abstractly; a call on it that resolves to a method
+  of `T`'s `&where` protocols (with `Self → T`), or to another generic whose
+  constraints `T`'s constraints satisfy, is checked precisely (and yields a precise
+  result type). The check is **lenient**: the only hard def-time error is a
+  genuinely unknown function name (a typo) —
+  ```lisp
+  (defn maxv:T (a:T b:T &where (Ord T))
+    (when (greater a b) …))   ; error at the defn: unknown function 'greater'
+  ```
+  A *known* operation that the abstract interface can't confirm — an operator
+  (`(< a b)`), or a foreign/variadic call (`(printf …)`) on an abstract value — is
+  **deferred to stamp time** rather than rejected, since it may well be valid for
+  the concrete type (A1 catches it if not). When such a deferred call *does* fail
+  for a concrete instantiation, the stamp-time error carries an instantiation note
+  pointing back to the call site:
+  ```
+  file:NN: error: no matching method for overloaded 'dbl' with given argument types
+    note: while instantiating @weird.f64.f64 (requested at file:12)
+  ```
+  The constraint protocol's existence is also checked at the `defn`.
+- **Cross-unit.** A generic template exports verbatim through `.nuch`
+  (`(defn (maxv T) ((a T) (b T) &where (Ord T)) …)`); an importing unit
+  re-registers it (trusting the exporter's A2 check) and stamps its own
+  instantiations locally, calling the exporter's concrete protocol methods by
+  their mangled symbols.
+
+Implementation: templates are registered as `METHOD-GENERIC` in `g-generics`
+(retaining the body); `generic-resolve` adds the protocol-bound tier and, on a
+unique match, `generic-instantiate` substitutes type variables, stamps a concrete
+method (registered immediately so the call site can name its symbol) and queues
+the body on a worklist drained at the end of the top-level loop. The A2 check
+(`check-generic-templates` / `gcheck`) runs at the outermost top-level after all
+names/protocols/conformances are registered, typing the body with parameters
+bound to abstract `TY-TYVAR` types — which never reach codegen, since templates
+emit only after monomorphization.
+
+*Not yet implemented:* same-name overloading that mixes imported and
+locally-defined methods; `&rest` together with `&where`; REPL generic
+instantiation; full parametric generics (nested/multiple unbound variables,
+generic struct layout).
 
 ## Literal Values
 

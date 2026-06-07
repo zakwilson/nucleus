@@ -62,6 +62,7 @@ Nucleus is a replacement for C using Lisp style syntax and macros with LLVM as i
 - [stage6-plan.md](stage6-plan.md) — implementation plan for the non-blocked items in stage6-cleanup.md
 - [stage6-floats.md](stage6-floats.md) — design for `f32` / `f64` types (deferred from stage 6)
 - [stage6-redefinition.md](stage6-redefinition.md) — design for REPL function redefinition (deferred from stage 6)
+- [stage9/polymorphism.md](stage9/polymorphism.md) — Stage 9: survey of how dispatch works today and four options for a polymorphism mechanism (open multimethods, protocols/traits, parametric generics, type-directed macros); §8 develops the chosen direction — a hybrid of Option 1 (overloaded `defn` multimethods) plus protocols as a thin checked abstraction layer
 - [progress.md](progress.md) — terse summary of done / pending / deferred work
 - [stage6-rest-optional.md](stage6-rest-optional.md) — design for `&rest` / `&optional` parameters in `defn`
 - [stage6-expressions.md](stage6-expressions.md) — design for expressions-as-values and implicit return
