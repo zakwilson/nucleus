@@ -56,3 +56,12 @@ since `free(NULL)` is a no-op.
 Open question: whether to flip the default so plain `let` itself auto-frees,
 with `let*` as the opt-out (the original shape proposed here). `with` exists
 alongside `let` for now; revisit once it has wider use.
+<<<<<<< Updated upstream
+=======
+
+## Safe constructs
+
+Nucleus isn't trying to be Rust, but it should provide the option of safe constructs where it's practical to do so, and move things that should be avoided when possible to an unsafe/ namespace.
+
+The `with` special form is a target for improvement. It should enforce a lexical *lifetime* rather than just preventing memory leaks. Attempting to return variables bound to pointers using `with` should be a compile-time error. That includes binding a second variable with a nested `let`. Returning the dereferenced value is permissible.
+>>>>>>> Stashed changes

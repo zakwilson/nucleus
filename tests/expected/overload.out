@@ -1,0 +1,6 @@
+circle area=75
+rect area=24
+kind i32=1
+kind f64=2
+sum/1=10
+sum/2=30
