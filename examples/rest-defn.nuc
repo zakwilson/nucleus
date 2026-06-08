@@ -11,8 +11,8 @@
         cur:ptr args)
     (while (!= cur null)
       (let (cell:ptr:Node (cast ptr:Node cur))
-        (set! total (+ total (cast i64 (. cell car))))
-        (set! cur (. cell cdr))))
+        (set! total (+ total (cast i64 (cell car))))
+        (set! cur (cell cdr))))
     (return total)))
 
 ; Mix of fixed positional + &rest.
@@ -20,8 +20,8 @@
   (let (cur:ptr args)
     (while (!= cur null)
       (let (cell:ptr:Node (cast ptr:Node cur))
-        (printf "%s%s\n" prefix (cast ptr (. cell car)))
-        (set! cur (. cell cdr))))))
+        (printf "%s%s\n" prefix (cast ptr (cell car)))
+        (set! cur (cell cdr))))))
 
 (defn main:i32 ()
   (printf "%ld\n" (sum 1 2 3 4))

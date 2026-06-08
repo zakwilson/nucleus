@@ -38,3 +38,9 @@
 (extend i64 Ord) (extend i64 Num)
 (extend f64 Ord) (extend f64 Num)
 (extend f32 Ord) (extend f32 Num)
+
+; C-style strings are Eq (content comparison via strcmp), but not Ord — the
+; built-in `=` / `!=` on two CStr lower to a strcmp, so the conformance is
+; code-free, like the numeric ones. (No ordering: strcmp's sign is byte order,
+; deliberately left out of scope here.)
+(extend CStr Eq)

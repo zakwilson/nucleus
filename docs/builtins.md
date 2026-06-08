@@ -116,6 +116,8 @@ Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defin
 | `dotimes` | `(dotimes (var:type n) body)` | `(let (var:type 0) (while (< var n) body (inc! var)))` |
 | `->` | `(-> x form ...)` | Threads `x` through each form. If a form contains `_`, the value replaces `_`; otherwise inserts as first arg (thread-first). Bare symbols wrap as `(sym value)`. `_` is only special inside `->`. |
 
+`(import arena)` additionally provides `(new T)` — allocate one zeroed `T` from the arena, typed `(ptr T)`. It expands to `(cast (ptr T) (arena-alloc (sizeof T)))`, collapsing the cast + `sizeof` boilerplate for the common "allocate a single struct" case. It is **not** in the prelude (it depends on `arena-alloc`), so it requires an explicit `(import arena)`.
+
 ## Variadic Arithmetic
 
 `+ - * /` are macros that expand to nested binary primitive calls. They live in `lib/macros.nuc` and are available in every program via the auto-imported prelude. The binary primitives `_+ _- _* _/` are the actual binops; the macros exist to break the expansion cycle.
@@ -167,9 +169,9 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `deref` | Dereference a pointer (reader sugar: `@p` → `(deref p)`) | `*p` |
 | `ptr-set!` | Write through a pointer | `*p = val` |
 | `ptr+` | Pointer arithmetic | `p + n` |
-| `.` | Struct field access | `s.field` |
+| `_get` | Low-level struct field read (compiler-internal primitive; bypasses any user `get` override). Prefer head position `(s field)` in ordinary code; use `_get` only where head position would dispatch wrongly (a user `get` method reading its own field, or a struct held in a special-form-named variable). | `s.field` |
 | `.set!` | Struct field assignment | `s.field = val` |
-| `get` | Member access / field read: `(get s 'field)` ≡ `(s field)` ≡ `(. s field)`; overridable per type. See [Callable values](#callable-values-non-function-call-position) | `s.field` |
+| `get` | Member access / field read: `(get s 'field)` ≡ `(s field)`; for a plain struct this lowers to the `_get` primitive (zero-overhead), overridable per type. See [Callable values](#callable-values-non-function-call-position) | `s.field` |
 | `invoke` | General call on a value: `(invoke s 3)` ≡ `(s 3)`; user-defined (`Seq`/`Call`) | `s(3)` / `s[3]` |
 | `sizeof` | Size of a type | `sizeof(T)` |
 | `alloca` | Stack-allocate memory | `alloca()` / VLA |
@@ -418,8 +420,11 @@ held in a variable, call `invoke` explicitly: `(invoke s x)`.
 
 **`get` — member access (the `Struct` default).** Every struct conforms to the
 built-in `Struct` blanket protocol, whose `get` is supplied by an **intrinsic**: a
-literal selector const-folds to a static `getelementptr`+`load`, **byte-identical
-to `.` and zero-overhead**. So `(c rad)` ≡ `(. c rad)` ≡ `(get c 'rad)`.
+literal selector const-folds to a static `getelementptr`+`load`, **identical to the
+`_get` primitive and zero-overhead**. So `(c rad)` ≡ `(get c 'rad)` ≡ `(_get c rad)`.
+Head position `(c rad)` is the idiomatic spelling; `_get` is the escape hatch (it
+reads the field directly, skipping any user `get` override — so a user `get` method
+uses `_get` for its own fields to avoid recursing into itself).
 
 ```lisp
 (defstruct Point x:i32 y:i32)
@@ -477,6 +482,7 @@ no vtable. `get`/`invoke` overloads and `Seq`/`Call` export through the existing
 | `null` | ptr | `NULL` |
 | `true` | bool (i1) | `1` / `true` |
 | `false` | bool (i1) | `0` / `false` |
+| `"…"` string literal | `CStr` | `"…"` (`char*`) |
 
 ## Symbols
 
@@ -510,7 +516,10 @@ Symbol identity replaces `strcmp` for matching known spellings. Prefer `(= h 'de
 | `f32` / `float` | IEEE-754 binary32 | `float` |
 | `f64` / `double` | IEEE-754 binary64 | `double` |
 | `ptr` | Opaque pointer | `void*` |
+| `CStr` | C-style (null-terminated) string | `char*` |
 | `void` | No value | `void` |
+
+`CStr` is the type of a string literal — a C `char*`. It lowers to `ptr` (same ABI) and flows into any `ptr`-typed C function with no cast, but it is a **distinct type for operator dispatch**: `=` / `!=` on two `CStr` do a `strcmp` **content** comparison (so equal text compares equal across distinct buffers), whereas `=` on two raw `ptr` is pointer identity. `CStr` conforms to the `Eq` protocol (`lib/numeric.nuc`), so it works in an `Eq`-bounded generic; it is not `Ord` (no ordering — out of scope here, along with Unicode). Only `=` / `!=` are defined; other operators on `CStr` are an error. A `CStr` and a `ptr` are freely interconvertible with `cast` (no IR) and coerce automatically in value positions (assignment, return, field/array store); a string literal also passes directly to a plain `ptr` parameter. (Multimethod dispatch treats `CStr` as distinct — overload on `CStr` explicitly, or `cast` to `ptr`.) `strcmp` must be declared, which the prelude's `(include string)` provides. Example: `examples/cstr.nuc`.
 
 Float literals: `1.5`, `-0.25`, `1e10`, `1.5e-3`, `.5`. Default type is `f64`; narrow with `(cast f32 ...)`. Widen `f32`→`f64` and convert int↔float with `cast`. Special values use Scheme syntax: `+inf.0`, `-inf.0`, `+nan.0`. Float arithmetic uses `+ - * / %` and comparisons use `= != < <= > >=` (LLVM `fadd`/`fcmp`); operands must have the same float width — promote with explicit `cast`. Mixing float and integer operands without a cast is a compile error.
 

@@ -18,16 +18,16 @@
 
 ; Operator overloads. (+ a b) folds to (_+ a b), so the arithmetic primitive is
 ; the overload point; comparisons dispatch on the operator name directly.
-(defn _+:ptr:Cents (a:ptr:Cents b:ptr:Cents) (return (mk (+ (. a v) (. b v)))))
-(defn _-:ptr:Cents (a:ptr:Cents b:ptr:Cents) (return (mk (- (. a v) (. b v)))))
-(defn _*:ptr:Cents (a:ptr:Cents b:ptr:Cents) (return (mk (/ (* (. a v) (. b v)) 100))))
-(defn _/:ptr:Cents (a:ptr:Cents b:ptr:Cents) (return (mk (/ (* (. a v) 100) (. b v)))))
-(defn <:i1  (a:ptr:Cents b:ptr:Cents) (return (< (. a v) (. b v))))
-(defn <=:i1 (a:ptr:Cents b:ptr:Cents) (return (<= (. a v) (. b v))))
-(defn >:i1  (a:ptr:Cents b:ptr:Cents) (return (> (. a v) (. b v))))
-(defn >=:i1 (a:ptr:Cents b:ptr:Cents) (return (>= (. a v) (. b v))))
-(defn =:i1  (a:ptr:Cents b:ptr:Cents) (return (= (. a v) (. b v))))
-(defn !=:i1 (a:ptr:Cents b:ptr:Cents) (return (!= (. a v) (. b v))))
+(defn _+:ptr:Cents (a:ptr:Cents b:ptr:Cents) (return (mk (+ (a v) (b v)))))
+(defn _-:ptr:Cents (a:ptr:Cents b:ptr:Cents) (return (mk (- (a v) (b v)))))
+(defn _*:ptr:Cents (a:ptr:Cents b:ptr:Cents) (return (mk (/ (* (a v) (b v)) 100))))
+(defn _/:ptr:Cents (a:ptr:Cents b:ptr:Cents) (return (mk (/ (* (a v) 100) (b v)))))
+(defn <:i1  (a:ptr:Cents b:ptr:Cents) (return (< (a v) (b v))))
+(defn <=:i1 (a:ptr:Cents b:ptr:Cents) (return (<= (a v) (b v))))
+(defn >:i1  (a:ptr:Cents b:ptr:Cents) (return (> (a v) (b v))))
+(defn >=:i1 (a:ptr:Cents b:ptr:Cents) (return (>= (a v) (b v))))
+(defn =:i1  (a:ptr:Cents b:ptr:Cents) (return (= (a v) (b v))))
+(defn !=:i1 (a:ptr:Cents b:ptr:Cents) (return (!= (a v) (b v))))
 
 ; Cents satisfies the library protocols; both assertions are code-free checks.
 (extend ptr:Cents Ord)
@@ -53,10 +53,10 @@
   (let (a:ptr:Cents (mk 150)
         b:ptr:Cents (mk 220)
         c:ptr:Cents (mk 30))
-    (printf "cents sum   = %d\n" (. (sum3 a b c) v))
-    (printf "cents max   = %d\n" (. (maxv a b) v))
-    (printf "cents a+b   = %d\n" (. (+ a b) v))
-    (printf "cents a*b   = %d\n" (. (* a b) v))
+    (printf "cents sum   = %d\n" ((sum3 a b c) v))
+    (printf "cents max   = %d\n" ((maxv a b) v))
+    (printf "cents a+b   = %d\n" ((+ a b) v))
+    (printf "cents a*b   = %d\n" ((* a b) v))
     (printf "cents a<b   = %d\n" (< a b)))
   ; Mixed-width arithmetic: untyped literal adapts; i32 widens to i64.
   (let (big:i64 1000000000)

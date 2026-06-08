@@ -6,16 +6,16 @@
 (defstruct Node
   kind:i32 line:i32 i:i64 s:ptr car:ptr cdr:ptr)
 
-(defn first:ptr (n:ptr) (return (. (cast ptr:Node n) car)))
-(defn rest:ptr  (n:ptr) (return (. (cast ptr:Node n) cdr)))
+(defn first:ptr (n:ptr) (return ((cast ptr:Node n) car)))
+(defn rest:ptr  (n:ptr) (return ((cast ptr:Node n) cdr)))
 
 (defn print-list:void (n:ptr)
   (let (cur:ptr n)
     (printf "(")
     (while (!= cur null)
       (let (node:ptr:Node (cast ptr:Node (first cur)))
-        (cond (= (. node kind) 0) (printf "%ld" (. node i))
-              (= (. node kind) 2) (printf "%s" (. node s))
+        (cond (= (node kind) 0) (printf "%ld" (node i))
+              (= (node kind) 2) (printf "%s" (node s))
               true                 (printf "?")))
       (set! cur (rest cur))
       (cond (!= cur null) (printf " ")))

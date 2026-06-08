@@ -6,6 +6,6 @@
   (let (p:ptr:Point (alloca Point))
     (.set! p x 10)
     (.set! p y 20)
-    (printf "x=%d y=%d sum=%d\n" (. p x) (. p y) (+ (. p x) (. p y)))
+    (printf "x=%d y=%d sum=%d\n" (p x) (p y) (+ (p x) (p y)))
     (printf "sizeof Point = %lld\n" (sizeof Point)))
   (return 0))

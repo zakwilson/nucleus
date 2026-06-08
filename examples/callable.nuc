@@ -17,27 +17,29 @@
 ; ---- Seq: an i32 vector, indexable by call ----
 (defstruct Vec data:ptr:i32 len:i32)
 (defn invoke:i32 (self:ptr:Vec i:i32)
-  (return (aref (. self data) i)))
+  (return (aref (self data) i)))
 (extend Vec Seq)
 
 ; ---- Call: a function object that adds a fixed delta to *arg ----
 (defstruct Adder delta:i32)
 (defn invoke:ptr (self:ptr:Adder arg:ptr)
   (let (out:ptr:i32 (cast ptr:i32 (malloc (cast i64 4))))
-    (aset! out 0 (+ (aref (cast ptr:i32 arg) 0) (. self delta)))
+    (aset! out 0 (+ (aref (cast ptr:i32 arg) 0) (self delta)))
     (return (cast ptr out))))
 (extend Adder Call)
 
 ; ---- A user `get` override: it owns all member access on its type (tier 0
 ;      beats the Struct intrinsic). Here a synthetic 'f selector is computed,
-;      while any other selector delegates to the real field.
+;      while any other selector delegates to the real field. The body reads the
+;      field with the `_get` primitive (not head position `(self c)`, which would
+;      dispatch back into this same method and recurse).
 (defstruct Temp c:i32)
 (defn get:i32 (self:ptr:Temp sel:ptr)
-  (if (= sel 'f) (return (+ (* (. self c) 2) 30))
-                 (return (. self c))))
+  (if (= sel 'f) (return (+ (* (_get self c) 2) 30))
+                 (return (_get self c))))
 
 (defn main:i32 ()
-  ; Member access by call — the Struct default. (p x) == (. p x).
+  ; Member access by call — the Struct default. (p x) == (_get p x).
   (let (p:ptr:Point (cast ptr:Point (malloc (cast i64 (sizeof Point)))))
     (.set! p x 3)
     (.set! p y 4)

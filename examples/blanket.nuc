@@ -31,6 +31,6 @@
     (.set! p x 5)
     (.set! p y 6)
     ; id returns the same pointer; Struct gate accepts it.
-    (printf "id ptr.x = %d\n" (. (id p) x))
+    (printf "id ptr.x = %d\n" ((id p) x))
     (printf "boxed    = %d\n" (boxed p)))
   (return 0))
