@@ -48,7 +48,8 @@ Current branch: `stage6-cleanup`
 | §10.3: operators as ordinary generic functions; inline peephole; user operator overloading; `Num`/`Eq`/`Ord` (`lib/numeric.nuc`); protocol-on-protocol `(extend Ord Eq)` | Done (§11) |
 | §10.1: blanket protocols `Any` / `Struct` (`g-blanket`, automatic/structural conformance) | Done (§11) |
 | §10.2: `Valid` inferred structural bound (per-call-site non-emitting stamp; derived values) | Done (§11) |
-| Examples: `overload`, `protocol`, `generic`, `operators`, `blanket`, `valid` | Done |
+| Callable values (`callable-values.md`): non-function head → `get` (Struct member-access intrinsic, byte-identical to `.`, overridable) / `invoke` (user-supplied, `Seq`/`Call`); computed-symbol field access (homogeneous); arbitrary-expression heads + `funcall` folding | Done (`callable-values.md` impl status) |
+| Examples: `overload`, `protocol`, `generic`, `operators`, `blanket`, `valid`, `callable` | Done |
 
 ---
 
@@ -63,7 +64,7 @@ Current branch: `stage6-cleanup`
 | Lambda / closures | `design/stage999-future.md` |
 | Map/reduce/filter | `design/stage999-future.md` |
 | Polymorphism / protocol system | Done — Stage 9 (`design/stage9/polymorphism.md`) |
-| `dyn`, parametric generics (nested tyvars), `defcast` tier, callable values | Deferred — see `design/stage9/` §11 / `callable-values.md` |
+| `dyn`, parametric generics (nested tyvars), `defcast` tier | Deferred — see `design/stage9/` §11 / `callable-values.md` |
 | Vectors/hashes | `design/stage999-future.md` |
 | Gensym reader macro | `design/stage999-future.md` |
 

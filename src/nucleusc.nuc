@@ -1031,6 +1031,70 @@
             (inc! i))
           (return null))))))
 
+; Result type of `(get callee selector)` for callee type `ct` — mirrors
+; emit-get-with-callee / emit-get-intrinsic so the type pass cannot drift from
+; codegen. A tier-0 user `get` method → its return; a literal selector → the
+; named field's type; a computed selector → null (emit keeps its own type).
+(defn callable-get-type:ptr (ct:ptr sel-node:ptr scope:ptr)
+  (let (ctt:ptr:Type (cast ptr:Type ct)
+        g:ptr (generic-lookup "get"))
+    (when (!= g null)
+      (let (argtypes:ptr (arena-alloc (* (cast i64 2) (cast i64 8))))
+        (aset! (cast ptr:ptr argtypes) 0 ct)
+        (aset! (cast ptr:ptr argtypes) 1 ty-ptr)
+        (let (m:ptr (generic-find-method-exact g argtypes 2))
+          (when (!= m null) (return (-> m (cast ptr:Method _) (. ret-type)))))))
+    (when (or (or (!= (. ctt kind) TY-PTR) (= (. ctt elem) null))
+              (-> ctt (. elem) (cast ptr:Type _) (. kind) (!= _ TY-STRUCT)))
+      (return null))
+    (let (lit:ptr (selector-literal-sym sel-node))
+      (when (= lit null) (return null))
+      (let (sd:ptr:StructDef (cast ptr:StructDef (-> ctt (. elem) (cast ptr:Type _) (. sdef)))
+            idx:i32 (struct-field-index (-> ctt (. elem) (cast ptr:Type _) (. sdef))
+                                        (-> lit (cast ptr:Node _) (. s))))
+        (when (< idx 0) (return null))
+        (return (aref (cast ptr:ptr (. sd field-types)) idx))))))
+
+; Result type of `(invoke callee arg…)` for callee type `ct` — the tier-0 `invoke`
+; method's return, else null (mirrors emit-invoke-with-callee at the exact tier).
+(defn callable-invoke-type:ptr (ct:ptr n:ptr arg-start:i32 nargs:i32 scope:ptr)
+  (let (g:ptr (generic-lookup "invoke"))
+    (when (= g null) (return null))
+    (let (total:i32 (+ nargs 1)
+          argtypes:ptr (arena-alloc (* (cast i64 (+ total 1)) (cast i64 8)))
+          ok:i32 1)
+      (aset! (cast ptr:ptr argtypes) 0 ct)
+      (let (i:i32 0)
+        (while (< i nargs)
+          (let (at:ptr (node-type (node-at n (+ arg-start i)) scope))
+            (when (= at null) (set! ok 0))
+            (aset! (cast ptr:ptr argtypes) (+ i 1) at))
+          (inc! i)))
+      (when (= ok 0) (return null))
+      (let (m:ptr (generic-find-method-exact g argtypes total))
+        (when (= m null) (return null))
+        (return (-> m (cast ptr:Method _) (. ret-type)))))))
+
+; Type of a non-function head value `ct` applied in `(callee arg…)` — mirrors
+; emit-callable-value: single literal-symbol arg → get, else → invoke.
+(defn callable-value-type:ptr (ct:ptr n:ptr scope:ptr)
+  (let (nargs:i32 (- (node-len n) 1))
+    (if (and (= nargs 1) (!= (selector-literal-sym (node-at n 1)) null))
+      (return (callable-get-type ct (node-at n 1) scope))
+      (return (callable-invoke-type ct n 1 nargs scope)))))
+
+(defn node-type-get:ptr (n:ptr scope:ptr)
+  (when (!= (node-len n) 3) (return null))
+  (let (ct:ptr (node-type (node-at n 1) scope))
+    (when (= ct null) (return null))
+    (return (callable-get-type ct (node-at n 2) scope))))
+
+(defn node-type-invoke:ptr (n:ptr scope:ptr)
+  (when (< (node-len n) 2) (return null))
+  (let (ct:ptr (node-type (node-at n 1) scope))
+    (when (= ct null) (return null))
+    (return (callable-invoke-type ct n 2 (- (node-len n) 2) scope))))
+
 ; A call head (not a special form): mirror emit-dispatch. Operator → a matching
 ; user overload's return type, else i1 for comparisons / the first operand's type
 ; (the intrinsic peephole result); overloaded set → the exactly matched method's
@@ -1078,7 +1142,8 @@
     (let (sym:ptr:Sym (cast ptr:Sym (scope-lookup scope h)))
       (when (= (cast ptr sym) null) (return null))
       (let (ft:ptr:Type (cast ptr:Type (. sym type)))
-        (when (!= (. ft kind) TY-FN) (return null))
+        ; A non-function value head is a callable value: mirror the get/invoke desugar.
+        (when (!= (. ft kind) TY-FN) (return (callable-value-type (cast ptr ft) n scope)))
         (return (. ft ret))))))
 
 (defn node-type:ptr (n:ptr scope:ptr)
@@ -1125,6 +1190,8 @@
         (when (= hp 'ptr+) (return (node-type (node-at n 1) scope)))
         (when (= hp '.) (return (node-type-field n scope)))
         (when (= hp '.set!) (return ty-void))
+        (when (= hp 'get) (return (node-type-get n scope)))
+        (when (= hp 'invoke) (return (node-type-invoke n scope)))
         (when (= hp 'sizeof) (return ty-i64))
         (when (= hp 'alloca) (return (node-type-alloca n)))
         (when (= hp 'char) (return ty-i8))
@@ -3299,6 +3366,34 @@
 ; Struct field access
 ; ============================================================
 
+; Index of field `fname` in struct `sd`, or -1. Shared by `.`, the `get`
+; intrinsic, and the non-emitting type pass so the three cannot drift.
+(defn struct-field-index:i32 (sd:ptr fname:ptr)
+  (let (sdd:ptr:StructDef (cast ptr:StructDef sd)
+        i:i32 0)
+    (while (< i (. sdd num-fields))
+      (when (= (strcmp (aref (cast ptr:ptr (. sdd field-names)) i) fname) 0)
+        (return i))
+      (inc! i))
+    (return -1)))
+
+; Emit `getelementptr + load` of field `idx` from the pointer-to-struct value
+; `p`. This is the zero-overhead member-access core shared by the `.` special
+; form (emit-field-get) and the `get` blanket intrinsic (emit-get-intrinsic);
+; a literal-symbol `(s 'field)` const-folds straight to this, byte-identical.
+(defn emit-field-load:ptr (p:ptr sd:ptr idx:i32)
+  (let (pv:ptr:Val (cast ptr:Val p)
+        sdd:ptr:StructDef (cast ptr:StructDef sd)
+        ftype:ptr (aref (cast ptr:ptr (. sdd field-types)) idx)
+        gep:ptr (new-tmp))
+    (fprintf g-body-stream
+      "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
+      gep (. sdd name) (. pv val) idx)
+    (let (val:ptr (new-tmp))
+      (fprintf g-body-stream "  %s = load %s, ptr %s, align %d\n"
+        val (type-to-ir ftype) gep (type-size ftype))
+      (return (alloc-val ftype val)))))
+
 (defn emit-field-get:ptr (call:ptr scope:ptr)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 3)
@@ -3312,24 +3407,11 @@
         (when (!= (. fn-node kind) NODE-SYM)
           (die-at (. fn-node line) ".: field name must be symbol"))
         (let (sd:ptr:StructDef (cast ptr:StructDef (-> pt (. elem) (cast ptr:Type _) (. sdef)))
-              idx:i32 -1
-              i:i32 0)
-          (while (< i (. sd num-fields))
-            (when (= (strcmp (aref (cast ptr:ptr (. sd field-names)) i) (. fn-node s)) 0)
-              (set! idx i) (set! i (. sd num-fields)))
-            (inc! i))
+              idx:i32 (struct-field-index (cast ptr sd) (. fn-node s)))
           (when (< idx 0)
             (die-at (. fn-node line)
               (fmt-2s ".: no field '%s' on struct '%s'" (. fn-node s) (. sd name))))
-          (let (ftype:ptr (aref (cast ptr:ptr (. sd field-types)) idx)
-                gep:ptr (new-tmp))
-            (fprintf g-body-stream
-              "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
-              gep (. sd name) (. p val) idx)
-            (let (val:ptr (new-tmp))
-              (fprintf g-body-stream "  %s = load %s, ptr %s, align %d\n"
-                val (type-to-ir ftype) gep (type-size ftype))
-              (return (alloc-val ftype val)))))))))
+          (return (emit-field-load (cast ptr p) (cast ptr sd) idx)))))))
 
 (defn emit-field-set:ptr (call:ptr scope:ptr)
   (let (cc:ptr:Node (cast ptr:Node call))
@@ -3366,6 +3448,184 @@
               (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
                 (type-to-ir ftype) (. cv val) gep (type-size ftype))
               (return (alloc-val ty-void null)))))))))
+
+; ============================================================
+; Callable values (non-function call position) — callable-values.md
+;
+; A non-function value `s` in head position, `(s arg…)`, desugars by the sole
+; argument into one of two reserved generics:
+;   (s 'field) / (s field)  [a literal symbol]  → (get s 'field)   member access
+;   (s 3)      / (s a b …)  [anything else]      → (invoke s 3 …)   general call
+; `get` carries a built-in Struct intrinsic (GEP+load, zero overhead, overridable
+; by a user `get` method); `invoke` is purely user-supplied (indexing, Seq/Call).
+; ============================================================
+
+; If `node` is a literal field selector — a bare symbol `field` or an explicit
+; `(quote field)` — return the symbol Node; else null (a computed selector). A
+; bare symbol is always a field, never a variable: field interpretation wins so
+; it never depends on what is in scope (callable-values.md §3.5).
+(defn selector-literal-sym:ptr (node:ptr)
+  (when (= node null) (return null))
+  (let (nn:ptr:Node (cast ptr:Node node))
+    (when (= (. nn kind) NODE-SYM) (return node))
+    (when (and (= (. nn kind) NODE-CELL) (= (node-len node) 2))
+      (when (= (node-at node 0) 'quote)
+        (let (inner:ptr (node-at node 1))
+          (when (= (-> inner (cast ptr:Node _) (. kind)) NODE-SYM) (return inner)))))
+    (return null)))
+
+; Emit the selector argument as a value for a user `get` method: a literal
+; selector becomes its interned symbol Node* (the same pointer the reader / a
+; `'sym` quote produce); a computed selector is evaluated normally.
+(defn emit-selector-value:ptr (sel-node:ptr scope:ptr)
+  (let (lit:ptr (selector-literal-sym sel-node))
+    (if (!= lit null)
+      (return (alloc-val ty-ptr (emit-quote-tree lit)))
+      (return (emit-node sel-node scope)))))
+
+; Computed-symbol field access (callable-values.md §3.2/§3.3, step 3): the
+; selector is dynamic but the struct type is static. Restricted to a homogeneous
+; struct (all fields one type) so the result type is well-defined. Emits a
+; bounded branch comparing the selector against each interned field symbol
+; (pointer identity), then an array-style GEP+load at the matched index.
+(defn emit-computed-field:ptr (n:ptr scope:ptr callee-val:ptr sd:ptr sel-node:ptr line:i32)
+  (let (sdd:ptr:StructDef (cast ptr:StructDef sd)
+        nf:i32 (. sdd num-fields))
+    (when (= nf 0) (die-at line "get: cannot index an empty struct with a computed selector"))
+    (let (ftype:ptr (aref (cast ptr:ptr (. sdd field-types)) 0)
+          fi:i32 1)
+      ; Homogeneity gate — a heterogeneous struct has no single result type.
+      (while (< fi nf)
+        (when (= (type-eq (aref (cast ptr:ptr (. sdd field-types)) fi) ftype) 0)
+          (die-at line
+            (fmt-s "get: computed field access requires a homogeneous struct, but '%s' has fields of differing types"
+                   (. sdd name))))
+        (inc! fi))
+      (let (cv:ptr:Val (cast ptr:Val callee-val)
+            sel:ptr:Val (cast ptr:Val (emit-node sel-node scope)))
+        (when (-> sel (. type) (cast ptr:Type _) (. kind) (!= _ TY-PTR))
+          (die-at line "get: computed selector must evaluate to a symbol (ptr)"))
+        ; Build the field index by a chain of select instructions, innermost
+        ; default 0: idx = (sel==f0)?0 : (sel==f1)?1 : … : 0.
+        (let (idx:ptr "0"
+              k:i32 (- nf 1))
+          (while (>= k 0)
+            (let (fsym-node:ptr:Node (cast ptr:Node (alloc-node)))
+              (.set! fsym-node kind NODE-SYM)
+              (.set! fsym-node line line)
+              (.set! fsym-node s (aref (cast ptr:ptr (. sdd field-names)) k))
+              (let (fsym:ptr (emit-quote-tree (cast ptr fsym-node))
+                    cmp:ptr (new-tmp))
+                (fprintf g-body-stream "  %s = icmp eq ptr %s, %s\n" cmp (. sel val) fsym)
+                (let (nidx:ptr (new-tmp))
+                  (fprintf g-body-stream "  %s = select i1 %s, i64 %d, i64 %s\n"
+                    nidx cmp k idx)
+                  (set! idx nidx))))
+            (set! k (- k 1)))
+          ; Homogeneous layout is contiguous, so index it as an array of ftype.
+          (let (gep:ptr (new-tmp))
+            (fprintf g-body-stream
+              "  %s = getelementptr inbounds %s, ptr %s, i64 %s\n"
+              gep (type-to-ir ftype) (. cv val) idx)
+            (let (val:ptr (new-tmp))
+              (fprintf g-body-stream "  %s = load %s, ptr %s, align %d\n"
+                val (type-to-ir ftype) gep (type-size ftype))
+              (return (alloc-val ftype val)))))))))
+
+; The `get` blanket intrinsic: member access on a pointer-to-struct callee. A
+; literal selector const-folds to a static GEP+load (byte-identical to `.`); a
+; computed selector takes the homogeneous runtime branch above.
+(defn emit-get-intrinsic:ptr (n:ptr scope:ptr callee-val:ptr sel-node:ptr line:i32)
+  (let (cv:ptr:Val (cast ptr:Val callee-val)
+        ct:ptr:Type (cast ptr:Type (. cv type)))
+    (when (or (or (!= (. ct kind) TY-PTR) (= (. ct elem) null))
+              (-> ct (. elem) (cast ptr:Type _) (. kind) (!= _ TY-STRUCT)))
+      (die-at line "callable value: not callable — no matching get/invoke method and not a pointer-to-struct"))
+    (let (sd:ptr:StructDef (cast ptr:StructDef (-> ct (. elem) (cast ptr:Type _) (. sdef)))
+          lit:ptr (selector-literal-sym sel-node))
+      (when (= lit null)
+        (return (emit-computed-field n scope callee-val (cast ptr sd) sel-node line)))
+      (let (idx:i32 (struct-field-index (cast ptr sd) (-> lit (cast ptr:Node _) (. s))))
+        (when (< idx 0)
+          (die-at line
+            (fmt-2s "get: no field '%s' on struct '%s'" (-> lit (cast ptr:Node _) (. s)) (. sd name))))
+        (return (emit-field-load callee-val (cast ptr sd) idx))))))
+
+; Resolve `(get callee selector)` for an already-emitted callee value. A user
+; `get` method for (callee-type, symbol) sits at tier 0 and out-ranks the
+; intrinsic (concrete beats blanket); otherwise the Struct intrinsic handles it.
+(defn emit-get-with-callee:ptr (n:ptr scope:ptr callee-val:ptr sel-node:ptr)
+  (let (cv:ptr:Val (cast ptr:Val callee-val)
+        ct:ptr (. cv type)
+        line:i32 (-> n (cast ptr:Node _) (. line))
+        g:ptr (generic-lookup "get"))
+    (when (!= g null)
+      (let (argtypes:ptr (arena-alloc (* (cast i64 2) (cast i64 8))))
+        (aset! (cast ptr:ptr argtypes) 0 ct)
+        (aset! (cast ptr:ptr argtypes) 1 ty-ptr)
+        (let (m:ptr (generic-find-method-exact g argtypes 2))
+          (when (!= m null)
+            (let (sel-val:ptr (emit-selector-value sel-node scope)
+                  args:ptr (arena-alloc (* (cast i64 2) (sizeof Val))))
+              (memcpy (ptr+ (cast ptr:Val args) 0) cv (sizeof Val))
+              (memcpy (ptr+ (cast ptr:Val args) 1) sel-val (sizeof Val))
+              (return (emit-resolved-call n scope "get" m args 2 line)))))))
+    (return (emit-get-intrinsic n scope callee-val sel-node line))))
+
+; Resolve `(invoke callee arg…)` for an already-emitted callee value. The callee
+; is the first dispatch argument; the rest are emitted here. Dispatch is ordinary
+; multimethod resolution over the `invoke` generic — a type "becomes callable" by
+; defining `invoke` methods (indexing, Seq/Call). No built-in default.
+(defn emit-invoke-with-callee:ptr (n:ptr scope:ptr callee-val:ptr arg-start:i32 nargs:i32)
+  (let (cv:ptr:Val (cast ptr:Val callee-val)
+        line:i32 (-> n (cast ptr:Node _) (. line))
+        total:i32 (+ nargs 1)
+        args:ptr (arena-alloc (* (cast i64 (+ total 1)) (sizeof Val)))
+        argtypes:ptr (arena-alloc (* (cast i64 (+ total 1)) (cast i64 8)))
+        arg-nodes:ptr (arena-alloc (* (cast i64 (+ total 1)) (cast i64 8))))
+    (memcpy (ptr+ (cast ptr:Val args) 0) cv (sizeof Val))
+    (aset! (cast ptr:ptr argtypes) 0 (. cv type))
+    (aset! (cast ptr:ptr arg-nodes) 0 null)
+    (let (i:i32 0)
+      (while (< i nargs)
+        (let (anode:ptr (node-at n (+ arg-start i))
+              v:ptr (emit-node anode scope))
+          (memcpy (ptr+ (cast ptr:Val args) (+ i 1)) v (sizeof Val))
+          (aset! (cast ptr:ptr argtypes) (+ i 1) (-> v (cast ptr:Val _) (. type)))
+          (aset! (cast ptr:ptr arg-nodes) (+ i 1) anode))
+        (inc! i)))
+    (let (g:ptr (generic-lookup "invoke"))
+      (when (= g null)
+        (die-at line "value is not callable: no `invoke` method is defined for this type"))
+      (let (m:ptr (generic-resolve g argtypes arg-nodes total line))
+        (return (emit-resolved-call n scope "invoke" m args total line))))))
+
+; The desugar entry point: an already-emitted non-function head value `callee-val`
+; in `(callee arg…)`. A single literal-symbol argument routes to `get` (member
+; access); everything else routes to `invoke`.
+(defn emit-callable-value:ptr (n:ptr scope:ptr callee-val:ptr)
+  (let (nargs:i32 (- (node-len n) 1)
+        ct:ptr:Type (cast ptr:Type (. (cast ptr:Val callee-val) type)))
+    ; A function-pointer value folds to an indirect call (callable-values.md §4.2).
+    (when (= (. ct kind) TY-FN)
+      (return (emit-funcall-value n scope callee-val 1)))
+    (when (and (= nargs 1) (!= (selector-literal-sym (node-at n 1)) null))
+      (return (emit-get-with-callee n scope callee-val (node-at n 1))))
+    (return (emit-invoke-with-callee n scope callee-val 1 nargs))))
+
+; Explicit `(get value selector)` and `(invoke value arg…)` surface forms. They
+; share the resolution above so `(get s 'f)` ≡ `(s f)` and `(invoke v 3)` ≡ `(v 3)`.
+(defn emit-get:ptr (call:ptr scope:ptr)
+  (let (cc:ptr:Node (cast ptr:Node call))
+    (when (!= (node-len cc) 3) (die-at (. cc line) "get expects (get value selector)"))
+    (let (callee-val:ptr (emit-node (node-at cc 1) scope))
+      (return (emit-get-with-callee call scope callee-val (node-at cc 2))))))
+
+(defn emit-invoke:ptr (call:ptr scope:ptr)
+  (let (cc:ptr:Node (cast ptr:Node call))
+    (when (< (node-len cc) 2) (die-at (. cc line) "invoke expects (invoke value arg...)"))
+    (let (callee-val:ptr (emit-node (node-at cc 1) scope))
+      (return (emit-invoke-with-callee call scope callee-val 2 (- (node-len cc) 2))))))
 
 ; ============================================================
 ; sizeof, alloca, array ops, char, pointer ops
@@ -3536,52 +3796,58 @@
         (fprintf g-body-stream "  %s = call ptr %s()\n" tmp (. fn val))
         (return (alloc-val ty-ptr tmp))))))
 
-; (funcall fn-ptr args...) — general typed function pointer call
+; Indirect call of an already-emitted function-pointer value `fn-val`; arguments
+; are node-at(arg-start)..end. Shared by the explicit `funcall` surface and the
+; call position — a TY-FN value in head position folds to this, so `funcall` is
+; effectively compiler-internal (callable-values.md §4.2).
+(defn emit-funcall-value:ptr (n:ptr scope:ptr fn-val:ptr arg-start:i32)
+  (let (cc:ptr:Node (cast ptr:Node n)
+        fv:ptr:Val (cast ptr:Val fn-val)
+        fn-type:ptr:Type (cast ptr:Type (. fv type))
+        ret-type:ptr (. fn-type ret)
+        np:i32 (. fn-type num-params)
+        nargs:i32 (- (node-len cc) arg-start))
+    (when (!= nargs np)
+      (die-at (. cc line)
+        (fmt-s "call: expected %d args, got %d" (cast i64 np) (cast i64 nargs))))
+    (let (arg-vals:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (cast i64 8)))
+          i:i32 0)
+      (while (< i nargs)
+        (aset! (cast ptr:ptr arg-vals) i (emit-node (node-at cc (+ i arg-start)) scope))
+        (inc! i))
+      (let (ret-ir:ptr (type-to-ir ret-type))
+        (if (= (-> ret-type (cast ptr:Type _) (. kind)) TY-VOID)
+          (do
+            (fprintf g-body-stream "  call void %s(" (. fv val))
+            (set! i 0)
+            (while (< i nargs)
+              (when (!= i 0) (fprintf g-body-stream ", "))
+              (let (av:ptr:Val (cast ptr:Val (aref (cast ptr:ptr arg-vals) i)))
+                (fprintf g-body-stream "%s %s" (type-to-ir (. av type)) (. av val)))
+              (inc! i))
+            (fprintf g-body-stream ")\n")
+            (return (alloc-val ty-void null)))
+          (let (tmp:ptr (new-tmp))
+            (fprintf g-body-stream "  %s = call %s %s(" tmp ret-ir (. fv val))
+            (set! i 0)
+            (while (< i nargs)
+              (when (!= i 0) (fprintf g-body-stream ", "))
+              (let (av:ptr:Val (cast ptr:Val (aref (cast ptr:ptr arg-vals) i)))
+                (fprintf g-body-stream "%s %s" (type-to-ir (. av type)) (. av val)))
+              (inc! i))
+            (fprintf g-body-stream ")\n")
+            (return (alloc-val ret-type tmp))))))))
+
+; (funcall fn-ptr args...) — general typed function pointer call.
 ; fn-ptr must have TY-FN type. Emits call with proper LLVM IR signature.
 (defn emit-funcall:ptr (call:ptr scope:ptr)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (< (node-len cc) 2)
       (die-at (. cc line) "funcall expects at least 1 arg"))
-    (let (fn-val:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope))
-          fn-type:ptr:Type (cast ptr:Type (. fn-val type)))
-      (when (!= (. fn-type kind) TY-FN)
+    (let (fn-val:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope)))
+      (when (-> fn-val (. type) (cast ptr:Type _) (. kind) (!= _ TY-FN))
         (die-at (. cc line) "funcall: first arg must be a function pointer"))
-      (let (ret-type:ptr (. fn-type ret)
-            np:i32 (. fn-type num-params)
-            nargs:i32 (- (node-len cc) 2))
-        (when (!= nargs np)
-          (die-at (. cc line)
-            (fmt-s "funcall: expected %d args, got %d"
-              (cast i64 np) (cast i64 nargs))))
-        ; Emit arguments
-        (let (arg-vals:ptr (arena-alloc (* (cast i64 nargs) (cast i64 8)))
-              i:i32 0)
-          (while (< i nargs)
-            (aset! (cast ptr:ptr arg-vals) i (emit-node (node-at cc (+ i 2)) scope))
-            (inc! i))
-          ; Build call instruction
-          (let (ret-ir:ptr (type-to-ir ret-type))
-            (if (= (-> ret-type (cast ptr:Type _) (. kind)) TY-VOID)
-              (do
-                (fprintf g-body-stream "  call void %s(" (. fn-val val))
-                (set! i 0)
-                (while (< i nargs)
-                  (when (!= i 0) (fprintf g-body-stream ", "))
-                  (let (av:ptr:Val (cast ptr:Val (aref (cast ptr:ptr arg-vals) i)))
-                    (fprintf g-body-stream "%s %s" (type-to-ir (. av type)) (. av val)))
-                  (inc! i))
-                (fprintf g-body-stream ")\n")
-                (return (alloc-val ty-void null)))
-              (let (tmp:ptr (new-tmp))
-                (fprintf g-body-stream "  %s = call %s %s(" tmp ret-ir (. fn-val val))
-                (set! i 0)
-                (while (< i nargs)
-                  (when (!= i 0) (fprintf g-body-stream ", "))
-                  (let (av:ptr:Val (cast ptr:Val (aref (cast ptr:ptr arg-vals) i)))
-                    (fprintf g-body-stream "%s %s" (type-to-ir (. av type)) (. av val)))
-                  (inc! i))
-                (fprintf g-body-stream ")\n")
-                (return (alloc-val ret-type tmp))))))))))
+      (return (emit-funcall-value call scope (cast ptr fn-val) 2)))))
 
 (defn emit-deref:ptr (call:ptr scope:ptr)
   (let (cc:ptr:Node (cast ptr:Node call))
@@ -4339,14 +4605,24 @@
   (let (sym:ptr (scope-lookup scope h))
     (when (= sym null)
       (die-at (. (cast ptr:Node head) line) (fmt-s "unknown: %s" h)))
-    (return (emit-call n scope sym))))
+    ; A defn/extern symbol (is-local 0, TY-FN) is a direct call. Anything else in
+    ; head position is a value: emit it once, then route. A function-pointer value
+    ; (a local/global TY-FN variable) folds to an indirect call; a non-function
+    ; value routes to get (member access) / invoke (callable-values.md §4.1/§4.2).
+    (when (and (-> sym (cast ptr:Sym _) (. type) (cast ptr:Type _) (. kind) (= _ TY-FN))
+               (= (-> sym (cast ptr:Sym _) (. is-local)) 0))
+      (return (emit-call n scope sym)))
+    (return (emit-callable-value n scope (emit-symbol-ref head scope)))))
 
 (defn emit-list:ptr (n:ptr scope:ptr)
   (let (nn:ptr:Node (cast ptr:Node n))
     (when (= (node-len nn) 0) (die-at (. nn line) "empty list"))
     (let (head:ptr:Node (cast ptr:Node (node-at nn 0)))
+      ; An arbitrary-expression head — `((mk) 3)`, `(@p 3)` — cannot be a macro or
+      ; special form (those are symbol-keyed): emit it and route as a callable
+      ; value (callable-values.md §4.1). Symbol heads continue below.
       (when (!= (. head kind) NODE-SYM)
-        (die-at (. head line) "list head must be symbol"))
+        (return (emit-callable-value n scope (emit-node (cast ptr head) scope))))
       (let (h:ptr (. head s)
             hp:ptr (cast ptr head))
         ; Check macro table before special forms.
@@ -4386,6 +4662,8 @@
         (when (= hp 'ptr+) (return (emit-ptr-add n scope)))
         (when (= hp '.) (return (emit-field-get n scope)))
         (when (= hp '.set!) (return (emit-field-set n scope)))
+        (when (= hp 'get) (return (emit-get n scope)))
+        (when (= hp 'invoke) (return (emit-invoke n scope)))
         (when (= hp 'sizeof) (return (emit-sizeof n scope)))
         (when (= hp 'alloca) (return (emit-alloca-form n scope)))
         (when (= hp 'char) (return (emit-char n scope)))

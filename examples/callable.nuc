@@ -1,0 +1,68 @@
+; Stage 9 — callable values (callable-values.md).
+;
+; A non-function value `s` in head position, `(s arg)`, dispatches by its sole
+; argument:
+;   - a literal symbol  → member access (the `get` generic; the built-in Struct
+;                         intrinsic emits a GEP+load, byte-identical to `.`, and
+;                         is overridable by a user `get` method)
+;   - anything else      → a user-defined `invoke` (indexing, function objects)
+; The Seq / Call protocols (lib/seq.nuc) name the `invoke` capability.
+
+(include stdio)
+(include stdlib)
+(import seq)
+
+(defstruct Point x:i32 y:i32)
+
+; ---- Seq: an i32 vector, indexable by call ----
+(defstruct Vec data:ptr:i32 len:i32)
+(defn invoke:i32 (self:ptr:Vec i:i32)
+  (return (aref (. self data) i)))
+(extend Vec Seq)
+
+; ---- Call: a function object that adds a fixed delta to *arg ----
+(defstruct Adder delta:i32)
+(defn invoke:ptr (self:ptr:Adder arg:ptr)
+  (let (out:ptr:i32 (cast ptr:i32 (malloc (cast i64 4))))
+    (aset! out 0 (+ (aref (cast ptr:i32 arg) 0) (. self delta)))
+    (return (cast ptr out))))
+(extend Adder Call)
+
+; ---- A user `get` override: it owns all member access on its type (tier 0
+;      beats the Struct intrinsic). Here a synthetic 'f selector is computed,
+;      while any other selector delegates to the real field.
+(defstruct Temp c:i32)
+(defn get:i32 (self:ptr:Temp sel:ptr)
+  (if (= sel 'f) (return (+ (* (. self c) 2) 30))
+                 (return (. self c))))
+
+(defn main:i32 ()
+  ; Member access by call — the Struct default. (p x) == (. p x).
+  (let (p:ptr:Point (cast ptr:Point (malloc (cast i64 (sizeof Point)))))
+    (.set! p x 3)
+    (.set! p y 4)
+    (printf "point: x=%d y=%d\n" (p x) (p y)))
+
+  ; Seq: (v i) indexes; (v len) is member access — same value, the argument decides.
+  (let (v:ptr:Vec (cast ptr:Vec (malloc (cast i64 (sizeof Vec))))
+        arr:ptr:i32 (cast ptr:i32 (malloc (cast i64 12))))
+    (aset! arr 0 10)
+    (aset! arr 1 20)
+    (aset! arr 2 30)
+    (.set! v data arr)
+    (.set! v len 3)
+    (printf "seq: v0=%d v1=%d v2=%d len=%d\n" (v 0) (v 1) (v 2) (v len)))
+
+  ; Call: a function object invoked with a pointer argument.
+  (let (add5:ptr:Adder (cast ptr:Adder (malloc (cast i64 (sizeof Adder))))
+        n:ptr:i32 (cast ptr:i32 (malloc (cast i64 4))))
+    (.set! add5 delta 5)
+    (aset! n 0 37)
+    (let (r:ptr:i32 (cast ptr:i32 (add5 (cast ptr n))))
+      (printf "call: 37+5=%d\n" (aref r 0))))
+
+  ; User get override beats the intrinsic; 'f is synthetic, 'c delegates to the field.
+  (let (t:ptr:Temp (cast ptr:Temp (malloc (cast i64 (sizeof Temp)))))
+    (.set! t c 20)
+    (printf "temp: c=%d f=%d\n" (t c) (t f)))
+  (return 0))
