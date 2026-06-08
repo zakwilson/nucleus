@@ -276,3 +276,66 @@ it. Each step keeps `make test` / `make bootstrap` green.
 4. Restrict for now, defer `dyn` to stage999.
 5. `get` for field access, `invoke` for callables. `Seq` and `Call` for the protocol names.
 6. `funcall` can probably become compiler-internal. Do arbitrary expression heads at this point unless there's a major blocker.
+
+---
+
+## Implementation status — landed (2026-06-08)
+
+All five staging steps (§7) are implemented in `src/nucleusc.nuc`; `make test`
+(37 cases, incl. `examples/callable.nuc`) and `make bootstrap` (stage1.ll ==
+stage2.ll, byte-identical) are green. This section is authoritative where it
+refines the design above.
+
+**Steps 1–2 — desugar + `get`/`invoke` + the `Struct` member-access intrinsic.**
+`get` and `invoke` are reserved **special forms** (`emit-get` / `emit-invoke`),
+and the non-`TY-FN` head case of `emit-dispatch` routes a value head through the
+same `emit-callable-value` desugar, so `(s f)`, `(get s 'f)`, `(s 3)` and
+`(invoke s 3)` share one resolution path. A single literal-symbol argument →
+`get`; everything else → `invoke`. `selector-literal-sym` detects a literal
+selector (a bare `NODE-SYM` or `(quote sym)`); a bare symbol is *always* a field,
+never a variable (§3.5), so the routing never depends on scope. Member access is
+the `get` generic's built-in intrinsic: the field-index lookup + GEP/load were
+factored out of `emit-field-get` into `struct-field-index` / `emit-field-load`,
+which the literal `get` path calls directly — **verified byte-identical to `.`**.
+A concrete user `get` method (params `(ptr:T, ptr)`) is found by
+`generic-find-method-exact` at tier 0 and out-ranks the intrinsic (§3.3/§3.5); the
+selector is passed as the interned symbol `Node*`. `invoke` has no default —
+resolution goes through the ordinary `generic-resolve`, so a struct pointer with
+an integer selector is **unbound unless an integer `invoke` exists** (§4.4: it does
+*not* fall back to `aref`).
+
+**Step 3 — computed-symbol field access.** `emit-computed-field` handles an
+*explicit* `(get callee expr)` whose selector is a compound expression: a chain of
+`select` instructions compares the selector (by pointer identity) against the
+struct's interned field symbols to pick an index, then an array-style GEP+load.
+Restricted to **homogeneous** structs (all field types `type-eq`) so the result
+type is well-defined; a heterogeneous struct is a clear def-time error. `dyn`
+(heterogeneous/erased) stays deferred to stage999 per decision 4.
+
+**Step 4 — `Seq` / `Call`.** Ordinary library protocols over `invoke` in
+`lib/seq.nuc` (`Seq` = `invoke:i32 (self:ptr:Self i:i32)`, `Call` =
+`invoke:ptr (self:ptr:Self arg:ptr)`); they export through the existing
+`defprotocol` machinery (no new `.nuch` form). `examples/callable.nuc` +
+`tests/expected/callable.out` cover member access by call, `Seq` indexing vs.
+member access on one value, a `Call` function object, and a user `get` override.
+
+**Step 5 — arbitrary-expression heads + `funcall` folding.** `emit-list` no longer
+requires a symbol head: a non-symbol head (`((mk) 3)`, `(@p 3)`) is emitted once
+and routed through `emit-callable-value`. A head whose value is `TY-FN` folds to an
+indirect call via `emit-funcall-value` (extracted from `emit-funcall`, which is now
+a thin wrapper) — so `(f a b)` works for a local/global fn-pointer variable and the
+explicit `funcall` / `funcall-ptr-*` family is **compiler-internal** (still
+accepted as a surface). `emit-dispatch` now takes the direct-call path only for a
+real function symbol (`is-local = 0`, `TY-FN`); every other head is a value.
+
+**Type pass (no drift).** `node-type` mirrors the desugar: `node-type-get` /
+`node-type-invoke` for the special forms, and `node-type-call`'s non-`TY-FN` branch
+for the value-head case, all via shared `callable-get-type` / `callable-invoke-type`
+/ `callable-value-type`. They mirror only the **exact tier** (a tier-0 user method's
+return, or the literal field's type) and return null otherwise, so codegen's own
+type stands where the type pass is imprecise — the rung-3 bootstrap invariant holds.
+
+**Deferred (as designed):** `dyn`-typed / heterogeneous computed field access; a
+`set!`-place form `(set! (s i) v)` (§4.3, wants generic places); an element-generic
+`Seq` (wants associated/parametric types); and cross-unit `get`/`invoke` overload
+*merging* (single-unit dispatch and `.nuch` export both work).

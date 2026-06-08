@@ -169,6 +169,8 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `ptr+` | Pointer arithmetic | `p + n` |
 | `.` | Struct field access | `s.field` |
 | `.set!` | Struct field assignment | `s.field = val` |
+| `get` | Member access / field read: `(get s 'field)` ≡ `(s field)` ≡ `(. s field)`; overridable per type. See [Callable values](#callable-values-non-function-call-position) | `s.field` |
+| `invoke` | General call on a value: `(invoke s 3)` ≡ `(s 3)`; user-defined (`Seq`/`Call`) | `s(3)` / `s[3]` |
 | `sizeof` | Size of a type | `sizeof(T)` |
 | `alloca` | Stack-allocate memory | `alloca()` / VLA |
 | `char` | Character literal | `'c'` |
@@ -395,6 +397,74 @@ and typos caught):
 locally-defined methods; `&rest` together with `&where`; REPL generic
 instantiation; full parametric generics (nested/multiple unbound variables,
 generic struct layout).
+
+## Callable values (non-function call position)
+
+A **non-function value in head position**, `(s arg…)`, is no longer an error — it
+dispatches by its sole argument into one of two reserved generics:
+
+| call | argument | desugars to | meaning |
+|---|---|---|---|
+| `(s field)` / `(s 'field)` | a **literal symbol** | `(get s 'field)` | member access |
+| `(s 3)` / `(s a b…)` | anything else | `(invoke s 3 …)` | indexing / general call |
+
+A **bare symbol argument is always a field selector**, never a variable — field
+interpretation wins so it never depends on what is in scope. To dispatch a value
+held in a variable, call `invoke` explicitly: `(invoke s x)`.
+
+**`get` — member access (the `Struct` default).** Every struct conforms to the
+built-in `Struct` blanket protocol, whose `get` is supplied by an **intrinsic**: a
+literal selector const-folds to a static `getelementptr`+`load`, **byte-identical
+to `.` and zero-overhead**. So `(c rad)` ≡ `(. c rad)` ≡ `(get c 'rad)`.
+
+```lisp
+(defstruct Point x:i32 y:i32)
+(p x)          ; ≡ (. p x) — a plain field load
+```
+
+The intrinsic is **overridable**: a concrete user `get` method for a type sits at
+tier 0 and out-ranks the blanket intrinsic, so it owns *all* member access on that
+type. A user `get` takes the selector as an interned symbol (`ptr`):
+
+```lisp
+(defn get:i32 (self:ptr:Temp sel:ptr)
+  (if (= sel 'f) (return …) (return (. self c))))   ; (t f) and (t c) both route here
+```
+
+**`invoke` — indexing / general call.** A type "becomes callable" by defining
+`invoke` methods; there is **no** built-in default (a struct pointer with an
+integer selector is unbound unless it defines an integer `invoke` — it does *not*
+fall back to `aref`). Dispatch is ordinary multimethod resolution on the whole
+argument tuple, so the same value answers both forms by argument:
+
+```lisp
+(defstruct Vec data:ptr:i32 len:i32)
+(defn invoke:i32 (self:ptr:Vec i:i32) (return (aref (. self data) i)))
+(v 3)          ; ⇒ (invoke v 3) → element access
+(v len)        ; ⇒ (get v 'len) → the length field
+```
+
+The `Seq` and `Call` protocols (`lib/seq.nuc`) name the `invoke` capability:
+`Seq` is integer-indexable (`(invoke:i32 (self:ptr:Self i:i32))`), `Call` is a
+unary `ptr→ptr` function object. Because protocols fix concrete signatures (no
+associated types yet), the element/argument types are concrete.
+
+**Computed selector (`get` only).** An *explicit* `(get callee expr)` whose
+selector is a compound expression (not a bare/quoted symbol) reads a field chosen
+at runtime: the selector is compared by pointer identity against the struct's
+interned field symbols. Restricted to **homogeneous** structs (all fields one
+type) so the result type is well-defined; a heterogeneous struct is a clear error.
+
+**Arbitrary-expression and function-pointer heads.** The head need not be a
+symbol: `((mk-vec) 3)` and `(@p 3)` emit the head once and route the same way. A
+head whose value is a **function pointer** folds to an indirect call, so
+`(f a b)` works for a local/global fn-pointer variable `f` and the explicit
+`funcall`/`funcall-ptr-*` forms are now compiler-internal (still accepted).
+
+Everything resolves at compile time to a static GEP+load, a direct `call` to a
+resolved method, or an indirect `call` through a fn-pointer — no dispatch object,
+no vtable. `get`/`invoke` overloads and `Seq`/`Call` export through the existing
+`defmethod`/`defprotocol`/`extend` machinery; there is no new `.nuch` form.
 
 ## Literal Values
 
