@@ -392,6 +392,10 @@ and typos caught):
   ```
   `Valid` is itself written explicitly (it *nominates* structural checking); a bare
   `&where (T)` with no protocol remains an error.
+  
+Using `Valid` with a public API is risky whether it's inside the library code or a user
+method on a library function because it may unexpectedly match unowned call sites. 
+It's safer to prefer named protocols and treat `Valid` as an escape hatch.
 
 *Not yet implemented:* same-name overloading that mixes imported and
 locally-defined methods; `&rest` together with `&where`; REPL generic
