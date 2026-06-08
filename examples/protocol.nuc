@@ -13,10 +13,10 @@
   (label:ptr (self:ptr:Self)))
 
 ; Concrete implementations are ordinary overloaded defns (Option 1 substrate).
-(defn area:i32 (s:ptr:Circle) (return (* (* (. s rad) (. s rad)) 3)))
+(defn area:i32 (s:ptr:Circle) (return (* (* (s rad) (s rad)) 3)))
 (defn label:ptr (s:ptr:Circle) (return "circle"))
 
-(defn area:i32 (s:ptr:Square) (return (* (. s side) (. s side))))
+(defn area:i32 (s:ptr:Square) (return (* (s side) (s side))))
 (defn label:ptr (s:ptr:Square) (return "square"))
 
 ; Code-free conformance assertions; fail to compile if a method is missing.
