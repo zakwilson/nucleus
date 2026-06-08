@@ -9,10 +9,10 @@
 
 ; Overload on pointer-to-struct argument type.
 (defn area:i32 (c:ptr:Circle)
-  (return (* (* (. c rad) (. c rad)) 3)))
+  (return (* (* (c rad) (c rad)) 3)))
 
 (defn area:i32 (s:ptr:Rect)
-  (return (* (. s w) (. s h))))
+  (return (* (s w) (s h))))
 
 ; Overload on primitive argument type (and different return types — B1).
 (defn kind:i32 (x:i32) (return 1))

@@ -70,3 +70,14 @@ The `with` special form is a target for improvement. It should enforce a lexical
 ## Nullability
 
 It would be **great** if most types and pointers could be non-nullable with a `Maybe` or `Option` type to provide nullability where it's desired. Even better would be safe pointers by default which cannot point to anything but a valid instance of the declared type, with raw pointers relegated to an `unsafe` namespace.
+
+## Base features
+
+* vector/hashmap/set in a library, use in the compiler
+* case/switch for matching a value
+* Unicode strings
+* Str protocol
+
+## Error attribution
+
+A recent failed compile reported a malformed `cond` but not its location. The compiler should try to track the location of compile errors wherever practical.

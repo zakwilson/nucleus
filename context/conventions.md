@@ -68,6 +68,92 @@ would need `@"lt?"`). The compiler does not currently quote symbols, so user
 *function* names should stick to `[A-Za-z0-9$._-]`. (`set!`/`inc!`/`lt?`-style
 names are fine for special forms and macros, which never become `@`-symbols.)
 
+## Struct field names are interned — StructDef builders must use `intern-str`
+
+`struct-field-index` (src/nucleusc.nuc) matches a selector against a struct's
+`field-names` by **pointer identity** (`=`), not `strcmp`. This works because both
+sides are interned: selectors arrive interned (the reader / `quote` intern symbol
+spellings at lex time, so `(. fn-node s)` is the canonical string) and stored field
+names are interned at build time via `intern-str` (interns the spelling, returns the
+canonical string pointer). The three field-access paths — `.` (`emit-field-get`),
+the `get` intrinsic (`emit-get-intrinsic`), and the non-emitting type pass
+(`node-type-field`) — all route through `struct-field-index`, so they cannot drift.
+
+There are exactly **two** places that populate a StructDef's `field-names`:
+`emit-defstruct` (the normal path, incl. `.nuch` imports) and `repl-register-node`
+(the REPL's hand-built `Node`). **Both must intern each name** (`(intern-str fname)`).
+A raw string literal would `strcmp`-equal a selector but **not** be pointer-identical,
+so the field would silently look absent (`-1` ⇒ "no field" / null type). If you add a
+third StructDef builder, intern its field names too. The `make bootstrap` fixed point
+does **not** exercise the REPL path — the `repl-redefinition` test does (its `*`/`-`/`if`
+macros do `(. (cast ptr:Node args) cdr)` at expansion time), so keep `make test` green,
+not just `make bootstrap`, when touching field interning.
+
+## `CStr` is ABI-identical to `ptr` — gate pointer ABI on `is-ptr-like`, not `TY-PTR`
+
+`TY-CSTR` (the C-string type; string literals are `CStr`) lowers to `ptr` in IR
+and is a plain `char*` at the ABI. It is a *distinct kind* only so `=` / `!=`
+dispatch to a `strcmp` content comparison (`emit-binop-vals`) instead of pointer
+identity. **Everywhere else it must behave exactly like `TY-PTR`:** `type-to-ir`
+→ `ptr`, `type-size` → 8, zero-init → `null`, `cast` to/from `ptr` is a no-op,
+and it must never be `inttoptr`'d (it is already a pointer). A bare `(= (. t
+kind) TY-PTR)` ABI check therefore *misses* `CStr` — use the `is-ptr-like`
+predicate ({`TY-PTR`, `TY-CSTR`}; `TY-FN` deliberately excluded). This bit the
+`&rest` arg-folding (`emit-call-with-args`), which `inttoptr`'d any non-`TY-PTR`
+arg and produced invalid `inttoptr ptr→ptr` for a `CStr` rest arg. When adding a
+new pointer/integer ABI decision, branch on `is-ptr-like`.
+
+Two deliberate asymmetries: (1) `CStr`↔`ptr` coerce freely in *value* positions
+(`coerce-int-val`) but **not** in multimethod dispatch (`arg-adapts`) — `CStr` is
+distinct there on purpose, so you can overload `CStr` vs `ptr`; pass a literal to
+a plain `ptr` function freely, but to a `ptr` *multimethod* cast explicitly.
+(2) Conformance is keyed by `type-spelling`, which must return `"CStr"` (not the
+fall-through `"ptr"`) or `(extend CStr Eq)` won't match the call-site check.
+
+**Mixed-operand rule (`emit-binop-vals`):** `=`/`!=` fire the strcmp lowering when
+*either* operand is `CStr` (the other must be `ptr`/`CStr`); two plain `ptr` stay
+`icmp` identity. So `(= some-ptr "literal")` is a content test (the literal is
+`CStr`) — this is what lets the compiler write `(= name "i32")` instead of
+`(= (strcmp name "i32") 0)` without retyping `name`. The corollary trap: any value
+you retype `ptr`→`CStr` makes *all* its `=`/`!=` become strcmp, so never retype a
+field/param that is compared for pointer identity (notably **`Node.s`** — the
+interned-symbol path). `strncmp` (prefix) has no operator; leave those as calls.
+
+**Verifying a behavior-neutral type migration:** retyping `ptr`→`CStr` and
+rewriting `(= (strcmp a b) 0)`→`(= a b)` is **byte-identical at the IR level**
+(`CStr` lowers to `ptr`; the `=` emits the same `strcmp`+`icmp`). So the migration
+is provable: snapshot `build/nucleusc.ll`, migrate, rebuild, `diff`. A non-zero diff
+is a regression — most commonly a both-`ptr` comparison that lost its strcmp (a
+`< call @strcmp` / `> icmp eq ptr` hunk) because neither operand ended up `CStr`;
+fix by giving one side a `CStr` type. `make bootstrap` (stage1==stage2) does **not**
+catch this (both stages share the change); the before/after IR diff does.
+
+## Member access is head position `(s field)`; `_get` is the bypass primitive
+
+The `.` field-access special form was renamed **`_get`** (compiler-internal
+primitive; `emit-field-get`) and ordinary code uses **head position `(s field)`**
+instead (the callable-values `get` path: Struct-blanket intrinsic, byte-identical
+GEP+load). `.set!` is unchanged (writes stay `(.set! s f v)`). Two non-obvious
+hazards — both bit the `.`→head-position migration and are why `_get` still exists:
+
+- **A user `get` method must read its own fields with `_get`, not head position.**
+  `(self field)` inside a `(defn get … (self:ptr:T sel))` dispatches back into that
+  same `get` method → infinite recursion → segfault. Use `(_get self field)` (direct,
+  bypasses the override). Head position respects user `get` overrides; `_get` skips them.
+- **A struct held in a variable named like a special form or macro collides.**
+  `(cond field)` parses as the `cond` special form (special forms/macros are
+  dispatched before scope lookup). Fix by renaming the variable (preferred) or using
+  `(_get cond field)`. **Functions don't collide** — a local shadows them in scope
+  lookup, so `(localvar field)` is member access even if a function shares the name.
+  The migration script special-cases reserved-named *direct* heads (`(. cond f)` →
+  `(_get cond f)`); a reserved-named **`->` base** (`(-> cond … (. type))`) is not
+  caught and must be renamed.
+
+The `->` macro (`lib/macros.nuc`) was extended to substitute `_` in **head**
+position (it scans the whole form, not just args), so a threaded value can land in
+call position: `(-> s (_ field))` ⇒ `(s field)`. The migration rewrites a 1-arg
+`->`-step `(. field)` to `(_ field)` and a normal `(. s field)` to `(s field)`.
+
 ## C interop invariant
 
 All Nucleus types must be representable in C. This is a core design requirement — Nucleus is a drop-in replacement for C, and any function or data structure defined in Nucleus must be consumable from C. If you encounter or are asked to create a type that cannot be represented as a C struct/function/enum (e.g. closures with hidden captured environments, tagged unions requiring runtime support), flag it as a design violation before proceeding.

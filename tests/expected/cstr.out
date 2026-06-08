@@ -1,0 +1,7 @@
+foo = foo   : 1
+foo = bar   : 0
+foo != bar  : 1
+copy = foo  : 1
+copy ptr==  : 0
+same hi hi  : 1
+same hi yo  : 0

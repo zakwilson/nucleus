@@ -48,6 +48,13 @@
     (memset p 0 n)
     (return p)))
 
+; (new T) — allocate one zeroed T from the arena, typed (ptr T).
+;   (new Scope)  =>  (cast (ptr Scope) (arena-alloc (sizeof Scope)))
+; arena-alloc zero-fills, so the result is a zero-initialised T*. Collapses the
+; cast + sizeof boilerplate for the common "allocate a single struct" case.
+(defmacro new (T)
+  `(cast (ptr ~T) (arena-alloc (sizeof ~T))))
+
 (defn arena-strndup:ptr (s:ptr n:i64)
   (let (p:ptr (arena-alloc (+ n (cast i64 1))))
     (memcpy p s n)
