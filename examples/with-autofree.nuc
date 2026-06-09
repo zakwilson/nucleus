@@ -6,20 +6,20 @@
 (include string)
 
 (defn fall-through:void ()
-  (with (p:ptr:i32 (cast ptr:i32 (malloc (cast i64 16))))
+  (with (p:ptr:i32 (malloc 16))
     (ptr-set! p 7)
     (printf "fall-through: %d\n" (deref p))))
 
 (defn early-return:i32 (flag:i32)
-  (with (p:ptr:i32 (cast ptr:i32 (malloc (cast i64 16))))
+  (with (p:ptr:i32 (malloc 16))
     (ptr-set! p 42)
     (cond (= flag 1) (return (deref p)))
     (return (+ (deref p) 1))))
 
 (defn nested:void ()
-  (with (a:ptr:i32 (cast ptr:i32 (malloc (cast i64 16))))
+  (with (a:ptr:i32 (malloc 16))
     (ptr-set! a 10)
-    (with (b:ptr:i32 (cast ptr:i32 (calloc (cast i64 4) (cast i64 4))))
+    (with (b:ptr:i32 (calloc 4 4))
       (ptr-set! b 20)
       (printf "nested: %d %d\n" (deref a) (deref b)))))
 
@@ -28,13 +28,13 @@
     (printf "hello %s\n" s)))
 
 (defn realloc-bind:void ()
-  (with (p:ptr (malloc (cast i64 8)))
-    (set! p (realloc p (cast i64 32)))
+  (with (p:ptr (malloc 8))
+    (set! p (realloc p 32))
     (printf "realloc ok\n")))
 
 (defn mixed:void ()
   (with (n:i32 99
-         p:ptr:i32 (cast ptr:i32 (malloc (cast i64 16))))
+         p:ptr:i32 (malloc 16))
     (ptr-set! p n)
     (printf "mixed: %d\n" (deref p))))
 

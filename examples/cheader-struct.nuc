@@ -1,0 +1,42 @@
+(include stdio)
+(import "tests/fixtures/cheader-struct.h")
+
+; Use the named C struct (struct CHPoint) by value.
+(defn use-chpoint:i32 ()
+  (let (p:ptr:CHPoint (alloca CHPoint))
+    (.set! p x 3)
+    (.set! p y 4)
+    (return (+ (. p x) (. p y)))))
+
+; Use the typedef'd struct CHStatus.
+(defn use-chstatus:i32 ()
+  (let (s:ptr:CHStatus (alloca CHStatus))
+    (.set! s code 10)
+    (.set! s detail 20)
+    (return (+ (. s code) (. s detail)))))
+
+; Use a struct with a nested-by-value field. CHBoxed.p is a (value)
+; struct CHPoint; write through it with the .& field-address operator.
+(defn use-chboxed:i32 ()
+  (let (b:ptr:CHBoxed (alloca CHBoxed))
+    (.set! b tag 99)
+    (.set! (.& b p) x 7)
+    (.set! (.& b p) y 8)
+    (return (+ (. b tag) (+ (. (.& b p) x) (. (.& b p) y))))))
+
+; CHWithAnon's `point` field is an anonymous inline struct `{ int a; int b; }`
+; — the c-header parser registers it as an anonymous (content-hashed)
+; struct and uses .& to write through the nested-by-value field.
+(defn use-chwithanon:i32 ()
+  (let (w:ptr:CHWithAnon (alloca CHWithAnon))
+    (.set! w kind 5)
+    (.set! (.& w point) a 100)
+    (.set! (.& w point) b 200)
+    (return (+ (. w kind) (+ (. (.& w point) a) (. (.& w point) b))))))
+
+(defn main:int ()
+  (printf "chpoint=%d\n" (use-chpoint))
+  (printf "chstatus=%d\n" (use-chstatus))
+  (printf "chboxed=%d\n" (use-chboxed))
+  (printf "chwithanon=%d\n" (use-chwithanon))
+  (return 0))

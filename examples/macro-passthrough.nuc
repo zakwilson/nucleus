@@ -1,0 +1,22 @@
+; Macro pass-through: a macro parameter is a Node* the body inspects (cast to
+; ptr:Node for member access), but the spliced ~x in its expansion carries no
+; type constraint — the host compiler types it normally at the call site. So one
+; macro can accept arguments of unrelated value types.
+
+(include stdio)
+
+; tprint: pick a printf format from the literal kind, then splice the
+; original expression in.
+(defmacro tprint (x)
+  (cond (= ((cast ptr:Node x) kind) NODE-INT)   `(printf "%d\n" ~x)
+        (= ((cast ptr:Node x) kind) NODE-STR)   `(printf "%s\n" ~x)
+        (= ((cast ptr:Node x) kind) NODE-FLOAT) `(printf "%f\n" ~x)
+        true                                    `(printf "%p\n" ~x)))
+
+(defn main:int ()
+  (tprint 42)            ; i32  → "%d\n"
+  (tprint "hello")       ; ptr  → "%s\n"
+  (tprint 3.14)          ; f64  → "%f\n"
+  (let (p:ptr null)
+    (tprint p))          ; ptr  → "%p\n" (default branch)
+  (return 0))

@@ -1,0 +1,11 @@
+i32=42
+i64=1234567890123
+neg=-7
+str=nucleus
+null=-1
+t=-1 f=0
+f32=1.50
+f64=3.141592653589793
+char=Z
+const=42
+after set: i32=100 str=after
