@@ -2,43 +2,40 @@
 ;
 ; Requires: arena (arena-strndup, arena-alloc), snprintf, strlen, isdigit.
 
-(defn i64:i64 (n:i32)
-  (return (cast i64 n)))
-
 (defn fmt-i32:ptr (fmt:ptr d:i32)
   (let (buf:ptr (alloca i8 256)
         n:i32 (snprintf buf (cast i64 256) fmt d))
-    (return (arena-strndup buf (i64 n)))))
+    (return (arena-strndup buf (cast i64 n)))))
 
 (defn fmt-i32-i32:ptr (fmt:ptr a:i32 b:i32)
   (let (buf:ptr (alloca i8 256)
         n:i32 (snprintf buf (cast i64 256) fmt a b))
-    (return (arena-strndup buf (i64 n)))))
+    (return (arena-strndup buf (cast i64 n)))))
 
 (defn fmt-i64:ptr (fmt:ptr d:i64)
   (let (buf:ptr (alloca i8 256)
         n:i32 (snprintf buf (cast i64 256) fmt d))
-    (return (arena-strndup buf (i64 n)))))
+    (return (arena-strndup buf (cast i64 n)))))
 
 (defn fmt-s:ptr (fmt:ptr s:ptr)
   (let (buf:ptr (alloca i8 512)
         n:i32 (snprintf buf (cast i64 512) fmt s))
-    (return (arena-strndup buf (i64 n)))))
+    (return (arena-strndup buf (cast i64 n)))))
 
 (defn fmt-sd:ptr (fmt:ptr s:ptr d:i32)
   (let (buf:ptr (alloca i8 512)
         n:i32 (snprintf buf (cast i64 512) fmt s d))
-    (return (arena-strndup buf (i64 n)))))
+    (return (arena-strndup buf (cast i64 n)))))
 
 (defn fmt-2s:ptr (fmt:ptr s1:ptr s2:ptr)
   (let (buf:ptr (alloca i8 512)
         n:i32 (snprintf buf (cast i64 512) fmt s1 s2))
-    (return (arena-strndup buf (i64 n)))))
+    (return (arena-strndup buf (cast i64 n)))))
 
 (defn fmt-2s-i:ptr (fmt:ptr s1:ptr s2:ptr d:i32)
   (let (buf:ptr (alloca i8 512)
         n:i32 (snprintf buf (cast i64 512) fmt s1 s2 d))
-    (return (arena-strndup buf (i64 n)))))
+    (return (arena-strndup buf (cast i64 n)))))
 
 ; Replace chars invalid in LLVM IR identifiers with underscores.
 (defn sanitize-for-ir:ptr (name:ptr)

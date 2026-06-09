@@ -29,6 +29,17 @@
 ; Token kinds
 (defenum TokKind TOK-LPAREN TOK-RPAREN TOK-RMACRO TOK-INT TOK-STRING TOK-SYMBOL TOK-FLOAT TOK-EOF)
 
+; Name kinds for the one-symbol-one-meaning shadowing check (see
+; name-existing-kind / guard-name-kind). Ordered by lookup priority.
+(defconst NK-NONE 0)
+(defconst NK-SPECIAL 1)
+(defconst NK-BUILTIN 2)   ; a primitive/built-in type name (i32, ptr, ...)
+(defconst NK-TYPE 3)      ; a struct type
+(defconst NK-PROTOCOL 4)
+(defconst NK-MACRO 5)
+(defconst NK-FUNCTION 6)
+(defconst NK-VALUE 7)     ; defvar / defconst / defenum member / extern
+
 ; Node struct and NODE-* kinds come from lib/prelude.nuc (imported below).
 
 ; Type kinds. TY-TYVAR is an abstract type variable used only by the Stage 9
@@ -206,6 +217,23 @@
 (defvar ty-f32:ptr)
 (defvar ty-f64:ptr)
 (defvar ty-cstr:ptr)
+
+; Target descriptor. The compiler emits code for a single target, described
+; here so the "a pointer is i64" assumption lives in one place instead of being
+; scattered as literal 8s / i64s through codegen. Set in compiler-init; defaults
+; describe x86_64 Linux. To target a 32-bit platform, set g-target-ptr-bytes to
+; 4 (and g-target-triple accordingly) — type sizes, alignments, sizeof, and the
+; size/pointer-sized integer type all follow. (The macro/CT JIT still runs on
+; the host, so its target machine stays the host triple.)
+(defvar g-target-triple:ptr)
+(defvar g-target-ptr-bytes:i32 8)
+
+; Host pointer size in bytes — the platform the compiler itself runs on, used to
+; size its own arrays-of-pointers. Distinct from g-target-ptr-bytes (the
+; platform being compiled *for*): when cross-compiling they differ. Initialised
+; from (sizeof ptr) in compiler-init; the literal default covers allocations
+; before init runs.
+(defvar g-host-ptr-bytes:i32 8)
 
 ; Struct registry
 (defvar g-structs:ptr)
@@ -405,9 +433,9 @@
     (when (= (vv len) (vv cap))
       (let (nc:i32 4)
         (when (!= (vv cap) 0) (set! nc (* (vv cap) 2)))
-        (let (nd:ptr (arena-alloc (* (i64 nc) (i64 8))))
+        (let (nd:ptr (arena-alloc (* (cast i64 nc) (ptr-bytes))))
           (when (!= (vv len) 0)
-            (memcpy nd (vv data) (* (i64 (vv len)) (i64 8))))
+            (memcpy nd (vv data) (* (cast i64 (vv len)) (ptr-bytes))))
           (.set! vv data nd)
           (.set! vv cap nc))))
     (aset! (cast ptr:ptr (vv data)) (vv len) item)
@@ -426,41 +454,44 @@
 (defn fprint-node:void (out:ptr n:ptr)
   (when (= n null) (fputs "()" out) (return))
   (let (nn:ptr:Node (cast ptr:Node n))
-    (when (= (nn kind) NODE-INT)
-      (fprintf out "%ld" (nn i)) (return))
-    (when (= (nn kind) NODE-FLOAT)
-       (fputs (nn s) out) (return))
-    (when (= (nn kind) NODE-SYM)
-       (fputs (nn s) out) (return))
-    (when (= (nn kind) NODE-STR)
-      (fputc 34 out)
-      (let (s:ptr (nn s)
-                  i:i64 (cast i64 0)
-                  len:i64 (strlen s))
-        (while (< i len)
-          (let (c:i32 (char-at s i))
-            (cond (= c 10) (do (fputc 92 out) (fputc 110 out))
-                  (= c 9)  (do (fputc 92 out) (fputc 116 out))
-                  (= c 13) (do (fputc 92 out) (fputc 114 out))
-                  (= c 92) (do (fputc 92 out) (fputc 92 out))
-                  (= c 34) (do (fputc 92 out) (fputc 34 out))
-                  (= c 0)  (do (fputc 92 out) (fputc 48 out))
-                  true     (fputc c out)))
-          (set! i (+ i (cast i64 1)))))
-      (fputc 34 out)
-      (return))
-    (when (= (nn kind) NODE-CELL)
-      (fputc 40 out)
-      (let (cur:ptr n
-                    first:i32 1)
-        (while (and (!= cur null)
-                    (= ((cast ptr:Node cur) kind) NODE-CELL))
-          (when (= first 0) (fputc 32 out))
-          (set! first 0)
-          (fprint-node out ((cast ptr:Node cur) car))
-          (set! cur ((cast ptr:Node cur) cdr))))
-      (fputc 41 out)
-      (return))))
+    (case (nn kind)
+      NODE-INT
+        (fprintf out "%ld" (nn i))
+      NODE-FLOAT
+        (fputs (nn s) out)
+      NODE-SYM
+        (fputs (nn s) out)
+      NODE-STR
+        (do
+          (fputc 34 out)
+          (let (s:ptr (nn s)
+                      i:i64 (cast i64 0)
+                      len:i64 (strlen s))
+            (while (< i len)
+              (let (c:i32 (char-at s i))
+                (case c
+                  10 (do (fputc 92 out) (fputc 110 out))
+                  9  (do (fputc 92 out) (fputc 116 out))
+                  13 (do (fputc 92 out) (fputc 114 out))
+                  92 (do (fputc 92 out) (fputc 92 out))
+                  34 (do (fputc 92 out) (fputc 34 out))
+                  0  (do (fputc 92 out) (fputc 48 out))
+                  (fputc c out)))
+              (set! i (+ i (cast i64 1)))))
+          (fputc 34 out))
+      NODE-CELL
+        (do
+          (fputc 40 out)
+          (let (cur:ptr n
+                        first:i32 1)
+            (while (and (!= cur null)
+                        (= ((cast ptr:Node cur) kind) NODE-CELL))
+              (when (= first 0) (fputc 32 out))
+              (set! first 0)
+              (fprint-node out ((cast ptr:Node cur) car))
+              (set! cur ((cast ptr:Node cur) cdr))))
+          (fputc 41 out))
+      0)))
 
 (defn print-node:void (n:ptr)
   (fprint-node (cast ptr stdout) n))
@@ -536,6 +567,21 @@
       (return (fmt-s "struct %s" ((cast ptr:StructDef (tt sdef)) name))))
     (return "/* unknown */")))
 
+; The IR type of a pointer-sized integer (size_t / intptr_t) for the target.
+; All pointer-as-integer codegen routes through this rather than hardcoding i64.
+(defn ptr-int-ir:ptr ()
+  (if (= g-target-ptr-bytes 4) "i32" "i64"))
+
+; The registered singleton type for a pointer-sized integer on the target.
+(defn ptr-int-type:ptr ()
+  (if (= g-target-ptr-bytes 4) ty-i32 ty-i64))
+
+; Size in bytes of one host pointer, as an i64 — the element size for the
+; compiler's own arrays of pointers. Use instead of a literal 8 so the compiler
+; allocates correctly on hosts where a pointer is not 8 bytes.
+(defn ptr-bytes:i64 ()
+  (cast i64 g-host-ptr-bytes))
+
 (defn type-size:i32 (t:ptr)
   (let (tt:ptr:Type (cast ptr:Type t))
     (when (= (tt kind) TY-I1)   (return 1))
@@ -547,11 +593,13 @@
     (when (= (tt kind) TY-UI16) (return 2))
     (when (= (tt kind) TY-UI32) (return 4))
     (when (= (tt kind) TY-UI64) (return 8))
-    (when (= (tt kind) TY-PTR)  (return 8))
-    (when (= (tt kind) TY-CSTR) (return 8))
+    (when (= (tt kind) TY-PTR)  (return g-target-ptr-bytes))
+    (when (= (tt kind) TY-CSTR) (return g-target-ptr-bytes))
     (when (= (tt kind) TY-F32)  (return 4))
     (when (= (tt kind) TY-F64)  (return 8))
-    (when (= (tt kind) TY-STRUCT) (return 8))
+    ; A struct value is laid out by LLVM; we use the pointer alignment as a
+    ; conservative slot size/alignment for it (structs are handled by-reference).
+    (when (= (tt kind) TY-STRUCT) (return g-target-ptr-bytes))
     (return 1)))
 
 (defn is-int-type:i32 (t:ptr)
@@ -735,7 +783,7 @@
                               (inc! count)
                               (set! cur ((cast ptr:Node cur) cdr)))
                             (set! num-p count)
-                            (set! param-arr (arena-alloc (* (cast i64 count) (cast i64 8))))
+                            (set! param-arr (arena-alloc (* (cast i64 count) (ptr-bytes))))
                             ; Parse each param type
                             (set! cur plist)
                             (let (pi:i32 0)
@@ -866,9 +914,9 @@
     (when (= (sc len) (sc cap))
       (let (nc:i32 8)
         (when (!= (sc cap) 0) (set! nc (* (sc cap) 2)))
-        (let (ns:ptr (arena-alloc (* (i64 nc) (sizeof Sym))))
+        (let (ns:ptr (arena-alloc (* (cast i64 nc) (sizeof Sym))))
           (when (!= (sc len) 0)
-            (memcpy ns (sc syms) (* (i64 (sc len)) (sizeof Sym))))
+            (memcpy ns (sc syms) (* (cast i64 (sc len)) (sizeof Sym))))
           (.set! sc syms ns)
           (.set! sc cap nc))))
     (let (sym:ptr:Sym (cast ptr:Sym (ptr+ (cast ptr:Sym (sc syms)) (sc len))))
@@ -899,9 +947,9 @@
     (when (= (sc ncleanups) (sc ccleanups))
       (let (nc:i32 4)
         (when (!= (sc ccleanups) 0) (set! nc (* (sc ccleanups) 2)))
-        (let (ns:ptr (arena-alloc (* (i64 nc) (i64 8))))
+        (let (ns:ptr (arena-alloc (* (cast i64 nc) (ptr-bytes))))
           (when (!= (sc ncleanups) 0)
-            (memcpy ns (sc cleanup-slots) (* (i64 (sc ncleanups)) (i64 8))))
+            (memcpy ns (sc cleanup-slots) (* (cast i64 (sc ncleanups)) (ptr-bytes))))
           (.set! sc cleanup-slots ns)
           (.set! sc ccleanups nc))))
     (let (slots:ptr:ptr (cast ptr:ptr (sc cleanup-slots)))
@@ -917,15 +965,15 @@
     (when (= g-strs-len g-strs-cap)
       (let (nc:i32 8)
         (when (!= g-strs-cap 0) (set! nc (* g-strs-cap 2)))
-        (let (ns:ptr (malloc (* (i64 nc) (sizeof StrLit))))
+        (let (ns:ptr (malloc (* (cast i64 nc) (sizeof StrLit))))
           (when (= ns null) (perror "malloc") (exit 1))
           (when (!= g-strs null)
-            (memcpy ns g-strs (* (i64 g-strs-len) (sizeof StrLit)))
+            (memcpy ns g-strs (* (cast i64 g-strs-len) (sizeof StrLit)))
             (free g-strs))
           (set! g-strs ns)
           (set! g-strs-cap nc))))
     (let (sl:ptr:StrLit (cast ptr:StrLit (ptr+ (cast ptr:StrLit g-strs) g-strs-len)))
-      (.set! sl bytes (arena-strndup bytes (i64 len)))
+      (.set! sl bytes (arena-strndup bytes (cast i64 len)))
       (.set! sl len len)
       (.set! sl id id)
       (inc! g-strs-len)
@@ -1061,7 +1109,7 @@
   (let (ctt:ptr:Type (cast ptr:Type ct)
         g:ptr (generic-lookup "get"))
     (when (!= g null)
-      (let (argtypes:ptr (arena-alloc (* (cast i64 2) (cast i64 8))))
+      (let (argtypes:ptr (arena-alloc (* (cast i64 2) (ptr-bytes))))
         (aset! (cast ptr:ptr argtypes) 0 ct)
         (aset! (cast ptr:ptr argtypes) 1 ty-ptr)
         (let (m:ptr (generic-find-method-exact g argtypes 2))
@@ -1083,7 +1131,7 @@
   (let (g:ptr (generic-lookup "invoke"))
     (when (= g null) (return null))
     (let (total:i32 (+ nargs 1)
-          argtypes:ptr (arena-alloc (* (cast i64 (+ total 1)) (cast i64 8)))
+          argtypes:ptr (arena-alloc (* (cast i64 (+ total 1)) (ptr-bytes)))
           ok:i32 1)
       (aset! (cast ptr:ptr argtypes) 0 ct)
       (let (i:i32 0)
@@ -1130,8 +1178,8 @@
           ; A user overload of this operator, if any, wins (mirror emit).
           (when (!= (gg mangled) 0)
             (let (nargs:i32 (- (node-len n) 1)
-                  argtypes:ptr (arena-alloc (* (i64 (+ nargs 1)) (i64 8)))
-                  arg-nodes:ptr (arena-alloc (* (i64 (+ nargs 1)) (i64 8)))
+                  argtypes:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (ptr-bytes)))
+                  arg-nodes:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (ptr-bytes)))
                   i:i32 0
                   ok:i32 1)
               (while (< i nargs)
@@ -1149,7 +1197,7 @@
             (return (node-type (node-at n 1) scope))))
         (when (!= (gg mangled) 0)
           (let (nargs:i32 (- (node-len n) 1)
-                argtypes:ptr (arena-alloc (* (i64 (+ nargs 1)) (i64 8)))
+                argtypes:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (ptr-bytes)))
                 i:i32 0
                 ok:i32 1)
             (while (< i nargs)
@@ -1561,7 +1609,7 @@
       (let (na:ptr (coerce-num-val a target line)
             nb:ptr (coerce-num-val b target line))
         (when (or (= na null) (= nb null)) (return null))
-        (let (pair:ptr (arena-alloc (* (i64 2) (i64 8))))
+        (let (pair:ptr (arena-alloc (* (cast i64 2) (ptr-bytes))))
           (aset! (cast ptr:ptr pair) 0 na)
           (aset! (cast ptr:ptr pair) 1 nb)
           (return pair)))))))
@@ -1697,7 +1745,7 @@
         (set! g-cap-generics nc))))
   (let (g:ptr:Generic (cast ptr:Generic (ptr+ (cast ptr:Generic g-generics) g-num-generics)))
     (.set! g name name)
-    (.set! g methods (arena-alloc (* (cast i64 4) (cast i64 8))))
+    (.set! g methods (arena-alloc (* (cast i64 4) (ptr-bytes))))
     (.set! g num-methods 0)
     (.set! g cap 4)
     (.set! g finalized 0)
@@ -1709,8 +1757,8 @@
   (let (gg:ptr:Generic (cast ptr:Generic g))
     (when (= (gg num-methods) (gg cap))
       (let (nc:i32 (* (gg cap) 2)
-            nm:ptr (arena-alloc (* (cast i64 nc) (cast i64 8))))
-        (memcpy nm (gg methods) (* (cast i64 (gg num-methods)) (cast i64 8)))
+            nm:ptr (arena-alloc (* (cast i64 nc) (ptr-bytes))))
+        (memcpy nm (gg methods) (* (cast i64 (gg num-methods)) (ptr-bytes)))
         (.set! gg methods nm)
         (.set! gg cap nc)))
     (aset! (cast ptr:ptr (gg methods)) (gg num-methods) m)
@@ -1896,7 +1944,7 @@
       (when (!= has-rest 0) (set! nparams (- raw 1)))
       (let (ptypes:ptr null)
         (when (> nparams 0)
-          (set! ptypes (arena-alloc (* (i64 nparams) (i64 8)))))
+          (set! ptypes (arena-alloc (* (cast i64 nparams) (ptr-bytes)))))
         (let (i:i32 0
               di:i32 0)
           (while (< i raw)
@@ -2045,7 +2093,7 @@
       (while (< j (gg num-methods))
         (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (gg methods)) j)))
           (when (= (m kind) METHOD-GENERIC)
-            (let (bound:ptr (arena-alloc (* (i64 (+ (m num-tyvars) 1)) (i64 8))))
+            (let (bound:ptr (arena-alloc (* (cast i64 (+ (m num-tyvars) 1)) (ptr-bytes))))
               (when (!= (generic-method-bind (cast ptr m) argtypes nargs bound) 0)
                 (if (!= (generic-constraints-ok (cast ptr m) bound line) 0)
                   (do (set! cand (cast ptr m)) (set! cand-bound bound) (inc! ncand))
@@ -2285,9 +2333,9 @@
             nc:i32 (- raw (+ wi 1)))
         (when (< nc 1)
           (die-at (ff line) "defn: &where requires at least one (Protocol Var) constraint"))
-        (let (con-protos:ptr (arena-alloc (* (i64 nc) (i64 8)))
-              con-vars:ptr   (arena-alloc (* (i64 nc) (i64 8)))
-              tyvars:ptr     (arena-alloc (* (i64 nc) (i64 8)))
+        (let (con-protos:ptr (arena-alloc (* (cast i64 nc) (ptr-bytes)))
+              con-vars:ptr   (arena-alloc (* (cast i64 nc) (ptr-bytes)))
+              tyvars:ptr     (arena-alloc (* (cast i64 nc) (ptr-bytes)))
               ntv:i32 0
               ci:i32 0)
           (while (< ci nc)
@@ -2448,7 +2496,7 @@
       (when (!= existing null) (return existing)))
     ; Concrete spelling for each bound type variable, used to stamp the body.
     (let (ntv:i32 (mm num-tyvars)
-          spellings:ptr (arena-alloc (* (i64 (+ ntv 1)) (i64 8)))
+          spellings:ptr (arena-alloc (* (cast i64 (+ ntv 1)) (ptr-bytes)))
           si:i32 0)
       (while (< si ntv)
         (aset! (cast ptr:ptr spellings) si (type-spelling (aref (cast ptr:ptr bound) si)))
@@ -2466,7 +2514,7 @@
         (valid-check-instance m stamped bound line))
       (let (ptypes:ptr null)
         (when (> nargs 0)
-          (set! ptypes (arena-alloc (* (i64 nargs) (i64 8))))
+          (set! ptypes (arena-alloc (* (cast i64 nargs) (ptr-bytes))))
           (let (i:i32 0)
             (while (< i nargs)
               (aset! (cast ptr:ptr ptypes) i (aref (cast ptr:ptr argtypes) i))
@@ -2603,7 +2651,7 @@
       (while (< gi (gg num-methods))
         (let (m2:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (gg methods)) gi)))
           (when (= (m2 kind) METHOD-GENERIC)
-            (let (bound:ptr (arena-alloc (* (i64 (+ (m2 num-tyvars) 1)) (i64 8))))
+            (let (bound:ptr (arena-alloc (* (cast i64 (+ (m2 num-tyvars) 1)) (ptr-bytes))))
               (when (!= (generic-method-bind (cast ptr m2) argtypes nargs bound) 0)
                 (let (ok:i32 1 ci:i32 0)
                   (while (< ci (m2 num-constraints))
@@ -2740,7 +2788,7 @@
         ; (operator, foreign/concrete function) on an abstract value is deferred
         ; to stamp-time (A1), since it may well be valid for the concrete type.
         (let (nargs:i32 (- (node-len n) 1)
-              argtypes:ptr (arena-alloc (* (i64 (+ nargs 1)) (i64 8)))
+              argtypes:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (ptr-bytes)))
               any-abstract:i32 0
               i:i32 0)
           (while (< i nargs)
@@ -2911,7 +2959,7 @@
       (while (< j (gg num-methods))
         (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (gg methods)) j)))
           (when (= (m kind) METHOD-GENERIC)
-            (let (bound:ptr (arena-alloc (* (i64 (+ (m num-tyvars) 1)) (i64 8))))
+            (let (bound:ptr (arena-alloc (* (cast i64 (+ (m num-tyvars) 1)) (ptr-bytes))))
               (when (and (!= (generic-method-bind (cast ptr m) argtypes nargs bound) 0)
                          (!= (generic-constraints-ok (cast ptr m) bound line) 0))
                 (return (template-result-type (cast ptr m) bound line))))))
@@ -2976,8 +3024,8 @@
           (return (node-type n scope)))
         ; A genuine call: type the arguments, then require it to resolve.
         (let (nargs:i32 (- (node-len n) 1)
-              argtypes:ptr (arena-alloc (* (i64 (+ nargs 1)) (i64 8)))
-              arg-nodes:ptr (arena-alloc (* (i64 (+ nargs 1)) (i64 8)))
+              argtypes:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (ptr-bytes)))
+              arg-nodes:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (ptr-bytes)))
               all-known:i32 1
               i:i32 0)
           (while (< i nargs)
@@ -3205,10 +3253,11 @@
         (die-at (name-node line) "defprotocol: name must be a symbol"))
       (let (pname:ptr (name-node s))
         (when (!= (protocol-lookup pname) null) (return))
+        (guard-name-kind pname (ff line) NK-PROTOCOL)
         (let (nsigs:i32 (- (node-len form) 2)
               sigs:ptr null)
           (when (> nsigs 0)
-            (set! sigs (arena-alloc (* (cast i64 nsigs) (cast i64 8))))
+            (set! sigs (arena-alloc (* (cast i64 nsigs) (ptr-bytes))))
             (let (i:i32 0)
               (while (< i nsigs)
                 (aset! (cast ptr:ptr sigs) i (node-at form (+ i 2)))
@@ -3617,7 +3666,7 @@
         line:i32 (-> n (cast ptr:Node _) (_ line))
         g:ptr (generic-lookup "get"))
     (when (!= g null)
-      (let (argtypes:ptr (arena-alloc (* (cast i64 2) (cast i64 8))))
+      (let (argtypes:ptr (arena-alloc (* (cast i64 2) (ptr-bytes))))
         (aset! (cast ptr:ptr argtypes) 0 ct)
         (aset! (cast ptr:ptr argtypes) 1 ty-ptr)
         (let (m:ptr (generic-find-method-exact g argtypes 2))
@@ -3638,8 +3687,8 @@
         line:i32 (-> n (cast ptr:Node _) (_ line))
         total:i32 (+ nargs 1)
         args:ptr (arena-alloc (* (cast i64 (+ total 1)) (sizeof Val)))
-        argtypes:ptr (arena-alloc (* (cast i64 (+ total 1)) (cast i64 8)))
-        arg-nodes:ptr (arena-alloc (* (cast i64 (+ total 1)) (cast i64 8))))
+        argtypes:ptr (arena-alloc (* (cast i64 (+ total 1)) (ptr-bytes)))
+        arg-nodes:ptr (arena-alloc (* (cast i64 (+ total 1)) (ptr-bytes))))
     (memcpy (ptr+ (cast ptr:Val args) 0) cv (sizeof Val))
     (aset! (cast ptr:ptr argtypes) 0 (cv type))
     (aset! (cast ptr:ptr arg-nodes) 0 null)
@@ -3697,8 +3746,10 @@
         (fprintf g-body-stream "  %s = getelementptr %s, ptr null, i32 1\n"
           gep (type-to-ir ty))
         (let (sz:ptr (new-tmp))
-          (fprintf g-body-stream "  %s = ptrtoint ptr %s to i64\n" sz gep)
-          (return (alloc-val ty-i64 sz)))))))
+          ; sizeof yields a pointer-sized integer (size_t), not a hardcoded i64.
+          (fprintf g-body-stream "  %s = ptrtoint ptr %s to %s\n"
+            sz gep (ptr-int-ir))
+          (return (alloc-val (ptr-int-type) sz)))))))
 
 (defn emit-alloca-form:ptr (call:ptr scope:ptr)
   (let (cc:ptr:Node (cast ptr:Node call))
@@ -3867,7 +3918,7 @@
     (when (!= nargs np)
       (die-at (cc line)
         (fmt-s "call: expected %d args, got %d" (cast i64 np) (cast i64 nargs))))
-    (let (arg-vals:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (cast i64 8)))
+    (let (arg-vals:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (ptr-bytes)))
           i:i32 0)
       (while (< i nargs)
         (aset! (cast ptr:ptr arg-vals) i (emit-node (node-at cc (+ i arg-start)) scope))
@@ -4013,7 +4064,7 @@
 (defn emit-call:ptr (call:ptr scope:ptr sym:ptr)
   (let (cc:ptr:Node (cast ptr:Node call)
         nargs:i32 (- (node-len cc) 1)
-        args:ptr (arena-alloc (* (i64 (+ nargs 1)) (sizeof Val)))
+        args:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (sizeof Val)))
         i:i32 0)
     (while (< i nargs)
       (let (v:ptr (emit-node (node-at cc (+ i 1)) scope))
@@ -4076,7 +4127,7 @@
                                 (- (cast i64 2048) apos)
                                 "%s%s %s" sep
                                 (type-to-ir (av type)) (av val)))
-            (set! apos (+ apos (i64 w)))))
+            (set! apos (+ apos (cast i64 w)))))
         (inc! i))
       (let (ft:ptr:Type (cast ptr:Type (ss type)))
         (when (!= (ft kind) TY-FN)
@@ -4086,7 +4137,7 @@
             (let (sig:ptr (alloca i8 512)
                   sp:i64 (cast i64 0)
                   w:i32 (snprintf sig (cast i64 512) "%s (" (type-to-ir (ft ret))))
-              (set! sp (i64 w))
+              (set! sp (cast i64 w))
               (set! i 0)
               (while (< i (ft num-params))
                 (let (pt:ptr (aref (cast ptr:ptr (ft params)) i)
@@ -4094,7 +4145,7 @@
                   (when (!= i 0) (set! sep ", "))
                   (set! w (snprintf (ptr+ (cast ptr:i8 sig) sp) (- (cast i64 512) sp)
                                     "%s%s" sep (type-to-ir pt)))
-                  (set! sp (+ sp (i64 w))))
+                  (set! sp (+ sp (cast i64 w))))
                 (inc! i))
               (let (va-sep:ptr "")
                 (when (!= (ft num-params) 0) (set! va-sep ", "))
@@ -4472,6 +4523,22 @@
 
 ; Run one expansion of a macro call: invoke the JIT-compiled macro function
 ; and return the resulting (ptr Node). Does not desugar or emit IR.
+; Attribute macro-generated nodes to the call site. Nodes synthesized during
+; expansion (the cons cells built by the __cons/__append quasiquote helpers)
+; carry line 0; spliced user arguments keep their real reader line. Stamping
+; only line-0 nodes fills in the macro's own structure with the call-site line
+; so downstream errors (e.g. a malformed `cond` from a bad `case`/`if`) point at
+; the user's code instead of line 0. A non-zero line means the whole subtree is
+; already attributed (a user argument), so we stop there.
+(defn stamp-macro-lines:void (node:ptr ln:i32)
+  (when (= node null) (return))
+  (let (n:ptr:Node (cast ptr:Node node))
+    (when (!= (n line) 0) (return))
+    (.set! n line ln)
+    (when (= (n kind) NODE-CELL)
+      (stamp-macro-lines (n car) ln)
+      (stamp-macro-lines (n cdr) ln))))
+
 (defn expand-macro-call:ptr (call:ptr macro-def:ptr)
   (let (mdef:ptr:MacroDef (cast ptr:MacroDef macro-def)
         nargs:i32 (- (node-len (cast ptr:Node call)) 1))
@@ -4483,7 +4550,7 @@
       (when (!= nargs (mdef num-params))
         (die-at ((cast ptr:Node call) line)
                 (fmt-s "macro: wrong number of args" (cast i64 0)))))
-    (let (args-arr:ptr (malloc (* (cast i64 (mdef num-params)) (cast i64 8)))
+    (let (args-arr:ptr (malloc (* (cast i64 (mdef num-params)) (ptr-bytes)))
           regular-params:i32 (mdef num-params)
           i:i32 0)
       (when (!= (mdef variadic) 0)
@@ -4514,6 +4581,9 @@
             (fprintf stderr "%s: macro '%s': returned null\n"
                           g-source-path (mdef name))
             (exit 1))
+          ; Attribute the expansion to the macro call site so errors in
+          ; macro-generated forms report a real source line, not line 0.
+          (stamp-macro-lines result ((cast ptr:Node call) line))
           (return result))))))
 
 ; Expand a form by macros. depth=1 expands once; depth<0 expands until the
@@ -4599,9 +4669,9 @@
 (defn emit-generic-call:ptr (n:ptr scope:ptr g:ptr)
   (let (nn:ptr:Node (cast ptr:Node n)
         nargs:i32 (- (node-len nn) 1)
-        args:ptr (arena-alloc (* (i64 (+ nargs 1)) (sizeof Val)))
-        argtypes:ptr (arena-alloc (* (i64 (+ nargs 1)) (i64 8)))
-        arg-nodes:ptr (arena-alloc (* (i64 (+ nargs 1)) (i64 8)))
+        args:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (sizeof Val)))
+        argtypes:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (ptr-bytes)))
+        arg-nodes:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (ptr-bytes)))
         i:i32 0)
     (while (< i nargs)
       (let (anode:ptr (node-at nn (+ i 1))
@@ -4622,9 +4692,9 @@
 (defn emit-operator-dispatch:ptr (n:ptr scope:ptr g:ptr binop:ptr)
   (let (nn:ptr:Node (cast ptr:Node n)
         nargs:i32 (- (node-len nn) 1)
-        args:ptr (arena-alloc (* (i64 (+ nargs 1)) (sizeof Val)))
-        argtypes:ptr (arena-alloc (* (i64 (+ nargs 1)) (i64 8)))
-        arg-nodes:ptr (arena-alloc (* (i64 (+ nargs 1)) (i64 8)))
+        args:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (sizeof Val)))
+        argtypes:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (ptr-bytes)))
+        arg-nodes:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (ptr-bytes)))
         i:i32 0)
     (while (< i nargs)
       (let (anode:ptr (node-at nn (+ i 1))
@@ -4733,6 +4803,104 @@
 ; Top-level forms
 ; ============================================================
 
+; ============================================================
+; Name (non-)shadowing — a symbol may name only one kind of thing
+; (special form, built-in type, struct type, protocol, macro, function, value).
+; Each top-level definer checks its name against every other namespace and errors
+; on a cross-kind collision. Same-kind reuse (overloaded defn, struct/value
+; redefinition) is allowed. Lookups are by content (strcmp) so they don't depend
+; on whether a given table stores interned names.
+; ============================================================
+
+(defn special-form-named:i32 (name:ptr)
+  (when (or (= name "let") (= name "with")) (return 1))
+  (when (or (= name "do") (= name "cond")) (return 1))
+  (when (or (= name "return") (= name "while")) (return 1))
+  (when (or (= name "set!") (= name "inc!")) (return 1))
+  (when (or (= name "quote") (= name "quasiquote")) (return 1))
+  (when (or (= name "not") (or (= name "and") (= name "or"))) (return 1))
+  (when (or (= name "cast") (= name "addr-of")) (return 1))
+  (when (or (= name "deref") (or (= name "ptr-set!") (= name "ptr+"))) (return 1))
+  (when (or (= name "_get") (= name ".set!")) (return 1))
+  (when (or (= name "sizeof") (or (= name "alloca") (= name "char"))) (return 1))
+  (when (or (= name "aref") (or (= name "aset!") (= name "gensym"))) (return 1))
+  (when (or (= name "funcall") (= name "funcall-void")) (return 1))
+  (when (or (= name "funcall-ptr-1") (= name "funcall-ptr-i32")) (return 1))
+  (when (or (= name "funcall-ptr-i64") (= name "funcall-ptr-ptr")) (return 1))
+  ; top-level definer / structural keywords are reserved too
+  (when (or (= name "defn") (or (= name "defvar") (= name "defconst"))) (return 1))
+  (when (or (= name "defenum") (or (= name "defstruct") (= name "defmacro"))) (return 1))
+  (when (or (= name "defprotocol") (or (= name "extend") (= name "def-rmacro"))) (return 1))
+  (when (or (= name "import") (or (= name "include") (= name "extern"))) (return 1))
+  (when (or (= name "declare") (= name "compile-time")) (return 1))
+  (return 0))
+
+(defn primitive-type-named:i32 (name:ptr)
+  (when (or (= name "int") (= name "bool")) (return 1))
+  (when (or (= name "i1") (or (= name "i8") (= name "i16"))) (return 1))
+  (when (or (= name "i32") (= name "i64")) (return 1))
+  (when (or (= name "ui8") (or (= name "ui16") (= name "ui32"))) (return 1))
+  (when (= name "ui64") (return 1))
+  (when (or (= name "f32") (or (= name "f64") (= name "float"))) (return 1))
+  (when (or (= name "double") (or (= name "ptr") (= name "void"))) (return 1))
+  (when (= name "CStr") (return 1))
+  (return 0))
+
+; The kind currently associated with `name`, or NK-NONE. Highest-priority kind
+; wins; a lower-priority definer will see the higher kind and report the clash.
+(defn name-existing-kind:i32 (name:ptr)
+  (when (!= (special-form-named name) 0) (return NK-SPECIAL))
+  (when (!= (primitive-type-named name) 0) (return NK-BUILTIN))
+  (let (i:i32 0)
+    (while (< i g-structs-len)
+      (let (sd:ptr:StructDef (cast ptr:StructDef (ptr+ (cast ptr:StructDef g-structs) i)))
+        (when (= (strcmp (sd name) name) 0) (return NK-TYPE)))
+      (inc! i)))
+  (let (i:i32 0)
+    (while (< i g-num-protocols)
+      (let (p:ptr:Protocol (cast ptr:Protocol (ptr+ (cast ptr:Protocol g-protocols) i)))
+        (when (= (strcmp (p name) name) 0) (return NK-PROTOCOL)))
+      (inc! i)))
+  (let (i:i32 0)
+    (while (< i g-num-macros)
+      (let (m:ptr:MacroDef (cast ptr:MacroDef (ptr+ (cast ptr:MacroDef g-macros) i)))
+        (when (= (strcmp (m name) name) 0) (return NK-MACRO)))
+      (inc! i)))
+  (let (i:i32 0)
+    (while (< i g-num-generics)
+      (let (g:ptr:Generic (cast ptr:Generic (ptr+ (cast ptr:Generic g-generics) i)))
+        (when (= (strcmp (g name) name) 0) (return NK-FUNCTION)))
+      (inc! i)))
+  (let (sc:ptr:Scope (cast ptr:Scope g-globals)
+        i:i32 0)
+    (while (< i (sc len))
+      (let (sym:ptr:Sym (cast ptr:Sym (ptr+ (cast ptr:Sym (sc syms)) i)))
+        (when (= (strcmp (sym name) name) 0)
+          (if (and (!= (sym type) null)
+                   (= (-> sym (_ type) (cast ptr:Type _) (_ kind)) TY-FN))
+            (return NK-FUNCTION)
+            (return NK-VALUE))))
+      (inc! i)))
+  (return NK-NONE))
+
+(defn kind-noun:ptr (k:i32)
+  (when (= k NK-SPECIAL)  (return "a special form"))
+  (when (= k NK-BUILTIN)  (return "a built-in type"))
+  (when (= k NK-TYPE)     (return "a type"))
+  (when (= k NK-PROTOCOL) (return "a protocol"))
+  (when (= k NK-MACRO)    (return "a macro"))
+  (when (= k NK-FUNCTION) (return "a function"))
+  (when (= k NK-VALUE)    (return "a value"))
+  (return "something"))
+
+; Error if `name` already names a different kind of thing than `newk`.
+(defn guard-name-kind:void (name:ptr line:i32 newk:i32)
+  (let (existing:i32 (name-existing-kind name))
+    (when (and (!= existing NK-NONE) (!= existing newk))
+      (die-at line
+        (fmt-2s "'%s' already names %s — a symbol may name only one kind of thing"
+                name (kind-noun existing))))))
+
 (defn emit-defvar:void (call:ptr)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (or (< (node-len cc) 2) (> (node-len cc) 3))
@@ -4743,6 +4911,7 @@
                                           ((cast ptr:Node name-node) line)))
         (when (= ty null)
           (die-at ((cast ptr:Node name-node) line) (fmt-s "defvar: missing :type on '%s'" name)))
+        (guard-name-kind name (cc line) NK-VALUE)
         (let (ir-name:ptr (fmt-s "@%s" name)
               align:i32 (type-size ty))
           (if (= (node-len cc) 3)
@@ -4766,6 +4935,7 @@
         (die-at (name line) "defconst: name must be symbol"))
       (when (!= (val kind) NODE-INT)
         (die-at (val line) "defconst: value must be integer literal"))
+      (guard-name-kind (name s) (cc line) NK-VALUE)
       (let (sym:ptr:Sym (cast ptr:Sym (scope-define g-globals (name s) ty-i32 null 0)))
         (.set! sym is-const 1)
         (.set! sym const-val (fmt-i64 "%ld" (val i)))))))
@@ -4778,6 +4948,7 @@
         (let (name:ptr:Node (cast ptr:Node (node-at cc i)))
           (when (!= (name kind) NODE-SYM)
             (die-at (name line) "defenum: value must be symbol"))
+          (guard-name-kind (name s) (cc line) NK-VALUE)
           (let (sym:ptr:Sym (cast ptr:Sym (scope-define g-globals (name s) ty-i32 null 0)))
             (.set! sym is-const 1)
             (.set! sym const-val (fmt-i32 "%d" (- i 2)))))
@@ -4789,6 +4960,7 @@
     (let (name-node:ptr:Node (cast ptr:Node (node-at cc 1)))
       (when (!= (name-node kind) NODE-SYM)
         (die-at (name-node line) "defstruct: name must be symbol"))
+      (guard-name-kind (name-node s) (cc line) NK-TYPE)
       ; Reuse a StructDef pre-registered by prescan-struct-names (name only), or
       ; register fresh. Skip if its definition was already written to IR — covers
       ; redefinition (the prelude defines Node and some programs also do).
@@ -4800,8 +4972,8 @@
             sd:ptr:StructDef (cast ptr:StructDef
                                (if (!= existing null) existing (register-struct (name-node s))))
             nfields:i32 (- (node-len cc) 2))
-        (.set! sd field-names (arena-alloc (* (i64 nfields) (i64 8))))
-        (.set! sd field-types (arena-alloc (* (i64 nfields) (i64 8))))
+        (.set! sd field-names (arena-alloc (* (cast i64 nfields) (ptr-bytes))))
+        (.set! sd field-types (arena-alloc (* (cast i64 nfields) (ptr-bytes))))
         (.set! sd num-fields nfields)
         (let (i:i32 0)
           (while (< i nfields)
@@ -4835,6 +5007,7 @@
       (when (= ty null)
         (die-at ((cast ptr:Node arg1) line)
           (fmt-s "extern: missing :type on '%s'" name)))
+      (guard-name-kind name (cc line) NK-VALUE)
       (let (ir-name:ptr (fmt-s "@%s" name))
         (fprintf g-out "%s = external global %s\n\n" ir-name (type-to-ir ty))
         (scope-define g-globals name ty ir-name 1)))))
@@ -4865,6 +5038,7 @@
                                            ((cast ptr:Node name-node) line)))
         (when (= ret null)
           (die-at ((cast ptr:Node name-node) line) (fmt-s "defn: missing :type on '%s'" fname)))
+        (guard-name-kind fname (cc line) NK-FUNCTION)
         (let (
               raw-nparams:i32 (node-len params-node)
               has-rest:i32 0
@@ -4888,8 +5062,8 @@
             (let (param-types:ptr null
                   param-names:ptr null)
               (when (> nparams 0)
-                  (set! param-types (arena-alloc (* (i64 nparams) (i64 8))))
-                  (set! param-names (arena-alloc (* (i64 nparams) (i64 8)))))
+                  (set! param-types (arena-alloc (* (cast i64 nparams) (ptr-bytes))))
+                  (set! param-names (arena-alloc (* (cast i64 nparams) (ptr-bytes)))))
               (let (i:i32 0
                     di:i32 0)
                 (while (< i raw-nparams)
@@ -5123,7 +5297,7 @@
                         (let (nparams:i32 (node-len params-node)
                               ptypes:ptr null)
                           (when (> nparams 0)
-                            (set! ptypes (arena-alloc (* (i64 nparams) (i64 8)))))
+                            (set! ptypes (arena-alloc (* (cast i64 nparams) (ptr-bytes)))))
                           (let (j:i32 0)
                             (while (< j nparams)
                               (let (p:ptr (node-at params-node j)
@@ -5143,7 +5317,7 @@
             (inc! bi)))
 
         ; Collect expression forms (non-top-level) for __compile_time_main.
-        (let (expr-forms:ptr (arena-alloc (* (cast i64 256) (cast i64 8)))
+        (let (expr-forms:ptr (arena-alloc (* (cast i64 256) (ptr-bytes)))
               nexpr:i32 0
               bi:i32 1)
           (while (< bi nforms)
@@ -5247,7 +5421,7 @@
             (let (ir-bufp:ptr null  ir-sizep:i64 (cast i64 0)
                   irs:ptr (open_memstream (addr-of ir-bufp) (cast ptr (addr-of ir-sizep))))
               (fprintf irs "; ModuleID = '<compile-time>'\n")
-              (fprintf irs "target triple = \"x86_64-pc-linux-gnu\"\n\n")
+              (fprintf irs "target triple = \"%s\"\n\n" g-target-triple)
               ; In REPL mode, include the accumulated preamble
               (when (!= g-interactive 0)
                  (fflush g-repl-preamble)
@@ -5294,6 +5468,7 @@
         (die-at (name-node line) "defmacro: name must be symbol"))
       (when (= (node-is-list params-node) 0)
         (die-at (name-node line) "defmacro: params must be a list"))
+      (guard-name-kind (name-node s) (ff line) NK-MACRO)
       (let (macro-name:ptr (name-node s)
             num-params:i32 (node-len params-node)
             jit-name:ptr (fmt-sd "__macro_%s_%d" (sanitize-for-ir macro-name) g-num-macros))
@@ -5314,7 +5489,7 @@
               pi:i32 0
               ai:i32 0)
           (when (> pcount 0)
-            (set! pnames (arena-alloc (* (i64 pcount) (i64 8)))))
+            (set! pnames (arena-alloc (* (cast i64 pcount) (ptr-bytes)))))
           (while (< pi num-params)
             (let (p:ptr:Node (cast ptr:Node (node-at params-node pi)))
               (when (!= (p kind) NODE-SYM)
@@ -5453,7 +5628,7 @@
                   (let (ir-bufp:ptr null  ir-sizep:i64 (cast i64 0)
                         irs:ptr (open_memstream (addr-of ir-bufp) (cast ptr (addr-of ir-sizep))))
                     (fprintf irs "; ModuleID = '<defmacro %s>'\n" macro-name)
-                    (fprintf irs "target triple = \"x86_64-pc-linux-gnu\"\n\n")
+                    (fprintf irs "target triple = \"%s\"\n\n" g-target-triple)
                     ; In REPL mode, include the accumulated preamble
                     (when (!= g-interactive 0)
                        (fflush g-repl-preamble)
@@ -5488,7 +5663,7 @@
           (sl id) ir-len)
         (let (j:i32 0)
           (while (< j (sl len))
-            (let (c:i32 (char-at (sl bytes) (i64 j)))
+            (let (c:i32 (char-at (sl bytes) (cast i64 j)))
               (if (or (or (= c 92) (= c 34))
                     (or (< c 32) (>= c 127)))
                 (fprintf out "\\%02X" c)
@@ -5797,43 +5972,43 @@
                   "top-level form must be a list starting with a symbol"))
         (let (h:ptr (-> f (node-at _ 0) (cast ptr:Node _) (_ s))
               hp:ptr (-> f (node-at _ 0)))
-          (cond (= hp 'defconst)
-                  (emit-defconst (cast ptr f))
-                (= hp 'defenum)
-                  (emit-defenum (cast ptr f))
-                (= hp 'defvar)
-                  ; Globals go to the def-stream rather than the decl-stream
-                  ; so they appear only in the main module IR. CT and macro
-                  ; JIT modules pull in g-decl-bufp but not g-def-bufp, and
-                  ; resolve global references back to the host process via
-                  ; the dylib generator. Otherwise prelude globals (from node
-                  ; / arena / intern table) would duplicate across modules.
-                  (do (set! g-out g-def-stream) (emit-defvar (cast ptr f)))
-                (= hp 'defstruct)
-                  (do (set! g-out g-type-stream) (emit-defstruct (cast ptr f)))
-                (= hp 'include)
-                  (do (set! g-out g-decl-stream) (emit-include (cast ptr f)))
-                (= hp 'extern)
-                  (do (set! g-out g-decl-stream) (emit-extern (cast ptr f)))
-                (= hp 'defn)
-                  (do (set! g-out g-def-stream) (emit-defn (cast ptr f)))
-                (= hp 'defprotocol)
-                  ; Registered in prescan-protocols; emits no code.
-                  0
-                (= hp 'extend)
-                  (emit-extend (cast ptr f))
-                (= hp 'compile-time)
-                  (emit-compile-time (cast ptr f))
-                (= hp 'defmacro)
-                  (emit-defmacro (cast ptr f))
-                (= hp 'def-rmacro)
-                  (emit-def-rmacro (cast ptr f))
-                (= hp 'import)
-                  (emit-import (cast ptr f))
-                (= hp 'declare)
-                  (do (set! g-out g-decl-stream) (emit-nuch-declare-import (cast ptr f)))
-                true
-                  (die-at (f line) (fmt-s "unknown top-level form: %s" h)))))
+          (case hp
+            'defconst
+              (emit-defconst (cast ptr f))
+            'defenum
+              (emit-defenum (cast ptr f))
+            'defvar
+              ; Globals go to the def-stream rather than the decl-stream
+              ; so they appear only in the main module IR. CT and macro
+              ; JIT modules pull in g-decl-bufp but not g-def-bufp, and
+              ; resolve global references back to the host process via
+              ; the dylib generator. Otherwise prelude globals (from node
+              ; / arena / intern table) would duplicate across modules.
+              (do (set! g-out g-def-stream) (emit-defvar (cast ptr f)))
+            'defstruct
+              (do (set! g-out g-type-stream) (emit-defstruct (cast ptr f)))
+            'include
+              (do (set! g-out g-decl-stream) (emit-include (cast ptr f)))
+            'extern
+              (do (set! g-out g-decl-stream) (emit-extern (cast ptr f)))
+            'defn
+              (do (set! g-out g-def-stream) (emit-defn (cast ptr f)))
+            'defprotocol
+              ; Registered in prescan-protocols; emits no code.
+              0
+            'extend
+              (emit-extend (cast ptr f))
+            'compile-time
+              (emit-compile-time (cast ptr f))
+            'defmacro
+              (emit-defmacro (cast ptr f))
+            'def-rmacro
+              (emit-def-rmacro (cast ptr f))
+            'import
+              (emit-import (cast ptr f))
+            'declare
+              (do (set! g-out g-decl-stream) (emit-nuch-declare-import (cast ptr f)))
+            (die-at (f line) (fmt-s "unknown top-level form: %s" h)))))
       (set! fc ((cast ptr:Node fc) cdr))))
   ; A2: type-check generic template bodies against their abstract protocol
   ; interface. Only at the outermost level — every import has now registered its
@@ -6089,14 +6264,15 @@
                    (and (> (node-len (cast ptr f)) 0)
                         (-> f (node-at _ 0) (cast ptr:Node _) (_ kind) (= _ NODE-SYM))))
           (let (h:ptr (-> f (node-at _ 0) (cast ptr:Node _) (_ s)))
-            (cond (= h "defstruct")    (emit-nuch-defstruct (cast ptr f))
-                  (= h "defn")         (emit-nuch-defn (cast ptr f))
-                  (= h "defprotocol")  (emit-nuch-defprotocol (cast ptr f))
-                  (= h "extend")       (emit-nuch-extend (cast ptr f))
-                  (= h "defconst")     (emit-nuch-defconst (cast ptr f))
-                  (= h "defenum")      (emit-nuch-defenum (cast ptr f))
-                  (= h "defmacro")     (emit-nuch-defmacro (cast ptr f))
-                  true                            0))))
+            (case h
+              "defstruct"    (emit-nuch-defstruct (cast ptr f))
+              "defn"         (emit-nuch-defn (cast ptr f))
+              "defprotocol"  (emit-nuch-defprotocol (cast ptr f))
+              "extend"       (emit-nuch-extend (cast ptr f))
+              "defconst"     (emit-nuch-defconst (cast ptr f))
+              "defenum"      (emit-nuch-defenum (cast ptr f))
+              "defmacro"     (emit-nuch-defmacro (cast ptr f))
+              0))))
       (set! fc ((cast ptr:Node fc) cdr)))))
 
 ; ============================================================
@@ -6132,7 +6308,7 @@
           (when (!= params-node null)
             (set! nparams (node-len params-node)))
           (when (> nparams 0)
-            (set! ptypes (arena-alloc (* (i64 nparams) (i64 8)))))
+            (set! ptypes (arena-alloc (* (cast i64 nparams) (ptr-bytes)))))
           (while (< j nparams)
             (let (p:ptr (node-at params-node j)
                   pn:ptr null
@@ -6202,31 +6378,31 @@
                    (and (> (node-len (cast ptr f)) 0)
                         (-> f (node-at _ 0) (cast ptr:Node _) (_ kind) (= _ NODE-SYM))))
           (let (h:ptr (-> f (node-at _ 0) (cast ptr:Node _) (_ s)))
-            (cond (= h "defstruct")
-                    (do (set! g-out g-type-stream) (emit-defstruct (cast ptr f)))
-                  (= h "declare")
-                    (do (set! g-out g-decl-stream) (emit-nuch-declare-import (cast ptr f)))
-                  (= h "defmethod")
-                    (do (set! g-out g-decl-stream) (emit-nuch-defmethod-import (cast ptr f)))
-                  (= h "defn")
-                    ; Only bounded-generic templates are exported as whole defns;
-                    ; register (exporter-verified, so trusted) so calls in this
-                    ; unit can instantiate them.
-                    (register-generic-defn (cast ptr f) 1)
-                  (= h "defprotocol")
-                    (protocol-register-form (cast ptr f))
-                  (= h "extend")
-                    (register-imported-conformance (cast ptr f))
-                  (= h "defconst")
-                    (emit-defconst (cast ptr f))
-                  (= h "defenum")
-                    (emit-defenum (cast ptr f))
-                  (= h "defmacro")
-                    (emit-defmacro (cast ptr f))
-                  (= h "def-rmacro")
-                    (emit-def-rmacro (cast ptr f))
-                  true
-                    0))))
+            (case h
+              "defstruct"
+                (do (set! g-out g-type-stream) (emit-defstruct (cast ptr f)))
+              "declare"
+                (do (set! g-out g-decl-stream) (emit-nuch-declare-import (cast ptr f)))
+              "defmethod"
+                (do (set! g-out g-decl-stream) (emit-nuch-defmethod-import (cast ptr f)))
+              "defn"
+                ; Only bounded-generic templates are exported as whole defns;
+                ; register (exporter-verified, so trusted) so calls in this
+                ; unit can instantiate them.
+                (register-generic-defn (cast ptr f) 1)
+              "defprotocol"
+                (protocol-register-form (cast ptr f))
+              "extend"
+                (register-imported-conformance (cast ptr f))
+              "defconst"
+                (emit-defconst (cast ptr f))
+              "defenum"
+                (emit-defenum (cast ptr f))
+              "defmacro"
+                (emit-defmacro (cast ptr f))
+              "def-rmacro"
+                (emit-def-rmacro (cast ptr f))
+              0))))
       (set! fc ((cast ptr:Node fc) cdr))))
   ; Finalize any newly-imported generic templates so their names dispatch
   ; through the registry (imported concrete methods finalize themselves).
@@ -6255,12 +6431,18 @@
 ; Register the built-in blanket protocols (§10.1). Hardcoded for now; a
 ; user-declarable blanket facility is parked in design/stage999-future.md.
 (defn init-blanket:void ()
-  (set! g-blanket (arena-alloc (* (cast i64 8) (cast i64 8))))
+  (set! g-blanket (arena-alloc (* (cast i64 8) (ptr-bytes))))
   (aset! (cast ptr:ptr g-blanket) 0 "Any")
   (aset! (cast ptr:ptr g-blanket) 1 "Struct")
   (set! g-num-blanket 2))
 
 (defn compiler-init:void ()
+  ; Target descriptor (single source of truth for the "pointer is i64"
+  ; assumption). Defaults to x86_64 Linux; g-target-ptr-bytes defaults to 8.
+  (set! g-target-triple "x86_64-pc-linux-gnu")
+  (set! g-target-ptr-bytes 8)
+  ; Host pointer size — actual width of a pointer in this running compiler.
+  (set! g-host-ptr-bytes (cast i32 (sizeof ptr)))
   (types-init)
   (init-binops)
   (init-generics)
@@ -6275,6 +6457,11 @@
 ; Emit quasiquote helpers (__cons / __append) into the given streams
 ; ============================================================
 
+; NOTE: the __cons/__append IR templates below assume a 64-bit target Node ABI
+; (size 40 = 16 + 3*8, pointer fields at 8-byte alignment). To target a platform
+; where g-target-ptr-bytes != 8, these literals (malloc size and the `align 8`
+; on the ptr stores) must be derived from g-target-ptr-bytes — pointer fields
+; would otherwise be misaligned. Tracked as remaining 32-bit work.
 (defn emit-qq-helpers:void (decl:ptr def:ptr)
   (when (= g-malloc-decl-done 0)
     (fprintf decl "declare ptr @malloc(i64)\n"))
@@ -6332,7 +6519,7 @@
         irs:ptr (open_memstream (addr-of ir-bufp) (cast ptr (addr-of ir-sizep))))
     (fprintf irs "; ModuleID = '%s'\n" source-file)
     (fprintf irs "source_filename = \"%s\"\n" source-file)
-    (fprintf irs "target triple = \"x86_64-pc-linux-gnu\"\n\n")
+    (fprintf irs "target triple = \"%s\"\n\n" g-target-triple)
     (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
       (fputs g-type-bufp irs))
     (emit-string-table irs)
@@ -6459,13 +6646,13 @@
 
 (defn add-include-path:void (path:ptr)
   (when (= g-include-paths null)
-    (set! g-include-paths (malloc (* (cast i64 64) (cast i64 8)))))
+    (set! g-include-paths (malloc (* (cast i64 64) (ptr-bytes)))))
   (aset! (cast ptr:ptr g-include-paths) g-num-include-paths path)
   (inc! g-num-include-paths))
 
 (defn add-link-arg:void (arg:ptr)
   (when (= g-link-args null)
-    (set! g-link-args (malloc (* (cast i64 64) (cast i64 8)))))
+    (set! g-link-args (malloc (* (cast i64 64) (ptr-bytes)))))
   (aset! (cast ptr:ptr g-link-args) g-num-link-args arg)
   (inc! g-num-link-args))
 
