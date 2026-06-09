@@ -1,0 +1,10 @@
+(defvar gx:i32 10)
+gx
+(set! gx 42)
+gx
+(defvar gb:bool true)
+gb
+(set! gb false)
+gb
+(defvar gf:f64 3.14)
+gf
