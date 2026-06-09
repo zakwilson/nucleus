@@ -10,7 +10,7 @@ Obviously
 
 ### Map/reduce/filter
 
-Ideally polymorphic
+Polymorphic on Seq
 
 ### Polymorphism in general
 
@@ -27,7 +27,6 @@ The ability to redefine vars and fns in the REPL would be helpful. We don't have
 ### Closures
 
 Lexical closures are a huge win for abstraction. Representing them in C may be tricky, but maybe there's a workaround or a way to give C a limited interface. Lifecycle could also be tricky.
-
 
 ### Gensym reader macro
 
@@ -49,31 +48,12 @@ There should be `docstring` and `signature` functions for tool use, and probably
 
 `set!` should take multiple pairs like `let`.
 
-## Memory management
-
-The `with` form (added in stage6) is `let` plus auto-free for any binding
-whose init expression is a libc allocator (`malloc`/`calloc`/`realloc`/`strdup`,
-including through `cast`). Cleanups fire on fall-through and on early `return`
-inside the body. Disarming a single binding is done by storing `null` to it,
-since `free(NULL)` is a no-op.
-
-Open question: whether to flip the default so plain `let` itself auto-frees,
-with `let*` as the opt-out (the original shape proposed here). `with` exists
-alongside `let` for now; revisit once it has wider use.
-
-## Safe constructs
-
-Nucleus isn't trying to be Rust, but it should provide the option of safe constructs where it's practical to do so, and move things that should be avoided when possible to an unsafe/ namespace.
-
-The `with` special form is a target for improvement. It should enforce a lexical *lifetime* rather than just preventing memory leaks. Attempting to return variables bound to pointers using `with` should be a compile-time error. That includes binding a second variable with a nested `let`. Returning the dereferenced value is permissible.
-
-## Nullability
-
-It would be **great** if most types and pointers could be non-nullable with a `Maybe` or `Option` type to provide nullability where it's desired. Even better would be safe pointers by default which cannot point to anything but a valid instance of the declared type, with raw pointers relegated to an `unsafe` namespace.
-
 ## Base features
 
 * vector/hashmap/set in a library, use in the compiler
-* case/switch for matching a value
 * Unicode strings
 * Str protocol
+
+## Bounds checking for C str/array
+
+Safe accessors with runtime cost seem like a good idea here, but it would be even better if there are ways to improve safety with no runtime cost.
