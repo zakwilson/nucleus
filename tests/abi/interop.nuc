@@ -1,0 +1,57 @@
+; Struct-ABI interop acceptance test (Nucleus caller -> C callee).
+; Mirrors tests/abi/clib.c; output must match tests/abi/expected.out, which
+; is produced by an all-C reference build. Exercises:
+;   - small INTEGER-class struct passed (pair_sum) and returned (pair_make)
+;   - small struct with a float field, INTEGER eightbyte (mixed_get)
+;   - >16-byte struct passed byval (big_sum) and returned via sret (big_make)
+;
+; This file is the acceptance gate for Phase C (ABI lowering). Until Phase C
+; lands it prints wrong numbers; it is run via `make abi-test`, NOT wired
+; into `make test`, so the green build is preserved meanwhile.
+
+(defstruct Pair  a:int b:int)
+(defstruct Mixed i:int f:f32)
+(defstruct Big   x:i64 y:i64 z:i64)
+
+(include stdio)
+
+(declare pair_make:Pair  (a:int b:int))
+(declare pair_sum:int    (p:Pair))
+(declare big_make:Big    (x:i64 y:i64 z:i64))
+(declare big_sum:i64     (b:Big))
+(declare mixed_get:f64   (m:Mixed))
+
+; Nucleus-defined struct functions, to exercise the defn side of the ABI
+; (prologue reconstruction of struct params; sret / register-coerced returns)
+; and Nucleus->Nucleus consistency (caller coercion must match callee).
+(defn nuc_pair_make:Pair (a:int b:int)
+  (let (q:ptr:Pair (alloca Pair)) (.set! q a a) (.set! q b b) @q))
+(defn nuc_pair_sum:int (p:Pair)
+  (let (q:ptr:Pair (alloca Pair)) (ptr-set! q p) (+ (. q a) (. q b))))
+(defn nuc_big_make:Big (x:i64 y:i64 z:i64)
+  (let (q:ptr:Big (alloca Big)) (.set! q x x) (.set! q y y) (.set! q z z) @q))
+(defn nuc_big_sum:i64 (b:Big)
+  (let (q:ptr:Big (alloca Big)) (ptr-set! q b) (+ (+ (. q x) (. q y)) (. q z))))
+
+(defn main:int ()
+  ; Nucleus -> C
+  (let (p:ptr:Pair (alloca Pair))
+    (ptr-set! p (pair_make 3 4))
+    (printf "pair_make=%d,%d\n" (. p a) (. p b))
+    (printf "pair_sum=%d\n" (pair_sum @p)))
+  (let (b:ptr:Big (alloca Big))
+    (ptr-set! b (big_make 100 200 300))
+    (printf "big_make=%lld,%lld,%lld\n" (. b x) (. b y) (. b z))
+    (printf "big_sum=%lld\n" (big_sum @b)))
+  (let (m:ptr:Mixed (alloca Mixed))
+    (.set! m i 7)
+    (.set! m f (cast f32 1.5))
+    (printf "mixed_get=%.1f\n" (mixed_get @m)))
+  ; Nucleus -> Nucleus
+  (let (p:ptr:Pair (alloca Pair))
+    (ptr-set! p (nuc_pair_make 3 4))
+    (printf "n2n pair=%d,%d sum=%d\n" (. p a) (. p b) (nuc_pair_sum @p)))
+  (let (b:ptr:Big (alloca Big))
+    (ptr-set! b (nuc_big_make 100 200 300))
+    (printf "n2n big=%lld,%lld,%lld sum=%lld\n" (. b x) (. b y) (. b z) (nuc_big_sum @b)))
+  (return 0))

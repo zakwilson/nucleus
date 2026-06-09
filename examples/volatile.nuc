@@ -1,0 +1,26 @@
+(include stdio)
+
+(defstruct Reg
+  flags:i32
+  status:i32:volatile)
+
+(defn bump-counter:void ((p (ptr (i32 volatile))))
+  (ptr-set! p (+ (deref p) 1)))
+
+(defn main:int ()
+  (let (x:i32:volatile 0)
+    (set! x 1)
+    (inc! x)
+    (printf "x=%d\n" x))
+
+  (let (r:ptr:Reg (alloca Reg))
+    (.set! r flags 7)
+    (.set! r status 42)
+    (printf "flags=%d status=%d\n" (. r flags) (. r status)))
+
+  (let (slot:i32 0)
+    (bump-counter (addr-of slot))
+    (bump-counter (addr-of slot))
+    (printf "slot=%d\n" slot))
+
+  (return 0))

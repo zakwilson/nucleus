@@ -62,14 +62,19 @@
     (if (!= is-unsigned 0) (return ty-ui8) (return ty-i8)))
   (when (= name "short")
     (if (!= is-unsigned 0) (return ty-ui16) (return ty-i16)))
-  (when (= name "int")
+  (when (or (= name "int") (= name "long"))
     (when (!= is-short 0)
       (if (!= is-unsigned 0) (return ty-ui16) (return ty-i16)))
-    (when (!= is-long 0)
-      (if (!= is-unsigned 0) (return ty-ui64) (return ty-i64)))
+    ; A "long" base implies at least one `long` specifier.
+    (let (lc:i32 is-long)
+      (when (and (= name "long") (< lc 1)) (set! lc 1))
+      (when (>= lc 2)   ; long long — always 64-bit
+        (if (!= is-unsigned 0) (return ty-ui64) (return ty-i64)))
+      (when (= lc 1)    ; long — depends on the target's data model
+        (if (= (target-long-size) 8)
+          (if (!= is-unsigned 0) (return ty-ui64) (return ty-i64))
+          (if (!= is-unsigned 0) (return ty-ui32) (return ty-i32)))))
     (if (!= is-unsigned 0) (return ty-ui32) (return ty-i32)))
-  (when (= name "long")
-    (if (!= is-unsigned 0) (return ty-ui64) (return ty-i64)))
   (when (= name "float")  (return ty-f32))
   (when (= name "double")
     ; `long double` is platform-specific (80-bit on x86-64) — skip.
@@ -135,24 +140,34 @@
                   (do (set! is-unsigned 1) (set! pos tok-end))
                 (= tok "signed")     (set! pos tok-end)
                 (= tok "long")
-                  (do (set! is-long 1)
+                  (do (set! is-long (+ is-long 1))
                       (set! pos tok-end)
-                      ; Check if this is the base type itself (no further type follows)
-                      ; by peeking at what comes next
+                      ; Peek to distinguish `long`, `long long`, `long int`,
+                      ; `long double`, and `long` as a base type.
                       (let (peek-pos:i64 (c-skip-ws buf tok-end len)
                             peek-end:i64 (cast i64 0)
                             peek-tok:ptr (c-read-ident buf peek-pos len (cast ptr:i64 (addr-of peek-end))))
-                        ; If next token is "long", consume it (long long)
+                        ; Consume a second "long" (long long) and re-peek.
                         (when (= peek-tok "long")
-                          (set! pos peek-end))
-                        ; If next token is "int", that will be consumed as base-name
-                        ; If next token is something else or a '*', "long" is the base type
+                          (set! is-long (+ is-long 1))
+                          (set! pos peek-end)
+                          (set! peek-pos (c-skip-ws buf peek-end len))
+                          (set! peek-tok (c-read-ident buf peek-pos len (cast ptr:i64 (addr-of peek-end)))))
+                        ; "int"/"double" follow as the base; otherwise the base is
+                        ; an implicit int and "long" is the (long-counted) base.
                         (when (and (!= peek-tok "int")
-                                   (and (!= peek-tok "long")
-                                        (!= peek-tok "char")))
+                                   (!= peek-tok "double"))
                           (set! base-name "long") (set! done 1))))
                 (= tok "short")
-                  (do (set! is-short 1) (set! pos tok-end))
+                  (do (set! is-short 1) (set! pos tok-end)
+                      ; `short` alone (or `unsigned short`) is an implicit
+                      ; `short int`: if `int` doesn't follow, the next token is
+                      ; the declarator, so `short` itself is the base type.
+                      (let (peek-pos:i64 (c-skip-ws buf tok-end len)
+                            peek-end:i64 (cast i64 0)
+                            peek-tok:ptr (c-read-ident buf peek-pos len (cast ptr:i64 (addr-of peek-end))))
+                        (when (!= peek-tok "int")
+                          (set! base-name "short") (set! done 1))))
                 (= tok "struct")
                   (do (set! is-struct 1) (set! pos tok-end))
                 (= tok "__attribute__")
@@ -180,8 +195,28 @@
                (set! pos (c-skip-ws buf pos len))
                (set! check 1))))))
     (ptr-set! out-end pos)
-    ; If it's a struct, treat as pointer (opaque)
-    (when (!= is-struct 0) (return ty-ptr))
+    ; Struct base. struct {...} / struct Tag {...} parse the body to a TY-STRUCT;
+    ; struct Tag references look up by tag; pointer-to-struct collapses to ptr.
+    (when (!= is-struct 0)
+      (when (> ptr-depth 0) (return ty-ptr))
+      (let (look:i64 (c-skip-ws buf pos len)
+            tag:ptr base-name)
+        (when (and (< look len) (= (char-at buf look) 123))
+          (let (sd-end:i64 (cast i64 0)
+                sd:ptr (c-parse-struct-body buf look len (cast ptr:i64 (addr-of sd-end)) tag))
+            (ptr-set! out-end sd-end)
+            (when (!= sd null)
+              (let (t:ptr:Type (cast ptr:Type (make-type TY-STRUCT)))
+                (.set! t sdef sd)
+                (return (cast ptr t))))
+            (return ty-ptr)))
+        (when (!= tag null)
+          (let (sd:ptr (lookup-struct tag))
+            (when (!= sd null)
+              (let (t:ptr:Type (cast ptr:Type (make-type TY-STRUCT)))
+                (.set! t sdef sd)
+                (return (cast ptr t))))))
+        (return ty-ptr)))
     ; Resolve base type
     (when (= base-name null)
         ; bare "unsigned" or "signed" with no base → int
@@ -365,6 +400,192 @@
 
 ; Process a C header file: run clang -E, parse function declarations.
 ; header-path is e.g. "stdio.h" or "/usr/include/mylib.h".
+; Size in bytes of C `long` for the configured target's data model (Stage 8):
+; LP64 -> 8, ILP32 -> 4, LLP64 (Windows) -> 4. `long long` is always 8.
+(defn target-long-size:i32 ()
+  (when (= ((cast ptr:Target g-target) ptr-size) 4) (return 4))
+  (when (!= (strstr ((cast ptr:Target g-target) triple) "windows") null) (return 4))
+  (return 8))
+
+; Parse a C struct body `{ field; field; ... }` into a StructDef. tag-name null
+; means anonymous (memoized by shape). Returns the StructDef* or null on skip.
+(defn c-parse-struct-body:ptr (buf:ptr pos:i64 len:i64 out-end:ptr:i64 tag-name:ptr)
+  ; Expect '{' at pos.
+  (when (or (>= pos len) (!= (char-at buf pos) 123))
+    (ptr-set! out-end pos) (return null))
+  ; Pre-scan: locate the matching '}' so out-end is set ONCE here.
+  ; All failure paths can simply `return null` and the caller's pos is
+  ; correctly positioned past the body.
+  (let (body-end:i64 (+ pos (cast i64 1))
+        depth:i32 1)
+    (while (and (< body-end len) (> depth 0))
+      (when (= (char-at buf body-end) 123) (inc! depth))
+      (when (= (char-at buf body-end) 125) (set! depth (- depth 1)))
+      (when (> depth 0)
+        (set! body-end (+ body-end (cast i64 1)))))
+    (when (< body-end len) (set! body-end (+ body-end (cast i64 1))))
+    (ptr-set! out-end body-end))
+  (set! pos (+ pos (cast i64 1)))
+  (let (max-fields:i32 64
+        fnames:ptr (arena-alloc (* (cast i64 64) (cast i64 8)))
+        ftypes:ptr (arena-alloc (* (cast i64 64) (cast i64 8)))
+        nfields:i32 0
+        bad:i32 0
+        done:i32 0
+        ; Field-loop state, kept at this scope so the loop body can be
+        ; flat and use `when` guards rather than deep nesting.
+        fty:ptr null
+        fname:ptr null
+        te:i64 0
+        ne:i64 0)
+    ; Per-field loop. On any anomaly we set bad=1 done=1 and abandon
+    ; the struct (out-end is already past `}`, so the caller is fine).
+    (while (= done 0)
+      (set! pos (c-skip-ws buf pos len))
+      (when (>= pos len) (set! bad 1) (set! done 1))
+      (when (and (= done 0) (= (char-at buf pos) 125))
+        (set! pos (+ pos (cast i64 1))) (set! done 1))
+      (when (= done 0)
+        (set! fty (c-parse-type buf pos len (cast ptr:i64 (addr-of te))))
+        (when (= fty null) (set! bad 1) (set! done 1)))
+      (when (= done 0)
+        (set! pos te)
+        (set! pos (c-skip-ws buf pos len))
+        ; Function-pointer field: type (*name)(args...). Collapse to ptr.
+        (when (and (< pos len) (= (char-at buf pos) 40))
+          (set! pos (c-skip-parens buf pos len))
+          (set! pos (c-skip-ws buf pos len))
+          (when (and (< pos len) (= (char-at buf pos) 40))
+            (set! pos (c-skip-parens buf pos len)))
+          (set! fty ty-ptr)
+          (set! pos (c-skip-ws buf pos len))))
+      (when (= done 0)
+        (set! fname (c-read-ident buf pos len (cast ptr:i64 (addr-of ne))))
+        (when (= (cast i64 (strlen fname)) (cast i64 0))
+          (set! bad 1) (set! done 1)))
+      (when (= done 0)
+        (set! pos ne)
+        (set! pos (c-skip-ws buf pos len))
+        ; Reject array `[`, bitfield `:`, and multi-decl `,` — abandon
+        ; the whole struct on any of them. Anything but `;` is bad.
+        (when (>= pos len) (set! bad 1) (set! done 1))
+        (when (and (= done 0) (!= (char-at buf pos) 59))
+          (set! bad 1) (set! done 1)))
+      (when (= done 0)
+        (when (>= nfields max-fields) (set! bad 1) (set! done 1)))
+      (when (= done 0)
+        (aset! (cast ptr:ptr fnames) nfields (intern-str fname))
+        (aset! (cast ptr:ptr ftypes) nfields fty)
+        (inc! nfields)
+        (set! pos (+ pos (cast i64 1)))))
+    (when (!= bad 0) (return null))
+    ; Build StructDef. Anonymous → memoize via content hash; tagged
+    ; → register by tag (if not already present).
+    (when (= tag-name null)
+      (return (lookup-or-make-anon-struct fnames ftypes nfields)))
+    (let (existing:ptr (lookup-struct tag-name))
+      (when (!= existing null) (return existing)))
+    (let (sd:ptr:StructDef (register-struct (arena-strdup tag-name)))
+      (.set! sd field-names fnames)
+      (.set! sd field-types ftypes)
+      (.set! sd num-fields nfields)
+      (.set! sd src-file g-source-path)
+      (.set! sd src-line 0)
+      (fprintf g-type-stream "%%%s = type { " tag-name)
+      (let (i:i32 0)
+        (while (< i nfields)
+          (when (!= i 0) (fprintf g-type-stream ", "))
+          (fprintf g-type-stream "%s" (type-to-ir (aref (cast ptr:ptr ftypes) i)))
+          (inc! i)))
+      (fprintf g-type-stream " }\n\n")
+      (return sd))))
+
+; Parse a top-level `struct Tag {...};` or `typedef struct [Tag] {...} Name;`.
+; Returns 1 if a definition was consumed, 0 if the caller should fall back.
+(defn c-parse-struct-decl:i32 (buf:ptr pos:i64 len:i64 out-end:ptr:i64 line:i32)
+  (let (is-typedef:i32 0
+        te:i64 0
+        tok:ptr (c-read-ident buf pos len (cast ptr:i64 (addr-of te))))
+    (cond
+      (= (strcmp tok "typedef") 0)
+        (do (set! is-typedef 1) (set! pos te))
+      (= (strcmp tok "struct") 0)
+        (set! pos te)
+      true
+        (do (ptr-set! out-end pos) (return 0)))
+    (when (!= is-typedef 0)
+      (set! pos (c-skip-ws buf pos len))
+      (let (te2:i64 0
+            t2:ptr (c-read-ident buf pos len (cast ptr:i64 (addr-of te2))))
+        (when (!= (strcmp t2 "struct") 0)
+          (ptr-set! out-end pos) (return 0))
+        (set! pos te2)))
+    ; After 'struct': optional tag, then optional body.
+    (set! pos (c-skip-ws buf pos len))
+    (let (tag:ptr null
+          tag-end:i64 0
+          maybe-tag:ptr (c-read-ident buf pos len (cast ptr:i64 (addr-of tag-end))))
+      (when (!= (cast i64 (strlen maybe-tag)) (cast i64 0))
+        (set! tag maybe-tag)
+        (set! pos tag-end)
+        (set! pos (c-skip-ws buf pos len)))
+      ; Expect '{' for a definition (forward decls/uses fall back to skip).
+      (when (or (>= pos len) (!= (char-at buf pos) 123))
+        (ptr-set! out-end pos) (return 0))
+      (let (body-end:i64 0
+            sd:ptr (c-parse-struct-body buf pos len
+                                        (cast ptr:i64 (addr-of body-end))
+                                        (if (!= is-typedef 0) null tag)))
+        (set! pos body-end)
+        ; For typedef, the typedef name comes after the body and may
+        ; differ from the inner tag. Register a separate StructDef
+        ; under the typedef name pointing at the same shape — but if
+        ; sd is null (skipped body) we just consume to ';'.
+        (set! pos (c-skip-ws buf pos len))
+        (when (!= is-typedef 0)
+          (let (ne:i64 0
+                tname:ptr (c-read-ident buf pos len (cast ptr:i64 (addr-of ne))))
+            (when (and (!= sd null)
+                       (!= (cast i64 (strlen tname)) (cast i64 0)))
+              ; Register as a second alias if not already known.
+              (when (= (lookup-struct tname) null)
+                (let (alias:ptr:StructDef (register-struct (arena-strdup tname)))
+                  (.set! alias field-names ((cast ptr:StructDef sd) field-names))
+                  (.set! alias field-types ((cast ptr:StructDef sd) field-types))
+                  (.set! alias num-fields ((cast ptr:StructDef sd) num-fields))
+                  (.set! alias src-file g-source-path)
+                  (.set! alias src-line 0)
+                  (fprintf g-type-stream "%%%s = type { " tname)
+                  (let (i:i32 0
+                        nf:i32 ((cast ptr:StructDef sd) num-fields)
+                        fts:ptr ((cast ptr:StructDef sd) field-types))
+                    (while (< i nf)
+                      (when (!= i 0) (fprintf g-type-stream ", "))
+                      (fprintf g-type-stream "%s"
+                        (type-to-ir (aref (cast ptr:ptr fts) i)))
+                      (inc! i)))
+                  (fprintf g-type-stream " }\n\n"))))
+            (when (!= (cast i64 (strlen tname)) (cast i64 0))
+              (set! pos ne))))
+        ; Skip trailing __attribute__ if any.
+        (set! pos (c-skip-ws buf pos len))
+        (let (attr-check:i32 1)
+          (while (!= attr-check 0)
+            (set! attr-check 0)
+            (let (ae:i64 0
+                  at:ptr (c-read-ident buf pos len (cast ptr:i64 (addr-of ae))))
+              (when (= (strcmp at "__attribute__") 0)
+                (set! pos (c-skip-ws buf ae len))
+                (when (and (< pos len) (= (char-at buf pos) 40))
+                  (set! pos (c-skip-parens buf pos len)))
+                (set! pos (c-skip-ws buf pos len))
+                (set! attr-check 1)))))
+        ; Consume trailing semicolon.
+        (when (and (< pos len) (= (char-at buf pos) 59))
+          (set! pos (+ pos (cast i64 1))))
+        (ptr-set! out-end pos)
+        (return 1)))))
+
 (defn emit-c-include:void (header-path:ptr line:i32)
   ; Build clang -E command
   (let (cmd:ptr (alloca i8 512))
@@ -393,11 +614,14 @@
                 ; Skip typedefs, static inline functions, etc.
                 ; Only process extern declarations and top-level type declarations
                 (cond
-                  (= tok "extern")
-                    ; Extern declaration — try to parse as function
+                  (or (= tok "extern") (or (= tok "struct") (= tok "typedef")))
+                    ; extern -> function declaration; struct/typedef -> struct layout.
                     (let (decl-end:i64 (cast i64 0)
-                          ok:i32 (c-parse-func-decl buf pos buf-len
-                                                    (cast ptr:i64 (addr-of decl-end)) line))
+                          ok:i32 (if (= tok "extern")
+                                   (c-parse-func-decl buf pos buf-len
+                                                      (cast ptr:i64 (addr-of decl-end)) line)
+                                   (c-parse-struct-decl buf pos buf-len
+                                                        (cast ptr:i64 (addr-of decl-end)) line)))
                       (if (!= ok 0)
                         (set! pos decl-end)
                         (do ; Not a function — skip to semicolon

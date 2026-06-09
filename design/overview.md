@@ -55,7 +55,7 @@ Nucleus is a replacement for C using Lisp style syntax and macros with LLVM as i
 - [stage0-plan.md](stage0-plan.md) — implementation plan for the stage-0 compiler (C host, LLVM IR backend)
 - [stage1-self-host.md](stage1-self-host.md) — implementation plan for self-hosting the compiler
 - [syntax.md](syntax.md) — notes on syntax
-- [stage2-features.md](stage2-features.md) - early features following successful self-hosting
+- [stage2-macros-jit.md](stage2-macros-jit.md) - early features following successful self-hosting: macros and JIT
 - [stage3b-interop.md](stage3b-interop.md) — C interop: unsigned types, function pointers, C header parsing, `--emit-cheader`
 - [stage3c.md](stage3c.md) — deferred C interop issues: unions, bit-fields, struct ABI, platform portability
 - [stage6-cleanup.md](stage6-cleanup.md) — REPL, printing, macroexpand, n-ary arithmetic, modularization
@@ -69,6 +69,11 @@ Nucleus is a replacement for C using Lisp style syntax and macros with LLVM as i
 - [stage6-expressions.md](stage6-expressions.md) — design for expressions-as-values and implicit return
 - [stage6-pointer-syntax.md](stage6-pointer-syntax.md) — replace `*T` pointer syntax with `(ptr T)` constructor
 - [long-term-issues.md](long-term-issues.md) - potential problems for a mature implementation, deferred during early phases of development
+- [stage7.md](stage7.md) — Stage 7 ergonomics overview; sub-plans: [implicit-cast](stage7/implicit-cast.md), [optional](stage7/optional.md) (`&optional` args), [macro-casts](stage7/macro-casts.md), [repl-features](stage7/repl-features.md), [interaction-mode](stage7/interaction-mode.md) (Emacs)
+- [stage8.md](stage8.md) — Stage 8 C-parity overview, with [stage8-list.md](stage8-list.md) (candidate C features); sub-plans: [types](stage8/types.md), [globals](stage8/globals.md), [expressions](stage8/expressions.md), [platform](stage8/platform.md) (target descriptor + cross-compilation + struct ABI — Phases A–F), [volatile-plan](stage8/volatile-plan.md), [anon-struct-plan](stage8/anon-struct-plan.md), [cheader-struct-plan](stage8/cheader-struct-plan.md), [optimization](stage8/optimization.md)
+- [stage888-deferred.md](stage888-deferred.md) — items deferred out of stage 8
+- [stage9/cleanup.md](stage9/cleanup.md) — Stage 9 cleanup (`case` macro, error attribution, one-symbol-one-kind, target descriptor) and [stage9/implementation.md](stage9/implementation.md) (compiler implementation notes)
+- [stage999-future.md](stage999-future.md) — far-future / wishlist work (safety constructs, nullability, optimization pipeline, base-feature libraries)
 
 ## Agent feedback
 
@@ -78,4 +83,4 @@ Agents encountering new design documents should add them to the above list.
 
 ## Pre-release
 
-Nucleus is currently in pre-release development. Breaking changes are expected without warning.
+Nucleus is currently in pre-release development. Breaking changes are expected without warning: at this point Nucleus is only used for its own compiler (and the examples), so it is acceptable to make breaking changes without regard to other projects, because there are none.
