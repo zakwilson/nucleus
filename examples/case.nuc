@@ -1,0 +1,35 @@
+; The `case` macro — multi-way equality dispatch (lib/macros.nuc).
+;
+; (case form v1 r1 v2 r2 ... default) compares `form` against each value with
+; `=`, yielding the first matching result. The final unpaired argument is the
+; required default. It expands to a let-free cond, so `form` is re-evaluated per
+; comparison and should be side-effect free.
+
+(include stdio)
+
+; Dispatch over integer literals, with a default arm.
+(defn name-digit:ptr (n:i32)
+  (case n
+    0 "zero"
+    1 "one"
+    2 "two"
+    3 "three"
+    "many"))
+
+; case works over any type with an `=`.
+(defn is-vowel:i32 (c:i32)
+  (case c
+    97  1     ; a
+    101 1     ; e
+    105 1     ; i
+    111 1     ; o
+    117 1     ; u
+    0))
+
+(defn main:i32 ()
+  (printf "%s\n" (name-digit 0))
+  (printf "%s\n" (name-digit 2))
+  (printf "%s\n" (name-digit 9))
+  (printf "a vowel? %d\n" (is-vowel 97))
+  (printf "z vowel? %d\n" (is-vowel 122))
+  (return 0))

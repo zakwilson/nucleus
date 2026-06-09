@@ -58,6 +58,31 @@
 (defmacro if (test then else)
   `(cond ~test ~then true ~else))
 
+; (case form v1 r1 v2 r2 ... default) — multi-way equality dispatch.
+; Compares `form` (with =) against each value vi in turn and yields the result
+; ri of the first match. A final unpaired argument is the required default, used
+; when nothing matches. Expands to a cond:
+;   (case x a ra b rb d) => (cond (= x a) ra (= x b) rb true d)
+; Because = is overloadable, case works over any type with an equality (ints,
+; enum constants, symbols, C strings). `form` is re-evaluated per comparison, so
+; it should be a pure, side-effect-free expression.
+(defmacro case (form &rest clauses)
+  (let (acc:ptr null
+        cur:ptr clauses)
+    (while (!= cur null)
+      (let (rest:ptr ((cast ptr:Node cur) cdr))
+        (if (= rest null)
+          ; Lone trailing element: the default arm.
+          (do
+            (set! acc `(~@acc true ~((cast ptr:Node cur) car)))
+            (set! cur null))
+          ; A value/result pair.
+          (do
+            (set! acc `(~@acc (= ~form ~((cast ptr:Node cur) car))
+                              ~((cast ptr:Node rest) car)))
+            (set! cur ((cast ptr:Node rest) cdr))))))
+    `(cond ~@acc)))
+
 ; (when condition body) — one-armed conditional; body only if condition is true.
 ; For multiple body forms, wrap them in (do ...).
 (defmacro when (condition &rest body)
