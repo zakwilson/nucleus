@@ -83,6 +83,10 @@ Importing a `.nuch` with `defmethod` forms registers the methods for dispatch in
 | `def-rmacro` | Define a reader macro `(def-rmacro "prefix" symbol)`. When `prefix` appears at the start of a token, the reader wraps the next form: `(symbol form)`. Built-in reader macros: `'` (quote), `` ` `` (quasiquote), `~` (unquote), `~@` (unquote-splice), `@` (deref). | — |
 | `exclude-prelude` | Suppress the implicit `(import prelude)` for this source file. Must be the first top-level form; takes no arguments. Use when a file should compile against the bare language without the standard macros, `Node` struct, or `(include string)` declarations. | — |
 
+### One symbol, one kind
+
+A symbol may name only **one** kind of thing: a special form, a built-in type (`i32`, `ptr`, `double`, …), a struct type, a protocol, a macro, a function, or a value (`defvar`/`defconst`/`defenum` member/`extern`). Defining a name that already names a *different* kind is an error, e.g. `(defn double …)` clashes with the `double` type alias, and `(defstruct i32 …)` clashes with the built-in type. Same-kind reuse is still allowed: overloaded `defn` (multimethods) and REPL/`defstruct` redefinition. This keeps name resolution unambiguous across the language's namespaces.
+
 ## Type Syntax and Desugar
 
 Types are attached to names with `:` syntax: `name:type` (e.g., `x:i32`, `main:int`). A desugar pass runs before compilation, splitting colon-typed symbols in binding positions into canonical list form:
@@ -108,6 +112,7 @@ Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defin
 | Name | Signature | Expands To |
 |------|-----------|------------|
 | `if` | `(if test then else)` | `(cond test then true else)` |
+| `case` | `(case form v1 r1 v2 r2 ... default)` | `(cond (= form v1) r1 (= form v2) r2 ... true default)` |
 | `when` | `(when condition body...)` | `(cond condition (do body...))` |
 | `unless` | `(unless condition body...)` | `(cond (not condition) (do body...))` |
 | `zero?` | `(zero? x)` | `(= x 0)` |
@@ -115,6 +120,8 @@ Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defin
 | `for` | `(for (var:type init) test step body)` | `(let (var:type init) (while test body step))` |
 | `dotimes` | `(dotimes (var:type n) body)` | `(let (var:type 0) (while (< var n) body (inc! var)))` |
 | `->` | `(-> x form ...)` | Threads `x` through each form. If a form contains `_`, the value replaces `_`; otherwise inserts as first arg (thread-first). Bare symbols wrap as `(sym value)`. `_` is only special inside `->`. |
+
+`case` is multi-way equality dispatch: it compares `form` against each value `vi` with `=` and yields the first matching result `ri`. The final unpaired argument is the **required** default. Because `=` is overloadable, `case` works over any type with an equality (integers, enum constants, symbols, C strings). `form` is re-evaluated per comparison, so it should be side-effect free.
 
 `(import arena)` additionally provides `(new T)` — allocate one zeroed `T` from the arena, typed `(ptr T)`. It expands to `(cast (ptr T) (arena-alloc (sizeof T)))`, collapsing the cast + `sizeof` boilerplate for the common "allocate a single struct" case. It is **not** in the prelude (it depends on `arena-alloc`), so it requires an explicit `(import arena)`.
 
@@ -518,6 +525,8 @@ Symbol identity replaces `strcmp` for matching known spellings. Prefer `(= h 'de
 | `ptr` | Opaque pointer | `void*` |
 | `CStr` | C-style (null-terminated) string | `char*` |
 | `void` | No value | `void` |
+
+Pointer size and the target are not hardcoded as `i64`/`8` throughout codegen: a target descriptor (`g-target-triple`, `g-target-ptr-bytes`, defaulting to `x86_64-pc-linux-gnu` / 8 bytes) drives the emitted `target triple`, pointer/`CStr` type sizes and alignments, and the width of `sizeof` (a pointer-sized `size_t`). To target a 32-bit platform, set `g-target-ptr-bytes` to 4. (The macro/`compile-time` JIT still targets the host. One remaining 64-bit assumption is the hand-written `__cons`/`__append` IR in `emit-qq-helpers`.)
 
 `CStr` is the type of a string literal — a C `char*`. It lowers to `ptr` (same ABI) and flows into any `ptr`-typed C function with no cast, but it is a **distinct type for operator dispatch**: `=` / `!=` on two `CStr` do a `strcmp` **content** comparison (so equal text compares equal across distinct buffers), whereas `=` on two raw `ptr` is pointer identity. `CStr` conforms to the `Eq` protocol (`lib/numeric.nuc`), so it works in an `Eq`-bounded generic; it is not `Ord` (no ordering — out of scope here, along with Unicode). Only `=` / `!=` are defined; other operators on `CStr` are an error. A `CStr` and a `ptr` are freely interconvertible with `cast` (no IR) and coerce automatically in value positions (assignment, return, field/array store); a string literal also passes directly to a plain `ptr` parameter. (Multimethod dispatch treats `CStr` as distinct — overload on `CStr` explicitly, or `cast` to `ptr`.) `strcmp` must be declared, which the prelude's `(include string)` provides. Example: `examples/cstr.nuc`.
 

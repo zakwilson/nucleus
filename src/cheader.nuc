@@ -315,7 +315,7 @@
         (let (ft:ptr:Type (cast ptr:Type (make-type TY-FN)))
           (.set! ft ret ret-type)
           (.set! ft num-params num-params)
-          (.set! ft params (arena-alloc (* (i64 num-params) (i64 8))))
+          (.set! ft params (arena-alloc (* (cast i64 num-params) (cast i64 8))))
           (let (j:i32 0)
             (while (< j num-params)
               (aset! (cast ptr:ptr (ft params)) j (aref (cast ptr:ptr param-types) j))

@@ -51,6 +51,14 @@ Current branch: `stage6-cleanup`
 | Callable values (`callable-values.md`): non-function head → `get` (Struct member-access intrinsic, byte-identical to `.`, overridable) / `invoke` (user-supplied, `Seq`/`Call`); computed-symbol field access (homogeneous); arbitrary-expression heads + `funcall` folding | Done (`callable-values.md` impl status) |
 | Examples: `overload`, `protocol`, `generic`, `operators`, `blanket`, `valid`, `callable` | Done |
 
+### Stage 9 cleanup (`design/stage9/cleanup.md`)
+| Item | Status |
+|---|---|
+| `case` macro (`lib/macros.nuc`); applied to `emit-nuch-header`, `emit-nuch-import-forms`, `fprint-node`, `emit-toplevel-forms`; `examples/case.nuc` | Done |
+| Error attribution: `stamp-macro-lines` propagates the macro call-site line onto line-0 quasiquote nodes; shadowing errors use the form-cell line | Done |
+| Name (non-)shadowing: one symbol = one kind, checked at every top-level definer; fixed `i64`/`double` self-shadows | Done |
+| i64 hardcoding: target descriptor (`g-target-triple` / `g-target-ptr-bytes`) + host `ptr-bytes`; `sizeof`/`type-size`/triple parameterized. Remaining: `emit-qq-helpers` Node ABI | Done (qq-helper ABI deferred) |
+
 ---
 
 ## Deferred (needs design decision or blocked on above)

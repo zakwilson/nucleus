@@ -45,7 +45,7 @@ It should be possible to add a docstring to anything that can be defined. .nuch 
 
 There should be `docstring` and `signature` functions for tool use, and probably a `doc` function for human use at the REPL that gets the docstring, signature, and anything else that might be interesting about a symbol for the developer.
 
-## Cleanup
+## set!
 
 `set!` should take multiple pairs like `let`.
 
@@ -77,7 +77,3 @@ It would be **great** if most types and pointers could be non-nullable with a `M
 * case/switch for matching a value
 * Unicode strings
 * Str protocol
-
-## Error attribution
-
-A recent failed compile reported a malformed `cond` but not its location. The compiler should try to track the location of compile errors wherever practical.
