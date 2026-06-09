@@ -1,0 +1,40 @@
+; &optional parameters for defn. The compiler fills in default
+; expressions at the call site (in the caller's scope) for any
+; trailing arguments the caller omits.
+
+(include stdio)
+
+; Single optional with a constant default.
+(defn add:int (a:int &optional (b:int 10))
+  (+ a b))
+
+; Multiple optionals, partial fill.
+(defn triplet:int (a:int &optional (b:int 2) (c:int 3))
+  (+ (+ a b) c))
+
+; Constant default with no required params.
+(defn just-default:int (&optional (n:int 7))
+  n)
+
+; Non-constant default — call-site evaluated, so each call sees fresh state.
+(defvar counter:int 0)
+
+(defn next-counter:int ()
+  (set! counter (+ counter 1))
+  counter)
+
+(defn with-counter:int (&optional (n:int (next-counter)))
+  n)
+
+(defn main:i32 ()
+  (printf "%d\n" (add 5))                ; 15
+  (printf "%d\n" (add 5 7))              ; 12
+  (printf "%d\n" (triplet 1))            ; 6
+  (printf "%d\n" (triplet 1 20))         ; 24
+  (printf "%d\n" (triplet 1 20 30))      ; 51
+  (printf "%d\n" (just-default))         ; 7
+  (printf "%d\n" (with-counter))         ; 1
+  (printf "%d\n" (with-counter))         ; 2
+  (printf "%d\n" (with-counter 99))      ; 99
+  (printf "%d\n" (with-counter))         ; 3
+  (return 0))

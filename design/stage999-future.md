@@ -1,5 +1,7 @@
 # Future plans
 
+Nothing here is fleshed out. Some ideas may be bad. Things here may never be implemented, or may be impossible.
+
 ## Lispiness
 
 Nucleus is a replacement for C, but it should bring in as much Lisp goodness as it can without compromising C interop or adding runtime overhead.
@@ -38,21 +40,50 @@ Probably `#`, semantics like Clojure but not the postfix syntax
 
 Clojure uses these well. Not included by default at runtime of course, but good general-purpose implementations people would want to import if they don't need something purpose-built.
 
-## REPL documentation
+### defcall
 
-It should be possible to add a docstring to anything that can be defined. .nuch headers should include them. They should be added to C headers as comments.
+Probably a subset of polymorphism. In Clojure, many things that are not fns in the traditional sense can be called as fns.
 
-There should be `docstring` and `signature` functions for tool use, and probably a `doc` function for human use at the REPL that gets the docstring, signature, and anything else that might be interesting about a symbol for the developer.
+A type should be a cast (and maybe this should rely on defcast, or maybe it should be a new mechanism allowing destructive operations). A struct should be field access.
 
-## set!
+## Editor integration
 
-`set!` should take multiple pairs like `let`.
+Local Emacs interaction (eval-from-buffer, completion, jump-to-definition,
+describe, macroexpand, REPL plumbing over `nucleusc -i`) landed in stage 7
+— see `design/stage7/interaction-mode.md` and `docs/emacs.md`. Other
+editors (VS Code, neovim) and any network protocol are deferred.
+
+
+## Memory management
+
+The `with` form (added in stage6) is `let` plus auto-free for any binding
+whose init expression is a libc allocator (`malloc`/`calloc`/`realloc`/`strdup`,
+including through `cast`). Cleanups fire on fall-through and on early `return`
+inside the body. Disarming a single binding is done by storing `null` to it,
+since `free(NULL)` is a no-op.
+
+Open question: whether to flip the default so plain `let` itself auto-frees,
+with `let*` as the opt-out (the original shape proposed here). `with` exists
+alongside `let` for now; revisit once it has wider use.
+
+## Safe constructs
+
+Nucleus isn't trying to be Rust, but it should provide the option of safe constructs where it's practical to do so, and move things that should be avoided when possible to an unsafe/ namespace.
+
+The `with` special form is a target for improvement. It should enforce a lexical *lifetime* rather than just preventing memory leaks. Attempting to return variables bound to pointers using `with` should be a compile-time error. That includes binding a second variable with a nested `let`. Returning the dereferenced value is permissible.
+
+## Nullability
+
+It would be **great** if most types and pointers could be non-nullable with a `Maybe` or `Option` type to provide nullability where it's desired. Even better would be safe pointers by default which cannot point to anything but a valid instance of the declared type, with raw pointers relegated to an `unsafe` namespace.
 
 ## Base features
 
 * vector/hashmap/set in a library, use in the compiler
 * Unicode strings
 * Str protocol
+* `addr-of` probably needs a reader macro
+* `defvar` only accepts integer literals, wat?
+* `set!` should take multiple pairs like `let` and/or be polymorphic
 
 ## Bounds checking for C str/array
 
