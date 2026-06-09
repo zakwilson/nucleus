@@ -1,0 +1,29 @@
+(include stdio)
+
+; Forward and backward gotos.
+(defn count-down:int (n:int)
+  (label top)
+  (printf "%d\n" n)
+  (cond
+    (> n 1) (do (set! n (- n 1)) (goto top))
+    true 0)
+  (return 0))
+
+; Computed goto: select target via label-addr / goto-ptr.
+(defn dispatch:int (which:int)
+  (let (target:ptr null)
+    (cond
+      (= which 0) (set! target (label-addr a))
+      (= which 1) (set! target (label-addr b))
+      true        (set! target (label-addr c)))
+    (goto-ptr target))
+  (label a) (printf "a\n") (return 0)
+  (label b) (printf "b\n") (return 0)
+  (label c) (printf "c\n") (return 0))
+
+(defn main:int ()
+  (count-down 3)
+  (dispatch 0)
+  (dispatch 1)
+  (dispatch 2)
+  (return 0))

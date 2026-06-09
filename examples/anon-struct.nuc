@@ -1,0 +1,49 @@
+(include stdio)
+
+; Anonymous struct as a let-binding type (list form for the name+type).
+(defn local-anon:i32 ()
+  (let ((p (ptr (struct x:i32 y:i32))) (alloca (struct x:i32 y:i32)))
+    (.set! p x 3)
+    (.set! p y 4)
+    (return (+ (. p x) (. p y)))))
+
+; Nested anonymous struct as a value-typed defstruct field. Use .&
+; to obtain a pointer to the nested field and .set! through it.
+(defstruct Outer
+  (point (struct x:i32 y:i32))
+  tag:i32)
+
+(defn nested-field:i32 ()
+  (let (o:ptr:Outer (alloca Outer))
+    (.set! (.& o point) x 10)
+    (.set! (.& o point) y 20)
+    (.set! o tag 7)
+    (return (+ (. (.& o point) x) (+ (. (.& o point) y) (. o tag))))))
+
+; Anonymous struct via pointer as function parameter type. Two call
+; sites must resolve to the same StructDef (memoization).
+(defn take-anon:i32 ((p (ptr (struct x:i32 y:i32))))
+  (return (- (. p x) (. p y))))
+
+(defn pass-twice:i32 ()
+  (let ((a (ptr (struct x:i32 y:i32))) (alloca (struct x:i32 y:i32))
+        (b (ptr (struct x:i32 y:i32))) (alloca (struct x:i32 y:i32)))
+    (.set! a x 100) (.set! a y 1)
+    (.set! b x 50)  (.set! b y 5)
+    (return (+ (take-anon a) (take-anon b)))))
+
+; (ptr (struct ...)) round-trip.
+(defn write-via-ptr:void ((p (ptr (struct v:i32))))
+  (.set! p v 99))
+
+(defn ptr-round-trip:i32 ()
+  (let ((s (ptr (struct v:i32))) (alloca (struct v:i32)))
+    (write-via-ptr s)
+    (return (. s v))))
+
+(defn main:int ()
+  (printf "local=%d\n" (local-anon))
+  (printf "nested=%d\n" (nested-field))
+  (printf "twice=%d\n" (pass-twice))
+  (printf "rt=%d\n" (ptr-round-trip))
+  (return 0))
