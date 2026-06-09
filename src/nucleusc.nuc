@@ -25,6 +25,7 @@
 ; ============================================================
 
 (defconst MAX-STRUCTS 64)
+(defconst MAX-CAST-RULES 256)
 
 ; Token kinds
 (defenum TokKind TOK-LPAREN TOK-RPAREN TOK-RMACRO TOK-INT TOK-STRING TOK-SYMBOL TOK-FLOAT TOK-EOF)
@@ -62,7 +63,9 @@
   field-names:ptr
   field-types:ptr
   num-fields:i32
-  emitted:i32)      ; type definition already written to IR (vs. name-only pre-registration)
+  emitted:i32       ; type definition already written to IR (vs. name-only pre-registration)
+  src-file:ptr      ; source file where defined (cheader/anon struct provenance)
+  src-line:i32)
 
 (defstruct Type
   kind:i32
@@ -72,7 +75,18 @@
   variadic:i32
   has-rest:i32
   elem:ptr
-  sdef:ptr)
+  sdef:ptr
+  ; --- Stage 8 additions ---
+  nopt:i32          ; number of trailing &optional params (TY-FN)
+  opt-defaults:ptr  ; array of ptr:Node default-value forms for the &optional params
+  ; Parallel array to `params`: each entry is a `ptr` to the param's declared
+  ; name (arena-owned C string), or null if unknown. Used by the REPL to render
+  ; real parameter names instead of positional pN.
+  param-names:ptr
+  ; Volatile qualifier: when set, loads/stores at this type's storage site are
+  ; emitted as `load volatile`/`store volatile`. Primitive singletons are shared,
+  ; so volatility is represented by cloning the Type via type-with-volatile.
+  is-volatile:i32)
 
 (defstruct Tok
   kind:i32
@@ -89,7 +103,15 @@
   is-local:i32
   is-const:i32
   const-val:ptr
-  tracker:ptr)
+  tracker:ptr
+  ; --- Stage 8 / REPL introspection additions ---
+  src-file:ptr      ; source file where defined (null if unknown)
+  src-line:i32      ; source line where defined (0 if unknown)
+  trace-tracker:ptr ; resource tracker for a REPL-installed trace wrapper
+  trace-saved:ptr   ; saved original ir-name while traced
+  ; Docstring captured from a defn whose body's first form is a string literal
+  ; (with at least one form following it). null otherwise. Used by REPL doc/apropos.
+  docstring:ptr)
 
 (defstruct Scope
   parent:ptr
@@ -108,6 +130,23 @@
 (defstruct Val
   type:ptr
   val:ptr)
+
+; ---- Aggregate ABI lowering (Stage 8 Phase C, x86_64 System V) ----
+; How a struct-by-value parameter or return is lowered to the platform C ABI.
+; Only TY-STRUCT is ever non-DIRECT, so every scalar/pointer path is unchanged.
+;   ABI-DIRECT  — passed/returned as-is (all scalars, pointers).
+;   ABI-MEMORY  — >16 bytes: param is `ptr byval(%T)`, return is `sret` (hidden
+;                 leading pointer param, function returns void).
+;   ABI-COERCE1 — ≤8 bytes: one eightbyte, coerced to reg0 (e.g. i64/double).
+;   ABI-COERCE2 — 9..16 bytes: two eightbytes reg0,reg1; return is {reg0,reg1}.
+(defenum AbiKind ABI-DIRECT ABI-MEMORY ABI-COERCE1 ABI-COERCE2)
+
+(defstruct AbiInfo
+  kind:i32     ; AbiKind
+  reg0:ptr     ; IR type string for eightbyte 0 (COERCE1/COERCE2), else null
+  reg1:ptr     ; IR type string for eightbyte 1 (COERCE2), else null
+  size:i32     ; struct ABI size in bytes (MEMORY/COERCE)
+  align:i32)   ; struct ABI alignment in bytes (MEMORY/COERCE)
 
 (defstruct BinOp
   name:ptr
@@ -179,12 +218,44 @@
   name:CStr
   jit-name:ptr
   num-params:i32
-  variadic:i32)
+  variadic:i32
+  ; --- Stage 8 / REPL introspection additions ---
+  src-file:ptr
+  src-line:i32
+  ; Docstring captured from a defmacro whose body's first form is a string
+  ; literal (with at least one form following it). null otherwise.
+  docstring:ptr
+  ; Parameter names array (parallel to the user-declared param list, minus
+  ; &rest/&optional keywords) for tooling. null if not captured.
+  param-names:ptr)
 
 (defstruct RMacro
   prefix:ptr
   prefix-len:i32
   wrap-sym:ptr)
+
+; A label declaration within the current function (Stage 8 goto support).
+; `total` is the number of (label NAME) occurrences seen in the pre-scan;
+; `seen` counts how many have been emitted so the last one wins the live BB.
+(defstruct LabelEntry
+  name:ptr
+  total:i32
+  seen:i32)
+
+; A user-asserted implicit conversion (defcast From To conv-fn). Applied at call
+; sites by safe-coerce-val when an argument's type differs from the parameter's.
+(defstruct CastRule
+  from:ptr
+  to:ptr
+  ir-name:ptr)
+
+; A resolved compilation target (Stage 8 cross-compilation). datalayout and
+; ptr-size come from LLVM for `triple`, so emitted IR matches the target ABI.
+(defstruct Target
+  triple:ptr
+  datalayout:ptr
+  ptr-size:i32
+  ptr-align:i32)
 
 
 ; ============================================================
@@ -228,6 +299,16 @@
 (defvar g-target-triple:ptr)
 (defvar g-target-ptr-bytes:i32 8)
 
+; Stage 8 cross-compilation: g-target is the resolved Target (triple + datalayout
+; + pointer size from LLVM). g-host-target is always the native platform — the
+; macro/CT JIT runs in-process, so its modules use the host. g-target-triple and
+; g-target-ptr-bytes (above) are derived from g-target so the rest of codegen,
+; which predates the Target struct, keeps working unchanged. The override is set
+; by --target=<triple>; null means "use the host".
+(defvar g-target:ptr)
+(defvar g-host-target:ptr)
+(defvar g-target-triple-override:ptr)
+
 ; Host pointer size in bytes — the platform the compiler itself runs on, used to
 ; size its own arrays-of-pointers. Distinct from g-target-ptr-bytes (the
 ; platform being compiled *for*): when cross-compiling they differ. Initialised
@@ -257,6 +338,25 @@
 (defvar g-body-bufp:ptr)
 (defvar g-body-sizep:i64 0)
 (defvar g-block-term:i32 0)
+
+; defcast registry (Stage 8). g-cast-rules is a pre-allocated array of CastRule
+; (length MAX-CAST-RULES), filled by register-cast-rule from `defcast` forms.
+(defvar g-cast-rules:ptr)
+(defvar g-cast-rules-len:i32 0)
+
+; Label/goto support (Stage 8 C-parity). g-lbl-tbl is a Vec of LabelEntry*
+; (name, total occurrence count, seen-so-far) reset per function by
+; reset-function-state. g-cur-fname is the @-less IR symbol of the function
+; currently being emitted (for blockaddress in label-addr).
+(defvar g-lbl-tbl:ptr)
+(defvar g-cur-fname:ptr)
+
+; Aggregate return ABI of the function currently being emitted (Stage 8 Phase C).
+; g-fn-ret-abi is its AbiInfo* (ABI-DIRECT for scalar/pointer returns); when the
+; return is ABI-MEMORY, g-fn-sret-name is the IR name of the hidden sret pointer
+; param. Both reset by reset-function-state and set in emit-defn.
+(defvar g-fn-ret-abi:ptr)
+(defvar g-fn-sret-name:ptr)
 
 ; Current output stream for top-level emission
 (defvar g-out:ptr)
@@ -652,6 +752,335 @@
     (when (= k TY-UI64) (return 1))
     (return 0)))
 
+; ============================================================
+; Aggregate ABI lowering — x86_64 System V (Stage 8 Phase C)
+; ============================================================
+; Struct-by-value parameters and returns must follow the platform C ABI, not
+; LLVM's default by-value aggregate passing (which is not ABI-correct). The
+; classifier below ports clang's eightbyte model: a struct ≤16 bytes is split
+; into one or two eightbytes, each classified INTEGER or SSE and coerced to a
+; register type; >16 bytes goes through memory (byval param / sret return).
+; Only TY-STRUCT is ever non-DIRECT, so every scalar/pointer path is unchanged.
+; See design/stage8/platform.md for the reverse-engineered coercion table.
+
+; Round x up to a multiple of a (a is a power of two in practice, but the
+; arithmetic form works for any positive a).
+(defn abi-align-up:i32 (x:i32 a:i32)
+  (when (<= a 1) (return x))
+  (return (* (/ (+ x (- a 1)) a) a)))
+
+; ABI alignment of a type in bytes. Scalars use their natural alignment
+; (== size); pointers/functions use the target pointer alignment; structs use
+; the max alignment of any field.
+(defn abi-alignof:i32 (t:ptr)
+  (let (k:i32 ((cast ptr:Type t) kind))
+    (when (= k TY-STRUCT)
+      (return (abi-struct-align (cast ptr:StructDef ((cast ptr:Type t) sdef)))))
+    (when (= k TY-PTR)  (return g-target-ptr-bytes))
+    (when (= k TY-CSTR) (return g-target-ptr-bytes))
+    (when (= k TY-FN)   (return g-target-ptr-bytes))
+    (return (type-size t))))
+
+; ABI size of a type in bytes. Unlike type-size (which returns the pointer size
+; for any struct, sufficient for its by-reference slots), this walks struct
+; fields so the classifier sees the real aggregate size.
+(defn abi-sizeof:i32 (t:ptr)
+  (let (k:i32 ((cast ptr:Type t) kind))
+    (when (= k TY-STRUCT)
+      (return (abi-struct-size (cast ptr:StructDef ((cast ptr:Type t) sdef)))))
+    (when (= k TY-FN) (return g-target-ptr-bytes))
+    (return (type-size t))))
+
+; Max field alignment of a struct (its own ABI alignment).
+(defn abi-struct-align:i32 (sd:ptr)
+  (let (sdd:ptr:StructDef (cast ptr:StructDef sd)
+        n:i32 (sdd num-fields)
+        a:i32 1
+        i:i32 0)
+    (while (< i n)
+      (let (fa:i32 (abi-alignof (aref (cast ptr:ptr (sdd field-types)) i)))
+        (when (> fa a) (set! a fa)))
+      (inc! i))
+    (return a)))
+
+; ABI size of a struct: fields laid out with natural padding, total rounded up
+; to the struct's own alignment (tail padding included).
+(defn abi-struct-size:i32 (sd:ptr)
+  (let (sdd:ptr:StructDef (cast ptr:StructDef sd)
+        n:i32 (sdd num-fields)
+        off:i32 0
+        i:i32 0)
+    (while (< i n)
+      (let (ft:ptr (aref (cast ptr:ptr (sdd field-types)) i)
+            fa:i32 (abi-alignof ft))
+        (set! off (abi-align-up off fa))
+        (set! off (+ off (abi-sizeof ft))))
+      (inc! i))
+    (return (abi-align-up off (abi-struct-align sd)))))
+
+; Classify the eightbyte covering absolute bytes [lo, lo+8) against the fields
+; of struct sd placed at absolute base offset `base`. Recurses into nested
+; struct fields by absolute offset. Returns a class code: 0 none, 1 SSE/float,
+; 2 SSE/double, 3 INTEGER. Higher wins (INTEGER beats SSE; double beats float).
+(defn abi-class-eightbyte:i32 (sd:ptr base:i32 lo:i32)
+  (let (sdd:ptr:StructDef (cast ptr:StructDef sd)
+        n:i32 (sdd num-fields)
+        hi:i32 (+ lo 8)
+        off:i32 0
+        cls:i32 0
+        i:i32 0)
+    (while (< i n)
+      (let (ft:ptr (aref (cast ptr:ptr (sdd field-types)) i)
+            fa:i32 (abi-alignof ft)
+            fsz:i32 (abi-sizeof ft))
+        (set! off (abi-align-up off fa))
+        (let (fabs:i32 (+ base off)
+              fk:i32 ((cast ptr:Type ft) kind))
+          ; Does this field overlap [lo, hi)?
+          (when (and (< fabs hi) (> (+ fabs fsz) lo))
+            (if (= fk TY-STRUCT)
+              (let (sub:i32 (abi-class-eightbyte
+                              (cast ptr:StructDef ((cast ptr:Type ft) sdef)) fabs lo))
+                (when (> sub cls) (set! cls sub)))
+              (if (!= (is-float-type ft) 0)
+                (let (fc:i32 (if (= fk TY-F64) 2 1))
+                  (when (> fc cls) (set! cls fc)))
+                (set! cls 3)))))     ; integer / pointer → INTEGER
+        (set! off (+ off fsz)))
+      (inc! i))
+    (return cls)))
+
+; Coercion IR type for one eightbyte: class `cls` holding `n` bytes (1..8).
+; INTEGER → i(8·n) for n ≤ 4 (i8/i16/i24/i32), else i64. SSE/double → double.
+; SSE/float → <2 x float> when the eightbyte is full, else float.
+(defn abi-eightbyte-ir:ptr (cls:i32 n:i32)
+  (when (= cls 2) (return "double"))
+  (when (= cls 1)
+    (if (= n 8) (return "<2 x float>") (return "float")))
+  (if (<= n 4)
+    (return (fmt-i32 "i%d" (* n 8)))
+    (return "i64")))
+
+; Classify a type for the SysV aggregate ABI. Returns an AbiInfo*. Non-struct
+; types are ABI-DIRECT (byte-identical to pre-ABI codegen).
+(defn abi-classify:ptr (t:ptr)
+  (let (info:ptr:AbiInfo (cast ptr:AbiInfo (arena-alloc (sizeof AbiInfo))))
+    (.set! info kind ABI-DIRECT)
+    (.set! info reg0 null)
+    (.set! info reg1 null)
+    (.set! info size 0)
+    (.set! info align 0)
+    (when (!= ((cast ptr:Type t) kind) TY-STRUCT) (return (cast ptr info)))
+    (let (sd:ptr (cast ptr ((cast ptr:Type t) sdef))
+          sz:i32 (abi-struct-size (cast ptr:StructDef ((cast ptr:Type t) sdef)))
+          al:i32 (abi-struct-align (cast ptr:StructDef ((cast ptr:Type t) sdef))))
+      (.set! info size sz)
+      (.set! info align al)
+      (when (> sz 16)
+        (.set! info kind ABI-MEMORY)
+        (return (cast ptr info)))
+      (let (n0:i32 (if (< sz 8) sz 8)
+            c0:i32 (abi-class-eightbyte (cast ptr:StructDef sd) 0 0))
+        (.set! info reg0 (abi-eightbyte-ir c0 n0)))
+      (when (<= sz 8)
+        (.set! info kind ABI-COERCE1)
+        (return (cast ptr info)))
+      (let (n1:i32 (- sz 8)
+            c1:i32 (abi-class-eightbyte (cast ptr:StructDef sd) 0 8))
+        (.set! info reg1 (abi-eightbyte-ir c1 n1)))
+      (.set! info kind ABI-COERCE2)
+      (return (cast ptr info)))))
+
+; Return type string for a function signature given its return AbiInfo: void for
+; MEMORY (the value goes through the sret pointer), the coercion reg(s) for
+; COERCE, or the plain type for DIRECT.
+(defn abi-ret-ir:ptr (info:ptr ret:ptr)
+  (let (k:i32 ((cast ptr:AbiInfo info) kind))
+    (when (= k ABI-MEMORY)  (return "void"))
+    (when (= k ABI-COERCE1) (return ((cast ptr:AbiInfo info) reg0)))
+    (when (= k ABI-COERCE2)
+      (return (fmt-2s "{ %s, %s }"
+                ((cast ptr:AbiInfo info) reg0) ((cast ptr:AbiInfo info) reg1))))
+    (return (type-to-ir ret))))
+
+; Print one lowered parameter to g-out. `name` is the param name for a `define`
+; (emits the `%name.arg` operand) or null for a `declare` (types only). COERCE2
+; expands to two comma-separated entries; the caller supplies the leading comma.
+(defn abi-print-param:void (info:ptr ptype:ptr name:ptr)
+  (let (ii:ptr:AbiInfo (cast ptr:AbiInfo info)
+        k:i32 ((cast ptr:AbiInfo info) kind))
+    (when (= k ABI-DIRECT)
+      (if (= name null)
+        (fprintf g-out "%s" (type-to-ir ptype))
+        (fprintf g-out "%s %%%s.arg" (type-to-ir ptype) name))
+      (return))
+    (when (= k ABI-MEMORY)
+      (if (= name null)
+        (fprintf g-out "ptr byval(%s) align %d" (type-to-ir ptype) (ii align))
+        (fprintf g-out "ptr byval(%s) align %d %%%s.arg" (type-to-ir ptype) (ii align) name))
+      (return))
+    (when (= k ABI-COERCE1)
+      (if (= name null)
+        (fprintf g-out "%s" (ii reg0))
+        (fprintf g-out "%s %%%s.arg" (ii reg0) name))
+      (return))
+    ; COERCE2
+    (if (= name null)
+      (fprintf g-out "%s, %s" (ii reg0) (ii reg1))
+      (fprintf g-out "%s %%%s.arg.0, %s %%%s.arg.1" (ii reg0) name (ii reg1) name))))
+
+; Emit the entry-block reconstruction for one parameter into its `.addr` slot,
+; and bind it in fn-scope. DIRECT keeps the prior alloca+store (byte-identical).
+; MEMORY binds the byval pointer directly (it already points at the copy).
+; COERCE allocas the struct and stores the register arg(s) at their offsets.
+(defn abi-emit-param-prologue:void (fn-scope:ptr pname:ptr ptype:ptr)
+  (let (info:ptr:AbiInfo (cast ptr:AbiInfo (abi-classify ptype))
+        k:i32 ((cast ptr:AbiInfo (abi-classify ptype)) kind)
+        slot:ptr (fmt-s "%%%s.addr" pname)
+        arg:ptr (fmt-s "%%%s.arg" pname))
+    (when (= k ABI-DIRECT)
+      (let (palign:i32 (type-size ptype))
+        (fprintf g-entry-stream "  %s = alloca %s, align %d\n" slot (type-to-ir ptype) palign)
+        (fprintf g-entry-stream "  store %s %s, ptr %s, align %d\n"
+          (type-to-ir ptype) arg slot palign)
+        (scope-define fn-scope pname ptype slot 1))
+      (return))
+    (when (= k ABI-MEMORY)
+      (scope-define fn-scope pname ptype arg 1)
+      (return))
+    ; COERCE1 / COERCE2: materialize the register arg(s) back into a struct slot.
+    (fprintf g-entry-stream "  %s = alloca %s\n" slot (type-to-ir ptype))
+    (if (= k ABI-COERCE1)
+      (fprintf g-entry-stream "  store %s %s, ptr %s\n" ((cast ptr:AbiInfo info) reg0) arg slot)
+      (let (gp:ptr null)
+        (fprintf g-entry-stream "  store %s %%%s.arg.0, ptr %s\n"
+          ((cast ptr:AbiInfo info) reg0) pname slot)
+        (set! gp (new-tmp))
+        (fprintf g-entry-stream "  %s = getelementptr i8, ptr %s, i64 8\n" gp slot)
+        (fprintf g-entry-stream "  store %s %%%s.arg.1, ptr %s\n"
+          ((cast ptr:AbiInfo info) reg1) pname gp)))
+    (scope-define fn-scope pname ptype slot 1)))
+
+; Emit a struct return for the current function per g-fn-ret-abi. `v` is the
+; first-class struct value to return. MEMORY stores it through the sret pointer
+; and returns void; COERCE rounds it through memory and returns the reg(s).
+(defn emit-struct-ret:void (v:ptr)
+  (let (vv:ptr:Val (cast ptr:Val v)
+        info:ptr:AbiInfo (cast ptr:AbiInfo g-fn-ret-abi)
+        k:i32 ((cast ptr:AbiInfo g-fn-ret-abi) kind)
+        ty:ptr (type-to-ir ((cast ptr:Val v) type)))
+    (when (= k ABI-MEMORY)
+      (fprintf g-body-stream "  store %s %s, ptr %s\n" ty (vv val) g-fn-sret-name)
+      (fprintf g-body-stream "  ret void\n")
+      (return))
+    (let (tmp:ptr (new-tmp))
+      (fprintf g-entry-stream "  %s = alloca %s\n" tmp ty)
+      (fprintf g-body-stream "  store %s %s, ptr %s\n" ty (vv val) tmp)
+      (if (= k ABI-COERCE1)
+        (let (r:ptr (new-tmp))
+          (fprintf g-body-stream "  %s = load %s, ptr %s\n" r (info reg0) tmp)
+          (fprintf g-body-stream "  ret %s %s\n" (info reg0) r))
+        ; COERCE2: load both eightbytes, build the {reg0,reg1} return aggregate.
+        (let (r0:ptr (new-tmp)
+              gp:ptr null
+              r1:ptr null
+              a0:ptr null
+              a1:ptr null)
+          (fprintf g-body-stream "  %s = load %s, ptr %s\n" r0 (info reg0) tmp)
+          (set! gp (new-tmp))
+          (fprintf g-body-stream "  %s = getelementptr i8, ptr %s, i64 8\n" gp tmp)
+          (set! r1 (new-tmp))
+          (fprintf g-body-stream "  %s = load %s, ptr %s\n" r1 (info reg1) gp)
+          (set! a0 (new-tmp))
+          (fprintf g-body-stream "  %s = insertvalue { %s, %s } undef, %s %s, 0\n"
+            a0 (info reg0) (info reg1) (info reg0) r0)
+          (set! a1 (new-tmp))
+          (fprintf g-body-stream "  %s = insertvalue { %s, %s } %s, %s %s, 1\n"
+            a1 (info reg0) (info reg1) a0 (info reg1) r1)
+          (fprintf g-body-stream "  ret { %s, %s } %s\n" (info reg0) (info reg1) a1))))))
+
+; Build the LLVM call-argument fragment for one already-emitted argument Val,
+; emitting any materialization/coercion instructions as a side effect. Scalars
+; and pointers return "<ty> <val>" unchanged; a struct is materialized to memory
+; and lowered to byval / register load(s) per its AbiInfo.
+(defn abi-arg-frag:ptr (av:ptr)
+  (let (a:ptr:Val (cast ptr:Val av)
+        info:ptr:AbiInfo (cast ptr:AbiInfo (abi-classify ((cast ptr:Val av) type)))
+        k:i32 ((cast ptr:AbiInfo (abi-classify ((cast ptr:Val av) type))) kind))
+    (when (= k ABI-DIRECT)
+      (return (fmt-2s "%s %s" (type-to-ir (a type)) (a val))))
+    (let (ty:ptr (type-to-ir (a type))
+          addr:ptr (new-tmp))
+      (fprintf g-entry-stream "  %s = alloca %s\n" addr ty)
+      (fprintf g-body-stream "  store %s %s, ptr %s\n" ty (a val) addr)
+      (when (= k ABI-MEMORY)
+        (return (fmt-2s "%s %s" (fmt-sd "ptr byval(%s) align %d" ty (info align)) addr)))
+      (when (= k ABI-COERCE1)
+        (let (r:ptr (new-tmp))
+          (fprintf g-body-stream "  %s = load %s, ptr %s\n" r (info reg0) addr)
+          (return (fmt-2s "%s %s" (info reg0) r))))
+      ; COERCE2
+      (let (r0:ptr (new-tmp)
+            gp:ptr null
+            r1:ptr null)
+        (fprintf g-body-stream "  %s = load %s, ptr %s\n" r0 (info reg0) addr)
+        (set! gp (new-tmp))
+        (fprintf g-body-stream "  %s = getelementptr i8, ptr %s, i64 8\n" gp addr)
+        (set! r1 (new-tmp))
+        (fprintf g-body-stream "  %s = load %s, ptr %s\n" r1 (info reg1) gp)
+        (return (fmt-2s "%s, %s"
+                  (fmt-2s "%s %s" (info reg0) r0)
+                  (fmt-2s "%s %s" (info reg1) r1)))))))
+
+; Emit a direct call whose return is a struct lowered per `info`, reconstruct
+; the first-class struct value, and return its Val. `arglist` is the already
+; built scalar/coerced argument string; `nargs` is the count it holds (so a
+; MEMORY sret prefix knows whether it needs a separating comma).
+(defn abi-emit-struct-call:ptr (info:ptr ret:ptr ir-name:ptr arglist:ptr nargs:i32)
+  (let (ii:ptr:AbiInfo (cast ptr:AbiInfo info)
+        k:i32 ((cast ptr:AbiInfo info) kind)
+        ty:ptr (type-to-ir ret))
+    (when (= k ABI-MEMORY)
+      (let (slot:ptr (new-tmp)
+            sep:ptr "")
+        (fprintf g-entry-stream "  %s = alloca %s\n" slot ty)
+        (when (> nargs 0) (set! sep ", "))
+        (fprintf g-body-stream "  call void %s(ptr sret(%s) align %d %s%s%s)\n"
+          ir-name ty (ii align) slot sep arglist)
+        (let (v:ptr (new-tmp))
+          (fprintf g-body-stream "  %s = load %s, ptr %s\n" v ty slot)
+          (return (alloc-val ret v)))))
+    (when (= k ABI-COERCE1)
+      (let (tmp:ptr (new-tmp))
+        (fprintf g-body-stream "  %s = call %s %s(%s)\n" tmp (ii reg0) ir-name arglist)
+        (let (slot:ptr (new-tmp))
+          (fprintf g-entry-stream "  %s = alloca %s\n" slot ty)
+          (fprintf g-body-stream "  store %s %s, ptr %s\n" (ii reg0) tmp slot)
+          (let (v:ptr (new-tmp))
+            (fprintf g-body-stream "  %s = load %s, ptr %s\n" v ty slot)
+            (return (alloc-val ret v))))))
+    ; COERCE2: call returns {reg0,reg1}; split it back into the struct slot.
+    (let (rty:ptr (fmt-2s "{ %s, %s }" (ii reg0) (ii reg1))
+          tmp:ptr (new-tmp))
+      (fprintf g-body-stream "  %s = call %s %s(%s)\n" tmp rty ir-name arglist)
+      (let (slot:ptr (new-tmp)
+            e0:ptr null
+            gp:ptr null
+            e1:ptr null
+            v:ptr null)
+        (fprintf g-entry-stream "  %s = alloca %s\n" slot ty)
+        (set! e0 (new-tmp))
+        (fprintf g-body-stream "  %s = extractvalue %s %s, 0\n" e0 rty tmp)
+        (fprintf g-body-stream "  store %s %s, ptr %s\n" (ii reg0) e0 slot)
+        (set! gp (new-tmp))
+        (fprintf g-body-stream "  %s = getelementptr i8, ptr %s, i64 8\n" gp slot)
+        (set! e1 (new-tmp))
+        (fprintf g-body-stream "  %s = extractvalue %s %s, 1\n" e1 rty tmp)
+        (fprintf g-body-stream "  store %s %s, ptr %s\n" (ii reg1) e1 gp)
+        (set! v (new-tmp))
+        (fprintf g-body-stream "  %s = load %s, ptr %s\n" v ty slot)
+        (return (alloc-val ret v))))))
+
 ; Try to coerce a value to a target type. Returns a Val* or null on failure.
 ; Handles: same kind (identity), int-to-int (trunc/sext/zext), same-width sign change.
 (defn coerce-int-val:ptr (v:ptr target:ptr line:i32)
@@ -695,6 +1124,76 @@
     (.set! sd emitted 0)
     (inc! g-structs-len)
     (return (cast ptr sd))))
+
+; ============================================================
+; Stage 8: anonymous structs — (struct field:type ...) types, memoized by
+; content hash so two textually-identical shapes share one StructDef.
+; ============================================================
+
+(defn fnv-byte:i64 (h:i64 b:i64)
+  (set! h (bit-xor h b))
+  (set! h (* h (cast i64 1099511628211)))
+  (return h))
+
+(defn fnv-str:i64 (h:i64 s:ptr)
+  (let (i:i64 0
+        c:i32 (bit-and (cast i32 (aref (cast ptr:i8 s) 0)) 255))
+    (while (!= c 0)
+      (set! h (fnv-byte h (cast i64 c)))
+      (set! i (+ i (cast i64 1)))
+      (set! c (bit-and (cast i32 (aref (cast ptr:i8 s) i)) 255)))
+    (return h)))
+
+(defn hash-type:i64 (h:i64 t:ptr)
+  (when (= t null) (return (fnv-byte h (cast i64 255))))
+  (let (tt:ptr:Type (cast ptr:Type t)
+        k:i32 (tt kind))
+    (set! h (fnv-byte h (cast i64 k)))
+    (set! h (fnv-byte h (cast i64 (tt is-volatile))))
+    (when (= k TY-PTR)
+      (set! h (hash-type h (tt elem))))
+    (when (= k TY-STRUCT)
+      (set! h (fnv-str h ((cast ptr:StructDef (tt sdef)) name))))
+    (when (= k TY-FN)
+      (set! h (hash-type h (tt ret)))
+      (set! h (fnv-byte h (cast i64 (tt num-params))))
+      (let (i:i32 0)
+        (while (< i (tt num-params))
+          (set! h (hash-type h (aref (cast ptr:ptr (tt params)) i)))
+          (inc! i))))
+    (return h)))
+
+(defn hash-struct-shape:i64 (field-names:ptr field-types:ptr nfields:i32)
+  (let (h:i64 -3750763034362895579
+        i:i32 0)
+    (while (< i nfields)
+      (set! h (fnv-str h (aref (cast ptr:ptr field-names) i)))
+      (set! h (fnv-byte h (cast i64 0)))
+      (set! h (hash-type h (aref (cast ptr:ptr field-types) i)))
+      (inc! i))
+    (return h)))
+
+(defn lookup-or-make-anon-struct:ptr (field-names:ptr field-types:ptr nfields:i32)
+  (let (hash:i64 (hash-struct-shape field-names field-types nfields)
+        synth:ptr (fmt-i64 "__anon_struct_h%016lx" hash)
+        sd:ptr (lookup-struct synth))
+    (when (= sd null)
+      (set! sd (register-struct synth))
+      (let (sd2:ptr:StructDef (cast ptr:StructDef sd))
+        (.set! sd2 field-names field-names)
+        (.set! sd2 field-types field-types)
+        (.set! sd2 num-fields nfields)
+        (.set! sd2 emitted 1)
+        (.set! sd2 src-file g-source-path)
+        (.set! sd2 src-line 0))
+      (fprintf g-type-stream "%%%s = type { " synth)
+      (let (i:i32 0)
+        (while (< i nfields)
+          (when (!= i 0) (fprintf g-type-stream ", "))
+          (fprintf g-type-stream "%s" (type-to-ir (aref (cast ptr:ptr field-types) i)))
+          (inc! i)))
+      (fprintf g-type-stream " }\n\n"))
+    (return sd)))
 
 (defn lookup-struct:ptr (name:ptr)
   (let (i:i32 0)
@@ -743,6 +1242,62 @@
         (return (parse-type-from-node (split-colon-segments (n s) line) line)))
       (return (parse-type-name (n s) line)))
     (when (= (n kind) NODE-CELL)
+      ; Postfix volatile: (T volatile) or (T1 T2 ... volatile). Strip the trailing
+      ; 'volatile and recurse on the head, then mark volatile. Placed before ptr/fn
+      ; so (ptr i32 volatile) ≡ volatile (ptr i32).
+      (let (nlen:i32 (node-len n))
+        (when (>= nlen 2)
+          (let (last:ptr:Node (cast ptr:Node (node-at n (- nlen 1))))
+            (when (and (!= (cast ptr last) null)
+                       (and (= (last kind) NODE-SYM)
+                            (= (strcmp (last s) "volatile") 0)))
+              (let (head-len:i32 (- nlen 1)
+                    inner:ptr null)
+                (if (= head-len 1)
+                  (set! inner (n car))
+                  (let (cur:ptr (cast ptr n)
+                        new-head:ptr null
+                        new-tail:ptr null
+                        i:i32 0)
+                    (while (< i head-len)
+                      (let (cell:ptr (make-cell ((cast ptr:Node cur) car) null line))
+                        (when (= new-head null) (set! new-head cell))
+                        (when (!= new-tail null) (.set! (cast ptr:Node new-tail) cdr cell))
+                        (set! new-tail cell))
+                      (set! cur ((cast ptr:Node cur) cdr))
+                      (inc! i))
+                    (set! inner new-head)))
+                (return (type-with-volatile (parse-type-from-node inner line))))))))
+      ; Anonymous struct: (struct field:type ...) — memoized by content hash so
+      ; two textually-identical shapes share one synthesized StructDef.
+      (let (head:ptr (n car))
+        (when (= head 'struct)
+          (let (rest:ptr (n cdr)
+                nfields:i32 0
+                cur:ptr null)
+            (set! cur rest)
+            (while (!= cur null)
+              (inc! nfields)
+              (set! cur ((cast ptr:Node cur) cdr)))
+            (let (fnames:ptr (arena-alloc (* (cast i64 nfields) (cast i64 8)))
+                  ftypes:ptr (arena-alloc (* (cast i64 nfields) (cast i64 8)))
+                  i:i32 0)
+              (set! cur rest)
+              (while (!= cur null)
+                (let (field:ptr ((cast ptr:Node cur) car)
+                      fname:ptr null
+                      fty:ptr (extract-name-and-type field (cast ptr:ptr (addr-of fname)) line))
+                  (when (= fty null)
+                    (die-at line (fmt-s "struct: field '%s' missing :type" fname)))
+                  ; Intern so field-name pointer-equality works at access sites.
+                  (aset! (cast ptr:ptr fnames) i (intern-str fname))
+                  (aset! (cast ptr:ptr ftypes) i fty))
+                (inc! i)
+                (set! cur ((cast ptr:Node cur) cdr)))
+              (let (sd:ptr (lookup-or-make-anon-struct fnames ftypes nfields)
+                    t:ptr:Type (cast ptr:Type (make-type TY-STRUCT)))
+                (.set! t sdef sd)
+                (return (cast ptr t)))))))
       ; Check for pointer constructor: (ptr T) or (ptr ptr T) ...
       (let (head:ptr (n car))
         (when (= head 'ptr)
@@ -997,6 +1552,10 @@
   (set! g-tmp 0)
   (set! g-label 0)
   (set! g-block-term 0)
+  (set! g-lbl-tbl (make-vec))
+  (set! g-cur-fname null)
+  (set! g-fn-ret-abi null)
+  (set! g-fn-sret-name null)
   (set! g-entry-stream (open_memstream (addr-of g-entry-bufp)
                                        (cast ptr (addr-of g-entry-sizep))))
   (set! g-body-stream (open_memstream (addr-of g-body-bufp)
@@ -1246,7 +1805,13 @@
         (when (= hp 'quote) (return ty-ptr))
         (when (= hp 'quasiquote) (return null))
         (when (= hp 'while) (return ty-void))
-        (when (= hp 'set!) (return ty-void))
+        (when (= hp 'set!)
+          (let (tgt:ptr:Node (cast ptr:Node (node-at n 1))
+                nm:ptr null  ti:ptr null)
+            (split-typed (tgt s) (cast ptr:ptr (addr-of nm)) (cast ptr:ptr (addr-of ti)))
+            (let (sym:ptr:Sym (cast ptr:Sym (scope-lookup scope nm)))
+              (when (= (cast ptr sym) null) (return ty-void))
+              (return (sym type)))))
         (when (= hp 'inc!) (return ty-void))
         (when (= hp 'not) (return ty-i1))
         (when (= hp 'and) (return ty-i1))
@@ -1497,8 +2062,7 @@
            (return (alloc-val (sym type) (sym ir-name))))
          (die-at (nn line) (fmt-s "cannot use '%s' as value" (nn s))))
         (let (tmp:ptr (new-tmp))
-          (fprintf g-body-stream "  %s = load %s, ptr %s, align %d\n"
-            tmp (type-to-ir (sym type)) (sym ir-name) (type-size (sym type)))
+          (emit-load tmp (type-to-ir (sym type)) (sym ir-name) (sym type))
           (return (alloc-val (sym type) tmp)))))))
 
 ; ============================================================
@@ -1575,6 +2139,103 @@
           tmp instr (type-to-ir src) (vv val) (type-to-ir target))
         (return (alloc-val target tmp))))
     (return null)))
+
+; ============================================================
+; Stage 8: defcast registry + implicit safe coercion at call sites
+; ============================================================
+
+(defn register-cast-rule:void (from:ptr to:ptr ir-name:ptr)
+  (when (>= g-cast-rules-len MAX-CAST-RULES)
+    (fprintf stderr "nucleusc: too many defcast rules\n") (exit 1))
+  (let (cr:ptr:CastRule (cast ptr:CastRule
+                          (ptr+ (cast ptr:CastRule g-cast-rules) g-cast-rules-len)))
+    (.set! cr from from)
+    (.set! cr to to)
+    (.set! cr ir-name ir-name)
+    (inc! g-cast-rules-len)))
+
+(defn lookup-cast-rule:ptr (from:ptr to:ptr)
+  (let (i:i32 0)
+    (while (< i g-cast-rules-len)
+      (let (cr:ptr:CastRule (cast ptr:CastRule
+                              (ptr+ (cast ptr:CastRule g-cast-rules) i)))
+        (when (and (!= (type-eq (cr from) from) 0)
+                   (!= (type-eq (cr to) to) 0))
+          (return (cast ptr cr))))
+      (inc! i)))
+  (return null))
+
+; Coerce a Val to a target type at a call site (or any implicit context):
+; same-kind identity, int↔int via coerce-int-val, f32→f64 fpext, and any
+; user-registered defcast rule. Returns null when no safe conversion applies.
+(defn safe-coerce-val:ptr (v:ptr target:ptr line:i32)
+  (let (vv:ptr:Val (cast ptr:Val v)
+        src:ptr (vv type)
+        sk:i32 ((cast ptr:Type src) kind)
+        dk:i32 ((cast ptr:Type target) kind))
+    (when (= sk dk) (return v))
+    (when (and (!= (is-int-type src) 0) (!= (is-int-type target) 0))
+      (return (coerce-int-val v target line)))
+    (when (and (= sk TY-F32) (= dk TY-F64))
+      (let (tmp:ptr (new-tmp))
+        (fprintf g-body-stream "  %s = fpext float %s to double\n" tmp (vv val))
+        (return (alloc-val target tmp))))
+    (let (rule:ptr (lookup-cast-rule src target))
+      (when (!= rule null)
+        (let (cr:ptr:CastRule (cast ptr:CastRule rule)
+              tmp:ptr (new-tmp))
+          (fprintf g-body-stream "  %s = call %s %s(%s %s)\n"
+            tmp (type-to-ir target) (cr ir-name) (type-to-ir src) (vv val))
+          (return (alloc-val target tmp)))))
+    (return null)))
+
+(defn emit-defcast:void (call:ptr)
+  (let (cc:ptr:Node (cast ptr:Node call))
+    (when (!= (node-len cc) 4)
+      (die-at (cc line) "defcast: expects (defcast From To conv-fn)"))
+    (let (from-node:ptr (node-at cc 1)
+          to-node:ptr   (node-at cc 2)
+          fn-node:ptr:Node (cast ptr:Node (node-at cc 3))
+          from:ptr (parse-type-from-node from-node (cc line))
+          to:ptr   (parse-type-from-node to-node   (cc line)))
+      (when (!= (fn-node kind) NODE-SYM)
+        (die-at (fn-node line) "defcast: conv-fn must be a symbol"))
+      ; Reject pairs already covered by built-in safe-coerce rules.
+      (let (fk:i32 ((cast ptr:Type from) kind)
+            tk:i32 ((cast ptr:Type to) kind))
+        (when (= fk tk)
+          (die-at (cc line) "defcast: identity cast is implicit; rule rejected"))
+        (when (and (!= (is-int-type from) 0) (!= (is-int-type to) 0))
+          (die-at (cc line)
+            "defcast: integer↔integer pairs are handled by built-in coercion; rule rejected"))
+        (when (and (= fk TY-F32) (= tk TY-F64))
+          (die-at (cc line)
+            "defcast: f32→f64 is handled by built-in coercion; rule rejected")))
+      (when (!= (lookup-cast-rule from to) null)
+        (die-at (cc line) "defcast: a rule for this pair is already registered"))
+      (let (sym:ptr (scope-lookup g-globals (fn-node s)))
+        (when (= sym null)
+          (die-at (fn-node line) (fmt-s "defcast: unknown function '%s'" (fn-node s))))
+        (let (ss:ptr:Sym (cast ptr:Sym sym)
+              ft:ptr:Type (cast ptr:Type (ss type)))
+          (when (!= (ft kind) TY-FN)
+            (die-at (fn-node line) (fmt-s "defcast: '%s' is not a function" (fn-node s))))
+          (when (!= (ft num-params) 1)
+            (die-at (fn-node line) (fmt-s "defcast: '%s' must take exactly one argument" (fn-node s))))
+          (when (!= (ft variadic) 0)
+            (die-at (fn-node line) (fmt-s "defcast: '%s' must not be variadic" (fn-node s))))
+          (when (!= (ft has-rest) 0)
+            (die-at (fn-node line) (fmt-s "defcast: '%s' must not use &rest" (fn-node s))))
+          (let (param0:ptr (aref (cast ptr:ptr (ft params)) 0))
+            (when (= (type-eq param0 from) 0)
+              (die-at (fn-node line)
+                (fmt-2s "defcast: '%s' parameter type does not match From; expected %s"
+                  (fn-node s) (type-to-ir from)))))
+          (when (= (type-eq (ft ret) to) 0)
+            (die-at (fn-node line)
+              (fmt-2s "defcast: '%s' return type does not match To; expected %s"
+                (fn-node s) (type-to-ir to))))
+          (register-cast-rule from to (ss ir-name)))))))
 
 ; The widen / untyped-int-literal resolution tier for a binary operator
 ; (Stage 9 §10.3). Untyped int literals (a-node/b-node denoting an int literal)
@@ -1918,13 +2579,15 @@
 ; &rest marker is present (the marker itself is not a parameter).
 (defn defn-params-count:i32 (params-node:ptr)
   (let (raw:i32 (node-len params-node)
+        n:i32 (node-len params-node)
         i:i32 0)
     (while (< i raw)
       (let (sp:ptr:Node (cast ptr:Node (node-at params-node i)))
-        (when (and (= (sp kind) NODE-SYM) (= (sp s) "&rest"))
-          (return (- raw 1))))
+        (when (= (sp kind) NODE-SYM)
+          (when (= (sp s) "&rest") (set! n (- n 1)))
+          (when (= (sp s) "&optional") (set! n (- n 1)))))
       (inc! i))
-    (return raw)))
+    (return n)))
 
 ; The fixed parameter types of a defn param list as a ptr-array (&rest-aware:
 ; the &rest marker is skipped and the rest parameter is typed ptr). Shared by
@@ -1932,32 +2595,41 @@
 (defn defn-params-to-types:ptr (params-node:ptr)
   (let (raw:i32 (node-len params-node)
         has-rest:i32 0
-        rest-idx:i32 -1)
+        rest-idx:i32 -1
+        opt-idx:i32 -1)
     (let (si:i32 0)
       (while (< si raw)
         (let (sp:ptr:Node (cast ptr:Node (node-at params-node si)))
-          (when (and (= (sp kind) NODE-SYM) (= (sp s) "&rest"))
-            (set! has-rest 1)
-            (set! rest-idx si)))
+          (when (= (sp kind) NODE-SYM)
+            (when (= (sp s) "&rest") (set! has-rest 1) (set! rest-idx si))
+            (when (= (sp s) "&optional") (set! opt-idx si))))
         (inc! si)))
     (let (nparams:i32 raw)
-      (when (!= has-rest 0) (set! nparams (- raw 1)))
+      (when (!= has-rest 0) (set! nparams (- nparams 1)))
+      (when (!= opt-idx -1) (set! nparams (- nparams 1)))
       (let (ptypes:ptr null)
         (when (> nparams 0)
           (set! ptypes (arena-alloc (* (cast i64 nparams) (ptr-bytes)))))
         (let (i:i32 0
               di:i32 0)
           (while (< i raw)
-            (when (or (= has-rest 0) (!= i rest-idx))
-              (let (p:ptr (node-at params-node i)
-                    pn:ptr null
-                    pty:ptr (extract-name-and-type p (cast ptr:ptr (addr-of pn))
-                                                    ((cast ptr:Node p) line)))
-                (when (= pty null) (set! pty ty-i32))
-                (when (and (!= has-rest 0) (= di (- nparams 1)))
-                  (set! pty ty-ptr))
-                (aset! (cast ptr:ptr ptypes) di pty)
-                (inc! di)))
+            (let (skip:i32 0)
+              (when (and (!= has-rest 0) (= i rest-idx)) (set! skip 1))
+              (when (= i opt-idx) (set! skip 1))
+              (when (= skip 0)
+                (let (p:ptr (node-at params-node i)
+                      pn:ptr null
+                      spec:ptr (node-at params-node i))
+                  ; Optional params are (name:type default) lists — type is on the head.
+                  (when (and (!= opt-idx -1) (> i opt-idx))
+                    (set! spec (node-at p 0)))
+                  (let (pty:ptr (extract-name-and-type spec (cast ptr:ptr (addr-of pn))
+                                                       ((cast ptr:Node spec) line)))
+                    (when (= pty null) (set! pty ty-i32))
+                    (when (and (!= has-rest 0) (= di (- nparams 1)))
+                      (set! pty ty-ptr))
+                    (aset! (cast ptr:ptr ptypes) di pty)
+                    (inc! di)))))
             (inc! i)))
         (return ptypes)))))
 
@@ -3501,8 +4173,7 @@
       "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
       gep (sdd name) (pv val) idx)
     (let (val:ptr (new-tmp))
-      (fprintf g-body-stream "  %s = load %s, ptr %s, align %d\n"
-        val (type-to-ir ftype) gep (type-size ftype))
+      (emit-load val (type-to-ir ftype) gep ftype)
       (return (alloc-val ftype val)))))
 
 (defn emit-field-get:ptr (call:ptr scope:ptr)
@@ -3551,8 +4222,7 @@
               (fprintf g-body-stream
                 "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
                 gep (sd name) (p val) idx)
-              (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
-                (type-to-ir ftype) (cv val) gep (type-size ftype))
+              (emit-store (type-to-ir ftype) (cv val) gep ftype)
               (return (alloc-val ty-void null)))))))))
 
 ; ============================================================
@@ -3966,8 +4636,7 @@
         (die-at (cc line) "deref: operand must be typed pointer"))
       (let (elem:ptr (-> p (_ type) (cast ptr:Type _) (_ elem))
             tmp:ptr (new-tmp))
-        (fprintf g-body-stream "  %s = load %s, ptr %s, align %d\n"
-          tmp (type-to-ir elem) (p val) (type-size elem))
+        (emit-load tmp (type-to-ir elem) (p val) elem)
         (return (alloc-val elem tmp))))))
 
 (defn emit-ptr-set:ptr (call:ptr scope:ptr)
@@ -3983,8 +4652,7 @@
         (when (= coerced null)
           (die-at (cc line) "ptr-set!: value type mismatch"))
         (let (cv:ptr:Val (cast ptr:Val coerced))
-          (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
-            (type-to-ir elem) (cv val) (p val) (type-size elem))
+          (emit-store (type-to-ir elem) (cv val) (p val) elem)
           (return (alloc-val ty-void null)))))))
 
 (defn emit-ptr-add:ptr (call:ptr scope:ptr)
@@ -4063,14 +4731,34 @@
 
 (defn emit-call:ptr (call:ptr scope:ptr sym:ptr)
   (let (cc:ptr:Node (cast ptr:Node call)
+        ss:ptr:Sym (cast ptr:Sym sym)
+        ft0:ptr:Type (cast ptr:Type (ss type))
         nargs:i32 (- (node-len cc) 1)
-        args:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (sizeof Val)))
-        i:i32 0)
-    (while (< i nargs)
-      (let (v:ptr (emit-node (node-at cc (+ i 1)) scope))
-        (memcpy (ptr+ (cast ptr:Val args) i) v (sizeof Val)))
-      (inc! i))
-    (return (emit-call-with-args call scope sym args nargs))))
+        max-args:i32 (- (node-len cc) 1))
+    ; &optional callee: the arg buffer may need to grow up to num-params.
+    (when (and (!= (cast ptr ft0) null) (= (ft0 kind) TY-FN))
+      (when (> (ft0 num-params) max-args) (set! max-args (ft0 num-params))))
+    (let (args:ptr (arena-alloc (* (cast i64 (+ max-args 1)) (sizeof Val)))
+          i:i32 0)
+      (while (< i nargs)
+        (let (v:ptr (emit-node (node-at cc (+ i 1)) scope))
+          (memcpy (ptr+ (cast ptr:Val args) i) v (sizeof Val)))
+        (inc! i))
+      ; Fill defaults for missing trailing &optional args, emitting each default
+      ; expression in the caller's scope.
+      (when (and (= (ft0 kind) TY-FN) (!= (ft0 nopt) 0))
+        (let (np:i32 (ft0 num-params)
+              required:i32 (- (ft0 num-params) (ft0 nopt)))
+          (when (< nargs required) (die-at (cc line) (fmt-s "%s: too few args" (ss name))))
+          (when (> nargs np) (die-at (cc line) (fmt-s "%s: too many args" (ss name))))
+          (let (oi:i32 nargs)
+            (while (< oi np)
+              (let (default-node:ptr (aref (cast ptr:ptr (ft0 opt-defaults)) (- oi required))
+                    v:ptr (emit-node default-node scope))
+                (memcpy (ptr+ (cast ptr:Val args) oi) v (sizeof Val)))
+              (inc! oi))
+            (set! nargs np))))
+      (return (emit-call-with-args call scope sym args nargs)))))
 
 ; Emit a call given already-emitted argument Vals. Shared by the ordinary call
 ; path and the multimethod dispatch path (which must resolve the method from
@@ -4115,6 +4803,22 @@
               (.set! slot type ty-ptr)
               (.set! slot val prev-name))
             (set! eff-nargs (+ fixed 1)))))
+      ; Stage 8 implicit casts: coerce each fixed argument whose IR type differs
+      ; from its parameter's via safe-coerce-val (int widen, f32→f64, defcast).
+      ; When the IR types already match, or no safe conversion exists, the
+      ; argument is left untouched — preserving the prior pass-through behavior.
+      (let (ncoerce:i32 (ft0 num-params))
+        (when (!= (ft0 has-rest) 0) (set! ncoerce (- (ft0 num-params) 1)))
+        (when (> ncoerce eff-nargs) (set! ncoerce eff-nargs))
+        (let (ci:i32 0)
+          (while (< ci ncoerce)
+            (let (slot:ptr:Val (cast ptr:Val (ptr+ (cast ptr:Val args) ci))
+                  ptype:ptr (aref (cast ptr:ptr (ft0 params)) ci))
+              (when (!= (strcmp (type-to-ir (slot type)) (type-to-ir ptype)) 0)
+                (let (nc:ptr (safe-coerce-val (cast ptr slot) ptype (cc line)))
+                  (when (and (!= nc null) (!= nc (cast ptr slot)))
+                    (memcpy slot nc (sizeof Val))))))
+            (inc! ci))))
       (let (arglist:ptr (alloca i8 2048)
             apos:i64 (cast i64 0))
         (aset! (cast ptr:i8 arglist) (cast i64 0) (cast i8 0))
@@ -4123,10 +4827,13 @@
         (let (av:ptr:Val (cast ptr:Val (ptr+ (cast ptr:Val args) i))
               sep:ptr "")
           (when (!= i 0) (set! sep ", "))
+          ; abi-arg-frag returns "<ty> <val>" for scalars/pointers (unchanged),
+          ; or the byval / register-coerced fragment for a struct-by-value arg
+          ; (emitting the materialization instructions as a side effect).
           (let (w:i32 (snprintf (ptr+ (cast ptr:i8 arglist) apos)
                                 (- (cast i64 2048) apos)
-                                "%s%s %s" sep
-                                (type-to-ir (av type)) (av val)))
+                                "%s%s" sep
+                                (abi-arg-frag (cast ptr av))))
             (set! apos (+ apos (cast i64 w)))))
         (inc! i))
       (let (ft:ptr:Type (cast ptr:Type (ss type)))
@@ -4159,13 +4866,18 @@
                     tmp sig (ss ir-name) arglist)
                   (return (alloc-val (ft ret) tmp))))))
           (do
-            (if (-> ft (_ ret) (cast ptr:Type _) (_ kind) (= _ TY-VOID))
-              (fprintf g-body-stream "  call %s %s(%s)\n"
-                (type-to-ir (ft ret)) (ss ir-name) arglist)
-              (let (tmp:ptr (new-tmp))
-                (fprintf g-body-stream "  %s = call %s %s(%s)\n"
-                  tmp (type-to-ir (ft ret)) (ss ir-name) arglist)
-                (return (alloc-val (ft ret) tmp))))))
+            (let (ret-info:ptr:AbiInfo (cast ptr:AbiInfo (abi-classify (ft ret))))
+              (if (!= ((cast ptr:AbiInfo ret-info) kind) ABI-DIRECT)
+                ; Struct return: emit the lowered call + reconstruction.
+                (return (abi-emit-struct-call ret-info (ft ret) (ss ir-name)
+                                              (cast ptr arglist) eff-nargs))
+                (if (-> ft (_ ret) (cast ptr:Type _) (_ kind) (= _ TY-VOID))
+                  (fprintf g-body-stream "  call %s %s(%s)\n"
+                    (type-to-ir (ft ret)) (ss ir-name) arglist)
+                  (let (tmp:ptr (new-tmp))
+                    (fprintf g-body-stream "  %s = call %s %s(%s)\n"
+                      tmp (type-to-ir (ft ret)) (ss ir-name) arglist)
+                    (return (alloc-val (ft ret) tmp))))))))
         (return (alloc-val ty-void null)))))))
 
 ; ============================================================
@@ -4228,7 +4940,10 @@
       (die-at (cc line) "return expects 0 or 1 args"))
     (let (v:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope)))
       (emit-walk-cleanups scope)
-      (fprintf g-body-stream "  ret %s %s\n" (type-to-ir (v type)) (v val))
+      (if (and (!= g-fn-ret-abi null)
+               (!= ((cast ptr:AbiInfo g-fn-ret-abi) kind) ABI-DIRECT))
+        (emit-struct-ret (cast ptr v))
+        (fprintf g-body-stream "  ret %s %s\n" (type-to-ir (v type)) (v val)))
       (set! g-block-term 1)
       (return (alloc-val ty-void null)))))
 
@@ -4475,37 +5190,443 @@
             (when (= coerced null)
               (die-at (cc line) (fmt-s "set!: type mismatch for '%s'" (target s))))
             (let (cv:ptr:Val (cast ptr:Val coerced))
-              (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
-                (type-to-ir (sym type)) (cv val) (sym ir-name) (type-size (sym type)))
+              (emit-store (type-to-ir (sym type)) (cv val) (sym ir-name) (sym type))
+              ; set! yields the assigned value (so the REPL echoes it).
+              (return (alloc-val (sym type) (cv val))))))))))
+
+; ============================================================
+; Stage 8: scalar load/store helpers (volatile-aware)
+; ============================================================
+
+; Emit a scalar load into dst-tmp. When `ty` is volatile, emits `load volatile`.
+(defn emit-load:void (dst-tmp:ptr ir-type:ptr ptr-name:ptr ty:ptr)
+  (let (vol:ptr ""
+        align:i32 (type-size ty))
+    (when (and (!= ty null) (!= ((cast ptr:Type ty) is-volatile) 0))
+      (set! vol "volatile "))
+    (fprintf g-body-stream "  %s = load %s%s, ptr %s, align %d\n"
+      dst-tmp vol ir-type ptr-name align)))
+
+; Emit a scalar store of `val`. When `ty` is volatile, emits `store volatile`.
+(defn emit-store:void (ir-type:ptr val:ptr ptr-name:ptr ty:ptr)
+  (let (vol:ptr ""
+        align:i32 (type-size ty))
+    (when (and (!= ty null) (!= ((cast ptr:Type ty) is-volatile) 0))
+      (set! vol "volatile "))
+    (fprintf g-body-stream "  store %s%s %s, ptr %s, align %d\n"
+      vol ir-type val ptr-name align)))
+
+; Store a zero/null of `field-type` into the slot at `gep` (struct/array fill).
+(defn emit-zero-store:void (field-type:ptr gep:ptr)
+  (let (ft:ptr:Type (cast ptr:Type field-type)
+        ir:ptr (type-to-ir field-type)
+        zero:ptr "0")
+    (when (= (ft kind) TY-PTR) (set! zero "null"))
+    (when (= (ft kind) TY-F32) (set! zero "0.000000e+00"))
+    (when (= (ft kind) TY-F64) (set! zero "0.000000e+00"))
+    (fprintf g-body-stream "  store %s %s, ptr %s\n" ir zero gep)))
+
+; Return a copy of `t` with is-volatile=1. Primitive type singletons are shared,
+; so we clone rather than mutate. If `t` is already volatile, returns it as-is.
+(defn type-with-volatile:ptr (t:ptr)
+  (let (src:ptr:Type (cast ptr:Type t))
+    (when (!= (src is-volatile) 0) (return t))
+    (let (dst:ptr:Type (cast ptr:Type (alloc-type)))
+      (.set! dst kind        (src kind))
+      (.set! dst ret         (src ret))
+      (.set! dst params      (src params))
+      (.set! dst num-params  (src num-params))
+      (.set! dst variadic    (src variadic))
+      (.set! dst has-rest    (src has-rest))
+      (.set! dst nopt        (src nopt))
+      (.set! dst opt-defaults (src opt-defaults))
+      (.set! dst elem        (src elem))
+      (.set! dst sdef        (src sdef))
+      (.set! dst param-names (src param-names))
+      (.set! dst is-volatile 1)
+      (return (cast ptr dst)))))
+
+; ============================================================
+; Stage 8: inc! / dec!
+; ============================================================
+
+(defn emit-inc-dec:ptr (call:ptr scope:ptr op-instr:ptr op-name:ptr)
+  (let (cc:ptr:Node (cast ptr:Node call))
+    (when (!= (node-len cc) 2) (die-at (cc line) (fmt-s "%s expects 1 arg" op-name)))
+    (let (target:ptr:Node (cast ptr:Node (node-at cc 1)))
+      (when (!= (target kind) NODE-SYM)
+        (die-at (target line) (fmt-s "%s: target must be symbol" op-name)))
+      ; Strip any :type annotation so typed names from macro expansions resolve.
+      (let (nm:ptr null
+            type-ignored:ptr null)
+        (split-typed (target s)
+                     (cast ptr:ptr (addr-of nm))
+                     (cast ptr:ptr (addr-of type-ignored)))
+        (let (sym:ptr:Sym (cast ptr:Sym (scope-lookup scope nm)))
+          (when (or (= (cast ptr sym) null) (= (sym is-local) 0))
+            (die-at (target line) (fmt-s "%s: undefined local" op-name)))
+          (when (= (is-int-type (sym type)) 0)
+            (die-at (cc line) (fmt-s "%s: must be integer" op-name)))
+          (let (ir:ptr (type-to-ir (sym type))
+                t1:ptr (new-tmp))
+            (emit-load t1 ir (sym ir-name) (sym type))
+            (let (t2:ptr (new-tmp))
+              (fprintf g-body-stream "  %s = %s nsw %s %s, 1\n" t2 op-instr ir t1)
+              (emit-store ir t2 (sym ir-name) (sym type))
               (return (alloc-val ty-void null)))))))))
 
 (defn emit-inc:ptr (call:ptr scope:ptr)
+  (return (emit-inc-dec call scope "add" "inc!")))
+
+(defn emit-dec:ptr (call:ptr scope:ptr)
+  (return (emit-inc-dec call scope "sub" "dec!")))
+
+; ============================================================
+; Stage 8: labels and goto (incl. computed goto via blockaddress)
+; ============================================================
+
+(defn lbl-find:ptr (name:ptr)
+  (let (v:ptr:Vec (cast ptr:Vec g-lbl-tbl)
+        i:i32 0)
+    (while (< i (v len))
+      (let (e:ptr:LabelEntry (cast ptr:LabelEntry (aref (cast ptr:ptr (v data)) i)))
+        (when (= (strcmp (e name) name) 0)
+          (return (cast ptr e))))
+      (inc! i))
+    (return null)))
+
+(defn lbl-add-occurrence:void (name:ptr)
+  (let (e:ptr:LabelEntry (cast ptr:LabelEntry (lbl-find name)))
+    (when (= (cast ptr e) null)
+      (let (ne:ptr:LabelEntry (cast ptr:LabelEntry (arena-alloc (sizeof LabelEntry))))
+        (.set! ne name name)
+        (.set! ne total 0)
+        (.set! ne seen 0)
+        (vec-push g-lbl-tbl (cast ptr ne))
+        (set! e ne)))
+    (.set! e total (+ (e total) 1))))
+
+; Pre-scan a function body form for (label NAME) declarations so forward gotos
+; and last-decl-wins resolution work. Skips inside quote/quasiquote.
+(defn prescan-labels:void (form:ptr)
+  (when (= form null) (return))
+  (let (n:ptr:Node (cast ptr:Node form))
+    (when (!= (n kind) NODE-CELL) (return))
+    (when (= (node-len n) 0) (return))
+    (let (head:ptr:Node (cast ptr:Node (node-at n 0)))
+      (when (= (head kind) NODE-SYM)
+        (when (or (= (strcmp (head s) "quote") 0)
+                  (= (strcmp (head s) "quasiquote") 0))
+          (return))
+        (when (and (= (strcmp (head s) "label") 0)
+                   (= (node-len n) 2))
+          (let (nm:ptr:Node (cast ptr:Node (node-at n 1)))
+            (when (= (nm kind) NODE-SYM)
+              (lbl-add-occurrence (nm s)))))))
+    (let (it:ptr:Node n)
+      (while (and (!= (cast ptr it) null) (= (it kind) NODE-CELL))
+        (prescan-labels (it car))
+        (set! it (cast ptr:Node (it cdr)))))))
+
+(defn emit-label:ptr (call:ptr scope:ptr)
   (let (cc:ptr:Node (cast ptr:Node call))
-    (when (!= (node-len cc) 2) (die-at (cc line) "inc! expects 1 arg"))
-    (let (target:ptr:Node (cast ptr:Node (node-at cc 1)))
-      (when (!= (target kind) NODE-SYM)
-        (die-at (target line) "inc!: target must be symbol"))
-      ; Strip any :type annotation so typed names from macro expansions resolve.
-      (let (inc-name:ptr null
-            inc-type-ignored:ptr null)
-        (split-typed (target s)
-                     (cast ptr:ptr (addr-of inc-name))
-                     (cast ptr:ptr (addr-of inc-type-ignored)))
-        (let (sym:ptr:Sym (cast ptr:Sym (scope-lookup scope inc-name)))
-          (when (or (= (cast ptr sym) null) (= (sym is-local) 0))
-            (die-at (target line) (fmt-s "inc!: undefined local '%s'" (target s))))
-          (when (= (is-int-type (sym type)) 0)
-            (die-at (cc line) "inc!: must be integer"))
-          (let (ir:ptr (type-to-ir (sym type))
-                align:i32 (type-size (sym type))
-                t1:ptr (new-tmp))
-            (fprintf g-body-stream "  %s = load %s, ptr %s, align %d\n"
-              t1 ir (sym ir-name) align)
-            (let (t2:ptr (new-tmp))
-              (fprintf g-body-stream "  %s = add nsw %s %s, 1\n" t2 ir t1)
-              (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
-                ir t2 (sym ir-name) align)
-              (return (alloc-val ty-void null)))))))))
+    (when (!= (node-len cc) 2) (die-at (cc line) "label: expects 1 name"))
+    (let (nm:ptr:Node (cast ptr:Node (node-at cc 1)))
+      (when (!= (nm kind) NODE-SYM)
+        (die-at (nm line) "label: name must be symbol"))
+      (let (e:ptr:LabelEntry (cast ptr:LabelEntry (lbl-find (nm s))))
+        (when (= (cast ptr e) null)
+          ; Pre-scan missed this label (e.g. from a macro expansion). Treat as a
+          ; single decl; computed gotos may miss it in the indirectbr dest list.
+          (lbl-add-occurrence (nm s))
+          (set! e (cast ptr:LabelEntry (lbl-find (nm s)))))
+        (.set! e seen (+ (e seen) 1))
+        (let (bb-name:ptr null)
+          (if (= (e seen) (e total))
+            (set! bb-name (fmt-s "lbl.%s" (nm s)))
+            (set! bb-name (fmt-sd "lbl.%s.dead%d" (nm s) (e seen))))
+          (when (= g-block-term 0)
+            (fprintf g-body-stream "  br label %%%s\n" bb-name))
+          (fprintf g-body-stream "%s:\n" bb-name)
+          (set! g-block-term 0)
+          (return (alloc-val ty-void null)))))))
+
+(defn emit-goto:ptr (call:ptr scope:ptr)
+  (let (cc:ptr:Node (cast ptr:Node call))
+    (when (!= (node-len cc) 2) (die-at (cc line) "goto: expects 1 label name"))
+    (let (nm:ptr:Node (cast ptr:Node (node-at cc 1)))
+      (when (!= (nm kind) NODE-SYM)
+        (die-at (nm line) "goto: name must be symbol"))
+      (let (e:ptr:LabelEntry (cast ptr:LabelEntry (lbl-find (nm s))))
+        (when (= (cast ptr e) null)
+          (die-at (nm line) (fmt-s "goto: no such label '%s' in function" (nm s))))
+        (fprintf g-body-stream "  br label %%lbl.%s\n" (nm s))
+        ; Start a fresh dead BB so subsequent forms in a do/let body have a valid
+        ; insertion point. LLVM eliminates it (no predecessors).
+        (let (dead:ptr (fmt-i32 "goto.dead%d" (new-label-id)))
+          (fprintf g-body-stream "%s:\n" dead))
+        (set! g-block-term 0)
+        (return (alloc-val ty-void null))))))
+
+(defn emit-label-addr:ptr (call:ptr scope:ptr)
+  (let (cc:ptr:Node (cast ptr:Node call))
+    (when (!= (node-len cc) 2) (die-at (cc line) "label-addr: expects 1 label name"))
+    (let (nm:ptr:Node (cast ptr:Node (node-at cc 1)))
+      (when (!= (nm kind) NODE-SYM)
+        (die-at (nm line) "label-addr: name must be symbol"))
+      (let (e:ptr:LabelEntry (cast ptr:LabelEntry (lbl-find (nm s))))
+        (when (= (cast ptr e) null)
+          (die-at (nm line) (fmt-s "label-addr: no such label '%s' in function" (nm s)))))
+      (when (= g-cur-fname null)
+        (die-at (cc line) "label-addr: not inside a function"))
+      (let (tmp:ptr (new-tmp))
+        ; getelementptr offset 0 is a no-op binding the blockaddress to an SSA name.
+        (fprintf g-body-stream
+          "  %s = getelementptr i8, ptr blockaddress(@%s, %%lbl.%s), i64 0\n"
+          tmp g-cur-fname (nm s))
+        (return (alloc-val ty-ptr tmp))))))
+
+(defn emit-goto-ptr:ptr (call:ptr scope:ptr)
+  (let (cc:ptr:Node (cast ptr:Node call))
+    (when (!= (node-len cc) 2) (die-at (cc line) "goto-ptr: expects 1 ptr arg"))
+    (let (v:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope)))
+      (when (!= ((cast ptr:Type (v type)) kind) TY-PTR)
+        (die-at (cc line) "goto-ptr: arg must be ptr"))
+      (let (tbl:ptr:Vec (cast ptr:Vec g-lbl-tbl))
+        (when (= (tbl len) 0)
+          (die-at (cc line) "goto-ptr: no labels declared in function"))
+        (fprintf g-body-stream "  indirectbr ptr %s, [" (v val))
+        (let (i:i32 0
+              first:i32 1)
+          (while (< i (tbl len))
+            (let (e:ptr:LabelEntry (cast ptr:LabelEntry (aref (cast ptr:ptr (tbl data)) i)))
+              (when (= first 0) (fprintf g-body-stream ","))
+              (set! first 0)
+              (fprintf g-body-stream " label %%lbl.%s" (e name)))
+            (inc! i)))
+        (fprintf g-body-stream " ]\n"))
+      (let (dead:ptr (fmt-i32 "goto-ptr.dead%d" (new-label-id)))
+        (fprintf g-body-stream "%s:\n" dead))
+      (set! g-block-term 0)
+      (return (alloc-val ty-void null)))))
+
+; ============================================================
+; Stage 8: struct/array compound literals and field-address
+; ============================================================
+
+(defn struct-field-idx:i32 (sd:ptr name:ptr)
+  (let (sdef:ptr:StructDef (cast ptr:StructDef sd)
+        i:i32 0)
+    (while (< i (sdef num-fields))
+      (when (= (strcmp (aref (cast ptr:ptr (sdef field-names)) i) name) 0)
+        (return i))
+      (inc! i))
+    (return -1)))
+
+; (.& p field) -> pointer to the field within struct *p.
+(defn emit-field-addr:ptr (call:ptr scope:ptr)
+  (let (cc:ptr:Node (cast ptr:Node call))
+    (when (!= (node-len cc) 3) (die-at (cc line) ".& expects 2 args"))
+    (let (p:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope))
+          pt:ptr:Type (cast ptr:Type (p type)))
+      (when (or (or (!= (pt kind) TY-PTR) (= (pt elem) null))
+              (!= ((cast ptr:Type (pt elem)) kind) TY-STRUCT))
+        (die-at (cc line) ".&: operand must be pointer to struct"))
+      (let (fn-node:ptr:Node (cast ptr:Node (node-at cc 2)))
+        (when (!= (fn-node kind) NODE-SYM)
+          (die-at (fn-node line) ".&: field name must be symbol"))
+        (let (sd:ptr:StructDef (cast ptr:StructDef ((cast ptr:Type (pt elem)) sdef))
+              idx:i32 (struct-field-idx (cast ptr sd) (fn-node s)))
+          (when (< idx 0)
+            (die-at (fn-node line)
+              (fmt-2s ".&: no field '%s' on struct '%s'" (fn-node s) (sd name))))
+          (let (ftype:ptr (aref (cast ptr:ptr (sd field-types)) idx)
+                gep:ptr (new-tmp))
+            (fprintf g-body-stream
+              "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
+              gep (sd name) (p val) idx)
+            (let (rt:ptr:Type (cast ptr:Type (make-type TY-PTR)))
+              (.set! rt elem ftype)
+              (return (alloc-val (cast ptr rt) gep)))))))))
+
+; (array T e0 e1 ... | (idx v) ...) -> ptr:T to a stack array of int elements.
+(defn emit-array-lit:ptr (call:ptr scope:ptr)
+  (let (cc:ptr:Node (cast ptr:Node call)
+        nargs:i32 (- (node-len cc) 1))
+    (when (< nargs 1)
+      (die-at (cc line) "array: expects element type and 0+ initializers"))
+    (let (etype-node:ptr (node-at cc 1)
+          etype:ptr (parse-type-from-node etype-node ((cast ptr:Node etype-node) line))
+          ninits:i32 (- nargs 1))
+      ; Pass 1: scan inits to compute length and parse designated keys.
+      (let (max-idx:i32 -1
+            pos-count:i32 0
+            keys:ptr (arena-alloc (* (cast i64 ninits) (cast i64 4)))
+            i:i32 0)
+        (while (< i ninits)
+          (let (arg:ptr:Node (cast ptr:Node (node-at cc (+ 2 i)))
+                is-designated:i32 0)
+            (when (and (= (arg kind) NODE-CELL)
+                       (and (= (node-len arg) 2)
+                            (= ((cast ptr:Node (node-at arg 0)) kind) NODE-INT)))
+              (set! is-designated 1))
+            (if (!= is-designated 0)
+              (let (k:i64 ((cast ptr:Node (node-at arg 0)) i))
+                (when (< k (cast i64 0))
+                  (die-at (arg line) "array: designated index must be non-negative"))
+                (when (> (cast i32 k) max-idx) (set! max-idx (cast i32 k)))
+                (aset! (cast ptr:i32 keys) i (cast i32 k)))
+              (do
+                (aset! (cast ptr:i32 keys) i (cast i32 -1))
+                (inc! pos-count))))
+          (inc! i))
+        (let (length:i32 pos-count)
+          (when (> (+ max-idx 1) length) (set! length (+ max-idx 1)))
+          (when (= length 0) (die-at (cc line) "array: at least one initializer required"))
+          (let (vals:ptr (arena-alloc (* (cast i64 length) (cast i64 8)))
+                seen:ptr (arena-alloc (* (cast i64 length) (cast i64 4)))
+                pos-cursor:i32 0
+                j:i32 0)
+            (while (< j length)
+              (aset! (cast ptr:ptr vals) j null)
+              (aset! (cast ptr:i32 seen) j (cast i32 0))
+              (inc! j))
+            ; Place designated inits.
+            (set! j 0)
+            (while (< j ninits)
+              (let (k:i32 (aref (cast ptr:i32 keys) j))
+                (when (>= k 0)
+                  (when (!= (aref (cast ptr:i32 seen) k) 0)
+                    (die-at ((cast ptr:Node (node-at cc (+ 2 j))) line)
+                      (fmt-i32 "array: index %d specified twice" k)))
+                  (aset! (cast ptr:i32 seen) k (cast i32 1))
+                  (let (vexpr:ptr (node-at (cast ptr:Node (node-at cc (+ 2 j))) 1)
+                        v:ptr (emit-node vexpr scope)
+                        coerced:ptr (coerce-int-val v etype (cc line)))
+                    (when (= coerced null)
+                      (die-at (cc line) "array: type mismatch in designated initializer"))
+                    (aset! (cast ptr:ptr vals) k coerced))))
+              (inc! j))
+            ; Positional inits fill the next unspecified slots.
+            (set! j 0)
+            (while (< j ninits)
+              (let (k:i32 (aref (cast ptr:i32 keys) j))
+                (when (< k 0)
+                  (while (and (< pos-cursor length)
+                              (!= (aref (cast ptr:i32 seen) pos-cursor) 0))
+                    (inc! pos-cursor))
+                  (when (>= pos-cursor length)
+                    (die-at (cc line) "array: positional initializer overflows length"))
+                  (let (arg:ptr (node-at cc (+ 2 j))
+                        v:ptr (emit-node arg scope)
+                        coerced:ptr (coerce-int-val v etype (cc line)))
+                    (when (= coerced null)
+                      (die-at (cc line) "array: type mismatch in positional initializer"))
+                    (aset! (cast ptr:i32 seen) pos-cursor (cast i32 1))
+                    (aset! (cast ptr:ptr vals) pos-cursor coerced)
+                    (inc! pos-cursor))))
+              (inc! j))
+            ; Emit alloca in entry stream, then fill slots.
+            (let (slot:ptr (new-tmp)
+                  etype-ir:ptr (type-to-ir etype))
+              (fprintf g-entry-stream "  %s = alloca %s, i32 %d\n" slot etype-ir length)
+              (let (k:i32 0)
+                (while (< k length)
+                  (let (gep:ptr (new-tmp))
+                    (fprintf g-body-stream
+                      "  %s = getelementptr inbounds %s, ptr %s, i64 %d\n"
+                      gep etype-ir slot k)
+                    (let (vp:ptr (aref (cast ptr:ptr vals) k))
+                      (if (= vp null)
+                        (emit-zero-store etype gep)
+                        (let (cv:ptr:Val (cast ptr:Val vp))
+                          (fprintf g-body-stream "  store %s %s, ptr %s\n"
+                            etype-ir (cv val) gep)))))
+                  (inc! k)))
+              (let (pt:ptr:Type (cast ptr:Type (make-type TY-PTR)))
+                (.set! pt elem etype)
+                (return (alloc-val (cast ptr pt) slot))))))))))
+
+; (S e0 e1 ... | (field v) ...) -> ptr:S compound literal (struct-name head).
+(defn emit-struct-lit:ptr (call:ptr scope:ptr sd:ptr)
+  (let (cc:ptr:Node (cast ptr:Node call)
+        sdef:ptr:StructDef (cast ptr:StructDef sd)
+        nargs:i32 (- (node-len cc) 1)
+        nfields:i32 ((cast ptr:StructDef sd) num-fields))
+    (when (> nargs nfields)
+      (die-at (cc line) (fmt-s "struct literal: too many initializers for struct '%s'" (sdef name))))
+    (let (vals:ptr (arena-alloc (* (cast i64 nfields) (cast i64 8)))
+          seen:ptr (arena-alloc (* (cast i64 nfields) (cast i64 4)))
+          pos-idx:i32 0
+          i:i32 0)
+      (while (< i nfields)
+        (aset! (cast ptr:ptr vals) i null)
+        (aset! (cast ptr:i32 seen) i (cast i32 0))
+        (inc! i))
+      (set! i 0)
+      (while (< i nargs)
+        (let (arg:ptr:Node (cast ptr:Node (node-at cc (+ 1 i)))
+              is-designated:i32 0)
+          (when (= (arg kind) NODE-CELL)
+            (when (and (= (node-len arg) 2)
+                       (= ((cast ptr:Node (node-at arg 0)) kind) NODE-SYM))
+              (set! is-designated 1)))
+          (if (!= is-designated 0)
+            (let (fname-node:ptr:Node (cast ptr:Node (node-at arg 0))
+                  vexpr:ptr (node-at arg 1)
+                  fidx:i32 (struct-field-idx sd (fname-node s)))
+              (when (< fidx 0)
+                (die-at (fname-node line)
+                  (fmt-s "struct literal: no field '%s'" (fname-node s))))
+              (when (!= (aref (cast ptr:i32 seen) fidx) 0)
+                (die-at (fname-node line)
+                  (fmt-s "struct literal: field '%s' specified twice" (fname-node s))))
+              (aset! (cast ptr:i32 seen) fidx (cast i32 1))
+              (let (ftype:ptr (aref (cast ptr:ptr (sdef field-types)) fidx)
+                    v:ptr (emit-node vexpr scope)
+                    coerced:ptr (coerce-int-val v ftype (cc line)))
+                (when (= coerced null)
+                  (die-at (cc line)
+                    (fmt-s "struct literal: type mismatch for field '%s'" (fname-node s))))
+                (aset! (cast ptr:ptr vals) fidx coerced)))
+            (do
+              (while (and (< pos-idx nfields)
+                          (!= (aref (cast ptr:i32 seen) pos-idx) 0))
+                (inc! pos-idx))
+              (when (>= pos-idx nfields)
+                (die-at (arg line) "struct literal: too many positional initializers"))
+              (let (ftype:ptr (aref (cast ptr:ptr (sdef field-types)) pos-idx)
+                    v:ptr (emit-node arg scope)
+                    coerced:ptr (coerce-int-val v ftype (cc line)))
+                (when (= coerced null)
+                  (die-at (cc line) "struct literal: type mismatch for positional initializer"))
+                (aset! (cast ptr:i32 seen) pos-idx (cast i32 1))
+                (aset! (cast ptr:ptr vals) pos-idx coerced)
+                (inc! pos-idx)))))
+        (inc! i))
+      (let (slot:ptr (new-tmp)
+            sname:ptr (sdef name))
+        (fprintf g-entry-stream "  %s = alloca %%%s\n" slot sname)
+        (let (k:i32 0)
+          (while (< k nfields)
+            (let (ftype:ptr (aref (cast ptr:ptr (sdef field-types)) k)
+                  ftype-ir:ptr (type-to-ir ftype)
+                  gep:ptr (new-tmp))
+              (fprintf g-body-stream
+                "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
+                gep sname slot k)
+              (let (vp:ptr (aref (cast ptr:ptr vals) k))
+                (if (= vp null)
+                  (emit-zero-store ftype gep)
+                  (let (cv:ptr:Val (cast ptr:Val vp))
+                    (fprintf g-body-stream "  store %s %s, ptr %s\n"
+                      ftype-ir (cv val) gep)))))
+            (inc! k)))
+        (let (pt:ptr:Type (cast ptr:Type (make-type TY-PTR))
+              st:ptr:Type (cast ptr:Type (make-type TY-STRUCT)))
+          (.set! st sdef sd)
+          (.set! pt elem (cast ptr st))
+          (return (alloc-val (cast ptr pt) slot)))))))
 
 ; ============================================================
 ; Macro expansion (calls JIT-compiled macro functions at compiler runtime)
@@ -4732,6 +5853,10 @@
           (return (emit-generic-call n scope (cast ptr gg)))))))
   (let (sym:ptr (scope-lookup scope h))
     (when (= sym null)
+      ; Struct-name-as-constructor: (S init...) -> ptr:S compound literal.
+      (let (sd:ptr (lookup-struct h))
+        (when (!= sd null)
+          (return (emit-struct-lit n scope sd))))
       (die-at ((cast ptr:Node head) line) (fmt-s "unknown: %s" h)))
     ; A defn/extern symbol (is-local 0, TY-FN) is a direct call. Anything else in
     ; head position is a value: emit it once, then route. A function-pointer value
@@ -4778,6 +5903,12 @@
         (when (= hp 'while) (return (emit-while n scope)))
         (when (= hp 'set!) (return (emit-set n scope)))
         (when (= hp 'inc!) (return (emit-inc n scope)))
+        (when (= hp 'dec!) (return (emit-dec n scope)))
+        (when (= hp 'label) (return (emit-label n scope)))
+        (when (= hp 'goto) (return (emit-goto n scope)))
+        (when (= hp 'label-addr) (return (emit-label-addr n scope)))
+        (when (= hp 'goto-ptr) (return (emit-goto-ptr n scope)))
+        (when (= hp 'array) (return (emit-array-lit n scope)))
         (when (= hp 'not) (return (emit-not n scope)))
         (when (= hp 'and) (return (emit-short-circuit n scope 1)))
         (when (= hp 'or) (return (emit-short-circuit n scope 0)))
@@ -4789,6 +5920,8 @@
         (when (= hp 'ptr-set!) (return (emit-ptr-set n scope)))
         (when (= hp 'ptr+) (return (emit-ptr-add n scope)))
         (when (= hp '_get) (return (emit-field-get n scope)))
+        (when (= hp '.) (return (emit-field-get n scope)))
+        (when (= hp '.&) (return (emit-field-addr n scope)))
         (when (= hp '.set!) (return (emit-field-set n scope)))
         (when (= hp 'get) (return (emit-get n scope)))
         (when (= hp 'invoke) (return (emit-invoke n scope)))
@@ -4817,6 +5950,9 @@
   (when (or (= name "do") (= name "cond")) (return 1))
   (when (or (= name "return") (= name "while")) (return 1))
   (when (or (= name "set!") (= name "inc!")) (return 1))
+  (when (or (= name "dec!") (= name "array")) (return 1))
+  (when (or (= name "label") (or (= name "goto") (= name "label-addr"))) (return 1))
+  (when (or (= name "goto-ptr") (or (= name ".") (= name ".&"))) (return 1))
   (when (or (= name "quote") (= name "quasiquote")) (return 1))
   (when (or (= name "not") (or (= name "and") (= name "or"))) (return 1))
   (when (or (= name "cast") (= name "addr-of")) (return 1))
@@ -4901,6 +6037,73 @@
         (fmt-2s "'%s' already names %s — a symbol may name only one kind of thing"
                 name (kind-noun existing))))))
 
+; Record the defining source location on a freshly-defined Sym (used by the
+; REPL and for error attribution). Tolerates a null sym.
+(defn sym-set-src-loc:void (sym:ptr line:i32)
+  (when (= sym null) (return))
+  (let (s:ptr:Sym (cast ptr:Sym sym))
+    (.set! s src-file g-source-path)
+    (.set! s src-line line)))
+
+; Produce the LLVM initializer string for a `defvar` init form at `ty`.
+; Accepts int / float / string / null / true / false / defconst-name / (char "x").
+(defn defvar-init-ir:ptr (init:ptr ty:ptr)
+  (let (nn:ptr:Node (cast ptr:Node init)
+        ty-kind:i32 ((cast ptr:Type ty) kind))
+    ; Integer literal: any int type (signed or unsigned).
+    (when (= (nn kind) NODE-INT)
+      (when (= (is-int-type ty) 0)
+        (die-at (nn line)
+          (fmt-s "defvar: integer literal incompatible with type %s" (type-to-ir ty))))
+      (return (fmt-i64 "%ld" (nn i))))
+    ; Float literal: f32 or f64. LLVM accepts the same decimal/hex form for both.
+    (when (= (nn kind) NODE-FLOAT)
+      (when (= (is-float-type ty) 0)
+        (die-at (nn line)
+          (fmt-s "defvar: float literal incompatible with type %s" (type-to-ir ty))))
+      (return (float-literal-ir (nn s))))
+    ; String literal: ptr type. Intern into the string table and refer to it
+    ; as @.str.N (decays to a byte pointer for printf consumers).
+    (when (= (nn kind) NODE-STR)
+      (when (!= ty-kind TY-PTR)
+        (die-at (nn line) "defvar: string literal requires ptr type"))
+      (let (sid:i32 (intern-string (nn s) (cast i32 (strlen (nn s)))))
+        (return (fmt-i32 "@.str.%d" sid))))
+    ; Symbol literal: null, true, false, or a defconst/defenum name.
+    (when (= (nn kind) NODE-SYM)
+      (when (= (strcmp (nn s) "null") 0)
+        (when (!= ty-kind TY-PTR)
+          (die-at (nn line) "defvar: null requires ptr type"))
+        (return "null"))
+      (when (= (strcmp (nn s) "true") 0)
+        (when (!= ty-kind TY-I1)
+          (die-at (nn line) "defvar: true requires i1/bool type"))
+        (return "true"))
+      (when (= (strcmp (nn s) "false") 0)
+        (when (!= ty-kind TY-I1)
+          (die-at (nn line) "defvar: false requires i1/bool type"))
+        (return "false"))
+      (let (sym:ptr:Sym (cast ptr:Sym (scope-lookup g-globals (nn s))))
+        (when (and (!= (cast ptr sym) null) (!= (sym is-const) 0))
+          (when (= (is-int-type ty) 0)
+            (die-at (nn line)
+              (fmt-s "defvar: constant '%s' incompatible with non-integer type" (nn s))))
+          (return (sym const-val))))
+      (die-at (nn line) (fmt-s "defvar: unsupported init symbol '%s'" (nn s))))
+    ; (char "x") — char literal, one byte stored in an int field.
+    (when (and (= (nn kind) NODE-CELL) (= (node-len nn) 2))
+      (let (head:ptr:Node (cast ptr:Node (node-at nn 0)))
+        (when (and (= (head kind) NODE-SYM) (= (strcmp (head s) "char") 0))
+          (let (arg:ptr:Node (cast ptr:Node (node-at nn 1)))
+            (when (or (!= (arg kind) NODE-STR)
+                      (!= (cast i64 (strlen (arg s))) (cast i64 1)))
+              (die-at (arg line) "defvar: (char ...) requires a single-char string"))
+            (when (= (is-int-type ty) 0)
+              (die-at (nn line) "defvar: char literal requires integer type"))
+            (return (fmt-i32 "%d" (char-at (arg s) (cast i64 0))))))))
+    (die-at (nn line) "defvar: init must be a literal")
+    (return null)))
+
 (defn emit-defvar:void (call:ptr)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (or (< (node-len cc) 2) (> (node-len cc) 3))
@@ -4913,18 +6116,18 @@
           (die-at ((cast ptr:Node name-node) line) (fmt-s "defvar: missing :type on '%s'" name)))
         (guard-name-kind name (cc line) NK-VALUE)
         (let (ir-name:ptr (fmt-s "@%s" name)
-              align:i32 (type-size ty))
+              align:i32 (type-size ty)
+              init-ir:ptr null)
           (if (= (node-len cc) 3)
-            (let (init:ptr:Node (cast ptr:Node (node-at cc 2)))
-              (when (!= (init kind) NODE-INT)
-                (die-at (init line) "defvar: init must be integer literal"))
-              (fprintf g-out "%s = global %s %ld, align %d\n\n"
-                ir-name (type-to-ir ty) (init i) align))
-            (let (zero:ptr "0")
-              (when (!= (is-ptr-like ty) 0) (set! zero "null"))
-              (fprintf g-out "%s = global %s %s, align %d\n\n"
-                ir-name (type-to-ir ty) zero align)))
-          (scope-define g-globals name ty ir-name 1))))))
+            (set! init-ir (defvar-init-ir (node-at cc 2) ty))
+            (let (tk:i32 ((cast ptr:Type ty) kind))
+              (cond (!= (is-ptr-like ty) 0) (set! init-ir "null")
+                    (or (= tk TY-F32) (= tk TY-F64)) (set! init-ir "0.0")
+                    (= tk TY-I1) (set! init-ir "false")
+                    true (set! init-ir "0"))))
+          (fprintf g-out "%s = global %s %s, align %d\n\n"
+            ir-name (type-to-ir ty) init-ir align)
+          (sym-set-src-loc (scope-define g-globals name ty ir-name 1) (cc line)))))))
 
 (defn emit-defconst:void (call:ptr)
   (let (cc:ptr:Node (cast ptr:Node call))
@@ -5042,46 +6245,82 @@
         (let (
               raw-nparams:i32 (node-len params-node)
               has-rest:i32 0
-              rest-idx:i32 -1)
-          ; Scan for &rest. Must be at position (raw-nparams - 2) so the rest
-          ; param itself is the trailing entry.
+              rest-idx:i32 -1
+              opt-idx:i32 -1
+              nopt:i32 0)
+          ; Scan for &rest and &optional. &rest must be second-to-last so the rest
+          ; param itself is the trailing entry. &optional comes after all required
+          ; params; everything after it (until end or &rest) is an optional spec.
           (let (si:i32 0)
             (while (< si raw-nparams)
               (let (sp:ptr:Node (cast ptr:Node (node-at params-node si)))
-                (when (and (= (sp kind) NODE-SYM)
-                           (= (sp s) "&rest"))
-                  (when (!= si (- raw-nparams 2))
-                    (die-at (sp line) "defn: &rest must be second-to-last param"))
-                  (when (!= has-rest 0)
-                    (die-at (sp line) "defn: multiple &rest in params"))
-                  (set! has-rest 1)
-                  (set! rest-idx si)))
+                (when (= (sp kind) NODE-SYM)
+                  (when (= (sp s) "&rest")
+                    (when (!= si (- raw-nparams 2))
+                      (die-at (sp line) "defn: &rest must be second-to-last param"))
+                    (when (!= has-rest 0)
+                      (die-at (sp line) "defn: multiple &rest in params"))
+                    (set! has-rest 1)
+                    (set! rest-idx si))
+                  (when (= (sp s) "&optional")
+                    (when (!= opt-idx -1)
+                      (die-at (sp line) "defn: multiple &optional in params"))
+                    (set! opt-idx si))))
               (inc! si)))
+          (when (and (!= opt-idx -1) (!= has-rest 0))
+            (die-at ((cast ptr:Node (node-at params-node opt-idx)) line)
+                    "defn: &optional cannot be combined with &rest"))
+          (when (!= opt-idx -1)
+            (when (= opt-idx (- raw-nparams 1))
+              (die-at ((cast ptr:Node (node-at params-node opt-idx)) line)
+                      "defn: &optional must be followed by at least one param"))
+            (set! nopt (- (- raw-nparams 1) opt-idx)))
           (let (nparams:i32 raw-nparams)
-            (when (!= has-rest 0) (set! nparams (- raw-nparams 1)))
+            (when (!= has-rest 0) (set! nparams (- nparams 1)))
+            (when (!= opt-idx -1) (set! nparams (- nparams 1)))
             (let (param-types:ptr null
-                  param-names:ptr null)
+                  param-names:ptr null
+                  opt-defaults:ptr null
+                  required:i32 (- nparams nopt))
               (when (> nparams 0)
                   (set! param-types (arena-alloc (* (cast i64 nparams) (ptr-bytes))))
                   (set! param-names (arena-alloc (* (cast i64 nparams) (ptr-bytes)))))
+              (when (> nopt 0)
+                  (set! opt-defaults (arena-alloc (* (cast i64 nopt) (ptr-bytes)))))
               (let (i:i32 0
                     di:i32 0)
                 (while (< i raw-nparams)
-                  (when (or (= has-rest 0) (!= i rest-idx))
-                    (let (p:ptr (node-at params-node i)
-                          pname:ptr null
-                          pty:ptr (extract-name-and-type p (cast ptr:ptr (addr-of pname))
-                                                         ((cast ptr:Node p) line)))
-                      (when (= pty null)
-                        (die-at ((cast ptr:Node p) line) (fmt-s "defn: missing :type on param '%s'" pname)))
-                      ; The &rest parameter receives a Node* cons-list head.
-                      ; The user's declared type annotates element type only;
-                      ; the actual param is always ptr.
-                      (when (and (!= has-rest 0) (= di (- nparams 1)))
-                        (set! pty ty-ptr))
-                      (aset! (cast ptr:ptr param-types) di pty)
-                      (aset! (cast ptr:ptr param-names) di pname))
-                    (inc! di))
+                  (let (skip:i32 0)
+                    (when (and (!= has-rest 0) (= i rest-idx)) (set! skip 1))
+                    (when (= i opt-idx) (set! skip 1))
+                    (when (= skip 0)
+                      (let (p:ptr (node-at params-node i)
+                            pname:ptr null
+                            is-opt:i32 0
+                            spec:ptr (node-at params-node i)
+                            default-node:ptr null)
+                        (when (and (!= opt-idx -1) (> i opt-idx)) (set! is-opt 1))
+                        (when (!= is-opt 0)
+                          ; Optional param: a 2-element list (name:type default).
+                          (when (or (= (node-is-list p) 0) (!= (node-len p) 2))
+                            (die-at ((cast ptr:Node p) line)
+                              "defn: &optional param must be (name:type default)"))
+                          (set! spec (node-at p 0))
+                          (set! default-node (node-at p 1)))
+                        (let (pty:ptr (extract-name-and-type spec (cast ptr:ptr (addr-of pname))
+                                                             ((cast ptr:Node spec) line)))
+                          (when (= pty null)
+                            (die-at ((cast ptr:Node p) line) (fmt-s "defn: missing :type on param '%s'" pname)))
+                          ; The &rest parameter receives a Node* cons-list head.
+                          ; The user's declared type annotates element type only;
+                          ; the actual param is always ptr.
+                          (when (and (!= has-rest 0) (= di (- nparams 1)))
+                            (set! pty ty-ptr))
+                          (aset! (cast ptr:ptr param-types) di pty)
+                          (aset! (cast ptr:ptr param-names) di pname)
+                          (when (!= is-opt 0)
+                            (aset! (cast ptr:ptr opt-defaults) (- di required) default-node))))
+                      (inc! di)))
                   (inc! i)))
           ; Register function in globals
           (let (ft:ptr:Type (cast ptr:Type (make-type TY-FN)))
@@ -5090,6 +6329,8 @@
             (.set! ft params param-types)
             (.set! ft variadic 0)
             (.set! ft has-rest has-rest)
+            (.set! ft nopt nopt)
+            (.set! ft opt-defaults opt-defaults)
             ; Solitary names (and fallback defns with no registered generic) keep
             ; their scope binding under @name. Overloaded methods dispatch through
             ; the generic registry, so no bare-name binding is installed.
@@ -5098,26 +6339,41 @@
                             (defn-ir-name fname param-types nparams) 0)))
           ; Codegen
           (reset-function-state)
+          ; g-cur-fname is the @-less IR symbol of this function (for blockaddress
+          ; in label-addr). defn-ir-name returns "@sym"; skip the leading '@'.
+          (set! g-cur-fname (ptr+ (cast ptr:i8 (defn-ir-name fname param-types nparams))
+                                  (cast i32 1)))
+          ; Aggregate return ABI (Stage 8 Phase C): drives the signature, the
+          ; sret hidden param, and how `return` lowers a struct value.
+          (set! g-fn-ret-abi (abi-classify ret))
+          (when (= ((cast ptr:AbiInfo g-fn-ret-abi) kind) ABI-MEMORY)
+            (set! g-fn-sret-name "%.sret"))
           (let (fn-scope:ptr (scope-new g-globals)
                 i:i32 0)
             (while (< i nparams)
-              (let (pname:ptr (aref (cast ptr:ptr param-names) i)
-                    ptype:ptr (aref (cast ptr:ptr param-types) i)
-                    slot:ptr (fmt-s "%%%s.addr" pname)
-                    arg:ptr (fmt-s "%%%s.arg" pname)
-                    palign:i32 (type-size ptype))
-                (fprintf g-entry-stream "  %s = alloca %s, align %d\n"
-                  slot (type-to-ir ptype) palign)
-                (fprintf g-entry-stream "  store %s %s, ptr %s, align %d\n"
-                  (type-to-ir ptype) arg slot palign)
-                (scope-define fn-scope pname ptype slot 1))
+              (abi-emit-param-prologue fn-scope
+                (aref (cast ptr:ptr param-names) i)
+                (aref (cast ptr:ptr param-types) i))
               (inc! i))
             (set! i 3)
+            ; Pre-scan the body for (label NAME) decls so forward gotos and
+            ; last-decl-wins resolution work.
+            (let (psi:i32 i)
+              (while (< psi (node-len cc))
+                (prescan-labels (node-at cc psi))
+                (inc! psi)))
             (let (last-val:ptr (alloc-val ty-void null))
               (while (< i (node-len cc))
                 (set! last-val (emit-node (node-at cc i) fn-scope))
                 (inc! i))
               (when (= g-block-term 0)
+                (if (!= ((cast ptr:AbiInfo g-fn-ret-abi) kind) ABI-DIRECT)
+                  ; Struct return via the aggregate ABI. A void last expression
+                  ; (degenerate fall-off) returns a zeroed struct.
+                  (emit-struct-ret
+                    (if (= ((cast ptr:Type ((cast ptr:Val last-val) type)) kind) TY-VOID)
+                      (alloc-val ret "zeroinitializer")
+                      last-val))
                 (if (= ((cast ptr:Type ret) kind) TY-VOID)
                   (fprintf g-body-stream "  ret void\n")
                   ; Implicit return: if the last expression yielded a value
@@ -5137,18 +6393,27 @@
                                  fname)))
                       (let (cv:ptr:Val (cast ptr:Val coerced))
                         (fprintf g-body-stream "  ret %s %s\n"
-                          (type-to-ir ret) (cv val))))))))
+                          (type-to-ir ret) (cv val)))))))))
             ; Close streams and emit function
             (fclose g-entry-stream)
             (fclose g-body-stream)
-            (fprintf g-out "define %s %s(" (type-to-ir ret) (defn-ir-name fname param-types nparams))
-            (set! i 0)
-            (while (< i nparams)
-              (when (!= i 0) (fprintf g-out ", "))
-              (fprintf g-out "%s %%%s.arg"
-                (type-to-ir (aref (cast ptr:ptr param-types) i))
-                (aref (cast ptr:ptr param-names) i))
-              (inc! i))
+            (fprintf g-out "define %s %s("
+              (abi-ret-ir g-fn-ret-abi ret) (defn-ir-name fname param-types nparams))
+            ; A MEMORY return prepends the hidden sret pointer parameter.
+            (let (need-comma:i32 0)
+              (when (= ((cast ptr:AbiInfo g-fn-ret-abi) kind) ABI-MEMORY)
+                (fprintf g-out "ptr sret(%s) align %d %s"
+                  (type-to-ir ret) ((cast ptr:AbiInfo g-fn-ret-abi) align) g-fn-sret-name)
+                (set! need-comma 1))
+              (set! i 0)
+              (while (< i nparams)
+                (when (!= need-comma 0) (fprintf g-out ", "))
+                (abi-print-param
+                  (abi-classify (aref (cast ptr:ptr param-types) i))
+                  (aref (cast ptr:ptr param-types) i)
+                  (aref (cast ptr:ptr param-names) i))
+                (set! need-comma 1)
+                (inc! i)))
             (fprintf g-out ") {\n")
             (fprintf g-out "entry:\n")
             (when (and (!= g-entry-bufp null) (!= (char-at g-entry-bufp (cast i64 0)) 0))
@@ -5421,7 +6686,7 @@
             (let (ir-bufp:ptr null  ir-sizep:i64 (cast i64 0)
                   irs:ptr (open_memstream (addr-of ir-bufp) (cast ptr (addr-of ir-sizep))))
               (fprintf irs "; ModuleID = '<compile-time>'\n")
-              (fprintf irs "target triple = \"%s\"\n\n" g-target-triple)
+              (fprintf irs "target triple = \"%s\"\n\n" ((cast ptr:Target g-host-target) triple))
               ; In REPL mode, include the accumulated preamble
               (when (!= g-interactive 0)
                  (fflush g-repl-preamble)
@@ -5628,7 +6893,7 @@
                   (let (ir-bufp:ptr null  ir-sizep:i64 (cast i64 0)
                         irs:ptr (open_memstream (addr-of ir-bufp) (cast ptr (addr-of ir-sizep))))
                     (fprintf irs "; ModuleID = '<defmacro %s>'\n" macro-name)
-                    (fprintf irs "target triple = \"%s\"\n\n" g-target-triple)
+                    (fprintf irs "target triple = \"%s\"\n\n" ((cast ptr:Target g-host-target) triple))
                     ; In REPL mode, include the accumulated preamble
                     (when (!= g-interactive 0)
                        (fflush g-repl-preamble)
@@ -5987,6 +7252,8 @@
               (do (set! g-out g-def-stream) (emit-defvar (cast ptr f)))
             'defstruct
               (do (set! g-out g-type-stream) (emit-defstruct (cast ptr f)))
+            'defcast
+              (emit-defcast (cast ptr f))
             'include
               (do (set! g-out g-decl-stream) (emit-include (cast ptr f)))
             'extern
@@ -6250,6 +7517,20 @@
   (print-node (node-at form 2))
   (printf ")\n"))
 
+; Cast rules export verbatim (the conv-fn is exported separately as a declare,
+; which must precede this form in the header). The importer re-runs emit-defcast.
+(defn emit-nuch-defcast:void (form:ptr)
+  (print-node form)
+  (printf "\n"))
+
+; A module's top-level globals export as `extern` so importers see the symbol
+; without its initializer (the producing module owns the definition). Index 1 is
+; the desugared name:type node; any initializer is intentionally dropped.
+(defn emit-nuch-extern:void (form:ptr)
+  (printf "(extern ")
+  (print-node (node-at form 1))
+  (printf ")\n"))
+
 (defn emit-nuch-header:void (forms:ptr source-file:ptr)
   ; Populate the registries so overloaded names, mangled symbols, and protocols
   ; are known before emitting declarations.
@@ -6269,6 +7550,8 @@
               "defn"         (emit-nuch-defn (cast ptr f))
               "defprotocol"  (emit-nuch-defprotocol (cast ptr f))
               "extend"       (emit-nuch-extend (cast ptr f))
+              "defcast"      (emit-nuch-defcast (cast ptr f))
+              "defvar"       (emit-nuch-extern (cast ptr f))
               "defconst"     (emit-nuch-defconst (cast ptr f))
               "defenum"      (emit-nuch-defenum (cast ptr f))
               "defmacro"     (emit-nuch-defmacro (cast ptr f))
@@ -6325,15 +7608,25 @@
             (.set! ft variadic 0)
             (scope-define g-globals fname (cast ptr ft)
                           (fmt-s "@%s" fname) 0)
-            ; Emit LLVM declare
-            (fprintf g-out "declare %s @%s(" (type-to-ir ret) fname)
-            (set! j 0)
-            (while (< j nparams)
-              (when (!= j 0) (fprintf g-out ", "))
-              (fprintf g-out "%s"
-                (type-to-ir (aref (cast ptr:ptr ptypes) j)))
-              (inc! j))
-            (fprintf g-out ")\n")))))))
+            ; Emit LLVM declare, lowering struct-by-value params/return to the
+            ; platform C ABI (sret / byval / register coercion) just like a defn.
+            (let (ret-info:ptr:AbiInfo (cast ptr:AbiInfo (abi-classify ret)))
+              (fprintf g-out "declare %s @%s(" (abi-ret-ir ret-info ret) fname)
+              (let (need-comma:i32 0)
+                (when (= ((cast ptr:AbiInfo ret-info) kind) ABI-MEMORY)
+                  (fprintf g-out "ptr sret(%s) align %d"
+                    (type-to-ir ret) ((cast ptr:AbiInfo ret-info) align))
+                  (set! need-comma 1))
+                (set! j 0)
+                (while (< j nparams)
+                  (when (!= need-comma 0) (fprintf g-out ", "))
+                  (abi-print-param
+                    (abi-classify (aref (cast ptr:ptr ptypes) j))
+                    (aref (cast ptr:ptr ptypes) j)
+                    null)
+                  (set! need-comma 1)
+                  (inc! j)))
+              (fprintf g-out ")\n"))))))))
 
 ; Import one exported overloaded method: register it (with its mangled symbol)
 ; in the generic registry so calls in the importing unit dispatch to it, and
@@ -6394,6 +7687,10 @@
                 (protocol-register-form (cast ptr f))
               "extend"
                 (register-imported-conformance (cast ptr f))
+              "defcast"
+                (emit-defcast (cast ptr f))
+              "extern"
+                (do (set! g-out g-decl-stream) (emit-extern (cast ptr f)))
               "defconst"
                 (emit-defconst (cast ptr f))
               "defenum"
@@ -6436,13 +7733,72 @@
   (aset! (cast ptr:ptr g-blanket) 1 "Struct")
   (set! g-num-blanket 2))
 
+; Register the LLVM backends the --target matrix can select (X86 + AArch64 +
+; ARM, covering Linux/Darwin/Windows variants). Safe to call repeatedly.
+(defn targets-init-all:void ()
+  (LLVMInitializeX86TargetInfo)
+  (LLVMInitializeX86Target)
+  (LLVMInitializeX86TargetMC)
+  (LLVMInitializeX86AsmPrinter)
+  (LLVMInitializeAArch64TargetInfo)
+  (LLVMInitializeAArch64Target)
+  (LLVMInitializeAArch64TargetMC)
+  (LLVMInitializeAArch64AsmPrinter)
+  (LLVMInitializeARMTargetInfo)
+  (LLVMInitializeARMTarget)
+  (LLVMInitializeARMTargetMC)
+  (LLVMInitializeARMAsmPrinter))
+
+; Resolve `triple` to a Target descriptor, pulling the datalayout string and
+; pointer size from LLVM so emitted IR matches the target ABI.
+(defn make-target-for-triple:ptr (triple:ptr)
+  (let (target:ptr null
+        terr:ptr null
+        tres:i32 (LLVMGetTargetFromTriple triple (addr-of target) (addr-of terr)))
+    (when (!= tres 0)
+      (fprintf stderr "nucleusc: target lookup failed for '%s': %s\n" triple terr)
+      (LLVMDisposeMessage terr)
+      (exit 1))
+    (let (tm:ptr (LLVMCreateTargetMachine target triple "" "" 0 2 0))
+      (when (= tm null)
+        (fprintf stderr "nucleusc: failed to create TargetMachine for '%s'\n" triple)
+        (exit 1))
+      (let (td:ptr (LLVMCreateTargetDataLayout tm)
+            tgt:ptr:Target (cast ptr:Target (arena-alloc (sizeof Target))))
+        (let (dl-str:ptr (LLVMCopyStringRepOfTargetData td)
+              psize:i32 (LLVMPointerSize td))
+          (.set! tgt triple triple)
+          (.set! tgt datalayout dl-str)
+          (.set! tgt ptr-size psize)
+          (.set! tgt ptr-align psize))
+        (LLVMDisposeTargetData td)
+        (LLVMDisposeTargetMachine tm)
+        (return (cast ptr tgt))))))
+
+; Populate g-host-target (always native) and g-target (== host unless
+; --target=<triple> overrides). Derives g-target-triple / g-target-ptr-bytes so
+; the rest of codegen, which predates the Target struct, sees the right values.
+(defn target-init:void ()
+  (targets-init-all)
+  (let (host-triple:ptr (LLVMGetDefaultTargetTriple))
+    (set! g-host-target (make-target-for-triple host-triple))
+    (if (= g-target-triple-override null)
+      (set! g-target g-host-target)
+      (set! g-target (make-target-for-triple g-target-triple-override))))
+  (let (tg:ptr:Target (cast ptr:Target g-target)
+        hg:ptr:Target (cast ptr:Target g-host-target))
+    (set! g-target-triple (tg triple))
+    (set! g-target-ptr-bytes (tg ptr-size))
+    (set! g-host-ptr-bytes (hg ptr-size))))
+
 (defn compiler-init:void ()
   ; Target descriptor (single source of truth for the "pointer is i64"
-  ; assumption). Defaults to x86_64 Linux; g-target-ptr-bytes defaults to 8.
+  ; assumption). target-init below resolves it from LLVM (host, or --target).
   (set! g-target-triple "x86_64-pc-linux-gnu")
   (set! g-target-ptr-bytes 8)
   ; Host pointer size — actual width of a pointer in this running compiler.
   (set! g-host-ptr-bytes (cast i32 (sizeof ptr)))
+  (target-init)
   (types-init)
   (init-binops)
   (init-generics)
@@ -6451,6 +7807,8 @@
   (init-rmacros)
   (set! g-structs (arena-alloc (* (cast i64 MAX-STRUCTS) (sizeof StructDef))))
   (set! g-macros (arena-alloc (* (cast i64 256) (sizeof MacroDef))))
+  (set! g-cast-rules (arena-alloc (* (cast i64 MAX-CAST-RULES) (sizeof CastRule))))
+  (set! g-cast-rules-len 0)
   (set! g-globals (scope-new null)))
 
 ; ============================================================
@@ -6519,6 +7877,7 @@
         irs:ptr (open_memstream (addr-of ir-bufp) (cast ptr (addr-of ir-sizep))))
     (fprintf irs "; ModuleID = '%s'\n" source-file)
     (fprintf irs "source_filename = \"%s\"\n" source-file)
+    (fprintf irs "target datalayout = \"%s\"\n" ((cast ptr:Target g-target) datalayout))
     (fprintf irs "target triple = \"%s\"\n\n" g-target-triple)
     (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
       (fputs g-type-bufp irs))
@@ -6555,13 +7914,13 @@
 
     (let (target:ptr null
           terr:ptr null
-          tres:i32 (LLVMGetTargetFromTriple "x86_64-pc-linux-gnu" (addr-of target) (addr-of terr)))
+          tres:i32 (LLVMGetTargetFromTriple g-target-triple (addr-of target) (addr-of terr)))
       (when (!= tres 0)
         (fprintf stderr "nucleusc: target lookup failed: %s\n" terr)
         (LLVMDisposeMessage terr)
         (exit 1))
       ; CodeGenLevel = Default(2), Reloc = PIC(2), CodeModel = Default(0)
-      (let (tm:ptr (LLVMCreateTargetMachine target "x86_64-pc-linux-gnu" "" "" g-opt-level 2 0))
+      (let (tm:ptr (LLVMCreateTargetMachine target g-target-triple "" "" g-opt-level 2 0))
         (let (out-path:ptr g-output-path
               obj-path:ptr null
               keep-obj:i32 g-emit-obj)
@@ -6688,6 +8047,8 @@
                 (set! g-opt-level 2)
               (= arg "-O3")
                 (set! g-opt-level 3)
+              (= (strncmp arg "--target=" (cast i64 9)) 0)
+                (set! g-target-triple-override (ptr+ (cast ptr:i8 arg) (cast i64 9)))
               (= (strncmp arg "-I" (cast i64 2)) 0)
                 (if (> (cast i64 (strlen arg)) (cast i64 2))
                   ; -I/path/to/dir (no space)

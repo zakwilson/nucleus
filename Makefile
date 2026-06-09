@@ -39,6 +39,16 @@ boot-binary: $(REPL_SHIM_O) | $(BUILD)
 test: $(BIN)
 	./tests/run-tests.sh
 
+# Struct-ABI interop acceptance test (Phase C gate). Not part of `make test`
+# until aggregate ABI lowering lands; see design/stage8/platform.md.
+abi-test: $(BIN)
+	NUCLEUSC=$(BIN) ./tests/run-abi-test.sh
+
+# Struct-layout verification (Phase E gate): sizeof/offsetof vs the platform
+# C compiler over the question-14 corpus. See design/stage8/platform.md.
+layout-test: $(BIN)
+	NUCLEUSC=$(BIN) ./tests/run-layout-test.sh
+
 bootstrap: $(BIN) | $(BUILD)/out
 	@echo "=== Stage 2: self-hosted compiler -> nucleusc.nuc ==="
 	$(BIN) --emit-llvm src/nucleusc.nuc > $(BUILD)/stage2.ll
@@ -52,13 +62,26 @@ bootstrap: $(BIN) | $(BUILD)/out
 	diff tests/expected/hello.out $(BUILD)/out/hello-bootstrap.out
 	@echo "PASS: bootstrap complete"
 
+# Windows boot IR (Phase F): cross-emitted on this host so a fresh Windows
+# checkout can build its first nucleusc.exe via build.ps1 (which has no prior
+# compiler to bootstrap from). The compiler's own IR has no aggregate-by-value,
+# so these are ABI-clean on Win64. Regenerated alongside the Linux boot IR at
+# each milestone (see update-bootstrap) to keep all flavors in lock-step.
+WIN_BOOT_IRS := boot/nucleusc-x86_64-windows-gnu.ll boot/nucleusc-x86_64-windows-msvc.ll
+
+windows-boot: $(BIN)
+	$(BIN) --target=x86_64-pc-windows-gnu  --emit-llvm src/nucleusc.nuc > boot/nucleusc-x86_64-windows-gnu.ll
+	$(BIN) --target=x86_64-pc-windows-msvc --emit-llvm src/nucleusc.nuc > boot/nucleusc-x86_64-windows-msvc.ll
+	@echo "DONE: Windows boot IRs updated"
+
 # Update committed bootstrap artifacts from the current self-hosted compiler.
 # Only run this at a stable milestone (all tests passing, bootstrap verified).
 update-bootstrap: $(BIN)
 	@echo "=== Updating bootstrap artifacts ==="
 	$(BIN) --emit-llvm src/nucleusc.nuc > boot/nucleusc.ll
 	cp $(BIN) bin/nucleusc
-	@echo "DONE: boot/nucleusc.ll and bin/nucleusc updated"
+	$(MAKE) windows-boot
+	@echo "DONE: boot/nucleusc.ll, bin/nucleusc, and Windows boot IRs updated"
 
 # ---- Library compilation ----
 
@@ -102,4 +125,36 @@ lib: lib-headers lib-objs
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: test clean bootstrap boot-binary update-bootstrap ensure-boot lib-headers lib-cheaders lib-objs lib-so lib
+# ---- Install ----
+#
+# Installs the compiler binary plus the lib/ source files needed at import
+# time (macros, prelude, etc.). The compiler searches for imports in:
+#   1. directory of current source file
+#   2. ./lib relative to cwd
+#   3. -I paths
+#   4. $NUCLEUS_LIB
+#   5. /usr/local/share/nucleus/lib   (compiled-in default)
+#
+# So a default-prefix install just works; for a custom PREFIX, set
+# NUCLEUS_LIB=$(PREFIX)/share/nucleus/lib in the environment.
+
+PREFIX  ?= /usr/local
+DESTDIR ?=
+BINDIR  := $(DESTDIR)$(PREFIX)/bin
+LIBDIR  := $(DESTDIR)$(PREFIX)/share/nucleus/lib
+
+install: $(BIN)
+	install -d $(BINDIR) $(LIBDIR)
+	install -m 755 $(BIN) $(BINDIR)/nucleusc
+	install -m 644 lib/*.nuc $(LIBDIR)/
+	@echo "Installed nucleusc to $(BINDIR)/nucleusc"
+	@echo "Installed lib files to $(LIBDIR)/"
+	@if [ "$(PREFIX)" != "/usr/local" ]; then \
+		echo "Note: PREFIX != /usr/local — set NUCLEUS_LIB=$(PREFIX)/share/nucleus/lib"; \
+	fi
+
+uninstall:
+	rm -f $(BINDIR)/nucleusc
+	rm -rf $(DESTDIR)$(PREFIX)/share/nucleus
+
+.PHONY: test abi-test layout-test clean bootstrap boot-binary update-bootstrap windows-boot ensure-boot lib-headers lib-cheaders lib-objs lib-so lib install uninstall

@@ -1,0 +1,37 @@
+; Nucleus side of the struct-layout verification harness (Phase E,
+; design/stage8/platform.md question 13(a)/14). Imports the shared corpus
+; header and prints sizeof + per-field byte offsets for every struct, one
+; line each, computed entirely from Nucleus's own layout walk (sizeof) and
+; field-address arithmetic (offsetof). tests/layout/layout.c prints the same
+; lines using the platform C compiler; run-layout-test.sh diffs them, so any
+; disagreement between Nucleus's layout and the C ABI fails the build.
+
+(import "tests/layout/structs.h")
+(include stdio)
+
+; offsetof(field) = address-of-field - base, both as integers.
+(defn off:i64 (base:ptr fld:ptr) (return (- (cast i64 fld) (cast i64 base))))
+
+(defn main:int ()
+  (let (s:ptr:P_i8  (alloca P_i8))  (printf "P_i8 sizeof=%lld a=%lld\n"  (cast i64 (sizeof P_i8))  (off s (.& s a))))
+  (let (s:ptr:P_i16 (alloca P_i16)) (printf "P_i16 sizeof=%lld a=%lld\n" (cast i64 (sizeof P_i16)) (off s (.& s a))))
+  (let (s:ptr:P_i32 (alloca P_i32)) (printf "P_i32 sizeof=%lld a=%lld\n" (cast i64 (sizeof P_i32)) (off s (.& s a))))
+  (let (s:ptr:P_i64 (alloca P_i64)) (printf "P_i64 sizeof=%lld a=%lld\n" (cast i64 (sizeof P_i64)) (off s (.& s a))))
+  (let (s:ptr:P_f32 (alloca P_f32)) (printf "P_f32 sizeof=%lld a=%lld\n" (cast i64 (sizeof P_f32)) (off s (.& s a))))
+  (let (s:ptr:P_f64 (alloca P_f64)) (printf "P_f64 sizeof=%lld a=%lld\n" (cast i64 (sizeof P_f64)) (off s (.& s a))))
+  (let (s:ptr:P_ptr (alloca P_ptr)) (printf "P_ptr sizeof=%lld a=%lld\n" (cast i64 (sizeof P_ptr)) (off s (.& s a))))
+
+  (let (s:ptr:M_8_64  (alloca M_8_64))  (printf "M_8_64 sizeof=%lld a=%lld b=%lld\n"  (cast i64 (sizeof M_8_64))  (off s (.& s a)) (off s (.& s b))))
+  (let (s:ptr:M_32_8  (alloca M_32_8))  (printf "M_32_8 sizeof=%lld a=%lld b=%lld\n"  (cast i64 (sizeof M_32_8))  (off s (.& s a)) (off s (.& s b))))
+  (let (s:ptr:M_8_32  (alloca M_8_32))  (printf "M_8_32 sizeof=%lld a=%lld b=%lld\n"  (cast i64 (sizeof M_8_32))  (off s (.& s a)) (off s (.& s b))))
+  (let (s:ptr:M_16_64 (alloca M_16_64)) (printf "M_16_64 sizeof=%lld a=%lld b=%lld\n" (cast i64 (sizeof M_16_64)) (off s (.& s a)) (off s (.& s b))))
+  (let (s:ptr:M_8_16_8 (alloca M_8_16_8)) (printf "M_8_16_8 sizeof=%lld a=%lld b=%lld c=%lld\n" (cast i64 (sizeof M_8_16_8)) (off s (.& s a)) (off s (.& s b)) (off s (.& s c))))
+  (let (s:ptr:M_64_8  (alloca M_64_8))  (printf "M_64_8 sizeof=%lld a=%lld b=%lld\n"  (cast i64 (sizeof M_64_8))  (off s (.& s a)) (off s (.& s b))))
+
+  (let (s:ptr:Inner (alloca Inner)) (printf "Inner sizeof=%lld x=%lld y=%lld\n"   (cast i64 (sizeof Inner)) (off s (.& s x))  (off s (.& s y))))
+  (let (s:ptr:Outer (alloca Outer)) (printf "Outer sizeof=%lld pt=%lld tag=%lld\n" (cast i64 (sizeof Outer)) (off s (.& s pt)) (off s (.& s tag))))
+  (let (s:ptr:Anon  (alloca Anon))  (printf "Anon sizeof=%lld in=%lld tag=%lld\n"  (cast i64 (sizeof Anon))  (off s (.& s in)) (off s (.& s tag))))
+
+  (let (s:ptr:TimeSpec (alloca TimeSpec)) (printf "TimeSpec sizeof=%lld tv_sec=%lld tv_nsec=%lld\n" (cast i64 (sizeof TimeSpec)) (off s (.& s tv_sec)) (off s (.& s tv_nsec))))
+  (let (s:ptr:Rec (alloca Rec)) (printf "Rec sizeof=%lld tag=%lld value=%lld next=%lld d=%lld\n" (cast i64 (sizeof Rec)) (off s (.& s tag)) (off s (.& s value)) (off s (.& s next)) (off s (.& s d))))
+  (return 0))
