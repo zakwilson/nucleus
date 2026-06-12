@@ -1,0 +1,4 @@
+(defunion Shape (circle r:f64) (rect w:f64 h:f64) point)
+(defn area:f64 (s:ptr:Shape) (match s ((circle r) (return (* 3.14159 (* r r)))) ((rect w h) (return (* w h))) (point (return 0.0))))
+(let (s:Shape (Shape-rect 3.0 4.0)) (area (addr-of s)))
+(let (s:Shape (make Shape circle 1.0)) (area (addr-of s)))

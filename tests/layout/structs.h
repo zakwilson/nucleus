@@ -4,10 +4,12 @@
  * walk) and #included by layout.c (the platform C compiler is the oracle).
  * run-layout-test.sh diffs the two outputs; any disagreement is a layout bug.
  *
- * Only field types the Nucleus C-header parser can represent are used. Arrays,
- * unions, and bitfields are skipped by the parser by design (a struct with one
- * is registered as opaque ptr, not a partial layout), so they are out of scope
- * here; the calling-convention half of the ABI is covered by tests/abi/. */
+ * Only field types the Nucleus C-header parser can represent are used. Arrays
+ * and bitfields are skipped by the parser by design (a struct with one is
+ * registered as opaque ptr, not a partial layout), so they are out of scope
+ * here; the calling-convention half of the ABI is covered by tests/abi/.
+ * Unions are supported since stage 10 (design/stage10/unions.md §2) and
+ * covered below. */
 
 /* Each primitive alone in a one-field struct. */
 struct P_i8  { char a; };
@@ -34,3 +36,11 @@ struct Anon  { struct { int x; long long y; } in; int tag; };
 /* timespec-shaped and a larger mixed record. */
 struct TimeSpec { long tv_sec; long tv_nsec; };
 struct Rec      { char tag; long value; void *next; double d; };
+
+/* Unions (stage 10): size = max member size, align = max member align,
+ * every member at offset 0; padding from a small-but-aligned mix. */
+union U_scalar { long long as_int; double as_float; void *as_ptr; };
+union U_mixed  { char small; double wide; };
+union U_pad    { char bytes; int word; };
+struct UWrap   { char tag; union U_scalar u; };
+struct UAnon   { int kind; union { int word; double real; } data; char tail; };

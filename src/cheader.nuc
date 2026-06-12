@@ -113,7 +113,8 @@
         is-short:i32 0
         base-name:ptr null
         ptr-depth:i32 0
-        is-struct:i32 0)
+        is-struct:i32 0
+        is-union:i32 0)
     ; Parse type qualifiers and specifiers
     (let (done:i32 0)
       (while (= done 0)
@@ -170,6 +171,8 @@
                           (set! base-name "short") (set! done 1))))
                 (= tok "struct")
                   (do (set! is-struct 1) (set! pos tok-end))
+                (= tok "union")
+                  (do (set! is-struct 1) (set! is-union 1) (set! pos tok-end))
                 (= tok "__attribute__")
                   (do (set! pos (c-skip-ws buf tok-end len))
                       (when (and (< pos len) (= (char-at buf pos) 40))
@@ -195,27 +198,24 @@
                (set! pos (c-skip-ws buf pos len))
                (set! check 1))))))
     (ptr-set! out-end pos)
-    ; Struct base. struct {...} / struct Tag {...} parse the body to a TY-STRUCT;
-    ; struct Tag references look up by tag; pointer-to-struct collapses to ptr.
+    ; Struct/union base. struct {...} / struct Tag {...} parse the body to a
+    ; TY-STRUCT (TY-UNION for unions); Tag references look up by tag;
+    ; pointer-to-aggregate collapses to ptr.
     (when (!= is-struct 0)
       (when (> ptr-depth 0) (return ty-ptr))
       (let (look:i64 (c-skip-ws buf pos len)
             tag:ptr base-name)
         (when (and (< look len) (= (char-at buf look) 123))
           (let (sd-end:i64 (cast i64 0)
-                sd:ptr (c-parse-struct-body buf look len (cast ptr:i64 (addr-of sd-end)) tag))
+                sd:ptr (c-parse-struct-body buf look len (cast ptr:i64 (addr-of sd-end)) tag is-union))
             (ptr-set! out-end sd-end)
             (when (!= sd null)
-              (let (t:ptr:Type (cast ptr:Type (make-type TY-STRUCT)))
-                (.set! t sdef sd)
-                (return (cast ptr t))))
+              (return (cast ptr (type-for-sdef sd))))
             (return ty-ptr)))
         (when (!= tag null)
           (let (sd:ptr (lookup-struct tag))
             (when (!= sd null)
-              (let (t:ptr:Type (cast ptr:Type (make-type TY-STRUCT)))
-                (.set! t sdef sd)
-                (return (cast ptr t))))))
+              (return (cast ptr (type-for-sdef sd))))))
         (return ty-ptr)))
     ; Resolve base type
     (when (= base-name null)
@@ -407,9 +407,11 @@
   (when (!= (strstr ((cast ptr:Target g-target) triple) "windows") null) (return 4))
   (return 8))
 
-; Parse a C struct body `{ field; field; ... }` into a StructDef. tag-name null
-; means anonymous (memoized by shape). Returns the StructDef* or null on skip.
-(defn c-parse-struct-body:ptr (buf:ptr pos:i64 len:i64 out-end:ptr:i64 tag-name:ptr)
+; Parse a C struct/union body `{ field; field; ... }` into a StructDef.
+; tag-name null means anonymous (memoized by shape); is-union selects the
+; union registration path (members at offset 0, deferred IR type definition).
+; Returns the StructDef* or null on skip.
+(defn c-parse-struct-body:ptr (buf:ptr pos:i64 len:i64 out-end:ptr:i64 tag-name:ptr is-union:i32)
   ; Expect '{' at pos.
   (when (or (>= pos len) (!= (char-at buf pos) 123))
     (ptr-set! out-end pos) (return null))
@@ -479,10 +481,14 @@
         (inc! nfields)
         (set! pos (+ pos (cast i64 1)))))
     (when (!= bad 0) (return null))
+    ; A union with no members would have no IR representation.
+    (when (and (!= is-union 0) (= nfields 0)) (return null))
     ; Build StructDef. Anonymous → memoize via content hash; tagged
     ; → register by tag (if not already present).
     (when (= tag-name null)
-      (return (lookup-or-make-anon-struct fnames ftypes nfields)))
+      (if (!= is-union 0)
+        (return (lookup-or-make-anon-union fnames ftypes nfields))
+        (return (lookup-or-make-anon-struct fnames ftypes nfields))))
     (let (existing:ptr (lookup-struct tag-name))
       (when (!= existing null) (return existing)))
     (let (sd:ptr:StructDef (register-struct (arena-strdup tag-name)))
@@ -491,19 +497,28 @@
       (.set! sd num-fields nfields)
       (.set! sd src-file g-source-path)
       (.set! sd src-line 0)
-      (fprintf g-type-stream "%%%s = type { " tag-name)
-      (let (i:i32 0)
-        (while (< i nfields)
-          (when (!= i 0) (fprintf g-type-stream ", "))
-          (fprintf g-type-stream "%s" (type-to-ir (aref (cast ptr:ptr ftypes) i)))
-          (inc! i)))
-      (fprintf g-type-stream " }\n\n")
+      (if (!= is-union 0)
+        ; Named union: members at offset 0; the IR type definition is
+        ; deferred until member layouts are final (drain-pending-union-irs).
+        (do
+          (.set! sd is-union 1)
+          (vec-push g-pending-unions (cast ptr sd)))
+        (do
+          (fprintf g-type-stream "%%%s = type { " tag-name)
+          (let (i:i32 0)
+            (while (< i nfields)
+              (when (!= i 0) (fprintf g-type-stream ", "))
+              (fprintf g-type-stream "%s" (type-to-ir (aref (cast ptr:ptr ftypes) i)))
+              (inc! i)))
+          (fprintf g-type-stream " }\n\n")))
       (return sd))))
 
-; Parse a top-level `struct Tag {...};` or `typedef struct [Tag] {...} Name;`.
+; Parse a top-level `struct Tag {...};`, `union Tag {...};`, or
+; `typedef struct|union [Tag] {...} Name;`.
 ; Returns 1 if a definition was consumed, 0 if the caller should fall back.
 (defn c-parse-struct-decl:i32 (buf:ptr pos:i64 len:i64 out-end:ptr:i64 line:i32)
   (let (is-typedef:i32 0
+        is-union:i32 0
         te:i64 0
         tok:ptr (c-read-ident buf pos len (cast ptr:i64 (addr-of te))))
     (cond
@@ -511,14 +526,18 @@
         (do (set! is-typedef 1) (set! pos te))
       (= (strcmp tok "struct") 0)
         (set! pos te)
+      (= (strcmp tok "union") 0)
+        (do (set! is-union 1) (set! pos te))
       true
         (do (ptr-set! out-end pos) (return 0)))
     (when (!= is-typedef 0)
       (set! pos (c-skip-ws buf pos len))
       (let (te2:i64 0
             t2:ptr (c-read-ident buf pos len (cast ptr:i64 (addr-of te2))))
-        (when (!= (strcmp t2 "struct") 0)
-          (ptr-set! out-end pos) (return 0))
+        (cond
+          (= (strcmp t2 "struct") 0) 0
+          (= (strcmp t2 "union") 0) (set! is-union 1)
+          true (do (ptr-set! out-end pos) (return 0)))
         (set! pos te2)))
     ; After 'struct': optional tag, then optional body.
     (set! pos (c-skip-ws buf pos len))
@@ -535,7 +554,7 @@
       (let (body-end:i64 0
             sd:ptr (c-parse-struct-body buf pos len
                                         (cast ptr:i64 (addr-of body-end))
-                                        (if (!= is-typedef 0) null tag)))
+                                        (if (!= is-typedef 0) null tag) is-union))
         (set! pos body-end)
         ; For typedef, the typedef name comes after the body and may
         ; differ from the inner tag. Register a separate StructDef
@@ -555,16 +574,22 @@
                   (.set! alias num-fields ((cast ptr:StructDef sd) num-fields))
                   (.set! alias src-file g-source-path)
                   (.set! alias src-line 0)
-                  (fprintf g-type-stream "%%%s = type { " tname)
-                  (let (i:i32 0
-                        nf:i32 ((cast ptr:StructDef sd) num-fields)
-                        fts:ptr ((cast ptr:StructDef sd) field-types))
-                    (while (< i nf)
-                      (when (!= i 0) (fprintf g-type-stream ", "))
-                      (fprintf g-type-stream "%s"
-                        (type-to-ir (aref (cast ptr:ptr fts) i)))
-                      (inc! i)))
-                  (fprintf g-type-stream " }\n\n"))))
+                  (if (!= is-union 0)
+                    ; Union alias: same deferred-definition path as the tag.
+                    (do
+                      (.set! alias is-union 1)
+                      (vec-push g-pending-unions (cast ptr alias)))
+                    (do
+                      (fprintf g-type-stream "%%%s = type { " tname)
+                      (let (i:i32 0
+                            nf:i32 ((cast ptr:StructDef sd) num-fields)
+                            fts:ptr ((cast ptr:StructDef sd) field-types))
+                        (while (< i nf)
+                          (when (!= i 0) (fprintf g-type-stream ", "))
+                          (fprintf g-type-stream "%s"
+                            (type-to-ir (aref (cast ptr:ptr fts) i)))
+                          (inc! i)))
+                      (fprintf g-type-stream " }\n\n"))))))
             (when (!= (cast i64 (strlen tname)) (cast i64 0))
               (set! pos ne))))
         ; Skip trailing __attribute__ if any.
@@ -614,8 +639,9 @@
                 ; Skip typedefs, static inline functions, etc.
                 ; Only process extern declarations and top-level type declarations
                 (cond
-                  (or (= tok "extern") (or (= tok "struct") (= tok "typedef")))
-                    ; extern -> function declaration; struct/typedef -> struct layout.
+                  (or (or (= tok "extern") (= tok "union"))
+                      (or (= tok "struct") (= tok "typedef")))
+                    ; extern -> function declaration; struct/union/typedef -> layout.
                     (let (decl-end:i64 (cast i64 0)
                           ok:i32 (if (= tok "extern")
                                    (c-parse-func-decl buf pos buf-len
@@ -672,6 +698,10 @@
   (when (= name "ui16")  (return "uint16_t"))
   (when (= name "ui32")  (return "uint32_t"))
   (when (= name "ui64")  (return "uint64_t"))
+  (when (= name "f32")   (return "float"))
+  (when (= name "f64")   (return "double"))
+  (when (= name "bool")  (return "_Bool"))
+  (when (= name "CStr")  (return "const char*"))
   (when (= name "ptr")   (return "void*"))
   ; Assume struct type
   (return (fmt-s "struct %s" name)))
@@ -694,7 +724,23 @@
             (if (= ((cast ptr:Node rest) cdr) null)
               (set! inner (type-node-to-c ((cast ptr:Node rest) car)))
               (set! inner (type-node-to-c rest)))
-            (return (fmt-s "%s*" inner))))))
+            (return (fmt-s "%s*" inner))))
+        ; Anonymous union: (union member:type ...) → inline `union { ... }`.
+        (when (and (!= head null)
+                   (and (= ((cast ptr:Node head) kind) NODE-SYM)
+                        (= ((cast ptr:Node head) s) "union")))
+          (let (acc:ptr "union { "
+                cur:ptr rest)
+            (while (!= cur null)
+              (let (member:ptr ((cast ptr:Node cur) car)
+                    mname:ptr null
+                    mtname:ptr null)
+                (extract-name-type member (cast ptr:ptr (addr-of mname)) (cast ptr:ptr (addr-of mtname)))
+                (let (mtnode:ptr (extract-type-node member ((cast ptr:Node member) line)))
+                  (set! acc (fmt-2s "%s%s" acc
+                              (fmt-2s "%s %s; " (type-node-to-c mtnode) mname)))))
+              (set! cur ((cast ptr:Node cur) cdr)))
+            (return (fmt-s "%s}" acc))))))
     (return "void*")))
 
 ; Extract the type AST node from a binding form.  Returns:
@@ -736,12 +782,41 @@
         (inc! i)))
     (printf "} %s;\n\n" name)))
 
+; A defunion-template instance type ((Result i64 i32)) has no C spelling yet —
+; the instance struct is not exported, and mapping it to void* would emit an
+; ABI-wrong signature (the value is really a by-value tagged struct). Detect it
+; so the declare can be skipped honestly.
+(defn cheader-template-instance:i32 (tn:ptr)
+  (when (= tn null) (return 0))
+  (let (n:ptr:Node (cast ptr:Node tn))
+    (when (!= (n kind) NODE-CELL) (return 0))
+    (let (head:ptr:Node (cast ptr:Node (n car)))
+      (when (= (cast ptr head) null) (return 0))
+      (when (!= (head kind) NODE-SYM) (return 0))
+      (when (!= (union-template-lookup (head s)) null) (return 1))
+      (return 0))))
+
 (defn emit-cheader-declare:void (form:ptr)
   ; (defn name:rettype (params...) ...)
   (let (name-node:ptr (node-at form 1)
         fname:ptr null
         ret-name:ptr null)
     (extract-name-type name-node (cast ptr:ptr (addr-of fname)) (cast ptr:ptr (addr-of ret-name)))
+    ; Skip signatures mentioning template-instance types (no C spelling yet).
+    (let (skip:i32 (cheader-template-instance
+                     (extract-type-node name-node ((cast ptr:Node name-node) line)))
+          params0:ptr (node-at form 2)
+          np:i32 (node-len (node-at form 2))
+          pi:i32 0)
+      (while (< pi np)
+        (when (!= (cheader-template-instance
+                    (extract-type-node (node-at params0 pi)
+                                       ((cast ptr:Node (node-at params0 pi)) line))) 0)
+          (set! skip 1))
+        (inc! pi))
+      (when (!= skip 0)
+        (printf "/* %s: uses a defunion-template instance type; not exported */\n" fname)
+        (return)))
     (let (rtnode:ptr (extract-type-node name-node ((cast ptr:Node name-node) line))
           ret-c:ptr "void")
       (when (!= rtnode null) (set! ret-c (type-node-to-c rtnode)))
@@ -786,11 +861,81 @@
         (inc! i)))
     (printf "};\n\n")))
 
+; Export a defunion as its C view (unions.md §3): the tagged struct plus an
+; enum of tag constants, fully legible and constructible from C. Templates
+; define no type and are skipped.
+(defn emit-cheader-defunion:void (form:ptr)
+  (let (name-node:ptr:Node (cast ptr:Node (node-at form 1)))
+    (when (!= (name-node kind) NODE-SYM) (return))
+    (let (name:ptr (name-node s)
+          narms:i32 (- (node-len form) 2)
+          npay:i32 0
+          i:i32 0)
+      ; Any payload-bearing arm?
+      (while (< i narms)
+        (when (= ((cast ptr:Node (node-at form (+ i 2))) kind) NODE-CELL)
+          (inc! npay))
+        (inc! i))
+      (printf "typedef struct {\n    int32_t tag;\n")
+      (when (> npay 0)
+        (printf "    union {\n")
+        (set! i 0)
+        (while (< i narms)
+          (let (arm:ptr:Node (cast ptr:Node (node-at form (+ i 2))))
+            (when (= (arm kind) NODE-CELL)
+              (let (aname:ptr ((cast ptr:Node (node-at (cast ptr arm) 0)) s)
+                    nf:i32 (- (node-len (cast ptr arm)) 1))
+                (if (= nf 1)
+                  ; One field → the payload is just that field, named by the arm.
+                  (let (field:ptr (node-at (cast ptr arm) 1)
+                        tnode:ptr (extract-type-node field ((cast ptr:Node field) line)))
+                    (printf "        %s %s;\n" (type-node-to-c tnode) aname))
+                  (do
+                    (printf "        struct { ")
+                    (let (fi:i32 0)
+                      (while (< fi nf)
+                        (let (field:ptr (node-at (cast ptr arm) (+ fi 1))
+                              fname:ptr null
+                              ftname:ptr null)
+                          (extract-name-type field (cast ptr:ptr (addr-of fname))
+                                                    (cast ptr:ptr (addr-of ftname)))
+                          (let (tnode:ptr (extract-type-node field ((cast ptr:Node field) line)))
+                            (printf "%s %s; " (type-node-to-c tnode) fname)))
+                        (inc! fi)))
+                    (printf "} %s;\n" aname))))))
+          (inc! i))
+        (printf "    } payload;\n"))
+      (printf "} %s;\n\n" name)
+      ; Tag constants: declaration order from 0 — part of the C contract.
+      (printf "enum %s_tag {\n" name)
+      (set! i 0)
+      (while (< i narms)
+        (let (arm:ptr:Node (cast ptr:Node (node-at form (+ i 2)))
+              aname:ptr (if (= (arm kind) NODE-SYM) (arm s)
+                          ((cast ptr:Node (node-at (cast ptr arm) 0)) s)))
+          (printf "    %s_%s = %d" name aname i)
+          (when (< i (- narms 1)) (printf ","))
+          (printf "\n"))
+        (inc! i))
+      (printf "};\n\n"))))
+
 (defn emit-cheader-header:void (forms:ptr source-file:ptr)
   (printf "#pragma once\n")
   (printf "#include <stdint.h>\n")
   (printf "#include <stdbool.h>\n\n")
   (printf "/* Generated from %s by nucleusc --emit-cheader */\n\n" source-file)
+  ; Register defunion templates first so declares can recognize (and skip)
+  ; signatures that mention template-instance types.
+  (let (fc0:ptr forms)
+    (while (!= fc0 null)
+      (let (f:ptr:Node (cast ptr:Node ((cast ptr:Node fc0) car)))
+        (when (and (and (!= (cast ptr f) null) (= (f kind) NODE-CELL))
+                   (and (> (node-len (cast ptr f)) 1)
+                        (and (-> f (node-at _ 0) (cast ptr:Node _) (_ kind) (= _ NODE-SYM))
+                             (and (-> f (node-at _ 0) (cast ptr:Node _) (_ s) (= _ "defunion"))
+                                  (-> f (node-at _ 1) (cast ptr:Node _) (_ kind) (= _ NODE-CELL))))))
+          (register-union-template (cast ptr f))))
+      (set! fc0 ((cast ptr:Node fc0) cdr))))
   (let (fc:ptr forms)
     (while (!= fc null)
       (let (f:ptr:Node (cast ptr:Node ((cast ptr:Node fc) car)))
@@ -799,6 +944,7 @@
                         (-> f (node-at _ 0) (cast ptr:Node _) (_ kind) (= _ NODE-SYM))))
           (let (h:ptr (-> f (node-at _ 0) (cast ptr:Node _) (_ s)))
             (cond (= h "defstruct") (emit-cheader-defstruct (cast ptr f))
+                  (= h "defunion")  (emit-cheader-defunion (cast ptr f))
                   (= h "defn")      (emit-cheader-declare (cast ptr f))
                   (= h "defconst")  (emit-cheader-defconst (cast ptr f))
                   (= h "defenum")   (emit-cheader-defenum (cast ptr f))

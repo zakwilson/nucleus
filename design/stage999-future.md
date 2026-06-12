@@ -46,6 +46,19 @@ Probably a subset of polymorphism. In Clojure, many things that are not fns in t
 
 A type should be a cast (and maybe this should rely on defcast, or maybe it should be a new mechanism allowing destructive operations). A struct should be field access.
 
+## Sum types and match
+
+Tagged unions with a `match` form, noted as adjacent follow-ons from stage 10
+(see stage10/safety.md §3) along with bounds-checked slices and
+`const`/read-only pointers. `(Maybe T)` over a non-pointer payload needs this
+(stage10/nullability.md §1), as does the generic `(Result T E)` error-handling
+option (stage10/errors.md §2). Niche encoding for the pointer cases should be
+something the layout engine applies, not a special case.
+
+**Now designed in [stage10/unions.md](stage10/unions.md)** (untagged C
+unions + `defunion`/`match` + explicit-instance templates + the niche layout
+rules). Bounds-checked slices and `const` pointers remain here.
+
 ## Editor integration
 
 Local Emacs interaction (eval-from-buffer, completion, jump-to-definition,
@@ -66,16 +79,6 @@ Open question: whether to flip the default so plain `let` itself auto-frees,
 with `let*` as the opt-out (the original shape proposed here). `with` exists
 alongside `let` for now; revisit once it has wider use.
 
-## Safe constructs
-
-Nucleus isn't trying to be Rust, but it should provide the option of safe constructs where it's practical to do so, and move things that should be avoided when possible to an unsafe/ namespace.
-
-The `with` special form is a target for improvement. It should enforce a lexical *lifetime* rather than just preventing memory leaks. Attempting to return variables bound to pointers using `with` should be a compile-time error. That includes binding a second variable with a nested `let`. Returning the dereferenced value is permissible.
-
-## Nullability
-
-It would be **great** if most types and pointers could be non-nullable with a `Maybe` or `Option` type to provide nullability where it's desired. Even better would be safe pointers by default which cannot point to anything but a valid instance of the declared type, with raw pointers relegated to an `unsafe` namespace.
-
 ## Base features
 
 * vector/hashmap/set in a library, use in the compiler
@@ -92,8 +95,4 @@ Safe accessors with runtime cost seem like a good idea here, but it would be eve
 ## import-only
 
 `import-only` takes a library name and a list of symbols, importing only those symbols and the dependencies of the functions/structs/etc... they resolve to. This is intended for very constrained targets like microcontrollers. It's OK if this has limitations like only working for Nucleus (not C libraries) or requiring the source, not just a header.
-
-## library path
-
-Upon installing Nucleus with `make install`, it won't actually run from arbitrary working directories because it can't find macros.nuc.
 

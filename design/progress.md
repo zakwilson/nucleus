@@ -111,6 +111,21 @@ Current branch: `main` (Stage 8 C-parity + Stage 9 polymorphism merged)
 | Name (non-)shadowing: one symbol = one kind, checked at every top-level definer; fixed `i64`/`double` self-shadows | Done |
 | i64 hardcoding: target descriptor (`g-target-triple` / `g-target-ptr-bytes`) + host `ptr-bytes`; `sizeof`/`type-size`/triple parameterized. Remaining: `emit-qq-helpers` Node ABI | Done (qq-helper ABI deferred) |
 
+### Stage 10 unions & tagged sums (`design/stage10/unions.md`)
+| Item | Status |
+|---|---|
+| U1: untagged `(union ...)` — `TY-UNION`, max-size/max-align layout, anon memoization (`__anon_union_h<hex>`), deferred IR type defs (`drain-pending-union-irs`) | Done |
+| U1: C header import of `union {...}` fields / named unions / `typedef union` (stage-3c skip lifted); cheader + `.nuch` export; SysV `abi-classify` merge over members at offset 0 | Done |
+| U1: layout corpus (`tests/layout/`) extended with union cases vs the C oracle | Done |
+| U2: `defunion` (monomorphic) — `{tag:i32, payload:union}` backing struct, generated `Union-arm` constructors, `make`, no raw tag/payload access outside `match` | Done |
+| U2: `match` — exhaustiveness (compile error naming the missing arm), `case`/`switch` lowering, value-expression join, by-value binders, `(ref x)` in-place binders (pointer scrutinee), `defenum` scrutinee freebie | Done |
+| U2: Drop rule (§7) — owning `with` binding of a union with Drop-conforming arm payloads rejected unless the union itself conforms to Drop | Done (v1 reject; tag-switch drop later) |
+| U3: templates — `(defunion (Result T E) ...)`, explicit-instance `make`, memoized stamping, `.nuch` verbatim export + importer-side stamping | Done |
+| U3: return-position target typing (§5c) — bare `(ok v)`/`(err e)` against the declared return type | Done (direct return form only) |
+| U4: niche layout rules (`?T`/`!T` as layout instances), `:repr` | Deferred with errors.md A2 (designer: A1 is core, A2 an optimization) |
+| REPL: `defunion` definition + constructor declares in preamble; lazily-emitted union type defs drained into the preamble (libc preload, `include`, `import`) | Done |
+| Examples/tests: `examples/unions.nuc`, `tests/repl/unions.in` | Done |
+
 ---
 
 ## Deferred (needs design decision or blocked on above)
@@ -119,7 +134,7 @@ Current branch: `main` (Stage 8 C-parity + Stage 9 polymorphism merged)
 |---|---|
 | Polymorphic print/read (`def-print-method`) | Now expressible via Stage 9 multimethods/protocols |
 | C header library as external `.so` | Separate from internal split already done |
-| Stage 3c: unions, bit-fields, struct ABI, `long double`, `_Complex` | Deferred per `design/stage3c.md` |
+| Stage 3c: bit-fields, `long double`, `_Complex` | Deferred per `design/stage3c.md`; unions done (stage 10), struct ABI done (stage 8) |
 | Lambda / closures | `design/stage999-future.md` |
 | Map/reduce/filter | `design/stage999-future.md` |
 | Polymorphism / protocol system | Done — Stage 9 (`design/stage9/polymorphism.md`) |
