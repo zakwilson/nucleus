@@ -60,3 +60,20 @@ Prefer the REPL when iteration speed matters more than reproducibility:
   ...)` forms run normally — don't strip them when pasting code.
 - Errors don't kill the session; on error the partial form's IR is discarded
   and the prompt returns. Use this to probe failure cases cheaply.
+
+## REPL preamble / module-assembly invariant (for compiler work)
+
+Every JIT'd REPL module is assembled as **preamble + this module's type buffer
++ strings + decls + defs**. Two rules keep named types defined exactly once
+per module:
+
+1. Never append a module's type buffer to `g-repl-preamble` *before* the
+   module is JIT'd — the module already includes both, so an early append
+   defines every type twice (LLVM "redefinition of type" parse error). Copy
+   the buffer (`strdup`), JIT, then append the copy (see the `import` and
+   `defunion` paths in `src/repl.nuc`).
+2. Lazily-emitted type definitions (union IR defs via
+   `drain-pending-union-irs`) must be drained into a buffer that *reaches the
+   preamble* in the same step that registers them (libc preload, `include`,
+   `import`). Leaving them pending makes them surface inside some later
+   module's type buffer while subsequent modules need them from the preamble.

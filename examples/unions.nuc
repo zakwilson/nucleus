@@ -1,0 +1,93 @@
+; Stage 10: unions & tagged sums (design/stage10/unions.md).
+; Layer 1 — untagged (union ...): raw C-parity reinterpretation, members at
+; offset 0, accessed through a typed pointer (the cast is the escape hatch).
+; Layer 2 — defunion tagged sums: generated arm constructors, (make ...) and
+; return-position target typing for construction, and (match ...) as the sole
+; eliminator with exhaustiveness checking. (ref x) binders alias payload
+; fields in place for mutation (pointer scrutinee). match over a defenum
+; scrutinee gets the same exhaustiveness check.
+(include stdio)
+
+; ---- Layer 1: untagged union as a struct field ----
+
+(defstruct Scalar kind:i32 (data (union as-int:i64 as-float:f64)))
+
+; ---- Layer 2: tagged sums ----
+
+(defunion Shape
+  (circle r:f64)
+  (rect   w:f64 h:f64)
+  point)                          ; payload-less arm
+
+(defenum Color RED GREEN BLUE)
+
+; Exhaustive match: no `_` arm, so adding a Shape arm breaks this loudly.
+(defn area:f64 (s:ptr:Shape)
+  (match s
+    ((circle r) (return (* 3.14159 (* r r))))
+    ((rect w h) (return (* w h)))
+    (point      (return 0.0))))
+
+; (ref x) binders need a pointer scrutinee; they alias the field in place.
+(defn scale-by:void (s:ptr:Shape k:f64)
+  (match s
+    ((circle (ref r))       (ptr-set! r (* @r k)))
+    ((rect (ref w) (ref h)) (do (ptr-set! w (* @w k)) (ptr-set! h (* @h k))))
+    (point 0)))
+
+; A parameterized defunion declares a template; (Result i64 i32) stamps and
+; memoizes the concrete instance. In return position, bare (ok v) / (err e)
+; resolve against the declared return type (unions.md §5c target typing).
+(defunion (Result T E)
+  (ok  v:T)
+  (err e:E))
+
+(defn (try-div (Result i64 i32)) (a:i64 b:i64)
+  (when (= b (cast i64 0))
+    (return (err 1)))
+  (return (ok (/ a b))))
+
+(defn report:void ((r (Result i64 i32)))
+  (match r
+    ((ok v)  (printf "ok %lld\n" v))
+    ((err e) (printf "err %d\n" e))))
+
+(defn color-name:ptr (c:i32)
+  (match c
+    (RED   (return "red"))
+    (GREEN (return "green"))
+    (BLUE  (return "blue"))))
+
+(defn main:i32 ()
+  ; Untagged: write one member, read it back; .& gives the field pointer.
+  (let (s:ptr:Scalar (alloca Scalar)
+        (d (ptr (union as-int:i64 as-float:f64))) (.& s data))
+    (.set! s kind 1)
+    (.set! d as-int (cast i64 42))
+    (printf "scalar kind %d as-int %lld (sizeof %lld)\n"
+      (s kind) (d as-int) (cast i64 (sizeof Scalar))))
+
+  ; Tagged: constructors, make, match, in-place mutation.
+  (let (c:Shape (Shape-circle 1.5)
+        r:Shape (make Shape rect 3.0 4.0)
+        p:Shape (Shape-point))
+    (printf "areas %.2f %.2f %.2f\n"
+      (area (addr-of c)) (area (addr-of r)) (area (addr-of p)))
+    (scale-by (addr-of r) 2.0)
+    (printf "scaled %.2f\n" (area (addr-of r)))
+    ; match is also a value expression (cond's phi rules)
+    (printf "kind %s\n"
+      (match r
+        ((circle _) "circle")
+        ((rect _ _) "rect")
+        (point      "point"))))
+
+  ; Templates: explicit-instance construction + target typing.
+  (let ((a (Result i64 i32)) (try-div (cast i64 10) (cast i64 4))
+        (b (Result i64 i32)) (try-div (cast i64 10) (cast i64 0)))
+    (report a)
+    (report b))
+
+  ; defenum freebie: exhaustive match over enum members.
+  (printf "color %s\n" (color-name GREEN))
+  0)

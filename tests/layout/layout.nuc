@@ -34,4 +34,10 @@
 
   (let (s:ptr:TimeSpec (alloca TimeSpec)) (printf "TimeSpec sizeof=%lld tv_sec=%lld tv_nsec=%lld\n" (cast i64 (sizeof TimeSpec)) (off s (.& s tv_sec)) (off s (.& s tv_nsec))))
   (let (s:ptr:Rec (alloca Rec)) (printf "Rec sizeof=%lld tag=%lld value=%lld next=%lld d=%lld\n" (cast i64 (sizeof Rec)) (off s (.& s tag)) (off s (.& s value)) (off s (.& s next)) (off s (.& s d))))
+
+  (printf "U_scalar sizeof=%lld\n" (cast i64 (sizeof U_scalar)))
+  (printf "U_mixed sizeof=%lld\n"  (cast i64 (sizeof U_mixed)))
+  (printf "U_pad sizeof=%lld\n"    (cast i64 (sizeof U_pad)))
+  (let (s:ptr:UWrap (alloca UWrap)) (printf "UWrap sizeof=%lld tag=%lld u=%lld\n" (cast i64 (sizeof UWrap)) (off s (.& s tag)) (off s (.& s u))))
+  (let (s:ptr:UAnon (alloca UAnon)) (printf "UAnon sizeof=%lld kind=%lld data=%lld tail=%lld\n" (cast i64 (sizeof UAnon)) (off s (.& s kind)) (off s (.& s data)) (off s (.& s tail))))
   (return 0))

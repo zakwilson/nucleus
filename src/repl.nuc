@@ -161,17 +161,50 @@
                   (set! g-out g-type-stream)
                   (emit-defstruct (cast ptr f))
                   ; Append type def to preamble for future modules
+                  (drain-pending-union-irs)
                   (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
                   (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
                     (fputs g-type-bufp g-repl-preamble))
                   (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
                   (fprintf stderr "  defined\n"))
+            (and (!= h null) (= h "defunion"))
+              ; Tagged sum: register the type (or template), JIT the arm
+              ; constructors, then push the type defs + constructor declares
+              ; into the preamble for future modules.
+              (do (open-module-streams)
+                  (set! g-out g-type-stream)
+                  (let (nn:ptr:Node (cast ptr:Node (node-at form 1)))
+                    (when (and (= (nn kind) NODE-SYM)
+                               (= (cast ptr (lookup-struct (nn s))) null))
+                      (register-struct (nn s))))
+                  (prescan-union-ctors (cast ptr f))
+                  (finalize-generics)
+                  (set! g-out g-def-stream)
+                  (emit-defunion (cast ptr f))
+                  (drain-pending-union-irs)
+                  (fflush g-type-stream)
+                  (let (tcopy:ptr null)
+                    (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
+                      (set! tcopy (strdup g-type-bufp)))
+                    (repl-jit-module (f line))
+                    (when (!= tcopy null)
+                      (fputs tcopy g-repl-preamble)
+                      (free tcopy)))
+                  (let (nn:ptr:Node (cast ptr:Node (node-at form 1)))
+                    (when (= (nn kind) NODE-SYM)
+                      (repl-declare-union-ctors (nn s))))
+                  (fprintf stderr "  defined\n"))
             (and (!= h null) (= h "include"))
               (do (open-module-streams)
                   (set! g-out g-decl-stream)
                   (emit-include (cast ptr f))
-                  ; Append declarations to preamble for future modules
+                  ; Header unions defer their IR type defs; land them here so
+                  ; the preamble carries them for every later module.
+                  (drain-pending-union-irs)
+                  ; Append types + declarations to preamble for future modules
                   (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
+                  (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
+                    (fputs g-type-bufp g-repl-preamble))
                   (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp (cast i64 0)) 0))
                     (fputs g-decl-bufp g-repl-preamble))
                   (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp))
@@ -332,11 +365,20 @@
               (do (let (pre-len:i32 ((cast ptr:Scope g-globals) len))
                     (open-module-streams)
                     (emit-import (cast ptr f))
-                    ; Append type definitions to preamble before JIT
+                    ; Land lazily-emitted union type defs in this module's type
+                    ; buffer, copy it, and append the copy to the preamble only
+                    ; AFTER the module is JIT'd — the module itself already
+                    ; includes both the preamble and its own type buffer, so an
+                    ; early append would define every type twice.
+                    (drain-pending-union-irs)
                     (fflush g-type-stream)
-                    (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
-                      (fputs g-type-bufp g-repl-preamble))
-                    (repl-jit-module (f line))
+                    (let (tcopy:ptr null)
+                      (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
+                        (set! tcopy (strdup g-type-bufp)))
+                      (repl-jit-module (f line))
+                      (when (!= tcopy null)
+                        (fputs tcopy g-repl-preamble)
+                        (free tcopy)))
                     ; Add declares for newly imported functions to preamble
                     ; Skip duplicate scope entries (prescan + emit-defn both register)
                     (let (si:i32 pre-len)
@@ -582,6 +624,37 @@
     (aset! (cast ptr:ptr (cast ptr tgt-addr)) (cast i64 0) (cast ptr impl-addr))
     (return 0)))
 
+; Append ABI-lowered `declare`s for a defunion's arm constructors to the REPL
+; preamble so later modules can call them (the defining module owns the bodies).
+(defn repl-declare-union-ctors:void (uname:ptr)
+  (if-some (ud (uniondef-lookup uname))
+    (let (ret:ptr (type-for-sdef (ud sdef))
+          ret-info:ptr (abi-classify (type-for-sdef (ud sdef)))
+          saved-out:ptr g-out
+          i:i32 0)
+      (set! g-out g-repl-preamble)
+      (while (< i (ud num-arms))
+        (let (aname:ptr (aref (cast ptr:ptr (ud arm-names)) i)
+              nf:i32 (aref (cast ptr:i32 (ud arm-nfields)) i)
+              ftypes:ptr (aref (cast ptr:ptr (ud arm-ftypes)) i))
+          (fprintf g-out "declare %s @%s-%s(" (abi-ret-ir ret-info ret) uname aname)
+          (let (need-comma:i32 0)
+            (when (= ((cast ptr:AbiInfo ret-info) kind) ABI-MEMORY)
+              (fprintf g-out "ptr sret(%s) align %d"
+                (type-to-ir ret) ((cast ptr:AbiInfo ret-info) align))
+              (set! need-comma 1))
+            (let (j:i32 0)
+              (while (< j nf)
+                (when (!= need-comma 0) (fprintf g-out ", "))
+                (abi-print-param (abi-classify (aref (cast ptr:ptr ftypes) j))
+                                 (aref (cast ptr:ptr ftypes) j) null)
+                (set! need-comma 1)
+                (inc! j))))
+          (fprintf g-out ")\n"))
+        (inc! i))
+      (set! g-out saved-out))
+    0))
+
 ; Build a JIT module from the current module streams and add it to the JIT.
 ; Includes the REPL preamble (accumulated declarations/types) in the module.
 (defn repl-jit-module:void (line:i32)
@@ -599,6 +672,9 @@
 ; "define ... @foo(...) { ... }" but JIT'd as "@foo.impl.N" so the stable
 ; @foo thunk symbol can dispatch to the latest impl on each redefinition.
 (defn repl-jit-module-rt-rewrite:void (line:i32 rt:ptr fname:ptr impl-name:ptr)
+  ; Union type definitions are emitted lazily — land any pending ones in this
+  ; module's type buffer before it is captured.
+  (drain-pending-union-irs)
   (fflush g-type-stream)
   (fflush g-decl-stream)
   (fflush g-def-stream)
@@ -643,7 +719,14 @@
   (emit-c-include "string.h" 0)
   (emit-c-include "ctype.h" 0)
   (emit-c-include "unistd.h" 0)
+  ; Header unions register with lazily-emitted IR type defs; land them in this
+  ; throwaway module's type buffer so the preamble gets them exactly once
+  ; (leaving them pending would make them surface inside a later module that
+  ; already sees them via the preamble — a redefinition error).
+  (drain-pending-union-irs)
   (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
+  (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
+    (fputs g-type-bufp g-repl-preamble))
   (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp (cast i64 0)) 0))
     (fputs g-decl-bufp g-repl-preamble))
   (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)

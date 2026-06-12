@@ -24,7 +24,8 @@ and it *is* a `T*` to C.
 > **Scope.** Stage 10 covers nullability of **pointers** only (the niche-encoded
 > case). `(Maybe T)` over a non-pointer payload needs a discriminant
 > (`{has:i1, val:T}`) and is left to the future sum-types feature
-> ([../stage999-future.md](../stage999-future.md)).
+> ([../stage999-future.md](../stage999-future.md), now designed in
+> [unions.md](unions.md)).
 
 ## 2. Representation
 

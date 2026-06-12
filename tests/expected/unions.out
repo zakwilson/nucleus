@@ -1,0 +1,7 @@
+scalar kind 1 as-int 42 (sizeof 16)
+areas 7.07 12.00 0.00
+scaled 48.00
+kind rect
+ok 2
+err 1
+color green
