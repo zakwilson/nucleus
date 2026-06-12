@@ -152,6 +152,43 @@ strictly incremental: an unconverted file sees no new errors.
 All three at zero runtime cost (one branch per explicit narrow) and zero ABI
 change.
 
-## 9. Implementation status
+## 9. Implementation status (landed 2026-06-12)
 
-Pending — design only.
+N1 is fully implemented; `make test` and `make bootstrap` pass. N2 (converting
+the compiler) has not started; the flip remains deferred.
+
+- **Representation (§2)** — `pkind` (`PTR-RAW`/`PTR-REF`/`PTR-MAYBE`) on
+  `Type`, default raw. Deliberately ignored by `type-eq`/`hash-type`/
+  `type-mangle-token` (like `is-volatile`), so dispatch, monomorphization, and
+  emitted IR are unaffected; shared `Type`s are never mutated
+  (`type-as-pkind` clones, identity when the kind already matches). `?T`
+  parses in `parse-type-name`; `(ref T)` / `(Maybe (ref T))` in
+  `parse-type-from-node`; `(Maybe T)` over a non-pointer is rejected with a
+  pointer to the future sum-types work.
+- **Surface forms (§3)** — all seven. `none` is an elem-less Maybe singleton
+  that coerces into any `?T` slot exactly as `null` coerces into `(ptr T)`;
+  `some`/`as-ref` are pure relabels (no IR); `unwrap` is a null test +
+  `llvm.trap` (declared lazily); `unwrap-or` evaluates its default only on the
+  none path; `if-some`/`when-some` bind the Maybe and desugar to `cond`, so
+  the synthesized `(!= x null)` test *is* the narrowing point and `cond`'s
+  phi/typing/fall-through rules apply unchanged.
+- **Narrowing (§4)** — per-`Sym` narrowed view (`ntype`) plus a global undo
+  stack. Established by `cond` tests in both polarities (with `and`/`or`/`not`
+  decomposition), failed-guard accumulation across later `cond` pairs and past
+  the form when guard bodies terminate, the rhs of `and`/`or`, `while`
+  conditions, and known-non-null `set!`/init. Killed by reassignment (sticky
+  across joins via `kstamp`), by a loop-body prescan for textual `set!` (with
+  an emit-time backstop for macro-synthesized assignments), and wholesale at
+  `label`. Reads go through `sym-effective-type`, shared by codegen and
+  `node-type`, so the two cannot drift.
+- **Checks (§5, §7)** — deref/field/index/store gates on un-narrowed Maybe
+  (`require-derefable`) at `deref`, `aref`/`aset!`, `ptr-set!`, `.`/`get`/
+  `.set!`/`.&`; flow gates (`pkind-flow-check`) on assignment/init, call
+  arguments, and explicit + implicit returns; widening always allowed;
+  `(cast ref:T x)` is the audited assertion at the C boundary. `cond` joins
+  meet kinds conservatively (raw over Maybe over ref).
+- **N2 (§6)** — open. No compiler code converted yet; the checks engage only
+  on `ref`/`Maybe` spellings, so unconverted code sees no new errors.
+
+[examples/maybe.nuc](../../examples/maybe.nuc) exercises the full surface in
+the test suite.

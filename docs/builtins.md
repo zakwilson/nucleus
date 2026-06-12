@@ -122,6 +122,33 @@ Types are attached to names with `:` syntax: `name:type` (e.g., `x:i32`, `main:i
 
 Pointers to a typed element use the `ptr` constructor: `(ptr T)` is a pointer to `T`, and `(ptr ptr T)` chains. Bare `ptr` (with no element) remains the opaque `void*` pointer.
 
+### Pointer kinds: `(ref T)` and `?T` (Stage 10)
+
+Typed pointers carry a compile-time **kind**; all three lower to the same IR
+`ptr` and are ABI-identical to a C `T*` (see `design/stage10/nullability.md`):
+
+| Surface | Meaning | Deref | Null? |
+|---|---|---|---|
+| `(ptr T)`, bare `ptr` | **raw** — unchecked, the default | allowed (your problem) | yes |
+| `(ref T)` / `ref:T` | **non-null** — always a valid `T` | always safe | no |
+| `?T` ≡ `(Maybe (ref T))` | **nullable-checked** — may be none | **compile error** until narrowed | yes (`null` = none) |
+
+Only a `(ref T)` destination adds obligations: raw or `?T` values may not flow
+into a `(ref T)` slot (binding, `set!`, field/element store, argument, return)
+— narrow first, or assert with `(cast ref:T x)` (the audited C-boundary
+escape hatch). Widening (`ref`→raw, `ref`→`?T`, raw↔`?T`) is always allowed.
+`none` is the null `?T` literal; `(Maybe T)` over non-pointers needs sum types
+and is future work.
+
+**Flow narrowing**: inside a region dominated by a successful non-null test, a
+local `?T` binding reads as `(ref T)`. The compiler's own guard idioms are the
+mechanism — `(when (= m null) (return …))`, `(if (!= m null) … …)`,
+`(and (!= m null) (m field))` all narrow, as do `if-some`/`when-some`/`unwrap`.
+A reassignment kills the narrow (sticky across joins); loop bodies drop narrows
+established outside the loop for any binding the body assigns; `label` kills
+all narrows (unknown predecessors). Kind mismatches at a `cond`/`if` join meet
+conservatively (`raw` beats `Maybe` beats `ref`).
+
 ### Volatile qualifier
 
 A type can be tagged `volatile` in postfix position — either the list form `(T volatile)` or the sugared `T:volatile`. Loads and stores of a value held at a volatile-qualified storage site (variable, struct field, or pointer target) are emitted as `load volatile` / `store volatile` in LLVM IR; the compiler will not elide, reorder, or coalesce them. Examples:
@@ -250,7 +277,7 @@ expression yields `void` (e.g., a side-effect or no-return call like
 |------|-------------|--------------|
 | `do` | Sequence multiple expressions; yields the last | `{ ... }` block |
 | `let` | Bind local variables; yields the body's last expression | local variable declaration |
-| `with` | Like `let`, but auto-frees any binding whose init expression is a libc allocator (`malloc`/`calloc`/`realloc`/`strdup`, possibly through `cast`). Frees fire on fall-through and on early `return` from inside the body. Disarm a single binding by storing `null` to it (`free(NULL)` is a no-op) — useful when the pointer escapes via the body. | `let` + scoped `free` |
+| `with` | Like `let`, but **owns** any binding whose init is a libc allocator (`malloc`/`calloc`/`realloc`/`strdup`, possibly through `cast`) or whose declared type conforms to the `Drop` protocol. Owned bindings are released at scope exit (libc → `free`; Drop → statically dispatched `(drop b)`, null-guarded) in reverse binding order, on fall-through and on early `return`. The compiler verifies at compile time that an owned resource does not **escape** the scope — see [Pointer lifecycle](#pointer-lifecycle-with-escape-analysis). Use `(move b)` to transfer ownership out. | `let` + scoped `free` / RAII |
 | `cond` | Multi-way conditional; yields the matched branch's value (strict-typed across branches) | `if` / `else if` / `else` chain |
 | `case` | Integer-keyed dispatch; lowers to LLVM `switch`. Each clause is `(KEY body...)` where KEY is an integer literal, a list of integer literals, or the symbol `_` (default). With no `_` clause, an unmatched scrutinee hits `unreachable` (UB). Yields the matched branch's value (strict-typed across branches), like `cond`. | `switch` / `default:` |
 | `while` | Loop; yields `void` | `while` |
@@ -292,6 +319,49 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `funcall-ptr-i64` | Call a `ptr` function pointer with no arguments, returning `i64` | `((long(*)())fn)()` |
 | `funcall-ptr-ptr` | Call a `ptr` function pointer with no arguments, returning `ptr` | `((void*(*)())fn)()` |
 | `gensym` | Return a fresh unique symbol `Node*` (e.g. `__gs_0`); for use in macro bodies to avoid variable capture | — |
+| `some` | `(some r)` — wrap a non-null `(ref T)` as `?T` / `(Maybe (ref T))`. Pure relabel, no IR. | — |
+| `as-ref` | `(as-ref p)` — launder a raw pointer into `?T` (null stays none). Pure relabel, no IR; narrow before use. | — |
+| `unwrap` | `(unwrap m)` — the `(ref T)` inside a `?T`, or trap (`llvm.trap`) if none. The one runtime branch nullability costs, paid only where written. | `assert(p); p` |
+| `unwrap-or` | `(unwrap-or m default)` — the `(ref T)` inside, or `default` (evaluated only on the none path; must itself be `(ref ...)`-compatible). | `p ? p : d` |
+| `if-some` | `(if-some (x m) then else)` — if `m` is non-null, bind `x:(ref T)` in `then`; else evaluate `else`. Desugars to `cond`, so its value/typing rules match `if`. | `if ((x = m)) … else …` |
+| `when-some` | `(when-some (x m) body…)` — one-armed `if-some`. | `if ((x = m)) { … }` |
+| `move` | `(move b)` — transfer ownership of a `with`-owned binding out: disarms its scope-exit cleanup, yields the value with its escape taint cleared, and marks `b` consumed (later uses are "use after move"; reassignment revives it). | — |
+| `defer` | `(defer expr)` — register `expr` as an ad-hoc cleanup on the enclosing binding scope (nearest `let`/`with`/function body), re-emitted at every exit path in reverse registration order. Lexical, not dynamic: it runs at scope exit whether or not control reached the `defer` site. | `goto cleanup` discipline |
+
+## Pointer lifecycle: `with` escape analysis
+
+A `with` binding whose init is a libc allocator, or whose declared type
+conforms to the `Drop` protocol, is an **owning binding**: its resource is
+released at scope exit, so any pointer still aliasing it afterwards would
+dangle. The compiler tracks aliases (its **taint**) at compile time and rejects
+escapes (see `design/stage10/lifecycle.md`):
+
+- Taint follows pointer **identity**: binding a tainted value (`let`/`with`/
+  `set!`), `cast`, `ptr+`, `.&`, `addr-of`, and control-flow joins keep it.
+  Copying the pointee **value** out (`deref`, field loads) clears it — so
+  `(return (deref p))` and `(return (p count))` are fine.
+- **Escape sinks** (compile errors on tainted operands): `return` (explicit or
+  implicit), and stores into longer-lived memory (`set!` to an outer binding;
+  `aset!`/`.set!`/`ptr-set!` into memory not owned by the same or an inner
+  `with`). Manually calling `free`/`drop` on an owning binding is a
+  double-free error.
+- **`(move b)`** is the sanctioned way out: it disarms the cleanup, clears the
+  taint, and consumes the binding.
+- Passing a tainted value as a **function argument** is allowed (arguments are
+  borrows; the callee retaining the pointer is the same residual risk as C),
+  and pointers loaded *out of* the resource are not tracked — these are the
+  two documented imprecision boundaries of the cheap, intraprocedural tier.
+
+The `Drop` protocol is an ordinary Stage 9 protocol; conforming makes a type
+`with`-manageable with zero dispatch overhead:
+
+```
+(defprotocol Drop
+  (drop:void (self:ptr:Self)))
+(defn drop:void (self:ptr:Res) ...)   ; concrete method
+(extend Res Drop)                      ; checked, code-free conformance
+(with (r:ptr:Res (make-res)) ...)      ; (drop r) fires at scope exit
+```
 
 ## Binary Operators
 

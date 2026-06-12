@@ -1,0 +1,23 @@
+; Stage 10 lifecycle: a with-owned resource is freed at scope exit and may not
+; escape (return / store into longer-lived memory are compile errors); (move p)
+; transfers ownership out, disarming the cleanup and consuming the binding.
+; Values copied out of the resource (deref / field loads) are always fine.
+; See design/stage10/lifecycle.md.
+(include stdio)
+(include stdlib)
+(import "string.h")
+
+(defn make-greeting:ptr ()
+  (with (s:ptr (malloc 32))
+    (memcpy s "hello" 6)
+    (return (move s))))      ; ownership leaves with the value — no free fires
+
+(defn first-len:i64 ()
+  (with (s:ptr (strdup "four"))
+    (return (strlen s))))    ; a copied-out value, not an alias: permitted
+
+(defn main:i32 ()
+  (let (g:ptr (make-greeting))
+    (printf "%s %ld\n" g (first-len))
+    (free g))                 ; the caller owns the moved value
+  (return 0))
