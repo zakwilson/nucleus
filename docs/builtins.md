@@ -97,6 +97,7 @@ Importing a `.nuch` with `defmethod` forms registers the methods for dispatch in
 | `defenum` | Define an enumeration | `enum` |
 | `defvar` | Define a global variable `(defvar name:type [init])`. The optional init must be a literal the language can express in constant position: an integer literal (any int width, signed or unsigned), float literal (`f32` / `f64`), string literal (storage type must be `ptr`), `null` (ptr only), `true` / `false` (`i1`/`bool` only), `(char "x")` (any int type), or a name bound by `defconst` / `defenum` (the constant value is folded in). Omitted inits default to zero / `null` / `false`. `set!` works on the result. The symbol is exported with default linkage and is visible to C consumers (`extern T name;`) and other Nucleus modules (`(extern name:type)`). Storage class specifiers (`static`, `register`, `thread_local`) are deferred — see `design/stage888-deferred.md`. | global variable definition |
 | `defstruct` | Define a struct type | `struct` |
+| `defunion` | Define a tagged sum `(defunion Name (arm field:type ...) ... bare-arm)` or a template `(defunion (Name T ...) ...)`. See [Unions and tagged sums](#unions-and-tagged-sums). | tagged `struct {int tag; union {...} payload;}` |
 | `defprotocol` | Define a protocol: a named set of required method signatures (types may mention `Self`). Compile-time only; emits no code. See [Protocols](#protocols-defprotocol-and-extend). | — (concept: interface/trait) |
 | `extend` | Assert conformance `(extend Type Protocol)`: checks that each required signature resolves to a concrete method with `Self → Type`, then records the fact. Code-free. See [Protocols](#protocols-defprotocol-and-extend). | — |
 | `include` | Include a C standard library module. `(include stdio)` preprocesses `stdio.h` with `clang -E` and imports all extern function declarations. Any C header can be used: `(include math)` includes `math.h`. | `#include` |
@@ -178,7 +179,7 @@ A struct used directly (not behind `ptr`) as a `defn`/`declare` parameter or ret
 
 ### C header struct ingestion
 
-C headers consumed via `(include foo)` or `(import "foo.h")` now register their `struct Foo { ... };` and `typedef struct { ... } Bar;` definitions as Nucleus structs with the same name. Anonymous inline struct fields are registered as memoized anonymous structs (same `__anon_struct_h<hex>` machinery). Pass-by-value parameters typed as a C struct work through this path. Field types that the parser cannot represent yet (arrays, bitfields, unions, multi-declarator lines like `int a, b;`) cause the whole struct to be skipped — registered as opaque `ptr` at use sites — rather than registering a layout-incompatible partial struct.
+C headers consumed via `(include foo)` or `(import "foo.h")` now register their `struct Foo { ... };` and `typedef struct { ... } Bar;` definitions as Nucleus structs with the same name. Anonymous inline struct fields are registered as memoized anonymous structs (same `__anon_struct_h<hex>` machinery). Pass-by-value parameters typed as a C struct work through this path. `union { ... }` fields, named unions, and `typedef union` are registered as untagged union types (stage 10 — see [Unions and tagged sums](#unions-and-tagged-sums)); headers like SDL's or pthread's no longer degrade over them. Field types that the parser cannot represent yet (arrays, bitfields, multi-declarator lines like `int a, b;`) cause the whole struct to be skipped — registered as opaque `ptr` at use sites — rather than registering a layout-incompatible partial struct.
 
 In inline type positions (the type argument of `cast`, `sizeof`, `alloca`), either the canonical list form or the colon sugar works: `(cast (ptr Node) x)` and `(cast ptr:Node x)` are equivalent.
 
@@ -187,6 +188,126 @@ Desugar operates on binding positions in `defn`, `defvar`, `defstruct`, `extern`
 Both the sugared `:` syntax and the canonical list form are accepted in all binding positions. Macros that manipulate types can work with the canonical list form; macros that don't care about types can use the `:` sugar and it will be desugared before compilation.
 
 Macro output is desugared before compilation, so macro-generated code can use either form.
+
+## Unions and tagged sums
+
+Stage 10 (design/stage10/unions.md) adds two layers: raw **untagged unions**
+(C parity) and **tagged sums** (`defunion` + `match`) layered on them.
+
+### Untagged `(union ...)`
+
+`(union member:type ...)` is a type expression accepted wherever a type is
+expected, mirroring the anonymous-struct form: size = max member size, align =
+max member align, every member at offset 0. Like `(struct ...)` it is memoized
+by structural content (`%__anon_union_h<16-hex>`). Named untagged unions come
+from C headers; Nucleus code wraps the anonymous form in a `defstruct` field.
+
+Member access goes through a pointer to the union and is a typed load/store at
+offset 0 — reading a member other than the one last written is a
+reinterpretation, exactly `cast`'s contract (no checking; the raw frontier):
+
+```lisp
+(defstruct Scalar kind:i32 (data (union as-int:i64 as-float:f64)))
+(let (s:ptr:Scalar (alloca Scalar)
+      (d (ptr (union as-int:i64 as-float:f64))) (.& s data))
+  (.set! d as-int (cast i64 42))
+  (d as-int))
+```
+
+`abi-classify` extends to unions (every member classified at offset 0, classes
+merged per SysV), and `sizeof`/layout agree with the platform C compiler
+(gated by `make layout-test`).
+
+### `defunion` — tagged sums
+
+```lisp
+(defunion Shape
+  (circle r:f64)
+  (rect   w:f64 h:f64)
+  point)                ; payload-less arm
+```
+
+Representation: a struct `{tag:i32, payload:(union ...)}`. Tags are assigned
+in declaration order from 0 and are part of the C contract (`--emit-cheader`
+exports the tagged struct plus an `enum Shape_tag` of constants). Each arm's
+payload is the single field's type, or a memoized anonymous struct of the
+fields. By-value passing/returning rides the stage-8 struct ABI.
+
+**Constructors** are generated ordinary functions named `Union-arm`:
+`(Shape-circle 2.0)`, `(Shape-point)` — value-returning, no allocation.
+`(make Shape rect 3.0 4.0)` is the equivalent explicit form (and the only
+spelling for template instances, below). The arm names themselves are not
+bound (one-symbol-one-kind); only the prefixed constructors are.
+
+**No raw access outside `match`**: the tag and payload are not readable as
+fields (`(s tag)` is an error directing you to `match`); the escape hatch is
+an explicit `cast` to the representation struct.
+
+### `match`
+
+```lisp
+(match s
+  ((circle r)   (* 3.14159 (* r r)))
+  ((rect w h)   (* w h))
+  (point        0.0))
+```
+
+- One-level patterns: `(arm binders...)`, a bare arm name for payload-less
+  arms, or `_` as a default arm. Binders are positional; `_` ignores a field.
+- A plain binder binds the payload field **by value**. A `(ref x)` binder
+  binds `x:(ref field-type)` aliasing the field in place for mutation
+  (requires a pointer scrutinee): `((circle (ref r)) (ptr-set! r (* @r 2.0)))`.
+- **Exhaustiveness**: without `_`, covering every arm is required; a missing
+  arm is a compile error naming it. Adding an arm breaks every defaultless
+  `match` loudly.
+- The whole form is a value expression with `cond`'s strict cross-branch
+  typing and void-collapse rules. Lowers to `case`/LLVM `switch` on the tag;
+  an exhaustive match emits no default clause (a corrupted tag is UB, the C
+  contract).
+- Scrutinee: a `defunion` value or a `ptr`/`ref` to one (auto-deref for the
+  tag read). Also works over a `defenum` scrutinee with bare member names as
+  patterns and the same exhaustiveness rule.
+
+### Templates: `(defunion (Result T E) ...)`
+
+A parameterized head declares a **template**; it defines no type by itself. A
+fully-applied use stamps and memoizes a concrete instance:
+
+```lisp
+(defunion (Result T E)
+  (ok  v:T)
+  (err e:E))
+
+(defn (try-div (Result i64 i32)) (a:i64 b:i64)
+  (when (= b (cast i64 0))
+    (return (err 1)))          ; return-position target typing
+  (return (ok (/ a b))))
+
+(let ((r (Result i64 i32)) (try-div x y))
+  (match r
+    ((ok v)  ...)
+    ((err e) ...)))
+```
+
+Substitution is purely syntactic (use sites are explicit; no inference).
+Construction is via `(make (Result i64 i32) ok v)` or **target typing**: in
+`return` position of a function declared to return a `defunion` (or template
+instance), a bare `(arm args...)` resolves against the declared type. The
+rewrite applies only to the directly returned form, not through `if`/`cond`
+branches. Note that the `name:(Type ...)` colon sugar does not parse for
+parenthesized types — use the list form `(name (Result i64 i32))` in binding
+positions.
+
+`.nuch` headers export `defunion` forms verbatim (template or monomorphic);
+importers re-register the type and stamp their own instances. `--emit-cheader`
+exports monomorphic defunions as the tagged struct + tag enum; functions whose
+signatures mention template instances are skipped with a comment (no C
+spelling for instances yet).
+
+**Drop interaction**: a `with`-owned binding of a tagged union whose arms hold
+`Drop`-conforming payloads is a compile error (freeing the box would leak the
+live arm) unless the union itself conforms to `Drop` — write the tag switch
+in its `drop` method with `match`.
 
 ## Standard Macros (`lib/macros.nuc`)
 
@@ -280,6 +401,8 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `with` | Like `let`, but **owns** any binding whose init is a libc allocator (`malloc`/`calloc`/`realloc`/`strdup`, possibly through `cast`) or whose declared type conforms to the `Drop` protocol. Owned bindings are released at scope exit (libc → `free`; Drop → statically dispatched `(drop b)`, null-guarded) in reverse binding order, on fall-through and on early `return`. The compiler verifies at compile time that an owned resource does not **escape** the scope — see [Pointer lifecycle](#pointer-lifecycle-with-escape-analysis). Use `(move b)` to transfer ownership out. | `let` + scoped `free` / RAII |
 | `cond` | Multi-way conditional; yields the matched branch's value (strict-typed across branches) | `if` / `else if` / `else` chain |
 | `case` | Integer-keyed dispatch; lowers to LLVM `switch`. Each clause is `(KEY body...)` where KEY is an integer literal, a list of integer literals, or the symbol `_` (default). With no `_` clause, an unmatched scrutinee hits `unreachable` (UB). Yields the matched branch's value (strict-typed across branches), like `cond`. | `switch` / `default:` |
+| `match` | Eliminate a `defunion` value (or a `defenum` integer) by arm, with exhaustiveness checking. See [Unions and tagged sums](#unions-and-tagged-sums). | `switch` on the tag |
+| `make` | Construct a `defunion` value by arm: `(make Type arm args...)` — the explicit-instance spelling required for template instances, e.g. `(make (Result i64 i32) ok v)`. | designated initializer |
 | `while` | Loop; yields `void` | `while` |
 | `set!` | Assign to a variable; yields the assigned value | `x = val` |
 | `inc!` | Increment a variable by 1 (or by an optional delta). Yields the new value. | `x++` / `x += n` |

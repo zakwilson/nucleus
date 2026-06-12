@@ -31,5 +31,11 @@ int main(void) {
 
     printf("TimeSpec sizeof=%lld tv_sec=%lld tv_nsec=%lld\n", SZ(TimeSpec), OFF(TimeSpec, tv_sec), OFF(TimeSpec, tv_nsec));
     printf("Rec sizeof=%lld tag=%lld value=%lld next=%lld d=%lld\n", SZ(Rec), OFF(Rec, tag), OFF(Rec, value), OFF(Rec, next), OFF(Rec, d));
+
+    printf("U_scalar sizeof=%lld\n", (long long)sizeof(union U_scalar));
+    printf("U_mixed sizeof=%lld\n",  (long long)sizeof(union U_mixed));
+    printf("U_pad sizeof=%lld\n",    (long long)sizeof(union U_pad));
+    printf("UWrap sizeof=%lld tag=%lld u=%lld\n", SZ(UWrap), OFF(UWrap, tag), OFF(UWrap, u));
+    printf("UAnon sizeof=%lld kind=%lld data=%lld tail=%lld\n", SZ(UAnon), OFF(UAnon, kind), OFF(UAnon, data), OFF(UAnon, tail));
     return 0;
 }
