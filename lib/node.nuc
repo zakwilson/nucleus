@@ -5,16 +5,17 @@
 
 (import arena)
 
-(defn alloc-node:ptr ()
-  (return (arena-alloc (sizeof Node))))
+; arena-alloc aborts on exhaustion, so node allocation never yields null.
+(defn alloc-node:ref:Node ()
+  (return (cast ref:Node (arena-alloc (sizeof Node)))))
 
-(defn make-cell:ptr (car:ptr cdr:ptr line:i32)
-  (let (c:ptr:Node (cast ptr:Node (alloc-node)))
+(defn make-cell:ref:Node (car:ptr cdr:ptr line:i32)
+  (let (c:ref:Node (alloc-node))
     (.set! c kind NODE-CELL)
     (.set! c line line)
     (.set! c car car)
     (.set! c cdr cdr)
-    (return (cast ptr c))))
+    (return c)))
 
 ; ============================================================
 ; Symbol intern table
@@ -30,7 +31,7 @@
 
 (defstruct InternEntry
   spelling:ptr
-  node:ptr)
+  node:ref:Node)  ; valid whenever spelling is non-null (occupied entry)
 
 (defvar g-intern-table:ptr)
 (defvar g-intern-cap:i32 0)
@@ -47,7 +48,7 @@
       (set! c (bit-and (cast i32 (aref (cast ptr:i8 s) i)) 255)))
     (return h)))
 
-(defn intern-raw-insert:void (table:ptr cap:i32 sp:ptr nd:ptr)
+(defn intern-raw-insert:void (table:ptr cap:i32 sp:ptr nd:ref:Node)
   (let (mask:i64 (cast i64 (- cap 1))
         j:i64 (bit-and (intern-hash sp) mask))
     (while (!= 0 1)
@@ -75,7 +76,7 @@
             (intern-raw-insert new-table new-cap (e spelling) (e node))))
         (inc! i)))))
 
-(defn intern-symbol:ptr (s:ptr)
+(defn intern-symbol:ref:Node (s:ptr)
   (when (= g-intern-cap 0)
     (set! g-intern-cap 1024)
     (set! g-intern-table (arena-alloc (* (cast i64 g-intern-cap)
@@ -89,19 +90,19 @@
                                     (ptr+ (cast ptr:InternEntry g-intern-table) (cast i32 j))))
         (when (= (e spelling) null)
           (let (canon:ptr (arena-strdup s)
-                nd:ptr:Node (cast ptr:Node (alloc-node)))
+                nd:ref:Node (alloc-node))
             (.set! nd kind NODE-SYM)
             (.set! nd line 0)
             (.set! nd s canon)
             (.set! e spelling canon)
-            (.set! e node (cast ptr nd))
+            (.set! e node nd)
             (inc! g-intern-len)
-            (return (cast ptr nd))))
+            (return nd)))
         (when (= (strcmp (e spelling) s) 0)
           (return (e node))))
       (set! j (bit-and (+ j (cast i64 1)) mask)))))
 
-(defn node-at:ptr (n:ptr i:i32)
+(defn node-at:?Node (n:ptr i:i32)
   (let (nn:ptr:Node (cast ptr:Node n))
     (while (and (and (!= n null) (= (nn kind) NODE-CELL)) (> i 0))
       (set! n (nn cdr))

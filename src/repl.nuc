@@ -375,7 +375,7 @@
                     (inc! g-repl-id)
                     (set! g-out g-def-stream)
                     (reset-function-state)
-                    (let (fn-scope:ptr (scope-new g-globals)
+                    (let (fn-scope:ref:Scope (scope-new g-globals)
                           result:ptr:Val (cast ptr:Val (emit-node (cast ptr f) fn-scope))
                           result-kind:i32 ((cast ptr:Type (result type)) kind))
                       ; Generate the return based on result type
