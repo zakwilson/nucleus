@@ -195,6 +195,44 @@ The escape analysis (§2) is unchanged by `Drop`: "owning binding" simply become
     (return (move n))))          ; cleanup disarmed; n consumed
 ```
 
-## 8. Implementation status
+## 8. Implementation status (landed 2026-06-12)
 
-Pending — design only.
+All three phases are implemented; `make test` and `make bootstrap` pass.
+
+### L1 — escape/taint analysis — done
+Taint is the owning with-`Scope*`, carried on `Val` (per value) and `Sym` (per
+binding), seeded when `emit-with` arms a cleanup (`owns`/`cslot`/`taint` on
+the binding's `Sym`). It propagates per §2.2 through binding init
+(`let`/`with`), `set!`, `cast`, `ptr+`, `.&`, `addr-of`, and `cond` joins
+(`taint-merge` keeps the deeper scope); value-copying ops (`deref`, field
+loads, calls) start clean. Sinks per §2.3: explicit **and implicit** `return`;
+`set!` to a binding whose home scope does not descend from the owning scope;
+`aset!`/`.set!`/`ptr-set!` stores where the target memory is not owned by the
+same-or-inner `with` (`taint-store-check` — untainted targets are
+conservatively rejected, slightly stricter than §2.3's "same-or-inner local
+slot"); and manual `(free b)` / `(drop b)` of an owning binding. One deviation
+from §3's sketch: the checks run in the emitters, not a separate `node-type`
+walk — the state lives on `Sym`, which the type pass shares, so the two
+cannot drift.
+
+### L2 — `Drop` + `defer` — done
+`with-drop-method` arms a cleanup for any binding whose declared type is a
+pointer to a struct with a recorded `Drop` conformance and an exactly
+resolvable `drop` method (`type-eq` ignores pointer kinds, so `(ref S)`
+resolves the same method as `(ptr S)`). `emit-drop-cleanup` emits a
+null-guarded static call, so `move` / `(set! b null)` disarm Drop resources
+exactly like libc ones; the libc spelling fast path is unchanged. Cleanups are
+a tagged `Cleanup` record (free / drop / defer shapes). `(defer expr)`
+registers on the enclosing binding scope and is re-emitted at every exit path —
+including `let` fall-through and the function's implicit-return fall-off,
+which now fire scope cleanups too. **`defer` is lexical, not dynamic**: it
+runs at scope exit even if control never reached the defer site at runtime.
+
+### L3 — `move` / consume — done
+`(move b)` requires an owning binding; it loads the value, stores `null` to
+the cleanup slot, marks the `Sym` consumed, and yields the value with taint
+cleared. `emit-symbol-ref` rejects reads of a consumed binding ("use after
+move"); a reassignment revives it. The §7 worked examples produce the designed
+diagnostics verbatim; the success cases are in the test suite as
+[examples/with-lifecycle.nuc](../../examples/with-lifecycle.nuc) and
+[examples/drop-defer.nuc](../../examples/drop-defer.nuc).

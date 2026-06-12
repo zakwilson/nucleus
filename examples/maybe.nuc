@@ -1,0 +1,36 @@
+; Stage 10 nullability: (ref T) non-null pointers, ?T == (Maybe (ref T))
+; explicit nullability (niche-encoded: null = none), flow narrowing, and the
+; transition forms. Every pointer flavor lowers to the same IR `ptr` and is
+; ABI-identical to a C T*. See design/stage10/nullability.md.
+(include stdio)
+(include stdlib)
+
+(defstruct Pt x:i32 y:i32)
+
+; A fallible lookup: nullability is explicit in the signature.
+(defn lookup:?Pt (give:i1 p:ptr:Pt)
+  (if give
+    (return (some (cast ref:Pt p)))
+    (return none)))
+
+; A null guard narrows ?T to (ref T) — the compiler's own idiom is the
+; narrowing mechanism, so converted code keeps its guards unchanged.
+(defn show:i32 (m:?Pt)
+  (when (= m null) (return -1))
+  (return (m x)))
+
+(defn main:i32 ()
+  (let (p:ptr:Pt (cast ptr:Pt (malloc 8)))
+    (.set! p x 7)
+    (printf "guard %d %d\n" (show (lookup true p)) (show (lookup false p)))
+    (printf "if-some %d\n" (if-some (q (lookup true p)) (q x) -1))
+    (printf "if-some-none %d\n" (if-some (q (lookup false p)) (q x) -1))
+    (when-some (q (lookup true p))
+      (printf "when-some %d\n" (q x)))
+    (printf "unwrap %d\n" ((unwrap (lookup true p)) x))
+    (printf "unwrap-or %d\n" ((unwrap-or (lookup false p) (cast ref:Pt p)) x))
+    (let (m:?Pt (as-ref p))
+      (when (!= m null)
+        (printf "as-ref %d\n" (m x))))
+    (free p))
+  (return 0))

@@ -88,3 +88,12 @@ It would be **great** if most types and pointers could be non-nullable with a `M
 ## Bounds checking for C str/array
 
 Safe accessors with runtime cost seem like a good idea here, but it would be even better if there are ways to improve safety with no runtime cost.
+
+## import-only
+
+`import-only` takes a library name and a list of symbols, importing only those symbols and the dependencies of the functions/structs/etc... they resolve to. This is intended for very constrained targets like microcontrollers. It's OK if this has limitations like only working for Nucleus (not C libraries) or requiring the source, not just a header.
+
+## library path
+
+Upon installing Nucleus with `make install`, it won't actually run from arbitrary working directories because it can't find macros.nuc.
+
