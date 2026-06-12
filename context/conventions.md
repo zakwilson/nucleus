@@ -157,3 +157,25 @@ call position: `(-> s (_ field))` ⇒ `(s field)`. The migration rewrites a 1-ar
 ## C interop invariant
 
 All Nucleus types must be representable in C. This is a core design requirement — Nucleus is a drop-in replacement for C, and any function or data structure defined in Nucleus must be consumable from C. If you encounter or are asked to create a type that cannot be represented as a C struct/function/enum (e.g. closures with hidden captured environments, tagged unions requiring runtime support), flag it as a design violation before proceeding.
+
+## Stage 10 pointer-kind conversion gotchas (N2)
+
+When converting a function or binding from `(ptr T)` to `(ref T)` / `?T`
+(design/stage10/nullability.md §6), three recurring constraints:
+
+- **`die-at` is not known to be noreturn.** A `(when (= x null) (die-at …))`
+  guard does **not** narrow `x` past the guard — narrowing accumulates only
+  when the guard body visibly terminates (`return`/`goto`). Restructure such
+  sites to `(if-some (x m) then (die-at …))` instead. (A future `noreturn`
+  attribute would make the guard idiom work as-is.)
+- **Prelude types can't appear in `src/nucleusc.nuc` defn signatures.** The
+  toplevel signature prescan parses types before `(import prelude)` is
+  processed, so `ref:Node` / `?Node` in a *signature* dies with
+  "unknown type: Node" at line 0. Bodies are fine; lib/*.nuc files are fine
+  (their prescan runs at import time, after the prelude).
+- **`type-eq` compares pointer elems, so mixed cond/if joins collapse.**
+  Joining a bare `ptr` value with a `(ref T)`/`(ptr T)` value in a value
+  position `if`/`cond` collapses the phi to void (pre-existing rule); if the
+  result is used, you get a malformed-IR clang error or a flow-check error.
+  Fix by giving the other branch's binding its real element type — never by
+  casting the `ref` side back to bare `ptr`.

@@ -206,7 +206,7 @@ Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defin
 
 `case` is multi-way equality dispatch: it compares `form` against each value `vi` with `=` and yields the first matching result `ri`. The final unpaired argument is the **required** default. Because `=` is overloadable, `case` works over any type with an equality (integers, enum constants, symbols, C strings). `form` is re-evaluated per comparison, so it should be side-effect free.
 
-`(import arena)` additionally provides `(new T)` — allocate one zeroed `T` from the arena, typed `(ptr T)`. It expands to `(cast (ptr T) (arena-alloc (sizeof T)))`, collapsing the cast + `sizeof` boilerplate for the common "allocate a single struct" case. It is **not** in the prelude (it depends on `arena-alloc`), so it requires an explicit `(import arena)`.
+`(import arena)` additionally provides `(new T)` — allocate one zeroed `T` from the arena, typed `(ref T)` (non-null: `arena-alloc` aborts on exhaustion rather than returning null). It expands to `(cast (ref T) (arena-alloc (sizeof T)))`, collapsing the cast + `sizeof` boilerplate for the common "allocate a single struct" case. It is **not** in the prelude (it depends on `arena-alloc`), so it requires an explicit `(import arena)`.
 
 ## Macros and pass-through arguments
 
