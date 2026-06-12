@@ -8206,7 +8206,10 @@
     (return 1)))
 
 ; Try to find a file by name in the import search path.
-; Search order: directory of current source file, lib/ relative to cwd.
+; Search order: directory of current source file; lib/ relative to cwd;
+; -I include paths; $NUCLEUS_LIB; the compiled-in default install path.
+; The last two let an installed compiler find its standard libraries
+; (macros, prelude, …) when run from an arbitrary working directory.
 (defn try-import-path:ptr (filename:ptr)
   ; Try directory of the current source file
   (let (pathlen:i64 (cast i64 (strlen g-source-path))
@@ -8232,6 +8235,16 @@
         (when (!= (file-exists candidate) 0)
           (return candidate)))
       (inc! j)))
+  ; Try $NUCLEUS_LIB (a single directory; lets a custom-PREFIX install be found)
+  (let (libenv:ptr (getenv "NUCLEUS_LIB"))
+    (when (!= libenv null)
+      (let (candidate:ptr (fmt-2s "%s/%s" libenv filename))
+        (when (!= (file-exists candidate) 0)
+          (return candidate)))))
+  ; Try the compiled-in default install path (default-prefix `make install`)
+  (let (candidate:ptr (fmt-s "/usr/local/share/nucleus/lib/%s" filename))
+    (when (!= (file-exists candidate) 0)
+      (return candidate)))
   (return null))
 
 ; Resolve an import name to a .nuc or .nuch file path.
