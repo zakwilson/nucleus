@@ -187,8 +187,65 @@ the compiler) has not started; the flip remains deferred.
   arguments, and explicit + implicit returns; widening always allowed;
   `(cast ref:T x)` is the audited assertion at the C boundary. `cond` joins
   meet kinds conservatively (raw over Maybe over ref).
-- **N2 (§6)** — open. No compiler code converted yet; the checks engage only
-  on `ref`/`Maybe` spellings, so unconverted code sees no new errors.
+- **N2 (§6)** — **first major tranche landed 2026-06-12** (`make test` 66/66,
+  `make bootstrap` fixed point, boot artifacts re-converged). Converted:
+  - **Allocators/constructors → `(ref T)`** (never null): `alloc-node`,
+    `make-cell`, `intern-symbol` (lib/node.nuc, with `InternEntry.node` as a
+    `ref:Node` field); `alloc-tok`/`alloc-type`/`alloc-val`/`make-vec`/
+    `make-type`/`register-struct`/`lookup-or-make-anon-struct`/`scope-new`/
+    `scope-define`/`generic-new`/`protocol-new`/`generic-register-method`/
+    `generic-instantiate`/`make-tyvar-type`/`make-target-for-triple`/
+    `type-with-volatile`/`node-type-cast`/`node-type-alloca`; the `(new T)`
+    macro itself (lib/arena.nuc); the `ty-*` singleton defvars.
+  - **The whole `emit-*` family → `ref:Val`** (~74 emitters incl. `emit-node`,
+    `emit-list`, `abi-emit-struct-call`): an emitter always yields a Val.
+    Locals holding emitter results are `ref:Val`, which deleted ~60
+    `(cast ptr:Val …)` waivers at binding sites.
+  - **Nullable lookups → `?T`**: `scope-lookup:?Sym`, `lookup-struct:?StructDef`,
+    `node-at:?Node`, `generic-lookup:?Generic`, `protocol-lookup:?Protocol`,
+    `find-macro:?MacroDef`, `lbl-find:?LabelEntry`, `lookup-cast-rule:?CastRule`,
+    `with-drop-method:?Method`, `generic-find-method-exact:?Method`,
+    `operator-user-resolve:?Method`, the coercers (`coerce-int-val`/
+    `coerce-num-val`/`safe-coerce-val` → `?Val`), and the `node-type` /
+    `callable-*-type` family (→ `?Type`; null = unmodeled form).
+    `generic-resolve` turned out to be **never-null** (it dies on no-match) and
+    is `ref:Method`.
+  - **Non-null parameters**: every `scope` parameter (~97) is `ref:Scope`
+    (`g-globals` too); the dispatch spine carries `sym:ref:Sym`
+    (`emit-call`/`emit-call-with-args`), `g:ref:Generic` (`emit-generic-call`/
+    `emit-operator-dispatch`), `m:ref:Method` (`emit-resolved-call`).
+    `emit-dispatch`/`node-type-call` and `emit-symbol-ref`/`emit-set`/
+    `emit-move` bind their lookups as `?T` and narrow.
+
+  **Friction findings (input to the §6 flip decision):**
+  1. **`die-at` guards don't narrow.** The pervasive idiom
+     `(when (= x null) (die-at …))` does *not* establish a narrow past the
+     guard, because nothing marks `die-at` noreturn — the §4 accumulation
+     only fires when the guard body visibly terminates (`return`/`goto`).
+     Such sites must restructure to `if-some`/`when-some` (done for the hot
+     emitters). A `noreturn` function attribute would erase most of the
+     remaining conversion cost and is the single highest-leverage enabler.
+  2. **Prelude types can't appear in `nucleusc.nuc` defn signatures.** The
+     toplevel signature prescan parses param/return types before the
+     `(import prelude)` form is processed, so `ref:Node`/`?Node` in a
+     *signature* dies with "unknown type: Node" (bodies are fine — imports
+     have run by then). lib files don't hit this (their prescan runs at
+     import time). Fixing it means letting the prescan resolve imports'
+     struct names first; until then Node-typed signatures in the compiler
+     stay `ptr`.
+  3. **Mixed cond/if joins collapse.** `type-eq` compares pointer elems, so a
+     join of a bare `ptr` value with a `(ref T)`/`(ptr T)` value collapses
+     the phi to void (pre-existing rule). Converting a function's return to
+     `ref` can therefore break a *caller's* `(if … (emit-x) raw-local)`
+     join; the fix is typing the other side's binding (which the flow checks
+     then verify). Caught at compile/link time in all observed cases.
+  4. **Correlated-field invariants need one waiver.** E.g. `Cleanup.defer-scope`
+     is non-null exactly when `defer-node` is; the kinds can't express that,
+     so one `(cast ref:Scope …)` remains, with a comment.
+  5. Remaining: ~25 guarded `(cast ptr:Sym (scope-lookup …))`-style sites in
+     colder paths (defvar/defconst/inc-dec/addr-of emitters, gcheck/valid
+     walkers, repl.nuc), field types beyond `InternEntry.node`, and the
+     `?i8`-shaped string returns (left raw — `?T` over `CStr` reads poorly).
 
 [examples/maybe.nuc](../../examples/maybe.nuc) exercises the full surface in
 the test suite.

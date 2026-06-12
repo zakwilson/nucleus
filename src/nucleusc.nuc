@@ -145,13 +145,13 @@
   drop-ty:ptr     ; declared binding Type* (Drop cleanups)
   drop-ret:ptr    ; drop method return Type* (Drop cleanups)
   defer-node:ptr  ; retained expression AST (defer cleanups)
-  defer-scope:ptr); scope in which defer-node is re-emitted
+  defer-scope:ref:Scope); scope in which defer-node is re-emitted
 
 ; A narrowing undo entry (Stage 10 nullability §4). Restores are skipped when
 ; the binding's kstamp moved past `stamp` — a kill (reassignment) is sticky.
 (defstruct NarrowUndo
   name:ptr
-  scope:ptr
+  scope:ref:Scope
   old-ntype:ptr
   old-ndepth:i32
   stamp:i32)
@@ -321,23 +321,23 @@
 (defvar g-peek-valid:i32 0)
 
 ; Singleton types
-(defvar ty-void:ptr)
-(defvar ty-i1:ptr)
-(defvar ty-i8:ptr)
-(defvar ty-i16:ptr)
-(defvar ty-i32:ptr)
-(defvar ty-i64:ptr)
-(defvar ty-ptr:ptr)
-(defvar ty-ui8:ptr)
-(defvar ty-ui16:ptr)
-(defvar ty-ui32:ptr)
-(defvar ty-ui64:ptr)
-(defvar ty-f32:ptr)
-(defvar ty-f64:ptr)
-(defvar ty-cstr:ptr)
+(defvar ty-void:ref:Type)
+(defvar ty-i1:ref:Type)
+(defvar ty-i8:ref:Type)
+(defvar ty-i16:ref:Type)
+(defvar ty-i32:ref:Type)
+(defvar ty-i64:ref:Type)
+(defvar ty-ptr:ref:Type)
+(defvar ty-ui8:ref:Type)
+(defvar ty-ui16:ref:Type)
+(defvar ty-ui32:ref:Type)
+(defvar ty-ui64:ref:Type)
+(defvar ty-f32:ref:Type)
+(defvar ty-f64:ref:Type)
+(defvar ty-cstr:ref:Type)
 ; Stage 10: the type of `none` — an elem-less (Maybe (ref ?)) that coerces
 ; into any concrete ?T slot exactly as `null` coerces into any (ptr T).
-(defvar ty-maybe-ptr:ptr)
+(defvar ty-maybe-ptr:ref:Type)
 
 ; Target descriptor. The compiler emits code for a single target, described
 ; here so the "a pointer is i64" assumption lives in one place instead of being
@@ -371,7 +371,7 @@
 (defvar g-structs-len:i32 0)
 
 ; Global scope
-(defvar g-globals:ptr)
+(defvar g-globals:ref:Scope)
 
 ; String literal table
 (defvar g-strs:ptr)
@@ -557,8 +557,9 @@
 ; Allocation helpers
 ; ============================================================
 
-(defn alloc-tok:ptr ()
-  (return (arena-alloc (sizeof Tok))))
+; Arena-backed allocators: arena-alloc aborts on exhaustion, never null.
+(defn alloc-tok:ref:Tok ()
+  (return (cast ref:Tok (arena-alloc (sizeof Tok)))))
 
 (defn nucleus_gensym:ptr ()
   (let (id:i32 g-gensym-id)
@@ -571,22 +572,21 @@
       (.set! n s buf)
       (return (cast ptr n)))))
 
-(defn alloc-type:ptr ()
-  (let (t:ptr (arena-alloc (sizeof Type)))
-    (return t)))
+(defn alloc-type:ref:Type ()
+  (return (cast ref:Type (arena-alloc (sizeof Type)))))
 
-(defn alloc-val:ptr (ty:ptr v:ptr)
-  (let (r:ptr (arena-alloc (sizeof Val)))
-    (.set! (cast ptr:Val r) type ty)
-    (.set! (cast ptr:Val r) val v)
+(defn alloc-val:ref:Val (ty:ptr v:ptr)
+  (let (r:ref:Val (cast ref:Val (arena-alloc (sizeof Val))))
+    (.set! r type ty)
+    (.set! r val v)
     (return r)))
 
 ; ============================================================
 ; Growable pointer vector
 ; ============================================================
 
-(defn make-vec:ptr ()
-  (return (arena-alloc (sizeof Vec))))
+(defn make-vec:ref:Vec ()
+  (return (cast ref:Vec (arena-alloc (sizeof Vec)))))
 
 (defn vec-push:void (v:ptr item:ptr)
   (let (vv:ptr:Vec (cast ptr:Vec v))
@@ -660,10 +660,10 @@
 ; Types
 ; ============================================================
 
-(defn make-type:ptr (k:i32)
-  (let (t:ptr:Type (cast ptr:Type (alloc-type)))
+(defn make-type:ref:Type (k:i32)
+  (let (t:ref:Type (alloc-type))
     (.set! t kind k)
-    (return (cast ptr t))))
+    (return t)))
 
 (defn types-init:void ()
   (set! ty-void (make-type TY-VOID))
@@ -681,7 +681,7 @@
   (set! ty-cstr (make-type TY-CSTR))
   (set! ty-ptr  (make-type TY-PTR))
   (set! ty-maybe-ptr (make-type TY-PTR))
-  (.set! (cast ptr:Type ty-maybe-ptr) pkind PTR-MAYBE))
+  (.set! ty-maybe-ptr pkind PTR-MAYBE))
 
 (defn type-to-ir:ptr (t:ptr)
   (let (tt:ptr:Type (cast ptr:Type t))
@@ -1060,7 +1060,7 @@
 ; and bind it in fn-scope. DIRECT keeps the prior alloca+store (byte-identical).
 ; MEMORY binds the byval pointer directly (it already points at the copy).
 ; COERCE allocas the struct and stores the register arg(s) at their offsets.
-(defn abi-emit-param-prologue:void (fn-scope:ptr pname:ptr ptype:ptr)
+(defn abi-emit-param-prologue:void (fn-scope:ref:Scope pname:ptr ptype:ptr)
   (let (info:ptr:AbiInfo (cast ptr:AbiInfo (abi-classify ptype))
         k:i32 ((cast ptr:AbiInfo (abi-classify ptype)) kind)
         slot:ptr (fmt-s "%%%s.addr" pname)
@@ -1163,7 +1163,7 @@
 ; the first-class struct value, and return its Val. `arglist` is the already
 ; built scalar/coerced argument string; `nargs` is the count it holds (so a
 ; MEMORY sret prefix knows whether it needs a separating comma).
-(defn abi-emit-struct-call:ptr (info:ptr ret:ptr ir-name:ptr arglist:ptr nargs:i32)
+(defn abi-emit-struct-call:ref:Val (info:ptr ret:ptr ir-name:ptr arglist:ptr nargs:i32)
   (let (ii:ptr:AbiInfo (cast ptr:AbiInfo info)
         k:i32 ((cast ptr:AbiInfo info) kind)
         ty:ptr (type-to-ir ret))
@@ -1210,7 +1210,7 @@
 
 ; Try to coerce a value to a target type. Returns a Val* or null on failure.
 ; Handles: same kind (identity), int-to-int (trunc/sext/zext), same-width sign change.
-(defn coerce-int-val:ptr (v:ptr target:ptr line:i32)
+(defn coerce-int-val:?Val (v:ptr target:ptr line:i32)
   (let (vv:ptr:Val (cast ptr:Val v)
         src:ptr (vv type)
         sk:i32 (-> src (cast ptr:Type _) (_ kind))
@@ -1249,7 +1249,7 @@
     ; Not compatible
     (return null)))
 
-(defn register-struct:ptr (name:ptr)
+(defn register-struct:ref:StructDef (name:ptr)
   (when (>= g-structs-len MAX-STRUCTS)
     (fprintf stderr "nucleusc: too many structs\n") (exit 1))
   (let (sd:ptr:StructDef (cast ptr:StructDef (ptr+ (cast ptr:StructDef g-structs) g-structs-len)))
@@ -1257,7 +1257,7 @@
     (.set! sd num-fields 0)
     (.set! sd emitted 0)
     (inc! g-structs-len)
-    (return (cast ptr sd))))
+    (return (cast ref:StructDef sd))))
 
 ; ============================================================
 ; Stage 8: anonymous structs — (struct field:type ...) types, memoized by
@@ -1307,7 +1307,7 @@
       (inc! i))
     (return h)))
 
-(defn lookup-or-make-anon-struct:ptr (field-names:ptr field-types:ptr nfields:i32)
+(defn lookup-or-make-anon-struct:ref:StructDef (field-names:ptr field-types:ptr nfields:i32)
   (let (hash:i64 (hash-struct-shape field-names field-types nfields)
         synth:ptr (fmt-i64 "__anon_struct_h%016lx" hash)
         sd:ptr (lookup-struct synth))
@@ -1327,9 +1327,11 @@
           (fprintf g-type-stream "%s" (type-to-ir (aref (cast ptr:ptr field-types) i)))
           (inc! i)))
       (fprintf g-type-stream " }\n\n"))
-    (return sd)))
+    ; Both arms leave sd non-null, but the set!-kill is sticky across the join
+    ; (nullability.md §4) — assert rather than re-test.
+    (return (cast ref:StructDef sd))))
 
-(defn lookup-struct:ptr (name:ptr)
+(defn lookup-struct:?StructDef (name:ptr)
   (let (i:i32 0)
     (while (< i g-structs-len)
       (let (sd:ptr:StructDef (cast ptr:StructDef (ptr+ (cast ptr:StructDef g-structs) i)))
@@ -1338,15 +1340,15 @@
       (inc! i)))
   (return null))
 
-(defn parse-type-name:ptr (name:ptr line:i32)
+(defn parse-type-name:ref:Type (name:ptr line:i32)
   ; Stage 10 sugar: ?T is (Maybe (ref T)) — an explicitly nullable non-null
   ; pointer, niche-encoded as the bare pointer (null = none).
   (when (= (char-at name (cast i64 0)) 63)
     (let (inner:ptr (parse-type-name (ptr+ (cast ptr:i8 name) (cast i64 1)) line)
-          mt:ptr:Type (cast ptr:Type (make-type TY-PTR)))
+          mt:ref:Type (make-type TY-PTR))
       (.set! mt elem inner)
       (.set! mt pkind PTR-MAYBE)
-      (return (cast ptr mt))))
+      (return mt)))
   (when (= name "int") (return ty-i32))
   (when (= name "i1") (return ty-i1))
   (when (= name "i8") (return ty-i8))
@@ -1367,16 +1369,16 @@
   (when (= name "double") (return ty-f64))
   (let (sd:ptr (lookup-struct name))
     (when (!= sd null)
-      (let (t:ptr:Type (cast ptr:Type (make-type TY-STRUCT)))
+      (let (t:ref:Type (make-type TY-STRUCT))
         (.set! t sdef sd)
-        (return (cast ptr t)))))
+        (return t))))
   (die-at line (fmt-s "unknown type: %s" name)))
 
 ; Parse a type from an AST node. Handles:
 ;   - symbol node: delegates to parse-type-name
 ;   - list node (ptr T) or (ptr ptr ... T): builds TY-PTR
 ;   - list node ((fn ret-type) (param-types...)) or (fn ret-type): builds TY-FN
-(defn parse-type-from-node:ptr (node:ptr line:i32)
+(defn parse-type-from-node:ref:Type (node:ptr line:i32)
   (let (n:ptr:Node (cast ptr:Node node))
     (when (= (n kind) NODE-SYM)
       ; Colon-sugar in inline type position: "ptr:Node" → (ptr Node).
@@ -1437,9 +1439,9 @@
                 (inc! i)
                 (set! cur ((cast ptr:Node cur) cdr)))
               (let (sd:ptr (lookup-or-make-anon-struct fnames ftypes nfields)
-                    t:ptr:Type (cast ptr:Type (make-type TY-STRUCT)))
+                    t:ref:Type (make-type TY-STRUCT))
                 (.set! t sdef sd)
-                (return (cast ptr t)))))))
+                (return t))))))
       ; Check for pointer constructor: (ptr T) or (ptr ptr T) ...
       (let (head:ptr (n car))
         (when (= head 'ptr)
@@ -1449,9 +1451,9 @@
               (if (= ((cast ptr:Node rest) cdr) null)
                 (set! elem (parse-type-from-node ((cast ptr:Node rest) car) line))
                 (set! elem (parse-type-from-node rest line)))
-              (let (pt:ptr:Type (cast ptr:Type (make-type TY-PTR)))
+              (let (pt:ref:Type (make-type TY-PTR))
                 (.set! pt elem elem)
-                (return (cast ptr pt)))))))
+                (return pt))))))
       ; Stage 10: (ref T) — a non-null pointer to T. Same shape as (ptr T)
       ; (colon sugar ref:T arrives here too), but the element is required.
       (let (head:ptr (n car))
@@ -1463,10 +1465,10 @@
               (if (= ((cast ptr:Node rest) cdr) null)
                 (set! elem (parse-type-from-node ((cast ptr:Node rest) car) line))
                 (set! elem (parse-type-from-node rest line)))
-              (let (pt:ptr:Type (cast ptr:Type (make-type TY-PTR)))
+              (let (pt:ref:Type (make-type TY-PTR))
                 (.set! pt elem elem)
                 (.set! pt pkind PTR-REF)
-                (return (cast ptr pt)))))))
+                (return pt))))))
       ; Stage 10: (Maybe (ref T)) — explicit nullability over a non-null
       ; pointer, niche-encoded (null = none). Pointer payloads only; a
       ; non-pointer Maybe needs a discriminant and is left to sum types.
@@ -1482,7 +1484,7 @@
               (when (or (-> inner (cast ptr:Type _) (_ kind) (!= _ TY-PTR))
                         (!= (ptr-pkind inner) PTR-REF))
                 (die-at line "Maybe: payload must be (ref T) — (Maybe T) over non-pointers needs sum types (future)"))
-              (return (type-as-pkind inner PTR-MAYBE))))))
+              (return (cast ref:Type (type-as-pkind inner PTR-MAYBE)))))))
       ; Check for function pointer type: ((fn ret) (param-types...))
       (let (head:ptr (n car))
         (when (!= head null)
@@ -1520,12 +1522,12 @@
                                        (parse-type-from-node ((cast ptr:Node cur) car) line))
                                 (inc! pi)
                                 (set! cur ((cast ptr:Node cur) cdr))))))))
-                    (let (ft:ptr:Type (cast ptr:Type (make-type TY-FN)))
+                    (let (ft:ref:Type (make-type TY-FN))
                       (.set! ft ret ret-type)
                       (.set! ft params param-arr)
                       (.set! ft num-params num-p)
                       (.set! ft variadic is-va)
-                      (return (cast ptr ft))))))))
+                      (return ft)))))))
           ; Head is a symbol "fn" — function pointer with no params: (fn ret-type)
          (when (= head 'fn)
              (let (ret-node:ptr (n cdr)
@@ -1533,12 +1535,12 @@
                (when (and (!= ret-node null)
                           (!= ((cast ptr:Node ret-node) car) null))
                  (set! ret-type (parse-type-from-node ((cast ptr:Node ret-node) car) line)))
-               (let (ft:ptr:Type (cast ptr:Type (make-type TY-FN)))
+               (let (ft:ref:Type (make-type TY-FN))
                  (.set! ft ret ret-type)
                  (.set! ft params null)
                  (.set! ft num-params 0)
                  (.set! ft variadic 0)
-                 (return (cast ptr ft))))))))
+                 (return ft)))))))
     (die-at line "unable to parse type expression")))
 
 (defn split-typed:void (sym:ptr out-name:ptr:ptr out-type-name:ptr:ptr)
@@ -1632,12 +1634,12 @@
 ; Symbol table
 ; ============================================================
 
-(defn scope-new:ptr (parent:ptr)
-  (let (s:ptr:Scope (new Scope))
+(defn scope-new:ref:Scope (parent:ptr)
+  (let (s:ref:Scope (new Scope))
     (.set! s parent parent)
-    (return (cast ptr s))))
+    (return s)))
 
-(defn scope-define:ptr (s:ptr name:ptr type:ptr ir-name:ptr is-local:i32)
+(defn scope-define:ref:Sym (s:ptr name:ptr type:ptr ir-name:ptr is-local:i32)
   (let (sc:ptr:Scope (cast ptr:Scope s))
     (when (= (sc len) (sc cap))
       (let (nc:i32 8)
@@ -1654,9 +1656,9 @@
       (.set! sym is-local is-local)
       (.set! sym home s)
       (.set! sc len (+ (sc len) 1))
-      (return (cast ptr sym)))))
+      (return (cast ref:Sym sym)))))
 
-(defn scope-lookup:ptr (s:ptr name:ptr)
+(defn scope-lookup:?Sym (s:ptr name:ptr)
   (let (cur:ptr s)
     (while (!= cur null)
       (let (sc:ptr:Scope (cast ptr:Scope cur)
@@ -1752,7 +1754,7 @@
 ; "not modeled — keep the emit-computed type"; callers treat null as unknown.
 ; node-type never emits and never aborts: ambiguous lookups yield null.
 
-(defn node-type-sym:ptr (n:ptr scope:ptr)
+(defn node-type-sym:?Type (n:ptr scope:ref:Scope)
   (when (= n 'null)  (return ty-ptr))
   (when (= n 'true)  (return ty-i1))
   (when (= n 'false) (return ty-i1))
@@ -1767,10 +1769,10 @@
 
 ; let / with: the type of the last body expression, evaluated in a child scope
 ; carrying the binding types (values are irrelevant to typing).
-(defn node-type-block:ptr (n:ptr scope:ptr)
+(defn node-type-block:?Type (n:ptr scope:ref:Scope)
   (let (binds:ptr:Node (cast ptr:Node (node-at n 1)))
     (when (or (= (cast ptr binds) null) (!= (binds kind) NODE-CELL)) (return null))
-    (let (inner:ptr (scope-new scope)
+    (let (inner:ref:Scope (scope-new scope)
           i:i32 0
           bl:i32 (node-len (cast ptr binds)))
       (while (< i bl)
@@ -1789,18 +1791,18 @@
         (when (= last null) (return ty-void))
         (return (node-type last inner))))))
 
-(defn node-type-cast:ptr (n:ptr)
+(defn node-type-cast:ref:Type (n:ptr)
   (let (tn:ptr:Node (cast ptr:Node (node-at n 1)))
     (return (parse-type-from-node (cast ptr tn) (tn line)))))
 
-(defn node-type-alloca:ptr (n:ptr)
+(defn node-type-alloca:ref:Type (n:ptr)
   (let (tn:ptr:Node (cast ptr:Node (node-at n 1)))
     (let (ty:ptr (parse-type-from-node (cast ptr tn) (tn line))
-          pt:ptr:Type (cast ptr:Type (make-type TY-PTR)))
+          pt:ref:Type (make-type TY-PTR))
       (.set! pt elem ty)
-      (return (cast ptr pt)))))
+      (return pt))))
 
-(defn node-type-addr-of:ptr (n:ptr scope:ptr)
+(defn node-type-addr-of:?Type (n:ptr scope:ref:Scope)
   (let (target:ptr:Node (cast ptr:Node (node-at n 1)))
     (when (!= (target kind) NODE-SYM) (return null))
     (let (sym:ptr:Sym (cast ptr:Sym (scope-lookup scope (target s))))
@@ -1809,7 +1811,7 @@
         (.set! pt elem (sym type))
         (return (cast ptr pt))))))
 
-(defn node-type-funcall:ptr (n:ptr scope:ptr)
+(defn node-type-funcall:?Type (n:ptr scope:ref:Scope)
   (let (t:ptr (node-type (node-at n 1) scope))
     (when (= t null) (return null))
     (let (tt:ptr:Type (cast ptr:Type t))
@@ -1817,14 +1819,14 @@
       (return (tt ret)))))
 
 ; deref / aref: the pointee type of the first operand's pointer.
-(defn node-type-deref-elem:ptr (n:ptr scope:ptr)
+(defn node-type-deref-elem:?Type (n:ptr scope:ref:Scope)
   (let (t:ptr (node-type (node-at n 1) scope))
     (when (= t null) (return null))
     (let (tt:ptr:Type (cast ptr:Type t))
       (when (or (!= (tt kind) TY-PTR) (= (tt elem) null)) (return null))
       (return (tt elem)))))
 
-(defn node-type-field:ptr (n:ptr scope:ptr)
+(defn node-type-field:?Type (n:ptr scope:ref:Scope)
   (let (t:ptr (node-type (node-at n 1) scope))
     (when (= t null) (return null))
     (let (tt:ptr:Type (cast ptr:Type t))
@@ -1842,15 +1844,15 @@
 ; emit-get-with-callee / emit-get-intrinsic so the type pass cannot drift from
 ; codegen. A tier-0 user `get` method → its return; a literal selector → the
 ; named field's type; a computed selector → null (emit keeps its own type).
-(defn callable-get-type:ptr (ct:ptr sel-node:ptr scope:ptr)
+(defn callable-get-type:?Type (ct:ptr sel-node:ptr scope:ref:Scope)
   (let (ctt:ptr:Type (cast ptr:Type ct)
-        g:ptr (generic-lookup "get"))
+        g:?Generic (generic-lookup "get"))
     (when (!= g null)
       (let (argtypes:ptr (arena-alloc (* (cast i64 2) (ptr-bytes))))
         (aset! (cast ptr:ptr argtypes) 0 ct)
         (aset! (cast ptr:ptr argtypes) 1 ty-ptr)
-        (let (m:ptr (generic-find-method-exact g argtypes 2))
-          (when (!= m null) (return (-> m (cast ptr:Method _) (_ ret-type)))))))
+        (let (m:?Method (generic-find-method-exact g argtypes 2))
+          (when (!= m null) (return (m ret-type))))))
     (when (or (or (!= (ctt kind) TY-PTR) (= (ctt elem) null))
               (-> ctt (_ elem) (cast ptr:Type _) (_ kind) (!= _ TY-STRUCT)))
       (return null))
@@ -1864,8 +1866,8 @@
 
 ; Result type of `(invoke callee arg…)` for callee type `ct` — the tier-0 `invoke`
 ; method's return, else null (mirrors emit-invoke-with-callee at the exact tier).
-(defn callable-invoke-type:ptr (ct:ptr n:ptr arg-start:i32 nargs:i32 scope:ptr)
-  (let (g:ptr (generic-lookup "invoke"))
+(defn callable-invoke-type:?Type (ct:ptr n:ptr arg-start:i32 nargs:i32 scope:ref:Scope)
+  (let (g:?Generic (generic-lookup "invoke"))
     (when (= g null) (return null))
     (let (total:i32 (+ nargs 1)
           argtypes:ptr (arena-alloc (* (cast i64 (+ total 1)) (ptr-bytes)))
@@ -1878,25 +1880,25 @@
             (aset! (cast ptr:ptr argtypes) (+ i 1) at))
           (inc! i)))
       (when (= ok 0) (return null))
-      (let (m:ptr (generic-find-method-exact g argtypes total))
+      (let (m:?Method (generic-find-method-exact g argtypes total))
         (when (= m null) (return null))
-        (return (-> m (cast ptr:Method _) (_ ret-type)))))))
+        (return (m ret-type))))))
 
 ; Type of a non-function head value `ct` applied in `(callee arg…)` — mirrors
 ; emit-callable-value: single literal-symbol arg → get, else → invoke.
-(defn callable-value-type:ptr (ct:ptr n:ptr scope:ptr)
+(defn callable-value-type:?Type (ct:ptr n:ptr scope:ref:Scope)
   (let (nargs:i32 (- (node-len n) 1))
     (if (and (= nargs 1) (!= (selector-literal-sym (node-at n 1)) null))
       (return (callable-get-type ct (node-at n 1) scope))
       (return (callable-invoke-type ct n 1 nargs scope)))))
 
-(defn node-type-get:ptr (n:ptr scope:ptr)
+(defn node-type-get:?Type (n:ptr scope:ref:Scope)
   (when (!= (node-len n) 3) (return null))
   (let (ct:ptr (node-type (node-at n 1) scope))
     (when (= ct null) (return null))
     (return (callable-get-type ct (node-at n 2) scope))))
 
-(defn node-type-invoke:ptr (n:ptr scope:ptr)
+(defn node-type-invoke:?Type (n:ptr scope:ref:Scope)
   (when (< (node-len n) 2) (return null))
   (let (ct:ptr (node-type (node-at n 1) scope))
     (when (= ct null) (return null))
@@ -1906,14 +1908,13 @@
 ; user overload's return type, else i1 for comparisons / the first operand's type
 ; (the intrinsic peephole result); overloaded set → the exactly matched method's
 ; return type; solitary/extern → the bound function's return.
-(defn node-type-call:ptr (n:ptr scope:ptr h:ptr)
-  (let (g:ptr (generic-lookup h))
+(defn node-type-call:?Type (n:ptr scope:ref:Scope h:ptr)
+  (let (g:?Generic (generic-lookup h))
     (when (!= g null)
-      (let (gg:ptr:Generic (cast ptr:Generic g)
-            m0:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (gg methods)) 0)))
+      (let (m0:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (g methods)) 0)))
         (when (= (m0 kind) METHOD-INTRINSIC)
           ; A user overload of this operator, if any, wins (mirror emit).
-          (when (!= (gg mangled) 0)
+          (when (!= (g mangled) 0)
             (let (nargs:i32 (- (node-len n) 1)
                   argtypes:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (ptr-bytes)))
                   arg-nodes:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (ptr-bytes)))
@@ -1927,12 +1928,12 @@
                   (aset! (cast ptr:ptr arg-nodes) i anode))
                 (inc! i))
               (when (!= ok 0)
-                (let (um:ptr (operator-user-resolve (cast ptr gg) argtypes arg-nodes nargs))
-                  (when (!= um null) (return (-> um (cast ptr:Method _) (_ ret-type))))))))
+                (let (um:?Method (operator-user-resolve g argtypes arg-nodes nargs))
+                  (when (!= um null) (return (um ret-type)))))))
           (let (bop:ptr:BinOp (cast ptr:BinOp (m0 binop)))
             (when (!= (bop is-cmp) 0) (return ty-i1))
             (return (node-type (node-at n 1) scope))))
-        (when (!= (gg mangled) 0)
+        (when (!= (g mangled) 0)
           (let (nargs:i32 (- (node-len n) 1)
                 argtypes:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (ptr-bytes)))
                 i:i32 0
@@ -1943,17 +1944,17 @@
                 (aset! (cast ptr:ptr argtypes) i at))
               (inc! i))
             (when (= ok 0) (return null))
-            (let (m:ptr (generic-find-method-exact (cast ptr gg) argtypes nargs))
+            (let (m:?Method (generic-find-method-exact g argtypes nargs))
               (when (= m null) (return null))
-              (return (-> m (cast ptr:Method _) (_ ret-type))))))))
-    (let (sym:ptr:Sym (cast ptr:Sym (scope-lookup scope h)))
-      (when (= (cast ptr sym) null) (return null))
+              (return (m ret-type)))))))
+    (if-some (sym (scope-lookup scope h))
       (let (ft:ptr:Type (cast ptr:Type (sym type)))
         ; A non-function value head is a callable value: mirror the get/invoke desugar.
         (when (!= (ft kind) TY-FN) (return (callable-value-type (cast ptr ft) n scope)))
-        (return (ft ret))))))
+        (return (ft ret)))
+      (return null))))
 
-(defn node-type:ptr (n:ptr scope:ptr)
+(defn node-type:?Type (n:ptr scope:ref:Scope)
   (when (= n null) (return ty-void))
   (let (nn:ptr:Node (cast ptr:Node n))
     (when (= (nn kind) NODE-INT)   (return ty-i32))
@@ -2031,9 +2032,9 @@
 ; Expression codegen
 ; ============================================================
 
-(defn emit-node:ptr (n:ptr scope:ptr)
+(defn emit-node:ref:Val (n:ptr scope:ref:Scope)
   (let (nn:ptr:Node (cast ptr:Node n)
-        v:ptr (alloc-val ty-void null))
+        v:ref:Val (alloc-val ty-void null))
     (when (= (nn kind) NODE-INT)   (set! v (emit-int n)))
     (when (= (nn kind) NODE-FLOAT) (set! v (emit-float n)))
     (when (= (nn kind) NODE-STR)   (set! v (emit-string n)))
@@ -2044,10 +2045,10 @@
     ; a mismatch corrupts the next bootstrap and is caught at once. node-type
     ; returns null for the forms it does not model; those keep emit's own type.
     (let (t:ptr (node-type n scope))
-      (when (!= t null) (.set! (cast ptr:Val v) type t)))
+      (when (!= t null) (.set! v type t)))
     (return v)))
 
-(defn emit-int:ptr (n:ptr)
+(defn emit-int:ref:Val (n:ptr)
   (return (alloc-val ty-i32 (fmt-i64 "%ld" ((cast ptr:Node n) i)))))
 
 ; Translate a float literal lexeme to an LLVM IR floating-point
@@ -2109,11 +2110,11 @@
     (aset! (cast ptr:i8 buf) out (cast i8 0))
     (return buf)))
 
-(defn emit-float:ptr (n:ptr)
+(defn emit-float:ref:Val (n:ptr)
   (let (nn:ptr:Node (cast ptr:Node n))
     (return (alloc-val ty-f64 (float-literal-ir (nn s))))))
 
-(defn emit-string:ptr (n:ptr)
+(defn emit-string:ref:Val (n:ptr)
   (let (nn:ptr:Node (cast ptr:Node n)
         id:i32 (intern-string (nn s) (cast i32 (strlen (nn s))))
         ir-len:i32 (+ ((cast ptr:StrLit (ptr+ (cast ptr:StrLit g-strs) id)) len) 1)
@@ -2181,7 +2182,7 @@
             ir-len sid sp)))
       (return tmp))))
 
-(defn emit-quote:ptr (call:ptr)
+(defn emit-quote:ref:Val (call:ptr)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len call) 2) (die-at (cc line) "quote: expects 1 arg"))
     (let (ref:ptr (emit-quote-tree (node-at call 1)))
@@ -2198,27 +2199,27 @@
       (when (= h tag) (return 1))
       (return 0))))
 
-(defn emit-qq-list:ptr (list:ptr scope:ptr)
+(defn emit-qq-list:ref:Val (list:ptr scope:ref:Scope)
   (when (= list null) (return (alloc-val ty-ptr "null")))
   (set! g-qq-used 1)
   (let (lc:ptr:Node (cast ptr:Node list)
         elem:ptr (lc car))
     (when (!= (qq-is-tagged elem 'unquote-splice) 0)
       (let (inner:ptr (node-at elem 1)
-            a:ptr:Val (cast ptr:Val (emit-node inner scope))
-            rest:ptr:Val (cast ptr:Val (emit-qq-list (lc cdr) scope))
+            a:ref:Val (emit-node inner scope)
+            rest:ref:Val (emit-qq-list (lc cdr) scope)
             tmp:ptr (new-tmp))
         (fprintf g-body-stream "  %s = call ptr @__append(ptr %s, ptr %s)\n"
                  tmp (a val) (rest val))
         (return (alloc-val ty-ptr tmp))))
-    (let (head:ptr:Val (cast ptr:Val (emit-qq-form elem scope))
-          tail:ptr:Val (cast ptr:Val (emit-qq-list (lc cdr) scope))
+    (let (head:ref:Val (emit-qq-form elem scope)
+          tail:ref:Val (emit-qq-list (lc cdr) scope)
           tmp:ptr (new-tmp))
       (fprintf g-body-stream "  %s = call ptr @__cons(ptr %s, ptr %s)\n"
                tmp (head val) (tail val))
       (return (alloc-val ty-ptr tmp)))))
 
-(defn emit-qq-form:ptr (form:ptr scope:ptr)
+(defn emit-qq-form:ref:Val (form:ptr scope:ref:Scope)
   (when (= form null) (return (alloc-val ty-ptr "null")))
   (let (fn:ptr:Node (cast ptr:Node form))
     (when (!= (fn kind) NODE-CELL)
@@ -2230,7 +2231,7 @@
       (die-at (fn line) "unquote-splice outside list"))
     (return (emit-qq-list form scope))))
 
-(defn emit-quasiquote:ptr (call:ptr scope:ptr)
+(defn emit-quasiquote:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len call) 2) (die-at (cc line) "quasiquote: expects 1 arg"))
     (return (emit-qq-form (node-at call 1) scope))))
@@ -2267,7 +2268,7 @@
 ; Narrow binding `name` (resolved in `scope`) to the non-null view of its
 ; current effective type, pushing an undo entry. No-op unless the binding
 ; currently reads as a local (Maybe (ref T)).
-(defn narrow-apply:void (scope:ptr name:ptr)
+(defn narrow-apply:void (scope:ref:Scope name:ptr)
   (when (= g-nundo null) (set! g-nundo (make-vec)))
   (let (sym:ptr:Sym (cast ptr:Sym (scope-lookup scope name)))
     (when (= (cast ptr sym) null) (return))
@@ -2397,7 +2398,7 @@
           (return))))))
 
 ; Narrow every name in `names` (a Vec) resolved against `scope`.
-(defn narrow-names:void (scope:ptr names:ptr)
+(defn narrow-names:void (scope:ref:Scope names:ptr)
   (let (v:ptr:Vec (cast ptr:Vec names)
         i:i32 0)
     (while (< i (v len))
@@ -2407,7 +2408,7 @@
 ; Conservatively kill narrows for any textual (set! x ...) target inside `n` —
 ; run before a loop body emits, so a narrow established outside the loop can't
 ; license a use that a later iteration's assignment would invalidate.
-(defn prescan-kill-sets:void (n:ptr scope:ptr)
+(defn prescan-kill-sets:void (n:ptr scope:ref:Scope)
   (when (= n null) (return))
   (let (nn:ptr:Node (cast ptr:Node n))
     (when (!= (nn kind) NODE-CELL) (return))
@@ -2456,7 +2457,7 @@
       (die-at line
         (fmt-s "%s: resource bound by `with` escapes via store into longer-lived memory — use (move ...) to transfer ownership" op)))))
 
-(defn emit-symbol-ref:ptr (n:ptr scope:ptr)
+(defn emit-symbol-ref:ref:Val (n:ptr scope:ref:Scope)
   (let (nn:ptr:Node (cast ptr:Node n))
     (when (= n 'null)  (return (alloc-val ty-ptr "null")))
     (when (= n 'true)  (return (alloc-val ty-i1 "1")))
@@ -2467,24 +2468,24 @@
     (let (lookup-name:ptr null
           ignored-type:ptr null)
       (split-typed (nn s) (cast ptr:ptr (addr-of lookup-name)) (cast ptr:ptr (addr-of ignored-type)))
-      (let (sym:ptr:Sym (cast ptr:Sym (scope-lookup scope lookup-name)))
-        (when (= (cast ptr sym) null)
-          (die-at (nn line) (fmt-s "undefined: %s" (nn s))))
-        (when (!= (sym moved) 0)
-          (die-at (nn line) (fmt-s "use after move: '%s'" (nn s))))
-        (when (!= (sym is-const) 0)
-          (return (alloc-val (sym type) (sym const-val))))
-        (when (= (sym is-local) 0)
-         (when (-> sym (_ type) (cast ptr:Type _) (_ kind) (= _ TY-FN))
-           (return (alloc-val (sym type) (sym ir-name))))
-         (die-at (nn line) (fmt-s "cannot use '%s' as value" (nn s))))
-        (let (tmp:ptr (new-tmp))
-          (emit-load tmp (type-to-ir (sym type)) (sym ir-name) (sym type))
-          ; Stage 10: the read uses the flow-narrowed view of the binding's
-          ; type and carries the binding's escape taint.
-          (let (rv:ptr:Val (cast ptr:Val (alloc-val (sym-effective-type (cast ptr sym)) tmp)))
-            (.set! rv taint (sym taint))
-            (return (cast ptr rv))))))))
+      (if-some (sym (scope-lookup scope lookup-name))
+        (do
+          (when (!= (sym moved) 0)
+            (die-at (nn line) (fmt-s "use after move: '%s'" (nn s))))
+          (when (!= (sym is-const) 0)
+            (return (alloc-val (sym type) (sym const-val))))
+          (when (= (sym is-local) 0)
+            (when (-> sym (_ type) (cast ptr:Type _) (_ kind) (= _ TY-FN))
+              (return (alloc-val (sym type) (sym ir-name))))
+            (die-at (nn line) (fmt-s "cannot use '%s' as value" (nn s))))
+          (let (tmp:ptr (new-tmp))
+            (emit-load tmp (type-to-ir (sym type)) (sym ir-name) (sym type))
+            ; Stage 10: the read uses the flow-narrowed view of the binding's
+            ; type and carries the binding's escape taint.
+            (let (rv:ref:Val (alloc-val (sym-effective-type sym) tmp))
+              (.set! rv taint (sym taint))
+              (return rv))))
+        (die-at (nn line) (fmt-s "undefined: %s" (nn s)))))))
 
 ; ============================================================
 ; Binary operations
@@ -2539,7 +2540,7 @@
 ; Coerce a numeric Val to a target numeric type: int→int (trunc/sext/zext),
 ; int→float (sitofp/uitofp), float→float (fpext/fptrunc). Identity when already
 ; the target; null when the source is not numeric.
-(defn coerce-num-val:ptr (v:ptr target:ptr line:i32)
+(defn coerce-num-val:?Val (v:ptr target:ptr line:i32)
   (let (vv:ptr:Val (cast ptr:Val v)
         src:ptr (vv type))
     (when (!= (type-eq src target) 0) (return v))
@@ -2575,7 +2576,7 @@
     (.set! cr ir-name ir-name)
     (inc! g-cast-rules-len)))
 
-(defn lookup-cast-rule:ptr (from:ptr to:ptr)
+(defn lookup-cast-rule:?CastRule (from:ptr to:ptr)
   (let (i:i32 0)
     (while (< i g-cast-rules-len)
       (let (cr:ptr:CastRule (cast ptr:CastRule
@@ -2589,7 +2590,7 @@
 ; Coerce a Val to a target type at a call site (or any implicit context):
 ; same-kind identity, int↔int via coerce-int-val, f32→f64 fpext, and any
 ; user-registered defcast rule. Returns null when no safe conversion applies.
-(defn safe-coerce-val:ptr (v:ptr target:ptr line:i32)
+(defn safe-coerce-val:?Val (v:ptr target:ptr line:i32)
   (let (vv:ptr:Val (cast ptr:Val v)
         src:ptr (vv type)
         sk:i32 ((cast ptr:Type src) kind)
@@ -2703,7 +2704,7 @@
 ; untyped int literals for the widen/adapt tier when the operand types differ. For
 ; operands that already share a type, the IR is byte-identical to the pre-Stage-9
 ; emit-binop (binop-coerce returns null and nothing is inserted).
-(defn emit-binop-vals:ptr (a:ptr b:ptr a-node:ptr b-node:ptr op:ptr line:i32)
+(defn emit-binop-vals:ref:Val (a:ptr b:ptr a-node:ptr b-node:ptr op:ptr line:i32)
   (let (bop:ptr:BinOp (cast ptr:BinOp op)
         av:ptr:Val (cast ptr:Val a)
         bv:ptr:Val (cast ptr:Val b))
@@ -2794,20 +2795,20 @@
         (when (!= (bop is-cmp) 0) (set! rtype ty-i1))
         (return (alloc-val rtype tmp))))))
 
-(defn emit-binop:ptr (call:ptr scope:ptr op:ptr)
+(defn emit-binop:ref:Val (call:ptr scope:ref:Scope op:ptr)
   (let (cc:ptr:Node (cast ptr:Node call)
         bop:ptr:BinOp (cast ptr:BinOp op))
     (when (!= (node-len cc) 3)
       (die-at (cc line) (fmt-s "%s expects 2 args" (bop name))))
-    (let (a:ptr (emit-node (node-at cc 1) scope)
-          b:ptr (emit-node (node-at cc 2) scope))
+    (let (a:ref:Val (emit-node (node-at cc 1) scope)
+          b:ref:Val (emit-node (node-at cc 2) scope))
       (return (emit-binop-vals a b (node-at cc 1) (node-at cc 2) op (cc line))))))
 
 ; ============================================================
 ; Generic (polymorphism) registry
 ; ============================================================
 
-(defn generic-lookup:ptr (name:ptr)
+(defn generic-lookup:?Generic (name:ptr)
   (let (i:i32 0)
     (while (< i g-num-generics)
       (let (g:ptr:Generic (cast ptr:Generic (ptr+ (cast ptr:Generic g-generics) i)))
@@ -2816,7 +2817,7 @@
       (inc! i)))
   (return null))
 
-(defn generic-new:ptr (name:ptr)
+(defn generic-new:ref:Generic (name:ptr)
   (when (= g-num-generics g-cap-generics)
     (let (nc:i32 64)
       (when (!= g-cap-generics 0) (set! nc (* g-cap-generics 2)))
@@ -2833,7 +2834,7 @@
     (.set! g finalized 0)
     (.set! g mangled 0)
     (inc! g-num-generics)
-    (return (cast ptr g))))
+    (return (cast ref:Generic g))))
 
 (defn generic-add-method:void (g:ptr m:ptr)
   (let (gg:ptr:Generic (cast ptr:Generic g))
@@ -2984,7 +2985,7 @@
         (return (fmt-s "ptr:%s" (type-spelling (tt elem))))))
     (return "ptr")))
 
-(defn generic-find-method-exact:ptr (g:ptr param-types:ptr nparams:i32)
+(defn generic-find-method-exact:?Method (g:ptr param-types:ptr nparams:i32)
   (let (gg:ptr:Generic (cast ptr:Generic g)
         i:i32 0)
     (while (< i (gg num-methods))
@@ -3057,7 +3058,7 @@
 ; Register one defn signature as a USER method of its name's generic. Called
 ; from prescan-defn-signatures; mangling/scope binding is decided later by
 ; finalize-generics once the full method set per name is known.
-(defn generic-register-method:ptr (fname:ptr ret:ptr param-types:ptr nparams:i32
+(defn generic-register-method:ref:Method (fname:ptr ret:ptr param-types:ptr nparams:i32
                                    has-rest:i32 variadic:i32 body:ptr)
   (let (g:ptr (generic-lookup fname))
     (when (= g null) (set! g (generic-new fname)))
@@ -3067,7 +3068,7 @@
       (.set! ft params param-types)
       (.set! ft variadic variadic)
       (.set! ft has-rest has-rest)
-      (let (m:ptr:Method (new Method))
+      (let (m:ref:Method (new Method))
         (.set! m param-types param-types)
         (.set! m num-params nparams)
         (.set! m ret-type ret)
@@ -3079,7 +3080,7 @@
         (.set! m binop null)
         (.set! m body body)
         (generic-add-method g (cast ptr m))
-        (return (cast ptr m))))))
+        (return m)))))
 
 ; Decide mangling for every not-yet-finalized user generic. A solitary concrete
 ; name keeps its unmangled @name and is bound in g-globals (so forward references
@@ -3165,9 +3166,9 @@
 ; a safe widen / untyped-int-literal adaptation on every argument (§10.3); the
 ; caller (emit-generic-call) coerces the args to the chosen params. arg-nodes is
 ; the parallel array of argument source nodes (or null) used to spot literals.
-(defn generic-resolve:ptr (g:ptr argtypes:ptr arg-nodes:ptr nargs:i32 line:i32)
+(defn generic-resolve:ref:Method (g:ptr argtypes:ptr arg-nodes:ptr nargs:i32 line:i32)
   (let (gg:ptr:Generic (cast ptr:Generic g)
-        found:ptr null
+        found:?Method null
         i:i32 0)
     (while (< i (gg num-methods))
       (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (gg methods)) i)))
@@ -3197,7 +3198,7 @@
       (when (= ncand 1)
         (return (generic-instantiate g cand cand-bound argtypes nargs line)))
       ; tier 2: widen / untyped-int-literal adaptation on a concrete method.
-      (let (wcand:ptr null
+      (let (wcand:?Method null
             wn:i32 0
             k:i32 0)
         (while (< k (gg num-methods))
@@ -3218,21 +3219,20 @@
           (inc! k))
         (when (> wn 1)
           (die-at line (fmt-s "ambiguous overload for '%s' under argument widening" (gg name))))
-        (when (= wn 1) (return wcand)))
+        (when (!= wcand null) (return wcand)))
       (when (!= constraint-fail 0)
         (die-at line
           (fmt-s "no matching method for '%s': arguments do not satisfy the required protocol constraint"
                  (gg name))))
       (die-at line (fmt-s "no matching method for overloaded '%s' with given argument types"
-                          (gg name)))
-      (return null))))
+                          (gg name))))))
 
 ; Resolve an operator call to a USER overload (exact, then a unique widen/literal
 ; match), or null to fall back to the built-in numeric/pointer peephole. Unlike
 ; generic-resolve this never dies — an unmatched operator is the common case and
 ; simply uses its intrinsic seed. Shared by emit (call vs inline) and node-type
 ; (the overload's return type vs the intrinsic's) so the two cannot drift.
-(defn operator-user-resolve:ptr (g:ptr argtypes:ptr arg-nodes:ptr nargs:i32)
+(defn operator-user-resolve:?Method (g:ptr argtypes:ptr arg-nodes:ptr nargs:i32)
   (let (gg:ptr:Generic (cast ptr:Generic g)
         i:i32 0)
     (while (< i (gg num-methods))
@@ -3582,10 +3582,10 @@
 ; Monomorphize a generic template for a concrete argument tuple: reuse a cached
 ; instantiation if present, else stamp a concrete method (registered now so the
 ; call site can name its symbol; its body is queued for later emission).
-(defn generic-instantiate:ptr (g:ptr m:ptr bound:ptr argtypes:ptr nargs:i32 line:i32)
+(defn generic-instantiate:ref:Method (g:ptr m:ptr bound:ptr argtypes:ptr nargs:i32 line:i32)
   (let (gg:ptr:Generic (cast ptr:Generic g)
         mm:ptr:Method (cast ptr:Method m))
-    (let (existing:ptr (generic-find-method-exact g argtypes nargs))
+    (let (existing:?Method (generic-find-method-exact g argtypes nargs))
       (when (!= existing null) (return existing)))
     ; Concrete spelling for each bound type variable, used to stamp the body.
     (let (ntv:i32 (mm num-tyvars)
@@ -3612,10 +3612,10 @@
             (while (< i nargs)
               (aset! (cast ptr:ptr ptypes) i (aref (cast ptr:ptr argtypes) i))
               (inc! i))))
-        (let (newm:ptr (generic-register-method (gg name) sret ptypes nargs 0 0 stamped)
+        (let (newm:ref:Method (generic-register-method (gg name) sret ptypes nargs 0 0 stamped)
               mangled:ptr (mangle-fn-name (gg name) ptypes nargs)
               job:ptr:MonoJob (new MonoJob))
-          (.set! (cast ptr:Method newm) ir-name mangled)
+          (.set! newm ir-name mangled)
           ; Record where this instantiation was requested, so a stamp-time emit
           ; error in the body points back here (g-source-path is the call site's).
           (.set! job form stamped)
@@ -3636,11 +3636,11 @@
 ; This never emits and only ever manufactures TY-TYVAR types, which codegen never
 ; sees (templates emit only after monomorphization).
 
-(defn make-tyvar-type:ptr (m:ptr idx:i32)
-  (let (t:ptr:Type (cast ptr:Type (make-type TY-TYVAR)))
+(defn make-tyvar-type:ref:Type (m:ptr idx:i32)
+  (let (t:ref:Type (make-type TY-TYVAR))
     (.set! t sdef m)         ; owning template Method*
     (.set! t num-params idx) ; tyvar index within that template
-    (return (cast ptr t))))
+    (return t)))
 
 (defn tyvar-type-name:ptr (t:ptr)
   (let (m:ptr:Method (cast ptr:Method (-> t (cast ptr:Type _) (_ sdef)))
@@ -3828,7 +3828,7 @@
 ; Type-check one node of a generic body in `scope`, against template `m`.
 ; Returns the node's (possibly abstract) type, or null when not modeled. Aborts
 ; with a def-time diagnostic on an operation the constraints do not provide.
-(defn gcheck:ptr (n:ptr scope:ptr m:ptr)
+(defn gcheck:ptr (n:ptr scope:ref:Scope m:ptr)
   (when (= n null) (return ty-void))
   (let (nn:ptr:Node (cast ptr:Node n))
     (when (= (nn kind) NODE-INT)   (return ty-i32))
@@ -3852,7 +3852,7 @@
         ; let / with: bind names (possibly abstract), then check the body.
         (when (or (= hp 'let) (= hp 'with))
           (let (binds:ptr (node-at n 1)
-                inner:ptr (scope-new scope)
+                inner:ref:Scope (scope-new scope)
                 bl:i32 (node-len binds)
                 i:i32 0)
             (while (< i bl)
@@ -3918,7 +3918,7 @@
 
 ; Walk only the compound (list) children of a node, checking nested calls but
 ; ignoring bare symbols (which may be type names, field names, or places).
-(defn gcheck-walk-children:void (n:ptr scope:ptr m:ptr)
+(defn gcheck-walk-children:void (n:ptr scope:ref:Scope m:ptr)
   (let (cl:i32 (node-len n) i:i32 1)
     (while (< i cl)
       (let (c:ptr (node-at n i))
@@ -3932,7 +3932,7 @@
   (let (mm:ptr:Method (cast ptr:Method m)
         form:ptr (mm body)
         params-node:ptr (node-at form 2)
-        scope:ptr (scope-new g-globals)
+        scope:ref:Scope (scope-new g-globals)
         nparams:i32 (mm num-params)
         i:i32 0)
     ; Every &where constraint must name a known protocol/blanket/Valid — checked
@@ -4062,7 +4062,7 @@
         (inc! j)))
     (return null)))
 
-(defn valid-walk-children:void (n:ptr scope:ptr gname:ptr cty:ptr line:i32)
+(defn valid-walk-children:void (n:ptr scope:ref:Scope gname:ptr cty:ptr line:i32)
   (let (cl:i32 (node-len n) i:i32 1)
     (while (< i cl)
       (let (c:ptr (node-at n i))
@@ -4074,7 +4074,7 @@
 ; aborting at any direct generic/operator call the concrete type can't satisfy.
 ; gname is the generic being instantiated and cty its concrete spelling, used
 ; only in the diagnostic. line is the requesting call site.
-(defn valid-walk:ptr (n:ptr scope:ptr gname:ptr cty:ptr line:i32)
+(defn valid-walk:ptr (n:ptr scope:ref:Scope gname:ptr cty:ptr line:i32)
   (when (= n null) (return ty-void))
   (let (nn:ptr:Node (cast ptr:Node n))
     (when (= (nn kind) NODE-INT)   (return ty-i32))
@@ -4095,7 +4095,7 @@
         (when (or (= hp 'quote) (= hp 'quasiquote)) (return ty-ptr))
         (when (or (= hp 'let) (= hp 'with))
           (let (binds:ptr (node-at n 1)
-                inner:ptr (scope-new scope)
+                inner:ref:Scope (scope-new scope)
                 bl:i32 (node-len binds)
                 i:i32 0)
             (while (< i bl)
@@ -4155,7 +4155,7 @@
 (defn valid-check-instance:void (m:ptr stamped:ptr bound:ptr line:i32)
   (let (mm:ptr:Method (cast ptr:Method m)
         params-node:ptr (node-at stamped 2)
-        scope:ptr (scope-new g-globals)
+        scope:ref:Scope (scope-new g-globals)
         gname:ptr (defn-name-only (node-at stamped 1))
         cty:ptr "?"
         nparams:i32 (mm num-params)
@@ -4197,7 +4197,7 @@
 ; verifies, after the whole-file prescan, that each required signature resolves
 ; to a concrete method with Self→Type substituted, and records the conformance.
 
-(defn protocol-lookup:ptr (name:ptr)
+(defn protocol-lookup:?Protocol (name:ptr)
   (let (i:i32 0)
     (while (< i g-num-protocols)
       (let (p:ptr:Protocol (cast ptr:Protocol (ptr+ (cast ptr:Protocol g-protocols) i)))
@@ -4205,7 +4205,7 @@
       (inc! i)))
   (return null))
 
-(defn protocol-new:ptr (name:ptr sigs:ptr num-sigs:i32)
+(defn protocol-new:ref:Protocol (name:ptr sigs:ptr num-sigs:i32)
   (when (= g-num-protocols g-cap-protocols)
     (let (nc:i32 16)
       (when (!= g-cap-protocols 0) (set! nc (* g-cap-protocols 2)))
@@ -4219,7 +4219,7 @@
     (.set! p sigs sigs)
     (.set! p num-sigs num-sigs)
     (inc! g-num-protocols)
-    (return (cast ptr p))))
+    (return (cast ref:Protocol p))))
 
 ; Is `name` one of the built-in blanket protocols (§10.1)? Blanket protocols have
 ; automatic conformance — no `extend` is written — so they are consulted before
@@ -4508,25 +4508,25 @@
 ; Cast
 ; ============================================================
 
-(defn emit-cast:ptr (call:ptr scope:ptr)
+(defn emit-cast:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 3)
       (die-at (cc line) "cast expects 2 args"))
     (let (type-node:ptr:Node (cast ptr:Node (node-at cc 1)))
       (let (dst:ptr (parse-type-from-node (cast ptr type-node) (type-node line))
-            v:ptr:Val (cast ptr:Val (emit-node (node-at cc 2) scope))
+            v:ref:Val (emit-node (node-at cc 2) scope)
             src:ptr (v type))
         ; Reinterpreting casts preserve pointer identity, so the result keeps
         ; the operand's escape taint (lifecycle.md §2.2).
         (when (= (-> src (cast ptr:Type _) (_ kind)) (-> dst (cast ptr:Type _) (_ kind)))
-          (let (rv:ptr:Val (cast ptr:Val (alloc-val dst (v val))))
+          (let (rv:ref:Val (alloc-val dst (v val)))
             (.set! rv taint (v taint))
-            (return (cast ptr rv))))
+            (return rv)))
         ; CStr <-> ptr: both lower to `ptr`, reinterpret with no IR.
         (when (and (!= (is-ptr-like src) 0) (!= (is-ptr-like dst) 0))
-          (let (rv:ptr:Val (cast ptr:Val (alloc-val dst (v val))))
+          (let (rv:ref:Val (alloc-val dst (v val)))
             (.set! rv taint (v taint))
-            (return (cast ptr rv))))
+            (return rv)))
         (let (instr:ptr null)
           (when (and (!= (is-int-type src) 0) (!= (is-int-type dst) 0))
             (let (sw:i32 (int-width src) dw:i32 (int-width dst))
@@ -4594,7 +4594,7 @@
 ; `p`. This is the zero-overhead member-access core shared by the `.` special
 ; form (emit-field-get) and the `get` blanket intrinsic (emit-get-intrinsic);
 ; a literal-symbol `(s 'field)` const-folds straight to this, byte-identical.
-(defn emit-field-load:ptr (p:ptr sd:ptr idx:i32)
+(defn emit-field-load:ref:Val (p:ptr sd:ptr idx:i32)
   (let (pv:ptr:Val (cast ptr:Val p)
         sdd:ptr:StructDef (cast ptr:StructDef sd)
         ftype:ptr (aref (cast ptr:ptr (sdd field-types)) idx)
@@ -4606,11 +4606,11 @@
       (emit-load val (type-to-ir ftype) gep ftype)
       (return (alloc-val ftype val)))))
 
-(defn emit-field-get:ptr (call:ptr scope:ptr)
+(defn emit-field-get:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 3)
       (die-at (cc line) "_get expects 2 args"))
-    (let (p:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope))
+    (let (p:ref:Val (emit-node (node-at cc 1) scope)
           pt:ptr:Type (cast ptr:Type (p type)))
       (when (or (or (!= (pt kind) TY-PTR) (= (pt elem) null))
               (-> pt (_ elem) (cast ptr:Type _) (_ kind) (!= _ TY-STRUCT)))
@@ -4626,11 +4626,11 @@
               (fmt-2s "_get: no field '%s' on struct '%s'" (fn-node s) (sd name))))
           (return (emit-field-load (cast ptr p) (cast ptr sd) idx)))))))
 
-(defn emit-field-set:ptr (call:ptr scope:ptr)
+(defn emit-field-set:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 4)
       (die-at (cc line) ".set! expects 3 args"))
-    (let (p:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope))
+    (let (p:ref:Val (emit-node (node-at cc 1) scope)
           pt:ptr:Type (cast ptr:Type (p type)))
       (when (or (or (!= (pt kind) TY-PTR) (= (pt elem) null))
               (-> pt (_ elem) (cast ptr:Type _) (_ kind) (!= _ TY-STRUCT)))
@@ -4645,7 +4645,7 @@
             (die-at (fn-node line)
               (fmt-2s ".set!: no field '%s' on struct '%s'" (fn-node s) (sd name))))
           (let (ftype:ptr (aref (cast ptr:ptr (sd field-types)) idx)
-                v:ptr (emit-node (node-at cc 3) scope)
+                v:ref:Val (emit-node (node-at cc 3) scope)
                 coerced:ptr (coerce-int-val v ftype (cc line)))
             (when (= coerced null)
               (die-at (cc line) (fmt-s ".set!: type mismatch for field '%s'" (fn-node s))))
@@ -4686,7 +4686,7 @@
 ; Emit the selector argument as a value for a user `get` method: a literal
 ; selector becomes its interned symbol Node* (the same pointer the reader / a
 ; `'sym` quote produce); a computed selector is evaluated normally.
-(defn emit-selector-value:ptr (sel-node:ptr scope:ptr)
+(defn emit-selector-value:ref:Val (sel-node:ptr scope:ref:Scope)
   (let (lit:ptr (selector-literal-sym sel-node))
     (if (!= lit null)
       (return (alloc-val ty-ptr (emit-quote-tree lit)))
@@ -4697,7 +4697,7 @@
 ; struct (all fields one type) so the result type is well-defined. Emits a
 ; bounded branch comparing the selector against each interned field symbol
 ; (pointer identity), then an array-style GEP+load at the matched index.
-(defn emit-computed-field:ptr (n:ptr scope:ptr callee-val:ptr sd:ptr sel-node:ptr line:i32)
+(defn emit-computed-field:ref:Val (n:ptr scope:ref:Scope callee-val:ptr sd:ptr sel-node:ptr line:i32)
   (let (sdd:ptr:StructDef (cast ptr:StructDef sd)
         nf:i32 (sdd num-fields))
     (when (= nf 0) (die-at line "get: cannot index an empty struct with a computed selector"))
@@ -4711,7 +4711,7 @@
                    (sdd name))))
         (inc! fi))
       (let (cv:ptr:Val (cast ptr:Val callee-val)
-            sel:ptr:Val (cast ptr:Val (emit-node sel-node scope)))
+            sel:ref:Val (emit-node sel-node scope))
         (when (-> sel (_ type) (cast ptr:Type _) (_ kind) (!= _ TY-PTR))
           (die-at line "get: computed selector must evaluate to a symbol (ptr)"))
         ; Build the field index by a chain of select instructions, innermost
@@ -4744,7 +4744,7 @@
 ; The `get` blanket intrinsic: member access on a pointer-to-struct callee. A
 ; literal selector const-folds to a static GEP+load (byte-identical to `.`); a
 ; computed selector takes the homogeneous runtime branch above.
-(defn emit-get-intrinsic:ptr (n:ptr scope:ptr callee-val:ptr sel-node:ptr line:i32)
+(defn emit-get-intrinsic:ref:Val (n:ptr scope:ref:Scope callee-val:ptr sel-node:ptr line:i32)
   (let (cv:ptr:Val (cast ptr:Val callee-val)
         ct:ptr:Type (cast ptr:Type (cv type)))
     (when (or (or (!= (ct kind) TY-PTR) (= (ct elem) null))
@@ -4764,7 +4764,7 @@
 ; Resolve `(get callee selector)` for an already-emitted callee value. A user
 ; `get` method for (callee-type, symbol) sits at tier 0 and out-ranks the
 ; intrinsic (concrete beats blanket); otherwise the Struct intrinsic handles it.
-(defn emit-get-with-callee:ptr (n:ptr scope:ptr callee-val:ptr sel-node:ptr)
+(defn emit-get-with-callee:ref:Val (n:ptr scope:ref:Scope callee-val:ptr sel-node:ptr)
   (let (cv:ptr:Val (cast ptr:Val callee-val)
         ct:ptr (cv type)
         line:i32 (-> n (cast ptr:Node _) (_ line))
@@ -4773,9 +4773,9 @@
       (let (argtypes:ptr (arena-alloc (* (cast i64 2) (ptr-bytes))))
         (aset! (cast ptr:ptr argtypes) 0 ct)
         (aset! (cast ptr:ptr argtypes) 1 ty-ptr)
-        (let (m:ptr (generic-find-method-exact g argtypes 2))
+        (let (m:?Method (generic-find-method-exact g argtypes 2))
           (when (!= m null)
-            (let (sel-val:ptr (emit-selector-value sel-node scope)
+            (let (sel-val:ref:Val (emit-selector-value sel-node scope)
                   args:ptr (arena-alloc (* (cast i64 2) (sizeof Val))))
               (memcpy (ptr+ (cast ptr:Val args) 0) cv (sizeof Val))
               (memcpy (ptr+ (cast ptr:Val args) 1) sel-val (sizeof Val))
@@ -4786,7 +4786,7 @@
 ; is the first dispatch argument; the rest are emitted here. Dispatch is ordinary
 ; multimethod resolution over the `invoke` generic — a type "becomes callable" by
 ; defining `invoke` methods (indexing, Seq/Call). No built-in default.
-(defn emit-invoke-with-callee:ptr (n:ptr scope:ptr callee-val:ptr arg-start:i32 nargs:i32)
+(defn emit-invoke-with-callee:ref:Val (n:ptr scope:ref:Scope callee-val:ptr arg-start:i32 nargs:i32)
   (let (cv:ptr:Val (cast ptr:Val callee-val)
         line:i32 (-> n (cast ptr:Node _) (_ line))
         total:i32 (+ nargs 1)
@@ -4799,7 +4799,7 @@
     (let (i:i32 0)
       (while (< i nargs)
         (let (anode:ptr (node-at n (+ arg-start i))
-              v:ptr (emit-node anode scope))
+              v:ref:Val (emit-node anode scope))
           (memcpy (ptr+ (cast ptr:Val args) (+ i 1)) v (sizeof Val))
           (aset! (cast ptr:ptr argtypes) (+ i 1) (-> v (cast ptr:Val _) (_ type)))
           (aset! (cast ptr:ptr arg-nodes) (+ i 1) anode))
@@ -4807,13 +4807,13 @@
     (let (g:ptr (generic-lookup "invoke"))
       (when (= g null)
         (die-at line "value is not callable: no `invoke` method is defined for this type"))
-      (let (m:ptr (generic-resolve g argtypes arg-nodes total line))
+      (let (m:ref:Method (generic-resolve g argtypes arg-nodes total line))
         (return (emit-resolved-call n scope "invoke" m args total line))))))
 
 ; The desugar entry point: an already-emitted non-function head value `callee-val`
 ; in `(callee arg…)`. A single literal-symbol argument routes to `get` (member
 ; access); everything else routes to `invoke`.
-(defn emit-callable-value:ptr (n:ptr scope:ptr callee-val:ptr)
+(defn emit-callable-value:ref:Val (n:ptr scope:ref:Scope callee-val:ptr)
   (let (nargs:i32 (- (node-len n) 1)
         ct:ptr:Type (cast ptr:Type ((cast ptr:Val callee-val) type)))
     ; A function-pointer value folds to an indirect call (callable-values.md §4.2).
@@ -4825,23 +4825,23 @@
 
 ; Explicit `(get value selector)` and `(invoke value arg…)` surface forms. They
 ; share the resolution above so `(get s 'f)` ≡ `(s f)` and `(invoke v 3)` ≡ `(v 3)`.
-(defn emit-get:ptr (call:ptr scope:ptr)
+(defn emit-get:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 3) (die-at (cc line) "get expects (get value selector)"))
-    (let (callee-val:ptr (emit-node (node-at cc 1) scope))
+    (let (callee-val:ref:Val (emit-node (node-at cc 1) scope))
       (return (emit-get-with-callee call scope callee-val (node-at cc 2))))))
 
-(defn emit-invoke:ptr (call:ptr scope:ptr)
+(defn emit-invoke:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (< (node-len cc) 2) (die-at (cc line) "invoke expects (invoke value arg...)"))
-    (let (callee-val:ptr (emit-node (node-at cc 1) scope))
+    (let (callee-val:ref:Val (emit-node (node-at cc 1) scope))
       (return (emit-invoke-with-callee call scope callee-val 2 (- (node-len cc) 2))))))
 
 ; ============================================================
 ; sizeof, alloca, array ops, char, pointer ops
 ; ============================================================
 
-(defn emit-sizeof:ptr (call:ptr scope:ptr)
+(defn emit-sizeof:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "sizeof expects 1 arg"))
     (let (tn:ptr:Node (cast ptr:Node (node-at cc 1)))
@@ -4855,7 +4855,7 @@
             sz gep (ptr-int-ir))
           (return (alloc-val (ptr-int-type) sz)))))))
 
-(defn emit-alloca-form:ptr (call:ptr scope:ptr)
+(defn emit-alloca-form:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (and (!= (node-len cc) 2) (!= (node-len cc) 3))
       (die-at (cc line) "alloca expects 1 or 2 args"))
@@ -4865,22 +4865,22 @@
             pt:ptr:Type (cast ptr:Type (make-type TY-PTR)))
         (.set! pt elem ty)
         (if (= (node-len cc) 3)
-          (let (nv:ptr:Val (cast ptr:Val (emit-node (node-at cc 2) scope)))
+          (let (nv:ref:Val (emit-node (node-at cc 2) scope))
             (fprintf g-body-stream "  %s = alloca %s, i32 %s, align %d\n"
               slot (type-to-ir ty) (nv val) (type-size ty)))
           (fprintf g-entry-stream "  %s = alloca %s, align %d\n"
             slot (type-to-ir ty) (type-size ty)))
         (return (alloc-val (cast ptr pt) slot))))))
 
-(defn emit-aref:ptr (call:ptr scope:ptr)
+(defn emit-aref:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 3) (die-at (cc line) "aref expects 2 args"))
-    (let (p:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope)))
+    (let (p:ref:Val (emit-node (node-at cc 1) scope))
       (when (or (-> p (_ type) (cast ptr:Type _) (_ kind) (!= _ TY-PTR))
               (-> p (_ type) (cast ptr:Type _) (_ elem) (= _ null)))
         (die-at (cc line) "aref: operand must be typed pointer"))
       (require-derefable (p type) (cc line) "aref")
-      (let (idx:ptr:Val (cast ptr:Val (emit-node (node-at cc 2) scope)))
+      (let (idx:ref:Val (emit-node (node-at cc 2) scope))
         (when (= (is-int-type (idx type)) 0)
           (die-at (cc line) "aref: index must be integer"))
         (let (idx64:ptr (idx val))
@@ -4899,15 +4899,15 @@
                 val (type-to-ir elem) gep (type-size elem))
               (return (alloc-val elem val)))))))))
 
-(defn emit-aset:ptr (call:ptr scope:ptr)
+(defn emit-aset:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 4) (die-at (cc line) "aset! expects 3 args"))
-    (let (p:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope)))
+    (let (p:ref:Val (emit-node (node-at cc 1) scope))
       (when (or (-> p (_ type) (cast ptr:Type _) (_ kind) (!= _ TY-PTR))
               (-> p (_ type) (cast ptr:Type _) (_ elem) (= _ null)))
         (die-at (cc line) "aset!: operand must be typed pointer"))
       (require-derefable (p type) (cc line) "aset!")
-      (let (idx:ptr:Val (cast ptr:Val (emit-node (node-at cc 2) scope)))
+      (let (idx:ref:Val (emit-node (node-at cc 2) scope))
         (when (= (is-int-type (idx type)) 0)
           (die-at (cc line) "aset!: index must be integer"))
         (let (idx64:ptr (idx val))
@@ -4917,7 +4917,7 @@
                 t (type-to-ir (idx type)) (idx val))
               (set! idx64 t)))
           (let (elem:ptr (-> p (_ type) (cast ptr:Type _) (_ elem))
-                v:ptr (emit-node (node-at cc 3) scope)
+                v:ref:Val (emit-node (node-at cc 3) scope)
                 coerced:ptr (coerce-int-val v elem (cc line)))
             (when (= coerced null)
               (die-at (cc line) "aset!: value type mismatch"))
@@ -4931,7 +4931,7 @@
                 (type-to-ir elem) (cv val) gep (type-size elem))
               (return (alloc-val ty-void null)))))))))
 
-(defn emit-char:ptr (call:ptr scope:ptr)
+(defn emit-char:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "char expects 1 arg"))
     (let (arg:ptr:Node (cast ptr:Node (node-at cc 1)))
@@ -4939,7 +4939,7 @@
         (die-at (arg line) "char: arg must be single-char string"))
       (return (alloc-val ty-i8 (fmt-i32 "%d" (char-at (arg s) (cast i64 0))))))))
 
-(defn emit-addr-of:ptr (call:ptr scope:ptr)
+(defn emit-addr-of:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "addr-of expects 1 arg"))
     (let (target:ptr:Node (cast ptr:Node (node-at cc 1)))
@@ -4954,25 +4954,25 @@
           (.set! pt elem (sym type))
           ; The slot address reaches the same resource the binding does, so it
           ; carries the binding's escape taint (lifecycle.md §2.2).
-          (let (rv:ptr:Val (cast ptr:Val (alloc-val (cast ptr pt) (sym ir-name))))
+          (let (rv:ref:Val (alloc-val (cast ptr pt) (sym ir-name)))
             (.set! rv taint (sym taint))
-            (return (cast ptr rv))))))))
+            (return rv)))))))
 
-(defn emit-funcall-void:ptr (call:ptr scope:ptr)
+(defn emit-funcall-void:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "funcall-void expects 1 arg"))
-    (let (fn:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope)))
+    (let (fn:ref:Val (emit-node (node-at cc 1) scope))
       (when (-> fn (_ type) (cast ptr:Type _) (_ kind) (!= _ TY-PTR))
         (die-at (cc line) "funcall-void: arg must be ptr"))
       (fprintf g-body-stream "  call void %s()\n" (fn val))
       (return (alloc-val ty-void null)))))
 
 ; (funcall-ptr-1 fn arg) — call fn(arg) as ptr(ptr) via pointer, return ptr
-(defn emit-funcall-ptr-1:ptr (call:ptr scope:ptr)
+(defn emit-funcall-ptr-1:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 3) (die-at (cc line) "funcall-ptr-1 expects 2 args"))
     (let (fn:ptr:Val  (cast ptr:Val (emit-node (node-at cc 1) scope))
-          arg:ptr:Val (cast ptr:Val (emit-node (node-at cc 2) scope)))
+          arg:ref:Val (emit-node (node-at cc 2) scope))
       (when (-> fn (_ type) (cast ptr:Type _) (_ kind) (!= _ TY-PTR))
         (die-at (cc line) "funcall-ptr-1: fn must be ptr"))
       (when (-> arg (_ type) (cast ptr:Type _) (_ kind) (!= _ TY-PTR))
@@ -4983,10 +4983,10 @@
         (return (alloc-val ty-ptr tmp))))))
 
 ; (funcall-ptr-i32 fn) — call fn() as i32() via pointer, return i32
-(defn emit-funcall-ptr-i32:ptr (call:ptr scope:ptr)
+(defn emit-funcall-ptr-i32:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "funcall-ptr-i32 expects 1 arg"))
-    (let (fn:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope)))
+    (let (fn:ref:Val (emit-node (node-at cc 1) scope))
       (when (-> fn (_ type) (cast ptr:Type _) (_ kind) (!= _ TY-PTR))
         (die-at (cc line) "funcall-ptr-i32: arg must be ptr"))
       (let (tmp:ptr (new-tmp))
@@ -4994,10 +4994,10 @@
         (return (alloc-val ty-i32 tmp))))))
 
 ; (funcall-ptr-i64 fn) — call fn() as i64() via pointer, return i64
-(defn emit-funcall-ptr-i64:ptr (call:ptr scope:ptr)
+(defn emit-funcall-ptr-i64:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "funcall-ptr-i64 expects 1 arg"))
-    (let (fn:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope)))
+    (let (fn:ref:Val (emit-node (node-at cc 1) scope))
       (when (-> fn (_ type) (cast ptr:Type _) (_ kind) (!= _ TY-PTR))
         (die-at (cc line) "funcall-ptr-i64: arg must be ptr"))
       (let (tmp:ptr (new-tmp))
@@ -5005,10 +5005,10 @@
         (return (alloc-val ty-i64 tmp))))))
 
 ; (funcall-ptr-ptr fn) — call fn() as ptr() via pointer, return ptr
-(defn emit-funcall-ptr-ptr:ptr (call:ptr scope:ptr)
+(defn emit-funcall-ptr-ptr:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "funcall-ptr-ptr expects 1 arg"))
-    (let (fn:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope)))
+    (let (fn:ref:Val (emit-node (node-at cc 1) scope))
       (when (-> fn (_ type) (cast ptr:Type _) (_ kind) (!= _ TY-PTR))
         (die-at (cc line) "funcall-ptr-ptr: arg must be ptr"))
       (let (tmp:ptr (new-tmp))
@@ -5019,7 +5019,7 @@
 ; are node-at(arg-start)..end. Shared by the explicit `funcall` surface and the
 ; call position — a TY-FN value in head position folds to this, so `funcall` is
 ; effectively compiler-internal (callable-values.md §4.2).
-(defn emit-funcall-value:ptr (n:ptr scope:ptr fn-val:ptr arg-start:i32)
+(defn emit-funcall-value:ref:Val (n:ptr scope:ref:Scope fn-val:ptr arg-start:i32)
   (let (cc:ptr:Node (cast ptr:Node n)
         fv:ptr:Val (cast ptr:Val fn-val)
         fn-type:ptr:Type (cast ptr:Type (fv type))
@@ -5059,19 +5059,19 @@
 
 ; (funcall fn-ptr args...) — general typed function pointer call.
 ; fn-ptr must have TY-FN type. Emits call with proper LLVM IR signature.
-(defn emit-funcall:ptr (call:ptr scope:ptr)
+(defn emit-funcall:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (< (node-len cc) 2)
       (die-at (cc line) "funcall expects at least 1 arg"))
-    (let (fn-val:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope)))
+    (let (fn-val:ref:Val (emit-node (node-at cc 1) scope))
       (when (-> fn-val (_ type) (cast ptr:Type _) (_ kind) (!= _ TY-FN))
         (die-at (cc line) "funcall: first arg must be a function pointer"))
       (return (emit-funcall-value call scope (cast ptr fn-val) 2)))))
 
-(defn emit-deref:ptr (call:ptr scope:ptr)
+(defn emit-deref:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "deref expects 1 arg"))
-    (let (p:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope)))
+    (let (p:ref:Val (emit-node (node-at cc 1) scope))
       (when (or (-> p (_ type) (cast ptr:Type _) (_ kind) (!= _ TY-PTR))
               (-> p (_ type) (cast ptr:Type _) (_ elem) (= _ null)))
         (die-at (cc line) "deref: operand must be typed pointer"))
@@ -5081,16 +5081,16 @@
         (emit-load tmp (type-to-ir elem) (p val) elem)
         (return (alloc-val elem tmp))))))
 
-(defn emit-ptr-set:ptr (call:ptr scope:ptr)
+(defn emit-ptr-set:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 3) (die-at (cc line) "ptr-set! expects 2 args"))
-    (let (p:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope)))
+    (let (p:ref:Val (emit-node (node-at cc 1) scope))
       (when (or (-> p (_ type) (cast ptr:Type _) (_ kind) (!= _ TY-PTR))
               (-> p (_ type) (cast ptr:Type _) (_ elem) (= _ null)))
         (die-at (cc line) "ptr-set!: operand must be typed pointer"))
       (require-derefable (p type) (cc line) "ptr-set!")
       (let (elem:ptr (-> p (_ type) (cast ptr:Type _) (_ elem))
-            v:ptr (emit-node (node-at cc 2) scope)
+            v:ref:Val (emit-node (node-at cc 2) scope)
             coerced:ptr (coerce-int-val v elem (cc line)))
         (when (= coerced null)
           (die-at (cc line) "ptr-set!: value type mismatch"))
@@ -5104,34 +5104,34 @@
 ; ============================================================
 
 ; (some r) — wrap a non-null (ref T) as (Maybe (ref T)). Pure relabel, no IR.
-(defn emit-some:ptr (call:ptr scope:ptr)
+(defn emit-some:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "some expects 1 arg"))
-    (let (v:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope)))
+    (let (v:ref:Val (emit-node (node-at cc 1) scope))
       (when (!= (ptr-pkind (v type)) PTR-REF)
         (die-at (cc line) "some: value must be non-null (ref ...) — launder a raw pointer with (as-ref ...)"))
-      (let (rv:ptr:Val (cast ptr:Val (alloc-val (type-as-pkind (v type) PTR-MAYBE) (v val))))
+      (let (rv:ref:Val (alloc-val (type-as-pkind (v type) PTR-MAYBE) (v val)))
         (.set! rv taint (v taint))
-        (return (cast ptr rv))))))
+        (return rv)))))
 
 ; (as-ref p) — launder a raw pointer into (Maybe (ref T)): null stays none.
 ; Pure relabel, no IR; the value still has to be narrowed before use.
-(defn emit-as-ref:ptr (call:ptr scope:ptr)
+(defn emit-as-ref:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "as-ref expects 1 arg"))
-    (let (v:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope)))
+    (let (v:ref:Val (emit-node (node-at cc 1) scope))
       (when (-> v (_ type) (cast ptr:Type _) (_ kind) (!= _ TY-PTR))
         (die-at (cc line) "as-ref: value must be a pointer"))
-      (let (rv:ptr:Val (cast ptr:Val (alloc-val (type-as-pkind (v type) PTR-MAYBE) (v val))))
+      (let (rv:ref:Val (alloc-val (type-as-pkind (v type) PTR-MAYBE) (v val)))
         (.set! rv taint (v taint))
-        (return (cast ptr rv))))))
+        (return rv)))))
 
 ; (unwrap m) — the (ref T) inside, or trap. The one runtime branch nullability
 ; costs, paid only where it is written.
-(defn emit-unwrap:ptr (call:ptr scope:ptr)
+(defn emit-unwrap:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "unwrap expects 1 arg"))
-    (let (v:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope)))
+    (let (v:ref:Val (emit-node (node-at cc 1) scope))
       (when (!= (ptr-pkind (v type)) PTR-MAYBE)
         (die-at (cc line) "unwrap: value must be (Maybe (ref ...)) — launder a raw pointer with (as-ref ...)"))
       (when (= g-trap-declared 0)
@@ -5148,16 +5148,16 @@
         (fprintf g-body-stream "  unreachable\n")
         (fprintf g-body-stream "%s:\n" ok-lbl)
         (set! g-block-term 0)
-        (let (rv:ptr:Val (cast ptr:Val (alloc-val (type-as-pkind (v type) PTR-REF) (v val))))
+        (let (rv:ref:Val (alloc-val (type-as-pkind (v type) PTR-REF) (v val)))
           (.set! rv taint (v taint))
-          (return (cast ptr rv)))))))
+          (return rv))))))
 
 ; (unwrap-or m default) — the narrowed value, or `default` (evaluated only on
 ; the none path; it must satisfy the non-null (ref ...) result type).
-(defn emit-unwrap-or:ptr (call:ptr scope:ptr)
+(defn emit-unwrap-or:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 3) (die-at (cc line) "unwrap-or expects 2 args"))
-    (let (v:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope)))
+    (let (v:ref:Val (emit-node (node-at cc 1) scope))
       (when (!= (ptr-pkind (v type)) PTR-MAYBE)
         (die-at (cc line) "unwrap-or: value must be (Maybe (ref ...)) — launder a raw pointer with (as-ref ...)"))
       (let (ref-ty:ptr (type-as-pkind (v type) PTR-REF)
@@ -5173,7 +5173,7 @@
         (fprintf g-body-stream "  br label %%%s\n" end-lbl)
         (fprintf g-body-stream "%s:\n" none-lbl)
         (set! g-block-term 0)
-        (let (dv:ptr:Val (cast ptr:Val (emit-node (node-at cc 2) scope))
+        (let (dv:ref:Val (emit-node (node-at cc 2) scope)
               dval:ptr null
               dtaint:ptr null)
           (let (dterm:i32 g-block-term)
@@ -5194,16 +5194,16 @@
                   tmp (v val) some-lbl dval join-lbl)
                 (fprintf g-body-stream "  %s = phi ptr [ %s, %%%s ]\n"
                   tmp (v val) some-lbl))
-              (let (rv:ptr:Val (cast ptr:Val (alloc-val ref-ty tmp)))
+              (let (rv:ref:Val (alloc-val ref-ty tmp))
                 (.set! rv taint (taint-merge (v taint) dtaint))
-                (return (cast ptr rv))))))))))
+                (return rv)))))))))
 
 ; (if-some (x m) then [else]) / (when-some (x m) body…) — bind x to the Maybe
 ; value and desugar to cond: the synthesized (!= x null) test is the standard
 ; narrowing point, so x reads as (ref T) exactly inside the then arm (and stays
 ; Maybe in the else arm). Reuses cond's phi typing, fall-through, and
 ; after-the-form narrowing rules wholesale.
-(defn emit-if-some:ptr (call:ptr scope:ptr is-when:i32)
+(defn emit-if-some:ref:Val (call:ptr scope:ref:Scope is-when:i32)
   (let (cc:ptr:Node (cast ptr:Node call)
         tag:ptr "if-some")
     (when (!= is-when 0) (set! tag "when-some"))
@@ -5217,14 +5217,14 @@
       (let (xnode:ptr:Node (cast ptr:Node (node-at (cast ptr binder) 0)))
         (when (!= (xnode kind) NODE-SYM)
           (die-at (binder line) (fmt-s "%s: name must be a symbol" tag)))
-        (let (mv:ptr:Val (cast ptr:Val (emit-node (node-at (cast ptr binder) 1) scope)))
+        (let (mv:ref:Val (emit-node (node-at (cast ptr binder) 1) scope))
           (when (!= (ptr-pkind (mv type)) PTR-MAYBE)
             (die-at (cc line) (fmt-s "%s: value must be (Maybe (ref ...)) — launder a raw pointer with (as-ref ...)" tag)))
           (let (slot:ptr (fmt-sd "%%%s.addr.%d" (xnode s) g-tmp))
             (inc! g-tmp)
             (fprintf g-entry-stream "  %s = alloca ptr, align 8\n" slot)
             (fprintf g-body-stream "  store ptr %s, ptr %s, align 8\n" (mv val) slot)
-            (let (inner:ptr (scope-new scope)
+            (let (inner:ref:Scope (scope-new scope)
                   sym:ptr:Sym (cast ptr:Sym (scope-define inner (xnode s) (mv type) slot 1))
                   ln:i32 (cc line))
               (.set! sym taint (mv taint))
@@ -5244,14 +5244,14 @@
                                   (make-cell test tail ln) ln))
                   (return (emit-cond synth inner)))))))))))
 
-(defn emit-ptr-add:ptr (call:ptr scope:ptr)
+(defn emit-ptr-add:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 3) (die-at (cc line) "ptr+ expects 2 args"))
-    (let (p:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope)))
+    (let (p:ref:Val (emit-node (node-at cc 1) scope))
       (when (or (-> p (_ type) (cast ptr:Type _) (_ kind) (!= _ TY-PTR))
               (-> p (_ type) (cast ptr:Type _) (_ elem) (= _ null)))
         (die-at (cc line) "ptr+: operand must be typed pointer"))
-      (let (nv:ptr:Val (cast ptr:Val (emit-node (node-at cc 2) scope)))
+      (let (nv:ref:Val (emit-node (node-at cc 2) scope))
         (when (= (is-int-type (nv type)) 0)
           (die-at (cc line) "ptr+: offset must be integer"))
         (let (idx:ptr (nv val))
@@ -5267,21 +5267,21 @@
               tmp (type-to-ir elem) (p val) idx)
             ; An interior pointer aliases the resource: keep the taint
             ; (lifecycle.md §2.2).
-            (let (rv:ptr:Val (cast ptr:Val (alloc-val (p type) tmp)))
+            (let (rv:ref:Val (alloc-val (p type) tmp))
               (.set! rv taint (p taint))
-              (return (cast ptr rv)))))))))
+              (return rv))))))))
 
-(defn emit-not:ptr (call:ptr scope:ptr)
+(defn emit-not:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "not expects 1 arg"))
-    (let (a:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope)))
+    (let (a:ref:Val (emit-node (node-at cc 1) scope))
       (when (-> a (_ type) (cast ptr:Type _) (_ kind) (!= _ TY-I1))
         (die-at (cc line) "not expects i1 operand"))
       (let (tmp:ptr (new-tmp))
         (fprintf g-body-stream "  %s = xor i1 %s, 1\n" tmp (a val))
         (return (alloc-val ty-i1 tmp))))))
 
-(defn emit-short-circuit:ptr (call:ptr scope:ptr is-and:i32)
+(defn emit-short-circuit:ref:Val (call:ptr scope:ref:Scope is-and:i32)
   (let (cc:ptr:Node (cast ptr:Node call)
         tag:ptr "or")
     (when (!= is-and 0) (set! tag "and"))
@@ -5292,7 +5292,7 @@
           end-lbl:ptr (fmt-sd "%s.end%d" tag id)
           slot:ptr (fmt-sd "%%%s.val%d" tag id))
       (fprintf g-entry-stream "  %s = alloca i1, align 1\n" slot)
-      (let (lhs:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope)))
+      (let (lhs:ref:Val (emit-node (node-at cc 1) scope))
         (when (-> lhs (_ type) (cast ptr:Type _) (_ kind) (!= _ TY-I1))
           (die-at ((cast ptr:Node (node-at cc 1)) line)
             (fmt-s "%s expects i1 operands" tag)))
@@ -5314,7 +5314,7 @@
             (test-true-nonnull (node-at cc 1) scfacts)
             (test-false-nonnull (node-at cc 1) scfacts))
           (narrow-names scope scfacts)
-        (let (rhs:ptr:Val (cast ptr:Val (emit-node (node-at cc 2) scope)))
+        (let (rhs:ref:Val (emit-node (node-at cc 2) scope))
           (narrow-restore scmark)
           (when (-> rhs (_ type) (cast ptr:Type _) (_ kind) (!= _ TY-I1))
             (die-at ((cast ptr:Node (node-at cc 2)) line)
@@ -5332,7 +5332,7 @@
 ; Function calls
 ; ============================================================
 
-(defn emit-call:ptr (call:ptr scope:ptr sym:ptr)
+(defn emit-call:ref:Val (call:ptr scope:ref:Scope sym:ref:Sym)
   (let (cc:ptr:Node (cast ptr:Node call)
         ss:ptr:Sym (cast ptr:Sym sym)
         ft0:ptr:Type (cast ptr:Type (ss type))
@@ -5354,7 +5354,7 @@
     (let (args:ptr (arena-alloc (* (cast i64 (+ max-args 1)) (sizeof Val)))
           i:i32 0)
       (while (< i nargs)
-        (let (v:ptr (emit-node (node-at cc (+ i 1)) scope))
+        (let (v:ref:Val (emit-node (node-at cc (+ i 1)) scope))
           (memcpy (ptr+ (cast ptr:Val args) i) v (sizeof Val)))
         (inc! i))
       ; Fill defaults for missing trailing &optional args, emitting each default
@@ -5367,7 +5367,7 @@
           (let (oi:i32 nargs)
             (while (< oi np)
               (let (default-node:ptr (aref (cast ptr:ptr (ft0 opt-defaults)) (- oi required))
-                    v:ptr (emit-node default-node scope))
+                    v:ref:Val (emit-node default-node scope))
                 (memcpy (ptr+ (cast ptr:Val args) oi) v (sizeof Val)))
               (inc! oi))
             (set! nargs np))))
@@ -5377,7 +5377,7 @@
 ; path and the multimethod dispatch path (which must resolve the method from
 ; argument types before the call can be emitted). Handles &rest folding, the
 ; variadic signature, and void/non-void returns.
-(defn emit-call-with-args:ptr (call:ptr scope:ptr sym:ptr args:ptr nargs:i32)
+(defn emit-call-with-args:ref:Val (call:ptr scope:ref:Scope sym:ref:Sym args:ptr nargs:i32)
   (let (cc:ptr:Node (cast ptr:Node call)
         ss:ptr:Sym (cast ptr:Sym sym)
         i:i32 0)
@@ -5525,7 +5525,7 @@
 ; (recorded by `extend <S> Drop`), and the `drop` generic must resolve exactly
 ; on [ty]. Returns the Method*, or null when the binding is not Drop-managed.
 ; type-eq ignores pointer kinds, so (ref S) resolves the same method as (ptr S).
-(defn with-drop-method:ptr (ty:ptr)
+(defn with-drop-method:?Method (ty:ptr)
   (let (tt:ptr:Type (cast ptr:Type ty))
     (when (!= (tt kind) TY-PTR) (return null))
     (when (= (tt elem) null) (return null))
@@ -5544,7 +5544,7 @@
 ; scope (nearest let/with/function body), re-emitted at every exit path in
 ; reverse registration order. Lexical, not dynamic: the cleanup runs at scope
 ; exit whether or not control reached the defer site at runtime.
-(defn emit-defer:ptr (call:ptr scope:ptr)
+(defn emit-defer:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "defer expects 1 expression"))
     (let (cl:ptr:Cleanup (new Cleanup))
@@ -5558,23 +5558,23 @@
 ; the armed cleanup a no-op), yield p's value with its escape taint cleared so
 ; it may legitimately return or store out, and mark p consumed — any later use
 ; is "use after move" (a reassignment revives the binding).
-(defn emit-move:ptr (call:ptr scope:ptr)
+(defn emit-move:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "move expects 1 binding name"))
     (let (tname:ptr (node-binding-name (node-at cc 1)))
       (when (= tname null) (die-at (cc line) "move: operand must be a binding name"))
-      (let (sym:ptr:Sym (cast ptr:Sym (scope-lookup scope tname)))
-        (when (= (cast ptr sym) null)
-          (die-at (cc line) (fmt-s "move: undefined '%s'" tname)))
-        (when (!= (sym moved) 0)
-          (die-at (cc line) (fmt-s "use after move: '%s'" tname)))
-        (when (= (sym owns) 0)
-          (die-at (cc line) (fmt-s "move: '%s' does not own a with-bound resource" tname)))
-        (let (tmp:ptr (new-tmp))
-          (emit-load tmp (type-to-ir (sym type)) (sym ir-name) (sym type))
-          (fprintf g-body-stream "  store ptr null, ptr %s, align 8\n" (sym cslot))
-          (.set! sym moved 1)
-          (return (alloc-val (sym-effective-type (cast ptr sym)) tmp)))))))
+      (if-some (sym (scope-lookup scope tname))
+        (do
+          (when (!= (sym moved) 0)
+            (die-at (cc line) (fmt-s "use after move: '%s'" tname)))
+          (when (= (sym owns) 0)
+            (die-at (cc line) (fmt-s "move: '%s' does not own a with-bound resource" tname)))
+          (let (tmp:ptr (new-tmp))
+            (emit-load tmp (type-to-ir (sym type)) (sym ir-name) (sym type))
+            (fprintf g-body-stream "  store ptr null, ptr %s, align 8\n" (sym cslot))
+            (.set! sym moved 1)
+            (return (alloc-val (sym-effective-type sym) tmp))))
+        (die-at (cc line) (fmt-s "move: undefined '%s'" tname))))))
 
 ; Emit a Drop-protocol cleanup: load the resource pointer from its slot and,
 ; when non-null, statically dispatch to the resolved drop method. The null
@@ -5605,7 +5605,7 @@
 ; shapes: legacy libc free (free(NULL) is a no-op, so a slot disarmed via
 ; (set! name null) or `move` is safe), a Drop-protocol call (null-guarded for
 ; the same reason), and a (defer expr) re-emitted in its registration scope.
-(defn emit-scope-cleanups:void (scope:ptr)
+(defn emit-scope-cleanups:void (scope:ref:Scope)
   (when (= g-block-term 1) (return))
   (let (sc:ptr:Scope (cast ptr:Scope scope))
     (when (= (sc ncleanups) 0) (return))
@@ -5614,7 +5614,9 @@
       (while (>= i 0)
         (let (cl:ptr:Cleanup (cast ptr:Cleanup (aref slots i)))
           (cond (!= (cl defer-node) null)
-                  (emit-node (cl defer-node) (cl defer-scope))
+                  ; defer-scope is set whenever defer-node is (emit-defer) —
+                  ; a correlated-fields invariant the pointer kinds can't carry.
+                  (emit-node (cl defer-node) (cast ref:Scope (cl defer-scope)))
                 (!= (cl drop-fn) null)
                   (emit-drop-cleanup (cast ptr cl))
                 true
@@ -5626,13 +5628,13 @@
 ; Walk the lexical scope chain emitting cleanups at every level. Used by
 ; emit-return so an early return inside nested `with` bodies still frees
 ; bound resources before terminating the basic block.
-(defn emit-walk-cleanups:void (scope:ptr)
-  (let (cur:ptr scope)
+(defn emit-walk-cleanups:void (scope:ref:Scope)
+  (let (cur:?Scope (some scope))
     (while (!= cur null)
       (emit-scope-cleanups cur)
       (set! cur ((cast ptr:Scope cur) parent)))))
 
-(defn emit-return:ptr (call:ptr scope:ptr)
+(defn emit-return:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (= (node-len cc) 1)
       (emit-walk-cleanups scope)
@@ -5641,7 +5643,7 @@
       (return (alloc-val ty-void null)))
     (when (!= (node-len cc) 2)
       (die-at (cc line) "return expects 0 or 1 args"))
-    (let (v:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope)))
+    (let (v:ref:Val (emit-node (node-at cc 1) scope))
       ; Stage 10 escape analysis: returning unwinds every with-scope, so a
       ; tainted value always dangles past its cleanup (lifecycle.md §2.3).
       (when (!= (v taint) null)
@@ -5658,23 +5660,23 @@
       (set! g-block-term 1)
       (return (alloc-val ty-void null)))))
 
-(defn emit-do:ptr (call:ptr scope:ptr)
+(defn emit-do:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call)
-        last:ptr (alloc-val ty-void null)
+        last:ref:Val (alloc-val ty-void null)
         i:i32 1)
     (while (< i (node-len cc))
       (set! last (emit-node (node-at cc i) scope))
       (inc! i))
     (return last)))
 
-(defn emit-let:ptr (call:ptr scope:ptr)
+(defn emit-let:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (or (< (node-len cc) 2) (-> cc (node-at _ 1) (cast ptr:Node _) (_ kind) (!= _ NODE-CELL)))
       (die-at (cc line) "let: bad form"))
     (let (binds:ptr:Node (cast ptr:Node (node-at cc 1)))
       (when (!= (% (node-len binds) 2) 0)
         (die-at (binds line) "let: binding list must be even"))
-      (let (inner:ptr (scope-new scope)
+      (let (inner:ref:Scope (scope-new scope)
             i:i32 0)
         (while (< i (node-len binds))
           (let (bname:ptr (node-at binds i)
@@ -5689,7 +5691,7 @@
                 (inc! g-tmp)
                 (fprintf g-entry-stream "  %s = alloca %s, align %d\n"
                   slot (type-to-ir ty) align)
-                (let (v:ptr:Val (cast ptr:Val (emit-node bval-node inner))
+                (let (v:ref:Val (emit-node bval-node inner)
                       coerced:ptr (coerce-int-val v ty ((cast ptr:Node bval-node) line)))
                   (when (= coerced null)
                     (die-at ((cast ptr:Node bval-node) line)
@@ -5707,7 +5709,7 @@
                                  (= (ptr-pkind ((cast ptr:Val v) type)) PTR-REF))
                         (narrow-apply inner name))))))))
           (set! i (+ i 2)))
-        (let (last:ptr (alloc-val ty-void null)
+        (let (last:ref:Val (alloc-val ty-void null)
               j:i32 2)
           (while (< j (node-len cc))
             (set! last (emit-node (node-at cc j) inner))
@@ -5721,14 +5723,14 @@
 ; libc allocator call (malloc/calloc/realloc/strdup, optionally wrapped in
 ; cast). Frees fire on fall-through (after the body) and on early `return`
 ; via emit-walk-cleanups in emit-return.
-(defn emit-with:ptr (call:ptr scope:ptr)
+(defn emit-with:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (or (< (node-len cc) 2) (-> cc (node-at _ 1) (cast ptr:Node _) (_ kind) (!= _ NODE-CELL)))
       (die-at (cc line) "with: bad form"))
     (let (binds:ptr:Node (cast ptr:Node (node-at cc 1)))
       (when (!= (% (node-len binds) 2) 0)
         (die-at (binds line) "with: binding list must be even"))
-      (let (inner:ptr (scope-new scope)
+      (let (inner:ref:Scope (scope-new scope)
             i:i32 0)
         (while (< i (node-len binds))
           (let (bname:ptr (node-at binds i)
@@ -5744,7 +5746,7 @@
                 (inc! g-tmp)
                 (fprintf g-entry-stream "  %s = alloca %s, align %d\n"
                   slot (type-to-ir ty) align)
-                (let (v:ptr:Val (cast ptr:Val (emit-node bval-node inner))
+                (let (v:ref:Val (emit-node bval-node inner)
                       coerced:ptr (coerce-int-val v ty ((cast ptr:Node bval-node) line)))
                   (when (= coerced null)
                     (die-at ((cast ptr:Node bval-node) line)
@@ -5786,7 +5788,7 @@
                                  (= (ptr-pkind ((cast ptr:Val v) type)) PTR-REF))
                         (narrow-apply inner name))))))))
           (set! i (+ i 2)))
-        (let (last:ptr (alloc-val ty-void null)
+        (let (last:ref:Val (alloc-val ty-void null)
               j:i32 2)
           (while (< j (node-len cc))
             (set! last (emit-node (node-at cc j) inner))
@@ -5800,7 +5802,7 @@
 ; cond is then statement-shaped and any caller that uses it in value position
 ; will fail its own type-check downstream. If no clause has `true` as its
 ; test, the implicit fallthrough contributes `undef` of the result type.
-(defn emit-cond:ptr (call:ptr scope:ptr)
+(defn emit-cond:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call)
         nargs:i32 (- (node-len cc) 1))
     (when (or (< nargs 2) (!= (% nargs 2) 0))
@@ -5846,7 +5848,7 @@
                   (set! next-lbl fall-lbl)
                   (set! has-fallthrough 1))
                 (set! next-lbl (fmt-i32-i32 "cond.test%d.%d" id (+ i 1))))
-              (let (test:ptr:Val (cast ptr:Val (emit-node (cast ptr test-node) scope)))
+              (let (test:ref:Val (emit-node (cast ptr test-node) scope))
                 (when (!= ((cast ptr:Type (test type)) kind) TY-I1)
                   (die-at (test-node line) "cond: test must be i1"))
                 (fprintf g-body-stream "  br i1 %s, label %%%s, label %%%s\n"
@@ -5857,7 +5859,7 @@
               (let (tfacts:ptr (make-vec))
                 (test-true-nonnull (cast ptr test-node) tfacts)
                 (narrow-names scope tfacts))))
-          (let (bv:ptr:Val (cast ptr:Val (emit-node body-node scope))
+          (let (bv:ref:Val (emit-node body-node scope)
                 bterm:i32 g-block-term)
             (when (= bterm 0)
               (let (join-lbl:ptr (fmt-i32-i32 "cond.join%d.%d" id i)
@@ -5926,11 +5928,11 @@
           (when (= has-fallthrough 1)
             (fprintf g-body-stream ", [ undef, %%%s ]" fall-lbl))
           (fprintf g-body-stream "\n")
-          (let (rv:ptr:Val (cast ptr:Val (alloc-val result-type tmp)))
+          (let (rv:ref:Val (alloc-val result-type tmp))
             (.set! rv taint result-taint)
-            (return (cast ptr rv))))))))
+            (return rv)))))))
 
-(defn emit-while:ptr (call:ptr scope:ptr)
+(defn emit-while:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (< (node-len cc) 2) (die-at (cc line) "while: missing condition"))
     (let (id:i32 (new-label-id)
@@ -5949,7 +5951,7 @@
       (fprintf g-body-stream "  br label %%%s\n" cond-lbl)
       (fprintf g-body-stream "%s:\n" cond-lbl)
       (set! g-block-term 0)
-      (let (cnd:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope)))
+      (let (cnd:ref:Val (emit-node (node-at cc 1) scope))
         (when (-> cnd (_ type) (cast ptr:Type _) (_ kind) (!= _ TY-I1))
           (die-at ((cast ptr:Node (node-at cc 1)) line)
             "while condition must be i1"))
@@ -5975,7 +5977,7 @@
       (set! g-block-term 0)
       (return (alloc-val ty-void null)))))
 
-(defn emit-set:ptr (call:ptr scope:ptr)
+(defn emit-set:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 3) (die-at (cc line) "set! expects 2 args"))
     (let (target:ptr:Node (cast ptr:Node (node-at cc 1)))
@@ -5987,17 +5989,18 @@
         (split-typed (target s)
                      (cast ptr:ptr (addr-of set-name))
                      (cast ptr:ptr (addr-of set-type-ignored)))
-        (let (sym:ptr:Sym (cast ptr:Sym (scope-lookup scope set-name)))
-          (when (or (= (cast ptr sym) null) (= (sym is-local) 0))
+        (if-some (sym (scope-lookup scope set-name))
+          (do
+          (when (= (sym is-local) 0)
             (die-at (target line) (fmt-s "set!: undefined local '%s'" (target s))))
-          (let (v:ptr (emit-node (node-at cc 2) scope)
-                coerced:ptr (coerce-int-val v (sym type) (cc line)))
+          (let (v:ref:Val (emit-node (node-at cc 2) scope)
+                coerced:?Val (coerce-int-val v (sym type) (cc line)))
             (when (= coerced null)
               (die-at (cc line) (fmt-s "set!: type mismatch for '%s'" (target s))))
             ; Stage 10 escape analysis: a with-owned resource may only be
             ; stored into a binding that lives no longer than the resource
             ; (same-or-inner scope relative to the owning with).
-            (let (vtaint:ptr ((cast ptr:Val v) taint))
+            (let (vtaint:ptr (v taint))
               (when (!= vtaint null)
                 (when (= (scope-descends (sym home) vtaint) 0)
                   (die-at (cc line)
@@ -6020,12 +6023,13 @@
                       (fmt-s "assignment to '%s' invalidates a null-narrowing established outside this loop — re-guard inside the loop" (target s))))
                   (narrow-kill (cast ptr sym))
                   ; Assigning a known non-null value re-narrows going forward.
-                  (when (= (ptr-pkind ((cast ptr:Val v) type)) PTR-REF)
+                  (when (= (ptr-pkind (v type)) PTR-REF)
                     (narrow-apply scope set-name)))
                 ; set! yields the assigned value (so the REPL echoes it).
-                (let (rv:ptr:Val (cast ptr:Val (alloc-val (sym type) (cv val))))
+                (let (rv:ref:Val (alloc-val (sym type) (cv val)))
                   (.set! rv taint vtaint)
-                  (return (cast ptr rv)))))))))))
+                  (return rv))))))
+          (die-at (target line) (fmt-s "set!: undefined local '%s'" (target s))))))))
 
 ; ============================================================
 ; Stage 8: scalar load/store helpers (volatile-aware)
@@ -6061,10 +6065,10 @@
 
 ; Return a copy of `t` with is-volatile=1. Primitive type singletons are shared,
 ; so we clone rather than mutate. If `t` is already volatile, returns it as-is.
-(defn type-with-volatile:ptr (t:ptr)
+(defn type-with-volatile:ref:Type (t:ref:Type)
   (let (src:ptr:Type (cast ptr:Type t))
     (when (!= (src is-volatile) 0) (return t))
-    (let (dst:ptr:Type (cast ptr:Type (alloc-type)))
+    (let (dst:ref:Type (alloc-type))
       (.set! dst kind        (src kind))
       (.set! dst ret         (src ret))
       (.set! dst params      (src params))
@@ -6078,13 +6082,13 @@
       (.set! dst param-names (src param-names))
       (.set! dst is-volatile 1)
       (.set! dst pkind       (src pkind))
-      (return (cast ptr dst)))))
+      (return dst))))
 
 ; ============================================================
 ; Stage 8: inc! / dec!
 ; ============================================================
 
-(defn emit-inc-dec:ptr (call:ptr scope:ptr op-instr:ptr op-name:ptr)
+(defn emit-inc-dec:ref:Val (call:ptr scope:ref:Scope op-instr:ptr op-name:ptr)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) (fmt-s "%s expects 1 arg" op-name)))
     (let (target:ptr:Node (cast ptr:Node (node-at cc 1)))
@@ -6109,17 +6113,17 @@
               (emit-store ir t2 (sym ir-name) (sym type))
               (return (alloc-val ty-void null)))))))))
 
-(defn emit-inc:ptr (call:ptr scope:ptr)
+(defn emit-inc:ref:Val (call:ptr scope:ref:Scope)
   (return (emit-inc-dec call scope "add" "inc!")))
 
-(defn emit-dec:ptr (call:ptr scope:ptr)
+(defn emit-dec:ref:Val (call:ptr scope:ref:Scope)
   (return (emit-inc-dec call scope "sub" "dec!")))
 
 ; ============================================================
 ; Stage 8: labels and goto (incl. computed goto via blockaddress)
 ; ============================================================
 
-(defn lbl-find:ptr (name:ptr)
+(defn lbl-find:?LabelEntry (name:ptr)
   (let (v:ptr:Vec (cast ptr:Vec g-lbl-tbl)
         i:i32 0)
     (while (< i (v len))
@@ -6162,7 +6166,7 @@
         (prescan-labels (it car))
         (set! it (cast ptr:Node (it cdr)))))))
 
-(defn emit-label:ptr (call:ptr scope:ptr)
+(defn emit-label:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "label: expects 1 name"))
     ; Stage 10 narrowing: a label is a potential backward-goto target — a
@@ -6188,7 +6192,7 @@
           (set! g-block-term 0)
           (return (alloc-val ty-void null)))))))
 
-(defn emit-goto:ptr (call:ptr scope:ptr)
+(defn emit-goto:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "goto: expects 1 label name"))
     (let (nm:ptr:Node (cast ptr:Node (node-at cc 1)))
@@ -6205,7 +6209,7 @@
         (set! g-block-term 0)
         (return (alloc-val ty-void null))))))
 
-(defn emit-label-addr:ptr (call:ptr scope:ptr)
+(defn emit-label-addr:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "label-addr: expects 1 label name"))
     (let (nm:ptr:Node (cast ptr:Node (node-at cc 1)))
@@ -6223,10 +6227,10 @@
           tmp g-cur-fname (nm s))
         (return (alloc-val ty-ptr tmp))))))
 
-(defn emit-goto-ptr:ptr (call:ptr scope:ptr)
+(defn emit-goto-ptr:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "goto-ptr: expects 1 ptr arg"))
-    (let (v:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope)))
+    (let (v:ref:Val (emit-node (node-at cc 1) scope))
       (when (!= ((cast ptr:Type (v type)) kind) TY-PTR)
         (die-at (cc line) "goto-ptr: arg must be ptr"))
       (let (tbl:ptr:Vec (cast ptr:Vec g-lbl-tbl))
@@ -6261,10 +6265,10 @@
     (return -1)))
 
 ; (.& p field) -> pointer to the field within struct *p.
-(defn emit-field-addr:ptr (call:ptr scope:ptr)
+(defn emit-field-addr:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 3) (die-at (cc line) ".& expects 2 args"))
-    (let (p:ptr:Val (cast ptr:Val (emit-node (node-at cc 1) scope))
+    (let (p:ref:Val (emit-node (node-at cc 1) scope)
           pt:ptr:Type (cast ptr:Type (p type)))
       (when (or (or (!= (pt kind) TY-PTR) (= (pt elem) null))
               (!= ((cast ptr:Type (pt elem)) kind) TY-STRUCT))
@@ -6287,12 +6291,12 @@
               (.set! rt elem ftype)
               ; Interior address into the resource: keep the escape taint
               ; (lifecycle.md §2.2).
-              (let (rv:ptr:Val (cast ptr:Val (alloc-val (cast ptr rt) gep)))
+              (let (rv:ref:Val (alloc-val (cast ptr rt) gep))
                 (.set! rv taint (p taint))
-                (return (cast ptr rv))))))))))
+                (return rv)))))))))
 
 ; (array T e0 e1 ... | (idx v) ...) -> ptr:T to a stack array of int elements.
-(defn emit-array-lit:ptr (call:ptr scope:ptr)
+(defn emit-array-lit:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call)
         nargs:i32 (- (node-len cc) 1))
     (when (< nargs 1)
@@ -6343,7 +6347,7 @@
                       (fmt-i32 "array: index %d specified twice" k)))
                   (aset! (cast ptr:i32 seen) k (cast i32 1))
                   (let (vexpr:ptr (node-at (cast ptr:Node (node-at cc (+ 2 j))) 1)
-                        v:ptr (emit-node vexpr scope)
+                        v:ref:Val (emit-node vexpr scope)
                         coerced:ptr (coerce-int-val v etype (cc line)))
                     (when (= coerced null)
                       (die-at (cc line) "array: type mismatch in designated initializer"))
@@ -6360,7 +6364,7 @@
                   (when (>= pos-cursor length)
                     (die-at (cc line) "array: positional initializer overflows length"))
                   (let (arg:ptr (node-at cc (+ 2 j))
-                        v:ptr (emit-node arg scope)
+                        v:ref:Val (emit-node arg scope)
                         coerced:ptr (coerce-int-val v etype (cc line)))
                     (when (= coerced null)
                       (die-at (cc line) "array: type mismatch in positional initializer"))
@@ -6390,7 +6394,7 @@
                 (return (alloc-val (cast ptr pt) slot))))))))))
 
 ; (S e0 e1 ... | (field v) ...) -> ptr:S compound literal (struct-name head).
-(defn emit-struct-lit:ptr (call:ptr scope:ptr sd:ptr)
+(defn emit-struct-lit:ref:Val (call:ptr scope:ref:Scope sd:ptr)
   (let (cc:ptr:Node (cast ptr:Node call)
         sdef:ptr:StructDef (cast ptr:StructDef sd)
         nargs:i32 (- (node-len cc) 1)
@@ -6425,7 +6429,7 @@
                   (fmt-s "struct literal: field '%s' specified twice" (fname-node s))))
               (aset! (cast ptr:i32 seen) fidx (cast i32 1))
               (let (ftype:ptr (aref (cast ptr:ptr (sdef field-types)) fidx)
-                    v:ptr (emit-node vexpr scope)
+                    v:ref:Val (emit-node vexpr scope)
                     coerced:ptr (coerce-int-val v ftype (cc line)))
                 (when (= coerced null)
                   (die-at (cc line)
@@ -6438,7 +6442,7 @@
               (when (>= pos-idx nfields)
                 (die-at (arg line) "struct literal: too many positional initializers"))
               (let (ftype:ptr (aref (cast ptr:ptr (sdef field-types)) pos-idx)
-                    v:ptr (emit-node arg scope)
+                    v:ref:Val (emit-node arg scope)
                     coerced:ptr (coerce-int-val v ftype (cc line)))
                 (when (= coerced null)
                   (die-at (cc line) "struct literal: type mismatch for positional initializer"))
@@ -6475,7 +6479,7 @@
 ; ============================================================
 
 ; Find a macro definition by name, or null.
-(defn find-macro:ptr (name:ptr)
+(defn find-macro:?MacroDef (name:ptr)
   (let (mi:i32 0)
     (while (< mi g-num-macros)
       (let (mdef:ptr:MacroDef (cast ptr:MacroDef (ptr+ (cast ptr:MacroDef g-macros) mi)))
@@ -6597,7 +6601,7 @@
         (set! it (cast ptr:Node (it cdr))))
       (return out))))
 
-(defn emit-macro-expand:ptr (call:ptr scope:ptr macro-def:ptr)
+(defn emit-macro-expand:ref:Val (call:ptr scope:ref:Scope macro-def:ptr)
   (let (result:ptr (expand-macro-call call macro-def))
     (return (emit-node (desugar result) scope))))
 
@@ -6610,26 +6614,25 @@
 ; parameter type (identity for an exact match, so the IR is unchanged) then
 ; emits the call to the selected symbol. Shared by ordinary overloaded dispatch
 ; and the operator user-overload path.
-(defn emit-resolved-call:ptr (n:ptr scope:ptr gname:ptr m:ptr args:ptr nargs:i32 line:i32)
-  (let (mm:ptr:Method (cast ptr:Method m)
-        ss:ptr:Sym (new Sym))
-    (when (and (!= (mm param-types) null) (and (= (mm has-rest) 0) (= (mm num-params) nargs)))
+(defn emit-resolved-call:ref:Val (n:ptr scope:ref:Scope gname:ptr m:ref:Method args:ptr nargs:i32 line:i32)
+  (let (ss:ref:Sym (new Sym))
+    (when (and (!= (m param-types) null) (and (= (m has-rest) 0) (= (m num-params) nargs)))
       (let (ci:i32 0)
         (while (< ci nargs)
           (let (slot:ptr (ptr+ (cast ptr:Val args) ci)
-                pt:ptr (aref (cast ptr:ptr (mm param-types)) ci)
+                pt:ptr (aref (cast ptr:ptr (m param-types)) ci)
                 na:ptr (coerce-num-val slot pt line))
             (when (and (!= na null) (!= na slot)) (memcpy slot na (sizeof Val))))
           (inc! ci))))
     (.set! ss name gname)
-    (.set! ss type (mm fn-type))
-    (.set! ss ir-name (mm ir-name))
+    (.set! ss type (m fn-type))
+    (.set! ss ir-name (m ir-name))
     (.set! ss is-local 0)
-    (return (emit-call-with-args n scope (cast ptr ss) args nargs))))
+    (return (emit-call-with-args n scope ss args nargs))))
 
 ; Emit a call to an overloaded generic: emit the arguments, resolve the method
 ; from their concrete types, then emit the call to the selected mangled symbol.
-(defn emit-generic-call:ptr (n:ptr scope:ptr g:ptr)
+(defn emit-generic-call:ref:Val (n:ptr scope:ref:Scope g:ref:Generic)
   (let (nn:ptr:Node (cast ptr:Node n)
         nargs:i32 (- (node-len nn) 1)
         args:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (sizeof Val)))
@@ -6638,13 +6641,13 @@
         i:i32 0)
     (while (< i nargs)
       (let (anode:ptr (node-at nn (+ i 1))
-            v:ptr (emit-node anode scope))
+            v:ref:Val (emit-node anode scope))
         (memcpy (ptr+ (cast ptr:Val args) i) v (sizeof Val))
         (aset! (cast ptr:ptr argtypes) i ((cast ptr:Val v) type))
         (aset! (cast ptr:ptr arg-nodes) i anode))
       (inc! i))
-    (let (m:ptr:Method (cast ptr:Method (generic-resolve g argtypes arg-nodes nargs (nn line))))
-      (return (emit-resolved-call n scope (-> g (cast ptr:Generic _) (_ name)) (cast ptr m)
+    (let (m:ref:Method (generic-resolve g argtypes arg-nodes nargs (nn line)))
+      (return (emit-resolved-call n scope (g name) m
                                   args nargs (nn line))))))
 
 ; Emit an operator that carries user overloads (§10.3). Emit the operands, then
@@ -6652,7 +6655,7 @@
 ; call to it, otherwise fall back to the built-in numeric/pointer inline peephole
 ; (emit-binop-vals). A pure operator (no user overloads) never reaches here — it
 ; short-circuits to emit-binop in emit-dispatch, preserving byte-identical IR.
-(defn emit-operator-dispatch:ptr (n:ptr scope:ptr g:ptr binop:ptr)
+(defn emit-operator-dispatch:ref:Val (n:ptr scope:ref:Scope g:ref:Generic binop:ptr)
   (let (nn:ptr:Node (cast ptr:Node n)
         nargs:i32 (- (node-len nn) 1)
         args:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (sizeof Val)))
@@ -6661,14 +6664,14 @@
         i:i32 0)
     (while (< i nargs)
       (let (anode:ptr (node-at nn (+ i 1))
-            v:ptr (emit-node anode scope))
+            v:ref:Val (emit-node anode scope))
         (memcpy (ptr+ (cast ptr:Val args) i) v (sizeof Val))
         (aset! (cast ptr:ptr argtypes) i ((cast ptr:Val v) type))
         (aset! (cast ptr:ptr arg-nodes) i anode))
       (inc! i))
-    (let (m:ptr (operator-user-resolve g argtypes arg-nodes nargs))
+    (let (m:?Method (operator-user-resolve g argtypes arg-nodes nargs))
       (when (!= m null)
-        (return (emit-resolved-call n scope (-> g (cast ptr:Generic _) (_ name)) m
+        (return (emit-resolved-call n scope (g name) m
                                     args nargs (nn line))))
       (when (!= nargs 2)
         (die-at (nn line) (fmt-s "%s expects 2 args" ((cast ptr:BinOp binop) name))))
@@ -6682,43 +6685,46 @@
 ; resolves user-method-or-inline; overloaded sets dispatch on argument types;
 ; solitary names and C/extern functions fall through to the ordinary scope-bound
 ; call (also byte-identical).
-(defn emit-dispatch:ptr (n:ptr scope:ptr h:ptr head:ptr)
+(defn emit-dispatch:ref:Val (n:ptr scope:ref:Scope h:ptr head:ptr)
   ; Stage 10 (lifecycle.md §2.3): manually dropping a with-owned binding
   ; double-frees — the armed cleanup also fires at scope exit.
   (when (and (= h "drop") (= (node-len n) 2))
     (let (tname:ptr (node-binding-name (node-at n 1)))
       (when (!= tname null)
-        (let (tsym:ptr:Sym (cast ptr:Sym (scope-lookup scope tname)))
-          (when (and (!= (cast ptr tsym) null) (!= (tsym owns) 0))
+        (when-some (tsym (scope-lookup scope tname))
+          (when (!= (tsym owns) 0)
             (die-at ((cast ptr:Node n) line)
               (fmt-2s "double drop: '%s' is dropped at `with` scope exit — use (move %s) to take ownership first" tname tname)))))))
-  (let (g:ptr (generic-lookup h))
+  (let (g:?Generic (generic-lookup h))
     (when (!= g null)
-      (let (gg:ptr:Generic (cast ptr:Generic g)
-            m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (gg methods)) 0)))
+      (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (g methods)) 0)))
         (when (= (m kind) METHOD-INTRINSIC)
-          (if (= (gg mangled) 0)
+          (if (= (g mangled) 0)
             (return (emit-binop n scope (m binop)))
-            (return (emit-operator-dispatch n scope (cast ptr gg) (m binop)))))
-        (when (!= (gg mangled) 0)
-          (return (emit-generic-call n scope (cast ptr gg)))))))
-  (let (sym:ptr (scope-lookup scope h))
-    (when (= sym null)
-      ; Struct-name-as-constructor: (S init...) -> ptr:S compound literal.
-      (let (sd:ptr (lookup-struct h))
+            (return (emit-operator-dispatch n scope g (m binop)))))
+        (when (!= (g mangled) 0)
+          (return (emit-generic-call n scope g))))))
+  ; A defn/extern symbol (is-local 0, TY-FN) is a direct call. Anything else in
+  ; head position is a value: emit it once, then route. A function-pointer value
+  ; (a local/global TY-FN variable) folds to an indirect call; a non-function
+  ; value routes to get (member access) / invoke (callable-values.md §4.1/§4.2).
+  ; (if-some rather than a null guard: the guard body would end in die-at,
+  ; which the narrowing engine cannot know is noreturn.)
+  (if-some (sym (scope-lookup scope h))
+    (do
+      (when (and (-> sym (_ type) (cast ptr:Type _) (_ kind) (= _ TY-FN))
+                 (= (sym is-local) 0))
+        (return (emit-call n scope sym)))
+      (return (emit-callable-value n scope (emit-symbol-ref head scope))))
+    ; No symbol: struct-name-as-constructor (S init...) -> ptr:S compound
+    ; literal, else unknown.
+    (do
+      (let (sd:?StructDef (lookup-struct h))
         (when (!= sd null)
           (return (emit-struct-lit n scope sd))))
-      (die-at ((cast ptr:Node head) line) (fmt-s "unknown: %s" h)))
-    ; A defn/extern symbol (is-local 0, TY-FN) is a direct call. Anything else in
-    ; head position is a value: emit it once, then route. A function-pointer value
-    ; (a local/global TY-FN variable) folds to an indirect call; a non-function
-    ; value routes to get (member access) / invoke (callable-values.md §4.1/§4.2).
-    (when (and (-> sym (cast ptr:Sym _) (_ type) (cast ptr:Type _) (_ kind) (= _ TY-FN))
-               (= (-> sym (cast ptr:Sym _) (_ is-local)) 0))
-      (return (emit-call n scope sym)))
-    (return (emit-callable-value n scope (emit-symbol-ref head scope)))))
+      (die-at ((cast ptr:Node head) line) (fmt-s "unknown: %s" h)))))
 
-(defn emit-list:ptr (n:ptr scope:ptr)
+(defn emit-list:ref:Val (n:ptr scope:ref:Scope)
   (let (nn:ptr:Node (cast ptr:Node n))
     (when (= (node-len nn) 0) (die-at (nn line) "empty list"))
     (let (head:ptr:Node (cast ptr:Node (node-at nn 0)))
@@ -7031,13 +7037,12 @@
       ; Reuse a StructDef pre-registered by prescan-struct-names (name only), or
       ; register fresh. Skip if its definition was already written to IR — covers
       ; redefinition (the prelude defines Node and some programs also do).
-      (let (existing:ptr (lookup-struct (name-node s)))
-        (when (and (!= existing null)
-                   (!= (-> existing (cast ptr:StructDef _) (_ emitted)) 0))
+      (let (existing:?StructDef (lookup-struct (name-node s)))
+        (when (and (!= existing null) (!= (existing emitted) 0))
           (return)))
-      (let (existing:ptr (lookup-struct (name-node s))
-            sd:ptr:StructDef (cast ptr:StructDef
-                               (if (!= existing null) existing (register-struct (name-node s))))
+      (let (sd:ref:StructDef (if-some (e (lookup-struct (name-node s)))
+                               e
+                               (register-struct (name-node s)))
             nfields:i32 (- (node-len cc) 2))
         (.set! sd field-names (arena-alloc (* (cast i64 nfields) (ptr-bytes))))
         (.set! sd field-types (arena-alloc (* (cast i64 nfields) (ptr-bytes))))
@@ -7215,7 +7220,7 @@
           (set! g-fn-ret-type ret)
           (when (= ((cast ptr:AbiInfo g-fn-ret-abi) kind) ABI-MEMORY)
             (set! g-fn-sret-name "%.sret"))
-          (let (fn-scope:ptr (scope-new g-globals)
+          (let (fn-scope:ref:Scope (scope-new g-globals)
                 i:i32 0)
             (while (< i nparams)
               (abi-emit-param-prologue fn-scope
@@ -7229,7 +7234,7 @@
               (while (< psi (node-len cc))
                 (prescan-labels (node-at cc psi))
                 (inc! psi)))
-            (let (last-val:ptr (alloc-val ty-void null))
+            (let (last-val:ptr:Val (alloc-val ty-void null))
               (while (< i (node-len cc))
                 (set! last-val (emit-node (node-at cc i) fn-scope))
                 (inc! i))
@@ -7493,7 +7498,7 @@
           (inc! g-ct-id)
           (set! g-out ct-def)
           (reset-function-state)
-          (let (fn-scope:ptr (scope-new g-globals)
+          (let (fn-scope:ref:Scope (scope-new g-globals)
                 ei:i32 0)
             (while (< ei nexpr)
               (emit-node (aref (cast ptr:ptr expr-forms) ei) fn-scope)
@@ -7669,7 +7674,7 @@
 
               ; Set up function codegen state
               (reset-function-state)
-              (let (fn-scope:ptr (scope-new g-globals))
+              (let (fn-scope:ref:Scope (scope-new g-globals))
 
                 ; Entry prologue: alloca for args pointer, then load each param
                 (fprintf g-entry-stream "  %%__args.addr = alloca ptr, align 8\n")
@@ -7689,7 +7694,7 @@
                 (let (last-val:ptr "null"
                       bi:i32 3)
                   (while (< bi (node-len ff))
-                    (let (bv:ptr:Val (cast ptr:Val (emit-node (node-at ff bi) fn-scope)))
+                    (let (bv:ref:Val (emit-node (node-at ff bi) fn-scope))
                       (when (and (!= (cast ptr bv) null)
                                (and (!= (bv val) null)
                                     (-> bv (_ type) (cast ptr:Type _) (_ kind) (= _ TY-PTR))))
@@ -8175,15 +8180,18 @@
     (return 0)))
 
 ; Push a path onto a Node-based string list, return new head.
+; (Returns a fresh non-null cell; spelled :ptr because Node is a prelude type
+; and the toplevel signature prescan runs before the prelude import — see
+; design/stage10/nullability.md N2 friction notes.)
 (defn import-list-push:ptr (list:ptr path:ptr)
-  (let (n:ptr:Node (new Node))
+  (let (n:ref:Node (new Node))
     (.set! n kind NODE-STR)
     (.set! n line 0)
     (.set! n i (cast i64 0))
     (.set! n s path)
     (.set! n car null)
     (.set! n cdr list)
-    (return (cast ptr n))))
+    (return n)))
 
 ; Remove the head of a Node-based string list, return new head.
 (defn import-list-pop:ptr (list:ptr)
@@ -8627,7 +8635,7 @@
 
 ; Resolve `triple` to a Target descriptor, pulling the datalayout string and
 ; pointer size from LLVM so emitted IR matches the target ABI.
-(defn make-target-for-triple:ptr (triple:ptr)
+(defn make-target-for-triple:ref:Target (triple:ptr)
   (let (target:ptr null
         terr:ptr null
         tres:i32 (LLVMGetTargetFromTriple triple (addr-of target) (addr-of terr)))
@@ -8649,7 +8657,7 @@
           (.set! tgt ptr-align psize))
         (LLVMDisposeTargetData td)
         (LLVMDisposeTargetMachine tm)
-        (return (cast ptr tgt))))))
+        (return (cast ref:Target tgt))))))
 
 ; Populate g-host-target (always native) and g-target (== host unless
 ; --target=<triple> overrides). Derives g-target-triple / g-target-ptr-bytes so
