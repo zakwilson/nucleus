@@ -1,0 +1,7 @@
+guard 7 -1
+if-some 7
+if-some-none -1
+when-some 7
+unwrap 7
+unwrap-or 7
+as-ref 7

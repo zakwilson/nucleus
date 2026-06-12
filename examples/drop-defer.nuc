@@ -1,0 +1,31 @@
+; Stage 10: the Drop protocol generalizes with-cleanup beyond the libc
+; allocators — any binding whose declared type conforms to Drop is armed, and
+; (drop b) is statically dispatched at scope exit in reverse binding order.
+; (defer expr) registers an ad-hoc cleanup on the enclosing scope, re-emitted
+; at every exit path. See design/stage10/lifecycle.md §5.
+(include stdio)
+(include stdlib)
+
+(defprotocol Drop
+  (drop:void (self:ptr:Self)))
+
+(defstruct Res id:i32)
+
+(defn drop:void (self:ptr:Res)
+  (printf "drop %d\n" (self id))
+  (free (cast ptr self)))
+
+(extend Res Drop)
+
+(defn make-res:ptr:Res (id:i32)
+  (let (r:ptr:Res (cast ptr:Res (malloc 4)))
+    (.set! r id id)
+    (return r)))
+
+(defn main:i32 ()
+  (defer (printf "bye\n"))
+  (with (a:ptr:Res (make-res 1)
+         b:ptr:Res (make-res 2))
+    (printf "body %d %d\n" (a id) (b id)))
+  (printf "end\n")
+  (return 0))

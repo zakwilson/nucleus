@@ -112,7 +112,24 @@ preserves a byte-identical bootstrap until a phase deliberately converts code.
 6. **(Later stage) — the default flip.** Reinterpret `(ptr T)` as non-null;
    retire raw to an `unsafe`-named spelling. Decided with N2 data.
 
-## 5. Implementation status
+## 5. Implementation status (landed 2026-06-12)
 
-Pending — design only. Update this section as phases land (mirror the Stage 9
-docs' per-rung status tables).
+Phases L1, N1, L2, and L3 are implemented and landed together; `make test`
+(66 examples + REPL sessions) and `make bootstrap` (fixed point) pass, and all
+boot artifacts (Linux + Windows IRs, `bin/nucleusc`) are converged in
+lock-step. N2 and the default flip remain open.
+
+| Phase | Status | Notes |
+|---|---|---|
+| **L1 — escape analysis on `with`** | **done** | Taint (owning with-Scope*) carried on `Val`/`Sym`, seeded by owning `with` bindings; sinks: explicit + implicit `return`, stores into longer-lived memory (`set!`, `aset!`, `.set!`, `ptr-set!`), and manual `free`/`drop` of an owning binding (double-free). One deviation from the spec sketch: the checks live in the *emitters* (sharing `Sym` state with `node-type` via `sym-effective-type`) rather than a separate `node-type` walk — same effect, no drift possible. *(lifecycle.md §8)* |
+| **N1 — `(ref T)` + `Maybe` + narrowing** | **done** | `pkind` on `Type` (raw/ref/Maybe; ignored by `type-eq`/hashing/mangling so dispatch and IR are unaffected); `?T` reader sugar; `none`; deref/field/index gate on un-narrowed Maybe; flow gates on assignment, arguments, and returns; flow narrowing in `cond`/`and`/`or`/`while`/`set!` with kill-on-assign, loop prescan, and `label` kill-all; all seven §3 transition forms (`if-some` binds and desugars to `cond`, so the synthesized null test *is* the narrowing point). *(nullability.md §9)* |
+| **L2 — `Drop` protocol + `defer`** | **done** | `with` arms a null-guarded, statically dispatched `(drop b)` for any binding whose declared pointer-to-struct type conforms to `Drop`; the libc allocators keep their fast path; `(defer expr)` re-emits at every scope exit, including `let` fall-through and the implicit-return fall-off. `defer` is lexical, not dynamic. |
+| **N2 — convert the compiler to `(ref T)`** | **open** | Not started. The checks engage only on `ref`/`Maybe` spellings, so the unconverted compiler sees no new errors. |
+| **L3 — `move` / consume** | **done** | `(move b)` disarms the cleanup slot, clears taint, and consumes the binding ("use after move" on later reads; reassignment revives). `(free (move b))` is the sanctioned manual-release spelling. |
+| **(later) — the default flip** | **open** | Deferred per §3; decide with N2 friction data. |
+
+Examples in the test suite: [examples/maybe.nuc](../../examples/maybe.nuc),
+[examples/with-lifecycle.nuc](../../examples/with-lifecycle.nuc),
+[examples/drop-defer.nuc](../../examples/drop-defer.nuc). The error
+diagnostics match the specs' worked examples (verified manually; the example
+harness only runs successful programs).
