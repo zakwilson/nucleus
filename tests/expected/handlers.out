@@ -1,0 +1,9 @@
+no-handler: err config-missing
+no-handler-ok: ok 50
+repaired: ok 777
+repaired-ok: ok 50
+forced: err config-missing
+declined: err config-missing
+detail: ok 42
+nested: ok 42
+other-err: err parse-failed

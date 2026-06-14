@@ -114,10 +114,11 @@ preserves a byte-identical bootstrap until a phase deliberately converts code.
 
 ## 5. Implementation status (landed 2026-06-12)
 
-Phases L1, N1, L2, and L3 are implemented and landed together; `make test`
-(66 examples + REPL sessions) and `make bootstrap` (fixed point) pass, and all
-boot artifacts (Linux + Windows IRs, `bin/nucleusc`) are converged in
-lock-step. N2 and the default flip remain open.
+Phases L1, N1, L2, L3, and the default flip (Phase F) are implemented and
+landed; `make test` (71 examples + REPL sessions) and `make bootstrap` (fixed
+point) pass, and all boot artifacts (Linux + Windows IRs, `bin/nucleusc`) are
+converged in lock-step. N2's first tranche landed; the flip subsumed the rest of
+the typed-pointer conversion (the remaining `void*` slots are exempt by design).
 
 | Phase | Status | Notes |
 |---|---|---|
@@ -126,7 +127,7 @@ lock-step. N2 and the default flip remain open.
 | **L2 — `Drop` protocol + `defer`** | **done** | `with` arms a null-guarded, statically dispatched `(drop b)` for any binding whose declared pointer-to-struct type conforms to `Drop`; the libc allocators keep their fast path; `(defer expr)` re-emits at every scope exit, including `let` fall-through and the implicit-return fall-off. `defer` is lexical, not dynamic. |
 | **N2 — convert the compiler to `(ref T)`** | **first tranche done (2026-06-12)** | Allocators/constructors and the whole `emit-*` family return `ref`; lookups and the `node-type` family return `?T`; all `scope` params and the dispatch spine (`sym`/`g`/`m`) are `ref`; hot emitters narrow via `if-some`. ~25 colder guarded-cast sites remain. Friction data captured in nullability.md §9 — headline: a `noreturn` attribute for `die-at` would unlock the `(when (= x null) (die-at …))` idiom as a narrowing point and erase most remaining cost. |
 | **L3 — `move` / consume** | **done** | `(move b)` disarms the cleanup slot, clears taint, and consumes the binding ("use after move" on later reads; reassignment revives). `(free (move b))` is the sanctioned manual-release spelling. |
-| **(later) — the default flip** | **open** | Deferred per §3; decide with N2 friction data. |
+| **the default flip (Phase F)** | **done** | `(ptr T)` / bare typed `ptr` reinterpreted as non-null (PTR-REF); raw retired to the `(raw T)` / `raw:T` spelling (no `unsafe` namespace yet — arrives with namespaces); `?` made uniform `(Maybe T)` (pointer operand niches as `?ptr:T`, value operand stamps the value-`Maybe`). The non-null obligation engages only on **typed** pointers: an elem-less bare `ptr` is the `void*` escape hatch and is exempt from the flow check (a non-null `void*` is a meaningless contract — the direct analogue of the CStr-is-ref-compatible refinement), which kept the conversion to the real typed-pointer sites instead of ~400 `null`-into-`void*` false positives. `addr-of`/`.&`/`alloca`/`array`/compound-literal yield `ref` by construction. `make test` 71/71, `make bootstrap` fixed point, boot re-converged. See `flip.md` and nullability.md §9. |
 
 Examples in the test suite: [examples/maybe.nuc](../../examples/maybe.nuc),
 [examples/with-lifecycle.nuc](../../examples/with-lifecycle.nuc),

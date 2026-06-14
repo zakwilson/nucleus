@@ -15,6 +15,18 @@
 (declare popen:ptr (cmd:ptr mode:ptr))
 (declare pclose:i32 (stream:ptr))
 
+; Stage 10 Phase F1: well-known libc functions that never return. A C header
+; carries no nullability/noreturn metadata we trust (the parser even discards
+; __attribute__((noreturn))), so recognize the standard noreturn libc functions
+; by name. A statement-position call to one terminates its block, so a
+; (when (= x null) (exit 1)) / (abort) guard narrows the tested binding past it.
+(defn c-fn-noreturn:i32 (fname:ptr)
+  (when (or (= fname "exit") (= fname "abort")) (return 1))
+  (when (or (= fname "_exit") (= fname "_Exit")) (return 1))
+  (when (or (= fname "quick_exit") (= fname "abort_handler_s")) (return 1))
+  (when (or (= fname "longjmp") (= fname "siglongjmp")) (return 1))
+  (return 0))
+
 ; ============================================================
 ; Libc include (via C header parsing)
 ; ============================================================
@@ -358,8 +370,11 @@
           (.set! ft variadic is-variadic)
           ; Only register if not already defined
           (when (= (scope-lookup g-globals fname) null)
-              (scope-define g-globals fname (cast ptr ft)
-                            (fmt-s "@%s" fname) 0)
+              (let (csym:ref:Sym (scope-define g-globals fname (cast ptr ft)
+                                  (fmt-s "@%s" fname) 0))
+                ; Stage 10 Phase F1: mark known-noreturn libc functions.
+                (when (!= (c-fn-noreturn fname) 0)
+                  (.set! (cast ptr:Sym csym) noreturn 1)))
               (when (= fname "malloc")
                 (set! g-malloc-decl-done 1))
               ; Emit LLVM declare
@@ -374,7 +389,10 @@
                 (let (sep:ptr "")
                   (when (!= num-params 0) (set! sep ", "))
                   (fprintf g-out "%s..." sep)))
-              (fprintf g-out ")\n")))
+              ; Stage 10 Phase F1: trailing LLVM `noreturn` function attribute.
+              (if (!= (c-fn-noreturn fname) 0)
+                (fprintf g-out ") noreturn\n")
+                (fprintf g-out ")\n"))))
         (return 1)))))
 
 ; Read all output from a popen'd command into a malloc'd buffer.

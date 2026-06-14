@@ -8,14 +8,14 @@
 (defstruct Pt x:i32 y:i32)
 
 ; A fallible lookup: nullability is explicit in the signature.
-(defn lookup:?Pt (give:i1 p:ptr:Pt)
+(defn lookup:?ptr:Pt (give:i1 p:ptr:Pt)
   (if give
     (return (some (cast ref:Pt p)))
     (return none)))
 
 ; A null guard narrows ?T to (ref T) — the compiler's own idiom is the
 ; narrowing mechanism, so converted code keeps its guards unchanged.
-(defn show:i32 (m:?Pt)
+(defn show:i32 (m:?ptr:Pt)
   (when (= m null) (return -1))
   (return (m x)))
 
@@ -29,7 +29,7 @@
       (printf "when-some %d\n" (q x)))
     (printf "unwrap %d\n" ((unwrap (lookup true p)) x))
     (printf "unwrap-or %d\n" ((unwrap-or (lookup false p) (cast ref:Pt p)) x))
-    (let (m:?Pt (as-ref p))
+    (let (m:?ptr:Pt (as-ref p))
       (when (!= m null)
         (printf "as-ref %d\n" (m x))))
     (free p))
