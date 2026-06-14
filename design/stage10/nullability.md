@@ -155,8 +155,9 @@ change.
 
 ## 9. Implementation status (landed 2026-06-12)
 
-N1 is fully implemented; `make test` and `make bootstrap` pass. N2 (converting
-the compiler) has not started; the flip remains deferred.
+N1, N2's first tranche, and the **Phase F flip** are all implemented; `make
+test` (71) and `make bootstrap` (fixed point) pass. The flip (`design/stage10/flip.md`)
+is **landed** — see §9.1 below.
 
 - **Representation (§2)** — `pkind` (`PTR-RAW`/`PTR-REF`/`PTR-MAYBE`) on
   `Type`, default raw. Deliberately ignored by `type-eq`/`hash-type`/
@@ -250,3 +251,52 @@ the compiler) has not started; the flip remains deferred.
 
 [examples/maybe.nuc](../../examples/maybe.nuc) exercises the full surface in
 the test suite.
+
+### 9.1 The flip (Phase F, landed)
+
+The deferred default-flip from §6 is done; build plan in
+[flip.md](flip.md), spec in [errors-prompt.md](errors-prompt.md) §"Phase F".
+
+- **Parser (5 edits).** `types-init` sets the `ty-ptr` singleton to `PTR-REF`;
+  the `(ptr T)` branch in `parse-type-from-node` sets `PTR-REF`; the `null`
+  literal becomes `ty-raw` at both `node-type-sym` and `emit-symbol-ref`. `?`
+  uniformity is the final edit (below). `(raw T)` / `raw:T` / `?ptr:T` already
+  parsed (Stage-1 groundwork).
+
+- **The `void*` refinement (the key deviation from the literal plan).** Flipping
+  the *elem-less* `ty-ptr` singleton to `PTR-REF` makes **every** bare `ptr`
+  slot non-null. A non-fatal enumeration surfaced **733** violations — *all* with
+  an elem-less destination; *none* flowing into a typed `(ptr T)`/`(ref T)` slot
+  (N2 had already cleared those). The plan measured **343** (302 Maybe→ref +
+  41 raw→ref + 0 deref); the 390 surplus were `null`/untyped-raw into bare
+  `void*` locals. Resolution: `pkind-flow-check` **exempts an elem-less
+  destination** — a `void*` names no pointee, can't be deref'd (`aref`/field
+  access dies on "operand must be typed pointer"), so a non-null obligation on
+  it protects nothing. This is the direct analogue of the CStr-is-ref-compatible
+  refinement and lands the flip's teeth exactly on typed pointers, where
+  `null`/raw/Maybe → `(ref T)` is still an error. (The friction-finding-1
+  `noreturn die-at` enabler had already landed at Stage-1; with the `void*`
+  exemption the remaining typed-pointer conversion was already complete, so no
+  per-site `raw`/narrow churn was needed.)
+
+- **Non-null by construction.** `(addr-of x)`, `(.& p f)`, `(alloca T)`,
+  `(array T …)`, and a `(S …)` compound literal each yield `(ref T)` (a stack /
+  field / binding address is always valid), so they flow into `(ptr T)`/`(ref T)`
+  slots directly. This is what makes the examples (which use typed pointers)
+  type-check under the flip; their `node-type` counterparts mirror the emit kind
+  so codegen and `node-type` never drift.
+
+- **Uniform `?`.** All ~70 `?Foo` pointer-Maybe spellings in src+lib were
+  re-spelled `?ptr:Foo` (byte-identical: both parse to `TY-PTR(elem=Foo, MAYBE)`),
+  then both `?` handlers' value-operand branch was switched to stamp the value
+  `(Maybe T)` template instead of niche-wrapping. After the re-spelling no bare
+  value `?Foo` remained in our source, so the switch is byte-identical there;
+  `?` now means plain `(Maybe T)` everywhere (pointer operand niches as
+  `?ptr:T`, value operand is the E2 value union), removing the E1 sugar
+  asymmetry.
+
+- **Invariant held.** `pkind` is ignored by `type-eq`/`hash-type`/
+  `type-mangle-token`/`type-to-ir`, so every `raw`/`ref`/`?` choice lowers to the
+  same IR `ptr`: `make bootstrap` (stage1.ll == stage2.ll) is a fixed point
+  across the whole flip, proving no emitted IR changed. `make test` 71/71; boot
+  artifacts re-converged.

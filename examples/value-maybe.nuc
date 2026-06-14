@@ -1,0 +1,47 @@
+; Stage 10 E2 — value Maybe over non-pointers (design/stage10/errors.md §10).
+; (Maybe T) for a non-pointer T stamps a {tag, T} union (vs the niche pointer
+; (Maybe (ref T))). Built with make / return-position target typing, eliminated
+; with match. ?!T = (Maybe (Result T Err)) — a fallible result that may be absent.
+(include stdio)
+
+(deferror nope "no value")
+
+; (Maybe i64) over a non-pointer. Parenthesized types use the list form in
+; binding/return positions (the name:(...) colon sugar does not parse there).
+(defn (half (Maybe i64)) (n:i64)
+  (when (!= (% n (cast i64 2)) (cast i64 0))
+    (return none))                          ; bare none target-types here
+  (return (some (/ n (cast i64 2)))))        ; (some v) target-types here
+
+(defn show:void ((m (Maybe i64)))
+  (match m
+    ((some v) (printf "some %lld\n" v))
+    (none     (printf "none\n"))))
+
+; A fallible inner computation, wrapped into a may-be-absent result.
+(defn checked:!i64 (k:i64)
+  (when (= k (cast i64 0)) (return (err nope)))
+  (return (ok k)))
+
+(defn lookup:?!i64 (k:i64)
+  (when (< k (cast i64 0)) (return none))    ; absent
+  (let (rv:!i64 (checked k))                 ; present: an inner Result value
+    (return (some rv))))
+
+(defn show-r:void (r:?!i64)
+  (match r
+    ((some res)
+      (match res
+        ((ok v)  (printf "present ok %lld\n" v))
+        ((err e) (printf "present err %s\n" (err-name e)))))
+    (none (printf "absent\n"))))
+
+(defn main:i32 ()
+  (show (half (cast i64 8)))
+  (show (half (cast i64 7)))
+  (show (make (Maybe i64) some (cast i64 99)))
+  (show (make (Maybe i64) none))
+  (show-r (lookup (cast i64 5)))
+  (show-r (lookup (cast i64 0)))
+  (show-r (lookup (cast i64 -1)))
+  0)

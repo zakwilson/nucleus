@@ -1,0 +1,47 @@
+; Stage 10 error handling — E1 (design/stage10/errors.md).
+; Recoverable errors as ordinary return values: a fallible function returns
+; !T = (Result T Err). The caller must match / try / unwrap before using it.
+; (Handlers and with-handler arrive in E3; here err == err!.)
+(include stdio)
+(import error)
+
+(deferror config-missing "config file not found")
+(deferror parse-failed   "could not parse value")
+
+; A fallible computation. !i64 desugars to (Result i64 Err); (ok v) / (err E)
+; resolve against the declared return type in return position.
+(defn checked:!i64 (n:i64)
+  (when (= n (cast i64 0))
+    (return (err config-missing)))
+  (when (< n (cast i64 0))
+    (return (err! parse-failed)))      ; err! : unconditional (no handler check)
+  (return (ok n)))
+
+; Propagation: `try` yields the ok value or re-returns the error via err!.
+; The re-wrap target-types against THIS function's declared return.
+(defn doubled:!i64 (n:i64)
+  (let (v:i64 (try (checked n)))
+    (return (ok (* v (cast i64 2))))))
+
+(defn show:void (r:!i64)
+  (match r
+    ((ok v)  (printf "ok %lld\n" v))
+    ((err e) (printf "err %s: %s\n" (err-name e) (err-message e)))))
+
+(defn main:i32 ()
+  ; match on a Result value, both arms.
+  (show (checked (cast i64 42)))
+  (show (checked (cast i64 0)))
+  (show (checked (cast i64 -5)))
+
+  ; try: success propagates the value, failure propagates the error.
+  (show (doubled (cast i64 21)))
+  (show (doubled (cast i64 0)))
+
+  ; unwrap on the ok arm yields the payload.
+  (printf "unwrap %lld\n" (unwrap (checked (cast i64 7))))
+
+  ; unwrap-or supplies a default on the err arm (evaluated only then).
+  (printf "unwrap-or ok  %lld\n" (unwrap-or (checked (cast i64 9)) (cast i64 -1)))
+  (printf "unwrap-or err %lld\n" (unwrap-or (checked (cast i64 0)) (cast i64 99)))
+  0)

@@ -121,29 +121,50 @@ Types are attached to names with `:` syntax: `name:type` (e.g., `x:i32`, `main:i
 - `node:ptr:Node` → `(node (ptr Node))` — pointer-to-Node
 - `pp:ptr:ptr:Node` → `(pp (ptr ptr Node))` — pointer-to-pointer-to-Node
 
-Pointers to a typed element use the `ptr` constructor: `(ptr T)` is a pointer to `T`, and `(ptr ptr T)` chains. Bare `ptr` (with no element) remains the opaque `void*` pointer.
+Pointers to a typed element use the `ptr` constructor: `(ptr T)` is a **non-null** pointer to `T`, and `(ptr ptr T)` chains. Bare `ptr` (with no element) is the opaque `void*` pointer — it carries no element contract, so non-null obligations do not apply to it.
 
-### Pointer kinds: `(ref T)` and `?T` (Stage 10)
+### Pointer kinds: `(ptr T)`, `(raw T)`, and `?T` (Stage 10, flipped)
 
 Typed pointers carry a compile-time **kind**; all three lower to the same IR
-`ptr` and are ABI-identical to a C `T*` (see `design/stage10/nullability.md`):
+`ptr` and are ABI-identical to a C `T*` (see `design/stage10/nullability.md`).
+The safe default is **on**: a typed `(ptr T)` is non-null.
 
 | Surface | Meaning | Deref | Null? |
 |---|---|---|---|
-| `(ptr T)`, bare `ptr` | **raw** — unchecked, the default | allowed (your problem) | yes |
-| `(ref T)` / `ref:T` | **non-null** — always a valid `T` | always safe | no |
-| `?T` ≡ `(Maybe (ref T))` | **nullable-checked** — may be none | **compile error** until narrowed | yes (`null` = none) |
+| `(ptr T)` / `ptr:T`, `(ref T)` / `ref:T` | **non-null** — always a valid `T` (the default) | always safe | no |
+| `(raw T)` / `raw:T`, bare `ptr` | **raw** — unchecked, the C-boundary / `void*` escape | allowed (your problem) | yes |
+| `?T` ≡ `(Maybe T)` | **nullable-checked** — may be none | **compile error** until narrowed (pointer `T`) | yes |
 
-Only a `(ref T)` destination adds obligations: raw or `?T` values may not flow
-into a `(ref T)` slot (binding, `set!`, field/element store, argument, return)
-— narrow first, or assert with `(cast ref:T x)` (the audited C-boundary
-escape hatch). Widening (`ref`→raw, `ref`→`?T`, raw↔`?T`) is always allowed.
-`none` is the null `?T` literal; `(Maybe T)` over non-pointers needs sum types
-and is future work.
+`(ptr T)` and `(ref T)` are now synonyms (both non-null); `(ref T)` remains as
+the explicit, greppable spelling. A genuinely nullable pointer is spelled
+`(raw T)` / `raw:T`. The `null` literal is `raw`, so it flows into `raw`/`?`
+slots but not into a non-null `(ptr T)`/`(ref T)` slot.
+
+Only a **typed** non-null destination adds obligations: a `raw` or `?T` value
+may not flow into a `(ptr T)`/`(ref T)` slot (binding, `set!`, field/element
+store, argument, return) — narrow first, or assert with `(cast ref:T x)` (the
+audited C-boundary escape hatch). An elem-less bare `ptr` (`void*`) slot carries
+no contract and is exempt. Widening (non-null→raw, non-null→`?T`, raw↔`?T`) is
+always allowed. `none` is the null `?T` literal. Stack addresses are non-null by
+construction: `(addr-of x)`, `(.& p f)`, `(alloca T)`, `(array T …)`, and a
+`(S …)` compound literal all yield `(ref T)`.
+
+**Uniform `?` (Maybe)** (Stage 10 Phase F): `?T` ≡ `(Maybe T)` with no
+auto-`ref` injection. For a **pointer** operand it niche-encodes
+(`?ptr:T` / `?ref:T` ≡ `(Maybe (ref T))`, one pointer, `null` = none); for a
+**value** operand (`?i64`, `?SomeStruct`) it stamps the two-arm `{tag, T}` value
+union from the prelude template. One spelling, two layouts. A nullable pointer
+written `?ptr:Foo` makes the niche-encoding explicit. The value `(Maybe T)` is
+built with `make` / return-position target typing (bare `none` / `(some v)`
+resolve against a `(Maybe T)` return) and eliminated with `match`
+(`((some v) …)` / `(none …)`). The pointer relabels (`some`/`none`/`as-ref`
+outside return position, `if-some`/`when-some`/`unwrap`/`unwrap-or`) stay
+pointer-only. `?!T` ≡ `(Maybe (Result T Err))` is the value-Maybe-over-Result
+sugar (a fallible result that may be absent).
 
 **Flow narrowing**: inside a region dominated by a successful non-null test, a
-local `?T` binding reads as `(ref T)`. The compiler's own guard idioms are the
-mechanism — `(when (= m null) (return …))`, `(if (!= m null) … …)`,
+local `?ptr:T` binding reads as `(ref T)`. The compiler's own guard idioms are
+the mechanism — `(when (= m null) (return …))`, `(if (!= m null) … …)`,
 `(and (!= m null) (m field))` all narrow, as do `if-some`/`when-some`/`unwrap`.
 A reassignment kills the narrow (sticky across joins); loop bodies drop narrows
 established outside the loop for any binding the body assigns; `label` kills
@@ -308,6 +329,189 @@ spelling for instances yet).
 `Drop`-conforming payloads is a compile error (freeing the box would leak the
 live arm) unless the union itself conforms to `Drop` — write the tag switch
 in its `drop` method with `match`.
+
+## Error handling: `Err`, `deferror`, `!T`, handlers (Stage 10)
+
+Recoverable errors are ordinary return values (design/stage10/errors.md). A
+fallible function returns `(Result T Err)`, written with the sugar `!T`. The
+caller must `match`, `try`, or `unwrap` before using the value. The
+unrecoverable tier is unchanged: `die`/`die-at` still abort.
+
+**`Err`** is a distinct builtin scalar type represented as `i32` (C-legible),
+distinguished from a plain `i32` so the error machinery can key on it. Id `0`
+is reserved ("no error"); real ids are dense from `1`.
+
+**`deferror`** defines an error value and registers its name + message:
+
+```lisp
+(deferror config-missing "config file not found")
+```
+
+`config-missing` becomes a compile-time `Err` constant. The name is the stable
+contract; the id is a per-build representation (assigned in definition order,
+capped at 4095). Names are program-global. `.nuch` headers export `deferror`
+verbatim; importers re-register and get their own dense ids.
+
+**The `!` type sugar** (recognized only in type positions, so no clash with
+`!=`):
+
+| Spelling | Expansion | Reading |
+|---|---|---|
+| `!T`  | `(Result T Err)`           | fallible value — `T` as written (`!i64` is `(Result i64 Err)`) |
+| `!?T` | `(Result (Maybe T) Err)`   | error, or none, or value |
+| `?!T` | `(Maybe (Result T Err))`   | a fallible result that may be absent (value-`Maybe` over a Result) |
+
+After the Phase F flip `?` is uniform `(Maybe T)` (no `(ref …)` injection), so
+`?` and `!` compose without asymmetry — both take their payload as written
+(`!?i64` is `(Result (Maybe i64) Err)`; `?ptr:T` is the niche-encoded
+nullable pointer). The
+`(Result T E)` template now lives in the prelude, always available. Because the
+toplevel signature prescan now resolves imported (prelude) types, `name:!Config`
+parses in ordinary signatures — which is the point of the sugar, since
+`name:(Result Config Err)` does not parse (parenthesized type in a colon
+position). `!` over a parenthesized payload has no sugar; write
+`(Result (ref FILE) Err)` longhand.
+
+**Construction.** In `return` position (and the implicit-return tail) of a
+function declared `!T`, bare `(ok v)` / `(err E)` resolve against the return
+type (the union target-typing rule). **Reading rule:** `(err E)` means "give up
+unless a bound handler repairs"; `(err! E)` means "give up unconditionally" —
+it bypasses the handler chain and returns the error value. Use `err!` when you
+want an unconditional error return regardless of any bound handlers. Elsewhere
+(non-return positions, custom `(Result T MyErrStruct)` types), use
+`(make (Result T Err) ok v)`; stored Results are plain data with no handler
+machinery.
+
+**Elimination.**
+
+| Form | Meaning |
+|---|---|
+| `match` | the eliminator — `((ok v) …)` / `((err e) …)` arms |
+| `(try r)` | propagation macro (`lib/error.nuc`, needs `(import error)`): yields the `ok` value, or re-returns the error via `err!` from the enclosing `!T` function |
+| `(unwrap r)` | the `ok` payload, or — on `err` — print `err-name`/`err-message` and abort (needs `printf` in scope for the message) |
+| `(unwrap-or r d)` | the `ok` payload, or `d` (evaluated only on the `err` arm) |
+| `(err-name e)` / `(err-message e)` | the descriptor strings for an `Err` value |
+
+```lisp
+(include stdio)
+(import error)
+(deferror parse-failed "could not parse value")
+
+(defn checked:!i64 (n:i64)
+  (when (< n (cast i64 0)) (return (err parse-failed)))
+  (return (ok n)))
+
+(defn doubled:!i64 (n:i64)
+  (let (v:i64 (try (checked n)))          ; propagate on err
+    (return (ok (* v (cast i64 2))))))
+
+(match (checked x)
+  ((ok v)  ...)
+  ((err e) (printf "%s: %s\n" (err-name e) (err-message e))))
+```
+
+A `!T` is C-legible: the U2 tagged struct `{i32 tag; union payload}` plus the
+`Err` id constants; nothing propagates across a function boundary by a mechanism
+C doesn't understand.
+
+### Handler-aware `err` and `with-handler` (E3)
+
+When `(import error)` is in scope, returning `(err E)` from a `!T` function
+consults the dynamically-bound handler chain before returning the error value. A
+matching handler can **repair** the fault: the function returns `(ok v)` instead
+of the error. `(err! E)` always bypasses the chain.
+
+**Where the check fires.** Only at `(return (err E))` and the implicit-return
+tail of a function whose declared return type is `!T` (i.e. `(Result T Err)`
+with the builtin `Err` as the error arm). A stored `Result`, an `(err …)` in
+any non-return position, or a custom `(Result T MyErrStruct)` type are plain
+values — no handler machinery applies.
+
+**`(err E detail)`.** An optional second argument of type `ptr` passes a
+transient context pointer to the handler. It is borrowed for the call and never
+stored in the error value:
+
+```lisp
+(return (err config-missing path))   ; handler receives path as detail
+```
+
+**`with-handler`.** Binds a handler in the current dynamic extent (from
+`lib/error.nuc`; requires `(import error)`):
+
+```lisp
+(with-handler (error-value repair-type handler-fn ctx) body…)
+```
+
+- `error-value` — a `deferror` constant; the handler fires only on this error.
+- `repair-type` — the value type `T` of the `!T` function being repaired.
+  Declared explicitly because the handler may be active across many sites
+  returning different `T`s, and the compiler needs the type at the `err` site
+  to make the match sound and to wrap `(ok v)` correctly.
+- `handler-fn` — a function `(fn (Maybe repair-type) (ptr ptr))` taking `(ctx
+  detail)` and returning `(Maybe repair-type)`. Return `(some v)` to repair;
+  return `none` to decline (the error propagates).
+- `ctx` — an arbitrary `ptr` forwarded to every call of `handler-fn`.
+
+**Handler keying.** A handler matches only when **both** the error id and the
+site's repair type `T` agree. A handler bound for `(config-missing, Config)`
+fires at `!Config` sites and is invisible to a `!FILE` site raising the same
+error. The type key is the type's mangled-name string (pointer-compare with
+`strcmp` fallback, separate-compilation-safe).
+
+**Semantics.**
+
+- *Origin-only, once.* Handlers run at the `(err E)` site, never at `(try …)`
+  propagation. `try` re-returns via `err!`, so propagation never re-checks
+  handlers.
+- *CL unbind rule.* While a handler executes, the chain is rewound past that
+  handler. An error raised inside a handler finds only outer handlers — no
+  self-match, no infinite recursion.
+- *Zero happy-path cost.* The handler check sits only on the `(err E)` return
+  path. Programs that bind no handlers pay one global pointer load and null
+  compare per `err` return, on the error path only. `err!` costs nothing extra.
+
+**Gating.** The handler machinery lives in `lib/error.nuc`. Without
+`(import error)`, `(err E)` behaves like `(err! E)` — the check is never
+emitted. `try`, `with-handler`, `Handler`, and `err-find-handler` all require
+the import.
+
+**v1 limitation.** Handler repair types must be value types. A repair type that
+is a `(ref X)` (i.e. a `(Maybe (ref X))`-shaped return from the handler fn) is
+not supported in v1.
+
+**Example** (see also `examples/handlers.nuc`):
+
+```lisp
+(include stdio)
+(import error)
+
+(deferror config-missing "config file not found")
+
+; A fallible function. (err config-missing) consults bound handlers first.
+; err! would bypass them unconditionally.
+(defn load-num:!i64 (n:i64)
+  (when (= n (cast i64 0))
+    (return (err config-missing)))    ; handler may repair → (ok v)
+  (return (ok (* n (cast i64 10)))))
+
+; A repairing handler: (some v) repairs, none declines.
+(defn (repair-from-ctx (Maybe i64)) (ctx:ptr detail:ptr)
+  (return (some (deref (cast ptr:i64 ctx)))))
+
+(defn main:i32 ()
+  ; No handler bound: (err config-missing) returns the error value.
+  (match (load-num (cast i64 0))
+    ((ok v)  (printf "ok %lld\n" v))
+    ((err e) (printf "err: %s\n" (err-name e))))
+
+  ; Repairing handler bound for (config-missing, i64): err → (ok 777).
+  (let (fixed:i64 (cast i64 777))
+    (with-handler (config-missing i64 repair-from-ctx (cast ptr (addr-of fixed)))
+      (match (load-num (cast i64 0))
+        ((ok v)  (printf "repaired: %lld\n" v))   ; prints: repaired: 777
+        ((err e) (printf "err: %s\n" (err-name e))))))
+  0)
+```
 
 ## Standard Macros (`lib/macros.nuc`)
 
