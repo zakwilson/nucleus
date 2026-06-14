@@ -15,7 +15,7 @@ REPL_SHIM_O  := $(BUILD)/repl_shim.o
 
 $(BIN): src/nucleusc.nuc src/repl.nuc src/cheader.nuc $(REPL_SHIM_O) | $(BUILD) ensure-boot
 	$(BOOT) --emit-llvm src/nucleusc.nuc > $(BUILD)/nucleusc.ll
-	clang $(BUILD)/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl -rdynamic -O3 -o $@
+	clang $(BUILD)/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl -rdynamic -ffast-math -march=native -O3 -o $@
 
 $(REPL_SHIM_O): src/repl_shim.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -34,7 +34,7 @@ ensure-boot: $(REPL_SHIM_O) | $(BUILD)
 
 # Force-rebuild the bootstrap binary from the committed IR (boot/nucleusc.ll).
 boot-binary: $(REPL_SHIM_O) | $(BUILD)
-	clang boot/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl -rdynamic -O3 -o bin/nucleusc
+	clang boot/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl -rdynamic -ffast-math -march=native -O3 -o bin/nucleusc
 
 test: $(BIN)
 	./tests/run-tests.sh
@@ -52,7 +52,7 @@ layout-test: $(BIN)
 bootstrap: $(BIN) | $(BUILD)/out
 	@echo "=== Stage 2: self-hosted compiler -> nucleusc.nuc ==="
 	$(BIN) --emit-llvm src/nucleusc.nuc > $(BUILD)/stage2.ll
-	clang $(BUILD)/stage2.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl -rdynamic -O3 -o $(BUILD)/nucleusc-stage2
+	clang $(BUILD)/stage2.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl -rdynamic -ffast-math -march=native -ffast-math -march=native -O3 -o $(BUILD)/nucleusc-stage2
 	@echo "=== Fixed-point test ==="
 	diff $(BUILD)/nucleusc.ll $(BUILD)/stage2.ll
 	@echo "PASS: stage1.ll == stage2.ll"
