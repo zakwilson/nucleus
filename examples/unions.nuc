@@ -37,10 +37,9 @@
 
 ; A parameterized defunion declares a template; (Result i64 i32) stamps and
 ; memoizes the concrete instance. In return position, bare (ok v) / (err e)
-; resolve against the declared return type (unions.md §5c target typing).
-(defunion (Result T E)
-  (ok  v:T)
-  (err e:E))
+; resolve against the declared return type (unions.md §5c target typing). The
+; (Result T E) template now lives in the prelude (design/stage10/errors.md §9),
+; so it is available here without a local definition.
 
 (defn (try-div (Result i64 i32)) (a:i64 b:i64)
   (when (= b (cast i64 0))

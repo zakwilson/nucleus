@@ -1,0 +1,73 @@
+; Stage 10 error handling — library half (design/stage10/errors.md §4, §11).
+;
+; `try` propagates a `!T` (`(Result T Err)`): on `ok` yields the value, on `err`
+; re-returns the error from the enclosing function via `err!` (the
+; handler-bypassing opt-out), so propagation never re-runs handlers (§11.3).
+;
+; `with-handler` binds a dynamically-scoped handler keyed on (error, repair-type)
+; (§11.2). Returning `(err E)` from a `!T` function consults bound handlers
+; first (compiler-emitted at the err site); if one repairs with `(some v)`, the
+; function returns `(ok v)` instead. `err!` bypasses the chain. The repair type
+; is declared explicitly and the handler fn must return `(Maybe repair-type)`,
+; `none` declining.
+;
+; The compiler half — `Err`, `deferror`, `!T`, `err`/`err!`, `match`, `unwrap`,
+; the handler-chain check, and `type-token` — is built in. Only this library
+; (`try`, `Handler`, the chain global, the find-walk, `with-handler`) needs
+; `(import error)`.
+
+(include string)
+
+(defmacro try (r)
+  (let (v:ptr (gensym)
+        e:ptr (gensym))
+    `(match ~r
+       ((ok ~v) ~v)
+       ((err ~e) (return (err! ~e))))))
+
+; A bound handler: condition identity + repair-type token + a type-erased fn
+; pointer and context, linked into the chain. Stack-allocated in the binding
+; frame by `with-handler`.
+(defstruct Handler
+  what:Err          ; condition identity (a deferror value)
+  rty:ptr           ; repair-type token (mangled-name string from type-token)
+  hfn:ptr           ; type-erased handler fn pointer: (fn (Maybe T) (ptr ptr))
+  ctx:ptr
+  prev:ptr)         ; previous chain top (a Handler*), or null
+
+(defvar g-handler-top:ptr null)
+
+; Innermost handler matching both the error id and the repair-type token, or
+; null. Token compare is pointer-identity first (interned), strcmp as the
+; separate-compilation-safe fallback (§11.2). Called from the compiler-emitted
+; err site; the typed call + (ok v) re-wrap stay in the compiler.
+(defn err-find-handler:ptr (eid:Err token:ptr)
+  (let (h:ptr g-handler-top)
+    (while (!= h null)
+      (let (hh:ptr:Handler (cast ptr:Handler h))
+        (when (and (= (hh what) eid)
+                   (or (= (hh rty) token)
+                       (= (strcmp (hh rty) token) (cast i32 0))))
+          (return h))
+        (set! h (hh prev))))
+    (return null)))
+
+; (with-handler (error-value repair-type handler-fn ctx) body…)
+; Stack-allocate a Handler, link it, run body, and unlink on scope exit (the
+; `defer` makes the pop reliable across early returns). The repair type is
+; declared explicitly and mangled to its token by the `type-token` builtin, so
+; it matches the token the err site computes for its own T.
+(defmacro with-handler (spec &rest body)
+  (let (h:ptr (gensym))
+    ; List binding form `(~h (ptr Handler))`, not `~h:ptr:Handler`: the reader
+    ; tokenizes a colon-typed gensym binding as one symbol and the type is lost
+    ; (context/macros-jit.md). The body uses ~h only in value position.
+    `(let ((~h (ptr Handler)) (alloca Handler))
+       (.set! ~h what ~(node-at spec 0))
+       (.set! ~h rty (type-token ~(node-at spec 1)))
+       (.set! ~h hfn (cast ptr ~(node-at spec 2)))
+       (.set! ~h ctx ~(node-at spec 3))
+       (.set! ~h prev g-handler-top)
+       (set! g-handler-top (cast ptr ~h))
+       (defer (set! g-handler-top (~h prev)))
+       ~@body)))

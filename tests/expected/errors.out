@@ -1,0 +1,8 @@
+ok 42
+err config-missing: config file not found
+err parse-failed: could not parse value
+ok 42
+err config-missing: config file not found
+unwrap 7
+unwrap-or ok  9
+unwrap-or err 99

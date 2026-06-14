@@ -102,7 +102,7 @@
           (return (e node))))
       (set! j (bit-and (+ j (cast i64 1)) mask)))))
 
-(defn node-at:?Node (n:ptr i:i32)
+(defn node-at:?ptr:Node (n:ptr i:i32)
   (let (nn:ptr:Node (cast ptr:Node n))
     (while (and (and (!= n null) (= (nn kind) NODE-CELL)) (> i 0))
       (set! n (nn cdr))

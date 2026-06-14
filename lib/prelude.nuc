@@ -22,6 +22,23 @@
 
 (import macros)
 
+; Stage 10 errors (design/stage10/errors.md §9): the generic Result template,
+; always available so the `!T` sugar — `(Result T Err)` — works in any program.
+; A template registers no type and emits no IR until a use stamps a concrete
+; instance, so this is byte-identical for programs that never use errors.
+(defunion (Result T E)
+  (ok  v:T)
+  (err e:E))
+
+; Value Maybe (design/stage10/errors.md §10): (Maybe T) over a non-pointer T
+; stamps this two-arm {tag, T} union; (Maybe (ref T)) keeps the niche-encoded
+; pointer (a parser special case). Eliminated with `match`, built with `make`
+; or return-position target typing. The pointer relabels some/none/as-ref and
+; if-some/when-some/unwrap stay pointer-only in v1.
+(defunion (Maybe T)
+  (some v:T)
+  none)
+
 ; Brings in alloc-node, make-cell, and intern-symbol — needed by any
 ; program that uses 'X or `(...) so that quoted symbols share identity
 ; with reader-produced ones. Imported after macros because node.nuc

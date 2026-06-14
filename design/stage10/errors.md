@@ -439,3 +439,449 @@ error ids are one global set (Zig) or per-set declarations; composition with
 `?T` (is `!?T` — "error, or none, or value" — allowed, as in Zig?); the
 error-context answer (§2, weak spot 1); and the documented C-side encoding
 contract for exported `!T` functions.
+
+
+#### Designer
+
+* With unions done, A1 should be unblocked. It's more general than A2 and avoids the weak spot, so it's my preferred version. A2 is deferred as a possible future optimization to use in special cases.
+* `!` is good sugar here, and `!?` and `?!` should be allowed. They're useful, and having the interrobang as syntax is amusing.
+* Error IDs are one global set. After we have namespaces, they should get namespaced.
+
+I ilke C-lite a lot in concept, but the machinery at the error site is verbose and requires a deliberate opt-in. It would be more ergonomic and flexible if trying to return an error value checked for bound handlers and used them by default with an opt-out `err!` to bypass them and return the error value unconditionally. The default leaves it up to the caller whether to let an error propagate or handle it where it occurs.
+
+The example then becomes
+
+```lisp
+(defn read-config:!Config (path:ptr)
+  (let (raw:ptr (fopen path "r"))
+    (when (= raw null)
+      (return (err config-missing)))
+    (return (parse-config (cast ref:FILE raw)))))
+```
+
+and a call with a handler bound to `config-missing` will try that handler before returning an error value.
+
+This does mean the two mechanisms become complected a bit more than the original proposal, and C-lite probably can't stand alone as a library. 
+
+#### Robot — response
+
+Decisions recorded: **A1 is the version built** ([unions.md](unions.md) U1–U3
+landed, so the gate is open); A2 is deferred alongside U4's niche layout as a
+future optimization; `!` sugar adopted, `!?` and `?!` both legal; error ids
+are one global set, namespaced when namespaces exist. The C-lite revision —
+handler check as the *default* meaning of returning an error, `err!` as the
+opt-out — is worked through in §11. It contains one genuine design problem
+(typing the repair value, §11.2) whose proposed resolution shapes the
+`with-handler` surface, so §13 ends with the rulings needed before
+implementation. Sections continue the survey's numbering.
+
+## 8. The vocabulary: `Err` and `deferror`
+
+- **`Err` is a distinct scalar type, represented as `i32`.** Distinct (a
+  builtin named type, not an alias) so target typing, `with-handler`, and
+  U4's eventual rule-3 niche detection can key on it; `i32` so it is
+  C-legible. Id 0 is reserved as "no error"; ids are assigned densely from 1
+  in definition order.
+- `(deferror config-missing "config file not found")` binds `config-missing`
+  as a compile-time `Err` constant and registers `{id, name, message}` in a
+  static descriptor table emitted into the binary. `err-name` / `err-message`
+  are library accessors over the table; `unwrap` and the panic tier print
+  through them.
+- **Id cap 4095.** `deferror` dies past 4095 definitions. Free now, and it
+  keeps every id inside the top-page range A2's ERR_PTR encoding needs, so
+  the U4 rule-3 niche (`(Result (ref T) Err)` → tagged pointer) stays a pure
+  layout optimization later — no renumbering, no semantic change.
+- **Namespacing (per the directive).** When namespaces land, the *names*
+  namespace like any global; the id space stays program-global and dense (it
+  indexes the descriptor table and, post-U4, the niche range). Ids are
+  assigned per program build and are not stable across builds — the name is
+  the contract, the id is the representation. (Separately-compiled-and-linked
+  Nucleus libraries would need link-time id reconciliation; out of scope
+  pre-release.)
+- **C export.** Constants as an enum/#defines plus the accessor
+  declarations; an error crossing to C is an int with a documented meaning.
+
+## 9. `!T` and the composition sugar
+
+`(defunion (Result T E) (ok v:T) (err e:E))` moves from examples/unions.nuc
+into the prelude. The sugar:
+
+| Spelling | Expansion | Reading |
+|---|---|---|
+| `!T` | `(Result T Err)` | fallible value — T as written, by value for structs |
+| `!?T` | `(Result (Maybe (ref T)) Err)` | error, or none, or value |
+| `?!T` | `(Maybe (Result T Err))` | a fallible result that may be absent (§10) |
+| `?T` | `(Maybe (ref T))` | unchanged |
+
+Like `?`, `!` is recognized only in type-parsing positions
+(`parse-type-name` recursion past the prefix char, exactly the `?`
+mechanism), so there is no collision with `!=` — `!=` never occurs where a
+type is parsed. The sugar is not just brevity: `name:(Result Config Err)`
+does not parse (the U3 limitation on parenthesized types in colon
+positions), while `name:!Config` does, so `!T` is what makes Result returns
+usable in ordinary signatures.
+
+One deliberate asymmetry, flagged for sign-off (§13): `?T` injects `(ref …)`
+(its historical pointer-only meaning) while `!T` takes T as written — A1's
+point is arbitrary payloads, so `!i64` must be `(Result i64 Err)`.
+Consequently the composed `?!T` reads `?` as plain `(Maybe …)` over the
+Result *value*, not as a pointer — the only sensible reading, since the
+operand is already a complete value type. Long forms remain available; `!`
+over a parenthesized payload (an error union over `(ref FILE)`, say) has no
+sugar and is written `(Result (ref FILE) Err)`.
+
+Surface forms — most already exist via U2/U3:
+
+| Form | Status |
+|---|---|
+| `(ok v)` / `(err E)` in return position | U3 target typing, exists; `err` gains handler semantics in §11 |
+| `(make (Result … Err) ok v)` | exists — the explicit spelling for non-return positions |
+| `(err! E)` | new: unconditional error return, no handler check |
+| `(try r)` | new — **a library macro**, expansion below |
+| `match` | exists; the eliminator — no separate `if-ok` proposed (§13) |
+| `(unwrap r)` / `(unwrap-or r d)` | extend the existing compiler forms to Result operands; `unwrap` dies printing `err-name`/`err-message` |
+
+`try` needs no compiler support. Verified against `emit-cond` /
+`emit-match-clauses`: a terminated clause contributes nothing to the join
+phi, so a match whose err arm returns yields the ok arm's type:
+
+```lisp
+(defmacro try (r)
+  (let (v (gensym) e (gensym))
+    `(match ,r
+       ((ok ,v) ,v)
+       ((err ,e) (return (err! ,e))))))
+```
+
+The `(err! ,e)` re-wrap target-types against the *enclosing* function's
+declared return, which is what lets `(try …)` cross from `!Config` into
+`!App` — and is also why propagation never re-runs handlers (§11.3).
+`(try r)` over a `!?T` yields `?T`, composing with the N1 narrowing forms
+unchanged.
+
+A2's `errdefer` is dropped from v1 — `defer` plus an explicit error path has
+covered every case so far; reintroduce if adoption (E4) finds the pattern.
+
+## 10. `(Maybe T)` over values — the gate `?!T` opens
+
+nullability.md §1 deferred non-pointer `Maybe` to sum types; sum types exist
+now. The prelude gains a `(defunion (Maybe T) (some v:T) none)`-shaped
+template, and the parser's rejection of `(Maybe non-pointer)`
+(src/nucleusc.nuc:1943) becomes a template stamp:
+
+- `(Maybe (ref T))` keeps the N1 niche-encoded pointer — a parser special
+  case until U4 makes it a layout rule;
+- `(Maybe T)` for any other T stamps the two-arm `{tag, T}` union.
+
+One spelling, two layouts — the convergence unions.md §6 anticipated; this
+brings the spelling forward while the layout unification stays U4.
+
+Scope is deliberately minimal: value-Maybe is eliminated with `match` and
+constructed with `make` (or return-position target typing, where the
+declared return type disambiguates `(some v)`/`none` from the pointer
+relabels). The pointer forms — `if-some`/`when-some`/`unwrap`/`unwrap-or`,
+`some`/`none` coercion outside return position — stay pointer-only in v1.
+Beyond `?!T`, value-Maybe is the **decline channel for handlers**: a handler
+returns `(Maybe T)`, `none` meaning "declined", which no longer needs a
+reserved null and so lifts §4's "a repair may not itself be null"
+restriction.
+
+## 11. Handler-aware `err` — the complected redesign
+
+Per the directive: returning an error checks bound handlers by default;
+`err!` bypasses. The reading rule for the two spellings: **`err` means "give
+up, unless someone above repairs"; `err!` means "give up."**
+
+**11.1 Where the check attaches.** The check compiles in at exactly the
+positions where return-position target typing already fires (U3): `(return
+(err E))` and the implicit-return tail. There, `(err E)` means: find a
+willing handler; if one repairs with `v`, the function returns `(ok v)`;
+otherwise it returns the error value. In any other position `err` (or
+`(make … err …)`, anywhere) is a bare constructor — a stored Result is data;
+the negotiation happens only when a function *gives up*. The check is
+emitted only when the error arm's type is `Err` — `!T`-shaped returns;
+custom `(Result T MyErrStruct)` instances are plain unions with no implicit
+machinery.
+
+**11.2 The repair-typing problem and its resolution.** The repair becomes
+the function's ok value, so a handler must produce the `T` of whichever `!T`
+function it fires in — but binding is dynamic and `T` varies per site, since
+the vocabulary is global (the same `parse-failed` returns from many
+functions). Resolution: **handlers are keyed on the pair (error, repair
+type)**. `with-handler` records the condition *and* a type token for the
+repair type, read off the handler fn's declared return `(Maybe T)`; an err
+site walks the chain matching its error id *and its own `T`*; only on a
+double match is the stored fn pointer cast to `(fn (Maybe T) (ptr ptr))` and
+called — the match is what makes the cast sound, without RTTI. The token is
+the type's mangled-name string (pointer compare with strcmp fallback —
+separate-compilation-safe). Handler returns ride the stage-8 struct ABI and
+inherit its platform coverage. Consequence, stated as a feature: a handler
+bound for `(config-missing, Config)` fires at `!Config` sites and is
+invisible to a `!FILE` site returning the same error — which is what makes a
+single global error set workable at all.
+
+**11.3 Origin-only, once.** Handlers run where the error is constructed and
+returned — the `err` site — not at propagation: `try` re-returns through
+`err!`. One negotiation per fault, at the frame nearest the fault that has
+the typed context; repeating the offer at every propagation frame would
+re-ask the same question at ever-wronger types.
+
+**11.4 The library/compiler split.** §4's pure library splits in two. The
+`Handler` record `{what:Err, rty:ptr, hfn, ctx, prev}`, the chain global,
+and the find-walk stay a small library (lib/error.nuc); `with-handler` is
+the §4 macro unchanged (stack-allocate, link, `defer` the unlink) plus the
+type token. But the **call side is compiler-emitted** at err sites — it
+needs the site's `T` for the match, the cast, and the `(ok v)` re-wrap. The
+CL unbind rule is kept: the emitted call saves/restores the chain top around
+the handler, so an error inside a handler finds outer handlers only.
+
+**11.5 `detail`.** `(err E detail)` — optional second argument, `ptr`,
+passed to handlers and then dropped, never stored in the error value. This
+recovers the context the explicit `signal` carried (the example above
+dropped `path`; with this it is `(err config-missing path)`), under §4's
+ownership convention: borrowed for the call.
+
+**11.6 What the complecting costs, honestly.**
+
+- **Resumption granularity moves from fault site to function boundary.**
+  §4's handler repaired the *cause* (an alternate FILE handle; parsing
+  continues); this design's handler supplies the *result* (a whole Config).
+  Where fault-site granularity matters, factor the negotiable operation into
+  its own `!`-returning function — an `(open-config (Result (ref FILE) Err))`
+  whose handler supplies the handle — and the typing is automatic. The
+  factoring pressure is real, but it points where the code should go anyway.
+- **The standalone-policy shape is lost.** §4's arena case — `arena-grow`
+  signaling `out-of-memory` and *continuing in place* with the repaired
+  block, no error return anywhere — has no expression here unless the grow
+  path itself becomes `!`-returning. If a use case demands
+  signal-without-return, `signal` can be re-exposed over the same chain (the
+  library half is unchanged); v1 does not provide it.
+- **C-lite no longer stands alone**, as the directive anticipates: check
+  emission, target typing, and the `Err`/`Result` types tie it to the
+  compiler. The chain mechanics remain C-safe — handler invocation is still
+  an ordinary call, and signaling across intervening C frames still works
+  when the erring function is Nucleus.
+- **Readability.** An `(err E)` return can now succeed. The site still reads
+  linearly (the negotiation is at the `return`, not hidden in callees), but
+  `err` no longer literally means "this function returns an error here" —
+  hence the reading rule at the top of §11, and `err!` where the
+  unconditional meaning is wanted.
+- **Cost audit.** Happy path: zero — the check sits on the err return path
+  only. Programs that never bind handlers: one global load + null compare
+  per checked err return, on the error path. `err!` recovers exact zero.
+  Bind/walk costs are confined to users, as before. This satisfies the
+  zero-mandatory-cost invariant in spirit; the letter is one branch on a
+  path already constructing a tagged struct.
+
+**11.7 C interop of `!T` itself.** A `!T` crossing to C is the U2 tagged
+struct plus the `Err` constants — fully legible. The known U3 gap applies:
+`--emit-cheader` skips functions whose signatures mention template
+instances, so exported `!T` functions need the instance-naming fix (e.g.
+`nuc_Result_Config_Err`) before C callers get prototypes. Tracked under E4
+if the exported surface adopts `!T`; otherwise it stays deferred with the
+rest of the U3 note.
+
+## 12. Staging
+
+Each phase independently shippable, bootstrap byte-identical until a phase
+deliberately converts code — the standing discipline.
+
+| Phase | Content | Bootstrap |
+|---|---|---|
+| **E1** | `Err` + `deferror` + descriptor table + `err-name`/`err-message`; prelude `Result`; `!T`/`!?T` sugar; `try` macro; `unwrap`/`unwrap-or` over Result. No handlers yet, so `err` has no check to make. | byte-identical until something adopts `!T` |
+| **E2** | Value-Maybe: `(Maybe T)` over non-pointers as a prelude template stamp; `?!T` sugar. | byte-identical |
+| **E3** | Handler chain library + `with-handler` + compiler-emitted check at err returns + `err!`. From here `err` ≠ `err!`. | byte-identical until a handler exists |
+| **E4** | Adoption: convert `die-at` sites in library-ish code (reader, coercion) to `!T` per §7.2 — the REPL's `repl_throw` boundary shrinks to true panics; cheader instance naming if the exported surface needs it. | byte-identical per step |
+| *(later)* | Namespaced error names (post-namespaces); A2 via U4 niche layout — `(Result (ref T) Err)` becomes pointer-sized; §8's id cap already reserved the range. | — |
+
+## 13. Open questions for the designer
+
+1. **The `?` asymmetry (§9):** `?T` injects `(ref …)`; `?!T` reads `?` as
+   value-Maybe over the Result. Accept as documented, or re-spell `?` as
+   plain `(Maybe T)` uniformly at the safety flip (breaking, but the flip is
+   already the breaking moment)?
+2. **(error, repair-type)-keyed handlers (§11.2):** confirm — it makes the
+   handler fn's declared return type load-bearing in `with-handler`, and
+   gives the "same error, different sites, different handlers" behavior.
+3. **`(err E detail)`** — optional transient detail pointer: in?
+4. **`if-ok`:** proposal is *not* to provide it; `match` is the eliminator
+   and is already two-arms-short. Object if the §2 table's spelling is
+   wanted anyway.
+5. **`errdefer`:** dropped from v1, reintroduced on demand — agreed?
+6. **Standalone `signal`** (policy points with no error return — the
+   arena-OOM shape): omitted from v1, recoverable later over the same chain —
+   agreed?
+7. **Id cap 4095** to keep A2's encoding reachable — agreed?
+
+#### Designer
+
+1. Add the safety flip to this pass and avoid the issue.
+
+2. That's fine for now. I'm considering adding `dyn` to improve this, which would add cost to use, but calling error handlers shouldn't usually be on the hot path.
+
+3. Yes, optional transient detail pointer.
+
+4. `match` is good here.
+
+5. Yes.
+
+6. Omit `signal` for now.
+
+7. The cap is fine for now.
+
+#### Robot — implementation status
+
+**E1 landed** (`make test` 69/69, `make bootstrap` fixed point holds). The build
+spec is [errors-prompt.md](errors-prompt.md); status detail also lives in
+[../progress.md](../progress.md) (stage 10 errors table); user-facing docs in
+docs/builtins.md §"Error handling"; runtime coverage in `examples/errors.nuc`.
+Implementation notes:
+
+- **`Err` is a new type kind `TY-ERR`**, lowering to `i32` everywhere
+  (`type-to-ir`/`type-size`/`is-int-type`/`int-width`/`abi-classify` treat it as
+  a 4-byte signed int) but distinct under `type-eq` and mangling (`"Err"`), so a
+  `(Result T Err)` is distinguishable from `(Result T i32)` for the E3 handler
+  check. `Err`↔`i32` coerce freely in value positions (the `is-int-type` path),
+  like `CStr`↔`ptr`.
+- **`deferror` descriptor table.** Ids are dense from 1 (slot 0 reserved). The
+  compiler accumulates `{name-sid, msg-sid}` and emits two `[N+1 x ptr]` arrays
+  (`@nuc_err_names`/`@nuc_err_messages`) of `@.str` pointers at module assembly,
+  **only when at least one deferror exists or an accessor is used** — so
+  error-free programs (the compiler's own bootstrap included) are byte-identical.
+- **`err-name`/`err-message` are compiler intrinsics, not library functions** —
+  a deliberate deviation from §8's "library accessors". The build model makes a
+  genuine library accessor impossible without friction: the table is emitted
+  *conditionally* into the program module, but a `lib/error.nuc` accessor
+  referencing it would need either an `extern` declaration (which collides with
+  the in-module definition — verified: LLVM rejects decl+def of the same global)
+  or an undeclared reference (also rejected). The intrinsic GEPs the table by
+  element type, so it needs no length at the call site. Revisit if E3/E4 wants a
+  first-class accessor (e.g. pass a base-pointer intrinsic to a library walker).
+- **`unwrap` on a `Result`** branches on the tag: `ok` yields the payload; `err`
+  prints `nucleus: unwrap on error <name>: <message>` via `printf` (required in
+  scope — `(include stdio)`), `fflush`es, then `@llvm.trap`s. `unwrap-or` phis
+  the `ok` payload against the default. The message goes to **stdout** for now
+  (avoids the `@stderr` global-dedup problem); revisit with the panic-tier hook.
+- **`!T` / signatures.** The `!` sugar in `parse-type-name` stamps
+  `(Result <inner> Err)` from the prelude template, taking the payload as
+  written. For `!T` to work in `defn` signatures (its whole point), the toplevel
+  signature prescan had to see the prelude's `Result` — so **friction finding 2
+  (prelude types in signatures) was pulled forward**: `prescan-imported-types`
+  walks the import tree depth-first and registers imported struct names + union
+  templates (names only, idempotent, no IR) before `prescan-defn-signatures`.
+  This keeps the bootstrap byte-identical (verified) and also unblocks
+  `ref:Node`/`?Node` in compiler signatures for the eventual flip.
+- **`err!`** is handled in `union-target-rewrite` as the `err` arm with its `!`
+  stripped (E1 has no handlers, so `err` == `err!`); E3 will split them by
+  emitting the handler-chain check at the `err` site. `(err E detail)` is
+  deferred to E3 (E1 takes the err arm's single `Err` field exactly).
+
+**E2 landed** (`make test` 70/70, fixed point holds; `examples/value-maybe.nuc`):
+
+- Prelude gains `(defunion (Maybe T) (some v:T) none)`. The parser's `(Maybe X)`
+  block now dispatches on the payload: `(Maybe (ref T))` keeps the niche pointer
+  (PTR-MAYBE in place), any other `X` stamps the value template (so the generic
+  template-use path is told to skip `Maybe`). One spelling, two layouts.
+- Value-Maybe is built with `make` / return-position target typing — `(some v)`
+  rewrites like any arm, and **bare `none`** is special-cased in
+  `union-target-rewrite` (it is a reserved keyword, never a user variable, so it
+  can't shadow a binding; a niche-pointer return still gets the relabel because
+  `uniondef-for-type` returns null for a TY-PTR). Eliminated with `match`.
+- `?!T` is a dedicated prefix in `parse-type-name` (checked before plain `?`):
+  it reads `?` as a *value* Maybe over the `!T` Result, per §10's "operand is a
+  complete value type". `?Sym`-style niche pointers are untouched (they never
+  begin `?!`). The pointer relabels (`some`/`none`/`as-ref`, `if-some`/etc.)
+  remain pointer-only.
+
+**E3 landed** (`make test` 71/71, fixed point holds, bootstrap byte-identical;
+`examples/handlers.nuc`). What was built and the deviations:
+
+- **Compiler half = one internal special form.** `union-target-rewrite` is the
+  single chokepoint for both explicit `(return …)` and the implicit tail. When
+  the returned form is a non-bang `(err E [detail])`, the enclosing return type
+  is an `!T` (the `err` arm's single payload field has kind `TY-ERR` —
+  `result-err-arm-is-err`), **and** the error library is in scope
+  (`error-lib-in-scope`: `g-handler-top` + `err-find-handler` + the `Handler`
+  struct all resolve), it rewrites to `(__err-handled E [detail])`. Otherwise
+  `err` keeps the plain `(make … err …)` construct — identical to `err!`. The
+  rewrite stays a pure node→node function; all IR is emitted by the new
+  `emit-__err-handled` special form, where `scope` is available.
+- **The negotiation (§11.1–§11.5)** is a value-expression of type
+  `(Result T Err)`, `T = result-ok-type`. It builds `(err E)` **once** into a
+  result alloca slot as the default (no handler / declined), then
+  `h = err-find-handler(E, type-token(T))`; on a non-null `h` it applies the CL
+  unbind rule (save `g-handler-top`, set it to `h->prev`), calls the handler,
+  restores `g-handler-top`, and on `(some v)` overwrites the slot with `(ok v)`.
+  The slot-default avoids a struct phi and re-evaluating side effects per path
+  (E is a `deferror` compile-time constant in every real use, so building the
+  err arm and passing E to the find-walk evaluates it twice harmlessly).
+  Re-uses `emit-union-construct` for both `(ok v)` and `(err E)` (no synthesized
+  `(Result T Err)` type node needed); `detail` is borrowed for the call and
+  never stored.
+- **The handler call rides the Stage-8 struct-return ABI** via
+  `abi-emit-struct-call` (callee is the loaded `hfn` SSA value, arglist
+  `"ptr %ctx, ptr %detail"`, `info = abi-classify((Maybe T))`), **not**
+  `emit-funcall-value` — the latter emits an *uncoerced* struct-return call that
+  mismatches the handler `defn`'s coerced `(Maybe T)` return. `(Maybe T)` is
+  stamped in-compiler via `union-template-stamp-types` on the prelude `Maybe`
+  template (`stamp-maybe-type`); the result is matched by reading its tag and
+  loading the `some` payload. Limitation: a repair type that is itself a
+  `(ref X)` (niche-encoded `(Maybe (ref X))`, a plain ptr not a struct) is not
+  supported by the struct-call path — v1 repair types are value types.
+- **Gating preserves byte-identical bootstrap.** The compiler imports no `error`
+  and has no `err` sites, so `error-lib-in-scope` is false during self-compile
+  and the rewrite never fires — stage1.ll == stage2.ll verified. `err` gains
+  handler-awareness exactly when `(import error)` is present;
+  `examples/errors.nuc` (imports error, binds no handler) is unchanged because
+  `err-find-handler` returns null and the default `(err E)` stands.
+- **Three incidental fixes the library half needed to actually run** (E1
+  committed the `lib/error.nuc` macros before the compiler support, so they were
+  dead/broken):
+  1. **Macro/CT JIT modules now re-declare the ordinary program `defn`s a macro
+     body calls** (e.g. `node-at` in `with-handler`). Such functions are
+     `define`d only in the main module; the JIT module needs a local `declare`
+     to resolve the symbol from the `-rdynamic` host binary. `emit-defn` records
+     each main-module defn's signature (`g-program-defns`/`ProgDefn`);
+     `emit-call-with-args` emits the declare into the JIT module's decl stream on
+     first reference (`macro-jit-ensure-decl`, deduped per module). This also
+     lifts the historical "`*Node` macros only work in the compiler" limitation.
+  2. **`with-handler`'s binding spelling** changed from the typed-gensym form
+     `~h:ptr:Handler` (the reader tokenizes a colon-typed gensym as one symbol
+     and the type is lost) to the list form `((~h (ptr Handler)) …)`. Logic
+     unchanged.
+  3. **`(cast ptr <fn>)` / `(cast (fn …) <ptr>)`** are now a no-IR reinterpret
+     in `emit-cast` (a function value is already `ptr` in opaque-pointer IR) —
+     needed to type-erase a handler fn into `Handler.hfn:ptr`. `is-ptr-like` was
+     left unchanged (broad widening would risk the bootstrap); the case is
+     handled narrowly.
+
+**Phase F (the safety flip) landed** (`make test` 71/71, `make bootstrap` fixed
+point, all boot artifacts re-converged). Build plan and the full how is in
+[flip.md](flip.md); status mirrored in [../progress.md](../progress.md),
+[safety.md](safety.md) §5, and [nullability.md](nullability.md) §9.1. Headline:
+
+- **A blocking self-compile crash was fixed first.** The Phase-F1 `noreturn`
+  trailing-attribute probe in the `(declare …)` desugar (and the parallel
+  `emit-nuch-declare-import` / `defn` body-position-0 sites) dereferenced the
+  last node's `kind` without a null guard; an empty param list `()` reads as a
+  null car (`node-at` returns null), so the compiler segfaulted compiling its own
+  `(declare repl_try:i32 ())` — the examples use `include`, not explicit
+  `declare`, which is why the test suite passed while self-compile died. Fixed by
+  null-guarding all three probes. Leftover `TRACE` debug statements from the
+  mid-flip session were removed.
+- **Stage-1 (additive, byte-identical) groundwork:** the `(raw T)` / bare `raw` /
+  `raw:T` spelling (PTR-RAW; new `ty-raw` singleton), colon-strings in
+  `parse-type-name`, `?`/`!` prefixes on list-type heads (so the multi-colon
+  desugar `?ptr:Node` → `(?ptr Node)` parses), and `?` niche-relabeling a pointer
+  operand so `?ptr:Foo` ≡ the old `?Foo` (`TY-PTR(elem=Foo, MAYBE)`).
+- **The flip:** `(ptr T)` / bare typed `ptr` are now non-null (PTR-REF); `null`
+  is `raw`; `?` is uniform `(Maybe T)` (pointer operand → niche `?ptr:T`, value
+  operand → value-`Maybe`). Two refinements keep the flip's teeth on **typed**
+  pointers and avoid thousands of false positives: **CStr is ref-compatible**
+  (string literals are non-null), and an **elem-less `void*` destination is
+  exempt** (a non-null contract on a pointer with no pointee, that cannot be
+  deref'd, protects nothing — the direct analogue of the CStr refinement). With
+  both, the per-site conversion the plan budgeted (~329) collapsed to zero: every
+  violation had a `void*` destination, and N2 had already typed the real
+  pointer slots. `pkind` is ignored by `type-eq`/`hash-type`/mangling/`type-to-ir`,
+  so the flip changed **no** emitted IR — the fixed-point bootstrap is the proof.

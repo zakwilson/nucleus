@@ -1,0 +1,7 @@
+some 4
+none
+some 99
+none
+present ok 5
+present err nope
+absent
