@@ -330,6 +330,82 @@ spelling for instances yet).
 live arm) unless the union itself conforms to `Drop` — write the tag switch
 in its `drop` method with `match`.
 
+### Niche layout and `&repr` (Stage 10 C4)
+
+The layout engine applies four rules in strict order to decide a `defunion`'s
+representation:
+
+| Rule | Arms shape | Layout | C type | Nucleus type |
+|---|---|---|---|---|
+| 1 | All arms payload-less | `i32` tag only (≅ `defenum`) | `int32_t` | direct tag value |
+| 2 | Two arms: one payload-less + one single `(ref T)` field | bare pointer, `null` = payload-less arm | `T*` | `(Maybe (ref T))` / `?ptr:T` |
+| 3 | Two arms: one single `(ref T)` field + one single `Err` field | bare pointer, ERR_PTR encoding | `T*` (reserved top-page range) | `(Result (ref T) Err)` / `!ptr:T` |
+| 4 | Everything else | `{i32 tag; union payload}` tagged struct | tagged struct + enum constants | `(Result T E)`, multi-arm, etc. |
+
+Rules are applied in order; the first that matches wins. Niche rules (2 and 3)
+require the `(ref T)` payload to name a concrete pointee type — an elem-less
+bare `ptr` does not qualify and the union falls through to rule 4.
+
+**ERR_PTR encoding (rule 3).** `(ok p)` stores the `(ref T)` pointer `p`
+directly. `(err E)` encodes the error id as `inttoptr(0 - id)`, placing it in
+the top page of the address space (ids 1–4095, ensured by `deferror`'s cap).
+`is-err` is a single unsigned compare: `ptrtoint(p) >= (0 - 4096)`. A valid
+object address is never in the top page, so the two ranges never overlap. The
+whole niche-ERRPTR value is ABI-identical to a `T*` — no discriminant word, no
+struct wrapper; `sizeof(!ptr:T) == sizeof(T*)`.
+
+**`&repr` attribute.** An optional trailing `&repr mode` in a `defunion` arm
+list overrides the automatic rule selection:
+
+```lisp
+; Force the tagged struct even for two-arm pointer shapes (e.g. when a C
+; consumer constructs the union directly and needs the predictable layout).
+(defunion (MaybeRef T)
+  (some v:(ref T))
+  none
+  &repr tagged)
+
+; Require a niche — compile error if the arms are not nicheable.
+(defunion (Nullable T)
+  (ok  v:(ref T))
+  (err e:Err)
+  &repr niche)
+```
+
+- `&repr tagged` — always produce rule-4 layout regardless of arm shapes.
+- `&repr niche` — require niche layout; die at compile time if the arms do not
+  qualify (error: "arms are not nicheable").
+- No `&repr` marker — automatic: apply rules 1–4 in order.
+
+**All elimination forms are representation-transparent.** `match`, `try`,
+`unwrap`, and `unwrap-or` all accept a niche-layout value and dispatch on the
+correct encoding automatically. User code does not need to know which rule
+applies.
+
+```lisp
+(include stdio)
+(include stdlib)
+(import error)
+(defstruct Pt x:i32 y:i32)
+(deferror not-found "point not found")
+
+; !ptr:Pt is (Result (ref Pt) Err) via rule 3: pointer-sized, no struct.
+(defn lookup:!ptr:Pt (p:ptr:Pt good:i32)
+  (when (= good 0) (return (err not-found)))
+  (return (ok (cast ref:Pt p))))
+
+(defn main:i32 ()
+  (let (pt:ptr:Pt (cast ptr:Pt (malloc (sizeof Pt))))
+    (.set! pt x 42)
+    (match (lookup pt 1)
+      ((ok q)  (printf "ok x=%d\n" (q x)))
+      ((err e) (printf "err: %s\n" (err-name e))))
+    (free pt))
+  0)
+```
+
+See also `examples/errptr.nuc`.
+
 ## Error handling: `Err`, `deferror`, `!T`, handlers (Stage 10)
 
 Recoverable errors are ordinary return values (design/stage10/errors.md). A
@@ -410,9 +486,21 @@ machinery.
   ((err e) (printf "%s: %s\n" (err-name e) (err-message e))))
 ```
 
-A `!T` is C-legible: the U2 tagged struct `{i32 tag; union payload}` plus the
-`Err` id constants; nothing propagates across a function boundary by a mechanism
-C doesn't understand.
+**C layout of `!T`.** The representation depends on the payload:
+
+- `!SomeStruct`, `!i64`, `!f32`, etc. (non-pointer payload) — the tagged
+  struct `{i32 tag; union payload}` plus the `Err` id constants as an enum.
+  Fully legible and constructible from C. `sizeof(!T) == sizeof(Result.T.Err)`.
+- `!ptr:T` (`(Result (ref T) Err)` over a typed pointer, rule 3 niche layout)
+  — a bare `T*` with the ERR_PTR convention: `ok` values are the pointer
+  directly; `err` values occupy the top-page range
+  `[ptrtoint(-4095), ptrtoint(-1)]` (ids 1–4095). C code that understands the
+  ERR_PTR convention can consume it directly. `sizeof(!ptr:T) == sizeof(T*)`.
+  Use `&repr tagged` on the `defunion` to opt out and force the struct layout
+  when a C consumer needs it unconditionally (see [Niche layout and `&repr`](#niche-layout-and-repr-stage-10-c4)).
+
+Nothing propagates across a function boundary by a mechanism C doesn't
+understand.
 
 ### Handler-aware `err` and `with-handler` (E3)
 

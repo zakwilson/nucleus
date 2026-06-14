@@ -34,60 +34,11 @@ as a postfix tag on the storage site. None of this is committed.
 
 ## Stage 10 safety / error-handling deferrals
 
-### U4 + A2 — niche layout and `&repr`
-
-`defunion` and the `Result`/`Maybe` templates currently use a
-`{tag:i32, payload:union}` representation everywhere. Two related
-optimizations are deferred:
-
-- **U4**: a `&repr` annotation letting a `defunion` control its layout
-  (e.g. tag in the high bits of a pointer, flag bits in alignment padding).
-- **A2**: `(Result (ref T) Err)` folded to a tagged pointer — the
-  ERR_PTR niche encoding (ids 1–4095 in the top page, never a valid
-  object address). This makes a `!T` ABI-identical to a raw `T*` at the
-  C boundary, as `?T` already is.
-
-Both need the same layout-rule engine. Error ids are already capped at
-4095 (errors.md §8) to keep the range compatible. Design: errors.md A2,
-unions.md U4.
-
-### E4 — coercion-path adoption of `!T`
-
-The reader pipeline was converted to return `!ptr` (E4 done). The
-remaining `die-at` sites in the coercion path (`coerce-int-val` /
-`coerce-num-val` / `safe-coerce-val` and the `pkind-flow-check` abort in
-`emit-*`) were not converted — the cascade runs deeper into the emitter
-and is a larger change than the reader. Current behavior: a type mismatch
-in the emitter still calls `die-at` and exits (batch) or `repl_throw`s
-(REPL). Revisit when the emitter is more modular.
-
-### N2 remaining cold sites (~25)
-
-The first N2 tranche converted all hot emitters, allocators, and the
-dispatch spine. Remaining un-converted spots:
-
-- defvar/defconst/inc-dec/addr-of emitters
-- gcheck/valid walkers, `repl.nuc`
-- field types beyond `InternEntry.node`
-- `?i8`-shaped string returns (left raw — `?ptr:i8` reads poorly for
-  C-string returns)
-
-None block anything; conversion can proceed incrementally when touching
-those paths.
-
 ### `errdefer`
 
 Dropped from error handling v1 (errors.md §12). The `defer` + explicit
 error-path combination has covered every case so far. Reintroduce if
 adoption finds a pattern that genuinely needs it.
-
-### Standalone `signal` (policy hooks without error return)
-
-The arena-OOM shape — a fault site that signals for a repair value and
-*continues in place* without returning an error — was omitted from v1
-(errors.md §13 Q6). The handler-chain library half is unchanged and
-already supports this; the compiler does not emit a check. Re-expose a
-`signal` function over the same chain if a use case demands it.
 
 ### Handler repair over niche pointers
 
@@ -105,3 +56,9 @@ compiler-enforced `(unsafe …)` boundary. A first-class enforced block is
 left as a future option once the checks have proven out and the raw-op
 cluster sites are known. Arrives alongside namespaces / the `unsafe/`
 namespace (safety.md §1, flip.md "Out of scope").
+
+### `die-at` hook
+
+One implementation-vs-plan deviation it flagged and documented accurately: the cleanup-prompt described C3's panic hook as firing on both die-at and unwrap-on-err. The actual implementation only hooks unwrap (in emit-unwrap-result / emit-unwrap-niche-errptr) — there's no hook on the bare die-at path. This is recorded as-built in the errors.md C3 block rather than papered over.
+
+One thing worth your attention: that C3 deviation means the panic-tier hook is narrower than the prompt's spec — a REPL/test harness binding 'unhandled-error will see unwrap failures but not direct die-at aborts. If you intended die-at to also consult the hook, that's a code gap, not a docs gap. Want me to look into wiring the die-at path too, or is the unwrap-only scope the intended final state?

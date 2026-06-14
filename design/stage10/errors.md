@@ -932,3 +932,83 @@ path)."
   the emit path and cascades through the whole code generator — a larger,
   separate adoption than the reader. The `--emit-cheader` template-instance gap
   (§11.7) is untouched because no *exported* surface adopted `!T`.
+
+**Phase C1 landed (N2 cold-site cleanup, 2026-06-14)** (`make test` 71/71,
+`make bootstrap` fixed point). The ~25 guarded `(cast ptr:Sym (scope-lookup …))`
+nullable-launder casts in cold emitter paths (defvar/defconst/inc-dec/addr-of
+emitters, gcheck/valid walkers, `src/repl.nuc`) were replaced with `?ptr:Sym`
+bindings narrowed by their existing null-guards. Enabled by the Phase-F1
+`noreturn die-at` annotation (now `die-at` is `noreturn`, so `(when (= sym null)
+(die-at …))` narrows past the guard). Two deliberate hold-outs survive, both
+outside the named clusters — the E3 `emit-err-handled` handler-chain lookups
+(`err-find-handler` / `g-handler-top`), which are non-null by the
+`error-lib-in-scope` precondition with no natural use-site guard; the casts there
+are `§5`-audited "known valid" assertions. The legitimate non-lookup casts also
+stay (pointer arithmetic over `(sc syms)` arrays; the `(.set! (cast ptr:Sym fsym)
+noreturn 1)` field-stores). No surface change, no IR change — byte-identical
+bootstrap. Documented as §9 finding 5 in
+[nullability.md](nullability.md).
+
+**Phase C2 landed (standalone `signal`, 2026-06-14)** (`make test` 71/71,
+`make bootstrap` fixed point; `examples/signal.nuc`). Adds a
+compiler-emitted special form `(signal E RepairType [detail])` — the
+§4 / §13-Q6 "standalone policy query" that was explicitly deferred from E3. It
+shares the extracted `emit-handler-call` core with `emit-err-handled`, so the
+chain walk, the CL unbind rule, and the `(Maybe RepairType)` return are all
+identical to the `err` path. Key distinctions from `(err E)`:
+
+- Not tied to return position; may appear anywhere inside a function body.
+- Returns `(Maybe RepairType)` directly (not wrapped in `(ok v)` or discarded).
+- Does not require the enclosing function to return `!T`.
+- `RepairType` is a type-position operand (parsed, not evaluated), identical to
+  `with-handler`'s `type-token` argument.
+
+Requires `(import error)` (hard-gated by `error-lib-in-scope`; a compile error
+if the library is absent). The v1 limitation on value-type repair applies: a
+`(ref X)` niche-pointer `RepairType` cannot be carried by the struct-return ABI
+path.
+
+**Phase C3 landed (panic-tier hook, 2026-06-14)** (`make test` 71/71,
+`make bootstrap` fixed point). `unwrap` on a `Result` (the `emit-unwrap-result`
+panic path) now calls `emit-handler-call(unhandled-error, i32, msg)` — the same
+handler-chain walk `signal` uses — before printing the error message and
+trapping. A handler bound on `unhandled-error` receives the message string
+as `detail` (type `i32` for the repair type, which is discarded: the trap
+happens regardless). Gating: fires only when `error-lib-in-scope` is true *and*
+`unhandled-error` is resolved as a `deferror` constant — so a program without
+`(import error)` or without a `(deferror unhandled-error …)` declaration pays
+nothing (byte-identical). The hook is a no-op when no handler is bound; its
+value (the allocator policy shape from §4) is logging and diagnostics before the
+abort, not prevention of it. The niche-ERRPTR `unwrap` path (`emit-unwrap-niche-errptr`)
+carries the same hook.
+
+**Phase C4 / A2 landed (niche layout engine, 2026-06-14)** (`make test` 71/71,
+`make bootstrap` fixed point; `examples/errptr.nuc`; `tests/layout/` niche gate).
+The U4 niche layout rules from §6 are fully implemented. Concretely:
+
+- **`(Result (ref T) Err)` over a typed payload** (`!ptr:T` in sugar) is
+  `LAYOUT-NICHE-ERRPTR`: pointer-sized, C-ABI-identical to `T*`. The ERR_PTR
+  encoding: `(ok p)` stores `p` directly; `(err E)` emits
+  `inttoptr(0 - zext(id))`, placing the error id in the reserved top page
+  (ids 1..4095, enforced by `deferror`'s cap). `is-err` is one unsigned compare
+  against `0 - 4096`. All elimination forms (`match`, `try`, `unwrap`,
+  `unwrap-or`) accept a niche-ERRPTR value and dispatch through the encoding
+  transparently.
+- **`(Maybe (ref T))`** (rule 2, `LAYOUT-NICHE-MAYBE`) was already the N1
+  niche; C4 unifies it under the same `union-layout-classify` engine so both
+  niche kinds are driven by one decision function.
+- **`&repr tagged`** on a `defunion` forces LAYOUT-TAGGED unconditionally —
+  the `{i32 tag; union payload}` struct, even for arms that would otherwise
+  qualify for a niche. Use it when a C consumer needs the predictable struct
+  layout.
+- **`&repr niche`** requires a niche and emits a compile error if the arms do
+  not qualify (not two arms / no typed `ref` arm). Optional; the layout engine
+  applies niches automatically when arms qualify.
+- **Elem-less `ptr` payloads do not qualify for niche rules 2/3.** This keeps
+  the compiler's own `!ptr` (`(Result ptr Err)` with no `elem`) in
+  LAYOUT-TAGGED, preserving the byte-identical bootstrap.
+- **The §8 id cap (4095)** already reserved the full top-page range the
+  ERRPTR encoding needs; no renumbering or semantic change.
+- Full status in [unions.md](unions.md) robot section and [../progress.md](../progress.md);
+  user-facing documentation in docs/builtins.md §"Unions and tagged sums" (niche
+  layout + `&repr`) and §"Error handling" (pointer-sized `!ptr:T` contract).
