@@ -254,11 +254,13 @@ Implement `match` by-reference binders.
 #### Robot — implementation status
 
 U1–U3 are implemented per the designer's directives (i32 tag, target typing,
-`(ref x)` by-reference binders); U4 niche layout and `:repr` are deferred with
-A2. Status detail lives in [../progress.md](../progress.md) (stage 10 unions
+`(ref x)` by-reference binders). U4 niche layout and `&repr` are also
+implemented (Phase C4, 2026-06-14) — see the **U4 landed** entry below.
+Status detail lives in [../progress.md](../progress.md) (stage 10 unions
 table); user-facing documentation in docs/builtins.md §"Unions and tagged
-sums"; runtime coverage in `examples/unions.nuc`, `tests/repl/unions.in`, and
-union cases in the `tests/layout/` C-oracle corpus. Implementation notes:
+sums" and §"Niche layout and `&repr`"; runtime coverage in
+`examples/unions.nuc`, `examples/errptr.nuc`, `tests/repl/unions.in`, and
+union/niche cases in the `tests/layout/` C-oracle corpus. Implementation notes:
 
 - Target typing rewrites only the **directly returned** form (`(return (ok v))`
   and the implicit-return last form), not `if`/`cond` branches in tail
@@ -275,3 +277,53 @@ union cases in the `tests/layout/` C-oracle corpus. Implementation notes:
   template instances — instances have no C-safe exported spelling yet (the
   mangled name `Result.i64.i32` is not a C identifier). Monomorphic defunions
   export the §3 tagged struct + tag-constant enum.
+
+**U4 landed (C4, 2026-06-14)** (`make test` 71/71, `make bootstrap` fixed point,
+`examples/errptr.nuc`, `tests/layout/` niche gate). The niche layout engine
+is fully implemented; `LAYOUT-ENUM / NICHE-MAYBE / NICHE-ERRPTR / TAGGED`
+constants (`defconst` in nucleusc.nuc) drive all four rules. Implementation
+notes:
+
+- **`union-layout-classify`** is a standalone function that decides the
+  layout in strict rule order, reading the arm table built by
+  `defunion-register` and an explicit `repr` mode parsed from the arm chain.
+  It sets a `niche-elem-out` pointer to the `(ref T)` payload's element type
+  for the niche cases (rules 2/3) so downstream codegen can recover `T`.
+- **`&repr` syntax.** A trailing `&repr tagged` or `&repr niche` in the arm
+  list (stripped by `defunion-strip-repr`) explicitly controls the layout
+  decision: `&repr tagged` forces rule 4 unconditionally; `&repr niche` forces
+  a niche and dies with a compile error if the arms are not nicheable.
+  `REPR-AUTO` (no marker) runs the rules in order.
+- **Rule 1 (LAYOUT-ENUM).** All arms payload-less → the union is just an i32
+  tag (no payload struct or union member emitted). The backing struct
+  `type-to-ir` returns the tag-only struct. `&repr niche` on an all-enum union
+  is a compile error ("an all-payload-less union is an enum, not a niche").
+- **Rules 2/3 require a *typed* `(ref T)` payload** (`arm-is-typed-ref`). An
+  elem-less `ptr` payload does not qualify — this deliberately keeps the
+  reader's `!ptr` (elem-less `(Result ptr Err)`) in LAYOUT-TAGGED, preserving
+  the byte-identical bootstrap.
+- **Rule 2 (LAYOUT-NICHE-MAYBE).** Two arms: one payload-less, one a single
+  `(ref T)` field. `union-instance-type` returns a `TY-PTR` with
+  `pkind = PTR-MAYBE`; `(some p)` stores `p` directly; `none` is `null`.
+  `sizeof` == pointer size; C sees `T*`.
+- **Rule 3 (LAYOUT-NICHE-ERRPTR).** Two arms: one a single `(ref T)` field,
+  one a single `Err` field. `union-instance-type` returns `pkind = PTR-ERRPTR`.
+  `(ok p)` stores `p` directly; `(err E)` emits `inttoptr(0 - zext(E to iptr))`,
+  placing the id in the reserved top page. `is-err` is
+  `icmp uge (ptrtoint p) (0 - 4096)` — one compare with no discriminant.
+  `sizeof` == pointer size; C sees `T*` with the documented ERR_PTR convention.
+  `match` / `try` / `unwrap` / `unwrap-or` all route through this encoding
+  transparently (`emit-match-niche-errptr`, `emit-unwrap-niche-errptr`, etc.).
+- **Niche construction in return position** (`union-target-rewrite`): when the
+  enclosing return type is a niche pointer, bare `(ok v)` / `(err E)` / `(some
+  p)` / `none` are rewritten to `(__niche-ctor arm args…)`, which calls
+  `emit-niche-construct` with the return type as the target.
+- **`niche-layout-of`** (helper) maps a `TY-PTR` with non-AUTO pkind to the
+  corresponding `LAYOUT-*` constant; returns `LAYOUT-TAGGED` for non-niche
+  types. Used as the dispatch predicate across all elimination forms.
+- **Bootstrap invariant.** The elem-less `!ptr` types in the compiler
+  (`Result ptr Err`) have no `elem`, so `arm-is-typed-ref` returns 0 for them
+  and they stay LAYOUT-TAGGED — stage1.ll == stage2.ll holds.
+- **Layout harness extended.** `tests/layout/structs.h` and `tests/layout/layout.nuc`
+  include two niche cases: `sizeof(?ptr:Pt)` and `sizeof(!ptr:Pt)` both == 8;
+  `(some (cast ref:Pt pt))` round-trips `pt` unchanged. Gated into `make test`.

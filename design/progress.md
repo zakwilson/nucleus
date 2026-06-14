@@ -1,6 +1,6 @@
 # Nucleus — Progress Summary
 
-Current branch: `stage10-safety` (Stage 10 errors E1–E4 + safety flip + C4 niche layout)
+Current branch: `stage10-safety` (Stage 10 errors E1–E4 + safety flip + C1–C4 cleanup/niche)
 
 ---
 
@@ -142,6 +142,9 @@ Current branch: `stage10-safety` (Stage 10 errors E1–E4 + safety flip + C4 nic
 | E4: adopt `!T` at `die-at` sites (reader, coercion); shrink REPL `repl_throw` boundary | Done for the reader (`lib/reader.nuc`: `lex-*`/`next-tok`/`peek-tok`/`eat-tok`/`read-form`/`read-list`/`read-program` now return `!ptr`; every reader `die-at` → `report-at` + `(err! parse-error)`, internal calls propagate via `try`; diagnostics byte-preserved since `report-at` still prints path:line at the fault site. Batch driver uses a `read-program-or-die` wrapper (`exit 1` on err); REPL `match`es and recovers, so a syntax error is a value path, not a stale-`jmp_buf` longjmp. `die-at` stays the panic tier; no codegen change so the fixed point held with no converge round. `make test` 71/71, `make bootstrap` fixed point, boot re-converged.) Coercion-path adoption (the `pkind-flow-check` abort) deferred — larger cascade through the emitter. |
 | Phase F: safety flip — `(ptr T)` non-null, `(raw T)` nullable, `?` uniform `(Maybe T)` | Done (5 parser edits flip the singleton + `(ptr T)` to PTR-REF and `null` to `raw`; `pkind-flow-check` exempts elem-less `void*` destinations — non-null is only meaningful on typed pointers, the direct analogue of the CStr refinement — so the flip's teeth land on `(ptr T)`/`(ref T)` slots; `addr-of`/`.&`/`alloca`/`array`/compound-literal now yield `ref`; all `?Foo` pointer-Maybes re-spelled `?ptr:Foo`, value-operand `?` stamps value-`Maybe`. `make test` 71/71, `make bootstrap` fixed point, boot re-converged. `noreturn die-at` was already landed at Stage-1.) |
 | A2 (Stage 10 Phase C4) niche-encoded `!T` / `:repr` (union-layout-classify + ENUM/TAGGED/NICHE/ERRPTR rules) | Done (full niche encoding: MAYBE `None` → null, ERRPTR `Err` → `(i32)-1`; `:repr` tags in defunion; layout harness extended) |
+| C1: N2 cold-site cleanup — ~25 nullable-launder `cast ptr:Sym` in cold emitter paths replaced with `?ptr:Sym` + existing null-guards; enabled by `noreturn die-at` (Phase F1) | Done (2026-06-14; two deliberate hold-outs: E3 `err-find-handler`/`g-handler-top` lookups, non-null by precondition; see nullability.md §9 finding 5) |
+| C2: standalone `signal` — `(signal E RepairType [detail])` special form; walks handler chain via shared `emit-handler-call`; returns `(Maybe RepairType)` without return-position requirement | Done (2026-06-14; `examples/signal.nuc`) |
+| C3: panic-tier hook — `unwrap`/`unwrap-or` on `Result` signal `unhandled-error` before aborting; gated on `error-lib-in-scope` + `unhandled-error` in scope | Done (2026-06-14; no-op when no handler bound) |
 
 ---
 
