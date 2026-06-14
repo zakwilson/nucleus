@@ -1,6 +1,6 @@
 # Nucleus — Progress Summary
 
-Current branch: `main` (Stage 8 C-parity + Stage 9 polymorphism merged)
+Current branch: `stage10-safety` (Stage 10 errors E1–E4 + safety flip + C4 niche layout)
 
 ---
 
@@ -122,7 +122,7 @@ Current branch: `main` (Stage 8 C-parity + Stage 9 polymorphism merged)
 | U2: Drop rule (§7) — owning `with` binding of a union with Drop-conforming arm payloads rejected unless the union itself conforms to Drop | Done (v1 reject; tag-switch drop later) |
 | U3: templates — `(defunion (Result T E) ...)`, explicit-instance `make`, memoized stamping, `.nuch` verbatim export + importer-side stamping | Done |
 | U3: return-position target typing (§5c) — bare `(ok v)`/`(err e)` against the declared return type | Done (direct return form only) |
-| U4: niche layout rules (`?T`/`!T` as layout instances), `:repr` | Deferred with errors.md A2 (designer: A1 is core, A2 an optimization) |
+| U4: niche layout rules (`?T`/`!T` as layout instances), `:repr` | Done (C4: union-layout-classify → LAYOUT-NICHE-MAYBE rule 2 + LAYOUT-NICHE-ERRPTR rule 3 + niche lowering via `union-target-rewrite`; `examples/errptr.nuc`; `layout` test gate) |
 | REPL: `defunion` definition + constructor declares in preamble; lazily-emitted union type defs drained into the preamble (libc preload, `include`, `import`) | Done |
 | Examples/tests: `examples/unions.nuc`, `tests/repl/unions.in` | Done |
 
@@ -139,9 +139,9 @@ Current branch: `main` (Stage 8 C-parity + Stage 9 polymorphism merged)
 | E1: examples/tests — `examples/errors.nuc` | Done |
 | E2: value `(Maybe T)` over non-pointers (prelude template; `(Maybe (ref T))` stays niche, `(Maybe T)` stamps `{tag,T}`); `match`/`make`/return-target-typing (incl. bare `none`); `?!T` sugar (value Maybe over a Result) | Done (`examples/value-maybe.nuc`) |
 | E3: handler-aware `err` + `with-handler` + handler chain (`lib/error.nuc`) keyed on (error, repair-type); `(err E detail)`; CL unbind rule | Done (compiler-emitted `__err-handled` at `!T` err return sites via `union-target-rewrite`; handler call rides the Stage-8 struct-return ABI through `abi-emit-struct-call`; gated on the error lib being in scope so the compiler self-compiles byte-identically; `examples/handlers.nuc`) |
-| E4: adopt `!T` at `die-at` sites (reader, coercion); shrink REPL `repl_throw` boundary | Pending |
+| E4: adopt `!T` at `die-at` sites (reader, coercion); shrink REPL `repl_throw` boundary | Done for the reader (`lib/reader.nuc`: `lex-*`/`next-tok`/`peek-tok`/`eat-tok`/`read-form`/`read-list`/`read-program` now return `!ptr`; every reader `die-at` → `report-at` + `(err! parse-error)`, internal calls propagate via `try`; diagnostics byte-preserved since `report-at` still prints path:line at the fault site. Batch driver uses a `read-program-or-die` wrapper (`exit 1` on err); REPL `match`es and recovers, so a syntax error is a value path, not a stale-`jmp_buf` longjmp. `die-at` stays the panic tier; no codegen change so the fixed point held with no converge round. `make test` 71/71, `make bootstrap` fixed point, boot re-converged.) Coercion-path adoption (the `pkind-flow-check` abort) deferred — larger cascade through the emitter. |
 | Phase F: safety flip — `(ptr T)` non-null, `(raw T)` nullable, `?` uniform `(Maybe T)` | Done (5 parser edits flip the singleton + `(ptr T)` to PTR-REF and `null` to `raw`; `pkind-flow-check` exempts elem-less `void*` destinations — non-null is only meaningful on typed pointers, the direct analogue of the CStr refinement — so the flip's teeth land on `(ptr T)`/`(ref T)` slots; `addr-of`/`.&`/`alloca`/`array`/compound-literal now yield `ref`; all `?Foo` pointer-Maybes re-spelled `?ptr:Foo`, value-operand `?` stamps value-`Maybe`. `make test` 71/71, `make bootstrap` fixed point, boot re-converged. `noreturn die-at` was already landed at Stage-1.) |
-| A2 niche-encoded `!T` / `:repr` | Deferred with U4 |
+| A2 (Stage 10 Phase C4) niche-encoded `!T` / `:repr` (union-layout-classify + ENUM/TAGGED/NICHE/ERRPTR rules) | Done (full niche encoding: MAYBE `None` → null, ERRPTR `Err` → `(i32)-1`; `:repr` tags in defunion; layout harness extended) |
 
 ---
 

@@ -726,11 +726,31 @@
 
 ; Convert a type AST node to a C type string. Handles SYM types and
 ; (ptr T) / (ptr ptr T) ... lists.
+; A niche `!ptr:T` / `?ptr:T` (design/stage10/unions.md §6 rules 2/3) is a bare
+; pointer to T — to C it IS a `T*`, with the reserved top page used for error /
+; none sentinels (errors.md §2/§8). Render it as `T*` with a documented comment
+; rather than the generic `void*`, so the C header is legible. `s` is the type
+; spelling; returns the C rendering, or null if it is not a niche sugar symbol.
+(defn niche-sym-to-c:ptr (s:ptr)
+  (let (c0:i32 (char-at s (cast i64 0)))
+    (when (and (!= c0 33) (!= c0 63)) (return null))   ; not ! or ?
+    ; The payload must be a pointer spelling: !ptr:T / ?ptr:T / !ref:T / ?ref:T.
+    (let (rest:ptr (ptr+ (cast ptr:i8 s) (cast i64 1)))
+      (when (= (strncmp rest "ptr:" (cast i64 4)) 0)
+        (let (elem:ptr (type-name-to-c (ptr+ (cast ptr:i8 rest) (cast i64 4))))
+          (return (fmt-s "%s* /* niche: reserved top page = error/none */" elem))))
+      (when (= (strncmp rest "ref:" (cast i64 4)) 0)
+        (let (elem:ptr (type-name-to-c (ptr+ (cast ptr:i8 rest) (cast i64 4))))
+          (return (fmt-s "%s* /* niche: reserved top page = error/none */" elem))))
+      (return null))))
+
 (defn type-node-to-c:ptr (tn:ptr)
   (when (= tn null) (return "void"))
   (let (n:ptr:Node (cast ptr:Node tn))
     (when (= (n kind) NODE-SYM)
-      (return (type-name-to-c (n s))))
+      (let (nc:ptr (niche-sym-to-c (n s)))
+        (when (!= nc null) (return nc))
+        (return (type-name-to-c (n s)))))
     (when (= (n kind) NODE-CELL)
       (let (head:ptr (n car)
             rest:ptr (n cdr))

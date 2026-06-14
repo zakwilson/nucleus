@@ -8,6 +8,16 @@
 
 (import "tests/layout/structs.h")
 (include stdio)
+(include stdlib)
+(import error)
+
+; Stage 10 U4/A2 niche unions over a typed (ref Pt) payload (design/stage10/
+; unions.md §6 rules 2/3). `?ptr:Pt` == (Maybe (ref Pt)) and `!ptr:Pt` ==
+; (Result (ref Pt) Err) both lower to a bare pointer (no struct, no discriminant),
+; so sizeof == sizeof(void*) and (some p)/(ok p) carry p unchanged — the C-ABI
+; promise that `!ptr:Pt` is a `Pt*`. Niche types are used only in function
+; bodies here (sizeof / a `?ptr:Pt` value), since a C-header-imported Pt is not
+; registered until the emit phase (signatures referencing it would prescan-fail).
 
 ; offsetof(field) = address-of-field - base, both as integers.
 (defn off:i64 (base:ptr fld:ptr) (return (- (cast i64 fld) (cast i64 base))))
@@ -40,4 +50,12 @@
   (printf "U_pad sizeof=%lld\n"    (cast i64 (sizeof U_pad)))
   (let (s:ptr:UWrap (alloca UWrap)) (printf "UWrap sizeof=%lld tag=%lld u=%lld\n" (cast i64 (sizeof UWrap)) (off s (.& s tag)) (off s (.& s u))))
   (let (s:ptr:UAnon (alloca UAnon)) (printf "UAnon sizeof=%lld kind=%lld data=%lld tail=%lld\n" (cast i64 (sizeof UAnon)) (off s (.& s kind)) (off s (.& s data)) (off s (.& s tail))))
+
+  ; Niche unions: pointer-sized, and (some p) round-trips p unchanged.
+  (printf "NICHE_MAYBE sizeof=%lld\n"  (cast i64 (sizeof ?ptr:Pt)))
+  (printf "NICHE_ERRPTR sizeof=%lld\n" (cast i64 (sizeof !ptr:Pt)))
+  (let (pt:ptr:Pt (alloca Pt))
+    (let (m:?ptr:Pt (some (cast ref:Pt pt))
+          back:ref:Pt (unwrap m))
+      (printf "NICHE_okptr_roundtrip=%d\n" (if (= (cast i64 back) (cast i64 pt)) 1 0))))
   (return 0))

@@ -1,0 +1,63 @@
+; Stage 10 U4/A2 — the ERR_PTR niche (design/stage10/unions.md §6 rule 3,
+; design/stage10/errors.md §2/§8). A `(Result (ref T) Err)` over a *typed*
+; pointer payload — spelled `!ptr:T` — is niche-encoded in the pointer itself:
+;   (ok p)  is p directly (non-null, never in the reserved top page)
+;   (err E) is inttoptr(-id), a sentinel in the top page [-4095, -1]
+;   is-err  is one unsigned compare against -4096
+; so the whole `!ptr:T` is a bare pointer — ABI-identical to a C `T*` — with no
+; discriminant word and no struct. ok/err/match/try/unwrap/unwrap-or all read
+; the same encoding; only the layout differs from the tagged `(Result T E)`.
+(include stdio)
+(include stdlib)
+(import error)
+
+(defstruct Pt x:i32 y:i32)
+
+(deferror not-found "point not found")
+(deferror bad-index "index out of range")
+
+; A fallible lookup returning a niche-encoded pointer-or-error. (ok p) / (err E)
+; resolve against the declared return type in return position (target typing).
+(defn lookup:!ptr:Pt (p:ptr:Pt i:i32)
+  (when (< i (cast i32 0))
+    (return (err bad-index)))
+  (when (> i (cast i32 0))
+    (return (err! not-found)))      ; err! is identical here (no handler path for a niche)
+  (return (ok (cast ref:Pt p))))
+
+; Propagation with `try`: yields the ok pointer or re-returns the error.
+(defn lookup-x:!i32 (p:ptr:Pt i:i32)
+  (let (q:ref:Pt (try (lookup p i)))
+    (return (ok (q x)))))
+
+(defn show:void (r:!ptr:Pt)
+  (match r
+    ((ok q)  (printf "ok x=%d\n" (q x)))
+    ((err e) (printf "err %s: %s\n" (err-name e) (err-message e)))))
+
+(defn main:i32 ()
+  (let (p:ptr:Pt (cast ptr:Pt (malloc 8)))
+    (.set! p x 7)
+
+    ; match on a niche Result value, both arms.
+    (show (lookup p (cast i32 0)))
+    (show (lookup p (cast i32 1)))
+    (show (lookup p (cast i32 -1)))
+
+    ; unwrap on the ok arm yields the (ref T) pointer.
+    (printf "unwrap %d\n" ((unwrap (lookup p (cast i32 0))) x))
+
+    ; unwrap-or supplies a default (ref T) on the err arm (evaluated only then).
+    (printf "unwrap-or ok  %d\n" ((unwrap-or (lookup p (cast i32 0)) (cast ref:Pt p)) x))
+    (printf "unwrap-or err %d\n" ((unwrap-or (lookup p (cast i32 1)) (cast ref:Pt p)) x))
+
+    ; try: success propagates the value, failure propagates the error.
+    (match (lookup-x p (cast i32 0))
+      ((ok v)  (printf "try ok %d\n" v))
+      ((err e) (printf "try err %s\n" (err-name e))))
+    (match (lookup-x p (cast i32 -1))
+      ((ok v)  (printf "try ok %d\n" v))
+      ((err e) (printf "try err %s\n" (err-name e))))
+
+    (free p))
+  0)

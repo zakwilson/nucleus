@@ -221,12 +221,18 @@ is **landed** — see §9.1 below.
 
   **Friction findings (input to the §6 flip decision):**
   1. **`die-at` guards don't narrow.** The pervasive idiom
-     `(when (= x null) (die-at …))` does *not* establish a narrow past the
-     guard, because nothing marks `die-at` noreturn — the §4 accumulation
+     `(when (= x null) (die-at …))` did *not* establish a narrow past the
+     guard, because nothing marked `die-at` noreturn — the §4 accumulation
      only fires when the guard body visibly terminates (`return`/`goto`).
-     Such sites must restructure to `if-some`/`when-some` (done for the hot
-     emitters). A `noreturn` function attribute would erase most of the
-     remaining conversion cost and is the single highest-leverage enabler.
+     Such sites had to restructure to `if-some`/`when-some` (done for the hot
+     emitters). **Resolved (C1, 2026-06-14):** the `noreturn` mechanism (the
+     Phase-F1 trailing/body-position-0 attribute + `terminate-after-noreturn`)
+     existed but had never been applied to `die-at` itself — the flip preferred
+     `if-some` to stay byte-identical. C1 marks `die-at` `noreturn` (it always
+     `exit`s or `repl_throw`s), so `(when (= x null) (die-at …))` now narrows
+     past the guard exactly as `return`/`goto` do. This elides provably-dead
+     code after every statement-position `die-at`, a one-time codegen change
+     (fixed point holds; boot re-converged).
   2. **Prelude types can't appear in `nucleusc.nuc` defn signatures.** The
      toplevel signature prescan parses param/return types before the
      `(import prelude)` form is processed, so `ref:Node`/`?Node` in a
@@ -244,10 +250,22 @@ is **landed** — see §9.1 below.
   4. **Correlated-field invariants need one waiver.** E.g. `Cleanup.defer-scope`
      is non-null exactly when `defer-node` is; the kinds can't express that,
      so one `(cast ref:Scope …)` remains, with a comment.
-  5. Remaining: ~25 guarded `(cast ptr:Sym (scope-lookup …))`-style sites in
+  5. ~~Remaining: ~25 guarded `(cast ptr:Sym (scope-lookup …))`-style sites in
      colder paths (defvar/defconst/inc-dec/addr-of emitters, gcheck/valid
-     walkers, repl.nuc), field types beyond `InternEntry.node`, and the
-     `?i8`-shaped string returns (left raw — `?T` over `CStr` reads poorly).
+     walkers, repl.nuc)~~ — **done (C1, 2026-06-14).** The named cold clusters
+     now carry zero nullable-launder `cast ptr:Sym`: guarded lookups bind
+     `?ptr:Sym` and narrow through the site's existing null-guard (now that
+     finding 1's `noreturn die-at` landed, the `(when (= sym null) (die-at …))`
+     idiom narrows too); `scope-define` results bind `ref:Sym` directly (it dies
+     internally on failure, never null). Two deliberate hold-outs remain, both
+     outside the named clusters: the E3 `emit-err-handled` handler-chain lookups
+     (`err-find-handler`/`g-handler-top`), non-null by the `error-lib-in-scope`
+     precondition with no natural use-site guard — the cast-to-`ref` is the
+     §5 audited "known valid" assertion, not a bypass. The legitimate non-lookup
+     casts stay: pointer *arithmetic* over `(sc syms)` arrays and the
+     `(.set! (cast ptr:Sym fsym) noreturn 1)` field-stores. Still open: field
+     types beyond `InternEntry.node`, and the `?i8`-shaped string returns (left
+     raw — `?T` over `CStr` reads poorly).
 
 [examples/maybe.nuc](../../examples/maybe.nuc) exercises the full surface in
 the test suite.
