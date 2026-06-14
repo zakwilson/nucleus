@@ -1,0 +1,8 @@
+ok x=7
+err not-found: point not found
+err bad-index: index out of range
+unwrap 7
+unwrap-or ok  7
+unwrap-or err 7
+try ok 7
+try err bad-index
