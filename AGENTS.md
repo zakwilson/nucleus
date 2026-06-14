@@ -2,9 +2,19 @@
 
 This file provides guidance to LLM agents when working with code in this repository.
 
+## Large tasks: delegate to subagents first
+
+**Before starting any large task, stop and plan a subagent delegation strategy — do not begin doing the work yourself in this (orchestrating) session.** A task is "large" if it is multi-phase, spans multiple files, or you would describe it as large, complex, or multi-step. The moment you notice yourself acknowledging that a task is big is the trigger to delegate, not a reason to push ahead solo.
+
+- Read [context/local.md](context/local.md) for the available subagents and how to use them. It is **required reading for large tasks**, not just environment setup.
+- Split the work into chunks that each fit comfortably under 100K tokens of context, and dispatch each chunk to the appropriate subagent.
+- Keep this session lean: delegate code reading, implementation, building/testing, and doc updates. Reserve the main thread for planning and integration.
+
 ## Design document
 
 The design documents for this project are in the design directory. Any additional plans or design documents should be placed there and noted in overview.md.
+
+**Before finishing a task**, review what has changed and update [progress.md](design/progress.md).
 
 ## Plans
 
@@ -18,7 +28,7 @@ Documentation for the current state of the language lives in the docs directory.
 
 ## Context files
 
-- [context/local.md](context/local.md) — VM setup, SDK paths, emulator workflow, MCP server *(local only, not in git)*
+- [context/local.md](context/local.md) — container/toolchain setup **and the mandatory subagent-delegation workflow for large tasks** *(local only, not in git)*
 - [context/build.md](context/build.md) - build flow and bootstrap artifacts
 - [context/macros-jit.md](context/macros-jit.md) - macros and JIT
 - [context/repl.md](context/repl.md) - when (and when not) to use `nucleusc -i` during development

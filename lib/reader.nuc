@@ -6,6 +6,17 @@
 ; g-source-path, g-peek, g-peek-valid).
 ; Also needs libc: isspace, isdigit, strtol, memcpy, fprintf, exit,
 ; and the stderr extern.
+;
+; Stage 10 E4: the reader's recoverable syntax errors are returned as `!ptr`
+; values (a `(Result ptr Err)`) rather than aborting via `die-at`/`repl_throw`.
+; The human-readable diagnostic is still printed at the fault site by
+; `report-at` (so line/path context is preserved exactly); the propagated
+; `parse-error` is the value-channel signal callers `try`/`match` on. `die-at`
+; itself stays the panic tier for unrecoverable compiler bugs elsewhere.
+
+(import error)
+
+(deferror parse-error "parse error")
 
 ; ============================================================
 ; Character access helper
@@ -19,6 +30,12 @@
 ; ============================================================
 
 (defn die-at:void (line:i32 msg:ptr)
+  noreturn
+  ; Stage 10 C3: consult the panic-tier debugger hook before aborting. With no
+  ; (unhandled-error, i32) handler bound this is a one-load chain walk that
+  ; returns none and falls straight through to today's abort; a bound handler
+  ; may log/record `msg` first. The repair value is ignored (we abort anyway).
+  (signal unhandled-error i32 msg)
   (fprintf stderr "%s:%d: error: %s\n" g-source-path line msg)
   ; If a generic instantiation is being emitted, point back to it (and its call
   ; site). g-mono-context is null except during the monomorphization drain.
@@ -27,6 +44,14 @@
   (when (!= g-interactive 0)
     (repl_throw))
   (exit 1))
+
+; Stage 10 E4: report a recoverable reader error without aborting. Prints the
+; same diagnostic `die-at` does (path:line: error: msg, plus the mono-context
+; note), but returns to the caller, which then propagates `(err! parse-error)`.
+(defn report-at:void (line:i32 msg:ptr)
+  (fprintf stderr "%s:%d: error: %s\n" g-source-path line msg)
+  (when (!= g-mono-context null)
+    (fprintf stderr "  note: %s\n" g-mono-context)))
 
 ; ============================================================
 ; Lexer
@@ -63,13 +88,15 @@
   (when (= c 59) (return 0))
   (return 1))
 
-(defn lex-string:ptr (open-line:i32)
+(defn lex-string:!ptr (open-line:i32)
   (let (buf:ptr (alloca i8 4096)
         n:i64 (cast i64 0)
         done:i32 0)
     (while (= done 0)
       (let (c:i32 (next-char))
-        (when (= c 0) (die-at open-line "unterminated string literal"))
+        (when (= c 0)
+          (do (report-at open-line "unterminated string literal")
+              (return (err! parse-error))))
         (if (= c 34)
           (set! done 1)
           (do
@@ -83,16 +110,18 @@
                 (when (= e 92)  (do (set! c 92) (set! handled 1)))
                 (when (= e 34)  (do (set! c 34) (set! handled 1)))
                 (when (= handled 0)
-                  (die-at g-line (fmt-i32 "unknown escape \\%c" e)))))
+                  (do (report-at g-line (fmt-i32 "unknown escape \\%c" e))
+                      (return (err! parse-error))))))
             (when (>= n (cast i64 4095))
-              (die-at open-line "string literal too long"))
+              (do (report-at open-line "string literal too long")
+                  (return (err! parse-error))))
             (aset! (cast ptr:i8 buf) n (cast i8 c))
             (set! n (+ n (cast i64 1)))))))
     (let (t:ptr:Tok (cast ptr:Tok (alloc-tok)))
       (.set! t kind TOK-STRING)
       (.set! t line open-line)
       (.set! t s (arena-strndup buf n))
-      (return (cast ptr t)))))
+      (return (ok (cast ptr t))))))
 
 ; Returns 1 if `text` (length `len`) is a float literal in the syntactic
 ; sense: optional sign, at least one digit, contains either `.` or
@@ -147,7 +176,7 @@
       (when (and (!= saw-e 0) (= digits-exp 0)) (return 0))
       (return 1))))
 
-(defn lex-atom:ptr ()
+(defn lex-atom:!ptr ()
   (let (start-line:i32 g-line
         start:i64 g-pos)
     (while (!= (is-sym-char (peek-char)) 0)
@@ -170,27 +199,28 @@
       (when (!= is-int 0)
         (let (buf:ptr (alloca i8 64))
           (when (>= len (cast i64 64))
-            (die-at start-line "integer literal too long"))
+            (do (report-at start-line "integer literal too long")
+                (return (err! parse-error))))
           (memcpy buf text len)
           (aset! (cast ptr:i8 buf) len (cast i8 0))
           (let (t:ptr:Tok (cast ptr:Tok (alloc-tok)))
             (.set! t kind TOK-INT)
             (.set! t line start-line)
             (.set! t i (strtol buf null 10))
-            (return (cast ptr t)))))
+            (return (ok (cast ptr t))))))
       (when (!= (is-float-literal text len) 0)
         (let (tf:ptr:Tok (cast ptr:Tok (alloc-tok)))
           (.set! tf kind TOK-FLOAT)
           (.set! tf line start-line)
           (.set! tf s (arena-strndup text len))
-          (return (cast ptr tf))))
+          (return (ok (cast ptr tf)))))
       (let (ts:ptr:Tok (cast ptr:Tok (alloc-tok)))
         (.set! ts kind TOK-SYMBOL)
         (.set! ts line start-line)
         (.set! ts s (arena-strndup text len))
-        (return (cast ptr ts))))))
+        (return (ok (cast ptr ts)))))))
 
-(defn next-tok:ptr ()
+(defn next-tok:!ptr ()
   (skip-ws)
   (let (c:i32 (peek-char)
         line:i32 g-line)
@@ -198,19 +228,19 @@
       (let (te:ptr:Tok (cast ptr:Tok (alloc-tok)))
         (.set! te kind TOK-EOF)
         (.set! te line line)
-        (return (cast ptr te))))
+        (return (ok (cast ptr te)))))
     (when (= c 40)
       (do (next-char)
         (let (tl:ptr:Tok (cast ptr:Tok (alloc-tok)))
           (.set! tl kind TOK-LPAREN)
           (.set! tl line line)
-          (return (cast ptr tl)))))
+          (return (ok (cast ptr tl))))))
     (when (= c 41)
       (do (next-char)
         (let (tr:ptr:Tok (cast ptr:Tok (alloc-tok)))
           (.set! tr kind TOK-RPAREN)
           (.set! tr line line)
-          (return (cast ptr tr)))))
+          (return (ok (cast ptr tr))))))
     ; Reader macro table lookup — longest prefix match
     (let (best-idx:i32 -1
           best-len:i32 0
@@ -241,7 +271,7 @@
             (.set! tq kind TOK-RMACRO)
             (.set! tq line line)
             (.set! tq s (rm wrap-sym))
-            (return (cast ptr tq))))))
+            (return (ok (cast ptr tq)))))))
     (when (= c 34)
       (do (next-char) (return (lex-string line))))
     (return (lex-atom))))
@@ -250,73 +280,89 @@
 ; Reader / AST
 ; ============================================================
 
-(defn peek-tok:ptr ()
+(defn peek-tok:!ptr ()
   (when (= g-peek-valid 0)
-    (do (set! g-peek (next-tok))
+    (do (set! g-peek (try (next-tok)))
         (set! g-peek-valid 1)))
-  (return g-peek))
+  (return (ok g-peek)))
 
-(defn eat-tok:ptr ()
-  (let (t:ptr (peek-tok))
+(defn eat-tok:!ptr ()
+  (let (t:ptr (try (peek-tok)))
     (set! g-peek-valid 0)
-    (return t)))
+    (return (ok t))))
 
-(defn read-form:ptr ()
-  (let (t:ptr:Tok (cast ptr:Tok (eat-tok)))
+(defn read-form:!ptr ()
+  (let (t:ptr:Tok (cast ptr:Tok (try (eat-tok))))
     (when (= (t kind) TOK-LPAREN) (return (read-list (t line))))
-    (when (= (t kind) TOK-RPAREN) (die-at (t line) "unexpected )"))
+    (when (= (t kind) TOK-RPAREN)
+      (do (report-at (t line) "unexpected )")
+          (return (err! parse-error))))
     (when (= (t kind) TOK-RMACRO)
-      (let (quoted:ptr (read-form)
+      (let (quoted:ptr (try (read-form))
             sym:ptr (intern-symbol (t s)))
-        (return (make-cell sym
-                           (make-cell quoted null (t line))
-                           (t line)))))
+        (return (ok (make-cell sym
+                               (make-cell quoted null (t line))
+                               (t line))))))
     (when (= (t kind) TOK-INT)
       (let (n:ptr:Node (cast ptr:Node (alloc-node)))
         (.set! n kind NODE-INT)
         (.set! n line (t line))
         (.set! n i (t i))
-        (return (cast ptr n))))
+        (return (ok (cast ptr n)))))
     (when (= (t kind) TOK-FLOAT)
       (let (n:ptr:Node (cast ptr:Node (alloc-node)))
         (.set! n kind NODE-FLOAT)
         (.set! n line (t line))
         (.set! n s (t s))
-        (return (cast ptr n))))
+        (return (ok (cast ptr n)))))
     (when (= (t kind) TOK-STRING)
       (let (n:ptr:Node (cast ptr:Node (alloc-node)))
         (.set! n kind NODE-STR)
         (.set! n line (t line))
         (.set! n s (t s))
-        (return (cast ptr n))))
+        (return (ok (cast ptr n)))))
     (when (= (t kind) TOK-SYMBOL)
-      (return (intern-symbol (t s))))
-    (die-at (t line) "unexpected end of input")))
+      (return (ok (intern-symbol (t s)))))
+    (do (report-at (t line) "unexpected end of input")
+        (return (err! parse-error)))))
 
-(defn read-list:ptr (line:i32)
+(defn read-list:!ptr (line:i32)
   (let (head:ptr null
         tail:ptr null)
     (while (!= 0 1)
-      (let (t:ptr:Tok (cast ptr:Tok (peek-tok)))
-        (when (= (t kind) TOK-EOF) (die-at line "unterminated list"))
+      (let (t:ptr:Tok (cast ptr:Tok (try (peek-tok))))
+        (when (= (t kind) TOK-EOF)
+          (do (report-at line "unterminated list")
+              (return (err! parse-error))))
         (when (= (t kind) TOK-RPAREN)
-          (do (eat-tok) (return head)))
-        (let (child:ptr (read-form)
+          (do (try (eat-tok)) (return (ok head))))
+        (let (child:ptr (try (read-form))
               cell:ptr (make-cell child null line))
           (when (= tail null) (set! head cell))
           (when (!= tail null) (.set! (cast ptr:Node tail) cdr cell))
           (set! tail cell))))
-    (return head)))
+    (return (ok head))))
 
-(defn read-program:ptr ()
+(defn read-program:!ptr ()
   (let (head:ptr null
         tail:ptr null)
-    (while (!= ((cast ptr:Tok (peek-tok)) kind) TOK-EOF)
-      (let (form:ptr (read-form)
-            line:i32 0)
-        (when (!= form null) (set! line ((cast ptr:Node form) line)))
-        (let (cell:ptr (make-cell form null line))
-          (when (= tail null) (set! head cell))
-          (when (!= tail null) (.set! (cast ptr:Node tail) cdr cell))
-          (set! tail cell))))
-    (return head)))
+    (while (!= 0 1)
+      (let (pk:ptr:Tok (cast ptr:Tok (try (peek-tok))))
+        (when (= (pk kind) TOK-EOF) (return (ok head)))
+        (let (form:ptr (try (read-form))
+              line:i32 0)
+          (when (!= form null) (set! line ((cast ptr:Node form) line)))
+          (let (cell:ptr (make-cell form null line))
+            (when (= tail null) (set! head cell))
+            (when (!= tail null) (.set! (cast ptr:Node tail) cdr cell))
+            (set! tail cell)))))
+    (return (ok head))))
+
+; Stage 10 E4 boundary: batch-compile driver entry. On a parse error the
+; diagnostic has already been printed at the fault site (report-at), so just
+; abort the build (exit 1), matching the pre-E4 die-at behavior. The REPL calls
+; `read-program` directly and `match`es it so a syntax error recovers instead.
+(defn read-program-or-die:ptr ()
+  (match (read-program)
+    ((ok forms) forms)
+    ((err e) (do (exit 1) (return null)))))

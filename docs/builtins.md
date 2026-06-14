@@ -37,7 +37,7 @@ Functions defined in the REPL persist across inputs and can call each other. All
 
 Imported libraries work: `(import mathlib)` makes `square`, `cube`, etc. available. The standard macros (`if`, `when`, `unless`, `for`, `dotimes`, `->`) are auto-imported at REPL startup, so they're usable without `(import macros)`. The `Node` struct and `NODE-*` constants are pre-registered for macro support.
 
-Errors in the REPL are caught and recovered; the REPL continues after an error (including IR parse errors and JIT errors). With `--repl-format=json`, each REPL-level error (missing form arg, JIT lookup failure, recovered error) is emitted as a single-line JSON object on stderr.
+Errors in the REPL are caught and recovered; the REPL continues after an error (including source syntax errors, IR parse errors, and JIT errors). Source syntax errors recover as an ordinary value path: the reader returns a `!T` (Stage 10 E4) rather than aborting, so an unbalanced `)` or an unterminated form reports its diagnostic and the session keeps going. With `--repl-format=json`, each REPL-level error (missing form arg, JIT lookup failure, recovered error) is emitted as a single-line JSON object on stderr.
 
 ### REPL meta forms
 
@@ -512,6 +512,49 @@ not supported in v1.
         ((err e) (printf "err: %s\n" (err-name e))))))
   0)
 ```
+
+### Standalone `signal`
+
+```lisp
+(signal E RepairType)            ; → (Maybe RepairType)
+(signal E RepairType detail)     ; detail:ptr, borrowed for the handler call
+```
+
+`signal` asks bound handlers for *policy* without returning. It walks the same
+handler chain `with-handler` binds, looking for a handler keyed on `(E,
+RepairType)` — exactly `err-find-handler`'s key — and, on a match, calls it
+under the CL unbind rule and yields its `(Maybe RepairType)`; `none` (no handler
+matched, or the handler declined) is the default. `RepairType` is a **type**
+operand (parsed, not evaluated), like `with-handler`'s `type-token`.
+
+Unlike `(err E)`, `signal` is **not tied to return position** and does **not**
+wrap the result in `(ok v)` — it hands the `(Maybe RepairType)` straight back, so
+the caller decides what to do (continue in place, fall back, propagate). This is
+errors.md §4's "low-level code asks high-level code for policy" shape — e.g. an
+allocator's grow path signalling for a replacement block, falling back to its own
+behavior if policy declines:
+
+```lisp
+(import error)
+(deferror out-of-memory "allocation grow needs a policy decision")
+
+(defn grow:i64 (need:i64)
+  (match (signal out-of-memory i64 (cast ptr (addr-of need)))
+    ((some sz) sz)               ; a handler supplied a size: continue
+    (none      (cast i64 0))))   ; declined / no handler: the fallback
+
+(defn (grant-double (Maybe i64)) (ctx:ptr detail:ptr)
+  (return (some (* (deref (cast ptr:i64 detail)) (cast i64 2)))))
+
+(with-handler (out-of-memory i64 grant-double null)
+  (grow (cast i64 8)))           ; → 16
+```
+
+`signal` requires `(import error)` (it references the handler chain). Its result
+is a **value** `(Maybe T)`, eliminated with `match` (not `if-some`, which is
+pointer-only). The **v1 repair-type-is-a-value-type limitation** applies: a
+`(ref X)` niche-pointer repair is not a struct, so the struct-return call path
+cannot carry it (`examples/signal.nuc`).
 
 ## Standard Macros (`lib/macros.nuc`)
 

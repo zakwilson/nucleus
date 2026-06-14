@@ -18,6 +18,15 @@
 
 (include string)
 
+; The panic-tier debugger hook (errors.md §4 "the panic tier gets a hook for
+; free", phase C3). `die-at` and `unwrap`-on-`err` `signal` this condition before
+; aborting, with `detail` carrying the formatted message — so a REPL or test
+; harness can bind an (unhandled-error, i32) handler to log/pretty-print/record
+; the error before the abort. Declined by default (no handler ⇒ the chain walk
+; returns none ⇒ today's abort, unchanged). The repair value is ignored: the
+; panic path aborts regardless.
+(deferror unhandled-error "unhandled error")
+
 (defmacro try (r)
   (let (v:ptr (gensym)
         e:ptr (gensym))

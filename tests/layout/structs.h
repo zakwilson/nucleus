@@ -44,3 +44,10 @@ union U_mixed  { char small; double wide; };
 union U_pad    { char bytes; int word; };
 struct UWrap   { char tag; union U_scalar u; };
 struct UAnon   { int kind; union { int word; double real; } data; char tail; };
+
+/* Stage 10 U4/A2 niche unions (design/stage10/unions.md §6 rules 2/3): a payload
+ * struct for the niche pointer cases. A Nucleus `(Maybe (ref Pt))` /
+ * `(Result (ref Pt) Err)` over this type is niche-encoded in the pointer, so to
+ * C it is just a `struct Pt *` — pointer-sized, with the documented reserved
+ * top-page range for error sentinels (errors.md §2/§8). */
+struct Pt { int x; int y; };

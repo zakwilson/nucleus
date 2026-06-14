@@ -37,5 +37,15 @@ int main(void) {
     printf("U_pad sizeof=%lld\n",    (long long)sizeof(union U_pad));
     printf("UWrap sizeof=%lld tag=%lld u=%lld\n", SZ(UWrap), OFF(UWrap, tag), OFF(UWrap, u));
     printf("UAnon sizeof=%lld kind=%lld data=%lld tail=%lld\n", SZ(UAnon), OFF(UAnon, kind), OFF(UAnon, data), OFF(UAnon, tail));
+
+    /* Stage 10 U4/A2 niche unions (design/stage10/unions.md §6 rules 2/3): a
+     * `(Maybe (ref T))` / `(Result (ref T) Err)` over a typed pointer payload is
+     * niche-encoded *in the pointer*, so to C it IS a `struct Pt *` — pointer-
+     * sized, no discriminant. The oracle is sizeof(void*); the .nuc side prints
+     * sizeof of its niche unions. The round-trip check confirms (ok p) carries p
+     * unchanged (the C-ABI promise that `!ptr:Pt` is a `Pt*`). */
+    printf("NICHE_MAYBE sizeof=%lld\n",  (long long)sizeof(struct Pt *));
+    printf("NICHE_ERRPTR sizeof=%lld\n", (long long)sizeof(struct Pt *));
+    printf("NICHE_okptr_roundtrip=%d\n", 1);
     return 0;
 }

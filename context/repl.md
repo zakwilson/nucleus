@@ -3,8 +3,12 @@
 The REPL is `build/nucleusc -i` (or `--interactive`). It runs the same compiler
 binary in interactive mode: each top-level form is parsed, compiled to LLVM IR,
 added to a persistent JIT session, and (for expression forms) called
-immediately. Definitions persist across forms; errors are recovered via
-`repl_throw` (setjmp/longjmp shim in `src/repl_shim.c`) instead of exiting.
+immediately. Definitions persist across forms instead of exiting. Recovery is
+split by error kind: **reader/source syntax errors** (unbalanced `)`,
+unterminated form, bad escape, …) are an ordinary `!T` value path as of Stage 10
+E4 — `read-program` returns `(err parse-error)`, the REPL `match`es it and
+continues; **eval/JIT errors** (and the `die-at` panic tier) still unwind via
+`repl_throw` (setjmp/longjmp shim in `src/repl_shim.c`).
 
 stdio.h, stdlib.h, string.h, ctype.h, and unistd.h are pre-loaded at startup,
 so libc functions are available without an explicit `(include ...)`.

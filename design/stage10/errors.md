@@ -885,3 +885,50 @@ point, all boot artifacts re-converged). Build plan and the full how is in
   violation had a `void*` destination, and N2 had already typed the real
   pointer slots. `pkind` is ignored by `type-eq`/`hash-type`/mangling/`type-to-ir`,
   so the flip changed **no** emitted IR — the fixed-point bootstrap is the proof.
+
+**Phase E4 (adoption — the reader) landed** (`make test` 71/71, `make bootstrap`
+fixed point, all boot artifacts re-converged). The first real consumer of `!T`
+is the compiler itself: the **reader pipeline** (`lib/reader.nuc`) no longer
+aborts on a syntax error. This is the §7.2 direction — "`die-at` sites in
+library-ish code (reader, coercion) become `!T` returns, which is also what the
+REPL wants (today's `repl_throw` longjmp becomes an ordinary error return
+path)."
+
+- **What converted.** `lex-string`, `lex-atom`, `next-tok`, `peek-tok`,
+  `eat-tok`, `read-form`, `read-list`, `read-program` now return `!ptr`
+  (`(Result ptr Err)`). Every former `die-at` in the reader (unterminated
+  string / list, unknown escape, literal-too-long, unexpected `)`, unexpected
+  EOF) became `(do (report-at line msg) (return (err! parse-error)))`; internal
+  reader calls propagate with `try`; success returns wrap with `(ok …)`. The
+  reader `(import error)`s for `try` and declares one `(deferror parse-error …)`.
+- **Diagnostics are byte-for-byte preserved.** `Err` carries only an id, not a
+  line, so the human-readable message (with `g-source-path`:line and the
+  `g-mono-context` note) is still printed *at the fault site* by `report-at` —
+  `die-at` minus the `repl_throw`/`exit`. The propagated `parse-error` is purely
+  the value-channel signal callers discriminate on. `err!` (not `err`) is used
+  throughout, so no handler check is emitted — a syntax error is not a
+  negotiable condition.
+- **Boundaries.** The batch driver calls a new `read-program-or-die` wrapper
+  (`match`; on `err`, `exit 1` — the diagnostic already printed, matching pre-E4
+  behavior) at all three `nucleusc.nuc` read sites. The REPL (`repl.nuc`,
+  macro-preload + main loop) `match`es `read-program` directly: on `err` it
+  resets `g-peek-valid` and continues the session. This removed the reader's
+  contribution to the `repl_throw` boundary — previously the main loop's read ran
+  *outside* any `repl_try`, so a syntax error longjmp'd to a stale `jmp_buf`;
+  now it is a clean value-path recovery (verified: `)` and `(foo` errors report
+  and the session keeps evaluating).
+- **`die-at` stays** the panic tier (still ~347 unrecoverable-bug sites). Only
+  the reader's own recoverable calls moved to `!T`.
+- **No codegen change**, so the fixed point held *without* a converge round —
+  the change is entirely in what the reader/driver source does, not in `emit-*`.
+  `(import error)` is now transitively pulled into the compiler (reader →
+  error); this adds `g-handler-top`, `err-find-handler`, the `try`/`with-handler`
+  macros, and a one-entry `deferror` descriptor table to the compiler binary,
+  but activates no handler machinery (no non-`!` `err` sites exist in the
+  compiler).
+- **Not converted (future E4 increments):** the coercion path. `coerce-int-val`
+  / `coerce-num-val` / `safe-coerce-val` already signal failure by returning
+  `null` (not `die-at`); their real abort is `pkind-flow-check`, which is deep in
+  the emit path and cascades through the whole code generator — a larger,
+  separate adoption than the reader. The `--emit-cheader` template-instance gap
+  (§11.7) is untouched because no *exported* surface adopted `!T`.
