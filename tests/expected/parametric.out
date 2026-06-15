@@ -1,0 +1,4 @@
+pair fst=3 snd=4
+pair fst=7 snd=2.5
+box val=42 len=1
+container elem=99

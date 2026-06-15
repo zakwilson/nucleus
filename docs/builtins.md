@@ -96,10 +96,10 @@ Importing a `.nuch` with `defmethod` forms registers the methods for dispatch in
 | `defconst` | Define a compile-time constant | `#define` / `enum` constant |
 | `defenum` | Define an enumeration | `enum` |
 | `defvar` | Define a global variable `(defvar name:type [init])`. The optional init must be a literal the language can express in constant position: an integer literal (any int width, signed or unsigned), float literal (`f32` / `f64`), string literal (storage type must be `ptr`), `null` (ptr only), `true` / `false` (`i1`/`bool` only), `(char "x")` (any int type), or a name bound by `defconst` / `defenum` (the constant value is folded in). Omitted inits default to zero / `null` / `false`. `set!` works on the result. The symbol is exported with default linkage and is visible to C consumers (`extern T name;`) and other Nucleus modules (`(extern name:type)`). Storage class specifiers (`static`, `register`, `thread_local`) are deferred — see `design/stage888-deferred.md`. | global variable definition |
-| `defstruct` | Define a struct type | `struct` |
+| `defstruct` | Define a struct type, or a parametric struct template when the name is a list: `(defstruct (Name T ...) ...)`. See [Parametric struct templates](#parametric-struct-templates-defstruct-name-t-). | `struct` |
 | `defunion` | Define a tagged sum `(defunion Name (arm field:type ...) ... bare-arm)` or a template `(defunion (Name T ...) ...)`. See [Unions and tagged sums](#unions-and-tagged-sums). | tagged `struct {int tag; union {...} payload;}` |
-| `defprotocol` | Define a protocol: a named set of required method signatures (types may mention `Self`). Compile-time only; emits no code. See [Protocols](#protocols-defprotocol-and-extend). | — (concept: interface/trait) |
-| `extend` | Assert conformance `(extend Type Protocol)`: checks that each required signature resolves to a concrete method with `Self → Type`, then records the fact. Code-free. See [Protocols](#protocols-defprotocol-and-extend). | — |
+| `defprotocol` | Define a protocol: a named set of required method signatures (types may mention `Self` and extra element parameters). Compile-time only; emits no code. See [Protocols](#protocols-defprotocol-and-extend) and [Parametric protocols](#parametric-protocols). | — (concept: interface/trait) |
+| `extend` | Assert conformance `(extend Type Protocol)` or parametric conformance `(extend (Name T) (Protocol T))`: checks that each required signature resolves, then records the fact. Code-free. See [Protocols](#protocols-defprotocol-and-extend) and [Parametric protocols](#parametric-protocols). | — |
 | `include` | Include a C standard library module. `(include stdio)` preprocesses `stdio.h` with `clang -E` and imports all extern function declarations. Any C header can be used: `(include math)` includes `math.h`. | `#include` |
 | `import` | Import a Nucleus library or C header. `(import name)` resolves `name.nuc` (source) or `name.nuch` (header) from source directory, `lib/`, `-I` paths, `$NUCLEUS_LIB`, or `/usr/local/share/nucleus/lib` (the install-time default used by `make install`). `(import "stdio.h")` preprocesses a C header with `clang -E` and imports extern function declarations. Source imports inline all definitions; header imports emit `declare` (extern) for functions. Duplicate imports are silently skipped. | — |
 | `declare` | Declare an external function signature `(declare name:rettype (params...))`. Used in `.nuch` header files and at the top level. | function prototype |
@@ -405,6 +405,159 @@ applies.
 ```
 
 See also `examples/errptr.nuc`.
+
+## Parametric struct templates: `(defstruct (Name T ...) ...)`
+
+Stage 11 adds parametric struct templates — the struct analogue of `defunion`
+templates. A `defstruct` whose name position is a **list** registers a template;
+it defines no type and emits no IR until used. A **type application** in type
+position stamps a concrete monomorphic instance.
+
+### Defining a template
+
+```lisp
+(defstruct (Vector T)
+  data:(ptr T)
+  len:usize
+  cap:usize)
+
+(defstruct (Pair K V)
+  key:K
+  val:V)
+```
+
+The parameters are bare type symbols. A single-element name list `(Foo)` (no
+type parameters) is an error — use a plain `defstruct`. Type parameters are
+types only; value/const parameters (e.g. a compile-time array length) are not
+supported.
+
+### Type application
+
+`(Name T ...)` in **type position** stamps a concrete monomorphic struct named
+`Name.T` (dot-separated, using the same `type-mangle-token` scheme as union
+instances and overloaded-fn mangling). Stamping is memoized: `(Vector i32)` in
+multiple locations produces the same `StructDef`.
+
+Type application is recognized in type position only — after `:`, in field
+types, `defn` parameter and return types, `cast` targets, `sizeof` operands, and
+`alloca`/`array` element types. The colon sugar composes:
+
+```lisp
+(defn count:usize (self:(ref (Vector T)))
+  (return (self len)))
+
+(defstruct Tree
+  val:i32
+  left:(ptr (Tree i32))   ; pointer self-reference — fine
+  right:(ptr (Tree i32)))
+```
+
+A template that embeds its own instance **by value** is an infinite layout error
+(the same rule plain structs enforce). A pointer self-reference stamps without
+issue: `register-struct` reserves the name before fields are filled.
+
+### Construction
+
+Value-position construction uses the **explicit two-level form**: the inner
+`(Name T ...)` stamps the concrete type, and the outer application is an
+ordinary compound literal over that instance:
+
+```lisp
+((Vector i32) data len cap)     ; builds a Vector.i32 value
+((Pair CStr i32) k v)           ; builds a Pair.CStr.i32 value
+```
+
+A **bare `(Vector v0 v1 ...)` in value position is a compile error** for a
+template name — it is ambiguous (is `v0` a type argument or the first field?)
+and the diagnostic points at the explicit two-level form.
+
+**Known limitation:** the colon binding sugar does not work when the RHS is a
+parenthesized type: `name:(ref (Vector T))` does not tokenize. Use the list
+binding form instead: `(name (ref (Vector T)))`. This is a pre-existing
+tokenizer limitation (not specific to parametric structs).
+
+### Methods over a template
+
+A `defn` whose parameter or return type mentions a registered struct template
+applied to free symbols infers those symbols as the method's type variables —
+bound by the parametric receiver, not by `&where`. The body is monomorphized
+once per distinct concrete receiver type, reusing the rung-4 monomorphizer.
+
+```lisp
+(defn count:usize (self:(ref (Vector T)))
+  (return (self len)))
+
+(defn push:void ((self (ref (Vector T))) x:T)
+  ; ... grow if needed, store x, increment len
+  )
+```
+
+The method call `(count v)` with `v:(ref Vector.i32)` resolves to a direct
+`call` (inlinable, zero dispatch overhead). Field access `(v len)` on a stamped
+instance is a static GEP+load — byte-identical to any hand-written struct.
+
+`&where` remains available for **extra bounds** on the type variable:
+`&where (T Ord)` constrains `T` beyond what the receiver alone asserts.
+
+### `.nuch` export and C ABI
+
+A stamped instance is an ordinary monomorphic `TY-STRUCT`: the Stage 8 SysV
+classifier (`abi-classify`) applies unchanged. By-value parameters and return
+values work with no special handling.
+
+`.nuch` export emits the template verbatim (`(defstruct (Vector T) ...)`);
+importers re-register the template and re-stamp instances on demand. Concrete
+instances are not serialized into the header (same precedent as union templates;
+re-stamping reproduces an identical layout). Methods export through the existing
+rung-4 generic `defmethod` / monomorphization machinery.
+
+C-legible names: `--emit-cheader` maps dots (and any non-`[A-Za-z0-9_]`
+character) to `_` via `sanitize-for-c` (`src/cheader.nuc`), so `Vector.i32`
+exports as `Vector_i32`. LLVM IR keeps the dotted name (dots are legal in IR).
+
+**Known limitation (`.nuch` consumer):** when a `declare` form has a
+parametric return type, the list-form name node is required:
+`(declare (p2_make (P2 i32 i32)) (...))`.
+
+See also `examples/parametric.nuc`, `examples/import-parametric.nuc`, and
+`tests/abi/interop.nuc`.
+
+## Parametric protocols
+
+A **parametric protocol** carries extra type parameters beyond `Self`. These
+extra parameters are bound explicitly at the `extend` site, enabling element-
+typed collection protocols without full associated types.
+
+```lisp
+(defprotocol (Seq E)
+  (get:E ((self (ref Self)) i:usize))
+  (len:usize ((self (ref Self)))))
+```
+
+The element parameter `E` is a free symbol in the protocol's required-method
+signatures. At the `extend` site, bind it to the conforming type's element:
+
+```lisp
+(extend (Vector T) (Seq T))   ; binds E := T for each stamped Vector instance
+```
+
+Conformance is checked **at stamp time**: when `Vector.i32` is stamped, the
+protocol's required methods (with `Self → Vector.i32` and `E → i32`) must
+resolve to concrete implementations, else a compile-time error names the missing
+method. This produces earlier, clearer diagnostics than lazy (use-time)
+checking.
+
+**Full associated types** (where the element type is *derived* from `Self`
+rather than spelled explicitly at the `extend` site) are deferred. Parametric
+protocols with explicit element binding at the `extend` site are the v1 form.
+See `design/stage11/parametric-structs.md` §5 and §9.
+
+**Limitation:** the `&where` parser requires single-symbol bounds
+`(Protocol Var)`. Bounds that name a parametric protocol with an associated
+element (`&where ((Seq E) Self)`) are not supported in v1 — the element-generic
+frontier is deferred to a future pass. Generic functions bounded on a parametric
+protocol must be expressed via ordinary `extend` + stamp-time checking on the
+conforming type.
 
 ## Error handling: `Err`, `deferror`, `!T`, handlers (Stage 10)
 
@@ -949,7 +1102,10 @@ constraint is the standard `Ord`; built-in numeric types conform automatically.
   among the arguments and requires they agree; the bound type must conform
   (nominally, via `extend`) to the variable's protocol(s). There is no unifier:
   variables appear only in **bare** parameter/return positions. A nested position
-  (`(ptr T)`, etc.) is rejected (deferred to full parametric generics).
+  (`(ptr T)`, etc.) in a plain `&where` generic is rejected. For a parametric
+  struct receiver, the type variable **is** permitted in nested positions like
+  `(ptr T)` and `(ref T)` — those tyvars are inferred from the receiver, not
+  supplied via `&where`. See [Parametric struct templates](#parametric-struct-templates-defstruct-name-t-).
 - **Abstract return (B1).** The return type may be a type variable bound by a
   parameter (`maxv:T` above); the concrete return is known per instantiation.
   A return variable bound by *no* parameter (Haskell `read`) is rejected — it
@@ -1033,8 +1189,8 @@ It's safer to prefer named protocols and treat `Valid` as an escape hatch.
 
 *Not yet implemented:* same-name overloading that mixes imported and
 locally-defined methods; `&rest` together with `&where`; REPL generic
-instantiation; full parametric generics (nested/multiple unbound variables,
-generic struct layout).
+instantiation; non-type/const parameters in parametric generics; higher-kinded
+or partially applied type parameters.
 
 ## Callable values (non-function call position)
 
@@ -1147,11 +1303,15 @@ Symbol identity replaces `strcmp` for matching known spellings. Prefer `(= h 'de
 | `ui64` | 64-bit unsigned integer | `uint64_t` |
 | `f32` / `float` | IEEE-754 binary32 | `float` |
 | `f64` / `double` | IEEE-754 binary64 | `double` |
+| `usize` | Unsigned pointer-sized integer (resolves to `i32` on ILP32 targets, `i64` on LP64) | `size_t` |
+| `ssize` | Signed pointer-sized integer (resolves to `i32` on ILP32 targets, `i64` on LP64) | `ssize_t` / `ptrdiff_t` |
 | `ptr` | Opaque pointer | `void*` |
 | `CStr` | C-style (null-terminated) string | `char*` |
 | `void` | No value | `void` |
 
 Pointer size and the target are not hardcoded as `i64`/`8` throughout codegen: a target descriptor (`g-target-triple`, `g-target-ptr-bytes`, defaulting to `x86_64-pc-linux-gnu` / 8 bytes) drives the emitted `target triple`, pointer/`CStr` type sizes and alignments, and the width of `sizeof` (a pointer-sized `size_t`). To target a 32-bit platform, set `g-target-ptr-bytes` to 4. (The macro/`compile-time` JIT still targets the host. One remaining 64-bit assumption is the hand-written `__cons`/`__append` IR in `emit-qq-helpers`.)
+
+**`usize` and `ssize`** are the portable index and length types for pointer-sized arithmetic. They resolve to the target's pointer-width integer at compile time: `i32` on ILP32 (4-byte pointer) targets and `i64` on LP64 (8-byte pointer) targets. `usize` is unsigned; `ssize` is signed. They are valid in any type position and are handled correctly by `sizeof`, type mangling, `type-eq`, and arithmetic operators. Use `usize` for lengths, counts, and non-negative offsets; use `ssize` for signed differences or offsets that may be negative. Both participate in the standard numeric promotions and are mangled distinctly (e.g. `usize`, `ssize`) in method symbols and stamped struct names.
 
 `CStr` is the type of a string literal — a C `char*`. It lowers to `ptr` (same ABI) and flows into any `ptr`-typed C function with no cast, but it is a **distinct type for operator dispatch**: `=` / `!=` on two `CStr` do a `strcmp` **content** comparison (so equal text compares equal across distinct buffers), whereas `=` on two raw `ptr` is pointer identity. `CStr` conforms to the `Eq` protocol (`lib/numeric.nuc`), so it works in an `Eq`-bounded generic; it is not `Ord` (no ordering — out of scope here, along with Unicode). Only `=` / `!=` are defined; other operators on `CStr` are an error. A `CStr` and a `ptr` are freely interconvertible with `cast` (no IR) and coerce automatically in value positions (assignment, return, field/array store); a string literal also passes directly to a plain `ptr` parameter. (Multimethod dispatch treats `CStr` as distinct — overload on `CStr` explicitly, or `cast` to `ptr`.) `strcmp` must be declared, which the prelude's `(include string)` provides. Example: `examples/cstr.nuc`.
 

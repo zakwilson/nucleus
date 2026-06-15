@@ -4,6 +4,7 @@
 ;   - small INTEGER-class struct passed (pair_sum) and returned (pair_make)
 ;   - small struct with a float field, INTEGER eightbyte (mixed_get)
 ;   - >16-byte struct passed byval (big_sum) and returned via sret (big_make)
+;   - parametric struct (P2 i32 i32) passed and returned by value (p2_sum, p2_make)
 ;
 ; This file is the acceptance gate for Phase C (ABI lowering). Until Phase C
 ; lands it prints wrong numbers; it is run via `make abi-test`, NOT wired
@@ -13,6 +14,11 @@
 (defstruct Mixed i:int f:f32)
 (defstruct Big   x:i64 y:i64 z:i64)
 
+; Parametric struct template — Stage 11 ABI parity test.
+; (P2 i32 i32) stamps to a 2xi32 aggregate, SysV class INTEGER (one register).
+; C-legible name: P2_i32_i32 (dot → underscore in --emit-cheader).
+(defstruct (P2 A B) a:A b:B)
+
 (include stdio)
 
 (declare pair_make:Pair  (a:int b:int))
@@ -20,6 +26,10 @@
 (declare big_make:Big    (x:i64 y:i64 z:i64))
 (declare big_sum:i64     (b:Big))
 (declare mixed_get:f64   (m:Mixed))
+; Parametric struct: extern C functions taking/returning (P2 i32 i32) by value.
+; C side uses typedef struct { int a; int b; } P2i; -- same layout.
+(declare p2_sum:i32 ((p (P2 i32 i32))))
+(declare (p2_make (P2 i32 i32)) (a:i32 b:i32))
 
 ; Nucleus-defined struct functions, to exercise the defn side of the ABI
 ; (prologue reconstruction of struct params; sret / register-coerced returns)
@@ -54,4 +64,9 @@
   (let (b:ptr:Big (alloca Big))
     (ptr-set! b (nuc_big_make 100 200 300))
     (printf "n2n big=%lld,%lld,%lld sum=%lld\n" (. b x) (. b y) (. b z) (nuc_big_sum @b)))
+  ; Parametric struct: (P2 i32 i32) passed and returned by value across C boundary.
+  (let ((q (ptr (P2 i32 i32))) (alloca (P2 i32 i32)))
+    (ptr-set! q (p2_make 3 4))
+    (printf "p2_make=%d,%d\n" (. q a) (. q b))
+    (printf "p2_sum=%d\n" (p2_sum @q)))
   (return 0))

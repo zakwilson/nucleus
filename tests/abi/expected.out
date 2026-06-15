@@ -5,5 +5,7 @@ big_sum=600
 mixed_get=8.5
 n2n pair=3,4 sum=7
 n2n big=100,200,300 sum=600
+p2_make=3,4
+p2_sum=7
 c2n pair=3,4 sum=7
 c2n big=100,200,300 sum=600

@@ -1,0 +1,85 @@
+; Stage 11: parametric structs showcase.
+; Exercises: (defstruct (Pair A B)) template definition, type application in
+; type position, methods over template tyvars, explicit construction via
+; ((Pair i32 i32) v0 v1), a parametric protocol (Container E) extended by the
+; template, a bounded generic call, and usize as a pointer-sized scalar.
+
+(include stdio)
+
+; ----------------------------------------------------------------
+; 1. Parametric struct definitions.
+; ----------------------------------------------------------------
+; Two-variable struct.
+(defstruct (Pair A B)
+  fst:A
+  snd:B)
+
+; Single-variable struct; also uses usize for a length field (requirement 6).
+(defstruct (Box T)
+  val:T
+  len:usize)
+
+; ----------------------------------------------------------------
+; 3. Methods over the template.
+;    Tyvars are inferred from the receiver type.
+;    NOTE: parenthesised parameter-type uses list binding form (p (ref ...))
+;    because the colon form p:(...) does not tokenise for a parenthesised RHS.
+; ----------------------------------------------------------------
+(defn pair-first:A ((p (ref (Pair A B))))
+  (return (p fst)))
+
+(defn pair-second:B ((p (ref (Pair A B))))
+  (return (p snd)))
+
+(defn box-val:T ((b (ref (Box T))))
+  (return (b val)))
+
+(defn box-len:usize ((b (ref (Box T))))
+  (return (b len)))
+
+; ----------------------------------------------------------------
+; 5. Parametric protocol — element type E is a protocol parameter.
+;    (defprotocol (Container E) ...) parametrises the element type so the
+;    method signature can mention both Self and E.
+; ----------------------------------------------------------------
+(defprotocol (Container E)
+  (get-elem:E ((self (ref Self)) i:usize)))
+
+; Concrete implementation for Box T: return the stored value.
+(defn get-elem:T ((self (ref (Box T))) i:usize)
+  (return (self val)))
+
+; Extend the template: every Box T conforms to (Container T).
+; This binds the protocol's extra parameter E := T.
+(extend (Box T) (Container T))
+
+; ----------------------------------------------------------------
+; 5b. A generic function exercising the conformance.
+;     Uses structural dispatch — get-elem resolves for any stamped Box instance.
+; ----------------------------------------------------------------
+(defn show-box:void ((b (ref (Box i32))))
+  (printf "container elem=%d\n" (get-elem b (cast usize 0))))
+
+(defn main:int ()
+  ; 2 + 4. Type application in type position; explicit construction.
+  ;   ((Pair i32 i32) 3 4) stamps Pair.i32.i32 and constructs a value.
+  (let ((p (ref (Pair i32 i32))) (alloca (Pair i32 i32)))
+    (ptr-set! p @((Pair i32 i32) 3 4))
+    (printf "pair fst=%d snd=%d\n" (pair-first p) (pair-second p)))
+
+  ; Pair with different element types.
+  (let ((q (ref (Pair i32 f64))) (alloca (Pair i32 f64)))
+    (ptr-set! q @((Pair i32 f64) 7 2.5))
+    (printf "pair fst=%d snd=%g\n" (pair-first q) (pair-second q)))
+
+  ; 1b + 6. Box with usize length field.
+  (let ((b (ref (Box i32))) (alloca (Box i32)))
+    (ptr-set! b @((Box i32) 42 (cast usize 1)))
+    (printf "box val=%d len=%llu\n" (box-val b) (cast ui64 (box-len b))))
+
+  ; 5b. Parametric protocol: get-elem dispatches to Box T's conforming method.
+  (let ((b2 (ref (Box i32))) (alloca (Box i32)))
+    (ptr-set! b2 @((Box i32) 99 (cast usize 1)))
+    (show-box b2))
+
+  (return 0))

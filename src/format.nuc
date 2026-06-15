@@ -55,3 +55,25 @@
       (set! i (+ i (cast i64 1))))
     (aset! (cast ptr:i8 s) n (cast i8 0))
     (return s)))
+
+; Replace chars invalid in C identifiers with underscores.
+; Like sanitize-for-ir but dots (.) are also replaced — C identifiers are
+; [A-Za-z_][A-Za-z0-9_]* and dots are not legal. Used only on the
+; --emit-cheader path so IR struct names (which legally contain dots) are
+; unaffected.
+(defn sanitize-for-c:ptr (name:ptr)
+  (let (n:i64 (strlen name)
+        s:ptr (arena-alloc (+ n (cast i64 1)))
+        i:i64 (cast i64 0))
+    (while (< i n)
+      (let (c:i32 (bit-and (cast i32 (aref (cast ptr:i8 name) i)) 255)
+            is-digit:i1 (!= (isdigit c) 0)
+            is-lower:i1 (and (>= c 97) (<= c 122))
+            is-upper:i1 (and (>= c 65) (<= c 90))
+            ok:i1       (or is-digit (or is-lower (or is-upper (= c 95)))))
+        (if ok
+          (aset! (cast ptr:i8 s) i (cast i8 c))
+          (aset! (cast ptr:i8 s) i (cast i8 95))))
+      (set! i (+ i (cast i64 1))))
+    (aset! (cast ptr:i8 s) n (cast i8 0))
+    (return s)))
