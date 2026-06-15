@@ -733,7 +733,7 @@ deliberately converts code — the standing discipline.
 
 **E1 landed** (`make test` 69/69, `make bootstrap` fixed point holds). The build
 spec is [errors-prompt.md](errors-prompt.md); status detail also lives in
-[../progress.md](../progress.md) (stage 10 errors table); user-facing docs in
+[progress.md](progress.md) (stage 10 errors table); user-facing docs in
 docs/builtins.md §"Error handling"; runtime coverage in `examples/errors.nuc`.
 Implementation notes:
 
@@ -857,7 +857,7 @@ Implementation notes:
 
 **Phase F (the safety flip) landed** (`make test` 71/71, `make bootstrap` fixed
 point, all boot artifacts re-converged). Build plan and the full how is in
-[flip.md](flip.md); status mirrored in [../progress.md](../progress.md),
+[flip.md](flip.md); status mirrored in [progress.md](progress.md),
 [safety.md](safety.md) §5, and [nullability.md](nullability.md) §9.1. Headline:
 
 - **A blocking self-compile crash was fixed first.** The Phase-F1 `noreturn`
@@ -1009,6 +1009,6 @@ The U4 niche layout rules from §6 are fully implemented. Concretely:
   LAYOUT-TAGGED, preserving the byte-identical bootstrap.
 - **The §8 id cap (4095)** already reserved the full top-page range the
   ERRPTR encoding needs; no renumbering or semantic change.
-- Full status in [unions.md](unions.md) robot section and [../progress.md](../progress.md);
+- Full status in [unions.md](unions.md) robot section and [progress.md](progress.md);
   user-facing documentation in docs/builtins.md §"Unions and tagged sums" (niche
   layout + `&repr`) and §"Error handling" (pointer-sized `!ptr:T` contract).

@@ -721,8 +721,9 @@
   (when (= name "bool")  (return "_Bool"))
   (when (= name "CStr")  (return "const char*"))
   (when (= name "ptr")   (return "void*"))
-  ; Assume struct type
-  (return (fmt-s "struct %s" name)))
+  ; Assume struct type — sanitize the name for C (dots from stamped parametric
+  ; instances like Vector.i32 become underscores: Vector_i32).
+  (return (fmt-s "struct %s" (sanitize-for-c name))))
 
 ; Convert a type AST node to a C type string. Handles SYM types and
 ; (ptr T) / (ptr ptr T) ... lists.
@@ -805,7 +806,10 @@
     (return null)))
 
 (defn emit-cheader-defstruct:void (form:ptr)
-  (let (name:ptr ((cast ptr:Node (node-at form 1)) s)
+  ; Skip parametric templates: (defstruct (Name T...) ...) has a list at
+  ; position 1, not a sym. Templates define no concrete C type.
+  (when (!= ((cast ptr:Node (node-at form 1)) kind) NODE-SYM) (return))
+  (let (name:ptr (sanitize-for-c ((cast ptr:Node (node-at form 1)) s))
         nfields:i32 (- (node-len form) 2))
     (printf "typedef struct {\n")
     (let (i:i32 0)
@@ -905,7 +909,7 @@
 (defn emit-cheader-defunion:void (form:ptr)
   (let (name-node:ptr:Node (cast ptr:Node (node-at form 1)))
     (when (!= (name-node kind) NODE-SYM) (return))
-    (let (name:ptr (name-node s)
+    (let (name:ptr (sanitize-for-c (name-node s))
           narms:i32 (- (node-len form) 2)
           npay:i32 0
           i:i32 0)

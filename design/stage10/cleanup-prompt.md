@@ -12,7 +12,7 @@ what already exists and the deviations from the original design:
 [unions.md](unions.md) "robot — implementation status" (U1–U3),
 [errors.md](errors.md) §"robot — implementation status" (E1–E4 + flip),
 [nullability.md](nullability.md) §9 (N1/N2 + flip, **especially the friction
-findings**), and [../progress.md](../progress.md) (the Stage 10 tables).
+findings**), and [progress.md](progress.md) (the Stage 10 tables).
 
 ## What's being finished
 
@@ -203,7 +203,7 @@ byte-identical (compiler binds no handler); `make test` green.
 E4 converted the **reader** (`lib/reader.nuc`) from `die-at` to `!T` returns
 (errors.md §"Phase E4 landed"); the **emitter/coercion path was left** because
 converting `emit-node` itself to `!ref:Val` cascades through ~74 emitters
-(progress.md E4 row). This phase does the *tractable* remainder in two parts.
+(stage10/progress.md E4 row). This phase does the *tractable* remainder in two parts.
 
 ### Part A — convert contained recoverable coercion sites to `!T`
 
@@ -264,7 +264,7 @@ polish; the hook's *presence* (off by default) is the deliverable.
 with diagnostics byte-preserved via `report-at`; `die-at`/`unwrap` signal
 `'unhandled-error` before aborting (no-op without a handler); `make test` green,
 boot re-converged; the remaining `die-at` sites are confirmed as the intended
-panic tier (note the count in errors.md / progress.md).
+panic tier (note the count in errors.md / stage10/progress.md).
 
 ---
 
@@ -273,7 +273,7 @@ panic tier (note the count in errors.md / progress.md).
 The capstone and the convergence step both designs point at: **U4** (unions.md §6
 + §9, the `&repr` control and niche rules 1–3) and **A2** (errors.md §2/§8, the
 ERR_PTR encoding) are the *same layout-rule engine*. Today `Result`/`Maybe` over
-pointers are still emitted as fat `{i32 tag; union}` structs (progress.md U4/A2
+pointers are still emitted as fat `{i32 tag; union}` structs (stage10/progress.md U4/A2
 rows); this phase makes the layout engine niche-encode the pointer cases, so
 `(Maybe (ref T))` *is* a bare nullable pointer and `(Result (ref T) Err)` *is* a
 bare ERR_PTR-tagged pointer — both ABI-identical to `T*` at the C boundary.
@@ -424,7 +424,7 @@ case; boot re-converged.
   implementation status" sections: U4 outcome in [unions.md](unions.md), A2 +
   `signal` + the E4 coercion increment in [errors.md](errors.md). Reconcile
   nullability.md §9 finding 5 (C1). Flip the U4/A2 and N2-cold-site rows in
-  [../progress.md](../progress.md) from Deferred to Done with notes.
+  [progress.md](progress.md) from Deferred to Done with notes.
 - **Context files** (AGENTS.md self-improving-context step): if C2/C4 surface a
   non-obvious build or JIT gotcha (e.g. the macro-JIT decl machinery, or a
   layout/ABI interaction), add a concise note to the right

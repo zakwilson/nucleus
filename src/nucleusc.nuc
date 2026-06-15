@@ -29,6 +29,8 @@
 ; Stage 10 unions (design/stage10/unions.md)
 (defconst MAX-UNIONS 128)
 (defconst MAX-UNION-TEMPLATES 64)
+; Stage 11 parametric structs (design/stage11/parametric-structs.md §1)
+(defconst MAX-STRUCT-TEMPLATES 64)
 (defconst MAX-ENUMS 128)
 (defconst MAX-UNION-ARMS 64)
 ; Stage 10 errors (design/stage10/errors.md §8): global error-id cap. Ids are
@@ -70,7 +72,10 @@
 (defenum TypeKind TY-VOID TY-I1 TY-I8 TY-I16 TY-I32 TY-I64
                   TY-UI8 TY-UI16 TY-UI32 TY-UI64
                   TY-PTR TY-FN TY-STRUCT
-                  TY-F32 TY-F64 TY-TYVAR TY-CSTR TY-UNION TY-ERR)
+                  TY-F32 TY-F64 TY-TYVAR TY-CSTR TY-UNION TY-ERR
+                  ; Stage 11: pointer-sized integer scalars. TY-USIZE is unsigned,
+                  ; TY-SSIZE is signed. Both lower to i32/i64 per g-target-ptr-bytes.
+                  TY-USIZE TY-SSIZE)
 
 ; Pointer kinds (Stage 10 nullability, design/stage10/nullability.md). A
 ; compile-time contract carried on TY-PTR types; all three lower to IR `ptr`
@@ -123,7 +128,15 @@
   src-line:i32
   ; --- Stage 10 unions ---
   is-union:i32      ; 1 = untagged union: all fields at offset 0, size = max member
-  udef:ptr)         ; UnionDef* when this struct is a defunion backing struct, else null
+  udef:ptr          ; UnionDef* when this struct is a defunion backing struct, else null
+  ; --- Stage 11 parametric structs (T2): origin of a stamped template instance ---
+  ; For a struct produced by struct-template-stamp-types these record which
+  ; template it came from and the concrete type arguments, so the method unifier
+  ; can recover (template, args) from a concrete `Vector.i32` and bind a tyvar
+  ; pattern `(Vector T)` against it. null/0 for an ordinary hand-written struct.
+  origin-template:ptr ; StructTemplate* this instance was stamped from, or null
+  origin-args:ptr     ; ptr array of concrete arg Type* (length origin-nargs), or null
+  origin-nargs:i32)
 
 ; A tagged sum (defunion, design/stage10/unions.md §3). The backing
 ; representation is an ordinary struct {tag:i32, payload:(union ...)} held in
@@ -152,6 +165,16 @@
   tyvars:ptr        ; ptr array of tyvar name strings
   ntv:i32
   form:ptr)         ; retained (defunion (Name T ...) arms...) Node*
+
+; A parameterized defstruct template: `(defstruct (Vector T) ...)`. Defines no
+; type itself; a fully-applied use `(Vector i32)` in type position stamps a
+; concrete monomorphic StructDef (struct-template-stamp-types). Exact analogue
+; of UnionTemplate (design/stage11/parametric-structs.md §1).
+(defstruct StructTemplate
+  name:CStr
+  tyvars:ptr        ; ptr array of tyvar name strings
+  ntv:i32
+  form:ptr)         ; retained (defstruct (Name T ...) field-specs...) Node*
 
 ; A defenum's member table, recorded so `match` can check exhaustiveness over
 ; enum constants (the §4 freebie). Member i's value is i.
@@ -333,19 +356,39 @@
   mangled:i32)      ; 0 = solitary, unmangled @name (C-callable); 1 = mangled set
 
 ; A Protocol names a capability: a set of required method signatures whose
-; parameter/return types may mention `Self`. It is purely compile-time and
-; emits no code. `extend Type Protocol` substitutes Self→Type in each signature
-; and verifies a matching concrete method exists (see emit-extend).
+; parameter/return types may mention `Self` and, for a parametric protocol
+; `(defprotocol (Seq E) ...)`, the extra parameters `E...` bound at the extend
+; site. It is purely compile-time and emits no code. `extend Type Protocol`
+; substitutes Self→Type (and each extra param→its binding) in each signature and
+; verifies a matching concrete method exists (see emit-extend).
 (defstruct Protocol
   name:CStr
   sigs:ptr          ; ptr to array of ptr:Node, each a (name:ret (params...)) form
-  num-sigs:i32)
+  num-sigs:i32
+  ; --- Stage 11 parametric protocols (T4) ---
+  ; Extra type parameters beyond the implicit `Self`: for `(defprotocol (Seq E)
+  ; ...)` this is the one-element array {"E"}. Empty (null/0) for a plain
+  ; `(defprotocol Name ...)`, which behaves exactly as before (Self-only).
+  params:ptr        ; ptr array of extra-param name strings (beyond Self), or null
+  num-params:i32)
 
 ; A recorded (Type, Protocol) conformance fact. No code; consulted by the
 ; resolver (protocol-bound tier, later) and exported in .nuch.
 (defstruct Conformance
   type-name:CStr
   proto-name:CStr)
+
+; Stage 11 parametric structs (T4): a recorded template-level conformance from
+; `(extend (Vector T) (Seq T))`. `template` is the extended struct template;
+; `proto` is the (parametric) protocol; `bindings` is a node array — the proto
+; application's args, e.g. `T` from `(Seq T)` — positionally bound to the
+; protocol's extra params. At stamp time the template tyvars in each binding are
+; substituted to the concrete instance args to obtain concrete param spellings.
+(defstruct TmplConformance
+  template:ptr      ; StructTemplate*
+  proto:ptr         ; Protocol*
+  bindings:ptr      ; ptr array of Node* (the proto-app args), or null if none
+  nbindings:i32)
 
 ; A queued generic instantiation: the stamped concrete defn form awaiting body
 ; emission, plus a human-readable context ("while instantiating @name.toks…
@@ -443,6 +486,11 @@
 ; Stage 10: the type of `none` — an elem-less (Maybe (ref ?)) that coerces
 ; into any concrete ?T slot exactly as `null` coerces into any (ptr T).
 (defvar ty-maybe-ptr:ref:Type)
+; Stage 11: pointer-sized integer singletons. usize is unsigned (like C size_t),
+; ssize is signed (like C ssize_t / ptrdiff_t). Both lower to i32 on ILP32
+; targets and i64 on LP64 targets, tracking signedness exactly like ui*/i*.
+(defvar ty-usize:ref:Type)
+(defvar ty-ssize:ref:Type)
 
 ; Target descriptor. The compiler emits code for a single target, described
 ; here so the "a pointer is i64" assumption lives in one place instead of being
@@ -484,6 +532,10 @@
 (defvar g-uniondefs-len:i32 0)
 (defvar g-union-templates:ptr)
 (defvar g-union-templates-len:i32 0)
+; Stage 11 parametric structs: defstruct-template registry. Inert until a use
+; `(Vector i32)` in type position fires a stamp (parametric-structs.md §1).
+(defvar g-struct-templates:ptr)
+(defvar g-struct-templates-len:i32 0)
 (defvar g-enumdefs:ptr)
 (defvar g-enumdefs-len:i32 0)
 (defvar g-pending-unions:ptr)
@@ -604,6 +656,18 @@
 (defvar g-proto-supers:ptr)
 (defvar g-num-proto-supers:i32 0)
 (defvar g-cap-proto-supers:i32 0)
+
+; Stage 11 parametric structs (T4): template-level conformances. A
+; `(extend (Vector T) (Seq T))` records that *every* stamped instance of the
+; `Vector` template conforms to `Seq`, with the protocol's extra params bound
+; positionally to the template's tyvar spellings (here `E := T`). The per-instance
+; conformance check fires at stamp time (struct-template-stamp-types): when
+; `Vector.i32` is stamped, the template tyvars are substituted to concrete args
+; and each required method must resolve for the instance. Inert until a stamp
+; fires, so byte-identical for programs using no parametric protocols.
+(defvar g-tmpl-conformances:ptr)
+(defvar g-num-tmpl-conformances:i32 0)
+(defvar g-cap-tmpl-conformances:i32 0)
 
 ; Blanket protocols (Stage 9 §10.1): built-in protocols with automatic
 ; conformance — `Any` (every type) and `Struct` (every struct type). Stored as a
@@ -844,7 +908,9 @@
   (set! ty-raw  (make-type TY-PTR))
   (.set! ty-raw pkind PTR-RAW)
   (set! ty-maybe-ptr (make-type TY-PTR))
-  (.set! ty-maybe-ptr pkind PTR-MAYBE))
+  (.set! ty-maybe-ptr pkind PTR-MAYBE)
+  (set! ty-usize (make-type TY-USIZE))
+  (set! ty-ssize (make-type TY-SSIZE)))
 
 (defn type-to-ir:ptr (t:ptr)
   (let (tt:ptr:Type (cast ptr:Type t))
@@ -864,6 +930,8 @@
     (when (= (tt kind) TY-ERR)    (return "i32"))
     (when (= (tt kind) TY-F32)    (return "float"))
     (when (= (tt kind) TY-F64)    (return "double"))
+    (when (= (tt kind) TY-USIZE)  (return (ptr-int-ir)))
+    (when (= (tt kind) TY-SSIZE)  (return (ptr-int-ir)))
     (when (= (tt kind) TY-STRUCT)
       (return (fmt-s "%%%s" ((cast ptr:StructDef (tt sdef)) name))))
     (when (= (tt kind) TY-UNION)
@@ -892,6 +960,8 @@
     (when (= (tt kind) TY-ERR)    (return "int32_t"))
     (when (= (tt kind) TY-F32)    (return "float"))
     (when (= (tt kind) TY-F64)    (return "double"))
+    (when (= (tt kind) TY-USIZE)  (return "size_t"))
+    (when (= (tt kind) TY-SSIZE)  (return "ssize_t"))
     (when (= (tt kind) TY-STRUCT)
       (return (fmt-s "struct %s" ((cast ptr:StructDef (tt sdef)) name))))
     (when (= (tt kind) TY-UNION)
@@ -926,9 +996,11 @@
     (when (= (tt kind) TY-UI64) (return 8))
     (when (= (tt kind) TY-PTR)  (return g-target-ptr-bytes))
     (when (= (tt kind) TY-CSTR) (return g-target-ptr-bytes))
-    (when (= (tt kind) TY-ERR)  (return 4))
-    (when (= (tt kind) TY-F32)  (return 4))
-    (when (= (tt kind) TY-F64)  (return 8))
+    (when (= (tt kind) TY-ERR)   (return 4))
+    (when (= (tt kind) TY-F32)   (return 4))
+    (when (= (tt kind) TY-F64)   (return 8))
+    (when (= (tt kind) TY-USIZE) (return g-target-ptr-bytes))
+    (when (= (tt kind) TY-SSIZE) (return g-target-ptr-bytes))
     ; A struct value is laid out by LLVM; we use the pointer alignment as a
     ; conservative slot size/alignment for it (structs are handled by-reference).
     (when (= (tt kind) TY-STRUCT) (return g-target-ptr-bytes))
@@ -948,7 +1020,9 @@
     (when (= k TY-UI64) (return 1))
     ; Err is an i32-repr scalar: integer for comparison/coercion/arithmetic,
     ; distinguished from i32 only by type-eq / mangling (errors.md §8).
-    (when (= k TY-ERR) (return 1))
+    (when (= k TY-ERR)   (return 1))
+    (when (= k TY-USIZE) (return 1))
+    (when (= k TY-SSIZE) (return 1))
     (return 0)))
 
 (defn is-float-type:i32 (t:ptr)
@@ -978,15 +1052,18 @@
     (when (= k TY-UI16) (return 16))
     (when (= k TY-UI32) (return 32))
     (when (= k TY-UI64) (return 64))
-    (when (= k TY-ERR) (return 32))
+    (when (= k TY-ERR)   (return 32))
+    (when (= k TY-USIZE) (return (* g-target-ptr-bytes 8)))
+    (when (= k TY-SSIZE) (return (* g-target-ptr-bytes 8)))
     (return 0)))
 
 (defn is-unsigned:i32 (t:ptr)
   (let (k:i32 ((cast ptr:Type t) kind))
-    (when (= k TY-UI8) (return 1))
-    (when (= k TY-UI16) (return 1))
-    (when (= k TY-UI32) (return 1))
-    (when (= k TY-UI64) (return 1))
+    (when (= k TY-UI8)   (return 1))
+    (when (= k TY-UI16)  (return 1))
+    (when (= k TY-UI32)  (return 1))
+    (when (= k TY-UI64)  (return 1))
+    (when (= k TY-USIZE) (return 1))
     (return 0)))
 
 ; ============================================================
@@ -1478,6 +1555,9 @@
     (.set! sd emitted 0)
     (.set! sd is-union 0)
     (.set! sd udef null)
+    (.set! sd origin-template null)
+    (.set! sd origin-args null)
+    (.set! sd origin-nargs 0)
     (inc! g-structs-len)
     (return (cast ref:StructDef sd))))
 
@@ -1596,10 +1676,32 @@
       (inc! i))
     (return best)))
 
+; Write the deferred `%name = type { f0, f1, ... }` definition for one stamped
+; parametric-struct instance (parametric-structs.md §3). Shares the pending queue
+; with unions; distinguished by is-union == 0. A plain struct line — no
+; repr-member/padding — so a stamped instance is byte-identical to the
+; hand-written struct. The `emitted` flag guards double-emit.
+(defn emit-pending-struct-ir-type:void (sd:ptr)
+  (let (sdd:ptr:StructDef (cast ptr:StructDef sd))
+    (when (!= (sdd emitted) 0) (return))
+    (.set! sdd emitted 1)
+    (fprintf g-type-stream "%%%s = type { " (sdd name))
+    (let (i:i32 0)
+      (while (< i (sdd num-fields))
+        (when (!= i 0) (fprintf g-type-stream ", "))
+        (fprintf g-type-stream "%s" (type-to-ir (aref (cast ptr:ptr (sdd field-types)) i)))
+        (inc! i)))
+    (fprintf g-type-stream " }\n\n")))
+
 ; Write the deferred `%name = type { repr [, pad] }` definition for one union.
 (defn emit-union-ir-type:void (sd:ptr)
   (let (sdd:ptr:StructDef (cast ptr:StructDef sd))
     (when (!= (sdd emitted) 0) (return))
+    ; Stage 11: a stamped parametric struct queued on the shared pending list is
+    ; not a union — emit a plain struct line instead of the union wrapper.
+    (when (= (sdd is-union) 0)
+      (emit-pending-struct-ir-type sd)
+      (return))
     (.set! sdd emitted 1)
     (let (ri:i32 (union-repr-member sd)
           rt:ptr (aref (cast ptr:ptr (sdd field-types)) ri)
@@ -1696,6 +1798,10 @@
   (when (= name "ui16") (return ty-ui16))
   (when (= name "ui32") (return ty-ui32))
   (when (= name "ui64") (return ty-ui64))
+  ; Stage 11: pointer-sized integer aliases. usize is unsigned (size_t),
+  ; ssize is signed (ssize_t/ptrdiff_t). Size follows g-target-ptr-bytes.
+  (when (= name "usize") (return ty-usize))
+  (when (= name "ssize") (return ty-ssize))
   (when (= name "f32") (return ty-f32))
   (when (= name "f64") (return ty-f64))
   (when (= name "float") (return ty-f32))
@@ -1740,6 +1846,19 @@
                                    (ptr+ (cast ptr:UnionTemplate g-union-templates) i)))
         (when (= (ut name) name)
           (return (cast ptr ut))))
+      (inc! i)))
+  (return null))
+
+; Stage 11: look up a registered defstruct template by (interned) name. Mirror
+; union-template-lookup. Names compare by pointer equality, so callers pass an
+; interned head symbol (parametric-structs.md §1).
+(defn struct-template-lookup:?ptr:StructTemplate (name:ptr)
+  (let (i:i32 0)
+    (while (< i g-struct-templates-len)
+      (let (st:ptr:StructTemplate (cast ptr:StructTemplate
+                                    (ptr+ (cast ptr:StructTemplate g-struct-templates) i)))
+        (when (= (st name) name)
+          (return (cast ptr st))))
       (inc! i)))
   (return null))
 
@@ -2086,6 +2205,45 @@
           (.set! ut ntv ntv)
           (.set! ut form form))))))
 
+; Stage 11: register `(defstruct (Name T ...) field-specs...)` as a template.
+; Exact analogue of register-union-template — defines no type, emits no IR; a
+; use `(Name A B)` in type position stamps a concrete instance via
+; struct-template-stamp-types. Re-import (idempotent prescan, .nuch) is a no-op.
+; A name list with no parameters — `(Foo)` — is an error (parametric-structs.md
+; §2): use a plain `defstruct`.
+(defn register-struct-template:void (form:ptr)
+  (let (ff:ptr:Node (cast ptr:Node form)
+        head:ptr:Node (cast ptr:Node (node-at form 1))
+        name-node:ptr:Node (cast ptr:Node (node-at (cast ptr head) 0)))
+    (when (!= (name-node kind) NODE-SYM)
+      (die-at (head line) "defstruct: template name must be a symbol"))
+    (let (name:ptr (name-node s)
+          ntv:i32 (- (node-len (cast ptr head)) 1))
+      (when (< ntv 1)
+        (die-at (head line) "defstruct: template needs at least one type parameter — use a plain defstruct"))
+      ; Re-import of the same template (e.g. via .nuch, or the idempotent prescan
+      ; pass) is a no-op.
+      (when (!= (struct-template-lookup name) null) (return))
+      (guard-name-kind name (ff line) NK-TYPE)
+      (when (>= g-struct-templates-len MAX-STRUCT-TEMPLATES)
+        (die-at (ff line) "too many defstruct templates"))
+      (let (tyvars:ptr (arena-alloc (* (cast i64 ntv) (ptr-bytes)))
+            i:i32 0)
+        (while (< i ntv)
+          (let (tv:ptr:Node (cast ptr:Node (node-at (cast ptr head) (+ i 1))))
+            (when (!= (tv kind) NODE-SYM)
+              (die-at (tv line) "defstruct: type parameter must be a symbol"))
+            (aset! (cast ptr:ptr tyvars) i (tv s)))
+          (inc! i))
+        (let (st:ptr:StructTemplate (cast ptr:StructTemplate
+                                      (ptr+ (cast ptr:StructTemplate g-struct-templates)
+                                            g-struct-templates-len)))
+          (inc! g-struct-templates-len)
+          (.set! st name name)
+          (.set! st tyvars tyvars)
+          (.set! st ntv ntv)
+          (.set! st form form))))))
+
 ; Stamp (and memoize) a concrete instance of a defunion template from a type
 ; The Type a defunion instance resolves to. For a niche layout (unions.md §6
 ; rules 2/3) this is a bare pointer carrying the niche pkind and elem=T — the
@@ -2144,6 +2302,110 @@
               arms-subst:ptr (subst-tyvars-node arms (utt tyvars) spellings (utt ntv))
               ud2:ref:UnionDef (defunion-register iname arms-subst line))
           (return (union-instance-type (cast ptr ud2))))))))
+
+; Stage 11: stamp (and memoize) a concrete instance of a defstruct template
+; (parametric-structs.md §3). Exact analogue of union-template-stamp-types:
+;   1. Mangled instance name `Vector.i32` (type-mangle-token per arg), interned
+;      so the lookup-struct memoization is a pointer-identity hit.
+;   2. Memoize via lookup-struct — a hit returns the existing type-for-sdef.
+;   3. On a miss, register-struct the mangled name FIRST (so a pointer
+;      self-reference `(ptr (Tree T))` resolving to (Tree i32) finds the
+;      in-progress StructDef and terminates), then subst-tyvars-node the
+;      field-spec list, parse each concrete field type, fill the StructDef, and
+;      QUEUE its `%name = type {…}` line on the shared deferred-IR queue (drained
+;      at module-assembly boundaries, exactly like unions). The result IS an
+;      ordinary monomorphic TY-STRUCT — no new layout/ABI code.
+(defn struct-template-stamp-types:ref:Type (st:ptr argts:ptr nargs:i32 line:i32)
+  (let (stt:ptr:StructTemplate (cast ptr:StructTemplate st))
+    (when (!= nargs (stt ntv))
+      (die-at line
+        (fmt-s "%s: wrong number of type arguments for defstruct template" (stt name))))
+    (let (spellings:ptr (arena-alloc (* (cast i64 nargs) (ptr-bytes)))
+          iname:ptr (stt name)
+          i:i32 0)
+      (while (< i nargs)
+        (let (at:ptr (aref (cast ptr:ptr argts) i))
+          (aset! (cast ptr:ptr spellings) i (type-spelling at))
+          (set! iname (fmt-2s "%s.%s" iname (type-mangle-token at))))
+        (inc! i))
+      ; Intern so the lookup-struct / register-struct name comparison (which is
+      ; pointer-identity) memoizes across uses within the unit.
+      (set! iname (intern-str iname))
+      ; Memoized hit: the instance was already stamped (or is mid-stamp for a
+      ; recursive self-reference) — return its Type without re-emitting.
+      (let (existing:?ptr:StructDef (lookup-struct iname))
+        (when (!= existing null)
+          (return (type-for-sdef existing))))
+      ; Miss: reserve the name before filling fields so a pointer self-reference
+      ; (Tree T → (ptr (Tree i32))) resolves to this in-progress StructDef.
+      (let (sd:ref:StructDef (register-struct iname)
+            ; The template form's field specs are everything after the (Name T...)
+            ; head: (defstruct (Name T..) f0 f1 ...) → cdr-cdr.
+            fields-tmpl:ptr (-> (cast ptr:Node (stt form)) (_ cdr) (cast ptr:Node _) (_ cdr))
+            fields:ptr (subst-tyvars-node fields-tmpl (stt tyvars) spellings (stt ntv))
+            nfields:i32 0
+            cur:ptr fields)
+        ; Record the stamping origin (T2): the method unifier recovers
+        ; (template, args) from a concrete instance to bind a pattern `(Vector T)`
+        ; against a concrete `Vector.i32`. Copy the arg Type*s into a stable arena
+        ; array, since the caller's `argts` may be reused.
+        (let (origin-args:ptr (arena-alloc (* (cast i64 (if (> nargs 0) nargs 1)) (ptr-bytes)))
+              oi:i32 0)
+          (while (< oi nargs)
+            (aset! (cast ptr:ptr origin-args) oi (aref (cast ptr:ptr argts) oi))
+            (inc! oi))
+          (.set! sd origin-template st)
+          (.set! sd origin-args origin-args)
+          (.set! sd origin-nargs nargs))
+        (while (!= cur null)
+          (inc! nfields)
+          (set! cur ((cast ptr:Node cur) cdr)))
+        (.set! sd field-names (arena-alloc (* (cast i64 nfields) (ptr-bytes))))
+        (.set! sd field-types (arena-alloc (* (cast i64 nfields) (ptr-bytes))))
+        (.set! sd num-fields nfields)
+        (.set! sd src-file g-source-path)
+        (.set! sd src-line line)
+        (let (fi:i32 0)
+          (set! cur fields)
+          (while (!= cur null)
+            (let (field:ptr ((cast ptr:Node cur) car)
+                  fname:ptr null
+                  fty:ptr (extract-name-and-type field (cast ptr:ptr (addr-of fname))
+                                                 ((cast ptr:Node field) line)))
+              (when (= fty null)
+                (die-at ((cast ptr:Node field) line)
+                  (fmt-2s "defstruct template %s: field '%s' missing :type" (stt name) fname)))
+              (aset! (cast ptr:ptr (sd field-names)) fi (intern-str fname))
+              (aset! (cast ptr:ptr (sd field-types)) fi fty))
+            (inc! fi)
+            (set! cur ((cast ptr:Node cur) cdr))))
+        ; Queue the `%name = type {…}` IR on the shared deferred queue. emit-pending
+        ; -struct-ir-type writes the plain struct line at drain time; the `emitted`
+        ; flag guards double-emit. Deferring (rather than emitting inline) keeps a
+        ; mid-function stamp from interleaving into a def-stream body, the same
+        ; discipline unions use.
+        (vec-push g-pending-unions (cast ptr sd))
+        ; Stage 11 T4: per-instance protocol conformance check. For each template
+        ; conformance recorded via `(extend (Vector T) (Seq T))`, substitute this
+        ; instance's concrete args into the protocol bindings and confirm every
+        ; required method resolves for the instance — erroring (naming the method)
+        ; if not, and recording the concrete `(Vector.i32, Seq)` conformance so a
+        ; Seq-bounded generic call finds it. Done after the StructDef is fully
+        ; built so a required method that mentions the instance resolves.
+        (tmpl-conformance-check-instance st iname spellings nargs line)
+        (return (type-for-sdef sd))))))
+
+; Node-driven entry: stamp `(Name A B)` from a use node (mirrors
+; union-template-stamp). Parses each type argument, then delegates.
+(defn struct-template-stamp:ref:Type (st:ptr use-node:ptr line:i32)
+  (let (stt:ptr:StructTemplate (cast ptr:StructTemplate st)
+        nargs:i32 (- (node-len use-node) 1)
+        argts:ptr (arena-alloc (* (cast i64 (if (> nargs 0) nargs 1)) (ptr-bytes)))
+        i:i32 0)
+    (while (< i nargs)
+      (aset! (cast ptr:ptr argts) i (parse-type-from-node (node-at use-node (+ i 1)) line))
+      (inc! i))
+    (return (struct-template-stamp-types st argts nargs line))))
 
 ; Parse a type from an AST node. Handles:
 ;   - symbol node: delegates to parse-type-name
@@ -2275,6 +2537,16 @@
                     t:ref:Type (make-type TY-UNION))
                 (.set! t sdef sd)
                 (return t))))))
+      ; Stage 11: a parameterized defstruct use — (Vector i32), (HashMap K V) —
+      ; in type position stamps (and memoizes) a concrete monomorphic instance
+      ; (parametric-structs.md §3). The colon-sugar composes for free: ptr:T and
+      ; (ref ...) reach here through the recursion above / the ptr/ref branches
+      ; below with the inner (Vector i32) parsed via this same routine.
+      (let (head:ptr:Node (cast ptr:Node (n car)))
+        (when (and (!= (cast ptr head) null) (= (head kind) NODE-SYM))
+          (let (st:ptr (struct-template-lookup (head s)))
+            (when (!= st null)
+              (return (struct-template-stamp st (cast ptr n) line))))))
       ; A parameterized defunion use: (Result A B) stamps (and memoizes) a
       ; concrete instance of the template (unions.md §5). `Maybe` is excluded —
       ; it has bespoke handling below (one spelling, two layouts: niche pointer
@@ -3937,7 +4209,9 @@
       (return (-> tt (_ sdef) (cast ptr:StructDef _) (_ name))))
     (when (= k TY-FN) (return "fn"))
     (when (= k TY-CSTR) (return "cstr"))
-    (when (= k TY-ERR) (return "Err"))
+    (when (= k TY-ERR)   (return "Err"))
+    (when (= k TY-USIZE) (return "usize"))
+    (when (= k TY-SSIZE) (return "ssize"))
     (return "x")))
 
 ; A safe, distinct IR token for a generic name. Operators (whose source symbols
@@ -3995,8 +4269,10 @@
     (when (= k TY-F64)  (return "f64"))
     (when (= k TY-STRUCT) (return (-> tt (_ sdef) (cast ptr:StructDef _) (_ name))))
     (when (= k TY-UNION) (return (-> tt (_ sdef) (cast ptr:StructDef _) (_ name))))
-    (when (= k TY-CSTR) (return "CStr"))
-    (when (= k TY-ERR) (return "Err"))
+    (when (= k TY-CSTR)  (return "CStr"))
+    (when (= k TY-ERR)   (return "Err"))
+    (when (= k TY-USIZE) (return "usize"))
+    (when (= k TY-SSIZE) (return "ssize"))
     (when (= k TY-PTR)
       (if (= (tt elem) null)
         (return "ptr")
@@ -4014,6 +4290,43 @@
           (return (cast ptr m))))
       (inc! i))
     (return null)))
+
+; Stage 11 T4: would a *generic* (METHOD-GENERIC) method of `g` resolve for the
+; concrete `param-types`? Mirrors generic-resolve's tier-1 — bind the tyvars, then
+; check the &where constraints — but does NOT instantiate (no MonoJob queued, no
+; emission), so it is a pure side-effect-free conformance probe. Used by
+; method-satisfies-sig so a required protocol method written generically over a
+; parametric struct (`get`/`count` over `(Vector T)`) counts as satisfied for a
+; stamped instance, exactly as the real call would resolve. On a match writes the
+; method's *bound* return Type* through `out-ret` (the body return spelling with
+; the tyvars substituted) so the caller can verify it against a required return.
+(defn generic-binds-for:i32 (g:ptr param-types:ptr nparams:i32 out-ret:ptr:ptr line:i32)
+  (let (gg:ptr:Generic (cast ptr:Generic g)
+        j:i32 0)
+    (while (< j (gg num-methods))
+      (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (gg methods)) j)))
+        (when (= (m kind) METHOD-GENERIC)
+          (let (bound:ptr (arena-alloc (* (cast i64 (+ (m num-tyvars) 1)) (ptr-bytes))))
+            (when (and (= (m num-params) nparams)
+                       (!= (generic-method-bind (cast ptr m) param-types nparams bound) 0))
+              (when (!= (generic-constraints-ok (cast ptr m) bound line) 0)
+                ; Resolve the bound return type from the method's return spelling
+                ; (mirrors abstract-call-via-generic): a bare tyvar return picks
+                ; its bound Type*, otherwise parse the (already-concrete) spelling.
+                (when (!= out-ret null)
+                  (let (rnode:ptr (binding-type-node (node-at (m body) 1)))
+                    (if (= rnode null)
+                      (ptr-set! out-ret ty-void)
+                      (let (rt:ptr null)
+                        (when (= (-> rnode (cast ptr:Node _) (_ kind)) NODE-SYM)
+                          (let (ridx:i32 (tyvar-index-of (-> rnode (cast ptr:Node _) (_ s))
+                                                         (m tyvars) (m num-tyvars)))
+                            (when (>= ridx 0) (set! rt (aref (cast ptr:ptr bound) ridx)))))
+                        (when (= rt null) (set! rt (parse-type-from-node rnode line)))
+                        (ptr-set! out-ret rt)))))
+                (return 1))))))
+      (inc! j))
+    (return 0)))
 
 ; Fixed parameter count of a defn param list: the raw count, minus one if a
 ; &rest marker is present (the marker itself is not a parameter).
@@ -4423,30 +4736,247 @@
   (let (l:ptr:Node (cast ptr:Node list))
     (return (make-cell (l car) (take-first-n (l cdr) (- n 1) line) line))))
 
-; Register a bounded-generic defn as a METHOD-GENERIC template. Validates the
-; &where constraints, that every type variable is bound by a bare parameter
-; (no return-only / B2), and that no tyvar appears in a nested position.
+; ============================================================
+; Stage 11 T2: tyvar-from-receiver inference + structural unification
+; ============================================================
+; A method written over a parametric struct — `(defn count:usize
+; ((self (ref (Vector T)))) ...)` — declares its tyvars implicitly through the
+; receiver instead of an explicit `&where`. The free symbol `T` appearing as an
+; argument of the registered template application `(Vector T)` is the method's
+; type variable, inferred from the receiver (parametric-structs.md §4). These
+; helpers (a) decide whether a symbol names a concrete type (else it is a tyvar),
+; (b) collect such tyvars from a parameter/return type node, and (c) structurally
+; unify a type-pattern node against a concrete argument Type* to bind them — the
+; exact equivalent of an `&where`-declared tyvar list, so the method is recorded
+; and stamped through the unchanged rung-4 monomorphizer.
+
+; Does `name` name a concrete (non-tyvar) type? Mirrors parse-type-name's
+; acceptance set without dying. A free symbol that is NOT resolvable here is a
+; candidate type variable.
+(defn tyname-resolvable:i32 (name:ptr)
+  (when (!= (primitive-type-named name) 0) (return 1))
+  (when (or (= name "usize") (or (= name "ssize") (= name "raw"))) (return 1))
+  (when (!= (cast ptr (lookup-struct name)) null) (return 1))
+  (when (!= (cast ptr (struct-template-lookup name)) null) (return 1))
+  (when (!= (cast ptr (union-template-lookup name)) null) (return 1))
+  (when (!= (cast ptr (enumdef-lookup name)) null) (return 1))
+  (return 0))
+
+; The inner pattern node of a pointer wrapper `(ptr|raw|ref X...)`, mirroring how
+; parse-type-from-node consumes it: a single trailing element is that element;
+; several (e.g. the colon-sugar shape `(ref Vector T)`) is the whole tail list
+; `(Vector T)`. Returns null for a wrapper with no operand.
+(defn wrapper-inner-pattern:ptr (node:ptr)
+  (let (n:ptr:Node (cast ptr:Node node)
+        rest:ptr (n cdr))
+    (when (= rest null) (return null))
+    (if (= ((cast ptr:Node rest) cdr) null)
+      (return ((cast ptr:Node rest) car))
+      (return rest))))
+
+; If `node` is a list whose head names a registered struct template, return that
+; StructTemplate*; else null. (Used to recognize a template application both for
+; tyvar collection and unification.)
+(defn node-template-of:?ptr:StructTemplate (node:ptr)
+  (when (= node null) (return null))
+  (let (n:ptr:Node (cast ptr:Node node))
+    (when (!= (n kind) NODE-CELL) (return null))
+    (let (head:ptr:Node (cast ptr:Node (n car)))
+      (when (or (= (cast ptr head) null) (!= (head kind) NODE-SYM)) (return null))
+      (return (struct-template-lookup (head s))))))
+
+; True if `node` is a pointer-wrapper list head: (ptr ...) / (raw ...) / (ref ...).
+(defn node-is-ptr-wrapper:i32 (node:ptr)
+  (when (= node null) (return 0))
+  (let (n:ptr:Node (cast ptr:Node node))
+    (when (!= (n kind) NODE-CELL) (return 0))
+    (let (head:ptr:Node (cast ptr:Node (n car)))
+      (when (or (= (cast ptr head) null) (!= (head kind) NODE-SYM)) (return 0))
+      (when (or (= (head s) "ptr") (or (= (head s) "raw") (= (head s) "ref")))
+        (return 1))
+      (return 0))))
+
+; Append `name` to the tyvar array at *io-ntv (deduplicated). The array must have
+; room (it is sized to the parameter/return node count, an upper bound). io-ntv is
+; a ptr:i32 box holding the running count.
+(defn tyvars-add:void (name:ptr out-tyvars:ptr io-ntv:ptr)
+  (let (ntv:i32 (aref (cast ptr:i32 io-ntv) 0))
+    (when (>= (tyvar-index-of name out-tyvars ntv) 0) (return))
+    (aset! (cast ptr:ptr out-tyvars) ntv name)
+    (aset! (cast ptr:i32 io-ntv) 0 (+ ntv 1))))
+
+; Walk a parameter/return type pattern node, collecting free symbols that appear
+; as arguments of a registered struct-template application and are not resolvable
+; as concrete types — these are the method's receiver-inferred tyvars. Recurses
+; through pointer wrappers and nested template applications.
+(defn collect-pattern-tyvars:void (node:ptr out-tyvars:ptr io-ntv:ptr)
+  (when (= node null) (return))
+  (let (n:ptr:Node (cast ptr:Node node))
+    ; A bare symbol in receiver position is collected only via a template-arg
+    ; below; a top-level bare symbol that is a concrete type or a known name is
+    ; not a tyvar here (return-only/standalone `T` is out of scope — bound only
+    ; through the receiver application).
+    (when (= (n kind) NODE-SYM) (return))
+    (when (= (n kind) NODE-CELL)
+      ; Template application: each unresolvable symbol arg is a tyvar; recurse
+      ; into list args (e.g. (HashMap K (Vector V))).
+      (let (st:?ptr:StructTemplate (node-template-of node))
+        (when (!= st null)
+          (let (cur:ptr (n cdr))
+            (while (!= cur null)
+              (let (arg:ptr ((cast ptr:Node cur) car)
+                    an:ptr:Node (cast ptr:Node arg))
+                (if (= (an kind) NODE-SYM)
+                  (when (= (tyname-resolvable (an s)) 0)
+                    (tyvars-add (an s) out-tyvars io-ntv))
+                  (collect-pattern-tyvars arg out-tyvars io-ntv)))
+              (set! cur ((cast ptr:Node cur) cdr))))
+          (return)))
+      ; Pointer wrapper: descend into the inner pattern.
+      (when (!= (node-is-ptr-wrapper node) 0)
+        (collect-pattern-tyvars (wrapper-inner-pattern node) out-tyvars io-ntv)
+        (return)))))
+
+; Structurally unify a type-pattern node `pat` against a concrete argument Type*
+; `at`, binding each tyvar (by index in `tyvars`) into out-bound. Returns 1 on a
+; consistent match, 0 on any mismatch. The cases mirror parse-type-from-node:
+;   - bare tyvar symbol: bind (and agree on repeats);
+;   - any other symbol / colon-sugar symbol: parse it concretely and type-eq;
+;   - (ptr|raw|ref X): `at` must be a TY-PTR, recurse on X vs (at elem);
+;   - (Template A B): `at` must be a stamped instance of that template, recurse
+;     positionally on A,B vs the recorded origin args;
+;   - anything else: parse the whole pattern concretely and type-eq.
+(defn unify-tpat:i32 (pat:ptr at:ptr tyvars:ptr ntv:i32 out-bound:ptr line:i32)
+  (when (or (= pat null) (= at null)) (return 0))
+  (let (pn:ptr:Node (cast ptr:Node pat))
+    (when (= (pn kind) NODE-SYM)
+      ; A single bare symbol that is a declared tyvar binds directly.
+      (when (= (strchr (pn s) 58) null)
+        (let (idx:i32 (tyvar-index-of (pn s) tyvars ntv))
+          (when (>= idx 0)
+            (let (cur:ptr (aref (cast ptr:ptr out-bound) idx))
+              (if (= cur null)
+                (do (aset! (cast ptr:ptr out-bound) idx at) (return 1))
+                (return (type-eq cur at)))))))
+      ; Otherwise a concrete (possibly colon-sugared) type: parse and compare.
+      (return (type-eq (parse-type-from-node pat line) at)))
+    (when (= (pn kind) NODE-CELL)
+      ; Pointer wrapper vs a concrete pointer: unify element patterns.
+      (when (!= (node-is-ptr-wrapper pat) 0)
+        (when (!= (-> at (cast ptr:Type _) (_ kind)) TY-PTR) (return 0))
+        (return (unify-tpat (wrapper-inner-pattern pat)
+                            (-> at (cast ptr:Type _) (_ elem))
+                            tyvars ntv out-bound line)))
+      ; Template application vs a stamped instance of the same template.
+      (let (st:?ptr:StructTemplate (node-template-of pat))
+        (when (!= st null)
+          (when (!= (-> at (cast ptr:Type _) (_ kind)) TY-STRUCT) (return 0))
+          (let (sd:ptr:StructDef (cast ptr:StructDef (-> at (cast ptr:Type _) (_ sdef))))
+            (when (!= (cast ptr (sd origin-template)) (cast ptr st)) (return 0))
+            (let (nargs:i32 (- (node-len pat) 1))
+              (when (!= nargs (sd origin-nargs)) (return 0))
+              (let (i:i32 0)
+                (while (< i nargs)
+                  (when (= (unify-tpat (node-at pat (+ i 1))
+                                       (aref (cast ptr:ptr (sd origin-args)) i)
+                                       tyvars ntv out-bound line) 0)
+                    (return 0))
+                  (inc! i)))
+              (return 1)))))
+      ; Any other compound type (anonymous struct, fn pointer): parse concretely.
+      (return (type-eq (parse-type-from-node pat line) at)))
+    (return 0)))
+
+; Does this defn signature mention a registered struct template applied to free
+; (tyvar) symbols in any parameter or return type? If so it is a receiver-inferred
+; generic method (parametric-structs.md §4), recorded like an `&where` template.
+(defn defn-has-receiver-tyvars:i32 (form:ptr)
+  (let (name-node:ptr (node-at form 1)
+        params-node:ptr (node-at form 2))
+    (when (= (node-is-list params-node) 0) (return 0))
+    (let (cap:i32 (+ (node-len params-node) 2)
+          tyvars:ptr (arena-alloc (* (cast i64 cap) (ptr-bytes)))
+          ntv:i32 0
+          np:i32 (node-len params-node)
+          i:i32 0)
+      (while (< i np)
+        (let (p:ptr:Node (cast ptr:Node (node-at params-node i)))
+          ; Skip &where / &rest / &optional markers and their constraint lists.
+          (when (and (= (p kind) NODE-SYM)
+                     (or (= (p s) "&where") (or (= (p s) "&rest") (= (p s) "&optional"))))
+            (return (if (> ntv 0) 1 0)))
+          (collect-pattern-tyvars (binding-type-node (node-at params-node i))
+                                  tyvars (cast ptr:i32 (addr-of ntv))))
+        (inc! i))
+      (collect-pattern-tyvars (binding-type-node name-node) tyvars (cast ptr:i32 (addr-of ntv)))
+      (return (if (> ntv 0) 1 0)))))
+
+; A defn is a bounded-generic template — recorded for on-demand monomorphization
+; rather than emitted concretely — if it carries an explicit `&where` clause OR
+; its receiver/return mentions a parametric struct over free tyvars (§4). Both
+; routing sites (prescan registration, emit-defn skip) consult this so the two
+; never disagree about whether a defn is a template.
+(defn defn-is-generic-template:i32 (form:ptr)
+  (let (params-node:ptr (node-at form 2))
+    (when (>= (params-where-index params-node) 0) (return 1))
+    (return (defn-has-receiver-tyvars form))))
+
+; Can the parameter type pattern `pat` bind the type variable `tvname` under the
+; structural unifier (unify-tpat)? Mirrors that traversal: a bare-symbol match, a
+; tyvar under a ptr/ref/raw wrapper, or a tyvar as an argument of a registered
+; struct-template application (recursively). Used to confirm every declared tyvar
+; is determined by some parameter.
+(defn pattern-determines-tyvar:i32 (pat:ptr tvname:ptr)
+  (when (= pat null) (return 0))
+  (let (n:ptr:Node (cast ptr:Node pat))
+    (when (= (n kind) NODE-SYM)
+      (if (and (= (strchr (n s) 58) null) (= (n s) tvname)) (return 1) (return 0)))
+    (when (= (n kind) NODE-CELL)
+      (when (!= (node-is-ptr-wrapper pat) 0)
+        (return (pattern-determines-tyvar (wrapper-inner-pattern pat) tvname)))
+      (let (st:?ptr:StructTemplate (node-template-of pat))
+        (when (!= st null)
+          (let (cur:ptr (n cdr))
+            (while (!= cur null)
+              (when (!= (pattern-determines-tyvar ((cast ptr:Node cur) car) tvname) 0)
+                (return 1))
+              (set! cur ((cast ptr:Node cur) cdr))))
+          (return 0))))
+    (return 0)))
+
+; Register a bounded-generic defn as a METHOD-GENERIC template (Stage 9 rung 4).
+; Tyvars come from two sources, merged (parametric-structs.md §4):
+;   - explicit `&where (Protocol Var)` constraints (the variable is declared and
+;     carries an extra bound);
+;   - receiver inference — a free symbol appearing as an argument of a registered
+;     struct-template application in a parameter/return type (`(ref (Vector T))`).
+; A method may have receiver-inferred tyvars and no `&where` at all. Every
+; declared tyvar must be determined by some parameter through the structural
+; unifier; the body is retained and monomorphized per concrete call site.
 (defn register-generic-defn:void (form:ptr trusted:i32)
   (let (ff:ptr:Node (cast ptr:Node form)
         name-node:ptr (node-at form 1)
         params-node:ptr (node-at form 2)
         fname:ptr (defn-name-only name-node)
-        wi:i32 (params-where-index params-node))
+        wi:i32 (params-where-index params-node)
+        has-where:i32 (if (>= (params-where-index params-node) 0) 1 0))
     (when (= fname null) (die-at (ff line) "defn: malformed generic name"))
-    (let (nparams:i32 wi
+    (let (raw:i32 (node-len params-node)
+          nparams:i32 (if (>= wi 0) wi (defn-params-count params-node))
           i:i32 0)
       (while (< i nparams)
         (let (p:ptr:Node (cast ptr:Node (node-at params-node i)))
           (when (and (= (p kind) NODE-SYM) (= (p s) "&rest"))
-            (die-at (p line) "defn: &rest combined with &where is not supported yet")))
+            (die-at (p line) "defn: &rest combined with a generic method is not supported yet")))
         (inc! i))
-      (let (raw:i32 (node-len params-node)
-            nc:i32 (- raw (+ wi 1)))
-        (when (< nc 1)
+      (let (nc:i32 (if (>= wi 0) (- raw (+ wi 1)) 0))
+        (when (and (!= has-where 0) (< nc 1))
           (die-at (ff line) "defn: &where requires at least one (Protocol Var) constraint"))
-        (let (con-protos:ptr (arena-alloc (* (cast i64 nc) (ptr-bytes)))
-              con-vars:ptr   (arena-alloc (* (cast i64 nc) (ptr-bytes)))
-              tyvars:ptr     (arena-alloc (* (cast i64 nc) (ptr-bytes)))
+        ; Capacity: constraint vars + one tyvar per parameter + the return type.
+        (let (cap:i32 (+ (+ nc nparams) 1)
+              con-protos:ptr (arena-alloc (* (cast i64 (if (> nc 0) nc 1)) (ptr-bytes)))
+              con-vars:ptr   (arena-alloc (* (cast i64 (if (> nc 0) nc 1)) (ptr-bytes)))
+              tyvars:ptr     (arena-alloc (* (cast i64 cap) (ptr-bytes)))
               ntv:i32 0
               ci:i32 0)
           (while (< ci nc)
@@ -4463,34 +4993,28 @@
                   (aset! (cast ptr:ptr tyvars) ntv (vn s))
                   (inc! ntv))))
             (inc! ci))
-          ; Reject nested tyvar positions in params and return (deferred to Option 3).
+          ; Merge in receiver-inferred tyvars from each parameter and the return
+          ; type. These are bound structurally by the unifier (a tyvar nested in a
+          ; ptr/ref wrapper or a template application), so the old flat-only
+          ; nested-position rejection no longer applies.
           (let (j:i32 0)
             (while (< j nparams)
-              (let (ptn:ptr (binding-type-node (node-at params-node j)))
-                (when (and (!= ptn null)
-                           (and (!= ((cast ptr:Node ptn) kind) NODE-SYM)
-                                (!= (node-mentions-tyvar ptn tyvars ntv) 0)))
-                  (die-at (ff line)
-                    "defn: nested type variable in a parameter type is not supported (deferred to Option 3)")))
+              (collect-pattern-tyvars (binding-type-node (node-at params-node j))
+                                      tyvars (cast ptr:i32 (addr-of ntv)))
               (inc! j)))
-          (let (rtn:ptr (binding-type-node name-node))
-            (when (and (!= rtn null)
-                       (and (!= ((cast ptr:Node rtn) kind) NODE-SYM)
-                            (!= (node-mentions-tyvar rtn tyvars ntv) 0)))
-              (die-at (ff line)
-                "defn: nested type variable in the return type is not supported (deferred to Option 3)")))
-          ; Every declared tyvar must be determined by a bare parameter type.
+          (collect-pattern-tyvars (binding-type-node name-node)
+                                  tyvars (cast ptr:i32 (addr-of ntv)))
+          ; Every declared tyvar must be determined by some parameter under the
+          ; structural unifier (return-only tyvars need dyn, deferred).
           (let (ti:i32 0)
             (while (< ti ntv)
               (let (tvname:CStr (aref (cast ptr:ptr tyvars) ti)
                     bnd:i32 0
                     j:i32 0)
                 (while (< j nparams)
-                  (let (ptn:ptr (binding-type-node (node-at params-node j)))
-                    (when (and (!= ptn null)
-                               (and (= ((cast ptr:Node ptn) kind) NODE-SYM)
-                                    (= ((cast ptr:Node ptn) s) tvname)))
-                      (set! bnd 1)))
+                  (when (!= (pattern-determines-tyvar (binding-type-node (node-at params-node j))
+                                                      tvname) 0)
+                    (set! bnd 1))
                   (inc! j))
                 (when (= bnd 0)
                   (die-at (ff line)
@@ -4524,9 +5048,12 @@
               (generic-add-method g (cast ptr m)))))))))
 
 ; Try to bind a generic template's type variables from a concrete argument
-; tuple. Bare-tyvar params bind (and must agree on repeats); concrete params
-; must match exactly. On success fills out-bound[tyvar-index] = Type* and
-; returns 1; on any mismatch returns 0.
+; tuple by structurally unifying each parameter's type pattern against the
+; concrete argument Type* (unify-tpat): bare-tyvar params bind (and must agree on
+; repeats); concrete params (including ptr/ref wrappers and parametric-struct
+; applications like `(ref (Vector T))`) match positionally, binding any tyvars
+; nested within. On success fills out-bound[tyvar-index] = Type* and returns 1; on
+; any mismatch returns 0.
 (defn generic-method-bind:i32 (m:ptr argtypes:ptr nargs:i32 out-bound:ptr)
   (let (mm:ptr:Method (cast ptr:Method m))
     (when (!= (mm num-params) nargs) (return 0))
@@ -4539,17 +5066,9 @@
           (let (ptn:ptr (binding-type-node (node-at params-node i))
                 at:ptr (aref (cast ptr:ptr argtypes) i))
             (when (or (= ptn null) (= at null)) (return 0))
-            (let (pn:ptr:Node (cast ptr:Node ptn)
-                  idx:i32 -1)
-              (when (= (pn kind) NODE-SYM)
-                (set! idx (tyvar-index-of (pn s) (mm tyvars) ntv)))
-              (if (>= idx 0)
-                (let (cur:ptr (aref (cast ptr:ptr out-bound) idx))
-                  (if (= cur null)
-                    (aset! (cast ptr:ptr out-bound) idx at)
-                    (when (= (type-eq cur at) 0) (return 0))))
-                (let (cty:ptr (parse-type-from-node ptn (pn line)))
-                  (when (= (type-eq cty at) 0) (return 0))))))
+            (when (= (unify-tpat ptn at (mm tyvars) ntv out-bound
+                                 ((cast ptr:Node ptn) line)) 0)
+              (return 0)))
           (inc! i)))
       (let (k:i32 0)
         (while (< k ntv)
@@ -4977,6 +5496,28 @@
         (gcheck (node-at form j) scope m)
         (inc! j)))))
 
+; Does any parameter of this generic template bind a tyvar in a *nested* position
+; — inside a ptr/ref wrapper or a parametric-struct application (a receiver-
+; inferred method, parametric-structs.md §4)? The abstract A2 interface check
+; (gbind-decl-type) only models flat tyvar parameters; a nested receiver type
+; cannot be parsed against an abstract element, so such a template defers all body
+; type-checking to stamp time (the concrete monomorphized body goes through the
+; ordinary emit/type pass). A plain flat-tyvar `&where` template returns 0 here
+; and is A2-checked exactly as before (byte-identical).
+(defn method-has-nested-tyvar:i32 (m:ptr)
+  (let (mm:ptr:Method (cast ptr:Method m)
+        params-node:ptr (node-at (mm body) 2)
+        np:i32 (mm num-params)
+        i:i32 0)
+    (while (< i np)
+      (let (ptn:ptr (binding-type-node (node-at params-node i)))
+        (when (and (!= ptn null)
+                   (and (= ((cast ptr:Node ptn) kind) NODE-CELL)
+                        (!= (node-mentions-tyvar ptn (mm tyvars) (mm num-tyvars)) 0)))
+          (return 1)))
+      (inc! i))
+    (return 0)))
+
 ; Check every not-yet-checked bounded-generic template. Runs after the top-level
 ; loop (so includes/imports/protocols/conformances are all registered) and before
 ; the worklist drain (so a body error surfaces at the defn, before any A1
@@ -4990,7 +5531,11 @@
           (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (gg methods)) mi)))
             (when (and (= (m kind) METHOD-GENERIC) (= (m checked) 0))
               (.set! m checked 1)
-              (check-generic-template (cast ptr m))))
+              ; Receiver-inferred methods (nested tyvar receivers) defer body
+              ; checking to stamp time; the abstract interface check only models
+              ; flat tyvar parameters.
+              (when (= (method-has-nested-tyvar (cast ptr m)) 0)
+                (check-generic-template (cast ptr m)))))
           (inc! mi)))
       (inc! gi))))
 
@@ -5239,6 +5784,8 @@
     (.set! p name name)
     (.set! p sigs sigs)
     (.set! p num-sigs num-sigs)
+    (.set! p params null)
+    (.set! p num-params 0)
     (inc! g-num-protocols)
     (return (cast ref:Protocol p))))
 
@@ -5360,26 +5907,75 @@
                          (n line))))
     (return node)))
 
-; Register a (defprotocol Name (sig...) ...) form. Idempotent on name.
+; Deep-copy a (parametric) protocol signature AST, substituting `Self`→typename
+; and each extra protocol parameter `params[i]`→`pspellings[i]` (T4). This is the
+; element-binding generalization of subst-self-node: a `Self`-only protocol
+; (nparams=0) reduces to substituting `Self` alone, identical in effect to
+; subst-self-node. Reuses the structural tyvar substituter subst-tyvars-node by
+; building a combined name→spelling map {Self→typename, E→…}.
+(defn subst-proto-sig-node:ptr (node:ptr typename:ptr params:ptr pspellings:ptr nparams:i32)
+  (let (n:i32 (+ nparams 1)
+        names:ptr (arena-alloc (* (cast i64 n) (ptr-bytes)))
+        spellings:ptr (arena-alloc (* (cast i64 n) (ptr-bytes))))
+    (aset! (cast ptr:ptr names) 0 "Self")
+    (aset! (cast ptr:ptr spellings) 0 typename)
+    (let (i:i32 0)
+      (while (< i nparams)
+        (aset! (cast ptr:ptr names) (+ i 1) (aref (cast ptr:ptr params) i))
+        (aset! (cast ptr:ptr spellings) (+ i 1) (aref (cast ptr:ptr pspellings) i))
+        (inc! i)))
+    (return (subst-tyvars-node node names spellings n))))
+
+; Register a (defprotocol Name (sig...) ...) form, or a parametric protocol
+; (defprotocol (Name E...) (sig...) ...) whose name position is a *list* (the
+; same list-head rule as defstruct/defunion templates). For the parametric form
+; the head symbol is the protocol name and the remaining list elements are the
+; extra type parameters bound at the `extend` site (T4). Idempotent on name.
 (defn protocol-register-form:void (form:ptr)
   (let (ff:ptr:Node (cast ptr:Node form))
     (when (< (node-len form) 2)
       (die-at (ff line) "defprotocol: expected (defprotocol Name (sig...) ...)"))
-    (let (name-node:ptr:Node (cast ptr:Node (node-at form 1)))
-      (when (!= (name-node kind) NODE-SYM)
-        (die-at (name-node line) "defprotocol: name must be a symbol"))
-      (let (pname:ptr (name-node s))
-        (when (!= (protocol-lookup pname) null) (return))
-        (guard-name-kind pname (ff line) NK-PROTOCOL)
-        (let (nsigs:i32 (- (node-len form) 2)
-              sigs:ptr null)
-          (when (> nsigs 0)
-            (set! sigs (arena-alloc (* (cast i64 nsigs) (ptr-bytes))))
-            (let (i:i32 0)
-              (while (< i nsigs)
-                (aset! (cast ptr:ptr sigs) i (node-at form (+ i 2)))
-                (inc! i))))
-          (protocol-new pname sigs nsigs))))))
+    (let (name-node:ptr:Node (cast ptr:Node (node-at form 1))
+          pname:ptr null
+          params:ptr null
+          nparams:i32 0)
+      ; Parametric protocol: name position is a list `(Seq E ...)` — head is the
+      ; protocol name, the rest are the extra parameter names (beyond Self).
+      (if (= (name-node kind) NODE-CELL)
+        (let (head:ptr:Node (cast ptr:Node (node-at (cast ptr name-node) 0)))
+          (when (!= (head kind) NODE-SYM)
+            (die-at (name-node line) "defprotocol: protocol name must be a symbol"))
+          (set! pname (head s))
+          (set! nparams (- (node-len (cast ptr name-node)) 1))
+          (when (< nparams 1)
+            (die-at (name-node line)
+              "defprotocol: parametric protocol needs at least one parameter — use a plain defprotocol"))
+          (set! params (arena-alloc (* (cast i64 nparams) (ptr-bytes))))
+          (let (pi:i32 0)
+            (while (< pi nparams)
+              (let (pv:ptr:Node (cast ptr:Node (node-at (cast ptr name-node) (+ pi 1))))
+                (when (!= (pv kind) NODE-SYM)
+                  (die-at (pv line) "defprotocol: protocol parameter must be a symbol"))
+                (aset! (cast ptr:ptr params) pi (pv s)))
+              (inc! pi))))
+        (do
+          (when (!= (name-node kind) NODE-SYM)
+            (die-at (name-node line) "defprotocol: name must be a symbol"))
+          (set! pname (name-node s))))
+      (when (!= (protocol-lookup pname) null) (return))
+      (guard-name-kind pname (ff line) NK-PROTOCOL)
+      (let (nsigs:i32 (- (node-len form) 2)
+            sigs:ptr null)
+        (when (> nsigs 0)
+          (set! sigs (arena-alloc (* (cast i64 nsigs) (ptr-bytes))))
+          (let (i:i32 0)
+            (while (< i nsigs)
+              (aset! (cast ptr:ptr sigs) i (node-at form (+ i 2)))
+              (inc! i))))
+        (let (p:ref:Protocol (protocol-new pname sigs nsigs))
+          (when (> nparams 0)
+            (.set! p params params)
+            (.set! p num-params nparams)))))))
 
 (defn prescan-protocols:void (forms:ptr)
   (let (fc:ptr forms)
@@ -5425,23 +6021,76 @@
 
 ; Does a method named `mname` satisfy a required signature (param types `ptypes`,
 ; return `ret`; ret=null means "any")? Either a user/concrete method at the exact
-; tier, or a built-in operator whose result type matches. Shared by `extend`
-; conformance and the `Valid` call-site check (§10.2).
-(defn method-satisfies-sig:i32 (mname:ptr ptypes:ptr nparams:i32 ret:ptr)
+; tier, a *generic* method that binds for `ptypes` with satisfied constraints (T4:
+; a method written over a parametric struct, e.g. `get`/`count` over `(Vector T)`,
+; that resolves for the stamped instance), or a built-in operator whose result
+; type matches. Shared by `extend` conformance and the `Valid` call-site check
+; (§10.2). `line` is only used for the generic-bind probe's constraint diagnostics.
+;
+; `check-ret`: when nonzero the user/generic method's *return type* must also equal
+; `ret`. This is required for parametric protocols whose return carries a bound
+; element (`get:E`) — a `get:i32` does not satisfy `get:f64`. Plain (Self-only)
+; protocols pass check-ret=0 to preserve the historical param-only match exactly
+; (byte-identical), since their concrete methods already return the right type.
+(defn method-satisfies-sig:i32 (mname:ptr ptypes:ptr nparams:i32 ret:ptr check-ret:i32 line:i32)
   (let (g:ptr (generic-lookup mname))
     (when (= g null) (return 0))
-    (when (!= (generic-find-method-exact g ptypes nparams) null) (return 1))
+    (let (um:?ptr:Method (generic-find-method-exact g ptypes nparams))
+      (when (!= (cast ptr um) null)
+        (when (= check-ret 0) (return 1))
+        (when (or (= ret null)
+                  (and (!= (-> um (cast ptr:Method _) (_ ret-type)) null)
+                       (!= (type-eq (-> um (cast ptr:Method _) (_ ret-type)) ret) 0)))
+          (return 1))))
+    (let (grt:ptr null)
+      (when (!= (generic-binds-for g ptypes nparams (cast ptr:ptr (addr-of grt)) line) 0)
+        (when (= check-ret 0) (return 1))
+        (when (or (= ret null) (and (!= grt null) (!= (type-eq grt ret) 0)))
+          (return 1))))
     (let (rt:ptr (builtin-op-result-type g ptypes nparams))
       (when (and (!= rt null) (or (= ret null) (!= (type-eq rt ret) 0))) (return 1)))
     (return 0)))
 
+; Check that every required signature of `proto` resolves for `typename` with
+; `Self`→typename and each extra protocol parameter substituted to `pspellings`.
+; Returns 1 if all resolve, 0 (after printing each missing method) otherwise.
+; The Self-only path passes nparams=0 — the substitution reduces to Self alone,
+; byte-identical to the historical subst-self-node behavior.
+(defn proto-sigs-resolve:i32 (proto:ptr typename:ptr pspellings:ptr line:i32)
+  (let (pp:ptr:Protocol (cast ptr:Protocol proto)
+        i:i32 0
+        missing:i32 0)
+    (while (< i (pp num-sigs))
+      (let (sig:ptr (aref (cast ptr:ptr (pp sigs)) i)
+            csig:ptr (subst-proto-sig-node sig typename (pp params) pspellings (pp num-params))
+            name-node:ptr (node-at csig 0)
+            params-node:ptr (node-at csig 1)
+            mname:ptr null
+            ret:ptr (extract-name-and-type name-node (cast ptr:ptr (addr-of mname))
+                                           ((cast ptr:Node name-node) line)))
+        (let (nparams:i32 (defn-params-count params-node)
+              ptypes:ptr (defn-params-to-types params-node)
+              ; Enforce the return type only for a parametric protocol, where the
+              ; return may carry a bound element (`get:E`). Plain protocols keep the
+              ; historical param-only match (byte-identical).
+              check-ret:i32 (if (> (pp num-params) 0) 1 0))
+          (when (= (method-satisfies-sig mname ptypes nparams ret check-ret line) 0)
+            (set! missing 1)
+            (fprintf (cast ptr stderr)
+              "  %s does not implement %s.%s\n" typename (pp name) mname))))
+      (inc! i))
+    (when (!= missing 0) (return 0))
+    (return 1)))
+
 ; Verify (when check≠0) and record that `typename` conforms to protocol
 ; `proto-name`, then recurse into the protocol's super-protocols (§10.3). In
-; check mode every required signature (Self→typename) must resolve to a concrete
-; method or a satisfying built-in operator; missing methods are reported and the
-; compile aborts. The conformance-lookup guard makes this idempotent and safe
-; against cyclic inheritance. Import side passes check=0 (trust the exporter).
-(defn verify-conformance:void (typename:ptr proto-name:ptr line:i32 check:i32)
+; check mode every required signature (Self→typename, extra params→`pspellings`)
+; must resolve to a concrete method or a satisfying built-in operator; missing
+; methods are reported and the compile aborts. The conformance-lookup guard makes
+; this idempotent and safe against cyclic inheritance. Import side passes
+; check=0 (trust the exporter). `pspellings` carries the concrete bindings for a
+; parametric protocol (null for a plain Self-only protocol).
+(defn verify-conformance-params:void (typename:ptr proto-name:ptr pspellings:ptr line:i32 check:i32)
   (when (!= (conformance-lookup typename proto-name) 0) (return))
   (let (proto:ptr (protocol-lookup proto-name))
     (when (= proto null)
@@ -5449,54 +6098,194 @@
         (die-at line (fmt-s "extend: unknown protocol '%s'" proto-name)))
       (return))
     (when (!= check 0)
-      (let (pp:ptr:Protocol (cast ptr:Protocol proto)
-            i:i32 0
-            missing:i32 0)
-        (while (< i (pp num-sigs))
-          (let (sig:ptr (aref (cast ptr:ptr (pp sigs)) i)
-                csig:ptr (subst-self-node sig typename)
-                name-node:ptr (node-at csig 0)
-                params-node:ptr (node-at csig 1)
-                mname:ptr null
-                ret:ptr (extract-name-and-type name-node (cast ptr:ptr (addr-of mname))
-                                               ((cast ptr:Node name-node) line)))
-            (let (nparams:i32 (defn-params-count params-node)
-                  ptypes:ptr (defn-params-to-types params-node))
-              (when (= (method-satisfies-sig mname ptypes nparams ret) 0)
-                (set! missing 1)
-                (fprintf (cast ptr stderr)
-                  "  %s does not implement %s.%s\n" typename proto-name mname))))
-          (inc! i))
-        (when (!= missing 0)
-          (die-at line
-            (fmt-2s "type '%s' does not conform to protocol '%s'" typename proto-name)))))
+      (when (= (proto-sigs-resolve proto typename pspellings line) 0)
+        (die-at line
+          (fmt-2s "type '%s' does not conform to protocol '%s'" typename proto-name))))
     (conformance-add typename proto-name)
-    ; Conforming to `proto-name` requires conforming to each declared super.
+    ; Conforming to `proto-name` requires conforming to each declared super. The
+    ; supers are plain (Self-only) protocols here, so they carry no extra params.
     (let (si:i32 0)
       (while (< si g-num-proto-supers)
         (let (e:ptr:Conformance (cast ptr:Conformance (ptr+ (cast ptr:Conformance g-proto-supers) si)))
           (when (= (e type-name) proto-name)
-            (verify-conformance typename (e proto-name) line check)))
+            (verify-conformance-params typename (e proto-name) null line check)))
         (inc! si)))))
+
+; Self-only conformance (the historical signature): plain protocols carry no
+; extra parameters, so the bindings array is null.
+(defn verify-conformance:void (typename:ptr proto-name:ptr line:i32 check:i32)
+  (verify-conformance-params typename proto-name null line check))
+
+; Stage 11 T4: record a template-level conformance `(extend (Vector T) (Seq T))`.
+; `template` is the extended struct template, `proto` the (parametric) protocol,
+; and `bindings` the proto-application args (`T`) positionally bound to the
+; protocol's extra params (`E`). Idempotent on (template, proto). The per-instance
+; check is deferred to stamp time (tmpl-conformance-check-instance).
+(defn tmpl-conformance-add:void (template:ptr proto:ptr bindings:ptr nbindings:i32)
+  (let (i:i32 0)
+    (while (< i g-num-tmpl-conformances)
+      (let (c:ptr:TmplConformance (cast ptr:TmplConformance
+                                    (ptr+ (cast ptr:TmplConformance g-tmpl-conformances) i)))
+        (when (and (= (c template) template) (= (c proto) proto)) (return)))
+      (inc! i)))
+  (when (= g-num-tmpl-conformances g-cap-tmpl-conformances)
+    (let (nc:i32 16)
+      (when (!= g-cap-tmpl-conformances 0) (set! nc (* g-cap-tmpl-conformances 2)))
+      (let (nt:ptr (arena-alloc (* (cast i64 nc) (sizeof TmplConformance))))
+        (when (!= g-num-tmpl-conformances 0)
+          (memcpy nt g-tmpl-conformances (* (cast i64 g-num-tmpl-conformances) (sizeof TmplConformance))))
+        (set! g-tmpl-conformances nt)
+        (set! g-cap-tmpl-conformances nc))))
+  (let (c:ptr:TmplConformance (cast ptr:TmplConformance
+                                (ptr+ (cast ptr:TmplConformance g-tmpl-conformances)
+                                      g-num-tmpl-conformances)))
+    (.set! c template template)
+    (.set! c proto proto)
+    (.set! c bindings bindings)
+    (.set! c nbindings nbindings)
+    (inc! g-num-tmpl-conformances)))
+
+; Check (and record) that the concrete instance named `iname`, stamped from
+; struct template `st` with concrete arg spellings `arg-spellings` (length
+; `nargs`, the template's tyvars in order), satisfies the parametric protocol of
+; one recorded template conformance `c`. Each protocol binding node (`T` from
+; `(Seq T)`) is rewritten with the template tyvars → concrete arg spellings, then
+; parsed and canonicalized to its concrete spelling (`i32`), giving the protocol's
+; extra-param bindings. verify-conformance-params then checks every required
+; method resolves for `iname`, recording the concrete conformance so a Seq-bounded
+; generic call over `Vector.i32` finds it through the ordinary conformance lookup.
+(defn tmpl-conformance-check-one:void (c:ptr st:ptr iname:ptr arg-spellings:ptr nargs:i32 line:i32)
+  (let (cc:ptr:TmplConformance (cast ptr:TmplConformance c)
+        stt:ptr:StructTemplate (cast ptr:StructTemplate st)
+        proto:ptr (cc proto)
+        nb:i32 (cc nbindings)
+        pspellings:ptr null)
+    (when (> nb 0)
+      (set! pspellings (arena-alloc (* (cast i64 nb) (ptr-bytes))))
+      (let (i:i32 0)
+        (while (< i nb)
+          (let (bnode:ptr (aref (cast ptr:ptr (cc bindings)) i)
+                ; Substitute the template's tyvars (T) with the concrete instance
+                ; arg spellings (i32) in this binding node, then parse + canonicalize.
+                sub:ptr (subst-tyvars-node bnode (stt tyvars) arg-spellings nargs)
+                bt:ptr (parse-type-from-node sub line))
+            (aset! (cast ptr:ptr pspellings) i (type-spelling bt)))
+          (inc! i))))
+    (verify-conformance-params iname (-> proto (cast ptr:Protocol _) (_ name))
+                               pspellings line 1)))
+
+; Stamp-time hook: a concrete instance `iname` was just stamped from template
+; `st` (arg spellings `arg-spellings`, length `nargs`). Check every template-level
+; conformance recorded for `st`, recording the concrete per-instance conformance
+; (and erroring, naming the missing method, if a required method does not resolve).
+(defn tmpl-conformance-check-instance:void (st:ptr iname:ptr arg-spellings:ptr nargs:i32 line:i32)
+  (let (i:i32 0)
+    (while (< i g-num-tmpl-conformances)
+      (let (c:ptr:TmplConformance (cast ptr:TmplConformance
+                                    (ptr+ (cast ptr:TmplConformance g-tmpl-conformances) i)))
+        (when (= (c template) st)
+          (tmpl-conformance-check-one (cast ptr c) st iname arg-spellings nargs line)))
+      (inc! i))))
+
+; Retroactively check a newly-recorded template conformance against every
+; instance of the template already stamped before the `extend` was processed
+; (a `(Vector i32)` use earlier in the file may stamp the instance before the
+; `extend` form is reached). Recovers each instance's (template, args) from its
+; StructDef origin fields (T2) and runs the per-instance check.
+(defn tmpl-conformance-recheck-stamped:void (c:ptr st:ptr line:i32)
+  (let (i:i32 0)
+    (while (< i g-structs-len)
+      (let (sd:ptr:StructDef (cast ptr:StructDef (ptr+ (cast ptr:StructDef g-structs) i)))
+        (when (= (sd origin-template) st)
+          (let (na:i32 (sd origin-nargs)
+                spell:ptr null)
+            (when (> na 0)
+              (set! spell (arena-alloc (* (cast i64 na) (ptr-bytes))))
+              (let (k:i32 0)
+                (while (< k na)
+                  (aset! (cast ptr:ptr spell) k
+                         (type-spelling (aref (cast ptr:ptr (sd origin-args)) k)))
+                  (inc! k))))
+            (tmpl-conformance-check-one c st (sd name) spell na line))))
+      (inc! i))))
 
 ; (extend Subject Protocol): post-prescan conformance check (§9.2/§10.3). When
 ; Subject is a *protocol*, this declares protocol inheritance (Subject requires
 ; Protocol). Otherwise Subject is a type whose conformance is verified and
 ; recorded, recursing into the protocol's supers.
+; The protocol name carried by an `extend` protocol position, which is either a
+; bare symbol `Seq` or a parametric application `(Seq T...)`. Returns the name and
+; writes the application's arg nodes + count through `out-args`/`out-nargs`.
+(defn extend-proto-name:ptr (proto-node:ptr out-args:ptr:ptr out-nargs:ptr:i32 line:i32)
+  (let (pn:ptr:Node (cast ptr:Node proto-node))
+    (when (= (pn kind) NODE-SYM)
+      (ptr-set! out-args null)
+      (aset! (cast ptr:i32 out-nargs) 0 0)
+      (return (pn s)))
+    (when (= (pn kind) NODE-CELL)
+      (let (head:ptr:Node (cast ptr:Node (node-at (cast ptr pn) 0)))
+        (when (!= (head kind) NODE-SYM)
+          (die-at (pn line) "extend: protocol name must be a symbol"))
+        (let (na:i32 (- (node-len (cast ptr pn)) 1)
+              args:ptr null)
+          (when (> na 0)
+            (set! args (arena-alloc (* (cast i64 na) (ptr-bytes))))
+            (let (i:i32 0)
+              (while (< i na)
+                (aset! (cast ptr:ptr args) i (node-at (cast ptr pn) (+ i 1)))
+                (inc! i))))
+          (ptr-set! out-args args)
+          (aset! (cast ptr:i32 out-nargs) 0 na)
+          (return (head s)))))
+    (die-at (pn line) "extend: protocol must be a symbol or (Protocol args...)")
+    (return null)))
+
 (defn emit-extend:void (form:ptr)
   (let (ff:ptr:Node (cast ptr:Node form))
     (when (< (node-len form) 3)
       (die-at (ff line) "extend: expected (extend Subject Protocol)"))
     (let (type-node:ptr:Node (cast ptr:Node (node-at form 1))
-          proto-node:ptr:Node (cast ptr:Node (node-at form 2)))
+          proto-node:ptr:Node (cast ptr:Node (node-at form 2))
+          proto-args:ptr null
+          proto-nargs:i32 0
+          proto-name:ptr (extend-proto-name (cast ptr proto-node)
+                                            (cast ptr:ptr (addr-of proto-args))
+                                            (cast ptr:i32 (addr-of proto-nargs))
+                                            (proto-node line)))
+      ; Stage 11 T4: the subject is a struct *template* `(extend (Vector T) (Seq T))`.
+      ; Record a template-level conformance; the per-instance check fires at stamp
+      ; time, and any already-stamped instance is rechecked now.
+      (when (= (type-node kind) NODE-CELL)
+        (let (thead:ptr:Node (cast ptr:Node (node-at (cast ptr type-node) 0)))
+          (when (!= (thead kind) NODE-SYM)
+            (die-at (type-node line) "extend: template subject name must be a symbol"))
+          (let (st:?ptr:StructTemplate (struct-template-lookup (thead s)))
+            (when (= (cast ptr st) null)
+              (die-at (type-node line)
+                (fmt-s "extend: '%s' is not a struct template" (thead s))))
+            (let (proto:?ptr:Protocol (protocol-lookup proto-name))
+              (when (= (cast ptr proto) null)
+                (die-at (proto-node line) (fmt-s "extend: unknown protocol '%s'" proto-name)))
+              ; The protocol application must supply exactly the protocol's extra
+              ; params, each bound positionally to one of the template's tyvars.
+              (when (!= proto-nargs (-> proto (cast ptr:Protocol _) (_ num-params)))
+                (die-at (proto-node line)
+                  (fmt-s "extend: protocol '%s' expects a different number of parameters" proto-name)))
+              (tmpl-conformance-add (cast ptr st) (cast ptr proto) proto-args proto-nargs)
+              ; Retroactively check instances stamped before this extend was seen.
+              (let (ntc:i32 g-num-tmpl-conformances
+                    c:ptr:TmplConformance (cast ptr:TmplConformance
+                                            (ptr+ (cast ptr:TmplConformance g-tmpl-conformances)
+                                                  (- ntc 1))))
+                (tmpl-conformance-recheck-stamped (cast ptr c) (cast ptr st) (ff line)))
+              (return)))))
+      ; --- subject is a concrete type (symbol) ---
       (when (!= (type-node kind) NODE-SYM)
-        (die-at (type-node line) "extend: subject must be a symbol"))
-      (when (!= (proto-node kind) NODE-SYM)
-        (die-at (proto-node line) "extend: protocol must be a symbol"))
-      (let (typename:ptr (type-node s)
-            proto-name:ptr (proto-node s))
-        ; Protocol-on-protocol: declare inheritance, no per-type check.
-        (when (!= (protocol-lookup typename) null)
+        (die-at (type-node line) "extend: subject must be a symbol or struct template"))
+      (let (typename:ptr (type-node s))
+        ; Protocol-on-protocol: declare inheritance, no per-type check. Only the
+        ; bare-symbol protocol form participates in inheritance.
+        (when (and (!= (protocol-lookup typename) null) (= proto-nargs 0))
           (when (= (protocol-lookup proto-name) null)
             (die-at (proto-node line)
               (fmt-s "extend: '%s' is a protocol, so its supertype '%s' must be a protocol too"
@@ -5505,13 +6294,27 @@
           (return))
         ; Extending to a blanket protocol (Any/Struct) is redundant — conformance
         ; is automatic and structural — so accept it as a no-op.
-        (when (!= (blanket-lookup proto-name) 0) (return))
-        (when (= (protocol-lookup proto-name) null)
-          (die-at (proto-node line) (fmt-s "extend: unknown protocol '%s'" proto-name)))
-        ; Validate single-token subject types eagerly for a clean diagnostic.
-        (when (= (strchr typename 58) null)
-          (parse-type-name typename (type-node line)))
-        (verify-conformance typename proto-name (ff line) 1)))))
+        (when (and (!= (blanket-lookup proto-name) 0) (= proto-nargs 0)) (return))
+        (let (proto:?ptr:Protocol (protocol-lookup proto-name))
+          (when (= (cast ptr proto) null)
+            (die-at (proto-node line) (fmt-s "extend: unknown protocol '%s'" proto-name)))
+          ; Validate single-token subject types eagerly for a clean diagnostic.
+          (when (= (strchr typename 58) null)
+            (parse-type-name typename (type-node line)))
+          (when (!= proto-nargs (-> proto (cast ptr:Protocol _) (_ num-params)))
+            (die-at (proto-node line)
+              (fmt-s "extend: protocol '%s' expects a different number of parameters" proto-name)))
+          ; Concrete protocol params (`(Seq i32)`): canonicalize each arg's spelling.
+          (let (pspellings:ptr null)
+            (when (> proto-nargs 0)
+              (set! pspellings (arena-alloc (* (cast i64 proto-nargs) (ptr-bytes))))
+              (let (i:i32 0)
+                (while (< i proto-nargs)
+                  (aset! (cast ptr:ptr pspellings) i
+                         (type-spelling (parse-type-from-node
+                                          (aref (cast ptr:ptr proto-args) i) (proto-node line))))
+                  (inc! i))))
+            (verify-conformance-params typename proto-name pspellings (ff line) 1)))))))
 
 ; Import side: trust the exporting unit's check; record the fact (and recurse
 ; supers), or re-register a protocol-inheritance edge.
@@ -5952,7 +6755,9 @@
         (when (= (is-int-type (idx type)) 0)
           (die-at (cc line) "aref: index must be integer"))
         (let (idx64:ptr (idx val))
-          (when (-> idx (_ type) (cast ptr:Type _) (_ kind) (!= _ TY-I64))
+          ; Extend the index to i64 for the GEP unless it is already pointer-wide
+          ; (i64 on LP64, i32 on ILP32). usize/ssize are pointer-sized so no sext.
+          (when (< (type-size (idx type)) g-target-ptr-bytes)
             (let (t:ptr (new-tmp))
               (fprintf g-body-stream "  %s = sext %s %s to i64\n"
                 t (type-to-ir (idx type)) (idx val))
@@ -5979,7 +6784,8 @@
         (when (= (is-int-type (idx type)) 0)
           (die-at (cc line) "aset!: index must be integer"))
         (let (idx64:ptr (idx val))
-          (when (-> idx (_ type) (cast ptr:Type _) (_ kind) (!= _ TY-I64))
+          ; Same pointer-width guard as emit-aref: skip sext when already i64.
+          (when (< (type-size (idx type)) g-target-ptr-bytes)
             (let (t:ptr (new-tmp))
               (fprintf g-body-stream "  %s = sext %s %s to i64\n"
                 t (type-to-ir (idx type)) (idx val))
@@ -7631,7 +8437,8 @@
         (when (= (is-int-type (nv type)) 0)
           (die-at (cc line) "ptr+: offset must be integer"))
         (let (idx:ptr (nv val))
-          (when (-> nv (_ type) (cast ptr:Type _) (_ kind) (!= _ TY-I64))
+          ; Skip sext when the offset is already pointer-wide (i64 on LP64).
+          (when (< (type-size (nv type)) g-target-ptr-bytes)
             (let (t:ptr (new-tmp))
               (fprintf g-body-stream "  %s = sext %s %s to i64\n"
                 t (type-to-ir (nv type)) (nv val))
@@ -9162,6 +9969,12 @@
       (let (sd:?ptr:StructDef (lookup-struct h))
         (when (!= sd null)
           (return (emit-struct-lit n scope sd))))
+      ; Stage 11: bare (Template arg ...) with a struct-template name in head
+      ; position is ambiguous (type arg vs first field value) and is an error.
+      ; Point at the explicit ((Template <type-args>) field0 ...) form.
+      (when (!= (cast ptr (struct-template-lookup h)) null)
+        (die-at ((cast ptr:Node head) line)
+          (fmt-s "'%s' is a struct template; construct with the explicit form ((Template <type-args>) field0 field1 ...)" h)))
       (die-at ((cast ptr:Node head) line) (fmt-s "unknown: %s" h)))))
 
 (defn emit-list:ref:Val (n:ptr scope:ref:Scope)
@@ -9171,7 +9984,20 @@
       ; An arbitrary-expression head — `((mk) 3)`, `(@p 3)` — cannot be a macro or
       ; special form (those are symbol-keyed): emit it and route as a callable
       ; value (callable-values.md §4.1). Symbol heads continue below.
+      ; Stage 11: ((Vector i32) v0 v1 ...) — a list head that is a struct-template
+      ; application. The inner (Vector i32) is parsed via parse-type-from-node to
+      ; stamp (or look up) the concrete instance; the outer form is then an ordinary
+      ; compound literal over that StructDef (parametric-structs.md §6).
       (when (!= (head kind) NODE-SYM)
+        (when (= (head kind) NODE-CELL)
+          (let (hcar:ptr (head car))
+            (when (!= hcar null)
+              (let (hcar-node:ptr:Node (cast ptr:Node hcar))
+                (when (= (hcar-node kind) NODE-SYM)
+                  (when (!= (cast ptr (struct-template-lookup (hcar-node s))) null)
+                    (let (stamped-ty:ptr (parse-type-from-node (cast ptr head) (head line)))
+                      (when (= ((cast ptr:Type stamped-ty) kind) TY-STRUCT)
+                        (return (emit-struct-lit n scope ((cast ptr:Type stamped-ty) sdef)))))))))))
         (return (emit-callable-value n scope (emit-node (cast ptr head) scope))))
       (let (h:ptr (head s)
             hp:ptr (cast ptr head))
@@ -9604,6 +10430,12 @@
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (< (node-len cc) 2) (die-at (cc line) "defstruct: missing name"))
     (let (name-node:ptr:Node (cast ptr:Node (node-at cc 1)))
+      ; Stage 11: a parameterized head — `(defstruct (Vector T) ...)` — is a
+      ; template; defines no type, emits no IR (parametric-structs.md §2). A use
+      ; `(Vector i32)` in type position stamps a concrete instance.
+      (when (= (name-node kind) NODE-CELL)
+        (register-struct-template (cast ptr cc))
+        (return))
       (when (!= (name-node kind) NODE-SYM)
         (die-at (name-node line) "defstruct: name must be symbol"))
       (guard-name-kind (name-node s) (cc line) NK-TYPE)
@@ -9759,9 +10591,10 @@
           params-node:ptr (node-at cc 2))
       (when (= (node-is-list params-node) 0)
         (die-at ((cast ptr:Node name-node) line) "defn: params must be list"))
-      ; A bounded-generic template (carries `&where`) emits no code itself; it is
-      ; registered in prescan and monomorphized per call site.
-      (when (>= (params-where-index params-node) 0) (return))
+      ; A bounded-generic template — `&where` or a parametric-struct receiver —
+      ; emits no code itself; it is registered in prescan and monomorphized per
+      ; call site.
+      (when (!= (defn-is-generic-template call) 0) (return))
       (let (fname:ptr null
             ret:ptr (extract-name-and-type name-node (cast ptr:ptr (addr-of fname))
                                            ((cast ptr:Node name-node) line)))
@@ -10844,9 +11677,14 @@
           (let (h:ptr (-> f (node-at _ 0) (cast ptr:Node _) (_ s)))
             (when (= h "defstruct")
               (let (nn:ptr:Node (cast ptr:Node (node-at (cast ptr f) 1)))
-                (when (and (= (nn kind) NODE-SYM)
-                           (= (cast ptr (lookup-struct (nn s))) null))
-                  (register-struct (nn s)))))
+                (if (= (nn kind) NODE-SYM)
+                  (when (= (cast ptr (lookup-struct (nn s))) null)
+                    (register-struct (nn s)))
+                  ; Stage 11: a parameterized head — (defstruct (Vector T) ...) —
+                  ; registers a template here so defn signatures naming
+                  ; (Vector i32) resolve in the signature prescan that follows.
+                  (when (= (nn kind) NODE-CELL)
+                    (register-struct-template (cast ptr f))))))
             ; defunion: pre-register the backing struct's name (monomorphic) or
             ; the template, so defn signatures mentioning the type resolve in
             ; the signature prescan that follows.
@@ -10931,9 +11769,10 @@
           (let (name-node:ptr (node-at (cast ptr f) 1)
                 params-node:ptr (node-at (cast ptr f) 2))
             (when (!= (node-is-list params-node) 0)
-              ; A `&where` clause marks a bounded-generic template: retain it for
-              ; on-demand monomorphization rather than parsing its tyvar types.
-              (if (>= (params-where-index params-node) 0)
+              ; A `&where` clause OR a receiver over a parametric struct marks a
+              ; bounded-generic template: retain it for on-demand monomorphization
+              ; rather than parsing its (free-tyvar) parameter/return types now.
+              (if (!= (defn-is-generic-template (cast ptr f)) 0)
                 (register-generic-defn (cast ptr f) 0)
                 (let (fname:ptr null
                       ret:ptr (extract-name-and-type name-node (cast ptr:ptr (addr-of fname))
@@ -11266,8 +12105,13 @@
 ; A solitary function exports as a plain (declare ...); an overloaded one
 ; exports a (defmethod ...) per method so each keeps its distinct symbol. A
 ; bounded-generic template exports verbatim so importers can monomorphize it.
+; "Bounded-generic" covers both an explicit `&where` clause and a method whose
+; receiver/return is over a parametric struct (`(Vector T)`, §4): both carry free
+; tyvars, so defn-form-mangled-name's concrete param-type parse would die
+; `unknown type: T`. defn-is-generic-template is the same predicate the prescan
+; and emit-defn skip consult, so the three never disagree.
 (defn emit-nuch-defn:void (form:ptr)
-  (when (>= (params-where-index (node-at form 2)) 0)
+  (when (!= (defn-is-generic-template form) 0)
     (print-node form)
     (printf "\n")
     (return))
@@ -11644,6 +12488,11 @@
   (set! g-uniondefs-len 0)
   (set! g-union-templates (arena-alloc (* (cast i64 MAX-UNION-TEMPLATES) (sizeof UnionTemplate))))
   (set! g-union-templates-len 0)
+  (set! g-struct-templates (arena-alloc (* (cast i64 MAX-STRUCT-TEMPLATES) (sizeof StructTemplate))))
+  (set! g-struct-templates-len 0)
+  (set! g-tmpl-conformances null)
+  (set! g-num-tmpl-conformances 0)
+  (set! g-cap-tmpl-conformances 0)
   (set! g-enumdefs (arena-alloc (* (cast i64 MAX-ENUMS) (sizeof EnumDef))))
   (set! g-enumdefs-len 0)
   (set! g-deferror-name-sids (arena-alloc (* (cast i64 (+ MAX-DEFERRORS 1)) (cast i64 4))))

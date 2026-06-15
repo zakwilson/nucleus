@@ -256,7 +256,7 @@ Implement `match` by-reference binders.
 U1–U3 are implemented per the designer's directives (i32 tag, target typing,
 `(ref x)` by-reference binders). U4 niche layout and `&repr` are also
 implemented (Phase C4, 2026-06-14) — see the **U4 landed** entry below.
-Status detail lives in [../progress.md](../progress.md) (stage 10 unions
+Status detail lives in [progress.md](progress.md) (stage 10 unions
 table); user-facing documentation in docs/builtins.md §"Unions and tagged
 sums" and §"Niche layout and `&repr`"; runtime coverage in
 `examples/unions.nuc`, `examples/errptr.nuc`, `tests/repl/unions.in`, and

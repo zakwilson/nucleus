@@ -408,7 +408,7 @@ an `'unhandled-error` condition before aborting once standalone `signal` exists
   "Unions and tagged sums" (§~192) and "Pointer kinds" (§~126) sections for
   `Err`/`deferror`/`Result`/`!T`/handlers, and rewrite the `?`/`ref`/`ptr`
   description after the flip.
-- Update [design/progress.md](../progress.md) — add a Stage 10 errors table
+- Update [design/stage10/progress.md](progress.md) — add a Stage 10 errors table
   (mirror the unions table at lines ~114–125) and flip the N2/flip rows in the
   safety/nullability status.
 - Record implementation notes back into [errors.md](errors.md) (the doc is

@@ -1,0 +1,15 @@
+; Test importing a parametric struct template from a .nuch header.
+; Imports boxlib which exports (defstruct (Box T) val:T) with no concrete
+; instantiation.  This unit re-stamps Box.i32 locally by constructing
+; ((Box i32) 42) and calling box-get on the result.
+
+(include stdio)
+(import boxlib)
+
+(defn main:int ()
+  (let ((b (ptr (Box i32))) (alloca (Box i32)))
+    (ptr-set! b @((Box i32) 42))
+    (printf "box-get=%d\n" (box-get b))
+    (box-set b 99)
+    (printf "box-get=%d\n" (box-get b)))
+  (return 0))

@@ -1,0 +1,4 @@
+; .nuch header for lib/boxlib.nuc
+(defstruct (Box T) (val T))
+(defn (box-get T) ((b (ptr (Box T)))) (return (b val)))
+(defn (box-set void) ((b (ptr (Box T))) (v T)) (.set! b val v))
