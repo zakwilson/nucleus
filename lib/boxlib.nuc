@@ -1,0 +1,12 @@
+; Parametric Box library — for testing cross-unit template export/import.
+; NOTE: no concrete instantiation here (no (Box i32) etc.) — keeps the lib
+; instantiation-free so the importer can stamp without duplicate-symbol errors.
+
+(defstruct (Box T)
+  val:T)
+
+(defn box-get:T ((b (ptr (Box T))))
+  (return (b val)))
+
+(defn box-set:void ((b (ptr (Box T))) v:T)
+  (.set! b val v))
