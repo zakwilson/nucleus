@@ -1,5 +1,13 @@
 # Nucleus Built-ins Reference
 
+> **This file has been split into focused reference documents.**
+> See [docs/index.md](index.md) for the new entry point and table of contents.
+
+The sections below are preserved for compatibility with existing links in design documents.
+For new reading, prefer the split files listed in the index.
+
+---
+
 Built-in forms and functions as implemented in `src/nucleusc.nuc`.
 
 ## Compiler Flags
@@ -95,7 +103,7 @@ Importing a `.nuch` with `defmethod` forms registers the methods for dispatch in
 | `defn` | Define a function. Supports `&rest` for variadic functions: `(defn name (a:t &rest xs:elem) ...)`. The rest parameter receives a `Node*` cons-list head built at the call site (so each call site emits `@make-cell` calls and the program must define a compatible `make-cell`). The element type annotation is documentation only — non-`ptr` args are `inttoptr`'d into `Node.car`. `&rest` functions are not directly C-callable; calling through a function pointer requires manually constructing the rest list. `&rest` must be the second-to-last param. Supports `&optional` for trailing parameters with defaults: `(defn name (a:t &optional (b:t default) ...) ...)`. Each `&optional` param must be a 2-element list `(name:type default-expr)`. Defaults are evaluated at the call site in the caller's scope (Common Lisp semantics), so non-constant defaults like `(next-counter)` produce a fresh value per call. Implicit casts apply to defaults. The compiled function has fixed maximum arity at the LLVM/C ABI level — calling through a function pointer or from C requires supplying every argument including the optional ones. `&optional` cannot be combined with `&rest`. A struct-by-value parameter or return is lowered to the platform C ABI (see [Passing and returning structs by value](#passing-and-returning-structs-by-value)). **Docstring**: if the first body form is a string literal AND there is at least one more form after it, that string is captured as the function's docstring (visible via `(doc fn)` and `(apropos)`); a function whose body is a single string literal is treated as returning the string, not as having a docstring. The same convention applies to `defmacro`. **Overloadable:** defining `defn` again with the same name but different parameter types adds a method — see [Polymorphism](#polymorphism-overloaded-defn-multimethods). | function definition |
 | `defconst` | Define a compile-time constant | `#define` / `enum` constant |
 | `defenum` | Define an enumeration | `enum` |
-| `defvar` | Define a global variable `(defvar name:type [init])`. The optional init must be a literal the language can express in constant position: an integer literal (any int width, signed or unsigned), float literal (`f32` / `f64`), string literal (storage type must be `ptr`), `null` (ptr only), `true` / `false` (`i1`/`bool` only), `(char "x")` (any int type), or a name bound by `defconst` / `defenum` (the constant value is folded in). Omitted inits default to zero / `null` / `false`. `set!` works on the result. The symbol is exported with default linkage and is visible to C consumers (`extern T name;`) and other Nucleus modules (`(extern name:type)`). Storage class specifiers (`static`, `register`, `thread_local`) are deferred — see `design/stage888-deferred.md`. | global variable definition |
+| `defvar` | Define a global variable `(defvar name:type [init])`. The optional init must be a literal the language can express in constant position: an integer literal (any int width, signed or unsigned), float literal (`f32` / `f64`), string literal (storage type must be `ptr`), `null` (ptr only), `true` / `false` (`i1`/`bool` only), `(char "x")` (any int type), or a name bound by `defconst` / `defenum` (the constant value is folded in). Omitted inits default to zero / `null` / `false`; a global of **aggregate** type (struct or union) with no init is zero-filled (`zeroinitializer`), so e.g. `(defvar g:MyStruct)` is valid. `set!` works on the result. The symbol is exported with default linkage and is visible to C consumers (`extern T name;`) and other Nucleus modules (`(extern name:type)`). Storage class specifiers (`static`, `register`, `thread_local`) are deferred — see `design/stage888-deferred.md`. | global variable definition |
 | `defstruct` | Define a struct type, or a parametric struct template when the name is a list: `(defstruct (Name T ...) ...)`. See [Parametric struct templates](#parametric-struct-templates-defstruct-name-t-). | `struct` |
 | `defunion` | Define a tagged sum `(defunion Name (arm field:type ...) ... bare-arm)` or a template `(defunion (Name T ...) ...)`. See [Unions and tagged sums](#unions-and-tagged-sums). | tagged `struct {int tag; union {...} payload;}` |
 | `defprotocol` | Define a protocol: a named set of required method signatures (types may mention `Self` and extra element parameters). Compile-time only; emits no code. See [Protocols](#protocols-defprotocol-and-extend) and [Parametric protocols](#parametric-protocols). | — (concept: interface/trait) |
@@ -811,6 +819,8 @@ Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defin
 | `null?` | `(null? x)` | `(= x null)` |
 | `for` | `(for (var:type init) test step body)` | `(let (var:type init) (while test body step))` |
 | `dotimes` | `(dotimes (var:type n) body)` | `(let (var:type 0) (while (< var n) body (inc! var)))` |
+| `doseq` | `(doseq (var iter-ref) body...)` | Loop over an iterator: calls `(next iter-ref)` each step, binds the element to `var`, and runs `body...`; stops on `none`. `iter-ref` must be a `(ref IterType)` where `IterType` conforms to `(Iterator E)`. See [Iterators](#iterators-libiteratornuc-stage-11). |
+| `into` | `(into coll-sym iter-ref)` | Drain an iterator into a collection: calls `(next iter-ref)` each step and `(conj coll-sym elem)` for each element; stops on `none`. Requires `coll-sym` to be a `(ref CollType)` with a `conj` method. See [Iterators](#iterators-libiteratornuc-stage-11). |
 | `->` | `(-> x form ...)` | Threads `x` through each form. If a form contains `_`, the value replaces `_`; otherwise inserts as first arg (thread-first). Bare symbols wrap as `(sym value)`. `_` is only special inside `->`. |
 
 `case` is multi-way equality dispatch: it compares `form` against each value `vi` with `=` and yields the first matching result `ri`. The final unpaired argument is the **required** default. Because `=` is overloadable, `case` works over any type with an equality (integers, enum constants, symbols, C strings). `form` is re-evaluated per comparison, so it should be side-effect free.
@@ -1241,10 +1251,12 @@ argument tuple, so the same value answers both forms by argument:
 (v len)        ; ⇒ (get v 'len) → the length field
 ```
 
-The `Seq` and `Call` protocols (`lib/seq.nuc`) name the `invoke` capability:
-`Seq` is integer-indexable (`(invoke:i32 (self:ptr:Self i:i32))`), `Call` is a
-unary `ptr→ptr` function object. Because protocols fix concrete signatures (no
-associated types yet), the element/argument types are concrete.
+The `IntIndexable` and `Call` protocols (`lib/seq.nuc`) name the `invoke`
+capability: `IntIndexable` is integer-indexable (`(invoke:i32 (self:ptr:Self
+i:i32))`), `Call` is a unary `ptr→ptr` function object. Because protocols fix
+concrete signatures (no associated types yet), the element/argument types are
+concrete. (`IntIndexable` was named `Seq` before Stage 11 collections; it was
+renamed to free the `Seq` name for the parametric collection protocol.)
 
 **Computed selector (`get` only).** An *explicit* `(get callee expr)` whose
 selector is a compound expression (not a bare/quoted symbol) reads a field chosen
@@ -1260,8 +1272,8 @@ head whose value is a **function pointer** folds to an indirect call, so
 
 Everything resolves at compile time to a static GEP+load, a direct `call` to a
 resolved method, or an indirect `call` through a fn-pointer — no dispatch object,
-no vtable. `get`/`invoke` overloads and `Seq`/`Call` export through the existing
-`defmethod`/`defprotocol`/`extend` machinery; there is no new `.nuch` form.
+no vtable. `get`/`invoke` overloads and `IntIndexable`/`Call` export through the
+existing `defmethod`/`defprotocol`/`extend` machinery; there is no new `.nuch` form.
 
 ## Literal Values
 
@@ -1420,3 +1432,208 @@ Pre-declared C standard library functions, available without `extern`.
 | `dup` | `(i32) -> i32` | `<unistd.h>` |
 | `dup2` | `(i32, i32) -> i32` | `<unistd.h>` |
 | `close` | `(i32) -> i32` | `<unistd.h>` |
+
+## Allocators (`lib/allocator.nuc`, Stage 11)
+
+The collection library owns and frees memory through an **allocator** rather than
+a bare `malloc`, so a collection can be built against libc, an arena, or a future
+allocator and still free with the same backend that built it. `(import allocator)`
+brings in the protocol, the handle type, the backends, and a default.
+
+### The `Allocator` protocol
+
+The documented contract (Zig-shaped). `align` is part of the contract even where
+a backend ignores it. The byte type is `(raw ui8)` (= C `unsigned char *`):
+
+```lisp
+(defprotocol Allocator
+  ((alloc   (raw ui8)) ((self (ref Self)) size:usize align:usize))
+  ((realloc (raw ui8)) ((self (ref Self)) (p (raw ui8)) old:usize new:usize align:usize))
+  (free:void           ((self (ref Self)) (p (raw ui8)) size:usize align:usize)))
+```
+
+Note the **list-form method names** (`(alloc (raw ui8))`, not `alloc:(raw ui8)`):
+a parenthesised type does not tokenise in a colon return/parameter position, so
+both the name's return type and `(raw ui8)` parameters use the list binding form.
+
+### Runtime dispatch: `AllocHandle`
+
+A collection stores **one** allocator handle field and dispatches through it
+without knowing the concrete backend — the design's "stored field" plumbing. The
+protocol system is static-only (no vtables) and `funcall-ptr-*` cannot call a
+3+-arg function pointer, so dispatch is a **tagged handle**, not a vtable:
+
+```lisp
+(defenum AllocKind ALLOC-LIBC ALLOC-ARENA)
+(defstruct AllocHandle kind:i32 data:ptr)
+```
+
+| Helper | Signature | Behaviour |
+|--------|-----------|-----------|
+| `alloc-handle-alloc` | `((h (ref AllocHandle)) size:usize align:usize) -> (raw ui8)` | libc `malloc`, or `arena-alloc`; `kind` selects |
+| `alloc-handle-realloc` | `((h (ref AllocHandle)) (p (raw ui8)) old:usize new:usize align:usize) -> (raw ui8)` | libc `realloc`, or arena fresh-alloc + `memcpy` of `min(old,new)` |
+| `alloc-handle-free` | `((h (ref AllocHandle)) (p (raw ui8)) size:usize align:usize) -> void` | libc `free`, or no-op for the arena |
+
+### Default and constructors
+
+| Function | Signature | Use |
+|----------|-----------|-----|
+| `default-allocator` | `() -> (ref AllocHandle)` | the process-global libc handle; backs convenience constructors that omit an allocator |
+| `libc-allocator` | `((h (ref AllocHandle))) -> (ref AllocHandle)` | initialise a caller-owned slot as a libc handle |
+| `arena-allocator` | `((h (ref AllocHandle))) -> (ref AllocHandle)` | initialise a caller-owned slot as an arena handle (state lives in `lib/arena.nuc`'s globals) |
+
+A collection stores the `AllocHandle` by value; use `(.& coll alloc-field)` to get
+a `(ref AllocHandle)` into it for the helpers. Example: `examples/allocator-test.nuc`.
+
+**Why no static `(extend MyAlloc Allocator)` in the library.** A generic method
+literally named `free`/`realloc`/`malloc` shadows the libc symbol of that name for
+the whole compilation unit (this is why `Drop` uses `drop`), and such a
+conformance currently cannot be `import`ed at all — the imported file's transitive
+`(include stdlib)` re-declares the libc symbol before the importing generics
+finalize. A conformance defined *directly* in the consuming unit does compile.
+See `design/stage11/progress.md` (M1) for the details and the deferred compiler fix.
+
+## Iterators (`lib/iterator.nuc`, Stage 11)
+
+`(import iterator)` provides the `Iterator` parametric protocol, two concrete
+iterator structs, two lazy combinator types, function-object protocols, and
+typed reduce functions. Bring it in with `(import iterator)`.
+
+### The `Iterator` protocol
+
+```lisp
+(defprotocol (Iterator E)
+  ((next (Maybe E)) ((self (ref Self)))))
+```
+
+`E` is the element type. A conforming type provides a `next` method that
+advances the iterator and returns `(some v)` for the next element or `none`
+when exhausted. `next` takes `(ref Self)` because it mutates the iterator's
+position. Use `(Maybe i32)` or `(Maybe i64)` (not `(Maybe ptr)`) as the element
+type — `(Maybe ptr)` is niche-encoded as a nullable pointer and cannot be used
+with `match`.
+
+### Concrete iterators
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `IntRangeIter` | `start:i32 end:i32` | Iterates `i32` values in `[start, end)`. Element type `i32`. |
+| `I64ArrayIter` | `data:ptr:i64 pos:usize len:usize` | Iterates `i64` elements from a flat array. Element type `i64`. |
+
+Both conform to `(Iterator i32)` / `(Iterator i64)` respectively.
+
+**Constructing an iterator:** use `alloca` and `.set!` the fields, then pass a
+`(ref IterType)` to `next` or to `doseq`.
+
+```lisp
+(let ((r (ref IntRangeIter)) (alloca IntRangeIter))
+  (.set! r start 1)
+  (.set! r end 6)
+  (doseq (x r)
+    (printf "%d\n" x)))   ; prints 1 2 3 4 5
+```
+
+### Function-object protocols
+
+These protocols let user-defined types serve as functions passed to `MapIterI64`,
+`FilterIterI64`, and `reduce-*`:
+
+| Protocol | Required method | Description |
+|----------|----------------|-------------|
+| `CallI64` | `callfn:i64 (self:ptr:Self x:i64)` | Unary `i64 → i64` transform. Used as the map / predicate function. |
+| `BinaryCallI64` | `foldop:i64 (self:ptr:Self acc:i64 x:i64)` | Binary `(i64, i64) → i64` fold. Used by reduce. |
+
+Define a struct, `extend` it with the protocol, then provide `callfn` or `foldop`:
+
+```lisp
+(defstruct SumI64 dummy:i32)
+(extend SumI64 BinaryCallI64)
+(defn foldop:i64 (self:ptr:SumI64 acc:i64 x:i64)
+  (return (+ acc x)))
+```
+
+### Lazy combinators
+
+Both are **parametric structs** with type parameters `I` (source iterator type)
+and `F` (function-object type). Parametrising on `F` means the concrete `callfn`
+is selected at stamp time — there is no runtime vtable.
+
+**`(MapIterI64 I F)`** — applies `callfn` to each element of the source iterator.
+`I` must conform to `(Iterator i64)`. `F` must conform to `CallI64`.
+
+**`(FilterIterI64 I F)`** — keeps only elements where `callfn` returns non-zero.
+Same constraints as `MapIterI64`.
+
+Fields are stored **by value** inside the struct. Use `memcpy` with `(.& struct field)` to copy a source iterator or function object into a combinator's field (because `alloca` returns a reference, and field assignment requires a reference to the destination):
+
+```lisp
+(let ((mi (ref (MapIterI64 I64ArrayIter SquareI64)))
+      (alloca (MapIterI64 I64ArrayIter SquareI64)))
+  (memcpy (cast ptr (.& mi source)) (cast ptr src) (cast i64 (sizeof I64ArrayIter)))
+  (memcpy (cast ptr (.& mi f))      (cast ptr sq)  (cast i64 (sizeof SquareI64)))
+  ...)
+```
+
+To call `next` on a field stored by value inside a struct, use `(.& self fieldname)` to get a `(ref FieldType)`:
+
+```lisp
+(defn (next (Maybe i64)) ((self (ref (MapIterI64 I F))))
+  (let ((res (Maybe i64)) (next (.& self source)))
+    ...))
+```
+
+### Reduce functions
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `reduce-i64` | `((f (ref G)) init:i64 (it (ref I64ArrayIter)) &where (BinaryCallI64 G)) -> i64` | Fold an `I64ArrayIter` with a `BinaryCallI64` function object `f`. |
+| `reduce-map-i64` | `((fold (ref G)) init:i64 (it (ref (MapIterI64 I F))) &where (BinaryCallI64 G)) -> i64` | Fold a `MapIterI64` with a `BinaryCallI64`. |
+| `reduce-filter-map-i64` | `((fold (ref G)) init:i64 (it (ref (FilterIterI64 (MapIterI64 I F) P))) &where (BinaryCallI64 G)) -> i64` | Fold a `FilterIterI64` wrapping a `MapIterI64`. |
+
+`G` is inferred at the call site from the concrete type of `fold`. All three
+functions iterate until `none` and return the accumulated value.
+
+### End-to-end example
+
+Chain `[1,2,3,4,5]` → square → keep even → sum (= 4 + 16 = 20):
+
+```lisp
+(import iterator)
+
+(defstruct SumI64 dummy:i32)
+(extend SumI64 BinaryCallI64)
+(defn foldop:i64 (self:ptr:SumI64 acc:i64 x:i64) (return (+ acc x)))
+
+(defstruct SquareI64 dummy:i32)
+(extend SquareI64 CallI64)
+(defn callfn:i64 (self:ptr:SquareI64 x:i64) (return (* x x)))
+
+(defstruct IsEvenI64 dummy:i32)
+(extend IsEvenI64 CallI64)
+(defn callfn:i64 (self:ptr:IsEvenI64 x:i64)
+  (return (cast i64 (= (% x (cast i64 2)) (cast i64 0)))))
+
+(defn main:i32 ()
+  (let (arr:ptr:i64 (alloca i64 5))
+    (aset! arr 0 (cast i64 1)) (aset! arr 1 (cast i64 2))
+    (aset! arr 2 (cast i64 3)) (aset! arr 3 (cast i64 4))
+    (aset! arr 4 (cast i64 5))
+    (let ((sq (ref SquareI64)) (alloca SquareI64))
+    (let ((ev (ref IsEvenI64)) (alloca IsEvenI64))
+    (let ((sm (ref SumI64)) (alloca SumI64))
+    (let ((src (ref I64ArrayIter)) (alloca I64ArrayIter))
+      (.set! src data arr) (.set! src pos (cast usize 0)) (.set! src len (cast usize 5))
+      (let ((mi (ref (MapIterI64 I64ArrayIter SquareI64))
+            (alloca (MapIterI64 I64ArrayIter SquareI64)))
+        (memcpy (cast ptr (.& mi source)) (cast ptr src) (cast i64 (sizeof I64ArrayIter)))
+        (memcpy (cast ptr (.& mi f))      (cast ptr sq)  (cast i64 (sizeof SquareI64)))
+        (let ((fi (ref (FilterIterI64 (MapIterI64 I64ArrayIter SquareI64) IsEvenI64)))
+              (alloca (FilterIterI64 (MapIterI64 I64ArrayIter SquareI64) IsEvenI64)))
+          (memcpy (cast ptr (.& fi source)) (cast ptr mi)
+                  (cast i64 (sizeof (MapIterI64 I64ArrayIter SquareI64))))
+          (memcpy (cast ptr (.& fi pred)) (cast ptr ev) (cast i64 (sizeof IsEvenI64)))
+          (printf "sum=%lld\n" (reduce-filter-map-i64 sm (cast i64 0) fi)))))))))
+  (return 0))
+```
+
+See `examples/iterator-test.nuc` for the complete working example.
