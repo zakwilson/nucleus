@@ -89,6 +89,7 @@ Source files contain top-level forms (`defn`, `defvar`, `defstruct`, etc.). A `m
 | [Standard library](stdlib.md) | Pre-declared libc bindings (stdio, stdlib, string, ctype, unistd) |
 | [Allocators](allocators.md) | `Allocator` protocol, `AllocHandle`, libc/arena backends (`lib/allocator.nuc`) |
 | [Iterators](iterators.md) | `Iterator` protocol, concrete iterators, lazy combinators, reduce (`lib/iterator.nuc`) |
+| [Collections](collections.md) | Core collection protocols (`Coll`/`Seq`/`Assoc`/`Set`/`Drop`), `Hash`, `Vector`, `HashMap`, `HashSet` (`lib/coll.nuc`, `lib/hash.nuc`, `lib/vector.nuc`, `lib/hashmap.nuc`, `lib/hashset.nuc`) |
 
 ## Standard library overview
 
@@ -104,6 +105,11 @@ Additional libraries available via `import`:
 - `(import arena)` — arena allocator + `(new T)` convenience macro
 - `(import allocator)` — `Allocator` protocol and `AllocHandle`
 - `(import iterator)` — `Iterator` protocol and concrete iterators
+- `(import coll)` — core collection protocols (`Coll`, `Seq`, `Assoc`, `Set`, `Drop`)
+- `(import hash)` — `Hash` protocol with `i32`/`i64`/`usize`/`CStr` conformances (FNV-1a)
+- `(import vector)` — `Vector T` dynamic array and `VecIter T`
+- `(import hashmap)` — `HashMap K V` and `HashMapKeyIter K V`
+- `(import hashset)` — `HashSet T` and `HashSetIter T`
 - `(import seq)` — `IntIndexable`, `Call` protocols
 
 Use `(exclude-prelude)` as the first form in a file to suppress the auto-import and compile against the bare language.
