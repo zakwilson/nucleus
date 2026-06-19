@@ -1,0 +1,117 @@
+; Stage 11 assoc-types (A2/A4.4) — dispatch-time recovery of associated tyvars
+; from a conforming type's retained conformance arguments. No phantom params.
+;
+; `(MapIter I F)` carries only the source-iterator type I and the function-object
+; type F. The source element type S and the result element type E are NOT fields
+; and NOT threaded by the caller — they are recovered at dispatch from:
+;   ((Iterator S) I)  — S := the element type I's Iterator conformance yields
+;   ((UnaryFn S E) F) — S is checked against F's arg, E := F's result
+;
+; MapIter, UnaryFn, FoldFn, FilterIter, and reduce are now in lib/iterator.nuc.
+;
+; chain: IntRangeIter[1,4) -> Double -> 2 4 6
+;        (next yields some 2, some 4, some 6, then none)
+;
+; Also demonstrates:
+;   collect-all  — standalone generic with &where ((Iterator E) I) (§2.5)
+;   sum-i32-iter — constrain case: ((Iterator i32) I) requires exactly i32 element
+;   Error case (commented): passing a non-i32 iterator to sum-i32-iter would
+;     produce a compile-time constraint-mismatch error. (The harness has no
+;     .nuc.fail mechanism; errors are compile-time diagnostics, not runtime output.)
+
+(include stdio)
+(import allocator)
+(import coll)
+(import iterator)
+(import vector)
+
+; ---------------------------------------------------------------------------
+; A function object mapping i32 -> i32 (doubles its input). Conforms to
+; (UnaryFn i32 i32) from lib/iterator.nuc: conformance args = {"i32","i32"}.
+; The first (arg) position carries the already-recovered S=i32 and is CHECKED;
+; the second (ret) position carries the undetermined E and is RECOVERED -> E=i32.
+; ---------------------------------------------------------------------------
+(defstruct Double dummy:i32)
+
+(extend Double (UnaryFn i32 i32))
+
+(defn (apply i32) ((self (ref Double)) (x i32))
+  (return (* x (cast i32 2))))
+
+; ---------------------------------------------------------------------------
+; §2.5 Standalone generic: collect-all.
+; E is recovered from ((Iterator E) I) — the caller supplies no element param.
+; (Iterator E) is both a bound (I must conform to Iterator) and the extraction
+; (E := I's element type). One constraint, both jobs.
+; ---------------------------------------------------------------------------
+(defn collect-all:void ((it (ref I)) (out (ref (Vector E)))
+                        &where ((Iterator E) I))
+  (let (done:i32 0)
+    (while (= done 0)
+      (let ((item (Maybe E)) (next it))
+        (match item
+          ((some v) (conj out v))
+          (none (set! done 1)))))))
+
+; ---------------------------------------------------------------------------
+; Constrain case: ((Iterator i32) I) — the argument i32 is concrete, so the
+; compiler CHECKS that I's Iterator conformance recorded exactly i32, rather than
+; recovering a free variable. A mismatch (e.g. an (Iterator i64) iterator) is a
+; compile-time constraint-mismatch error.
+; ---------------------------------------------------------------------------
+(defn sum-i32-iter:i32 ((it (ref I)) &where ((Iterator i32) I))
+  (let (acc:i32 0)
+    (let (done:i32 0)
+      (while (= done 0)
+        (let ((item (Maybe i32)) (next it))
+          (match item
+            ((some v) (set! acc (+ acc v)))
+            (none (set! done 1))))))
+    (return acc)))
+
+; ---------------------------------------------------------------------------
+; Error case (compile-time only — no .nuc.fail harness).
+; Uncommenting the block below causes a compile-time error because I64ArrayIter
+; conforms to (Iterator i64), not (Iterator i32), and the constrain step
+; mismatches:
+;   error: constraint 'Iterator' parameter mismatch: expected i32, found i64
+;
+; (let ((ai (ref I64ArrayIter)) (alloca I64ArrayIter))
+;   (sum-i32-iter ai))
+; ---------------------------------------------------------------------------
+
+(defn main:i32 ()
+  ; Concrete instance: I = IntRangeIter (yields i32 -> S=i32),
+  ;                    F = Double       ((UnaryFn i32 i32) -> checks S=i32, E=i32).
+  (let ((mi (ref (MapIter IntRangeIter Double)))
+        (alloca (MapIter IntRangeIter Double)))
+    (.set! (.& mi source) start 1)
+    (.set! (.& mi source) end 4)
+    (.set! (.& mi f) dummy 0)
+    ; Drive the mapped iterator: 2 4 6 then none.
+    (let (done:i32 0)
+      (while (= done 0)
+        (let ((item (Maybe i32)) (next mi))
+          (match item
+            ((some v) (printf "%d\n" v))
+            (none (set! done 1)))))))
+
+  ; collect-all: range [10,13) -> Vector i32, print elements.
+  (with ((v (ref (Vector i32))) (alloca (Vector i32)))
+    (vector-init v)
+    (let ((it (ref IntRangeIter)) (alloca IntRangeIter))
+      (.set! it start 10)
+      (.set! it end 13)
+      (collect-all it v))
+    (let (i:usize (cast usize 0))
+      (while (< i (count v))
+        (printf "%d\n" (invoke v i))
+        (set! i (+ i (cast usize 1))))))
+
+  ; sum-i32-iter: constrain case — only accepts (Iterator i32).
+  (let ((it2 (ref IntRangeIter)) (alloca IntRangeIter))
+    (.set! it2 start 1)
+    (.set! it2 end 5)
+    (printf "sum=%d\n" (sum-i32-iter it2)))
+
+  (return 0))

@@ -1,10 +1,10 @@
 # Stage 11 Progress — Parametric Structs & Collections
 
-Parametric structs: **done** (T0–T6). Collections: **in progress** (M1–M5 done).
+Parametric structs: **done** (T0–T6). Collections: **in progress** (M1–M5 done; A0–A2 associated types done; A4.0–A4.4 extend-site recovery + generic iterator rewrite done).
 Cleanup: §1 (colon-paren sugar), §2 (keyword/StrView), §3 (iterator-test flatten), §4a (phantom tyvar) — all **done**.
 Back to [../progress.md](../progress.md)
 
-86 tests pass; `make bootstrap` is a byte-identical fixed point.
+89 tests pass; `make bootstrap` is a byte-identical fixed point.
 
 ---
 
@@ -13,7 +13,7 @@ Back to [../progress.md](../progress.md)
 | Task | Description | Status | Key functions / files |
 |---|---|---|---|
 | M1 | **Allocator protocol + default + arena conformance** — the `Allocator` protocol (the design's Zig-shaped `alloc`/`realloc`/`free` contract); a tagged `AllocHandle` (`{kind, data}`) a collection stores in one field and dispatches through; libc + arena backends behind `alloc-handle-{alloc,realloc,free}`; a process-global default (libc) handle; field-setting constructors `libc-allocator` / `arena-allocator`. Compiler bugfix: aggregate-typed `defvar` globals now emit `zeroinitializer` (was an invalid `0`). The old `Seq` protocol in `lib/seq.nuc` renamed to `IntIndexable` to free the `Seq` name for the M3 collection protocol. | Done | `lib/allocator.nuc` (protocol, `AllocHandle`, `AllocKind`, helpers, `g-default-alloc`, `default-allocator`); `lib/seq.nuc` (`IntIndexable`); `examples/allocator-test.nuc` + `tests/expected/allocator-test.out`; `emit-defvar` aggregate-init arm (`src/nucleusc.nuc`) |
-| M2 | `Iterator` protocol, `into`, `doseq`; lazy `map`/`filter`/`reduce` | Done | `lib/iterator.nuc` (`Iterator` parametric protocol, `IntRangeIter`, `I64ArrayIter`, `MapIterI64`, `FilterIterI64`, `BinaryCallI64`, reduce functions); `lib/seq.nuc` (`BinaryCall`); `lib/macros.nuc` (`doseq`, `into`); `examples/iterator-test.nuc` + `tests/expected/iterator-test.out` |
+| M2 | `Iterator` protocol, `into`, `doseq`; generic lazy `map`/`filter`/`reduce` | Done | `lib/iterator.nuc` (`Iterator` parametric protocol, `IntRangeIter`, `I64ArrayIter`, `UnaryFn`/`FoldFn` function-object protocols, `MapIter`/`FilterIter` generic combinators conforming to `Iterator` via `&where`-on-`extend`, generic `reduce`); `lib/macros.nuc` (`doseq`, `into`); `examples/iterator-test.nuc` + `tests/expected/iterator-test.out` |
 | M3 | **`Vector T`** — dynamically-sized heap sequence (STL `vector` in spirit); O(1) amortized `conj`/`append`/`invoke` (capacity doubling), O(n) `insert`; `Coll`/`Seq` conformance; capacity ops (`capacity`/`reserve`/`vector-init-capacity`); `VecIter` forward cursor (`Iterator` conformance); `Drop` frees the buffer at `with`-scope exit. Fill-in-place constructors (`vector-init`) infer `T` from the receiver. | Done | `lib/vector.nuc` (`Vector`, `VecIter`, `count`/`conj`/`empty?`/`invoke`/`append`/`contains?`/`insert`, capacity ops, `next`/`iter-init`); `lib/coll.nuc` (`Coll`/`Seq`/`Drop` protocols); `examples/vector-test.nuc` + `tests/expected/vector-test.out` |
 | M4 | **`Hash` lib + `HashMap K V` + `HashSet T`** — open-addressing tables (linear probing, power-of-two cap, tombstone deletion, 75% load-factor doubling). `Hash` protocol with FNV-1a conformances for `i32`/`i64`/`usize`/`CStr`; new `(Assoc K V)` and `(Set E)` protocols in `lib/coll.nuc`. HashMap: `assoc`/`dissoc` (`Assoc`), standalone `hmap-get → (Maybe V)`, `count`/`empty?`, `HashMapKeyIter`. HashSet: `insert`/`contains?`/`set-remove`, mutating `union`/`difference`/`intersection` (`Set`), `conj`/`count`/`empty?` (`Coll`), `HashSetIter`. Both own their byte arrays through the stored `AllocHandle` and `Drop` them at `with`-scope exit. | Done | `lib/hash.nuc` (`Hash`, `fnv1a-byte`/`fnv1a-int`, scalar+CStr conformances); `lib/coll.nuc` (`Assoc`/`Set` protocols); `lib/hashmap.nuc` (`HashMap`, `HashMapKeyIter`, resize/probe); `lib/hashset.nuc` (`HashSet`, `HashSetIter`, set algebra); `examples/hashmap-test.nuc` + `examples/hashset-test.nuc` + `tests/expected/*.out`. Compiler fix: latent `ptr-get` typo in `lib/vector.nuc`'s `vector-init-alloc` (never instantiated) corrected to `deref`. |
 | M5 | **Reader-macro literals `[…]` / `{…}` / `#{…}` → constructors** — the reader recognises the bracket delimiters and expands each to a `let` that stack-allocates the stamped collection, runs its in-place init (default libc allocator), `conj`/`assoc`-es each element, and yields the `(ref Coll)`; placed as a `with` RHS the outer `with` fires `Drop`. Element types are inferred from scalar literals (int→`i32`, float→`f64`, string→`CStr`); empty/mixed-kind/non-scalar/odd-map literals are reader errors. | Done | `src/nucleusc.nuc` (`TokKind` enum: `TOK-LBRACK`/`TOK-RBRACK`/`TOK-LBRACE`/`TOK-RBRACE`/`TOK-HASHBRACE`); `lib/reader.nuc` (`is-sym-char` delimiter exclusions, `next-tok` bracket lexing, `read-vector-literal`/`read-hashmap-literal`/`read-hashset-literal`, `infer-lit-type`/`read-lit-elems`, `lit-*` node builders); `examples/{vector,hashmap,hashset}-lit-test.nuc` + `tests/expected/*.out`; `Makefile` (`COMPILER_DEPS`: source-inlined libs now rebuild `$(BIN)`) |
@@ -87,7 +87,13 @@ Back to [../progress.md](../progress.md)
    `match` normally. All iterators in M2 use `i64` elements.
 2. **No runtime vtable dispatch; MapIter/FilterIter are parametric on F.** Because
    protocols dispatch statically, lazy combinator types must be parametric on the
-   function-object type `F`. The `callfn`/`foldop` call is resolved at stamp time.
+   function-object type `F`. The concrete `apply`/`fold` call is resolved at stamp
+   time. The combinators (`MapIter`/`FilterIter` + `UnaryFn`/`FoldFn`) are
+   **element-generic**: `(MapIter I F)` conforms to `(Iterator E)` where `E` is
+   recovered at stamp time from `F`'s `UnaryFn` conformance via `&where` on
+   `extend`. This is A4 (`design/stage11/assoc-types-extend.md`), implemented and
+   complete. The former `i64`-specialized `MapIterI64`/`FilterIterI64`/`CallI64`/
+   `BinaryCallI64` types have been retired.
 3. **`(Maybe T)` construction in non-return position.** `none` and `(some v)` work
    in return position. Elsewhere use `(make (Maybe T) none)` / `(make (Maybe T) some v)`.
 4. **Field access via `(.& self field)` required for `addr-of`.** `(addr-of expr)` only
@@ -128,11 +134,12 @@ Back to [../progress.md](../progress.md)
    receiver-type dispatch, no protocol needed). HashSet extends `(Coll T)` normally (`conj` ==
    `insert`).
 5. **`get`/`keys`/`vals` are standalone, not protocol methods.** Their result types are
-   derived from `Self` (`hmap-get → (Maybe V)`; the key iterator type varies by `Self`), an
-   associated-types shape the protocol machinery cannot express. `Assoc` carries only
-   `assoc`/`dissoc`; `Set` carries `union`/`difference`/`intersection`/`contains?`. Each
-   concrete map/set provides the rest as ordinary generic functions (`hmap-get`,
-   `hmap-iter-keys`, `hashset-iter`).
+   derived from `Self` (`hmap-get → (Maybe V)`; the key iterator type varies by `Self`).
+   Associated types are now implemented (A0–A2), so lifting these into the `Assoc`/`Set`
+   protocols is now mechanically possible but is its own task (see `assoc-types.md` §5
+   out-of-scope). `Assoc` carries only `assoc`/`dissoc`; `Set` carries
+   `union`/`difference`/`intersection`/`contains?`. Each concrete map/set provides the rest
+   as ordinary generic functions (`hmap-get`, `hmap-iter-keys`, `hashset-iter`).
 6. **Open-addressing invariants.** Cap is always a power of two, so the bucket index is
    `(bit-and (hash …) (- cap 1))`. States are `0=empty / 1=occupied / 2=tombstone`; lookup
    stops at the first empty slot and skips tombstones; `assoc`/`insert` reuse the first
@@ -242,8 +249,11 @@ Back to [../progress.md](../progress.md)
    `name:(ref (Vector T))` and the list form compile identically.
 2. **`declare` with a parametric return type** requires the list-form name node:
    `(declare (p2_make (P2 i32 i32)) (...))`.
-3. **Generic functions bounded on a parametric protocol** (`&where ((Seq E) Self)`) are
+3. ~~**Generic functions bounded on a parametric protocol** (`&where ((Seq E) Self)`) are
    not supported — the `&where` parser requires `(Var Protocol)` with plain symbols. The
-   associated-types frontier is deferred to a future pass. Conformance is exercised via
-   `extend` + stamp-time checking + ordinary overload resolution (the `examples/parametric.nuc`
-   working pattern).
+   associated-types frontier is deferred to a future pass.~~ **Resolved** (A0–A2, associated
+   types): the `&where` constraint now accepts `((Protocol Arg…) Var)` — a protocol application
+   in the constraint head. Each `Arg` is recovered (if an unbound tyvar) or constrained (if
+   concrete or already bound). Dispatch-time fixpoint binding reads recovered args from the
+   conforming variable's stored conformance record. See `design/stage11/assoc-types.md` §7.
+4. ~~**Generic combinators cannot conform to `Iterator` (no extend-site recovery).**~~ **Resolved (A4.0–A4.4, all complete).** A `&where` clause on `extend` runs A2's recovery fixpoint at stamp time, recording the per-instance `Conformance` with recovered args. A stamped `(MapIter IntRangeIter SqFn)` records `Conformance{Iterator, args=[i32]}` and is a first-class `Iterator`. `lib/iterator.nuc` has been rewritten: the `i64`-specialized `MapIterI64`/`FilterIterI64`/`CallI64`/`BinaryCallI64` types are retired; generic `MapIter`/`FilterIter`/`UnaryFn`/`FoldFn`/`reduce` are the library API. Combinators chain freely (`FilterIter` over `MapIter` works via bottom-up stamp recursion). `.nuch` round-trip of `&where`-bearing template extends is implemented (A4.3). Cross-unit test: `examples/assoc-types-extend-cross.nuc`. All 89 tests pass; byte-identical bootstrap. See `design/stage11/assoc-types-extend.md` for the full record.

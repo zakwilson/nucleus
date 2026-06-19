@@ -21,7 +21,7 @@ These collections are **mutable and in-place** in the STL spirit — `conj`, `as
 | `conj` | Add an element in the collection's natural way, mutating in place. For a vector this is append; for a set this is insert. |
 | `empty?` | Returns `1` when `count = 0`, else `0`. |
 
-`iter` is intentionally absent from the protocol: it returns an iterator type derived from `Self` (an associated type), which the parametric protocol machinery cannot express. Each concrete type provides its own `iter`-style initializer function.
+`iter` is intentionally absent from the protocol: it returns a type derived from `Self` (the concrete iterator type), which varies per collection and cannot be a fixed protocol method without naming a collection-specific associated type for the return. Each concrete type provides its own `iter`-style initializer function (`iter-init`, `hmap-iter-keys`, `hashset-iter`). Associated types are now supported (see [Generics](generics.md#associated-type-bounds-where-protocol-arg--var)), but lifting `iter` into the protocol is its own task.
 
 ### `(Seq E)` — ordered, index-addressable sequences
 
@@ -55,7 +55,7 @@ These collections are **mutable and in-place** in the STL spirit — `conj`, `as
 | `assoc` | Insert or overwrite the value for `key`, mutating in place. |
 | `dissoc` | Remove the entry for `key`, mutating in place. No-op if absent. |
 
-`hmap-get` (key → `(Maybe V)`), key iteration, and `select-keys` are standalone functions rather than protocol methods because their result types depend on the concrete map type and cannot be expressed in the protocol.
+`hmap-get` (key → `(Maybe V)`), key iteration, and `select-keys` are standalone functions rather than protocol methods. Lifting them into the protocol would require naming the result type — e.g. `(Maybe V)` for `hmap-get` — which is expressible but has not been done yet. See `design/stage11/assoc-types.md` §5 for the out-of-scope note.
 
 ### `(Set E)` — sets of unique members
 

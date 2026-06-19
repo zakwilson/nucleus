@@ -310,7 +310,7 @@ documentation in `docs/builtins.md` §"Parametric struct templates" and
    `(declare (p2_make (P2 i32 i32)) (...))`.
 3. **Generic functions bounded on a parametric protocol** (`&where ((Container
    E) Self)` / associated-element bounds) are not supported in v1 — the `&where`
-   parser requires `(Var Protocol)` with plain symbols. This is the deferred
+   parser requires `(Protocol Var)` with plain symbols. This is the deferred
    associated-types frontier (§9); conformance is exercised via `extend` +
    stamp-time checking + ordinary overload resolution of the protocol methods on
    a conforming instance. See `examples/parametric.nuc` for the working pattern.

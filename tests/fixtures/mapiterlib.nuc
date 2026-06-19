@@ -1,0 +1,11 @@
+; Cross-unit fixture for assoc-types A4.3 (.nuch round-trip of a &where extend).
+;
+; After A4.4: MapIter, UnaryFn, and the &where extend are now part of
+; lib/iterator.nuc. This fixture re-exports them through the .nuch import path,
+; testing that the TmplConformance (and its &where clause) survives --emit-nuch
+; round-trip and allows stamp-time recovery in the importing unit.
+;
+; Regenerate the header with:
+;     nucleusc --emit-nuch tests/fixtures/mapiterlib.nuc > lib/mapiterlib.nuch
+
+(import iterator)

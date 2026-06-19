@@ -17,11 +17,33 @@ Robot proposed
 
 That's fine, but a programmer can still request the nth Char if they're willing to wait for it.
 
+Deferred: regex
+
+## Str protocol
+
+The language provides a default string type, but that won't be the best representation for every use case. The Str protocol provides a common interface for operations all strings, including CStr and types not implemented here should be able to support.
+
+Open question: Rust-like `parse`, taking a type (may need to be a quoted symbol) and a string, returning ?T. This can be implemented for multiple return types, including types unknown to the protocol. Can a protocol check this, or must it be used ad-hoc with `(Valid T)`?
+
+Extends protocols:
+
+* Coll
+* Seq
+* Drop
+
+## ByteStr protocol
+
+Describes functionality strings built on top of a Seq of bytes can support. Operations that return a byte index belong here.
+
+Open question: can `CStr` extend `ByteStr`?
+
 ## Char types
 
-Character protocol provides utf8 and utf16 encoders and decoders
+Character protocol provides utf8 and utf16 encoders and decoders.
 
-Char type is a 32-bit unicode scalar value
+Char type is a 32-bit unicode scalar value, like Rust.
+
+## String implementation
 
 ### Selected implementaiton: thin wrapper over byte vector
 
