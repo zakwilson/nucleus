@@ -109,14 +109,36 @@ Every owning collection conforms to `Drop` so a `with`-bound value frees its buf
 
 **Built-in conformances** (FNV-1a, 64-bit):
 
-| Type | Coverage |
-|------|----------|
-| `i32` | Folds 4 bytes of the value. |
-| `i64` | Folds 8 bytes. |
-| `usize` | Folds 8 bytes (high bytes are zero on 32-bit targets). |
-| `CStr` | Folds each character byte up to (not including) the NUL terminator. |
+| Type | Library | Coverage |
+|------|---------|----------|
+| `i32` | `lib/hash.nuc` | Folds 4 bytes of the value. |
+| `i64` | `lib/hash.nuc` | Folds 8 bytes. |
+| `usize` | `lib/hash.nuc` | Folds 8 bytes (high bytes are zero on 32-bit targets). |
+| `CStr` | `lib/hash.nuc` | Folds each character byte up to (not including) the NUL terminator. |
+| `StrView` | `lib/strview.nuc` | FNV-1a fold over exactly `len` bytes (handles embedded NULs). |
+| `Keyword` | `lib/keyword.nuc` | Returns the hash cached at intern time — O(1), no byte walk. |
 
 Unlike `numeric.nuc`'s code-free operator conformances, these are real method bodies because there is no built-in `hash` operator.
+
+**Keywords as ergonomic map/set keys.** `Keyword` conforms to both `Hash` and `Eq`, making it the idiomatic lightweight key type when keys are known names rather than arbitrary strings. Because equality is identity (intern `id` compare) and hashing is a single cached load, keyword-keyed maps are faster than `CStr`-keyed ones (no `strcmp`, no byte walk):
+
+```lisp
+(include stdio)
+(import strview) (import hash) (import keyword)
+(import allocator) (import coll) (import iterator) (import hashmap)
+
+(defn main:i32 ()
+  (with ((m (ref (HashMap Keyword i32))) (alloca (HashMap Keyword i32)))
+    (hashmap-init m)
+    (assoc m :width 1920)
+    (assoc m :height 1080)
+    (match (hmap-get m :width)
+      ((some v) (printf "width=%d\n" v))   ; width=1920
+      (none     (printf "absent\n"))))
+  (return 0))
+```
+
+See [Keyword literals](types.md#keyword-literals----foo) in the Types reference for the full semantics and the `(import keyword)` requirement.
 
 **Conforming a user type:** extend `Hash` and provide the `hash` method:
 

@@ -1,0 +1,364 @@
+; Stage 11 collections — HashSet T: an open-addressing hash set with linear
+; probing. O(1) average `contains?`/`insert`/`set-remove`. Members conform to
+; Hash + Eq (= for equality, (hash (addr-of k)) for hashing). Owns two parallel
+; byte arrays (keys buffer and state buffer) through a stored allocator handle
+; and frees them via `Drop` at `with`-scope exit.
+;
+; Design: design/stage11/collections.md §"HashSet" + §"Memory model".
+;
+; ---------------------------------------------------------------------------
+; USAGE (the working construction pattern):
+;
+;   (with ((s (ref (HashSet CStr))) (alloca (HashSet CStr)))
+;     (hashset-init s)                          ; empty, default allocator
+;     (insert s "dog") (insert s "cat")
+;     (printf "%d\n" (contains? s "dog"))       ; 1
+;     (set-remove s "dog")
+;     (printf "%d\n" (contains? s "dog"))       ; 0
+;     ...)                                      ; drop fires here
+;
+; `hashset-init` takes a (ref (HashSet T)) so T is inferred from the binding's
+; declared type. `(alloca (HashSet T))` + init is the canonical idiom.
+; ---------------------------------------------------------------------------
+;
+; INTERNAL LAYOUT
+;
+;   keys   : raw byte buffer holding cap elements of type T, tightly packed.
+;   states : raw byte buffer of cap bytes; one per bucket.
+;            0 = empty (never written), 1 = occupied, 2 = tombstone (deleted).
+;   count  : number of live (occupied) members.
+;   cap    : total allocated bucket slots; always a power of two.
+;   alloc  : the AllocHandle used for both buffers.
+;
+; Capacity starts at 8 and doubles when load-factor exceeds 3/4 (count*4 >=
+; cap*3). Tombstones are skipped during lookup and dropped during resize.
+; ---------------------------------------------------------------------------
+
+(include stdio)
+(include stdlib)
+(include string)
+
+(extern stderr:ptr)
+
+(import allocator)
+(import coll)
+(import iterator)
+(import hash)
+
+; ---------------------------------------------------------------------------
+; Panic helpers. Non-generic so they are emitted once and resolve their
+; stderr/exit/fprintf references against this file's includes. A generic body
+; is monomorphized at the call site and would require the consumer to declare
+; stderr itself; routing through these helpers keeps that burden here.
+; ---------------------------------------------------------------------------
+(defn hashset-oom:void ()
+  (fprintf stderr "hashset: out of memory\n")
+  (exit 1))
+
+; ---------------------------------------------------------------------------
+; HashSet T — open-addressing hash set.
+; ---------------------------------------------------------------------------
+(defstruct (HashSet T)
+  (keys (raw ui8))      ; element buffer: cap * sizeof(T) bytes
+  (states (raw ui8))    ; state buffer: cap bytes (0=empty, 1=occupied, 2=tomb)
+  count:usize
+  cap:usize
+  alloc:AllocHandle)
+
+; ---------------------------------------------------------------------------
+; hashset-init: initialise an empty HashSet with the default (libc) allocator.
+; Initial capacity is 8, which is a power of two and small enough to never
+; trigger a resize for the first 6 insertions.
+; ---------------------------------------------------------------------------
+(defn hashset-init:void ((s (ref (HashSet T))))
+  (let (init-cap:usize (cast usize 8)
+        elem-size:usize (cast usize (sizeof T)))
+    (libc-allocator (.& s alloc))
+    (let ((kbuf (raw ui8))
+          (alloc-handle-alloc (.& s alloc)
+                              (* init-cap elem-size)
+                              (cast usize 8)))
+      (when (= (cast ptr kbuf) null) (hashset-oom))
+      (let ((sbuf (raw ui8))
+            (alloc-handle-alloc (.& s alloc) init-cap (cast usize 1)))
+        (when (= (cast ptr sbuf) null) (hashset-oom))
+        (memset (cast ptr sbuf) 0 (cast i64 init-cap))
+        (.set! s keys kbuf)
+        (.set! s states sbuf)
+        (.set! s count (cast usize 0))
+        (.set! s cap init-cap)))))
+
+; ---------------------------------------------------------------------------
+; hashset-resize: internal. Allocate new arrays of new-cap slots, rehash all
+; OCCUPIED (state == 1) buckets from the old arrays into the new ones (dropping
+; tombstones), then free the old arrays and install the new arrays + cap.
+; new-cap must be a power of two and >= current count.
+; ---------------------------------------------------------------------------
+(defn hashset-resize:void ((s (ref (HashSet T))) new-cap:usize)
+  (let (elem-size:usize (cast usize (sizeof T)))
+    (let ((new-keys (raw ui8))
+          (alloc-handle-alloc (.& s alloc)
+                              (* new-cap elem-size)
+                              (cast usize 8)))
+      (when (= (cast ptr new-keys) null) (hashset-oom))
+      (let ((new-states (raw ui8))
+            (alloc-handle-alloc (.& s alloc) new-cap (cast usize 1)))
+        (when (= (cast ptr new-states) null) (hashset-oom))
+        (memset (cast ptr new-states) 0 (cast i64 new-cap))
+        (let (new-mask:usize (- new-cap (cast usize 1))
+              old-cap:usize (s cap)
+              old-kbuf:ptr:T (cast ptr:T (cast ptr (s keys)))
+              old-sbuf:ptr:ui8 (cast ptr:ui8 (cast ptr (s states)))
+              new-kbuf:ptr:T (cast ptr:T (cast ptr new-keys))
+              new-sbuf:ptr:ui8 (cast ptr:ui8 (cast ptr new-states))
+              i:usize (cast usize 0))
+          ; Rehash every occupied bucket from the old table.
+          (while (< i old-cap)
+            (when (= (cast i32 (aref old-sbuf (cast i64 i))) 1)
+              (let (elem:T (aref old-kbuf (cast i64 i))
+                    k:T elem
+                    h:usize (hash (addr-of k))
+                    idx:usize (bit-and h new-mask)
+                    done:i32 0)
+                (while (= done 0)
+                  (let (st:i32 (cast i32 (aref new-sbuf (cast i64 idx))))
+                    (if (= st (cast i32 0))
+                      (do
+                        (aset! new-kbuf (cast i64 idx) elem)
+                        (aset! new-sbuf (cast i64 idx) (cast ui8 1))
+                        (set! done 1))
+                      (set! idx (bit-and (+ idx (cast usize 1)) new-mask)))))))
+            (set! i (+ i (cast usize 1))))
+          ; Free the old arrays and install the new ones.
+          (alloc-handle-free (.& s alloc)
+                             (s keys)
+                             (* old-cap elem-size)
+                             (cast usize 8))
+          (alloc-handle-free (.& s alloc)
+                             (s states)
+                             old-cap
+                             (cast usize 1))
+          (.set! s keys new-keys)
+          (.set! s states new-states)
+          (.set! s cap new-cap))))))
+
+; ---------------------------------------------------------------------------
+; insert: add elem to the set. No-op if already present. Grows by doubling
+; when load-factor exceeds 3/4 (count*4 >= cap*3).
+; ---------------------------------------------------------------------------
+(defn insert:void ((self (ref (HashSet T))) elem:T)
+  (when (>= (* (self count) (cast usize 4))
+            (* (self cap)   (cast usize 3)))
+    (hashset-resize self (* (self cap) (cast usize 2))))
+  (let (kbuf:ptr:T (cast ptr:T (cast ptr (self keys)))
+        sbuf:ptr:ui8 (cast ptr:ui8 (cast ptr (self states)))
+        mask:usize (- (self cap) (cast usize 1))
+        k:T elem
+        idx:usize (bit-and (hash (addr-of k)) mask)
+        first-tomb:usize (cast usize 0)
+        has-tomb:i32 0
+        done:i32 0)
+    (while (= done 0)
+      (let (st:i32 (cast i32 (aref sbuf (cast i64 idx))))
+        (if (= st (cast i32 0))
+          ; Empty slot: insert here (or reuse first tombstone if we saw one).
+          (do
+            (let (ins-idx:usize (if (!= has-tomb 0) first-tomb idx))
+              (aset! kbuf (cast i64 ins-idx) elem)
+              (aset! sbuf (cast i64 ins-idx) (cast ui8 1))
+              (.set! self count (+ (self count) (cast usize 1)))
+              (set! done 1)))
+          (if (= st (cast i32 2))
+            ; Tombstone: remember first one, keep probing to check for dup.
+            (do
+              (when (= has-tomb 0)
+                (set! first-tomb idx)
+                (set! has-tomb 1))
+              (set! idx (bit-and (+ idx (cast usize 1)) mask)))
+            (if (= (aref kbuf (cast i64 idx)) elem)
+              ; Already present: no-op.
+              (set! done 1)
+              ; Collision: linear probe forward.
+              (set! idx (bit-and (+ idx (cast usize 1)) mask)))))))))
+
+; ---------------------------------------------------------------------------
+; contains?: 1 if elem is in the set, else 0. Skips tombstones, stops on
+; empty. Set conformance.
+; ---------------------------------------------------------------------------
+(defn contains?:i32 ((self (ref (HashSet T))) elem:T)
+  (let (kbuf:ptr:T (cast ptr:T (cast ptr (self keys)))
+        sbuf:ptr:ui8 (cast ptr:ui8 (cast ptr (self states)))
+        mask:usize (- (self cap) (cast usize 1))
+        k:T elem
+        idx:usize (bit-and (hash (addr-of k)) mask)
+        done:i32 0
+        result:i32 0)
+    (while (= done 0)
+      (let (st:i32 (cast i32 (aref sbuf (cast i64 idx))))
+        (if (= st (cast i32 0))
+          ; Empty: not found.
+          (set! done 1)
+          (if (= st (cast i32 1))
+            (if (= (aref kbuf (cast i64 idx)) elem)
+              ; Match.
+              (do (set! result 1) (set! done 1))
+              (set! idx (bit-and (+ idx (cast usize 1)) mask)))
+            ; Tombstone: keep probing.
+            (set! idx (bit-and (+ idx (cast usize 1)) mask))))))
+    (return result)))
+
+; ---------------------------------------------------------------------------
+; set-remove: remove elem from the set (tombstone it). No-op if not present.
+; Named `set-remove` rather than `remove` to avoid shadowing libc `remove`.
+; ---------------------------------------------------------------------------
+(defn set-remove:void ((self (ref (HashSet T))) elem:T)
+  (let (kbuf:ptr:T (cast ptr:T (cast ptr (self keys)))
+        sbuf:ptr:ui8 (cast ptr:ui8 (cast ptr (self states)))
+        mask:usize (- (self cap) (cast usize 1))
+        k:T elem
+        idx:usize (bit-and (hash (addr-of k)) mask)
+        done:i32 0)
+    (while (= done 0)
+      (let (st:i32 (cast i32 (aref sbuf (cast i64 idx))))
+        (if (= st (cast i32 0))
+          ; Empty: not in set.
+          (set! done 1)
+          (if (= st (cast i32 1))
+            (if (= (aref kbuf (cast i64 idx)) elem)
+              ; Found: tombstone it.
+              (do
+                (aset! sbuf (cast i64 idx) (cast ui8 2))
+                (.set! self count (- (self count) (cast usize 1)))
+                (set! done 1))
+              (set! idx (bit-and (+ idx (cast usize 1)) mask)))
+            ; Tombstone: keep probing.
+            (set! idx (bit-and (+ idx (cast usize 1)) mask))))))))
+
+; ---------------------------------------------------------------------------
+; Coll T conformance: count, empty?, conj.
+; ---------------------------------------------------------------------------
+
+(defn count:usize ((self (ref (HashSet T))))
+  (return (self count)))
+
+(defn empty?:i32 ((self (ref (HashSet T))))
+  (return (if (= (self count) (cast usize 0)) 1 0)))
+
+; conj for a set == insert (add a member).
+(defn conj:void ((self (ref (HashSet T))) elem:T)
+  (insert self elem))
+
+; ---------------------------------------------------------------------------
+; Set T conformance: union, difference, intersection, contains?.
+; (contains? is already defined above.)
+;
+; All three mutate the receiver in place.
+; ---------------------------------------------------------------------------
+
+; union: add every occupied member of `other` into self.
+(defn union:void ((self (ref (HashSet T))) (other (ref (HashSet T))))
+  (let (kbuf:ptr:T (cast ptr:T (cast ptr (other keys)))
+        sbuf:ptr:ui8 (cast ptr:ui8 (cast ptr (other states)))
+        cap:usize (other cap)
+        i:usize (cast usize 0))
+    (while (< i cap)
+      (when (= (cast i32 (aref sbuf (cast i64 i))) 1)
+        (insert self (aref kbuf (cast i64 i))))
+      (set! i (+ i (cast usize 1))))))
+
+; difference: remove from self every member that is also in other.
+(defn difference:void ((self (ref (HashSet T))) (other (ref (HashSet T))))
+  (let (kbuf:ptr:T (cast ptr:T (cast ptr (self keys)))
+        sbuf:ptr:ui8 (cast ptr:ui8 (cast ptr (self states)))
+        cap:usize (self cap)
+        i:usize (cast usize 0))
+    (while (< i cap)
+      (when (= (cast i32 (aref sbuf (cast i64 i))) 1)
+        (when (!= (contains? other (aref kbuf (cast i64 i))) 0)
+          (aset! sbuf (cast i64 i) (cast ui8 2))
+          (.set! self count (- (self count) (cast usize 1)))))
+      (set! i (+ i (cast usize 1))))))
+
+; intersection: keep in self only members also in other.
+(defn intersection:void ((self (ref (HashSet T))) (other (ref (HashSet T))))
+  (let (kbuf:ptr:T (cast ptr:T (cast ptr (self keys)))
+        sbuf:ptr:ui8 (cast ptr:ui8 (cast ptr (self states)))
+        cap:usize (self cap)
+        i:usize (cast usize 0))
+    (while (< i cap)
+      (when (= (cast i32 (aref sbuf (cast i64 i))) 1)
+        (when (= (contains? other (aref kbuf (cast i64 i))) 0)
+          (aset! sbuf (cast i64 i) (cast ui8 2))
+          (.set! self count (- (self count) (cast usize 1)))))
+      (set! i (+ i (cast usize 1))))))
+
+; ---------------------------------------------------------------------------
+; Conformance declarations.
+; ---------------------------------------------------------------------------
+(extend (HashSet T) (Coll T))
+(extend (HashSet T) (Set T))
+(extend (HashSet T) Drop)
+
+; ---------------------------------------------------------------------------
+; Drop: free the keys and states buffers through the stored allocator, then
+; null the pointers and zero count/cap. Null-guarded and idempotent.
+; ---------------------------------------------------------------------------
+(defn drop:void ((self (ptr (HashSet T))))
+  (when (!= (cast ptr (self keys)) null)
+    (alloc-handle-free (.& self alloc)
+                       (self keys)
+                       (* (self cap) (cast usize (sizeof T)))
+                       (cast usize 8)))
+  (when (!= (cast ptr (self states)) null)
+    (alloc-handle-free (.& self alloc)
+                       (self states)
+                       (self cap)
+                       (cast usize 1)))
+  (.set! self keys null)
+  (.set! self states null)
+  (.set! self count (cast usize 0))
+  (.set! self cap (cast usize 0)))
+
+; ---------------------------------------------------------------------------
+; HashSetIter T — a forward cursor over the occupied members of a HashSet.
+; Stores borrowed (non-owning) pointers to the keys and states buffers; the
+; iterator must not outlive the HashSet.
+;
+;   (let ((it (ref (HashSetIter i32))) (alloca (HashSetIter i32)))
+;     (hashset-iter it s)
+;     (doseq (x it) ...))
+;
+; `hashset-iter` fills a caller-provided (ref (HashSetIter T)) from a
+; (ref (HashSet T)); the fill-in-place form mirrors vector.nuc's `iter-init`.
+; ---------------------------------------------------------------------------
+(defstruct (HashSetIter T)
+  kbuf:ptr        ; cast to ptr:T on read (raw pointer to element buffer)
+  sbuf:ptr        ; cast to ptr:ui8 on read (raw pointer to state buffer)
+  pos:usize
+  cap:usize)
+
+(extend (HashSetIter T) (Iterator T))
+
+(defn (next (Maybe T)) ((self (ref (HashSetIter T))))
+  (let (kptr:ptr:T (cast ptr:T (self kbuf))
+        sptr:ptr:ui8 (cast ptr:ui8 (self sbuf))
+        done:i32 0
+        result:i32 0)
+    (while (= done 0)
+      (when (>= (self pos) (self cap))
+        (return none))
+      (let (st:i32 (cast i32 (aref sptr (cast i64 (self pos)))))
+        (if (= st (cast i32 1))
+          (do
+            (let (v:T (aref kptr (cast i64 (self pos))))
+              (.set! self pos (+ (self pos) (cast usize 1)))
+              (return (some v))))
+          (.set! self pos (+ (self pos) (cast usize 1))))))
+    (return none)))
+
+; hashset-iter: configure `it` to scan `s` from the start (borrowing buffers).
+(defn hashset-iter:void ((it (ref (HashSetIter T))) (s (ref (HashSet T))))
+  (.set! it kbuf (cast ptr (s keys)))
+  (.set! it sbuf (cast ptr (s states)))
+  (.set! it pos (cast usize 0))
+  (.set! it cap (s cap)))

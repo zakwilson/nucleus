@@ -82,10 +82,17 @@
 (defn is-sym-char:i32 (c:i32)
   (when (= c 0) (return 0))
   (when (!= (isspace c) 0) (return 0))
-  (when (= c 40) (return 0))
-  (when (= c 41) (return 0))
-  (when (= c 34) (return 0))
-  (when (= c 59) (return 0))
+  (when (= c 40) (return 0))   ; (
+  (when (= c 41) (return 0))   ; )
+  (when (= c 34) (return 0))   ; "
+  (when (= c 59) (return 0))   ; ;
+  ; Collection-literal delimiters (Stage 11 M5) terminate an atom so that e.g.
+  ; the trailing `]` in `[1 2 3]` is not swallowed into the `3` token. These
+  ; characters appear in current source only inside string literals.
+  (when (= c 91) (return 0))   ; [
+  (when (= c 93) (return 0))   ; ]
+  (when (= c 123) (return 0))  ; {
+  (when (= c 125) (return 0))  ; }
   (return 1))
 
 (defn lex-string:!ptr (open-line:i32)
@@ -214,6 +221,20 @@
           (.set! tf line start-line)
           (.set! tf s (arena-strndup text len))
           (return (ok (cast ptr tf)))))
+      ; Keyword literal (Stage 11 cleanup §2): an atom that begins with ':' and
+      ; has a non-empty remainder is a keyword. The token carries the NAME only
+      ; (the leading colon stripped), so downstream interning and printing never
+      ; re-handle the sigil. A lone ':' (len 1) is not a keyword — it falls
+      ; through to a plain symbol. No existing source has a colon-led atom, so
+      ; this is additive (the compiler's own source stays a bootstrap fixed
+      ; point). Colon-CHAIN spellings like `ptr:i8` or trailing-colon sugar
+      ; `name:` do not begin with ':' and are unaffected.
+      (when (and (> len (cast i64 1)) (= (char-at text (cast i64 0)) 58))
+        (let (tk:ptr:Tok (cast ptr:Tok (alloc-tok)))
+          (.set! tk kind TOK-KEYWORD)
+          (.set! tk line start-line)
+          (.set! tk s (arena-strndup (ptr+ (cast ptr:i8 text) (cast i64 1)) (- len (cast i64 1))))
+          (return (ok (cast ptr tk)))))
       (let (ts:ptr:Tok (cast ptr:Tok (alloc-tok)))
         (.set! ts kind TOK-SYMBOL)
         (.set! ts line start-line)
@@ -241,6 +262,42 @@
           (.set! tr kind TOK-RPAREN)
           (.set! tr line line)
           (return (ok (cast ptr tr))))))
+    ; Collection-literal delimiters (Stage 11 M5). `[` … `]` is a Vector
+    ; literal, `{` … `}` a HashMap literal, `#{` … `}` a HashSet literal. The
+    ; `#{` two-char sequence must be matched before `#` is lexed as a symbol
+    ; char (a lone `#` still falls through to lex-atom). `[` `]` `{` `}` were
+    ; previously symbol chars but appear in current source only inside string
+    ; literals, so claiming them as delimiters is non-breaking.
+    (when (= c 91)
+      (do (next-char)
+        (let (tlb:ptr:Tok (cast ptr:Tok (alloc-tok)))
+          (.set! tlb kind TOK-LBRACK)
+          (.set! tlb line line)
+          (return (ok (cast ptr tlb))))))
+    (when (= c 93)
+      (do (next-char)
+        (let (trb:ptr:Tok (cast ptr:Tok (alloc-tok)))
+          (.set! trb kind TOK-RBRACK)
+          (.set! trb line line)
+          (return (ok (cast ptr trb))))))
+    (when (and (= c 35) (= (char-at g-src (+ g-pos (cast i64 1))) 123))
+      (do (next-char) (next-char)
+        (let (thb:ptr:Tok (cast ptr:Tok (alloc-tok)))
+          (.set! thb kind TOK-HASHBRACE)
+          (.set! thb line line)
+          (return (ok (cast ptr thb))))))
+    (when (= c 123)
+      (do (next-char)
+        (let (tlc:ptr:Tok (cast ptr:Tok (alloc-tok)))
+          (.set! tlc kind TOK-LBRACE)
+          (.set! tlc line line)
+          (return (ok (cast ptr tlc))))))
+    (when (= c 125)
+      (do (next-char)
+        (let (trc:ptr:Tok (cast ptr:Tok (alloc-tok)))
+          (.set! trc kind TOK-RBRACE)
+          (.set! trc line line)
+          (return (ok (cast ptr trc))))))
     ; Reader macro table lookup — longest prefix match
     (let (best-idx:i32 -1
           best-len:i32 0
@@ -291,9 +348,269 @@
     (set! g-peek-valid 0)
     (return (ok t))))
 
+; ============================================================
+; Collection-literal sugar (Stage 11 M5)
+;
+; `[e1 e2 …]`     -> Vector  literal
+; `{k1 v1 k2 v2}` -> HashMap  literal
+; `#{e1 e2 …}`    -> HashSet  literal
+;
+; Each expands to a `let` that stack-allocates the (stamped) collection, runs
+; its in-place init constructor with the default allocator, conj/assoc-es every
+; literal element, and yields the `(ref Coll)`. Placed as the RHS of a `with`
+; binding, the outer `with` fires `Drop` on the returned ref at scope exit
+; because every collection type conforms to `Drop`. The element type is inferred
+; from the literal's elements (all must agree); empty and mixed literals error.
+; ============================================================
+
+; Build a single-symbol Node from a C string (interned: identical spellings
+; share identity, matching reader-produced symbols elsewhere).
+(defn lit-sym:ptr (s:ptr)
+  (return (cast ptr (intern-symbol s))))
+
+; Build the node list `( <a> <b> )`.
+(defn lit-list2:ptr (a:ptr b:ptr line:i32)
+  (return (cast ptr (make-cell a (make-cell b null line) line))))
+
+; Build the node list `( <a> <b> <c> )`.
+(defn lit-list3:ptr (a:ptr b:ptr c:ptr line:i32)
+  (return (cast ptr (make-cell a (make-cell b (make-cell c null line) line) line))))
+
+; Build `(ref <ty>)` where <ty> is an already-built type node.
+(defn lit-ref:ptr (ty:ptr line:i32)
+  (return (lit-list2 (lit-sym "ref") ty line)))
+
+; Build `(alloca <ty>)` where <ty> is an already-built type node.
+(defn lit-alloca:ptr (ty:ptr line:i32)
+  (return (lit-list2 (lit-sym "alloca") ty line)))
+
+; Classify one literal element node into a coarse "kind": 1 = integer,
+; 2 = float, 3 = string, 0 = not a permitted scalar literal. Same-kind is the
+; mixing rule (int / float / string may not mix in one literal).
+;
+; Integer literals always infer `i32` (the compiler types a NODE-INT as i32 and
+; has no native i64 integer literal — see emit-int in src/nucleusc.nuc); a
+; magnitude-based i64 promotion is intentionally NOT done because `(cast i64
+; bigval)` on an i32-typed literal truncates. A literal whose natural type is i32
+; / f64 / CStr matches the corresponding collection element parameter directly,
+; so the expansion needs no element casts.
+(defn lit-elem-kind:i32 (n:ptr)
+  (let (nn:ptr:Node (cast ptr:Node n))
+    (when (= (nn kind) NODE-INT) (return 1))
+    (when (= (nn kind) NODE-FLOAT) (return 2))
+    (when (= (nn kind) NODE-STR) (return 3))
+    (return 0)))
+
+; Map an element kind to its type spelling.
+(defn lit-kind-type:ptr (kind:i32)
+  (when (= kind 1) (return "i32"))
+  (when (= kind 2) (return "f64"))
+  (when (= kind 3) (return "CStr"))
+  (return null))
+
+; Infer the uniform element-type spelling of a sub-sequence of literal elements.
+; Starting at element index `start`, every `stride`-th element is examined; all
+; must share a kind (int/float/string). Integer width is promoted to i64 if any
+; examined integer overshoots the signed-32 range. Returns the type spelling
+; ("i32"/"i64"/"f64"/"CStr") as an ok ptr, or reports `bad-msg`/`mix-msg` and
+; returns the parse-error. `head` is the element cell-list; `line` the literal's
+; opening line.
+;   start=0 stride=1 : every element (vector / set).
+;   start=0 stride=2 : keys of a map.   start=1 stride=2 : values of a map.
+(defn infer-lit-type:!ptr (head:ptr start:i32 stride:i32 line:i32 bad-msg:ptr mix-msg:ptr)
+  (let (cur:ptr head
+        idx:i32 0
+        kind:i32 0
+        seen:i32 0)
+    (while (!= cur null)
+      (when (= (% (- idx start) stride) 0)
+        (when (>= idx start)
+          (let (k:i32 (lit-elem-kind ((cast ptr:Node cur) car)))
+            (when (= k 0)
+              (do (report-at line bad-msg)
+                  (return (err! parse-error))))
+            (if (= seen 0)
+              (do (set! kind k) (set! seen 1))
+              (when (!= k kind)
+                (do (report-at line mix-msg)
+                    (return (err! parse-error))))))))
+      (set! idx (+ idx 1))
+      (set! cur (cast ptr ((cast ptr:Node cur) cdr))))
+    (return (ok (lit-kind-type kind)))))
+
+; Read literal elements until the given close-token kind, collecting them into a
+; cell-list (head returned via out-pointer slots is awkward here, so we return
+; the head node and the count). Consumes the close token. On EOF before close,
+; reports an "unterminated" diagnostic and returns the parse-error.
+;   what       : "vector"/"map"/"set" (diagnostic text)
+;   close-kind : TOK-RBRACK or TOK-RBRACE
+;   open-line  : line of the opening delimiter
+; Returns the head of the element cell-list (null when empty).
+(defn read-lit-elems:!ptr (what:ptr close-kind:i32 open-line:i32)
+  (let (head:ptr null
+        tail:ptr null)
+    (while (!= 0 1)
+      (let (t:ptr:Tok (cast ptr:Tok (try (peek-tok))))
+        (when (= (t kind) TOK-EOF)
+          (do (report-at open-line (fmt-s "unterminated %s literal" what))
+              (return (err! parse-error))))
+        (when (= (t kind) close-kind)
+          (do (try (eat-tok)) (return (ok head))))
+        (let (child:ptr (try (read-form))
+              cell:ptr (make-cell child null open-line))
+          (when (= tail null) (set! head cell))
+          (when (!= tail null) (.set! (cast ptr:Node tail) cdr cell))
+          (set! tail cell))))
+    (return (ok head))))
+
+; `[e1 e2 …]` -> Vector literal.
+(defn read-vector-literal:!ptr (line:i32)
+  (let (head:ptr (try (read-lit-elems "vector" TOK-RBRACK line)))
+    (when (= head null)
+      (do (report-at line "empty vector literal: use (alloca (Vector T)) + vector-init")
+          (return (err! parse-error))))
+    ; Infer element type from the elements (all must share a kind).
+    (let (et:ptr (try (infer-lit-type head 0 1 line
+                        "vector literal elements must be scalar literals (int, float, or string)"
+                        "vector literal: mixed element types")))
+      ; Build the expansion.
+      (let (gs:ptr (nucleus_gensym)
+            etsym:ptr (lit-sym et))
+        ; (Vector E)  — built fresh for the ref and the alloca positions.
+        (let (coll-ty1:ptr (lit-list2 (lit-sym "Vector") etsym line)
+              coll-ty2:ptr (lit-list2 (lit-sym "Vector") (lit-sym et) line))
+          ; binding list: ( (gs (ref (Vector E)))  (alloca (Vector E)) )
+          (let (decl:ptr (lit-list2 gs (lit-ref coll-ty1 line) line)
+                bindings:ptr (lit-list2 decl (lit-alloca coll-ty2 line) line))
+            ; Body chain, built back-to-front so it ends with the gs symbol.
+            ; Start with the trailing `gs` then prepend each (conj gs e), then
+            ; finally the (vector-init gs).
+            (let (body:ptr (cast ptr (make-cell gs null line)))
+              ; Walk elements in reverse is awkward with a forward list, so build
+              ; a forward conj-chain into a temp and splice it. Simpler: collect
+              ; conj cells forward, then append the trailing gs.
+              (let (chead:ptr null
+                    ctail:ptr null
+                    cur2:ptr head)
+                (while (!= cur2 null)
+                  (let (elem:ptr ((cast ptr:Node cur2) car)
+                        conj-form:ptr (lit-list3 (lit-sym "conj") gs elem line)
+                        cell:ptr (make-cell conj-form null line))
+                    (when (= ctail null) (set! chead cell))
+                    (when (!= ctail null) (.set! (cast ptr:Node ctail) cdr cell))
+                    (set! ctail cell))
+                  (set! cur2 (cast ptr ((cast ptr:Node cur2) cdr))))
+                ; Append trailing `gs` cell to the conj-chain.
+                (let (gscell:ptr (make-cell gs null line))
+                  (when (= ctail null) (set! chead gscell))
+                  (when (!= ctail null) (.set! (cast ptr:Node ctail) cdr gscell))
+                  ; Prepend (vector-init gs) to the chain.
+                  (let (init-form:ptr (lit-list2 (lit-sym "vector-init") gs line)
+                        full-body:ptr (make-cell init-form chead line))
+                    ; (let <bindings> <full-body...>)
+                    (return (ok (make-cell (lit-sym "let")
+                                  (make-cell bindings full-body line)
+                                  line)))))))))))))
+
+; `#{e1 e2 …}` -> HashSet literal. Same shape as the Vector literal but stamps
+; (HashSet E), calls hashset-init, and inserts with `conj` (which == insert).
+(defn read-hashset-literal:!ptr (line:i32)
+  (let (head:ptr (try (read-lit-elems "set" TOK-RBRACE line)))
+    (when (= head null)
+      (do (report-at line "empty set literal: use (alloca (HashSet T)) + hashset-init")
+          (return (err! parse-error))))
+    (let (et:ptr (try (infer-lit-type head 0 1 line
+                        "set literal elements must be scalar literals (int, float, or string)"
+                        "set literal: mixed element types")))
+      (let (gs:ptr (nucleus_gensym))
+        (let (coll-ty1:ptr (lit-list2 (lit-sym "HashSet") (lit-sym et) line)
+              coll-ty2:ptr (lit-list2 (lit-sym "HashSet") (lit-sym et) line))
+          (let (decl:ptr (lit-list2 gs (lit-ref coll-ty1 line) line)
+                bindings:ptr (lit-list2 decl (lit-alloca coll-ty2 line) line))
+            (let (chead:ptr null
+                  ctail:ptr null
+                  cur2:ptr head)
+              (while (!= cur2 null)
+                (let (elem:ptr ((cast ptr:Node cur2) car)
+                      conj-form:ptr (lit-list3 (lit-sym "conj") gs elem line)
+                      cell:ptr (make-cell conj-form null line))
+                  (when (= ctail null) (set! chead cell))
+                  (when (!= ctail null) (.set! (cast ptr:Node ctail) cdr cell))
+                  (set! ctail cell))
+                (set! cur2 (cast ptr ((cast ptr:Node cur2) cdr))))
+              (let (gscell:ptr (make-cell gs null line))
+                (when (= ctail null) (set! chead gscell))
+                (when (!= ctail null) (.set! (cast ptr:Node ctail) cdr gscell))
+                (let (init-form:ptr (lit-list2 (lit-sym "hashset-init") gs line)
+                      full-body:ptr (make-cell init-form chead line))
+                  (return (ok (make-cell (lit-sym "let")
+                                (make-cell bindings full-body line)
+                                line))))))))))))
+
+; `{k1 v1 k2 v2 …}` -> HashMap literal. Elements come in key/value pairs; an odd
+; count is an error. Keys infer K, values infer V (each set must agree). Stamps
+; (HashMap K V), calls hashmap-init, and `assoc`-es each pair.
+(defn read-hashmap-literal:!ptr (line:i32)
+  (let (head:ptr (try (read-lit-elems "map" TOK-RBRACE line)))
+    (when (= head null)
+      (do (report-at line "empty map literal: use (alloca (HashMap K V)) + hashmap-init")
+          (return (err! parse-error))))
+    (when (!= (bit-and (node-len head) 1) 0)
+      (do (report-at line "map literal: odd number of elements")
+          (return (err! parse-error))))
+    ; Infer K from keys (even positions) and V from values (odd positions).
+    (let (kt:ptr (try (infer-lit-type head 0 2 line
+                        "map literal keys must be scalar literals (int, float, or string)"
+                        "map literal: mixed key types"))
+          vt:ptr (try (infer-lit-type head 1 2 line
+                        "map literal values must be scalar literals (int, float, or string)"
+                        "map literal: mixed value types")))
+      (let (gs:ptr (nucleus_gensym))
+        ; (HashMap K V) built fresh for ref and alloca positions.
+        (let (coll-ty1:ptr (lit-list3 (lit-sym "HashMap") (lit-sym kt) (lit-sym vt) line)
+              coll-ty2:ptr (lit-list3 (lit-sym "HashMap") (lit-sym kt) (lit-sym vt) line))
+          (let (decl:ptr (lit-list2 gs (lit-ref coll-ty1 line) line)
+                bindings:ptr (lit-list2 decl (lit-alloca coll-ty2 line) line))
+            ; Build (assoc gs k v) per pair.
+            (let (chead:ptr null
+                  ctail:ptr null
+                  cur2:ptr head)
+              (while (!= cur2 null)
+                (let (knode:ptr ((cast ptr:Node cur2) car)
+                      vcell:ptr (cast ptr ((cast ptr:Node cur2) cdr)))
+                  (let (vnode:ptr ((cast ptr:Node vcell) car)
+                        ; (assoc gs k v)
+                        assoc-form:ptr (cast ptr (make-cell (lit-sym "assoc")
+                                          (make-cell gs
+                                            (make-cell knode
+                                              (make-cell vnode null line) line) line)
+                                          line))
+                        cell:ptr (make-cell assoc-form null line))
+                    (when (= ctail null) (set! chead cell))
+                    (when (!= ctail null) (.set! (cast ptr:Node ctail) cdr cell))
+                    (set! ctail cell)
+                    (set! cur2 (cast ptr ((cast ptr:Node vcell) cdr))))))
+              (let (gscell:ptr (make-cell gs null line))
+                (when (= ctail null) (set! chead gscell))
+                (when (!= ctail null) (.set! (cast ptr:Node ctail) cdr gscell))
+                (let (init-form:ptr (lit-list2 (lit-sym "hashmap-init") gs line)
+                      full-body:ptr (make-cell init-form chead line))
+                  (return (ok (make-cell (lit-sym "let")
+                                (make-cell bindings full-body line)
+                                line))))))))))))
+
 (defn read-form:!ptr ()
   (let (t:ptr:Tok (cast ptr:Tok (try (eat-tok))))
     (when (= (t kind) TOK-LPAREN) (return (read-list (t line))))
+    (when (= (t kind) TOK-LBRACK) (return (read-vector-literal (t line))))
+    (when (= (t kind) TOK-HASHBRACE) (return (read-hashset-literal (t line))))
+    (when (= (t kind) TOK-LBRACE) (return (read-hashmap-literal (t line))))
+    (when (= (t kind) TOK-RBRACK)
+      (do (report-at (t line) "unexpected ]")
+          (return (err! parse-error))))
+    (when (= (t kind) TOK-RBRACE)
+      (do (report-at (t line) "unexpected }")
+          (return (err! parse-error))))
     (when (= (t kind) TOK-RPAREN)
       (do (report-at (t line) "unexpected )")
           (return (err! parse-error))))
@@ -323,8 +640,55 @@
         (return (ok (cast ptr n)))))
     (when (= (t kind) TOK-SYMBOL)
       (return (ok (intern-symbol (t s)))))
+    ; Keyword literal (Stage 11 cleanup §2): build a NODE-KEYWORD carrying the
+    ; name (colon already stripped by the lexer). Self-evaluating; the compiler
+    ; lowers it to a keyword-intern call.
+    (when (= (t kind) TOK-KEYWORD)
+      (let (n:ptr:Node (cast ptr:Node (alloc-node)))
+        (.set! n kind NODE-KEYWORD)
+        (.set! n line (t line))
+        (.set! n s (t s))
+        (return (ok (cast ptr n)))))
     (do (report-at (t line) "unexpected end of input")
         (return (err! parse-error)))))
+
+; Colon-paren binding sugar (design/stage11/cleanup.md §1).
+;
+; The colon is an ordinary symbol char, so `name:(ref (Vector T))` lexes as the
+; atom `name:` immediately followed by a separate `(ref …)` list — and nothing
+; rejoins them. In list (binding) context, when a just-read symbol ends in `:`
+; and the very next raw character is `(` with no intervening whitespace, fuse
+; them into the canonical list node `(name <paren-form>)` — exactly the shape
+; `extract-name-and-type` already accepts from the `(name type)` list form.
+;
+; The check is gated on `g-peek-valid == 0`: a bare symbol token is produced by
+; `read-form` without lexing ahead, so after it returns `g-pos` sits exactly at
+; the character following the atom. If a token had been peeked, `g-pos` would be
+; past the `(` and the raw peek would be unreliable; in that case we never fuse
+; (and that case never arises here, since `read-form` on a symbol does not peek).
+;
+; Additive: no existing source has a trailing-colon atom adjacent to `(`, so the
+; bootstrap stays byte-identical. Returns the (possibly fused) child node.
+(defn fuse-colon-paren:!ptr (child:ptr line:i32)
+  ; Only consider a freshly-lexed symbol with no token peeked past it.
+  (when (or (= child null) (!= g-peek-valid 0)) (return (ok child)))
+  (let (cn:ptr:Node (cast ptr:Node child))
+    (when (!= (cn kind) NODE-SYM) (return (ok child)))
+    (let (s:ptr (cn s)
+          len:i64 (strlen (cn s)))
+      ; Must end in ':' and the next raw stream char must be '(' (no whitespace).
+      (when (or (= len (cast i64 0))
+                (!= (char-at s (- len (cast i64 1))) 58))
+        (return (ok child)))
+      (when (!= (peek-char) 40) (return (ok child)))
+      ; Strip the trailing ':' to recover the binding name, then read the
+      ; following parenthesised form recursively (handles (ref (Vector T)),
+      ; (ptr u8), function-pointer forms, etc.).
+      (let (name-node:ptr (cast ptr (intern-symbol (arena-strndup s (- len (cast i64 1)))))
+            paren-form:ptr (try (read-form)))
+        (return (ok (cast ptr (make-cell name-node
+                                (make-cell paren-form null line)
+                                line))))))))
 
 (defn read-list:!ptr (line:i32)
   (let (head:ptr null
@@ -336,7 +700,8 @@
               (return (err! parse-error))))
         (when (= (t kind) TOK-RPAREN)
           (do (try (eat-tok)) (return (ok head))))
-        (let (child:ptr (try (read-form))
+        (let (raw:ptr (try (read-form))
+              child:ptr (try (fuse-colon-paren raw line))
               cell:ptr (make-cell child null line))
           (when (= tail null) (set! head cell))
           (when (!= tail null) (.set! (cast ptr:Node tail) cdr cell))

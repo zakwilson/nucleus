@@ -1,0 +1,110 @@
+; Stage 11 collections — the core collection protocols (Coll, Seq) and the Drop
+; protocol used by every owning collection.
+;
+; Design: design/stage11/collections.md §"Protocols (core)".
+;
+; These protocols are CORE (every collection conforms); the concrete types
+; (Vector, HashMap, ...) are libraries. A type T conforms by providing the
+; protocol's methods over a (ref Self) receiver and asserting
+;   (extend (Vector T) (Coll T))
+; The element type E is a protocol parameter (a parametric protocol) so the
+; method signatures can mention both Self and the element type.
+;
+; ---------------------------------------------------------------------------
+; TOKENIZER / DISPATCH NOTES (carried from M1/M2 and parametric structs):
+;
+;  - A parameter or return type spelled as a parenthesised form must use the
+;    list binding form: `(self (ref Self))`, NOT `self:(ref Self)`. A colon
+;    CHAIN with no parens DOES tokenise: `ptr:Self`, `ref:AllocHandle`.
+;  - usize is the pointer-sized unsigned index/length type.
+;  - Dispatch is STATIC (no vtables). A conformance is verified at stamp time
+;    and a bound call lowers to a direct monomorphized call.
+;
+; ---------------------------------------------------------------------------
+; WHY index access is `invoke`, not `get`:
+;
+;  The head symbol `get` is reserved by the compiler for struct *field* access
+;  (`(s 'field)` / `(get s 'field)`); `emit-get-with-callee` forces the
+;  selector argument's type to ptr, so a user `get` generic whose index
+;  parameter is `usize` can never be selected through the `get` head. Per the
+;  design (§Seq: "`get` index access ... routes to invoke"), the index getter
+;  is the `invoke` generic: `(v i)` with an integer index routes to `invoke`
+;  (callable-values.md), distinct from `(v 'field)` member access. So `Seq`'s
+;  index method is named `invoke` and is called as `(v i)`.
+; ---------------------------------------------------------------------------
+
+; ---------------------------------------------------------------------------
+; Coll E — the minimum every collection implements.
+;   count  -> number of live elements (usize)
+;   conj   -> add an element in the collection's natural/efficient way,
+;             MUTATING in place (append for a vector)
+;   empty? -> 1 when count = 0, else 0
+; `iter` is intentionally NOT in the protocol: it returns an iterator type
+; derived from Self, which is not expressible without associated types. Each
+; concrete type provides its own `iter` function.
+; ---------------------------------------------------------------------------
+(defprotocol (Coll E)
+  (count:usize ((self (ref Self))))
+  (conj:void   ((self (ref Self)) elem:E))
+  (empty?:i32  ((self (ref Self)))))
+
+; ---------------------------------------------------------------------------
+; Seq E — ordered, index-addressable sequences (a practical subset of the
+; design's Seq; the lazy map/reduce/filter live on the Iterator side, M2).
+;   invoke    -> index access `(s i)` -> E (panics out of bounds)
+;   append    -> add at the back, MUTATING (same as conj for a vector)
+;   contains? -> linear membership test, 1/0 (uses = on E)
+;   insert    -> insert at an index, shifting the tail right, MUTATING
+; ---------------------------------------------------------------------------
+(defprotocol (Seq E)
+  (invoke:E      ((self (ref Self)) i:usize))
+  (append:void   ((self (ref Self)) elem:E))
+  (contains?:i32 ((self (ref Self)) elem:E))
+  (insert:void   ((self (ref Self)) i:usize elem:E)))
+
+; ---------------------------------------------------------------------------
+; Assoc K V — associative (key -> value) maps.
+;   assoc  -> insert/overwrite the value for a key, MUTATING in place.
+;   dissoc -> remove a key (and its value), MUTATING in place.
+; Two protocol parameters: K (key type) and V (value type). Both are bound at
+; the extend site: (extend (HashMap K V) (Assoc K V)).
+;
+; `get` (key -> (Maybe V)), `keys`/`vals` (-> Iterator) and `select-keys` are
+; intentionally NOT in the protocol: their result types are derived from Self
+; (an associated type / a Self-derived iterator type), which the protocol
+; machinery cannot express. Each concrete map provides them as standalone
+; functions (e.g. HashMap's `hmap-get`).
+; ---------------------------------------------------------------------------
+(defprotocol (Assoc K V)
+  (assoc:void  ((self (ref Self)) key:K val:V))
+  (dissoc:void ((self (ref Self)) key:K)))
+
+; ---------------------------------------------------------------------------
+; Set E — sets of unique members (the in-place, mutating algebra).
+;   union        -> add every member of `other` into self, MUTATING self.
+;   difference   -> remove from self every member also in `other`, MUTATING.
+;   intersection -> keep in self only members also in `other`, MUTATING.
+;   contains?    -> membership test, 1/0.
+; The set-algebra methods mutate the receiver (the efficient primitive); a
+; fresh-result variant is just `iter` + `into`. `select` (filter to a new set)
+; is NOT in the protocol — it returns a new collection (Self-derived).
+; ---------------------------------------------------------------------------
+(defprotocol (Set E)
+  (union:void        ((self (ref Self)) (other (ref Self))))
+  (difference:void   ((self (ref Self)) (other (ref Self))))
+  (intersection:void ((self (ref Self)) (other (ref Self))))
+  (contains?:i32     ((self (ref Self)) elem:E)))
+
+; ---------------------------------------------------------------------------
+; Drop — the Stage 10 lifecycle protocol. An owning collection conforms so a
+; `with`-bound value frees its buffer at scope exit (statically dispatched in
+; reverse binding order). The method is named `drop` (NOT `free`) so it does
+; not shadow libc `@free` for the compilation unit.
+;
+; Drop is declared here (the canonical library home) so every owning
+; collection lib can `(import coll)` and extend it. Programs that only need
+; ad-hoc lifecycle outside collections may still define their own Drop
+; (examples/drop-defer.nuc does), in a unit that does not import this one.
+; ---------------------------------------------------------------------------
+(defprotocol Drop
+  (drop:void (self:ptr:Self)))

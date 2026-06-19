@@ -1,0 +1,39 @@
+; Stage 11 M5 — HashMap literal sugar `{…}`.
+;
+; `{"foo" 42 "bar" 7}` expands (in the reader) to a let that stack-allocates a
+; (HashMap CStr i32), runs hashmap-init with the default allocator, assoc-es
+; each key/value pair, and yields the (ref (HashMap CStr i32)). The outer `with`
+; fires Drop at scope exit.
+
+(include stdio)
+(import allocator)
+(import coll)
+(import iterator)
+(import hash)
+(import hashmap)
+
+(defn main:i32 ()
+  (with ((m (ref (HashMap CStr i32))) {"foo" 42 "bar" 7 "baz" 99})
+    (printf "count=%llu\n" (cast ui64 (count m)))     ; count=3
+    (match (hmap-get m "foo")
+      ((some x) (printf "foo=%d\n" x))                 ; foo=42
+      (none     (printf "foo=absent\n")))
+    (match (hmap-get m "bar")
+      ((some x) (printf "bar=%d\n" x))                 ; bar=7
+      (none     (printf "bar=absent\n")))
+    (match (hmap-get m "baz")
+      ((some x) (printf "baz=%d\n" x))                 ; baz=99
+      (none     (printf "baz=absent\n")))
+    (match (hmap-get m "missing")
+      ((some x) (printf "missing=%d\n" x))
+      (none     (printf "missing=absent\n"))))         ; missing=absent
+
+  ; Single pair literal.
+  (with ((s (ref (HashMap CStr i32))) {"only" 1})
+    (printf "single-count=%llu\n" (cast ui64 (count s))) ; single-count=1
+    (match (hmap-get s "only")
+      ((some x) (printf "only=%d\n" x))                ; only=1
+      (none     (printf "only=absent\n"))))
+
+  (printf "done\n")
+  (return 0))

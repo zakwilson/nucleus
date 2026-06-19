@@ -1,0 +1,15 @@
+count=3
+empty?=0
+one=1
+two=2
+missing=absent
+count-after-overwrite=3
+two-after=22
+count-after-dissoc=2
+one-after=absent
+count-after-resize=7
+two-post-resize=22
+three-post-resize=3
+seven-post-resize=7
+iter-count=7
+done

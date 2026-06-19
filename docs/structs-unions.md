@@ -309,6 +309,24 @@ instance is a static GEP+load — byte-identical to any hand-written struct.
 `&where` remains available for **extra bounds** on the type variable:
 `&where (T Ord)` constrains `T` beyond what the receiver alone asserts.
 
+A receiver type variable is bound **positionally** from the stamped receiver, so
+a template's trailing type parameters that appear in **no field** ("phantom"
+params) are still recovered and may be named in a method's signature — including
+its return type:
+
+```lisp
+; S and E appear in no field; they are bound positionally from the receiver.
+(defstruct (Two I F S E) a:I b:F)
+
+(defn two-s:S ((self (ref (Two I F S E))))   ; returns the 3rd type-argument
+  (return (cast S (self a))))
+```
+
+A call `(two-s t)` with `t:(ref (Two i32 f64 i32 i64))` binds `S := i32` from the
+third receiver type-argument. This makes the verbose "thread an explicit element
+type" combinator pattern (e.g. a `MapIter I F S E` carrying source/result element
+types as phantom params) expressible with a single implementation.
+
 ### `.nuch` export and C ABI
 
 A stamped instance is an ordinary monomorphic `TY-STRUCT`: the Stage 8 SysV

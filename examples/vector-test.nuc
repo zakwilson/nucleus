@@ -1,0 +1,47 @@
+; Stage 11 M3 — Vector: create, conj, indexed access, count/empty?/capacity,
+; iterate with doseq, insert, contains?, reserve, and Drop at with-scope exit.
+;
+; Index access is `(v i)` (the `invoke` generic), NOT `(get v i)`: the `get`
+; head is reserved for struct field access. `doseq` drives an iterator ref, so
+; the VecIter is materialised into a local and its address passed.
+
+(include stdio)
+(import allocator)
+(import coll)
+(import iterator)
+(import vector)
+
+(defn main:i32 ()
+  ; Stack-allocate a Vector i32 owned by `with`; vector-init sets the libc
+  ; allocator and zeroes the fields. `drop` fires automatically at scope exit.
+  (with ((v (ref (Vector i32))) (alloca (Vector i32)))
+    (vector-init v)
+
+    ; conj three elements (exercises capacity doubling: 0 -> 4).
+    (conj v 10) (conj v 20) (conj v 30)
+    (printf "count=%llu\n" (cast ui64 (count v)))     ; count=3
+    (printf "get[1]=%d\n" (v (cast usize 1)))         ; get[1]=20
+    (printf "empty?=%d\n" (empty? v))                 ; empty?=0
+    (printf "cap>=3: %d\n" (if (>= (capacity v) (cast usize 3)) 1 0)) ; 1
+
+    ; doseq iterate: allocate a VecIter, init it to scan v, then drive it.
+    ; doseq advances an iterator *reference* via (next it).
+    (let ((it (ref (VecIter i32))) (alloca (VecIter i32)))
+      (iter-init it v)
+      (doseq (x it) (printf "elem=%d\n" x)))           ; 10, 20, 30
+
+    ; insert 15 at index 1, shifting the tail right.
+    (insert v (cast usize 1) 15)
+    (printf "after insert: count=%llu\n" (cast ui64 (count v))) ; 4
+    (printf "get[1]=%d\n" (v (cast usize 1)))         ; 15
+
+    ; contains?
+    (printf "contains 20: %d\n" (contains? v 20))     ; 1
+    (printf "contains 99: %d\n" (contains? v 99))     ; 0
+
+    ; reserve and capacity
+    (reserve v (cast usize 100))
+    (printf "cap>=100: %d\n" (if (>= (capacity v) (cast usize 100)) 1 0)) ; 1
+
+    (printf "done\n"))
+  (return 0))

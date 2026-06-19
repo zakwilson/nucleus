@@ -1,0 +1,62 @@
+; Item 4a — phantom / positional type-variable recovery.
+;
+; A defstruct template may declare trailing type parameters that appear in NO
+; field ("phantom" params). A generic method written over such a template names
+; those params in its receiver pattern `(ref (Two I F S E))`; the compiler must
+; recover their concrete bindings POSITIONALLY from the stamped receiver
+; `(Two i32 f64 i32 i64)` — even though S and E never appear in a field type.
+;
+; Before the fix the tyvars array was sized "one slot per parameter", so a single
+; receiver parameter applying an N-arg template overran the arena: one phantom
+; param produced `unknown type: S`, two produced a segfault. The array is now
+; sized by the node count of each type pattern, a safe upper bound.
+
+(include stdio)
+
+; I and F are used by fields; S and E are phantom (no field mentions them).
+(defstruct (Two I F S E)
+  a:I
+  b:F)
+
+; 1. Generic method returning a FIELD type (I). All four tyvars I F S E are
+;    inferred from the receiver; S and E must still bind so the signature parses.
+(defn two-a:I ((self (ref (Two I F S E))))
+  (return (self a)))
+
+; 2. Generic method whose RETURN type is a phantom param (S), recovered
+;    positionally from the third receiver type-argument.
+(defn two-s:S ((self (ref (Two I F S E))))
+  (return (cast S (self a))))
+
+; 3. Generic method whose return type is the fourth (phantom) param (E).
+(defn two-e:E ((self (ref (Two I F S E))))
+  (return (cast E (self a))))
+
+; A verbose MapIter-style combinator: one implementation, explicit S/E threading.
+;   I = source container type, F = mapping-fn placeholder,
+;   S = source element type (phantom), E = result element type (phantom).
+(defstruct (MapIterVerbose I F S E)
+  source:I
+  f:F)
+
+(defn miv-e:E ((self (ref (MapIterVerbose I F S E))))
+  (return (cast E (self f))))
+
+(defn miv-s:S ((self (ref (MapIterVerbose I F S E))))
+  (return (cast S (self f))))
+
+(defn main:i32 ()
+  ; Concrete instance: I=i32, F=f64, S=i32, E=i64.
+  (let ((t (ref (Two i32 f64 i32 i64))) (alloca (Two i32 f64 i32 i64)))
+    (ptr-set! t @((Two i32 f64 i32 i64) (cast i32 42) (cast f64 3.14)))
+    (printf "a=%d\n" (two-a t))               ; a=42
+    (printf "s=%d\n" (two-s t))               ; s=42  (S=i32)
+    (printf "e=%lld\n" (cast i64 (two-e t))))  ; e=42  (E=i64)
+
+  ; MapIterVerbose instance: I=i32, F=i32, S=i64, E=i32.
+  (let ((m (ref (MapIterVerbose i32 i32 i64 i32)))
+        (alloca (MapIterVerbose i32 i32 i64 i32)))
+    (ptr-set! m @((MapIterVerbose i32 i32 i64 i32) (cast i32 7) (cast i32 99)))
+    (printf "miv-e=%d\n" (miv-e m))                 ; miv-e=99 (E=i32)
+    (printf "miv-s=%lld\n" (cast i64 (miv-s m))))    ; miv-s=99 (S=i64)
+  0)

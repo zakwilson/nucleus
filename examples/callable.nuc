@@ -6,7 +6,7 @@
 ;                         intrinsic emits a GEP+load, byte-identical to `.`, and
 ;                         is overridable by a user `get` method)
 ;   - anything else      → a user-defined `invoke` (indexing, function objects)
-; The Seq / Call protocols (lib/seq.nuc) name the `invoke` capability.
+; The IntIndexable / Call protocols (lib/seq.nuc) name the `invoke` capability.
 
 (include stdio)
 (include stdlib)
@@ -14,11 +14,11 @@
 
 (defstruct Point x:i32 y:i32)
 
-; ---- Seq: an i32 vector, indexable by call ----
+; ---- IntIndexable: an i32 vector, indexable by call ----
 (defstruct Vec data:ptr:i32 len:i32)
 (defn invoke:i32 (self:ptr:Vec i:i32)
   (return (aref (self data) i)))
-(extend Vec Seq)
+(extend Vec IntIndexable)
 
 ; ---- Call: a function object that adds a fixed delta to *arg ----
 (defstruct Adder delta:i32)
@@ -45,7 +45,7 @@
     (.set! p y 4)
     (printf "point: x=%d y=%d\n" (p x) (p y)))
 
-  ; Seq: (v i) indexes; (v len) is member access — same value, the argument decides.
+  ; IntIndexable: (v i) indexes; (v len) is member access — same value, the argument decides.
   (let (v:ptr:Vec (cast ptr:Vec (malloc (cast i64 (sizeof Vec))))
         arr:ptr:i32 (cast ptr:i32 (malloc (cast i64 12))))
     (aset! arr 0 10)

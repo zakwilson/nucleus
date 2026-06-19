@@ -1,0 +1,85 @@
+; Stage 11 M4 — HashMap K V: assoc, dissoc, hmap-get, resize, key iteration.
+;
+; Exercises:
+;   - assoc + count (basic inserts)
+;   - hmap-get hits and a miss (match on Maybe)
+;   - overwrite an existing key (count unchanged)
+;   - dissoc a key (count decrements, key becomes absent)
+;   - forced resize (assoc enough keys to exceed 75% load on cap=8)
+;   - HashMapKeyIter key iteration (count iterated keys — order is hash-dependent
+;     so we never print key values; just count or sum derived data)
+;   - Drop fires at with-scope exit (no leak)
+
+(include stdio)
+(import allocator)
+(import coll)
+(import iterator)
+(import hash)
+(import hashmap)
+
+(defn main:i32 ()
+  (with ((m (ref (HashMap CStr i32))) (alloca (HashMap CStr i32)))
+    (hashmap-init m)
+
+    ; --- Basic inserts ---
+    (assoc m "one"   1)
+    (assoc m "two"   2)
+    (assoc m "three" 3)
+    (printf "count=%llu\n" (cast ui64 (count m)))   ; 3
+    (printf "empty?=%d\n" (empty? m))               ; 0
+
+    ; --- hmap-get: hits and a miss ---
+    (match (hmap-get m "one")
+      ((some v) (printf "one=%d\n" v))              ; one=1
+      (none     (printf "one=absent\n")))
+    (match (hmap-get m "two")
+      ((some v) (printf "two=%d\n" v))              ; two=2
+      (none     (printf "two=absent\n")))
+    (match (hmap-get m "missing")
+      ((some v) (printf "missing=%d\n" v))
+      (none     (printf "missing=absent\n")))        ; missing=absent
+
+    ; --- Overwrite: count must not change ---
+    (assoc m "two" 22)
+    (printf "count-after-overwrite=%llu\n" (cast ui64 (count m))) ; 3
+    (match (hmap-get m "two")
+      ((some v) (printf "two-after=%d\n" v))        ; two-after=22
+      (none     (printf "two-after=absent\n")))
+
+    ; --- dissoc: count decrements, key becomes absent ---
+    (dissoc m "one")
+    (printf "count-after-dissoc=%llu\n" (cast ui64 (count m)))   ; 2
+    (match (hmap-get m "one")
+      ((some v) (printf "one-after=%d\n" v))
+      (none     (printf "one-after=absent\n")))      ; one-after=absent
+
+    ; --- Force a resize: add enough keys to exceed 75% on cap=8 (>= 6 total) ---
+    ; We already have "two"(22) and "three"(3); add 5 more to reach 7 total,
+    ; which exceeds cap*3/4 = 6 and triggers a resize from cap=8 to cap=16.
+    (assoc m "four"  4)
+    (assoc m "five"  5)
+    (assoc m "six"   6)
+    (assoc m "seven" 7)
+    (assoc m "eight" 8)
+    (printf "count-after-resize=%llu\n" (cast ui64 (count m)))   ; 7
+
+    ; Confirm all entries are still retrievable after the resize.
+    (match (hmap-get m "two")
+      ((some v) (printf "two-post-resize=%d\n" v))  ; two-post-resize=22
+      (none     (printf "two-post-resize=absent\n")))
+    (match (hmap-get m "three")
+      ((some v) (printf "three-post-resize=%d\n" v)); three-post-resize=3
+      (none     (printf "three-post-resize=absent\n")))
+    (match (hmap-get m "seven")
+      ((some v) (printf "seven-post-resize=%d\n" v)); seven-post-resize=7
+      (none     (printf "seven-post-resize=absent\n")))
+
+    ; --- HashMapKeyIter: count iterated keys (order is hash-dependent) ---
+    (let ((it (ref (HashMapKeyIter CStr i32))) (alloca (HashMapKeyIter CStr i32)))
+      (hmap-iter-keys it m)
+      (let (iter-count:i32 0)
+        (doseq (k it) (set! iter-count (+ iter-count 1)))
+        (printf "iter-count=%d\n" iter-count)))     ; iter-count=7
+
+    (printf "done\n"))
+  (return 0))

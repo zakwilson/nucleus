@@ -1,0 +1,13 @@
+count=3
+get[1]=20
+empty?=0
+cap>=3: 1
+elem=10
+elem=20
+elem=30
+after insert: count=4
+get[1]=15
+contains 20: 1
+contains 99: 0
+cap>=100: 1
+done

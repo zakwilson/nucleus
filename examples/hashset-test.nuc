@@ -1,0 +1,124 @@
+; Stage 11 M4 — HashSet: open-addressing hash set exercising insert, contains?,
+; set-remove, resize, set algebra (union/intersection/difference), and iteration.
+;
+; Output is DETERMINISTIC: set algebra uses i32 elements; iteration is tested by
+; summing elements (order-independent). CStr membership tests drive the basic
+; API. See tests/expected/hashset-test.out for the expected output.
+
+(include stdio)
+(import allocator)
+(import coll)
+(import iterator)
+(import hash)
+(import hashset)
+
+(defn main:i32 ()
+
+  ; ----------------------------------------------------------------
+  ; 1. Basic CStr insert / contains? / set-remove
+  ; ----------------------------------------------------------------
+  (with ((s (ref (HashSet CStr))) (alloca (HashSet CStr)))
+    (hashset-init s)
+
+    (insert s "dog")
+    (insert s "cat")
+    (insert s "fish")
+    (printf "count after 3 inserts: %llu\n" (cast ui64 (count s)))   ; 3
+
+    ; Duplicate insert must not double-count.
+    (insert s "dog")
+    (printf "count after dup insert: %llu\n" (cast ui64 (count s)))  ; 3
+
+    (printf "contains dog: %d\n"  (contains? s "dog"))   ; 1
+    (printf "contains cat: %d\n"  (contains? s "cat"))   ; 1
+    (printf "contains bird: %d\n" (contains? s "bird"))  ; 0
+
+    ; Remove "cat" and verify count drops and lookup returns 0.
+    (set-remove s "cat")
+    (printf "count after remove: %llu\n" (cast ui64 (count s)))     ; 2
+    (printf "contains cat after remove: %d\n" (contains? s "cat"))  ; 0
+    (printf "contains dog after remove: %d\n" (contains? s "dog"))) ; 1
+
+  ; ----------------------------------------------------------------
+  ; 2. Resize: insert 9 elements into a fresh set (initial cap=8, so we
+  ;    cross the 3/4 threshold and force at least one resize) and verify
+  ;    all members are still reachable after rehashing.
+  ; ----------------------------------------------------------------
+  (with ((r (ref (HashSet i32))) (alloca (HashSet i32)))
+    (hashset-init r)
+    (insert r 1) (insert r 2) (insert r 3) (insert r 4) (insert r 5)
+    (insert r 6) (insert r 7) (insert r 8) (insert r 9)
+    (printf "count after 9 inserts: %llu\n" (cast ui64 (count r)))  ; 9
+    ; Spot-check a few members after resize.
+    (printf "contains 1 after resize: %d\n" (contains? r 1))   ; 1
+    (printf "contains 5 after resize: %d\n" (contains? r 5))   ; 1
+    (printf "contains 9 after resize: %d\n" (contains? r 9))   ; 1
+    (printf "contains 10 after resize: %d\n" (contains? r 10))) ; 0
+
+  ; ----------------------------------------------------------------
+  ; 3. Set algebra with i32 elements.
+  ;    A = {1, 2, 3, 4}   B = {3, 4, 5, 6}
+  ;
+  ;    union(A,B)        = {1,2,3,4,5,6}  count=6
+  ;    intersection(A,B) = {3,4}          count=2
+  ;    difference(A,B)   = {1,2}          count=2
+  ; ----------------------------------------------------------------
+
+  ; --- union ---
+  (with ((a (ref (HashSet i32))) (alloca (HashSet i32)))
+    (hashset-init a)
+    (insert a 1) (insert a 2) (insert a 3) (insert a 4)
+    (with ((b (ref (HashSet i32))) (alloca (HashSet i32)))
+      (hashset-init b)
+      (insert b 3) (insert b 4) (insert b 5) (insert b 6)
+      (union a b)
+      (printf "union count: %llu\n" (cast ui64 (count a)))       ; 6
+      (printf "union has 1: %d\n" (contains? a 1))               ; 1
+      (printf "union has 6: %d\n" (contains? a 6))               ; 1
+      (printf "union has 7: %d\n" (contains? a 7))))             ; 0
+
+  ; --- intersection ---
+  (with ((a (ref (HashSet i32))) (alloca (HashSet i32)))
+    (hashset-init a)
+    (insert a 1) (insert a 2) (insert a 3) (insert a 4)
+    (with ((b (ref (HashSet i32))) (alloca (HashSet i32)))
+      (hashset-init b)
+      (insert b 3) (insert b 4) (insert b 5) (insert b 6)
+      (intersection a b)
+      (printf "intersection count: %llu\n" (cast ui64 (count a))) ; 2
+      (printf "intersection has 3: %d\n" (contains? a 3))         ; 1
+      (printf "intersection has 4: %d\n" (contains? a 4))         ; 1
+      (printf "intersection has 1: %d\n" (contains? a 1))))       ; 0
+
+  ; --- difference ---
+  (with ((a (ref (HashSet i32))) (alloca (HashSet i32)))
+    (hashset-init a)
+    (insert a 1) (insert a 2) (insert a 3) (insert a 4)
+    (with ((b (ref (HashSet i32))) (alloca (HashSet i32)))
+      (hashset-init b)
+      (insert b 3) (insert b 4) (insert b 5) (insert b 6)
+      (difference a b)
+      (printf "difference count: %llu\n" (cast ui64 (count a)))  ; 2
+      (printf "difference has 1: %d\n" (contains? a 1))          ; 1
+      (printf "difference has 2: %d\n" (contains? a 2))          ; 1
+      (printf "difference has 3: %d\n" (contains? a 3))))        ; 0
+
+  ; ----------------------------------------------------------------
+  ; 4. Iterator: insert {10, 20, 30, 40, 50} and sum with HashSetIter.
+  ;    Sum is order-independent so output is deterministic.
+  ; ----------------------------------------------------------------
+  (with ((s (ref (HashSet i32))) (alloca (HashSet i32)))
+    (hashset-init s)
+    (insert s 10) (insert s 20) (insert s 30) (insert s 40) (insert s 50)
+    (let ((it (ref (HashSetIter i32))) (alloca (HashSetIter i32)))
+      (hashset-iter it s)
+      (let (sum:i32 0
+            iter-count:i32 0)
+        (doseq (x it)
+          (set! sum (+ sum x))
+          (set! iter-count (+ iter-count 1)))
+        (printf "iter count: %d\n" iter-count)  ; 5
+        (printf "iter sum: %d\n" sum))))         ; 150
+
+  (printf "done\n")
+  (return 0))

@@ -1,0 +1,136 @@
+; Stage 11 cleanup §2 — Keyword: an interned, immutable, self-evaluating name,
+; built on the shared StrView substrate (lib/strview.nuc).
+;
+; Design: design/stage11/cleanup.md §2.
+;
+; ---------------------------------------------------------------------------
+; WHAT A KEYWORD IS
+;
+; `:foo` is a keyword literal. The reader recognises a leading-colon atom and
+; emits a NODE-KEYWORD; the compiler lowers that to a runtime call to
+; `keyword-intern("foo")`, which returns the one canonical `Keyword` value for
+; that name. Two `:foo` therefore share an `id`, so equality is an integer
+; compare (no byte walk) and hashing is a cached load — the whole point being
+; ergonomic, cheap `HashMap` keys.
+;
+; Representation (design §"Keyword representation"):
+;   name         : (ptr StrView) into the intern arena (borrowed, process-lived)
+;   id           : sequential intern id — identity for Eq
+;   cached-hash  : StrView byte-hash computed once at intern time — for Hash
+;
+; The intern pool is KEYWORD-SPECIFIC (not shared with StrView) and uses a plain
+; linear scan over a fixed-size global array — NOT a HashMap, which would be
+; circular (HashMap keys want to be keywords). 256 entries is ample for a
+; program's distinct keyword set; overflow aborts with a diagnostic.
+;
+; Name bytes are stored NUL-terminated in their own malloc'd block, so the
+; StrView's `strview-to-cstr` bridge is sound for any interned keyword name.
+; ---------------------------------------------------------------------------
+
+(include stdio)
+(include stdlib)
+(include string)
+
+(extern stderr:ptr)
+
+(import strview)
+(import hash)
+(import numeric)   ; the Eq protocol (= / !=)
+
+; ---------------------------------------------------------------------------
+; The interned keyword. A value type: copying a Keyword copies these three
+; words; identity lives in `id`, so a copy is still `=` to its original.
+; ---------------------------------------------------------------------------
+(defstruct Keyword
+  name:(ptr StrView)
+  id:usize
+  cached-hash:usize)
+
+; ---------------------------------------------------------------------------
+; Intern table: a fixed-size global array of Keyword entries plus a live count.
+; Lazily malloc'd on first intern (zero startup cost for programs with no
+; keywords). An entry is occupied iff its index < g-keyword-count.
+; ---------------------------------------------------------------------------
+(defconst KEYWORD-MAX 256)
+
+(defvar g-keyword-table:ptr null)
+(defvar g-keyword-count:usize 0)
+
+; Abort on intern-table overflow. Non-generic so its libc references resolve
+; against this file's includes.
+(defn keyword-overflow:void ()
+  (fprintf stderr "keyword: intern table full (max %d)\n" KEYWORD-MAX)
+  (exit 1))
+
+; ---------------------------------------------------------------------------
+; keyword-intern — return the canonical Keyword for the name in `cs`.
+;
+; Linear scan: compare `cs` byte-for-byte (strcmp) against each existing entry's
+; name. On a hit, return that entry's Keyword value (identity preserved via id).
+; On a miss, append a fresh entry: copy the name bytes (NUL-terminated) into a
+; malloc'd block, wrap them in a heap StrView, compute the byte hash once, assign
+; the next sequential id, and return the new value.
+; ---------------------------------------------------------------------------
+(defn keyword-intern:Keyword ((cs CStr))
+  ; Lazy table init.
+  (when (= g-keyword-table null)
+    (set! g-keyword-table (malloc (* (cast i64 KEYWORD-MAX) (sizeof Keyword)))))
+  (let (tbl:ptr:Keyword (cast ptr:Keyword g-keyword-table)
+        n:usize g-keyword-count
+        i:usize (cast usize 0))
+    ; Look for an existing entry with the same name bytes.
+    (while (< i n)
+      (let (e:ptr:Keyword (cast ptr:Keyword (ptr+ tbl (cast i32 i)))
+            sv:ptr:StrView (cast ptr:StrView (e name)))
+        (when (= (strcmp (strview-to-cstr sv) (cast ptr cs)) 0)
+          (return (deref e))))
+      (set! i (+ i (cast usize 1))))
+    ; Miss: append a new entry.
+    (when (>= n (cast usize KEYWORD-MAX))
+      (keyword-overflow))
+    (let (slen:i64 (strlen (cast ptr cs))
+          ; Copy the name bytes NUL-terminated so strview-to-cstr stays sound.
+          buf:ptr (malloc (+ slen (cast i64 1))))
+      (memcpy buf (cast ptr cs) (+ slen (cast i64 1)))
+      (let (sv:ptr:StrView (cast ptr:StrView (malloc (cast i64 (sizeof StrView)))))
+        (.set! sv data (cast ptr:ui8 buf))
+        (.set! sv len  (cast usize slen))
+        (let (e:ptr:Keyword (cast ptr:Keyword (ptr+ tbl (cast i32 n)))
+              h:usize (strview-hash sv))
+          (.set! e name sv)
+          (.set! e id   n)
+          (.set! e cached-hash h)
+          (set! g-keyword-count (+ n (cast usize 1)))
+          (return (deref e)))))))
+
+; ---------------------------------------------------------------------------
+; keyword-name — the keyword's name as a (ref StrView) (borrowed; process-lived).
+; Lets callers print or further-inspect a keyword without touching the layout.
+; ---------------------------------------------------------------------------
+(defn keyword-name:ref:StrView ((self (ref Keyword)))
+  (return (cast ref:StrView (cast ptr (self name)))))
+
+; ---------------------------------------------------------------------------
+; Conformances.
+;
+; Eq is identity: two keywords are equal iff they share an intern id. By value
+; (matching the Eq protocol and the collection key path `(= k1 k2)`).
+;
+; Hash returns the hash cached at intern time (no byte walk), by (ref Self) per
+; the Hash protocol. Because equal keywords share a name they share a cached
+; hash, so Eq/Hash agree.
+; ---------------------------------------------------------------------------
+
+(extend Keyword Eq)
+(defn =:i1 (a:Keyword b:Keyword)
+  (let (la:Keyword a
+        lb:Keyword b)
+    (return (if (= ((addr-of la) id) ((addr-of lb) id)) true false))))
+(defn !=:i1 (a:Keyword b:Keyword)
+  (let (la:Keyword a
+        lb:Keyword b)
+    (return (if (= ((addr-of la) id) ((addr-of lb) id)) false true))))
+
+(extend Keyword Hash)
+(defn hash:usize ((self (ref Keyword)))
+  (return (self cached-hash)))

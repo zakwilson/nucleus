@@ -13,7 +13,19 @@ BOOT         := bin/nucleusc
 # REPL shim (setjmp/longjmp wrapper)
 REPL_SHIM_O  := $(BUILD)/repl_shim.o
 
-$(BIN): src/nucleusc.nuc src/repl.nuc src/cheader.nuc $(REPL_SHIM_O) | $(BUILD) ensure-boot
+# Source-inlined dependencies of the compiler. `src/nucleusc.nuc` `(import)`s
+# these as `.nuc` files, which the importer inlines into the same translation
+# unit — so editing any of them changes the compiler's emitted IR and must
+# trigger a rebuild. (Header `.nuch` imports like src/llvm.nuch only emit
+# `declare`s, resolved at link time.) The prelude chain (prelude -> macros,
+# node -> arena) is auto-prepended into every batch compile, including the
+# compiler's own. lib/reader.nuc was the gap that previously let reader edits
+# go unrebuilt.
+COMPILER_DEPS := src/nucleusc.nuc src/repl.nuc src/cheader.nuc src/format.nuc \
+                 lib/prelude.nuc lib/macros.nuc lib/node.nuc lib/arena.nuc \
+                 lib/error.nuc lib/reader.nuc
+
+$(BIN): $(COMPILER_DEPS) $(REPL_SHIM_O) | $(BUILD) ensure-boot
 	$(BOOT) --emit-llvm src/nucleusc.nuc > $(BUILD)/nucleusc.ll
 	clang $(BUILD)/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl -rdynamic -ffast-math -march=native -O3 -o $@
 

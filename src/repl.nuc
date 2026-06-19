@@ -256,6 +256,16 @@
                             impl-name:ptr null)
                         (set! g-defn-impl-counter (+ g-defn-impl-counter (cast i64 1)))
                         (set! impl-name (fmt-sd "%s.impl.%d" fname-ir impl-id))
+                        ; When redefining, remove the old method from the
+                        ; generic before prescan adds the new one.
+                        ; Otherwise finalize-generics sees a duplicate signature.
+                        (when (and (!= is-redef 0) (!= old-sym null))
+                          (let (old-g:?ptr:Generic (generic-lookup fname))
+                            (when (!= old-g null)
+                              (let (old-ft:ptr:Type (cast ptr:Type (old-sym type)))
+                                (when (= (old-ft kind) TY-FN)
+                                  (generic-remove-matching-user-method
+                                    old-g (old-ft params) (old-ft num-params)))))))
                         (open-module-streams)
                         (let (one-form:ptr (make-cell form null (f line)))
                           (prescan-defn-signatures one-form))

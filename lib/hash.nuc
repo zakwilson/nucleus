@@ -1,0 +1,104 @@
+; Stage 11 collections — the Hash protocol and built-in conformances for the
+; scalar types and CStr. Required by HashSet/HashMap (a key or set member must
+; be both Hash and Eq).
+;
+; Design: design/stage11/collections.md §"Hash (its own lib)".
+;
+; ---------------------------------------------------------------------------
+; THE PROTOCOL
+;
+;   (defprotocol Hash
+;     (hash:usize ((self (ref Self)))))
+;
+; A type conforms by providing `hash` over a (ref Self) receiver returning a
+; usize. The receiver is by reference so a large key (a struct) need not be
+; copied; the scalar conformances simply load through it.
+;
+; TOKENIZER NOTE (carried from M1/M2 + parametric structs): a parameter whose
+; type is a parenthesised form uses the LIST binding form `(self (ref Self))`,
+; never `self:(ref Self)`. A plain-symbol return type in colon position DOES
+; tokenise, so `hash:usize` is fine.
+;
+; ---------------------------------------------------------------------------
+; THE HASH FUNCTION: FNV-1a (64-bit), the same algorithm the compiler itself
+; uses to hash interned strings / struct shapes (src/nucleusc.nuc fnv-byte /
+; fnv-str). FNV-1a folds the input one byte at a time:
+;
+;   h := FNV_OFFSET_BASIS                 ; 0xcbf29ce484222325
+;   for each byte b:  h := (h XOR b) * FNV_PRIME      ; prime = 0x100000001b3
+;
+; We fold every byte of an integer scalar (so equal values hash equal), and the
+; bytes of a CStr up to its terminator. The fold runs in i64 (the natural width
+; for the constants and the multiply) and the result is cast to usize at the
+; end — usize is the protocol's return type and the table indexes with it.
+;
+; FNV_OFFSET_BASIS 0xcbf29ce484222325 as a *signed* i64 is the negative literal
+; below (the high bit is set); writing the unsigned hex directly would overflow
+; the signed-literal range, so we use the two's-complement decimal form exactly
+; as the compiler's hash-struct-shape seed does (-3750763034362895579).
+; ---------------------------------------------------------------------------
+
+(include stdio)
+(include string)
+
+; Fold one byte `b` (0..255, passed as i64) into the running hash `h`.
+; The * is the FNV prime 0x100000001b3 = 1099511628211.
+(defn fnv1a-byte:i64 (h:i64 b:i64)
+  (set! h (bit-xor h b))
+  (set! h (* h (cast i64 1099511628211)))
+  (return h))
+
+; Fold the `n` low bytes of integer value `v` (little-endian byte order) into
+; `h`. Byte order is internal to this hash (never observed), so little-endian is
+; an arbitrary, consistent choice — equal values always fold identically.
+(defn fnv1a-int:i64 (h:i64 v:i64 n:i32)
+  (let (i:i32 0)
+    (while (< i n)
+      (let (b:i64 (bit-and (bit-shr v (cast i64 (* i 8))) (cast i64 255)))
+        (set! h (fnv1a-byte h b)))
+      (set! i (+ i 1)))
+    (return h)))
+
+; ---------------------------------------------------------------------------
+; The Hash protocol.
+; ---------------------------------------------------------------------------
+(defprotocol Hash
+  (hash:usize ((self (ref Self)))))
+
+; ---------------------------------------------------------------------------
+; Built-in conformances. Each loads the value through the (ref Self) receiver,
+; folds its bytes through FNV-1a, and returns the result as usize.
+;
+; i32 — fold the 4 bytes of the value.
+; i64 — fold the 8 bytes.
+; usize — fold the target-pointer-sized value as 8 bytes (the high bytes are
+;         zero on a 32-bit target, which is harmless: a zero byte still folds).
+; CStr — fold each character byte up to (not including) the NUL terminator.
+; ---------------------------------------------------------------------------
+
+(extend i32 Hash)
+(defn hash:usize ((self (ref i32)))
+  (let (h:i64 -3750763034362895579)
+    (return (cast usize (fnv1a-int h (cast i64 (deref self)) 4)))))
+
+(extend i64 Hash)
+(defn hash:usize ((self (ref i64)))
+  (let (h:i64 -3750763034362895579)
+    (return (cast usize (fnv1a-int h (deref self) 8)))))
+
+(extend usize Hash)
+(defn hash:usize ((self (ref usize)))
+  (let (h:i64 -3750763034362895579)
+    (return (cast usize (fnv1a-int h (cast i64 (deref self)) 8)))))
+
+(extend CStr Hash)
+(defn hash:usize ((self (ref CStr)))
+  (let (h:i64 -3750763034362895579
+        s:ptr:i8 (cast ptr:i8 (deref self))
+        i:i64 0)
+    (let (c:i32 (bit-and (cast i32 (aref s 0)) 255))
+      (while (!= c 0)
+        (set! h (fnv1a-byte h (cast i64 c)))
+        (set! i (+ i (cast i64 1)))
+        (set! c (bit-and (cast i32 (aref s i)) 255))))
+    (return (cast usize h))))

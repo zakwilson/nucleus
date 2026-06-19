@@ -179,3 +179,23 @@ When converting a function or binding from `(ptr T)` to `(ref T)` / `?T`
   result is used, you get a malformed-IR clang error or a flow-check error.
   Fix by giving the other branch's binding its real element type — never by
   casting the `ref` side back to bare `ptr`.
+
+## `(Maybe ptr)` is niche-encoded — cannot use `match` on it
+
+When the element type of `Maybe` is a pointer kind (`TY-PTR`), the compiler
+niche-encodes `(Maybe ptr:T)` as a nullable pointer (no tag word, null = none).
+This means `match` cannot be used on it — match expects a tagged sum. Use
+`i32` or `i64` as iterator element types and `match` normally. If you need a
+nullable pointer specifically, use `if-some`/`when-some`/`unwrap`/`unwrap-or`.
+
+## `macros.nuc` is auto-imported — adding macros shifts the string pool
+
+`lib/macros.nuc` is transitively auto-imported into **every** compilation
+including the compiler itself (via `lib/prelude.nuc`). Adding new macro
+definitions (with quasiquote string literals like `"let"`, `"i32"`, etc.) shifts
+the compiler's internal string pool numbering. This causes a spurious bootstrap
+diff that has nothing to do with correctness. Convergence requires two passes:
+1. `make update-bootstrap` — install the new compiler binary as the new boot artifact
+2. `make clean && make` — rebuild from the new boot so stage1 == stage2
+Then `make bootstrap` passes. The `make bootstrap` target diffs stage1 vs stage2,
+not the new binary vs old boot.

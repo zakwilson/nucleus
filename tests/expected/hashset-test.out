@@ -1,0 +1,28 @@
+count after 3 inserts: 3
+count after dup insert: 3
+contains dog: 1
+contains cat: 1
+contains bird: 0
+count after remove: 2
+contains cat after remove: 0
+contains dog after remove: 1
+count after 9 inserts: 9
+contains 1 after resize: 1
+contains 5 after resize: 1
+contains 9 after resize: 1
+contains 10 after resize: 0
+union count: 6
+union has 1: 1
+union has 6: 1
+union has 7: 0
+intersection count: 2
+intersection has 3: 1
+intersection has 4: 1
+intersection has 1: 0
+difference count: 2
+difference has 1: 1
+difference has 2: 1
+difference has 3: 0
+iter count: 5
+iter sum: 150
+done
