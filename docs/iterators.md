@@ -1,8 +1,8 @@
 # Iterators (`lib/iterator.nuc`, Stage 11)
 
 `(import iterator)` provides the `Iterator` parametric protocol, two concrete
-iterator structs, two lazy combinator types, function-object protocols, and
-typed reduce functions.
+iterator structs, function-object protocols, generic lazy combinators, and a
+generic `reduce`.
 
 ## The `Iterator` protocol
 
@@ -40,104 +40,137 @@ Both conform to `(Iterator i32)` / `(Iterator i64)` respectively.
 
 ## Function-object protocols
 
-These protocols let user-defined types serve as functions passed to `MapIterI64`,
-`FilterIterI64`, and `reduce-*`:
+These protocols let user-defined struct types serve as functions passed to
+`MapIter`, `FilterIter`, and `reduce`. They replace the old `CallI64` /
+`BinaryCallI64` protocols with generic versions.
 
 | Protocol | Required method | Description |
 |----------|----------------|-------------|
-| `CallI64` | `callfn:i64 (self:ptr:Self x:i64)` | Unary `i64 → i64` transform. Used as the map / predicate function. |
-| `BinaryCallI64` | `foldop:i64 (self:ptr:Self acc:i64 x:i64)` | Binary `(i64, i64) → i64` fold. Used by reduce. |
+| `(UnaryFn Arg Ret)` | `(apply Ret) ((self (ref Self)) (x Arg))` | Maps one value to another: `Arg → Ret`. Used as the transform for `MapIter` and the predicate for `FilterIter`. |
+| `(FoldFn Acc Elem)` | `(fold Acc) ((self (ref Self)) (acc Acc) (x Elem))` | Binary fold: `(Acc, Elem) → Acc`. Used by `reduce`. |
 
-Define a struct, `extend` it with the protocol, then provide `callfn` or `foldop`:
+Define a struct and `extend` it with the desired protocol:
 
 ```lisp
+; A fold function: sum two i64 values.
 (defstruct SumI64 dummy:i32)
-(extend SumI64 BinaryCallI64)
-(defn foldop:i64 (self:ptr:SumI64 acc:i64 x:i64)
+(extend SumI64 (FoldFn i64 i64))
+(defn fold:i64 ((self (ref SumI64)) acc:i64 x:i64)
   (return (+ acc x)))
+
+; A map function: square an i64.
+(defstruct SquareI64 dummy:i32)
+(extend SquareI64 (UnaryFn i64 i64))
+(defn apply:i64 ((self (ref SquareI64)) x:i64)
+  (return (* x x)))
 ```
 
 ## Lazy combinators
 
 Both are **parametric structs** with type parameters `I` (source iterator type)
-and `F` (function-object type). Parametrising on `F` means the concrete `callfn`
-is selected at stamp time — there is no runtime vtable.
+and `F` (function-object type). The concrete method is selected at stamp time —
+there is no runtime vtable.
 
-**`(MapIterI64 I F)`** — applies `callfn` to each element of the source iterator.
-`I` must conform to `(Iterator i64)`. `F` must conform to `CallI64`.
+**`(MapIter I F)`** — applies `F`'s `apply` to each element yielded by `I`. `I`
+must conform to `(Iterator S)` for some element type `S`; `F` must conform to
+`(UnaryFn S E)`. The result element type `E` is recovered at stamp time from
+`F`'s `UnaryFn` conformance. `(MapIter I F)` itself conforms to `(Iterator E)`.
 
-**`(FilterIterI64 I F)`** — keeps only elements where `callfn` returns non-zero.
-Same constraints as `MapIterI64`.
+**`(FilterIter I F)`** — keeps only elements for which `F`'s `apply` returns
+non-zero (truthy). `I` must conform to `(Iterator S)`; `F` must conform to
+`(UnaryFn S i32)`. The element type is unchanged: `(FilterIter I F)` conforms
+to `(Iterator S)`.
 
-Fields are stored **by value** inside the struct. Use `memcpy` with `(.& struct field)` to copy a source iterator or function object into a combinator's field (because `alloca` returns a reference, and field assignment requires a reference to the destination):
+Both combinators conform to `Iterator` via `extend` with a `&where` clause —
+see [Conforming combinators: `&where` on `extend`](generics.md#conforming-combinators-where-on-extend).
+This means they are first-class `Iterator` values and can be nested or passed to
+any generic function bounded on `Iterator`.
+
+Fields are stored **by value** inside the struct. Use `memcpy` with
+`(.& struct field)` to copy a source iterator or function object into a
+combinator's field:
 
 ```lisp
-(let ((mi (ref (MapIterI64 I64ArrayIter SquareI64)))
-      (alloca (MapIterI64 I64ArrayIter SquareI64)))
+(let ((mi (ref (MapIter I64ArrayIter SquareI64)))
+      (alloca (MapIter I64ArrayIter SquareI64)))
   (memcpy (cast ptr (.& mi source)) (cast ptr src) (cast i64 (sizeof I64ArrayIter)))
   (memcpy (cast ptr (.& mi f))      (cast ptr sq)  (cast i64 (sizeof SquareI64)))
   ...)
 ```
 
-To call `next` on a field stored by value inside a struct, use `(.& self fieldname)` to get a `(ref FieldType)`:
+To call `next` on a field stored by value inside a struct, use
+`(.& self fieldname)` to get a `(ref FieldType)`:
 
 ```lisp
-(defn (next (Maybe i64)) ((self (ref (MapIterI64 I F))))
-  (let ((res (Maybe i64)) (next (.& self source)))
+(defn (next (Maybe E)) ((self (ref (MapIter I F)))
+                        &where ((Iterator S) I)
+                               ((UnaryFn S E) F))
+  (let ((res (Maybe S)) (next (.& self source)))
     ...))
 ```
 
-## Reduce functions
+## `reduce`
 
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `reduce-i64` | `((f (ref G)) init:i64 (it (ref I64ArrayIter)) &where (BinaryCallI64 G)) -> i64` | Fold an `I64ArrayIter` with a `BinaryCallI64` function object `f`. |
-| `reduce-map-i64` | `((fold (ref G)) init:i64 (it (ref (MapIterI64 I F))) &where (BinaryCallI64 G)) -> i64` | Fold a `MapIterI64` with a `BinaryCallI64`. |
-| `reduce-filter-map-i64` | `((fold (ref G)) init:i64 (it (ref (FilterIterI64 (MapIterI64 I F) P))) &where (BinaryCallI64 G)) -> i64` | Fold a `FilterIterI64` wrapping a `MapIterI64`. |
+```lisp
+(defn reduce:Acc ((g (ref G)) (init Acc) (it (ref I))
+                  &where ((Iterator S) I)
+                         ((FoldFn Acc S) G))
+  ...)
+```
 
-`G` is inferred at the call site from the concrete type of `fold`. All three
-functions iterate until `none` and return the accumulated value.
+Folds `it` left-to-right, starting from `init`, by calling `(fold g acc elem)`
+for each element. `G` is the fold-function type, bounded by `(FoldFn Acc S)`.
+`S` is the iterator's element type, recovered from `I`'s `Iterator` conformance
+at the call site. Returns the final accumulated value `Acc`.
+
+Because `MapIter` and `FilterIter` conform to `Iterator`, `reduce` can consume
+them directly:
+
+```lisp
+(reduce sm (cast i64 0) fi)   ; fi: any (ref (Iterator i64))-conforming type
+```
 
 ## End-to-end example
 
 Chain `[1,2,3,4,5]` → square → keep even → sum (= 4 + 16 = 20):
 
 ```lisp
+(include stdio)
 (import iterator)
 
 (defstruct SumI64 dummy:i32)
-(extend SumI64 BinaryCallI64)
-(defn foldop:i64 (self:ptr:SumI64 acc:i64 x:i64) (return (+ acc x)))
+(extend SumI64 (FoldFn i64 i64))
+(defn fold:i64 ((self (ref SumI64)) acc:i64 x:i64) (return (+ acc x)))
 
 (defstruct SquareI64 dummy:i32)
-(extend SquareI64 CallI64)
-(defn callfn:i64 (self:ptr:SquareI64 x:i64) (return (* x x)))
+(extend SquareI64 (UnaryFn i64 i64))
+(defn apply:i64 ((self (ref SquareI64)) x:i64) (return (* x x)))
 
 (defstruct IsEvenI64 dummy:i32)
-(extend IsEvenI64 CallI64)
-(defn callfn:i64 (self:ptr:IsEvenI64 x:i64)
-  (return (cast i64 (= (% x (cast i64 2)) (cast i64 0)))))
+(extend IsEvenI64 (UnaryFn i64 i32))
+(defn apply:i32 ((self (ref IsEvenI64)) x:i64)
+  (return (cast i32 (= (% x (cast i64 2)) (cast i64 0)))))
 
 (defn main:i32 ()
   (let (arr:ptr:i64 (alloca i64 5))
     (aset! arr 0 (cast i64 1)) (aset! arr 1 (cast i64 2))
     (aset! arr 2 (cast i64 3)) (aset! arr 3 (cast i64 4))
     (aset! arr 4 (cast i64 5))
-    (let ((sq (ref SquareI64)) (alloca SquareI64))
-    (let ((ev (ref IsEvenI64)) (alloca IsEvenI64))
-    (let ((sm (ref SumI64)) (alloca SumI64))
+    (let ((sq  (ref SquareI64)) (alloca SquareI64))
+    (let ((ev  (ref IsEvenI64)) (alloca IsEvenI64))
+    (let ((sm  (ref SumI64))    (alloca SumI64))
     (let ((src (ref I64ArrayIter)) (alloca I64ArrayIter))
       (.set! src data arr) (.set! src pos (cast usize 0)) (.set! src len (cast usize 5))
-      (let ((mi (ref (MapIterI64 I64ArrayIter SquareI64))
-            (alloca (MapIterI64 I64ArrayIter SquareI64)))
+      (let ((mi (ref (MapIter I64ArrayIter SquareI64)))
+            (alloca (MapIter I64ArrayIter SquareI64)))
         (memcpy (cast ptr (.& mi source)) (cast ptr src) (cast i64 (sizeof I64ArrayIter)))
         (memcpy (cast ptr (.& mi f))      (cast ptr sq)  (cast i64 (sizeof SquareI64)))
-        (let ((fi (ref (FilterIterI64 (MapIterI64 I64ArrayIter SquareI64) IsEvenI64)))
-              (alloca (FilterIterI64 (MapIterI64 I64ArrayIter SquareI64) IsEvenI64)))
+        (let ((fi (ref (FilterIter (MapIter I64ArrayIter SquareI64) IsEvenI64)))
+              (alloca (FilterIter (MapIter I64ArrayIter SquareI64) IsEvenI64)))
           (memcpy (cast ptr (.& fi source)) (cast ptr mi)
-                  (cast i64 (sizeof (MapIterI64 I64ArrayIter SquareI64))))
+                  (cast i64 (sizeof (MapIter I64ArrayIter SquareI64))))
           (memcpy (cast ptr (.& fi pred)) (cast ptr ev) (cast i64 (sizeof IsEvenI64)))
-          (printf "sum=%lld\n" (reduce-filter-map-i64 sm (cast i64 0) fi)))))))))
+          (printf "sum=%lld\n" (reduce sm (cast i64 0) fi)))))))))
   (return 0))
 ```
 

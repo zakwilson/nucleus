@@ -1,0 +1,76 @@
+; Stage 11 assoc-types (A4.2/A4.4) — extend-site associated-type recovery.
+;
+; A generic combinator can now ITSELF conform to the protocol it implements via a
+; `&where` clause on the `extend` form, with the protocol-application arg recovered
+; at stamp time from the combinator's own field conformances:
+;
+;   (extend (MapIter I F) (Iterator E) &where ((Iterator S) I) ((UnaryFn S E) F))
+;
+; reads "(MapIter I F) conforms to (Iterator E), where I yields S and F maps S→E";
+; `E` (the element MapIter yields) is recovered from F's UnaryFn conformance when a
+; concrete (MapIter IntRangeIter SqFn) is stamped. Once recorded, the stamped
+; combinator is a first-class Iterator: it can be driven by a generic `reduce`
+; bounded on ((Iterator S) I), and it can be the *source* of another combinator
+; (FilterIter over MapIter) which recovers ITS element from the MapIter conformance.
+;
+; After A4.4: UnaryFn, FoldFn, MapIter, FilterIter, and reduce are all in
+; lib/iterator.nuc. This file only defines the concrete function objects and main.
+;
+; Output:
+;   reduce(map sq [1,5)) = 30          ; 1+4+9+16
+;   reduce(filter even (map sq [1,5))) = 20   ; 4+16
+
+(include stdio)
+(import iterator)
+
+; SqFn: i32 -> i32, squares its input. Conforms to (UnaryFn i32 i32) from
+; lib/iterator.nuc: the arg position carries the recovered S=i32 (CHECKED),
+; the ret position the undetermined E (RECOVERED -> E=i32).
+(defstruct SqFn dummy:i32)
+(extend SqFn (UnaryFn i32 i32))
+(defn (apply i32) ((self (ref SqFn)) (x i32))
+  (return (* x x)))
+
+; EvenPred: i32 -> i32 (truthy = nonzero). Conforms to (UnaryFn i32 i32).
+(defstruct EvenPred dummy:i32)
+(extend EvenPred (UnaryFn i32 i32))
+(defn (apply i32) ((self (ref EvenPred)) (x i32))
+  (if (= (% x 2) 0) (return 1) (return 0)))
+
+; SumFn: folds (i32 acc, i32 elem) -> i32 by addition. Conforms to (FoldFn i32 i32).
+(defstruct SumFn dummy:i32)
+(extend SumFn (FoldFn i32 i32))
+(defn (fold i32) ((self (ref SumFn)) (acc i32) (x i32))
+  (return (+ acc x)))
+
+(defn main:i32 ()
+  ; Level 1: reduce over a MapIter (squares of [1,5)) -> 1+4+9+16 = 30.
+  (let ((src (ref IntRangeIter)) (alloca IntRangeIter))
+    (.set! src start 1)
+    (.set! src end 5)
+    (let ((mi (ref (MapIter IntRangeIter SqFn))) (alloca (MapIter IntRangeIter SqFn)))
+      (.set! (.& mi source) start 1)
+      (.set! (.& mi source) end 5)
+      (.set! (.& mi f) dummy 0)
+      (let ((sum (ref SumFn)) (alloca SumFn))
+        (.set! sum dummy 0)
+        (printf "reduce(map sq [1,5)) = %d\n" (reduce sum 0 mi)))))
+
+  ; Level 2: reduce over a FilterIter wrapping a MapIter — even squares of [1,5):
+  ; squares are 1 4 9 16, evens are 4 16 -> 4+16 = 20. A 2-level combinator chain.
+  (let ((mi2 (ref (MapIter IntRangeIter SqFn))) (alloca (MapIter IntRangeIter SqFn)))
+    (.set! (.& mi2 source) start 1)
+    (.set! (.& mi2 source) end 5)
+    (.set! (.& mi2 f) dummy 0)
+    (let ((fi (ref (FilterIter (MapIter IntRangeIter SqFn) EvenPred)))
+          (alloca (FilterIter (MapIter IntRangeIter SqFn) EvenPred)))
+      ; The FilterIter's source is the MapIter by value.
+      (.set! (.& (.& fi source) source) start 1)
+      (.set! (.& (.& fi source) source) end 5)
+      (.set! (.& (.& fi source) f) dummy 0)
+      (.set! (.& fi pred) dummy 0)
+      (let ((sum2 (ref SumFn)) (alloca SumFn))
+        (.set! sum2 dummy 0)
+        (printf "reduce(filter even (map sq [1,5))) = %d\n" (reduce sum2 0 fi)))))
+
+  (return 0))

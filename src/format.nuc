@@ -32,6 +32,11 @@
         n:i32 (snprintf buf (cast i64 512) fmt s1 s2))
     (return (arena-strndup buf (cast i64 n)))))
 
+(defn fmt-3s:ptr (fmt:ptr s1:ptr s2:ptr s3:ptr)
+  (let (buf:ptr (alloca i8 512)
+        n:i32 (snprintf buf (cast i64 512) fmt s1 s2 s3))
+    (return (arena-strndup buf (cast i64 n)))))
+
 (defn fmt-2s-i:ptr (fmt:ptr s1:ptr s2:ptr d:i32)
   (let (buf:ptr (alloca i8 512)
         n:i32 (snprintf buf (cast i64 512) fmt s1 s2 d))

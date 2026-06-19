@@ -345,6 +345,14 @@
   num-tyvars:i32
   con-protos:ptr    ; array of ptr (protocol name per &where constraint)
   con-vars:ptr      ; array of ptr (type-variable name per constraint; parallel)
+  ; --- Stage 11 assoc-types (A1): parametric &where constraints ---
+  ; For a constraint `((Proto Arg…) V)`, the argument-pattern nodes `Arg…` (each
+  ; a type-spelling Node*, recovered or constrained at dispatch — A2). Parallel
+  ; to con-protos/con-vars: con-args[i] is a ptr array of Node* of length
+  ; con-nargs[i]; for a plain `(Proto V)` constraint con-args[i] is null and
+  ; con-nargs[i] is 0.
+  con-args:ptr      ; array of ptr (per constraint: a ptr array of Node*, or null)
+  con-nargs:ptr     ; array of i32 (per constraint: count of arg nodes)
   num-constraints:i32
   checked:i32)      ; A2 def-time check done (so it runs once per template)
 
@@ -375,9 +383,18 @@
 
 ; A recorded (Type, Protocol) conformance fact. No code; consulted by the
 ; resolver (protocol-bound tier, later) and exported in .nuch.
+; Stage 11 assoc-types (A0): the parametric protocol's bound arguments are now
+; retained so dispatch-time associated-type recovery (A2) can read them back out.
+; `args` is a ptr array of canonical type-spelling strings (one per protocol
+; extra-param, in head order: `(extend IntRangeIter (Iterator i32))` → {"i32"});
+; null/0 for a plain (non-parametric) protocol. Coherence (`conformance-add`)
+; keeps one record per (type, proto), so these args are functionally determined
+; by the conforming type — that is the associated-type recovery rule.
 (defstruct Conformance
   type-name:CStr
-  proto-name:CStr)
+  proto-name:CStr
+  args:ptr          ; ptr array of canonical type-spelling strings, or null
+  nargs:i32)
 
 ; Stage 11 parametric structs (T4): a recorded template-level conformance from
 ; `(extend (Vector T) (Seq T))`. `template` is the extended struct template;
@@ -385,11 +402,30 @@
 ; application's args, e.g. `T` from `(Seq T)` — positionally bound to the
 ; protocol's extra params. At stamp time the template tyvars in each binding are
 ; substituted to the concrete instance args to obtain concrete param spellings.
+; Stage 11 assoc-types (A4): a template-level conformance may now carry a trailing
+; `&where` clause `(extend (MapIter I F) (Iterator E) &where ((Iterator S) I)
+; ((UnaryFn S E) F))`, whose constraints recover the protocol-application args
+; (`E`) from the instance's own arg conformances at stamp time (A4.2). The clause
+; is parsed identically to a `defn`'s &where (parse-where-constraints) and stored
+; here, mirroring the Method constraint fields (con-protos/con-vars/con-args/
+; con-nargs). A `&where`-free extend records `num-constraints = 0`; nothing
+; downstream changes for it (the bootstrap stays byte-identical, §9). `num-tyvars`
+; is the count of the conformance's tyvars (the template tyvars plus any assoc
+; tyvars introduced by the &where clause), needed to size A4.2's recovery bound
+; array; for a &where-free extend it equals the template's own tyvar count.
 (defstruct TmplConformance
   template:ptr      ; StructTemplate*
   proto:ptr         ; Protocol*
   bindings:ptr      ; ptr array of Node* (the proto-app args), or null if none
-  nbindings:i32)
+  nbindings:i32
+  ; --- Stage 11 assoc-types (A4): trailing &where clause, or empty ---
+  tyvars:ptr        ; ptr array of tyvar name strings (template tyvars + assoc), or null
+  num-tyvars:i32    ; count of tyvars above (template ntv for a &where-free extend)
+  con-protos:ptr    ; array of ptr (protocol name per &where constraint), or null
+  con-vars:ptr      ; array of ptr (conforming-variable name per constraint), or null
+  con-args:ptr      ; array of ptr (per constraint: a ptr array of Node*, or null)
+  con-nargs:ptr     ; array of i32 (per constraint: count of arg nodes), or null
+  num-constraints:i32)  ; 0 for a &where-free extend
 
 ; A queued generic instantiation: the stamped concrete defn form awaiting body
 ; emission, plus a human-readable context ("while instantiating @name.toks…
@@ -4940,6 +4976,25 @@
         (collect-pattern-tyvars (wrapper-inner-pattern node) out-tyvars io-ntv)
         (return)))))
 
+; Collect the type variables appearing in a parametric-constraint argument node
+; `((Proto Arg…) V)` (assoc-types A1). Unlike a receiver pattern — where a bare
+; top-level symbol is a concrete type, never a tyvar (collect-pattern-tyvars
+; returns on NODE-SYM) — a constraint Arg that is a bare *unresolvable* symbol IS
+; an associated type variable to recover (`S` in `((Iterator S) I)`). A resolvable
+; bare symbol (`i32` in `((Iterator i32) I)`) is a concrete constrain target, not a
+; tyvar. Compound args (template applications, ptr/ref wrappers, e.g. `(Maybe E)`)
+; delegate to collect-pattern-tyvars, which already finds their nested tyvars.
+(defn collect-constraint-arg-tyvars:void (node:ptr out-tyvars:ptr io-ntv:ptr)
+  (when (= node null) (return))
+  (let (n:ptr:Node (cast ptr:Node node))
+    (when (= (n kind) NODE-SYM)
+      ; A colon-sugared symbol (`ptr:Foo`) is a concrete type, never a tyvar.
+      (when (= (strchr (n s) 58) null)
+        (when (= (tyname-resolvable (n s)) 0)
+          (tyvars-add (n s) out-tyvars io-ntv)))
+      (return))
+    (collect-pattern-tyvars node out-tyvars io-ntv)))
+
 ; Structurally unify a type-pattern node `pat` against a concrete argument Type*
 ; `at`, binding each tyvar (by index in `tyvars`) into out-bound. Returns 1 on a
 ; consistent match, 0 on any mismatch. The cases mirror parse-type-from-node:
@@ -5056,6 +5111,85 @@
           (return 0))))
     (return 0)))
 
+; Does the colon-free symbol `tvname` appear anywhere as a leaf of `node`? Used
+; by the assoc-types (A1) determination fixpoint to test whether a constraint
+; argument pattern `((Proto Arg…) V)` references a given tyvar. Walks every cell
+; and symbol leaf (unlike pattern-determines-tyvar, which restricts itself to the
+; unifier-reachable positions); an Arg may be a bare `S`, a `(Maybe E)`, etc.
+(defn node-mentions-tyvar-named:i32 (node:ptr tvname:ptr)
+  (when (= node null) (return 0))
+  (let (n:ptr:Node (cast ptr:Node node))
+    (when (= (n kind) NODE-SYM)
+      (if (and (= (strchr (n s) 58) null) (= (n s) tvname)) (return 1) (return 0)))
+    (when (= (n kind) NODE-CELL)
+      (when (!= (node-mentions-tyvar-named (n car) tvname) 0) (return 1))
+      (return (node-mentions-tyvar-named (n cdr) tvname)))
+    (return 0)))
+
+; Parse a `&where` constraint list into the per-Method constraint arrays
+; (assoc-types A1, factored out for A4 so `emit-extend` can reuse it — design
+; assoc-types-extend.md §5). `params-node` holds the constraint nodes starting at
+; index `base`; there are `nc` of them. Fills, for each constraint i in [0,nc):
+;   con-protos[i] — the protocol name CStr;
+;   con-vars[i]   — the conforming variable name CStr;
+;   con-args[i]   — a ptr[] of the protocol-application Arg nodes (or null for a
+;                   plain `(Proto V)` constraint);
+;   con-nargs[i]  — the Arg count (0 for a plain constraint).
+; Every constraint variable and every constraint-Arg tyvar is added to `tyvars`
+; (size already provisioned by the caller) with `io-ntv` (a ptr:i32 box) bumped.
+; Diagnostics attribute to `line`. This is a verbatim lift of the loop formerly
+; inline in register-generic-defn; behaviour is unchanged.
+(defn parse-where-constraints:void (params-node:ptr base:i32 nc:i32
+                                    con-protos:ptr con-vars:ptr con-args:ptr con-nargs:ptr
+                                    tyvars:ptr io-ntv:ptr line:i32)
+  (let (ci:i32 0)
+    (while (< ci nc)
+      (let (cnode:ptr (node-at params-node (+ base ci)))
+        (when (or (= (node-is-list cnode) 0) (!= (node-len cnode) 2))
+          (die-at line "defn: each &where constraint must be (Protocol Var)"))
+        ; Element 0 is the protocol slot: either a bare symbol (plain
+        ; protocol, unchanged path) or a list `(Proto Arg…)` (a protocol
+        ; application — assoc-types A1). Element 1 is always the conforming
+        ; variable symbol, in tail position, as in `(Ord T)`.
+        (let (c0:ptr:Node (cast ptr:Node (node-at cnode 0))
+              vn:ptr:Node (cast ptr:Node (node-at cnode 1)))
+          (when (!= (vn kind) NODE-SYM)
+            (die-at line "defn: &where constraint must name a protocol and a variable"))
+          ; Element 0 may be null when written as the empty list `()` in the
+          ; protocol slot; guard the kind read before classifying.
+          (if (and (!= (cast ptr c0) null) (= (c0 kind) NODE-SYM))
+            ; Plain protocol `(Proto V)`: no associated args.
+            (do
+              (aset! (cast ptr:ptr con-protos) ci (c0 s))
+              (aset! (cast ptr:ptr con-args) ci null)
+              (aset! (cast ptr:i32 con-nargs) ci 0))
+            ; Protocol application `((Proto Arg…) V)`: element 0 is a list
+            ; whose head names the protocol and whose tail are the argument
+            ; patterns. Each Arg is a type-spelling node; any tyvar in it is
+            ; collected (recovered/constrained at dispatch — A2).
+            (do
+              (when (or (= (node-is-list (cast ptr c0)) 0) (< (node-len (cast ptr c0)) 1))
+                (die-at line "defn: &where constraint protocol application must be (Protocol Arg...)"))
+              (let (hn:ptr:Node (cast ptr:Node (node-at (cast ptr c0) 0)))
+                (when (!= (hn kind) NODE-SYM)
+                  (die-at line "defn: &where constraint protocol application head must be a protocol name"))
+                (let (na:i32 (- (node-len (cast ptr c0)) 1)
+                      argv:ptr (if (> na 0) (arena-alloc (* (cast i64 na) (ptr-bytes))) null)
+                      ai:i32 0)
+                  (while (< ai na)
+                    (let (argn:ptr (node-at (cast ptr c0) (+ ai 1)))
+                      (aset! (cast ptr:ptr argv) ai argn)
+                      (collect-constraint-arg-tyvars argn tyvars io-ntv))
+                    (inc! ai))
+                  (aset! (cast ptr:ptr con-protos) ci (hn s))
+                  (aset! (cast ptr:ptr con-args) ci argv)
+                  (aset! (cast ptr:i32 con-nargs) ci na)))))
+          (aset! (cast ptr:ptr con-vars) ci (vn s))
+          (when (< (tyvar-index-of (vn s) tyvars (aref (cast ptr:i32 io-ntv) 0)) 0)
+            (aset! (cast ptr:ptr tyvars) (aref (cast ptr:i32 io-ntv) 0) (vn s))
+            (aset! (cast ptr:i32 io-ntv) 0 (+ (aref (cast ptr:i32 io-ntv) 0) 1)))))
+      (inc! ci))))
+
 ; Register a bounded-generic defn as a METHOD-GENERIC template (Stage 9 rung 4).
 ; Tyvars come from two sources, merged (parametric-structs.md §4):
 ;   - explicit `&where (Protocol Var)` constraints (the variable is declared and
@@ -5099,26 +5233,31 @@
             (inc! sb-j))
           (set! slot-bound (+ slot-bound
                               (count-pattern-nodes (binding-type-node name-node))))
+          ; Assoc-type tyvars (A1) appear literally as nodes inside a parametric
+          ; constraint's protocol-application `(Proto Arg…)`, so size them by the
+          ; same node-walk: walk element 0 of every constraint. A plain (symbol)
+          ; element-0 contributes 1, which only over-allocates; a list `(Proto
+          ; Arg…)` contributes one slot per Arg node, matching collect-pattern-
+          ; tyvars' upper bound — no separate per-binding accounting needed.
+          (let (sb-c:i32 0)
+            (while (< sb-c nc)
+              (set! slot-bound (+ slot-bound
+                                  (count-pattern-nodes
+                                    (node-at (node-at params-node (+ (+ wi 1) sb-c)) 0))))
+              (inc! sb-c)))
         (let (cap:i32 (if (> slot-bound 0) slot-bound 1)
               con-protos:ptr (arena-alloc (* (cast i64 (if (> nc 0) nc 1)) (ptr-bytes)))
               con-vars:ptr   (arena-alloc (* (cast i64 (if (> nc 0) nc 1)) (ptr-bytes)))
+              con-args:ptr   (arena-alloc (* (cast i64 (if (> nc 0) nc 1)) (ptr-bytes)))
+              con-nargs:ptr  (arena-alloc (* (cast i64 (if (> nc 0) nc 1)) (cast i64 4)))
               tyvars:ptr     (arena-alloc (* (cast i64 cap) (ptr-bytes)))
-              ntv:i32 0
-              ci:i32 0)
-          (while (< ci nc)
-            (let (cnode:ptr (node-at params-node (+ (+ wi 1) ci)))
-              (when (or (= (node-is-list cnode) 0) (!= (node-len cnode) 2))
-                (die-at (ff line) "defn: each &where constraint must be (Protocol Var)"))
-              (let (pn:ptr:Node (cast ptr:Node (node-at cnode 0))
-                    vn:ptr:Node (cast ptr:Node (node-at cnode 1)))
-                (when (or (!= (pn kind) NODE-SYM) (!= (vn kind) NODE-SYM))
-                  (die-at (ff line) "defn: &where constraint must name a protocol and a variable"))
-                (aset! (cast ptr:ptr con-protos) ci (pn s))
-                (aset! (cast ptr:ptr con-vars) ci (vn s))
-                (when (< (tyvar-index-of (vn s) tyvars ntv) 0)
-                  (aset! (cast ptr:ptr tyvars) ntv (vn s))
-                  (inc! ntv))))
-            (inc! ci))
+              ntv:i32 0)
+          ; Parse the &where constraint list into the con-* arrays and collect
+          ; constraint variables + Arg tyvars (assoc-types A1). Shared with
+          ; emit-extend (A4) via parse-where-constraints.
+          (parse-where-constraints params-node (+ wi 1) nc
+                                   con-protos con-vars con-args con-nargs
+                                   tyvars (cast ptr:i32 (addr-of ntv)) (ff line))
           ; Merge in receiver-inferred tyvars from each parameter and the return
           ; type. These are bound structurally by the unifier (a tyvar nested in a
           ; ptr/ref wrapper or a template application), so the old flat-only
@@ -5130,9 +5269,19 @@
               (inc! j)))
           (collect-pattern-tyvars (binding-type-node name-node)
                                   tyvars (cast ptr:i32 (addr-of ntv)))
-          ; Every declared tyvar must be determined by some parameter under the
-          ; structural unifier (return-only tyvars need dyn, deferred).
-          (let (ti:i32 0)
+          ; Every declared tyvar must be determined (return-only tyvars need dyn,
+          ; deferred). Determination is a fixpoint (assoc-types A1 §3.4):
+          ;   seed: a tyvar bound by some parameter pattern under the structural
+          ;         unifier is determined;
+          ;   step: for each constraint `((Proto Arg…) V)` whose conforming
+          ;         variable V is already determined, every tyvar that appears in
+          ;         an Arg position becomes determined (it is recovered from V's
+          ;         conformance at dispatch — A2);
+          ;   repeat until no change.
+          ; A plain `(Proto V)` constraint has no Arg nodes, so it adds nothing —
+          ; identical to the pre-A1 single-pass behaviour.
+          (let (determined:ptr (arena-alloc (* (cast i64 (if (> ntv 0) ntv 1)) (cast i64 4)))
+                ti:i32 0)
             (while (< ti ntv)
               (let (tvname:CStr (aref (cast ptr:ptr tyvars) ti)
                     bnd:i32 0
@@ -5142,10 +5291,40 @@
                                                       tvname) 0)
                     (set! bnd 1))
                   (inc! j))
-                (when (= bnd 0)
+                (aset! (cast ptr:i32 determined) ti bnd))
+              (inc! ti))
+            ; Propagate through constraints to a fixpoint.
+            (let (changed:i32 1)
+              (while (!= changed 0)
+                (set! changed 0)
+                (let (ck:i32 0)
+                  (while (< ck nc)
+                    (let (vidx:i32 (tyvar-index-of (aref (cast ptr:ptr con-vars) ck) tyvars ntv)
+                          na:i32 (aref (cast ptr:i32 con-nargs) ck))
+                      ; Constraint's conforming variable determined and it carries
+                      ; recoverable args → each arg-mentioned tyvar is determined.
+                      (when (and (>= vidx 0)
+                                 (and (!= (aref (cast ptr:i32 determined) vidx) 0) (> na 0)))
+                        (let (argv:ptr (aref (cast ptr:ptr con-args) ck)
+                              ai:i32 0)
+                          (while (< ai na)
+                            (let (argn:ptr (aref (cast ptr:ptr argv) ai)
+                                  ti2:i32 0)
+                              (while (< ti2 ntv)
+                                (when (and (= (aref (cast ptr:i32 determined) ti2) 0)
+                                           (!= (node-mentions-tyvar-named argn (aref (cast ptr:ptr tyvars) ti2)) 0))
+                                  (aset! (cast ptr:i32 determined) ti2 1)
+                                  (set! changed 1))
+                                (inc! ti2)))
+                            (inc! ai)))))
+                    (inc! ck)))))
+            ; Any tyvar still undetermined is the existing error.
+            (let (ti3:i32 0)
+              (while (< ti3 ntv)
+                (when (= (aref (cast ptr:i32 determined) ti3) 0)
                   (die-at (ff line)
-                    (fmt-s "defn: type variable '%s' is not determined by any parameter (return-only generics need dyn, deferred)" tvname))))
-              (inc! ti)))
+                    (fmt-s "defn: type variable '%s' is not determined by any parameter (return-only generics need dyn, deferred)" (aref (cast ptr:ptr tyvars) ti3))))
+                (inc! ti3))))
           ; Constraint protocols are validated in the A2 pass (check-generic-
           ; template), which runs after all imports — so a &where may name a
           ; protocol that an `import` provides, while a genuine typo is still
@@ -5168,6 +5347,8 @@
               (.set! m num-tyvars ntv)
               (.set! m con-protos con-protos)
               (.set! m con-vars con-vars)
+              (.set! m con-args con-args)
+              (.set! m con-nargs con-nargs)
               (.set! m num-constraints nc)
               ; Imported templates were checked by the exporting unit; skip A2.
               (.set! m checked trusted)
@@ -5180,6 +5361,140 @@
 ; applications like `(ref (Vector T))`) match positionally, binding any tyvars
 ; nested within. On success fills out-bound[tyvar-index] = Type* and returns 1; on
 ; any mismatch returns 0.
+; Convert a retained conformance argument — a canonical type-spelling string such
+; as "i32" or "ptr:Node" — back into a concrete Type*. Higher-kinded args are out
+; of scope (assoc-types §5), so every stored spelling is a single (possibly
+; colon-sugared) symbol, exactly what parse-type-from-node accepts from a SYM node.
+(defn conf-arg-to-type:ref:Type (spelling:ptr line:i32)
+  (let (n:ptr:Node (cast ptr:Node (alloc-node)))
+    (.set! n kind NODE-SYM)
+    (.set! n line line)
+    (.set! n s spelling)
+    (return (parse-type-from-node (cast ptr n) line))))
+
+; Assoc-types A2 (§3.5): after the positional unifier has bound the parameter
+; tyvars in out-bound, recover or check the associated tyvars carried by each
+; parametric `&where` constraint `((Proto Arg…) V)`. A fixpoint, because one
+; constraint's recovered tyvar (S from `((Iterator S) I)`) can be another's input
+; (`((UnaryFn S E) F)`).
+;
+;   For each constraint whose conforming variable V is now bound to a concrete
+;   type CV (con-nargs[i] > 0; a plain protocol is skipped):
+;     - look up CV's Conformance for Proto;
+;     - for each Arg[j] paired with the conformance's stored args[j]:
+;         · Arg[j] an as-yet-unbound declared tyvar → bind it (RECOVER);
+;         · otherwise resolve Arg[j] (a bound tyvar or concrete type) to its
+;           canonical spelling and require equality with args[j] (CONSTRAIN).
+;
+; Returns 1 once no new binding is added. Returns 0 (a *soft* no-match, mirroring
+; generic-constraints-ok) when a determined V does not conform to Proto, so the
+; candidate is rejected and the standard missing-conformance diagnostic fires
+; downstream. Hard errors that cannot be "another candidate" — a conformance with
+; no retained args (stale .nuch), or a constrain-step mismatch — die-at here.
+; Recover or check one constraint's associated tyvars against the conforming
+; variable's conformance record. Returns 1 to keep iterating (V unbound, or a
+; binding was made — *changed via the out box), 1 with no change, or 0 for a soft
+; no-match (V conforms to nothing for Proto). Hard errors (stale args, arity, or a
+; constrain mismatch) die-at. `io-changed` is a ptr:i32 box set to 1 on a RECOVER.
+; Operates on an explicit constraint tuple (assoc-types A4, factored out of the
+; Method* so emit-extend can reuse the same fixpoint — assoc-types-extend.md §5):
+;   tyvar-names / num-tyvars — the declared tyvars and their count;
+;   con-protos / con-vars / con-args / con-nargs — the parsed &where arrays;
+;   ci — the constraint index; out-bound — the bound[tyvar-index] = Type* array;
+;   io-changed — a ptr:i32 box set to 1 on a RECOVER; line — diagnostic line for
+;     the hard-error cases (stale args / arity mismatch).
+(defn recover-one-constraint:i32 (tyvar-names:ptr num-tyvars:i32
+                                  con-protos:ptr con-vars:ptr con-args:ptr con-nargs:ptr
+                                  ci:i32 out-bound:ptr io-changed:ptr line:i32)
+  (let (na:i32 (aref (cast ptr:i32 con-nargs) ci))
+    (when (= na 0) (return 1))
+    (let (ntv:i32 num-tyvars
+          proto:ptr (aref (cast ptr:ptr con-protos) ci)
+          vidx:i32 (tyvar-index-of (aref (cast ptr:ptr con-vars) ci) tyvar-names ntv)
+          cv:ptr (if (>= vidx 0) (aref (cast ptr:ptr out-bound) vidx) null))
+      ; V not yet bound → defer to a later fixpoint iteration.
+      (when (= cv null) (return 1))
+      (let (cvspell:ptr (type-spelling cv))
+        ; Missing conformance is a soft reject (like generic-constraints-ok).
+        (when (= (conformance-lookup cvspell proto) 0) (return 0))
+        (let (cn:i32 0
+              cargs:ptr (conformance-args cvspell proto (cast ptr:i32 (addr-of cn))))
+          ; A recorded conformance with no retained args predates arg retention
+          ; (stale .nuch) — a hard, fix-by-recompile error.
+          (when (or (= cargs null) (= cn 0))
+            (die-at line
+              (fmt-2s "conformance for protocol '%s' (type '%s') was recorded without parameter bindings; recompile"
+                      proto cvspell)))
+          ; The constraint's arg count must match the protocol's parameter count;
+          ; a mismatch would read past the stored args and is a hard error.
+          (when (!= na cn)
+            (die-at line
+              (fmt-2s "constraint '%s' supplies the wrong number of arguments for the conformance of '%s'"
+                      proto cvspell)))
+          (let (argv:ptr (aref (cast ptr:ptr con-args) ci)
+                j:i32 0)
+            (while (< j na)
+              (let (argn:ptr (aref (cast ptr:ptr argv) j)
+                    conspell:ptr (aref (cast ptr:ptr cargs) j)
+                    an:ptr:Node (cast ptr:Node argn)
+                    tidx:i32 -1)
+                ; A bare colon-free symbol naming a declared tyvar may be
+                ; recovered or constrained; anything else is a concrete pattern.
+                (when (and (= (an kind) NODE-SYM) (= (strchr (an s) 58) null))
+                  (set! tidx (tyvar-index-of (an s) tyvar-names ntv)))
+                (if (>= tidx 0)
+                  (let (cur:ptr (aref (cast ptr:ptr out-bound) tidx))
+                    (if (= cur null)
+                      ; RECOVER: bind the tyvar to the stored arg type.
+                      (do (aset! (cast ptr:ptr out-bound) tidx
+                                 (conf-arg-to-type conspell (an line)))
+                          (aset! (cast ptr:i32 io-changed) 0 1))
+                      ; CONSTRAIN: an already-bound tyvar must agree.
+                      (when (!= (strcmp (type-spelling cur) conspell) 0)
+                        (die-at (an line)
+                          (fmt-3s "constraint '%s' parameter mismatch: expected %s, found %s"
+                                  proto (type-spelling cur) conspell)))))
+                  ; CONSTRAIN: a concrete arg pattern must equal the stored arg.
+                  (let (cty:ptr (parse-type-from-node argn (an line)))
+                    (when (!= (strcmp (type-spelling cty) conspell) 0)
+                      (die-at (an line)
+                        (fmt-3s "constraint '%s' parameter mismatch: expected %s, found %s"
+                                proto (type-spelling cty) conspell))))))
+              (inc! j))
+            (return 1)))))))
+
+; Assoc-types A2 (§3.5): after the positional unifier has bound the parameter
+; tyvars in out-bound, recover or check the associated tyvars carried by each
+; parametric `&where` constraint `((Proto Arg…) V)`. A fixpoint, because one
+; constraint's recovered tyvar (S from `((Iterator S) I)`) can be another's input
+; (`((UnaryFn S E) F)`). Returns 0 (a soft no-match) when a determined V does not
+; conform to Proto; 1 otherwise. A plain protocol (con-nargs[i] == 0) is skipped,
+; so this is inert for every non-parametric constraint (e.g. `(Any T)`).
+;
+; Factored out of the Method* (assoc-types A4 §5) to operate on an explicit
+; constraint tuple, so emit-extend can run the identical fixpoint at stamp time:
+;   tyvar-names / num-tyvars — declared tyvars and count;
+;   out-bound — mutable bound[tyvar-index] = Type* array (seeded by the caller);
+;   con-protos / con-vars / con-args / con-nargs — the parsed &where arrays;
+;   num-constraints — count; line — diagnostic line for hard errors.
+(defn recover-assoc-into:i32 (tyvar-names:ptr out-bound:ptr num-tyvars:i32
+                              con-protos:ptr con-vars:ptr con-args:ptr con-nargs:ptr
+                              num-constraints:i32 line:i32)
+  (let (nc:i32 num-constraints)
+    (when (= nc 0) (return 1))
+    (let (changed:i32 1)
+      (while (!= changed 0)
+        (set! changed 0)
+        (let (ci:i32 0)
+          (while (< ci nc)
+            (when (= (recover-one-constraint tyvar-names num-tyvars
+                                             con-protos con-vars con-args con-nargs
+                                             ci out-bound
+                                             (cast ptr:i32 (addr-of changed)) line) 0)
+              (return 0))
+            (inc! ci)))))
+    (return 1)))
+
 (defn generic-method-bind:i32 (m:ptr argtypes:ptr nargs:i32 out-bound:ptr)
   (let (mm:ptr:Method (cast ptr:Method m))
     (when (!= (mm num-params) nargs) (return 0))
@@ -5196,6 +5511,15 @@
                                  ((cast ptr:Node ptn) line)) 0)
               (return 0)))
           (inc! i)))
+      ; Recover/check associated tyvars from the parametric &where constraints
+      ; (assoc-types A2). A soft 0 here means a constraint's conforming variable
+      ; does not conform — reject this candidate before the all-bound check.
+      ; recover-assoc-into runs the shared fixpoint over the Method's fields.
+      (when (= (recover-assoc-into (mm tyvars) out-bound (mm num-tyvars)
+                                   (mm con-protos) (mm con-vars) (mm con-args) (mm con-nargs)
+                                   (mm num-constraints)
+                                   (-> (mm body) (cast ptr:Node _) (_ line))) 0)
+        (return 0))
       (let (k:i32 0)
         (while (< k ntv)
           (when (= (aref (cast ptr:ptr out-bound) k) null) (return 0))
@@ -5961,8 +6285,67 @@
       (inc! i)))
   (return 0))
 
-(defn conformance-add:void (type-name:ptr proto-name:ptr)
-  (when (!= (conformance-lookup type-name proto-name) 0) (return))
+; Retrieve the retained associated-type arguments for the `(type-name, proto-name)`
+; conformance (assoc-types A1; consumed by A2's dispatch-time recovery). Returns the
+; `args` ptr array (of canonical type-spelling strings) and writes the count through
+; `out-nargs` (a ptr:i32 box). Returns null with *out-nargs = 0 when no such
+; conformance exists or it carries no parametric args (a plain protocol, or a stale
+; record predating arg retention). The two outcomes — no record vs. record-without-
+; args — are distinguished by conformance-lookup, which A2 calls first.
+(defn conformance-args:ptr (type-name:ptr proto-name:ptr out-nargs:ptr)
+  (let (i:i32 0)
+    (while (< i g-num-conformances)
+      (let (c:ptr:Conformance (cast ptr:Conformance (ptr+ (cast ptr:Conformance g-conformances) i)))
+        (when (and (= (c type-name) type-name)
+                   (= (c proto-name) proto-name))
+          (aset! (cast ptr:i32 out-nargs) 0 (c nargs))
+          (return (c args))))
+      (inc! i)))
+  (aset! (cast ptr:i32 out-nargs) 0 0)
+  (return null))
+
+; Compare two retained-arg arrays of canonical type-spelling strings for equality
+; (content, via strcmp — `args` is a raw `ptr` array so `=` would be pointer
+; identity). Length must match and every spelling must be string-equal.
+(defn conformance-args-eq:i32 (a:ptr na:i32 b:ptr nb:i32)
+  (when (!= na nb) (return 0))
+  (let (i:i32 0)
+    (while (< i na)
+      (when (!= (strcmp (aref (cast ptr:ptr a) i) (aref (cast ptr:ptr b) i)) 0)
+        (return 0))
+      (inc! i)))
+  (return 1))
+
+; Record that `type-name` conforms to `proto-name`, retaining the parametric
+; protocol's bound arguments `args` (length `nargs`, a ptr array of canonical
+; type-spelling strings; null/0 for a plain protocol) for assoc-type recovery (A2).
+; Coherence (one conformance per (type, proto)):
+;   - a re-extend with *identical* args is a silent no-op (historical behaviour);
+;   - a re-extend with *different* args is rejected (recovery would be ambiguous);
+;   - a re-record with no args (the super-protocol recursion and the historical
+;     plain-protocol path both pass null/0) leaves an existing arg-bearing record
+;     untouched, and an existing arg-less record is *upgraded* in place if real
+;     args arrive later (e.g. a stale conformance recorded before the args were
+;     known). Conflict therefore fires only when both sides carry args and differ.
+(defn conformance-add:void (type-name:ptr proto-name:ptr args:ptr nargs:i32 line:i32)
+  (let (i:i32 0)
+    (while (< i g-num-conformances)
+      (let (c:ptr:Conformance (cast ptr:Conformance (ptr+ (cast ptr:Conformance g-conformances) i)))
+        (when (and (= (c type-name) type-name) (= (c proto-name) proto-name))
+          ; Incoming call supplies no args → nothing to add or check; keep as-is.
+          (when (= nargs 0) (return))
+          ; Existing record has no retained args → upgrade it in place.
+          (when (= (c nargs) 0)
+            (.set! c args args)
+            (.set! c nargs nargs)
+            (return))
+          ; Both sides carry args: they must agree, else it is a coherence error.
+          (when (= (conformance-args-eq (c args) (c nargs) args nargs) 0)
+            (die-at line
+              (fmt-2s "type '%s' re-extends protocol '%s' with different associated arguments"
+                      type-name proto-name)))
+          (return)))
+      (inc! i)))
   (when (= g-num-conformances g-cap-conformances)
     (let (nc:i32 16)
       (when (!= g-cap-conformances 0) (set! nc (* g-cap-conformances 2)))
@@ -5974,6 +6357,8 @@
   (let (c:ptr:Conformance (cast ptr:Conformance (ptr+ (cast ptr:Conformance g-conformances) g-num-conformances)))
     (.set! c type-name type-name)
     (.set! c proto-name proto-name)
+    (.set! c args args)
+    (.set! c nargs nargs)
     (inc! g-num-conformances)))
 
 ; Record a protocol-inheritance edge: conforming to `sub` requires `super`.
@@ -6216,8 +6601,16 @@
 ; this idempotent and safe against cyclic inheritance. Import side passes
 ; check=0 (trust the exporter). `pspellings` carries the concrete bindings for a
 ; parametric protocol (null for a plain Self-only protocol).
-(defn verify-conformance-params:void (typename:ptr proto-name:ptr pspellings:ptr line:i32 check:i32)
-  (when (!= (conformance-lookup typename proto-name) 0) (return))
+(defn verify-conformance-params:void (typename:ptr proto-name:ptr pspellings:ptr npspellings:i32 line:i32 check:i32)
+  ; A0: when a parametric protocol is re-extended, the coherence check (and any
+  ; arg-upgrade of an arg-less record) lives in `conformance-add`, so the
+  ; already-recorded case must still reach it. A plain protocol carries no args
+  ; (npspellings 0), so the historical early-return is preserved exactly for it —
+  ; keeping the hot, byte-identical path untouched.
+  (when (!= (conformance-lookup typename proto-name) 0)
+    (when (> npspellings 0)
+      (conformance-add typename proto-name pspellings npspellings line))
+    (return))
   (let (proto:ptr (protocol-lookup proto-name))
     (when (= proto null)
       (when (!= check 0)
@@ -6227,27 +6620,34 @@
       (when (= (proto-sigs-resolve proto typename pspellings line) 0)
         (die-at line
           (fmt-2s "type '%s' does not conform to protocol '%s'" typename proto-name))))
-    (conformance-add typename proto-name)
+    (conformance-add typename proto-name pspellings npspellings line)
     ; Conforming to `proto-name` requires conforming to each declared super. The
     ; supers are plain (Self-only) protocols here, so they carry no extra params.
     (let (si:i32 0)
       (while (< si g-num-proto-supers)
         (let (e:ptr:Conformance (cast ptr:Conformance (ptr+ (cast ptr:Conformance g-proto-supers) si)))
           (when (= (e type-name) proto-name)
-            (verify-conformance-params typename (e proto-name) null line check)))
+            (verify-conformance-params typename (e proto-name) null 0 line check)))
         (inc! si)))))
 
 ; Self-only conformance (the historical signature): plain protocols carry no
 ; extra parameters, so the bindings array is null.
 (defn verify-conformance:void (typename:ptr proto-name:ptr line:i32 check:i32)
-  (verify-conformance-params typename proto-name null line check))
+  (verify-conformance-params typename proto-name null 0 line check))
 
 ; Stage 11 T4: record a template-level conformance `(extend (Vector T) (Seq T))`.
 ; `template` is the extended struct template, `proto` the (parametric) protocol,
 ; and `bindings` the proto-application args (`T`) positionally bound to the
 ; protocol's extra params (`E`). Idempotent on (template, proto). The per-instance
 ; check is deferred to stamp time (tmpl-conformance-check-instance).
-(defn tmpl-conformance-add:void (template:ptr proto:ptr bindings:ptr nbindings:i32)
+; Stage 11 assoc-types (A4): also carries the parsed trailing `&where` clause
+; (tyvars/num-tyvars + con-protos/con-vars/con-args/con-nargs/num-constraints).
+; A &where-free extend passes the template's own tyvars/ntv, null constraint
+; arrays, and num-constraints = 0 — identical downstream behaviour to T4.
+(defn tmpl-conformance-add:void (template:ptr proto:ptr bindings:ptr nbindings:i32
+                                 tyvars:ptr num-tyvars:i32
+                                 con-protos:ptr con-vars:ptr con-args:ptr con-nargs:ptr
+                                 num-constraints:i32)
   (let (i:i32 0)
     (while (< i g-num-tmpl-conformances)
       (let (c:ptr:TmplConformance (cast ptr:TmplConformance
@@ -6269,36 +6669,105 @@
     (.set! c proto proto)
     (.set! c bindings bindings)
     (.set! c nbindings nbindings)
+    (.set! c tyvars tyvars)
+    (.set! c num-tyvars num-tyvars)
+    (.set! c con-protos con-protos)
+    (.set! c con-vars con-vars)
+    (.set! c con-args con-args)
+    (.set! c con-nargs con-nargs)
+    (.set! c num-constraints num-constraints)
     (inc! g-num-tmpl-conformances)))
 
 ; Check (and record) that the concrete instance named `iname`, stamped from
 ; struct template `st` with concrete arg spellings `arg-spellings` (length
 ; `nargs`, the template's tyvars in order), satisfies the parametric protocol of
 ; one recorded template conformance `c`. Each protocol binding node (`T` from
-; `(Seq T)`) is rewritten with the template tyvars → concrete arg spellings, then
+; `(Seq T)`) is rewritten with the conformance's tyvars → concrete spellings, then
 ; parsed and canonicalized to its concrete spelling (`i32`), giving the protocol's
 ; extra-param bindings. verify-conformance-params then checks every required
 ; method resolves for `iname`, recording the concrete conformance so a Seq-bounded
 ; generic call over `Vector.i32` finds it through the ordinary conformance lookup.
+;
+; Stage 11 assoc-types (A4.2): a `&where`-bearing extend
+; `(extend (MapIter I F) (Iterator E) &where ((Iterator S) I) ((UnaryFn S E) F))`
+; names a protocol-application arg (`E`) that is neither a template parameter nor
+; concrete — it is recovered from this instance's own conformances (`F`'s
+; `(UnaryFn S E)`). For such a conformance (num-constraints > 0) the binding map is
+; built in two stages: the template tyvars are seeded with the instance's stamp arg
+; spellings (`I → "IntRangeIter"`, `F → "SqFn"`), then recover-assoc-into runs the
+; A2 fixpoint to fill the associated tyvars (`S`, `E`). The full map is substituted
+; into `(Iterator E)`, then verified and recorded as for the concrete-arg path. The
+; recovery reads the conformances of the stamp args, which must already be recorded;
+; if a conforming variable's conformance is not yet present (recover-assoc-into
+; returns a soft 0), the check is *deferred* rather than erroring — the bottom-up
+; stamping order (and the post-extend recheck, §4.5) records it on a later pass.
 (defn tmpl-conformance-check-one:void (c:ptr st:ptr iname:ptr arg-spellings:ptr nargs:i32 line:i32)
   (let (cc:ptr:TmplConformance (cast ptr:TmplConformance c)
         stt:ptr:StructTemplate (cast ptr:StructTemplate st)
         proto:ptr (cc proto)
         nb:i32 (cc nbindings)
-        pspellings:ptr null)
+        pspellings:ptr null
+        ; The tyvar-name array and the concrete spellings used to substitute the
+        ; protocol binding nodes. For a &where-free extend these are the template's
+        ; own tyvars and the instance's stamp arg spellings (the unchanged T4 path).
+        ; For a &where-bearing extend (set below) they are the conformance's full
+        ; tyvar set (template + associated) and the recovered spellings.
+        subst-tyvars:ptr (stt tyvars)
+        subst-spellings:ptr arg-spellings
+        subst-ntv:i32 nargs)
+    ; Stage 11 assoc-types (A4.2): recover the associated tyvars at stamp time.
+    (when (> (cc num-constraints) 0)
+      (let (ntv:i32 (cc num-tyvars)
+            ; out-bound[tyvar-index] = Type* (or null), the same representation
+            ; recover-assoc-into / generic-method-bind use at dispatch time.
+            out-bound:ptr (arena-alloc (* (cast i64 (if (> ntv 0) ntv 1)) (ptr-bytes)))
+            spellings:ptr (arena-alloc (* (cast i64 (if (> ntv 0) ntv 1)) (ptr-bytes)))
+            k:i32 0)
+        ; Seed: every tyvar starts unbound; the first `nargs` entries of the
+        ; conformance's tyvar array are the template's own tyvars (seeded by
+        ; emit-extend in template order, hence aligned with `arg-spellings`).
+        (while (< k ntv) (aset! (cast ptr:ptr out-bound) k null) (inc! k))
+        (let (si:i32 0)
+          (while (< si nargs)
+            (aset! (cast ptr:ptr out-bound) si
+                   (conf-arg-to-type (aref (cast ptr:ptr arg-spellings) si) line))
+            (inc! si)))
+        ; Run the A2 fixpoint over the conformance's &where clause. A soft 0 means
+        ; a conforming variable's conformance is not yet recorded for this instance
+        ; — defer (a later pass / recheck-stamped will catch it), do not error.
+        (when (= (recover-assoc-into (cc tyvars) out-bound ntv
+                                     (cc con-protos) (cc con-vars) (cc con-args) (cc con-nargs)
+                                     (cc num-constraints) line) 0)
+          (return))
+        ; recover-assoc-into fills the associated tyvars; the full map must now be
+        ; total over the conformance's tyvars (the determination fixpoint in
+        ; emit-extend guaranteed every protocol-app tyvar is reachable). Any still-
+        ; unbound entry means a constraint never fired — also a deferral.
+        (let (bk:i32 0)
+          (while (< bk ntv)
+            (when (= (aref (cast ptr:ptr out-bound) bk) null) (return))
+            (aset! (cast ptr:ptr spellings) bk (type-spelling (aref (cast ptr:ptr out-bound) bk)))
+            (inc! bk)))
+        (set! subst-tyvars (cc tyvars))
+        (set! subst-spellings spellings)
+        (set! subst-ntv ntv)))
     (when (> nb 0)
       (set! pspellings (arena-alloc (* (cast i64 nb) (ptr-bytes))))
       (let (i:i32 0)
         (while (< i nb)
           (let (bnode:ptr (aref (cast ptr:ptr (cc bindings)) i)
-                ; Substitute the template's tyvars (T) with the concrete instance
-                ; arg spellings (i32) in this binding node, then parse + canonicalize.
-                sub:ptr (subst-tyvars-node bnode (stt tyvars) arg-spellings nargs)
+                ; Substitute the conformance's tyvars with the concrete spellings
+                ; (template args for T4, recovered args for A4.2) in this binding
+                ; node, then parse + canonicalize.
+                sub:ptr (subst-tyvars-node bnode subst-tyvars subst-spellings subst-ntv)
                 bt:ptr (parse-type-from-node sub line))
             (aset! (cast ptr:ptr pspellings) i (type-spelling bt)))
           (inc! i))))
+    ; A0: `pspellings` holds the *substituted concrete* protocol args for this
+    ; instance (`T` → i32, or a recovered `E` → i32), so the per-instance
+    ; conformance retains them.
     (verify-conformance-params iname (-> proto (cast ptr:Protocol _) (_ name))
-                               pspellings line 1)))
+                               pspellings nb line 1)))
 
 ; Stamp-time hook: a concrete instance `iname` was just stamped from template
 ; `st` (arg spellings `arg-spellings`, length `nargs`). Check every template-level
@@ -6397,7 +6866,130 @@
               (when (!= proto-nargs (-> proto (cast ptr:Protocol _) (_ num-params)))
                 (die-at (proto-node line)
                   (fmt-s "extend: protocol '%s' expects a different number of parameters" proto-name)))
-              (tmpl-conformance-add (cast ptr st) (cast ptr proto) proto-args proto-nargs)
+              ; Stage 11 assoc-types (A4.1): parse a trailing `&where` clause, if
+              ; present, into the conformance's constraint arrays and run the
+              ; determination fixpoint (assoc-types-extend.md §3). The clause is
+              ; spelled identically to a defn's &where and parsed by the shared
+              ; parse-where-constraints (A4.0). `form` is `(extend Subject (Proto
+              ; Arg…) &where C…)`: node 0 = `extend`, 1 = subject, 2 = proto app,
+              ; 3 = `&where` marker, 4… = constraints. A &where-free extend
+              ; (node-len <= 3) keeps num-constraints = 0 and behaves exactly as T4.
+              (let (stt:ptr:StructTemplate (cast ptr:StructTemplate st)
+                    base-ntv:i32 (stt ntv)
+                    nc:i32 0
+                    where-i:i32 -1)
+                ; Detect the trailing &where marker at node 3.
+                (when (> (node-len form) 3)
+                  (let (m:ptr:Node (cast ptr:Node (node-at form 3)))
+                    (when (and (= (m kind) NODE-SYM) (= (m s) "&where"))
+                      (set! where-i 3)
+                      (set! nc (- (node-len form) 4)))))
+                (when (and (>= where-i 0) (< nc 1))
+                  (die-at (ff line) "extend: &where requires at least one (Protocol Var) constraint"))
+                (if (= nc 0)
+                  ; --- &where-free extend: the unchanged T4 path ---
+                  (tmpl-conformance-add (cast ptr st) (cast ptr proto) proto-args proto-nargs
+                                        (stt tyvars) base-ntv null null null null 0)
+                  ; --- &where-bearing extend: parse + determine (A4.1) ---
+                  (do
+                    ; Capacity: the template's own tyvars seed the array; each
+                    ; constraint may introduce more (its conforming var + arg
+                    ; tyvars), and the protocol application `(Iterator E)` may name
+                    ; a tyvar (E) bound only by the &where clause. Size the
+                    ; additional slots by the node-walk of each constraint's
+                    ; element 0 plus each protocol-application arg — never less
+                    ; than the collectible tyvar count — mirroring
+                    ; register-generic-defn's bound.
+                    (let (slot-bound:i32 base-ntv
+                          sb-c:i32 0)
+                      (while (< sb-c nc)
+                        (set! slot-bound (+ slot-bound
+                                            (count-pattern-nodes
+                                              (node-at (node-at form (+ 4 sb-c)) 0))))
+                        (inc! sb-c))
+                      (let (sb-p:i32 0)
+                        (while (< sb-p proto-nargs)
+                          (set! slot-bound (+ slot-bound
+                                              (count-pattern-nodes
+                                                (aref (cast ptr:ptr proto-args) sb-p))))
+                          (inc! sb-p)))
+                      (let (cap:i32 (if (> slot-bound 0) slot-bound 1)
+                            con-protos:ptr (arena-alloc (* (cast i64 nc) (ptr-bytes)))
+                            con-vars:ptr   (arena-alloc (* (cast i64 nc) (ptr-bytes)))
+                            con-args:ptr   (arena-alloc (* (cast i64 nc) (ptr-bytes)))
+                            con-nargs:ptr  (arena-alloc (* (cast i64 nc) (cast i64 4)))
+                            tyvars:ptr     (arena-alloc (* (cast i64 cap) (ptr-bytes)))
+                            ntv:i32 0)
+                        ; Seed the tyvars array with the template's own tyvars; they
+                        ; are the instance's stamp arguments, hence always determined.
+                        (let (si:i32 0)
+                          (while (< si base-ntv)
+                            (aset! (cast ptr:ptr tyvars) si (aref (cast ptr:ptr (stt tyvars)) si))
+                            (inc! si)))
+                        (set! ntv base-ntv)
+                        ; Parse the &where constraints (constraints start at node 4),
+                        ; collecting constraint vars + Arg tyvars after the seeds.
+                        (parse-where-constraints form 4 nc
+                                                 con-protos con-vars con-args con-nargs
+                                                 tyvars (cast ptr:i32 (addr-of ntv)) (ff line))
+                        ; Collect tyvars appearing in the protocol application
+                        ; `(Iterator E)` too, so the §3 determination check can see
+                        ; an E that no &where constraint introduces. A concrete arg
+                        ; (`i32`) or a template tyvar (already seeded) is skipped;
+                        ; only a fresh bare tyvar (`E`) is added — initially
+                        ; undetermined, so it must be reached by the fixpoint.
+                        (let (pci:i32 0)
+                          (while (< pci proto-nargs)
+                            (collect-constraint-arg-tyvars (aref (cast ptr:ptr proto-args) pci)
+                                                           tyvars (cast ptr:i32 (addr-of ntv)))
+                            (inc! pci)))
+                        ; Determination fixpoint (§3): seed = template tyvars (the
+                        ; first base-ntv entries); step = for each constraint whose
+                        ; conforming var V is determined, every tyvar appearing in an
+                        ; Arg position becomes determined; repeat to fixpoint.
+                        (let (determined:ptr (arena-alloc (* (cast i64 (if (> ntv 0) ntv 1)) (cast i64 4)))
+                              di:i32 0)
+                          (while (< di ntv)
+                            (aset! (cast ptr:i32 determined) di (if (< di base-ntv) 1 0))
+                            (inc! di))
+                          (let (changed:i32 1)
+                            (while (!= changed 0)
+                              (set! changed 0)
+                              (let (ck:i32 0)
+                                (while (< ck nc)
+                                  (let (vidx:i32 (tyvar-index-of (aref (cast ptr:ptr con-vars) ck) tyvars ntv)
+                                        na:i32 (aref (cast ptr:i32 con-nargs) ck))
+                                    (when (and (>= vidx 0)
+                                               (and (!= (aref (cast ptr:i32 determined) vidx) 0) (> na 0)))
+                                      (let (argv:ptr (aref (cast ptr:ptr con-args) ck)
+                                            ai:i32 0)
+                                        (while (< ai na)
+                                          (let (argn:ptr (aref (cast ptr:ptr argv) ai)
+                                                ti2:i32 0)
+                                            (while (< ti2 ntv)
+                                              (when (and (= (aref (cast ptr:i32 determined) ti2) 0)
+                                                         (!= (node-mentions-tyvar-named argn (aref (cast ptr:ptr tyvars) ti2)) 0))
+                                                (aset! (cast ptr:i32 determined) ti2 1)
+                                                (set! changed 1))
+                                              (inc! ti2)))
+                                          (inc! ai)))))
+                                  (inc! ck)))))
+                          ; Every tyvar mentioned in the protocol application
+                          ; `(Iterator E)` must be determined after convergence.
+                          (let (pai:i32 0)
+                            (while (< pai proto-nargs)
+                              (let (argn:ptr (aref (cast ptr:ptr proto-args) pai)
+                                    ti:i32 0)
+                                (while (< ti ntv)
+                                  (when (and (= (aref (cast ptr:i32 determined) ti) 0)
+                                             (!= (node-mentions-tyvar-named argn (aref (cast ptr:ptr tyvars) ti)) 0))
+                                    (die-at (proto-node line)
+                                      (fmt-s "extend: protocol parameter '%s' is not determined by the subject or any &where constraint"
+                                             (aref (cast ptr:ptr tyvars) ti))))
+                                  (inc! ti)))
+                              (inc! pai))))
+                        (tmpl-conformance-add (cast ptr st) (cast ptr proto) proto-args proto-nargs
+                                              tyvars ntv con-protos con-vars con-args con-nargs nc))))))
               ; Retroactively check instances stamped before this extend was seen.
               (let (ntc:i32 g-num-tmpl-conformances
                     c:ptr:TmplConformance (cast ptr:TmplConformance
@@ -6440,19 +7032,59 @@
                          (type-spelling (parse-type-from-node
                                           (aref (cast ptr:ptr proto-args) i) (proto-node line))))
                   (inc! i))))
-            (verify-conformance-params typename proto-name pspellings (ff line) 1)))))))
+            (verify-conformance-params typename proto-name pspellings proto-nargs (ff line) 1)))))))
 
 ; Import side: trust the exporting unit's check; record the fact (and recurse
 ; supers), or re-register a protocol-inheritance edge.
+; A0: an imported `extend` may name a *parametric* protocol application
+; `(extend IntRangeIter (Iterator i32))`. The historical guard required both
+; positions to be bare symbols, silently dropping every parametric conformance on
+; import. Now the protocol position is parsed with `extend-proto-name` and its
+; concrete args are canonicalized and retained (rule (a), §4.5) so an
+; associated-type bound (A2) on an imported type recovers them. The exporter
+; already verified the methods, so we pass check=0 (trust) and only record.
+; A template-subject extend (`(extend (Vector T) (Seq T))`, or A4.3's
+; `&where`-bearing `(extend (MapIter I F) (Iterator E) &where …)`) re-registers
+; the `TmplConformance` in the importing unit by replaying the *same*
+; `emit-extend` template branch the defining unit ran (assoc-types-extend.md §10).
+; That branch parses any trailing `&where`, runs the determination fixpoint, and
+; records the `TmplConformance` (with its constraint clause); the per-instance
+; `Conformance` — with the recovered associated args — is then produced at stamp
+; time when the importing unit stamps a concrete instance (A4.2's stamp-time
+; recovery). It emits no IR (template subjects define no type), so it is safe on
+; the import path. The exporter cannot serialize per-instance recovered args for
+; instances it never stamped; re-running recovery in the importer closes that gap.
 (defn register-imported-conformance:void (form:ptr)
   (when (>= (node-len form) 3)
     (let (type-node:ptr:Node (cast ptr:Node (node-at form 1))
           proto-node:ptr:Node (cast ptr:Node (node-at form 2)))
-      (when (and (= (type-node kind) NODE-SYM) (= (proto-node kind) NODE-SYM))
-        (if (!= (protocol-lookup (type-node s)) null)
-          (proto-super-add (type-node s) (proto-node s))
-          (verify-conformance (type-node s) (proto-node s)
-                              ((cast ptr:Node form) line) 0))))))
+      ; Template subject: delegate to emit-extend (registers the
+      ; TmplConformance + &where clause; recovery fires at stamp time here).
+      (when (= (type-node kind) NODE-CELL)
+        (emit-extend (cast ptr form))
+        (return))
+      (when (= (type-node kind) NODE-SYM)
+        (let (proto-args:ptr null
+              proto-nargs:i32 0
+              proto-name:ptr (extend-proto-name (cast ptr proto-node)
+                                                (cast ptr:ptr (addr-of proto-args))
+                                                (cast ptr:i32 (addr-of proto-nargs))
+                                                ((cast ptr:Node form) line)))
+          ; A protocol-on-protocol inheritance edge keeps its plain-symbol shape.
+          (if (and (!= (protocol-lookup (type-node s)) null) (= proto-nargs 0))
+            (proto-super-add (type-node s) proto-name)
+            (let (pspellings:ptr null)
+              (when (> proto-nargs 0)
+                (set! pspellings (arena-alloc (* (cast i64 proto-nargs) (ptr-bytes))))
+                (let (i:i32 0)
+                  (while (< i proto-nargs)
+                    (aset! (cast ptr:ptr pspellings) i
+                           (type-spelling (parse-type-from-node
+                                            (aref (cast ptr:ptr proto-args) i)
+                                            ((cast ptr:Node form) line))))
+                    (inc! i))))
+              (verify-conformance-params (type-node s) proto-name pspellings proto-nargs
+                                         ((cast ptr:Node form) line) 0))))))))
 
 ; ============================================================
 ; Cast
@@ -12277,11 +12909,22 @@
   (print-node form)
   (printf "\n"))
 
+; Export every node of the form, not just the subject (1) and protocol (2). A
+; template-subject extend may carry a trailing `&where` clause (assoc-types-
+; extend.md §10): `(extend (MapIter I F) (Iterator E) &where ((Iterator S) I)
+; ((UnaryFn S E) F))`. The clause is needed so the importer can re-run the
+; determination fixpoint and recover the associated args at stamp time in its
+; own unit (register-imported-conformance → emit-extend). For a `&where`-free
+; extend (node-len == 3) this prints `(extend Subject Protocol)`, byte-identical
+; to the previous subject+protocol-only emission.
 (defn emit-nuch-extend:void (form:ptr)
-  (printf "(extend ")
-  (print-node (node-at form 1))
-  (printf " ")
-  (print-node (node-at form 2))
+  (printf "(extend")
+  (let (i:i32 1
+        n:i32 (node-len form))
+    (while (< i n)
+      (fputc 32 (cast ptr stdout))
+      (print-node (node-at form i))
+      (inc! i)))
   (printf ")\n"))
 
 ; Cast rules export verbatim (the conv-fn is exported separately as a declare,
