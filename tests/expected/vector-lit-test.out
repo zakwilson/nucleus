@@ -1,0 +1,8 @@
+count=3
+get[0]=1
+get[2]=3
+fcount=3
+fget[1]=2.5
+ucount=1
+uget[0]=42
+done

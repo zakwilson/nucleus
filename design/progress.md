@@ -18,7 +18,7 @@ Current branch: `stage11-collections`
 | 9 | Polymorphism — multimethods, protocols, bounded generics, callable values, operators, `Any`/`Valid`; Stage 9 cleanup | Done | [stage9/progress.md](stage9/progress.md) |
 | 10 | Safety — untagged unions, `defunion`/`match`, `Result`/`Maybe`, error handling, niche layout, safety flip | Done | [stage10/progress.md](stage10/progress.md) |
 | 11 (prereq) | Parametric generics — `(defstruct (Vector T) ...)` templates, stamping, methods, construction, parametric protocols, `usize`/`ssize`, C ABI + `.nuch` export | Done | [stage11/progress.md](stage11/progress.md) |
-| 11 | Collections — `Vector`/`HashSet`/`HashMap`/`String`, protocols, iterators, allocators | Design only | [stage11/collections.md](stage11/collections.md) |
+| 11 | Collections — `Vector`/`HashSet`/`HashMap`/`String`, protocols, iterators, allocators | In progress — M1 (Allocator) + M2 (Iterator + doseq + lazy map/filter/reduce) + M3 (`Vector`) + M4 (`Hash`/`HashMap`/`HashSet`) + M5 (reader-macro literals `[…]`/`{…}`/`#{…}`) done; cleanup §1–§4a (colon-paren sugar, keyword/StrView, iterator-test flatten, phantom-tyvar fix) done; M6 (`String`) remaining | [stage11/collections.md](stage11/collections.md), [stage11/progress.md](stage11/progress.md) |
 
 ---
 
@@ -66,11 +66,11 @@ Current branch: `stage11-collections`
 | C header library as external `.so` | Separate from internal split already done |
 | Stage 3c: bit-fields, `long double`, `_Complex` | Deferred per `design/stage3c.md`; unions done (stage 10), struct ABI done (stage 8) |
 | Lambda / closures | `design/stage999-future.md` |
-| Map/reduce/filter | Designed (lazy, over `Iterator`) in `design/stage11/collections.md`; unimplemented |
+| Map/reduce/filter | Done — M2: lazy `MapIterI64`/`FilterIterI64` + `reduce-*` in `lib/iterator.nuc`; `doseq`/`into` macros in `lib/macros.nuc` |
 | Polymorphism / protocol system | Done — Stage 9 (`design/stage9/polymorphism.md`) |
 | `dyn`, `defcast` tier | Deferred — see `design/stage9/` §11 / `callable-values.md` |
 | Parametric generics (generic structs) | Implemented — Stage 11 prereq; see [stage11/progress.md](stage11/progress.md) |
-| Vectors/hashes | Designed in `design/stage11/collections.md`; unimplemented (parametric-struct blocker now lifted) |
+| Vectors/hashes | Implemented (Stage 11 M3–M5): `Vector`, `HashMap`, `HashSet`, protocols (`Coll`/`Seq`/`Assoc`/`Set`/`Hash`/`Drop`), reader-macro literals `[…]`/`{…}`/`#{…}` — see `design/stage11/progress.md` |
 | Gensym reader macro | `design/stage999-future.md` |
 
 ---

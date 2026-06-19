@@ -1,0 +1,79 @@
+; Stage 11 M2 — Iterator protocol, doseq, lazy map/filter/reduce.
+;
+; Tests:
+;   1. IntRangeIter with doseq (prints 1 2 3 4 5).
+;   2. I64ArrayIter -> MapIterI64 -> FilterIterI64 -> reduce chain.
+;
+; chain: [1,2,3,4,5] -> square -> [1,4,9,16,25]
+;                    -> keep-even -> [4,16]
+;                    -> sum -> 20
+
+(include stdio)
+(include string)
+(import iterator)
+
+; ---------------------------------------------------------------------------
+; BinaryCallI64 conformer: sums two i64 values.
+; ---------------------------------------------------------------------------
+(defstruct SumI64 dummy:i32)
+(extend SumI64 BinaryCallI64)
+(defn foldop:i64 (self:ptr:SumI64 acc:i64 x:i64)
+  (return (+ acc x)))
+
+; ---------------------------------------------------------------------------
+; CallI64 conformer: squares an i64.
+; ---------------------------------------------------------------------------
+(defstruct SquareI64 dummy:i32)
+(extend SquareI64 CallI64)
+(defn callfn:i64 (self:ptr:SquareI64 x:i64)
+  (return (* x x)))
+
+; ---------------------------------------------------------------------------
+; CallI64 conformer: predicate — returns 1 when x is even, else 0.
+; ---------------------------------------------------------------------------
+(defstruct IsEvenI64 dummy:i32)
+(extend IsEvenI64 CallI64)
+(defn callfn:i64 (self:ptr:IsEvenI64 x:i64)
+  (return (cast i64 (= (% x (cast i64 2)) (cast i64 0)))))
+
+; ---------------------------------------------------------------------------
+; Helper: run the chain test and return the sum.
+; Separated into its own function to keep main readable.
+; ---------------------------------------------------------------------------
+(defn run-chain:i64 (arr:ptr:i64)
+  (let ((sq  (ref SquareI64))  (alloca SquareI64)
+        (ev  (ref IsEvenI64))  (alloca IsEvenI64)
+        (sm  (ref SumI64))     (alloca SumI64)
+        (src (ref I64ArrayIter)) (alloca I64ArrayIter)
+        (mi  (ref (MapIterI64 I64ArrayIter SquareI64)))
+             (alloca (MapIterI64 I64ArrayIter SquareI64))
+        (fi  (ref (FilterIterI64 (MapIterI64 I64ArrayIter SquareI64) IsEvenI64)))
+             (alloca (FilterIterI64 (MapIterI64 I64ArrayIter SquareI64) IsEvenI64)))
+    (.set! src data arr)
+    (.set! src pos  (cast usize 0))
+    (.set! src len  (cast usize 5))
+    (memcpy (cast ptr (.& mi source)) (cast ptr src) (cast i64 (sizeof I64ArrayIter)))
+    (memcpy (cast ptr (.& mi f))      (cast ptr sq)  (cast i64 (sizeof SquareI64)))
+    (memcpy (cast ptr (.& fi source)) (cast ptr mi)
+            (cast i64 (sizeof (MapIterI64 I64ArrayIter SquareI64))))
+    (memcpy (cast ptr (.& fi pred)) (cast ptr ev) (cast i64 (sizeof IsEvenI64)))
+    (return (reduce-filter-map-i64 sm (cast i64 0) fi))))
+
+(defn main:i32 ()
+  ; ---- 1. doseq over IntRangeIter ----------------------------------------
+  (let ((r (ref IntRangeIter)) (alloca IntRangeIter))
+    (.set! r start 1)
+    (.set! r end 6)
+    (doseq (x r)
+      (printf "%d\n" x)))
+
+  ; ---- 2. map/filter/reduce chain over i64 elements ----------------------
+  (let (arr:ptr:i64 (alloca i64 5))
+    (aset! arr 0 (cast i64 1))
+    (aset! arr 1 (cast i64 2))
+    (aset! arr 2 (cast i64 3))
+    (aset! arr 3 (cast i64 4))
+    (aset! arr 4 (cast i64 5))
+    (printf "sum=%lld\n" (run-chain arr)))
+
+  (return 0))

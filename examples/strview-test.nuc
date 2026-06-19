@@ -1,0 +1,40 @@
+; Stage 11 cleanup §2 — StrView substrate operations.
+;
+; Builds views from C strings and exercises the shared byte core: length, byte
+; equality (equal content vs. differing content vs. differing length), and the
+; byte hash (equal content hashes equal; different content hashes differently).
+
+(include stdio)
+(include stdlib)
+(import strview)
+(import hash)
+
+(defn main:i32 ()
+  ; Build three views: two with identical content, one different.
+  (let (a:ptr:StrView (strview-from-cstr "hello")
+        b:ptr:StrView (strview-from-cstr "hello")
+        c:ptr:StrView (strview-from-cstr "world")
+        d:ptr:StrView (strview-from-cstr "hell"))
+    ; Length.
+    (printf "len-a=%llu\n" (cast ui64 (strview-len a)))      ; len-a=5
+    (printf "len-d=%llu\n" (cast ui64 (strview-len d)))      ; len-d=4
+
+    ; Byte equality: same content equal, different content / length not.
+    (printf "a=b? %d\n" (strview-eq a b))                    ; a=b? 1
+    (printf "a=c? %d\n" (strview-eq a c))                    ; a=c? 0
+    (printf "a=d? %d\n" (strview-eq a d))                    ; a=d? 0
+
+    ; Byte hash: equal content hashes equal; differing content differs.
+    (let (ha:usize (strview-hash a)
+          hb:usize (strview-hash b)
+          hc:usize (strview-hash c))
+      (printf "ha=hb? %d\n" (if (= ha hb) 1 0))              ; ha=hb? 1
+      (printf "ha=hc? %d\n" (if (= ha hc) 1 0)))             ; ha=hc? 0
+
+    ; CStr round trip: the view's bytes are the original NUL-terminated string.
+    (printf "to-cstr=%s\n" (strview-to-cstr a))              ; to-cstr=hello
+
+    (free (cast ptr a)) (free (cast ptr b))
+    (free (cast ptr c)) (free (cast ptr d)))
+  (printf "done\n")
+  (return 0))

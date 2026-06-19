@@ -1,0 +1,32 @@
+; Stage 11 M5 — Vector literal sugar `[…]`.
+;
+; `[1 2 3]` expands (in the reader) to a let that stack-allocates a
+; (Vector i32), runs vector-init with the default allocator, conj-es each
+; element, and yields the (ref (Vector i32)). As the RHS of a `with` binding,
+; the outer `with` fires Drop at scope exit (the buffer is freed).
+
+(include stdio)
+(import allocator)
+(import coll)
+(import iterator)
+(import vector)
+
+(defn main:i32 ()
+  ; i32 element literal.
+  (with ((v (ref (Vector i32))) [1 2 3])
+    (printf "count=%llu\n" (cast ui64 (count v)))   ; count=3
+    (printf "get[0]=%d\n" (v (cast usize 0)))       ; get[0]=1
+    (printf "get[2]=%d\n" (v (cast usize 2))))      ; get[2]=3
+
+  ; f64 element literal (inferred element type f64).
+  (with ((f (ref (Vector f64))) [1.5 2.5 3.5])
+    (printf "fcount=%llu\n" (cast ui64 (count f)))   ; fcount=3
+    (printf "fget[1]=%.1f\n" (f (cast usize 1))))    ; fget[1]=2.5
+
+  ; A single-element literal.
+  (with ((u (ref (Vector i32))) [42])
+    (printf "ucount=%llu\n" (cast ui64 (count u)))   ; ucount=1
+    (printf "uget[0]=%d\n" (u (cast usize 0))))      ; uget[0]=42
+
+  (printf "done\n")
+  (return 0))

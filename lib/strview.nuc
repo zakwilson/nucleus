@@ -1,0 +1,135 @@
+; Stage 11 cleanup §2 — StrView: the shared, immutable, non-owning byte-slice
+; substrate underneath both `Keyword` (this cleanup) and `String` (M6).
+;
+; Design: design/stage11/cleanup.md §2 ("keyword type on a shared StrView
+; substrate") and design/stage11/string.md ("thin wrapper over byte vector").
+;
+; ---------------------------------------------------------------------------
+; WHAT THIS IS (and is NOT)
+;
+; A StrView is a length-prefixed view over UTF-8 bytes: `{ data, len }`. It is
+; length-counted (not NUL-terminated), so it generalises to sub-slices and to
+; buffers with embedded NULs. It owns nothing: copying a StrView copies the two
+; words, never the bytes; dropping a StrView frees nothing.
+;
+; Operations exposed here are exactly the narrow shared core that keyword and
+; String agree on: byte length, byte equality (memcmp), byte hashing (the FNV-1a
+; fold REUSED from lib/hash.nuc — never re-implemented), and a CStr bridge.
+;
+; Deliberately OUT of scope (belongs to M6 String, not here): ownership, growth,
+; mutation, and the Char / UTF-8 codepoint-iterator layer. This file bakes in NO
+; keyword-specific assumptions, so M6 String reuses it unchanged.
+;
+; ---------------------------------------------------------------------------
+; TOKENIZER NOTES (carried from M1/M4):
+;   - A parameter whose type is a parenthesised form uses the LIST binding form
+;     `(sv (ref StrView))`, never `sv:(ref StrView)`.
+;   - The byte element type is `ui8` (= C `unsigned char`); `u8` is not a Nucleus
+;     type name (the design doc's `u8` reads as `ui8` here).
+;   - A plain-symbol return type in colon position DOES tokenise, so
+;     `strview-len:usize` is fine. The colon-paren binding sugar is also live
+;     (design §1), so `data:(ptr ui8)` tokenises in a defstruct field.
+; ---------------------------------------------------------------------------
+
+(include stdio)
+(include stdlib)
+(include string)
+
+(import hash)
+(import numeric)   ; the Eq protocol (= / !=)
+
+; ---------------------------------------------------------------------------
+; The view: a borrowed pointer to the first byte plus a byte count. No NUL is
+; required or assumed; `len` is authoritative.
+; ---------------------------------------------------------------------------
+(defstruct StrView
+  data:(ptr ui8)
+  len:usize)
+
+; ---------------------------------------------------------------------------
+; strview-len — the byte length. Trivial accessor; present so callers depend on
+; the operation, not the field layout.
+; ---------------------------------------------------------------------------
+(defn strview-len:usize ((sv (ref StrView)))
+  (return (sv len)))
+
+; ---------------------------------------------------------------------------
+; strview-eq — byte equality. Equal length AND identical bytes. The length test
+; comes first so memcmp is only reached for same-length views (and so two views
+; of different length never read past either buffer). Returns 1 (equal) / 0.
+; ---------------------------------------------------------------------------
+(defn strview-eq:i32 ((a (ref StrView)) (b (ref StrView)))
+  (when (!= (a len) (b len)) (return 0))
+  (when (= (a len) (cast usize 0)) (return 1))
+  (let (c:i32 (memcmp (cast ptr (a data)) (cast ptr (b data)) (cast i64 (a len))))
+    (return (if (= c 0) 1 0))))
+
+; ---------------------------------------------------------------------------
+; strview-hash — fold every byte of the view through FNV-1a (lib/hash.nuc's
+; `fnv1a-byte`, seeded with the same offset basis the scalar/CStr conformances
+; use). The fold runs in i64 and the result is cast to usize, matching the Hash
+; protocol's return type. This is the length-counted analogue of the CStr Hash
+; conformance: it folds exactly `len` bytes instead of stopping at a NUL, so a
+; StrView over a buffer with embedded NULs still hashes all of its bytes.
+; ---------------------------------------------------------------------------
+(defn strview-hash:usize ((sv (ref StrView)))
+  (let (h:i64 -3750763034362895579
+        p:ptr:ui8 (sv data)
+        n:usize (sv len)
+        i:usize (cast usize 0))
+    (while (< i n)
+      (let (b:i64 (bit-and (cast i64 (aref p (cast i64 i))) (cast i64 255)))
+        (set! h (fnv1a-byte h b)))
+      (set! i (+ i (cast usize 1))))
+    (return (cast usize h))))
+
+; ---------------------------------------------------------------------------
+; CStr bridge.
+;
+; strview-from-cstr — heap-allocate a StrView whose `data` aliases the C string's
+; own bytes and whose `len` is strlen(cs). The view BORROWS the C string's bytes
+; (no copy), so the caller must keep the C string alive for the view's lifetime.
+; Returns a heap pointer the caller owns (free with libc free).
+; ---------------------------------------------------------------------------
+(defn (strview-from-cstr (ptr StrView)) ((cs CStr))
+  (let (sv:ptr:StrView (cast ptr:StrView (malloc (cast i64 (sizeof StrView)))))
+    (.set! sv data (cast ptr:ui8 (cast ptr cs)))
+    (.set! sv len  (cast usize (strlen (cast ptr cs))))
+    (return sv)))
+
+; ---------------------------------------------------------------------------
+; strview-to-cstr — reinterpret the view's bytes as a C string. Only sound when
+; the underlying buffer is NUL-terminated at `data[len]`; that holds for the
+; keyword intern arena (names are stored NUL-terminated) and for any view built
+; from a C string. The view itself does not guarantee termination, so callers on
+; arbitrary sub-slices must not use this.
+; ---------------------------------------------------------------------------
+(defn strview-to-cstr:CStr ((sv (ref StrView)))
+  (return (cast CStr (cast ptr (sv data)))))
+
+; ---------------------------------------------------------------------------
+; Protocol conformances.
+;
+; Hash's receiver is (ref Self), so the StrView Hash conformance takes the view
+; by reference and delegates to strview-hash.
+;
+; Eq is by VALUE (the protocol is `(=:i1 (a:Self b:Self))`, and collection key
+; comparison loads two K values and calls `(= k1 k2)`), so the StrView Eq
+; conformance takes two StrView VALUES. It copies each to a local and takes its
+; address (the same `(addr-of k)` idiom the collections use to call Hash) so the
+; by-reference strview-eq does the actual byte compare without a second copy.
+; ---------------------------------------------------------------------------
+
+(extend StrView Hash)
+(defn hash:usize ((self (ref StrView)))
+  (return (strview-hash self)))
+
+(extend StrView Eq)
+(defn =:i1 (a:StrView b:StrView)
+  (let (la:StrView a
+        lb:StrView b)
+    (return (if (= (strview-eq (addr-of la) (addr-of lb)) 1) true false))))
+(defn !=:i1 (a:StrView b:StrView)
+  (let (la:StrView a
+        lb:StrView b)
+    (return (if (= (strview-eq (addr-of la) (addr-of lb)) 1) false true))))

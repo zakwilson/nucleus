@@ -13,9 +13,17 @@
 ; only *name and check* the capability.
 
 ; Integer-indexable: `(s i)` returns the i-th element (fixed to i32 today).
-(defprotocol Seq
+; Named IntIndexable (not Seq) so the parametric Stage 11 `Seq` collection
+; protocol can claim that name; this one only names the `invoke`-by-i32
+; capability and is independent of it.
+(defprotocol IntIndexable
   (invoke:i32 (self:ptr:Self i:i32)))
 
 ; A unary function object: `(f x)` maps a ptr argument to a ptr result.
 (defprotocol Call
   (invoke:ptr (self:ptr:Self arg:ptr)))
+
+; A binary function object: `(f a b)` maps two ptr arguments to a ptr result.
+; Used by reduce to fold a sequence with an accumulator.
+(defprotocol BinaryCall
+  (invoke2:ptr (self:ptr:Self a:ptr b:ptr)))

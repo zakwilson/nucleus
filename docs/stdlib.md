@@ -60,3 +60,107 @@ Pre-declared C standard library functions, available without `extern`. These are
 | `dup` | `(i32) -> i32` | `<unistd.h>` |
 | `dup2` | `(i32, i32) -> i32` | `<unistd.h>` |
 | `close` | `(i32) -> i32` | `<unistd.h>` |
+
+---
+
+## `StrView` (`lib/strview.nuc`, Stage 11)
+
+`(import strview)` provides an immutable, non-owning, length-prefixed UTF-8 byte slice. `StrView` is the shared substrate underneath `Keyword` and the future `String` type. It deliberately has no ownership, growth, mutation, or UTF-8/codepoint layer — those belong to `String`.
+
+```lisp
+(defstruct StrView
+  data:(ptr ui8)
+  len:usize)
+```
+
+`data` points to the first byte of the underlying buffer. `len` is authoritative; the buffer is **not** NUL-terminated (except when built from a C string, in which case `strview-to-cstr` is sound). Copying a `StrView` copies two words and borrows the bytes — it frees nothing. There is no `Drop` conformance.
+
+Also requires `(import hash)` and `(import numeric)` (both transitively needed for `Hash`/`Eq` conformances).
+
+### Functions
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `strview-from-cstr` | `((cs CStr)) -> (ptr StrView)` | Heap-allocate a `StrView` that borrows `cs`'s bytes. `len` is `strlen(cs)`. The caller owns the returned pointer (free with libc `free`). The C string must outlive the view. |
+| `strview-to-cstr` | `((sv (ref StrView))) -> CStr` | Reinterpret the view's bytes as a `CStr`. **Only sound when the underlying buffer is NUL-terminated at `data[len]`** — guaranteed for views built from C strings and for keyword names, but not for arbitrary sub-slices. |
+| `strview-len` | `((sv (ref StrView))) -> usize` | Byte length of the view. |
+| `strview-eq` | `((a (ref StrView)) (b (ref StrView))) -> i32` | Returns `1` if both views have equal length and identical bytes (`memcmp`), `0` otherwise. |
+| `strview-hash` | `((sv (ref StrView))) -> usize` | FNV-1a fold over exactly `len` bytes (same algorithm and offset basis as `lib/hash.nuc`'s scalar/`CStr` conformances). Handles embedded NULs. |
+
+### Protocol conformances
+
+`StrView` conforms to `Hash` (by `(ref Self)`) and `Eq` (by value). The `Eq` conformance uses `strview-eq` internally; `=` and `!=` on two `StrView` values are content equality (same bytes), not pointer identity.
+
+### Example
+
+```lisp
+(include stdio)
+(include stdlib)
+(import strview)
+(import hash)
+
+(defn main:i32 ()
+  (let (a:ptr:StrView (strview-from-cstr "hello")
+        b:ptr:StrView (strview-from-cstr "hello")
+        c:ptr:StrView (strview-from-cstr "world"))
+    (printf "len=%llu\n"  (cast ui64 (strview-len a)))  ; 5
+    (printf "a=b? %d\n"   (strview-eq a b))              ; 1
+    (printf "a=c? %d\n"   (strview-eq a c))              ; 0
+    (printf "cstr=%s\n"   (strview-to-cstr a))           ; hello
+    (free (cast ptr a)) (free (cast ptr b)) (free (cast ptr c)))
+  (return 0))
+```
+
+See `examples/strview-test.nuc` for a complete runnable example.
+
+---
+
+## `Keyword` (`lib/keyword.nuc`, Stage 11)
+
+`(import keyword)` provides interned, self-evaluating keyword values. Requires `(import strview)`, `(import hash)`, and `(import numeric)`.
+
+```lisp
+(defstruct Keyword
+  name:(ptr StrView)
+  id:usize
+  cached-hash:usize)
+```
+
+Keywords are constructed exclusively by the compiler from `:foo` reader literals, which lower to `(keyword-intern "foo")`. Two keywords with the same spelling share an `id`; equality is an integer compare and hashing is a single cached load — no byte walk at either operation.
+
+The intern pool is a fixed-size global array (capacity 256). It is lazily initialised on first use. Overflow aborts with a diagnostic message and `exit(1)`.
+
+### Functions
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `keyword-intern` | `((cs CStr)) -> Keyword` | Look up or insert `cs` in the intern pool and return the canonical `Keyword`. Called implicitly by the compiler for each `:foo` literal; direct calls are valid but unusual. |
+| `keyword-name` | `((self (ref Keyword))) -> ref:StrView` | Return the keyword's name as a borrowed `StrView` (process-lived; do not free). |
+
+### Protocol conformances
+
+`Keyword` conforms to `Eq` (by value, identity — compares `id`) and `Hash` (by `(ref Self)`, returns `cached-hash`). These conformances satisfy the `K: Hash + Eq` requirement for `HashMap` and `HashSet`.
+
+### Usage
+
+Keywords are written as `:identifier` in source. The compiler requires `(import keyword)` (plus its transitive imports) at the use site; without it the compiler errors with `undefined: keyword-intern`.
+
+```lisp
+(include stdio)
+(import strview)
+(import hash)
+(import keyword)
+
+(defn main:i32 ()
+  ; Self-evaluation and identity equality.
+  (printf "foo=foo? %d\n" (if (= :foo :foo) 1 0))   ; 1
+  (printf "foo=bar? %d\n" (if (= :foo :bar) 1 0))   ; 0
+  (printf "foo!=bar? %d\n" (if (!= :foo :bar) 1 0)) ; 1
+
+  ; Inspect the keyword name.
+  (let (k:Keyword :hello)
+    (printf "name=%s\n" (strview-to-cstr (keyword-name (addr-of k))))) ; hello
+  (return 0))
+```
+
+See `examples/keyword-test.nuc` for a HashMap usage example. See [Keyword literals](types.md#keyword-literals----foo) for the full semantics and syntax disambiguation rules.

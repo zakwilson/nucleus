@@ -1,0 +1,227 @@
+; Stage 11 collections — Vector T: a dynamically-sized, heap-backed, mutable
+; sequence (C++ STL `vector` in spirit). O(1) indexed `invoke`/append (amortized
+; via capacity doubling), O(n) `insert`. Owns its element buffer through a stored
+; allocator handle and frees it via `Drop` at `with`-scope exit.
+;
+; Design: design/stage11/collections.md §"Vector" + §"Memory model".
+;
+; ---------------------------------------------------------------------------
+; USAGE (the working construction pattern):
+;
+;   (with ((v (ref (Vector i32))) (alloca (Vector i32)))
+;     (vector-init v)          ; empty, default (libc) allocator
+;     (conj v 10) (conj v 20)
+;     (printf "%d\n" (v (cast usize 0)))   ; index access -> 10
+;     ...)                     ; (drop v) fires here, freeing the buffer
+;
+; `vector-init` takes a (ref (Vector T)) so the element type T is inferred from
+; the binding's declared type — there is no zero-arg value constructor because a
+; bare `(vector-new)` has no argument from which to infer T (the result type is
+; not propagated to a tyvar by the compiler). `(alloca (Vector T))` + init is the
+; idiom; it also composes with `with`/Drop, which a returned-by-value Vector
+; cannot (an owning collection may not escape by return without `move`).
+; ---------------------------------------------------------------------------
+
+(include stdio)
+(include stdlib)
+(include string)
+
+; `stderr` is a libc global, not a function — C header parsing imports functions
+; only, so it must be declared explicitly (as the compiler itself does).
+(extern stderr:ptr)
+
+(import allocator)
+(import coll)
+(import iterator)
+
+; ---------------------------------------------------------------------------
+; Panic helpers. These are NON-generic so they are emitted once and resolve
+; their `stderr`/`exit`/`fprintf` references against this file's includes. A
+; generic method body is monomorphized at the *call site* in the consuming unit,
+; which would otherwise have to declare `stderr`/`exit` itself; routing the panic
+; through these helpers keeps the consumer's only requirement to `(import vector)`.
+; ---------------------------------------------------------------------------
+(defn vector-oom:void ()
+  (fprintf stderr "vector: out of memory\n")
+  (exit 1))
+
+(defn vector-bounds:void (what:CStr i:usize n:usize)
+  (fprintf stderr "vector: %s index %llu out of bounds (len %llu)\n"
+    what (cast ui64 i) (cast ui64 n))
+  (exit 1))
+
+; Vector T: dynamically-sized heap array.
+;   data  : raw byte pointer to the element buffer (null while cap = 0).
+;   len   : number of live elements.
+;   cap   : total allocated element slots.
+;   alloc : the allocator handle the buffer is owned through (by value).
+(defstruct (Vector T)
+  (data (raw ui8))   ; list-form: (raw ui8) is a parenthesised type
+  len:usize
+  cap:usize
+  alloc:AllocHandle)
+
+; ---------------------------------------------------------------------------
+; Constructors. Each takes a caller-owned (ref (Vector T)) to initialise in
+; place; T is inferred from the receiver. Returns void; the receiver is ready
+; to use afterwards.
+; ---------------------------------------------------------------------------
+
+; Initialise an empty Vector with the default (libc) allocator.
+(defn vector-init:void ((v (ref (Vector T))))
+  (.set! v data null)
+  (.set! v len (cast usize 0))
+  (.set! v cap (cast usize 0))
+  (libc-allocator (.& v alloc)))
+
+; Initialise an empty Vector with an explicit allocator handle (copied in).
+(defn vector-init-alloc:void ((v (ref (Vector T))) (a (ref AllocHandle)))
+  (.set! v data null)
+  (.set! v len (cast usize 0))
+  (.set! v cap (cast usize 0))
+  (.set! v alloc (deref a)))
+
+; ---------------------------------------------------------------------------
+; Internal: grow the buffer. Doubles capacity (or seeds 4 when empty),
+; reallocating through the stored allocator. Aborts on OOM.
+; ---------------------------------------------------------------------------
+(defn vector-grow:void ((v (ref (Vector T))))
+  (let (new-cap:usize (if (= (v cap) (cast usize 0))
+                        (cast usize 4)
+                        (* (v cap) (cast usize 2)))
+        elem-size:usize (cast usize (sizeof T)))
+    (let (old-bytes:usize (* (v cap) elem-size)
+          new-bytes:usize (* new-cap elem-size)
+          ah:ref:AllocHandle (.& v alloc))
+      (let ((new-data (raw ui8))
+            (alloc-handle-realloc ah (v data) old-bytes new-bytes (cast usize 8)))
+        (when (= (cast ptr new-data) null) (vector-oom))
+        (.set! v data new-data)
+        (.set! v cap new-cap)))))
+
+; ---------------------------------------------------------------------------
+; Coll T conformance: count, conj, empty?.
+; ---------------------------------------------------------------------------
+
+; count -> number of live elements.
+(defn count:usize ((self (ref (Vector T))))
+  (return (self len)))
+
+; conj: append an element at the back, growing if needed.
+(defn conj:void ((self (ref (Vector T))) elem:T)
+  (when (>= (self len) (self cap)) (vector-grow self))
+  (aset! (cast ptr:T (cast ptr (self data))) (cast i64 (self len)) elem)
+  (.set! self len (+ (self len) (cast usize 1))))
+
+; empty? -> 1 when len = 0, else 0.
+(defn empty?:i32 ((self (ref (Vector T))))
+  (return (if (= (self len) (cast usize 0)) 1 0)))
+
+; ---------------------------------------------------------------------------
+; Seq T conformance: invoke (index), append, contains?, insert.
+; ---------------------------------------------------------------------------
+
+; invoke: index access `(v i)` -> element. Panics on out-of-bounds.
+(defn invoke:T ((self (ref (Vector T))) i:usize)
+  (when (>= i (self len)) (vector-bounds "get" i (self len)))
+  (return (aref (cast ptr:T (cast ptr (self data))) (cast i64 i))))
+
+; append: add at the back (same as conj for a vector).
+(defn append:void ((self (ref (Vector T))) elem:T)
+  (conj self elem))
+
+; contains?: linear scan with =, 1 if found else 0. (Scalar element types.)
+(defn contains?:i32 ((self (ref (Vector T))) elem:T)
+  (let (i:usize (cast usize 0))
+    (while (< i (self len))
+      (when (= (aref (cast ptr:T (cast ptr (self data))) (cast i64 i)) elem)
+        (return 1))
+      (set! i (+ i (cast usize 1))))
+    (return 0)))
+
+; insert: place elem at index i, shifting [i,len) right by one. Grows if full.
+; i may equal len (append). i > len is out of bounds.
+(defn insert:void ((self (ref (Vector T))) i:usize elem:T)
+  (when (> i (self len)) (vector-bounds "insert" i (self len)))
+  (when (>= (self len) (self cap)) (vector-grow self))
+  (let (buf:ptr:T (cast ptr:T (cast ptr (self data)))
+        j:usize (self len))
+    (while (> j i)
+      (aset! buf (cast i64 j) (aref buf (cast i64 (- j (cast usize 1)))))
+      (set! j (- j (cast usize 1))))
+    (aset! buf (cast i64 i) elem))
+  (.set! self len (+ (self len) (cast usize 1))))
+
+; ---------------------------------------------------------------------------
+; Capacity operations (STL-like opt-in surface; design §Vector recommends
+; Minimal + reserve/capacity/with-capacity).
+; ---------------------------------------------------------------------------
+
+; capacity -> current allocated slot count.
+(defn capacity:usize ((self (ref (Vector T))))
+  (return (self cap)))
+
+; reserve: ensure at least n total slots (grows by doubling until cap >= n).
+(defn reserve:void ((self (ref (Vector T))) n:usize)
+  (while (< (self cap) n) (vector-grow self)))
+
+; vector-init-capacity: initialise empty (default allocator) with >= n slots
+; reserved. The with-capacity constructor for known-size builds.
+(defn vector-init-capacity:void ((v (ref (Vector T))) n:usize)
+  (vector-init v)
+  (reserve v n))
+
+; ---------------------------------------------------------------------------
+; Drop conformance: free the buffer through the stored allocator. Null-safe and
+; idempotent (data is nulled so a double drop / post-move is a no-op).
+; ---------------------------------------------------------------------------
+(extend (Vector T) (Coll T))
+(extend (Vector T) (Seq T))
+(extend (Vector T) Drop)
+
+(defn drop:void ((self (ptr (Vector T))))
+  (when (!= (cast ptr (self data)) null)
+    (alloc-handle-free (.& self alloc)
+                       (self data)
+                       (* (self cap) (cast usize (sizeof T)))
+                       (cast usize 8)))
+  (.set! self data null)
+  (.set! self len (cast usize 0))
+  (.set! self cap (cast usize 0)))
+
+; ---------------------------------------------------------------------------
+; VecIter T — a forward cursor over a Vector's elements. Iterator T conformance
+; provides `next`; `iter-init` configures a caller-allocated VecIter to scan a
+; Vector from the start.
+;
+;   (let ((it (ref (VecIter i32))) (alloca (VecIter i32)))
+;     (iter-init it v)
+;     (doseq (x it) ...))          ; doseq advances `it` via (next it)
+;
+; The iterator BORROWS the buffer (raw element pointer); it does not own it and
+; must not outlive the Vector.
+;
+; NOTE: `iter-init` fills a caller-provided (ref (VecIter T)) rather than
+; returning a VecIter by value. `doseq` needs an iterator *reference* anyway, and
+; returning a >16-byte struct by value currently mis-lowers under the SysV sret
+; path (a pre-existing aggregate-return ABI gap — see design/stage11/progress.md).
+; The fill-in-place form mirrors `vector-init` and the M2 iterator idioms.
+; ---------------------------------------------------------------------------
+(defstruct (VecIter T)
+  data:ptr     ; element-typed buffer pointer (cast to ptr:T on read)
+  pos:usize
+  len:usize)
+
+(extend (VecIter T) (Iterator T))
+
+(defn (next (Maybe T)) ((self (ref (VecIter T))))
+  (when (>= (self pos) (self len)) (return none))
+  (let (v:T (aref (cast ptr:T (self data)) (cast i64 (self pos))))
+    (.set! self pos (+ (self pos) (cast usize 1)))
+    (return (some v))))
+
+; iter-init: configure `it` to scan `v` from the start (borrowing its buffer).
+(defn iter-init:void ((it (ref (VecIter T))) (v (ref (Vector T))))
+  (.set! it data (cast ptr (v data)))
+  (.set! it pos (cast usize 0))
+  (.set! it len (v len)))

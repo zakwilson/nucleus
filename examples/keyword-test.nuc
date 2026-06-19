@@ -1,0 +1,51 @@
+; Stage 11 cleanup §2 — keyword literals.
+;
+;   - `:foo` self-evaluates to the canonical interned Keyword.
+;   - `(= :foo :foo)` is true (identity), `(= :foo :bar)` is false.
+;   - A keyword is usable as a HashMap key: insert :a -> 1, :b -> 2 and look up.
+
+(include stdio)
+(include stdlib)
+(include string)
+(import strview)
+(import hash)
+(import keyword)
+(import allocator)
+(import coll)
+(import iterator)
+(import hashmap)
+
+(defn main:i32 ()
+  ; Self-evaluation: a bare keyword is a value (a Keyword) in value position.
+  (let (k:Keyword :foo)
+    (printf "self-eval ok=%d\n" (if (= k :foo) 1 0)))       ; self-eval ok=1
+
+  ; Identity equality: same spelling equal, different spelling not.
+  (printf "foo=foo? %d\n" (if (= :foo :foo) 1 0))           ; foo=foo? 1
+  (printf "foo=bar? %d\n" (if (= :foo :bar) 1 0))           ; foo=bar? 0
+  (printf "foo!=bar? %d\n" (if (!= :foo :bar) 1 0))         ; foo!=bar? 1
+
+  ; Keyword as a HashMap key.
+  (with ((m (ref (HashMap Keyword i32))) (alloca (HashMap Keyword i32)))
+    (hashmap-init m)
+    (assoc m :a 1)
+    (assoc m :b 2)
+    (printf "count=%llu\n" (cast ui64 (count m)))           ; count=2
+    (match (hmap-get m :a)
+      ((some v) (printf "a=%d\n" v))                         ; a=1
+      (none     (printf "a=absent\n")))
+    (match (hmap-get m :b)
+      ((some v) (printf "b=%d\n" v))                         ; b=2
+      (none     (printf "b=absent\n")))
+    (match (hmap-get m :c)
+      ((some v) (printf "c=%d\n" v))
+      (none     (printf "c=absent\n")))                      ; c=absent
+    ; Overwrite through an equal keyword key.
+    (assoc m :a 42)
+    (match (hmap-get m :a)
+      ((some v) (printf "a2=%d\n" v))                        ; a2=42
+      (none     (printf "a2=absent\n")))
+    (printf "count2=%llu\n" (cast ui64 (count m))))          ; count2=2
+
+  (printf "done\n")
+  (return 0))

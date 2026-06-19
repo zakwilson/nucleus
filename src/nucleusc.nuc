@@ -40,7 +40,8 @@
 (defconst MAX-DEFERRORS 4095)
 
 ; Token kinds
-(defenum TokKind TOK-LPAREN TOK-RPAREN TOK-RMACRO TOK-INT TOK-STRING TOK-SYMBOL TOK-FLOAT TOK-EOF)
+(defenum TokKind TOK-LPAREN TOK-RPAREN TOK-RMACRO TOK-INT TOK-STRING TOK-SYMBOL TOK-FLOAT TOK-EOF
+                 TOK-LBRACK TOK-RBRACK TOK-LBRACE TOK-RBRACE TOK-HASHBRACE TOK-KEYWORD)
 
 ; Name kinds for the one-symbol-one-meaning shadowing check (see
 ; name-existing-kind / guard-name-kind). Ordered by lookup priority.
@@ -842,6 +843,8 @@
         (fputs (nn s) out)
       NODE-SYM
         (fputs (nn s) out)
+      NODE-KEYWORD
+        (do (fputc 58 out) (fputs (nn s) out))
       NODE-STR
         (do
           (fputc 34 out)
@@ -3208,6 +3211,16 @@
     (when (= (nn kind) NODE-FLOAT) (return ty-f64))
     (when (= (nn kind) NODE-STR)   (return ty-cstr))
     (when (= (nn kind) NODE-SYM)   (return (node-type-sym n scope)))
+    ; Keyword literal (Stage 11 cleanup §2): its static type is the `Keyword`
+    ; struct, available only when the program has (import keyword). If the struct
+    ; is registered, report it so the Rung-3 cross-check at the emit site agrees
+    ; with the keyword-intern call's return type; otherwise return null and let
+    ; emit's own type stand (emit-keyword's synthetic call dies with a clear
+    ; "undefined: keyword-intern" if the lib was not imported).
+    (when (= (nn kind) NODE-KEYWORD)
+      (let (sd:?ptr:StructDef (lookup-struct "Keyword"))
+        (when (!= sd null) (return (type-for-sdef sd)))
+        (return null)))
     (when (!= (nn kind) NODE-CELL) (return ty-void))
     (when (= (node-len n) 0) (return null))
     (let (head:ptr:Node (cast ptr:Node (node-at n 0)))
@@ -3322,6 +3335,7 @@
     (when (= (nn kind) NODE-FLOAT) (set! v (emit-float n)))
     (when (= (nn kind) NODE-STR)   (set! v (emit-string n)))
     (when (= (nn kind) NODE-SYM)   (set! v (emit-symbol-ref n scope)))
+    (when (= (nn kind) NODE-KEYWORD) (set! v (emit-keyword n scope)))
     (when (= (nn kind) NODE-CELL)  (set! v (emit-list n scope)))
     ; Rung 3: the type a node contributes to its parent is the shared node-type
     ; rule's answer, so codegen and the (non-emitting) type pass cannot drift —
@@ -3407,6 +3421,28 @@
       tmp ir-len id)
     (return (alloc-val ty-cstr tmp))))
 
+; Keyword literal (Stage 11 cleanup §2). `:foo` self-evaluates to the one
+; canonical `Keyword` value for "foo". Rather than hand-roll the (struct-by-value
+; returning) call IR, lower to the synthetic call form `(keyword-intern "foo")`
+; and route it through the ordinary emit path — so dispatch, the struct-return
+; ABI, and node-type all reuse the existing machinery. The program must
+; `(import keyword)` to provide `keyword-intern` (exactly as `[...]`/`{...}`
+; require their collection libs). The node's `s` is the name with the leading
+; colon already stripped by the reader.
+(defn emit-keyword:ref:Val (n:ptr scope:ref:Scope)
+  (let (nn:ptr:Node (cast ptr:Node n)
+        line:i32 (nn line)
+        ; Synthetic NODE-STR carrying the keyword name.
+        strnode:ptr:Node (cast ptr:Node (alloc-node)))
+    (.set! strnode kind NODE-STR)
+    (.set! strnode line line)
+    (.set! strnode s (nn s))
+    ; (keyword-intern "name")
+    (let (call:ptr (make-cell (cast ptr 'keyword-intern)
+                     (make-cell (cast ptr strnode) null line)
+                     line))
+      (return (emit-node call scope)))))
+
 ; Build a quoted Node tree at runtime so that quoted symbols share Node
 ; identity with reader-produced ones. Returns a body-stream tmp ref.
 ;
@@ -3431,17 +3467,19 @@
         (fprintf g-body-stream "  %s = call ptr @make-cell(ptr %s, ptr %s, i32 %d)\n"
                  tmp car-ref cdr-ref (nn line))
         (return tmp)))
-    ; NODE-INT / NODE-STR / NODE-FLOAT — runtime alloc + fill.
+    ; NODE-INT / NODE-STR / NODE-FLOAT / NODE-KEYWORD — runtime alloc + fill.
+    ; NODE-KEYWORD (Stage 11 cleanup §2) stores its name in `s` like NODE-STR but
+    ; must also write its own kind (NODE-INT is 0, so alloc-node's zero-fill
+    ; already names it for the INT case; every other literal kind is stored).
     (let (tmp:ptr (new-tmp))
       (fprintf g-body-stream "  %s = call ptr @alloc-node()\n" tmp)
-      (when (or (= (nn kind) NODE-STR) (= (nn kind) NODE-FLOAT))
-        (let (k:i32 1
-              kp:ptr (new-tmp))
-          (when (= (nn kind) NODE-FLOAT) (set! k 4))
+      (when (or (or (= (nn kind) NODE-STR) (= (nn kind) NODE-FLOAT))
+                (= (nn kind) NODE-KEYWORD))
+        (let (kp:ptr (new-tmp))
           (fprintf g-body-stream
             "  %s = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %s, i32 0, i32 0\n"
             kp tmp)
-          (fprintf g-body-stream "  store i32 %d, ptr %s, align 4\n" k kp)))
+          (fprintf g-body-stream "  store i32 %d, ptr %s, align 4\n" (nn kind) kp)))
       (let (lp:ptr (new-tmp))
         (fprintf g-body-stream
           "  %s = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %s, i32 0, i32 1\n"
@@ -3453,7 +3491,8 @@
             "  %s = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %s, i32 0, i32 2\n"
             ip tmp)
           (fprintf g-body-stream "  store i64 %ld, ptr %s, align 8\n" (nn i) ip)))
-      (when (or (= (nn kind) NODE-STR) (= (nn kind) NODE-FLOAT))
+      (when (or (or (= (nn kind) NODE-STR) (= (nn kind) NODE-FLOAT))
+                (= (nn kind) NODE-KEYWORD))
         (let (sid:i32 (intern-string (nn s) (cast i32 (strlen (nn s))))
               ir-len:i32 (+ ((cast ptr:StrLit (ptr+ (cast ptr:StrLit g-strs) sid)) len) 1)
               sp:ptr (new-tmp))
@@ -4128,7 +4167,40 @@
         (.set! gg methods nm)
         (.set! gg cap nc)))
     (aset! (cast ptr:ptr (gg methods)) (gg num-methods) m)
-    (.set! gg num-methods (+ (gg num-methods) 1))))
+    (.set! gg num-methods (+ (gg num-methods) 1))
+    ; A generic finalized by an earlier unit's prescan (its methods given their
+    ; mangling) can gain more methods when a later `import` (processed in the
+    ; dispatch loop, after this unit's signature prescan already finalized the
+    ; generic) registers its own overloads of the same name. Without re-running
+    ; finalize, those imported methods keep null ir-names and emit under the bare
+    ; `@name`, colliding (e.g. a local parametric `next` finalizes the `next`
+    ; generic, then `(import iterator)` adds concrete `next` methods that never get
+    ; mangled). Clearing `finalized` lets the import's finalize-generics re-mangle
+    ; every method. Safe: this runs in the prescan/import phase, before any of the
+    ; affected methods' bodies are emitted, so no already-emitted reference uses a
+    ; stale ir-name.
+    (.set! gg finalized 0)))
+
+; Remove the first METHOD-USER from generic `g` whose param count and types
+; match `param-types`/`nparams`. No-op if not found. Called by the REPL to
+; evict the old method entry before re-prescan'ing a redefined defn, so that
+; finalize-generics does not see a duplicate-signature pair.
+(defn generic-remove-matching-user-method:void (g:ptr param-types:ptr nparams:i32)
+  (let (gg:ptr:Generic (cast ptr:Generic g)
+        i:i32 0)
+    (while (< i (gg num-methods))
+      (let (mi:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (gg methods)) i)))
+        (when (and (= (mi kind) METHOD-USER)
+                   (and (= (mi num-params) nparams)
+                        (!= (params-type-eq (mi param-types) param-types nparams) 0)))
+          (let (j:i32 i)
+            (while (< (+ j 1) (gg num-methods))
+              (aset! (cast ptr:ptr (gg methods)) j
+                     (aref (cast ptr:ptr (gg methods)) (+ j 1)))
+              (set! j (+ j 1))))
+          (.set! gg num-methods (- (gg num-methods) 1))
+          (return)))
+      (inc! i))))
 
 ; Seed the operator family as intrinsic generics. Each intrinsic method defers
 ; to emit-binop (which performs the numeric type selection), so operator IR is
@@ -4322,7 +4394,23 @@
                           (let (ridx:i32 (tyvar-index-of (-> rnode (cast ptr:Node _) (_ s))
                                                          (m tyvars) (m num-tyvars)))
                             (when (>= ridx 0) (set! rt (aref (cast ptr:ptr bound) ridx)))))
-                        (when (= rt null) (set! rt (parse-type-from-node rnode line)))
+                        ; A parametric return type — e.g. (Maybe T) — is a NODE-CELL
+                        ; that still mentions the method's tyvars. Substitute each
+                        ; tyvar with its bound concrete spelling before parsing, so
+                        ; `(Maybe T)` with T:=i32 parses as `(Maybe i32)` rather than
+                        ; failing with "unknown type: T".
+                        (when (= rt null)
+                          (let (ntv:i32 (m num-tyvars)
+                                spellings:ptr (arena-alloc
+                                                (* (cast i64 (+ ntv 1)) (ptr-bytes)))
+                                si:i32 0)
+                            (while (< si ntv)
+                              (aset! (cast ptr:ptr spellings) si
+                                     (type-spelling (aref (cast ptr:ptr bound) si)))
+                              (inc! si))
+                            (set! rt (parse-type-from-node
+                                       (subst-tyvars-node rnode (m tyvars) spellings ntv)
+                                       line))))
                         (ptr-set! out-ret rt)))))
                 (return 1))))))
       (inc! j))
@@ -4805,6 +4893,21 @@
     (aset! (cast ptr:ptr out-tyvars) ntv name)
     (aset! (cast ptr:i32 io-ntv) 0 (+ ntv 1))))
 
+; Upper bound on the number of tyvar slots `collect-pattern-tyvars` can write for
+; this type pattern. Every tyvar it emits is a distinct symbol leaf of the node,
+; so the total node count is a safe (conservative, pre-dedup) bound. Used to size
+; the tyvars array: a single parameter whose receiver is a struct-template
+; application `(Two I F S E)` contributes one slot PER type argument — including
+; phantom params that appear in no field — so the old "one tyvar per parameter"
+; estimate under-allocated and corrupted the arena (Item 4a). Counting nodes can
+; never under-count.
+(defn count-pattern-nodes:i32 (node:ptr)
+  (when (= node null) (return 0))
+  (let (n:ptr:Node (cast ptr:Node node))
+    (when (= (n kind) NODE-CELL)
+      (return (+ 1 (+ (count-pattern-nodes (n car)) (count-pattern-nodes (n cdr))))))
+    (return 1)))
+
 ; Walk a parameter/return type pattern node, collecting free symbols that appear
 ; as arguments of a registered struct-template application and are not resolvable
 ; as concrete types — these are the method's receiver-inferred tyvars. Recurses
@@ -4894,10 +4997,19 @@
   (let (name-node:ptr (node-at form 1)
         params-node:ptr (node-at form 2))
     (when (= (node-is-list params-node) 0) (return 0))
-    (let (cap:i32 (+ (node-len params-node) 2)
-          tyvars:ptr (arena-alloc (* (cast i64 cap) (ptr-bytes)))
+    ; Capacity must cover one tyvar per type-argument of any struct-template
+    ; receiver, not just one per parameter (Item 4a) — size by the node count of
+    ; each parameter/return type pattern, a safe upper bound on collectible
+    ; tyvars. Add the return-type node count and 1 so the array is never empty.
+    (let (np:i32 (node-len params-node)
+          cap:i32 (+ (count-pattern-nodes (binding-type-node name-node)) 1)
+          ci:i32 0)
+      (while (< ci np)
+        (set! cap (+ cap (count-pattern-nodes
+                           (binding-type-node (node-at params-node ci)))))
+        (inc! ci))
+    (let (tyvars:ptr (arena-alloc (* (cast i64 cap) (ptr-bytes)))
           ntv:i32 0
-          np:i32 (node-len params-node)
           i:i32 0)
       (while (< i np)
         (let (p:ptr:Node (cast ptr:Node (node-at params-node i)))
@@ -4909,7 +5021,7 @@
                                   tyvars (cast ptr:i32 (addr-of ntv))))
         (inc! i))
       (collect-pattern-tyvars (binding-type-node name-node) tyvars (cast ptr:i32 (addr-of ntv)))
-      (return (if (> ntv 0) 1 0)))))
+      (return (if (> ntv 0) 1 0))))))
 
 ; A defn is a bounded-generic template — recorded for on-demand monomorphization
 ; rather than emitted concretely — if it carries an explicit `&where` clause OR
@@ -4972,8 +5084,22 @@
       (let (nc:i32 (if (>= wi 0) (- raw (+ wi 1)) 0))
         (when (and (!= has-where 0) (< nc 1))
           (die-at (ff line) "defn: &where requires at least one (Protocol Var) constraint"))
-        ; Capacity: constraint vars + one tyvar per parameter + the return type.
-        (let (cap:i32 (+ (+ nc nparams) 1)
+        ; Capacity: constraint vars + a conservative upper bound on receiver-
+        ; inferred tyvars across every parameter and the return type. A single
+        ; parameter applying a struct template `(Two I F S E)` contributes one
+        ; tyvar per type argument (phantom params included), so sizing by node
+        ; count — never less than the tyvar count — avoids the arena overrun that
+        ; the old `nc + nparams + 1` estimate caused for multi-arg receivers.
+        (let (slot-bound:i32 nc
+              sb-j:i32 0)
+          (while (< sb-j nparams)
+            (set! slot-bound (+ slot-bound
+                                (count-pattern-nodes
+                                  (binding-type-node (node-at params-node sb-j)))))
+            (inc! sb-j))
+          (set! slot-bound (+ slot-bound
+                              (count-pattern-nodes (binding-type-node name-node))))
+        (let (cap:i32 (if (> slot-bound 0) slot-bound 1)
               con-protos:ptr (arena-alloc (* (cast i64 (if (> nc 0) nc 1)) (ptr-bytes)))
               con-vars:ptr   (arena-alloc (* (cast i64 (if (> nc 0) nc 1)) (ptr-bytes)))
               tyvars:ptr     (arena-alloc (* (cast i64 cap) (ptr-bytes)))
@@ -5045,7 +5171,7 @@
               (.set! m num-constraints nc)
               ; Imported templates were checked by the exporting unit; skip A2.
               (.set! m checked trusted)
-              (generic-add-method g (cast ptr m)))))))))
+              (generic-add-method g (cast ptr m))))))))))
 
 ; Try to bind a generic template's type variables from a concrete argument
 ; tuple by structurally unifying each parameter's type pattern against the
@@ -8717,6 +8843,14 @@
 ; (recorded by `extend <S> Drop`), and the `drop` generic must resolve exactly
 ; on [ty]. Returns the Method*, or null when the binding is not Drop-managed.
 ; type-eq ignores pointer kinds, so (ref S) resolves the same method as (ptr S).
+;
+; A `drop` defined over a *parametric* struct template (`(defn drop:void
+; ((v (ptr (Vec T)))))`) is a METHOD-GENERIC, which generic-find-method-exact
+; (METHOD-USER only) cannot see. After the Drop conformance is confirmed for the
+; concrete instance, fall through to generic-resolve, which binds the template's
+; tyvars to the concrete instance and instantiates the per-instance monomorph
+; (real ir-name + queued MonoJob) so emit-drop-cleanup can call it directly —
+; exactly how an ordinary `(drop v)` call on the stamped instance would resolve.
 (defn with-drop-method:?ptr:Method (ty:ptr)
   (let (tt:ptr:Type (cast ptr:Type ty))
     (when (!= (tt kind) TY-PTR) (return null))
@@ -8730,7 +8864,12 @@
           (when (= g null) (return null))
           (let (argtypes:ptr (arena-alloc (ptr-bytes)))
             (aset! (cast ptr:ptr argtypes) 0 ty)
-            (return (generic-find-method-exact g argtypes 1))))))))
+            (let (exact:?ptr:Method (generic-find-method-exact g argtypes 1))
+              (when (!= exact null) (return exact))
+              ; Parametric drop (METHOD-GENERIC): resolve+instantiate for this
+              ; concrete instance. The conformance check above guarantees a drop
+              ; exists, so generic-resolve will not die.
+              (return (generic-resolve g argtypes null 1 0)))))))))
 
 ; unions.md §7: the name of the first defunion arm holding a Drop-conforming
 ; payload field (a pointer to a struct that conforms to Drop), or null.
@@ -10282,6 +10421,10 @@
               (cond (!= (is-ptr-like ty) 0) (set! init-ir "null")
                     (or (= tk TY-F32) (= tk TY-F64)) (set! init-ir "0.0")
                     (= tk TY-I1) (set! init-ir "false")
+                    ; Aggregates (struct/union) cannot use the integer `0`
+                    ; literal — LLVM requires `zeroinitializer` for a default-
+                    ; zero aggregate global.
+                    (or (= tk TY-STRUCT) (= tk TY-UNION)) (set! init-ir "zeroinitializer")
                     true (set! init-ir "0"))))
           (fprintf g-out "%s = global %s %s, align %d\n\n"
             ir-name (type-to-ir ty) init-ir align)
@@ -10569,6 +10712,14 @@
         (die-at ((cast ptr:Node arg1) line)
           (fmt-s "extern: missing :type on '%s'" name)))
       (guard-name-kind name (cc line) NK-VALUE)
+      ; Dedup: an `(extern X)` re-declared by a second imported library (e.g. two
+      ; collection libs both declaring `stderr`) must emit `@X = external global`
+      ; only once — LLVM rejects a duplicate global definition. A redeclaration of
+      ; an already-bound extern is an idempotent no-op, so skip both the emission
+      ; and the re-define. (Imports dedup whole files by path, but the same symbol
+      ; declared in two different files still reaches here twice.)
+      (when (!= (scope-lookup g-globals name) null)
+        (return))
       (let (ir-name:ptr (fmt-s "@%s" name))
         (fprintf g-out "%s = external global %s\n\n" ir-name (type-to-ir ty))
         (scope-define g-globals name ty ir-name 1)))))

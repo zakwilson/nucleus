@@ -1,0 +1,61 @@
+; Stage 11 collections M1 — Allocator protocol, default (libc) allocator, and
+; arena allocator, exercised through the runtime AllocHandle dispatch.
+;
+; lib/allocator provides the tagged AllocHandle a collection stores and calls
+; through, plus the libc and arena backends behind the alloc-handle-* helpers.
+;
+; NOTE (tokenizer): a binding whose type is parenthesised, e.g. (raw ui8) or
+; (ref AllocHandle), uses the list binding form `(name (type))`; the colon sugar
+; `name:(...)` does not tokenise for a parenthesised RHS.
+
+(include stdio)
+(import allocator)
+
+; A collection-shaped struct that stores an AllocHandle by value and allocates
+; its backing buffer through it — the M1 "struct stores an AllocHandle and calls
+; through it" requirement in miniature.
+(defstruct IntBuf
+  alloc:AllocHandle
+  data:ptr
+  cap:usize)
+
+(defn main:i32 ()
+  ; ---- 1. Default (libc) allocator: alloc then free. ----
+  (let (d:ref:AllocHandle (default-allocator))
+    (let ((p (raw ui8)) (alloc-handle-alloc d (cast usize 32) (cast usize 8)))
+      (if (= (cast ptr p) null)
+        (printf "default: alloc failed\n")
+        (printf "default: alloc ok (kind=%d)\n" (d kind)))
+      (alloc-handle-free d p (cast usize 32) (cast usize 8))
+      (printf "default: freed\n")))
+
+  ; ---- 2. Arena allocator (via a stack handle): alloc only (free is a no-op). ----
+  (let ((ah (ref AllocHandle)) (alloca AllocHandle))
+    (arena-allocator ah)
+    (let ((q (raw ui8)) (alloc-handle-alloc ah (cast usize 64) (cast usize 8)))
+      (if (= (cast ptr q) null)
+        (printf "arena: alloc failed\n")
+        (printf "arena: alloc ok (kind=%d)\n" (ah kind)))
+      ; free is a no-op for the arena; calling it is still well-defined.
+      (alloc-handle-free ah q (cast usize 64) (cast usize 8))
+      (printf "arena: free is no-op\n")))
+
+  ; ---- 3. A struct stores an AllocHandle and allocates through it. ----
+  (let ((s (ref IntBuf)) (alloca IntBuf))
+    (.set! s cap (cast usize 4))
+    ; Initialise the stored handle in place: take the address of the struct's
+    ; AllocHandle field with `(.& s alloc)` (a (ref AllocHandle) into the struct)
+    ; and configure it as a libc handle.
+    (let (sa:ref:AllocHandle (.& s alloc))
+      (libc-allocator sa)
+      ; Allocate 4 i32 (16 bytes) through the stored handle.
+      (let ((raw (raw ui8)) (alloc-handle-alloc sa (cast usize 16) (cast usize 4)))
+        (.set! s data (cast ptr raw))
+        (let (arr:ptr:i32 (cast ptr:i32 (s data)))
+          (aset! arr 0 10) (aset! arr 1 20) (aset! arr 2 30) (aset! arr 3 40)
+          (printf "intbuf: cap=%llu v0=%d v3=%d\n"
+            (cast ui64 (s cap)) (aref arr 0) (aref arr 3)))
+        (alloc-handle-free sa raw (cast usize 16) (cast usize 4))
+        (printf "intbuf: freed via stored handle\n"))))
+
+  (return 0))
