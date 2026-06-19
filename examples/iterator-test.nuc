@@ -2,7 +2,7 @@
 ;
 ; Tests:
 ;   1. IntRangeIter with doseq (prints 1 2 3 4 5).
-;   2. I64ArrayIter -> MapIterI64 -> FilterIterI64 -> reduce chain.
+;   2. I64ArrayIter -> MapIter -> FilterIter -> reduce chain.
 ;
 ; chain: [1,2,3,4,5] -> square -> [1,4,9,16,25]
 ;                    -> keep-even -> [4,16]
@@ -13,28 +13,29 @@
 (import iterator)
 
 ; ---------------------------------------------------------------------------
-; BinaryCallI64 conformer: sums two i64 values.
+; FoldFn conformer: sums two i64 values.
 ; ---------------------------------------------------------------------------
 (defstruct SumI64 dummy:i32)
-(extend SumI64 BinaryCallI64)
-(defn foldop:i64 (self:ptr:SumI64 acc:i64 x:i64)
+(extend SumI64 (FoldFn i64 i64))
+(defn (fold i64) ((self (ref SumI64)) (acc i64) (x i64))
   (return (+ acc x)))
 
 ; ---------------------------------------------------------------------------
-; CallI64 conformer: squares an i64.
+; UnaryFn conformer: squares an i64.
 ; ---------------------------------------------------------------------------
 (defstruct SquareI64 dummy:i32)
-(extend SquareI64 CallI64)
-(defn callfn:i64 (self:ptr:SquareI64 x:i64)
+(extend SquareI64 (UnaryFn i64 i64))
+(defn (apply i64) ((self (ref SquareI64)) (x i64))
   (return (* x x)))
 
 ; ---------------------------------------------------------------------------
-; CallI64 conformer: predicate — returns 1 when x is even, else 0.
+; UnaryFn conformer: predicate — returns 1 when x is even, else 0.
+; Conforms to (UnaryFn i64 i32) as required by FilterIter.
 ; ---------------------------------------------------------------------------
 (defstruct IsEvenI64 dummy:i32)
-(extend IsEvenI64 CallI64)
-(defn callfn:i64 (self:ptr:IsEvenI64 x:i64)
-  (return (cast i64 (= (% x (cast i64 2)) (cast i64 0)))))
+(extend IsEvenI64 (UnaryFn i64 i32))
+(defn (apply i32) ((self (ref IsEvenI64)) (x i64))
+  (return (cast i32 (= (% x (cast i64 2)) (cast i64 0)))))
 
 ; ---------------------------------------------------------------------------
 ; Helper: run the chain test and return the sum.
@@ -45,19 +46,19 @@
         (ev  (ref IsEvenI64))  (alloca IsEvenI64)
         (sm  (ref SumI64))     (alloca SumI64)
         (src (ref I64ArrayIter)) (alloca I64ArrayIter)
-        (mi  (ref (MapIterI64 I64ArrayIter SquareI64)))
-             (alloca (MapIterI64 I64ArrayIter SquareI64))
-        (fi  (ref (FilterIterI64 (MapIterI64 I64ArrayIter SquareI64) IsEvenI64)))
-             (alloca (FilterIterI64 (MapIterI64 I64ArrayIter SquareI64) IsEvenI64)))
+        (mi  (ref (MapIter I64ArrayIter SquareI64)))
+             (alloca (MapIter I64ArrayIter SquareI64))
+        (fi  (ref (FilterIter (MapIter I64ArrayIter SquareI64) IsEvenI64)))
+             (alloca (FilterIter (MapIter I64ArrayIter SquareI64) IsEvenI64)))
     (.set! src data arr)
     (.set! src pos  (cast usize 0))
     (.set! src len  (cast usize 5))
     (memcpy (cast ptr (.& mi source)) (cast ptr src) (cast i64 (sizeof I64ArrayIter)))
     (memcpy (cast ptr (.& mi f))      (cast ptr sq)  (cast i64 (sizeof SquareI64)))
     (memcpy (cast ptr (.& fi source)) (cast ptr mi)
-            (cast i64 (sizeof (MapIterI64 I64ArrayIter SquareI64))))
+            (cast i64 (sizeof (MapIter I64ArrayIter SquareI64))))
     (memcpy (cast ptr (.& fi pred)) (cast ptr ev) (cast i64 (sizeof IsEvenI64)))
-    (return (reduce-filter-map-i64 sm (cast i64 0) fi))))
+    (return (reduce sm (cast i64 0) fi))))
 
 (defn main:i32 ()
   ; ---- 1. doseq over IntRangeIter ----------------------------------------

@@ -1,0 +1,2 @@
+reduce(map sq [1,5)) = 30
+reduce(filter even (map sq [1,5))) = 20

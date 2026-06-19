@@ -1,8 +1,38 @@
 # Associated types for protocols
 
-**Status:** Design only — not yet implemented.
+**Status:** Implemented (stage11-collections branch). A0–A2 complete; see §7 below.
 **Prerequisite:** Stage 11 cleanup §4a (phantom-param tyvar-recovery fix) — done.
 **References:** parametric-structs *Known limitations #3*; cleanup §4b finding.
+
+---
+
+## 0. Revision note (syntax)
+
+An earlier draft of this document proposed a `with (Name = Var)` suffix on
+`&where` constraints and a `(type Name)` declaration inside `defprotocol`. Both
+were dropped after evaluation against the rest of the language:
+
+- **`(Name = Var)` introduced infix `=`.** Nucleus is a prefix s-expression
+  language with *no* infix syntax, and `=` is already the equality function
+  (`(= done 0)`). Spelling a binding as `(Elem = E)` overloads a value operator
+  as syntax — foreign to the language and to the reader.
+- **`with` introduced a bare in-list keyword.** Nucleus's parameter-list markers
+  are all `&`-prefixed (`&where`, `&rest`, `&optional`); there is no precedent
+  for a bare keyword *inside* a constraint.
+- **`(type Name)` and the "parametric vs associated" split were unnecessary.**
+  The conformance registry already dedups on `(type, protocol)`
+  (`conformance-add`, src/nucleusc.nuc:5964) — i.e. a type conforms to a given
+  protocol **at most once**. That *is* the associated-type coherence rule
+  ("the protocol's parameters are functionally determined by the conforming
+  type"). So every parametric-protocol parameter is recoverable; there is no
+  second flavour to distinguish.
+
+The revised surface generalizes the **existing** `&where` constraint shape
+`(Protocol Var)` to `((Protocol Arg…) Var)` — a protocol *application* in the
+slot where a bare protocol name already goes. This reuses the `extend`
+spelling verbatim, keeps the conforming variable in its existing tail position,
+keeps every constraint a 2-element list, needs no new tokens, and folds the
+deferred "parametric-protocol `&where`" frontier into the same mechanism.
 
 ---
 
@@ -47,24 +77,20 @@ phantom params on the outermost type.
 
 ### 1.2 The `&where` parser gap
 
-`&where` currently requires `(Protocol Var)` where both are **plain symbols**.
-You cannot write:
-
-```lisp
-(defn map-into ... &where ((Iterator I) with (Elem = E)))
-```
-
-The parser (`register-generic-defn`, "each &where constraint must be (Protocol
-Var)") rejects a parametric protocol name in the constraint position. This is
-the "parametric-protocol `&where` frontier" (Known limitations #3).
+`&where` currently requires `(Protocol Var)` where **both elements are plain
+symbols** (`register-generic-defn`, src/nucleusc.nuc:5110 — "each &where
+constraint must be (Protocol Var)", which rejects any constraint whose first
+element is not a symbol). You cannot name a parametric protocol in a constraint
+at all, let alone recover its element type. This is the "parametric-protocol
+`&where` frontier" (Known limitations #3).
 
 ### 1.3 What associated types solve
 
-An associated type is a type name that a protocol *exposes*, and that a
-conformer *binds* when it extends the protocol. Once `VecIter T` binds
-`Elem = T` as part of its `(Iterator T)` conformance, any generic function
-bounded on `(Iterator I)` can recover `Elem` from `I` without threading an
-extra phantom param.
+An associated type is a protocol parameter whose concrete value is **recovered
+from the conforming type** rather than re-supplied at every use site. Once
+`VecIter T` records, through its `(Iterator T)` conformance, *what it yields*,
+any generic function bounded on `(Iterator …)` can read that element type back
+out of `I` without threading an extra phantom param.
 
 The desired end state:
 
@@ -74,49 +100,44 @@ The desired end state:
   source:I
   f:F)
 
-; 'E' is derived from the Iterator conformance of I, not declared separately.
+; S and E are recovered from the conformances of I and F — not declared
+; separately, not threaded by the caller.
 (defn (next (Maybe E)) ((self (ref (MapIter I F)))
-                        &where ((Iterator I) with (Elem = E))
-                               ((CallFn F S E) with (Src = S)))
+                        &where ((Iterator S) I)
+                               ((UnaryFn S E) F))
   ...)
 ```
+
+`((Iterator S) I)` reads "`I` conforms to `Iterator`, yielding `S`";
+`((UnaryFn S E) F)` reads "`F` maps `S` to `E`". `S` and `E` flow out of the
+conformances and into the return type `(Maybe E)`.
 
 ---
 
 ## 2. Surface syntax
 
-### 2.1 Declaring an associated type in a protocol
+### 2.1 Declaring a parametric protocol (unchanged)
 
-Use a `(type Name)` declaration inside `defprotocol`, before the methods:
+No new declaration syntax. A protocol with parameters beyond `Self` is written
+exactly as it is today (parametric protocols already shipped in Stage 11):
 
 ```lisp
 (defprotocol (Iterator Elem)
-  (type Elem)
   ((next (Maybe Elem)) ((self (ref Self)))))
 ```
 
-The `(type Elem)` line declares that `Elem` is an **associated type** of this
-protocol. The position of `Elem` in the `(Iterator Elem)` parameter list still
-matters (it is the first — and for this protocol, only — extra param). The
-`(type ...)` declaration signals that this param is *associated* (bound by the
-conformer) rather than *parametric* (supplied at every use site).
+`Elem` is a free type name in the required-method signatures, bound positionally
+at the `extend` site. There is **no `(type …)` marker** — every parameter of a
+parametric protocol is an associated type, because the conformance registry
+already permits at most one conformance per `(type, protocol)` pair
+(`conformance-add`, src/nucleusc.nuc:5964). The protocol's parameters are
+therefore functionally determined by the conforming type, which is precisely
+what makes them recoverable.
 
-**Decision:** Use `(type Name)` rather than a sigil like `#Elem`. The `(type
-...)` form is explicit, consistent with Nucleus's sexp style, and unambiguous
-at the parser level — it is a list with head `type`, which is not a valid
-method signature shape. A sigil `#Elem` would require a new reader token type
-and complicates the parametric-protocol parameter list parsing.
+### 2.2 Conformance: binding the associated type (unchanged source)
 
-For backward compatibility, **a protocol with no `(type ...)` declarations
-remains purely parametric** — `(extend T (Protocol Arg))` syntax is unchanged.
-A protocol with a `(type ...)` declaration gains the associated-type semantics
-described below.
-
-### 2.2 Conformance: binding the associated type
-
-When a type extends a protocol that has associated types, the associated type is
-bound by the conformance declaration. The existing `(extend T (Protocol Arg))`
-syntax already carries this information — no new syntax is needed:
+The existing `extend` form already carries the binding positionally — no new
+syntax:
 
 ```lisp
 ; VecIter T conforms to (Iterator T) — so Elem is bound to T.
@@ -126,46 +147,37 @@ syntax already carries this information — no new syntax is needed:
 (extend IntRangeIter (Iterator i32))
 ```
 
-The associated type binding is: for each `(type Name)` declared in the
-protocol, the corresponding positional argument in the `(Protocol Arg...)` list
-in the `extend` form is the concrete type.
+The only *implementation* change is that the conformance record must now
+**retain** the bound arguments (today it discards them — see §3.1); the source
+form is identical.
 
-For `(Iterator Elem)`, `Elem` is the first (and only) extra param, so the first
-argument to `(Iterator ...)` in the `extend` form is the bound value of `Elem`.
+### 2.3 Using the associated type in `&where` bounds — the one new shape
 
-**No new syntax in `extend`.** The conformance record stored in `g-conformances`
-gains an associated-type binding map, but the source form is unchanged.
+Generalize the existing constraint shape
 
-### 2.3 Method signatures within the protocol
-
-Inside the protocol body, `Elem` is used as a free type name in method
-signatures. This is unchanged from the current parametric-protocol form:
-
-```lisp
-(defprotocol (Iterator Elem)
-  (type Elem)
-  ((next (Maybe Elem)) ((self (ref Self)))))
+```
+constraint ::= (Protocol Var)              ; today — Protocol is a bare symbol
 ```
 
-When the protocol is stamped for a concrete conforming type, `Elem` resolves to
-the bound value from the conformance record.
+to allow a **protocol application** in the protocol slot:
 
-### 2.4 Using the associated type in `&where` bounds
-
-The key new syntax: inside a `&where` clause, a bound on a protocol with
-associated types may optionally bind the associated type to a local tyvar:
-
-```lisp
-&where ((Iterator I) with (Elem = E))
+```
+constraint ::= (Protocol Var)              ; plain protocol, no parameters
+             | ((Protocol Arg…) Var)       ; parametric protocol; each Arg
+                                           ;   recovers or constrains a parameter
 ```
 
-This reads: "I conforms to `Iterator`, and the associated type `Elem` of that
-conformance is bound to the tyvar `E` in this function's scope."
+The conforming variable `Var` stays in **tail position**, exactly as in
+`(Ord T)`. The protocol slot — element 0 — may now be a list `(Protocol Arg…)`
+instead of a bare symbol. Each `Arg` is matched positionally against the
+parameters in the protocol's head (`(Iterator Elem)` → first arg is `Elem`),
+mirroring how `extend` already binds them.
 
-Multiple associated types in a single bound (not covered in this spec — see
-§7.1) would use additional `(Name = V)` pairs.
+This is the **same spelling as `extend`'s protocol application** — `(Iterator T)`
+at the `extend` site, `(Iterator S)` at the `&where` site — so there is one
+protocol-application notation across the language, not two.
 
-A complete `defn` using this syntax:
+A complete `defn`:
 
 ```lisp
 (defstruct (MapIter I F)
@@ -173,27 +185,61 @@ A complete `defn` using this syntax:
   f:F)
 
 (defn (next (Maybe E)) ((self (ref (MapIter I F)))
-                        &where ((Iterator I) with (Elem = E))
-                               ((Fn1 F E S) with (Src = S) (Dst = E)))
+                        &where ((Iterator S) I)
+                               ((UnaryFn S E) F))
   (let ((res (Maybe S)) (next (.& self source)))
     (match res
-      ((some v) (return (some (invoke (.& self f) v))))
+      ((some v) (return (some (apply (.& self f) v))))
       (none (return none)))))
 ```
 
-When `MapIter` is stamped for a concrete `I=VecIter.i32`, the compiler:
-1. Looks up the `(Iterator I)` conformance for `VecIter.i32`.
-2. Reads the associated-type binding: `Elem = i32`.
-3. Binds `E = i32` in the method's tyvar scope.
-4. The return type `(Maybe E)` resolves to `(Maybe i32)`.
+where the function-object protocol is itself an ordinary parametric protocol:
 
-### 2.5 Standalone generic functions bounded by associated type
+```lisp
+(defprotocol (UnaryFn Arg Ret)
+  ((apply Ret) ((self (ref Self)) (x Arg))))
 
-Associated-type `&where` also works in standalone generic functions:
+(defstruct Double dummy:i32)
+(defn (apply i64) ((self (ref Double)) (x i64)) (return (* x (cast i64 2))))
+(extend Double (UnaryFn i64 i64))
+```
+
+When `MapIter` is stamped for a concrete `I = VecIter.i32`, `F = Double`, the
+compiler:
+1. Binds `I = VecIter.i32`, `F = Double` from the receiver pattern (as today).
+2. Reads `VecIter.i32`'s `Iterator` conformance and recovers its element →
+   binds `S = i32`.
+3. Reads `Double`'s `UnaryFn` conformance: arg `i64`, ret `i64`. The arg
+   position carries the already-determined `S`, so it is **checked** (`i64` must
+   equal `S = i32` — here it would mismatch and is a clean error; with a matching
+   `VecIter.i64` source it succeeds). The ret position carries the undetermined
+   `E`, so it is **recovered** → binds `E = i64`.
+4. The return type `(Maybe E)` resolves to `(Maybe i64)`.
+
+### 2.4 Recover vs. constrain is decided by the argument, not the protocol
+
+An `Arg` in a constraint's protocol application is **recovered** when it is an as
+yet unbound type variable, and **constrained** (checked for equality) when it is
+already bound or concrete. This is exactly how `generic-method-bind` /
+`unify-tpat` already treat positional arguments in a receiver pattern
+(src/nucleusc.nuc:5176). It means a single mechanism covers both:
+
+```lisp
+&where ((Iterator S) I)     ; S unbound here → recover the element type of I
+&where ((Iterator i32) I)   ; i32 concrete  → require that I yields exactly i32
+```
+
+The second form is the deferred "parametric-protocol `&where`" frontier
+(cleanup §4 residual constraint, parametric-structs Known limitation #3). It
+falls out of this design for free; it is no longer a separate exclusion.
+
+### 2.5 Standalone generic functions
+
+The same shape works in standalone generic functions:
 
 ```lisp
 (defn collect-all ((it (ref I)) (out (ref (Vector E)))
-                   &where ((Iterator I) with (Elem = E)))
+                   &where ((Iterator E) I))
   (let (done:i32 0)
     (while (= done 0)
       (let ((item (Maybe E)) (next it))
@@ -202,7 +248,8 @@ Associated-type `&where` also works in standalone generic functions:
           (none (set! done 1)))))))
 ```
 
-Here `E` is derived automatically from `I`'s conformance, so the caller writes:
+Here `E` is recovered from `I`'s conformance, so the caller writes no element
+param:
 
 ```lisp
 (let ((v (ref (Vector i32))) (alloca (Vector i32)))
@@ -212,258 +259,312 @@ Here `E` is derived automatically from `I`'s conformance, so the caller writes:
     (collect-all it v)))
 ```
 
-No phantom param for the element type.
+Note `((Iterator E) I)` is *both* a bound (I must conform to `Iterator`) and an
+extraction (E := I's element). One constraint, both jobs — the same way
+`(Ord T)` both bounds and names `T` today.
 
 ---
 
 ## 3. Stamping and conformance-checking changes
 
-### 3.1 `g-conformances` registry format
+### 3.1 `Conformance` registry format
 
-Currently `g-conformances` stores `(conforming-type, protocol-name, extra-args)`
-tuples. The extra-args carry the positional arguments from `(extend T (Protocol
-A B ...))`.
+The concrete-conformance record (`Conformance`, src/nucleusc.nuc:378) today
+holds only `{type-name, proto-name}`; the parametric arguments in
+`(extend IntRangeIter (Iterator i32))` are checked by `emit-extend` and then
+**discarded**. Recovery is impossible until they are retained.
 
-**Change:** extend each conformance entry with an **associated-type binding map**:
+**Change:** add a positional argument array to each conformance record:
 
 ```
-g-conformances entry:
-  { conforming-type    ; concrete type key (e.g. "VecIter.i32")
-    protocol-name      ; e.g. "Iterator"
-    extra-args         ; list of concrete types (positional, as today)
-    assoc-bindings     ; (name → concrete-type) for each (type Name) in protocol
-  }
+Conformance:
+  type-name      ; concrete type key (e.g. "VecIter.i32")
+  proto-name     ; e.g. "Iterator"
+  args           ; ptr array of Type* (or type-spelling Node*), one per
+                 ;   protocol parameter, in head order; null/empty for a
+                 ;   plain (non-parametric) protocol
+  nargs
 ```
 
-For `(extend (VecIter T) (Iterator T))` with `T` stamped to `i32`:
-- `extra-args = [i32]`
-- `assoc-bindings = {Elem → i32}`
+For `(extend (VecIter T) (Iterator T))` stamped with `T = i32`: `args = [i32]`.
+For `(extend IntRangeIter (Iterator i32))`: `args = [i32]`.
 
-The `assoc-bindings` map is populated at `emit-extend` time, immediately after
-the extra-args are bound. For each `(type Name)` declared in the protocol (in
-order), the corresponding positional extra-arg is the concrete type, and the
-binding `Name → concrete-type` is stored.
+The dedup rule in `conformance-add` (src/nucleusc.nuc:5965) is unchanged: still
+one record per `(type, proto)`. A second `extend` of the same `(type, proto)`
+with *different* args is a coherence error (today it is silently dropped; with
+recovery it must be rejected, since recovery would be ambiguous). For a plain
+protocol with no parameters, `args` is empty and everything behaves as before.
 
-The `assoc-bindings` map is **keyed by the associated-type name** (a string),
-**valued by a type node** (the same representation as an extra-arg).
+The `TmplConformance` record (src/nucleusc.nuc:388) already retains the binding
+pattern as `Node*`s; the new work is only to **propagate** those, substituted to
+concrete types, into the per-instance `Conformance` recorded at stamp time
+(`tmpl-conformance-check-instance`, src/nucleusc.nuc:2398) instead of dropping
+them.
 
 ### 3.2 `emit-extend` changes
 
-`emit-extend` currently validates that the extra-args count matches the
-protocol's param count, then stores the conformance.
+`emit-extend` (src/nucleusc.nuc:6230 calls `conformance-add`) currently validates
+the parametric-arg count against the protocol's param count, substitutes them to
+check the required methods, and then records only `(type, proto)`.
 
-**Add:** after storing the conformance, build the `assoc-bindings` map. Walk
-the protocol's `(type ...)` declarations in order; for each one, record
-`name → extra-args[i]` in the map.
+**Change:** pass the resolved argument list through to `conformance-add` so it is
+stored in the new `args` field. No source-syntax change. For a template extend,
+`tmpl-conformance-add` already stores the pattern; the per-stamp path records the
+substituted concrete args.
 
-If the protocol has no `(type ...)` declarations, the map is empty and the
-behaviour is unchanged.
+### 3.3 `&where` parser changes (`register-generic-defn`)
 
-**No change to source syntax** — the `(extend T (Protocol A))` form is identical.
-
-### 3.3 `&where` parser changes
-
-Currently `register-generic-defn` parses `&where` constraints as a flat list
-of `(Protocol Var)` pairs, failing on any other shape.
-
-**Change:** extend the parser to accept an optional `with (Name = Var)...`
-suffix in a constraint:
+Today the constraint loop (src/nucleusc.nuc:5108) requires each constraint to be
+a 2-list of two symbols. Generalize element 0:
 
 ```
-constraint ::= (Protocol Var)
-             | (Protocol Var) with (Name = Var) ...
+for each constraint (C V):
+  require it is a 2-list and V is a symbol            ; V = conforming variable
+  if C is a symbol:        plain protocol, no args    ; (unchanged path)
+  if C is a list (P A…):   P is the protocol name (symbol),
+                           A… are the argument patterns
 ```
 
-The `with` keyword is checked after the `(Protocol Var)` pair is parsed. If
-present, each `(Name = Var)` pair registers an associated-type tyvar binding
-for this constraint.
+For the parametric case, register `V` as a constraint variable (as today) and
+additionally **collect any type variables appearing in `A…`** into the method's
+tyvar set (`collect-pattern-tyvars` over each `A`, the same helper already used
+for parameter patterns). Store, per constraint, the protocol name, the
+conforming variable, and the argument-pattern nodes.
 
-These bindings are stored alongside the `&where` constraint in the generic
-function's descriptor (the `g-generic-defns` entry), as a list of
-`(assoc-name, local-tyvar-name)` pairs per constraint.
+Because the assoc tyvars (`S`, `E`) now appear literally as nodes inside the
+constraint, the capacity sizing (`count-pattern-nodes`, src/nucleusc.nuc:5097)
+must also walk the constraint argument nodes. With that, **no special "one extra
+slot per associated binding" accounting is needed** — assoc tyvars are sized and
+collected by the same node-walk as every other tyvar. (This is simpler than the
+earlier draft's separate slot bookkeeping.)
 
-### 3.4 `unify-tpat` changes
+### 3.4 Determination check (`register-generic-defn`)
 
-`unify-tpat` recursively unifies a type pattern against a concrete type,
-collecting tyvar bindings. It is called during method dispatch to bind the
-receiver's tyvars.
+The existing check (src/nucleusc.nuc:5133) rejects any declared tyvar "not
+determined by some parameter" (return-only tyvars need `dyn`, deferred). An
+assoc tyvar like `S`/`E` is *not* determined by a parameter directly — it is
+determined transitively, by being recovered from a constraint whose conforming
+variable is itself determined.
 
-**Add:** after unifying the receiver type pattern and collecting the standard
-tyvar bindings, check whether any `&where` constraints have associated-type
-bindings. For each such constraint `((Protocol V) with (Name = W))`:
+**Change:** compute determination as a **fixpoint**:
 
-1. Look up `V`'s concrete binding from the just-unified receiver bindings.
-   (If `V` is the receiver type itself, it is already concrete.)
-2. Look up the conformance of that concrete type in `g-conformances` for
-   `Protocol`.
-3. Read `assoc-bindings[Name]` from that conformance entry — this is the
-   concrete type for `Name`.
-4. Bind `W → concrete-type` in the current tyvar environment.
+1. Seed: every tyvar bound by a parameter pattern is determined.
+2. Repeat until no change: for each constraint `((Proto Arg…) V)` whose `V` is
+   determined, every tyvar that appears in a recoverable `Arg` position becomes
+   determined.
+3. Any tyvar still undetermined after the fixpoint is the existing error
+   (return/constraint-only with no anchor → needs `dyn`).
 
-This is done **after** the standard positional unification, so the associated
-bindings augment rather than replace it.
+This keeps the typo-catching guarantee (an undetermined tyvar is still an error)
+while admitting the new transitive case.
+
+### 3.5 `unify-tpat` / dispatch-time binding
+
+`unify-tpat` (src/nucleusc.nuc:5176) binds the receiver/parameter tyvars from the
+concrete argument tuple. After it has run the standard positional unification,
+resolve the constraints to a fixpoint (mirroring §3.4, but now filling concrete
+`Type*`s):
+
+Repeat until no new binding:
+- For each constraint `((Proto Arg…) V)` whose `V` is now bound to a concrete
+  type `CV`:
+  1. Look up `CV`'s `Conformance` for `Proto` (the new `args`-bearing record).
+  2. For each `Arg[i]` paired with the conformance's `args[i]`: if `Arg[i]` is an
+     unbound tyvar, bind it to `args[i]` (**recover**); otherwise unify the two
+     (**constrain**), failing on mismatch.
+
+A fixpoint is required because one constraint's recovered tyvar can be another
+constraint's input (`S` recovered from `((Iterator S) I)` is then checked against
+`((UnaryFn S E) F)`). The recovered bindings augment the standard ones and flow
+unchanged through `generic-method-bind` → `generic-instantiate` →
+`monomorphize-form` — they are just more names in the same substitution map.
 
 **Error cases:**
-- If the concrete type for `V` does not conform to `Protocol`: emit a
-  "does not conform to Protocol" diagnostic (the existing missing-conformance
-  path), not a crash.
-- If `Protocol` has no `(type Name)` declaration: emit a diagnostic "Protocol
-  has no associated type 'Name'".
+- `CV` does not conform to `Proto`: the existing missing-conformance diagnostic.
+- The conformance record has no `args` (a stale conformance recorded before this
+  feature): "conformance for *Proto* was recorded without parameter bindings;
+  recompile" — see migration §4.
+- A `constrain` step mismatches (e.g. `S` recovered as `i32` but `F` maps `i64`):
+  a clear "constraint *Proto* parameter mismatch: expected S = i32, found i64".
 
-### 3.5 `register-generic-defn` changes
+### 3.6 `generic-resolve` / `generic-instantiate` — no structural change
 
-`register-generic-defn` builds the tyvar array for a generic function. The
-array is currently sized by `count-pattern-nodes` over the parameter types (the
-fix from cleanup §4a).
+Once §3.5 binds the assoc tyvars, the monomorphizer substitutes them by name like
+any other tyvar. No change beyond the `unify-tpat` augmentation.
 
-**Add:** for each `&where` constraint that has `with (Name = Var)` bindings,
-include one additional tyvar slot per associated binding. This accounts for
-tyvars that appear only in associated-type positions, not in any parameter
-type pattern.
+### 3.7 Conformance check at stamp time — unchanged
 
-These extra tyvars are initialised to unbound and filled by `unify-tpat` at
-dispatch time (§3.4).
-
-### 3.6 `generic-resolve` / `generic-instantiate` changes
-
-`generic-resolve` selects a generic method, then `generic-instantiate`
-substitutes the concrete tyvars into the method body via `monomorphize-form`.
-
-**No structural change** is needed in `generic-resolve` beyond the `unify-tpat`
-augmentation in §3.4 — once the associated-type tyvars are bound by
-`unify-tpat`, they flow through `generic-method-bind` → `generic-instantiate`
-→ `monomorphize-form` unchanged. The monomorphiser already handles any
-recovered tyvar by name lookup; the associated-type tyvars are just more names
-in the same map.
-
-### 3.7 Conformance check at stamp time
-
-`struct-template-stamp-types` already calls `emit-extend` to check that a
-stamped instance satisfies its declared `extend` forms. This is unchanged.
-
-**What is new:** when a generic function is dispatched for a stamped type and
-that dispatch path traverses an associated-type `&where` constraint, the
-associated-type binding lookup (§3.4) must succeed. If it fails (the conformance
-exists but has no `assoc-bindings` — i.e. was registered before this feature),
-the error is "conformance for Protocol was registered without associated-type
-bindings; re-extend or recompile". This handles transitional states during
-migration (§4.1).
+`struct-template-stamp-types` → `tmpl-conformance-check-instance`
+(src/nucleusc.nuc:2398) already checks a stamped instance against its `extend`
+forms. The new work (§3.1/§3.2) is only that this path now *stores* the
+substituted args in the per-instance `Conformance`, making them available to
+§3.5 later.
 
 ---
 
 ## 4. Migration path
 
-### 4.1 Existing `(extend T (Protocol A))` forms
+### 4.1 Existing `(extend …)` forms
 
-All existing conformances continue to work. The `assoc-bindings` map is
-populated automatically from the `(type ...)` declarations in the protocol
-definition and the positional extra-args in the `extend` form. The source
-syntax is identical.
-
-When an existing protocol gains a `(type Name)` declaration, all `(extend ...)`
-forms that reference it are re-evaluated at compile time and the `assoc-bindings`
-map is populated. No source changes to conformers are needed.
-
-For the `Iterator` protocol specifically: `(extend IntRangeIter (Iterator i32))`
-becomes, after the protocol gains `(type Elem)`, a conformance with
-`assoc-bindings = {Elem → i32}`. The source line is unchanged.
+All existing conformances continue to work; the source syntax is identical. The
+`args` field is populated automatically from the protocol's parameter list and
+the positional arguments already present in the `extend` form. No conformer
+source changes. Because parametric protocols already shipped, there is no
+"protocol gains parameters" retrofit — the parameters were always there; only
+their *retention* in the conformance record is new.
 
 ### 4.2 Existing concrete-element combinators
 
-`MapIterI64`, `FilterIterI64`, etc., in `lib/iterator.nuc` are fully
-specialised to `i64` elements and use no phantom params. They are unaffected
-by this change and continue to compile and run.
+`MapIterI64`, `FilterIterI64`, etc., in `lib/iterator.nuc` are fully specialised
+to `i64` elements and use no phantom params. They are unaffected and continue to
+compile and run.
 
 ### 4.3 Phantom-param verbose forms
 
 The `MapIterVerbose I F S E` pattern from `examples/phantom-tyvar-test.nuc`
-continues to compile and run. It is the explicit threading workaround. Once
-associated types are implemented, new code should prefer the two-param form
-`(MapIter I F)` with `&where` associated-type extraction; existing verbose forms
-need not be rewritten.
+continues to compile and run. Once associated types land, new code should prefer
+the two-param `(MapIter I F)` with `&where ((Iterator S) I) ((UnaryFn S E) F)`;
+existing verbose forms need not be rewritten.
 
-### 4.4 The `&where` parser backward compatibility
+### 4.4 `&where` parser backward compatibility
 
-Existing `&where (Protocol Var)` constraints require no `with` clause and are
-parsed identically. The `with` suffix is optional.
+Existing `&where (Protocol Var)` constraints (both symbols) parse identically —
+they are the `C is a symbol` branch of §3.3. The protocol-application branch is
+purely additive.
+
+### 4.5 Stale conformance records across units
+
+A `.nuch` produced before this feature records conformances without the `args`
+field. Two acceptable handling rules (pre-release; pick at implementation time):
+either (a) the importer re-runs `emit-extend` for imported `extend` forms so the
+`args` are repopulated from the freshly-read protocol shape, or (b) bump the
+`.nuch` format version and require recompiling libraries whose conformances are
+consumed by an associated-type bound. The §3.5 "recorded without parameter
+bindings" diagnostic catches the un-migrated case cleanly rather than crashing.
 
 ---
 
 ## 5. Out of scope
 
-- **Multiple associated types per protocol.** The spec handles exactly one
-  `(type ...)` declaration per protocol. Multiple associated types require a
-  more complex conformance-binding map and disambiguation rules when two
-  protocols expose types with the same name; deferred.
+- **Higher-kinded associated types.** A parameter that is itself parametric
+  (`Elem = (Maybe T)` with `T` free, recovered) requires higher-kinded
+  unification; deferred. Concrete and fully-applied args (`(Maybe i32)`) are
+  fine.
 
-- **Higher-kinded types.** An associated type that is itself parametric (e.g.,
-  `Elem = (Maybe T)` where `T` is free) requires higher-kinded unification;
-  deferred.
+- **Lambdas and closures.** The function-object type `F` in combinators is always
+  a named struct conforming to a `UnaryFn`/`BinaryFn`-style protocol; anonymous
+  closures are a separate stage.
 
-- **Lambdas and closures.** The `F` (function object) type in combinators
-  is always a named struct type conforming to a `Fn1`/`CallFn` protocol;
-  anonymous function objects are a separate stage.
+- **Multi-conformance with differing args.** A type conforming to one protocol
+  with two different parameterizations (Rust's generic-trait multi-impl) stays
+  forbidden — it is already forbidden by the `(type, proto)` dedup, and recovery
+  requires that single-conformance coherence.
 
 - **`get`/`keys`/`vals` as protocol methods on `Assoc`.** These return derived
-  types (`(Maybe V)`, the key iterator type). Making them protocol methods would
-  require associated types on `Assoc` as well; this spec covers `Iterator`
-  only. `hmap-get` etc. remain standalone generic functions for now.
-
-- **`&where` bounds on parametric protocols without associated types.** The
-  parser still requires a plain-symbol protocol name in `(Protocol Var)` when
-  `Protocol` is fully parametric (no `(type ...)` declarations). The
-  `with (Name = Var)` extension handles only the associated-type case. The
-  general parametric-protocol `&where` constraint (e.g., bounding on
-  `(Seq i32)`) remains deferred.
+  types (`(Maybe V)`, a key-iterator type). Making them protocol methods is now
+  *mechanically* possible under this design (their result types are recoverable
+  parameters of an `Assoc K V` protocol), but lifting `hmap-get` etc. from
+  standalone generics to protocol methods is its own task; this spec lands the
+  `Iterator`/function-object combinator path first.
 
 ---
 
 ## 6. Open questions
 
-**Q1: Ambiguous associated type when a type conforms to multiple protocols with
-the same associated-type name.**
+**Q1: Same parameter recovered from two protocols a type conforms to.**
 
-If `VecIter T` conforms to both `(Iterator T)` and `(DoubleIterator T)`, and
-both declare `(type Elem)`, then `&where ((Iterator I) with (Elem = E))` is
-unambiguous (the protocol name disambiguates). But if a future generic function
-writes `Elem` without a qualifying protocol, the compiler has no basis for
-selection. **Decision needed at implementation time:** either (a) require the
-qualifying `with` clause whenever there is ambiguity, emitting a diagnostic if
-`Elem` is used unqualified and is ambiguous; or (b) require unique associated-type
-names within a single conforming type across all protocols (a global constraint,
-easier to check but restrictive).
+A type may conform to both `(Iterator T)` and `(DoubleIterator T)`. A constraint
+names the protocol explicitly — `((Iterator S) I)` vs `((DoubleIterator S) I)` —
+so recovery is never ambiguous *as written*. There is no unqualified-`Elem` form
+in this design (unlike the earlier draft's `(type Elem)`), so the ambiguity the
+earlier draft worried about cannot arise. **No decision needed.**
 
-**Q2: Associated-type extraction for a conformance that was stamped before the
-protocol gained `(type ...)` declarations.**
+**Q2 (resolved): return-position assoc tyvars.** `E` in `(next (Maybe E))`
+appears in the return type *before* the `&where` clause binds it. This is already
+handled: `register-generic-defn` collects tyvars from the return type
+(src/nucleusc.nuc:5131) and sizes capacity by node count (5100). With §3.3, `E`
+also appears inside the constraint `((UnaryFn S E) F)`, so it is declared there
+too, and §3.4's fixpoint marks it determined. The only genuinely new machinery
+is §3.5's conformance-driven binding.
 
-If `lib/iterator.nuc` is compiled with the old `(Iterator E)` (no `(type
-Elem)`), and then a downstream unit imports it and references a `(type Elem)`
-declaration, the imported conformance records have no `assoc-bindings`. The
-import/re-stamp path (`nuch` import) must re-evaluate `extend` forms on import
-to populate `assoc-bindings` from the newly-declared protocol shape.
-**Decision needed:** whether the importer triggers a re-`emit-extend` for all
-known conformances of that protocol when the protocol definition changes on
-import, or whether a simpler rule (recompile the library when its protocol gains
-associated types) is acceptable in pre-release.
+**Q3 (resolved): order of binding across interdependent constraints.** Handled by
+the §3.4 / §3.5 fixpoint: constraints are resolved repeatedly until no new tyvar
+is bound, so a parameter recovered by one constraint (`S`) can serve as input to
+another (`((UnaryFn S E) F)`) regardless of textual order.
 
-**Q3: Order of evaluation when `E` appears in a parameter type before the
-`&where` clause that defines it.**
+**Q4: cross-unit conformance-arg propagation.** §4.5 lists two migration rules
+for stale `.nuch` records. Decide at implementation time whether the importer
+re-runs `emit-extend` (rule a) or the format version bumps (rule b). Rule (b) is
+simpler and acceptable in pre-release; rule (a) is more robust for mixed-version
+imports.
 
-In:
+**Q4 decision taken (implementation):** Rule (a) — the `.nuch` importer re-runs
+`emit-extend` for imported `extend` forms, repopulating `args` from the freshly-
+read protocol shape. Concrete parametric extends from importers work correctly.
+Template-subject extends (free tyvars in the exporter's `(extend (Vector T) (Seq T))`
+form) are re-registered as `TmplConformance` records; the per-instance `Conformance`
+with substituted concrete args is produced at stamp time in the importing unit. This
+is a pre-existing limitation (the template is re-registered, not the already-stamped
+instances from the exporter), surfaced by A0 but not introduced by it.
 
-```lisp
-(defn (next (Maybe E)) ((self (ref (MapIter I F)))
-                        &where ((Iterator I) with (Elem = E)))
-  ...)
-```
+---
 
-`E` appears in the return type `(Maybe E)` before `&where` establishes it. The
-tyvar `E` must be registered at declaration time (from the `&where` clause) so
-that `register-generic-defn` includes a slot for it, and then bound at dispatch
-time (by `unify-tpat`). The existing `count-pattern-nodes` sizing (§4a fix)
-handles parameter-position tyvars; return-position tyvars are currently sized
-by `defn-has-receiver-tyvars`. **Verify at implementation time** that
-associated-type tyvars appearing only in the return type are also included in
-the tyvar array. The §3.5 fix (one extra slot per `with (Name = Var)`) should
-cover this, but the interaction with `defn-has-receiver-tyvars` needs
-explicit testing.
+## 7. Robot — implementation status
+
+**What landed (A0–A2, stage11-collections branch):**
+
+- **A0 — Conformance arg retention.** `Conformance` struct gained `args:ptr` and
+  `nargs:i32` fields. `conformance-add` stores the resolved protocol-application
+  arguments and enforces coherence (a second `extend` of the same `(type, proto)`
+  pair with *differing* args is now an error rather than a silent no-op). At stamp
+  time, `tmpl-conformance-check-instance` propagates the substituted concrete args
+  into the per-instance `Conformance`. Bootstrap byte-identical.
+
+- **A1 — `&where` parser.** `register-generic-defn`'s constraint loop now accepts
+  `((Protocol Arg…) Var)` as well as the existing `(Protocol Var)`. Argument-pattern
+  nodes are collected into new `con-args`/`con-nargs` fields on `Method`. The tyvar
+  set is sized and populated by walking constraint arg nodes through the existing
+  `count-pattern-nodes`/`collect-pattern-tyvars` helpers (no separate slot
+  accounting). The determination check is extended to a fixpoint: parameter-
+  determined tyvars seed it; tyvars recovered from a determined constraint variable's
+  conformance position become determined; anything still undetermined after
+  convergence is the existing error. Bootstrap byte-identical.
+
+- **A2 — Dispatch-time binding.** After the standard positional unification in
+  `generic-method-bind`/`unify-tpat`, a fixpoint resolves the parametric constraints:
+  for each `((P Arg…) V)` whose `V` is bound to a concrete type `CV`, the conformance
+  record's `args` are paired with `Arg…` — unbound tyvars are recovered, concrete/
+  bound args are constrained (checked). The recovered bindings augment `out-bound` and
+  flow unchanged through `generic-instantiate`/`monomorphize-form`. Clear diagnostics
+  for missing conformance and constraint mismatch. Bootstrap byte-identical.
+
+- **A3 — Examples, tests, docs.** `examples/assoc-types.nuc` and
+  `tests/expected/assoc-types.out` cover: the `MapIter`/`UnaryFn` phantom-free
+  combinator; `collect-all` (§2.5 standalone generic with `&where ((Iterator E) I)`);
+  `sum-i32-iter` (constrain case — `((Iterator i32) I)` checks not recovers); a
+  commented error case showing the constraint-mismatch diagnostic. The test is
+  auto-discovered by `tests/run-tests.sh` (no `.nuc.fail` harness exists).
+
+**Open questions resolved:**
+
+- **Q2 (return-position assoc tyvars):** resolved-as-designed. `E` in
+  `(next (Maybe E))` appears in the return type before the `&where` clause; this is
+  fine because `register-generic-defn` already collects tyvars from the return type,
+  and the fixpoint (§3.4) marks `E` determined via the constraint.
+
+- **Q3 (order of binding across interdependent constraints):** resolved-as-designed.
+  The fixpoint handles any textual order; `S` recovered from `((Iterator S) I)` is
+  available as input to `((UnaryFn S E) F)` after one pass.
+
+- **Q4 (cross-unit conformance args):** rule (a) taken — the importer re-runs
+  `emit-extend` so args are repopulated from the freshly-read protocol shape.
+  Template-subject extends re-register as `TmplConformance`; per-instance
+  conformances with concrete args are produced at stamp time in the importing unit.
+  This is a pre-existing limitation for cross-unit template stamps, not introduced
+  by this feature.
+
+**Known remaining limitation:** the `get`/`keys`/`vals` as `Assoc` protocol methods
+uplift (§5 out-of-scope item) is mechanically enabled but remains a separate task.
+The `&where` on a parametric protocol is now fully implemented; the pre-existing
+"standalone `&where ((Seq E) Self)`" limitation noted in earlier progress tables is
+resolved.

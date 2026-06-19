@@ -18,8 +18,8 @@
 ;   `invoke` and `invoke2` dispatch statically to the concrete method based on
 ;   the first argument's type. There is no runtime vtable dispatch. MapIter and
 ;   FilterIter are parametric on their function-object types (F) so the concrete
-;   invoke method is selected at stamp time. reduce-* functions use &where to
-;   declare their fold tyvar G as bounded by BinaryCall.
+;   invoke method is selected at stamp time. reduce uses &where to declare its
+;   fold tyvar G as bounded by FoldFn and element type S recovered from I.
 
 (include stdio)
 (import seq)
@@ -71,103 +71,73 @@
     (return (some v))))
 
 ; ---------------------------------------------------------------------------
-; 4. MapIterI64 I F — lazy map over a source iterator with i64 elements.
-;    I is the source iterator type (element type i64 — matched with match).
-;    F is the function-object type: must implement an i64->i64 transformation.
-;    Defined as a parametric struct so both I and F are stamped concretely.
-;
-;    The function object protocol: maps (i64) -> i64. We define a new
-;    protocol for this:
+; 4. UnaryFn Arg Ret — function objects mapping one value to another.
 ; ---------------------------------------------------------------------------
+(defprotocol (UnaryFn Arg Ret)
+  ((apply Ret) ((self (ref Self)) (x Arg))))
 
-; Unary i64 function protocol: maps one i64 arg to one i64 result.
-(defprotocol CallI64
-  (callfn:i64 (self:ptr:Self x:i64)))
+; ---------------------------------------------------------------------------
+; 5. FoldFn Acc Elem — binary fold: (acc, elem) -> acc.
+; ---------------------------------------------------------------------------
+(defprotocol (FoldFn Acc Elem)
+  ((fold Acc) ((self (ref Self)) (acc Acc) (x Elem))))
 
-; MapIterI64 I F: source stores I by value; f stores F by value.
-; Element type is i64 (result of callfn applied to source element).
-(defstruct (MapIterI64 I F)
+; ---------------------------------------------------------------------------
+; 6. MapIter I F — generic lazy map. S (source element) and E (result element)
+;    are recovered at stamp time from I's and F's conformances.
+; ---------------------------------------------------------------------------
+(defstruct (MapIter I F)
   source:I
   f:F)
 
-(extend (MapIterI64 I F) (Iterator i64))
-
-(defn (next (Maybe i64)) ((self (ref (MapIterI64 I F))))
-  (let ((res (Maybe i64)) (next (.& self source)))
+(defn (next (Maybe E)) ((self (ref (MapIter I F)))
+                        &where ((Iterator S) I)
+                               ((UnaryFn S E) F))
+  (let ((res (Maybe S)) (next (.& self source)))
     (match res
-      ((some v)
-       (return (some (callfn (.& self f) v))))
+      ((some v) (return (some (apply (.& self f) v))))
       (none (return none)))))
 
+(extend (MapIter I F) (Iterator E)
+        &where ((Iterator S) I)
+               ((UnaryFn S E) F))
+
 ; ---------------------------------------------------------------------------
-; 5. FilterIterI64 I F — lazy filter over a source iterator with i64 elements.
-;    F is the predicate type: callfn returns i64; non-zero = keep.
+; 7. FilterIter I F — generic lazy filter. The predicate F maps S -> i32
+;    (truthy = nonzero). The element type S is unchanged from the source.
 ; ---------------------------------------------------------------------------
-(defstruct (FilterIterI64 I F)
+(defstruct (FilterIter I F)
   source:I
   pred:F)
 
-(extend (FilterIterI64 I F) (Iterator i64))
-
-(defn (next (Maybe i64)) ((self (ref (FilterIterI64 I F))))
+(defn (next (Maybe S)) ((self (ref (FilterIter I F)))
+                        &where ((Iterator S) I)
+                               ((UnaryFn S i32) F))
   (let (done:i32 0)
-    (let ((result (Maybe i64)) (make (Maybe i64) none))
+    (while (= done 0)
+      (let ((item (Maybe S)) (next (.& self source)))
+        (match item
+          ((some v)
+           (when (!= (apply (.& self pred) v) 0)
+             (return (some v))))
+          (none (return none)))))
+    (return none)))
+
+(extend (FilterIter I F) (Iterator S)
+        &where ((Iterator S) I)
+               ((UnaryFn S i32) F))
+
+; ---------------------------------------------------------------------------
+; 8. Generic reduce over any Iterator.
+; ---------------------------------------------------------------------------
+(defn reduce:Acc ((g (ref G)) (init Acc) (it (ref I))
+                  &where ((Iterator S) I)
+                         ((FoldFn Acc S) G))
+  (let (acc:Acc init)
+    (let (done:i32 0)
       (while (= done 0)
-        (let ((item (Maybe i64)) (next (.& self source)))
+        (let ((item (Maybe S)) (next it))
           (match item
-            ((some v)
-             (when (!= (callfn (.& self pred) v) (cast i64 0))
-               (do
-                 (set! result (make (Maybe i64) some v))
-                 (set! done 1))))
-            (none (set! done 1)))))
-      (return result))))
-
-; ---------------------------------------------------------------------------
-; 6. BinaryCallI64 protocol: (i64, i64) -> i64 binary fold.
-; ---------------------------------------------------------------------------
-(defprotocol BinaryCallI64
-  (foldop:i64 (self:ptr:Self acc:i64 x:i64)))
-
-; ---------------------------------------------------------------------------
-; 7. reduce-i64 — fold an I64ArrayIter with a BinaryCallI64 function object.
-; ---------------------------------------------------------------------------
-(defn reduce-i64:i64
-    ((f (ref G)) init:i64 (it (ref I64ArrayIter)) &where (BinaryCallI64 G))
-  (let (acc:i64 init
-        done:i32 0)
-    (while (= done 0)
-      (let ((item (Maybe i64)) (next it))
-        (match item
-          ((some v) (set! acc (foldop f acc v)))
-          (none (set! done 1)))))
-    (return acc)))
-
-; ---------------------------------------------------------------------------
-; 8. reduce-map-i64 — fold a (MapIterI64 I F) with a BinaryCallI64 G.
-; ---------------------------------------------------------------------------
-(defn reduce-map-i64:i64
-    ((fold (ref G)) init:i64 (it (ref (MapIterI64 I F))) &where (BinaryCallI64 G))
-  (let (acc:i64 init
-        done:i32 0)
-    (while (= done 0)
-      (let ((item (Maybe i64)) (next it))
-        (match item
-          ((some v) (set! acc (foldop fold acc v)))
-          (none (set! done 1)))))
-    (return acc)))
-
-; ---------------------------------------------------------------------------
-; 9. reduce-filter-map-i64 — fold (FilterIterI64 (MapIterI64 I F) P) with G.
-; ---------------------------------------------------------------------------
-(defn reduce-filter-map-i64:i64
-    ((fold (ref G)) init:i64 (it (ref (FilterIterI64 (MapIterI64 I F) P)))
-     &where (BinaryCallI64 G))
-  (let (acc:i64 init
-        done:i32 0)
-    (while (= done 0)
-      (let ((item (Maybe i64)) (next it))
-        (match item
-          ((some v) (set! acc (foldop fold acc v)))
-          (none (set! done 1)))))
+            ((some v) (set! acc (fold g acc v)))
+            (none (set! done 1))))))
     (return acc)))
