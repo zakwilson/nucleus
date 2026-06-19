@@ -80,13 +80,13 @@ Source files contain top-level forms (`defn`, `defvar`, `defstruct`, etc.). A `m
 |----------|----------|
 | [Compiler](compiler.md) | Flags (`-O`, `--emit-llvm`, `--target`, …), REPL, `.nuch` header format |
 | [Top-level forms](toplevel.md) | `defn`, `defvar`, `defstruct`, `defunion`, `defprotocol`, `import`, `defmacro`, … |
-| [Types](types.md) | Built-in types, pointer kinds (`ptr`/`ref`/`raw`/`?T`), volatile, function pointer types, coercions, literals, symbols |
+| [Types](types.md) | Built-in types, pointer kinds (`ptr`/`ref`/`raw`/`?T`), volatile, function pointer types, coercions, literals, keyword literals (`:foo`), symbols |
 | [Structs and unions](structs-unions.md) | Anonymous structs, passing by value, `defunion`, `match`, niche layout, parametric struct templates |
 | [Special forms](special-forms.md) | Control flow, memory ops, `with`/`move`/`defer`, binary operators, callable values (`get`/`invoke`) |
 | [Macros](macros.md) | Standard macros (`if`, `when`, `for`, `dotimes`, `->`), variadic arithmetic, writing macros |
 | [Generics](generics.md) | Multimethods, `defprotocol`/`extend`, parametric protocols, bounded `&where` generics |
 | [Error handling](errors.md) | `deferror`, `!T`, `try`/`unwrap`, `with-handler`, `signal` |
-| [Standard library](stdlib.md) | Pre-declared libc bindings (stdio, stdlib, string, ctype, unistd) |
+| [Standard library](stdlib.md) | Pre-declared libc bindings (stdio, stdlib, string, ctype, unistd); `StrView` byte-slice substrate (`lib/strview.nuc`); `Keyword` interned names (`lib/keyword.nuc`) |
 | [Allocators](allocators.md) | `Allocator` protocol, `AllocHandle`, libc/arena backends (`lib/allocator.nuc`) |
 | [Iterators](iterators.md) | `Iterator` protocol, concrete iterators, lazy combinators, reduce (`lib/iterator.nuc`) |
 | [Collections](collections.md) | Core collection protocols (`Coll`/`Seq`/`Assoc`/`Set`/`Drop`), `Hash`, `Vector`, `HashMap`, `HashSet` (`lib/coll.nuc`, `lib/hash.nuc`, `lib/vector.nuc`, `lib/hashmap.nuc`, `lib/hashset.nuc`) |
@@ -106,6 +106,8 @@ Additional libraries available via `import`:
 - `(import allocator)` — `Allocator` protocol and `AllocHandle`
 - `(import iterator)` — `Iterator` protocol and concrete iterators
 - `(import coll)` — core collection protocols (`Coll`, `Seq`, `Assoc`, `Set`, `Drop`)
+- `(import strview)` — `StrView` immutable byte-slice substrate (`Hash`+`Eq` conformances)
+- `(import keyword)` — `Keyword` interned self-evaluating names, usable as `HashMap`/`HashSet` keys
 - `(import hash)` — `Hash` protocol with `i32`/`i64`/`usize`/`CStr` conformances (FNV-1a)
 - `(import vector)` — `Vector T` dynamic array and `VecIter T`
 - `(import hashmap)` — `HashMap K V` and `HashMapKeyIter K V`

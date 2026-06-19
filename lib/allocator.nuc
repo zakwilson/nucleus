@@ -1,0 +1,163 @@
+; Stage 11 collections — the Allocator protocol, the runtime allocator handle,
+; and its libc/arena backends. See design/stage11/collections.md
+; §"An allocator protocol".
+;
+; Memory in the collection library is owned and released through an allocator
+; rather than the arena or a bare malloc, so a collection can be built against
+; libc, an arena, or any future allocator and still free correctly.
+;
+; ---------------------------------------------------------------------------
+; Dispatch is a tagged handle, NOT a static `extend` conformance.
+;
+; The design sketches a Zig-shaped protocol whose methods take the allocator by
+; (ref Self), and the obvious encoding is a concrete allocator struct that
+; `extend`s `Allocator`. Three constraints make a *static* conformance the wrong
+; primitive here:
+;
+;  1. Collections need DYNAMIC dispatch. A collection stores ONE allocator field
+;     and must call through it without knowing the concrete allocator type at the
+;     call site. The protocol system is static-only (no vtables), and the
+;     `funcall-ptr-*` builtins only call function pointers of arity 0/1 with
+;     ptr/i32/i64 results (src/nucleusc.nuc §funcall-ptr-*), so a C-style vtable
+;     whose entries take (data size align) -> (raw ui8) cannot be called at all.
+;
+;  2. The libc-name collision. A generic method literally named `free` (or
+;     `realloc`/`malloc`) lowers to LLVM `@free` and *shadows libc `@free` for the
+;     whole compilation unit*: every 1-arg `(free p)` then targets the 4-arg
+;     generic — an arity mismatch on a non-vararg function (UB / crash). This is
+;     exactly why the `Drop` protocol names its method `drop`, not `free`. An
+;     allocator MUST call libc `free`, so it cannot also define a `free` generic.
+;
+;  3. Worse from a library: a conformance defining `realloc`/`free` generics
+;     cannot be `import`ed at all — the imported file's transitive
+;     `(include stdlib)` re-emits `declare @realloc(ptr,i64)` / `declare @free`
+;     before those generics finalize, an "invalid redefinition". (It compiles
+;     when defined *directly* in the consuming unit; only the import path is
+;     blocked. Fixing the prescan/include ordering is a compiler change out of
+;     scope for M1 — recorded in design/stage11/progress.md.)
+;
+; Hence the allocator interface is a TAGGED HANDLE: `AllocHandle` carries a `kind`
+; discriminant plus allocator-specific `data`; the alloc-handle-* helpers branch
+; on `kind`. This is precisely the design's "Plumbing (decided): stored field" —
+; the collection stores one AllocHandle and uses it for conj/assoc/Drop. The libc
+; arm calls libc malloc/realloc/free; the arena arm defers to lib/arena.nuc. The
+; `Allocator` *protocol* below is still defined as the documented contract (inert,
+; zero-code), so a future single, statically-known allocator can `extend` it
+; directly in its own unit.
+;
+; This file calls libc `free`/`realloc` by name and so deliberately defines NO
+; `free`/`realloc`/`malloc` generic, keeping those libc symbols intact.
+;
+; NOTE (tokenizer): a parameter OR a method's return type whose spelling is a
+; parenthesised form, e.g. (raw ui8), must use the list binding form. The colon
+; sugar does not tokenise for a parenthesised RHS:
+;   - parameter:    `(p (raw ui8))`               not  `p:(raw ui8)`
+;   - return type:  `((alloc (raw ui8)) ...)`     not  `(alloc:(raw ui8) ...)`
+; A colon CHAIN with no parens (e.g. `ref:AllocHandle`) does tokenise and means
+; `(ref AllocHandle)`. The byte element type is `ui8` (= C `unsigned char`); `u8`
+; is not a Nucleus type name (the design doc's `u8` reads as `ui8` here).
+; ---------------------------------------------------------------------------
+
+(include stdio)
+(include stdlib)
+(include string)
+
+(import arena)
+
+; ---------------------------------------------------------------------------
+; 1. The Allocator protocol (the design's contract).
+;
+; A concrete allocator type conforms by defining alloc / realloc / free over a
+; (ref Self) and asserting (extend MyAllocator Allocator). `align` is advisory
+; for the libc/arena backends (both already align to 16/8), but it is part of
+; the contract so an allocator that needs it has it.
+; ---------------------------------------------------------------------------
+(defprotocol Allocator
+  ((alloc (raw ui8))   ((self (ref Self)) size:usize align:usize))
+  ((realloc (raw ui8)) ((self (ref Self)) (p (raw ui8)) old:usize new:usize align:usize))
+  (free:void           ((self (ref Self)) (p (raw ui8)) size:usize align:usize)))
+
+; ---------------------------------------------------------------------------
+; 2. AllocKind — the runtime discriminant for AllocHandle dispatch.
+; ---------------------------------------------------------------------------
+(defenum AllocKind ALLOC-LIBC ALLOC-ARENA)
+
+; The handle a collection stores: a discriminant plus allocator-specific state.
+; `data` is null for the libc backend (it needs no state) and an opaque pointer
+; for stateful allocators (the arena uses its module globals, so null here too).
+(defstruct AllocHandle
+  kind:i32
+  data:ptr)
+
+; ---------------------------------------------------------------------------
+; 3. The runtime dispatch helpers. A collection holds a (ref AllocHandle) and
+;    calls these; they branch on `kind`. malloc/realloc take size_t and free
+;    takes void* — sizes are pointer-sized, so casting usize -> i64 is width-
+;    preserving on the target (i64 on LP64, i32 on ILP32) and the call boundary
+;    coerces i64 -> size_t, exactly as lib/arena.nuc does.
+; ---------------------------------------------------------------------------
+
+; (alloc-handle-alloc h size align) -> (raw ui8). Returns null on libc OOM (the
+; caller checks); the arena arm aborts internally rather than returning null.
+(defn (alloc-handle-alloc (raw ui8)) ((h (ref AllocHandle)) size:usize align:usize)
+  (when (= (h kind) ALLOC-ARENA)
+    (return (cast (raw ui8) (arena-alloc (cast i64 size)))))
+  (return (cast (raw ui8) (malloc (cast i64 size)))))
+
+; (alloc-handle-realloc h p old new align) -> (raw ui8).
+(defn (alloc-handle-realloc (raw ui8))
+    ((h (ref AllocHandle)) (p (raw ui8)) old:usize new:usize align:usize)
+  (when (= (h kind) ALLOC-ARENA)
+    ; The arena cannot grow a prior allocation in place, so allocate fresh and
+    ; copy the smaller of old/new bytes. The old block is abandoned (released
+    ; wholesale when the arena is reset).
+    (let (np:ptr (arena-alloc (cast i64 new)))
+      (when (!= (cast ptr p) null)
+        (let (n:usize (if (< old new) old new))
+          (memcpy np (cast ptr p) (cast i64 n))))
+      (return (cast (raw ui8) np))))
+  ; realloc(NULL, n) behaves as malloc(n).
+  (return (cast (raw ui8) (realloc (cast ptr p) (cast i64 new)))))
+
+; (alloc-handle-free h p size align) -> void.
+(defn alloc-handle-free:void
+    ((h (ref AllocHandle)) (p (raw ui8)) size:usize align:usize)
+  ; The arena frees nothing per-allocation; the whole arena is released at once.
+  (when (= (h kind) ALLOC-ARENA)
+    (return))
+  ; free(NULL) is a safe no-op in C, so no null guard.
+  (free (cast ptr p)))
+
+; ---------------------------------------------------------------------------
+; 4. The default (libc) allocator. A single process-global handle backs every
+;    convenience constructor that omits an explicit allocator. It is a plain
+;    constant value (kind = ALLOC-LIBC, data = null), so no startup
+;    initialisation is required — defvar zero-fills, and ALLOC-LIBC is 0.
+; ---------------------------------------------------------------------------
+(defvar g-default-alloc:AllocHandle)
+
+; Returns the shared default handle. Stable for the process lifetime; callers
+; store the (ref AllocHandle) in the collections they build. `ref:AllocHandle`
+; is the colon-chain spelling of `(ref AllocHandle)`.
+(defn default-allocator:ref:AllocHandle ()
+  (return (addr-of g-default-alloc)))
+
+; ---------------------------------------------------------------------------
+; 5. Convenience: initialise a caller-owned AllocHandle slot for a given kind.
+;    A collection constructor that takes no allocator argument calls
+;    (default-allocator); one that wants an arena allocates an AllocHandle slot
+;    it owns and passes it to (arena-allocator h).
+; ---------------------------------------------------------------------------
+
+; Initialise a caller-owned slot as a libc handle and return it.
+(defn libc-allocator:ref:AllocHandle ((h (ref AllocHandle)))
+  (.set! h kind ALLOC-LIBC)
+  (.set! h data null)
+  (return h))
+
+; Initialise a caller-owned slot as the arena handle and return it. The arena's
+; state lives in lib/arena.nuc's module globals, so `data` stays null.
+(defn arena-allocator:ref:AllocHandle ((h (ref AllocHandle)))
+  (.set! h kind ALLOC-ARENA)
+  (.set! h data null)
+  (return h))

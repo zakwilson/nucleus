@@ -1,0 +1,9 @@
+len-a=5
+len-d=4
+a=b? 1
+a=c? 0
+a=d? 0
+ha=hb? 1
+ha=hc? 0
+to-cstr=hello
+done

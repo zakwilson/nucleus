@@ -18,7 +18,11 @@
   car:ptr
   cdr:ptr)
 
-(defenum NodeKind NODE-INT NODE-STR NODE-SYM NODE-CELL NODE-FLOAT)
+; NODE-KEYWORD (Stage 11 cleanup §2): a `:foo` keyword literal. Carries the name
+; (without the leading colon) in the `s` field. Lowered by the compiler to a
+; runtime `keyword-intern` call; self-evaluating. Appended last so the existing
+; NODE-* ordinals are unchanged (byte-identical for keyword-free programs).
+(defenum NodeKind NODE-INT NODE-STR NODE-SYM NODE-CELL NODE-FLOAT NODE-KEYWORD)
 
 (import macros)
 

@@ -12,9 +12,22 @@ Pointers to a typed element use the `ptr` constructor: `(ptr T)` is a **non-null
 
 In inline type positions (the type argument of `cast`, `sizeof`, `alloca`), either the canonical list form or the colon sugar works: `(cast (ptr Node) x)` and `(cast ptr:Node x)` are equivalent.
 
+**Colon-paren binding sugar.** A binding's type may also be a parenthesised form written directly after the colon, with no space: `name:(ref (Vector T))`, `v:(ptr u8)`, `f:(fn i32) (i32 i32)`. In list (binding) context the reader fuses a trailing-colon atom that is *immediately* followed by `(` into the canonical list node `(name <paren-form>)`. So `v:(ref (Vector i32))` is exactly `(v (ref (Vector i32)))`, in both parameter lists and `let` bindings. The fusion only fires when the colon is the last character of the atom and the very next character is `(` (no whitespace); a mid-colon symbol such as `foo:i32` is unaffected.
+
 Desugar operates on binding positions in `defn`, `defvar`, `defstruct`, `extern`, `declare`, and `let`. Expression bodies are not desugared; typed symbols in value position (e.g., from macro expansion) are handled by the compiler directly.
 
 Both the sugared `:` syntax and the canonical list form are accepted in all binding positions. Macros that manipulate types can work with the canonical list form; macros that don't care about types can use the `:` sugar and it will be desugared before compilation.
+
+**Multi-binding `let`.** A single `let` accepts any number of name/init pairs in one flat binding list — both `:` sugar and list forms compose freely in the same binding list:
+
+```lisp
+(let ((a (ref AllocHandle)) (alloca AllocHandle)
+      (v (ref (Vector i32))) (alloca (Vector i32))
+      n:i32 7)
+  ...)
+```
+
+The bindings are established in order (left to right); each init expression may reference names introduced earlier in the same list.
 
 Macro output is desugared before compilation, so macro-generated code can use either form.
 
@@ -110,17 +123,27 @@ Float literals: `1.5`, `-0.25`, `1e10`, `1.5e-3`, `.5`. Default type is `f64`; n
 
 Function pointer types are written as `(fn:rettype (param-types...))` in sugared form, or `((fn rettype) (param-types...))` in desugared/canonical form.
 
-In parameter position (where `(` would terminate the symbol for colon sugar), use the canonical list form:
+In parameter and `let`-binding positions, either the canonical list form or the
+colon-paren sugar works — the reader fuses a trailing-colon name immediately
+followed by `(` (see *Colon-paren binding sugar* above):
 
 ```lisp
+; canonical list form
 (defn apply:i32 ((f (fn i32) (i32 i32)) a:i32 b:i32)
+  (return (funcall f a b)))
+
+; colon-paren sugar — equivalent
+(defn apply:i32 (f:(fn i32) (i32 i32) a:i32 b:i32)
   (return (funcall f a b)))
 ```
 
-In `let` bindings, the binding name is also a list:
+In `let` bindings, the binding name is also a list (or its colon-paren sugar):
 
 ```lisp
-(let ((f (fn i32) (i32 i32)) some-function)
+(let ((f (fn i32) (i32 i32)) some-function)   ; list form
+  (funcall f 1 2))
+
+(let (f:(fn i32) (i32 i32) some-function)     ; colon-paren sugar
   (funcall f 1 2))
 ```
 
@@ -155,6 +178,52 @@ Explicit `(cast ...)` is also still required for cross-kind conversions: `int �
 | `true` | bool (i1) | `1` / `true` |
 | `false` | bool (i1) | `0` / `false` |
 | `"…"` string literal | `CStr` | `"…"` (`char*`) |
+
+## Keyword literals — `:foo`
+
+**Keywords** are interned, self-evaluating names written as a colon followed by a non-empty identifier: `:foo`, `:http-method`, `:ok`. A keyword literal evaluates to a canonical `Keyword` value; two keyword literals with the same spelling are identical (`(= :foo :foo)` is `true`; `(= :foo :bar)` is `false`). `!=` follows the same identity semantics.
+
+A `Keyword` has static type `Keyword` and conforms to both `Hash` and `Eq`, making it a natural key type for `HashMap` and member type for `HashSet`.
+
+**Requires `(import keyword)`** — and transitively `(import strview)`, `(import hash)`, and `(import numeric)`. Without the import the compiler emits `undefined: keyword-intern`. See [Keywords and StrView](stdlib.md#strview-libstrviewnuc) for the full API.
+
+```lisp
+(include stdio)
+(import strview)
+(import hash)
+(import keyword)
+(import allocator)
+(import coll)
+(import iterator)
+(import hashmap)
+
+(defn main:i32 ()
+  ; Self-evaluation.
+  (let (k:Keyword :foo)
+    (printf "self-eval=%d\n" (if (= k :foo) 1 0)))    ; 1
+
+  ; Identity equality.
+  (printf "foo=foo? %d\n" (if (= :foo :foo) 1 0))     ; 1
+  (printf "foo=bar? %d\n" (if (= :foo :bar) 1 0))     ; 0
+
+  ; Keywords as HashMap keys.
+  (with ((m (ref (HashMap Keyword i32))) (alloca (HashMap Keyword i32)))
+    (hashmap-init m)
+    (assoc m :a 1)
+    (assoc m :b 2)
+    (match (hmap-get m :a)
+      ((some v) (printf "a=%d\n" v))                   ; a=1
+      (none     (printf "absent\n"))))
+  (return 0))
+```
+
+**Syntax disambiguation.** The keyword reader rule fires only when the entire atom starts with `:` and has a non-empty remainder. It does **not** interfere with:
+
+- **Colon-chain type syntax** (`ptr:i8`, `ref:Foo`) — the colon is interior, not leading.
+- **Colon-paren binding sugar** (`name:(ref T)`) — the colon is trailing on the name token; the paren that follows is read as a type expression.
+- A bare `:` by itself remains a plain symbol.
+
+**Intern pool limit.** The intern pool holds up to 256 distinct keywords per process. Exceeding this limit aborts with a diagnostic. 256 is ample for a typical program's keyword vocabulary.
 
 ## Symbols
 

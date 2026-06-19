@@ -1,0 +1,8 @@
+count=3
+foo=42
+bar=7
+baz=99
+missing=absent
+single-count=1
+only=1
+done

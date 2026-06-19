@@ -126,6 +126,52 @@
          ~body
          (inc! ~var-node)))))
 
+; (doseq (var iter-expr) body...) — iterate an iterator, binding var to each element.
+;
+; Expands to a while loop with a done-flag so it composes safely in any context.
+; The iterator is stored in a local variable and advanced via (next (addr-of iter)).
+; No `return` or `break` inside the expansion — works in any expression context.
+;
+; Example:
+;   (doseq (x (IntRangeIter 0 5))
+;     (printf "%d\n" x))
+(defmacro doseq (binding &rest body)
+  ; binding is (var iter-ref) where iter-ref is a (ref Iterator) symbol.
+  ; Advances the iterator each loop step, binding the element to var.
+  ; Uses (done-sym i32) list-binding form so the gensym doesn't need a colon type.
+  (let (done-sym:ptr  (gensym)
+        var-sym:ptr   ((cast ptr:Node binding) car)
+        coll-expr:ptr ((cast ptr:Node ((cast ptr:Node binding) cdr)) car))
+    `(let ((~done-sym i32) (cast i32 0))
+       (while (= ~done-sym 0)
+         (match (next ~coll-expr)
+           ((some ~var-sym) (do ~@body))
+           (none (set! ~done-sym 1)))))))
+
+; (into ctor-expr iter-expr) — materialize an iterator into a collection.
+;
+; ctor-expr produces the initial (empty) collection value. iter-expr is an
+; iterator. Each element is folded into the collection via (conj coll elem),
+; where conj takes a (ref CollectionType) and an element. The final collection
+; value is yielded as the expression result.
+;
+; Requires the collection to implement a `conj` method.
+; Tested fully in M3 when Vector/conj are available.
+; (into coll-sym iter-ref) — materialize iter-ref into a collection coll-sym.
+;
+; coll-sym must be a (ref Collection) symbol already declared and initialized.
+; iter-ref must be a (ref Iterator) symbol. Each element is appended via conj.
+; Requires the collection to implement a `conj` method.
+; Tested fully in M3 when Vector/conj are available.
+(defmacro into (coll-sym iter-ref)
+  (let (done-sym:ptr (gensym)
+        x-sym:ptr    (gensym))
+    `(let ((~done-sym i32) (cast i32 0))
+       (while (= ~done-sym 0)
+         (match (next ~iter-ref)
+           ((some ~x-sym) (conj ~coll-sym ~x-sym))
+           (none (set! ~done-sym 1)))))))
+
 ; (-> x form ...) — threading macro with _ placeholder.
 ; Threads x through each form. If a form contains _, the threaded value
 ; replaces _ at that position. If no _ is present, the value is inserted

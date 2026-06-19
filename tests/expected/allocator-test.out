@@ -1,0 +1,6 @@
+default: alloc ok (kind=0)
+default: freed
+arena: alloc ok (kind=1)
+arena: free is no-op
+intbuf: cap=4 v0=10 v3=40
+intbuf: freed via stored handle
