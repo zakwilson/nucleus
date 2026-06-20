@@ -88,6 +88,28 @@
         (.set! s count (cast usize 0))
         (.set! s cap init-cap)))))
 
+; hashset-init-alloc: initialise an empty HashSet with an explicit allocator
+; handle (copied in), mirroring vector-init-alloc. The buffers are allocated
+; through the passed handle, so the set owns its storage through it (arena =
+; process-lifetime, no per-allocation free).
+(defn hashset-init-alloc:void ((s (ref (HashSet T))) (a (ref AllocHandle)))
+  (let (init-cap:usize (cast usize 8)
+        elem-size:usize (cast usize (sizeof T)))
+    (.set! s alloc (deref a))
+    (let ((kbuf (raw ui8))
+          (alloc-handle-alloc (.& s alloc)
+                              (* init-cap elem-size)
+                              (cast usize 8)))
+      (when (= (cast ptr kbuf) null) (hashset-oom))
+      (let ((sbuf (raw ui8))
+            (alloc-handle-alloc (.& s alloc) init-cap (cast usize 1)))
+        (when (= (cast ptr sbuf) null) (hashset-oom))
+        (memset (cast ptr sbuf) 0 (cast i64 init-cap))
+        (.set! s keys kbuf)
+        (.set! s states sbuf)
+        (.set! s count (cast usize 0))
+        (.set! s cap init-cap)))))
+
 ; ---------------------------------------------------------------------------
 ; hashset-resize: internal. Allocate new arrays of new-cap slots, rehash all
 ; OCCUPIED (state == 1) buckets from the old arrays into the new ones (dropping

@@ -1,11 +1,15 @@
 ; Stage 9 — callable values (callable-values.md).
 ;
-; A non-function value `s` in head position, `(s arg)`, dispatches by its sole
-; argument:
-;   - a literal symbol  → member access (the `get` generic; the built-in Struct
-;                         intrinsic emits a GEP+load, byte-identical to `.`, and
-;                         is overridable by a user `get` method)
-;   - anything else      → a user-defined `invoke` (indexing, function objects)
+; A non-function value `s` in head position, `(s arg)`, routes
+; `invoke → get → _get`:
+;   - if the value's type has an `invoke` method → that `invoke` runs, with the
+;     argument(s) taken as values (indexing, function objects). `(v idx)` indexes
+;     even when `idx` is a local symbol holding an index.
+;   - else if the type has a custom `get` method → that `get` runs.
+;   - else a single literal-symbol argument is the raw `_get` field intrinsic
+;     (GEP+load, byte-identical to `.`).
+; Because invoke takes precedence, a type that defines `invoke` can no longer use
+; the callable form for field access — read its fields with `_get`/`.field`.
 ; Function-object protocols: (UnaryFn Arg Ret) and (FoldFn Acc Elem) in
 ; lib/iterator.nuc provide parametric, element-generic alternatives to the
 ; former fixed-type Call/BinaryCall protocols.
@@ -16,10 +20,11 @@
 
 (defstruct Point x:i32 y:i32)
 
-; ---- invoke: an i32 vector, indexable by call ----
+; ---- invoke: an i32 vector, indexable by call. Vec defines `invoke`, so its
+;      own fields are read with `_get` (the callable form indexes, not gets). ----
 (defstruct Vec data:ptr:i32 len:i32)
 (defn invoke:i32 (self:ptr:Vec i:i32)
-  (return (aref (self data) i)))
+  (return (aref (_get self data) i)))
 
 ; ---- UnaryFn: a function object that adds a fixed delta to its i32 argument ----
 (defstruct Adder delta:i32)
@@ -50,7 +55,8 @@
     (.set! p y 4)
     (printf "point: x=%d y=%d\n" (p x) (p y)))
 
-  ; invoke: (v i) indexes; (v len) is member access — same value, the argument decides.
+  ; invoke takes precedence: (v i) indexes (literal OR a local index symbol);
+  ; the field `len` is read with `_get` since Vec has an `invoke` method.
   (let (v:ptr:Vec (cast ptr:Vec (malloc (cast i64 (sizeof Vec))))
         arr:ptr:i32 (cast ptr:i32 (malloc (cast i64 12))))
     (aset! arr 0 10)
@@ -58,7 +64,10 @@
     (aset! arr 2 30)
     (.set! v data arr)
     (.set! v len 3)
-    (printf "seq: v0=%d v1=%d v2=%d len=%d\n" (v 0) (v 1) (v 2) (v len)))
+    ; idx is a local symbol holding an index — (v idx) routes to invoke (indexes),
+    ; it is NOT a field named "idx". This is the behaviour Step C fixes.
+    (let (idx:i32 1)
+      (printf "seq: v0=%d vidx=%d v2=%d len=%d\n" (v 0) (v idx) (v 2) (_get v len))))
 
   ; UnaryFn: a function object invoked with an i32 argument via apply.
   (let ((add5 (ref Adder)) (alloca Adder))

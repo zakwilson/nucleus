@@ -1,5 +1,5 @@
 point: x=3 y=4
-seq: v0=10 v1=20 v2=30 len=3
+seq: v0=10 vidx=20 v2=30 len=3
 call: 37+5=42
 fold: 1*2*3*4=24
 temp: c=20 f=70

@@ -14,7 +14,9 @@
 ;     They are fine in generic protocol method names (sanitize-for-ir strips them).
 ;   - The byte element type is `ui8`; `u8` is not a Nucleus type name.
 ;   - Vector fields: data:(raw ui8), len:usize, cap:usize, alloc:AllocHandle.
-;   - Field access through a ref: `(v len)` reads field `len` from `(ref (Vector T))`.
+;   - Field access uses the raw `_get` intrinsic: `(_get v len)` reads field `len`
+;     from `(ref (Vector T))`. The callable form `(v idx)` indexes (invoke), so a
+;     literal field name like `(v len)` would mis-route to invoke — use `_get`.
 ;   - Drop protocol: `(drop:void (self:ptr:Self))` — ptr, NOT ref.
 ; ---------------------------------------------------------------------------
 
@@ -51,8 +53,8 @@
 ; ---------------------------------------------------------------------------
 (defn string-as-view:StrView ((self (ref String)))
   (let (v:(ref (Vector ui8)) (.& self bytes)
-        len:usize (v len)
-        data:ptr:ui8 (cast ptr:ui8 (cast ptr (v data))))
+        len:usize (_get v len)
+        data:ptr:ui8 (cast ptr:ui8 (cast ptr (_get v data))))
     (let ((sv (ref StrView)) (alloca StrView))
       (.set! sv data data)
       (.set! sv len  len)
@@ -101,12 +103,12 @@
   (let (v:(ref (Vector ui8)) (.& self bytes)
         clen:usize (char-utf8-len c))
     ; Ensure capacity for clen more bytes (reserve takes total slots needed).
-    (reserve v (+ (v len) clen))
+    (reserve v (+ (_get v len) clen))
     ; Write directly into the raw buffer at offset len.
-    (let (dst:ptr:ui8 (ptr+ (cast ptr:ui8 (cast ptr (v data))) (cast i64 (v len))))
+    (let (dst:ptr:ui8 (ptr+ (cast ptr:ui8 (cast ptr (_get v data))) (cast i64 (_get v len))))
       (char-encode-utf8 c dst)
       ; Bump len by clen.
-      (.set! v len (+ (v len) clen)))))
+      (.set! v len (+ (_get v len) clen)))))
 
 ; string-push-str — append a StrView's bytes, validating UTF-8 first.
 ; Returns !i32 (0 on success): err invalid-utf8 if the StrView contains invalid UTF-8.
@@ -128,12 +130,12 @@
 ; string-pop-char — remove and return the last codepoint, or none if empty.
 (defn (string-pop-char (Maybe Char)) ((self (ref String)))
   (let (v:(ref (Vector ui8)) (.& self bytes)
-        len:usize (v len))
+        len:usize (_get v len))
     (when (= len (cast usize 0)) (return none))
     ; Walk backward to find the start of the last codepoint.
     ; A continuation byte has pattern 10xxxxxx: (b & 0xC0) == 0x80.
     ; The last codepoint start is the last non-continuation byte.
-    (let (p:ptr:ui8 (cast ptr:ui8 (cast ptr (v data)))
+    (let (p:ptr:ui8 (cast ptr:ui8 (cast ptr (_get v data)))
           i:usize (- len (cast usize 1)))
       ; Skip continuation bytes backward.
       (while (and (> i (cast usize 0))
@@ -159,13 +161,13 @@
 ;         invalid-char-boundary if byte_len falls mid-codepoint.
 (defn string-truncate:!i32 ((self (ref String)) byte-len:usize)
   (let (v:(ref (Vector ui8)) (.& self bytes)
-        cur-len:usize (v len))
+        cur-len:usize (_get v len))
     (when (> byte-len cur-len)
       (return (err! str-index-out-of-bounds)))
     ; Check byte boundary: byte_len must not fall on a continuation byte.
     ; A continuation byte has pattern 10xxxxxx (bit-and b 0xC0) == 0x80.
     (when (and (> byte-len (cast usize 0)) (< byte-len cur-len))
-      (let (b:ui8 (aref (cast ptr:ui8 (cast ptr (v data))) (cast i64 byte-len)))
+      (let (b:ui8 (aref (cast ptr:ui8 (cast ptr (_get v data))) (cast i64 byte-len)))
         (when (= (bit-and (cast ui32 b) (cast ui32 192)) (cast ui32 128))
           (return (err! invalid-char-boundary)))))
     (.set! v len byte-len)
@@ -175,23 +177,23 @@
 ; the current length.
 (defn string-reserve:void ((self (ref String)) extra:usize)
   (let (v:(ref (Vector ui8)) (.& self bytes))
-    (reserve v (+ (v len) extra))))
+    (reserve v (+ (_get v len) extra))))
 
 ; string-shrink-to-fit — shrink capacity to match len.
 ; Reallocates the buffer to exactly len bytes (or frees if len = 0).
 (defn string-shrink-to-fit:void ((self (ref String)))
   (let (v:(ref (Vector ui8)) (.& self bytes)
-        cur-len:usize (v len))
-    (when (= cur-len (v cap)) (return))  ; already at fit
+        cur-len:usize (_get v len))
+    (when (= cur-len (_get v cap)) (return))  ; already at fit
     (when (= cur-len (cast usize 0))
       ; Free the buffer entirely.
-      (alloc-handle-free (.& v alloc) (v data) (* (v cap) (cast usize 1)) (cast usize 8))
+      (alloc-handle-free (.& v alloc) (_get v data) (* (_get v cap) (cast usize 1)) (cast usize 8))
       (.set! v data null)
       (.set! v cap (cast usize 0))
       (return))
     ; Reallocate to exactly cur-len bytes.
     (let ((new-data (raw ui8))
-          (alloc-handle-realloc (.& v alloc) (v data) (v cap) cur-len (cast usize 8)))
+          (alloc-handle-realloc (.& v alloc) (_get v data) (_get v cap) cur-len (cast usize 8)))
       (when (= (cast ptr new-data) null)
         (fprintf stderr "string: out of memory in shrink-to-fit\n")
         (exit 1))

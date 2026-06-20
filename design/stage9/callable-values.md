@@ -64,6 +64,14 @@ The dispatch engine is reused wholesale: `g-generics` / `generic-resolve` (src:1
 | `(s rad)` / `(s 'rad)` | a **symbol** (incl. bare-field sugar) | `(get s 'rad)` | member access |
 | `(s 3)` | anything else (integer, …) | `(invoke s 3)` | general call / index |
 
+> **Superseded (Stage 11 cleanup3 Step C).** The routing is no longer keyed on the
+> *argument shape* but on the *callee type*: **`invoke → get → _get`**. A type with
+> an `invoke` method indexes/applies its argument as a value (so `(v idx)` indexes
+> on a local `idx`); a type with a custom `get` runs that; a plain struct falls back
+> to the raw `_get` field intrinsic. A type that defines `invoke` therefore cannot use
+> the callable form for field access — use `_get`/`.field`. See
+> [stage11/cleanup3.md](../stage11/cleanup3.md) "Step C".
+
 - **`get`** is the field-access generic. Every struct conforms to the **`Struct`
   blanket protocol** ([polymorphism.md §10.1](polymorphism.md)), whose required `get`
   is supplied by a built-in **intrinsic** that emits the same GEP+load as `.` — so

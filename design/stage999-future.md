@@ -98,5 +98,6 @@ Safe accessors with runtime cost seem like a good idea here, but it would be eve
 
 ## errata
 
-(Maybe StrView) fails in JIT modules, !void unsupported, struct-in-Result returns zeroed fields, and
-  single-conformer generic ?-methods need a shim for IR mangling.
+(Maybe StrView) fails in JIT modules, !void unsupported, struct-in-Result returns zeroed fields, and single-conformer generic ?-methods need a shim for IR mangling.
+
+ name:ref:(Param T) colon-chain doesn't parse for a defn name/param — fuse-colon-paren mangles it. Use the list form (name (ref (Param T))).
