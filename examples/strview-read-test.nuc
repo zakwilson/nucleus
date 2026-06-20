@@ -1,0 +1,108 @@
+; Stage 11 M6 (S3) — StrView read-layer smoke test.
+;
+; Exercises:
+;   - byte-len / char-count on a multi-byte UTF-8 string ("héllo": 6 bytes, 5 chars)
+;     'é' is U+00E9, encoded as 0xC3 0xA9 (2 bytes).
+;   - ByteIter via (bytes sv) / doseq-iter
+;   - CharIter via (chars sv) / doseq-iter + char-to-u32
+;   - byte-at success (first byte = 'h' = 104)
+;   - char-at success (index 1 = 'é' = 233)
+;   - sub-bytes success (first 1 byte "h") — prints len=1
+;   - starts-with? / ends-with? / contains-str?
+;   - strview-trim on "  hello  " — checks trimmed len=5
+;   - str-empty? on empty and non-empty views
+
+(include stdio)
+(include stdlib)
+(import strview-str)   ; StrView + ByteIter/CharIter + ByteStr/Str conformances
+(import char)
+(import iterator)
+
+; Build a StrView from a raw byte array on the heap.
+; "héllo" = [0x68, 0xC3, 0xA9, 0x6C, 0x6C, 0x6F] — 6 bytes, 5 codepoints.
+(defn make-hello-utf8:(ptr StrView) ()
+  (let (buf:ptr:ui8 (cast ptr:ui8 (malloc (cast i64 7)))  ; 6 bytes + NUL
+        sv:ptr:StrView (cast ptr:StrView (malloc (cast i64 (sizeof StrView)))))
+    ; h é(high) é(low) l l o NUL
+    (aset! buf (cast i64 0) (cast ui8 104))   ; 'h'
+    (aset! buf (cast i64 1) (cast ui8 195))   ; 0xC3 (lead byte of é)
+    (aset! buf (cast i64 2) (cast ui8 169))   ; 0xA9 (continuation byte of é)
+    (aset! buf (cast i64 3) (cast ui8 108))   ; 'l'
+    (aset! buf (cast i64 4) (cast ui8 108))   ; 'l'
+    (aset! buf (cast i64 5) (cast ui8 111))   ; 'o'
+    (aset! buf (cast i64 6) (cast ui8 0))     ; NUL terminator
+    (.set! sv data buf)
+    (.set! sv len  (cast usize 6))
+    (return sv)))
+
+(defn main:i32 ()
+  (let (sv:ptr:StrView (make-hello-utf8))
+
+    ; --- byte-len and char-count ---
+    (printf "byte-len=%llu\n"   (cast ui64 (byte-len sv)))    ; 6
+    (printf "char-count=%llu\n" (cast ui64 (char-count sv)))  ; 5
+
+    ; --- iterate bytes ---
+    (let (bit:ByteIter (bytes sv))
+      (doseq-iter (b (addr-of bit))
+        (printf "byte=%u\n" (cast ui32 b))))
+    ; expected: 104 195 169 108 108 111
+
+    ; --- iterate chars ---
+    (let (cit:CharIter (chars sv))
+      (doseq-iter (c (addr-of cit))
+        (printf "char=%u\n" (cast ui32 (char-to-u32 c)))))
+    ; expected: 104 233 108 108 111
+
+    ; --- byte-at ---
+    (let (r1:!ui8 (byte-at sv (cast usize 0)))
+      (match r1
+        ((ok b) (printf "byte-at-0=%u\n" (cast ui32 b)))   ; 104 = 'h'
+        ((err e) (printf "byte-at-0=err\n"))))
+
+    ; --- char-at index 1 ('é' = U+00E9 = 233) ---
+    (let (r2:!Char (char-at sv (cast usize 1)))
+      (match r2
+        ((ok c) (printf "char-at-1=%u\n" (cast ui32 (char-to-u32 c))))  ; 233
+        ((err e) (printf "char-at-1=err\n"))))
+
+    ; --- sub-bytes [0,1) → "h" (1 byte) ---
+    (let (r3:!ptr:StrView (sub-bytes sv (cast usize 0) (cast usize 1)))
+      (match r3
+        ((ok s) (printf "sub-bytes-len=%llu\n" (cast ui64 (s len))))   ; 1
+        ((err e) (printf "sub-bytes=err\n"))))
+
+    ; --- starts-with? prefix "h" ---
+    (let (prefix:ptr:StrView (strview-from-cstr "h"))
+      (printf "starts-with-h=%d\n" (starts-with? sv prefix))    ; 1
+      (free (cast ptr prefix)))
+
+    ; --- ends-with? suffix "llo" ---
+    (let (suffix:ptr:StrView (strview-from-cstr "llo"))
+      (printf "ends-with-llo=%d\n" (ends-with? sv suffix))       ; 1
+      (free (cast ptr suffix)))
+
+    ; --- contains-str? "ll" ---
+    (let (needle:ptr:StrView (strview-from-cstr "ll"))
+      (printf "contains-ll=%d\n" (contains-str? sv needle))      ; 1
+      (free (cast ptr needle)))
+
+    ; --- str-empty? ---
+    (printf "empty-hello=%d\n" (str-empty? sv))   ; 0
+
+    (free (cast ptr (sv data)))
+    (free (cast ptr sv)))
+
+  ; --- strview-trim ---
+  (let (wsv:ptr:StrView (strview-from-cstr "  hello  "))
+    (let (t:StrView (strview-trim wsv))
+      (printf "trim-len=%llu\n" (cast ui64 ((addr-of t) len))))  ; 5
+    (free (cast ptr wsv)))
+
+  ; --- str-empty? on an empty view ---
+  (let (esv:ptr:StrView (strview-from-cstr ""))
+    (printf "empty-empty=%d\n" (str-empty? esv))  ; 1
+    (free (cast ptr esv)))
+
+  (printf "done\n")
+  (return 0))

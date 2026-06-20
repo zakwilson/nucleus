@@ -1,0 +1,22 @@
+; Stage 11 M6 (S2) — string error codes.
+;
+; Canonical home for all four string/char error conditions. Both
+; lib/string-protocols.nuc (ByteStr/Str) and lib/char.nuc (S1) import this
+; file so that the deferror definitions live in exactly one place.
+;
+; Design: design/stage11/string.md §"Errors used".
+
+; Byte index past the end of the string (byte-at, char-at, sub-bytes, truncate).
+(deferror str-index-out-of-bounds "string index out of bounds")
+
+; A byte offset argument falls on a UTF-8 continuation byte (sub-bytes,
+; truncate) — the endpoint does not lie on a codepoint boundary.
+(deferror invalid-char-boundary "byte offset is not a UTF-8 codepoint boundary")
+
+; A byte sequence is not well-formed UTF-8 (string-from-cstr, string-from-view,
+; push-str).
+(deferror invalid-utf8 "bytes are not valid UTF-8")
+
+; A ui32 value is not a valid Unicode scalar value (surrogate pair range
+; 0xD800–0xDFFF, or > 0x10FFFF). Used by char-from-u32 (S1).
+(deferror invalid-codepoint "value is not a Unicode scalar value")

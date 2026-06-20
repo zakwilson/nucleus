@@ -130,6 +130,102 @@
       (.set! t s (arena-strndup buf n))
       (return (ok (cast ptr t))))))
 
+; Stage 11 M6 (S0): char literals (design/stage11/string.md §"Char types",
+; Q-char-literal). Backslash-led so they collide with neither keywords (leading
+; `:`) nor strings (`"`):
+;   \a          a single printable codepoint (the byte after the backslash)
+;   \newline …  a named control code (newline/return/tab/space/nul/escape/
+;               backspace/delete)
+;   \u{1F600}   an explicit hex codepoint, validated to be a Unicode scalar
+;               value (0..=0x10FFFF, surrogates 0xD800..=0xDFFF rejected)
+; Emits a TOK-CHAR carrying the validated scalar value in `i`. At entry g-pos
+; points at the leading backslash.
+
+; ASCII hex digit -> 0..15, or -1 if not a hex digit. Self-contained (no libc
+; isxdigit dependency), so the reader stays standalone-lexable.
+(defn hex-digit-val:i32 (c:i32)
+  (when (and (>= c 48) (<= c 57)) (return (- c 48)))     ; 0-9
+  (when (and (>= c 97) (<= c 102)) (return (+ (- c 97) 10))) ; a-f
+  (when (and (>= c 65) (<= c 70)) (return (+ (- c 65) 10)))  ; A-F
+  (return -1))
+
+; Build a TOK-CHAR with codepoint `cp` at `line`.
+(defn make-char-tok:ptr (cp:i32 line:i32)
+  (let (t:ptr:Tok (cast ptr:Tok (alloc-tok)))
+    (.set! t kind TOK-CHAR)
+    (.set! t line line)
+    (.set! t i (cast i64 cp))
+    (return (cast ptr t))))
+
+(defn lex-char-literal:!ptr (open-line:i32)
+  ; Consume the leading backslash.
+  (next-char)
+  (let (c0:i32 (peek-char))
+    (when (= c0 0)
+      (do (report-at open-line "unterminated char literal")
+          (return (err! parse-error))))
+    ; `\u{XXXX}` hex form — only when 'u' is immediately followed by '{'. A bare
+    ; `\u` (no brace) is the ordinary printable literal for the letter 'u'.
+    (when (and (= c0 117) (= (char-at g-src (+ g-pos (cast i64 1))) 123))
+      (next-char) (next-char)   ; consume 'u' and '{'
+      (let (cp:i32 0 ndigits:i32 0 done:i32 0)
+        (while (= done 0)
+          (let (h:i32 (peek-char))
+            (cond
+              (= h 125) (do (next-char) (set! done 1))   ; '}'
+              (= h 0)   (do (report-at open-line "unterminated \\u{...} char literal")
+                            (return (err! parse-error)))
+              true
+                (let (hv:i32 (hex-digit-val h))
+                  (when (< hv 0)
+                    (do (report-at open-line "invalid hex digit in \\u{...} char literal")
+                        (return (err! parse-error))))
+                  (next-char)
+                  (set! cp (+ (* cp 16) hv))
+                  (set! ndigits (+ ndigits 1))
+                  ; Guard against absurdly long sequences overflowing the
+                  ; accumulator before the range check below can run.
+                  (when (> ndigits 6)
+                    (do (report-at open-line "codepoint out of range in \\u{...} (max 0x10FFFF)")
+                        (return (err! parse-error))))))))
+        (when (= ndigits 0)
+          (do (report-at open-line "empty \\u{...} char literal")
+              (return (err! parse-error))))
+        ; Reject non-scalar values: > 0x10FFFF, or a UTF-16 surrogate.
+        (when (> cp 1114111)
+          (do (report-at open-line "invalid-codepoint: value exceeds 0x10FFFF")
+              (return (err! parse-error))))
+        (when (and (>= cp 55296) (<= cp 57343))
+          (do (report-at open-line "invalid-codepoint: surrogate 0xD800..0xDFFF is not a scalar value")
+              (return (err! parse-error))))
+        (return (ok (make-char-tok cp open-line)))))
+    ; If the character after the backslash is not a symbol char (e.g. `\(`,
+    ; `\)`, `\"`, or a literal space `\ `), it is a single-codepoint literal of
+    ; exactly that byte — consume just it.
+    (when (= (is-sym-char c0) 0)
+      (next-char)
+      (return (ok (make-char-tok c0 open-line))))
+    ; Otherwise read the run of symbol chars: length 1 is a printable scalar,
+    ; a longer run must be a recognized named control code.
+    (let (start:i64 g-pos)
+      (while (!= (is-sym-char (peek-char)) 0)
+        (next-char))
+      (let (len:i64 (- g-pos start)
+            text:ptr (ptr+ (cast ptr:i8 g-src) start))
+        (when (= len (cast i64 1))
+          (return (ok (make-char-tok (char-at text (cast i64 0)) open-line))))
+        ; Named control codes (string.md §"Char types").
+        (when (= (strncmp text "newline" len) 0)   (when (= len (cast i64 7)) (return (ok (make-char-tok 10 open-line)))))
+        (when (= (strncmp text "return" len) 0)     (when (= len (cast i64 6)) (return (ok (make-char-tok 13 open-line)))))
+        (when (= (strncmp text "tab" len) 0)        (when (= len (cast i64 3)) (return (ok (make-char-tok 9 open-line)))))
+        (when (= (strncmp text "space" len) 0)      (when (= len (cast i64 5)) (return (ok (make-char-tok 32 open-line)))))
+        (when (= (strncmp text "nul" len) 0)        (when (= len (cast i64 3)) (return (ok (make-char-tok 0 open-line)))))
+        (when (= (strncmp text "escape" len) 0)     (when (= len (cast i64 6)) (return (ok (make-char-tok 27 open-line)))))
+        (when (= (strncmp text "backspace" len) 0)  (when (= len (cast i64 9)) (return (ok (make-char-tok 8 open-line)))))
+        (when (= (strncmp text "delete" len) 0)     (when (= len (cast i64 6)) (return (ok (make-char-tok 127 open-line)))))
+        (do (report-at open-line (fmt-s "unknown named char literal '\\%s'" (arena-strndup text len)))
+            (return (err! parse-error)))))))
+
 ; Returns 1 if `text` (length `len`) is a float literal in the syntactic
 ; sense: optional sign, at least one digit, contains either `.` or
 ; `e`/`E`, and consists otherwise of digits and at most one exponent
@@ -331,6 +427,11 @@
             (return (ok (cast ptr tq)))))))
     (when (= c 34)
       (do (next-char) (return (lex-string line))))
+    ; Char literal (Stage 11 M6 S0): a leading backslash. No current source has a
+    ; bare backslash outside a string literal (handled above), so this is purely
+    ; additive — the compiler's own source stays a bootstrap fixed point.
+    (when (= c 92)
+      (return (lex-char-literal line)))
     (return (lex-atom))))
 
 ; ============================================================
@@ -623,6 +724,15 @@
     (when (= (t kind) TOK-INT)
       (let (n:ptr:Node (cast ptr:Node (alloc-node)))
         (.set! n kind NODE-INT)
+        (.set! n line (t line))
+        (.set! n i (t i))
+        (return (ok (cast ptr n)))))
+    ; Char literal (Stage 11 M6 S0): a NODE-CHAR carrying the validated Unicode
+    ; scalar value in `i`. Self-evaluating; the compiler emits it as a Char-typed
+    ; i32 constant (emit-char-literal).
+    (when (= (t kind) TOK-CHAR)
+      (let (n:ptr:Node (cast ptr:Node (alloc-node)))
+        (.set! n kind NODE-CHAR)
         (.set! n line (t line))
         (.set! n i (t i))
         (return (ok (cast ptr n)))))

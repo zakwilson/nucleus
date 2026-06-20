@@ -41,7 +41,12 @@
 
 ; Token kinds
 (defenum TokKind TOK-LPAREN TOK-RPAREN TOK-RMACRO TOK-INT TOK-STRING TOK-SYMBOL TOK-FLOAT TOK-EOF
-                 TOK-LBRACK TOK-RBRACK TOK-LBRACE TOK-RBRACE TOK-HASHBRACE TOK-KEYWORD)
+                 TOK-LBRACK TOK-RBRACK TOK-LBRACE TOK-RBRACE TOK-HASHBRACE TOK-KEYWORD
+                 ; Stage 11 M6 (S0): a `\a` / `\newline` / `\u{1F600}` char literal.
+                 ; The token carries the (validated) Unicode scalar value in `i`;
+                 ; read-form lowers it to a NODE-CHAR. Appended last to keep the
+                 ; existing TOK-* ordinals unchanged.
+                 TOK-CHAR)
 
 ; Name kinds for the one-symbol-one-meaning shadowing check (see
 ; name-existing-kind / guard-name-kind). Ordered by lookup priority.
@@ -76,7 +81,14 @@
                   TY-F32 TY-F64 TY-TYVAR TY-CSTR TY-UNION TY-ERR
                   ; Stage 11: pointer-sized integer scalars. TY-USIZE is unsigned,
                   ; TY-SSIZE is signed. Both lower to i32/i64 per g-target-ptr-bytes.
-                  TY-USIZE TY-SSIZE)
+                  TY-USIZE TY-SSIZE
+                  ; Stage 11 M6 (S0): the Unicode scalar `Char` (design/stage11/
+                  ; string.md §"Char types"). A distinct 32-bit built-in scalar over
+                  ; `ui32` — the same kind of distinct scalar TY-CSTR is — lowering to
+                  ; IR `i32` (C `uint32_t`), so `=`/`!=` dispatch on `Char` and a
+                  ; `Char`-vs-int overload stay distinct. Appended last to keep the
+                  ; existing TypeKind ordinals unchanged.
+                  TY-CHAR)
 
 ; Pointer kinds (Stage 10 nullability, design/stage10/nullability.md). A
 ; compile-time contract carried on TY-PTR types; all three lower to IR `ptr`
@@ -513,6 +525,9 @@
 (defvar ty-f32:ref:Type)
 (defvar ty-f64:ref:Type)
 (defvar ty-cstr:ref:Type)
+; Stage 11 M6 (S0): the `Char` scalar singleton — a distinct 32-bit built-in over
+; `ui32` (design/stage11/string.md §"Char types"), the model for char literals.
+(defvar ty-char:ref:Type)
 ; Stage 10 Phase F: bare `raw` — a nullable, unchecked pointer singleton
 ; (PTR-RAW). The flip makes bare `ptr` non-null, so `raw` is the spelling that
 ; keeps today's raw/nullable pointer behavior; `null`'s type and C-boundary
@@ -939,6 +954,7 @@
   (set! ty-f32  (make-type TY-F32))
   (set! ty-f64  (make-type TY-F64))
   (set! ty-cstr (make-type TY-CSTR))
+  (set! ty-char (make-type TY-CHAR))
   (set! ty-err  (make-type TY-ERR))
   (set! ty-ptr  (make-type TY-PTR))
   ; Phase F flip: bare `ptr` / the ty-ptr singleton is now non-null (PTR-REF),
@@ -966,6 +982,8 @@
     (when (= (tt kind) TY-PTR)    (return "ptr"))
     (when (= (tt kind) TY-FN)     (return "ptr"))
     (when (= (tt kind) TY-CSTR)   (return "ptr"))
+    ; Char lowers to i32 (same width as ui32); distinct only at the type level.
+    (when (= (tt kind) TY-CHAR)   (return "i32"))
     (when (= (tt kind) TY-ERR)    (return "i32"))
     (when (= (tt kind) TY-F32)    (return "float"))
     (when (= (tt kind) TY-F64)    (return "double"))
@@ -996,6 +1014,8 @@
     (when (= (tt kind) TY-PTR)    (return "void*"))
     (when (= (tt kind) TY-FN)     (return "void*"))
     (when (= (tt kind) TY-CSTR)   (return "char*"))
+    ; Char is a Unicode scalar value; uint32_t at the C boundary.
+    (when (= (tt kind) TY-CHAR)   (return "uint32_t"))
     (when (= (tt kind) TY-ERR)    (return "int32_t"))
     (when (= (tt kind) TY-F32)    (return "float"))
     (when (= (tt kind) TY-F64)    (return "double"))
@@ -1035,6 +1055,7 @@
     (when (= (tt kind) TY-UI64) (return 8))
     (when (= (tt kind) TY-PTR)  (return g-target-ptr-bytes))
     (when (= (tt kind) TY-CSTR) (return g-target-ptr-bytes))
+    (when (= (tt kind) TY-CHAR)  (return 4))
     (when (= (tt kind) TY-ERR)   (return 4))
     (when (= (tt kind) TY-F32)   (return 4))
     (when (= (tt kind) TY-F64)   (return 8))
@@ -1062,6 +1083,10 @@
     (when (= k TY-ERR)   (return 1))
     (when (= k TY-USIZE) (return 1))
     (when (= k TY-SSIZE) (return 1))
+    ; Char is an i32-repr distinct scalar: integer for comparison/coercion/cast
+    ; (a same-width `cast` Char<->ui32 is a no-IR reinterpret), distinguished from
+    ; ui32 only by type-eq / mangling so `=`/`!=` dispatch and literals keep meaning.
+    (when (= k TY-CHAR)  (return 1))
     (return 0)))
 
 (defn is-float-type:i32 (t:ptr)
@@ -1094,6 +1119,7 @@
     (when (= k TY-ERR)   (return 32))
     (when (= k TY-USIZE) (return (* g-target-ptr-bytes 8)))
     (when (= k TY-SSIZE) (return (* g-target-ptr-bytes 8)))
+    (when (= k TY-CHAR)  (return 32))
     (return 0)))
 
 (defn is-unsigned:i32 (t:ptr)
@@ -1103,6 +1129,8 @@
     (when (= k TY-UI32)  (return 1))
     (when (= k TY-UI64)  (return 1))
     (when (= k TY-USIZE) (return 1))
+    ; Char is over ui32, so it is unsigned for the trunc/zext-vs-sext choice.
+    (when (= k TY-CHAR)  (return 1))
     (return 0)))
 
 ; ============================================================
@@ -1832,6 +1860,7 @@
   (when (= name "ptr") (return ty-ptr))
   (when (= name "raw") (return ty-raw))
   (when (= name "CStr") (return ty-cstr))
+  (when (= name "Char") (return ty-char))
   (when (= name "void") (return ty-void))
   (when (= name "ui8") (return ty-ui8))
   (when (= name "ui16") (return ty-ui16))
@@ -3246,6 +3275,7 @@
     (when (= (nn kind) NODE-INT)   (return ty-i32))
     (when (= (nn kind) NODE-FLOAT) (return ty-f64))
     (when (= (nn kind) NODE-STR)   (return ty-cstr))
+    (when (= (nn kind) NODE-CHAR)  (return ty-char))
     (when (= (nn kind) NODE-SYM)   (return (node-type-sym n scope)))
     ; Keyword literal (Stage 11 cleanup §2): its static type is the `Keyword`
     ; struct, available only when the program has (import keyword). If the struct
@@ -3304,7 +3334,9 @@
         (when (= hp 'invoke) (return (node-type-invoke n scope)))
         (when (= hp 'sizeof) (return ty-i64))
         (when (= hp 'alloca) (return (node-type-alloca n)))
-        (when (= hp 'char) (return ty-i8))
+        ; (char "x") is sugar for the \x char literal — a Char value (S0). Must
+        ; match emit-char's result type so the Rung-3 cross-check agrees.
+        (when (= hp 'char) (return ty-char))
         (when (= hp 'aref) (return (node-type-deref-elem n scope)))
         (when (= hp 'aset!) (return ty-void))
         ; Stage 10: Maybe transition forms — relabelings mirror their emitters
@@ -3368,6 +3400,7 @@
   (let (nn:ptr:Node (cast ptr:Node n)
         v:ref:Val (alloc-val ty-void null))
     (when (= (nn kind) NODE-INT)   (set! v (emit-int n)))
+    (when (= (nn kind) NODE-CHAR)  (set! v (emit-char-literal n)))
     (when (= (nn kind) NODE-FLOAT) (set! v (emit-float n)))
     (when (= (nn kind) NODE-STR)   (set! v (emit-string n)))
     (when (= (nn kind) NODE-SYM)   (set! v (emit-symbol-ref n scope)))
@@ -3383,6 +3416,13 @@
 
 (defn emit-int:ref:Val (n:ptr)
   (return (alloc-val ty-i32 (fmt-i64 "%ld" ((cast ptr:Node n) i)))))
+
+; Stage 11 M6 (S0): a `\a` / `\newline` / `\u{1F600}` char literal. The reader
+; lexed the (validated) Unicode scalar value into the node's `i` field; emit it
+; as a `Char`-typed i32 constant. Distinct from emit-int only in the result type,
+; so `=`/`!=` dispatch and `Char`-vs-int overloads see a `Char`, not an `i32`.
+(defn emit-char-literal:ref:Val (n:ptr)
+  (return (alloc-val ty-char (fmt-i64 "%ld" ((cast ptr:Node n) i)))))
 
 ; Translate a float literal lexeme to an LLVM IR floating-point
 ; constant. Hex bit-patterns for the Scheme-style special tokens
@@ -3503,14 +3543,16 @@
         (fprintf g-body-stream "  %s = call ptr @make-cell(ptr %s, ptr %s, i32 %d)\n"
                  tmp car-ref cdr-ref (nn line))
         (return tmp)))
-    ; NODE-INT / NODE-STR / NODE-FLOAT / NODE-KEYWORD — runtime alloc + fill.
-    ; NODE-KEYWORD (Stage 11 cleanup §2) stores its name in `s` like NODE-STR but
-    ; must also write its own kind (NODE-INT is 0, so alloc-node's zero-fill
-    ; already names it for the INT case; every other literal kind is stored).
+    ; NODE-INT / NODE-STR / NODE-FLOAT / NODE-KEYWORD / NODE-CHAR — runtime alloc
+    ; + fill. NODE-KEYWORD (Stage 11 cleanup §2) stores its name in `s` like
+    ; NODE-STR but must also write its own kind (NODE-INT is 0, so alloc-node's
+    ; zero-fill already names it for the INT case; every other literal kind is
+    ; stored). NODE-CHAR (S0) stores its kind too, then its codepoint via the
+    ; NODE-INT `i`-store branch below.
     (let (tmp:ptr (new-tmp))
       (fprintf g-body-stream "  %s = call ptr @alloc-node()\n" tmp)
       (when (or (or (= (nn kind) NODE-STR) (= (nn kind) NODE-FLOAT))
-                (= (nn kind) NODE-KEYWORD))
+                (or (= (nn kind) NODE-KEYWORD) (= (nn kind) NODE-CHAR)))
         (let (kp:ptr (new-tmp))
           (fprintf g-body-stream
             "  %s = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %s, i32 0, i32 0\n"
@@ -3521,7 +3563,7 @@
           "  %s = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %s, i32 0, i32 1\n"
           lp tmp)
         (fprintf g-body-stream "  store i32 %d, ptr %s, align 4\n" (nn line) lp))
-      (when (= (nn kind) NODE-INT)
+      (when (or (= (nn kind) NODE-INT) (= (nn kind) NODE-CHAR))
         (let (ip:ptr (new-tmp))
           (fprintf g-body-stream
             "  %s = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %s, i32 0, i32 2\n"
@@ -4041,6 +4083,17 @@
                 ; Both typed: int+float (non-literal) needs an explicit cast.
                 (when (and (!= (is-float-type at) 0) (!= (is-int-type bt) 0)) (return null))
                 (when (and (!= (is-int-type at) 0) (!= (is-float-type bt) 0)) (return null))
+                ; Char is a distinct scalar (Stage 11 M6 S0): a typed Char must not
+                ; silently unify with a same-width non-Char int (e.g. ui32). Bail
+                ; so the kind-mismatch check in emit-binop-vals reports it; the
+                ; programmer casts explicitly. (An untyped int *literal* still
+                ; adapts to Char via the literal branches above — only two typed,
+                ; differently-kinded operands are rejected.)
+                (when (and (or (= (-> at (cast ptr:Type _) (_ kind)) TY-CHAR)
+                               (= (-> bt (cast ptr:Type _) (_ kind)) TY-CHAR))
+                           (!= (-> at (cast ptr:Type _) (_ kind))
+                               (-> bt (cast ptr:Type _) (_ kind))))
+                  (return null))
                 (if (!= (is-float-type at) 0)
                   (if (>= (float-width at) (float-width bt)) (set! target at) (set! target bt))
                   (do
@@ -4317,6 +4370,7 @@
       (return (-> tt (_ sdef) (cast ptr:StructDef _) (_ name))))
     (when (= k TY-FN) (return "fn"))
     (when (= k TY-CSTR) (return "cstr"))
+    (when (= k TY-CHAR) (return "Char"))
     (when (= k TY-ERR)   (return "Err"))
     (when (= k TY-USIZE) (return "usize"))
     (when (= k TY-SSIZE) (return "ssize"))
@@ -4378,6 +4432,7 @@
     (when (= k TY-STRUCT) (return (-> tt (_ sdef) (cast ptr:StructDef _) (_ name))))
     (when (= k TY-UNION) (return (-> tt (_ sdef) (cast ptr:StructDef _) (_ name))))
     (when (= k TY-CSTR)  (return "CStr"))
+    (when (= k TY-CHAR)  (return "Char"))
     (when (= k TY-ERR)   (return "Err"))
     (when (= k TY-USIZE) (return "usize"))
     (when (= k TY-SSIZE) (return "ssize"))
@@ -5824,6 +5879,7 @@
     (when (= (nn kind) NODE-INT)   (return ty-i32))
     (when (= (nn kind) NODE-FLOAT) (return ty-f64))
     (when (= (nn kind) NODE-STR)   (return ty-cstr))
+    (when (= (nn kind) NODE-CHAR)  (return ty-char))
     (when (= (nn kind) NODE-SYM)   (return (node-type-sym n scope)))
     (when (!= (nn kind) NODE-CELL) (return ty-void))
     (when (= (node-len n) 0) (return null))
@@ -6096,6 +6152,7 @@
     (when (= (nn kind) NODE-INT)   (return ty-i32))
     (when (= (nn kind) NODE-FLOAT) (return ty-f64))
     (when (= (nn kind) NODE-STR)   (return ty-cstr))
+    (when (= (nn kind) NODE-CHAR)  (return ty-char))
     (when (= (nn kind) NODE-SYM)   (return (node-type-sym n scope)))
     (when (!= (nn kind) NODE-CELL) (return ty-void))
     (when (= (node-len n) 0) (return null))
@@ -7633,13 +7690,18 @@
                 (type-to-ir elem) (cv val) gep (type-size elem))
               (return (alloc-val ty-void null)))))))))
 
+; (char "x") — now sugar for the `\x` char literal: produces a `Char`-typed
+; value from the first byte of a single-byte string (Stage 11 M6 S0). Superseded
+; by the `\x` reader literal; kept so existing call sites read as `Char`, not the
+; old raw `i8`. The byte is in 0..127 in practice (ASCII source), already a valid
+; scalar value, so no codepoint validation is needed.
 (defn emit-char:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "char expects 1 arg"))
     (let (arg:ptr:Node (cast ptr:Node (node-at cc 1)))
       (when (or (!= (arg kind) NODE-STR) (!= (cast i64 (strlen (arg s))) (cast i64 1)))
         (die-at (arg line) "char: arg must be single-char string"))
-      (return (alloc-val ty-i8 (fmt-i32 "%d" (char-at (arg s) (cast i64 0))))))))
+      (return (alloc-val ty-char (fmt-i32 "%d" (char-at (arg s) (cast i64 0))))))))
 
 (defn emit-addr-of:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))

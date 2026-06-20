@@ -1,0 +1,157 @@
+; Stage 11 M6 (S4) — String owning type: construction, mutation, protocol
+; conformances, Drop, Eq, Ord, Hash, and use as HashMap key.
+;
+; Tests:
+;   1. string-new + string-push-char: build "Hello", check byte-len / char-count
+;   2. chars iteration: print each char's u32 value
+;   3. string-push-str: append " World", check byte-len, as-view → cstr
+;   4. string-pop-char: pop 'd' (u32=100)
+;   5. string-from-view: success and error (invalid UTF-8)
+;   6. Drop via with block: String auto-drops, print "dropped" after
+;   7. Eq on two Strings with same content (=1) and different content (=0)
+;   8. Ord: < on "Hello" < "World"
+;   9. HashMap<String,i32>: insert two String keys, look them up
+
+(include stdio)
+(include stdlib)
+(include string)
+(import allocator)
+(import coll)
+(import iterator)
+(import vector)
+(import hash)
+(import hashmap)
+(import strview)
+(import strview-str)
+(import char)
+(import string-errors)
+(import string-protocols)
+(import string)
+(import error)
+
+(defn main:i32 ()
+
+  ; ---- 1. Build "Hello" with push-char ----------------------------------------
+  (with ((s (ref String)) (alloca String))
+    (vector-init (.& s bytes))
+
+    (string-push-char s \H)
+    (string-push-char s \e)
+    (string-push-char s \l)
+    (string-push-char s \l)
+    (string-push-char s \o)
+
+    (printf "byte-len=%llu\n" (cast ui64 (byte-len s)))     ; 5
+    (printf "char-count=%llu\n" (cast ui64 (char-count s))) ; 5
+
+    ; ---- 2. chars iteration --------------------------------------------------
+    (let (ci:CharIter (chars s))
+      (doseq-iter (c (addr-of ci))
+        (printf "char=%u\n" (cast ui32 c))))  ; 72 101 108 108 111
+
+    ; ---- 3. string-push-str: append " World" ----------------------------------
+    (let ((needle (ref StrView)) (alloca StrView))
+      (.set! needle data (cast ptr:ui8 (cast ptr " World")))
+      (.set! needle len  (cast usize 6))
+      (let (r:!i32 (string-push-str s needle))
+        (match r
+          ((ok _) (printf "push-str=ok\n"))
+          ((err e) (printf "push-str=err\n"))))
+      (printf "byte-len-after=%llu\n" (cast ui64 (byte-len s))) ; 11
+      ; Print as CStr using strview-to-cstr on as-view.
+      (let (sv:StrView (as-view s))
+        (printf "content=%s\n" (strview-to-cstr (addr-of sv)))))  ; Hello World
+
+    ; ---- 4. string-pop-char: pop 'd' -----------------------------------------
+    (let ((popped (Maybe Char)) (string-pop-char s))
+      (match popped
+        ((some c) (printf "popped=%u\n" (cast ui32 c)))   ; 100 (= 'd')
+        (none (printf "popped=none\n"))))
+    (printf "byte-len-after-pop=%llu\n" (cast ui64 (byte-len s))) ; 10
+
+    ; ---- 5a. string-from-view: success path ------------------------------------
+    (let ((sv2 (ref StrView)) (alloca StrView))
+      (.set! sv2 data (cast ptr:ui8 (cast ptr "hi")))
+      (.set! sv2 len  (cast usize 2))
+      (let (r2:!String (string-from-view sv2))
+        (match r2
+          ((ok s2)
+           (printf "from-view=ok\n")
+           (let (sv3:StrView (as-view (addr-of s2)))
+             (printf "from-view-content=%s\n" (strview-to-cstr (addr-of sv3))))
+           ; Drop s2 explicitly since we're inside a match arm.
+           (drop (addr-of s2)))
+          ((err e) (printf "from-view=err\n")))))
+
+    ; ---- 5b. string-from-view: invalid UTF-8 → error --------------------------
+    ; 0xFF is not a valid UTF-8 lead byte.
+    (let (bad-buf:ptr:ui8 (cast ptr:ui8 (malloc (cast i64 1))))
+      (aset! bad-buf (cast i64 0) (cast ui8 255))
+      (let ((bad-sv (ref StrView)) (alloca StrView))
+        (.set! bad-sv data bad-buf)
+        (.set! bad-sv len  (cast usize 1))
+        (let (r3:!String (string-from-view bad-sv))
+          (match r3
+            ((ok s3)
+             (printf "from-view-bad=ok\n")
+             (drop (addr-of s3)))
+            ((err e) (printf "from-view-bad=err\n")))))  ; err
+      (free (cast ptr bad-buf)))
+
+    (printf "hello-done\n"))
+  ; String `s` drops here automatically.
+
+  ; ---- 6. Drop via with block --------------------------------------------------
+  (with ((s2 (ref String)) (alloca String))
+    (vector-init (.& s2 bytes))
+    (string-push-char s2 \X)
+    (printf "in-with\n"))
+  ; Drop fires at the closing paren above.
+  (printf "after-with\n")  ; printed after drop
+
+  ; ---- 7. Eq ------------------------------------------------------------------
+  (let (a:String (string-from-cstr-unchecked "foo")
+        b:String (string-from-cstr-unchecked "foo")
+        c:String (string-from-cstr-unchecked "bar"))
+    (printf "eq-same=%d\n"  (if (= a b) 1 0))   ; 1
+    (printf "eq-diff=%d\n"  (if (= a c) 1 0))   ; 0
+    (printf "neq-diff=%d\n" (if (!= a c) 1 0))  ; 1
+    (drop (addr-of a))
+    (drop (addr-of b))
+    (drop (addr-of c)))
+
+  ; ---- 8. Ord -----------------------------------------------------------------
+  (let (p:String (string-from-cstr-unchecked "Hello")
+        q:String (string-from-cstr-unchecked "World"))
+    (printf "lt-hv=%d\n"  (if (< p q) 1 0))   ; 1 ("Hello" < "World")
+    (printf "gt-vh=%d\n"  (if (> q p) 1 0))   ; 1
+    (drop (addr-of p))
+    (drop (addr-of q)))
+
+  ; ---- 9. HashMap<String,i32> -------------------------------------------------
+  (with ((m (ref (HashMap String i32))) (alloca (HashMap String i32)))
+    (hashmap-init m)
+
+    ; assoc String keys into the map (regular generic dispatch, no get-intrinsic issue).
+    (let (k1:String (string-from-cstr-unchecked "alpha")
+          k2:String (string-from-cstr-unchecked "beta"))
+      (assoc m k1 42)
+      (assoc m k2 99))
+    (printf "hmap-count=%llu\n" (cast ui64 (count m)))   ; 2
+
+    ; Look up by freshly-constructed equal keys.
+    ; Use (string-from-cstr-unchecked "...") as the selector expression so
+    ; the compiler uses value-keyed dispatch (not literal-symbol field access).
+    (match (get m (string-from-cstr-unchecked "alpha"))
+      ((some v) (printf "alpha=%d\n" v))    ; 42
+      (none     (printf "alpha=absent\n")))
+    (match (get m (string-from-cstr-unchecked "beta"))
+      ((some v) (printf "beta=%d\n" v))     ; 99
+      (none     (printf "beta=absent\n")))
+    (match (get m (string-from-cstr-unchecked "gamma"))
+      ((some v) (printf "gamma=%d\n" v))
+      (none     (printf "gamma=absent\n")))
+
+    (printf "hmap-done\n"))
+
+  (return 0))

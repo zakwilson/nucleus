@@ -1,0 +1,16 @@
+A=65
+a=97
+0=48
+newline=10
+tab=9
+space=32
+nul=0
+delete=127
+u41=65
+u1F600=128512
+eq-aa=1
+eq-ab=0
+ne-ab=1
+char-x=120
+lit-x=120
+char-eq-lit=1

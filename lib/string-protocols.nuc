@@ -1,0 +1,109 @@
+; Stage 11 M6 (S2) — ByteStr and Str read-only string protocols.
+;
+; Design: design/stage11/string.md §"ByteStr protocol" and §"Str protocol".
+;
+; Two protocol layers sit below the concrete String type:
+;
+;   ByteStr — encoding-agnostic byte substrate: byte length, byte-at, byte
+;             iterator, sub-slice, byte-substring search. O(1) for StrView/
+;             String; O(n) strlen for CStr (no stored length). CStr cannot
+;             represent embedded NULs but still conforms.
+;
+;   Str     — UTF-8 / codepoint layer on top: char count (O(n)), char-at
+;             (O(n)), char iterator, prefix/suffix/contains tests. Extends Eq
+;             (content comparison) only — NOT Coll/Seq/Drop, because CStr and
+;             StrView own nothing and cannot mutate (eval §1 of string.md).
+;
+; These protocols define SHAPES only.  The conforming `extend` blocks for
+; StrView, CStr, and String go in later tasks (S3/S4).
+;
+; ---------------------------------------------------------------------------
+; TOKENIZER NOTES (carried from coll.nuc / strview.nuc):
+;
+;   - A parameter whose type is a parenthesised form uses the LIST binding
+;     form: `(self (ref Self))`.  Never `self:(ref Self)`.
+;   - A return type that is a parenthesised form uses the list form for the
+;     defprotocol method head: `((byte-find (Maybe usize)) ...)`.
+;   - Plain-symbol return types in colon position DO tokenise, so
+;     `byte-len:usize` and `as-view:StrView` are fine.
+;   - `!T` colon return types tokenise as per the colon-paren sugar:
+;     `byte-at:!ui8` and `sub-bytes:!StrView` work.
+;   - ByteI and CharI are protocol type parameters (associated iterator types
+;     à la Coll's It parameter).  They are bound at the `extend` site, not
+;     declared elsewhere.
+; ---------------------------------------------------------------------------
+
+(import strview)    ; StrView struct + Eq/Hash conformances
+(import iterator)  ; (Iterator E) — ByteI must conform to (Iterator ui8),
+                   ;                CharI must conform to (Iterator Char)
+(import string-errors) ; the four deferror codes
+
+; ---------------------------------------------------------------------------
+; ByteStr ByteI — the byte substrate.
+;
+;   ByteI is this concrete type's byte-iterator type; it must itself conform
+;   to (Iterator ui8).  Bound per conformer, e.g.:
+;     (extend StrView (ByteStr ViewByteIter))
+;
+; Methods:
+;   byte-len   — byte length.  O(1) for StrView/String; O(n) strlen for CStr.
+;   byte-at    — i-th byte, O(1).  Errors str-index-out-of-bounds when i >=
+;                byte-len.
+;   bytes      — return a fresh byte iterator by VALUE (associated type ByteI).
+;                Drive with (addr-of it) + next (the value-return convention
+;                from examples/assoc-iter-return.nuc and coll.nuc C2.1).
+;   as-view    — borrow the entire content as a StrView (two-word value, no
+;                copy).  The bridge to all StrView byte ops.
+;   sub-bytes  — sub-slice [start,end) as a borrowed StrView.  Two distinct
+;                errors: str-index-out-of-bounds when the range is past the
+;                end, invalid-char-boundary when an endpoint falls mid-
+;                codepoint.
+;   byte-find  — first byte index of a byte-substring, or none.  `none` is
+;                a legitimate "not found", not an error: returns (Maybe usize).
+; ---------------------------------------------------------------------------
+(defprotocol (ByteStr ByteI)
+  (byte-len:usize   ((self (ref Self))))
+  (byte-at:!ui8     ((self (ref Self)) i:usize))
+  (bytes:ByteI      ((self (ref Self))))
+  (as-view:StrView  ((self (ref Self))))
+  (sub-bytes:!ptr:StrView ((self (ref Self)) start:usize end:usize))
+  ((byte-find (Maybe usize)) ((self (ref Self)) (needle (ref StrView)))))
+
+; ---------------------------------------------------------------------------
+; Str CharI — the codepoint layer.
+;
+;   CharI is this concrete type's char-iterator type; it must itself conform
+;   to (Iterator Char).  Bound per conformer, e.g.:
+;     (extend StrView (Str ViewCharIter))
+;
+;   Str extends Eq — content comparison — and ONLY Eq (not Coll/Seq/Drop;
+;   see design/stage11/string.md eval §1: mutation ops belong only on the
+;   concrete owning String, not on the shared read surface).
+;   The protocol inheritance is recorded with `(extend Str Eq)` below,
+;   matching the `(extend Ord Eq)` pattern in lib/numeric.nuc.
+;
+; Methods:
+;   char-count   — codepoint count.  O(n): walks UTF-8 bytes counting lead
+;                  bytes.  Never an unqualified "count" (byte vs. codepoint
+;                  ambiguity rule from string.md §4).
+;   str-empty?   — 1 when byte-len == 0, else 0.  Cheap: no codepoint walk.
+;   char-at      — nth codepoint, O(n).  Errors str-index-out-of-bounds when
+;                  i is past the last codepoint.
+;   chars        — return a fresh char iterator by VALUE (associated type
+;                  CharI).  Drive with (addr-of it) + next.
+;   starts-with? — 1 when self begins with the given prefix StrView, else 0.
+;   ends-with?   — 1 when self ends with the given suffix StrView, else 0.
+;   contains-str?— 1 when self contains the given needle StrView, else 0.
+; ---------------------------------------------------------------------------
+(defprotocol (Str CharI)
+  (char-count:usize    ((self (ref Self))))
+  (str-empty?:i32      ((self (ref Self))))
+  (char-at:!Char       ((self (ref Self)) i:usize))
+  (chars:CharI         ((self (ref Self))))
+  (starts-with?:i32    ((self (ref Self)) (prefix (ref StrView))))
+  (ends-with?:i32      ((self (ref Self)) (suffix (ref StrView))))
+  (contains-str?:i32   ((self (ref Self)) (needle (ref StrView)))))
+
+; Str extends Eq: every type that conforms to Str must also conform to Eq
+; (content comparison).  This mirrors `(extend Ord Eq)` in lib/numeric.nuc.
+(extend Str Eq)

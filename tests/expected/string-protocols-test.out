@@ -1,0 +1,11 @@
+e1-nonzero=1
+e2-nonzero=1
+e3-nonzero=1
+e4-nonzero=1
+e1-ne-e2=1
+e1-ne-e3=1
+e1-ne-e4=1
+e2-ne-e3=1
+e2-ne-e4=1
+e3-ne-e4=1
+done

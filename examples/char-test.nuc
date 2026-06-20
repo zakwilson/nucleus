@@ -1,0 +1,33 @@
+; Stage 11 M6 (S0): the built-in `Char` distinct scalar and char literals.
+; Exercises printable scalars (\a), named control codes (\newline), the
+; \u{XXXX} hex form, `=`/`!=` dispatch on Char, and same-width cast to ui32.
+
+(defn main:i32 ()
+  ; A printable scalar literal is a Char; cast to ui32 yields its codepoint.
+  (printf "A=%u\n" (cast ui32 \A))            ; 65
+  (printf "a=%u\n" (cast ui32 \a))            ; 97
+  (printf "0=%u\n" (cast ui32 \0))            ; 48 (the digit zero, printable)
+
+  ; Named control codes.
+  (printf "newline=%u\n" (cast ui32 \newline))     ; 10
+  (printf "tab=%u\n"     (cast ui32 \tab))         ; 9
+  (printf "space=%u\n"   (cast ui32 \space))       ; 32
+  (printf "nul=%u\n"     (cast ui32 \nul))         ; 0
+  (printf "delete=%u\n"  (cast ui32 \delete))      ; 127
+
+  ; Hex codepoint form, including a 4-byte (astral) codepoint.
+  (printf "u41=%u\n"    (cast ui32 \u{41}))         ; 65
+  (printf "u1F600=%u\n" (cast ui32 \u{1F600}))      ; 128512
+
+  ; `=`/`!=` dispatch on two Char values. (Normalize the i1 result to 0/1 with
+  ; `if` — a bare (cast i32 bool) sign-extends true to -1 for every scalar type,
+  ; which is pre-existing Nucleus semantics, not Char-specific.)
+  (printf "eq-aa=%d\n" (if (= \a \a) 1 0))          ; 1
+  (printf "eq-ab=%d\n" (if (= \a \b) 1 0))          ; 0
+  (printf "ne-ab=%d\n" (if (!= \a \b) 1 0))         ; 1
+
+  ; (char "x") is now sugar for the \x literal — same Char codepoint.
+  (printf "char-x=%u\n" (cast ui32 (char "x")))     ; 120
+  (printf "lit-x=%u\n"  (cast ui32 \x))             ; 120
+  (printf "char-eq-lit=%d\n" (if (= (char "x") \x) 1 0)) ; 1
+  (return 0))
