@@ -175,7 +175,6 @@
 ; Drop conformance: free the buffer through the stored allocator. Null-safe and
 ; idempotent (data is nulled so a double drop / post-move is a no-op).
 ; ---------------------------------------------------------------------------
-(extend (Vector T) (Coll T))
 (extend (Vector T) (Seq T))
 (extend (Vector T) Drop)
 
@@ -201,11 +200,11 @@
 ; The iterator BORROWS the buffer (raw element pointer); it does not own it and
 ; must not outlive the Vector.
 ;
-; NOTE: `iter-init` fills a caller-provided (ref (VecIter T)) rather than
-; returning a VecIter by value. `doseq` needs an iterator *reference* anyway, and
-; returning a >16-byte struct by value currently mis-lowers under the SysV sret
-; path (a pre-existing aggregate-return ABI gap — see design/stage11/progress.md).
-; The fill-in-place form mirrors `vector-init` and the M2 iterator idioms.
+; NOTE: `iter-init` is the internal fill-in-place helper. The protocol surface
+; is the value-returning `iter` (Coll conformance, defined below): it alloca's a
+; VecIter, calls `iter-init`, and returns `(deref it)` by value through the SysV
+; sret path. Consumers `(addr-of …)` the returned value to get the (ref (VecIter
+; T)) that `next` wants (the doseq/into convention — C2.1).
 ; ---------------------------------------------------------------------------
 (defstruct (VecIter T)
   data:ptr     ; element-typed buffer pointer (cast to ptr:T on read)
@@ -221,7 +220,21 @@
     (return (some v))))
 
 ; iter-init: configure `it` to scan `v` from the start (borrowing its buffer).
+; Internal helper: the value-returning `iter` (Coll conformance) wraps it.
 (defn iter-init:void ((it (ref (VecIter T))) (v (ref (Vector T))))
   (.set! it data (cast ptr (v data)))
   (.set! it pos (cast usize 0))
   (.set! it len (v len)))
+
+; ---------------------------------------------------------------------------
+; Coll T (VecIter T) conformance. `iter` returns a fresh VecIter BY VALUE
+; (alloca + iter-init + (deref …) — the spike pattern). Consumers `addr-of`
+; the result to drive `next`. (extend is placed here because (VecIter T) must
+; be declared before it can name the associated iterator type.)
+; ---------------------------------------------------------------------------
+(extend (Vector T) (Coll T (VecIter T)))
+
+(defn iter:(VecIter T) ((self (ref (Vector T))))
+  (let ((it (ref (VecIter T))) (alloca (VecIter T)))
+    (iter-init it self)
+    (return (deref it))))

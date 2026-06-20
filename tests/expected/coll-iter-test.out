@@ -1,0 +1,5 @@
+vec count=4 sum=10
+set count=3 sum=60
+map count=3 valsum=600
+into count=3 sum=18
+done

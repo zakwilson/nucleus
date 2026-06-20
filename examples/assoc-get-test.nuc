@@ -1,0 +1,31 @@
+; Stage 11 C2.2a — get:(Maybe V) as an Assoc protocol method.
+;
+; Exercises:
+;   - (get m key) dispatches through the Assoc protocol to HashMap's impl.
+;   - hit returns (some v); miss returns none.
+;   - Works for both CStr and Keyword key types (two conformances of Hash/Eq).
+
+(include stdio)
+(import allocator)
+(import coll)
+(import iterator)
+(import hash)
+(import hashmap)
+
+(defn main:i32 ()
+  ; CStr-keyed map.
+  (with ((m (ref (HashMap CStr i32))) (alloca (HashMap CStr i32)))
+    (hashmap-init m)
+    (assoc m "alpha" 1)
+    (assoc m "beta"  2)
+    (match (get m "alpha")
+      ((some v) (printf "alpha=%d\n" v))    ; alpha=1
+      (none     (printf "alpha=absent\n")))
+    (match (get m "beta")
+      ((some v) (printf "beta=%d\n" v))     ; beta=2
+      (none     (printf "beta=absent\n")))
+    (match (get m "gamma")
+      ((some v) (printf "gamma=%d\n" v))
+      (none     (printf "gamma=absent\n"))) ; gamma=absent
+    (printf "done\n"))
+  (return 0))

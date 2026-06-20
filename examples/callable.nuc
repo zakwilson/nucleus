@@ -6,27 +6,32 @@
 ;                         intrinsic emits a GEP+load, byte-identical to `.`, and
 ;                         is overridable by a user `get` method)
 ;   - anything else      → a user-defined `invoke` (indexing, function objects)
-; The IntIndexable / Call protocols (lib/seq.nuc) name the `invoke` capability.
+; Function-object protocols: (UnaryFn Arg Ret) and (FoldFn Acc Elem) in
+; lib/iterator.nuc provide parametric, element-generic alternatives to the
+; former fixed-type Call/BinaryCall protocols.
 
 (include stdio)
 (include stdlib)
-(import seq)
+(import iterator)
 
 (defstruct Point x:i32 y:i32)
 
-; ---- IntIndexable: an i32 vector, indexable by call ----
+; ---- invoke: an i32 vector, indexable by call ----
 (defstruct Vec data:ptr:i32 len:i32)
 (defn invoke:i32 (self:ptr:Vec i:i32)
   (return (aref (self data) i)))
-(extend Vec IntIndexable)
 
-; ---- Call: a function object that adds a fixed delta to *arg ----
+; ---- UnaryFn: a function object that adds a fixed delta to its i32 argument ----
 (defstruct Adder delta:i32)
-(defn invoke:ptr (self:ptr:Adder arg:ptr)
-  (let (out:ptr:i32 (cast ptr:i32 (malloc (cast i64 4))))
-    (aset! out 0 (+ (aref (cast ptr:i32 arg) 0) (self delta)))
-    (return (cast ptr out))))
-(extend Adder Call)
+(extend Adder (UnaryFn i32 i32))
+(defn (apply i32) ((self (ref Adder)) (x i32))
+  (return (+ x (self delta))))
+
+; ---- FoldFn: a function object that multiplies accumulator by element ----
+(defstruct Multiplier dummy:i32)
+(extend Multiplier (FoldFn i32 i32))
+(defn (fold i32) ((self (ref Multiplier)) (acc i32) (x i32))
+  (return (* acc x)))
 
 ; ---- A user `get` override: it owns all member access on its type (tier 0
 ;      beats the Struct intrinsic). Here a synthetic 'f selector is computed,
@@ -45,7 +50,7 @@
     (.set! p y 4)
     (printf "point: x=%d y=%d\n" (p x) (p y)))
 
-  ; IntIndexable: (v i) indexes; (v len) is member access — same value, the argument decides.
+  ; invoke: (v i) indexes; (v len) is member access — same value, the argument decides.
   (let (v:ptr:Vec (cast ptr:Vec (malloc (cast i64 (sizeof Vec))))
         arr:ptr:i32 (cast ptr:i32 (malloc (cast i64 12))))
     (aset! arr 0 10)
@@ -55,13 +60,15 @@
     (.set! v len 3)
     (printf "seq: v0=%d v1=%d v2=%d len=%d\n" (v 0) (v 1) (v 2) (v len)))
 
-  ; Call: a function object invoked with a pointer argument.
-  (let (add5:ptr:Adder (cast ptr:Adder (malloc (cast i64 (sizeof Adder))))
-        n:ptr:i32 (cast ptr:i32 (malloc (cast i64 4))))
+  ; UnaryFn: a function object invoked with an i32 argument via apply.
+  (let ((add5 (ref Adder)) (alloca Adder))
     (.set! add5 delta 5)
-    (aset! n 0 37)
-    (let (r:ptr:i32 (cast ptr:i32 (add5 (cast ptr n))))
-      (printf "call: 37+5=%d\n" (aref r 0))))
+    (printf "call: 37+5=%d\n" (apply add5 37)))
+
+  ; FoldFn: reduce [2,3,4] by multiplication starting from 1 via fold.
+  (let ((mul (ref Multiplier)) (alloca Multiplier))
+    (.set! mul dummy 0)
+    (printf "fold: 1*2*3*4=%d\n" (fold mul (fold mul (fold mul 1 2) 3) 4)))
 
   ; User get override beats the intrinsic; 'f is synthetic, 'c delegates to the field.
   (let (t:ptr:Temp (cast ptr:Temp (malloc (cast i64 (sizeof Temp)))))

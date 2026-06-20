@@ -126,44 +126,98 @@
          ~body
          (inc! ~var-node)))))
 
-; (doseq (var iter-expr) body...) — iterate an iterator, binding var to each element.
+; (doseq (var coll-expr IterType) body...) — iterate any Coll, binding var to
+; each element.
+;
+; coll-expr is a COLLECTION (a (ref (Vector T)) / (ref (HashSet T)) / (ref
+; (HashMap K V)) / …); IterType is its associated iterator type — the It in
+; (Coll E It) — e.g. (VecIter i32), (HashSetIter i32), (HashMapEntryIter K V).
+; `doseq` calls the protocol `iter` to get a fresh iterator BY VALUE, binds it
+; to a typed local, then drives it via (next (addr-of it)) — the value-return +
+; addr-of convention (C2.1, design/stage11/cleanup2.md). It dispatches
+; generically over any (Coll E It).
+;
+; Why IterType must be named: the language has no type inference for `let`
+; bindings (every binding needs an explicit type) and `addr-of` only takes the
+; address of a named local (not an rvalue), so the value-returned iterator must
+; live in a typed binding we can address. The binding's THIRD element supplies
+; that type; the macro emits `(let (it:IterType (iter coll)) …)`.
 ;
 ; Expands to a while loop with a done-flag so it composes safely in any context.
-; The iterator is stored in a local variable and advanced via (next (addr-of iter)).
 ; No `return` or `break` inside the expansion — works in any expression context.
 ;
+; For a bare iterator REFERENCE (a pure Iterator that is not a Coll — e.g.
+; IntRangeIter / MapIter / FilterIter / HashMapKeyIter), use `doseq-iter`.
+;
 ; Example:
-;   (doseq (x (IntRangeIter 0 5))
-;     (printf "%d\n" x))
+;   (with ((v (ref (Vector i32))) (alloca (Vector i32)))
+;     (vector-init v) (conj v 1) (conj v 2)
+;     (doseq (x v (VecIter i32)) (printf "%d\n" x)))
 (defmacro doseq (binding &rest body)
-  ; binding is (var iter-ref) where iter-ref is a (ref Iterator) symbol.
-  ; Advances the iterator each loop step, binding the element to var.
-  ; Uses (done-sym i32) list-binding form so the gensym doesn't need a colon type.
+  ; binding is (var coll-expr IterType). (iter coll-expr) yields an IterType
+  ; value bound to a fresh typed local `it`; drive (next (addr-of it)) per step.
+  ; The (sym type) list-binding form lets the done-flag gensym skip a colon type.
+  (let (done-sym:ptr  (gensym)
+        it-sym:ptr    (gensym)
+        var-sym:ptr   ((cast ptr:Node binding) car)
+        coll-expr:ptr ((cast ptr:Node ((cast ptr:Node binding) cdr)) car)
+        it-type:ptr   ((cast ptr:Node ((cast ptr:Node ((cast ptr:Node binding) cdr)) cdr)) car))
+    `(let ((~it-sym ~it-type) (iter ~coll-expr))
+       (let ((~done-sym i32) (cast i32 0))
+         (while (= ~done-sym 0)
+           (match (next (addr-of ~it-sym))
+             ((some ~var-sym) (do ~@body))
+             (none (set! ~done-sym 1))))))))
+
+; (doseq-iter (var iter-ref) body...) — iterate a bare iterator REFERENCE.
+;
+; iter-ref is a (ref Iterator) symbol (the iterator already materialised by the
+; caller). Advances it each loop step via (next iter-ref), binding the element
+; to var. This is the pre-Coll form, kept for pure iterators (IntRangeIter,
+; MapIter, FilterIter, the single-projection map iterators) that have no `iter`.
+;
+; Example:
+;   (let ((r (ref IntRangeIter)) (alloca IntRangeIter))
+;     (.set! r start 0) (.set! r end 5)
+;     (doseq-iter (x r) (printf "%d\n" x)))
+(defmacro doseq-iter (binding &rest body)
   (let (done-sym:ptr  (gensym)
         var-sym:ptr   ((cast ptr:Node binding) car)
-        coll-expr:ptr ((cast ptr:Node ((cast ptr:Node binding) cdr)) car))
+        iter-ref:ptr  ((cast ptr:Node ((cast ptr:Node binding) cdr)) car))
     `(let ((~done-sym i32) (cast i32 0))
        (while (= ~done-sym 0)
-         (match (next ~coll-expr)
+         (match (next ~iter-ref)
            ((some ~var-sym) (do ~@body))
            (none (set! ~done-sym 1)))))))
 
-; (into ctor-expr iter-expr) — materialize an iterator into a collection.
+; (into dest-coll src-coll IterType) — materialize one Coll into another.
 ;
-; ctor-expr produces the initial (empty) collection value. iter-expr is an
-; iterator. Each element is folded into the collection via (conj coll elem),
-; where conj takes a (ref CollectionType) and an element. The final collection
-; value is yielded as the expression result.
+; dest-coll is a (ref Collection) already declared and initialised; src-coll is
+; any (Coll E It) and IterType is its associated iterator type (the It). `into`
+; calls the protocol `iter` on src-coll and folds every element into dest-coll
+; via (conj dest-coll elem). Dispatches generically over any source Coll (C2.1).
+; Requires dest-coll to implement `conj` over E. IterType is named for the same
+; reason as in `doseq` (no let-binding inference; addr-of needs a named local).
 ;
-; Requires the collection to implement a `conj` method.
-; Tested fully in M3 when Vector/conj are available.
-; (into coll-sym iter-ref) — materialize iter-ref into a collection coll-sym.
+; Example:
+;   (into dest src (VecIter i32))   ; copy every element of src into dest
+(defmacro into (coll-sym src-coll it-type)
+  (let (done-sym:ptr (gensym)
+        it-sym:ptr   (gensym)
+        x-sym:ptr    (gensym))
+    `(let ((~it-sym ~it-type) (iter ~src-coll))
+       (let ((~done-sym i32) (cast i32 0))
+         (while (= ~done-sym 0)
+           (match (next (addr-of ~it-sym))
+             ((some ~x-sym) (conj ~coll-sym ~x-sym))
+             (none (set! ~done-sym 1))))))))
+
+; (into-iter dest-coll iter-ref) — materialize a bare iterator ref into a Coll.
 ;
-; coll-sym must be a (ref Collection) symbol already declared and initialized.
-; iter-ref must be a (ref Iterator) symbol. Each element is appended via conj.
-; Requires the collection to implement a `conj` method.
-; Tested fully in M3 when Vector/conj are available.
-(defmacro into (coll-sym iter-ref)
+; dest-coll is a (ref Collection) already declared and initialised; iter-ref is
+; a (ref Iterator) symbol. Each element is appended via (conj dest-coll elem).
+; The pre-Coll form, kept for pure iterators that have no `iter`.
+(defmacro into-iter (coll-sym iter-ref)
   (let (done-sym:ptr (gensym)
         x-sym:ptr    (gensym))
     `(let ((~done-sym i32) (cast i32 0))

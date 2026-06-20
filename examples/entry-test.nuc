@@ -1,0 +1,65 @@
+; Stage 11 C2.2c — (Entry K V): the key/value pair element type of HashMap's
+; Coll conformance. Tests:
+;   1. Entry round-trip: build an Entry value, read its fields back.
+;   2. (iter m) yields (Entry K V) values; match on (Maybe (Entry K V)).
+;   3. conj on a HashMap via an Entry inserts the pair (Coll conj == assoc).
+;
+; Keys are i32 here so per-entry values can be printed in a DETERMINISTIC way:
+; we sum keys and vals (order-independent) rather than printing bucket order.
+
+(include stdio)
+(import allocator)
+(import coll)
+(import iterator)
+(import hash)
+(import hashmap)
+
+(defn main:i32 ()
+  ; ---- 1. Entry round-trip -----------------------------------------------
+  (let ((e (ref (Entry i32 i32))) (alloca (Entry i32 i32)))
+    (.set! e key 7)
+    (.set! e val 42)
+    (printf "entry key=%d val=%d\n" (e key) (e val)))   ; entry key=7 val=42
+
+  ; ---- 2. iter yields Entry values; drive next manually ------------------
+  (with ((m (ref (HashMap i32 i32))) (alloca (HashMap i32 i32)))
+    (hashmap-init m)
+    (assoc m 1 10)
+    (assoc m 2 20)
+    (assoc m 3 30)
+    ; (iter m) returns a HashMapEntryIter BY VALUE; addr-of to drive next.
+    (let (it:(HashMapEntryIter i32 i32) (iter m)
+          ksum:i32 0
+          vsum:i32 0
+          n:i32 0
+          done:i32 0)
+      (while (= done 0)
+        (match (next (addr-of it))
+          ((some e)
+           (set! ksum (+ ksum ((addr-of e) key)))
+           (set! vsum (+ vsum ((addr-of e) val)))
+           (set! n (+ n 1)))
+          (none (set! done 1))))
+      (printf "iter n=%d ksum=%d vsum=%d\n" n ksum vsum)))  ; iter n=3 ksum=6 vsum=60
+
+  ; ---- 3. conj a HashMap via an Entry (Coll conj == assoc) ---------------
+  (with ((m (ref (HashMap i32 i32))) (alloca (HashMap i32 i32)))
+    (hashmap-init m)
+    (let ((e (ref (Entry i32 i32))) (alloca (Entry i32 i32)))
+      (.set! e key 5)
+      (.set! e val 500)
+      (conj m (deref e)))
+    (let ((e (ref (Entry i32 i32))) (alloca (Entry i32 i32)))
+      (.set! e key 6)
+      (.set! e val 600)
+      (conj m (deref e)))
+    (printf "conj count=%llu\n" (cast ui64 (count m)))      ; conj count=2
+    (match (get m 5)
+      ((some v) (printf "get 5=%d\n" v))                    ; get 5=500
+      (none     (printf "get 5=absent\n")))
+    (match (get m 6)
+      ((some v) (printf "get 6=%d\n" v))                    ; get 6=600
+      (none     (printf "get 6=absent\n"))))
+
+  (printf "done\n")
+  (return 0))

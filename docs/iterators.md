@@ -28,15 +28,17 @@ with `match`.
 Both conform to `(Iterator i32)` / `(Iterator i64)` respectively.
 
 **Constructing an iterator:** use `alloca` and `.set!` the fields, then pass a
-`(ref IterType)` to `next` or to `doseq`.
+`(ref IterType)` to `next` or to `doseq-iter`.
 
 ```lisp
 (let ((r (ref IntRangeIter)) (alloca IntRangeIter))
   (.set! r start 1)
   (.set! r end 6)
-  (doseq (x r)
+  (doseq-iter (x r)
     (printf "%d\n" x)))   ; prints 1 2 3 4 5
 ```
+
+**`doseq` vs `doseq-iter`.** Use `(doseq (var coll IterType) body...)` when the thing you are iterating is a **collection** conforming to `(Coll E It)` — `doseq` calls `(iter coll)` to get a fresh iterator by value. Use `(doseq-iter (var iter-ref) body...)` when you already hold a **bare iterator reference** — a `(ref IterType)` for a type that conforms to `(Iterator E)` but is not itself a `Coll` (e.g. `IntRangeIter`, `MapIter`, `FilterIter`, `HashMapKeyIter`). `doseq-iter` calls `(next iter-ref)` directly without going through `iter`. See [Macros](macros.md) for full signatures and the rationale for the explicit `IterType` argument.
 
 ## Function-object protocols
 

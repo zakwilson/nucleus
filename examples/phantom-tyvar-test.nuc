@@ -1,5 +1,12 @@
 ; Item 4a — phantom / positional type-variable recovery.
 ;
+; REGRESSION TEST — kept to validate phantom-param recovery, an orthogonal
+; feature from associated types. New code should NOT use the four-param verbose
+; form demonstrated here; prefer the two-param `(MapIter I F)` in
+; `lib/iterator.nuc`, which recovers element types via `&where` constraints on
+; `extend` (A0–A4, see docs/generics.md and design/stage11/assoc-types.md §4.2).
+; The `MapIterVerbose` struct below is superseded by associated types.
+;
 ; A defstruct template may declare trailing type parameters that appear in NO
 ; field ("phantom" params). A generic method written over such a template names
 ; those params in its receiver pattern `(ref (Two I F S E))`; the compiler must
@@ -32,9 +39,11 @@
 (defn two-e:E ((self (ref (Two I F S E))))
   (return (cast E (self a))))
 
-; A verbose MapIter-style combinator: one implementation, explicit S/E threading.
+; LEGACY PATTERN (superseded by associated types, A0–A4): a verbose MapIter-style
+; combinator with explicit phantom params for source/result element types.
 ;   I = source container type, F = mapping-fn placeholder,
 ;   S = source element type (phantom), E = result element type (phantom).
+; New code uses (MapIter I F) from lib/iterator.nuc instead.
 (defstruct (MapIterVerbose I F S E)
   source:I
   f:F)

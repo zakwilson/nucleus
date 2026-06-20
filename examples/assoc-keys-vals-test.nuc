@@ -1,0 +1,39 @@
+; Stage 11 C2.2b — keys/vals as Assoc protocol methods.
+;
+; Exercises:
+;   - (keys m) returns a (HashMapKeyIter K V) BY VALUE — Assoc Ki associated type.
+;   - (vals m) returns a (HashMapValIter K V) BY VALUE — Assoc Vi associated type.
+;   - Both iterators are driven with doseq-iter on a named local ref.
+;   - Hash order is non-deterministic; sum the keys and vals for determinism.
+
+(include stdio)
+(import allocator)
+(import coll)
+(import iterator)
+(import hash)
+(import hashmap)
+
+(defn main:i32 ()
+  (with ((m (ref (HashMap i32 i32))) (alloca (HashMap i32 i32)))
+    (hashmap-init m)
+    (assoc m 1 10)
+    (assoc m 2 20)
+    (assoc m 3 30)
+
+    ; --- sum keys via (keys m) returning HashMapKeyIter i32 i32 by value ---
+    ; Bind the returned iterator to a typed local; addr-of to drive doseq-iter.
+    (let (ki:(HashMapKeyIter i32 i32) (keys m))
+      (let (key-sum:i32 0)
+        (doseq-iter (k (addr-of ki))
+          (set! key-sum (+ key-sum k)))
+        (printf "key-sum=%d\n" key-sum)))    ; key-sum=6  (1+2+3)
+
+    ; --- sum vals via (vals m) returning HashMapValIter i32 i32 by value ---
+    (let (vi:(HashMapValIter i32 i32) (vals m))
+      (let (val-sum:i32 0)
+        (doseq-iter (v (addr-of vi))
+          (set! val-sum (+ val-sum v)))
+        (printf "val-sum=%d\n" val-sum)))    ; val-sum=60  (10+20+30)
+
+    (printf "done\n"))
+  (return 0))
