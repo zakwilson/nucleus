@@ -1,0 +1,173 @@
+; Stage 11 M6 (S5) — FromStr protocol and parse macro.
+;
+; FromStr is conformed by types that can be parsed from a StrView.
+; The `parse` macro dispatches to the correct conformance given an explicit
+; target type: (parse i32 sv) → !i32.
+;
+; Parse errors:
+;   parse-int-error   — integer parse failures (non-digit, empty, overflow)
+;   parse-float-error — float parse failures (malformed, trailing garbage)
+;
+; Conformances for i32, i64, f64 are defined here.
+;
+; Design: design/stage11/string.md §"S5 split/lines/trim + FromStr/parse".
+;
+; ---------------------------------------------------------------------------
+; TOKENIZER NOTES (carried from strview.nuc / string.nuc):
+;   - `?` and `!` must NOT appear in plain defn names.
+;   - strtol / strtoll / strtod: brought in by `(include stdlib)`.
+;   - Endptr pattern: `(let (ep:ptr null) (strtod cs (addr-of ep)) ...)`.
+;     `addr-of` requires a named local symbol; field expressions don't work.
+;   - NUL-terminated copy: StrView bytes are not guaranteed NUL-terminated,
+;     so we malloc(n+1), memcpy, set buf[n]=0, call libc, then free.
+;   - `(defprotocol (FromStr R) ...)` with R as a type parameter: the
+;     phantom-type return-type pattern. Extend as `(extend i32 (FromStr !i32))`.
+;     `subst-proto-sig-node` substitutes R→"!i32" in the segment "from-str:R",
+;     yielding "from-str:!i32" — which parses correctly as (Result i32 Err).
+;   - `!Self` in a protocol method DOES NOT WORK: `parse-type-name` can't
+;     resolve "Self" as a concrete type. Use parametric R instead.
+; ---------------------------------------------------------------------------
+
+(include stdio)
+(include stdlib)
+(include string)
+
+(import strview)
+
+; Parse error codes.
+(deferror parse-int-error   "invalid integer")
+(deferror parse-float-error "invalid float")
+
+; ---------------------------------------------------------------------------
+; FromStr R — types that can be parsed from a StrView.
+;
+; R is the return type parameter: (extend i32 (FromStr !i32)) registers
+; `from-str:!i32` for Self=i32. The `from-str` method takes a phantom
+; `(self Self)` first argument so that generic dispatch selects the right
+; conformer. At the call site, callers use `(parse T sv)` which expands to
+; `(from-str (cast T 0) sv)`.
+; ---------------------------------------------------------------------------
+(defprotocol (FromStr R)
+  (from-str:R ((self Self) (sv (ref StrView)))))
+
+; ---------------------------------------------------------------------------
+; parse macro — type-directed dispatch to FromStr.
+;
+; Usage: (parse i32 sv) → !i32
+;        (parse i64 sv) → !i64
+;        (parse f64 sv) → !f64
+;
+; Expands to (from-str (cast T 0) sv). The (cast T 0) provides a zeroed
+; phantom value of the target type to select the right conformer.
+; ---------------------------------------------------------------------------
+(defmacro parse (ty sv)
+  `(from-str (cast ~ty 0) ~sv))
+
+; ---------------------------------------------------------------------------
+; parse-nul-copy — internal helper.
+; Allocate a NUL-terminated copy of sv's bytes. Caller must free the result.
+; Precondition: sv.len > 0 (callers check this before calling).
+; ---------------------------------------------------------------------------
+(defn parse-nul-copy:ptr:ui8 ((sv (ref StrView)))
+  (let (n:usize (sv len)
+        buf:ptr:ui8 (cast ptr:ui8 (malloc (cast i64 (+ n (cast usize 1))))))
+    (memcpy (cast ptr buf) (cast ptr (sv data)) (cast i64 n))
+    (aset! buf (cast i64 n) (cast ui8 0))
+    (return buf)))
+
+; ---------------------------------------------------------------------------
+; i32 FromStr — parse a signed decimal integer from a StrView.
+;
+; Delegates to libc strtol (base 10). Creates a NUL-terminated copy of sv.
+; Validates: non-empty, no leading whitespace (strtol accepts it, we reject),
+; all bytes consumed (endptr must equal buf+n after the call).
+;
+; Errors parse-int-error on: empty, leading whitespace, non-digit, overflow.
+; ---------------------------------------------------------------------------
+(extend i32 (FromStr !i32))
+
+(defn from-str:!i32 ((self i32) (sv (ref StrView)))
+  (let (n:usize (sv len))
+    ; Empty input.
+    (when (= n (cast usize 0))
+      (return (err! parse-int-error)))
+    ; Reject leading whitespace (strtol skips it, we don't).
+    (let (first:ui8 (aref (sv data) (cast i64 0)))
+      (when (or (= (cast ui32 first) (cast ui32 32))
+                (or (= (cast ui32 first) (cast ui32 9))
+                    (or (= (cast ui32 first) (cast ui32 10))
+                        (or (= (cast ui32 first) (cast ui32 13))
+                            (or (= (cast ui32 first) (cast ui32 11))
+                                (= (cast ui32 first) (cast ui32 12)))))))
+        (return (err! parse-int-error))))
+    ; NUL-terminate for strtol.
+    (let (buf:ptr:ui8 (parse-nul-copy sv)
+          ep:ptr null
+          val:i64 (strtol (cast CStr (cast ptr buf)) (addr-of ep) 10)
+          consumed:i64 (- (cast i64 ep) (cast i64 (cast ptr buf))))
+      (free (cast ptr buf))
+      ; Not all bytes consumed → non-digit trailing chars.
+      (when (!= consumed (cast i64 n))
+        (return (err! parse-int-error)))
+      ; Range check for i32: [-2147483648, 2147483647].
+      (when (or (> val (cast i64 2147483647))
+                (< val (cast i64 -2147483648)))
+        (return (err! parse-int-error)))
+      (return (ok (cast i32 val))))))
+
+; ---------------------------------------------------------------------------
+; i64 FromStr — parse a signed 64-bit integer from a StrView.
+;
+; Same strategy as i32 but uses strtoll and no range check (strtoll already
+; clamps to i64 limits). Detects overflow by checking that strtoll consumed
+; all bytes. The consumed-bytes check handles the non-digit case uniformly.
+; ---------------------------------------------------------------------------
+(extend i64 (FromStr !i64))
+
+(defn from-str:!i64 ((self i64) (sv (ref StrView)))
+  (let (n:usize (sv len))
+    (when (= n (cast usize 0))
+      (return (err! parse-int-error)))
+    ; Reject leading whitespace.
+    (let (first:ui8 (aref (sv data) (cast i64 0)))
+      (when (or (= (cast ui32 first) (cast ui32 32))
+                (or (= (cast ui32 first) (cast ui32 9))
+                    (or (= (cast ui32 first) (cast ui32 10))
+                        (or (= (cast ui32 first) (cast ui32 13))
+                            (or (= (cast ui32 first) (cast ui32 11))
+                                (= (cast ui32 first) (cast ui32 12)))))))
+        (return (err! parse-int-error))))
+    (let (buf:ptr:ui8 (parse-nul-copy sv)
+          ep:ptr null
+          val:i64 (strtoll (cast CStr (cast ptr buf)) (addr-of ep) 10)
+          consumed:i64 (- (cast i64 ep) (cast i64 (cast ptr buf))))
+      (free (cast ptr buf))
+      (when (!= consumed (cast i64 n))
+        (return (err! parse-int-error)))
+      (return (ok val)))))
+
+; ---------------------------------------------------------------------------
+; f64 FromStr — parse a double-precision float from a StrView.
+;
+; Delegates to libc strtod. Creates a NUL-terminated copy of sv.
+; Errors parse-float-error on: empty, no bytes consumed (strtod endptr ==
+; start → no valid number at all), trailing garbage (endptr != buf+n).
+; ---------------------------------------------------------------------------
+(extend f64 (FromStr !f64))
+
+(defn from-str:!f64 ((self f64) (sv (ref StrView)))
+  (let (n:usize (sv len))
+    (when (= n (cast usize 0))
+      (return (err! parse-float-error)))
+    (let (buf:ptr:ui8 (parse-nul-copy sv)
+          ep:ptr null
+          val:f64 (strtod (cast CStr (cast ptr buf)) (addr-of ep))
+          consumed:i64 (- (cast i64 ep) (cast i64 (cast ptr buf))))
+      (free (cast ptr buf))
+      ; strtod consumed zero bytes → no valid number.
+      (when (= consumed (cast i64 0))
+        (return (err! parse-float-error)))
+      ; strtod did not consume all bytes → trailing garbage.
+      (when (!= consumed (cast i64 n))
+        (return (err! parse-float-error)))
+      (return (ok val)))))

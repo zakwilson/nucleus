@@ -922,7 +922,7 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `invoke` | General call on a value: `(invoke s 3)` ≡ `(s 3)`; user-defined (`Seq`/`Call`) | `s(3)` / `s[3]` |
 | `sizeof` | Size of a type | `sizeof(T)` |
 | `alloca` | Stack-allocate memory | `alloca()` / VLA |
-| `char` | Character literal | `'c'` |
+| `char` | `(char "x")` — a `Char` value (codepoint) from a single-byte string; sugar for the `\x` char literal. See [Char literals](types.md#char-literals--a). | `(Char)'c'` |
 | `aref` | Array element access | `arr[i]` |
 | `aset!` | Array element assignment; yields the stored value | `arr[i] = val` |
 | `(StructName init...)` | Compound struct literal. Each `init` is either `(field val)` for a designated initializer or a bare value for a positional one (positional inits fill the next field that has not been designated). Unspecified fields are zero-initialized. Yields `ptr:StructName`, alloca-backed (stack lifetime is the enclosing function). Defining a function with the same name as a struct is a compile-time error (the function would shadow the constructor). | `(struct S){.f = v, ...}` |

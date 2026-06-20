@@ -1,0 +1,36 @@
+; Stage 11 M6 (S2) — smoke test for the ByteStr/Str protocol declarations
+; and the four string error codes.
+;
+; This test verifies that the protocol and error files PARSE AND COMPILE
+; without errors, and that the deferror values are reachable as Err identities.
+; No conformers are implemented yet (those come in S3/S4); we just confirm that
+; the protocol shapes resolve and the error descriptors are interned.
+
+(include stdio)
+(import string-errors)
+(import string-protocols)
+
+(defn main:i32 ()
+  ; Print the error identity values (Err is a distinct ui32-sized type; we
+  ; can cast to ui32 and print to prove each deferror compiled and was interned
+  ; with a unique non-zero id). We compare pairs to show they are distinct.
+  (let (e1:Err str-index-out-of-bounds
+        e2:Err invalid-char-boundary
+        e3:Err invalid-utf8
+        e4:Err invalid-codepoint)
+    ; All four errors are non-zero (zero is the "no error" sentinel in the
+    ; runtime, so interned conditions start at 1).
+    (printf "e1-nonzero=%d\n" (if (!= (cast ui32 e1) (cast ui32 0)) 1 0))
+    (printf "e2-nonzero=%d\n" (if (!= (cast ui32 e2) (cast ui32 0)) 1 0))
+    (printf "e3-nonzero=%d\n" (if (!= (cast ui32 e3) (cast ui32 0)) 1 0))
+    (printf "e4-nonzero=%d\n" (if (!= (cast ui32 e4) (cast ui32 0)) 1 0))
+
+    ; All four are distinct from each other.
+    (printf "e1-ne-e2=%d\n" (if (!= (cast ui32 e1) (cast ui32 e2)) 1 0))
+    (printf "e1-ne-e3=%d\n" (if (!= (cast ui32 e1) (cast ui32 e3)) 1 0))
+    (printf "e1-ne-e4=%d\n" (if (!= (cast ui32 e1) (cast ui32 e4)) 1 0))
+    (printf "e2-ne-e3=%d\n" (if (!= (cast ui32 e2) (cast ui32 e3)) 1 0))
+    (printf "e2-ne-e4=%d\n" (if (!= (cast ui32 e2) (cast ui32 e4)) 1 0))
+    (printf "e3-ne-e4=%d\n" (if (!= (cast ui32 e3) (cast ui32 e4)) 1 0)))
+  (printf "done\n")
+  (return 0))

@@ -65,7 +65,7 @@ Pre-declared C standard library functions, available without `extern`. These are
 
 ## `StrView` (`lib/strview.nuc`, Stage 11)
 
-`(import strview)` provides an immutable, non-owning, length-prefixed UTF-8 byte slice. `StrView` is the shared substrate underneath `Keyword` and the future `String` type. It deliberately has no ownership, growth, mutation, or UTF-8/codepoint layer — those belong to `String`.
+`(import strview)` provides an immutable, non-owning, length-prefixed UTF-8 byte slice. `StrView` is the shared substrate underneath `Keyword` and `String`. It deliberately has no ownership, growth, mutation, or UTF-8/codepoint layer — those belong to `String`. For a full reference covering `Char`, `StrView`, `String`, split, lines, trim, and parse, see [Strings](strings.md).
 
 ```lisp
 (defstruct StrView

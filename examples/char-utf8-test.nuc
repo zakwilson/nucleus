@@ -1,0 +1,142 @@
+; Stage 11 M6 (S1) — Char library test: UTF-8 encode/decode + classification.
+; Exercises:
+;   - char-utf8-len for 1-4-byte codepoints
+;   - char-encode-utf8 + char-decode-utf8 round-trips (1-4 bytes)
+;   - char-decode-utf8 on invalid/truncated input → ok=0
+;   - char-from-u32 on a surrogate → invalid-codepoint error
+;   - char-to-u32 round-trip
+;   - ASCII classification: is-ascii?, is-digit?, is-alpha?, is-alnum?, is-whitespace?
+;   - char-ascii-upper, char-ascii-lower (total functions)
+
+(include stdio)
+(include stdlib)
+(import error)
+(import char)
+
+; --- UTF-8 encode/decode round-trip for a given codepoint ---
+; Encodes c to a temporary buffer, then decodes from that buffer and prints
+; the results. Verifies ok=1, nbytes matches the expected count, and ch is
+; identical to the original.
+; Access DecodeResult fields via addr-of (field access requires a pointer).
+(defn test-roundtrip:void ((label CStr) (c Char) (expected-bytes usize))
+  (let (buf:ptr (malloc (cast i64 4))
+        p:ptr:ui8 (cast ptr:ui8 buf))
+    (let (written:usize (char-encode-utf8 c p))
+      (let (dr:DecodeResult (char-decode-utf8 p written))
+        (printf "%s: len=%llu write=%llu ok=%d decoded=%u match=%d\n"
+          label
+          (cast ui64 expected-bytes)
+          (cast ui64 written)
+          ((addr-of dr) ok)
+          (cast ui32 ((addr-of dr) ch))
+          (if (and (= ((addr-of dr) ok) 1)
+                   (and (= written expected-bytes)
+                        (= ((addr-of dr) nbytes) expected-bytes)))
+            1 0))))
+    (free buf)))
+
+; --- Check that decoding invalid/truncated bytes returns ok=0 ---
+(defn test-decode-invalid:void ((label CStr) (b0 ui8) (b1 ui8) (b2 ui8) (len usize))
+  (let (buf:ptr (malloc (cast i64 4))
+        p:ptr:ui8 (cast ptr:ui8 buf))
+    (aset! p (cast i64 0) b0)
+    (aset! p (cast i64 1) b1)
+    (aset! p (cast i64 2) b2)
+    (let (dr:DecodeResult (char-decode-utf8 p len))
+      (printf "%s: ok=%d\n" label ((addr-of dr) ok)))
+    (free buf)))
+
+(defn main:i32 ()
+  ; --- UTF-8 round-trips ---
+  ; 1-byte: U+0041 'A' (ASCII)
+  (test-roundtrip "A (1-byte)"     \A              (cast usize 1))
+  ; 1-byte boundary: U+007F DEL
+  (test-roundtrip "DEL (1-byte)"   \delete         (cast usize 1))
+  ; 2-byte: U+00E9 'é'
+  (test-roundtrip "e-acute (2)"    \u{E9}          (cast usize 2))
+  ; 2-byte boundary: U+07FF
+  (test-roundtrip "U+07FF (2)"     \u{7FF}         (cast usize 2))
+  ; 3-byte: U+4E16 '世'
+  (test-roundtrip "world-cjk (3)"  \u{4E16}        (cast usize 3))
+  ; 3-byte: U+FFFD replacement character
+  (test-roundtrip "U+FFFD (3)"     \u{FFFD}        (cast usize 3))
+  ; 4-byte: U+1F600 😀
+  (test-roundtrip "emoji (4)"      \u{1F600}       (cast usize 4))
+  ; 4-byte: U+10FFFF (max valid codepoint)
+  (test-roundtrip "U+10FFFF (4)"   \u{10FFFF}      (cast usize 4))
+
+  ; --- char-utf8-len ---
+  (printf "len-A=%llu\n"       (cast ui64 (char-utf8-len \A)))
+  (printf "len-e9=%llu\n"      (cast ui64 (char-utf8-len \u{E9})))
+  (printf "len-4E16=%llu\n"    (cast ui64 (char-utf8-len \u{4E16})))
+  (printf "len-1F600=%llu\n"   (cast ui64 (char-utf8-len \u{1F600})))
+
+  ; --- Invalid / truncated decode ---
+  ; Truncated 2-byte sequence: lead byte 0xC3 with len=1 (no continuation)
+  (test-decode-invalid "trunc-2byte"
+    (cast ui8 195) (cast ui8 0) (cast ui8 0) (cast usize 1))
+  ; Bad continuation byte (0x41 is not 10xxxxxx)
+  (test-decode-invalid "bad-cont"
+    (cast ui8 195) (cast ui8 65) (cast ui8 0) (cast usize 2))
+  ; Surrogate in 3-byte encoding: U+D800 = 0xED 0xA0 0x80
+  (test-decode-invalid "surrogate-3byte"
+    (cast ui8 237) (cast ui8 160) (cast ui8 128) (cast usize 3))
+  ; Overlong 2-byte: encodes U+0041 (0xC1 0x81) — overlong, must be rejected
+  (test-decode-invalid "overlong-2byte"
+    (cast ui8 193) (cast ui8 129) (cast ui8 0) (cast usize 2))
+  ; Empty input: len=0
+  (test-decode-invalid "empty"
+    (cast ui8 0) (cast ui8 0) (cast ui8 0) (cast usize 0))
+  ; Invalid lead byte: 0xFF
+  (test-decode-invalid "bad-lead"
+    (cast ui8 255) (cast ui8 0) (cast ui8 0) (cast usize 1))
+
+  ; --- char-to-u32 / char-from-u32 ---
+  (printf "to-u32-A=%u\n" (char-to-u32 \A))
+  (printf "to-u32-emoji=%u\n" (char-to-u32 \u{1F600}))
+
+  ; char-from-u32 success
+  (let (r1:!Char (char-from-u32 (cast ui32 65)))
+    (match r1
+      ((ok c) (printf "from-u32-65=ok:%u\n" (cast ui32 c)))
+      ((err e) (printf "from-u32-65=err\n"))))
+
+  ; char-from-u32 on a surrogate (U+D800) → error
+  (let (r2:!Char (char-from-u32 (cast ui32 55296)))
+    (match r2
+      ((ok c) (printf "from-u32-D800=ok\n"))
+      ((err e) (printf "from-u32-D800=err:%s\n" (err-name e)))))
+
+  ; char-from-u32 on out-of-range (0x110000) → error
+  (let (r3:!Char (char-from-u32 (cast ui32 1114112)))
+    (match r3
+      ((ok c) (printf "from-u32-110000=ok\n"))
+      ((err e) (printf "from-u32-110000=err:%s\n" (err-name e)))))
+
+  ; --- Classification ---
+  (printf "is-ascii-A=%d\n"      (char-is-ascii \A))
+  (printf "is-ascii-emoji=%d\n"  (char-is-ascii \u{1F600}))
+  (printf "is-digit-5=%d\n"      (char-is-digit \5))
+  (printf "is-digit-A=%d\n"      (char-is-digit \A))
+  (printf "is-alpha-A=%d\n"      (char-is-alpha \A))
+  (printf "is-alpha-z=%d\n"      (char-is-alpha \z))
+  (printf "is-alpha-5=%d\n"      (char-is-alpha \5))
+  (printf "is-alnum-A=%d\n"      (char-is-alnum \A))
+  (printf "is-alnum-5=%d\n"      (char-is-alnum \5))
+  (printf "is-alnum-bang=%d\n"   (char-is-alnum \!))
+  (printf "is-ws-space=%d\n"     (char-is-whitespace \space))
+  (printf "is-ws-tab=%d\n"       (char-is-whitespace \tab))
+  (printf "is-ws-newline=%d\n"   (char-is-whitespace \newline))
+  (printf "is-ws-A=%d\n"         (char-is-whitespace \A))
+
+  ; --- Case conversion (total functions) ---
+  (printf "upper-a=%u\n"    (cast ui32 (char-ascii-upper \a)))
+  (printf "upper-Z=%u\n"    (cast ui32 (char-ascii-upper \Z)))
+  (printf "upper-5=%u\n"    (cast ui32 (char-ascii-upper \5)))
+  (printf "lower-A=%u\n"    (cast ui32 (char-ascii-lower \A)))
+  (printf "lower-z=%u\n"    (cast ui32 (char-ascii-lower \z)))
+  (printf "lower-5=%u\n"    (cast ui32 (char-ascii-lower \5)))
+  ; Non-ASCII is unchanged
+  (printf "upper-emoji=%u\n" (cast ui32 (char-ascii-upper \u{1F600})))
+
+  (return 0))

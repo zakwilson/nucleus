@@ -1,0 +1,73 @@
+; Stage 11 M6 (S3) — ByteStr and Str conformances for StrView.
+;
+; This file exists to break the circular-import cycle:
+;   string-protocols.nuc imports strview (for StrView in method signatures)
+;   strview.nuc must NOT import string-protocols (would be circular)
+;
+; strview-str.nuc is the leaf that imports both and wires the conformances.
+; Programs that need ByteStr/Str methods on StrView should import strview-str
+; (which re-exports everything from both strview and string-protocols via the
+; transitive import chain).
+;
+; Design: design/stage11/string.md §"S3 StrView read layer".
+
+(import strview)          ; StrView, ByteIter, CharIter, strview-* helpers
+(import string-protocols) ; ByteStr, Str
+
+; ---------------------------------------------------------------------------
+; ByteStr conformance for StrView.
+; ByteI = ByteIter (defined in strview.nuc).
+; ---------------------------------------------------------------------------
+(extend StrView (ByteStr ByteIter))
+(defn byte-len:usize ((self (ref StrView)))
+  (strview-byte-len self))
+(defn byte-at:!ui8 ((self (ref StrView)) i:usize)
+  (strview-byte-at self i))
+(defn bytes:ByteIter ((self (ref StrView)))
+  (strview-bytes self))
+(defn as-view:StrView ((self (ref StrView)))
+  (strview-as-view self))
+(defn sub-bytes:!ptr:StrView ((self (ref StrView)) start:usize end:usize)
+  (strview-sub-bytes self start end))
+(defn (byte-find (Maybe usize)) ((self (ref StrView)) (needle (ref StrView)))
+  (strview-byte-find self needle))
+
+; ---------------------------------------------------------------------------
+; Str conformance for StrView.
+; CharI = CharIter (defined in strview.nuc).
+; ---------------------------------------------------------------------------
+(extend StrView (Str CharIter))
+(defn char-count:usize ((self (ref StrView)))
+  (strview-char-count self))
+(defn str-empty?:i32 ((self (ref StrView)))
+  (strview-empty self))
+(defn char-at:!Char ((self (ref StrView)) i:usize)
+  (strview-char-at self i))
+(defn chars:CharIter ((self (ref StrView)))
+  (strview-chars self))
+(defn starts-with?:i32 ((self (ref StrView)) (prefix (ref StrView)))
+  (strview-starts-with self prefix))
+(defn ends-with?:i32 ((self (ref StrView)) (suffix (ref StrView)))
+  (strview-ends-with self suffix))
+(defn contains-str?:i32 ((self (ref StrView)) (needle (ref StrView)))
+  (strview-contains-str self needle))
+
+; ---------------------------------------------------------------------------
+; Force-mangle shims for `?`-named Str methods.
+;
+; The Nucleus compiler only sanitizes method names (replacing `?` with `_` in
+; the LLVM IR symbol) when a generic has ≥2 implementations (overloaded).
+; The four `?`-named Str methods above are the ONLY implementations so far —
+; all four would be emitted as unmangled `@str-empty?` etc., which LLVM rejects.
+;
+; Fix: register a second implementation on a private dummy struct. This forces
+; the generics to be mangled, producing sanitized names like
+; `@str-empty_.ref.StrView` for the actual StrView dispatch.
+;
+; TODO (S4): remove once CStr or String provides a real second implementation.
+; ---------------------------------------------------------------------------
+(defstruct _StrMangleShim _dummy:i32)
+(defn str-empty?:i32 ((self (ref _StrMangleShim))) 0)
+(defn starts-with?:i32 ((self (ref _StrMangleShim)) (prefix (ref StrView))) 0)
+(defn ends-with?:i32   ((self (ref _StrMangleShim)) (suffix (ref StrView))) 0)
+(defn contains-str?:i32 ((self (ref _StrMangleShim)) (needle (ref StrView))) 0)
