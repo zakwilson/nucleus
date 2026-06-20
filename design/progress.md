@@ -22,6 +22,74 @@ Current branch: `stage11-collections`
 
 ---
 
+## Compiler self-adoption of collections (2026-06-20)
+
+Refactor of `src/nucleusc.nuc` to use the Stage 11 collections where they add
+safety or clarity, per [stage11/compiler-collections-refactor.md](stage11/compiler-collections-refactor.md).
+Two milestones landed, each byte-identical-bootstrap-preserving (102/102 tests):
+
+- **Hand-rolled `Vec` → `(Vector ptr)`** (was behind a `make-vec`/`vec-*`
+  wrapper); the `Vec` struct is removed. Every indexed read of the compiler's
+  dynamic pointer tables is now bounds-checked.
+- **`special-form-named` / `primitive-type-named`** (`(or (= name "lit") …)` walls)
+  → `(HashSet CStr)` membership (`init-name-sets` at startup).
+- **cleanup3 Steps A+B** (`[stage11/cleanup3.md](stage11/cleanup3.md)`): deleted
+  the `vec-push`/`vec-len`/`vec-get`/`vec-pop` wrappers — globals/locals holding a
+  table are typed `(ref (Vector ptr))` / `(ref (HashSet CStr))` and use sites call
+  `conj`/`count`/`invoke`/`contains?` directly (no per-use cast); predicate params
+  typed `CStr`. Collections are built against a shared **arena** `AllocHandle`
+  (`g-arena-alloc`, init first in `compiler-init`; new `hashset-init-alloc` /
+  `hashmap-init-alloc` mirror `vector-init-alloc`) — no malloc/leak. Residual casts
+  confined to construction sites + four Vec-param helpers. **Bootstrap constraint
+  found:** a `(ref (Vector ptr))` in any `defn` *signature* stamps `%Vector.ptr`
+  at the whole-unit signature prescan, ahead of the allocator import, breaking the
+  prelude's macro-JIT module (`%AllocHandle` undefined) under the unmodified boot —
+  so `make-vec` returns `:ptr` and the helpers take `:ptr` (one internal cast).
+  Full root-cause + the deferred proper fix in `stage11/cleanup3.md`.
+- **cleanup3 Stages 1+2 — drain deferral + `make-vec` retype** (two-stage boot
+  refresh, `stage11/cleanup3.md`): **Stage 1** taught `drain-pending-union-irs` to
+  skip a queued type whose `TY-STRUCT`/`TY-UNION` field deps aren't yet emitted
+  (`pending-union-deps-ready`), leaving it queued for a later drain. Emitted-flag
+  tracking is global but `g-type-bufp` is one shared buffer every module
+  concatenates, so the flag already means "present in the current module." Dormant
+  + byte-identical, then baked into boot (`make update-bootstrap`, incl. Windows
+  IRs). **Stage 2** retyped `make-vec` → `(ref (Vector ptr))` and the four helpers'
+  Vec params to `(ref (Vector ptr))`, removing all workaround casts; the prescan
+  now stamps `%Vector.ptr` early and the deferral defers it past `%AllocHandle`.
+  Byte-identical against the refreshed boot, 102/102, abi-test green. Parametric
+  defn signatures must use the **list form** (`(make-vec (ref (Vector ptr)))`),
+  not colon-sugar (`:ref:(Vector ptr)`), which mis-parses the name. Final
+  `update-bootstrap` deferred to Step C.
+- **cleanup3 Step C — `(v i)` routes `invoke → get → _get`** (`stage11/cleanup3.md`):
+  `emit-callable-value` and its type-pass mirror `callable-value-type` now decide by
+  the **callee type** via the new side-effect-free predicate
+  `generic-has-receiver-method` (first-param `type-eq` for METHOD-USER, `unify-tpat`
+  over the receiver for METHOD-GENERIC). A type with an `invoke` method indexes its
+  argument as a **value**, so `(v idx)` evaluates a local `idx` and indexes instead
+  of reading a field named `idx`; a plain struct (no `invoke`, no custom `get`) still
+  lands on the raw `_get` field intrinsic with byte-identical IR. Byte-identical
+  bootstrap required purging the callable field-read form from the `(ref (Vector …))`
+  method bodies in `lib/vector.nuc` and `lib/string.nuc` (rewritten to `_get`; only
+  `Vector` has `invoke`). `examples/callable.nuc` updated to the new contract and
+  demonstrates the local-index case. Final `make update-bootstrap` (incl. Windows
+  IRs) run; reconverges byte-identically, 102/102, abi-test green.
+
+- **cleanup3 `into` + `#{…}` for name-sets**: the 72-`insert` run for
+  `g-special-form-set` and the 19-`insert` run for `g-primitive-type-set` in
+  `init-name-sets` replaced by single `(into g-set #{ … } (HashSetIter CStr))`
+  forms. Arena allocation + `hashset-init-alloc` lines unchanged. This is the
+  endorsed in-function alternative to global collection literals (which remain out —
+  no pre-main static-init). Byte-identical bootstrap, 102/102, abi-test green.
+
+By-value fixed-cap tables (`g-structs`, `g-uniondefs`, `g-*-templates`,
+`g-enumdefs`, `g-cast-rules`, `g-strs`), symbol-identity dispatch chains, and
+map/reduce/filter were evaluated and left as-is (poor fits — interior-pointer
+stability, marginal gain, or closure-less boilerplate; reasons in the design doc
+§7). No language surface changed. `make update-bootstrap`/commit pending user
+go-ahead.
+
+---
+
 ## Stage 0–6 completed items
 
 ### Stage 0–5 (complete)

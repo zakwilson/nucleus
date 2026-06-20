@@ -97,6 +97,33 @@
             (.set! m count  (cast usize 0))
             (.set! m cap    init-cap)))))))
 
+; hashmap-init-alloc: initialise an empty HashMap with an explicit allocator
+; handle (copied in), mirroring vector-init-alloc / hashset-init-alloc. The three
+; buffers are allocated through the passed handle, so the map owns its storage
+; through it (arena = process-lifetime, no per-allocation free).
+(defn hashmap-init-alloc:void ((m (ref (HashMap K V))) (a (ref AllocHandle)))
+  (let (init-cap:usize (cast usize 8)
+        ksz:usize (* init-cap (cast usize (sizeof K)))
+        vsz:usize (* init-cap (cast usize (sizeof V))))
+    (.set! m alloc (deref a))
+    (let (ah:ref:AllocHandle (.& m alloc))
+      (let ((kbuf (raw ui8)) (alloc-handle-alloc ah ksz (cast usize 8)))
+        (when (= (cast ptr kbuf) null) (hashmap-oom))
+        (let ((vbuf (raw ui8)) (alloc-handle-alloc ah vsz (cast usize 8)))
+          (when (= (cast ptr vbuf) null) (hashmap-oom))
+          (let ((sbuf (raw ui8)) (alloc-handle-alloc ah init-cap (cast usize 1)))
+            (when (= (cast ptr sbuf) null) (hashmap-oom))
+            ; Zero the states array so all buckets start as empty.
+            (let (i:usize (cast usize 0))
+              (while (< i init-cap)
+                (aset! (cast ptr:ui8 (cast ptr sbuf)) (cast i64 i) (cast ui8 0))
+                (set! i (+ i (cast usize 1)))))
+            (.set! m keys   kbuf)
+            (.set! m vals   vbuf)
+            (.set! m states sbuf)
+            (.set! m count  (cast usize 0))
+            (.set! m cap    init-cap)))))))
+
 ; ---------------------------------------------------------------------------
 ; Internal: rehash all occupied buckets from old arrays into new-cap arrays.
 ; new-cap must be a power of two. Tombstones are dropped (not copied).

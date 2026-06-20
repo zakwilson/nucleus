@@ -283,6 +283,7 @@ See [Iterators](iterators.md) for `doseq` / `doseq-iter` and the `Iterator` prot
 | Constructor | Signature | Description |
 |-------------|-----------|-------------|
 | `hashmap-init` | `((m (ref (HashMap K V)))) -> void` | Initialise empty with the default libc allocator, initial capacity 8. |
+| `hashmap-init-alloc` | `((m (ref (HashMap K V))) (a (ref AllocHandle))) -> void` | Initialise empty with an explicit allocator (e.g. an arena), initial capacity 8. |
 
 ### Operations
 
@@ -430,6 +431,7 @@ Iteration order is hash-dependent and unspecified for both `keys` and `vals`.
 | Constructor | Signature | Description |
 |-------------|-----------|-------------|
 | `hashset-init` | `((s (ref (HashSet T)))) -> void` | Initialise empty with the default libc allocator, initial capacity 8. |
+| `hashset-init-alloc` | `((s (ref (HashSet T))) (a (ref AllocHandle))) -> void` | Initialise empty with an explicit allocator (e.g. an arena), initial capacity 8. |
 
 ### Operations
 

@@ -148,16 +148,21 @@ The **standard numeric protocols** live in `lib/numeric.nuc`: `Eq` (`= !=`), `Or
 ## Callable values (non-function call position)
 
 A **non-function value in head position**, `(s arg…)`, is no longer an error — it
-dispatches by its sole argument into one of two reserved generics:
+routes **`invoke → get → _get`** by the callee's *type*:
 
-| call | argument | desugars to | meaning |
+| precedence | condition on the callee type | desugars to | meaning |
 |---|---|---|---|
-| `(s field)` / `(s 'field)` | a **literal symbol** | `(get s 'field)` | member access |
-| `(s 3)` / `(s a b…)` | anything else | `(invoke s 3 …)` | indexing / general call |
+| 1 | has an `invoke` method | `(invoke s arg…)` | indexing / general call (arg is a **value**) |
+| 2 | has a custom `get` method | `(get s arg)` | value-keyed or symbol member access |
+| 3 | otherwise (plain struct) | `(get s 'field)` → `_get` | raw field access (single literal symbol) |
 
-A **bare symbol argument is always a field selector**, never a variable — field
-interpretation wins so it never depends on what is in scope. To dispatch a value
-held in a variable, call `invoke` explicitly: `(invoke s x)`.
+Because **`invoke` takes precedence**, a type that defines `invoke` indexes/applies
+its argument as a *value* — so `(v idx)` evaluates the local `idx` and indexes,
+rather than reading a field named `idx`. The consequence is that such a type can no
+longer use the callable form for field access: read its fields with `_get`/`.field`
+(`(_get v len)`), not `(v len)`. A **plain struct** (no `invoke`, no custom `get`)
+still treats a single literal-symbol argument as a field selector via the raw `_get`
+intrinsic, so `(p x)` ≡ `(_get p x)` is unchanged and zero-overhead.
 
 **`get` — member access (the `Struct` default).** Every struct conforms to the
 built-in `Struct` blanket protocol, whose `get` is supplied by an **intrinsic**: a
@@ -200,20 +205,25 @@ the resolver binds the method's type variables and checks its `&where` constrain
 before selecting it. If no `get` method matches the selector's type, the call
 falls back to the struct intrinsic (a `ptr`-typed computed selector takes the
 homogeneous computed-field branch; any other type is an error). This is how a
-`HashMap`/`Bag`-style type answers `(m key)` by value while plain structs keep
-zero-overhead symbol field access.
+`Bag`-style type answers `(m key)` by value while plain structs keep zero-overhead
+symbol field access. (Note: this value-keyed `get` path applies only to types that
+do **not** define `invoke` — `invoke` outranks `get`. A `HashMap`, whose lookup is
+exposed through `get`, has no `invoke`; a `Vector`, whose indexing is `invoke`, is
+indexed by call and must read its fields with `_get`.)
 
-**`invoke` — indexing / general call.** A type "becomes callable" by defining
-`invoke` methods; there is **no** built-in default (a struct pointer with an
-integer selector is unbound unless it defines an integer `invoke` — it does *not*
-fall back to `aref`). Dispatch is ordinary multimethod resolution on the whole
-argument tuple, so the same value answers both forms by argument:
+**`invoke` — indexing / general call (highest precedence).** A type "becomes
+callable" by defining `invoke` methods; there is **no** built-in default. Once a
+type has an `invoke` method, *every* `(s arg…)` on that type routes to `invoke`,
+with the argument(s) taken as values — so the callee can no longer be used for
+field access by call. Dispatch is ordinary multimethod resolution on the whole
+argument tuple:
 
 ```lisp
 (defstruct Vec data:ptr:i32 len:i32)
-(defn invoke:i32 (self:ptr:Vec i:i32) (return (aref (. self data) i)))
-(v 3)          ; ⇒ (invoke v 3) → element access
-(v len)        ; ⇒ (get v 'len) → the length field
+(defn invoke:i32 (self:ptr:Vec i:i32) (return (aref (_get self data) i)))
+(v 3)          ; ⇒ (invoke v 3) → element access (literal index)
+(let (idx:i32 1) (v idx))   ; ⇒ (invoke v idx) → indexes; NOT a field named idx
+(_get v len)   ; field access — `(v len)` would mis-route to invoke
 ```
 
 For parametric function-object conformance use `(UnaryFn Arg Ret)` and

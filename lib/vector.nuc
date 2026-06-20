@@ -86,15 +86,15 @@
 ; reallocating through the stored allocator. Aborts on OOM.
 ; ---------------------------------------------------------------------------
 (defn vector-grow:void ((v (ref (Vector T))))
-  (let (new-cap:usize (if (= (v cap) (cast usize 0))
+  (let (new-cap:usize (if (= (_get v cap) (cast usize 0))
                         (cast usize 4)
-                        (* (v cap) (cast usize 2)))
+                        (* (_get v cap) (cast usize 2)))
         elem-size:usize (cast usize (sizeof T)))
-    (let (old-bytes:usize (* (v cap) elem-size)
+    (let (old-bytes:usize (* (_get v cap) elem-size)
           new-bytes:usize (* new-cap elem-size)
           ah:ref:AllocHandle (.& v alloc))
       (let ((new-data (raw ui8))
-            (alloc-handle-realloc ah (v data) old-bytes new-bytes (cast usize 8)))
+            (alloc-handle-realloc ah (_get v data) old-bytes new-bytes (cast usize 8)))
         (when (= (cast ptr new-data) null) (vector-oom))
         (.set! v data new-data)
         (.set! v cap new-cap)))))
@@ -105,17 +105,17 @@
 
 ; count -> number of live elements.
 (defn count:usize ((self (ref (Vector T))))
-  (return (self len)))
+  (return (_get self len)))
 
 ; conj: append an element at the back, growing if needed.
 (defn conj:void ((self (ref (Vector T))) elem:T)
-  (when (>= (self len) (self cap)) (vector-grow self))
-  (aset! (cast ptr:T (cast ptr (self data))) (cast i64 (self len)) elem)
-  (.set! self len (+ (self len) (cast usize 1))))
+  (when (>= (_get self len) (_get self cap)) (vector-grow self))
+  (aset! (cast ptr:T (cast ptr (_get self data))) (cast i64 (_get self len)) elem)
+  (.set! self len (+ (_get self len) (cast usize 1))))
 
 ; empty? -> 1 when len = 0, else 0.
 (defn empty?:i32 ((self (ref (Vector T))))
-  (return (if (= (self len) (cast usize 0)) 1 0)))
+  (return (if (= (_get self len) (cast usize 0)) 1 0)))
 
 ; ---------------------------------------------------------------------------
 ; Seq T conformance: invoke (index), append, contains?, insert.
@@ -123,8 +123,8 @@
 
 ; invoke: index access `(v i)` -> element. Panics on out-of-bounds.
 (defn invoke:T ((self (ref (Vector T))) i:usize)
-  (when (>= i (self len)) (vector-bounds "get" i (self len)))
-  (return (aref (cast ptr:T (cast ptr (self data))) (cast i64 i))))
+  (when (>= i (_get self len)) (vector-bounds "get" i (_get self len)))
+  (return (aref (cast ptr:T (cast ptr (_get self data))) (cast i64 i))))
 
 ; append: add at the back (same as conj for a vector).
 (defn append:void ((self (ref (Vector T))) elem:T)
@@ -133,8 +133,8 @@
 ; contains?: linear scan with =, 1 if found else 0. (Scalar element types.)
 (defn contains?:i32 ((self (ref (Vector T))) elem:T)
   (let (i:usize (cast usize 0))
-    (while (< i (self len))
-      (when (= (aref (cast ptr:T (cast ptr (self data))) (cast i64 i)) elem)
+    (while (< i (_get self len))
+      (when (= (aref (cast ptr:T (cast ptr (_get self data))) (cast i64 i)) elem)
         (return 1))
       (set! i (+ i (cast usize 1))))
     (return 0)))
@@ -142,15 +142,15 @@
 ; insert: place elem at index i, shifting [i,len) right by one. Grows if full.
 ; i may equal len (append). i > len is out of bounds.
 (defn insert:void ((self (ref (Vector T))) i:usize elem:T)
-  (when (> i (self len)) (vector-bounds "insert" i (self len)))
-  (when (>= (self len) (self cap)) (vector-grow self))
-  (let (buf:ptr:T (cast ptr:T (cast ptr (self data)))
-        j:usize (self len))
+  (when (> i (_get self len)) (vector-bounds "insert" i (_get self len)))
+  (when (>= (_get self len) (_get self cap)) (vector-grow self))
+  (let (buf:ptr:T (cast ptr:T (cast ptr (_get self data)))
+        j:usize (_get self len))
     (while (> j i)
       (aset! buf (cast i64 j) (aref buf (cast i64 (- j (cast usize 1)))))
       (set! j (- j (cast usize 1))))
     (aset! buf (cast i64 i) elem))
-  (.set! self len (+ (self len) (cast usize 1))))
+  (.set! self len (+ (_get self len) (cast usize 1))))
 
 ; ---------------------------------------------------------------------------
 ; Capacity operations (STL-like opt-in surface; design §Vector recommends
@@ -159,11 +159,11 @@
 
 ; capacity -> current allocated slot count.
 (defn capacity:usize ((self (ref (Vector T))))
-  (return (self cap)))
+  (return (_get self cap)))
 
 ; reserve: ensure at least n total slots (grows by doubling until cap >= n).
 (defn reserve:void ((self (ref (Vector T))) n:usize)
-  (while (< (self cap) n) (vector-grow self)))
+  (while (< (_get self cap) n) (vector-grow self)))
 
 ; vector-init-capacity: initialise empty (default allocator) with >= n slots
 ; reserved. The with-capacity constructor for known-size builds.
@@ -179,10 +179,10 @@
 (extend (Vector T) Drop)
 
 (defn drop:void ((self (ptr (Vector T))))
-  (when (!= (cast ptr (self data)) null)
+  (when (!= (cast ptr (_get self data)) null)
     (alloc-handle-free (.& self alloc)
-                       (self data)
-                       (* (self cap) (cast usize (sizeof T)))
+                       (_get self data)
+                       (* (_get self cap) (cast usize (sizeof T)))
                        (cast usize 8)))
   (.set! self data null)
   (.set! self len (cast usize 0))
@@ -222,9 +222,9 @@
 ; iter-init: configure `it` to scan `v` from the start (borrowing its buffer).
 ; Internal helper: the value-returning `iter` (Coll conformance) wraps it.
 (defn iter-init:void ((it (ref (VecIter T))) (v (ref (Vector T))))
-  (.set! it data (cast ptr (v data)))
+  (.set! it data (cast ptr (_get v data)))
   (.set! it pos (cast usize 0))
-  (.set! it len (v len)))
+  (.set! it len (_get v len)))
 
 ; ---------------------------------------------------------------------------
 ; Coll T (VecIter T) conformance. `iter` returns a fresh VecIter BY VALUE
