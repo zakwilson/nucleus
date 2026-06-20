@@ -110,15 +110,14 @@
   (with ((s (ref (HashSet i32))) (alloca (HashSet i32)))
     (hashset-init s)
     (insert s 10) (insert s 20) (insert s 30) (insert s 40) (insert s 50)
-    (let ((it (ref (HashSetIter i32))) (alloca (HashSetIter i32)))
-      (hashset-iter it s)
-      (let (sum:i32 0
-            iter-count:i32 0)
-        (doseq (x it)
-          (set! sum (+ sum x))
-          (set! iter-count (+ iter-count 1)))
-        (printf "iter count: %d\n" iter-count)  ; 5
-        (printf "iter sum: %d\n" sum))))         ; 150
+    ; doseq dispatches generically over the Coll: (iter s) yields a HashSetIter.
+    (let (sum:i32 0
+          iter-count:i32 0)
+      (doseq (x s (HashSetIter i32))
+        (set! sum (+ sum x))
+        (set! iter-count (+ iter-count 1)))
+      (printf "iter count: %d\n" iter-count)  ; 5
+      (printf "iter sum: %d\n" sum)))          ; 150
 
   (printf "done\n")
   (return 0))

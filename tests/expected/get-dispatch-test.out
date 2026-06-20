@@ -1,0 +1,6 @@
+sbag[hello]=7
+sbag[world]=miss
+ibag[42]=99
+ibag[0]=miss
+ibag.val=99
+ibag.key=42

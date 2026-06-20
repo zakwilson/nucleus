@@ -295,7 +295,6 @@
 ; ---------------------------------------------------------------------------
 ; Conformance declarations.
 ; ---------------------------------------------------------------------------
-(extend (HashSet T) (Coll T))
 (extend (HashSet T) (Set T))
 (extend (HashSet T) Drop)
 
@@ -357,8 +356,22 @@
     (return none)))
 
 ; hashset-iter: configure `it` to scan `s` from the start (borrowing buffers).
+; Internal helper: the value-returning `iter` (Coll conformance) wraps it.
 (defn hashset-iter:void ((it (ref (HashSetIter T))) (s (ref (HashSet T))))
   (.set! it kbuf (cast ptr (s keys)))
   (.set! it sbuf (cast ptr (s states)))
   (.set! it pos (cast usize 0))
   (.set! it cap (s cap)))
+
+; ---------------------------------------------------------------------------
+; Coll T (HashSetIter T) conformance. `iter` returns a fresh HashSetIter BY
+; VALUE (alloca + hashset-iter + (deref …) — the spike pattern). Consumers
+; `addr-of` the result to drive `next`. (extend is placed here because
+; (HashSetIter T) must be declared before it can name the associated iterator.)
+; ---------------------------------------------------------------------------
+(extend (HashSet T) (Coll T (HashSetIter T)))
+
+(defn iter:(HashSetIter T) ((self (ref (HashSet T))))
+  (let ((it (ref (HashSetIter T))) (alloca (HashSetIter T)))
+    (hashset-iter it self)
+    (return (deref it))))

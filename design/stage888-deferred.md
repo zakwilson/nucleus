@@ -62,3 +62,24 @@ namespace (safety.md §1, flip.md "Out of scope").
 One implementation-vs-plan deviation it flagged and documented accurately: the cleanup-prompt described C3's panic hook as firing on both die-at and unwrap-on-err. The actual implementation only hooks unwrap (in emit-unwrap-result / emit-unwrap-niche-errptr) — there's no hook on the bare die-at path. This is recorded as-built in the errors.md C3 block rather than papered over.
 
 One thing worth your attention: that C3 deviation means the panic-tier hook is narrower than the prompt's spec — a REPL/test harness binding 'unhandled-error will see unwrap failures but not direct die-at aborts. If you intended die-at to also consult the hook, that's a code gap, not a docs gap. Want me to look into wiring the die-at path too, or is the unwrap-only scope the intended final state?
+
+## Strings / Unicode (Stage 11 `string.md` deferrals)
+
+### UTF-16 encode/decode on `Char`
+
+An earlier `string.md` draft listed UTF-16 alongside UTF-8 on the `Char`
+protocol. Deferred (Q-utf16): Nucleus is a UTF-8 language and there is no
+concrete consumer (no Windows wide-API interop story). Reintroduce a
+`char-encode-utf16` / `char-decode-utf16` pair only when a real consumer
+appears; the surrogate-pair logic is well-understood and self-contained.
+
+### Full Unicode case mapping / folding
+
+`string.md` ships **ASCII-only** `upcase`/`downcase` (and `char-ascii-upper`/
+`char-ascii-lower`) in its first pass (Q-case). Full Unicode case mapping and
+case folding are deferred: they need the Unicode case tables (multi-codepoint
+expansions like `ß → SS`, locale-sensitive rules like Turkish dotless-i), which
+is a data-table + algorithm effort disproportionate to the first string release.
+`collections.md` already flagged `upcase`/`downcase` as "Unicode/locale-fraught."
+Grapheme-cluster segmentation and NFC/NFD normalization belong to the same future
+Unicode-tables library.

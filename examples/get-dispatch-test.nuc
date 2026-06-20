@@ -1,0 +1,64 @@
+; Stage 11 cleanup C2.0 — value-keyed `get` dispatch.
+;
+; `(get callee selector)` splits on the selector kind (callable-values.md
+; §3.2/§3.3):
+;   - a literal-symbol selector (`'field` / bare `field`) is member access — the
+;     field intrinsic (or a (T, symbol-ptr) user override);
+;   - a computed/value selector (an i32 / CStr / any non-symbol value) resolves
+;     the `get` generic on the selector's *actual* type, including a parametric
+;     (METHOD-GENERIC) override such as a `(Bag K V)` key getter.
+;
+; This test defines a toy `(Bag K V)` carrying one key/value pair and a generic
+; value-keyed `get:(Maybe V)`. It exercises:
+;   1. a CStr key   — (get sbag "hello")  -> dispatches to the generic get
+;   2. an i32 key   — (get ibag 42)       -> dispatches to the generic get
+;   3. a symbol key — (get ibag 'val)     -> field access via the intrinsic
+; demonstrating that value selectors reach the generic method while a literal
+; symbol still does plain field access.
+
+(include stdio)
+
+(defstruct (Bag K V)
+  key:K
+  val:V
+  has:i32)
+
+; Value-keyed lookup: a parametric (METHOD-GENERIC) `get` returning (Maybe V).
+; Reached only for computed/value selectors via emit-get-with-callee Branch B.
+(defn (get (Maybe V)) ((self (ref (Bag K V))) key:K)
+  (if (and (!= (self has) 0) (= (self key) key))
+    (return (some (self val)))
+    (return none)))
+
+(defn main:i32 ()
+  ; --- CStr key: value selector -> generic get ---
+  (let ((sbag (ref (Bag CStr i32))) (alloca (Bag CStr i32)))
+    (.set! sbag key "hello")
+    (.set! sbag val 7)
+    (.set! sbag has 1)
+    (match (get sbag "hello")
+      ((some v) (printf "sbag[hello]=%d\n" v))
+      (none (printf "sbag[hello]=miss\n")))
+    (match (get sbag "world")
+      ((some v) (printf "sbag[world]=%d\n" v))
+      (none (printf "sbag[world]=miss\n"))))
+
+  ; --- i32 key: value selector -> generic get ---
+  (let ((ibag (ref (Bag i32 i32))) (alloca (Bag i32 i32)))
+    (.set! ibag key 42)
+    (.set! ibag val 99)
+    (.set! ibag has 1)
+    (match (get ibag 42)
+      ((some v) (printf "ibag[42]=%d\n" v))
+      (none (printf "ibag[42]=miss\n")))
+    (match (get ibag 0)
+      ((some v) (printf "ibag[0]=%d\n" v))
+      (none (printf "ibag[0]=miss\n")))
+
+    ; --- symbol key: literal selector -> field-access intrinsic ---
+    ; `(get ibag 'val)` is NOT value-keyed dispatch: a bare/quoted symbol is a
+    ; field name, so this reads the `val` field directly (i32 = 99).
+    (printf "ibag.val=%d\n" (get ibag 'val))
+    (printf "ibag.key=%d\n" (get ibag 'key)))
+
+  (return 0))

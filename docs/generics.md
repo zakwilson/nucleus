@@ -210,6 +210,15 @@ When the bound names a **parametric protocol**, the constraint head is a protoco
   `((Iterator S) I)`) can be the input of another (`((UnaryFn S E) F)`), so the
   constraints are resolved repeatedly until no new variable binds — regardless of
   textual order.
+- **The conforming variable may be a free type parameter or a recovered tyvar.**
+  It does not have to come from a struct-template application in the parameter list.
+  A bare type parameter used directly as a parameter type — `C` in `(c (ref C))` —
+  can be the conforming variable: `&where ((IterColl It) C)` recovers `It` from
+  `C`'s `IterColl` conformance, with `C` itself bound from the call argument at
+  dispatch. A tyvar recovered by an earlier constraint can in turn be the conforming
+  variable of a later one: `&where ((IterColl It) C) ((Iterator E) It)` first
+  recovers `It`, then uses it to recover `E`. The fixpoint and the dispatch-time
+  binding handle both; see `examples/assoc-iter-return.nuc`.
 - **Coherence makes this sound:** a type conforms to a given protocol at most once
   (the `(type, protocol)` dedup in the conformance registry), so the recovered
   arguments are functionally determined by the conforming type — no ambiguity, no

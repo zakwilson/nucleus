@@ -1,29 +1,8 @@
-; Standard callable protocols (callable-values.md §3.4).
+; lib/seq.nuc — retained as a placeholder after removal of the fixed-type
+; IntIndexable, Call, and BinaryCall protocols (C2.5, design/stage11/cleanup2.md).
 ;
-; A non-function value in call position routes a non-symbol argument to the
-; `invoke` generic. These protocols name that capability over `invoke` so a
-; program can require "indexable" / "callable" and get a checked conformance via
-; `extend`. They emit no code — a type conforms because its `invoke` method(s)
-; already match the required signature.
-;
-; Protocols substitute only `Self` (no associated types), so the element and
-; argument types are concrete here; a Seq abstract over any element type awaits
-; the parametric-generics rung. The call mechanism itself does not depend on
-; these protocols — `(v 3)` works from the `invoke` method alone; the protocols
-; only *name and check* the capability.
-
-; Integer-indexable: `(s i)` returns the i-th element (fixed to i32 today).
-; Named IntIndexable (not Seq) so the parametric Stage 11 `Seq` collection
-; protocol can claim that name; this one only names the `invoke`-by-i32
-; capability and is independent of it.
-(defprotocol IntIndexable
-  (invoke:i32 (self:ptr:Self i:i32)))
-
-; A unary function object: `(f x)` maps a ptr argument to a ptr result.
-(defprotocol Call
-  (invoke:ptr (self:ptr:Self arg:ptr)))
-
-; A binary function object: `(f a b)` maps two ptr arguments to a ptr result.
-; Used by reduce to fold a sequence with an accumulator.
-(defprotocol BinaryCall
-  (invoke2:ptr (self:ptr:Self a:ptr b:ptr)))
+; Those protocols named the `invoke` capability over concrete types (i32, ptr).
+; The parametric replacements are (UnaryFn Arg Ret) and (FoldFn Acc Elem) in
+; lib/iterator.nuc. The call mechanism itself (a value in head position routes
+; to the `invoke` generic) does not depend on protocol conformance — an `invoke`
+; method works without it. See docs/builtins.md §invoke and examples/callable.nuc.

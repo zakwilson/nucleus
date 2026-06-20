@@ -1,0 +1,89 @@
+; Stage 11 string-prep spike (string.md Q-method-uplift-spike) — a protocol
+; method whose RETURN TYPE is one of the protocol's own parameters (an associated
+; type), recovered at dispatch from the receiver's conformance, with the returned
+; value then used as a RECEIVER for another protocol's method.
+;
+; This is the exact capability the Str/ByteStr `chars`/`bytes` uplift depends on:
+;
+;   (defprotocol (Str CharI) (chars:CharI ((self (ref Self)))) ...)
+;   (defn over-any-string (... &where ((Str CharI) S) ((Iterator Char) CharI)) ...)
+;
+; `chars` returns the associated iterator type CharI; the consumer recovers CharI
+; from S, then CONSTRAINS CharI to be an (Iterator Char) and drives `next` on it.
+; The novel bit vs the existing MapIter/reduce examples: the second constraint's
+; CONFORMING VARIABLE (CharI / here It) is itself a tyvar RECOVERED by the first
+; constraint — not a parameter-bound tyvar. If that resolves, the uplift is safe.
+;
+; Modelled here with:
+;   (IterColl It)  — a collection that produces an iterator of associated type It
+;     mk-iter : (ref Self) -> It           ; returns the associated iterator BY VALUE
+;   count-coll     — generic over C: recovers It from ((IterColl It) C), then
+;                    recovers the element type E from ((Iterator E) It), calls
+;                    mk-iter to get an It, and drives next over it.
+
+(include stdio)
+(import iterator)   ; the (Iterator E) protocol
+
+; ---------------------------------------------------------------------------
+; A concrete iterator over [cur, stop) yielding i32 (conforms (Iterator i32)).
+; ---------------------------------------------------------------------------
+(defstruct CountIter cur:i32 stop:i32)
+
+(extend CountIter (Iterator i32))
+
+(defn (next (Maybe i32)) ((self (ref CountIter)))
+  (when (>= (self cur) (self stop)) (return none))
+  (let (v:i32 (self cur))
+    (.set! self cur (+ v 1))
+    (return (some v))))
+
+; ---------------------------------------------------------------------------
+; The IterColl protocol: mk-iter returns the associated iterator type It.
+; It is a return-only associated parameter, exactly like E in (Iterator E)'s
+; (next (Maybe E)) — bound at the extend site, recovered at dispatch.
+; ---------------------------------------------------------------------------
+(defprotocol (IterColl It)
+  (mk-iter:It ((self (ref Self)))))
+
+; ---------------------------------------------------------------------------
+; A small container conforming to (IterColl CountIter). mk-iter builds a fresh
+; CountIter over [base, base+len) and returns it by value (alloca + set + deref,
+; the keyword.nuc idiom for returning a struct value).
+; ---------------------------------------------------------------------------
+(defstruct Span base:i32 len:i32)
+
+(extend Span (IterColl CountIter))
+
+(defn mk-iter:CountIter ((self (ref Span)))
+  (let ((it (ref CountIter)) (alloca CountIter))
+    (.set! it cur  (self base))
+    (.set! it stop (+ (self base) (self len)))
+    (return (deref it))))
+
+; ---------------------------------------------------------------------------
+; The generic consumer. Two interdependent &where constraints:
+;   ((IterColl It) C)  — recover It (the associated iterator type) from C
+;   ((Iterator E) It)  — It is the CONFORMING VAR here (recovered above), and E
+;                        is recovered from It's Iterator conformance.
+; Then mk-iter yields an It (bare associated type), driven via next.
+; ---------------------------------------------------------------------------
+(defn count-coll:i32 ((c (ref C))
+                      &where ((IterColl It) C)
+                             ((Iterator E) It))
+  (let (it:It (mk-iter c)
+        n:i32 0
+        done:i32 0)
+    (while (= done 0)
+      (let ((item (Maybe E)) (next (addr-of it)))
+        (match item
+          ((some v) (set! n (+ n 1)))
+          (none (set! done 1)))))
+    (return n)))
+
+(defn main:i32 ()
+  (let ((s (ref Span)) (alloca Span))
+    (.set! s base 10)
+    (.set! s len 5)
+    ; Span [10,15) has 5 elements.
+    (printf "count=%d\n" (count-coll s)))
+  (return 0))

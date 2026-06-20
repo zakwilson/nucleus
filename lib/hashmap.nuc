@@ -1,5 +1,5 @@
 ; Stage 11 collections — HashMap K V: an open-addressing hash map with linear
-; probing and tombstone deletion. O(1) amortized assoc/dissoc/hmap-get. Owns
+; probing and tombstone deletion. O(1) amortized assoc/dissoc/get. Owns
 ; three parallel byte arrays (keys, vals, states) through a stored AllocHandle
 ; and frees them via Drop at with-scope exit.
 ;
@@ -12,7 +12,7 @@
 ;     (hashmap-init m)
 ;     (assoc m "one" 1)
 ;     (assoc m "two" 2)
-;     (match (hmap-get m "one")
+;     (match (get m "one")
 ;       ((some v) (printf "got %d\n" v))
 ;       (none     (printf "absent\n")))
 ;     ...)   ; (drop m) fires here, freeing keys/vals/states
@@ -41,6 +41,17 @@
 (defn hashmap-oom:void ()
   (fprintf stderr "hashmap: out of memory\n")
   (exit 1))
+
+; ---------------------------------------------------------------------------
+; Entry K V — a key/value pair, the element type of HashMap's Coll conformance
+; (C2.2c, design/stage11/cleanup2.md). A plain value struct, returned by value
+; like the spike iterator's element. `iter` over a HashMap yields Entry values
+; so `into`/`doseq`/`reduce` work over a map uniformly; `keys`/`vals` remain the
+; separate single-projection iterators (C2.2b).
+; ---------------------------------------------------------------------------
+(defstruct (Entry K V)
+  key:K
+  val:V)
 
 ; ---------------------------------------------------------------------------
 ; HashMap K V: three parallel byte arrays (keys, vals, states) plus metadata.
@@ -146,9 +157,10 @@
           (.set! m cap    new-cap))))))
 
 ; ---------------------------------------------------------------------------
-; Assoc K V conformance: assoc, dissoc.
+; Assoc K V Ki Vi conformance: assoc, dissoc, get, keys, vals.
+; Ki = (HashMapKeyIter K V), Vi = (HashMapValIter K V) — declared below.
+; The extend is placed after those structs are defined.
 ; ---------------------------------------------------------------------------
-(extend (HashMap K V) (Assoc K V))
 (extend (HashMap K V) Drop)
 
 ; assoc: insert or overwrite the value for key. Grows at 75% load.
@@ -228,10 +240,10 @@
                 (set! idx (bit-and (+ idx (cast usize 1)) mask))))))))))
 
 ; ---------------------------------------------------------------------------
-; hmap-get: lookup by key, returns (Maybe V). Not a protocol method because the
-; result type is derived from V and cannot be expressed in the Assoc protocol.
+; Assoc K V — get: lookup by key, returns (Maybe V).
+; V is a protocol parameter of Assoc so (Maybe V) is expressible directly.
 ; ---------------------------------------------------------------------------
-(defn (hmap-get (Maybe V)) ((self (ref (HashMap K V))) key:K)
+(defn (get (Maybe V)) ((self (ref (HashMap K V))) key:K)
   (let (mask:usize (- (self cap) (cast usize 1))
         kbuf:ptr:K (cast ptr:K (cast ptr (self keys)))
         vbuf:ptr:V (cast ptr:V (cast ptr (self vals)))
@@ -261,9 +273,11 @@
         (return none)))))
 
 ; ---------------------------------------------------------------------------
-; Standalone count and empty? (NOT extending Coll — conj is not well-defined
-; for a key/value map where inserting one element requires both a key and a
-; value; the element type for Coll would be ambiguous).
+; Coll (Entry K V) (HashMapEntryIter K V) conformance: count, empty?, conj, iter.
+; The element type is the key/value pair (Entry K V) (C2.2c): conj inserts an
+; entry (= assoc its key/val), and iter yields Entry values. The Coll extend +
+; iter live at the bottom (HashMapEntryIter must be declared first); count,
+; empty? and conj are here.
 ; ---------------------------------------------------------------------------
 
 ; count: number of live (occupied) entries.
@@ -273,6 +287,12 @@
 ; empty?: 1 if no live entries, else 0.
 (defn empty?:i32 ((self (ref (HashMap K V))))
   (return (if (= (self count) (cast usize 0)) 1 0)))
+
+; conj: insert an entry. The Entry is passed by value; bind it to a local and
+; `addr-of` to read its fields (the (hash (addr-of k)) idiom), then assoc.
+(defn conj:void ((self (ref (HashMap K V))) elem:(Entry K V))
+  (let (e:(Entry K V) elem)
+    (assoc self ((addr-of e) key) ((addr-of e) val))))
 
 ; ---------------------------------------------------------------------------
 ; Drop conformance: free all three arrays through the stored allocator.
@@ -330,3 +350,122 @@
   (.set! it sbuf (cast ptr (m states)))
   (.set! it pos  (cast usize 0))
   (.set! it cap  (m cap)))
+
+; ---------------------------------------------------------------------------
+; HashMapValIter K V — a forward cursor over occupied values only (C2.2b).
+; Analogous to HashMapKeyIter but loads from vbuf instead of kbuf. No kbuf
+; field needed — only the val and states buffers are consulted.
+;   vbuf : pointer into the HashMap's vals buffer (borrowed, not owned).
+;   sbuf : pointer into the HashMap's states buffer (borrowed).
+;   pos  : current scan position (0 .. cap).
+;   cap  : total bucket count (end sentinel).
+;
+; The iterator BORROWS the buffer; it must not outlive the HashMap.
+; ---------------------------------------------------------------------------
+(defstruct (HashMapValIter K V)
+  vbuf:ptr     ; cast to ptr:V on read
+  sbuf:ptr     ; cast to ptr:ui8 on read
+  pos:usize
+  cap:usize)
+
+(extend (HashMapValIter K V) (Iterator V))
+
+(defn (next (Maybe V)) ((self (ref (HashMapValIter K V))))
+  (let (vbuf:ptr:V (cast ptr:V (self vbuf))
+        sbuf:ptr:ui8 (cast ptr:ui8 (self sbuf)))
+    (while (< (self pos) (self cap))
+      (let (st:i32 (cast i32 (aref sbuf (cast i64 (self pos)))))
+        (if (= st (cast i32 1))
+          ; Occupied: return this value and advance pos.
+          (do
+            (let (v:V (aref vbuf (cast i64 (self pos))))
+              (.set! self pos (+ (self pos) (cast usize 1)))
+              (return (some v))))
+          ; Empty or tombstone: skip.
+          (.set! self pos (+ (self pos) (cast usize 1))))))
+    (return none)))
+
+; hmap-iter-vals: fill a caller-allocated HashMapValIter to scan m's values.
+; Internal helper: the value-returning `vals` (Assoc) wraps it.
+; Borrows the val and states buffers; iterator must not outlive m.
+(defn hmap-iter-vals:void ((it (ref (HashMapValIter K V))) (m (ref (HashMap K V))))
+  (.set! it vbuf (cast ptr (m vals)))
+  (.set! it sbuf (cast ptr (m states)))
+  (.set! it pos  (cast usize 0))
+  (.set! it cap  (m cap)))
+
+; ---------------------------------------------------------------------------
+; Assoc K V (HashMapKeyIter K V) (HashMapValIter K V) conformance.
+; assoc/dissoc/get are declared above; keys and vals are value-returning
+; protocol methods (C2.2b). Each uses alloca + fill-helper + (deref …), the
+; same convention as `iter` in Coll (C2.1).
+; ---------------------------------------------------------------------------
+(extend (HashMap K V) (Assoc K V (HashMapKeyIter K V) (HashMapValIter K V)))
+
+(defn keys:(HashMapKeyIter K V) ((self (ref (HashMap K V))))
+  (let ((it (ref (HashMapKeyIter K V))) (alloca (HashMapKeyIter K V)))
+    (hmap-iter-keys it self)
+    (return (deref it))))
+
+(defn vals:(HashMapValIter K V) ((self (ref (HashMap K V))))
+  (let ((it (ref (HashMapValIter K V))) (alloca (HashMapValIter K V)))
+    (hmap-iter-vals it self)
+    (return (deref it))))
+
+; ---------------------------------------------------------------------------
+; HashMapEntryIter K V — a forward cursor over occupied (key, val) pairs, the
+; element type of HashMap's Coll conformance (C2.2c). Borrows the keys, vals
+; and states buffers (non-owning); must not outlive the HashMap. `next` yields
+; (some (Entry K V key val)) for each occupied bucket, skipping empty/tombstone
+; slots exactly like HashMapKeyIter — but loads both key and val.
+; ---------------------------------------------------------------------------
+(defstruct (HashMapEntryIter K V)
+  kbuf:ptr     ; cast to ptr:K on read
+  vbuf:ptr     ; cast to ptr:V on read
+  sbuf:ptr     ; cast to ptr:ui8 on read
+  pos:usize
+  cap:usize)
+
+(extend (HashMapEntryIter K V) (Iterator (Entry K V)))
+
+(defn (next (Maybe (Entry K V))) ((self (ref (HashMapEntryIter K V))))
+  (let (kbuf:ptr:K (cast ptr:K (self kbuf))
+        vbuf:ptr:V (cast ptr:V (self vbuf))
+        sbuf:ptr:ui8 (cast ptr:ui8 (self sbuf)))
+    (while (< (self pos) (self cap))
+      (let (st:i32 (cast i32 (aref sbuf (cast i64 (self pos)))))
+        (if (= st (cast i32 1))
+          ; Occupied: build an Entry from this bucket and advance pos.
+          (do
+            (let ((e (ref (Entry K V))) (alloca (Entry K V)))
+              (.set! e key (aref kbuf (cast i64 (self pos))))
+              (.set! e val (aref vbuf (cast i64 (self pos))))
+              (.set! self pos (+ (self pos) (cast usize 1)))
+              (return (some (deref e)))))
+          ; Empty or tombstone: skip.
+          (.set! self pos (+ (self pos) (cast usize 1))))))
+    (return none)))
+
+; hmap-iter-entries: fill a caller-allocated HashMapEntryIter to scan m's
+; entries. Internal helper: the value-returning `iter` (Coll) wraps it.
+; Borrows the key, val and states buffers; iterator must not outlive m.
+(defn hmap-iter-entries:void ((it (ref (HashMapEntryIter K V))) (m (ref (HashMap K V))))
+  (.set! it kbuf (cast ptr (m keys)))
+  (.set! it vbuf (cast ptr (m vals)))
+  (.set! it sbuf (cast ptr (m states)))
+  (.set! it pos  (cast usize 0))
+  (.set! it cap  (m cap)))
+
+; ---------------------------------------------------------------------------
+; Coll (Entry K V) (HashMapEntryIter K V) conformance — the extend + value-
+; returning `iter` (count/empty?/conj are above). `iter` returns a fresh
+; HashMapEntryIter BY VALUE (alloca + hmap-iter-entries + (deref …)); consumers
+; `addr-of` the result to drive `next`. (Placed here because HashMapEntryIter
+; must be declared before it can name the associated iterator type.)
+; ---------------------------------------------------------------------------
+(extend (HashMap K V) (Coll (Entry K V) (HashMapEntryIter K V)))
+
+(defn iter:(HashMapEntryIter K V) ((self (ref (HashMap K V))))
+  (let ((it (ref (HashMapEntryIter K V))) (alloca (HashMapEntryIter K V)))
+    (hmap-iter-entries it self)
+    (return (deref it))))

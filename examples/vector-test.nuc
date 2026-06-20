@@ -2,8 +2,9 @@
 ; iterate with doseq, insert, contains?, reserve, and Drop at with-scope exit.
 ;
 ; Index access is `(v i)` (the `invoke` generic), NOT `(get v i)`: the `get`
-; head is reserved for struct field access. `doseq` drives an iterator ref, so
-; the VecIter is materialised into a local and its address passed.
+; head is reserved for struct field access. `doseq` now dispatches generically
+; over any Coll: (doseq (x v (VecIter i32)) …) calls the protocol `iter` on the
+; vector itself (the iterator type is named — no let-binding type inference).
 
 (include stdio)
 (import allocator)
@@ -24,11 +25,10 @@
     (printf "empty?=%d\n" (empty? v))                 ; empty?=0
     (printf "cap>=3: %d\n" (if (>= (capacity v) (cast usize 3)) 1 0)) ; 1
 
-    ; doseq iterate: allocate a VecIter, init it to scan v, then drive it.
-    ; doseq advances an iterator *reference* via (next it).
-    (let ((it (ref (VecIter i32))) (alloca (VecIter i32)))
-      (iter-init it v)
-      (doseq (x it) (printf "elem=%d\n" x)))           ; 10, 20, 30
+    ; doseq iterate generically over the Coll: (doseq (x v (VecIter i32)) …)
+    ; calls the protocol `iter` on v (value-returning VecIter) and drives it
+    ; internally. The iterator type is named (no let-binding type inference).
+    (doseq (x v (VecIter i32)) (printf "elem=%d\n" x)) ; 10, 20, 30
 
     ; insert 15 at index 1, shifting the tail right.
     (insert v (cast usize 1) 15)

@@ -6,9 +6,10 @@
 ; These protocols are CORE (every collection conforms); the concrete types
 ; (Vector, HashMap, ...) are libraries. A type T conforms by providing the
 ; protocol's methods over a (ref Self) receiver and asserting
-;   (extend (Vector T) (Coll T))
-; The element type E is a protocol parameter (a parametric protocol) so the
-; method signatures can mention both Self and the element type.
+;   (extend (Vector T) (Coll T (VecIter T)))
+; The element type E and the associated iterator type It are protocol parameters
+; (a parametric protocol with an associated type) so the method signatures can
+; mention Self, the element type, and the iterator type.
 ;
 ; ---------------------------------------------------------------------------
 ; TOKENIZER / DISPATCH NOTES (carried from M1/M2 and parametric structs):
@@ -23,30 +24,38 @@
 ; ---------------------------------------------------------------------------
 ; WHY index access is `invoke`, not `get`:
 ;
-;  The head symbol `get` is reserved by the compiler for struct *field* access
-;  (`(s 'field)` / `(get s 'field)`); `emit-get-with-callee` forces the
-;  selector argument's type to ptr, so a user `get` generic whose index
-;  parameter is `usize` can never be selected through the `get` head. Per the
-;  design (§Seq: "`get` index access ... routes to invoke"), the index getter
-;  is the `invoke` generic: `(v i)` with an integer index routes to `invoke`
-;  (callable-values.md), distinct from `(v 'field)` member access. So `Seq`'s
-;  index method is named `invoke` and is called as `(v i)`.
+;  The head symbol `get` dispatches through `emit-get-with-callee`: a symbol
+;  selector (`(s 'field)` / `(get s 'field)`) is always a field access; a
+;  value selector (`(get m key)`) resolves a user `get` generic override first
+;  (C2.0) and falls back to the computed-field intrinsic. `Assoc`'s lookup
+;  method is therefore named `get` and called as `(get m key)`. Sequential
+;  index access uses `invoke` instead (per §Seq: an integer index `(v i)`
+;  routes to `invoke`, keeping field access and index access distinct — see
+;  callable-values.md). So `Seq`'s index method is named `invoke` and called
+;  as `(v i)`.
 ; ---------------------------------------------------------------------------
 
 ; ---------------------------------------------------------------------------
-; Coll E — the minimum every collection implements.
+; Coll E It — the minimum every collection implements.
 ;   count  -> number of live elements (usize)
 ;   conj   -> add an element in the collection's natural/efficient way,
 ;             MUTATING in place (append for a vector)
 ;   empty? -> 1 when count = 0, else 0
-; `iter` is intentionally NOT in the protocol: it returns an iterator type
-; derived from Self, which is not expressible without associated types. Each
-; concrete type provides its own `iter` function.
+;   iter   -> a fresh iterator over the collection's elements
+;
+; It is the associated iterator type (C2.1, design/stage11/cleanup2.md);
+; `iter` returns an It by VALUE (the alloca + set + (deref …) idiom proven by
+; examples/assoc-iter-return.nuc). Consumers (`doseq`/`into`) bind the returned
+; It to a local and `(addr-of it)` to get the `(ref It)` that `next` wants. The
+; fill-in-place `iter-init`/`hashset-iter`/`hmap-iter-entries` forms are demoted
+; to internal helpers that the value-returning `iter` wraps; the protocol surface
+; is value-return only — one convention. It must itself conform to (Iterator E).
 ; ---------------------------------------------------------------------------
-(defprotocol (Coll E)
-  (count:usize ((self (ref Self))))
-  (conj:void   ((self (ref Self)) elem:E))
-  (empty?:i32  ((self (ref Self)))))
+(defprotocol (Coll E It)
+  (count:usize  ((self (ref Self))))
+  (conj:void    ((self (ref Self)) elem:E))
+  (empty?:i32   ((self (ref Self))))
+  (iter:It      ((self (ref Self)))))
 
 ; ---------------------------------------------------------------------------
 ; Seq E — ordered, index-addressable sequences (a practical subset of the
@@ -63,21 +72,30 @@
   (insert:void   ((self (ref Self)) i:usize elem:E)))
 
 ; ---------------------------------------------------------------------------
-; Assoc K V — associative (key -> value) maps.
+; Assoc K V Ki Vi — associative (key -> value) maps.
 ;   assoc  -> insert/overwrite the value for a key, MUTATING in place.
 ;   dissoc -> remove a key (and its value), MUTATING in place.
-; Two protocol parameters: K (key type) and V (value type). Both are bound at
-; the extend site: (extend (HashMap K V) (Assoc K V)).
+;   get    -> look up a key, returning (Maybe V).
+;   keys   -> a fresh key-only iterator, returned BY VALUE (associated type Ki).
+;   vals   -> a fresh value-only iterator, returned BY VALUE (associated type Vi).
 ;
-; `get` (key -> (Maybe V)), `keys`/`vals` (-> Iterator) and `select-keys` are
-; intentionally NOT in the protocol: their result types are derived from Self
-; (an associated type / a Self-derived iterator type), which the protocol
-; machinery cannot express. Each concrete map provides them as standalone
-; functions (e.g. HashMap's `hmap-get`).
+; Four protocol parameters: K (key type), V (value type), Ki (key iterator
+; type), and Vi (val iterator type). All are bound at the extend site:
+;   (extend (HashMap K V) (Assoc K V (HashMapKeyIter K V) (HashMapValIter K V)))
+;
+; Ki must conform to (Iterator K); Vi must conform to (Iterator V). Both
+; `keys` and `vals` use the value-return convention (alloca + fill + deref),
+; consistent with (Coll E It)'s `iter` (C2.1). Consumers bind the returned
+; iterator to a typed local and `(addr-of it)` to drive `next`, or use
+; `doseq-iter` on the named local. `select-keys` is deliberately kept
+; standalone (C2.2d, design/stage11/cleanup2.md).
 ; ---------------------------------------------------------------------------
-(defprotocol (Assoc K V)
-  (assoc:void  ((self (ref Self)) key:K val:V))
-  (dissoc:void ((self (ref Self)) key:K)))
+(defprotocol (Assoc K V Ki Vi)
+  (assoc:void        ((self (ref Self)) key:K val:V))
+  (dissoc:void       ((self (ref Self)) key:K))
+  ((get (Maybe V))   ((self (ref Self)) key:K))
+  (keys:Ki           ((self (ref Self))))
+  (vals:Vi           ((self (ref Self)))))
 
 ; ---------------------------------------------------------------------------
 ; Set E — sets of unique members (the in-place, mutating algebra).
@@ -87,7 +105,9 @@
 ;   contains?    -> membership test, 1/0.
 ; The set-algebra methods mutate the receiver (the efficient primitive); a
 ; fresh-result variant is just `iter` + `into`. `select` (filter to a new set)
-; is NOT in the protocol — it returns a new collection (Self-derived).
+; is not in the protocol — it produces a Self-derived new collection that has
+; low value as a generic bound. It is deliberately kept standalone (C2.3 in
+; design/stage11/cleanup2.md), not because it is inexpressible.
 ; ---------------------------------------------------------------------------
 (defprotocol (Set E)
   (union:void        ((self (ref Self)) (other (ref Self))))

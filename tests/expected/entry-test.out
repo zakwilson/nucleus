@@ -1,0 +1,6 @@
+entry key=7 val=42
+iter n=3 ksum=6 vsum=60
+conj count=2
+get 5=500
+get 6=600
+done
