@@ -145,10 +145,13 @@ check* the capability:
 (extend Vec Seq)
 ```
 
-**Element type fixed today.** Protocols substitute only `Self` (no associated types),
-so `Seq` fixes a concrete element type (`:i32`); a `Seq` abstract over *any* element
-needs associated / generic-struct types (the deferred parametric rung). The call
-mechanism does not depend on this — `(vec 3)` works from the `invoke` method alone.
+**Element type fixed in these protocols.** `IntIndexable`/`Call` fix concrete element
+and argument types. The parametric rung has shipped (Stage 11 parametric structs +
+associated types A0–A4); element-generic function-object protocols are now available
+as `(UnaryFn Arg Ret)` / `(FoldFn Acc Elem)` in `lib/iterator.nuc`. The fixed-type
+protocols remain for existing users and are planned for removal in C2.5 (see
+`design/stage11/cleanup2.md`). The call mechanism does not depend on them — `(vec 3)`
+works from the `invoke` method alone.
 
 ### 3.5 Resolution, precedence, and the bare-symbol rule
 

@@ -1,10 +1,20 @@
 # Stage 11 Progress — Parametric Structs & Collections
 
-Parametric structs: **done** (T0–T6). Collections: **in progress** (M1–M5 done; A0–A2 associated types done; A4.0–A4.4 extend-site recovery + generic iterator rewrite done).
-Cleanup: §1 (colon-paren sugar), §2 (keyword/StrView), §3 (iterator-test flatten), §4a (phantom tyvar) — all **done**.
+Parametric structs: **done** (T0–T6). Collections: **in progress** (M1–M5 done; A0–A2 associated types done; A4.0–A4.4 extend-site recovery + generic iterator rewrite done). M6 String: **designed** (`string.md` fleshed out — protocol layering, methods, decisions; not yet implemented).
+Cleanup: §1 (colon-paren sugar), §2 (keyword/StrView), §3 (iterator-test flatten), §4a (phantom tyvar) — all **done**. Second cleanup: C2.0 (generalize value-keyed `get` dispatch), C2.2a (`get:(Maybe V)` on `Assoc`; `hmap-get` deleted), C2.3/C2.4/C2.6 (doc/design judgement cleanups), C2.5 (remove legacy protocols `Call`/`BinaryCall`/`IntIndexable`), C2.7 + C2.8 (doc/comment rationale sweep + resolved-limitation close-out) — **done**. A4.5 (`defn &where` compound `((Protocol Arg) Var)` constraints) — **done** (`examples/assoc-iter-return.nuc` prints `count=5`, byte-identical bootstrap). C2.1 (`iter` lifted into `Coll` as `(Coll E It)` with a value-returning associated iterator; `doseq`/`into` migrated to generic-`Coll` dispatch, with `doseq-iter`/`into-iter` retained for bare iterator refs) + C2.2b (`keys:Ki`/`vals:Vi` lifted into `Assoc` as `(Assoc K V Ki Vi)` with associated iterator types; `HashMapValIter` added; `HashMap` conforms to `(Assoc K V (HashMapKeyIter K V) (HashMapValIter K V))`) + C2.2c (`(Entry K V)` pair + `HashMap` conforms to `(Coll (Entry K V) (HashMapEntryIter K V))`) — **done** (95 tests, byte-identical bootstrap).
 Back to [../progress.md](../progress.md)
 
-89 tests pass; `make bootstrap` is a byte-identical fixed point.
+95 tests pass; `make bootstrap` is a byte-identical fixed point.
+
+**M6 String design (`design/stage11/string.md`):** evaluated and specified. Key
+calls — `Str` is a read-only contract extending `Eq` only (not `Coll`/`Seq`/`Drop`);
+three-layer split `ByteStr` ⊂ `Str` ⊂ `String`; error-handling (not panic/Maybe)
+for bounds/validation; `Char` a new built-in distinct scalar with `\a`/`\newline`/
+`\u{…}` literals; string literals migrate to a borrowed static `StrView`, not owned
+`String`. **Associated-type uplift validated:** `examples/assoc-iter-return.nuc`
+confirms a protocol method can return a bare associated type used as a later
+constraint's conforming variable (the `chars`/`bytes` uplift), so those can be real
+protocol methods rather than standalone functions.
 
 ---
 
@@ -119,27 +129,28 @@ Back to [../progress.md](../progress.md)
    collection's key/element `K` is a tyvar; to hash it, copy the stored key into a `K`-typed
    local and pass its address. The conformance is selected at stamp time per concrete `K`.
    `K` must be both `Hash` (for the table) and `Eq` (for `=` collision resolution); both are
-   enforced structurally at stamp time (no `&where` bound — the parametric-protocol `&where`
-   frontier is still deferred), so a `K` lacking either errors with a missing-method
-   diagnostic when the table is first stamped.
+   enforced structurally at stamp time (the parametric-protocol `&where` frontier is now
+   resolved — A0–A2, see `design/stage11/assoc-types.md`), so a `K` lacking either errors
+   with a missing-method diagnostic when the table is first stamped.
 3. **FNV-1a folds bytes; the offset basis is a signed-literal trick.** Scalars fold every
    value byte little-endian, `CStr` folds chars to the NUL. The 64-bit offset basis
    `0xcbf29ce484222325` has its high bit set, so it is written as the two's-complement
    decimal `-3750763034362895579` (the same constant the compiler's own `hash-struct-shape`
    seeds with) — the unsigned hex would overflow the signed-literal range. The fold runs in
    `i64` and is cast to `usize` at the end (the protocol's return type).
-4. **HashMap does NOT extend `(Coll E)`.** `Coll`'s `conj` takes a single element `E`, but a
-   map insert needs both a key and a value, so the element type is ambiguous. HashMap extends
-   only `(Assoc K V)` and `Drop`; `count`/`empty?` are standalone generic methods (callable by
-   receiver-type dispatch, no protocol needed). HashSet extends `(Coll T)` normally (`conj` ==
-   `insert`).
-5. **`get`/`keys`/`vals` are standalone, not protocol methods.** Their result types are
-   derived from `Self` (`hmap-get → (Maybe V)`; the key iterator type varies by `Self`).
-   Associated types are now implemented (A0–A2), so lifting these into the `Assoc`/`Set`
-   protocols is now mechanically possible but is its own task (see `assoc-types.md` §5
-   out-of-scope). `Assoc` carries only `assoc`/`dissoc`; `Set` carries
-   `union`/`difference`/`intersection`/`contains?`. Each concrete map/set provides the rest
-   as ordinary generic functions (`hmap-get`, `hmap-iter-keys`, `hashset-iter`).
+4. **HashMap conforms to `(Coll (Entry K V) (HashMapEntryIter K V))` and `(Assoc K V (HashMapKeyIter K V) (HashMapValIter K V))`** (since C2.1/C2.2b/C2.2c).
+   `Coll`'s element type is the key/value pair `(Entry K V)` (a plain value struct): `conj`
+   inserts an `Entry` (= `assoc` of its key/val) and `iter` yields `Entry` values via
+   `HashMapEntryIter`. `Assoc` is now `(Assoc K V Ki Vi)` with value-returning `keys:Ki` and
+   `vals:Vi` protocol methods; `HashMap` binds `Ki = HashMapKeyIter K V` and `Vi = HashMapValIter K V`.
+   HashMap also extends `Drop`. (Before C2.2c, HashMap did not extend `Coll` because a single-element
+   `conj` was ambiguous for a key/value map; the pair element type resolves that.) HashSet extends
+   `(Coll T (HashSetIter T))`, Vector extends `(Coll T (VecIter T))` — both with `conj` == append/insert.
+5. **`get`, `iter`, `keys`, and `vals` are all protocol methods.** `get` was lifted into `Assoc`
+   (C2.2a: `(get (Maybe V))`); `iter` was lifted into `Coll` (C2.1: `iter:It`, value-returning
+   associated iterator); `keys`/`vals` were lifted into `Assoc` (C2.2b: `keys:Ki`/`vals:Vi`,
+   value-returning associated iterators, same alloca+set+deref convention). `Assoc` carries
+   `assoc`/`dissoc`/`get`/`keys`/`vals`; `Set` carries `union`/`difference`/`intersection`/`contains?`.
 6. **Open-addressing invariants.** Cap is always a power of two, so the bucket index is
    `(bit-and (hash …) (- cap 1))`. States are `0=empty / 1=occupied / 2=tombstone`; lookup
    stops at the first empty slot and skips tombstones; `assoc`/`insert` reuse the first
@@ -171,6 +182,23 @@ Back to [../progress.md](../progress.md)
 | §2 | **`StrView` substrate + `Keyword` literal `:foo`** — see detailed section below. Also fixes a latent `emit-extern` dedup bug (two libs both declaring `(extern stderr:ptr)` → LLVM "redefinition of global"). | Done | `lib/strview.nuc`, `lib/keyword.nuc`, `lib/reader.nuc`, `src/nucleusc.nuc`; `examples/{keyword,strview}-test.nuc` |
 | §3 | **Iterator-test flatten** — `examples/iterator-test.nuc` multi-binding `let` already supported; nested `let`s flattened to a single flat binding list. No language change; output unchanged. Docs: note added to `docs/types.md` §"Type Syntax and Desugar" (multi-binding `let`). | Done | `examples/iterator-test.nuc` |
 | §4a | **Phantom/positional tyvar recovery** — `register-generic-defn` and `defn-has-receiver-tyvars` now size the `tyvars` arena array by `count-pattern-nodes` (total node count of parameter/return type patterns) rather than by parameter count alone. Fixes segfault + `unknown type` for generic methods over multi-param templates with trailing phantom type params. Bootstrap byte-identical. | Done | `src/nucleusc.nuc` (`count-pattern-nodes`, `register-generic-defn`, `defn-has-receiver-tyvars`); `examples/phantom-tyvar-test.nuc` + `tests/expected/phantom-tyvar-test.out`; docs in `docs/structs-unions.md` |
+
+---
+
+## Stage 11 cleanup — second pass (`design/stage11/cleanup2.md`)
+
+| Task | Description | Status | Key files |
+|---|---|---|---|
+| C2.7+C2.8 | **Doc/comment rationale sweep + resolve limitation #3** — all "impossible without associated types" comments updated; `docs/parametric-structs.md` limitation #3 marked resolved; `docs/collections.md`, `docs/special-forms.md`, `docs/builtins.md`, `docs/index.md`, `docs/structs-unions.md`, `design/stage9/callable-values.md` rationale passes done | Done | `lib/coll.nuc`, `lib/seq.nuc`, `docs/collections.md`, `docs/special-forms.md`, `docs/builtins.md`, `docs/index.md`, `docs/structs-unions.md`, `design/stage9/callable-values.md`, `design/stage11/parametric-structs.md` |
+| C2.0 | **Compiler: generalize `get` dispatch** — `emit-get-with-callee` split into a literal-symbol branch (unchanged, static GEP field access) and a computed/value-selector branch (`generic-resolve-nullable` on hit → call generic `get` override; on miss → field intrinsic). `generic-resolve-nullable` added as a non-dying variant of `generic-resolve`. Bootstrap byte-identical on current source. | Done | `src/nucleusc.nuc` (`emit-get-with-callee`, `generic-resolve-nullable`); `examples/get-dispatch-test.nuc` + `tests/expected/get-dispatch-test.out` |
+| C2.2a | **`get:(Maybe V)` into `Assoc` protocol; `hmap-get` deleted** — `Assoc K V` now declares `((get (Maybe V)) ((self (ref Self)) key:K))` as a protocol method; `HashMap` provides the conforming method body; the standalone `hmap-get` generic is removed; all call sites migrated to `(get m key)`. | Done | `lib/coll.nuc` (`Assoc` protocol), `lib/hashmap.nuc` (`get` method, `hmap-get` removed), `examples/{hashmap,hashmap-lit,keyword}-test.nuc`, `examples/assoc-get-test.nuc` + `tests/expected/assoc-get-test.out` |
+| C2.5 | **Remove `Call`/`BinaryCall`/`IntIndexable` from `lib/seq.nuc`; migrate `examples/callable.nuc` to `UnaryFn`/`FoldFn`** — the fixed-element-type callable protocols are retired; `examples/callable.nuc` rewritten using the generic `UnaryFn`/`FoldFn` from `lib/iterator.nuc`; docs updated | Done | `lib/seq.nuc` (protocols removed), `examples/callable.nuc` (rewritten), `tests/expected/callable.out`, `docs/special-forms.md`, `docs/builtins.md`, `docs/index.md` |
+| C2.3 | **`Set.select` comment corrected** — confirmed as a deliberate design choice (not a limitation), not a missing associated-type feature; comment in `lib/coll.nuc` updated accordingly | Done | `lib/coll.nuc` |
+| C2.4 | **Reconcile `design/stage11/collections.md` §Seq with shipped lazy-iterator reality** — §Seq updated to document the shipped `Iterator`/`MapIter`/`FilterIter` shape rather than the pre-implementation sketch | Done | `design/stage11/collections.md` |
+| C2.6 | **Frame `examples/phantom-tyvar-test.nuc` as legacy regression test** — file comment updated to identify it as a legacy regression test for the §4a phantom-tyvar fix, superseded by associated-type approaches | Done | `examples/phantom-tyvar-test.nuc` |
+| C2.1 | **Lift `iter` into `Coll` with associated iterator type `It`; migrate `doseq`/`into`** — `Coll` is now `(Coll E It)` with `iter:It` (value return: alloca + set + `(deref …)`, the spike pattern); `Vector`/`HashSet`/`HashMap` conform with a value-returning `iter`, wrapping their (now internal) fill-in-place helpers. `doseq`/`into` migrated to dispatch generically over any `Coll`: `(doseq (var coll IterType) …)` / `(into dest src IterType)` call the protocol `iter`, bind the result to a typed local, and drive `(next (addr-of it))`. `IterType` is named explicitly because Nucleus `let` has no binding-type inference and `addr-of` needs a named local (not an rvalue). New `doseq-iter`/`into-iter` keep the pre-C2.1 bare-iterator-ref form for pure iterators (`IntRangeIter`, `MapIter`, `FilterIter`, `HashMapKeyIter`). | Done | `lib/coll.nuc` (`Coll E It` + `iter`), `lib/vector.nuc`, `lib/hashset.nuc`, `lib/hashmap.nuc` (value-returning `iter` + extends), `lib/macros.nuc` (`doseq`/`into` migrated + `doseq-iter`/`into-iter` added); `examples/{vector,hashset,hashmap,iterator}-test.nuc` migrated; `examples/coll-iter-test.nuc` + `tests/expected/coll-iter-test.out` |
+| C2.2b | **Lift `keys`/`vals` into `Assoc` with associated iterator types** — `Assoc` is now `(Assoc K V Ki Vi)` with `keys:Ki` and `vals:Vi` (value-return, same alloca+set+deref convention as `iter`); `(defstruct (HashMapValIter K V) vbuf:ptr sbuf:ptr pos:usize cap:usize)` added, conforming to `(Iterator V)` with `hmap-iter-vals` fill helper; `HashMap` conforms to `(Assoc K V (HashMapKeyIter K V) (HashMapValIter K V))`. | Done | `lib/coll.nuc` (`Assoc K V Ki Vi`, `keys`/`vals` methods); `lib/hashmap.nuc` (`HashMapValIter`, `hmap-iter-vals`, `keys`/`vals` methods, extend); `examples/assoc-keys-vals-test.nuc` + `tests/expected/assoc-keys-vals-test.out` |
+| C2.2c | **`(Entry K V)` struct; `HashMap` conforms to `(Coll (Entry K V) (HashMapEntryIter K V))`** — added `(defstruct (Entry K V) key:K val:V)` (value-struct pair element), `(defstruct (HashMapEntryIter K V) …)` conforming to `(Iterator (Entry K V))` (`next` yields `(some (Entry …))` per occupied bucket), the fill helper `hmap-iter-entries`, the value-returning `iter:(HashMapEntryIter K V)`, the `(Coll (Entry K V) …)` extend, and `conj` over an `Entry` (= `assoc` its key/val). `keys`/`vals` remain separate single-projection iterators (C2.2b). | Done | `lib/hashmap.nuc` (`Entry`, `HashMapEntryIter`, `iter`, `conj`, extend); `examples/entry-test.nuc` + `tests/expected/entry-test.out`; also covered by `examples/coll-iter-test.nuc` |
 
 ---
 
@@ -237,6 +265,7 @@ Back to [../progress.md](../progress.md)
 | `tests/abi/interop.nuc` + `tests/abi/clib.c` | By-value ABI parity for a stamped `(P2 i32 i32)` across the C boundary |
 | `tests/expected/parametric.out` | Expected output for `examples/parametric.nuc` |
 | `examples/phantom-tyvar-test.nuc` | Cleanup §4a — generic methods over a template with phantom (field-less) trailing type params; positional tyvar recovery from the stamped receiver, including a phantom param in the return type and a verbose `MapIter`-style combinator |
+| `examples/get-dispatch-test.nuc` | Cleanup C2.0 — value-keyed `get` dispatch: a parametric `(Bag K V)` `get:(Maybe V)` is selected for `CStr`/`i32` computed selectors, while a literal `'val` selector still does plain field access |
 
 ---
 

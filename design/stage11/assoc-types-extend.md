@@ -1,11 +1,27 @@
 # Extend-site associated-type recovery (composable combinators)
 
-**Status:** **Done.** A4.0 (shared-helper refactor), A4.1 (`TmplConformance`
-constraint fields + `emit-extend` `&where` parse + determination fixpoint),
-A4.2 (stamp-time recovery in `tmpl-conformance-check-one`), A4.3 (`.nuch`
-round-trip of `&where`-bearing template extends), and A4.4 (`lib/iterator.nuc`
-rewrite) all landed. All tasks A4.0–A4.4 complete; all 89 tests pass;
-byte-identical bootstrap.
+**Status:** A4.0–A4.5 **done** (92 tests, byte-identical bootstrap). A4.5 extends
+`defn &where` to support the compound `((Protocol Arg…) Var)` constraint form for
+conforming variables that are free type parameters or previously-recovered tyvars
+— the gap that blocked C2.1/C2.2b/C2.2c, now closed (`examples/assoc-iter-return.nuc`
+compiles and prints `count=5`).
+
+The A4.5 capability fell out of the A1/A4.0 machinery already in place rather than
+requiring new inference: `parse-where-constraints` (src/nucleusc.nuc) already adds
+every constraint's conforming variable to the tyvar set, so a bare free parameter
+`C` in `(ref C)` (Case 1) and a tyvar recovered by an earlier constraint
+(`It` in Case 2) are both registered tyvars by the time the determination fixpoint
+in `register-generic-defn` runs. The fixpoint seeds `C` (determined by the
+`(ref C)` parameter pattern via `pattern-determines-tyvar`), then recovers `It`
+from `((IterColl It) C)`, then `E` from `((Iterator E) It)`. At dispatch,
+`generic-method-bind` binds `C` from the argument type (`unify-tpat` on `(ref C)`
+vs `(ref Span)`) and `recover-assoc-into` runs the same fixpoint to bind `It`/`E`
+from the recorded conformances *before* `generic-constraints-ok` reads the bound
+of the recovered var — so the recovered-conforming-var case (Case 2) resolves with
+no extra code. The only outstanding work for A4.5 was operational: add the
+expected-output fixture and refresh the committed bootstrap (the stale `bin/nucleusc`
+predated the source fix). Byte-identical bootstrap holds because the compiler's own
+source uses no compound `defn &where`, so the path is inert during self-compile (§9).
 
 A4.3 made the `&where` clause survive `--emit-nuch` (`emit-nuch-extend` now emits
 every node of the `extend` form, not just subject+protocol) and made the importer
@@ -524,11 +540,16 @@ the orchestrating thread for integration.
 | **A4.2** ✅ | `tmpl-conformance-check-one` runs `recover-assoc-into` at stamp time and records the per-instance `Conformance` with recovered args (§4.3–4.5); ordering guards (§8). **Landed:** byte-identical bootstrap; `(MapIter IntRangeIter SqFn)` records `Conformance{Iterator, [i32]}`; the `map → filter → reduce` chain compiles and runs (`examples/assoc-types-extend.nuc`, 88/88). | systems-impl-engineer | byte-identical; a stamped `(MapIter IntRangeIter Double)` records `Conformance{Iterator, [i32]}`; chaining + generic `reduce` over a combinator compile and run |
 | **A4.3** ✅ | `.nuch` round-trip of the `&where`-bearing `extend` (§10). **Landed:** `emit-nuch-extend` serializes the full `extend` form (incl. `&where`); `register-imported-conformance` delegates a template-subject extend to `emit-extend` so the `TmplConformance` (and its `&where` clause) is reconstructed in the importer, with stamp-time recovery firing there. Cross-unit test `examples/assoc-types-extend-cross.nuc` (`.nuch` at `lib/mapiterlib.nuch`); byte-identical bootstrap; 89/89. | systems-impl-engineer | imported combinator conformance recovers args in the importing unit |
 | **A4.4** ✅ | Rewrite `lib/iterator.nuc` to generic chainable combinators (§6); collapse the `*I64` specializations; rewrite `examples/iterator-test.nuc` (multi-level generic chain) + `examples/assoc-types.nuc`; update `docs/iterators.md`/`docs/generics.md`/`docs/collections.md`; flip progress. **Landed:** `lib/iterator.nuc` rewritten with `UnaryFn`/`FoldFn`/`MapIter`/`FilterIter`/`reduce`; the `i64`-specialized `*I64` types retired; `examples/iterator-test.nuc` uses the generic API; 89/89 tests; byte-identical bootstrap. | focused-task-implementer (lib/examples) + api-docs-writer (docs/progress) | `make test` green; chain output matches; docs describe extend-site `&where` |
+| **A4.5** ✅ | Extend `defn &where` to support the compound `((Protocol Arg…) Var)` form for conforming variables that are *free type parameters* (bare unbound tyvars in parameter positions, not from a struct-template application) and *previously-recovered tyvars* (a tyvar that was itself recovered by an earlier constraint in the same `&where` clause). See §14. **Landed:** the capability fell out of the A1/A4.0 helpers already in place — `parse-where-constraints` seeds every conforming variable into the tyvar set, the `register-generic-defn` determination fixpoint recovers the chain (`C → It → E`), and dispatch-time `generic-method-bind`/`recover-assoc-into` binds `C` from the argument and the recovered vars before `generic-constraints-ok` reads them. Only the test fixture + bootstrap refresh remained. `examples/assoc-iter-return.nuc` prints `count=5`; 92/92 tests; byte-identical bootstrap; C2.1/C2.2b/C2.2c unblocked. | systems-impl-engineer | `examples/assoc-iter-return.nuc` compiles and prints `count=5`; 92 tests pass; byte-identical bootstrap |
 
 **Definition of done:** the `map → filter → reduce` chain runs **generically** over
 an arbitrary element type with no phantom params and no i64 specialization;
 combinators conform to `Iterator` and nest to ≥3 levels; the compiler still
 self-compiles byte-identically; docs and progress reflect the shipped surface.
+
+**A4.5 definition of done:** `examples/assoc-iter-return.nuc` compiles and
+runs (`count=5`); all 92 tests green; bootstrap byte-identical; `C2.1` / `C2.2b` /
+`C2.2c` unblocked.
 
 ---
 
@@ -545,5 +566,109 @@ self-compiles byte-identically; docs and progress reflect the shipped surface.
 4. **`let` has no type inference** (`let: missing :type`) — so there is no back-door
    to recover an element type without a bound; the conformance route (A4) is the
    only one.
+
+---
+
+## 14. A4.5 — `defn &where` compound constraint support
+
+### 14.1 Observed gap
+
+`defn &where` with the compound `((Protocol Arg…) Var)` constraint form fails for
+two related cases:
+
+**Case 1 — free type parameter as conforming variable.** A `defn` whose parameter
+type is a bare unbound symbol (not a struct-template application) cannot use that
+symbol as the conforming variable in a compound constraint:
+
+```lisp
+(defprotocol (IterColl It)
+  (mk-iter:It ((self (ref Self)))))
+
+; FAILS today: "defn: &where constraint must name a protocol and a variable"
+(defn count-coll:i32 ((c (ref C)) &where ((IterColl It) C))
+  ...)
+```
+
+`C` appears in `(ref C)`, a bare pointer-to-unknown-type — the compiler does not
+recognize it as a tyvar from the parameter pattern alone.
+
+**Case 2 — recovered tyvar as conforming variable.** Even if Case 1 were fixed, the
+second constraint in a chained `&where` may use a tyvar that was *recovered* by the
+first constraint as its conforming variable:
+
+```lisp
+(defn count-coll:i32 ((c (ref C))
+                      &where ((IterColl It) C)   ; C conforming → recover It
+                             ((Iterator E) It))  ; It conforming → recover E
+  ...)
+```
+
+`It` is not a parameter-bound tyvar; it is recovered from `C`'s `IterColl`
+conformance. The second constraint `((Iterator E) It)` must therefore see the
+**post-fixpoint** tyvar set, not the initial one.
+
+These two cases together are what `examples/assoc-iter-return.nuc` exercises. The
+file exists and was intended as the validation spike for this capability, but it
+was written before the compiler support landed; it currently fails to compile.
+
+### 14.2 What already works
+
+The compound `((Protocol Arg…) Var)` form *does* work in `defn &where` when `Var`
+is a tyvar already bound by a **struct-template application** in the parameter list
+(the A1/A2 path). For example, `(defn (next (Maybe E)) ((self (ref (MapIter I F)))
+&where ((Iterator S) I) ((UnaryFn S E) F))` compiles and runs: `I` and `F` come
+from the `(MapIter I F)` template application, so they are in the initial tyvar set;
+`S` and `E` are then recovered in a single fixpoint pass. The `defn`-level
+`generic-resolve` path already reads back these recovered args at dispatch.
+
+The gap is only for conforming variables that are **not** already in the initial
+tyvar set — i.e., those introduced directly as parameter types or recovered by a
+prior constraint in the same clause.
+
+### 14.3 Likely root cause
+
+`defn-has-receiver-tyvars` / `register-generic-defn` (src/nucleusc.nuc) determine
+the initial tyvar set by scanning parameter and return-type patterns for struct-
+template applications. A bare type symbol (e.g. `C` in `(ref C)`) that is neither a
+registered struct name nor one of those template tyvars is not added to the set.
+
+Consequently the `&where` parser, when it encounters `((IterColl It) C)`, checks
+that `C` is a known tyvar — and fails with "must name a protocol and a variable"
+because `C` is not yet in the set.
+
+**Fix direction:**
+1. **Seed from `&where` conforming variables.** When parsing a `defn`'s `&where`
+   clause, treat any *unrecognized bare symbol* in a conforming-variable position as
+   a new free tyvar and add it to the initial tyvar set. (A conforming variable that
+   names a registered struct or concrete type is a type constraint, not a new tyvar;
+   this case is already forbidden or irrelevant.)
+2. **Iterative fixpoint over the full constraint list.** After seeding with both
+   parameter-pattern tyvars and `&where` conforming variables, run the same
+   determination fixpoint A1 already implements — recovering `Arg` tyvars for each
+   constraint whose `Var` is determined. A recovered tyvar (like `It` after pass 1)
+   is then available as a conforming variable in later constraints (like
+   `((Iterator E) It)`).
+3. **Dispatch-time recovery.** The call-site resolution (`generic-method-bind`,
+   `generic-resolve` tier-1) already runs the recovery fixpoint. Confirm it handles
+   the case where the conforming variable's type is recovered, not just directly
+   provided as a call argument — or extend it to do so.
+
+### 14.4 Acceptance criteria
+
+- `examples/assoc-iter-return.nuc` compiles and prints `count=5`.
+- Add `tests/expected/assoc-iter-return.out` containing `count=5` so it runs in
+  `make test`.
+- All existing 92 tests still pass; `make bootstrap` is byte-identical.
+- The fix must not change the behaviour of existing `defn &where` with template-
+  bound conforming variables (the A1/A2 paths are exercised by the 92-test suite).
+
+### 14.5 Out of scope
+
+- `defn &where` with a concrete (non-tyvar) conforming variable — already rejected
+  or unsupported; leave unchanged.
+- Mutually-recursive `&where` recovery (two constraints that each recover the
+  other's conforming variable) — document as a non-goal if encountered.
+- Any change to `extend &where` (A4.0–A4.4 paths) — those are complete and must
+  remain byte-identical.
 </content>
 </invoke>

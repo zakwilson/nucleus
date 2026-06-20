@@ -61,11 +61,12 @@
     (return (reduce sm (cast i64 0) fi))))
 
 (defn main:i32 ()
-  ; ---- 1. doseq over IntRangeIter ----------------------------------------
+  ; ---- 1. doseq-iter over a bare IntRangeIter ref (a pure Iterator, not a
+  ;         Coll, so it uses the iterator-ref form) ----------------------------
   (let ((r (ref IntRangeIter)) (alloca IntRangeIter))
     (.set! r start 1)
     (.set! r end 6)
-    (doseq (x r)
+    (doseq-iter (x r)
       (printf "%d\n" x)))
 
   ; ---- 2. map/filter/reduce chain over i64 elements ----------------------

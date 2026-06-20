@@ -95,22 +95,23 @@ compare structurally, which is also what lets a collection be a `HashMap` key or
 
 ### Coll
 
+Shipped as `(Coll E It)` — element type `E` and associated iterator type `It` (C2.1). `It` must conform to `(Iterator E)`.
+
 - `count` → `usize`
 - `conj` — add a value in the way most natural/efficient for the collection
   (append for vector, insert for set/map), **mutating in place** (Clojure's name,
   not its persistence).
-- `iter` → an `Iterator` (see below).
-- `empty?` → `bool`.
+- `iter` → `It` by value — associated iterator type, returned using the alloca+set+deref convention (C2.1).
+- `empty?` → `i32` (1 if empty, 0 otherwise).
 
 ### Seq
 
-- `map` / `reduce` / `filter` — **lazy, over iterators** (see Iteration). `map` and
-  `filter` return a new lazy `Iterator`; `reduce` consumes one to a value. They take
-  a `Call` (a function object) as their first argument, so they are usable now,
-  before lambdas/closures exist.
+- `map` / `reduce` / `filter` — **lazy Iterator combinators** (see Iteration and
+  §Functions as arguments). They are **not** `Seq` protocol methods; they live in
+  `lib/iterator.nuc` and take a `UnaryFn`/`FoldFn` function-object as first argument.
 - `append` / `prepend` — mutating add at the back / front.
 - `insert` (index) / `get` (index) — `usize` index.
-- `find` — first element satisfying a `Call`, as `(Maybe E)`.
+- `find` — first element satisfying a predicate function-object, as `(Maybe E)`.
 - `contains?` — membership of one element, `bool`.
 
 `get` here is **index access**: `(s i)` with an integer routes to `invoke`
@@ -121,19 +122,20 @@ not the field `get`.
 
 ### Assoc
 
-- `get` (key) → `(Maybe V)`
+- `get` (key) → `(Maybe V)` — in protocol as of C2.2a.
 - `assoc` (key val) — insert/overwrite, **mutating**.
 - `dissoc` (key) — remove, mutating.
-- `keys` / `vals` → `Iterator` (lazy, no intermediate collection).
-- `select-keys` (keys) → a new map restricted to the given keys.
+- `keys` / `vals` → associated iterator types `Ki` / `Vi` returned by value — in protocol as of C2.2b (`(Assoc K V Ki Vi)`).
+- `select-keys` (keys) → a new map restricted to the given keys — not in protocol (standalone, deferred).
 
 ### Set
 
 - `union` / `difference` / `intersection` — set algebra, **mutating the receiver**
   (the in-place, efficient form is the primitive for the `HashSet` this stage adds).
   A fresh-result variant, if wanted later, is just `iter` + `into`.
-- `select` (a `Call`) — the subset of members satisfying the predicate (filter on a
-  set).
+- `select` (a predicate function-object) — the subset of members satisfying the
+  predicate (filter on a set). Standalone; not a `Set` protocol method (see §Set
+  above and C2.3 in `design/stage11/cleanup2.md`).
 - `contains?` (value) — membership, `bool`. (This subsumes the earlier "`get`
   (value)": a set's fundamental query is membership, so it is `contains?`, not
   `get`.)
@@ -174,8 +176,9 @@ transforms compose with no intermediate allocation, and nothing needs an owner/
   complete. (Value `(Maybe T)` over non-pointer `E` already exists — Stage 10 E2.)
 - **Not concurrency-safe.** A single-threaded forward cursor; sharing one across
   threads is out of scope here.
-- **`map`/`filter`** wrap an iterator in a new lazy iterator (a small struct holding
-  the source iterator + the `Call`); **`reduce`** drives an iterator to a value.
+- **`map`/`filter`** wrap an iterator in a new lazy iterator (`MapIter`/`FilterIter`,
+  a small struct holding the source iterator + the function object); **`reduce`**
+  drives an iterator to a value.
 - **`into`** materializes an iterator into a concrete collection —
   `(into (Vector i32) some-iter)` — and is therefore **required** (it is how lazy
   pipelines become owned data). `into` is also the target of the reader-macro
@@ -188,14 +191,15 @@ Bidirectional iteration (`prev`) is **deferred**: it only makes sense for
 doubly-linked/random-access sources and wants a separate `BiIterator` protocol. Not
 in Stage 11.
 
-## Functions as arguments (pre-lambda)
+## Functions as arguments
 
-`map`/`reduce`/`filter`/`find`/`select` take a `Call` (the `lib/seq.nuc` function-
-object protocol) as their first argument so they are usable **before lambdas/
-closures land** (deferred, stage999). Once closures exist this gets much nicer; the
-`Call`-first signatures are provisional until then. With parametric protocols
-(Prerequisites 2) `Call` can range over the actual element/result types rather than
-the current fixed `ptr -> ptr`.
+`map`/`reduce`/`filter` are implemented as generic lazy iterator combinators
+(`MapIter`/`FilterIter`/`reduce` in `lib/iterator.nuc`), not as `Seq` protocol
+methods. They take a function-object argument conforming to `(UnaryFn Arg Ret)` or
+`(FoldFn Acc Elem)` — the element-generic replacements for the old fixed-type `Call`
+protocol. The `Call`/`BinaryCall` protocols in `lib/seq.nuc` were legacy
+fixed-`ptr`-typed variants and have been removed (C2.5, `design/stage11/cleanup2.md`).
+Lambdas/closures remain deferred (stage999); function objects are the current idiom.
 
 ## Types (libraries)
 
@@ -289,5 +293,5 @@ The `CStr` → `String` literal switch is the riskiest piece and comes last.
 - `BiIterator` / `prev`.
 - Persistent/immutable collections + Clojure-style concurrency — far-future stage.
 - Heterogeneous collections — need `dyn` (stage999).
-- Lambdas/closures — `map`/`filter` use `Call` until then (stage999).
+- Lambdas/closures — `map`/`filter` use function-object protocols (`UnaryFn`/`FoldFn`) until then (stage999).
 </content>

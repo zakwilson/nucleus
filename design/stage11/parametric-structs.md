@@ -308,9 +308,11 @@ documentation in `docs/builtins.md` §"Parametric struct templates" and
    limitation, not specific to parametric structs.
 2. **`declare` with a parametric return type** requires the list-form name node:
    `(declare (p2_make (P2 i32 i32)) (...))`.
-3. **Generic functions bounded on a parametric protocol** (`&where ((Container
+3. ~~**Generic functions bounded on a parametric protocol** (`&where ((Container
    E) Self)` / associated-element bounds) are not supported in v1 — the `&where`
-   parser requires `(Protocol Var)` with plain symbols. This is the deferred
-   associated-types frontier (§9); conformance is exercised via `extend` +
-   stamp-time checking + ordinary overload resolution of the protocol methods on
-   a conforming instance. See `examples/parametric.nuc` for the working pattern.
+   parser requires `(Protocol Var)` with plain symbols.~~ **Resolved (A0–A2,
+   associated types):** the `&where` constraint now accepts `((Protocol Arg…) Var)`,
+   with each `Arg` recovered (if unbound tyvar) or constrained (if concrete/bound).
+   Also resolved at extend-site (A4): `&where` on `extend` runs the same fixpoint at
+   stamp time. See `design/stage11/assoc-types.md` §7 and
+   `design/stage11/assoc-types-extend.md`.

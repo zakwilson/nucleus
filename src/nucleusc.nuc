@@ -7282,7 +7282,7 @@
 ;   (s 'field) / (s field)  [a literal symbol]  → (get s 'field)   member access
 ;   (s 3)      / (s a b …)  [anything else]      → (invoke s 3 …)   general call
 ; `get` carries a built-in Struct intrinsic (GEP+load, zero overhead, overridable
-; by a user `get` method); `invoke` is purely user-supplied (indexing, Seq/Call).
+; by a user `get` method); `invoke` is purely user-supplied (indexing, function objects).
 ; ============================================================
 
 ; If `node` is a literal field selector — a bare symbol `field` or an explicit
@@ -7388,31 +7388,101 @@
             (return (alloc-val ftype v))))
         (return (emit-field-load callee-val (cast ptr sd) idx))))))
 
-; Resolve `(get callee selector)` for an already-emitted callee value. A user
-; `get` method for (callee-type, symbol) sits at tier 0 and out-ranks the
-; intrinsic (concrete beats blanket); otherwise the Struct intrinsic handles it.
+; Like generic-resolve, but returns null on no match instead of dying — a
+; non-dying generic resolve for callsites where an unmatched generic is a normal
+; fallback case (e.g. value-keyed `get`, where a miss means "use the struct
+; intrinsic" not "error"). Mirrors generic-resolve's tier 0 (exact METHOD-USER)
+; and tier 1 (METHOD-GENERIC: bind tyvars, check &where constraints, instantiate
+; the winning candidate). Tier 2 (untyped-literal widening) is intentionally
+; omitted: this resolver is only used for value-keyed dispatch where an exact or
+; constrained-generic match is required to override the intrinsic, and a partial
+; widen-match must not silently shadow the blanket fallback. A no-match path has
+; no side effects — instantiation (which registers a method and queues a MonoJob)
+; only runs when exactly one tier-1 candidate is found.
+(defn generic-resolve-nullable:?ptr:Method (g:ptr argtypes:ptr nargs:i32 line:i32)
+  (let (gg:ptr:Generic (cast ptr:Generic g)
+        found:?ptr:Method null
+        i:i32 0)
+    ; tier 0: exact concrete (METHOD-USER) match.
+    (while (< i (gg num-methods))
+      (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (gg methods)) i)))
+        (when (and (= (m kind) METHOD-USER)
+                   (and (= (m num-params) nargs)
+                        (!= (params-type-eq (m param-types) argtypes nargs) 0)))
+          (set! found (cast ptr m))))
+      (inc! i))
+    (when (!= found null) (return found))
+    ; tier 1: bounded-generic templates — bind the tyvars then check &where.
+    (let (cand:ptr null
+          cand-bound:ptr null
+          ncand:i32 0
+          j:i32 0)
+      (while (< j (gg num-methods))
+        (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (gg methods)) j)))
+          (when (= (m kind) METHOD-GENERIC)
+            (let (bound:ptr (arena-alloc (* (cast i64 (+ (m num-tyvars) 1)) (ptr-bytes))))
+              (when (!= (generic-method-bind (cast ptr m) argtypes nargs bound) 0)
+                (when (!= (generic-constraints-ok (cast ptr m) bound line) 0)
+                  (do (set! cand (cast ptr m)) (set! cand-bound bound) (inc! ncand)))))))
+        (inc! j))
+      (when (> ncand 1)
+        (die-at line (fmt-s "ambiguous generic match for '%s'" (gg name))))
+      (when (= ncand 1)
+        (return (generic-instantiate g cand cand-bound argtypes nargs line)))
+      (return null))))
+
+; Resolve `(get callee selector)` for an already-emitted callee value, splitting
+; on the selector kind (callable-values.md §3.2/§3.3).
+;
+; Branch A — literal-symbol selector (`'field` or bare `field`): member access.
+; A user `get` method for (callee-type, symbol-ptr) sits at tier 0 and out-ranks
+; the intrinsic (concrete beats blanket); otherwise the Struct intrinsic does the
+; GEP+load. The selector's value type is always ty-ptr here (an interned symbol).
+;
+; Branch B — computed/value selector (an i32/CStr/any non-symbol key): value-keyed
+; lookup. Emit the selector to a real value, then resolve the `get` generic on the
+; selector's *actual* type — including parametric (METHOD-GENERIC) overrides such
+; as a `(Bag K V)` key getter — via the non-dying resolver. On a hit, call the
+; resolved method with the already-emitted selector value (do not re-emit). On a
+; miss, fall through to the struct intrinsic's computed-field branch.
 (defn emit-get-with-callee:ref:Val (n:ptr scope:ref:Scope callee-val:ptr sel-node:ptr)
   (let (cv:ptr:Val (cast ptr:Val callee-val)
         ct:ptr (cv type)
         line:i32 (-> n (cast ptr:Node _) (_ line))
-        g:ptr (generic-lookup "get"))
-    (when (!= g null)
-      (let (argtypes:ptr (arena-alloc (* (cast i64 2) (ptr-bytes))))
-        (aset! (cast ptr:ptr argtypes) 0 ct)
-        (aset! (cast ptr:ptr argtypes) 1 ty-ptr)
-        (let (m:?ptr:Method (generic-find-method-exact g argtypes 2))
-          (when (!= m null)
-            (let (sel-val:ref:Val (emit-selector-value sel-node scope)
-                  args:ptr (arena-alloc (* (cast i64 2) (sizeof Val))))
-              (memcpy (ptr+ (cast ptr:Val args) 0) cv (sizeof Val))
-              (memcpy (ptr+ (cast ptr:Val args) 1) sel-val (sizeof Val))
-              (return (emit-resolved-call n scope "get" m args 2 line)))))))
+        g:ptr (generic-lookup "get")
+        sym:ptr (selector-literal-sym sel-node))
+    (if (!= sym null)
+      ; --- Branch A: literal-symbol selector (unchanged field-access path) ---
+      (when (!= g null)
+        (let (argtypes:ptr (arena-alloc (* (cast i64 2) (ptr-bytes))))
+          (aset! (cast ptr:ptr argtypes) 0 ct)
+          (aset! (cast ptr:ptr argtypes) 1 ty-ptr)
+          (let (m:?ptr:Method (generic-find-method-exact g argtypes 2))
+            (when (!= m null)
+              (let (sel-val:ref:Val (emit-selector-value sel-node scope)
+                    args:ptr (arena-alloc (* (cast i64 2) (sizeof Val))))
+                (memcpy (ptr+ (cast ptr:Val args) 0) cv (sizeof Val))
+                (memcpy (ptr+ (cast ptr:Val args) 1) sel-val (sizeof Val))
+                (return (emit-resolved-call n scope "get" m args 2 line)))))))
+      ; --- Branch B: computed/value selector (value-keyed generic dispatch) ---
+      (when (!= g null)
+        (let (sel-val:ref:Val (emit-node sel-node scope)
+              kt:ptr (-> sel-val (_ type))
+              argtypes:ptr (arena-alloc (* (cast i64 2) (ptr-bytes))))
+          (aset! (cast ptr:ptr argtypes) 0 ct)
+          (aset! (cast ptr:ptr argtypes) 1 kt)
+          (let (m:?ptr:Method (generic-resolve-nullable g argtypes 2 line))
+            (when (!= m null)
+              (let (args:ptr (arena-alloc (* (cast i64 2) (sizeof Val))))
+                (memcpy (ptr+ (cast ptr:Val args) 0) cv (sizeof Val))
+                (memcpy (ptr+ (cast ptr:Val args) 1) (cast ptr sel-val) (sizeof Val))
+                (return (emit-resolved-call n scope "get" m args 2 line))))))))
     (return (emit-get-intrinsic n scope callee-val sel-node line))))
 
 ; Resolve `(invoke callee arg…)` for an already-emitted callee value. The callee
 ; is the first dispatch argument; the rest are emitted here. Dispatch is ordinary
 ; multimethod resolution over the `invoke` generic — a type "becomes callable" by
-; defining `invoke` methods (indexing, Seq/Call). No built-in default.
+; defining `invoke` methods (indexing, function objects). No built-in default.
 (defn emit-invoke-with-callee:ref:Val (n:ptr scope:ref:Scope callee-val:ptr arg-start:i32 nargs:i32)
   (let (cv:ptr:Val (cast ptr:Val callee-val)
         line:i32 (-> n (cast ptr:Node _) (_ line))

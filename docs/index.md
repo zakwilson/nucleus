@@ -112,6 +112,6 @@ Additional libraries available via `import`:
 - `(import vector)` — `Vector T` dynamic array and `VecIter T`
 - `(import hashmap)` — `HashMap K V` and `HashMapKeyIter K V`
 - `(import hashset)` — `HashSet T` and `HashSetIter T`
-- `(import seq)` — `IntIndexable`, `Call` protocols
+- `(import seq)` — empty placeholder; `IntIndexable`, `Call`, and `BinaryCall` were removed in C2.5 (use `UnaryFn`/`FoldFn` from `(import iterator)`)
 
 Use `(exclude-prelude)` as the first form in a file to suppress the auto-import and compile against the bare language.

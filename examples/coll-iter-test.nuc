@@ -1,0 +1,77 @@
+; Stage 11 C2.1 — `iter` lifted into Coll: a value-returning associated iterator.
+;
+; `(iter coll)` returns the collection's iterator BY VALUE (alloca + set +
+; (deref …), the spike pattern); `doseq` dispatches generically over any
+; (Coll E It) by calling `iter` and `addr-of`-ing the result internally.
+;
+; Exercises:
+;   1. doseq generically over a Vector i32 (sum is order-preserving).
+;   2. doseq generically over a HashSet i32 (sum is order-independent).
+;   3. doseq generically over a HashMap (Entry K V) — sums vals (C2.2c).
+;   4. `into` from one Vector into another (generic Coll -> Coll copy).
+;
+; All outputs are order-independent (sums / counts) so the test is deterministic
+; regardless of hash bucket order.
+
+(include stdio)
+(import allocator)
+(import coll)
+(import iterator)
+(import hash)
+(import vector)
+(import hashset)
+(import hashmap)
+
+(defn main:i32 ()
+  ; ---- 1. Vector via generic doseq ---------------------------------------
+  (with ((v (ref (Vector i32))) (alloca (Vector i32)))
+    (vector-init v)
+    (conj v 1) (conj v 2) (conj v 3) (conj v 4)
+    (let (sum:i32 0
+          n:i32 0)
+      (doseq (x v (VecIter i32))
+        (set! sum (+ sum x))
+        (set! n (+ n 1)))
+      (printf "vec count=%d sum=%d\n" n sum)))      ; vec count=4 sum=10
+
+  ; ---- 2. HashSet via generic doseq --------------------------------------
+  (with ((s (ref (HashSet i32))) (alloca (HashSet i32)))
+    (hashset-init s)
+    (insert s 10) (insert s 20) (insert s 30)
+    (let (sum:i32 0
+          n:i32 0)
+      (doseq (x s (HashSetIter i32))
+        (set! sum (+ sum x))
+        (set! n (+ n 1)))
+      (printf "set count=%d sum=%d\n" n sum)))      ; set count=3 sum=60
+
+  ; ---- 3. HashMap entries via generic doseq (C2.2c) ----------------------
+  ;        doseq yields (Entry K V) values; read fields via (addr-of e).
+  (with ((m (ref (HashMap CStr i32))) (alloca (HashMap CStr i32)))
+    (hashmap-init m)
+    (assoc m "a" 100)
+    (assoc m "b" 200)
+    (assoc m "c" 300)
+    (let (vsum:i32 0
+          n:i32 0)
+      (doseq (e m (HashMapEntryIter CStr i32))
+        (set! vsum (+ vsum ((addr-of e) val)))
+        (set! n (+ n 1)))
+      (printf "map count=%d valsum=%d\n" n vsum)))  ; map count=3 valsum=600
+
+  ; ---- 4. into: copy one Vector into another (generic Coll -> Coll) ------
+  (with ((src (ref (Vector i32))) (alloca (Vector i32)))
+    (vector-init src)
+    (conj src 5) (conj src 6) (conj src 7)
+    (with ((dst (ref (Vector i32))) (alloca (Vector i32)))
+      (vector-init dst)
+      (into dst src (VecIter i32))
+      (let (sum:i32 0
+            n:i32 0)
+        (doseq (x dst (VecIter i32))
+          (set! sum (+ sum x))
+          (set! n (+ n 1)))
+        (printf "into count=%d sum=%d\n" n sum))))  ; into count=3 sum=18
+
+  (printf "done\n")
+  (return 0))

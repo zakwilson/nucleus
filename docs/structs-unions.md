@@ -325,7 +325,12 @@ its return type:
 A call `(two-s t)` with `t:(ref (Two i32 f64 i32 i64))` binds `S := i32` from the
 third receiver type-argument. This makes the verbose "thread an explicit element
 type" combinator pattern (e.g. a `MapIter I F S E` carrying source/result element
-types as phantom params) expressible with a single implementation.
+types as phantom params) expressible with a single implementation. Associated types
+(A0–A4, see [Generics](generics.md#associated-type-bounds-where-protocol-arg--var))
+supersede this pattern for new code: the two-param `(MapIter I F)` recovers the
+element type via `&where` constraints on `extend`, requiring no phantom params.
+The four-param verbose form is kept as a regression test
+(`examples/phantom-tyvar-test.nuc`) but is not the recommended approach.
 
 ### `.nuch` export and C ABI
 

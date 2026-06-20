@@ -6,22 +6,31 @@ These collections are **mutable and in-place** in the STL spirit — `conj`, `as
 
 ## Core protocols (`lib/coll.nuc`)
 
-### `(Coll E)` — minimum every collection implements
+### `(Coll E It)` — minimum every collection implements
 
 ```lisp
-(defprotocol (Coll E)
-  (count:usize ((self (ref Self))))
-  (conj:void   ((self (ref Self)) elem:E))
-  (empty?:i32  ((self (ref Self)))))
+(defprotocol (Coll E It)
+  (count:usize  ((self (ref Self))))
+  (conj:void    ((self (ref Self)) elem:E))
+  (empty?:i32   ((self (ref Self))))
+  (iter:It      ((self (ref Self)))))
 ```
 
 | Method | Description |
 |--------|-------------|
 | `count` | Number of live elements. |
-| `conj` | Add an element in the collection's natural way, mutating in place. For a vector this is append; for a set this is insert. |
+| `conj` | Add an element in the collection's natural way, mutating in place. For a vector this is append; for a set this is insert; for a map this takes an `(Entry K V)` pair. |
 | `empty?` | Returns `1` when `count = 0`, else `0`. |
+| `iter` | Returns a fresh iterator over the collection's elements **by value**. The return type is the associated iterator type `It`, which must conform to `(Iterator E)`. |
 
-`iter` is intentionally absent from the protocol: it returns a type derived from `Self` (the concrete iterator type), which varies per collection and cannot be a fixed protocol method without naming a collection-specific associated type for the return. Each concrete type provides its own `iter`-style initializer function (`iter-init`, `hmap-iter-keys`, `hashset-iter`). Associated types are now supported (see [Generics](generics.md#associated-type-bounds-where-protocol-arg--var)), but lifting `iter` into the protocol is its own task.
+`It` is the associated iterator type parameter (C2.1). `iter` returns an `It` by value using the alloca + set + `(deref …)` convention. Because `let` bindings require an explicit type and `addr-of` only takes the address of a named local (not an rvalue), callers must bind the returned iterator to a typed local before driving `next`:
+
+```lisp
+(let (it:(VecIter i32) (iter v))
+  (match (next (addr-of it)) ...))
+```
+
+In practice, `doseq` handles this automatically — see [Macros](macros.md) for the `(doseq (var coll IterType) …)` form. The fill-in-place helpers (`iter-init`, `hashset-iter`, `hmap-iter-entries`) remain available as internal helpers that the value-returning `iter` methods wrap; the documented protocol surface is value-return only.
 
 ### `(Seq E)` — ordered, index-addressable sequences
 
@@ -42,20 +51,40 @@ These collections are **mutable and in-place** in the STL spirit — `conj`, `as
 
 **Why `invoke`, not `get`:** the head symbol `get` is reserved by the compiler for struct field access (`(s 'field)`). The callable-values dispatch routes an integer index `(s i)` to `invoke` instead, keeping field access and index access distinct. See [Special forms](special-forms.md) for the callable-values dispatch rules.
 
-### `(Assoc K V)` — associative key/value maps
+### `(Assoc K V Ki Vi)` — associative key/value maps
 
 ```lisp
-(defprotocol (Assoc K V)
-  (assoc:void  ((self (ref Self)) key:K val:V))
-  (dissoc:void ((self (ref Self)) key:K)))
+(defprotocol (Assoc K V Ki Vi)
+  (assoc:void        ((self (ref Self)) key:K val:V))
+  (dissoc:void       ((self (ref Self)) key:K))
+  ((get (Maybe V))   ((self (ref Self)) key:K))
+  (keys:Ki           ((self (ref Self))))
+  (vals:Vi           ((self (ref Self)))))
 ```
 
 | Method | Description |
 |--------|-------------|
 | `assoc` | Insert or overwrite the value for `key`, mutating in place. |
 | `dissoc` | Remove the entry for `key`, mutating in place. No-op if absent. |
+| `get` | Look up `key`; returns `(some v)` on a hit, `none` on a miss. |
+| `keys` | Returns a fresh key iterator by value. The return type is the associated iterator type `Ki`, which must conform to `(Iterator K)`. |
+| `vals` | Returns a fresh value iterator by value. The return type is the associated iterator type `Vi`, which must conform to `(Iterator V)`. |
 
-`hmap-get` (key → `(Maybe V)`), key iteration, and `select-keys` are standalone functions rather than protocol methods. Lifting them into the protocol would require naming the result type — e.g. `(Maybe V)` for `hmap-get` — which is expressible but has not been done yet. See `design/stage11/assoc-types.md` §5 for the out-of-scope note.
+`Ki` and `Vi` are associated iterator type parameters (C2.2b). Like `Coll`'s `iter:It`, `keys` and `vals` use the alloca + set + `(deref …)` convention and return iterators by value. Callers must bind the result to a typed local before driving `next`:
+
+```lisp
+(let (kit:(HashMapKeyIter CStr i32) (keys m))
+  (doseq-iter (k (addr-of kit))
+    (printf "key=%s\n" k)))
+```
+
+In practice, iterate keys or values using `doseq-iter` on the bound result, or use the value-returning `keys`/`vals` result with `into`. Call `(get m key)` and match on the result for single-key lookup:
+
+```lisp
+(match (get m "one")
+  ((some v) (printf "got %d\n" v))
+  (none     (printf "absent\n")))
+```
 
 ### `(Set E)` — sets of unique members
 
@@ -76,7 +105,7 @@ All four methods take `(ref Self)` receivers. The algebra methods (`union`, `dif
 | `intersection` | Keeps in `self` only members also in `other`. |
 | `contains?` | Returns `1` if `elem` is a member, else `0`. |
 
-`select` (filter to a new set) is not in the protocol because it produces a Self-derived result type.
+`select` (filter to a new set) is deliberately not in the protocol. It produces a Self-derived new collection that has low value as a generic bound; it is kept standalone by design, not because it is inexpressible (C2.3, `design/stage11/cleanup2.md`).
 
 ### `Drop` — lifecycle protocol for owning collections
 
@@ -132,7 +161,7 @@ Unlike `numeric.nuc`'s code-free operator conformances, these are real method bo
     (hashmap-init m)
     (assoc m :width 1920)
     (assoc m :height 1080)
-    (match (hmap-get m :width)
+    (match (get m :width)
       ((some v) (printf "width=%d\n" v))   ; width=1920
       (none     (printf "absent\n"))))
   (return 0))
@@ -152,7 +181,7 @@ See [Keyword literals](types.md#keyword-literals----foo) in the Types reference 
 
 ## `Vector T` (`lib/vector.nuc`)
 
-`(import vector)` provides a dynamically-sized, heap-backed mutable sequence. Append is O(1) amortized (capacity doubles); indexed access and `insert` are O(1) and O(n) respectively. Conforms to `(Coll T)`, `(Seq T)`, and `Drop`.
+`(import vector)` provides a dynamically-sized, heap-backed mutable sequence. Append is O(1) amortized (capacity doubles); indexed access and `insert` are O(1) and O(n) respectively. Conforms to `(Coll T (VecIter T))`, `(Seq T)`, and `Drop`.
 
 ### Construction
 
@@ -201,16 +230,16 @@ Vectors are initialised in place — there is no value constructor because a zer
   len:usize)
 ```
 
-`VecIter T` conforms to `(Iterator T)`. It borrows the vector's buffer — it must not outlive the `Vector`. Use `iter-init` to fill a caller-allocated `VecIter`, then drive it with `doseq`:
+`VecIter T` conforms to `(Iterator T)`. It borrows the vector's buffer — it must not outlive the `Vector`. Because `Vector T` conforms to `(Coll T (VecIter T))`, the idiomatic iteration form is `doseq` with the `IterType` argument:
 
 ```lisp
-(let ((it (ref (VecIter i32))) (alloca (VecIter i32)))
-  (iter-init it v)
-  (doseq (x it)
-    (printf "elem=%d\n" x)))
+(doseq (x v (VecIter i32))
+  (printf "elem=%d\n" x))
 ```
 
-See [Iterators](iterators.md) for `doseq` and the `Iterator` protocol.
+`doseq` calls `(iter v)` internally to obtain a fresh `VecIter i32` by value, binds it to a typed local, and drives `(next (addr-of it))` per step. The internal helper `iter-init` (fills a caller-allocated `VecIter`) is still available but is not the recommended surface for new code.
+
+See [Iterators](iterators.md) for `doseq` / `doseq-iter` and the `Iterator` protocol.
 
 ### Full example
 
@@ -229,9 +258,7 @@ See [Iterators](iterators.md) for `doseq` and the `Iterator` protocol.
     (printf "get[1]=%d\n"  (v (cast usize 1)))        ; get[1]=20
     (insert v (cast usize 1) 15)
     (printf "after insert: %d\n" (v (cast usize 1)))  ; 15
-    (let ((it (ref (VecIter i32))) (alloca (VecIter i32)))
-      (iter-init it v)
-      (doseq (x it) (printf "elem=%d\n" x))))         ; 10 15 20 30
+    (doseq (x v (VecIter i32)) (printf "elem=%d\n" x)))  ; 10 15 20 30
   (return 0))
 ```
 
@@ -239,9 +266,7 @@ See [Iterators](iterators.md) for `doseq` and the `Iterator` protocol.
 
 ## `HashMap K V` (`lib/hashmap.nuc`)
 
-`(import hashmap)` provides an open-addressing hash map with linear probing and tombstone deletion. O(1) average `assoc`/`dissoc`/`hmap-get`. Conforms to `(Assoc K V)` and `Drop`. Keys must conform to `Hash` and `Eq`.
-
-`HashMap` does **not** conform to `(Coll T)` because `conj` is ambiguous for a key/value map — inserting a single element requires both a key and a value.
+`(import hashmap)` provides an open-addressing hash map with linear probing and tombstone deletion. O(1) average `assoc`/`dissoc`/`get`. Conforms to `(Assoc K V (HashMapKeyIter K V) (HashMapValIter K V))`, `(Coll (Entry K V) (HashMapEntryIter K V))`, and `Drop`. Keys must conform to `Hash` and `Eq`.
 
 **Implementation:** three parallel byte arrays (keys, vals, states). Capacity is always a power of two; a 75% load factor triggers doubling. Tombstone entries are skipped during lookup and dropped on resize.
 
@@ -262,25 +287,63 @@ See [Iterators](iterators.md) for `doseq` and the `Iterator` protocol.
 ### Operations
 
 ```lisp
-; Assoc K V
-(assoc:void   ((self (ref (HashMap K V))) key:K val:V))
-(dissoc:void  ((self (ref (HashMap K V))) key:K))
+; Assoc K V (HashMapKeyIter K V) (HashMapValIter K V)
+(assoc:void        ((self (ref (HashMap K V))) key:K val:V))
+(dissoc:void       ((self (ref (HashMap K V))) key:K))
+((get (Maybe V))   ((self (ref (HashMap K V))) key:K))
+(keys:(HashMapKeyIter K V)  ((self (ref (HashMap K V)))))
+(vals:(HashMapValIter K V)  ((self (ref (HashMap K V)))))
 
-; Standalone (result types derived from V)
-((hmap-get (Maybe V)) ((self (ref (HashMap K V))) key:K))
+; Coll (Entry K V) (HashMapEntryIter K V)
+(conj:void    ((self (ref (HashMap K V))) elem:(Entry K V)))
+(iter:(HashMapEntryIter K V) ((self (ref (HashMap K V)))))
 
-; Standalone count / empty?
+; count / empty?
 (count:usize  ((self (ref (HashMap K V)))))
 (empty?:i32   ((self (ref (HashMap K V)))))
 ```
 
-`hmap-get` returns `(Maybe V)`. Match on the result to distinguish hit from miss:
+`get` returns `(Maybe V)`. Match on the result to distinguish hit from miss:
 
 ```lisp
-(match (hmap-get m "one")
+(match (get m "one")
   ((some v) (printf "got %d\n" v))
   (none     (printf "absent\n")))
 ```
+
+`conj` on a `HashMap` takes an `(Entry K V)` value and inserts its `key`/`val` pair — equivalent to `(assoc m e.key e.val)`.
+
+### `(Entry K V)` — key/value pair element type
+
+```lisp
+(defstruct (Entry K V)
+  key:K
+  val:V)
+```
+
+`Entry K V` is a plain value struct. It is the element type `E` of `HashMap`'s `(Coll E It)` conformance. `iter` over a `HashMap` yields `Entry` values, so `doseq`, `into`, and `reduce` work uniformly over a map's entries.
+
+### Entry iteration with `HashMapEntryIter K V`
+
+```lisp
+(defstruct (HashMapEntryIter K V)
+  kbuf:ptr
+  vbuf:ptr
+  sbuf:ptr
+  pos:usize
+  cap:usize)
+```
+
+`HashMapEntryIter K V` conforms to `(Iterator (Entry K V))`. It borrows the map's key, value, and state buffers and must not outlive the `HashMap`. The idiomatic form uses `doseq` with the `IterType` argument (C2.1):
+
+```lisp
+(doseq (e m (HashMapEntryIter CStr i32))
+  (printf "key=%s val=%d\n" ((addr-of e) key) ((addr-of e) val)))
+```
+
+`doseq` calls `(iter m)` to get a fresh `HashMapEntryIter` by value, binds it to a typed local, and drives `(next (addr-of it))`. Each element `e` is yielded by value; use `(addr-of e)` to access its fields.
+
+Iteration order is hash-dependent and unspecified.
 
 ### Key iteration with `HashMapKeyIter K V`
 
@@ -292,16 +355,37 @@ See [Iterators](iterators.md) for `doseq` and the `Iterator` protocol.
   cap:usize)
 ```
 
-`HashMapKeyIter K V` conforms to `(Iterator K)`. It borrows the map's key and state buffers and must not outlive the `HashMap`. Use `hmap-iter-keys` to fill a caller-allocated iterator:
+`HashMapKeyIter K V` conforms to `(Iterator K)`. It is returned by value from the `Assoc` protocol method `keys`. The idiomatic form binds the result to a typed local then drives it with `doseq-iter`:
 
 ```lisp
-(let ((it (ref (HashMapKeyIter CStr i32))) (alloca (HashMapKeyIter CStr i32)))
-  (hmap-iter-keys it m)
-  (doseq (k it)
+(let (kit:(HashMapKeyIter CStr i32) (keys m))
+  (doseq-iter (k (addr-of kit))
     (printf "key=%s\n" k)))
 ```
 
-Iteration order is hash-dependent and unspecified.
+The lower-level fill helper `hmap-iter-keys` (fills a caller-allocated `HashMapKeyIter` in place) is still available but is not the recommended surface for new code.
+
+### Value iteration with `HashMapValIter K V`
+
+```lisp
+(defstruct (HashMapValIter K V)
+  vbuf:ptr
+  sbuf:ptr
+  pos:usize
+  cap:usize)
+```
+
+`HashMapValIter K V` conforms to `(Iterator V)`. It is returned by value from the `Assoc` protocol method `vals`:
+
+```lisp
+(let (vit:(HashMapValIter CStr i32) (vals m))
+  (doseq-iter (v (addr-of vit))
+    (printf "val=%d\n" v)))
+```
+
+The lower-level fill helper `hmap-iter-vals` is still available but is not the recommended surface.
+
+Iteration order is hash-dependent and unspecified for both `keys` and `vals`.
 
 ### Full example
 
@@ -318,7 +402,7 @@ Iteration order is hash-dependent and unspecified.
     (hashmap-init m)
     (assoc m "one" 1) (assoc m "two" 2) (assoc m "three" 3)
     (printf "count=%llu\n" (cast ui64 (count m)))  ; 3
-    (match (hmap-get m "two")
+    (match (get m "two")
       ((some v) (printf "two=%d\n" v))             ; two=2
       (none     (printf "absent\n")))
     (dissoc m "one")
@@ -330,7 +414,7 @@ Iteration order is hash-dependent and unspecified.
 
 ## `HashSet T` (`lib/hashset.nuc`)
 
-`(import hashset)` provides an open-addressing hash set with linear probing. O(1) average `insert`/`contains?`/`set-remove`. Conforms to `(Coll T)`, `(Set T)`, and `Drop`. Members must conform to `Hash` and `Eq`.
+`(import hashset)` provides an open-addressing hash set with linear probing. O(1) average `insert`/`contains?`/`set-remove`. Conforms to `(Coll T (HashSetIter T))`, `(Set T)`, and `Drop`. Members must conform to `Hash` and `Eq`.
 
 **Implementation:** two parallel byte arrays (keys buffer and state buffer). Same open-addressing layout as `HashMap`; same 75% load-factor doubling policy.
 
@@ -376,14 +460,14 @@ Iteration order is hash-dependent and unspecified.
   cap:usize)
 ```
 
-`HashSetIter T` conforms to `(Iterator T)`. It borrows the set's buffers and must not outlive the `HashSet`. Use `hashset-iter` to fill a caller-allocated iterator:
+`HashSetIter T` conforms to `(Iterator T)`. It borrows the set's buffers and must not outlive the `HashSet`. Because `HashSet T` conforms to `(Coll T (HashSetIter T))`, the idiomatic iteration form is `doseq` with the `IterType` argument:
 
 ```lisp
-(let ((it (ref (HashSetIter i32))) (alloca (HashSetIter i32)))
-  (hashset-iter it s)
-  (doseq (x it)
-    (printf "member=%d\n" x)))
+(doseq (x s (HashSetIter i32))
+  (printf "member=%d\n" x))
 ```
+
+`doseq` calls `(iter s)` to get a fresh `HashSetIter i32` by value and drives `(next (addr-of it))` per step. The internal helper `hashset-iter` (fills a caller-allocated `HashSetIter`) is still available but is not the recommended surface for new code.
 
 Iteration order is hash-dependent and unspecified.
 
@@ -442,7 +526,7 @@ outer `with` fires `Drop` at scope exit because every collection conforms to
   (printf "%d\n" (v (cast usize 0))))            ; 1
 
 (with ((m (ref (HashMap CStr i32))) {"foo" 42 "bar" 7})
-  (match (hmap-get m "foo")
+  (match (get m "foo")
     ((some x) (printf "%d\n" x))                  ; 42
     (none     (printf "absent\n"))))
 
@@ -492,6 +576,6 @@ paths are reader diagnostics (compile-time `error:` messages), not runtime outpu
 
 **Owning collections and scope.** Owning collections store their allocator handle by value and must not escape their `with` binding by return or store-out. `Drop` fires at scope exit; a double-drop is a no-op (the pointer is nulled). The `move` form (when available) transfers ownership.
 
-**`HashMap` does not conform to `Coll`.** `conj` is not defined for `HashMap` because inserting one element requires both a key and a value — the `Coll E` element type would be ambiguous. Use `assoc` directly.
+**`HashMap` `conj` takes an `Entry`, not a raw value.** `(conj m e)` inserts the `(Entry K V)` pair `e` into the map. Use `assoc` directly when key and value are already separate.
 
 **`HashSet` uses `set-remove`, not `remove`.** The name `remove` is libc's file-removal function; shadowing it would break `(include stdio)` consumers that use `remove` in the same unit.

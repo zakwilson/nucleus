@@ -181,6 +181,28 @@ type. A user `get` takes the selector as an interned symbol (`ptr`):
   (if (= sel 'f) (return …) (return (. self c))))   ; (t f) and (t c) both route here
 ```
 
+**Value-keyed `get` (computed selectors).** Dispatch splits on the selector kind.
+A literal-symbol selector takes the member-access path above (the selector value
+is always an interned symbol `ptr`). A **computed/value selector** — an `i32`, a
+`CStr`, or any non-symbol value — instead resolves the `get` generic on the
+selector's *actual* type, so a parametric `get` override can index by a real key:
+
+```lisp
+(defstruct (Bag K V) key:K val:V has:i32)
+(defn (get (Maybe V)) ((self (ref (Bag K V))) key:K) …)   ; value-keyed lookup
+(get bag "hello")    ; CStr selector → the (Bag K V) get method, returns (Maybe V)
+(get bag 42)         ; i32  selector → the same method
+(get bag 'val)       ; symbol selector → field access, returns the raw V field
+```
+
+The value-keyed override is found even when it is a parametric (generic) method:
+the resolver binds the method's type variables and checks its `&where` constraints
+before selecting it. If no `get` method matches the selector's type, the call
+falls back to the struct intrinsic (a `ptr`-typed computed selector takes the
+homogeneous computed-field branch; any other type is an error). This is how a
+`HashMap`/`Bag`-style type answers `(m key)` by value while plain structs keep
+zero-overhead symbol field access.
+
 **`invoke` — indexing / general call.** A type "becomes callable" by defining
 `invoke` methods; there is **no** built-in default (a struct pointer with an
 integer selector is unbound unless it defines an integer `invoke` — it does *not*
@@ -194,12 +216,10 @@ argument tuple, so the same value answers both forms by argument:
 (v len)        ; ⇒ (get v 'len) → the length field
 ```
 
-The `IntIndexable` and `Call` protocols (`lib/seq.nuc`) name the `invoke`
-capability: `IntIndexable` is integer-indexable (`(invoke:i32 (self:ptr:Self
-i:i32))`), `Call` is a unary `ptr→ptr` function object. Because protocols fix
-concrete signatures (no associated types yet), the element/argument types are
-concrete. (`IntIndexable` was named `Seq` before Stage 11 collections; it was
-renamed to free the `Seq` name for the parametric collection protocol.)
+For parametric function-object conformance use `(UnaryFn Arg Ret)` and
+`(FoldFn Acc Elem)` from `lib/iterator.nuc`
+(see [Generics](generics.md#associated-type-bounds-where-protocol-arg--var)).
+See `examples/callable.nuc` for a full demonstration.
 
 **Computed selector (`get` only).** An *explicit* `(get callee expr)` whose
 selector is a compound expression (not a bare/quoted symbol) reads a field chosen
@@ -215,5 +235,5 @@ head whose value is a **function pointer** folds to an indirect call, so
 
 Everything resolves at compile time to a static GEP+load, a direct `call` to a
 resolved method, or an indirect `call` through a fn-pointer — no dispatch object,
-no vtable. `get`/`invoke` overloads and `IntIndexable`/`Call` export through the
-existing `defmethod`/`defprotocol`/`extend` machinery; there is no new `.nuch` form.
+no vtable. `get`/`invoke` overloads export through the existing
+`defmethod`/`defprotocol`/`extend` machinery; there is no new `.nuch` form.
