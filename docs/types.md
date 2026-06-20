@@ -109,6 +109,7 @@ Volatility lives on the storage site, not the value: `volatile T` and `T` are as
 | `ssize` | Signed pointer-sized integer (resolves to `i32` on ILP32 targets, `i64` on LP64) | `ssize_t` / `ptrdiff_t` |
 | `ptr` | Opaque pointer | `void*` |
 | `CStr` | C-style (null-terminated) string | `char*` |
+| `Char` | A 32-bit Unicode scalar value (codepoint) | `uint32_t` |
 | `void` | No value | `void` |
 
 Pointer size and the target are not hardcoded as `i64`/`8` throughout codegen: a target descriptor (`g-target-triple`, `g-target-ptr-bytes`, defaulting to `x86_64-pc-linux-gnu` / 8 bytes) drives the emitted `target triple`, pointer/`CStr` type sizes and alignments, and the width of `sizeof` (a pointer-sized `size_t`). To target a 32-bit platform, set `g-target-ptr-bytes` to 4. (The macro/`compile-time` JIT still targets the host. One remaining 64-bit assumption is the hand-written `__cons`/`__append` IR in `emit-qq-helpers`.)
@@ -116,6 +117,8 @@ Pointer size and the target are not hardcoded as `i64`/`8` throughout codegen: a
 **`usize` and `ssize`** are the portable index and length types for pointer-sized arithmetic. They resolve to the target's pointer-width integer at compile time: `i32` on ILP32 (4-byte pointer) targets and `i64` on LP64 (8-byte pointer) targets. `usize` is unsigned; `ssize` is signed. They are valid in any type position and are handled correctly by `sizeof`, type mangling, `type-eq`, and arithmetic operators. Use `usize` for lengths, counts, and non-negative offsets; use `ssize` for signed differences or offsets that may be negative. Both participate in the standard numeric promotions and are mangled distinctly (e.g. `usize`, `ssize`) in method symbols and stamped struct names.
 
 `CStr` is the type of a string literal — a C `char*`. It lowers to `ptr` (same ABI) and flows into any `ptr`-typed C function with no cast, but it is a **distinct type for operator dispatch**: `=` / `!=` on two `CStr` do a `strcmp` **content** comparison (so equal text compares equal across distinct buffers), whereas `=` on two raw `ptr` is pointer identity. `CStr` conforms to the `Eq` protocol (`lib/numeric.nuc`), so it works in an `Eq`-bounded generic; it is not `Ord` (no ordering — out of scope here, along with Unicode). Only `=` / `!=` are defined; other operators on `CStr` are an error. A `CStr` and a `ptr` are freely interconvertible with `cast` (no IR) and coerce automatically in value positions (assignment, return, field/array store); a string literal also passes directly to a plain `ptr` parameter. (Multimethod dispatch treats `CStr` as distinct — overload on `CStr` explicitly, or `cast` to `ptr`.) `strcmp` must be declared, which the prelude's `(include string)` provides. Example: `examples/cstr.nuc`.
+
+**`Char`** is a single Unicode scalar value — a codepoint in `0..=0x10FFFF` excluding the UTF-16 surrogate range `0xD800..=0xDFFF` (Rust's `char` model; "character" means codepoint, not grapheme cluster). It is a **built-in distinct 32-bit scalar over `ui32`**, the same kind of distinct scalar `CStr` is: it lowers to IR `i32` (C `uint32_t`, size 4) and participates in the integer operators, but it is its own type for dispatch. `=` / `!=` on two `Char` compare codepoints (`(= \a \a)` is true, `(= \a \b)` is false), and a `Char`-vs-int overload is distinguishable. A same-width `cast` between `Char` and `ui32`/`i32` is a no-op reinterpret (`(cast ui32 \A)` is `65`). Because `Char` is distinct, two *typed* operands of different kind do **not** silently unify: `(= \a (cast ui32 65))` is a compile error (`operand type mismatch`) — cast one side explicitly. An untyped integer literal still adapts to a `Char` operand, so `(= \a 97)` is allowed. Write a `Char` value with a [char literal](#char-literals--a) (below) or, equivalently, the `(char "x")` form. (The `Char` UTF-8 encode/decode and classification library is a separate task.)
 
 Float literals: `1.5`, `-0.25`, `1e10`, `1.5e-3`, `.5`. Default type is `f64`; narrow with `(cast f32 ...)`. Widen `f32`→`f64` and convert int↔float with `cast`. Special values use Scheme syntax: `+inf.0`, `-inf.0`, `+nan.0`. Float arithmetic uses `+ - * / %` and comparisons use `= != < <= > >=` (LLVM `fadd`/`fcmp`); operands must have the same float width — promote with explicit `cast`. Mixing float and integer operands without a cast is a compile error.
 
@@ -178,6 +181,28 @@ Explicit `(cast ...)` is also still required for cross-kind conversions: `int �
 | `true` | bool (i1) | `1` / `true` |
 | `false` | bool (i1) | `0` / `false` |
 | `"…"` string literal | `CStr` | `"…"` (`char*`) |
+| `\a`, `\newline`, `\u{1F600}` char literal | `Char` | `(uint32_t)U'…'` |
+
+## Char literals — `\a`
+
+A **char literal** is a backslash followed by one of three forms, evaluating to a self-evaluating `Char` value (a Unicode scalar). The leading `\` collides with neither keywords (leading `:`) nor strings (`"`), so it is unambiguous:
+
+| Form | Meaning | Example |
+|------|---------|---------|
+| `\a` | A single printable codepoint — the character after the backslash | `\A` → 65, `\x` → 120, `\(` → 40 |
+| `\name` | A named control code | `\newline` (0x0A), `\return` (0x0D), `\tab` (0x09), `\space` (0x20), `\nul` (0x00), `\escape` (0x1B), `\backspace` (0x08), `\delete` (0x7F) |
+| `\u{HEX}` | An explicit codepoint as hex digits between braces | `\u{41}` → 65, `\u{1F600}` → 😀 (128512) |
+
+The `\u{…}` form is validated at read time: a value above `0x10FFFF`, a UTF-16 surrogate (`0xD800..=0xDFFF`), an empty or non-hex body, or an unknown `\name` is a reader error (`invalid-codepoint` / `unknown named char literal`). A lone printable form is exactly the byte after the backslash, so a single-character spelling like `\u` (no brace) is the letter `u`, not a malformed escape.
+
+```lisp
+(printf "%u\n" (cast ui32 \A))          ; 65
+(printf "%u\n" (cast ui32 \newline))    ; 10
+(printf "%u\n" (cast ui32 \u{1F600}))   ; 128512
+(printf "%d\n" (if (= \a \a) 1 0))      ; 1
+```
+
+The `(char "x")` special form is equivalent sugar for the single-byte case: `(char "x")` and `\x` both produce the `Char` with codepoint 120. See `examples/char-test.nuc`.
 
 ## Keyword literals — `:foo`
 

@@ -96,3 +96,7 @@ Safe accessors with runtime cost seem like a good idea here, but it would be eve
 
 `import-only` takes a library name and a list of symbols, importing only those symbols and the dependencies of the functions/structs/etc... they resolve to. This is intended for very constrained targets like microcontrollers. It's OK if this has limitations like only working for Nucleus (not C libraries) or requiring the source, not just a header.
 
+## errata
+
+(Maybe StrView) fails in JIT modules, !void unsupported, struct-in-Result returns zeroed fields, and
+  single-conformer generic ?-methods need a shim for IR mangling.

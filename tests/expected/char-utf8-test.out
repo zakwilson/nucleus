@@ -1,0 +1,44 @@
+A (1-byte): len=1 write=1 ok=1 decoded=65 match=1
+DEL (1-byte): len=1 write=1 ok=1 decoded=127 match=1
+e-acute (2): len=2 write=2 ok=1 decoded=233 match=1
+U+07FF (2): len=2 write=2 ok=1 decoded=2047 match=1
+world-cjk (3): len=3 write=3 ok=1 decoded=19990 match=1
+U+FFFD (3): len=3 write=3 ok=1 decoded=65533 match=1
+emoji (4): len=4 write=4 ok=1 decoded=128512 match=1
+U+10FFFF (4): len=4 write=4 ok=1 decoded=1114111 match=1
+len-A=1
+len-e9=2
+len-4E16=3
+len-1F600=4
+trunc-2byte: ok=0
+bad-cont: ok=0
+surrogate-3byte: ok=0
+overlong-2byte: ok=0
+empty: ok=0
+bad-lead: ok=0
+to-u32-A=65
+to-u32-emoji=128512
+from-u32-65=ok:65
+from-u32-D800=err:invalid-codepoint
+from-u32-110000=err:invalid-codepoint
+is-ascii-A=1
+is-ascii-emoji=0
+is-digit-5=1
+is-digit-A=0
+is-alpha-A=1
+is-alpha-z=1
+is-alpha-5=0
+is-alnum-A=1
+is-alnum-5=1
+is-alnum-bang=0
+is-ws-space=1
+is-ws-tab=1
+is-ws-newline=1
+is-ws-A=0
+upper-a=65
+upper-Z=90
+upper-5=53
+lower-A=97
+lower-z=122
+lower-5=53
+upper-emoji=128512

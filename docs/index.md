@@ -90,6 +90,7 @@ Source files contain top-level forms (`defn`, `defvar`, `defstruct`, etc.). A `m
 | [Allocators](allocators.md) | `Allocator` protocol, `AllocHandle`, libc/arena backends (`lib/allocator.nuc`) |
 | [Iterators](iterators.md) | `Iterator` protocol, concrete iterators, lazy combinators, reduce (`lib/iterator.nuc`) |
 | [Collections](collections.md) | Core collection protocols (`Coll`/`Seq`/`Assoc`/`Set`/`Drop`), `Hash`, `Vector`, `HashMap`, `HashSet` (`lib/coll.nuc`, `lib/hash.nuc`, `lib/vector.nuc`, `lib/hashmap.nuc`, `lib/hashset.nuc`) |
+| [Strings](strings.md) | `Char` scalar, `StrView` borrowed slice, `String` owning type, UTF-8 encode/decode, `ByteStr`/`Str` protocols, split, lines, trim, `FromStr`/`parse` (`lib/char.nuc`, `lib/strview.nuc`, `lib/string.nuc`, `lib/parse.nuc`, `lib/string-split.nuc`) |
 
 ## Standard library overview
 
@@ -107,11 +108,18 @@ Additional libraries available via `import`:
 - `(import iterator)` — `Iterator` protocol and concrete iterators
 - `(import coll)` — core collection protocols (`Coll`, `Seq`, `Assoc`, `Set`, `Drop`)
 - `(import strview)` — `StrView` immutable byte-slice substrate (`Hash`+`Eq` conformances)
+- `(import strview-str)` — `ByteStr`/`Str` protocol conformances for `StrView` (separate to avoid circular imports)
 - `(import keyword)` — `Keyword` interned self-evaluating names, usable as `HashMap`/`HashSet` keys
 - `(import hash)` — `Hash` protocol with `i32`/`i64`/`usize`/`CStr` conformances (FNV-1a)
 - `(import vector)` — `Vector T` dynamic array and `VecIter T`
 - `(import hashmap)` — `HashMap K V` and `HashMapKeyIter K V`
 - `(import hashset)` — `HashSet T` and `HashSetIter T`
+- `(import char)` — `Char` UTF-8 encode/decode, classification, case conversion (`lib/char.nuc`)
+- `(import string-errors)` — the six string/parse error codes as `deferror` symbols
+- `(import string-protocols)` — `ByteStr ByteI` and `Str CharI` read-only protocol shapes
+- `(import string)` — `String` owning type: constructors, mutation, conformances (`lib/string.nuc`)
+- `(import string-split)` — `SplitIter`/`LineIter` for `strview-split`/`strview-lines` (`lib/string-split.nuc`)
+- `(import parse)` — `FromStr R` protocol and `parse` macro for `i32`/`i64`/`f64` (`lib/parse.nuc`)
 - `(import seq)` — empty placeholder; `IntIndexable`, `Call`, and `BinaryCall` were removed in C2.5 (use `UnaryFn`/`FoldFn` from `(import iterator)`)
 
 Use `(exclude-prelude)` as the first form in a file to suppress the auto-import and compile against the bare language.

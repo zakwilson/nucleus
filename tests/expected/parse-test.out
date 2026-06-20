@@ -1,0 +1,12 @@
+i32-42=42
+i32-neg7=-7
+i32-abc=err
+i32-max=2147483647
+i32-overflow=err
+i64-big=1000000000000
+i64-min=-9223372036854775808
+f64-pi=3.14
+f64-nan=err
+i32-ws=err
+i32-trail=err
+i32-empty=err

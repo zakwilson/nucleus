@@ -1,0 +1,120 @@
+; Stage 11 M6 (S5) — FromStr / parse tests.
+;
+; Tests:
+;   1. (parse i32 "42") → 42
+;   2. (parse i32 "-7") → -7
+;   3. (parse i32 "abc") → error
+;   4. (parse i32 "2147483647") → 2147483647 (i32 max)
+;   5. (parse i32 "2147483648") → error (overflow)
+;   6. (parse i64 "1000000000000") → 1000000000000
+;   7. (parse i64 "-9223372036854775808") → i64 min
+;   8. (parse f64 "3.14") → close to 3.14
+;   9. (parse f64 "notanumber") → error
+;  10. (parse i32 " 42") → error (leading whitespace rejected)
+;  11. (parse i32 "42 ") → error (trailing whitespace)
+;  12. (parse i32 "") → error (empty)
+
+(include stdio)
+(include stdlib)
+(import strview)
+(import parse)
+
+(defn main:i32 ()
+
+  ; ---- 1. i32 success: "42" ---------------------------------------------------
+  (let (sv:ptr:StrView (strview-from-cstr "42"))
+    (let (r:!i32 (parse i32 sv))
+      (match r
+        ((ok v) (printf "i32-42=%d\n" v))
+        ((err e) (printf "i32-42=err\n"))))
+    (free (cast ptr sv)))
+
+  ; ---- 2. i32 success: "-7" ---------------------------------------------------
+  (let (sv:ptr:StrView (strview-from-cstr "-7"))
+    (let (r:!i32 (parse i32 sv))
+      (match r
+        ((ok v) (printf "i32-neg7=%d\n" v))
+        ((err e) (printf "i32-neg7=err\n"))))
+    (free (cast ptr sv)))
+
+  ; ---- 3. i32 error: "abc" ----------------------------------------------------
+  (let (sv:ptr:StrView (strview-from-cstr "abc"))
+    (let (r:!i32 (parse i32 sv))
+      (match r
+        ((ok v) (printf "i32-abc=ok\n"))
+        ((err e) (printf "i32-abc=err\n"))))
+    (free (cast ptr sv)))
+
+  ; ---- 4. i32 max: "2147483647" -----------------------------------------------
+  (let (sv:ptr:StrView (strview-from-cstr "2147483647"))
+    (let (r:!i32 (parse i32 sv))
+      (match r
+        ((ok v) (printf "i32-max=%d\n" v))
+        ((err e) (printf "i32-max=err\n"))))
+    (free (cast ptr sv)))
+
+  ; ---- 5. i32 overflow: "2147483648" ------------------------------------------
+  (let (sv:ptr:StrView (strview-from-cstr "2147483648"))
+    (let (r:!i32 (parse i32 sv))
+      (match r
+        ((ok v) (printf "i32-overflow=ok\n"))
+        ((err e) (printf "i32-overflow=err\n"))))
+    (free (cast ptr sv)))
+
+  ; ---- 6. i64 success: "1000000000000" ----------------------------------------
+  (let (sv:ptr:StrView (strview-from-cstr "1000000000000"))
+    (let (r:!i64 (parse i64 sv))
+      (match r
+        ((ok v) (printf "i64-big=%lld\n" v))
+        ((err e) (printf "i64-big=err\n"))))
+    (free (cast ptr sv)))
+
+  ; ---- 7. i64 min: "-9223372036854775808" -------------------------------------
+  (let (sv:ptr:StrView (strview-from-cstr "-9223372036854775808"))
+    (let (r:!i64 (parse i64 sv))
+      (match r
+        ((ok v) (printf "i64-min=%lld\n" v))
+        ((err e) (printf "i64-min=err\n"))))
+    (free (cast ptr sv)))
+
+  ; ---- 8. f64 success: "3.14" -------------------------------------------------
+  (let (sv:ptr:StrView (strview-from-cstr "3.14"))
+    (let (r:!f64 (parse f64 sv))
+      (match r
+        ((ok v) (printf "f64-pi=%.2f\n" v))
+        ((err e) (printf "f64-pi=err\n"))))
+    (free (cast ptr sv)))
+
+  ; ---- 9. f64 error: "notanumber" ---------------------------------------------
+  (let (sv:ptr:StrView (strview-from-cstr "notanumber"))
+    (let (r:!f64 (parse f64 sv))
+      (match r
+        ((ok v) (printf "f64-nan=ok\n"))
+        ((err e) (printf "f64-nan=err\n"))))
+    (free (cast ptr sv)))
+
+  ; ---- 10. i32 error: " 42" (leading whitespace) ------------------------------
+  (let (sv:ptr:StrView (strview-from-cstr " 42"))
+    (let (r:!i32 (parse i32 sv))
+      (match r
+        ((ok v) (printf "i32-ws=ok\n"))
+        ((err e) (printf "i32-ws=err\n"))))
+    (free (cast ptr sv)))
+
+  ; ---- 11. i32 error: "42 " (trailing whitespace) -----------------------------
+  (let (sv:ptr:StrView (strview-from-cstr "42 "))
+    (let (r:!i32 (parse i32 sv))
+      (match r
+        ((ok v) (printf "i32-trail=ok\n"))
+        ((err e) (printf "i32-trail=err\n"))))
+    (free (cast ptr sv)))
+
+  ; ---- 12. i32 error: "" (empty) ----------------------------------------------
+  (let (sv:ptr:StrView (strview-from-cstr ""))
+    (let (r:!i32 (parse i32 sv))
+      (match r
+        ((ok v) (printf "i32-empty=ok\n"))
+        ((err e) (printf "i32-empty=err\n"))))
+    (free (cast ptr sv)))
+
+  (return 0))

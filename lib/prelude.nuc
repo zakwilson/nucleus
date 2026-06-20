@@ -22,7 +22,11 @@
 ; (without the leading colon) in the `s` field. Lowered by the compiler to a
 ; runtime `keyword-intern` call; self-evaluating. Appended last so the existing
 ; NODE-* ordinals are unchanged (byte-identical for keyword-free programs).
-(defenum NodeKind NODE-INT NODE-STR NODE-SYM NODE-CELL NODE-FLOAT NODE-KEYWORD)
+; NODE-CHAR (Stage 11 M6 S0): a `\a` / `\newline` / `\u{1F600}` char literal.
+; Carries the Unicode scalar value in the `i` field (like NODE-INT) and self-
+; evaluates to a `Char`-typed constant. Appended last so existing NODE-* ordinals
+; are unchanged (byte-identical for programs with no char literals).
+(defenum NodeKind NODE-INT NODE-STR NODE-SYM NODE-CELL NODE-FLOAT NODE-KEYWORD NODE-CHAR)
 
 (import macros)
 
