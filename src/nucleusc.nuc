@@ -446,11 +446,6 @@
   form:ptr
   context:ptr)
 
-(defstruct Vec
-  data:ptr
-  len:i32
-  cap:i32)
-
 (defstruct MacroDef
   name:CStr
   jit-name:ptr
@@ -590,7 +585,7 @@
 (defvar g-struct-templates-len:i32 0)
 (defvar g-enumdefs:ptr)
 (defvar g-enumdefs-len:i32 0)
-(defvar g-pending-unions:ptr)
+(defvar (g-pending-unions (ref (Vector ptr))))
 ; Stage 10 errors: the deferror descriptor table, indexed by error id (1-based;
 ; slot 0 reserved). Each entry is the string-table id of the name / message, so
 ; the table emits as arrays of `@.str.N` pointers at module assembly. Emitted
@@ -603,6 +598,19 @@
 
 ; Global scope
 (defvar g-globals:ref:Scope)
+
+; Shared arena allocator handle backing every compiler-owned collection (the
+; Vector pointer tables and the two HashSet name-kind sets). The arena's free is
+; a no-op, so these process-lifetime globals are never dropped — the faithful
+; match for the original arena-backed tables. Initialised once, first thing in
+; compiler-init (ALLOC-ARENA is non-zero, so it needs explicit init).
+(defvar g-arena-alloc:AllocHandle)
+
+; Name-kind membership sets (built once in compiler-init; never dropped).
+; special-form-named and primitive-type-named consult these instead of long
+; string-comparison chains.
+(defvar (g-special-form-set (ref (HashSet CStr))))
+(defvar (g-primitive-type-set (ref (HashSet CStr))))
 
 ; String literal table
 (defvar g-strs:ptr)
@@ -629,7 +637,7 @@
 ; (name, total occurrence count, seen-so-far) reset per function by
 ; reset-function-state. g-cur-fname is the @-less IR symbol of the function
 ; currently being emitted (for blockaddress in label-addr).
-(defvar g-lbl-tbl:ptr)
+(defvar (g-lbl-tbl (ref (Vector ptr))))
 (defvar g-cur-fname:ptr)
 
 ; Aggregate return ABI of the function currently being emitted (Stage 8 Phase C).
@@ -646,7 +654,7 @@
 ; written to the decl stream (lazy, used by `unwrap`).
 (defvar g-fn-ret-type:ptr)
 (defvar g-loop-depth:i32 0)
-(defvar g-nundo:ptr)
+(defvar (g-nundo (ref (Vector ptr))))
 (defvar g-trap-declared:i32 0)
 
 ; Current output stream for top-level emission
@@ -684,7 +692,7 @@
 ; (so the call site can name its symbol) but defer the body emission until the
 ; current function finishes; the worklist is drained at the end of the top-level
 ; loop. g-mono-drained is a persistent cursor so recursive drains never re-emit.
-(defvar g-mono-worklist:ptr)
+(defvar (g-mono-worklist (ref (Vector ptr))))
 (defvar g-mono-drained:i32 0)
 ; Set to the current instantiation's context string while a stamped generic body
 ; is being emitted; die-at appends it as a note so a stamp-time error points back
@@ -746,7 +754,7 @@
 ; needs a `declare` for each so it links the symbol from the -rdynamic host
 ; binary. Reset at the start of each macro/CT module; emit-call-with-args adds an
 ; entry (and emits the declare to g-decl-out) on first reference while redirected.
-(defvar g-macro-decls:ptr)
+(defvar (g-macro-decls (ref (Vector ptr))))
 
 ; Program-defined `defn`s (the `define`s emitted into the main module). Only
 ; these need a fresh `declare` in a macro/CT JIT module — externs and
@@ -754,7 +762,7 @@
 ; copies in. Populated by emit-defn as it writes each `define`; the captured
 ; signature (ret + param Types + ABI) reproduces the declare losslessly (the
 ; g-globals Sym for an overloaded/generic name carries no usable param array).
-(defvar g-program-defns:ptr)
+(defvar (g-program-defns (ref (Vector ptr))))
 
 ; Compiler mode flags.
 (defvar g-emit-nuch:i32 0)    ; when 1, output .nuch header instead of LLVM IR
@@ -818,6 +826,32 @@
 (import node)
 
 ; ============================================================
+; Collections — imported from lib/vector.nuc, lib/hash.nuc, lib/hashset.nuc
+; (Stage 11). The compiler's growable pointer tables are (Vector ptr) values;
+; the globals/locals holding them are typed (ref (Vector ptr)) so use sites call
+; conj/count/invoke directly (bounds-checked indexing, amortized growth) with no
+; per-use cast. make-vec returns the concrete (ref (Vector ptr)), so construction
+; sites need no cast either. Naming (Vector ptr) in make-vec's *signature* stamps
+; the instance during the defn-signature prescan (which runs before the allocator
+; import is emitted), queuing `%Vector.ptr = type { …, %AllocHandle }` on the
+; pending-IR list ahead of `%AllocHandle`'s definition. The drain deferral
+; (pending-union-deps-ready / drain-pending-union-irs) leaves `%Vector.ptr` queued
+; while `%AllocHandle` is still undefined — so the prelude's macro-JIT module does
+; not emit a dangling `%AllocHandle` reference — and emits it on a later drain,
+; after the allocator import defines `%AllocHandle`. hash + hashset support
+; (HashSet CStr) for special-form-named / primitive-type-named membership. All
+; are arena-backed (g-arena-alloc), never dropped.
+; vector pulls in its deps allocator/coll/iterator. These bring the generic
+; method names count/conj/invoke/insert/contains?/iter/empty? into scope; the
+; compiler uses suffixed names (defn-params-count, etc.) so there are no
+; top-level collisions.
+; ============================================================
+
+(import vector)
+(import hash)
+(import hashset)
+
+; ============================================================
 ; Allocation helpers
 ; ============================================================
 
@@ -848,22 +882,23 @@
 ; ============================================================
 ; Growable pointer vector
 ; ============================================================
+;
+; Backed by lib/vector.nuc's (Vector ptr): bounds-checked indexing (panics on
+; OOB instead of silently corrupting), amortized growth via conj. The compiler
+; only ever stores ptr elements, so make-vec returns the concrete
+; (ref (Vector ptr)) and call sites use conj/count/invoke directly — no per-use
+; casts. The struct and its element buffer are allocated through the shared
+; arena handle (g-arena-alloc, whose free is a no-op), so these process-lifetime
+; tables are never dropped — the faithful match for the old arena-backed Vec.
 
-(defn make-vec:ref:Vec ()
-  (return (cast ref:Vec (arena-alloc (sizeof Vec)))))
-
-(defn vec-push:void (v:ptr item:ptr)
-  (let (vv:ptr:Vec (cast ptr:Vec v))
-    (when (= (vv len) (vv cap))
-      (let (nc:i32 4)
-        (when (!= (vv cap) 0) (set! nc (* (vv cap) 2)))
-        (let (nd:ptr (arena-alloc (* (cast i64 nc) (ptr-bytes))))
-          (when (!= (vv len) 0)
-            (memcpy nd (vv data) (* (cast i64 (vv len)) (ptr-bytes))))
-          (.set! vv data nd)
-          (.set! vv cap nc))))
-    (aset! (cast ptr:ptr (vv data)) (vv len) item)
-    (.set! vv len (+ (vv len) 1))))
+(defn (make-vec (ref (Vector ptr))) ()
+  (let ((v (ref (Vector ptr)))
+        (cast (ref (Vector ptr))
+          (alloc-handle-alloc (addr-of g-arena-alloc)
+                              (sizeof (Vector ptr))
+                              (cast usize 8))))
+    (vector-init-alloc v (addr-of g-arena-alloc))
+    (return v)))
 
 ; ============================================================
 ; Reader — imported from lib/reader.nuc
@@ -1726,7 +1761,7 @@
         (.set! sd2 emitted 0)
         (.set! sd2 src-file g-source-path)
         (.set! sd2 src-line 0))
-      (vec-push g-pending-unions sd))
+      (conj g-pending-unions sd))
     (return (cast ref:StructDef sd))))
 
 ; The member a union's IR wrapper struct holds: the first member with maximal
@@ -1780,15 +1815,52 @@
         (fprintf g-type-stream "%%%s = type { %s }\n\n"
           (sdd name) (type-to-ir rt))))))
 
-; Emit every still-pending union type definition. Idempotent; called before
-; each module assembly (batch output, compile-time JIT, macro JIT, REPL).
+; Are all of `sd`'s by-value named-type field dependencies already emitted into
+; the shared type buffer (g-type-bufp)? A field lowers to a `%Name` reference
+; only when its kind is TY-STRUCT/TY-UNION (type-to-ir); TY-PTR fields lower to
+; opaque `ptr` and carry no named dependency. Since `emitted` is set exactly
+; when a StructDef's `%Name = type {...}` line is written into the single shared
+; g-type-bufp (the one buffer every module — batch, CT, macro-JIT, REPL —
+; concatenates), `dep.emitted == 1` is precisely "the dependency's definition is
+; already present in the module currently being assembled." When every named
+; dependency is present, this returns 1 and the type emits exactly as before
+; (the current source never stamps a (Vector ptr) ahead of its %AllocHandle dep,
+; so this is always 1 → zero deferrals → byte-identical). The deferral exists for
+; a type stamped at prescan (signature occurrence) before the import that defines
+; its struct-by-value field has run: it stays queued until a later drain, after
+; that import emits the dependency. See cleanup3.md "two-stage boot refresh".
+(defn pending-union-deps-ready:i32 (sd:ptr)
+  (let (sdd:ptr:StructDef (cast ptr:StructDef sd)
+        n:i32 (sdd num-fields)
+        i:i32 0)
+    (while (< i n)
+      (let (ft:ptr:Type (cast ptr:Type (aref (cast ptr:ptr (sdd field-types)) i))
+            fk:i32 (ft kind))
+        (when (or (= fk TY-STRUCT) (= fk TY-UNION))
+          (let (dep:ptr:StructDef (cast ptr:StructDef (ft sdef)))
+            ; A null sdef (shape-only / unresolved) cannot be a satisfied named
+            ; dependency; treat as not-ready so we defer rather than emit a
+            ; dangling %ref.
+            (when (= (cast ptr dep) null) (return 0))
+            (when (= (dep emitted) 0) (return 0)))))
+      (inc! i)))
+  (return 1))
+
+; Emit every still-pending union/struct type definition whose named field
+; dependencies are already present in the shared type buffer. Idempotent (each
+; emit re-checks `emitted` and is a no-op once written); entries are never
+; removed from the queue, so a type skipped here for an unready dependency is
+; retried on the next drain — by which point the import that defines the
+; dependency will have emitted it. Called before each module assembly (batch
+; output, compile-time JIT, macro JIT, REPL).
 (defn drain-pending-union-irs:void ()
   (when (= g-pending-unions null) (return))
-  (let (v:ptr:Vec (cast ptr:Vec g-pending-unions)
-        i:i32 0)
-    (while (< i (v len))
-      (emit-union-ir-type (aref (cast ptr:ptr (v data)) i))
-      (inc! i))))
+  (let (i:usize (cast usize 0))
+    (while (< i (count g-pending-unions))
+      (let (sd:ptr (invoke g-pending-unions i))
+        (when (!= (pending-union-deps-ready sd) 0)
+          (emit-union-ir-type sd)))
+      (set! i (+ i (cast usize 1))))))
 
 (defn lookup-struct:?ptr:StructDef (name:ptr)
   (let (i:i32 0)
@@ -2452,7 +2524,7 @@
         ; flag guards double-emit. Deferring (rather than emitting inline) keeps a
         ; mid-function stamp from interleaving into a def-stream body, the same
         ; discipline unions use.
-        (vec-push g-pending-unions (cast ptr sd))
+        (conj g-pending-unions (cast ptr sd))
         ; Stage 11 T4: per-instance protocol conformance check. For each template
         ; conformance recorded via `(extend (Vector T) (Seq T))`, substitute this
         ; instance's concrete args into the protocol bindings and confirm every
@@ -2969,13 +3041,12 @@
 ; The captured ProgDefn for an emitted @symbol, or null. Membership is by
 ; content (ir-names are freshly formatted, not interned).
 (defn program-defn-lookup:?ptr:ProgDefn (irn:ptr)
-  (let (i:i32 0)
-    (while (< i ((cast ptr:Vec g-program-defns) len))
-      (let (pd:ptr:ProgDefn (cast ptr:ProgDefn
-                              (aref (cast ptr:ptr ((cast ptr:Vec g-program-defns) data)) i)))
+  (let (i:usize (cast usize 0))
+    (while (< i (count g-program-defns))
+      (let (pd:ptr:ProgDefn (cast ptr:ProgDefn (invoke g-program-defns i)))
         (when (= (strcmp (pd ir-name) irn) (cast i32 0))
           (return (cast ptr pd))))
-      (inc! i)))
+      (set! i (+ i (cast usize 1)))))
   (return null))
 
 ; Record a program-defined function's signature so macro/CT JIT modules can
@@ -2992,7 +3063,7 @@
     (.set! pd ptypes ptypes)
     (.set! pd nparams nparams)
     (.set! pd variadic variadic)
-    (vec-push g-program-defns (cast ptr pd))))
+    (conj g-program-defns (cast ptr pd))))
 
 ; Ensure a `declare` for an ordinary global function `ss` exists in the current
 ; macro/CT JIT module. No-op in the main module (the function is `define`d
@@ -3010,13 +3081,13 @@
     (let (pd:?ptr:ProgDefn (program-defn-lookup irn))
       (when (= pd null) (return))
       ; Dedup within this module.
-      (let (i:i32 0)
-        (while (< i ((cast ptr:Vec g-macro-decls) len))
-          (when (= (strcmp (aref (cast ptr:ptr ((cast ptr:Vec g-macro-decls) data)) i) irn)
+      (let (i:usize (cast usize 0))
+        (while (< i (count g-macro-decls))
+          (when (= (strcmp (invoke g-macro-decls i) irn)
                    (cast i32 0))
             (return))
-          (inc! i)))
-      (vec-push g-macro-decls (intern-str irn))
+          (set! i (+ i (cast usize 1)))))
+      (conj g-macro-decls (intern-str irn))
       ; Variadic prototypes lower trivially (no struct args reach a macro body).
       (when (!= (pd variadic) 0)
         (fprintf g-decl-out "declare %s %s(...)\n" (type-to-ir (pd ret)) irn)
@@ -3200,12 +3271,19 @@
         (return (m ret-type))))))
 
 ; Type of a non-function head value `ct` applied in `(callee arg…)` — mirrors
-; emit-callable-value: single literal-symbol arg → get, else → invoke.
+; emit-callable-value's `invoke → get → _get` routing so the type pass cannot
+; drift from codegen: a callee whose type has an `invoke` method → invoke result;
+; else a single arg with a custom/intrinsic `get` → get result.
 (defn callable-value-type:?ptr:Type (ct:ptr n:ptr scope:ref:Scope)
   (let (nargs:i32 (- (node-len n) 1))
-    (if (and (= nargs 1) (!= (selector-literal-sym (node-at n 1)) null))
-      (return (callable-get-type ct (node-at n 1) scope))
-      (return (callable-invoke-type ct n 1 nargs scope)))))
+    (when (!= (generic-has-receiver-method (generic-lookup "invoke") (cast ptr ct)) 0)
+      (return (callable-invoke-type ct n 1 nargs scope)))
+    (when (and (= nargs 1)
+               (!= (generic-has-receiver-method (generic-lookup "get") (cast ptr ct)) 0))
+      (return (callable-get-type ct (node-at n 1) scope)))
+    (when (and (= nargs 1) (!= (selector-literal-sym (node-at n 1)) null))
+      (return (callable-get-type ct (node-at n 1) scope)))
+    (return (callable-invoke-type ct n 1 nargs scope))))
 
 (defn node-type-get:?ptr:Type (n:ptr scope:ref:Scope)
   (when (!= (node-len n) 3) (return null))
@@ -3663,7 +3741,7 @@
 
 (defn narrow-mark:i32 ()
   (when (= g-nundo null) (set! g-nundo (make-vec)))
-  (return ((cast ptr:Vec g-nundo) len)))
+  (return (cast i32 (count g-nundo))))
 
 ; Narrow binding `name` (resolved in `scope`) to the non-null view of its
 ; current effective type, pushing an undo entry. No-op unless the binding
@@ -3681,7 +3759,7 @@
         (.set! u old-ntype (sym ntype))
         (.set! u old-ndepth (sym ndepth))
         (.set! u stamp (sym kstamp))
-        (vec-push g-nundo (cast ptr u)))
+        (conj g-nundo (cast ptr u)))
       (.set! sym ntype (type-as-pkind eff PTR-REF))
       (.set! sym ndepth g-loop-depth))))
 
@@ -3689,16 +3767,18 @@
 ; binding was killed after the push are skipped.
 (defn narrow-restore:void (mark:i32)
   (when (= g-nundo null) (return))
-  (let (v:ptr:Vec (cast ptr:Vec g-nundo))
-    (while (> (v len) mark)
-      (let (u:ptr:NarrowUndo (cast ptr:NarrowUndo
-                               (aref (cast ptr:ptr (v data)) (- (v len) 1))))
-        (let (sym:?ptr:Sym (scope-lookup (u scope) (u name)))
-          (when (!= sym null)
-            (when (= (u stamp) (sym kstamp))
-              (.set! sym ntype (u old-ntype))
-              (.set! sym ndepth (u old-ndepth)))))
-        (.set! v len (- (v len) 1))))))
+  ; Read/shrink the undo stack's len via the explicit raw field intrinsic _get
+  ; (not the callable form (g-nundo len), which a later dispatch change would
+  ; route differently). The pop discards the entry; the buffer is reused.
+  (while (> (cast i32 (_get g-nundo len)) mark)
+    (let (u:ptr:NarrowUndo (cast ptr:NarrowUndo
+                             (invoke g-nundo (- (_get g-nundo len) (cast usize 1)))))
+      (let (sym:?ptr:Sym (scope-lookup (u scope) (u name)))
+        (when (!= sym null)
+          (when (= (u stamp) (sym kstamp))
+            (.set! sym ntype (u old-ntype))
+            (.set! sym ndepth (u old-ndepth)))))
+      (.set! g-nundo len (- (_get g-nundo len) (cast usize 1))))))
 
 ; Kill a binding's narrow: reassignment invalidates the dominating test.
 (defn narrow-kill:void (sym:ptr)
@@ -3709,14 +3789,13 @@
 ; Kill every live narrow (label join points — a backward goto re-enters).
 (defn narrow-kill-all:void ()
   (when (= g-nundo null) (return))
-  (let (v:ptr:Vec (cast ptr:Vec g-nundo)
-        i:i32 0)
-    (while (< i (v len))
-      (let (u:ptr:NarrowUndo (cast ptr:NarrowUndo (aref (cast ptr:ptr (v data)) i)))
+  (let (i:usize (cast usize 0))
+    (while (< i (count g-nundo))
+      (let (u:ptr:NarrowUndo (cast ptr:NarrowUndo (invoke g-nundo i)))
         (let (sym:?ptr:Sym (scope-lookup (u scope) (u name)))
           (when (and (!= sym null) (!= (sym ntype) null))
             (narrow-kill sym))))
-      (inc! i))))
+      (set! i (+ i (cast usize 1))))))
 
 ; Is `node` the symbol `null`? (content compare — macro-built nodes may not be
 ; interned).
@@ -3741,7 +3820,9 @@
 
 ; Collect binding names proven non-null when `test` is TRUE into `out`:
 ;   (!= m null) — m;  (and A B) — both arms;  (not X) — X's false-facts.
-(defn test-true-nonnull:void (test:ptr out:ptr)
+; `out` is the (ref (Vector ptr)) fact accumulator; the drain deferral makes the
+; parametric type safe in this signature (see make-vec).
+(defn test-true-nonnull:void (test:ptr (out (ref (Vector ptr))))
   (when (= test null) (return))
   (let (nn:ptr:Node (cast ptr:Node test))
     (when (!= (nn kind) NODE-CELL) (return))
@@ -3763,14 +3844,15 @@
             (let (a:ptr (node-at test 1)
                   b:ptr (node-at test 2))
               (when (and (!= (node-is-null-sym b) 0) (!= (node-binding-name a) null))
-                (vec-push out (node-binding-name a)))
+                (conj out (node-binding-name a)))
               (when (and (!= (node-is-null-sym a) 0) (!= (node-binding-name b) null))
-                (vec-push out (node-binding-name b)))))
+                (conj out (node-binding-name b)))))
           (return))))))
 
 ; Collect binding names proven non-null when `test` is FALSE into `out`:
 ;   (= m null) — m;  (or A B) — both arms;  (not X) — X's true-facts.
-(defn test-false-nonnull:void (test:ptr out:ptr)
+; `out` is the (ref (Vector ptr)) fact accumulator (see test-true-nonnull).
+(defn test-false-nonnull:void (test:ptr (out (ref (Vector ptr))))
   (when (= test null) (return))
   (let (nn:ptr:Node (cast ptr:Node test))
     (when (!= (nn kind) NODE-CELL) (return))
@@ -3792,18 +3874,19 @@
             (let (a:ptr (node-at test 1)
                   b:ptr (node-at test 2))
               (when (and (!= (node-is-null-sym b) 0) (!= (node-binding-name a) null))
-                (vec-push out (node-binding-name a)))
+                (conj out (node-binding-name a)))
               (when (and (!= (node-is-null-sym a) 0) (!= (node-binding-name b) null))
-                (vec-push out (node-binding-name b)))))
+                (conj out (node-binding-name b)))))
           (return))))))
 
-; Narrow every name in `names` (a Vec) resolved against `scope`.
-(defn narrow-names:void (scope:ref:Scope names:ptr)
-  (let (v:ptr:Vec (cast ptr:Vec names)
-        i:i32 0)
-    (while (< i (v len))
-      (narrow-apply scope (aref (cast ptr:ptr (v data)) i))
-      (inc! i))))
+; Narrow every name in `names` (a Vec) resolved against `scope`. `names` is the
+; (ref (Vector ptr)) accumulator filled by test-true/false-nonnull; the drain
+; deferral makes the parametric type safe in this signature (see make-vec).
+(defn narrow-names:void (scope:ref:Scope (names (ref (Vector ptr))))
+  (let (i:usize (cast usize 0))
+    (while (< i (count names))
+      (narrow-apply scope (invoke names i))
+      (set! i (+ i (cast usize 1))))))
 
 ; Conservatively kill narrows for any textual (set! x ...) target inside `n` —
 ; run before a loop body emits, so a narrow established outside the loop can't
@@ -4933,7 +5016,7 @@
 ; acceptance set without dying. A free symbol that is NOT resolvable here is a
 ; candidate type variable.
 (defn tyname-resolvable:i32 (name:ptr)
-  (when (!= (primitive-type-named name) 0) (return 1))
+  (when (!= (primitive-type-named (cast CStr name)) 0) (return 1))
   (when (or (= name "usize") (or (= name "ssize") (= name "raw"))) (return 1))
   (when (!= (cast ptr (lookup-struct name)) null) (return 1))
   (when (!= (cast ptr (struct-template-lookup name)) null) (return 1))
@@ -5664,7 +5747,7 @@
           (.set! job context
                  (fmt-2s-i "while instantiating %s (requested at %s:%d)"
                            mangled g-source-path line))
-          (vec-push g-mono-worklist (cast ptr job))
+          (conj g-mono-worklist (cast ptr job))
           (return newm)))))))
 
 ; ============================================================
@@ -6252,15 +6335,14 @@
 ; persistent cursor makes recursive drains (during imports) never re-emit, and
 ; stamping inside a drained body simply extends the worklist this loop consumes.
 (defn drain-mono-worklist:void ()
-  (let (vv:ptr:Vec (cast ptr:Vec g-mono-worklist))
-    (while (< g-mono-drained (vv len))
-      (let (job:ptr:MonoJob (cast ptr:MonoJob (aref (cast ptr:ptr (vv data)) g-mono-drained)))
-        (set! g-mono-drained (+ g-mono-drained 1))
-        (set! g-out g-def-stream)
-        ; Attach the instantiation context to any error raised while emitting.
-        (set! g-mono-context (job context))
-        (emit-defn (job form))
-        (set! g-mono-context null)))))
+  (while (< g-mono-drained (cast i32 (count g-mono-worklist)))
+    (let (job:ptr:MonoJob (cast ptr:MonoJob (invoke g-mono-worklist (cast usize g-mono-drained))))
+      (set! g-mono-drained (+ g-mono-drained 1))
+      (set! g-out g-def-stream)
+      ; Attach the instantiation context to any error raised while emitting.
+      (set! g-mono-context (job context))
+      (emit-defn (job form))
+      (set! g-mono-context null))))
 
 ; ============================================================
 ; Protocols & conformances (Stage 9 rung 2)
@@ -7488,6 +7570,40 @@
         (return (generic-instantiate g cand cand-bound argtypes nargs line)))
       (return null))))
 
+; Side-effect-free probe: does generic `g` carry a method whose *first parameter*
+; (the receiver) accepts the callee type `ct`? Used by the callable-value router
+; to make the `invoke → get → _get` decision *before* emitting any argument, so a
+; plain struct (no `invoke`, no custom `get`) lands on the raw `_get` field
+; intrinsic with byte-identical IR. A METHOD-USER receiver must `type-eq` `ct`; a
+; METHOD-GENERIC (parametric, e.g. `(ref (Vector T))`) is probed by unifying its
+; first-parameter type pattern against `ct` — the same structural unifier
+; generic-method-bind uses, but over the receiver alone (no args), writing only to
+; a throwaway bound array. Returns 1 on the first match, else 0.
+(defn generic-has-receiver-method:i32 (g:ptr ct:ptr)
+  (when (= g null) (return 0))
+  (let (gg:ptr:Generic (cast ptr:Generic g)
+        i:i32 0)
+    (while (< i (gg num-methods))
+      (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (gg methods)) i)))
+        (when (> (m num-params) 0)
+          (if (= (m kind) METHOD-USER)
+            (when (!= (type-eq (aref (cast ptr:ptr (m param-types)) 0) ct) 0)
+              (return 1))
+            ; METHOD-GENERIC: unify the receiver pattern against ct. The unifier
+            ; only writes the scratch bound array, so this is side-effect-free.
+            (let (params-node:ptr (node-at (m body) 2)
+                  ntv:i32 (m num-tyvars)
+                  bound:ptr (arena-alloc (* (cast i64 (+ ntv 1)) (ptr-bytes)))
+                  ptn:ptr (binding-type-node (node-at params-node 0)))
+              (when (!= ptn null)
+                (let (k:i32 0)
+                  (while (< k ntv) (aset! (cast ptr:ptr bound) k null) (inc! k)))
+                (when (!= (unify-tpat ptn ct (m tyvars) ntv bound
+                                      (-> (m body) (cast ptr:Node _) (_ line))) 0)
+                  (return 1)))))))
+      (inc! i))
+    (return 0)))
+
 ; Resolve `(get callee selector)` for an already-emitted callee value, splitting
 ; on the selector kind (callable-values.md §3.2/§3.3).
 ;
@@ -7565,14 +7681,29 @@
         (return (emit-resolved-call n scope "invoke" m args total line))))))
 
 ; The desugar entry point: an already-emitted non-function head value `callee-val`
-; in `(callee arg…)`. A single literal-symbol argument routes to `get` (member
-; access); everything else routes to `invoke`.
+; in `(callee arg…)`. Routing is `invoke → get → _get`: if the callee type
+; participates in the `invoke` generic it indexes/applies (the arg is a *value*, so
+; `(v idx)` evaluates `idx`); else if it has a *custom* `get` method that runs;
+; else a single literal-symbol arg is the raw `_get` field intrinsic. A plain
+; struct (no invoke, no custom get) therefore lands on the field intrinsic with the
+; same IR as before this change.
 (defn emit-callable-value:ref:Val (n:ptr scope:ref:Scope callee-val:ptr)
   (let (nargs:i32 (- (node-len n) 1)
         ct:ptr:Type (cast ptr:Type ((cast ptr:Val callee-val) type)))
     ; A function-pointer value folds to an indirect call (callable-values.md §4.2).
     (when (= (ct kind) TY-FN)
       (return (emit-funcall-value n scope callee-val 1)))
+    ; invoke takes precedence: any callee whose type has an `invoke` method treats
+    ; the arg(s) as values (so `(v idx)` indexes, not a field-named-`idx` get).
+    (when (!= (generic-has-receiver-method (generic-lookup "invoke") (cast ptr ct)) 0)
+      (return (emit-invoke-with-callee n scope callee-val 1 nargs)))
+    ; A custom `get` method (the intrinsic is not registered) handles its own
+    ; literal-vs-computed selector split inside emit-get-with-callee.
+    (when (and (= nargs 1)
+               (!= (generic-has-receiver-method (generic-lookup "get") (cast ptr ct)) 0))
+      (return (emit-get-with-callee n scope callee-val (node-at n 1))))
+    ; Fall back: a single literal-symbol arg is the raw `_get` field intrinsic;
+    ; anything else has no callable meaning (emit-invoke-with-callee reports it).
     (when (and (= nargs 1) (!= (selector-literal-sym (node-at n 1)) null))
       (return (emit-get-with-callee n scope callee-val (node-at n 1))))
     (return (emit-invoke-with-callee n scope callee-val 1 nargs))))
@@ -8877,8 +9008,8 @@
         id:i32 (new-label-id)
         def-lbl:ptr (fmt-i32 "match.def%d" id)
         end-lbl:ptr (fmt-i32 "match.end%d" id)
-        vals:ptr (make-vec)
-        preds:ptr (make-vec)
+        (vals (ref (Vector ptr))) (make-vec)
+        (preds (ref (Vector ptr))) (make-vec)
         result-type:ptr null
         result-taint:ptr null
         ci:i32 0)
@@ -8941,8 +9072,8 @@
                   (fprintf g-body-stream "  br label %%%s\n" join-lbl)
                   (fprintf g-body-stream "%s:\n" join-lbl)
                   (fprintf g-body-stream "  br label %%%s\n" end-lbl)
-                  (vec-push vals (bv val))
-                  (vec-push preds join-lbl)))))
+                  (conj vals (bv val))
+                  (conj preds join-lbl)))))
           (narrow-restore tmark)))
       (inc! ci))
     ; No `_` clause: the default is unreachable (exhaustiveness was verified).
@@ -8951,7 +9082,7 @@
       (fprintf g-body-stream "  unreachable\n"))
     (fprintf g-body-stream "%s:\n" end-lbl)
     (set! g-block-term 0)
-    (when (= ((cast ptr:Vec vals) len) 0)
+    (when (= (count vals) (cast usize 0))
       (fprintf g-body-stream "  unreachable\n")
       (set! g-block-term 1))
     (if (or (= result-type null)
@@ -8959,16 +9090,14 @@
       (return (alloc-val ty-void null))
       (let (tmp:ptr (new-tmp)
             ty-ir:ptr (type-to-ir result-type)
-            vv:ptr:Vec (cast ptr:Vec vals)
-            pv:ptr:Vec (cast ptr:Vec preds)
-            k:i32 0)
+            k:usize (cast usize 0))
         (fprintf g-body-stream "  %s = phi %s " tmp ty-ir)
-        (while (< k (vv len))
-          (when (> k 0) (fprintf g-body-stream ", "))
+        (while (< k (count vals))
+          (when (> k (cast usize 0)) (fprintf g-body-stream ", "))
           (fprintf g-body-stream "[ %s, %%%s ]"
-            (aref (cast ptr:ptr (vv data)) k)
-            (aref (cast ptr:ptr (pv data)) k))
-          (inc! k))
+            (invoke vals k)
+            (invoke preds k))
+          (set! k (+ k (cast usize 1))))
         (fprintf g-body-stream "\n")
         (let (rv:ref:Val (alloc-val result-type tmp))
           (.set! rv taint result-taint)
@@ -9098,8 +9227,8 @@
           err-lbl:ptr (fmt-i32 "match.err%d" id)
           ok-lbl:ptr (fmt-i32 "match.ok%d" id)
           end-lbl:ptr (fmt-i32 "match.end%d" id)
-          vals:ptr (make-vec)
-          preds:ptr (make-vec)
+          (vals (ref (Vector ptr))) (make-vec)
+          (preds (ref (Vector ptr))) (make-vec)
           ; result-type/result-taint are threaded through both arms; a single-
           ; element i32/ptr array stands in for a by-reference local.
           rtbox:ptr (arena-alloc (ptr-bytes))
@@ -9151,19 +9280,19 @@
       (set! g-block-term 0)
       (let (result-type:ptr (aref (cast ptr:ptr rtbox) 0)
             result-taint:ptr (aref (cast ptr:ptr ttbox) 0))
-        (when (= ((cast ptr:Vec vals) len) 0)
+        (when (= (count vals) (cast usize 0))
           (fprintf g-body-stream "  unreachable\n")
           (set! g-block-term 1))
         (if (or (= result-type null) (= ((cast ptr:Type result-type) kind) TY-VOID))
           (return (alloc-val ty-void null))
           (let (tmp:ptr (new-tmp) ty-ir:ptr (type-to-ir result-type)
-                vv:ptr:Vec (cast ptr:Vec vals) pv:ptr:Vec (cast ptr:Vec preds) k:i32 0)
+                k:usize (cast usize 0))
             (fprintf g-body-stream "  %s = phi %s " tmp ty-ir)
-            (while (< k (vv len))
-              (when (> k 0) (fprintf g-body-stream ", "))
+            (while (< k (count vals))
+              (when (> k (cast usize 0)) (fprintf g-body-stream ", "))
               (fprintf g-body-stream "[ %s, %%%s ]"
-                (aref (cast ptr:ptr (vv data)) k) (aref (cast ptr:ptr (pv data)) k))
-              (inc! k))
+                (invoke vals k) (invoke preds k))
+              (set! k (+ k (cast usize 1))))
             (fprintf g-body-stream "\n")
             (let (rv:ref:Val (alloc-val result-type tmp))
               (.set! rv taint result-taint)
@@ -9172,7 +9301,10 @@
 ; One arm body of a niche-ERRPTR match: run the forms (implicit do), apply
 ; cond's cross-branch typing into rtbox/ttbox (single-element ptr arrays), and
 ; (unless the block terminated) branch to a per-arm join feeding the end phi.
-(defn emit-niche-match-arm:void (body:ptr inner:ref:Scope vals:ptr preds:ptr
+; `vals`/`preds` are the (ref (Vector ptr)) phi-incoming tables; the drain
+; deferral makes the parametric type safe in this signature (see make-vec).
+(defn emit-niche-match-arm:void (body:ptr inner:ref:Scope
+                                 (vals (ref (Vector ptr))) (preds (ref (Vector ptr)))
                                  rtbox:ptr ttbox:ptr end-lbl:ptr id:i32 which:i32)
   (let (bv:ref:Val (alloc-val ty-void null)
         bcur:ptr body)
@@ -9196,8 +9328,8 @@
         (fprintf g-body-stream "  br label %%%s\n" join-lbl)
         (fprintf g-body-stream "%s:\n" join-lbl)
         (fprintf g-body-stream "  br label %%%s\n" end-lbl)
-        (vec-push vals (bv val))
-        (vec-push preds join-lbl)))))
+        (conj vals (bv val))
+        (conj preds join-lbl)))))
 
 ; (match scrutinee (pattern body...) ...) — the defunion eliminator
 ; (unions.md §4). Scrutinee: a defunion value, a ref/ptr to one (auto-deref
@@ -9382,7 +9514,7 @@
         ; or false (or) — so the lhs's facts hold while it is emitted. This
         ; is what makes (and (!= m null) (m kind)) check.
         (let (scmark:i32 (narrow-mark)
-              scfacts:ptr (make-vec))
+              (scfacts (ref (Vector ptr))) (make-vec))
           (if (!= is-and 0)
             (test-true-nonnull (node-at cc 1) scfacts)
             (test-false-nonnull (node-at cc 1) scfacts))
@@ -9949,8 +10081,8 @@
           id:i32 (new-label-id)
           end-lbl:ptr (fmt-i32 "cond.end%d" id)
           fall-lbl:ptr (fmt-i32 "cond.fall%d" id)
-          vals:ptr (make-vec)
-          preds:ptr (make-vec)
+          (vals (ref (Vector ptr))) (make-vec)
+          (preds (ref (Vector ptr))) (make-vec)
           result-type:ptr null
           result-taint:ptr null
           has-fallthrough:i32 0
@@ -9958,8 +10090,8 @@
           ; subsequent pair (a failed null-test); `after` holds names to
           ; narrow past the cond (a terminated guard body whose predecessors
           ; all terminated too); all-term tracks the latter condition.
-          acc:ptr (make-vec)
-          after:ptr (make-vec)
+          (acc (ref (Vector ptr))) (make-vec)
+          (after (ref (Vector ptr))) (make-vec)
           all-term:i32 1
           i:i32 0)
       (while (< i npairs)
@@ -9994,7 +10126,7 @@
               (fprintf g-body-stream "%s:\n" then-lbl)
               (set! g-block-term 0)
               ; Inside the taken branch the test's non-null facts hold.
-              (let (tfacts:ptr (make-vec))
+              (let ((tfacts (ref (Vector ptr))) (make-vec))
                 (test-true-nonnull (cast ptr test-node) tfacts)
                 (narrow-names scope tfacts))))
           (let (bv:ref:Val (emit-node body-node scope)
@@ -10019,8 +10151,8 @@
                 (fprintf g-body-stream "  br label %%%s\n" join-lbl)
                 (fprintf g-body-stream "%s:\n" join-lbl)
                 (fprintf g-body-stream "  br label %%%s\n" end-lbl)
-                (vec-push vals (bv val))
-                (vec-push preds join-lbl)))
+                (conj vals (bv val))
+                (conj preds join-lbl)))
             (narrow-restore tmark)
             (when (= is-final-true 0)
               ; Failed tests hold for every later pair...
@@ -10045,7 +10177,7 @@
       ; If every branch terminated (no live phi incomings) and there is no
       ; fallthrough, end-lbl is unreachable — terminate it so callers know
       ; control does not flow past the cond.
-      (when (and (= ((cast ptr:Vec vals) len) 0) (= has-fallthrough 0))
+      (when (and (= (count vals) (cast usize 0)) (= has-fallthrough 0))
         (fprintf g-body-stream "  unreachable\n")
         (set! g-block-term 1))
       (if (or (= result-type null)
@@ -10053,16 +10185,14 @@
         (return (alloc-val ty-void null))
         (let (tmp:ptr (new-tmp)
               ty-ir:ptr (type-to-ir result-type)
-              vv:ptr:Vec (cast ptr:Vec vals)
-              pv:ptr:Vec (cast ptr:Vec preds)
-              k:i32 0)
+              k:usize (cast usize 0))
           (fprintf g-body-stream "  %s = phi %s " tmp ty-ir)
-          (while (< k (vv len))
-            (when (> k 0) (fprintf g-body-stream ", "))
+          (while (< k (count vals))
+            (when (> k (cast usize 0)) (fprintf g-body-stream ", "))
             (fprintf g-body-stream "[ %s, %%%s ]"
-              (aref (cast ptr:ptr (vv data)) k)
-              (aref (cast ptr:ptr (pv data)) k))
-            (inc! k))
+              (invoke vals k)
+              (invoke preds k))
+            (set! k (+ k (cast usize 1))))
           (when (= has-fallthrough 1)
             (fprintf g-body-stream ", [ undef, %%%s ]" fall-lbl))
           (fprintf g-body-stream "\n")
@@ -10100,7 +10230,7 @@
       ; The condition's non-null facts hold inside the body (re-established
       ; by the back-edge re-test); they are undone at loop exit.
       (let (wmark:i32 (narrow-mark)
-            wfacts:ptr (make-vec))
+            (wfacts (ref (Vector ptr))) (make-vec))
         (test-true-nonnull (node-at cc 1) wfacts)
         (narrow-names scope wfacts)
         (let (i:i32 2)
@@ -10262,13 +10392,12 @@
 ; ============================================================
 
 (defn lbl-find:?ptr:LabelEntry (name:ptr)
-  (let (v:ptr:Vec (cast ptr:Vec g-lbl-tbl)
-        i:i32 0)
-    (while (< i (v len))
-      (let (e:ptr:LabelEntry (cast ptr:LabelEntry (aref (cast ptr:ptr (v data)) i)))
+  (let (i:usize (cast usize 0))
+    (while (< i (count g-lbl-tbl))
+      (let (e:ptr:LabelEntry (cast ptr:LabelEntry (invoke g-lbl-tbl i)))
         (when (= (strcmp (e name) name) 0)
           (return (cast ptr e))))
-      (inc! i))
+      (set! i (+ i (cast usize 1))))
     (return null)))
 
 (defn lbl-add-occurrence:void (name:ptr)
@@ -10278,7 +10407,7 @@
         (.set! ne name name)
         (.set! ne total 0)
         (.set! ne seen 0)
-        (vec-push g-lbl-tbl (cast ptr ne))
+        (conj g-lbl-tbl (cast ptr ne))
         (set! e ne)))
     (.set! e total (+ (e total) 1))))
 
@@ -10371,18 +10500,18 @@
     (let (v:ref:Val (emit-node (node-at cc 1) scope))
       (when (!= ((cast ptr:Type (v type)) kind) TY-PTR)
         (die-at (cc line) "goto-ptr: arg must be ptr"))
-      (let (tbl:ptr:Vec (cast ptr:Vec g-lbl-tbl))
-        (when (= (tbl len) 0)
+      (do
+        (when (= (count g-lbl-tbl) (cast usize 0))
           (die-at (cc line) "goto-ptr: no labels declared in function"))
         (fprintf g-body-stream "  indirectbr ptr %s, [" (v val))
-        (let (i:i32 0
+        (let (i:usize (cast usize 0)
               first:i32 1)
-          (while (< i (tbl len))
-            (let (e:ptr:LabelEntry (cast ptr:LabelEntry (aref (cast ptr:ptr (tbl data)) i)))
+          (while (< i (count g-lbl-tbl))
+            (let (e:ptr:LabelEntry (cast ptr:LabelEntry (invoke g-lbl-tbl i)))
               (when (= first 0) (fprintf g-body-stream ","))
               (set! first 0)
               (fprintf g-body-stream " label %%lbl.%s" (e name)))
-            (inc! i)))
+            (set! i (+ i (cast usize 1)))))
         (fprintf g-body-stream " ]\n"))
       (let (dead:ptr (fmt-i32 "goto-ptr.dead%d" (new-label-id)))
         (fprintf g-body-stream "%s:\n" dead))
@@ -10994,59 +11123,17 @@
 ; on whether a given table stores interned names.
 ; ============================================================
 
-(defn special-form-named:i32 (name:ptr)
-  (when (or (= name "let") (= name "with")) (return 1))
-  (when (or (= name "do") (= name "cond")) (return 1))
-  (when (or (= name "return") (= name "while")) (return 1))
-  (when (or (= name "set!") (= name "inc!")) (return 1))
-  (when (or (= name "dec!") (= name "array")) (return 1))
-  (when (or (= name "label") (or (= name "goto") (= name "label-addr"))) (return 1))
-  (when (or (= name "goto-ptr") (or (= name ".") (= name ".&"))) (return 1))
-  (when (or (= name "quote") (= name "quasiquote")) (return 1))
-  (when (or (= name "not") (or (= name "and") (= name "or"))) (return 1))
-  (when (or (= name "cast") (= name "addr-of")) (return 1))
-  (when (or (= name "deref") (or (= name "ptr-set!") (= name "ptr+"))) (return 1))
-  (when (or (= name "_get") (= name ".set!")) (return 1))
-  (when (or (= name "sizeof") (or (= name "alloca") (= name "char"))) (return 1))
-  (when (or (= name "aref") (or (= name "aset!") (= name "gensym"))) (return 1))
-  (when (or (= name "funcall") (= name "funcall-void")) (return 1))
-  (when (or (= name "funcall-ptr-1") (= name "funcall-ptr-i32")) (return 1))
-  (when (or (= name "funcall-ptr-i64") (= name "funcall-ptr-ptr")) (return 1))
-  ; Stage 10 safety forms
-  (when (or (= name "some") (or (= name "as-ref") (= name "unwrap"))) (return 1))
-  (when (or (= name "unwrap-or") (or (= name "if-some") (= name "when-some"))) (return 1))
-  (when (or (= name "move") (= name "defer")) (return 1))
-  ; Stage 10 tagged sums
-  (when (or (= name "match") (or (= name "make") (= name "defunion"))) (return 1))
-  ; Stage 10 errors
-  (when (or (= name "deferror") (or (= name "err!") (= name "err-name"))) (return 1))
-  (when (or (= name "err-message") (= name "type-token")) (return 1))
-  (when (or (= name "__err-handled") (= name "signal")) (return 1))
-  ; top-level definer / structural keywords are reserved too
-  (when (or (= name "defn") (or (= name "defvar") (= name "defconst"))) (return 1))
-  (when (or (= name "defenum") (or (= name "defstruct") (= name "defmacro"))) (return 1))
-  (when (or (= name "defprotocol") (or (= name "extend") (= name "def-rmacro"))) (return 1))
-  (when (or (= name "import") (or (= name "include") (= name "extern"))) (return 1))
-  (when (or (= name "declare") (= name "compile-time")) (return 1))
-  (return 0))
+(defn special-form-named:i32 (name:CStr)
+  (return (contains? g-special-form-set name)))
 
-(defn primitive-type-named:i32 (name:ptr)
-  (when (or (= name "int") (= name "bool")) (return 1))
-  (when (or (= name "i1") (or (= name "i8") (= name "i16"))) (return 1))
-  (when (or (= name "i32") (= name "i64")) (return 1))
-  (when (or (= name "ui8") (or (= name "ui16") (= name "ui32"))) (return 1))
-  (when (= name "ui64") (return 1))
-  (when (or (= name "f32") (or (= name "f64") (= name "float"))) (return 1))
-  (when (or (= name "double") (or (= name "ptr") (= name "void"))) (return 1))
-  (when (= name "CStr") (return 1))
-  (when (= name "Err") (return 1))
-  (return 0))
+(defn primitive-type-named:i32 (name:CStr)
+  (return (contains? g-primitive-type-set name)))
 
 ; The kind currently associated with `name`, or NK-NONE. Highest-priority kind
 ; wins; a lower-priority definer will see the higher kind and report the clash.
 (defn name-existing-kind:i32 (name:ptr)
-  (when (!= (special-form-named name) 0) (return NK-SPECIAL))
-  (when (!= (primitive-type-named name) 0) (return NK-BUILTIN))
+  (when (!= (special-form-named (cast CStr name)) 0) (return NK-SPECIAL))
+  (when (!= (primitive-type-named (cast CStr name)) 0) (return NK-BUILTIN))
   (let (i:i32 0)
     (while (< i g-structs-len)
       (let (sd:ptr:StructDef (cast ptr:StructDef (ptr+ (cast ptr:StructDef g-structs) i)))
@@ -13395,7 +13482,72 @@
     (set! g-target-ptr-bytes (tg ptr-size))
     (set! g-host-ptr-bytes (hg ptr-size))))
 
+; Build the two name-kind membership sets used by special-form-named and
+; primitive-type-named. Called once from compiler-init before any parsing
+; occurs. The sets are heap-malloc'd and never dropped (batch-process lifetime).
+; Each set is allocated from the shared arena (one raw->ref cast per set) and
+; initialised with hashset-init-alloc so it owns its buffers through g-arena-alloc
+; (never dropped, process-lifetime). Members are inserted as bare string literals
+; (already CStr), and the typed globals need no per-insert cast.
+(defn init-name-sets:void ()
+  ; --- special-form-named set (72 members) ---
+  (set! g-special-form-set
+    (cast (ref (HashSet CStr))
+      (alloc-handle-alloc (addr-of g-arena-alloc) (sizeof (HashSet CStr)) (cast usize 8))))
+  (hashset-init-alloc g-special-form-set (addr-of g-arena-alloc))
+  (into g-special-form-set
+    #{ ; control flow / binding
+       "let" "with" "do" "cond" "return" "while"
+       ; mutation
+       "set!" "inc!" "dec!"
+       ; memory / pointers
+       "array" "label" "goto" "label-addr" "goto-ptr"
+       "." ".&" "cast" "addr-of" "deref"
+       "ptr-set!" "ptr+" "_get" ".set!"
+       "sizeof" "alloca" "aref" "aset!"
+       ; literals / quoting
+       "quote" "quasiquote" "char"
+       ; logic
+       "not" "and" "or"
+       ; macros / functions
+       "gensym" "funcall" "funcall-void"
+       "funcall-ptr-1" "funcall-ptr-i32" "funcall-ptr-i64" "funcall-ptr-ptr"
+       ; option / result
+       "some" "as-ref" "unwrap" "unwrap-or" "if-some" "when-some"
+       ; ownership / control
+       "move" "defer" "match" "make"
+       ; error handling
+       "defunion" "deferror" "err!" "err-name" "err-message"
+       "type-token" "__err-handled" "signal"
+       ; top-level definers
+       "defn" "defvar" "defconst" "defenum" "defstruct"
+       "defmacro" "defprotocol" "extend" "def-rmacro"
+       "import" "include" "extern" "declare" "compile-time" }
+    (HashSetIter CStr))
+  ; --- primitive-type-named set (19 members) ---
+  (set! g-primitive-type-set
+    (cast (ref (HashSet CStr))
+      (alloc-handle-alloc (addr-of g-arena-alloc) (sizeof (HashSet CStr)) (cast usize 8))))
+  (hashset-init-alloc g-primitive-type-set (addr-of g-arena-alloc))
+  (into g-primitive-type-set
+    #{ ; integer types
+       "int" "bool" "i1" "i8" "i16" "i32" "i64"
+       "ui8" "ui16" "ui32" "ui64"
+       ; float types
+       "f32" "f64" "float" "double"
+       ; pointer / special
+       "ptr" "void" "CStr" "Err" }
+    (HashSetIter CStr)))
+
 (defn compiler-init:void ()
+  ; Shared arena allocator handle. Must be first: every compiler collection (the
+  ; name-kind HashSets built by init-name-sets, and every make-vec) is
+  ; constructed against it, so it has to be live before any of them.
+  (arena-allocator (addr-of g-arena-alloc))
+  ; Membership sets for special-form-named / primitive-type-named predicates.
+  ; Must be first: name-shadowing checks call these predicates as soon as any
+  ; top-level definer is encountered.
+  (init-name-sets)
   ; Target descriptor (single source of truth for the "pointer is i64"
   ; assumption). target-init below resolves it from LLVM (host, or --target).
   (set! g-target-triple "x86_64-pc-linux-gnu")

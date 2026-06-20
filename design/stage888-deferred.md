@@ -83,3 +83,8 @@ is a data-table + algorithm effort disproportionate to the first string release.
 `collections.md` already flagged `upcase`/`downcase` as "Unicode/locale-fraught."
 Grapheme-cluster segmentation and NFC/NFD normalization belong to the same future
 Unicode-tables library.
+
+### Seq
+
+I really want strings to be Seq, or to add another protocol. It should be possible to `doseq` a string.
+
