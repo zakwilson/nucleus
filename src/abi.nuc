@@ -1,0 +1,412 @@
+; ABI lowering — SysV x86_64 struct-by-value classification and coercion.
+; Source-imported by src/nucleusc.nuc after basic type functions are defined.
+
+; ============================================================
+; Aggregate ABI lowering — x86_64 System V (Stage 8 Phase C)
+; ============================================================
+; Struct-by-value parameters and returns must follow the platform C ABI, not
+; LLVM's default by-value aggregate passing (which is not ABI-correct). The
+; classifier below ports clang's eightbyte model: a struct ≤16 bytes is split
+; into one or two eightbytes, each classified INTEGER or SSE and coerced to a
+; register type; >16 bytes goes through memory (byval param / sret return).
+; Only TY-STRUCT is ever non-DIRECT, so every scalar/pointer path is unchanged.
+; See design/stage8/platform.md for the reverse-engineered coercion table.
+
+; Round x up to a multiple of a (a is a power of two in practice, but the
+; arithmetic form works for any positive a).
+(defn abi-align-up:i32 (x:i32 a:i32)
+  (when (<= a 1) (return x))
+  (return (* (/ (+ x (- a 1)) a) a)))
+
+; ABI alignment of a type in bytes. Scalars use their natural alignment
+; (== size); pointers/functions use the target pointer alignment; structs use
+; the max alignment of any field.
+(defn abi-alignof:i32 (t:ptr)
+  (let (k:i32 ((cast ptr:Type t) kind))
+    (when (= k TY-STRUCT)
+      (return (abi-struct-align (cast ptr:StructDef ((cast ptr:Type t) sdef)))))
+    ; A union's alignment is its max member alignment — the same computation
+    ; abi-struct-align performs, so it is shared.
+    (when (= k TY-UNION)
+      (return (abi-struct-align (cast ptr:StructDef ((cast ptr:Type t) sdef)))))
+    (when (= k TY-PTR)  (return g-target-ptr-bytes))
+    (when (= k TY-CSTR) (return g-target-ptr-bytes))
+    (when (= k TY-FN)   (return g-target-ptr-bytes))
+    (return (type-size t))))
+
+; ABI size of a type in bytes. Unlike type-size (which returns the pointer size
+; for any struct, sufficient for its by-reference slots), this walks struct
+; fields so the classifier sees the real aggregate size.
+(defn abi-sizeof:i32 (t:ptr)
+  (let (k:i32 ((cast ptr:Type t) kind))
+    (when (= k TY-STRUCT)
+      (return (abi-struct-size (cast ptr:StructDef ((cast ptr:Type t) sdef)))))
+    (when (= k TY-UNION)
+      (return (abi-union-size (cast ptr:StructDef ((cast ptr:Type t) sdef)))))
+    (when (= k TY-FN) (return g-target-ptr-bytes))
+    (return (type-size t))))
+
+; ABI size of an untagged union: the max member size, rounded up to the union's
+; own (max member) alignment.
+(defn abi-union-size:i32 (sd:ptr)
+  (let (sdd:ptr:StructDef (cast ptr:StructDef sd)
+        n:i32 (sdd num-fields)
+        mx:i32 0
+        i:i32 0)
+    (while (< i n)
+      (let (fsz:i32 (abi-sizeof (aref (cast ptr:ptr (sdd field-types)) i)))
+        (when (> fsz mx) (set! mx fsz)))
+      (inc! i))
+    (return (abi-align-up mx (abi-struct-align sd)))))
+
+; Max field alignment of a struct (its own ABI alignment).
+(defn abi-struct-align:i32 (sd:ptr)
+  (let (sdd:ptr:StructDef (cast ptr:StructDef sd)
+        n:i32 (sdd num-fields)
+        a:i32 1
+        i:i32 0)
+    (while (< i n)
+      (let (fa:i32 (abi-alignof (aref (cast ptr:ptr (sdd field-types)) i)))
+        (when (> fa a) (set! a fa)))
+      (inc! i))
+    (return a)))
+
+; ABI size of a struct: fields laid out with natural padding, total rounded up
+; to the struct's own alignment (tail padding included).
+(defn abi-struct-size:i32 (sd:ptr)
+  (let (sdd:ptr:StructDef (cast ptr:StructDef sd)
+        n:i32 (sdd num-fields)
+        off:i32 0
+        i:i32 0)
+    (while (< i n)
+      (let (ft:ptr (aref (cast ptr:ptr (sdd field-types)) i)
+            fa:i32 (abi-alignof ft))
+        (set! off (abi-align-up off fa))
+        (set! off (+ off (abi-sizeof ft))))
+      (inc! i))
+    (return (abi-align-up off (abi-struct-align sd)))))
+
+; Classify the eightbyte covering absolute bytes [lo, lo+8) against the fields
+; of struct sd placed at absolute base offset `base`. Recurses into nested
+; struct fields by absolute offset. Returns a class code: 0 none, 1 SSE/float,
+; 2 SSE/double, 3 INTEGER. Higher wins (INTEGER beats SSE; double beats float).
+(defn abi-class-eightbyte:i32 (sd:ptr base:i32 lo:i32)
+  (let (sdd:ptr:StructDef (cast ptr:StructDef sd)
+        n:i32 (sdd num-fields)
+        hi:i32 (+ lo 8)
+        off:i32 0
+        cls:i32 0
+        i:i32 0)
+    (while (< i n)
+      ; Union members all live at offset 0 — neutralize the running offset so
+      ; every member is classified against the same base (SysV merges the
+      ; classes of all members, which the max-merge below already does).
+      (when (!= (sdd is-union) 0) (set! off 0))
+      (let (ft:ptr (aref (cast ptr:ptr (sdd field-types)) i)
+            fa:i32 (abi-alignof ft)
+            fsz:i32 (abi-sizeof ft))
+        (set! off (abi-align-up off fa))
+        (let (fabs:i32 (+ base off)
+              fk:i32 ((cast ptr:Type ft) kind))
+          ; Does this field overlap [lo, hi)?
+          (when (and (< fabs hi) (> (+ fabs fsz) lo))
+            (if (or (= fk TY-STRUCT) (= fk TY-UNION))
+              (let (sub:i32 (abi-class-eightbyte
+                              (cast ptr:StructDef ((cast ptr:Type ft) sdef)) fabs lo))
+                (when (> sub cls) (set! cls sub)))
+              (if (!= (is-float-type ft) 0)
+                (let (fc:i32 (if (= fk TY-F64) 2 1))
+                  (when (> fc cls) (set! cls fc)))
+                (set! cls 3)))))     ; integer / pointer → INTEGER
+        (set! off (+ off fsz)))
+      (inc! i))
+    (return cls)))
+
+; Coercion IR type for one eightbyte: class `cls` holding `n` bytes (1..8).
+; INTEGER → i(8·n) for n ≤ 4 (i8/i16/i24/i32), else i64. SSE/double → double.
+; SSE/float → <2 x float> when the eightbyte is full, else float.
+(defn abi-eightbyte-ir:ptr (cls:i32 n:i32)
+  (when (= cls 2) (return "double"))
+  (when (= cls 1)
+    (if (= n 8) (return "<2 x float>") (return "float")))
+  (if (<= n 4)
+    (return (fmt-i32 "i%d" (* n 8)))
+    (return "i64")))
+
+; Classify a type for the SysV aggregate ABI. Returns an AbiInfo*. Non-struct
+; types are ABI-DIRECT (byte-identical to pre-ABI codegen).
+(defn abi-classify:ptr (t:ptr)
+  (let (info:ptr:AbiInfo (cast ptr:AbiInfo (arena-alloc (sizeof AbiInfo))))
+    (.set! info kind ABI-DIRECT)
+    (.set! info reg0 null)
+    (.set! info reg1 null)
+    (.set! info size 0)
+    (.set! info align 0)
+    (when (and (!= ((cast ptr:Type t) kind) TY-STRUCT)
+               (!= ((cast ptr:Type t) kind) TY-UNION))
+      (return (cast ptr info)))
+    (let (sd:ptr (cast ptr ((cast ptr:Type t) sdef))
+          sz:i32 (abi-sizeof t)
+          al:i32 (abi-alignof t))
+      (.set! info size sz)
+      (.set! info align al)
+      (when (> sz 16)
+        (.set! info kind ABI-MEMORY)
+        (return (cast ptr info)))
+      (let (n0:i32 (if (< sz 8) sz 8)
+            c0:i32 (abi-class-eightbyte (cast ptr:StructDef sd) 0 0))
+        (.set! info reg0 (abi-eightbyte-ir c0 n0)))
+      (when (<= sz 8)
+        (.set! info kind ABI-COERCE1)
+        (return (cast ptr info)))
+      (let (n1:i32 (- sz 8)
+            c1:i32 (abi-class-eightbyte (cast ptr:StructDef sd) 0 8))
+        (.set! info reg1 (abi-eightbyte-ir c1 n1)))
+      (.set! info kind ABI-COERCE2)
+      (return (cast ptr info)))))
+
+; Return type string for a function signature given its return AbiInfo: void for
+; MEMORY (the value goes through the sret pointer), the coercion reg(s) for
+; COERCE, or the plain type for DIRECT.
+(defn abi-ret-ir:ptr (info:ptr ret:ptr)
+  (let (k:i32 ((cast ptr:AbiInfo info) kind))
+    (when (= k ABI-MEMORY)  (return "void"))
+    (when (= k ABI-COERCE1) (return ((cast ptr:AbiInfo info) reg0)))
+    (when (= k ABI-COERCE2)
+      (return (fmt-2s "{ %s, %s }"
+                ((cast ptr:AbiInfo info) reg0) ((cast ptr:AbiInfo info) reg1))))
+    (return (type-to-ir ret))))
+
+; Print one lowered parameter to g-out. `name` is the param name for a `define`
+; (emits the `%name.arg` operand) or null for a `declare` (types only). COERCE2
+; expands to two comma-separated entries; the caller supplies the leading comma.
+(defn abi-print-param:void (info:ptr ptype:ptr name:ptr)
+  (let (ii:ptr:AbiInfo (cast ptr:AbiInfo info)
+        k:i32 ((cast ptr:AbiInfo info) kind))
+    (when (= k ABI-DIRECT)
+      (if (= name null)
+        (fprintf g-out "%s" (type-to-ir ptype))
+        (fprintf g-out "%s %%%s.arg" (type-to-ir ptype) name))
+      (return))
+    (when (= k ABI-MEMORY)
+      (if (= name null)
+        (fprintf g-out "ptr byval(%s) align %d" (type-to-ir ptype) (ii align))
+        (fprintf g-out "ptr byval(%s) align %d %%%s.arg" (type-to-ir ptype) (ii align) name))
+      (return))
+    (when (= k ABI-COERCE1)
+      (if (= name null)
+        (fprintf g-out "%s" (ii reg0))
+        (fprintf g-out "%s %%%s.arg" (ii reg0) name))
+      (return))
+    ; COERCE2
+    (if (= name null)
+      (fprintf g-out "%s, %s" (ii reg0) (ii reg1))
+      (fprintf g-out "%s %%%s.arg.0, %s %%%s.arg.1" (ii reg0) name (ii reg1) name))))
+
+; Emit the entry-block reconstruction for one parameter into its `.addr` slot,
+; and bind it in fn-scope. DIRECT keeps the prior alloca+store (byte-identical).
+; MEMORY binds the byval pointer directly (it already points at the copy).
+; COERCE allocas the struct and stores the register arg(s) at their offsets.
+(defn abi-emit-param-prologue:void (fn-scope:ref:Scope pname:ptr ptype:ptr)
+  (let (info:ptr:AbiInfo (cast ptr:AbiInfo (abi-classify ptype))
+        k:i32 ((cast ptr:AbiInfo (abi-classify ptype)) kind)
+        slot:ptr (fmt-s "%%%s.addr" pname)
+        arg:ptr (fmt-s "%%%s.arg" pname))
+    (when (= k ABI-DIRECT)
+      (let (palign:i32 (type-size ptype))
+        (fprintf g-entry-stream "  %s = alloca %s, align %d\n" slot (type-to-ir ptype) palign)
+        (fprintf g-entry-stream "  store %s %s, ptr %s, align %d\n"
+          (type-to-ir ptype) arg slot palign)
+        (scope-define fn-scope pname ptype slot 1))
+      (return))
+    (when (= k ABI-MEMORY)
+      (scope-define fn-scope pname ptype arg 1)
+      (return))
+    ; COERCE1 / COERCE2: materialize the register arg(s) back into a struct slot.
+    (fprintf g-entry-stream "  %s = alloca %s\n" slot (type-to-ir ptype))
+    (if (= k ABI-COERCE1)
+      (fprintf g-entry-stream "  store %s %s, ptr %s\n" ((cast ptr:AbiInfo info) reg0) arg slot)
+      (let (gp:ptr null)
+        (fprintf g-entry-stream "  store %s %%%s.arg.0, ptr %s\n"
+          ((cast ptr:AbiInfo info) reg0) pname slot)
+        (set! gp (new-tmp))
+        (fprintf g-entry-stream "  %s = getelementptr i8, ptr %s, i64 8\n" gp slot)
+        (fprintf g-entry-stream "  store %s %%%s.arg.1, ptr %s\n"
+          ((cast ptr:AbiInfo info) reg1) pname gp)))
+    (scope-define fn-scope pname ptype slot 1)))
+
+; Emit a struct return for the current function per g-fn-ret-abi. `v` is the
+; first-class struct value to return. MEMORY stores it through the sret pointer
+; and returns void; COERCE rounds it through memory and returns the reg(s).
+(defn emit-struct-ret:void (v:ptr)
+  (let (vv:ptr:Val (cast ptr:Val v)
+        info:ptr:AbiInfo (cast ptr:AbiInfo g-fn-ret-abi)
+        k:i32 ((cast ptr:AbiInfo g-fn-ret-abi) kind)
+        ty:ptr (type-to-ir ((cast ptr:Val v) type)))
+    (when (= k ABI-MEMORY)
+      (fprintf g-body-stream "  store %s %s, ptr %s\n" ty (vv val) g-fn-sret-name)
+      (fprintf g-body-stream "  ret void\n")
+      (return))
+    (let (tmp:ptr (new-tmp))
+      (fprintf g-entry-stream "  %s = alloca %s\n" tmp ty)
+      (fprintf g-body-stream "  store %s %s, ptr %s\n" ty (vv val) tmp)
+      (if (= k ABI-COERCE1)
+        (let (r:ptr (new-tmp))
+          (fprintf g-body-stream "  %s = load %s, ptr %s\n" r (info reg0) tmp)
+          (fprintf g-body-stream "  ret %s %s\n" (info reg0) r))
+        ; COERCE2: load both eightbytes, build the {reg0,reg1} return aggregate.
+        (let (r0:ptr (new-tmp)
+              gp:ptr null
+              r1:ptr null
+              a0:ptr null
+              a1:ptr null)
+          (fprintf g-body-stream "  %s = load %s, ptr %s\n" r0 (info reg0) tmp)
+          (set! gp (new-tmp))
+          (fprintf g-body-stream "  %s = getelementptr i8, ptr %s, i64 8\n" gp tmp)
+          (set! r1 (new-tmp))
+          (fprintf g-body-stream "  %s = load %s, ptr %s\n" r1 (info reg1) gp)
+          (set! a0 (new-tmp))
+          (fprintf g-body-stream "  %s = insertvalue { %s, %s } undef, %s %s, 0\n"
+            a0 (info reg0) (info reg1) (info reg0) r0)
+          (set! a1 (new-tmp))
+          (fprintf g-body-stream "  %s = insertvalue { %s, %s } %s, %s %s, 1\n"
+            a1 (info reg0) (info reg1) a0 (info reg1) r1)
+          (fprintf g-body-stream "  ret { %s, %s } %s\n" (info reg0) (info reg1) a1))))))
+
+; Build the LLVM call-argument fragment for one already-emitted argument Val,
+; emitting any materialization/coercion instructions as a side effect. Scalars
+; and pointers return "<ty> <val>" unchanged; a struct is materialized to memory
+; and lowered to byval / register load(s) per its AbiInfo.
+(defn abi-arg-frag:ptr (av:ptr)
+  (let (a:ptr:Val (cast ptr:Val av)
+        info:ptr:AbiInfo (cast ptr:AbiInfo (abi-classify ((cast ptr:Val av) type)))
+        k:i32 ((cast ptr:AbiInfo (abi-classify ((cast ptr:Val av) type))) kind))
+    (when (= k ABI-DIRECT)
+      (return (fmt-2s "%s %s" (type-to-ir (a type)) (a val))))
+    (let (ty:ptr (type-to-ir (a type))
+          addr:ptr (new-tmp))
+      (fprintf g-entry-stream "  %s = alloca %s\n" addr ty)
+      (fprintf g-body-stream "  store %s %s, ptr %s\n" ty (a val) addr)
+      (when (= k ABI-MEMORY)
+        (return (fmt-2s "%s %s" (fmt-sd "ptr byval(%s) align %d" ty (info align)) addr)))
+      (when (= k ABI-COERCE1)
+        (let (r:ptr (new-tmp))
+          (fprintf g-body-stream "  %s = load %s, ptr %s\n" r (info reg0) addr)
+          (return (fmt-2s "%s %s" (info reg0) r))))
+      ; COERCE2
+      (let (r0:ptr (new-tmp)
+            gp:ptr null
+            r1:ptr null)
+        (fprintf g-body-stream "  %s = load %s, ptr %s\n" r0 (info reg0) addr)
+        (set! gp (new-tmp))
+        (fprintf g-body-stream "  %s = getelementptr i8, ptr %s, i64 8\n" gp addr)
+        (set! r1 (new-tmp))
+        (fprintf g-body-stream "  %s = load %s, ptr %s\n" r1 (info reg1) gp)
+        (return (fmt-2s "%s, %s"
+                  (fmt-2s "%s %s" (info reg0) r0)
+                  (fmt-2s "%s %s" (info reg1) r1)))))))
+
+; Emit a direct call whose return is a struct lowered per `info`, reconstruct
+; the first-class struct value, and return its Val. `arglist` is the already
+; built scalar/coerced argument string; `nargs` is the count it holds (so a
+; MEMORY sret prefix knows whether it needs a separating comma).
+(defn abi-emit-struct-call:ref:Val (info:ptr ret:ptr ir-name:ptr arglist:ptr nargs:i32)
+  (let (ii:ptr:AbiInfo (cast ptr:AbiInfo info)
+        k:i32 ((cast ptr:AbiInfo info) kind)
+        ty:ptr (type-to-ir ret))
+    (when (= k ABI-MEMORY)
+      (let (slot:ptr (new-tmp)
+            sep:ptr "")
+        (fprintf g-entry-stream "  %s = alloca %s\n" slot ty)
+        (when (> nargs 0) (set! sep ", "))
+        (fprintf g-body-stream "  call void %s(ptr sret(%s) align %d %s%s%s)\n"
+          ir-name ty (ii align) slot sep arglist)
+        (let (v:ptr (new-tmp))
+          (fprintf g-body-stream "  %s = load %s, ptr %s\n" v ty slot)
+          (return (alloc-val ret v)))))
+    (when (= k ABI-COERCE1)
+      (let (tmp:ptr (new-tmp))
+        (fprintf g-body-stream "  %s = call %s %s(%s)\n" tmp (ii reg0) ir-name arglist)
+        (let (slot:ptr (new-tmp))
+          (fprintf g-entry-stream "  %s = alloca %s\n" slot ty)
+          (fprintf g-body-stream "  store %s %s, ptr %s\n" (ii reg0) tmp slot)
+          (let (v:ptr (new-tmp))
+            (fprintf g-body-stream "  %s = load %s, ptr %s\n" v ty slot)
+            (return (alloc-val ret v))))))
+    ; COERCE2: call returns {reg0,reg1}; split it back into the struct slot.
+    (let (rty:ptr (fmt-2s "{ %s, %s }" (ii reg0) (ii reg1))
+          tmp:ptr (new-tmp))
+      (fprintf g-body-stream "  %s = call %s %s(%s)\n" tmp rty ir-name arglist)
+      (let (slot:ptr (new-tmp)
+            e0:ptr null
+            gp:ptr null
+            e1:ptr null
+            v:ptr null)
+        (fprintf g-entry-stream "  %s = alloca %s\n" slot ty)
+        (set! e0 (new-tmp))
+        (fprintf g-body-stream "  %s = extractvalue %s %s, 0\n" e0 rty tmp)
+        (fprintf g-body-stream "  store %s %s, ptr %s\n" (ii reg0) e0 slot)
+        (set! gp (new-tmp))
+        (fprintf g-body-stream "  %s = getelementptr i8, ptr %s, i64 8\n" gp slot)
+        (set! e1 (new-tmp))
+        (fprintf g-body-stream "  %s = extractvalue %s %s, 1\n" e1 rty tmp)
+        (fprintf g-body-stream "  store %s %s, ptr %s\n" (ii reg1) e1 gp)
+        (set! v (new-tmp))
+        (fprintf g-body-stream "  %s = load %s, ptr %s\n" v ty slot)
+        (return (alloc-val ret v))))))
+
+; Try to coerce a value to a target type. Returns a Val* or null on failure.
+; Handles: same kind (identity), int-to-int (trunc/sext/zext), same-width sign change.
+(defn coerce-int-val:?ptr:Val (v:ptr target:ptr line:i32)
+  (let (vv:ptr:Val (cast ptr:Val v)
+        src:ptr (vv type)
+        sk:i32 (-> src (cast ptr:Type _) (_ kind))
+        dk:i32 (-> target (cast ptr:Type _) (_ kind)))
+    ; Stage 10: pointer-kind flow gate — raw/Maybe may not flow into a
+    ; non-null (ref T) slot. Engages only when the destination is ref, so
+    ; every pre-Stage-10 path is untouched.
+    (when (= dk TY-PTR)
+      (pkind-flow-check src target line "assignment"))
+    ; Same kind — identity
+    (when (= sk dk) (return v))
+    ; CStr is an opaque char* — freely interconvertible with a plain pointer,
+    ; no IR (both lower to `ptr`). Keeps string literals (CStr) usable wherever a
+    ; ptr is expected, and a ptr usable where a CStr slot is declared.
+    (when (or (and (= sk TY-CSTR) (= dk TY-PTR))
+              (and (= sk TY-PTR) (= dk TY-CSTR)))
+      (let (rv:ptr:Val (cast ptr:Val (alloc-val target (vv val))))
+        (.set! rv taint (vv taint))
+        (return (cast ptr rv))))
+    ; Both integers — emit cast if needed
+    (when (and (!= (is-int-type src) 0) (!= (is-int-type target) 0))
+      (let (sw:i32 (int-width src) dw:i32 (int-width target))
+        (when (= sw dw)
+          ; Same width, different signedness — reinterpret (no IR needed)
+          (return (alloc-val target (vv val))))
+        (let (tmp:ptr (new-tmp)
+              instr:ptr null)
+          (if (< dw sw)
+            (set! instr "trunc")
+            (if (!= (is-unsigned src) 0)
+              (set! instr "zext")
+              (set! instr "sext")))
+          (fprintf g-body-stream "  %s = %s %s %s to %s\n"
+            tmp instr (type-to-ir src) (vv val) (type-to-ir target))
+          (return (alloc-val target tmp)))))
+    ; Not compatible
+    (return null)))
+
+(defn register-struct:ref:StructDef (name:ptr)
+  (when (>= g-structs-len MAX-STRUCTS)
+    (fprintf stderr "nucleusc: too many structs\n") (exit 1))
+  (let (sd:ptr:StructDef (cast ptr:StructDef (ptr+ (cast ptr:StructDef g-structs) g-structs-len)))
+    (.set! sd name name)
+    (.set! sd num-fields 0)
+    (.set! sd emitted 0)
+    (.set! sd is-union 0)
+    (.set! sd udef null)
+    (.set! sd origin-template null)
+    (.set! sd origin-args null)
+    (.set! sd origin-nargs 0)
+    (inc! g-structs-len)
+    (return (cast ref:StructDef sd))))

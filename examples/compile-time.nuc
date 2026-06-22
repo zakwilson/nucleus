@@ -1,5 +1,5 @@
 ; Demonstrate (compile-time ...) — code that runs during compilation.
-(include stdio)
+(import-use "stdio.h")
 
 ; Simple expression at compile time
 (compile-time

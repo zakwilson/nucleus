@@ -104,7 +104,7 @@ substituted by concrete types — once per distinct instantiation, and cached.
 Statically dispatched, zero runtime overhead.
 
 ```lisp
-(import numeric)                          ; Eq / Ord / Num over the operators
+(import-use numeric)                      ; Eq / Ord / Num over the operators
 
 (defn maxv:T (a:T b:T &where (Ord T))     ; T is a type variable bounded by Ord
   (if (< a b) b a))                       ; operators dispatch on T directly

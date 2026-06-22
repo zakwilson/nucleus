@@ -15,7 +15,7 @@ By default `nucleusc <file.nuc>` produces a linked native executable (`a.out` un
 | `-ffast-math` | Emit `fast` flags on floating-point arithmetic (`fadd`/`fsub`/`fmul`/`fdiv`/`frem`), permitting reassociation, contraction, and no-signed-zero/no-NaN assumptions. This is what lets the optimizer vectorize FP **reductions** (e.g. `pi += …`); without it an FP reduction stays scalar even at `-O3` because reordering would change results. Comparisons are left unflagged. Changes numerical results — opt-in only. |
 | `-march=native` | Target the host CPU and its full feature set (via `LLVMGetHostCPUName` / `LLVMGetHostCPUFeatures`) instead of the generic baseline, so vectorized loops use the widest available registers (e.g. 256-bit AVX rather than 128-bit SSE2). Host-only — do not combine with `--target=`. Produces non-portable objects. |
 | `--emit-nuch` | Output a `.nuch` header instead of compiling. Extracts function signatures, struct definitions, constants, enums, and macros. |
-| `--emit-cheader` | Output a C header (`.h`) instead of compiling. Emits `#pragma once`, `#include <stdint.h>`, typedefs for structs, extern function declarations, `extern` declarations for `defvar` and `extern` globals, `#define` constants, and enums. |
+| `--emit-cheader` | Output a C header (`.h`) instead of compiling. Emits `#pragma once`, `#include <stdint.h>`, typedefs for structs, extern function declarations, `extern` declarations for `defvar` and `extern` globals, `#define` constants, and enums. For a namespaced library, function declarations use the C-legal mangled link name (`geom__area`, not the Nucleus name `geom/area`), so a C consumer links against the same symbol the library emits. |
 | `-i` / `--interactive` | Start the REPL (interactive Read-Eval-Print Loop). |
 | `-I<path>` / `-I <path>` | Add a directory to the import search path. Searched after the source file's directory and `lib/`. |
 | `--repl-format=text\|json` | Format for REPL error output. Default `text` (legacy `  error: <msg>` lines). With `json`, each error is emitted as a single-line JSON object: `{"file":..,"line":..,"message":..}`. Suitable for agent-driven REPL sessions. |
@@ -25,15 +25,15 @@ By default `nucleusc <file.nuc>` produces a linked native executable (`a.out` un
 
 Start with `nucleusc -i`. The REPL reads one form at a time, JIT-compiles it, and prints the result. Multi-line input is supported (the REPL detects unbalanced parentheses and prompts for continuation lines with `...>`).
 
-Supported top-level forms in the REPL: `defn`, `defvar`, `defconst`, `defenum`, `defstruct`, `include`, `extern`, `import`, `defmacro`, `def-rmacro`, `compile-time`, `macroexpand`, `macroexpand-1`, `macroexpand-all`. Any other form (including bare symbols, integers, and function calls) is evaluated as an expression.
+Supported top-level forms in the REPL: `defn`, `defvar`, `defconst`, `defenum`, `defstruct`, `extern`, `import`, `import-use`, `import-prefixed`, `import-only`, `unsafe-import-private`, `defmacro`, `def-rmacro`, `compile-time`, `macroexpand`, `macroexpand-1`, `macroexpand-all`. Any other form (including bare symbols, integers, and function calls) is evaluated as an expression.
 
 Result printing is type-aware: integer kinds print as decimal, string literals print as `"..."` with escapes, quoted forms (`'foo`, `(quote ...)`) print using the AST printer, and other pointer values print as `#<ptr 0x...>`. The reader rejects `#<...>` syntax with a clear error so a printed unreadable value can't silently round-trip as input.
 
 `macroexpand` / `macroexpand-1` print the expansion of a quoted form. `(macroexpand '(when c b))` expands to fixpoint; `(macroexpand-1 '(when c b))` expands one step. An optional integer second arg overrides the depth: `(macroexpand 'form 2)` expands at most twice; `(macroexpand 'form -1)` expands to fixpoint. Subforms are not recursed into (matches Common Lisp `macroexpand`). If the form is not a macro call (head is missing or not a registered macro), the REPL prints `not a macro call: <form>` rather than echoing the input unchanged. `macroexpand-all` expands the head to fixpoint and then recursively expands every subform; quoted/quasiquoted forms are left untouched.
 
-Functions defined in the REPL persist across inputs and can call each other. All libc functions (stdio, stdlib, string, ctype, unistd) are pre-loaded — no `(include ...)` needed.
+Functions defined in the REPL persist across inputs and can call each other. All libc functions (stdio, stdlib, string, ctype, unistd) are pre-loaded — no `(import-use ...)` needed.
 
-Imported libraries work: `(import mathlib)` makes `square`, `cube`, etc. available. The standard macros (`if`, `when`, `unless`, `for`, `dotimes`, `->`) are auto-imported at REPL startup, so they're usable without `(import macros)`. The `Node` struct and `NODE-*` constants are pre-registered for macro support.
+Imported libraries work: `(import-use mathlib)` makes `square`, `cube`, etc. available. The standard macros (`if`, `when`, `unless`, `for`, `dotimes`, `->`) are auto-imported at REPL startup, so they're usable without `(import-use macros)`. The `Node` struct and `NODE-*` constants are pre-registered for macro support.
 
 Errors in the REPL are caught and recovered; the REPL continues after an error (including source syntax errors, IR parse errors, and JIT errors). Source syntax errors recover as an ordinary value path: the reader returns a `!T` (Stage 10 E4) rather than aborting, so an unbalanced `)` or an unterminated form reports its diagnostic and the session keeps going. With `--repl-format=json`, each REPL-level error (missing form arg, JIT lookup failure, recovered error) is emitted as a single-line JSON object on stderr.
 
@@ -49,7 +49,7 @@ For tooling and interactive use, the REPL recognizes these forms in addition to 
 | `(dir)` | List every known name (globals, macros, structs) with a one-line summary. Functions show signatures with parameter names; consts show values. |
 | `(apropos "needle")` | Substring search across known names AND docstrings; prints summaries (and the docstring) for matches. The arg may be a string or symbol. |
 | `(complete "prefix")` | Prefix search; prints just the matching names — useful for editor completion. |
-| `(imports)` | Print resolved paths of all `(import name)` entries, one per line. |
+| `(imports)` | Print resolved paths of all `import`/`import-use` entries, one per line. |
 | `(casts)` | Print every registered `defcast` rule as `from -> to via fn`. |
 | `(expansion-of form)` | Like `(macroexpand-all 'form)` but takes the form unquoted. |
 | `(last-error)` | Print the most recent recovered REPL error (line + message), or `(none)`. JSON-formatted under `--repl-format=json`. |
@@ -63,7 +63,7 @@ Functions can be redefined. Redefining a `defn` confirms with `redefined` (vs. `
 Limitations:
 - Functions need explicit `(return ...)` to return values (same as batch mode).
 - Redefining a function with a different signature is allowed by the REPL but existing callers were compiled against the old signature; calls through them have undefined behavior. Restart the session if the type changes.
-- `(import node)` brings in the AST utilities (`make-cell`, `node-at`, `node-len`, `node-is-list`); they allocate via `arena-alloc` and the arena initializes lazily on first call.
+- `(import-use node)` brings in the AST utilities (`make-cell`, `node-at`, `node-len`, `node-is-list`); they allocate via `arena-alloc` and the arena initializes lazily on first call.
 - stdout from JIT'd code is line-buffered (`setvbuf(stdout, NULL, _IOLBF, 0)` is called on REPL startup) so printf output appears immediately in both terminal and pipe-driven sessions.
 
 ## .nuch Header Format
@@ -84,3 +84,16 @@ Supported forms: `declare` (function signatures), `defstruct`, `defconst`, `defe
 ```
 
 Importing a `.nuch` with `defmethod` forms registers the methods for dispatch in the importing unit and emits an LLVM `declare` under each mangled symbol (resolved at link time). Imported `defprotocol` forms re-register the protocol; imported `extend` forms with a *concrete* subject record the conformance fact without re-checking it (the exporting unit already verified it). An imported `extend` whose subject is a struct *template* (`(extend (Vector T) (Seq T))`, or an associated-type combinator `(extend (MapIter I F) (Iterator E) &where …)`) is re-run as a template conformance: the exporter cannot serialize the recovered args for instances it never stamped, so the importer re-registers the template conformance (carrying any `&where` clause, which is exported verbatim on the `extend` form) and recovers the per-instance args at stamp time when it stamps a concrete instance locally. Imported `defcast` forms re-register the cast rule; imported `extern` forms emit an `external global`. See [Polymorphism](generics.md#polymorphism-overloaded-defn-multimethods) and [Protocols](generics.md#protocols-defprotocol-and-extend).
+
+### Namespaced libraries (`.nuch` round-trip)
+
+When the source declares a namespace, its public symbols emit *mangled* link names (`geom/area` → `@geom__area`; see [namespaces](#namespaces)). The `.nuch` carries that namespace so an importer re-resolves the symbols under the correct link name: the header opens with the namespace directive (and a `set-ir-prefix` line if the library overrode the default prefix), and the importer's `do-import` re-runs the **same** ir-name computation while that namespace is current.
+
+```lisp
+; .nuch header for lib/nsgeom.nuc
+(ns geom)
+(declare (area i32) ((w i32) (h i32)))
+(declare (perimeter i32) ((w i32) (h i32)))
+```
+
+Importing this with `(import-prefixed "nsgeom.nuch" g)` makes `g/area` resolve to `@geom__area` — matching the link name in the library's `.o`. Overloaded methods already carry their fully-mangled symbol on the `defmethod` form (`@geom__area.i32.i32`), so they round-trip unchanged; the `(ns …)` line additionally fixes the link name of *solitary* `declare`d functions and `extern` globals (which the importer otherwise rebuilds from the bare name). A library in the default `user` namespace emits **no** `(ns …)` line and bare names, so its header is byte-identical to before.

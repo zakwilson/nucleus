@@ -14,7 +14,7 @@
 ; `parse-error` is the value-channel signal callers `try`/`match` on. `die-at`
 ; itself stays the panic tier for unrecoverable compiler bugs elsewhere.
 
-(import error)
+(import-use error)
 
 (deferror parse-error "parse error")
 

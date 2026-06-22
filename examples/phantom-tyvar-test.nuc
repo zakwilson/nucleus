@@ -18,7 +18,7 @@
 ; param produced `unknown type: S`, two produced a segfault. The array is now
 ; sized by the node count of each type pattern, a safe upper bound.
 
-(include stdio)
+(import-use "stdio.h")
 
 ; I and F are used by fields; S and E are phantom (no field mentions them).
 (defstruct (Two I F S E)

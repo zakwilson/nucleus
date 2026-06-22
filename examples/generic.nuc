@@ -3,7 +3,7 @@
 ; its type variables are bound at each call site, the body is monomorphized for
 ; the concrete types, and protocol-typed operations resolve per instantiation.
 
-(include stdio)
+(import-use "stdio.h")
 
 ; A capability: any type that can be ordered.
 (defprotocol Ord

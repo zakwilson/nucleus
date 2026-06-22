@@ -1,9 +1,9 @@
 ; Exercises the `with` form: same shape as `let`, autofrees libc-alloc'd
 ; bindings at scope exit (fall-through and early-return).
 
-(include stdio)
-(include stdlib)
-(include string)
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(import-use "string.h")
 
 (defn fall-through:void ()
   (with (p:ptr:i32 (malloc 16))

@@ -1,0 +1,5 @@
+geom/area(3,4) = 12
+g/area(3,4) = 12
+geom/perimeter(3,4) = 14
+square(5) = 25
+double-area(3,4) = 24

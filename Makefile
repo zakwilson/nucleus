@@ -21,7 +21,8 @@ REPL_SHIM_O  := $(BUILD)/repl_shim.o
 # node -> arena) is auto-prepended into every batch compile, including the
 # compiler's own. lib/reader.nuc was the gap that previously let reader edits
 # go unrebuilt.
-COMPILER_DEPS := src/nucleusc.nuc src/repl.nuc src/cheader.nuc src/format.nuc \
+COMPILER_DEPS := src/nucleusc.nuc src/compiler-types.nuc src/type-utils.nuc src/type-mangle.nuc src/scope.nuc src/abi.nuc src/union-registry.nuc src/generics.nuc src/union-emit.nuc src/repl.nuc src/cheader.nuc src/nuch.nuc \
+                 src/format.nuc \
                  lib/prelude.nuc lib/macros.nuc lib/node.nuc lib/arena.nuc \
                  lib/error.nuc lib/reader.nuc
 

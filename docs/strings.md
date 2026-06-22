@@ -1,6 +1,6 @@
 # Strings (`lib/char.nuc`, `lib/strview.nuc`, `lib/string.nuc`, Stage 11)
 
-`(import string)` provides the full string stack: the `Char` scalar, the `StrView` borrowed slice, the `String` owning type, UTF-8 encode/decode, split, lines, trim, and `parse`. Individual sub-libraries may be imported when only part of the stack is needed; see the import list at the end of each section.
+`(import-use string)` provides the full string stack: the `Char` scalar, the `StrView` borrowed slice, the `String` owning type, UTF-8 encode/decode, split, lines, trim, and `parse`. Individual sub-libraries may be imported when only part of the stack is needed; see the import list at the end of each section.
 
 ---
 
@@ -45,7 +45,7 @@ The `\u{…}` form validates that the value is a Unicode scalar value: it must b
 
 ## §2 — `Char` functions (`lib/char.nuc`)
 
-`(import char)` — requires `(import error)` and `(import string-errors)` (transitively satisfied).
+`(import-use char)` — requires `(import-use error)` and `(import-use string-errors)` (transitively satisfied).
 
 ### `DecodeResult`
 
@@ -98,7 +98,7 @@ All functions are **total**: non-ASCII input returns 0.
 
 ## §3 — `StrView` — borrowed byte/char substrate
 
-`(import strview)` — also requires `(import hash)` and `(import numeric)` (transitively satisfied). For `ByteStr`/`Str` protocol conformances, use `(import strview-str)` instead.
+`(import-use strview)` — also requires `(import-use hash)` and `(import-use numeric)` (transitively satisfied). For `ByteStr`/`Str` protocol conformances, use `(import-use strview-str)` instead.
 
 `StrView` is a non-owning, immutable, length-prefixed byte slice. It borrows its bytes — copying a `StrView` copies two words; there is no `Drop` conformance and nothing is freed.
 
@@ -190,14 +190,14 @@ All three return a `StrView` by value that borrows the same underlying bytes. No
 | `Eq` | Byte equality: same length and identical bytes. Takes `StrView` by value. |
 | `Ord` | Byte-lexicographic: `memcmp` on `min(a.len, b.len)` bytes; shorter is less-than on tie. |
 | `Hash` | FNV-1a over exactly `len` bytes (handles embedded NULs). Receiver `(ref StrView)`. |
-| `ByteStr ByteIter` | Via `(import strview-str)` (separate import to avoid circular dependency). |
-| `Str CharIter` | Via `(import strview-str)`. |
+| `ByteStr ByteIter` | Via `(import-use strview-str)` (separate import to avoid circular dependency). |
+| `Str CharIter` | Via `(import-use strview-str)`. |
 
 ---
 
 ## §4 — `ByteStr` and `Str` protocols
 
-`(import string-protocols)` — also requires `(import strview)` and `(import iterator)` (transitively satisfied).
+`(import-use string-protocols)` — also requires `(import-use strview)` and `(import-use iterator)` (transitively satisfied).
 
 Two read-only protocol layers define the public string surface.
 
@@ -253,16 +253,16 @@ Two read-only protocol layers define the public string surface.
 
 | Type | `ByteStr ByteI` | `Str CharI` | Import |
 |------|-----------------|-------------|--------|
-| `StrView` | `(ByteStr ByteIter)` | `(Str CharIter)` | `(import strview-str)` |
-| `String` | `(ByteStr ByteIter)` | `(Str CharIter)` | `(import string)` |
+| `StrView` | `(ByteStr ByteIter)` | `(Str CharIter)` | `(import-use strview-str)` |
+| `String` | `(ByteStr ByteIter)` | `(Str CharIter)` | `(import-use string)` |
 
-**Circular-import note.** `string-protocols.nuc` imports `strview` (for `StrView` in method signatures). Therefore `strview.nuc` cannot import `string-protocols` — a circular dependency. The conformances for `StrView` live in the separate `lib/strview-str.nuc`, which imports both at the leaf level. Import `(import strview-str)` to get `ByteStr`/`Str` on `StrView`.
+**Circular-import note.** `string-protocols.nuc` imports `strview` (for `StrView` in method signatures). Therefore `strview.nuc` cannot import `string-protocols` — a circular dependency. The conformances for `StrView` live in the separate `lib/strview-str.nuc`, which imports both at the leaf level. Use `(import-use strview-str)` to get `ByteStr`/`Str` on `StrView`.
 
 ---
 
 ## §5 — `String` — owning type
 
-`(import string)` — also requires `(import vector)`, `(import strview-str)`, `(import char)`, `(import string-protocols)`, and `(import hash)` (all transitively satisfied).
+`(import-use string)` — also requires `(import-use vector)`, `(import-use strview-str)`, `(import-use char)`, `(import-use string-protocols)`, and `(import-use hash)` (all transitively satisfied).
 
 `String` owns a heap byte buffer and releases it at `with`-scope exit. All reading is delegated through a zero-copy `string-as-view` bridge to `StrView`.
 
@@ -322,8 +322,8 @@ Two read-only protocol layers define the public string surface.
 ### Example
 
 ```lisp
-(import string)
-(import vector)
+(import-use string)
+(import-use vector)
 
 (defn main:i32 ()
   (with (s:String (string-new))
@@ -338,7 +338,7 @@ Two read-only protocol layers define the public string surface.
 
 ## §6 — Split, lines, and trim
 
-`(import string-split)` — requires `(import strview)` (transitively satisfied).
+`(import-use string-split)` — requires `(import-use strview)` (transitively satisfied).
 
 Lazy splitting with no allocation — iterators hold raw pointers into the source `StrView`. The source must remain alive for the iterator's lifetime.
 
@@ -388,7 +388,7 @@ Constructs a `LineIter` that splits `sv` on `\n`, stripping any trailing `\r` fr
 
 ### Trim
 
-Trim functions live in `lib/strview.nuc` (available via `(import strview)`):
+Trim functions live in `lib/strview.nuc` (available via `(import-use strview)`):
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
@@ -402,7 +402,7 @@ All three return a `StrView` by value that borrows the same underlying bytes. No
 
 ## §7 — `FromStr` and `parse`
 
-`(import parse)` — requires `(import strview)` (transitively satisfied).
+`(import-use parse)` — requires `(import-use strview)` (transitively satisfied).
 
 ### `FromStr R` protocol
 
@@ -415,9 +415,9 @@ All three return a `StrView` by value that borrows the same underlying bytes. No
 
 | Conformer | `R` | Import |
 |-----------|-----|--------|
-| `i32` | `!i32` | `(import parse)` |
-| `i64` | `!i64` | `(import parse)` |
-| `f64` | `!f64` | `(import parse)` |
+| `i32` | `!i32` | `(import-use parse)` |
+| `i64` | `!i64` | `(import-use parse)` |
+| `f64` | `!f64` | `(import-use parse)` |
 
 ### `parse` macro
 
@@ -445,7 +445,7 @@ All three conformances are **strict**:
 - `f64`: delegates to `strtod`; zero bytes consumed → `parse-float-error`; trailing garbage → `parse-float-error`
 
 ```lisp
-(import parse)
+(import-use parse)
 
 (defn main:i32 ()
   (let ((sv (ref StrView)) (alloca StrView))

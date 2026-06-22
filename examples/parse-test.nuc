@@ -14,10 +14,10 @@
 ;  11. (parse i32 "42 ") → error (trailing whitespace)
 ;  12. (parse i32 "") → error (empty)
 
-(include stdio)
-(include stdlib)
-(import strview)
-(import parse)
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(import-use strview)
+(import-use parse)
 
 (defn main:i32 ()
 

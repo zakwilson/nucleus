@@ -2,8 +2,8 @@
 ; explicit nullability (niche-encoded: null = none), flow narrowing, and the
 ; transition forms. Every pointer flavor lowers to the same IR `ptr` and is
 ; ABI-identical to a C T*. See design/stage10/nullability.md.
-(include stdio)
-(include stdlib)
+(import-use "stdio.h")
+(import-use "stdlib.h")
 
 (defstruct Pt x:i32 y:i32)
 

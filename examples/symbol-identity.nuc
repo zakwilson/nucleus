@@ -1,6 +1,6 @@
 ; Symbol identity: two symbols with the same spelling are the same Node*.
 
-(include stdio)
+(import-use "stdio.h")
 
 (defn show:void (label:ptr eq:bool)
   (if eq (printf "%s: yes\n" label) (printf "%s: no\n" label)))

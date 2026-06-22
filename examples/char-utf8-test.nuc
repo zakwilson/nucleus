@@ -8,10 +8,10 @@
 ;   - ASCII classification: is-ascii?, is-digit?, is-alpha?, is-alnum?, is-whitespace?
 ;   - char-ascii-upper, char-ascii-lower (total functions)
 
-(include stdio)
-(include stdlib)
-(import error)
-(import char)
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(import-use error)
+(import-use char)
 
 ; --- UTF-8 encode/decode round-trip for a given codepoint ---
 ; Encodes c to a temporary buffer, then decodes from that buffer and prints

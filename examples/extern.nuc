@@ -1,4 +1,4 @@
-(include stdio)
+(import-use "stdio.h")
 (extern stderr:ptr)
 
 (defn main:int ()

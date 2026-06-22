@@ -12,11 +12,11 @@
 ;   - strview-trim on "  hello  " — checks trimmed len=5
 ;   - str-empty? on empty and non-empty views
 
-(include stdio)
-(include stdlib)
-(import strview-str)   ; StrView + ByteIter/CharIter + ByteStr/Str conformances
-(import char)
-(import iterator)
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(import-use strview-str)   ; StrView + ByteIter/CharIter + ByteStr/Str conformances
+(import-use char)
+(import-use iterator)
 
 ; Build a StrView from a raw byte array on the heap.
 ; "héllo" = [0x68, 0xC3, 0xA9, 0x6C, 0x6C, 0x6F] — 6 bytes, 5 codepoints.

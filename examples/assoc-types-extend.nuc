@@ -20,8 +20,8 @@
 ;   reduce(map sq [1,5)) = 30          ; 1+4+9+16
 ;   reduce(filter even (map sq [1,5))) = 20   ; 4+16
 
-(include stdio)
-(import iterator)
+(import-use "stdio.h")
+(import-use iterator)
 
 ; SqFn: i32 -> i32, squares its input. Conforms to (UnaryFn i32 i32) from
 ; lib/iterator.nuc: the arg position carries the recovered S=i32 (CHECKED),

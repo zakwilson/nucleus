@@ -6,9 +6,9 @@
 ; No conformers are implemented yet (those come in S3/S4); we just confirm that
 ; the protocol shapes resolve and the error descriptors are interned.
 
-(include stdio)
-(import string-errors)
-(import string-protocols)
+(import-use "stdio.h")
+(import-use string-errors)
+(import-use string-protocols)
 
 (defn main:i32 ()
   ; Print the error identity values (Err is a distinct ui32-sized type; we

@@ -1,6 +1,6 @@
-(include stdio)
-(include stdlib)
-(include string)
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(import-use "string.h")
 
 (defn main:int ()
   (let (s:ptr "hello"

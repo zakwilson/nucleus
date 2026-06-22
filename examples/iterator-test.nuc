@@ -8,9 +8,9 @@
 ;                    -> keep-even -> [4,16]
 ;                    -> sum -> 20
 
-(include stdio)
-(include string)
-(import iterator)
+(import-use "stdio.h")
+(import-use "string.h")
+(import-use iterator)
 
 ; ---------------------------------------------------------------------------
 ; FoldFn conformer: sums two i64 values.

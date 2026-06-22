@@ -3,8 +3,8 @@
 ; instantiation.  This unit re-stamps Box.i32 locally by constructing
 ; ((Box i32) 42) and calling box-get on the result.
 
-(include stdio)
-(import boxlib)
+(import-use "stdio.h")
+(import-use boxlib)
 
 (defn main:int ()
   (let ((b (ptr (Box i32))) (alloca (Box i32)))

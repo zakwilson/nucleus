@@ -5,12 +5,12 @@
 ;   - hit returns (some v); miss returns none.
 ;   - Works for both CStr and Keyword key types (two conformances of Hash/Eq).
 
-(include stdio)
-(import allocator)
-(import coll)
-(import iterator)
-(import hash)
-(import hashmap)
+(import-use "stdio.h")
+(import-use allocator)
+(import-use coll)
+(import-use iterator)
+(import-use hash)
+(import-use hashmap)
 
 (defn main:i32 ()
   ; CStr-keyed map.

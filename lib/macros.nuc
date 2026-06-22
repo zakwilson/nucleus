@@ -1,8 +1,8 @@
 ; Standard macro library for Nucleus.
 ;
 ; These macros require defmacro and quasiquote support (stage-2 compiler).
-; Until a proper (include "file.nuc") mechanism exists, copy this section
-; verbatim into any program that needs these forms.
+; They are pulled in automatically by the prelude; a file may also bring them
+; in explicitly with (import-use macros).
 
 ; variadic math
 ;   (+)            => 0

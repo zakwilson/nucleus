@@ -5,7 +5,7 @@
 (defstruct Circle rad:i32)
 (defstruct Rect w:i32 h:i32)
 
-(include stdio)
+(import-use "stdio.h")
 
 ; Overload on pointer-to-struct argument type.
 (defn area:i32 (c:ptr:Circle)

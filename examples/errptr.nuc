@@ -7,9 +7,9 @@
 ; so the whole `!ptr:T` is a bare pointer — ABI-identical to a C `T*` — with no
 ; discriminant word and no struct. ok/err/match/try/unwrap/unwrap-or all read
 ; the same encoding; only the layout differs from the tagged `(Result T E)`.
-(include stdio)
-(include stdlib)
-(import error)
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(import-use error)
 
 (defstruct Pt x:i32 y:i32)
 

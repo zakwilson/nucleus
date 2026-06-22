@@ -30,7 +30,7 @@
 ;
 ;  3. Worse from a library: a conformance defining `realloc`/`free` generics
 ;     cannot be `import`ed at all — the imported file's transitive
-;     `(include stdlib)` re-emits `declare @realloc(ptr,i64)` / `declare @free`
+;     `(import-use "stdlib.h")` re-emits `declare @realloc(ptr,i64)` / `declare @free`
 ;     before those generics finalize, an "invalid redefinition". (It compiles
 ;     when defined *directly* in the consuming unit; only the import path is
 ;     blocked. Fixing the prescan/include ordering is a compiler change out of
@@ -58,11 +58,11 @@
 ; is not a Nucleus type name (the design doc's `u8` reads as `ui8` here).
 ; ---------------------------------------------------------------------------
 
-(include stdio)
-(include stdlib)
-(include string)
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(import-use "string.h")
 
-(import arena)
+(import-use arena)
 
 ; ---------------------------------------------------------------------------
 ; 1. The Allocator protocol (the design's contract).

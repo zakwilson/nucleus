@@ -21,8 +21,8 @@
 ;                    recovers the element type E from ((Iterator E) It), calls
 ;                    mk-iter to get an It, and drives next over it.
 
-(include stdio)
-(import iterator)   ; the (Iterator E) protocol
+(import-use "stdio.h")
+(import-use iterator)   ; the (Iterator E) protocol
 
 ; ---------------------------------------------------------------------------
 ; A concrete iterator over [cur, stop) yielding i32 (conforms (Iterator i32)).

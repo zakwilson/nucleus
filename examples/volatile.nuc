@@ -1,4 +1,4 @@
-(include stdio)
+(import-use "stdio.h")
 
 (defstruct Reg
   flags:i32

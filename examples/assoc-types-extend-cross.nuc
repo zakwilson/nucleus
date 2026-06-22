@@ -13,9 +13,9 @@
 ; Output:
 ;   reduce(map sq [1,5)) = 30          ; 1+4+9+16
 
-(include stdio)
-(import iterator)
-(import mapiterlib)   ; resolves to lib/mapiterlib.nuch (header import)
+(import-use "stdio.h")
+(import-use iterator)
+(import-use mapiterlib)   ; resolves to lib/mapiterlib.nuch (header import)
 
 ; SqFn: i32 -> i32, squares its input. Conforms to (UnaryFn i32 i32) from
 ; lib/iterator.nuc (re-exported through mapiterlib). Recovery of the MapIter

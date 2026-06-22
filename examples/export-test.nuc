@@ -1,0 +1,14 @@
+; Stage 12 N5: `export` re-export form.
+;
+; lib/nsgfacade.nuc is a facade in the `gfacade` namespace that imports
+; lib/nsgeom.nuc (namespace `geom`) and re-exports geom/area and
+; geom/perimeter under gfacade's name. This file imports the facade with
+; prefix `g` and calls g/area and g/perimeter, which should resolve to the
+; original @geom__area and @geom__perimeter ir-names.
+
+(import-prefixed nsgfacade g)
+
+(defn main:i32 ()
+  (printf "export area(3,4) = %d\n" (g/area 3 4))
+  (printf "export perimeter(3,4) = %d\n" (g/perimeter 3 4))
+  (return 0))

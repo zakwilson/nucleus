@@ -1,6 +1,6 @@
 # Iterators (`lib/iterator.nuc`, Stage 11)
 
-`(import iterator)` provides the `Iterator` parametric protocol, two concrete
+`(import-use iterator)` provides the `Iterator` parametric protocol, two concrete
 iterator structs, function-object protocols, generic lazy combinators, and a
 generic `reduce`.
 
@@ -137,8 +137,8 @@ them directly:
 Chain `[1,2,3,4,5]` → square → keep even → sum (= 4 + 16 = 20):
 
 ```lisp
-(include stdio)
-(import iterator)
+(import-use "stdio.h")
+(import-use iterator)
 
 (defstruct SumI64 dummy:i32)
 (extend SumI64 (FoldFn i64 i64))

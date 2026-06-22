@@ -5,11 +5,11 @@
 ; element, and yields the (ref (Vector i32)). As the RHS of a `with` binding,
 ; the outer `with` fires Drop at scope exit (the buffer is freed).
 
-(include stdio)
-(import allocator)
-(import coll)
-(import iterator)
-(import vector)
+(import-use "stdio.h")
+(import-use allocator)
+(import-use coll)
+(import-use iterator)
+(import-use vector)
 
 (defn main:i32 ()
   ; i32 element literal.

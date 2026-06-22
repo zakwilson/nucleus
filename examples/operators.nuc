@@ -5,8 +5,8 @@
 ; user types add operator methods, and generics can be bounded by the standard
 ; Num/Eq/Ord protocols and use operators directly on the abstract type variable.
 
-(include stdio)
-(import numeric)
+(import-use "stdio.h")
+(import-use numeric)
 
 ; ---- A user numeric type: rationals reduced to a common scale (here /100). ----
 (defstruct Cents v:i32)
