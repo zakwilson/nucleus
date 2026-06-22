@@ -2,7 +2,7 @@
 ; expressions at the call site (in the caller's scope) for any
 ; trailing arguments the caller omits.
 
-(include stdio)
+(import-use "stdio.h")
 
 ; Single optional with a constant default.
 (defn add:int (a:int &optional (b:int 10))

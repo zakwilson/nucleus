@@ -1,0 +1,26 @@
+; Stage 12 N3: public/private definers.
+;
+; Tests that:
+; - defn- creates a private (internal-linkage) function callable within the same file
+; - defvar- creates a private (internal-linkage) global variable
+; - defconst- creates a private compile-time constant
+; - public defn is unaffected
+
+(import-use prelude)
+
+(defn- helper-add:i32 (a:i32 b:i32)
+  (return (+ a b)))
+
+(defvar- g-private-counter:i32)
+
+(defconst- PRIVATE-MAX 100)
+
+(defn main:i32 ()
+  (set! g-private-counter 0)
+  (let (result:i32 (helper-add 3 4)
+        at-max:i32 (helper-add (cast i32 PRIVATE-MAX) 0))
+    (inc! g-private-counter)
+    (printf "%d\n" result)
+    (printf "%d\n" g-private-counter)
+    (printf "%d\n" at-max)
+    (return 0)))

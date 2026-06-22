@@ -3,7 +3,7 @@
 ; type constraint — the host compiler types it normally at the call site. So one
 ; macro can accept arguments of unrelated value types.
 
-(include stdio)
+(import-use "stdio.h")
 
 ; tprint: pick a printf format from the literal kind, then splice the
 ; original expression in.

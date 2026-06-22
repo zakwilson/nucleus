@@ -6,9 +6,9 @@
 ; flows into any ptr-typed C function (here strcpy/printf) with no cast. Unicode
 ; is out of scope.
 
-(include stdio)
-(include string)
-(import numeric)
+(import-use "stdio.h")
+(import-use "string.h")
+(import-use numeric)
 
 ; CStr conforms to Eq (lib/numeric.nuc), so it works in an Eq-bounded generic.
 (defn same:i1 (a:T b:T &where (Eq T))

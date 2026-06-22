@@ -1,4 +1,4 @@
-(include stdio)
+(import-use "stdio.h")
 
 (defn is-even:int (n:int)
   (cond (= n 0)

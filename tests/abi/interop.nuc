@@ -19,7 +19,7 @@
 ; C-legible name: P2_i32_i32 (dot → underscore in --emit-cheader).
 (defstruct (P2 A B) a:A b:B)
 
-(include stdio)
+(import-use "stdio.h")
 
 (declare pair_make:Pair  (a:int b:int))
 (declare pair_sum:int    (p:Pair))

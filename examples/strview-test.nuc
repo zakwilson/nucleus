@@ -4,10 +4,10 @@
 ; equality (equal content vs. differing content vs. differing length), and the
 ; byte hash (equal content hashes equal; different content hashes differently).
 
-(include stdio)
-(include stdlib)
-(import strview)
-(import hash)
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(import-use strview)
+(import-use hash)
 
 (defn main:i32 ()
   ; Build three views: two with identical content, one different.

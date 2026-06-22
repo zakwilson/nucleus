@@ -34,16 +34,16 @@
 ; cap*3). Tombstones are skipped during lookup and dropped during resize.
 ; ---------------------------------------------------------------------------
 
-(include stdio)
-(include stdlib)
-(include string)
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(import-use "string.h")
 
 (extern stderr:ptr)
 
-(import allocator)
-(import coll)
-(import iterator)
-(import hash)
+(import-use allocator)
+(import-use coll)
+(import-use iterator)
+(import-use hash)
 
 ; ---------------------------------------------------------------------------
 ; Panic helpers. Non-generic so they are emitted once and resolve their

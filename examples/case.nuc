@@ -5,7 +5,7 @@
 ; required default. It expands to a let-free cond, so `form` is re-evaluated per
 ; comparison and should be side-effect free.
 
-(include stdio)
+(import-use "stdio.h")
 
 ; Dispatch over integer literals, with a default arm.
 (defn name-digit:ptr (n:i32)

@@ -1,0 +1,11 @@
+; Stage 12 N4: geometry library in the `geom` namespace.
+; Symbols emit as @geom__area, @geom__perimeter, etc.
+; Used by examples/ns-mangle.nuc to exercise cross-namespace IR mangling.
+
+(ns geom)
+
+(defn area:i32 (w:i32 h:i32)
+  (return (* w h)))
+
+(defn perimeter:i32 (w:i32 h:i32)
+  (return (* 2 (+ w h))))

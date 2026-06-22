@@ -22,16 +22,16 @@
 ; Resize threshold: count*4 >= cap*3  (75% load factor).
 ; ---------------------------------------------------------------------------
 
-(include stdio)
-(include stdlib)
-(include string)
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(import-use "string.h")
 
 (extern stderr:ptr)
 
-(import allocator)
-(import coll)
-(import iterator)
-(import hash)
+(import-use allocator)
+(import-use coll)
+(import-use iterator)
+(import-use hash)
 
 ; ---------------------------------------------------------------------------
 ; Panic helper. Non-generic so it is emitted once and resolves its libc

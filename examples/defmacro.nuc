@@ -1,4 +1,4 @@
-(include stdio)
+(import-use "stdio.h")
 
 ; Basic macro: when (one-armed if)
 (defmacro when (condition body)

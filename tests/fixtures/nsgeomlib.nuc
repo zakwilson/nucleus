@@ -1,0 +1,13 @@
+; Stage 12 N6: fixture for the .nuch / --emit-cheader namespace round-trip test.
+;
+; A library in the `geom` namespace. Its public symbols emit mangled link names
+; (@geom__area, @geom__perimeter). tests/run-tests.sh compiles this to a .nuch
+; and a .o, then links a consumer that imports the .nuch by path — proving the
+; importer re-resolves geom/area to @geom__area and the names match at link time.
+(ns geom)
+
+(defn area:i32 (w:i32 h:i32)
+  (return (* w h)))
+
+(defn perimeter:i32 (w:i32 h:i32)
+  (return (* 2 (+ w h))))

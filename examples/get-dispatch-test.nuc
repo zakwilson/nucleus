@@ -16,7 +16,7 @@
 ; demonstrating that value selectors reach the generic method while a literal
 ; symbol still does plain field access.
 
-(include stdio)
+(import-use "stdio.h")
 
 (defstruct (Bag K V)
   key:K

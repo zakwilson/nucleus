@@ -1,0 +1,177 @@
+; Symbol table, string-literal table, and codegen helpers, source-imported by
+; src/nucleusc.nuc. Extracted from nucleusc.nuc (Stage 12 N8). Imported BEFORE
+; abi.nuc/union-registry.nuc because abi.nuc calls scope-define/new-tmp; the one
+; codegen helper that itself needs abi (macro-jit-ensure-decl) is kept in
+; nucleusc.nuc to break the import cycle. Depends on: compiler-types.nuc
+; (Scope/Sym/StrLit/ProgDefn structs), the g-* codegen globals, make-vec, and
+; libc — all already in scope at the import point in nucleusc.nuc.
+
+; ============================================================
+; Symbol table
+; ============================================================
+
+(defn scope-new:ref:Scope (parent:ptr)
+  (let (s:ref:Scope (new Scope))
+    (.set! s parent parent)
+    (return s)))
+
+(defn scope-define:ref:Sym (s:ptr name:ptr type:ptr ir-name:ptr is-local:i32)
+  (let (sc:ptr:Scope (cast ptr:Scope s))
+    ; Stage 12: globals are keyed by their fully-qualified name. The global scope
+    ; is the unique null-parent scope; local scopes (params, let bindings) always
+    ; have a parent and keep their raw names. Under the default `user` namespace,
+    ; qualify-name returns the bare name unchanged, so the key — and the whole
+    ; bootstrap — is byte-identical. Only the lookup KEY (`name`) is qualified;
+    ; `ir-name` is untouched (mangling is a separate, later concern).
+    (when (= (sc parent) null)
+      (set! name (qualify-name name)))
+    (when (= (sc len) (sc cap))
+      (let (nc:i32 8)
+        (when (!= (sc cap) 0) (set! nc (* (sc cap) 2)))
+        (let (ns:ptr (arena-alloc (* (cast i64 nc) (sizeof Sym))))
+          (when (!= (sc len) 0)
+            (memcpy ns (sc syms) (* (cast i64 (sc len)) (sizeof Sym))))
+          (.set! sc syms ns)
+          (.set! sc cap nc))))
+    (let (sym:ptr:Sym (cast ptr:Sym (ptr+ (cast ptr:Sym (sc syms)) (sc len))))
+      (.set! sym name name)
+      (.set! sym type type)
+      (.set! sym ir-name ir-name)
+      (.set! sym is-local is-local)
+      (.set! sym home s)
+      (.set! sc len (+ (sc len) 1))
+      (return (cast ref:Sym sym)))))
+
+(defn scope-lookup:?ptr:Sym (s:ptr name:ptr)
+  (let (cur:ptr s)
+    (while (!= cur null)
+      (let (sc:ptr:Scope (cast ptr:Scope cur)
+            i:i32 (- (sc len) 1)
+            ; Stage 12: the global scope (the unique null-parent scope) keys its
+            ; symbols by fully-qualified name, so a bare reference in namespace
+            ; `foo` resolves to `foo/bar` and a qualified `foo/bar` resolves
+            ; directly. Inner (local) scopes match the raw name, so a local
+            ; binding still shadows a global before we ever reach the qualifier.
+            ; Under `user`, qualify-name is identity — bootstrap byte-identical.
+            key:ptr name)
+        (when (= (sc parent) null)
+          (set! key (qualify-name name)))
+        (while (>= i 0)
+          (let (sym:ptr:Sym (cast ptr:Sym (ptr+ (cast ptr:Sym (sc syms)) i)))
+            (when (= (sym name) key)
+              (return (cast ptr sym))))
+          (set! i (- i 1)))
+        (set! cur (sc parent)))))
+  (return null))
+
+; Stage 10 Phase F1: after emitting a call to a `noreturn` callee in statement
+; position, control cannot fall through. If the current block is not already
+; terminated, close it with `unreachable` and set g-block-term so (a) LLVM sees
+; a single terminator and (b) emit-cond's narrowing accumulation treats the
+; guard body as terminated — narrowing the tested binding past the guard. No-op
+; once a terminator (return/goto/trap) has already been emitted into the block.
+(defn terminate-after-noreturn:void ()
+  (when (= g-block-term 0)
+    (fprintf g-body-stream "  unreachable\n")
+    (set! g-block-term 1)))
+
+; Record an armed Cleanup* on a scope, fired at scope exit (and on each early
+; return that unwinds past it) by emit-scope-cleanups, in reverse order.
+(defn scope-push-cleanup:void (s:ptr slot:ptr)
+  (let (sc:ptr:Scope (cast ptr:Scope s))
+    (when (= (sc ncleanups) (sc ccleanups))
+      (let (nc:i32 4)
+        (when (!= (sc ccleanups) 0) (set! nc (* (sc ccleanups) 2)))
+        (let (ns:ptr (arena-alloc (* (cast i64 nc) (ptr-bytes))))
+          (when (!= (sc ncleanups) 0)
+            (memcpy ns (sc cleanup-slots) (* (cast i64 (sc ncleanups)) (ptr-bytes))))
+          (.set! sc cleanup-slots ns)
+          (.set! sc ccleanups nc))))
+    (let (slots:ptr:ptr (cast ptr:ptr (sc cleanup-slots)))
+      (aset! slots (sc ncleanups) slot)
+      (.set! sc ncleanups (+ (sc ncleanups) 1)))))
+
+; ============================================================
+; String literal table
+; ============================================================
+
+(defn intern-string:i32 (bytes:ptr len:i32)
+  (let (id:i32 g-strs-len)
+    (when (= g-strs-len g-strs-cap)
+      (let (nc:i32 8)
+        (when (!= g-strs-cap 0) (set! nc (* g-strs-cap 2)))
+        (let (ns:ptr (malloc (* (cast i64 nc) (sizeof StrLit))))
+          (when (= ns null) (perror "malloc") (exit 1))
+          (when (!= g-strs null)
+            (memcpy ns g-strs (* (cast i64 g-strs-len) (sizeof StrLit)))
+            (free g-strs))
+          (set! g-strs ns)
+          (set! g-strs-cap nc))))
+    (let (sl:ptr:StrLit (cast ptr:StrLit (ptr+ (cast ptr:StrLit g-strs) g-strs-len)))
+      (.set! sl bytes (arena-strndup bytes (cast i64 len)))
+      (.set! sl len len)
+      (.set! sl id id)
+      (inc! g-strs-len)
+      (return id))))
+
+; ============================================================
+; Codegen helpers
+; ============================================================
+
+(defn new-tmp:ptr ()
+  (let (r:ptr (fmt-i32 "%%t%d" g-tmp))
+    (inc! g-tmp)
+    (return r)))
+
+(defn new-label-id:i32 ()
+  (let (r:i32 g-label)
+    (inc! g-label)
+    (return r)))
+
+(defn reset-function-state:void ()
+  (set! g-tmp 0)
+  (set! g-label 0)
+  (set! g-block-term 0)
+  (set! g-lbl-tbl (make-vec))
+  (set! g-cur-fname null)
+  (set! g-fn-ret-abi null)
+  (set! g-fn-sret-name null)
+  (set! g-fn-ret-type null)
+  (set! g-loop-depth 0)
+  (set! g-nundo (make-vec))
+  (set! g-entry-stream (open_memstream (addr-of g-entry-bufp)
+                                       (cast ptr (addr-of g-entry-sizep))))
+  (set! g-body-stream (open_memstream (addr-of g-body-bufp)
+                                      (cast ptr (addr-of g-body-sizep)))))
+
+; True while codegen is redirected into a macro/compile-time JIT module rather
+; than the main program module (g-decl-out is swapped away from g-decl-stream).
+(defn in-jit-module:i32 ()
+  (return (if (!= g-decl-out g-decl-stream) 1 0)))
+
+; The captured ProgDefn for an emitted @symbol, or null. Membership is by
+; content (ir-names are freshly formatted, not interned).
+(defn program-defn-lookup:?ptr:ProgDefn (irn:ptr)
+  (let (i:usize (cast usize 0))
+    (while (< i (count g-program-defns))
+      (let (pd:ptr:ProgDefn (cast ptr:ProgDefn (invoke g-program-defns i)))
+        (when (= (strcmp (pd ir-name) irn) (cast i32 0))
+          (return (cast ptr pd))))
+      (set! i (+ i (cast usize 1)))))
+  (return null))
+
+; Record a program-defined function's signature so macro/CT JIT modules can
+; reproduce its declare. Idempotent by ir-name. Only main-module defns are
+; recorded — a defn emitted *inside* a CT/macro JIT module already lives in that
+; module, so re-declaring it there is a redefinition error.
+(defn program-defn-record:void (irn:ptr ret:ptr ptypes:ptr nparams:i32 variadic:i32)
+  (when (!= (in-jit-module) 0) (return))
+  (when (= irn null) (return))
+  (when (!= (cast ptr (program-defn-lookup irn)) null) (return))
+  (let (pd:ptr:ProgDefn (cast ptr:ProgDefn (arena-alloc (sizeof ProgDefn))))
+    (.set! pd ir-name (intern-str irn))
+    (.set! pd ret ret)
+    (.set! pd ptypes ptypes)
+    (.set! pd nparams nparams)
+    (.set! pd variadic variadic)
+    (conj g-program-defns (cast ptr pd))))

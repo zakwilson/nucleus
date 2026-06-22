@@ -8,8 +8,8 @@
 ;
 ; The repair type must be a *value* type (the handler call rides the struct-return
 ; ABI); a (ref T) niche-pointer repair is unsupported in v1.
-(include stdio)
-(import error)
+(import-use "stdio.h")
+(import-use error)
 
 (deferror out-of-memory "allocation grow needs a policy decision")
 

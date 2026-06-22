@@ -3,8 +3,8 @@
 ; dynamically-bound handler chain first. A handler keyed on (error, repair-type)
 ; that returns (some v) repairs the fault — the function returns (ok v) instead;
 ; (none) declines and the error value propagates. `err!` bypasses the chain.
-(include stdio)
-(import error)
+(import-use "stdio.h")
+(import-use error)
 
 (deferror config-missing "config file not found")
 (deferror parse-failed   "could not parse value")

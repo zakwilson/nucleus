@@ -9,9 +9,9 @@
 ; allocated. Old blocks remain valid (pointers into them are never
 ; invalidated).
 
-(include stdio)
-(include stdlib)
-(include string)
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(import-use "string.h")
 
 (defconst ARENA-SIZE 16777216)
 

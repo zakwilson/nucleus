@@ -3,8 +3,8 @@
 ; (drop b) is statically dispatched at scope exit in reverse binding order.
 ; (defer expr) registers an ad-hoc cleanup on the enclosing scope, re-emitted
 ; at every exit path. See design/stage10/lifecycle.md §5.
-(include stdio)
-(include stdlib)
+(import-use "stdio.h")
+(import-use "stdlib.h")
 
 (defprotocol Drop
   (drop:void (self:ptr:Self)))

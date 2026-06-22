@@ -1,8 +1,8 @@
 ; C header handling — extracted from src/nucleusc.nuc.
 ;
 ; Provides:
-;   * (include foo) and (import "foo.h") — preprocess a C header via clang -E
-;     and register its extern function declarations with the compiler.
+;   * (import-use "foo.h") / (import "foo.h" prefix) — preprocess a C header
+;     via clang -E and register its extern function declarations with the compiler.
 ;   * --emit-cheader output — write a C header (.h) describing the current
 ;     translation unit's defstruct/defn/defconst/defenum forms.
 ;
@@ -26,18 +26,6 @@
   (when (or (= fname "quick_exit") (= fname "abort_handler_s")) (return 1))
   (when (or (= fname "longjmp") (= fname "siglongjmp")) (return 1))
   (return 0))
-
-; ============================================================
-; Libc include (via C header parsing)
-; ============================================================
-
-(defn emit-include:void (call:ptr)
-  (let (cc:ptr:Node (cast ptr:Node call))
-    (when (or (!= (node-len cc) 2) (-> cc (node-at _ 1) (cast ptr:Node _) (_ kind) (!= _ NODE-SYM)))
-      (die-at (cc line) "include: expects one symbol"))
-    (let (mod:ptr (-> cc (node-at _ 1) (cast ptr:Node _) (_ s))
-          header:ptr (fmt-s "%s.h" mod))
-      (emit-c-include header (cc line)))))
 
 ; ============================================================
 ; C header parsing (clang -E)
@@ -358,6 +346,13 @@
         (when (and (< pos len) (= (char-at buf pos) 59))
           (set! pos (+ pos (cast i64 1))))
         (ptr-set! out-end pos)
+        ; Stage 12: in collect mode (a prefixed C-header import), record every
+        ; parsed function name so the importer can alias it as prefix/name —
+        ; even one the prelude already registered, which the new/existing guard
+        ; below would otherwise skip.
+        (when (!= g-cinclude-collecting 0)
+          (set! g-cinclude-collected
+                (import-list-push g-cinclude-collected fname)))
         ; Register the function
         (let (ft:ptr:Type (cast ptr:Type (make-type TY-FN)))
           (.set! ft ret ret-type)
@@ -862,7 +857,10 @@
     (let (rtnode:ptr (extract-type-node name-node ((cast ptr:Node name-node) line))
           ret-c:ptr "void")
       (when (!= rtnode null) (set! ret-c (type-node-to-c rtnode)))
-      (printf "%s %s(" ret-c fname))
+      ; Stage 12 N6: emit the C-legal mangled link name (`geom__area`) for a
+      ; namespaced library. ns-ir-base composes g-current-ns's ir-prefix onto the
+      ; bare name; identity under `user`, so existing headers are byte-identical.
+      (printf "%s %s(" ret-c (ns-ir-base fname)))
     (let (params:ptr (node-at form 2)
           n:i32 (node-len params)
           i:i32 0)
@@ -962,6 +960,14 @@
       (printf "};\n\n"))))
 
 (defn emit-cheader-header:void (forms:ptr source-file:ptr)
+  ; Stage 12 N6: a namespaced library's public symbols carry a mangled link name
+  ; (`@geom__area`), so the C declarations must use that C-legal spelling — never
+  ; the Nucleus source name `geom/area` (not a C identifier). Apply a leading
+  ; `(ns NAME)` / `set-ir-prefix` so g-current-ns is set; emit-cheader-declare
+  ; then composes the namespace ir-prefix onto each function name via ns-ir-base.
+  ; Identity under `user`, so an un-namespaced library's header is byte-identical.
+  (set! forms (apply-leading-ns forms))
+  (apply-early-set-ir-prefix forms)
   (printf "#pragma once\n")
   (printf "#include <stdint.h>\n")
   (printf "#include <stdbool.h>\n\n")

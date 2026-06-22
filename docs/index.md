@@ -5,7 +5,7 @@ Nucleus is a compiled systems programming language with Lisp-style syntax, a str
 ## Core principles
 
 - **Lisp syntax, systems semantics**: parenthesized S-expression syntax; semantics close to C with explicit memory management and no GC
-- **C interop first**: imports C headers directly (`include`, `import`), exports C-legible types and functions (`.nuch` headers, `--emit-cheader`)
+- **C interop first**: imports C headers directly (`import-use`, `import`), exports C-legible types and functions (`.nuch` headers, `--emit-cheader`)
 - **Zero-cost generics**: multimethods, protocols, and bounded generics resolved entirely at compile time — no vtables, no runtime dispatch objects
 - **Explicit nullability**: `(ptr T)` / `(ref T)` are non-null by default; nullable pointers are `?T` or `(raw T)`, explicit at each declaration
 
@@ -20,7 +20,7 @@ Source files contain top-level forms (`defn`, `defvar`, `defstruct`, etc.). A `m
 ## Hello, world
 
 ```lisp
-(include stdio)
+(import-use "stdio.h")
 
 (defn main:i32 ()
   (printf "Hello, world!\n")
@@ -56,7 +56,7 @@ Source files contain top-level forms (`defn`, `defvar`, `defstruct`, etc.). A `m
 
 **Generics** — use protocols and bounded `defn`:
 ```lisp
-(import numeric)
+(import-use numeric)
 (defn maxv:T (a:T b:T &where (Ord T))
   (if (< a b) b a))
 (maxv 3 9)    ; → 9 (stamps @maxv.i32.i32)
@@ -97,29 +97,29 @@ Source files contain top-level forms (`defn`, `defvar`, `defstruct`, etc.). A `m
 The prelude (`lib/prelude.nuc`) is auto-imported into every program and provides:
 - The `Node` struct and `NODE-*` enum (for macro AST manipulation)
 - All standard macros (`if`, `when`, `unless`, `for`, `dotimes`, `->`, `case`, etc.)
-- `(include string)` declarations for `strlen`, `strcmp`, `memcpy`, etc.
+- `(import-use "string.h")` declarations for `strlen`, `strcmp`, `memcpy`, etc.
 
-Additional libraries available via `import`:
-- `(import macros)` — standard macros (already in prelude)
-- `(import numeric)` — `Eq`, `Ord`, `Num` protocols for operators
-- `(import error)` — `try`, `with-handler`, `signal`, `err-find-handler`
-- `(import arena)` — arena allocator + `(new T)` convenience macro
-- `(import allocator)` — `Allocator` protocol and `AllocHandle`
-- `(import iterator)` — `Iterator` protocol and concrete iterators
-- `(import coll)` — core collection protocols (`Coll`, `Seq`, `Assoc`, `Set`, `Drop`)
-- `(import strview)` — `StrView` immutable byte-slice substrate (`Hash`+`Eq` conformances)
-- `(import strview-str)` — `ByteStr`/`Str` protocol conformances for `StrView` (separate to avoid circular imports)
-- `(import keyword)` — `Keyword` interned self-evaluating names, usable as `HashMap`/`HashSet` keys
-- `(import hash)` — `Hash` protocol with `i32`/`i64`/`usize`/`CStr` conformances (FNV-1a)
-- `(import vector)` — `Vector T` dynamic array and `VecIter T`
-- `(import hashmap)` — `HashMap K V` and `HashMapKeyIter K V`
-- `(import hashset)` — `HashSet T` and `HashSetIter T`
-- `(import char)` — `Char` UTF-8 encode/decode, classification, case conversion (`lib/char.nuc`)
-- `(import string-errors)` — the six string/parse error codes as `deferror` symbols
-- `(import string-protocols)` — `ByteStr ByteI` and `Str CharI` read-only protocol shapes
-- `(import string)` — `String` owning type: constructors, mutation, conformances (`lib/string.nuc`)
-- `(import string-split)` — `SplitIter`/`LineIter` for `strview-split`/`strview-lines` (`lib/string-split.nuc`)
-- `(import parse)` — `FromStr R` protocol and `parse` macro for `i32`/`i64`/`f64` (`lib/parse.nuc`)
-- `(import seq)` — empty placeholder; `IntIndexable`, `Call`, and `BinaryCall` were removed in C2.5 (use `UnaryFn`/`FoldFn` from `(import iterator)`)
+Additional libraries available via `import-use`:
+- `(import-use macros)` — standard macros (already in prelude)
+- `(import-use numeric)` — `Eq`, `Ord`, `Num` protocols for operators
+- `(import-use error)` — `try`, `with-handler`, `signal`, `err-find-handler`
+- `(import-use arena)` — arena allocator + `(new T)` convenience macro
+- `(import-use allocator)` — `Allocator` protocol and `AllocHandle`
+- `(import-use iterator)` — `Iterator` protocol and concrete iterators
+- `(import-use coll)` — core collection protocols (`Coll`, `Seq`, `Assoc`, `Set`, `Drop`)
+- `(import-use strview)` — `StrView` immutable byte-slice substrate (`Hash`+`Eq` conformances)
+- `(import-use strview-str)` — `ByteStr`/`Str` protocol conformances for `StrView` (separate to avoid circular imports)
+- `(import-use keyword)` — `Keyword` interned self-evaluating names, usable as `HashMap`/`HashSet` keys
+- `(import-use hash)` — `Hash` protocol with `i32`/`i64`/`usize`/`CStr` conformances (FNV-1a)
+- `(import-use vector)` — `Vector T` dynamic array and `VecIter T`
+- `(import-use hashmap)` — `HashMap K V` and `HashMapKeyIter K V`
+- `(import-use hashset)` — `HashSet T` and `HashSetIter T`
+- `(import-use char)` — `Char` UTF-8 encode/decode, classification, case conversion (`lib/char.nuc`)
+- `(import-use string-errors)` — the six string/parse error codes as `deferror` symbols
+- `(import-use string-protocols)` — `ByteStr ByteI` and `Str CharI` read-only protocol shapes
+- `(import-use string)` — `String` owning type: constructors, mutation, conformances (`lib/string.nuc`)
+- `(import-use string-split)` — `SplitIter`/`LineIter` for `strview-split`/`strview-lines` (`lib/string-split.nuc`)
+- `(import-use parse)` — `FromStr R` protocol and `parse` macro for `i32`/`i64`/`f64` (`lib/parse.nuc`)
+- `(import-use seq)` — empty placeholder; `IntIndexable`, `Call`, and `BinaryCall` were removed in C2.5 (use `UnaryFn`/`FoldFn` from `(import-use iterator)`)
 
 Use `(exclude-prelude)` as the first form in a file to suppress the auto-import and compile against the bare language.

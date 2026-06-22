@@ -3,9 +3,9 @@
 ; transfers ownership out, disarming the cleanup and consuming the binding.
 ; Values copied out of the resource (deref / field loads) are always fine.
 ; See design/stage10/lifecycle.md.
-(include stdio)
-(include stdlib)
-(import "string.h")
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(import-use "string.h")
 
 (defn make-greeting:ptr ()
   (with (s:ptr (malloc 32))

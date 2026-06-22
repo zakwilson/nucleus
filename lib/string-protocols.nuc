@@ -33,10 +33,10 @@
 ;     declared elsewhere.
 ; ---------------------------------------------------------------------------
 
-(import strview)    ; StrView struct + Eq/Hash conformances
-(import iterator)  ; (Iterator E) — ByteI must conform to (Iterator ui8),
+(import-use strview)    ; StrView struct + Eq/Hash conformances
+(import-use iterator)  ; (Iterator E) — ByteI must conform to (Iterator ui8),
                    ;                CharI must conform to (Iterator Char)
-(import string-errors) ; the four deferror codes
+(import-use string-errors) ; the four deferror codes
 
 ; ---------------------------------------------------------------------------
 ; ByteStr ByteI — the byte substrate.

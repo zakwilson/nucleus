@@ -1,4 +1,4 @@
-(include stdio)
+(import-use "stdio.h")
 
 (defn main:int ()
   (let (a:int 10

@@ -1,0 +1,16 @@
+; Stage 12 N4: IR mangling and cross-namespace function calls.
+;
+; lib/nsgeom.nuc declares (ns geom), so its symbols emit as @geom__area,
+; @geom__perimeter (IR-mangled).  Importing it with a prefix exposes them as
+; geom/area and geom/perimeter in user namespace.  The user namespace itself
+; keeps bare ir-names (@user-fn), proving the byte-identical escape hatch.
+
+(import-prefixed nsgeom geom)
+
+(defn user-fn:i32 (x:i32) (return (* x x)))
+
+(defn main:i32 ()
+  (printf "geom/area(3,4) = %d\n" (geom/area 3 4))
+  (printf "geom/perimeter(3,4) = %d\n" (geom/perimeter 3 4))
+  (printf "user-fn(5) = %d\n" (user-fn 5))
+  (return 0))

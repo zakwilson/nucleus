@@ -10,12 +10,12 @@
 ;     so we never print key values; just count or sum derived data)
 ;   - Drop fires at with-scope exit (no leak)
 
-(include stdio)
-(import allocator)
-(import coll)
-(import iterator)
-(import hash)
-(import hashmap)
+(import-use "stdio.h")
+(import-use allocator)
+(import-use coll)
+(import-use iterator)
+(import-use hash)
+(import-use hashmap)
 
 (defn main:i32 ()
   (with ((m (ref (HashMap CStr i32))) (alloca (HashMap CStr i32)))

@@ -1,4 +1,4 @@
-(include stdio)
+(import-use "stdio.h")
 
 ; Anonymous struct as a let-binding type (list form for the name+type).
 (defn local-anon:i32 ()

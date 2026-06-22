@@ -7,7 +7,7 @@
 ; tyvar. `Struct` holds for any struct type (its member-access `get` method is
 ; supplied once callable-values lands); here it just gates a generic to structs.
 
-(include stdio)
+(import-use "stdio.h")
 
 ; Identity over any type at all.
 (defn id:T (x:T &where (Any T))

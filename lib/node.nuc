@@ -3,7 +3,7 @@
 ; The Node struct and NODE-* constants are defined in lib/prelude.nuc, which
 ; is auto-imported into every program. arena-alloc comes from lib/arena.nuc.
 
-(import arena)
+(import-use arena)
 
 ; arena-alloc aborts on exhaustion, so node allocation never yields null.
 (defn alloc-node:ref:Node ()

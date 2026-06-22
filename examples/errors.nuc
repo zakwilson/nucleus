@@ -2,8 +2,8 @@
 ; Recoverable errors as ordinary return values: a fallible function returns
 ; !T = (Result T Err). The caller must match / try / unwrap before using it.
 ; (Handlers and with-handler arrive in E3; here err == err!.)
-(include stdio)
-(import error)
+(import-use "stdio.h")
+(import-use error)
 
 (deferror config-missing "config file not found")
 (deferror parse-failed   "could not parse value")

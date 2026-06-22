@@ -1,6 +1,6 @@
 (defstruct Point x:int y:int)
 
-(include stdio)
+(import-use "stdio.h")
 
 (defn main:int ()
   (let (p:ptr:Point (alloca Point))

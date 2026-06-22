@@ -1,4 +1,4 @@
-(include stdio)
+(import-use "stdio.h")
 
 (defn add:i32 (a:i32 b:i32) (return (+ a b)))
 (defn mul:i32 (a:i32 b:i32) (return (* a b)))

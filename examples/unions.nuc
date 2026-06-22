@@ -6,7 +6,7 @@
 ; eliminator with exhaustiveness checking. (ref x) binders alias payload
 ; fields in place for mutation (pointer scrutinee). match over a defenum
 ; scrutinee gets the same exhaustiveness check.
-(include stdio)
+(import-use "stdio.h")
 
 ; ---- Layer 1: untagged union as a struct field ----
 

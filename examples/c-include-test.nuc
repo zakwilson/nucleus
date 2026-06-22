@@ -1,6 +1,6 @@
-(import "stdio.h")
-(import "stdlib.h")
-(import "string.h")
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(import-use "string.h")
 
 (defn main:i32 ()
   (with (s:ptr (malloc 64))

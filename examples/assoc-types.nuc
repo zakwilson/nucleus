@@ -19,11 +19,11 @@
 ;     produce a compile-time constraint-mismatch error. (The harness has no
 ;     .nuc.fail mechanism; errors are compile-time diagnostics, not runtime output.)
 
-(include stdio)
-(import allocator)
-(import coll)
-(import iterator)
-(import vector)
+(import-use "stdio.h")
+(import-use allocator)
+(import-use coll)
+(import-use iterator)
+(import-use vector)
 
 ; ---------------------------------------------------------------------------
 ; A function object mapping i32 -> i32 (doubles its input). Conforms to

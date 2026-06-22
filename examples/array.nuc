@@ -1,4 +1,4 @@
-(include stdio)
+(import-use "stdio.h")
 
 (defn main:int ()
   (let (arr:ptr:int (alloca int 3))

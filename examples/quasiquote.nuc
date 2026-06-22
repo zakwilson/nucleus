@@ -1,7 +1,7 @@
 ; Quasiquote / unquote / unquote-splice demo.
 ; Under the hood these use builtin @__cons and @__append runtime helpers.
 
-(include stdio)
+(import-use "stdio.h")
 
 (defstruct Node
   kind:i32 line:i32 i:i64 s:ptr car:ptr cdr:ptr)

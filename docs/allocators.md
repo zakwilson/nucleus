@@ -2,7 +2,7 @@
 
 The collection library owns and frees memory through an **allocator** rather than
 a bare `malloc`, so a collection can be built against libc, an arena, or a future
-allocator and still free with the same backend that built it. `(import allocator)`
+allocator and still free with the same backend that built it. `(import-use allocator)`
 brings in the protocol, the handle type, the backends, and a default.
 
 ## The `Allocator` protocol
@@ -54,6 +54,6 @@ a `(ref AllocHandle)` into it for the helpers. Example: `examples/allocator-test
 literally named `free`/`realloc`/`malloc` shadows the libc symbol of that name for
 the whole compilation unit (this is why `Drop` uses `drop`), and such a
 conformance currently cannot be `import`ed at all — the imported file's transitive
-`(include stdlib)` re-declares the libc symbol before the importing generics
+`(import-use "stdlib.h")` re-declares the libc symbol before the importing generics
 finalize. A conformance defined *directly* in the consuming unit does compile.
 See `design/stage11/progress.md` (M1) for the details and the deferred compiler fix.
