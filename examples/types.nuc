@@ -1,4 +1,4 @@
-(include stdio)
+(import-use "stdio.h")
 
 (defn sum-i64:i64 (a:i64 b:i64)
   (return (+ a b)))

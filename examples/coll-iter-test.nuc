@@ -13,14 +13,14 @@
 ; All outputs are order-independent (sums / counts) so the test is deterministic
 ; regardless of hash bucket order.
 
-(include stdio)
-(import allocator)
-(import coll)
-(import iterator)
-(import hash)
-(import vector)
-(import hashset)
-(import hashmap)
+(import-use "stdio.h")
+(import-use allocator)
+(import-use coll)
+(import-use iterator)
+(import-use hash)
+(import-use vector)
+(import-use hashset)
+(import-use hashmap)
 
 (defn main:i32 ()
   ; ---- 1. Vector via generic doseq ---------------------------------------

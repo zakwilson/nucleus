@@ -1,0 +1,20 @@
+; Stage 12 N2: prefixed / explicit import forms.
+;
+; - (import-prefixed "stdio.h" c)  → the C header's symbols become c/NAME;
+;   c/printf still links to @printf (foreign symbols keep their bare ir-name).
+; - (import-prefixed mathlib m)    → mathlib's exports become m/square, m/cube.
+; - (import-prefixed mathlib math) → the SAME file under a second prefix is
+;   allowed (aliasing); math/square resolves to the same symbol as m/square.
+; - (import-use mathlib)           → flatten: bare `cube` is also available.
+
+(import-prefixed "stdio.h" c)
+(import-prefixed mathlib m)
+(import-prefixed mathlib math)
+(import-use mathlib)
+
+(defn main:int ()
+  (c/printf "m/square(5) = %d\n" (m/square 5))
+  (c/printf "m/cube(3) = %d\n" (m/cube 3))
+  (c/printf "math/square(4) = %d\n" (math/square 4))
+  (c/printf "cube(2) = %d\n" (cube 2))
+  (return 0))

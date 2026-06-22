@@ -1,5 +1,5 @@
-(include stdio)
-(import "tests/fixtures/cheader-struct.h")
+(import-use "stdio.h")
+(import-use "tests/fixtures/cheader-struct.h")
 
 ; Use the named C struct (struct CHPoint) by value.
 (defn use-chpoint:i32 ()

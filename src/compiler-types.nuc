@@ -1,0 +1,480 @@
+; Nucleus compiler — core constants and struct definitions
+
+; ============================================================
+; Constants
+; ============================================================
+
+(defconst MAX-STRUCTS 256)
+(defconst MAX-CAST-RULES 256)
+; Stage 10 unions (design/stage10/unions.md)
+(defconst MAX-UNIONS 128)
+(defconst MAX-UNION-TEMPLATES 64)
+; Stage 11 parametric structs (design/stage11/parametric-structs.md §1)
+(defconst MAX-STRUCT-TEMPLATES 64)
+(defconst MAX-ENUMS 128)
+(defconst MAX-UNION-ARMS 64)
+; Stage 10 errors (design/stage10/errors.md §8): global error-id cap. Ids are
+; dense from 1 (0 reserved), so the descriptor table has MAX-DEFERRORS+1 slots.
+; The cap keeps every id inside the top-page range A2's future ERR_PTR niche
+; encoding needs — no renumbering when U4 lands.
+(defconst MAX-DEFERRORS 4095)
+
+; Token kinds
+(defenum TokKind TOK-LPAREN TOK-RPAREN TOK-RMACRO TOK-INT TOK-STRING TOK-SYMBOL TOK-FLOAT TOK-EOF
+                 TOK-LBRACK TOK-RBRACK TOK-LBRACE TOK-RBRACE TOK-HASHBRACE TOK-KEYWORD
+                 ; Stage 11 M6 (S0): a `\a` / `\newline` / `\u{1F600}` char literal.
+                 ; The token carries the (validated) Unicode scalar value in `i`;
+                 ; read-form lowers it to a NODE-CHAR. Appended last to keep the
+                 ; existing TOK-* ordinals unchanged.
+                 TOK-CHAR)
+
+; Name kinds for the one-symbol-one-meaning shadowing check (see
+; name-existing-kind / guard-name-kind). Ordered by lookup priority.
+(defconst NK-NONE 0)
+(defconst NK-SPECIAL 1)
+(defconst NK-BUILTIN 2)   ; a primitive/built-in type name (i32, ptr, ...)
+(defconst NK-TYPE 3)      ; a struct type
+(defconst NK-PROTOCOL 4)
+(defconst NK-MACRO 5)
+(defconst NK-FUNCTION 6)
+(defconst NK-VALUE 7)     ; defvar / defconst / defenum member / extern
+
+; Node struct and NODE-* kinds come from lib/prelude.nuc (imported below).
+
+; Type kinds. TY-TYVAR is an abstract type variable used only by the Stage 9
+; rung-4 A2 def-time check of generic bodies; it never reaches codegen (generic
+; templates emit only after monomorphization, where every type is concrete).
+; TY-CSTR is a C-style (null-terminated) string — ABI-identical to a `char*`
+; pointer (lowers to `ptr`), distinct only so `=`/`!=` dispatch to a `strcmp`
+; content comparison (Eq) instead of pointer identity. Unicode is out of scope.
+; TY-UNION is a Stage 10 untagged union (design/stage10/unions.md §2): size =
+; max member size, align = max member align, every member at offset 0. It
+; reuses StructDef (with is-union=1) for its member table.
+; TY-ERR is the Stage 10 error-code scalar (design/stage10/errors.md §8): a
+; distinct builtin type represented as i32 so it is C-legible, but distinguished
+; from a plain i32 by `type-eq`/mangling so `with-handler`, the E3 handler check,
+; and U4's future niche detection can key on it. `deferror` defines TY-ERR
+; constants; the `err` arm of an `!T` (`(Result T Err)`) is TY-ERR.
+(defenum TypeKind TY-VOID TY-I1 TY-I8 TY-I16 TY-I32 TY-I64
+                  TY-UI8 TY-UI16 TY-UI32 TY-UI64
+                  TY-PTR TY-FN TY-STRUCT
+                  TY-F32 TY-F64 TY-TYVAR TY-CSTR TY-UNION TY-ERR
+                  ; Stage 11: pointer-sized integer scalars. TY-USIZE is unsigned,
+                  ; TY-SSIZE is signed. Both lower to i32/i64 per g-target-ptr-bytes.
+                  TY-USIZE TY-SSIZE
+                  ; Stage 11 M6 (S0): the Unicode scalar `Char` (design/stage11/
+                  ; string.md §"Char types"). A distinct 32-bit built-in scalar over
+                  ; `ui32` — the same kind of distinct scalar TY-CSTR is — lowering to
+                  ; IR `i32` (C `uint32_t`), so `=`/`!=` dispatch on `Char` and a
+                  ; `Char`-vs-int overload stay distinct. Appended last to keep the
+                  ; existing TypeKind ordinals unchanged.
+                  TY-CHAR)
+
+; Pointer kinds (Stage 10 nullability, design/stage10/nullability.md). A
+; compile-time contract carried on TY-PTR types; all three lower to IR `ptr`
+; and are ABI-identical. PTR-RAW is the default (today's unchecked pointer);
+; PTR-REF is non-null; PTR-MAYBE is nullable-checked (deref forbidden until
+; narrowed). The kind is deliberately ignored by type-eq / hash-type /
+; type-mangle-token (like is-volatile), so dispatch, monomorphization, and
+; emitted IR are unaffected — only the flow checks read it.
+(defconst PTR-RAW 0)
+(defconst PTR-REF 1)
+(defconst PTR-MAYBE 2)
+; PTR-ERRPTR (Stage 10 U4/A2, design/stage10/errors.md §2/§8): a niche-encoded
+; (Result (ref T) Err) — a bare pointer carrying the ERR_PTR encoding (ok p =
+; p directly; err E = inttoptr(-id), id in 1..4095; is-err = icmp uge against
+; -4096). Like the other pkinds it is invisible to type-eq / hash-type /
+; type-mangle-token, so a niche `!T` mangles and compares exactly like a `T*`.
+(defconst PTR-ERRPTR 3)
+
+; Union layout classes (design/stage10/unions.md §6 — the four ordered niche
+; rules). The layout engine (union-layout-classify) decides, in order:
+;   ENUM         — all arms payload-less: just the i32 tag (≅ defenum).
+;   NICHE-MAYBE  — two arms, one payload-less, one a single typed (ref T) field:
+;                  a bare pointer, null = the payload-less arm (== N1's ?T).
+;   NICHE-ERRPTR — two arms, one a single typed (ref T) field, one a single Err
+;                  field: a bare pointer with the ERR_PTR encoding (== A2's !T).
+;   TAGGED       — otherwise: the §3 {i32 tag, union payload} struct.
+; The niche rules require the (ref T) payload's element to be present and
+; non-void; an elem-less (Result ptr Err) (the reader's !ptr) stays TAGGED so
+; the bootstrap is byte-identical (the void* exemption, nullability.md §9.1).
+(defconst LAYOUT-ENUM 0)
+(defconst LAYOUT-NICHE-MAYBE 1)
+(defconst LAYOUT-NICHE-ERRPTR 2)
+(defconst LAYOUT-TAGGED 3)
+; &repr modes parsed off a defunion form (unions.md §6, §9).
+(defconst REPR-AUTO 0)    ; default: the layout engine decides
+(defconst REPR-TAGGED 1)  ; &repr tagged: force the §3 struct (C-consumer opt-out)
+(defconst REPR-NICHE 2)   ; &repr niche: require a niche, error if not nicheable
+
+; ============================================================
+; Struct definitions (ordered by dependency)
+; ============================================================
+
+(defstruct StructDef
+  name:CStr
+  field-names:ptr
+  field-types:ptr
+  num-fields:i32
+  emitted:i32       ; type definition already written to IR (vs. name-only pre-registration)
+  src-file:ptr      ; source file where defined (cheader/anon struct provenance)
+  src-line:i32
+  ; --- Stage 10 unions ---
+  is-union:i32      ; 1 = untagged union: all fields at offset 0, size = max member
+  udef:ptr          ; UnionDef* when this struct is a defunion backing struct, else null
+  ; --- Stage 11 parametric structs (T2): origin of a stamped template instance ---
+  ; For a struct produced by struct-template-stamp-types these record which
+  ; template it came from and the concrete type arguments, so the method unifier
+  ; can recover (template, args) from a concrete `Vector.i32` and bind a tyvar
+  ; pattern `(Vector T)` against it. null/0 for an ordinary hand-written struct.
+  origin-template:ptr ; StructTemplate* this instance was stamped from, or null
+  origin-args:ptr     ; ptr array of concrete arg Type* (length origin-nargs), or null
+  origin-nargs:i32)
+
+; A tagged sum (defunion, design/stage10/unions.md §3). The backing
+; representation is an ordinary struct {tag:i32, payload:(union ...)} held in
+; `sdef`; this record carries the arm table `match` and `make` need. Arm i's
+; payload is: null (payload-less), the single field's type (one field), or a
+; memoized anonymous struct of the fields (several).
+(defstruct UnionDef
+  name:CStr
+  sdef:ptr          ; backing StructDef (tag [+ payload])
+  union-sd:ptr      ; payload union's StructDef (one member per payload arm), or null
+  num-arms:i32
+  arm-names:ptr     ; ptr array — interned arm name per arm
+  arm-ptypes:ptr    ; ptr array — payload Type* per arm (null for payload-less)
+  arm-fnames:ptr    ; ptr array — per arm: ptr array of interned field names
+  arm-ftypes:ptr    ; ptr array — per arm: ptr array of field Type*s
+  arm-nfields:ptr   ; ptr:i32 array — field count per arm
+  ; --- Stage 10 U4 niche layout (design/stage10/unions.md §6) ---
+  layout:i32        ; LAYOUT-ENUM / NICHE-MAYBE / NICHE-ERRPTR / TAGGED
+  niche-elem:ptr    ; for NICHE-MAYBE/ERRPTR: the (ref T) payload's element Type*
+  src-line:i32)
+
+; A parameterized defunion template: `(defunion (Result T E) ...)`. Defines no
+; type itself; a fully-applied use `(Result A B)` stamps a concrete instance.
+(defstruct UnionTemplate
+  name:CStr
+  tyvars:ptr        ; ptr array of tyvar name strings
+  ntv:i32
+  form:ptr)         ; retained (defunion (Name T ...) arms...) Node*
+
+; A parameterized defstruct template: `(defstruct (Vector T) ...)`. Defines no
+; type itself; a fully-applied use `(Vector i32)` in type position stamps a
+; concrete monomorphic StructDef (struct-template-stamp-types). Exact analogue
+; of UnionTemplate (design/stage11/parametric-structs.md §1).
+(defstruct StructTemplate
+  name:CStr
+  tyvars:ptr        ; ptr array of tyvar name strings
+  ntv:i32
+  form:ptr)         ; retained (defstruct (Name T ...) field-specs...) Node*
+
+; A defenum's member table, recorded so `match` can check exhaustiveness over
+; enum constants (the §4 freebie). Member i's value is i.
+(defstruct EnumDef
+  name:CStr
+  members:ptr       ; ptr array of interned member name strings
+  num-members:i32)
+
+(defstruct Type
+  kind:i32
+  ret:ptr
+  params:ptr
+  num-params:i32
+  variadic:i32
+  has-rest:i32
+  elem:ptr
+  sdef:ptr
+  ; --- Stage 8 additions ---
+  nopt:i32          ; number of trailing &optional params (TY-FN)
+  opt-defaults:ptr  ; array of ptr:Node default-value forms for the &optional params
+  ; Parallel array to `params`: each entry is a `ptr` to the param's declared
+  ; name (arena-owned C string), or null if unknown. Used by the REPL to render
+  ; real parameter names instead of positional pN.
+  param-names:ptr
+  ; Volatile qualifier: when set, loads/stores at this type's storage site are
+  ; emitted as `load volatile`/`store volatile`. Primitive singletons are shared,
+  ; so volatility is represented by cloning the Type via type-with-volatile.
+  is-volatile:i32
+  ; Pointer kind (Stage 10): PTR-RAW / PTR-REF / PTR-MAYBE for TY-PTR.
+  ; Shared Types are never mutated — clone via type-as-pkind.
+  pkind:i32)
+
+(defstruct Tok
+  kind:i32
+  line:i32
+  i:i64
+  s:ptr)
+
+; Node struct comes from lib/prelude.nuc (imported below).
+
+(defstruct Sym
+  name:CStr
+  type:ptr
+  ir-name:ptr
+  is-local:i32
+  is-const:i32
+  const-val:ptr
+  tracker:ptr
+  ; --- Stage 8 / REPL introspection additions ---
+  src-file:ptr      ; source file where defined (null if unknown)
+  src-line:i32      ; source line where defined (0 if unknown)
+  trace-tracker:ptr ; resource tracker for a REPL-installed trace wrapper
+  trace-saved:ptr   ; saved original ir-name while traced
+  ; Docstring captured from a defn whose body's first form is a string literal
+  ; (with at least one form following it). null otherwise. Used by REPL doc/apropos.
+  docstring:ptr
+  ; --- Stage 10 safety (lifecycle + nullability) ---
+  home:ptr          ; defining Scope* (escape analysis compares scope nesting)
+  taint:ptr         ; owning with-Scope* whose resource this value aliases (null = clean)
+  owns:i32          ; 1 = this binding armed a `with` cleanup (owning binding)
+  moved:i32         ; 1 = consumed by (move ...); any further use is an error
+  cslot:ptr         ; cleanup slot IR name when owns=1 (move disarms by storing null)
+  ntype:ptr         ; flow-narrowed type override (?T read as (ref T)); null = none
+  ndepth:i32        ; g-loop-depth at which the current narrow was established
+  kstamp:i32        ; bumped on each kill (reassignment); stale undo entries skip
+  ; Stage 10 Phase F1 (nullability.md §9 finding 1): the callee never returns
+  ; (die-at, repl_throw, libc exit/abort). A statement-position call to it
+  ; emits `unreachable` and terminates the block, so the (when (= x null)
+  ; (die-at …)) guard idiom narrows past the guard via emit-cond's g-block-term
+  ; accumulation — no narrowing-engine change needed.
+  noreturn:i32
+  ; Stage 12 N3: symbol is private — not importable from another namespace.
+  ; Set by `defn-`, `defvar-`, `defconst-`, `defenum-` (private member values).
+  ; For link-emitting forms, also implies internal LLVM linkage.
+  sym-private:i32)
+
+; One armed scope-exit cleanup (Stage 10 lifecycle, design/stage10/lifecycle.md).
+; Exactly one shape is set: legacy libc free (only slot), a Drop-protocol call
+; (slot + drop-*), or an ad-hoc (defer expr) re-emitted at each exit path.
+(defstruct Cleanup
+  slot:ptr        ; alloca slot holding the resource pointer (free/drop)
+  drop-fn:ptr     ; IR name of the resolved drop method (Drop cleanups)
+  drop-ty:ptr     ; declared binding Type* (Drop cleanups)
+  drop-ret:ptr    ; drop method return Type* (Drop cleanups)
+  defer-node:ptr  ; retained expression AST (defer cleanups)
+  defer-scope:ref:Scope); scope in which defer-node is re-emitted
+
+; A narrowing undo entry (Stage 10 nullability §4). Restores are skipped when
+; the binding's kstamp moved past `stamp` — a kill (reassignment) is sticky.
+(defstruct NarrowUndo
+  name:ptr
+  scope:ref:Scope
+  old-ntype:ptr
+  old-ndepth:i32
+  stamp:i32)
+
+(defstruct Scope
+  parent:ptr
+  syms:ptr
+  len:i32
+  cap:i32
+  cleanup-slots:ptr
+  ncleanups:i32
+  ccleanups:i32)
+
+(defstruct StrLit
+  bytes:ptr
+  len:i32
+  id:i32)
+
+(defstruct Val
+  type:ptr
+  val:ptr
+  ; Stage 10 escape analysis: owning with-Scope* this value aliases (null =
+  ; clean). Propagated through identity-preserving ops (cast, ptr+, .&, phi);
+  ; dropped by value-copying ops (deref, field load, calls).
+  taint:ptr)
+
+; ---- Aggregate ABI lowering (Stage 8 Phase C, x86_64 System V) ----
+; How a struct-by-value parameter or return is lowered to the platform C ABI.
+; Only TY-STRUCT is ever non-DIRECT, so every scalar/pointer path is unchanged.
+;   ABI-DIRECT  — passed/returned as-is (all scalars, pointers).
+;   ABI-MEMORY  — >16 bytes: param is `ptr byval(%T)`, return is `sret` (hidden
+;                 leading pointer param, function returns void).
+;   ABI-COERCE1 — ≤8 bytes: one eightbyte, coerced to reg0 (e.g. i64/double).
+;   ABI-COERCE2 — 9..16 bytes: two eightbytes reg0,reg1; return is {reg0,reg1}.
+(defenum AbiKind ABI-DIRECT ABI-MEMORY ABI-COERCE1 ABI-COERCE2)
+
+(defstruct AbiInfo
+  kind:i32     ; AbiKind
+  reg0:ptr     ; IR type string for eightbyte 0 (COERCE1/COERCE2), else null
+  reg1:ptr     ; IR type string for eightbyte 1 (COERCE2), else null
+  size:i32     ; struct ABI size in bytes (MEMORY/COERCE)
+  align:i32)   ; struct ABI alignment in bytes (MEMORY/COERCE)
+
+; A program-defined function's captured signature, so a macro/CT JIT module can
+; reproduce its `declare`. ir-name is the emitted @symbol; ret + param Types
+; drive the ABI-lowered declare exactly as emit-defn lowered the `define`.
+(defstruct ProgDefn
+  ir-name:ptr
+  ret:ptr
+  ptypes:ptr   ; ptr array of param Type*
+  nparams:i32
+  variadic:i32)
+
+(defstruct BinOp
+  name:ptr
+  instr:ptr
+  instr-u:ptr
+  is-cmp:i32)
+
+; ---- Polymorphism (Stage 9) ----
+; A Generic is a named set of Methods sharing one source name. Operators are
+; seeded as intrinsic generics (see init-generics); user defns add methods.
+; Dispatch among concrete methods is on the whole argument tuple.
+(defenum MethodKind METHOD-INTRINSIC METHOD-USER METHOD-GENERIC)
+
+(defstruct Method
+  param-types:ptr   ; ptr to array of ptr:Type (length num-params); null for intrinsic
+  num-params:i32
+  ret-type:ptr      ; ptr:Type; null for intrinsic
+  has-rest:i32
+  variadic:i32
+  kind:i32          ; one of MethodKind
+  ir-name:ptr       ; emitted symbol "@name..." (user methods); null otherwise
+  fn-type:ptr       ; ptr:Type (TY-FN) for user methods; null otherwise
+  binop:ptr         ; ptr:BinOp (intrinsic operators); null otherwise
+  body:ptr          ; retained defn form (generic methods); null otherwise
+  ; --- METHOD-GENERIC only (Stage 9 rung 4): a bounded generic defn template ---
+  tyvars:ptr        ; array of ptr (distinct type-variable name strings)
+  num-tyvars:i32
+  con-protos:ptr    ; array of ptr (protocol name per &where constraint)
+  con-vars:ptr      ; array of ptr (type-variable name per constraint; parallel)
+  ; --- Stage 11 assoc-types (A1): parametric &where constraints ---
+  ; For a constraint `((Proto Arg…) V)`, the argument-pattern nodes `Arg…` (each
+  ; a type-spelling Node*, recovered or constrained at dispatch — A2). Parallel
+  ; to con-protos/con-vars: con-args[i] is a ptr array of Node* of length
+  ; con-nargs[i]; for a plain `(Proto V)` constraint con-args[i] is null and
+  ; con-nargs[i] is 0.
+  con-args:ptr      ; array of ptr (per constraint: a ptr array of Node*, or null)
+  con-nargs:ptr     ; array of i32 (per constraint: count of arg nodes)
+  num-constraints:i32
+  checked:i32)      ; A2 def-time check done (so it runs once per template)
+
+(defstruct Generic
+  name:CStr
+  methods:ptr       ; ptr to array of ptr:Method
+  num-methods:i32
+  cap:i32
+  finalized:i32     ; mangling decided + solitary scope binding established
+  mangled:i32       ; 0 = solitary, unmangled @name (C-callable); 1 = mangled set
+  ; Stage 12 N4: the IR-mangling prefix string for this generic's methods (e.g.
+  ; "foo", or "" under `user`). Captured at generic-new time from the *defining*
+  ; namespace so finalize/monomorphization — which may run while a later import's
+  ; namespace is current — still mangle under the right prefix. The empty prefix
+  ; (`user`) composes to the bare name, keeping the bootstrap byte-identical.
+  ir-prefix:CStr)
+
+; A Protocol names a capability: a set of required method signatures whose
+; parameter/return types may mention `Self` and, for a parametric protocol
+; `(defprotocol (Seq E) ...)`, the extra parameters `E...` bound at the extend
+; site. It is purely compile-time and emits no code. `extend Type Protocol`
+; substitutes Self→Type (and each extra param→its binding) in each signature and
+; verifies a matching concrete method exists (see emit-extend).
+(defstruct Protocol
+  name:CStr
+  sigs:ptr          ; ptr to array of ptr:Node, each a (name:ret (params...)) form
+  num-sigs:i32
+  ; --- Stage 11 parametric protocols (T4) ---
+  ; Extra type parameters beyond the implicit `Self`: for `(defprotocol (Seq E)
+  ; ...)` this is the one-element array {"E"}. Empty (null/0) for a plain
+  ; `(defprotocol Name ...)`, which behaves exactly as before (Self-only).
+  params:ptr        ; ptr array of extra-param name strings (beyond Self), or null
+  num-params:i32)
+
+; A recorded (Type, Protocol) conformance fact. No code; consulted by the
+; resolver (protocol-bound tier, later) and exported in .nuch.
+; Stage 11 assoc-types (A0): the parametric protocol's bound arguments are now
+; retained so dispatch-time associated-type recovery (A2) can read them back out.
+; `args` is a ptr array of canonical type-spelling strings (one per protocol
+; extra-param, in head order: `(extend IntRangeIter (Iterator i32))` → {"i32"});
+; null/0 for a plain (non-parametric) protocol. Coherence (`conformance-add`)
+; keeps one record per (type, proto), so these args are functionally determined
+; by the conforming type — that is the associated-type recovery rule.
+(defstruct Conformance
+  type-name:CStr
+  proto-name:CStr
+  args:ptr          ; ptr array of canonical type-spelling strings, or null
+  nargs:i32)
+
+; Stage 11 parametric structs (T4): a recorded template-level conformance from
+; `(extend (Vector T) (Seq T))`. `template` is the extended struct template;
+; `proto` is the (parametric) protocol; `bindings` is a node array — the proto
+; application's args, e.g. `T` from `(Seq T)` — positionally bound to the
+; protocol's extra params. At stamp time the template tyvars in each binding are
+; substituted to the concrete instance args to obtain concrete param spellings.
+; Stage 11 assoc-types (A4): a template-level conformance may now carry a trailing
+; `&where` clause `(extend (MapIter I F) (Iterator E) &where ((Iterator S) I)
+; ((UnaryFn S E) F))`, whose constraints recover the protocol-application args
+; (`E`) from the instance's own arg conformances at stamp time (A4.2). The clause
+; is parsed identically to a `defn`'s &where (parse-where-constraints) and stored
+; here, mirroring the Method constraint fields (con-protos/con-vars/con-args/
+; con-nargs). A `&where`-free extend records `num-constraints = 0`; nothing
+; downstream changes for it (the bootstrap stays byte-identical, §9). `num-tyvars`
+; is the count of the conformance's tyvars (the template tyvars plus any assoc
+; tyvars introduced by the &where clause), needed to size A4.2's recovery bound
+; array; for a &where-free extend it equals the template's own tyvar count.
+(defstruct TmplConformance
+  template:ptr      ; StructTemplate*
+  proto:ptr         ; Protocol*
+  bindings:ptr      ; ptr array of Node* (the proto-app args), or null if none
+  nbindings:i32
+  ; --- Stage 11 assoc-types (A4): trailing &where clause, or empty ---
+  tyvars:ptr        ; ptr array of tyvar name strings (template tyvars + assoc), or null
+  num-tyvars:i32    ; count of tyvars above (template ntv for a &where-free extend)
+  con-protos:ptr    ; array of ptr (protocol name per &where constraint), or null
+  con-vars:ptr      ; array of ptr (conforming-variable name per constraint), or null
+  con-args:ptr      ; array of ptr (per constraint: a ptr array of Node*, or null)
+  con-nargs:ptr     ; array of i32 (per constraint: count of arg nodes), or null
+  num-constraints:i32)  ; 0 for a &where-free extend
+
+; A queued generic instantiation: the stamped concrete defn form awaiting body
+; emission, plus a human-readable context ("while instantiating @name.toks…
+; requested at file:line") attached to any compile error raised while emitting it.
+(defstruct MonoJob
+  form:ptr
+  context:ptr)
+
+(defstruct MacroDef
+  name:CStr
+  jit-name:ptr
+  num-params:i32
+  variadic:i32
+  ; --- Stage 8 / REPL introspection additions ---
+  src-file:ptr
+  src-line:i32
+  ; Docstring captured from a defmacro whose body's first form is a string
+  ; literal (with at least one form following it). null otherwise.
+  docstring:ptr
+  ; Parameter names array (parallel to the user-declared param list, minus
+  ; &rest/&optional keywords) for tooling. null if not captured.
+  param-names:ptr)
+
+(defstruct RMacro
+  prefix:ptr
+  prefix-len:i32
+  wrap-sym:ptr)
+
+; A label declaration within the current function (Stage 8 goto support).
+; `total` is the number of (label NAME) occurrences seen in the pre-scan;
+; `seen` counts how many have been emitted so the last one wins the live BB.
+(defstruct LabelEntry
+  name:ptr
+  total:i32
+  seen:i32)
+
+; A user-asserted implicit conversion (defcast From To conv-fn). Applied at call
+; sites by safe-coerce-val when an argument's type differs from the parameter's.
+(defstruct CastRule
+  from:ptr
+  to:ptr
+  ir-name:ptr)
+
+; A resolved compilation target (Stage 8 cross-compilation). datalayout and
+; ptr-size come from LLVM for `triple`, so emitted IR matches the target ABI.
+(defstruct Target
+  triple:ptr
+  datalayout:ptr
+  ptr-size:i32
+  ptr-align:i32)

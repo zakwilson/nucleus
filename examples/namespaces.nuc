@@ -1,0 +1,40 @@
+; Stage 12 N9: comprehensive namespace feature showcase.
+;
+; Exercises:
+;  - import-prefixed: two separate namespaces with prefix routing
+;  - export facade: nsgfacade re-exports geom symbols; accessed via g/ prefix
+;  - import-only: bring a bare symbol in from a user-namespace lib (mathlib)
+;  - defn-: private (internal-linkage) helper, not importable by other files
+;  - c/printf: explicit C-header prefixed import alongside the prelude's stdio
+
+; Prefixed import: nsgeom (ns geom) → geom/area, geom/perimeter
+(import-prefixed nsgeom geom)
+
+; Export facade: nsgfacade re-exports geom's symbols; with prefix g → g/area, g/perimeter
+(import-prefixed nsgfacade g)
+
+; import-only: bring `square` from mathlib (user namespace) as a bare name.
+; For namespaced libs (ns geom), symbols arrive qualified (geom/area); for
+; user-namespace libs the name is bare, so `square` is directly callable.
+(import-only mathlib square)
+
+; Explicit prefixed C header import — c/printf resolves to the same @printf as
+; the prelude's stdio import; the compiler deduplicates by file.
+(import "stdio.h" c)
+
+; Private function: internal linkage, not importable by other namespaces.
+(defn- double-area:i32 (w:i32 h:i32)
+  (return (* 2 (geom/area w h))))
+
+(defn main:i32 ()
+  ; geom/ prefix from import-prefixed
+  (c/printf "geom/area(3,4) = %d\n" (geom/area 3 4))
+  ; g/ prefix from export facade (same IR as geom/area)
+  (c/printf "g/area(3,4) = %d\n" (g/area 3 4))
+  ; geom/perimeter from prefixed import
+  (c/printf "geom/perimeter(3,4) = %d\n" (geom/perimeter 3 4))
+  ; bare name from import-only (mathlib is in user namespace)
+  (c/printf "square(5) = %d\n" (square 5))
+  ; private helper defined in this file
+  (c/printf "double-area(3,4) = %d\n" (double-area 3 4))
+  (return 0))

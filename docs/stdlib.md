@@ -1,6 +1,6 @@
 # Nucleus Standard Library Bindings
 
-Pre-declared C standard library functions, available without `extern`. These are registered at compiler startup, so no `(include ...)` is needed to call them.
+Pre-declared C standard library functions, available without `extern`. These are registered at compiler startup, so no `(import-use ...)` is needed to call them.
 
 ## stdio
 
@@ -65,7 +65,7 @@ Pre-declared C standard library functions, available without `extern`. These are
 
 ## `StrView` (`lib/strview.nuc`, Stage 11)
 
-`(import strview)` provides an immutable, non-owning, length-prefixed UTF-8 byte slice. `StrView` is the shared substrate underneath `Keyword` and `String`. It deliberately has no ownership, growth, mutation, or UTF-8/codepoint layer — those belong to `String`. For a full reference covering `Char`, `StrView`, `String`, split, lines, trim, and parse, see [Strings](strings.md).
+`(import-use strview)` provides an immutable, non-owning, length-prefixed UTF-8 byte slice. `StrView` is the shared substrate underneath `Keyword` and `String`. It deliberately has no ownership, growth, mutation, or UTF-8/codepoint layer — those belong to `String`. For a full reference covering `Char`, `StrView`, `String`, split, lines, trim, and parse, see [Strings](strings.md).
 
 ```lisp
 (defstruct StrView
@@ -75,7 +75,7 @@ Pre-declared C standard library functions, available without `extern`. These are
 
 `data` points to the first byte of the underlying buffer. `len` is authoritative; the buffer is **not** NUL-terminated (except when built from a C string, in which case `strview-to-cstr` is sound). Copying a `StrView` copies two words and borrows the bytes — it frees nothing. There is no `Drop` conformance.
 
-Also requires `(import hash)` and `(import numeric)` (both transitively needed for `Hash`/`Eq` conformances).
+Also requires `(import-use hash)` and `(import-use numeric)` (both transitively needed for `Hash`/`Eq` conformances).
 
 ### Functions
 
@@ -94,10 +94,10 @@ Also requires `(import hash)` and `(import numeric)` (both transitively needed f
 ### Example
 
 ```lisp
-(include stdio)
-(include stdlib)
-(import strview)
-(import hash)
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(import-use strview)
+(import-use hash)
 
 (defn main:i32 ()
   (let (a:ptr:StrView (strview-from-cstr "hello")
@@ -117,7 +117,7 @@ See `examples/strview-test.nuc` for a complete runnable example.
 
 ## `Keyword` (`lib/keyword.nuc`, Stage 11)
 
-`(import keyword)` provides interned, self-evaluating keyword values. Requires `(import strview)`, `(import hash)`, and `(import numeric)`.
+`(import-use keyword)` provides interned, self-evaluating keyword values. Requires `(import-use strview)`, `(import-use hash)`, and `(import-use numeric)`.
 
 ```lisp
 (defstruct Keyword
@@ -143,13 +143,13 @@ The intern pool is a fixed-size global array (capacity 256). It is lazily initia
 
 ### Usage
 
-Keywords are written as `:identifier` in source. The compiler requires `(import keyword)` (plus its transitive imports) at the use site; without it the compiler errors with `undefined: keyword-intern`.
+Keywords are written as `:identifier` in source. The compiler requires `(import-use keyword)` (plus its transitive imports) at the use site; without it the compiler errors with `undefined: keyword-intern`.
 
 ```lisp
-(include stdio)
-(import strview)
-(import hash)
-(import keyword)
+(import-use "stdio.h")
+(import-use strview)
+(import-use hash)
+(import-use keyword)
 
 (defn main:i32 ()
   ; Self-evaluation and identity equality.

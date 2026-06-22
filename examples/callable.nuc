@@ -14,9 +14,9 @@
 ; lib/iterator.nuc provide parametric, element-generic alternatives to the
 ; former fixed-type Call/BinaryCall protocols.
 
-(include stdio)
-(include stdlib)
-(import iterator)
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(import-use iterator)
 
 (defstruct Point x:i32 y:i32)
 

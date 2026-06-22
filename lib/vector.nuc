@@ -22,17 +22,17 @@
 ; cannot (an owning collection may not escape by return without `move`).
 ; ---------------------------------------------------------------------------
 
-(include stdio)
-(include stdlib)
-(include string)
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(import-use "string.h")
 
 ; `stderr` is a libc global, not a function — C header parsing imports functions
 ; only, so it must be declared explicitly (as the compiler itself does).
 (extern stderr:ptr)
 
-(import allocator)
-(import coll)
-(import iterator)
+(import-use allocator)
+(import-use coll)
+(import-use iterator)
 
 ; ---------------------------------------------------------------------------
 ; Panic helpers. These are NON-generic so they are emitted once and resolve

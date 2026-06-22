@@ -1,4 +1,4 @@
-(include stdio)
+(import-use "stdio.h")
 
 ; Forward and backward gotos.
 (defn count-down:int (n:int)

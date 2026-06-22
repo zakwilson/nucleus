@@ -1,0 +1,292 @@
+; Type model and pointer-kind helpers, source-imported by src/nucleusc.nuc.
+; Extracted from nucleusc.nuc (Stage 12 N8). Depends on: compiler-types.nuc
+; (Type/StructDef structs, TY-*/PTR-* constants), the type singletons and
+; g-target-ptr-bytes/g-host-ptr-bytes globals, alloc-type, fmt-s, and die-at —
+; all already in scope at the import point in nucleusc.nuc.
+
+; ============================================================
+; Types
+; ============================================================
+
+(defn make-type:ref:Type (k:i32)
+  (let (t:ref:Type (alloc-type))
+    (.set! t kind k)
+    (return t)))
+
+(defn types-init:void ()
+  (set! ty-void (make-type TY-VOID))
+  (set! ty-i1   (make-type TY-I1))
+  (set! ty-i8   (make-type TY-I8))
+  (set! ty-i16  (make-type TY-I16))
+  (set! ty-i32  (make-type TY-I32))
+  (set! ty-i64  (make-type TY-I64))
+  (set! ty-ui8  (make-type TY-UI8))
+  (set! ty-ui16 (make-type TY-UI16))
+  (set! ty-ui32 (make-type TY-UI32))
+  (set! ty-ui64 (make-type TY-UI64))
+  (set! ty-f32  (make-type TY-F32))
+  (set! ty-f64  (make-type TY-F64))
+  (set! ty-cstr (make-type TY-CSTR))
+  (set! ty-char (make-type TY-CHAR))
+  (set! ty-err  (make-type TY-ERR))
+  (set! ty-ptr  (make-type TY-PTR))
+  ; Phase F flip: bare `ptr` / the ty-ptr singleton is now non-null (PTR-REF),
+  ; what `(ref T)` means. Nullable pointers use `raw` / `(raw T)` instead.
+  (.set! ty-ptr pkind PTR-REF)
+  (set! ty-raw  (make-type TY-PTR))
+  (.set! ty-raw pkind PTR-RAW)
+  (set! ty-maybe-ptr (make-type TY-PTR))
+  (.set! ty-maybe-ptr pkind PTR-MAYBE)
+  (set! ty-usize (make-type TY-USIZE))
+  (set! ty-ssize (make-type TY-SSIZE)))
+
+(defn type-to-ir:ptr (t:ptr)
+  (let (tt:ptr:Type (cast ptr:Type t))
+    (when (= (tt kind) TY-VOID)   (return "void"))
+    (when (= (tt kind) TY-I1)     (return "i1"))
+    (when (= (tt kind) TY-I8)     (return "i8"))
+    (when (= (tt kind) TY-I16)    (return "i16"))
+    (when (= (tt kind) TY-I32)    (return "i32"))
+    (when (= (tt kind) TY-I64)    (return "i64"))
+    (when (= (tt kind) TY-UI8)    (return "i8"))
+    (when (= (tt kind) TY-UI16)   (return "i16"))
+    (when (= (tt kind) TY-UI32)   (return "i32"))
+    (when (= (tt kind) TY-UI64)   (return "i64"))
+    (when (= (tt kind) TY-PTR)    (return "ptr"))
+    (when (= (tt kind) TY-FN)     (return "ptr"))
+    (when (= (tt kind) TY-CSTR)   (return "ptr"))
+    ; Char lowers to i32 (same width as ui32); distinct only at the type level.
+    (when (= (tt kind) TY-CHAR)   (return "i32"))
+    (when (= (tt kind) TY-ERR)    (return "i32"))
+    (when (= (tt kind) TY-F32)    (return "float"))
+    (when (= (tt kind) TY-F64)    (return "double"))
+    (when (= (tt kind) TY-USIZE)  (return (ptr-int-ir)))
+    (when (= (tt kind) TY-SSIZE)  (return (ptr-int-ir)))
+    (when (= (tt kind) TY-STRUCT)
+      (return (fmt-s "%%%s" ((cast ptr:StructDef (tt sdef)) name))))
+    (when (= (tt kind) TY-UNION)
+      (return (fmt-s "%%%s" ((cast ptr:StructDef (tt sdef)) name))))
+    (return "?")))
+
+; Map a Nucleus type to its C representation string.
+; For function pointer types, returns a simplified "void*" — the full
+; C function pointer syntax (with return type and params) is handled
+; separately in emit-cheader-declare where we have the param names.
+(defn type-to-c:ptr (t:ptr)
+  (let (tt:ptr:Type (cast ptr:Type t))
+    (when (= (tt kind) TY-VOID)   (return "void"))
+    (when (= (tt kind) TY-I1)     (return "_Bool"))
+    (when (= (tt kind) TY-I8)     (return "int8_t"))
+    (when (= (tt kind) TY-I16)    (return "int16_t"))
+    (when (= (tt kind) TY-I32)    (return "int32_t"))
+    (when (= (tt kind) TY-I64)    (return "int64_t"))
+    (when (= (tt kind) TY-UI8)    (return "uint8_t"))
+    (when (= (tt kind) TY-UI16)   (return "uint16_t"))
+    (when (= (tt kind) TY-UI32)   (return "uint32_t"))
+    (when (= (tt kind) TY-UI64)   (return "uint64_t"))
+    (when (= (tt kind) TY-PTR)    (return "void*"))
+    (when (= (tt kind) TY-FN)     (return "void*"))
+    (when (= (tt kind) TY-CSTR)   (return "char*"))
+    ; Char is a Unicode scalar value; uint32_t at the C boundary.
+    (when (= (tt kind) TY-CHAR)   (return "uint32_t"))
+    (when (= (tt kind) TY-ERR)    (return "int32_t"))
+    (when (= (tt kind) TY-F32)    (return "float"))
+    (when (= (tt kind) TY-F64)    (return "double"))
+    (when (= (tt kind) TY-USIZE)  (return "size_t"))
+    (when (= (tt kind) TY-SSIZE)  (return "ssize_t"))
+    (when (= (tt kind) TY-STRUCT)
+      (return (fmt-s "struct %s" ((cast ptr:StructDef (tt sdef)) name))))
+    (when (= (tt kind) TY-UNION)
+      (return (fmt-s "union %s" ((cast ptr:StructDef (tt sdef)) name))))
+    (return "/* unknown */")))
+
+; The IR type of a pointer-sized integer (size_t / intptr_t) for the target.
+; All pointer-as-integer codegen routes through this rather than hardcoding i64.
+(defn ptr-int-ir:ptr ()
+  (if (= g-target-ptr-bytes 4) "i32" "i64"))
+
+; The registered singleton type for a pointer-sized integer on the target.
+(defn ptr-int-type:ptr ()
+  (if (= g-target-ptr-bytes 4) ty-i32 ty-i64))
+
+; Size in bytes of one host pointer, as an i64 — the element size for the
+; compiler's own arrays of pointers. Use instead of a literal 8 so the compiler
+; allocates correctly on hosts where a pointer is not 8 bytes.
+(defn ptr-bytes:i64 ()
+  (cast i64 g-host-ptr-bytes))
+
+(defn type-size:i32 (t:ptr)
+  (let (tt:ptr:Type (cast ptr:Type t))
+    (when (= (tt kind) TY-I1)   (return 1))
+    (when (= (tt kind) TY-I8)   (return 1))
+    (when (= (tt kind) TY-I16)  (return 2))
+    (when (= (tt kind) TY-I32)  (return 4))
+    (when (= (tt kind) TY-I64)  (return 8))
+    (when (= (tt kind) TY-UI8)  (return 1))
+    (when (= (tt kind) TY-UI16) (return 2))
+    (when (= (tt kind) TY-UI32) (return 4))
+    (when (= (tt kind) TY-UI64) (return 8))
+    (when (= (tt kind) TY-PTR)  (return g-target-ptr-bytes))
+    (when (= (tt kind) TY-CSTR) (return g-target-ptr-bytes))
+    (when (= (tt kind) TY-CHAR)  (return 4))
+    (when (= (tt kind) TY-ERR)   (return 4))
+    (when (= (tt kind) TY-F32)   (return 4))
+    (when (= (tt kind) TY-F64)   (return 8))
+    (when (= (tt kind) TY-USIZE) (return g-target-ptr-bytes))
+    (when (= (tt kind) TY-SSIZE) (return g-target-ptr-bytes))
+    ; A struct value is laid out by LLVM; we use the pointer alignment as a
+    ; conservative slot size/alignment for it (structs are handled by-reference).
+    (when (= (tt kind) TY-STRUCT) (return g-target-ptr-bytes))
+    (when (= (tt kind) TY-UNION) (return g-target-ptr-bytes))
+    (return 1)))
+
+(defn is-int-type:i32 (t:ptr)
+  (let (k:i32 ((cast ptr:Type t) kind))
+    (when (= k TY-I1) (return 1))
+    (when (= k TY-I8) (return 1))
+    (when (= k TY-I16) (return 1))
+    (when (= k TY-I32) (return 1))
+    (when (= k TY-I64) (return 1))
+    (when (= k TY-UI8) (return 1))
+    (when (= k TY-UI16) (return 1))
+    (when (= k TY-UI32) (return 1))
+    (when (= k TY-UI64) (return 1))
+    ; Err is an i32-repr scalar: integer for comparison/coercion/arithmetic,
+    ; distinguished from i32 only by type-eq / mangling (errors.md §8).
+    (when (= k TY-ERR)   (return 1))
+    (when (= k TY-USIZE) (return 1))
+    (when (= k TY-SSIZE) (return 1))
+    ; Char is an i32-repr distinct scalar: integer for comparison/coercion/cast
+    ; (a same-width `cast` Char<->ui32 is a no-IR reinterpret), distinguished from
+    ; ui32 only by type-eq / mangling so `=`/`!=` dispatch and literals keep meaning.
+    (when (= k TY-CHAR)  (return 1))
+    (return 0)))
+
+(defn is-float-type:i32 (t:ptr)
+  (let (k:i32 ((cast ptr:Type t) kind))
+    (when (= k TY-F32) (return 1))
+    (when (= k TY-F64) (return 1))
+    (return 0)))
+
+; A type whose IR representation is `ptr` and whose ABI is a plain pointer:
+; TY-PTR and TY-CSTR (a C-string is a `char*`). They are interconvertible with
+; no IR and zero-initialise to `null`. (TY-FN is deliberately excluded — its
+; existing call-position handling is unchanged by CStr.)
+(defn is-ptr-like:i32 (t:ptr)
+  (let (k:i32 ((cast ptr:Type t) kind))
+    (when (= k TY-PTR) (return 1))
+    (when (= k TY-CSTR) (return 1))
+    (return 0)))
+
+(defn int-width:i32 (t:ptr)
+  (let (k:i32 ((cast ptr:Type t) kind))
+    (when (= k TY-I1) (return 1))
+    (when (= k TY-I8) (return 8))
+    (when (= k TY-I16) (return 16))
+    (when (= k TY-I32) (return 32))
+    (when (= k TY-I64) (return 64))
+    (when (= k TY-UI8) (return 8))
+    (when (= k TY-UI16) (return 16))
+    (when (= k TY-UI32) (return 32))
+    (when (= k TY-UI64) (return 64))
+    (when (= k TY-ERR)   (return 32))
+    (when (= k TY-USIZE) (return (* g-target-ptr-bytes 8)))
+    (when (= k TY-SSIZE) (return (* g-target-ptr-bytes 8)))
+    (when (= k TY-CHAR)  (return 32))
+    (return 0)))
+
+(defn is-unsigned:i32 (t:ptr)
+  (let (k:i32 ((cast ptr:Type t) kind))
+    (when (= k TY-UI8)   (return 1))
+    (when (= k TY-UI16)  (return 1))
+    (when (= k TY-UI32)  (return 1))
+    (when (= k TY-UI64)  (return 1))
+    (when (= k TY-USIZE) (return 1))
+    ; Char is over ui32, so it is unsigned for the trunc/zext-vs-sext choice.
+    (when (= k TY-CHAR)  (return 1))
+    (return 0)))
+
+; ============================================================
+; Stage 10: pointer kinds (design/stage10/nullability.md)
+; ============================================================
+
+; The pointer kind of a type: the Stage 10 contract for TY-PTR, PTR-RAW for
+; everything else (including non-pointers, so callers can probe freely).
+(defn ptr-pkind:i32 (t:ptr)
+  (when (= t null) (return PTR-RAW))
+  (let (tt:ptr:Type (cast ptr:Type t))
+    (when (!= (tt kind) TY-PTR) (return PTR-RAW))
+    (return (tt pkind))))
+
+; Clone `t` with pkind=k. Typed-pointer Types may be shared (and bare ptr is a
+; singleton), so relabeling/narrowing never mutates. Identity when k matches.
+(defn type-as-pkind:ptr (t:ptr k:i32)
+  (let (src:ptr:Type (cast ptr:Type t))
+    (when (= (src pkind) k) (return t))
+    (let (dst:ptr:Type (cast ptr:Type (alloc-type)))
+      (.set! dst kind        (src kind))
+      (.set! dst ret         (src ret))
+      (.set! dst params      (src params))
+      (.set! dst num-params  (src num-params))
+      (.set! dst variadic    (src variadic))
+      (.set! dst has-rest    (src has-rest))
+      (.set! dst nopt        (src nopt))
+      (.set! dst opt-defaults (src opt-defaults))
+      (.set! dst elem        (src elem))
+      (.set! dst sdef        (src sdef))
+      (.set! dst param-names (src param-names))
+      (.set! dst is-volatile (src is-volatile))
+      (.set! dst pkind       k)
+      (return (cast ptr dst)))))
+
+; The conservative meet of two pointer kinds for a control-flow join (cond /
+; if-some phi): raw if either side waived the checks, else Maybe if either
+; side may be null, else ref.
+(defn pkind-meet:i32 (a:i32 b:i32)
+  (when (or (= a PTR-RAW) (= b PTR-RAW)) (return PTR-RAW))
+  (when (or (= a PTR-MAYBE) (= b PTR-MAYBE)) (return PTR-MAYBE))
+  (return PTR-REF))
+
+; Enforce pointer-kind flow into a declared slot (binding init, set!, field /
+; element store, argument, return). Only a non-null (ref T) destination adds an
+; obligation: the source must itself be ref. Widening (ref→raw, ref→Maybe,
+; raw→Maybe, Maybe→raw) is always allowed; the existing kind/elem rules are
+; unchanged. `cast` does not pass through here, so (cast (ref T) raw) remains
+; the explicit, audited assertion.
+;
+; CStr (string-literal / C-string type) is treated as ref-compatible: string
+; literals are non-null constants, the overwhelmingly common CStr source, and
+; flagging "foo" into a (ref ...)/ptr param would bury the flip under thousands
+; of false positives. A genuinely nullable C string is spelled `raw` (the
+; audited edge), not CStr.
+;
+; Untyped-pointer refinement (Phase F): a non-null obligation is only meaningful
+; on a *typed* destination. An elem-less bare `ptr` slot is the compiler's `void*`
+; escape hatch: it names no pointee, cannot be deref'd (`aref`/field access dies
+; with "operand must be typed pointer"), so a non-null contract on it protects
+; nothing. Enforcing it would bury the flip under ~343 contractless flows where a
+; (now-`?T`) `node-at`/`scope-lookup`/coercer result feeds an untyped local or
+; param. So an elem-less destination is exempt; the flip's teeth stay on typed
+; (ref T)/(ptr T) slots, where `null`/raw/Maybe into a (ref T) is still an error
+; and a typed raw/Maybe source into a typed ref slot is still checked. Direct
+; analogue of the CStr refinement above; deref safety is enforced separately by
+; `require-derefable`.
+(defn pkind-flow-check:void (src:ptr dst:ptr line:i32 ctx:ptr)
+  (when (or (= src null) (= dst null)) (return))
+  (when (!= (ptr-pkind dst) PTR-REF) (return))
+  (when (= (ptr-pkind src) PTR-REF) (return))
+  ; Untyped (void*) destination carries no non-null contract: an elem-less bare
+  ; `ptr` slot names no pointee and cannot be deref'd, so a non-null obligation
+  ; on it protects nothing. The flip's teeth stay on typed (ref T)/(ptr T) slots.
+  (when (= ((cast ptr:Type dst) elem) null) (return))
+  (let (sk:i32 ((cast ptr:Type src) kind))
+    (when (= sk TY-PTR)
+      (if (= (ptr-pkind src) PTR-MAYBE)
+        (die-at line (fmt-s "%s: value may be null where non-null (ref ...) is required — narrow with if-some/when-some, unwrap, or a null guard" ctx))
+        (die-at line (fmt-s "%s: raw pointer where non-null (ref ...) is required — launder with (as-ref ...) + narrowing, or assert with (cast (ref T) ...)" ctx))))))
+
+; Deref/field/index gate: a (Maybe (ref T)) value cannot be accessed until
+; narrowed. Raw stays unchecked (the signed waiver); ref is always safe.
+(defn require-derefable:void (t:ptr line:i32 op:ptr)
+  (when (= (ptr-pkind t) PTR-MAYBE)
+    (die-at line (fmt-s "%s: value may be null — narrow with if-some/when-some, unwrap, or a (when (= x null) ...) guard before use" op))))

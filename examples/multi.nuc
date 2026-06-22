@@ -1,4 +1,4 @@
-(include stdio)
+(import-use "stdio.h")
 
 (defn show:int (a:int b:int)
   (printf "a = %d b = %d\n" a b)

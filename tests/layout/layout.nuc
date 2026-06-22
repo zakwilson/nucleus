@@ -6,10 +6,10 @@
 ; lines using the platform C compiler; run-layout-test.sh diffs them, so any
 ; disagreement between Nucleus's layout and the C ABI fails the build.
 
-(import "tests/layout/structs.h")
-(include stdio)
-(include stdlib)
-(import error)
+(import-use "tests/layout/structs.h")
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(import-use error)
 
 ; Stage 10 U4/A2 niche unions over a typed (ref Pt) payload (design/stage10/
 ; unions.md §6 rules 2/3). `?ptr:Pt` == (Maybe (ref Pt)) and `!ptr:Pt` ==

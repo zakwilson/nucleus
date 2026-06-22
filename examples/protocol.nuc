@@ -6,7 +6,7 @@
 (defstruct Circle rad:i32)
 (defstruct Square side:i32)
 
-(include stdio)
+(import-use "stdio.h")
 
 (defprotocol Shape
   (area:i32 (self:ptr:Self))

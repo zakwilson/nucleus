@@ -8,7 +8,7 @@
 ;     unless, zero?, null?, for, dotimes, ->).
 ;   - libc string functions (needed by the macros' JIT'd bodies).
 
-(include string)
+(import-use "string.h")
 
 (defstruct Node
   kind:i32
@@ -28,7 +28,7 @@
 ; are unchanged (byte-identical for programs with no char literals).
 (defenum NodeKind NODE-INT NODE-STR NODE-SYM NODE-CELL NODE-FLOAT NODE-KEYWORD NODE-CHAR)
 
-(import macros)
+(import-use macros)
 
 ; Stage 10 errors (design/stage10/errors.md §9): the generic Result template,
 ; always available so the `!T` sugar — `(Result T Err)` — works in any program.
@@ -51,4 +51,4 @@
 ; program that uses 'X or `(...) so that quoted symbols share identity
 ; with reader-produced ones. Imported after macros because node.nuc
 ; (and the arena it pulls in) use `when`/`if` from macros.nuc.
-(import node)
+(import-use node)

@@ -67,7 +67,7 @@ done
 # `long` ABI model (Phase D): C `long` resolves per the target's data model.
 # Parse a header with long/long long functions and check the emitted declares.
 abs_long_h="$(pwd)/tests/abi/long.h"
-printf '(import "%s")\n(defn use:i64 () (return (lfn 1)))\n' "$abs_long_h" > "$(pwd)/tests/abi/.long_probe.nuc"
+printf '(import-use "%s")\n(defn use:i64 () (return (lfn 1)))\n' "$abs_long_h" > "$(pwd)/tests/abi/.long_probe.nuc"
 check_long() {  # <triple> <expected-lfn-ir> <expected-llfn-ir>
     local triple="$1" want_l="$2" want_ll="$3"
     local ir; ir="$(./build/nucleusc --target="$triple" --emit-llvm tests/abi/.long_probe.nuc 2>/dev/null || true)"
@@ -101,5 +101,56 @@ if NUCLEUSC=./build/nucleusc ./tests/run-layout-test.sh; then
 else
     fail=1
 fi
+
+# Stage 12 N6: .nuch + --emit-cheader namespace round-trip. A library in the
+# `geom` namespace exports mangled link names (@geom__area). The .nuch must carry
+# (ns geom) so an importer re-resolves geom/area to @geom__area, and the cheader
+# must emit the C-legal name `geom__area` — not the Nucleus name `geom/area`.
+ns6_dir="$(mktemp -d)"
+ns6_lib="$(pwd)/tests/fixtures/nsgeomlib.nuc"
+./build/nucleusc --emit-nuch    "$ns6_lib" > "$ns6_dir/lib.nuch"  2>/dev/null || true
+./build/nucleusc --emit-cheader "$ns6_lib" > "$ns6_dir/lib.h"     2>/dev/null || true
+./build/nucleusc --emit-llvm    "$ns6_lib" > "$ns6_dir/lib.ll"    2>/dev/null || true
+
+# 1. The .nuch carries the namespace directive so the importer can re-mangle.
+if grep -q '^(ns geom)' "$ns6_dir/lib.nuch"; then
+    echo "PASS  n6-nuch-carries-ns"
+else
+    echo "FAIL  n6-nuch-carries-ns"; fail=1
+fi
+
+# 2. The cheader emits the C-legal mangled name, never the slash form.
+if grep -q 'geom__area' "$ns6_dir/lib.h" && ! grep -q 'geom/area' "$ns6_dir/lib.h"; then
+    echo "PASS  n6-cheader-c-legal"
+else
+    echo "FAIL  n6-cheader-c-legal"; fail=1
+fi
+
+# 3. Importing the .nuch by path re-resolves geom/area to @geom__area, and the
+#    consumer links against the lib object and runs.
+# The consumer excludes the prelude (the lib object already provides it) so the
+# two objects link without duplicate prelude symbols. It needs only `printf`
+# (declared) and the imported geom symbols, so no prelude operators are used.
+cat > "$ns6_dir/main.nuc" <<EOF
+(exclude-prelude)
+(import-prefixed "$ns6_dir/lib.nuch" g)
+(declare printf:i32 (fmt:CStr &rest args:i32))
+(defn main:i32 ()
+  (printf "area=%d perimeter=%d\n" (g/area 6 7) (g/perimeter 6 7))
+  (return 0))
+EOF
+./build/nucleusc --emit-llvm "$ns6_dir/main.nuc" > "$ns6_dir/main.ll" 2>/dev/null || true
+if grep -q 'call i32 @geom__area' "$ns6_dir/main.ll"; then
+    echo "PASS  n6-import-resolves-mangled"
+else
+    echo "FAIL  n6-import-resolves-mangled"; fail=1
+fi
+if clang "$ns6_dir/lib.ll" "$ns6_dir/main.ll" -o "$ns6_dir/bin" 2>/dev/null \
+   && [ "$("$ns6_dir/bin")" = "area=42 perimeter=26" ]; then
+    echo "PASS  n6-nuch-link-and-run"
+else
+    echo "FAIL  n6-nuch-link-and-run"; fail=1
+fi
+rm -rf "$ns6_dir"
 
 exit $fail

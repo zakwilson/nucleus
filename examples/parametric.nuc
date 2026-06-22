@@ -4,7 +4,7 @@
 ; ((Pair i32 i32) v0 v1), a parametric protocol (Container E) extended by the
 ; template, a bounded generic call, and usize as a pointer-sized scalar.
 
-(include stdio)
+(import-use "stdio.h")
 
 ; ----------------------------------------------------------------
 ; 1. Parametric struct definitions.

@@ -1,8 +1,8 @@
 ; Test native imports.
 
-(include stdio)
-(import mathlib)
-(import mathlib)  ; duplicate import — should be a no-op
+(import-use "stdio.h")
+(import-use mathlib)
+(import-use mathlib)  ; duplicate import — should be a no-op
 
 (defn main:int ()
   (printf "square(5) = %d\n" (square 5))

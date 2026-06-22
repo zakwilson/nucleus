@@ -4,16 +4,16 @@
 ;   - `(= :foo :foo)` is true (identity), `(= :foo :bar)` is false.
 ;   - A keyword is usable as a HashMap key: insert :a -> 1, :b -> 2 and look up.
 
-(include stdio)
-(include stdlib)
-(include string)
-(import strview)
-(import hash)
-(import keyword)
-(import allocator)
-(import coll)
-(import iterator)
-(import hashmap)
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(import-use "string.h")
+(import-use strview)
+(import-use hash)
+(import-use keyword)
+(import-use allocator)
+(import-use coll)
+(import-use iterator)
+(import-use hashmap)
 
 (defn main:i32 ()
   ; Self-evaluation: a bare keyword is a value (a Keyword) in value position.

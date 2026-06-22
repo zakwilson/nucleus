@@ -1,4 +1,4 @@
-(include stdio)
+(import-use "stdio.h")
 
 (defn add-f64:f64 (a:f64 b:f64)
   (return (+ a b)))

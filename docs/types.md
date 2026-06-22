@@ -118,7 +118,7 @@ Pointer size and the target are not hardcoded as `i64`/`8` throughout codegen: a
 
 **`usize` and `ssize`** are the portable index and length types for pointer-sized arithmetic. They resolve to the target's pointer-width integer at compile time: `i32` on ILP32 (4-byte pointer) targets and `i64` on LP64 (8-byte pointer) targets. `usize` is unsigned; `ssize` is signed. They are valid in any type position and are handled correctly by `sizeof`, type mangling, `type-eq`, and arithmetic operators. Use `usize` for lengths, counts, and non-negative offsets; use `ssize` for signed differences or offsets that may be negative. Both participate in the standard numeric promotions and are mangled distinctly (e.g. `usize`, `ssize`) in method symbols and stamped struct names.
 
-`CStr` is the type of a string literal — a C `char*`. It lowers to `ptr` (same ABI) and flows into any `ptr`-typed C function with no cast, but it is a **distinct type for operator dispatch**: `=` / `!=` on two `CStr` do a `strcmp` **content** comparison (so equal text compares equal across distinct buffers), whereas `=` on two raw `ptr` is pointer identity. `CStr` conforms to the `Eq` protocol (`lib/numeric.nuc`), so it works in an `Eq`-bounded generic; it is not `Ord` (no ordering — out of scope here, along with Unicode). Only `=` / `!=` are defined; other operators on `CStr` are an error. A `CStr` and a `ptr` are freely interconvertible with `cast` (no IR) and coerce automatically in value positions (assignment, return, field/array store); a string literal also passes directly to a plain `ptr` parameter. (Multimethod dispatch treats `CStr` as distinct — overload on `CStr` explicitly, or `cast` to `ptr`.) `strcmp` must be declared, which the prelude's `(include string)` provides. Example: `examples/cstr.nuc`.
+`CStr` is the type of a string literal — a C `char*`. It lowers to `ptr` (same ABI) and flows into any `ptr`-typed C function with no cast, but it is a **distinct type for operator dispatch**: `=` / `!=` on two `CStr` do a `strcmp` **content** comparison (so equal text compares equal across distinct buffers), whereas `=` on two raw `ptr` is pointer identity. `CStr` conforms to the `Eq` protocol (`lib/numeric.nuc`), so it works in an `Eq`-bounded generic; it is not `Ord` (no ordering — out of scope here, along with Unicode). Only `=` / `!=` are defined; other operators on `CStr` are an error. A `CStr` and a `ptr` are freely interconvertible with `cast` (no IR) and coerce automatically in value positions (assignment, return, field/array store); a string literal also passes directly to a plain `ptr` parameter. (Multimethod dispatch treats `CStr` as distinct — overload on `CStr` explicitly, or `cast` to `ptr`.) `strcmp` must be declared, which the prelude's `(import-use "string.h")` provides. Example: `examples/cstr.nuc`.
 
 **`Char`** is a single Unicode scalar value — a codepoint in `0..=0x10FFFF` excluding the UTF-16 surrogate range `0xD800..=0xDFFF` (Rust's `char` model; "character" means codepoint, not grapheme cluster). It is a **built-in distinct 32-bit scalar over `ui32`**, the same kind of distinct scalar `CStr` is: it lowers to IR `i32` (C `uint32_t`, size 4) and participates in the integer operators, but it is its own type for dispatch. `=` / `!=` on two `Char` compare codepoints (`(= \a \a)` is true, `(= \a \b)` is false), and a `Char`-vs-int overload is distinguishable. A same-width `cast` between `Char` and `ui32`/`i32` is a no-op reinterpret (`(cast ui32 \A)` is `65`). Because `Char` is distinct, two *typed* operands of different kind do **not** silently unify: `(= \a (cast ui32 65))` is a compile error (`operand type mismatch`) — cast one side explicitly. An untyped integer literal still adapts to a `Char` operand, so `(= \a 97)` is allowed. Write a `Char` value with a [char literal](#char-literals--a) (below) or, equivalently, the `(char "x")` form. (The `Char` UTF-8 encode/decode and classification library is a separate task.)
 
@@ -212,17 +212,17 @@ The `(char "x")` special form is equivalent sugar for the single-byte case: `(ch
 
 A `Keyword` has static type `Keyword` and conforms to both `Hash` and `Eq`, making it a natural key type for `HashMap` and member type for `HashSet`.
 
-**Requires `(import keyword)`** — and transitively `(import strview)`, `(import hash)`, and `(import numeric)`. Without the import the compiler emits `undefined: keyword-intern`. See [Keywords and StrView](stdlib.md#strview-libstrviewnuc) for the full API.
+**Requires `(import-use keyword)`** — and transitively `(import-use strview)`, `(import-use hash)`, and `(import-use numeric)`. Without the import the compiler emits `undefined: keyword-intern`. See [Keywords and StrView](stdlib.md#strview-libstrviewnuc) for the full API.
 
 ```lisp
-(include stdio)
-(import strview)
-(import hash)
-(import keyword)
-(import allocator)
-(import coll)
-(import iterator)
-(import hashmap)
+(import-use "stdio.h")
+(import-use strview)
+(import-use hash)
+(import-use keyword)
+(import-use allocator)
+(import-use coll)
+(import-use iterator)
+(import-use hashmap)
 
 (defn main:i32 ()
   ; Self-evaluation.

@@ -11,11 +11,11 @@
 ;   8. strview-trim-start "  hello" → len=5
 ;   9. strview-trim-end "hello  " → len=5
 
-(include stdio)
-(include stdlib)
-(include string)
-(import strview)
-(import string-split)
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(import-use "string.h")
+(import-use strview)
+(import-use string-split)
 
 ; Print a StrView as a C string (assumes the view is a slice of a NUL-terminated
 ; buffer, OR we copy it to a temp buffer).

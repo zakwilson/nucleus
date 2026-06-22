@@ -2,7 +2,7 @@
 ; (Maybe T) for a non-pointer T stamps a {tag, T} union (vs the niche pointer
 ; (Maybe (ref T))). Built with make / return-position target typing, eliminated
 ; with match. ?!T = (Maybe (Result T Err)) — a fallible result that may be absent.
-(include stdio)
+(import-use "stdio.h")
 
 (deferror nope "no value")
 

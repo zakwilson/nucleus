@@ -8,8 +8,8 @@
 ; (ref AllocHandle), uses the list binding form `(name (type))`; the colon sugar
 ; `name:(...)` does not tokenise for a parenthesised RHS.
 
-(include stdio)
-(import allocator)
+(import-use "stdio.h")
+(import-use allocator)
 
 ; A collection-shaped struct that stores an AllocHandle by value and allocates
 ; its backing buffer through it — the M1 "struct stores an AllocHandle and calls

@@ -21,10 +21,10 @@
 ;     but share the `i32` IR representation.
 ; ---------------------------------------------------------------------------
 
-(include stdlib)
+(import-use "stdlib.h")
 
-(import error)          ; deferror / !T / err!
-(import string-errors)  ; invalid-codepoint (canonical home)
+(import-use error)          ; deferror / !T / err!
+(import-use string-errors)  ; invalid-codepoint (canonical home)
 
 ; ---------------------------------------------------------------------------
 ; DecodeResult — the outcome of a single UTF-8 decode attempt.

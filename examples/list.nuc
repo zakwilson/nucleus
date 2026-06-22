@@ -1,8 +1,8 @@
 ; Demonstrates list manipulation primitives over the unified Node type.
 ; The definitions here mirror lib/list.nuc; a proper import mechanism is TBD.
 
-(include stdio)
-(include stdlib)
+(import-use "stdio.h")
+(import-use "stdlib.h")
 
 (defstruct Node
   kind:i32

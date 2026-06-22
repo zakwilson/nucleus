@@ -27,15 +27,15 @@
 ; StrView's `strview-to-cstr` bridge is sound for any interned keyword name.
 ; ---------------------------------------------------------------------------
 
-(include stdio)
-(include stdlib)
-(include string)
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(import-use "string.h")
 
 (extern stderr:ptr)
 
-(import strview)
-(import hash)
-(import numeric)   ; the Eq protocol (= / !=)
+(import-use strview)
+(import-use hash)
+(import-use numeric)   ; the Eq protocol (= / !=)
 
 ; ---------------------------------------------------------------------------
 ; The interned keyword. A value type: copying a Keyword copies these three

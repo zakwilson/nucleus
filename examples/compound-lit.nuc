@@ -1,7 +1,7 @@
 (defstruct Point x:int y:int)
 (defstruct Rect tl:ptr:Point br:ptr:Point label:ptr)
 
-(include stdio)
+(import-use "stdio.h")
 
 (defn main:int ()
   ; Positional struct literal.

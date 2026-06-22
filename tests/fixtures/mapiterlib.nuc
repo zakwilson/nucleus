@@ -8,4 +8,4 @@
 ; Regenerate the header with:
 ;     nucleusc --emit-nuch tests/fixtures/mapiterlib.nuc > lib/mapiterlib.nuch
 
-(import iterator)
+(import-use iterator)

@@ -5,12 +5,12 @@
 ; summing elements (order-independent). CStr membership tests drive the basic
 ; API. See tests/expected/hashset-test.out for the expected output.
 
-(include stdio)
-(import allocator)
-(import coll)
-(import iterator)
-(import hash)
-(import hashset)
+(import-use "stdio.h")
+(import-use allocator)
+(import-use coll)
+(import-use iterator)
+(import-use hash)
+(import-use hashset)
 
 (defn main:i32 ()
 

@@ -3,7 +3,7 @@
 ;
 ; The Node struct and make-cell come in via the auto-imported prelude.
 
-(include stdio)
+(import-use "stdio.h")
 
 ; Sum any number of i64 args. The compiler inttoptr's each into Node.car.
 (defn sum:i64 (&rest args:i64)

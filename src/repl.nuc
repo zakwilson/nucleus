@@ -137,7 +137,11 @@
                       (-> f (node-at _ 0) (cast ptr:Node _) (_ kind) (= _ NODE-SYM))))
         (set! h (-> f (node-at _ 0) (cast ptr:Node _) (_ s))))
       ; Top-level defining forms
-      (cond (and (!= h null) (= h "defconst"))
+      (cond (and (!= h null) (= h "ns"))
+              ; Stage 12: set the current namespace. emit-ns is silent on a
+              ; second `ns` under the REPL flag (g-interactive), as designed.
+              (do (emit-ns (cast ptr f)) (set! is-expr 0))
+            (and (!= h null) (= h "defconst"))
               (do (emit-defconst (cast ptr f)) (set! is-expr 0))
             (and (!= h null) (= h "defenum"))
               (do (emit-defenum (cast ptr f)) (set! is-expr 0))
@@ -194,20 +198,6 @@
                     (when (= (nn kind) NODE-SYM)
                       (repl-declare-union-ctors (nn s))))
                   (fprintf stderr "  defined\n"))
-            (and (!= h null) (= h "include"))
-              (do (open-module-streams)
-                  (set! g-out g-decl-stream)
-                  (emit-include (cast ptr f))
-                  ; Header unions defer their IR type defs; land them here so
-                  ; the preamble carries them for every later module.
-                  (drain-pending-union-irs)
-                  ; Append types + declarations to preamble for future modules
-                  (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
-                  (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
-                    (fputs g-type-bufp g-repl-preamble))
-                  (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp (cast i64 0)) 0))
-                    (fputs g-decl-bufp g-repl-preamble))
-                  (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp))
             (and (!= h null) (= h "extern"))
               (do (open-module-streams)
                   (set! g-out g-decl-stream)
@@ -371,10 +361,23 @@
                             (fprintf stderr "  ")
                             (fprint-node stderr expanded)
                             (fprintf stderr "\n")))))))
-            (and (!= h null) (= h "import"))
+            ; Stage 12 N7: the flatten import forms (`import-use`, `import-only`)
+            ; behave like the old `import` in the REPL — symbols enter g-globals
+            ; directly under their bare names and the declare-backfill below
+            ; surfaces them for later modules. The C-header string-path form
+            ; (`(import-use "stdio.h")`) flows through the same path; do-import
+            ; routes the .h string to emit-c-include and the backfill below
+            ; declares the parsed externs. The prefix-qualified forms (`import`,
+            ; `import-prefixed`, `unsafe-import-private`) inject ir-name-sharing
+            ; aliases that this name-keyed backfill would mis-declare, so they are
+            ; left to the compiler path for now.
+            (and (!= h null)
+                 (or (= h "import-use") (= h "import-only")))
               (do (let (pre-len:i32 ((cast ptr:Scope g-globals) len))
                     (open-module-streams)
-                    (emit-import (cast ptr f))
+                    (if (= h "import-only")
+                      (emit-import-only (cast ptr f))
+                      (emit-import-use (cast ptr f)))
                     ; Land lazily-emitted union type defs in this module's type
                     ; buffer, copy it, and append the copy to the preamble only
                     ; AFTER the module is JIT'd — the module itself already
@@ -774,7 +777,7 @@
     (.set! sym is-const 1) (.set! sym const-val "3")))
 
 ; Auto-import lib/macros.nuc so the standard macros (if, when, unless, for,
-; dotimes, ->) are available at the REPL without an explicit (import macros).
+; dotimes, ->) are available at the REPL without an explicit (import-use macros).
 ; Errors are tolerated via repl_try so the session still starts if the library
 ; can't be found or fails to JIT.
 (defn repl-preload-macros:void ()
@@ -783,7 +786,7 @@
         save-line:i32 g-line
         save-peek:ptr g-peek
         save-peek-valid:i32 g-peek-valid)
-    (set! g-src "(import macros)")
+    (set! g-src "(import-use macros)")
     (set! g-pos (cast i64 0))
     (set! g-line 1)
     (set! g-peek-valid 0)

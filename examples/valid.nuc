@@ -6,8 +6,8 @@
 ; stamp), so a type that cannot support an operation is rejected at the call site
 ; — including operations on values *derived* from T — with no protocol declared.
 
-(include stdio)
-(import numeric)
+(import-use "stdio.h")
+(import-use numeric)
 
 ; clampv uses only < and >, so it is valid for any ordered/comparable type.
 (defn clampv:T (x:T lo:T hi:T &where (Valid T))

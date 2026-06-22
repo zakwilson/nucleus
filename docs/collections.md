@@ -1,6 +1,6 @@
 # Collections (`lib/coll.nuc`, `lib/hash.nuc`, `lib/vector.nuc`, `lib/hashmap.nuc`, `lib/hashset.nuc`, Stage 11)
 
-`(import coll)` provides the core collection protocols (`Coll`, `Seq`, `Assoc`, `Set`, `Drop`) that every owning collection conforms to. The concrete types (`Vector`, `HashMap`, `HashSet`) are separate libraries and must be imported individually.
+`(import-use coll)` provides the core collection protocols (`Coll`, `Seq`, `Assoc`, `Set`, `Drop`) that every owning collection conforms to. The concrete types (`Vector`, `HashMap`, `HashSet`) are separate libraries and must be imported individually.
 
 These collections are **mutable and in-place** in the STL spirit — `conj`, `assoc`, and the set-algebra operations mutate the receiver. They own heap memory through a stored `AllocHandle` and free it via `Drop` at `with`-scope exit. See [Allocators](allocators.md) for the allocator protocol and handle type.
 
@@ -116,13 +116,13 @@ All four methods take `(ref Self)` receivers. The algebra methods (`union`, `dif
 
 Every owning collection conforms to `Drop` so a `with`-bound value frees its buffer at scope exit, in reverse binding order. The method is named `drop` (not `free`) so it does not shadow libc `@free`. See [Special forms](special-forms.md) for `with`/`move`/`defer` semantics.
 
-`Drop` is declared in `lib/coll.nuc` so every owning collection library can `(import coll)` and extend it.
+`Drop` is declared in `lib/coll.nuc` so every owning collection library can `(import-use coll)` and extend it.
 
 ---
 
 ## `Hash` protocol (`lib/hash.nuc`)
 
-`(import hash)` is required by `hashmap` and `hashset`. A key type or set-member type must conform to both `Hash` and `Eq`.
+`(import-use hash)` is required by `hashmap` and `hashset`. A key type or set-member type must conform to both `Hash` and `Eq`.
 
 ```lisp
 (defprotocol Hash
@@ -152,9 +152,9 @@ Unlike `numeric.nuc`'s code-free operator conformances, these are real method bo
 **Keywords as ergonomic map/set keys.** `Keyword` conforms to both `Hash` and `Eq`, making it the idiomatic lightweight key type when keys are known names rather than arbitrary strings. Because equality is identity (intern `id` compare) and hashing is a single cached load, keyword-keyed maps are faster than `CStr`-keyed ones (no `strcmp`, no byte walk):
 
 ```lisp
-(include stdio)
-(import strview) (import hash) (import keyword)
-(import allocator) (import coll) (import iterator) (import hashmap)
+(import-use "stdio.h")
+(import-use strview) (import-use hash) (import-use keyword)
+(import-use allocator) (import-use coll) (import-use iterator) (import-use hashmap)
 
 (defn main:i32 ()
   (with ((m (ref (HashMap Keyword i32))) (alloca (HashMap Keyword i32)))
@@ -167,7 +167,7 @@ Unlike `numeric.nuc`'s code-free operator conformances, these are real method bo
   (return 0))
 ```
 
-See [Keyword literals](types.md#keyword-literals----foo) in the Types reference for the full semantics and the `(import keyword)` requirement.
+See [Keyword literals](types.md#keyword-literals----foo) in the Types reference for the full semantics and the `(import-use keyword)` requirement.
 
 **Conforming a user type:** extend `Hash` and provide the `hash` method:
 
@@ -181,7 +181,7 @@ See [Keyword literals](types.md#keyword-literals----foo) in the Types reference 
 
 ## `Vector T` (`lib/vector.nuc`)
 
-`(import vector)` provides a dynamically-sized, heap-backed mutable sequence. Append is O(1) amortized (capacity doubles); indexed access and `insert` are O(1) and O(n) respectively. Conforms to `(Coll T (VecIter T))`, `(Seq T)`, and `Drop`.
+`(import-use vector)` provides a dynamically-sized, heap-backed mutable sequence. Append is O(1) amortized (capacity doubles); indexed access and `insert` are O(1) and O(n) respectively. Conforms to `(Coll T (VecIter T))`, `(Seq T)`, and `Drop`.
 
 ### Construction
 
@@ -244,11 +244,11 @@ See [Iterators](iterators.md) for `doseq` / `doseq-iter` and the `Iterator` prot
 ### Full example
 
 ```lisp
-(include stdio)
-(import allocator)
-(import coll)
-(import iterator)
-(import vector)
+(import-use "stdio.h")
+(import-use allocator)
+(import-use coll)
+(import-use iterator)
+(import-use vector)
 
 (defn main:i32 ()
   (with ((v (ref (Vector i32))) (alloca (Vector i32)))
@@ -266,7 +266,7 @@ See [Iterators](iterators.md) for `doseq` / `doseq-iter` and the `Iterator` prot
 
 ## `HashMap K V` (`lib/hashmap.nuc`)
 
-`(import hashmap)` provides an open-addressing hash map with linear probing and tombstone deletion. O(1) average `assoc`/`dissoc`/`get`. Conforms to `(Assoc K V (HashMapKeyIter K V) (HashMapValIter K V))`, `(Coll (Entry K V) (HashMapEntryIter K V))`, and `Drop`. Keys must conform to `Hash` and `Eq`.
+`(import-use hashmap)` provides an open-addressing hash map with linear probing and tombstone deletion. O(1) average `assoc`/`dissoc`/`get`. Conforms to `(Assoc K V (HashMapKeyIter K V) (HashMapValIter K V))`, `(Coll (Entry K V) (HashMapEntryIter K V))`, and `Drop`. Keys must conform to `Hash` and `Eq`.
 
 **Implementation:** three parallel byte arrays (keys, vals, states). Capacity is always a power of two; a 75% load factor triggers doubling. Tombstone entries are skipped during lookup and dropped on resize.
 
@@ -391,12 +391,12 @@ Iteration order is hash-dependent and unspecified for both `keys` and `vals`.
 ### Full example
 
 ```lisp
-(include stdio)
-(import allocator)
-(import coll)
-(import iterator)
-(import hash)
-(import hashmap)
+(import-use "stdio.h")
+(import-use allocator)
+(import-use coll)
+(import-use iterator)
+(import-use hash)
+(import-use hashmap)
 
 (defn main:i32 ()
   (with ((m (ref (HashMap CStr i32))) (alloca (HashMap CStr i32)))
@@ -415,7 +415,7 @@ Iteration order is hash-dependent and unspecified for both `keys` and `vals`.
 
 ## `HashSet T` (`lib/hashset.nuc`)
 
-`(import hashset)` provides an open-addressing hash set with linear probing. O(1) average `insert`/`contains?`/`set-remove`. Conforms to `(Coll T (HashSetIter T))`, `(Set T)`, and `Drop`. Members must conform to `Hash` and `Eq`.
+`(import-use hashset)` provides an open-addressing hash set with linear probing. O(1) average `insert`/`contains?`/`set-remove`. Conforms to `(Coll T (HashSetIter T))`, `(Set T)`, and `Drop`. Members must conform to `Hash` and `Eq`.
 
 **Implementation:** two parallel byte arrays (keys buffer and state buffer). Same open-addressing layout as `HashMap`; same 75% load-factor doubling policy.
 
@@ -476,12 +476,12 @@ Iteration order is hash-dependent and unspecified.
 ### Full example
 
 ```lisp
-(include stdio)
-(import allocator)
-(import coll)
-(import iterator)
-(import hash)
-(import hashset)
+(import-use "stdio.h")
+(import-use allocator)
+(import-use coll)
+(import-use iterator)
+(import-use hash)
+(import-use hashset)
 
 (defn main:i32 ()
   ; Basic membership
@@ -580,4 +580,4 @@ paths are reader diagnostics (compile-time `error:` messages), not runtime outpu
 
 **`HashMap` `conj` takes an `Entry`, not a raw value.** `(conj m e)` inserts the `(Entry K V)` pair `e` into the map. Use `assoc` directly when key and value are already separate.
 
-**`HashSet` uses `set-remove`, not `remove`.** The name `remove` is libc's file-removal function; shadowing it would break `(include stdio)` consumers that use `remove` in the same unit.
+**`HashSet` uses `set-remove`, not `remove`.** The name `remove` is libc's file-removal function; shadowing it would break `(import-use "stdio.h")` consumers that use `remove` in the same unit.

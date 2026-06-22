@@ -59,14 +59,14 @@ machinery.
 | Form | Meaning |
 |---|---|
 | `match` | the eliminator — `((ok v) …)` / `((err e) …)` arms |
-| `(try r)` | propagation macro (`lib/error.nuc`, needs `(import error)`): yields the `ok` value, or re-returns the error via `err!` from the enclosing `!T` function |
+| `(try r)` | propagation macro (`lib/error.nuc`, needs `(import-use error)`): yields the `ok` value, or re-returns the error via `err!` from the enclosing `!T` function |
 | `(unwrap r)` | the `ok` payload, or — on `err` — print `err-name`/`err-message` and abort (needs `printf` in scope for the message) |
 | `(unwrap-or r d)` | the `ok` payload, or `d` (evaluated only on the `err` arm) |
 | `(err-name e)` / `(err-message e)` | the descriptor strings for an `Err` value |
 
 ```lisp
-(include stdio)
-(import error)
+(import-use "stdio.h")
+(import-use error)
 (deferror parse-failed "could not parse value")
 
 (defn checked:!i64 (n:i64)
@@ -102,7 +102,7 @@ understand.
 
 ## Handler-aware `err` and `with-handler` (E3)
 
-When `(import error)` is in scope, returning `(err E)` from a `!T` function
+When `(import-use error)` is in scope, returning `(err E)` from a `!T` function
 consults the dynamically-bound handler chain before returning the error value. A
 matching handler can **repair** the fault: the function returns `(ok v)` instead
 of the error. `(err! E)` always bypasses the chain.
@@ -122,7 +122,7 @@ stored in the error value:
 ```
 
 **`with-handler`.** Binds a handler in the current dynamic extent (from
-`lib/error.nuc`; requires `(import error)`):
+`lib/error.nuc`; requires `(import-use error)`):
 
 ```lisp
 (with-handler (error-value repair-type handler-fn ctx) body…)
@@ -157,7 +157,7 @@ error. The type key is the type's mangled-name string (pointer-compare with
   compare per `err` return, on the error path only. `err!` costs nothing extra.
 
 **Gating.** The handler machinery lives in `lib/error.nuc`. Without
-`(import error)`, `(err E)` behaves like `(err! E)` — the check is never
+`(import-use error)`, `(err E)` behaves like `(err! E)` — the check is never
 emitted. `try`, `with-handler`, `Handler`, and `err-find-handler` all require
 the import.
 
@@ -168,8 +168,8 @@ not supported in v1.
 **Example** (see also `examples/handlers.nuc`):
 
 ```lisp
-(include stdio)
-(import error)
+(import-use "stdio.h")
+(import-use error)
 
 (deferror config-missing "config file not found")
 
@@ -221,7 +221,7 @@ allocator's grow path signalling for a replacement block, falling back to its ow
 behavior if policy declines:
 
 ```lisp
-(import error)
+(import-use error)
 (deferror out-of-memory "allocation grow needs a policy decision")
 
 (defn grow:i64 (need:i64)
@@ -236,7 +236,7 @@ behavior if policy declines:
   (grow (cast i64 8)))           ; → 16
 ```
 
-`signal` requires `(import error)` (it references the handler chain). Its result
+`signal` requires `(import-use error)` (it references the handler chain). Its result
 is a **value** `(Maybe T)`, eliminated with `match` (not `if-some`, which is
 pointer-only). The **v1 repair-type-is-a-value-type limitation** applies: a
 `(ref X)` niche-pointer repair is not a struct, so the struct-return call path

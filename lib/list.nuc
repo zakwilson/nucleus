@@ -11,7 +11,7 @@
 ; These functions allocate with malloc. Cleanup is the caller's responsibility.
 ; Programs that don't use lists don't pay for them.
 
-(include stdlib)
+(import-use "stdlib.h")
 
 (defstruct Node
   kind:i32

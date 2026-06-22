@@ -15,7 +15,7 @@
 ; ---------------------------------------------------------------------------
 ; TOKENIZER NOTES (carried from strview.nuc / string.nuc):
 ;   - `?` and `!` must NOT appear in plain defn names.
-;   - strtol / strtoll / strtod: brought in by `(include stdlib)`.
+;   - strtol / strtoll / strtod: brought in by `(import-use "stdlib.h")`.
 ;   - Endptr pattern: `(let (ep:ptr null) (strtod cs (addr-of ep)) ...)`.
 ;     `addr-of` requires a named local symbol; field expressions don't work.
 ;   - NUL-terminated copy: StrView bytes are not guaranteed NUL-terminated,
@@ -28,11 +28,11 @@
 ;     resolve "Self" as a concrete type. Use parametric R instead.
 ; ---------------------------------------------------------------------------
 
-(include stdio)
-(include stdlib)
-(include string)
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(import-use "string.h")
 
-(import strview)
+(import-use strview)
 
 ; Parse error codes.
 (deferror parse-int-error   "invalid integer")

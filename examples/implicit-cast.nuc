@@ -1,5 +1,5 @@
-(include stdio)
-(include stdlib)
+(import-use "stdio.h")
+(import-use "stdlib.h")
 
 ; Built-in implicit cast: i32 literal → ui64 (size_t) for malloc.
 ; No (cast i64 ...) wrapper required.

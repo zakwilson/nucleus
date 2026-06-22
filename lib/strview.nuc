@@ -30,15 +30,15 @@
 ;     must NOT appear in plain `defn` names (LLVM IR rejects them).
 ; ---------------------------------------------------------------------------
 
-(include stdio)
-(include stdlib)
-(include string)
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(import-use "string.h")
 
-(import hash)
-(import numeric)       ; Eq / Ord protocols (= / != / <)
-(import char)          ; Char type, char-decode-utf8, DecodeResult
-(import string-errors) ; str-index-out-of-bounds, invalid-char-boundary
-(import iterator)      ; (Iterator E)
+(import-use hash)
+(import-use numeric)       ; Eq / Ord protocols (= / != / <)
+(import-use char)          ; Char type, char-decode-utf8, DecodeResult
+(import-use string-errors) ; str-index-out-of-bounds, invalid-char-boundary
+(import-use iterator)      ; (Iterator E)
 ; NOTE: string-protocols.nuc imports strview, so we CANNOT import it here
 ; (circular).  The ByteStr/Str conformances for StrView live in strview-str.nuc,
 ; which imports both strview and string-protocols.

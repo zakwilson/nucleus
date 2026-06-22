@@ -38,8 +38,8 @@
 ; as the compiler's hash-struct-shape seed does (-3750763034362895579).
 ; ---------------------------------------------------------------------------
 
-(include stdio)
-(include string)
+(import-use "stdio.h")
+(import-use "string.h")
 
 ; Fold one byte `b` (0..255, passed as i64) into the running hash `h`.
 ; The * is the FNV prime 0x100000001b3 = 1099511628211.

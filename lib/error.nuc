@@ -16,7 +16,7 @@
 ; (`try`, `Handler`, the chain global, the find-walk, `with-handler`) needs
 ; `(import error)`.
 
-(include string)
+(import-use "string.h")
 
 ; The panic-tier debugger hook (errors.md §4 "the panic tier gets a hook for
 ; free", phase C3). `die-at` and `unwrap`-on-`err` `signal` this condition before
