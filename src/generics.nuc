@@ -2024,11 +2024,50 @@
   (when (= name "Valid") (return 1))
   (return 0))
 
+; Stage 13 L2: does `ty` conform to the `Drop` protocol? Owning-ness in this
+; compiler is recorded *nominally*: a struct (or stamped template instance) is
+; Drop iff `(extend <S> Drop)` recorded the conformance — collections write that
+; extend by hand on the wrapper struct, so a struct that owns a Drop field is
+; itself extended to Drop and this nominal check is the transitive answer. The
+; same nominal predicate `with-drop-method`/`union-drop-arm` use; reused here so
+; Drop-ness has a single source of truth. A bare struct (TY-STRUCT) or untagged
+; union (TY-UNION, also a StructDef) is checked on its registered name; every
+; non-aggregate kind is never Drop.
+(defn type-conforms-drop:i32 (ty:ptr)
+  (let (tt:ptr:Type (cast ptr:Type ty)
+        k:i32 (tt kind))
+    (when (or (= k TY-STRUCT) (= k TY-UNION))
+      (let (sd:ptr:StructDef (cast ptr:StructDef (tt sdef)))
+        (when (= (cast ptr sd) null) (return 0))
+        (when (!= (conformance-lookup (sd name) "Drop") 0) (return 1))))
+    (return 0)))
+
+; Stage 13 L2: is `ty` trivially (bitwise) copyable, hence automatically `Clone`?
+; A primitive (any non-aggregate kind — scalar, pointer, CStr, Err, usize, …) is
+; trivially copyable. A struct or untagged union is trivially copyable iff it does
+; NOT conform to `Drop` (transitively, per `type-conforms-drop`): a Drop-free
+; aggregate owns no resources, so a value copy is sound and the closure owns
+; nothing. An owning (Drop) aggregate is excluded — it must hand-write `clone`
+; (an `(extend <S> Clone)`), which the nominal conformance registry serves. A
+; TY-TYVAR is abstract and never structurally trivial here (its Clone-ness comes
+; from its own `&where` bound), so it returns 0.
+(defn type-trivially-copyable:i32 (ty:ptr)
+  (let (tt:ptr:Type (cast ptr:Type ty)
+        k:i32 (tt kind))
+    (when (= k TY-TYVAR) (return 0))
+    (when (or (= k TY-STRUCT) (= k TY-UNION))
+      (when (!= (type-conforms-drop ty) 0) (return 0)))
+    (return 1)))
+
 ; Automatic conformance for a blanket protocol (§10.1). `Any` holds for every
 ; type (the no-constraint constraint); `Struct` holds for any struct type or
 ; pointer-to-struct (its required `get` member-access method is supplied by a
-; built-in once callable-values lands). Blanket conformance is structural and
-; consulted directly, so it is never recorded in g-conformances.
+; built-in once callable-values lands). `Clone` (Stage 13 L2) holds automatically
+; for any trivially-copyable type — a primitive, or a Drop-free aggregate — with a
+; bitwise copy as its `clone`; an owning (Drop) type is excluded here and conforms
+; only by a hand-written `(extend <S> Clone)` recorded nominally. Blanket
+; conformance is structural and consulted directly, so it is never recorded in
+; g-conformances.
 (defn blanket-conforms:i32 (ty:ptr proto-name:ptr)
   (when (= proto-name "Any") (return 1))
   (when (= proto-name "Struct")
@@ -2039,6 +2078,8 @@
                       (= (-> ty (cast ptr:Type _) (_ elem) (cast ptr:Type _) (_ kind)) TY-STRUCT)))
         (return 1))
       (return 0)))
+  (when (= proto-name "Clone")
+    (return (type-trivially-copyable ty)))
   (return 0))
 
 ; Stage 12 N4 (decision 9): conformance/protocol facts are global, keyed on the

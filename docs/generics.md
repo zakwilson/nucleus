@@ -8,8 +8,8 @@ A `defn` whose name already exists but whose **parameter types differ** does not
 (defstruct Circle rad:i32)
 (defstruct Rect w:i32 h:i32)
 
-(defn area:i32 (c:ptr:Circle) (return (* (* (. c rad) (. c rad)) 3)))
-(defn area:i32 (s:ptr:Rect)   (return (* (. s w) (. s h))))
+(defn area:i32 (c:ptr:Circle) (return (* (* (c rad) (c rad)) 3)))
+(defn area:i32 (s:ptr:Rect)   (return (* (s w) (s h))))
 
 (defn kind:i32 (x:i32) (return 1))   ; overload on primitive type
 (defn kind:i32 (x:f64) (return 2))
@@ -43,7 +43,7 @@ A **protocol** names a capability — a set of required method signatures — an
 `extend Type Protocol` is a **checked, code-free conformance assertion**. It runs after the whole-file prescan: for each required signature it substitutes `Self → Type` and requires that a concrete method already resolves at the exact tier (the implementations are ordinary overloaded `defn`s). It records the `(Type, Protocol)` fact and emits nothing.
 
 ```lisp
-(defn area:i32  (s:ptr:Circle) (return (* (* (. s rad) (. s rad)) 3)))
+(defn area:i32  (s:ptr:Circle) (return (* (* (s rad) (s rad)) 3)))
 (defn label:ptr (s:ptr:Circle) (return "circle"))
 
 (extend Circle Shape)   ; OK — both methods exist for Circle
@@ -379,6 +379,43 @@ and typos caught):
 Using `Valid` with a public API is risky whether it's inside the library code or a user
 method on a library function because it may unexpectedly match unowned call sites. 
 It's safer to prefer named protocols and treat `Valid` as an escape hatch.
+
+### The `Clone` protocol
+
+`Clone` is a prelude-registered protocol whose single method returns a fresh,
+independently-owned copy of `Self`:
+
+```lisp
+(defprotocol Clone
+  ((clone Self) ((self (ref Self)))))
+```
+
+It is the obligation `vfn` clone-capture imposes on each captured value (Stage 13,
+`design/stage13/lambda.md`). Conformance has two paths, the same split built-in
+numerics use for `Eq`/`Ord`:
+
+- **Automatic (structural).** Any *trivially-copyable* type conforms automatically
+  with a bitwise copy — a primitive (any scalar, pointer, `CStr`, `Err`, `usize`,
+  …), or an aggregate (struct / untagged union) that does **not** conform to `Drop`.
+  No `extend` is written; the conformance is recognized by a structural predicate
+  alongside `Any`/`Struct` (`blanket-conforms`), so a Drop-free value satisfies a
+  `&where (Clone T)` bound with no boilerplate and the closure that captures it owns
+  nothing.
+- **Hand-written (nominal).** An owning (`Drop`) type is *excluded* from the
+  automatic rule — a bitwise copy of an owned resource would double-free — so it
+  conforms by a hand-written `clone` plus `(extend <S> Clone)`, deep-copying its
+  resources (a collection's `clone` allocates a fresh buffer through its stored
+  allocator and copies the elements). A hand-written `clone` is an ordinary tier-0
+  method, so it is dispatched in preference to the bitwise default whenever it
+  exists.
+
+A `Drop` type with **no** `Clone` conformance — neither automatic (it is `Drop`,
+hence excluded) nor hand-written — is **not** `Clone`: a `&where (Clone T)` bound
+rejects it at the call site. (Stage 13's `vfn` turns that rejection into a directed
+"use `mfn` to move it instead" diagnostic.) Drop-ness is the same nominal,
+transitively-recorded fact the `with` cleanup uses: a wrapper struct that owns a
+`Drop` field is itself `extend`ed to `Drop`, so its own recorded conformance is the
+transitive answer.
 
 *Not yet implemented:* same-name overloading that mixes imported and
 locally-defined methods; `&rest` together with `&where`; REPL generic

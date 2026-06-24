@@ -30,6 +30,17 @@
 
 (import-use macros)
 
+; Stage 13 L2 (design/stage13/lambda.md §"The Clone protocol"): the Clone
+; protocol, always available so `(&where (Clone T))` bounds resolve and `vfn`
+; clone-capture has a protocol to require. `clone` returns a fresh, independently
+; owned Self given a reference to the source. A trivially-copyable type — a
+; primitive or a Drop-free aggregate — conforms AUTOMATICALLY with a bitwise copy
+; (structural, handled in the compiler's blanket-conforms, no `extend` written);
+; only an owning (Drop) type hand-writes `clone` via `(extend <S> Clone)`. A
+; protocol emits no IR, so this is byte-identical for programs that never use it.
+(defprotocol Clone
+  ((clone Self) ((self (ref Self)))))
+
 ; Stage 10 errors (design/stage10/errors.md §9): the generic Result template,
 ; always available so the `!T` sugar — `(Result T Err)` — works in any program.
 ; A template registers no type and emits no IR until a use stamps a concrete
