@@ -1,0 +1,55 @@
+; Stage 13 L1: the frame-region escape analysis (lambda.md §"Lifetime and escape
+; analysis"). Taking the address of frame-local storage (a let/with value
+; binding, an alloca result, or a by-value parameter) taints the resulting
+; pointer with the storage's region, so it cannot escape via `return`. This is a
+; pure pointer-provenance check — `let` gains NO drop and NO ownership.
+;
+; This example exercises only the LEGAL paths, proving the new analysis does not
+; reject sound frame-pointer usage:
+;   * a pointer derived from a (ref ...) parameter may be returned (pointee is
+;     caller-owned);
+;   * `.&` through a (ref ...) parameter may be returned likewise;
+;   * a frame pointer may flow DOWNWARD into a callee (a borrow);
+;   * a value copied/`deref`-ed out of frame storage clears taint and may escape.
+;
+; The corresponding REJECTED forms are compile errors, e.g.
+;   (defn bad:ptr () (let (x:i32 5) (return (addr-of x))))   ; address of frame-local 'x'
+;   (defn leak:ptr (p:Point) (return (.& (addr-of p) x)))    ; field of frame-local 'p'
+; (verified at the compiler, not runnable here since they do not compile).
+
+(import-use "stdio.h")
+
+(defstruct Point x:i32 y:i32)
+
+; A pointer derived from a (ref ...) parameter escapes legally: the pointee
+; lives in the caller, so returning its interior address is sound.
+(defn point-x-addr:ref:i32 ((p (ref Point)))
+  (return (.& p x)))
+
+; Downward borrow: a pointer into THIS frame's local is passed into a callee.
+; The callee only reads through it; nothing escapes upward.
+(defn read-i32:i32 ((p (ref i32)))
+  (return (deref p)))
+
+(defn sum-locals:i32 (a:i32 b:i32)
+  (let (la:i32 a
+        lb:i32 b)
+    ; (addr-of la) is frame-tainted, but flows DOWN into read-i32 — a borrow.
+    (return (+ (read-i32 (addr-of la)) (read-i32 (addr-of lb))))))
+
+; Value-return idiom: build a struct in an alloca, then `deref` a COPY out. The
+; deref clears the frame taint, so the returned value carries nothing dangling.
+(defn make-point:Point (x:i32 y:i32)
+  (let ((p (ref Point)) (alloca Point))
+    (.set! p x x)
+    (.set! p y y)
+    (return (deref p))))
+
+(defn main:i32 ()
+  (let (pt:Point (make-point 3 4))
+    ; Read a field's address back out of a (ref Point) — legal escape of a
+    ; caller-owned pointee from point-x-addr's perspective.
+    (printf "x=%d\n" (deref (point-x-addr (addr-of pt))))
+    (printf "sum=%d\n" (sum-locals 10 20))
+    (printf "y=%d\n" ((addr-of pt) y)))
+  (return 0))

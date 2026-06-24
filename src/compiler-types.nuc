@@ -226,7 +226,8 @@
   docstring:ptr
   ; --- Stage 10 safety (lifecycle + nullability) ---
   home:ptr          ; defining Scope* (escape analysis compares scope nesting)
-  taint:ptr         ; owning with-Scope* whose resource this value aliases (null = clean)
+  taint:ptr         ; owning with-Scope* (or, Stage 13 L1, frame-region Scope*) this value aliases (null = clean)
+  taint-frame:i32   ; Stage 13 L1: 1 = `taint` is a frame-region (addr-of of a plain local), not a with-resource
   owns:i32          ; 1 = this binding armed a `with` cleanup (owning binding)
   moved:i32         ; 1 = consumed by (move ...); any further use is an error
   cslot:ptr         ; cleanup slot IR name when owns=1 (move disarms by storing null)
@@ -284,7 +285,16 @@
   ; Stage 10 escape analysis: owning with-Scope* this value aliases (null =
   ; clean). Propagated through identity-preserving ops (cast, ptr+, .&, phi);
   ; dropped by value-copying ops (deref, field load, calls).
-  taint:ptr)
+  taint:ptr
+  ; Stage 13 L1 (lambda.md §"Lifetime and escape analysis"): 1 when `taint` is a
+  ; *frame-region* — the scope of a plain let/with/param storage whose address
+  ; was taken (emit-addr-of's new source) — rather than a `with`-OWNED resource.
+  ; Both kinds escape via `return` (the function-frame boundary, enforced now);
+  ; but a frame-region pointer stored into other frame memory is an intra-frame
+  ; borrow, so the *store* sinks enforce only with-taint (taint-frame == 0).
+  ; Nested-region store precision is deferred (see lambda.md §Deferred).
+  ; Propagated alongside `taint` by every identity-preserving op.
+  taint-frame:i32)
 
 ; ---- Aggregate ABI lowering (Stage 8 Phase C, x86_64 System V) ----
 ; How a struct-by-value parameter or return is lowered to the platform C ABI.

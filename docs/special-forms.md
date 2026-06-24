@@ -20,7 +20,7 @@ expression yields `void` (e.g., a side-effect or no-return call like
 |------|-------------|--------------|
 | `do` | Sequence multiple expressions; yields the last | `{ ... }` block |
 | `let` | Bind local variables; yields the body's last expression | local variable declaration |
-| `with` | Like `let`, but **owns** any binding whose init is a libc allocator (`malloc`/`calloc`/`realloc`/`strdup`, possibly through `cast`) or whose declared type conforms to the `Drop` protocol. Owned bindings are released at scope exit (libc → `free`; Drop → statically dispatched `(drop b)`, null-guarded) in reverse binding order, on fall-through and on early `return`. The compiler verifies at compile time that an owned resource does not **escape** the scope — see [Pointer lifecycle](#pointer-lifecycle-with-escape-analysis). Use `(move b)` to transfer ownership out. | `let` + scoped `free` / RAII |
+| `with` | Like `let`, but **owns** any binding whose init is a libc allocator (`malloc`/`calloc`/`realloc`/`strdup`, possibly through `cast`) or whose declared type conforms to the `Drop` protocol. Owned bindings are released at scope exit (libc → `free`; Drop → statically dispatched `(drop b)`, null-guarded) in reverse binding order, on fall-through and on early `return`. The compiler verifies at compile time that an owned resource does not **escape** the scope — see [Pointer lifecycle](#pointer-lifecycle-escape-analysis). Use `(move b)` to transfer ownership out. | `let` + scoped `free` / RAII |
 | `cond` | Multi-way conditional; yields the matched branch's value (strict-typed across branches) | `if` / `else if` / `else` chain |
 | `case` | Integer-keyed dispatch; lowers to LLVM `switch`. Each clause is `(KEY body...)` where KEY is an integer literal, a list of integer literals, or the symbol `_` (default). With no `_` clause, an unmatched scrutinee hits `unreachable` (UB). Yields the matched branch's value (strict-typed across branches), like `cond`. | `switch` / `default:` |
 | `match` | Eliminate a `defunion` value (or a `defenum` integer) by arm, with exhaustiveness checking. See [Unions and tagged sums](structs-unions.md#unions-and-tagged-sums). | `switch` on the tag |
@@ -38,7 +38,7 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `and` | Short-circuit logical AND | `&&` |
 | `or` | Short-circuit logical OR | `\|\|` |
 | `cast` | Type cast | `(type)x` |
-| `addr-of` | Take address of a variable | `&x` |
+| `addr-of` | Take address of a variable. The address of **frame-local storage** (a `let`/`with` value binding or a by-value parameter) is escape-tracked so it cannot be returned — see [Pointer lifecycle](#pointer-lifecycle-escape-analysis); the address of a global or of a reference/pointer binding is not. | `&x` |
 | `deref` | Dereference a pointer (reader sugar: `@p` → `(deref p)`) | `*p` |
 | `ptr-set!` | Write through a pointer; yields the stored value | `*p = val` |
 | `ptr+` | Pointer arithmetic | `p + n` |
@@ -72,30 +72,66 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `when-some` | `(when-some (x m) body…)` — one-armed `if-some`. | `if ((x = m)) { … }` |
 | `move` | `(move b)` — transfer ownership of a `with`-owned binding out: disarms its scope-exit cleanup, yields the value with its escape taint cleared, and marks `b` consumed (later uses are "use after move"; reassignment revives it). | — |
 | `defer` | `(defer expr)` — register `expr` as an ad-hoc cleanup on the enclosing binding scope (nearest `let`/`with`/function body), re-emitted at every exit path in reverse registration order. Lexical, not dynamic: it runs at scope exit whether or not control reached the `defer` site. | `goto cleanup` discipline |
+| `fn` | `(fn (params):ret body…)` — an **anonymous function**. The body may reference its own parameters and top-level names (`defconst` / global `defvar` / another `defn`), but **not** any enclosing runtime local (a `let`/`with` binding or a by-value parameter); doing so is a compile error directing the author to `vfn`/`mfn`/`cfn`. The form is lambda-lifted to a fresh top-level function and its value is that function's pointer, so a non-capturing `fn` is a true function pointer with no environment and no runtime overhead — usable inline, storable in a variable, passable as an argument, and C-callable (e.g. a `qsort` comparator). The trailing `:ret` is the return type, matching the `(x:i32):i32` convention; a parenthesised return type (`(ref T)`) uses the space-separated list form. A local binding named `fn` shadows this keyword. (Stage 13 — see [lambda.md](../design/stage13/lambda.md).) | function pointer / non-capturing lambda |
+| `vfn` | `(vfn (params):ret body…)` — a **clone-capture closure**. Like `fn` but it *captures* the enclosing runtime locals its body references, by **clone** (the source survives untouched). Each capture must conform to `Clone` (see [generics.md](generics.md)): a POD / `Drop`-free capture is a bitwise value copy (no allocation; the closure owns nothing and is not `Drop`); an owning (`Drop`) capture is deep-cloned via its hand-written `clone`, and the closure then owns the copy and conforms to `Drop` with a synthesized field-wise cleanup. A `Drop` capture with no `Clone` is rejected, directing the author to `mfn`. The closure lowers to an anonymous by-value struct (one field per capture) plus a synthesized `invoke` method of the lambda's arity, so it is **callable with ordinary call syntax** — `(c arg…)` routes to `invoke` via the callable-values rule, no new call form needed. A non-capturing `vfn` folds to a bare `fn` pointer (zero overhead). The trailing `:ret` and parenthesised-return-type rule match `fn`; a local named `vfn` shadows this keyword. (Stage 13 — see [lambda.md](../design/stage13/lambda.md).) | clone-capture closure (by-value, owning iff a capture is `Drop`) |
 
-## Pointer lifecycle: `with` escape analysis
+## Pointer lifecycle: escape analysis
 
-A `with` binding whose init is a libc allocator, or whose declared type
-conforms to the `Drop` protocol, is an **owning binding**: its resource is
-released at scope exit, so any pointer still aliasing it afterwards would
-dangle. The compiler tracks aliases (its **taint**) at compile time and rejects
-escapes (see `design/stage10/lifecycle.md`):
+The compiler tracks pointer provenance (its **taint**) at compile time and
+rejects pointers that would outlive the storage they point into. Two storage
+classes feed the same machinery (see `design/stage10/lifecycle.md` and
+`design/stage13/lambda.md` §"Lifetime and escape analysis"):
+
+1. **`with`-owned resources** — a `with` binding whose init is a libc allocator,
+   or whose declared type conforms to `Drop`, is an **owning binding**: its
+   resource is released at scope exit, so any pointer still aliasing it
+   afterwards would dangle. (Concern: ownership/cleanup.)
+2. **Frame-local storage** — taking the address of a plain `let`/`with` value
+   binding or a **by-value parameter** (all of which live in a stack frame
+   alloca) yields a pointer into the frame, which is reclaimed when the function
+   returns. (Concern: pointer provenance only — `let` runs **no** drop and
+   confers **no** ownership; this is purely a use-after-free check.)
+
+Both share one mechanism:
 
 - Taint follows pointer **identity**: binding a tainted value (`let`/`with`/
   `set!`), `cast`, `ptr+`, `.&`, `addr-of`, and control-flow joins keep it.
   Copying the pointee **value** out (`deref`, field loads) clears it — so
   `(return (deref p))` and `(return (p count))` are fine.
-- **Escape sinks** (compile errors on tainted operands): `return` (explicit or
-  implicit), and stores into longer-lived memory (`set!` to an outer binding;
-  `aset!`/`.set!`/`ptr-set!` into memory not owned by the same or an inner
-  `with`). Manually calling `free`/`drop` on an owning binding is a
-  double-free error.
-- **`(move b)`** is the sanctioned way out: it disarms the cleanup, clears the
-  taint, and consumes the binding.
-- Passing a tainted value as a **function argument** is allowed (arguments are
-  borrows; the callee retaining the pointer is the same residual risk as C),
-  and pointers loaded *out of* the resource are not tracked — these are the
-  two documented imprecision boundaries of the cheap, intraprocedural tier.
+- `addr-of` (and `.&` through it) is the **frame-local taint source**. It does
+  **not** taint:
+  - the address of a **global** (`defvar`/`defconst`) — it outlives any frame;
+  - the address of a **reference/pointer parameter** or any pointer-typed local
+    — the slot holds a pointer whose pointee is caller-owned, so a value
+    *loaded out of* it may legitimately be returned (the existing untracked
+    imprecision boundary). So `(.& v field)` through a `(ref T)` parameter
+    still returns fine.
+- **Escape sinks** (compile errors on tainted operands):
+  - **`return`** rejects *any* tainted value — both a `with`-owned alias and a
+    pointer into frame-local storage. This is the function-frame boundary, and
+    it catches the classic `(return (addr-of x))` / `return &local` bug.
+  - **Stores into longer-lived memory** (`set!` to an outer binding;
+    `aset!`/`.set!`/`ptr-set!` into memory not owned by the same or an inner
+    `with`) reject **`with`-owned** taint only. A frame-local pointer stored
+    into other frame memory is an intra-frame borrow; full nested-region store
+    precision is deferred, so the first cut enforces the frame boundary at
+    `return`. Manually calling `free`/`drop` on an owning binding is a
+    double-free error.
+- **`(move b)`** is the sanctioned way out of a `with` scope: it disarms the
+  cleanup, clears the taint, and consumes the binding.
+- Passing a tainted value as a **function argument** is allowed — downward flow
+  is a borrow (the callee retaining the pointer is the same residual risk as C),
+  and pointers loaded *out of* a resource are not tracked — the two documented
+  imprecision boundaries of the cheap, intraprocedural tier.
+
+```lisp
+(defn bad:ptr ()
+  (let (x:i32 5)
+    (return (addr-of x))))        ; ERROR: address of frame-local 'x' escapes via return
+
+(defn point-x:ref:i32 ((p (ref Point)))
+  (return (.& p x)))              ; OK: pointee is caller-owned (ref parameter)
+```
 
 The `Drop` protocol is an ordinary Stage 9 protocol; conforming makes a type
 `with`-manageable with zero dispatch overhead:

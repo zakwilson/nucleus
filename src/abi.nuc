@@ -376,6 +376,8 @@
               (and (= sk TY-PTR) (= dk TY-CSTR)))
       (let (rv:ptr:Val (cast ptr:Val (alloc-val target (vv val))))
         (.set! rv taint (vv taint))
+        ; Stage 13 L1: carry the frame-region flag through CStr<->ptr coercion.
+        (.set! rv taint-frame (vv taint-frame))
         (return (cast ptr rv))))
     ; Both integers — emit cast if needed
     (when (and (!= (is-int-type src) 0) (!= (is-int-type target) 0))

@@ -29,7 +29,7 @@
       (when (!= (ptr-pkind (v type)) PTR-REF)
         (die-at (cc line) "some: value must be non-null (ref ...) — launder a raw pointer with (as-ref ...)"))
       (let (rv:ref:Val (alloc-val (type-as-pkind (v type) PTR-MAYBE) (v val)))
-        (.set! rv taint (v taint))
+        (val-copy-taint (cast ptr rv) (cast ptr v))
         (return rv)))))
 
 ; (as-ref p) — launder a raw pointer into (Maybe (ref T)): null stays none.
@@ -41,7 +41,7 @@
       (when (-> v (_ type) (cast ptr:Type _) (_ kind) (!= _ TY-PTR))
         (die-at (cc line) "as-ref: value must be a pointer"))
       (let (rv:ref:Val (alloc-val (type-as-pkind (v type) PTR-MAYBE) (v val)))
-        (.set! rv taint (v taint))
+        (val-copy-taint (cast ptr rv) (cast ptr v))
         (return rv)))))
 
 ; (unwrap r) over a Result `!T` value (errors.md §9): yields the `ok` payload,
@@ -1491,9 +1491,9 @@
               "  %s = getelementptr inbounds %s, ptr %s, i64 %s\n"
               tmp (type-to-ir elem) (p val) idx)
             ; An interior pointer aliases the resource: keep the taint
-            ; (lifecycle.md §2.2).
+            ; (lifecycle.md §2.2) and, Stage 13 L1, the frame-region flag.
             (let (rv:ref:Val (alloc-val (p type) tmp))
-              (.set! rv taint (p taint))
+              (val-copy-taint (cast ptr rv) (cast ptr p))
               (return rv))))))))
 
 (defn emit-not:ref:Val (call:ptr scope:ref:Scope)

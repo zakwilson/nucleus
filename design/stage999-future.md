@@ -101,3 +101,9 @@ Safe accessors with runtime cost seem like a good idea here, but it would be eve
 (Maybe StrView) fails in JIT modules, !void unsupported, struct-in-Result returns zeroed fields, and single-conformer generic ?-methods need a shim for IR mangling.
 
  name:ref:(Param T) colon-chain doesn't parse for a defn name/param — fuse-colon-paren mangles it. Use the list form (name (ref (Param T))).
+
+Sigil/rmacro for ref in type signatures, addr-of in code
+
+Symbol mangling for any name LLVM or C might not like
+
+UnaryFn protocol should extend to a lot of things that can be invoked
