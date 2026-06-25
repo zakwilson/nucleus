@@ -20,6 +20,84 @@ Current branch: `stage11-collections`
 | 11 (prereq) | Parametric generics — `(defstruct (Vector T) ...)` templates, stamping, methods, construction, parametric protocols, `usize`/`ssize`, C ABI + `.nuch` export | Done | [stage11/progress.md](stage11/progress.md) |
 | 12 | Modules and namespaces — `ns`, import forms, `defn-`/`defvar-` private/internal, `set-ir-prefix`, IR mangling, `export`, `.nuch` round-trip, source migration, compiler split (14,477 → 7,193 lines) | Done | [stage12/namespaces.md](stage12/namespaces.md), [stage12/progress.md](stage12/progress.md) |
 | 11 | Collections — `Vector`/`HashSet`/`HashMap`/`String`, protocols, iterators, allocators | Done — M1 (Allocator) + M2 (Iterator + doseq + generic lazy map/filter/reduce) + M3 (`Vector`) + M4 (`Hash`/`HashMap`/`HashSet`) + M5 (reader-macro literals `[…]`/`{…}`/`#{…}`) done; cleanup §1–§4a (colon-paren sugar, keyword/StrView, iterator-test flatten, phantom-tyvar fix) done; associated types (A0–A2) done; **A4 (A4.0–A4.4) done** — extend-site `&where` recovery fully implemented + `.nuch` round-trip + `lib/iterator.nuc` rewritten with generic element-agnostic `MapIter`/`FilterIter`/`UnaryFn`/`FoldFn`/`reduce` (retiring the `*I64` specializations); 89 tests pass ([stage11/assoc-types-extend.md](stage11/assoc-types-extend.md)); **C2.7+C2.8 done** — doc/comment rationale sweep + resolved-limitation close-out; **M6 S0 done** — the `Char` built-in distinct scalar + char literals (`\a`/`\newline`/`\u{…}`), the critical-path prerequisite, byte-identical-additive; M6 S2 done — `lib/string-errors.nuc` (four string `deferror` codes) + `lib/string-protocols.nuc` (`ByteStr ByteI`/`Str CharI` protocol shapes, `(extend Str Eq)` inheritance); **M6 S1 done** — `lib/char.nuc` (UTF-8 encode/decode, `DecodeResult`, `char-from-u32`/`char-to-u32`, ASCII classification + case, `invalid-codepoint` error; note: classification functions named without `?` suffix since `?` is invalid in non-generic LLVM identifiers); **M6 S3 done** — `lib/strview.nuc` (StrView + ByteIter/CharIter + full read layer + Eq/Ord/Hash), `lib/strview-str.nuc` (ByteStr/Str conformances); **M6 S4 done** — `lib/string.nuc` (String owning type wrapping Vector ui8, constructors, mutation API, Drop/ByteStr/Str/Eq/Ord/Hash conformances, works as HashMap key); **M6 S5 done** — `lib/parse.nuc` (`FromStr R` parametric protocol, `parse` macro, `i32`/`i64`/`f64` conformances via libc strtol/strtoll/strtod), `lib/string-split.nuc` (`SplitIter`/`LineIter` with done-flag design — avoids `(Maybe StrView)` JIT struct issue; `strview-split`/`strview-lines`); 102 tests pass; byte-identical bootstrap; **M6 S6 done** — `docs/strings.md` (§1–§8: Char, StrView, String, ByteStr/Str protocols, split/lines/trim, FromStr/parse, error codes); `docs/index.md` updated; M6 **complete** | [stage11/collections.md](stage11/collections.md), [stage11/progress.md](stage11/progress.md) |
+| 13 | Lambdas and closures — `fn`/`vfn`/`mfn`/`cfn` (four capture modes), `Clone`, escape generalization, structural conformance derivation | Done — four lambda/closure forms split by capture mode (`fn` non-capturing → bare function pointer; `vfn` clone-capture via `Clone`, source survives; `mfn` move-capture via the `move` sink; `cfn` reference-capture, allocator-backed + escape-checked), each lowering to an anonymous env struct + synthesized `invoke` (callable-values); the `with` escape analysis generalized to all frame-local storage (pointer-provenance; `let` gains no drop/lifetime); `Clone` protocol with automatic structural conformance for `Drop`-free types; structural function-protocol conformance derivation (recognized set `{UnaryFn, FoldFn}`) so a closure/`fn` literal satisfies a `&where` combinator bound with no hand-written function object; capturing-closure-typed public `defn`s excluded from `--emit-cheader` + warned, `fn`-pointer signatures emit normally; three pre-existing compiler limitations (by-value struct-return ABI, `with`-drop `TY-PTR`-only, no env-type inference) cap owning-closure cases at IR-level-verified — POD closures over scalars run fully. **119 tests pass; byte-identical bootstrap** (variadic `and`/`or` follow-up below re-converged after a one-time boot refresh). | [stage13/progress.md](stage13/progress.md) |
+
+---
+
+## Stage 13 — Lambdas and closures (2026-06-25)
+
+**Stage 13 complete.** The four lambda/closure forms landed, split by capture
+mode: `fn` (no runtime capture → bare function pointer, C-callable, zero
+overhead), `vfn` (clone-capture via the new `Clone` protocol; source always
+survives), `mfn` (move-capture via the `move` sink; consumes the source and owns
+the resource — the form that exports an owned value out of a `with`), and `cfn`
+(reference-capture, allocator-backed env, escape-checked). All four lower to an
+anonymous env struct plus a synthesized `invoke` method, callable through the
+existing callable-values routing (no fixed arity, no mandatory conformance); a
+non-capturing form folds to a plain function pointer.
+
+Supporting work: the `with` escape analysis was **generalized** from owned heap
+resources to all frame-local storage (a pointer-provenance check — `let` gains no
+drop/lifetime semantics), closing the pre-existing `return &local` UAF; the
+**`Clone`** protocol ships with automatic structural conformance for
+trivially-copyable types (hand-written for owning types); and a **structural
+function-protocol conformance derivation** lets a closure or `fn` literal satisfy
+a `&where ((UnaryFn …) F)` / `((FoldFn …) G)` bound with no hand-written
+function-object struct (recognized set: `{UnaryFn, FoldFn}`).
+Capturing-closure-typed public `defn`s are excluded from `--emit-cheader` and
+warn; `fn`-pointer signatures emit normally.
+
+**117 tests pass; `make bootstrap` is a byte-identical fixed point** (L2–L9
+additive and inert in the compiler's own source; L1 — the one non-additive phase
+— re-converged after a measure-then-flip triage that found no genuine
+`return &local` site in the compiler). `examples/closures.nuc` exercises all four
+forms inline to `reduce`; `tests/fixtures/closure-escape.nuc` and
+`tests/fixtures/closure-cheader.nuc` are the negative/cheader fixtures. Three
+**pre-existing** compiler limitations (not closure bugs) cap what is runnable
+end-to-end — by-value struct-return ABI corruption, `with`-drop arming for
+`TY-PTR` only, and no type inference for anonymous env types — so owning-closure
+cases are IR-level-verified only; POD closures over scalars are fully runnable.
+Detail: [stage13/progress.md](stage13/progress.md).
+
+---
+
+## Stage 13 follow-up — Variadic `and`/`or` (2026-06-25)
+
+**Variadic logical `and`/`or` landed** as prelude macros, mirroring the
+`_+`/`+` split: `and`/`or` are now `&rest` right-fold macros in `lib/macros.nuc`
+(`(and)`→`true`, `(or)`→`false`, `(and x)`→`x`, `(and a b c…)`→`(_and a (and b c…))`,
+symmetrically for `or` over `_or`). The renamed binary short-circuit primitives
+`_and`/`_or` are the actual special forms, routed to the existing
+`emit-short-circuit` with unchanged IR labels, and are now **documented public
+primitives** usable directly for hand-written binary short-circuit (same exposure
+as `_+`).
+
+**Cumulative narrowing is preserved** across variadic chains: the right-nested
+binary spine means each clause narrows by all prior ones, so
+`(and (!= m null) (m kind) (> (m x) 0))` typechecks (`(m kind)`/`(m x)` see `m`
+non-null). The narrowing analyzers (`test-true-nonnull`/`test-false-nonnull`)
+were retargeted from the old flat N-ary `(and…)`/`(or…)` loop to recurse both
+arms of the new binary `_and`/`_or`.
+
+**1-arg relaxation (accepted semantics change):** `(and x)`/`(or x)` now return
+`x` **unchecked** (previously `(and x)` errored `"and expects 2 args"`). Matches
+CL/`+` variadic semantics; the i1 check still fires for ≥2-arg forms inside
+`emit-short-circuit`.
+
+**Tests:** added `logic` (variadic 0/1/N-arg `and`/`or`) and `and-narrow` (the
+3-arg narrowing proof); **117 → 119 pass.**
+
+**Bootstrap deviation worth recording.** The design prompt predicted this change
+would be bootstrap-inert (byte-identical, **no** refresh) like `_+`/`+`. That
+prediction did **not** hold: renaming a *special form* (statically dispatched via
+the hardcoded `(when (= hp …))` chain in the binary) is a breaking bootstrap
+change — unlike **binops** like `_+`, which are *runtime-registered* via
+`add-binop` at startup, so the old boot already dispatches them (which is why the
+`_+`/`+` split is inert but a `_and`/`and` split is not). The fixed point
+`build/nucleusc.ll == build/stage2.ll` **does** hold byte-identically after a
+one-time regeneration. **Lesson: special-form renames break the boot; binop
+additions do not.** (The gotcha and the 2-stage manual bridge are captured in
+`context/build.md`; docs updated in `docs/special-forms.md` + `docs/macros.md`.)
 
 ---
 

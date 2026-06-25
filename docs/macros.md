@@ -41,6 +41,21 @@ Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defin
 | `(/ x)`       | `(_/ 1 x)` — integer reciprocal                |
 | `(/ a b ...)` | `(/ (_/ a b) ...)` — left-fold                 |
 
+## Variadic Logical Operators
+
+`and`/`or` are macros that expand to nested binary short-circuit primitive calls, mirroring the `_+`/`+` split above. They live in `lib/macros.nuc` and are available in every program via the auto-imported prelude. The binary primitives `_and`/`_or` are the actual short-circuit forms; the macros exist to make the logical operators variadic.
+
+| Form          | Expansion                                       |
+|---------------|-------------------------------------------------|
+| `(and)`       | `true`                                          |
+| `(and x)`     | `x` — **unchecked** (no i1 check)              |
+| `(and a b ...)` | `(_and a (and b ...))` — right-fold          |
+| `(or)`        | `false`                                         |
+| `(or x)`      | `x` — **unchecked** (no i1 check)              |
+| `(or a b ...)` | `(_or a (or b ...))` — right-fold             |
+
+The binary `_and`/`_or` i1-check both operands and short-circuit left-to-right (`_and` stops at the first false, `_or` at the first true). Because the macro right-nests, each operand in an N-ary chain narrows under all prior ones (cumulative narrowing — a later `(m field)` typechecks after an earlier `(!= m null)`). See the [`and`/`or`/`_and`/`_or`](special-forms.md#special-forms) rows for the full short-circuit and narrowing semantics.
+
 ## Macros and pass-through arguments
 
 Macro parameters are typed `ptr:Node` — the macro sees AST. When the macro

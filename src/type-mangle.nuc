@@ -40,11 +40,74 @@
     (when (= k TY-SSIZE) (return "ssize"))
     (return "x")))
 
+; ============================================================
+; Stage 13 L7 — distinct, round-trippable spelling for TY-FN.
+; ============================================================
+; type-spelling previously collapsed every function-pointer (TY-FN) to "ptr" —
+; colliding with raw pointers and indistinguishable across signatures — which is
+; lossy under the colon-based spelling/substitution system (it cannot encode a
+; function signature). That blocks a bare `fn` from flowing through a generic
+; combinator: the combinator's `(ref G)` binds G to the fn's type, the stamped
+; body substitutes G's spelling into `(ref <spelling>)`, and "ptr" re-parses to
+; a raw pointer, losing the fn-ness so the forwarding call can't be rebuilt.
+;
+; Each distinct TY-FN Type* object is assigned a stable name "__fnty_<id>",
+; resolved back to the original Type* by parse-type-name (union-registry.nuc).
+; Pointer-identity keying suffices: the fn value and the combinator's bound
+; tyvar carry the SAME Type* object, so both spell to one name and round-trip.
+; IR mangling (type-mangle-token -> "fn") and aggregate-ABI/cheader emission
+; (type-to-ir -> "ptr") are untouched, so the bootstrap stays byte-identical
+; (no TY-FN flows through a generic in the compiler's own source: `make
+; bootstrap` re-converges with this change).
+(defvar g-fnty-id:i32 0)
+(defvar g-fnty-names:ptr null)   ; array of ptr (name strings, parallel)
+(defvar g-fnty-types:ptr null)   ; array of ptr (Type*)
+(defvar g-fnty-count:i32 0)
+(defvar g-fnty-cap:i32 0)
+
+(defn fnty-intern:ptr (t:ptr)
+  (let (i:i32 0)
+    (while (< i g-fnty-count)
+      (when (= (aref (cast ptr:ptr g-fnty-types) i) t)
+        (return (aref (cast ptr:ptr g-fnty-names) i)))
+      (inc! i)))
+  (when (= g-fnty-cap 0)
+    (set! g-fnty-cap 16)
+    (set! g-fnty-names (arena-alloc (* (cast i64 g-fnty-cap) (ptr-bytes))))
+    (set! g-fnty-types (arena-alloc (* (cast i64 g-fnty-cap) (ptr-bytes)))))
+  (when (= g-fnty-count g-fnty-cap)
+    (let (nc:i32 (* g-fnty-cap 2)
+          nn:ptr (arena-alloc (* (cast i64 (* g-fnty-cap 2)) (ptr-bytes)))
+          nt:ptr (arena-alloc (* (cast i64 (* g-fnty-cap 2)) (ptr-bytes))))
+      (memcpy nn g-fnty-names (* (cast i64 g-fnty-count) (ptr-bytes)))
+      (memcpy nt g-fnty-types (* (cast i64 g-fnty-count) (ptr-bytes)))
+      (set! g-fnty-names nn)
+      (set! g-fnty-types nt)
+      (set! g-fnty-cap nc)))
+  (let (name:ptr (intern-str (fmt-i32 "__fnty_%d" g-fnty-id)))
+    (inc! g-fnty-id)
+    (aset! (cast ptr:ptr g-fnty-names) g-fnty-count name)
+    (aset! (cast ptr:ptr g-fnty-types) g-fnty-count t)
+    (inc! g-fnty-count)
+    (return name)))
+
+; Resolve a "__fnty_<id>" name back to its Type*, so a stamped generic body's
+; `(ref __fnty_3)` re-parses to the original TY-FN. String compare (the name
+; reaching here may be a fresh fmt copy, not the cached interned pointer).
+(defn fnty-resolve:ptr (name:ptr)
+  (let (i:i32 0)
+    (while (< i g-fnty-count)
+      (when (= (strcmp (aref (cast ptr:ptr g-fnty-names) i) name) 0)
+        (return (aref (cast ptr:ptr g-fnty-types) i)))
+      (inc! i)))
+  (return null))
+
 ; A type's source spelling as a colon-joined string: the inverse of the type
 ; parser. Serves two roles — the key into the conformance registry (matching the
 ; subject spelling of `extend`), and the replacement text when substituting a
 ; concrete type for a type variable's occurrences in a retained generic body.
-; Pointers nest as ptr:elem; structs/primitives are their bare names.
+; Pointers nest as ptr:elem; structs/primitives are their bare names. A TY-FN
+; spells to its interned "__fnty_N" name (above), not "ptr".
 (defn type-spelling:ptr (t:ptr)
   (let (tt:ptr:Type (cast ptr:Type t)
         k:i32 (tt kind))
@@ -67,6 +130,7 @@
     (when (= k TY-ERR)   (return "Err"))
     (when (= k TY-USIZE) (return "usize"))
     (when (= k TY-SSIZE) (return "ssize"))
+    (when (= k TY-FN)    (return (fnty-intern t)))
     (when (= k TY-PTR)
       (if (= (tt elem) null)
         (return "ptr")

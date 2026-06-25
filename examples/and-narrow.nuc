@@ -1,0 +1,39 @@
+; Cumulative narrowing through a variadic `and` chain (Stage 13).
+;
+; m is an explicitly-nullable pointer (?ptr:Rec). Dereferencing it ((m kind),
+; (m x)) is only type-safe once m is known non-null. In the 3-arg form
+;   (and (!= m null) (= (m kind) 1) (> (m x) 0))
+; the 2nd and 3rd clauses deref m, and they typecheck ONLY because each clause
+; narrows by ALL prior ones: clause 2 sees m non-null from clause 1, and clause
+; 3 sees m non-null from clauses 1+2. This right-folds to
+;   (_and (!= m null) (_and (= (m kind) 1) (> (m x) 0)))
+; and the narrowing analyser recurses both arms of each binary _and, so the
+; non-null fact from the outer LHS flows into the inner RHS spine. If narrowing
+; did not propagate through the variadic chain, (m kind)/(m x) would be rejected
+; as a deref of a nullable pointer and this file would fail to compile.
+(import-use "stdio.h")
+(import-use "stdlib.h")
+
+(defstruct Rec kind:i32 x:i32)
+
+(defn classify:i32 (m:?ptr:Rec)
+  ; 3-arg variadic and: each later clause derefs m under the prior non-null.
+  (cond (and (!= m null) (= (m kind) 1) (> (m x) 0))
+          (return 100)
+        (and (!= m null) (= (m kind) 2))
+          (return 200)
+        true
+          (return 0)))
+
+(defn main:i32 ()
+  (let (r:ptr:Rec (cast ptr:Rec (malloc (cast i64 (sizeof Rec)))))
+    (.set! r kind 1)
+    (.set! r x 42)
+    (printf "kind1-big = %d\n" (classify (some (cast ref:Rec r))))
+    (.set! r x -1)
+    (printf "kind1-neg = %d\n" (classify (some (cast ref:Rec r))))
+    (.set! r kind 2)
+    (printf "kind2     = %d\n" (classify (some (cast ref:Rec r))))
+    (printf "none      = %d\n" (classify none))
+    (free r))
+  (return 0))
