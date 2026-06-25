@@ -446,13 +446,15 @@
           err0:i32 (arm-is-err-field arm-ptypes arm-nfields 0)
           err1:i32 (arm-is-err-field arm-ptypes arm-nfields 1))
       ; Rule 2: one payload-less arm, one single typed (ref T) field.
-      (when (or (and (!= none0 0) (!= ref1 0)) (and (!= ref0 0) (!= none1 0)))
+      (when (or (and (!= none0 0) (!= ref1 0))
+                (and (!= ref0 0) (!= none1 0)))
         (let (ri:i32 (if (!= ref0 0) 0 1))
           (aset! (cast ptr:ptr niche-elem-out) 0
             (-> (cast ptr:Type (aref (cast ptr:ptr arm-ptypes) ri)) (_ elem)))
           (return LAYOUT-NICHE-MAYBE)))
       ; Rule 3: one single typed (ref T) field, one single Err field.
-      (when (or (and (!= ref0 0) (!= err1 0)) (and (!= err0 0) (!= ref1 0)))
+      (when (or (and (!= ref0 0) (!= err1 0))
+                (and (!= err0 0) (!= ref1 0)))
         (let (ri:i32 (if (!= ref0 0) 0 1))
           (aset! (cast ptr:ptr niche-elem-out) 0
             (-> (cast ptr:Type (aref (cast ptr:ptr arm-ptypes) ri)) (_ elem)))
@@ -625,7 +627,7 @@
               ; references this backing struct, so its IR type is not emitted
               ; (the §3 struct that would defeat the whole point of the niche).
               (when (and (!= g-type-stream null)
-                         (and (!= layout LAYOUT-NICHE-MAYBE) (!= layout LAYOUT-NICHE-ERRPTR)))
+                         (!= layout LAYOUT-NICHE-MAYBE) (!= layout LAYOUT-NICHE-ERRPTR))
                 (if (!= union-sd null)
                   (fprintf g-type-stream "%%%s = type { i32, %%%s }\n\n"
                     name ((cast ptr:StructDef union-sd) name))
@@ -950,8 +952,8 @@
         (when (>= nlen 2)
           (let (last:ptr:Node (cast ptr:Node (node-at n (- nlen 1))))
             (when (and (!= (cast ptr last) null)
-                       (and (= (last kind) NODE-SYM)
-                            (= (strcmp (last s) "volatile") 0)))
+                       (= (last kind) NODE-SYM)
+                       (= (strcmp (last s) "volatile") 0))
               (let (head-len:i32 (- nlen 1)
                     inner:ptr null)
                 (if (= head-len 1)
@@ -1047,7 +1049,7 @@
       ; for (Maybe (ref T)), value stamp otherwise).
       (let (head:ptr:Node (cast ptr:Node (n car)))
         (when (and (!= (cast ptr head) null)
-                   (and (= (head kind) NODE-SYM) (!= (head s) "Maybe")))
+                   (= (head kind) NODE-SYM) (!= (head s) "Maybe"))
           (let (ut:ptr (union-template-lookup (head s)))
             (when (!= ut null)
               (return (union-template-stamp ut (cast ptr n) line))))))
