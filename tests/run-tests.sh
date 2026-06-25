@@ -153,4 +153,50 @@ else
 fi
 rm -rf "$ns6_dir"
 
+# Stage 13 L1: cfn escape analysis. A cfn captures each used local by reference,
+# so the closure value inherits the captured referent's frame region. Returning
+# it out of that scope would dangle, so compiling the fixture must FAIL with the
+# frame-region escape error. (The `examples/closures.nuc` run covers the positive
+# cfn case; this proves the escape rejection.)
+esc_err="$(./build/nucleusc --emit-llvm tests/fixtures/closure-escape.nuc 2>&1 >/dev/null || true)"
+if printf '%s' "$esc_err" \
+   | grep -q "address of frame-local storage escapes via return"; then
+    echo "PASS  closure-escape-rejected"
+else
+    echo "FAIL  closure-escape-rejected"; fail=1
+fi
+
+# Stage 13 L8: a public defn whose signature exposes a capturing-closure env
+# type (__vfn_env_N) is not C-callable, so --emit-cheader OMITS its prototype
+# (writing a comment in its place) and the compiler WARNS at the definition. A
+# plain function-pointer-compatible defn is emitted normally. The fixture
+# declares a __vfn_env_0 struct by hand to stand in for a synthesized env (real
+# envs are created post-prescan, so they cannot appear in source signatures).
+ch_dir="$(mktemp -d)"
+./build/nucleusc --emit-cheader tests/fixtures/closure-cheader.nuc > "$ch_dir/lib.h" 2>/dev/null || true
+ch_warn="$(./build/nucleusc --emit-llvm tests/fixtures/closure-cheader.nuc 2>&1 >/dev/null || true)"
+
+# 1. closure-typed prototype is OMITTED, with the explanatory comment in place.
+if grep -q 'apply-closure: exposes a closure type; not C-callable, omitted' "$ch_dir/lib.h" \
+   && ! grep -q 'apply-closure(' "$ch_dir/lib.h"; then
+    echo "PASS  l8-cheader-omits-closure"
+else
+    echo "FAIL  l8-cheader-omits-closure"; fail=1
+fi
+
+# 2. the plain fn-pointer defn IS emitted to the header.
+if grep -q 'plain-fn(int32_t x, int32_t y)' "$ch_dir/lib.h"; then
+    echo "PASS  l8-cheader-emits-fnptr"
+else
+    echo "FAIL  l8-cheader-emits-fnptr"; fail=1
+fi
+
+# 3. the definition site warns on stderr.
+if printf '%s' "$ch_warn" | grep -q "warning: 'apply-closure' exposes a closure type"; then
+    echo "PASS  l8-cheader-warns"
+else
+    echo "FAIL  l8-cheader-warns"; fail=1
+fi
+rm -rf "$ch_dir"
+
 exit $fail

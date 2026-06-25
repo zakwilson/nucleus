@@ -381,3 +381,130 @@ stay out of hot compiler loops.
   full per-binding region comparison is required for closures bound in an outer
   scope that capture an inner-scope local, and can follow once the coarse check is
   in place.
+
+## Robot — implementation status
+
+Stage 13 is implemented (L0–L9a). **117 tests pass; `make bootstrap` is a
+byte-identical fixed point.** L2–L9 are additive and inert in the compiler's own
+source (no extant source uses `fn`/`vfn`/`mfn`/`cfn` or `Clone`); L1 is the one
+non-additive phase and re-converged after a measure-then-flip triage that found no
+genuine `return &local` site in the compiler. The runnable demo is
+`examples/closures.nuc`; the negative/cheader fixtures are
+`tests/fixtures/closure-escape.nuc` and `tests/fixtures/closure-cheader.nuc`.
+
+### What landed
+
+- **L1 — escape generalization.** `addr-of`/`.&` on frame-local storage (a
+  `let`/`with` value binding, an `alloca` result, or a by-value parameter) taints
+  a region-tagged pointer that may not escape upward (return or store-out).
+  Reference/pointer parameters are excluded (pointee is caller-owned); `move` and
+  copy/`deref`-out still clear taint. Error: `address of frame-local storage
+  escapes via return` (and analogous for store-out). `let` gains **no** drop and
+  **no** lifetime semantics — this is pointer-provenance only. See
+  `docs/special-forms.md` §"Pointer lifecycle".
+- **L2 — `Clone`.** `(defprotocol Clone ((clone Self) ((self (ref Self)))))`,
+  with automatic structural conformance (bitwise clone) for trivially-copyable
+  types — a primitive, or a struct with no `Drop` field transitively — modeled on
+  the built-in `Any`/`Struct` blanket rules, **not** user `extend`. Owning types
+  hand-write `clone`. A `Drop` type with no `Clone` is not `Clone` (and a `vfn`
+  capture of it yields the directed "use `mfn`" error). See `docs/generics.md`
+  §"The Clone protocol".
+- **L3 — `fn`.** Anonymous function → bare function pointer (C-callable, zero
+  overhead). The body may reference its own params and top-level names
+  (`defconst` / global `defvar` / `defn`); referencing an enclosing runtime local
+  is a compile error directing the author to `vfn`/`mfn`/`cfn`. The
+  inlinable-compile-time-constant-local relaxation is **deferred** — first cut
+  forbids *all* enclosing-local capture. Lambda-lifted to a gensym top-level
+  `defn`.
+- **L4 — `vfn` + closure environment + `invoke`.** A capturing closure lowers to
+  an anonymous env struct (`__vfn_env_N`, one field per capture) plus an `invoke`
+  method of the closure's natural arity, routed through the existing
+  callable-values mechanism (no fixed arity, no mandatory conformance). Each field
+  is populated by `clone` (every capture must be `Clone`); a `Drop` capture with
+  no `Clone` yields the directed "use `mfn`" error. A POD-only `vfn` is a plain
+  by-value non-owning struct (bitwise copy, no `Drop`). If any cloned field is
+  `Drop`, the env struct conforms to `Drop` via a synthesized `drop` (drops owned
+  fields in reverse, null-guarded). **The source is never invalidated.**
+- **L5 — `mfn`.** Reuses the L4 machinery with a mode flag on the per-field
+  population: each owned field is moved via the existing `move` sink (disarm the
+  `with`-cleanup, mark consumed → use-after-move thereafter). The closure owns the
+  moved resources → synthesized `drop`; no allocator; travels by value. Sound for
+  export-from-`with` (the move disarms the source cleanup so the return is sound).
+- **L6 — `cfn`.** Reference-capture: the env is a struct of pointers into the
+  captured locals, preceded by a stored `AllocHandle`; takes a bare allocator
+  operand (`(ref AllocHandle)`) backing the env storage when it must outlive the
+  frame; conforms to `Drop` to free the env. Region inheritance: the closure value
+  inherits each captured reference's region; escaping a referent's region is
+  rejected at the existing sinks.
+- **L7 — structural function-protocol conformance derivation.** When a closure
+  type flows into a `&where ((P …) V)` position, the compiler structurally matches
+  the closure's `invoke` against `P`'s single required method and synthesizes a
+  forwarding conformance (the generated method delegates to `invoke`), reading the
+  bound args off `invoke`'s parameter/return types. Works for bare `fn`/function
+  pointers (the synthesized method reads the fn pointer via `(deref self)`) and for
+  capturing closures (forwards via `(invoke self …)`). Bare `fn` types are
+  interned as `__fnty_N`. Idempotent. See `docs/generics.md` §"Structural
+  function-protocol conformance".
+- **L8 — C interop.** A public `defn` whose signature mentions a capturing-closure
+  env type (return or param) is **excluded from `--emit-cheader`** (an
+  `/* ... exposes a closure type ... */` comment is left in its place) and
+  **warns** at its definition. A non-capturing `fn` (function pointer) is emitted
+  to headers normally. Closure-type detection matches the `__vfn_env_` name prefix
+  (the cheader path runs pre-codegen, AST-only, so a `StructDef` flag would be
+  invisible). The warning is gated to public, non-synthesized defns.
+- **L9a — examples/tests.** `examples/closures.nuc` exercises all four forms as
+  the fold of a generic `reduce` (all run, correct results).
+  `tests/fixtures/closure-escape.nuc` is the negative test for L1;
+  `tests/fixtures/closure-cheader.nuc` exercises the L8 cheader omission +
+  warning + fn-pointer emission.
+
+### Decisions the implementation sharpened
+
+- **Recognized-set scoping for L7 (resolved toward the narrow side).** The open
+  mechanism question in §"Representation and calling" — whether structural
+  derivation fires for *any* single-method function-shaped protocol or only a
+  recognized set — is answered toward the **narrow side**: derivation fires only
+  for **{`UnaryFn`, `FoldFn`}**, not arbitrary single-method protocols. This
+  sidesteps the `(type, protocol)` coherence/dedup interaction for the general
+  case; the set can be widened later.
+- **`__vfn_env_` name prefix for L8.** Closure-type detection in the cheader path
+  matches the `__vfn_env_` prefix rather than consulting a `StructDef` flag,
+  because the cheader scan runs pre-codegen (AST-only), before the synthesized env
+  structs exist as flagged records.
+- **Direct env emission, not a struct literal, for L4.** `emit-struct-lit`
+  misreads `(clone (addr-of x))` as a designated field initializer (`clone:=`);
+  emitting the env directly (alloca + per-field GEP/store) avoids that and keeps
+  the POD path a bitwise copy.
+- **`fn-force-generic-mangled` gotcha.** A solitary `drop`/`invoke` generic (one
+  conformer) keeps an unmangled `@drop` and a bare scope binding; adding the
+  synthesized closure method as a second method made `emit-defn` re-bind `@drop`
+  to the closure method, hijacking all drops. Forcing `mangled=1`+`finalized=1`
+  (without re-mangling already-emitted methods) routes dispatch by type and stops
+  the re-bind. In any program using collections, `drop` is already mangled, so
+  this only bites lone-`Drop`-type cases.
+
+### Pre-existing limitations gating runnable demos
+
+These are **not closure bugs** — they reproduce on the boot `bin/nucleusc`
+independent of Stage 13 — but they cap what is runnable end-to-end (IR-level-
+verified-only cases noted):
+
+1. **By-value struct return/passing corrupts** via an `emit-struct-ret` ABI bug
+   (store ptr / `sret` instead of memcpy). An owning/`Drop` env struct therefore
+   cannot round-trip by value through a binding or a return.
+2. **`with-drop-method` only arms `Drop` for `TY-PTR` bindings** (the `ptr:Res`
+   idiom), not struct-value bindings. A `with`-bound owning closure's synthesized
+   `drop` therefore does not fire at scope exit. The "mfn exported from `with`,
+   drops at its eventual scope" case is **IR-level-verified only**.
+3. **Anonymous env types can't be named in `let`/`with` bindings** (no type
+   inference for env types). Closures must be passed inline as combinator
+   arguments; you cannot bind one to a name and call it later. Hence
+   `examples/closures.nuc` passes each closure inline to `reduce`.
+
+A POD `vfn`/`mfn` over scalars (the common case in the demo) is **fully
+runnable**: the env is a non-owning by-value struct with no `Drop` and no naming
+requirement, passed inline. The owning-closure mechanism (synthesized `drop`, env
+conformance, move disarm) is generated correctly and is exactly what
+`with-drop-method` would consult — verified at the IR level; it is the three
+limitations above, not the closure codegen, that block the end-to-end runnable
+demonstration.

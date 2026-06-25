@@ -1,0 +1,10 @@
+(and) = -1
+(or)  = 0
+(and 5) = 5
+(or  9) = 9
+and4 all  = -1
+and4 some = 0
+or3 none = 0
+or3 some = -1
+or  sc = -1
+and sc = 0

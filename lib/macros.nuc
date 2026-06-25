@@ -54,6 +54,28 @@
                    ~((cast ptr:Node ((cast ptr:Node args) cdr)) car))
               ~@((cast ptr:Node ((cast ptr:Node args) cdr)) cdr))))
 
+; variadic logic
+;   (and)         => true
+;   (and x)       => x
+;   (and x y z..) => (_and x (and y z..))   [right-fold; short-circuits]
+(defmacro and (&rest args)
+  (cond (= args null)
+          `true
+        (= ((cast ptr:Node args) cdr) null)
+          ((cast ptr:Node args) car)
+        true
+          `(_and ~((cast ptr:Node args) car)
+                 (and ~@((cast ptr:Node args) cdr)))))
+
+(defmacro or (&rest args)
+  (cond (= args null)
+          `false
+        (= ((cast ptr:Node args) cdr) null)
+          ((cast ptr:Node args) car)
+        true
+          `(_or ~((cast ptr:Node args) car)
+                (or ~@((cast ptr:Node args) cdr)))))
+
 ; (if test then else) — binary conditional over cond.
 (defmacro if (test then else)
   `(cond ~test ~then true ~else))

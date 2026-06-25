@@ -1,0 +1,23 @@
+; Stage 13 L8 — C header exclusion of closure-typed public defns (fixture).
+;
+; A public defn whose signature exposes a capturing-closure environment type is
+; NOT C-callable, so --emit-cheader OMITS its prototype (emitting a comment in
+; its place) and the compiler WARNS at the definition site. A plain
+; function-pointer-compatible defn is emitted normally.
+;
+; Real closure env structs are synthesized post-prescan (fn-make-env-struct) and
+; cannot appear in source signatures in a runnable program, so this fixture
+; declares the env shape by hand (defstruct __vfn_env_0 ...) purely to exercise
+; the signature scan in cheader-mentions-closure, which matches the __vfn_env_
+; prefix. This file is not a runnable program (no main).
+
+(defstruct __vfn_env_0 captured:i32)
+
+; Exposes a closure env type by reference -> omitted from the C header, warned
+; at the definition.
+(defn apply-closure:i32 ((c (ref __vfn_env_0)) (x i32))
+  (return x))
+
+; A plain function (function-pointer-compatible) signature -> emitted normally.
+(defn plain-fn:i32 ((x i32) (y i32))
+  (return (+ x y)))

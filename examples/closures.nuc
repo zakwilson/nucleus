@@ -1,0 +1,111 @@
+; Stage 13 — Lambdas and closures: the four forms.
+;
+; This is the reference runnable demo for the closure feature. Each of the four
+; forms is exercised as the fold function of a generic `reduce` over an
+; IntRangeIter (lib/iterator.nuc). `reduce` declares its fold operand `g` with
+; the bound `((FoldFn Acc S) G)`, and the compiler structurally derives each
+; closure's `(FoldFn ...)` conformance from its synthesized `invoke` method — so
+; no hand-written function-object struct is needed (see design/stage13/lambda.md
+; §"Representation and calling").
+;
+; The four forms (lambda.md §"The four forms"):
+;   fn  — anonymous function; no runtime capture. A true function pointer.
+;   vfn — clone-capture closure; the source always survives, untouched.
+;   mfn — move-capture closure; the source is consumed (use-after-move after).
+;   cfn — reference-capture closure; a struct of pointers, borrows its referents.
+;
+; Each closure is passed INLINE to `reduce` rather than bound in a `let`/`with`,
+; because the closure's anonymous environment type cannot be spelled in a
+; binding (no type inference for env types yet). Passing it directly as the `g`
+; argument is the supported shape.
+
+(import-use "stdio.h")
+(import-use iterator)
+(import-use allocator)
+
+; A top-level name. Referencing it from a body is NOT capture — it is an ordinary
+; global reference, resolved the way any function reaches a defconst. Only the
+; use of an enclosing LOCAL is capture.
+(defconst SHIFT 10)
+
+; A top-level defn. It is a plain function pointer and may be passed directly as
+; the fold function `g` — the non-capturing case, fully C-callable.
+(defn sumsq:i32 ((acc i32) (x i32))
+  (return (+ acc (* x x))))
+
+(defn main:i32 ()
+  ; One shared iterator slot. `reduce` advances it to exhaustion, so reset
+  ; start/end before each fold.
+  (let ((r (ref IntRangeIter)) (alloca IntRangeIter))
+    (.set! r start 1)
+    (.set! r end 6)
+
+    ; ------------------------------------------------------------------
+    ; 1. fn — anonymous function (no runtime capture).
+    ;
+    ; (a) A top-level defn passed by name: a bare function pointer.
+    ;     sum of squares over 1..5 = 1+4+9+16+25 = 55.
+    ; ------------------------------------------------------------------
+    (.set! r start 1) (.set! r end 6)
+    (printf "fn   defn-fnptr   sumsq(1..5)        = %d\n"
+            (reduce sumsq 0 r))
+
+    ; (b) An fn literal whose body references only its parameters and the
+    ;     top-level defconst SHIFT (which folds to an immediate — no capture).
+    ;     sum of (x * 10) over 1..5 = 10*15 = 150.
+    (.set! r start 1) (.set! r end 6)
+    (printf "fn   literal      sum (x*SHIFT=10)   = %d\n"
+            (reduce (fn (acc:i32 x:i32):i32 (return (+ acc (* x SHIFT)))) 0 r))
+
+    ; ------------------------------------------------------------------
+    ; 2. vfn — capture by clone (source survives).
+    ;
+    ; `factor` is a runtime local, cloned into the closure's environment. i32 is
+    ; POD, so the clone is a bitwise copy (zero allocation, zero overhead) and
+    ; the vfn owns nothing. The source is untouched: factor is still 7 afterward.
+    ; sum of (x * 7) over 1..5 = 7*15 = 105.
+    ; ------------------------------------------------------------------
+    (.set! r start 1) (.set! r end 6)
+    (let (factor:i32 7)
+      (printf "vfn  clone        sum (x*factor=7)  = %d   [factor after = %d]\n"
+              (reduce (vfn (acc:i32 x:i32):i32 (return (+ acc (* x factor)))) 0 r)
+              factor))
+
+    ; ------------------------------------------------------------------
+    ; 3. mfn — capture by move (source consumed).
+    ;
+    ; `base` is moved into the closure's environment: the binding is consumed,
+    ; and any later VALUE use of `base` would be a "use after move" compile
+    ; error (so we do not print it afterward). The closure becomes the sole
+    ; owner of the moved value. sum of (x * 100) over 1..5 = 100*15 = 1500.
+    ;
+    ; NOTE: the design's headlining mfn use case — exporting an owned value OUT
+    ; of a `with` scope by returning the closure — is verified only at the IR
+    ; level. End-to-end it is blocked by two pre-existing compiler limitations
+    ; (not closure bugs): (1) by-value struct return/passing corrupts via an
+    ; ABI bug, so an owning closure value cannot round-trip through a binding or
+    ; a return; (2) `with`-drop arming only recognizes TY-PTR bindings, not
+    ; struct-value bindings. See design/stage13/lambda-prompt.md "out of scope".
+    ; ------------------------------------------------------------------
+    (.set! r start 1) (.set! r end 6)
+    (let (base:i32 100)
+      (printf "mfn  move         sum (x*base=100)  = %d   [base consumed]\n"
+              (reduce (mfn (acc:i32 x:i32):i32 (return (+ acc (* x base)))) 0 r)))
+
+    ; ------------------------------------------------------------------
+    ; 4. cfn — capture by reference (borrows its referents).
+    ;
+    ; `mult` is captured by reference: the environment holds a pointer into the
+    ; local. The closure's lifetime must not exceed `mult`'s scope (the escape
+    ; analysis enforces this — see tests/fixtures/closure-escape.nuc). A cfn
+    ; takes an explicit allocator for its own (heap) environment storage; the
+    ; captured variables themselves are borrowed, not owned.
+    ; sum of (x * 3) over 1..5 = 3*15 = 45; mult is still 3 afterward.
+    ; ------------------------------------------------------------------
+    (.set! r start 1) (.set! r end 6)
+    (let (mult:i32 3
+          h:ref:AllocHandle (default-allocator))
+      (printf "cfn  ref          sum (x*mult=3)   = %d   [mult after = %d]\n"
+              (reduce (cfn h (acc:i32 x:i32):i32 (return (+ acc (* x mult)))) 0 r)
+              mult)))
+  (return 0))

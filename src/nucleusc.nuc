@@ -1120,7 +1120,7 @@
       (return name))))
 
 ; Collect binding names proven non-null when `test` is TRUE into `out`:
-;   (!= m null) — m;  (and A B) — both arms;  (not X) — X's false-facts.
+;   (!= m null) — m;  (and A B) / (_and A B) — both arms;  (not X) — X's false-facts.
 ; `out` is the (ref (Vector ptr)) fact accumulator; the drain deferral makes the
 ; parametric type safe in this signature (see make-vec).
 (defn test-true-nonnull:void (test:ptr (out (ref (Vector ptr))))
@@ -1130,7 +1130,9 @@
     (let (head:ptr:Node (cast ptr:Node (node-at test 0)))
       (when (or (= (cast ptr head) null) (!= (head kind) NODE-SYM)) (return))
       (let (h:ptr (head s))
-        (when (= (strcmp h "and") 0)
+        ; Match both "_and" (the binary primitive, post-macro-expansion) and "and"
+        ; (a raw variadic macro call still unexpanded in a cond/while test slot).
+        (when (or (= (strcmp h "_and") 0) (= (strcmp h "and") 0))
           (let (i:i32 1)
             (while (< i (node-len test))
               (test-true-nonnull (node-at test i) out)
@@ -1151,7 +1153,7 @@
           (return))))))
 
 ; Collect binding names proven non-null when `test` is FALSE into `out`:
-;   (= m null) — m;  (or A B) — both arms;  (not X) — X's true-facts.
+;   (= m null) — m;  (or A B) / (_or A B) — both arms;  (not X) — X's true-facts.
 ; `out` is the (ref (Vector ptr)) fact accumulator (see test-true-nonnull).
 (defn test-false-nonnull:void (test:ptr (out (ref (Vector ptr))))
   (when (= test null) (return))
@@ -1160,7 +1162,9 @@
     (let (head:ptr:Node (cast ptr:Node (node-at test 0)))
       (when (or (= (cast ptr head) null) (!= (head kind) NODE-SYM)) (return))
       (let (h:ptr (head s))
-        (when (= (strcmp h "or") 0)
+        ; Match both "_or" (the binary primitive, post-macro-expansion) and "or"
+        ; (a raw variadic macro call still unexpanded in a cond/while test slot).
+        (when (or (= (strcmp h "_or") 0) (= (strcmp h "or") 0))
           (let (i:i32 1)
             (while (< i (node-len test))
               (test-false-nonnull (node-at test i) out)
@@ -3173,6 +3177,29 @@
       (set! cur ((cast ptr:Node cur) cdr)))
     (return n)))
 
+; Depth of a Scope* in the lexical chain (root = 1). Used by the cfn region
+; join (L6) to pick the innermost (most-recently-entered, first-to-exit) region
+; among a set of capture taints — the strongest constraint, matching the L1
+; escape sink's direction (lambda.md §"Lifetime and escape analysis": an escape
+; is rejected when the destination outlives the source's region; the innermost
+; region is exited first, so joining it makes the closure escape-earliest).
+(defn scope-depth:i32 (s:ptr)
+  (let (d:i32 0
+        cur:ptr s)
+    (while (!= cur null)
+      (inc! d)
+      (set! cur ((cast ptr:Scope cur) parent)))
+    (return d)))
+
+; Construct a NODE-INT literal node (arena zero-fills, so kind defaults to
+; NODE-INT = 0; set it explicitly + the i64 payload). Used to synthesize the
+; integer literal for the allocator align argument in the cfn env drop body.
+(defn fn-make-int-node:ptr (v:i64)
+  (let (n:ref:Node (alloc-node))
+    (.set! n kind NODE-INT)
+    (.set! n i v)
+    (return (cast ptr n))))
+
 ; Rewrite the lambda body so every reference to a captured enclosing-local
 ; `name` becomes a field access `(. self name)` on the closure environment.
 ; Mirrors fn-capture-walk's position discipline exactly: a name in `bound`
@@ -3181,7 +3208,7 @@
 ; quoted data is opaque. `caps` is the collected capture-name list; a symbol is
 ; rewritten iff it is in `caps` and not shadowed by `bound`. Returns a new Node
 ; tree (structure-sharing where nothing was rewritten).
-(defn fn-rewrite-captures:ptr (node:ptr caps:ptr bound:ptr self-sym:ptr line:i32)
+(defn fn-rewrite-captures:ptr (node:ptr caps:ptr bound:ptr self-sym:ptr line:i32 mode:i32)
   (when (= node null) (return null))
   (let (nn:ptr:Node (cast ptr:Node node))
     ; A bare symbol: rewrite to (. self name) iff it is a (non-shadowed) capture.
@@ -3192,27 +3219,42 @@
         (when (= name null) (return node))
         (when (!= (fn-bound-has bound name) 0) (return node))
         (when (and (= ti null) (!= (fn-bound-has caps name) 0))
-          ; (. self name): self is (ref Env), so this loads the captured field.
-          (return (make-cell (cast ptr (intern-symbol "."))
-                    (make-cell self-sym
-                      (make-cell (cast ptr (intern-symbol name)) null line)
-                      line)
-                    line))))
+          ; A capture reference rewrites to a field access on `self`. mode 2
+          ; (cfn): the env field holds a POINTER into the captured local, so a
+          ; value use reads through it — (deref (. self name)). mode 0/1
+          ; (vfn/mfn): the field holds the value — (. self name).
+          (if (= mode 2)
+            (let (field-access:ptr
+                    (make-cell (cast ptr (intern-symbol "."))
+                      (make-cell self-sym
+                        (make-cell (cast ptr (intern-symbol name)) null line)
+                        line)
+                      line))
+              (return (make-cell (cast ptr (intern-symbol "deref"))
+                        (make-cell field-access null line)
+                        line)))
+            (return (make-cell (cast ptr (intern-symbol "."))
+                      (make-cell self-sym
+                        (make-cell (cast ptr (intern-symbol name)) null line)
+                        line)
+                      line)))))
       (return node))
     (when (!= (nn kind) NODE-CELL) (return node))
     (let (hd:ptr:Node (cast ptr:Node (node-at node 0)))
       ; Non-symbol head — rewrite every element.
       (when (or (= (cast ptr hd) null) (!= (hd kind) NODE-SYM))
-        (return (fn-rewrite-list node 0 caps bound self-sym line)))
+        (return (fn-rewrite-list node 0 caps bound self-sym line mode)))
       (let (h:ptr (hd s))
         ; Quoted data is opaque.
         (when (or (= (strcmp h "quote") 0) (= (strcmp h "quasiquote") 0))
           (return node))
         ; addr-of a capture: `(addr-of cap)` takes the address of the by-value
-        ; local. Inside the closure that local lives as an env field, so the
-        ; address is `(.& self cap)` (the field's address), NOT `(addr-of (. self
-        ; cap))` — addr-of's target must be a binding name, and a field load is an
-        ; rvalue. A non-capture / shadowed operand keeps the ordinary addr-of.
+        ; local. Inside the closure that local lives as an env field. mode 0/1
+        ; (vfn/mfn): the address is `(.& self cap)` (the field's address) —
+        ; addr-of's target must be a binding name, and a field load is an rvalue.
+        ; mode 2 (cfn): the field ALREADY holds the captured local's address, so
+        ; `(addr-of cap)` == `(. self cap)` (no extra indirection). A non-capture
+        ; / shadowed operand keeps the ordinary addr-of.
         (when (and (= (strcmp h "addr-of") 0) (= (node-len node) 2))
           (let (opnode:ptr:Node (cast ptr:Node (node-at node 1)))
             (when (= (opnode kind) NODE-SYM)
@@ -3222,24 +3264,30 @@
                 (when (and (!= oname null)
                            (and (= (fn-bound-has bound oname) 0)
                                 (!= (fn-bound-has caps oname) 0)))
-                  (return (make-cell (cast ptr (intern-symbol ".&"))
-                            (make-cell self-sym
-                              (make-cell (cast ptr (intern-symbol oname)) null line)
-                              line)
-                            line)))))))
+                  (if (= mode 2)
+                    (return (make-cell (cast ptr (intern-symbol "."))
+                              (make-cell self-sym
+                                (make-cell (cast ptr (intern-symbol oname)) null line)
+                                line)
+                              line))
+                    (return (make-cell (cast ptr (intern-symbol ".&"))
+                              (make-cell self-sym
+                                (make-cell (cast ptr (intern-symbol oname)) null line)
+                                line)
+                              line))))))))
         ; Field access: index-2 operand is a literal field name; rewrite only the
         ; subject (index 1) and rebuild around the verbatim field name.
         (when (or (= (strcmp h ".") 0)
                   (or (= (strcmp h "_get") 0) (= (strcmp h ".&") 0)))
-          (let (subj:ptr (fn-rewrite-captures (node-at node 1) caps bound self-sym line))
+          (let (subj:ptr (fn-rewrite-captures (node-at node 1) caps bound self-sym line mode))
             (return (make-cell (cast ptr hd)
                       (make-cell subj
                         (make-cell (node-at node 2) null line)
                         line)
                       line))))
         (when (= (strcmp h ".set!") 0)
-          (let (subj:ptr (fn-rewrite-captures (node-at node 1) caps bound self-sym line)
-                val:ptr (fn-rewrite-captures (node-at node 3) caps bound self-sym line))
+          (let (subj:ptr (fn-rewrite-captures (node-at node 1) caps bound self-sym line mode)
+                val:ptr (fn-rewrite-captures (node-at node 3) caps bound self-sym line mode))
             (return (make-cell (cast ptr hd)
                       (make-cell subj
                         (make-cell (node-at node 2)
@@ -3252,8 +3300,8 @@
           (let (binds:ptr (node-at node 1))
             (when (!= (node-is-list binds) 0)
               (let (inner-bound:ptr (fn-bind-let-names binds bound)
-                    new-binds:ptr (fn-rewrite-let-binds binds caps bound self-sym line)
-                    new-body:ptr (fn-rewrite-list-from node 2 caps inner-bound self-sym line))
+                    new-binds:ptr (fn-rewrite-let-binds binds caps bound self-sym line mode)
+                    new-body:ptr (fn-rewrite-list-from node 2 caps inner-bound self-sym line mode))
                 (return (make-cell (cast ptr hd)
                           (make-cell new-binds new-body line)
                           line))))
@@ -3266,25 +3314,25 @@
           (let (params:ptr (node-at node 1))
             (when (!= (node-is-list params) 0)
               (let (inner-bound:ptr (fn-bind-param-names params bound)
-                    new-body:ptr (fn-rewrite-list-from node 2 caps inner-bound self-sym line))
+                    new-body:ptr (fn-rewrite-list-from node 2 caps inner-bound self-sym line mode))
                 (return (make-cell (cast ptr hd)
                           (make-cell params new-body line)
                           line))))
             (return node)))
         ; Ordinary form: keep the head verbatim, rewrite every argument.
         (return (make-cell (cast ptr hd)
-                  (fn-rewrite-list-rest node caps bound self-sym line)
+                  (fn-rewrite-list-rest node caps bound self-sym line mode)
                   line))))))
 
 ; Rewrite a Node list (cons spine) element-by-element starting at index `start`,
 ; returning a fresh spine. Used for non-symbol-head forms.
-(defn fn-rewrite-list:ptr (node:ptr start:i32 caps:ptr bound:ptr self-sym:ptr line:i32)
+(defn fn-rewrite-list:ptr (node:ptr start:i32 caps:ptr bound:ptr self-sym:ptr line:i32 mode:i32)
   (let (n:i32 (node-len node)
         head:ptr null
         tail:ptr null
         i:i32 start)
     (while (< i n)
-      (let (e:ptr (fn-rewrite-captures (node-at node i) caps bound self-sym line)
+      (let (e:ptr (fn-rewrite-captures (node-at node i) caps bound self-sym line mode)
             cell:ptr (make-cell e null line))
         (if (= head null) (set! head cell) (.set! (cast ptr:Node tail) cdr cell))
         (set! tail cell))
@@ -3292,17 +3340,17 @@
     (return head)))
 
 ; The tail spine (args) of a symbol-headed form: indices 1..end, fresh spine.
-(defn fn-rewrite-list-rest:ptr (node:ptr caps:ptr bound:ptr self-sym:ptr line:i32)
-  (return (fn-rewrite-list node 1 caps bound self-sym line)))
+(defn fn-rewrite-list-rest:ptr (node:ptr caps:ptr bound:ptr self-sym:ptr line:i32 mode:i32)
+  (return (fn-rewrite-list node 1 caps bound self-sym line mode)))
 
 ; A fresh body spine from index `start` (used for let/with/nested-lambda bodies).
-(defn fn-rewrite-list-from:ptr (node:ptr start:i32 caps:ptr bound:ptr self-sym:ptr line:i32)
-  (return (fn-rewrite-list node start caps bound self-sym line)))
+(defn fn-rewrite-list-from:ptr (node:ptr start:i32 caps:ptr bound:ptr self-sym:ptr line:i32 mode:i32)
+  (return (fn-rewrite-list node start caps bound self-sym line mode)))
 
 ; Rewrite the init expressions of a let/with binding list: even slots are
 ; binding names (kept verbatim), odd slots are init expressions (rewritten in
 ; the pre-binding `bound` set, matching fn-capture-walk's init handling).
-(defn fn-rewrite-let-binds:ptr (binds:ptr caps:ptr bound:ptr self-sym:ptr line:i32)
+(defn fn-rewrite-let-binds:ptr (binds:ptr caps:ptr bound:ptr self-sym:ptr line:i32 mode:i32)
   (let (n:i32 (node-len binds)
         head:ptr null
         tail:ptr null
@@ -3310,7 +3358,7 @@
     (while (< i n)
       (let (e:ptr (if (= (% i 2) 0)
                     (cast ptr (node-at binds i))
-                    (fn-rewrite-captures (node-at binds i) caps bound self-sym line))
+                    (fn-rewrite-captures (node-at binds i) caps bound self-sym line mode))
             cell:ptr (cast ptr (make-cell e null line)))
         (if (= head null) (set! head cell) (.set! (cast ptr:Node tail) cdr cell))
         (set! tail cell))
@@ -3342,30 +3390,50 @@
 ; g-out now (the env is monomorphic and fully known here, exactly like a plain
 ; defstruct). `caps` is the capture-name list; `scope` resolves each capture's
 ; Sym for its declared type.
-(defn fn-make-env-struct:ptr (caps:ptr scope:ref:Scope line:i32)
+(defn fn-make-env-struct:ptr (caps:ptr scope:ref:Scope line:i32 mode:i32 alloc-field-ty:ptr)
   (let (ncaps:i32 (fn-caps-count caps)
+        ; mode 2 (cfn): the env is a struct of POINTERS into the captured locals,
+        ; preceded by a leading `__alloc` field holding the (ref AllocHandle) so
+        ; the synthesized drop can free the env block through the same allocator
+        ; that backed it. mode 0/1 (vfn/mfn): one value field per capture, no
+        ; alloc field (unchanged).
+        has-alloc:i32 (if (= mode 2) 1 0)
+        off:i32 has-alloc
+        nf:i32 (+ ncaps has-alloc)
         ename:ptr (sanitize-for-ir (intern-str (fmt-i32 "__vfn_env_%d" g-vfn-env-id))))
     (inc! g-vfn-env-id)
     (let (sd:ref:StructDef (register-struct ename))
-      (.set! sd field-names (arena-alloc (* (cast i64 ncaps) (ptr-bytes))))
-      (.set! sd field-types (arena-alloc (* (cast i64 ncaps) (ptr-bytes))))
-      (.set! sd num-fields ncaps)
+      (.set! sd field-names (arena-alloc (* (cast i64 nf) (ptr-bytes))))
+      (.set! sd field-types (arena-alloc (* (cast i64 nf) (ptr-bytes))))
+      (.set! sd num-fields nf)
       (.set! sd src-file g-source-path)
       (.set! sd src-line line)
+      (when (!= has-alloc 0)
+        (aset! (cast ptr:ptr (sd field-names)) 0 (intern-str "__alloc"))
+        (aset! (cast ptr:ptr (sd field-types)) 0 alloc-field-ty))
       (let (i:i32 0
             cur:ptr caps)
         (while (!= cur null)
           (let (cname:ptr ((cast ptr:Node cur) s))
             (if-some (csym (scope-lookup scope cname))
               (do
-                (aset! (cast ptr:ptr (sd field-names)) i (intern-str cname))
-                (aset! (cast ptr:ptr (sd field-types)) i (sym-effective-type csym)))
+                (let (fty:ptr (sym-effective-type csym))
+                  ; mode 2 (cfn): the field stores a POINTER to the captured
+                  ; local's storage, so its type is (ref <T>) (PTR-REF, mirroring
+                  ; what (addr-of cap) yields). mode 0/1: the value type as-is.
+                  (when (= mode 2)
+                    (let (pt:ptr:Type (cast ptr:Type (make-type TY-PTR)))
+                      (.set! pt elem fty)
+                      (.set! pt pkind PTR-REF)
+                      (set! fty (cast ptr pt))))
+                  (aset! (cast ptr:ptr (sd field-names)) (+ off i) (intern-str cname))
+                  (aset! (cast ptr:ptr (sd field-types)) (+ off i) fty)))
               (die-at line (fmt-s "vfn: internal — capture '%s' not in scope" cname)))
             (inc! i)
             (set! cur ((cast ptr:Node cur) cdr)))))
       (fprintf g-out "%%%s = type { " ename)
       (let (i:i32 0)
-        (while (< i ncaps)
+        (while (< i nf)
           (when (!= i 0) (fprintf g-out ", "))
           (fprintf g-out "%s" (type-to-ir (aref (cast ptr:ptr (sd field-types)) i)))
           (inc! i)))
@@ -3385,7 +3453,7 @@
 ; the env value.
 (defn fn-make-invoke-method:void (env-sd:ptr caps:ptr params-node:ptr ret:ptr
                                   param-types:ptr param-names:ptr nparams:i32
-                                  body-list:ptr line:i32)
+                                  body-list:ptr line:i32 mode:i32)
   ; Receiver-extended param Type* array: [(ref Env), p0, p1, …]. This is the
   ; exact signature generic-find-method-exact / defn-ir-name will match on.
   (let (self-ty:ptr (fn-env-ref-type env-sd)
@@ -3400,7 +3468,7 @@
     (let (self-sym:ptr (cast ptr (intern-symbol "self"))
           inner-bound:ptr (fn-bind-param-names params-node
                             (import-list-push null "self"))
-          body2:ptr (fn-rewrite-list body-list 0 caps inner-bound self-sym line))
+          body2:ptr (fn-rewrite-list body-list 0 caps inner-bound self-sym line mode))
       ; Synthesized params: (self (ref Env)) prepended to the original param
       ; specs. The receiver uses the list form so the env name (which never
       ; contains a colon) is parsed as a type node, not colon-sugar.
@@ -3437,8 +3505,8 @@
                            mangled g-source-path line))
           (conj g-mono-worklist (cast ptr job)))))))
 
-; Synthesize, register, and queue the closure's `drop` method for an OWNING env
-; (at least one field is a Drop type):
+; Synthesize, register, and queue the closure's `drop` method for an OWNING env.
+; mode 0/1 (vfn/mfn — at least one field is a Drop type):
 ;   (defn drop:void ((self (ptr <Env>))) (drop (.& self fK)) … reverse order)
 ; Each owned field is dropped via `(drop (.& self f))` — `.&` yields a (ref
 ; FieldType) whose nominal Drop method resolves through the `drop` generic,
@@ -3449,37 +3517,82 @@
 ; resolvable drop method). Only owning fields are dropped; POD fields own
 ; nothing and are skipped (a null-bodied drop over a POD-only env is never
 ; synthesized — the caller gates on owns-anything).
-(defn fn-make-drop-method:void (env-sd:ptr line:i32)
+; mode 2 (cfn — the env holds borrowed pointers, no owned referents): the env's
+; own storage was allocated through the `alloc` operand, so drop frees that block
+; via the stored handle (the leading __alloc field), mirroring how a collection's
+; drop frees its buffer through its stored AllocHandle (lib/vector.nuc):
+;   (defn drop:void ((self (ptr <Env>)))
+;     (alloc-handle-free (. self __alloc) (cast (raw ui8) self) (sizeof Env) (cast usize 8)))
+; The (Env, Drop) conformance is recorded unconditionally (a cfn always owns its
+; env storage), so a with-bound cfn arms the cleanup.
+(defn fn-make-drop-method:void (env-sd:ptr line:i32 mode:i32)
   (let (sd:ptr:StructDef (cast ptr:StructDef env-sd)
         nf:i32 (sd num-fields)
         self-sym:ptr (cast ptr (intern-symbol "self"))
-        ; Build the drop body: a reverse-order list of (drop (.& self fK)) for
-        ; each Drop field. Built head-first by prepending in forward order so the
-        ; final spine is reverse-declaration order.
-        body:ptr null
-        k:i32 0)
-    (while (< k nf)
-      (let (fty:ptr (aref (cast ptr:ptr (sd field-types)) k))
-        (when (!= (type-conforms-drop fty) 0)
-          (let (fname:ptr (aref (cast ptr:ptr (sd field-names)) k)
-                addr:ptr (make-cell (cast ptr (intern-symbol ".&"))
-                           (make-cell self-sym
-                             (make-cell (cast ptr (intern-symbol fname)) null line)
-                             line)
-                           line)
-                dropcall:ptr (make-cell (cast ptr (intern-symbol "drop"))
-                               (make-cell addr null line)
-                               line))
-            ; Prepend in forward order → spine ends up reverse-declaration order.
-            (set! body (make-cell dropcall body line)))))
-      (inc! k))
+        body:ptr null)
+    (if (= mode 2)
+      ; cfn: free the env block through the stored allocator handle.
+      (let (alloc-sym:ptr (cast ptr (intern-symbol "__alloc"))
+            ; (. self __alloc) → the stored (ref AllocHandle).
+            handle-access:ptr (make-cell (cast ptr (intern-symbol "."))
+                                  (make-cell self-sym
+                                    (make-cell alloc-sym null line)
+                                    line)
+                                  line)
+            ; (cast (raw ui8) self) — self is (ptr Env); reinterpret as (raw ui8)
+            ; (both lower to ptr; cast is a no-IR reinterpret).
+            raw-ty:ptr (make-cell (cast ptr (intern-symbol "raw"))
+                          (make-cell (cast ptr (intern-symbol "ui8")) null line)
+                          line)
+            raw-self:ptr (make-cell (cast ptr (intern-symbol "cast"))
+                            (make-cell raw-ty
+                              (make-cell self-sym null line)
+                              line)
+                            line)
+            ; (sizeof Env) — the block size, matching the alloc-handle-alloc call.
+            sizeof-node:ptr (make-cell (cast ptr (intern-symbol "sizeof"))
+                              (make-cell (cast ptr (intern-symbol (sd name))) null line)
+                              line)
+            ; (cast usize 8) — pointer alignment of the env block.
+            align-node:ptr (make-cell (cast ptr (intern-symbol "cast"))
+                            (make-cell (cast ptr (intern-symbol "usize"))
+                              (make-cell (fn-make-int-node (cast i64 8)) null line)
+                              line)
+                            line)
+            freecall:ptr (make-cell (cast ptr (intern-symbol "alloc-handle-free"))
+                            (make-cell handle-access
+                              (make-cell raw-self
+                                (make-cell sizeof-node
+                                  (make-cell align-node null line)
+                                  line)
+                                line)
+                              line)
+                            line))
+        (set! body (make-cell freecall null line)))
+      ; vfn/mfn: reverse-order (drop (.& self fK)) over the Drop fields. Built
+      ; head-first by prepending in forward order → final spine is reverse order.
+      (let (k:i32 0)
+        (while (< k nf)
+          (let (fty:ptr (aref (cast ptr:ptr (sd field-types)) k))
+            (when (!= (type-conforms-drop fty) 0)
+              (let (fname:ptr (aref (cast ptr:ptr (sd field-names)) k)
+                    addr:ptr (make-cell (cast ptr (intern-symbol ".&"))
+                               (make-cell self-sym
+                                 (make-cell (cast ptr (intern-symbol fname)) null line)
+                                 line)
+                               line)
+                    dropcall:ptr (make-cell (cast ptr (intern-symbol "drop"))
+                                   (make-cell addr null line)
+                                   line))
+                (set! body (make-cell dropcall body line)))))
+          (inc! k))))
     ; Synthesize (defn drop:void ((self (ptr Env))) body…).
     (let (env-ptr-node:ptr (make-cell (cast ptr (intern-symbol "ptr"))
                              (make-cell (cast ptr (intern-symbol (sd name))) null line)
                              line)
           self-spec:ptr (make-cell self-sym
-                          (make-cell env-ptr-node null line)
-                          line)
+                           (make-cell env-ptr-node null line)
+                           line)
           new-params:ptr (make-cell self-spec null line)
           name-sym:ptr (cast ptr (intern-symbol "drop:void"))
           defn-sym:ptr (cast ptr (intern-symbol "defn"))
@@ -3529,62 +3642,178 @@
 ; struct-literal designated-initializer heuristic, which would mis-read a
 ; `(clone …)` call as a `clone`-field initializer. Sets *out-owns-drop to 1 iff
 ; any field is a Drop type (the closure then owns resources). Captures are
-; iterated in the same order as fn-make-env-struct laid out the fields.
+; iterated in the same order as fn-make-env-struct laid out the fields. `mode`
+; selects the per-field population: 0 = vfn clone (POD bitwise / Drop deep-clone
+; via Clone, else the directed mfn error); 1 = mfn move (a with-owned capture is
+; routed through the `move` sink to disarm its with-cleanup + mark it consumed,
+; a non-owned capture is bitwise-copied since move == copy when nothing disarms).
 (defn fn-emit-env-value:ref:Val (env-sd:ptr caps:ptr scope:ref:Scope
-                                 out-owns-drop:ptr:i32 line:i32)
+                                 out-owns-drop:ptr:i32 line:i32 mode:i32 alloc-aptr:ptr)
   (let (sd:ptr:StructDef (cast ptr:StructDef env-sd)
         slot:ptr (new-tmp))
-    (fprintf g-entry-stream "  %s = alloca %%%s\n" slot (sd name))
-    (let (k:i32 0
-          cur:ptr caps)
-      (while (!= cur null)
-        (let (cname:ptr ((cast ptr:Node cur) s)
-              fty:ptr (aref (cast ptr:ptr (sd field-types)) k)
-              fty-ir:ptr (type-to-ir (aref (cast ptr:ptr (sd field-types)) k))
-              gep:ptr (new-tmp))
-          (fprintf g-body-stream
-            "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
-            gep (sd name) slot k)
-          ; Per-capture clone classification: POD → bitwise copy of the bare
-          ; capture symbol; Drop → deep clone via the hand-written method.
-          (if (= (type-conforms-drop fty) 0)
-            ; POD / trivially-copyable: a plain value copy (bitwise clone).
-            (let (init-node:ptr (cast ptr (intern-symbol cname))
-                  v:ref:Val (emit-node init-node scope)
-                  coerced:ptr (coerce-int-val v fty line))
-              (when (= coerced null)
-                (die-at line (fmt-s "vfn: capture '%s' value type mismatch" cname)))
-              (fprintf g-body-stream "  store %s %s, ptr %s\n"
-                fty-ir (-> coerced (cast ptr:Val _) (_ val)) gep))
-            ; Drop capture: require a hand-written Clone, else direct to mfn; then
-            ; deep-clone via `(clone (addr-of x))`.
-            (do
-              (when (= (conformance-lookup (type-spelling fty) "Clone") 0)
-                (die-at line
-                  (fmt-2s "vfn cannot clone-capture '%s' (type %s is Drop with no Clone); use mfn to move it instead"
-                          cname (type-spelling fty))))
-              (ptr-set! out-owns-drop 1)
-              (let (clone-node:ptr (make-cell (cast ptr (intern-symbol "clone"))
-                                     (make-cell (make-cell (cast ptr (intern-symbol "addr-of"))
-                                                  (make-cell (cast ptr (intern-symbol cname)) null line)
-                                                  line)
-                                       null line)
-                                     line)
-                    v:ref:Val (emit-node clone-node scope)
-                    coerced:ptr (coerce-int-val v fty line))
-                (when (= coerced null)
-                  (die-at line (fmt-s "vfn: clone of capture '%s' type mismatch" cname)))
-                (fprintf g-body-stream "  store %s %s, ptr %s\n"
-                  fty-ir (-> coerced (cast ptr:Val _) (_ val)) gep)))))
-        (inc! k)
-        (set! cur ((cast ptr:Node cur) cdr))))
-    ; A stack compound literal is a valid, non-null (ref Env) address.
-    (let (pt:ptr:Type (cast ptr:Type (make-type TY-PTR))
-          st:ptr:Type (cast ptr:Type (make-type TY-STRUCT)))
-      (.set! st sdef env-sd)
-      (.set! pt elem (cast ptr st))
-      (.set! pt pkind PTR-REF)
-      (return (alloc-val (cast ptr pt) slot)))))
+    (if (= mode 2)
+      ; cfn (L6): the env is a struct of POINTERS into the captured locals plus a
+      ; leading __alloc field (the (ref AllocHandle) that backed the env). The env
+      ; storage is heap-allocated through `alloc-aptr`'s handle (always-heap first
+      ; cut, per lambda-prompt L6). Each capture field is populated by storing
+      ; (addr-of cap) into it. The closure value inherits the JOIN of the
+      ; captures' addr-of taints (L1 region inheritance): a with-owned capture
+      ; contributes with-taint (rejected at return AND store-out sinks), a frame-
+      ; local capture contributes frame-taint (rejected at return), a ref/ptr-
+      ; param or global capture contributes nothing. The join picks the innermost
+      ; (first-to-exit) region within each class, with with-taint preferred over
+      ; frame-taint — the strongest constraint, matching the L1 sink direction.
+      (let (ahsym:?ptr:Sym (scope-lookup scope "alloc-handle-alloc"))
+        (when (= ahsym null)
+          (die-at line "cfn: 'alloc-handle-alloc' not in scope — (import-use allocator) is required to use cfn"))
+        (let (ah-ir:ptr (ahsym ir-name)
+              ; sizeof Env as a runtime usize (mirrors emit-sizeof).
+              sz-node:ptr (make-cell (cast ptr (intern-symbol "sizeof"))
+                              (make-cell (cast ptr (intern-symbol (sd name))) null line)
+                              line)
+              sz-val:ref:Val (emit-node sz-node scope)
+              blk:ptr (new-tmp))
+          ; Allocate the env block through the handle. alloc-handle-alloc is
+          ; (raw ui8)((ref AllocHandle) usize usize) -> ptr at the IR level.
+          (fprintf g-body-stream "  %s = call ptr %s(ptr %s, %s %s, %s 8)\n"
+            blk ah-ir alloc-aptr (type-to-ir (sz-val type)) (sz-val val) (ptr-int-ir))
+          ; Store the handle pointer into field 0 (__alloc) so the synthesized
+          ; drop can free this block through the same handle. join-* are bound at
+          ; this level so they are in scope for BOTH the per-capture while below
+          ; and the final closure-Val build after it.
+          (let (g0:ptr (new-tmp)
+                join-taint:ptr null
+                join-frame:i32 0
+                join-depth:i32 -1)
+            (fprintf g-body-stream "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 0\n"
+              g0 (sd name) blk)
+            (fprintf g-body-stream "  store ptr %s, ptr %s, align 8\n" alloc-aptr g0)
+            ; Per-capture: store (addr-of cap) into field k+1; join addr-of taints.
+            (let (k:i32 0
+                  cur:ptr caps)
+              (while (!= cur null)
+                (let (cname:ptr ((cast ptr:Node cur) s)
+                      gep:ptr (new-tmp))
+                  (fprintf g-body-stream "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
+                    gep (sd name) blk (+ k 1))
+                  (let (addr-node:ptr (make-cell (cast ptr (intern-symbol "addr-of"))
+                                          (make-cell (cast ptr (intern-symbol cname)) null line)
+                                          line)
+                        av:ref:Val (emit-node addr-node scope))
+                    (fprintf g-body-stream "  store ptr %s, ptr %s, align 8\n" (av val) gep)
+                    ; Join the addr-of taint (L1 region inheritance).
+                    (when (!= (av taint) null)
+                      (let (d:i32 (scope-depth (av taint)))
+                        (if (= (av taint-frame) 0)
+                          ; with-taint beats frame-taint (rejected at store-out too).
+                          (when (or (= join-taint null)
+                                    (or (and (= join-frame 0) (> d join-depth))
+                                        (= join-frame 1)))
+                            (set! join-taint (av taint))
+                            (set! join-frame 0)
+                            (set! join-depth d))
+                          ; frame-taint: only when no with-taint joined yet.
+                          (when (or (= join-taint null)
+                                    (and (= join-frame 1) (> d join-depth)))
+                            (set! join-taint (av taint))
+                            (set! join-frame 1)
+                            (set! join-depth d)))))))
+                (inc! k)
+                (set! cur ((cast ptr:Node cur) cdr))))
+            ; The closure value: a (ref Env) into the heap block, carrying the
+            ; joined taint so returning it past a captured frame/with local's
+            ; scope is rejected at the existing escape sinks.
+            (let (pt:ptr:Type (cast ptr:Type (make-type TY-PTR))
+                  st:ptr:Type (cast ptr:Type (make-type TY-STRUCT)))
+              (.set! st sdef env-sd)
+              (.set! pt elem (cast ptr st))
+              (.set! pt pkind PTR-REF)
+              (let (rv:ref:Val (alloc-val (cast ptr pt) blk))
+                (.set! rv taint join-taint)
+                (.set! rv taint-frame join-frame)
+                (return rv))))))
+      ; vfn/mfn: stack alloca + per-field clone/move.
+      (do
+        (fprintf g-entry-stream "  %s = alloca %%%s\n" slot (sd name))
+        (let (k:i32 0
+              cur:ptr caps)
+          (while (!= cur null)
+            (let (cname:ptr ((cast ptr:Node cur) s)
+                  fty:ptr (aref (cast ptr:ptr (sd field-types)) k)
+                  fty-ir:ptr (type-to-ir (aref (cast ptr:ptr (sd field-types)) k))
+                  gep:ptr (new-tmp))
+              (fprintf g-body-stream
+                "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
+                gep (sd name) slot k)
+              ; Per-capture population: mode 0 = vfn clone, mode 1 = mfn move.
+              (if (= mode 0)
+                (if (= (type-conforms-drop fty) 0)
+                  ; POD / trivially-copyable: a plain value copy (bitwise clone).
+                  (let (init-node:ptr (cast ptr (intern-symbol cname))
+                        v:ref:Val (emit-node init-node scope)
+                        coerced:ptr (coerce-int-val v fty line))
+                    (when (= coerced null)
+                      (die-at line (fmt-s "vfn: capture '%s' value type mismatch" cname)))
+                    (fprintf g-body-stream "  store %s %s, ptr %s\n"
+                      fty-ir (-> coerced (cast ptr:Val _) (_ val)) gep))
+                  ; Drop capture: require a hand-written Clone, else direct to mfn; then
+                  ; deep-clone via `(clone (addr-of x))`.
+                  (do
+                    (when (= (conformance-lookup (type-spelling fty) "Clone") 0)
+                      (die-at line
+                        (fmt-2s "vfn cannot clone-capture '%s' (type %s is Drop with no Clone); use mfn to move it instead"
+                                cname (type-spelling fty))))
+                    (ptr-set! out-owns-drop 1)
+                    (let (clone-node:ptr (make-cell (cast ptr (intern-symbol "clone"))
+                                           (make-cell (make-cell (cast ptr (intern-symbol "addr-of"))
+                                                        (make-cell (cast ptr (intern-symbol cname)) null line)
+                                                        line)
+                                                     null line)
+                                           line)
+                          v:ref:Val (emit-node clone-node scope)
+                          coerced:ptr (coerce-int-val v fty line))
+                      (when (= coerced null)
+                        (die-at line (fmt-s "vfn: clone of capture '%s' type mismatch" cname)))
+                      (fprintf g-body-stream "  store %s %s, ptr %s\n"
+                        fty-ir (-> coerced (cast ptr:Val _) (_ val)) gep))))
+                ; mfn move: classify by with-ownership. A with-owned capture (owns=1)
+                ; is routed through `(move x)` — emit-move disarms its with-cleanup
+                ; (stores null into its cslot), marks it consumed (moved=1; any later
+                ; reference is use-after-move), and yields its value with escape taint
+                ; cleared so the closure may outlive the source's original scope. A
+                ; non-owned capture (a let binding / by-value param) has no with-cleanup
+                ; to disarm, so moving it == copying it: a bare-symbol bitwise copy.
+                (do
+                  (when (!= (type-conforms-drop fty) 0)
+                    (ptr-set! out-owns-drop 1))
+                  (if-some (csym (scope-lookup scope cname))
+                    (if (= (csym owns) 0)
+                      (let (init-node:ptr (cast ptr (intern-symbol cname))
+                            v:ref:Val (emit-node init-node scope)
+                            coerced:ptr (coerce-int-val v fty line))
+                        (when (= coerced null)
+                          (die-at line (fmt-s "mfn: capture '%s' value type mismatch" cname)))
+                        (fprintf g-body-stream "  store %s %s, ptr %s\n"
+                          fty-ir (-> coerced (cast ptr:Val _) (_ val)) gep))
+                      (let (move-node:ptr (make-cell (cast ptr (intern-symbol "move"))
+                                              (make-cell (cast ptr (intern-symbol cname)) null line)
+                                              line)
+                            v:ref:Val (emit-move move-node scope)
+                            coerced:ptr (coerce-int-val v fty line))
+                        (when (= coerced null)
+                          (die-at line (fmt-s "mfn: move of capture '%s' type mismatch" cname)))
+                        (fprintf g-body-stream "  store %s %s, ptr %s\n"
+                          fty-ir (-> coerced (cast ptr:Val _) (_ val)) gep)))
+                    (die-at line (fmt-s "mfn: internal — capture '%s' not in scope" cname))))))
+            (inc! k)
+            (set! cur ((cast ptr:Node cur) cdr))))
+        ; A stack compound literal is a valid, non-null (ref Env) address.
+        (let (pt:ptr:Type (cast ptr:Type (make-type TY-PTR))
+              st:ptr:Type (cast ptr:Type (make-type TY-STRUCT)))
+          (.set! st sdef env-sd)
+          (.set! pt elem (cast ptr st))
+          (.set! pt pkind PTR-REF)
+          (return (alloc-val (cast ptr pt) slot)))))))
 
 (defn emit-vfn:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call)
@@ -3627,12 +3856,12 @@
                 (aset! (cast ptr:ptr param-names) pi pname))
               (inc! pi)))
           ; --- Env struct + invoke method ---
-          (let (env-sd:ptr (fn-make-env-struct caps-head scope line)
+          (let (env-sd:ptr (fn-make-env-struct caps-head scope line 0 (cast ptr null))
                 body-list:ptr (-> cc (_ cdr) (cast ptr:Node _) (_ cdr)
                                      (cast ptr:Node _) (_ cdr))
                 owns-drop:i32 0)
             (fn-make-invoke-method env-sd caps-head params-node ret
-                                   param-types param-names nparams body-list line)
+                                   param-types param-names nparams body-list line 0)
             ; Determine ownership up front by scanning the env field types: if any
             ; field is a Drop type, the closure owns its cloned resources, so
             ; synthesize its `drop` + record the (Env, Drop) conformance BEFORE the
@@ -3647,14 +3876,193 @@
                   (set! owns-drop 1))
                 (inc! fi)))
             (when (!= owns-drop 0)
-              (fn-make-drop-method env-sd line))
+              (fn-make-drop-method env-sd line 0))
             ; Emit the populated env value (a (ref Env)). Per-capture clone
             ; classification (POD bitwise / Drop deep-clone / Drop-no-Clone error)
             ; happens inside fn-emit-env-value; the owns-drop it computes must
             ; agree with the pre-scan above (same type-conforms-drop predicate).
             (let (chk:i32 0)
               (return (fn-emit-env-value env-sd caps-head scope
-                                         (cast ptr:i32 (addr-of chk)) line)))))))))
+                                         (cast ptr:i32 (addr-of chk)) line 0
+                                         (cast ptr null))))))))))
+
+; Stage 13 L5 (lambda.md §"mfn — capture by move"): a move-capture closure
+; `(mfn (params):ret body…)`. Mirrors emit-vfn exactly — reuses fn-capture-walk
+; (COLLECT), fn-make-env-struct, fn-make-invoke-method, fn-rewrite-captures (via
+; fn-make-invoke-method), fn-make-drop-method, and fn-force-generic-mangled
+; (via the invoke/drop registration) unchanged. The ONLY difference is the
+; per-field population mode passed to fn-emit-env-value (1 = move): each
+; with-owned capture is routed through the `move` sink (disarm its with-cleanup,
+; mark it consumed → later use is use-after-move, yield its value with taint
+; cleared), and each non-owned capture is bitwise-copied (move == copy when
+; nothing disarms). The closure owns the moved resources → fn-make-drop-method
+; synthesizes its drop over the Drop fields; no allocator; travels by value.
+; Because the move clears the source's with-cleanup + taint, an mfn created
+; inside a `with` may be returned out of it without an escape error (the
+; export-from-`with` case) — ownership transferred, not a dangling borrow.
+(defn emit-mfn:ref:Val (call:ptr scope:ref:Scope)
+  (let (cc:ptr:Node (cast ptr:Node call)
+        line:i32 ((cast ptr:Node call) line))
+    (when (< (node-len cc) 4)
+      (die-at line "mfn: expects (mfn (params):ret body…)"))
+    (let (params-node:ptr (node-at cc 1)
+          ret-node:ptr (node-at cc 2))
+      (when (= (node-is-list params-node) 0)
+        (die-at line "mfn: params must be a list"))
+      ; --- Capture collection (COLLECT mode) — shared with vfn ---
+      (let (bound:ptr (fn-bind-param-names params-node null)
+            caps-head:ptr null
+            bi:i32 3)
+        (while (< bi (node-len cc))
+          (fn-capture-walk (node-at cc bi) scope bound
+                           (cast ptr:ptr (addr-of caps-head)) line)
+          (inc! bi))
+        ; No runtime capture → identical to `fn`: a bare function pointer, zero
+        ; overhead. Reuse emit-fn so the decay path is shared.
+        (when (= caps-head null)
+          (return (emit-fn call scope)))
+        ; --- Parse params (mirrors emit-fn / emit-vfn) ---
+        (let (nparams:i32 (node-len params-node)
+              ret:ptr (fn-parse-ret-type ret-node line)
+              param-types:ptr null
+              param-names:ptr null)
+          (when (> nparams 0)
+            (set! param-types (arena-alloc (* (cast i64 nparams) (ptr-bytes))))
+            (set! param-names (arena-alloc (* (cast i64 nparams) (ptr-bytes)))))
+          (let (pi:i32 0)
+            (while (< pi nparams)
+              (let (pname:ptr null
+                    pty:ptr (extract-name-and-type (node-at params-node pi)
+                                                   (cast ptr:ptr (addr-of pname))
+                                                   ((cast ptr:Node (node-at params-node pi)) line)))
+                (when (= pty null)
+                  (die-at line (fmt-s "mfn: missing :type on param '%s'" pname)))
+                (aset! (cast ptr:ptr param-types) pi pty)
+                (aset! (cast ptr:ptr param-names) pi pname))
+              (inc! pi)))
+          ; --- Env struct + invoke method (reused from L4 as-is) ---
+          (let (env-sd:ptr (fn-make-env-struct caps-head scope line 1 (cast ptr null))
+                body-list:ptr (-> cc (_ cdr) (cast ptr:Node _) (_ cdr)
+                                     (cast ptr:Node _) (_ cdr))
+                owns-drop:i32 0)
+            (fn-make-invoke-method env-sd caps-head params-node ret
+                                   param-types param-names nparams body-list line 1)
+            ; Pre-scan env field types: if any field is a Drop type, the closure
+            ; owns the moved resource, so synthesize its `drop` + record the
+            ; (Env, Drop) conformance BEFORE the env value is emitted (a with-
+            ; binding of this env consults the conformance to arm its scope-exit
+            ; drop, so it must already be recorded).
+            (let (nf:i32 (-> env-sd (cast ptr:StructDef _) (_ num-fields))
+                  fi:i32 0)
+              (while (< fi nf)
+                (when (!= (type-conforms-drop
+                            (aref (cast ptr:ptr (-> env-sd (cast ptr:StructDef _) (_ field-types))) fi)) 0)
+                  (set! owns-drop 1))
+                (inc! fi)))
+            (when (!= owns-drop 0)
+              (fn-make-drop-method env-sd line 0))
+            ; Emit the populated env value (a (ref Env)). Per-capture move
+            ; classification (non-owned bitwise / with-owned move) happens inside
+            ; fn-emit-env-value in mode 1; the owns-drop it computes must agree
+            ; with the pre-scan above (same type-conforms-drop predicate).
+            (let (chk:i32 0)
+              (return (fn-emit-env-value env-sd caps-head scope
+                                         (cast ptr:i32 (addr-of chk)) line 1
+                                         (cast ptr null))))))))))
+
+; Stage 13 L6 (lambda.md §"cfn — capture by reference"): a reference-capture
+; closure `(cfn alloc (params):ret body…)`. The index-1 operand `alloc` is a bare
+; `(ref AllocHandle)` (NOT part of the params/return group); the params list is at
+; index 2, the return type at index 3, the body at index 4+. Mirrors emit-vfn/
+; emit-mfn — reuses fn-capture-walk (COLLECT), fn-make-env-struct, fn-make-
+; invoke-method, fn-rewrite-captures (via fn-make-invoke-method), fn-make-drop-
+; method, and fn-force-generic-mangled — with mode 2 throughout. The differences:
+;   * the env is a struct of POINTERS into the captured locals, preceded by a
+;     leading __alloc field holding the (ref AllocHandle);
+;   * the env storage is heap-allocated through `alloc` (always-heap first cut);
+;   * each capture field is populated by storing (addr-of cap);
+;   * the closure conforms to Drop unconditionally (it owns the env storage), and
+;     the synthesized drop frees the env block via the stored handle;
+;   * the closure value inherits the join of the captures' addr-of taints (L1
+;     region inheritance) so escaping a captured frame/with local's scope is
+;     rejected at the existing sinks.
+; A non-capturing cfn folds to a bare `fn` pointer (zero overhead), dropping the
+; (unused) allocator operand. A local named `cfn` shadows this keyword.
+(defn emit-cfn:ref:Val (call:ptr scope:ref:Scope)
+  (let (cc:ptr:Node (cast ptr:Node call)
+        line:i32 ((cast ptr:Node call) line))
+    (when (< (node-len cc) 5)
+      (die-at line "cfn: expects (cfn alloc (params):ret body…)"))
+    (let (alloc-node:ptr (node-at cc 1)
+          params-node:ptr (node-at cc 2)
+          ret-node:ptr (node-at cc 3))
+      (when (= (node-is-list params-node) 0)
+        (die-at line "cfn: params must be a list"))
+      ; --- Capture collection (COLLECT mode) — shared with vfn/mfn ---
+      (let (bound:ptr (fn-bind-param-names params-node null)
+            caps-head:ptr null
+            bi:i32 4)
+        (while (< bi (node-len cc))
+          (fn-capture-walk (node-at cc bi) scope bound
+                           (cast ptr:ptr (addr-of caps-head)) line)
+          (inc! bi))
+        ; No runtime capture → identical to `fn`: a bare function pointer, zero
+        ; overhead. The cfn shape (alloc at index 1) differs from `fn`'s, so
+        ; rebuild an fn-shaped node (fn params ret body…) and delegate to emit-fn.
+        (when (= caps-head null)
+          (let (fn-sym:ptr (cast ptr (intern-symbol "fn"))
+                body-list:ptr (-> cc (_ cdr) (cast ptr:Node _) (_ cdr)
+                                     (cast ptr:Node _) (_ cdr) (cast ptr:Node _) (_ cdr)))
+            (return (emit-fn
+                      (make-cell fn-sym
+                        (make-cell params-node
+                          (make-cell ret-node body-list line)
+                          line)
+                        line)
+                      scope))))
+        ; --- Emit the allocator operand once; validate it is a (ref AllocHandle) ---
+        (let (alloc-val:ref:Val (emit-node alloc-node scope)
+              alloc-ty:ptr:Type (cast ptr:Type (alloc-val type)))
+          (when (or (!= (alloc-ty kind) TY-PTR)
+                    (or (= (alloc-ty elem) null)
+                        (!= (-> (alloc-ty elem) (cast ptr:Type _) (_ kind)) TY-STRUCT)))
+            (die-at line "cfn: allocator operand must be a (ref AllocHandle) — (import-use allocator) and pass e.g. (default-allocator)"))
+          ; --- Parse params (mirrors emit-fn / emit-vfn) ---
+          (let (nparams:i32 (node-len params-node)
+                ret:ptr (fn-parse-ret-type ret-node line)
+                param-types:ptr null
+                param-names:ptr null)
+            (when (> nparams 0)
+              (set! param-types (arena-alloc (* (cast i64 nparams) (ptr-bytes))))
+              (set! param-names (arena-alloc (* (cast i64 nparams) (ptr-bytes)))))
+            (let (pi:i32 0)
+              (while (< pi nparams)
+                (let (pname:ptr null
+                      pty:ptr (extract-name-and-type (node-at params-node pi)
+                                                     (cast ptr:ptr (addr-of pname))
+                                                     ((cast ptr:Node (node-at params-node pi)) line)))
+                  (when (= pty null)
+                    (die-at line (fmt-s "cfn: missing :type on param '%s'" pname)))
+                  (aset! (cast ptr:ptr param-types) pi pty)
+                  (aset! (cast ptr:ptr param-names) pi pname))
+                (inc! pi)))
+            ; --- Env struct (mode 2: __alloc + ptr fields) + invoke (mode 2) ---
+            (let (env-sd:ptr (fn-make-env-struct caps-head scope line 2 (alloc-val type))
+                  body-list:ptr (-> cc (_ cdr) (cast ptr:Node _) (_ cdr)
+                                     (cast ptr:Node _) (_ cdr) (cast ptr:Node _) (_ cdr)))
+              (fn-make-invoke-method env-sd caps-head params-node ret
+                                     param-types param-names nparams body-list line 2)
+              ; A cfn always owns its (heap) env storage, so it always conforms to
+              ; Drop and gets a synthesized drop that frees the env via the stored
+              ; handle. Record the (Env, Drop) conformance BEFORE the env value is
+              ; emitted (a with-binding of this env consults it to arm cleanup).
+              (fn-make-drop-method env-sd line 2)
+              ; Emit the populated env value (a (ref Env) carrying the joined taint).
+              ; alloc-aptr is the handle's IR pointer, evaluated once above.
+              (let (chk:i32 0)
+                (return (fn-emit-env-value env-sd caps-head scope
+                                           (cast ptr:i32 (addr-of chk)) line 2
+                                           (alloc-val val)))))))))))
 
 ; (move p) — affine ownership transfer out of a with (lifecycle.md §4):
 ; disarm p's cleanup slot (store null; free(NULL) / the drop null-guard make
@@ -4773,6 +5181,31 @@
                 na:ptr (coerce-num-val slot pt line))
             (when (and (!= na null) (!= na slot)) (memcpy slot na (sizeof Val))))
           (inc! ci))))
+    ; Stage 13 L7: a bare TY-FN argument (function pointer) flowing into a
+    ; (ref TY-FN) param (unify-tpat's TY-FN-into-(ref G) rule) needs calling-
+    ; convention adaptation. The callee treats the param as pointer-to-fn-ptr
+    ; (it will (deref self) to load the function pointer), but the caller has
+    ; a bare function pointer. Emit an alloca, store the fn ptr into it, and
+    ; pass the slot's address so the callee's deref loads the right value.
+    (when (and (!= (m param-types) null) (and (= (m has-rest) 0) (= (m num-params) nargs)))
+      (let (ci:i32 0)
+        (while (< ci nargs)
+          (let (slot:ptr (ptr+ (cast ptr:Val args) ci)
+                pt:ptr (aref (cast ptr:ptr (m param-types)) ci)
+                av:ptr:Val (cast ptr:Val slot)
+                aty:ptr:Type (cast ptr:Type (av type))
+                ptt:ptr:Type (cast ptr:Type pt))
+            (when (and (= (aty kind) TY-FN)
+                       (and (= (ptt kind) TY-PTR)
+                            (and (= (ptt pkind) PTR-REF)
+                                 (and (!= (ptt elem) null)
+                                      (= (-> (ptt elem) (cast ptr:Type _) (_ kind)) TY-FN)))))
+              (let (tmp:ptr (new-tmp))
+                (fprintf g-body-stream "  %s = alloca ptr, align 8\n" tmp)
+                (fprintf g-body-stream "  store ptr %s, ptr %s, align 8\n" (av val) tmp)
+                (.set! av type pt)
+                (.set! av val tmp))))
+          (inc! ci))))
     (.set! ss name gname)
     (.set! ss type (m fn-type))
     (.set! ss ir-name (m ir-name))
@@ -4935,8 +5368,8 @@
         (when (= hp 'goto-ptr) (return (emit-goto-ptr n scope)))
         (when (= hp 'array) (return (emit-array-lit n scope)))
         (when (= hp 'not) (return (emit-not n scope)))
-        (when (= hp 'and) (return (emit-short-circuit n scope 1)))
-        (when (= hp 'or) (return (emit-short-circuit n scope 0)))
+        (when (= hp '_and) (return (emit-short-circuit n scope 1)))
+        (when (= hp '_or) (return (emit-short-circuit n scope 0)))
         (when (= hp 'cast) (return (emit-cast n scope)))
         (when (= hp 'addr-of) (return (emit-addr-of n scope)))
         (when (= hp 'funcall-void) (return (emit-funcall-void n scope)))
@@ -4984,6 +5417,26 @@
         ; anonymous env struct + `invoke` method, callable through callable-values.
         (when (and (= hp 'vfn) (= (cast ptr (scope-lookup scope "vfn")) null))
           (return (emit-vfn n scope)))
+        ; Stage 13 L5 (lambda.md §"mfn — capture by move"): a move-capture
+        ; closure. Gated on `mfn` not being a bound local (same one-symbol-one-
+        ; kind shadow rule as `fn`/`vfn`). A non-capturing mfn folds to a bare
+        ; function pointer (emit-mfn delegates to emit-fn); a capturing mfn
+        ; lowers to an anonymous env struct + `invoke` method, with each
+        ; with-owned capture moved (disarmed + consumed) into the env and the
+        ; closure's `drop` synthesized over the owned fields.
+        (when (and (= hp 'mfn) (= (cast ptr (scope-lookup scope "mfn")) null))
+          (return (emit-mfn n scope)))
+        ; Stage 13 L6 (lambda.md §"cfn — capture by reference"): a reference-
+        ; capture closure. Gated on `cfn` not being a bound local (same one-
+        ; symbol-one-kind shadow rule as fn/vfn/mfn). A non-capturing cfn folds to
+        ; a bare function pointer (emit-cfn delegates to emit-fn); a capturing cfn
+        ; lowers to an anonymous env struct of pointers (plus a stored AllocHandle)
+        ; heap-allocated through the `alloc` operand, an `invoke` method, and a
+        ; synthesized `drop` that frees the env via the handle. The closure value
+        ; inherits the join of the captures' addr-of taints (L1) so escaping a
+        ; captured frame/with local's scope is rejected at the existing sinks.
+        (when (and (= hp 'cfn) (= (cast ptr (scope-lookup scope "cfn")) null))
+          (return (emit-cfn n scope)))
         ; Stage 10 tagged sums (unions.md §3–§4)
         (when (= hp 'match) (return (emit-match n scope)))
         (when (= hp 'make) (return (emit-make n scope)))
@@ -5495,12 +5948,13 @@
 
 (defn emit-defn:void (call:ptr)
   (let (cc:ptr:Node (cast ptr:Node call))
-    (when (< (node-len cc) 4) (die-at (cc line) "defn: bad form"))
+      (when (< (node-len cc) 4) (die-at (cc line) "defn: bad form"))
     (let (name-node:ptr (node-at cc 1)
           params-node:ptr (node-at cc 2))
       (when (= (node-is-list params-node) 0)
         (die-at ((cast ptr:Node name-node) line) "defn: params must be list"))
       ; A bounded-generic template — `&where` or a parametric-struct receiver —
+
       ; emits no code itself; it is registered in prescan and monomorphized per
       ; call site.
       (when (!= (defn-is-generic-template call) 0) (return))
@@ -5510,6 +5964,27 @@
         (when (= ret null)
           (die-at ((cast ptr:Node name-node) line) (fmt-s "defn: missing :type on '%s'" fname)))
         (guard-name-kind fname (cc line) NK-FUNCTION)
+        ; L8: warn when a public defn's signature exposes a capturing-closure env
+        ; type (__vfn_env_N) — it is excluded from --emit-cheader (see
+        ; cheader-mentions-closure). Gated on public (defn-, not defn) and on a
+        ; real top-level defn (g-mono-context is set only during the mono drain,
+        ; which emits synthesized closure invoke/drop methods whose `self` param
+        ; is (ref Env) — those are internal, not a public API surface). A plain
+        ; fn pointer is C-ABI and does not trigger this.
+        (when (and (= g-defining-private 0) (= g-mono-context null))
+          (let (mc:i32 (cheader-mentions-closure
+                         (extract-type-node name-node ((cast ptr:Node name-node) line)))
+                mcpi:i32 0
+                mcp:i32 (node-len params-node))
+            (while (< mcpi mcp)
+              (when (!= (cheader-mentions-closure
+                          (extract-type-node (node-at params-node mcpi)
+                                             ((cast ptr:Node (node-at params-node mcpi)) line))) 0)
+                (set! mc 1))
+              (inc! mcpi))
+            (when (!= mc 0)
+              (fprintf stderr "%s:%d: warning: %s\n" g-source-path (cc line)
+                       (fmt-s "'%s' exposes a closure type and will be excluded from generated C headers" fname)))))
         ; Stage 10 Phase F1: an optional `noreturn` attribute keyword in
         ; body-position 0 (right after the params) marks the function as never
         ; returning — die-at, repl_throw and friends. It is stripped so the body
@@ -7636,8 +8111,8 @@
        "sizeof" "alloca" "aref" "aset!"
        ; literals / quoting
        "quote" "quasiquote" "char"
-       ; logic
-       "not" "and" "or"
+        ; logic
+        "not" "_and" "_or"
        ; macros / functions
        "gensym" "funcall" "funcall-void"
        "funcall-ptr-1" "funcall-ptr-i32" "funcall-ptr-i64" "funcall-ptr-ptr"

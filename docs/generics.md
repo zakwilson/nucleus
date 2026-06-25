@@ -417,6 +417,51 @@ transitively-recorded fact the `with` cleanup uses: a wrapper struct that owns a
 `Drop` field is itself `extend`ed to `Drop`, so its own recorded conformance is the
 transitive answer.
 
+### Structural function-protocol conformance (closures)
+
+A closure, or a bare function pointer, is **never pre-declared** to conform to a
+function protocol. Instead, when one flows into a `&where ((P …) V)` bound, the
+compiler **structurally matches** the value's `invoke` (or, for a function
+pointer, its signature) against `P`'s single required method and **synthesizes a
+forwarding conformance**, reading the bound type arguments straight off the
+matched signature. This is what lets an `fn`/`vfn`/`mfn`/`cfn` literal be passed
+inline to a generic combinator such as `map`/`reduce`
+(`lib/iterator.nuc`, [Iterators](iterators.md)) with no hand-written
+function-object struct:
+
+```lisp
+; reduce bounds its fold operand g with &where ((FoldFn Acc S) G).
+; Each closure literal below gets a synthesized (closure, FoldFn) conformance
+; derived from its invoke, recovering Acc and S off invoke's signature.
+(reduce (fn  (acc i32 x i32):i32 (return (+ acc (* x x))))      0 r)   ; bare fn ptr
+(reduce (vfn (acc i32 x i32):i32 (return (+ acc (* x factor)))) 0 r)   ; POD clone
+```
+
+**Recognized-set scoping.** Derivation fires only for a recognized set of
+single-method "function-shaped" protocols — **`UnaryFn`** (`Arg` → `Ret`) and
+**`FoldFn`** (`Acc`, `Elem`) from `lib/iterator.nuc` — **not** for arbitrary
+single-method protocols. The narrow scope sidesteps the open
+`(type, protocol)` coherence/dedup interaction a fully general mechanism would
+raise; the set can be widened later if other function-shaped protocols emerge.
+(The open mechanism question in `design/stage13/lambda.md` §"Representation and
+calling" is thereby resolved toward the narrow side.)
+
+**Mechanism.**
+
+- For a **capturing closure** (`vfn`/`mfn`/`cfn`), the synthesized method
+  delegates to its `invoke`: `(invoke self arg…)`. The protocol's bound arguments
+  are read off `invoke`'s parameter and return types.
+- For a **bare `fn`** or function pointer, the synthesized method reads the
+  pointer through `(deref self)` and calls it; bare `fn` types are interned as
+  `__fnty_N` so each distinct signature gets a single conformance record.
+
+The derivation is **idempotent** (re-deriving for the same `(type, protocol)`
+pair returns the existing record) and obeys the one-conformance-per-
+`(type, protocol)` coherence rule, so recovered arguments are unambiguous and a
+monomorphized call site is byte-identical to one over a hand-written function
+object. See `design/stage13/lambda.md` §"Representation and calling" and
+`examples/closures.nuc`.
+
 *Not yet implemented:* same-name overloading that mixes imported and
 locally-defined methods; `&rest` together with `&where`; REPL generic
 instantiation; non-type/const parameters in parametric generics; higher-kinded

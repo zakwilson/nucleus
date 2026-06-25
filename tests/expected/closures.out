@@ -1,0 +1,5 @@
+fn   defn-fnptr   sumsq(1..5)        = 55
+fn   literal      sum (x*SHIFT=10)   = 150
+vfn  clone        sum (x*factor=7)  = 105   [factor after = 7]
+mfn  move         sum (x*base=100)  = 1500   [base consumed]
+cfn  ref          sum (x*mult=3)   = 45   [mult after = 3]
