@@ -265,9 +265,9 @@
             (when (= pdone 0)
               ; Check for '...'
               (when (and (< (+ pos (cast i64 2)) len)
-                         (and (= (char-at buf pos) 46)
-                              (and (= (char-at buf (+ pos (cast i64 1))) 46)
-                                   (= (char-at buf (+ pos (cast i64 2))) 46))))
+                         (= (char-at buf pos) 46)
+                         (= (char-at buf (+ pos (cast i64 1))) 46)
+                         (= (char-at buf (+ pos (cast i64 2))) 46))
                  (set! is-variadic 1)
                  (set! pos (+ pos (cast i64 3)))
                  (set! pos (c-skip-ws buf pos len))
