@@ -897,8 +897,8 @@
       ; so this can't shadow a binding; for a pointer-Maybe (niche) return,
       ; uniondef-for-type returned null above and `none` stays the relabel.
       (when (and (= (n kind) NODE-SYM)
-                 (and (= (n s) "none")
-                      (>= (union-arm-index (cast ptr udd) "none") 0)))
+                 (= (n s) "none")
+                 (>= (union-arm-index (cast ptr udd) "none") 0))
         (let (ln:i32 (n line))
           (return (make-cell (cast ptr 'make)
                     (make-cell (cast ptr (intern-symbol (udd name)))
@@ -925,8 +925,8 @@
         ; Without the library, or for a custom (Result T NonErr), `err` falls
         ; through to the plain `(make … err …)` construct below (== err!).
         (when (and (= (head s) "err")
-                   (and (= (result-err-arm-is-err (cast ptr udd)) 1)
-                        (= (error-lib-in-scope) 1)))
+                   (= (result-err-arm-is-err (cast ptr udd)) 1)
+                   (= (error-lib-in-scope) 1))
           (return (make-cell (cast ptr (intern-symbol "__err-handled")) (n cdr) ln)))
         (when (< (union-arm-index (cast ptr udd) (head s)) 0) (return form))
         (return (make-cell (cast ptr 'make)
@@ -994,8 +994,8 @@
                 (scope-define inner (b s) ftype slot 1))
               ; (ref x): alias the field in place for mutation.
               (do
-                (when (or (or (!= (b kind) NODE-CELL) (!= (node-len (cast ptr b)) 2))
-                          (!= (node-at (cast ptr b) 0) 'ref))
+               (when (or (!= (b kind) NODE-CELL) (!= (node-len (cast ptr b)) 2)
+                         (!= (node-at (cast ptr b) 0) 'ref))
                   (die-at (b line) "match: binder must be a name, _, or (ref name)"))
                 (when (= is-ptr 0)
                   (die-at (b line)
