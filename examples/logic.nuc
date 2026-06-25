@@ -1,0 +1,41 @@
+; Variadic and/or — right-folding macros over the _and/_or binary short-circuit
+; primitives (Stage 13). Mirrors the (+)/_+ convention:
+;   (and)         => true
+;   (or)          => false
+;   (and x)       => x   [1-arg returns the operand UNCHECKED — not forced to i1]
+;   (or x)        => x
+;   (and a b c..) => (_and a (and b c..))   [short-circuits; i1-checked]
+;   (or  a b c..) => (_or  a (or  b c..))
+(import-use "stdio.h")
+
+; Volatile so the optimiser cannot fold (/ 1 trap-zero) into a compile-time
+; div-by-zero: it traps (SIGFPE) only if reached at runtime. Used to prove the
+; variadic short-circuit — if a later arg were evaluated, the process would die.
+(defvar trap-zero:i32:volatile 0)
+
+(defn main:i32 ()
+  (printf "(and) = %d\n" (cast i32 (and)))
+  (printf "(or)  = %d\n" (cast i32 (or)))
+
+  ; 1-arg returns the operand UNCHECKED. The operand is an i32 value (not i1),
+  ; so the result is the value itself — 5, not 1. This distinguishes the new
+  ; 1-arg-returns-operand semantics from an i1 coercion.
+  (printf "(and 5) = %d\n" (and 5))
+  (printf "(or  9) = %d\n" (or 9))
+
+  (let (a:i32 2  b:i32 3  c:i32 4  d:i32 5)
+    ; 4-arg and: all-true yields true; one false mid-chain yields false.
+    (printf "and4 all  = %d\n" (cast i32 (and (> a 0) (> b 0) (> c 0) (> d 0))))
+    (printf "and4 some = %d\n" (cast i32 (and (> a 0) (> b 0) (< c 0) (> d 0))))
+
+    ; 3-arg or: all-false yields false; a later arg true yields true.
+    (printf "or3 none = %d\n" (cast i32 (or (< a 0) (< b 0) (< c 0))))
+    (printf "or3 some = %d\n" (cast i32 (or (< a 0) (< b 0) (> c 0))))
+
+    ; Short-circuit proof. (or x y z) folds to (_or x (_or y z)); when x is
+    ; true the inner (_or y z) — including the div-by-zero in position 3 — is
+    ; never evaluated. If the variadic form failed to short-circuit, SIGFPE.
+    (printf "or  sc = %d\n" (cast i32 (or (> a 0) (< b 0) (< (/ 1 trap-zero) 0))))
+    ; Symmetric: a variadic (and ...) stops at the first false (position 1).
+    (printf "and sc = %d\n" (cast i32 (and (< a 0) (> b 0) (< (/ 1 trap-zero) 0)))))
+  (return 0))

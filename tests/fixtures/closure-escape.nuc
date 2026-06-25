@@ -1,0 +1,23 @@
+; Stage 13 L1 — cfn escape analysis (negative fixture).
+;
+; A cfn captures each used local BY REFERENCE: its environment is a struct of
+; pointers into the captured storage, so the closure value INHERITS the region of
+; each captured referent. Returning it out of the referent's scope would dangle,
+; so the frame-region escape analysis rejects the return.
+;
+; This fixture is intentionally not a runnable program (no main). Compiling it
+; must FAIL with the escape error:
+;   "address of frame-local storage escapes via return — the pointed-to storage
+;    is reclaimed when this function returns"
+; which proves the cfn inherits its captured local's region and the return sink
+; catches the escape.
+
+(import-use allocator)
+
+; `x` is a plain frame local (a let binding). The cfn captures it by reference,
+; so the closure value is tainted with x's frame region. Returning the closure
+; escapes that region and is rejected.
+(defn escapes:i32 ()
+  (let (x:i32 5)
+    (let (h:ref:AllocHandle (default-allocator))
+      (return (cfn h ():i32 (return x))))))

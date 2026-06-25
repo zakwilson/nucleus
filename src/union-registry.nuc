@@ -284,6 +284,12 @@
   (when (= name "f64") (return ty-f64))
   (when (= name "float") (return ty-f32))
   (when (= name "double") (return ty-f64))
+  ; Stage 13 L7: a TY-FN spelling (interned "__fnty_<id>" from type-spelling)
+  ; resolves back to the original function-pointer Type*. This is what lets a
+  ; stamped generic body's `(ref __fnty_3)` re-parse to the fn's TY-FN, so the
+  ; forwarding call on the function pointer can be reconstructed at emit time.
+  (let (ft:ptr (fnty-resolve name))
+    (when (!= ft null) (return (cast ref:Type ft))))
   ; Stage 12 N4: a struct/union type spelling may be namespace-qualified
   ; (`coll/Vector`); the type registry is keyed by the bare name, so strip the
   ; qualifier before lookup. Identity under `user` (no slash) → byte-identical.

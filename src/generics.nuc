@@ -120,6 +120,18 @@
   (when (or (= a null) (= b null)) (return 0))
   (let (aa:ptr:Type (cast ptr:Type a)
         bb:ptr:Type (cast ptr:Type b))
+    ; Stage 13 L7: a bare TY-FN (function pointer, as passed at a call site)
+    ; and a (ref TY-FN) (as written in a generic param list after stamping)
+    ; are compatible under the unify-tpat TY-FN-into-(ref G) rule. Treat them
+    ; as type-eq so defn-ir-name finds the method registered with the bare
+    ; argtype when emit-defn re-parses the stamped (ref __fnty_N) param.
+    ; Consistent with type-eq's existing TY-FN imprecision (any two TY-FN are eq).
+    (when (and (= (aa kind) TY-FN)
+               (and (= (bb kind) TY-PTR) (= (bb pkind) PTR-REF)))
+      (return (type-eq a (bb elem))))
+    (when (and (= (bb kind) TY-FN)
+               (and (= (aa kind) TY-PTR) (= (aa pkind) PTR-REF)))
+      (return (type-eq (aa elem) b)))
     (when (!= (aa kind) (bb kind)) (return 0))
     (when (= (aa kind) TY-STRUCT)
       (if (= (aa sdef) (bb sdef)) (return 1) (return 0)))
@@ -635,6 +647,14 @@
   (when (!= (cast ptr (struct-template-lookup name)) null) (return 1))
   (when (!= (cast ptr (union-template-lookup name)) null) (return 1))
   (when (!= (cast ptr (enumdef-lookup name)) null) (return 1))
+  ; Stage 13 L7: a TY-FN spelling (interned "__fnty_<id>") resolves back to a
+  ; concrete function-pointer Type* via fnty-resolve (mirroring parse-type-name),
+  ; so a stamped generic body's template-arg spelling — e.g. (MapIter I __fnty_0) —
+  ; is treated as a concrete type, not a free tyvar. Without this, collect-pattern-
+  ; tyvars wrongly collects __fnty_0, defn-has-receiver-tyvars returns 1, the
+  ; stamped method looks like a template, and emit-defn skips its define while the
+  ; call site still references its ir-name (undefined symbol at link/parse).
+  (when (!= (fnty-resolve name) null) (return 1))
   (return 0))
 
 ; The inner pattern node of a pointer wrapper `(ptr|raw|ref X...)`, mirroring how
@@ -772,6 +792,13 @@
     (when (= (pn kind) NODE-CELL)
       ; Pointer wrapper vs a concrete pointer: unify element patterns.
       (when (!= (node-is-ptr-wrapper pat) 0)
+        ; Stage 13 L7: a bare `fn` (function pointer, TY-FN) flowing into a
+        ; `(ref G)`/`(ptr G)` position binds G to the TY-FN itself — the stamped
+        ; body's `(ref G)` becomes `(ref <fn>)`, and the by-value fn pointer
+        ; passed at the call site lands in the param slot as that storage. A
+        ; TY-FN has no `elem`, so unify the inner pattern directly against `at`.
+        (when (= (-> at (cast ptr:Type _) (_ kind)) TY-FN)
+          (return (unify-tpat (wrapper-inner-pattern pat) at tyvars ntv out-bound line)))
         (when (!= (-> at (cast ptr:Type _) (_ kind)) TY-PTR) (return 0))
         (return (unify-tpat (wrapper-inner-pattern pat)
                             (-> at (cast ptr:Type _) (_ elem))
@@ -1167,7 +1194,14 @@
       (when (= cv null) (return 1))
       (let (cvspell:ptr (type-spelling cv))
         ; Missing conformance is a soft reject (like generic-constraints-ok).
-        (when (= (conformance-lookup cvspell proto) 0) (return 0))
+        ; Stage 13 L7: before rejecting, try to derive a structural conformance
+        ; for a closure (the closure's invoke method satisfies the protocol's
+        ; function-shaped method). derive-closure-conformance is idempotent, so
+        ; a later generic-constraints-ok call that reaches the same (type, proto)
+        ; sees the conformance already recorded and skips.
+        (when (and (= (conformance-lookup cvspell proto) 0)
+                   (= (derive-closure-conformance cv proto line) 0))
+          (return 0))
         (let (cn:i32 0
               cargs:ptr (conformance-args cvspell proto (cast ptr:i32 (addr-of cn))))
           ; A recorded conformance with no retained args predates arg retention
@@ -1267,9 +1301,9 @@
       ; does not conform — reject this candidate before the all-bound check.
       ; recover-assoc-into runs the shared fixpoint over the Method's fields.
       (when (= (recover-assoc-into (mm tyvars) out-bound (mm num-tyvars)
-                                   (mm con-protos) (mm con-vars) (mm con-args) (mm con-nargs)
-                                   (mm num-constraints)
-                                   (-> (mm body) (cast ptr:Node _) (_ line))) 0)
+                                    (mm con-protos) (mm con-vars) (mm con-args) (mm con-nargs)
+                                    (mm num-constraints)
+                                    (-> (mm body) (cast ptr:Node _) (_ line))) 0)
         (return 0))
       (let (k:i32 0)
         (while (< k ntv)
@@ -1290,10 +1324,15 @@
             bt:ptr (aref (cast ptr:ptr bound) idx))
         ; Blanket protocols (§10.1) conform automatically; Valid (§10.2) matches
         ; here and is checked structurally at the call site; otherwise require a
-        ; nominal conformance recorded by `extend`.
+        ; nominal conformance recorded by `extend`. Stage 13 L7: a closure that
+        ; has not hand-extended the protocol may still derive a structural
+        ; conformance on demand (derive-closure-conformance is idempotent — if
+        ; recover-one-constraint already fired during generic-method-bind, the
+        ; conformance is already recorded and this is a no-op).
         (when (and (= (blanket-conforms bt proto) 0)
                    (and (!= proto "Valid")
-                        (= (conformance-lookup (type-spelling bt) proto) 0)))
+                        (and (= (conformance-lookup (type-spelling bt) proto) 0)
+                             (= (derive-closure-conformance bt proto line) 0))))
           (return 0)))
       (inc! i))
     (return 1)))
@@ -1324,7 +1363,8 @@
   (let (gg:ptr:Generic (cast ptr:Generic g)
         mm:ptr:Method (cast ptr:Method m))
     (let (existing:?ptr:Method (generic-find-method-exact g argtypes nargs))
-      (when (!= existing null) (return existing)))
+      (when (!= existing null)
+        (return existing)))
     ; Concrete spelling for each bound type variable, used to stamp the body.
     (let (ntv:i32 (mm num-tyvars)
           spellings:ptr (arena-alloc (* (cast i64 (+ ntv 1)) (ptr-bytes)))
@@ -1344,12 +1384,16 @@
       (when (!= (method-has-valid m) 0)
         (valid-check-instance m stamped bound line))
       (let (ptypes:ptr null)
-        (when (> nargs 0)
-          (set! ptypes (arena-alloc (* (cast i64 nargs) (ptr-bytes))))
-          (let (i:i32 0)
-            (while (< i nargs)
-              (aset! (cast ptr:ptr ptypes) i (aref (cast ptr:ptr argtypes) i))
-              (inc! i))))
+        ; Stage 13 L7: parse param types from the STAMPED form (not argtypes) so
+        ; the method's param-types match what emit-defn will re-parse from the
+        ; same stamped form. This matters when a bare TY-FN arg flows into a
+        ; (ref G) param: argtypes has bare TY-FN, but the stamped form has
+        ; (ref __fnty_N) = TY-PTR. Using the stamped-form types keeps
+        ; defn-ir-name, mangle-fn-name, and emit-resolved-call's TY-FN-to-
+        ; (ref TY-FN) calling-convention adaptation all consistent.
+        (let (stamped-params:ptr (node-at stamped 2))
+          (set! ptypes (defn-params-to-types stamped-params))
+          (set! nargs (defn-params-count stamped-params)))
         (let (newm:ref:Method (generic-register-method (gg name) sret ptypes nargs 0 0 stamped)
               ; Stage 12 N4: mangle the stamped concrete method under the
               ; template's *defining* namespace (gg ir-prefix), not the call
@@ -1519,7 +1563,7 @@
   (when (or (= hp 'return) (= hp 'while)) (return 1))
   (when (or (= hp 'set!) (= hp 'inc!)) (return 1))
   (when (or (= hp 'quote) (= hp 'quasiquote)) (return 1))
-  (when (or (= hp 'not) (or (= hp 'and) (= hp 'or))) (return 1))
+  (when (or (= hp 'not) (or (= hp '_and) (= hp '_or))) (return 1))
   (when (or (= hp 'cast) (= hp 'addr-of)) (return 1))
   (when (or (= hp 'deref) (or (= hp 'ptr-set!) (= hp 'ptr+))) (return 1))
   (when (or (= hp '_get) (= hp '.set!)) (return 1))
@@ -1617,7 +1661,7 @@
           (let (last:ptr null j:i32 1 cl:i32 (node-len n))
             (while (< j cl) (set! last (gcheck (node-at n j) scope m)) (inc! j))
             (return last)))
-        ; cond / and / or / not / set! / inc! / return / while and the structural
+        ; cond / _and / _or / not / set! / inc! / return / while and the structural
         ; special forms: walk compound children; result type is not modeled.
         (when (!= (gcheck-special-form hp) 0)
           (gcheck-walk-children n scope m)
@@ -2185,6 +2229,200 @@
     (.set! c args args)
     (.set! c nargs nargs)
     (inc! g-num-conformances)))
+
+(defn derive-closure-conformance:i32 (cvtype:ptr proto:ptr line:i32)
+  (let (cvspell:ptr (type-spelling cvtype)
+        cv:ptr:Type (cast ptr:Type cvtype))
+    ; Step 1: idempotent — already conforms.
+    (when (!= (conformance-lookup cvspell proto) 0) (return 1))
+    ; Step 2: recognized-set gate (UnaryFn/FoldFn today).
+    (when (and (!= proto "UnaryFn") (!= proto "FoldFn")) (return 0))
+  ; Step 3: find the closure's invoke method — a METHOD-USER on the `invoke`
+  ; generic whose self param (param-types[0]) is (ref Env) with Env.name == cvspell.
+  ; Detection is semantic ("the type has an invoke method"), not by name, so it
+  ; covers vfn/mfn/cfn closures uniformly; a hand-written struct with an `invoke`
+  ; method that has NOT hand-extended the protocol would also derive (benign — if
+  ; it HAD hand-extended, step 1 already returned 1).
+  (let (ig:ptr (generic-lookup "invoke")
+        im:?ptr:Method null)
+    ; The invoke search only fires when an `invoke` generic exists (a program
+    ; with closures); a bare `fn` in a closure-free program reaches the TY-FN
+    ; synthesis below with im=null.
+    (when (!= ig null)
+      (let (igg:ptr:Generic (cast ptr:Generic ig)
+            mi:i32 0)
+        (while (< mi (igg num-methods))
+          (let (mm:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (igg methods)) mi)))
+            (when (= (mm kind) METHOD-USER)
+              (let (self-ty:ptr (aref (cast ptr:ptr (mm param-types)) 0))
+                (when (!= self-ty null)
+                  (let (st:ptr:Type (cast ptr:Type self-ty))
+                    (when (and (= (st kind) TY-PTR)
+                               (and (!= (st elem) null)
+                                    (= (st pkind) PTR-REF)))
+                      (let (et:ptr:Type (cast ptr:Type (st elem)))
+                        (when (= (et kind) TY-STRUCT)
+                          (let (sd:ptr:StructDef (cast ptr:StructDef (et sdef)))
+                            (when (and (!= (cast ptr sd) null)
+                                       (= (sd name) cvspell))
+                              (set! im (cast ptr mm))))))))))))
+          (inc! mi))))
+      ; Resolve the source method whose signature drives derivation. For a
+      ; capturing closure that is the `invoke` method found above (call-style 0,
+      ; forward by calling invoke on self). For a bare `fn` (TY-FN — no env, no
+      ; invoke method) the fn's own param/return signature is the callable shape,
+      ; so synthesize an imp directly from the TY-FN Type* (call-style 1, forward
+      ; by dereffing self and calling the function pointer). im is null when no
+      ; matching invoke method exists (the TY-FN case, or a non-callable type).
+      (let (imp-src:?ptr:Method null
+            call-style:i32 0)
+        (if (!= (cast ptr im) null)
+          (set! imp-src (cast ptr:Method im))
+          (when (= (cv kind) TY-FN)
+            (let (fn-np:i32 (cv num-params)
+                  total:i32 (+ fn-np 1)
+                  ptypes:ptr (arena-alloc (* (cast i64 total) (ptr-bytes)))
+                  self-ty:ptr:Type (cast ptr:Type (make-type TY-PTR)))
+              (.set! self-ty elem cvtype)
+              (.set! self-ty pkind PTR-REF)
+              (aset! (cast ptr:ptr ptypes) 0 (cast ptr self-ty))
+              (let (fpi:i32 0)
+                (while (< fpi fn-np)
+                  (aset! (cast ptr:ptr ptypes) (+ fpi 1)
+                         (aref (cast ptr:ptr (cv params)) fpi))
+                  (inc! fpi)))
+              (let (syn:ref:Method (new Method))
+                (.set! syn param-types ptypes)
+                (.set! syn num-params total)
+                (.set! syn ret-type (cv ret))
+                (.set! syn kind METHOD-USER)
+                (.set! syn has-rest 0)
+                (.set! syn variadic 0)
+                (set! imp-src (cast ptr syn))
+                (set! call-style 1)))))
+        (when (= (cast ptr imp-src) null) (return 0))
+        ; Steps 4-5: protocol must be single-method; parse its sig.  imp is the
+        ; non-null source method (cast from the nullable imp-src above).
+        (let (imp:ptr:Method (cast ptr:Method imp-src)
+              pp:ptr:Protocol (cast ptr:Protocol (protocol-lookup proto)))
+          (when (= (cast ptr pp) null) (return 0))
+          (when (!= (pp num-sigs) 1) (return 0))
+        (let (sig:ptr (aref (cast ptr:ptr (pp sigs)) 0)
+              name-node:ptr (node-at sig 0)
+              params-node:ptr (node-at sig 1)
+              method-name:ptr ((cast ptr:Node (node-at name-node 0)) s)
+              ret-node:ptr (node-at name-node 1)
+              k:i32 (- (node-len params-node) 1)
+              npp:i32 (pp num-params)
+              args:ptr (arena-alloc (* (cast i64 npp) (ptr-bytes)))
+              j:i32 0)
+            ; Step 6: arity check — non-self param count must match imp's.
+            (when (!= k (- (imp num-params) 1)) (return 0))
+          ; Step 8: bind each protocol extra-param to an invoke type spelling.
+          ; For each extra-param name pj, scan the sig's ret node and non-self
+          ; param type nodes for a NODE-SYM matching pj; the corresponding invoke
+          ; type's spelling is the candidate. Zero candidates → unbindable;
+          ; multiple differing candidates → inconsistent. (UnaryFn: Arg←invoke
+          ; param[0], Ret←invoke ret. FoldFn: Acc←invoke ret/param[0], Elem←
+          ; invoke param[1].)
+          (while (< j npp)
+            (let (pj:ptr (aref (cast ptr:ptr (pp params)) j)
+                  cand:ptr null
+                  ncand:i32 0
+                  pi2:i32 0)
+              (when (and (!= ret-node null)
+                         (and (= ((cast ptr:Node ret-node) kind) NODE-SYM)
+                              (= ((cast ptr:Node ret-node) s) pj)))
+                (set! cand (type-spelling (imp ret-type)))
+                (inc! ncand))
+              (while (< pi2 k)
+                (let (ptn:ptr (binding-type-node (node-at params-node (+ pi2 1))))
+                  (when (and (!= ptn null)
+                             (and (= ((cast ptr:Node ptn) kind) NODE-SYM)
+                                  (= ((cast ptr:Node ptn) s) pj)))
+                    (let (this-cand:ptr
+                           (type-spelling (aref (cast ptr:ptr (imp param-types)) (+ pi2 1))))
+                      (inc! ncand)
+                      (when (= cand null) (set! cand this-cand))
+                      (when (!= (strcmp cand this-cand) 0)
+                        (return 0)))))
+                (inc! pi2))
+              (when (= ncand 0) (return 0))
+              (aset! (cast ptr:ptr args) j cand))
+            (inc! j))
+            ; Step 9: synthesize the forwarding method (mirrors fn-make-invoke-method).
+            ; call-style 0 (closure): (invoke self __a0…) routes to the env's invoke.
+            ; call-style 1 (bare fn): ((deref self) __a0…) loads the fn pointer from
+            ; the self slot and calls it directly (a TY-FN indirect call).
+            (let (ret-spelling:ptr (type-spelling (imp ret-type))
+                  total:i32 (imp num-params)
+                  name-sym:ptr
+                    (cast ptr (intern-symbol (fmt-2s "%s:%s" method-name ret-spelling)))
+                  self-sym:ptr (cast ptr (intern-symbol "self"))
+                  env-ref-node:ptr
+                    (make-cell (cast ptr (intern-symbol "ref"))
+                      (make-cell (cast ptr (intern-symbol cvspell)) null line)
+                      line)
+                  self-spec:ptr
+                    (make-cell self-sym (make-cell env-ref-node null line) line)
+                  params-spine:ptr null
+                  pi3:i32 (- k 1))
+              (while (>= pi3 0)
+                (let (a-sym:ptr (cast ptr (intern-symbol (fmt-i32 "__a%d" pi3)))
+                      ty-sym:ptr
+                        (cast ptr (intern-symbol
+                                    (type-spelling
+                                      (aref (cast ptr:ptr (imp param-types)) (+ pi3 1)))))
+                      spec-i:ptr (make-cell a-sym (make-cell ty-sym null line) line))
+                  (set! params-spine (make-cell spec-i params-spine line))
+                  (dec! pi3)))
+              (set! params-spine (make-cell self-spec params-spine line))
+              (let (fwd-args:ptr null
+                    pi4:i32 (- k 1))
+                (while (>= pi4 0)
+                  (set! fwd-args
+                    (make-cell (cast ptr (intern-symbol (fmt-i32 "__a%d" pi4)))
+                      fwd-args line))
+                  (dec! pi4))
+                (let (call-head:ptr
+                        (if (= call-style 0)
+                          (make-cell (cast ptr (intern-symbol "invoke"))
+                            (make-cell self-sym fwd-args line) line)
+                          (let (deref-self:ptr
+                                  (make-cell (cast ptr (intern-symbol "deref"))
+                                    (make-cell self-sym null line) line))
+                            (make-cell deref-self fwd-args line)))
+                      defn-form:ptr
+                        (make-cell (cast ptr (intern-symbol "defn"))
+                          (make-cell name-sym
+                            (make-cell params-spine
+                              (make-cell call-head null line)
+                              line)
+                            line)
+                          line)
+                      mtypes:ptr (arena-alloc (* (cast i64 total) (ptr-bytes)))
+                      ci:i32 0)
+                (while (< ci total)
+                  (aset! (cast ptr:ptr mtypes) ci
+                    (aref (cast ptr:ptr (imp param-types)) ci))
+                  (inc! ci))
+                (let (newm:ref:Method
+                       (generic-register-method method-name (imp ret-type)
+                         mtypes total 0 0 defn-form)
+                      mangled:ptr (mangle-fn-name "" method-name mtypes total)
+                      job:ptr:MonoJob (new MonoJob))
+                  (.set! newm ir-name mangled)
+                  (fn-force-generic-mangled method-name)
+                  (.set! job form defn-form)
+                  (.set! job context
+                         (fmt-2s-i "while deriving closure conformance to %s (at %s:%d)"
+                                   proto g-source-path line))
+                  (conj g-mono-worklist (cast ptr job))
+                  ; Step 10: record the conformance with the recovered args.
+                  (conformance-add cvspell proto args npp line)
+                  ; Step 11: success.
+                  (return 1)))))))))))
+
 
 ; Record a protocol-inheritance edge: conforming to `sub` requires `super`.
 ; Stage 12 N4 (decision 9): canonicalize both protocol names to their bare
@@ -3220,8 +3458,8 @@
               (return (sym type)))))
         (when (= hp 'inc!) (return ty-void))
         (when (= hp 'not) (return ty-i1))
-        (when (= hp 'and) (return ty-i1))
-        (when (= hp 'or) (return ty-i1))
+        (when (= hp '_and) (return ty-i1))
+        (when (= hp '_or) (return ty-i1))
         (when (= hp 'cast) (return (node-type-cast n)))
         (when (= hp 'addr-of) (return (node-type-addr-of n scope)))
         (when (= hp 'funcall-void) (return ty-void))
