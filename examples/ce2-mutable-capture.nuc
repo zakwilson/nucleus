@@ -1,0 +1,84 @@
+; Stage 13 CE-2: mutable capture — set!/inc!/dec! on a captured name.
+;
+; Tests:
+;  1. mfn inc! on a captured counter — env field persists across calls.
+;     The mfn RETURNS the env counter; reduce result = count after all calls.
+;  2. cfn set! write-back through captured reference — outer scope sees mutation.
+;  3. let-bound (CE-1) vfn with inc! on captured counter, called repeatedly (1,2,3).
+;  4. set! on a non-captured closure-local (regression: must still work unchanged).
+;  5. cfn dec! on a captured counter via a reference.
+
+(import-use "stdio.h")
+(import-use iterator)
+(import-use allocator)
+
+(defn main:i32 ()
+  (let ((r (ref IntRangeIter)) (alloca IntRangeIter))
+
+    ; ---------------------------------------------------------------
+    ; 1. mfn with inc! on a captured `seen` counter.
+    ;    The closure returns `seen` (the env field) each call.
+    ;    After 5 calls over 1..5, reduce result = final env count = 5.
+    ; ---------------------------------------------------------------
+    (.set! r start 1) (.set! r end 6)
+    (let (seen:i32 0)
+      (let (result:i32
+              (reduce (mfn (acc:i32 x:i32):i32
+                        (inc! seen)
+                        (return seen))   ; return env counter, not acc
+                      0 r))
+        (printf "mfn inc! env-counter: result=%d  (expect 5)\n" result)))
+
+    ; ---------------------------------------------------------------
+    ; 2. cfn set! write-back: total accumulated through captured reference.
+    ;    reduce over 1..5: total = 15 written into outer scope via cfn.
+    ; ---------------------------------------------------------------
+    (.set! r start 1) (.set! r end 6)
+    (let (total:i32 0
+          h:ref:AllocHandle (default-allocator))
+      (reduce (cfn h (acc:i32 x:i32):i32
+                (set! total (+ total x))
+                (return acc))
+              0 r)
+      (printf "cfn set! write-back: total=%d  (expect 15)\n" total))
+
+    ; ---------------------------------------------------------------
+    ; 3. let-bound vfn (CE-1) with inc! on captured count.
+    ;    Three successive calls return 1, 2, 3 (env field persists).
+    ; ---------------------------------------------------------------
+    (let (count:i32 0)
+      (let (counter (vfn (x:i32):i32
+                      (inc! count)
+                      (return count)))
+        (printf "let vfn counter: %d %d %d  (expect 1 2 3)\n"
+                (counter 0) (counter 0) (counter 0))))
+
+    ; ---------------------------------------------------------------
+    ; 4. set! on a non-captured closure-local (regression).
+    ;    reduce over 1..3: each x doubled via set! on y (a let-local, NOT a capture).
+    ;    result = 2+4+6 = 12.
+    ; ---------------------------------------------------------------
+    (.set! r start 1) (.set! r end 4)
+    (let (result2:i32
+            (reduce (mfn (acc:i32 x:i32):i32
+                      (let (y:i32 0)
+                        (set! y (* x 2))
+                        (return (+ acc y))))
+                    0 r))
+      (printf "non-capture set!: result=%d  (expect 12)\n" result2))
+
+    ; ---------------------------------------------------------------
+    ; 5. cfn dec! write-back: decrement captured counter through reference.
+    ;    countdown starts at 5; cfn decrements it each of 3 calls.
+    ;    After reduce over 3 elements: countdown = 5 - 3 = 2.
+    ; ---------------------------------------------------------------
+    (.set! r start 1) (.set! r end 4)
+    (let (countdown:i32 5
+          h2:ref:AllocHandle (default-allocator))
+      (reduce (cfn h2 (acc:i32 x:i32):i32
+                (dec! countdown)
+                (return acc))
+              0 r)
+      (printf "cfn dec! write-back: countdown=%d  (expect 2)\n" countdown)))
+
+  (return 0))

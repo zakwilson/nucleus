@@ -1,0 +1,3 @@
+let  cfn   f(1)    = 4   (expect 4)
+with cfn   g(2)    = 32   (expect 32)
+let  vfn   reduce  = 45   (expect 45)

@@ -510,7 +510,9 @@ A2 check later** without disturbing emitted code. This is also the moment the
    Delivers abstract parameters **and** B1 abstract returns together. Land A1
    first; add the A2 `type-of-node` check after.
 4. **`(dyn Protocol)`** — fat pointer; enables B2 returns and heterogeneous
-   collections; the only runtime-cost rung; opt-in; deferred until needed.
+   collections; the only runtime-cost rung; opt-in; deferred until needed. *This
+   deferral is now realized by [stage13/type-erasure.md](../stage13/type-erasure.md),
+   which builds `(dyn Protocol)` and `BoxedFn` as one shared fat-pointer machine.*
 5. **Full Option 3** — nested type-variable positions, multiple variables,
    generic struct layout, real unification.
 
@@ -1113,7 +1115,9 @@ checks `bar` on that. The def-time A2 walk stays lenient for `Valid` bodies
 (operations defer to the call-site stamp). Example: `examples/valid.nuc`.
 
 **Still deferred:** `defcast` and a cast resolution tier (no registry in-tree);
-the `(dyn Protocol)` fat pointer (B2 returns / heterogeneous collections); nested /
+the `(dyn Protocol)` fat pointer (B2 returns / heterogeneous collections) — now
+planned in [stage13/type-erasure.md](../stage13/type-erasure.md) as one shared
+machine with `BoxedFn`; nested /
 multiple type-variable positions and a real unifier (full Option 3); REPL
 per-method redefinition; `(addr-of overloaded-name)` disambiguation; `extend`'s
 inline-`defn` sugar; bare-`x:Show` parameter sugar; a user-declarable blanket

@@ -236,47 +236,102 @@
     (scope-define fn-scope pname ptype slot 1)))
 
 ; Emit a struct return for the current function per g-fn-ret-abi. `v` is the
-; first-class struct value to return. MEMORY stores it through the sret pointer
-; and returns void; COERCE rounds it through memory and returns the reg(s).
+; struct value to return — either a first-class struct (TY-STRUCT, e.g. a value
+; loaded from a struct-returning call) or a pointer to its storage (TY-PTR — a
+; struct literal's `(ref S)`, or a closure's `(ref Env)` whose env travels by
+; value out of the frame).
+;
+; CE-3 (closure-enhancements.md §CE-3) fix (b): when the returned value is a
+; *pointer* to the struct bytes, copy the bytes out — a typed load (the LLVM
+; "typed memcpy") from the source address — instead of `store`-ing the pointer
+; value itself into the sret/coerce slot. That earlier `store ptr ...` corrupted
+; every by-value owning struct return (a struct literal / closure env arrives by
+; pointer). The first-class struct case is unchanged (its `.val` already holds
+; the aggregate), so scalar/pointer-only self-compilation stays byte-identical.
+; MEMORY copies through the sret pointer and returns void; COERCE loads the
+; eightbyte(s) and returns the reg(s).
 (defn emit-struct-ret:void (v:ptr)
   (let (vv:ptr:Val (cast ptr:Val v)
         info:ptr:AbiInfo (cast ptr:AbiInfo g-fn-ret-abi)
-        k:i32 ((cast ptr:AbiInfo g-fn-ret-abi) kind)
-        ty:ptr (type-to-ir ((cast ptr:Val v) type)))
-    (when (= k ABI-MEMORY)
-      (fprintf g-body-stream "  store %s %s, ptr %s\n" ty (vv val) g-fn-sret-name)
-      (fprintf g-body-stream "  ret void\n")
-      (return))
-    (let (tmp:ptr (new-tmp))
-      (fprintf g-entry-stream "  %s = alloca %s\n" tmp ty)
-      (fprintf g-body-stream "  store %s %s, ptr %s\n" ty (vv val) tmp)
-      (if (= k ABI-COERCE1)
-        (let (r:ptr (new-tmp))
-          (fprintf g-body-stream "  %s = load %s, ptr %s\n" r (info reg0) tmp)
-          (fprintf g-body-stream "  ret %s %s\n" (info reg0) r))
-        ; COERCE2: load both eightbytes, build the {reg0,reg1} return aggregate.
-        (let (r0:ptr (new-tmp)
-              gp:ptr null
-              r1:ptr null
-              a0:ptr null
-              a1:ptr null)
-          (fprintf g-body-stream "  %s = load %s, ptr %s\n" r0 (info reg0) tmp)
-          (set! gp (new-tmp))
-          (fprintf g-body-stream "  %s = getelementptr i8, ptr %s, i64 8\n" gp tmp)
-          (set! r1 (new-tmp))
-          (fprintf g-body-stream "  %s = load %s, ptr %s\n" r1 (info reg1) gp)
-          (set! a0 (new-tmp))
-          (fprintf g-body-stream "  %s = insertvalue { %s, %s } undef, %s %s, 0\n"
-            a0 (info reg0) (info reg1) (info reg0) r0)
-          (set! a1 (new-tmp))
-          (fprintf g-body-stream "  %s = insertvalue { %s, %s } %s, %s %s, 1\n"
-            a1 (info reg0) (info reg1) a0 (info reg1) r1)
-          (fprintf g-body-stream "  ret { %s, %s } %s\n" (info reg0) (info reg1) a1))))))
+        k:i32 ((cast ptr:AbiInfo g-fn-ret-abi) kind))
+    ; By-pointer return (struct literal `(ref S)` / closure `(ref Env)`): the
+    ; struct bytes live at `(vv val)`. Load eightbyte(s) / the whole aggregate
+    ; straight from that address — never `store` the pointer itself.
+    (when (= ((cast ptr:Type (vv type)) kind) TY-PTR)
+      (let (ty:ptr (type-to-ir g-fn-ret-type)
+            src:ptr (vv val))
+        (when (= k ABI-MEMORY)
+          (let (agg:ptr (new-tmp))
+            (fprintf g-body-stream "  %s = load %s, ptr %s\n" agg ty src)
+            (fprintf g-body-stream "  store %s %s, ptr %s\n" ty agg g-fn-sret-name))
+          (fprintf g-body-stream "  ret void\n")
+          (return))
+        (if (= k ABI-COERCE1)
+          (let (r:ptr (new-tmp))
+            (fprintf g-body-stream "  %s = load %s, ptr %s\n" r (info reg0) src)
+            (fprintf g-body-stream "  ret %s %s\n" (info reg0) r))
+          ; COERCE2: load both eightbytes from the struct address directly.
+          (let (r0:ptr (new-tmp)
+                gp:ptr null
+                r1:ptr null
+                a0:ptr null
+                a1:ptr null)
+            (fprintf g-body-stream "  %s = load %s, ptr %s\n" r0 (info reg0) src)
+            (set! gp (new-tmp))
+            (fprintf g-body-stream "  %s = getelementptr i8, ptr %s, i64 8\n" gp src)
+            (set! r1 (new-tmp))
+            (fprintf g-body-stream "  %s = load %s, ptr %s\n" r1 (info reg1) gp)
+            (set! a0 (new-tmp))
+            (fprintf g-body-stream "  %s = insertvalue { %s, %s } undef, %s %s, 0\n"
+              a0 (info reg0) (info reg1) (info reg0) r0)
+            (set! a1 (new-tmp))
+            (fprintf g-body-stream "  %s = insertvalue { %s, %s } %s, %s %s, 1\n"
+              a1 (info reg0) (info reg1) a0 (info reg1) r1)
+            (fprintf g-body-stream "  ret { %s, %s } %s\n" (info reg0) (info reg1) a1)))
+        (return)))
+    ; First-class struct value — the original (byte-identical) path: `.val`
+    ; holds the aggregate, so store it / round it through memory directly.
+    (let (ty:ptr (type-to-ir ((cast ptr:Val v) type)))
+      (when (= k ABI-MEMORY)
+        (fprintf g-body-stream "  store %s %s, ptr %s\n" ty (vv val) g-fn-sret-name)
+        (fprintf g-body-stream "  ret void\n")
+        (return))
+      (let (tmp:ptr (new-tmp))
+        (fprintf g-entry-stream "  %s = alloca %s\n" tmp ty)
+        (fprintf g-body-stream "  store %s %s, ptr %s\n" ty (vv val) tmp)
+        (if (= k ABI-COERCE1)
+          (let (r:ptr (new-tmp))
+            (fprintf g-body-stream "  %s = load %s, ptr %s\n" r (info reg0) tmp)
+            (fprintf g-body-stream "  ret %s %s\n" (info reg0) r))
+          ; COERCE2: load both eightbytes, build the {reg0,reg1} return aggregate.
+          (let (r0:ptr (new-tmp)
+                gp:ptr null
+                r1:ptr null
+                a0:ptr null
+                a1:ptr null)
+            (fprintf g-body-stream "  %s = load %s, ptr %s\n" r0 (info reg0) tmp)
+            (set! gp (new-tmp))
+            (fprintf g-body-stream "  %s = getelementptr i8, ptr %s, i64 8\n" gp tmp)
+            (set! r1 (new-tmp))
+            (fprintf g-body-stream "  %s = load %s, ptr %s\n" r1 (info reg1) gp)
+            (set! a0 (new-tmp))
+            (fprintf g-body-stream "  %s = insertvalue { %s, %s } undef, %s %s, 0\n"
+              a0 (info reg0) (info reg1) (info reg0) r0)
+            (set! a1 (new-tmp))
+            (fprintf g-body-stream "  %s = insertvalue { %s, %s } %s, %s %s, 1\n"
+              a1 (info reg0) (info reg1) a0 (info reg1) r1)
+            (fprintf g-body-stream "  ret { %s, %s } %s\n" (info reg0) (info reg1) a1)))))))
 
 ; Build the LLVM call-argument fragment for one already-emitted argument Val,
 ; emitting any materialization/coercion instructions as a side effect. Scalars
 ; and pointers return "<ty> <val>" unchanged; a struct is materialized to memory
-; and lowered to byval / register load(s) per its AbiInfo.
+; (a typed `store` of the first-class value, never `store ptr`) and lowered to
+; byval / register load(s) per its AbiInfo. A struct-by-value argument must
+; arrive here as a first-class TY-STRUCT value — the symmetric counterpart to
+; emit-struct-ret's typed copy. A by-value struct passed as a `(ref S)`/`(ref
+; Env)` pointer is normalized to first-class at the call site (emit-call-with-
+; args, CE-3 fix (b)) before reaching here, since classification on the arg type
+; alone cannot distinguish a by-value-struct arg from an ordinary pointer arg.
 (defn abi-arg-frag:ptr (av:ptr)
   (let (a:ptr:Val (cast ptr:Val av)
         info:ptr:AbiInfo (cast ptr:AbiInfo (abi-classify ((cast ptr:Val av) type)))

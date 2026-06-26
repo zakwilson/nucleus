@@ -1,0 +1,26 @@
+; Stage 13 — CE-3 negative fixture: moving a struct-VALUE Drop binding into an
+; `mfn` consumes the source, so any later use is a use-after-move error.
+; Compiling this must FAIL (the positive `examples/ce3-owning-closure.nuc` run
+; covers the move/drop path; this proves the consume is enforced — including
+; through `addr-of`, the only way to read a struct value's field).
+
+(import-use "stdlib.h")
+
+(defprotocol Drop
+  (drop:void (self:ptr:Self)))
+
+(defstruct Res id:i32 buf:ptr)
+
+(defn drop:void (self:ptr:Res)
+  (free (self buf)))
+
+(extend Res Drop)
+
+(defn make-res:Res (id:i32)
+  (let (b:ptr (malloc 16))
+    (return (Res id b))))
+
+(defn use-after-move:i32 ()
+  (with (r (make-res 7))
+    (with (f (mfn ():i32 (return (. (addr-of r) id))))   ; mfn moves r in
+      (return (. (addr-of r) id)))))                     ; use after move -> error

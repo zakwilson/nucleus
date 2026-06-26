@@ -14,10 +14,10 @@
 ;   mfn — move-capture closure; the source is consumed (use-after-move after).
 ;   cfn — reference-capture closure; a struct of pointers, borrows its referents.
 ;
-; Each closure is passed INLINE to `reduce` rather than bound in a `let`/`with`,
-; because the closure's anonymous environment type cannot be spelled in a
-; binding (no type inference for env types yet). Passing it directly as the `g`
-; argument is the supported shape.
+; Each closure here is passed INLINE to `reduce`. A closure may also be NAMED in
+; a `let`/`with` binding (with no `:type` — the env type is inferred from the
+; init) and then passed by name or called directly; see examples/named-closures.nuc
+; (Stage 13 CE-1). Passing it inline as the `g` argument is the original shape.
 
 (import-use "stdio.h")
 (import-use iterator)

@@ -1,0 +1,5 @@
+mfn inc! env-counter: result=5  (expect 5)
+cfn set! write-back: total=15  (expect 15)
+let vfn counter: 1 2 3  (expect 1 2 3)
+non-capture set!: result=12  (expect 12)
+cfn dec! write-back: countdown=2  (expect 2)
