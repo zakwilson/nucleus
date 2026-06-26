@@ -2401,6 +2401,14 @@
       (let (sym:?ptr:Sym (scope-lookup scope (target s)))
         (when (= sym null)
           (die-at (target line) (fmt-s "addr-of: undefined '%s'" (target s))))
+        ; CE-3 (closure-enhancements.md §CE-3): a moved-out binding is consumed,
+        ; so taking its address is a use-after-move just like reading it
+        ; (emit-symbol-ref). Newly reachable now that struct-VALUE with-bindings
+        ; can be moved (owns=1) and the only way to read a struct value's field
+        ; is through its address — so an unchecked addr-of would silently revive a
+        ; moved struct value.
+        (when (!= ((cast ptr:Sym sym) moved) 0)
+          (die-at (target line) (fmt-s "use after move: '%s'" (target s))))
         (when (-> sym (_ type) (cast ptr:Type _) (_ kind) (= _ TY-FN))
           (die-at (target line) (fmt-s "addr-of: cannot take address of function '%s'" (target s))))
         (let (pt:ptr:Type (cast ptr:Type (make-type TY-PTR)))
@@ -2690,6 +2698,24 @@
           (while (< ci ncoerce)
             (let (slot:ptr:Val (cast ptr:Val (ptr+ (cast ptr:Val args) ci))
                   ptype:ptr (aref (cast ptr:ptr (ft0 params)) ci))
+              ; CE-3 (closure-enhancements.md §CE-3) fix (b), symmetric arg path:
+              ; passing a struct *by value* — the parameter is a by-value struct
+              ; (TY-STRUCT) but the argument is represented as a pointer to that
+              ; struct (a struct literal's `(ref S)`, or a closure's `(ref Env)`).
+              ; Load the struct bytes into a first-class value so abi-arg-frag
+              ; lowers it byval/coerced per the ABI, instead of (abi-classify of a
+              ; pointer being DIRECT) passing the raw pointer where the callee
+              ; expects the aggregate. abi-arg-frag itself classifies on the arg
+              ; type alone and cannot tell a by-value-struct arg from a pointer
+              ; arg, so the normalization must happen here, where ptype is known.
+              (when (and (= ((cast ptr:Type ptype) kind) TY-STRUCT)
+                         (= ((cast ptr:Type (slot type)) kind) TY-PTR)
+                         (!= ((cast ptr:Type (slot type)) elem) null)
+                         (!= (type-eq ((cast ptr:Type (slot type)) elem) ptype) 0))
+                (let (fc:ptr (new-tmp))
+                  (emit-load fc (type-to-ir ptype) (slot val) ptype)
+                  (.set! slot type ptype)
+                  (.set! slot val fc)))
               ; Stage 10: pointer-kind contract on arguments — raw/Maybe may
               ; not flow into a (ref T) parameter. Checked independently of IR
               ; coercion (all pointer flavors share the IR type `ptr`).
@@ -2805,25 +2831,51 @@
 ; tyvars to the concrete instance and instantiates the per-instance monomorph
 ; (real ir-name + queued MonoJob) so emit-drop-cleanup can call it directly —
 ; exactly how an ordinary `(drop v)` call on the stamped instance would resolve.
+; Resolve the Drop method to arm for a with-binding of type `ty`, or null if the
+; binding is not an owning Drop type. Two binding shapes own a Drop resource:
+;   - TY-PTR to a Drop struct — the `ptr:Res` idiom; the slot holds the resource
+;     pointer and the drop receiver is that same pointer type.
+;   - CE-3 (closure-enhancements.md §CE-3) fix (c): a struct-VALUE binding whose
+;     struct conforms to Drop — an owning closure exported by value (its env is a
+;     by-value TY-STRUCT), or a hand-written owning struct value. The drop method
+;     always takes a *pointer* to the struct (self:ptr:S), so the generic is
+;     queried with a synthesized (ref S) whose elem is this struct (type-eq on a
+;     TY-PTR compares only the pointee, so pkind is immaterial). emit-with arms
+;     the cleanup against a handle pointing at the binding's stack slot, so the
+;     existing pointer-shaped emit-drop-cleanup / move-disarm path is reused
+;     verbatim — the same `owns=1` that lets emit-move consume a struct-value
+;     capture into an `mfn`.
 (defn with-drop-method:?ptr:Method (ty:ptr)
-  (let (tt:ptr:Type (cast ptr:Type ty))
-    (when (!= (tt kind) TY-PTR) (return null))
-    (when (= (tt elem) null) (return null))
-    (let (et:ptr:Type (cast ptr:Type (tt elem)))
-      (when (!= (et kind) TY-STRUCT) (return null))
-      (let (sd:ptr:StructDef (cast ptr:StructDef (et sdef)))
-        (when (= (cast ptr sd) null) (return null))
-        (when (= (conformance-lookup (sd name) "Drop") 0) (return null))
-        (let (g:ptr (generic-lookup "drop"))
-          (when (= g null) (return null))
-          (let (argtypes:ptr (arena-alloc (ptr-bytes)))
-            (aset! (cast ptr:ptr argtypes) 0 ty)
-            (let (exact:?ptr:Method (generic-find-method-exact g argtypes 1))
-              (when (!= exact null) (return exact))
-              ; Parametric drop (METHOD-GENERIC): resolve+instantiate for this
-              ; concrete instance. The conformance check above guarantees a drop
-              ; exists, so generic-resolve will not die.
-              (return (generic-resolve g argtypes null 1 0)))))))))
+  (let (tt:ptr:Type (cast ptr:Type ty)
+        sd:ptr null
+        qty:ptr null)
+    (cond
+      (= (tt kind) TY-PTR)
+        (do
+          (when (= (tt elem) null) (return null))
+          (let (et:ptr:Type (cast ptr:Type (tt elem)))
+            (when (!= (et kind) TY-STRUCT) (return null))
+            (set! sd (et sdef))
+            (set! qty ty)))
+      (= (tt kind) TY-STRUCT)
+        (let (pt:ptr:Type (cast ptr:Type (make-type TY-PTR)))
+          (.set! pt elem (cast ptr tt))
+          (.set! pt pkind PTR-REF)
+          (set! sd (tt sdef))
+          (set! qty (cast ptr pt)))
+      true (return null))
+    (when (= sd null) (return null))
+    (when (= (conformance-lookup ((cast ptr:StructDef sd) name) "Drop") 0) (return null))
+    (let (g:ptr (generic-lookup "drop"))
+      (when (= g null) (return null))
+      (let (argtypes:ptr (arena-alloc (ptr-bytes)))
+        (aset! (cast ptr:ptr argtypes) 0 qty)
+        (let (exact:?ptr:Method (generic-find-method-exact g argtypes 1))
+          (when (!= exact null) (return exact))
+          ; Parametric drop (METHOD-GENERIC): resolve+instantiate for this
+          ; concrete instance. The conformance check above guarantees a drop
+          ; exists, so generic-resolve will not die.
+          (return (generic-resolve g argtypes null 1 0)))))))
 
 ; unions.md §7: the name of the first defunion arm holding a Drop-conforming
 ; payload field (a pointer to a struct that conforms to Drop), or null.
@@ -3301,6 +3353,112 @@
                           (make-cell val null line)
                           line)
                         line)))))
+        ; set! on a captured name: rewrite to a field store so that mutations
+        ; of the capture persist across invoke calls (mode 0/1) or write back
+        ; through the captured pointer (mode 2 cfn).
+        ; (set! c v) -> mode 0/1: (.set! self c (rewrite v))
+        ;           -> mode 2:   (ptr-set! (. self c) (rewrite v))
+        ; A set! whose target is NOT a capture falls through to the generic
+        ; rewrite, which leaves the target symbol verbatim (correct).
+        (when (and (= (strcmp h "set!") 0) (= (node-len node) 3))
+          (let (tgt:ptr:Node (cast ptr:Node (node-at node 1)))
+            (when (= (tgt kind) NODE-SYM)
+              (let (cname:ptr null
+                    cti:ptr null)
+                (split-typed (tgt s)
+                             (cast ptr:ptr (addr-of cname))
+                             (cast ptr:ptr (addr-of cti)))
+                (when (and (!= cname null)
+                           (= (fn-bound-has bound cname) 0)
+                           (!= (fn-bound-has caps cname) 0))
+                  (let (val-rw:ptr (fn-rewrite-captures (node-at node 2) caps bound self-sym line mode)
+                        cname-sym:ptr (cast ptr (intern-symbol cname))
+                        field-access:ptr
+                          (make-cell (cast ptr (intern-symbol "."))
+                            (make-cell self-sym
+                              (make-cell cname-sym null line)
+                              line)
+                            line))
+                    (if (= mode 2)
+                      (return (make-cell (cast ptr (intern-symbol "ptr-set!"))
+                                (make-cell field-access
+                                  (make-cell val-rw null line)
+                                  line)
+                                line))
+                      (return (make-cell (cast ptr (intern-symbol ".set!"))
+                                (make-cell self-sym
+                                  (make-cell cname-sym
+                                    (make-cell val-rw null line)
+                                    line)
+                                  line)
+                                line)))))))))
+        ; inc!/dec! on a captured name: read-modify-write through the env field.
+        ; (inc! c) -> mode 0/1: (.set! self c (+ (. self c) 1))
+        ;         -> mode 2:   (ptr-set! (. self c) (+ (deref (. self c)) 1))
+        ; (dec! uses - instead of +). A non-captured target falls through.
+        (when (and (or (= (strcmp h "inc!") 0) (= (strcmp h "dec!") 0))
+                   (= (node-len node) 2))
+          (let (tgt:ptr:Node (cast ptr:Node (node-at node 1)))
+            (when (= (tgt kind) NODE-SYM)
+              (let (cname:ptr null
+                    cti:ptr null)
+                (split-typed (tgt s)
+                             (cast ptr:ptr (addr-of cname))
+                             (cast ptr:ptr (addr-of cti)))
+                (when (and (!= cname null)
+                           (= (fn-bound-has bound cname) 0)
+                           (!= (fn-bound-has caps cname) 0))
+                  (let (op-sym:ptr (if (= (strcmp h "inc!") 0)
+                                     (cast ptr (intern-symbol "+"))
+                                     (cast ptr (intern-symbol "-")))
+                        cname-sym:ptr (cast ptr (intern-symbol cname)))
+                    (if (= mode 2)
+                      (let (fa1:ptr
+                              (make-cell (cast ptr (intern-symbol "."))
+                                (make-cell self-sym
+                                  (make-cell cname-sym null line)
+                                  line)
+                                line)
+                            fa2:ptr
+                              (make-cell (cast ptr (intern-symbol "."))
+                                (make-cell self-sym
+                                  (make-cell cname-sym null line)
+                                  line)
+                                line)
+                            deref-node:ptr
+                              (make-cell (cast ptr (intern-symbol "deref"))
+                                (make-cell fa2 null line)
+                                line)
+                            arith:ptr
+                              (make-cell op-sym
+                                (make-cell deref-node
+                                  (make-cell (fn-make-int-node 1) null line)
+                                  line)
+                                line))
+                        (return (make-cell (cast ptr (intern-symbol "ptr-set!"))
+                                  (make-cell fa1
+                                    (make-cell arith null line)
+                                    line)
+                                  line)))
+                      (let (read-field:ptr
+                              (make-cell (cast ptr (intern-symbol "."))
+                                (make-cell self-sym
+                                  (make-cell cname-sym null line)
+                                  line)
+                                line)
+                            arith:ptr
+                              (make-cell op-sym
+                                (make-cell read-field
+                                  (make-cell (fn-make-int-node 1) null line)
+                                  line)
+                                line))
+                        (return (make-cell (cast ptr (intern-symbol ".set!"))
+                                  (make-cell self-sym
+                                    (make-cell cname-sym
+                                      (make-cell arith null line)
+                                      line)
+                                    line)
+                                  line))))))))))
         ; let / with: init exprs see the outer set; the body sees `bound`
         ; extended by the new binding names (a shadowing binding stops rewrite).
         (when (or (= (strcmp h "let") 0) (= (strcmp h "with") 0))
@@ -4210,7 +4368,19 @@
                 bval-node:ptr (node-at binds (+ i 1)))
             (let (name:ptr null
                   ty:ptr (extract-name-and-type bname (cast ptr:ptr (addr-of name))
-                                                ((cast ptr:Node bname) line)))
+                                                ((cast ptr:Node bname) line))
+                  pre-v:ptr null)
+              ; CE-1 (closure-enhancements.md §CE-1): env-type inference. A bare-
+              ; symbol binding with no spelled type — which previously always died
+              ; here — adopts the type of its emitted init value, so a closure
+              ; (whose anonymous env type cannot be written) can be `let`-bound.
+              ; Gated to bare symbols so typed/destructuring bindings are untouched;
+              ; existing source always spells a type, so this path is inert under
+              ; self-compilation (byte-identical bootstrap, no refresh).
+              (when (and (= ty null)
+                         (= ((cast ptr:Node bname) kind) NODE-SYM))
+                (set! pre-v (cast ptr (emit-node bval-node inner)))
+                (set! ty ((cast ptr:Val pre-v) type)))
               (when (= ty null)
                 (die-at ((cast ptr:Node bname) line) (fmt-s "let: missing :type on '%s'" name)))
               (let (slot:ptr (fmt-sd "%%%s.addr.%d" name g-tmp)
@@ -4218,7 +4388,9 @@
                 (inc! g-tmp)
                 (fprintf g-entry-stream "  %s = alloca %s, align %d\n"
                   slot (type-to-ir ty) align)
-                (let (v:ref:Val (emit-node bval-node inner)
+                (let (v:ref:Val (if (= pre-v null)
+                                  (emit-node bval-node inner)
+                                  (cast ref:Val pre-v))
                       coerced:ptr (coerce-int-val v ty ((cast ptr:Node bval-node) line)))
                   (when (= coerced null)
                     (die-at ((cast ptr:Node bval-node) line)
@@ -4266,7 +4438,17 @@
                 bval-node:ptr (node-at binds (+ i 1)))
             (let (name:ptr null
                   ty:ptr (extract-name-and-type bname (cast ptr:ptr (addr-of name))
-                                                ((cast ptr:Node bname) line)))
+                                                ((cast ptr:Node bname) line))
+                  pre-v:ptr null)
+              ; CE-1 (closure-enhancements.md §CE-1): env-type inference, mirror of
+              ; emit-let. A bare-symbol binding with no spelled type adopts the type
+              ; of its emitted init value so a closure (e.g. a cfn whose owning env
+              ; drops at this with-scope via the TY-PTR with-drop-method path) can be
+              ; `with`-bound. Gated to bare symbols; inert under self-compilation.
+              (when (and (= ty null)
+                         (= ((cast ptr:Node bname) kind) NODE-SYM))
+                (set! pre-v (cast ptr (emit-node bval-node inner)))
+                (set! ty ((cast ptr:Val pre-v) type)))
               (when (= ty null)
                 (die-at ((cast ptr:Node bname) line) (fmt-s "with: missing :type on '%s'" name)))
               (let (slot:ptr (fmt-sd "%%%s.addr.%d" name g-tmp)
@@ -4275,7 +4457,9 @@
                 (inc! g-tmp)
                 (fprintf g-entry-stream "  %s = alloca %s, align %d\n"
                   slot (type-to-ir ty) align)
-                (let (v:ref:Val (emit-node bval-node inner)
+                (let (v:ref:Val (if (= pre-v null)
+                                  (emit-node bval-node inner)
+                                  (cast ref:Val pre-v))
                       coerced:ptr (coerce-int-val v ty ((cast ptr:Node bval-node) line)))
                   (when (= coerced null)
                     (die-at ((cast ptr:Node bval-node) line)
@@ -4315,16 +4499,33 @@
                               (.set! sym taint inner))
                           ; Owning binding, Drop shape: statically dispatched
                           ; (drop binding) at scope exit (lifecycle.md §5).
+                          ; CE-3 fix (c): a struct-VALUE binding (TY-STRUCT — an
+                          ; owning closure exported by value, or a hand-written
+                          ; owning struct value) keeps its bytes inline in `slot`,
+                          ; so the drop receiver is the slot's *address*. The
+                          ; cleanup/move machinery is pointer-shaped (loads a ptr,
+                          ; null-guards, calls drop on it; `move` disarms by
+                          ; storing null), so arm against a fresh handle pointing
+                          ; at the slot: drop sees the struct address, and a move
+                          ; nulls the handle to disarm exactly like a TY-PTR
+                          ; binding. This is the `owns=1` that lets emit-move
+                          ; consume a struct-value Drop capture into an `mfn`.
                           (!= (cast ptr dm) null)
-                            (let (cl:ptr:Cleanup (new Cleanup))
-                              (.set! cl slot slot)
-                              (.set! cl drop-fn (dm ir-name))
-                              (.set! cl drop-ty ty)
-                              (.set! cl drop-ret (dm ret-type))
-                              (scope-push-cleanup inner (cast ptr cl))
-                              (.set! sym owns 1)
-                              (.set! sym cslot slot)
-                              (.set! sym taint inner))
+                            (let (cslot:ptr slot)
+                              (when (= (-> ty (cast ptr:Type _) (_ kind)) TY-STRUCT)
+                                (set! cslot (fmt-sd "%%%s.drophandle.%d" name g-tmp))
+                                (inc! g-tmp)
+                                (fprintf g-entry-stream "  %s = alloca ptr, align 8\n" cslot)
+                                (fprintf g-body-stream "  store ptr %s, ptr %s, align 8\n" slot cslot))
+                              (let (cl:ptr:Cleanup (new Cleanup))
+                                (.set! cl slot cslot)
+                                (.set! cl drop-fn (dm ir-name))
+                                (.set! cl drop-ty ty)
+                                (.set! cl drop-ret (dm ret-type))
+                                (scope-push-cleanup inner (cast ptr cl))
+                                (.set! sym owns 1)
+                                (.set! sym cslot cslot)
+                                (.set! sym taint inner)))
                           ; Non-owning with-binding: behaves like let (adopts
                           ; the init value's taint and frame-region flag).
                           true

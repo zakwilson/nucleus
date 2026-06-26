@@ -107,3 +107,5 @@ Sigil/rmacro for ref in type signatures, addr-of in code
 Symbol mangling for any name LLVM or C might not like
 
 UnaryFn protocol should extend to a lot of things that can be invoked
+
+inc!/dec! predate macros; they should probably become macros over set!

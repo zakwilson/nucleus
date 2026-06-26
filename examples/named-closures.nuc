@@ -1,0 +1,35 @@
+; Stage 13 — CE-1: named closures via let/with env-type inference.
+;
+; A capturing closure (cfn/vfn/mfn) has an anonymous, compiler-minted env type
+; that cannot be spelled in a binding. CE-1 (closure-enhancements.md §CE-1) adds
+; env-type inference for a bare-symbol let/with binding: the binding adopts the
+; type of its emitted init value, so a closure can be NAMED and then called,
+; with-dropped, or passed by name to a generic combinator.
+
+(import-use "stdio.h")
+(import-use iterator)
+(import-use allocator)
+
+(defn main:i32 ()
+  (let ((r (ref IntRangeIter)) (alloca IntRangeIter)
+        h:ref:AllocHandle (default-allocator)
+        mult:i32 3)
+
+    ; 1. let-bound cfn (env type inferred), captured `mult` by reference,
+    ;    then called by name. f(1) = 1 + mult = 4.
+    (let (f (cfn h (x:i32):i32 (return (+ x mult))))
+      (printf "let  cfn   f(1)    = %d   (expect 4)\n" (f 1)))
+
+    ; 2. with-bound cfn — its owning (heap) env drops at with-scope exit via the
+    ;    existing TY-PTR with-drop-method path. g(2) = 2 + mult*10 = 32.
+    (with (g (cfn h (x:i32):i32 (return (+ x (* mult 10)))))
+      (printf "with cfn   g(2)    = %d   (expect 32)\n" (g 2)))
+
+    ; 3. let-bound closure passed to `reduce` as a NAMED operand — proves
+    ;    conformance is type-keyed (derive-closure-conformance keys off the env
+    ;    spelling + recorded invoke), not literal-vs-name. sum of (x*mult) over
+    ;    1..5 = 3*15 = 45.
+    (.set! r start 1) (.set! r end 6)
+    (let (acc-fn (vfn (acc:i32 x:i32):i32 (return (+ acc (* x mult)))))
+      (printf "let  vfn   reduce  = %d   (expect 45)\n" (reduce acc-fn 0 r))))
+  (return 0))

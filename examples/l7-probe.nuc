@@ -1,0 +1,17 @@
+(import-use "stdio.h")
+(import-use iterator)
+
+(defn sq-fn:i32 (x:i32) (return (* x x)))
+(defn sum-fn:i32 (acc:i32 x:i32) (return (+ acc x)))
+
+(defn main:i32 ()
+  (let ((src (ref IntRangeIter)) (alloca IntRangeIter))
+    (.set! src start 1)
+    (.set! src end 5)
+    (let ((mi (ref (MapIter IntRangeIter ((fn i32) (i32)))))
+          (alloca (MapIter IntRangeIter ((fn i32) (i32)))))
+      (.set! (.& mi source) start 1)
+      (.set! (.& mi source) end 5)
+      (.set! mi f sq-fn)
+      (printf "sum of squares = %d\n" (reduce sum-fn 0 mi))))
+  (return 0))

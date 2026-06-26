@@ -166,6 +166,18 @@ else
     echo "FAIL  closure-escape-rejected"; fail=1
 fi
 
+# Stage 13 CE-3: moving a struct-VALUE Drop binding into an `mfn` consumes the
+# source, so a later use must be rejected as use-after-move — including through
+# `addr-of` (the only way to read a struct value's field). Compiling the fixture
+# must FAIL with the use-after-move error. (The `examples/ce3-owning-closure.nuc`
+# run covers the positive move/drop-once path; this proves the consume.)
+uam_err="$(./build/nucleusc --emit-llvm tests/fixtures/ce3-use-after-move.nuc 2>&1 >/dev/null || true)"
+if printf '%s' "$uam_err" | grep -q "use after move: 'r'"; then
+    echo "PASS  ce3-use-after-move-rejected"
+else
+    echo "FAIL  ce3-use-after-move-rejected"; fail=1
+fi
+
 # Stage 13 L8: a public defn whose signature exposes a capturing-closure env
 # type (__vfn_env_N) is not C-callable, so --emit-cheader OMITS its prototype
 # (writing a comment in its place) and the compiler WARNS at the definition. A

@@ -1,0 +1,65 @@
+; Stage 13 — CE-3: owning-closure export (by-value return + struct-value with-drop).
+;
+; CE-3 (closure-enhancements.md §CE-3) lifts two ABI/lifetime limitations so an
+; owning value can travel by value out of its creating scope and drop exactly
+; once at its eventual scope:
+;
+;   (b) by-value struct return/passing copies the struct *bytes* (a typed
+;       load/store, the LLVM "typed memcpy") instead of storing the struct
+;       pointer into the sret/coerce slot — so an owning struct round-trips by
+;       value through a return without corruption.
+;   (c) a struct-VALUE `with`-binding whose type conforms to Drop arms its drop
+;       at scope exit (previously only TY-PTR `ptr:Res` bindings did). The same
+;       `owns=1` is what lets an `mfn` MOVE a struct-value Drop binding into its
+;       env, consuming the source.
+;
+; Together these let an `mfn` move an owning struct in (consuming the source),
+; be carried by value, and drop the moved resource at the closure's eventual
+; scope with no double free — the design's headline mfn-export case, here run
+; end-to-end. (Returning the anonymous closure *object* across a `defn` boundary
+; still needs an env-type spelling — the separate CE-4 storability work — but
+; the by-value ABI and the move/drop arming it depends on are exercised here.)
+
+(import-use "stdio.h")
+(import-use "stdlib.h")
+
+(defprotocol Drop
+  (drop:void (self:ptr:Self)))
+
+; An owning resource: holds a heap buffer that `drop` frees. `id` lets us see
+; which resource drops, and when.
+(defstruct Res id:i32 buf:ptr)
+
+(defn drop:void (self:ptr:Res)
+  (printf "drop Res %d\n" (self id))
+  (free (self buf)))
+
+(extend Res Drop)
+
+; (b) Returns a Res BY VALUE — the struct-return ABI copies the bytes, so the
+; caller receives a fully-formed owning value, not a corrupt pointer.
+(defn make-res:Res (id:i32)
+  (let (b:ptr (malloc 16))
+    (return (Res id b))))
+
+; (c) double-duty: the `mfn` MOVES the struct-value owning binding `r` into its
+; env (consuming it), so `r`'s own with-cleanup is disarmed. The closure owns
+; the moved Res and drops it at the closure's own with-scope exit — exactly
+; once. Returns the moved id so we can observe the data survived the move.
+(defn move-into-closure:i32 ()
+  (with (r (make-res 2))
+    (with (f (mfn ():i32 (return (. (addr-of r) id))))
+      (return (f)))))
+
+(defn main:i32 ()
+  ; 1. (b)+(c): a by-value owning struct, with-bound at the caller, drops at
+  ;    scope exit: "use Res 1" then "drop Res 1".
+  (with (r (make-res 1))
+    (printf "use Res %d\n" (. (addr-of r) id)))
+
+  ; 2. (c) double-duty: the mfn moves a struct-value Drop binding in. The
+  ;    closure drops the moved resource (id 2) once, at its scope; r's cleanup
+  ;    is disarmed by the move (no double free).
+  (printf "closure moved id = %d\n" (move-into-closure))
+  (printf "done\n")
+  (return 0))

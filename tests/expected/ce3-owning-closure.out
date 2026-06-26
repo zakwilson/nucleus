@@ -1,0 +1,5 @@
+use Res 1
+drop Res 1
+drop Res 2
+closure moved id = 2
+done
