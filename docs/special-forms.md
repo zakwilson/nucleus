@@ -93,6 +93,74 @@ derived structurally on demand at the use site (see
 [Generics](generics.md#structural-function-protocol-conformance-closures)).
 Stage 13 detail: [lambda.md](../design/stage13/lambda.md).
 
+**Naming a closure (`let`/`with` env-type inference).** A capturing closure's
+environment type is anonymous and compiler-minted, so it cannot be *spelled* in a
+binding's `:type`. A **bare-symbol** `let`/`with` binding with **no** type
+annotation therefore **infers** its type from the closure value's environment
+type, so a closure can be bound to a name and then called, `with`-dropped, or
+passed by name to a generic combinator — not only passed inline:
+
+```
+(let (f (cfn h (x:i32):i32 (return (+ x mult))))   ; type inferred — no :type
+  (f 1))                                            ; named closure call
+(with (g (cfn h (x:i32):i32 …))                     ; owning env drops at with-exit
+  (g 2))                                             ; via the with-drop-method path
+(let (acc (vfn (a:i32 x:i32):i32 …))                ; named operand, type-keyed
+  (reduce acc 0 it))                                 ; conformance — same as inline
+```
+
+The inference fires **only** on a bare symbol with no annotation (the case that
+previously errored "missing `:type`"); typed and destructuring bindings are
+unchanged, and no other type is inferred beyond what the init value already
+exposes. A `with`-bound closure that owns its environment (a `cfn`, or a
+`vfn`/`mfn` over a `Drop` capture) drops it at scope exit through the ordinary
+`with`-binding `Drop` path. Storing a closure elsewhere (a `Vector`, a struct
+field, a heterogeneous return) is a separate, unsolved problem — a `let`/`with`
+name is *one concrete type at one frame slot*, not a shared storable type; see
+[closure-enhancements.md §CE-4](../design/stage13/closure-enhancements.md).
+
+**Mutable capture (`set!`/`inc!`/`dec!` on a captured name).** A closure body
+may **mutate** a captured name with `set!`, `inc!`, or `dec!`. The rewrite
+depends on the closure's capture mode:
+
+- **`vfn`/`mfn` (by-value capture):** the env field holds the value. `(set! c v)`
+  rewrites to `(.set! self c v)` (field store); `(inc! c)` / `(dec! c)` expand to
+  the read-modify-write equivalent `(.set! self c (op (. self c) 1))`. The mutation
+  lands in the env field and **persists across successive calls** to the same
+  closure instance (since `invoke` receives `self` as a `(ref Env)` — a mutable
+  reference). The outer binding is unaffected (it was copied/moved into the env at
+  closure creation).
+
+- **`cfn` (by-reference capture):** the env field holds a *pointer* into the outer
+  binding's storage. `(set! c v)` rewrites to `(ptr-set! (. self c) v)` — a store
+  through the captured pointer. `(inc! c)` / `(dec! c)` become `(ptr-set! (. self c)
+  (op (deref (. self c)) 1))`. The **outer binding sees the mutation** after each
+  call, as with any by-reference write-back. The existing L1 store-sink safety
+  checks are preserved.
+
+A `set!`/`inc!`/`dec!` whose target is a **closure-local binding** (a `let`
+inside the closure body, or a closure parameter) is not a capture and is rewritten
+as an ordinary local assignment, unchanged.
+
+**Owning-closure export and struct-value `with` drop (CE-3).** A `with`-bound
+value of any type that conforms to `Drop` — including struct-value bindings, not
+only `ptr`-typed ones — drops correctly at scope exit. An `mfn` may capture a
+struct-value `Drop` binding by move: the source binding's cleanup is disarmed at
+closure-creation time, the closure owns the moved resource, and the resource drops
+at the closure's eventual scope exit with no double-free; a later reference to the
+consumed source binding (via symbol or `addr-of`) is a compile error ("use after
+move"). The by-value struct ABI copies struct bytes correctly so owning env structs
+round-trip through returns and `with`-bindings without corruption. See
+`examples/ce3-owning-closure.nuc`.
+
+**One remaining gap:** a `defn` cannot declare its return type as a closure value
+— the anonymous env type (`__vfn_env_N`) cannot be spelled in a return-type
+position, so a `defn` trying to return an `mfn` value errors "unknown type".
+Within a function body, closure values can be created inside a `with`, moved out
+of it, held in a `let`/`with` binding (CE-1), and used as local operands fully.
+Returning the closure *object* across a function boundary awaits CE-4 (env
+naming).
+
 ## Pointer lifecycle: escape analysis
 
 The compiler tracks pointer provenance (its **taint**) at compile time and
