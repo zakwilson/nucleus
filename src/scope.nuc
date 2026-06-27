@@ -96,23 +96,15 @@
 ; ============================================================
 
 (defn intern-string:i32 (bytes:ptr len:i32)
-  (let (id:i32 g-strs-len)
-    (when (= g-strs-len g-strs-cap)
-      (let (nc:i32 8)
-        (when (!= g-strs-cap 0) (set! nc (* g-strs-cap 2)))
-        (let (ns:ptr (malloc (* (cast i64 nc) (sizeof StrLit))))
-          (when (= ns null) (perror "malloc") (exit 1))
-          (when (!= g-strs null)
-            (memcpy ns g-strs (* (cast i64 g-strs-len) (sizeof StrLit)))
-            (free g-strs))
-          (set! g-strs ns)
-          (set! g-strs-cap nc))))
-    (let (sl:ptr:StrLit (cast ptr:StrLit (ptr+ (cast ptr:StrLit g-strs) g-strs-len)))
-      (.set! sl bytes (arena-strndup bytes (cast i64 len)))
-      (.set! sl len len)
-      (.set! sl id id)
-      (inc! g-strs-len)
-      (return id))))
+  ; The id is the element's position in g-strs; each StrLit is individually
+  ; arena-allocated and its pointer appended in order.
+  (let (id:i32 (cast i32 (count g-strs))
+        sl:ptr:StrLit (cast ptr:StrLit (arena-alloc (sizeof StrLit))))
+    (.set! sl bytes (arena-strndup bytes (cast i64 len)))
+    (.set! sl len len)
+    (.set! sl id id)
+    (conj g-strs (cast ptr sl))
+    (return id)))
 
 ; ============================================================
 ; Codegen helpers

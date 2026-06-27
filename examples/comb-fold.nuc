@@ -1,0 +1,41 @@
+; R1 combinators — folds & last-value: foldr (right fold) plus the thin numeric
+; wrappers sum / product / min / max, and keep-last / do-last. foldr takes a
+; FoldFn closure (inline AND named); the wrappers take no closure (they inline +
+; / * / <).
+
+(import-use "stdio.h")
+(import-use vector)
+(import-use iterator)
+(import-use combinators)
+
+(defn main:i32 ()
+  (with ((v (ref (Vector i32))) (alloca (Vector i32)))
+    (vector-init v) (conj v 1) (conj v 2) (conj v 3) (conj v 4)
+    (let (base:i32 10)
+
+      ; ---- foldr (right fold): g(acc,x) = acc*base + x, over reversed [4 3 2 1] ----
+      ; 0 -> 0*10+4=4 -> 4*10+3=43 -> 43*10+2=432 -> 432*10+1=4321
+      (let ((it (VecIter i32)) (iter v))
+        (printf "foldr-inline=%d\n"
+          (foldr (vfn (acc:i32 x:i32):i32 (return (+ (* acc base) x))) 0 (addr-of it))))
+      (let (horner (vfn (acc:i32 x:i32):i32 (return (+ (* acc base) x))))
+        (let ((it (VecIter i32)) (iter v))
+          (printf "foldr-named=%d\n" (foldr horner 0 (addr-of it)))))
+
+      ; ---- numeric wrappers ----
+      (let ((it (VecIter i32)) (iter v)) (printf "sum=%d\n" (sum (addr-of it))))
+      (let ((it (VecIter i32)) (iter v)) (printf "product=%d\n" (product (addr-of it))))
+      (let ((it (VecIter i32)) (iter v)) (printf "min=%d\n" (min (addr-of it))))
+      (let ((it (VecIter i32)) (iter v)) (printf "max=%d\n" (max (addr-of it))))
+
+      ; ---- keep-last: last value of (x+base) over the sequence (= 4+10) ----
+      (let ((it (VecIter i32)) (iter v))
+        (printf "keeplast-inline=%d\n"
+          (keep-last (vfn (x:i32):i32 (return (+ x base))) -1 (addr-of it))))
+      (let (addbase (vfn (x:i32):i32 (return (+ x base))))
+        (let ((it (VecIter i32)) (iter v))
+          (printf "keeplast-named=%d\n" (keep-last addbase -1 (addr-of it)))))
+
+      ; ---- do-last: implicit-progn last value ----
+      (printf "do-last=%d\n" (do-last (printf "") (+ base 1) (* base 3)))))
+  (return 0))

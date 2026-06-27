@@ -202,8 +202,8 @@
 
 (defn lookup-struct:?ptr:StructDef (name:ptr)
   (let (i:i32 0)
-    (while (< i g-structs-len)
-      (let (sd:ptr:StructDef (cast ptr:StructDef (ptr+ (cast ptr:StructDef g-structs) i)))
+    (while (< i (cast i32 (count g-structs)))
+      (let (sd:ptr:StructDef (cast ptr:StructDef (invoke g-structs (cast usize i))))
         (when (= (sd name) name)
           (return (cast ptr sd))))
       (inc! i)))
@@ -588,8 +588,8 @@
 
 (defn uniondef-lookup:?ptr:UnionDef (name:ptr)
   (let (i:i32 0)
-    (while (< i g-uniondefs-len)
-      (let (ud:ptr:UnionDef (cast ptr:UnionDef (ptr+ (cast ptr:UnionDef g-uniondefs) i)))
+    (while (< i (cast i32 (count g-uniondefs)))
+      (let (ud:ptr:UnionDef (cast ptr:UnionDef (invoke g-uniondefs (cast usize i))))
         (when (= (ud name) name)
           (return (cast ptr ud))))
       (inc! i)))
@@ -597,9 +597,9 @@
 
 (defn union-template-lookup:?ptr:UnionTemplate (name:ptr)
   (let (i:i32 0)
-    (while (< i g-union-templates-len)
+    (while (< i (cast i32 (count g-union-templates)))
       (let (ut:ptr:UnionTemplate (cast ptr:UnionTemplate
-                                   (ptr+ (cast ptr:UnionTemplate g-union-templates) i)))
+                                   (invoke g-union-templates (cast usize i))))
         (when (= (ut name) name)
           (return (cast ptr ut))))
       (inc! i)))
@@ -610,9 +610,9 @@
 ; interned head symbol (parametric-structs.md §1).
 (defn struct-template-lookup:?ptr:StructTemplate (name:ptr)
   (let (i:i32 0)
-    (while (< i g-struct-templates-len)
+    (while (< i (cast i32 (count g-struct-templates)))
       (let (st:ptr:StructTemplate (cast ptr:StructTemplate
-                                    (ptr+ (cast ptr:StructTemplate g-struct-templates) i)))
+                                    (invoke g-struct-templates (cast usize i))))
         (when (= (st name) name)
           (return (cast ptr st))))
       (inc! i)))
@@ -773,7 +773,7 @@
 (defn defunion-register:ref:UnionDef (name:ptr arms-raw:ptr line:i32)
   (let (existing:?ptr:UnionDef (uniondef-lookup name))
     (when (!= existing null) (return existing)))
-  (when (>= g-uniondefs-len MAX-UNIONS)
+  (when (>= (cast i32 (count g-uniondefs)) MAX-UNIONS)
     (die-at line "too many defunions"))
   (let (repr-box:i32 REPR-AUTO
         arms:ptr (defunion-strip-repr arms-raw (cast ptr:i32 (addr-of repr-box)) line)
@@ -902,9 +902,8 @@
                     name ((cast ptr:StructDef union-sd) name))
                   (fprintf g-type-stream "%%%s = type { i32 }\n\n" name)))
               (.set! sd emitted 1))
-            (let (ud:ptr:UnionDef (cast ptr:UnionDef
-                                    (ptr+ (cast ptr:UnionDef g-uniondefs) g-uniondefs-len)))
-              (inc! g-uniondefs-len)
+            (let (ud:ptr:UnionDef (cast ptr:UnionDef (arena-alloc (sizeof UnionDef))))
+              (conj g-uniondefs (cast ptr ud))
               (.set! ud name name)
               (.set! ud sdef (cast ptr sd))
               (.set! ud union-sd union-sd)
@@ -944,7 +943,7 @@
       ; Re-import of the same template (e.g. via .nuch) is a no-op.
       (when (!= (union-template-lookup name) null) (return))
       (guard-name-kind name (ff line) NK-TYPE)
-      (when (>= g-union-templates-len MAX-UNION-TEMPLATES)
+      (when (>= (cast i32 (count g-union-templates)) MAX-UNION-TEMPLATES)
         (die-at (ff line) "too many defunion templates"))
       (let (tyvars:ptr (arena-alloc (* (cast i64 ntv) (ptr-bytes)))
             i:i32 0)
@@ -954,10 +953,8 @@
               (die-at (tv line) "defunion: type parameter must be a symbol"))
             (aset! (cast ptr:ptr tyvars) i (tv s)))
           (inc! i))
-        (let (ut:ptr:UnionTemplate (cast ptr:UnionTemplate
-                                     (ptr+ (cast ptr:UnionTemplate g-union-templates)
-                                           g-union-templates-len)))
-          (inc! g-union-templates-len)
+        (let (ut:ptr:UnionTemplate (cast ptr:UnionTemplate (arena-alloc (sizeof UnionTemplate))))
+          (conj g-union-templates (cast ptr ut))
           (.set! ut name name)
           (.set! ut tyvars tyvars)
           (.set! ut ntv ntv)
@@ -983,7 +980,7 @@
       ; pass) is a no-op.
       (when (!= (struct-template-lookup name) null) (return))
       (guard-name-kind name (ff line) NK-TYPE)
-      (when (>= g-struct-templates-len MAX-STRUCT-TEMPLATES)
+      (when (>= (cast i32 (count g-struct-templates)) MAX-STRUCT-TEMPLATES)
         (die-at (ff line) "too many defstruct templates"))
       (let (tyvars:ptr (arena-alloc (* (cast i64 ntv) (ptr-bytes)))
             i:i32 0)
@@ -993,10 +990,8 @@
               (die-at (tv line) "defstruct: type parameter must be a symbol"))
             (aset! (cast ptr:ptr tyvars) i (tv s)))
           (inc! i))
-        (let (st:ptr:StructTemplate (cast ptr:StructTemplate
-                                      (ptr+ (cast ptr:StructTemplate g-struct-templates)
-                                            g-struct-templates-len)))
-          (inc! g-struct-templates-len)
+        (let (st:ptr:StructTemplate (cast ptr:StructTemplate (arena-alloc (sizeof StructTemplate))))
+          (conj g-struct-templates (cast ptr st))
           (.set! st name name)
           (.set! st tyvars tyvars)
           (.set! st ntv ntv)

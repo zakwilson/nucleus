@@ -1,0 +1,69 @@
+; R1-iter: byte folding a CStr and a String through `reduce` over a ByteIter.
+;
+; The FNV-1a hash expressed as a fold over the byte iterator must match the
+; hand-written strview-hash (lib/strview.nuc) for the same bytes. Demonstrates:
+;   1. cstr-bytes  — a ByteIter over a C string, folded to the FNV hash.
+;   2. strview-bytes over a String's view — same fold, same hash.
+;   3. doseq-iter over cstr-bytes — sum the byte values.
+
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(import-use iterator)
+(import-use strview)
+(import-use string)
+(import-use hash)
+
+; FoldFn: FNV-1a one byte at a time. acc = running i64 hash; x = the byte (ui8).
+(defstruct Fnv1aFold dummy:i32)
+(extend Fnv1aFold (FoldFn i64 ui8))
+(defn (fold i64) ((self (ref Fnv1aFold)) (acc i64) (x ui8))
+  (return (fnv1a-byte acc (bit-and (cast i64 x) (cast i64 255)))))
+
+; FoldFn: sum byte values into an i64 accumulator.
+(defstruct ByteSum dummy:i32)
+(extend ByteSum (FoldFn i64 ui8))
+(defn (fold i64) ((self (ref ByteSum)) (acc i64) (x ui8))
+  (return (+ acc (bit-and (cast i64 x) (cast i64 255)))))
+
+; fnv-via-reduce — fold the bytes of a ByteIter through FNV-1a, seeded with the
+; same offset basis strview-hash uses, returning the hash as usize.
+(defn fnv-via-reduce:usize ((it (ref ByteIter)))
+  (let ((f (ref Fnv1aFold)) (alloca Fnv1aFold)
+        (basis i64) -3750763034362895579)
+    (return (cast usize (reduce f basis it)))))
+
+(defn main:i32 ()
+  ; ---- 1. CStr byte fold vs strview-hash over the same bytes ----------------
+  (let (cs:CStr "hello, world")
+    (let (sv:ptr:StrView (strview-from-cstr cs))
+      (let (it:ByteIter (cstr-bytes cs)
+            reduced:usize (fnv-via-reduce (addr-of it))
+            direct:usize  (strview-hash sv))
+        (printf "cstr reduce==direct: %d\n" (cast i32 (if (= reduced direct) 1 0)))
+        (printf "cstr hash=%llu\n" (cast ui64 reduced)))
+      (free (cast ptr sv))))
+
+  ; ---- 2. String byte fold (via its StrView) vs strview-hash ----------------
+  (let (s:String (string-from-cstr-unchecked "hello, world"))
+    (let (sv:StrView (string-as-view (addr-of s)))
+      (let (it:ByteIter (strview-bytes (addr-of sv))
+            reduced:usize (fnv-via-reduce (addr-of it))
+            direct:usize  (strview-hash (addr-of sv)))
+        (printf "string reduce==direct: %d\n" (cast i32 (if (= reduced direct) 1 0)))))
+    (drop (addr-of s)))
+
+  ; ---- 3. doseq-iter over cstr-bytes: sum byte values -----------------------
+  (let (total:i64 0
+        it:ByteIter (cstr-bytes "ABC"))
+    (doseq-iter (b (addr-of it))
+      (set! total (+ total (bit-and (cast i64 b) (cast i64 255)))))
+    ; 'A'+'B'+'C' = 65+66+67 = 198
+    (printf "abc byte-sum=%lld\n" total))
+
+  ; ---- 4. reduce byte-sum over a ByteIter -----------------------------------
+  (let ((bs (ref ByteSum)) (alloca ByteSum)
+        (it (ref ByteIter)) (alloca ByteIter))
+    (let (it2:ByteIter (cstr-bytes "ABC"))
+      (printf "abc reduce-sum=%lld\n" (reduce bs (cast i64 0) (addr-of it2)))))
+
+  (return 0))

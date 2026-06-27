@@ -1,0 +1,10 @@
+find-inline=5
+find-named=4
+findidx-inline=2
+findidx-named=5
+any-inline=1
+exists-named=1
+every-inline=1
+all-named=0
+countif-inline=2
+countif-named=3

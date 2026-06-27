@@ -33,6 +33,7 @@
 (import-use "string.h")
 
 (import-use strview)
+(import-use iterator)
 
 ; ---------------------------------------------------------------------------
 ; SplitIter — lazy byte-level split of a StrView on a delimiter StrView.
@@ -60,7 +61,12 @@
   rem:usize
   sep-data:(ptr ui8)
   sep-len:usize
-  done:i32)
+  done:i32
+  ; cur: scratch slot holding the most recently yielded segment, so the
+  ; Iterator `next` can hand back a (ref StrView) into the iterator itself
+  ; (see the Iterator conformance below). Filled by `next`; unused by the
+  ; done-flag `split-iter-next` API.
+  cur:StrView)
 
 ; split-iter-done — 1 if the iterator is exhausted (no more segments).
 (defn split-iter-done:i32 ((it (ref SplitIter)))
@@ -129,6 +135,29 @@
     (return (deref it))))
 
 ; ---------------------------------------------------------------------------
+; SplitIter as an Iterator (replaces the deferred done-flag-only API).
+;
+; `next` yields each segment as a (ref StrView) pointing into the iterator's own
+; `cur` slot, encoded as i64 so the (Maybe i64) is a TAGGED, matchable
+; value-Maybe — `reduce` / `doseq-iter` / `match` accept it. (Conforming to
+; (Iterator StrView) directly is impossible: (Maybe StrView) embeds %StrView in
+; an anonymous union that the macro-expansion JIT module cannot resolve; and a
+; niche (Maybe ptr) is not matchable. The i64-pointer encoding sidesteps both —
+; see lib/iterator.nuc and context/build.md.)
+;
+; Behavior is identical to the done-flag loop: one segment per `next`, the same
+; segments in the same order; iteration ends (none) on the call after the final
+; segment set done=1. Recover each segment with (cast ptr:StrView (cast ptr e));
+; the returned pointer aliases `cur` and is valid until the next `next` call.
+; ---------------------------------------------------------------------------
+(extend SplitIter (Iterator i64))
+
+(defn (next (Maybe i64)) ((self (ref SplitIter)))
+  (when (= (self done) 1) (return none))
+  (.set! self cur (split-iter-next self))
+  (return (some (cast i64 (.& self cur)))))
+
+; ---------------------------------------------------------------------------
 ; LineIter — split a StrView on '\n', stripping trailing '\r' from each line.
 ;
 ; Same done-flag convention as SplitIter.
@@ -136,7 +165,9 @@
 (defstruct LineIter
   buf:(ptr ui8)
   rem:usize
-  done:i32)
+  done:i32
+  ; cur: scratch slot for the most recently yielded line (see SplitIter.cur).
+  cur:StrView)
 
 ; lines-iter-done — 1 if the iterator is exhausted.
 (defn lines-iter-done:i32 ((it (ref LineIter)))
@@ -191,3 +222,32 @@
     (.set! it rem  (sv len))
     (.set! it done 0)
     (return (deref it))))
+
+; ---------------------------------------------------------------------------
+; LineIter as an Iterator. Same i64-pointer encoding and identical behavior as
+; the SplitIter conformance above; yields each line (trailing newline stripped).
+; ---------------------------------------------------------------------------
+(extend LineIter (Iterator i64))
+
+(defn (next (Maybe i64)) ((self (ref LineIter)))
+  (when (= (self done) 1) (return none))
+  (.set! self cur (lines-iter-next self))
+  (return (some (cast i64 (.& self cur)))))
+
+; ---------------------------------------------------------------------------
+; doseq-split — iterate a SplitIter / LineIter (a bare Iterator), binding `var`
+; to each segment as a (ref StrView). Sugar over `doseq-iter` that hides the
+; i64-pointer decode the Iterator conformance uses.
+;
+;   (doseq-split (seg (addr-of it)) (print-sv seg))
+;
+; `var` is bound to a (ref StrView) borrowing the iterator's `cur` slot (valid
+; until the next step). iter-ref is a (ref SplitIter)/(ref LineIter).
+; ---------------------------------------------------------------------------
+(defmacro doseq-split (binding &rest body)
+  (let (var-sym:ptr  ((cast ptr:Node binding) car)
+        iter-ref:ptr ((cast ptr:Node ((cast ptr:Node binding) cdr)) car)
+        raw-sym:ptr  (gensym))
+    `(doseq-iter (~raw-sym ~iter-ref)
+       (let ((~var-sym (ref StrView)) (cast ptr:StrView (cast ptr ~raw-sym)))
+         ~@body))))

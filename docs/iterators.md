@@ -40,6 +40,58 @@ Both conform to `(Iterator i32)` / `(Iterator i64)` respectively.
 
 **`doseq` vs `doseq-iter`.** Use `(doseq (var coll IterType) body...)` when the thing you are iterating is a **collection** conforming to `(Coll E It)` — `doseq` calls `(iter coll)` to get a fresh iterator by value. Use `(doseq-iter (var iter-ref) body...)` when you already hold a **bare iterator reference** — a `(ref IterType)` for a type that conforms to `(Iterator E)` but is not itself a `Coll` (e.g. `IntRangeIter`, `MapIter`, `FilterIter`, `HashMapKeyIter`). `doseq-iter` calls `(next iter-ref)` directly without going through `iter`. See [Macros](macros.md) for full signatures and the rationale for the explicit `IterType` argument.
 
+## More concrete iterators (Stage 13 R1)
+
+These conformers let `reduce` / `doseq-iter` reach cons-cell lists, C strings,
+and string segments. They share one design constraint: an `Iterator`'s element
+type must give a **tagged, matchable `(Maybe E)`** because `reduce`/`doseq-iter`
+eliminate it with `match`. The matchable scalar Maybes are `(Maybe i32)` /
+`(Maybe i64)` / `(Maybe ui8)` / `(Maybe Char)`. `(Maybe ptr)` is **niche-encoded**
+(a bare nullable pointer) and is *not* matchable, and `(Maybe StrView)` (any
+struct payload) fails in the macro-expansion JIT module (see
+[strings](strings.md) and `context/build.md`). So an iterator whose logical
+element is a pointer or a struct yields it **cast to `i64`** — the same encoding
+`I64ArrayIter` uses — and the consumer recovers it with a `cast`.
+
+| Type (lib) | Conforms to | `next` yields | Recover with |
+|------------|-------------|---------------|--------------|
+| `ByteIter` (`strview`) | `(Iterator ui8)` | each byte | — (scalar) |
+| `CharIter` (`strview`) | `(Iterator Char)` | each UTF-8 codepoint | — (scalar) |
+| `ListIter` (`list`) | `(Iterator i64)` | each cons element (a `Node*`, cast to `i64`) | `(cast ptr:Node (cast ptr e))` |
+| `SplitIter` (`string-split`) | `(Iterator i64)` | each segment as a `(ref StrView)` into the iterator's `cur` slot, cast to `i64` | `(cast ptr:StrView (cast ptr e))` |
+| `LineIter` (`string-split`) | `(Iterator i64)` | each line (same encoding as `SplitIter`) | `(cast ptr:StrView (cast ptr e))` |
+
+**Cons-cell lists — `ListIter`.** `(list-iter lst)` returns a `ListIter` by
+value positioned at the head of a cons-cell list (`null` = empty). Drive it with
+`doseq-iter` or `reduce`; each element arrives as the `Node*` cast to `i64`.
+
+```lisp
+(let (it:ListIter (list-iter lst))
+  (doseq-iter (x (addr-of it))
+    (printf "%lld\n" ((cast ptr:Node (cast ptr x)) i))))
+```
+
+**C strings and Strings — byte/char folds.** `(cstr-bytes cs)` / `(cstr-chars cs)`
+(`lib/strview.nuc`) return a `ByteIter` / `CharIter` over a `CStr` (the NUL is
+excluded). A `String` folds via `string-as-view` + `strview-bytes`/`strview-chars`.
+This lets the FNV byte hash be written as a `reduce` over the byte iterator that
+matches `strview-hash` exactly. See `examples/cstr-fold-test.nuc`.
+
+**Lazy string splitting — `SplitIter` / `LineIter`.** These conform to
+`(Iterator i64)` (previously a done-flag-only API). The `(doseq-split (var iter-ref) body)`
+macro (`lib/string-split.nuc`) hides the decode, binding `var` to a
+`(ref StrView)` borrowing the iterator's `cur` slot (valid until the next step):
+
+```lisp
+(let (it:SplitIter (strview-split sv sep))
+  (doseq-split (seg (addr-of it))
+    (print-sv seg)))
+```
+
+The done-flag API (`split-iter-done`/`split-iter-next`, `lines-iter-done`/
+`lines-iter-next`) is retained and yields identical segments. See
+`examples/listiter-test.nuc`, `examples/split-iter-test.nuc`.
+
 ## Function-object protocols
 
 These protocols let user-defined struct types serve as functions passed to
