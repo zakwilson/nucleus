@@ -1,0 +1,59 @@
+; R1 combinators — search & quantifiers: find / find-index / any? / exists? /
+; every? / all? / count-if. All early-stop except count-if (a count must visit
+; every element). Each is exercised with an inline closure AND a named (CE-1) one.
+;
+; The quantifier names carry `?` but are GENERIC (they have &where), so their
+; monomorphised names route through sanitize-for-ir (`?` -> `_`) — no bare
+; `@any?`/`@every?`/`@exists?`/`@all?` ever reaches the IR (LLVM would reject it).
+
+(import-use "stdio.h")
+(import-use vector)
+(import-use iterator)
+(import-use combinators)
+
+(defn main:i32 ()
+  (with ((v (ref (Vector i32))) (alloca (Vector i32)))
+    (vector-init v) (conj v 3) (conj v 1) (conj v 4) (conj v 1) (conj v 5) (conj v 9)
+    (let (thr:i32 3)
+
+      ; ---- find (Maybe E) ----
+      (let ((it (VecIter i32)) (iter v))
+        (match (find (vfn (x:i32):i32 (return (if (> x 4) 1 0))) (addr-of it))
+          ((some f) (printf "find-inline=%d\n" f))
+          (none (printf "find-inline=none\n"))))
+      (let (gtthr (vfn (x:i32):i32 (return (if (> x thr) 1 0))))
+        (let ((it (VecIter i32)) (iter v))
+          (match (find gtthr (addr-of it))
+            ((some f) (printf "find-named=%d\n" f))
+            (none (printf "find-named=none\n")))))
+
+      ; ---- find-index ----
+      (let ((it (VecIter i32)) (iter v))
+        (printf "findidx-inline=%d\n"
+          (find-index (vfn (x:i32):i32 (return (if (= x 4) 1 0))) (addr-of it))))
+      (let (eq9 (vfn (x:i32):i32 (return (if (= x 9) 1 0))))
+        (let ((it (VecIter i32)) (iter v))
+          (printf "findidx-named=%d\n" (find-index eq9 (addr-of it)))))
+
+      ; ---- any? / exists? ----
+      (let ((it (VecIter i32)) (iter v))
+        (printf "any-inline=%d\n" (any? (vfn (x:i32):i32 (return (if (> x 8) 1 0))) (addr-of it))))
+      (let (gtthr (vfn (x:i32):i32 (return (if (> x thr) 1 0))))
+        (let ((it (VecIter i32)) (iter v))
+          (printf "exists-named=%d\n" (exists? gtthr (addr-of it)))))
+
+      ; ---- every? / all? ----
+      (let ((it (VecIter i32)) (iter v))
+        (printf "every-inline=%d\n" (every? (vfn (x:i32):i32 (return (if (> x 0) 1 0))) (addr-of it))))
+      (let (gtthr (vfn (x:i32):i32 (return (if (> x thr) 1 0))))
+        (let ((it (VecIter i32)) (iter v))
+          (printf "all-named=%d\n" (all? gtthr (addr-of it)))))
+
+      ; ---- count-if ----
+      (let ((it (VecIter i32)) (iter v))
+        (printf "countif-inline=%d\n"
+          (count-if (vfn (x:i32):i32 (return (if (= x 1) 1 0))) (addr-of it))))
+      (let (gtthr (vfn (x:i32):i32 (return (if (> x thr) 1 0))))
+        (let ((it (VecIter i32)) (iter v))
+          (printf "countif-named=%d\n" (count-if gtthr (addr-of it)))))))
+  (return 0))

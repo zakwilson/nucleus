@@ -16,23 +16,17 @@
 
 (defn generic-lookup:?ptr:Generic (name:ptr)
   (let (i:i32 0)
-    (while (< i g-num-generics)
-      (let (g:ptr:Generic (cast ptr:Generic (ptr+ (cast ptr:Generic g-generics) i)))
+    (while (< i (cast i32 (count g-generics)))
+      (let (g:ptr:Generic (cast ptr:Generic (invoke g-generics (cast usize i))))
         (when (= (g name) name)
           (return (cast ptr g))))
       (inc! i)))
   (return null))
 
 (defn generic-new:ref:Generic (name:ptr)
-  (when (= g-num-generics g-cap-generics)
-    (let (nc:i32 64)
-      (when (!= g-cap-generics 0) (set! nc (* g-cap-generics 2)))
-      (let (ng:ptr (arena-alloc (* (cast i64 nc) (sizeof Generic))))
-        (when (!= g-num-generics 0)
-          (memcpy ng g-generics (* (cast i64 g-num-generics) (sizeof Generic))))
-        (set! g-generics ng)
-        (set! g-cap-generics nc))))
-  (let (g:ptr:Generic (cast ptr:Generic (ptr+ (cast ptr:Generic g-generics) g-num-generics)))
+  ; Each Generic is individually arena-allocated (pointer-stable for the whole
+  ; compilation) and its pointer appended to g-generics in registration order.
+  (let (g:ptr:Generic (cast ptr:Generic (arena-alloc (sizeof Generic))))
     (.set! g name name)
     (.set! g methods (arena-alloc (* (cast i64 4) (ptr-bytes))))
     (.set! g num-methods 0)
@@ -43,7 +37,7 @@
     ; or monomorphization that runs in a later import's namespace still mangles
     ; under this generic's own namespace.
     (.set! g ir-prefix (ns-ir-prefix g-current-ns))
-    (inc! g-num-generics)
+    (conj g-generics (cast ptr g))
     (return (cast ref:Generic g))))
 
 (defn generic-add-method:void (g:ptr m:ptr)
@@ -95,8 +89,8 @@
 ; byte-identical to the pre-dispatch compiler.
 (defn init-generics:void ()
   (let (i:i32 0)
-    (while (< i g-num-binops)
-      (let (bop:ptr:BinOp (cast ptr:BinOp (ptr+ (cast ptr:BinOp g-binops) i))
+    (while (< i (cast i32 (count g-binops)))
+      (let (bop:ptr:BinOp (cast ptr:BinOp (invoke g-binops (cast usize i)))
             g:ptr (generic-new (bop name))
             m:ptr:Method (new Method))
         (.set! m param-types null)
@@ -350,8 +344,8 @@
 ; and dispatches through the registry (templates are stamped on demand).
 (defn finalize-generics:void ()
   (let (gi:i32 0)
-    (while (< gi g-num-generics)
-      (let (gg:ptr:Generic (cast ptr:Generic (ptr+ (cast ptr:Generic g-generics) gi)))
+    (while (< gi (cast i32 (count g-generics)))
+      (let (gg:ptr:Generic (cast ptr:Generic (invoke g-generics (cast usize gi))))
         (when (and (= (gg finalized) 0) (> (gg num-methods) 0))
           ; Tally the method kinds. An operator name carries an intrinsic seed
           ; method (§9.2); a user overload of that operator adds METHOD-USER
@@ -1775,8 +1769,8 @@
 ; stamp-time error from instantiation).
 (defn check-generic-templates:void ()
   (let (gi:i32 0)
-    (while (< gi g-num-generics)
-      (let (gg:ptr:Generic (cast ptr:Generic (ptr+ (cast ptr:Generic g-generics) gi))
+    (while (< gi (cast i32 (count g-generics)))
+      (let (gg:ptr:Generic (cast ptr:Generic (invoke g-generics (cast usize gi)))
             mi:i32 0)
         (while (< mi (gg num-methods))
           (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (gg methods)) mi)))
@@ -2027,28 +2021,20 @@
 
 (defn protocol-lookup:?ptr:Protocol (name:ptr)
   (let (i:i32 0)
-    (while (< i g-num-protocols)
-      (let (p:ptr:Protocol (cast ptr:Protocol (ptr+ (cast ptr:Protocol g-protocols) i)))
+    (while (< i (cast i32 (count g-protocols)))
+      (let (p:ptr:Protocol (cast ptr:Protocol (invoke g-protocols (cast usize i))))
         (when (= (p name) name) (return (cast ptr p))))
       (inc! i)))
   (return null))
 
 (defn protocol-new:ref:Protocol (name:ptr sigs:ptr num-sigs:i32)
-  (when (= g-num-protocols g-cap-protocols)
-    (let (nc:i32 16)
-      (when (!= g-cap-protocols 0) (set! nc (* g-cap-protocols 2)))
-      (let (np:ptr (arena-alloc (* (cast i64 nc) (sizeof Protocol))))
-        (when (!= g-num-protocols 0)
-          (memcpy np g-protocols (* (cast i64 g-num-protocols) (sizeof Protocol))))
-        (set! g-protocols np)
-        (set! g-cap-protocols nc))))
-  (let (p:ptr:Protocol (cast ptr:Protocol (ptr+ (cast ptr:Protocol g-protocols) g-num-protocols)))
+  (let (p:ptr:Protocol (cast ptr:Protocol (arena-alloc (sizeof Protocol))))
     (.set! p name name)
     (.set! p sigs sigs)
     (.set! p num-sigs num-sigs)
     (.set! p params null)
     (.set! p num-params 0)
-    (inc! g-num-protocols)
+    (conj g-protocols (cast ptr p))
     (return (cast ref:Protocol p))))
 
 ; Is `name` one of the built-in blanket protocols (§10.1)? Blanket protocols have
@@ -2056,8 +2042,8 @@
 ; the nominal conformance registry.
 (defn blanket-lookup:i32 (name:CStr)
   (let (i:i32 0)
-    (while (< i g-num-blanket)
-      (when (= (aref (cast ptr:ptr g-blanket) i) name) (return 1))
+    (while (< i (cast i32 (count g-blanket)))
+      (when (= (cast CStr (invoke g-blanket (cast usize i))) name) (return 1))
       (inc! i)))
   (return 0))
 
@@ -2141,8 +2127,8 @@
   (set! type-name (strip-ns-qualifier type-name))
   (set! proto-name (strip-ns-qualifier proto-name))
   (let (i:i32 0)
-    (while (< i g-num-conformances)
-      (let (c:ptr:Conformance (cast ptr:Conformance (ptr+ (cast ptr:Conformance g-conformances) i)))
+    (while (< i (cast i32 (count g-conformances)))
+      (let (c:ptr:Conformance (cast ptr:Conformance (invoke g-conformances (cast usize i))))
         (when (and (= (c type-name) type-name)
                    (= (c proto-name) proto-name))
           (return 1)))
@@ -2161,8 +2147,8 @@
   (set! type-name (strip-ns-qualifier type-name))
   (set! proto-name (strip-ns-qualifier proto-name))
   (let (i:i32 0)
-    (while (< i g-num-conformances)
-      (let (c:ptr:Conformance (cast ptr:Conformance (ptr+ (cast ptr:Conformance g-conformances) i)))
+    (while (< i (cast i32 (count g-conformances)))
+      (let (c:ptr:Conformance (cast ptr:Conformance (invoke g-conformances (cast usize i))))
         (when (and (= (c type-name) type-name)
                    (= (c proto-name) proto-name))
           (aset! (cast ptr:i32 out-nargs) 0 (c nargs))
@@ -2200,8 +2186,8 @@
   (set! type-name (strip-ns-qualifier type-name))
   (set! proto-name (strip-ns-qualifier proto-name))
   (let (i:i32 0)
-    (while (< i g-num-conformances)
-      (let (c:ptr:Conformance (cast ptr:Conformance (ptr+ (cast ptr:Conformance g-conformances) i)))
+    (while (< i (cast i32 (count g-conformances)))
+      (let (c:ptr:Conformance (cast ptr:Conformance (invoke g-conformances (cast usize i))))
         (when (and (= (c type-name) type-name) (= (c proto-name) proto-name))
           ; Incoming call supplies no args → nothing to add or check; keep as-is.
           (when (= nargs 0) (return))
@@ -2217,28 +2203,44 @@
                       type-name proto-name)))
           (return)))
       (inc! i)))
-  (when (= g-num-conformances g-cap-conformances)
-    (let (nc:i32 16)
-      (when (!= g-cap-conformances 0) (set! nc (* g-cap-conformances 2)))
-      (let (ncf:ptr (arena-alloc (* (cast i64 nc) (sizeof Conformance))))
-        (when (!= g-num-conformances 0)
-          (memcpy ncf g-conformances (* (cast i64 g-num-conformances) (sizeof Conformance))))
-        (set! g-conformances ncf)
-        (set! g-cap-conformances nc))))
-  (let (c:ptr:Conformance (cast ptr:Conformance (ptr+ (cast ptr:Conformance g-conformances) g-num-conformances)))
+  (let (c:ptr:Conformance (cast ptr:Conformance (arena-alloc (sizeof Conformance))))
     (.set! c type-name type-name)
     (.set! c proto-name proto-name)
     (.set! c args args)
     (.set! c nargs nargs)
-    (inc! g-num-conformances)))
+    (conj g-conformances (cast ptr c))))
+
+; Has a synthesized closure-conformance forwarder with this exact ir-name
+; already been registered (and thus queued for emission) in generic `gen-name`?
+; Used to collapse the otherwise-colliding `apply.pfn.<ret>` thunks that several
+; same-signature bare `fn` operands would each synthesize (see
+; derive-closure-conformance). The freshly-registered method whose emission is
+; being decided has a null ir-name at the call site, so it is never self-counted.
+(defn derived-fwd-already-emitted:i32 (gen-name:ptr mangled:ptr)
+  (let (g:ptr (generic-lookup gen-name))
+    (when (= g null) (return 0))
+    (let (gg:ptr:Generic (cast ptr:Generic g)
+          i:i32 0)
+      (while (< i (gg num-methods))
+        (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (gg methods)) i)))
+          (when (and (!= (m ir-name) null)
+                     (= (strcmp (m ir-name) mangled) 0))
+            (return 1)))
+        (inc! i))
+      (return 0))))
 
 (defn derive-closure-conformance:i32 (cvtype:ptr proto:ptr line:i32)
   (let (cvspell:ptr (type-spelling cvtype)
         cv:ptr:Type (cast ptr:Type cvtype))
     ; Step 1: idempotent — already conforms.
     (when (!= (conformance-lookup cvspell proto) 0) (return 1))
-    ; Step 2: recognized-set gate (UnaryFn/FoldFn today).
-    (when (and (!= proto "UnaryFn") (!= proto "FoldFn")) (return 0))
+    ; Step 2: recognized-set gate (UnaryFn / FoldFn / BinaryFn). BinaryFn is the
+    ; same-typed-args comparator shape `sort` (lib/combinators.nuc) needs; it is
+    ; derived by the identical sig-scan as the other two (each protocol param is
+    ; bound from a matching NODE-SYM in the single method's signature). This gate
+    ; entry is inert under self-compilation — the compiler never stamps a
+    ; BinaryFn — so the bootstrap stays a byte-identical fixed point.
+    (when (and (!= proto "UnaryFn") (!= proto "FoldFn") (!= proto "BinaryFn")) (return 0))
   ; Step 3: find the closure's invoke method — a METHOD-USER on the `invoke`
   ; generic whose self param (param-types[0]) is (ref Env) with Env.name == cvspell.
   ; Detection is semantic ("the type has an invoke method"), not by name, so it
@@ -2408,22 +2410,38 @@
                   (aset! (cast ptr:ptr mtypes) ci
                     (aref (cast ptr:ptr (imp param-types)) ci))
                   (inc! ci))
-                (let (newm:ref:Method
-                       (generic-register-method method-name (imp ret-type)
-                         mtypes total 0 0 defn-form)
-                      mangled:ptr (mangle-fn-name "" method-name mtypes total)
-                      job:ptr:MonoJob (new MonoJob))
-                  (.set! newm ir-name mangled)
-                  (fn-force-generic-mangled method-name)
-                  (.set! job form defn-form)
-                  (.set! job context
-                         (fmt-2s-i "while deriving closure conformance to %s (at %s:%d)"
-                                   proto g-source-path line))
-                  (conj g-mono-worklist (cast ptr job))
-                  ; Step 10: record the conformance with the recovered args.
-                  (conformance-add cvspell proto args npp line)
-                  ; Step 11: success.
-                  (return 1)))))))))))
+                (let (mangled:ptr (mangle-fn-name "" method-name mtypes total))
+                  ; A bare `fn` (call-style 1) erases its signature to the lossy
+                  ; "pfn" token under mangle-fn-name, so every same-signature bare
+                  ; fn forwards through an IDENTICAL synthesized method named e.g.
+                  ; `apply.pfn.i32` (the forwarder just derefs self and calls the
+                  ; fn pointer — correct for any bare fn of that signature). The
+                  ; conformance key, however, is the per-fn `__fnty_N` spelling
+                  ; (fnty-intern dedups by Type* identity), so step 1's idempotent
+                  ; short-circuit misses and each occurrence would re-synthesize a
+                  ; colliding `define @apply.pfn.i32`. Register the method for
+                  ; dispatch unconditionally, but queue its emission MonoJob only
+                  ; the first time this exact ir-name is seen — a later occurrence
+                  ; reuses the single shared thunk. (Capturing closures never hit
+                  ; this: each has a distinct env-struct spelling, so their
+                  ; forwarder names are already unique.)
+                  (let (newm:ref:Method
+                         (generic-register-method method-name (imp ret-type)
+                           mtypes total 0 0 defn-form)
+                        already:i32 (derived-fwd-already-emitted method-name mangled))
+                    (.set! newm ir-name mangled)
+                    (fn-force-generic-mangled method-name)
+                    (when (= already 0)
+                      (let (job:ptr:MonoJob (new MonoJob))
+                        (.set! job form defn-form)
+                        (.set! job context
+                               (fmt-2s-i "while deriving closure conformance to %s (at %s:%d)"
+                                         proto g-source-path line))
+                        (conj g-mono-worklist (cast ptr job))))
+                    ; Step 10: record the conformance with the recovered args.
+                    (conformance-add cvspell proto args npp line)
+                    ; Step 11: success.
+                    (return 1))))))))))))
 
 
 ; Record a protocol-inheritance edge: conforming to `sub` requires `super`.
@@ -2433,23 +2451,15 @@
   (set! sub (strip-ns-qualifier sub))
   (set! super (strip-ns-qualifier super))
   (let (i:i32 0)
-    (while (< i g-num-proto-supers)
-      (let (e:ptr:Conformance (cast ptr:Conformance (ptr+ (cast ptr:Conformance g-proto-supers) i)))
+    (while (< i (cast i32 (count g-proto-supers)))
+      (let (e:ptr:Conformance (cast ptr:Conformance (invoke g-proto-supers (cast usize i))))
         (when (and (= (e type-name) sub) (= (e proto-name) super))
           (return)))
       (inc! i)))
-  (when (= g-num-proto-supers g-cap-proto-supers)
-    (let (nc:i32 16)
-      (when (!= g-cap-proto-supers 0) (set! nc (* g-cap-proto-supers 2)))
-      (let (ne:ptr (arena-alloc (* (cast i64 nc) (sizeof Conformance))))
-        (when (!= g-num-proto-supers 0)
-          (memcpy ne g-proto-supers (* (cast i64 g-num-proto-supers) (sizeof Conformance))))
-        (set! g-proto-supers ne)
-        (set! g-cap-proto-supers nc))))
-  (let (e:ptr:Conformance (cast ptr:Conformance (ptr+ (cast ptr:Conformance g-proto-supers) g-num-proto-supers)))
+  (let (e:ptr:Conformance (cast ptr:Conformance (arena-alloc (sizeof Conformance))))
     (.set! e type-name sub)
     (.set! e proto-name super)
-    (inc! g-num-proto-supers)))
+    (conj g-proto-supers (cast ptr e))))
 
 ; Substitute the type variable `Self` in a colon-typed symbol spelling: split
 ; on ':' and replace any segment that is exactly "Self" with the concrete type
@@ -2701,8 +2711,8 @@
     ; Conforming to `proto-name` requires conforming to each declared super. The
     ; supers are plain (Self-only) protocols here, so they carry no extra params.
     (let (si:i32 0)
-      (while (< si g-num-proto-supers)
-        (let (e:ptr:Conformance (cast ptr:Conformance (ptr+ (cast ptr:Conformance g-proto-supers) si)))
+      (while (< si (cast i32 (count g-proto-supers)))
+        (let (e:ptr:Conformance (cast ptr:Conformance (invoke g-proto-supers (cast usize si))))
           (when (= (e type-name) proto-name)
             (verify-conformance-params typename (e proto-name) null 0 line check)))
         (inc! si)))))
@@ -2726,22 +2736,13 @@
                                  con-protos:ptr con-vars:ptr con-args:ptr con-nargs:ptr
                                  num-constraints:i32)
   (let (i:i32 0)
-    (while (< i g-num-tmpl-conformances)
+    (while (< i (cast i32 (count g-tmpl-conformances)))
       (let (c:ptr:TmplConformance (cast ptr:TmplConformance
-                                    (ptr+ (cast ptr:TmplConformance g-tmpl-conformances) i)))
+                                    (invoke g-tmpl-conformances (cast usize i))))
         (when (and (= (c template) template) (= (c proto) proto)) (return)))
       (inc! i)))
-  (when (= g-num-tmpl-conformances g-cap-tmpl-conformances)
-    (let (nc:i32 16)
-      (when (!= g-cap-tmpl-conformances 0) (set! nc (* g-cap-tmpl-conformances 2)))
-      (let (nt:ptr (arena-alloc (* (cast i64 nc) (sizeof TmplConformance))))
-        (when (!= g-num-tmpl-conformances 0)
-          (memcpy nt g-tmpl-conformances (* (cast i64 g-num-tmpl-conformances) (sizeof TmplConformance))))
-        (set! g-tmpl-conformances nt)
-        (set! g-cap-tmpl-conformances nc))))
   (let (c:ptr:TmplConformance (cast ptr:TmplConformance
-                                (ptr+ (cast ptr:TmplConformance g-tmpl-conformances)
-                                      g-num-tmpl-conformances)))
+                                (arena-alloc (sizeof TmplConformance))))
     (.set! c template template)
     (.set! c proto proto)
     (.set! c bindings bindings)
@@ -2753,7 +2754,7 @@
     (.set! c con-args con-args)
     (.set! c con-nargs con-nargs)
     (.set! c num-constraints num-constraints)
-    (inc! g-num-tmpl-conformances)))
+    (conj g-tmpl-conformances (cast ptr c))))
 
 ; Check (and record) that the concrete instance named `iname`, stamped from
 ; struct template `st` with concrete arg spellings `arg-spellings` (length
@@ -2852,9 +2853,9 @@
 ; (and erroring, naming the missing method, if a required method does not resolve).
 (defn tmpl-conformance-check-instance:void (st:ptr iname:ptr arg-spellings:ptr nargs:i32 line:i32)
   (let (i:i32 0)
-    (while (< i g-num-tmpl-conformances)
+    (while (< i (cast i32 (count g-tmpl-conformances)))
       (let (c:ptr:TmplConformance (cast ptr:TmplConformance
-                                    (ptr+ (cast ptr:TmplConformance g-tmpl-conformances) i)))
+                                    (invoke g-tmpl-conformances (cast usize i))))
         (when (= (c template) st)
           (tmpl-conformance-check-one (cast ptr c) st iname arg-spellings nargs line)))
       (inc! i))))
@@ -2866,8 +2867,8 @@
 ; StructDef origin fields (T2) and runs the per-instance check.
 (defn tmpl-conformance-recheck-stamped:void (c:ptr st:ptr line:i32)
   (let (i:i32 0)
-    (while (< i g-structs-len)
-      (let (sd:ptr:StructDef (cast ptr:StructDef (ptr+ (cast ptr:StructDef g-structs) i)))
+    (while (< i (cast i32 (count g-structs)))
+      (let (sd:ptr:StructDef (cast ptr:StructDef (invoke g-structs (cast usize i))))
         (when (= (sd origin-template) st)
           (let (na:i32 (sd origin-nargs)
                 spell:ptr null)
@@ -3074,10 +3075,10 @@
                         (tmpl-conformance-add (cast ptr st) (cast ptr proto) proto-args proto-nargs
                                               tyvars ntv con-protos con-vars con-args con-nargs nc))))))
               ; Retroactively check instances stamped before this extend was seen.
-              (let (ntc:i32 g-num-tmpl-conformances
+              ; The just-added conformance is the last element of g-tmpl-conformances.
+              (let (ntc:i32 (cast i32 (count g-tmpl-conformances))
                     c:ptr:TmplConformance (cast ptr:TmplConformance
-                                            (ptr+ (cast ptr:TmplConformance g-tmpl-conformances)
-                                                  (- ntc 1))))
+                                            (invoke g-tmpl-conformances (cast usize (- ntc 1)))))
                 (tmpl-conformance-recheck-stamped (cast ptr c) (cast ptr st) (ff line)))
               (return)))))
       ; --- subject is a concrete type (symbol) ---

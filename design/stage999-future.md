@@ -109,3 +109,5 @@ Symbol mangling for any name LLVM or C might not like
 UnaryFn protocol should extend to a lot of things that can be invoked
 
 inc!/dec! predate macros; they should probably become macros over set!
+
+Bindings like (g:ptr:Generic (cast ptr:Generic (invoke g-generics (cast usize i)))) are verbose. Why isn't all of this typed correctly? Why `invoke` instead of the vector in the head position?

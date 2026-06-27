@@ -1,0 +1,10 @@
+map-inline [2 4 6]
+map-named  [11 12 13]
+filt-inline[1 3]
+filt-named [2 3]
+rmif-inline[2]
+rmif-named [1]
+feach-inl   1 2 3
+feach-name  101 102 103
+fmap-named1[1 11 2 12 3 13]
+fmap-named2[1 101 2 102 3 103]

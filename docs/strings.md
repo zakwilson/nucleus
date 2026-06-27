@@ -384,7 +384,32 @@ Constructs a `LineIter` that splits `sv` on `\n`, stripping any trailing `\r` fr
         (printf "%.*s\n" (cast i32 ((addr-of seg) len)) ((addr-of seg) data))))))
 ```
 
-**v1 limitation.** `SplitIter` and `LineIter` do **not** conform to `(Iterator StrView)`. The compiler cannot compile `(Maybe StrView)` (a struct embedded in the anonymous union) in JIT modules used for macro expansion. Use the `split-iter-done`/`split-iter-next` and `lines-iter-done`/`lines-iter-next` pairs directly.
+### `Iterator` conformance and `doseq-split` (Stage 13 R1)
+
+`SplitIter` and `LineIter` also conform to `(Iterator i64)`, so `reduce` /
+`doseq-iter` can drive them. They cannot conform to `(Iterator StrView)`
+directly — `(Maybe StrView)` embeds a struct in the anonymous union, which the
+macro-expansion JIT module cannot resolve — and a niche `(Maybe ptr)` is not
+matchable. Instead `next` stores each segment in the iterator's `cur` slot and
+yields a `(ref StrView)` into it **cast to `i64`** (a tagged, matchable Maybe).
+The `(doseq-split (var iter-ref) body)` macro hides the decode, binding `var` to
+a `(ref StrView)` borrowing `cur` (valid until the next step):
+
+```lisp
+(let (it:SplitIter (strview-split sv sep))
+  (doseq-split (seg (addr-of it))
+    (printf "%.*s\n" (cast i32 (seg len)) (seg data))))
+```
+
+The done-flag API (`split-iter-done`/`split-iter-next`, `lines-iter-done`/
+`lines-iter-next`) is retained and yields identical segments. See
+[Iterators](iterators.md#more-concrete-iterators-stage-13-r1) and
+`examples/split-iter-test.nuc`.
+
+**C-string byte/char folds.** `(cstr-bytes cs)` / `(cstr-chars cs)` return a
+`ByteIter` / `CharIter` over a `CStr` (NUL excluded), so a `CStr` can be byte- or
+char-folded with `reduce` like a `String` (which folds via `string-as-view` +
+`strview-bytes`/`strview-chars`). See `examples/cstr-fold-test.nuc`.
 
 ### Trim
 
@@ -481,7 +506,7 @@ All of these conform to the `Err` type and are usable with `(err-name e)`, `try`
 - **`?` in function names.** Classification functions use `char-is-ascii` etc. without a `?` suffix — `?` is invalid in LLVM IR identifiers for non-generic `defn` names. The `?` suffix is only valid in protocol method names, where the generics machinery sanitizes it.
 - **`string-push-str` and `string-truncate` return `!i32`.** The compiler does not yet support `!void`. Check for `(ok 0)` / `(err e)` or use `try` to propagate.
 - **`sub-bytes` returns `!ptr:StrView`.** The caller owns the `ptr:StrView` wrapper and must `free` it. The bytes are borrowed from the source StrView; do not free `data`.
-- **`SplitIter`/`LineIter` are not `Iterator StrView`.** The `(Maybe StrView)` union type cannot be compiled in JIT macro modules. Use the `*-iter-done`/`*-iter-next` pair directly.
+- **`SplitIter`/`LineIter` are not `Iterator StrView`.** The `(Maybe StrView)` union type cannot be compiled in JIT macro modules. They instead conform to `(Iterator i64)`, yielding each segment as a `(ref StrView)` cast to `i64`; the `doseq-split` macro decodes it. The `*-iter-done`/`*-iter-next` pair is still available.
 - **`string-new-alloc` takes `(ref AllocHandle)`.** It copies the handle in; the caller retains ownership of the original.
 - **`CharIter` is lossless but substitutes U+FFFD.** Invalid UTF-8 bytes are never skipped silently — iteration always advances by at least one byte. Invalid bytes produce U+FFFD (the Unicode replacement character) as the yield value rather than an error, so iterating over a `CharIter` always terminates without an error path.
 - **Borrow lifetimes are unchecked.** `ByteIter`, `CharIter`, `SplitIter`, `LineIter`, and sub-views returned by `strview-sub-bytes` all hold raw pointers into their source buffer. There is no compile-time lifetime enforcement — the caller is responsible for keeping the source alive.

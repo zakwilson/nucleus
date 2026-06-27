@@ -12,6 +12,7 @@
 ; Programs that don't use lists don't pay for them.
 
 (import-use "stdlib.h")
+(import-use iterator)
 
 (defstruct Node
   kind:i32
@@ -42,3 +43,40 @@
 (defn append:ptr (a:ptr b:ptr)
   (cond (= a null) (return b))
   (return (cons (first a) (append (rest a) b))))
+
+; ---------------------------------------------------------------------------
+; ListIter — drive a cons-cell list (a chain of CELL Nodes terminated by null)
+; as an Iterator, yielding each element (the `car` / `first` of each cell).
+;
+; The element is a Node* (a `ptr`), but it is yielded CAST TO i64 so the
+; (Maybe i64) is a TAGGED value-Maybe that `reduce` / `doseq-iter` / `match`
+; accept. This is the exact encoding I64ArrayIter uses for its pointer-cast
+; values. A bare (Maybe ptr) is NICHE-encoded (a nullable pointer, not a tagged
+; union) and is therefore NOT matchable — it cannot drive reduce/doseq (see the
+; (Maybe ptr) note in lib/iterator.nuc). Recover each element in a consumer with
+; (cast ptr:Node elem).
+;
+; This is the iterator that lets element combinators reach AST `Node` cdr-lists
+; without changing the cons-cell representation.
+;
+; LIFETIME: the iterator holds the current cell pointer and does NOT own the
+; list; the list must outlive the iterator.
+; ---------------------------------------------------------------------------
+(defstruct ListIter
+  cur:ptr)
+
+(extend ListIter (Iterator i64))
+
+(defn (next (Maybe i64)) ((self (ref ListIter)))
+  (let (c:ptr (self cur))
+    (when (= c null) (return none))
+    (.set! self cur (rest c))
+    (return (some (cast i64 (first c))))))
+
+; list-iter — a ListIter positioned at the head of `lst` (null = empty list).
+; Returned BY VALUE (alloca + set + deref), the value-return convention the
+; other iterators use; drive with (addr-of it) + next, or via doseq-iter.
+(defn list-iter:ListIter (lst:ptr)
+  (let ((it (ref ListIter)) (alloca ListIter))
+    (.set! it cur lst)
+    (return (deref it))))

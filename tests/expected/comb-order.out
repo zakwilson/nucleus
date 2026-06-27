@@ -1,0 +1,8 @@
+sort-asc [1 2 3 4 5]
+sort-desc[5 4 3 2 1]
+sortby-as[1 2 3 4 5]
+sortby-de[5 4 3 2 1]
+emitj-inline=[1, 2, 3, 4, 5]
+emitj-named=[1 | 2 | 3 | 4 | 5]
+join-inline=a/b/c
+join-named=one-two-three

@@ -221,6 +221,32 @@
 (defn strview-as-view:StrView ((sv (ref StrView)))
   (return (deref sv)))
 
+; ---------------------------------------------------------------------------
+; CStr byte/char iterators.
+;
+; A ByteIter / CharIter over a NUL-terminated C string (the NUL is excluded;
+; the length is strlen(cs)). The iterator BORROWS the C string's bytes and must
+; not outlive it. These let a CStr be byte- or char-folded with `reduce` exactly
+; like a String (which folds via string-as-view + strview-bytes/-chars), e.g.
+; expressing the FNV byte hash as a fold over the byte iterator.
+; ---------------------------------------------------------------------------
+
+; cstr-bytes — a ByteIter over the bytes of cs (by value, value-return convention).
+(defn cstr-bytes:ByteIter (cs:CStr)
+  (let ((it (ref ByteIter)) (alloca ByteIter))
+    (.set! it buf (cast ptr:ui8 (cast ptr cs)))
+    (.set! it pos (cast usize 0))
+    (.set! it len (cast usize (strlen (cast ptr cs))))
+    (return (deref it))))
+
+; cstr-chars — a CharIter over the UTF-8 codepoints of cs (by value).
+(defn cstr-chars:CharIter (cs:CStr)
+  (let ((it (ref CharIter)) (alloca CharIter))
+    (.set! it buf (cast ptr:ui8 (cast ptr cs)))
+    (.set! it pos (cast usize 0))
+    (.set! it len (cast usize (strlen (cast ptr cs))))
+    (return (deref it))))
+
 ; strview-sub-bytes — O(1) sub-slice [start, end).
 ;
 ; Two distinct errors:

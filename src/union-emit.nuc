@@ -938,8 +938,8 @@
 ; constants, so a collision already means same-kind reuse).
 (defn enumdef-lookup-member:?ptr:EnumDef (member:ptr)
   (let (i:i32 0)
-    (while (< i g-enumdefs-len)
-      (let (ed:ptr:EnumDef (cast ptr:EnumDef (ptr+ (cast ptr:EnumDef g-enumdefs) i)))
+    (while (< i (cast i32 (count g-enumdefs)))
+      (let (ed:ptr:EnumDef (cast ptr:EnumDef (invoke g-enumdefs (cast usize i))))
         (when (>= (enum-member-index (cast ptr ed) member) 0)
           (return (cast ptr ed))))
       (inc! i)))

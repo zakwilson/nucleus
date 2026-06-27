@@ -98,34 +98,36 @@
 ; before init runs.
 (defvar g-host-ptr-bytes:i32 8)
 
-; Struct registry
-(defvar g-structs:ptr)
-(defvar g-structs-len:i32 0)
+; Struct registry. (Vector ptr) of StructDef* (each individually arena-allocated,
+; registration order). count = number of structs; invoke = indexed access.
+(defvar (g-structs (ref (Vector ptr))))
 ; Stage 10 unions: tagged-sum registry, templates, enum tables, and the list of
 ; untagged-union StructDefs whose IR type definition is still pending. Union IR
 ; needs member sizes (for padding), and members may name structs whose fields
 ; are registered later in the unit — so union type defs are written lazily, by
 ; drain-pending-union-irs, at every module-assembly point (LLVM named types are
 ; order-independent within a module).
-(defvar g-uniondefs:ptr)
-(defvar g-uniondefs-len:i32 0)
-(defvar g-union-templates:ptr)
-(defvar g-union-templates-len:i32 0)
+; (Vector ptr) of UnionDef* (each individually arena-allocated, registration order).
+(defvar (g-uniondefs (ref (Vector ptr))))
+; (Vector ptr) of UnionTemplate* (each individually arena-allocated).
+(defvar (g-union-templates (ref (Vector ptr))))
 ; Stage 11 parametric structs: defstruct-template registry. Inert until a use
 ; `(Vector i32)` in type position fires a stamp (parametric-structs.md §1).
-(defvar g-struct-templates:ptr)
-(defvar g-struct-templates-len:i32 0)
-(defvar g-enumdefs:ptr)
-(defvar g-enumdefs-len:i32 0)
+(defvar (g-struct-templates (ref (Vector ptr))))
+; (Vector ptr) of EnumDef* (each individually arena-allocated).
+(defvar (g-enumdefs (ref (Vector ptr))))
 (defvar (g-pending-unions (ref (Vector ptr))))
 ; Stage 10 errors: the deferror descriptor table, indexed by error id (1-based;
 ; slot 0 reserved). Each entry is the string-table id of the name / message, so
 ; the table emits as arrays of `@.str.N` pointers at module assembly. Emitted
 ; only when at least one deferror exists or an accessor is used, so programs that
 ; never touch errors stay byte-identical.
-(defvar g-deferror-name-sids:ptr)
-(defvar g-deferror-msg-sids:ptr)
-(defvar g-deferrors-len:i32 0)
+; Parallel (Vector ptr) registries indexed by 1-based error id; index 0 is a
+; reserved placeholder ("no error"), conj'd at init so the vector index equals the
+; runtime id. Each element is a string-table id stored in the ptr slot via an
+; i64↔ptr cast. The old g-deferrors-len (highest id) is (count - 1).
+(defvar (g-deferror-name-sids (ref (Vector ptr))))
+(defvar (g-deferror-msg-sids (ref (Vector ptr))))
 (defvar g-err-table-used:i32 0)
 
 ; Global scope
@@ -144,10 +146,10 @@
 (defvar (g-special-form-set (ref (HashSet CStr))))
 (defvar (g-primitive-type-set (ref (HashSet CStr))))
 
-; String literal table
-(defvar g-strs:ptr)
-(defvar g-strs-len:i32 0)
-(defvar g-strs-cap:i32 0)
+; String literal table. (Vector ptr) of StrLit* (each individually
+; arena-allocated). The interned id is the element's position, so emit sites read
+; back the StrLit by `(invoke g-strs id)` and emit `@.str.<id>`.
+(defvar (g-strs (ref (Vector ptr))))
 
 ; Per-function codegen state
 (defvar g-tmp:i32 0)
@@ -162,8 +164,8 @@
 
 ; defcast registry (Stage 8). g-cast-rules is a pre-allocated array of CastRule
 ; (length MAX-CAST-RULES), filled by register-cast-rule from `defcast` forms.
-(defvar g-cast-rules:ptr)
-(defvar g-cast-rules-len:i32 0)
+; (Vector ptr) of CastRule* (each individually arena-allocated, registration order).
+(defvar (g-cast-rules (ref (Vector ptr))))
 
 ; Label/goto support (Stage 8 C-parity). g-lbl-tbl is a Vec of LabelEntry*
 ; (name, total occurrence count, seen-so-far) reset per function by
@@ -211,13 +213,13 @@
 (defvar g-ct-id:i32 0)
 
 ; BinOp table
-(defvar g-binops:ptr)
-(defvar g-num-binops:i32 0)
+; (Vector ptr) of BinOp* (each individually arena-allocated, registration order).
+(defvar (g-binops (ref (Vector ptr))))
 
-; Generic (polymorphism) registry
-(defvar g-generics:ptr)
-(defvar g-num-generics:i32 0)
-(defvar g-cap-generics:i32 0)
+; Generic (polymorphism) registry. (Vector ptr) of Generic* (each Generic is
+; individually arena-allocated; the vector holds the pointers in registration
+; order). count = number of generics; invoke = indexed access.
+(defvar (g-generics (ref (Vector ptr))))
 
 ; Monomorphization worklist (Stage 9 rung 4): stamped concrete defn forms
 ; awaiting emission. Generic calls resolve + register an instantiation eagerly
@@ -235,19 +237,17 @@
 ; names and with g-source-path restored to the unit being compiled.
 (defvar g-toplevel-depth:i32 0)
 
-; Protocol / conformance registries (Stage 9 rung 2)
-(defvar g-protocols:ptr)
-(defvar g-num-protocols:i32 0)
-(defvar g-cap-protocols:i32 0)
-(defvar g-conformances:ptr)
-(defvar g-num-conformances:i32 0)
-(defvar g-cap-conformances:i32 0)
+; Protocol / conformance registries (Stage 9 rung 2). (Vector ptr) of Protocol*
+; (each individually arena-allocated, in registration order).
+(defvar (g-protocols (ref (Vector ptr))))
+; (Vector ptr) of Conformance* (each individually arena-allocated, registration
+; order).
+(defvar (g-conformances (ref (Vector ptr))))
 ; Protocol inheritance edges (Stage 9 §10.3): `(extend Ord Eq)` records that
 ; conforming to Ord additionally requires conforming to Eq. Reuses the
 ; Conformance layout: type-name = sub-protocol, proto-name = required super.
-(defvar g-proto-supers:ptr)
-(defvar g-num-proto-supers:i32 0)
-(defvar g-cap-proto-supers:i32 0)
+; (Vector ptr) of Conformance* edges (each individually arena-allocated).
+(defvar (g-proto-supers (ref (Vector ptr))))
 
 ; Stage 11 parametric structs (T4): template-level conformances. A
 ; `(extend (Vector T) (Seq T))` records that *every* stamped instance of the
@@ -257,9 +257,8 @@
 ; `Vector.i32` is stamped, the template tyvars are substituted to concrete args
 ; and each required method must resolve for the instance. Inert until a stamp
 ; fires, so byte-identical for programs using no parametric protocols.
-(defvar g-tmpl-conformances:ptr)
-(defvar g-num-tmpl-conformances:i32 0)
-(defvar g-cap-tmpl-conformances:i32 0)
+; (Vector ptr) of TmplConformance* (each individually arena-allocated).
+(defvar (g-tmpl-conformances (ref (Vector ptr))))
 
 ; Stage 12 N8: late-binding hooks that bridge a single back-edge each, where an
 ; earlier-imported file must call a function that lives in a later-imported file
@@ -281,17 +280,18 @@
 ; Blanket protocols (Stage 9 §10.1): built-in protocols with automatic
 ; conformance — `Any` (every type) and `Struct` (every struct type). Stored as a
 ; small set of names plus a per-name predicate baked into blanket-conforms.
-(defvar g-blanket:ptr)
-(defvar g-num-blanket:i32 0)
+; (Vector ptr) of blanket-protocol name strings (interned CStr stored as ptr).
+(defvar (g-blanket (ref (Vector ptr))))
 
-; Macro registry
-(defvar g-macros:ptr)
-(defvar g-num-macros:i32 0)
+; Macro registry. (Vector ptr) of MacroDef* (each individually arena-allocated,
+; registration order). The element index is also the macro's JIT-name uniquifier.
+(defvar (g-macros (ref (Vector ptr))))
 (defvar g-gensym-id:i32 0)
 
 ; Reader macro table
-(defvar g-rmacros:ptr)
-(defvar g-num-rmacros:i32 0)
+; Reader macro table. (Vector ptr) of RMacro* (each individually arena-allocated,
+; registration order).
+(defvar (g-rmacros (ref (Vector ptr))))
 
 ; Set to 1 once @malloc has been declared via a C-header import (e.g. (import-use "stdlib.h")).
 ; Guards against emitting a duplicate malloc declaration in macro JIT modules.
@@ -869,7 +869,7 @@
 (defn emit-string:ref:Val (n:ptr)
   (let (nn:ptr:Node (cast ptr:Node n)
         id:i32 (intern-string (nn s) (cast i32 (strlen (nn s))))
-        ir-len:i32 (+ ((cast ptr:StrLit (ptr+ (cast ptr:StrLit g-strs) id)) len) 1)
+        ir-len:i32 (+ ((cast ptr:StrLit (invoke g-strs (cast usize id))) len) 1)
         tmp:ptr (new-tmp))
     (fprintf g-body-stream
       "  %s = getelementptr inbounds [%d x i8], ptr @.str.%d, i64 0, i64 0\n"
@@ -909,7 +909,7 @@
   (let (nn:ptr:Node (cast ptr:Node n))
     (when (= (nn kind) NODE-SYM)
       (let (sid:i32 (intern-string (nn s) (cast i32 (strlen (nn s))))
-            ir-len:i32 (+ ((cast ptr:StrLit (ptr+ (cast ptr:StrLit g-strs) sid)) len) 1)
+            ir-len:i32 (+ ((cast ptr:StrLit (invoke g-strs (cast usize sid))) len) 1)
             tmp:ptr (new-tmp))
         (fprintf g-body-stream
           "  %s = call ptr @intern-symbol(ptr getelementptr inbounds ([%d x i8], ptr @.str.%d, i64 0, i64 0))\n"
@@ -953,7 +953,7 @@
                 (= (nn kind) NODE-FLOAT)
                 (= (nn kind) NODE-KEYWORD))
         (let (sid:i32 (intern-string (nn s) (cast i32 (strlen (nn s))))
-              ir-len:i32 (+ ((cast ptr:StrLit (ptr+ (cast ptr:StrLit g-strs) sid)) len) 1)
+              ir-len:i32 (+ ((cast ptr:StrLit (invoke g-strs (cast usize sid))) len) 1)
               sp:ptr (new-tmp))
           (fprintf g-body-stream
             "  %s = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %s, i32 0, i32 3\n"
@@ -1296,15 +1296,15 @@
 ; ============================================================
 
 (defn add-binop:void (name:ptr instr:ptr instr-u:ptr is-cmp:i32)
-  (let (op:ptr:BinOp (cast ptr:BinOp (ptr+ (cast ptr:BinOp g-binops) g-num-binops)))
+  (let (op:ptr:BinOp (cast ptr:BinOp (arena-alloc (sizeof BinOp))))
     (.set! op name name)
     (.set! op instr instr)
     (.set! op instr-u instr-u)
     (.set! op is-cmp is-cmp)
-    (inc! g-num-binops)))
+    (conj g-binops (cast ptr op))))
 
 (defn init-binops:void ()
-  (set! g-binops (arena-alloc (* (cast i64 24) (sizeof BinOp))))
+  (set! g-binops (make-vec))
   (add-binop "_+"     "add nsw"  "add"      0)
   (add-binop "_-"     "sub nsw"  "sub"      0)
   (add-binop "_*"     "mul nsw"  "mul"      0)
@@ -1371,20 +1371,19 @@
 ; ============================================================
 
 (defn register-cast-rule:void (from:ptr to:ptr ir-name:ptr)
-  (when (>= g-cast-rules-len MAX-CAST-RULES)
+  (when (>= (cast i32 (count g-cast-rules)) MAX-CAST-RULES)
     (fprintf stderr "nucleusc: too many defcast rules\n") (exit 1))
-  (let (cr:ptr:CastRule (cast ptr:CastRule
-                          (ptr+ (cast ptr:CastRule g-cast-rules) g-cast-rules-len)))
+  (let (cr:ptr:CastRule (cast ptr:CastRule (arena-alloc (sizeof CastRule))))
     (.set! cr from from)
     (.set! cr to to)
     (.set! cr ir-name ir-name)
-    (inc! g-cast-rules-len)))
+    (conj g-cast-rules (cast ptr cr))))
 
 (defn lookup-cast-rule:?ptr:CastRule (from:ptr to:ptr)
   (let (i:i32 0)
-    (while (< i g-cast-rules-len)
+    (while (< i (cast i32 (count g-cast-rules)))
       (let (cr:ptr:CastRule (cast ptr:CastRule
-                              (ptr+ (cast ptr:CastRule g-cast-rules) i)))
+                              (invoke g-cast-rules (cast usize i))))
         (when (and (!= (type-eq (cr from) from) 0)
                    (!= (type-eq (cr to) to) 0))
           (return (cast ptr cr))))
@@ -6042,8 +6041,8 @@
 ; Find a macro definition by name, or null.
 (defn find-macro:?ptr:MacroDef (name:ptr)
   (let (mi:i32 0)
-    (while (< mi g-num-macros)
-      (let (mdef:ptr:MacroDef (cast ptr:MacroDef (ptr+ (cast ptr:MacroDef g-macros) mi)))
+    (while (< mi (cast i32 (count g-macros)))
+      (let (mdef:ptr:MacroDef (cast ptr:MacroDef (invoke g-macros (cast usize mi))))
         (when (= (mdef name) name)
           (return (cast ptr mdef))))
       (inc! mi)))
@@ -6357,8 +6356,8 @@
             hp:ptr (cast ptr head))
         ; Check macro table before special forms.
         (let (mi:i32 0)
-          (while (< mi g-num-macros)
-            (let (mdef:ptr:MacroDef (cast ptr:MacroDef (ptr+ (cast ptr:MacroDef g-macros) mi)))
+          (while (< mi (cast i32 (count g-macros)))
+            (let (mdef:ptr:MacroDef (cast ptr:MacroDef (invoke g-macros (cast usize mi))))
               (when (= (mdef name) h)
                 (return (emit-macro-expand n scope (cast ptr mdef)))))
             (inc! mi)))
@@ -6494,24 +6493,24 @@
   (when (!= (special-form-named (cast CStr name)) 0) (return NK-SPECIAL))
   (when (!= (primitive-type-named (cast CStr name)) 0) (return NK-BUILTIN))
   (let (i:i32 0)
-    (while (< i g-structs-len)
-      (let (sd:ptr:StructDef (cast ptr:StructDef (ptr+ (cast ptr:StructDef g-structs) i)))
+    (while (< i (cast i32 (count g-structs)))
+      (let (sd:ptr:StructDef (cast ptr:StructDef (invoke g-structs (cast usize i))))
         (when (= (strcmp (sd name) name) 0) (return NK-TYPE)))
       (inc! i)))
   (when (!= (cast ptr (union-template-lookup name)) null) (return NK-TYPE))
   (let (i:i32 0)
-    (while (< i g-num-protocols)
-      (let (p:ptr:Protocol (cast ptr:Protocol (ptr+ (cast ptr:Protocol g-protocols) i)))
+    (while (< i (cast i32 (count g-protocols)))
+      (let (p:ptr:Protocol (cast ptr:Protocol (invoke g-protocols (cast usize i))))
         (when (= (strcmp (p name) name) 0) (return NK-PROTOCOL)))
       (inc! i)))
   (let (i:i32 0)
-    (while (< i g-num-macros)
-      (let (m:ptr:MacroDef (cast ptr:MacroDef (ptr+ (cast ptr:MacroDef g-macros) i)))
+    (while (< i (cast i32 (count g-macros)))
+      (let (m:ptr:MacroDef (cast ptr:MacroDef (invoke g-macros (cast usize i))))
         (when (= (strcmp (m name) name) 0) (return NK-MACRO)))
       (inc! i)))
   (let (i:i32 0)
-    (while (< i g-num-generics)
-      (let (g:ptr:Generic (cast ptr:Generic (ptr+ (cast ptr:Generic g-generics) i)))
+    (while (< i (cast i32 (count g-generics)))
+      (let (g:ptr:Generic (cast ptr:Generic (invoke g-generics (cast usize i))))
         (when (= (strcmp (g name) name) 0) (return NK-FUNCTION)))
       (inc! i)))
   (let (sc:ptr:Scope (cast ptr:Scope g-globals)
@@ -6697,15 +6696,16 @@
                    (= (-> existing (_ type) (cast ptr:Type _) (_ kind)) TY-ERR))
           (return (ok (cast i32 0)))))
       (guard-name-kind (name-node s) (cc line) NK-VALUE)
-      (when (>= g-deferrors-len MAX-DEFERRORS)
+      (when (>= (- (cast i32 (count g-deferror-name-sids)) 1) MAX-DEFERRORS)
         (do (report-at (cc line) "deferror: too many error definitions (id cap 4095)")
             (return (err! malformed-form))))
-      (let (id:i32 (+ g-deferrors-len 1)
+      ; The next 1-based id is the index the new element lands at — i.e. the
+      ; current count (index 0 is the reserved placeholder).
+      (let (id:i32 (cast i32 (count g-deferror-name-sids))
             name-sid:i32 (intern-string (name-node s) (cast i32 (strlen (name-node s))))
             msg-sid:i32 (intern-string (msg-node s) (cast i32 (strlen (msg-node s)))))
-        (aset! (cast ptr:i32 g-deferror-name-sids) id name-sid)
-        (aset! (cast ptr:i32 g-deferror-msg-sids) id msg-sid)
-        (set! g-deferrors-len id)
+        (conj g-deferror-name-sids (cast ptr (cast i64 name-sid)))
+        (conj g-deferror-msg-sids (cast ptr (cast i64 msg-sid)))
         (let (sym:ref:Sym (scope-define g-globals (name-node s) (cast ptr ty-err) null 0))
           (.set! sym is-const 1)
           (.set! sym const-val (fmt-i32 "%d" id)))
@@ -6767,12 +6767,11 @@
     ; enum (unions.md §4 freebie). Re-registration (import dedup) is a no-op.
     (let (en:ptr:Node (cast ptr:Node (node-at cc 1)))
       (when (and (= (en kind) NODE-SYM)
-                 (< g-enumdefs-len MAX-ENUMS)
+                 (< (cast i32 (count g-enumdefs)) MAX-ENUMS)
                  (= (cast ptr (enumdef-lookup (en s))) null))
         (let (n:i32 (- (node-len cc) 2)
               members:ptr (arena-alloc (* (cast i64 n) (ptr-bytes)))
-              ed:ptr:EnumDef (cast ptr:EnumDef
-                               (ptr+ (cast ptr:EnumDef g-enumdefs) g-enumdefs-len))
+              ed:ptr:EnumDef (cast ptr:EnumDef (arena-alloc (sizeof EnumDef)))
               j:i32 0)
           (while (< j n)
             (aset! (cast ptr:ptr members) j
@@ -6781,12 +6780,12 @@
           (.set! ed name (en s))
           (.set! ed members members)
           (.set! ed num-members n)
-          (inc! g-enumdefs-len))))))
+          (conj g-enumdefs (cast ptr ed)))))))
 
 (defn enumdef-lookup:?ptr:EnumDef (name:ptr)
   (let (i:i32 0)
-    (while (< i g-enumdefs-len)
-      (let (ed:ptr:EnumDef (cast ptr:EnumDef (ptr+ (cast ptr:EnumDef g-enumdefs) i)))
+    (while (< i (cast i32 (count g-enumdefs)))
+      (let (ed:ptr:EnumDef (cast ptr:EnumDef (invoke g-enumdefs (cast usize i))))
         (when (= (ed name) name)
           (return (cast ptr ed))))
       (inc! i)))
@@ -7548,7 +7547,7 @@
       (guard-name-kind (name-node s) (ff line) NK-MACRO)
       (let (macro-name:ptr (name-node s)
             num-params:i32 (node-len params-node)
-            jit-name:ptr (fmt-sd "__macro_%s_%d" (sanitize-for-ir macro-name) g-num-macros))
+            jit-name:ptr (fmt-sd "__macro_%s_%d" (sanitize-for-ir macro-name) (cast i32 (count g-macros))))
         ; Detect &rest variadic parameter (must be second-to-last in param list).
         (let (variadic:i32 0
               pcount:i32 num-params)
@@ -7576,14 +7575,14 @@
                   (inc! ai)))
             (inc! pi))
           ; Register in macro table
-          (when (>= g-num-macros 256)
+          (when (>= (cast i32 (count g-macros)) 256)
             (die-at (ff line) "defmacro: macro table full"))
-          (let (mdef:ptr:MacroDef (cast ptr:MacroDef (ptr+ (cast ptr:MacroDef g-macros) g-num-macros)))
+          (let (mdef:ptr:MacroDef (cast ptr:MacroDef (arena-alloc (sizeof MacroDef))))
             (.set! mdef name macro-name)
             (.set! mdef jit-name jit-name)
             (.set! mdef num-params pcount)
             (.set! mdef variadic variadic)
-            (inc! g-num-macros))
+            (conj g-macros (cast ptr mdef)))
 
           ; Flush main streams
           (fflush g-type-stream)
@@ -7741,8 +7740,8 @@
 
 (defn emit-string-table:void (out:ptr)
   (let (i:i32 0)
-    (while (< i g-strs-len)
-      (let (sl:ptr:StrLit (cast ptr:StrLit (ptr+ (cast ptr:StrLit g-strs) i))
+    (while (< i (cast i32 (count g-strs)))
+      (let (sl:ptr:StrLit (cast ptr:StrLit (invoke g-strs (cast usize i)))
             ir-len:i32 (+ (sl len) 1))
         (fprintf out "@.str.%d = private unnamed_addr constant [%d x i8] c\""
           (sl id) ir-len)
@@ -7757,7 +7756,7 @@
             (inc! j)))
         (fprintf out "\\00\", align 1\n"))
       (inc! i)))
-  (when (!= g-strs-len 0) (fputc 10 out)))
+  (when (!= (count g-strs) (cast usize 0)) (fputc 10 out)))
 
 ; Stage 10 errors: the deferror descriptor table (design/stage10/errors.md §8).
 ; Two arrays of name/message pointers, indexed by error id (slot 0 reserved =
@@ -7765,15 +7764,16 @@
 ; needed at the call site. Emitted only when errors are in play, keeping
 ; error-free programs (incl. the compiler's own bootstrap) byte-identical.
 (defn emit-deferror-table:void (out:ptr)
-  (when (and (= g-deferrors-len 0) (= g-err-table-used 0)) (return))
-  (let (n:i32 (+ g-deferrors-len 1))
+  ; count == 1 means only the reserved placeholder (no real deferrors).
+  (when (and (= (count g-deferror-name-sids) (cast usize 1)) (= g-err-table-used 0)) (return))
+  (let (n:i32 (cast i32 (count g-deferror-name-sids)))
     (fprintf out "@nuc_err_names = constant [%d x ptr] [" n)
     (let (i:i32 0)
       (while (< i n)
         (when (> i 0) (fprintf out ", "))
         (if (= i 0)
           (fprintf out "ptr null")
-          (fprintf out "ptr @.str.%d" (aref (cast ptr:i32 g-deferror-name-sids) i)))
+          (fprintf out "ptr @.str.%d" (cast i32 (cast i64 (invoke g-deferror-name-sids (cast usize i))))))
         (inc! i)))
     (fprintf out "]\n")
     (fprintf out "@nuc_err_messages = constant [%d x ptr] [" n)
@@ -7782,7 +7782,7 @@
         (when (> i 0) (fprintf out ", "))
         (if (= i 0)
           (fprintf out "ptr null")
-          (fprintf out "ptr @.str.%d" (aref (cast ptr:i32 g-deferror-msg-sids) i)))
+          (fprintf out "ptr @.str.%d" (cast i32 (cast i64 (invoke g-deferror-msg-sids (cast usize i))))))
         (inc! i)))
     (fprintf out "]\n\n")))
 
@@ -9022,14 +9022,14 @@
 ; ============================================================
 
 (defn register-rmacro:void (prefix:ptr wrap-sym:ptr)
-  (let (rm:ptr:RMacro (cast ptr:RMacro (ptr+ (cast ptr:RMacro g-rmacros) g-num-rmacros)))
+  (let (rm:ptr:RMacro (cast ptr:RMacro (arena-alloc (sizeof RMacro))))
     (.set! rm prefix prefix)
     (.set! rm prefix-len (cast i32 (strlen prefix)))
-    (.set! rm wrap-sym wrap-sym))
-  (inc! g-num-rmacros))
+    (.set! rm wrap-sym wrap-sym)
+    (conj g-rmacros (cast ptr rm))))
 
 (defn init-rmacros:void ()
-  (set! g-rmacros (arena-alloc (* (cast i64 64) (sizeof RMacro))))
+  (set! g-rmacros (make-vec))
   ; Register longest prefixes first for correct matching.
   (register-rmacro "~@" "unquote-splice")
   (register-rmacro "~" "unquote")
@@ -9040,10 +9040,9 @@
 ; Register the built-in blanket protocols (§10.1). Hardcoded for now; a
 ; user-declarable blanket facility is parked in design/stage999-future.md.
 (defn init-blanket:void ()
-  (set! g-blanket (arena-alloc (* (cast i64 8) (ptr-bytes))))
-  (aset! (cast ptr:ptr g-blanket) 0 "Any")
-  (aset! (cast ptr:ptr g-blanket) 1 "Struct")
-  (set! g-num-blanket 2)
+  (set! g-blanket (make-vec))
+  (conj g-blanket (cast ptr "Any"))
+  (conj g-blanket (cast ptr "Struct"))
   ; Stage 12 N8: install the late-binding cross-file hooks (see their defvars).
   ; tmpl-conformance-check-instance (generics.nuc) is called from union-registry
   ; .nuc; stamp-maybe-type (union-emit.nuc) is called from node-type-call (generics
@@ -9181,6 +9180,8 @@
   ; name-kind HashSets built by init-name-sets, and every make-vec) is
   ; constructed against it, so it has to be live before any of them.
   (arena-allocator (addr-of g-arena-alloc))
+  ; String-literal table: empty Vector, grown by intern-string during emit.
+  (set! g-strs (make-vec))
   ; Stage 12 N4: g-current-ns must be set before init-generics (which calls
   ; generic-new → ns-ir-prefix → strcmp(g-current-ns, "user")); intern-str
   ; requires the arena live, which is satisfied by the arena-allocator call above.
@@ -9198,26 +9199,29 @@
   (set! g-host-ptr-bytes (cast i32 (sizeof ptr)))
   (target-init)
   (types-init)
+  (set! g-generics (make-vec))
   (init-binops)
   (init-generics)
   (init-blanket)
+  (set! g-fnty-names (make-vec))
+  (set! g-fnty-types (make-vec))
+  (set! g-protocols (make-vec))
+  (set! g-conformances (make-vec))
+  (set! g-proto-supers (make-vec))
   (set! g-mono-worklist (make-vec))
   (init-rmacros)
-  (set! g-structs (arena-alloc (* (cast i64 MAX-STRUCTS) (sizeof StructDef))))
-  (set! g-uniondefs (arena-alloc (* (cast i64 MAX-UNIONS) (sizeof UnionDef))))
-  (set! g-uniondefs-len 0)
-  (set! g-union-templates (arena-alloc (* (cast i64 MAX-UNION-TEMPLATES) (sizeof UnionTemplate))))
-  (set! g-union-templates-len 0)
-  (set! g-struct-templates (arena-alloc (* (cast i64 MAX-STRUCT-TEMPLATES) (sizeof StructTemplate))))
-  (set! g-struct-templates-len 0)
-  (set! g-tmpl-conformances null)
-  (set! g-num-tmpl-conformances 0)
-  (set! g-cap-tmpl-conformances 0)
-  (set! g-enumdefs (arena-alloc (* (cast i64 MAX-ENUMS) (sizeof EnumDef))))
-  (set! g-enumdefs-len 0)
-  (set! g-deferror-name-sids (arena-alloc (* (cast i64 (+ MAX-DEFERRORS 1)) (cast i64 4))))
-  (set! g-deferror-msg-sids (arena-alloc (* (cast i64 (+ MAX-DEFERRORS 1)) (cast i64 4))))
-  (set! g-deferrors-len 0)
+  (set! g-structs (make-vec))
+  (set! g-uniondefs (make-vec))
+  (set! g-union-templates (make-vec))
+  (set! g-struct-templates (make-vec))
+  (set! g-tmpl-conformances (make-vec))
+  (set! g-enumdefs (make-vec))
+  ; Deferror sid tables: reserve index 0 (the "no error" placeholder) so the
+  ; vector index equals the 1-based runtime error id.
+  (set! g-deferror-name-sids (make-vec))
+  (set! g-deferror-msg-sids (make-vec))
+  (conj g-deferror-name-sids (cast ptr (cast i64 0)))
+  (conj g-deferror-msg-sids (cast ptr (cast i64 0)))
   (set! g-err-table-used 0)
   (set! g-prescan-visited null)
   (set! g-import-aliased null)
@@ -9225,9 +9229,8 @@
   (set! g-cinclude-collecting 0)
   (set! g-cinclude-collected null)
   (set! g-pending-unions (make-vec))
-  (set! g-macros (arena-alloc (* (cast i64 256) (sizeof MacroDef))))
-  (set! g-cast-rules (arena-alloc (* (cast i64 MAX-CAST-RULES) (sizeof CastRule))))
-  (set! g-cast-rules-len 0)
+  (set! g-macros (make-vec))
+  (set! g-cast-rules (make-vec))
   (set! g-globals (scope-new null))
   ; Stage 12: start every compilation unit in the default `user` namespace.
   ; Interned so qualify-name's "is this the user namespace?" check is a pointer

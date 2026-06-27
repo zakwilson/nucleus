@@ -88,3 +88,28 @@ Unicode-tables library.
 
 I really want strings to be Seq, or to add another protocol. It should be possible to `doseq` a string.
 
+## Type erasure
+
+- **Multi-protocol boxes** (`(dyn (Show Eq))` / `BoxedFn` conforming to several
+  protocols at once). v1 is **single-protocol**; the vtable holds one protocol's
+  method set.
+- **`clone` on boxes.** The vtable reserves a `clone?` slot but v1 may **omit**
+  it — a box is move-only / non-cloneable until a concrete need appears (cloning
+  a box means deep-cloning the heap payload through the allocator, which needs
+  the env to be `Clone`).
+- **Object-safety / method-set selection.** Which protocols are "box-safe"
+  (single dispatch, no `Self`-by-value returns, no generic methods) — v1
+  restricts to the obviously-safe shapes (the `Fn` family is trivially safe);
+  general object-safety rules are deferred.
+- **Coherence interaction.** The unified structural-vs-nominal lookup must keep
+  one-conformance-per-`(type, protocol)`; v1 must not let a structurally-derived
+  `Fn` conformance and a hand-written `extend` collide for the same type/protocol
+  (the L7 coherence rule already covers the `Fn` family).
+- **`cfn`-of-pointer escape interaction.** Boxing a `cfn` that captured a
+  pointer-typed local by reference inherits the known `cfn`-of-pointer escape
+  imprecision (closure-enhancements.md §"Known soundness gap"); boxing does not
+  *fix* it and may *extend* its reach (a dangling box). v1 documents this; the
+  full fix is the deferred per-binding region precision.
+- **C-ABI crossing.** v1 excludes `BoxedFn`/`(dyn P)`-mentioning public defns
+  from `--emit-cheader` (L8 precedent). A faithful C representation of the fat
+  pointer + `Drop` semantics is out of scope.
