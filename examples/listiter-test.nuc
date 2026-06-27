@@ -1,0 +1,50 @@
+; R1-iter: ListIter — drive a cons-cell Node* list as an Iterator.
+;
+; Builds a cons list of INT nodes (10 20 30 40) and:
+;   1. doseq-iter over a ListIter, printing each element's .i field.
+;   2. reduce over a fresh ListIter, summing the .i fields (= 100).
+;
+; The element is a Node* yielded as i64 (the tagged-Maybe encoding ListIter
+; uses); a consumer recovers it with (cast ptr:Node (cast ptr e)).
+
+(import-use "stdio.h")
+(import-use "stdlib.h")
+; Explicit path: a bare (import-use list) would resolve to examples/list.nuc
+; (importer-dir is searched first), which has its own `main`. The path form
+; reaches the library unambiguously.
+(import-use "lib/list.nuc")
+(import-use iterator)
+
+; FoldFn: add the .i field of each list node (a Node*, arriving as an i64) to acc.
+(defstruct SumNodeI dummy:i32)
+(extend SumNodeI (FoldFn i64 i64))
+(defn (fold i64) ((self (ref SumNodeI)) (acc i64) (x i64))
+  (let (n:ptr:Node (cast ptr:Node (cast ptr x)))
+    (return (+ acc (n i)))))
+
+; int-node — a fresh INT node carrying value v.
+(defn int-node:ptr (v:i64)
+  (let (c:ptr:Node (cast ptr:Node (malloc (sizeof Node))))
+    (.set! c kind 0)
+    (.set! c line 0)
+    (.set! c i v)
+    (.set! c s null)
+    (.set! c car null)
+    (.set! c cdr null)
+    (return (cast ptr c))))
+
+(defn main:i32 ()
+  (let (lst:ptr (cons (int-node (cast i64 10))
+                      (cons (int-node (cast i64 20))
+                            (cons (int-node (cast i64 30))
+                                  (cons (int-node (cast i64 40)) null)))))
+    ; 1. doseq-iter: print each element's .i field.
+    (let (it:ListIter (list-iter lst))
+      (doseq-iter (x (addr-of it))
+        (printf "elem=%lld\n" (cast i64 ((cast ptr:Node (cast ptr x)) i)))))
+    ; 2. reduce: sum the .i fields.
+    (let ((sm (ref SumNodeI)) (alloca SumNodeI)
+          (it (ref ListIter)) (alloca ListIter))
+      (.set! it cur lst)
+      (printf "sum=%lld\n" (reduce sm (cast i64 0) it))))
+  (return 0))

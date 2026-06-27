@@ -398,8 +398,8 @@
     (let (best-idx:i32 -1
           best-len:i32 0
           ri:i32 0)
-      (while (< ri g-num-rmacros)
-        (let (rm:ptr:RMacro (cast ptr:RMacro (ptr+ (cast ptr:RMacro g-rmacros) ri))
+      (while (< ri (cast i32 (count g-rmacros)))
+        (let (rm:ptr:RMacro (cast ptr:RMacro (invoke g-rmacros (cast usize ri)))
               plen:i32 (rm prefix-len)
               match:i32 1
               j:i32 0)
@@ -414,7 +414,7 @@
                 (set! best-len plen))))
         (inc! ri))
       (when (>= best-idx 0)
-        (let (rm:ptr:RMacro (cast ptr:RMacro (ptr+ (cast ptr:RMacro g-rmacros) best-idx)))
+        (let (rm:ptr:RMacro (cast ptr:RMacro (invoke g-rmacros (cast usize best-idx))))
           ; Advance past prefix characters (tracking newlines)
           (let (k:i32 0)
             (while (< k best-len)

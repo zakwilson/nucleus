@@ -137,6 +137,93 @@ protocols only for `(dyn P)`; no `clone` on boxes (move-only); process-default
 libc allocator only (no per-box `AllocHandle`); `BoxedFn`/`(dyn P)` public
 `defn`s excluded from `--emit-cheader`. Detail: [stage13/progress.md](stage13/progress.md).
 
+## Stage 13 — Functional refactor R1: new `Iterator` conformers (2026-06-27)
+
+**R1-iter done** (the iterator sub-task of
+[functional-refactor.md](stage13/functional-refactor.md) R1; the eager and
+closure-returning combinators are separate later dispatches — R1 is not yet
+complete). 132 tests pass (+3 examples); `make bootstrap` is a byte-identical
+fixed point with **no** `update-bootstrap` (library-only: the compiler imports
+none of these libs).
+
+New iterators so the (forthcoming) combinators reach more shapes:
+
+- **`ListIter`** (`lib/list.nuc`) — conforms the cons-cell `Node*` list to
+  `(Iterator i64)`, yielding each element (a `Node*`) cast to `i64`. `list-iter`
+  constructs one by value. Lets element folds reach AST `Node` cdr-lists without
+  changing the cons representation.
+- **CStr byte/char iterators** (`lib/strview.nuc`) — `cstr-bytes`/`cstr-chars`
+  return a `ByteIter`/`CharIter` over a `CStr`, so a `CStr` byte-folds with
+  `reduce` like a `String`. Verified: the FNV-1a hash as a `reduce` over the byte
+  iterator equals the hand-written `strview-hash`.
+- **`SplitIter`/`LineIter` now conform to `(Iterator i64)`** (`lib/string-split.nuc`),
+  replacing the deferred done-flag-only API. A new `cur:StrView` slot holds the
+  yielded segment; `next` returns a `(ref StrView)` into it cast to `i64`. The
+  `doseq-split` macro hides the decode. The done-flag API is retained and yields
+  identical segments (verified by a parity test).
+
+**Design note — the `i64`-pointer encoding.** An `Iterator` element type must
+produce a *tagged, matchable* `(Maybe E)` (`reduce`/`doseq-iter` eliminate it
+with `match`). `(Maybe ptr)` is niche-encoded and not matchable; `(Maybe StrView)`
+(struct payload) breaks the macro-expansion JIT module. So iterators whose
+logical element is a pointer or struct yield it cast to `i64` — the
+`I64ArrayIter` precedent — and the consumer recovers it with a `cast`.
+Examples: `examples/listiter-test.nuc`, `examples/cstr-fold-test.nuc`,
+`examples/split-iter-test.nuc`.
+
+---
+
+## Stage 13 — Functional refactor R2: raw-array registry → `Vector` (2026-06-27)
+
+**R2 done** ([functional-refactor.md](stage13/functional-refactor.md) §R2).
+All 18 of the spec-listed compiler registries now ride `lib/vector.nuc`'s
+`(Vector ptr)` substrate instead of hand-rolled `g-X:ptr` + `g-num-X`/`g-cap-X`
+globals (with `malloc`/`memcpy`/`free` growth thunks) or fixed `MAX-*` arena
+pre-allocs. 136 tests pass; **`make bootstrap` is a byte-identical fixed point**
+(`stage1.ll == stage2.ll`); `make update-bootstrap` refreshed the committed
+artifacts.
+
+Converted, one at a time behind `make test` gates (Vector is append-only and
+order-preserving, so iteration order is unchanged):
+
+- **Batch 1 — hand-rolled growables** (each *deleted* its `g-num-*`/`g-cap-*`
+  globals and `memcpy` growth thunk): `g-generics`, `g-protocols`,
+  `g-conformances`, `g-proto-supers`, `g-tmpl-conformances` (all `src/generics.nuc`);
+  `g-strs` (string-literal table, `src/scope.nuc` — id stays the element index);
+  the parallel `g-fnty-names`/`g-fnty-types` (`src/type-mangle.nuc`); the parallel
+  `g-deferror-name-sids`/`g-deferror-msg-sids` (the old `g-deferrors-len` is now
+  `count - 1`; a reserved index-0 placeholder keeps the vector index equal to the
+  1-based runtime error id; sids are stored in the `ptr` slot via an i64↔ptr cast).
+- **Batch 2 — fixed arena pre-allocs** (each replaced its `MAX-*`-sized arena
+  alloc with `make-vec`; the `MAX-*` overflow guards are kept, now testing
+  `(cast i32 (count g-X))`, so behaviour is exactly preserved): `g-structs`,
+  `g-uniondefs`, `g-union-templates`, `g-struct-templates`, `g-enumdefs`,
+  `g-binops`, `g-macros`, `g-rmacros`, `g-blanket`, `g-cast-rules`.
+
+**Representation note.** The old inline-array registries stored their entries
+*by value* in one contiguous block (`generic-new`/`register-struct`/… returned a
+pointer into the array). The migration keeps the **element type `ptr`** (per the
+substrate-only invariant): each entry is now individually `arena-alloc`-ed and the
+vector holds its pointer. This is strictly *safer* than the old code, whose
+`memcpy`-on-grow left previously-returned element pointers dangling/stale; the
+arena allocations are pointer-stable for the whole compilation.
+
+**Byte-identical, not just re-converged.** The risk table predicted pointer-origin
+drift requiring a controlled refresh. In practice the committed boot already
+supports every `Vector` op used (`make-vec`/`conj`/`count`/`invoke`), and the IR
+emitted for a given source is a function of registry *contents in order* (not the
+internal substrate), so the old boot and the R2 compiler emit identical IR for the
+same source — `stage1.ll == stage2.ll` held at every step.
+
+**Out of spec (flagged, not converted).** Three more hand-rolled parallel-array
+growables matching the same pattern were found that the §R2 list does **not**
+enumerate (added later by the type-erasure commit `c4d973e`):
+`g-boxedfn-keys`/`g-boxedfn-types` (`src/union-registry.nuc`),
+`g-dyn-keys`/`g-dyn-types`/`g-dyn-protos` (`src/union-registry.nuc`), and
+`g-vtable-keys`/`g-vtable-names` (`src/nucleusc.nuc`). They sit on the boxing /
+vtable-emission path; converting them is a natural follow-up but was left to a
+coordinator decision to avoid scope creep on the spec'd task.
+
 ---
 
 ## Stage 12 N9 — Docs, examples, close-out (2026-06-22)

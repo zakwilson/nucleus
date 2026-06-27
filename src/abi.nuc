@@ -454,9 +454,9 @@
     (return null)))
 
 (defn register-struct:ref:StructDef (name:ptr)
-  (when (>= g-structs-len MAX-STRUCTS)
+  (when (>= (cast i32 (count g-structs)) MAX-STRUCTS)
     (fprintf stderr "nucleusc: too many structs\n") (exit 1))
-  (let (sd:ptr:StructDef (cast ptr:StructDef (ptr+ (cast ptr:StructDef g-structs) g-structs-len)))
+  (let (sd:ptr:StructDef (cast ptr:StructDef (arena-alloc (sizeof StructDef))))
     (.set! sd name name)
     (.set! sd num-fields 0)
     (.set! sd emitted 0)
@@ -465,5 +465,5 @@
     (.set! sd origin-template null)
     (.set! sd origin-args null)
     (.set! sd origin-nargs 0)
-    (inc! g-structs-len)
+    (conj g-structs (cast ptr sd))
     (return (cast ref:StructDef sd))))

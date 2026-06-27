@@ -1,0 +1,86 @@
+; R1 combinators — ordering & joinery: sort / sort-by (in-place on a Vector) and
+; emit-joined / join. sort's comparator is a BINARY predicate (BinaryFn) — the
+; recognised closure-conformance set was extended minimally to admit it (mirroring
+; how FoldFn is recognised). Each combinator gets an inline AND a named operand.
+
+(import-use "stdio.h")
+(import-use vector)
+(import-use iterator)
+(import-use combinators)
+
+; A named UnaryFn conformer rendering a small int to a fixed C string (join).
+(defstruct NameFn dummy:i32)
+(extend NameFn (UnaryFn i32 CStr))
+(defn (apply CStr) ((self (ref NameFn)) (x i32))
+  (if (= x 1) (return "one")
+    (if (= x 2) (return "two")
+      (if (= x 3) (return "three") (return "?")))))
+
+(defn show:void (label:CStr (v (ref (Vector i32))))
+  (printf "%s[" label)
+  (let (i:usize (cast usize 0))
+    (while (< i (count v))
+      (when (> i (cast usize 0)) (printf " "))
+      (printf "%d" (v i))
+      (set! i (+ i (cast usize 1)))))
+  (printf "]\n"))
+
+(defn print-string:void ((s (ref String)))
+  (let (sv:StrView (string-as-view s))
+    (printf "%.*s" (cast i32 ((addr-of sv) len)) (cast ptr ((addr-of sv) data)))))
+
+(defn main:i32 ()
+  (with ((v (ref (Vector i32))) (alloca (Vector i32)))
+    (vector-init v) (conj v 3) (conj v 1) (conj v 2) (conj v 5) (conj v 4)
+    (let (one:i32 1)
+
+      ; ---- sort ascending (inline BinaryFn "less" comparator; captures `one`) ----
+      (sort (vfn (a:i32 b:i32):i32 (return (if (< a b) one 0))) v)
+      (show "sort-asc " v)
+
+      ; ---- sort descending (named BinaryFn comparator) ----
+      (let (gt (vfn (a:i32 b:i32):i32 (return (if (> a b) one 0))))
+        (sort gt v))
+      (show "sort-desc" v)
+
+      ; ---- sort-by ascending key = x (restore order; inline UnaryFn key) ----
+      (sort-by (vfn (x:i32):i32 (return (* x one))) v)
+      (show "sortby-as" v)
+
+      ; ---- sort-by descending via negated key (named) ----
+      (let (negkey (vfn (x:i32):i32 (return (- 0 x))))
+        (sort-by negkey v))
+      (show "sortby-de" v))
+
+    ; ---- emit-joined (inline) ----
+    (sort-by (vfn (x:i32):i32 (return x)) v)   ; ascending again
+    (printf "emitj-inline=[")
+    (let ((it (VecIter i32)) (iter v))
+      (emit-joined (vfn (x:i32):i32 (printf "%d" x) (return 0)) ", " (addr-of it)))
+    (printf "]\n")
+
+    ; ---- emit-joined (named) ----
+    (let (star:i32 0
+          emit (vfn (x:i32):i32 (printf "%d" (+ x star)) (return 0)))
+      (printf "emitj-named=[")
+      (let ((it (VecIter i32)) (iter v))
+        (emit-joined emit " | " (addr-of it)))
+      (printf "]\n"))
+
+    ; ---- join into a String (inline render closure i32 -> CStr) ----
+    (with ((w (ref (Vector i32))) (alloca (Vector i32)))
+      (vector-init w) (conj w 1) (conj w 2) (conj w 3)
+      (let (q:i32 0
+            render (vfn (x:i32):CStr (if (= (+ x q) 1) (return "a")
+                                      (if (= x 2) (return "b") (return "c")))))
+        (let ((it (VecIter i32)) (iter w))
+          (let ((s String) (join render "/" (addr-of it)))
+            (printf "join-inline=") (print-string (addr-of s)) (printf "\n")
+            (drop (addr-of s)))))
+      ; ---- join (named render conformer) ----
+      (let ((nf (ref NameFn)) (alloca NameFn))
+        (let ((it (VecIter i32)) (iter w))
+          (let ((s String) (join nf "-" (addr-of it)))
+            (printf "join-named=") (print-string (addr-of s)) (printf "\n")
+            (drop (addr-of s)))))))
+  (return 0))

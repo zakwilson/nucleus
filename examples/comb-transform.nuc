@@ -1,0 +1,90 @@
+; R1 combinators — transformations: map / filter / remove-if / for-each /
+; flat-map. Each is exercised with BOTH an inline closure operand and a named
+; (CE-1) one, proving conformance is type-keyed (it never inspects literal vs
+; name). Owning results (new Vectors) are dropped exactly once.
+
+(import-use "stdio.h")
+(import-use vector)
+(import-use iterator)
+(import-use combinators)
+
+; A named UnaryFn conformer for flat-map: x -> a fresh Vector [x, x+k].
+(defstruct ExpandFn k:i32)
+(extend ExpandFn (UnaryFn i32 (Vector i32)))
+(defn (apply (Vector i32)) ((self (ref ExpandFn)) (x i32))
+  (let ((r (ref (Vector i32))) (alloca (Vector i32)))
+    (vector-init r) (conj r x) (conj r (+ x (self k)))
+    (return (deref r))))
+
+(defn show:void (label:CStr (v (ref (Vector i32))))
+  (printf "%s[" label)
+  (let (i:usize (cast usize 0))
+    (while (< i (count v))
+      (when (> i (cast usize 0)) (printf " "))
+      (printf "%d" (v i))
+      (set! i (+ i (cast usize 1)))))
+  (printf "]\n"))
+
+(defn main:i32 ()
+  (with ((v (ref (Vector i32))) (alloca (Vector i32)))
+    (vector-init v) (conj v 1) (conj v 2) (conj v 3)
+    (let (k:i32 10
+          thr:i32 1)
+
+      ; ---- map ----
+      (let ((it (VecIter i32)) (iter v))
+        (let ((m (Vector i32)) (map (vfn (x:i32):i32 (return (* x 2))) (addr-of it)))
+          (show "map-inline " (addr-of m)) (drop (addr-of m))))
+      (let (addk (vfn (x:i32):i32 (return (+ x k))))
+        (let ((it (VecIter i32)) (iter v))
+          (let ((m (Vector i32)) (map addk (addr-of it)))
+            (show "map-named  " (addr-of m)) (drop (addr-of m)))))
+
+      ; ---- filter ----
+      (let ((it (VecIter i32)) (iter v))
+        (let ((f (Vector i32)) (filter (vfn (x:i32):i32 (return (bit-and x 1))) (addr-of it)))
+          (show "filt-inline" (addr-of f)) (drop (addr-of f))))
+      (let (gtthr (vfn (x:i32):i32 (return (if (> x thr) 1 0))))
+        (let ((it (VecIter i32)) (iter v))
+          (let ((f (Vector i32)) (filter gtthr (addr-of it)))
+            (show "filt-named " (addr-of f)) (drop (addr-of f)))))
+
+      ; ---- remove-if ----
+      (let ((it (VecIter i32)) (iter v))
+        (let ((r (Vector i32)) (remove-if (vfn (x:i32):i32 (return (bit-and x 1))) (addr-of it)))
+          (show "rmif-inline" (addr-of r)) (drop (addr-of r))))
+      (let (gtthr (vfn (x:i32):i32 (return (if (> x thr) 1 0))))
+        (let ((it (VecIter i32)) (iter v))
+          (let ((r (Vector i32)) (remove-if gtthr (addr-of it)))
+            (show "rmif-named " (addr-of r)) (drop (addr-of r)))))
+
+      ; ---- for-each (pure side effect: print) ----
+      (printf "feach-inl  ")
+      (let ((it (VecIter i32)) (iter v))
+        (for-each (vfn (x:i32):i32 (printf " %d" x) (return 0)) (addr-of it)))
+      (printf "\n")
+      (let (base:i32 100
+            emit (vfn (x:i32):i32 (printf " %d" (+ x base)) (return 0)))
+        (printf "feach-name ")
+        (let ((it (VecIter i32)) (iter v))
+          (for-each emit (addr-of it)))
+        (printf "\n"))
+
+      ; ---- flat-map ----
+      ; NOTE: flat-map's operand must RETURN an owning collection. An inline
+      ; `vfn` cannot serve here — returning a struct by value from a closure hits
+      ; a pre-existing closure-sret ABI gap (the returned struct's fields are
+      ; zeroed; see docs/iterators.md). So flat-map's operand is a hand-written
+      ; UnaryFn conformer (ExpandFn) — the same pattern cstr-fold's FoldFn
+      ; conformers use. Two distinct instances prove the dispatch is type-keyed.
+      (let ((ef (ref ExpandFn)) (alloca ExpandFn))
+        (.set! ef k k)
+        (let ((it (VecIter i32)) (iter v))
+          (let ((fm (Vector i32)) (flat-map ef (addr-of it)))
+            (show "fmap-named1" (addr-of fm)) (drop (addr-of fm)))))
+      (let ((ef2 (ref ExpandFn)) (alloca ExpandFn))
+        (.set! ef2 k 100)
+        (let ((it (VecIter i32)) (iter v))
+          (let ((fm (Vector i32)) (flat-map ef2 (addr-of it)))
+            (show "fmap-named2" (addr-of fm)) (drop (addr-of fm)))))))
+  (return 0))

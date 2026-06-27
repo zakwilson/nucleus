@@ -1,0 +1,5 @@
+cstr reduce==direct: 1
+cstr hash=1875365091780485949
+string reduce==direct: 1
+abc byte-sum=198
+abc reduce-sum=198

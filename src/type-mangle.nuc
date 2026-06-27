@@ -60,35 +60,21 @@
 ; (no TY-FN flows through a generic in the compiler's own source: `make
 ; bootstrap` re-converges with this change).
 (defvar g-fnty-id:i32 0)
-(defvar g-fnty-names:ptr null)   ; array of ptr (name strings, parallel)
-(defvar g-fnty-types:ptr null)   ; array of ptr (Type*)
-(defvar g-fnty-count:i32 0)
-(defvar g-fnty-cap:i32 0)
+; Parallel (Vector ptr) registries kept in lockstep: g-fnty-names[i] is the
+; "__fnty_<id>" name for the TY-FN Type* g-fnty-types[i]. conj'd together.
+(defvar (g-fnty-names (ref (Vector ptr))))   ; name strings, parallel
+(defvar (g-fnty-types (ref (Vector ptr))))   ; Type*, parallel
 
 (defn fnty-intern:ptr (t:ptr)
   (let (i:i32 0)
-    (while (< i g-fnty-count)
-      (when (= (aref (cast ptr:ptr g-fnty-types) i) t)
-        (return (aref (cast ptr:ptr g-fnty-names) i)))
+    (while (< i (cast i32 (count g-fnty-types)))
+      (when (= (invoke g-fnty-types (cast usize i)) t)
+        (return (invoke g-fnty-names (cast usize i))))
       (inc! i)))
-  (when (= g-fnty-cap 0)
-    (set! g-fnty-cap 16)
-    (set! g-fnty-names (arena-alloc (* (cast i64 g-fnty-cap) (ptr-bytes))))
-    (set! g-fnty-types (arena-alloc (* (cast i64 g-fnty-cap) (ptr-bytes)))))
-  (when (= g-fnty-count g-fnty-cap)
-    (let (nc:i32 (* g-fnty-cap 2)
-          nn:ptr (arena-alloc (* (cast i64 (* g-fnty-cap 2)) (ptr-bytes)))
-          nt:ptr (arena-alloc (* (cast i64 (* g-fnty-cap 2)) (ptr-bytes))))
-      (memcpy nn g-fnty-names (* (cast i64 g-fnty-count) (ptr-bytes)))
-      (memcpy nt g-fnty-types (* (cast i64 g-fnty-count) (ptr-bytes)))
-      (set! g-fnty-names nn)
-      (set! g-fnty-types nt)
-      (set! g-fnty-cap nc)))
   (let (name:ptr (intern-str (fmt-i32 "__fnty_%d" g-fnty-id)))
     (inc! g-fnty-id)
-    (aset! (cast ptr:ptr g-fnty-names) g-fnty-count name)
-    (aset! (cast ptr:ptr g-fnty-types) g-fnty-count t)
-    (inc! g-fnty-count)
+    (conj g-fnty-names (cast ptr name))
+    (conj g-fnty-types (cast ptr t))
     (return name)))
 
 ; Resolve a "__fnty_<id>" name back to its Type*, so a stamped generic body's
@@ -96,9 +82,9 @@
 ; reaching here may be a fresh fmt copy, not the cached interned pointer).
 (defn fnty-resolve:ptr (name:ptr)
   (let (i:i32 0)
-    (while (< i g-fnty-count)
-      (when (= (strcmp (aref (cast ptr:ptr g-fnty-names) i) name) 0)
-        (return (aref (cast ptr:ptr g-fnty-types) i)))
+    (while (< i (cast i32 (count g-fnty-names)))
+      (when (= (strcmp (invoke g-fnty-names (cast usize i)) name) 0)
+        (return (invoke g-fnty-types (cast usize i))))
       (inc! i)))
   (return null))
 
