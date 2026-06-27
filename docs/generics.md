@@ -59,7 +59,7 @@ If a required method is missing, compilation fails with a diagnostic naming each
 
 **Cross-unit.** `defprotocol` and `extend` (type-conformance and protocol-inheritance) export verbatim through `.nuch`; an importing unit re-registers the protocol and trusts the recorded conformance (it does not re-check). See [.nuch Header Format](compiler.md#nuch-header-format).
 
-*Not yet implemented (within protocols):* inline-`defn` sugar inside `extend`, and the dynamic `(dyn Protocol)` form. Conformance currently requires a concrete (non-generic) implementation.
+*Not yet implemented (within protocols):* inline-`defn` sugar inside `extend`. The dynamic `(dyn Protocol)` form is implemented — see [Type erasure](#type-erasure-boxedfn-and-dyn-protocol) below. Conformance currently requires a concrete (non-generic) implementation.
 
 ## Parametric protocols
 
@@ -466,3 +466,195 @@ object. See `design/stage13/lambda.md` §"Representation and calling" and
 locally-defined methods; `&rest` together with `&where`; REPL generic
 instantiation; non-type/const parameters in parametric generics; higher-kinded
 or partially applied type parameters.
+
+## Type erasure: `BoxedFn` and `(dyn Protocol)`
+
+When the **concrete closure or value type is unknown at the storage site** —
+storing closures with different captures in a `Vector`, returning an
+implementation-chosen concrete type from a `defn`, or boxing any value under a
+protocol interface — Nucleus provides a single opt-in type-erasure mechanism: a
+**two-word fat pointer** backed by a **static per-concrete-type vtable**. The
+fat pointer is a 16-byte by-value aggregate (`TY-STRUCT`):
+
+```
+{ data:   ptr,    ; heap-allocated payload (the boxed env / boxed value)
+  vtable: ptr }   ; address of the per-concrete-type vtable global
+```
+
+The vtable is a static immutable global synthesized once per `(concrete type,
+protocol)` pair:
+
+```
+{ invoke/method,  ; call/dispatch thunk
+  drop }          ; payload drop thunk (null for POD types)
+```
+
+The fat pointer rides the existing CE-3 by-value-struct ABI (16 bytes →
+`COERCE2` in `abi-classify`); there is no new calling-convention machinery.
+
+**Cost profile.** The zero-cost static/monomorphized path is **strictly
+preserved**: type erasure adds nothing to the inline `fn` / POD-`vfn` /
+`let`-bound monomorphic closure path, nor to inline-monomorphized generics. The
+fat pointer, the vtable, the heap box, and the indirect call exist **only**
+when a value is explicitly boxed into an erased slot. The feature is opt-in:
+every hot path stays inline and direct-call.
+
+The machine has two concrete instantiations, described below.
+
+### `BoxedFn` — owning, heap-boxed closure handle
+
+`(BoxedFn (params…) ret)` is a spellable, fixed-size, signature-parameterized
+type that erases the concrete closure environment. It is the answer to the
+"how do I store closures with different captures in the same `Vector` or struct
+field" question.
+
+**Boxing.** Assigning any capturing closure (`vfn`/`mfn`/`cfn`) or bare `fn`
+pointer into a `(BoxedFn …)` slot triggers the boxing coercion automatically:
+
+1. The env struct is moved by value to a fresh heap block (the process-default
+   libc allocator; the two-word fat pointer has no room for a per-box
+   `AllocHandle`).
+2. The per-env vtable global `@__vt.<env>.<sig>` is synthesized lazily once
+   (the vtable `invoke` slot = the already-synthesized `@invoke.p<Env>.<…>`
+   method; the `drop` slot = the synthesized env `drop` thunk, or null for a
+   POD env).
+3. A bare `fn` pointer is wrapped in a synthesized per-signature forwarder thunk
+   `@__fnfwd.<sig>` (heap cell holds the fn pointer; the thunk loads and calls
+   it), so non-capturing `fn` literals are storable too.
+4. The result is a uniform `{data, vtable}` fat pointer.
+
+**`Drop`.** The box conforms to `Drop` via a shared `@__boxedfn_drop` thunk:
+null-guards `data`, indirect-calls `vtable.drop(data)` (running the env's own
+field-drops), then `free(data)`. A `with`-bound `BoxedFn` drops cleanly at
+scope exit through the existing struct-value `Drop` path (CE-3).
+
+**Dispatch.** `(box args…)` or `(invoke box args…)` — both spell the same
+call — lower to an indirect call through vtable slot 0, passing `data` as the
+implicit first argument and the literal args as the rest. The box `Type`
+carries the spelled `(params…) ret` signature so argument coercion is
+type-checked statically.
+
+**Conformance admission.** The source type is checked **structurally**: the
+env's `invoke` non-self signature must match the box's `(params…) ret`
+(same mechanism as structural function-protocol derivation, §above). A bare
+`fn` pointer's signature must match directly.
+
+```lisp
+; bare fn box
+(let (b (BoxedFn (i32) i32)) (fn (x:i32):i32 (return (* x 3))))
+(b 5)    ; → 15 (indirect call through vtable)
+
+; heterogeneous collection
+(let (v (Vector (BoxedFn (i32) i32))) [])
+(vector-push v (vfn (x:i32):i32 (return (* x (. self factor)))))   ; captured factor
+(vector-push v (fn  (x:i32):i32 (return (+ x 1))))                  ; bare fn
+
+; struct field
+(defstruct Handler action:(BoxedFn (i32) void))
+
+; defn returning a boxed closure — closes the CE-4 env-naming gap
+(defn make-adder:(BoxedFn (i32) i32) (n:i32)
+  (return (BoxedFn (i32) i32) (vfn (x:i32):i32 (return (+ x n)))))
+```
+
+See `examples/boxedfn.nuc` for the full working example.
+
+**Known v1 limits.**
+
+- Boxes through the **process-default libc allocator** only; no per-box
+  `AllocHandle`. A `cfn` env's vtable drop slot is forced null (avoiding a
+  double-free: the `cfn` drop would also free the block the box owns); the
+  original cfn env then leaks — a documented cfn-box ownership gap.
+- Boxes are **move-only**: no `clone` on a `BoxedFn` value (the vtable
+  `clone?` slot is reserved but not emitted).
+- A `BoxedFn` conforming to a user function protocol (`UnaryFn`/`FoldFn`) via
+  an already-boxed value must re-box; there is no transparent protocol cast.
+
+### `(dyn Protocol)` — type-erased protocol value
+
+`(dyn P)` for an arbitrary user protocol `P` (declared with `defprotocol` and
+implemented via `extend`) is a fat-pointer type that erases the concrete
+implementation type. It enables:
+
+- **B2 — unbound-abstract returns:** a `defn` may declare its return type as
+  `(dyn P)`, returning any concrete type that `extend`s `P`. Without `(dyn P)`
+  the protocol name was not a spellable type; now it is a concrete 16-byte
+  struct.
+- **Heterogeneous collections:** `(Vector (dyn P))` holds mixed concrete types
+  in uniform slots.
+
+**Boxing.** Assigning a value of any concrete type `T` (that has `(extend T P)`)
+into a `(dyn P)` slot triggers the boxing coercion automatically: the value is
+moved by value to the heap; the per-`(T, P)` vtable global is synthesized with
+the `extend P` method's IR name in slot 0 and the type's drop thunk (if any)
+in slot 1; the result is `{data, vtable}`.
+
+**Conformance admission.** The source type must have a **nominal** `(extend T P)`
+conformance in scope at the boxing site. Structural derivation (function-protocol
+inference) does not apply to `(dyn P)`; use `BoxedFn` for closure boxes.
+
+**Dispatch.** A method call `(method-name box args…)` where `box` has type
+`(dyn P)` lowers to an indirect vtable call: load slot 0 from the vtable,
+call `slot(data, args…)`.
+
+Note the surface difference: a `BoxedFn` is dispatched as a **callable value**
+`(box args…)`; a `(dyn P)` is dispatched as a **named method call**
+`(method-name box args…)`. They are not interchangeable.
+
+```lisp
+(defprotocol Describe
+  ((describe void) ((self (ref Self)))))
+
+(defstruct Cat name:ptr)
+(defstruct Dog name:ptr)
+
+(defn describe:void (self:(ref Cat)) (printf "Cat: %s\n" (. self name)))
+(defn describe:void (self:(ref Dog)) (printf "Dog: %s\n" (. self name)))
+
+(extend Cat Describe)
+(extend Dog Describe)
+
+; B2 — return type is a protocol name
+(defn make-animal:(dyn Describe) (kind:i32)
+  (if (= kind 0)
+    (return (dyn Describe) (Cat "Whiskers"))
+    (return (dyn Describe) (Dog "Rex"))))
+
+; heterogeneous Vector
+(let (v (Vector (dyn Describe))) [])
+(vector-push v (dyn Describe) (Cat "Felix"))
+(vector-push v (dyn Describe) (Dog "Buddy"))
+; iterate and dispatch:
+(doseq (a v) (describe (addr-of a)))
+```
+
+See `examples/dyn-protocol.nuc` for the full working example.
+
+**v1 scope limits.** The following are not yet supported and produce clear
+compile-time diagnostics:
+
+- **Multi-method protocols.** v1 vtable layout is `{method0, drop}` — the slot
+  index for a second method would collide with `drop`. Only single-method
+  protocols are supported.
+- **Parametric protocols.** `(dyn (Seq E))` is not parseable as a type; only
+  bare protocol names are accepted.
+- **Object-safety.** Protocol methods whose non-receiver parameters or return type
+  mention `Self` cannot be placed in a vtable (the concrete `Self` is erased). The
+  parser rejects them with a clear error.
+- **Multi-protocol boxes** (`(dyn (Show Eq))`). Not supported; v1 is
+  single-protocol.
+- **No `clone`.** Boxes are move-only.
+
+### C-ABI and `--emit-cheader`
+
+A public `defn` whose parameter or return type mentions `BoxedFn` or `(dyn P)`
+is **excluded from `--emit-cheader`**: the fat pointer carries Nucleus-side
+`Drop`/vtable semantics with no faithful C spelling. An explanatory comment is
+emitted in place of the excluded declaration, and a warning is issued at the
+`defn` definition site. Plain `fn`-pointer signatures and all other types
+continue to emit normally. (This generalizes the L8 closure-env-type exclusion
+— see [lambda.md](../design/stage13/lambda.md).) The fixture
+`tests/fixtures/box-cheader.nuc` covers the exclusion and warning.
+
+See `design/stage13/type-erasure.md` for the full design and implementation
+record (TE-0 … TE-7).

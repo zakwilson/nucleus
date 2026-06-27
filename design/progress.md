@@ -20,7 +20,7 @@ Current branch: `stage11-collections`
 | 11 (prereq) | Parametric generics — `(defstruct (Vector T) ...)` templates, stamping, methods, construction, parametric protocols, `usize`/`ssize`, C ABI + `.nuch` export | Done | [stage11/progress.md](stage11/progress.md) |
 | 12 | Modules and namespaces — `ns`, import forms, `defn-`/`defvar-` private/internal, `set-ir-prefix`, IR mangling, `export`, `.nuch` round-trip, source migration, compiler split (14,477 → 7,193 lines) | Done | [stage12/namespaces.md](stage12/namespaces.md), [stage12/progress.md](stage12/progress.md) |
 | 11 | Collections — `Vector`/`HashSet`/`HashMap`/`String`, protocols, iterators, allocators | Done — M1 (Allocator) + M2 (Iterator + doseq + generic lazy map/filter/reduce) + M3 (`Vector`) + M4 (`Hash`/`HashMap`/`HashSet`) + M5 (reader-macro literals `[…]`/`{…}`/`#{…}`) done; cleanup §1–§4a (colon-paren sugar, keyword/StrView, iterator-test flatten, phantom-tyvar fix) done; associated types (A0–A2) done; **A4 (A4.0–A4.4) done** — extend-site `&where` recovery fully implemented + `.nuch` round-trip + `lib/iterator.nuc` rewritten with generic element-agnostic `MapIter`/`FilterIter`/`UnaryFn`/`FoldFn`/`reduce` (retiring the `*I64` specializations); 89 tests pass ([stage11/assoc-types-extend.md](stage11/assoc-types-extend.md)); **C2.7+C2.8 done** — doc/comment rationale sweep + resolved-limitation close-out; **M6 S0 done** — the `Char` built-in distinct scalar + char literals (`\a`/`\newline`/`\u{…}`), the critical-path prerequisite, byte-identical-additive; M6 S2 done — `lib/string-errors.nuc` (four string `deferror` codes) + `lib/string-protocols.nuc` (`ByteStr ByteI`/`Str CharI` protocol shapes, `(extend Str Eq)` inheritance); **M6 S1 done** — `lib/char.nuc` (UTF-8 encode/decode, `DecodeResult`, `char-from-u32`/`char-to-u32`, ASCII classification + case, `invalid-codepoint` error; note: classification functions named without `?` suffix since `?` is invalid in non-generic LLVM identifiers); **M6 S3 done** — `lib/strview.nuc` (StrView + ByteIter/CharIter + full read layer + Eq/Ord/Hash), `lib/strview-str.nuc` (ByteStr/Str conformances); **M6 S4 done** — `lib/string.nuc` (String owning type wrapping Vector ui8, constructors, mutation API, Drop/ByteStr/Str/Eq/Ord/Hash conformances, works as HashMap key); **M6 S5 done** — `lib/parse.nuc` (`FromStr R` parametric protocol, `parse` macro, `i32`/`i64`/`f64` conformances via libc strtol/strtoll/strtod), `lib/string-split.nuc` (`SplitIter`/`LineIter` with done-flag design — avoids `(Maybe StrView)` JIT struct issue; `strview-split`/`strview-lines`); 102 tests pass; byte-identical bootstrap; **M6 S6 done** — `docs/strings.md` (§1–§8: Char, StrView, String, ByteStr/Str protocols, split/lines/trim, FromStr/parse, error codes); `docs/index.md` updated; M6 **complete** | [stage11/collections.md](stage11/collections.md), [stage11/progress.md](stage11/progress.md) |
-| 13 | Lambdas and closures — `fn`/`vfn`/`mfn`/`cfn` (four capture modes), `Clone`, escape generalization, structural conformance derivation | Done — four lambda/closure forms split by capture mode (`fn` non-capturing → bare function pointer; `vfn` clone-capture via `Clone`, source survives; `mfn` move-capture via the `move` sink; `cfn` reference-capture, allocator-backed + escape-checked), each lowering to an anonymous env struct + synthesized `invoke` (callable-values); the `with` escape analysis generalized to all frame-local storage (pointer-provenance; `let` gains no drop/lifetime); `Clone` protocol with automatic structural conformance for `Drop`-free types; structural function-protocol conformance derivation (recognized set `{UnaryFn, FoldFn}`) so a closure/`fn` literal satisfies a `&where` combinator bound with no hand-written function object; capturing-closure-typed public `defn`s excluded from `--emit-cheader` + warned, `fn`-pointer signatures emit normally; three pre-existing compiler limitations (by-value struct-return ABI, `with`-drop `TY-PTR`-only, no env-type inference) cap owning-closure cases at IR-level-verified — POD closures over scalars run fully. **119 tests pass; byte-identical bootstrap** (variadic `and`/`or` follow-up below re-converged after a one-time boot refresh). | [stage13/progress.md](stage13/progress.md) |
+| 13 | Lambdas, closures, and type erasure — `fn`/`vfn`/`mfn`/`cfn` (four capture modes), `Clone`, escape generalization, structural conformance derivation, `BoxedFn`, `(dyn Protocol)` | Done — four lambda/closure forms + `Clone` + structural function-protocol conformance (CE-1/CE-2/CE-3 enhancements); all three pre-existing compiler limitations lifted; type-erasure machine (`BoxedFn` + `(dyn Protocol)`) implemented (TE-0 … TE-7). **129 tests pass; byte-identical bootstrap.** | [stage13/progress.md](stage13/progress.md) |
 
 ---
 
@@ -98,6 +98,44 @@ change — unlike **binops** like `_+`, which are *runtime-registered* via
 one-time regeneration. **Lesson: special-form renames break the boot; binop
 additions do not.** (The gotcha and the 2-stage manual bridge are captured in
 `context/build.md`; docs updated in `docs/special-forms.md` + `docs/macros.md`.)
+
+---
+
+## Stage 13 — Type erasure: `BoxedFn` + `(dyn Protocol)` (2026-06-27)
+
+**Type erasure complete (TE-0 … TE-7).** 129 tests pass; `make bootstrap` is a
+byte-identical fixed point.
+
+The shared fat-pointer machine is built once and instantiated as two user-facing
+types:
+
+- **`(BoxedFn (params…) ret)`** — a spellable, fixed-size, owning, heap-boxed
+  closure handle. Any `fn`/`vfn`/`mfn`/`cfn` literal assigned into a
+  `(BoxedFn …)` slot is automatically heap-boxed; the fat pointer carries a
+  static per-env vtable with `invoke` and `drop` slots. Enables
+  `(Vector (BoxedFn …))`, `BoxedFn` struct fields, and — critically — a `defn`
+  returning a boxed closure by value, closing the CE-4 env-naming gap. A bare
+  `fn` pointer boxes via a synthesized per-signature forwarder thunk. Dispatch:
+  `(box args…)` or `(invoke box args…)` → indirect vtable call.
+- **`(dyn P)`** for an arbitrary user protocol `P` (requires `(extend T P)` on
+  the source type) — erases the concrete implementation type. Enables **B2
+  unbound-abstract returns** (a `defn` returning `(dyn P)` was previously
+  rejected as "unknown type"; now it is a concrete 16-byte struct) and
+  **heterogeneous collections** (`(Vector (dyn P))`). Dispatch: `(method-name
+  box args…)` → indirect vtable call.
+
+Both types are `Drop`-conforming (shared `@__boxedfn_drop` thunk); neither
+requires a new calling-convention (both ride the CE-3 ABI-COERCE2 16-byte
+by-value-struct path). Conformance admission is unified: structural for
+`BoxedFn` (env `invoke` signature match), nominal `extend` for `(dyn P)`.
+All TE phases were byte-identical (no bootstrap refresh needed): the compiler
+itself boxes nothing, so zero box IR is emitted during self-compilation.
+
+The CE-4 "design exploration only" designation is fully superseded; the Stage 9
+rung-5 `(dyn Protocol)` deferral is implemented. v1 scope limits: single-method
+protocols only for `(dyn P)`; no `clone` on boxes (move-only); process-default
+libc allocator only (no per-box `AllocHandle`); `BoxedFn`/`(dyn P)` public
+`defn`s excluded from `--emit-cheader`. Detail: [stage13/progress.md](stage13/progress.md).
 
 ---
 

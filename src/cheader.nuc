@@ -833,9 +833,11 @@
       (when (!= (union-template-lookup (head s)) null) (return 1))
       (return 0))))
 
-; L8: detect a capturing-closure environment type in a signature's type AST.
-; The env structs are compiler-generated __vfn_env_N (fn-make-env-struct); they
-; are not C-callable, so a public defn exposing one — by value, or via a
+; L8: detect a capturing-closure environment type OR a type-erased box type in a
+; signature's type AST. Closure env structs are compiler-generated __vfn_env_N
+; (fn-make-env-struct). Type-erased box types are (BoxedFn …) and (dyn P) — fat
+; pointers carrying Nucleus-side Drop/vtable semantics with no faithful C spelling.
+; None of these is C-callable, so a public defn exposing one — by value, or via a
 ; (ref ...)/(ptr ...) indirection — is excluded from --emit-cheader and warned at
 ; its definition. A plain `fn`/function-pointer type is NOT a closure type (it
 ; is C-ABI). Returns 1 if `tn` mentions such a type, else 0. Unwraps arbitrary
@@ -851,6 +853,9 @@
         (let (head:ptr:Node (cast ptr:Node (n car)))
           (when (or (= (cast ptr head) null) (!= (head kind) NODE-SYM)) (return 0))
           (let (hs:ptr (head s))
+            ; Type-erased box types: (BoxedFn …) and (dyn P) carry fat-pointer
+            ; Nucleus semantics with no faithful C spelling.
+            (when (or (= hs "BoxedFn") (= hs "dyn")) (return 1))
             (when (and (!= hs "ptr") (!= hs "ref")) (return 0))
             (let (rest:ptr (n cdr))
               (when (= rest null) (return 0))
@@ -881,7 +886,8 @@
         (printf "/* %s: uses a defunion-template instance type; not exported */\n" fname)
         (return)))
     ; L8: exclude public defns whose signature exposes a capturing-closure env
-    ; type (__vfn_env_N) — not C-callable. A plain fn pointer is fine.
+    ; type (__vfn_env_N) or a type-erased box type (BoxedFn/dyn) — not C-callable.
+    ; A plain fn pointer is fine.
     (let (skip-cl:i32 (cheader-mentions-closure
                         (extract-type-node name-node ((cast ptr:Node name-node) line)))
           clparams:ptr (node-at form 2)
@@ -894,7 +900,7 @@
           (set! skip-cl 1))
         (inc! clpi))
       (when (!= skip-cl 0)
-        (printf "/* %s: exposes a closure type; not C-callable, omitted */\n" fname)
+        (printf "/* %s: exposes a closure or type-erased box type; not C-callable, omitted */\n" fname)
         (return)))
     (let (rtnode:ptr (extract-type-node name-node ((cast ptr:Node name-node) line))
           ret-c:ptr "void")

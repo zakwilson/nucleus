@@ -1,0 +1,7 @@
+bare fn box: 11
+returned box: 25
+struct field box: 107
+vec[0](5) = 15
+vec[1](5) = 500
+vec[2](5) = 4
+done
