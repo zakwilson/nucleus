@@ -1,0 +1,85 @@
+; Stage 13 — (dyn Protocol) (type erasure, instantiation B). A `(dyn P)` is the
+; same fixed-size, owning, heap-boxed fat pointer as a BoxedFn, but it erases an
+; arbitrary VALUE of a user protocol `P` via P's NOMINAL `extend` conformance: the
+; per-concrete-type vtable holds the addresses of that type's `extend P` method
+; impl(s). This unlocks the Stage 9 rung-5 deferrals:
+;   - B2: returning an unbound-abstract protocol value (a `(dyn P)` return type);
+;   - heterogeneous collections: a `(Vector (dyn P))` holding boxes of two distinct
+;     concrete types, iterated and dispatched through each box's vtable.
+;
+; The shared machine (design/stage13/type-erasure.md): a two-word fat pointer
+; { data, vtable } where `data` is the heap-boxed value and `vtable` is the
+; per-type static dispatch table. `(method box arg…)` forwards through
+; `vtable.<slot>(data, arg…)`; the box conforms to Drop (the shared @__boxedfn_drop
+; thunk: runs the boxed value's own drop via the vtable, then frees `data`). The
+; concrete types here are POD, so each box has a null drop slot and Drop just frees.
+
+(import-use "stdio.h")
+(import-use allocator)
+(import-use coll)
+(import-use iterator)
+(import-use vector)
+
+; A single, single-method user protocol: `describe` maps a value to an int.
+(defprotocol Describe
+  ((describe i32) ((self (ref Self)))))
+
+; Two DISTINCT concrete types that nominally extend Describe.
+(defstruct Cat n:i32)
+(extend Cat Describe)
+(defn describe:i32 ((self (ref Cat)))
+  (return (+ 100 (self n))))
+
+(defstruct Dog tag:i32)
+(extend Dog Describe)
+(defn describe:i32 ((self (ref Dog)))
+  (return (* 10 (self tag))))
+
+; (B2) A defn whose return type is the unbound-abstract `(dyn Describe)`. Each
+;      concrete value is boxed at the return site; the returned box owns its heap
+;      payload and is dropped at the caller's scope.
+(defn make-describable:(dyn Describe) (which:i32)
+  (if (= which 0)
+    (return (Cat 5))
+    (return (Dog 7))))
+
+; A defn taking a `(dyn Describe)` BY VALUE — the concrete argument is boxed at the
+; call site and ownership transfers into the parameter, which dispatches `describe`
+; through the vtable and then drops the box (frees its heap payload).
+(defn show-it:i32 (d:(dyn Describe))
+  (let (r:i32 (describe d))
+    (drop (addr-of d))
+    (return r)))
+
+(defn main:i32 ()
+  ; (B2) returned boxes of two different concrete types, each owned by a `with`
+  ;      binding and dropped (data freed) at scope exit.
+  (with (d0:(dyn Describe) (make-describable 0))
+    (printf "b2 cat: %d\n" (describe d0)))             ; 105
+  (with (d1:(dyn Describe) (make-describable 1))
+    (printf "b2 dog: %d\n" (describe d1)))             ; 70
+
+  ; A concrete value boxed into a `(dyn Describe)` parameter at the call site.
+  (printf "param cat: %d\n" (show-it (Cat 3)))         ; 103
+  (printf "param dog: %d\n" (show-it (Dog 4)))         ; 40
+
+  ; Heterogeneous (Vector (dyn Describe)) — boxes of two distinct concrete types in
+  ; one homogeneous slot type. Box each value into a let (no drop), conj the box,
+  ; then iterate, dispatch `describe` through the vtable, and drop each box element
+  ; exactly once. The Vector's own Drop frees the buffer at scope exit. No leak,
+  ; no double-free.
+  (with ((v (ref (Vector (dyn Describe)))) (alloca (Vector (dyn Describe))))
+    (vector-init v)
+    (let (cat:(dyn Describe)  (Cat 1)
+          dog:(dyn Describe)  (Dog 2)
+          cat2:(dyn Describe) (Cat 9))
+      (conj v cat) (conj v dog) (conj v cat2))
+    (let (i:usize (cast usize 0))
+      (while (< i (count v))
+        (let (e:(dyn Describe) (v i))
+          (printf "vec[%d] = %d\n" (cast i32 i) (describe e))
+          (drop (addr-of e)))
+        (set! i (+ i (cast usize 1))))))
+
+  (printf "done\n")
+  (return 0))

@@ -1,0 +1,28 @@
+; Stage 13 — C header exclusion of BoxedFn/dyn-typed public defns (fixture).
+;
+; Public defns whose signatures expose a (BoxedFn …) or (dyn P) type are
+; NOT C-callable (fat pointer carrying Nucleus-side Drop/vtable semantics with
+; no faithful C spelling), so --emit-cheader OMITS their prototypes (emitting
+; a comment) and the compiler WARNS at the definition site. A plain
+; function-pointer-compatible defn is emitted normally.
+;
+; (BoxedFn …) and (dyn P) are type-parser surface available at prescan, so
+; they can be spelled directly in signatures (unlike the L8 closure fixture,
+; which needs a hand-defined __vfn_env_N struct). This file is not a runnable
+; program (no main).
+
+; Minimal protocol for the dyn test case.
+(defprotocol Showable
+  ((show i32) ((self (ref Self)))))
+
+; Exposes a BoxedFn return type -> omitted from the C header, warned at definition.
+(defn make-boxed:(BoxedFn (i32) i32) ()
+  (return 0))
+
+; Exposes a dyn parameter -> omitted from the C header, warned at definition.
+(defn use-dyn:i32 ((s (dyn Showable)))
+  (return 0))
+
+; A plain function (function-pointer-compatible) signature -> emitted normally.
+(defn plain-fn:i32 ((x i32) (y i32))
+  (return (+ x y)))

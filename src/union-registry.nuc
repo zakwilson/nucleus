@@ -312,6 +312,275 @@
     (return t)))
 
 ; ============================================================
+; Stage 13 type-erasure (TE-1): the shared fat-pointer aggregate.
+; ============================================================
+; A type-erased value (BoxedFn / (dyn P), design/stage13/type-erasure.md) is a
+; two-word fat pointer, a by-value aggregate:
+;   { data: ptr,        ; heap-allocated payload (the boxed env / boxed value)
+;     vtable: ptr }      ; address of the static per-concrete-type vtable (TE-2)
+; Field order is { data, vtable } (the committed CE-4 order). It is an ordinary
+; 16-byte TY-STRUCT, so it rides the existing by-value-struct ABI with no new
+; value-vs-pointer logic: abi-classify sees two INTEGER eightbytes → ABI-COERCE2,
+; exactly the CE-3 pass/return/store path (emit-struct-ret TY-PTR typed copy,
+; emit-call-with-args first-class load, abi-arg-frag). type-size returns the
+; pointer size for the TY-STRUCT slot; LLVM computes the real 16-byte size for
+; typed load/store.
+;
+; CRITICAL (inertness): the StructDef is registered LAZILY — only the first time
+; a box type is actually needed (TE-3+). Registering it eagerly at init would
+; emit a `%__fatptr = type { ptr, ptr }` line into every module's IR and drift
+; the bootstrap. Nothing boxes a value in the compiler's own source, so the lazy
+; registration fires in ZERO modules during self-compilation → byte-identical.
+(defvar g-fatptr-sdef:ptr null)   ; memoized {data,vtable} StructDef*, or null
+(defvar g-fatptr-type:ptr null)   ; memoized TY-STRUCT Type* over it, or null
+
+; Register (once) and return the {data:ptr, vtable:ptr} StructDef. Mirrors the
+; parametric-struct stamp (struct-template-stamp-types): reserve the name via
+; register-struct, fill the two ptr fields, and queue its `%__fatptr = type {…}`
+; IR on the shared deferred queue (emit-pending-struct-ir-type writes the plain
+; struct line at drain time; the `emitted` flag guards double-emit). Both fields
+; are opaque `ptr`, so the type has no named dependency and emits on the next
+; drain. Idempotent — subsequent calls return the cached def.
+(defn ensure-fatptr-sdef:ptr ()
+  (when (!= g-fatptr-sdef null) (return g-fatptr-sdef))
+  (let (nm:ptr (intern-str (sanitize-for-ir "__fatptr"))
+        sd:ref:StructDef (register-struct nm))
+    (.set! sd field-names (arena-alloc (* (cast i64 2) (ptr-bytes))))
+    (.set! sd field-types (arena-alloc (* (cast i64 2) (ptr-bytes))))
+    (aset! (cast ptr:ptr (sd field-names)) 0 (intern-str "data"))
+    (aset! (cast ptr:ptr (sd field-names)) 1 (intern-str "vtable"))
+    (aset! (cast ptr:ptr (sd field-types)) 0 (cast ptr ty-ptr))
+    (aset! (cast ptr:ptr (sd field-types)) 1 (cast ptr ty-ptr))
+    (.set! sd num-fields 2)
+    (.set! sd src-file g-source-path)
+    (.set! sd src-line 0)
+    (conj g-pending-unions (cast ptr sd))
+    (set! g-fatptr-sdef (cast ptr sd))
+    (return g-fatptr-sdef)))
+
+; The fat-pointer Type (TY-STRUCT over the StructDef above), memoized so every
+; box shares one immutable Type* (type-eq by sdef pointer identity). TE-3 uses
+; this as the slot/binding type and to build the fat-pointer Val; it constructs
+; a value by alloca'ing this type, storing the heap `data` ptr into field 0 and
+; the TE-2 vtable address into field 1, then loading the first-class aggregate.
+(defn fatptr-type:ptr ()
+  (when (= g-fatptr-type null)
+    (set! g-fatptr-type (cast ptr (type-for-sdef (ensure-fatptr-sdef)))))
+  (return g-fatptr-type))
+
+; ============================================================
+; Stage 13 type-erasure (TE-5 minimal): BoxedFn instance types.
+; ============================================================
+; `(BoxedFn (params…) ret)` denotes the shared fat pointer (TE-1) specialised to
+; the Fn family. Each distinct signature gets its OWN {data,vtable} StructDef so
+; type-eq (sdef pointer identity) keeps `(BoxedFn (i32) i32)` and
+; `(BoxedFn (f64) f64)` distinct — the shared 16-byte layout means the ABI is
+; still the CE-3 COERCE2 path. The Fn signature (ret + non-self params) is carried
+; on the returned TY-STRUCT Type's ret/params/num-params fields (unused for a
+; struct otherwise), so the boxing coercion (TE-3) and the `(invoke box …)`
+; forwarding (TE-4) recover it without a side table. Memoised per signature-key so
+; one spelling → one Type* → one sdef. LAZY like ensure-fatptr-sdef: the
+; `%__boxedfn.… = type {…}` line is queued only when a signature is first parsed,
+; so a box-free unit (the whole compiler) emits nothing → byte-identical bootstrap.
+(defvar g-boxedfn-keys:ptr null)   ; array of ptr — interned signature keys
+(defvar g-boxedfn-types:ptr null)  ; array of ptr — parallel box Type* (carries sig)
+(defvar g-boxedfn-count:i32 0)
+(defvar g-boxedfn-cap:i32 0)
+
+(defn boxedfn-memo-lookup:ptr (key:ptr)
+  (let (i:i32 0)
+    (while (< i g-boxedfn-count)
+      (when (= (aref (cast ptr:ptr g-boxedfn-keys) i) key)
+        (return (aref (cast ptr:ptr g-boxedfn-types) i)))
+      (inc! i)))
+  (return null))
+
+(defn boxedfn-memo-put:void (key:ptr ty:ptr)
+  (when (= g-boxedfn-cap 0)
+    (set! g-boxedfn-cap 16)
+    (set! g-boxedfn-keys (arena-alloc (* (cast i64 g-boxedfn-cap) (ptr-bytes))))
+    (set! g-boxedfn-types (arena-alloc (* (cast i64 g-boxedfn-cap) (ptr-bytes)))))
+  (when (= g-boxedfn-count g-boxedfn-cap)
+    (let (nc:i32 (* g-boxedfn-cap 2)
+          nk:ptr (arena-alloc (* (cast i64 (* g-boxedfn-cap 2)) (ptr-bytes)))
+          nt:ptr (arena-alloc (* (cast i64 (* g-boxedfn-cap 2)) (ptr-bytes))))
+      (memcpy nk g-boxedfn-keys (* (cast i64 g-boxedfn-count) (ptr-bytes)))
+      (memcpy nt g-boxedfn-types (* (cast i64 g-boxedfn-count) (ptr-bytes)))
+      (set! g-boxedfn-keys nk)
+      (set! g-boxedfn-types nt)
+      (set! g-boxedfn-cap nc)))
+  (aset! (cast ptr:ptr g-boxedfn-keys) g-boxedfn-count key)
+  (aset! (cast ptr:ptr g-boxedfn-types) g-boxedfn-count ty)
+  (inc! g-boxedfn-count))
+
+; A dot-free signature token "<rettok>_<p0tok>_<p1tok>…" (each via
+; type-mangle-token), keying the per-signature box StructDef name and memo entry.
+(defn boxedfn-sig-token:ptr (param-arr:ptr num-p:i32 ret:ptr)
+  (let (s:ptr (type-mangle-token ret)
+        i:i32 0)
+    (while (< i num-p)
+      (set! s (fmt-2s "%s_%s" s (type-mangle-token (aref (cast ptr:ptr param-arr) i))))
+      (inc! i))
+    (return s)))
+
+; The (memoised) BoxedFn instance Type for a signature. On a miss it registers a
+; fresh {data:ptr, vtable:ptr} StructDef (mirroring ensure-fatptr-sdef but with a
+; per-signature name), queues its IR on the shared pending-union list, builds the
+; TY-STRUCT Type, stamps the Fn signature onto ret/params/num-params, and memoises.
+(defn boxedfn-type:ptr (param-arr:ptr num-p:i32 ret:ptr line:i32)
+  (let (tok:ptr (boxedfn-sig-token param-arr num-p ret)
+        key:ptr (intern-str (fmt-s "BoxedFn.%s" tok))
+        hit:ptr (boxedfn-memo-lookup key))
+    (when (!= hit null) (return hit))
+    (let (nm:ptr (intern-str (sanitize-for-ir (fmt-s "__boxedfn.%s" tok)))
+          sd:ref:StructDef (register-struct nm))
+      (.set! sd field-names (arena-alloc (* (cast i64 2) (ptr-bytes))))
+      (.set! sd field-types (arena-alloc (* (cast i64 2) (ptr-bytes))))
+      (aset! (cast ptr:ptr (sd field-names)) 0 (intern-str "data"))
+      (aset! (cast ptr:ptr (sd field-names)) 1 (intern-str "vtable"))
+      (aset! (cast ptr:ptr (sd field-types)) 0 (cast ptr ty-ptr))
+      (aset! (cast ptr:ptr (sd field-types)) 1 (cast ptr ty-ptr))
+      (.set! sd num-fields 2)
+      (.set! sd src-file g-source-path)
+      (.set! sd src-line 0)
+      (conj g-pending-unions (cast ptr sd))
+      (let (t:ref:Type (type-for-sdef (cast ptr sd)))
+        ; Carry the Fn signature on the struct Type for invoke-forwarding / boxing.
+        (.set! t ret ret)
+        (.set! t params param-arr)
+        (.set! t num-params num-p)
+        (boxedfn-memo-put key (cast ptr t))
+        (return (cast ptr t))))))
+
+; If `ty` is a BoxedFn instance type, return its canonical box Type* (carrying the
+; Fn signature in ret/params/num-params); else null. Detection is by StructDef
+; pointer identity against the memo, so a loaded box value and any re-derived
+; spelling both resolve. INERT until a box type is parsed (count stays 0 in a
+; box-free unit) — the loop never runs, so no IR is affected.
+(defn boxedfn-canonical:ptr (ty:ptr)
+  (when (= ty null) (return null))
+  (let (tt:ptr:Type (cast ptr:Type ty))
+    (when (!= (tt kind) TY-STRUCT) (return null))
+    (let (sd:ptr (tt sdef)
+          i:i32 0)
+      (when (= sd null) (return null))
+      (while (< i g-boxedfn-count)
+        (let (bt:ptr:Type (cast ptr:Type (aref (cast ptr:ptr g-boxedfn-types) i)))
+          (when (= (bt sdef) sd) (return (cast ptr bt))))
+        (inc! i))
+      (return null))))
+
+; ============================================================
+; Stage 13 type-erasure TE-6: general `(dyn Protocol)` instance types.
+; ============================================================
+; `(dyn P)` denotes the SAME shared fat pointer (TE-1) as a BoxedFn — a two-word
+; {data:ptr, vtable:ptr} — but erases a value of an arbitrary *user protocol* `P`
+; via NOMINAL `extend P` conformance instead of the structural closure→Fn match.
+; Each distinct protocol gets its OWN {data,vtable} StructDef so type-eq (sdef
+; pointer identity) keeps `(dyn Show)` and `(dyn Eq)` distinct, and so a loaded box
+; resolves its protocol. The protocol NAME (the interned symbol string, matching
+; the protocol registry's key) is carried in a parallel memo array — `(dyn P)`
+; needs no signature on the Type (the method set comes from the Protocol record at
+; vtable-build time, nucleusc.nuc). LAZY like boxedfn-type: the `%__dyn.<P> = type
+; {…}` line is queued only when a `(dyn P)` is first parsed, so a dyn-free unit (the
+; whole compiler) emits nothing → byte-identical bootstrap. Protocol validation is
+; deferred to box construction (union-registry is imported before generics, so the
+; protocol registry is not yet visible here); a parse only stores the name.
+(defvar g-dyn-keys:ptr null)    ; array of ptr — interned "dyn.<P>" keys
+(defvar g-dyn-types:ptr null)   ; array of ptr — parallel box Type*
+(defvar g-dyn-protos:ptr null)  ; array of ptr — parallel interned protocol-name strings
+(defvar g-dyn-count:i32 0)
+(defvar g-dyn-cap:i32 0)
+
+(defn dyn-memo-lookup:ptr (key:ptr)
+  (let (i:i32 0)
+    (while (< i g-dyn-count)
+      (when (= (aref (cast ptr:ptr g-dyn-keys) i) key)
+        (return (aref (cast ptr:ptr g-dyn-types) i)))
+      (inc! i)))
+  (return null))
+
+(defn dyn-memo-put:void (key:ptr ty:ptr proto:ptr)
+  (when (= g-dyn-cap 0)
+    (set! g-dyn-cap 16)
+    (set! g-dyn-keys (arena-alloc (* (cast i64 g-dyn-cap) (ptr-bytes))))
+    (set! g-dyn-types (arena-alloc (* (cast i64 g-dyn-cap) (ptr-bytes))))
+    (set! g-dyn-protos (arena-alloc (* (cast i64 g-dyn-cap) (ptr-bytes)))))
+  (when (= g-dyn-count g-dyn-cap)
+    (let (nc:i32 (* g-dyn-cap 2)
+          nk:ptr (arena-alloc (* (cast i64 (* g-dyn-cap 2)) (ptr-bytes)))
+          nt:ptr (arena-alloc (* (cast i64 (* g-dyn-cap 2)) (ptr-bytes)))
+          np:ptr (arena-alloc (* (cast i64 (* g-dyn-cap 2)) (ptr-bytes))))
+      (memcpy nk g-dyn-keys (* (cast i64 g-dyn-count) (ptr-bytes)))
+      (memcpy nt g-dyn-types (* (cast i64 g-dyn-count) (ptr-bytes)))
+      (memcpy np g-dyn-protos (* (cast i64 g-dyn-count) (ptr-bytes)))
+      (set! g-dyn-keys nk)
+      (set! g-dyn-types nt)
+      (set! g-dyn-protos np)
+      (set! g-dyn-cap nc)))
+  (aset! (cast ptr:ptr g-dyn-keys) g-dyn-count key)
+  (aset! (cast ptr:ptr g-dyn-types) g-dyn-count ty)
+  (aset! (cast ptr:ptr g-dyn-protos) g-dyn-count proto)
+  (inc! g-dyn-count))
+
+; The (memoised) `(dyn P)` instance Type for protocol name `proto`. On a miss it
+; registers a fresh {data:ptr, vtable:ptr} StructDef named `%__dyn.<P>`, queues its
+; IR on the shared pending-union list, builds the TY-STRUCT Type, and records the
+; protocol name in the parallel memo. Mirrors boxedfn-type exactly (same layout, so
+; the same CE-3 COERCE2 ABI), differing only in the carried datum (protocol name vs
+; Fn signature).
+(defn dyn-type:ptr (proto:ptr line:i32)
+  (let (key:ptr (intern-str (fmt-s "dyn.%s" proto))
+        hit:ptr (dyn-memo-lookup key))
+    (when (!= hit null) (return hit))
+    (let (nm:ptr (intern-str (sanitize-for-ir (fmt-s "__dyn.%s" proto)))
+          sd:ref:StructDef (register-struct nm))
+      (.set! sd field-names (arena-alloc (* (cast i64 2) (ptr-bytes))))
+      (.set! sd field-types (arena-alloc (* (cast i64 2) (ptr-bytes))))
+      (aset! (cast ptr:ptr (sd field-names)) 0 (intern-str "data"))
+      (aset! (cast ptr:ptr (sd field-names)) 1 (intern-str "vtable"))
+      (aset! (cast ptr:ptr (sd field-types)) 0 (cast ptr ty-ptr))
+      (aset! (cast ptr:ptr (sd field-types)) 1 (cast ptr ty-ptr))
+      (.set! sd num-fields 2)
+      (.set! sd src-file g-source-path)
+      (.set! sd src-line 0)
+      (conj g-pending-unions (cast ptr sd))
+      (let (t:ref:Type (type-for-sdef (cast ptr sd)))
+        (dyn-memo-put key (cast ptr t) proto)
+        (return (cast ptr t))))))
+
+; If `ty` is a `(dyn P)` instance type, return its canonical box Type*; else null.
+; Detection is by StructDef pointer identity against the memo (a loaded box value
+; and any re-derived spelling both resolve). INERT until a `(dyn P)` is parsed.
+(defn dyn-canonical:ptr (ty:ptr)
+  (when (= ty null) (return null))
+  (let (tt:ptr:Type (cast ptr:Type ty))
+    (when (!= (tt kind) TY-STRUCT) (return null))
+    (let (sd:ptr (tt sdef)
+          i:i32 0)
+      (when (= sd null) (return null))
+      (while (< i g-dyn-count)
+        (let (dt:ptr:Type (cast ptr:Type (aref (cast ptr:ptr g-dyn-types) i)))
+          (when (= (dt sdef) sd) (return (cast ptr dt))))
+        (inc! i))
+      (return null))))
+
+; The protocol name carried by a `(dyn P)` box Type (the interned symbol string,
+; usable directly as a `protocol-lookup` key), or null if `ty` is not a dyn box.
+(defn dyn-proto-of:ptr (ty:ptr)
+  (when (= ty null) (return null))
+  (let (tt:ptr:Type (cast ptr:Type ty))
+    (when (!= (tt kind) TY-STRUCT) (return null))
+    (let (sd:ptr (tt sdef)
+          i:i32 0)
+      (when (= sd null) (return null))
+      (while (< i g-dyn-count)
+        (let (dt:ptr:Type (cast ptr:Type (aref (cast ptr:ptr g-dyn-types) i)))
+          (when (= (dt sdef) sd) (return (aref (cast ptr:ptr g-dyn-protos) i))))
+        (inc! i))
+      (return null))))
+
+; ============================================================
 ; Stage 10: tagged sums — defunion (design/stage10/unions.md §3) and the
 ; parameterized-template layer (§5). A defunion is a struct
 ; {tag:i32, payload:(union ...)} plus an arm table consumed by match/make.
@@ -1123,6 +1392,51 @@
                 (let (argts:ptr (arena-alloc (ptr-bytes)))
                   (aset! (cast ptr:ptr argts) 0 inner)
                   (return (union-template-stamp-types (cast ptr ut) argts 1 line))))))))
+      ; Stage 13 TE-5: (BoxedFn (param-types…) ret) — the shared fat pointer
+      ; (TE-1) specialised to the Fn family (design/stage13/type-erasure.md). Each
+      ; signature is a distinct {data,vtable} instance type. Additive: no existing
+      ; spelling reaches here, so the bootstrap stays byte-identical.
+      (let (head:ptr (n car))
+        (when (= head 'BoxedFn)
+          (let (plist-node:ptr (n cdr))
+            (when (or (= plist-node null)
+                      (= ((cast ptr:Node plist-node) cdr) null))
+              (die-at line "BoxedFn: expects (BoxedFn (param-types…) ret)"))
+            (let (params-list:ptr ((cast ptr:Node plist-node) car)
+                  ret-node:ptr (-> plist-node (cast ptr:Node _) (_ cdr) (cast ptr:Node _) (_ car))
+                  num-p:i32 0
+                  cur:ptr null)
+              (set! cur params-list)
+              (while (!= cur null) (inc! num-p) (set! cur ((cast ptr:Node cur) cdr)))
+              (let (param-arr:ptr (if (> num-p 0)
+                                    (arena-alloc (* (cast i64 num-p) (ptr-bytes)))
+                                    (cast ptr null))
+                    pi:i32 0)
+                (set! cur params-list)
+                (while (!= cur null)
+                  (aset! (cast ptr:ptr param-arr) pi
+                         (parse-type-from-node ((cast ptr:Node cur) car) line))
+                  (inc! pi)
+                  (set! cur ((cast ptr:Node cur) cdr)))
+                (let (ret-ty:ptr (parse-type-from-node ret-node line))
+                  (return (boxedfn-type param-arr num-p ret-ty line))))))))
+      ; Stage 13 TE-6: (dyn P) — the shared fat pointer (TE-1) erasing a value of
+      ; an arbitrary single user protocol P via nominal `extend` conformance
+      ; (design/stage13/type-erasure.md "Instantiation B"). P must be a bare
+      ; protocol symbol (parametric `(dyn (Seq E))` is deferred). The protocol is
+      ; NOT resolved here — union-registry is imported before the protocol registry
+      ; — only its name is stored; validation fires at box-construction time.
+      ; Additive: no existing spelling reaches here, so the bootstrap stays
+      ; byte-identical.
+      (let (head:ptr (n car))
+        (when (= head 'dyn)
+          (let (rest:ptr (n cdr))
+            (when (or (= rest null) (= ((cast ptr:Node rest) car) null))
+              (die-at line "(dyn P): expects (dyn Protocol)"))
+            (let (pnode:ptr:Node (cast ptr:Node ((cast ptr:Node rest) car)))
+              (when (!= (pnode kind) NODE-SYM)
+                (die-at line "(dyn P): protocol must be a bare symbol (parametric protocols are not boxable)"))
+              (return (dyn-type (pnode s) line))))))
       ; Check for function pointer type: ((fn ret) (param-types...))
       (let (head:ptr (n car))
         (when (!= head null)

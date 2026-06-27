@@ -2221,6 +2221,10 @@
         args:ptr (arena-alloc (* (cast i64 (+ total 1)) (sizeof Val)))
         argtypes:ptr (arena-alloc (* (cast i64 (+ total 1)) (ptr-bytes)))
         arg-nodes:ptr (arena-alloc (* (cast i64 (+ total 1)) (ptr-bytes))))
+    ; Stage 13 TE-4: a BoxedFn callee dispatches through its vtable invoke slot,
+    ; not the `invoke` generic (no method has the box as receiver). Inert otherwise.
+    (when (!= (boxedfn-canonical (cv type)) null)
+      (return (emit-box-invoke n scope callee-val arg-start nargs)))
     (memcpy (ptr+ (cast ptr:Val args) 0) cv (sizeof Val))
     (aset! (cast ptr:ptr argtypes) 0 (cv type))
     (aset! (cast ptr:ptr arg-nodes) 0 null)
@@ -2251,6 +2255,11 @@
     ; A function-pointer value folds to an indirect call (callable-values.md §4.2).
     (when (= (ct kind) TY-FN)
       (return (emit-funcall-value n scope callee-val 1)))
+    ; Stage 13 TE-4: a BoxedFn value applies through its vtable regardless of the
+    ; argument shape (a symbol arg must not be mis-routed to `get`/`_get`). Inert
+    ; otherwise — the compiler has no box value.
+    (when (!= (boxedfn-canonical (cast ptr ct)) null)
+      (return (emit-invoke-with-callee n scope callee-val 1 nargs)))
     ; invoke takes precedence: any callee whose type has an `invoke` method treats
     ; the arg(s) as values (so `(v idx)` indexes, not a field-named-`idx` get).
     (when (!= (generic-has-receiver-method (generic-lookup "invoke") (cast ptr ct)) 0)
@@ -2698,6 +2707,28 @@
           (while (< ci ncoerce)
             (let (slot:ptr:Val (cast ptr:Val (ptr+ (cast ptr:Val args) ci))
                   ptype:ptr (aref (cast ptr:ptr (ft0 params)) ci))
+              ; Stage 13 TE-3: a closure (ref Env) argument flowing into a
+              ; BoxedFn-typed parameter is heap-boxed into the shared fat pointer
+              ; BEFORE the CE-3 by-value normalization (which would otherwise see a
+              ; pointer whose pointee != ptype and pass the raw env pointer). After
+              ; boxing, slot holds the {data,vtable} value and the CE-3 block's
+              ; TY-PTR guard is false, so abi-arg-frag lowers the box by value.
+              ; Inert when ptype is not a box (the compiler never has one).
+              (let (bcanon:ptr (boxedfn-canonical ptype))
+                (when (and (!= bcanon null)
+                           (= (boxedfn-canonical (slot type)) null)
+                           (= ((cast ptr:Type (slot type)) kind) TY-PTR))
+                  (let (boxed:ref:Val (emit-box-closure (cast ptr slot) bcanon scope (cc line)))
+                    (memcpy slot (cast ptr boxed) (sizeof Val)))))
+              ; Stage 13 TE-6: symmetric path for a concrete value flowing into a
+              ; `(dyn P)`-typed parameter — box it (the nominal value box) before the
+              ; CE-3 normalization. Inert when ptype is not a dyn box.
+              (let (dcanon:ptr (dyn-canonical ptype))
+                (when (and (!= dcanon null)
+                           (= (dyn-canonical (slot type)) null)
+                           (= ((cast ptr:Type (slot type)) kind) TY-PTR))
+                  (let (boxed:ref:Val (emit-box-value (cast ptr slot) dcanon scope (cc line)))
+                    (memcpy slot (cast ptr boxed) (sizeof Val)))))
               ; CE-3 (closure-enhancements.md §CE-3) fix (b), symmetric arg path:
               ; passing a struct *by value* — the parameter is a by-value struct
               ; (TY-STRUCT) but the argument is represented as a pointer to that
@@ -2846,6 +2877,19 @@
 ;     verbatim — the same `owns=1` that lets emit-move consume a struct-value
 ;     capture into an `mfn`.
 (defn with-drop-method:?ptr:Method (ty:ptr)
+  ; Stage 13 TE-4: a BoxedFn box is Drop-conforming via the shared @__boxedfn_drop
+  ; thunk (vtable.drop(data) + free), which is NOT registered on the `drop` generic
+  ; (it is hand-emitted by ensure-box-drop-fn at box-construction time). Short-
+  ; circuit with a synthetic Method carrying that symbol so emit-with arms the
+  ; box's scope-exit drop through the normal cleanup path. Inert for any non-box ty.
+  (let (bdt:ptr (boxedfn-drop-target ty))
+    (when (!= bdt null)
+      (let (m:ref:Method (new Method))
+        (.set! m ir-name "@__boxedfn_drop")
+        (.set! m ret-type ty-void)
+        (.set! m kind METHOD-USER)
+        (.set! m num-params 1)
+        (return (cast ref:Method m)))))
   (let (tt:ptr:Type (cast ptr:Type ty)
         sd:ptr null
         qty:ptr null)
@@ -3783,6 +3827,740 @@
                          mangled g-source-path line))
         (conj g-mono-worklist (cast ptr job))))))
 
+; ============================================================
+; Stage 13 type-erasure (TE-2): static per-concrete-type vtable synthesis.
+; ============================================================
+; For each concrete type ever boxed into a fat pointer (TE-1), synthesize ONE
+; static immutable global vtable holding the addresses of that type's thunks:
+;   @__vt.<type>.<proto> = internal constant { ptr, ptr }
+;     { ptr <invoke-thunk>, ptr <drop-thunk-or-null> }
+; slot 0 = the type's invoke/dispatch thunk, slot 1 = its drop thunk (null for a
+; POD / non-owning type). For a BoxedFn these thunks are the *already-synthesized*
+; per-env `invoke` (fn-make-invoke-method) and `drop` (fn-make-drop-method)
+; methods — the vtable just takes their addresses; no new thunks are written. The
+; box's `vtable` field (TE-3) is set to this global's address at construction.
+;
+; Dedup: memoized per (concrete-type spelling, protocol/signature) via parallel
+; arrays (mirrors g-fnty-* in type-mangle.nuc) — reserve-key-first, intern,
+; reuse — so a second box of the same type shares one global. The vtable symbol
+; routes through sanitize-for-ir so `!`/`?`/`/` never reach the emitted name.
+;
+; Emission target is g-out (mirroring fn-make-env-struct): at box time g-out is
+; the current module's def stream (batch / CT-JIT / macro-JIT), so the vtable
+; lands in the same module as the @invoke/@drop thunks it references (those are
+; queued on g-mono-worklist when the closure is emitted in that module). LLVM
+; permits a constant to reference function globals defined later in the module.
+;
+; INERTNESS: nothing calls ensure-vtable-for yet (no boxing surface until TE-3),
+; so this emits in zero modules during self-compilation → byte-identical.
+(defvar g-vtable-keys:ptr null)   ; array of ptr — interned "(spelling)/(proto)" keys
+(defvar g-vtable-names:ptr null)  ; array of ptr — parallel "@__vt..." symbol strings
+(defvar g-vtable-count:i32 0)
+(defvar g-vtable-cap:i32 0)
+
+; Memo lookup: the already-emitted vtable symbol for interned `key`, or null.
+(defn vtable-memo-lookup:ptr (key:ptr)
+  (let (i:i32 0)
+    (while (< i g-vtable-count)
+      (when (= (aref (cast ptr:ptr g-vtable-keys) i) key)
+        (return (aref (cast ptr:ptr g-vtable-names) i)))
+      (inc! i)))
+  (return null))
+
+; Record (key → vtable-symbol), growing the parallel arrays (mirrors fnty-intern).
+(defn vtable-memo-put:void (key:ptr name:ptr)
+  (when (= g-vtable-cap 0)
+    (set! g-vtable-cap 16)
+    (set! g-vtable-keys (arena-alloc (* (cast i64 g-vtable-cap) (ptr-bytes))))
+    (set! g-vtable-names (arena-alloc (* (cast i64 g-vtable-cap) (ptr-bytes)))))
+  (when (= g-vtable-count g-vtable-cap)
+    (let (nc:i32 (* g-vtable-cap 2)
+          nk:ptr (arena-alloc (* (cast i64 (* g-vtable-cap 2)) (ptr-bytes)))
+          nn:ptr (arena-alloc (* (cast i64 (* g-vtable-cap 2)) (ptr-bytes))))
+      (memcpy nk g-vtable-keys (* (cast i64 g-vtable-count) (ptr-bytes)))
+      (memcpy nn g-vtable-names (* (cast i64 g-vtable-count) (ptr-bytes)))
+      (set! g-vtable-keys nk)
+      (set! g-vtable-names nn)
+      (set! g-vtable-cap nc)))
+  (aset! (cast ptr:ptr g-vtable-keys) g-vtable-count key)
+  (aset! (cast ptr:ptr g-vtable-names) g-vtable-count name)
+  (inc! g-vtable-count))
+
+; The emitted `@invoke.p<Env>.<argtoks>` symbol for a concrete env type: scan the
+; `invoke` generic for the METHOD-USER whose self param (param-types[0]) is
+; (ref Env) with Env matching `env-ty`'s StructDef — the exact scan
+; derive-closure-conformance uses to locate a closure's invoke. Names compare by
+; pointer identity (interned struct name). Returns the method's pre-mangled
+; ir-name (already including the leading `@`), or null if none is registered.
+(defn vtable-invoke-irname:ptr (env-ty:ptr)
+  (let (ev:ptr:Type (cast ptr:Type env-ty))
+    (when (!= (ev kind) TY-STRUCT) (return null))
+    (let (envname:ptr (-> ev (_ sdef) (cast ptr:StructDef _) (_ name))
+          ig:ptr (generic-lookup "invoke"))
+      (when (= ig null) (return null))
+      (let (igg:ptr:Generic (cast ptr:Generic ig)
+            mi:i32 0)
+        (while (< mi (igg num-methods))
+          (let (mm:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (igg methods)) mi)))
+            (when (= (mm kind) METHOD-USER)
+              (let (self-ty:ptr (aref (cast ptr:ptr (mm param-types)) 0))
+                (when (!= self-ty null)
+                  (let (st:ptr:Type (cast ptr:Type self-ty))
+                    (when (and (= (st kind) TY-PTR)
+                               (and (!= (st elem) null) (= (st pkind) PTR-REF)))
+                      (let (et:ptr:Type (cast ptr:Type (st elem)))
+                        (when (= (et kind) TY-STRUCT)
+                          (let (sd:ptr:StructDef (cast ptr:StructDef (et sdef)))
+                            (when (and (!= (cast ptr sd) null) (= (sd name) envname))
+                              (return (mm ir-name))))))))))))
+          (inc! mi)))
+      (return null))))
+
+; The emitted `@drop.p<Env>` symbol for a concrete type that conforms to Drop, or
+; null for a non-owning / POD type (the vtable's drop slot is then `null`).
+; Delegates to with-drop-method (handles the TY-STRUCT→(ref T) self shape and
+; resolves exact or parametric drop) and reads the resolved method's ir-name.
+(defn vtable-drop-irname:ptr (concrete-ty:ptr)
+  ; TE-4: a cfn env (mode 2 — a leading `__alloc` field) captures by REFERENCE, so
+  ; it owns no Drop fields; its synthesized drop merely FREES the env block through
+  ; the stored handle. When such an env is boxed the box owns (and frees) its heap
+  ; copy, so the vtable drop slot must be null — otherwise the box-drop free plus
+  ; the env-drop free would double-free. (The original cfn env block then leaks: the
+  ; documented cfn-box ownership gap, consistent with the cfn-of-pointer escape open
+  ; question.) A vfn/mfn env's drop is field-drops only and composes correctly with
+  ; the box's free, so it stays in the slot.
+  (let (ct:ptr:Type (cast ptr:Type concrete-ty))
+    (when (= (ct kind) TY-STRUCT)
+      (let (sd:ptr:StructDef (cast ptr:StructDef (ct sdef)))
+        (when (and (!= (cast ptr sd) null) (> (sd num-fields) 0)
+                   (= (strcmp (aref (cast ptr:ptr (sd field-names)) 0) "__alloc") 0))
+          (return null)))))
+  (let (m:?ptr:Method (with-drop-method concrete-ty))
+    (when (= m null) (return null))
+    (let (mm:ptr:Method (cast ptr:Method m))
+      (return (mm ir-name)))))
+
+; TE-6: the emitted concrete-impl symbol for the SOLE method of single-method
+; protocol `proto` on concrete type `concrete-ty` — the `(dyn P)` analogue of
+; vtable-invoke-irname (which resolves the env's structural `invoke`). Mirrors
+; proto-sigs-resolve / method-satisfies-sig: substitute Self→concrete-ty in the
+; protocol's single signature, then find the exact concrete method on the
+; method-name generic. v1 restricts `(dyn P)` to a single-method, non-parametric
+; protocol so the vtable is the 2-slot `{ method0, drop }` layout (drop at index 1)
+; that the shared @__boxedfn_drop thunk reads verbatim. Dies on a missing protocol,
+; a multi/parametric protocol (deferred), or a missing concrete impl.
+(defn dyn-vtable-method-irname:ptr (concrete-ty:ptr proto:ptr line:i32)
+  (let (pp:?ptr:Protocol (protocol-lookup proto))
+    (when (= pp null)
+      (die-at line (fmt-s "(dyn %s): '%s' is not a declared protocol" proto proto)))
+    (let (ppp:ptr:Protocol (cast ptr:Protocol pp))
+      (when (!= (ppp num-sigs) 1)
+        (die-at line (fmt-s "(dyn %s): only single-method protocols are boxable in v1" proto)))
+      (when (> (ppp num-params) 0)
+        (die-at line (fmt-s "(dyn %s): parametric protocols are not boxable in v1" proto)))
+      (let (typename:ptr (type-spelling concrete-ty)
+            sig:ptr (aref (cast ptr:ptr (ppp sigs)) 0)
+            csig:ptr (subst-proto-sig-node sig typename (ppp params) null 0)
+            name-node:ptr (node-at csig 0)
+            params-node:ptr (node-at csig 1)
+            mname:ptr null)
+        (extract-name-and-type name-node (cast ptr:ptr (addr-of mname)) line)
+        (let (nparams:i32 (defn-params-count params-node)
+              ptypes:ptr (defn-params-to-types params-node)
+              g:ptr (generic-lookup mname))
+          (when (= g null)
+            (die-at line (fmt-2s "(dyn %s): no method '%s' is defined" proto mname)))
+          (let (m:?ptr:Method (generic-find-method-exact g ptypes nparams))
+            (when (= m null)
+              (die-at line (fmt-3s "(dyn %s): type '%s' does not implement %s"
+                                   proto typename mname)))
+            (return (-> m (cast ptr:Method _) (_ ir-name)))))))))
+
+; Emit (once) and return the vtable global symbol for (concrete-ty, proto). On a
+; memo hit returns the existing symbol without re-emitting; on a miss it ensures
+; the fat-pointer layout is registered (TE-1), resolves the method0/drop thunk
+; symbols, emits one `internal constant { ptr, ptr }` to g-out, records the memo,
+; and returns the `@__vt...` symbol. Box construction stores this address into the
+; fat pointer's `vtable` field. Slot 0 (method0) is the env's structural `invoke`
+; for a BoxedFn (proto "Fn") or the concrete `extend P` impl for a `(dyn P)` box;
+; slot 1 (drop) is the type's drop thunk (null for a POD/non-owning type). Dies if
+; the boxed type has no method0 thunk (an invoke/impl is mandatory; drop optional).
+(defn ensure-vtable-for:ptr (concrete-ty:ptr proto:ptr line:i32)
+  (let (key:ptr (intern-str (fmt-2s "%s/%s" (type-spelling concrete-ty) proto))
+        hit:ptr (vtable-memo-lookup key))
+    (when (!= hit null) (return hit))
+    ; The box that will reference this vtable is a fat pointer of the TE-1 type.
+    (ensure-fatptr-sdef)
+    (let (inv:ptr (if (= (strcmp proto "Fn") 0)
+                    (vtable-invoke-irname concrete-ty)
+                    (dyn-vtable-method-irname concrete-ty proto line))
+          drp:ptr (vtable-drop-irname concrete-ty))
+      (when (= inv null)
+        (die-at line (fmt-s "type-erasure: no invoke thunk for boxed type %s"
+                            (type-spelling concrete-ty))))
+      (let (vbare:ptr (sanitize-for-ir (fmt-2s "__vt.%s.%s"
+                                               (type-mangle-token concrete-ty) proto))
+            vname:ptr (intern-str (fmt-s "@%s" vbare)))
+        (if (= drp null)
+          (fprintf g-out "%s = internal constant { ptr, ptr } { ptr %s, ptr null }\n\n"
+                   vname inv)
+          (fprintf g-out "%s = internal constant { ptr, ptr } { ptr %s, ptr %s }\n\n"
+                   vname inv drp))
+        (vtable-memo-put key vname)
+        (return vname)))))
+
+; ============================================================
+; Stage 13 type-erasure TE-3 — the boxing coercion at assignment into an
+; erased slot (design/stage13/type-erasure.md §"(c) The boxing coercion").
+; ============================================================
+; When a concrete closure value (an emitted `__vfn_env_N` env produced by
+; vfn/mfn/cfn) flows into a `(BoxedFn …)` slot, it is moved to the heap and
+; wrapped in the shared two-word fat pointer (TE-1) pointing at the per-env
+; static vtable (TE-2). Every closure value is emitted as a `(ref Env)` (a
+; PTR-REF to its TY-STRUCT env: stack storage for vfn/mfn, heap storage for
+; cfn), so the box always moves the env *by value* into a fresh heap block.
+;
+; INERTNESS / byte-identity: the compiler's own source never spells `(BoxedFn …)`,
+; so `boxedfn-canonical` returns null at every coercion site during self-compile,
+; `maybe-box-into-slot` returns its input unchanged, and zero box IR is emitted →
+; byte-identical bootstrap, no refresh. Verify, do not assume.
+
+; The closure's synthesized `invoke` METHOD-USER for a concrete env type: the same
+; env-receiver scan vtable-invoke-irname uses, but returning the Method so the
+; structural admission can compare its signature against the box's. Returns null
+; for a non-struct type or a type with no registered invoke (e.g. a bare `fn`).
+(defn closure-invoke-method:?ptr:Method (env-ty:ptr)
+  (let (ev:ptr:Type (cast ptr:Type env-ty))
+    (when (!= (ev kind) TY-STRUCT) (return null))
+    (let (envname:ptr (-> ev (_ sdef) (cast ptr:StructDef _) (_ name))
+          ig:ptr (generic-lookup "invoke"))
+      (when (= ig null) (return null))
+      (let (igg:ptr:Generic (cast ptr:Generic ig)
+            mi:i32 0)
+        (while (< mi (igg num-methods))
+          (let (mm:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (igg methods)) mi)))
+            (when (= (mm kind) METHOD-USER)
+              (let (self-ty:ptr (aref (cast ptr:ptr (mm param-types)) 0))
+                (when (!= self-ty null)
+                  (let (st:ptr:Type (cast ptr:Type self-ty))
+                    (when (and (= (st kind) TY-PTR)
+                               (and (!= (st elem) null) (= (st pkind) PTR-REF)))
+                      (let (et:ptr:Type (cast ptr:Type (st elem)))
+                        (when (= (et kind) TY-STRUCT)
+                          (let (sd:ptr:StructDef (cast ptr:StructDef (et sdef)))
+                            (when (and (!= (cast ptr sd) null) (= (sd name) envname))
+                              (return (cast ptr mm))))))))))))
+          (inc! mi)))
+      (return null))))
+
+; The single, unified conformance-admission entry point the boxing coercion uses
+; (design/stage13.md §"Conformance: structural vs nominal must unify"). It tries
+; STRUCTURAL derivation first (closures → the Fn family) and falls back to NOMINAL
+; `extend` conformance (arbitrary protocols). Returns 1 when `concrete-ty` may be
+; boxed into `box-ty`, 0 otherwise; dies with a clear message when a closure is
+; found but its signature is incompatible with the BoxedFn slot.
+;   * box-ty is a fat-pointer instance Type. If it is a BoxedFn (boxedfn-canonical
+;     non-null), structural admission = the env's `invoke` method's non-self
+;     signature must match the box's (params…) ret (carried on box-ty).
+;   * proto-name is the protocol-name string for a `(dyn P)` box (TE-6), or null
+;     for a BoxedFn box. The nominal path (derive-closure-conformance for a named
+;     Fn protocol, then conformance-lookup) is wired but only fires when a proto
+;     name is supplied — i.e. it is dormant under TE-3 (BoxedFn only).
+; Coherence (one-conformance-per-(type,proto)) is preserved: derive-closure-
+; conformance is idempotent on an existing record and the structural BoxedFn match
+; records nothing (the env's invoke is its sole, fixed callable shape).
+(defn admit-erased-conformance:i32 (concrete-ty:ptr box-ty:ptr proto-name:ptr line:i32)
+  (let (canon:ptr (boxedfn-canonical box-ty))
+    ; (a) BoxedFn (Fn-family) box: structural signature match.
+    (when (!= canon null)
+      (let (im:?ptr:Method (closure-invoke-method concrete-ty))
+        (when (= im null) (return 0))
+        (let (m:ptr:Method (cast ptr:Method im)
+              bt:ptr:Type (cast ptr:Type canon)
+              np:i32 (bt num-params))
+          (when (!= (- (m num-params) 1) np)
+            (die-at line "BoxedFn: closure takes a different number of arguments than the slot's signature"))
+          (let (k:i32 0)
+            (while (< k np)
+              (when (= (type-eq (aref (cast ptr:ptr (m param-types)) (+ k 1))
+                                (aref (cast ptr:ptr (bt params)) k)) 0)
+                (die-at line "BoxedFn: closure parameter type does not match the slot's signature"))
+              (inc! k)))
+          (when (= (type-eq (m ret-type) (bt ret)) 0)
+            (die-at line "BoxedFn: closure return type does not match the slot's signature"))
+          (return 1))))
+    ; (b) general (dyn P) box (TE-6): structural closure→named-Fn protocol, then
+    ;     nominal extend conformance. Dormant under TE-3 (proto-name null).
+    (when (!= proto-name null)
+      (when (!= (derive-closure-conformance concrete-ty proto-name line) 0)
+        (return 1))
+      (when (!= (conformance-lookup (type-spelling concrete-ty) proto-name) 0)
+        (return 1)))
+    (return 0)))
+
+; Build the first-class fat-pointer value {data = blk, vtable = vname} of box type
+; `box-ty`: alloca the box, store the two pointers, load the aggregate. Shared by
+; the closure-box and bare-fn-box paths.
+(defn build-fatptr-val:ref:Val (blk:ptr vname:ptr box-ty:ptr)
+  (let (box-ir:ptr (type-to-ir box-ty)
+        fpslot:ptr (new-tmp))
+    (fprintf g-entry-stream "  %s = alloca %s, align 8\n" fpslot box-ir)
+    (let (g0:ptr (new-tmp))
+      (fprintf g-body-stream "  %s = getelementptr inbounds %s, ptr %s, i32 0, i32 0\n"
+        g0 box-ir fpslot)
+      (fprintf g-body-stream "  store ptr %s, ptr %s, align 8\n" blk g0))
+    (let (g1:ptr (new-tmp))
+      (fprintf g-body-stream "  %s = getelementptr inbounds %s, ptr %s, i32 0, i32 1\n"
+        g1 box-ir fpslot)
+      (fprintf g-body-stream "  store ptr %s, ptr %s, align 8\n" vname g1))
+    (let (fp:ptr (new-tmp))
+      (fprintf g-body-stream "  %s = load %s, ptr %s, align 8\n" fp box-ir fpslot)
+      (return (alloc-val box-ty fp)))))
+
+; TE-5: the static vtable for a BARE-`fn` box. A non-capturing closure has no env
+; and no synthesized `invoke` method, so the vtable invoke slot is a per-signature
+; FORWARDER thunk `@__fnfwd.<sig>(ptr data, args…)` that loads the function pointer
+; from the heap cell `data` and indirect-calls it; the drop slot is null (the box's
+; @__boxedfn_drop just frees the cell). Memoized per signature (reuses the vtable
+; memo with an `fnfwd.<sig>` key); the forwarder + vtable are emitted once to g-out.
+(defn ensure-fnfwd-vtable:ptr (box-ty:ptr line:i32)
+  (let (canon:ptr (boxedfn-canonical box-ty)
+        bt:ptr:Type (cast ptr:Type canon)
+        np:i32 (bt num-params)
+        ret:ptr (bt ret)
+        sigtok:ptr (boxedfn-sig-token (bt params) np ret)
+        key:ptr (intern-str (fmt-s "fnfwd.%s" sigtok))
+        hit:ptr (vtable-memo-lookup key))
+    (when (!= hit null) (return hit))
+    (ensure-fatptr-sdef)
+    (let (fwd:ptr (intern-str (fmt-s "@%s" (sanitize-for-ir (fmt-s "__fnfwd.%s" sigtok))))
+          vtname:ptr (intern-str (fmt-s "@%s" (sanitize-for-ir (fmt-s "__vtfn.%s" sigtok))))
+          ret-ir:ptr (type-to-ir ret))
+      (fprintf g-out "define internal %s %s(ptr %%data" ret-ir fwd)
+      (let (i:i32 0)
+        (while (< i np)
+          (fprintf g-out ", %s %%a%d" (type-to-ir (aref (cast ptr:ptr (bt params)) i)) i)
+          (inc! i)))
+      (fprintf g-out ") {\nentry:\n")
+      (fprintf g-out "  %%fp = load ptr, ptr %%data, align 8\n")
+      (if (= (-> ret (cast ptr:Type _) (_ kind)) TY-VOID)
+        (do
+          (fprintf g-out "  call void %%fp(")
+          (let (i:i32 0)
+            (while (< i np)
+              (when (!= i 0) (fprintf g-out ", "))
+              (fprintf g-out "%s %%a%d" (type-to-ir (aref (cast ptr:ptr (bt params)) i)) i)
+              (inc! i)))
+          (fprintf g-out ")\n  ret void\n}\n\n"))
+        (do
+          (fprintf g-out "  %%r = call %s %%fp(" ret-ir)
+          (let (i:i32 0)
+            (while (< i np)
+              (when (!= i 0) (fprintf g-out ", "))
+              (fprintf g-out "%s %%a%d" (type-to-ir (aref (cast ptr:ptr (bt params)) i)) i)
+              (inc! i)))
+          (fprintf g-out ")\n  ret %s %%r\n}\n\n" ret-ir)))
+      (fprintf g-out "%s = internal constant { ptr, ptr } { ptr %s, ptr null }\n\n" vtname fwd)
+      (vtable-memo-put key vtname)
+      (return vtname))))
+
+; TE-5: box a bare `fn` pointer (a non-capturing closure). data = a heap cell
+; holding the function pointer; vtable = the per-signature forwarder. The box is
+; still Drop (its @__boxedfn_drop frees the cell; the forwarder's drop slot is
+; null — there is no env to run). Args at call time go through emit-box-invoke,
+; whose indirect call lands on the forwarder, which loads+calls the real fn.
+(defn emit-box-bare-fn:ref:Val (v:ptr box-ty:ptr scope:ref:Scope line:i32)
+  (let (vv:ptr:Val (cast ptr:Val v)
+        fnty:ptr:Type (cast ptr:Type (vv type))
+        canon:ptr (boxedfn-canonical box-ty)
+        bt:ptr:Type (cast ptr:Type canon)
+        np:i32 (bt num-params))
+    ; Structural admission: the fn signature must match the box's (params…) ret.
+    (when (!= (fnty num-params) np)
+      (die-at line "BoxedFn: function takes a different number of arguments than the slot's signature"))
+    (let (k:i32 0)
+      (while (< k np)
+        (when (= (type-eq (aref (cast ptr:ptr (fnty params)) k)
+                          (aref (cast ptr:ptr (bt params)) k)) 0)
+          (die-at line "BoxedFn: function parameter type does not match the slot's signature"))
+        (inc! k)))
+    (when (= (type-eq (fnty ret) (bt ret)) 0)
+      (die-at line "BoxedFn: function return type does not match the slot's signature"))
+    (ensure-box-drop-fn box-ty line)
+    (let (vname:ptr (ensure-fnfwd-vtable box-ty line))
+      (when (= (scope-lookup scope "default-allocator") null)
+        (die-at line "BoxedFn: boxing a function requires (import-use allocator)"))
+      (let (ahsym:?ptr:Sym (scope-lookup scope "alloc-handle-alloc"))
+        (when (= ahsym null)
+          (die-at line "BoxedFn: boxing a function requires (import-use allocator)"))
+        (let (da-node:ptr (make-cell (cast ptr (intern-symbol "default-allocator")) null line)
+              hv:ref:Val (emit-node da-node scope)
+              blk:ptr (new-tmp))
+          (fprintf g-body-stream "  %s = call ptr %s(ptr %s, %s %d, %s 8)\n"
+            blk ((cast ptr:Sym ahsym) ir-name) (hv val)
+            (ptr-int-ir) (cast i32 (ptr-bytes)) (ptr-int-ir))
+          (fprintf g-body-stream "  store ptr %s, ptr %s, align 8\n" (vv val) blk)
+          (return (build-fatptr-val blk vname box-ty)))))))
+
+; Emit the boxing coercion: heap-move the concrete closure env `v` (a `(ref Env)`)
+; into the shared fat pointer for `box-ty`, yielding a first-class `{data,vtable}`
+; value (design/stage13/type-erasure.md §"(c)"). Steps:
+;   1. admit conformance via the unified entry point (structural Fn-family);
+;   2. resolve the per-env static vtable (TE-2 ensure-vtable-for);
+;   3. heap-allocate a fresh block (v1: the process-default libc allocator — see
+;      the allocator note below) and copy the env into it BY VALUE (the CE-3
+;      by-value-struct move: a typed load + store of the whole env aggregate);
+;   4. build the fat pointer {data = heap block, vtable = &__vt…} and return it.
+;
+; ALLOCATOR DECISION (v1, documented open question): the fat pointer is exactly
+; two words {data,vtable} with no room for an AllocHandle, so the box does NOT
+; thread the closure's own allocator. It boxes through the *process-default* libc
+; allocator (default-allocator), which is a process-lifetime global constant;
+; TE-4's box-Drop recovers it the same way (or frees directly) — no per-box handle
+; storage and no leak. A future per-allocator box would prepend an allocator-
+; handle header word to the heap block; flagged as an Open-Questions change.
+(defn emit-box-closure:ref:Val (v:ptr box-ty:ptr scope:ref:Scope line:i32)
+  (let (vv:ptr:Val (cast ptr:Val v)
+        vt:ptr:Type (cast ptr:Type (vv type)))
+    ; TE-5: a non-capturing closure decays to a bare `fn` pointer (TY-FN). Box it
+    ; via a per-signature forwarder thunk (data = a heap cell holding the fn ptr).
+    (when (= (vt kind) TY-FN)
+      (return (emit-box-bare-fn v box-ty scope line)))
+    ; Otherwise the value is a capturing closure — a `(ref Env)`.
+    (when (or (!= (vt kind) TY-PTR) (= (vt elem) null)
+              (!= (-> (vt elem) (cast ptr:Type _) (_ kind)) TY-STRUCT))
+      (die-at line "BoxedFn: can only box a closure value (a capturing closure's (ref Env), or a bare `fn`)"))
+    (let (env-ty:ptr (vt elem)
+          env-name:ptr (-> env-ty (cast ptr:Type _) (_ sdef) (cast ptr:StructDef _) (_ name)))
+      ; (1) Conformance admission (structural → nominal).
+      (when (= (admit-erased-conformance env-ty box-ty (cast ptr null) line) 0)
+        (die-at line (fmt-s "BoxedFn: type '%s' has no invoke method (not a closure)"
+                            (type-spelling env-ty))))
+      ; (2) The static per-type vtable (TE-2): one @__vt.<env>.Fn global.
+      (let (vname:ptr (ensure-vtable-for env-ty "Fn" line))
+        ; (TE-4) Ensure the box is Drop-conforming: record the (box, Drop)
+        ; conformance and emit the shared @__boxedfn_drop thunk (lazy, once per
+        ; module) so a with/scope-exit drop of this box runs vtable.drop + frees.
+        (ensure-box-drop-fn box-ty line)
+        ; (3+4) Heap-move the env by value and build the fat pointer. The env is a
+        ;       TY-STRUCT travelling by value into the heap box, exactly the move a
+        ;       `(dyn P)` performs on a concrete struct — shared helper.
+        (return (emit-box-struct-move v env-name box-ty vname scope line))))))
+
+; The shared payload move (TE-3 step 3+4): heap-allocate a fresh block through the
+; process-default libc allocator and copy the concrete TY-STRUCT value `v` (a
+; `(ref Struct)`) into it BY VALUE (the CE-3 typed load+store), then build the fat
+; pointer {data = heap block, vtable = vname}. `struct-name` is the sdef name (an
+; env for a BoxedFn, the boxed value's struct for a `(dyn P)`). The box does NOT
+; thread the source allocator (the fat pointer has no room for an AllocHandle); it
+; boxes through default-allocator and @__boxedfn_drop frees through libc free — the
+; symmetric recovery of the v1 allocator decision (no per-box handle, no leak).
+(defn emit-box-struct-move:ref:Val (v:ptr struct-name:ptr box-ty:ptr vname:ptr scope:ref:Scope line:i32)
+  (let (vv:ptr:Val (cast ptr:Val v))
+    (when (= (scope-lookup scope "default-allocator") null)
+      (die-at line "type-erasure: boxing a value requires (import-use allocator)"))
+    (let (ahsym:?ptr:Sym (scope-lookup scope "alloc-handle-alloc"))
+      (when (= ahsym null)
+        (die-at line "type-erasure: boxing a value requires (import-use allocator)"))
+      (let (da-node:ptr (make-cell (cast ptr (intern-symbol "default-allocator")) null line)
+            hv:ref:Val (emit-node da-node scope)
+            sz-node:ptr (make-cell (cast ptr (intern-symbol "sizeof"))
+                          (make-cell (cast ptr (intern-symbol struct-name)) null line)
+                          line)
+            sz-val:ref:Val (emit-node sz-node scope)
+            blk:ptr (new-tmp))
+        (fprintf g-body-stream "  %s = call ptr %s(ptr %s, %s %s, %s 8)\n"
+          blk ((cast ptr:Sym ahsym) ir-name) (hv val)
+          (type-to-ir (sz-val type)) (sz-val val) (ptr-int-ir))
+        ; Copy the aggregate by value into the heap block (CE-3 path).
+        (let (evec:ptr (new-tmp))
+          (fprintf g-body-stream "  %s = load %%%s, ptr %s, align 8\n"
+            evec struct-name (vv val))
+          (fprintf g-body-stream "  store %%%s %s, ptr %s, align 8\n"
+            struct-name evec blk))
+        (return (build-fatptr-val blk vname box-ty))))))
+
+; TE-6: box an arbitrary concrete VALUE into a `(dyn P)` fat pointer. Unlike a
+; BoxedFn (which erases a closure env via the structural `invoke`), `(dyn P)` erases
+; a struct value via its NOMINAL `extend P` conformance, with the per-(type,P)
+; vtable holding the concrete `extend P` method address(es). The payload move is
+; identical to the closure-env move (a struct travelling by value into the heap),
+; so it shares emit-box-struct-move. v1 boxes a struct VALUE produced as a
+; `(ref Struct)` (a struct literal, a `(default-allocator)`-free local); the drop
+; slot is the struct's own drop (null for a POD struct → free only).
+(defn emit-box-value:ref:Val (v:ptr box-ty:ptr scope:ref:Scope line:i32)
+  (let (vv:ptr:Val (cast ptr:Val v)
+        vt:ptr:Type (cast ptr:Type (vv type))
+        proto:ptr (dyn-proto-of box-ty))
+    (when (or (!= (vt kind) TY-PTR) (= (vt elem) null)
+              (!= (-> (vt elem) (cast ptr:Type _) (_ kind)) TY-STRUCT))
+      (die-at line "(dyn P): can only box a concrete struct value (a (ref Struct))"))
+    (let (struct-ty:ptr (vt elem)
+          struct-name:ptr (-> struct-ty (cast ptr:Type _) (_ sdef) (cast ptr:StructDef _) (_ name)))
+      ; (1) Nominal conformance admission (the dormant path in admit-erased-
+      ;     conformance fires now that a protocol name is supplied).
+      (when (= (admit-erased-conformance struct-ty box-ty proto line) 0)
+        (die-at line (fmt-2s "(dyn %s): type '%s' does not conform to the protocol"
+                             proto (type-spelling struct-ty))))
+      ; (2) The static per-(type,P) vtable (TE-2): one @__vt.<type>.<P> global.
+      (let (vname:ptr (ensure-vtable-for struct-ty proto line))
+        ; (TE-4) Register the box's Drop (shared @__boxedfn_drop thunk).
+        (ensure-box-drop-fn box-ty line)
+        ; (3+4) Heap-move the value by value and build the fat pointer.
+        (return (emit-box-struct-move v struct-name box-ty vname scope line))))))
+
+; Coercion chokepoint: if `target` is an erased slot — a `(BoxedFn …)` (structural
+; closure box) or a `(dyn P)` (nominal value box) — and `v` is not already a box of
+; that kind, box `v`; otherwise return `v` untouched. Called from every erased-slot
+; coercion site (let/with binding init, return, call-arg) immediately before
+; coerce-int-val / safe-coerce-val so the boxed value then coerces as an identity
+; (same TY-STRUCT box). Inert for any non-box target (the compiler has none).
+(defn maybe-box-into-slot:ref:Val (v:ptr target:ptr scope:ref:Scope line:i32)
+  (let (bcanon:ptr (boxedfn-canonical target))
+    (when (!= bcanon null)
+      (let (vt:ptr (-> v (cast ptr:Val _) (_ type)))
+        ; Already a box (re-binding / passing through an existing BoxedFn value).
+        (when (!= (boxedfn-canonical vt) null) (return (cast ref:Val v)))
+        (return (emit-box-closure v bcanon scope line))))
+    (let (dcanon:ptr (dyn-canonical target))
+      (when (!= dcanon null)
+        (let (vt:ptr (-> v (cast ptr:Val _) (_ type)))
+          ; Already a (dyn P) box of the same kind — pass through unchanged.
+          (when (!= (dyn-canonical vt) null) (return (cast ref:Val v)))
+          (return (emit-box-value v dcanon scope line)))))
+    (return (cast ref:Val v))))
+
+; ============================================================
+; Stage 13 type-erasure TE-4 — box `Drop` + forwarding-through-vtable
+; (design/stage13/type-erasure.md §"(d) Box Drop" + §"(e) Forwarding").
+; ============================================================
+
+; The single SHARED box-drop thunk. Every fat pointer has the same `{data,vtable}`
+; layout, so one function drops any box: null-guard `data`, indirect-call the
+; vtable's drop slot (the boxed env's own field-drops; null for a POD env), then
+; free `data` through the process-default libc allocator the box was built with
+; (the symmetric recovery of the TE-3 allocator decision — no per-box handle).
+; The null guards make a moved-out (`set! …null`) or POD box a safe no-op, exactly
+; like libc free / the Drop cleanup null-guard. Emitted once per module (lazy) to
+; g-out; INERT under self-compilation (the compiler boxes nothing).
+(defvar g-boxdrop-emitted:i32 0)
+
+(defn ensure-box-drop-fn:void (box-ty:ptr line:i32)
+  ; A `(dyn P)` box is the same fat pointer as a BoxedFn, so it reuses the shared
+  ; @__boxedfn_drop thunk verbatim (drop slot at vtable index 1, free `data`).
+  (let (canon:ptr (boxedfn-canonical box-ty))
+    (when (= canon null) (set! canon (dyn-canonical box-ty)))
+    (when (= canon null) (return))
+    ; Register the box's drop on the `drop` generic ONCE per box-sdef (gated on the
+    ; conformance memo), so an explicit `(drop box-addr)` in user/library code — a
+    ; struct's field-drop, a collection element-drop — dispatches to the shared
+    ; @__boxedfn_drop. All box types share the one layout-only thunk: each distinct
+    ; box receiver gets its own Method, all pointing at the same symbol. The
+    ; conformance record also makes type-conforms-drop / with-drop-method (its TE-4
+    ; short-circuit) see the box as Drop-conforming.
+    (let (sd:ptr (-> canon (cast ptr:Type _) (_ sdef))
+          sd-name:ptr (-> canon (cast ptr:Type _) (_ sdef) (cast ptr:StructDef _) (_ name)))
+      (when (= (conformance-lookup sd-name "Drop") 0)
+        (let (recv:ptr:Type (cast ptr:Type (make-type TY-PTR))
+              mtypes:ptr (arena-alloc (ptr-bytes)))
+          (.set! recv elem canon)
+          (.set! recv pkind PTR-REF)
+          (aset! (cast ptr:ptr mtypes) 0 (cast ptr recv))
+          (let (m:ref:Method (generic-register-method "drop" ty-void mtypes 1 0 0 (cast ptr null)))
+            (.set! m ir-name "@__boxedfn_drop"))
+          ; Route `drop` by argument type so the box drop and every other type's
+          ; drop coexist without one re-binding the other's bare @drop symbol.
+          (fn-force-generic-mangled "drop")
+          (conformance-add sd-name "Drop" (cast ptr null) 0 line))))
+    (when (= g-boxdrop-emitted 0)
+      (set! g-boxdrop-emitted 1)
+      (fprintf g-out "define internal void @__boxedfn_drop(ptr %%self) {\n")
+      (fprintf g-out "entry:\n")
+      (fprintf g-out "  %%data = load ptr, ptr %%self, align 8\n")
+      (fprintf g-out "  %%dnull = icmp eq ptr %%data, null\n")
+      (fprintf g-out "  br i1 %%dnull, label %%bd_done, label %%bd_live\n")
+      (fprintf g-out "bd_live:\n")
+      (fprintf g-out "  %%vtp = getelementptr inbounds { ptr, ptr }, ptr %%self, i32 0, i32 1\n")
+      (fprintf g-out "  %%vt = load ptr, ptr %%vtp, align 8\n")
+      (fprintf g-out "  %%dslotp = getelementptr inbounds { ptr, ptr }, ptr %%vt, i32 0, i32 1\n")
+      (fprintf g-out "  %%dropfn = load ptr, ptr %%dslotp, align 8\n")
+      (fprintf g-out "  %%fnull = icmp eq ptr %%dropfn, null\n")
+      (fprintf g-out "  br i1 %%fnull, label %%bd_free, label %%bd_calldrop\n")
+      (fprintf g-out "bd_calldrop:\n")
+      (fprintf g-out "  call void %%dropfn(ptr %%data)\n")
+      (fprintf g-out "  br label %%bd_free\n")
+      (fprintf g-out "bd_free:\n")
+      (fprintf g-out "  call void @free(ptr %%data)\n")
+      (fprintf g-out "  br label %%bd_done\n")
+      (fprintf g-out "bd_done:\n")
+      (fprintf g-out "  ret void\n")
+      (fprintf g-out "}\n\n"))))
+
+; If `ty` is an erased box — a BoxedFn or a `(dyn P)`, as a TY-STRUCT value or a
+; pointer to one ((ref box)) — return its canonical box Type; else null. Used by
+; with-drop-method to arm the box's Drop (both kinds share @__boxedfn_drop).
+(defn boxedfn-drop-target:ptr (ty:ptr)
+  (when (= ty null) (return null))
+  (let (c:ptr (boxedfn-canonical ty))
+    (when (!= c null) (return c))
+    (let (dc:ptr (dyn-canonical ty))
+      (when (!= dc null) (return dc)))
+    (let (tt:ptr:Type (cast ptr:Type ty))
+      (when (and (= (tt kind) TY-PTR) (!= (tt elem) null))
+        (let (ce:ptr (boxedfn-canonical (tt elem)))
+          (when (!= ce null) (return ce)))
+        (let (de:ptr (dyn-canonical (tt elem)))
+          (when (!= de null) (return de)))))
+    (return null)))
+
+; Forwarding-through-vtable (§(e)): lower `(invoke box args…)` / `(box args…)` to an
+; indirect call through the box's vtable invoke slot. Extract `{data,vtable}` from
+; the first-class box value, load the invoke thunk (vtable field 0), and call
+; `invoke(data, args…)` — `data` is the boxed `(ref Env)` receiver. Args are
+; coerced to the box signature's parameter types (carried on the box Type); the
+; call is type-checked by that signature. Scalar/pointer Fn signatures only (the
+; live path); a struct-by-value param/ret in a box signature is a TE-5 follow-up.
+(defn emit-box-invoke:ref:Val (n:ptr scope:ref:Scope callee-val:ptr arg-start:i32 nargs:i32)
+  (let (cv:ptr:Val (cast ptr:Val callee-val)
+        box-ty:ptr (boxedfn-canonical (cv type))
+        bt:ptr:Type (cast ptr:Type box-ty)
+        line:i32 (-> n (cast ptr:Node _) (_ line))
+        np:i32 (bt num-params)
+        ret-ty:ptr (bt ret)
+        box-ir:ptr (type-to-ir box-ty))
+    (when (!= nargs np)
+      (die-at line (fmt-s "BoxedFn call: expected %d args, got %d"
+                          (cast i64 np) (cast i64 nargs))))
+    (let (data:ptr (new-tmp)
+          vt:ptr (new-tmp))
+      (fprintf g-body-stream "  %s = extractvalue %s %s, 0\n" data box-ir (cv val))
+      (fprintf g-body-stream "  %s = extractvalue %s %s, 1\n" vt box-ir (cv val))
+      (let (invslotp:ptr (new-tmp)
+            invfn:ptr (new-tmp))
+        (fprintf g-body-stream "  %s = getelementptr inbounds { ptr, ptr }, ptr %s, i32 0, i32 0\n"
+          invslotp vt)
+        (fprintf g-body-stream "  %s = load ptr, ptr %s, align 8\n" invfn invslotp)
+        (let (arg-vals:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (ptr-bytes)))
+              i:i32 0)
+          (while (< i nargs)
+            (let (av:ref:Val (emit-node (node-at n (+ arg-start i)) scope)
+                  pty:ptr (aref (cast ptr:ptr (bt params)) i)
+                  coerced:ptr (coerce-int-val (cast ptr av) pty line))
+              (when (= coerced null)
+                (die-at line "BoxedFn call: argument type does not match the slot's signature"))
+              (aset! (cast ptr:ptr arg-vals) i coerced))
+            (inc! i))
+          (let (ret-ir:ptr (type-to-ir ret-ty))
+            (if (= (-> ret-ty (cast ptr:Type _) (_ kind)) TY-VOID)
+              (do
+                (fprintf g-body-stream "  call void %s(ptr %s" invfn data)
+                (set! i 0)
+                (while (< i nargs)
+                  (let (av:ptr:Val (cast ptr:Val (aref (cast ptr:ptr arg-vals) i)))
+                    (fprintf g-body-stream ", %s %s" (type-to-ir (av type)) (av val)))
+                  (inc! i))
+                (fprintf g-body-stream ")\n")
+                (return (alloc-val ty-void null)))
+              (let (tmp:ptr (new-tmp))
+                (fprintf g-body-stream "  %s = call %s %s(ptr %s" tmp ret-ir invfn data)
+                (set! i 0)
+                (while (< i nargs)
+                  (let (av:ptr:Val (cast ptr:Val (aref (cast ptr:ptr arg-vals) i)))
+                    (fprintf g-body-stream ", %s %s" (type-to-ir (av type)) (av val)))
+                  (inc! i))
+                (fprintf g-body-stream ")\n")
+                (return (alloc-val ret-ty tmp))))))))))
+
+; TE-6: the vtable slot index of protocol method `gname` on the `(dyn P)` box
+; `box-ty`, or -1 if P declares no such method (so a generic call whose first
+; argument is a dyn box but whose name is NOT one of P's methods falls through to
+; ordinary resolution). v1 single-method protocols always answer 0 (method0 at
+; vtable index 0; the drop slot is index 1, read verbatim by @__boxedfn_drop).
+(defn dyn-method-slot:i32 (box-ty:ptr gname:ptr)
+  (let (proto:ptr (dyn-proto-of box-ty))
+    (when (= proto null) (return -1))
+    (let (pp:?ptr:Protocol (protocol-lookup proto))
+      (when (= pp null) (return -1))
+      (let (ppp:ptr:Protocol (cast ptr:Protocol pp)
+            i:i32 0)
+        (while (< i (ppp num-sigs))
+          (let (sig:ptr (aref (cast ptr:ptr (ppp sigs)) i)
+                name-node:ptr (node-at sig 0)
+                mname:ptr null)
+            (extract-name-and-type name-node (cast ptr:ptr (addr-of mname)) 0)
+            (when (and (!= mname null) (= (strcmp mname gname) 0)) (return i)))
+          (inc! i))
+        (return -1)))))
+
+; TE-6: forward a `(dyn P)` method call `(method box args…)` through the box's
+; vtable (§(e)). `args` holds the PRE-EMITTED argument Vals (args[0] = the box,
+; args[1…] = the call args, already lowered by emit-generic-call); `slot` is the
+; method's vtable index. Extract {data,vtable} from the first-class box, load the
+; method thunk from vtable[slot], coerce each call arg to P's method signature, and
+; emit the indirect call `method(data, args…)` — `data` is the boxed value passed
+; as the method's `(ref Self)` receiver. Type-checked by the protocol method's sig;
+; its non-self params and return must be concrete (v1 object-safety: no `Self` in a
+; non-receiver position — such a method makes the protocol non-boxable).
+(defn emit-dyn-forward:ref:Val (box-ty:ptr args:ptr nargs:i32 slot:i32 line:i32)
+  (let (proto:ptr (dyn-proto-of box-ty)
+        pp:ptr:Protocol (cast ptr:Protocol (protocol-lookup proto))
+        sig:ptr (aref (cast ptr:ptr (pp sigs)) slot)
+        name-node:ptr (node-at sig 0)
+        params-node:ptr (node-at sig 1)
+        mname:ptr null
+        ret-ty:ptr (extract-name-and-type name-node (cast ptr:ptr (addr-of mname)) line)
+        np:i32 (- (node-len params-node) 1)
+        box-val:ptr:Val (cast ptr:Val (ptr+ (cast ptr:Val args) 0))
+        box-ir:ptr (type-to-ir box-ty))
+    (when (= ret-ty null) (set! ret-ty ty-void))
+    (when (!= (- nargs 1) np)
+      (die-at line (fmt-2s "(dyn %s) call: %s expects a different number of arguments"
+                           proto mname)))
+    (let (data:ptr (new-tmp)
+          vt:ptr (new-tmp))
+      (fprintf g-body-stream "  %s = extractvalue %s %s, 0\n" data box-ir (box-val val))
+      (fprintf g-body-stream "  %s = extractvalue %s %s, 1\n" vt box-ir (box-val val))
+      (let (slotp:ptr (new-tmp)
+            mfn:ptr (new-tmp))
+        (fprintf g-body-stream "  %s = getelementptr inbounds { ptr, ptr }, ptr %s, i32 0, i32 %d\n"
+          slotp vt slot)
+        (fprintf g-body-stream "  %s = load ptr, ptr %s, align 8\n" mfn slotp)
+        ; Coerce each (already-emitted) call arg to the protocol method's non-self
+        ; param type.
+        (let (arg-vals:ptr (arena-alloc (* (cast i64 (+ np 1)) (ptr-bytes)))
+              i:i32 0)
+          (while (< i np)
+            (let (pnode:ptr (node-at params-node (+ i 1))
+                  pname:ptr null
+                  pty:ptr (extract-name-and-type pnode (cast ptr:ptr (addr-of pname)) line)
+                  av:ptr:Val (cast ptr:Val (ptr+ (cast ptr:Val args) (+ i 1)))
+                  coerced:ptr (coerce-int-val (cast ptr av) pty line))
+              (when (= coerced null)
+                (die-at line (fmt-2s "(dyn %s) call: argument type does not match %s's signature"
+                                     proto mname)))
+              (aset! (cast ptr:ptr arg-vals) i coerced))
+            (inc! i))
+          (let (ret-ir:ptr (type-to-ir ret-ty))
+            (if (= (-> ret-ty (cast ptr:Type _) (_ kind)) TY-VOID)
+              (do
+                (fprintf g-body-stream "  call void %s(ptr %s" mfn data)
+                (set! i 0)
+                (while (< i np)
+                  (let (av:ptr:Val (cast ptr:Val (aref (cast ptr:ptr arg-vals) i)))
+                    (fprintf g-body-stream ", %s %s" (type-to-ir (av type)) (av val)))
+                  (inc! i))
+                (fprintf g-body-stream ")\n")
+                (return (alloc-val ty-void null)))
+              (let (tmp:ptr (new-tmp))
+                (fprintf g-body-stream "  %s = call %s %s(ptr %s" tmp ret-ir mfn data)
+                (set! i 0)
+                (while (< i np)
+                  (let (av:ptr:Val (cast ptr:Val (aref (cast ptr:ptr arg-vals) i)))
+                    (fprintf g-body-stream ", %s %s" (type-to-ir (av type)) (av val)))
+                  (inc! i))
+                (fprintf g-body-stream ")\n")
+                (return (alloc-val ret-ty tmp))))))))))
+
 ; Stage 13 L4: emit a clone-capture closure `(vfn (params):ret body…)`.
 ;
 ;   1. Parse params/return type like a defn (mirrors emit-fn).
@@ -4321,7 +5099,15 @@
       (die-at (cc line) "return expects 0 or 1 args"))
     ; Stage 10 target typing (unions.md §5c): in return position, a bare
     ; `(arm args...)` of the declared defunion return type means construction.
-    (let (v:ref:Val (emit-node (union-target-rewrite (node-at cc 1)) scope))
+    ; Stage 13 TE-3: a closure returned into a (BoxedFn …) return slot is heap-
+    ; boxed here — this is also what closes the CE-4 env-naming return gap (the
+    ; anonymous env can't be spelled, but BoxedFn can). The boxed value owns heap
+    ; storage, so the escape-taint check below sees a clean (untainted) value and
+    ; the box may legitimately leave the frame. Inert when the return type is not
+    ; a box (maybe-box-into-slot passes the value through unchanged).
+    (let (v:ref:Val (maybe-box-into-slot
+                      (emit-node (union-target-rewrite (node-at cc 1)) scope)
+                      g-fn-ret-type scope (cc line)))
       ; Stage 10 escape analysis: returning unwinds every with-scope, so a
       ; tainted value always dangles past its cleanup (lifecycle.md §2.3).
       ; Stage 10/13: returning unwinds every frame scope, so any tainted value —
@@ -4391,7 +5177,11 @@
                 (let (v:ref:Val (if (= pre-v null)
                                   (emit-node bval-node inner)
                                   (cast ref:Val pre-v))
-                      coerced:ptr (coerce-int-val v ty ((cast ptr:Node bval-node) line)))
+                      ; Stage 13 TE-3: a closure flowing into a (BoxedFn …) slot is
+                      ; heap-boxed into the shared fat pointer here (inert otherwise).
+                      coerced:ptr (coerce-int-val
+                                    (maybe-box-into-slot v ty inner ((cast ptr:Node bval-node) line))
+                                    ty ((cast ptr:Node bval-node) line)))
                   (when (= coerced null)
                     (die-at ((cast ptr:Node bval-node) line)
                       (fmt-s "let: init type mismatch for '%s'" name)))
@@ -4460,7 +5250,13 @@
                 (let (v:ref:Val (if (= pre-v null)
                                   (emit-node bval-node inner)
                                   (cast ref:Val pre-v))
-                      coerced:ptr (coerce-int-val v ty ((cast ptr:Node bval-node) line)))
+                      ; Stage 13 TE-3: a closure flowing into a (BoxedFn …) slot is
+                      ; heap-boxed into the shared fat pointer here (inert otherwise).
+                      ; (TE-4 wires the box's Drop; for now an unboxed with-binding
+                      ; of a BoxedFn is non-owning — with-drop-method box-ty = null.)
+                      coerced:ptr (coerce-int-val
+                                    (maybe-box-into-slot v ty inner ((cast ptr:Node bval-node) line))
+                                    ty ((cast ptr:Node bval-node) line)))
                   (when (= coerced null)
                     (die-at ((cast ptr:Node bval-node) line)
                       (fmt-s "with: init type mismatch for '%s'" name)))
@@ -5440,6 +6236,17 @@
         (aset! (cast ptr:ptr argtypes) i ((cast ptr:Val v) type))
         (aset! (cast ptr:ptr arg-nodes) i anode))
       (inc! i))
+    ; Stage 13 TE-6: `(dyn P)` method dispatch. When the first argument is a
+    ; `(dyn P)` box and this generic names one of P's methods, the box has no
+    ; concrete receiver method to resolve — forward through the vtable slot instead
+    ; (an indirect call `method(data, args…)`). Inert otherwise (the compiler boxes
+    ; nothing; dyn-canonical is null at every call site during self-compilation).
+    (when (> nargs 0)
+      (let (dbox:ptr (dyn-canonical (aref (cast ptr:ptr argtypes) 0)))
+        (when (!= dbox null)
+          (let (slot:i32 (dyn-method-slot dbox (g name)))
+            (when (>= slot 0)
+              (return (emit-dyn-forward dbox args nargs slot (nn line))))))))
     (let (m:ref:Method (generic-resolve g argtypes arg-nodes nargs (nn line)))
       (return (emit-resolved-call n scope (g name) m
                                   args nargs (nn line))))))
@@ -6177,12 +6984,13 @@
           (die-at ((cast ptr:Node name-node) line) (fmt-s "defn: missing :type on '%s'" fname)))
         (guard-name-kind fname (cc line) NK-FUNCTION)
         ; L8: warn when a public defn's signature exposes a capturing-closure env
-        ; type (__vfn_env_N) — it is excluded from --emit-cheader (see
-        ; cheader-mentions-closure). Gated on public (defn-, not defn) and on a
-        ; real top-level defn (g-mono-context is set only during the mono drain,
-        ; which emits synthesized closure invoke/drop methods whose `self` param
-        ; is (ref Env) — those are internal, not a public API surface). A plain
-        ; fn pointer is C-ABI and does not trigger this.
+        ; type (__vfn_env_N) or a type-erased box type (BoxedFn/dyn) — it is
+        ; excluded from --emit-cheader (see cheader-mentions-closure). Gated on
+        ; public (defn-, not defn) and on a real top-level defn (g-mono-context is
+        ; set only during the mono drain, which emits synthesized closure
+        ; invoke/drop methods whose `self` param is (ref Env) — those are internal,
+        ; not a public API surface). A plain fn pointer is C-ABI and does not
+        ; trigger this.
         (when (and (= g-defining-private 0) (= g-mono-context null))
           (let (mc:i32 (cheader-mentions-closure
                          (extract-type-node name-node ((cast ptr:Node name-node) line)))
@@ -6196,7 +7004,7 @@
               (inc! mcpi))
             (when (!= mc 0)
               (fprintf stderr "%s:%d: warning: %s\n" g-source-path (cc line)
-                       (fmt-s "'%s' exposes a closure type and will be excluded from generated C headers" fname)))))
+                       (fmt-s "'%s' exposes a closure or type-erased box type and will be excluded from generated C headers" fname)))))
         ; Stage 10 Phase F1: an optional `noreturn` attribute keyword in
         ; body-position 0 (right after the params) marks the function as never
         ; returning — die-at, repl_throw and friends. It is stripped so the body

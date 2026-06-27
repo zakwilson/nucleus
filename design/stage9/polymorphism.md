@@ -1114,14 +1114,17 @@ without an associated-type solver — the chain types `(foo x)` concretely and t
 checks `bar` on that. The def-time A2 walk stays lenient for `Valid` bodies
 (operations defer to the call-site stamp). Example: `examples/valid.nuc`.
 
+**Implemented (TE-0 … TE-7):** the `(dyn Protocol)` fat pointer (B2 returns /
+heterogeneous collections) — realized in
+[stage13/type-erasure.md](../stage13/type-erasure.md) as one shared machine
+with `BoxedFn` (TE-5/TE-6); 129 tests pass, byte-identical bootstrap. See
+`docs/generics.md` §Type erasure for the user-facing reference.
+
 **Still deferred:** `defcast` and a cast resolution tier (no registry in-tree);
-the `(dyn Protocol)` fat pointer (B2 returns / heterogeneous collections) — now
-planned in [stage13/type-erasure.md](../stage13/type-erasure.md) as one shared
-machine with `BoxedFn`; nested /
-multiple type-variable positions and a real unifier (full Option 3); REPL
-per-method redefinition; `(addr-of overloaded-name)` disambiguation; `extend`'s
-inline-`defn` sugar; bare-`x:Show` parameter sugar; a user-declarable blanket
-facility (parked in stage999-future.md); and exact value-position typing of
-`cond`/`if`/macro results in `node-type` (the rung-3 frontier `Valid` and A2
-inherit). The `Struct` blanket's `get` member-access method is specified in
-callable-values.md and not part of this section.
+nested / multiple type-variable positions and a real unifier (full Option 3);
+REPL per-method redefinition; `(addr-of overloaded-name)` disambiguation;
+`extend`'s inline-`defn` sugar; bare-`x:Show` parameter sugar; a
+user-declarable blanket facility (parked in stage999-future.md); and exact
+value-position typing of `cond`/`if`/macro results in `node-type` (the rung-3
+frontier `Valid` and A2 inherit). The `Struct` blanket's `get` member-access
+method is specified in callable-values.md and not part of this section.

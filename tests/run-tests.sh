@@ -189,7 +189,7 @@ ch_dir="$(mktemp -d)"
 ch_warn="$(./build/nucleusc --emit-llvm tests/fixtures/closure-cheader.nuc 2>&1 >/dev/null || true)"
 
 # 1. closure-typed prototype is OMITTED, with the explanatory comment in place.
-if grep -q 'apply-closure: exposes a closure type; not C-callable, omitted' "$ch_dir/lib.h" \
+if grep -q 'apply-closure: exposes a closure or type-erased box type; not C-callable, omitted' "$ch_dir/lib.h" \
    && ! grep -q 'apply-closure(' "$ch_dir/lib.h"; then
     echo "PASS  l8-cheader-omits-closure"
 else
@@ -204,11 +204,51 @@ else
 fi
 
 # 3. the definition site warns on stderr.
-if printf '%s' "$ch_warn" | grep -q "warning: 'apply-closure' exposes a closure type"; then
+if printf '%s' "$ch_warn" | grep -q "warning: 'apply-closure' exposes a closure or type-erased box type"; then
     echo "PASS  l8-cheader-warns"
 else
     echo "FAIL  l8-cheader-warns"; fail=1
 fi
 rm -rf "$ch_dir"
+
+# Stage 13 — C header exclusion of BoxedFn/dyn-typed public defns.
+# --emit-cheader omits prototypes whose signatures mention (BoxedFn …) or (dyn P)
+# (fat pointers with Nucleus-side semantics; no faithful C spelling), emitting a
+# comment in place and warning at the definition site. Plain fn-pointer defns are
+# still emitted normally.
+bch_dir="$(mktemp -d)"
+./build/nucleusc --emit-cheader tests/fixtures/box-cheader.nuc > "$bch_dir/lib.h" 2>/dev/null || true
+bch_warn="$(./build/nucleusc --emit-llvm tests/fixtures/box-cheader.nuc 2>&1 >/dev/null || true)"
+
+# 4. BoxedFn-typed prototype is OMITTED, with the explanatory comment in place.
+if grep -q 'make-boxed: exposes a closure or type-erased box type; not C-callable, omitted' "$bch_dir/lib.h" \
+   && ! grep -q 'make-boxed(' "$bch_dir/lib.h"; then
+    echo "PASS  l13-cheader-omits-boxedfn"
+else
+    echo "FAIL  l13-cheader-omits-boxedfn"; fail=1
+fi
+
+# 5. dyn-typed prototype is OMITTED, with the explanatory comment in place.
+if grep -q 'use-dyn: exposes a closure or type-erased box type; not C-callable, omitted' "$bch_dir/lib.h" \
+   && ! grep -q 'use-dyn(' "$bch_dir/lib.h"; then
+    echo "PASS  l13-cheader-omits-dyn"
+else
+    echo "FAIL  l13-cheader-omits-dyn"; fail=1
+fi
+
+# 6. the plain fn-pointer defn IS emitted to the header.
+if grep -q 'plain-fn(int32_t x, int32_t y)' "$bch_dir/lib.h"; then
+    echo "PASS  l13-cheader-emits-fnptr"
+else
+    echo "FAIL  l13-cheader-emits-fnptr"; fail=1
+fi
+
+# 7. the definition site warns on stderr (at least one box-typed defn fires).
+if printf '%s' "$bch_warn" | grep -q "warning:.*exposes a closure or type-erased box type"; then
+    echo "PASS  l13-cheader-warns"
+else
+    echo "FAIL  l13-cheader-warns"; fail=1
+fi
+rm -rf "$bch_dir"
 
 exit $fail

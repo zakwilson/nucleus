@@ -509,3 +509,37 @@ storage story), progress.md, and confirm the overview.md entry + cross-links.
 - Confirm the [overview.md](../overview.md) entry and the cross-links from
   closure-enhancements.md (CE-4) and polymorphism.md (the rung-5 deferral) point
   here.
+
+---
+
+## Robot — implementation status
+
+**TE-0 … TE-7 are all done.** 129 tests pass (99 auto-discovered
+`examples/*.nuc` + 30 named fixture checks); `make bootstrap` is a
+byte-identical fixed point (`build/stage2.ll == build/nucleusc.ll`). Zero
+regressions from the L0–CE-3 baseline.
+
+**What shipped:**
+
+- **Shared machine (TE-1 … TE-4):** lazy-registered `__fatptr` `TY-STRUCT` (16
+  bytes, rides CE-3 ABI-COERCE2 path unchanged); per-`(type, proto)` static
+  vtable globals `@__vt.<type>.<proto>` memoized via parallel arrays in
+  `union-registry.nuc`; boxing coercion chokepoint `maybe-box-into-slot`
+  (unified structural/nominal admission via `admit-erased-conformance`); shared
+  `@__boxedfn_drop` thunk for box `Drop`.
+- **TE-5 (`BoxedFn`):** `(BoxedFn (params…) ret)` type surface in
+  `union-registry.nuc`; `emit-box-bare-fn` / `ensure-fnfwd-vtable` for
+  non-capturing closures; four live cases in `examples/boxedfn.nuc`.
+- **TE-6 (`(dyn Protocol)`):** `(dyn P)` type surface in `union-registry.nuc`;
+  `dyn-vtable-method-irname` + `emit-dyn-forward` for named-method dispatch;
+  B2 unbound-abstract returns; `examples/dyn-protocol.nuc`.
+- **C-ABI:** `cheader-mentions-closure` extended to detect `BoxedFn` / `dyn`
+  type-AST heads; public defns mentioning them are excluded from `--emit-cheader`
+  with an explanatory comment and a definition-site warning. Covered by
+  `tests/fixtures/box-cheader.nuc`.
+
+**v1 deferrals (unchanged from the Open questions section):** multi-method
+`(dyn P)`; parametric `(dyn (Seq E))`; object-safety enforcement beyond natural
+parse rejection; multi-protocol boxes; `clone` on boxes; per-allocator box
+handles (current: process-default libc only); cfn-box double-free avoidance
+(cfn vtable drop forced null — cfn env leaks on box `Drop`).
