@@ -114,10 +114,14 @@ previously errored "missing `:type`"); typed and destructuring bindings are
 unchanged, and no other type is inferred beyond what the init value already
 exposes. A `with`-bound closure that owns its environment (a `cfn`, or a
 `vfn`/`mfn` over a `Drop` capture) drops it at scope exit through the ordinary
-`with`-binding `Drop` path. Storing a closure elsewhere (a `Vector`, a struct
-field, a heterogeneous return) is a separate, unsolved problem — a `let`/`with`
-name is *one concrete type at one frame slot*, not a shared storable type; see
-[closure-enhancements.md §CE-4](../design/stage13/closure-enhancements.md).
+`with`-binding `Drop` path.
+
+**Storable closures.** When a closure needs to be placed in a `Vector`, a
+struct field, or returned from a `defn`, use `(BoxedFn (params…) ret)` — a
+spellable, fixed-size, owning fat-pointer type that erases the concrete env.
+The boxing coercion is automatic at assignment into a `BoxedFn`-typed slot and
+costs a heap allocation (process-default libc allocator); dispatch is via an
+indirect vtable call. See [Type erasure](generics.md#type-erasure-boxedfn-and-dyn-protocol) in `docs/generics.md`.
 
 **Mutable capture (`set!`/`inc!`/`dec!` on a captured name).** A closure body
 may **mutate** a captured name with `set!`, `inc!`, or `dec!`. The rewrite
@@ -153,13 +157,16 @@ move"). The by-value struct ABI copies struct bytes correctly so owning env stru
 round-trip through returns and `with`-bindings without corruption. See
 `examples/ce3-owning-closure.nuc`.
 
-**One remaining gap:** a `defn` cannot declare its return type as a closure value
-— the anonymous env type (`__vfn_env_N`) cannot be spelled in a return-type
-position, so a `defn` trying to return an `mfn` value errors "unknown type".
-Within a function body, closure values can be created inside a `with`, moved out
-of it, held in a `let`/`with` binding (CE-1), and used as local operands fully.
-Returning the closure *object* across a function boundary awaits CE-4 (env
-naming).
+**Returning a closure across a function boundary** requires `BoxedFn` as the
+return type: the anonymous env type (`__vfn_env_N`) cannot be spelled in a
+return-type position, but `(BoxedFn (params…) ret)` can. Declare the `defn`'s
+return type as `(BoxedFn …)` and return the closure expression with an explicit
+`(BoxedFn …)` target annotation; the boxing coercion fires automatically and
+the fat pointer is returned by value. Within a function body, closure values can
+be created inside a `with`, moved out of it, held in a `let`/`with` binding
+(CE-1), and used as local operands with no boxing overhead. See
+[Type erasure](generics.md#type-erasure-boxedfn-and-dyn-protocol) and
+`examples/boxedfn.nuc`.
 
 ## Pointer lifecycle: escape analysis
 

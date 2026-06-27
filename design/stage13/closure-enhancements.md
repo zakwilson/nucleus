@@ -204,11 +204,16 @@ two separate halves — move-disarm on a `ptr:Res`, synthesized field-drop on a
 
 ---
 
-## CE-4 — Storable closures (design exploration — not yet scheduled)
+## CE-4 — Storable closures
+
+**Implemented** — see [type-erasure.md](type-erasure.md) (TE-0 … TE-7, done).
+`BoxedFn` and `(dyn Protocol)` are the realized form of Option 3 below. User
+docs: `docs/generics.md` §Type erasure. The analysis below is the original
+design exploration record; it is preserved as context for the implementation.
 
 This explains **why a closure cannot be stored** (in a `Vector`, a struct field,
-or returned as a heterogeneous value) today, and the **options** for changing
-that. It is a design note, not a build order — no agent assignment yet.
+or returned as a heterogeneous value) with a bare anonymous env type, and the
+**options** considered.
 
 ### Why closures aren't storable now
 
@@ -301,14 +306,13 @@ behind a uniform slot.
     **CE-3** (the env must travel by value to the heap, so the by-value-struct ABI
     fix is a prerequisite).
 
-### Recommendation
+### Recommendation (historical — now implemented)
 
-Document **Option 0 + `fn`-pointers** as the supported storage idiom *now* — they
-cover the stateless and explicit-state cases, and the compiler refactor never
-stores a closure (combinators consume them inline), so it is unblocked. Treat
-**Option 3 (`BoxedFn`)** as the committed *future* direction for first-class
-storable closures, gated behind CE-3 and explicitly **not** part of the Stage 13
-dogfooding. Options 1–2 remain as ad-hoc user-space patterns, not language work.
+**Option 3 (`BoxedFn`) is implemented** in [type-erasure.md](type-erasure.md)
+(TE-5/TE-6). `BoxedFn` and `(dyn Protocol)` are the shipped storable-closure
+and type-erased-value forms respectively. Options 1–2 remain ad-hoc user-space
+patterns that do not require language work. Option 0 (`fn`-pointers) continues
+to work for stateless closures and explicit-state callbacks.
 
 ---
 

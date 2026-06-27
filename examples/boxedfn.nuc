@@ -1,0 +1,72 @@
+; Stage 13 — BoxedFn (type erasure, instantiation A). A `(BoxedFn (params…) ret)`
+; is a fixed-size, owning, heap-boxed closure handle that erases the concrete
+; capture environment: many differently-captured closures share one slot type.
+;
+; The shared machine (design/stage13/type-erasure.md): a two-word fat pointer
+; { data, vtable } where `data` is the heap-boxed env and `vtable` is the per-env
+; static dispatch table. `(box arg…)` forwards through `vtable.invoke(data, arg…)`;
+; the box conforms to Drop (runs the env's own field-drops via the vtable, then
+; frees `data`). This exercises the four live cases end-to-end:
+;   (1) a bare `fn` boxed (no captures — a forwarder thunk),
+;   (2) a Vector of heterogeneously-captured closures (CE-4's headline),
+;   (3) a struct field of BoxedFn type,
+;   (4) a `defn` returning a BoxedFn (closes the env-naming return gap).
+
+(import-use "stdio.h")
+(import-use allocator)
+(import-use coll)
+(import-use iterator)
+(import-use vector)
+
+; (4) A defn whose return type is a BoxedFn — the anonymous env is not spellable,
+;     but the BoxedFn handle is. The returned box owns its heap env.
+(defn make-adder:(BoxedFn (i32) i32) (n:i32)
+  (return (vfn (x:i32):i32 (+ x n))))
+
+; (3) A struct holding a BoxedFn field. Its Drop drops the box field (frees the
+;     boxed env) — `(drop (.& self f))` dispatches to the shared box-drop thunk.
+(defstruct Holder f:(BoxedFn (i32) i32))
+(extend Holder Drop)
+(defn drop:void ((self (ptr Holder)))
+  (drop (.& self f)))
+
+(defn main:i32 ()
+  ; (1) bare-fn box: a non-capturing closure decays to a function pointer, which
+  ;     is boxed via a per-signature forwarder thunk (data = a heap cell holding
+  ;     the fn pointer). Drops (frees the cell) at scope exit.
+  (with (bf:(BoxedFn (i32) i32) (fn (x:i32):i32 (+ x 1)))
+    (printf "bare fn box: %d\n" (bf 10)))                ; 11
+
+  ; (4) returned box, owned by `add5`, dropped at scope exit.
+  (with (add5:(BoxedFn (i32) i32) (make-adder 5))
+    (printf "returned box: %d\n" (add5 20)))             ; 25
+
+  ; (3) struct field of BoxedFn. Box the closure into a let (no drop), build the
+  ;     Holder (which copies the box value into its field), then drop the Holder
+  ;     at scope exit — its Drop drops the box field exactly once.
+  (let (k:i32 7
+        cb:(BoxedFn (i32) i32) (vfn (x:i32):i32 (+ x k)))
+    (with ((h (ref Holder)) (Holder cb))
+      (printf "struct field box: %d\n" (invoke (. h f) 100))))  ; 107
+
+  ; (2) Vector of heterogeneously-captured closures — CE-4's headline use case.
+  ;     Box each closure into a let (no drop), conj the box, then iterate, invoke,
+  ;     and drop each box element exactly once. The Vector's own Drop frees the
+  ;     buffer at scope exit. No leak, no double-free.
+  (with ((v (ref (Vector (BoxedFn (i32) i32)))) (alloca (Vector (BoxedFn (i32) i32))))
+    (vector-init v)
+    (let (a:i32 10
+          b:i32 100
+          c0:(BoxedFn (i32) i32) (vfn (x:i32):i32 (+ x a))     ; +10  (captures a)
+          c1:(BoxedFn (i32) i32) (vfn (x:i32):i32 (* x b))     ; *100 (captures b)
+          c2:(BoxedFn (i32) i32) (fn  (x:i32):i32 (- x 1)))    ; -1   (bare fn)
+      (conj v c0) (conj v c1) (conj v c2))
+    (let (i:usize (cast usize 0))
+      (while (< i (count v))
+        (let (e:(BoxedFn (i32) i32) (v i))
+          (printf "vec[%d](5) = %d\n" (cast i32 i) (e 5))
+          (drop (addr-of e)))
+        (set! i (+ i (cast usize 1))))))
+
+  (printf "done\n")
+  (return 0))
