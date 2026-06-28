@@ -7,6 +7,8 @@
 ; the whole-unit prescan) lets union-registry import before generics cleanly.
 ; Extracted from nucleusc.nuc → generics.nuc → here (Stage 12 N8).
 
+(import-use list)
+
 ; A short, dot-free token naming a type for use in mangled symbols. Pointers
 ; get a "p" prefix on their pointee so ptr:Circle and Circle stay distinct.
 (defn type-mangle-token:ptr (t:ptr)
@@ -66,11 +68,9 @@
 (defvar (g-fnty-types (ref (Vector ptr))))   ; Type*, parallel
 
 (defn fnty-intern:ptr (t:ptr)
-  (let (i:i32 0)
-    (while (< i (cast i32 (count g-fnty-types)))
-      (when (= (invoke g-fnty-types (cast usize i)) t)
-        (return (invoke g-fnty-names (cast usize i))))
-      (inc! i)))
+  (dotimes (i (cast i32 (count g-fnty-types)))
+    (when (= (invoke g-fnty-types (cast usize i)) t)
+      (return (invoke g-fnty-names (cast usize i)))))
   (let (name:ptr (intern-str (fmt-i32 "__fnty_%d" g-fnty-id)))
     (inc! g-fnty-id)
     (conj g-fnty-names (cast ptr name))
@@ -81,11 +81,9 @@
 ; `(ref __fnty_3)` re-parses to the original TY-FN. String compare (the name
 ; reaching here may be a fresh fmt copy, not the cached interned pointer).
 (defn fnty-resolve:ptr (name:ptr)
-  (let (i:i32 0)
-    (while (< i (cast i32 (count g-fnty-names)))
-      (when (= (strcmp (invoke g-fnty-names (cast usize i)) name) 0)
-        (return (invoke g-fnty-types (cast usize i))))
-      (inc! i)))
+  (dotimes (i (cast i32 (count g-fnty-names)))
+    (when (= (strcmp (invoke g-fnty-names (cast usize i)) name) 0)
+      (return (invoke g-fnty-types (cast usize i)))))
   (return null))
 
 ; A type's source spelling as a colon-joined string: the inverse of the type
@@ -124,10 +122,8 @@
     (return "ptr")))
 
 (defn tyvar-index-of:i32 (name:CStr tyvars:ptr ntv:i32)
-  (let (i:i32 0)
-    (while (< i ntv)
-      (when (= (aref (cast ptr:ptr tyvars) i) name) (return i))
-      (inc! i)))
+  (dotimes (i ntv)
+    (when (= (aref (cast ptr:ptr tyvars) i) name) (return i)))
   (return -1))
 
 ; Substitute type variables inside one symbol's colon spelling: split on ':',
@@ -141,17 +137,13 @@
       (when (>= idx 0) (return (aref (cast ptr:ptr spellings) idx)))
       (return s)))
   (let (segs:ptr (split-colon-segments s line)
-        acc:ptr null
-        cur:ptr segs)
-    (while (!= cur null)
-      (let (seg:ptr (-> cur (cast ptr:Node _) (_ car) (cast ptr:Node _) (_ s))
-            piece:ptr null
-            idx:i32 0)
-        (set! piece seg)
-        (set! idx (tyvar-index-of seg tyvars ntv))
-        (when (>= idx 0) (set! piece (aref (cast ptr:ptr spellings) idx)))
-        (if (= acc null) (set! acc piece) (set! acc (fmt-2s "%s:%s" acc piece))))
-      (set! cur ((cast ptr:Node cur) cdr)))
+        acc:ptr null)
+    (let (it:ListIter (list-iter segs))
+      (doseq-iter (e (addr-of it))
+        (let (seg:ptr ((cast ptr:Node (cast ptr e)) s)
+              idx:i32 (tyvar-index-of seg tyvars ntv)
+              piece:ptr (if (>= idx 0) (aref (cast ptr:ptr spellings) idx) seg))
+          (if (= acc null) (set! acc piece) (set! acc (fmt-2s "%s:%s" acc piece))))))
     (when (= acc null) (return s))
     (return acc)))
 

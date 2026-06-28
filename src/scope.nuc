@@ -144,12 +144,10 @@
 ; The captured ProgDefn for an emitted @symbol, or null. Membership is by
 ; content (ir-names are freshly formatted, not interned).
 (defn program-defn-lookup:?ptr:ProgDefn (irn:ptr)
-  (let (i:usize (cast usize 0))
-    (while (< i (count g-program-defns))
-      (let (pd:ptr:ProgDefn (cast ptr:ProgDefn (invoke g-program-defns i)))
-        (when (= (strcmp (pd ir-name) irn) (cast i32 0))
-          (return (cast ptr pd))))
-      (set! i (+ i (cast usize 1)))))
+  (dotimes (i (cast i32 (count g-program-defns)))
+    (let (pd:ptr:ProgDefn (cast ptr:ProgDefn (invoke g-program-defns (cast usize i))))
+      (when (= (strcmp (pd ir-name) irn) (cast i32 0))
+        (return (cast ptr pd)))))
   (return null))
 
 ; Record a program-defined function's signature so macro/CT JIT modules can
