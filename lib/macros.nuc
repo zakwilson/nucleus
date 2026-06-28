@@ -140,12 +140,12 @@
 ; Example: (dotimes (i:i32 n) (process (node-at items i:i32)))
 ; Uses struct field access to extract elements from spec so this macro works
 ; even in programs that have not yet included stdlib (no node-at dependency).
-(defmacro dotimes (spec body)
+(defmacro dotimes (spec &rest body)
   (let (var-node:ptr ((cast ptr:Node spec) car)
         n-node:ptr   ((cast ptr:Node ((cast ptr:Node spec) cdr)) car))
     `(let (~var-node 0)
        (while (< ~var-node ~n-node)
-         ~body
+         (do ~@body)
          (inc! ~var-node)))))
 
 ; (doseq (var coll-expr IterType) body...) — iterate any Coll, binding var to

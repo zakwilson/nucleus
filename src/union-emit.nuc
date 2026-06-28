@@ -937,21 +937,17 @@
 ; every registered defenum; the first hit wins (defenum members are global
 ; constants, so a collision already means same-kind reuse).
 (defn enumdef-lookup-member:?ptr:EnumDef (member:ptr)
-  (let (i:i32 0)
-    (while (< i (cast i32 (count g-enumdefs)))
-      (let (ed:ptr:EnumDef (cast ptr:EnumDef (invoke g-enumdefs (cast usize i))))
-        (when (>= (enum-member-index (cast ptr ed) member) 0)
-          (return (cast ptr ed))))
-      (inc! i)))
+  (dotimes (i (cast i32 (count g-enumdefs)))
+    (let (ed:ptr:EnumDef (cast ptr:EnumDef (invoke g-enumdefs (cast usize i))))
+      (when (>= (enum-member-index (cast ptr ed) member) 0)
+        (return (cast ptr ed)))))
   (return null))
 
 (defn enum-member-index:i32 (ed:ptr member:ptr)
-  (let (edd:ptr:EnumDef (cast ptr:EnumDef ed)
-        i:i32 0)
-    (while (< i (edd num-members))
+  (let (edd:ptr:EnumDef (cast ptr:EnumDef ed))
+    (dotimes (i (edd num-members))
       (when (= (strcmp (aref (cast ptr:ptr (edd members)) i) member) 0)
-        (return i))
-      (inc! i))
+        (return i)))
     (return -1)))
 
 ; Bind one clause's payload binders into `inner`. `pp` is the payload pointer

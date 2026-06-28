@@ -19,14 +19,14 @@
 
 (defn emit-nuch-list:void (form:ptr)
   (dotimes (i (node-len form))
-    (do (when (!= i 0) (fputc 32 (cast ptr stdout)))
-        (print-node (node-at form i)))))
+    (when (!= i 0) (fputc 32 (cast ptr stdout)))
+    (print-node (node-at form i))))
 
 (defn emit-nuch-defstruct:void (form:ptr)
   (printf "(defstruct ")
   (dotimes (i (- (node-len form) 1))
-    (do (when (!= i 0) (fputc 32 (cast ptr stdout)))
-        (print-node (node-at form (+ i 1)))))
+    (when (!= i 0) (fputc 32 (cast ptr stdout)))
+    (print-node (node-at form (+ i 1))))
   (printf ")\n"))
 
 (defn emit-nuch-declare:void (form:ptr)
@@ -36,8 +36,8 @@
   (printf " (")
   (let (params:ptr (node-at form 2))
     (dotimes (i (node-len params))
-      (do (when (!= i 0) (fputc 32 (cast ptr stdout)))
-          (print-node (node-at params i)))))
+      (when (!= i 0) (fputc 32 (cast ptr stdout)))
+      (print-node (node-at params i))))
   (printf "))\n"))
 
 (defn emit-nuch-defconst:void (form:ptr)
@@ -50,8 +50,8 @@
 (defn emit-nuch-defenum:void (form:ptr)
   (printf "(defenum")
   (dotimes (i (- (node-len form) 1))
-    (do (fputc 32 (cast ptr stdout))
-        (print-node (node-at form (+ i 1)))))
+    (fputc 32 (cast ptr stdout))
+    (print-node (node-at form (+ i 1))))
   (printf ")\n"))
 
 (defn emit-nuch-defmacro:void (form:ptr)
@@ -67,8 +67,8 @@
   (printf " (")
   (let (params:ptr (node-at form 2))
     (dotimes (i (node-len params))
-      (do (when (!= i 0) (fputc 32 (cast ptr stdout)))
-          (print-node (node-at params i)))))
+      (when (!= i 0) (fputc 32 (cast ptr stdout)))
+      (print-node (node-at params i))))
   (printf "))\n"))
 
 ; A solitary function exports as a plain (declare ...); an overloaded one
@@ -106,8 +106,8 @@
 (defn emit-nuch-extend:void (form:ptr)
   (printf "(extend")
   (dotimes (i (- (node-len form) 1))
-    (do (fputc 32 (cast ptr stdout))
-        (print-node (node-at form (+ i 1)))))
+    (fputc 32 (cast ptr stdout))
+    (print-node (node-at form (+ i 1))))
   (printf ")\n"))
 
 ; Cast rules export verbatim (the conv-fn is exported separately as a declare,
@@ -261,12 +261,12 @@
                     (type-to-ir ret) ((cast ptr:AbiInfo ret-info) align))
                   (set! need-comma 1))
                 (dotimes (j nparams)
-                  (do (when (!= need-comma 0) (fprintf g-out ", "))
-                      (abi-print-param
-                        (abi-classify (aref (cast ptr:ptr ptypes) j))
-                        (aref (cast ptr:ptr ptypes) j)
-                        null)
-                      (set! need-comma 1))))
+                  (when (!= need-comma 0) (fprintf g-out ", "))
+                  (abi-print-param
+                   (abi-classify (aref (cast ptr:ptr ptypes) j))
+                   (aref (cast ptr:ptr ptypes) j)
+                   null)
+                  (set! need-comma 1)))
               ; Stage 10 Phase F1: trailing LLVM `noreturn` function attribute.
               (if (!= is-noreturn 0)
                 (fprintf g-out ") noreturn\n")
@@ -301,8 +301,8 @@
             (.set! (cast ptr:Generic g) finalized 1))
           (fprintf g-out "declare %s %s(" (type-to-ir ret) mangled)
           (dotimes (j nparams)
-            (do (when (!= j 0) (fprintf g-out ", "))
-                (fprintf g-out "%s" (type-to-ir (aref (cast ptr:ptr ptypes) j)))))
+            (when (!= j 0) (fprintf g-out ", "))
+            (fprintf g-out "%s" (type-to-ir (aref (cast ptr:ptr ptypes) j))))
           (fprintf g-out ")\n"))))))
 
 ; A defunion arriving via .nuch: register the type (or template) exactly as
