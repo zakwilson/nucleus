@@ -42,9 +42,9 @@
 (defn hash-struct-shape:i64 (field-names:ptr field-types:ptr nfields:i32)
   (let (h:i64 -3750763034362895579)
     (dotimes (i nfields)
-      (do (set! h (fnv-str h (aref (cast ptr:ptr field-names) i)))
-          (set! h (fnv-byte h (cast i64 0)))
-          (set! h (hash-type h (aref (cast ptr:ptr field-types) i)))))
+      (set! h (fnv-str h (aref (cast ptr:ptr field-names) i)))
+      (set! h (fnv-byte h (cast i64 0)))
+      (set! h (hash-type h (aref (cast ptr:ptr field-types) i))))
     (return h)))
 
 (defn lookup-or-make-anon-struct:ref:StructDef (field-names:ptr field-types:ptr nfields:i32)
@@ -62,8 +62,8 @@
         (.set! sd2 src-line 0))
       (fprintf g-type-stream "%%%s = type { " synth)
       (dotimes (i nfields)
-        (do (when (!= i 0) (fprintf g-type-stream ", "))
-            (fprintf g-type-stream "%s" (type-to-ir (aref (cast ptr:ptr field-types) i)))))
+        (when (!= i 0) (fprintf g-type-stream ", "))
+        (fprintf g-type-stream "%s" (type-to-ir (aref (cast ptr:ptr field-types) i))))
       (fprintf g-type-stream " }\n\n"))
     ; Both arms leave sd non-null, but the set!-kill is sticky across the join
     ; (nullability.md §4) — assert rather than re-test.
@@ -119,8 +119,8 @@
     (.set! sdd emitted 1)
     (fprintf g-type-stream "%%%s = type { " (sdd name))
     (dotimes (i (sdd num-fields))
-      (do (when (!= i 0) (fprintf g-type-stream ", "))
-          (fprintf g-type-stream "%s" (type-to-ir (aref (cast ptr:ptr (sdd field-types)) i)))))
+      (when (!= i 0) (fprintf g-type-stream ", "))
+      (fprintf g-type-stream "%s" (type-to-ir (aref (cast ptr:ptr (sdd field-types)) i))))
     (fprintf g-type-stream " }\n\n")))
 
 ; Write the deferred `%name = type { repr [, pad] }` definition for one union.
