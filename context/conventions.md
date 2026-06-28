@@ -10,12 +10,16 @@ When a feature in a design document gets implemented, add a **Status:** note but
 
 ## `node-type` mirrors `emit-node` (keep them in lockstep)
 
-`emit-node` (src/nucleusc.nuc) sets the type a node propagates to its parent from
+`emit-node` (`src/nucleusc.nuc`) sets the type a node propagates to its parent from
 `node-type(n, scope)` (Stage 9 rung 3) whenever that returns non-null. So the
-non-emitting type pass and codegen share **one typing rule per node kind**. If you
-add a new special form to `emit-list`, or change the result type any `emit-*`
-function returns, **update the matching branch in `node-type` (and its helpers
-`node-type-call` / `node-type-block` / `node-type-field` / …) in the same change**.
+non-emitting type pass and codegen share **one typing rule per node kind**. Since
+the Stage 12 module split the two halves live in **different files**: `emit-node`
+and the `emit-*` family in `src/nucleusc.nuc`, the entire `node-type` family (the
+`node-type` dispatcher plus `node-type-call` / `node-type-block` / `node-type-field`
+/ … helpers) in `src/generics.nuc`. Editing one file without its partner is the
+easy mistake. If you add a new special form to `emit-list`, or change the result
+type any `emit-*` function returns, **update the matching branch in `node-type`
+(generics.nuc) in the same change**.
 The `make bootstrap` fixed-point test enforces this: a divergence makes the
 compiler emit different IR than it consumes and `stage1.ll != stage2.ll`. A form
 that `node-type` deliberately does not model returns null (codegen then keeps its
@@ -199,3 +203,17 @@ diff that has nothing to do with correctness. Convergence requires two passes:
 2. `make clean && make` — rebuild from the new boot so stage1 == stage2
 Then `make bootstrap` passes. The `make bootstrap` target diffs stage1 vs stage2,
 not the new binary vs old boot.
+
+## `(Vector ptr)` cannot be iterated with `doseq` or combinators
+
+All compiler registries are `(Vector ptr)`. The element type `ptr` causes
+`(Maybe ptr)` niche-encoding (see the `(Maybe ptr)` section above). Since
+`match` cannot handle niche-encoded types, `doseq`, `for-each`, `find`, `any?`,
+`every?`, `reduce`, and all other combinators that use `(match (next it) …)`
+internally will **crash at runtime** with "match: scrutinee must be a defunion
+value" when driven over a `(VecIter ptr)`.
+
+**For `(Vector ptr)` loops in `src/` compiler code: use `dotimes` only.**
+
+For Node* linked-list loops (AST cdr-lists): `ListIter` yields `i64` which IS
+matchable — `doseq-iter` + `list-iter` works correctly there.
