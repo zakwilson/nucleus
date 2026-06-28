@@ -238,9 +238,7 @@ Converted `while` counted loops to `dotimes` and `Node*` cdr-list walks to
 - **`src/nuch.nuc`**: eight emission helpers (`emit-nuch-list`, `emit-nuch-defstruct`, `emit-nuch-declare`, `emit-nuch-defenum`, `emit-nuch-defmethod`, `emit-nuch-extend`, `emit-nuch-declare-import`, `emit-nuch-defmethod-import`) → `dotimes`; three cdr-list walks (`emit-nuch-header`, `emit-defunion-import`, `emit-nuch-import-forms`) → `doseq-iter + list-iter`. Added `(import-use list)`.
 - **`src/union-registry.nuc`**: seven counted loops → `dotimes` (companion batch by sub-agent).
 
-Key gotcha: `dotimes` takes exactly ONE body form — multiple statements must be
-wrapped in `(do ...)`. The pattern `(dotimes (i n) (do FORM1 FORM2 ...))` is the
-correct idiom. Non-unit-stride loops and the `scope-lookup` reverse scan were left
+Non-unit-stride loops and the `scope-lookup` reverse scan were left
 as-is per the leave-alone list. 136 tests pass; **`make bootstrap` is a
 byte-identical fixed point** (`stage1.ll == stage2.ll`).
 
