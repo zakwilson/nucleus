@@ -303,6 +303,15 @@ point. → build-test-runner.
 
 ### R3 — Compiler loop refactor (full scope)
 
+**Status: Partial done (2026-06-28).** Batch 1 complete: `src/scope.nuc`,
+`src/type-mangle.nuc`, `src/nuch.nuc`, `src/union-registry.nuc` (first batch
+of sites only). 136 tests pass; byte-identical bootstrap. Remaining R3 work
+(lookup clusters in `src/generics.nuc`, `src/nucleusc.nuc`, etc.) continues.
+
+Key gotcha discovered: `dotimes` takes exactly **one** body form (`(defmacro
+dotimes (spec body))`). Multi-statement bodies must be wrapped in `(do ...)`.
+See `context/conventions.md`.
+
 **Agent: focused-task-implementer** / **systems-impl-engineer**, dispatched by
 file cluster; **build-test-runner** gates between batches. Depends on R1 + R2.
 
