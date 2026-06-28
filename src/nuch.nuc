@@ -11,26 +11,22 @@
 ; lowering, and the namespace machinery) — this dependence is intentional, since
 ; the .nuch round-trip mirrors the same emit/register paths the batch driver uses.
 
+(import-use list)
+
 ; ============================================================
 ; .nuch header emission
 ; ============================================================
 
 (defn emit-nuch-list:void (form:ptr)
-  (let (i:i32 0
-        n:i32 (node-len form))
-    (while (< i n)
-      (when (!= i 0) (fputc 32 (cast ptr stdout)))
-      (print-node (node-at form i))
-      (inc! i))))
+  (dotimes (i (node-len form))
+    (do (when (!= i 0) (fputc 32 (cast ptr stdout)))
+        (print-node (node-at form i)))))
 
 (defn emit-nuch-defstruct:void (form:ptr)
   (printf "(defstruct ")
-  (let (i:i32 1
-        n:i32 (node-len form))
-    (while (< i n)
-      (when (!= i 1) (fputc 32 (cast ptr stdout)))
-      (print-node (node-at form i))
-      (inc! i)))
+  (dotimes (i (- (node-len form) 1))
+    (do (when (!= i 0) (fputc 32 (cast ptr stdout)))
+        (print-node (node-at form (+ i 1)))))
   (printf ")\n"))
 
 (defn emit-nuch-declare:void (form:ptr)
@@ -38,13 +34,10 @@
   ; index 1 is name:rettype, index 2 is param list
   (print-node (node-at form 1))
   (printf " (")
-  (let (params:ptr (node-at form 2)
-        i:i32 0
-        n:i32 (node-len params))
-    (while (< i n)
-      (when (!= i 0) (fputc 32 (cast ptr stdout)))
-      (print-node (node-at params i))
-      (inc! i)))
+  (let (params:ptr (node-at form 2))
+    (dotimes (i (node-len params))
+      (do (when (!= i 0) (fputc 32 (cast ptr stdout)))
+          (print-node (node-at params i)))))
   (printf "))\n"))
 
 (defn emit-nuch-defconst:void (form:ptr)
@@ -56,12 +49,9 @@
 
 (defn emit-nuch-defenum:void (form:ptr)
   (printf "(defenum")
-  (let (i:i32 1
-        n:i32 (node-len form))
-    (while (< i n)
-      (fputc 32 (cast ptr stdout))
-      (print-node (node-at form i))
-      (inc! i)))
+  (dotimes (i (- (node-len form) 1))
+    (do (fputc 32 (cast ptr stdout))
+        (print-node (node-at form (+ i 1)))))
   (printf ")\n"))
 
 (defn emit-nuch-defmacro:void (form:ptr)
@@ -75,13 +65,10 @@
   (printf "(defmethod \"%s\" " mangled)
   (print-node (node-at form 1))
   (printf " (")
-  (let (params:ptr (node-at form 2)
-        i:i32 0
-        n:i32 (node-len params))
-    (while (< i n)
-      (when (!= i 0) (fputc 32 (cast ptr stdout)))
-      (print-node (node-at params i))
-      (inc! i)))
+  (let (params:ptr (node-at form 2))
+    (dotimes (i (node-len params))
+      (do (when (!= i 0) (fputc 32 (cast ptr stdout)))
+          (print-node (node-at params i)))))
   (printf "))\n"))
 
 ; A solitary function exports as a plain (declare ...); an overloaded one
@@ -118,12 +105,9 @@
 ; to the previous subject+protocol-only emission.
 (defn emit-nuch-extend:void (form:ptr)
   (printf "(extend")
-  (let (i:i32 1
-        n:i32 (node-len form))
-    (while (< i n)
-      (fputc 32 (cast ptr stdout))
-      (print-node (node-at form i))
-      (inc! i)))
+  (dotimes (i (- (node-len form) 1))
+    (do (fputc 32 (cast ptr stdout))
+        (print-node (node-at form (+ i 1)))))
   (printf ")\n"))
 
 ; Cast rules export verbatim (the conv-fn is exported separately as a declare,
@@ -169,9 +153,9 @@
     (let (override:ptr (ns-ir-prefix-get g-current-ns))
       (when (!= override null)
         (printf "(set-ir-prefix \"%s\")\n" override))))
-  (let (fc:ptr forms)
-    (while (!= fc null)
-      (let (f:ptr:Node (cast ptr:Node ((cast ptr:Node fc) car)))
+  (let (it:ListIter (list-iter forms))
+    (doseq-iter (fc (addr-of it))
+      (let (f:ptr:Node (cast ptr:Node (cast ptr fc)))
         (when (and (!= (cast ptr f) null)
                    (= (f kind) NODE-CELL)
                    (> (node-len (cast ptr f)) 0)
@@ -193,8 +177,7 @@
               "deferror"     (do (print-node (cast ptr f)) (printf "\n"))
               "defenum"      (emit-nuch-defenum (cast ptr f))
               "defmacro"     (emit-nuch-defmacro (cast ptr f))
-              0))))
-      (set! fc ((cast ptr:Node fc) cdr)))))
+              0)))))))
 
 ; ============================================================
 ; .nuch import processing
@@ -239,21 +222,19 @@
           ; Skip if already defined (e.g. from include or c-include)
           (when (!= (scope-lookup g-globals fname) null) (return))
           (let (nparams:i32 0
-                ptypes:ptr null
-                j:i32 0)
+                ptypes:ptr null)
           (when (!= params-node null)
             (set! nparams (node-len params-node)))
           (when (> nparams 0)
             (set! ptypes (arena-alloc (* (cast i64 nparams) (ptr-bytes)))))
-          (while (< j nparams)
+          (dotimes (j nparams)
             (let (p:ptr (node-at params-node j)
                   pn:ptr null
                   pty:ptr (extract-name-and-type p (cast ptr:ptr (addr-of pn))
                                                   ((cast ptr:Node p) line)))
               (if (!= pty null)
                 (aset! (cast ptr:ptr ptypes) j pty)
-                (aset! (cast ptr:ptr ptypes) j ty-i32)))
-            (inc! j))
+                (aset! (cast ptr:ptr ptypes) j ty-i32))))
           (let (ft:ptr:Type (cast ptr:Type (make-type TY-FN)))
             (.set! ft ret ret)
             (.set! ft num-params nparams)
@@ -279,15 +260,13 @@
                   (fprintf g-out "ptr sret(%s) align %d"
                     (type-to-ir ret) ((cast ptr:AbiInfo ret-info) align))
                   (set! need-comma 1))
-                (set! j 0)
-                (while (< j nparams)
-                  (when (!= need-comma 0) (fprintf g-out ", "))
-                  (abi-print-param
-                    (abi-classify (aref (cast ptr:ptr ptypes) j))
-                    (aref (cast ptr:ptr ptypes) j)
-                    null)
-                  (set! need-comma 1)
-                  (inc! j)))
+                (dotimes (j nparams)
+                  (do (when (!= need-comma 0) (fprintf g-out ", "))
+                      (abi-print-param
+                        (abi-classify (aref (cast ptr:ptr ptypes) j))
+                        (aref (cast ptr:ptr ptypes) j)
+                        null)
+                      (set! need-comma 1))))
               ; Stage 10 Phase F1: trailing LLVM `noreturn` function attribute.
               (if (!= is-noreturn 0)
                 (fprintf g-out ") noreturn\n")
@@ -321,11 +300,9 @@
             (.set! (cast ptr:Generic g) mangled 1)
             (.set! (cast ptr:Generic g) finalized 1))
           (fprintf g-out "declare %s %s(" (type-to-ir ret) mangled)
-          (let (j:i32 0)
-            (while (< j nparams)
-              (when (!= j 0) (fprintf g-out ", "))
-              (fprintf g-out "%s" (type-to-ir (aref (cast ptr:ptr ptypes) j)))
-              (inc! j)))
+          (dotimes (j nparams)
+            (do (when (!= j 0) (fprintf g-out ", "))
+                (fprintf g-out "%s" (type-to-ir (aref (cast ptr:ptr ptypes) j)))))
           (fprintf g-out ")\n"))))))
 
 ; A defunion arriving via .nuch: register the type (or template) exactly as
@@ -346,28 +323,27 @@
       (let (arms:ptr (-> ff (_ cdr) (cast ptr:Node _) (_ cdr)))
         (defunion-register (name-node s) arms (ff line))
         ; Constructor declares: (declare Name-arm:Name (fields...)).
-        (let (saved-out:ptr g-out
-              cur:ptr arms)
+        (let (saved-out:ptr g-out)
           (set! g-out g-decl-stream)
-          (while (!= cur null)
-            (let (ctor:ptr:Node (cast ptr:Node
-                                  (union-ctor-form (name-node s)
-                                                   ((cast ptr:Node cur) car) (ff line))))
-              ; Reshape the synthesized defn into a declare: same name node,
-              ; same params, no body.
-              (emit-nuch-declare-import
-                (make-cell (cast ptr 'declare)
-                  (make-cell (node-at (cast ptr ctor) 1)
-                    (make-cell (node-at (cast ptr ctor) 2) null (ff line))
-                    (ff line))
-                  (ff line))))
-            (set! cur ((cast ptr:Node cur) cdr)))
+          (let (it:ListIter (list-iter arms))
+            (doseq-iter (cur (addr-of it))
+              (let (ctor:ptr:Node (cast ptr:Node
+                                    (union-ctor-form (name-node s)
+                                                     (cast ptr cur) (ff line))))
+                ; Reshape the synthesized defn into a declare: same name node,
+                ; same params, no body.
+                (emit-nuch-declare-import
+                  (make-cell (cast ptr 'declare)
+                    (make-cell (node-at (cast ptr ctor) 1)
+                      (make-cell (node-at (cast ptr ctor) 2) null (ff line))
+                      (ff line))
+                    (ff line))))))
           (set! g-out saved-out))))))
 
 (defn emit-nuch-import-forms:void (forms:ptr)
-  (let (fc:ptr forms)
-    (while (!= fc null)
-      (let (f:ptr:Node (cast ptr:Node ((cast ptr:Node fc) car)))
+  (let (it:ListIter (list-iter forms))
+    (doseq-iter (fc (addr-of it))
+      (let (f:ptr:Node (cast ptr:Node (cast ptr fc)))
         (when (and (!= (cast ptr f) null) (= (f kind) NODE-CELL)
                    (> (node-len (cast ptr f)) 0)
                    (-> f (node-at _ 0) (cast ptr:Node _) (_ kind) (= _ NODE-SYM)))
@@ -413,8 +389,7 @@
                 (emit-defmacro (cast ptr f))
               "def-rmacro"
                 (emit-def-rmacro (cast ptr f))
-              0))))
-      (set! fc ((cast ptr:Node fc) cdr))))
+              0)))))
   ; Finalize any newly-imported generic templates so their names dispatch
   ; through the registry (imported concrete methods finalize themselves).
-  (finalize-generics))
+  (finalize-generics)))

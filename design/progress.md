@@ -226,6 +226,26 @@ coordinator decision to avoid scope creep on the spec'd task.
 
 ---
 
+## Stage 13 — Functional refactor R3: compiler loop refactor (2026-06-28)
+
+**R3 done** ([functional-refactor.md](stage13/functional-refactor.md) §R3).
+Converted `while` counted loops to `dotimes` and `Node*` cdr-list walks to
+`doseq-iter + list-iter` across four source-imported compiler files:
+
+- **`src/scope.nuc`**: `program-defn-lookup` (counted `(Vector ptr)` scan → `dotimes`)
+- **`src/type-mangle.nuc`**: `fnty-intern`, `fnty-resolve`, `tyvar-index-of` (counted → `dotimes`); `subst-tyvars-sym` (cdr-list walk → `doseq-iter + list-iter`). Added `(import-use list)`.
+- **`src/type-utils.nuc`**: no while loops present; left untouched.
+- **`src/nuch.nuc`**: eight emission helpers (`emit-nuch-list`, `emit-nuch-defstruct`, `emit-nuch-declare`, `emit-nuch-defenum`, `emit-nuch-defmethod`, `emit-nuch-extend`, `emit-nuch-declare-import`, `emit-nuch-defmethod-import`) → `dotimes`; three cdr-list walks (`emit-nuch-header`, `emit-defunion-import`, `emit-nuch-import-forms`) → `doseq-iter + list-iter`. Added `(import-use list)`.
+- **`src/union-registry.nuc`**: seven counted loops → `dotimes` (companion batch by sub-agent).
+
+Key gotcha: `dotimes` takes exactly ONE body form — multiple statements must be
+wrapped in `(do ...)`. The pattern `(dotimes (i n) (do FORM1 FORM2 ...))` is the
+correct idiom. Non-unit-stride loops and the `scope-lookup` reverse scan were left
+as-is per the leave-alone list. 136 tests pass; **`make bootstrap` is a
+byte-identical fixed point** (`stage1.ll == stage2.ll`).
+
+---
+
 ## Stage 12 N9 — Docs, examples, close-out (2026-06-22)
 
 **N9 complete.** Stage 12 fully closed out.
