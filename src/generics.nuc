@@ -3264,15 +3264,19 @@
                 (when (= at null) (set! ok 0))
                 (aset! (cast ptr:ptr argtypes) i at)))
             (when (= ok 0) (return null))
+            ; First try METHOD-USER (exact match).
             (let (m:?ptr:Method (generic-find-method-exact g argtypes nargs))
-              (when (= m null) (return null))
-              (return (m ret-type)))))))
+              (when (!= m null) (return (m ret-type))))
+            ; Then try METHOD-GENERIC (parametric match with tyvar substitution).
+            (let (out-ret:ptr (arena-alloc (ptr-bytes)))
+              (when (!= (generic-binds-for g argtypes nargs (cast ptr:ptr out-ret) 0) 0)
+                (return (aref (cast ptr:ptr out-ret) 0)))))))))
     (if-some (sym (scope-lookup scope h))
       (let (ft:ptr:Type (cast ptr:Type (sym type)))
         ; A non-function value head is a callable value: mirror the get/invoke desugar.
         (when (!= (ft kind) TY-FN) (return (callable-value-type (cast ptr ft) n scope)))
         (return (ft ret)))
-      (return null))))
+      (return null)))
 
 (defn node-type:?ptr:Type (n:ptr scope:ref:Scope)
   (when (= n null) (return ty-void))
