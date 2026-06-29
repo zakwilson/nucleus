@@ -272,6 +272,50 @@ iteration instead of after the loop. The IR signature is a missing
 `inc!`/`br-loop-back` just before a spurious `ret`. Documented in
 [functional-refactor.md](stage13/functional-refactor.md) §R3.
 
+### R3 Batch 3 — `src/abi.nuc` + `src/union-emit.nuc` counted loops (2026-06-29)
+
+**Batch 3 complete.** Four same-shape `dotimes` swaps, byte-identical bootstrap:
+
+- `src/abi.nuc`: `abi-union-size`, `abi-struct-align`, `abi-struct-size`
+  (counted scans over the `field-types` raw array; the running-offset and
+  max-fold accumulators preserved; order-significant `abi-struct-size` stays
+  in order since `dotimes` preserves it). `abi-class-eightbyte` is LEAVE-ALONE
+  (SysV ABI codegen).
+- `src/union-emit.nuc`: `emit-union-construct` (counted scan over `ftypes`;
+  sequential GEP offsets preserved). The `emit-match*` family is LEAVE-ALONE.
+
+`src/repl.nuc` `repl-eval-form` was a target but LEFT ALONE: both its remaining
+loops start at non-zero (`si:i32 pre-len`, `dj:i32 (+ si 1)`) and don't fit the
+counted-from-zero `dotimes` shape without a force-fit. 136 tests pass; byte-identical
+bootstrap.
+
+### R3 Batch 4 — `src/nucleusc.nuc` counted-cluster sweep (2026-06-29)
+
+**Batch 4 complete.** 18 loops across 16 functions converted to `dotimes`,
+byte-identical bootstrap. Find/lookup shape (`ns-ir-prefix-{set,get}`,
+`struct-field-index`, `struct-field-idx`, `generic-resolve-nullable`,
+`generic-has-receiver-method`, `vtable-memo-lookup`, `dyn-method-slot`,
+`lbl-find`, `enumdef-lookup`, `try-import-path`) plus non-find scans
+(`narrow-names`, `ns-prefix-sanitize` byte walk, `admit-erased-conformance`,
+`union-drop-arm`, `expand-macro-call` scan, `emit-string-table`, `compile-and-link`).
+The paren-placement gotcha from Batch 2 fired twice (`lbl-find`,
+`enumdef-lookup`), caught pre-build. LEFT ALONE: `emit-export` (starts at
+`i:i32 1`, skips head), `inject-import-aliases` (`[start,end)` slice,
+non-zero start), `expand-macro-call` 2nd loop (reverse stride), and the entire
+call-emit / body-emit / literal-lowering / closure-synthesis / fixpoint /
+state-machine leave-alone list. 136 tests pass; byte-identical bootstrap.
+
+**Strategic finding (Batches 3–4):** the original R3 cluster plan assumed
+registry lookups → `find` and registry scans → `any?`/`every?`. That is
+**not viable**: every compiler registry is `(Vector ptr)`, and `(Maybe ptr)`
+niche-encoding crashes every combinator that internally does
+`(match (next it) …)` over a `(VecIter ptr)`. So clusters 1, 2, 6 (the
+registry find/any?/for-each sites) stay `dotimes`; only the **AST `Node*`
+cdr-list walks** (via `ListIter`, which yields matchable `i64`) can move to
+`doseq-iter`+`list-iter`. The remaining R3 work is the `doseq-iter` cluster
+over AST cdr-lists (expected to drift; controlled refresh per the bootstrap
+policy). See [functional-refactor.md](stage13/functional-refactor.md) §R3.
+
 ---
 
 ## Stage 12 N9 — Docs, examples, close-out (2026-06-22)

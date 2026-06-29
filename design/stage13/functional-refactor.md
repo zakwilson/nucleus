@@ -303,14 +303,39 @@ point. → build-test-runner.
 
 ### R3 — Compiler loop refactor (full scope)
 
-**Status: Partial done (2026-06-29).** Batch 1 complete: `src/scope.nuc`,
-`src/type-mangle.nuc`, `src/nuch.nuc`, `src/union-registry.nuc` (first batch
-of sites only). Batch 2 complete: `src/generics.nuc` counted-loop cluster
-(`generic-remove-matching-user-method` scan, `init-generics`, `params-type-eq`,
-`mangle-fn-name`, `generic-find-method-exact`, `generic-binds-for`,
-`generic-resolve`, `operator-user-resolve`, `unify-tpat`, `valid-resolve-type`,
-`proto-sigs-resolve`, `tmpl-conformance-check-one`). 136 tests pass; byte-identical
-bootstrap. Remaining R3 work (lookup clusters in `src/nucleusc.nuc`, etc.) continues.
+**Status: Partial done (2026-06-29) — counted-loop (`dotimes`) sweep complete.**
+Batch 1 complete: `src/scope.nuc`, `src/type-mangle.nuc`, `src/nuch.nuc`,
+`src/union-registry.nuc` (first batch of sites only). Batch 2 complete:
+`src/generics.nuc` counted-loop cluster (`generic-remove-matching-user-method`
+scan, `init-generics`, `params-type-eq`, `mangle-fn-name`,
+`generic-find-method-exact`, `generic-binds-for`, `generic-resolve`,
+`operator-user-resolve`, `unify-tpat`, `valid-resolve-type`, `proto-sigs-resolve`,
+`tmpl-conformance-check-one`). Batch 3 complete: `src/abi.nuc`
+(`abi-union-size`, `abi-struct-align`, `abi-struct-size`) and
+`src/union-emit.nuc` (`emit-union-construct`). Batch 4 complete:
+`src/nucleusc.nuc` counted-cluster (`narrow-names`, `ns-prefix-sanitize`,
+`ns-ir-prefix-{set,get}`, `struct-field-index`, `struct-field-idx`,
+`generic-resolve-nullable`, `generic-has-receiver-method`, `union-drop-arm`,
+`vtable-memo-lookup`, `admit-erased-conformance`, `dyn-method-slot`, `lbl-find`,
+`enumdef-lookup`, `emit-string-table`, `try-import-path`, `narrow-names`,
+`expand-macro-call` scan, `compile-and-link`). All `dotimes` swaps are same-shape
+(`let i=0; while(<i n); body; inc! i`) and **byte-identical** — no bootstrap
+refresh needed across any batch. 136 tests pass throughout.
+
+**Strategic finding — the `(Vector ptr)` constraint reshapes the remaining
+clusters.** Every compiler registry is `(Vector ptr)`, and `(Maybe ptr)`
+niche-encoding makes `doseq`/`for-each`/`find`/`any?`/`every?`/`reduce`/`map`
+**crash at runtime** over a `(VecIter ptr)` (see `context/conventions.md`).
+Therefore the original cluster plan's "registry lookups → `find`" (cluster 1) and
+"registry scans → `any?`/`every?`" (cluster 2) are **not viable** as written:
+those loops stay `dotimes`. The combinators only reach **AST `Node*` cdr-lists**
+via `ListIter` (which yields `i64`, matchable) — the `doseq-iter`+`list-iter`
+cluster. The remaining R3 work is: (a) `doseq-iter` conversions of the AST
+cdr-list walks (the real iterator dogfooding), and (b) `dotimes` cleanup of any
+remaining counted loops in the smaller files. The byte-identical `dotimes` swaps
+landing zero bootstrap drift across four batches confirms the same-shape-swap
+discipline; the `doseq-iter` cluster is expected to drift (new iterator IR) and
+will need a controlled refresh per the bootstrap policy.
 
 Key gotcha discovered: `dotimes` takes exactly **one** body form (`(defmacro
 dotimes (spec body))`). Multi-statement bodies must be wrapped in `(do ...)`.
@@ -322,8 +347,10 @@ body — close the dotimes on the last in-loop statement, not on the `(return X)
 line. A `(return X)` accidentally left inside the dotimes body fires on the
 first non-matching iteration instead of after the loop, silently breaking
 lookups (e.g. `generic-binds-for` returned 0 for every generic method →
-`Iterator` conformance checks failed). The textual IR diff shows the missing
-`inc!`/`br-loop-back` right before a spurious `ret`.
+`Iterator` conformance checks failed; `lbl-find`/`enumdef-lookup` hit the same
+trap in Batch 4). The textual IR diff shows the missing `inc!`/`br-loop-back`
+right before a spurious `ret`. Safer pattern: close the dotimes on the
+`(return FOUND)` line and put `(return NOTFOUND)` on its own line after.
 
 **Agent: focused-task-implementer** / **systems-impl-engineer**, dispatched by
 file cluster; **build-test-runner** gates between batches. Depends on R1 + R2.
