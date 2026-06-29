@@ -1,0 +1,47 @@
+; Stage 13 R1 — closure-returning combinators (the storable-closure payoff).
+;
+; Each of the six combinators in lib/combinators.nuc RETURNS a `(BoxedFn …)` by
+; value — a owning, heap-boxed closure handle (design/stage13/type-erasure.md).
+; This example constructs each returned box, CALLS it (showing the right value),
+; and drops it exactly once — the discipline examples/boxedfn.nuc established.
+; A `with` binding auto-drops its box at scope exit; a `let`-bound box needs an
+; explicit `(drop (addr-of e))` (demonstrated in the partial case). No leak, no
+; double-free: the operands are bare `fn` pointers captured by value, so each
+; box's env vtable drop slot is null (no transitive drop). Output is deterministic
+; integers (no addresses/pointers).
+
+(import-use "stdio.h")
+(import-use allocator)
+(import-use iterator)
+(import-use numeric)
+(import-use combinators)
+
+(defn main:i32 ()
+  ; compose / comp — `(compose g f)` boxes `x → (g (f x))`.
+  (with (c1:(BoxedFn (i32) i32) (compose (fn (x:i32):i32 (+ x 1)) (fn (x:i32):i32 (* x 2))))
+    (printf "compose((+1),(*2))(10) = %d\n" (c1 10)))            ; 21
+  (with (c2:(BoxedFn (i32) i32) (comp (fn (x:i32):i32 (- x 1)) (fn (x:i32):i32 (+ x 3))))
+    (printf "comp((-1),(+3))(10) = %d\n" (c2 10)))               ; 12
+
+  ; complement — `(complement pred)` boxes the negated predicate.
+  (with (cm:(BoxedFn (i32) i32) (complement (fn (x:i32):i32 (< x 5))))
+    (printf "complement(<5)(3) = %d\n" (cm 3))                   ; 0 (3<5 is true)
+    (printf "complement(<5)(7) = %d\n" (cm 7)))                  ; 1 (7<5 is false)
+
+  ; conjoin / disjoin — combine two predicate boxes under and / or.
+  (with (cj:(BoxedFn (i32) i32) (conjoin (fn (x:i32):i32 (< x 10)) (fn (x:i32):i32 (> x 0))))
+    (printf "conjoin(<10,>0)(5,12,-1) = %d %d %d\n" (cj 5) (cj 12) (cj -1)))   ; 1 0 0
+  (with (dj:(BoxedFn (i32) i32) (disjoin (fn (x:i32):i32 (> x 100)) (fn (x:i32):i32 (< x 0))))
+    (printf "disjoin(>100,<0)(5,150,-1) = %d %d %d\n" (dj 5) (dj 150) (dj -1))); 0 1 1
+
+  ; constantly — `(constantly v)` boxes `_ → v`, ignoring its argument.
+  (with (k:(BoxedFn (i32) i32) (constantly 42))
+    (printf "constantly(42)(0,99) = %d %d\n" (k 0) (k 99)))      ; 42 42
+
+  ; partial — `(partial f a)` boxes `x → (f a x)` (partial application of the
+  ; first arg). Dropped exactly once by the `with` scope-exit drop.
+  (with (p:(BoxedFn (i32) i32) (partial (fn (a:i32 x:i32):i32 (+ a x)) 10))
+    (printf "partial(+10)(5,20) = %d %d\n" (p 5) (p 20)))       ; 15 30
+
+  (printf "done\n")
+  (return 0))
