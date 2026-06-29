@@ -620,12 +620,10 @@
     (let (pd:?ptr:ProgDefn (program-defn-lookup irn))
       (when (= pd null) (return))
       ; Dedup within this module.
-      (let (i:usize (cast usize 0))
-        (while (< i (count g-macro-decls))
-          (when (= (strcmp (invoke g-macro-decls i) irn)
-                   (cast i32 0))
-            (return))
-          (set! i (+ i (cast usize 1)))))
+      (dotimes (i (count g-macro-decls))
+               (when (= (strcmp (invoke g-macro-decls (cast usize i)) irn)
+                        (cast i32 0))
+                     (return)))
       (conj g-macro-decls (intern-str irn))
       ; Variadic prototypes lower trivially (no struct args reach a macro body).
       (when (!= (pd variadic) 0)
@@ -638,9 +636,8 @@
             (fprintf g-decl-out "ptr sret(%s) align %d"
               (type-to-ir (pd ret)) ((cast ptr:AbiInfo ret-info) align))
             (set! need-comma 1))
-          (let (j:i32 0)
-            (while (< j (pd nparams))
-              (when (!= need-comma 0) (fprintf g-decl-out ", "))
+          (dotimes (j:i32 (pd nparams))
+                   (when (!= need-comma 0) (fprintf g-decl-out ", "))
               ; abi-print-param writes to g-out (the def stream); format the
               ; declare's param types straight into g-decl-out instead.
               (let (pty:ptr (aref (cast ptr:ptr (pd ptypes)) j)
@@ -655,8 +652,7 @@
                         (fprintf g-decl-out "%s, %s" (pinfo reg0) (pinfo reg1))
                       true
                         (fprintf g-decl-out "%s" (type-to-ir pty))))
-              (set! need-comma 1)
-              (inc! j))))
+              (set! need-comma 1)))
         (fprintf g-decl-out ")\n")))))
 
 (defn split-typed:void (sym:ptr out-name:ptr:ptr out-type-name:ptr:ptr)
@@ -1092,13 +1088,11 @@
 ; Kill every live narrow (label join points — a backward goto re-enters).
 (defn narrow-kill-all:void ()
   (when (= g-nundo null) (return))
-  (let (i:usize (cast usize 0))
-    (while (< i (count g-nundo))
-      (let (u:ptr:NarrowUndo (cast ptr:NarrowUndo (invoke g-nundo i)))
-        (let (sym:?ptr:Sym (scope-lookup (u scope) (u name)))
-          (when (and (!= sym null) (!= (sym ntype) null))
-            (narrow-kill sym))))
-      (set! i (+ i (cast usize 1))))))
+  (dotimes (i (count g-nundo))
+    (let (u:ptr:NarrowUndo (cast ptr:NarrowUndo (invoke g-nundo (cast usize i))))
+      (let (sym:?ptr:Sym (scope-lookup (u scope) (u name)))
+        (when (and (!= sym null) (!= (sym ntype) null))
+              (narrow-kill sym))))))
 
 ; Is `node` the symbol `null`? (content compare — macro-built nodes may not be
 ; interned).
@@ -1135,10 +1129,8 @@
         ; Match both "_and" (the binary primitive, post-macro-expansion) and "and"
         ; (a raw variadic macro call still unexpanded in a cond/while test slot).
         (when (or (= (strcmp h "_and") 0) (= (strcmp h "and") 0))
-          (let (i:i32 1)
-            (while (< i (node-len test))
-              (test-true-nonnull (node-at test i) out)
-              (inc! i)))
+          (dotimes (i (node-len test))
+             (test-true-nonnull (node-at test i) out))
           (return))
         (when (= (strcmp h "not") 0)
           (when (= (node-len test) 2)
@@ -1380,14 +1372,12 @@
     (conj g-cast-rules (cast ptr cr))))
 
 (defn lookup-cast-rule:?ptr:CastRule (from:ptr to:ptr)
-  (let (i:i32 0)
-    (while (< i (cast i32 (count g-cast-rules)))
-      (let (cr:ptr:CastRule (cast ptr:CastRule
-                              (invoke g-cast-rules (cast usize i))))
-        (when (and (!= (type-eq (cr from) from) 0)
-                   (!= (type-eq (cr to) to) 0))
-          (return (cast ptr cr))))
-      (inc! i)))
+  (dotimes (i (count g-cast-rules))
+           (let (cr:ptr:CastRule (cast ptr:CastRule
+                                       (invoke g-cast-rules (cast usize i))))
+             (when (and (!= (type-eq (cr from) from) 0)
+                        (!= (type-eq (cr to) to) 0))
+                   (return (cast ptr cr)))))
   (return null))
 
 ; Coerce a Val to a target type at a call site (or any implicit context):
@@ -6040,12 +6030,10 @@
 
 ; Find a macro definition by name, or null.
 (defn find-macro:?ptr:MacroDef (name:ptr)
-  (let (mi:i32 0)
-    (while (< mi (cast i32 (count g-macros)))
-      (let (mdef:ptr:MacroDef (cast ptr:MacroDef (invoke g-macros (cast usize mi))))
-        (when (= (mdef name) name)
-          (return (cast ptr mdef))))
-      (inc! mi)))
+  (dotimes (mi (count g-macros))
+           (let (mdef:ptr:MacroDef (cast ptr:MacroDef (invoke g-macros (cast usize mi))))
+             (when (= (mdef name) name)
+                   (return (cast ptr mdef)))))
   (return null))
 
 ; Run one expansion of a macro call: invoke the JIT-compiled macro function
@@ -6355,12 +6343,10 @@
       (let (h:ptr (head s)
             hp:ptr (cast ptr head))
         ; Check macro table before special forms.
-        (let (mi:i32 0)
-          (while (< mi (cast i32 (count g-macros)))
-            (let (mdef:ptr:MacroDef (cast ptr:MacroDef (invoke g-macros (cast usize mi))))
-              (when (= (mdef name) h)
-                (return (emit-macro-expand n scope (cast ptr mdef)))))
-            (inc! mi)))
+        (dotimes (mi (count g-macros))
+          (let (mdef:ptr:MacroDef (cast ptr:MacroDef (invoke g-macros (cast usize mi))))
+            (when (= (mdef name) h)
+                  (return (emit-macro-expand n scope (cast ptr mdef))))))
         (when (and (= hp 'gensym) (= (node-len nn) 1))
           (let (tmp:ptr (new-tmp))
             (fprintf g-body-stream "  %s = call ptr @nucleus_gensym()\n" tmp)
@@ -6492,37 +6478,25 @@
 (defn name-existing-kind:i32 (name:ptr)
   (when (!= (special-form-named (cast CStr name)) 0) (return NK-SPECIAL))
   (when (!= (primitive-type-named (cast CStr name)) 0) (return NK-BUILTIN))
-  (let (i:i32 0)
-    (while (< i (cast i32 (count g-structs)))
-      (let (sd:ptr:StructDef (cast ptr:StructDef (invoke g-structs (cast usize i))))
-        (when (= (strcmp (sd name) name) 0) (return NK-TYPE)))
-      (inc! i)))
+  (dotimes (i (count g-structs))
+           (let (sd:ptr:StructDef (cast ptr:StructDef (invoke g-structs (cast usize i))))
+             (when (= (strcmp (sd name) name) 0) (return NK-TYPE))))
   (when (!= (cast ptr (union-template-lookup name)) null) (return NK-TYPE))
-  (let (i:i32 0)
-    (while (< i (cast i32 (count g-protocols)))
-      (let (p:ptr:Protocol (cast ptr:Protocol (invoke g-protocols (cast usize i))))
-        (when (= (strcmp (p name) name) 0) (return NK-PROTOCOL)))
-      (inc! i)))
-  (let (i:i32 0)
-    (while (< i (cast i32 (count g-macros)))
-      (let (m:ptr:MacroDef (cast ptr:MacroDef (invoke g-macros (cast usize i))))
-        (when (= (strcmp (m name) name) 0) (return NK-MACRO)))
-      (inc! i)))
-  (let (i:i32 0)
-    (while (< i (cast i32 (count g-generics)))
-      (let (g:ptr:Generic (cast ptr:Generic (invoke g-generics (cast usize i))))
-        (when (= (strcmp (g name) name) 0) (return NK-FUNCTION)))
-      (inc! i)))
-  (let (sc:ptr:Scope (cast ptr:Scope g-globals)
-        i:i32 0)
-    (while (< i (sc len))
+  
+  (dotimes (i (count g-macros))
+           (let (m:ptr:MacroDef (cast ptr:MacroDef (invoke g-macros (cast usize i))))
+             (when (= (strcmp (m name) name) 0) (return NK-MACRO))))
+  (dotimes (i (count g-generics))
+           (let (g:ptr:Generic (cast ptr:Generic (invoke g-generics (cast usize i))))
+             (when (= (strcmp (g name) name) 0) (return NK-FUNCTION))))
+  (let (sc:ptr:Scope (cast ptr:Scope g-globals))
+    (dotimes (i (sc len))
       (let (sym:ptr:Sym (cast ptr:Sym (ptr+ (cast ptr:Sym (sc syms)) i)))
         (when (= (strcmp (sym name) name) 0)
           (if (and (!= (sym type) null)
                    (= (-> sym (_ type) (cast ptr:Type _) (_ kind)) TY-FN))
             (return NK-FUNCTION)
-            (return NK-VALUE))))
-      (inc! i)))
+            (return NK-VALUE))))))
   (return NK-NONE))
 
 (defn kind-noun:ptr (k:i32)
@@ -6844,7 +6818,7 @@
   (let (an:ptr:Node (cast ptr:Node arm)
         aname:ptr (if (= (an kind) NODE-SYM) (an s)
                     (-> an (node-at _ 0) (cast ptr:Node _) (_ s)))
-        fields:ptr (if (= (an kind) NODE-SYM) null ((cast ptr:Node arm) cdr))
+        fields:ptr (if (= (an kind) NODE-SYM) null (cast ptr ((cast ptr:Node arm) cdr)))
         name-node:ptr (intern-symbol (fmt-2s "%s:%s" (fmt-2s "%s-%s" uname aname) uname)))
     ; (make uname aname f1 f2 ...) — args are the field names.
     (let (make-args:ptr null
@@ -7612,7 +7586,14 @@
                 ; Entry prologue: alloca for args pointer, then load each param
                 (fprintf g-entry-stream "  %%__args.addr = alloca ptr, align 8\n")
                 (fprintf g-entry-stream "  store ptr %%__args.arg, ptr %%__args.addr, align 8\n")
-                (let (ei:i32 0)
+                ; Macro params are Node* — type them (raw Node) so bodies can
+                ; access (p car)/(p cdr) without (cast ptr:Node …). raw (PTR-RAW)
+                ; keeps them null-tolerant and deref-allowed; the IR is still
+                ; `ptr`, so codegen is unchanged.
+                (let (ei:i32 0
+                      raw-node-ty:ref:Type (make-type TY-PTR))
+                  (.set! raw-node-ty elem (parse-type-name "Node" 0))
+                  (.set! raw-node-ty pkind PTR-RAW)
                   (while (< ei pcount)
                     (let (pname:ptr (aref (cast ptr:ptr pnames) ei))
                       (fprintf g-entry-stream "  %%%s.addr = alloca ptr, align 8\n" pname)
@@ -7620,7 +7601,10 @@
                       (fprintf g-entry-stream "  %%__ag%d = getelementptr ptr, ptr %%__ap%d, i32 %d\n" ei ei ei)
                       (fprintf g-entry-stream "  %%__av%d = load ptr, ptr %%__ag%d, align 8\n" ei ei)
                       (fprintf g-entry-stream "  store ptr %%__av%d, ptr %%%s.addr, align 8\n" ei pname)
-                      (scope-define fn-scope pname ty-ptr (fmt-s "%%%s.addr" pname) 1))
+                      (scope-define fn-scope
+                                    pname
+                                    (cast ptr raw-node-ty)
+                                    (fmt-s "%%%s.addr" pname) 1))
                     (inc! ei)))
 
                 ; Compile body forms; last result is return value
@@ -7768,22 +7752,18 @@
   (when (and (= (count g-deferror-name-sids) (cast usize 1)) (= g-err-table-used 0)) (return))
   (let (n:i32 (cast i32 (count g-deferror-name-sids)))
     (fprintf out "@nuc_err_names = constant [%d x ptr] [" n)
-    (let (i:i32 0)
-      (while (< i n)
-        (when (> i 0) (fprintf out ", "))
-        (if (= i 0)
+    (dotimes (i n)
+      (when (> i 0) (fprintf out ", "))
+      (if (= i 0)
           (fprintf out "ptr null")
-          (fprintf out "ptr @.str.%d" (cast i32 (cast i64 (invoke g-deferror-name-sids (cast usize i))))))
-        (inc! i)))
+          (fprintf out "ptr @.str.%d" (cast i32 (cast i64 (invoke g-deferror-name-sids (cast usize i)))))))
     (fprintf out "]\n")
     (fprintf out "@nuc_err_messages = constant [%d x ptr] [" n)
-    (let (i:i32 0)
-      (while (< i n)
-        (when (> i 0) (fprintf out ", "))
-        (if (= i 0)
+    (dotimes (i n)
+      (when (> i 0) (fprintf out ", "))
+      (if (= i 0)
           (fprintf out "ptr null")
-          (fprintf out "ptr @.str.%d" (cast i32 (cast i64 (invoke g-deferror-msg-sids (cast usize i))))))
-        (inc! i)))
+          (fprintf out "ptr @.str.%d" (cast i32 (cast i64 (invoke g-deferror-msg-sids (cast usize i)))))))
     (fprintf out "]\n\n")))
 
 ; ============================================================

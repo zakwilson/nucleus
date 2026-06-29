@@ -58,11 +58,19 @@ The binary `_and`/`_or` i1-check both operands and short-circuit left-to-right (
 
 ## Macros and pass-through arguments
 
-Macro parameters are typed `ptr:Node` — the macro sees AST. When the macro
-splices a parameter into its expansion via `~param`, the resulting form is
-compiled as if the user had written that expression directly at the call site,
-so the *value* type the parameter evaluates to in the expansion is whatever
-the user wrote — `i32`, `ptr:i8`, `f64`, `Foo`, etc.
+Macro parameters are typed `(raw Node)` — the macro sees AST. Because the
+parameter is a typed (nullable, unchecked) pointer to `Node`, a macro can walk
+the argument's structure with member access **without casting**: `(p car)`,
+`(p cdr)`, and chains such as `((p cdr) car)` type-check directly — `car`/`cdr`
+are themselves `(raw Node)`, so they chain. Use `(p kind)` / `(p s)` / `(p i)`
+/ `(p line)` for the other `Node` fields. (Historically these required
+`((cast ptr:Node p) car)` because `car`/`cdr` were untyped `ptr`; that cast is
+now redundant but still compiles — `ptr`↔`(raw Node)` is a no-op reinterpret.)
+
+When the macro splices a parameter into its expansion via `~param`, the
+resulting form is compiled as if the user had written that expression directly
+at the call site, so the *value* type the parameter evaluates to in the
+expansion is whatever the user wrote — `i32`, `ptr:i8`, `f64`, `Foo`, etc.
 
 This means a single macro can take, inspect, and splice arguments of different
 value types — there is no value-level `T` to keep consistent across calls;
@@ -84,6 +92,47 @@ only the AST representation is uniform.
 (tprint some-ptr)  ; → (printf "%p\n" some-ptr)  — ptr at the call site
 ```
 
-Inside the macro `x` is `ptr:Node`; the spliced `~x` carries no type
+Inside the macro `x` is `(raw Node)`; the spliced `~x` carries no type
 constraint into the expansion. The host compiler types the resulting form
 using its normal rules.
+
+### ⚠ Sharp edge: `cond`/`if` branches and typed slots must share a pointer type
+
+`car`/`cdr` — and every macro parameter — have type `(raw Node)`. A `cond`/`if`
+is a *value* expression whose result type is the **unified** type of its
+branches, compared by `type-eq` (the element type **and** the pointer kind must
+match). A `(raw Node)` value does **not** unify with a bare `ptr`, with a
+non-null `ptr:Node`/`ref:Node`, with a differently-typed pointer, or with a
+quasiquoted form (`` `(...) `` evaluates to a bare `ptr`). When the branches
+disagree the expression collapses to `void`, which then fails wherever a
+pointer was expected:
+
+- a `let`/`set!` reports `init type mismatch` / a type error, and
+- a macro whose entire body is such a `cond` **silently returns `null`**,
+  surfacing later as `macro '<name>': returned null`.
+
+Fix it by making the branches agree — usually cast the odd branch to a bare
+pointer (`ptr` ↔ `(raw Node)` is a no-op reinterpret, so this is free):
+
+```lisp
+; BAD — (cdr) is (raw Node), the other branch is null → cond collapses to void
+(let (rest:ptr (if (= (n kind) NODE-CELL) ((cast ptr:Node n) cdr) null)) ...)
+
+; GOOD — both branches are bare ptr
+(let (rest:ptr (if (= (n kind) NODE-CELL) (cast ptr ((cast ptr:Node n) cdr)) null)) ...)
+
+; A variadic-operator macro: the single-arg branch returns the element node,
+; the others are quasiquotes. Cast the bare branch so all branches are `ptr`.
+(defmacro * (&rest args)
+  (cond (= args null)                     `1
+        (= ((cast ptr:Node args) cdr) null)
+          (cast ptr ((cast ptr:Node args) car))   ; ← without (cast ptr …) the
+        true                                       ;   cond is (raw Node)|ptr → void
+          `(_* ~((cast ptr:Node args) car) (* ~@((cast ptr:Node args) cdr)))))
+```
+
+The same rule governs flow into a declared slot: a `(raw Node)` value flows
+freely into a bare `:ptr` local (exempt — bare `ptr` is `void*` and carries no
+contract), but a **typed** non-null `(ptr T)`/`(ref T)` parameter, `return`, or
+binding **rejects** it (`raw pointer where non-null (ref ...) is required`).
+Bind node values to `:ptr` locals, or cast, when they meet other pointer types.

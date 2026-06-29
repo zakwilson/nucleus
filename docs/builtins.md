@@ -115,7 +115,7 @@ Importing a `.nuch` with `defmethod` forms registers the methods for dispatch in
 | `unsafe-import-private` | Prefix-qualified import that also reaches a library's private symbols: `(unsafe-import-private lib prefix sym...)`. | — |
 | `declare` | Declare an external function signature `(declare name:rettype (params...))`. Used in `.nuch` header files and at the top level. | function prototype |
 | `extern` | Declare a foreign global variable `(extern name:type)`. The compiler emits `@name = external global T`, leaving storage and initialization to the linker. Works for both C-defined and Nucleus-defined producers; the matching `defvar` may live in another `.o` file. | `extern` declaration |
-| `defmacro` | Define a compile-time macro `(defmacro name (params...) body...)`. Supports `&rest` for variadic macros: `(defmacro name (a b &rest rest) ...)` — `rest` receives a cons list of remaining args. Parameters (and the `&rest` list) are typed `ptr:Node` inside the body, so `(. p car)`, `(. p cdr)`, `(. p kind)`, and `(. p s)` work directly with no `(cast ptr:Node ...)`. The macro can splice a parameter into a quasiquote regardless of the value type the user-supplied expression evaluates to at the call site — see [Macros and pass-through arguments](#macros-and-pass-through-arguments) below. | macro |
+| `defmacro` | Define a compile-time macro `(defmacro name (params...) body...)`. Supports `&rest` for variadic macros: `(defmacro name (a b &rest rest) ...)` — `rest` receives a cons list of remaining args. Parameters (and the `&rest` list) are typed `(raw Node)` inside the body, so `(p car)`, `(p cdr)`, chains like `((p cdr) car)`, `(p kind)`, and `(p s)` work directly with no `(cast ptr:Node ...)`. The macro can splice a parameter into a quasiquote regardless of the value type the user-supplied expression evaluates to at the call site — see [Macros and pass-through arguments](#macros-and-pass-through-arguments) below (note the `cond`/`if` branch-unification sharp edge). | macro |
 | `defcast` | Register an implicit conversion `(defcast From To conv-fn)`. `conv-fn` must be a unary function with signature `To (From)` already in scope; the compiler emits a call to it whenever an arg of `From` is supplied where `To` is expected. Pairs already covered by built-in coercion (identity, int↔int, `f32`→`f64`) are rejected at registration. Rules are unidirectional and non-transitive — declare each direction explicitly, and chain through an intermediate type by writing the chain yourself. Exported in `.nuch` headers. | implicit conversion |
 | `def-rmacro` | Define a reader macro `(def-rmacro "prefix" symbol)`. When `prefix` appears at the start of a token, the reader wraps the next form: `(symbol form)`. Built-in reader macros: `'` (quote), `` ` `` (quasiquote), `~` (unquote), `~@` (unquote-splice), `@` (deref). | — |
 | `exclude-prelude` | Suppress the implicit `(import-use prelude)` for this source file. Must be the first top-level form; takes no arguments. Use when a file should compile against the bare language without the standard macros, `Node` struct, or `(import-use "string.h")` declarations. | — |
@@ -829,11 +829,15 @@ Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defin
 
 ## Macros and pass-through arguments
 
-Macro parameters are typed `ptr:Node` — the macro sees AST. When the macro
-splices a parameter into its expansion via `~param`, the resulting form is
-compiled as if the user had written that expression directly at the call site,
-so the *value* type the parameter evaluates to in the expansion is whatever
-the user wrote — `i32`, `ptr:i8`, `f64`, `Foo`, etc.
+Macro parameters are typed `(raw Node)` — the macro sees AST. Because the
+parameter is a typed pointer to `Node`, a macro walks the argument's structure
+with member access **without casting**: `(p car)`, `(p cdr)`, chains like
+`((p cdr) car)`, and `(p kind)`/`(p s)` all type-check directly (`car`/`cdr`
+are themselves `(raw Node)`). When the macro splices a parameter into its
+expansion via `~param`, the resulting form is compiled as if the user had
+written that expression directly at the call site, so the *value* type the
+parameter evaluates to in the expansion is whatever the user wrote — `i32`,
+`ptr:i8`, `f64`, `Foo`, etc.
 
 This means a single macro can take, inspect, and splice arguments of different
 value types — there is no value-level `T` to keep consistent across calls;
@@ -855,9 +859,15 @@ only the AST representation is uniform.
 (tprint some-ptr)  ; → (printf "%p\n" some-ptr)  — ptr at the call site
 ```
 
-Inside the macro `x` is `ptr:Node`; the spliced `~x` carries no type
+Inside the macro `x` is `(raw Node)`; the spliced `~x` carries no type
 constraint into the expansion. The host compiler types the resulting form
 using its normal rules.
+
+> **⚠ Sharp edge:** since `car`/`cdr`/params are `(raw Node)`, a `cond`/`if`
+> whose branches mix a `(raw Node)` value with a bare `ptr`/`null`/quasiquote
+> (bare `ptr`) fails to unify and collapses to `void` — which makes a macro
+> silently `return null`. Cast the odd branch to a bare pointer so all branches
+> agree. Full detail in [macros.md](macros.md).
 
 ## Variadic Arithmetic
 
