@@ -39801,8 +39801,9 @@ entry:
   %i.addr.113 = alloca i32, align 4
   %at.addr.117 = alloca ptr, align 8
   %m.addr.136 = alloca ptr, align 8
-  %sym.addr.149 = alloca ptr, align 8
-  %ft.addr.152 = alloca ptr, align 8
+  %out-ret.addr.146 = alloca ptr, align 8
+  %sym.addr.162 = alloca ptr, align 8
+  %ft.addr.165 = alloca ptr, align 8
   %t1 = load ptr, ptr %h.addr, align 8
   %t2 = call ptr @generic-lookup(ptr %t1)
   store ptr %t2, ptr %g.addr.0, align 8
@@ -40024,17 +40025,38 @@ cond.end11:
   %t140 = call ptr @generic-find-method-exact(ptr %t137, ptr %t138, i32 %t139)
   store ptr %t140, ptr %m.addr.136, align 8
   %t141 = load ptr, ptr %m.addr.136, align 8
-  %t142 = icmp eq ptr %t141, null
+  %t142 = icmp ne ptr %t141, null
   br i1 %t142, label %cond.then12.0, label %cond.fall12
 cond.then12.0:
-  ret ptr null
-cond.fall12:
-  br label %cond.end12
-cond.end12:
   %t143 = load ptr, ptr %m.addr.136, align 8
   %t144 = getelementptr inbounds %Method, ptr %t143, i32 0, i32 2
   %t145 = load ptr, ptr %t144, align 8
   ret ptr %t145
+cond.fall12:
+  br label %cond.end12
+cond.end12:
+  %t147 = call i64 @ptr-bytes()
+  %t148 = call ptr @arena-alloc(i64 %t147)
+  store ptr %t148, ptr %out-ret.addr.146, align 8
+  %t149 = load ptr, ptr %g.addr.0, align 8
+  %t150 = load ptr, ptr %argtypes.addr.103, align 8
+  %t151 = load i32, ptr %nargs.addr.99, align 4
+  %t152 = load ptr, ptr %out-ret.addr.146, align 8
+  %t153 = call i32 @generic-binds-for(ptr %t149, ptr %t150, i32 %t151, ptr %t152, i32 0)
+  %t154 = icmp ne i32 %t153, 0
+  br i1 %t154, label %cond.then13.0, label %cond.fall13
+cond.then13.0:
+  %t155 = load ptr, ptr %out-ret.addr.146, align 8
+  %t156 = sext i32 0 to i64
+  %t157 = getelementptr inbounds ptr, ptr %t155, i64 %t156
+  %t158 = load ptr, ptr %t157, align 8
+  ret ptr %t158
+cond.fall13:
+  br label %cond.end13
+cond.end13:
+  br label %cond.join8.0
+cond.join8.0:
+  br label %cond.end8
 cond.fall8:
   br label %cond.end8
 cond.end8:
@@ -40044,41 +40066,41 @@ cond.join0.0:
 cond.fall0:
   br label %cond.end0
 cond.end0:
-  %t146 = load ptr, ptr %scope.addr, align 8
-  %t147 = load ptr, ptr %h.addr, align 8
-  %t148 = call ptr @scope-lookup(ptr %t146, ptr %t147)
-  store ptr %t148, ptr %sym.addr.149, align 8
-  %t150 = load ptr, ptr %sym.addr.149, align 8
-  %t151 = icmp ne ptr %t150, null
-  br i1 %t151, label %cond.then13.0, label %cond.test13.1
-cond.then13.0:
-  %t153 = load ptr, ptr %sym.addr.149, align 8
-  %t154 = getelementptr inbounds %Sym, ptr %t153, i32 0, i32 1
-  %t155 = load ptr, ptr %t154, align 8
-  store ptr %t155, ptr %ft.addr.152, align 8
-  %t156 = load ptr, ptr %ft.addr.152, align 8
-  %t157 = getelementptr inbounds %Type, ptr %t156, i32 0, i32 0
-  %t158 = load i32, ptr %t157, align 4
-  %t159 = icmp ne i32 %t158, 11
-  br i1 %t159, label %cond.then14.0, label %cond.fall14
+  %t159 = load ptr, ptr %scope.addr, align 8
+  %t160 = load ptr, ptr %h.addr, align 8
+  %t161 = call ptr @scope-lookup(ptr %t159, ptr %t160)
+  store ptr %t161, ptr %sym.addr.162, align 8
+  %t163 = load ptr, ptr %sym.addr.162, align 8
+  %t164 = icmp ne ptr %t163, null
+  br i1 %t164, label %cond.then14.0, label %cond.test14.1
 cond.then14.0:
-  %t160 = load ptr, ptr %ft.addr.152, align 8
-  %t161 = load ptr, ptr %n.addr, align 8
-  %t162 = load ptr, ptr %scope.addr, align 8
-  %t163 = call ptr @callable-value-type(ptr %t160, ptr %t161, ptr %t162)
-  ret ptr %t163
-cond.fall14:
-  br label %cond.end14
-cond.end14:
-  %t164 = load ptr, ptr %ft.addr.152, align 8
-  %t165 = getelementptr inbounds %Type, ptr %t164, i32 0, i32 1
-  %t166 = load ptr, ptr %t165, align 8
-  ret ptr %t166
-cond.test13.1:
-  br label %cond.then13.1
-cond.then13.1:
+  %t166 = load ptr, ptr %sym.addr.162, align 8
+  %t167 = getelementptr inbounds %Sym, ptr %t166, i32 0, i32 1
+  %t168 = load ptr, ptr %t167, align 8
+  store ptr %t168, ptr %ft.addr.165, align 8
+  %t169 = load ptr, ptr %ft.addr.165, align 8
+  %t170 = getelementptr inbounds %Type, ptr %t169, i32 0, i32 0
+  %t171 = load i32, ptr %t170, align 4
+  %t172 = icmp ne i32 %t171, 11
+  br i1 %t172, label %cond.then15.0, label %cond.fall15
+cond.then15.0:
+  %t173 = load ptr, ptr %ft.addr.165, align 8
+  %t174 = load ptr, ptr %n.addr, align 8
+  %t175 = load ptr, ptr %scope.addr, align 8
+  %t176 = call ptr @callable-value-type(ptr %t173, ptr %t174, ptr %t175)
+  ret ptr %t176
+cond.fall15:
+  br label %cond.end15
+cond.end15:
+  %t177 = load ptr, ptr %ft.addr.165, align 8
+  %t178 = getelementptr inbounds %Type, ptr %t177, i32 0, i32 1
+  %t179 = load ptr, ptr %t178, align 8
+  ret ptr %t179
+cond.test14.1:
+  br label %cond.then14.1
+cond.then14.1:
   ret ptr null
-cond.end13:
+cond.end14:
   unreachable
 }
 
