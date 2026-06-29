@@ -737,7 +737,11 @@
 
 ; Pre-register the Node struct and NODE-* constants for macros support in REPL.
 (defn repl-register-node:void ()
-  ; Register Node struct: kind:i32, line:i32, i:i64, s:ptr, car:ptr, cdr:ptr
+  ; Register Node struct mirroring lib/prelude.nuc's defstruct Node: car/cdr
+  ; are (raw Node) so macros can chain field access without casts (e.g.
+  ; ((spec cdr) car) in dotimes). A bare ty-ptr here returns an untyped ptr
+  ; from (spec cdr), and the chained (... car) dies in emit-get-intrinsic
+  ; ("not a pointer-to-struct"). Must stay in lockstep with the prelude def.
   (let (sd:ptr:StructDef (cast ptr:StructDef (register-struct "Node")))
     (.set! sd num-fields 6)
     (.set! sd field-names (arena-alloc (* (cast i64 6) (cast i64 8))))
@@ -752,8 +756,11 @@
     (aset! (cast ptr:ptr (sd field-types)) 1 ty-i32)
     (aset! (cast ptr:ptr (sd field-types)) 2 ty-i64)
     (aset! (cast ptr:ptr (sd field-types)) 3 ty-ptr)
-    (aset! (cast ptr:ptr (sd field-types)) 4 ty-ptr)
-    (aset! (cast ptr:ptr (sd field-types)) 5 ty-ptr))
+    (let (raw-node-ty:ref:Type (make-type TY-PTR))
+      (.set! raw-node-ty elem (parse-type-name "Node" 0))
+      (.set! raw-node-ty pkind PTR-RAW)
+      (aset! (cast ptr:ptr (sd field-types)) 4 (cast ptr raw-node-ty))
+      (aset! (cast ptr:ptr (sd field-types)) 5 (cast ptr raw-node-ty))))
   ; Add Node IR type to preamble
   (fprintf g-repl-preamble "%%Node = type { i32, i32, i64, ptr, ptr, ptr }\n\n")
   ; Register NODE-* constants
@@ -820,9 +827,9 @@
     (while (!= running 0)
       (let (input:ptr (repl-read-input))
         (when (= input null)
-          (fprintf stderr "\n") (set! running 0))
+              (fprintf stderr "\n") (set! running 0))
         (when (!= input null)
-          (when (!= running 0)
+              (when (!= running 0)
               ; Parse the input
               (set! g-src input)
               (set! g-pos (cast i64 0))
