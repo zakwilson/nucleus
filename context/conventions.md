@@ -202,13 +202,14 @@ When converting a function or binding from `(ptr T)` to `(ref T)` / `?T`
   Fix by giving the other branch's binding its real element type — never by
   casting the `ref` side back to bare `ptr`.
 
-## `(Maybe ptr)` is niche-encoded — cannot use `match` on it
+## `(Maybe ptr)` is niche-encoded — `match` works, but the representation is a bare pointer
 
 When the element type of `Maybe` is a pointer kind (`TY-PTR`), the compiler
 niche-encodes `(Maybe ptr:T)` as a nullable pointer (no tag word, null = none).
-This means `match` cannot be used on it — match expects a tagged sum. Use
-`i32` or `i64` as iterator element types and `match` normally. If you need a
-nullable pointer specifically, use `if-some`/`when-some`/`unwrap`/`unwrap-or`.
+`match` works on niche-encoded Maybe: `(match m ((some p) ...) (none ...))`
+branches on a null test and binds `p` as `(ref T)` in the `some` arm. The
+alternatives `if-some`/`when-some`/`unwrap`/`unwrap-or` also work and may be
+more concise for simple cases.
 
 ## `macros.nuc` is auto-imported — adding macros shifts the string pool
 
@@ -222,19 +223,21 @@ diff that has nothing to do with correctness. Convergence requires two passes:
 Then `make bootstrap` passes. The `make bootstrap` target diffs stage1 vs stage2,
 not the new binary vs old boot.
 
-## `(Vector ptr)` cannot be iterated with `doseq` or combinators
+## `(Vector ptr)` iteration with combinators
 
 All compiler registries are `(Vector ptr)`. The element type `ptr` causes
-`(Maybe ptr)` niche-encoding (see the `(Maybe ptr)` section above). Since
-`match` cannot handle niche-encoded types, `doseq`, `for-each`, `find`, `any?`,
-`every?`, `reduce`, and all other combinators that use `(match (next it) …)`
-internally will **crash at runtime** with "match: scrutinee must be a defunion
-value" when driven over a `(VecIter ptr)`.
+`(Maybe ptr)` niche-encoding. Combinators like `doseq`, `for-each`, `find`,
+`any?`, `every?`, and `reduce` that use `(match (next it) …)` internally now
+work correctly over `(VecIter ptr)` since niche-encoded Maybe supports `match`.
 
-**For `(Vector ptr)` loops in `src/` compiler code: use `dotimes` only.**
+For `(Vector ptr)` loops in `src/` compiler code, `dotimes` remains the
+idiomatic choice for simple iterations, but combinators are now viable.
 
-For Node* linked-list loops (AST cdr-lists): `ListIter` yields `i64` which IS
-matchable — `doseq-iter` + `list-iter` works correctly there.
+For Node* linked-list loops (AST cdr-lists): `ListIter` yields `i64` (a pointer
+cast to i64) because the bootstrap compiler's generic protocol resolution cannot
+yet infer niche-encoded return types from protocol conformances. Once the
+bootstrap is updated with improved generic protocol resolution, `ListIter` can
+be converted to yield `ptr` directly.
 
 ## `dotimes` conversion gotchas (R3 compiler-loop refactor)
 

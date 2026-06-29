@@ -141,9 +141,8 @@
 ; `cur` slot, encoded as i64 so the (Maybe i64) is a TAGGED, matchable
 ; value-Maybe — `reduce` / `doseq-iter` / `match` accept it. (Conforming to
 ; (Iterator StrView) directly is impossible: (Maybe StrView) embeds %StrView in
-; an anonymous union that the macro-expansion JIT module cannot resolve; and a
-; niche (Maybe ptr) is not matchable. The i64-pointer encoding sidesteps both —
-; see lib/iterator.nuc and context/build.md.)
+; an anonymous union that the macro-expansion JIT module cannot resolve. The
+; i64-pointer encoding sidesteps this — see lib/iterator.nuc and context/build.md.)
 ;
 ; Behavior is identical to the done-flag loop: one segment per `next`, the same
 ; segments in the same order; iteration ends (none) on the call after the final

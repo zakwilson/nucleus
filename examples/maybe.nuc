@@ -19,10 +19,17 @@
   (when (= m null) (return -1))
   (return (m x)))
 
+; match on a niche-encoded Maybe: branches on null test, binds (ref T) in some.
+(defn show-match:i32 (m:?ptr:Pt)
+  (match m
+    ((some q) (return (q x)))
+    (none     (return -1))))
+
 (defn main:i32 ()
   (let (p:ptr:Pt (cast ptr:Pt (malloc 8)))
     (.set! p x 7)
     (printf "guard %d %d\n" (show (lookup true p)) (show (lookup false p)))
+    (printf "match %d %d\n" (show-match (lookup true p)) (show-match (lookup false p)))
     (printf "if-some %d\n" (if-some (q (lookup true p)) (q x) -1))
     (printf "if-some-none %d\n" (if-some (q (lookup false p)) (q x) -1))
     (when-some (q (lookup true p))
