@@ -460,27 +460,25 @@
           (fprintf g-body-stream
             "  %s = getelementptr inbounds i8, ptr %s, i64 %d\n"
             pp base (union-payload-off ud))
-          (let (fi:i32 0)
-            (while (< fi nf)
-              (let (ftype:ptr (aref (cast ptr:ptr ftypes) fi)
-                    v:ref:Val (emit-node (node-at cc (+ argi fi)) scope)
-                    coerced:ptr (coerce-int-val v ftype (cc line)))
-                (when (= coerced null)
-                  (die-at (cc line)
-                    (fmt-2s "%s: type mismatch for a field of arm '%s'"
-                            (udd name) (aref (cast ptr:ptr (udd arm-names)) arm))))
-                (set! taint (taint-merge taint (v taint)))
-                (let (cv:ptr:Val (cast ptr:Val coerced)
-                      fgep:ptr pp)
-                  ; Several fields → the payload is the memoized anon struct;
-                  ; one field → the payload IS the field, at offset 0.
-                  (when (> nf 1)
-                    (set! fgep (new-tmp))
-                    (fprintf g-body-stream
-                      "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
-                      fgep ((cast ptr:StructDef (ptype sdef)) name) pp fi))
-                  (emit-store (type-to-ir ftype) (cv val) fgep ftype)))
-              (inc! fi)))))
+          (dotimes (fi:i32 nf)
+            (let (ftype:ptr (aref (cast ptr:ptr ftypes) fi)
+                  v:ref:Val (emit-node (node-at cc (+ argi fi)) scope)
+                  coerced:ptr (coerce-int-val v ftype (cc line)))
+              (when (= coerced null)
+                (die-at (cc line)
+                  (fmt-2s "%s: type mismatch for a field of arm '%s'"
+                          (udd name) (aref (cast ptr:ptr (udd arm-names)) arm))))
+              (set! taint (taint-merge taint (v taint)))
+              (let (cv:ptr:Val (cast ptr:Val coerced)
+                    fgep:ptr pp)
+                ; Several fields → the payload is the memoized anon struct;
+                ; one field → the payload IS the field, at offset 0.
+                (when (> nf 1)
+                  (set! fgep (new-tmp))
+                  (fprintf g-body-stream
+                    "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
+                    fgep ((cast ptr:StructDef (ptype sdef)) name) pp fi))
+                (emit-store (type-to-ir ftype) (cv val) fgep ftype))))))
       (let (v:ptr (new-tmp))
         (fprintf g-body-stream "  %s = load %%%s, ptr %s\n" v (sd name) base)
         (let (rv:ref:Val (alloc-val (type-for-sdef (cast ptr sd)) v))

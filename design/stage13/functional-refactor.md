@@ -303,14 +303,27 @@ point. → build-test-runner.
 
 ### R3 — Compiler loop refactor (full scope)
 
-**Status: Partial done (2026-06-28).** Batch 1 complete: `src/scope.nuc`,
+**Status: Partial done (2026-06-29).** Batch 1 complete: `src/scope.nuc`,
 `src/type-mangle.nuc`, `src/nuch.nuc`, `src/union-registry.nuc` (first batch
-of sites only). 136 tests pass; byte-identical bootstrap. Remaining R3 work
-(lookup clusters in `src/generics.nuc`, `src/nucleusc.nuc`, etc.) continues.
+of sites only). Batch 2 complete: `src/generics.nuc` counted-loop cluster
+(`generic-remove-matching-user-method` scan, `init-generics`, `params-type-eq`,
+`mangle-fn-name`, `generic-find-method-exact`, `generic-binds-for`,
+`generic-resolve`, `operator-user-resolve`, `unify-tpat`, `valid-resolve-type`,
+`proto-sigs-resolve`, `tmpl-conformance-check-one`). 136 tests pass; byte-identical
+bootstrap. Remaining R3 work (lookup clusters in `src/nucleusc.nuc`, etc.) continues.
 
 Key gotcha discovered: `dotimes` takes exactly **one** body form (`(defmacro
 dotimes (spec body))`). Multi-statement bodies must be wrapped in `(do ...)`.
 See `context/conventions.md`.
+
+Second gotcha (Batch 2): when converting `(let (i:i32 0) (while …) (return X))`
+to `(dotimes …)`, the trailing `(return X)` must land **outside** the dotimes
+body — close the dotimes on the last in-loop statement, not on the `(return X)`
+line. A `(return X)` accidentally left inside the dotimes body fires on the
+first non-matching iteration instead of after the loop, silently breaking
+lookups (e.g. `generic-binds-for` returned 0 for every generic method →
+`Iterator` conformance checks failed). The textual IR diff shows the missing
+`inc!`/`br-loop-back` right before a spurious `ret`.
 
 **Agent: focused-task-implementer** / **systems-impl-engineer**, dispatched by
 file cluster; **build-test-runner** gates between batches. Depends on R1 + R2.
