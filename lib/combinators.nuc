@@ -27,7 +27,9 @@
 (import-use "stdio.h")
 (import-use "stdlib.h")
 (import-use "string.h")          ; strlen, for join
+(import-use allocator)           ; BoxedFn boxing (the closure-returning combinators)
 (import-use iterator)            ; Iterator/UnaryFn/FoldFn protocols + reduce
+(import-use numeric)             ; Ord (constantly's value-type bound)
 (import-use strview)             ; StrView (string.nuc's !String fns reference it)
 (import-use vector)              ; Vector / VecIter / conj / count / iter
 (import-use string)              ; String / string-new / string-push-bytes-raw
@@ -400,3 +402,101 @@
 ; spelling used when a counted/imperative loop is refactored to keep one value.)
 (defmacro do-last (&rest body)
   `(do ~@body))
+
+; ===========================================================================
+; Closure-returning combinators (the storable-closure payoff — Stage 13 TE-5)
+; ===========================================================================
+; Higher-order combinators that PRODUCE a closure and return it by value as a
+; `(BoxedFn (params…) ret)` — impossible before TE-5 (a defn could not spell a
+; closure return type; the anonymous `__vfn_env_N` was unnameable). Each is
+; generic over its signature so it stamps on use only, keeping the compiler boot
+; byte-identical (the compiler imports no combinator and boxes nothing — verify
+; no `%__fatptr`/`@__vt.*`/`@__boxedfn_drop` reached build/nucleusc.ll).
+;
+; OPERAND MODEL (v1 — the safe fallback per design/stage13/functional-refactor.md
+; risk register): the function-typed operands are BARE `fn` pointers (non-
+; capturing functions). A bare `fn` flows into a `(ref G)` operand slot, binds G
+; to its TY-FN, and the returned box's env captures it as a plain function
+; pointer VALUE (8 bytes, copied into the heap env) — NOT a `Drop` value. So the
+; env's synthesized vtable drop slot is NULL (verified: the emitted vtable is
+; `{ invoke, null }`), which means there is no transitive drop of a captured box
+; and thus no nested-box leak or double-free. This is exactly the `make-adder`
+; shape in examples/boxedfn.nuc (a real capturing closure boxed on return via the
+; existing coercion machinery), only the captured payload is a fn pointer(s)
+; rather than an int. Nesting — a `BoxedFn` operand captured by a returned
+; `BoxedFn`, needing transitive drop — is deferred until the nested-box drop path
+; is proven; v1 restricts operands to bare fn pointers (and, for `constantly`, a
+; plain by-value scalar).
+;
+; Each returned box is an owning `Drop` value: the caller must drop it exactly
+; once (`(drop (addr-of e))` for a let-bound box, or a `with` binding's scope-
+; exit drop), following examples/boxedfn.nuc.
+;
+; NOTE on vfn return annotations: the closure's return type is spelled as a bare
+; symbol (e.g. `(vfn (x:A) C …)`, not `(vfn (x:A):C …)`) when it is a tyvar. A
+; `:Tyvar` keyword return annotation is a NODE-KEYWORD, and the generic
+; monomorphizer's `subst-tyvars-node` (lib/type-mangle.nuc) only substitutes
+; NODE-SYM/NODE-CELL — a keyword tyvar would survive unstamped into the nested
+; closure stamping and report "unknown type". A bare-symbol return is a NODE-SYM
+; and substitutes correctly. Concrete returns (`i32`) may use either spelling.
+;
+; NOTE on `constantly`: its value operand `v` is a flat by-value tyvar, so the
+; defn's A2 abstract body check (gcheck) runs (it is skipped only when a param
+; carries a nested tyvar). gcheck models closure-creating forms (vfn/fn/mfn/cfn)
+; by binding their params and checking the body — without that, the vfn's param
+; list would be mis-walked as a call. V is bounded by `Ord` (the most general
+; recognised protocol i32/i64/CStr conform to) solely so the tyvar is collected;
+; constantly performs no Ord operation, so the bound is a collection vehicle, not
+; a semantic requirement on the value.
+; ===========================================================================
+
+; compose — `(compose g f)` → a box `x → (g (f x))`. g : (UnaryFn B C), f : (UnaryFn
+; A B). Both operands are bare fn pointers captured by value (null env-drop slot).
+(defn (compose (BoxedFn (A) C)) ((g (ref G)) (f (ref F))
+                                  &where ((UnaryFn B C) G)
+                                         ((UnaryFn A B) F))
+  (return (vfn (x:A) C (apply g (apply f x)))))
+
+; comp — alias of compose.
+(defn (comp (BoxedFn (A) C)) ((g (ref G)) (f (ref F))
+                               &where ((UnaryFn B C) G)
+                                      ((UnaryFn A B) F))
+  (return (compose g f)))
+
+; complement — `(complement pred)` → a box `x → ¬(pred x)` (i32: 1 when pred is
+; falsy, 0 when truthy). pred : (UnaryFn A i32), a bare predicate fn pointer.
+(defn (complement (BoxedFn (A) i32)) ((pred (ref P))
+                                       &where ((UnaryFn A i32) P))
+  (return (vfn (x:A) i32 (if (!= (apply pred x) 0) 0 1))))
+
+; conjoin — `(conjoin p q)` → a box `x → (p x) ∧ (q x)` (i32: 1 when both truthy).
+; p, q : (UnaryFn A i32), bare predicate fn pointers.
+(defn (conjoin (BoxedFn (A) i32)) ((p (ref P)) (q (ref Q))
+                                    &where ((UnaryFn A i32) P)
+                                           ((UnaryFn A i32) Q))
+  (return (vfn (x:A) i32 (if (!= (apply p x) 0) (if (!= (apply q x) 0) 1 0) 0))))
+
+; disjoin — `(disjoin p q)` → a box `x → (p x) ∨ (q x)` (i32: 1 when either truthy).
+; p, q : (UnaryFn A i32), bare predicate fn pointers.
+(defn (disjoin (BoxedFn (A) i32)) ((p (ref P)) (q (ref Q))
+                                    &where ((UnaryFn A i32) P)
+                                           ((UnaryFn A i32) Q))
+  (return (vfn (x:A) i32 (if (!= (apply p x) 0) 1 (if (!= (apply q x) 0) 1 0)))))
+
+; constantly — `(constantly v)` → a box `_ → v` that always returns v, ignoring
+; its argument. The value v is captured BY VALUE (cloned into the heap env, like
+; make-adder's int). The box's input type is V (the value's type): the ignored
+; argument must be V-typed. V is Ord-bounded only so the tyvar is collected (see
+; the operand-model note above).
+(defn (constantly (BoxedFn (V) V)) ((v V) &where (Ord V))
+  (return (vfn (ignored:V) V v)))
+
+; partial — `(partial f a)` → a box `x → (f a x)` (partial application of the
+; first argument). f : (FoldFn A X) — a bare 2-arg fn pointer whose return type
+; equals its first argument's type (the FoldFn shape: (Acc, Elem) → Acc). v1
+; partial covers this FoldFn-shaped binary function (the common arithmetic case,
+; e.g. `(partial + n)`); a general `(A, X) → R` binary protocol is deferred. a is
+; captured by value; f is captured as a bare fn pointer (null env-drop slot).
+(defn (partial (BoxedFn (X) A)) ((f (ref F)) (a A)
+                                  &where ((FoldFn A X) F))
+  (return (vfn (x:X) A (fold f a x))))

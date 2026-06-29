@@ -235,3 +235,23 @@ value" when driven over a `(VecIter ptr)`.
 
 For Node* linked-list loops (AST cdr-lists): `ListIter` yields `i64` which IS
 matchable — `doseq-iter` + `list-iter` works correctly there.
+
+## `dotimes` conversion gotchas (R3 compiler-loop refactor)
+
+A trap recurs when converting a counted `(let (i:i32 0) (while (< i n) … (inc! i)))`
+to `(dotimes (i:i32 n) …)` in `src/` compiler code:
+
+   **A trailing `(return X)` must land OUTSIDE the dotimes body.** For a find-shape
+   loop ending `(return FOUND)` after the scan with `(return NOTFOUND)` after the
+   loop, close the dotimes on the `(return FOUND)` line and put `(return NOTFOUND)`
+   on its own line after. If you close one paren too few, `(return NOTFOUND)` lands
+   *inside* the dotimes body and the function returns NOTFOUND on the first
+   non-matching iteration — silently breaking every lookup (hit `generic-binds-for`,
+   `lbl-find`, `enumdef-lookup` during R3). The textual-IR signature is a missing
+   `inc!`/`br-loop-back` immediately before a spurious `ret`.
+
+A same-shape swap (zero start, unit stride, `inc!` last) expands to byte-identical
+IR — no `make update-bootstrap` needed. Loops starting at non-zero, with non-unit
+stride, or with `inc!` not last do **not** fit `dotimes`; leave them imperative.
+`return` inside a `dotimes` body works (it expands to a `while`), so early-return
+find loops convert fine — just mind the gotcha.

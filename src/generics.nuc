@@ -1575,6 +1575,26 @@
             (let (last:ptr null j:i32 2 cl:i32 (node-len n))
               (while (< j cl) (set! last (gcheck (node-at n j) inner m)) (inc! j))
               (return last))))
+        ; Closure forms (vfn/fn/mfn/cfn): `(vfn (params) ret body…)`. Bind each
+        ; param in an inner scope (so the param list is NOT walked as calls — the
+        ; bug that blocked flat-tyvar closure-returning generics like `constantly`)
+        ; and check the body forms. The ret annotation (index 2) and param types
+        ; are not calls; the captured-value operations are deferred to stamp time
+        ; (the concrete monomorphized closure body goes through the ordinary
+        ; emit/type pass). Boot-inert: no compiler generic creates a closure.
+        (when (or (= h "vfn") (= h "fn") (= h "mfn") (= h "cfn"))
+          (let (cparams:ptr (node-at n 1)
+                cinner:ref:Scope (scope-new scope)
+                cnp:i32 (node-len cparams))
+            (dotimes (cpi cnp)
+              (let (cpnode:ptr (node-at cparams cpi)
+                    cpty:ptr (gbind-decl-type cpnode m (nn line))
+                    cpnm:ptr (gbind-name cpnode))
+                (when (and (!= cpnm null) (!= cpty null))
+                  (scope-define cinner cpnm cpty cpnm 1))))
+            (let (clast:ptr null cj:i32 3 ccl:i32 (node-len n))
+              (while (< cj ccl) (set! clast (gcheck (node-at n cj) cinner m)) (inc! cj))
+              (return clast))))
         (when (= hp 'do)
           (let (last:ptr null j:i32 1 cl:i32 (node-len n))
             (while (< j cl) (set! last (gcheck (node-at n j) scope m)) (inc! j))
