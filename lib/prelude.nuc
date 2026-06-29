@@ -15,8 +15,8 @@
   line:i32
   i:i64
   s:ptr
-  car:ptr
-  cdr:ptr)
+  (car (raw Node))
+  (cdr (raw Node)))
 
 ; NODE-KEYWORD (Stage 11 cleanup §2): a `:foo` keyword literal. Carries the name
 ; (without the leading colon) in the `s` field. Lowered by the compiler to a

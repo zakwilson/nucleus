@@ -1224,7 +1224,7 @@
                                 (cast ptr:Node (node-at (cast ptr pat) 0))))
               (when (!= (an kind) NODE-SYM)
                 (die-at (an line) "match: arm name must be a symbol"))
-              (let (binders:ptr (if (= (pat kind) NODE-CELL) ((cast ptr:Node pat) cdr) null))
+              (let (binders:ptr (if (= (pat kind) NODE-CELL) (cast ptr ((cast ptr:Node pat) cdr)) null))
                 (if (= (strcmp (an s) "ok") 0)
                   (do (set! ok-body ((cast ptr:Node clause) cdr)) (set! ok-bind binders))
                   (if (= (strcmp (an s) "err") 0)

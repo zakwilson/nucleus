@@ -12,7 +12,7 @@
   (cond (= args null)
     `0
     (= ((cast ptr:Node args) cdr) null)
-    ((cast ptr:Node args) car)
+    (cast ptr ((cast ptr:Node args) car))
     true
     `(_+ ~((cast ptr:Node args) car)
            (+ ~@((cast ptr:Node args) cdr)))))
@@ -21,7 +21,7 @@
   (cond (= args null)
           `1
         (= ((cast ptr:Node args) cdr) null)
-          ((cast ptr:Node args) car)
+          (cast ptr ((cast ptr:Node args) car))
         true
           `(_* ~((cast ptr:Node args) car)
                 (* ~@((cast ptr:Node args) cdr)))))
@@ -62,7 +62,7 @@
   (cond (= args null)
           `true
         (= ((cast ptr:Node args) cdr) null)
-          ((cast ptr:Node args) car)
+          (cast ptr ((cast ptr:Node args) car))
         true
           `(_and ~((cast ptr:Node args) car)
                  (and ~@((cast ptr:Node args) cdr)))))
@@ -71,7 +71,7 @@
   (cond (= args null)
           `false
         (= ((cast ptr:Node args) cdr) null)
-          ((cast ptr:Node args) car)
+          (cast ptr ((cast ptr:Node args) car))
         true
           `(_or ~((cast ptr:Node args) car)
                 (or ~@((cast ptr:Node args) cdr)))))
@@ -141,9 +141,9 @@
 ; Uses struct field access to extract elements from spec so this macro works
 ; even in programs that have not yet included stdlib (no node-at dependency).
 (defmacro dotimes (spec &rest body)
-  (let (var-node:ptr ((cast ptr:Node spec) car)
-        n-node:ptr   ((cast ptr:Node ((cast ptr:Node spec) cdr)) car))
-    `(let (~var-node 0)
+  (let ((var-node (raw Node)) (spec car)
+        (n-node (raw Node)) ((spec cdr) car))
+    `(let (~var-node (* ~n-node 0)) ; adopt the count's type for the index
        (while (< ~var-node ~n-node)
          (do ~@body)
          (inc! ~var-node)))))
@@ -181,9 +181,9 @@
   ; The (sym type) list-binding form lets the done-flag gensym skip a colon type.
   (let (done-sym:ptr  (gensym)
         it-sym:ptr    (gensym)
-        var-sym:ptr   ((cast ptr:Node binding) car)
-        coll-expr:ptr ((cast ptr:Node ((cast ptr:Node binding) cdr)) car)
-        it-type:ptr   ((cast ptr:Node ((cast ptr:Node ((cast ptr:Node binding) cdr)) cdr)) car))
+        var-sym:ptr   (binding car)
+        coll-expr:ptr ((binding cdr) car)
+        it-type:ptr   (((binding cdr) cdr) car))
     `(let ((~it-sym ~it-type) (iter ~coll-expr))
        (let ((~done-sym i32) (cast i32 0))
          (while (= ~done-sym 0)
@@ -204,8 +204,8 @@
 ;     (doseq-iter (x r) (printf "%d\n" x)))
 (defmacro doseq-iter (binding &rest body)
   (let (done-sym:ptr  (gensym)
-        var-sym:ptr   ((cast ptr:Node binding) car)
-        iter-ref:ptr  ((cast ptr:Node ((cast ptr:Node binding) cdr)) car))
+        var-sym:ptr   (binding car)
+        iter-ref:ptr  ((binding cdr) car))
     `(let ((~done-sym i32) (cast i32 0))
        (while (= ~done-sym 0)
          (match (next ~iter-ref)
@@ -261,45 +261,45 @@
 ;   (-> x)                     expands to x                      [identity]
 (defmacro -> (x &rest forms)
   (let (result:ptr x
-        current:ptr forms)
+        (current (raw Node)) forms)
     (while (!= current null)
-      (let (form:ptr ((cast ptr:Node current) car))
+      (let ((form (raw Node)) (current car))
         (if (= ((cast ptr:Node form) kind) NODE-CELL)
           (do
             ; Scan the whole form (head + args) for the _ placeholder. Scanning
             ; the head lets a threaded value land in call position, e.g.
             ; (-> s (_ field)) => (s field) — head-position member access.
             (let (has-placeholder:i32 0
-                  scan:ptr form)
+                  (scan (raw Node)) form)
               (while (!= scan null)
-                (let (child:ptr ((cast ptr:Node scan) car))
-                  (when (= ((cast ptr:Node child) kind) NODE-SYM)
-                    (when (= (strcmp ((cast ptr:Node child) s) "_") 0)
+                (let ((child (raw Node)) (scan car))
+                  (when (= (child kind) NODE-SYM)
+                    (when (= (strcmp (child s) "_") 0)
                       (set! has-placeholder 1))))
-                (set! scan ((cast ptr:Node scan) cdr)))
+                (set! scan (scan cdr)))
               (if (!= has-placeholder 0)
                 ; Has _: rebuild list, substituting result for each _.
                 ; Pass 1: build reversed list with substitutions.
-                (let (rev:ptr null
-                      src:ptr form)
+                (let ((rev (raw Node)) null
+                      (src (raw Node)) form)
                   (while (!= src null)
-                    (let (elem:ptr ((cast ptr:Node src) car)
+                    (let ((elem (raw Node)) (src car)
                           replacement:ptr elem)
-                      (when (= ((cast ptr:Node elem) kind) NODE-SYM)
-                        (when (= (strcmp ((cast ptr:Node elem) s) "_") 0)
+                      (when (= (elem kind) NODE-SYM)
+                        (when (= (strcmp (elem s) "_") 0)
                           (set! replacement result)))
                       (set! rev `(~replacement ~@rev)))
-                    (set! src ((cast ptr:Node src) cdr)))
+                    (set! src (src cdr)))
                   ; Pass 2: reverse to restore order.
                   (let (final:ptr null)
                     (while (!= rev null)
-                      (set! final `(~((cast ptr:Node rev) car) ~@final))
-                      (set! rev ((cast ptr:Node rev) cdr)))
+                      (set! final `(~(rev car) ~@final))
+                      (set! rev (rev cdr)))
                     (set! result final)))
                 ; No _: thread-first (insert after head).
-                (let (head:ptr ((cast ptr:Node form) car)
-                      tail:ptr ((cast ptr:Node form) cdr))
+                (let (head:ptr (form car)
+                      tail:ptr (form cdr))
                   (set! result `(~head ~result ~@tail))))))
           (set! result `(~form ~result))))
-      (set! current ((cast ptr:Node current) cdr)))
+      (set! current (current cdr)))
     result))

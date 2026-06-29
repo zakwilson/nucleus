@@ -111,3 +111,9 @@ UnaryFn protocol should extend to a lot of things that can be invoked
 inc!/dec! predate macros; they should probably become macros over set!
 
 Bindings like (g:ptr:Generic (cast ptr:Generic (invoke g-generics (cast usize i)))) are verbose. Why isn't all of this typed correctly? Why `invoke` instead of the vector in the head position?
+
+(dotimes (i:i32 (cast i32 (count g-pending-unions))) ...) instead of usize is verbose. Numeric literals should conform to the declared type automatically.
+
+Colon sugar might work for casts
+
+Invalid spelling — car:raw:Node (colon form) doesn't parse for a parameterized raw; it mistyped the Node fields. The valid spelling is the list form (car (raw Node)) (same as lib/vector.nuc:59 (data (raw ui8))).

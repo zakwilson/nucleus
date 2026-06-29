@@ -93,6 +93,24 @@ does **not** exercise the REPL path — the `repl-redefinition` test does (its `
 macros do `(. (cast ptr:Node args) cdr)` at expansion time), so keep `make test` green,
 not just `make bootstrap`, when touching field interning.
 
+**Field TYPES drift too — `repl-register-node` must mirror `lib/prelude.nuc`'s `defstruct Node`.**
+The same lockstep that applies to field *names* applies to field *types*: every field-type
+slot `repl-register-node` writes must match the canonical `defstruct Node` in
+`lib/prelude.nuc` (and `lib/list.nuc`). When `car`/`cdr` were retyped `ptr`→`(raw Node)`
+for macro ergonomics, `repl-register-node` was missed and kept assigning bare `ty-ptr`.
+The symptom is subtle: a macro that reads `(p car)` once and binds it works (bare `ptr`
+flows into a `(raw Node)` slot), but a macro that **chains** without a cast — e.g.
+`((spec cdr) car)` in `dotimes` (lib/macros.nuc) — dies in `emit-get-intrinsic`
+(src/nucleusc.nuc:~2056, "callable value: not callable — no matching get/invoke method
+and not a pointer-to-struct") because `(spec cdr)` returns an untyped `ptr` (elem=null),
+so `ek` resolves to `TY-VOID` and the `TY-STRUCT`/`TY-UNION` gate fails. This fires the
+moment the REPL JITs any new-ergonomics macro, so `nucleusc -i` dies at startup inside
+`repl-preload-macros` and `(import-use macros)` dies interactively even with the preload
+removed — the failure is independent of *when* the macro library loads. Build the typed
+slot with the same pattern the macro emitter uses (src/nucleusc.nuc, `make-type TY-PTR`
++ `elem` = `(parse-type-name "Node" 0)` + `pkind PTR-RAW`); `parse-type-name` succeeds
+because `register-struct "Node"` already ran earlier in the same function.
+
 ## `CStr` is ABI-identical to `ptr` — gate pointer ABI on `is-ptr-like`, not `TY-PTR`
 
 `TY-CSTR` (the C-string type; string literals are `CStr`) lowers to `ptr` in IR

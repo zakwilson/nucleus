@@ -81,6 +81,18 @@ established outside the loop for any binding the body assigns; `label` kills
 all narrows (unknown predecessors). Kind mismatches at a `cond`/`if` join meet
 conservatively (`raw` beats `Maybe` beats `ref`).
 
+> **⚠ Sharp edge — branch *element* types must match.** The conservative meet
+> above reconciles the pointer *kind*, but the branch **element** types must
+> still be `type-eq`. Two pointer branches with *different element types* —
+> e.g. `(raw Node)` (the type of `Node.car`/`Node.cdr` and of macro parameters)
+> versus a bare `ptr`, a `ptr:i8`, or a quasiquoted `` `(...) `` (bare `ptr`) —
+> do **not** unify; the `cond`/`if` collapses to `void`. That then fails
+> wherever a value was expected (`let`/`set!` `init type mismatch`; a macro
+> body returns `null`). Make the branches agree — usually `(cast ptr <branch>)`
+> the odd one (`ptr` ↔ `(raw Node)` is a no-op reinterpret). This bites most
+> often in macros and AST-walking code; see the "Sharp edge" section in
+> [macros.md](macros.md).
+
 ## Volatile qualifier
 
 A type can be tagged `volatile` in postfix position — either the list form `(T volatile)` or the sugared `T:volatile`. Loads and stores of a value held at a volatile-qualified storage site (variable, struct field, or pointer target) are emitted as `load volatile` / `store volatile` in LLVM IR; the compiler will not elide, reorder, or coalesce them. Examples:
