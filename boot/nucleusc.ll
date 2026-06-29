@@ -30705,6 +30705,9 @@ entry:
   %bt.addr.78 = alloca ptr, align 8
   %rnode.addr.105 = alloca ptr, align 8
   %ridx.addr.118 = alloca i32, align 4
+  %ntv.addr.136 = alloca i32, align 4
+  %spellings.addr.140 = alloca ptr, align 8
+  %si.addr.149 = alloca i32, align 4
   %t1 = load ptr, ptr %head.addr, align 8
   %t2 = call ptr @generic-lookup(ptr %t1)
   store ptr %t2, ptr %g.addr.0, align 8
@@ -30914,10 +30917,53 @@ cond.join10.0:
 cond.fall10:
   br label %cond.end10
 cond.end10:
-  %t136 = load ptr, ptr %rnode.addr.105, align 8
-  %t137 = load i32, ptr %line.addr, align 4
-  %t138 = call ptr @parse-type-from-node(ptr %t136, i32 %t137)
-  ret ptr %t138
+  %t137 = load ptr, ptr %m2.addr.17, align 8
+  %t138 = getelementptr inbounds %Method, ptr %t137, i32 0, i32 11
+  %t139 = load i32, ptr %t138, align 4
+  store i32 %t139, ptr %ntv.addr.136, align 4
+  %t141 = load i32, ptr %ntv.addr.136, align 4
+  %t142 = add nsw i32 %t141, 1
+  %t143 = sext i32 %t142 to i64
+  %t144 = call i64 @ptr-bytes()
+  %t145 = mul nsw i64 %t143, %t144
+  %t146 = call ptr @arena-alloc(i64 %t145)
+  store ptr %t146, ptr %spellings.addr.140, align 8
+  %t147 = load i32, ptr %ntv.addr.136, align 4
+  %t148 = mul nsw i32 %t147, 0
+  store i32 %t148, ptr %si.addr.149, align 4
+  br label %while.cond12
+while.cond12:
+  %t150 = load i32, ptr %si.addr.149, align 4
+  %t151 = load i32, ptr %ntv.addr.136, align 4
+  %t152 = icmp slt i32 %t150, %t151
+  br i1 %t152, label %while.body12, label %while.end12
+while.body12:
+  %t153 = load ptr, ptr %spellings.addr.140, align 8
+  %t154 = load i32, ptr %si.addr.149, align 4
+  %t155 = sext i32 %t154 to i64
+  %t156 = load ptr, ptr %bound.addr.29, align 8
+  %t157 = load i32, ptr %si.addr.149, align 4
+  %t158 = sext i32 %t157 to i64
+  %t159 = getelementptr inbounds ptr, ptr %t156, i64 %t158
+  %t160 = load ptr, ptr %t159, align 8
+  %t161 = call ptr @type-spelling(ptr %t160)
+  %t162 = getelementptr inbounds ptr, ptr %t153, i64 %t155
+  store ptr %t161, ptr %t162, align 8
+  %t163 = load i32, ptr %si.addr.149, align 4
+  %t164 = add nsw i32 %t163, 1
+  store i32 %t164, ptr %si.addr.149, align 4
+  br label %while.cond12
+while.end12:
+  %t165 = load ptr, ptr %rnode.addr.105, align 8
+  %t166 = load ptr, ptr %m2.addr.17, align 8
+  %t167 = getelementptr inbounds %Method, ptr %t166, i32 0, i32 10
+  %t168 = load ptr, ptr %t167, align 8
+  %t169 = load ptr, ptr %spellings.addr.140, align 8
+  %t170 = load i32, ptr %ntv.addr.136, align 4
+  %t171 = call ptr @subst-tyvars-node(ptr %t165, ptr %t168, ptr %t169, i32 %t170)
+  %t172 = load i32, ptr %line.addr, align 4
+  %t173 = call ptr @parse-type-from-node(ptr %t171, i32 %t172)
+  ret ptr %t173
 cond.fall8:
   br label %cond.end8
 cond.end8:
@@ -30933,9 +30979,9 @@ cond.join2.0:
 cond.fall2:
   br label %cond.end2
 cond.end2:
-  %t139 = load i32, ptr %gi.addr.11, align 4
-  %t140 = add nsw i32 %t139, 1
-  store i32 %t140, ptr %gi.addr.11, align 4
+  %t174 = load i32, ptr %gi.addr.11, align 4
+  %t175 = add nsw i32 %t174, 1
+  store i32 %t175, ptr %gi.addr.11, align 4
   br label %while.cond1
 while.end1:
   ret ptr null
