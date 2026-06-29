@@ -242,6 +242,36 @@ Non-unit-stride loops and the `scope-lookup` reverse scan were left
 as-is per the leave-alone list. 136 tests pass; **`make bootstrap` is a
 byte-identical fixed point** (`stage1.ll == stage2.ll`).
 
+### R3 Batch 2 — `src/generics.nuc` counted-loop cluster (2026-06-29)
+
+**Batch 2 complete.** Converted 12 functions' counted `while` scans to
+`dotimes` (same-shape swaps; the only IR delta is the `dotimes` init
+`(* n 0)` adopting the count's type — clang folds it, and both bootstrap
+stages share the change so the fixed point holds):
+
+- `generic-remove-matching-user-method` (first/scan loop only — the
+  `(< (+ j 1) …)` in-place compaction loop is LEAVE-ALONE)
+- `init-generics` (registry scan over `(count g-binops)`)
+- `params-type-eq`, `mangle-fn-name`, `generic-find-method-exact`,
+  `generic-binds-for` (method scan + tyvar/spellings scan),
+  `generic-resolve` (tier-0/tier-1/tier-2 + nested arg-adapt scans),
+  `operator-user-resolve` (exact + widen scans), `unify-tpat`,
+  `valid-resolve-type` (widen + generic-template scans),
+  `proto-sigs-resolve`, `tmpl-conformance-check-one` (4 scans: null-init,
+  arg-seed, bound-recovery with early return, binding substitution)
+
+Leave-alone list respected: `finalize-generics`, `register-generic-defn`,
+`recover-assoc-into`, `drain-mono-worklist`, `derive-closure-conformance`,
+`emit-extend`, and the `node-type` family are untouched. 136 tests pass;
+byte-identical bootstrap.
+
+**Gotcha hit:** a `(return X)` accidentally left inside the `dotimes`
+body (one close-paren short on the last in-loop statement) silently
+breaks lookups — the function returns on the first non-matching
+iteration instead of after the loop. The IR signature is a missing
+`inc!`/`br-loop-back` just before a spurious `ret`. Documented in
+[functional-refactor.md](stage13/functional-refactor.md) §R3.
+
 ---
 
 ## Stage 12 N9 — Docs, examples, close-out (2026-06-22)
