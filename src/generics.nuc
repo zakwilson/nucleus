@@ -1470,7 +1470,20 @@
                         (let (ridx:i32 (tyvar-index-of (-> rnode (cast ptr:Node _) (_ s))
                                                        (m2 tyvars) (m2 num-tyvars)))
                           (when (>= ridx 0) (return (aref (cast ptr:ptr bound) ridx)))))
-                      (return (parse-type-from-node rnode line)))))))))))
+                      ; A parametric return type — e.g. (Maybe T) — is a NODE-CELL
+                      ; that still mentions the method's tyvars. Substitute each
+                      ; tyvar with its bound concrete spelling before parsing, so
+                      ; `(Maybe T)` with T:=ptr parses as `(Maybe ptr)` rather than
+                      ; failing with "unknown type: T".
+                      (let (ntv:i32 (m2 num-tyvars)
+                            spellings:ptr (arena-alloc
+                                            (* (cast i64 (+ ntv 1)) (ptr-bytes))))
+                        (dotimes (si ntv)
+                          (aset! (cast ptr:ptr spellings) si
+                                 (type-spelling (aref (cast ptr:ptr bound) si))))
+                        (return (parse-type-from-node
+                                  (subst-tyvars-node rnode (m2 tyvars) spellings ntv)
+                                  line))))))))))))
     (return null)))
 
 ; Is this head one of the core special forms (mirrors emit-list's dispatch)?
