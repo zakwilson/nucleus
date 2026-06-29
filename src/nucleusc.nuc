@@ -1182,10 +1182,8 @@
 ; (ref (Vector ptr)) accumulator filled by test-true/false-nonnull; the drain
 ; deferral makes the parametric type safe in this signature (see make-vec).
 (defn narrow-names:void (scope:ref:Scope (names (ref (Vector ptr))))
-  (let (i:usize (cast usize 0))
-    (while (< i (count names))
-      (narrow-apply scope (invoke names i))
-      (set! i (+ i (cast usize 1))))))
+  (dotimes (i (count names))
+    (narrow-apply scope (invoke names i))))
 
 ; Conservatively kill narrows for any textual (set! x ...) target inside `n` —
 ; run before a loop body emits, so a narrow established outside the loop can't
@@ -1767,9 +1765,8 @@
   (let (n:i64 (strlen prefix)
         ; Worst case every char becomes `__` (2 bytes), plus the NUL.
         s:ptr (arena-alloc (+ (* n (cast i64 2)) (cast i64 1)))
-        i:i64 (cast i64 0)
         o:i64 (cast i64 0))
-    (while (< i n)
+    (dotimes (i n)
       (let (c:i32 (bit-and (cast i32 (aref (cast ptr:i8 prefix) i)) 255)
             is-digit:i1 (!= (isdigit c) 0)
             is-lower:i1 (and (>= c 97) (<= c 122))
@@ -1785,8 +1782,7 @@
           ok
             (do (aset! (cast ptr:i8 s) o (cast i8 c)) (set! o (+ o (cast i64 1))))
           true
-            (do (aset! (cast ptr:i8 s) o (cast i8 95)) (set! o (+ o (cast i64 1))))))
-      (set! i (+ i (cast i64 1))))
+            (do (aset! (cast ptr:i8 s) o (cast i8 95)) (set! o (+ o (cast i64 1)))))))
     (aset! (cast ptr:i8 s) o (cast i8 0))
     (return s)))
 
@@ -1794,12 +1790,10 @@
 ; (interned) namespace `ns`. Set by `set-ir-prefix`. Keys compare by pointer
 ; identity; a re-set overwrites the prior value (REPL re-entry, second directive).
 (defn ns-ir-prefix-set:void (ns:ptr prefix:ptr)
-  (let (i:i32 0)
-    (while (< i g-num-ns-prefix)
-      (when (= (aref (cast ptr:ptr g-ns-prefix-keys) i) ns)
-        (aset! (cast ptr:ptr g-ns-prefix-vals) i prefix)
-        (return))
-      (inc! i)))
+  (dotimes (i g-num-ns-prefix)
+    (when (= (aref (cast ptr:ptr g-ns-prefix-keys) i) ns)
+      (aset! (cast ptr:ptr g-ns-prefix-vals) i prefix)
+      (return)))
   (when (= g-num-ns-prefix g-cap-ns-prefix)
     (let (nc:i32 8)
       (when (!= g-cap-ns-prefix 0) (set! nc (* g-cap-ns-prefix 2)))
@@ -1817,11 +1811,9 @@
 
 ; The recorded ir-prefix for (interned) namespace `ns`, or null if none was set.
 (defn ns-ir-prefix-get:ptr (ns:ptr)
-  (let (i:i32 0)
-    (while (< i g-num-ns-prefix)
-      (when (= (aref (cast ptr:ptr g-ns-prefix-keys) i) ns)
-        (return (aref (cast ptr:ptr g-ns-prefix-vals) i)))
-      (inc! i)))
+  (dotimes (i g-num-ns-prefix)
+    (when (= (aref (cast ptr:ptr g-ns-prefix-keys) i) ns)
+      (return (aref (cast ptr:ptr g-ns-prefix-vals) i))))
   (return null))
 
 ; The effective ir-prefix for namespace `ns` (decision 7):
@@ -1867,12 +1859,10 @@
               op ((cast ptr:StructDef sd) name)))))
 
 (defn struct-field-index:i32 (sd:ptr fname:ptr)
-  (let (sdd:ptr:StructDef (cast ptr:StructDef sd)
-        i:i32 0)
-    (while (< i (sdd num-fields))
+  (let (sdd:ptr:StructDef (cast ptr:StructDef sd))
+    (dotimes (i (sdd num-fields))
       (when (= (aref (cast ptr:ptr (sdd field-names)) i) fname)
-        (return i))
-      (inc! i))
+        (return i)))
     (return -1)))
 
 ; Emit `getelementptr + load` of field `idx` from the pointer-to-struct value
@@ -2087,30 +2077,26 @@
 ; only runs when exactly one tier-1 candidate is found.
 (defn generic-resolve-nullable:?ptr:Method (g:ptr argtypes:ptr nargs:i32 line:i32)
   (let (gg:ptr:Generic (cast ptr:Generic g)
-        found:?ptr:Method null
-        i:i32 0)
+        found:?ptr:Method null)
     ; tier 0: exact concrete (METHOD-USER) match.
-    (while (< i (gg num-methods))
+    (dotimes (i (gg num-methods))
       (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (gg methods)) i)))
         (when (and (= (m kind) METHOD-USER)
                    (= (m num-params) nargs)
                    (!= (params-type-eq (m param-types) argtypes nargs) 0))
-          (set! found (cast ptr m))))
-      (inc! i))
+          (set! found (cast ptr m)))))
     (when (!= found null) (return found))
     ; tier 1: bounded-generic templates — bind the tyvars then check &where.
     (let (cand:ptr null
           cand-bound:ptr null
-          ncand:i32 0
-          j:i32 0)
-      (while (< j (gg num-methods))
+          ncand:i32 0)
+      (dotimes (j (gg num-methods))
         (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (gg methods)) j)))
           (when (= (m kind) METHOD-GENERIC)
             (let (bound:ptr (arena-alloc (* (cast i64 (+ (m num-tyvars) 1)) (ptr-bytes))))
               (when (!= (generic-method-bind (cast ptr m) argtypes nargs bound) 0)
                 (when (!= (generic-constraints-ok (cast ptr m) bound line) 0)
-                  (do (set! cand (cast ptr m)) (set! cand-bound bound) (inc! ncand)))))))
-        (inc! j))
+                  (do (set! cand (cast ptr m)) (set! cand-bound bound) (inc! ncand))))))))
       (when (> ncand 1)
         (die-at line (fmt-s "ambiguous generic match for '%s'" (gg name))))
       (when (= ncand 1)
@@ -2128,9 +2114,8 @@
 ; a throwaway bound array. Returns 1 on the first match, else 0.
 (defn generic-has-receiver-method:i32 (g:ptr ct:ptr)
   (when (= g null) (return 0))
-  (let (gg:ptr:Generic (cast ptr:Generic g)
-        i:i32 0)
-    (while (< i (gg num-methods))
+  (let (gg:ptr:Generic (cast ptr:Generic g))
+    (dotimes (i (gg num-methods))
       (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (gg methods)) i)))
         (when (> (m num-params) 0)
           (if (= (m kind) METHOD-USER)
@@ -2143,12 +2128,10 @@
                   bound:ptr (arena-alloc (* (cast i64 (+ ntv 1)) (ptr-bytes)))
                   ptn:ptr (binding-type-node (node-at params-node 0)))
               (when (!= ptn null)
-                (let (k:i32 0)
-                  (while (< k ntv) (aset! (cast ptr:ptr bound) k null) (inc! k)))
+                (dotimes (k ntv) (aset! (cast ptr:ptr bound) k null))
                 (when (!= (unify-tpat ptn ct (m tyvars) ntv bound
                                       (-> (m body) (cast ptr:Node _) (_ line))) 0)
-                  (return 1)))))))
-      (inc! i))
+                  (return 1))))))))
     (return 0)))
 
 ; Resolve `(get callee selector)` for an already-emitted callee value, splitting
@@ -2916,13 +2899,11 @@
 ; emits that switch, a with-managed union with Drop-conforming arms is
 ; rejected unless the union itself conforms to Drop (the manual tag switch).
 (defn union-drop-arm:ptr (ud:ptr)
-  (let (udd:ptr:UnionDef (cast ptr:UnionDef ud)
-        i:i32 0)
-    (while (< i (udd num-arms))
+  (let (udd:ptr:UnionDef (cast ptr:UnionDef ud))
+    (dotimes (i (udd num-arms))
       (let (nf:i32 (aref (cast ptr:i32 (udd arm-nfields)) i)
-            ftypes:ptr (aref (cast ptr:ptr (udd arm-ftypes)) i)
-            j:i32 0)
-        (while (< j nf)
+            ftypes:ptr (aref (cast ptr:ptr (udd arm-ftypes)) i))
+        (dotimes (j nf)
           (let (ft:ptr:Type (cast ptr:Type (aref (cast ptr:ptr ftypes) j)))
             (when (and (= (ft kind) TY-PTR) (!= (ft elem) null))
               (let (et:ptr:Type (cast ptr:Type (ft elem)))
@@ -2930,9 +2911,7 @@
                            (!= (et sdef) null)
                            (!= (conformance-lookup
                                 ((cast ptr:StructDef (et sdef)) name) "Drop") 0))
-                  (return (aref (cast ptr:ptr (udd arm-names)) i))))))
-          (inc! j)))
-      (inc! i))
+                  (return (aref (cast ptr:ptr (udd arm-names)) i)))))))))
     (return null)))
 
 ; (defer expr) — register expr as an ad-hoc cleanup on the enclosing binding
@@ -3849,11 +3828,9 @@
 
 ; Memo lookup: the already-emitted vtable symbol for interned `key`, or null.
 (defn vtable-memo-lookup:ptr (key:ptr)
-  (let (i:i32 0)
-    (while (< i g-vtable-count)
-      (when (= (aref (cast ptr:ptr g-vtable-keys) i) key)
-        (return (aref (cast ptr:ptr g-vtable-names) i)))
-      (inc! i)))
+  (dotimes (i g-vtable-count)
+    (when (= (aref (cast ptr:ptr g-vtable-keys) i) key)
+      (return (aref (cast ptr:ptr g-vtable-names) i))))
   (return null))
 
 ; Record (key → vtable-symbol), growing the parallel arrays (mirrors fnty-intern).
@@ -4069,12 +4046,10 @@
               np:i32 (bt num-params))
           (when (!= (- (m num-params) 1) np)
             (die-at line "BoxedFn: closure takes a different number of arguments than the slot's signature"))
-          (let (k:i32 0)
-            (while (< k np)
-              (when (= (type-eq (aref (cast ptr:ptr (m param-types)) (+ k 1))
-                                (aref (cast ptr:ptr (bt params)) k)) 0)
-                (die-at line "BoxedFn: closure parameter type does not match the slot's signature"))
-              (inc! k)))
+          (dotimes (k np)
+            (when (= (type-eq (aref (cast ptr:ptr (m param-types)) (+ k 1))
+                              (aref (cast ptr:ptr (bt params)) k)) 0)
+              (die-at line "BoxedFn: closure parameter type does not match the slot's signature")))
           (when (= (type-eq (m ret-type) (bt ret)) 0)
             (die-at line "BoxedFn: closure return type does not match the slot's signature"))
           (return 1))))
@@ -4470,15 +4445,13 @@
     (when (= proto null) (return -1))
     (let (pp:?ptr:Protocol (protocol-lookup proto))
       (when (= pp null) (return -1))
-      (let (ppp:ptr:Protocol (cast ptr:Protocol pp)
-            i:i32 0)
-        (while (< i (ppp num-sigs))
+      (let (ppp:ptr:Protocol (cast ptr:Protocol pp))
+        (dotimes (i (ppp num-sigs))
           (let (sig:ptr (aref (cast ptr:ptr (ppp sigs)) i)
                 name-node:ptr (node-at sig 0)
                 mname:ptr null)
             (extract-name-and-type name-node (cast ptr:ptr (addr-of mname)) 0)
-            (when (and (!= mname null) (= (strcmp mname gname) 0)) (return i)))
-          (inc! i))
+            (when (and (!= mname null) (= (strcmp mname gname) 0)) (return i))))
         (return -1)))))
 
 ; TE-6: forward a `(dyn P)` method call `(method box args…)` through the box's
@@ -5661,13 +5634,11 @@
 ; ============================================================
 
 (defn lbl-find:?ptr:LabelEntry (name:ptr)
-  (let (i:usize (cast usize 0))
-    (while (< i (count g-lbl-tbl))
-      (let (e:ptr:LabelEntry (cast ptr:LabelEntry (invoke g-lbl-tbl i)))
-        (when (= (strcmp (e name) name) 0)
-          (return (cast ptr e))))
-      (set! i (+ i (cast usize 1))))
-    (return null)))
+  (dotimes (i (count g-lbl-tbl))
+    (let (e:ptr:LabelEntry (cast ptr:LabelEntry (invoke g-lbl-tbl i)))
+      (when (= (strcmp (e name) name) 0)
+        (return (cast ptr e)))))
+  (return null))
 
 (defn lbl-add-occurrence:void (name:ptr)
   (let (e:ptr:LabelEntry (cast ptr:LabelEntry (lbl-find name)))
@@ -5792,12 +5763,10 @@
 ; ============================================================
 
 (defn struct-field-idx:i32 (sd:ptr name:ptr)
-  (let (sdef:ptr:StructDef (cast ptr:StructDef sd)
-        i:i32 0)
-    (while (< i (sdef num-fields))
+  (let (sdef:ptr:StructDef (cast ptr:StructDef sd))
+    (dotimes (i (sdef num-fields))
       (when (= (strcmp (aref (cast ptr:ptr (sdef field-names)) i) name) 0)
-        (return i))
-      (inc! i))
+        (return i)))
     (return -1)))
 
 ; (.& p field) -> pointer to the field within struct *p.
@@ -6066,13 +6035,11 @@
         (die-at ((cast ptr:Node call) line)
                 (fmt-s "macro: wrong number of args" (cast i64 0)))))
     (let (args-arr:ptr (malloc (* (cast i64 (mdef num-params)) (ptr-bytes)))
-          regular-params:i32 (mdef num-params)
-          i:i32 0)
+          regular-params:i32 (mdef num-params))
       (when (!= (mdef variadic) 0)
         (set! regular-params (- (mdef num-params) 1)))
-      (while (< i regular-params)
-        (aset! (cast ptr:ptr args-arr) i (node-at (cast ptr:Node call) (+ i 1)))
-        (inc! i))
+      (dotimes (i regular-params)
+        (aset! (cast ptr:ptr args-arr) i (node-at (cast ptr:Node call) (+ i 1))))
       (when (!= (mdef variadic) 0)
         (let (rest-list:ptr null
               rj:i32 nargs)
@@ -6757,12 +6724,10 @@
           (conj g-enumdefs (cast ptr ed)))))))
 
 (defn enumdef-lookup:?ptr:EnumDef (name:ptr)
-  (let (i:i32 0)
-    (while (< i (cast i32 (count g-enumdefs)))
-      (let (ed:ptr:EnumDef (cast ptr:EnumDef (invoke g-enumdefs (cast usize i))))
-        (when (= (ed name) name)
-          (return (cast ptr ed))))
-      (inc! i)))
+  (dotimes (i (cast i32 (count g-enumdefs)))
+    (let (ed:ptr:EnumDef (cast ptr:EnumDef (invoke g-enumdefs (cast usize i))))
+      (when (= (ed name) name)
+        (return (cast ptr ed)))))
   (return null))
 
 (defn emit-defstruct:void (call:ptr)
@@ -7723,23 +7688,19 @@
 ; ============================================================
 
 (defn emit-string-table:void (out:ptr)
-  (let (i:i32 0)
-    (while (< i (cast i32 (count g-strs)))
-      (let (sl:ptr:StrLit (cast ptr:StrLit (invoke g-strs (cast usize i)))
-            ir-len:i32 (+ (sl len) 1))
-        (fprintf out "@.str.%d = private unnamed_addr constant [%d x i8] c\""
-          (sl id) ir-len)
-        (let (j:i32 0)
-          (while (< j (sl len))
-            (let (c:i32 (char-at (sl bytes) (cast i64 j)))
-              (if (or (= c 92)
-                      (= c 34)
-                      (< c 32) (>= c 127))
-                (fprintf out "\\%02X" c)
-                (fputc c out)))
-            (inc! j)))
-        (fprintf out "\\00\", align 1\n"))
-      (inc! i)))
+  (dotimes (i (cast i32 (count g-strs)))
+    (let (sl:ptr:StrLit (cast ptr:StrLit (invoke g-strs (cast usize i)))
+          ir-len:i32 (+ (sl len) 1))
+      (fprintf out "@.str.%d = private unnamed_addr constant [%d x i8] c\""
+        (sl id) ir-len)
+      (dotimes (j (sl len))
+        (let (c:i32 (char-at (sl bytes) (cast i64 j)))
+          (if (or (= c 92)
+                  (= c 34)
+                  (< c 32) (>= c 127))
+            (fprintf out "\\%02X" c)
+            (fputc c out))))
+      (fprintf out "\\00\", align 1\n")))
   (when (!= (count g-strs) (cast usize 0)) (fputc 10 out)))
 
 ; Stage 10 errors: the deferror descriptor table (design/stage10/errors.md §8).
@@ -8548,12 +8509,10 @@
 (defn try-import-path:ptr (filename:ptr)
   ; Try directory of the current source file
   (let (pathlen:i64 (cast i64 (strlen g-source-path))
-        last-slash:i64 (cast i64 -1)
-        i:i64 (cast i64 0))
-    (while (< i pathlen)
+        last-slash:i64 (cast i64 -1))
+    (dotimes (i pathlen)
       (when (= (char-at g-source-path i) 47)
-        (set! last-slash i))
-      (set! i (+ i (cast i64 1))))
+        (set! last-slash i)))
     (when (>= last-slash (cast i64 0))
       (let (dir:ptr (strndup g-source-path last-slash)
             candidate:ptr (fmt-2s "%s/%s" dir filename))
@@ -8564,12 +8523,10 @@
     (when (!= (file-exists candidate) 0)
       (return candidate)))
   ; Try -I include paths
-  (let (j:i32 0)
-    (while (< j g-num-include-paths)
-      (let (candidate:ptr (fmt-2s "%s/%s" (aref (cast ptr:ptr g-include-paths) j) filename))
-        (when (!= (file-exists candidate) 0)
-          (return candidate)))
-      (inc! j)))
+  (dotimes (j g-num-include-paths)
+    (let (candidate:ptr (fmt-2s "%s/%s" (aref (cast ptr:ptr g-include-paths) j) filename))
+      (when (!= (file-exists candidate) 0)
+        (return candidate))))
   ; Try $NUCLEUS_LIB (a single directory; lets a custom-PREFIX install be found)
   (let (libenv:ptr (getenv "NUCLEUS_LIB"))
     (when (!= libenv null)
@@ -9359,10 +9316,8 @@
             (let (cmd-bufp:ptr null  cmd-sizep:i64 (cast i64 0)
                   cmds:ptr (open_memstream (addr-of cmd-bufp) (cast ptr (addr-of cmd-sizep))))
               (fprintf cmds "clang %s -o %s" obj-path out-path)
-              (let (j:i32 0)
-                (while (< j g-num-link-args)
-                  (fprintf cmds " %s" (aref (cast ptr:ptr g-link-args) j))
-                  (inc! j)))
+              (dotimes (j g-num-link-args)
+                (fprintf cmds " %s" (aref (cast ptr:ptr g-link-args) j)))
               (fclose cmds)
               (let (rc2:i32 (system cmd-bufp))
                 (free cmd-bufp)
