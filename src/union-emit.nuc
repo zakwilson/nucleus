@@ -1312,6 +1312,110 @@
               (.set! rv taint result-taint)
               (return rv))))))))
 
+; (match m ((some p) …) (none …)) over a niche-MAYBE value (unions.md §6
+; rule 2) — the §3 switch-on-tag has no tag here, so branch on a null test.
+; The some clause binds p = r typed (ref T) (the niche elem); the none clause
+; has no binder. Parallels the PTR-ERRPTR ok/err match lowering, with the
+; null pointer as the discriminant.
+(defn emit-match-niche-maybe:ref:Val (call:ptr scope:ref:Scope sv:ptr elem:ptr)
+  (let (cc:ptr:Node (cast ptr:Node call)
+        rval:ptr ((cast ptr:Val sv) val)
+        staint:ptr ((cast ptr:Val sv) taint)
+        nclauses:i32 (- (node-len cc) 2)
+        some-body:ptr null   some-bind:ptr null
+        none-body:ptr null
+        def-body:ptr null
+        ci:i32 0)
+    ; Resolve the (at most two) arm clauses + optional _ default.
+    (while (< ci nclauses)
+      (let (clause:ptr:Node (cast ptr:Node (node-at cc (+ ci 2))))
+        (when (or (!= (clause kind) NODE-CELL) (< (node-len (cast ptr clause)) 2))
+          (die-at (clause line) "match: clause must be (pattern body...)"))
+        (let (pat:ptr:Node (cast ptr:Node (node-at (cast ptr clause) 0)))
+          (if (and (= (pat kind) NODE-SYM) (= (pat s) "_"))
+            (set! def-body ((cast ptr:Node clause) cdr))
+            (let (an:ptr:Node (if (= (pat kind) NODE-SYM) pat
+                                (cast ptr:Node (node-at (cast ptr pat) 0))))
+              (when (!= (an kind) NODE-SYM)
+                (die-at (an line) "match: arm name must be a symbol"))
+              (let (binders:ptr (if (= (pat kind) NODE-CELL) (cast ptr ((cast ptr:Node pat) cdr)) null))
+                (if (= (strcmp (an s) "some") 0)
+                  (do (set! some-body ((cast ptr:Node clause) cdr)) (set! some-bind binders))
+                  (if (= (strcmp (an s) "none") 0)
+                    (do
+                      (when (and (!= binders null) (!= (-> (cast ptr:Node binders) (_ car)) null))
+                        (die-at (an line) "match: arm 'none' carries no payload — remove its binders"))
+                      (set! none-body ((cast ptr:Node clause) cdr)))
+                    (die-at (an line)
+                      (fmt-s "match: niche (Maybe (ref T)) has arms `some`/`none`, not '%s'" (an s))))))))))
+      (inc! ci))
+    ; Exhaustiveness: cover both arms, or a _ default (unions.md §4).
+    (when (= def-body null)
+      (when (= some-body null) (die-at (cc line) "match: non-exhaustive — missing arm 'some' (add it or a _ default)"))
+      (when (= none-body null) (die-at (cc line) "match: non-exhaustive — missing arm 'none' (add it or a _ default)")))
+    ; A two-block diamond joined by a phi — cond's cross-branch typing applied
+    ; across the some/none arms.
+    (let (cmp:ptr (new-tmp)
+          id:i32 (new-label-id)
+          none-lbl:ptr (fmt-i32 "match.none%d" id)
+          some-lbl:ptr (fmt-i32 "match.some%d" id)
+          end-lbl:ptr (fmt-i32 "match.end%d" id)
+          (vals (ref (Vector ptr))) (make-vec)
+          (preds (ref (Vector ptr))) (make-vec)
+          rtbox:ptr (arena-alloc (ptr-bytes))
+          ttbox:ptr (arena-alloc (ptr-bytes)))
+      (aset! (cast ptr:ptr rtbox) 0 null)
+      (aset! (cast ptr:ptr ttbox) 0 null)
+      ; Discriminant: null = none, non-null = some.
+      (fprintf g-body-stream "  %s = icmp eq ptr %s, null\n" cmp rval)
+      (fprintf g-body-stream "  br i1 %s, label %%%s, label %%%s\n" cmp none-lbl some-lbl)
+      ; --- none arm: no binder, run the none (or default) body ---
+      (fprintf g-body-stream "%s:\n" none-lbl)
+      (set! g-block-term 0)
+      (let (inner:ref:Scope (scope-new scope))
+        (emit-niche-match-arm (if (!= none-body null) none-body def-body) inner
+          vals preds rtbox ttbox end-lbl id 0))
+      ; --- some arm: bind p = r typed (ref T), run the some (or default) body ---
+      (fprintf g-body-stream "%s:\n" some-lbl)
+      (set! g-block-term 0)
+      (let (inner:ref:Scope (scope-new scope))
+        (when (and (!= some-bind null) (!= (-> (cast ptr:Node some-bind) (_ car)) null))
+          (let (b:ptr:Node (cast ptr:Node ((cast ptr:Node some-bind) car)))
+            (when (and (= (b kind) NODE-SYM) (!= (b s) "_"))
+              (let (rt:ptr:Type (cast ptr:Type (make-type TY-PTR))
+                    slot:ptr (fmt-sd "%%%s.addr.%d" (b s) g-tmp))
+                (inc! g-tmp)
+                (.set! rt elem elem)
+                (.set! rt pkind PTR-REF)
+                (fprintf g-entry-stream "  %s = alloca ptr, align 8\n" slot)
+                (fprintf g-body-stream "  store ptr %s, ptr %s, align 8\n" rval slot)
+                (let (sym:ref:Sym (scope-define inner (b s) (cast ptr rt) slot 1))
+                  (.set! sym taint staint))))))
+        (emit-niche-match-arm (if (!= some-body null) some-body def-body) inner
+          vals preds rtbox ttbox end-lbl id 1))
+      ; --- join ---
+      (fprintf g-body-stream "%s:\n" end-lbl)
+      (set! g-block-term 0)
+      (let (result-type:ptr (aref (cast ptr:ptr rtbox) 0)
+            result-taint:ptr (aref (cast ptr:ptr ttbox) 0))
+        (when (= (count vals) (cast usize 0))
+          (fprintf g-body-stream "  unreachable\n")
+          (set! g-block-term 1))
+        (if (or (= result-type null) (= ((cast ptr:Type result-type) kind) TY-VOID))
+          (return (alloc-val ty-void null))
+          (let (tmp:ptr (new-tmp) ty-ir:ptr (type-to-ir result-type)
+                k:usize (cast usize 0))
+            (fprintf g-body-stream "  %s = phi %s " tmp ty-ir)
+            (while (< k (count vals))
+              (when (> k (cast usize 0)) (fprintf g-body-stream ", "))
+              (fprintf g-body-stream "[ %s, %%%s ]"
+                (invoke vals k) (invoke preds k))
+              (set! k (+ k (cast usize 1))))
+            (fprintf g-body-stream "\n")
+            (let (rv:ref:Val (alloc-val result-type tmp))
+              (.set! rv taint result-taint)
+              (return rv))))))))
+
 ; One arm body of a niche-ERRPTR match: run the forms (implicit do), apply
 ; cond's cross-branch typing into rtbox/ttbox (single-element ptr arrays), and
 ; (unless the block terminated) branch to a per-arm join feeding the end phi.
@@ -1357,6 +1461,9 @@
           st:ptr:Type (cast ptr:Type (sv type)))
       (when (= (niche-layout-of (sv type)) LAYOUT-NICHE-ERRPTR)
         (return (emit-match-niche-errptr call scope (cast ptr sv)
+                  (-> (cast ptr:Type (sv type)) (_ elem)))))
+      (when (= (niche-layout-of (sv type)) LAYOUT-NICHE-MAYBE)
+        (return (emit-match-niche-maybe call scope (cast ptr sv)
                   (-> (cast ptr:Type (sv type)) (_ elem)))))
       (when (!= (is-int-type (sv type)) 0)
         (return (emit-match-enum call scope (cast ptr sv))))
