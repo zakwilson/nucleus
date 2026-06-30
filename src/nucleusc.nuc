@@ -618,9 +618,9 @@
     (let (pd:?ptr:ProgDefn (program-defn-lookup irn))
       (when (= pd null) (return))
       ; Dedup within this module.
-      (dotimes (i (count g-macro-decls))
-               (when (= (strcmp (invoke g-macro-decls (cast usize i)) irn)
-                        (cast i32 0))
+      (doseq (m g-macro-decls (VecIter ptr))
+               (when (= (strcmp m irn)
+                        0)
                      (return)))
       (conj g-macro-decls (intern-str irn))
       ; Variadic prototypes lower trivially (no struct args reach a macro body).
@@ -1086,8 +1086,8 @@
 ; Kill every live narrow (label join points — a backward goto re-enters).
 (defn narrow-kill-all:void ()
   (when (= g-nundo null) (return))
-  (dotimes (i (count g-nundo))
-    (let (u:ptr:NarrowUndo (cast ptr:NarrowUndo (invoke g-nundo (cast usize i))))
+  (doseq (n g-nundo (VecIter ptr))
+    (let (u:ptr:NarrowUndo (cast ptr:NarrowUndo n))
       (let (sym:?ptr:Sym (scope-lookup (u scope) (u name)))
         (when (and (!= sym null) (!= (sym ntype) null))
               (narrow-kill sym))))))
@@ -1178,8 +1178,8 @@
 ; (ref (Vector ptr)) accumulator filled by test-true/false-nonnull; the drain
 ; deferral makes the parametric type safe in this signature (see make-vec).
 (defn narrow-names:void (scope:ref:Scope (names (ref (Vector ptr))))
-  (dotimes (i (count names))
-    (narrow-apply scope (invoke names i))))
+  (doseq (n names (VecIter ptr))
+    (narrow-apply scope n)))
 
 ; Conservatively kill narrows for any textual (set! x ...) target inside `n` —
 ; run before a loop body emits, so a narrow established outside the loop can't
@@ -1366,9 +1366,8 @@
     (conj g-cast-rules (cast ptr cr))))
 
 (defn lookup-cast-rule:?ptr:CastRule (from:ptr to:ptr)
-  (dotimes (i (count g-cast-rules))
-           (let (cr:ptr:CastRule (cast ptr:CastRule
-                                       (invoke g-cast-rules (cast usize i))))
+  (doseq (rule g-cast-rules (VecIter ptr))
+           (let (cr:ptr:CastRule (cast ptr:CastRule rule))
              (when (and (!= (type-eq (cr from) from) 0)
                         (!= (type-eq (cr to) to) 0))
                    (return (cast ptr cr)))))
@@ -5586,8 +5585,8 @@
 ; ============================================================
 
 (defn lbl-find:?ptr:LabelEntry (name:ptr)
-  (dotimes (i (count g-lbl-tbl))
-    (let (e:ptr:LabelEntry (cast ptr:LabelEntry (invoke g-lbl-tbl i)))
+  (doseq (lbl g-lbl-tbl (VecIter ptr))
+    (let (e:ptr:LabelEntry (cast ptr:LabelEntry lbl))
       (when (= (strcmp (e name) name) 0)
         (return (cast ptr e)))))
   (return null))
@@ -6383,19 +6382,25 @@
 ; The kind currently associated with `name`, or NK-NONE. Highest-priority kind
 ; wins; a lower-priority definer will see the higher kind and report the clash.
 (defn name-existing-kind:i32 (name:ptr)
-  (when (!= (special-form-named (cast CStr name)) 0) (return NK-SPECIAL))
-  (when (!= (primitive-type-named (cast CStr name)) 0) (return NK-BUILTIN))
-  (dotimes (i (count g-structs))
-           (let (sd:ptr:StructDef (cast ptr:StructDef (invoke g-structs (cast usize i))))
-             (when (= (strcmp (sd name) name) 0) (return NK-TYPE))))
-  (when (!= (cast ptr (union-template-lookup name)) null) (return NK-TYPE))
-  
-  (dotimes (i (count g-macros))
-           (let (m:ptr:MacroDef (cast ptr:MacroDef (invoke g-macros (cast usize i))))
-             (when (= (strcmp (m name) name) 0) (return NK-MACRO))))
-  (dotimes (i (count g-generics))
-           (let (g:ptr:Generic (cast ptr:Generic (invoke g-generics (cast usize i))))
-             (when (= (strcmp (g name) name) 0) (return NK-FUNCTION))))
+  (when (!= (special-form-named (cast CStr name)) 0)
+        (return NK-SPECIAL))
+  (when (!= (primitive-type-named (cast CStr name)) 0)
+        (return NK-BUILTIN))
+  (doseq (struct g-structs (VecIter ptr))
+         (when (= ((cast ptr:StructDef struct) name)
+                  (cast CStr name))
+               (return NK-TYPE)))
+  (when (!= (cast ptr (union-template-lookup name)) null)
+        (return NK-TYPE))
+  (doseq (macro g-macros (VecIter ptr))
+         (when (= ((cast ptr:MacroDef macro) name)
+                  (cast CStr  name))
+               (return NK-MACRO)))
+  (doseq (generic g-generics (VecIter ptr))
+           (let (g:ptr:Generic (cast ptr:Generic generic))
+             (when (= ((cast ptr:Generic generic) name)
+                      name)
+                   (return NK-FUNCTION))))
   (let (sc:ptr:Scope (cast ptr:Scope g-globals))
     (dotimes (i (sc len))
       (let (sym:ptr:Sym (cast ptr:Sym (ptr+ (cast ptr:Sym (sc syms)) i)))
