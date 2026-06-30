@@ -117,3 +117,5 @@ Bindings like (g:ptr:Generic (cast ptr:Generic (invoke g-generics (cast usize i)
 Colon sugar might work for casts
 
 Invalid spelling — car:raw:Node (colon form) doesn't parse for a parameterized raw; it mistyped the Node fields. The valid spelling is the list form (car (raw Node)) (same as lib/vector.nuc:59 (data (raw ui8))).
+
+Numeric literals are not automatically conformed to the required type in some circumstances (maybe builtins, maybe C libs)
