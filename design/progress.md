@@ -318,6 +318,64 @@ policy). See [functional-refactor.md](stage13/functional-refactor.md) §R3.
 
 ---
 
+## Stage 13 — Functional refactor R4: library & examples (2026-06-30)
+
+**R4 done** ([functional-refactor.md](stage13/functional-refactor.md) §R4).
+Library and examples refactored to use the R1 combinators, `dotimes`, `doseq`,
+`doseq-iter`, `doseq-split`, and `memset` where they fit. 138 tests pass;
+bootstrap byte-identical (no refresh — examples don't affect the boot, and the
+lib/ changes are inert).
+
+**lib/ changes:**
+- `lib/strview.nuc`: `strview-char-count` counted loop → `dotimes`
+- `lib/string.nuc`: `string-push-bytes-raw` counted loop → `dotimes`
+- `lib/hashmap.nuc`: three state-zeroing loops (`hashmap-init`,
+  `hashmap-init-alloc`, `hashmap-resize`) → `memset` (matching `hashset.nuc` pattern)
+
+**lib/ evaluated, left alone:**
+- FNV hash folds (`strview-hash`, `hash:usize` CStr, `intern-hash`, `fnv1a-int`):
+  `reduce` over `ByteIter` does not resolve from lib/ code (closure conformances
+  aren't derived in library files); loops stay imperative.
+- hashset set-algebra (`union`/`difference`/`intersection`): walk raw internal
+  `states[]` arrays — probe-table internals, leave-alone per design doc.
+- UTF-8 validators (`string-push-str`, `string-from-view`, `string-from-cstr`):
+  stateful decode (variable `nbytes` advance per step), not a simple counted loop.
+- hash-table probe internals, iterator `next` bodies, parser/lexer state machines
+  in `reader.nuc`, `memmove`/capacity-doubling in `vector.nuc`: all leave-alone.
+
+**examples/ changes:**
+- Counted loops → `dotimes`: `hello.nuc`, `ifwhile.nuc`, `mutual.nuc`
+- Hand-rolled → combinators: `assoc-types.nuc` (`collect-all` → `into-iter`,
+  `sum-i32-iter` → `sum`, MapIter drive → `for-each`, Vector print → `for-each`);
+  `assoc-iter-return.nuc` (`count-coll` → `reduce`); `rest-defn.nuc` (`sum` →
+  `reduce` over `ListIter`, `print-each` → `for-each` over `ListIter`);
+  `entry-test.nuc` (HashMapEntryIter → `doseq-iter`)
+- Vector iteration → `doseq`: `boxedfn.nuc`, `dyn-protocol.nuc`,
+  `comb-transform.nuc`, `comb-order.nuc`
+- Cons-list walks → `doseq-iter` over `ListIter`: `list.nuc`, `quasiquote.nuc`
+- String-split done-flag loops → `doseq-split`: `string-split-test.nuc` (6 sites),
+  `split-iter-test.nuc`
+
+**New dogfood examples:**
+- `examples/comb-storage.nuc`: wires R1 closure-returning combinators
+  (`compose`/`partial`/`complement`/`constantly`) to a `(Vector (BoxedFn (i32) i32))`,
+  walks with `doseq`, invokes each box. Proves combinators compose with storable
+  closures end-to-end.
+- `examples/dyn-comb.nuc`: heterogeneous values behind `(dyn Render)` in a
+  `(Vector (dyn Render))`, walked with `doseq` dispatching the protocol method
+  through each box's vtable. Proves combinators compose with `(dyn P)` storage.
+
+**Surprises:**
+- `reduce`/`for-each`/etc. with closure operands do not resolve from lib/ files
+  (closure conformances aren't derived in library compilation context). The
+  combinators work from examples/ and from the compiler's src/ (which has full
+  generic/conformance machinery). This is a known limitation of the lib/
+  compilation path, not a combinator bug.
+- `sum` combinator name conflicts with user `sum` defn in `rest-defn.nuc` —
+  renamed to `sum-args`.
+
+---
+
 ## Stage 13 — Niche-encoded Maybe iterator integration (2026-06-29)
 
 **Iterator conversion complete.** The pointer-yielding iterators (`ListIter`,

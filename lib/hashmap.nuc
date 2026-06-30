@@ -86,11 +86,7 @@
           (when (= (cast ptr vbuf) null) (hashmap-oom))
           (let ((sbuf (raw ui8)) (alloc-handle-alloc ah init-cap (cast usize 1)))
             (when (= (cast ptr sbuf) null) (hashmap-oom))
-            ; Zero the states array so all buckets start as empty.
-            (let (i:usize (cast usize 0))
-              (while (< i init-cap)
-                (aset! (cast ptr:ui8 (cast ptr sbuf)) (cast i64 i) (cast ui8 0))
-                (set! i (+ i (cast usize 1)))))
+            (memset (cast ptr sbuf) 0 (cast i64 init-cap))
             (.set! m keys   kbuf)
             (.set! m vals   vbuf)
             (.set! m states sbuf)
@@ -113,11 +109,7 @@
           (when (= (cast ptr vbuf) null) (hashmap-oom))
           (let ((sbuf (raw ui8)) (alloc-handle-alloc ah init-cap (cast usize 1)))
             (when (= (cast ptr sbuf) null) (hashmap-oom))
-            ; Zero the states array so all buckets start as empty.
-            (let (i:usize (cast usize 0))
-              (while (< i init-cap)
-                (aset! (cast ptr:ui8 (cast ptr sbuf)) (cast i64 i) (cast ui8 0))
-                (set! i (+ i (cast usize 1)))))
+            (memset (cast ptr sbuf) 0 (cast i64 init-cap))
             (.set! m keys   kbuf)
             (.set! m vals   vbuf)
             (.set! m states sbuf)
@@ -141,11 +133,7 @@
         (when (= (cast ptr nv) null) (hashmap-oom))
         (let ((ns (raw ui8)) (alloc-handle-alloc ah new-cap (cast usize 1)))
           (when (= (cast ptr ns) null) (hashmap-oom))
-          ; Zero new states.
-          (let (zi:usize (cast usize 0))
-            (while (< zi new-cap)
-              (aset! (cast ptr:ui8 (cast ptr ns)) (cast i64 zi) (cast ui8 0))
-              (set! zi (+ zi (cast usize 1)))))
+          (memset (cast ptr ns) 0 (cast i64 new-cap))
           ; Rehash every occupied bucket from the old arrays into the new arrays.
           (let (mask:usize (- new-cap (cast usize 1))
                 old-kbuf:ptr:K (cast ptr:K (cast ptr (m keys)))

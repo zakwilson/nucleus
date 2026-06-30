@@ -1,11 +1,10 @@
 (import-use "stdio.h")
 
 (defn main:int ()
-  (let (i:int 1)
-    (while (< i 5)
-      (cond (< i 3)
-        (printf "small: %d\n" i)
+  (dotimes (i:i32 4)
+    (let (cur:i32 (+ i 1))
+      (cond (< cur 3)
+        (printf "small: %d\n" cur)
         true
-        (printf "big:   %d\n" i))
-      (inc! i)))
+        (printf "big:   %d\n" cur))))
   (return 0))

@@ -321,14 +321,12 @@
 ; Every non-continuation byte starts a new codepoint.
 (defn strview-char-count:usize ((sv (ref StrView)))
   (let (n:usize (cast usize 0)
-        i:usize (cast usize 0)
         len:usize (sv len)
         p:ptr:ui8 (sv data))
-    (while (< i len)
+    (dotimes (i:usize len)
       (let (b:ui8 (aref p (cast i64 i)))
         (when (!= (bit-and (cast ui32 b) (cast ui32 192)) (cast ui32 128))
-          (set! n (+ n (cast usize 1)))))
-      (set! i (+ i (cast usize 1))))
+          (set! n (+ n (cast usize 1))))))
     (return n)))
 
 ; strview-char-at — O(n): nth codepoint (0-indexed).

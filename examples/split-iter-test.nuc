@@ -76,10 +76,9 @@
           (set! iter-acc (+ iter-acc (cast i32 (aref (seg data) (cast i64 0)))))))
       (let (flag-acc:i32 0
             it2:SplitIter (strview-split sv sep))
-        (while (= (split-iter-done (addr-of it2)) 0)
-          (let (s:StrView (split-iter-next (addr-of it2)))
-            (when (> ((addr-of s) len) (cast usize 0))
-              (set! flag-acc (+ flag-acc (cast i32 (aref ((addr-of s) data) (cast i64 0))))))))
+        (doseq-split (s (addr-of it2))
+          (when (> (s len) (cast usize 0))
+            (set! flag-acc (+ flag-acc (cast i32 (aref (s data) (cast i64 0)))))))
         (printf "parity iter==flag: %d (%d)\n"
                 (cast i32 (if (= iter-acc flag-acc) 1 0)) iter-acc)))
     (free (cast ptr sep))

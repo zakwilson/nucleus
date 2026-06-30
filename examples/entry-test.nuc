@@ -31,15 +31,11 @@
     (let (it:(HashMapEntryIter i32 i32) (iter m)
           ksum:i32 0
           vsum:i32 0
-          n:i32 0
-          done:i32 0)
-      (while (= done 0)
-        (match (next (addr-of it))
-          ((some e)
-           (set! ksum (+ ksum ((addr-of e) key)))
-           (set! vsum (+ vsum ((addr-of e) val)))
-           (set! n (+ n 1)))
-          (none (set! done 1))))
+          n:i32 0)
+      (doseq-iter (e (addr-of it))
+        (set! ksum (+ ksum ((addr-of e) key)))
+        (set! vsum (+ vsum ((addr-of e) val)))
+        (set! n (+ n 1)))
       (printf "iter n=%d ksum=%d vsum=%d\n" n ksum vsum)))  ; iter n=3 ksum=6 vsum=60
 
   ; ---- 3. conj a HashMap via an Entry (Coll conj == assoc) ---------------
