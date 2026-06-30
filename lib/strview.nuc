@@ -70,6 +70,26 @@
     (return (if (= c 0) 1 0))))
 
 ; ---------------------------------------------------------------------------
+; S3: ByteIter — iterates raw bytes of a StrView in order.
+;
+; LIFETIME: buf aliases the StrView's buffer; the iterator must not outlive
+; the StrView that produced it.
+; ---------------------------------------------------------------------------
+(defstruct ByteIter
+  buf:(ptr ui8)
+  pos:usize
+  len:usize)
+
+(extend ByteIter (Iterator ui8))
+
+(defn (next (Maybe ui8)) ((self (ref ByteIter)))
+  (when (>= (self pos) (self len))
+    (return none))
+  (let (b:ui8 (aref (self buf) (cast i64 (self pos))))
+    (.set! self pos (+ (self pos) (cast usize 1)))
+    (return (some b))))
+
+; ---------------------------------------------------------------------------
 ; strview-hash — fold every byte of the view through FNV-1a (lib/hash.nuc's
 ; `fnv1a-byte`, seeded with the same offset basis the scalar/CStr conformances
 ; use). The fold runs in i64 and the result is cast to usize, matching the Hash
@@ -78,15 +98,12 @@
 ; StrView over a buffer with embedded NULs still hashes all of its bytes.
 ; ---------------------------------------------------------------------------
 (defn strview-hash:usize ((sv (ref StrView)))
-  (let (h:i64 -3750763034362895579
-        p:ptr:ui8 (sv data)
-        n:usize (sv len)
-        i:usize (cast usize 0))
-    (while (< i n)
-      (let (b:i64 (bit-and (cast i64 (aref p (cast i64 i))) (cast i64 255)))
-        (set! h (fnv1a-byte h b)))
-      (set! i (+ i (cast usize 1))))
-    (return (cast usize h))))
+  (let (it:ByteIter (strview-bytes sv))
+    (return (cast usize
+      (reduce (vfn (h:i64 b:ui8):i64
+                (fnv1a-byte h (cast i64 b)))
+              (cast i64 -3750763034362895579)
+              (addr-of it))))))
 
 ; ---------------------------------------------------------------------------
 ; CStr bridge.
@@ -138,26 +155,6 @@
   (let (la:StrView a
         lb:StrView b)
     (return (if (= (strview-eq (addr-of la) (addr-of lb)) 1) false true))))
-
-; ---------------------------------------------------------------------------
-; S3: ByteIter — iterates raw bytes of a StrView in order.
-;
-; LIFETIME: buf aliases the StrView's buffer; the iterator must not outlive
-; the StrView that produced it.
-; ---------------------------------------------------------------------------
-(defstruct ByteIter
-  buf:(ptr ui8)
-  pos:usize
-  len:usize)
-
-(extend ByteIter (Iterator ui8))
-
-(defn (next (Maybe ui8)) ((self (ref ByteIter)))
-  (when (>= (self pos) (self len))
-    (return none))
-  (let (b:ui8 (aref (self buf) (cast i64 (self pos))))
-    (.set! self pos (+ (self pos) (cast usize 1)))
-    (return (some b))))
 
 ; ---------------------------------------------------------------------------
 ; S3: CharIter — iterates UTF-8 codepoints of a StrView.
