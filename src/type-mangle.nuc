@@ -140,7 +140,7 @@
         acc:ptr null)
     (let (it:ListIter (list-iter segs))
       (doseq-iter (e (addr-of it))
-        (let (seg:ptr ((cast ptr:Node (cast ptr e)) s)
+        (let (seg:ptr ((cast ptr:Node e) s)
               idx:i32 (tyvar-index-of seg tyvars ntv)
               piece:ptr (if (>= idx 0) (aref (cast ptr:ptr spellings) idx) seg))
           (if (= acc null) (set! acc piece) (set! acc (fmt-2s "%s:%s" acc piece))))))

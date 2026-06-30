@@ -233,11 +233,9 @@ work correctly over `(VecIter ptr)` since niche-encoded Maybe supports `match`.
 For `(Vector ptr)` loops in `src/` compiler code, `dotimes` remains the
 idiomatic choice for simple iterations, but combinators are now viable.
 
-For Node* linked-list loops (AST cdr-lists): `ListIter` yields `i64` (a pointer
-cast to i64) because the bootstrap compiler's generic protocol resolution cannot
-yet infer niche-encoded return types from protocol conformances. Once the
-bootstrap is updated with improved generic protocol resolution, `ListIter` can
-be converted to yield `ptr` directly.
+For Node* linked-list loops (AST cdr-lists): `ListIter` yields `ptr` directly
+since niche-encoded `(Maybe ptr)` is now matchable. Recover each element with
+`(cast ptr:Node elem)`.
 
 ## `dotimes` conversion gotchas (R3 compiler-loop refactor)
 

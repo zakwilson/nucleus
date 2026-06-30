@@ -4,8 +4,8 @@
 ;   1. doseq-iter over a ListIter, printing each element's .i field.
 ;   2. reduce over a fresh ListIter, summing the .i fields (= 100).
 ;
-; The element is a Node* yielded as i64 (the tagged-Maybe encoding ListIter
-; uses); a consumer recovers it with (cast ptr:Node (cast ptr e)).
+; The element is a Node* yielded as ptr (niche-encoded Maybe ptr is matchable);
+; a consumer recovers it with (cast ptr:Node e).
 
 (import-use "stdio.h")
 (import-use "stdlib.h")
@@ -15,11 +15,11 @@
 (import-use "lib/list.nuc")
 (import-use iterator)
 
-; FoldFn: add the .i field of each list node (a Node*, arriving as an i64) to acc.
+; FoldFn: add the .i field of each list node (a Node*, arriving as a ptr) to acc.
 (defstruct SumNodeI dummy:i32)
-(extend SumNodeI (FoldFn i64 i64))
-(defn (fold i64) ((self (ref SumNodeI)) (acc i64) (x i64))
-  (let (n:ptr:Node (cast ptr:Node (cast ptr x)))
+(extend SumNodeI (FoldFn i64 ptr))
+(defn (fold i64) ((self (ref SumNodeI)) (acc i64) (x ptr))
+  (let (n:ptr:Node (cast ptr:Node x))
     (return (+ acc (n i)))))
 
 ; int-node — a fresh INT node carrying value v.
@@ -41,7 +41,7 @@
     ; 1. doseq-iter: print each element's .i field.
     (let (it:ListIter (list-iter lst))
       (doseq-iter (x (addr-of it))
-        (printf "elem=%lld\n" (cast i64 ((cast ptr:Node (cast ptr x)) i)))))
+        (printf "elem=%lld\n" ((cast ptr:Node x) i))))
     ; 2. reduce: sum the .i fields.
     (let ((sm (ref SumNodeI)) (alloca SumNodeI)
           (it (ref ListIter)) (alloca ListIter))

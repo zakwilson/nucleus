@@ -21,17 +21,17 @@
     (printf "%s" (cast CStr (cast ptr buf)))
     (free (cast ptr buf))))
 
-; FoldFn: sum segment byte-lengths. x is the i64-encoded (ref StrView).
+; FoldFn: sum segment byte-lengths. x is the ptr-encoded (ref StrView).
 (defstruct SegLenSum dummy:i32)
-(extend SegLenSum (FoldFn i64 i64))
-(defn (fold i64) ((self (ref SegLenSum)) (acc i64) (x i64))
-  (let (sv:ptr:StrView (cast ptr:StrView (cast ptr x)))
+(extend SegLenSum (FoldFn i64 ptr))
+(defn (fold i64) ((self (ref SegLenSum)) (acc i64) (x ptr))
+  (let (sv:ptr:StrView (cast ptr:StrView x))
     (return (+ acc (cast i64 (sv len))))))
 
 ; FoldFn: count segments (ignores the element).
 (defstruct CountSeg dummy:i32)
-(extend CountSeg (FoldFn i64 i64))
-(defn (fold i64) ((self (ref CountSeg)) (acc i64) (x i64))
+(extend CountSeg (FoldFn i64 ptr))
+(defn (fold i64) ((self (ref CountSeg)) (acc i64) (x ptr))
   (return (+ acc (cast i64 1))))
 
 (defn main:i32 ()
