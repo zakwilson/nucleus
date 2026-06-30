@@ -1,0 +1,40 @@
+; R4 dogfood — storable-closure combinators wired to heterogeneous storage.
+;
+; Builds a `(Vector (BoxedFn (i32) i32))` from the R1 closure-returning
+; combinators (compose, partial, complement, constantly), walks it with
+; `for-each`, and drops each box exactly once. Proves the combinators compose
+; with the type-erased storage path end-to-end.
+
+(import-use "stdio.h")
+(import-use allocator)
+(import-use coll)
+(import-use iterator)
+(import-use combinators)
+(import-use vector)
+
+(defn main:i32 ()
+  (with ((v (ref (Vector (BoxedFn (i32) i32)))) (alloca (Vector (BoxedFn (i32) i32))))
+    (vector-init v)
+    ; compose: x -> (x*2)+1
+    (let (c0:(BoxedFn (i32) i32)
+            (compose (fn (x:i32):i32 (+ x 1)) (fn (x:i32):i32 (* x 2))))
+      (conj v c0))
+    ; partial: x -> (+ 10 x)
+    (let (c1:(BoxedFn (i32) i32)
+            (partial (fn (a:i32 x:i32):i32 (+ a x)) 10))
+      (conj v c1))
+    ; complement: x -> !(x < 5)  (1 when x >= 5)
+    (let (c2:(BoxedFn (i32) i32)
+            (complement (fn (x:i32):i32 (< x 5))))
+      (conj v c2))
+    ; constantly: _ -> 42
+    (let (c3:(BoxedFn (i32) i32)
+            (constantly 42))
+      (conj v c3))
+    ; Walk, invoke each box.
+    (let (idx:i32 0)
+      (doseq (f v (VecIter (BoxedFn (i32) i32)))
+        (printf "vec[%d](3) = %d\n" idx (f 3))
+        (set! idx (+ idx 1)))))
+  (printf "done\n")
+  (return 0))

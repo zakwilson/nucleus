@@ -86,11 +86,9 @@
 ; Internal helper: append raw bytes (no UTF-8 check — caller ensures validity).
 ; ---------------------------------------------------------------------------
 (defn string-push-bytes-raw:void ((self (ref String)) (p (ptr ui8)) n:usize)
-  (let (v:(ref (Vector ui8)) (.& self bytes)
-        i:usize (cast usize 0))
-    (while (< i n)
-      (conj v (aref p (cast i64 i)))
-      (set! i (+ i (cast usize 1))))))
+  (let (v:(ref (Vector ui8)) (.& self bytes))
+    (dotimes (i:usize n)
+      (conj v (aref p (cast i64 i))))))
 
 ; ---------------------------------------------------------------------------
 ; Mutation methods.

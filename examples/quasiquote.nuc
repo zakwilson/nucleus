@@ -2,6 +2,7 @@
 ; Under the hood these use builtin @__cons and @__append runtime helpers.
 
 (import-use "stdio.h")
+(import-use iterator)
 
 (defstruct Node
   kind:i32 line:i32 i:i64 s:ptr car:ptr cdr:ptr)
@@ -9,17 +10,27 @@
 (defn first:ptr (n:ptr) (return ((cast ptr:Node n) car)))
 (defn rest:ptr  (n:ptr) (return ((cast ptr:Node n) cdr)))
 
+(defstruct ListIter cur:ptr)
+(extend ListIter (Iterator ptr))
+(defn (next (Maybe ptr)) ((self (ref ListIter)))
+  (let (c:ptr (self cur))
+    (when (= c null) (return none))
+    (.set! self cur (rest c))
+    (return (some (first c)))))
+
 (defn print-list:void (n:ptr)
-  (let (cur:ptr n)
-    (printf "(")
-    (while (!= cur null)
-      (let (node:ptr:Node (cast ptr:Node (first cur)))
-        (cond (= (node kind) 0) (printf "%ld" (node i))
-              (= (node kind) 2) (printf "%s" (node s))
-              true                 (printf "?")))
-      (set! cur (rest cur))
-      (cond (!= cur null) (printf " ")))
-    (printf ")\n")))
+  (let ((lit (ref ListIter)) (alloca ListIter))
+    (.set! lit cur n)
+    (let (first-item:i32 1)
+      (printf "(")
+      (doseq-iter (elem lit)
+        (let (node:ptr:Node (cast ptr:Node elem))
+          (when (= first-item 0) (printf " "))
+          (cond (= (node kind) 0) (printf "%ld" (node i))
+                (= (node kind) 2) (printf "%s" (node s))
+                true                 (printf "?"))
+          (set! first-item 0)))
+      (printf ")\n"))))
 
 (defn main:int ()
   (let (x:ptr 'hello
