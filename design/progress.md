@@ -327,15 +327,14 @@ bootstrap byte-identical (no refresh — examples don't affect the boot, and the
 lib/ changes are inert).
 
 **lib/ changes:**
-- `lib/strview.nuc`: `strview-char-count` counted loop → `dotimes`
+- `lib/strview.nuc`: `strview-char-count` counted loop → `dotimes`; `strview-hash`
+  FNV fold → `reduce` over `ByteIter` (requires `ByteIter` definition to precede
+  `strview-hash` in the file — moved the struct + conformance above the hash function)
 - `lib/string.nuc`: `string-push-bytes-raw` counted loop → `dotimes`
 - `lib/hashmap.nuc`: three state-zeroing loops (`hashmap-init`,
   `hashmap-init-alloc`, `hashmap-resize`) → `memset` (matching `hashset.nuc` pattern)
 
 **lib/ evaluated, left alone:**
-- FNV hash folds (`strview-hash`, `hash:usize` CStr, `intern-hash`, `fnv1a-int`):
-  `reduce` over `ByteIter` does not resolve from lib/ code (closure conformances
-  aren't derived in library files); loops stay imperative.
 - hashset set-algebra (`union`/`difference`/`intersection`): walk raw internal
   `states[]` arrays — probe-table internals, leave-alone per design doc.
 - UTF-8 validators (`string-push-str`, `string-from-view`, `string-from-cstr`):
@@ -366,11 +365,6 @@ lib/ changes are inert).
   through each box's vtable. Proves combinators compose with `(dyn P)` storage.
 
 **Surprises:**
-- `reduce`/`for-each`/etc. with closure operands do not resolve from lib/ files
-  (closure conformances aren't derived in library compilation context). The
-  combinators work from examples/ and from the compiler's src/ (which has full
-  generic/conformance machinery). This is a known limitation of the lib/
-  compilation path, not a combinator bug.
 - `sum` combinator name conflicts with user `sum` defn in `rest-defn.nuc` —
   renamed to `sum-args`.
 
