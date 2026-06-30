@@ -155,7 +155,7 @@
         (printf "(set-ir-prefix \"%s\")\n" override))))
   (let (it:ListIter (list-iter forms))
     (doseq-iter (fc (addr-of it))
-      (let (f:ptr:Node (cast ptr:Node (cast ptr fc)))
+      (let (f:ptr:Node (cast ptr:Node fc))
         (when (and (!= (cast ptr f) null)
                    (= (f kind) NODE-CELL)
                    (> (node-len (cast ptr f)) 0)
@@ -328,8 +328,8 @@
           (let (it:ListIter (list-iter arms))
             (doseq-iter (cur (addr-of it))
               (let (ctor:ptr:Node (cast ptr:Node
-                                    (union-ctor-form (name-node s)
-                                                     (cast ptr cur) (ff line))))
+                                     (union-ctor-form (name-node s)
+                                                      cur (ff line))))
                 ; Reshape the synthesized defn into a declare: same name node,
                 ; same params, no body.
                 (emit-nuch-declare-import
@@ -343,7 +343,7 @@
 (defn emit-nuch-import-forms:void (forms:ptr)
   (let (it:ListIter (list-iter forms))
     (doseq-iter (fc (addr-of it))
-      (let (f:ptr:Node (cast ptr:Node (cast ptr fc)))
+      (let (f:ptr:Node (cast ptr:Node fc))
         (when (and (!= (cast ptr f) null) (= (f kind) NODE-CELL)
                    (> (node-len (cast ptr f)) 0)
                    (-> f (node-at _ 0) (cast ptr:Node _) (_ kind) (= _ NODE-SYM)))
