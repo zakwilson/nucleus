@@ -24,6 +24,7 @@
 (import-use coll)
 (import-use iterator)
 (import-use vector)
+(import-use combinators)
 
 ; ---------------------------------------------------------------------------
 ; A function object mapping i32 -> i32 (doubles its input). Conforms to
@@ -46,12 +47,7 @@
 ; ---------------------------------------------------------------------------
 (defn collect-all:void ((it (ref I)) (out (ref (Vector E)))
                         &where ((Iterator E) I))
-  (let (done:i32 0)
-    (while (= done 0)
-      (let ((item (Maybe E)) (next it))
-        (match item
-          ((some v) (conj out v))
-          (none (set! done 1)))))))
+  (into-iter out it))
 
 ; ---------------------------------------------------------------------------
 ; Constrain case: ((Iterator i32) I) — the argument i32 is concrete, so the
@@ -60,14 +56,7 @@
 ; compile-time constraint-mismatch error.
 ; ---------------------------------------------------------------------------
 (defn sum-i32-iter:i32 ((it (ref I)) &where ((Iterator i32) I))
-  (let (acc:i32 0)
-    (let (done:i32 0)
-      (while (= done 0)
-        (let ((item (Maybe i32)) (next it))
-          (match item
-            ((some v) (set! acc (+ acc v)))
-            (none (set! done 1))))))
-    (return acc)))
+  (return (sum it)))
 
 ; ---------------------------------------------------------------------------
 ; Error case (compile-time only — no .nuc.fail harness).
@@ -89,12 +78,7 @@
     (.set! (.& mi source) end 4)
     (.set! (.& mi f) dummy 0)
     ; Drive the mapped iterator: 2 4 6 then none.
-    (let (done:i32 0)
-      (while (= done 0)
-        (let ((item (Maybe i32)) (next mi))
-          (match item
-            ((some v) (printf "%d\n" v))
-            (none (set! done 1)))))))
+    (for-each (vfn (v:i32):i32 (printf "%d\n" v) (return 0)) mi))
 
   ; collect-all: range [10,13) -> Vector i32, print elements.
   (with ((v (ref (Vector i32))) (alloca (Vector i32)))
@@ -103,10 +87,8 @@
       (.set! it start 10)
       (.set! it end 13)
       (collect-all it v))
-    (let (i:usize (cast usize 0))
-      (while (< i (count v))
-        (printf "%d\n" (invoke v i))
-        (set! i (+ i (cast usize 1))))))
+    (let ((it (VecIter i32)) (iter v))
+      (for-each (vfn (x:i32):i32 (printf "%d\n" x) (return 0)) (addr-of it))))
 
   ; sum-i32-iter: constrain case — only accepts (Iterator i32).
   (let ((it2 (ref IntRangeIter)) (alloca IntRangeIter))
