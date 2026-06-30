@@ -401,6 +401,10 @@ re-converges to a fixed point, tests green throughout.** → build-test-runner.
 
 ### R4 — Library & examples refactor
 
+**Status: Done (2026-06-30).** 138 tests pass; `make bootstrap` byte-identical
+(no refresh — examples don't affect the boot, lib/ changes inert). Details in
+[progress.md](progress.md#stage-13--functional-refactor-r4-library--examples-2026-06-30).
+
 **Agent: focused-task-implementer.** Depends on R1 (and benefits from R2).
 Lower-risk dogfooding; examples do not affect the bootstrap.
 

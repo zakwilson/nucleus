@@ -4,29 +4,24 @@
 ; The Node struct and make-cell come in via the auto-imported prelude.
 
 (import-use "stdio.h")
+(import-use "lib/list.nuc")
+(import-use iterator)
+(import-use combinators)
 
 ; Sum any number of i64 args. The compiler inttoptr's each into Node.car.
-(defn sum:i64 (&rest args:i64)
-  (let (total:i64 0
-        cur:ptr args)
-    (while (!= cur null)
-      (let (cell:ptr:Node (cast ptr:Node cur))
-        (set! total (+ total (cast i64 (cell car))))
-        (set! cur (cell cdr))))
-    (return total)))
+(defn sum-args:i64 (&rest args:i64)
+  (let (it:ListIter (list-iter args))
+    (return (reduce (vfn (acc:i64 x:ptr):i64 (+ acc (cast i64 x))) (cast i64 0) (addr-of it)))))
 
 ; Mix of fixed positional + &rest.
 (defn print-each:void (prefix:ptr &rest args:ptr)
-  (let (cur:ptr args)
-    (while (!= cur null)
-      (let (cell:ptr:Node (cast ptr:Node cur))
-        (printf "%s%s\n" prefix (cast ptr (cell car)))
-        (set! cur (cell cdr))))))
+  (let (it:ListIter (list-iter args))
+    (for-each (vfn (elem:ptr):i32 (printf "%s%s\n" prefix elem) (return 0)) (addr-of it))))
 
 (defn main:i32 ()
-  (printf "%ld\n" (sum 1 2 3 4))
-  (printf "%ld\n" (sum))
-  (printf "%ld\n" (sum 10))
+  (printf "%ld\n" (sum-args 1 2 3 4))
+  (printf "%ld\n" (sum-args))
+  (printf "%ld\n" (sum-args 10))
   (print-each "> " "a" "b" "c")
   (print-each "= ")
   (return 0))

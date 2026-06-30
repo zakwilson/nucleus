@@ -18,11 +18,11 @@
 
 (defn show:void (label:CStr (v (ref (Vector i32))))
   (printf "%s[" label)
-  (let (i:usize (cast usize 0))
-    (while (< i (count v))
-      (when (> i (cast usize 0)) (printf " "))
-      (printf "%d" (v i))
-      (set! i (+ i (cast usize 1)))))
+  (let (first:i32 1)
+    (doseq (x v (VecIter i32))
+      (when (= first 0) (printf " "))
+      (printf "%d" x)
+      (set! first 0)))
   (printf "]\n"))
 
 (defn main:i32 ()

@@ -23,6 +23,7 @@
 
 (import-use "stdio.h")
 (import-use iterator)   ; the (Iterator E) protocol
+(import-use combinators)
 
 ; ---------------------------------------------------------------------------
 ; A concrete iterator over [cur, stop) yielding i32 (conforms (Iterator i32)).
@@ -70,15 +71,8 @@
 (defn count-coll:i32 ((c (ref C))
                       &where ((IterColl It) C)
                              ((Iterator E) It))
-  (let (it:It (mk-iter c)
-        n:i32 0
-        done:i32 0)
-    (while (= done 0)
-      (let ((item (Maybe E)) (next (addr-of it)))
-        (match item
-          ((some v) (set! n (+ n 1)))
-          (none (set! done 1)))))
-    (return n)))
+  (let (it:It (mk-iter c))
+    (return (reduce (vfn (acc:i32 x:E):i32 (+ acc 1)) (cast i32 0) (addr-of it)))))
 
 (defn main:i32 ()
   (let ((s (ref Span)) (alloca Span))

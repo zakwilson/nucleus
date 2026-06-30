@@ -1,0 +1,47 @@
+; R4 dogfood — heterogeneous values behind (dyn P) dispatched with a combinator.
+;
+; Defines a `Render` protocol, several conforming structs, stores them in a
+; `(Vector (dyn Render))`, and walks the vector with `for-each` dispatching
+; the protocol method through each box's vtable. Proves combinators compose
+; with the (dyn P) heterogeneous storage path.
+
+(import-use "stdio.h")
+(import-use allocator)
+(import-use coll)
+(import-use iterator)
+(import-use combinators)
+(import-use vector)
+
+(defprotocol Render
+  ((render i32) ((self (ref Self)))))
+
+(defstruct Circle r:i32)
+(extend Circle Render)
+(defn render:i32 ((self (ref Circle)))
+  (return (* 3 (self r))))
+
+(defstruct Square s:i32)
+(extend Square Render)
+(defn render:i32 ((self (ref Square)))
+  (return (* (self s) (self s))))
+
+(defstruct Label text:i32)
+(extend Label Render)
+(defn render:i32 ((self (ref Label)))
+  (return (+ 1000 (self text))))
+
+(defn main:i32 ()
+  (with ((v (ref (Vector (dyn Render)))) (alloca (Vector (dyn Render))))
+    (vector-init v)
+    (let (c:(dyn Render) (Circle 5)
+          s:(dyn Render) (Square 4)
+          l:(dyn Render) (Label 7))
+      (conj v c) (conj v s) (conj v l))
+    ; Walk with for-each, dispatch render through the vtable, drop each box.
+    (let (idx:i32 0)
+      (doseq (e v (VecIter (dyn Render)))
+        (printf "vec[%d] render = %d\n" idx (render e))
+        (drop (addr-of e))
+        (set! idx (+ idx 1)))))
+  (printf "done\n")
+  (return 0))

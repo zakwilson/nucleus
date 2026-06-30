@@ -13,9 +13,6 @@
     (return (is-even (- n 1)))))
 
 (defn main:int ()
-  (let (i:int 0)
-    (while (< i 6)
-      (do
-        (printf "%d: even=%d odd=%d\n" i (is-even i) (is-odd i))
-        (inc! i))))
+  (dotimes (i:i32 6)
+    (printf "%d: even=%d odd=%d\n" i (is-even i) (is-odd i)))
   (return 0))
