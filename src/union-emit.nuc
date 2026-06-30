@@ -496,7 +496,6 @@
   (when (= t null) (return LAYOUT-TAGGED))
   (let (tt:ptr:Type (cast ptr:Type t))
     (when (!= (tt kind) TY-PTR) (return LAYOUT-TAGGED))
-    (when (= (tt elem) null) (return LAYOUT-TAGGED))
     (when (= (tt pkind) PTR-MAYBE) (return LAYOUT-NICHE-MAYBE))
     (when (= (tt pkind) PTR-ERRPTR) (return LAYOUT-NICHE-ERRPTR))
     (return LAYOUT-TAGGED)))

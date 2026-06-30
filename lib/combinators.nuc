@@ -11,12 +11,10 @@
 ; iterator with `(iter coll)`, bind it to a typed local, and pass `(addr-of it)`.
 ;
 ; ELEMENT-TYPE CONVENTION (carried from R1-iter): the pointer/struct iterators
-; (ListIter / SplitIter / LineIter) yield each element CAST TO i64, because a
-; niche `(Maybe ptr)` and a struct `(Maybe StrView)` are not `match`-able. So when
-; a combinator is driven over such an iterator the recovered element type S is
-; `i64`; the caller recovers the real value with `(cast ptr:T (cast ptr e))`.
-; Scalar iterators (VecIter i32 / ByteIter / CharIter / IntRangeIter) bind S to
-; their real scalar element type directly.
+; (ListIter / SplitIter / LineIter) yield each element as `ptr` (niche-encoded
+; Maybe ptr is matchable). The caller recovers the real value with
+; `(cast ptr:T e)`. Scalar iterators (VecIter i32 / ByteIter / CharIter /
+; IntRangeIter) bind S to their real scalar element type directly.
 ;
 ; OWNING RETURNS: `map`/`filter`/`remove-if`/`flat-map`/`join` build and RETURN a
 ; fresh owning value (a `(Vector E)` or a `String`) by value. The caller owns the

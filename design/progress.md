@@ -318,6 +318,40 @@ policy). See [functional-refactor.md](stage13/functional-refactor.md) §R3.
 
 ---
 
+## Stage 13 — Niche-encoded Maybe iterator integration (2026-06-29)
+
+**Iterator conversion complete.** The pointer-yielding iterators (`ListIter`,
+`SplitIter`, `LineIter`) now yield `ptr` directly instead of `i64` (with explicit
+casts). This closes the last major gap in niche-encoded `(Maybe ptr)` support:
+iterators over pointer collections can now use the standard `(Iterator E)`
+protocol with `match`-able `(Maybe ptr)` results.
+
+**Root fix:** `niche-layout-of` in `src/union-emit.nuc:495` rejected niche-encoded
+`(Maybe ptr)` because it checked `elem=null` before checking `pkind`. Since bare
+`ptr` has `elem=null` (but `pkind=PTR-REF` after the Phase F flip), niche-encoding
+`(Maybe ptr)` produced a type with `pkind=PTR-MAYBE` and `elem=null`, which the
+function rejected. Removed the `elem=null` check, allowing it to recognize
+`PTR-MAYBE` and `PTR-ERRPTR` regardless of whether `elem` is null.
+
+**Changes:**
+- `lib/list.nuc`: `ListIter` conforms to `(Iterator ptr)` instead of `(Iterator i64)`;
+  `next` returns `(Maybe ptr)` instead of `(Maybe i64)`
+- `lib/string-split.nuc`: `SplitIter` and `LineIter` similarly converted
+- `src/union-emit.nuc`: removed `elem=null` check from `niche-layout-of`
+- `src/generics.nuc`, `src/nuch.nuc`, `src/type-mangle.nuc`: updated cast patterns
+  from `(cast ptr:Node (cast ptr cur))` to `(cast ptr:Node cur)` since elements are
+  now `ptr` directly
+- `examples/comb-shapes.nuc`, `examples/listiter-test.nuc`, `examples/split-iter-test.nuc`:
+  updated consumers to use `ptr` instead of `i64`
+- `context/conventions.md`: updated documentation to reflect that `ListIter` yields
+  `ptr` directly
+
+**Bootstrap:** `make update-bootstrap` required (the `niche-layout-of` fix changes
+the compiler's emit behavior). 136 tests pass; `make bootstrap` is a byte-identical
+fixed point.
+
+---
+
 ## Stage 12 N9 — Docs, examples, close-out (2026-06-22)
 
 **N9 complete.** Stage 12 fully closed out.

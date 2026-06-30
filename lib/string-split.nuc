@@ -138,23 +138,23 @@
 ; SplitIter as an Iterator (replaces the deferred done-flag-only API).
 ;
 ; `next` yields each segment as a (ref StrView) pointing into the iterator's own
-; `cur` slot, encoded as i64 so the (Maybe i64) is a TAGGED, matchable
-; value-Maybe — `reduce` / `doseq-iter` / `match` accept it. (Conforming to
+; `cur` slot, encoded as ptr so the (Maybe ptr) is a NICHE-encoded, matchable
+; Maybe — `reduce` / `doseq-iter` / `match` accept it. (Conforming to
 ; (Iterator StrView) directly is impossible: (Maybe StrView) embeds %StrView in
 ; an anonymous union that the macro-expansion JIT module cannot resolve. The
-; i64-pointer encoding sidesteps this — see lib/iterator.nuc and context/build.md.)
+; ptr encoding sidesteps this — see lib/iterator.nuc and context/build.md.)
 ;
 ; Behavior is identical to the done-flag loop: one segment per `next`, the same
 ; segments in the same order; iteration ends (none) on the call after the final
-; segment set done=1. Recover each segment with (cast ptr:StrView (cast ptr e));
+; segment set done=1. Recover each segment with (cast ptr:StrView e);
 ; the returned pointer aliases `cur` and is valid until the next `next` call.
 ; ---------------------------------------------------------------------------
-(extend SplitIter (Iterator i64))
+(extend SplitIter (Iterator ptr))
 
-(defn (next (Maybe i64)) ((self (ref SplitIter)))
+(defn (next (Maybe ptr)) ((self (ref SplitIter)))
   (when (= (self done) 1) (return none))
   (.set! self cur (split-iter-next self))
-  (return (some (cast i64 (.& self cur)))))
+  (return (some (.& self cur))))
 
 ; ---------------------------------------------------------------------------
 ; LineIter — split a StrView on '\n', stripping trailing '\r' from each line.
@@ -223,20 +223,20 @@
     (return (deref it))))
 
 ; ---------------------------------------------------------------------------
-; LineIter as an Iterator. Same i64-pointer encoding and identical behavior as
+; LineIter as an Iterator. Same ptr encoding and identical behavior as
 ; the SplitIter conformance above; yields each line (trailing newline stripped).
 ; ---------------------------------------------------------------------------
-(extend LineIter (Iterator i64))
+(extend LineIter (Iterator ptr))
 
-(defn (next (Maybe i64)) ((self (ref LineIter)))
+(defn (next (Maybe ptr)) ((self (ref LineIter)))
   (when (= (self done) 1) (return none))
   (.set! self cur (lines-iter-next self))
-  (return (some (cast i64 (.& self cur)))))
+  (return (some (.& self cur))))
 
 ; ---------------------------------------------------------------------------
 ; doseq-split — iterate a SplitIter / LineIter (a bare Iterator), binding `var`
 ; to each segment as a (ref StrView). Sugar over `doseq-iter` that hides the
-; i64-pointer decode the Iterator conformance uses.
+; ptr decode the Iterator conformance uses.
 ;
 ;   (doseq-split (seg (addr-of it)) (print-sv seg))
 ;
@@ -248,5 +248,5 @@
         iter-ref:ptr ((cast ptr:Node ((cast ptr:Node binding) cdr)) car)
         raw-sym:ptr  (gensym))
     `(doseq-iter (~raw-sym ~iter-ref)
-       (let ((~var-sym (ref StrView)) (cast ptr:StrView (cast ptr ~raw-sym)))
+       (let ((~var-sym (ref StrView)) (cast ptr:StrView ~raw-sym))
          ~@body))))

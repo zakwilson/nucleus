@@ -2,7 +2,7 @@
 ; driven over three different collection shapes, proving they are generic over any
 ; (Iterator E):
 ;   1. a Vector  (VecIter i32        — element type i32)
-;   2. a cons-list of Node* cells (ListIter — element yielded as i64, recovered
+;   2. a cons-list of Node* cells (ListIter — element yielded as ptr, recovered
 ;      with (cast ptr:Node …))
 ;   3. a String's characters (CharIter — element type Char)
 ;
@@ -42,7 +42,7 @@
     (let ((it (VecIter i32)) (iter v))
       (printf "vec every=%d\n" (every? (vfn (x:i32):i32 (return (if (> x 5) 1 0))) (addr-of it)))))
 
-  ; ===== 2. cons-list of Node* (ListIter yields i64) =====
+  ; ===== 2. cons-list of Node* (ListIter yields ptr) =====
   (let (lst:ptr (cons (int-node (cast i64 10))
                       (cons (int-node (cast i64 20))
                             (cons (int-node (cast i64 30))
@@ -51,32 +51,32 @@
     (let ((it (ref ListIter)) (alloca ListIter))
       (.set! it cur lst)
       (let ((m (Vector i64))
-            (map (vfn (e:i64):i64 (return ((cast ptr:Node (cast ptr e)) i))) it))
+            (map (vfn (e:ptr):i64 (return ((cast ptr:Node e) i))) it))
         (printf "lst map count=%d m0=%lld\n"
           (cast i32 (count (addr-of m))) (cast i64 ((addr-of m) (cast usize 0))))
         (drop (addr-of m))))
-    ; filter: keep nodes with .i > 25 (the Node* survives as i64)
+    ; filter: keep nodes with .i > 25 (the Node* survives as ptr)
     (let ((it (ref ListIter)) (alloca ListIter))
       (.set! it cur lst)
-      (let ((f (Vector i64))
-            (filter (vfn (e:i64):i32 (return (if (> ((cast ptr:Node (cast ptr e)) i) (cast i64 25)) 1 0))) it))
+      (let ((f (Vector ptr))
+            (filter (vfn (e:ptr):i32 (return (if (> ((cast ptr:Node e) i) (cast i64 25)) 1 0))) it))
         (printf "lst filter-count=%d\n" (cast i32 (count (addr-of f))))
         (drop (addr-of f))))
     ; find: first node with .i > 25
     (let ((it (ref ListIter)) (alloca ListIter))
       (.set! it cur lst)
-      (match (find (vfn (e:i64):i32 (return (if (> ((cast ptr:Node (cast ptr e)) i) (cast i64 25)) 1 0))) it)
-        ((some e) (printf "lst find=%lld\n" (cast i64 ((cast ptr:Node (cast ptr e)) i))))
+      (match (find (vfn (e:ptr):i32 (return (if (> ((cast ptr:Node e) i) (cast i64 25)) 1 0))) it)
+        ((some e) (printf "lst find=%lld\n" ((cast ptr:Node e) i)))
         (none (printf "lst find=none\n"))))
     ; any / every over .i
     (let ((it (ref ListIter)) (alloca ListIter))
       (.set! it cur lst)
       (printf "lst any=%d\n"
-        (any? (vfn (e:i64):i32 (return (if (> ((cast ptr:Node (cast ptr e)) i) (cast i64 35)) 1 0))) it)))
+        (any? (vfn (e:ptr):i32 (return (if (> ((cast ptr:Node e) i) (cast i64 35)) 1 0))) it)))
     (let ((it (ref ListIter)) (alloca ListIter))
       (.set! it cur lst)
       (printf "lst every=%d\n"
-        (every? (vfn (e:i64):i32 (return (if (> ((cast ptr:Node (cast ptr e)) i) (cast i64 5)) 1 0))) it))))
+        (every? (vfn (e:ptr):i32 (return (if (> ((cast ptr:Node e) i) (cast i64 5)) 1 0))) it))))
 
   ; ===== 3. String characters (CharIter yields Char) =====
   (let (s:String (string-from-cstr-unchecked "hello"))
