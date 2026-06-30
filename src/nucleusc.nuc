@@ -458,9 +458,9 @@
 (defn nucleus_gensym:ptr ()
   (let (id:i32 g-gensym-id)
     (inc! g-gensym-id)
-    (let (buf:ptr (malloc (cast i64 32))
+    (let (buf:ptr (malloc 32)
           n:ptr:Node (cast ptr:Node (malloc (sizeof Node))))
-      (snprintf buf (cast i64 32) "__gs_%d" id)
+      (snprintf buf 32 "__gs_%d" id)
       (memset (cast ptr n) 0 (sizeof Node))
       (.set! n kind (cast i32 NODE-SYM))
       (.set! n s buf)
@@ -531,9 +531,8 @@
         (do
           (fputc 34 out)
           (let (s:ptr (nn s)
-                      i:i64 (cast i64 0)
                       len:i64 (strlen s))
-            (while (< i len)
+            (dotimes (i len)
               (let (c:i32 (char-at s i))
                 (case c
                   10 (do (fputc 92 out) (fputc 110 out))
@@ -542,8 +541,7 @@
                   92 (do (fputc 92 out) (fputc 92 out))
                   34 (do (fputc 92 out) (fputc 34 out))
                   0  (do (fputc 92 out) (fputc 48 out))
-                  (fputc c out)))
-              (set! i (+ i (cast i64 1)))))
+                  (fputc c out)))))
           (fputc 34 out))
       NODE-CELL
         (do
@@ -663,7 +661,7 @@
         (ptr-set! out-type-name null))
       (let (name-len:i64 (- (cast i64 colon) (cast i64 sym)))
         (ptr-set! out-name (arena-strndup sym name-len))
-        (ptr-set! out-type-name (arena-strdup (ptr+ (cast ptr:i8 colon) (cast i64 1))))))))
+        (ptr-set! out-type-name (arena-strdup (ptr+ (cast ptr:i8 colon) 1)))))))
 
 ; Extract name and type-name from a node that is either:
 ;   - a symbol node (possibly containing :) — uses split-typed
@@ -701,7 +699,7 @@
     (when (= (n kind) NODE-SYM)
       (let (s:ptr (n s))
         (when (!= (strchr s 58) null)
-          (let (sec-colon:ptr (strchr (ptr+ (cast ptr:i8 (strchr s 58)) (cast i64 1)) 58))
+          (let (sec-colon:ptr (strchr (ptr+ (cast ptr:i8 (strchr s 58)) 1) 58))
             (when (!= sec-colon null)
               ; Multi-colon: desugar to a list and re-dispatch
               (return (extract-name-and-type (desugar-symbol node line)
@@ -809,28 +807,28 @@
   (when (= lex "+inf.0") (return "0x7FF0000000000000"))
   (when (= lex "-inf.0") (return "0xFFF0000000000000"))
   (when (= lex "+nan.0") (return "0x7FF8000000000000"))
-  (let (len:i64 (cast i64 (strlen lex))
-        buf:ptr (malloc (cast i64 96))
-        out:i64 (cast i64 0)
-        in:i64 (cast i64 0))
+  (let (len:i64 (strlen lex)
+        buf:ptr (malloc 96)
+        out:i64 0
+        in:i64 0)
     ; Optional sign.
-    (when (and (> len (cast i64 0))
-               (or (= (char-at lex (cast i64 0)) 43)
-                   (= (char-at lex (cast i64 0)) 45)))
-      (aset! (cast ptr:i8 buf) out (cast i8 (char-at lex (cast i64 0))))
-      (set! out (+ out (cast i64 1)))
-      (set! in (cast i64 1)))
+    (when (and (> len 0)
+               (or (= (char-at lex 0) 43)
+                   (= (char-at lex 0) 45)))
+          (aset! (cast ptr:i8 buf) out (cast i8 (char-at lex (cast i64 0))))
+      (set! out (+ out 1))
+      (set! in 1))
     ; Integer part: insert leading 0 if absent.
     (let (had-int-digit:i32 0)
       (while (and (< in len)
                   (!= (isdigit (char-at lex in)) 0))
         (aset! (cast ptr:i8 buf) out (cast i8 (char-at lex in)))
-        (set! out (+ out (cast i64 1)))
-        (set! in (+ in (cast i64 1)))
+        (inc! out)
+        (inc! in)
         (set! had-int-digit 1))
       (when (= had-int-digit 0)
-        (aset! (cast ptr:i8 buf) out (cast i8 48))
-        (set! out (+ out (cast i64 1)))))
+            (aset! (cast ptr:i8 buf) out (cast i8 (cast i64 48)))
+        (inc! out)))
     ; Decimal point + fraction. Synthesize a `.0` if missing.
     (cond (and (< in len) (= (char-at lex in) 46))
             (do (aset! (cast ptr:i8 buf) out (cast i8 46))
@@ -853,8 +851,8 @@
     ; Exponent (verbatim).
     (while (< in len)
       (aset! (cast ptr:i8 buf) out (cast i8 (char-at lex in)))
-      (set! out (+ out (cast i64 1)))
-      (set! in (+ in (cast i64 1))))
+      (inc! out)
+      (inc! in))
     (aset! (cast ptr:i8 buf) out (cast i8 0))
     (return buf)))
 
@@ -1718,11 +1716,11 @@
           name-part:ptr spelling)
       (when (!= slash null)
         (let (idx:i64 (- (cast i64 (cast ptr:i8 slash)) (cast i64 (cast ptr:i8 spelling)))
-              after:i32 (cast i32 (aref (cast ptr:i8 slash) (cast i64 1))))
-          (when (and (> idx (cast i64 0)) (!= after 0))
+              after:i32 (cast i32 (aref (cast ptr:i8 slash) 1)))
+          (when (and (> idx 0) (!= after 0))
             (set! interior 1)
             (set! ns-part (arena-strndup spelling idx))
-            (set! name-part (arena-strdup (ptr+ (cast ptr:i8 slash) (cast i64 1)))))))
+            (set! name-part (arena-strdup (ptr+ (cast ptr:i8 slash) 1))))))
       (when (= interior 0)
         (set! ns-part g-current-ns))
       ; `user` (whether the current namespace or an explicit `user/` qualifier)
@@ -1746,10 +1744,10 @@
   (let (slash:ptr (strchr spelling 47))
     (when (!= slash null)
       (let (idx:i64 (- (cast i64 (cast ptr:i8 slash)) (cast i64 (cast ptr:i8 spelling)))
-            after:i32 (cast i32 (aref (cast ptr:i8 slash) (cast i64 1))))
+            after:i32 (cast i32 (aref (cast ptr:i8 slash) 1)))
         ; Interior slash only (neither leading nor trailing): take the name part.
-        (when (and (> idx (cast i64 0)) (!= after 0))
-          (return (intern-str (arena-strdup (ptr+ (cast ptr:i8 slash) (cast i64 1))))))))
+        (when (and (> idx 0) (!= after 0))
+          (return (intern-str (arena-strdup (ptr+ (cast ptr:i8 slash) 1)))))))
     (return spelling)))
 
 ; Stage 12 N4: IR mangling (design/stage12/namespaces.md §"Implementation",
@@ -1762,8 +1760,8 @@
 (defn ns-prefix-sanitize:ptr (prefix:ptr)
   (let (n:i64 (strlen prefix)
         ; Worst case every char becomes `__` (2 bytes), plus the NUL.
-        s:ptr (arena-alloc (+ (* n (cast i64 2)) (cast i64 1)))
-        o:i64 (cast i64 0))
+        s:ptr (arena-alloc (+ (* n 2) 1))
+        o:i64 0)
     (dotimes (i n)
       (let (c:i32 (bit-and (cast i32 (aref (cast ptr:i8 prefix) i)) 255)
             is-digit:i1 (!= (isdigit c) 0)
@@ -1775,12 +1773,12 @@
           ; The namespace divider lowers to the `__` separator.
           (= c 47)
             (do (aset! (cast ptr:i8 s) o (cast i8 95))
-                (aset! (cast ptr:i8 s) (+ o (cast i64 1)) (cast i8 95))
-                (set! o (+ o (cast i64 2))))
+                (aset! (cast ptr:i8 s) (+ o 1) (cast i8 95))
+                (set! o (+ o 2)))
           ok
-            (do (aset! (cast ptr:i8 s) o (cast i8 c)) (set! o (+ o (cast i64 1))))
+            (do (aset! (cast ptr:i8 s) o (cast i8 c)) (set! o (+ o 1)))
           true
-            (do (aset! (cast ptr:i8 s) o (cast i8 95)) (set! o (+ o (cast i64 1)))))))
+            (do (aset! (cast ptr:i8 s) o (cast i8 95)) (set! o (+ o 1))))))
     (aset! (cast ptr:i8 s) o (cast i8 0))
     (return s)))
 
@@ -2721,8 +2719,8 @@
                   (when (and (!= nc null) (!= nc (cast ptr slot)))
                     (memcpy slot nc (sizeof Val))))))))
       (let (arglist:ptr (alloca i8 2048)
-            apos:i64 (cast i64 0))
-        (aset! (cast ptr:i8 arglist) (cast i64 0) (cast i8 0))
+            apos:i64 0)
+        (aset! (cast ptr:i8 arglist) 0 (cast i8 0))
         (set! i 0)
         (while (< i eff-nargs)
         (let (av:ptr:Val (cast ptr:Val (ptr+ (cast ptr:Val args) i))
@@ -2746,7 +2744,7 @@
         (if (!= (ft variadic) 0)
           (do
             (let (sig:ptr (alloca i8 512)
-                  sp:i64 (cast i64 0)
+                  sp:i64 0
                   w:i32 (snprintf sig (cast i64 512) "%s (" (type-to-ir (ft ret))))
               (set! sp (cast i64 w))
               (set! i 0)
@@ -5786,7 +5784,7 @@
               (set! is-designated 1))
             (if (!= is-designated 0)
               (let (k:i64 ((cast ptr:Node (node-at arg 0)) i))
-                (when (< k (cast i64 0))
+                (when (< k 0)
                   (die-at (arg line) "array: designated index must be non-negative"))
                 (when (> (cast i32 k) max-idx) (set! max-idx (cast i32 k)))
                 (aset! (cast ptr:i32 keys) i (cast i32 k)))
@@ -5977,11 +5975,11 @@
     (when (!= (mdef variadic) 0)
       (when (< nargs (- (mdef num-params) 1))
         (die-at ((cast ptr:Node call) line)
-                (fmt-s "macro: not enough args" (cast i64 0)))))
+                (fmt-s "macro: not enough args" 0))))
     (when (= (mdef variadic) 0)
       (when (!= nargs (mdef num-params))
         (die-at ((cast ptr:Node call) line)
-                (fmt-s "macro: wrong number of args" (cast i64 0)))))
+                (fmt-s "macro: wrong number of args" 0))))
     (let (args-arr:ptr (malloc (* (cast i64 (mdef num-params)) (ptr-bytes)))
           regular-params:i32 (mdef num-params))
       (when (!= (mdef variadic) 0)
@@ -5995,7 +5993,7 @@
             (set! rj (- rj 1))
             (set! rest-list (make-cell (node-at (cast ptr:Node call) (+ rj 1)) rest-list 0)))
           (aset! (cast ptr:ptr args-arr) regular-params rest-list)))
-      (let (addr:i64 (cast i64 0)
+      (let (addr:i64 0
             err:ptr (LLVMOrcLLJITLookup g-jit (addr-of addr) (mdef jit-name)))
         (when (!= err null)
           (fprintf stderr "%s: macro '%s': JIT lookup failed\n"
@@ -6485,7 +6483,7 @@
         (when (and (= (head kind) NODE-SYM) (= (strcmp (head s) "char") 0))
           (let (arg:ptr:Node (cast ptr:Node (node-at nn 1)))
             (when (or (!= (arg kind) NODE-STR)
-                      (!= (cast i64 (strlen (arg s))) (cast i64 1)))
+                      (!= (strlen (arg s)) 1))
               (die-at (arg line) "defvar: (char ...) requires a single-char string"))
             (when (= (is-int-type ty) 0)
               (die-at (nn line) "defvar: char literal requires integer type"))
@@ -7179,11 +7177,11 @@
             (exit 1)))))
 
 (defn jit-call-ct-main-sym:void (line:i32 sym:ptr)
-  (let (addr:i64 (cast i64 0))
+  (let (addr:i64 0)
     (let (err:ptr (LLVMOrcLLJITLookup g-jit (cast ptr (addr-of addr)) sym))
       (when (!= err null)
          (LLVMConsumeError err) (return))
-      (when (= addr (cast i64 0)) (return))
+      (when (= addr 0) (return))
       ; Redirect stdout -> stderr so CT printf does not corrupt the IR output
       (fflush (cast ptr stdout))
       (let (saved-fd:i32 (dup 1))
@@ -7211,11 +7209,11 @@
 
     ; Open fresh CT streams.
     (let (ct-type-bufp:ptr null
-          ct-type-sizep:i64 (cast i64 0)
+          ct-type-sizep:i64 0
           ct-decl-bufp:ptr null
-          ct-decl-sizep:i64 (cast i64 0)
+          ct-decl-sizep:i64 0
           ct-def-bufp:ptr null
-          ct-def-sizep:i64 (cast i64 0)
+          ct-def-sizep:i64 0
           ct-type:ptr (open_memstream (addr-of ct-type-bufp) (cast ptr (addr-of ct-type-sizep)))
           ct-decl:ptr (open_memstream (addr-of ct-decl-bufp) (cast ptr (addr-of ct-decl-sizep)))
           ct-def:ptr  (open_memstream (addr-of ct-def-bufp)  (cast ptr (addr-of ct-def-sizep))))
@@ -7458,8 +7456,8 @@
           (fflush g-decl-stream)
 
           ; Open fresh CT streams
-          (let (ct-decl-bufp:ptr null  ct-decl-sizep:i64 (cast i64 0)
-                ct-def-bufp:ptr null   ct-def-sizep:i64  (cast i64 0)
+          (let (ct-decl-bufp:ptr null  ct-decl-sizep:i64 0
+                ct-def-bufp:ptr null   ct-def-sizep:i64  0
                 ct-decl:ptr (open_memstream (addr-of ct-decl-bufp) (cast ptr (addr-of ct-decl-sizep)))
                 ct-def:ptr  (open_memstream (addr-of ct-def-bufp)  (cast ptr (addr-of ct-def-sizep))))
 
@@ -7586,7 +7584,7 @@
                   (fflush g-type-stream)
 
                   ; Assemble the macro JIT module IR
-                  (let (ir-bufp:ptr null  ir-sizep:i64 (cast i64 0)
+                  (let (ir-bufp:ptr null  ir-sizep:i64 0
                         irs:ptr (open_memstream (addr-of ir-bufp) (cast ptr (addr-of ir-sizep))))
                     (fprintf irs "; ModuleID = '<defmacro %s>'\n" macro-name)
                     (fprintf irs "target triple = \"%s\"\n\n" ((cast ptr:Target g-host-target) triple))
@@ -7664,7 +7662,7 @@
     (when (= f null) (perror path) (exit 1))
     (when (!= (fseek f (cast i64 0) 2) 0) (perror "fseek") (exit 1))
     (let (sz:i64 (ftell f))
-      (when (< sz (cast i64 0)) (perror "ftell") (exit 1))
+      (when (< sz 0) (perror "ftell") (exit 1))
       (rewind f)
       (let (buf:ptr (malloc (+ sz (cast i64 1))))
         (when (= buf null) (perror "malloc") (exit 1))
@@ -7683,8 +7681,8 @@
 (defn split-colon-segments:ptr (s:ptr line:i32)
   (let (result:ptr null
         tail:ptr null
-        start:i64 (cast i64 0)
-        i:i64 (cast i64 0)
+        start:i64 0
+        i:i64 0
         slen:i64 (cast i64 (strlen s)))
     (while (<= i slen)
       (when (or (= i slen) (= (char-at s i) 58))
@@ -7695,8 +7693,8 @@
                 (when (= tail null) (set! result cell))
                 (when (!= tail null) (.set! (cast ptr:Node tail) cdr cell))
                 (set! tail cell)))
-            (set! start (+ i (cast i64 1))))
-      (set! i (+ i (cast i64 1))))
+            (set! start (+ i 1)))
+      (set! i (+ i 1)))
     (return result)))
 
 ; Desugar a colon-typed symbol into a binding list:
@@ -7942,7 +7940,7 @@
                       (let (src:ptr (read-file path))
                         (set! g-source-path path)
                         (set! g-src src)
-                        (set! g-pos (cast i64 0))
+                        (set! g-pos 0)
                         (set! g-line 1)
                         (set! g-peek-valid 0)
                         (let (ifs:ptr (desugar (read-program-or-die)))
@@ -8441,7 +8439,7 @@
     (dotimes (i pathlen)
       (when (= (char-at g-source-path i) 47)
         (set! last-slash i)))
-    (when (>= last-slash (cast i64 0))
+    (when (>= last-slash 0)
       (let (dir:ptr (strndup g-source-path last-slash)
             candidate:ptr (fmt-2s "%s/%s" dir filename))
         (when (!= (file-exists candidate) 0)
@@ -9083,8 +9081,8 @@
   ; vector index equals the 1-based runtime error id.
   (set! g-deferror-name-sids (make-vec))
   (set! g-deferror-msg-sids (make-vec))
-  (conj g-deferror-name-sids (cast ptr (cast i64 0)))
-  (conj g-deferror-msg-sids (cast ptr (cast i64 0)))
+  (conj g-deferror-name-sids (cast ptr 0))
+  (conj g-deferror-msg-sids (cast ptr 0))
   (set! g-err-table-used 0)
   (set! g-prescan-visited null)
   (set! g-import-aliased null)
@@ -9172,7 +9170,7 @@
 ; the returned pointer (g-type-bufp/g-decl-bufp/g-def-bufp are also freed).
 ; Stores the buffer length through `len-out` (pointer to i64).
 (defn assemble-module-ir:ptr (source-file:ptr len-out:ptr)
-  (let (ir-bufp:ptr null  ir-sizep:i64 (cast i64 0)
+  (let (ir-bufp:ptr null  ir-sizep:i64 0
         irs:ptr (open_memstream (addr-of ir-bufp) (cast ptr (addr-of ir-sizep))))
     (fprintf irs "; ModuleID = '%s'\n" source-file)
     (fprintf irs "source_filename = \"%s\"\n" source-file)
@@ -9260,7 +9258,7 @@
   (fclose g-type-stream)
   (fclose g-decl-stream)
   (fclose g-def-stream)
-  (let (ir-len:i64 (cast i64 0)
+  (let (ir-len:i64 0
         ir:ptr (assemble-module-ir source-file (cast ptr (addr-of ir-len))))
     (if (!= g-emit-llvm 0)
       (do
