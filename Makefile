@@ -1,8 +1,9 @@
 CC           := clang
 CFLAGS       := -std=c11 -Wall -Wextra -Wpedantic -O0 -g
 LLVM_CFLAGS  := $(shell llvm-config --cflags 2>/dev/null)
-LLVM_LDFLAGS := $(shell llvm-config --ldflags 2>/dev/null)
-LLVM_LIBS    := $(shell llvm-config --libs orcjit core irreader 2>/dev/null)
+LLVM_LDFLAGS := $(shell llvm-config --link-shared --ldflags 2>/dev/null)
+LLVM_LIBS    := $(shell llvm-config --link-shared --libs orcjit core irreader 2>/dev/null)
+LLVM_SYSLIBS := $(shell llvm-config --link-shared --system-libs 2>/dev/null)
 BUILD        := build
 BIN          := $(BUILD)/nucleusc
 
@@ -28,7 +29,7 @@ COMPILER_DEPS := src/nucleusc.nuc src/compiler-types.nuc src/type-utils.nuc src/
 
 $(BIN): $(COMPILER_DEPS) $(REPL_SHIM_O) | $(BUILD) ensure-boot
 	$(BOOT) --emit-llvm src/nucleusc.nuc > $(BUILD)/nucleusc.ll
-	clang $(BUILD)/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl -rdynamic -ffast-math -march=native -O3 -o $@
+	clang $(BUILD)/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic -ffast-math -march=native -O3 -o $@
 
 $(REPL_SHIM_O): src/repl_shim.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -42,12 +43,12 @@ ensure-boot: $(REPL_SHIM_O) | $(BUILD)
 	@$(BOOT) --help >/dev/null 2>&1; ec=$$?; \
 	if [ $$ec -eq 126 ] || [ $$ec -eq 127 ]; then \
 		echo "bin/nucleusc: cannot execute (exit $$ec), rebuilding from boot/nucleusc.ll ..."; \
-		clang boot/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl -rdynamic -O3 -o $(BOOT); \
+		clang boot/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic -O3 -o $(BOOT); \
 	fi
 
 # Force-rebuild the bootstrap binary from the committed IR (boot/nucleusc.ll).
 boot-binary: $(REPL_SHIM_O) | $(BUILD)
-	clang boot/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl -rdynamic -ffast-math -march=native -O3 -o bin/nucleusc
+	clang boot/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic -ffast-math -march=native -O3 -o bin/nucleusc
 
 test: $(BIN)
 	./tests/run-tests.sh
@@ -65,7 +66,7 @@ layout-test: $(BIN)
 bootstrap: $(BIN) | $(BUILD)/out
 	@echo "=== Stage 2: self-hosted compiler -> nucleusc.nuc ==="
 	$(BIN) --emit-llvm src/nucleusc.nuc > $(BUILD)/stage2.ll
-	clang $(BUILD)/stage2.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl -rdynamic -ffast-math -march=native -ffast-math -march=native -O3 -o $(BUILD)/nucleusc-stage2
+	clang $(BUILD)/stage2.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic -ffast-math -march=native -ffast-math -march=native -O3 -o $(BUILD)/nucleusc-stage2
 	@echo "=== Fixed-point test ==="
 	diff $(BUILD)/nucleusc.ll $(BUILD)/stage2.ll
 	@echo "PASS: stage1.ll == stage2.ll"
