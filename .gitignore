@@ -2,3 +2,4 @@ context/local.md
 build/
 build/out/
 *.o
+bin/nucleusc
