@@ -1,16 +1,22 @@
-; ABI lowering — SysV x86_64 struct-by-value classification and coercion.
+; ABI lowering — SysV x86_64 and aarch64 struct-by-value classification and coercion.
 ; Source-imported by src/nucleusc.nuc after basic type functions are defined.
 
 ; ============================================================
-; Aggregate ABI lowering — x86_64 System V (Stage 8 Phase C)
+; Aggregate ABI lowering — x86_64 System V and aarch64 (Stage 8 Phase C)
 ; ============================================================
 ; Struct-by-value parameters and returns must follow the platform C ABI, not
 ; LLVM's default by-value aggregate passing (which is not ABI-correct). The
 ; classifier below ports clang's eightbyte model: a struct ≤16 bytes is split
 ; into one or two eightbytes, each classified INTEGER or SSE and coerced to a
-; register type; >16 bytes goes through memory (byval param / sret return).
+; register type; >16 bytes goes through memory (byval param / sret return on
+; x86_64, plain pointer on aarch64).
 ; Only TY-STRUCT is ever non-DIRECT, so every scalar/pointer path is unchanged.
 ; See design/stage8/platform.md for the reverse-engineered coercion table.
+
+; Check if target is aarch64 (AAPCS64 ABI uses plain pointers for large structs,
+; not byval attributes).
+(defn abi-is-aarch64:i32 ()
+  (return (if (!= (strstr g-target-triple "aarch64") null) 1 0)))
 
 ; Round x up to a multiple of a (a is a power of two in practice, but the
 ; arithmetic form works for any positive a).
@@ -174,6 +180,8 @@
 ; Print one lowered parameter to g-out. `name` is the param name for a `define`
 ; (emits the `%name.arg` operand) or null for a `declare` (types only). COERCE2
 ; expands to two comma-separated entries; the caller supplies the leading comma.
+; On aarch64, ABI-MEMORY uses plain `ptr` (no byval attribute); on x86_64, it
+; uses `ptr byval(%Ty) align N`.
 (defn abi-print-param:void (info:ptr ptype:ptr name:ptr)
   (let (ii:ptr:AbiInfo (cast ptr:AbiInfo info)
         k:i32 ((cast ptr:AbiInfo info) kind))
@@ -183,9 +191,15 @@
         (fprintf g-out "%s %%%s.arg" (type-to-ir ptype) name))
       (return))
     (when (= k ABI-MEMORY)
-      (if (= name null)
-        (fprintf g-out "ptr byval(%s) align %d" (type-to-ir ptype) (ii align))
-        (fprintf g-out "ptr byval(%s) align %d %%%s.arg" (type-to-ir ptype) (ii align) name))
+      (if (= (abi-is-aarch64) 0)
+        ; x86_64: byval attribute
+        (if (= name null)
+          (fprintf g-out "ptr byval(%s) align %d" (type-to-ir ptype) (ii align))
+          (fprintf g-out "ptr byval(%s) align %d %%%s.arg" (type-to-ir ptype) (ii align) name))
+        ; aarch64: plain pointer
+        (if (= name null)
+          (fprintf g-out "ptr")
+          (fprintf g-out "ptr %%%s.arg" name)))
       (return))
     (when (= k ABI-COERCE1)
       (if (= name null)
@@ -326,6 +340,7 @@
 ; Env)` pointer is normalized to first-class at the call site (emit-call-with-
 ; args, CE-3 fix (b)) before reaching here, since classification on the arg type
 ; alone cannot distinguish a by-value-struct arg from an ordinary pointer arg.
+; On aarch64, ABI-MEMORY passes a plain pointer (no byval attribute).
 (defn abi-arg-frag:ptr (av:ptr)
   (let (a:ptr:Val (cast ptr:Val av)
         info:ptr:AbiInfo (cast ptr:AbiInfo (abi-classify ((cast ptr:Val av) type)))
@@ -337,7 +352,11 @@
       (fprintf g-entry-stream "  %s = alloca %s\n" addr ty)
       (fprintf g-body-stream "  store %s %s, ptr %s\n" ty (a val) addr)
       (when (= k ABI-MEMORY)
-        (return (fmt-2s "%s %s" (fmt-sd "ptr byval(%s) align %d" ty (info align)) addr)))
+        (if (= (abi-is-aarch64) 0)
+          ; x86_64: byval attribute
+          (return (fmt-2s "%s %s" (fmt-sd "ptr byval(%s) align %d" ty (info align)) addr))
+          ; aarch64: plain pointer
+          (return (fmt-2s "ptr %s" addr))))
       (when (= k ABI-COERCE1)
         (let (r:ptr (new-tmp))
           (fprintf g-body-stream "  %s = load %s, ptr %s\n" r (info reg0) addr)
