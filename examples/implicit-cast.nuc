@@ -25,7 +25,7 @@
 (defcast i64 ptr id_to_ptr)
 
 (defn show-ptr:void (p:ptr)
-  (printf "ptr=%p\n" p))
+  (printf "ptr=%lld\n" (cast i64 p)))
 
 (defn main:int ()
   (printf "malloc-ok=%d\n" (try-malloc))

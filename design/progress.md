@@ -47,6 +47,12 @@ musl's libc headers (Alpine ARM64) omit `extern` on function declarations — va
 
 Also added `_Noreturn` (C11 keyword) to the list of qualifiers skipped by `c-parse-type`. musl declares `exit` as `_Noreturn void exit(int)`, and the parser didn't recognize `_Noreturn`, treating it as the base type name → `unknown: exit` error.
 
+### Test portability: null pointer printing
+
+Two tests (`implicit-cast` and `macro-passthrough`) printed null pointers with `printf("%p", NULL)`. This is implementation-defined: glibc (x86-64) prints `0`, musl (ARM64) prints `(nil)`. Tests expected `0` and failed on ARM64.
+
+**Fix:** changed both tests to cast the pointer to `i64` before printing with `%lld`, making output platform-independent. `examples/implicit-cast.nuc:28` and `examples/macro-passthrough.nuc:14` now print pointer values as integers.
+
 Bootstrap artifacts refreshed (`make update-bootstrap`); the new compiler declares additional C functions (`lldiv`, `getentropy`, etc.) because it now parses non-`extern` declarations — expected, not a regression.
 
 ---

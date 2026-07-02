@@ -11,7 +11,7 @@
   (cond (= ((cast ptr:Node x) kind) NODE-INT)   `(printf "%d\n" ~x)
         (= ((cast ptr:Node x) kind) NODE-STR)   `(printf "%s\n" ~x)
         (= ((cast ptr:Node x) kind) NODE-FLOAT) `(printf "%f\n" ~x)
-        true                                    `(printf "%p\n" ~x)))
+        true                                    `(printf "%lld\n" (cast i64 ~x))))
 
 (defn main:int ()
   (tprint 42)            ; i32  → "%d\n"
