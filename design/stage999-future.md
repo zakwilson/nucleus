@@ -100,7 +100,7 @@ Safe accessors with runtime cost seem like a good idea here, but it would be eve
 
 (Maybe StrView) fails in JIT modules, !void unsupported, struct-in-Result returns zeroed fields, and single-conformer generic ?-methods need a shim for IR mangling.
 
- name:ref:(Param T) colon-chain doesn't parse for a defn name/param — fuse-colon-paren mangles it. Use the list form (name (ref (Param T))).
+ **Superseded 2026-07-02 by [stage14/colon-paren-types.md](stage14/colon-paren-types.md) CP-1** — colon-chains now fuse correctly; `name:ref:(Param T)` reads as `(name (ref (Param T)))`. (Original note: name:ref:(Param T) colon-chain doesn't parse for a defn name/param — fuse-colon-paren mangles it. Use the list form (name (ref (Param T))).)
 
 Sigil/rmacro for ref in type signatures, addr-of in code
 

@@ -697,7 +697,12 @@
     ; Simple symbol: name:type[:more] — desugar first if multi-colon,
     ; else use split-typed and parse-type-name on the single tail token.
     (when (= (n kind) NODE-SYM)
-      (let (s:ptr (n s))
+      (let (s:ptr (n s)
+            slen:i64 (cast i64 (strlen (n s))))
+        ; CP-3: a binding symbol ending in ':' is a whitespace near-miss (e.g. `x: (T)`) —
+        ; desugar does not run inside defn bodies, so reject at this emit-time chokepoint.
+        (when (and (> slen 0) (= (char-at s (- slen 1)) 58))
+          (die-at line (fmt-s "binding name ends in ':' (%s) -- write name:(Type) with no space, or (name Type)" s)))
         (when (!= (strchr s 58) null)
           (let (sec-colon:ptr (strchr (ptr+ (cast ptr:i8 (strchr s 58)) 1) 58))
             (when (!= sec-colon null)
@@ -713,6 +718,12 @@
     (when (= (n kind) NODE-CELL)
       (let (car-node:ptr:Node (cast ptr:Node (n car)))
         (when (and (!= (cast ptr car-node) null) (= (car-node kind) NODE-SYM))
+          ; CP-3: a field whose name cell is a trailing-colon symbol (e.g. `(f: (raw Node))`
+          ; written with a space) — field CELLs bypass colon desugar, so reject here.
+          (let (cs:ptr (car-node s)
+                cslen:i64 (cast i64 (strlen (car-node s))))
+            (when (and (> cslen 0) (= (char-at cs (- cslen 1)) 58))
+              (die-at line (fmt-s "binding name ends in ':' (%s) -- write name:(Type) with no space, or (name Type)" cs))))
          (ptr-set! out-name (car-node s))
          (let (rest:ptr (n cdr))
            (when (= rest null) (return null))
@@ -5055,11 +5066,30 @@
       (inc! i))
     (return last)))
 
+; CP-3: scan a (possibly malformed) let/with binding list for a name element that
+; is a symbol ending in ':' — a whitespace near-miss like `(x: (raw Node) null)`.
+; Runs before the even-count check, which would otherwise mask it behind a confusing
+; "binding list must be even". defn bodies are not desugared, so this is the only
+; chokepoint that catches a trailing-colon let/with name.
+(defn check-colon-bindings:void (binds:ptr)
+  (let (cur:ptr binds)
+    (while (!= cur null)
+      (let (e:ptr ((cast ptr:Node cur) car))
+        (when (!= e null)
+          (let (en:ptr:Node (cast ptr:Node e))
+            (when (= (en kind) NODE-SYM)
+              (let (es:ptr (en s)
+                    elen:i64 (cast i64 (strlen (en s))))
+                (when (and (> elen 0) (= (char-at es (- elen 1)) 58))
+                  (die-at (en line) (fmt-s "binding name ends in ':' (%s) -- write name:(Type) with no space, or (name Type)" es))))))))
+      (set! cur ((cast ptr:Node cur) cdr)))))
+
 (defn emit-let:ref:Val (call:ptr scope:ref:Scope)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (or (< (node-len cc) 2) (-> cc (node-at _ 1) (cast ptr:Node _) (_ kind) (!= _ NODE-CELL)))
       (die-at (cc line) "let: bad form"))
     (let (binds:ptr:Node (cast ptr:Node (node-at cc 1)))
+      (check-colon-bindings binds)
       (when (!= (% (node-len binds) 2) 0)
         (die-at (binds line) "let: binding list must be even"))
       (let (inner:ref:Scope (scope-new scope)
@@ -5134,6 +5164,7 @@
     (when (or (< (node-len cc) 2) (-> cc (node-at _ 1) (cast ptr:Node _) (_ kind) (!= _ NODE-CELL)))
       (die-at (cc line) "with: bad form"))
     (let (binds:ptr:Node (cast ptr:Node (node-at cc 1)))
+      (check-colon-bindings binds)
       (when (!= (% (node-len binds) 2) 0)
         (die-at (binds line) "with: binding list must be even"))
       (let (inner:ref:Scope (scope-new scope)
@@ -7689,6 +7720,10 @@
         start:i64 0
         i:i64 0
         slen:i64 (cast i64 (strlen s)))
+    ; CP-3: a binding name ending in ':' is a whitespace near-miss (e.g. `x: (T)`) —
+    ; reject here instead of letting the empty final segment produce a remote error.
+    (when (and (> slen 0) (= (char-at s (- slen 1)) 58))
+      (die-at line (fmt-s "binding name ends in ':' (%s) -- write name:(Type) with no space, or (name Type)" s)))
     (while (<= i slen)
       (when (or (= i slen) (= (char-at s i) 58))
          (let (seg-len:i64 (- i start)

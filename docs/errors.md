@@ -37,9 +37,10 @@ After the Phase F flip `?` is uniform `(Maybe T)` (no `(ref …)` injection), so
 nullable pointer). The
 `(Result T E)` template now lives in the prelude, always available. Because the
 toplevel signature prescan now resolves imported (prelude) types, `name:!Config`
-parses in ordinary signatures — which is the point of the sugar, since
-`name:(Result Config Err)` does not parse (parenthesized type in a colon
-position). `!` over a parenthesized payload has no sugar; write
+parses in ordinary signatures. (`name:(Result Config Err)` now parses too via
+the colon-paren sugar, so `!` is no longer *required* for that — but it
+remains the terser spelling and composes with the `?!` value-Maybe-over-Result
+sugar.) `!` over a parenthesized payload has no sugar; write
 `(Result (ref FILE) Err)` longhand.
 
 ## Constructing and eliminating `!T`

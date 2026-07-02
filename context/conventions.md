@@ -39,6 +39,10 @@ generic monomorphizer (`subst-tyvars-node`) therefore substitutes at the
 colon-*segment* level (like `subst-self-node` for protocols), not by matching
 standalone symbol nodes — that handles both shapes uniformly.
 
+## Colon-binding diagnostics span multiple chokepoints (CP-3)
+
+A trailing-colon binding name (the whitespace near-miss, e.g. `x: (raw Node)`) is **not** caught by a single chokepoint — the desugar/emit split means top-level and body-local bindings take different paths. `split-colon-segments`/`desugar-symbol` only cover **top-level** binding positions (defvar/defn-name/params); a `defn` body is not desugared (see the note above), so a `let`/`with` inside a body never reaches the desugar path — `emit-let`/`emit-with`'s even-count check masks it first. And `defstruct` field CELLs bypass colon desugar entirely. CP-3 therefore needs complementary checks at three sites: `split-colon-segments` (desugar path), `extract-name-and-type` (both the SYM and CELL branches, emit-time), and a `check-colon-bindings` scan in `emit-let`/`emit-with` before the even-count check. Lesson: don't assume a single chokepoint for binding-name diagnostics — when adding one, audit both the desugar and emit trees for every binding-introducing form.
+
 ## Emitting a function mid-emission needs the worklist, not a direct `emit-defn`
 
 `emit-defn` calls `reset-function-state`, clobbering the per-function streams
@@ -190,11 +194,16 @@ When converting a function or binding from `(ptr T)` to `(ref T)` / `?T`
   when the guard body visibly terminates (`return`/`goto`). Restructure such
   sites to `(if-some (x m) then (die-at …))` instead. (A future `noreturn`
   attribute would make the guard idiom work as-is.)
-- **Prelude types can't appear in `src/nucleusc.nuc` defn signatures.** The
-  toplevel signature prescan parses types before `(import prelude)` is
-  processed, so `ref:Node` / `?Node` in a *signature* dies with
-  "unknown type: Node" at line 0. Bodies are fine; lib/*.nuc files are fine
-  (their prescan runs at import time, after the prelude).
+- **Prelude types in `src/nucleusc.nuc` defn signatures work now** (stale
+  constraint, removed 2026-07): `prescan-imported-types` (nucleusc.nuc, run for
+  the outermost unit) names prelude types and the `!T` sugar before the
+  signature prescan, so `ref:Node` / `ptr:Node` in a *signature* compiles —
+  384 nucleusc.nuc signatures already name compiler-types structs, and
+  `make-vec` has a parametric `(ref (Vector ptr))` return. The remaining
+  gotcha is Phase-F semantics, not ordering: `ptr:T` is **non-null**, so a
+  cursor walking a nullable link field (e.g. `Node.cdr`, typed `(raw Node)`)
+  must itself be `(raw T)`, not `ptr:T`. Older `x:ptr` spellings justified by
+  the prescan (e.g. the comment near `import-list-push`) are leftovers.
 - **`type-eq` compares pointer elems, so mixed cond/if joins collapse.**
   Joining a bare `ptr` value with a `(ref T)`/`(ptr T)` value in a value
   position `if`/`cond` collapses the phi to void (pre-existing rule); if the

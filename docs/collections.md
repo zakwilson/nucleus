@@ -570,7 +570,7 @@ paths are reader diagnostics (compile-time `error:` messages), not runtime outpu
 
 ## Gotchas and constraints
 
-**Parametric method parameter syntax.** A parameter or return type written as a parenthesised form must use the list binding form: `(self (ref (Vector T)))`, never `self:(ref (Vector T))`. A plain-symbol colon chain tokenises correctly: `count:usize`, `self:ptr:Self`.
+**Parametric method parameter syntax.** A parameter or return type written as a parenthesised form may use either the list binding form `(self (ref (Vector T)))` or the colon-paren sugar `self:(ref (Vector T))` (and the chain form `self:ref:(Vector T)`); they are equivalent. A plain-symbol colon chain tokenises correctly: `count:usize`, `self:ptr:Self`.
 
 **`usize` literals.** There is no `usize` literal; always write `(cast usize N)` for index and length values.
 
