@@ -2241,849 +2241,850 @@ target triple = "x86_64-pc-windows-gnu"
 @.str.2097 = private unnamed_addr constant [9 x i8] c"__inline\00", align 1
 @.str.2098 = private unnamed_addr constant [11 x i8] c"__inline__\00", align 1
 @.str.2099 = private unnamed_addr constant [14 x i8] c"__extension__\00", align 1
-@.str.2100 = private unnamed_addr constant [9 x i8] c"unsigned\00", align 1
-@.str.2101 = private unnamed_addr constant [7 x i8] c"signed\00", align 1
-@.str.2102 = private unnamed_addr constant [5 x i8] c"long\00", align 1
+@.str.2100 = private unnamed_addr constant [10 x i8] c"_Noreturn\00", align 1
+@.str.2101 = private unnamed_addr constant [9 x i8] c"unsigned\00", align 1
+@.str.2102 = private unnamed_addr constant [7 x i8] c"signed\00", align 1
 @.str.2103 = private unnamed_addr constant [5 x i8] c"long\00", align 1
-@.str.2104 = private unnamed_addr constant [4 x i8] c"int\00", align 1
-@.str.2105 = private unnamed_addr constant [7 x i8] c"double\00", align 1
-@.str.2106 = private unnamed_addr constant [5 x i8] c"long\00", align 1
-@.str.2107 = private unnamed_addr constant [6 x i8] c"short\00", align 1
-@.str.2108 = private unnamed_addr constant [4 x i8] c"int\00", align 1
-@.str.2109 = private unnamed_addr constant [6 x i8] c"short\00", align 1
-@.str.2110 = private unnamed_addr constant [7 x i8] c"struct\00", align 1
-@.str.2111 = private unnamed_addr constant [6 x i8] c"union\00", align 1
-@.str.2112 = private unnamed_addr constant [14 x i8] c"__attribute__\00", align 1
-@.str.2113 = private unnamed_addr constant [6 x i8] c"const\00", align 1
-@.str.2114 = private unnamed_addr constant [9 x i8] c"restrict\00", align 1
-@.str.2115 = private unnamed_addr constant [11 x i8] c"__restrict\00", align 1
-@.str.2116 = private unnamed_addr constant [4 x i8] c"int\00", align 1
-@.str.2117 = private unnamed_addr constant [5 x i8] c"void\00", align 1
-@.str.2118 = private unnamed_addr constant [14 x i8] c"__attribute__\00", align 1
-@.str.2119 = private unnamed_addr constant [8 x i8] c"__asm__\00", align 1
-@.str.2120 = private unnamed_addr constant [4 x i8] c"@%s\00", align 1
-@.str.2121 = private unnamed_addr constant [7 x i8] c"malloc\00", align 1
-@.str.2122 = private unnamed_addr constant [16 x i8] c"declare %s @%s(\00", align 1
-@.str.2123 = private unnamed_addr constant [3 x i8] c", \00", align 1
-@.str.2124 = private unnamed_addr constant [3 x i8] c"%s\00", align 1
-@.str.2125 = private unnamed_addr constant [1 x i8] c"\00", align 1
-@.str.2126 = private unnamed_addr constant [3 x i8] c", \00", align 1
-@.str.2127 = private unnamed_addr constant [6 x i8] c"%s...\00", align 1
-@.str.2128 = private unnamed_addr constant [12 x i8] c") noreturn\0A\00", align 1
-@.str.2129 = private unnamed_addr constant [3 x i8] c")\0A\00", align 1
-@.str.2130 = private unnamed_addr constant [2 x i8] c"r\00", align 1
-@.str.2131 = private unnamed_addr constant [8 x i8] c"windows\00", align 1
-@.str.2132 = private unnamed_addr constant [15 x i8] c"%%%s = type { \00", align 1
-@.str.2133 = private unnamed_addr constant [3 x i8] c", \00", align 1
-@.str.2134 = private unnamed_addr constant [3 x i8] c"%s\00", align 1
-@.str.2135 = private unnamed_addr constant [5 x i8] c" }\0A\0A\00", align 1
-@.str.2136 = private unnamed_addr constant [8 x i8] c"typedef\00", align 1
-@.str.2137 = private unnamed_addr constant [7 x i8] c"struct\00", align 1
-@.str.2138 = private unnamed_addr constant [6 x i8] c"union\00", align 1
-@.str.2139 = private unnamed_addr constant [7 x i8] c"struct\00", align 1
-@.str.2140 = private unnamed_addr constant [6 x i8] c"union\00", align 1
-@.str.2141 = private unnamed_addr constant [15 x i8] c"%%%s = type { \00", align 1
-@.str.2142 = private unnamed_addr constant [3 x i8] c", \00", align 1
-@.str.2143 = private unnamed_addr constant [3 x i8] c"%s\00", align 1
-@.str.2144 = private unnamed_addr constant [5 x i8] c" }\0A\0A\00", align 1
-@.str.2145 = private unnamed_addr constant [14 x i8] c"__attribute__\00", align 1
-@.str.2146 = private unnamed_addr constant [48 x i8] c"clang -E -x c -include %s /dev/null 2>/dev/null\00", align 1
-@.str.2147 = private unnamed_addr constant [37 x i8] c"c-include: failed to preprocess '%s'\00", align 1
-@.str.2148 = private unnamed_addr constant [6 x i8] c"union\00", align 1
-@.str.2149 = private unnamed_addr constant [7 x i8] c"struct\00", align 1
-@.str.2150 = private unnamed_addr constant [8 x i8] c"typedef\00", align 1
-@.str.2151 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
-@.str.2152 = private unnamed_addr constant [5 x i8] c"void\00", align 1
+@.str.2104 = private unnamed_addr constant [5 x i8] c"long\00", align 1
+@.str.2105 = private unnamed_addr constant [4 x i8] c"int\00", align 1
+@.str.2106 = private unnamed_addr constant [7 x i8] c"double\00", align 1
+@.str.2107 = private unnamed_addr constant [5 x i8] c"long\00", align 1
+@.str.2108 = private unnamed_addr constant [6 x i8] c"short\00", align 1
+@.str.2109 = private unnamed_addr constant [4 x i8] c"int\00", align 1
+@.str.2110 = private unnamed_addr constant [6 x i8] c"short\00", align 1
+@.str.2111 = private unnamed_addr constant [7 x i8] c"struct\00", align 1
+@.str.2112 = private unnamed_addr constant [6 x i8] c"union\00", align 1
+@.str.2113 = private unnamed_addr constant [14 x i8] c"__attribute__\00", align 1
+@.str.2114 = private unnamed_addr constant [6 x i8] c"const\00", align 1
+@.str.2115 = private unnamed_addr constant [9 x i8] c"restrict\00", align 1
+@.str.2116 = private unnamed_addr constant [11 x i8] c"__restrict\00", align 1
+@.str.2117 = private unnamed_addr constant [4 x i8] c"int\00", align 1
+@.str.2118 = private unnamed_addr constant [5 x i8] c"void\00", align 1
+@.str.2119 = private unnamed_addr constant [14 x i8] c"__attribute__\00", align 1
+@.str.2120 = private unnamed_addr constant [8 x i8] c"__asm__\00", align 1
+@.str.2121 = private unnamed_addr constant [4 x i8] c"@%s\00", align 1
+@.str.2122 = private unnamed_addr constant [7 x i8] c"malloc\00", align 1
+@.str.2123 = private unnamed_addr constant [16 x i8] c"declare %s @%s(\00", align 1
+@.str.2124 = private unnamed_addr constant [3 x i8] c", \00", align 1
+@.str.2125 = private unnamed_addr constant [3 x i8] c"%s\00", align 1
+@.str.2126 = private unnamed_addr constant [1 x i8] c"\00", align 1
+@.str.2127 = private unnamed_addr constant [3 x i8] c", \00", align 1
+@.str.2128 = private unnamed_addr constant [6 x i8] c"%s...\00", align 1
+@.str.2129 = private unnamed_addr constant [12 x i8] c") noreturn\0A\00", align 1
+@.str.2130 = private unnamed_addr constant [3 x i8] c")\0A\00", align 1
+@.str.2131 = private unnamed_addr constant [2 x i8] c"r\00", align 1
+@.str.2132 = private unnamed_addr constant [8 x i8] c"windows\00", align 1
+@.str.2133 = private unnamed_addr constant [15 x i8] c"%%%s = type { \00", align 1
+@.str.2134 = private unnamed_addr constant [3 x i8] c", \00", align 1
+@.str.2135 = private unnamed_addr constant [3 x i8] c"%s\00", align 1
+@.str.2136 = private unnamed_addr constant [5 x i8] c" }\0A\0A\00", align 1
+@.str.2137 = private unnamed_addr constant [8 x i8] c"typedef\00", align 1
+@.str.2138 = private unnamed_addr constant [7 x i8] c"struct\00", align 1
+@.str.2139 = private unnamed_addr constant [6 x i8] c"union\00", align 1
+@.str.2140 = private unnamed_addr constant [7 x i8] c"struct\00", align 1
+@.str.2141 = private unnamed_addr constant [6 x i8] c"union\00", align 1
+@.str.2142 = private unnamed_addr constant [15 x i8] c"%%%s = type { \00", align 1
+@.str.2143 = private unnamed_addr constant [3 x i8] c", \00", align 1
+@.str.2144 = private unnamed_addr constant [3 x i8] c"%s\00", align 1
+@.str.2145 = private unnamed_addr constant [5 x i8] c" }\0A\0A\00", align 1
+@.str.2146 = private unnamed_addr constant [14 x i8] c"__attribute__\00", align 1
+@.str.2147 = private unnamed_addr constant [48 x i8] c"clang -E -x c -include %s /dev/null 2>/dev/null\00", align 1
+@.str.2148 = private unnamed_addr constant [37 x i8] c"c-include: failed to preprocess '%s'\00", align 1
+@.str.2149 = private unnamed_addr constant [6 x i8] c"union\00", align 1
+@.str.2150 = private unnamed_addr constant [7 x i8] c"struct\00", align 1
+@.str.2151 = private unnamed_addr constant [8 x i8] c"typedef\00", align 1
+@.str.2152 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
 @.str.2153 = private unnamed_addr constant [5 x i8] c"void\00", align 1
-@.str.2154 = private unnamed_addr constant [3 x i8] c"i1\00", align 1
-@.str.2155 = private unnamed_addr constant [6 x i8] c"_Bool\00", align 1
-@.str.2156 = private unnamed_addr constant [3 x i8] c"i8\00", align 1
-@.str.2157 = private unnamed_addr constant [7 x i8] c"int8_t\00", align 1
-@.str.2158 = private unnamed_addr constant [4 x i8] c"i16\00", align 1
-@.str.2159 = private unnamed_addr constant [8 x i8] c"int16_t\00", align 1
-@.str.2160 = private unnamed_addr constant [4 x i8] c"i32\00", align 1
-@.str.2161 = private unnamed_addr constant [8 x i8] c"int32_t\00", align 1
-@.str.2162 = private unnamed_addr constant [4 x i8] c"int\00", align 1
-@.str.2163 = private unnamed_addr constant [8 x i8] c"int32_t\00", align 1
-@.str.2164 = private unnamed_addr constant [4 x i8] c"i64\00", align 1
-@.str.2165 = private unnamed_addr constant [8 x i8] c"int64_t\00", align 1
-@.str.2166 = private unnamed_addr constant [4 x i8] c"ui8\00", align 1
-@.str.2167 = private unnamed_addr constant [8 x i8] c"uint8_t\00", align 1
-@.str.2168 = private unnamed_addr constant [5 x i8] c"ui16\00", align 1
-@.str.2169 = private unnamed_addr constant [9 x i8] c"uint16_t\00", align 1
-@.str.2170 = private unnamed_addr constant [5 x i8] c"ui32\00", align 1
-@.str.2171 = private unnamed_addr constant [9 x i8] c"uint32_t\00", align 1
-@.str.2172 = private unnamed_addr constant [5 x i8] c"ui64\00", align 1
-@.str.2173 = private unnamed_addr constant [9 x i8] c"uint64_t\00", align 1
-@.str.2174 = private unnamed_addr constant [4 x i8] c"f32\00", align 1
-@.str.2175 = private unnamed_addr constant [6 x i8] c"float\00", align 1
-@.str.2176 = private unnamed_addr constant [4 x i8] c"f64\00", align 1
-@.str.2177 = private unnamed_addr constant [7 x i8] c"double\00", align 1
-@.str.2178 = private unnamed_addr constant [5 x i8] c"bool\00", align 1
-@.str.2179 = private unnamed_addr constant [6 x i8] c"_Bool\00", align 1
-@.str.2180 = private unnamed_addr constant [5 x i8] c"CStr\00", align 1
-@.str.2181 = private unnamed_addr constant [12 x i8] c"const char*\00", align 1
-@.str.2182 = private unnamed_addr constant [4 x i8] c"ptr\00", align 1
-@.str.2183 = private unnamed_addr constant [6 x i8] c"void*\00", align 1
-@.str.2184 = private unnamed_addr constant [10 x i8] c"struct %s\00", align 1
-@.str.2185 = private unnamed_addr constant [5 x i8] c"ptr:\00", align 1
-@.str.2186 = private unnamed_addr constant [48 x i8] c"%s* /* niche: reserved top page = error/none */\00", align 1
-@.str.2187 = private unnamed_addr constant [5 x i8] c"ref:\00", align 1
-@.str.2188 = private unnamed_addr constant [48 x i8] c"%s* /* niche: reserved top page = error/none */\00", align 1
-@.str.2189 = private unnamed_addr constant [5 x i8] c"void\00", align 1
-@.str.2190 = private unnamed_addr constant [4 x i8] c"ptr\00", align 1
-@.str.2191 = private unnamed_addr constant [6 x i8] c"void*\00", align 1
-@.str.2192 = private unnamed_addr constant [4 x i8] c"%s*\00", align 1
-@.str.2193 = private unnamed_addr constant [6 x i8] c"union\00", align 1
-@.str.2194 = private unnamed_addr constant [9 x i8] c"union { \00", align 1
-@.str.2195 = private unnamed_addr constant [5 x i8] c"%s%s\00", align 1
-@.str.2196 = private unnamed_addr constant [8 x i8] c"%s %s; \00", align 1
-@.str.2197 = private unnamed_addr constant [4 x i8] c"%s}\00", align 1
-@.str.2198 = private unnamed_addr constant [6 x i8] c"void*\00", align 1
-@.str.2199 = private unnamed_addr constant [18 x i8] c"typedef struct {\0A\00", align 1
-@.str.2200 = private unnamed_addr constant [12 x i8] c"    %s %s;\0A\00", align 1
-@.str.2201 = private unnamed_addr constant [8 x i8] c"} %s;\0A\0A\00", align 1
-@.str.2202 = private unnamed_addr constant [11 x i8] c"__vfn_env_\00", align 1
-@.str.2203 = private unnamed_addr constant [8 x i8] c"BoxedFn\00", align 1
-@.str.2204 = private unnamed_addr constant [4 x i8] c"dyn\00", align 1
-@.str.2205 = private unnamed_addr constant [4 x i8] c"ptr\00", align 1
-@.str.2206 = private unnamed_addr constant [4 x i8] c"ref\00", align 1
-@.str.2207 = private unnamed_addr constant [64 x i8] c"/* %s: uses a defunion-template instance type; not exported */\0A\00", align 1
-@.str.2208 = private unnamed_addr constant [78 x i8] c"/* %s: exposes a closure or type-erased box type; not C-callable, omitted */\0A\00", align 1
-@.str.2209 = private unnamed_addr constant [5 x i8] c"void\00", align 1
-@.str.2210 = private unnamed_addr constant [7 x i8] c"%s %s(\00", align 1
-@.str.2211 = private unnamed_addr constant [5 x i8] c"void\00", align 1
-@.str.2212 = private unnamed_addr constant [3 x i8] c", \00", align 1
-@.str.2213 = private unnamed_addr constant [6 x i8] c"%s %s\00", align 1
-@.str.2214 = private unnamed_addr constant [9 x i8] c"void* %s\00", align 1
-@.str.2215 = private unnamed_addr constant [4 x i8] c");\0A\00", align 1
-@.str.2216 = private unnamed_addr constant [16 x i8] c"#define %s %ld\0A\00", align 1
-@.str.2217 = private unnamed_addr constant [17 x i8] c"#define %s \22%s\22\0A\00", align 1
-@.str.2218 = private unnamed_addr constant [11 x i8] c"enum %s {\0A\00", align 1
-@.str.2219 = private unnamed_addr constant [15 x i8] c"    %s_%s = %d\00", align 1
-@.str.2220 = private unnamed_addr constant [2 x i8] c",\00", align 1
-@.str.2221 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
-@.str.2222 = private unnamed_addr constant [5 x i8] c"};\0A\0A\00", align 1
-@.str.2223 = private unnamed_addr constant [35 x i8] c"typedef struct {\0A    int32_t tag;\0A\00", align 1
-@.str.2224 = private unnamed_addr constant [13 x i8] c"    union {\0A\00", align 1
-@.str.2225 = private unnamed_addr constant [16 x i8] c"        %s %s;\0A\00", align 1
-@.str.2226 = private unnamed_addr constant [18 x i8] c"        struct { \00", align 1
-@.str.2227 = private unnamed_addr constant [8 x i8] c"%s %s; \00", align 1
-@.str.2228 = private unnamed_addr constant [7 x i8] c"} %s;\0A\00", align 1
-@.str.2229 = private unnamed_addr constant [16 x i8] c"    } payload;\0A\00", align 1
-@.str.2230 = private unnamed_addr constant [8 x i8] c"} %s;\0A\0A\00", align 1
-@.str.2231 = private unnamed_addr constant [15 x i8] c"enum %s_tag {\0A\00", align 1
-@.str.2232 = private unnamed_addr constant [15 x i8] c"    %s_%s = %d\00", align 1
-@.str.2233 = private unnamed_addr constant [2 x i8] c",\00", align 1
-@.str.2234 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
-@.str.2235 = private unnamed_addr constant [5 x i8] c"};\0A\0A\00", align 1
-@.str.2236 = private unnamed_addr constant [14 x i8] c"#pragma once\0A\00", align 1
-@.str.2237 = private unnamed_addr constant [21 x i8] c"#include <stdint.h>\0A\00", align 1
-@.str.2238 = private unnamed_addr constant [23 x i8] c"#include <stdbool.h>\0A\0A\00", align 1
-@.str.2239 = private unnamed_addr constant [53 x i8] c"/* Generated from %s by nucleusc --emit-cheader */\0A\0A\00", align 1
-@.str.2240 = private unnamed_addr constant [9 x i8] c"defunion\00", align 1
-@.str.2241 = private unnamed_addr constant [10 x i8] c"defstruct\00", align 1
-@.str.2242 = private unnamed_addr constant [9 x i8] c"defunion\00", align 1
-@.str.2243 = private unnamed_addr constant [5 x i8] c"defn\00", align 1
-@.str.2244 = private unnamed_addr constant [9 x i8] c"defconst\00", align 1
-@.str.2245 = private unnamed_addr constant [8 x i8] c"defenum\00", align 1
-@.str.2246 = private unnamed_addr constant [12 x i8] c"(defstruct \00", align 1
-@.str.2247 = private unnamed_addr constant [3 x i8] c")\0A\00", align 1
-@.str.2248 = private unnamed_addr constant [10 x i8] c"(declare \00", align 1
-@.str.2249 = private unnamed_addr constant [3 x i8] c" (\00", align 1
-@.str.2250 = private unnamed_addr constant [4 x i8] c"))\0A\00", align 1
-@.str.2251 = private unnamed_addr constant [11 x i8] c"(defconst \00", align 1
-@.str.2252 = private unnamed_addr constant [2 x i8] c" \00", align 1
-@.str.2253 = private unnamed_addr constant [3 x i8] c")\0A\00", align 1
-@.str.2254 = private unnamed_addr constant [9 x i8] c"(defenum\00", align 1
-@.str.2255 = private unnamed_addr constant [3 x i8] c")\0A\00", align 1
-@.str.2256 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
-@.str.2257 = private unnamed_addr constant [17 x i8] c"(defmethod \22%s\22 \00", align 1
-@.str.2258 = private unnamed_addr constant [3 x i8] c" (\00", align 1
-@.str.2259 = private unnamed_addr constant [4 x i8] c"))\0A\00", align 1
-@.str.2260 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@.str.2154 = private unnamed_addr constant [5 x i8] c"void\00", align 1
+@.str.2155 = private unnamed_addr constant [3 x i8] c"i1\00", align 1
+@.str.2156 = private unnamed_addr constant [6 x i8] c"_Bool\00", align 1
+@.str.2157 = private unnamed_addr constant [3 x i8] c"i8\00", align 1
+@.str.2158 = private unnamed_addr constant [7 x i8] c"int8_t\00", align 1
+@.str.2159 = private unnamed_addr constant [4 x i8] c"i16\00", align 1
+@.str.2160 = private unnamed_addr constant [8 x i8] c"int16_t\00", align 1
+@.str.2161 = private unnamed_addr constant [4 x i8] c"i32\00", align 1
+@.str.2162 = private unnamed_addr constant [8 x i8] c"int32_t\00", align 1
+@.str.2163 = private unnamed_addr constant [4 x i8] c"int\00", align 1
+@.str.2164 = private unnamed_addr constant [8 x i8] c"int32_t\00", align 1
+@.str.2165 = private unnamed_addr constant [4 x i8] c"i64\00", align 1
+@.str.2166 = private unnamed_addr constant [8 x i8] c"int64_t\00", align 1
+@.str.2167 = private unnamed_addr constant [4 x i8] c"ui8\00", align 1
+@.str.2168 = private unnamed_addr constant [8 x i8] c"uint8_t\00", align 1
+@.str.2169 = private unnamed_addr constant [5 x i8] c"ui16\00", align 1
+@.str.2170 = private unnamed_addr constant [9 x i8] c"uint16_t\00", align 1
+@.str.2171 = private unnamed_addr constant [5 x i8] c"ui32\00", align 1
+@.str.2172 = private unnamed_addr constant [9 x i8] c"uint32_t\00", align 1
+@.str.2173 = private unnamed_addr constant [5 x i8] c"ui64\00", align 1
+@.str.2174 = private unnamed_addr constant [9 x i8] c"uint64_t\00", align 1
+@.str.2175 = private unnamed_addr constant [4 x i8] c"f32\00", align 1
+@.str.2176 = private unnamed_addr constant [6 x i8] c"float\00", align 1
+@.str.2177 = private unnamed_addr constant [4 x i8] c"f64\00", align 1
+@.str.2178 = private unnamed_addr constant [7 x i8] c"double\00", align 1
+@.str.2179 = private unnamed_addr constant [5 x i8] c"bool\00", align 1
+@.str.2180 = private unnamed_addr constant [6 x i8] c"_Bool\00", align 1
+@.str.2181 = private unnamed_addr constant [5 x i8] c"CStr\00", align 1
+@.str.2182 = private unnamed_addr constant [12 x i8] c"const char*\00", align 1
+@.str.2183 = private unnamed_addr constant [4 x i8] c"ptr\00", align 1
+@.str.2184 = private unnamed_addr constant [6 x i8] c"void*\00", align 1
+@.str.2185 = private unnamed_addr constant [10 x i8] c"struct %s\00", align 1
+@.str.2186 = private unnamed_addr constant [5 x i8] c"ptr:\00", align 1
+@.str.2187 = private unnamed_addr constant [48 x i8] c"%s* /* niche: reserved top page = error/none */\00", align 1
+@.str.2188 = private unnamed_addr constant [5 x i8] c"ref:\00", align 1
+@.str.2189 = private unnamed_addr constant [48 x i8] c"%s* /* niche: reserved top page = error/none */\00", align 1
+@.str.2190 = private unnamed_addr constant [5 x i8] c"void\00", align 1
+@.str.2191 = private unnamed_addr constant [4 x i8] c"ptr\00", align 1
+@.str.2192 = private unnamed_addr constant [6 x i8] c"void*\00", align 1
+@.str.2193 = private unnamed_addr constant [4 x i8] c"%s*\00", align 1
+@.str.2194 = private unnamed_addr constant [6 x i8] c"union\00", align 1
+@.str.2195 = private unnamed_addr constant [9 x i8] c"union { \00", align 1
+@.str.2196 = private unnamed_addr constant [5 x i8] c"%s%s\00", align 1
+@.str.2197 = private unnamed_addr constant [8 x i8] c"%s %s; \00", align 1
+@.str.2198 = private unnamed_addr constant [4 x i8] c"%s}\00", align 1
+@.str.2199 = private unnamed_addr constant [6 x i8] c"void*\00", align 1
+@.str.2200 = private unnamed_addr constant [18 x i8] c"typedef struct {\0A\00", align 1
+@.str.2201 = private unnamed_addr constant [12 x i8] c"    %s %s;\0A\00", align 1
+@.str.2202 = private unnamed_addr constant [8 x i8] c"} %s;\0A\0A\00", align 1
+@.str.2203 = private unnamed_addr constant [11 x i8] c"__vfn_env_\00", align 1
+@.str.2204 = private unnamed_addr constant [8 x i8] c"BoxedFn\00", align 1
+@.str.2205 = private unnamed_addr constant [4 x i8] c"dyn\00", align 1
+@.str.2206 = private unnamed_addr constant [4 x i8] c"ptr\00", align 1
+@.str.2207 = private unnamed_addr constant [4 x i8] c"ref\00", align 1
+@.str.2208 = private unnamed_addr constant [64 x i8] c"/* %s: uses a defunion-template instance type; not exported */\0A\00", align 1
+@.str.2209 = private unnamed_addr constant [78 x i8] c"/* %s: exposes a closure or type-erased box type; not C-callable, omitted */\0A\00", align 1
+@.str.2210 = private unnamed_addr constant [5 x i8] c"void\00", align 1
+@.str.2211 = private unnamed_addr constant [7 x i8] c"%s %s(\00", align 1
+@.str.2212 = private unnamed_addr constant [5 x i8] c"void\00", align 1
+@.str.2213 = private unnamed_addr constant [3 x i8] c", \00", align 1
+@.str.2214 = private unnamed_addr constant [6 x i8] c"%s %s\00", align 1
+@.str.2215 = private unnamed_addr constant [9 x i8] c"void* %s\00", align 1
+@.str.2216 = private unnamed_addr constant [4 x i8] c");\0A\00", align 1
+@.str.2217 = private unnamed_addr constant [16 x i8] c"#define %s %ld\0A\00", align 1
+@.str.2218 = private unnamed_addr constant [17 x i8] c"#define %s \22%s\22\0A\00", align 1
+@.str.2219 = private unnamed_addr constant [11 x i8] c"enum %s {\0A\00", align 1
+@.str.2220 = private unnamed_addr constant [15 x i8] c"    %s_%s = %d\00", align 1
+@.str.2221 = private unnamed_addr constant [2 x i8] c",\00", align 1
+@.str.2222 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@.str.2223 = private unnamed_addr constant [5 x i8] c"};\0A\0A\00", align 1
+@.str.2224 = private unnamed_addr constant [35 x i8] c"typedef struct {\0A    int32_t tag;\0A\00", align 1
+@.str.2225 = private unnamed_addr constant [13 x i8] c"    union {\0A\00", align 1
+@.str.2226 = private unnamed_addr constant [16 x i8] c"        %s %s;\0A\00", align 1
+@.str.2227 = private unnamed_addr constant [18 x i8] c"        struct { \00", align 1
+@.str.2228 = private unnamed_addr constant [8 x i8] c"%s %s; \00", align 1
+@.str.2229 = private unnamed_addr constant [7 x i8] c"} %s;\0A\00", align 1
+@.str.2230 = private unnamed_addr constant [16 x i8] c"    } payload;\0A\00", align 1
+@.str.2231 = private unnamed_addr constant [8 x i8] c"} %s;\0A\0A\00", align 1
+@.str.2232 = private unnamed_addr constant [15 x i8] c"enum %s_tag {\0A\00", align 1
+@.str.2233 = private unnamed_addr constant [15 x i8] c"    %s_%s = %d\00", align 1
+@.str.2234 = private unnamed_addr constant [2 x i8] c",\00", align 1
+@.str.2235 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@.str.2236 = private unnamed_addr constant [5 x i8] c"};\0A\0A\00", align 1
+@.str.2237 = private unnamed_addr constant [14 x i8] c"#pragma once\0A\00", align 1
+@.str.2238 = private unnamed_addr constant [21 x i8] c"#include <stdint.h>\0A\00", align 1
+@.str.2239 = private unnamed_addr constant [23 x i8] c"#include <stdbool.h>\0A\0A\00", align 1
+@.str.2240 = private unnamed_addr constant [53 x i8] c"/* Generated from %s by nucleusc --emit-cheader */\0A\0A\00", align 1
+@.str.2241 = private unnamed_addr constant [9 x i8] c"defunion\00", align 1
+@.str.2242 = private unnamed_addr constant [10 x i8] c"defstruct\00", align 1
+@.str.2243 = private unnamed_addr constant [9 x i8] c"defunion\00", align 1
+@.str.2244 = private unnamed_addr constant [5 x i8] c"defn\00", align 1
+@.str.2245 = private unnamed_addr constant [9 x i8] c"defconst\00", align 1
+@.str.2246 = private unnamed_addr constant [8 x i8] c"defenum\00", align 1
+@.str.2247 = private unnamed_addr constant [12 x i8] c"(defstruct \00", align 1
+@.str.2248 = private unnamed_addr constant [3 x i8] c")\0A\00", align 1
+@.str.2249 = private unnamed_addr constant [10 x i8] c"(declare \00", align 1
+@.str.2250 = private unnamed_addr constant [3 x i8] c" (\00", align 1
+@.str.2251 = private unnamed_addr constant [4 x i8] c"))\0A\00", align 1
+@.str.2252 = private unnamed_addr constant [11 x i8] c"(defconst \00", align 1
+@.str.2253 = private unnamed_addr constant [2 x i8] c" \00", align 1
+@.str.2254 = private unnamed_addr constant [3 x i8] c")\0A\00", align 1
+@.str.2255 = private unnamed_addr constant [9 x i8] c"(defenum\00", align 1
+@.str.2256 = private unnamed_addr constant [3 x i8] c")\0A\00", align 1
+@.str.2257 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@.str.2258 = private unnamed_addr constant [17 x i8] c"(defmethod \22%s\22 \00", align 1
+@.str.2259 = private unnamed_addr constant [3 x i8] c" (\00", align 1
+@.str.2260 = private unnamed_addr constant [4 x i8] c"))\0A\00", align 1
 @.str.2261 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
-@.str.2262 = private unnamed_addr constant [8 x i8] c"(extend\00", align 1
-@.str.2263 = private unnamed_addr constant [3 x i8] c")\0A\00", align 1
-@.str.2264 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
-@.str.2265 = private unnamed_addr constant [9 x i8] c"(extern \00", align 1
-@.str.2266 = private unnamed_addr constant [3 x i8] c")\0A\00", align 1
-@.str.2267 = private unnamed_addr constant [23 x i8] c"; .nuch header for %s\0A\00", align 1
-@.str.2268 = private unnamed_addr constant [5 x i8] c"user\00", align 1
-@.str.2269 = private unnamed_addr constant [9 x i8] c"(ns %s)\0A\00", align 1
-@.str.2270 = private unnamed_addr constant [22 x i8] c"(set-ir-prefix \22%s\22)\0A\00", align 1
-@.str.2271 = private unnamed_addr constant [10 x i8] c"defstruct\00", align 1
-@.str.2272 = private unnamed_addr constant [9 x i8] c"defunion\00", align 1
-@.str.2273 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
-@.str.2274 = private unnamed_addr constant [5 x i8] c"defn\00", align 1
-@.str.2275 = private unnamed_addr constant [12 x i8] c"defprotocol\00", align 1
-@.str.2276 = private unnamed_addr constant [7 x i8] c"extend\00", align 1
-@.str.2277 = private unnamed_addr constant [8 x i8] c"defcast\00", align 1
-@.str.2278 = private unnamed_addr constant [7 x i8] c"defvar\00", align 1
-@.str.2279 = private unnamed_addr constant [9 x i8] c"defconst\00", align 1
-@.str.2280 = private unnamed_addr constant [9 x i8] c"deferror\00", align 1
-@.str.2281 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
-@.str.2282 = private unnamed_addr constant [8 x i8] c"defenum\00", align 1
-@.str.2283 = private unnamed_addr constant [9 x i8] c"defmacro\00", align 1
-@.str.2284 = private unnamed_addr constant [9 x i8] c"noreturn\00", align 1
-@.str.2285 = private unnamed_addr constant [53 x i8] c"declare: expected (declare name:rettype (params...))\00", align 1
-@.str.2286 = private unnamed_addr constant [31 x i8] c"declare: missing :type on '%s'\00", align 1
-@.str.2287 = private unnamed_addr constant [4 x i8] c"@%s\00", align 1
-@.str.2288 = private unnamed_addr constant [15 x i8] c"declare %s %s(\00", align 1
-@.str.2289 = private unnamed_addr constant [22 x i8] c"ptr sret(%s) align %d\00", align 1
-@.str.2290 = private unnamed_addr constant [3 x i8] c", \00", align 1
-@.str.2291 = private unnamed_addr constant [12 x i8] c") noreturn\0A\00", align 1
-@.str.2292 = private unnamed_addr constant [3 x i8] c")\0A\00", align 1
-@.str.2293 = private unnamed_addr constant [64 x i8] c"defmethod: expected (defmethod \22@sym\22 name:rettype (params...))\00", align 1
-@.str.2294 = private unnamed_addr constant [59 x i8] c"defmethod: first element must be the mangled symbol string\00", align 1
-@.str.2295 = private unnamed_addr constant [31 x i8] c"defmethod: missing return type\00", align 1
-@.str.2296 = private unnamed_addr constant [15 x i8] c"declare %s %s(\00", align 1
-@.str.2297 = private unnamed_addr constant [3 x i8] c", \00", align 1
-@.str.2298 = private unnamed_addr constant [3 x i8] c"%s\00", align 1
-@.str.2299 = private unnamed_addr constant [3 x i8] c")\0A\00", align 1
-@.str.2300 = private unnamed_addr constant [46 x i8] c"defunion: expects a name and at least one arm\00", align 1
-@.str.2301 = private unnamed_addr constant [32 x i8] c"defunion: name must be a symbol\00", align 1
-@.str.2302 = private unnamed_addr constant [8 x i8] c"declare\00", align 1
-@.str.2303 = private unnamed_addr constant [3 x i8] c"ns\00", align 1
-@.str.2304 = private unnamed_addr constant [14 x i8] c"set-ir-prefix\00", align 1
-@.str.2305 = private unnamed_addr constant [10 x i8] c"defstruct\00", align 1
-@.str.2306 = private unnamed_addr constant [9 x i8] c"defunion\00", align 1
-@.str.2307 = private unnamed_addr constant [8 x i8] c"declare\00", align 1
-@.str.2308 = private unnamed_addr constant [10 x i8] c"defmethod\00", align 1
-@.str.2309 = private unnamed_addr constant [5 x i8] c"defn\00", align 1
-@.str.2310 = private unnamed_addr constant [12 x i8] c"defprotocol\00", align 1
-@.str.2311 = private unnamed_addr constant [7 x i8] c"extend\00", align 1
-@.str.2312 = private unnamed_addr constant [8 x i8] c"defcast\00", align 1
-@.str.2313 = private unnamed_addr constant [7 x i8] c"extern\00", align 1
-@.str.2314 = private unnamed_addr constant [9 x i8] c"defconst\00", align 1
-@.str.2315 = private unnamed_addr constant [8 x i8] c"defenum\00", align 1
-@.str.2316 = private unnamed_addr constant [9 x i8] c"defmacro\00", align 1
-@.str.2317 = private unnamed_addr constant [11 x i8] c"def-rmacro\00", align 1
-@.str.2318 = private unnamed_addr constant [3 x i8] c"\5C\22\00", align 1
-@.str.2319 = private unnamed_addr constant [3 x i8] c"\5C\5C\00", align 1
-@.str.2320 = private unnamed_addr constant [3 x i8] c"\5Cn\00", align 1
-@.str.2321 = private unnamed_addr constant [3 x i8] c"\5Cr\00", align 1
-@.str.2322 = private unnamed_addr constant [3 x i8] c"\5Ct\00", align 1
-@.str.2323 = private unnamed_addr constant [7 x i8] c"\5Cu%04x\00", align 1
-@.str.2324 = private unnamed_addr constant [3 x i8] c"%c\00", align 1
-@.str.2325 = private unnamed_addr constant [10 x i8] c"{\22file\22:\22\00", align 1
-@.str.2326 = private unnamed_addr constant [24 x i8] c"\22,\22line\22:%d,\22message\22:\22\00", align 1
-@.str.2327 = private unnamed_addr constant [4 x i8] c"\22}\0A\00", align 1
-@.str.2328 = private unnamed_addr constant [13 x i8] c"  error: %s\0A\00", align 1
-@.str.2329 = private unnamed_addr constant [7 x i8] c"malloc\00", align 1
-@.str.2330 = private unnamed_addr constant [6 x i8] c"nuc> \00", align 1
-@.str.2331 = private unnamed_addr constant [6 x i8] c"...> \00", align 1
-@.str.2332 = private unnamed_addr constant [7 x i8] c"malloc\00", align 1
-@.str.2333 = private unnamed_addr constant [8 x i8] c"realloc\00", align 1
-@.str.2334 = private unnamed_addr constant [3 x i8] c"  \00", align 1
-@.str.2335 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
-@.str.2336 = private unnamed_addr constant [6 x i8] c"quote\00", align 1
-@.str.2337 = private unnamed_addr constant [3 x i8] c"  \00", align 1
-@.str.2338 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
-@.str.2339 = private unnamed_addr constant [3 x i8] c"ns\00", align 1
-@.str.2340 = private unnamed_addr constant [9 x i8] c"defconst\00", align 1
-@.str.2341 = private unnamed_addr constant [8 x i8] c"defenum\00", align 1
-@.str.2342 = private unnamed_addr constant [7 x i8] c"defvar\00", align 1
-@.str.2343 = private unnamed_addr constant [26 x i8] c"@%s = external global %s\0A\00", align 1
-@.str.2344 = private unnamed_addr constant [11 x i8] c"  defined\0A\00", align 1
-@.str.2345 = private unnamed_addr constant [10 x i8] c"defstruct\00", align 1
-@.str.2346 = private unnamed_addr constant [11 x i8] c"  defined\0A\00", align 1
-@.str.2347 = private unnamed_addr constant [9 x i8] c"defunion\00", align 1
-@.str.2348 = private unnamed_addr constant [11 x i8] c"  defined\0A\00", align 1
-@.str.2349 = private unnamed_addr constant [7 x i8] c"extern\00", align 1
-@.str.2350 = private unnamed_addr constant [5 x i8] c"defn\00", align 1
-@.str.2351 = private unnamed_addr constant [19 x i8] c"defn: missing name\00", align 1
-@.str.2352 = private unnamed_addr constant [40 x i8] c"redefinition: tracker remove failed: %s\00", align 1
-@.str.2353 = private unnamed_addr constant [11 x i8] c"%s.impl.%d\00", align 1
-@.str.2354 = private unnamed_addr constant [16 x i8] c"declare %s @%s(\00", align 1
-@.str.2355 = private unnamed_addr constant [3 x i8] c", \00", align 1
-@.str.2356 = private unnamed_addr constant [3 x i8] c"%s\00", align 1
-@.str.2357 = private unnamed_addr constant [3 x i8] c")\0A\00", align 1
-@.str.2358 = private unnamed_addr constant [13 x i8] c"  redefined\0A\00", align 1
-@.str.2359 = private unnamed_addr constant [11 x i8] c"  defined\0A\00", align 1
-@.str.2360 = private unnamed_addr constant [13 x i8] c"compile-time\00", align 1
-@.str.2361 = private unnamed_addr constant [9 x i8] c"defmacro\00", align 1
-@.str.2362 = private unnamed_addr constant [11 x i8] c"  defined\0A\00", align 1
-@.str.2363 = private unnamed_addr constant [11 x i8] c"def-rmacro\00", align 1
-@.str.2364 = private unnamed_addr constant [11 x i8] c"  defined\0A\00", align 1
-@.str.2365 = private unnamed_addr constant [12 x i8] c"macroexpand\00", align 1
-@.str.2366 = private unnamed_addr constant [14 x i8] c"macroexpand-1\00", align 1
-@.str.2367 = private unnamed_addr constant [16 x i8] c"macroexpand-all\00", align 1
+@.str.2262 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@.str.2263 = private unnamed_addr constant [8 x i8] c"(extend\00", align 1
+@.str.2264 = private unnamed_addr constant [3 x i8] c")\0A\00", align 1
+@.str.2265 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@.str.2266 = private unnamed_addr constant [9 x i8] c"(extern \00", align 1
+@.str.2267 = private unnamed_addr constant [3 x i8] c")\0A\00", align 1
+@.str.2268 = private unnamed_addr constant [23 x i8] c"; .nuch header for %s\0A\00", align 1
+@.str.2269 = private unnamed_addr constant [5 x i8] c"user\00", align 1
+@.str.2270 = private unnamed_addr constant [9 x i8] c"(ns %s)\0A\00", align 1
+@.str.2271 = private unnamed_addr constant [22 x i8] c"(set-ir-prefix \22%s\22)\0A\00", align 1
+@.str.2272 = private unnamed_addr constant [10 x i8] c"defstruct\00", align 1
+@.str.2273 = private unnamed_addr constant [9 x i8] c"defunion\00", align 1
+@.str.2274 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@.str.2275 = private unnamed_addr constant [5 x i8] c"defn\00", align 1
+@.str.2276 = private unnamed_addr constant [12 x i8] c"defprotocol\00", align 1
+@.str.2277 = private unnamed_addr constant [7 x i8] c"extend\00", align 1
+@.str.2278 = private unnamed_addr constant [8 x i8] c"defcast\00", align 1
+@.str.2279 = private unnamed_addr constant [7 x i8] c"defvar\00", align 1
+@.str.2280 = private unnamed_addr constant [9 x i8] c"defconst\00", align 1
+@.str.2281 = private unnamed_addr constant [9 x i8] c"deferror\00", align 1
+@.str.2282 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@.str.2283 = private unnamed_addr constant [8 x i8] c"defenum\00", align 1
+@.str.2284 = private unnamed_addr constant [9 x i8] c"defmacro\00", align 1
+@.str.2285 = private unnamed_addr constant [9 x i8] c"noreturn\00", align 1
+@.str.2286 = private unnamed_addr constant [53 x i8] c"declare: expected (declare name:rettype (params...))\00", align 1
+@.str.2287 = private unnamed_addr constant [31 x i8] c"declare: missing :type on '%s'\00", align 1
+@.str.2288 = private unnamed_addr constant [4 x i8] c"@%s\00", align 1
+@.str.2289 = private unnamed_addr constant [15 x i8] c"declare %s %s(\00", align 1
+@.str.2290 = private unnamed_addr constant [22 x i8] c"ptr sret(%s) align %d\00", align 1
+@.str.2291 = private unnamed_addr constant [3 x i8] c", \00", align 1
+@.str.2292 = private unnamed_addr constant [12 x i8] c") noreturn\0A\00", align 1
+@.str.2293 = private unnamed_addr constant [3 x i8] c")\0A\00", align 1
+@.str.2294 = private unnamed_addr constant [64 x i8] c"defmethod: expected (defmethod \22@sym\22 name:rettype (params...))\00", align 1
+@.str.2295 = private unnamed_addr constant [59 x i8] c"defmethod: first element must be the mangled symbol string\00", align 1
+@.str.2296 = private unnamed_addr constant [31 x i8] c"defmethod: missing return type\00", align 1
+@.str.2297 = private unnamed_addr constant [15 x i8] c"declare %s %s(\00", align 1
+@.str.2298 = private unnamed_addr constant [3 x i8] c", \00", align 1
+@.str.2299 = private unnamed_addr constant [3 x i8] c"%s\00", align 1
+@.str.2300 = private unnamed_addr constant [3 x i8] c")\0A\00", align 1
+@.str.2301 = private unnamed_addr constant [46 x i8] c"defunion: expects a name and at least one arm\00", align 1
+@.str.2302 = private unnamed_addr constant [32 x i8] c"defunion: name must be a symbol\00", align 1
+@.str.2303 = private unnamed_addr constant [8 x i8] c"declare\00", align 1
+@.str.2304 = private unnamed_addr constant [3 x i8] c"ns\00", align 1
+@.str.2305 = private unnamed_addr constant [14 x i8] c"set-ir-prefix\00", align 1
+@.str.2306 = private unnamed_addr constant [10 x i8] c"defstruct\00", align 1
+@.str.2307 = private unnamed_addr constant [9 x i8] c"defunion\00", align 1
+@.str.2308 = private unnamed_addr constant [8 x i8] c"declare\00", align 1
+@.str.2309 = private unnamed_addr constant [10 x i8] c"defmethod\00", align 1
+@.str.2310 = private unnamed_addr constant [5 x i8] c"defn\00", align 1
+@.str.2311 = private unnamed_addr constant [12 x i8] c"defprotocol\00", align 1
+@.str.2312 = private unnamed_addr constant [7 x i8] c"extend\00", align 1
+@.str.2313 = private unnamed_addr constant [8 x i8] c"defcast\00", align 1
+@.str.2314 = private unnamed_addr constant [7 x i8] c"extern\00", align 1
+@.str.2315 = private unnamed_addr constant [9 x i8] c"defconst\00", align 1
+@.str.2316 = private unnamed_addr constant [8 x i8] c"defenum\00", align 1
+@.str.2317 = private unnamed_addr constant [9 x i8] c"defmacro\00", align 1
+@.str.2318 = private unnamed_addr constant [11 x i8] c"def-rmacro\00", align 1
+@.str.2319 = private unnamed_addr constant [3 x i8] c"\5C\22\00", align 1
+@.str.2320 = private unnamed_addr constant [3 x i8] c"\5C\5C\00", align 1
+@.str.2321 = private unnamed_addr constant [3 x i8] c"\5Cn\00", align 1
+@.str.2322 = private unnamed_addr constant [3 x i8] c"\5Cr\00", align 1
+@.str.2323 = private unnamed_addr constant [3 x i8] c"\5Ct\00", align 1
+@.str.2324 = private unnamed_addr constant [7 x i8] c"\5Cu%04x\00", align 1
+@.str.2325 = private unnamed_addr constant [3 x i8] c"%c\00", align 1
+@.str.2326 = private unnamed_addr constant [10 x i8] c"{\22file\22:\22\00", align 1
+@.str.2327 = private unnamed_addr constant [24 x i8] c"\22,\22line\22:%d,\22message\22:\22\00", align 1
+@.str.2328 = private unnamed_addr constant [4 x i8] c"\22}\0A\00", align 1
+@.str.2329 = private unnamed_addr constant [13 x i8] c"  error: %s\0A\00", align 1
+@.str.2330 = private unnamed_addr constant [7 x i8] c"malloc\00", align 1
+@.str.2331 = private unnamed_addr constant [6 x i8] c"nuc> \00", align 1
+@.str.2332 = private unnamed_addr constant [6 x i8] c"...> \00", align 1
+@.str.2333 = private unnamed_addr constant [7 x i8] c"malloc\00", align 1
+@.str.2334 = private unnamed_addr constant [8 x i8] c"realloc\00", align 1
+@.str.2335 = private unnamed_addr constant [3 x i8] c"  \00", align 1
+@.str.2336 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@.str.2337 = private unnamed_addr constant [6 x i8] c"quote\00", align 1
+@.str.2338 = private unnamed_addr constant [3 x i8] c"  \00", align 1
+@.str.2339 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@.str.2340 = private unnamed_addr constant [3 x i8] c"ns\00", align 1
+@.str.2341 = private unnamed_addr constant [9 x i8] c"defconst\00", align 1
+@.str.2342 = private unnamed_addr constant [8 x i8] c"defenum\00", align 1
+@.str.2343 = private unnamed_addr constant [7 x i8] c"defvar\00", align 1
+@.str.2344 = private unnamed_addr constant [26 x i8] c"@%s = external global %s\0A\00", align 1
+@.str.2345 = private unnamed_addr constant [11 x i8] c"  defined\0A\00", align 1
+@.str.2346 = private unnamed_addr constant [10 x i8] c"defstruct\00", align 1
+@.str.2347 = private unnamed_addr constant [11 x i8] c"  defined\0A\00", align 1
+@.str.2348 = private unnamed_addr constant [9 x i8] c"defunion\00", align 1
+@.str.2349 = private unnamed_addr constant [11 x i8] c"  defined\0A\00", align 1
+@.str.2350 = private unnamed_addr constant [7 x i8] c"extern\00", align 1
+@.str.2351 = private unnamed_addr constant [5 x i8] c"defn\00", align 1
+@.str.2352 = private unnamed_addr constant [19 x i8] c"defn: missing name\00", align 1
+@.str.2353 = private unnamed_addr constant [40 x i8] c"redefinition: tracker remove failed: %s\00", align 1
+@.str.2354 = private unnamed_addr constant [11 x i8] c"%s.impl.%d\00", align 1
+@.str.2355 = private unnamed_addr constant [16 x i8] c"declare %s @%s(\00", align 1
+@.str.2356 = private unnamed_addr constant [3 x i8] c", \00", align 1
+@.str.2357 = private unnamed_addr constant [3 x i8] c"%s\00", align 1
+@.str.2358 = private unnamed_addr constant [3 x i8] c")\0A\00", align 1
+@.str.2359 = private unnamed_addr constant [13 x i8] c"  redefined\0A\00", align 1
+@.str.2360 = private unnamed_addr constant [11 x i8] c"  defined\0A\00", align 1
+@.str.2361 = private unnamed_addr constant [13 x i8] c"compile-time\00", align 1
+@.str.2362 = private unnamed_addr constant [9 x i8] c"defmacro\00", align 1
+@.str.2363 = private unnamed_addr constant [11 x i8] c"  defined\0A\00", align 1
+@.str.2364 = private unnamed_addr constant [11 x i8] c"def-rmacro\00", align 1
+@.str.2365 = private unnamed_addr constant [11 x i8] c"  defined\0A\00", align 1
+@.str.2366 = private unnamed_addr constant [12 x i8] c"macroexpand\00", align 1
+@.str.2367 = private unnamed_addr constant [14 x i8] c"macroexpand-1\00", align 1
 @.str.2368 = private unnamed_addr constant [16 x i8] c"macroexpand-all\00", align 1
-@.str.2369 = private unnamed_addr constant [14 x i8] c"macroexpand-1\00", align 1
-@.str.2370 = private unnamed_addr constant [28 x i8] c"%s requires a form argument\00", align 1
-@.str.2371 = private unnamed_addr constant [6 x i8] c"quote\00", align 1
-@.str.2372 = private unnamed_addr constant [21 x i8] c"  not a macro call: \00", align 1
-@.str.2373 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
-@.str.2374 = private unnamed_addr constant [3 x i8] c"  \00", align 1
-@.str.2375 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
-@.str.2376 = private unnamed_addr constant [11 x i8] c"import-use\00", align 1
-@.str.2377 = private unnamed_addr constant [12 x i8] c"import-only\00", align 1
+@.str.2369 = private unnamed_addr constant [16 x i8] c"macroexpand-all\00", align 1
+@.str.2370 = private unnamed_addr constant [14 x i8] c"macroexpand-1\00", align 1
+@.str.2371 = private unnamed_addr constant [28 x i8] c"%s requires a form argument\00", align 1
+@.str.2372 = private unnamed_addr constant [6 x i8] c"quote\00", align 1
+@.str.2373 = private unnamed_addr constant [21 x i8] c"  not a macro call: \00", align 1
+@.str.2374 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@.str.2375 = private unnamed_addr constant [3 x i8] c"  \00", align 1
+@.str.2376 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@.str.2377 = private unnamed_addr constant [11 x i8] c"import-use\00", align 1
 @.str.2378 = private unnamed_addr constant [12 x i8] c"import-only\00", align 1
-@.str.2379 = private unnamed_addr constant [15 x i8] c"declare %s %s(\00", align 1
-@.str.2380 = private unnamed_addr constant [3 x i8] c", \00", align 1
-@.str.2381 = private unnamed_addr constant [3 x i8] c"%s\00", align 1
-@.str.2382 = private unnamed_addr constant [1 x i8] c"\00", align 1
-@.str.2383 = private unnamed_addr constant [3 x i8] c", \00", align 1
-@.str.2384 = private unnamed_addr constant [6 x i8] c"%s...\00", align 1
-@.str.2385 = private unnamed_addr constant [3 x i8] c")\0A\00", align 1
-@.str.2386 = private unnamed_addr constant [16 x i8] c"__repl_eval_%ld\00", align 1
-@.str.2387 = private unnamed_addr constant [12 x i8] c"  ret void\0A\00", align 1
-@.str.2388 = private unnamed_addr constant [26 x i8] c"  %s = zext i1 %s to i32\0A\00", align 1
-@.str.2389 = private unnamed_addr constant [26 x i8] c"  %s = sext i8 %s to i32\0A\00", align 1
-@.str.2390 = private unnamed_addr constant [27 x i8] c"  %s = sext i16 %s to i32\0A\00", align 1
-@.str.2391 = private unnamed_addr constant [14 x i8] c"  ret i32 %s\0A\00", align 1
-@.str.2392 = private unnamed_addr constant [14 x i8] c"  ret i64 %s\0A\00", align 1
-@.str.2393 = private unnamed_addr constant [14 x i8] c"  ret ptr %s\0A\00", align 1
-@.str.2394 = private unnamed_addr constant [16 x i8] c"  ret float %s\0A\00", align 1
-@.str.2395 = private unnamed_addr constant [17 x i8] c"  ret double %s\0A\00", align 1
-@.str.2396 = private unnamed_addr constant [12 x i8] c"  ret void\0A\00", align 1
-@.str.2397 = private unnamed_addr constant [5 x i8] c"void\00", align 1
-@.str.2398 = private unnamed_addr constant [4 x i8] c"i32\00", align 1
-@.str.2399 = private unnamed_addr constant [4 x i8] c"i64\00", align 1
-@.str.2400 = private unnamed_addr constant [4 x i8] c"ptr\00", align 1
-@.str.2401 = private unnamed_addr constant [6 x i8] c"float\00", align 1
-@.str.2402 = private unnamed_addr constant [7 x i8] c"double\00", align 1
-@.str.2403 = private unnamed_addr constant [19 x i8] c"define %s @%s() {\0A\00", align 1
-@.str.2404 = private unnamed_addr constant [8 x i8] c"entry:\0A\00", align 1
-@.str.2405 = private unnamed_addr constant [4 x i8] c"}\0A\0A\00", align 1
-@.str.2406 = private unnamed_addr constant [21 x i8] c"JIT lookup error: %s\00", align 1
-@.str.2407 = private unnamed_addr constant [6 x i8] c"  %d\0A\00", align 1
-@.str.2408 = private unnamed_addr constant [7 x i8] c"  %ld\0A\00", align 1
-@.str.2409 = private unnamed_addr constant [13 x i8] c"  #<ptr %p>\0A\00", align 1
-@.str.2410 = private unnamed_addr constant [8 x i8] c"  null\0A\00", align 1
-@.str.2411 = private unnamed_addr constant [5 x i8] c"@%s(\00", align 1
+@.str.2379 = private unnamed_addr constant [12 x i8] c"import-only\00", align 1
+@.str.2380 = private unnamed_addr constant [15 x i8] c"declare %s %s(\00", align 1
+@.str.2381 = private unnamed_addr constant [3 x i8] c", \00", align 1
+@.str.2382 = private unnamed_addr constant [3 x i8] c"%s\00", align 1
+@.str.2383 = private unnamed_addr constant [1 x i8] c"\00", align 1
+@.str.2384 = private unnamed_addr constant [3 x i8] c", \00", align 1
+@.str.2385 = private unnamed_addr constant [6 x i8] c"%s...\00", align 1
+@.str.2386 = private unnamed_addr constant [3 x i8] c")\0A\00", align 1
+@.str.2387 = private unnamed_addr constant [16 x i8] c"__repl_eval_%ld\00", align 1
+@.str.2388 = private unnamed_addr constant [12 x i8] c"  ret void\0A\00", align 1
+@.str.2389 = private unnamed_addr constant [26 x i8] c"  %s = zext i1 %s to i32\0A\00", align 1
+@.str.2390 = private unnamed_addr constant [26 x i8] c"  %s = sext i8 %s to i32\0A\00", align 1
+@.str.2391 = private unnamed_addr constant [27 x i8] c"  %s = sext i16 %s to i32\0A\00", align 1
+@.str.2392 = private unnamed_addr constant [14 x i8] c"  ret i32 %s\0A\00", align 1
+@.str.2393 = private unnamed_addr constant [14 x i8] c"  ret i64 %s\0A\00", align 1
+@.str.2394 = private unnamed_addr constant [14 x i8] c"  ret ptr %s\0A\00", align 1
+@.str.2395 = private unnamed_addr constant [16 x i8] c"  ret float %s\0A\00", align 1
+@.str.2396 = private unnamed_addr constant [17 x i8] c"  ret double %s\0A\00", align 1
+@.str.2397 = private unnamed_addr constant [12 x i8] c"  ret void\0A\00", align 1
+@.str.2398 = private unnamed_addr constant [5 x i8] c"void\00", align 1
+@.str.2399 = private unnamed_addr constant [4 x i8] c"i32\00", align 1
+@.str.2400 = private unnamed_addr constant [4 x i8] c"i64\00", align 1
+@.str.2401 = private unnamed_addr constant [4 x i8] c"ptr\00", align 1
+@.str.2402 = private unnamed_addr constant [6 x i8] c"float\00", align 1
+@.str.2403 = private unnamed_addr constant [7 x i8] c"double\00", align 1
+@.str.2404 = private unnamed_addr constant [19 x i8] c"define %s @%s() {\0A\00", align 1
+@.str.2405 = private unnamed_addr constant [8 x i8] c"entry:\0A\00", align 1
+@.str.2406 = private unnamed_addr constant [4 x i8] c"}\0A\0A\00", align 1
+@.str.2407 = private unnamed_addr constant [21 x i8] c"JIT lookup error: %s\00", align 1
+@.str.2408 = private unnamed_addr constant [6 x i8] c"  %d\0A\00", align 1
+@.str.2409 = private unnamed_addr constant [7 x i8] c"  %ld\0A\00", align 1
+@.str.2410 = private unnamed_addr constant [13 x i8] c"  #<ptr %p>\0A\00", align 1
+@.str.2411 = private unnamed_addr constant [8 x i8] c"  null\0A\00", align 1
 @.str.2412 = private unnamed_addr constant [5 x i8] c"@%s(\00", align 1
-@.str.2413 = private unnamed_addr constant [27 x i8] c"@%s.tgt = global ptr null\0A\00", align 1
-@.str.2414 = private unnamed_addr constant [15 x i8] c"define %s @%s(\00", align 1
-@.str.2415 = private unnamed_addr constant [3 x i8] c", \00", align 1
-@.str.2416 = private unnamed_addr constant [9 x i8] c"%s %%a%d\00", align 1
-@.str.2417 = private unnamed_addr constant [12 x i8] c") {\0Aentry:\0A\00", align 1
-@.str.2418 = private unnamed_addr constant [41 x i8] c"  %%fp = load ptr, ptr @%s.tgt, align 8\0A\00", align 1
-@.str.2419 = private unnamed_addr constant [18 x i8] c"  call void %%fp(\00", align 1
-@.str.2420 = private unnamed_addr constant [3 x i8] c", \00", align 1
-@.str.2421 = private unnamed_addr constant [9 x i8] c"%s %%a%d\00", align 1
-@.str.2422 = private unnamed_addr constant [17 x i8] c")\0A  ret void\0A}\0A\0A\00", align 1
-@.str.2423 = private unnamed_addr constant [22 x i8] c"  %%r = call %s %%fp(\00", align 1
-@.str.2424 = private unnamed_addr constant [3 x i8] c", \00", align 1
-@.str.2425 = private unnamed_addr constant [9 x i8] c"%s %%a%d\00", align 1
-@.str.2426 = private unnamed_addr constant [19 x i8] c")\0A  ret %s %%r\0A}\0A\0A\00", align 1
-@.str.2427 = private unnamed_addr constant [29 x i8] c"; ModuleID = '<repl-thunk>'\0A\00", align 1
-@.str.2428 = private unnamed_addr constant [40 x i8] c"target triple = \22x86_64-pc-linux-gnu\22\0A\0A\00", align 1
-@.str.2429 = private unnamed_addr constant [17 x i8] c"NUC_REPL_DUMP_IR\00", align 1
-@.str.2430 = private unnamed_addr constant [40 x i8] c"----- THUNK IR -----\0A%s----- END -----\0A\00", align 1
-@.str.2431 = private unnamed_addr constant [38 x i8] c"redefinition: lookup of %s failed: %s\00", align 1
-@.str.2432 = private unnamed_addr constant [7 x i8] c"%s.tgt\00", align 1
-@.str.2433 = private unnamed_addr constant [38 x i8] c"redefinition: lookup of %s failed: %s\00", align 1
-@.str.2434 = private unnamed_addr constant [19 x i8] c"declare %s @%s-%s(\00", align 1
-@.str.2435 = private unnamed_addr constant [22 x i8] c"ptr sret(%s) align %d\00", align 1
-@.str.2436 = private unnamed_addr constant [3 x i8] c", \00", align 1
-@.str.2437 = private unnamed_addr constant [3 x i8] c")\0A\00", align 1
-@.str.2438 = private unnamed_addr constant [23 x i8] c"; ModuleID = '<repl>'\0A\00", align 1
-@.str.2439 = private unnamed_addr constant [40 x i8] c"target triple = \22x86_64-pc-linux-gnu\22\0A\0A\00", align 1
-@.str.2440 = private unnamed_addr constant [17 x i8] c"NUC_REPL_DUMP_IR\00", align 1
-@.str.2441 = private unnamed_addr constant [34 x i8] c"----- IR -----\0A%s----- END -----\0A\00", align 1
-@.str.2442 = private unnamed_addr constant [8 x i8] c"stdio.h\00", align 1
-@.str.2443 = private unnamed_addr constant [9 x i8] c"stdlib.h\00", align 1
-@.str.2444 = private unnamed_addr constant [9 x i8] c"string.h\00", align 1
-@.str.2445 = private unnamed_addr constant [8 x i8] c"ctype.h\00", align 1
-@.str.2446 = private unnamed_addr constant [9 x i8] c"unistd.h\00", align 1
-@.str.2447 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
-@.str.2448 = private unnamed_addr constant [5 x i8] c"Node\00", align 1
-@.str.2449 = private unnamed_addr constant [5 x i8] c"kind\00", align 1
-@.str.2450 = private unnamed_addr constant [5 x i8] c"line\00", align 1
-@.str.2451 = private unnamed_addr constant [2 x i8] c"i\00", align 1
-@.str.2452 = private unnamed_addr constant [2 x i8] c"s\00", align 1
-@.str.2453 = private unnamed_addr constant [4 x i8] c"car\00", align 1
-@.str.2454 = private unnamed_addr constant [4 x i8] c"cdr\00", align 1
-@.str.2455 = private unnamed_addr constant [5 x i8] c"Node\00", align 1
-@.str.2456 = private unnamed_addr constant [49 x i8] c"%%Node = type { i32, i32, i64, ptr, ptr, ptr }\0A\0A\00", align 1
-@.str.2457 = private unnamed_addr constant [9 x i8] c"NODE-INT\00", align 1
-@.str.2458 = private unnamed_addr constant [2 x i8] c"0\00", align 1
-@.str.2459 = private unnamed_addr constant [9 x i8] c"NODE-STR\00", align 1
-@.str.2460 = private unnamed_addr constant [2 x i8] c"1\00", align 1
-@.str.2461 = private unnamed_addr constant [9 x i8] c"NODE-SYM\00", align 1
-@.str.2462 = private unnamed_addr constant [2 x i8] c"2\00", align 1
-@.str.2463 = private unnamed_addr constant [10 x i8] c"NODE-CELL\00", align 1
-@.str.2464 = private unnamed_addr constant [2 x i8] c"3\00", align 1
-@.str.2465 = private unnamed_addr constant [20 x i8] c"(import-use macros)\00", align 1
-@.str.2466 = private unnamed_addr constant [36 x i8] c"Nucleus REPL (type Ctrl-D to exit)\0A\00", align 1
-@.str.2467 = private unnamed_addr constant [7 x i8] c"<repl>\00", align 1
-@.str.2468 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
-@.str.2469 = private unnamed_addr constant [18 x i8] c"error (recovered)\00", align 1
-@.str.2470 = private unnamed_addr constant [15 x i8] c"defn: bad form\00", align 1
-@.str.2471 = private unnamed_addr constant [26 x i8] c"defn: params must be list\00", align 1
-@.str.2472 = private unnamed_addr constant [28 x i8] c"defn: missing :type on '%s'\00", align 1
-@.str.2473 = private unnamed_addr constant [20 x i8] c"%s:%d: warning: %s\0A\00", align 1
-@.str.2474 = private unnamed_addr constant [93 x i8] c"'%s' exposes a closure or type-erased box type and will be excluded from generated C headers\00", align 1
-@.str.2475 = private unnamed_addr constant [9 x i8] c"noreturn\00", align 1
-@.str.2476 = private unnamed_addr constant [6 x i8] c"&rest\00", align 1
-@.str.2477 = private unnamed_addr constant [41 x i8] c"defn: &rest must be second-to-last param\00", align 1
-@.str.2478 = private unnamed_addr constant [31 x i8] c"defn: multiple &rest in params\00", align 1
-@.str.2479 = private unnamed_addr constant [10 x i8] c"&optional\00", align 1
-@.str.2480 = private unnamed_addr constant [35 x i8] c"defn: multiple &optional in params\00", align 1
-@.str.2481 = private unnamed_addr constant [46 x i8] c"defn: &optional cannot be combined with &rest\00", align 1
-@.str.2482 = private unnamed_addr constant [55 x i8] c"defn: &optional must be followed by at least one param\00", align 1
-@.str.2483 = private unnamed_addr constant [50 x i8] c"defn: &optional param must be (name:type default)\00", align 1
-@.str.2484 = private unnamed_addr constant [34 x i8] c"defn: missing :type on param '%s'\00", align 1
-@.str.2485 = private unnamed_addr constant [7 x i8] c"%.sret\00", align 1
-@.str.2486 = private unnamed_addr constant [94 x i8] c"resource bound by `with` escapes via implicit return \E2\80\94 use (move ...) to transfer ownership\00", align 1
-@.str.2487 = private unnamed_addr constant [16 x i8] c"zeroinitializer\00", align 1
-@.str.2488 = private unnamed_addr constant [12 x i8] c"  ret void\0A\00", align 1
-@.str.2489 = private unnamed_addr constant [2 x i8] c"0\00", align 1
-@.str.2490 = private unnamed_addr constant [5 x i8] c"null\00", align 1
-@.str.2491 = private unnamed_addr constant [13 x i8] c"  ret %s %s\0A\00", align 1
-@.str.2492 = private unnamed_addr constant [90 x i8] c"%s: implicit return type mismatch \E2\80\94 last expression does not match declared return type\00", align 1
-@.str.2493 = private unnamed_addr constant [13 x i8] c"  ret %s %s\0A\00", align 1
-@.str.2494 = private unnamed_addr constant [23 x i8] c"define internal %s %s(\00", align 1
-@.str.2495 = private unnamed_addr constant [14 x i8] c"define %s %s(\00", align 1
-@.str.2496 = private unnamed_addr constant [25 x i8] c"ptr sret(%s) align %d %s\00", align 1
-@.str.2497 = private unnamed_addr constant [3 x i8] c", \00", align 1
-@.str.2498 = private unnamed_addr constant [14 x i8] c") noreturn {\0A\00", align 1
-@.str.2499 = private unnamed_addr constant [5 x i8] c") {\0A\00", align 1
-@.str.2500 = private unnamed_addr constant [8 x i8] c"entry:\0A\00", align 1
-@.str.2501 = private unnamed_addr constant [4 x i8] c"}\0A\0A\00", align 1
-@.str.2502 = private unnamed_addr constant [44 x i8] c"%s:%d: JIT error in LLVMOrcCreateLLJIT: %s\0A\00", align 1
-@.str.2503 = private unnamed_addr constant [47 x i8] c"%s:%d: JIT error in CreateDynLibSearchGen: %s\0A\00", align 1
-@.str.2504 = private unnamed_addr constant [15 x i8] c"<compile-time>\00", align 1
-@.str.2505 = private unnamed_addr constant [41 x i8] c"%s:%d: compile-time: IR parse error: %s\0A\00", align 1
-@.str.2506 = private unnamed_addr constant [41 x i8] c"%s:%d: JIT error in AddLLVMIRModule: %s\0A\00", align 1
-@.str.2507 = private unnamed_addr constant [46 x i8] c"compile-time: expected at least one body form\00", align 1
-@.str.2508 = private unnamed_addr constant [5 x i8] c"defn\00", align 1
-@.str.2509 = private unnamed_addr constant [4 x i8] c"@%s\00", align 1
-@.str.2510 = private unnamed_addr constant [10 x i8] c"defstruct\00", align 1
-@.str.2511 = private unnamed_addr constant [9 x i8] c"defconst\00", align 1
-@.str.2512 = private unnamed_addr constant [8 x i8] c"defenum\00", align 1
-@.str.2513 = private unnamed_addr constant [7 x i8] c"defvar\00", align 1
-@.str.2514 = private unnamed_addr constant [7 x i8] c"extern\00", align 1
-@.str.2515 = private unnamed_addr constant [5 x i8] c"defn\00", align 1
-@.str.2516 = private unnamed_addr constant [24 x i8] c"__compile_time_main_%ld\00", align 1
-@.str.2517 = private unnamed_addr constant [12 x i8] c"  ret void\0A\00", align 1
-@.str.2518 = private unnamed_addr constant [21 x i8] c"define void @%s() {\0A\00", align 1
-@.str.2519 = private unnamed_addr constant [8 x i8] c"entry:\0A\00", align 1
-@.str.2520 = private unnamed_addr constant [4 x i8] c"}\0A\0A\00", align 1
-@.str.2521 = private unnamed_addr constant [26 x i8] c"declare ptr @malloc(i64)\0A\00", align 1
-@.str.2522 = private unnamed_addr constant [27 x i8] c"declare ptr @alloc-node()\0A\00", align 1
-@.str.2523 = private unnamed_addr constant [39 x i8] c"declare ptr @make-cell(ptr, ptr, i32)\0A\00", align 1
-@.str.2524 = private unnamed_addr constant [33 x i8] c"declare ptr @intern-symbol(ptr)\0A\00", align 1
-@.str.2525 = private unnamed_addr constant [48 x i8] c"define private ptr @__cons(ptr %%a, ptr %%b) {\0A\00", align 1
-@.str.2526 = private unnamed_addr constant [34 x i8] c"  %%c = call ptr @malloc(i64 40)\0A\00", align 1
-@.str.2527 = private unnamed_addr constant [89 x i8] c"  %%p0 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 0\0A\00", align 1
-@.str.2528 = private unnamed_addr constant [34 x i8] c"  store i32 3, ptr %%p0, align 8\0A\00", align 1
-@.str.2529 = private unnamed_addr constant [89 x i8] c"  %%p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 4\0A\00", align 1
-@.str.2530 = private unnamed_addr constant [36 x i8] c"  store ptr %%a, ptr %%p4, align 8\0A\00", align 1
-@.str.2531 = private unnamed_addr constant [89 x i8] c"  %%p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 5\0A\00", align 1
-@.str.2532 = private unnamed_addr constant [36 x i8] c"  store ptr %%b, ptr %%p5, align 8\0A\00", align 1
-@.str.2533 = private unnamed_addr constant [15 x i8] c"  ret ptr %%c\0A\00", align 1
-@.str.2534 = private unnamed_addr constant [4 x i8] c"}\0A\0A\00", align 1
-@.str.2535 = private unnamed_addr constant [50 x i8] c"define private ptr @__append(ptr %%a, ptr %%b) {\0A\00", align 1
-@.str.2536 = private unnamed_addr constant [8 x i8] c"entry:\0A\00", align 1
-@.str.2537 = private unnamed_addr constant [31 x i8] c"  %%z = icmp eq ptr %%a, null\0A\00", align 1
-@.str.2538 = private unnamed_addr constant [39 x i8] c"  br i1 %%z, label %%nil, label %%rec\0A\00", align 1
-@.str.2539 = private unnamed_addr constant [6 x i8] c"nil:\0A\00", align 1
-@.str.2540 = private unnamed_addr constant [15 x i8] c"  ret ptr %%b\0A\00", align 1
-@.str.2541 = private unnamed_addr constant [6 x i8] c"rec:\0A\00", align 1
-@.str.2542 = private unnamed_addr constant [89 x i8] c"  %%p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%a, i32 0, i32 4\0A\00", align 1
-@.str.2543 = private unnamed_addr constant [39 x i8] c"  %%car = load ptr, ptr %%p4, align 8\0A\00", align 1
-@.str.2544 = private unnamed_addr constant [89 x i8] c"  %%p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%a, i32 0, i32 5\0A\00", align 1
-@.str.2545 = private unnamed_addr constant [39 x i8] c"  %%cdr = load ptr, ptr %%p5, align 8\0A\00", align 1
-@.str.2546 = private unnamed_addr constant [51 x i8] c"  %%rest = call ptr @__append(ptr %%cdr, ptr %%b)\0A\00", align 1
-@.str.2547 = private unnamed_addr constant [49 x i8] c"  %%c = call ptr @__cons(ptr %%car, ptr %%rest)\0A\00", align 1
-@.str.2548 = private unnamed_addr constant [15 x i8] c"  ret ptr %%c\0A\00", align 1
-@.str.2549 = private unnamed_addr constant [4 x i8] c"}\0A\0A\00", align 1
-@.str.2550 = private unnamed_addr constant [31 x i8] c"; ModuleID = '<compile-time>'\0A\00", align 1
-@.str.2551 = private unnamed_addr constant [23 x i8] c"target triple = \22%s\22\0A\0A\00", align 1
-@.str.2552 = private unnamed_addr constant [41 x i8] c"defmacro: expects name, params, and body\00", align 1
-@.str.2553 = private unnamed_addr constant [30 x i8] c"defmacro: name must be symbol\00", align 1
-@.str.2554 = private unnamed_addr constant [32 x i8] c"defmacro: params must be a list\00", align 1
-@.str.2555 = private unnamed_addr constant [14 x i8] c"__macro_%s_%d\00", align 1
-@.str.2556 = private unnamed_addr constant [6 x i8] c"&rest\00", align 1
-@.str.2557 = private unnamed_addr constant [45 x i8] c"defmacro: &rest must be second-to-last param\00", align 1
-@.str.2558 = private unnamed_addr constant [33 x i8] c"defmacro: param must be a symbol\00", align 1
-@.str.2559 = private unnamed_addr constant [6 x i8] c"&rest\00", align 1
-@.str.2560 = private unnamed_addr constant [27 x i8] c"defmacro: macro table full\00", align 1
-@.str.2561 = private unnamed_addr constant [39 x i8] c"  %%__args.addr = alloca ptr, align 8\0A\00", align 1
-@.str.2562 = private unnamed_addr constant [54 x i8] c"  store ptr %%__args.arg, ptr %%__args.addr, align 8\0A\00", align 1
-@.str.2563 = private unnamed_addr constant [5 x i8] c"Node\00", align 1
-@.str.2564 = private unnamed_addr constant [35 x i8] c"  %%%s.addr = alloca ptr, align 8\0A\00", align 1
-@.str.2565 = private unnamed_addr constant [51 x i8] c"  %%__ap%d = load ptr, ptr %%__args.addr, align 8\0A\00", align 1
-@.str.2566 = private unnamed_addr constant [54 x i8] c"  %%__ag%d = getelementptr ptr, ptr %%__ap%d, i32 %d\0A\00", align 1
-@.str.2567 = private unnamed_addr constant [46 x i8] c"  %%__av%d = load ptr, ptr %%__ag%d, align 8\0A\00", align 1
-@.str.2568 = private unnamed_addr constant [46 x i8] c"  store ptr %%__av%d, ptr %%%s.addr, align 8\0A\00", align 1
-@.str.2569 = private unnamed_addr constant [10 x i8] c"%%%s.addr\00", align 1
-@.str.2570 = private unnamed_addr constant [5 x i8] c"null\00", align 1
-@.str.2571 = private unnamed_addr constant [14 x i8] c"  ret ptr %s\0A\00", align 1
-@.str.2572 = private unnamed_addr constant [36 x i8] c"define ptr @%s(ptr %%__args.arg) {\0A\00", align 1
-@.str.2573 = private unnamed_addr constant [8 x i8] c"entry:\0A\00", align 1
-@.str.2574 = private unnamed_addr constant [4 x i8] c"}\0A\0A\00", align 1
-@.str.2575 = private unnamed_addr constant [26 x i8] c"declare ptr @malloc(i64)\0A\00", align 1
-@.str.2576 = private unnamed_addr constant [27 x i8] c"declare ptr @alloc-node()\0A\00", align 1
-@.str.2577 = private unnamed_addr constant [39 x i8] c"declare ptr @make-cell(ptr, ptr, i32)\0A\00", align 1
-@.str.2578 = private unnamed_addr constant [33 x i8] c"declare ptr @intern-symbol(ptr)\0A\00", align 1
-@.str.2579 = private unnamed_addr constant [48 x i8] c"define private ptr @__cons(ptr %%a, ptr %%b) {\0A\00", align 1
-@.str.2580 = private unnamed_addr constant [34 x i8] c"  %%c = call ptr @malloc(i64 40)\0A\00", align 1
-@.str.2581 = private unnamed_addr constant [89 x i8] c"  %%p0 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 0\0A\00", align 1
-@.str.2582 = private unnamed_addr constant [34 x i8] c"  store i32 3, ptr %%p0, align 8\0A\00", align 1
-@.str.2583 = private unnamed_addr constant [89 x i8] c"  %%p1 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 1\0A\00", align 1
-@.str.2584 = private unnamed_addr constant [34 x i8] c"  store i32 0, ptr %%p1, align 4\0A\00", align 1
-@.str.2585 = private unnamed_addr constant [89 x i8] c"  %%p2 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 2\0A\00", align 1
-@.str.2586 = private unnamed_addr constant [34 x i8] c"  store i64 0, ptr %%p2, align 8\0A\00", align 1
-@.str.2587 = private unnamed_addr constant [89 x i8] c"  %%p3 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 3\0A\00", align 1
-@.str.2588 = private unnamed_addr constant [37 x i8] c"  store ptr null, ptr %%p3, align 8\0A\00", align 1
-@.str.2589 = private unnamed_addr constant [89 x i8] c"  %%p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 4\0A\00", align 1
-@.str.2590 = private unnamed_addr constant [36 x i8] c"  store ptr %%a, ptr %%p4, align 8\0A\00", align 1
-@.str.2591 = private unnamed_addr constant [89 x i8] c"  %%p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 5\0A\00", align 1
-@.str.2592 = private unnamed_addr constant [36 x i8] c"  store ptr %%b, ptr %%p5, align 8\0A\00", align 1
-@.str.2593 = private unnamed_addr constant [15 x i8] c"  ret ptr %%c\0A\00", align 1
-@.str.2594 = private unnamed_addr constant [4 x i8] c"}\0A\0A\00", align 1
-@.str.2595 = private unnamed_addr constant [50 x i8] c"define private ptr @__append(ptr %%a, ptr %%b) {\0A\00", align 1
-@.str.2596 = private unnamed_addr constant [8 x i8] c"entry:\0A\00", align 1
-@.str.2597 = private unnamed_addr constant [31 x i8] c"  %%z = icmp eq ptr %%a, null\0A\00", align 1
-@.str.2598 = private unnamed_addr constant [39 x i8] c"  br i1 %%z, label %%nil, label %%rec\0A\00", align 1
-@.str.2599 = private unnamed_addr constant [6 x i8] c"nil:\0A\00", align 1
-@.str.2600 = private unnamed_addr constant [15 x i8] c"  ret ptr %%b\0A\00", align 1
-@.str.2601 = private unnamed_addr constant [6 x i8] c"rec:\0A\00", align 1
-@.str.2602 = private unnamed_addr constant [89 x i8] c"  %%p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%a, i32 0, i32 4\0A\00", align 1
-@.str.2603 = private unnamed_addr constant [39 x i8] c"  %%car = load ptr, ptr %%p4, align 8\0A\00", align 1
-@.str.2604 = private unnamed_addr constant [89 x i8] c"  %%p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%a, i32 0, i32 5\0A\00", align 1
-@.str.2605 = private unnamed_addr constant [39 x i8] c"  %%cdr = load ptr, ptr %%p5, align 8\0A\00", align 1
-@.str.2606 = private unnamed_addr constant [51 x i8] c"  %%rest = call ptr @__append(ptr %%cdr, ptr %%b)\0A\00", align 1
-@.str.2607 = private unnamed_addr constant [49 x i8] c"  %%c = call ptr @__cons(ptr %%car, ptr %%rest)\0A\00", align 1
-@.str.2608 = private unnamed_addr constant [15 x i8] c"  ret ptr %%c\0A\00", align 1
-@.str.2609 = private unnamed_addr constant [4 x i8] c"}\0A\0A\00", align 1
-@.str.2610 = private unnamed_addr constant [31 x i8] c"declare ptr @nucleus_gensym()\0A\00", align 1
-@.str.2611 = private unnamed_addr constant [30 x i8] c"; ModuleID = '<defmacro %s>'\0A\00", align 1
-@.str.2612 = private unnamed_addr constant [23 x i8] c"target triple = \22%s\22\0A\0A\00", align 1
-@.str.2613 = private unnamed_addr constant [54 x i8] c"@.str.%d = private unnamed_addr constant [%d x i8] c\22\00", align 1
-@.str.2614 = private unnamed_addr constant [6 x i8] c"\5C%02X\00", align 1
-@.str.2615 = private unnamed_addr constant [15 x i8] c"\5C00\22, align 1\0A\00", align 1
-@.str.2616 = private unnamed_addr constant [39 x i8] c"@nuc_err_names = constant [%d x ptr] [\00", align 1
-@.str.2617 = private unnamed_addr constant [3 x i8] c", \00", align 1
-@.str.2618 = private unnamed_addr constant [9 x i8] c"ptr null\00", align 1
-@.str.2619 = private unnamed_addr constant [13 x i8] c"ptr @.str.%d\00", align 1
-@.str.2620 = private unnamed_addr constant [3 x i8] c"]\0A\00", align 1
-@.str.2621 = private unnamed_addr constant [42 x i8] c"@nuc_err_messages = constant [%d x ptr] [\00", align 1
-@.str.2622 = private unnamed_addr constant [3 x i8] c", \00", align 1
-@.str.2623 = private unnamed_addr constant [9 x i8] c"ptr null\00", align 1
-@.str.2624 = private unnamed_addr constant [13 x i8] c"ptr @.str.%d\00", align 1
-@.str.2625 = private unnamed_addr constant [4 x i8] c"]\0A\0A\00", align 1
-@.str.2626 = private unnamed_addr constant [3 x i8] c"rb\00", align 1
-@.str.2627 = private unnamed_addr constant [6 x i8] c"fseek\00", align 1
-@.str.2628 = private unnamed_addr constant [6 x i8] c"ftell\00", align 1
-@.str.2629 = private unnamed_addr constant [7 x i8] c"malloc\00", align 1
-@.str.2630 = private unnamed_addr constant [5 x i8] c"defn\00", align 1
-@.str.2631 = private unnamed_addr constant [7 x i8] c"defvar\00", align 1
-@.str.2632 = private unnamed_addr constant [10 x i8] c"defstruct\00", align 1
-@.str.2633 = private unnamed_addr constant [7 x i8] c"extern\00", align 1
-@.str.2634 = private unnamed_addr constant [8 x i8] c"declare\00", align 1
-@.str.2635 = private unnamed_addr constant [9 x i8] c"noreturn\00", align 1
-@.str.2636 = private unnamed_addr constant [4 x i8] c"let\00", align 1
-@.str.2637 = private unnamed_addr constant [5 x i8] c"with\00", align 1
-@.str.2638 = private unnamed_addr constant [13 x i8] c"compile-time\00", align 1
-@.str.2639 = private unnamed_addr constant [3 x i8] c"do\00", align 1
-@.str.2640 = private unnamed_addr constant [7 x i8] c"import\00", align 1
-@.str.2641 = private unnamed_addr constant [11 x i8] c"import-use\00", align 1
-@.str.2642 = private unnamed_addr constant [12 x i8] c"import-only\00", align 1
-@.str.2643 = private unnamed_addr constant [16 x i8] c"import-prefixed\00", align 1
-@.str.2644 = private unnamed_addr constant [22 x i8] c"unsafe-import-private\00", align 1
-@.str.2645 = private unnamed_addr constant [10 x i8] c"defstruct\00", align 1
-@.str.2646 = private unnamed_addr constant [11 x i8] c"defstruct-\00", align 1
-@.str.2647 = private unnamed_addr constant [9 x i8] c"defunion\00", align 1
-@.str.2648 = private unnamed_addr constant [10 x i8] c"defunion-\00", align 1
-@.str.2649 = private unnamed_addr constant [6 x i8] c"%s-%s\00", align 1
-@.str.2650 = private unnamed_addr constant [9 x i8] c"defunion\00", align 1
-@.str.2651 = private unnamed_addr constant [10 x i8] c"defunion-\00", align 1
-@.str.2652 = private unnamed_addr constant [5 x i8] c"defn\00", align 1
-@.str.2653 = private unnamed_addr constant [6 x i8] c"defn-\00", align 1
-@.str.2654 = private unnamed_addr constant [49 x i8] c"def-rmacro: expects (def-rmacro \22prefix\22 symbol)\00", align 1
-@.str.2655 = private unnamed_addr constant [36 x i8] c"def-rmacro: prefix must be a string\00", align 1
-@.str.2656 = private unnamed_addr constant [41 x i8] c"def-rmacro: wrap symbol must be a symbol\00", align 1
-@.str.2657 = private unnamed_addr constant [23 x i8] c"ns: expected (ns name)\00", align 1
-@.str.2658 = private unnamed_addr constant [31 x i8] c"ns: namespace must be a symbol\00", align 1
-@.str.2659 = private unnamed_addr constant [43 x i8] c"ns: namespace name may not contain a slash\00", align 1
-@.str.2660 = private unnamed_addr constant [20 x i8] c"%s:%d: warning: %s\0A\00", align 1
-@.str.2661 = private unnamed_addr constant [46 x i8] c"second ns directive; namespace re-set to '%s'\00", align 1
-@.str.2662 = private unnamed_addr constant [49 x i8] c"set-ir-prefix: expected (set-ir-prefix \22prefix\22)\00", align 1
-@.str.2663 = private unnamed_addr constant [1 x i8] c"\00", align 1
-@.str.2664 = private unnamed_addr constant [5 x i8] c"null\00", align 1
-@.str.2665 = private unnamed_addr constant [1 x i8] c"\00", align 1
-@.str.2666 = private unnamed_addr constant [49 x i8] c"set-ir-prefix: argument must be a string literal\00", align 1
-@.str.2667 = private unnamed_addr constant [1 x i8] c"\00", align 1
-@.str.2668 = private unnamed_addr constant [34 x i8] c"export: expected (export sym ...)\00", align 1
-@.str.2669 = private unnamed_addr constant [39 x i8] c"export: each argument must be a symbol\00", align 1
-@.str.2670 = private unnamed_addr constant [31 x i8] c"export: symbol not found: '%s'\00", align 1
-@.str.2671 = private unnamed_addr constant [14 x i8] c"set-ir-prefix\00", align 1
-@.str.2672 = private unnamed_addr constant [5 x i8] c"defn\00", align 1
-@.str.2673 = private unnamed_addr constant [6 x i8] c"defn-\00", align 1
-@.str.2674 = private unnamed_addr constant [7 x i8] c"defvar\00", align 1
-@.str.2675 = private unnamed_addr constant [8 x i8] c"defvar-\00", align 1
-@.str.2676 = private unnamed_addr constant [53 x i8] c"top-level form must be a list starting with a symbol\00", align 1
-@.str.2677 = private unnamed_addr constant [3 x i8] c"ns\00", align 1
-@.str.2678 = private unnamed_addr constant [14 x i8] c"set-ir-prefix\00", align 1
-@.str.2679 = private unnamed_addr constant [7 x i8] c"export\00", align 1
-@.str.2680 = private unnamed_addr constant [9 x i8] c"defconst\00", align 1
-@.str.2681 = private unnamed_addr constant [8 x i8] c"defenum\00", align 1
-@.str.2682 = private unnamed_addr constant [9 x i8] c"deferror\00", align 1
-@.str.2683 = private unnamed_addr constant [7 x i8] c"defvar\00", align 1
-@.str.2684 = private unnamed_addr constant [10 x i8] c"defstruct\00", align 1
-@.str.2685 = private unnamed_addr constant [9 x i8] c"defunion\00", align 1
-@.str.2686 = private unnamed_addr constant [8 x i8] c"defcast\00", align 1
-@.str.2687 = private unnamed_addr constant [7 x i8] c"extern\00", align 1
-@.str.2688 = private unnamed_addr constant [5 x i8] c"defn\00", align 1
-@.str.2689 = private unnamed_addr constant [12 x i8] c"defprotocol\00", align 1
-@.str.2690 = private unnamed_addr constant [7 x i8] c"extend\00", align 1
-@.str.2691 = private unnamed_addr constant [13 x i8] c"compile-time\00", align 1
-@.str.2692 = private unnamed_addr constant [9 x i8] c"defmacro\00", align 1
-@.str.2693 = private unnamed_addr constant [11 x i8] c"def-rmacro\00", align 1
-@.str.2694 = private unnamed_addr constant [10 x i8] c"defconst-\00", align 1
-@.str.2695 = private unnamed_addr constant [9 x i8] c"defenum-\00", align 1
-@.str.2696 = private unnamed_addr constant [8 x i8] c"defvar-\00", align 1
-@.str.2697 = private unnamed_addr constant [11 x i8] c"defstruct-\00", align 1
-@.str.2698 = private unnamed_addr constant [10 x i8] c"defunion-\00", align 1
-@.str.2699 = private unnamed_addr constant [6 x i8] c"defn-\00", align 1
-@.str.2700 = private unnamed_addr constant [13 x i8] c"defprotocol-\00", align 1
-@.str.2701 = private unnamed_addr constant [10 x i8] c"defmacro-\00", align 1
-@.str.2702 = private unnamed_addr constant [7 x i8] c"import\00", align 1
-@.str.2703 = private unnamed_addr constant [11 x i8] c"import-use\00", align 1
-@.str.2704 = private unnamed_addr constant [12 x i8] c"import-only\00", align 1
-@.str.2705 = private unnamed_addr constant [16 x i8] c"import-prefixed\00", align 1
-@.str.2706 = private unnamed_addr constant [22 x i8] c"unsafe-import-private\00", align 1
-@.str.2707 = private unnamed_addr constant [8 x i8] c"declare\00", align 1
-@.str.2708 = private unnamed_addr constant [27 x i8] c"unknown top-level form: %s\00", align 1
-@.str.2709 = private unnamed_addr constant [2 x i8] c"r\00", align 1
-@.str.2710 = private unnamed_addr constant [6 x i8] c"%s/%s\00", align 1
-@.str.2711 = private unnamed_addr constant [7 x i8] c"lib/%s\00", align 1
-@.str.2712 = private unnamed_addr constant [6 x i8] c"%s/%s\00", align 1
-@.str.2713 = private unnamed_addr constant [12 x i8] c"NUCLEUS_LIB\00", align 1
-@.str.2714 = private unnamed_addr constant [6 x i8] c"%s/%s\00", align 1
-@.str.2715 = private unnamed_addr constant [32 x i8] c"/usr/local/share/nucleus/lib/%s\00", align 1
-@.str.2716 = private unnamed_addr constant [7 x i8] c"%s.nuc\00", align 1
-@.str.2717 = private unnamed_addr constant [8 x i8] c"%s.nuch\00", align 1
-@.str.2718 = private unnamed_addr constant [6 x i8] c"%s\0A%s\00", align 1
-@.str.2719 = private unnamed_addr constant [6 x i8] c"%s/%s\00", align 1
-@.str.2720 = private unnamed_addr constant [20 x i8] c"%s:%d: warning: %s\0A\00", align 1
-@.str.2721 = private unnamed_addr constant [32 x i8] c"import: alias collision on '%s'\00", align 1
-@.str.2722 = private unnamed_addr constant [5 x i8] c".nuc\00", align 1
-@.str.2723 = private unnamed_addr constant [6 x i8] c".nuch\00", align 1
-@.str.2724 = private unnamed_addr constant [25 x i8] c"import: cannot find '%s'\00", align 1
-@.str.2725 = private unnamed_addr constant [45 x i8] c"import: prefix '%s' is already bound to '%s'\00", align 1
-@.str.2726 = private unnamed_addr constant [32 x i8] c"import: circular import of '%s'\00", align 1
-@.str.2727 = private unnamed_addr constant [5 x i8] c"user\00", align 1
-@.str.2728 = private unnamed_addr constant [6 x i8] c".nuch\00", align 1
-@.str.2729 = private unnamed_addr constant [45 x i8] c"import: name must be a symbol or string path\00", align 1
-@.str.2730 = private unnamed_addr constant [25 x i8] c"import: cannot find '%s'\00", align 1
-@.str.2731 = private unnamed_addr constant [45 x i8] c"import: prefix '%s' is already bound to '%s'\00", align 1
-@.str.2732 = private unnamed_addr constant [32 x i8] c"import: circular import of '%s'\00", align 1
-@.str.2733 = private unnamed_addr constant [5 x i8] c"user\00", align 1
-@.str.2734 = private unnamed_addr constant [6 x i8] c".nuch\00", align 1
-@.str.2735 = private unnamed_addr constant [39 x i8] c"import-use: expected (import-use name)\00", align 1
-@.str.2736 = private unnamed_addr constant [39 x i8] c"import: expected (import lib [prefix])\00", align 1
-@.str.2737 = private unnamed_addr constant [32 x i8] c"import: prefix must be a symbol\00", align 1
-@.str.2738 = private unnamed_addr constant [2 x i8] c"c\00", align 1
-@.str.2739 = private unnamed_addr constant [45 x i8] c"import: name must be a symbol or string path\00", align 1
-@.str.2740 = private unnamed_addr constant [39 x i8] c"import: prefix may not contain a slash\00", align 1
-@.str.2741 = private unnamed_addr constant [47 x i8] c"import-only: expected (import-only lib sym...)\00", align 1
-@.str.2742 = private unnamed_addr constant [74 x i8] c"unsafe-import-private: expected (unsafe-import-private lib prefix sym...)\00", align 1
-@.str.2743 = private unnamed_addr constant [47 x i8] c"unsafe-import-private: prefix must be a symbol\00", align 1
-@.str.2744 = private unnamed_addr constant [54 x i8] c"unsafe-import-private: prefix may not contain a slash\00", align 1
-@.str.2745 = private unnamed_addr constant [3 x i8] c"~@\00", align 1
-@.str.2746 = private unnamed_addr constant [15 x i8] c"unquote-splice\00", align 1
-@.str.2747 = private unnamed_addr constant [2 x i8] c"~\00", align 1
-@.str.2748 = private unnamed_addr constant [8 x i8] c"unquote\00", align 1
-@.str.2749 = private unnamed_addr constant [2 x i8] c"'\00", align 1
-@.str.2750 = private unnamed_addr constant [6 x i8] c"quote\00", align 1
-@.str.2751 = private unnamed_addr constant [2 x i8] c"`\00", align 1
-@.str.2752 = private unnamed_addr constant [11 x i8] c"quasiquote\00", align 1
-@.str.2753 = private unnamed_addr constant [2 x i8] c"@\00", align 1
-@.str.2754 = private unnamed_addr constant [6 x i8] c"deref\00", align 1
-@.str.2755 = private unnamed_addr constant [4 x i8] c"Any\00", align 1
-@.str.2756 = private unnamed_addr constant [7 x i8] c"Struct\00", align 1
-@.str.2757 = private unnamed_addr constant [45 x i8] c"nucleusc: target lookup failed for '%s': %s\0A\00", align 1
-@.str.2758 = private unnamed_addr constant [1 x i8] c"\00", align 1
+@.str.2413 = private unnamed_addr constant [5 x i8] c"@%s(\00", align 1
+@.str.2414 = private unnamed_addr constant [27 x i8] c"@%s.tgt = global ptr null\0A\00", align 1
+@.str.2415 = private unnamed_addr constant [15 x i8] c"define %s @%s(\00", align 1
+@.str.2416 = private unnamed_addr constant [3 x i8] c", \00", align 1
+@.str.2417 = private unnamed_addr constant [9 x i8] c"%s %%a%d\00", align 1
+@.str.2418 = private unnamed_addr constant [12 x i8] c") {\0Aentry:\0A\00", align 1
+@.str.2419 = private unnamed_addr constant [41 x i8] c"  %%fp = load ptr, ptr @%s.tgt, align 8\0A\00", align 1
+@.str.2420 = private unnamed_addr constant [18 x i8] c"  call void %%fp(\00", align 1
+@.str.2421 = private unnamed_addr constant [3 x i8] c", \00", align 1
+@.str.2422 = private unnamed_addr constant [9 x i8] c"%s %%a%d\00", align 1
+@.str.2423 = private unnamed_addr constant [17 x i8] c")\0A  ret void\0A}\0A\0A\00", align 1
+@.str.2424 = private unnamed_addr constant [22 x i8] c"  %%r = call %s %%fp(\00", align 1
+@.str.2425 = private unnamed_addr constant [3 x i8] c", \00", align 1
+@.str.2426 = private unnamed_addr constant [9 x i8] c"%s %%a%d\00", align 1
+@.str.2427 = private unnamed_addr constant [19 x i8] c")\0A  ret %s %%r\0A}\0A\0A\00", align 1
+@.str.2428 = private unnamed_addr constant [29 x i8] c"; ModuleID = '<repl-thunk>'\0A\00", align 1
+@.str.2429 = private unnamed_addr constant [40 x i8] c"target triple = \22x86_64-pc-linux-gnu\22\0A\0A\00", align 1
+@.str.2430 = private unnamed_addr constant [17 x i8] c"NUC_REPL_DUMP_IR\00", align 1
+@.str.2431 = private unnamed_addr constant [40 x i8] c"----- THUNK IR -----\0A%s----- END -----\0A\00", align 1
+@.str.2432 = private unnamed_addr constant [38 x i8] c"redefinition: lookup of %s failed: %s\00", align 1
+@.str.2433 = private unnamed_addr constant [7 x i8] c"%s.tgt\00", align 1
+@.str.2434 = private unnamed_addr constant [38 x i8] c"redefinition: lookup of %s failed: %s\00", align 1
+@.str.2435 = private unnamed_addr constant [19 x i8] c"declare %s @%s-%s(\00", align 1
+@.str.2436 = private unnamed_addr constant [22 x i8] c"ptr sret(%s) align %d\00", align 1
+@.str.2437 = private unnamed_addr constant [3 x i8] c", \00", align 1
+@.str.2438 = private unnamed_addr constant [3 x i8] c")\0A\00", align 1
+@.str.2439 = private unnamed_addr constant [23 x i8] c"; ModuleID = '<repl>'\0A\00", align 1
+@.str.2440 = private unnamed_addr constant [40 x i8] c"target triple = \22x86_64-pc-linux-gnu\22\0A\0A\00", align 1
+@.str.2441 = private unnamed_addr constant [17 x i8] c"NUC_REPL_DUMP_IR\00", align 1
+@.str.2442 = private unnamed_addr constant [34 x i8] c"----- IR -----\0A%s----- END -----\0A\00", align 1
+@.str.2443 = private unnamed_addr constant [8 x i8] c"stdio.h\00", align 1
+@.str.2444 = private unnamed_addr constant [9 x i8] c"stdlib.h\00", align 1
+@.str.2445 = private unnamed_addr constant [9 x i8] c"string.h\00", align 1
+@.str.2446 = private unnamed_addr constant [8 x i8] c"ctype.h\00", align 1
+@.str.2447 = private unnamed_addr constant [9 x i8] c"unistd.h\00", align 1
+@.str.2448 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@.str.2449 = private unnamed_addr constant [5 x i8] c"Node\00", align 1
+@.str.2450 = private unnamed_addr constant [5 x i8] c"kind\00", align 1
+@.str.2451 = private unnamed_addr constant [5 x i8] c"line\00", align 1
+@.str.2452 = private unnamed_addr constant [2 x i8] c"i\00", align 1
+@.str.2453 = private unnamed_addr constant [2 x i8] c"s\00", align 1
+@.str.2454 = private unnamed_addr constant [4 x i8] c"car\00", align 1
+@.str.2455 = private unnamed_addr constant [4 x i8] c"cdr\00", align 1
+@.str.2456 = private unnamed_addr constant [5 x i8] c"Node\00", align 1
+@.str.2457 = private unnamed_addr constant [49 x i8] c"%%Node = type { i32, i32, i64, ptr, ptr, ptr }\0A\0A\00", align 1
+@.str.2458 = private unnamed_addr constant [9 x i8] c"NODE-INT\00", align 1
+@.str.2459 = private unnamed_addr constant [2 x i8] c"0\00", align 1
+@.str.2460 = private unnamed_addr constant [9 x i8] c"NODE-STR\00", align 1
+@.str.2461 = private unnamed_addr constant [2 x i8] c"1\00", align 1
+@.str.2462 = private unnamed_addr constant [9 x i8] c"NODE-SYM\00", align 1
+@.str.2463 = private unnamed_addr constant [2 x i8] c"2\00", align 1
+@.str.2464 = private unnamed_addr constant [10 x i8] c"NODE-CELL\00", align 1
+@.str.2465 = private unnamed_addr constant [2 x i8] c"3\00", align 1
+@.str.2466 = private unnamed_addr constant [20 x i8] c"(import-use macros)\00", align 1
+@.str.2467 = private unnamed_addr constant [36 x i8] c"Nucleus REPL (type Ctrl-D to exit)\0A\00", align 1
+@.str.2468 = private unnamed_addr constant [7 x i8] c"<repl>\00", align 1
+@.str.2469 = private unnamed_addr constant [2 x i8] c"\0A\00", align 1
+@.str.2470 = private unnamed_addr constant [18 x i8] c"error (recovered)\00", align 1
+@.str.2471 = private unnamed_addr constant [15 x i8] c"defn: bad form\00", align 1
+@.str.2472 = private unnamed_addr constant [26 x i8] c"defn: params must be list\00", align 1
+@.str.2473 = private unnamed_addr constant [28 x i8] c"defn: missing :type on '%s'\00", align 1
+@.str.2474 = private unnamed_addr constant [20 x i8] c"%s:%d: warning: %s\0A\00", align 1
+@.str.2475 = private unnamed_addr constant [93 x i8] c"'%s' exposes a closure or type-erased box type and will be excluded from generated C headers\00", align 1
+@.str.2476 = private unnamed_addr constant [9 x i8] c"noreturn\00", align 1
+@.str.2477 = private unnamed_addr constant [6 x i8] c"&rest\00", align 1
+@.str.2478 = private unnamed_addr constant [41 x i8] c"defn: &rest must be second-to-last param\00", align 1
+@.str.2479 = private unnamed_addr constant [31 x i8] c"defn: multiple &rest in params\00", align 1
+@.str.2480 = private unnamed_addr constant [10 x i8] c"&optional\00", align 1
+@.str.2481 = private unnamed_addr constant [35 x i8] c"defn: multiple &optional in params\00", align 1
+@.str.2482 = private unnamed_addr constant [46 x i8] c"defn: &optional cannot be combined with &rest\00", align 1
+@.str.2483 = private unnamed_addr constant [55 x i8] c"defn: &optional must be followed by at least one param\00", align 1
+@.str.2484 = private unnamed_addr constant [50 x i8] c"defn: &optional param must be (name:type default)\00", align 1
+@.str.2485 = private unnamed_addr constant [34 x i8] c"defn: missing :type on param '%s'\00", align 1
+@.str.2486 = private unnamed_addr constant [7 x i8] c"%.sret\00", align 1
+@.str.2487 = private unnamed_addr constant [94 x i8] c"resource bound by `with` escapes via implicit return \E2\80\94 use (move ...) to transfer ownership\00", align 1
+@.str.2488 = private unnamed_addr constant [16 x i8] c"zeroinitializer\00", align 1
+@.str.2489 = private unnamed_addr constant [12 x i8] c"  ret void\0A\00", align 1
+@.str.2490 = private unnamed_addr constant [2 x i8] c"0\00", align 1
+@.str.2491 = private unnamed_addr constant [5 x i8] c"null\00", align 1
+@.str.2492 = private unnamed_addr constant [13 x i8] c"  ret %s %s\0A\00", align 1
+@.str.2493 = private unnamed_addr constant [90 x i8] c"%s: implicit return type mismatch \E2\80\94 last expression does not match declared return type\00", align 1
+@.str.2494 = private unnamed_addr constant [13 x i8] c"  ret %s %s\0A\00", align 1
+@.str.2495 = private unnamed_addr constant [23 x i8] c"define internal %s %s(\00", align 1
+@.str.2496 = private unnamed_addr constant [14 x i8] c"define %s %s(\00", align 1
+@.str.2497 = private unnamed_addr constant [25 x i8] c"ptr sret(%s) align %d %s\00", align 1
+@.str.2498 = private unnamed_addr constant [3 x i8] c", \00", align 1
+@.str.2499 = private unnamed_addr constant [14 x i8] c") noreturn {\0A\00", align 1
+@.str.2500 = private unnamed_addr constant [5 x i8] c") {\0A\00", align 1
+@.str.2501 = private unnamed_addr constant [8 x i8] c"entry:\0A\00", align 1
+@.str.2502 = private unnamed_addr constant [4 x i8] c"}\0A\0A\00", align 1
+@.str.2503 = private unnamed_addr constant [44 x i8] c"%s:%d: JIT error in LLVMOrcCreateLLJIT: %s\0A\00", align 1
+@.str.2504 = private unnamed_addr constant [47 x i8] c"%s:%d: JIT error in CreateDynLibSearchGen: %s\0A\00", align 1
+@.str.2505 = private unnamed_addr constant [15 x i8] c"<compile-time>\00", align 1
+@.str.2506 = private unnamed_addr constant [41 x i8] c"%s:%d: compile-time: IR parse error: %s\0A\00", align 1
+@.str.2507 = private unnamed_addr constant [41 x i8] c"%s:%d: JIT error in AddLLVMIRModule: %s\0A\00", align 1
+@.str.2508 = private unnamed_addr constant [46 x i8] c"compile-time: expected at least one body form\00", align 1
+@.str.2509 = private unnamed_addr constant [5 x i8] c"defn\00", align 1
+@.str.2510 = private unnamed_addr constant [4 x i8] c"@%s\00", align 1
+@.str.2511 = private unnamed_addr constant [10 x i8] c"defstruct\00", align 1
+@.str.2512 = private unnamed_addr constant [9 x i8] c"defconst\00", align 1
+@.str.2513 = private unnamed_addr constant [8 x i8] c"defenum\00", align 1
+@.str.2514 = private unnamed_addr constant [7 x i8] c"defvar\00", align 1
+@.str.2515 = private unnamed_addr constant [7 x i8] c"extern\00", align 1
+@.str.2516 = private unnamed_addr constant [5 x i8] c"defn\00", align 1
+@.str.2517 = private unnamed_addr constant [24 x i8] c"__compile_time_main_%ld\00", align 1
+@.str.2518 = private unnamed_addr constant [12 x i8] c"  ret void\0A\00", align 1
+@.str.2519 = private unnamed_addr constant [21 x i8] c"define void @%s() {\0A\00", align 1
+@.str.2520 = private unnamed_addr constant [8 x i8] c"entry:\0A\00", align 1
+@.str.2521 = private unnamed_addr constant [4 x i8] c"}\0A\0A\00", align 1
+@.str.2522 = private unnamed_addr constant [26 x i8] c"declare ptr @malloc(i64)\0A\00", align 1
+@.str.2523 = private unnamed_addr constant [27 x i8] c"declare ptr @alloc-node()\0A\00", align 1
+@.str.2524 = private unnamed_addr constant [39 x i8] c"declare ptr @make-cell(ptr, ptr, i32)\0A\00", align 1
+@.str.2525 = private unnamed_addr constant [33 x i8] c"declare ptr @intern-symbol(ptr)\0A\00", align 1
+@.str.2526 = private unnamed_addr constant [48 x i8] c"define private ptr @__cons(ptr %%a, ptr %%b) {\0A\00", align 1
+@.str.2527 = private unnamed_addr constant [34 x i8] c"  %%c = call ptr @malloc(i64 40)\0A\00", align 1
+@.str.2528 = private unnamed_addr constant [89 x i8] c"  %%p0 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 0\0A\00", align 1
+@.str.2529 = private unnamed_addr constant [34 x i8] c"  store i32 3, ptr %%p0, align 8\0A\00", align 1
+@.str.2530 = private unnamed_addr constant [89 x i8] c"  %%p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 4\0A\00", align 1
+@.str.2531 = private unnamed_addr constant [36 x i8] c"  store ptr %%a, ptr %%p4, align 8\0A\00", align 1
+@.str.2532 = private unnamed_addr constant [89 x i8] c"  %%p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 5\0A\00", align 1
+@.str.2533 = private unnamed_addr constant [36 x i8] c"  store ptr %%b, ptr %%p5, align 8\0A\00", align 1
+@.str.2534 = private unnamed_addr constant [15 x i8] c"  ret ptr %%c\0A\00", align 1
+@.str.2535 = private unnamed_addr constant [4 x i8] c"}\0A\0A\00", align 1
+@.str.2536 = private unnamed_addr constant [50 x i8] c"define private ptr @__append(ptr %%a, ptr %%b) {\0A\00", align 1
+@.str.2537 = private unnamed_addr constant [8 x i8] c"entry:\0A\00", align 1
+@.str.2538 = private unnamed_addr constant [31 x i8] c"  %%z = icmp eq ptr %%a, null\0A\00", align 1
+@.str.2539 = private unnamed_addr constant [39 x i8] c"  br i1 %%z, label %%nil, label %%rec\0A\00", align 1
+@.str.2540 = private unnamed_addr constant [6 x i8] c"nil:\0A\00", align 1
+@.str.2541 = private unnamed_addr constant [15 x i8] c"  ret ptr %%b\0A\00", align 1
+@.str.2542 = private unnamed_addr constant [6 x i8] c"rec:\0A\00", align 1
+@.str.2543 = private unnamed_addr constant [89 x i8] c"  %%p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%a, i32 0, i32 4\0A\00", align 1
+@.str.2544 = private unnamed_addr constant [39 x i8] c"  %%car = load ptr, ptr %%p4, align 8\0A\00", align 1
+@.str.2545 = private unnamed_addr constant [89 x i8] c"  %%p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%a, i32 0, i32 5\0A\00", align 1
+@.str.2546 = private unnamed_addr constant [39 x i8] c"  %%cdr = load ptr, ptr %%p5, align 8\0A\00", align 1
+@.str.2547 = private unnamed_addr constant [51 x i8] c"  %%rest = call ptr @__append(ptr %%cdr, ptr %%b)\0A\00", align 1
+@.str.2548 = private unnamed_addr constant [49 x i8] c"  %%c = call ptr @__cons(ptr %%car, ptr %%rest)\0A\00", align 1
+@.str.2549 = private unnamed_addr constant [15 x i8] c"  ret ptr %%c\0A\00", align 1
+@.str.2550 = private unnamed_addr constant [4 x i8] c"}\0A\0A\00", align 1
+@.str.2551 = private unnamed_addr constant [31 x i8] c"; ModuleID = '<compile-time>'\0A\00", align 1
+@.str.2552 = private unnamed_addr constant [23 x i8] c"target triple = \22%s\22\0A\0A\00", align 1
+@.str.2553 = private unnamed_addr constant [41 x i8] c"defmacro: expects name, params, and body\00", align 1
+@.str.2554 = private unnamed_addr constant [30 x i8] c"defmacro: name must be symbol\00", align 1
+@.str.2555 = private unnamed_addr constant [32 x i8] c"defmacro: params must be a list\00", align 1
+@.str.2556 = private unnamed_addr constant [14 x i8] c"__macro_%s_%d\00", align 1
+@.str.2557 = private unnamed_addr constant [6 x i8] c"&rest\00", align 1
+@.str.2558 = private unnamed_addr constant [45 x i8] c"defmacro: &rest must be second-to-last param\00", align 1
+@.str.2559 = private unnamed_addr constant [33 x i8] c"defmacro: param must be a symbol\00", align 1
+@.str.2560 = private unnamed_addr constant [6 x i8] c"&rest\00", align 1
+@.str.2561 = private unnamed_addr constant [27 x i8] c"defmacro: macro table full\00", align 1
+@.str.2562 = private unnamed_addr constant [39 x i8] c"  %%__args.addr = alloca ptr, align 8\0A\00", align 1
+@.str.2563 = private unnamed_addr constant [54 x i8] c"  store ptr %%__args.arg, ptr %%__args.addr, align 8\0A\00", align 1
+@.str.2564 = private unnamed_addr constant [5 x i8] c"Node\00", align 1
+@.str.2565 = private unnamed_addr constant [35 x i8] c"  %%%s.addr = alloca ptr, align 8\0A\00", align 1
+@.str.2566 = private unnamed_addr constant [51 x i8] c"  %%__ap%d = load ptr, ptr %%__args.addr, align 8\0A\00", align 1
+@.str.2567 = private unnamed_addr constant [54 x i8] c"  %%__ag%d = getelementptr ptr, ptr %%__ap%d, i32 %d\0A\00", align 1
+@.str.2568 = private unnamed_addr constant [46 x i8] c"  %%__av%d = load ptr, ptr %%__ag%d, align 8\0A\00", align 1
+@.str.2569 = private unnamed_addr constant [46 x i8] c"  store ptr %%__av%d, ptr %%%s.addr, align 8\0A\00", align 1
+@.str.2570 = private unnamed_addr constant [10 x i8] c"%%%s.addr\00", align 1
+@.str.2571 = private unnamed_addr constant [5 x i8] c"null\00", align 1
+@.str.2572 = private unnamed_addr constant [14 x i8] c"  ret ptr %s\0A\00", align 1
+@.str.2573 = private unnamed_addr constant [36 x i8] c"define ptr @%s(ptr %%__args.arg) {\0A\00", align 1
+@.str.2574 = private unnamed_addr constant [8 x i8] c"entry:\0A\00", align 1
+@.str.2575 = private unnamed_addr constant [4 x i8] c"}\0A\0A\00", align 1
+@.str.2576 = private unnamed_addr constant [26 x i8] c"declare ptr @malloc(i64)\0A\00", align 1
+@.str.2577 = private unnamed_addr constant [27 x i8] c"declare ptr @alloc-node()\0A\00", align 1
+@.str.2578 = private unnamed_addr constant [39 x i8] c"declare ptr @make-cell(ptr, ptr, i32)\0A\00", align 1
+@.str.2579 = private unnamed_addr constant [33 x i8] c"declare ptr @intern-symbol(ptr)\0A\00", align 1
+@.str.2580 = private unnamed_addr constant [48 x i8] c"define private ptr @__cons(ptr %%a, ptr %%b) {\0A\00", align 1
+@.str.2581 = private unnamed_addr constant [34 x i8] c"  %%c = call ptr @malloc(i64 40)\0A\00", align 1
+@.str.2582 = private unnamed_addr constant [89 x i8] c"  %%p0 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 0\0A\00", align 1
+@.str.2583 = private unnamed_addr constant [34 x i8] c"  store i32 3, ptr %%p0, align 8\0A\00", align 1
+@.str.2584 = private unnamed_addr constant [89 x i8] c"  %%p1 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 1\0A\00", align 1
+@.str.2585 = private unnamed_addr constant [34 x i8] c"  store i32 0, ptr %%p1, align 4\0A\00", align 1
+@.str.2586 = private unnamed_addr constant [89 x i8] c"  %%p2 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 2\0A\00", align 1
+@.str.2587 = private unnamed_addr constant [34 x i8] c"  store i64 0, ptr %%p2, align 8\0A\00", align 1
+@.str.2588 = private unnamed_addr constant [89 x i8] c"  %%p3 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 3\0A\00", align 1
+@.str.2589 = private unnamed_addr constant [37 x i8] c"  store ptr null, ptr %%p3, align 8\0A\00", align 1
+@.str.2590 = private unnamed_addr constant [89 x i8] c"  %%p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 4\0A\00", align 1
+@.str.2591 = private unnamed_addr constant [36 x i8] c"  store ptr %%a, ptr %%p4, align 8\0A\00", align 1
+@.str.2592 = private unnamed_addr constant [89 x i8] c"  %%p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 5\0A\00", align 1
+@.str.2593 = private unnamed_addr constant [36 x i8] c"  store ptr %%b, ptr %%p5, align 8\0A\00", align 1
+@.str.2594 = private unnamed_addr constant [15 x i8] c"  ret ptr %%c\0A\00", align 1
+@.str.2595 = private unnamed_addr constant [4 x i8] c"}\0A\0A\00", align 1
+@.str.2596 = private unnamed_addr constant [50 x i8] c"define private ptr @__append(ptr %%a, ptr %%b) {\0A\00", align 1
+@.str.2597 = private unnamed_addr constant [8 x i8] c"entry:\0A\00", align 1
+@.str.2598 = private unnamed_addr constant [31 x i8] c"  %%z = icmp eq ptr %%a, null\0A\00", align 1
+@.str.2599 = private unnamed_addr constant [39 x i8] c"  br i1 %%z, label %%nil, label %%rec\0A\00", align 1
+@.str.2600 = private unnamed_addr constant [6 x i8] c"nil:\0A\00", align 1
+@.str.2601 = private unnamed_addr constant [15 x i8] c"  ret ptr %%b\0A\00", align 1
+@.str.2602 = private unnamed_addr constant [6 x i8] c"rec:\0A\00", align 1
+@.str.2603 = private unnamed_addr constant [89 x i8] c"  %%p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%a, i32 0, i32 4\0A\00", align 1
+@.str.2604 = private unnamed_addr constant [39 x i8] c"  %%car = load ptr, ptr %%p4, align 8\0A\00", align 1
+@.str.2605 = private unnamed_addr constant [89 x i8] c"  %%p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%a, i32 0, i32 5\0A\00", align 1
+@.str.2606 = private unnamed_addr constant [39 x i8] c"  %%cdr = load ptr, ptr %%p5, align 8\0A\00", align 1
+@.str.2607 = private unnamed_addr constant [51 x i8] c"  %%rest = call ptr @__append(ptr %%cdr, ptr %%b)\0A\00", align 1
+@.str.2608 = private unnamed_addr constant [49 x i8] c"  %%c = call ptr @__cons(ptr %%car, ptr %%rest)\0A\00", align 1
+@.str.2609 = private unnamed_addr constant [15 x i8] c"  ret ptr %%c\0A\00", align 1
+@.str.2610 = private unnamed_addr constant [4 x i8] c"}\0A\0A\00", align 1
+@.str.2611 = private unnamed_addr constant [31 x i8] c"declare ptr @nucleus_gensym()\0A\00", align 1
+@.str.2612 = private unnamed_addr constant [30 x i8] c"; ModuleID = '<defmacro %s>'\0A\00", align 1
+@.str.2613 = private unnamed_addr constant [23 x i8] c"target triple = \22%s\22\0A\0A\00", align 1
+@.str.2614 = private unnamed_addr constant [54 x i8] c"@.str.%d = private unnamed_addr constant [%d x i8] c\22\00", align 1
+@.str.2615 = private unnamed_addr constant [6 x i8] c"\5C%02X\00", align 1
+@.str.2616 = private unnamed_addr constant [15 x i8] c"\5C00\22, align 1\0A\00", align 1
+@.str.2617 = private unnamed_addr constant [39 x i8] c"@nuc_err_names = constant [%d x ptr] [\00", align 1
+@.str.2618 = private unnamed_addr constant [3 x i8] c", \00", align 1
+@.str.2619 = private unnamed_addr constant [9 x i8] c"ptr null\00", align 1
+@.str.2620 = private unnamed_addr constant [13 x i8] c"ptr @.str.%d\00", align 1
+@.str.2621 = private unnamed_addr constant [3 x i8] c"]\0A\00", align 1
+@.str.2622 = private unnamed_addr constant [42 x i8] c"@nuc_err_messages = constant [%d x ptr] [\00", align 1
+@.str.2623 = private unnamed_addr constant [3 x i8] c", \00", align 1
+@.str.2624 = private unnamed_addr constant [9 x i8] c"ptr null\00", align 1
+@.str.2625 = private unnamed_addr constant [13 x i8] c"ptr @.str.%d\00", align 1
+@.str.2626 = private unnamed_addr constant [4 x i8] c"]\0A\0A\00", align 1
+@.str.2627 = private unnamed_addr constant [3 x i8] c"rb\00", align 1
+@.str.2628 = private unnamed_addr constant [6 x i8] c"fseek\00", align 1
+@.str.2629 = private unnamed_addr constant [6 x i8] c"ftell\00", align 1
+@.str.2630 = private unnamed_addr constant [7 x i8] c"malloc\00", align 1
+@.str.2631 = private unnamed_addr constant [5 x i8] c"defn\00", align 1
+@.str.2632 = private unnamed_addr constant [7 x i8] c"defvar\00", align 1
+@.str.2633 = private unnamed_addr constant [10 x i8] c"defstruct\00", align 1
+@.str.2634 = private unnamed_addr constant [7 x i8] c"extern\00", align 1
+@.str.2635 = private unnamed_addr constant [8 x i8] c"declare\00", align 1
+@.str.2636 = private unnamed_addr constant [9 x i8] c"noreturn\00", align 1
+@.str.2637 = private unnamed_addr constant [4 x i8] c"let\00", align 1
+@.str.2638 = private unnamed_addr constant [5 x i8] c"with\00", align 1
+@.str.2639 = private unnamed_addr constant [13 x i8] c"compile-time\00", align 1
+@.str.2640 = private unnamed_addr constant [3 x i8] c"do\00", align 1
+@.str.2641 = private unnamed_addr constant [7 x i8] c"import\00", align 1
+@.str.2642 = private unnamed_addr constant [11 x i8] c"import-use\00", align 1
+@.str.2643 = private unnamed_addr constant [12 x i8] c"import-only\00", align 1
+@.str.2644 = private unnamed_addr constant [16 x i8] c"import-prefixed\00", align 1
+@.str.2645 = private unnamed_addr constant [22 x i8] c"unsafe-import-private\00", align 1
+@.str.2646 = private unnamed_addr constant [10 x i8] c"defstruct\00", align 1
+@.str.2647 = private unnamed_addr constant [11 x i8] c"defstruct-\00", align 1
+@.str.2648 = private unnamed_addr constant [9 x i8] c"defunion\00", align 1
+@.str.2649 = private unnamed_addr constant [10 x i8] c"defunion-\00", align 1
+@.str.2650 = private unnamed_addr constant [6 x i8] c"%s-%s\00", align 1
+@.str.2651 = private unnamed_addr constant [9 x i8] c"defunion\00", align 1
+@.str.2652 = private unnamed_addr constant [10 x i8] c"defunion-\00", align 1
+@.str.2653 = private unnamed_addr constant [5 x i8] c"defn\00", align 1
+@.str.2654 = private unnamed_addr constant [6 x i8] c"defn-\00", align 1
+@.str.2655 = private unnamed_addr constant [49 x i8] c"def-rmacro: expects (def-rmacro \22prefix\22 symbol)\00", align 1
+@.str.2656 = private unnamed_addr constant [36 x i8] c"def-rmacro: prefix must be a string\00", align 1
+@.str.2657 = private unnamed_addr constant [41 x i8] c"def-rmacro: wrap symbol must be a symbol\00", align 1
+@.str.2658 = private unnamed_addr constant [23 x i8] c"ns: expected (ns name)\00", align 1
+@.str.2659 = private unnamed_addr constant [31 x i8] c"ns: namespace must be a symbol\00", align 1
+@.str.2660 = private unnamed_addr constant [43 x i8] c"ns: namespace name may not contain a slash\00", align 1
+@.str.2661 = private unnamed_addr constant [20 x i8] c"%s:%d: warning: %s\0A\00", align 1
+@.str.2662 = private unnamed_addr constant [46 x i8] c"second ns directive; namespace re-set to '%s'\00", align 1
+@.str.2663 = private unnamed_addr constant [49 x i8] c"set-ir-prefix: expected (set-ir-prefix \22prefix\22)\00", align 1
+@.str.2664 = private unnamed_addr constant [1 x i8] c"\00", align 1
+@.str.2665 = private unnamed_addr constant [5 x i8] c"null\00", align 1
+@.str.2666 = private unnamed_addr constant [1 x i8] c"\00", align 1
+@.str.2667 = private unnamed_addr constant [49 x i8] c"set-ir-prefix: argument must be a string literal\00", align 1
+@.str.2668 = private unnamed_addr constant [1 x i8] c"\00", align 1
+@.str.2669 = private unnamed_addr constant [34 x i8] c"export: expected (export sym ...)\00", align 1
+@.str.2670 = private unnamed_addr constant [39 x i8] c"export: each argument must be a symbol\00", align 1
+@.str.2671 = private unnamed_addr constant [31 x i8] c"export: symbol not found: '%s'\00", align 1
+@.str.2672 = private unnamed_addr constant [14 x i8] c"set-ir-prefix\00", align 1
+@.str.2673 = private unnamed_addr constant [5 x i8] c"defn\00", align 1
+@.str.2674 = private unnamed_addr constant [6 x i8] c"defn-\00", align 1
+@.str.2675 = private unnamed_addr constant [7 x i8] c"defvar\00", align 1
+@.str.2676 = private unnamed_addr constant [8 x i8] c"defvar-\00", align 1
+@.str.2677 = private unnamed_addr constant [53 x i8] c"top-level form must be a list starting with a symbol\00", align 1
+@.str.2678 = private unnamed_addr constant [3 x i8] c"ns\00", align 1
+@.str.2679 = private unnamed_addr constant [14 x i8] c"set-ir-prefix\00", align 1
+@.str.2680 = private unnamed_addr constant [7 x i8] c"export\00", align 1
+@.str.2681 = private unnamed_addr constant [9 x i8] c"defconst\00", align 1
+@.str.2682 = private unnamed_addr constant [8 x i8] c"defenum\00", align 1
+@.str.2683 = private unnamed_addr constant [9 x i8] c"deferror\00", align 1
+@.str.2684 = private unnamed_addr constant [7 x i8] c"defvar\00", align 1
+@.str.2685 = private unnamed_addr constant [10 x i8] c"defstruct\00", align 1
+@.str.2686 = private unnamed_addr constant [9 x i8] c"defunion\00", align 1
+@.str.2687 = private unnamed_addr constant [8 x i8] c"defcast\00", align 1
+@.str.2688 = private unnamed_addr constant [7 x i8] c"extern\00", align 1
+@.str.2689 = private unnamed_addr constant [5 x i8] c"defn\00", align 1
+@.str.2690 = private unnamed_addr constant [12 x i8] c"defprotocol\00", align 1
+@.str.2691 = private unnamed_addr constant [7 x i8] c"extend\00", align 1
+@.str.2692 = private unnamed_addr constant [13 x i8] c"compile-time\00", align 1
+@.str.2693 = private unnamed_addr constant [9 x i8] c"defmacro\00", align 1
+@.str.2694 = private unnamed_addr constant [11 x i8] c"def-rmacro\00", align 1
+@.str.2695 = private unnamed_addr constant [10 x i8] c"defconst-\00", align 1
+@.str.2696 = private unnamed_addr constant [9 x i8] c"defenum-\00", align 1
+@.str.2697 = private unnamed_addr constant [8 x i8] c"defvar-\00", align 1
+@.str.2698 = private unnamed_addr constant [11 x i8] c"defstruct-\00", align 1
+@.str.2699 = private unnamed_addr constant [10 x i8] c"defunion-\00", align 1
+@.str.2700 = private unnamed_addr constant [6 x i8] c"defn-\00", align 1
+@.str.2701 = private unnamed_addr constant [13 x i8] c"defprotocol-\00", align 1
+@.str.2702 = private unnamed_addr constant [10 x i8] c"defmacro-\00", align 1
+@.str.2703 = private unnamed_addr constant [7 x i8] c"import\00", align 1
+@.str.2704 = private unnamed_addr constant [11 x i8] c"import-use\00", align 1
+@.str.2705 = private unnamed_addr constant [12 x i8] c"import-only\00", align 1
+@.str.2706 = private unnamed_addr constant [16 x i8] c"import-prefixed\00", align 1
+@.str.2707 = private unnamed_addr constant [22 x i8] c"unsafe-import-private\00", align 1
+@.str.2708 = private unnamed_addr constant [8 x i8] c"declare\00", align 1
+@.str.2709 = private unnamed_addr constant [27 x i8] c"unknown top-level form: %s\00", align 1
+@.str.2710 = private unnamed_addr constant [2 x i8] c"r\00", align 1
+@.str.2711 = private unnamed_addr constant [6 x i8] c"%s/%s\00", align 1
+@.str.2712 = private unnamed_addr constant [7 x i8] c"lib/%s\00", align 1
+@.str.2713 = private unnamed_addr constant [6 x i8] c"%s/%s\00", align 1
+@.str.2714 = private unnamed_addr constant [12 x i8] c"NUCLEUS_LIB\00", align 1
+@.str.2715 = private unnamed_addr constant [6 x i8] c"%s/%s\00", align 1
+@.str.2716 = private unnamed_addr constant [32 x i8] c"/usr/local/share/nucleus/lib/%s\00", align 1
+@.str.2717 = private unnamed_addr constant [7 x i8] c"%s.nuc\00", align 1
+@.str.2718 = private unnamed_addr constant [8 x i8] c"%s.nuch\00", align 1
+@.str.2719 = private unnamed_addr constant [6 x i8] c"%s\0A%s\00", align 1
+@.str.2720 = private unnamed_addr constant [6 x i8] c"%s/%s\00", align 1
+@.str.2721 = private unnamed_addr constant [20 x i8] c"%s:%d: warning: %s\0A\00", align 1
+@.str.2722 = private unnamed_addr constant [32 x i8] c"import: alias collision on '%s'\00", align 1
+@.str.2723 = private unnamed_addr constant [5 x i8] c".nuc\00", align 1
+@.str.2724 = private unnamed_addr constant [6 x i8] c".nuch\00", align 1
+@.str.2725 = private unnamed_addr constant [25 x i8] c"import: cannot find '%s'\00", align 1
+@.str.2726 = private unnamed_addr constant [45 x i8] c"import: prefix '%s' is already bound to '%s'\00", align 1
+@.str.2727 = private unnamed_addr constant [32 x i8] c"import: circular import of '%s'\00", align 1
+@.str.2728 = private unnamed_addr constant [5 x i8] c"user\00", align 1
+@.str.2729 = private unnamed_addr constant [6 x i8] c".nuch\00", align 1
+@.str.2730 = private unnamed_addr constant [45 x i8] c"import: name must be a symbol or string path\00", align 1
+@.str.2731 = private unnamed_addr constant [25 x i8] c"import: cannot find '%s'\00", align 1
+@.str.2732 = private unnamed_addr constant [45 x i8] c"import: prefix '%s' is already bound to '%s'\00", align 1
+@.str.2733 = private unnamed_addr constant [32 x i8] c"import: circular import of '%s'\00", align 1
+@.str.2734 = private unnamed_addr constant [5 x i8] c"user\00", align 1
+@.str.2735 = private unnamed_addr constant [6 x i8] c".nuch\00", align 1
+@.str.2736 = private unnamed_addr constant [39 x i8] c"import-use: expected (import-use name)\00", align 1
+@.str.2737 = private unnamed_addr constant [39 x i8] c"import: expected (import lib [prefix])\00", align 1
+@.str.2738 = private unnamed_addr constant [32 x i8] c"import: prefix must be a symbol\00", align 1
+@.str.2739 = private unnamed_addr constant [2 x i8] c"c\00", align 1
+@.str.2740 = private unnamed_addr constant [45 x i8] c"import: name must be a symbol or string path\00", align 1
+@.str.2741 = private unnamed_addr constant [39 x i8] c"import: prefix may not contain a slash\00", align 1
+@.str.2742 = private unnamed_addr constant [47 x i8] c"import-only: expected (import-only lib sym...)\00", align 1
+@.str.2743 = private unnamed_addr constant [74 x i8] c"unsafe-import-private: expected (unsafe-import-private lib prefix sym...)\00", align 1
+@.str.2744 = private unnamed_addr constant [47 x i8] c"unsafe-import-private: prefix must be a symbol\00", align 1
+@.str.2745 = private unnamed_addr constant [54 x i8] c"unsafe-import-private: prefix may not contain a slash\00", align 1
+@.str.2746 = private unnamed_addr constant [3 x i8] c"~@\00", align 1
+@.str.2747 = private unnamed_addr constant [15 x i8] c"unquote-splice\00", align 1
+@.str.2748 = private unnamed_addr constant [2 x i8] c"~\00", align 1
+@.str.2749 = private unnamed_addr constant [8 x i8] c"unquote\00", align 1
+@.str.2750 = private unnamed_addr constant [2 x i8] c"'\00", align 1
+@.str.2751 = private unnamed_addr constant [6 x i8] c"quote\00", align 1
+@.str.2752 = private unnamed_addr constant [2 x i8] c"`\00", align 1
+@.str.2753 = private unnamed_addr constant [11 x i8] c"quasiquote\00", align 1
+@.str.2754 = private unnamed_addr constant [2 x i8] c"@\00", align 1
+@.str.2755 = private unnamed_addr constant [6 x i8] c"deref\00", align 1
+@.str.2756 = private unnamed_addr constant [4 x i8] c"Any\00", align 1
+@.str.2757 = private unnamed_addr constant [7 x i8] c"Struct\00", align 1
+@.str.2758 = private unnamed_addr constant [45 x i8] c"nucleusc: target lookup failed for '%s': %s\0A\00", align 1
 @.str.2759 = private unnamed_addr constant [1 x i8] c"\00", align 1
-@.str.2760 = private unnamed_addr constant [51 x i8] c"nucleusc: failed to create TargetMachine for '%s'\0A\00", align 1
-@.str.2761 = private unnamed_addr constant [4 x i8] c"let\00", align 1
-@.str.2762 = private unnamed_addr constant [5 x i8] c"with\00", align 1
-@.str.2763 = private unnamed_addr constant [3 x i8] c"do\00", align 1
-@.str.2764 = private unnamed_addr constant [5 x i8] c"cond\00", align 1
-@.str.2765 = private unnamed_addr constant [7 x i8] c"return\00", align 1
-@.str.2766 = private unnamed_addr constant [6 x i8] c"while\00", align 1
-@.str.2767 = private unnamed_addr constant [5 x i8] c"set!\00", align 1
-@.str.2768 = private unnamed_addr constant [5 x i8] c"inc!\00", align 1
-@.str.2769 = private unnamed_addr constant [5 x i8] c"dec!\00", align 1
-@.str.2770 = private unnamed_addr constant [6 x i8] c"array\00", align 1
-@.str.2771 = private unnamed_addr constant [6 x i8] c"label\00", align 1
-@.str.2772 = private unnamed_addr constant [5 x i8] c"goto\00", align 1
-@.str.2773 = private unnamed_addr constant [11 x i8] c"label-addr\00", align 1
-@.str.2774 = private unnamed_addr constant [9 x i8] c"goto-ptr\00", align 1
-@.str.2775 = private unnamed_addr constant [2 x i8] c".\00", align 1
-@.str.2776 = private unnamed_addr constant [3 x i8] c".&\00", align 1
-@.str.2777 = private unnamed_addr constant [5 x i8] c"cast\00", align 1
-@.str.2778 = private unnamed_addr constant [8 x i8] c"addr-of\00", align 1
-@.str.2779 = private unnamed_addr constant [6 x i8] c"deref\00", align 1
-@.str.2780 = private unnamed_addr constant [9 x i8] c"ptr-set!\00", align 1
-@.str.2781 = private unnamed_addr constant [5 x i8] c"ptr+\00", align 1
-@.str.2782 = private unnamed_addr constant [5 x i8] c"_get\00", align 1
-@.str.2783 = private unnamed_addr constant [6 x i8] c".set!\00", align 1
-@.str.2784 = private unnamed_addr constant [7 x i8] c"sizeof\00", align 1
-@.str.2785 = private unnamed_addr constant [7 x i8] c"alloca\00", align 1
-@.str.2786 = private unnamed_addr constant [5 x i8] c"aref\00", align 1
-@.str.2787 = private unnamed_addr constant [6 x i8] c"aset!\00", align 1
-@.str.2788 = private unnamed_addr constant [6 x i8] c"quote\00", align 1
-@.str.2789 = private unnamed_addr constant [11 x i8] c"quasiquote\00", align 1
-@.str.2790 = private unnamed_addr constant [5 x i8] c"char\00", align 1
-@.str.2791 = private unnamed_addr constant [4 x i8] c"not\00", align 1
-@.str.2792 = private unnamed_addr constant [5 x i8] c"_and\00", align 1
-@.str.2793 = private unnamed_addr constant [4 x i8] c"_or\00", align 1
-@.str.2794 = private unnamed_addr constant [7 x i8] c"gensym\00", align 1
-@.str.2795 = private unnamed_addr constant [8 x i8] c"funcall\00", align 1
-@.str.2796 = private unnamed_addr constant [13 x i8] c"funcall-void\00", align 1
-@.str.2797 = private unnamed_addr constant [14 x i8] c"funcall-ptr-1\00", align 1
-@.str.2798 = private unnamed_addr constant [16 x i8] c"funcall-ptr-i32\00", align 1
-@.str.2799 = private unnamed_addr constant [16 x i8] c"funcall-ptr-i64\00", align 1
-@.str.2800 = private unnamed_addr constant [16 x i8] c"funcall-ptr-ptr\00", align 1
-@.str.2801 = private unnamed_addr constant [5 x i8] c"some\00", align 1
-@.str.2802 = private unnamed_addr constant [7 x i8] c"as-ref\00", align 1
-@.str.2803 = private unnamed_addr constant [7 x i8] c"unwrap\00", align 1
-@.str.2804 = private unnamed_addr constant [10 x i8] c"unwrap-or\00", align 1
-@.str.2805 = private unnamed_addr constant [8 x i8] c"if-some\00", align 1
-@.str.2806 = private unnamed_addr constant [10 x i8] c"when-some\00", align 1
-@.str.2807 = private unnamed_addr constant [5 x i8] c"move\00", align 1
-@.str.2808 = private unnamed_addr constant [6 x i8] c"defer\00", align 1
-@.str.2809 = private unnamed_addr constant [6 x i8] c"match\00", align 1
-@.str.2810 = private unnamed_addr constant [5 x i8] c"make\00", align 1
-@.str.2811 = private unnamed_addr constant [9 x i8] c"defunion\00", align 1
-@.str.2812 = private unnamed_addr constant [9 x i8] c"deferror\00", align 1
-@.str.2813 = private unnamed_addr constant [5 x i8] c"err!\00", align 1
-@.str.2814 = private unnamed_addr constant [9 x i8] c"err-name\00", align 1
-@.str.2815 = private unnamed_addr constant [12 x i8] c"err-message\00", align 1
-@.str.2816 = private unnamed_addr constant [11 x i8] c"type-token\00", align 1
-@.str.2817 = private unnamed_addr constant [14 x i8] c"__err-handled\00", align 1
-@.str.2818 = private unnamed_addr constant [7 x i8] c"signal\00", align 1
-@.str.2819 = private unnamed_addr constant [5 x i8] c"defn\00", align 1
-@.str.2820 = private unnamed_addr constant [7 x i8] c"defvar\00", align 1
-@.str.2821 = private unnamed_addr constant [9 x i8] c"defconst\00", align 1
-@.str.2822 = private unnamed_addr constant [8 x i8] c"defenum\00", align 1
-@.str.2823 = private unnamed_addr constant [10 x i8] c"defstruct\00", align 1
-@.str.2824 = private unnamed_addr constant [9 x i8] c"defmacro\00", align 1
-@.str.2825 = private unnamed_addr constant [12 x i8] c"defprotocol\00", align 1
-@.str.2826 = private unnamed_addr constant [7 x i8] c"extend\00", align 1
-@.str.2827 = private unnamed_addr constant [11 x i8] c"def-rmacro\00", align 1
-@.str.2828 = private unnamed_addr constant [6 x i8] c"defn-\00", align 1
-@.str.2829 = private unnamed_addr constant [8 x i8] c"defvar-\00", align 1
-@.str.2830 = private unnamed_addr constant [10 x i8] c"defconst-\00", align 1
-@.str.2831 = private unnamed_addr constant [9 x i8] c"defenum-\00", align 1
-@.str.2832 = private unnamed_addr constant [11 x i8] c"defstruct-\00", align 1
-@.str.2833 = private unnamed_addr constant [10 x i8] c"defmacro-\00", align 1
-@.str.2834 = private unnamed_addr constant [13 x i8] c"defprotocol-\00", align 1
-@.str.2835 = private unnamed_addr constant [10 x i8] c"defunion-\00", align 1
-@.str.2836 = private unnamed_addr constant [7 x i8] c"import\00", align 1
-@.str.2837 = private unnamed_addr constant [11 x i8] c"import-use\00", align 1
-@.str.2838 = private unnamed_addr constant [12 x i8] c"import-only\00", align 1
-@.str.2839 = private unnamed_addr constant [16 x i8] c"import-prefixed\00", align 1
-@.str.2840 = private unnamed_addr constant [22 x i8] c"unsafe-import-private\00", align 1
-@.str.2841 = private unnamed_addr constant [7 x i8] c"extern\00", align 1
-@.str.2842 = private unnamed_addr constant [8 x i8] c"declare\00", align 1
-@.str.2843 = private unnamed_addr constant [13 x i8] c"compile-time\00", align 1
-@.str.2844 = private unnamed_addr constant [14 x i8] c"set-ir-prefix\00", align 1
-@.str.2845 = private unnamed_addr constant [7 x i8] c"export\00", align 1
-@.str.2846 = private unnamed_addr constant [4 x i8] c"int\00", align 1
-@.str.2847 = private unnamed_addr constant [5 x i8] c"bool\00", align 1
-@.str.2848 = private unnamed_addr constant [3 x i8] c"i1\00", align 1
-@.str.2849 = private unnamed_addr constant [3 x i8] c"i8\00", align 1
-@.str.2850 = private unnamed_addr constant [4 x i8] c"i16\00", align 1
-@.str.2851 = private unnamed_addr constant [4 x i8] c"i32\00", align 1
-@.str.2852 = private unnamed_addr constant [4 x i8] c"i64\00", align 1
-@.str.2853 = private unnamed_addr constant [4 x i8] c"ui8\00", align 1
-@.str.2854 = private unnamed_addr constant [5 x i8] c"ui16\00", align 1
-@.str.2855 = private unnamed_addr constant [5 x i8] c"ui32\00", align 1
-@.str.2856 = private unnamed_addr constant [5 x i8] c"ui64\00", align 1
-@.str.2857 = private unnamed_addr constant [4 x i8] c"f32\00", align 1
-@.str.2858 = private unnamed_addr constant [4 x i8] c"f64\00", align 1
-@.str.2859 = private unnamed_addr constant [6 x i8] c"float\00", align 1
-@.str.2860 = private unnamed_addr constant [7 x i8] c"double\00", align 1
-@.str.2861 = private unnamed_addr constant [4 x i8] c"ptr\00", align 1
-@.str.2862 = private unnamed_addr constant [5 x i8] c"void\00", align 1
-@.str.2863 = private unnamed_addr constant [5 x i8] c"CStr\00", align 1
-@.str.2864 = private unnamed_addr constant [4 x i8] c"Err\00", align 1
-@.str.2865 = private unnamed_addr constant [5 x i8] c"user\00", align 1
-@.str.2866 = private unnamed_addr constant [20 x i8] c"x86_64-pc-linux-gnu\00", align 1
-@.str.2867 = private unnamed_addr constant [5 x i8] c"user\00", align 1
-@.str.2868 = private unnamed_addr constant [26 x i8] c"declare ptr @malloc(i64)\0A\00", align 1
-@.str.2869 = private unnamed_addr constant [40 x i8] c"define ptr @__cons(ptr %%a, ptr %%b) {\0A\00", align 1
-@.str.2870 = private unnamed_addr constant [34 x i8] c"  %%c = call ptr @malloc(i64 40)\0A\00", align 1
-@.str.2871 = private unnamed_addr constant [89 x i8] c"  %%p0 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 0\0A\00", align 1
-@.str.2872 = private unnamed_addr constant [34 x i8] c"  store i32 3, ptr %%p0, align 8\0A\00", align 1
-@.str.2873 = private unnamed_addr constant [89 x i8] c"  %%p1 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 1\0A\00", align 1
-@.str.2874 = private unnamed_addr constant [34 x i8] c"  store i32 0, ptr %%p1, align 4\0A\00", align 1
-@.str.2875 = private unnamed_addr constant [89 x i8] c"  %%p2 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 2\0A\00", align 1
-@.str.2876 = private unnamed_addr constant [34 x i8] c"  store i64 0, ptr %%p2, align 8\0A\00", align 1
-@.str.2877 = private unnamed_addr constant [89 x i8] c"  %%p3 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 3\0A\00", align 1
-@.str.2878 = private unnamed_addr constant [37 x i8] c"  store ptr null, ptr %%p3, align 8\0A\00", align 1
-@.str.2879 = private unnamed_addr constant [89 x i8] c"  %%p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 4\0A\00", align 1
-@.str.2880 = private unnamed_addr constant [36 x i8] c"  store ptr %%a, ptr %%p4, align 8\0A\00", align 1
-@.str.2881 = private unnamed_addr constant [89 x i8] c"  %%p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 5\0A\00", align 1
-@.str.2882 = private unnamed_addr constant [36 x i8] c"  store ptr %%b, ptr %%p5, align 8\0A\00", align 1
-@.str.2883 = private unnamed_addr constant [15 x i8] c"  ret ptr %%c\0A\00", align 1
-@.str.2884 = private unnamed_addr constant [4 x i8] c"}\0A\0A\00", align 1
-@.str.2885 = private unnamed_addr constant [42 x i8] c"define ptr @__append(ptr %%a, ptr %%b) {\0A\00", align 1
-@.str.2886 = private unnamed_addr constant [8 x i8] c"entry:\0A\00", align 1
-@.str.2887 = private unnamed_addr constant [31 x i8] c"  %%z = icmp eq ptr %%a, null\0A\00", align 1
-@.str.2888 = private unnamed_addr constant [39 x i8] c"  br i1 %%z, label %%nil, label %%rec\0A\00", align 1
-@.str.2889 = private unnamed_addr constant [6 x i8] c"nil:\0A\00", align 1
-@.str.2890 = private unnamed_addr constant [15 x i8] c"  ret ptr %%b\0A\00", align 1
-@.str.2891 = private unnamed_addr constant [6 x i8] c"rec:\0A\00", align 1
-@.str.2892 = private unnamed_addr constant [89 x i8] c"  %%p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%a, i32 0, i32 4\0A\00", align 1
-@.str.2893 = private unnamed_addr constant [39 x i8] c"  %%car = load ptr, ptr %%p4, align 8\0A\00", align 1
-@.str.2894 = private unnamed_addr constant [89 x i8] c"  %%p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%a, i32 0, i32 5\0A\00", align 1
-@.str.2895 = private unnamed_addr constant [39 x i8] c"  %%cdr = load ptr, ptr %%p5, align 8\0A\00", align 1
-@.str.2896 = private unnamed_addr constant [51 x i8] c"  %%rest = call ptr @__append(ptr %%cdr, ptr %%b)\0A\00", align 1
-@.str.2897 = private unnamed_addr constant [49 x i8] c"  %%c = call ptr @__cons(ptr %%car, ptr %%rest)\0A\00", align 1
-@.str.2898 = private unnamed_addr constant [15 x i8] c"  ret ptr %%c\0A\00", align 1
-@.str.2899 = private unnamed_addr constant [4 x i8] c"}\0A\0A\00", align 1
-@.str.2900 = private unnamed_addr constant [19 x i8] c"; ModuleID = '%s'\0A\00", align 1
-@.str.2901 = private unnamed_addr constant [24 x i8] c"source_filename = \22%s\22\0A\00", align 1
-@.str.2902 = private unnamed_addr constant [26 x i8] c"target datalayout = \22%s\22\0A\00", align 1
-@.str.2903 = private unnamed_addr constant [23 x i8] c"target triple = \22%s\22\0A\0A\00", align 1
-@.str.2904 = private unnamed_addr constant [44 x i8] c"nucleusc: failed to parse generated IR: %s\0A\00", align 1
-@.str.2905 = private unnamed_addr constant [36 x i8] c"nucleusc: target lookup failed: %s\0A\00", align 1
-@.str.2906 = private unnamed_addr constant [1 x i8] c"\00", align 1
+@.str.2760 = private unnamed_addr constant [1 x i8] c"\00", align 1
+@.str.2761 = private unnamed_addr constant [51 x i8] c"nucleusc: failed to create TargetMachine for '%s'\0A\00", align 1
+@.str.2762 = private unnamed_addr constant [4 x i8] c"let\00", align 1
+@.str.2763 = private unnamed_addr constant [5 x i8] c"with\00", align 1
+@.str.2764 = private unnamed_addr constant [3 x i8] c"do\00", align 1
+@.str.2765 = private unnamed_addr constant [5 x i8] c"cond\00", align 1
+@.str.2766 = private unnamed_addr constant [7 x i8] c"return\00", align 1
+@.str.2767 = private unnamed_addr constant [6 x i8] c"while\00", align 1
+@.str.2768 = private unnamed_addr constant [5 x i8] c"set!\00", align 1
+@.str.2769 = private unnamed_addr constant [5 x i8] c"inc!\00", align 1
+@.str.2770 = private unnamed_addr constant [5 x i8] c"dec!\00", align 1
+@.str.2771 = private unnamed_addr constant [6 x i8] c"array\00", align 1
+@.str.2772 = private unnamed_addr constant [6 x i8] c"label\00", align 1
+@.str.2773 = private unnamed_addr constant [5 x i8] c"goto\00", align 1
+@.str.2774 = private unnamed_addr constant [11 x i8] c"label-addr\00", align 1
+@.str.2775 = private unnamed_addr constant [9 x i8] c"goto-ptr\00", align 1
+@.str.2776 = private unnamed_addr constant [2 x i8] c".\00", align 1
+@.str.2777 = private unnamed_addr constant [3 x i8] c".&\00", align 1
+@.str.2778 = private unnamed_addr constant [5 x i8] c"cast\00", align 1
+@.str.2779 = private unnamed_addr constant [8 x i8] c"addr-of\00", align 1
+@.str.2780 = private unnamed_addr constant [6 x i8] c"deref\00", align 1
+@.str.2781 = private unnamed_addr constant [9 x i8] c"ptr-set!\00", align 1
+@.str.2782 = private unnamed_addr constant [5 x i8] c"ptr+\00", align 1
+@.str.2783 = private unnamed_addr constant [5 x i8] c"_get\00", align 1
+@.str.2784 = private unnamed_addr constant [6 x i8] c".set!\00", align 1
+@.str.2785 = private unnamed_addr constant [7 x i8] c"sizeof\00", align 1
+@.str.2786 = private unnamed_addr constant [7 x i8] c"alloca\00", align 1
+@.str.2787 = private unnamed_addr constant [5 x i8] c"aref\00", align 1
+@.str.2788 = private unnamed_addr constant [6 x i8] c"aset!\00", align 1
+@.str.2789 = private unnamed_addr constant [6 x i8] c"quote\00", align 1
+@.str.2790 = private unnamed_addr constant [11 x i8] c"quasiquote\00", align 1
+@.str.2791 = private unnamed_addr constant [5 x i8] c"char\00", align 1
+@.str.2792 = private unnamed_addr constant [4 x i8] c"not\00", align 1
+@.str.2793 = private unnamed_addr constant [5 x i8] c"_and\00", align 1
+@.str.2794 = private unnamed_addr constant [4 x i8] c"_or\00", align 1
+@.str.2795 = private unnamed_addr constant [7 x i8] c"gensym\00", align 1
+@.str.2796 = private unnamed_addr constant [8 x i8] c"funcall\00", align 1
+@.str.2797 = private unnamed_addr constant [13 x i8] c"funcall-void\00", align 1
+@.str.2798 = private unnamed_addr constant [14 x i8] c"funcall-ptr-1\00", align 1
+@.str.2799 = private unnamed_addr constant [16 x i8] c"funcall-ptr-i32\00", align 1
+@.str.2800 = private unnamed_addr constant [16 x i8] c"funcall-ptr-i64\00", align 1
+@.str.2801 = private unnamed_addr constant [16 x i8] c"funcall-ptr-ptr\00", align 1
+@.str.2802 = private unnamed_addr constant [5 x i8] c"some\00", align 1
+@.str.2803 = private unnamed_addr constant [7 x i8] c"as-ref\00", align 1
+@.str.2804 = private unnamed_addr constant [7 x i8] c"unwrap\00", align 1
+@.str.2805 = private unnamed_addr constant [10 x i8] c"unwrap-or\00", align 1
+@.str.2806 = private unnamed_addr constant [8 x i8] c"if-some\00", align 1
+@.str.2807 = private unnamed_addr constant [10 x i8] c"when-some\00", align 1
+@.str.2808 = private unnamed_addr constant [5 x i8] c"move\00", align 1
+@.str.2809 = private unnamed_addr constant [6 x i8] c"defer\00", align 1
+@.str.2810 = private unnamed_addr constant [6 x i8] c"match\00", align 1
+@.str.2811 = private unnamed_addr constant [5 x i8] c"make\00", align 1
+@.str.2812 = private unnamed_addr constant [9 x i8] c"defunion\00", align 1
+@.str.2813 = private unnamed_addr constant [9 x i8] c"deferror\00", align 1
+@.str.2814 = private unnamed_addr constant [5 x i8] c"err!\00", align 1
+@.str.2815 = private unnamed_addr constant [9 x i8] c"err-name\00", align 1
+@.str.2816 = private unnamed_addr constant [12 x i8] c"err-message\00", align 1
+@.str.2817 = private unnamed_addr constant [11 x i8] c"type-token\00", align 1
+@.str.2818 = private unnamed_addr constant [14 x i8] c"__err-handled\00", align 1
+@.str.2819 = private unnamed_addr constant [7 x i8] c"signal\00", align 1
+@.str.2820 = private unnamed_addr constant [5 x i8] c"defn\00", align 1
+@.str.2821 = private unnamed_addr constant [7 x i8] c"defvar\00", align 1
+@.str.2822 = private unnamed_addr constant [9 x i8] c"defconst\00", align 1
+@.str.2823 = private unnamed_addr constant [8 x i8] c"defenum\00", align 1
+@.str.2824 = private unnamed_addr constant [10 x i8] c"defstruct\00", align 1
+@.str.2825 = private unnamed_addr constant [9 x i8] c"defmacro\00", align 1
+@.str.2826 = private unnamed_addr constant [12 x i8] c"defprotocol\00", align 1
+@.str.2827 = private unnamed_addr constant [7 x i8] c"extend\00", align 1
+@.str.2828 = private unnamed_addr constant [11 x i8] c"def-rmacro\00", align 1
+@.str.2829 = private unnamed_addr constant [6 x i8] c"defn-\00", align 1
+@.str.2830 = private unnamed_addr constant [8 x i8] c"defvar-\00", align 1
+@.str.2831 = private unnamed_addr constant [10 x i8] c"defconst-\00", align 1
+@.str.2832 = private unnamed_addr constant [9 x i8] c"defenum-\00", align 1
+@.str.2833 = private unnamed_addr constant [11 x i8] c"defstruct-\00", align 1
+@.str.2834 = private unnamed_addr constant [10 x i8] c"defmacro-\00", align 1
+@.str.2835 = private unnamed_addr constant [13 x i8] c"defprotocol-\00", align 1
+@.str.2836 = private unnamed_addr constant [10 x i8] c"defunion-\00", align 1
+@.str.2837 = private unnamed_addr constant [7 x i8] c"import\00", align 1
+@.str.2838 = private unnamed_addr constant [11 x i8] c"import-use\00", align 1
+@.str.2839 = private unnamed_addr constant [12 x i8] c"import-only\00", align 1
+@.str.2840 = private unnamed_addr constant [16 x i8] c"import-prefixed\00", align 1
+@.str.2841 = private unnamed_addr constant [22 x i8] c"unsafe-import-private\00", align 1
+@.str.2842 = private unnamed_addr constant [7 x i8] c"extern\00", align 1
+@.str.2843 = private unnamed_addr constant [8 x i8] c"declare\00", align 1
+@.str.2844 = private unnamed_addr constant [13 x i8] c"compile-time\00", align 1
+@.str.2845 = private unnamed_addr constant [14 x i8] c"set-ir-prefix\00", align 1
+@.str.2846 = private unnamed_addr constant [7 x i8] c"export\00", align 1
+@.str.2847 = private unnamed_addr constant [4 x i8] c"int\00", align 1
+@.str.2848 = private unnamed_addr constant [5 x i8] c"bool\00", align 1
+@.str.2849 = private unnamed_addr constant [3 x i8] c"i1\00", align 1
+@.str.2850 = private unnamed_addr constant [3 x i8] c"i8\00", align 1
+@.str.2851 = private unnamed_addr constant [4 x i8] c"i16\00", align 1
+@.str.2852 = private unnamed_addr constant [4 x i8] c"i32\00", align 1
+@.str.2853 = private unnamed_addr constant [4 x i8] c"i64\00", align 1
+@.str.2854 = private unnamed_addr constant [4 x i8] c"ui8\00", align 1
+@.str.2855 = private unnamed_addr constant [5 x i8] c"ui16\00", align 1
+@.str.2856 = private unnamed_addr constant [5 x i8] c"ui32\00", align 1
+@.str.2857 = private unnamed_addr constant [5 x i8] c"ui64\00", align 1
+@.str.2858 = private unnamed_addr constant [4 x i8] c"f32\00", align 1
+@.str.2859 = private unnamed_addr constant [4 x i8] c"f64\00", align 1
+@.str.2860 = private unnamed_addr constant [6 x i8] c"float\00", align 1
+@.str.2861 = private unnamed_addr constant [7 x i8] c"double\00", align 1
+@.str.2862 = private unnamed_addr constant [4 x i8] c"ptr\00", align 1
+@.str.2863 = private unnamed_addr constant [5 x i8] c"void\00", align 1
+@.str.2864 = private unnamed_addr constant [5 x i8] c"CStr\00", align 1
+@.str.2865 = private unnamed_addr constant [4 x i8] c"Err\00", align 1
+@.str.2866 = private unnamed_addr constant [5 x i8] c"user\00", align 1
+@.str.2867 = private unnamed_addr constant [20 x i8] c"x86_64-pc-linux-gnu\00", align 1
+@.str.2868 = private unnamed_addr constant [5 x i8] c"user\00", align 1
+@.str.2869 = private unnamed_addr constant [26 x i8] c"declare ptr @malloc(i64)\0A\00", align 1
+@.str.2870 = private unnamed_addr constant [40 x i8] c"define ptr @__cons(ptr %%a, ptr %%b) {\0A\00", align 1
+@.str.2871 = private unnamed_addr constant [34 x i8] c"  %%c = call ptr @malloc(i64 40)\0A\00", align 1
+@.str.2872 = private unnamed_addr constant [89 x i8] c"  %%p0 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 0\0A\00", align 1
+@.str.2873 = private unnamed_addr constant [34 x i8] c"  store i32 3, ptr %%p0, align 8\0A\00", align 1
+@.str.2874 = private unnamed_addr constant [89 x i8] c"  %%p1 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 1\0A\00", align 1
+@.str.2875 = private unnamed_addr constant [34 x i8] c"  store i32 0, ptr %%p1, align 4\0A\00", align 1
+@.str.2876 = private unnamed_addr constant [89 x i8] c"  %%p2 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 2\0A\00", align 1
+@.str.2877 = private unnamed_addr constant [34 x i8] c"  store i64 0, ptr %%p2, align 8\0A\00", align 1
+@.str.2878 = private unnamed_addr constant [89 x i8] c"  %%p3 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 3\0A\00", align 1
+@.str.2879 = private unnamed_addr constant [37 x i8] c"  store ptr null, ptr %%p3, align 8\0A\00", align 1
+@.str.2880 = private unnamed_addr constant [89 x i8] c"  %%p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 4\0A\00", align 1
+@.str.2881 = private unnamed_addr constant [36 x i8] c"  store ptr %%a, ptr %%p4, align 8\0A\00", align 1
+@.str.2882 = private unnamed_addr constant [89 x i8] c"  %%p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 5\0A\00", align 1
+@.str.2883 = private unnamed_addr constant [36 x i8] c"  store ptr %%b, ptr %%p5, align 8\0A\00", align 1
+@.str.2884 = private unnamed_addr constant [15 x i8] c"  ret ptr %%c\0A\00", align 1
+@.str.2885 = private unnamed_addr constant [4 x i8] c"}\0A\0A\00", align 1
+@.str.2886 = private unnamed_addr constant [42 x i8] c"define ptr @__append(ptr %%a, ptr %%b) {\0A\00", align 1
+@.str.2887 = private unnamed_addr constant [8 x i8] c"entry:\0A\00", align 1
+@.str.2888 = private unnamed_addr constant [31 x i8] c"  %%z = icmp eq ptr %%a, null\0A\00", align 1
+@.str.2889 = private unnamed_addr constant [39 x i8] c"  br i1 %%z, label %%nil, label %%rec\0A\00", align 1
+@.str.2890 = private unnamed_addr constant [6 x i8] c"nil:\0A\00", align 1
+@.str.2891 = private unnamed_addr constant [15 x i8] c"  ret ptr %%b\0A\00", align 1
+@.str.2892 = private unnamed_addr constant [6 x i8] c"rec:\0A\00", align 1
+@.str.2893 = private unnamed_addr constant [89 x i8] c"  %%p4 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%a, i32 0, i32 4\0A\00", align 1
+@.str.2894 = private unnamed_addr constant [39 x i8] c"  %%car = load ptr, ptr %%p4, align 8\0A\00", align 1
+@.str.2895 = private unnamed_addr constant [89 x i8] c"  %%p5 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%a, i32 0, i32 5\0A\00", align 1
+@.str.2896 = private unnamed_addr constant [39 x i8] c"  %%cdr = load ptr, ptr %%p5, align 8\0A\00", align 1
+@.str.2897 = private unnamed_addr constant [51 x i8] c"  %%rest = call ptr @__append(ptr %%cdr, ptr %%b)\0A\00", align 1
+@.str.2898 = private unnamed_addr constant [49 x i8] c"  %%c = call ptr @__cons(ptr %%car, ptr %%rest)\0A\00", align 1
+@.str.2899 = private unnamed_addr constant [15 x i8] c"  ret ptr %%c\0A\00", align 1
+@.str.2900 = private unnamed_addr constant [4 x i8] c"}\0A\0A\00", align 1
+@.str.2901 = private unnamed_addr constant [19 x i8] c"; ModuleID = '%s'\0A\00", align 1
+@.str.2902 = private unnamed_addr constant [24 x i8] c"source_filename = \22%s\22\0A\00", align 1
+@.str.2903 = private unnamed_addr constant [26 x i8] c"target datalayout = \22%s\22\0A\00", align 1
+@.str.2904 = private unnamed_addr constant [23 x i8] c"target triple = \22%s\22\0A\0A\00", align 1
+@.str.2905 = private unnamed_addr constant [44 x i8] c"nucleusc: failed to parse generated IR: %s\0A\00", align 1
+@.str.2906 = private unnamed_addr constant [36 x i8] c"nucleusc: target lookup failed: %s\0A\00", align 1
 @.str.2907 = private unnamed_addr constant [1 x i8] c"\00", align 1
-@.str.2908 = private unnamed_addr constant [6 x i8] c"out.o\00", align 1
-@.str.2909 = private unnamed_addr constant [6 x i8] c"a.out\00", align 1
-@.str.2910 = private unnamed_addr constant [5 x i8] c"%s.o\00", align 1
-@.str.2911 = private unnamed_addr constant [47 x i8] c"nucleusc: failed to emit object file '%s': %s\0A\00", align 1
-@.str.2912 = private unnamed_addr constant [15 x i8] c"clang %s -o %s\00", align 1
-@.str.2913 = private unnamed_addr constant [4 x i8] c" %s\00", align 1
-@.str.2914 = private unnamed_addr constant [44 x i8] c"nucleusc: link step failed (clang exit %d)\0A\00", align 1
-@.str.2915 = private unnamed_addr constant [16 x i8] c"exclude-prelude\00", align 1
-@.str.2916 = private unnamed_addr constant [3 x i8] c"ns\00", align 1
-@.str.2917 = private unnamed_addr constant [11 x i8] c"import-use\00", align 1
-@.str.2918 = private unnamed_addr constant [8 x i8] c"prelude\00", align 1
-@.str.2919 = private unnamed_addr constant [12 x i8] c"--emit-nuch\00", align 1
-@.str.2920 = private unnamed_addr constant [15 x i8] c"--emit-cheader\00", align 1
-@.str.2921 = private unnamed_addr constant [12 x i8] c"--emit-llvm\00", align 1
-@.str.2922 = private unnamed_addr constant [3 x i8] c"-S\00", align 1
-@.str.2923 = private unnamed_addr constant [3 x i8] c"-c\00", align 1
-@.str.2924 = private unnamed_addr constant [3 x i8] c"-o\00", align 1
-@.str.2925 = private unnamed_addr constant [25 x i8] c"-o requires an argument\0A\00", align 1
-@.str.2926 = private unnamed_addr constant [3 x i8] c"-i\00", align 1
-@.str.2927 = private unnamed_addr constant [14 x i8] c"--interactive\00", align 1
-@.str.2928 = private unnamed_addr constant [19 x i8] c"--repl-format=text\00", align 1
-@.str.2929 = private unnamed_addr constant [19 x i8] c"--repl-format=json\00", align 1
-@.str.2930 = private unnamed_addr constant [4 x i8] c"-O0\00", align 1
-@.str.2931 = private unnamed_addr constant [4 x i8] c"-O1\00", align 1
-@.str.2932 = private unnamed_addr constant [3 x i8] c"-O\00", align 1
-@.str.2933 = private unnamed_addr constant [4 x i8] c"-O2\00", align 1
-@.str.2934 = private unnamed_addr constant [4 x i8] c"-O3\00", align 1
-@.str.2935 = private unnamed_addr constant [10 x i8] c"--target=\00", align 1
-@.str.2936 = private unnamed_addr constant [3 x i8] c"-I\00", align 1
-@.str.2937 = private unnamed_addr constant [25 x i8] c"-I requires an argument\0A\00", align 1
-@.str.2938 = private unnamed_addr constant [3 x i8] c"-l\00", align 1
-@.str.2939 = private unnamed_addr constant [3 x i8] c"-L\00", align 1
-@.str.2940 = private unnamed_addr constant [18 x i8] c"unknown flag: %s\0A\00", align 1
-@.str.2941 = private unnamed_addr constant [25 x i8] c"unexpected argument: %s\0A\00", align 1
-@.str.2942 = private unnamed_addr constant [173 x i8] c"usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3] [-o <path>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [-i] [--repl-format=text|json] [-I<path>] <file.nuc>\0A\00", align 1
+@.str.2908 = private unnamed_addr constant [1 x i8] c"\00", align 1
+@.str.2909 = private unnamed_addr constant [6 x i8] c"out.o\00", align 1
+@.str.2910 = private unnamed_addr constant [6 x i8] c"a.out\00", align 1
+@.str.2911 = private unnamed_addr constant [5 x i8] c"%s.o\00", align 1
+@.str.2912 = private unnamed_addr constant [47 x i8] c"nucleusc: failed to emit object file '%s': %s\0A\00", align 1
+@.str.2913 = private unnamed_addr constant [15 x i8] c"clang %s -o %s\00", align 1
+@.str.2914 = private unnamed_addr constant [4 x i8] c" %s\00", align 1
+@.str.2915 = private unnamed_addr constant [44 x i8] c"nucleusc: link step failed (clang exit %d)\0A\00", align 1
+@.str.2916 = private unnamed_addr constant [16 x i8] c"exclude-prelude\00", align 1
+@.str.2917 = private unnamed_addr constant [3 x i8] c"ns\00", align 1
+@.str.2918 = private unnamed_addr constant [11 x i8] c"import-use\00", align 1
+@.str.2919 = private unnamed_addr constant [8 x i8] c"prelude\00", align 1
+@.str.2920 = private unnamed_addr constant [12 x i8] c"--emit-nuch\00", align 1
+@.str.2921 = private unnamed_addr constant [15 x i8] c"--emit-cheader\00", align 1
+@.str.2922 = private unnamed_addr constant [12 x i8] c"--emit-llvm\00", align 1
+@.str.2923 = private unnamed_addr constant [3 x i8] c"-S\00", align 1
+@.str.2924 = private unnamed_addr constant [3 x i8] c"-c\00", align 1
+@.str.2925 = private unnamed_addr constant [3 x i8] c"-o\00", align 1
+@.str.2926 = private unnamed_addr constant [25 x i8] c"-o requires an argument\0A\00", align 1
+@.str.2927 = private unnamed_addr constant [3 x i8] c"-i\00", align 1
+@.str.2928 = private unnamed_addr constant [14 x i8] c"--interactive\00", align 1
+@.str.2929 = private unnamed_addr constant [19 x i8] c"--repl-format=text\00", align 1
+@.str.2930 = private unnamed_addr constant [19 x i8] c"--repl-format=json\00", align 1
+@.str.2931 = private unnamed_addr constant [4 x i8] c"-O0\00", align 1
+@.str.2932 = private unnamed_addr constant [4 x i8] c"-O1\00", align 1
+@.str.2933 = private unnamed_addr constant [3 x i8] c"-O\00", align 1
+@.str.2934 = private unnamed_addr constant [4 x i8] c"-O2\00", align 1
+@.str.2935 = private unnamed_addr constant [4 x i8] c"-O3\00", align 1
+@.str.2936 = private unnamed_addr constant [10 x i8] c"--target=\00", align 1
+@.str.2937 = private unnamed_addr constant [3 x i8] c"-I\00", align 1
+@.str.2938 = private unnamed_addr constant [25 x i8] c"-I requires an argument\0A\00", align 1
+@.str.2939 = private unnamed_addr constant [3 x i8] c"-l\00", align 1
+@.str.2940 = private unnamed_addr constant [3 x i8] c"-L\00", align 1
+@.str.2941 = private unnamed_addr constant [18 x i8] c"unknown flag: %s\0A\00", align 1
+@.str.2942 = private unnamed_addr constant [25 x i8] c"unexpected argument: %s\0A\00", align 1
+@.str.2943 = private unnamed_addr constant [173 x i8] c"usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3] [-o <path>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [-i] [--repl-format=text|json] [-I<path>] <file.nuc>\0A\00", align 1
 
 @nuc_err_names = constant [4 x ptr] [ptr null, ptr @.str.105, ptr @.str.139, ptr @.str.211]
 @nuc_err_messages = constant [4 x ptr] [ptr null, ptr @.str.106, ptr @.str.140, ptr @.str.212]
@@ -78543,29 +78544,29 @@ entry:
   %done.addr.7 = alloca i32, align 4
   %tok-end.addr.21 = alloca i64, align 8
   %tok.addr.23 = alloca ptr, align 8
-  %peek-pos.addr.107 = alloca i64, align 8
-  %peek-end.addr.112 = alloca i64, align 8
-  %peek-tok.addr.114 = alloca ptr, align 8
+  %peek-pos.addr.112 = alloca i64, align 8
+  %peek-end.addr.117 = alloca i64, align 8
+  %peek-tok.addr.119 = alloca ptr, align 8
   %and.val8 = alloca i1, align 1
-  %peek-pos.addr.151 = alloca i64, align 8
-  %peek-end.addr.156 = alloca i64, align 8
-  %peek-tok.addr.158 = alloca ptr, align 8
+  %peek-pos.addr.156 = alloca i64, align 8
+  %peek-end.addr.161 = alloca i64, align 8
+  %peek-tok.addr.163 = alloca ptr, align 8
   %and.val11 = alloca i1, align 1
   %and.val13 = alloca i1, align 1
-  %check.addr.223 = alloca i32, align 4
-  %te.addr.226 = alloca i64, align 8
-  %t.addr.228 = alloca ptr, align 8
+  %check.addr.228 = alloca i32, align 4
+  %te.addr.231 = alloca i64, align 8
+  %t.addr.233 = alloca ptr, align 8
   %or.val16 = alloca i1, align 1
   %or.val17 = alloca i1, align 1
-  %look.addr.260 = alloca i64, align 8
-  %tag.addr.265 = alloca ptr, align 8
+  %look.addr.265 = alloca i64, align 8
+  %tag.addr.270 = alloca ptr, align 8
   %and.val21 = alloca i1, align 1
-  %sd-end.addr.275 = alloca i64, align 8
-  %sd.addr.277 = alloca ptr, align 8
-  %sd.addr.293 = alloca ptr, align 8
+  %sd-end.addr.280 = alloca i64, align 8
+  %sd.addr.282 = alloca ptr, align 8
+  %sd.addr.298 = alloca ptr, align 8
   %or.val27 = alloca i1, align 1
   %or.val28 = alloca i1, align 1
-  %base-type.addr.316 = alloca ptr, align 8
+  %base-type.addr.321 = alloca ptr, align 8
   store i32 0, ptr %is-unsigned.addr.0, align 4
   store i32 0, ptr %is-long.addr.1, align 4
   store i32 0, ptr %is-short.addr.2, align 4
@@ -78762,12 +78763,11 @@ cond.join5.10:
   br label %cond.end5
 cond.test5.11:
   %t90 = load ptr, ptr %tok.addr.23, align 8
-  %t91 = getelementptr inbounds [9 x i8], ptr @.str.2100, i64 0, i64 0
+  %t91 = getelementptr inbounds [10 x i8], ptr @.str.2100, i64 0, i64 0
   %t92 = call i32 @strcmp(ptr %t90, ptr %t91)
   %t93 = icmp eq i32 %t92, 0
   br i1 %t93, label %cond.then5.11, label %cond.test5.12
 cond.then5.11:
-  store i32 1, ptr %is-unsigned.addr.0, align 4
   %t94 = load i64, ptr %tok-end.addr.21, align 8
   store i64 %t94, ptr %pos.addr, align 8
   br label %cond.join5.11
@@ -78775,11 +78775,12 @@ cond.join5.11:
   br label %cond.end5
 cond.test5.12:
   %t95 = load ptr, ptr %tok.addr.23, align 8
-  %t96 = getelementptr inbounds [7 x i8], ptr @.str.2101, i64 0, i64 0
+  %t96 = getelementptr inbounds [9 x i8], ptr @.str.2101, i64 0, i64 0
   %t97 = call i32 @strcmp(ptr %t95, ptr %t96)
   %t98 = icmp eq i32 %t97, 0
   br i1 %t98, label %cond.then5.12, label %cond.test5.13
 cond.then5.12:
+  store i32 1, ptr %is-unsigned.addr.0, align 4
   %t99 = load i64, ptr %tok-end.addr.21, align 8
   store i64 %t99, ptr %pos.addr, align 8
   br label %cond.join5.12
@@ -78787,75 +78788,87 @@ cond.join5.12:
   br label %cond.end5
 cond.test5.13:
   %t100 = load ptr, ptr %tok.addr.23, align 8
-  %t101 = getelementptr inbounds [5 x i8], ptr @.str.2102, i64 0, i64 0
+  %t101 = getelementptr inbounds [7 x i8], ptr @.str.2102, i64 0, i64 0
   %t102 = call i32 @strcmp(ptr %t100, ptr %t101)
   %t103 = icmp eq i32 %t102, 0
   br i1 %t103, label %cond.then5.13, label %cond.test5.14
 cond.then5.13:
-  %t104 = load i32, ptr %is-long.addr.1, align 4
-  %t105 = add nsw i32 %t104, 1
-  store i32 %t105, ptr %is-long.addr.1, align 4
-  %t106 = load i64, ptr %tok-end.addr.21, align 8
-  store i64 %t106, ptr %pos.addr, align 8
-  %t108 = load ptr, ptr %buf.addr, align 8
-  %t109 = load i64, ptr %tok-end.addr.21, align 8
-  %t110 = load i64, ptr %len.addr, align 8
-  %t111 = call i64 @c-skip-ws(ptr %t108, i64 %t109, i64 %t110)
-  store i64 %t111, ptr %peek-pos.addr.107, align 8
-  %t113 = sext i32 0 to i64
-  store i64 %t113, ptr %peek-end.addr.112, align 8
-  %t115 = load ptr, ptr %buf.addr, align 8
-  %t116 = load i64, ptr %peek-pos.addr.107, align 8
-  %t117 = load i64, ptr %len.addr, align 8
-  %t118 = call ptr @c-read-ident(ptr %t115, i64 %t116, i64 %t117, ptr %peek-end.addr.112)
-  store ptr %t118, ptr %peek-tok.addr.114, align 8
-  %t119 = load ptr, ptr %peek-tok.addr.114, align 8
-  %t120 = getelementptr inbounds [5 x i8], ptr @.str.2103, i64 0, i64 0
-  %t121 = call i32 @strcmp(ptr %t119, ptr %t120)
-  %t122 = icmp eq i32 %t121, 0
-  br i1 %t122, label %cond.then6.0, label %cond.fall6
+  %t104 = load i64, ptr %tok-end.addr.21, align 8
+  store i64 %t104, ptr %pos.addr, align 8
+  br label %cond.join5.13
+cond.join5.13:
+  br label %cond.end5
+cond.test5.14:
+  %t105 = load ptr, ptr %tok.addr.23, align 8
+  %t106 = getelementptr inbounds [5 x i8], ptr @.str.2103, i64 0, i64 0
+  %t107 = call i32 @strcmp(ptr %t105, ptr %t106)
+  %t108 = icmp eq i32 %t107, 0
+  br i1 %t108, label %cond.then5.14, label %cond.test5.15
+cond.then5.14:
+  %t109 = load i32, ptr %is-long.addr.1, align 4
+  %t110 = add nsw i32 %t109, 1
+  store i32 %t110, ptr %is-long.addr.1, align 4
+  %t111 = load i64, ptr %tok-end.addr.21, align 8
+  store i64 %t111, ptr %pos.addr, align 8
+  %t113 = load ptr, ptr %buf.addr, align 8
+  %t114 = load i64, ptr %tok-end.addr.21, align 8
+  %t115 = load i64, ptr %len.addr, align 8
+  %t116 = call i64 @c-skip-ws(ptr %t113, i64 %t114, i64 %t115)
+  store i64 %t116, ptr %peek-pos.addr.112, align 8
+  %t118 = sext i32 0 to i64
+  store i64 %t118, ptr %peek-end.addr.117, align 8
+  %t120 = load ptr, ptr %buf.addr, align 8
+  %t121 = load i64, ptr %peek-pos.addr.112, align 8
+  %t122 = load i64, ptr %len.addr, align 8
+  %t123 = call ptr @c-read-ident(ptr %t120, i64 %t121, i64 %t122, ptr %peek-end.addr.117)
+  store ptr %t123, ptr %peek-tok.addr.119, align 8
+  %t124 = load ptr, ptr %peek-tok.addr.119, align 8
+  %t125 = getelementptr inbounds [5 x i8], ptr @.str.2104, i64 0, i64 0
+  %t126 = call i32 @strcmp(ptr %t124, ptr %t125)
+  %t127 = icmp eq i32 %t126, 0
+  br i1 %t127, label %cond.then6.0, label %cond.fall6
 cond.then6.0:
-  %t123 = load i32, ptr %is-long.addr.1, align 4
-  %t124 = add nsw i32 %t123, 1
-  store i32 %t124, ptr %is-long.addr.1, align 4
-  %t125 = load i64, ptr %peek-end.addr.112, align 8
-  store i64 %t125, ptr %pos.addr, align 8
-  %t126 = load ptr, ptr %buf.addr, align 8
-  %t127 = load i64, ptr %peek-end.addr.112, align 8
-  %t128 = load i64, ptr %len.addr, align 8
-  %t129 = call i64 @c-skip-ws(ptr %t126, i64 %t127, i64 %t128)
-  store i64 %t129, ptr %peek-pos.addr.107, align 8
-  %t130 = load ptr, ptr %buf.addr, align 8
-  %t131 = load i64, ptr %peek-pos.addr.107, align 8
-  %t132 = load i64, ptr %len.addr, align 8
-  %t133 = call ptr @c-read-ident(ptr %t130, i64 %t131, i64 %t132, ptr %peek-end.addr.112)
-  store ptr %t133, ptr %peek-tok.addr.114, align 8
+  %t128 = load i32, ptr %is-long.addr.1, align 4
+  %t129 = add nsw i32 %t128, 1
+  store i32 %t129, ptr %is-long.addr.1, align 4
+  %t130 = load i64, ptr %peek-end.addr.117, align 8
+  store i64 %t130, ptr %pos.addr, align 8
+  %t131 = load ptr, ptr %buf.addr, align 8
+  %t132 = load i64, ptr %peek-end.addr.117, align 8
+  %t133 = load i64, ptr %len.addr, align 8
+  %t134 = call i64 @c-skip-ws(ptr %t131, i64 %t132, i64 %t133)
+  store i64 %t134, ptr %peek-pos.addr.112, align 8
+  %t135 = load ptr, ptr %buf.addr, align 8
+  %t136 = load i64, ptr %peek-pos.addr.112, align 8
+  %t137 = load i64, ptr %len.addr, align 8
+  %t138 = call ptr @c-read-ident(ptr %t135, i64 %t136, i64 %t137, ptr %peek-end.addr.117)
+  store ptr %t138, ptr %peek-tok.addr.119, align 8
   br label %cond.join6.0
 cond.join6.0:
   br label %cond.end6
 cond.fall6:
   br label %cond.end6
 cond.end6:
-  %t134 = phi ptr [ %t133, %cond.join6.0 ], [ undef, %cond.fall6 ]
-  %t135 = load ptr, ptr %peek-tok.addr.114, align 8
-  %t136 = getelementptr inbounds [4 x i8], ptr @.str.2104, i64 0, i64 0
-  %t137 = call i32 @strcmp(ptr %t135, ptr %t136)
-  %t138 = icmp ne i32 %t137, 0
-  store i1 %t138, ptr %and.val8, align 1
-  br i1 %t138, label %and.rhs8, label %and.end8
+  %t139 = phi ptr [ %t138, %cond.join6.0 ], [ undef, %cond.fall6 ]
+  %t140 = load ptr, ptr %peek-tok.addr.119, align 8
+  %t141 = getelementptr inbounds [4 x i8], ptr @.str.2105, i64 0, i64 0
+  %t142 = call i32 @strcmp(ptr %t140, ptr %t141)
+  %t143 = icmp ne i32 %t142, 0
+  store i1 %t143, ptr %and.val8, align 1
+  br i1 %t143, label %and.rhs8, label %and.end8
 and.rhs8:
-  %t139 = load ptr, ptr %peek-tok.addr.114, align 8
-  %t140 = getelementptr inbounds [7 x i8], ptr @.str.2105, i64 0, i64 0
-  %t141 = call i32 @strcmp(ptr %t139, ptr %t140)
-  %t142 = icmp ne i32 %t141, 0
-  store i1 %t142, ptr %and.val8, align 1
+  %t144 = load ptr, ptr %peek-tok.addr.119, align 8
+  %t145 = getelementptr inbounds [7 x i8], ptr @.str.2106, i64 0, i64 0
+  %t146 = call i32 @strcmp(ptr %t144, ptr %t145)
+  %t147 = icmp ne i32 %t146, 0
+  store i1 %t147, ptr %and.val8, align 1
   br label %and.end8
 and.end8:
-  %t143 = load i1, ptr %and.val8, align 1
-  br i1 %t143, label %cond.then7.0, label %cond.fall7
+  %t148 = load i1, ptr %and.val8, align 1
+  br i1 %t148, label %cond.then7.0, label %cond.fall7
 cond.then7.0:
-  %t144 = getelementptr inbounds [5 x i8], ptr @.str.2106, i64 0, i64 0
-  store ptr %t144, ptr %base-name.addr.3, align 8
+  %t149 = getelementptr inbounds [5 x i8], ptr @.str.2107, i64 0, i64 0
+  store ptr %t149, ptr %base-name.addr.3, align 8
   store i32 1, ptr %done.addr.7, align 4
   br label %cond.join7.0
 cond.join7.0:
@@ -78863,40 +78876,40 @@ cond.join7.0:
 cond.fall7:
   br label %cond.end7
 cond.end7:
-  %t145 = phi i32 [ 1, %cond.join7.0 ], [ undef, %cond.fall7 ]
-  br label %cond.join5.13
-cond.join5.13:
+  %t150 = phi i32 [ 1, %cond.join7.0 ], [ undef, %cond.fall7 ]
+  br label %cond.join5.14
+cond.join5.14:
   br label %cond.end5
-cond.test5.14:
-  %t146 = load ptr, ptr %tok.addr.23, align 8
-  %t147 = getelementptr inbounds [6 x i8], ptr @.str.2107, i64 0, i64 0
-  %t148 = call i32 @strcmp(ptr %t146, ptr %t147)
-  %t149 = icmp eq i32 %t148, 0
-  br i1 %t149, label %cond.then5.14, label %cond.test5.15
-cond.then5.14:
+cond.test5.15:
+  %t151 = load ptr, ptr %tok.addr.23, align 8
+  %t152 = getelementptr inbounds [6 x i8], ptr @.str.2108, i64 0, i64 0
+  %t153 = call i32 @strcmp(ptr %t151, ptr %t152)
+  %t154 = icmp eq i32 %t153, 0
+  br i1 %t154, label %cond.then5.15, label %cond.test5.16
+cond.then5.15:
   store i32 1, ptr %is-short.addr.2, align 4
-  %t150 = load i64, ptr %tok-end.addr.21, align 8
-  store i64 %t150, ptr %pos.addr, align 8
-  %t152 = load ptr, ptr %buf.addr, align 8
-  %t153 = load i64, ptr %tok-end.addr.21, align 8
-  %t154 = load i64, ptr %len.addr, align 8
-  %t155 = call i64 @c-skip-ws(ptr %t152, i64 %t153, i64 %t154)
-  store i64 %t155, ptr %peek-pos.addr.151, align 8
-  %t157 = sext i32 0 to i64
-  store i64 %t157, ptr %peek-end.addr.156, align 8
-  %t159 = load ptr, ptr %buf.addr, align 8
-  %t160 = load i64, ptr %peek-pos.addr.151, align 8
-  %t161 = load i64, ptr %len.addr, align 8
-  %t162 = call ptr @c-read-ident(ptr %t159, i64 %t160, i64 %t161, ptr %peek-end.addr.156)
-  store ptr %t162, ptr %peek-tok.addr.158, align 8
-  %t163 = load ptr, ptr %peek-tok.addr.158, align 8
-  %t164 = getelementptr inbounds [4 x i8], ptr @.str.2108, i64 0, i64 0
-  %t165 = call i32 @strcmp(ptr %t163, ptr %t164)
-  %t166 = icmp ne i32 %t165, 0
-  br i1 %t166, label %cond.then9.0, label %cond.fall9
+  %t155 = load i64, ptr %tok-end.addr.21, align 8
+  store i64 %t155, ptr %pos.addr, align 8
+  %t157 = load ptr, ptr %buf.addr, align 8
+  %t158 = load i64, ptr %tok-end.addr.21, align 8
+  %t159 = load i64, ptr %len.addr, align 8
+  %t160 = call i64 @c-skip-ws(ptr %t157, i64 %t158, i64 %t159)
+  store i64 %t160, ptr %peek-pos.addr.156, align 8
+  %t162 = sext i32 0 to i64
+  store i64 %t162, ptr %peek-end.addr.161, align 8
+  %t164 = load ptr, ptr %buf.addr, align 8
+  %t165 = load i64, ptr %peek-pos.addr.156, align 8
+  %t166 = load i64, ptr %len.addr, align 8
+  %t167 = call ptr @c-read-ident(ptr %t164, i64 %t165, i64 %t166, ptr %peek-end.addr.161)
+  store ptr %t167, ptr %peek-tok.addr.163, align 8
+  %t168 = load ptr, ptr %peek-tok.addr.163, align 8
+  %t169 = getelementptr inbounds [4 x i8], ptr @.str.2109, i64 0, i64 0
+  %t170 = call i32 @strcmp(ptr %t168, ptr %t169)
+  %t171 = icmp ne i32 %t170, 0
+  br i1 %t171, label %cond.then9.0, label %cond.fall9
 cond.then9.0:
-  %t167 = getelementptr inbounds [6 x i8], ptr @.str.2109, i64 0, i64 0
-  store ptr %t167, ptr %base-name.addr.3, align 8
+  %t172 = getelementptr inbounds [6 x i8], ptr @.str.2110, i64 0, i64 0
+  store ptr %t172, ptr %base-name.addr.3, align 8
   store i32 1, ptr %done.addr.7, align 4
   br label %cond.join9.0
 cond.join9.0:
@@ -78904,32 +78917,18 @@ cond.join9.0:
 cond.fall9:
   br label %cond.end9
 cond.end9:
-  %t168 = phi i32 [ 1, %cond.join9.0 ], [ undef, %cond.fall9 ]
-  br label %cond.join5.14
-cond.join5.14:
-  br label %cond.end5
-cond.test5.15:
-  %t169 = load ptr, ptr %tok.addr.23, align 8
-  %t170 = getelementptr inbounds [7 x i8], ptr @.str.2110, i64 0, i64 0
-  %t171 = call i32 @strcmp(ptr %t169, ptr %t170)
-  %t172 = icmp eq i32 %t171, 0
-  br i1 %t172, label %cond.then5.15, label %cond.test5.16
-cond.then5.15:
-  store i32 1, ptr %is-struct.addr.5, align 4
-  %t173 = load i64, ptr %tok-end.addr.21, align 8
-  store i64 %t173, ptr %pos.addr, align 8
+  %t173 = phi i32 [ 1, %cond.join9.0 ], [ undef, %cond.fall9 ]
   br label %cond.join5.15
 cond.join5.15:
   br label %cond.end5
 cond.test5.16:
   %t174 = load ptr, ptr %tok.addr.23, align 8
-  %t175 = getelementptr inbounds [6 x i8], ptr @.str.2111, i64 0, i64 0
+  %t175 = getelementptr inbounds [7 x i8], ptr @.str.2111, i64 0, i64 0
   %t176 = call i32 @strcmp(ptr %t174, ptr %t175)
   %t177 = icmp eq i32 %t176, 0
   br i1 %t177, label %cond.then5.16, label %cond.test5.17
 cond.then5.16:
   store i32 1, ptr %is-struct.addr.5, align 4
-  store i32 1, ptr %is-union.addr.6, align 4
   %t178 = load i64, ptr %tok-end.addr.21, align 8
   store i64 %t178, ptr %pos.addr, align 8
   br label %cond.join5.16
@@ -78937,57 +78936,71 @@ cond.join5.16:
   br label %cond.end5
 cond.test5.17:
   %t179 = load ptr, ptr %tok.addr.23, align 8
-  %t180 = getelementptr inbounds [14 x i8], ptr @.str.2112, i64 0, i64 0
+  %t180 = getelementptr inbounds [6 x i8], ptr @.str.2112, i64 0, i64 0
   %t181 = call i32 @strcmp(ptr %t179, ptr %t180)
   %t182 = icmp eq i32 %t181, 0
   br i1 %t182, label %cond.then5.17, label %cond.test5.18
 cond.then5.17:
-  %t183 = load ptr, ptr %buf.addr, align 8
-  %t184 = load i64, ptr %tok-end.addr.21, align 8
-  %t185 = load i64, ptr %len.addr, align 8
-  %t186 = call i64 @c-skip-ws(ptr %t183, i64 %t184, i64 %t185)
-  store i64 %t186, ptr %pos.addr, align 8
-  %t187 = load i64, ptr %pos.addr, align 8
-  %t188 = load i64, ptr %len.addr, align 8
-  %t189 = icmp slt i64 %t187, %t188
-  store i1 %t189, ptr %and.val11, align 1
-  br i1 %t189, label %and.rhs11, label %and.end11
+  store i32 1, ptr %is-struct.addr.5, align 4
+  store i32 1, ptr %is-union.addr.6, align 4
+  %t183 = load i64, ptr %tok-end.addr.21, align 8
+  store i64 %t183, ptr %pos.addr, align 8
+  br label %cond.join5.17
+cond.join5.17:
+  br label %cond.end5
+cond.test5.18:
+  %t184 = load ptr, ptr %tok.addr.23, align 8
+  %t185 = getelementptr inbounds [14 x i8], ptr @.str.2113, i64 0, i64 0
+  %t186 = call i32 @strcmp(ptr %t184, ptr %t185)
+  %t187 = icmp eq i32 %t186, 0
+  br i1 %t187, label %cond.then5.18, label %cond.test5.19
+cond.then5.18:
+  %t188 = load ptr, ptr %buf.addr, align 8
+  %t189 = load i64, ptr %tok-end.addr.21, align 8
+  %t190 = load i64, ptr %len.addr, align 8
+  %t191 = call i64 @c-skip-ws(ptr %t188, i64 %t189, i64 %t190)
+  store i64 %t191, ptr %pos.addr, align 8
+  %t192 = load i64, ptr %pos.addr, align 8
+  %t193 = load i64, ptr %len.addr, align 8
+  %t194 = icmp slt i64 %t192, %t193
+  store i1 %t194, ptr %and.val11, align 1
+  br i1 %t194, label %and.rhs11, label %and.end11
 and.rhs11:
-  %t190 = load ptr, ptr %buf.addr, align 8
-  %t191 = load i64, ptr %pos.addr, align 8
-  %t192 = call i32 @char-at(ptr %t190, i64 %t191)
-  %t193 = icmp eq i32 %t192, 40
-  store i1 %t193, ptr %and.val11, align 1
-  br label %and.end11
-and.end11:
-  %t194 = load i1, ptr %and.val11, align 1
-  br i1 %t194, label %cond.then10.0, label %cond.fall10
-cond.then10.0:
   %t195 = load ptr, ptr %buf.addr, align 8
   %t196 = load i64, ptr %pos.addr, align 8
-  %t197 = load i64, ptr %len.addr, align 8
-  %t198 = call i64 @c-skip-parens(ptr %t195, i64 %t196, i64 %t197)
-  store i64 %t198, ptr %pos.addr, align 8
+  %t197 = call i32 @char-at(ptr %t195, i64 %t196)
+  %t198 = icmp eq i32 %t197, 40
+  store i1 %t198, ptr %and.val11, align 1
+  br label %and.end11
+and.end11:
+  %t199 = load i1, ptr %and.val11, align 1
+  br i1 %t199, label %cond.then10.0, label %cond.fall10
+cond.then10.0:
+  %t200 = load ptr, ptr %buf.addr, align 8
+  %t201 = load i64, ptr %pos.addr, align 8
+  %t202 = load i64, ptr %len.addr, align 8
+  %t203 = call i64 @c-skip-parens(ptr %t200, i64 %t201, i64 %t202)
+  store i64 %t203, ptr %pos.addr, align 8
   br label %cond.join10.0
 cond.join10.0:
   br label %cond.end10
 cond.fall10:
   br label %cond.end10
 cond.end10:
-  %t199 = phi i64 [ %t198, %cond.join10.0 ], [ undef, %cond.fall10 ]
-  br label %cond.join5.17
-cond.join5.17:
-  br label %cond.end5
-cond.test5.18:
-  br label %cond.then5.18
-cond.then5.18:
-  %t200 = load ptr, ptr %tok.addr.23, align 8
-  store ptr %t200, ptr %base-name.addr.3, align 8
-  %t201 = load i64, ptr %tok-end.addr.21, align 8
-  store i64 %t201, ptr %pos.addr, align 8
-  store i32 1, ptr %done.addr.7, align 4
+  %t204 = phi i64 [ %t203, %cond.join10.0 ], [ undef, %cond.fall10 ]
   br label %cond.join5.18
 cond.join5.18:
+  br label %cond.end5
+cond.test5.19:
+  br label %cond.then5.19
+cond.then5.19:
+  %t205 = load ptr, ptr %tok.addr.23, align 8
+  store ptr %t205, ptr %base-name.addr.3, align 8
+  %t206 = load i64, ptr %tok-end.addr.21, align 8
+  store i64 %t206, ptr %pos.addr, align 8
+  store i32 1, ptr %done.addr.7, align 4
+  br label %cond.join5.19
+cond.join5.19:
   br label %cond.end5
 cond.end5:
   br label %cond.join4.0
@@ -79004,183 +79017,183 @@ cond.fall2:
 cond.end2:
   br label %while.cond0
 while.end0:
-  %t202 = load ptr, ptr %buf.addr, align 8
-  %t203 = load i64, ptr %pos.addr, align 8
-  %t204 = load i64, ptr %len.addr, align 8
-  %t205 = call i64 @c-skip-ws(ptr %t202, i64 %t203, i64 %t204)
-  store i64 %t205, ptr %pos.addr, align 8
+  %t207 = load ptr, ptr %buf.addr, align 8
+  %t208 = load i64, ptr %pos.addr, align 8
+  %t209 = load i64, ptr %len.addr, align 8
+  %t210 = call i64 @c-skip-ws(ptr %t207, i64 %t208, i64 %t209)
+  store i64 %t210, ptr %pos.addr, align 8
   br label %while.cond12
 while.cond12:
-  %t206 = load i64, ptr %pos.addr, align 8
-  %t207 = load i64, ptr %len.addr, align 8
-  %t208 = icmp slt i64 %t206, %t207
-  store i1 %t208, ptr %and.val13, align 1
-  br i1 %t208, label %and.rhs13, label %and.end13
+  %t211 = load i64, ptr %pos.addr, align 8
+  %t212 = load i64, ptr %len.addr, align 8
+  %t213 = icmp slt i64 %t211, %t212
+  store i1 %t213, ptr %and.val13, align 1
+  br i1 %t213, label %and.rhs13, label %and.end13
 and.rhs13:
-  %t209 = load ptr, ptr %buf.addr, align 8
-  %t210 = load i64, ptr %pos.addr, align 8
-  %t211 = call i32 @char-at(ptr %t209, i64 %t210)
-  %t212 = icmp eq i32 %t211, 42
-  store i1 %t212, ptr %and.val13, align 1
+  %t214 = load ptr, ptr %buf.addr, align 8
+  %t215 = load i64, ptr %pos.addr, align 8
+  %t216 = call i32 @char-at(ptr %t214, i64 %t215)
+  %t217 = icmp eq i32 %t216, 42
+  store i1 %t217, ptr %and.val13, align 1
   br label %and.end13
 and.end13:
-  %t213 = load i1, ptr %and.val13, align 1
-  br i1 %t213, label %while.body12, label %while.end12
+  %t218 = load i1, ptr %and.val13, align 1
+  br i1 %t218, label %while.body12, label %while.end12
 while.body12:
-  %t214 = load i32, ptr %ptr-depth.addr.4, align 4
-  %t215 = add nsw i32 %t214, 1
-  store i32 %t215, ptr %ptr-depth.addr.4, align 4
-  %t216 = load i64, ptr %pos.addr, align 8
-  %t217 = sext i32 1 to i64
-  %t218 = add nsw i64 %t216, %t217
-  store i64 %t218, ptr %pos.addr, align 8
-  %t219 = load ptr, ptr %buf.addr, align 8
-  %t220 = load i64, ptr %pos.addr, align 8
-  %t221 = load i64, ptr %len.addr, align 8
-  %t222 = call i64 @c-skip-ws(ptr %t219, i64 %t220, i64 %t221)
-  store i64 %t222, ptr %pos.addr, align 8
-  store i32 1, ptr %check.addr.223, align 4
+  %t219 = load i32, ptr %ptr-depth.addr.4, align 4
+  %t220 = add nsw i32 %t219, 1
+  store i32 %t220, ptr %ptr-depth.addr.4, align 4
+  %t221 = load i64, ptr %pos.addr, align 8
+  %t222 = sext i32 1 to i64
+  %t223 = add nsw i64 %t221, %t222
+  store i64 %t223, ptr %pos.addr, align 8
+  %t224 = load ptr, ptr %buf.addr, align 8
+  %t225 = load i64, ptr %pos.addr, align 8
+  %t226 = load i64, ptr %len.addr, align 8
+  %t227 = call i64 @c-skip-ws(ptr %t224, i64 %t225, i64 %t226)
+  store i64 %t227, ptr %pos.addr, align 8
+  store i32 1, ptr %check.addr.228, align 4
   br label %while.cond14
 while.cond14:
-  %t224 = load i32, ptr %check.addr.223, align 4
-  %t225 = icmp ne i32 %t224, 0
-  br i1 %t225, label %while.body14, label %while.end14
+  %t229 = load i32, ptr %check.addr.228, align 4
+  %t230 = icmp ne i32 %t229, 0
+  br i1 %t230, label %while.body14, label %while.end14
 while.body14:
-  store i32 0, ptr %check.addr.223, align 4
-  %t227 = sext i32 0 to i64
-  store i64 %t227, ptr %te.addr.226, align 8
-  %t229 = load ptr, ptr %buf.addr, align 8
-  %t230 = load i64, ptr %pos.addr, align 8
-  %t231 = load i64, ptr %len.addr, align 8
-  %t232 = call ptr @c-read-ident(ptr %t229, i64 %t230, i64 %t231, ptr %te.addr.226)
-  store ptr %t232, ptr %t.addr.228, align 8
-  %t233 = load ptr, ptr %t.addr.228, align 8
-  %t234 = getelementptr inbounds [6 x i8], ptr @.str.2113, i64 0, i64 0
-  %t235 = call i32 @strcmp(ptr %t233, ptr %t234)
-  %t236 = icmp eq i32 %t235, 0
-  store i1 %t236, ptr %or.val16, align 1
-  br i1 %t236, label %or.end16, label %or.rhs16
+  store i32 0, ptr %check.addr.228, align 4
+  %t232 = sext i32 0 to i64
+  store i64 %t232, ptr %te.addr.231, align 8
+  %t234 = load ptr, ptr %buf.addr, align 8
+  %t235 = load i64, ptr %pos.addr, align 8
+  %t236 = load i64, ptr %len.addr, align 8
+  %t237 = call ptr @c-read-ident(ptr %t234, i64 %t235, i64 %t236, ptr %te.addr.231)
+  store ptr %t237, ptr %t.addr.233, align 8
+  %t238 = load ptr, ptr %t.addr.233, align 8
+  %t239 = getelementptr inbounds [6 x i8], ptr @.str.2114, i64 0, i64 0
+  %t240 = call i32 @strcmp(ptr %t238, ptr %t239)
+  %t241 = icmp eq i32 %t240, 0
+  store i1 %t241, ptr %or.val16, align 1
+  br i1 %t241, label %or.end16, label %or.rhs16
 or.rhs16:
-  %t237 = load ptr, ptr %t.addr.228, align 8
-  %t238 = getelementptr inbounds [9 x i8], ptr @.str.2114, i64 0, i64 0
-  %t239 = call i32 @strcmp(ptr %t237, ptr %t238)
-  %t240 = icmp eq i32 %t239, 0
-  store i1 %t240, ptr %or.val17, align 1
-  br i1 %t240, label %or.end17, label %or.rhs17
+  %t242 = load ptr, ptr %t.addr.233, align 8
+  %t243 = getelementptr inbounds [9 x i8], ptr @.str.2115, i64 0, i64 0
+  %t244 = call i32 @strcmp(ptr %t242, ptr %t243)
+  %t245 = icmp eq i32 %t244, 0
+  store i1 %t245, ptr %or.val17, align 1
+  br i1 %t245, label %or.end17, label %or.rhs17
 or.rhs17:
-  %t241 = load ptr, ptr %t.addr.228, align 8
-  %t242 = getelementptr inbounds [11 x i8], ptr @.str.2115, i64 0, i64 0
-  %t243 = call i32 @strcmp(ptr %t241, ptr %t242)
-  %t244 = icmp eq i32 %t243, 0
-  store i1 %t244, ptr %or.val17, align 1
+  %t246 = load ptr, ptr %t.addr.233, align 8
+  %t247 = getelementptr inbounds [11 x i8], ptr @.str.2116, i64 0, i64 0
+  %t248 = call i32 @strcmp(ptr %t246, ptr %t247)
+  %t249 = icmp eq i32 %t248, 0
+  store i1 %t249, ptr %or.val17, align 1
   br label %or.end17
 or.end17:
-  %t245 = load i1, ptr %or.val17, align 1
-  store i1 %t245, ptr %or.val16, align 1
+  %t250 = load i1, ptr %or.val17, align 1
+  store i1 %t250, ptr %or.val16, align 1
   br label %or.end16
 or.end16:
-  %t246 = load i1, ptr %or.val16, align 1
-  br i1 %t246, label %cond.then15.0, label %cond.fall15
+  %t251 = load i1, ptr %or.val16, align 1
+  br i1 %t251, label %cond.then15.0, label %cond.fall15
 cond.then15.0:
-  %t247 = load i64, ptr %te.addr.226, align 8
-  store i64 %t247, ptr %pos.addr, align 8
-  %t248 = load ptr, ptr %buf.addr, align 8
-  %t249 = load i64, ptr %pos.addr, align 8
-  %t250 = load i64, ptr %len.addr, align 8
-  %t251 = call i64 @c-skip-ws(ptr %t248, i64 %t249, i64 %t250)
-  store i64 %t251, ptr %pos.addr, align 8
-  store i32 1, ptr %check.addr.223, align 4
+  %t252 = load i64, ptr %te.addr.231, align 8
+  store i64 %t252, ptr %pos.addr, align 8
+  %t253 = load ptr, ptr %buf.addr, align 8
+  %t254 = load i64, ptr %pos.addr, align 8
+  %t255 = load i64, ptr %len.addr, align 8
+  %t256 = call i64 @c-skip-ws(ptr %t253, i64 %t254, i64 %t255)
+  store i64 %t256, ptr %pos.addr, align 8
+  store i32 1, ptr %check.addr.228, align 4
   br label %cond.join15.0
 cond.join15.0:
   br label %cond.end15
 cond.fall15:
   br label %cond.end15
 cond.end15:
-  %t252 = phi i32 [ 1, %cond.join15.0 ], [ undef, %cond.fall15 ]
+  %t257 = phi i32 [ 1, %cond.join15.0 ], [ undef, %cond.fall15 ]
   br label %while.cond14
 while.end14:
   br label %while.cond12
 while.end12:
-  %t253 = load ptr, ptr %out-end.addr, align 8
-  %t254 = load i64, ptr %pos.addr, align 8
-  store i64 %t254, ptr %t253, align 8
-  %t255 = load i32, ptr %is-struct.addr.5, align 4
-  %t256 = icmp ne i32 %t255, 0
-  br i1 %t256, label %cond.then18.0, label %cond.fall18
+  %t258 = load ptr, ptr %out-end.addr, align 8
+  %t259 = load i64, ptr %pos.addr, align 8
+  store i64 %t259, ptr %t258, align 8
+  %t260 = load i32, ptr %is-struct.addr.5, align 4
+  %t261 = icmp ne i32 %t260, 0
+  br i1 %t261, label %cond.then18.0, label %cond.fall18
 cond.then18.0:
-  %t257 = load i32, ptr %ptr-depth.addr.4, align 4
-  %t258 = icmp sgt i32 %t257, 0
-  br i1 %t258, label %cond.then19.0, label %cond.fall19
+  %t262 = load i32, ptr %ptr-depth.addr.4, align 4
+  %t263 = icmp sgt i32 %t262, 0
+  br i1 %t263, label %cond.then19.0, label %cond.fall19
 cond.then19.0:
-  %t259 = load ptr, ptr @ty-ptr, align 8
-  ret ptr %t259
+  %t264 = load ptr, ptr @ty-ptr, align 8
+  ret ptr %t264
 cond.fall19:
   br label %cond.end19
 cond.end19:
-  %t261 = load ptr, ptr %buf.addr, align 8
-  %t262 = load i64, ptr %pos.addr, align 8
-  %t263 = load i64, ptr %len.addr, align 8
-  %t264 = call i64 @c-skip-ws(ptr %t261, i64 %t262, i64 %t263)
-  store i64 %t264, ptr %look.addr.260, align 8
-  %t266 = load ptr, ptr %base-name.addr.3, align 8
-  store ptr %t266, ptr %tag.addr.265, align 8
-  %t267 = load i64, ptr %look.addr.260, align 8
+  %t266 = load ptr, ptr %buf.addr, align 8
+  %t267 = load i64, ptr %pos.addr, align 8
   %t268 = load i64, ptr %len.addr, align 8
-  %t269 = icmp slt i64 %t267, %t268
-  store i1 %t269, ptr %and.val21, align 1
-  br i1 %t269, label %and.rhs21, label %and.end21
+  %t269 = call i64 @c-skip-ws(ptr %t266, i64 %t267, i64 %t268)
+  store i64 %t269, ptr %look.addr.265, align 8
+  %t271 = load ptr, ptr %base-name.addr.3, align 8
+  store ptr %t271, ptr %tag.addr.270, align 8
+  %t272 = load i64, ptr %look.addr.265, align 8
+  %t273 = load i64, ptr %len.addr, align 8
+  %t274 = icmp slt i64 %t272, %t273
+  store i1 %t274, ptr %and.val21, align 1
+  br i1 %t274, label %and.rhs21, label %and.end21
 and.rhs21:
-  %t270 = load ptr, ptr %buf.addr, align 8
-  %t271 = load i64, ptr %look.addr.260, align 8
-  %t272 = call i32 @char-at(ptr %t270, i64 %t271)
-  %t273 = icmp eq i32 %t272, 123
-  store i1 %t273, ptr %and.val21, align 1
+  %t275 = load ptr, ptr %buf.addr, align 8
+  %t276 = load i64, ptr %look.addr.265, align 8
+  %t277 = call i32 @char-at(ptr %t275, i64 %t276)
+  %t278 = icmp eq i32 %t277, 123
+  store i1 %t278, ptr %and.val21, align 1
   br label %and.end21
 and.end21:
-  %t274 = load i1, ptr %and.val21, align 1
-  br i1 %t274, label %cond.then20.0, label %cond.fall20
+  %t279 = load i1, ptr %and.val21, align 1
+  br i1 %t279, label %cond.then20.0, label %cond.fall20
 cond.then20.0:
-  %t276 = sext i32 0 to i64
-  store i64 %t276, ptr %sd-end.addr.275, align 8
-  %t278 = load ptr, ptr %buf.addr, align 8
-  %t279 = load i64, ptr %look.addr.260, align 8
-  %t280 = load i64, ptr %len.addr, align 8
-  %t281 = load ptr, ptr %tag.addr.265, align 8
-  %t282 = load i32, ptr %is-union.addr.6, align 4
-  %t283 = call ptr @c-parse-struct-body(ptr %t278, i64 %t279, i64 %t280, ptr %sd-end.addr.275, ptr %t281, i32 %t282)
-  store ptr %t283, ptr %sd.addr.277, align 8
-  %t284 = load ptr, ptr %out-end.addr, align 8
-  %t285 = load i64, ptr %sd-end.addr.275, align 8
-  store i64 %t285, ptr %t284, align 8
-  %t286 = load ptr, ptr %sd.addr.277, align 8
-  %t287 = icmp ne ptr %t286, null
-  br i1 %t287, label %cond.then22.0, label %cond.fall22
+  %t281 = sext i32 0 to i64
+  store i64 %t281, ptr %sd-end.addr.280, align 8
+  %t283 = load ptr, ptr %buf.addr, align 8
+  %t284 = load i64, ptr %look.addr.265, align 8
+  %t285 = load i64, ptr %len.addr, align 8
+  %t286 = load ptr, ptr %tag.addr.270, align 8
+  %t287 = load i32, ptr %is-union.addr.6, align 4
+  %t288 = call ptr @c-parse-struct-body(ptr %t283, i64 %t284, i64 %t285, ptr %sd-end.addr.280, ptr %t286, i32 %t287)
+  store ptr %t288, ptr %sd.addr.282, align 8
+  %t289 = load ptr, ptr %out-end.addr, align 8
+  %t290 = load i64, ptr %sd-end.addr.280, align 8
+  store i64 %t290, ptr %t289, align 8
+  %t291 = load ptr, ptr %sd.addr.282, align 8
+  %t292 = icmp ne ptr %t291, null
+  br i1 %t292, label %cond.then22.0, label %cond.fall22
 cond.then22.0:
-  %t288 = load ptr, ptr %sd.addr.277, align 8
-  %t289 = call ptr @type-for-sdef(ptr %t288)
-  ret ptr %t289
+  %t293 = load ptr, ptr %sd.addr.282, align 8
+  %t294 = call ptr @type-for-sdef(ptr %t293)
+  ret ptr %t294
 cond.fall22:
   br label %cond.end22
 cond.end22:
-  %t290 = load ptr, ptr @ty-ptr, align 8
-  ret ptr %t290
+  %t295 = load ptr, ptr @ty-ptr, align 8
+  ret ptr %t295
 cond.fall20:
   br label %cond.end20
 cond.end20:
-  %t291 = load ptr, ptr %tag.addr.265, align 8
-  %t292 = icmp ne ptr %t291, null
-  br i1 %t292, label %cond.then23.0, label %cond.fall23
-cond.then23.0:
-  %t294 = load ptr, ptr %tag.addr.265, align 8
-  %t295 = call ptr @lookup-struct(ptr %t294)
-  store ptr %t295, ptr %sd.addr.293, align 8
-  %t296 = load ptr, ptr %sd.addr.293, align 8
+  %t296 = load ptr, ptr %tag.addr.270, align 8
   %t297 = icmp ne ptr %t296, null
-  br i1 %t297, label %cond.then24.0, label %cond.fall24
+  br i1 %t297, label %cond.then23.0, label %cond.fall23
+cond.then23.0:
+  %t299 = load ptr, ptr %tag.addr.270, align 8
+  %t300 = call ptr @lookup-struct(ptr %t299)
+  store ptr %t300, ptr %sd.addr.298, align 8
+  %t301 = load ptr, ptr %sd.addr.298, align 8
+  %t302 = icmp ne ptr %t301, null
+  br i1 %t302, label %cond.then24.0, label %cond.fall24
 cond.then24.0:
-  %t298 = load ptr, ptr %sd.addr.293, align 8
-  %t299 = call ptr @type-for-sdef(ptr %t298)
-  ret ptr %t299
+  %t303 = load ptr, ptr %sd.addr.298, align 8
+  %t304 = call ptr @type-for-sdef(ptr %t303)
+  ret ptr %t304
 cond.fall24:
   br label %cond.end24
 cond.end24:
@@ -79190,52 +79203,52 @@ cond.join23.0:
 cond.fall23:
   br label %cond.end23
 cond.end23:
-  %t300 = load ptr, ptr @ty-ptr, align 8
-  ret ptr %t300
+  %t305 = load ptr, ptr @ty-ptr, align 8
+  ret ptr %t305
 cond.fall18:
   br label %cond.end18
 cond.end18:
-  %t301 = load ptr, ptr %base-name.addr.3, align 8
-  %t302 = icmp eq ptr %t301, null
-  br i1 %t302, label %cond.then25.0, label %cond.fall25
+  %t306 = load ptr, ptr %base-name.addr.3, align 8
+  %t307 = icmp eq ptr %t306, null
+  br i1 %t307, label %cond.then25.0, label %cond.fall25
 cond.then25.0:
-  %t303 = load i32, ptr %is-unsigned.addr.0, align 4
-  %t304 = icmp ne i32 %t303, 0
-  store i1 %t304, ptr %or.val27, align 1
-  br i1 %t304, label %or.end27, label %or.rhs27
+  %t308 = load i32, ptr %is-unsigned.addr.0, align 4
+  %t309 = icmp ne i32 %t308, 0
+  store i1 %t309, ptr %or.val27, align 1
+  br i1 %t309, label %or.end27, label %or.rhs27
 or.rhs27:
-  %t305 = load i32, ptr %is-short.addr.2, align 4
-  %t306 = icmp ne i32 %t305, 0
-  store i1 %t306, ptr %or.val28, align 1
-  br i1 %t306, label %or.end28, label %or.rhs28
+  %t310 = load i32, ptr %is-short.addr.2, align 4
+  %t311 = icmp ne i32 %t310, 0
+  store i1 %t311, ptr %or.val28, align 1
+  br i1 %t311, label %or.end28, label %or.rhs28
 or.rhs28:
-  %t307 = load i32, ptr %is-long.addr.1, align 4
-  %t308 = icmp ne i32 %t307, 0
-  store i1 %t308, ptr %or.val28, align 1
+  %t312 = load i32, ptr %is-long.addr.1, align 4
+  %t313 = icmp ne i32 %t312, 0
+  store i1 %t313, ptr %or.val28, align 1
   br label %or.end28
 or.end28:
-  %t309 = load i1, ptr %or.val28, align 1
-  store i1 %t309, ptr %or.val27, align 1
+  %t314 = load i1, ptr %or.val28, align 1
+  store i1 %t314, ptr %or.val27, align 1
   br label %or.end27
 or.end27:
-  %t310 = load i1, ptr %or.val27, align 1
-  br i1 %t310, label %cond.then26.0, label %cond.fall26
+  %t315 = load i1, ptr %or.val27, align 1
+  br i1 %t315, label %cond.then26.0, label %cond.fall26
 cond.then26.0:
-  %t311 = getelementptr inbounds [4 x i8], ptr @.str.2116, i64 0, i64 0
-  store ptr %t311, ptr %base-name.addr.3, align 8
+  %t316 = getelementptr inbounds [4 x i8], ptr @.str.2117, i64 0, i64 0
+  store ptr %t316, ptr %base-name.addr.3, align 8
   br label %cond.join26.0
 cond.join26.0:
   br label %cond.end26
 cond.fall26:
   br label %cond.end26
 cond.end26:
-  %t312 = phi ptr [ %t311, %cond.join26.0 ], [ undef, %cond.fall26 ]
-  %t313 = load ptr, ptr %base-name.addr.3, align 8
-  %t314 = icmp eq ptr %t313, null
-  br i1 %t314, label %cond.then29.0, label %cond.fall29
+  %t317 = phi ptr [ %t316, %cond.join26.0 ], [ undef, %cond.fall26 ]
+  %t318 = load ptr, ptr %base-name.addr.3, align 8
+  %t319 = icmp eq ptr %t318, null
+  br i1 %t319, label %cond.then29.0, label %cond.fall29
 cond.then29.0:
-  %t315 = load ptr, ptr @ty-ptr, align 8
-  ret ptr %t315
+  %t320 = load ptr, ptr @ty-ptr, align 8
+  ret ptr %t320
 cond.fall29:
   br label %cond.end29
 cond.end29:
@@ -79245,36 +79258,36 @@ cond.join25.0:
 cond.fall25:
   br label %cond.end25
 cond.end25:
-  %t317 = load ptr, ptr %base-name.addr.3, align 8
-  %t318 = load i32, ptr %is-unsigned.addr.0, align 4
-  %t319 = load i32, ptr %is-long.addr.1, align 4
-  %t320 = load i32, ptr %is-short.addr.2, align 4
-  %t321 = call ptr @c-type-to-nucleus(ptr %t317, i32 %t318, i32 %t319, i32 %t320)
-  store ptr %t321, ptr %base-type.addr.316, align 8
-  %t322 = load ptr, ptr %base-type.addr.316, align 8
-  %t323 = icmp eq ptr %t322, null
-  br i1 %t323, label %cond.then30.0, label %cond.fall30
+  %t322 = load ptr, ptr %base-name.addr.3, align 8
+  %t323 = load i32, ptr %is-unsigned.addr.0, align 4
+  %t324 = load i32, ptr %is-long.addr.1, align 4
+  %t325 = load i32, ptr %is-short.addr.2, align 4
+  %t326 = call ptr @c-type-to-nucleus(ptr %t322, i32 %t323, i32 %t324, i32 %t325)
+  store ptr %t326, ptr %base-type.addr.321, align 8
+  %t327 = load ptr, ptr %base-type.addr.321, align 8
+  %t328 = icmp eq ptr %t327, null
+  br i1 %t328, label %cond.then30.0, label %cond.fall30
 cond.then30.0:
-  %t324 = load ptr, ptr @ty-ptr, align 8
-  store ptr %t324, ptr %base-type.addr.316, align 8
+  %t329 = load ptr, ptr @ty-ptr, align 8
+  store ptr %t329, ptr %base-type.addr.321, align 8
   br label %cond.join30.0
 cond.join30.0:
   br label %cond.end30
 cond.fall30:
   br label %cond.end30
 cond.end30:
-  %t325 = phi ptr [ %t324, %cond.join30.0 ], [ undef, %cond.fall30 ]
-  %t326 = load i32, ptr %ptr-depth.addr.4, align 4
-  %t327 = icmp sgt i32 %t326, 0
-  br i1 %t327, label %cond.then31.0, label %cond.fall31
+  %t330 = phi ptr [ %t329, %cond.join30.0 ], [ undef, %cond.fall30 ]
+  %t331 = load i32, ptr %ptr-depth.addr.4, align 4
+  %t332 = icmp sgt i32 %t331, 0
+  br i1 %t332, label %cond.then31.0, label %cond.fall31
 cond.then31.0:
-  %t328 = load ptr, ptr @ty-ptr, align 8
-  ret ptr %t328
+  %t333 = load ptr, ptr @ty-ptr, align 8
+  ret ptr %t333
 cond.fall31:
   br label %cond.end31
 cond.end31:
-  %t329 = load ptr, ptr %base-type.addr.316, align 8
-  ret ptr %t329
+  %t334 = load ptr, ptr %base-type.addr.321, align 8
+  ret ptr %t334
 }
 
 define i32 @c-parse-func-decl(ptr %buf.arg, i64 %pos.arg, i64 %len.arg, ptr %out-end.arg, i32 %line.arg) {
@@ -79558,7 +79571,7 @@ cond.then14.0:
   %t125 = call ptr @c-read-ident(ptr %t122, i64 %t123, i64 %t124, ptr %void-check-end.addr.119)
   store ptr %t125, ptr %void-check.addr.121, align 8
   %t126 = load ptr, ptr %void-check.addr.121, align 8
-  %t127 = getelementptr inbounds [5 x i8], ptr @.str.2117, i64 0, i64 0
+  %t127 = getelementptr inbounds [5 x i8], ptr @.str.2118, i64 0, i64 0
   %t128 = call i32 @strcmp(ptr %t126, ptr %t127)
   %t129 = icmp eq i32 %t128, 0
   br i1 %t129, label %cond.then15.0, label %cond.fall15
@@ -79934,7 +79947,7 @@ while.body37:
   %t307 = call ptr @c-read-ident(ptr %t304, i64 %t305, i64 %t306, ptr %ae.addr.301)
   store ptr %t307, ptr %at.addr.303, align 8
   %t308 = load ptr, ptr %at.addr.303, align 8
-  %t309 = getelementptr inbounds [14 x i8], ptr @.str.2118, i64 0, i64 0
+  %t309 = getelementptr inbounds [14 x i8], ptr @.str.2119, i64 0, i64 0
   %t310 = call i32 @strcmp(ptr %t308, ptr %t309)
   %t311 = icmp eq i32 %t310, 0
   br i1 %t311, label %cond.then38.0, label %cond.fall38
@@ -79986,7 +79999,7 @@ cond.fall38:
 cond.end38:
   %t333 = phi i32 [ 1, %cond.join38.0 ], [ undef, %cond.fall38 ]
   %t334 = load ptr, ptr %at.addr.303, align 8
-  %t335 = getelementptr inbounds [8 x i8], ptr @.str.2119, i64 0, i64 0
+  %t335 = getelementptr inbounds [8 x i8], ptr @.str.2120, i64 0, i64 0
   %t336 = call i32 @strcmp(ptr %t334, ptr %t335)
   %t337 = icmp eq i32 %t336, 0
   br i1 %t337, label %cond.then41.0, label %cond.fall41
@@ -80140,7 +80153,7 @@ cond.then48.0:
   %t420 = load ptr, ptr @g-globals, align 8
   %t421 = load ptr, ptr %fname.addr.14, align 8
   %t422 = load ptr, ptr %ft.addr.380, align 8
-  %t423 = getelementptr inbounds [4 x i8], ptr @.str.2120, i64 0, i64 0
+  %t423 = getelementptr inbounds [4 x i8], ptr @.str.2121, i64 0, i64 0
   %t424 = load ptr, ptr %fname.addr.14, align 8
   %t425 = call ptr @fmt-s(ptr %t423, ptr %t424)
   %t426 = call ptr @scope-define(ptr %t420, ptr %t421, ptr %t422, ptr %t425, i32 0)
@@ -80160,7 +80173,7 @@ cond.fall49:
   br label %cond.end49
 cond.end49:
   %t432 = load ptr, ptr %fname.addr.14, align 8
-  %t433 = getelementptr inbounds [7 x i8], ptr @.str.2121, i64 0, i64 0
+  %t433 = getelementptr inbounds [7 x i8], ptr @.str.2122, i64 0, i64 0
   %t434 = call i32 @strcmp(ptr %t432, ptr %t433)
   %t435 = icmp eq i32 %t434, 0
   br i1 %t435, label %cond.then50.0, label %cond.fall50
@@ -80174,7 +80187,7 @@ cond.fall50:
 cond.end50:
   %t436 = phi i32 [ 1, %cond.join50.0 ], [ undef, %cond.fall50 ]
   %t437 = load ptr, ptr @g-out, align 8
-  %t438 = getelementptr inbounds [16 x i8], ptr @.str.2122, i64 0, i64 0
+  %t438 = getelementptr inbounds [16 x i8], ptr @.str.2123, i64 0, i64 0
   %t439 = load ptr, ptr %ret-type.addr.2, align 8
   %t440 = call ptr @type-to-ir(ptr %t439)
   %t441 = load ptr, ptr %fname.addr.14, align 8
@@ -80192,7 +80205,7 @@ while.body51:
   br i1 %t448, label %cond.then52.0, label %cond.fall52
 cond.then52.0:
   %t449 = load ptr, ptr @g-out, align 8
-  %t450 = getelementptr inbounds [3 x i8], ptr @.str.2123, i64 0, i64 0
+  %t450 = getelementptr inbounds [3 x i8], ptr @.str.2124, i64 0, i64 0
   %t451 = call i32 (ptr, ptr, ...) @fprintf(ptr %t449, ptr %t450)
   br label %cond.join52.0
 cond.join52.0:
@@ -80202,7 +80215,7 @@ cond.fall52:
 cond.end52:
   %t452 = phi i32 [ %t451, %cond.join52.0 ], [ undef, %cond.fall52 ]
   %t453 = load ptr, ptr @g-out, align 8
-  %t454 = getelementptr inbounds [3 x i8], ptr @.str.2124, i64 0, i64 0
+  %t454 = getelementptr inbounds [3 x i8], ptr @.str.2125, i64 0, i64 0
   %t455 = load ptr, ptr %ft.addr.380, align 8
   %t456 = getelementptr inbounds %Type, ptr %t455, i32 0, i32 2
   %t457 = load ptr, ptr %t456, align 8
@@ -80221,13 +80234,13 @@ while.end51:
   %t467 = icmp ne i32 %t466, 0
   br i1 %t467, label %cond.then53.0, label %cond.fall53
 cond.then53.0:
-  %t469 = getelementptr inbounds [1 x i8], ptr @.str.2125, i64 0, i64 0
+  %t469 = getelementptr inbounds [1 x i8], ptr @.str.2126, i64 0, i64 0
   store ptr %t469, ptr %sep.addr.468, align 8
   %t470 = load i32, ptr %num-params.addr.48, align 4
   %t471 = icmp ne i32 %t470, 0
   br i1 %t471, label %cond.then54.0, label %cond.fall54
 cond.then54.0:
-  %t472 = getelementptr inbounds [3 x i8], ptr @.str.2126, i64 0, i64 0
+  %t472 = getelementptr inbounds [3 x i8], ptr @.str.2127, i64 0, i64 0
   store ptr %t472, ptr %sep.addr.468, align 8
   br label %cond.join54.0
 cond.join54.0:
@@ -80237,7 +80250,7 @@ cond.fall54:
 cond.end54:
   %t473 = phi ptr [ %t472, %cond.join54.0 ], [ undef, %cond.fall54 ]
   %t474 = load ptr, ptr @g-out, align 8
-  %t475 = getelementptr inbounds [6 x i8], ptr @.str.2127, i64 0, i64 0
+  %t475 = getelementptr inbounds [6 x i8], ptr @.str.2128, i64 0, i64 0
   %t476 = load ptr, ptr %sep.addr.468, align 8
   %t477 = call i32 (ptr, ptr, ...) @fprintf(ptr %t474, ptr %t475, ptr %t476)
   br label %cond.join53.0
@@ -80253,7 +80266,7 @@ cond.end53:
   br i1 %t481, label %cond.then55.0, label %cond.test55.1
 cond.then55.0:
   %t482 = load ptr, ptr @g-out, align 8
-  %t483 = getelementptr inbounds [12 x i8], ptr @.str.2128, i64 0, i64 0
+  %t483 = getelementptr inbounds [12 x i8], ptr @.str.2129, i64 0, i64 0
   %t484 = call i32 (ptr, ptr, ...) @fprintf(ptr %t482, ptr %t483)
   br label %cond.join55.0
 cond.join55.0:
@@ -80262,7 +80275,7 @@ cond.test55.1:
   br label %cond.then55.1
 cond.then55.1:
   %t485 = load ptr, ptr @g-out, align 8
-  %t486 = getelementptr inbounds [3 x i8], ptr @.str.2129, i64 0, i64 0
+  %t486 = getelementptr inbounds [3 x i8], ptr @.str.2130, i64 0, i64 0
   %t487 = call i32 (ptr, ptr, ...) @fprintf(ptr %t485, ptr %t486)
   br label %cond.join55.1
 cond.join55.1:
@@ -80291,7 +80304,7 @@ entry:
   %total.addr.13 = alloca i64, align 8
   %chunk.addr.15 = alloca i64, align 8
   %t1 = load ptr, ptr %cmd.addr, align 8
-  %t2 = getelementptr inbounds [2 x i8], ptr @.str.2130, i64 0, i64 0
+  %t2 = getelementptr inbounds [2 x i8], ptr @.str.2131, i64 0, i64 0
   %t3 = call ptr @popen(ptr %t1, ptr %t2)
   store ptr %t3, ptr %fp.addr.0, align 8
   %t4 = load ptr, ptr %fp.addr.0, align 8
@@ -80404,7 +80417,7 @@ cond.end0:
   %t4 = load ptr, ptr @g-target, align 8
   %t5 = getelementptr inbounds %Target, ptr %t4, i32 0, i32 0
   %t6 = load ptr, ptr %t5, align 8
-  %t7 = getelementptr inbounds [8 x i8], ptr @.str.2131, i64 0, i64 0
+  %t7 = getelementptr inbounds [8 x i8], ptr @.str.2132, i64 0, i64 0
   %t8 = call ptr @strstr(ptr %t6, ptr %t7)
   %t9 = icmp ne ptr %t8, null
   br i1 %t9, label %cond.then1.0, label %cond.fall1
@@ -81002,7 +81015,7 @@ cond.test34.1:
   br label %cond.then34.1
 cond.then34.1:
   %t253 = load ptr, ptr @g-type-stream, align 8
-  %t254 = getelementptr inbounds [15 x i8], ptr @.str.2132, i64 0, i64 0
+  %t254 = getelementptr inbounds [15 x i8], ptr @.str.2133, i64 0, i64 0
   %t255 = load ptr, ptr %tag-name.addr, align 8
   %t256 = call i32 (ptr, ptr, ...) @fprintf(ptr %t253, ptr %t254, ptr %t255)
   store i32 0, ptr %i.addr.257, align 4
@@ -81018,7 +81031,7 @@ while.body35:
   br i1 %t262, label %cond.then36.0, label %cond.fall36
 cond.then36.0:
   %t263 = load ptr, ptr @g-type-stream, align 8
-  %t264 = getelementptr inbounds [3 x i8], ptr @.str.2133, i64 0, i64 0
+  %t264 = getelementptr inbounds [3 x i8], ptr @.str.2134, i64 0, i64 0
   %t265 = call i32 (ptr, ptr, ...) @fprintf(ptr %t263, ptr %t264)
   br label %cond.join36.0
 cond.join36.0:
@@ -81028,7 +81041,7 @@ cond.fall36:
 cond.end36:
   %t266 = phi i32 [ %t265, %cond.join36.0 ], [ undef, %cond.fall36 ]
   %t267 = load ptr, ptr @g-type-stream, align 8
-  %t268 = getelementptr inbounds [3 x i8], ptr @.str.2134, i64 0, i64 0
+  %t268 = getelementptr inbounds [3 x i8], ptr @.str.2135, i64 0, i64 0
   %t269 = load ptr, ptr %ftypes.addr.58, align 8
   %t270 = load i32, ptr %i.addr.257, align 4
   %t271 = sext i32 %t270 to i64
@@ -81042,7 +81055,7 @@ cond.end36:
   br label %while.cond35
 while.end35:
   %t278 = load ptr, ptr @g-type-stream, align 8
-  %t279 = getelementptr inbounds [5 x i8], ptr @.str.2135, i64 0, i64 0
+  %t279 = getelementptr inbounds [5 x i8], ptr @.str.2136, i64 0, i64 0
   %t280 = call i32 (ptr, ptr, ...) @fprintf(ptr %t278, ptr %t279)
   br label %cond.join34.1
 cond.join34.1:
@@ -81098,7 +81111,7 @@ entry:
   %t8 = call ptr @c-read-ident(ptr %t5, i64 %t6, i64 %t7, ptr %te.addr.2)
   store ptr %t8, ptr %tok.addr.4, align 8
   %t9 = load ptr, ptr %tok.addr.4, align 8
-  %t10 = getelementptr inbounds [8 x i8], ptr @.str.2136, i64 0, i64 0
+  %t10 = getelementptr inbounds [8 x i8], ptr @.str.2137, i64 0, i64 0
   %t11 = call i32 @strcmp(ptr %t9, ptr %t10)
   %t12 = icmp eq i32 %t11, 0
   br i1 %t12, label %cond.then0.0, label %cond.test0.1
@@ -81111,7 +81124,7 @@ cond.join0.0:
   br label %cond.end0
 cond.test0.1:
   %t14 = load ptr, ptr %tok.addr.4, align 8
-  %t15 = getelementptr inbounds [7 x i8], ptr @.str.2137, i64 0, i64 0
+  %t15 = getelementptr inbounds [7 x i8], ptr @.str.2138, i64 0, i64 0
   %t16 = call i32 @strcmp(ptr %t14, ptr %t15)
   %t17 = icmp eq i32 %t16, 0
   br i1 %t17, label %cond.then0.1, label %cond.test0.2
@@ -81123,7 +81136,7 @@ cond.join0.1:
   br label %cond.end0
 cond.test0.2:
   %t19 = load ptr, ptr %tok.addr.4, align 8
-  %t20 = getelementptr inbounds [6 x i8], ptr @.str.2138, i64 0, i64 0
+  %t20 = getelementptr inbounds [6 x i8], ptr @.str.2139, i64 0, i64 0
   %t21 = call i32 @strcmp(ptr %t19, ptr %t20)
   %t22 = icmp eq i32 %t21, 0
   br i1 %t22, label %cond.then0.2, label %cond.test0.3
@@ -81160,7 +81173,7 @@ cond.then1.0:
   %t39 = call ptr @c-read-ident(ptr %t36, i64 %t37, i64 %t38, ptr %te2.addr.33)
   store ptr %t39, ptr %t2.addr.35, align 8
   %t40 = load ptr, ptr %t2.addr.35, align 8
-  %t41 = getelementptr inbounds [7 x i8], ptr @.str.2139, i64 0, i64 0
+  %t41 = getelementptr inbounds [7 x i8], ptr @.str.2140, i64 0, i64 0
   %t42 = call i32 @strcmp(ptr %t40, ptr %t41)
   %t43 = icmp eq i32 %t42, 0
   br i1 %t43, label %cond.then2.0, label %cond.test2.1
@@ -81170,7 +81183,7 @@ cond.join2.0:
   br label %cond.end2
 cond.test2.1:
   %t44 = load ptr, ptr %t2.addr.35, align 8
-  %t45 = getelementptr inbounds [6 x i8], ptr @.str.2140, i64 0, i64 0
+  %t45 = getelementptr inbounds [6 x i8], ptr @.str.2141, i64 0, i64 0
   %t46 = call i32 @strcmp(ptr %t44, ptr %t45)
   %t47 = icmp eq i32 %t46, 0
   br i1 %t47, label %cond.then2.1, label %cond.test2.2
@@ -81363,7 +81376,7 @@ cond.test11.1:
   br label %cond.then11.1
 cond.then11.1:
   %t152 = load ptr, ptr @g-type-stream, align 8
-  %t153 = getelementptr inbounds [15 x i8], ptr @.str.2141, i64 0, i64 0
+  %t153 = getelementptr inbounds [15 x i8], ptr @.str.2142, i64 0, i64 0
   %t154 = load ptr, ptr %tname.addr.107, align 8
   %t155 = call i32 (ptr, ptr, ...) @fprintf(ptr %t152, ptr %t153, ptr %t154)
   store i32 0, ptr %i.addr.156, align 4
@@ -81387,7 +81400,7 @@ while.body12:
   br i1 %t169, label %cond.then13.0, label %cond.fall13
 cond.then13.0:
   %t170 = load ptr, ptr @g-type-stream, align 8
-  %t171 = getelementptr inbounds [3 x i8], ptr @.str.2142, i64 0, i64 0
+  %t171 = getelementptr inbounds [3 x i8], ptr @.str.2143, i64 0, i64 0
   %t172 = call i32 (ptr, ptr, ...) @fprintf(ptr %t170, ptr %t171)
   br label %cond.join13.0
 cond.join13.0:
@@ -81397,7 +81410,7 @@ cond.fall13:
 cond.end13:
   %t173 = phi i32 [ %t172, %cond.join13.0 ], [ undef, %cond.fall13 ]
   %t174 = load ptr, ptr @g-type-stream, align 8
-  %t175 = getelementptr inbounds [3 x i8], ptr @.str.2143, i64 0, i64 0
+  %t175 = getelementptr inbounds [3 x i8], ptr @.str.2144, i64 0, i64 0
   %t176 = load ptr, ptr %fts.addr.161, align 8
   %t177 = load i32, ptr %i.addr.156, align 4
   %t178 = sext i32 %t177 to i64
@@ -81411,7 +81424,7 @@ cond.end13:
   br label %while.cond12
 while.end12:
   %t185 = load ptr, ptr @g-type-stream, align 8
-  %t186 = getelementptr inbounds [5 x i8], ptr @.str.2144, i64 0, i64 0
+  %t186 = getelementptr inbounds [5 x i8], ptr @.str.2145, i64 0, i64 0
   %t187 = call i32 (ptr, ptr, ...) @fprintf(ptr %t185, ptr %t186)
   br label %cond.join11.1
 cond.join11.1:
@@ -81472,7 +81485,7 @@ while.body15:
   %t208 = call ptr @c-read-ident(ptr %t205, i64 %t206, i64 %t207, ptr %ae.addr.202)
   store ptr %t208, ptr %at.addr.204, align 8
   %t209 = load ptr, ptr %at.addr.204, align 8
-  %t210 = getelementptr inbounds [14 x i8], ptr @.str.2145, i64 0, i64 0
+  %t210 = getelementptr inbounds [14 x i8], ptr @.str.2146, i64 0, i64 0
   %t211 = call i32 @strcmp(ptr %t209, ptr %t210)
   %t212 = icmp eq i32 %t211, 0
   br i1 %t212, label %cond.then16.0, label %cond.fall16
@@ -81590,7 +81603,7 @@ entry:
   store ptr %t1, ptr %cmd.addr.0, align 8
   %t2 = load ptr, ptr %cmd.addr.0, align 8
   %t3 = sext i32 512 to i64
-  %t4 = getelementptr inbounds [48 x i8], ptr @.str.2146, i64 0, i64 0
+  %t4 = getelementptr inbounds [48 x i8], ptr @.str.2147, i64 0, i64 0
   %t5 = load ptr, ptr %header-path.addr, align 8
   %t6 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %t2, i64 %t3, ptr %t4, ptr %t5)
   %t8 = sext i32 0 to i64
@@ -81603,7 +81616,7 @@ entry:
   br i1 %t13, label %cond.then0.0, label %cond.fall0
 cond.then0.0:
   %t14 = load i32, ptr %line.addr, align 4
-  %t15 = getelementptr inbounds [37 x i8], ptr @.str.2147, i64 0, i64 0
+  %t15 = getelementptr inbounds [37 x i8], ptr @.str.2148, i64 0, i64 0
   %t16 = load ptr, ptr %header-path.addr, align 8
   %t17 = call ptr @fmt-s(ptr %t15, ptr %t16)
   call void @die-at(i32 %t14, ptr %t17)
@@ -81694,21 +81707,21 @@ cond.then3.1:
   %t61 = call ptr @c-read-ident(ptr %t58, i64 %t59, i64 %t60, ptr %tok-end.addr.55)
   store ptr %t61, ptr %tok.addr.57, align 8
   %t62 = load ptr, ptr %tok.addr.57, align 8
-  %t63 = getelementptr inbounds [6 x i8], ptr @.str.2148, i64 0, i64 0
+  %t63 = getelementptr inbounds [6 x i8], ptr @.str.2149, i64 0, i64 0
   %t64 = call i32 @strcmp(ptr %t62, ptr %t63)
   %t65 = icmp eq i32 %t64, 0
   store i1 %t65, ptr %or.val8, align 1
   br i1 %t65, label %or.end8, label %or.rhs8
 or.rhs8:
   %t66 = load ptr, ptr %tok.addr.57, align 8
-  %t67 = getelementptr inbounds [7 x i8], ptr @.str.2149, i64 0, i64 0
+  %t67 = getelementptr inbounds [7 x i8], ptr @.str.2150, i64 0, i64 0
   %t68 = call i32 @strcmp(ptr %t66, ptr %t67)
   %t69 = icmp eq i32 %t68, 0
   store i1 %t69, ptr %or.val9, align 1
   br i1 %t69, label %or.end9, label %or.rhs9
 or.rhs9:
   %t70 = load ptr, ptr %tok.addr.57, align 8
-  %t71 = getelementptr inbounds [8 x i8], ptr @.str.2150, i64 0, i64 0
+  %t71 = getelementptr inbounds [8 x i8], ptr @.str.2151, i64 0, i64 0
   %t72 = call i32 @strcmp(ptr %t70, ptr %t71)
   %t73 = icmp eq i32 %t72, 0
   store i1 %t73, ptr %or.val9, align 1
@@ -82017,7 +82030,7 @@ while.end1:
   %t200 = load ptr, ptr %buf.addr.9, align 8
   call void @free(ptr %t200)
   %t201 = load ptr, ptr @g-out, align 8
-  %t202 = getelementptr inbounds [2 x i8], ptr @.str.2151, i64 0, i64 0
+  %t202 = getelementptr inbounds [2 x i8], ptr @.str.2152, i64 0, i64 0
   %t203 = call i32 (ptr, ptr, ...) @fprintf(ptr %t201, ptr %t202)
   ret void
 }
@@ -82027,182 +82040,182 @@ entry:
   %name.addr = alloca ptr, align 8
   store ptr %name.arg, ptr %name.addr, align 8
   %t0 = load ptr, ptr %name.addr, align 8
-  %t1 = getelementptr inbounds [5 x i8], ptr @.str.2152, i64 0, i64 0
+  %t1 = getelementptr inbounds [5 x i8], ptr @.str.2153, i64 0, i64 0
   %t2 = call i32 @strcmp(ptr %t0, ptr %t1)
   %t3 = icmp eq i32 %t2, 0
   br i1 %t3, label %cond.then0.0, label %cond.fall0
 cond.then0.0:
-  %t4 = getelementptr inbounds [5 x i8], ptr @.str.2153, i64 0, i64 0
+  %t4 = getelementptr inbounds [5 x i8], ptr @.str.2154, i64 0, i64 0
   ret ptr %t4
 cond.fall0:
   br label %cond.end0
 cond.end0:
   %t5 = load ptr, ptr %name.addr, align 8
-  %t6 = getelementptr inbounds [3 x i8], ptr @.str.2154, i64 0, i64 0
+  %t6 = getelementptr inbounds [3 x i8], ptr @.str.2155, i64 0, i64 0
   %t7 = call i32 @strcmp(ptr %t5, ptr %t6)
   %t8 = icmp eq i32 %t7, 0
   br i1 %t8, label %cond.then1.0, label %cond.fall1
 cond.then1.0:
-  %t9 = getelementptr inbounds [6 x i8], ptr @.str.2155, i64 0, i64 0
+  %t9 = getelementptr inbounds [6 x i8], ptr @.str.2156, i64 0, i64 0
   ret ptr %t9
 cond.fall1:
   br label %cond.end1
 cond.end1:
   %t10 = load ptr, ptr %name.addr, align 8
-  %t11 = getelementptr inbounds [3 x i8], ptr @.str.2156, i64 0, i64 0
+  %t11 = getelementptr inbounds [3 x i8], ptr @.str.2157, i64 0, i64 0
   %t12 = call i32 @strcmp(ptr %t10, ptr %t11)
   %t13 = icmp eq i32 %t12, 0
   br i1 %t13, label %cond.then2.0, label %cond.fall2
 cond.then2.0:
-  %t14 = getelementptr inbounds [7 x i8], ptr @.str.2157, i64 0, i64 0
+  %t14 = getelementptr inbounds [7 x i8], ptr @.str.2158, i64 0, i64 0
   ret ptr %t14
 cond.fall2:
   br label %cond.end2
 cond.end2:
   %t15 = load ptr, ptr %name.addr, align 8
-  %t16 = getelementptr inbounds [4 x i8], ptr @.str.2158, i64 0, i64 0
+  %t16 = getelementptr inbounds [4 x i8], ptr @.str.2159, i64 0, i64 0
   %t17 = call i32 @strcmp(ptr %t15, ptr %t16)
   %t18 = icmp eq i32 %t17, 0
   br i1 %t18, label %cond.then3.0, label %cond.fall3
 cond.then3.0:
-  %t19 = getelementptr inbounds [8 x i8], ptr @.str.2159, i64 0, i64 0
+  %t19 = getelementptr inbounds [8 x i8], ptr @.str.2160, i64 0, i64 0
   ret ptr %t19
 cond.fall3:
   br label %cond.end3
 cond.end3:
   %t20 = load ptr, ptr %name.addr, align 8
-  %t21 = getelementptr inbounds [4 x i8], ptr @.str.2160, i64 0, i64 0
+  %t21 = getelementptr inbounds [4 x i8], ptr @.str.2161, i64 0, i64 0
   %t22 = call i32 @strcmp(ptr %t20, ptr %t21)
   %t23 = icmp eq i32 %t22, 0
   br i1 %t23, label %cond.then4.0, label %cond.fall4
 cond.then4.0:
-  %t24 = getelementptr inbounds [8 x i8], ptr @.str.2161, i64 0, i64 0
+  %t24 = getelementptr inbounds [8 x i8], ptr @.str.2162, i64 0, i64 0
   ret ptr %t24
 cond.fall4:
   br label %cond.end4
 cond.end4:
   %t25 = load ptr, ptr %name.addr, align 8
-  %t26 = getelementptr inbounds [4 x i8], ptr @.str.2162, i64 0, i64 0
+  %t26 = getelementptr inbounds [4 x i8], ptr @.str.2163, i64 0, i64 0
   %t27 = call i32 @strcmp(ptr %t25, ptr %t26)
   %t28 = icmp eq i32 %t27, 0
   br i1 %t28, label %cond.then5.0, label %cond.fall5
 cond.then5.0:
-  %t29 = getelementptr inbounds [8 x i8], ptr @.str.2163, i64 0, i64 0
+  %t29 = getelementptr inbounds [8 x i8], ptr @.str.2164, i64 0, i64 0
   ret ptr %t29
 cond.fall5:
   br label %cond.end5
 cond.end5:
   %t30 = load ptr, ptr %name.addr, align 8
-  %t31 = getelementptr inbounds [4 x i8], ptr @.str.2164, i64 0, i64 0
+  %t31 = getelementptr inbounds [4 x i8], ptr @.str.2165, i64 0, i64 0
   %t32 = call i32 @strcmp(ptr %t30, ptr %t31)
   %t33 = icmp eq i32 %t32, 0
   br i1 %t33, label %cond.then6.0, label %cond.fall6
 cond.then6.0:
-  %t34 = getelementptr inbounds [8 x i8], ptr @.str.2165, i64 0, i64 0
+  %t34 = getelementptr inbounds [8 x i8], ptr @.str.2166, i64 0, i64 0
   ret ptr %t34
 cond.fall6:
   br label %cond.end6
 cond.end6:
   %t35 = load ptr, ptr %name.addr, align 8
-  %t36 = getelementptr inbounds [4 x i8], ptr @.str.2166, i64 0, i64 0
+  %t36 = getelementptr inbounds [4 x i8], ptr @.str.2167, i64 0, i64 0
   %t37 = call i32 @strcmp(ptr %t35, ptr %t36)
   %t38 = icmp eq i32 %t37, 0
   br i1 %t38, label %cond.then7.0, label %cond.fall7
 cond.then7.0:
-  %t39 = getelementptr inbounds [8 x i8], ptr @.str.2167, i64 0, i64 0
+  %t39 = getelementptr inbounds [8 x i8], ptr @.str.2168, i64 0, i64 0
   ret ptr %t39
 cond.fall7:
   br label %cond.end7
 cond.end7:
   %t40 = load ptr, ptr %name.addr, align 8
-  %t41 = getelementptr inbounds [5 x i8], ptr @.str.2168, i64 0, i64 0
+  %t41 = getelementptr inbounds [5 x i8], ptr @.str.2169, i64 0, i64 0
   %t42 = call i32 @strcmp(ptr %t40, ptr %t41)
   %t43 = icmp eq i32 %t42, 0
   br i1 %t43, label %cond.then8.0, label %cond.fall8
 cond.then8.0:
-  %t44 = getelementptr inbounds [9 x i8], ptr @.str.2169, i64 0, i64 0
+  %t44 = getelementptr inbounds [9 x i8], ptr @.str.2170, i64 0, i64 0
   ret ptr %t44
 cond.fall8:
   br label %cond.end8
 cond.end8:
   %t45 = load ptr, ptr %name.addr, align 8
-  %t46 = getelementptr inbounds [5 x i8], ptr @.str.2170, i64 0, i64 0
+  %t46 = getelementptr inbounds [5 x i8], ptr @.str.2171, i64 0, i64 0
   %t47 = call i32 @strcmp(ptr %t45, ptr %t46)
   %t48 = icmp eq i32 %t47, 0
   br i1 %t48, label %cond.then9.0, label %cond.fall9
 cond.then9.0:
-  %t49 = getelementptr inbounds [9 x i8], ptr @.str.2171, i64 0, i64 0
+  %t49 = getelementptr inbounds [9 x i8], ptr @.str.2172, i64 0, i64 0
   ret ptr %t49
 cond.fall9:
   br label %cond.end9
 cond.end9:
   %t50 = load ptr, ptr %name.addr, align 8
-  %t51 = getelementptr inbounds [5 x i8], ptr @.str.2172, i64 0, i64 0
+  %t51 = getelementptr inbounds [5 x i8], ptr @.str.2173, i64 0, i64 0
   %t52 = call i32 @strcmp(ptr %t50, ptr %t51)
   %t53 = icmp eq i32 %t52, 0
   br i1 %t53, label %cond.then10.0, label %cond.fall10
 cond.then10.0:
-  %t54 = getelementptr inbounds [9 x i8], ptr @.str.2173, i64 0, i64 0
+  %t54 = getelementptr inbounds [9 x i8], ptr @.str.2174, i64 0, i64 0
   ret ptr %t54
 cond.fall10:
   br label %cond.end10
 cond.end10:
   %t55 = load ptr, ptr %name.addr, align 8
-  %t56 = getelementptr inbounds [4 x i8], ptr @.str.2174, i64 0, i64 0
+  %t56 = getelementptr inbounds [4 x i8], ptr @.str.2175, i64 0, i64 0
   %t57 = call i32 @strcmp(ptr %t55, ptr %t56)
   %t58 = icmp eq i32 %t57, 0
   br i1 %t58, label %cond.then11.0, label %cond.fall11
 cond.then11.0:
-  %t59 = getelementptr inbounds [6 x i8], ptr @.str.2175, i64 0, i64 0
+  %t59 = getelementptr inbounds [6 x i8], ptr @.str.2176, i64 0, i64 0
   ret ptr %t59
 cond.fall11:
   br label %cond.end11
 cond.end11:
   %t60 = load ptr, ptr %name.addr, align 8
-  %t61 = getelementptr inbounds [4 x i8], ptr @.str.2176, i64 0, i64 0
+  %t61 = getelementptr inbounds [4 x i8], ptr @.str.2177, i64 0, i64 0
   %t62 = call i32 @strcmp(ptr %t60, ptr %t61)
   %t63 = icmp eq i32 %t62, 0
   br i1 %t63, label %cond.then12.0, label %cond.fall12
 cond.then12.0:
-  %t64 = getelementptr inbounds [7 x i8], ptr @.str.2177, i64 0, i64 0
+  %t64 = getelementptr inbounds [7 x i8], ptr @.str.2178, i64 0, i64 0
   ret ptr %t64
 cond.fall12:
   br label %cond.end12
 cond.end12:
   %t65 = load ptr, ptr %name.addr, align 8
-  %t66 = getelementptr inbounds [5 x i8], ptr @.str.2178, i64 0, i64 0
+  %t66 = getelementptr inbounds [5 x i8], ptr @.str.2179, i64 0, i64 0
   %t67 = call i32 @strcmp(ptr %t65, ptr %t66)
   %t68 = icmp eq i32 %t67, 0
   br i1 %t68, label %cond.then13.0, label %cond.fall13
 cond.then13.0:
-  %t69 = getelementptr inbounds [6 x i8], ptr @.str.2179, i64 0, i64 0
+  %t69 = getelementptr inbounds [6 x i8], ptr @.str.2180, i64 0, i64 0
   ret ptr %t69
 cond.fall13:
   br label %cond.end13
 cond.end13:
   %t70 = load ptr, ptr %name.addr, align 8
-  %t71 = getelementptr inbounds [5 x i8], ptr @.str.2180, i64 0, i64 0
+  %t71 = getelementptr inbounds [5 x i8], ptr @.str.2181, i64 0, i64 0
   %t72 = call i32 @strcmp(ptr %t70, ptr %t71)
   %t73 = icmp eq i32 %t72, 0
   br i1 %t73, label %cond.then14.0, label %cond.fall14
 cond.then14.0:
-  %t74 = getelementptr inbounds [12 x i8], ptr @.str.2181, i64 0, i64 0
+  %t74 = getelementptr inbounds [12 x i8], ptr @.str.2182, i64 0, i64 0
   ret ptr %t74
 cond.fall14:
   br label %cond.end14
 cond.end14:
   %t75 = load ptr, ptr %name.addr, align 8
-  %t76 = getelementptr inbounds [4 x i8], ptr @.str.2182, i64 0, i64 0
+  %t76 = getelementptr inbounds [4 x i8], ptr @.str.2183, i64 0, i64 0
   %t77 = call i32 @strcmp(ptr %t75, ptr %t76)
   %t78 = icmp eq i32 %t77, 0
   br i1 %t78, label %cond.then15.0, label %cond.fall15
 cond.then15.0:
-  %t79 = getelementptr inbounds [6 x i8], ptr @.str.2183, i64 0, i64 0
+  %t79 = getelementptr inbounds [6 x i8], ptr @.str.2184, i64 0, i64 0
   ret ptr %t79
 cond.fall15:
   br label %cond.end15
 cond.end15:
-  %t80 = getelementptr inbounds [10 x i8], ptr @.str.2184, i64 0, i64 0
+  %t80 = getelementptr inbounds [10 x i8], ptr @.str.2185, i64 0, i64 0
   %t81 = load ptr, ptr %name.addr, align 8
   %t82 = call ptr @sanitize-for-c(ptr %t81)
   %t83 = call ptr @fmt-s(ptr %t80, ptr %t82)
@@ -82244,7 +82257,7 @@ cond.end0:
   %t12 = getelementptr inbounds i8, ptr %t10, i64 %t11
   store ptr %t12, ptr %rest.addr.9, align 8
   %t13 = load ptr, ptr %rest.addr.9, align 8
-  %t14 = getelementptr inbounds [5 x i8], ptr @.str.2185, i64 0, i64 0
+  %t14 = getelementptr inbounds [5 x i8], ptr @.str.2186, i64 0, i64 0
   %t15 = sext i32 4 to i64
   %t16 = call i32 @strncmp(ptr %t13, ptr %t14, i64 %t15)
   %t17 = icmp eq i32 %t16, 0
@@ -82255,7 +82268,7 @@ cond.then2.0:
   %t21 = getelementptr inbounds i8, ptr %t19, i64 %t20
   %t22 = call ptr @type-name-to-c(ptr %t21)
   store ptr %t22, ptr %elem.addr.18, align 8
-  %t23 = getelementptr inbounds [48 x i8], ptr @.str.2186, i64 0, i64 0
+  %t23 = getelementptr inbounds [48 x i8], ptr @.str.2187, i64 0, i64 0
   %t24 = load ptr, ptr %elem.addr.18, align 8
   %t25 = call ptr @fmt-s(ptr %t23, ptr %t24)
   ret ptr %t25
@@ -82263,7 +82276,7 @@ cond.fall2:
   br label %cond.end2
 cond.end2:
   %t26 = load ptr, ptr %rest.addr.9, align 8
-  %t27 = getelementptr inbounds [5 x i8], ptr @.str.2187, i64 0, i64 0
+  %t27 = getelementptr inbounds [5 x i8], ptr @.str.2188, i64 0, i64 0
   %t28 = sext i32 4 to i64
   %t29 = call i32 @strncmp(ptr %t26, ptr %t27, i64 %t28)
   %t30 = icmp eq i32 %t29, 0
@@ -82274,7 +82287,7 @@ cond.then3.0:
   %t34 = getelementptr inbounds i8, ptr %t32, i64 %t33
   %t35 = call ptr @type-name-to-c(ptr %t34)
   store ptr %t35, ptr %elem.addr.31, align 8
-  %t36 = getelementptr inbounds [48 x i8], ptr @.str.2188, i64 0, i64 0
+  %t36 = getelementptr inbounds [48 x i8], ptr @.str.2189, i64 0, i64 0
   %t37 = load ptr, ptr %elem.addr.31, align 8
   %t38 = call ptr @fmt-s(ptr %t36, ptr %t37)
   ret ptr %t38
@@ -82307,7 +82320,7 @@ entry:
   %t1 = icmp eq ptr %t0, null
   br i1 %t1, label %cond.then0.0, label %cond.fall0
 cond.then0.0:
-  %t2 = getelementptr inbounds [5 x i8], ptr @.str.2189, i64 0, i64 0
+  %t2 = getelementptr inbounds [5 x i8], ptr @.str.2190, i64 0, i64 0
   ret ptr %t2
 cond.fall0:
   br label %cond.end0
@@ -82371,7 +82384,7 @@ and.rhs6:
   %t39 = load ptr, ptr %head.addr.25, align 8
   %t40 = getelementptr inbounds %Node, ptr %t39, i32 0, i32 3
   %t41 = load ptr, ptr %t40, align 8
-  %t42 = getelementptr inbounds [4 x i8], ptr @.str.2190, i64 0, i64 0
+  %t42 = getelementptr inbounds [4 x i8], ptr @.str.2191, i64 0, i64 0
   %t43 = call i32 @strcmp(ptr %t41, ptr %t42)
   %t44 = icmp eq i32 %t43, 0
   store i1 %t44, ptr %and.val6, align 1
@@ -82388,7 +82401,7 @@ cond.then4.0:
   %t48 = icmp eq ptr %t47, null
   br i1 %t48, label %cond.then7.0, label %cond.fall7
 cond.then7.0:
-  %t49 = getelementptr inbounds [6 x i8], ptr @.str.2191, i64 0, i64 0
+  %t49 = getelementptr inbounds [6 x i8], ptr @.str.2192, i64 0, i64 0
   ret ptr %t49
 cond.fall7:
   br label %cond.end7
@@ -82419,7 +82432,7 @@ cond.join8.1:
   br label %cond.end8
 cond.end8:
   %t61 = phi ptr [ %t58, %cond.join8.0 ], [ %t60, %cond.join8.1 ]
-  %t62 = getelementptr inbounds [4 x i8], ptr @.str.2192, i64 0, i64 0
+  %t62 = getelementptr inbounds [4 x i8], ptr @.str.2193, i64 0, i64 0
   %t63 = load ptr, ptr %inner.addr.50, align 8
   %t64 = call ptr @fmt-s(ptr %t62, ptr %t63)
   ret ptr %t64
@@ -82441,7 +82454,7 @@ and.rhs11:
   %t71 = load ptr, ptr %head.addr.25, align 8
   %t72 = getelementptr inbounds %Node, ptr %t71, i32 0, i32 3
   %t73 = load ptr, ptr %t72, align 8
-  %t74 = getelementptr inbounds [6 x i8], ptr @.str.2193, i64 0, i64 0
+  %t74 = getelementptr inbounds [6 x i8], ptr @.str.2194, i64 0, i64 0
   %t75 = call i32 @strcmp(ptr %t73, ptr %t74)
   %t76 = icmp eq i32 %t75, 0
   store i1 %t76, ptr %and.val11, align 1
@@ -82454,7 +82467,7 @@ and.end10:
   %t78 = load i1, ptr %and.val10, align 1
   br i1 %t78, label %cond.then9.0, label %cond.fall9
 cond.then9.0:
-  %t80 = getelementptr inbounds [9 x i8], ptr @.str.2194, i64 0, i64 0
+  %t80 = getelementptr inbounds [9 x i8], ptr @.str.2195, i64 0, i64 0
   store ptr %t80, ptr %acc.addr.79, align 8
   %t82 = load ptr, ptr %rest.addr.29, align 8
   store ptr %t82, ptr %cur.addr.81, align 8
@@ -82478,9 +82491,9 @@ while.body12:
   %t96 = load i32, ptr %t95, align 4
   %t97 = call ptr @extract-type-node(ptr %t93, i32 %t96)
   store ptr %t97, ptr %mtnode.addr.92, align 8
-  %t98 = getelementptr inbounds [5 x i8], ptr @.str.2195, i64 0, i64 0
+  %t98 = getelementptr inbounds [5 x i8], ptr @.str.2196, i64 0, i64 0
   %t99 = load ptr, ptr %acc.addr.79, align 8
-  %t100 = getelementptr inbounds [8 x i8], ptr @.str.2196, i64 0, i64 0
+  %t100 = getelementptr inbounds [8 x i8], ptr @.str.2197, i64 0, i64 0
   %t101 = load ptr, ptr %mtnode.addr.92, align 8
   %t102 = call ptr @type-node-to-c(ptr %t101)
   %t103 = load ptr, ptr %mname.addr.89, align 8
@@ -82493,7 +82506,7 @@ while.body12:
   store ptr %t108, ptr %cur.addr.81, align 8
   br label %while.cond12
 while.end12:
-  %t109 = getelementptr inbounds [4 x i8], ptr @.str.2197, i64 0, i64 0
+  %t109 = getelementptr inbounds [4 x i8], ptr @.str.2198, i64 0, i64 0
   %t110 = load ptr, ptr %acc.addr.79, align 8
   %t111 = call ptr @fmt-s(ptr %t109, ptr %t110)
   ret ptr %t111
@@ -82506,7 +82519,7 @@ cond.join3.0:
 cond.fall3:
   br label %cond.end3
 cond.end3:
-  %t112 = getelementptr inbounds [6 x i8], ptr @.str.2198, i64 0, i64 0
+  %t112 = getelementptr inbounds [6 x i8], ptr @.str.2199, i64 0, i64 0
   ret ptr %t112
 }
 
@@ -82629,7 +82642,7 @@ cond.end0:
   %t13 = call i32 @node-len(ptr %t12)
   %t14 = sub nsw i32 %t13, 2
   store i32 %t14, ptr %nfields.addr.11, align 4
-  %t15 = getelementptr inbounds [18 x i8], ptr @.str.2199, i64 0, i64 0
+  %t15 = getelementptr inbounds [18 x i8], ptr @.str.2200, i64 0, i64 0
   %t16 = call i32 (ptr, ...) @printf(ptr %t15)
   %t17 = load i32, ptr %nfields.addr.11, align 4
   %t18 = mul nsw i32 %t17, 0
@@ -82660,7 +82673,7 @@ while.body1:
   %t38 = icmp ne ptr %t37, null
   br i1 %t38, label %cond.then2.0, label %cond.fall2
 cond.then2.0:
-  %t39 = getelementptr inbounds [12 x i8], ptr @.str.2200, i64 0, i64 0
+  %t39 = getelementptr inbounds [12 x i8], ptr @.str.2201, i64 0, i64 0
   %t40 = load ptr, ptr %tnode.addr.31, align 8
   %t41 = call ptr @type-node-to-c(ptr %t40)
   %t42 = load ptr, ptr %fname.addr.28, align 8
@@ -82677,7 +82690,7 @@ cond.end2:
   store i32 %t46, ptr %i.addr.19, align 4
   br label %while.cond1
 while.end1:
-  %t47 = getelementptr inbounds [8 x i8], ptr @.str.2201, i64 0, i64 0
+  %t47 = getelementptr inbounds [8 x i8], ptr @.str.2202, i64 0, i64 0
   %t48 = load ptr, ptr %name.addr.5, align 8
   %t49 = call i32 (ptr, ...) @printf(ptr %t47, ptr %t48)
   ret void
@@ -82776,7 +82789,7 @@ cond.then1.0:
   %t10 = load ptr, ptr %n.addr.4, align 8
   %t11 = getelementptr inbounds %Node, ptr %t10, i32 0, i32 3
   %t12 = load ptr, ptr %t11, align 8
-  %t13 = getelementptr inbounds [11 x i8], ptr @.str.2202, i64 0, i64 0
+  %t13 = getelementptr inbounds [11 x i8], ptr @.str.2203, i64 0, i64 0
   %t14 = sext i32 10 to i64
   %t15 = call i32 @strncmp(ptr %t12, ptr %t13, i64 %t14)
   %t16 = icmp eq i32 %t15, 0
@@ -82828,14 +82841,14 @@ cond.end4:
   %t35 = load ptr, ptr %t34, align 8
   store ptr %t35, ptr %hs.addr.32, align 8
   %t36 = load ptr, ptr %hs.addr.32, align 8
-  %t37 = getelementptr inbounds [8 x i8], ptr @.str.2203, i64 0, i64 0
+  %t37 = getelementptr inbounds [8 x i8], ptr @.str.2204, i64 0, i64 0
   %t38 = call i32 @strcmp(ptr %t36, ptr %t37)
   %t39 = icmp eq i32 %t38, 0
   store i1 %t39, ptr %or.val7, align 1
   br i1 %t39, label %or.end7, label %or.rhs7
 or.rhs7:
   %t40 = load ptr, ptr %hs.addr.32, align 8
-  %t41 = getelementptr inbounds [4 x i8], ptr @.str.2204, i64 0, i64 0
+  %t41 = getelementptr inbounds [4 x i8], ptr @.str.2205, i64 0, i64 0
   %t42 = call i32 @strcmp(ptr %t40, ptr %t41)
   %t43 = icmp eq i32 %t42, 0
   store i1 %t43, ptr %or.val7, align 1
@@ -82849,14 +82862,14 @@ cond.fall6:
   br label %cond.end6
 cond.end6:
   %t45 = load ptr, ptr %hs.addr.32, align 8
-  %t46 = getelementptr inbounds [4 x i8], ptr @.str.2205, i64 0, i64 0
+  %t46 = getelementptr inbounds [4 x i8], ptr @.str.2206, i64 0, i64 0
   %t47 = call i32 @strcmp(ptr %t45, ptr %t46)
   %t48 = icmp ne i32 %t47, 0
   store i1 %t48, ptr %and.val9, align 1
   br i1 %t48, label %and.rhs9, label %and.end9
 and.rhs9:
   %t49 = load ptr, ptr %hs.addr.32, align 8
-  %t50 = getelementptr inbounds [4 x i8], ptr @.str.2206, i64 0, i64 0
+  %t50 = getelementptr inbounds [4 x i8], ptr @.str.2207, i64 0, i64 0
   %t51 = call i32 @strcmp(ptr %t49, ptr %t50)
   %t52 = icmp ne i32 %t51, 0
   store i1 %t52, ptr %and.val9, align 1
@@ -82994,7 +83007,7 @@ while.end0:
   %t41 = icmp ne i32 %t40, 0
   br i1 %t41, label %cond.then2.0, label %cond.fall2
 cond.then2.0:
-  %t42 = getelementptr inbounds [64 x i8], ptr @.str.2207, i64 0, i64 0
+  %t42 = getelementptr inbounds [64 x i8], ptr @.str.2208, i64 0, i64 0
   %t43 = load ptr, ptr %fname.addr.3, align 8
   %t44 = call i32 (ptr, ...) @printf(ptr %t42, ptr %t43)
   ret void
@@ -83055,7 +83068,7 @@ while.end3:
   %t80 = icmp ne i32 %t79, 0
   br i1 %t80, label %cond.then5.0, label %cond.fall5
 cond.then5.0:
-  %t81 = getelementptr inbounds [78 x i8], ptr @.str.2208, i64 0, i64 0
+  %t81 = getelementptr inbounds [78 x i8], ptr @.str.2209, i64 0, i64 0
   %t82 = load ptr, ptr %fname.addr.3, align 8
   %t83 = call i32 (ptr, ...) @printf(ptr %t81, ptr %t82)
   ret void
@@ -83068,7 +83081,7 @@ cond.end5:
   %t88 = load i32, ptr %t87, align 4
   %t89 = call ptr @extract-type-node(ptr %t85, i32 %t88)
   store ptr %t89, ptr %rtnode.addr.84, align 8
-  %t91 = getelementptr inbounds [5 x i8], ptr @.str.2209, i64 0, i64 0
+  %t91 = getelementptr inbounds [5 x i8], ptr @.str.2210, i64 0, i64 0
   store ptr %t91, ptr %ret-c.addr.90, align 8
   %t92 = load ptr, ptr %rtnode.addr.84, align 8
   %t93 = icmp ne ptr %t92, null
@@ -83084,7 +83097,7 @@ cond.fall6:
   br label %cond.end6
 cond.end6:
   %t96 = phi ptr [ %t95, %cond.join6.0 ], [ undef, %cond.fall6 ]
-  %t97 = getelementptr inbounds [7 x i8], ptr @.str.2210, i64 0, i64 0
+  %t97 = getelementptr inbounds [7 x i8], ptr @.str.2211, i64 0, i64 0
   %t98 = load ptr, ptr %ret-c.addr.90, align 8
   %t99 = load ptr, ptr %fname.addr.3, align 8
   %t100 = call ptr @ns-ir-base(ptr %t99)
@@ -83099,7 +83112,7 @@ cond.end6:
   %t109 = icmp eq i32 %t108, 0
   br i1 %t109, label %cond.then7.0, label %cond.fall7
 cond.then7.0:
-  %t110 = getelementptr inbounds [5 x i8], ptr @.str.2211, i64 0, i64 0
+  %t110 = getelementptr inbounds [5 x i8], ptr @.str.2212, i64 0, i64 0
   %t111 = call i32 (ptr, ...) @printf(ptr %t110)
   br label %cond.join7.0
 cond.join7.0:
@@ -83122,7 +83135,7 @@ while.body8:
   %t120 = icmp ne i32 %t119, 0
   br i1 %t120, label %cond.then9.0, label %cond.fall9
 cond.then9.0:
-  %t121 = getelementptr inbounds [3 x i8], ptr @.str.2212, i64 0, i64 0
+  %t121 = getelementptr inbounds [3 x i8], ptr @.str.2213, i64 0, i64 0
   %t122 = call i32 (ptr, ...) @printf(ptr %t121)
   br label %cond.join9.0
 cond.join9.0:
@@ -83149,7 +83162,7 @@ cond.end9:
   %t138 = icmp ne ptr %t137, null
   br i1 %t138, label %cond.then10.0, label %cond.test10.1
 cond.then10.0:
-  %t139 = getelementptr inbounds [6 x i8], ptr @.str.2213, i64 0, i64 0
+  %t139 = getelementptr inbounds [6 x i8], ptr @.str.2214, i64 0, i64 0
   %t140 = load ptr, ptr %ptnode.addr.131, align 8
   %t141 = call ptr @type-node-to-c(ptr %t140)
   %t142 = load ptr, ptr %pname.addr.128, align 8
@@ -83164,7 +83177,7 @@ cond.then10.1:
   %t145 = icmp ne ptr %t144, null
   br i1 %t145, label %cond.then11.0, label %cond.fall11
 cond.then11.0:
-  %t146 = getelementptr inbounds [9 x i8], ptr @.str.2214, i64 0, i64 0
+  %t146 = getelementptr inbounds [9 x i8], ptr @.str.2215, i64 0, i64 0
   %t147 = load ptr, ptr %pname.addr.128, align 8
   %t148 = call i32 (ptr, ...) @printf(ptr %t146, ptr %t147)
   br label %cond.join11.0
@@ -83184,7 +83197,7 @@ cond.end10:
   store i32 %t152, ptr %i.addr.115, align 4
   br label %while.cond8
 while.end8:
-  %t153 = getelementptr inbounds [4 x i8], ptr @.str.2215, i64 0, i64 0
+  %t153 = getelementptr inbounds [4 x i8], ptr @.str.2216, i64 0, i64 0
   %t154 = call i32 (ptr, ...) @printf(ptr %t153)
   ret void
 }
@@ -83209,7 +83222,7 @@ entry:
   %t11 = icmp eq i32 %t10, 0
   br i1 %t11, label %cond.then0.0, label %cond.fall0
 cond.then0.0:
-  %t12 = getelementptr inbounds [16 x i8], ptr @.str.2216, i64 0, i64 0
+  %t12 = getelementptr inbounds [16 x i8], ptr @.str.2217, i64 0, i64 0
   %t13 = load ptr, ptr %name.addr.0, align 8
   %t14 = load ptr, ptr %val-node.addr.5, align 8
   %t15 = getelementptr inbounds %Node, ptr %t14, i32 0, i32 2
@@ -83228,7 +83241,7 @@ cond.end0:
   %t22 = icmp eq i32 %t21, 1
   br i1 %t22, label %cond.then1.0, label %cond.fall1
 cond.then1.0:
-  %t23 = getelementptr inbounds [17 x i8], ptr @.str.2217, i64 0, i64 0
+  %t23 = getelementptr inbounds [17 x i8], ptr @.str.2218, i64 0, i64 0
   %t24 = load ptr, ptr %name.addr.0, align 8
   %t25 = load ptr, ptr %val-node.addr.5, align 8
   %t26 = getelementptr inbounds %Node, ptr %t25, i32 0, i32 3
@@ -83261,7 +83274,7 @@ entry:
   %t7 = call i32 @node-len(ptr %t6)
   %t8 = sub nsw i32 %t7, 2
   store i32 %t8, ptr %n.addr.5, align 4
-  %t9 = getelementptr inbounds [11 x i8], ptr @.str.2218, i64 0, i64 0
+  %t9 = getelementptr inbounds [11 x i8], ptr @.str.2219, i64 0, i64 0
   %t10 = load ptr, ptr %name.addr.0, align 8
   %t11 = call i32 (ptr, ...) @printf(ptr %t9, ptr %t10)
   %t12 = load i32, ptr %n.addr.5, align 4
@@ -83281,7 +83294,7 @@ while.body0:
   %t23 = getelementptr inbounds %Node, ptr %t22, i32 0, i32 3
   %t24 = load ptr, ptr %t23, align 8
   store ptr %t24, ptr %variant.addr.18, align 8
-  %t25 = getelementptr inbounds [15 x i8], ptr @.str.2219, i64 0, i64 0
+  %t25 = getelementptr inbounds [15 x i8], ptr @.str.2220, i64 0, i64 0
   %t26 = load ptr, ptr %name.addr.0, align 8
   %t27 = load ptr, ptr %variant.addr.18, align 8
   %t28 = load i32, ptr %i.addr.14, align 4
@@ -83292,7 +83305,7 @@ while.body0:
   %t33 = icmp slt i32 %t30, %t32
   br i1 %t33, label %cond.then1.0, label %cond.fall1
 cond.then1.0:
-  %t34 = getelementptr inbounds [2 x i8], ptr @.str.2220, i64 0, i64 0
+  %t34 = getelementptr inbounds [2 x i8], ptr @.str.2221, i64 0, i64 0
   %t35 = call i32 (ptr, ...) @printf(ptr %t34)
   br label %cond.join1.0
 cond.join1.0:
@@ -83301,14 +83314,14 @@ cond.fall1:
   br label %cond.end1
 cond.end1:
   %t36 = phi i32 [ %t35, %cond.join1.0 ], [ undef, %cond.fall1 ]
-  %t37 = getelementptr inbounds [2 x i8], ptr @.str.2221, i64 0, i64 0
+  %t37 = getelementptr inbounds [2 x i8], ptr @.str.2222, i64 0, i64 0
   %t38 = call i32 (ptr, ...) @printf(ptr %t37)
   %t39 = load i32, ptr %i.addr.14, align 4
   %t40 = add nsw i32 %t39, 1
   store i32 %t40, ptr %i.addr.14, align 4
   br label %while.cond0
 while.end0:
-  %t41 = getelementptr inbounds [5 x i8], ptr @.str.2222, i64 0, i64 0
+  %t41 = getelementptr inbounds [5 x i8], ptr @.str.2223, i64 0, i64 0
   %t42 = call i32 (ptr, ...) @printf(ptr %t41)
   ret void
 }
@@ -83392,13 +83405,13 @@ cond.end2:
   store i32 %t33, ptr %i.addr.19, align 4
   br label %while.cond1
 while.end1:
-  %t34 = getelementptr inbounds [35 x i8], ptr @.str.2223, i64 0, i64 0
+  %t34 = getelementptr inbounds [35 x i8], ptr @.str.2224, i64 0, i64 0
   %t35 = call i32 (ptr, ...) @printf(ptr %t34)
   %t36 = load i32, ptr %npay.addr.16, align 4
   %t37 = icmp sgt i32 %t36, 0
   br i1 %t37, label %cond.then3.0, label %cond.fall3
 cond.then3.0:
-  %t38 = getelementptr inbounds [13 x i8], ptr @.str.2224, i64 0, i64 0
+  %t38 = getelementptr inbounds [13 x i8], ptr @.str.2225, i64 0, i64 0
   %t39 = call i32 (ptr, ...) @printf(ptr %t38)
   %t40 = load i32, ptr %narms.addr.12, align 4
   %t41 = mul nsw i32 %t40, 0
@@ -83443,7 +83456,7 @@ cond.then6.0:
   %t73 = load i32, ptr %t72, align 4
   %t74 = call ptr @extract-type-node(ptr %t70, i32 %t73)
   store ptr %t74, ptr %tnode.addr.69, align 8
-  %t75 = getelementptr inbounds [16 x i8], ptr @.str.2225, i64 0, i64 0
+  %t75 = getelementptr inbounds [16 x i8], ptr @.str.2226, i64 0, i64 0
   %t76 = load ptr, ptr %tnode.addr.69, align 8
   %t77 = call ptr @type-node-to-c(ptr %t76)
   %t78 = load ptr, ptr %aname.addr.55, align 8
@@ -83454,7 +83467,7 @@ cond.join6.0:
 cond.test6.1:
   br label %cond.then6.1
 cond.then6.1:
-  %t80 = getelementptr inbounds [18 x i8], ptr @.str.2226, i64 0, i64 0
+  %t80 = getelementptr inbounds [18 x i8], ptr @.str.2227, i64 0, i64 0
   %t81 = call i32 (ptr, ...) @printf(ptr %t80)
   %t82 = load i32, ptr %nf.addr.60, align 4
   %t83 = mul nsw i32 %t82, 0
@@ -83481,7 +83494,7 @@ while.body7:
   %t100 = load i32, ptr %t99, align 4
   %t101 = call ptr @extract-type-node(ptr %t97, i32 %t100)
   store ptr %t101, ptr %tnode.addr.96, align 8
-  %t102 = getelementptr inbounds [8 x i8], ptr @.str.2227, i64 0, i64 0
+  %t102 = getelementptr inbounds [8 x i8], ptr @.str.2228, i64 0, i64 0
   %t103 = load ptr, ptr %tnode.addr.96, align 8
   %t104 = call ptr @type-node-to-c(ptr %t103)
   %t105 = load ptr, ptr %fname.addr.93, align 8
@@ -83491,7 +83504,7 @@ while.body7:
   store i32 %t108, ptr %fi.addr.84, align 4
   br label %while.cond7
 while.end7:
-  %t109 = getelementptr inbounds [7 x i8], ptr @.str.2228, i64 0, i64 0
+  %t109 = getelementptr inbounds [7 x i8], ptr @.str.2229, i64 0, i64 0
   %t110 = load ptr, ptr %aname.addr.55, align 8
   %t111 = call i32 (ptr, ...) @printf(ptr %t109, ptr %t110)
   br label %cond.join6.1
@@ -83511,7 +83524,7 @@ cond.end5:
   store i32 %t115, ptr %i.addr.42, align 4
   br label %while.cond4
 while.end4:
-  %t116 = getelementptr inbounds [16 x i8], ptr @.str.2229, i64 0, i64 0
+  %t116 = getelementptr inbounds [16 x i8], ptr @.str.2230, i64 0, i64 0
   %t117 = call i32 (ptr, ...) @printf(ptr %t116)
   br label %cond.join3.0
 cond.join3.0:
@@ -83520,10 +83533,10 @@ cond.fall3:
   br label %cond.end3
 cond.end3:
   %t118 = phi i32 [ %t117, %cond.join3.0 ], [ undef, %cond.fall3 ]
-  %t119 = getelementptr inbounds [8 x i8], ptr @.str.2230, i64 0, i64 0
+  %t119 = getelementptr inbounds [8 x i8], ptr @.str.2231, i64 0, i64 0
   %t120 = load ptr, ptr %name.addr.7, align 8
   %t121 = call i32 (ptr, ...) @printf(ptr %t119, ptr %t120)
-  %t122 = getelementptr inbounds [15 x i8], ptr @.str.2231, i64 0, i64 0
+  %t122 = getelementptr inbounds [15 x i8], ptr @.str.2232, i64 0, i64 0
   %t123 = load ptr, ptr %name.addr.7, align 8
   %t124 = call i32 (ptr, ...) @printf(ptr %t122, ptr %t123)
   %t125 = load i32, ptr %narms.addr.12, align 4
@@ -83566,7 +83579,7 @@ cond.join9.1:
 cond.end9:
   %t148 = phi ptr [ %t143, %cond.join9.0 ], [ %t147, %cond.join9.1 ]
   store ptr %t148, ptr %aname.addr.136, align 8
-  %t149 = getelementptr inbounds [15 x i8], ptr @.str.2232, i64 0, i64 0
+  %t149 = getelementptr inbounds [15 x i8], ptr @.str.2233, i64 0, i64 0
   %t150 = load ptr, ptr %name.addr.7, align 8
   %t151 = load ptr, ptr %aname.addr.136, align 8
   %t152 = load i32, ptr %i.addr.127, align 4
@@ -83577,7 +83590,7 @@ cond.end9:
   %t157 = icmp slt i32 %t154, %t156
   br i1 %t157, label %cond.then10.0, label %cond.fall10
 cond.then10.0:
-  %t158 = getelementptr inbounds [2 x i8], ptr @.str.2233, i64 0, i64 0
+  %t158 = getelementptr inbounds [2 x i8], ptr @.str.2234, i64 0, i64 0
   %t159 = call i32 (ptr, ...) @printf(ptr %t158)
   br label %cond.join10.0
 cond.join10.0:
@@ -83586,14 +83599,14 @@ cond.fall10:
   br label %cond.end10
 cond.end10:
   %t160 = phi i32 [ %t159, %cond.join10.0 ], [ undef, %cond.fall10 ]
-  %t161 = getelementptr inbounds [2 x i8], ptr @.str.2234, i64 0, i64 0
+  %t161 = getelementptr inbounds [2 x i8], ptr @.str.2235, i64 0, i64 0
   %t162 = call i32 (ptr, ...) @printf(ptr %t161)
   %t163 = load i32, ptr %i.addr.127, align 4
   %t164 = add nsw i32 %t163, 1
   store i32 %t164, ptr %i.addr.127, align 4
   br label %while.cond8
 while.end8:
-  %t165 = getelementptr inbounds [5 x i8], ptr @.str.2235, i64 0, i64 0
+  %t165 = getelementptr inbounds [5 x i8], ptr @.str.2236, i64 0, i64 0
   %t166 = call i32 (ptr, ...) @printf(ptr %t165)
   ret void
 }
@@ -83622,13 +83635,13 @@ entry:
   store ptr %t1, ptr %forms.addr, align 8
   %t2 = load ptr, ptr %forms.addr, align 8
   call void @apply-early-set-ir-prefix(ptr %t2)
-  %t3 = getelementptr inbounds [14 x i8], ptr @.str.2236, i64 0, i64 0
+  %t3 = getelementptr inbounds [14 x i8], ptr @.str.2237, i64 0, i64 0
   %t4 = call i32 (ptr, ...) @printf(ptr %t3)
-  %t5 = getelementptr inbounds [21 x i8], ptr @.str.2237, i64 0, i64 0
+  %t5 = getelementptr inbounds [21 x i8], ptr @.str.2238, i64 0, i64 0
   %t6 = call i32 (ptr, ...) @printf(ptr %t5)
-  %t7 = getelementptr inbounds [23 x i8], ptr @.str.2238, i64 0, i64 0
+  %t7 = getelementptr inbounds [23 x i8], ptr @.str.2239, i64 0, i64 0
   %t8 = call i32 (ptr, ...) @printf(ptr %t7)
-  %t9 = getelementptr inbounds [53 x i8], ptr @.str.2239, i64 0, i64 0
+  %t9 = getelementptr inbounds [53 x i8], ptr @.str.2240, i64 0, i64 0
   %t10 = load ptr, ptr %source-file.addr, align 8
   %t11 = call i32 (ptr, ...) @printf(ptr %t9, ptr %t10)
   %t13 = load ptr, ptr %forms.addr, align 8
@@ -83677,7 +83690,7 @@ and.rhs5:
   %t36 = call ptr @node-at(ptr %t35, i32 0)
   %t37 = getelementptr inbounds %Node, ptr %t36, i32 0, i32 3
   %t38 = load ptr, ptr %t37, align 8
-  %t39 = getelementptr inbounds [9 x i8], ptr @.str.2240, i64 0, i64 0
+  %t39 = getelementptr inbounds [9 x i8], ptr @.str.2241, i64 0, i64 0
   %t40 = call i32 @strcmp(ptr %t38, ptr %t39)
   %t41 = icmp eq i32 %t40, 0
   store i1 %t41, ptr %and.val6, align 1
@@ -83775,7 +83788,7 @@ cond.then8.0:
   %t84 = load ptr, ptr %t83, align 8
   store ptr %t84, ptr %h.addr.80, align 8
   %t85 = load ptr, ptr %h.addr.80, align 8
-  %t86 = getelementptr inbounds [10 x i8], ptr @.str.2241, i64 0, i64 0
+  %t86 = getelementptr inbounds [10 x i8], ptr @.str.2242, i64 0, i64 0
   %t87 = call i32 @strcmp(ptr %t85, ptr %t86)
   %t88 = icmp eq i32 %t87, 0
   br i1 %t88, label %cond.then12.0, label %cond.test12.1
@@ -83787,7 +83800,7 @@ cond.join12.0:
   br label %cond.end12
 cond.test12.1:
   %t90 = load ptr, ptr %h.addr.80, align 8
-  %t91 = getelementptr inbounds [9 x i8], ptr @.str.2242, i64 0, i64 0
+  %t91 = getelementptr inbounds [9 x i8], ptr @.str.2243, i64 0, i64 0
   %t92 = call i32 @strcmp(ptr %t90, ptr %t91)
   %t93 = icmp eq i32 %t92, 0
   br i1 %t93, label %cond.then12.1, label %cond.test12.2
@@ -83799,7 +83812,7 @@ cond.join12.1:
   br label %cond.end12
 cond.test12.2:
   %t95 = load ptr, ptr %h.addr.80, align 8
-  %t96 = getelementptr inbounds [5 x i8], ptr @.str.2243, i64 0, i64 0
+  %t96 = getelementptr inbounds [5 x i8], ptr @.str.2244, i64 0, i64 0
   %t97 = call i32 @strcmp(ptr %t95, ptr %t96)
   %t98 = icmp eq i32 %t97, 0
   br i1 %t98, label %cond.then12.2, label %cond.test12.3
@@ -83811,7 +83824,7 @@ cond.join12.2:
   br label %cond.end12
 cond.test12.3:
   %t100 = load ptr, ptr %h.addr.80, align 8
-  %t101 = getelementptr inbounds [9 x i8], ptr @.str.2244, i64 0, i64 0
+  %t101 = getelementptr inbounds [9 x i8], ptr @.str.2245, i64 0, i64 0
   %t102 = call i32 @strcmp(ptr %t100, ptr %t101)
   %t103 = icmp eq i32 %t102, 0
   br i1 %t103, label %cond.then12.3, label %cond.test12.4
@@ -83823,7 +83836,7 @@ cond.join12.3:
   br label %cond.end12
 cond.test12.4:
   %t105 = load ptr, ptr %h.addr.80, align 8
-  %t106 = getelementptr inbounds [8 x i8], ptr @.str.2245, i64 0, i64 0
+  %t106 = getelementptr inbounds [8 x i8], ptr @.str.2246, i64 0, i64 0
   %t107 = call i32 @strcmp(ptr %t105, ptr %t106)
   %t108 = icmp eq i32 %t107, 0
   br i1 %t108, label %cond.then12.4, label %cond.test12.5
@@ -84018,7 +84031,7 @@ entry:
   %form.addr = alloca ptr, align 8
   store ptr %form.arg, ptr %form.addr, align 8
   %i.addr.6 = alloca i32, align 4
-  %t0 = getelementptr inbounds [12 x i8], ptr @.str.2246, i64 0, i64 0
+  %t0 = getelementptr inbounds [12 x i8], ptr @.str.2247, i64 0, i64 0
   %t1 = call i32 (ptr, ...) @printf(ptr %t0)
   %t2 = load ptr, ptr %form.addr, align 8
   %t3 = call i32 @node-len(ptr %t2)
@@ -84057,7 +84070,7 @@ cond.end1:
   store i32 %t22, ptr %i.addr.6, align 4
   br label %while.cond0
 while.end0:
-  %t23 = getelementptr inbounds [3 x i8], ptr @.str.2247, i64 0, i64 0
+  %t23 = getelementptr inbounds [3 x i8], ptr @.str.2248, i64 0, i64 0
   %t24 = call i32 (ptr, ...) @printf(ptr %t23)
   ret void
 }
@@ -84068,12 +84081,12 @@ entry:
   store ptr %form.arg, ptr %form.addr, align 8
   %params.addr.6 = alloca ptr, align 8
   %i.addr.12 = alloca i32, align 4
-  %t0 = getelementptr inbounds [10 x i8], ptr @.str.2248, i64 0, i64 0
+  %t0 = getelementptr inbounds [10 x i8], ptr @.str.2249, i64 0, i64 0
   %t1 = call i32 (ptr, ...) @printf(ptr %t0)
   %t2 = load ptr, ptr %form.addr, align 8
   %t3 = call ptr @node-at(ptr %t2, i32 1)
   call void @print-node(ptr %t3)
-  %t4 = getelementptr inbounds [3 x i8], ptr @.str.2249, i64 0, i64 0
+  %t4 = getelementptr inbounds [3 x i8], ptr @.str.2250, i64 0, i64 0
   %t5 = call i32 (ptr, ...) @printf(ptr %t4)
   %t7 = load ptr, ptr %form.addr, align 8
   %t8 = call ptr @node-at(ptr %t7, i32 2)
@@ -84112,7 +84125,7 @@ cond.end1:
   store i32 %t26, ptr %i.addr.12, align 4
   br label %while.cond0
 while.end0:
-  %t27 = getelementptr inbounds [4 x i8], ptr @.str.2250, i64 0, i64 0
+  %t27 = getelementptr inbounds [4 x i8], ptr @.str.2251, i64 0, i64 0
   %t28 = call i32 (ptr, ...) @printf(ptr %t27)
   ret void
 }
@@ -84121,17 +84134,17 @@ define void @emit-nuch-defconst(ptr %form.arg) {
 entry:
   %form.addr = alloca ptr, align 8
   store ptr %form.arg, ptr %form.addr, align 8
-  %t0 = getelementptr inbounds [11 x i8], ptr @.str.2251, i64 0, i64 0
+  %t0 = getelementptr inbounds [11 x i8], ptr @.str.2252, i64 0, i64 0
   %t1 = call i32 (ptr, ...) @printf(ptr %t0)
   %t2 = load ptr, ptr %form.addr, align 8
   %t3 = call ptr @node-at(ptr %t2, i32 1)
   call void @print-node(ptr %t3)
-  %t4 = getelementptr inbounds [2 x i8], ptr @.str.2252, i64 0, i64 0
+  %t4 = getelementptr inbounds [2 x i8], ptr @.str.2253, i64 0, i64 0
   %t5 = call i32 (ptr, ...) @printf(ptr %t4)
   %t6 = load ptr, ptr %form.addr, align 8
   %t7 = call ptr @node-at(ptr %t6, i32 2)
   call void @print-node(ptr %t7)
-  %t8 = getelementptr inbounds [3 x i8], ptr @.str.2253, i64 0, i64 0
+  %t8 = getelementptr inbounds [3 x i8], ptr @.str.2254, i64 0, i64 0
   %t9 = call i32 (ptr, ...) @printf(ptr %t8)
   ret void
 }
@@ -84141,7 +84154,7 @@ entry:
   %form.addr = alloca ptr, align 8
   store ptr %form.arg, ptr %form.addr, align 8
   %i.addr.6 = alloca i32, align 4
-  %t0 = getelementptr inbounds [9 x i8], ptr @.str.2254, i64 0, i64 0
+  %t0 = getelementptr inbounds [9 x i8], ptr @.str.2255, i64 0, i64 0
   %t1 = call i32 (ptr, ...) @printf(ptr %t0)
   %t2 = load ptr, ptr %form.addr, align 8
   %t3 = call i32 @node-len(ptr %t2)
@@ -84169,7 +84182,7 @@ while.body0:
   store i32 %t19, ptr %i.addr.6, align 4
   br label %while.cond0
 while.end0:
-  %t20 = getelementptr inbounds [3 x i8], ptr @.str.2255, i64 0, i64 0
+  %t20 = getelementptr inbounds [3 x i8], ptr @.str.2256, i64 0, i64 0
   %t21 = call i32 (ptr, ...) @printf(ptr %t20)
   ret void
 }
@@ -84180,7 +84193,7 @@ entry:
   store ptr %form.arg, ptr %form.addr, align 8
   %t0 = load ptr, ptr %form.addr, align 8
   call void @print-node(ptr %t0)
-  %t1 = getelementptr inbounds [2 x i8], ptr @.str.2256, i64 0, i64 0
+  %t1 = getelementptr inbounds [2 x i8], ptr @.str.2257, i64 0, i64 0
   %t2 = call i32 (ptr, ...) @printf(ptr %t1)
   ret void
 }
@@ -84193,13 +84206,13 @@ entry:
   store ptr %mangled.arg, ptr %mangled.addr, align 8
   %params.addr.7 = alloca ptr, align 8
   %i.addr.13 = alloca i32, align 4
-  %t0 = getelementptr inbounds [17 x i8], ptr @.str.2257, i64 0, i64 0
+  %t0 = getelementptr inbounds [17 x i8], ptr @.str.2258, i64 0, i64 0
   %t1 = load ptr, ptr %mangled.addr, align 8
   %t2 = call i32 (ptr, ...) @printf(ptr %t0, ptr %t1)
   %t3 = load ptr, ptr %form.addr, align 8
   %t4 = call ptr @node-at(ptr %t3, i32 1)
   call void @print-node(ptr %t4)
-  %t5 = getelementptr inbounds [3 x i8], ptr @.str.2258, i64 0, i64 0
+  %t5 = getelementptr inbounds [3 x i8], ptr @.str.2259, i64 0, i64 0
   %t6 = call i32 (ptr, ...) @printf(ptr %t5)
   %t8 = load ptr, ptr %form.addr, align 8
   %t9 = call ptr @node-at(ptr %t8, i32 2)
@@ -84238,7 +84251,7 @@ cond.end1:
   store i32 %t27, ptr %i.addr.13, align 4
   br label %while.cond0
 while.end0:
-  %t28 = getelementptr inbounds [4 x i8], ptr @.str.2259, i64 0, i64 0
+  %t28 = getelementptr inbounds [4 x i8], ptr @.str.2260, i64 0, i64 0
   %t29 = call i32 (ptr, ...) @printf(ptr %t28)
   ret void
 }
@@ -84255,7 +84268,7 @@ entry:
 cond.then0.0:
   %t3 = load ptr, ptr %form.addr, align 8
   call void @print-node(ptr %t3)
-  %t4 = getelementptr inbounds [2 x i8], ptr @.str.2260, i64 0, i64 0
+  %t4 = getelementptr inbounds [2 x i8], ptr @.str.2261, i64 0, i64 0
   %t5 = call i32 (ptr, ...) @printf(ptr %t4)
   ret void
 cond.fall0:
@@ -84292,7 +84305,7 @@ entry:
   store ptr %form.arg, ptr %form.addr, align 8
   %t0 = load ptr, ptr %form.addr, align 8
   call void @print-node(ptr %t0)
-  %t1 = getelementptr inbounds [2 x i8], ptr @.str.2261, i64 0, i64 0
+  %t1 = getelementptr inbounds [2 x i8], ptr @.str.2262, i64 0, i64 0
   %t2 = call i32 (ptr, ...) @printf(ptr %t1)
   ret void
 }
@@ -84302,7 +84315,7 @@ entry:
   %form.addr = alloca ptr, align 8
   store ptr %form.arg, ptr %form.addr, align 8
   %i.addr.6 = alloca i32, align 4
-  %t0 = getelementptr inbounds [8 x i8], ptr @.str.2262, i64 0, i64 0
+  %t0 = getelementptr inbounds [8 x i8], ptr @.str.2263, i64 0, i64 0
   %t1 = call i32 (ptr, ...) @printf(ptr %t0)
   %t2 = load ptr, ptr %form.addr, align 8
   %t3 = call i32 @node-len(ptr %t2)
@@ -84330,7 +84343,7 @@ while.body0:
   store i32 %t19, ptr %i.addr.6, align 4
   br label %while.cond0
 while.end0:
-  %t20 = getelementptr inbounds [3 x i8], ptr @.str.2263, i64 0, i64 0
+  %t20 = getelementptr inbounds [3 x i8], ptr @.str.2264, i64 0, i64 0
   %t21 = call i32 (ptr, ...) @printf(ptr %t20)
   ret void
 }
@@ -84341,7 +84354,7 @@ entry:
   store ptr %form.arg, ptr %form.addr, align 8
   %t0 = load ptr, ptr %form.addr, align 8
   call void @print-node(ptr %t0)
-  %t1 = getelementptr inbounds [2 x i8], ptr @.str.2264, i64 0, i64 0
+  %t1 = getelementptr inbounds [2 x i8], ptr @.str.2265, i64 0, i64 0
   %t2 = call i32 (ptr, ...) @printf(ptr %t1)
   ret void
 }
@@ -84350,12 +84363,12 @@ define void @emit-nuch-extern(ptr %form.arg) {
 entry:
   %form.addr = alloca ptr, align 8
   store ptr %form.arg, ptr %form.addr, align 8
-  %t0 = getelementptr inbounds [9 x i8], ptr @.str.2265, i64 0, i64 0
+  %t0 = getelementptr inbounds [9 x i8], ptr @.str.2266, i64 0, i64 0
   %t1 = call i32 (ptr, ...) @printf(ptr %t0)
   %t2 = load ptr, ptr %form.addr, align 8
   %t3 = call ptr @node-at(ptr %t2, i32 1)
   call void @print-node(ptr %t3)
-  %t4 = getelementptr inbounds [3 x i8], ptr @.str.2266, i64 0, i64 0
+  %t4 = getelementptr inbounds [3 x i8], ptr @.str.2267, i64 0, i64 0
   %t5 = call i32 (ptr, ...) @printf(ptr %t4)
   ret void
 }
@@ -84387,16 +84400,16 @@ entry:
   call void @prescan-protocols(ptr %t4)
   %t5 = load ptr, ptr %forms.addr, align 8
   call void @prescan-defn-signatures(ptr %t5)
-  %t6 = getelementptr inbounds [23 x i8], ptr @.str.2267, i64 0, i64 0
+  %t6 = getelementptr inbounds [23 x i8], ptr @.str.2268, i64 0, i64 0
   %t7 = load ptr, ptr %source-file.addr, align 8
   %t8 = call i32 (ptr, ...) @printf(ptr %t6, ptr %t7)
   %t9 = load ptr, ptr @g-current-ns, align 8
-  %t10 = getelementptr inbounds [5 x i8], ptr @.str.2268, i64 0, i64 0
+  %t10 = getelementptr inbounds [5 x i8], ptr @.str.2269, i64 0, i64 0
   %t11 = call i32 @strcmp(ptr %t9, ptr %t10)
   %t12 = icmp ne i32 %t11, 0
   br i1 %t12, label %cond.then0.0, label %cond.fall0
 cond.then0.0:
-  %t13 = getelementptr inbounds [9 x i8], ptr @.str.2269, i64 0, i64 0
+  %t13 = getelementptr inbounds [9 x i8], ptr @.str.2270, i64 0, i64 0
   %t14 = load ptr, ptr @g-current-ns, align 8
   %t15 = call i32 (ptr, ...) @printf(ptr %t13, ptr %t14)
   %t17 = load ptr, ptr @g-current-ns, align 8
@@ -84406,7 +84419,7 @@ cond.then0.0:
   %t20 = icmp ne ptr %t19, null
   br i1 %t20, label %cond.then1.0, label %cond.fall1
 cond.then1.0:
-  %t21 = getelementptr inbounds [22 x i8], ptr @.str.2270, i64 0, i64 0
+  %t21 = getelementptr inbounds [22 x i8], ptr @.str.2271, i64 0, i64 0
   %t22 = load ptr, ptr %override.addr.16, align 8
   %t23 = call i32 (ptr, ...) @printf(ptr %t21, ptr %t22)
   br label %cond.join1.0
@@ -84490,7 +84503,7 @@ cond.then4.0:
   %t60 = load ptr, ptr %t59, align 8
   store ptr %t60, ptr %h.addr.56, align 8
   %t61 = load ptr, ptr %h.addr.56, align 8
-  %t62 = getelementptr inbounds [10 x i8], ptr @.str.2271, i64 0, i64 0
+  %t62 = getelementptr inbounds [10 x i8], ptr @.str.2272, i64 0, i64 0
   %t63 = call i32 @strcmp(ptr %t61, ptr %t62)
   %t64 = icmp eq i32 %t63, 0
   br i1 %t64, label %cond.then8.0, label %cond.test8.1
@@ -84502,21 +84515,21 @@ cond.join8.0:
   br label %cond.end8
 cond.test8.1:
   %t66 = load ptr, ptr %h.addr.56, align 8
-  %t67 = getelementptr inbounds [9 x i8], ptr @.str.2272, i64 0, i64 0
+  %t67 = getelementptr inbounds [9 x i8], ptr @.str.2273, i64 0, i64 0
   %t68 = call i32 @strcmp(ptr %t66, ptr %t67)
   %t69 = icmp eq i32 %t68, 0
   br i1 %t69, label %cond.then8.1, label %cond.test8.2
 cond.then8.1:
   %t70 = load ptr, ptr %f.addr.37, align 8
   call void @print-node(ptr %t70)
-  %t71 = getelementptr inbounds [2 x i8], ptr @.str.2273, i64 0, i64 0
+  %t71 = getelementptr inbounds [2 x i8], ptr @.str.2274, i64 0, i64 0
   %t72 = call i32 (ptr, ...) @printf(ptr %t71)
   br label %cond.join8.1
 cond.join8.1:
   br label %cond.end8
 cond.test8.2:
   %t73 = load ptr, ptr %h.addr.56, align 8
-  %t74 = getelementptr inbounds [5 x i8], ptr @.str.2274, i64 0, i64 0
+  %t74 = getelementptr inbounds [5 x i8], ptr @.str.2275, i64 0, i64 0
   %t75 = call i32 @strcmp(ptr %t73, ptr %t74)
   %t76 = icmp eq i32 %t75, 0
   br i1 %t76, label %cond.then8.2, label %cond.test8.3
@@ -84528,7 +84541,7 @@ cond.join8.2:
   br label %cond.end8
 cond.test8.3:
   %t78 = load ptr, ptr %h.addr.56, align 8
-  %t79 = getelementptr inbounds [12 x i8], ptr @.str.2275, i64 0, i64 0
+  %t79 = getelementptr inbounds [12 x i8], ptr @.str.2276, i64 0, i64 0
   %t80 = call i32 @strcmp(ptr %t78, ptr %t79)
   %t81 = icmp eq i32 %t80, 0
   br i1 %t81, label %cond.then8.3, label %cond.test8.4
@@ -84540,7 +84553,7 @@ cond.join8.3:
   br label %cond.end8
 cond.test8.4:
   %t83 = load ptr, ptr %h.addr.56, align 8
-  %t84 = getelementptr inbounds [7 x i8], ptr @.str.2276, i64 0, i64 0
+  %t84 = getelementptr inbounds [7 x i8], ptr @.str.2277, i64 0, i64 0
   %t85 = call i32 @strcmp(ptr %t83, ptr %t84)
   %t86 = icmp eq i32 %t85, 0
   br i1 %t86, label %cond.then8.4, label %cond.test8.5
@@ -84552,7 +84565,7 @@ cond.join8.4:
   br label %cond.end8
 cond.test8.5:
   %t88 = load ptr, ptr %h.addr.56, align 8
-  %t89 = getelementptr inbounds [8 x i8], ptr @.str.2277, i64 0, i64 0
+  %t89 = getelementptr inbounds [8 x i8], ptr @.str.2278, i64 0, i64 0
   %t90 = call i32 @strcmp(ptr %t88, ptr %t89)
   %t91 = icmp eq i32 %t90, 0
   br i1 %t91, label %cond.then8.5, label %cond.test8.6
@@ -84564,7 +84577,7 @@ cond.join8.5:
   br label %cond.end8
 cond.test8.6:
   %t93 = load ptr, ptr %h.addr.56, align 8
-  %t94 = getelementptr inbounds [7 x i8], ptr @.str.2278, i64 0, i64 0
+  %t94 = getelementptr inbounds [7 x i8], ptr @.str.2279, i64 0, i64 0
   %t95 = call i32 @strcmp(ptr %t93, ptr %t94)
   %t96 = icmp eq i32 %t95, 0
   br i1 %t96, label %cond.then8.6, label %cond.test8.7
@@ -84576,7 +84589,7 @@ cond.join8.6:
   br label %cond.end8
 cond.test8.7:
   %t98 = load ptr, ptr %h.addr.56, align 8
-  %t99 = getelementptr inbounds [9 x i8], ptr @.str.2279, i64 0, i64 0
+  %t99 = getelementptr inbounds [9 x i8], ptr @.str.2280, i64 0, i64 0
   %t100 = call i32 @strcmp(ptr %t98, ptr %t99)
   %t101 = icmp eq i32 %t100, 0
   br i1 %t101, label %cond.then8.7, label %cond.test8.8
@@ -84588,21 +84601,21 @@ cond.join8.7:
   br label %cond.end8
 cond.test8.8:
   %t103 = load ptr, ptr %h.addr.56, align 8
-  %t104 = getelementptr inbounds [9 x i8], ptr @.str.2280, i64 0, i64 0
+  %t104 = getelementptr inbounds [9 x i8], ptr @.str.2281, i64 0, i64 0
   %t105 = call i32 @strcmp(ptr %t103, ptr %t104)
   %t106 = icmp eq i32 %t105, 0
   br i1 %t106, label %cond.then8.8, label %cond.test8.9
 cond.then8.8:
   %t107 = load ptr, ptr %f.addr.37, align 8
   call void @print-node(ptr %t107)
-  %t108 = getelementptr inbounds [2 x i8], ptr @.str.2281, i64 0, i64 0
+  %t108 = getelementptr inbounds [2 x i8], ptr @.str.2282, i64 0, i64 0
   %t109 = call i32 (ptr, ...) @printf(ptr %t108)
   br label %cond.join8.8
 cond.join8.8:
   br label %cond.end8
 cond.test8.9:
   %t110 = load ptr, ptr %h.addr.56, align 8
-  %t111 = getelementptr inbounds [8 x i8], ptr @.str.2282, i64 0, i64 0
+  %t111 = getelementptr inbounds [8 x i8], ptr @.str.2283, i64 0, i64 0
   %t112 = call i32 @strcmp(ptr %t110, ptr %t111)
   %t113 = icmp eq i32 %t112, 0
   br i1 %t113, label %cond.then8.9, label %cond.test8.10
@@ -84614,7 +84627,7 @@ cond.join8.9:
   br label %cond.end8
 cond.test8.10:
   %t115 = load ptr, ptr %h.addr.56, align 8
-  %t116 = getelementptr inbounds [9 x i8], ptr @.str.2283, i64 0, i64 0
+  %t116 = getelementptr inbounds [9 x i8], ptr @.str.2284, i64 0, i64 0
   %t117 = call i32 @strcmp(ptr %t115, ptr %t116)
   %t118 = icmp eq i32 %t117, 0
   br i1 %t118, label %cond.then8.10, label %cond.test8.11
@@ -84745,7 +84758,7 @@ and.rhs3:
   %t21 = load ptr, ptr %last.addr.9, align 8
   %t22 = getelementptr inbounds %Node, ptr %t21, i32 0, i32 3
   %t23 = load ptr, ptr %t22, align 8
-  %t24 = getelementptr inbounds [9 x i8], ptr @.str.2284, i64 0, i64 0
+  %t24 = getelementptr inbounds [9 x i8], ptr @.str.2285, i64 0, i64 0
   %t25 = call i32 @strcmp(ptr %t23, ptr %t24)
   %t26 = icmp eq i32 %t25, 0
   store i1 %t26, ptr %and.val3, align 1
@@ -84792,7 +84805,7 @@ cond.then4.0:
   %t38 = load ptr, ptr %ff.addr.0, align 8
   %t39 = getelementptr inbounds %Node, ptr %t38, i32 0, i32 1
   %t40 = load i32, ptr %t39, align 4
-  %t41 = getelementptr inbounds [53 x i8], ptr @.str.2285, i64 0, i64 0
+  %t41 = getelementptr inbounds [53 x i8], ptr @.str.2286, i64 0, i64 0
   call void @die-at(i32 %t40, ptr %t41)
   unreachable
 cond.fall4:
@@ -84830,7 +84843,7 @@ cond.then7.0:
   %t60 = load ptr, ptr %name-node.addr.42, align 8
   %t61 = getelementptr inbounds %Node, ptr %t60, i32 0, i32 1
   %t62 = load i32, ptr %t61, align 4
-  %t63 = getelementptr inbounds [31 x i8], ptr @.str.2286, i64 0, i64 0
+  %t63 = getelementptr inbounds [31 x i8], ptr @.str.2287, i64 0, i64 0
   %t64 = load ptr, ptr %fname.addr.51, align 8
   %t65 = call ptr @fmt-s(ptr %t63, ptr %t64)
   call void @die-at(i32 %t62, ptr %t65)
@@ -84950,7 +84963,7 @@ while.end11:
   %t127 = load ptr, ptr %ft.addr.116, align 8
   %t128 = getelementptr inbounds %Type, ptr %t127, i32 0, i32 4
   store i32 0, ptr %t128, align 4
-  %t130 = getelementptr inbounds [4 x i8], ptr @.str.2287, i64 0, i64 0
+  %t130 = getelementptr inbounds [4 x i8], ptr @.str.2288, i64 0, i64 0
   %t131 = load ptr, ptr %fname.addr.51, align 8
   %t132 = call ptr @ns-ir-base(ptr %t131)
   %t133 = call ptr @fmt-s(ptr %t130, ptr %t132)
@@ -84978,7 +84991,7 @@ cond.end13:
   %t146 = call ptr @abi-classify(ptr %t145)
   store ptr %t146, ptr %ret-info.addr.144, align 8
   %t147 = load ptr, ptr @g-out, align 8
-  %t148 = getelementptr inbounds [15 x i8], ptr @.str.2288, i64 0, i64 0
+  %t148 = getelementptr inbounds [15 x i8], ptr @.str.2289, i64 0, i64 0
   %t149 = load ptr, ptr %ret-info.addr.144, align 8
   %t150 = load ptr, ptr %ret.addr.52, align 8
   %t151 = call ptr @abi-ret-ir(ptr %t149, ptr %t150)
@@ -84992,7 +85005,7 @@ cond.end13:
   br i1 %t158, label %cond.then14.0, label %cond.fall14
 cond.then14.0:
   %t159 = load ptr, ptr @g-out, align 8
-  %t160 = getelementptr inbounds [22 x i8], ptr @.str.2289, i64 0, i64 0
+  %t160 = getelementptr inbounds [22 x i8], ptr @.str.2290, i64 0, i64 0
   %t161 = load ptr, ptr %ret.addr.52, align 8
   %t162 = call ptr @type-to-ir(ptr %t161)
   %t163 = load ptr, ptr %ret-info.addr.144, align 8
@@ -85022,7 +85035,7 @@ while.body15:
   br i1 %t175, label %cond.then16.0, label %cond.fall16
 cond.then16.0:
   %t176 = load ptr, ptr @g-out, align 8
-  %t177 = getelementptr inbounds [3 x i8], ptr @.str.2290, i64 0, i64 0
+  %t177 = getelementptr inbounds [3 x i8], ptr @.str.2291, i64 0, i64 0
   %t178 = call i32 (ptr, ptr, ...) @fprintf(ptr %t176, ptr %t177)
   br label %cond.join16.0
 cond.join16.0:
@@ -85054,7 +85067,7 @@ while.end15:
   br i1 %t194, label %cond.then17.0, label %cond.test17.1
 cond.then17.0:
   %t195 = load ptr, ptr @g-out, align 8
-  %t196 = getelementptr inbounds [12 x i8], ptr @.str.2291, i64 0, i64 0
+  %t196 = getelementptr inbounds [12 x i8], ptr @.str.2292, i64 0, i64 0
   %t197 = call i32 (ptr, ptr, ...) @fprintf(ptr %t195, ptr %t196)
   br label %cond.join17.0
 cond.join17.0:
@@ -85063,7 +85076,7 @@ cond.test17.1:
   br label %cond.then17.1
 cond.then17.1:
   %t198 = load ptr, ptr @g-out, align 8
-  %t199 = getelementptr inbounds [3 x i8], ptr @.str.2292, i64 0, i64 0
+  %t199 = getelementptr inbounds [3 x i8], ptr @.str.2293, i64 0, i64 0
   %t200 = call i32 (ptr, ptr, ...) @fprintf(ptr %t198, ptr %t199)
   br label %cond.join17.1
 cond.join17.1:
@@ -85100,7 +85113,7 @@ cond.then0.0:
   %t5 = load ptr, ptr %ff.addr.0, align 8
   %t6 = getelementptr inbounds %Node, ptr %t5, i32 0, i32 1
   %t7 = load i32, ptr %t6, align 4
-  %t8 = getelementptr inbounds [64 x i8], ptr @.str.2293, i64 0, i64 0
+  %t8 = getelementptr inbounds [64 x i8], ptr @.str.2294, i64 0, i64 0
   call void @die-at(i32 %t7, ptr %t8)
   unreachable
 cond.fall0:
@@ -85124,7 +85137,7 @@ cond.then1.0:
   %t22 = load ptr, ptr %sym-node.addr.9, align 8
   %t23 = getelementptr inbounds %Node, ptr %t22, i32 0, i32 1
   %t24 = load i32, ptr %t23, align 4
-  %t25 = getelementptr inbounds [59 x i8], ptr @.str.2294, i64 0, i64 0
+  %t25 = getelementptr inbounds [59 x i8], ptr @.str.2295, i64 0, i64 0
   call void @die-at(i32 %t24, ptr %t25)
   unreachable
 cond.fall1:
@@ -85148,7 +85161,7 @@ cond.then2.0:
   %t39 = load ptr, ptr %name-node.addr.12, align 8
   %t40 = getelementptr inbounds %Node, ptr %t39, i32 0, i32 1
   %t41 = load i32, ptr %t40, align 4
-  %t42 = getelementptr inbounds [31 x i8], ptr @.str.2295, i64 0, i64 0
+  %t42 = getelementptr inbounds [31 x i8], ptr @.str.2296, i64 0, i64 0
   call void @die-at(i32 %t41, ptr %t42)
   unreachable
 cond.fall2:
@@ -85200,7 +85213,7 @@ cond.end3:
   %t72 = getelementptr inbounds %Generic, ptr %t71, i32 0, i32 4
   store i32 1, ptr %t72, align 4
   %t73 = load ptr, ptr @g-out, align 8
-  %t74 = getelementptr inbounds [15 x i8], ptr @.str.2296, i64 0, i64 0
+  %t74 = getelementptr inbounds [15 x i8], ptr @.str.2297, i64 0, i64 0
   %t75 = load ptr, ptr %ret.addr.31, align 8
   %t76 = call ptr @type-to-ir(ptr %t75)
   %t77 = load ptr, ptr %mangled.addr.26, align 8
@@ -85220,7 +85233,7 @@ while.body4:
   br i1 %t86, label %cond.then5.0, label %cond.fall5
 cond.then5.0:
   %t87 = load ptr, ptr @g-out, align 8
-  %t88 = getelementptr inbounds [3 x i8], ptr @.str.2297, i64 0, i64 0
+  %t88 = getelementptr inbounds [3 x i8], ptr @.str.2298, i64 0, i64 0
   %t89 = call i32 (ptr, ptr, ...) @fprintf(ptr %t87, ptr %t88)
   br label %cond.join5.0
 cond.join5.0:
@@ -85230,7 +85243,7 @@ cond.fall5:
 cond.end5:
   %t90 = phi i32 [ %t89, %cond.join5.0 ], [ undef, %cond.fall5 ]
   %t91 = load ptr, ptr @g-out, align 8
-  %t92 = getelementptr inbounds [3 x i8], ptr @.str.2298, i64 0, i64 0
+  %t92 = getelementptr inbounds [3 x i8], ptr @.str.2299, i64 0, i64 0
   %t93 = load ptr, ptr %ptypes.addr.46, align 8
   %t94 = load i32, ptr %j.addr.81, align 4
   %t95 = sext i32 %t94 to i64
@@ -85244,7 +85257,7 @@ cond.end5:
   br label %while.cond4
 while.end4:
   %t102 = load ptr, ptr @g-out, align 8
-  %t103 = getelementptr inbounds [3 x i8], ptr @.str.2299, i64 0, i64 0
+  %t103 = getelementptr inbounds [3 x i8], ptr @.str.2300, i64 0, i64 0
   %t104 = call i32 (ptr, ptr, ...) @fprintf(ptr %t102, ptr %t103)
   ret void
 }
@@ -85272,7 +85285,7 @@ cond.then0.0:
   %t5 = load ptr, ptr %ff.addr.0, align 8
   %t6 = getelementptr inbounds %Node, ptr %t5, i32 0, i32 1
   %t7 = load i32, ptr %t6, align 4
-  %t8 = getelementptr inbounds [46 x i8], ptr @.str.2300, i64 0, i64 0
+  %t8 = getelementptr inbounds [46 x i8], ptr @.str.2301, i64 0, i64 0
   call void @die-at(i32 %t7, ptr %t8)
   unreachable
 cond.fall0:
@@ -85302,7 +85315,7 @@ cond.then2.0:
   %t21 = load ptr, ptr %name-node.addr.9, align 8
   %t22 = getelementptr inbounds %Node, ptr %t21, i32 0, i32 1
   %t23 = load i32, ptr %t22, align 4
-  %t24 = getelementptr inbounds [32 x i8], ptr @.str.2301, i64 0, i64 0
+  %t24 = getelementptr inbounds [32 x i8], ptr @.str.2302, i64 0, i64 0
   call void @die-at(i32 %t23, ptr %t24)
   unreachable
 cond.fall2:
@@ -85375,7 +85388,7 @@ match.some5:
   %t71 = load i32, ptr %t70, align 4
   %t72 = call ptr @union-ctor-form(ptr %t67, ptr %t68, i32 %t71)
   store ptr %t72, ptr %ctor.addr.64, align 8
-  %t73 = call ptr @intern-symbol(ptr getelementptr inbounds ([8 x i8], ptr @.str.2302, i64 0, i64 0))
+  %t73 = call ptr @intern-symbol(ptr getelementptr inbounds ([8 x i8], ptr @.str.2303, i64 0, i64 0))
   %t74 = load ptr, ptr %ctor.addr.64, align 8
   %t75 = call ptr @node-at(ptr %t74, i32 1)
   %t76 = load ptr, ptr %ctor.addr.64, align 8
@@ -85484,7 +85497,7 @@ cond.then2.0:
   %t34 = load ptr, ptr %t33, align 8
   store ptr %t34, ptr %h.addr.30, align 8
   %t35 = load ptr, ptr %h.addr.30, align 8
-  %t36 = getelementptr inbounds [3 x i8], ptr @.str.2303, i64 0, i64 0
+  %t36 = getelementptr inbounds [3 x i8], ptr @.str.2304, i64 0, i64 0
   %t37 = call i32 @strcmp(ptr %t35, ptr %t36)
   %t38 = icmp eq i32 %t37, 0
   br i1 %t38, label %cond.then6.0, label %cond.test6.1
@@ -85496,7 +85509,7 @@ cond.join6.0:
   br label %cond.end6
 cond.test6.1:
   %t40 = load ptr, ptr %h.addr.30, align 8
-  %t41 = getelementptr inbounds [14 x i8], ptr @.str.2304, i64 0, i64 0
+  %t41 = getelementptr inbounds [14 x i8], ptr @.str.2305, i64 0, i64 0
   %t42 = call i32 @strcmp(ptr %t40, ptr %t41)
   %t43 = icmp eq i32 %t42, 0
   br i1 %t43, label %cond.then6.1, label %cond.test6.2
@@ -85508,7 +85521,7 @@ cond.join6.1:
   br label %cond.end6
 cond.test6.2:
   %t45 = load ptr, ptr %h.addr.30, align 8
-  %t46 = getelementptr inbounds [10 x i8], ptr @.str.2305, i64 0, i64 0
+  %t46 = getelementptr inbounds [10 x i8], ptr @.str.2306, i64 0, i64 0
   %t47 = call i32 @strcmp(ptr %t45, ptr %t46)
   %t48 = icmp eq i32 %t47, 0
   br i1 %t48, label %cond.then6.2, label %cond.test6.3
@@ -85522,7 +85535,7 @@ cond.join6.2:
   br label %cond.end6
 cond.test6.3:
   %t51 = load ptr, ptr %h.addr.30, align 8
-  %t52 = getelementptr inbounds [9 x i8], ptr @.str.2306, i64 0, i64 0
+  %t52 = getelementptr inbounds [9 x i8], ptr @.str.2307, i64 0, i64 0
   %t53 = call i32 @strcmp(ptr %t51, ptr %t52)
   %t54 = icmp eq i32 %t53, 0
   br i1 %t54, label %cond.then6.3, label %cond.test6.4
@@ -85536,7 +85549,7 @@ cond.join6.3:
   br label %cond.end6
 cond.test6.4:
   %t57 = load ptr, ptr %h.addr.30, align 8
-  %t58 = getelementptr inbounds [8 x i8], ptr @.str.2307, i64 0, i64 0
+  %t58 = getelementptr inbounds [8 x i8], ptr @.str.2308, i64 0, i64 0
   %t59 = call i32 @strcmp(ptr %t57, ptr %t58)
   %t60 = icmp eq i32 %t59, 0
   br i1 %t60, label %cond.then6.4, label %cond.test6.5
@@ -85550,7 +85563,7 @@ cond.join6.4:
   br label %cond.end6
 cond.test6.5:
   %t63 = load ptr, ptr %h.addr.30, align 8
-  %t64 = getelementptr inbounds [10 x i8], ptr @.str.2308, i64 0, i64 0
+  %t64 = getelementptr inbounds [10 x i8], ptr @.str.2309, i64 0, i64 0
   %t65 = call i32 @strcmp(ptr %t63, ptr %t64)
   %t66 = icmp eq i32 %t65, 0
   br i1 %t66, label %cond.then6.5, label %cond.test6.6
@@ -85564,7 +85577,7 @@ cond.join6.5:
   br label %cond.end6
 cond.test6.6:
   %t69 = load ptr, ptr %h.addr.30, align 8
-  %t70 = getelementptr inbounds [5 x i8], ptr @.str.2309, i64 0, i64 0
+  %t70 = getelementptr inbounds [5 x i8], ptr @.str.2310, i64 0, i64 0
   %t71 = call i32 @strcmp(ptr %t69, ptr %t70)
   %t72 = icmp eq i32 %t71, 0
   br i1 %t72, label %cond.then6.6, label %cond.test6.7
@@ -85576,7 +85589,7 @@ cond.join6.6:
   br label %cond.end6
 cond.test6.7:
   %t74 = load ptr, ptr %h.addr.30, align 8
-  %t75 = getelementptr inbounds [12 x i8], ptr @.str.2310, i64 0, i64 0
+  %t75 = getelementptr inbounds [12 x i8], ptr @.str.2311, i64 0, i64 0
   %t76 = call i32 @strcmp(ptr %t74, ptr %t75)
   %t77 = icmp eq i32 %t76, 0
   br i1 %t77, label %cond.then6.7, label %cond.test6.8
@@ -85588,7 +85601,7 @@ cond.join6.7:
   br label %cond.end6
 cond.test6.8:
   %t79 = load ptr, ptr %h.addr.30, align 8
-  %t80 = getelementptr inbounds [7 x i8], ptr @.str.2311, i64 0, i64 0
+  %t80 = getelementptr inbounds [7 x i8], ptr @.str.2312, i64 0, i64 0
   %t81 = call i32 @strcmp(ptr %t79, ptr %t80)
   %t82 = icmp eq i32 %t81, 0
   br i1 %t82, label %cond.then6.8, label %cond.test6.9
@@ -85600,7 +85613,7 @@ cond.join6.8:
   br label %cond.end6
 cond.test6.9:
   %t84 = load ptr, ptr %h.addr.30, align 8
-  %t85 = getelementptr inbounds [8 x i8], ptr @.str.2312, i64 0, i64 0
+  %t85 = getelementptr inbounds [8 x i8], ptr @.str.2313, i64 0, i64 0
   %t86 = call i32 @strcmp(ptr %t84, ptr %t85)
   %t87 = icmp eq i32 %t86, 0
   br i1 %t87, label %cond.then6.9, label %cond.test6.10
@@ -85612,7 +85625,7 @@ cond.join6.9:
   br label %cond.end6
 cond.test6.10:
   %t89 = load ptr, ptr %h.addr.30, align 8
-  %t90 = getelementptr inbounds [7 x i8], ptr @.str.2313, i64 0, i64 0
+  %t90 = getelementptr inbounds [7 x i8], ptr @.str.2314, i64 0, i64 0
   %t91 = call i32 @strcmp(ptr %t89, ptr %t90)
   %t92 = icmp eq i32 %t91, 0
   br i1 %t92, label %cond.then6.10, label %cond.test6.11
@@ -85626,7 +85639,7 @@ cond.join6.10:
   br label %cond.end6
 cond.test6.11:
   %t95 = load ptr, ptr %h.addr.30, align 8
-  %t96 = getelementptr inbounds [9 x i8], ptr @.str.2314, i64 0, i64 0
+  %t96 = getelementptr inbounds [9 x i8], ptr @.str.2315, i64 0, i64 0
   %t97 = call i32 @strcmp(ptr %t95, ptr %t96)
   %t98 = icmp eq i32 %t97, 0
   br i1 %t98, label %cond.then6.11, label %cond.test6.12
@@ -85638,7 +85651,7 @@ cond.join6.11:
   br label %cond.end6
 cond.test6.12:
   %t100 = load ptr, ptr %h.addr.30, align 8
-  %t101 = getelementptr inbounds [8 x i8], ptr @.str.2315, i64 0, i64 0
+  %t101 = getelementptr inbounds [8 x i8], ptr @.str.2316, i64 0, i64 0
   %t102 = call i32 @strcmp(ptr %t100, ptr %t101)
   %t103 = icmp eq i32 %t102, 0
   br i1 %t103, label %cond.then6.12, label %cond.test6.13
@@ -85650,7 +85663,7 @@ cond.join6.12:
   br label %cond.end6
 cond.test6.13:
   %t105 = load ptr, ptr %h.addr.30, align 8
-  %t106 = getelementptr inbounds [9 x i8], ptr @.str.2316, i64 0, i64 0
+  %t106 = getelementptr inbounds [9 x i8], ptr @.str.2317, i64 0, i64 0
   %t107 = call i32 @strcmp(ptr %t105, ptr %t106)
   %t108 = icmp eq i32 %t107, 0
   br i1 %t108, label %cond.then6.13, label %cond.test6.14
@@ -85662,7 +85675,7 @@ cond.join6.13:
   br label %cond.end6
 cond.test6.14:
   %t110 = load ptr, ptr %h.addr.30, align 8
-  %t111 = getelementptr inbounds [11 x i8], ptr @.str.2317, i64 0, i64 0
+  %t111 = getelementptr inbounds [11 x i8], ptr @.str.2318, i64 0, i64 0
   %t112 = call i32 @strcmp(ptr %t110, ptr %t111)
   %t113 = icmp eq i32 %t112, 0
   br i1 %t113, label %cond.then6.14, label %cond.test6.15
@@ -85704,7 +85717,7 @@ entry:
   br i1 %t1, label %cond.then0.0, label %cond.test0.1
 cond.then0.0:
   %t2 = load ptr, ptr @stderr, align 8
-  %t3 = getelementptr inbounds [3 x i8], ptr @.str.2318, i64 0, i64 0
+  %t3 = getelementptr inbounds [3 x i8], ptr @.str.2319, i64 0, i64 0
   %t4 = call i32 (ptr, ptr, ...) @fprintf(ptr %t2, ptr %t3)
   br label %cond.join0.0
 cond.join0.0:
@@ -85715,7 +85728,7 @@ cond.test0.1:
   br i1 %t6, label %cond.then0.1, label %cond.test0.2
 cond.then0.1:
   %t7 = load ptr, ptr @stderr, align 8
-  %t8 = getelementptr inbounds [3 x i8], ptr @.str.2319, i64 0, i64 0
+  %t8 = getelementptr inbounds [3 x i8], ptr @.str.2320, i64 0, i64 0
   %t9 = call i32 (ptr, ptr, ...) @fprintf(ptr %t7, ptr %t8)
   br label %cond.join0.1
 cond.join0.1:
@@ -85726,7 +85739,7 @@ cond.test0.2:
   br i1 %t11, label %cond.then0.2, label %cond.test0.3
 cond.then0.2:
   %t12 = load ptr, ptr @stderr, align 8
-  %t13 = getelementptr inbounds [3 x i8], ptr @.str.2320, i64 0, i64 0
+  %t13 = getelementptr inbounds [3 x i8], ptr @.str.2321, i64 0, i64 0
   %t14 = call i32 (ptr, ptr, ...) @fprintf(ptr %t12, ptr %t13)
   br label %cond.join0.2
 cond.join0.2:
@@ -85737,7 +85750,7 @@ cond.test0.3:
   br i1 %t16, label %cond.then0.3, label %cond.test0.4
 cond.then0.3:
   %t17 = load ptr, ptr @stderr, align 8
-  %t18 = getelementptr inbounds [3 x i8], ptr @.str.2321, i64 0, i64 0
+  %t18 = getelementptr inbounds [3 x i8], ptr @.str.2322, i64 0, i64 0
   %t19 = call i32 (ptr, ptr, ...) @fprintf(ptr %t17, ptr %t18)
   br label %cond.join0.3
 cond.join0.3:
@@ -85748,7 +85761,7 @@ cond.test0.4:
   br i1 %t21, label %cond.then0.4, label %cond.test0.5
 cond.then0.4:
   %t22 = load ptr, ptr @stderr, align 8
-  %t23 = getelementptr inbounds [3 x i8], ptr @.str.2322, i64 0, i64 0
+  %t23 = getelementptr inbounds [3 x i8], ptr @.str.2323, i64 0, i64 0
   %t24 = call i32 (ptr, ptr, ...) @fprintf(ptr %t22, ptr %t23)
   br label %cond.join0.4
 cond.join0.4:
@@ -85759,7 +85772,7 @@ cond.test0.5:
   br i1 %t26, label %cond.then0.5, label %cond.test0.6
 cond.then0.5:
   %t27 = load ptr, ptr @stderr, align 8
-  %t28 = getelementptr inbounds [7 x i8], ptr @.str.2323, i64 0, i64 0
+  %t28 = getelementptr inbounds [7 x i8], ptr @.str.2324, i64 0, i64 0
   %t29 = load i32, ptr %c.addr, align 4
   %t30 = call i32 (ptr, ptr, ...) @fprintf(ptr %t27, ptr %t28, i32 %t29)
   br label %cond.join0.5
@@ -85769,7 +85782,7 @@ cond.test0.6:
   br label %cond.then0.6
 cond.then0.6:
   %t31 = load ptr, ptr @stderr, align 8
-  %t32 = getelementptr inbounds [3 x i8], ptr @.str.2324, i64 0, i64 0
+  %t32 = getelementptr inbounds [3 x i8], ptr @.str.2325, i64 0, i64 0
   %t33 = load i32, ptr %c.addr, align 4
   %t34 = call i32 (ptr, ptr, ...) @fprintf(ptr %t31, ptr %t32, i32 %t33)
   br label %cond.join0.6
@@ -85828,18 +85841,18 @@ entry:
   br i1 %t1, label %cond.then0.0, label %cond.test0.1
 cond.then0.0:
   %t2 = load ptr, ptr @stderr, align 8
-  %t3 = getelementptr inbounds [10 x i8], ptr @.str.2325, i64 0, i64 0
+  %t3 = getelementptr inbounds [10 x i8], ptr @.str.2326, i64 0, i64 0
   %t4 = call i32 (ptr, ptr, ...) @fprintf(ptr %t2, ptr %t3)
   %t5 = load ptr, ptr @g-source-path, align 8
   call void @repl-error-json-puts(ptr %t5)
   %t6 = load ptr, ptr @stderr, align 8
-  %t7 = getelementptr inbounds [24 x i8], ptr @.str.2326, i64 0, i64 0
+  %t7 = getelementptr inbounds [24 x i8], ptr @.str.2327, i64 0, i64 0
   %t8 = load i32, ptr %line.addr, align 4
   %t9 = call i32 (ptr, ptr, ...) @fprintf(ptr %t6, ptr %t7, i32 %t8)
   %t10 = load ptr, ptr %msg.addr, align 8
   call void @repl-error-json-puts(ptr %t10)
   %t11 = load ptr, ptr @stderr, align 8
-  %t12 = getelementptr inbounds [4 x i8], ptr @.str.2327, i64 0, i64 0
+  %t12 = getelementptr inbounds [4 x i8], ptr @.str.2328, i64 0, i64 0
   %t13 = call i32 (ptr, ptr, ...) @fprintf(ptr %t11, ptr %t12)
   br label %cond.join0.0
 cond.join0.0:
@@ -85848,7 +85861,7 @@ cond.test0.1:
   br label %cond.then0.1
 cond.then0.1:
   %t14 = load ptr, ptr @stderr, align 8
-  %t15 = getelementptr inbounds [13 x i8], ptr @.str.2328, i64 0, i64 0
+  %t15 = getelementptr inbounds [13 x i8], ptr @.str.2329, i64 0, i64 0
   %t16 = load ptr, ptr %msg.addr, align 8
   %t17 = call i32 (ptr, ptr, ...) @fprintf(ptr %t14, ptr %t15, ptr %t16)
   br label %cond.join0.1
@@ -85892,7 +85905,7 @@ entry:
   %t13 = icmp eq ptr %t12, null
   br i1 %t13, label %cond.then0.0, label %cond.fall0
 cond.then0.0:
-  %t14 = getelementptr inbounds [7 x i8], ptr @.str.2329, i64 0, i64 0
+  %t14 = getelementptr inbounds [7 x i8], ptr @.str.2330, i64 0, i64 0
   call void @perror(ptr %t14)
   call void @exit(i32 1)
   unreachable
@@ -85916,7 +85929,7 @@ while.body1:
   br i1 %t23, label %cond.then2.0, label %cond.test2.1
 cond.then2.0:
   %t24 = load ptr, ptr @stderr, align 8
-  %t25 = getelementptr inbounds [6 x i8], ptr @.str.2330, i64 0, i64 0
+  %t25 = getelementptr inbounds [6 x i8], ptr @.str.2331, i64 0, i64 0
   %t26 = call i32 (ptr, ptr, ...) @fprintf(ptr %t24, ptr %t25)
   br label %cond.join2.0
 cond.join2.0:
@@ -85925,7 +85938,7 @@ cond.test2.1:
   br label %cond.then2.1
 cond.then2.1:
   %t27 = load ptr, ptr @stderr, align 8
-  %t28 = getelementptr inbounds [6 x i8], ptr @.str.2331, i64 0, i64 0
+  %t28 = getelementptr inbounds [6 x i8], ptr @.str.2332, i64 0, i64 0
   %t29 = call i32 (ptr, ptr, ...) @fprintf(ptr %t27, ptr %t28)
   br label %cond.join2.1
 cond.join2.1:
@@ -85941,7 +85954,7 @@ cond.end2:
   %t37 = icmp eq ptr %t36, null
   br i1 %t37, label %cond.then3.0, label %cond.fall3
 cond.then3.0:
-  %t38 = getelementptr inbounds [7 x i8], ptr @.str.2332, i64 0, i64 0
+  %t38 = getelementptr inbounds [7 x i8], ptr @.str.2333, i64 0, i64 0
   call void @perror(ptr %t38)
   call void @exit(i32 1)
   unreachable
@@ -86024,7 +86037,7 @@ while.end8:
   %t79 = icmp eq ptr %t78, null
   br i1 %t79, label %cond.then9.0, label %cond.fall9
 cond.then9.0:
-  %t80 = getelementptr inbounds [8 x i8], ptr @.str.2333, i64 0, i64 0
+  %t80 = getelementptr inbounds [8 x i8], ptr @.str.2334, i64 0, i64 0
   call void @perror(ptr %t80)
   call void @exit(i32 1)
   unreachable
@@ -86346,13 +86359,13 @@ cond.end0:
   br i1 %t7, label %cond.then1.0, label %cond.fall1
 cond.then1.0:
   %t8 = load ptr, ptr @stderr, align 8
-  %t9 = getelementptr inbounds [3 x i8], ptr @.str.2334, i64 0, i64 0
+  %t9 = getelementptr inbounds [3 x i8], ptr @.str.2335, i64 0, i64 0
   %t10 = call i32 (ptr, ptr, ...) @fprintf(ptr %t8, ptr %t9)
   %t11 = load ptr, ptr @stderr, align 8
   %t12 = load ptr, ptr %form.addr, align 8
   call void @fprint-node(ptr %t11, ptr %t12)
   %t13 = load ptr, ptr @stderr, align 8
-  %t14 = getelementptr inbounds [2 x i8], ptr @.str.2335, i64 0, i64 0
+  %t14 = getelementptr inbounds [2 x i8], ptr @.str.2336, i64 0, i64 0
   %t15 = call i32 (ptr, ptr, ...) @fprintf(ptr %t13, ptr %t14)
   ret void
 cond.fall1:
@@ -86383,7 +86396,7 @@ and.rhs5:
   %t29 = call ptr @node-at(ptr %t28, i32 0)
   %t30 = getelementptr inbounds %Node, ptr %t29, i32 0, i32 3
   %t31 = load ptr, ptr %t30, align 8
-  %t32 = getelementptr inbounds [6 x i8], ptr @.str.2336, i64 0, i64 0
+  %t32 = getelementptr inbounds [6 x i8], ptr @.str.2337, i64 0, i64 0
   %t33 = call i32 @strcmp(ptr %t31, ptr %t32)
   %t34 = icmp eq i32 %t33, 0
   store i1 %t34, ptr %and.val5, align 1
@@ -86401,14 +86414,14 @@ and.end3:
   br i1 %t37, label %cond.then2.0, label %cond.fall2
 cond.then2.0:
   %t38 = load ptr, ptr @stderr, align 8
-  %t39 = getelementptr inbounds [3 x i8], ptr @.str.2337, i64 0, i64 0
+  %t39 = getelementptr inbounds [3 x i8], ptr @.str.2338, i64 0, i64 0
   %t40 = call i32 (ptr, ptr, ...) @fprintf(ptr %t38, ptr %t39)
   %t41 = load ptr, ptr @stderr, align 8
   %t42 = load ptr, ptr %form.addr, align 8
   %t43 = call ptr @node-at(ptr %t42, i32 1)
   call void @fprint-node(ptr %t41, ptr %t43)
   %t44 = load ptr, ptr @stderr, align 8
-  %t45 = getelementptr inbounds [2 x i8], ptr @.str.2338, i64 0, i64 0
+  %t45 = getelementptr inbounds [2 x i8], ptr @.str.2339, i64 0, i64 0
   %t46 = call i32 (ptr, ptr, ...) @fprintf(ptr %t44, ptr %t45)
   ret void
 cond.fall2:
@@ -86462,7 +86475,7 @@ cond.end6:
   br i1 %t69, label %and.rhs10, label %and.end10
 and.rhs10:
   %t70 = load ptr, ptr %h.addr.47, align 8
-  %t71 = getelementptr inbounds [3 x i8], ptr @.str.2339, i64 0, i64 0
+  %t71 = getelementptr inbounds [3 x i8], ptr @.str.2340, i64 0, i64 0
   %t72 = call i32 @strcmp(ptr %t70, ptr %t71)
   %t73 = icmp eq i32 %t72, 0
   store i1 %t73, ptr %and.val10, align 1
@@ -86484,7 +86497,7 @@ cond.test9.1:
   br i1 %t77, label %and.rhs11, label %and.end11
 and.rhs11:
   %t78 = load ptr, ptr %h.addr.47, align 8
-  %t79 = getelementptr inbounds [9 x i8], ptr @.str.2340, i64 0, i64 0
+  %t79 = getelementptr inbounds [9 x i8], ptr @.str.2341, i64 0, i64 0
   %t80 = call i32 @strcmp(ptr %t78, ptr %t79)
   %t81 = icmp eq i32 %t80, 0
   store i1 %t81, ptr %and.val11, align 1
@@ -86506,7 +86519,7 @@ cond.test9.2:
   br i1 %t85, label %and.rhs12, label %and.end12
 and.rhs12:
   %t86 = load ptr, ptr %h.addr.47, align 8
-  %t87 = getelementptr inbounds [8 x i8], ptr @.str.2341, i64 0, i64 0
+  %t87 = getelementptr inbounds [8 x i8], ptr @.str.2342, i64 0, i64 0
   %t88 = call i32 @strcmp(ptr %t86, ptr %t87)
   %t89 = icmp eq i32 %t88, 0
   store i1 %t89, ptr %and.val12, align 1
@@ -86528,7 +86541,7 @@ cond.test9.3:
   br i1 %t93, label %and.rhs13, label %and.end13
 and.rhs13:
   %t94 = load ptr, ptr %h.addr.47, align 8
-  %t95 = getelementptr inbounds [7 x i8], ptr @.str.2342, i64 0, i64 0
+  %t95 = getelementptr inbounds [7 x i8], ptr @.str.2343, i64 0, i64 0
   %t96 = call i32 @strcmp(ptr %t94, ptr %t95)
   %t97 = icmp eq i32 %t96, 0
   store i1 %t97, ptr %and.val13, align 1
@@ -86565,7 +86578,7 @@ cond.then14.0:
   br i1 %t117, label %cond.then15.0, label %cond.fall15
 cond.then15.0:
   %t118 = load ptr, ptr @g-repl-preamble, align 8
-  %t119 = getelementptr inbounds [26 x i8], ptr @.str.2343, i64 0, i64 0
+  %t119 = getelementptr inbounds [26 x i8], ptr @.str.2344, i64 0, i64 0
   %t120 = load ptr, ptr %vname.addr.109, align 8
   %t121 = call ptr @sanitize-for-ir(ptr %t120)
   %t122 = load ptr, ptr %vty.addr.110, align 8
@@ -86586,7 +86599,7 @@ cond.fall14:
 cond.end14:
   %t126 = phi i32 [ %t125, %cond.join14.0 ], [ undef, %cond.fall14 ]
   %t127 = load ptr, ptr @stderr, align 8
-  %t128 = getelementptr inbounds [11 x i8], ptr @.str.2344, i64 0, i64 0
+  %t128 = getelementptr inbounds [11 x i8], ptr @.str.2345, i64 0, i64 0
   %t129 = call i32 (ptr, ptr, ...) @fprintf(ptr %t127, ptr %t128)
   br label %cond.join9.3
 cond.join9.3:
@@ -86598,7 +86611,7 @@ cond.test9.4:
   br i1 %t131, label %and.rhs16, label %and.end16
 and.rhs16:
   %t132 = load ptr, ptr %h.addr.47, align 8
-  %t133 = getelementptr inbounds [10 x i8], ptr @.str.2345, i64 0, i64 0
+  %t133 = getelementptr inbounds [10 x i8], ptr @.str.2346, i64 0, i64 0
   %t134 = call i32 @strcmp(ptr %t132, ptr %t133)
   %t135 = icmp eq i32 %t134, 0
   store i1 %t135, ptr %and.val16, align 1
@@ -86651,7 +86664,7 @@ cond.end17:
   %t158 = load ptr, ptr @g-def-bufp, align 8
   call void @free(ptr %t158)
   %t159 = load ptr, ptr @stderr, align 8
-  %t160 = getelementptr inbounds [11 x i8], ptr @.str.2346, i64 0, i64 0
+  %t160 = getelementptr inbounds [11 x i8], ptr @.str.2347, i64 0, i64 0
   %t161 = call i32 (ptr, ptr, ...) @fprintf(ptr %t159, ptr %t160)
   br label %cond.join9.4
 cond.join9.4:
@@ -86663,7 +86676,7 @@ cond.test9.5:
   br i1 %t163, label %and.rhs19, label %and.end19
 and.rhs19:
   %t164 = load ptr, ptr %h.addr.47, align 8
-  %t165 = getelementptr inbounds [9 x i8], ptr @.str.2347, i64 0, i64 0
+  %t165 = getelementptr inbounds [9 x i8], ptr @.str.2348, i64 0, i64 0
   %t166 = call i32 @strcmp(ptr %t164, ptr %t165)
   %t167 = icmp eq i32 %t166, 0
   store i1 %t167, ptr %and.val19, align 1
@@ -86782,7 +86795,7 @@ cond.fall25:
   br label %cond.end25
 cond.end25:
   %t223 = load ptr, ptr @stderr, align 8
-  %t224 = getelementptr inbounds [11 x i8], ptr @.str.2348, i64 0, i64 0
+  %t224 = getelementptr inbounds [11 x i8], ptr @.str.2349, i64 0, i64 0
   %t225 = call i32 (ptr, ptr, ...) @fprintf(ptr %t223, ptr %t224)
   br label %cond.join9.5
 cond.join9.5:
@@ -86794,7 +86807,7 @@ cond.test9.6:
   br i1 %t227, label %and.rhs26, label %and.end26
 and.rhs26:
   %t228 = load ptr, ptr %h.addr.47, align 8
-  %t229 = getelementptr inbounds [7 x i8], ptr @.str.2349, i64 0, i64 0
+  %t229 = getelementptr inbounds [7 x i8], ptr @.str.2350, i64 0, i64 0
   %t230 = call i32 @strcmp(ptr %t228, ptr %t229)
   %t231 = icmp eq i32 %t230, 0
   store i1 %t231, ptr %and.val26, align 1
@@ -86855,7 +86868,7 @@ cond.test9.7:
   br i1 %t256, label %and.rhs29, label %and.end29
 and.rhs29:
   %t257 = load ptr, ptr %h.addr.47, align 8
-  %t258 = getelementptr inbounds [5 x i8], ptr @.str.2350, i64 0, i64 0
+  %t258 = getelementptr inbounds [5 x i8], ptr @.str.2351, i64 0, i64 0
   %t259 = call i32 @strcmp(ptr %t257, ptr %t258)
   %t260 = icmp eq i32 %t259, 0
   store i1 %t260, ptr %and.val29, align 1
@@ -86888,7 +86901,7 @@ cond.then31.0:
   %t272 = load ptr, ptr %f.addr.0, align 8
   %t273 = getelementptr inbounds %Node, ptr %t272, i32 0, i32 1
   %t274 = load i32, ptr %t273, align 4
-  %t275 = getelementptr inbounds [19 x i8], ptr @.str.2351, i64 0, i64 0
+  %t275 = getelementptr inbounds [19 x i8], ptr @.str.2352, i64 0, i64 0
   call void @repl-error(i32 %t274, ptr %t275)
   br label %cond.join31.0
 cond.join31.0:
@@ -86929,7 +86942,7 @@ cond.then34.0:
   store ptr %t299, ptr %msg.addr.297, align 8
   %t300 = load ptr, ptr %msg.addr.297, align 8
   %t301 = sext i32 512 to i64
-  %t302 = getelementptr inbounds [40 x i8], ptr @.str.2352, i64 0, i64 0
+  %t302 = getelementptr inbounds [40 x i8], ptr @.str.2353, i64 0, i64 0
   %t303 = load ptr, ptr %rerr.addr.292, align 8
   %t304 = call ptr @LLVMGetErrorMessage(ptr %t303)
   %t305 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %t300, i64 %t301, ptr %t302, ptr %t304)
@@ -86971,7 +86984,7 @@ cond.end32:
   %t319 = sext i32 1 to i64
   %t320 = add nsw i64 %t318, %t319
   store i64 %t320, ptr @g-defn-impl-counter, align 8
-  %t321 = getelementptr inbounds [11 x i8], ptr @.str.2353, i64 0, i64 0
+  %t321 = getelementptr inbounds [11 x i8], ptr @.str.2354, i64 0, i64 0
   %t322 = load ptr, ptr %fname-ir.addr.276, align 8
   %t323 = load i32, ptr %impl-id.addr.314, align 4
   %t324 = call ptr @fmt-sd(ptr %t321, ptr %t322, i32 %t323)
@@ -87091,7 +87104,7 @@ cond.then42.0:
   %t386 = load ptr, ptr %ft.addr.374, align 8
   call void @jit-thunk-module(i32 %t384, ptr %t385, ptr %t386)
   %t387 = load ptr, ptr @g-repl-preamble, align 8
-  %t388 = getelementptr inbounds [16 x i8], ptr @.str.2354, i64 0, i64 0
+  %t388 = getelementptr inbounds [16 x i8], ptr @.str.2355, i64 0, i64 0
   %t389 = load ptr, ptr %ft.addr.374, align 8
   %t390 = getelementptr inbounds %Type, ptr %t389, i32 0, i32 1
   %t391 = load ptr, ptr %t390, align 8
@@ -87117,7 +87130,7 @@ while.body43:
   br i1 %t406, label %cond.then44.0, label %cond.fall44
 cond.then44.0:
   %t407 = load ptr, ptr @g-repl-preamble, align 8
-  %t408 = getelementptr inbounds [3 x i8], ptr @.str.2355, i64 0, i64 0
+  %t408 = getelementptr inbounds [3 x i8], ptr @.str.2356, i64 0, i64 0
   %t409 = call i32 (ptr, ptr, ...) @fprintf(ptr %t407, ptr %t408)
   br label %cond.join44.0
 cond.join44.0:
@@ -87127,7 +87140,7 @@ cond.fall44:
 cond.end44:
   %t410 = phi i32 [ %t409, %cond.join44.0 ], [ undef, %cond.fall44 ]
   %t411 = load ptr, ptr @g-repl-preamble, align 8
-  %t412 = getelementptr inbounds [3 x i8], ptr @.str.2356, i64 0, i64 0
+  %t412 = getelementptr inbounds [3 x i8], ptr @.str.2357, i64 0, i64 0
   %t413 = load ptr, ptr %ft.addr.374, align 8
   %t414 = getelementptr inbounds %Type, ptr %t413, i32 0, i32 2
   %t415 = load ptr, ptr %t414, align 8
@@ -87143,7 +87156,7 @@ cond.end44:
   br label %while.cond43
 while.end43:
   %t424 = load ptr, ptr @g-repl-preamble, align 8
-  %t425 = getelementptr inbounds [3 x i8], ptr @.str.2357, i64 0, i64 0
+  %t425 = getelementptr inbounds [3 x i8], ptr @.str.2358, i64 0, i64 0
   %t426 = call i32 (ptr, ptr, ...) @fprintf(ptr %t424, ptr %t425)
   br label %cond.join42.0
 cond.join42.0:
@@ -87215,7 +87228,7 @@ cond.end45:
   br i1 %t456, label %cond.then47.0, label %cond.test47.1
 cond.then47.0:
   %t457 = load ptr, ptr @stderr, align 8
-  %t458 = getelementptr inbounds [13 x i8], ptr @.str.2358, i64 0, i64 0
+  %t458 = getelementptr inbounds [13 x i8], ptr @.str.2359, i64 0, i64 0
   %t459 = call i32 (ptr, ptr, ...) @fprintf(ptr %t457, ptr %t458)
   br label %cond.join47.0
 cond.join47.0:
@@ -87224,7 +87237,7 @@ cond.test47.1:
   br label %cond.then47.1
 cond.then47.1:
   %t460 = load ptr, ptr @stderr, align 8
-  %t461 = getelementptr inbounds [11 x i8], ptr @.str.2359, i64 0, i64 0
+  %t461 = getelementptr inbounds [11 x i8], ptr @.str.2360, i64 0, i64 0
   %t462 = call i32 (ptr, ptr, ...) @fprintf(ptr %t460, ptr %t461)
   br label %cond.join47.1
 cond.join47.1:
@@ -87245,7 +87258,7 @@ cond.test9.8:
   br i1 %t465, label %and.rhs48, label %and.end48
 and.rhs48:
   %t466 = load ptr, ptr %h.addr.47, align 8
-  %t467 = getelementptr inbounds [13 x i8], ptr @.str.2360, i64 0, i64 0
+  %t467 = getelementptr inbounds [13 x i8], ptr @.str.2361, i64 0, i64 0
   %t468 = call i32 @strcmp(ptr %t466, ptr %t467)
   %t469 = icmp eq i32 %t468, 0
   store i1 %t469, ptr %and.val48, align 1
@@ -87267,7 +87280,7 @@ cond.test9.9:
   br i1 %t473, label %and.rhs49, label %and.end49
 and.rhs49:
   %t474 = load ptr, ptr %h.addr.47, align 8
-  %t475 = getelementptr inbounds [9 x i8], ptr @.str.2361, i64 0, i64 0
+  %t475 = getelementptr inbounds [9 x i8], ptr @.str.2362, i64 0, i64 0
   %t476 = call i32 @strcmp(ptr %t474, ptr %t475)
   %t477 = icmp eq i32 %t476, 0
   store i1 %t477, ptr %and.val49, align 1
@@ -87279,7 +87292,7 @@ cond.then9.9:
   %t479 = load ptr, ptr %f.addr.0, align 8
   call void @emit-defmacro(ptr %t479)
   %t480 = load ptr, ptr @stderr, align 8
-  %t481 = getelementptr inbounds [11 x i8], ptr @.str.2362, i64 0, i64 0
+  %t481 = getelementptr inbounds [11 x i8], ptr @.str.2363, i64 0, i64 0
   %t482 = call i32 (ptr, ptr, ...) @fprintf(ptr %t480, ptr %t481)
   br label %cond.join9.9
 cond.join9.9:
@@ -87291,7 +87304,7 @@ cond.test9.10:
   br i1 %t484, label %and.rhs50, label %and.end50
 and.rhs50:
   %t485 = load ptr, ptr %h.addr.47, align 8
-  %t486 = getelementptr inbounds [11 x i8], ptr @.str.2363, i64 0, i64 0
+  %t486 = getelementptr inbounds [11 x i8], ptr @.str.2364, i64 0, i64 0
   %t487 = call i32 @strcmp(ptr %t485, ptr %t486)
   %t488 = icmp eq i32 %t487, 0
   store i1 %t488, ptr %and.val50, align 1
@@ -87303,7 +87316,7 @@ cond.then9.10:
   %t490 = load ptr, ptr %f.addr.0, align 8
   call void @emit-def-rmacro(ptr %t490)
   %t491 = load ptr, ptr @stderr, align 8
-  %t492 = getelementptr inbounds [11 x i8], ptr @.str.2364, i64 0, i64 0
+  %t492 = getelementptr inbounds [11 x i8], ptr @.str.2365, i64 0, i64 0
   %t493 = call i32 (ptr, ptr, ...) @fprintf(ptr %t491, ptr %t492)
   br label %cond.join9.10
 cond.join9.10:
@@ -87315,21 +87328,21 @@ cond.test9.11:
   br i1 %t495, label %and.rhs51, label %and.end51
 and.rhs51:
   %t496 = load ptr, ptr %h.addr.47, align 8
-  %t497 = getelementptr inbounds [12 x i8], ptr @.str.2365, i64 0, i64 0
+  %t497 = getelementptr inbounds [12 x i8], ptr @.str.2366, i64 0, i64 0
   %t498 = call i32 @strcmp(ptr %t496, ptr %t497)
   %t499 = icmp eq i32 %t498, 0
   store i1 %t499, ptr %or.val52, align 1
   br i1 %t499, label %or.end52, label %or.rhs52
 or.rhs52:
   %t500 = load ptr, ptr %h.addr.47, align 8
-  %t501 = getelementptr inbounds [14 x i8], ptr @.str.2366, i64 0, i64 0
+  %t501 = getelementptr inbounds [14 x i8], ptr @.str.2367, i64 0, i64 0
   %t502 = call i32 @strcmp(ptr %t500, ptr %t501)
   %t503 = icmp eq i32 %t502, 0
   store i1 %t503, ptr %or.val53, align 1
   br i1 %t503, label %or.end53, label %or.rhs53
 or.rhs53:
   %t504 = load ptr, ptr %h.addr.47, align 8
-  %t505 = getelementptr inbounds [16 x i8], ptr @.str.2367, i64 0, i64 0
+  %t505 = getelementptr inbounds [16 x i8], ptr @.str.2368, i64 0, i64 0
   %t506 = call i32 @strcmp(ptr %t504, ptr %t505)
   %t507 = icmp eq i32 %t506, 0
   store i1 %t507, ptr %or.val53, align 1
@@ -87349,13 +87362,13 @@ cond.then9.11:
   store i32 0, ptr %is-expr.addr.48, align 4
   store i32 -1, ptr %depth.addr.511, align 4
   %t513 = load ptr, ptr %h.addr.47, align 8
-  %t514 = getelementptr inbounds [16 x i8], ptr @.str.2368, i64 0, i64 0
+  %t514 = getelementptr inbounds [16 x i8], ptr @.str.2369, i64 0, i64 0
   %t515 = call i32 @strcmp(ptr %t513, ptr %t514)
   %t516 = icmp eq i32 %t515, 0
   %t517 = sext i1 %t516 to i32
   store i32 %t517, ptr %is-all.addr.512, align 4
   %t518 = load ptr, ptr %h.addr.47, align 8
-  %t519 = getelementptr inbounds [14 x i8], ptr @.str.2369, i64 0, i64 0
+  %t519 = getelementptr inbounds [14 x i8], ptr @.str.2370, i64 0, i64 0
   %t520 = call i32 @strcmp(ptr %t518, ptr %t519)
   %t521 = icmp eq i32 %t520, 0
   br i1 %t521, label %cond.then54.0, label %cond.fall54
@@ -87411,7 +87424,7 @@ cond.then57.0:
   store ptr %t544, ptr %msg.addr.542, align 8
   %t545 = load ptr, ptr %msg.addr.542, align 8
   %t546 = sext i32 128 to i64
-  %t547 = getelementptr inbounds [28 x i8], ptr @.str.2370, i64 0, i64 0
+  %t547 = getelementptr inbounds [28 x i8], ptr @.str.2371, i64 0, i64 0
   %t548 = load ptr, ptr %h.addr.47, align 8
   %t549 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %t545, i64 %t546, ptr %t547, ptr %t548)
   %t550 = load ptr, ptr %f.addr.0, align 8
@@ -87466,7 +87479,7 @@ and.rhs62:
   %t576 = load ptr, ptr %qh.addr.569, align 8
   %t577 = getelementptr inbounds %Node, ptr %t576, i32 0, i32 3
   %t578 = load ptr, ptr %t577, align 8
-  %t579 = getelementptr inbounds [6 x i8], ptr @.str.2371, i64 0, i64 0
+  %t579 = getelementptr inbounds [6 x i8], ptr @.str.2372, i64 0, i64 0
   %t580 = call i32 @strcmp(ptr %t578, ptr %t579)
   %t581 = icmp eq i32 %t580, 0
   store i1 %t581, ptr %and.val62, align 1
@@ -87569,13 +87582,13 @@ and.end68:
   br i1 %t619, label %cond.then67.0, label %cond.test67.1
 cond.then67.0:
   %t620 = load ptr, ptr @stderr, align 8
-  %t621 = getelementptr inbounds [21 x i8], ptr @.str.2372, i64 0, i64 0
+  %t621 = getelementptr inbounds [21 x i8], ptr @.str.2373, i64 0, i64 0
   %t622 = call i32 (ptr, ptr, ...) @fprintf(ptr %t620, ptr %t621)
   %t623 = load ptr, ptr @stderr, align 8
   %t624 = load ptr, ptr %arg.addr.555, align 8
   call void @fprint-node(ptr %t623, ptr %t624)
   %t625 = load ptr, ptr @stderr, align 8
-  %t626 = getelementptr inbounds [2 x i8], ptr @.str.2373, i64 0, i64 0
+  %t626 = getelementptr inbounds [2 x i8], ptr @.str.2374, i64 0, i64 0
   %t627 = call i32 (ptr, ptr, ...) @fprintf(ptr %t625, ptr %t626)
   br label %cond.join67.0
 cond.join67.0:
@@ -87605,13 +87618,13 @@ cond.end70:
   %t636 = phi ptr [ %t632, %cond.join70.0 ], [ %t635, %cond.join70.1 ]
   store ptr %t636, ptr %expanded.addr.628, align 8
   %t637 = load ptr, ptr @stderr, align 8
-  %t638 = getelementptr inbounds [3 x i8], ptr @.str.2374, i64 0, i64 0
+  %t638 = getelementptr inbounds [3 x i8], ptr @.str.2375, i64 0, i64 0
   %t639 = call i32 (ptr, ptr, ...) @fprintf(ptr %t637, ptr %t638)
   %t640 = load ptr, ptr @stderr, align 8
   %t641 = load ptr, ptr %expanded.addr.628, align 8
   call void @fprint-node(ptr %t640, ptr %t641)
   %t642 = load ptr, ptr @stderr, align 8
-  %t643 = getelementptr inbounds [2 x i8], ptr @.str.2375, i64 0, i64 0
+  %t643 = getelementptr inbounds [2 x i8], ptr @.str.2376, i64 0, i64 0
   %t644 = call i32 (ptr, ptr, ...) @fprintf(ptr %t642, ptr %t643)
   br label %cond.join67.1
 cond.join67.1:
@@ -87628,14 +87641,14 @@ cond.test9.12:
   br i1 %t647, label %and.rhs71, label %and.end71
 and.rhs71:
   %t648 = load ptr, ptr %h.addr.47, align 8
-  %t649 = getelementptr inbounds [11 x i8], ptr @.str.2376, i64 0, i64 0
+  %t649 = getelementptr inbounds [11 x i8], ptr @.str.2377, i64 0, i64 0
   %t650 = call i32 @strcmp(ptr %t648, ptr %t649)
   %t651 = icmp eq i32 %t650, 0
   store i1 %t651, ptr %or.val72, align 1
   br i1 %t651, label %or.end72, label %or.rhs72
 or.rhs72:
   %t652 = load ptr, ptr %h.addr.47, align 8
-  %t653 = getelementptr inbounds [12 x i8], ptr @.str.2377, i64 0, i64 0
+  %t653 = getelementptr inbounds [12 x i8], ptr @.str.2378, i64 0, i64 0
   %t654 = call i32 @strcmp(ptr %t652, ptr %t653)
   %t655 = icmp eq i32 %t654, 0
   store i1 %t655, ptr %or.val72, align 1
@@ -87654,7 +87667,7 @@ cond.then9.12:
   store i32 %t661, ptr %pre-len.addr.658, align 4
   call void @open-module-streams()
   %t662 = load ptr, ptr %h.addr.47, align 8
-  %t663 = getelementptr inbounds [12 x i8], ptr @.str.2378, i64 0, i64 0
+  %t663 = getelementptr inbounds [12 x i8], ptr @.str.2379, i64 0, i64 0
   %t664 = call i32 @strcmp(ptr %t662, ptr %t663)
   %t665 = icmp eq i32 %t664, 0
   br i1 %t665, label %cond.then73.0, label %cond.test73.1
@@ -87797,7 +87810,7 @@ while.end79:
   br i1 %t740, label %cond.then81.0, label %cond.fall81
 cond.then81.0:
   %t741 = load ptr, ptr @g-repl-preamble, align 8
-  %t742 = getelementptr inbounds [15 x i8], ptr @.str.2379, i64 0, i64 0
+  %t742 = getelementptr inbounds [15 x i8], ptr @.str.2380, i64 0, i64 0
   %t743 = load ptr, ptr %ft.addr.704, align 8
   %t744 = getelementptr inbounds %Type, ptr %t743, i32 0, i32 1
   %t745 = load ptr, ptr %t744, align 8
@@ -87825,7 +87838,7 @@ while.body82:
   br i1 %t762, label %cond.then83.0, label %cond.fall83
 cond.then83.0:
   %t763 = load ptr, ptr @g-repl-preamble, align 8
-  %t764 = getelementptr inbounds [3 x i8], ptr @.str.2380, i64 0, i64 0
+  %t764 = getelementptr inbounds [3 x i8], ptr @.str.2381, i64 0, i64 0
   %t765 = call i32 (ptr, ptr, ...) @fprintf(ptr %t763, ptr %t764)
   br label %cond.join83.0
 cond.join83.0:
@@ -87835,7 +87848,7 @@ cond.fall83:
 cond.end83:
   %t766 = phi i32 [ %t765, %cond.join83.0 ], [ undef, %cond.fall83 ]
   %t767 = load ptr, ptr @g-repl-preamble, align 8
-  %t768 = getelementptr inbounds [3 x i8], ptr @.str.2381, i64 0, i64 0
+  %t768 = getelementptr inbounds [3 x i8], ptr @.str.2382, i64 0, i64 0
   %t769 = load ptr, ptr %ft.addr.704, align 8
   %t770 = getelementptr inbounds %Type, ptr %t769, i32 0, i32 2
   %t771 = load ptr, ptr %t770, align 8
@@ -87856,7 +87869,7 @@ while.end82:
   %t783 = icmp ne i32 %t782, 0
   br i1 %t783, label %cond.then84.0, label %cond.fall84
 cond.then84.0:
-  %t785 = getelementptr inbounds [1 x i8], ptr @.str.2382, i64 0, i64 0
+  %t785 = getelementptr inbounds [1 x i8], ptr @.str.2383, i64 0, i64 0
   store ptr %t785, ptr %sep.addr.784, align 8
   %t786 = load ptr, ptr %ft.addr.704, align 8
   %t787 = getelementptr inbounds %Type, ptr %t786, i32 0, i32 3
@@ -87864,7 +87877,7 @@ cond.then84.0:
   %t789 = icmp ne i32 %t788, 0
   br i1 %t789, label %cond.then85.0, label %cond.fall85
 cond.then85.0:
-  %t790 = getelementptr inbounds [3 x i8], ptr @.str.2383, i64 0, i64 0
+  %t790 = getelementptr inbounds [3 x i8], ptr @.str.2384, i64 0, i64 0
   store ptr %t790, ptr %sep.addr.784, align 8
   br label %cond.join85.0
 cond.join85.0:
@@ -87874,7 +87887,7 @@ cond.fall85:
 cond.end85:
   %t791 = phi ptr [ %t790, %cond.join85.0 ], [ undef, %cond.fall85 ]
   %t792 = load ptr, ptr @g-repl-preamble, align 8
-  %t793 = getelementptr inbounds [6 x i8], ptr @.str.2384, i64 0, i64 0
+  %t793 = getelementptr inbounds [6 x i8], ptr @.str.2385, i64 0, i64 0
   %t794 = load ptr, ptr %sep.addr.784, align 8
   %t795 = call i32 (ptr, ptr, ...) @fprintf(ptr %t792, ptr %t793, ptr %t794)
   br label %cond.join84.0
@@ -87885,7 +87898,7 @@ cond.fall84:
 cond.end84:
   %t796 = phi i32 [ %t795, %cond.join84.0 ], [ undef, %cond.fall84 ]
   %t797 = load ptr, ptr @g-repl-preamble, align 8
-  %t798 = getelementptr inbounds [3 x i8], ptr @.str.2385, i64 0, i64 0
+  %t798 = getelementptr inbounds [3 x i8], ptr @.str.2386, i64 0, i64 0
   %t799 = call i32 (ptr, ptr, ...) @fprintf(ptr %t797, ptr %t798)
   br label %cond.join81.0
 cond.join81.0:
@@ -87913,7 +87926,7 @@ cond.test9.13:
   br label %cond.then9.13
 cond.then9.13:
   call void @open-module-streams()
-  %t805 = getelementptr inbounds [16 x i8], ptr @.str.2386, i64 0, i64 0
+  %t805 = getelementptr inbounds [16 x i8], ptr @.str.2387, i64 0, i64 0
   %t806 = load i32, ptr @g-repl-id, align 4
   %t807 = sext i32 %t806 to i64
   %t808 = call ptr @fmt-i64(ptr %t805, i64 %t807)
@@ -87946,7 +87959,7 @@ cond.then86.0:
   br i1 %t828, label %cond.then87.0, label %cond.test87.1
 cond.then87.0:
   %t829 = load ptr, ptr @g-body-stream, align 8
-  %t830 = getelementptr inbounds [12 x i8], ptr @.str.2387, i64 0, i64 0
+  %t830 = getelementptr inbounds [12 x i8], ptr @.str.2388, i64 0, i64 0
   %t831 = call i32 (ptr, ptr, ...) @fprintf(ptr %t829, ptr %t830)
   br label %cond.join87.0
 cond.join87.0:
@@ -87998,7 +88011,7 @@ cond.then91.0:
   br i1 %t852, label %cond.then92.0, label %cond.test92.1
 cond.then92.0:
   %t853 = load ptr, ptr @g-body-stream, align 8
-  %t854 = getelementptr inbounds [26 x i8], ptr @.str.2388, i64 0, i64 0
+  %t854 = getelementptr inbounds [26 x i8], ptr @.str.2389, i64 0, i64 0
   %t855 = load ptr, ptr %ext-tmp.addr.849, align 8
   %t856 = load ptr, ptr %result.addr.815, align 8
   %t857 = getelementptr inbounds %Val, ptr %t856, i32 0, i32 1
@@ -88013,7 +88026,7 @@ cond.test92.1:
   br i1 %t861, label %cond.then92.1, label %cond.test92.2
 cond.then92.1:
   %t862 = load ptr, ptr @g-body-stream, align 8
-  %t863 = getelementptr inbounds [26 x i8], ptr @.str.2389, i64 0, i64 0
+  %t863 = getelementptr inbounds [26 x i8], ptr @.str.2390, i64 0, i64 0
   %t864 = load ptr, ptr %ext-tmp.addr.849, align 8
   %t865 = load ptr, ptr %result.addr.815, align 8
   %t866 = getelementptr inbounds %Val, ptr %t865, i32 0, i32 1
@@ -88028,7 +88041,7 @@ cond.test92.2:
   br i1 %t870, label %cond.then92.2, label %cond.test92.3
 cond.then92.2:
   %t871 = load ptr, ptr @g-body-stream, align 8
-  %t872 = getelementptr inbounds [27 x i8], ptr @.str.2390, i64 0, i64 0
+  %t872 = getelementptr inbounds [27 x i8], ptr @.str.2391, i64 0, i64 0
   %t873 = load ptr, ptr %ext-tmp.addr.849, align 8
   %t874 = load ptr, ptr %result.addr.815, align 8
   %t875 = getelementptr inbounds %Val, ptr %t874, i32 0, i32 1
@@ -88054,7 +88067,7 @@ cond.fall91:
 cond.end91:
   %t879 = phi ptr [ %t878, %cond.join91.0 ], [ undef, %cond.fall91 ]
   %t880 = load ptr, ptr @g-body-stream, align 8
-  %t881 = getelementptr inbounds [14 x i8], ptr @.str.2391, i64 0, i64 0
+  %t881 = getelementptr inbounds [14 x i8], ptr @.str.2392, i64 0, i64 0
   %t882 = load ptr, ptr %ret-val.addr.843, align 8
   %t883 = call i32 (ptr, ptr, ...) @fprintf(ptr %t880, ptr %t881, ptr %t882)
   br label %cond.join87.1
@@ -88066,7 +88079,7 @@ cond.test87.2:
   br i1 %t885, label %cond.then87.2, label %cond.test87.3
 cond.then87.2:
   %t886 = load ptr, ptr @g-body-stream, align 8
-  %t887 = getelementptr inbounds [14 x i8], ptr @.str.2392, i64 0, i64 0
+  %t887 = getelementptr inbounds [14 x i8], ptr @.str.2393, i64 0, i64 0
   %t888 = load ptr, ptr %result.addr.815, align 8
   %t889 = getelementptr inbounds %Val, ptr %t888, i32 0, i32 1
   %t890 = load ptr, ptr %t889, align 8
@@ -88080,7 +88093,7 @@ cond.test87.3:
   br i1 %t893, label %cond.then87.3, label %cond.test87.4
 cond.then87.3:
   %t894 = load ptr, ptr @g-body-stream, align 8
-  %t895 = getelementptr inbounds [14 x i8], ptr @.str.2393, i64 0, i64 0
+  %t895 = getelementptr inbounds [14 x i8], ptr @.str.2394, i64 0, i64 0
   %t896 = load ptr, ptr %result.addr.815, align 8
   %t897 = getelementptr inbounds %Val, ptr %t896, i32 0, i32 1
   %t898 = load ptr, ptr %t897, align 8
@@ -88094,7 +88107,7 @@ cond.test87.4:
   br i1 %t901, label %cond.then87.4, label %cond.test87.5
 cond.then87.4:
   %t902 = load ptr, ptr @g-body-stream, align 8
-  %t903 = getelementptr inbounds [16 x i8], ptr @.str.2394, i64 0, i64 0
+  %t903 = getelementptr inbounds [16 x i8], ptr @.str.2395, i64 0, i64 0
   %t904 = load ptr, ptr %result.addr.815, align 8
   %t905 = getelementptr inbounds %Val, ptr %t904, i32 0, i32 1
   %t906 = load ptr, ptr %t905, align 8
@@ -88108,7 +88121,7 @@ cond.test87.5:
   br i1 %t909, label %cond.then87.5, label %cond.test87.6
 cond.then87.5:
   %t910 = load ptr, ptr @g-body-stream, align 8
-  %t911 = getelementptr inbounds [17 x i8], ptr @.str.2395, i64 0, i64 0
+  %t911 = getelementptr inbounds [17 x i8], ptr @.str.2396, i64 0, i64 0
   %t912 = load ptr, ptr %result.addr.815, align 8
   %t913 = getelementptr inbounds %Val, ptr %t912, i32 0, i32 1
   %t914 = load ptr, ptr %t913, align 8
@@ -88120,7 +88133,7 @@ cond.test87.6:
   br label %cond.then87.6
 cond.then87.6:
   %t916 = load ptr, ptr @g-body-stream, align 8
-  %t917 = getelementptr inbounds [12 x i8], ptr @.str.2396, i64 0, i64 0
+  %t917 = getelementptr inbounds [12 x i8], ptr @.str.2397, i64 0, i64 0
   %t918 = call i32 (ptr, ptr, ...) @fprintf(ptr %t916, ptr %t917)
   br label %cond.join87.6
 cond.join87.6:
@@ -88138,7 +88151,7 @@ cond.end86:
   %t922 = call i32 @fclose(ptr %t921)
   %t923 = load ptr, ptr @g-body-stream, align 8
   %t924 = call i32 @fclose(ptr %t923)
-  %t926 = getelementptr inbounds [5 x i8], ptr @.str.2397, i64 0, i64 0
+  %t926 = getelementptr inbounds [5 x i8], ptr @.str.2398, i64 0, i64 0
   store ptr %t926, ptr %ret-ir.addr.925, align 8
   %t927 = load i32, ptr %result-kind.addr.819, align 4
   %t928 = icmp eq i32 %t927, 4
@@ -88171,7 +88184,7 @@ or.end94:
   %t937 = load i1, ptr %or.val94, align 1
   br i1 %t937, label %cond.then93.0, label %cond.fall93
 cond.then93.0:
-  %t938 = getelementptr inbounds [4 x i8], ptr @.str.2398, i64 0, i64 0
+  %t938 = getelementptr inbounds [4 x i8], ptr @.str.2399, i64 0, i64 0
   store ptr %t938, ptr %ret-ir.addr.925, align 8
   br label %cond.join93.0
 cond.join93.0:
@@ -88184,7 +88197,7 @@ cond.end93:
   %t941 = icmp eq i32 %t940, 5
   br i1 %t941, label %cond.then97.0, label %cond.fall97
 cond.then97.0:
-  %t942 = getelementptr inbounds [4 x i8], ptr @.str.2399, i64 0, i64 0
+  %t942 = getelementptr inbounds [4 x i8], ptr @.str.2400, i64 0, i64 0
   store ptr %t942, ptr %ret-ir.addr.925, align 8
   br label %cond.join97.0
 cond.join97.0:
@@ -88197,7 +88210,7 @@ cond.end97:
   %t945 = icmp eq i32 %t944, 10
   br i1 %t945, label %cond.then98.0, label %cond.fall98
 cond.then98.0:
-  %t946 = getelementptr inbounds [4 x i8], ptr @.str.2400, i64 0, i64 0
+  %t946 = getelementptr inbounds [4 x i8], ptr @.str.2401, i64 0, i64 0
   store ptr %t946, ptr %ret-ir.addr.925, align 8
   br label %cond.join98.0
 cond.join98.0:
@@ -88210,7 +88223,7 @@ cond.end98:
   %t949 = icmp eq i32 %t948, 13
   br i1 %t949, label %cond.then99.0, label %cond.fall99
 cond.then99.0:
-  %t950 = getelementptr inbounds [6 x i8], ptr @.str.2401, i64 0, i64 0
+  %t950 = getelementptr inbounds [6 x i8], ptr @.str.2402, i64 0, i64 0
   store ptr %t950, ptr %ret-ir.addr.925, align 8
   br label %cond.join99.0
 cond.join99.0:
@@ -88223,7 +88236,7 @@ cond.end99:
   %t953 = icmp eq i32 %t952, 14
   br i1 %t953, label %cond.then100.0, label %cond.fall100
 cond.then100.0:
-  %t954 = getelementptr inbounds [7 x i8], ptr @.str.2402, i64 0, i64 0
+  %t954 = getelementptr inbounds [7 x i8], ptr @.str.2403, i64 0, i64 0
   store ptr %t954, ptr %ret-ir.addr.925, align 8
   br label %cond.join100.0
 cond.join100.0:
@@ -88233,12 +88246,12 @@ cond.fall100:
 cond.end100:
   %t955 = phi ptr [ %t954, %cond.join100.0 ], [ undef, %cond.fall100 ]
   %t956 = load ptr, ptr @g-def-stream, align 8
-  %t957 = getelementptr inbounds [19 x i8], ptr @.str.2403, i64 0, i64 0
+  %t957 = getelementptr inbounds [19 x i8], ptr @.str.2404, i64 0, i64 0
   %t958 = load ptr, ptr %ret-ir.addr.925, align 8
   %t959 = load ptr, ptr %eval-sym.addr.804, align 8
   %t960 = call i32 (ptr, ptr, ...) @fprintf(ptr %t956, ptr %t957, ptr %t958, ptr %t959)
   %t961 = load ptr, ptr @g-def-stream, align 8
-  %t962 = getelementptr inbounds [8 x i8], ptr @.str.2404, i64 0, i64 0
+  %t962 = getelementptr inbounds [8 x i8], ptr @.str.2405, i64 0, i64 0
   %t963 = call i32 (ptr, ptr, ...) @fprintf(ptr %t961, ptr %t962)
   %t964 = load ptr, ptr @g-entry-bufp, align 8
   %t965 = icmp ne ptr %t964, null
@@ -88291,7 +88304,7 @@ cond.fall103:
 cond.end103:
   %t985 = phi i32 [ %t984, %cond.join103.0 ], [ undef, %cond.fall103 ]
   %t986 = load ptr, ptr @g-def-stream, align 8
-  %t987 = getelementptr inbounds [4 x i8], ptr @.str.2405, i64 0, i64 0
+  %t987 = getelementptr inbounds [4 x i8], ptr @.str.2406, i64 0, i64 0
   %t988 = call i32 (ptr, ptr, ...) @fprintf(ptr %t986, ptr %t987)
   %t989 = load ptr, ptr @g-entry-bufp, align 8
   call void @free(ptr %t989)
@@ -88335,7 +88348,7 @@ cond.then106.0:
   store ptr %t1011, ptr %msg.addr.1009, align 8
   %t1012 = load ptr, ptr %msg.addr.1009, align 8
   %t1013 = sext i32 512 to i64
-  %t1014 = getelementptr inbounds [21 x i8], ptr @.str.2406, i64 0, i64 0
+  %t1014 = getelementptr inbounds [21 x i8], ptr @.str.2407, i64 0, i64 0
   %t1015 = load ptr, ptr %em.addr.1006, align 8
   %t1016 = call i32 (ptr, i64, ptr, ...) @snprintf(ptr %t1012, i64 %t1013, ptr %t1014, ptr %t1015)
   %t1017 = load ptr, ptr %f.addr.0, align 8
@@ -88392,7 +88405,7 @@ cond.then108.0:
   %t1041 = call i32 %t1040()
   store i32 %t1041, ptr %rv.addr.1039, align 4
   %t1042 = load ptr, ptr @stderr, align 8
-  %t1043 = getelementptr inbounds [6 x i8], ptr @.str.2407, i64 0, i64 0
+  %t1043 = getelementptr inbounds [6 x i8], ptr @.str.2408, i64 0, i64 0
   %t1044 = load i32, ptr %rv.addr.1039, align 4
   %t1045 = call i32 (ptr, ptr, ...) @fprintf(ptr %t1042, ptr %t1043, i32 %t1044)
   br label %cond.join108.0
@@ -88410,7 +88423,7 @@ cond.then108.1:
   %t1053 = call i64 %t1052()
   store i64 %t1053, ptr %rv.addr.1051, align 8
   %t1054 = load ptr, ptr @stderr, align 8
-  %t1055 = getelementptr inbounds [7 x i8], ptr @.str.2408, i64 0, i64 0
+  %t1055 = getelementptr inbounds [7 x i8], ptr @.str.2409, i64 0, i64 0
   %t1056 = load i64, ptr %rv.addr.1051, align 8
   %t1057 = call i32 (ptr, ptr, ...) @fprintf(ptr %t1054, ptr %t1055, i64 %t1056)
   br label %cond.join108.1
@@ -88432,7 +88445,7 @@ cond.then108.2:
   br i1 %t1067, label %cond.then112.0, label %cond.test112.1
 cond.then112.0:
   %t1068 = load ptr, ptr @stderr, align 8
-  %t1069 = getelementptr inbounds [13 x i8], ptr @.str.2409, i64 0, i64 0
+  %t1069 = getelementptr inbounds [13 x i8], ptr @.str.2410, i64 0, i64 0
   %t1070 = load ptr, ptr %rv.addr.1063, align 8
   %t1071 = call i32 (ptr, ptr, ...) @fprintf(ptr %t1068, ptr %t1069, ptr %t1070)
   br label %cond.join112.0
@@ -88442,7 +88455,7 @@ cond.test112.1:
   br label %cond.then112.1
 cond.then112.1:
   %t1072 = load ptr, ptr @stderr, align 8
-  %t1073 = getelementptr inbounds [8 x i8], ptr @.str.2410, i64 0, i64 0
+  %t1073 = getelementptr inbounds [8 x i8], ptr @.str.2411, i64 0, i64 0
   %t1074 = call i32 (ptr, ptr, ...) @fprintf(ptr %t1072, ptr %t1073)
   br label %cond.join112.1
 cond.join112.1:
@@ -88528,11 +88541,11 @@ cond.then0.0:
 cond.fall0:
   br label %cond.end0
 cond.end0:
-  %t3 = getelementptr inbounds [5 x i8], ptr @.str.2411, i64 0, i64 0
+  %t3 = getelementptr inbounds [5 x i8], ptr @.str.2412, i64 0, i64 0
   %t4 = load ptr, ptr %fname.addr, align 8
   %t5 = call ptr @fmt-s(ptr %t3, ptr %t4)
   store ptr %t5, ptr %pat.addr.2, align 8
-  %t7 = getelementptr inbounds [5 x i8], ptr @.str.2412, i64 0, i64 0
+  %t7 = getelementptr inbounds [5 x i8], ptr @.str.2413, i64 0, i64 0
   %t8 = load ptr, ptr %impl-name.addr, align 8
   %t9 = call ptr @fmt-s(ptr %t7, ptr %t8)
   store ptr %t9, ptr %rep.addr.6, align 8
@@ -88652,11 +88665,11 @@ entry:
   %t10 = load i32, ptr %t9, align 4
   store i32 %t10, ptr %nparams.addr.7, align 4
   %t11 = load ptr, ptr %out.addr, align 8
-  %t12 = getelementptr inbounds [27 x i8], ptr @.str.2413, i64 0, i64 0
+  %t12 = getelementptr inbounds [27 x i8], ptr @.str.2414, i64 0, i64 0
   %t13 = load ptr, ptr %fname.addr, align 8
   %t14 = call i32 (ptr, ptr, ...) @fprintf(ptr %t11, ptr %t12, ptr %t13)
   %t15 = load ptr, ptr %out.addr, align 8
-  %t16 = getelementptr inbounds [15 x i8], ptr @.str.2414, i64 0, i64 0
+  %t16 = getelementptr inbounds [15 x i8], ptr @.str.2415, i64 0, i64 0
   %t17 = load ptr, ptr %ret-ir.addr.2, align 8
   %t18 = load ptr, ptr %fname.addr, align 8
   %t19 = call i32 (ptr, ptr, ...) @fprintf(ptr %t15, ptr %t16, ptr %t17, ptr %t18)
@@ -88675,7 +88688,7 @@ while.body0:
   br i1 %t27, label %cond.then1.0, label %cond.fall1
 cond.then1.0:
   %t28 = load ptr, ptr %out.addr, align 8
-  %t29 = getelementptr inbounds [3 x i8], ptr @.str.2415, i64 0, i64 0
+  %t29 = getelementptr inbounds [3 x i8], ptr @.str.2416, i64 0, i64 0
   %t30 = call i32 (ptr, ptr, ...) @fprintf(ptr %t28, ptr %t29)
   br label %cond.join1.0
 cond.join1.0:
@@ -88685,7 +88698,7 @@ cond.fall1:
 cond.end1:
   %t31 = phi i32 [ %t30, %cond.join1.0 ], [ undef, %cond.fall1 ]
   %t32 = load ptr, ptr %out.addr, align 8
-  %t33 = getelementptr inbounds [9 x i8], ptr @.str.2416, i64 0, i64 0
+  %t33 = getelementptr inbounds [9 x i8], ptr @.str.2417, i64 0, i64 0
   %t34 = load ptr, ptr %ftt.addr.0, align 8
   %t35 = getelementptr inbounds %Type, ptr %t34, i32 0, i32 2
   %t36 = load ptr, ptr %t35, align 8
@@ -88702,10 +88715,10 @@ cond.end1:
   br label %while.cond0
 while.end0:
   %t46 = load ptr, ptr %out.addr, align 8
-  %t47 = getelementptr inbounds [12 x i8], ptr @.str.2417, i64 0, i64 0
+  %t47 = getelementptr inbounds [12 x i8], ptr @.str.2418, i64 0, i64 0
   %t48 = call i32 (ptr, ptr, ...) @fprintf(ptr %t46, ptr %t47)
   %t49 = load ptr, ptr %out.addr, align 8
-  %t50 = getelementptr inbounds [41 x i8], ptr @.str.2418, i64 0, i64 0
+  %t50 = getelementptr inbounds [41 x i8], ptr @.str.2419, i64 0, i64 0
   %t51 = load ptr, ptr %fname.addr, align 8
   %t52 = call i32 (ptr, ptr, ...) @fprintf(ptr %t49, ptr %t50, ptr %t51)
   %t53 = load ptr, ptr %ftt.addr.0, align 8
@@ -88717,7 +88730,7 @@ while.end0:
   br i1 %t58, label %cond.then2.0, label %cond.test2.1
 cond.then2.0:
   %t59 = load ptr, ptr %out.addr, align 8
-  %t60 = getelementptr inbounds [18 x i8], ptr @.str.2419, i64 0, i64 0
+  %t60 = getelementptr inbounds [18 x i8], ptr @.str.2420, i64 0, i64 0
   %t61 = call i32 (ptr, ptr, ...) @fprintf(ptr %t59, ptr %t60)
   %t62 = load i32, ptr %nparams.addr.7, align 4
   %t63 = mul nsw i32 %t62, 0
@@ -88734,7 +88747,7 @@ while.body3:
   br i1 %t69, label %cond.then4.0, label %cond.fall4
 cond.then4.0:
   %t70 = load ptr, ptr %out.addr, align 8
-  %t71 = getelementptr inbounds [3 x i8], ptr @.str.2420, i64 0, i64 0
+  %t71 = getelementptr inbounds [3 x i8], ptr @.str.2421, i64 0, i64 0
   %t72 = call i32 (ptr, ptr, ...) @fprintf(ptr %t70, ptr %t71)
   br label %cond.join4.0
 cond.join4.0:
@@ -88744,7 +88757,7 @@ cond.fall4:
 cond.end4:
   %t73 = phi i32 [ %t72, %cond.join4.0 ], [ undef, %cond.fall4 ]
   %t74 = load ptr, ptr %out.addr, align 8
-  %t75 = getelementptr inbounds [9 x i8], ptr @.str.2421, i64 0, i64 0
+  %t75 = getelementptr inbounds [9 x i8], ptr @.str.2422, i64 0, i64 0
   %t76 = load ptr, ptr %ftt.addr.0, align 8
   %t77 = getelementptr inbounds %Type, ptr %t76, i32 0, i32 2
   %t78 = load ptr, ptr %t77, align 8
@@ -88761,7 +88774,7 @@ cond.end4:
   br label %while.cond3
 while.end3:
   %t88 = load ptr, ptr %out.addr, align 8
-  %t89 = getelementptr inbounds [17 x i8], ptr @.str.2422, i64 0, i64 0
+  %t89 = getelementptr inbounds [17 x i8], ptr @.str.2423, i64 0, i64 0
   %t90 = call i32 (ptr, ptr, ...) @fprintf(ptr %t88, ptr %t89)
   br label %cond.join2.0
 cond.join2.0:
@@ -88770,7 +88783,7 @@ cond.test2.1:
   br label %cond.then2.1
 cond.then2.1:
   %t91 = load ptr, ptr %out.addr, align 8
-  %t92 = getelementptr inbounds [22 x i8], ptr @.str.2423, i64 0, i64 0
+  %t92 = getelementptr inbounds [22 x i8], ptr @.str.2424, i64 0, i64 0
   %t93 = load ptr, ptr %ret-ir.addr.2, align 8
   %t94 = call i32 (ptr, ptr, ...) @fprintf(ptr %t91, ptr %t92, ptr %t93)
   %t95 = load i32, ptr %nparams.addr.7, align 4
@@ -88788,7 +88801,7 @@ while.body5:
   br i1 %t102, label %cond.then6.0, label %cond.fall6
 cond.then6.0:
   %t103 = load ptr, ptr %out.addr, align 8
-  %t104 = getelementptr inbounds [3 x i8], ptr @.str.2424, i64 0, i64 0
+  %t104 = getelementptr inbounds [3 x i8], ptr @.str.2425, i64 0, i64 0
   %t105 = call i32 (ptr, ptr, ...) @fprintf(ptr %t103, ptr %t104)
   br label %cond.join6.0
 cond.join6.0:
@@ -88798,7 +88811,7 @@ cond.fall6:
 cond.end6:
   %t106 = phi i32 [ %t105, %cond.join6.0 ], [ undef, %cond.fall6 ]
   %t107 = load ptr, ptr %out.addr, align 8
-  %t108 = getelementptr inbounds [9 x i8], ptr @.str.2425, i64 0, i64 0
+  %t108 = getelementptr inbounds [9 x i8], ptr @.str.2426, i64 0, i64 0
   %t109 = load ptr, ptr %ftt.addr.0, align 8
   %t110 = getelementptr inbounds %Type, ptr %t109, i32 0, i32 2
   %t111 = load ptr, ptr %t110, align 8
@@ -88815,7 +88828,7 @@ cond.end6:
   br label %while.cond5
 while.end5:
   %t121 = load ptr, ptr %out.addr, align 8
-  %t122 = getelementptr inbounds [19 x i8], ptr @.str.2426, i64 0, i64 0
+  %t122 = getelementptr inbounds [19 x i8], ptr @.str.2427, i64 0, i64 0
   %t123 = load ptr, ptr %ret-ir.addr.2, align 8
   %t124 = call i32 (ptr, ptr, ...) @fprintf(ptr %t121, ptr %t122, ptr %t123)
   br label %cond.join2.1
@@ -88844,10 +88857,10 @@ entry:
   %t4 = call ptr @open_memstream(ptr %buf.addr.0, ptr %szp.addr.1)
   store ptr %t4, ptr %s.addr.3, align 8
   %t5 = load ptr, ptr %s.addr.3, align 8
-  %t6 = getelementptr inbounds [29 x i8], ptr @.str.2427, i64 0, i64 0
+  %t6 = getelementptr inbounds [29 x i8], ptr @.str.2428, i64 0, i64 0
   %t7 = call i32 (ptr, ptr, ...) @fprintf(ptr %t5, ptr %t6)
   %t8 = load ptr, ptr %s.addr.3, align 8
-  %t9 = getelementptr inbounds [40 x i8], ptr @.str.2428, i64 0, i64 0
+  %t9 = getelementptr inbounds [40 x i8], ptr @.str.2429, i64 0, i64 0
   %t10 = call i32 (ptr, ptr, ...) @fprintf(ptr %t8, ptr %t9)
   %t11 = load ptr, ptr %s.addr.3, align 8
   %t12 = load ptr, ptr %fname-ir.addr, align 8
@@ -88870,13 +88883,13 @@ and.end1:
   %t22 = load i1, ptr %and.val1, align 1
   br i1 %t22, label %cond.then0.0, label %cond.fall0
 cond.then0.0:
-  %t23 = getelementptr inbounds [17 x i8], ptr @.str.2429, i64 0, i64 0
+  %t23 = getelementptr inbounds [17 x i8], ptr @.str.2430, i64 0, i64 0
   %t24 = call ptr @getenv(ptr %t23)
   %t25 = icmp ne ptr %t24, null
   br i1 %t25, label %cond.then2.0, label %cond.fall2
 cond.then2.0:
   %t26 = load ptr, ptr @stderr, align 8
-  %t27 = getelementptr inbounds [40 x i8], ptr @.str.2430, i64 0, i64 0
+  %t27 = getelementptr inbounds [40 x i8], ptr @.str.2431, i64 0, i64 0
   %t28 = load ptr, ptr %buf.addr.0, align 8
   %t29 = call i32 (ptr, ptr, ...) @fprintf(ptr %t26, ptr %t27, ptr %t28)
   br label %cond.join2.0
@@ -88932,7 +88945,7 @@ cond.then0.0:
   store ptr %t12, ptr %msg.addr.10, align 8
   %t13 = load ptr, ptr %msg.addr.10, align 8
   %t14 = sext i32 256 to i64
-  %t15 = getelementptr inbounds [38 x i8], ptr @.str.2431, i64 0, i64 0
+  %t15 = getelementptr inbounds [38 x i8], ptr @.str.2432, i64 0, i64 0
   %t16 = load ptr, ptr %impl-name.addr, align 8
   %t17 = load ptr, ptr %err1.addr.4, align 8
   %t18 = call ptr @LLVMGetErrorMessage(ptr %t17)
@@ -88946,7 +88959,7 @@ cond.then0.0:
 cond.fall0:
   br label %cond.end0
 cond.end0:
-  %t24 = getelementptr inbounds [7 x i8], ptr @.str.2432, i64 0, i64 0
+  %t24 = getelementptr inbounds [7 x i8], ptr @.str.2433, i64 0, i64 0
   %t25 = load ptr, ptr %fname-ir.addr, align 8
   %t26 = call ptr @fmt-s(ptr %t24, ptr %t25)
   store ptr %t26, ptr %tgt-name.addr.23, align 8
@@ -88963,7 +88976,7 @@ cond.then1.0:
   store ptr %t35, ptr %msg.addr.33, align 8
   %t36 = load ptr, ptr %msg.addr.33, align 8
   %t37 = sext i32 256 to i64
-  %t38 = getelementptr inbounds [38 x i8], ptr @.str.2433, i64 0, i64 0
+  %t38 = getelementptr inbounds [38 x i8], ptr @.str.2434, i64 0, i64 0
   %t39 = load ptr, ptr %tgt-name.addr.23, align 8
   %t40 = load ptr, ptr %err2.addr.27, align 8
   %t41 = call ptr @LLVMGetErrorMessage(ptr %t40)
@@ -89062,7 +89075,7 @@ while.body1:
   %t52 = load ptr, ptr %t51, align 8
   store ptr %t52, ptr %ftypes.addr.45, align 8
   %t53 = load ptr, ptr @g-out, align 8
-  %t54 = getelementptr inbounds [19 x i8], ptr @.str.2434, i64 0, i64 0
+  %t54 = getelementptr inbounds [19 x i8], ptr @.str.2435, i64 0, i64 0
   %t55 = load ptr, ptr %ret-info.addr.10, align 8
   %t56 = load ptr, ptr %ret.addr.5, align 8
   %t57 = call ptr @abi-ret-ir(ptr %t55, ptr %t56)
@@ -89077,7 +89090,7 @@ while.body1:
   br i1 %t65, label %cond.then2.0, label %cond.fall2
 cond.then2.0:
   %t66 = load ptr, ptr @g-out, align 8
-  %t67 = getelementptr inbounds [22 x i8], ptr @.str.2435, i64 0, i64 0
+  %t67 = getelementptr inbounds [22 x i8], ptr @.str.2436, i64 0, i64 0
   %t68 = load ptr, ptr %ret.addr.5, align 8
   %t69 = call ptr @type-to-ir(ptr %t68)
   %t70 = load ptr, ptr %ret-info.addr.10, align 8
@@ -89107,7 +89120,7 @@ while.body3:
   br i1 %t82, label %cond.then4.0, label %cond.fall4
 cond.then4.0:
   %t83 = load ptr, ptr @g-out, align 8
-  %t84 = getelementptr inbounds [3 x i8], ptr @.str.2436, i64 0, i64 0
+  %t84 = getelementptr inbounds [3 x i8], ptr @.str.2437, i64 0, i64 0
   %t85 = call i32 (ptr, ptr, ...) @fprintf(ptr %t83, ptr %t84)
   br label %cond.join4.0
 cond.join4.0:
@@ -89135,7 +89148,7 @@ cond.end4:
   br label %while.cond3
 while.end3:
   %t100 = load ptr, ptr @g-out, align 8
-  %t101 = getelementptr inbounds [3 x i8], ptr @.str.2437, i64 0, i64 0
+  %t101 = getelementptr inbounds [3 x i8], ptr @.str.2438, i64 0, i64 0
   %t102 = call i32 (ptr, ptr, ...) @fprintf(ptr %t100, ptr %t101)
   %t103 = load i32, ptr %i.addr.23, align 4
   %t104 = add nsw i32 %t103, 1
@@ -89216,10 +89229,10 @@ entry:
   %t16 = call ptr @open_memstream(ptr %ir-bufp.addr.12, ptr %ir-sizep.addr.13)
   store ptr %t16, ptr %irs.addr.15, align 8
   %t17 = load ptr, ptr %irs.addr.15, align 8
-  %t18 = getelementptr inbounds [23 x i8], ptr @.str.2438, i64 0, i64 0
+  %t18 = getelementptr inbounds [23 x i8], ptr @.str.2439, i64 0, i64 0
   %t19 = call i32 (ptr, ptr, ...) @fprintf(ptr %t17, ptr %t18)
   %t20 = load ptr, ptr %irs.addr.15, align 8
-  %t21 = getelementptr inbounds [40 x i8], ptr @.str.2439, i64 0, i64 0
+  %t21 = getelementptr inbounds [40 x i8], ptr @.str.2440, i64 0, i64 0
   %t22 = call i32 (ptr, ptr, ...) @fprintf(ptr %t20, ptr %t21)
   %t23 = load ptr, ptr @g-repl-preamble, align 8
   %t24 = call i32 @fflush(ptr %t23)
@@ -89369,13 +89382,13 @@ and.end11:
   %t86 = load i1, ptr %and.val11, align 1
   br i1 %t86, label %cond.then10.0, label %cond.fall10
 cond.then10.0:
-  %t87 = getelementptr inbounds [17 x i8], ptr @.str.2440, i64 0, i64 0
+  %t87 = getelementptr inbounds [17 x i8], ptr @.str.2441, i64 0, i64 0
   %t88 = call ptr @getenv(ptr %t87)
   %t89 = icmp ne ptr %t88, null
   br i1 %t89, label %cond.then12.0, label %cond.fall12
 cond.then12.0:
   %t90 = load ptr, ptr @stderr, align 8
-  %t91 = getelementptr inbounds [34 x i8], ptr @.str.2441, i64 0, i64 0
+  %t91 = getelementptr inbounds [34 x i8], ptr @.str.2442, i64 0, i64 0
   %t92 = load ptr, ptr %ir-bufp.addr.12, align 8
   %t93 = call i32 (ptr, ptr, ...) @fprintf(ptr %t90, ptr %t91, ptr %t92)
   br label %cond.join12.0
@@ -89413,15 +89426,15 @@ entry:
   call void @open-module-streams()
   %t0 = load ptr, ptr @g-decl-stream, align 8
   store ptr %t0, ptr @g-out, align 8
-  %t1 = getelementptr inbounds [8 x i8], ptr @.str.2442, i64 0, i64 0
+  %t1 = getelementptr inbounds [8 x i8], ptr @.str.2443, i64 0, i64 0
   call void @emit-c-include(ptr %t1, i32 0)
-  %t2 = getelementptr inbounds [9 x i8], ptr @.str.2443, i64 0, i64 0
+  %t2 = getelementptr inbounds [9 x i8], ptr @.str.2444, i64 0, i64 0
   call void @emit-c-include(ptr %t2, i32 0)
-  %t3 = getelementptr inbounds [9 x i8], ptr @.str.2444, i64 0, i64 0
+  %t3 = getelementptr inbounds [9 x i8], ptr @.str.2445, i64 0, i64 0
   call void @emit-c-include(ptr %t3, i32 0)
-  %t4 = getelementptr inbounds [8 x i8], ptr @.str.2445, i64 0, i64 0
+  %t4 = getelementptr inbounds [8 x i8], ptr @.str.2446, i64 0, i64 0
   call void @emit-c-include(ptr %t4, i32 0)
-  %t5 = getelementptr inbounds [9 x i8], ptr @.str.2446, i64 0, i64 0
+  %t5 = getelementptr inbounds [9 x i8], ptr @.str.2447, i64 0, i64 0
   call void @emit-c-include(ptr %t5, i32 0)
   call void @drain-pending-union-irs()
   %t6 = load ptr, ptr @g-type-stream, align 8
@@ -89487,7 +89500,7 @@ cond.end2:
   %t36 = load ptr, ptr @g-def-bufp, align 8
   call void @free(ptr %t36)
   %t37 = load ptr, ptr @g-repl-preamble, align 8
-  %t38 = getelementptr inbounds [2 x i8], ptr @.str.2447, i64 0, i64 0
+  %t38 = getelementptr inbounds [2 x i8], ptr @.str.2448, i64 0, i64 0
   %t39 = call i32 (ptr, ptr, ...) @fprintf(ptr %t37, ptr %t38)
   ret void
 }
@@ -89500,7 +89513,7 @@ entry:
   %sym.addr.116 = alloca ptr, align 8
   %sym.addr.126 = alloca ptr, align 8
   %sym.addr.136 = alloca ptr, align 8
-  %t1 = getelementptr inbounds [5 x i8], ptr @.str.2448, i64 0, i64 0
+  %t1 = getelementptr inbounds [5 x i8], ptr @.str.2449, i64 0, i64 0
   %t2 = call ptr @register-struct(ptr %t1)
   store ptr %t2, ptr %sd.addr.0, align 8
   %t3 = load ptr, ptr %sd.addr.0, align 8
@@ -89524,7 +89537,7 @@ entry:
   %t18 = getelementptr inbounds %StructDef, ptr %t17, i32 0, i32 1
   %t19 = load ptr, ptr %t18, align 8
   %t20 = sext i32 0 to i64
-  %t21 = getelementptr inbounds [5 x i8], ptr @.str.2449, i64 0, i64 0
+  %t21 = getelementptr inbounds [5 x i8], ptr @.str.2450, i64 0, i64 0
   %t22 = call ptr @intern-str(ptr %t21)
   %t23 = getelementptr inbounds ptr, ptr %t19, i64 %t20
   store ptr %t22, ptr %t23, align 8
@@ -89532,7 +89545,7 @@ entry:
   %t25 = getelementptr inbounds %StructDef, ptr %t24, i32 0, i32 1
   %t26 = load ptr, ptr %t25, align 8
   %t27 = sext i32 1 to i64
-  %t28 = getelementptr inbounds [5 x i8], ptr @.str.2450, i64 0, i64 0
+  %t28 = getelementptr inbounds [5 x i8], ptr @.str.2451, i64 0, i64 0
   %t29 = call ptr @intern-str(ptr %t28)
   %t30 = getelementptr inbounds ptr, ptr %t26, i64 %t27
   store ptr %t29, ptr %t30, align 8
@@ -89540,7 +89553,7 @@ entry:
   %t32 = getelementptr inbounds %StructDef, ptr %t31, i32 0, i32 1
   %t33 = load ptr, ptr %t32, align 8
   %t34 = sext i32 2 to i64
-  %t35 = getelementptr inbounds [2 x i8], ptr @.str.2451, i64 0, i64 0
+  %t35 = getelementptr inbounds [2 x i8], ptr @.str.2452, i64 0, i64 0
   %t36 = call ptr @intern-str(ptr %t35)
   %t37 = getelementptr inbounds ptr, ptr %t33, i64 %t34
   store ptr %t36, ptr %t37, align 8
@@ -89548,7 +89561,7 @@ entry:
   %t39 = getelementptr inbounds %StructDef, ptr %t38, i32 0, i32 1
   %t40 = load ptr, ptr %t39, align 8
   %t41 = sext i32 3 to i64
-  %t42 = getelementptr inbounds [2 x i8], ptr @.str.2452, i64 0, i64 0
+  %t42 = getelementptr inbounds [2 x i8], ptr @.str.2453, i64 0, i64 0
   %t43 = call ptr @intern-str(ptr %t42)
   %t44 = getelementptr inbounds ptr, ptr %t40, i64 %t41
   store ptr %t43, ptr %t44, align 8
@@ -89556,7 +89569,7 @@ entry:
   %t46 = getelementptr inbounds %StructDef, ptr %t45, i32 0, i32 1
   %t47 = load ptr, ptr %t46, align 8
   %t48 = sext i32 4 to i64
-  %t49 = getelementptr inbounds [4 x i8], ptr @.str.2453, i64 0, i64 0
+  %t49 = getelementptr inbounds [4 x i8], ptr @.str.2454, i64 0, i64 0
   %t50 = call ptr @intern-str(ptr %t49)
   %t51 = getelementptr inbounds ptr, ptr %t47, i64 %t48
   store ptr %t50, ptr %t51, align 8
@@ -89564,7 +89577,7 @@ entry:
   %t53 = getelementptr inbounds %StructDef, ptr %t52, i32 0, i32 1
   %t54 = load ptr, ptr %t53, align 8
   %t55 = sext i32 5 to i64
-  %t56 = getelementptr inbounds [4 x i8], ptr @.str.2454, i64 0, i64 0
+  %t56 = getelementptr inbounds [4 x i8], ptr @.str.2455, i64 0, i64 0
   %t57 = call ptr @intern-str(ptr %t56)
   %t58 = getelementptr inbounds ptr, ptr %t54, i64 %t55
   store ptr %t57, ptr %t58, align 8
@@ -89599,7 +89612,7 @@ entry:
   %t84 = call ptr @make-type(i32 10)
   store ptr %t84, ptr %raw-node-ty.addr.83, align 8
   %t85 = load ptr, ptr %raw-node-ty.addr.83, align 8
-  %t86 = getelementptr inbounds [5 x i8], ptr @.str.2455, i64 0, i64 0
+  %t86 = getelementptr inbounds [5 x i8], ptr @.str.2456, i64 0, i64 0
   %t87 = call ptr @parse-type-name(ptr %t86, i32 0)
   %t88 = getelementptr inbounds %Type, ptr %t85, i32 0, i32 6
   store ptr %t87, ptr %t88, align 8
@@ -89621,10 +89634,10 @@ entry:
   %t102 = getelementptr inbounds ptr, ptr %t99, i64 %t100
   store ptr %t101, ptr %t102, align 8
   %t103 = load ptr, ptr @g-repl-preamble, align 8
-  %t104 = getelementptr inbounds [49 x i8], ptr @.str.2456, i64 0, i64 0
+  %t104 = getelementptr inbounds [49 x i8], ptr @.str.2457, i64 0, i64 0
   %t105 = call i32 (ptr, ptr, ...) @fprintf(ptr %t103, ptr %t104)
   %t107 = load ptr, ptr @g-globals, align 8
-  %t108 = getelementptr inbounds [9 x i8], ptr @.str.2457, i64 0, i64 0
+  %t108 = getelementptr inbounds [9 x i8], ptr @.str.2458, i64 0, i64 0
   %t109 = load ptr, ptr @ty-i32, align 8
   %t110 = call ptr @scope-define(ptr %t107, ptr %t108, ptr %t109, ptr null, i32 0)
   store ptr %t110, ptr %sym.addr.106, align 8
@@ -89632,11 +89645,11 @@ entry:
   %t112 = getelementptr inbounds %Sym, ptr %t111, i32 0, i32 4
   store i32 1, ptr %t112, align 4
   %t113 = load ptr, ptr %sym.addr.106, align 8
-  %t114 = getelementptr inbounds [2 x i8], ptr @.str.2458, i64 0, i64 0
+  %t114 = getelementptr inbounds [2 x i8], ptr @.str.2459, i64 0, i64 0
   %t115 = getelementptr inbounds %Sym, ptr %t113, i32 0, i32 5
   store ptr %t114, ptr %t115, align 8
   %t117 = load ptr, ptr @g-globals, align 8
-  %t118 = getelementptr inbounds [9 x i8], ptr @.str.2459, i64 0, i64 0
+  %t118 = getelementptr inbounds [9 x i8], ptr @.str.2460, i64 0, i64 0
   %t119 = load ptr, ptr @ty-i32, align 8
   %t120 = call ptr @scope-define(ptr %t117, ptr %t118, ptr %t119, ptr null, i32 0)
   store ptr %t120, ptr %sym.addr.116, align 8
@@ -89644,11 +89657,11 @@ entry:
   %t122 = getelementptr inbounds %Sym, ptr %t121, i32 0, i32 4
   store i32 1, ptr %t122, align 4
   %t123 = load ptr, ptr %sym.addr.116, align 8
-  %t124 = getelementptr inbounds [2 x i8], ptr @.str.2460, i64 0, i64 0
+  %t124 = getelementptr inbounds [2 x i8], ptr @.str.2461, i64 0, i64 0
   %t125 = getelementptr inbounds %Sym, ptr %t123, i32 0, i32 5
   store ptr %t124, ptr %t125, align 8
   %t127 = load ptr, ptr @g-globals, align 8
-  %t128 = getelementptr inbounds [9 x i8], ptr @.str.2461, i64 0, i64 0
+  %t128 = getelementptr inbounds [9 x i8], ptr @.str.2462, i64 0, i64 0
   %t129 = load ptr, ptr @ty-i32, align 8
   %t130 = call ptr @scope-define(ptr %t127, ptr %t128, ptr %t129, ptr null, i32 0)
   store ptr %t130, ptr %sym.addr.126, align 8
@@ -89656,11 +89669,11 @@ entry:
   %t132 = getelementptr inbounds %Sym, ptr %t131, i32 0, i32 4
   store i32 1, ptr %t132, align 4
   %t133 = load ptr, ptr %sym.addr.126, align 8
-  %t134 = getelementptr inbounds [2 x i8], ptr @.str.2462, i64 0, i64 0
+  %t134 = getelementptr inbounds [2 x i8], ptr @.str.2463, i64 0, i64 0
   %t135 = getelementptr inbounds %Sym, ptr %t133, i32 0, i32 5
   store ptr %t134, ptr %t135, align 8
   %t137 = load ptr, ptr @g-globals, align 8
-  %t138 = getelementptr inbounds [10 x i8], ptr @.str.2463, i64 0, i64 0
+  %t138 = getelementptr inbounds [10 x i8], ptr @.str.2464, i64 0, i64 0
   %t139 = load ptr, ptr @ty-i32, align 8
   %t140 = call ptr @scope-define(ptr %t137, ptr %t138, ptr %t139, ptr null, i32 0)
   store ptr %t140, ptr %sym.addr.136, align 8
@@ -89668,7 +89681,7 @@ entry:
   %t142 = getelementptr inbounds %Sym, ptr %t141, i32 0, i32 4
   store i32 1, ptr %t142, align 4
   %t143 = load ptr, ptr %sym.addr.136, align 8
-  %t144 = getelementptr inbounds [2 x i8], ptr @.str.2464, i64 0, i64 0
+  %t144 = getelementptr inbounds [2 x i8], ptr @.str.2465, i64 0, i64 0
   %t145 = getelementptr inbounds %Sym, ptr %t143, i32 0, i32 5
   store ptr %t144, ptr %t145, align 8
   ret void
@@ -89698,7 +89711,7 @@ entry:
   store ptr %t7, ptr %save-peek.addr.6, align 8
   %t9 = load i32, ptr @g-peek-valid, align 4
   store i32 %t9, ptr %save-peek-valid.addr.8, align 4
-  %t10 = getelementptr inbounds [20 x i8], ptr @.str.2465, i64 0, i64 0
+  %t10 = getelementptr inbounds [20 x i8], ptr @.str.2466, i64 0, i64 0
   store ptr %t10, ptr @g-src, align 8
   %t11 = sext i32 0 to i64
   store i64 %t11, ptr @g-pos, align 8
@@ -89791,12 +89804,12 @@ entry:
   %f.addr.44 = alloca ptr, align 8
   %e.addr.62 = alloca i32, align 4
   %t0 = load ptr, ptr @stderr, align 8
-  %t1 = getelementptr inbounds [36 x i8], ptr @.str.2466, i64 0, i64 0
+  %t1 = getelementptr inbounds [36 x i8], ptr @.str.2467, i64 0, i64 0
   %t2 = call i32 (ptr, ptr, ...) @fprintf(ptr %t0, ptr %t1)
   %t3 = load ptr, ptr @stdout, align 8
   %t4 = sext i32 0 to i64
   %t5 = call i32 @setvbuf(ptr %t3, ptr null, i32 1, i64 %t4)
-  %t6 = getelementptr inbounds [7 x i8], ptr @.str.2467, i64 0, i64 0
+  %t6 = getelementptr inbounds [7 x i8], ptr @.str.2468, i64 0, i64 0
   store ptr %t6, ptr @g-source-path, align 8
   call void @compiler-init()
   %t7 = call ptr @open_memstream(ptr @g-repl-preamble-bufp, ptr @g-repl-preamble-sizep)
@@ -89818,7 +89831,7 @@ while.body0:
   br i1 %t14, label %cond.then1.0, label %cond.fall1
 cond.then1.0:
   %t15 = load ptr, ptr @stderr, align 8
-  %t16 = getelementptr inbounds [2 x i8], ptr @.str.2468, i64 0, i64 0
+  %t16 = getelementptr inbounds [2 x i8], ptr @.str.2469, i64 0, i64 0
   %t17 = call i32 (ptr, ptr, ...) @fprintf(ptr %t15, ptr %t16)
   store i32 0, ptr %running.addr.8, align 4
   br label %cond.join1.0
@@ -89879,7 +89892,7 @@ cond.then6.0:
   %t50 = load ptr, ptr %f.addr.44, align 8
   %t51 = getelementptr inbounds %Node, ptr %t50, i32 0, i32 1
   %t52 = load i32, ptr %t51, align 4
-  %t53 = getelementptr inbounds [18 x i8], ptr @.str.2469, i64 0, i64 0
+  %t53 = getelementptr inbounds [18 x i8], ptr @.str.2470, i64 0, i64 0
   call void @repl-error(i32 %t52, ptr %t53)
   br label %cond.join6.0
 cond.join6.0:
@@ -90005,7 +90018,7 @@ cond.then0.0:
   %t5 = load ptr, ptr %cc.addr.0, align 8
   %t6 = getelementptr inbounds %Node, ptr %t5, i32 0, i32 1
   %t7 = load i32, ptr %t6, align 4
-  %t8 = getelementptr inbounds [15 x i8], ptr @.str.2470, i64 0, i64 0
+  %t8 = getelementptr inbounds [15 x i8], ptr @.str.2471, i64 0, i64 0
   call void @die-at(i32 %t7, ptr %t8)
   unreachable
 cond.fall0:
@@ -90025,7 +90038,7 @@ cond.then1.0:
   %t18 = load ptr, ptr %name-node.addr.9, align 8
   %t19 = getelementptr inbounds %Node, ptr %t18, i32 0, i32 1
   %t20 = load i32, ptr %t19, align 4
-  %t21 = getelementptr inbounds [26 x i8], ptr @.str.2471, i64 0, i64 0
+  %t21 = getelementptr inbounds [26 x i8], ptr @.str.2472, i64 0, i64 0
   call void @die-at(i32 %t20, ptr %t21)
   unreachable
 cond.fall1:
@@ -90054,7 +90067,7 @@ cond.then3.0:
   %t34 = load ptr, ptr %name-node.addr.9, align 8
   %t35 = getelementptr inbounds %Node, ptr %t34, i32 0, i32 1
   %t36 = load i32, ptr %t35, align 4
-  %t37 = getelementptr inbounds [28 x i8], ptr @.str.2472, i64 0, i64 0
+  %t37 = getelementptr inbounds [28 x i8], ptr @.str.2473, i64 0, i64 0
   %t38 = load ptr, ptr %fname.addr.25, align 8
   %t39 = call ptr @fmt-s(ptr %t37, ptr %t38)
   call void @die-at(i32 %t36, ptr %t39)
@@ -90129,12 +90142,12 @@ while.end6:
   br i1 %t78, label %cond.then8.0, label %cond.fall8
 cond.then8.0:
   %t79 = load ptr, ptr @stderr, align 8
-  %t80 = getelementptr inbounds [20 x i8], ptr @.str.2473, i64 0, i64 0
+  %t80 = getelementptr inbounds [20 x i8], ptr @.str.2474, i64 0, i64 0
   %t81 = load ptr, ptr @g-source-path, align 8
   %t82 = load ptr, ptr %cc.addr.0, align 8
   %t83 = getelementptr inbounds %Node, ptr %t82, i32 0, i32 1
   %t84 = load i32, ptr %t83, align 4
-  %t85 = getelementptr inbounds [93 x i8], ptr @.str.2474, i64 0, i64 0
+  %t85 = getelementptr inbounds [93 x i8], ptr @.str.2475, i64 0, i64 0
   %t86 = load ptr, ptr %fname.addr.25, align 8
   %t87 = call ptr @fmt-s(ptr %t85, ptr %t86)
   %t88 = call i32 (ptr, ptr, ...) @fprintf(ptr %t79, ptr %t80, ptr %t81, i32 %t84, ptr %t87)
@@ -90177,7 +90190,7 @@ and.rhs12:
   %t105 = load ptr, ptr %b0.addr.96, align 8
   %t106 = getelementptr inbounds %Node, ptr %t105, i32 0, i32 3
   %t107 = load ptr, ptr %t106, align 8
-  %t108 = getelementptr inbounds [9 x i8], ptr @.str.2475, i64 0, i64 0
+  %t108 = getelementptr inbounds [9 x i8], ptr @.str.2476, i64 0, i64 0
   %t109 = call i32 @strcmp(ptr %t107, ptr %t108)
   %t110 = icmp eq i32 %t109, 0
   store i1 %t110, ptr %and.val12, align 1
@@ -90236,7 +90249,7 @@ cond.then14.0:
   %t136 = load ptr, ptr %sp.addr.128, align 8
   %t137 = getelementptr inbounds %Node, ptr %t136, i32 0, i32 3
   %t138 = load ptr, ptr %t137, align 8
-  %t139 = getelementptr inbounds [6 x i8], ptr @.str.2476, i64 0, i64 0
+  %t139 = getelementptr inbounds [6 x i8], ptr @.str.2477, i64 0, i64 0
   %t140 = call i32 @strcmp(ptr %t138, ptr %t139)
   %t141 = icmp eq i32 %t140, 0
   br i1 %t141, label %cond.then15.0, label %cond.fall15
@@ -90250,7 +90263,7 @@ cond.then16.0:
   %t146 = load ptr, ptr %sp.addr.128, align 8
   %t147 = getelementptr inbounds %Node, ptr %t146, i32 0, i32 1
   %t148 = load i32, ptr %t147, align 4
-  %t149 = getelementptr inbounds [41 x i8], ptr @.str.2477, i64 0, i64 0
+  %t149 = getelementptr inbounds [41 x i8], ptr @.str.2478, i64 0, i64 0
   call void @die-at(i32 %t148, ptr %t149)
   unreachable
 cond.fall16:
@@ -90263,7 +90276,7 @@ cond.then17.0:
   %t152 = load ptr, ptr %sp.addr.128, align 8
   %t153 = getelementptr inbounds %Node, ptr %t152, i32 0, i32 1
   %t154 = load i32, ptr %t153, align 4
-  %t155 = getelementptr inbounds [31 x i8], ptr @.str.2478, i64 0, i64 0
+  %t155 = getelementptr inbounds [31 x i8], ptr @.str.2479, i64 0, i64 0
   call void @die-at(i32 %t154, ptr %t155)
   unreachable
 cond.fall17:
@@ -90282,7 +90295,7 @@ cond.end15:
   %t158 = load ptr, ptr %sp.addr.128, align 8
   %t159 = getelementptr inbounds %Node, ptr %t158, i32 0, i32 3
   %t160 = load ptr, ptr %t159, align 8
-  %t161 = getelementptr inbounds [10 x i8], ptr @.str.2479, i64 0, i64 0
+  %t161 = getelementptr inbounds [10 x i8], ptr @.str.2480, i64 0, i64 0
   %t162 = call i32 @strcmp(ptr %t160, ptr %t161)
   %t163 = icmp eq i32 %t162, 0
   br i1 %t163, label %cond.then18.0, label %cond.fall18
@@ -90294,7 +90307,7 @@ cond.then19.0:
   %t166 = load ptr, ptr %sp.addr.128, align 8
   %t167 = getelementptr inbounds %Node, ptr %t166, i32 0, i32 1
   %t168 = load i32, ptr %t167, align 4
-  %t169 = getelementptr inbounds [35 x i8], ptr @.str.2480, i64 0, i64 0
+  %t169 = getelementptr inbounds [35 x i8], ptr @.str.2481, i64 0, i64 0
   call void @die-at(i32 %t168, ptr %t169)
   unreachable
 cond.fall19:
@@ -90339,7 +90352,7 @@ cond.then20.0:
   %t182 = call ptr @node-at(ptr %t180, i32 %t181)
   %t183 = getelementptr inbounds %Node, ptr %t182, i32 0, i32 1
   %t184 = load i32, ptr %t183, align 4
-  %t185 = getelementptr inbounds [46 x i8], ptr @.str.2481, i64 0, i64 0
+  %t185 = getelementptr inbounds [46 x i8], ptr @.str.2482, i64 0, i64 0
   call void @die-at(i32 %t184, ptr %t185)
   unreachable
 cond.fall20:
@@ -90360,7 +90373,7 @@ cond.then23.0:
   %t194 = call ptr @node-at(ptr %t192, i32 %t193)
   %t195 = getelementptr inbounds %Node, ptr %t194, i32 0, i32 1
   %t196 = load i32, ptr %t195, align 4
-  %t197 = getelementptr inbounds [55 x i8], ptr @.str.2482, i64 0, i64 0
+  %t197 = getelementptr inbounds [55 x i8], ptr @.str.2483, i64 0, i64 0
   call void @die-at(i32 %t196, ptr %t197)
   unreachable
 cond.fall23:
@@ -90559,7 +90572,7 @@ cond.then36.0:
   %t289 = load ptr, ptr %p.addr.262, align 8
   %t290 = getelementptr inbounds %Node, ptr %t289, i32 0, i32 1
   %t291 = load i32, ptr %t290, align 4
-  %t292 = getelementptr inbounds [50 x i8], ptr @.str.2483, i64 0, i64 0
+  %t292 = getelementptr inbounds [50 x i8], ptr @.str.2484, i64 0, i64 0
   call void @die-at(i32 %t291, ptr %t292)
   unreachable
 cond.fall36:
@@ -90591,7 +90604,7 @@ cond.then38.0:
   %t306 = load ptr, ptr %p.addr.262, align 8
   %t307 = getelementptr inbounds %Node, ptr %t306, i32 0, i32 1
   %t308 = load i32, ptr %t307, align 4
-  %t309 = getelementptr inbounds [34 x i8], ptr @.str.2484, i64 0, i64 0
+  %t309 = getelementptr inbounds [34 x i8], ptr @.str.2485, i64 0, i64 0
   %t310 = load ptr, ptr %pname.addr.266, align 8
   %t311 = call ptr @fmt-s(ptr %t309, ptr %t310)
   call void @die-at(i32 %t308, ptr %t311)
@@ -90761,7 +90774,7 @@ cond.end42:
   %t398 = icmp eq i32 %t397, 1
   br i1 %t398, label %cond.then45.0, label %cond.fall45
 cond.then45.0:
-  %t399 = getelementptr inbounds [7 x i8], ptr @.str.2485, i64 0, i64 0
+  %t399 = getelementptr inbounds [7 x i8], ptr @.str.2486, i64 0, i64 0
   store ptr %t399, ptr @g-fn-sret-name, align 8
   br label %cond.join45.0
 cond.join45.0:
@@ -90875,7 +90888,7 @@ cond.then51.0:
   %t464 = load ptr, ptr %cc.addr.0, align 8
   %t465 = getelementptr inbounds %Node, ptr %t464, i32 0, i32 1
   %t466 = load i32, ptr %t465, align 4
-  %t467 = getelementptr inbounds [94 x i8], ptr @.str.2486, i64 0, i64 0
+  %t467 = getelementptr inbounds [94 x i8], ptr @.str.2487, i64 0, i64 0
   call void @die-at(i32 %t466, ptr %t467)
   unreachable
 cond.fall51:
@@ -90896,7 +90909,7 @@ cond.then52.0:
   br i1 %t477, label %cond.then53.0, label %cond.test53.1
 cond.then53.0:
   %t478 = load ptr, ptr %ret.addr.26, align 8
-  %t479 = getelementptr inbounds [16 x i8], ptr @.str.2487, i64 0, i64 0
+  %t479 = getelementptr inbounds [16 x i8], ptr @.str.2488, i64 0, i64 0
   %t480 = call ptr @alloc-val(ptr %t478, ptr %t479)
   br label %cond.join53.0
 cond.join53.0:
@@ -90924,7 +90937,7 @@ cond.then52.1:
   br i1 %t486, label %cond.then54.0, label %cond.test54.1
 cond.then54.0:
   %t487 = load ptr, ptr @g-body-stream, align 8
-  %t488 = getelementptr inbounds [12 x i8], ptr @.str.2488, i64 0, i64 0
+  %t488 = getelementptr inbounds [12 x i8], ptr @.str.2489, i64 0, i64 0
   %t489 = call i32 (ptr, ptr, ...) @fprintf(ptr %t487, ptr %t488)
   br label %cond.join54.0
 cond.join54.0:
@@ -90940,14 +90953,14 @@ cond.then54.1:
   %t495 = icmp eq i32 %t494, 0
   br i1 %t495, label %cond.then55.0, label %cond.test55.1
 cond.then55.0:
-  %t497 = getelementptr inbounds [2 x i8], ptr @.str.2489, i64 0, i64 0
+  %t497 = getelementptr inbounds [2 x i8], ptr @.str.2490, i64 0, i64 0
   store ptr %t497, ptr %zero.addr.496, align 8
   %t498 = load ptr, ptr %ret.addr.26, align 8
   %t499 = call i32 @is-ptr-like(ptr %t498)
   %t500 = icmp ne i32 %t499, 0
   br i1 %t500, label %cond.then56.0, label %cond.fall56
 cond.then56.0:
-  %t501 = getelementptr inbounds [5 x i8], ptr @.str.2490, i64 0, i64 0
+  %t501 = getelementptr inbounds [5 x i8], ptr @.str.2491, i64 0, i64 0
   store ptr %t501, ptr %zero.addr.496, align 8
   br label %cond.join56.0
 cond.join56.0:
@@ -90957,7 +90970,7 @@ cond.fall56:
 cond.end56:
   %t502 = phi ptr [ %t501, %cond.join56.0 ], [ undef, %cond.fall56 ]
   %t503 = load ptr, ptr @g-body-stream, align 8
-  %t504 = getelementptr inbounds [13 x i8], ptr @.str.2491, i64 0, i64 0
+  %t504 = getelementptr inbounds [13 x i8], ptr @.str.2492, i64 0, i64 0
   %t505 = load ptr, ptr %ret.addr.26, align 8
   %t506 = call ptr @type-to-ir(ptr %t505)
   %t507 = load ptr, ptr %zero.addr.496, align 8
@@ -90982,7 +90995,7 @@ cond.then57.0:
   %t518 = load ptr, ptr %cc.addr.0, align 8
   %t519 = getelementptr inbounds %Node, ptr %t518, i32 0, i32 1
   %t520 = load i32, ptr %t519, align 4
-  %t521 = getelementptr inbounds [90 x i8], ptr @.str.2492, i64 0, i64 0
+  %t521 = getelementptr inbounds [90 x i8], ptr @.str.2493, i64 0, i64 0
   %t522 = load ptr, ptr %fname.addr.25, align 8
   %t523 = call ptr @fmt-s(ptr %t521, ptr %t522)
   call void @die-at(i32 %t520, ptr %t523)
@@ -90993,7 +91006,7 @@ cond.end57:
   %t525 = load ptr, ptr %coerced.addr.509, align 8
   store ptr %t525, ptr %cv.addr.524, align 8
   %t526 = load ptr, ptr @g-body-stream, align 8
-  %t527 = getelementptr inbounds [13 x i8], ptr @.str.2493, i64 0, i64 0
+  %t527 = getelementptr inbounds [13 x i8], ptr @.str.2494, i64 0, i64 0
   %t528 = load ptr, ptr %ret.addr.26, align 8
   %t529 = call ptr @type-to-ir(ptr %t528)
   %t530 = load ptr, ptr %cv.addr.524, align 8
@@ -91029,7 +91042,7 @@ cond.end50:
   br i1 %t541, label %cond.then58.0, label %cond.test58.1
 cond.then58.0:
   %t542 = load ptr, ptr @g-out, align 8
-  %t543 = getelementptr inbounds [23 x i8], ptr @.str.2494, i64 0, i64 0
+  %t543 = getelementptr inbounds [23 x i8], ptr @.str.2495, i64 0, i64 0
   %t544 = load ptr, ptr @g-fn-ret-abi, align 8
   %t545 = load ptr, ptr %ret.addr.26, align 8
   %t546 = call ptr @abi-ret-ir(ptr %t544, ptr %t545)
@@ -91045,7 +91058,7 @@ cond.test58.1:
   br label %cond.then58.1
 cond.then58.1:
   %t552 = load ptr, ptr @g-out, align 8
-  %t553 = getelementptr inbounds [14 x i8], ptr @.str.2495, i64 0, i64 0
+  %t553 = getelementptr inbounds [14 x i8], ptr @.str.2496, i64 0, i64 0
   %t554 = load ptr, ptr @g-fn-ret-abi, align 8
   %t555 = load ptr, ptr %ret.addr.26, align 8
   %t556 = call ptr @abi-ret-ir(ptr %t554, ptr %t555)
@@ -91075,7 +91088,7 @@ cond.end58:
   br i1 %t574, label %cond.then59.0, label %cond.fall59
 cond.then59.0:
   %t575 = load ptr, ptr @g-out, align 8
-  %t576 = getelementptr inbounds [25 x i8], ptr @.str.2496, i64 0, i64 0
+  %t576 = getelementptr inbounds [25 x i8], ptr @.str.2497, i64 0, i64 0
   %t577 = load ptr, ptr %ret.addr.26, align 8
   %t578 = call ptr @type-to-ir(ptr %t577)
   %t579 = load ptr, ptr @g-fn-ret-abi, align 8
@@ -91104,7 +91117,7 @@ while.body60:
   br i1 %t589, label %cond.then61.0, label %cond.fall61
 cond.then61.0:
   %t590 = load ptr, ptr @g-out, align 8
-  %t591 = getelementptr inbounds [3 x i8], ptr @.str.2497, i64 0, i64 0
+  %t591 = getelementptr inbounds [3 x i8], ptr @.str.2498, i64 0, i64 0
   %t592 = call i32 (ptr, ptr, ...) @fprintf(ptr %t590, ptr %t591)
   br label %cond.join61.0
 cond.join61.0:
@@ -91141,7 +91154,7 @@ while.end60:
   br i1 %t613, label %cond.then62.0, label %cond.test62.1
 cond.then62.0:
   %t614 = load ptr, ptr @g-out, align 8
-  %t615 = getelementptr inbounds [14 x i8], ptr @.str.2498, i64 0, i64 0
+  %t615 = getelementptr inbounds [14 x i8], ptr @.str.2499, i64 0, i64 0
   %t616 = call i32 (ptr, ptr, ...) @fprintf(ptr %t614, ptr %t615)
   br label %cond.join62.0
 cond.join62.0:
@@ -91150,7 +91163,7 @@ cond.test62.1:
   br label %cond.then62.1
 cond.then62.1:
   %t617 = load ptr, ptr @g-out, align 8
-  %t618 = getelementptr inbounds [5 x i8], ptr @.str.2499, i64 0, i64 0
+  %t618 = getelementptr inbounds [5 x i8], ptr @.str.2500, i64 0, i64 0
   %t619 = call i32 (ptr, ptr, ...) @fprintf(ptr %t617, ptr %t618)
   br label %cond.join62.1
 cond.join62.1:
@@ -91158,7 +91171,7 @@ cond.join62.1:
 cond.end62:
   %t620 = phi i32 [ %t616, %cond.join62.0 ], [ %t619, %cond.join62.1 ]
   %t621 = load ptr, ptr @g-out, align 8
-  %t622 = getelementptr inbounds [8 x i8], ptr @.str.2500, i64 0, i64 0
+  %t622 = getelementptr inbounds [8 x i8], ptr @.str.2501, i64 0, i64 0
   %t623 = call i32 (ptr, ptr, ...) @fprintf(ptr %t621, ptr %t622)
   %t624 = load ptr, ptr @g-entry-bufp, align 8
   %t625 = icmp ne ptr %t624, null
@@ -91211,7 +91224,7 @@ cond.fall65:
 cond.end65:
   %t645 = phi i32 [ %t644, %cond.join65.0 ], [ undef, %cond.fall65 ]
   %t646 = load ptr, ptr @g-out, align 8
-  %t647 = getelementptr inbounds [4 x i8], ptr @.str.2501, i64 0, i64 0
+  %t647 = getelementptr inbounds [4 x i8], ptr @.str.2502, i64 0, i64 0
   %t648 = call i32 (ptr, ptr, ...) @fprintf(ptr %t646, ptr %t647)
   %t649 = load ptr, ptr @g-entry-bufp, align 8
   call void @free(ptr %t649)
@@ -91251,7 +91264,7 @@ cond.end0:
   br i1 %t6, label %cond.then1.0, label %cond.fall1
 cond.then1.0:
   %t7 = load ptr, ptr @stderr, align 8
-  %t8 = getelementptr inbounds [44 x i8], ptr @.str.2502, i64 0, i64 0
+  %t8 = getelementptr inbounds [44 x i8], ptr @.str.2503, i64 0, i64 0
   %t9 = load ptr, ptr @g-source-path, align 8
   %t10 = load i32, ptr %line.addr, align 4
   %t11 = load ptr, ptr %err.addr.3, align 8
@@ -91290,7 +91303,7 @@ cond.end1:
   br i1 %t27, label %cond.then3.0, label %cond.fall3
 cond.then3.0:
   %t28 = load ptr, ptr @stderr, align 8
-  %t29 = getelementptr inbounds [47 x i8], ptr @.str.2503, i64 0, i64 0
+  %t29 = getelementptr inbounds [47 x i8], ptr @.str.2504, i64 0, i64 0
   %t30 = load ptr, ptr @g-source-path, align 8
   %t31 = load i32, ptr %line.addr, align 4
   %t32 = load ptr, ptr %err.addr.23, align 8
@@ -91356,7 +91369,7 @@ entry:
   store i64 %t5, ptr %ir-len.addr.3, align 8
   %t7 = load ptr, ptr %ir.addr, align 8
   %t8 = load i64, ptr %ir-len.addr.3, align 8
-  %t9 = getelementptr inbounds [15 x i8], ptr @.str.2504, i64 0, i64 0
+  %t9 = getelementptr inbounds [15 x i8], ptr @.str.2505, i64 0, i64 0
   %t10 = call ptr @LLVMCreateMemoryBufferWithMemoryRangeCopy(ptr %t7, i64 %t8, ptr %t9)
   store ptr %t10, ptr %mb.addr.6, align 8
   store ptr null, ptr %mod.addr.11, align 8
@@ -91370,7 +91383,7 @@ entry:
   br i1 %t18, label %cond.then0.0, label %cond.fall0
 cond.then0.0:
   %t19 = load ptr, ptr @stderr, align 8
-  %t20 = getelementptr inbounds [41 x i8], ptr @.str.2505, i64 0, i64 0
+  %t20 = getelementptr inbounds [41 x i8], ptr @.str.2506, i64 0, i64 0
   %t21 = load ptr, ptr @g-source-path, align 8
   %t22 = load i32, ptr %line.addr, align 4
   %t23 = load ptr, ptr %errmsg.addr.12, align 8
@@ -91430,7 +91443,7 @@ cond.end2:
   br i1 %t47, label %cond.then3.0, label %cond.fall3
 cond.then3.0:
   %t48 = load ptr, ptr @stderr, align 8
-  %t49 = getelementptr inbounds [41 x i8], ptr @.str.2506, i64 0, i64 0
+  %t49 = getelementptr inbounds [41 x i8], ptr @.str.2507, i64 0, i64 0
   %t50 = load ptr, ptr @g-source-path, align 8
   %t51 = load i32, ptr %line.addr, align 4
   %t52 = load ptr, ptr %err.addr.33, align 8
@@ -91578,7 +91591,7 @@ cond.then0.0:
   %t7 = load ptr, ptr %ff.addr.3, align 8
   %t8 = getelementptr inbounds %Node, ptr %t7, i32 0, i32 1
   %t9 = load i32, ptr %t8, align 4
-  %t10 = getelementptr inbounds [46 x i8], ptr @.str.2507, i64 0, i64 0
+  %t10 = getelementptr inbounds [46 x i8], ptr @.str.2508, i64 0, i64 0
   call void @die-at(i32 %t9, ptr %t10)
   unreachable
 cond.fall0:
@@ -91657,7 +91670,7 @@ and.rhs6:
   %t61 = call ptr @node-at(ptr %t60, i32 0)
   %t62 = getelementptr inbounds %Node, ptr %t61, i32 0, i32 3
   %t63 = load ptr, ptr %t62, align 8
-  %t64 = getelementptr inbounds [5 x i8], ptr @.str.2508, i64 0, i64 0
+  %t64 = getelementptr inbounds [5 x i8], ptr @.str.2509, i64 0, i64 0
   %t65 = call i32 @strcmp(ptr %t63, ptr %t64)
   %t66 = icmp eq i32 %t65, 0
   store i1 %t66, ptr %and.val6, align 1
@@ -91788,7 +91801,7 @@ while.end10:
   %t141 = load ptr, ptr @g-globals, align 8
   %t142 = load ptr, ptr %fname.addr.80, align 8
   %t143 = load ptr, ptr %ft.addr.130, align 8
-  %t144 = getelementptr inbounds [4 x i8], ptr @.str.2509, i64 0, i64 0
+  %t144 = getelementptr inbounds [4 x i8], ptr @.str.2510, i64 0, i64 0
   %t145 = load ptr, ptr %fname.addr.80, align 8
   %t146 = call ptr @fmt-s(ptr %t144, ptr %t145)
   %t147 = call ptr @scope-define(ptr %t141, ptr %t142, ptr %t143, ptr %t146, i32 0)
@@ -91880,7 +91893,7 @@ cond.then13.0:
   %t189 = load ptr, ptr %t188, align 8
   store ptr %t189, ptr %bh.addr.185, align 8
   %t190 = load ptr, ptr %bh.addr.185, align 8
-  %t191 = getelementptr inbounds [10 x i8], ptr @.str.2510, i64 0, i64 0
+  %t191 = getelementptr inbounds [10 x i8], ptr @.str.2511, i64 0, i64 0
   %t192 = call i32 @strcmp(ptr %t190, ptr %t191)
   %t193 = icmp eq i32 %t192, 0
   br i1 %t193, label %cond.then17.0, label %cond.fall17
@@ -91897,7 +91910,7 @@ cond.fall17:
   br label %cond.end17
 cond.end17:
   %t196 = load ptr, ptr %bh.addr.185, align 8
-  %t197 = getelementptr inbounds [9 x i8], ptr @.str.2511, i64 0, i64 0
+  %t197 = getelementptr inbounds [9 x i8], ptr @.str.2512, i64 0, i64 0
   %t198 = call i32 @strcmp(ptr %t196, ptr %t197)
   %t199 = icmp eq i32 %t198, 0
   br i1 %t199, label %cond.then18.0, label %cond.fall18
@@ -91912,7 +91925,7 @@ cond.fall18:
   br label %cond.end18
 cond.end18:
   %t201 = load ptr, ptr %bh.addr.185, align 8
-  %t202 = getelementptr inbounds [8 x i8], ptr @.str.2512, i64 0, i64 0
+  %t202 = getelementptr inbounds [8 x i8], ptr @.str.2513, i64 0, i64 0
   %t203 = call i32 @strcmp(ptr %t201, ptr %t202)
   %t204 = icmp eq i32 %t203, 0
   br i1 %t204, label %cond.then19.0, label %cond.fall19
@@ -91927,7 +91940,7 @@ cond.fall19:
   br label %cond.end19
 cond.end19:
   %t206 = load ptr, ptr %bh.addr.185, align 8
-  %t207 = getelementptr inbounds [7 x i8], ptr @.str.2513, i64 0, i64 0
+  %t207 = getelementptr inbounds [7 x i8], ptr @.str.2514, i64 0, i64 0
   %t208 = call i32 @strcmp(ptr %t206, ptr %t207)
   %t209 = icmp eq i32 %t208, 0
   br i1 %t209, label %cond.then20.0, label %cond.fall20
@@ -91944,7 +91957,7 @@ cond.fall20:
   br label %cond.end20
 cond.end20:
   %t212 = load ptr, ptr %bh.addr.185, align 8
-  %t213 = getelementptr inbounds [7 x i8], ptr @.str.2514, i64 0, i64 0
+  %t213 = getelementptr inbounds [7 x i8], ptr @.str.2515, i64 0, i64 0
   %t214 = call i32 @strcmp(ptr %t212, ptr %t213)
   %t215 = icmp eq i32 %t214, 0
   br i1 %t215, label %cond.then21.0, label %cond.fall21
@@ -91961,7 +91974,7 @@ cond.fall21:
   br label %cond.end21
 cond.end21:
   %t218 = load ptr, ptr %bh.addr.185, align 8
-  %t219 = getelementptr inbounds [5 x i8], ptr @.str.2515, i64 0, i64 0
+  %t219 = getelementptr inbounds [5 x i8], ptr @.str.2516, i64 0, i64 0
   %t220 = call i32 @strcmp(ptr %t218, ptr %t219)
   %t221 = icmp eq i32 %t220, 0
   br i1 %t221, label %cond.then22.0, label %cond.fall22
@@ -92016,7 +92029,7 @@ cond.end23:
   store i32 %t237, ptr %bi.addr.159, align 4
   br label %while.cond12
 while.end12:
-  %t239 = getelementptr inbounds [24 x i8], ptr @.str.2516, i64 0, i64 0
+  %t239 = getelementptr inbounds [24 x i8], ptr @.str.2517, i64 0, i64 0
   %t240 = load i32, ptr @g-ct-id, align 4
   %t241 = sext i32 %t240 to i64
   %t242 = call ptr @fmt-i64(ptr %t239, i64 %t241)
@@ -92057,7 +92070,7 @@ while.end25:
   br i1 %t265, label %cond.then26.0, label %cond.fall26
 cond.then26.0:
   %t266 = load ptr, ptr @g-body-stream, align 8
-  %t267 = getelementptr inbounds [12 x i8], ptr @.str.2517, i64 0, i64 0
+  %t267 = getelementptr inbounds [12 x i8], ptr @.str.2518, i64 0, i64 0
   %t268 = call i32 (ptr, ptr, ...) @fprintf(ptr %t266, ptr %t267)
   br label %cond.join26.0
 cond.join26.0:
@@ -92071,11 +92084,11 @@ cond.end26:
   %t272 = load ptr, ptr @g-body-stream, align 8
   %t273 = call i32 @fclose(ptr %t272)
   %t274 = load ptr, ptr %ct-def.addr.28, align 8
-  %t275 = getelementptr inbounds [21 x i8], ptr @.str.2518, i64 0, i64 0
+  %t275 = getelementptr inbounds [21 x i8], ptr @.str.2519, i64 0, i64 0
   %t276 = load ptr, ptr %ct-sym.addr.238, align 8
   %t277 = call i32 (ptr, ptr, ...) @fprintf(ptr %t274, ptr %t275, ptr %t276)
   %t278 = load ptr, ptr %ct-def.addr.28, align 8
-  %t279 = getelementptr inbounds [8 x i8], ptr @.str.2519, i64 0, i64 0
+  %t279 = getelementptr inbounds [8 x i8], ptr @.str.2520, i64 0, i64 0
   %t280 = call i32 (ptr, ptr, ...) @fprintf(ptr %t278, ptr %t279)
   %t281 = load ptr, ptr @g-entry-bufp, align 8
   %t282 = icmp ne ptr %t281, null
@@ -92128,7 +92141,7 @@ cond.fall29:
 cond.end29:
   %t302 = phi i32 [ %t301, %cond.join29.0 ], [ undef, %cond.fall29 ]
   %t303 = load ptr, ptr %ct-def.addr.28, align 8
-  %t304 = getelementptr inbounds [4 x i8], ptr @.str.2520, i64 0, i64 0
+  %t304 = getelementptr inbounds [4 x i8], ptr @.str.2521, i64 0, i64 0
   %t305 = call i32 (ptr, ptr, ...) @fprintf(ptr %t303, ptr %t304)
   %t306 = load ptr, ptr @g-entry-bufp, align 8
   call void @free(ptr %t306)
@@ -92149,91 +92162,91 @@ cond.end29:
   br i1 %t314, label %cond.then31.0, label %cond.fall31
 cond.then31.0:
   %t315 = load ptr, ptr %ct-decl.addr.26, align 8
-  %t316 = getelementptr inbounds [26 x i8], ptr @.str.2521, i64 0, i64 0
+  %t316 = getelementptr inbounds [26 x i8], ptr @.str.2522, i64 0, i64 0
   %t317 = call i32 (ptr, ptr, ...) @fprintf(ptr %t315, ptr %t316)
   %t318 = load ptr, ptr %ct-decl.addr.26, align 8
-  %t319 = getelementptr inbounds [27 x i8], ptr @.str.2522, i64 0, i64 0
+  %t319 = getelementptr inbounds [27 x i8], ptr @.str.2523, i64 0, i64 0
   %t320 = call i32 (ptr, ptr, ...) @fprintf(ptr %t318, ptr %t319)
   %t321 = load ptr, ptr %ct-decl.addr.26, align 8
-  %t322 = getelementptr inbounds [39 x i8], ptr @.str.2523, i64 0, i64 0
+  %t322 = getelementptr inbounds [39 x i8], ptr @.str.2524, i64 0, i64 0
   %t323 = call i32 (ptr, ptr, ...) @fprintf(ptr %t321, ptr %t322)
   %t324 = load ptr, ptr %ct-decl.addr.26, align 8
-  %t325 = getelementptr inbounds [33 x i8], ptr @.str.2524, i64 0, i64 0
+  %t325 = getelementptr inbounds [33 x i8], ptr @.str.2525, i64 0, i64 0
   %t326 = call i32 (ptr, ptr, ...) @fprintf(ptr %t324, ptr %t325)
   %t327 = load ptr, ptr %ct-def.addr.28, align 8
-  %t328 = getelementptr inbounds [48 x i8], ptr @.str.2525, i64 0, i64 0
+  %t328 = getelementptr inbounds [48 x i8], ptr @.str.2526, i64 0, i64 0
   %t329 = call i32 (ptr, ptr, ...) @fprintf(ptr %t327, ptr %t328)
   %t330 = load ptr, ptr %ct-def.addr.28, align 8
-  %t331 = getelementptr inbounds [34 x i8], ptr @.str.2526, i64 0, i64 0
+  %t331 = getelementptr inbounds [34 x i8], ptr @.str.2527, i64 0, i64 0
   %t332 = call i32 (ptr, ptr, ...) @fprintf(ptr %t330, ptr %t331)
   %t333 = load ptr, ptr %ct-def.addr.28, align 8
-  %t334 = getelementptr inbounds [89 x i8], ptr @.str.2527, i64 0, i64 0
+  %t334 = getelementptr inbounds [89 x i8], ptr @.str.2528, i64 0, i64 0
   %t335 = call i32 (ptr, ptr, ...) @fprintf(ptr %t333, ptr %t334)
   %t336 = load ptr, ptr %ct-def.addr.28, align 8
-  %t337 = getelementptr inbounds [34 x i8], ptr @.str.2528, i64 0, i64 0
+  %t337 = getelementptr inbounds [34 x i8], ptr @.str.2529, i64 0, i64 0
   %t338 = call i32 (ptr, ptr, ...) @fprintf(ptr %t336, ptr %t337)
   %t339 = load ptr, ptr %ct-def.addr.28, align 8
-  %t340 = getelementptr inbounds [89 x i8], ptr @.str.2529, i64 0, i64 0
+  %t340 = getelementptr inbounds [89 x i8], ptr @.str.2530, i64 0, i64 0
   %t341 = call i32 (ptr, ptr, ...) @fprintf(ptr %t339, ptr %t340)
   %t342 = load ptr, ptr %ct-def.addr.28, align 8
-  %t343 = getelementptr inbounds [36 x i8], ptr @.str.2530, i64 0, i64 0
+  %t343 = getelementptr inbounds [36 x i8], ptr @.str.2531, i64 0, i64 0
   %t344 = call i32 (ptr, ptr, ...) @fprintf(ptr %t342, ptr %t343)
   %t345 = load ptr, ptr %ct-def.addr.28, align 8
-  %t346 = getelementptr inbounds [89 x i8], ptr @.str.2531, i64 0, i64 0
+  %t346 = getelementptr inbounds [89 x i8], ptr @.str.2532, i64 0, i64 0
   %t347 = call i32 (ptr, ptr, ...) @fprintf(ptr %t345, ptr %t346)
   %t348 = load ptr, ptr %ct-def.addr.28, align 8
-  %t349 = getelementptr inbounds [36 x i8], ptr @.str.2532, i64 0, i64 0
+  %t349 = getelementptr inbounds [36 x i8], ptr @.str.2533, i64 0, i64 0
   %t350 = call i32 (ptr, ptr, ...) @fprintf(ptr %t348, ptr %t349)
   %t351 = load ptr, ptr %ct-def.addr.28, align 8
-  %t352 = getelementptr inbounds [15 x i8], ptr @.str.2533, i64 0, i64 0
+  %t352 = getelementptr inbounds [15 x i8], ptr @.str.2534, i64 0, i64 0
   %t353 = call i32 (ptr, ptr, ...) @fprintf(ptr %t351, ptr %t352)
   %t354 = load ptr, ptr %ct-def.addr.28, align 8
-  %t355 = getelementptr inbounds [4 x i8], ptr @.str.2534, i64 0, i64 0
+  %t355 = getelementptr inbounds [4 x i8], ptr @.str.2535, i64 0, i64 0
   %t356 = call i32 (ptr, ptr, ...) @fprintf(ptr %t354, ptr %t355)
   %t357 = load ptr, ptr %ct-def.addr.28, align 8
-  %t358 = getelementptr inbounds [50 x i8], ptr @.str.2535, i64 0, i64 0
+  %t358 = getelementptr inbounds [50 x i8], ptr @.str.2536, i64 0, i64 0
   %t359 = call i32 (ptr, ptr, ...) @fprintf(ptr %t357, ptr %t358)
   %t360 = load ptr, ptr %ct-def.addr.28, align 8
-  %t361 = getelementptr inbounds [8 x i8], ptr @.str.2536, i64 0, i64 0
+  %t361 = getelementptr inbounds [8 x i8], ptr @.str.2537, i64 0, i64 0
   %t362 = call i32 (ptr, ptr, ...) @fprintf(ptr %t360, ptr %t361)
   %t363 = load ptr, ptr %ct-def.addr.28, align 8
-  %t364 = getelementptr inbounds [31 x i8], ptr @.str.2537, i64 0, i64 0
+  %t364 = getelementptr inbounds [31 x i8], ptr @.str.2538, i64 0, i64 0
   %t365 = call i32 (ptr, ptr, ...) @fprintf(ptr %t363, ptr %t364)
   %t366 = load ptr, ptr %ct-def.addr.28, align 8
-  %t367 = getelementptr inbounds [39 x i8], ptr @.str.2538, i64 0, i64 0
+  %t367 = getelementptr inbounds [39 x i8], ptr @.str.2539, i64 0, i64 0
   %t368 = call i32 (ptr, ptr, ...) @fprintf(ptr %t366, ptr %t367)
   %t369 = load ptr, ptr %ct-def.addr.28, align 8
-  %t370 = getelementptr inbounds [6 x i8], ptr @.str.2539, i64 0, i64 0
+  %t370 = getelementptr inbounds [6 x i8], ptr @.str.2540, i64 0, i64 0
   %t371 = call i32 (ptr, ptr, ...) @fprintf(ptr %t369, ptr %t370)
   %t372 = load ptr, ptr %ct-def.addr.28, align 8
-  %t373 = getelementptr inbounds [15 x i8], ptr @.str.2540, i64 0, i64 0
+  %t373 = getelementptr inbounds [15 x i8], ptr @.str.2541, i64 0, i64 0
   %t374 = call i32 (ptr, ptr, ...) @fprintf(ptr %t372, ptr %t373)
   %t375 = load ptr, ptr %ct-def.addr.28, align 8
-  %t376 = getelementptr inbounds [6 x i8], ptr @.str.2541, i64 0, i64 0
+  %t376 = getelementptr inbounds [6 x i8], ptr @.str.2542, i64 0, i64 0
   %t377 = call i32 (ptr, ptr, ...) @fprintf(ptr %t375, ptr %t376)
   %t378 = load ptr, ptr %ct-def.addr.28, align 8
-  %t379 = getelementptr inbounds [89 x i8], ptr @.str.2542, i64 0, i64 0
+  %t379 = getelementptr inbounds [89 x i8], ptr @.str.2543, i64 0, i64 0
   %t380 = call i32 (ptr, ptr, ...) @fprintf(ptr %t378, ptr %t379)
   %t381 = load ptr, ptr %ct-def.addr.28, align 8
-  %t382 = getelementptr inbounds [39 x i8], ptr @.str.2543, i64 0, i64 0
+  %t382 = getelementptr inbounds [39 x i8], ptr @.str.2544, i64 0, i64 0
   %t383 = call i32 (ptr, ptr, ...) @fprintf(ptr %t381, ptr %t382)
   %t384 = load ptr, ptr %ct-def.addr.28, align 8
-  %t385 = getelementptr inbounds [89 x i8], ptr @.str.2544, i64 0, i64 0
+  %t385 = getelementptr inbounds [89 x i8], ptr @.str.2545, i64 0, i64 0
   %t386 = call i32 (ptr, ptr, ...) @fprintf(ptr %t384, ptr %t385)
   %t387 = load ptr, ptr %ct-def.addr.28, align 8
-  %t388 = getelementptr inbounds [39 x i8], ptr @.str.2545, i64 0, i64 0
+  %t388 = getelementptr inbounds [39 x i8], ptr @.str.2546, i64 0, i64 0
   %t389 = call i32 (ptr, ptr, ...) @fprintf(ptr %t387, ptr %t388)
   %t390 = load ptr, ptr %ct-def.addr.28, align 8
-  %t391 = getelementptr inbounds [51 x i8], ptr @.str.2546, i64 0, i64 0
+  %t391 = getelementptr inbounds [51 x i8], ptr @.str.2547, i64 0, i64 0
   %t392 = call i32 (ptr, ptr, ...) @fprintf(ptr %t390, ptr %t391)
   %t393 = load ptr, ptr %ct-def.addr.28, align 8
-  %t394 = getelementptr inbounds [49 x i8], ptr @.str.2547, i64 0, i64 0
+  %t394 = getelementptr inbounds [49 x i8], ptr @.str.2548, i64 0, i64 0
   %t395 = call i32 (ptr, ptr, ...) @fprintf(ptr %t393, ptr %t394)
   %t396 = load ptr, ptr %ct-def.addr.28, align 8
-  %t397 = getelementptr inbounds [15 x i8], ptr @.str.2548, i64 0, i64 0
+  %t397 = getelementptr inbounds [15 x i8], ptr @.str.2549, i64 0, i64 0
   %t398 = call i32 (ptr, ptr, ...) @fprintf(ptr %t396, ptr %t397)
   %t399 = load ptr, ptr %ct-def.addr.28, align 8
-  %t400 = getelementptr inbounds [4 x i8], ptr @.str.2549, i64 0, i64 0
+  %t400 = getelementptr inbounds [4 x i8], ptr @.str.2550, i64 0, i64 0
   %t401 = call i32 (ptr, ptr, ...) @fprintf(ptr %t399, ptr %t400)
   br label %cond.join31.0
 cond.join31.0:
@@ -92254,10 +92267,10 @@ cond.end31:
   %t413 = call ptr @open_memstream(ptr %ir-bufp.addr.409, ptr %ir-sizep.addr.410)
   store ptr %t413, ptr %irs.addr.412, align 8
   %t414 = load ptr, ptr %irs.addr.412, align 8
-  %t415 = getelementptr inbounds [31 x i8], ptr @.str.2550, i64 0, i64 0
+  %t415 = getelementptr inbounds [31 x i8], ptr @.str.2551, i64 0, i64 0
   %t416 = call i32 (ptr, ptr, ...) @fprintf(ptr %t414, ptr %t415)
   %t417 = load ptr, ptr %irs.addr.412, align 8
-  %t418 = getelementptr inbounds [23 x i8], ptr @.str.2551, i64 0, i64 0
+  %t418 = getelementptr inbounds [23 x i8], ptr @.str.2552, i64 0, i64 0
   %t419 = load ptr, ptr @g-host-target, align 8
   %t420 = getelementptr inbounds %Target, ptr %t419, i32 0, i32 0
   %t421 = load ptr, ptr %t420, align 8
@@ -92508,7 +92521,7 @@ cond.then0.0:
   %t5 = load ptr, ptr %ff.addr.0, align 8
   %t6 = getelementptr inbounds %Node, ptr %t5, i32 0, i32 1
   %t7 = load i32, ptr %t6, align 4
-  %t8 = getelementptr inbounds [41 x i8], ptr @.str.2552, i64 0, i64 0
+  %t8 = getelementptr inbounds [41 x i8], ptr @.str.2553, i64 0, i64 0
   call void @die-at(i32 %t7, ptr %t8)
   unreachable
 cond.fall0:
@@ -92529,7 +92542,7 @@ cond.then1.0:
   %t19 = load ptr, ptr %name-node.addr.9, align 8
   %t20 = getelementptr inbounds %Node, ptr %t19, i32 0, i32 1
   %t21 = load i32, ptr %t20, align 4
-  %t22 = getelementptr inbounds [30 x i8], ptr @.str.2553, i64 0, i64 0
+  %t22 = getelementptr inbounds [30 x i8], ptr @.str.2554, i64 0, i64 0
   call void @die-at(i32 %t21, ptr %t22)
   unreachable
 cond.fall1:
@@ -92543,7 +92556,7 @@ cond.then2.0:
   %t26 = load ptr, ptr %name-node.addr.9, align 8
   %t27 = getelementptr inbounds %Node, ptr %t26, i32 0, i32 1
   %t28 = load i32, ptr %t27, align 4
-  %t29 = getelementptr inbounds [32 x i8], ptr @.str.2554, i64 0, i64 0
+  %t29 = getelementptr inbounds [32 x i8], ptr @.str.2555, i64 0, i64 0
   call void @die-at(i32 %t28, ptr %t29)
   unreachable
 cond.fall2:
@@ -92563,7 +92576,7 @@ cond.end2:
   %t41 = load ptr, ptr %params-node.addr.12, align 8
   %t42 = call i32 @node-len(ptr %t41)
   store i32 %t42, ptr %num-params.addr.40, align 4
-  %t44 = getelementptr inbounds [14 x i8], ptr @.str.2555, i64 0, i64 0
+  %t44 = getelementptr inbounds [14 x i8], ptr @.str.2556, i64 0, i64 0
   %t45 = load ptr, ptr %macro-name.addr.36, align 8
   %t46 = call ptr @sanitize-for-ir(ptr %t45)
   %t47 = load ptr, ptr @g-macros, align 8
@@ -92591,7 +92604,7 @@ while.body3:
   %t64 = load ptr, ptr %vp.addr.60, align 8
   %t65 = getelementptr inbounds %Node, ptr %t64, i32 0, i32 3
   %t66 = load ptr, ptr %t65, align 8
-  %t67 = getelementptr inbounds [6 x i8], ptr @.str.2556, i64 0, i64 0
+  %t67 = getelementptr inbounds [6 x i8], ptr @.str.2557, i64 0, i64 0
   %t68 = call i32 @strcmp(ptr %t66, ptr %t67)
   %t69 = icmp eq i32 %t68, 0
   br i1 %t69, label %cond.then4.0, label %cond.fall4
@@ -92605,7 +92618,7 @@ cond.then5.0:
   %t74 = load ptr, ptr %vp.addr.60, align 8
   %t75 = getelementptr inbounds %Node, ptr %t74, i32 0, i32 1
   %t76 = load i32, ptr %t75, align 4
-  %t77 = getelementptr inbounds [45 x i8], ptr @.str.2557, i64 0, i64 0
+  %t77 = getelementptr inbounds [45 x i8], ptr @.str.2558, i64 0, i64 0
   call void @die-at(i32 %t76, ptr %t77)
   unreachable
 cond.fall5:
@@ -92667,7 +92680,7 @@ cond.then8.0:
   %t105 = load ptr, ptr %p.addr.97, align 8
   %t106 = getelementptr inbounds %Node, ptr %t105, i32 0, i32 1
   %t107 = load i32, ptr %t106, align 4
-  %t108 = getelementptr inbounds [33 x i8], ptr @.str.2558, i64 0, i64 0
+  %t108 = getelementptr inbounds [33 x i8], ptr @.str.2559, i64 0, i64 0
   call void @die-at(i32 %t107, ptr %t108)
   unreachable
 cond.fall8:
@@ -92676,7 +92689,7 @@ cond.end8:
   %t109 = load ptr, ptr %p.addr.97, align 8
   %t110 = getelementptr inbounds %Node, ptr %t109, i32 0, i32 3
   %t111 = load ptr, ptr %t110, align 8
-  %t112 = getelementptr inbounds [6 x i8], ptr @.str.2559, i64 0, i64 0
+  %t112 = getelementptr inbounds [6 x i8], ptr @.str.2560, i64 0, i64 0
   %t113 = call i32 @strcmp(ptr %t111, ptr %t112)
   %t114 = icmp ne i32 %t113, 0
   br i1 %t114, label %cond.then9.0, label %cond.fall9
@@ -92712,7 +92725,7 @@ cond.then10.0:
   %t130 = load ptr, ptr %ff.addr.0, align 8
   %t131 = getelementptr inbounds %Node, ptr %t130, i32 0, i32 1
   %t132 = load i32, ptr %t131, align 4
-  %t133 = getelementptr inbounds [27 x i8], ptr @.str.2560, i64 0, i64 0
+  %t133 = getelementptr inbounds [27 x i8], ptr @.str.2561, i64 0, i64 0
   call void @die-at(i32 %t132, ptr %t133)
   unreachable
 cond.fall10:
@@ -92773,15 +92786,15 @@ cond.end10:
   %t177 = call ptr @scope-new(ptr %t176)
   store ptr %t177, ptr %fn-scope.addr.175, align 8
   %t178 = load ptr, ptr @g-entry-stream, align 8
-  %t179 = getelementptr inbounds [39 x i8], ptr @.str.2561, i64 0, i64 0
+  %t179 = getelementptr inbounds [39 x i8], ptr @.str.2562, i64 0, i64 0
   %t180 = call i32 (ptr, ptr, ...) @fprintf(ptr %t178, ptr %t179)
   %t181 = load ptr, ptr @g-entry-stream, align 8
-  %t182 = getelementptr inbounds [54 x i8], ptr @.str.2562, i64 0, i64 0
+  %t182 = getelementptr inbounds [54 x i8], ptr @.str.2563, i64 0, i64 0
   %t183 = call i32 (ptr, ptr, ...) @fprintf(ptr %t181, ptr %t182)
   %t185 = call ptr @make-type(i32 10)
   store ptr %t185, ptr %raw-node-ty.addr.184, align 8
   %t186 = load ptr, ptr %raw-node-ty.addr.184, align 8
-  %t187 = getelementptr inbounds [5 x i8], ptr @.str.2563, i64 0, i64 0
+  %t187 = getelementptr inbounds [5 x i8], ptr @.str.2564, i64 0, i64 0
   %t188 = call ptr @parse-type-name(ptr %t187, i32 0)
   %t189 = getelementptr inbounds %Type, ptr %t186, i32 0, i32 6
   store ptr %t188, ptr %t189, align 8
@@ -92805,33 +92818,33 @@ while.body11:
   %t203 = load ptr, ptr %t202, align 8
   store ptr %t203, ptr %pname.addr.198, align 8
   %t204 = load ptr, ptr @g-entry-stream, align 8
-  %t205 = getelementptr inbounds [35 x i8], ptr @.str.2564, i64 0, i64 0
+  %t205 = getelementptr inbounds [35 x i8], ptr @.str.2565, i64 0, i64 0
   %t206 = load ptr, ptr %pname.addr.198, align 8
   %t207 = call i32 (ptr, ptr, ...) @fprintf(ptr %t204, ptr %t205, ptr %t206)
   %t208 = load ptr, ptr @g-entry-stream, align 8
-  %t209 = getelementptr inbounds [51 x i8], ptr @.str.2565, i64 0, i64 0
+  %t209 = getelementptr inbounds [51 x i8], ptr @.str.2566, i64 0, i64 0
   %t210 = load i32, ptr %ei.addr.194, align 4
   %t211 = call i32 (ptr, ptr, ...) @fprintf(ptr %t208, ptr %t209, i32 %t210)
   %t212 = load ptr, ptr @g-entry-stream, align 8
-  %t213 = getelementptr inbounds [54 x i8], ptr @.str.2566, i64 0, i64 0
+  %t213 = getelementptr inbounds [54 x i8], ptr @.str.2567, i64 0, i64 0
   %t214 = load i32, ptr %ei.addr.194, align 4
   %t215 = load i32, ptr %ei.addr.194, align 4
   %t216 = load i32, ptr %ei.addr.194, align 4
   %t217 = call i32 (ptr, ptr, ...) @fprintf(ptr %t212, ptr %t213, i32 %t214, i32 %t215, i32 %t216)
   %t218 = load ptr, ptr @g-entry-stream, align 8
-  %t219 = getelementptr inbounds [46 x i8], ptr @.str.2567, i64 0, i64 0
+  %t219 = getelementptr inbounds [46 x i8], ptr @.str.2568, i64 0, i64 0
   %t220 = load i32, ptr %ei.addr.194, align 4
   %t221 = load i32, ptr %ei.addr.194, align 4
   %t222 = call i32 (ptr, ptr, ...) @fprintf(ptr %t218, ptr %t219, i32 %t220, i32 %t221)
   %t223 = load ptr, ptr @g-entry-stream, align 8
-  %t224 = getelementptr inbounds [46 x i8], ptr @.str.2568, i64 0, i64 0
+  %t224 = getelementptr inbounds [46 x i8], ptr @.str.2569, i64 0, i64 0
   %t225 = load i32, ptr %ei.addr.194, align 4
   %t226 = load ptr, ptr %pname.addr.198, align 8
   %t227 = call i32 (ptr, ptr, ...) @fprintf(ptr %t223, ptr %t224, i32 %t225, ptr %t226)
   %t228 = load ptr, ptr %fn-scope.addr.175, align 8
   %t229 = load ptr, ptr %pname.addr.198, align 8
   %t230 = load ptr, ptr %raw-node-ty.addr.184, align 8
-  %t231 = getelementptr inbounds [10 x i8], ptr @.str.2569, i64 0, i64 0
+  %t231 = getelementptr inbounds [10 x i8], ptr @.str.2570, i64 0, i64 0
   %t232 = load ptr, ptr %pname.addr.198, align 8
   %t233 = call ptr @fmt-s(ptr %t231, ptr %t232)
   %t234 = call ptr @scope-define(ptr %t228, ptr %t229, ptr %t230, ptr %t233, i32 1)
@@ -92840,7 +92853,7 @@ while.body11:
   store i32 %t236, ptr %ei.addr.194, align 4
   br label %while.cond11
 while.end11:
-  %t238 = getelementptr inbounds [5 x i8], ptr @.str.2570, i64 0, i64 0
+  %t238 = getelementptr inbounds [5 x i8], ptr @.str.2571, i64 0, i64 0
   store ptr %t238, ptr %last-val.addr.237, align 8
   store i32 3, ptr %bi.addr.239, align 4
   br label %while.cond12
@@ -92902,7 +92915,7 @@ cond.end13:
   br label %while.cond12
 while.end12:
   %t270 = load ptr, ptr @g-body-stream, align 8
-  %t271 = getelementptr inbounds [14 x i8], ptr @.str.2571, i64 0, i64 0
+  %t271 = getelementptr inbounds [14 x i8], ptr @.str.2572, i64 0, i64 0
   %t272 = load ptr, ptr %last-val.addr.237, align 8
   %t273 = call i32 (ptr, ptr, ...) @fprintf(ptr %t270, ptr %t271, ptr %t272)
   %t275 = load i32, ptr @g-qq-used, align 4
@@ -92918,11 +92931,11 @@ while.end12:
   %t281 = load ptr, ptr @g-body-stream, align 8
   %t282 = call i32 @fclose(ptr %t281)
   %t283 = load ptr, ptr %ct-def.addr.164, align 8
-  %t284 = getelementptr inbounds [36 x i8], ptr @.str.2572, i64 0, i64 0
+  %t284 = getelementptr inbounds [36 x i8], ptr @.str.2573, i64 0, i64 0
   %t285 = load ptr, ptr %jit-name.addr.43, align 8
   %t286 = call i32 (ptr, ptr, ...) @fprintf(ptr %t283, ptr %t284, ptr %t285)
   %t287 = load ptr, ptr %ct-def.addr.164, align 8
-  %t288 = getelementptr inbounds [8 x i8], ptr @.str.2573, i64 0, i64 0
+  %t288 = getelementptr inbounds [8 x i8], ptr @.str.2574, i64 0, i64 0
   %t289 = call i32 (ptr, ptr, ...) @fprintf(ptr %t287, ptr %t288)
   %t290 = load ptr, ptr @g-entry-bufp, align 8
   %t291 = icmp ne ptr %t290, null
@@ -92975,7 +92988,7 @@ cond.fall18:
 cond.end18:
   %t311 = phi i32 [ %t310, %cond.join18.0 ], [ undef, %cond.fall18 ]
   %t312 = load ptr, ptr %ct-def.addr.164, align 8
-  %t313 = getelementptr inbounds [4 x i8], ptr @.str.2574, i64 0, i64 0
+  %t313 = getelementptr inbounds [4 x i8], ptr @.str.2575, i64 0, i64 0
   %t314 = call i32 (ptr, ptr, ...) @fprintf(ptr %t312, ptr %t313)
   %t315 = load ptr, ptr @g-entry-bufp, align 8
   call void @free(ptr %t315)
@@ -92992,7 +93005,7 @@ cond.then20.0:
   br i1 %t320, label %cond.then21.0, label %cond.fall21
 cond.then21.0:
   %t321 = load ptr, ptr %ct-decl.addr.162, align 8
-  %t322 = getelementptr inbounds [26 x i8], ptr @.str.2575, i64 0, i64 0
+  %t322 = getelementptr inbounds [26 x i8], ptr @.str.2576, i64 0, i64 0
   %t323 = call i32 (ptr, ptr, ...) @fprintf(ptr %t321, ptr %t322)
   br label %cond.join21.0
 cond.join21.0:
@@ -93002,106 +93015,106 @@ cond.fall21:
 cond.end21:
   %t324 = phi i32 [ %t323, %cond.join21.0 ], [ undef, %cond.fall21 ]
   %t325 = load ptr, ptr %ct-decl.addr.162, align 8
-  %t326 = getelementptr inbounds [27 x i8], ptr @.str.2576, i64 0, i64 0
+  %t326 = getelementptr inbounds [27 x i8], ptr @.str.2577, i64 0, i64 0
   %t327 = call i32 (ptr, ptr, ...) @fprintf(ptr %t325, ptr %t326)
   %t328 = load ptr, ptr %ct-decl.addr.162, align 8
-  %t329 = getelementptr inbounds [39 x i8], ptr @.str.2577, i64 0, i64 0
+  %t329 = getelementptr inbounds [39 x i8], ptr @.str.2578, i64 0, i64 0
   %t330 = call i32 (ptr, ptr, ...) @fprintf(ptr %t328, ptr %t329)
   %t331 = load ptr, ptr %ct-decl.addr.162, align 8
-  %t332 = getelementptr inbounds [33 x i8], ptr @.str.2578, i64 0, i64 0
+  %t332 = getelementptr inbounds [33 x i8], ptr @.str.2579, i64 0, i64 0
   %t333 = call i32 (ptr, ptr, ...) @fprintf(ptr %t331, ptr %t332)
   %t334 = load ptr, ptr %ct-def.addr.164, align 8
-  %t335 = getelementptr inbounds [48 x i8], ptr @.str.2579, i64 0, i64 0
+  %t335 = getelementptr inbounds [48 x i8], ptr @.str.2580, i64 0, i64 0
   %t336 = call i32 (ptr, ptr, ...) @fprintf(ptr %t334, ptr %t335)
   %t337 = load ptr, ptr %ct-def.addr.164, align 8
-  %t338 = getelementptr inbounds [34 x i8], ptr @.str.2580, i64 0, i64 0
+  %t338 = getelementptr inbounds [34 x i8], ptr @.str.2581, i64 0, i64 0
   %t339 = call i32 (ptr, ptr, ...) @fprintf(ptr %t337, ptr %t338)
   %t340 = load ptr, ptr %ct-def.addr.164, align 8
-  %t341 = getelementptr inbounds [89 x i8], ptr @.str.2581, i64 0, i64 0
+  %t341 = getelementptr inbounds [89 x i8], ptr @.str.2582, i64 0, i64 0
   %t342 = call i32 (ptr, ptr, ...) @fprintf(ptr %t340, ptr %t341)
   %t343 = load ptr, ptr %ct-def.addr.164, align 8
-  %t344 = getelementptr inbounds [34 x i8], ptr @.str.2582, i64 0, i64 0
+  %t344 = getelementptr inbounds [34 x i8], ptr @.str.2583, i64 0, i64 0
   %t345 = call i32 (ptr, ptr, ...) @fprintf(ptr %t343, ptr %t344)
   %t346 = load ptr, ptr %ct-def.addr.164, align 8
-  %t347 = getelementptr inbounds [89 x i8], ptr @.str.2583, i64 0, i64 0
+  %t347 = getelementptr inbounds [89 x i8], ptr @.str.2584, i64 0, i64 0
   %t348 = call i32 (ptr, ptr, ...) @fprintf(ptr %t346, ptr %t347)
   %t349 = load ptr, ptr %ct-def.addr.164, align 8
-  %t350 = getelementptr inbounds [34 x i8], ptr @.str.2584, i64 0, i64 0
+  %t350 = getelementptr inbounds [34 x i8], ptr @.str.2585, i64 0, i64 0
   %t351 = call i32 (ptr, ptr, ...) @fprintf(ptr %t349, ptr %t350)
   %t352 = load ptr, ptr %ct-def.addr.164, align 8
-  %t353 = getelementptr inbounds [89 x i8], ptr @.str.2585, i64 0, i64 0
+  %t353 = getelementptr inbounds [89 x i8], ptr @.str.2586, i64 0, i64 0
   %t354 = call i32 (ptr, ptr, ...) @fprintf(ptr %t352, ptr %t353)
   %t355 = load ptr, ptr %ct-def.addr.164, align 8
-  %t356 = getelementptr inbounds [34 x i8], ptr @.str.2586, i64 0, i64 0
+  %t356 = getelementptr inbounds [34 x i8], ptr @.str.2587, i64 0, i64 0
   %t357 = call i32 (ptr, ptr, ...) @fprintf(ptr %t355, ptr %t356)
   %t358 = load ptr, ptr %ct-def.addr.164, align 8
-  %t359 = getelementptr inbounds [89 x i8], ptr @.str.2587, i64 0, i64 0
+  %t359 = getelementptr inbounds [89 x i8], ptr @.str.2588, i64 0, i64 0
   %t360 = call i32 (ptr, ptr, ...) @fprintf(ptr %t358, ptr %t359)
   %t361 = load ptr, ptr %ct-def.addr.164, align 8
-  %t362 = getelementptr inbounds [37 x i8], ptr @.str.2588, i64 0, i64 0
+  %t362 = getelementptr inbounds [37 x i8], ptr @.str.2589, i64 0, i64 0
   %t363 = call i32 (ptr, ptr, ...) @fprintf(ptr %t361, ptr %t362)
   %t364 = load ptr, ptr %ct-def.addr.164, align 8
-  %t365 = getelementptr inbounds [89 x i8], ptr @.str.2589, i64 0, i64 0
+  %t365 = getelementptr inbounds [89 x i8], ptr @.str.2590, i64 0, i64 0
   %t366 = call i32 (ptr, ptr, ...) @fprintf(ptr %t364, ptr %t365)
   %t367 = load ptr, ptr %ct-def.addr.164, align 8
-  %t368 = getelementptr inbounds [36 x i8], ptr @.str.2590, i64 0, i64 0
+  %t368 = getelementptr inbounds [36 x i8], ptr @.str.2591, i64 0, i64 0
   %t369 = call i32 (ptr, ptr, ...) @fprintf(ptr %t367, ptr %t368)
   %t370 = load ptr, ptr %ct-def.addr.164, align 8
-  %t371 = getelementptr inbounds [89 x i8], ptr @.str.2591, i64 0, i64 0
+  %t371 = getelementptr inbounds [89 x i8], ptr @.str.2592, i64 0, i64 0
   %t372 = call i32 (ptr, ptr, ...) @fprintf(ptr %t370, ptr %t371)
   %t373 = load ptr, ptr %ct-def.addr.164, align 8
-  %t374 = getelementptr inbounds [36 x i8], ptr @.str.2592, i64 0, i64 0
+  %t374 = getelementptr inbounds [36 x i8], ptr @.str.2593, i64 0, i64 0
   %t375 = call i32 (ptr, ptr, ...) @fprintf(ptr %t373, ptr %t374)
   %t376 = load ptr, ptr %ct-def.addr.164, align 8
-  %t377 = getelementptr inbounds [15 x i8], ptr @.str.2593, i64 0, i64 0
+  %t377 = getelementptr inbounds [15 x i8], ptr @.str.2594, i64 0, i64 0
   %t378 = call i32 (ptr, ptr, ...) @fprintf(ptr %t376, ptr %t377)
   %t379 = load ptr, ptr %ct-def.addr.164, align 8
-  %t380 = getelementptr inbounds [4 x i8], ptr @.str.2594, i64 0, i64 0
+  %t380 = getelementptr inbounds [4 x i8], ptr @.str.2595, i64 0, i64 0
   %t381 = call i32 (ptr, ptr, ...) @fprintf(ptr %t379, ptr %t380)
   %t382 = load ptr, ptr %ct-def.addr.164, align 8
-  %t383 = getelementptr inbounds [50 x i8], ptr @.str.2595, i64 0, i64 0
+  %t383 = getelementptr inbounds [50 x i8], ptr @.str.2596, i64 0, i64 0
   %t384 = call i32 (ptr, ptr, ...) @fprintf(ptr %t382, ptr %t383)
   %t385 = load ptr, ptr %ct-def.addr.164, align 8
-  %t386 = getelementptr inbounds [8 x i8], ptr @.str.2596, i64 0, i64 0
+  %t386 = getelementptr inbounds [8 x i8], ptr @.str.2597, i64 0, i64 0
   %t387 = call i32 (ptr, ptr, ...) @fprintf(ptr %t385, ptr %t386)
   %t388 = load ptr, ptr %ct-def.addr.164, align 8
-  %t389 = getelementptr inbounds [31 x i8], ptr @.str.2597, i64 0, i64 0
+  %t389 = getelementptr inbounds [31 x i8], ptr @.str.2598, i64 0, i64 0
   %t390 = call i32 (ptr, ptr, ...) @fprintf(ptr %t388, ptr %t389)
   %t391 = load ptr, ptr %ct-def.addr.164, align 8
-  %t392 = getelementptr inbounds [39 x i8], ptr @.str.2598, i64 0, i64 0
+  %t392 = getelementptr inbounds [39 x i8], ptr @.str.2599, i64 0, i64 0
   %t393 = call i32 (ptr, ptr, ...) @fprintf(ptr %t391, ptr %t392)
   %t394 = load ptr, ptr %ct-def.addr.164, align 8
-  %t395 = getelementptr inbounds [6 x i8], ptr @.str.2599, i64 0, i64 0
+  %t395 = getelementptr inbounds [6 x i8], ptr @.str.2600, i64 0, i64 0
   %t396 = call i32 (ptr, ptr, ...) @fprintf(ptr %t394, ptr %t395)
   %t397 = load ptr, ptr %ct-def.addr.164, align 8
-  %t398 = getelementptr inbounds [15 x i8], ptr @.str.2600, i64 0, i64 0
+  %t398 = getelementptr inbounds [15 x i8], ptr @.str.2601, i64 0, i64 0
   %t399 = call i32 (ptr, ptr, ...) @fprintf(ptr %t397, ptr %t398)
   %t400 = load ptr, ptr %ct-def.addr.164, align 8
-  %t401 = getelementptr inbounds [6 x i8], ptr @.str.2601, i64 0, i64 0
+  %t401 = getelementptr inbounds [6 x i8], ptr @.str.2602, i64 0, i64 0
   %t402 = call i32 (ptr, ptr, ...) @fprintf(ptr %t400, ptr %t401)
   %t403 = load ptr, ptr %ct-def.addr.164, align 8
-  %t404 = getelementptr inbounds [89 x i8], ptr @.str.2602, i64 0, i64 0
+  %t404 = getelementptr inbounds [89 x i8], ptr @.str.2603, i64 0, i64 0
   %t405 = call i32 (ptr, ptr, ...) @fprintf(ptr %t403, ptr %t404)
   %t406 = load ptr, ptr %ct-def.addr.164, align 8
-  %t407 = getelementptr inbounds [39 x i8], ptr @.str.2603, i64 0, i64 0
+  %t407 = getelementptr inbounds [39 x i8], ptr @.str.2604, i64 0, i64 0
   %t408 = call i32 (ptr, ptr, ...) @fprintf(ptr %t406, ptr %t407)
   %t409 = load ptr, ptr %ct-def.addr.164, align 8
-  %t410 = getelementptr inbounds [89 x i8], ptr @.str.2604, i64 0, i64 0
+  %t410 = getelementptr inbounds [89 x i8], ptr @.str.2605, i64 0, i64 0
   %t411 = call i32 (ptr, ptr, ...) @fprintf(ptr %t409, ptr %t410)
   %t412 = load ptr, ptr %ct-def.addr.164, align 8
-  %t413 = getelementptr inbounds [39 x i8], ptr @.str.2605, i64 0, i64 0
+  %t413 = getelementptr inbounds [39 x i8], ptr @.str.2606, i64 0, i64 0
   %t414 = call i32 (ptr, ptr, ...) @fprintf(ptr %t412, ptr %t413)
   %t415 = load ptr, ptr %ct-def.addr.164, align 8
-  %t416 = getelementptr inbounds [51 x i8], ptr @.str.2606, i64 0, i64 0
+  %t416 = getelementptr inbounds [51 x i8], ptr @.str.2607, i64 0, i64 0
   %t417 = call i32 (ptr, ptr, ...) @fprintf(ptr %t415, ptr %t416)
   %t418 = load ptr, ptr %ct-def.addr.164, align 8
-  %t419 = getelementptr inbounds [49 x i8], ptr @.str.2607, i64 0, i64 0
+  %t419 = getelementptr inbounds [49 x i8], ptr @.str.2608, i64 0, i64 0
   %t420 = call i32 (ptr, ptr, ...) @fprintf(ptr %t418, ptr %t419)
   %t421 = load ptr, ptr %ct-def.addr.164, align 8
-  %t422 = getelementptr inbounds [15 x i8], ptr @.str.2608, i64 0, i64 0
+  %t422 = getelementptr inbounds [15 x i8], ptr @.str.2609, i64 0, i64 0
   %t423 = call i32 (ptr, ptr, ...) @fprintf(ptr %t421, ptr %t422)
   %t424 = load ptr, ptr %ct-def.addr.164, align 8
-  %t425 = getelementptr inbounds [4 x i8], ptr @.str.2609, i64 0, i64 0
+  %t425 = getelementptr inbounds [4 x i8], ptr @.str.2610, i64 0, i64 0
   %t426 = call i32 (ptr, ptr, ...) @fprintf(ptr %t424, ptr %t425)
   br label %cond.join20.0
 cond.join20.0:
@@ -93111,7 +93124,7 @@ cond.fall20:
 cond.end20:
   %t427 = phi i32 [ %t426, %cond.join20.0 ], [ undef, %cond.fall20 ]
   %t428 = load ptr, ptr %ct-decl.addr.162, align 8
-  %t429 = getelementptr inbounds [31 x i8], ptr @.str.2610, i64 0, i64 0
+  %t429 = getelementptr inbounds [31 x i8], ptr @.str.2611, i64 0, i64 0
   %t430 = call i32 (ptr, ptr, ...) @fprintf(ptr %t428, ptr %t429)
   %t431 = load ptr, ptr %ct-decl.addr.162, align 8
   %t432 = call i32 @fclose(ptr %t431)
@@ -93126,11 +93139,11 @@ cond.end20:
   %t441 = call ptr @open_memstream(ptr %ir-bufp.addr.437, ptr %ir-sizep.addr.438)
   store ptr %t441, ptr %irs.addr.440, align 8
   %t442 = load ptr, ptr %irs.addr.440, align 8
-  %t443 = getelementptr inbounds [30 x i8], ptr @.str.2611, i64 0, i64 0
+  %t443 = getelementptr inbounds [30 x i8], ptr @.str.2612, i64 0, i64 0
   %t444 = load ptr, ptr %macro-name.addr.36, align 8
   %t445 = call i32 (ptr, ptr, ...) @fprintf(ptr %t442, ptr %t443, ptr %t444)
   %t446 = load ptr, ptr %irs.addr.440, align 8
-  %t447 = getelementptr inbounds [23 x i8], ptr @.str.2612, i64 0, i64 0
+  %t447 = getelementptr inbounds [23 x i8], ptr @.str.2613, i64 0, i64 0
   %t448 = load ptr, ptr @g-host-target, align 8
   %t449 = getelementptr inbounds %Target, ptr %t448, i32 0, i32 0
   %t450 = load ptr, ptr %t449, align 8
@@ -93328,7 +93341,7 @@ while.body0:
   %t19 = add nsw i32 %t18, 1
   store i32 %t19, ptr %ir-len.addr.15, align 4
   %t20 = load ptr, ptr %out.addr, align 8
-  %t21 = getelementptr inbounds [54 x i8], ptr @.str.2613, i64 0, i64 0
+  %t21 = getelementptr inbounds [54 x i8], ptr @.str.2614, i64 0, i64 0
   %t22 = load ptr, ptr %sl.addr.10, align 8
   %t23 = getelementptr inbounds %StrLit, ptr %t22, i32 0, i32 2
   %t24 = load i32, ptr %t23, align 4
@@ -93387,7 +93400,7 @@ or.end3:
   br i1 %t54, label %cond.then2.0, label %cond.test2.1
 cond.then2.0:
   %t55 = load ptr, ptr %out.addr, align 8
-  %t56 = getelementptr inbounds [6 x i8], ptr @.str.2614, i64 0, i64 0
+  %t56 = getelementptr inbounds [6 x i8], ptr @.str.2615, i64 0, i64 0
   %t57 = load i32, ptr %c.addr.37, align 4
   %t58 = call i32 (ptr, ptr, ...) @fprintf(ptr %t55, ptr %t56, i32 %t57)
   br label %cond.join2.0
@@ -93410,7 +93423,7 @@ cond.end2:
   br label %while.cond1
 while.end1:
   %t65 = load ptr, ptr %out.addr, align 8
-  %t66 = getelementptr inbounds [15 x i8], ptr @.str.2615, i64 0, i64 0
+  %t66 = getelementptr inbounds [15 x i8], ptr @.str.2616, i64 0, i64 0
   %t67 = call i32 (ptr, ptr, ...) @fprintf(ptr %t65, ptr %t66)
   %t68 = load i32, ptr %i.addr.4, align 4
   %t69 = add nsw i32 %t68, 1
@@ -93467,7 +93480,7 @@ cond.end0:
   %t10 = trunc i64 %t9 to i32
   store i32 %t10, ptr %n.addr.7, align 4
   %t11 = load ptr, ptr %out.addr, align 8
-  %t12 = getelementptr inbounds [39 x i8], ptr @.str.2616, i64 0, i64 0
+  %t12 = getelementptr inbounds [39 x i8], ptr @.str.2617, i64 0, i64 0
   %t13 = load i32, ptr %n.addr.7, align 4
   %t14 = call i32 (ptr, ptr, ...) @fprintf(ptr %t11, ptr %t12, i32 %t13)
   %t15 = load i32, ptr %n.addr.7, align 4
@@ -93485,7 +93498,7 @@ while.body2:
   br i1 %t22, label %cond.then3.0, label %cond.fall3
 cond.then3.0:
   %t23 = load ptr, ptr %out.addr, align 8
-  %t24 = getelementptr inbounds [3 x i8], ptr @.str.2617, i64 0, i64 0
+  %t24 = getelementptr inbounds [3 x i8], ptr @.str.2618, i64 0, i64 0
   %t25 = call i32 (ptr, ptr, ...) @fprintf(ptr %t23, ptr %t24)
   br label %cond.join3.0
 cond.join3.0:
@@ -93499,7 +93512,7 @@ cond.end3:
   br i1 %t28, label %cond.then4.0, label %cond.test4.1
 cond.then4.0:
   %t29 = load ptr, ptr %out.addr, align 8
-  %t30 = getelementptr inbounds [9 x i8], ptr @.str.2618, i64 0, i64 0
+  %t30 = getelementptr inbounds [9 x i8], ptr @.str.2619, i64 0, i64 0
   %t31 = call i32 (ptr, ptr, ...) @fprintf(ptr %t29, ptr %t30)
   br label %cond.join4.0
 cond.join4.0:
@@ -93508,7 +93521,7 @@ cond.test4.1:
   br label %cond.then4.1
 cond.then4.1:
   %t32 = load ptr, ptr %out.addr, align 8
-  %t33 = getelementptr inbounds [13 x i8], ptr @.str.2619, i64 0, i64 0
+  %t33 = getelementptr inbounds [13 x i8], ptr @.str.2620, i64 0, i64 0
   %t34 = load ptr, ptr @g-deferror-name-sids, align 8
   %t35 = load i32, ptr %i.addr.17, align 4
   %t36 = sext i32 %t35 to i64
@@ -93527,10 +93540,10 @@ cond.end4:
   br label %while.cond2
 while.end2:
   %t44 = load ptr, ptr %out.addr, align 8
-  %t45 = getelementptr inbounds [3 x i8], ptr @.str.2620, i64 0, i64 0
+  %t45 = getelementptr inbounds [3 x i8], ptr @.str.2621, i64 0, i64 0
   %t46 = call i32 (ptr, ptr, ...) @fprintf(ptr %t44, ptr %t45)
   %t47 = load ptr, ptr %out.addr, align 8
-  %t48 = getelementptr inbounds [42 x i8], ptr @.str.2621, i64 0, i64 0
+  %t48 = getelementptr inbounds [42 x i8], ptr @.str.2622, i64 0, i64 0
   %t49 = load i32, ptr %n.addr.7, align 4
   %t50 = call i32 (ptr, ptr, ...) @fprintf(ptr %t47, ptr %t48, i32 %t49)
   %t51 = load i32, ptr %n.addr.7, align 4
@@ -93548,7 +93561,7 @@ while.body5:
   br i1 %t58, label %cond.then6.0, label %cond.fall6
 cond.then6.0:
   %t59 = load ptr, ptr %out.addr, align 8
-  %t60 = getelementptr inbounds [3 x i8], ptr @.str.2622, i64 0, i64 0
+  %t60 = getelementptr inbounds [3 x i8], ptr @.str.2623, i64 0, i64 0
   %t61 = call i32 (ptr, ptr, ...) @fprintf(ptr %t59, ptr %t60)
   br label %cond.join6.0
 cond.join6.0:
@@ -93562,7 +93575,7 @@ cond.end6:
   br i1 %t64, label %cond.then7.0, label %cond.test7.1
 cond.then7.0:
   %t65 = load ptr, ptr %out.addr, align 8
-  %t66 = getelementptr inbounds [9 x i8], ptr @.str.2623, i64 0, i64 0
+  %t66 = getelementptr inbounds [9 x i8], ptr @.str.2624, i64 0, i64 0
   %t67 = call i32 (ptr, ptr, ...) @fprintf(ptr %t65, ptr %t66)
   br label %cond.join7.0
 cond.join7.0:
@@ -93571,7 +93584,7 @@ cond.test7.1:
   br label %cond.then7.1
 cond.then7.1:
   %t68 = load ptr, ptr %out.addr, align 8
-  %t69 = getelementptr inbounds [13 x i8], ptr @.str.2624, i64 0, i64 0
+  %t69 = getelementptr inbounds [13 x i8], ptr @.str.2625, i64 0, i64 0
   %t70 = load ptr, ptr @g-deferror-msg-sids, align 8
   %t71 = load i32, ptr %i.addr.53, align 4
   %t72 = sext i32 %t71 to i64
@@ -93590,7 +93603,7 @@ cond.end7:
   br label %while.cond5
 while.end5:
   %t80 = load ptr, ptr %out.addr, align 8
-  %t81 = getelementptr inbounds [4 x i8], ptr @.str.2625, i64 0, i64 0
+  %t81 = getelementptr inbounds [4 x i8], ptr @.str.2626, i64 0, i64 0
   %t82 = call i32 (ptr, ptr, ...) @fprintf(ptr %t80, ptr %t81)
   ret void
 }
@@ -93604,7 +93617,7 @@ entry:
   %buf.addr.22 = alloca ptr, align 8
   %nr.addr.30 = alloca i64, align 8
   %t1 = load ptr, ptr %path.addr, align 8
-  %t2 = getelementptr inbounds [3 x i8], ptr @.str.2626, i64 0, i64 0
+  %t2 = getelementptr inbounds [3 x i8], ptr @.str.2627, i64 0, i64 0
   %t3 = call ptr @fopen(ptr %t1, ptr %t2)
   store ptr %t3, ptr %f.addr.0, align 8
   %t4 = load ptr, ptr %f.addr.0, align 8
@@ -93625,7 +93638,7 @@ cond.end0:
   %t11 = icmp ne i32 %t10, 0
   br i1 %t11, label %cond.then1.0, label %cond.fall1
 cond.then1.0:
-  %t12 = getelementptr inbounds [6 x i8], ptr @.str.2627, i64 0, i64 0
+  %t12 = getelementptr inbounds [6 x i8], ptr @.str.2628, i64 0, i64 0
   call void @perror(ptr %t12)
   call void @exit(i32 1)
   unreachable
@@ -93641,7 +93654,7 @@ cond.end1:
   %t19 = icmp slt i64 %t17, %t18
   br i1 %t19, label %cond.then2.0, label %cond.fall2
 cond.then2.0:
-  %t20 = getelementptr inbounds [6 x i8], ptr @.str.2628, i64 0, i64 0
+  %t20 = getelementptr inbounds [6 x i8], ptr @.str.2629, i64 0, i64 0
   call void @perror(ptr %t20)
   call void @exit(i32 1)
   unreachable
@@ -93659,7 +93672,7 @@ cond.end2:
   %t28 = icmp eq ptr %t27, null
   br i1 %t28, label %cond.then3.0, label %cond.fall3
 cond.then3.0:
-  %t29 = getelementptr inbounds [7 x i8], ptr @.str.2629, i64 0, i64 0
+  %t29 = getelementptr inbounds [7 x i8], ptr @.str.2630, i64 0, i64 0
   call void @perror(ptr %t29)
   call void @exit(i32 1)
   unreachable
@@ -94300,7 +94313,7 @@ cond.end3:
   %t24 = load ptr, ptr %t23, align 8
   store ptr %t24, ptr %h.addr.21, align 8
   %t25 = load ptr, ptr %h.addr.21, align 8
-  %t26 = getelementptr inbounds [5 x i8], ptr @.str.2630, i64 0, i64 0
+  %t26 = getelementptr inbounds [5 x i8], ptr @.str.2631, i64 0, i64 0
   %t27 = call i32 @strcmp(ptr %t25, ptr %t26)
   %t28 = icmp eq i32 %t27, 0
   br i1 %t28, label %cond.then4.0, label %cond.fall4
@@ -94373,7 +94386,7 @@ cond.fall4:
   br label %cond.end4
 cond.end4:
   %t72 = load ptr, ptr %h.addr.21, align 8
-  %t73 = getelementptr inbounds [7 x i8], ptr @.str.2631, i64 0, i64 0
+  %t73 = getelementptr inbounds [7 x i8], ptr @.str.2632, i64 0, i64 0
   %t74 = call i32 @strcmp(ptr %t72, ptr %t73)
   %t75 = icmp eq i32 %t74, 0
   br i1 %t75, label %cond.then8.0, label %cond.fall8
@@ -94424,7 +94437,7 @@ cond.fall8:
   br label %cond.end8
 cond.end8:
   %t103 = load ptr, ptr %h.addr.21, align 8
-  %t104 = getelementptr inbounds [10 x i8], ptr @.str.2632, i64 0, i64 0
+  %t104 = getelementptr inbounds [10 x i8], ptr @.str.2633, i64 0, i64 0
   %t105 = call i32 @strcmp(ptr %t103, ptr %t104)
   %t106 = icmp eq i32 %t105, 0
   br i1 %t106, label %cond.then11.0, label %cond.fall11
@@ -94478,7 +94491,7 @@ cond.fall11:
   br label %cond.end11
 cond.end11:
   %t137 = load ptr, ptr %h.addr.21, align 8
-  %t138 = getelementptr inbounds [7 x i8], ptr @.str.2633, i64 0, i64 0
+  %t138 = getelementptr inbounds [7 x i8], ptr @.str.2634, i64 0, i64 0
   %t139 = call i32 @strcmp(ptr %t137, ptr %t138)
   %t140 = icmp eq i32 %t139, 0
   br i1 %t140, label %cond.then14.0, label %cond.fall14
@@ -94524,7 +94537,7 @@ cond.fall14:
   br label %cond.end14
 cond.end14:
   %t163 = load ptr, ptr %h.addr.21, align 8
-  %t164 = getelementptr inbounds [8 x i8], ptr @.str.2634, i64 0, i64 0
+  %t164 = getelementptr inbounds [8 x i8], ptr @.str.2635, i64 0, i64 0
   %t165 = call i32 @strcmp(ptr %t163, ptr %t164)
   %t166 = icmp eq i32 %t165, 0
   br i1 %t166, label %cond.then17.0, label %cond.fall17
@@ -94564,7 +94577,7 @@ and.rhs22:
   %t189 = load ptr, ptr %last.addr.177, align 8
   %t190 = getelementptr inbounds %Node, ptr %t189, i32 0, i32 3
   %t191 = load ptr, ptr %t190, align 8
-  %t192 = getelementptr inbounds [9 x i8], ptr @.str.2635, i64 0, i64 0
+  %t192 = getelementptr inbounds [9 x i8], ptr @.str.2636, i64 0, i64 0
   %t193 = call i32 @strcmp(ptr %t191, ptr %t192)
   %t194 = icmp eq i32 %t193, 0
   store i1 %t194, ptr %and.val22, align 1
@@ -94723,14 +94736,14 @@ cond.fall17:
   br label %cond.end17
 cond.end17:
   %t270 = load ptr, ptr %h.addr.21, align 8
-  %t271 = getelementptr inbounds [4 x i8], ptr @.str.2636, i64 0, i64 0
+  %t271 = getelementptr inbounds [4 x i8], ptr @.str.2637, i64 0, i64 0
   %t272 = call i32 @strcmp(ptr %t270, ptr %t271)
   %t273 = icmp eq i32 %t272, 0
   store i1 %t273, ptr %or.val31, align 1
   br i1 %t273, label %or.end31, label %or.rhs31
 or.rhs31:
   %t274 = load ptr, ptr %h.addr.21, align 8
-  %t275 = getelementptr inbounds [5 x i8], ptr @.str.2637, i64 0, i64 0
+  %t275 = getelementptr inbounds [5 x i8], ptr @.str.2638, i64 0, i64 0
   %t276 = call i32 @strcmp(ptr %t274, ptr %t275)
   %t277 = icmp eq i32 %t276, 0
   store i1 %t277, ptr %or.val31, align 1
@@ -94785,14 +94798,14 @@ cond.fall30:
   br label %cond.end30
 cond.end30:
   %t306 = load ptr, ptr %h.addr.21, align 8
-  %t307 = getelementptr inbounds [13 x i8], ptr @.str.2638, i64 0, i64 0
+  %t307 = getelementptr inbounds [13 x i8], ptr @.str.2639, i64 0, i64 0
   %t308 = call i32 @strcmp(ptr %t306, ptr %t307)
   %t309 = icmp eq i32 %t308, 0
   store i1 %t309, ptr %or.val35, align 1
   br i1 %t309, label %or.end35, label %or.rhs35
 or.rhs35:
   %t310 = load ptr, ptr %h.addr.21, align 8
-  %t311 = getelementptr inbounds [3 x i8], ptr @.str.2639, i64 0, i64 0
+  %t311 = getelementptr inbounds [3 x i8], ptr @.str.2640, i64 0, i64 0
   %t312 = call i32 @strcmp(ptr %t310, ptr %t311)
   %t313 = icmp eq i32 %t312, 0
   store i1 %t313, ptr %or.val35, align 1
@@ -94913,7 +94926,7 @@ cond.then1.0:
   %t29 = load ptr, ptr %t28, align 8
   store ptr %t29, ptr %ph.addr.25, align 8
   %t30 = load ptr, ptr %ph.addr.25, align 8
-  %t31 = getelementptr inbounds [7 x i8], ptr @.str.2640, i64 0, i64 0
+  %t31 = getelementptr inbounds [7 x i8], ptr @.str.2641, i64 0, i64 0
   %t32 = call i32 @strcmp(ptr %t30, ptr %t31)
   %t33 = icmp eq i32 %t32, 0
   store i1 %t33, ptr %and.val7, align 1
@@ -94930,28 +94943,28 @@ and.end7:
   br i1 %t37, label %or.end6, label %or.rhs6
 or.rhs6:
   %t38 = load ptr, ptr %ph.addr.25, align 8
-  %t39 = getelementptr inbounds [11 x i8], ptr @.str.2641, i64 0, i64 0
+  %t39 = getelementptr inbounds [11 x i8], ptr @.str.2642, i64 0, i64 0
   %t40 = call i32 @strcmp(ptr %t38, ptr %t39)
   %t41 = icmp eq i32 %t40, 0
   store i1 %t41, ptr %or.val8, align 1
   br i1 %t41, label %or.end8, label %or.rhs8
 or.rhs8:
   %t42 = load ptr, ptr %ph.addr.25, align 8
-  %t43 = getelementptr inbounds [12 x i8], ptr @.str.2642, i64 0, i64 0
+  %t43 = getelementptr inbounds [12 x i8], ptr @.str.2643, i64 0, i64 0
   %t44 = call i32 @strcmp(ptr %t42, ptr %t43)
   %t45 = icmp eq i32 %t44, 0
   store i1 %t45, ptr %or.val9, align 1
   br i1 %t45, label %or.end9, label %or.rhs9
 or.rhs9:
   %t46 = load ptr, ptr %ph.addr.25, align 8
-  %t47 = getelementptr inbounds [16 x i8], ptr @.str.2643, i64 0, i64 0
+  %t47 = getelementptr inbounds [16 x i8], ptr @.str.2644, i64 0, i64 0
   %t48 = call i32 @strcmp(ptr %t46, ptr %t47)
   %t49 = icmp eq i32 %t48, 0
   store i1 %t49, ptr %or.val10, align 1
   br i1 %t49, label %or.end10, label %or.rhs10
 or.rhs10:
   %t50 = load ptr, ptr %ph.addr.25, align 8
-  %t51 = getelementptr inbounds [22 x i8], ptr @.str.2644, i64 0, i64 0
+  %t51 = getelementptr inbounds [22 x i8], ptr @.str.2645, i64 0, i64 0
   %t52 = call i32 @strcmp(ptr %t50, ptr %t51)
   %t53 = icmp eq i32 %t52, 0
   store i1 %t53, ptr %or.val10, align 1
@@ -95158,14 +95171,14 @@ cond.then1.0:
   %t29 = load ptr, ptr %t28, align 8
   store ptr %t29, ptr %h.addr.25, align 8
   %t30 = load ptr, ptr %h.addr.25, align 8
-  %t31 = getelementptr inbounds [10 x i8], ptr @.str.2645, i64 0, i64 0
+  %t31 = getelementptr inbounds [10 x i8], ptr @.str.2646, i64 0, i64 0
   %t32 = call i32 @strcmp(ptr %t30, ptr %t31)
   %t33 = icmp eq i32 %t32, 0
   store i1 %t33, ptr %or.val6, align 1
   br i1 %t33, label %or.end6, label %or.rhs6
 or.rhs6:
   %t34 = load ptr, ptr %h.addr.25, align 8
-  %t35 = getelementptr inbounds [11 x i8], ptr @.str.2646, i64 0, i64 0
+  %t35 = getelementptr inbounds [11 x i8], ptr @.str.2647, i64 0, i64 0
   %t36 = call i32 @strcmp(ptr %t34, ptr %t35)
   %t37 = icmp eq i32 %t36, 0
   store i1 %t37, ptr %or.val6, align 1
@@ -95232,14 +95245,14 @@ cond.fall5:
   br label %cond.end5
 cond.end5:
   %t61 = load ptr, ptr %h.addr.25, align 8
-  %t62 = getelementptr inbounds [9 x i8], ptr @.str.2647, i64 0, i64 0
+  %t62 = getelementptr inbounds [9 x i8], ptr @.str.2648, i64 0, i64 0
   %t63 = call i32 @strcmp(ptr %t61, ptr %t62)
   %t64 = icmp eq i32 %t63, 0
   store i1 %t64, ptr %or.val11, align 1
   br i1 %t64, label %or.end11, label %or.rhs11
 or.rhs11:
   %t65 = load ptr, ptr %h.addr.25, align 8
-  %t66 = getelementptr inbounds [10 x i8], ptr @.str.2648, i64 0, i64 0
+  %t66 = getelementptr inbounds [10 x i8], ptr @.str.2649, i64 0, i64 0
   %t67 = call i32 @strcmp(ptr %t65, ptr %t66)
   %t68 = icmp eq i32 %t67, 0
   store i1 %t68, ptr %or.val11, align 1
@@ -95531,7 +95544,7 @@ cond.join8.0:
 cond.fall8:
   br label %cond.end8
 cond.end8:
-  %t110 = getelementptr inbounds [6 x i8], ptr @.str.2649, i64 0, i64 0
+  %t110 = getelementptr inbounds [6 x i8], ptr @.str.2650, i64 0, i64 0
   %t111 = load ptr, ptr %name-node.addr.2, align 8
   %t112 = getelementptr inbounds %Node, ptr %t111, i32 0, i32 3
   %t113 = load ptr, ptr %t112, align 8
@@ -95635,14 +95648,14 @@ cond.then1.0:
   %t29 = load ptr, ptr %t28, align 8
   store ptr %t29, ptr %ph2.addr.25, align 8
   %t30 = load ptr, ptr %ph2.addr.25, align 8
-  %t31 = getelementptr inbounds [9 x i8], ptr @.str.2650, i64 0, i64 0
+  %t31 = getelementptr inbounds [9 x i8], ptr @.str.2651, i64 0, i64 0
   %t32 = call i32 @strcmp(ptr %t30, ptr %t31)
   %t33 = icmp eq i32 %t32, 0
   store i1 %t33, ptr %or.val6, align 1
   br i1 %t33, label %or.end6, label %or.rhs6
 or.rhs6:
   %t34 = load ptr, ptr %ph2.addr.25, align 8
-  %t35 = getelementptr inbounds [10 x i8], ptr @.str.2651, i64 0, i64 0
+  %t35 = getelementptr inbounds [10 x i8], ptr @.str.2652, i64 0, i64 0
   %t36 = call i32 @strcmp(ptr %t34, ptr %t35)
   %t37 = icmp eq i32 %t36, 0
   store i1 %t37, ptr %or.val6, align 1
@@ -95708,14 +95721,14 @@ cond.then7.0:
   %t61 = load ptr, ptr %t60, align 8
   store ptr %t61, ptr %ph3.addr.57, align 8
   %t62 = load ptr, ptr %ph3.addr.57, align 8
-  %t63 = getelementptr inbounds [5 x i8], ptr @.str.2652, i64 0, i64 0
+  %t63 = getelementptr inbounds [5 x i8], ptr @.str.2653, i64 0, i64 0
   %t64 = call i32 @strcmp(ptr %t62, ptr %t63)
   %t65 = icmp eq i32 %t64, 0
   store i1 %t65, ptr %or.val12, align 1
   br i1 %t65, label %or.end12, label %or.rhs12
 or.rhs12:
   %t66 = load ptr, ptr %ph3.addr.57, align 8
-  %t67 = getelementptr inbounds [6 x i8], ptr @.str.2653, i64 0, i64 0
+  %t67 = getelementptr inbounds [6 x i8], ptr @.str.2654, i64 0, i64 0
   %t68 = call i32 @strcmp(ptr %t66, ptr %t67)
   %t69 = icmp eq i32 %t68, 0
   store i1 %t69, ptr %or.val12, align 1
@@ -95847,7 +95860,7 @@ cond.then0.0:
   %t5 = load ptr, ptr %cc.addr.0, align 8
   %t6 = getelementptr inbounds %Node, ptr %t5, i32 0, i32 1
   %t7 = load i32, ptr %t6, align 4
-  %t8 = getelementptr inbounds [49 x i8], ptr @.str.2654, i64 0, i64 0
+  %t8 = getelementptr inbounds [49 x i8], ptr @.str.2655, i64 0, i64 0
   call void @die-at(i32 %t7, ptr %t8)
   unreachable
 cond.fall0:
@@ -95868,7 +95881,7 @@ cond.then1.0:
   %t19 = load ptr, ptr %prefix-node.addr.9, align 8
   %t20 = getelementptr inbounds %Node, ptr %t19, i32 0, i32 1
   %t21 = load i32, ptr %t20, align 4
-  %t22 = getelementptr inbounds [36 x i8], ptr @.str.2655, i64 0, i64 0
+  %t22 = getelementptr inbounds [36 x i8], ptr @.str.2656, i64 0, i64 0
   call void @die-at(i32 %t21, ptr %t22)
   unreachable
 cond.fall1:
@@ -95883,7 +95896,7 @@ cond.then2.0:
   %t27 = load ptr, ptr %sym-node.addr.12, align 8
   %t28 = getelementptr inbounds %Node, ptr %t27, i32 0, i32 1
   %t29 = load i32, ptr %t28, align 4
-  %t30 = getelementptr inbounds [41 x i8], ptr @.str.2656, i64 0, i64 0
+  %t30 = getelementptr inbounds [41 x i8], ptr @.str.2657, i64 0, i64 0
   call void @die-at(i32 %t29, ptr %t30)
   unreachable
 cond.fall2:
@@ -95915,7 +95928,7 @@ cond.then0.0:
   %t5 = load ptr, ptr %ff.addr.0, align 8
   %t6 = getelementptr inbounds %Node, ptr %t5, i32 0, i32 1
   %t7 = load i32, ptr %t6, align 4
-  %t8 = getelementptr inbounds [23 x i8], ptr @.str.2657, i64 0, i64 0
+  %t8 = getelementptr inbounds [23 x i8], ptr @.str.2658, i64 0, i64 0
   call void @die-at(i32 %t7, ptr %t8)
   unreachable
 cond.fall0:
@@ -95933,7 +95946,7 @@ cond.then1.0:
   %t16 = load ptr, ptr %ff.addr.0, align 8
   %t17 = getelementptr inbounds %Node, ptr %t16, i32 0, i32 1
   %t18 = load i32, ptr %t17, align 4
-  %t19 = getelementptr inbounds [31 x i8], ptr @.str.2658, i64 0, i64 0
+  %t19 = getelementptr inbounds [31 x i8], ptr @.str.2659, i64 0, i64 0
   call void @die-at(i32 %t18, ptr %t19)
   unreachable
 cond.fall1:
@@ -95949,7 +95962,7 @@ cond.then2.0:
   %t25 = load ptr, ptr %ff.addr.0, align 8
   %t26 = getelementptr inbounds %Node, ptr %t25, i32 0, i32 1
   %t27 = load i32, ptr %t26, align 4
-  %t28 = getelementptr inbounds [43 x i8], ptr @.str.2659, i64 0, i64 0
+  %t28 = getelementptr inbounds [43 x i8], ptr @.str.2660, i64 0, i64 0
   call void @die-at(i32 %t27, ptr %t28)
   unreachable
 cond.fall2:
@@ -95964,12 +95977,12 @@ cond.then3.0:
   br i1 %t32, label %cond.then4.0, label %cond.fall4
 cond.then4.0:
   %t33 = load ptr, ptr @stderr, align 8
-  %t34 = getelementptr inbounds [20 x i8], ptr @.str.2660, i64 0, i64 0
+  %t34 = getelementptr inbounds [20 x i8], ptr @.str.2661, i64 0, i64 0
   %t35 = load ptr, ptr @g-source-path, align 8
   %t36 = load ptr, ptr %ff.addr.0, align 8
   %t37 = getelementptr inbounds %Node, ptr %t36, i32 0, i32 1
   %t38 = load i32, ptr %t37, align 4
-  %t39 = getelementptr inbounds [46 x i8], ptr @.str.2661, i64 0, i64 0
+  %t39 = getelementptr inbounds [46 x i8], ptr @.str.2662, i64 0, i64 0
   %t40 = load ptr, ptr %name-node.addr.9, align 8
   %t41 = getelementptr inbounds %Node, ptr %t40, i32 0, i32 3
   %t42 = load ptr, ptr %t41, align 8
@@ -96016,7 +96029,7 @@ cond.then0.0:
   %t5 = load ptr, ptr %ff.addr.0, align 8
   %t6 = getelementptr inbounds %Node, ptr %t5, i32 0, i32 1
   %t7 = load i32, ptr %t6, align 4
-  %t8 = getelementptr inbounds [49 x i8], ptr @.str.2662, i64 0, i64 0
+  %t8 = getelementptr inbounds [49 x i8], ptr @.str.2663, i64 0, i64 0
   call void @die-at(i32 %t7, ptr %t8)
   unreachable
 cond.fall0:
@@ -96025,7 +96038,7 @@ cond.end0:
   %t10 = load ptr, ptr %form.addr, align 8
   %t11 = call ptr @node-at(ptr %t10, i32 1)
   store ptr %t11, ptr %arg.addr.9, align 8
-  %t13 = getelementptr inbounds [1 x i8], ptr @.str.2663, i64 0, i64 0
+  %t13 = getelementptr inbounds [1 x i8], ptr @.str.2664, i64 0, i64 0
   store ptr %t13, ptr %prefix.addr.12, align 8
   %t14 = load ptr, ptr %arg.addr.9, align 8
   %t15 = getelementptr inbounds %Node, ptr %t14, i32 0, i32 0
@@ -96051,7 +96064,7 @@ and.rhs2:
   %t25 = load ptr, ptr %arg.addr.9, align 8
   %t26 = getelementptr inbounds %Node, ptr %t25, i32 0, i32 3
   %t27 = load ptr, ptr %t26, align 8
-  %t28 = getelementptr inbounds [5 x i8], ptr @.str.2664, i64 0, i64 0
+  %t28 = getelementptr inbounds [5 x i8], ptr @.str.2665, i64 0, i64 0
   %t29 = call i32 @strcmp(ptr %t27, ptr %t28)
   %t30 = icmp eq i32 %t29, 0
   store i1 %t30, ptr %and.val2, align 1
@@ -96060,7 +96073,7 @@ and.end2:
   %t31 = load i1, ptr %and.val2, align 1
   br i1 %t31, label %cond.then1.1, label %cond.test1.2
 cond.then1.1:
-  %t32 = getelementptr inbounds [1 x i8], ptr @.str.2665, i64 0, i64 0
+  %t32 = getelementptr inbounds [1 x i8], ptr @.str.2666, i64 0, i64 0
   store ptr %t32, ptr %prefix.addr.12, align 8
   br label %cond.join1.1
 cond.join1.1:
@@ -96071,7 +96084,7 @@ cond.then1.2:
   %t33 = load ptr, ptr %ff.addr.0, align 8
   %t34 = getelementptr inbounds %Node, ptr %t33, i32 0, i32 1
   %t35 = load i32, ptr %t34, align 4
-  %t36 = getelementptr inbounds [49 x i8], ptr @.str.2666, i64 0, i64 0
+  %t36 = getelementptr inbounds [49 x i8], ptr @.str.2667, i64 0, i64 0
   call void @die-at(i32 %t35, ptr %t36)
   unreachable
 cond.end1:
@@ -96083,7 +96096,7 @@ cond.end1:
   br i1 %t41, label %cond.then3.0, label %cond.test3.1
 cond.then3.0:
   %t42 = load ptr, ptr @g-current-ns, align 8
-  %t43 = getelementptr inbounds [1 x i8], ptr @.str.2667, i64 0, i64 0
+  %t43 = getelementptr inbounds [1 x i8], ptr @.str.2668, i64 0, i64 0
   %t44 = call ptr @intern-str(ptr %t43)
   call void @ns-ir-prefix-set(ptr %t42, ptr %t44)
   br label %cond.join3.0
@@ -96125,7 +96138,7 @@ cond.then0.0:
   %t5 = load ptr, ptr %ff.addr.0, align 8
   %t6 = getelementptr inbounds %Node, ptr %t5, i32 0, i32 1
   %t7 = load i32, ptr %t6, align 4
-  %t8 = getelementptr inbounds [34 x i8], ptr @.str.2668, i64 0, i64 0
+  %t8 = getelementptr inbounds [34 x i8], ptr @.str.2669, i64 0, i64 0
   call void @die-at(i32 %t7, ptr %t8)
   unreachable
 cond.fall0:
@@ -96155,7 +96168,7 @@ cond.then2.0:
   %t24 = load ptr, ptr %arg.addr.16, align 8
   %t25 = getelementptr inbounds %Node, ptr %t24, i32 0, i32 1
   %t26 = load i32, ptr %t25, align 4
-  %t27 = getelementptr inbounds [39 x i8], ptr @.str.2669, i64 0, i64 0
+  %t27 = getelementptr inbounds [39 x i8], ptr @.str.2670, i64 0, i64 0
   call void @die-at(i32 %t26, ptr %t27)
   unreachable
 cond.fall2:
@@ -96176,7 +96189,7 @@ cond.then3.0:
   %t38 = load ptr, ptr %arg.addr.16, align 8
   %t39 = getelementptr inbounds %Node, ptr %t38, i32 0, i32 1
   %t40 = load i32, ptr %t39, align 4
-  %t41 = getelementptr inbounds [31 x i8], ptr @.str.2670, i64 0, i64 0
+  %t41 = getelementptr inbounds [31 x i8], ptr @.str.2671, i64 0, i64 0
   %t42 = load ptr, ptr %spelling.addr.28, align 8
   %t43 = call ptr @fmt-s(ptr %t41, ptr %t42)
   call void @die-at(i32 %t40, ptr %t43)
@@ -96296,7 +96309,7 @@ cond.then1.0:
   %t29 = load ptr, ptr %t28, align 8
   store ptr %t29, ptr %h.addr.25, align 8
   %t30 = load ptr, ptr %h.addr.25, align 8
-  %t31 = getelementptr inbounds [14 x i8], ptr @.str.2671, i64 0, i64 0
+  %t31 = getelementptr inbounds [14 x i8], ptr @.str.2672, i64 0, i64 0
   %t32 = call i32 @strcmp(ptr %t30, ptr %t31)
   %t33 = icmp eq i32 %t32, 0
   br i1 %t33, label %cond.then5.0, label %cond.test5.1
@@ -96306,28 +96319,28 @@ cond.then5.0:
   ret void
 cond.test5.1:
   %t35 = load ptr, ptr %h.addr.25, align 8
-  %t36 = getelementptr inbounds [5 x i8], ptr @.str.2672, i64 0, i64 0
+  %t36 = getelementptr inbounds [5 x i8], ptr @.str.2673, i64 0, i64 0
   %t37 = call i32 @strcmp(ptr %t35, ptr %t36)
   %t38 = icmp eq i32 %t37, 0
   store i1 %t38, ptr %or.val6, align 1
   br i1 %t38, label %or.end6, label %or.rhs6
 or.rhs6:
   %t39 = load ptr, ptr %h.addr.25, align 8
-  %t40 = getelementptr inbounds [6 x i8], ptr @.str.2673, i64 0, i64 0
+  %t40 = getelementptr inbounds [6 x i8], ptr @.str.2674, i64 0, i64 0
   %t41 = call i32 @strcmp(ptr %t39, ptr %t40)
   %t42 = icmp eq i32 %t41, 0
   store i1 %t42, ptr %or.val7, align 1
   br i1 %t42, label %or.end7, label %or.rhs7
 or.rhs7:
   %t43 = load ptr, ptr %h.addr.25, align 8
-  %t44 = getelementptr inbounds [7 x i8], ptr @.str.2674, i64 0, i64 0
+  %t44 = getelementptr inbounds [7 x i8], ptr @.str.2675, i64 0, i64 0
   %t45 = call i32 @strcmp(ptr %t43, ptr %t44)
   %t46 = icmp eq i32 %t45, 0
   store i1 %t46, ptr %or.val8, align 1
   br i1 %t46, label %or.end8, label %or.rhs8
 or.rhs8:
   %t47 = load ptr, ptr %h.addr.25, align 8
-  %t48 = getelementptr inbounds [8 x i8], ptr @.str.2675, i64 0, i64 0
+  %t48 = getelementptr inbounds [8 x i8], ptr @.str.2676, i64 0, i64 0
   %t49 = call i32 @strcmp(ptr %t47, ptr %t48)
   %t50 = icmp eq i32 %t49, 0
   store i1 %t50, ptr %or.val8, align 1
@@ -96455,7 +96468,7 @@ cond.then2.0:
   %t36 = load ptr, ptr %f.addr.15, align 8
   %t37 = getelementptr inbounds %Node, ptr %t36, i32 0, i32 1
   %t38 = load i32, ptr %t37, align 4
-  %t39 = getelementptr inbounds [53 x i8], ptr @.str.2676, i64 0, i64 0
+  %t39 = getelementptr inbounds [53 x i8], ptr @.str.2677, i64 0, i64 0
   call void @die-at(i32 %t38, ptr %t39)
   unreachable
 cond.fall2:
@@ -96470,7 +96483,7 @@ cond.end2:
   %t47 = call ptr @node-at(ptr %t46, i32 0)
   store ptr %t47, ptr %hp.addr.45, align 8
   %t48 = load ptr, ptr %hp.addr.45, align 8
-  %t49 = call ptr @intern-symbol(ptr getelementptr inbounds ([3 x i8], ptr @.str.2677, i64 0, i64 0))
+  %t49 = call ptr @intern-symbol(ptr getelementptr inbounds ([3 x i8], ptr @.str.2678, i64 0, i64 0))
   %t50 = icmp eq ptr %t48, %t49
   br i1 %t50, label %cond.then6.0, label %cond.test6.1
 cond.then6.0:
@@ -96481,7 +96494,7 @@ cond.join6.0:
   br label %cond.end6
 cond.test6.1:
   %t52 = load ptr, ptr %hp.addr.45, align 8
-  %t53 = call ptr @intern-symbol(ptr getelementptr inbounds ([14 x i8], ptr @.str.2678, i64 0, i64 0))
+  %t53 = call ptr @intern-symbol(ptr getelementptr inbounds ([14 x i8], ptr @.str.2679, i64 0, i64 0))
   %t54 = icmp eq ptr %t52, %t53
   br i1 %t54, label %cond.then6.1, label %cond.test6.2
 cond.then6.1:
@@ -96492,7 +96505,7 @@ cond.join6.1:
   br label %cond.end6
 cond.test6.2:
   %t56 = load ptr, ptr %hp.addr.45, align 8
-  %t57 = call ptr @intern-symbol(ptr getelementptr inbounds ([7 x i8], ptr @.str.2679, i64 0, i64 0))
+  %t57 = call ptr @intern-symbol(ptr getelementptr inbounds ([7 x i8], ptr @.str.2680, i64 0, i64 0))
   %t58 = icmp eq ptr %t56, %t57
   br i1 %t58, label %cond.then6.2, label %cond.test6.3
 cond.then6.2:
@@ -96503,7 +96516,7 @@ cond.join6.2:
   br label %cond.end6
 cond.test6.3:
   %t60 = load ptr, ptr %hp.addr.45, align 8
-  %t61 = call ptr @intern-symbol(ptr getelementptr inbounds ([9 x i8], ptr @.str.2680, i64 0, i64 0))
+  %t61 = call ptr @intern-symbol(ptr getelementptr inbounds ([9 x i8], ptr @.str.2681, i64 0, i64 0))
   %t62 = icmp eq ptr %t60, %t61
   br i1 %t62, label %cond.then6.3, label %cond.test6.4
 cond.then6.3:
@@ -96514,7 +96527,7 @@ cond.join6.3:
   br label %cond.end6
 cond.test6.4:
   %t64 = load ptr, ptr %hp.addr.45, align 8
-  %t65 = call ptr @intern-symbol(ptr getelementptr inbounds ([8 x i8], ptr @.str.2681, i64 0, i64 0))
+  %t65 = call ptr @intern-symbol(ptr getelementptr inbounds ([8 x i8], ptr @.str.2682, i64 0, i64 0))
   %t66 = icmp eq ptr %t64, %t65
   br i1 %t66, label %cond.then6.4, label %cond.test6.5
 cond.then6.4:
@@ -96525,7 +96538,7 @@ cond.join6.4:
   br label %cond.end6
 cond.test6.5:
   %t68 = load ptr, ptr %hp.addr.45, align 8
-  %t69 = call ptr @intern-symbol(ptr getelementptr inbounds ([9 x i8], ptr @.str.2682, i64 0, i64 0))
+  %t69 = call ptr @intern-symbol(ptr getelementptr inbounds ([9 x i8], ptr @.str.2683, i64 0, i64 0))
   %t70 = icmp eq ptr %t68, %t69
   br i1 %t70, label %cond.then6.5, label %cond.test6.6
 cond.then6.5:
@@ -96557,7 +96570,7 @@ cond.join6.5:
   br label %cond.end6
 cond.test6.6:
   %t83 = load ptr, ptr %hp.addr.45, align 8
-  %t84 = call ptr @intern-symbol(ptr getelementptr inbounds ([7 x i8], ptr @.str.2683, i64 0, i64 0))
+  %t84 = call ptr @intern-symbol(ptr getelementptr inbounds ([7 x i8], ptr @.str.2684, i64 0, i64 0))
   %t85 = icmp eq ptr %t83, %t84
   br i1 %t85, label %cond.then6.6, label %cond.test6.7
 cond.then6.6:
@@ -96570,7 +96583,7 @@ cond.join6.6:
   br label %cond.end6
 cond.test6.7:
   %t88 = load ptr, ptr %hp.addr.45, align 8
-  %t89 = call ptr @intern-symbol(ptr getelementptr inbounds ([10 x i8], ptr @.str.2684, i64 0, i64 0))
+  %t89 = call ptr @intern-symbol(ptr getelementptr inbounds ([10 x i8], ptr @.str.2685, i64 0, i64 0))
   %t90 = icmp eq ptr %t88, %t89
   br i1 %t90, label %cond.then6.7, label %cond.test6.8
 cond.then6.7:
@@ -96583,7 +96596,7 @@ cond.join6.7:
   br label %cond.end6
 cond.test6.8:
   %t93 = load ptr, ptr %hp.addr.45, align 8
-  %t94 = call ptr @intern-symbol(ptr getelementptr inbounds ([9 x i8], ptr @.str.2685, i64 0, i64 0))
+  %t94 = call ptr @intern-symbol(ptr getelementptr inbounds ([9 x i8], ptr @.str.2686, i64 0, i64 0))
   %t95 = icmp eq ptr %t93, %t94
   br i1 %t95, label %cond.then6.8, label %cond.test6.9
 cond.then6.8:
@@ -96596,7 +96609,7 @@ cond.join6.8:
   br label %cond.end6
 cond.test6.9:
   %t98 = load ptr, ptr %hp.addr.45, align 8
-  %t99 = call ptr @intern-symbol(ptr getelementptr inbounds ([8 x i8], ptr @.str.2686, i64 0, i64 0))
+  %t99 = call ptr @intern-symbol(ptr getelementptr inbounds ([8 x i8], ptr @.str.2687, i64 0, i64 0))
   %t100 = icmp eq ptr %t98, %t99
   br i1 %t100, label %cond.then6.9, label %cond.test6.10
 cond.then6.9:
@@ -96607,7 +96620,7 @@ cond.join6.9:
   br label %cond.end6
 cond.test6.10:
   %t102 = load ptr, ptr %hp.addr.45, align 8
-  %t103 = call ptr @intern-symbol(ptr getelementptr inbounds ([7 x i8], ptr @.str.2687, i64 0, i64 0))
+  %t103 = call ptr @intern-symbol(ptr getelementptr inbounds ([7 x i8], ptr @.str.2688, i64 0, i64 0))
   %t104 = icmp eq ptr %t102, %t103
   br i1 %t104, label %cond.then6.10, label %cond.test6.11
 cond.then6.10:
@@ -96620,7 +96633,7 @@ cond.join6.10:
   br label %cond.end6
 cond.test6.11:
   %t107 = load ptr, ptr %hp.addr.45, align 8
-  %t108 = call ptr @intern-symbol(ptr getelementptr inbounds ([5 x i8], ptr @.str.2688, i64 0, i64 0))
+  %t108 = call ptr @intern-symbol(ptr getelementptr inbounds ([5 x i8], ptr @.str.2689, i64 0, i64 0))
   %t109 = icmp eq ptr %t107, %t108
   br i1 %t109, label %cond.then6.11, label %cond.test6.12
 cond.then6.11:
@@ -96633,7 +96646,7 @@ cond.join6.11:
   br label %cond.end6
 cond.test6.12:
   %t112 = load ptr, ptr %hp.addr.45, align 8
-  %t113 = call ptr @intern-symbol(ptr getelementptr inbounds ([12 x i8], ptr @.str.2689, i64 0, i64 0))
+  %t113 = call ptr @intern-symbol(ptr getelementptr inbounds ([12 x i8], ptr @.str.2690, i64 0, i64 0))
   %t114 = icmp eq ptr %t112, %t113
   br i1 %t114, label %cond.then6.12, label %cond.test6.13
 cond.then6.12:
@@ -96642,7 +96655,7 @@ cond.join6.12:
   br label %cond.end6
 cond.test6.13:
   %t115 = load ptr, ptr %hp.addr.45, align 8
-  %t116 = call ptr @intern-symbol(ptr getelementptr inbounds ([7 x i8], ptr @.str.2690, i64 0, i64 0))
+  %t116 = call ptr @intern-symbol(ptr getelementptr inbounds ([7 x i8], ptr @.str.2691, i64 0, i64 0))
   %t117 = icmp eq ptr %t115, %t116
   br i1 %t117, label %cond.then6.13, label %cond.test6.14
 cond.then6.13:
@@ -96653,7 +96666,7 @@ cond.join6.13:
   br label %cond.end6
 cond.test6.14:
   %t119 = load ptr, ptr %hp.addr.45, align 8
-  %t120 = call ptr @intern-symbol(ptr getelementptr inbounds ([13 x i8], ptr @.str.2691, i64 0, i64 0))
+  %t120 = call ptr @intern-symbol(ptr getelementptr inbounds ([13 x i8], ptr @.str.2692, i64 0, i64 0))
   %t121 = icmp eq ptr %t119, %t120
   br i1 %t121, label %cond.then6.14, label %cond.test6.15
 cond.then6.14:
@@ -96664,7 +96677,7 @@ cond.join6.14:
   br label %cond.end6
 cond.test6.15:
   %t123 = load ptr, ptr %hp.addr.45, align 8
-  %t124 = call ptr @intern-symbol(ptr getelementptr inbounds ([9 x i8], ptr @.str.2692, i64 0, i64 0))
+  %t124 = call ptr @intern-symbol(ptr getelementptr inbounds ([9 x i8], ptr @.str.2693, i64 0, i64 0))
   %t125 = icmp eq ptr %t123, %t124
   br i1 %t125, label %cond.then6.15, label %cond.test6.16
 cond.then6.15:
@@ -96675,7 +96688,7 @@ cond.join6.15:
   br label %cond.end6
 cond.test6.16:
   %t127 = load ptr, ptr %hp.addr.45, align 8
-  %t128 = call ptr @intern-symbol(ptr getelementptr inbounds ([11 x i8], ptr @.str.2693, i64 0, i64 0))
+  %t128 = call ptr @intern-symbol(ptr getelementptr inbounds ([11 x i8], ptr @.str.2694, i64 0, i64 0))
   %t129 = icmp eq ptr %t127, %t128
   br i1 %t129, label %cond.then6.16, label %cond.test6.17
 cond.then6.16:
@@ -96686,7 +96699,7 @@ cond.join6.16:
   br label %cond.end6
 cond.test6.17:
   %t131 = load ptr, ptr %hp.addr.45, align 8
-  %t132 = call ptr @intern-symbol(ptr getelementptr inbounds ([10 x i8], ptr @.str.2694, i64 0, i64 0))
+  %t132 = call ptr @intern-symbol(ptr getelementptr inbounds ([10 x i8], ptr @.str.2695, i64 0, i64 0))
   %t133 = icmp eq ptr %t131, %t132
   br i1 %t133, label %cond.then6.17, label %cond.test6.18
 cond.then6.17:
@@ -96699,7 +96712,7 @@ cond.join6.17:
   br label %cond.end6
 cond.test6.18:
   %t135 = load ptr, ptr %hp.addr.45, align 8
-  %t136 = call ptr @intern-symbol(ptr getelementptr inbounds ([9 x i8], ptr @.str.2695, i64 0, i64 0))
+  %t136 = call ptr @intern-symbol(ptr getelementptr inbounds ([9 x i8], ptr @.str.2696, i64 0, i64 0))
   %t137 = icmp eq ptr %t135, %t136
   br i1 %t137, label %cond.then6.18, label %cond.test6.19
 cond.then6.18:
@@ -96712,7 +96725,7 @@ cond.join6.18:
   br label %cond.end6
 cond.test6.19:
   %t139 = load ptr, ptr %hp.addr.45, align 8
-  %t140 = call ptr @intern-symbol(ptr getelementptr inbounds ([8 x i8], ptr @.str.2696, i64 0, i64 0))
+  %t140 = call ptr @intern-symbol(ptr getelementptr inbounds ([8 x i8], ptr @.str.2697, i64 0, i64 0))
   %t141 = icmp eq ptr %t139, %t140
   br i1 %t141, label %cond.then6.19, label %cond.test6.20
 cond.then6.19:
@@ -96727,7 +96740,7 @@ cond.join6.19:
   br label %cond.end6
 cond.test6.20:
   %t144 = load ptr, ptr %hp.addr.45, align 8
-  %t145 = call ptr @intern-symbol(ptr getelementptr inbounds ([11 x i8], ptr @.str.2697, i64 0, i64 0))
+  %t145 = call ptr @intern-symbol(ptr getelementptr inbounds ([11 x i8], ptr @.str.2698, i64 0, i64 0))
   %t146 = icmp eq ptr %t144, %t145
   br i1 %t146, label %cond.then6.20, label %cond.test6.21
 cond.then6.20:
@@ -96742,7 +96755,7 @@ cond.join6.20:
   br label %cond.end6
 cond.test6.21:
   %t149 = load ptr, ptr %hp.addr.45, align 8
-  %t150 = call ptr @intern-symbol(ptr getelementptr inbounds ([10 x i8], ptr @.str.2698, i64 0, i64 0))
+  %t150 = call ptr @intern-symbol(ptr getelementptr inbounds ([10 x i8], ptr @.str.2699, i64 0, i64 0))
   %t151 = icmp eq ptr %t149, %t150
   br i1 %t151, label %cond.then6.21, label %cond.test6.22
 cond.then6.21:
@@ -96757,7 +96770,7 @@ cond.join6.21:
   br label %cond.end6
 cond.test6.22:
   %t154 = load ptr, ptr %hp.addr.45, align 8
-  %t155 = call ptr @intern-symbol(ptr getelementptr inbounds ([6 x i8], ptr @.str.2699, i64 0, i64 0))
+  %t155 = call ptr @intern-symbol(ptr getelementptr inbounds ([6 x i8], ptr @.str.2700, i64 0, i64 0))
   %t156 = icmp eq ptr %t154, %t155
   br i1 %t156, label %cond.then6.22, label %cond.test6.23
 cond.then6.22:
@@ -96772,7 +96785,7 @@ cond.join6.22:
   br label %cond.end6
 cond.test6.23:
   %t159 = load ptr, ptr %hp.addr.45, align 8
-  %t160 = call ptr @intern-symbol(ptr getelementptr inbounds ([13 x i8], ptr @.str.2700, i64 0, i64 0))
+  %t160 = call ptr @intern-symbol(ptr getelementptr inbounds ([13 x i8], ptr @.str.2701, i64 0, i64 0))
   %t161 = icmp eq ptr %t159, %t160
   br i1 %t161, label %cond.then6.23, label %cond.test6.24
 cond.then6.23:
@@ -96781,7 +96794,7 @@ cond.join6.23:
   br label %cond.end6
 cond.test6.24:
   %t162 = load ptr, ptr %hp.addr.45, align 8
-  %t163 = call ptr @intern-symbol(ptr getelementptr inbounds ([10 x i8], ptr @.str.2701, i64 0, i64 0))
+  %t163 = call ptr @intern-symbol(ptr getelementptr inbounds ([10 x i8], ptr @.str.2702, i64 0, i64 0))
   %t164 = icmp eq ptr %t162, %t163
   br i1 %t164, label %cond.then6.24, label %cond.test6.25
 cond.then6.24:
@@ -96794,7 +96807,7 @@ cond.join6.24:
   br label %cond.end6
 cond.test6.25:
   %t166 = load ptr, ptr %hp.addr.45, align 8
-  %t167 = call ptr @intern-symbol(ptr getelementptr inbounds ([7 x i8], ptr @.str.2702, i64 0, i64 0))
+  %t167 = call ptr @intern-symbol(ptr getelementptr inbounds ([7 x i8], ptr @.str.2703, i64 0, i64 0))
   %t168 = icmp eq ptr %t166, %t167
   br i1 %t168, label %cond.then6.25, label %cond.test6.26
 cond.then6.25:
@@ -96805,7 +96818,7 @@ cond.join6.25:
   br label %cond.end6
 cond.test6.26:
   %t170 = load ptr, ptr %hp.addr.45, align 8
-  %t171 = call ptr @intern-symbol(ptr getelementptr inbounds ([11 x i8], ptr @.str.2703, i64 0, i64 0))
+  %t171 = call ptr @intern-symbol(ptr getelementptr inbounds ([11 x i8], ptr @.str.2704, i64 0, i64 0))
   %t172 = icmp eq ptr %t170, %t171
   br i1 %t172, label %cond.then6.26, label %cond.test6.27
 cond.then6.26:
@@ -96816,7 +96829,7 @@ cond.join6.26:
   br label %cond.end6
 cond.test6.27:
   %t174 = load ptr, ptr %hp.addr.45, align 8
-  %t175 = call ptr @intern-symbol(ptr getelementptr inbounds ([12 x i8], ptr @.str.2704, i64 0, i64 0))
+  %t175 = call ptr @intern-symbol(ptr getelementptr inbounds ([12 x i8], ptr @.str.2705, i64 0, i64 0))
   %t176 = icmp eq ptr %t174, %t175
   br i1 %t176, label %cond.then6.27, label %cond.test6.28
 cond.then6.27:
@@ -96827,7 +96840,7 @@ cond.join6.27:
   br label %cond.end6
 cond.test6.28:
   %t178 = load ptr, ptr %hp.addr.45, align 8
-  %t179 = call ptr @intern-symbol(ptr getelementptr inbounds ([16 x i8], ptr @.str.2705, i64 0, i64 0))
+  %t179 = call ptr @intern-symbol(ptr getelementptr inbounds ([16 x i8], ptr @.str.2706, i64 0, i64 0))
   %t180 = icmp eq ptr %t178, %t179
   br i1 %t180, label %cond.then6.28, label %cond.test6.29
 cond.then6.28:
@@ -96838,7 +96851,7 @@ cond.join6.28:
   br label %cond.end6
 cond.test6.29:
   %t182 = load ptr, ptr %hp.addr.45, align 8
-  %t183 = call ptr @intern-symbol(ptr getelementptr inbounds ([22 x i8], ptr @.str.2706, i64 0, i64 0))
+  %t183 = call ptr @intern-symbol(ptr getelementptr inbounds ([22 x i8], ptr @.str.2707, i64 0, i64 0))
   %t184 = icmp eq ptr %t182, %t183
   br i1 %t184, label %cond.then6.29, label %cond.test6.30
 cond.then6.29:
@@ -96849,7 +96862,7 @@ cond.join6.29:
   br label %cond.end6
 cond.test6.30:
   %t186 = load ptr, ptr %hp.addr.45, align 8
-  %t187 = call ptr @intern-symbol(ptr getelementptr inbounds ([8 x i8], ptr @.str.2707, i64 0, i64 0))
+  %t187 = call ptr @intern-symbol(ptr getelementptr inbounds ([8 x i8], ptr @.str.2708, i64 0, i64 0))
   %t188 = icmp eq ptr %t186, %t187
   br i1 %t188, label %cond.then6.30, label %cond.test6.31
 cond.then6.30:
@@ -96866,7 +96879,7 @@ cond.then6.31:
   %t191 = load ptr, ptr %f.addr.15, align 8
   %t192 = getelementptr inbounds %Node, ptr %t191, i32 0, i32 1
   %t193 = load i32, ptr %t192, align 4
-  %t194 = getelementptr inbounds [27 x i8], ptr @.str.2708, i64 0, i64 0
+  %t194 = getelementptr inbounds [27 x i8], ptr @.str.2709, i64 0, i64 0
   %t195 = load ptr, ptr %h.addr.40, align 8
   %t196 = call ptr @fmt-s(ptr %t194, ptr %t195)
   call void @die-at(i32 %t193, ptr %t196)
@@ -97077,7 +97090,7 @@ entry:
   store ptr %path.arg, ptr %path.addr, align 8
   %f.addr.0 = alloca ptr, align 8
   %t1 = load ptr, ptr %path.addr, align 8
-  %t2 = getelementptr inbounds [2 x i8], ptr @.str.2709, i64 0, i64 0
+  %t2 = getelementptr inbounds [2 x i8], ptr @.str.2710, i64 0, i64 0
   %t3 = call ptr @fopen(ptr %t1, ptr %t2)
   store ptr %t3, ptr %f.addr.0, align 8
   %t4 = load ptr, ptr %f.addr.0, align 8
@@ -97153,7 +97166,7 @@ cond.then2.0:
   %t25 = load i64, ptr %last-slash.addr.3, align 8
   %t26 = call ptr @strndup(ptr %t24, i64 %t25)
   store ptr %t26, ptr %dir.addr.23, align 8
-  %t28 = getelementptr inbounds [6 x i8], ptr @.str.2710, i64 0, i64 0
+  %t28 = getelementptr inbounds [6 x i8], ptr @.str.2711, i64 0, i64 0
   %t29 = load ptr, ptr %dir.addr.23, align 8
   %t30 = load ptr, ptr %filename.addr, align 8
   %t31 = call ptr @fmt-2s(ptr %t28, ptr %t29, ptr %t30)
@@ -97174,7 +97187,7 @@ cond.join2.0:
 cond.fall2:
   br label %cond.end2
 cond.end2:
-  %t37 = getelementptr inbounds [7 x i8], ptr @.str.2711, i64 0, i64 0
+  %t37 = getelementptr inbounds [7 x i8], ptr @.str.2712, i64 0, i64 0
   %t38 = load ptr, ptr %filename.addr, align 8
   %t39 = call ptr @fmt-s(ptr %t37, ptr %t38)
   store ptr %t39, ptr %candidate.addr.36, align 8
@@ -97198,7 +97211,7 @@ while.cond5:
   %t49 = icmp slt i32 %t47, %t48
   br i1 %t49, label %while.body5, label %while.end5
 while.body5:
-  %t51 = getelementptr inbounds [6 x i8], ptr @.str.2712, i64 0, i64 0
+  %t51 = getelementptr inbounds [6 x i8], ptr @.str.2713, i64 0, i64 0
   %t52 = load ptr, ptr @g-include-paths, align 8
   %t53 = load i32, ptr %j.addr.46, align 4
   %t54 = sext i32 %t53 to i64
@@ -97222,14 +97235,14 @@ cond.end6:
   store i32 %t64, ptr %j.addr.46, align 4
   br label %while.cond5
 while.end5:
-  %t66 = getelementptr inbounds [12 x i8], ptr @.str.2713, i64 0, i64 0
+  %t66 = getelementptr inbounds [12 x i8], ptr @.str.2714, i64 0, i64 0
   %t67 = call ptr @getenv(ptr %t66)
   store ptr %t67, ptr %libenv.addr.65, align 8
   %t68 = load ptr, ptr %libenv.addr.65, align 8
   %t69 = icmp ne ptr %t68, null
   br i1 %t69, label %cond.then7.0, label %cond.fall7
 cond.then7.0:
-  %t71 = getelementptr inbounds [6 x i8], ptr @.str.2714, i64 0, i64 0
+  %t71 = getelementptr inbounds [6 x i8], ptr @.str.2715, i64 0, i64 0
   %t72 = load ptr, ptr %libenv.addr.65, align 8
   %t73 = load ptr, ptr %filename.addr, align 8
   %t74 = call ptr @fmt-2s(ptr %t71, ptr %t72, ptr %t73)
@@ -97250,7 +97263,7 @@ cond.join7.0:
 cond.fall7:
   br label %cond.end7
 cond.end7:
-  %t80 = getelementptr inbounds [32 x i8], ptr @.str.2715, i64 0, i64 0
+  %t80 = getelementptr inbounds [32 x i8], ptr @.str.2716, i64 0, i64 0
   %t81 = load ptr, ptr %filename.addr, align 8
   %t82 = call ptr @fmt-s(ptr %t80, ptr %t81)
   store ptr %t82, ptr %candidate.addr.79, align 8
@@ -97275,7 +97288,7 @@ entry:
   store i32 %line.arg, ptr %line.addr, align 4
   %nuc-path.addr.0 = alloca ptr, align 8
   %nuch-path.addr.8 = alloca ptr, align 8
-  %t1 = getelementptr inbounds [7 x i8], ptr @.str.2716, i64 0, i64 0
+  %t1 = getelementptr inbounds [7 x i8], ptr @.str.2717, i64 0, i64 0
   %t2 = load ptr, ptr %name.addr, align 8
   %t3 = call ptr @fmt-s(ptr %t1, ptr %t2)
   %t4 = call ptr @try-import-path(ptr %t3)
@@ -97289,7 +97302,7 @@ cond.then0.0:
 cond.fall0:
   br label %cond.end0
 cond.end0:
-  %t9 = getelementptr inbounds [8 x i8], ptr @.str.2717, i64 0, i64 0
+  %t9 = getelementptr inbounds [8 x i8], ptr @.str.2718, i64 0, i64 0
   %t10 = load ptr, ptr %name.addr, align 8
   %t11 = call ptr @fmt-s(ptr %t9, ptr %t10)
   %t12 = call ptr @try-import-path(ptr %t11)
@@ -97333,7 +97346,7 @@ cond.then0.0:
 cond.fall0:
   br label %cond.end0
 cond.end0:
-  %t8 = getelementptr inbounds [6 x i8], ptr @.str.2718, i64 0, i64 0
+  %t8 = getelementptr inbounds [6 x i8], ptr @.str.2719, i64 0, i64 0
   %t9 = load ptr, ptr %path.addr, align 8
   %t10 = load ptr, ptr %prefix.addr, align 8
   %t11 = call ptr @fmt-2s(ptr %t8, ptr %t9, ptr %t10)
@@ -97358,7 +97371,7 @@ entry:
   %t1 = load ptr, ptr %sym-name.addr, align 8
   %t2 = call ptr @strip-ns-qualifier(ptr %t1)
   store ptr %t2, ptr %bare-name.addr.0, align 8
-  %t4 = getelementptr inbounds [6 x i8], ptr @.str.2719, i64 0, i64 0
+  %t4 = getelementptr inbounds [6 x i8], ptr @.str.2720, i64 0, i64 0
   %t5 = load ptr, ptr %prefix.addr, align 8
   %t6 = load ptr, ptr %bare-name.addr.0, align 8
   %t7 = call ptr @fmt-2s(ptr %t4, ptr %t5, ptr %t6)
@@ -97383,10 +97396,10 @@ cond.then1.0:
   br i1 %t20, label %cond.then2.0, label %cond.fall2
 cond.then2.0:
   %t21 = load ptr, ptr @stderr, align 8
-  %t22 = getelementptr inbounds [20 x i8], ptr @.str.2720, i64 0, i64 0
+  %t22 = getelementptr inbounds [20 x i8], ptr @.str.2721, i64 0, i64 0
   %t23 = load ptr, ptr @g-source-path, align 8
   %t24 = load i32, ptr %line.addr, align 4
-  %t25 = getelementptr inbounds [32 x i8], ptr @.str.2721, i64 0, i64 0
+  %t25 = getelementptr inbounds [32 x i8], ptr @.str.2722, i64 0, i64 0
   %t26 = load ptr, ptr %spelling.addr.3, align 8
   %t27 = call ptr @fmt-s(ptr %t25, ptr %t26)
   %t28 = call i32 (ptr, ptr, ...) @fprintf(ptr %t21, ptr %t22, ptr %t23, i32 %t24, ptr %t27)
@@ -97642,14 +97655,14 @@ cond.then0.0:
   %t9 = load ptr, ptr %t8, align 8
   store ptr %t9, ptr %spath.addr.6, align 8
   %t10 = load ptr, ptr %spath.addr.6, align 8
-  %t11 = getelementptr inbounds [5 x i8], ptr @.str.2722, i64 0, i64 0
+  %t11 = getelementptr inbounds [5 x i8], ptr @.str.2723, i64 0, i64 0
   %t12 = call i32 @str-ends-with(ptr %t10, ptr %t11)
   %t13 = icmp ne i32 %t12, 0
   store i1 %t13, ptr %or.val2, align 1
   br i1 %t13, label %or.end2, label %or.rhs2
 or.rhs2:
   %t14 = load ptr, ptr %spath.addr.6, align 8
-  %t15 = getelementptr inbounds [6 x i8], ptr @.str.2723, i64 0, i64 0
+  %t15 = getelementptr inbounds [6 x i8], ptr @.str.2724, i64 0, i64 0
   %t16 = call i32 @str-ends-with(ptr %t14, ptr %t15)
   %t17 = icmp ne i32 %t16, 0
   store i1 %t17, ptr %or.val2, align 1
@@ -97671,7 +97684,7 @@ cond.then1.0:
   br i1 %t28, label %cond.then3.0, label %cond.fall3
 cond.then3.0:
   %t29 = load i32, ptr %line.addr, align 4
-  %t30 = getelementptr inbounds [25 x i8], ptr @.str.2724, i64 0, i64 0
+  %t30 = getelementptr inbounds [25 x i8], ptr @.str.2725, i64 0, i64 0
   %t31 = load ptr, ptr %name.addr.19, align 8
   %t32 = call ptr @fmt-s(ptr %t30, ptr %t31)
   call void @die-at(i32 %t29, ptr %t32)
@@ -97725,7 +97738,7 @@ and.end8:
   br i1 %t55, label %cond.then7.0, label %cond.fall7
 cond.then7.0:
   %t56 = load i32, ptr %line.addr, align 4
-  %t57 = getelementptr inbounds [45 x i8], ptr @.str.2725, i64 0, i64 0
+  %t57 = getelementptr inbounds [45 x i8], ptr @.str.2726, i64 0, i64 0
   %t58 = load ptr, ptr %prefix.addr, align 8
   %t59 = load ptr, ptr %bound.addr.44, align 8
   %t60 = getelementptr inbounds %Node, ptr %t59, i32 0, i32 4
@@ -97791,7 +97804,7 @@ cond.then11.1:
   br i1 %t86, label %cond.then12.0, label %cond.fall12
 cond.then12.0:
   %t87 = load i32, ptr %line.addr, align 4
-  %t88 = getelementptr inbounds [32 x i8], ptr @.str.2726, i64 0, i64 0
+  %t88 = getelementptr inbounds [32 x i8], ptr @.str.2727, i64 0, i64 0
   %t89 = load ptr, ptr %name.addr.19, align 8
   %t90 = call ptr @fmt-s(ptr %t88, ptr %t89)
   call void @die-at(i32 %t87, ptr %t90)
@@ -97834,7 +97847,7 @@ cond.end12:
   store i64 %t118, ptr @g-pos, align 8
   store i32 1, ptr @g-line, align 4
   store i32 0, ptr @g-peek-valid, align 4
-  %t119 = getelementptr inbounds [5 x i8], ptr @.str.2727, i64 0, i64 0
+  %t119 = getelementptr inbounds [5 x i8], ptr @.str.2728, i64 0, i64 0
   %t120 = call ptr @intern-str(ptr %t119)
   store ptr %t120, ptr @g-current-ns, align 8
   store i32 0, ptr @g-ns-seen, align 4
@@ -97842,7 +97855,7 @@ cond.end12:
   %t123 = call ptr @desugar(ptr %t122)
   store ptr %t123, ptr %forms.addr.121, align 8
   %t125 = load ptr, ptr %path.addr.23, align 8
-  %t126 = getelementptr inbounds [6 x i8], ptr @.str.2728, i64 0, i64 0
+  %t126 = getelementptr inbounds [6 x i8], ptr @.str.2729, i64 0, i64 0
   %t127 = call i32 @str-ends-with(ptr %t125, ptr %t126)
   store i32 %t127, ptr %is-nuch.addr.124, align 4
   %t128 = load i32, ptr %is-nuch.addr.124, align 4
@@ -97999,7 +98012,7 @@ cond.end0:
   br i1 %t203, label %cond.then16.0, label %cond.fall16
 cond.then16.0:
   %t204 = load i32, ptr %line.addr, align 4
-  %t205 = getelementptr inbounds [45 x i8], ptr @.str.2729, i64 0, i64 0
+  %t205 = getelementptr inbounds [45 x i8], ptr @.str.2730, i64 0, i64 0
   call void @die-at(i32 %t204, ptr %t205)
   unreachable
 cond.fall16:
@@ -98018,7 +98031,7 @@ cond.end16:
   br i1 %t215, label %cond.then17.0, label %cond.fall17
 cond.then17.0:
   %t216 = load i32, ptr %line.addr, align 4
-  %t217 = getelementptr inbounds [25 x i8], ptr @.str.2730, i64 0, i64 0
+  %t217 = getelementptr inbounds [25 x i8], ptr @.str.2731, i64 0, i64 0
   %t218 = load ptr, ptr %name.addr.206, align 8
   %t219 = call ptr @fmt-s(ptr %t217, ptr %t218)
   call void @die-at(i32 %t216, ptr %t219)
@@ -98072,7 +98085,7 @@ and.end22:
   br i1 %t242, label %cond.then21.0, label %cond.fall21
 cond.then21.0:
   %t243 = load i32, ptr %line.addr, align 4
-  %t244 = getelementptr inbounds [45 x i8], ptr @.str.2731, i64 0, i64 0
+  %t244 = getelementptr inbounds [45 x i8], ptr @.str.2732, i64 0, i64 0
   %t245 = load ptr, ptr %prefix.addr, align 8
   %t246 = load ptr, ptr %bound.addr.231, align 8
   %t247 = getelementptr inbounds %Node, ptr %t246, i32 0, i32 4
@@ -98138,7 +98151,7 @@ cond.then25.1:
   br i1 %t273, label %cond.then26.0, label %cond.fall26
 cond.then26.0:
   %t274 = load i32, ptr %line.addr, align 4
-  %t275 = getelementptr inbounds [32 x i8], ptr @.str.2732, i64 0, i64 0
+  %t275 = getelementptr inbounds [32 x i8], ptr @.str.2733, i64 0, i64 0
   %t276 = load ptr, ptr %name.addr.206, align 8
   %t277 = call ptr @fmt-s(ptr %t275, ptr %t276)
   call void @die-at(i32 %t274, ptr %t277)
@@ -98181,7 +98194,7 @@ cond.end26:
   store i64 %t305, ptr @g-pos, align 8
   store i32 1, ptr @g-line, align 4
   store i32 0, ptr @g-peek-valid, align 4
-  %t306 = getelementptr inbounds [5 x i8], ptr @.str.2733, i64 0, i64 0
+  %t306 = getelementptr inbounds [5 x i8], ptr @.str.2734, i64 0, i64 0
   %t307 = call ptr @intern-str(ptr %t306)
   store ptr %t307, ptr @g-current-ns, align 8
   store i32 0, ptr @g-ns-seen, align 4
@@ -98189,7 +98202,7 @@ cond.end26:
   %t310 = call ptr @desugar(ptr %t309)
   store ptr %t310, ptr %forms.addr.308, align 8
   %t312 = load ptr, ptr %path.addr.210, align 8
-  %t313 = getelementptr inbounds [6 x i8], ptr @.str.2734, i64 0, i64 0
+  %t313 = getelementptr inbounds [6 x i8], ptr @.str.2735, i64 0, i64 0
   %t314 = call i32 @str-ends-with(ptr %t312, ptr %t313)
   store i32 %t314, ptr %is-nuch.addr.311, align 4
   %t315 = load i32, ptr %is-nuch.addr.311, align 4
@@ -98313,7 +98326,7 @@ cond.then0.0:
   %t5 = load ptr, ptr %ff.addr.0, align 8
   %t6 = getelementptr inbounds %Node, ptr %t5, i32 0, i32 1
   %t7 = load i32, ptr %t6, align 4
-  %t8 = getelementptr inbounds [39 x i8], ptr @.str.2735, i64 0, i64 0
+  %t8 = getelementptr inbounds [39 x i8], ptr @.str.2736, i64 0, i64 0
   call void @die-at(i32 %t7, ptr %t8)
   unreachable
 cond.fall0:
@@ -98369,7 +98382,7 @@ cond.then0.0:
   %t10 = load ptr, ptr %ff.addr.0, align 8
   %t11 = getelementptr inbounds %Node, ptr %t10, i32 0, i32 1
   %t12 = load i32, ptr %t11, align 4
-  %t13 = getelementptr inbounds [39 x i8], ptr @.str.2736, i64 0, i64 0
+  %t13 = getelementptr inbounds [39 x i8], ptr @.str.2737, i64 0, i64 0
   call void @die-at(i32 %t12, ptr %t13)
   unreachable
 cond.fall0:
@@ -98395,7 +98408,7 @@ cond.then3.0:
   %t27 = load ptr, ptr %ff.addr.0, align 8
   %t28 = getelementptr inbounds %Node, ptr %t27, i32 0, i32 1
   %t29 = load i32, ptr %t28, align 4
-  %t30 = getelementptr inbounds [32 x i8], ptr @.str.2737, i64 0, i64 0
+  %t30 = getelementptr inbounds [32 x i8], ptr @.str.2738, i64 0, i64 0
   call void @die-at(i32 %t29, ptr %t30)
   unreachable
 cond.fall3:
@@ -98417,7 +98430,7 @@ cond.then2.1:
   %t37 = icmp eq i32 %t36, 1
   br i1 %t37, label %cond.then4.0, label %cond.test4.1
 cond.then4.0:
-  %t38 = getelementptr inbounds [2 x i8], ptr @.str.2738, i64 0, i64 0
+  %t38 = getelementptr inbounds [2 x i8], ptr @.str.2739, i64 0, i64 0
   store ptr %t38, ptr %prefix.addr.17, align 8
   br label %cond.join4.0
 cond.join4.0:
@@ -98460,7 +98473,7 @@ cond.then6.0:
   %t52 = load ptr, ptr %ff.addr.0, align 8
   %t53 = getelementptr inbounds %Node, ptr %t52, i32 0, i32 1
   %t54 = load i32, ptr %t53, align 4
-  %t55 = getelementptr inbounds [45 x i8], ptr @.str.2739, i64 0, i64 0
+  %t55 = getelementptr inbounds [45 x i8], ptr @.str.2740, i64 0, i64 0
   call void @die-at(i32 %t54, ptr %t55)
   unreachable
 cond.fall6:
@@ -98474,7 +98487,7 @@ cond.then7.0:
   %t59 = load ptr, ptr %ff.addr.0, align 8
   %t60 = getelementptr inbounds %Node, ptr %t59, i32 0, i32 1
   %t61 = load i32, ptr %t60, align 4
-  %t62 = getelementptr inbounds [39 x i8], ptr @.str.2740, i64 0, i64 0
+  %t62 = getelementptr inbounds [39 x i8], ptr @.str.2741, i64 0, i64 0
   call void @die-at(i32 %t61, ptr %t62)
   unreachable
 cond.fall7:
@@ -98567,7 +98580,7 @@ cond.then0.0:
   %t5 = load ptr, ptr %ff.addr.0, align 8
   %t6 = getelementptr inbounds %Node, ptr %t5, i32 0, i32 1
   %t7 = load i32, ptr %t6, align 4
-  %t8 = getelementptr inbounds [47 x i8], ptr @.str.2741, i64 0, i64 0
+  %t8 = getelementptr inbounds [47 x i8], ptr @.str.2742, i64 0, i64 0
   call void @die-at(i32 %t7, ptr %t8)
   unreachable
 cond.fall0:
@@ -98604,7 +98617,7 @@ cond.then0.0:
   %t7 = load ptr, ptr %ff.addr.0, align 8
   %t8 = getelementptr inbounds %Node, ptr %t7, i32 0, i32 1
   %t9 = load i32, ptr %t8, align 4
-  %t10 = getelementptr inbounds [74 x i8], ptr @.str.2742, i64 0, i64 0
+  %t10 = getelementptr inbounds [74 x i8], ptr @.str.2743, i64 0, i64 0
   call void @die-at(i32 %t9, ptr %t10)
   unreachable
 cond.fall0:
@@ -98625,7 +98638,7 @@ cond.then1.0:
   %t21 = load ptr, ptr %ff.addr.0, align 8
   %t22 = getelementptr inbounds %Node, ptr %t21, i32 0, i32 1
   %t23 = load i32, ptr %t22, align 4
-  %t24 = getelementptr inbounds [47 x i8], ptr @.str.2743, i64 0, i64 0
+  %t24 = getelementptr inbounds [47 x i8], ptr @.str.2744, i64 0, i64 0
   call void @die-at(i32 %t23, ptr %t24)
   unreachable
 cond.fall1:
@@ -98641,7 +98654,7 @@ cond.then2.0:
   %t30 = load ptr, ptr %ff.addr.0, align 8
   %t31 = getelementptr inbounds %Node, ptr %t30, i32 0, i32 1
   %t32 = load i32, ptr %t31, align 4
-  %t33 = getelementptr inbounds [54 x i8], ptr @.str.2744, i64 0, i64 0
+  %t33 = getelementptr inbounds [54 x i8], ptr @.str.2745, i64 0, i64 0
   call void @die-at(i32 %t32, ptr %t33)
   unreachable
 cond.fall2:
@@ -98699,20 +98712,20 @@ define void @init-rmacros() {
 entry:
   %t0 = call ptr @make-vec()
   store ptr %t0, ptr @g-rmacros, align 8
-  %t1 = getelementptr inbounds [3 x i8], ptr @.str.2745, i64 0, i64 0
-  %t2 = getelementptr inbounds [15 x i8], ptr @.str.2746, i64 0, i64 0
+  %t1 = getelementptr inbounds [3 x i8], ptr @.str.2746, i64 0, i64 0
+  %t2 = getelementptr inbounds [15 x i8], ptr @.str.2747, i64 0, i64 0
   call void @register-rmacro(ptr %t1, ptr %t2)
-  %t3 = getelementptr inbounds [2 x i8], ptr @.str.2747, i64 0, i64 0
-  %t4 = getelementptr inbounds [8 x i8], ptr @.str.2748, i64 0, i64 0
+  %t3 = getelementptr inbounds [2 x i8], ptr @.str.2748, i64 0, i64 0
+  %t4 = getelementptr inbounds [8 x i8], ptr @.str.2749, i64 0, i64 0
   call void @register-rmacro(ptr %t3, ptr %t4)
-  %t5 = getelementptr inbounds [2 x i8], ptr @.str.2749, i64 0, i64 0
-  %t6 = getelementptr inbounds [6 x i8], ptr @.str.2750, i64 0, i64 0
+  %t5 = getelementptr inbounds [2 x i8], ptr @.str.2750, i64 0, i64 0
+  %t6 = getelementptr inbounds [6 x i8], ptr @.str.2751, i64 0, i64 0
   call void @register-rmacro(ptr %t5, ptr %t6)
-  %t7 = getelementptr inbounds [2 x i8], ptr @.str.2751, i64 0, i64 0
-  %t8 = getelementptr inbounds [11 x i8], ptr @.str.2752, i64 0, i64 0
+  %t7 = getelementptr inbounds [2 x i8], ptr @.str.2752, i64 0, i64 0
+  %t8 = getelementptr inbounds [11 x i8], ptr @.str.2753, i64 0, i64 0
   call void @register-rmacro(ptr %t7, ptr %t8)
-  %t9 = getelementptr inbounds [2 x i8], ptr @.str.2753, i64 0, i64 0
-  %t10 = getelementptr inbounds [6 x i8], ptr @.str.2754, i64 0, i64 0
+  %t9 = getelementptr inbounds [2 x i8], ptr @.str.2754, i64 0, i64 0
+  %t10 = getelementptr inbounds [6 x i8], ptr @.str.2755, i64 0, i64 0
   call void @register-rmacro(ptr %t9, ptr %t10)
   ret void
 }
@@ -98722,10 +98735,10 @@ entry:
   %t0 = call ptr @make-vec()
   store ptr %t0, ptr @g-blanket, align 8
   %t1 = load ptr, ptr @g-blanket, align 8
-  %t2 = getelementptr inbounds [4 x i8], ptr @.str.2755, i64 0, i64 0
+  %t2 = getelementptr inbounds [4 x i8], ptr @.str.2756, i64 0, i64 0
   call void @conj.pVector.ptr.ptr(ptr %t1, ptr %t2)
   %t3 = load ptr, ptr @g-blanket, align 8
-  %t4 = getelementptr inbounds [7 x i8], ptr @.str.2756, i64 0, i64 0
+  %t4 = getelementptr inbounds [7 x i8], ptr @.str.2757, i64 0, i64 0
   call void @conj.pVector.ptr.ptr(ptr %t3, ptr %t4)
   store ptr @tmpl-conformance-check-instance, ptr @g-tmpl-conf-check-hook, align 8
   store ptr @stamp-maybe-type, ptr @g-stamp-maybe-type-hook, align 8
@@ -98771,7 +98784,7 @@ entry:
   br i1 %t6, label %cond.then0.0, label %cond.fall0
 cond.then0.0:
   %t7 = load ptr, ptr @stderr, align 8
-  %t8 = getelementptr inbounds [45 x i8], ptr @.str.2757, i64 0, i64 0
+  %t8 = getelementptr inbounds [45 x i8], ptr @.str.2758, i64 0, i64 0
   %t9 = load ptr, ptr %triple.addr, align 8
   %t10 = load ptr, ptr %terr.addr.1, align 8
   %t11 = call i32 (ptr, ptr, ...) @fprintf(ptr %t7, ptr %t8, ptr %t9, ptr %t10)
@@ -98784,8 +98797,8 @@ cond.fall0:
 cond.end0:
   %t14 = load ptr, ptr %target.addr.0, align 8
   %t15 = load ptr, ptr %triple.addr, align 8
-  %t16 = getelementptr inbounds [1 x i8], ptr @.str.2758, i64 0, i64 0
-  %t17 = getelementptr inbounds [1 x i8], ptr @.str.2759, i64 0, i64 0
+  %t16 = getelementptr inbounds [1 x i8], ptr @.str.2759, i64 0, i64 0
+  %t17 = getelementptr inbounds [1 x i8], ptr @.str.2760, i64 0, i64 0
   %t18 = call ptr @LLVMCreateTargetMachine(ptr %t14, ptr %t15, ptr %t16, ptr %t17, i32 0, i32 2, i32 0)
   store ptr %t18, ptr %tm.addr.13, align 8
   %t19 = load ptr, ptr %tm.addr.13, align 8
@@ -98793,7 +98806,7 @@ cond.end0:
   br i1 %t20, label %cond.then1.0, label %cond.fall1
 cond.then1.0:
   %t21 = load ptr, ptr @stderr, align 8
-  %t22 = getelementptr inbounds [51 x i8], ptr @.str.2760, i64 0, i64 0
+  %t22 = getelementptr inbounds [51 x i8], ptr @.str.2761, i64 0, i64 0
   %t23 = load ptr, ptr %triple.addr, align 8
   %t24 = call i32 (ptr, ptr, ...) @fprintf(ptr %t21, ptr %t22, ptr %t23)
   call void @exit(i32 1)
@@ -98917,259 +98930,259 @@ entry:
   %t8 = load ptr, ptr %__gs_0.addr.6, align 8
   call void @hashset_init.pHashSet.cstr(ptr %t8)
   %t9 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t10 = getelementptr inbounds [4 x i8], ptr @.str.2761, i64 0, i64 0
+  %t10 = getelementptr inbounds [4 x i8], ptr @.str.2762, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t9, ptr %t10)
   %t11 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t12 = getelementptr inbounds [5 x i8], ptr @.str.2762, i64 0, i64 0
+  %t12 = getelementptr inbounds [5 x i8], ptr @.str.2763, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t11, ptr %t12)
   %t13 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t14 = getelementptr inbounds [3 x i8], ptr @.str.2763, i64 0, i64 0
+  %t14 = getelementptr inbounds [3 x i8], ptr @.str.2764, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t13, ptr %t14)
   %t15 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t16 = getelementptr inbounds [5 x i8], ptr @.str.2764, i64 0, i64 0
+  %t16 = getelementptr inbounds [5 x i8], ptr @.str.2765, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t15, ptr %t16)
   %t17 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t18 = getelementptr inbounds [7 x i8], ptr @.str.2765, i64 0, i64 0
+  %t18 = getelementptr inbounds [7 x i8], ptr @.str.2766, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t17, ptr %t18)
   %t19 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t20 = getelementptr inbounds [6 x i8], ptr @.str.2766, i64 0, i64 0
+  %t20 = getelementptr inbounds [6 x i8], ptr @.str.2767, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t19, ptr %t20)
   %t21 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t22 = getelementptr inbounds [5 x i8], ptr @.str.2767, i64 0, i64 0
+  %t22 = getelementptr inbounds [5 x i8], ptr @.str.2768, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t21, ptr %t22)
   %t23 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t24 = getelementptr inbounds [5 x i8], ptr @.str.2768, i64 0, i64 0
+  %t24 = getelementptr inbounds [5 x i8], ptr @.str.2769, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t23, ptr %t24)
   %t25 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t26 = getelementptr inbounds [5 x i8], ptr @.str.2769, i64 0, i64 0
+  %t26 = getelementptr inbounds [5 x i8], ptr @.str.2770, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t25, ptr %t26)
   %t27 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t28 = getelementptr inbounds [6 x i8], ptr @.str.2770, i64 0, i64 0
+  %t28 = getelementptr inbounds [6 x i8], ptr @.str.2771, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t27, ptr %t28)
   %t29 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t30 = getelementptr inbounds [6 x i8], ptr @.str.2771, i64 0, i64 0
+  %t30 = getelementptr inbounds [6 x i8], ptr @.str.2772, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t29, ptr %t30)
   %t31 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t32 = getelementptr inbounds [5 x i8], ptr @.str.2772, i64 0, i64 0
+  %t32 = getelementptr inbounds [5 x i8], ptr @.str.2773, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t31, ptr %t32)
   %t33 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t34 = getelementptr inbounds [11 x i8], ptr @.str.2773, i64 0, i64 0
+  %t34 = getelementptr inbounds [11 x i8], ptr @.str.2774, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t33, ptr %t34)
   %t35 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t36 = getelementptr inbounds [9 x i8], ptr @.str.2774, i64 0, i64 0
+  %t36 = getelementptr inbounds [9 x i8], ptr @.str.2775, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t35, ptr %t36)
   %t37 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t38 = getelementptr inbounds [2 x i8], ptr @.str.2775, i64 0, i64 0
+  %t38 = getelementptr inbounds [2 x i8], ptr @.str.2776, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t37, ptr %t38)
   %t39 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t40 = getelementptr inbounds [3 x i8], ptr @.str.2776, i64 0, i64 0
+  %t40 = getelementptr inbounds [3 x i8], ptr @.str.2777, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t39, ptr %t40)
   %t41 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t42 = getelementptr inbounds [5 x i8], ptr @.str.2777, i64 0, i64 0
+  %t42 = getelementptr inbounds [5 x i8], ptr @.str.2778, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t41, ptr %t42)
   %t43 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t44 = getelementptr inbounds [8 x i8], ptr @.str.2778, i64 0, i64 0
+  %t44 = getelementptr inbounds [8 x i8], ptr @.str.2779, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t43, ptr %t44)
   %t45 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t46 = getelementptr inbounds [6 x i8], ptr @.str.2779, i64 0, i64 0
+  %t46 = getelementptr inbounds [6 x i8], ptr @.str.2780, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t45, ptr %t46)
   %t47 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t48 = getelementptr inbounds [9 x i8], ptr @.str.2780, i64 0, i64 0
+  %t48 = getelementptr inbounds [9 x i8], ptr @.str.2781, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t47, ptr %t48)
   %t49 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t50 = getelementptr inbounds [5 x i8], ptr @.str.2781, i64 0, i64 0
+  %t50 = getelementptr inbounds [5 x i8], ptr @.str.2782, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t49, ptr %t50)
   %t51 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t52 = getelementptr inbounds [5 x i8], ptr @.str.2782, i64 0, i64 0
+  %t52 = getelementptr inbounds [5 x i8], ptr @.str.2783, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t51, ptr %t52)
   %t53 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t54 = getelementptr inbounds [6 x i8], ptr @.str.2783, i64 0, i64 0
+  %t54 = getelementptr inbounds [6 x i8], ptr @.str.2784, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t53, ptr %t54)
   %t55 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t56 = getelementptr inbounds [7 x i8], ptr @.str.2784, i64 0, i64 0
+  %t56 = getelementptr inbounds [7 x i8], ptr @.str.2785, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t55, ptr %t56)
   %t57 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t58 = getelementptr inbounds [7 x i8], ptr @.str.2785, i64 0, i64 0
+  %t58 = getelementptr inbounds [7 x i8], ptr @.str.2786, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t57, ptr %t58)
   %t59 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t60 = getelementptr inbounds [5 x i8], ptr @.str.2786, i64 0, i64 0
+  %t60 = getelementptr inbounds [5 x i8], ptr @.str.2787, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t59, ptr %t60)
   %t61 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t62 = getelementptr inbounds [6 x i8], ptr @.str.2787, i64 0, i64 0
+  %t62 = getelementptr inbounds [6 x i8], ptr @.str.2788, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t61, ptr %t62)
   %t63 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t64 = getelementptr inbounds [6 x i8], ptr @.str.2788, i64 0, i64 0
+  %t64 = getelementptr inbounds [6 x i8], ptr @.str.2789, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t63, ptr %t64)
   %t65 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t66 = getelementptr inbounds [11 x i8], ptr @.str.2789, i64 0, i64 0
+  %t66 = getelementptr inbounds [11 x i8], ptr @.str.2790, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t65, ptr %t66)
   %t67 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t68 = getelementptr inbounds [5 x i8], ptr @.str.2790, i64 0, i64 0
+  %t68 = getelementptr inbounds [5 x i8], ptr @.str.2791, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t67, ptr %t68)
   %t69 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t70 = getelementptr inbounds [4 x i8], ptr @.str.2791, i64 0, i64 0
+  %t70 = getelementptr inbounds [4 x i8], ptr @.str.2792, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t69, ptr %t70)
   %t71 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t72 = getelementptr inbounds [5 x i8], ptr @.str.2792, i64 0, i64 0
+  %t72 = getelementptr inbounds [5 x i8], ptr @.str.2793, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t71, ptr %t72)
   %t73 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t74 = getelementptr inbounds [4 x i8], ptr @.str.2793, i64 0, i64 0
+  %t74 = getelementptr inbounds [4 x i8], ptr @.str.2794, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t73, ptr %t74)
   %t75 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t76 = getelementptr inbounds [7 x i8], ptr @.str.2794, i64 0, i64 0
+  %t76 = getelementptr inbounds [7 x i8], ptr @.str.2795, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t75, ptr %t76)
   %t77 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t78 = getelementptr inbounds [8 x i8], ptr @.str.2795, i64 0, i64 0
+  %t78 = getelementptr inbounds [8 x i8], ptr @.str.2796, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t77, ptr %t78)
   %t79 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t80 = getelementptr inbounds [13 x i8], ptr @.str.2796, i64 0, i64 0
+  %t80 = getelementptr inbounds [13 x i8], ptr @.str.2797, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t79, ptr %t80)
   %t81 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t82 = getelementptr inbounds [14 x i8], ptr @.str.2797, i64 0, i64 0
+  %t82 = getelementptr inbounds [14 x i8], ptr @.str.2798, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t81, ptr %t82)
   %t83 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t84 = getelementptr inbounds [16 x i8], ptr @.str.2798, i64 0, i64 0
+  %t84 = getelementptr inbounds [16 x i8], ptr @.str.2799, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t83, ptr %t84)
   %t85 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t86 = getelementptr inbounds [16 x i8], ptr @.str.2799, i64 0, i64 0
+  %t86 = getelementptr inbounds [16 x i8], ptr @.str.2800, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t85, ptr %t86)
   %t87 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t88 = getelementptr inbounds [16 x i8], ptr @.str.2800, i64 0, i64 0
+  %t88 = getelementptr inbounds [16 x i8], ptr @.str.2801, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t87, ptr %t88)
   %t89 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t90 = getelementptr inbounds [5 x i8], ptr @.str.2801, i64 0, i64 0
+  %t90 = getelementptr inbounds [5 x i8], ptr @.str.2802, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t89, ptr %t90)
   %t91 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t92 = getelementptr inbounds [7 x i8], ptr @.str.2802, i64 0, i64 0
+  %t92 = getelementptr inbounds [7 x i8], ptr @.str.2803, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t91, ptr %t92)
   %t93 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t94 = getelementptr inbounds [7 x i8], ptr @.str.2803, i64 0, i64 0
+  %t94 = getelementptr inbounds [7 x i8], ptr @.str.2804, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t93, ptr %t94)
   %t95 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t96 = getelementptr inbounds [10 x i8], ptr @.str.2804, i64 0, i64 0
+  %t96 = getelementptr inbounds [10 x i8], ptr @.str.2805, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t95, ptr %t96)
   %t97 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t98 = getelementptr inbounds [8 x i8], ptr @.str.2805, i64 0, i64 0
+  %t98 = getelementptr inbounds [8 x i8], ptr @.str.2806, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t97, ptr %t98)
   %t99 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t100 = getelementptr inbounds [10 x i8], ptr @.str.2806, i64 0, i64 0
+  %t100 = getelementptr inbounds [10 x i8], ptr @.str.2807, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t99, ptr %t100)
   %t101 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t102 = getelementptr inbounds [5 x i8], ptr @.str.2807, i64 0, i64 0
+  %t102 = getelementptr inbounds [5 x i8], ptr @.str.2808, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t101, ptr %t102)
   %t103 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t104 = getelementptr inbounds [6 x i8], ptr @.str.2808, i64 0, i64 0
+  %t104 = getelementptr inbounds [6 x i8], ptr @.str.2809, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t103, ptr %t104)
   %t105 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t106 = getelementptr inbounds [6 x i8], ptr @.str.2809, i64 0, i64 0
+  %t106 = getelementptr inbounds [6 x i8], ptr @.str.2810, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t105, ptr %t106)
   %t107 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t108 = getelementptr inbounds [5 x i8], ptr @.str.2810, i64 0, i64 0
+  %t108 = getelementptr inbounds [5 x i8], ptr @.str.2811, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t107, ptr %t108)
   %t109 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t110 = getelementptr inbounds [9 x i8], ptr @.str.2811, i64 0, i64 0
+  %t110 = getelementptr inbounds [9 x i8], ptr @.str.2812, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t109, ptr %t110)
   %t111 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t112 = getelementptr inbounds [9 x i8], ptr @.str.2812, i64 0, i64 0
+  %t112 = getelementptr inbounds [9 x i8], ptr @.str.2813, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t111, ptr %t112)
   %t113 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t114 = getelementptr inbounds [5 x i8], ptr @.str.2813, i64 0, i64 0
+  %t114 = getelementptr inbounds [5 x i8], ptr @.str.2814, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t113, ptr %t114)
   %t115 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t116 = getelementptr inbounds [9 x i8], ptr @.str.2814, i64 0, i64 0
+  %t116 = getelementptr inbounds [9 x i8], ptr @.str.2815, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t115, ptr %t116)
   %t117 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t118 = getelementptr inbounds [12 x i8], ptr @.str.2815, i64 0, i64 0
+  %t118 = getelementptr inbounds [12 x i8], ptr @.str.2816, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t117, ptr %t118)
   %t119 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t120 = getelementptr inbounds [11 x i8], ptr @.str.2816, i64 0, i64 0
+  %t120 = getelementptr inbounds [11 x i8], ptr @.str.2817, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t119, ptr %t120)
   %t121 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t122 = getelementptr inbounds [14 x i8], ptr @.str.2817, i64 0, i64 0
+  %t122 = getelementptr inbounds [14 x i8], ptr @.str.2818, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t121, ptr %t122)
   %t123 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t124 = getelementptr inbounds [7 x i8], ptr @.str.2818, i64 0, i64 0
+  %t124 = getelementptr inbounds [7 x i8], ptr @.str.2819, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t123, ptr %t124)
   %t125 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t126 = getelementptr inbounds [5 x i8], ptr @.str.2819, i64 0, i64 0
+  %t126 = getelementptr inbounds [5 x i8], ptr @.str.2820, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t125, ptr %t126)
   %t127 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t128 = getelementptr inbounds [7 x i8], ptr @.str.2820, i64 0, i64 0
+  %t128 = getelementptr inbounds [7 x i8], ptr @.str.2821, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t127, ptr %t128)
   %t129 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t130 = getelementptr inbounds [9 x i8], ptr @.str.2821, i64 0, i64 0
+  %t130 = getelementptr inbounds [9 x i8], ptr @.str.2822, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t129, ptr %t130)
   %t131 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t132 = getelementptr inbounds [8 x i8], ptr @.str.2822, i64 0, i64 0
+  %t132 = getelementptr inbounds [8 x i8], ptr @.str.2823, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t131, ptr %t132)
   %t133 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t134 = getelementptr inbounds [10 x i8], ptr @.str.2823, i64 0, i64 0
+  %t134 = getelementptr inbounds [10 x i8], ptr @.str.2824, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t133, ptr %t134)
   %t135 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t136 = getelementptr inbounds [9 x i8], ptr @.str.2824, i64 0, i64 0
+  %t136 = getelementptr inbounds [9 x i8], ptr @.str.2825, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t135, ptr %t136)
   %t137 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t138 = getelementptr inbounds [12 x i8], ptr @.str.2825, i64 0, i64 0
+  %t138 = getelementptr inbounds [12 x i8], ptr @.str.2826, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t137, ptr %t138)
   %t139 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t140 = getelementptr inbounds [7 x i8], ptr @.str.2826, i64 0, i64 0
+  %t140 = getelementptr inbounds [7 x i8], ptr @.str.2827, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t139, ptr %t140)
   %t141 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t142 = getelementptr inbounds [11 x i8], ptr @.str.2827, i64 0, i64 0
+  %t142 = getelementptr inbounds [11 x i8], ptr @.str.2828, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t141, ptr %t142)
   %t143 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t144 = getelementptr inbounds [6 x i8], ptr @.str.2828, i64 0, i64 0
+  %t144 = getelementptr inbounds [6 x i8], ptr @.str.2829, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t143, ptr %t144)
   %t145 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t146 = getelementptr inbounds [8 x i8], ptr @.str.2829, i64 0, i64 0
+  %t146 = getelementptr inbounds [8 x i8], ptr @.str.2830, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t145, ptr %t146)
   %t147 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t148 = getelementptr inbounds [10 x i8], ptr @.str.2830, i64 0, i64 0
+  %t148 = getelementptr inbounds [10 x i8], ptr @.str.2831, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t147, ptr %t148)
   %t149 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t150 = getelementptr inbounds [9 x i8], ptr @.str.2831, i64 0, i64 0
+  %t150 = getelementptr inbounds [9 x i8], ptr @.str.2832, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t149, ptr %t150)
   %t151 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t152 = getelementptr inbounds [11 x i8], ptr @.str.2832, i64 0, i64 0
+  %t152 = getelementptr inbounds [11 x i8], ptr @.str.2833, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t151, ptr %t152)
   %t153 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t154 = getelementptr inbounds [10 x i8], ptr @.str.2833, i64 0, i64 0
+  %t154 = getelementptr inbounds [10 x i8], ptr @.str.2834, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t153, ptr %t154)
   %t155 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t156 = getelementptr inbounds [13 x i8], ptr @.str.2834, i64 0, i64 0
+  %t156 = getelementptr inbounds [13 x i8], ptr @.str.2835, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t155, ptr %t156)
   %t157 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t158 = getelementptr inbounds [10 x i8], ptr @.str.2835, i64 0, i64 0
+  %t158 = getelementptr inbounds [10 x i8], ptr @.str.2836, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t157, ptr %t158)
   %t159 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t160 = getelementptr inbounds [7 x i8], ptr @.str.2836, i64 0, i64 0
+  %t160 = getelementptr inbounds [7 x i8], ptr @.str.2837, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t159, ptr %t160)
   %t161 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t162 = getelementptr inbounds [11 x i8], ptr @.str.2837, i64 0, i64 0
+  %t162 = getelementptr inbounds [11 x i8], ptr @.str.2838, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t161, ptr %t162)
   %t163 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t164 = getelementptr inbounds [12 x i8], ptr @.str.2838, i64 0, i64 0
+  %t164 = getelementptr inbounds [12 x i8], ptr @.str.2839, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t163, ptr %t164)
   %t165 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t166 = getelementptr inbounds [16 x i8], ptr @.str.2839, i64 0, i64 0
+  %t166 = getelementptr inbounds [16 x i8], ptr @.str.2840, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t165, ptr %t166)
   %t167 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t168 = getelementptr inbounds [22 x i8], ptr @.str.2840, i64 0, i64 0
+  %t168 = getelementptr inbounds [22 x i8], ptr @.str.2841, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t167, ptr %t168)
   %t169 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t170 = getelementptr inbounds [7 x i8], ptr @.str.2841, i64 0, i64 0
+  %t170 = getelementptr inbounds [7 x i8], ptr @.str.2842, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t169, ptr %t170)
   %t171 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t172 = getelementptr inbounds [8 x i8], ptr @.str.2842, i64 0, i64 0
+  %t172 = getelementptr inbounds [8 x i8], ptr @.str.2843, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t171, ptr %t172)
   %t173 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t174 = getelementptr inbounds [13 x i8], ptr @.str.2843, i64 0, i64 0
+  %t174 = getelementptr inbounds [13 x i8], ptr @.str.2844, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t173, ptr %t174)
   %t175 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t176 = getelementptr inbounds [14 x i8], ptr @.str.2844, i64 0, i64 0
+  %t176 = getelementptr inbounds [14 x i8], ptr @.str.2845, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t175, ptr %t176)
   %t177 = load ptr, ptr %__gs_0.addr.6, align 8
-  %t178 = getelementptr inbounds [7 x i8], ptr @.str.2845, i64 0, i64 0
+  %t178 = getelementptr inbounds [7 x i8], ptr @.str.2846, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t177, ptr %t178)
   %t179 = load ptr, ptr %__gs_0.addr.6, align 8
   call void @iter.pHashSet.cstr(ptr sret(%HashSetIter.cstr) align 8 %t180, ptr %t179)
@@ -99224,61 +99237,61 @@ while.end0:
   %t207 = load ptr, ptr %__gs_1.addr.205, align 8
   call void @hashset_init.pHashSet.cstr(ptr %t207)
   %t208 = load ptr, ptr %__gs_1.addr.205, align 8
-  %t209 = getelementptr inbounds [4 x i8], ptr @.str.2846, i64 0, i64 0
+  %t209 = getelementptr inbounds [4 x i8], ptr @.str.2847, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t208, ptr %t209)
   %t210 = load ptr, ptr %__gs_1.addr.205, align 8
-  %t211 = getelementptr inbounds [5 x i8], ptr @.str.2847, i64 0, i64 0
+  %t211 = getelementptr inbounds [5 x i8], ptr @.str.2848, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t210, ptr %t211)
   %t212 = load ptr, ptr %__gs_1.addr.205, align 8
-  %t213 = getelementptr inbounds [3 x i8], ptr @.str.2848, i64 0, i64 0
+  %t213 = getelementptr inbounds [3 x i8], ptr @.str.2849, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t212, ptr %t213)
   %t214 = load ptr, ptr %__gs_1.addr.205, align 8
-  %t215 = getelementptr inbounds [3 x i8], ptr @.str.2849, i64 0, i64 0
+  %t215 = getelementptr inbounds [3 x i8], ptr @.str.2850, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t214, ptr %t215)
   %t216 = load ptr, ptr %__gs_1.addr.205, align 8
-  %t217 = getelementptr inbounds [4 x i8], ptr @.str.2850, i64 0, i64 0
+  %t217 = getelementptr inbounds [4 x i8], ptr @.str.2851, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t216, ptr %t217)
   %t218 = load ptr, ptr %__gs_1.addr.205, align 8
-  %t219 = getelementptr inbounds [4 x i8], ptr @.str.2851, i64 0, i64 0
+  %t219 = getelementptr inbounds [4 x i8], ptr @.str.2852, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t218, ptr %t219)
   %t220 = load ptr, ptr %__gs_1.addr.205, align 8
-  %t221 = getelementptr inbounds [4 x i8], ptr @.str.2852, i64 0, i64 0
+  %t221 = getelementptr inbounds [4 x i8], ptr @.str.2853, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t220, ptr %t221)
   %t222 = load ptr, ptr %__gs_1.addr.205, align 8
-  %t223 = getelementptr inbounds [4 x i8], ptr @.str.2853, i64 0, i64 0
+  %t223 = getelementptr inbounds [4 x i8], ptr @.str.2854, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t222, ptr %t223)
   %t224 = load ptr, ptr %__gs_1.addr.205, align 8
-  %t225 = getelementptr inbounds [5 x i8], ptr @.str.2854, i64 0, i64 0
+  %t225 = getelementptr inbounds [5 x i8], ptr @.str.2855, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t224, ptr %t225)
   %t226 = load ptr, ptr %__gs_1.addr.205, align 8
-  %t227 = getelementptr inbounds [5 x i8], ptr @.str.2855, i64 0, i64 0
+  %t227 = getelementptr inbounds [5 x i8], ptr @.str.2856, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t226, ptr %t227)
   %t228 = load ptr, ptr %__gs_1.addr.205, align 8
-  %t229 = getelementptr inbounds [5 x i8], ptr @.str.2856, i64 0, i64 0
+  %t229 = getelementptr inbounds [5 x i8], ptr @.str.2857, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t228, ptr %t229)
   %t230 = load ptr, ptr %__gs_1.addr.205, align 8
-  %t231 = getelementptr inbounds [4 x i8], ptr @.str.2857, i64 0, i64 0
+  %t231 = getelementptr inbounds [4 x i8], ptr @.str.2858, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t230, ptr %t231)
   %t232 = load ptr, ptr %__gs_1.addr.205, align 8
-  %t233 = getelementptr inbounds [4 x i8], ptr @.str.2858, i64 0, i64 0
+  %t233 = getelementptr inbounds [4 x i8], ptr @.str.2859, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t232, ptr %t233)
   %t234 = load ptr, ptr %__gs_1.addr.205, align 8
-  %t235 = getelementptr inbounds [6 x i8], ptr @.str.2859, i64 0, i64 0
+  %t235 = getelementptr inbounds [6 x i8], ptr @.str.2860, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t234, ptr %t235)
   %t236 = load ptr, ptr %__gs_1.addr.205, align 8
-  %t237 = getelementptr inbounds [7 x i8], ptr @.str.2860, i64 0, i64 0
+  %t237 = getelementptr inbounds [7 x i8], ptr @.str.2861, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t236, ptr %t237)
   %t238 = load ptr, ptr %__gs_1.addr.205, align 8
-  %t239 = getelementptr inbounds [4 x i8], ptr @.str.2861, i64 0, i64 0
+  %t239 = getelementptr inbounds [4 x i8], ptr @.str.2862, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t238, ptr %t239)
   %t240 = load ptr, ptr %__gs_1.addr.205, align 8
-  %t241 = getelementptr inbounds [5 x i8], ptr @.str.2862, i64 0, i64 0
+  %t241 = getelementptr inbounds [5 x i8], ptr @.str.2863, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t240, ptr %t241)
   %t242 = load ptr, ptr %__gs_1.addr.205, align 8
-  %t243 = getelementptr inbounds [5 x i8], ptr @.str.2863, i64 0, i64 0
+  %t243 = getelementptr inbounds [5 x i8], ptr @.str.2864, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t242, ptr %t243)
   %t244 = load ptr, ptr %__gs_1.addr.205, align 8
-  %t245 = getelementptr inbounds [4 x i8], ptr @.str.2864, i64 0, i64 0
+  %t245 = getelementptr inbounds [4 x i8], ptr @.str.2865, i64 0, i64 0
   call void @conj.pHashSet.cstr.cstr(ptr %t244, ptr %t245)
   %t246 = load ptr, ptr %__gs_1.addr.205, align 8
   call void @iter.pHashSet.cstr(ptr sret(%HashSetIter.cstr) align 8 %t247, ptr %t246)
@@ -99330,12 +99343,12 @@ entry:
   %t0 = call ptr @arena-allocator(ptr @g-arena-alloc)
   %t1 = call ptr @make-vec()
   store ptr %t1, ptr @g-strs, align 8
-  %t2 = getelementptr inbounds [5 x i8], ptr @.str.2865, i64 0, i64 0
+  %t2 = getelementptr inbounds [5 x i8], ptr @.str.2866, i64 0, i64 0
   %t3 = call ptr @intern-str(ptr %t2)
   store ptr %t3, ptr @g-current-ns, align 8
   store i32 0, ptr @g-ns-seen, align 4
   call void @init-name-sets()
-  %t4 = getelementptr inbounds [20 x i8], ptr @.str.2866, i64 0, i64 0
+  %t4 = getelementptr inbounds [20 x i8], ptr @.str.2867, i64 0, i64 0
   store ptr %t4, ptr @g-target-triple, align 8
   store i32 8, ptr @g-target-ptr-bytes, align 4
   %t5 = getelementptr ptr, ptr null, i32 1
@@ -99398,7 +99411,7 @@ entry:
   store ptr %t29, ptr @g-cast-rules, align 8
   %t30 = call ptr @scope-new(ptr null)
   store ptr %t30, ptr @g-globals, align 8
-  %t31 = getelementptr inbounds [5 x i8], ptr @.str.2867, i64 0, i64 0
+  %t31 = getelementptr inbounds [5 x i8], ptr @.str.2868, i64 0, i64 0
   %t32 = call ptr @intern-str(ptr %t31)
   store ptr %t32, ptr @g-current-ns, align 8
   store i32 0, ptr @g-ns-seen, align 4
@@ -99420,7 +99433,7 @@ entry:
   br i1 %t1, label %cond.then0.0, label %cond.fall0
 cond.then0.0:
   %t2 = load ptr, ptr %decl.addr, align 8
-  %t3 = getelementptr inbounds [26 x i8], ptr @.str.2868, i64 0, i64 0
+  %t3 = getelementptr inbounds [26 x i8], ptr @.str.2869, i64 0, i64 0
   %t4 = call i32 (ptr, ptr, ...) @fprintf(ptr %t2, ptr %t3)
   br label %cond.join0.0
 cond.join0.0:
@@ -99430,97 +99443,97 @@ cond.fall0:
 cond.end0:
   %t5 = phi i32 [ %t4, %cond.join0.0 ], [ undef, %cond.fall0 ]
   %t6 = load ptr, ptr %def.addr, align 8
-  %t7 = getelementptr inbounds [40 x i8], ptr @.str.2869, i64 0, i64 0
+  %t7 = getelementptr inbounds [40 x i8], ptr @.str.2870, i64 0, i64 0
   %t8 = call i32 (ptr, ptr, ...) @fprintf(ptr %t6, ptr %t7)
   %t9 = load ptr, ptr %def.addr, align 8
-  %t10 = getelementptr inbounds [34 x i8], ptr @.str.2870, i64 0, i64 0
+  %t10 = getelementptr inbounds [34 x i8], ptr @.str.2871, i64 0, i64 0
   %t11 = call i32 (ptr, ptr, ...) @fprintf(ptr %t9, ptr %t10)
   %t12 = load ptr, ptr %def.addr, align 8
-  %t13 = getelementptr inbounds [89 x i8], ptr @.str.2871, i64 0, i64 0
+  %t13 = getelementptr inbounds [89 x i8], ptr @.str.2872, i64 0, i64 0
   %t14 = call i32 (ptr, ptr, ...) @fprintf(ptr %t12, ptr %t13)
   %t15 = load ptr, ptr %def.addr, align 8
-  %t16 = getelementptr inbounds [34 x i8], ptr @.str.2872, i64 0, i64 0
+  %t16 = getelementptr inbounds [34 x i8], ptr @.str.2873, i64 0, i64 0
   %t17 = call i32 (ptr, ptr, ...) @fprintf(ptr %t15, ptr %t16)
   %t18 = load ptr, ptr %def.addr, align 8
-  %t19 = getelementptr inbounds [89 x i8], ptr @.str.2873, i64 0, i64 0
+  %t19 = getelementptr inbounds [89 x i8], ptr @.str.2874, i64 0, i64 0
   %t20 = call i32 (ptr, ptr, ...) @fprintf(ptr %t18, ptr %t19)
   %t21 = load ptr, ptr %def.addr, align 8
-  %t22 = getelementptr inbounds [34 x i8], ptr @.str.2874, i64 0, i64 0
+  %t22 = getelementptr inbounds [34 x i8], ptr @.str.2875, i64 0, i64 0
   %t23 = call i32 (ptr, ptr, ...) @fprintf(ptr %t21, ptr %t22)
   %t24 = load ptr, ptr %def.addr, align 8
-  %t25 = getelementptr inbounds [89 x i8], ptr @.str.2875, i64 0, i64 0
+  %t25 = getelementptr inbounds [89 x i8], ptr @.str.2876, i64 0, i64 0
   %t26 = call i32 (ptr, ptr, ...) @fprintf(ptr %t24, ptr %t25)
   %t27 = load ptr, ptr %def.addr, align 8
-  %t28 = getelementptr inbounds [34 x i8], ptr @.str.2876, i64 0, i64 0
+  %t28 = getelementptr inbounds [34 x i8], ptr @.str.2877, i64 0, i64 0
   %t29 = call i32 (ptr, ptr, ...) @fprintf(ptr %t27, ptr %t28)
   %t30 = load ptr, ptr %def.addr, align 8
-  %t31 = getelementptr inbounds [89 x i8], ptr @.str.2877, i64 0, i64 0
+  %t31 = getelementptr inbounds [89 x i8], ptr @.str.2878, i64 0, i64 0
   %t32 = call i32 (ptr, ptr, ...) @fprintf(ptr %t30, ptr %t31)
   %t33 = load ptr, ptr %def.addr, align 8
-  %t34 = getelementptr inbounds [37 x i8], ptr @.str.2878, i64 0, i64 0
+  %t34 = getelementptr inbounds [37 x i8], ptr @.str.2879, i64 0, i64 0
   %t35 = call i32 (ptr, ptr, ...) @fprintf(ptr %t33, ptr %t34)
   %t36 = load ptr, ptr %def.addr, align 8
-  %t37 = getelementptr inbounds [89 x i8], ptr @.str.2879, i64 0, i64 0
+  %t37 = getelementptr inbounds [89 x i8], ptr @.str.2880, i64 0, i64 0
   %t38 = call i32 (ptr, ptr, ...) @fprintf(ptr %t36, ptr %t37)
   %t39 = load ptr, ptr %def.addr, align 8
-  %t40 = getelementptr inbounds [36 x i8], ptr @.str.2880, i64 0, i64 0
+  %t40 = getelementptr inbounds [36 x i8], ptr @.str.2881, i64 0, i64 0
   %t41 = call i32 (ptr, ptr, ...) @fprintf(ptr %t39, ptr %t40)
   %t42 = load ptr, ptr %def.addr, align 8
-  %t43 = getelementptr inbounds [89 x i8], ptr @.str.2881, i64 0, i64 0
+  %t43 = getelementptr inbounds [89 x i8], ptr @.str.2882, i64 0, i64 0
   %t44 = call i32 (ptr, ptr, ...) @fprintf(ptr %t42, ptr %t43)
   %t45 = load ptr, ptr %def.addr, align 8
-  %t46 = getelementptr inbounds [36 x i8], ptr @.str.2882, i64 0, i64 0
+  %t46 = getelementptr inbounds [36 x i8], ptr @.str.2883, i64 0, i64 0
   %t47 = call i32 (ptr, ptr, ...) @fprintf(ptr %t45, ptr %t46)
   %t48 = load ptr, ptr %def.addr, align 8
-  %t49 = getelementptr inbounds [15 x i8], ptr @.str.2883, i64 0, i64 0
+  %t49 = getelementptr inbounds [15 x i8], ptr @.str.2884, i64 0, i64 0
   %t50 = call i32 (ptr, ptr, ...) @fprintf(ptr %t48, ptr %t49)
   %t51 = load ptr, ptr %def.addr, align 8
-  %t52 = getelementptr inbounds [4 x i8], ptr @.str.2884, i64 0, i64 0
+  %t52 = getelementptr inbounds [4 x i8], ptr @.str.2885, i64 0, i64 0
   %t53 = call i32 (ptr, ptr, ...) @fprintf(ptr %t51, ptr %t52)
   %t54 = load ptr, ptr %def.addr, align 8
-  %t55 = getelementptr inbounds [42 x i8], ptr @.str.2885, i64 0, i64 0
+  %t55 = getelementptr inbounds [42 x i8], ptr @.str.2886, i64 0, i64 0
   %t56 = call i32 (ptr, ptr, ...) @fprintf(ptr %t54, ptr %t55)
   %t57 = load ptr, ptr %def.addr, align 8
-  %t58 = getelementptr inbounds [8 x i8], ptr @.str.2886, i64 0, i64 0
+  %t58 = getelementptr inbounds [8 x i8], ptr @.str.2887, i64 0, i64 0
   %t59 = call i32 (ptr, ptr, ...) @fprintf(ptr %t57, ptr %t58)
   %t60 = load ptr, ptr %def.addr, align 8
-  %t61 = getelementptr inbounds [31 x i8], ptr @.str.2887, i64 0, i64 0
+  %t61 = getelementptr inbounds [31 x i8], ptr @.str.2888, i64 0, i64 0
   %t62 = call i32 (ptr, ptr, ...) @fprintf(ptr %t60, ptr %t61)
   %t63 = load ptr, ptr %def.addr, align 8
-  %t64 = getelementptr inbounds [39 x i8], ptr @.str.2888, i64 0, i64 0
+  %t64 = getelementptr inbounds [39 x i8], ptr @.str.2889, i64 0, i64 0
   %t65 = call i32 (ptr, ptr, ...) @fprintf(ptr %t63, ptr %t64)
   %t66 = load ptr, ptr %def.addr, align 8
-  %t67 = getelementptr inbounds [6 x i8], ptr @.str.2889, i64 0, i64 0
+  %t67 = getelementptr inbounds [6 x i8], ptr @.str.2890, i64 0, i64 0
   %t68 = call i32 (ptr, ptr, ...) @fprintf(ptr %t66, ptr %t67)
   %t69 = load ptr, ptr %def.addr, align 8
-  %t70 = getelementptr inbounds [15 x i8], ptr @.str.2890, i64 0, i64 0
+  %t70 = getelementptr inbounds [15 x i8], ptr @.str.2891, i64 0, i64 0
   %t71 = call i32 (ptr, ptr, ...) @fprintf(ptr %t69, ptr %t70)
   %t72 = load ptr, ptr %def.addr, align 8
-  %t73 = getelementptr inbounds [6 x i8], ptr @.str.2891, i64 0, i64 0
+  %t73 = getelementptr inbounds [6 x i8], ptr @.str.2892, i64 0, i64 0
   %t74 = call i32 (ptr, ptr, ...) @fprintf(ptr %t72, ptr %t73)
   %t75 = load ptr, ptr %def.addr, align 8
-  %t76 = getelementptr inbounds [89 x i8], ptr @.str.2892, i64 0, i64 0
+  %t76 = getelementptr inbounds [89 x i8], ptr @.str.2893, i64 0, i64 0
   %t77 = call i32 (ptr, ptr, ...) @fprintf(ptr %t75, ptr %t76)
   %t78 = load ptr, ptr %def.addr, align 8
-  %t79 = getelementptr inbounds [39 x i8], ptr @.str.2893, i64 0, i64 0
+  %t79 = getelementptr inbounds [39 x i8], ptr @.str.2894, i64 0, i64 0
   %t80 = call i32 (ptr, ptr, ...) @fprintf(ptr %t78, ptr %t79)
   %t81 = load ptr, ptr %def.addr, align 8
-  %t82 = getelementptr inbounds [89 x i8], ptr @.str.2894, i64 0, i64 0
+  %t82 = getelementptr inbounds [89 x i8], ptr @.str.2895, i64 0, i64 0
   %t83 = call i32 (ptr, ptr, ...) @fprintf(ptr %t81, ptr %t82)
   %t84 = load ptr, ptr %def.addr, align 8
-  %t85 = getelementptr inbounds [39 x i8], ptr @.str.2895, i64 0, i64 0
+  %t85 = getelementptr inbounds [39 x i8], ptr @.str.2896, i64 0, i64 0
   %t86 = call i32 (ptr, ptr, ...) @fprintf(ptr %t84, ptr %t85)
   %t87 = load ptr, ptr %def.addr, align 8
-  %t88 = getelementptr inbounds [51 x i8], ptr @.str.2896, i64 0, i64 0
+  %t88 = getelementptr inbounds [51 x i8], ptr @.str.2897, i64 0, i64 0
   %t89 = call i32 (ptr, ptr, ...) @fprintf(ptr %t87, ptr %t88)
   %t90 = load ptr, ptr %def.addr, align 8
-  %t91 = getelementptr inbounds [49 x i8], ptr @.str.2897, i64 0, i64 0
+  %t91 = getelementptr inbounds [49 x i8], ptr @.str.2898, i64 0, i64 0
   %t92 = call i32 (ptr, ptr, ...) @fprintf(ptr %t90, ptr %t91)
   %t93 = load ptr, ptr %def.addr, align 8
-  %t94 = getelementptr inbounds [15 x i8], ptr @.str.2898, i64 0, i64 0
+  %t94 = getelementptr inbounds [15 x i8], ptr @.str.2899, i64 0, i64 0
   %t95 = call i32 (ptr, ptr, ...) @fprintf(ptr %t93, ptr %t94)
   %t96 = load ptr, ptr %def.addr, align 8
-  %t97 = getelementptr inbounds [4 x i8], ptr @.str.2899, i64 0, i64 0
+  %t97 = getelementptr inbounds [4 x i8], ptr @.str.2900, i64 0, i64 0
   %t98 = call i32 (ptr, ptr, ...) @fprintf(ptr %t96, ptr %t97)
   ret void
 }
@@ -99560,21 +99573,21 @@ entry:
   %t4 = call ptr @open_memstream(ptr %ir-bufp.addr.0, ptr %ir-sizep.addr.1)
   store ptr %t4, ptr %irs.addr.3, align 8
   %t5 = load ptr, ptr %irs.addr.3, align 8
-  %t6 = getelementptr inbounds [19 x i8], ptr @.str.2900, i64 0, i64 0
+  %t6 = getelementptr inbounds [19 x i8], ptr @.str.2901, i64 0, i64 0
   %t7 = load ptr, ptr %source-file.addr, align 8
   %t8 = call i32 (ptr, ptr, ...) @fprintf(ptr %t5, ptr %t6, ptr %t7)
   %t9 = load ptr, ptr %irs.addr.3, align 8
-  %t10 = getelementptr inbounds [24 x i8], ptr @.str.2901, i64 0, i64 0
+  %t10 = getelementptr inbounds [24 x i8], ptr @.str.2902, i64 0, i64 0
   %t11 = load ptr, ptr %source-file.addr, align 8
   %t12 = call i32 (ptr, ptr, ...) @fprintf(ptr %t9, ptr %t10, ptr %t11)
   %t13 = load ptr, ptr %irs.addr.3, align 8
-  %t14 = getelementptr inbounds [26 x i8], ptr @.str.2902, i64 0, i64 0
+  %t14 = getelementptr inbounds [26 x i8], ptr @.str.2903, i64 0, i64 0
   %t15 = load ptr, ptr @g-target, align 8
   %t16 = getelementptr inbounds %Target, ptr %t15, i32 0, i32 1
   %t17 = load ptr, ptr %t16, align 8
   %t18 = call i32 (ptr, ptr, ...) @fprintf(ptr %t13, ptr %t14, ptr %t17)
   %t19 = load ptr, ptr %irs.addr.3, align 8
-  %t20 = getelementptr inbounds [23 x i8], ptr @.str.2903, i64 0, i64 0
+  %t20 = getelementptr inbounds [23 x i8], ptr @.str.2904, i64 0, i64 0
   %t21 = load ptr, ptr @g-target-triple, align 8
   %t22 = call i32 (ptr, ptr, ...) @fprintf(ptr %t19, ptr %t20, ptr %t21)
   %t23 = load ptr, ptr @g-type-bufp, align 8
@@ -99722,7 +99735,7 @@ entry:
   br i1 %t14, label %cond.then0.0, label %cond.fall0
 cond.then0.0:
   %t15 = load ptr, ptr @stderr, align 8
-  %t16 = getelementptr inbounds [44 x i8], ptr @.str.2904, i64 0, i64 0
+  %t16 = getelementptr inbounds [44 x i8], ptr @.str.2905, i64 0, i64 0
   %t17 = load ptr, ptr %parse-err.addr.8, align 8
   %t18 = call i32 (ptr, ptr, ...) @fprintf(ptr %t15, ptr %t16, ptr %t17)
   %t19 = load ptr, ptr %parse-err.addr.8, align 8
@@ -99742,7 +99755,7 @@ cond.end0:
   br i1 %t26, label %cond.then1.0, label %cond.fall1
 cond.then1.0:
   %t27 = load ptr, ptr @stderr, align 8
-  %t28 = getelementptr inbounds [36 x i8], ptr @.str.2905, i64 0, i64 0
+  %t28 = getelementptr inbounds [36 x i8], ptr @.str.2906, i64 0, i64 0
   %t29 = load ptr, ptr %terr.addr.21, align 8
   %t30 = call i32 (ptr, ptr, ...) @fprintf(ptr %t27, ptr %t28, ptr %t29)
   %t31 = load ptr, ptr %terr.addr.21, align 8
@@ -99754,8 +99767,8 @@ cond.fall1:
 cond.end1:
   %t33 = load ptr, ptr %target.addr.20, align 8
   %t34 = load ptr, ptr @g-target-triple, align 8
-  %t35 = getelementptr inbounds [1 x i8], ptr @.str.2906, i64 0, i64 0
-  %t36 = getelementptr inbounds [1 x i8], ptr @.str.2907, i64 0, i64 0
+  %t35 = getelementptr inbounds [1 x i8], ptr @.str.2907, i64 0, i64 0
+  %t36 = getelementptr inbounds [1 x i8], ptr @.str.2908, i64 0, i64 0
   %t37 = load i32, ptr @g-opt-level, align 4
   %t38 = call ptr @LLVMCreateTargetMachine(ptr %t33, ptr %t34, ptr %t35, ptr %t36, i32 %t37, i32 2, i32 0)
   store ptr %t38, ptr %tm.addr.32, align 8
@@ -99772,14 +99785,14 @@ cond.then2.0:
   %t47 = icmp ne i32 %t46, 0
   br i1 %t47, label %cond.then3.0, label %cond.test3.1
 cond.then3.0:
-  %t48 = getelementptr inbounds [6 x i8], ptr @.str.2908, i64 0, i64 0
+  %t48 = getelementptr inbounds [6 x i8], ptr @.str.2909, i64 0, i64 0
   br label %cond.join3.0
 cond.join3.0:
   br label %cond.end3
 cond.test3.1:
   br label %cond.then3.1
 cond.then3.1:
-  %t49 = getelementptr inbounds [6 x i8], ptr @.str.2909, i64 0, i64 0
+  %t49 = getelementptr inbounds [6 x i8], ptr @.str.2910, i64 0, i64 0
   br label %cond.join3.1
 cond.join3.1:
   br label %cond.end3
@@ -99805,7 +99818,7 @@ cond.join4.0:
 cond.test4.1:
   br label %cond.then4.1
 cond.then4.1:
-  %t55 = getelementptr inbounds [5 x i8], ptr @.str.2910, i64 0, i64 0
+  %t55 = getelementptr inbounds [5 x i8], ptr @.str.2911, i64 0, i64 0
   %t56 = load ptr, ptr %out-path.addr.39, align 8
   %t57 = call ptr @fmt-s(ptr %t55, ptr %t56)
   store ptr %t57, ptr %obj-path.addr.41, align 8
@@ -99825,7 +99838,7 @@ cond.end4:
   br i1 %t66, label %cond.then5.0, label %cond.fall5
 cond.then5.0:
   %t67 = load ptr, ptr @stderr, align 8
-  %t68 = getelementptr inbounds [47 x i8], ptr @.str.2911, i64 0, i64 0
+  %t68 = getelementptr inbounds [47 x i8], ptr @.str.2912, i64 0, i64 0
   %t69 = load ptr, ptr %obj-path.addr.41, align 8
   %t70 = load ptr, ptr %emit-err.addr.59, align 8
   %t71 = call i32 (ptr, ptr, ...) @fprintf(ptr %t67, ptr %t68, ptr %t69, ptr %t70)
@@ -99848,7 +99861,7 @@ cond.then6.0:
   %t80 = call ptr @open_memstream(ptr %cmd-bufp.addr.76, ptr %cmd-sizep.addr.77)
   store ptr %t80, ptr %cmds.addr.79, align 8
   %t81 = load ptr, ptr %cmds.addr.79, align 8
-  %t82 = getelementptr inbounds [15 x i8], ptr @.str.2912, i64 0, i64 0
+  %t82 = getelementptr inbounds [15 x i8], ptr @.str.2913, i64 0, i64 0
   %t83 = load ptr, ptr %obj-path.addr.41, align 8
   %t84 = load ptr, ptr %out-path.addr.39, align 8
   %t85 = call i32 (ptr, ptr, ...) @fprintf(ptr %t81, ptr %t82, ptr %t83, ptr %t84)
@@ -99863,7 +99876,7 @@ while.cond7:
   br i1 %t91, label %while.body7, label %while.end7
 while.body7:
   %t92 = load ptr, ptr %cmds.addr.79, align 8
-  %t93 = getelementptr inbounds [4 x i8], ptr @.str.2913, i64 0, i64 0
+  %t93 = getelementptr inbounds [4 x i8], ptr @.str.2914, i64 0, i64 0
   %t94 = load ptr, ptr @g-link-args, align 8
   %t95 = load i32, ptr %j.addr.88, align 4
   %t96 = sext i32 %t95 to i64
@@ -99887,7 +99900,7 @@ while.end7:
   br i1 %t109, label %cond.then8.0, label %cond.fall8
 cond.then8.0:
   %t110 = load ptr, ptr @stderr, align 8
-  %t111 = getelementptr inbounds [44 x i8], ptr @.str.2914, i64 0, i64 0
+  %t111 = getelementptr inbounds [44 x i8], ptr @.str.2915, i64 0, i64 0
   %t112 = load i32, ptr %rc2.addr.104, align 4
   %t113 = call i32 (ptr, ptr, ...) @fprintf(ptr %t110, ptr %t111, i32 %t112)
   call void @exit(i32 1)
@@ -100035,7 +100048,7 @@ cond.end5:
   %t24 = load ptr, ptr %head.addr.15, align 8
   %t25 = getelementptr inbounds %Node, ptr %t24, i32 0, i32 3
   %t26 = load ptr, ptr %t25, align 8
-  %t27 = getelementptr inbounds [16 x i8], ptr @.str.2915, i64 0, i64 0
+  %t27 = getelementptr inbounds [16 x i8], ptr @.str.2916, i64 0, i64 0
   %t28 = call i32 @strcmp(ptr %t26, ptr %t27)
   %t29 = icmp ne i32 %t28, 0
   br i1 %t29, label %cond.then6.0, label %cond.fall6
@@ -100110,7 +100123,7 @@ cond.end4:
   %t21 = load ptr, ptr %head.addr.12, align 8
   %t22 = getelementptr inbounds %Node, ptr %t21, i32 0, i32 3
   %t23 = load ptr, ptr %t22, align 8
-  %t24 = getelementptr inbounds [3 x i8], ptr @.str.2916, i64 0, i64 0
+  %t24 = getelementptr inbounds [3 x i8], ptr @.str.2917, i64 0, i64 0
   %t25 = call i32 @strcmp(ptr %t23, ptr %t24)
   %t26 = icmp ne i32 %t25, 0
   br i1 %t26, label %cond.then5.0, label %cond.fall5
@@ -100132,10 +100145,10 @@ entry:
   %import-form.addr.9 = alloca ptr, align 8
   %ns-cell.addr.16 = alloca ptr, align 8
   %rest.addr.18 = alloca ptr, align 8
-  %t1 = getelementptr inbounds [11 x i8], ptr @.str.2917, i64 0, i64 0
+  %t1 = getelementptr inbounds [11 x i8], ptr @.str.2918, i64 0, i64 0
   %t2 = call ptr @intern-symbol(ptr %t1)
   store ptr %t2, ptr %import-sym.addr.0, align 8
-  %t4 = getelementptr inbounds [8 x i8], ptr @.str.2918, i64 0, i64 0
+  %t4 = getelementptr inbounds [8 x i8], ptr @.str.2919, i64 0, i64 0
   %t5 = call ptr @intern-symbol(ptr %t4)
   store ptr %t5, ptr %name-sym.addr.3, align 8
   %t7 = load ptr, ptr %name-sym.addr.3, align 8
@@ -100271,7 +100284,7 @@ while.body0:
   %t10 = load ptr, ptr %t9, align 8
   store ptr %t10, ptr %arg.addr.5, align 8
   %t11 = load ptr, ptr %arg.addr.5, align 8
-  %t12 = getelementptr inbounds [12 x i8], ptr @.str.2919, i64 0, i64 0
+  %t12 = getelementptr inbounds [12 x i8], ptr @.str.2920, i64 0, i64 0
   %t13 = call i32 @strcmp(ptr %t11, ptr %t12)
   %t14 = icmp eq i32 %t13, 0
   br i1 %t14, label %cond.then1.0, label %cond.test1.1
@@ -100282,7 +100295,7 @@ cond.join1.0:
   br label %cond.end1
 cond.test1.1:
   %t15 = load ptr, ptr %arg.addr.5, align 8
-  %t16 = getelementptr inbounds [15 x i8], ptr @.str.2920, i64 0, i64 0
+  %t16 = getelementptr inbounds [15 x i8], ptr @.str.2921, i64 0, i64 0
   %t17 = call i32 @strcmp(ptr %t15, ptr %t16)
   %t18 = icmp eq i32 %t17, 0
   br i1 %t18, label %cond.then1.1, label %cond.test1.2
@@ -100293,14 +100306,14 @@ cond.join1.1:
   br label %cond.end1
 cond.test1.2:
   %t19 = load ptr, ptr %arg.addr.5, align 8
-  %t20 = getelementptr inbounds [12 x i8], ptr @.str.2921, i64 0, i64 0
+  %t20 = getelementptr inbounds [12 x i8], ptr @.str.2922, i64 0, i64 0
   %t21 = call i32 @strcmp(ptr %t19, ptr %t20)
   %t22 = icmp eq i32 %t21, 0
   store i1 %t22, ptr %or.val2, align 1
   br i1 %t22, label %or.end2, label %or.rhs2
 or.rhs2:
   %t23 = load ptr, ptr %arg.addr.5, align 8
-  %t24 = getelementptr inbounds [3 x i8], ptr @.str.2922, i64 0, i64 0
+  %t24 = getelementptr inbounds [3 x i8], ptr @.str.2923, i64 0, i64 0
   %t25 = call i32 @strcmp(ptr %t23, ptr %t24)
   %t26 = icmp eq i32 %t25, 0
   store i1 %t26, ptr %or.val2, align 1
@@ -100315,7 +100328,7 @@ cond.join1.2:
   br label %cond.end1
 cond.test1.3:
   %t28 = load ptr, ptr %arg.addr.5, align 8
-  %t29 = getelementptr inbounds [3 x i8], ptr @.str.2923, i64 0, i64 0
+  %t29 = getelementptr inbounds [3 x i8], ptr @.str.2924, i64 0, i64 0
   %t30 = call i32 @strcmp(ptr %t28, ptr %t29)
   %t31 = icmp eq i32 %t30, 0
   br i1 %t31, label %cond.then1.3, label %cond.test1.4
@@ -100326,7 +100339,7 @@ cond.join1.3:
   br label %cond.end1
 cond.test1.4:
   %t32 = load ptr, ptr %arg.addr.5, align 8
-  %t33 = getelementptr inbounds [3 x i8], ptr @.str.2924, i64 0, i64 0
+  %t33 = getelementptr inbounds [3 x i8], ptr @.str.2925, i64 0, i64 0
   %t34 = call i32 @strcmp(ptr %t32, ptr %t33)
   %t35 = icmp eq i32 %t34, 0
   br i1 %t35, label %cond.then1.4, label %cond.test1.5
@@ -100340,7 +100353,7 @@ cond.then1.4:
   br i1 %t40, label %cond.then3.0, label %cond.fall3
 cond.then3.0:
   %t41 = load ptr, ptr @stderr, align 8
-  %t42 = getelementptr inbounds [25 x i8], ptr @.str.2925, i64 0, i64 0
+  %t42 = getelementptr inbounds [25 x i8], ptr @.str.2926, i64 0, i64 0
   %t43 = call i32 (ptr, ptr, ...) @fprintf(ptr %t41, ptr %t42)
   ret i32 2
 cond.fall3:
@@ -100357,14 +100370,14 @@ cond.join1.4:
   br label %cond.end1
 cond.test1.5:
   %t49 = load ptr, ptr %arg.addr.5, align 8
-  %t50 = getelementptr inbounds [3 x i8], ptr @.str.2926, i64 0, i64 0
+  %t50 = getelementptr inbounds [3 x i8], ptr @.str.2927, i64 0, i64 0
   %t51 = call i32 @strcmp(ptr %t49, ptr %t50)
   %t52 = icmp eq i32 %t51, 0
   store i1 %t52, ptr %or.val4, align 1
   br i1 %t52, label %or.end4, label %or.rhs4
 or.rhs4:
   %t53 = load ptr, ptr %arg.addr.5, align 8
-  %t54 = getelementptr inbounds [14 x i8], ptr @.str.2927, i64 0, i64 0
+  %t54 = getelementptr inbounds [14 x i8], ptr @.str.2928, i64 0, i64 0
   %t55 = call i32 @strcmp(ptr %t53, ptr %t54)
   %t56 = icmp eq i32 %t55, 0
   store i1 %t56, ptr %or.val4, align 1
@@ -100379,7 +100392,7 @@ cond.join1.5:
   br label %cond.end1
 cond.test1.6:
   %t58 = load ptr, ptr %arg.addr.5, align 8
-  %t59 = getelementptr inbounds [19 x i8], ptr @.str.2928, i64 0, i64 0
+  %t59 = getelementptr inbounds [19 x i8], ptr @.str.2929, i64 0, i64 0
   %t60 = call i32 @strcmp(ptr %t58, ptr %t59)
   %t61 = icmp eq i32 %t60, 0
   br i1 %t61, label %cond.then1.6, label %cond.test1.7
@@ -100390,7 +100403,7 @@ cond.join1.6:
   br label %cond.end1
 cond.test1.7:
   %t62 = load ptr, ptr %arg.addr.5, align 8
-  %t63 = getelementptr inbounds [19 x i8], ptr @.str.2929, i64 0, i64 0
+  %t63 = getelementptr inbounds [19 x i8], ptr @.str.2930, i64 0, i64 0
   %t64 = call i32 @strcmp(ptr %t62, ptr %t63)
   %t65 = icmp eq i32 %t64, 0
   br i1 %t65, label %cond.then1.7, label %cond.test1.8
@@ -100401,7 +100414,7 @@ cond.join1.7:
   br label %cond.end1
 cond.test1.8:
   %t66 = load ptr, ptr %arg.addr.5, align 8
-  %t67 = getelementptr inbounds [4 x i8], ptr @.str.2930, i64 0, i64 0
+  %t67 = getelementptr inbounds [4 x i8], ptr @.str.2931, i64 0, i64 0
   %t68 = call i32 @strcmp(ptr %t66, ptr %t67)
   %t69 = icmp eq i32 %t68, 0
   br i1 %t69, label %cond.then1.8, label %cond.test1.9
@@ -100412,7 +100425,7 @@ cond.join1.8:
   br label %cond.end1
 cond.test1.9:
   %t70 = load ptr, ptr %arg.addr.5, align 8
-  %t71 = getelementptr inbounds [4 x i8], ptr @.str.2931, i64 0, i64 0
+  %t71 = getelementptr inbounds [4 x i8], ptr @.str.2932, i64 0, i64 0
   %t72 = call i32 @strcmp(ptr %t70, ptr %t71)
   %t73 = icmp eq i32 %t72, 0
   br i1 %t73, label %cond.then1.9, label %cond.test1.10
@@ -100423,14 +100436,14 @@ cond.join1.9:
   br label %cond.end1
 cond.test1.10:
   %t74 = load ptr, ptr %arg.addr.5, align 8
-  %t75 = getelementptr inbounds [3 x i8], ptr @.str.2932, i64 0, i64 0
+  %t75 = getelementptr inbounds [3 x i8], ptr @.str.2933, i64 0, i64 0
   %t76 = call i32 @strcmp(ptr %t74, ptr %t75)
   %t77 = icmp eq i32 %t76, 0
   store i1 %t77, ptr %or.val5, align 1
   br i1 %t77, label %or.end5, label %or.rhs5
 or.rhs5:
   %t78 = load ptr, ptr %arg.addr.5, align 8
-  %t79 = getelementptr inbounds [4 x i8], ptr @.str.2933, i64 0, i64 0
+  %t79 = getelementptr inbounds [4 x i8], ptr @.str.2934, i64 0, i64 0
   %t80 = call i32 @strcmp(ptr %t78, ptr %t79)
   %t81 = icmp eq i32 %t80, 0
   store i1 %t81, ptr %or.val5, align 1
@@ -100445,7 +100458,7 @@ cond.join1.10:
   br label %cond.end1
 cond.test1.11:
   %t83 = load ptr, ptr %arg.addr.5, align 8
-  %t84 = getelementptr inbounds [4 x i8], ptr @.str.2934, i64 0, i64 0
+  %t84 = getelementptr inbounds [4 x i8], ptr @.str.2935, i64 0, i64 0
   %t85 = call i32 @strcmp(ptr %t83, ptr %t84)
   %t86 = icmp eq i32 %t85, 0
   br i1 %t86, label %cond.then1.11, label %cond.test1.12
@@ -100456,7 +100469,7 @@ cond.join1.11:
   br label %cond.end1
 cond.test1.12:
   %t87 = load ptr, ptr %arg.addr.5, align 8
-  %t88 = getelementptr inbounds [10 x i8], ptr @.str.2935, i64 0, i64 0
+  %t88 = getelementptr inbounds [10 x i8], ptr @.str.2936, i64 0, i64 0
   %t89 = sext i32 9 to i64
   %t90 = call i32 @strncmp(ptr %t87, ptr %t88, i64 %t89)
   %t91 = icmp eq i32 %t90, 0
@@ -100471,7 +100484,7 @@ cond.join1.12:
   br label %cond.end1
 cond.test1.13:
   %t95 = load ptr, ptr %arg.addr.5, align 8
-  %t96 = getelementptr inbounds [3 x i8], ptr @.str.2936, i64 0, i64 0
+  %t96 = getelementptr inbounds [3 x i8], ptr @.str.2937, i64 0, i64 0
   %t97 = sext i32 2 to i64
   %t98 = call i32 @strncmp(ptr %t95, ptr %t96, i64 %t97)
   %t99 = icmp eq i32 %t98, 0
@@ -100502,7 +100515,7 @@ cond.then6.1:
   br i1 %t111, label %cond.then7.0, label %cond.fall7
 cond.then7.0:
   %t112 = load ptr, ptr @stderr, align 8
-  %t113 = getelementptr inbounds [25 x i8], ptr @.str.2937, i64 0, i64 0
+  %t113 = getelementptr inbounds [25 x i8], ptr @.str.2938, i64 0, i64 0
   %t114 = call i32 (ptr, ptr, ...) @fprintf(ptr %t112, ptr %t113)
   ret i32 2
 cond.fall7:
@@ -100523,7 +100536,7 @@ cond.join1.13:
   br label %cond.end1
 cond.test1.14:
   %t120 = load ptr, ptr %arg.addr.5, align 8
-  %t121 = getelementptr inbounds [3 x i8], ptr @.str.2938, i64 0, i64 0
+  %t121 = getelementptr inbounds [3 x i8], ptr @.str.2939, i64 0, i64 0
   %t122 = sext i32 2 to i64
   %t123 = call i32 @strncmp(ptr %t120, ptr %t121, i64 %t122)
   %t124 = icmp eq i32 %t123, 0
@@ -100531,7 +100544,7 @@ cond.test1.14:
   br i1 %t124, label %or.end8, label %or.rhs8
 or.rhs8:
   %t125 = load ptr, ptr %arg.addr.5, align 8
-  %t126 = getelementptr inbounds [3 x i8], ptr @.str.2939, i64 0, i64 0
+  %t126 = getelementptr inbounds [3 x i8], ptr @.str.2940, i64 0, i64 0
   %t127 = sext i32 2 to i64
   %t128 = call i32 @strncmp(ptr %t125, ptr %t126, i64 %t127)
   %t129 = icmp eq i32 %t128, 0
@@ -100554,7 +100567,7 @@ cond.test1.15:
   br i1 %t135, label %cond.then1.15, label %cond.test1.16
 cond.then1.15:
   %t136 = load ptr, ptr @stderr, align 8
-  %t137 = getelementptr inbounds [18 x i8], ptr @.str.2940, i64 0, i64 0
+  %t137 = getelementptr inbounds [18 x i8], ptr @.str.2941, i64 0, i64 0
   %t138 = load ptr, ptr %arg.addr.5, align 8
   %t139 = call i32 (ptr, ptr, ...) @fprintf(ptr %t136, ptr %t137, ptr %t138)
   ret i32 2
@@ -100574,7 +100587,7 @@ cond.test9.1:
   br label %cond.then9.1
 cond.then9.1:
   %t143 = load ptr, ptr @stderr, align 8
-  %t144 = getelementptr inbounds [25 x i8], ptr @.str.2941, i64 0, i64 0
+  %t144 = getelementptr inbounds [25 x i8], ptr @.str.2942, i64 0, i64 0
   %t145 = load ptr, ptr %arg.addr.5, align 8
   %t146 = call i32 (ptr, ptr, ...) @fprintf(ptr %t143, ptr %t144, ptr %t145)
   ret i32 2
@@ -100603,7 +100616,7 @@ cond.end10:
   br i1 %t153, label %cond.then11.0, label %cond.fall11
 cond.then11.0:
   %t154 = load ptr, ptr @stderr, align 8
-  %t155 = getelementptr inbounds [173 x i8], ptr @.str.2942, i64 0, i64 0
+  %t155 = getelementptr inbounds [173 x i8], ptr @.str.2943, i64 0, i64 0
   %t156 = call i32 (ptr, ptr, ...) @fprintf(ptr %t154, ptr %t155)
   ret i32 2
 cond.fall11:

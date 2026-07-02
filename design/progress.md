@@ -45,6 +45,8 @@ musl's libc headers (Alpine ARM64) omit `extern` on function declarations — va
 
 **Fix:** restructured the parser to try `c-parse-func-decl` for **any** non-struct/union/typedef token. `c-parse-type` already skips `extern`/`static`/`inline` internally (line 134), so both styles parse identically. If parsing fails (not a function), falls through to the skip logic.
 
+Also added `_Noreturn` (C11 keyword) to the list of qualifiers skipped by `c-parse-type`. musl declares `exit` as `_Noreturn void exit(int)`, and the parser didn't recognize `_Noreturn`, treating it as the base type name → `unknown: exit` error.
+
 Bootstrap artifacts refreshed (`make update-bootstrap`); the new compiler declares additional C functions (`lldiv`, `getentropy`, etc.) because it now parses non-`extern` declarations — expected, not a regression.
 
 ---

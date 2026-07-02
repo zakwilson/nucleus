@@ -137,6 +137,7 @@
                 (= tok "__inline")   (set! pos tok-end)
                 (= tok "__inline__") (set! pos tok-end)
                 (= tok "__extension__") (set! pos tok-end)
+                (= tok "_Noreturn")  (set! pos tok-end)
                 (= tok "unsigned")
                   (do (set! is-unsigned 1) (set! pos tok-end))
                 (= tok "signed")     (set! pos tok-end)
