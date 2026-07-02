@@ -24,6 +24,31 @@ Current branch: `stage11-collections`
 
 ---
 
+## Portability fixes — ARM64 Linux / LLVM 21 (2026-07-02)
+
+**Two fixes for cross-platform builds**, verified on x86-64/LLVM19 (byte-identical bootstrap, 136 tests pass).
+
+### Makefile: robust LLVM detection
+
+The Makefile hardcoded `llvm-config` without `--link-shared`, which fails on Alpine ARM64 (LLVM 21) where only the monolithic `libLLVM-21.so` is available (no individual component libs). The `2>/dev/null` swallowed the error, leaving all LLVM vars empty → linker errors for every LLVM C API symbol.
+
+**Fix:** auto-detect `llvm-config` across naming conventions (`llvm-config`, `llvm-config-21`, `llvm-config-19`, Alpine paths `/usr/lib/llvm21/bin/llvm-config`), with a three-tier fallback:
+1. `--link-shared` (monolithic shared lib)
+2. Static component libs (if shared unavailable)
+3. Bare `-lLLVM` (if `llvm-config` missing entirely)
+
+Added `--system-libs` (already in `build.ps1` but missing from the Makefile) for musl's extra deps (`-lz`, `-ltinfo`, etc.). A diagnostic line (`LLVM: config=... ldflags=... libs=...`) prints at build time for remote debugging.
+
+### C header parser: musl compatibility
+
+musl's libc headers (Alpine ARM64) omit `extern` on function declarations — valid C, since file-scope functions are implicitly `extern`. glibc includes it. The C header parser at `src/cheader.nuc:654` only tried `c-parse-func-decl` when the token was `extern`, so musl's `int strcmp(...)` was skipped → `unknown: strcmp` error when `lib/macros.nuc` used `strcmp` (imported via the prelude's `(import-use "string.h")`).
+
+**Fix:** restructured the parser to try `c-parse-func-decl` for **any** non-struct/union/typedef token. `c-parse-type` already skips `extern`/`static`/`inline` internally (line 134), so both styles parse identically. If parsing fails (not a function), falls through to the skip logic.
+
+Bootstrap artifacts refreshed (`make update-bootstrap`); the new compiler declares additional C functions (`lldiv`, `getentropy`, etc.) because it now parses non-`extern` declarations — expected, not a regression.
+
+---
+
 ## Stage 13 — Lambdas and closures (2026-06-25)
 
 **Stage 13 complete.** The four lambda/closure forms landed, split by capture
