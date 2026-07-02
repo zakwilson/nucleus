@@ -1,0 +1,67 @@
+; Stage 14 — colon-paren type sugar: name:(Type ...) and the chain/return forms.
+;
+; The reader fuses a binding name ending in `:` with the following paren form:
+;   name:(T ...)   -> (name (T ...))     [the base sugar, every binding position]
+; This program exercises that sugar across the support matrix, plus:
+;   CP-1 chain:  name:k:(T ...)   -> (name (k (T ...)))   e.g. p:ptr:(ptr i32)
+;   CP-2 return: ... ):(T ...)    -> the paren form as a lone return type
+;                :k:(T ...)        -> (k (T ...))         (keyword-led spelling)
+; Every spelling here lowers IDENTICALLY to its list form (name (T ...)); see the
+; IR-identity spot-check in scratch/cp/. So this program's output is exactly what
+; the list-form spelling would print. Whitespace-before-paren forms
+; (e.g. `x: (T ...)`) are deliberately NOT used: they are hard errors by design.
+
+(import-use "stdio.h")
+(import-use "stdlib.h")
+
+; defstruct field — colon-paren pointer field.
+(defstruct Link
+  value:i32
+  next:(ptr Link))
+
+; defvar — global with a colon-paren type.
+(defvar empty:(ptr Link) null)
+
+; defn return-name (colon-paren) AND defn param (colon-paren).
+(defn with-value:(ptr Link) (l:(ptr Link) v:i32)
+  (.set! l value v)
+  (return l))
+
+; defn param (colon-paren); scalar return; walks the chain summing values.
+(defn chain-sum:i32 (l:(ptr Link))
+  (if (= l null)
+    (return 0)
+    (return (+ (l value) (chain-sum (l next))))))
+
+(defn main:i32 ()
+  ; let bindings — colon-paren types for two stack-allocated links.
+  (let (a:(ptr Link) (alloca Link)
+        b:(ptr Link) (alloca Link))
+    (.set! a value 10)
+    (.set! b value 20)
+    ; build the chain a -> b -> empty(null).
+    (.set! a next b)
+    (.set! b next empty)
+
+    ; with binding — colon-paren type; malloc'd i32 is freed at scope exit.
+    (with (g:(ptr i32) (malloc 4))
+      (ptr-set! g 5)
+      (printf "with-bind=%d\n" (deref g)))
+
+    ; CP-1 chain in a let binding:  pp:ptr:(ptr i32) -> (pp (ptr (ptr i32)))
+    ; AND a cast whose target type uses the CP-1 spelling: ptr:(ptr i32).
+    (let (pp:ptr:(ptr i32) (cast ptr:(ptr i32) null))
+      (printf "holder-is-null=%d\n" (if (= pp null) 1 0)))
+
+    ; lambda param (colon-paren) + CP-2 lone-colon return after ')':
+    ;   (fn (l:(ptr Link)):(ptr Link) ...) reads as (fn (l (ptr Link)) (ptr Link) ...)
+    (let (id (fn (l:(ptr Link)):(ptr Link) (return l)))
+      (printf "id(b)=%d\n" (chain-sum (funcall id b))))
+
+    ; CP-2 keyword-led return spelling: :ptr:(ptr i32) -> (ptr (ptr i32)).
+    (let (nuller (fn (x:i32) :ptr:(ptr i32) (cast (ptr i32) null)))
+      (printf "nuller-is-null=%d\n" (if (= (funcall nuller 0) null) 1 0)))
+
+    (printf "chain-sum(a)=%d\n" (chain-sum a))
+    (printf "chain-sum(b)=%d\n" (chain-sum b)))
+  (return 0))

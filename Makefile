@@ -59,9 +59,19 @@ COMPILER_DEPS := src/nucleusc.nuc src/compiler-types.nuc src/type-utils.nuc src/
                  lib/prelude.nuc lib/macros.nuc lib/node.nuc lib/arena.nuc \
                  lib/error.nuc lib/reader.nuc
 
-$(BIN): $(COMPILER_DEPS) $(REPL_SHIM_O) | $(BUILD) ensure-boot
+$(BIN): $(COMPILER_DEPS) $(REPL_SHIM_O) $(BUILD)/llvm-stamp | $(BUILD) ensure-boot
 	$(BOOT) --emit-llvm src/nucleusc.nuc > $(BUILD)/nucleusc.ll
 	clang $(BUILD)/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic -ffast-math -march=native -O3 -o $@
+
+# Content stamp of the linked LLVM version. A build/nucleusc carried across an
+# LLVM switch (e.g. a build dir shared between host and container) is linked
+# against a libLLVM the loader can't find; timestamps alone would leave it
+# stale-but-"up-to-date". The stamp only changes when the version string does,
+# so it forces exactly one relink per toolchain change.
+LLVM_VERSION := $(if $(LLVM_CONFIG),$(shell $(LLVM_CONFIG) --version 2>/dev/null),unknown)
+$(BUILD)/llvm-stamp: FORCE | $(BUILD)
+	@echo "$(LLVM_VERSION)" | cmp -s - $@ 2>/dev/null || echo "$(LLVM_VERSION)" > $@
+FORCE:
 
 $(REPL_SHIM_O): src/repl_shim.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@

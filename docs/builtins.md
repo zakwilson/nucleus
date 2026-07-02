@@ -326,9 +326,9 @@ Construction is via `(make (Result i64 i32) ok v)` or **target typing**: in
 `return` position of a function declared to return a `defunion` (or template
 instance), a bare `(arm args...)` resolves against the declared type. The
 rewrite applies only to the directly returned form, not through `if`/`cond`
-branches. Note that the `name:(Type ...)` colon sugar does not parse for
-parenthesized types — use the list form `(name (Result i64 i32))` in binding
-positions.
+branches. The `name:(Type ...)` colon-paren sugar works for parenthesized
+types — `r:(Result i64 i32)` (and the chain form `r:ref:(…)`) read directly
+in binding positions, equivalent to the list form `(name (Result i64 i32))`.
 
 `.nuch` headers export `defunion` forms verbatim (template or monomorphic);
 importers re-register the type and stamp their own instances. `--emit-cheader`
@@ -482,10 +482,11 @@ A **bare `(Vector v0 v1 ...)` in value position is a compile error** for a
 template name — it is ambiguous (is `v0` a type argument or the first field?)
 and the diagnostic points at the explicit two-level form.
 
-**Known limitation:** the colon binding sugar does not work when the RHS is a
-parenthesized type: `name:(ref (Vector T))` does not tokenize. Use the list
-binding form instead: `(name (ref (Vector T)))`. This is a pre-existing
-tokenizer limitation (not specific to parametric structs).
+The colon binding sugar now works when the RHS is a parenthesized type:
+`name:(ref (Vector T))` fuses in the reader, and the chain form
+`name:ref:(Vector T)` works too — both equivalent to the list binding form
+`(name (ref (Vector T)))`. (Earlier this did not tokenize; the Stage 14
+colon-paren fuse closed that gap.)
 
 ### Methods over a template
 
@@ -604,9 +605,10 @@ After the Phase F flip `?` is uniform `(Maybe T)` (no `(ref …)` injection), so
 nullable pointer). The
 `(Result T E)` template now lives in the prelude, always available. Because the
 toplevel signature prescan now resolves imported (prelude) types, `name:!Config`
-parses in ordinary signatures — which is the point of the sugar, since
-`name:(Result Config Err)` does not parse (parenthesized type in a colon
-position). `!` over a parenthesized payload has no sugar; write
+parses in ordinary signatures. (`name:(Result Config Err)` now parses too via
+the colon-paren sugar, so `!` is no longer *required* for that — but it
+remains the terser spelling and composes with the `?!` value-Maybe-over-Result
+sugar.) `!` over a parenthesized payload has no sugar; write
 `(Result (ref FILE) Err)` longhand.
 
 **Construction.** In `return` position (and the implicit-return tail) of a

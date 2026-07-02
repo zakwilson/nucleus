@@ -1,8 +1,9 @@
-# Stage 14 — staging order across the six workstreams
+# Stage 14 — staging order across the seven workstreams
 
-The six stage-14 designs — [colon-paren-types.md](colon-paren-types.md)
-(CP-1..3), [macro-conditional-casts.md](macro-conditional-casts.md)
-(MC-1..4), [defn-signature.md](defn-signature.md) (S1..4),
+The seven stage-14 designs — [colon-paren-types.md](colon-paren-types.md)
+(CP-1..3, **done 2026-07-02**), [macro-conditional-casts.md](macro-conditional-casts.md)
+(MC-1..4), [int-widening.md](int-widening.md) (LW-1..5),
+[defn-signature.md](defn-signature.md) (S1..4),
 [type-safety.md](type-safety.md) (14.1..14.7),
 [avr-targets.md](avr-targets.md) (AVR-0..8), and
 [riscv-linux.md](riscv-linux.md) (RV-0..5) — each carry local sequencing;
@@ -24,6 +25,11 @@ this doc fixes the cross-doc order.
   mis-fuses silently (the Stage-11 guidance "use the list form" exists
   *because* of this). Fixing it first lets the type-safety phases use the
   terse spelling safely.
+- **LW-1 → 14.3 (soft)**: type-safety's signature retyping mints new
+  literal-vs-`usize`/typed-param call sites; landing the template-tier
+  widening first prevents a fresh crop of cast requirements. LW-5's
+  tree-wide cast sweep must stay out of S3's quiet-tree window (and runs
+  per-file regardless). LW-1+LW-2 are atomic (node-type↔emit lockstep).
 - **AVR / RISC-V**: no edges to any of the above — they touch target/link
   plumbing and emission-width helpers, not the type-annotation surface. Soft
   rules: AVR-2 and MC-2 both touch quasiquote emission (helper-IR strings vs
@@ -39,19 +45,23 @@ this doc fixes the cross-doc order.
 and, where needed, one reconverging refresh — never two refresh windows in
 flight):
 
-1. **CP — colon-paren-types (CP-1 → CP-2 → CP-3).** Smallest, additive,
-   stage1==stage2 without re-baselining; unblocks S1 and removes the
-   silent-wrong-name trap before any mass annotation work.
+1. **CP — colon-paren-types (CP-1 → CP-2 → CP-3). ✅ Done 2026-07-02**
+   (byte-identical, no re-baseline; S1 unblocked).
 2. **MC — macro-conditional-casts (MC-1 → MC-2 → MC-3 → MC-4).** Independent
    of CP/S; expected near-byte-identical; removes the join-collapse failure
    class before signatures start gaining types.
-3. **S — defn-signature (S1 → S2 → S3 → S4).** The tree-wide mechanical
+3. **LW — int-widening (LW-1+LW-2 → LW-3 → LW-4 → LW-5).** Small and
+   independent (generic-resolution + call/return emit paths — no overlap
+   with MC's join sites or S/T's signature surfaces); slots here on the
+   small-before-big principle and to precede 14.3 (see edges). LW-5's
+   per-file cast sweep can trail into later slots but not S3's window.
+4. **S — defn-signature (S1 → S2 → S3 → S4).** The tree-wide mechanical
    rewrite (S3) wants a quiet tree: nothing else in flight during that
    window. Lands the final signature syntax before 14.3 edits the same
    lines.
-4. **T — type-safety (14.1 → 14.7).** The long haul, now fully unblocked.
-   14.1/14.2 have no dependency on MC/S and *may* be pulled forward in
-   parallel with items 1–2 if throughput matters, but the serial placement
+5. **T — type-safety (14.1 → 14.7).** The long haul, now fully unblocked.
+   14.1/14.2 have no dependency on MC/LW/S and *may* be pulled forward in
+   parallel with items 2–3 if throughput matters, but the serial placement
    keeps refresh windows discrete and is the default.
 
 **Parallel track — hardware targets (RISC-V, then AVR):**

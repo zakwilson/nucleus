@@ -780,10 +780,10 @@
 ; Additive: no existing source has a trailing-colon atom adjacent to `(`, so the
 ; bootstrap stays byte-identical. Returns the (possibly fused) child node.
 (defn fuse-colon-paren:!ptr (child:ptr line:i32)
-  ; Only consider a freshly-lexed symbol with no token peeked past it.
+  ; Only consider a freshly-lexed symbol/keyword with no token peeked past it.
   (when (or (= child null) (!= g-peek-valid 0)) (return (ok child)))
   (let (cn:ptr:Node (cast ptr:Node child))
-    (when (!= (cn kind) NODE-SYM) (return (ok child)))
+    (when (and (!= (cn kind) NODE-SYM) (!= (cn kind) NODE-KEYWORD)) (return (ok child)))
     (let (s:ptr (cn s)
           len:i64 (strlen (cn s)))
       ; Must end in ':' and the next raw stream char must be '(' (no whitespace).
@@ -791,14 +791,65 @@
                 (!= (char-at s (- len (cast i64 1))) 58))
         (return (ok child)))
       (when (!= (peek-char) 40) (return (ok child)))
-      ; Strip the trailing ':' to recover the binding name, then read the
-      ; following parenthesised form recursively (handles (ref (Vector T)),
-      ; (ptr u8), function-pointer forms, etc.).
-      (let (name-node:ptr (cast ptr (intern-symbol (arena-strndup s (- len (cast i64 1)))))
-            paren-form:ptr (try (read-form)))
-        (return (ok (cast ptr (make-cell name-node
-                                (make-cell paren-form null line)
-                                line))))))))
+      ; Read the following parenthesised form once.
+      (let (paren-form:ptr (try (read-form))
+            body:ptr (arena-strndup s (- len (cast i64 1))))
+        ; CP-2a: a bare ':' (NODE-SYM, empty body) fuses to the paren form
+        ; directly, so (fn (x:i32):(ref T) ...) reads as (fn (x:i32) (ref T) ...).
+        (when (and (= (cn kind) NODE-SYM) (= len (cast i64 1)))
+          (return (ok paren-form)))
+        ; CP-1 / keyword: split body on ':' into segments. The first segment is
+        ; the binding name for NODE-SYM (empty for NODE-KEYWORD, whose leading
+        ; ':' the lexer already stripped); remaining segments wrap the paren
+        ; form right-to-left as unary constructors.
+        (let (cur:ptr body
+              done:i32 0
+              head:ptr null
+              tail:ptr null)
+          (while (= done 0)
+            (let (colon:ptr (strchr cur 58))
+              (let (seg-len:i64 0)
+                (if (= colon null)
+                  (set! seg-len (cast i64 (strlen cur)))
+                  (set! seg-len (- (cast i64 colon) (cast i64 cur))))
+                ; An empty segment (e.g. body "a:" from atom "a::") is a reader error.
+                (when (= seg-len 0)
+                  (do (report-at line (fmt-s "empty segment in colon-chain '%s' -- write name:k1:(Type) with no '::'" s))
+                      (return (err! parse-error))))
+                (let (seg-node:ptr (cast ptr (intern-symbol (arena-strndup cur seg-len)))
+                      cell:ptr (make-cell seg-node null line))
+                  (when (= tail null) (set! head cell))
+                  (when (!= tail null) (.set! (cast ptr:Node tail) cdr cell))
+                  (set! tail cell)))
+              (if (= colon null)
+                (set! done 1)
+                (set! cur (ptr+ (cast ptr:i8 colon) (cast i64 1))))))
+          ; Name part: first segment for NODE-SYM, empty for NODE-KEYWORD.
+          (let (name-node:ptr null
+                ctor-list:ptr head)
+            (when (= (cn kind) NODE-SYM)
+              (do (set! name-node ((cast ptr:Node head) car))
+                  (set! ctor-list ((cast ptr:Node head) cdr))))
+            ; Reverse the constructor list, then fold it right-to-left around
+            ; the paren form, wrapping the name last if non-empty.
+            (let (rev:ptr null
+                  p:ptr ctor-list
+                  result:ptr paren-form
+                  q:ptr null)
+              (while (!= p null)
+                (let (nxt:ptr ((cast ptr:Node p) cdr))
+                  (.set! (cast ptr:Node p) cdr rev)
+                  (set! rev p)
+                  (set! p nxt)))
+              (set! q rev)
+              (while (!= q null)
+                (set! result (make-cell ((cast ptr:Node q) car)
+                                        (make-cell result null line)
+                                        line))
+                (set! q ((cast ptr:Node q) cdr)))
+              (when (!= name-node null)
+                (set! result (make-cell name-node (make-cell result null line) line)))
+              (return (ok (cast ptr result))))))))))
 
 (defn read-list:!ptr (line:i32)
   (let (head:ptr null
