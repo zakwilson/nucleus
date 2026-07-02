@@ -650,46 +650,50 @@
               (let (tok-end:i64 (cast i64 0)
                     tok:ptr (c-read-ident buf pos buf-len (cast ptr:i64 (addr-of tok-end))))
                 ; Skip typedefs, static inline functions, etc.
-                ; Only process extern declarations and top-level type declarations
+                ; Process extern/implicit function declarations and top-level type declarations.
+                ; musl (Alpine ARM64) omits `extern` on function declarations, so we try
+                ; c-parse-func-decl for any non-struct/union/typedef token.
                 (cond
-                  (or (or (= tok "extern") (= tok "union"))
-                      (or (= tok "struct") (= tok "typedef")))
-                    ; extern -> function declaration; struct/union/typedef -> layout.
+                  (or (= tok "union") (or (= tok "struct") (= tok "typedef")))
+                    ; struct/union/typedef -> layout.
                     (let (decl-end:i64 (cast i64 0)
-                          ok:i32 (if (= tok "extern")
-                                   (c-parse-func-decl buf pos buf-len
-                                                      (cast ptr:i64 (addr-of decl-end)) line)
-                                   (c-parse-struct-decl buf pos buf-len
-                                                        (cast ptr:i64 (addr-of decl-end)) line)))
+                          ok:i32 (c-parse-struct-decl buf pos buf-len
+                                                      (cast ptr:i64 (addr-of decl-end)) line))
                       (if (!= ok 0)
                         (set! pos decl-end)
-                        (do ; Not a function — skip to semicolon
+                        (do ; Not a struct — skip to semicolon
                          (while (and (< pos buf-len) (!= (char-at buf pos) 59))
                            (set! pos (+ pos (cast i64 1))))
                          (when (< pos buf-len)
                               (set! pos (+ pos (cast i64 1))))))))
                   true
-                    ; Skip to semicolon or next line
-                    (do (while (and (< pos buf-len)
-                                    (and (!= (char-at buf pos) 59)
-                                         (!= (char-at buf pos) 10)))
-                          ; Skip balanced braces (struct/enum bodies)
-                          (when (= (char-at buf pos) 123)
-                            (let (brace-depth:i32 1)
-                              (set! pos (+ pos (cast i64 1)))
-                              (while (and (< pos buf-len) (> brace-depth 0))
-                                (when (= (char-at buf pos) 123) (inc! brace-depth))
-                                (when (= (char-at buf pos) 125)
-                                  (set! brace-depth (- brace-depth 1)))
-                                (set! pos (+ pos (cast i64 1))))))
-                          (when (and (< pos buf-len)
-                                     (and (!= (char-at buf pos) 123)
-                                          (and (!= (char-at buf pos) 59)
-                                               (!= (char-at buf pos) 10))))
-                            (set! pos (+ pos (cast i64 1)))))
-                        (when (< pos buf-len)
-                          (set! pos (+ pos (cast i64 1))))))))
-          ; Safety: if pos didn't advance, force it forward to avoid infinite loop
+                    ; Try function declaration (handles both `extern int foo(...)` and
+                    ; bare `int foo(...)` — c-parse-type skips `extern` internally).
+                    (let (decl-end:i64 (cast i64 0)
+                          ok:i32 (c-parse-func-decl buf pos buf-len
+                                                    (cast ptr:i64 (addr-of decl-end)) line))
+                      (if (!= ok 0)
+                        (set! pos decl-end)
+                        ; Not a function — skip to semicolon or next line
+                        (do (while (and (< pos buf-len)
+                                        (and (!= (char-at buf pos) 59)
+                                             (!= (char-at buf pos) 10)))
+                              ; Skip balanced braces (struct/enum bodies)
+                              (when (= (char-at buf pos) 123)
+                                (let (brace-depth:i32 1)
+                                  (set! pos (+ pos (cast i64 1)))
+                                  (while (and (< pos buf-len) (> brace-depth 0))
+                                    (when (= (char-at buf pos) 123) (inc! brace-depth))
+                                    (when (= (char-at buf pos) 125)
+                                      (set! brace-depth (- brace-depth 1)))
+                                    (set! pos (+ pos (cast i64 1))))))
+                              (when (and (< pos buf-len)
+                                         (and (!= (char-at buf pos) 123)
+                                              (and (!= (char-at buf pos) 59)
+                                                   (!= (char-at buf pos) 10))))
+                                (set! pos (+ pos (cast i64 1)))))
+                            (when (< pos buf-len)
+                              (set! pos (+ pos (cast i64 1))))))))))          ; Safety: if pos didn't advance, force it forward to avoid infinite loop
           (when (= pos prev-pos)
             (set! pos (+ pos (cast i64 1))))))  ; closes when, while
       (free buf))                               ; let(pos) close + free in let(buf-len)
