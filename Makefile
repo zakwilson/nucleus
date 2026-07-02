@@ -1,9 +1,41 @@
 CC           := clang
 CFLAGS       := -std=c11 -Wall -Wextra -Wpedantic -O0 -g
-LLVM_CFLAGS  := $(shell llvm-config --cflags 2>/dev/null)
-LLVM_LDFLAGS := $(shell llvm-config --link-shared --ldflags 2>/dev/null)
-LLVM_LIBS    := $(shell llvm-config --link-shared --libs orcjit core irreader 2>/dev/null)
-LLVM_SYSLIBS := $(shell llvm-config --link-shared --system-libs 2>/dev/null)
+
+# LLVM detection: try llvm-config, then versioned names (Alpine: llvm21-config,
+# Debian: llvm-config-19). Fall back to -lLLVM monolithic shared lib if no
+# llvm-config is found (Alpine's llvm21 package may not ship llvm-config on PATH).
+LLVM_CONFIG  := $(shell which llvm-config 2>/dev/null || \
+                          which llvm-config-21 2>/dev/null || \
+                          which llvm-config-20 2>/dev/null || \
+                          which llvm-config-19 2>/dev/null || \
+                          ls /usr/lib/llvm21/bin/llvm-config 2>/dev/null || \
+                          ls /usr/lib/llvm19/bin/llvm-config 2>/dev/null || \
+                          echo "")
+ifneq ($(LLVM_CONFIG),)
+  LLVM_CFLAGS  := $(shell $(LLVM_CONFIG) --cflags 2>/dev/null)
+  LLVM_LDFLAGS := $(shell $(LLVM_CONFIG) --link-shared --ldflags 2>/dev/null)
+  LLVM_LIBS    := $(shell $(LLVM_CONFIG) --link-shared --libs orcjit core irreader 2>/dev/null)
+  LLVM_SYSLIBS := $(shell $(LLVM_CONFIG) --link-shared --system-libs 2>/dev/null)
+  # If --link-shared produced nothing (static-only install), fall back to static libs.
+  ifeq ($(LLVM_LIBS),)
+    LLVM_LDFLAGS := $(shell $(LLVM_CONFIG) --ldflags 2>/dev/null)
+    LLVM_LIBS    := $(shell $(LLVM_CONFIG) --libs orcjit core irreader 2>/dev/null)
+    LLVM_SYSLIBS := $(shell $(LLVM_CONFIG) --system-libs 2>/dev/null)
+  endif
+  # If both shared and static produced nothing, fall back to monolithic shared lib.
+  ifeq ($(LLVM_LIBS),)
+    LLVM_LDFLAGS :=
+    LLVM_LIBS    := -lLLVM
+    LLVM_SYSLIBS :=
+  endif
+else
+  # No llvm-config found — assume monolithic shared lib (Alpine, some distros).
+  LLVM_CFLAGS  :=
+  LLVM_LDFLAGS :=
+  LLVM_LIBS    := -lLLVM
+  LLVM_SYSLIBS :=
+endif
+$(info LLVM: config=$(LLVM_CONFIG) ldflags=$(LLVM_LDFLAGS) libs=$(LLVM_LIBS) syslibs=$(LLVM_SYSLIBS))
 BUILD        := build
 BIN          := $(BUILD)/nucleusc
 
