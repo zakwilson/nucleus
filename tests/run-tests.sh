@@ -45,7 +45,7 @@ done
 
 # Cross-target emission: each triple in the Phase-B matrix must produce IR
 # carrying the matching `target triple` line. Guards against a backend not
-# being registered (which makes --target reject the triple).
+# being registered (which makes --emit-llvm reject the triple).
 for triple in \
     x86_64-pc-linux-gnu \
     x86_64-apple-darwin \
@@ -55,13 +55,15 @@ for triple in \
     x86_64-pc-windows-msvc \
     x86_64-pc-windows-gnu \
     i386-pc-linux-gnu; do
-    ir="$(./build/nucleusc --target="$triple" --emit-llvm examples/hello.nuc 2>/dev/null || true)"
-    if printf '%s' "$ir" | grep -q "target triple = \"$triple\""; then
+    tmpfile="$(mktemp)"
+    ./build/nucleusc --target="$triple" --emit-llvm examples/hello.nuc > "$tmpfile" 2>/dev/null || true
+    if grep -q "target triple = \"$triple\"" "$tmpfile"; then
         echo "PASS  target-$triple"
     else
         echo "FAIL  target-$triple"
         fail=1
     fi
+    rm -f "$tmpfile"
 done
 
 # `long` ABI model (Phase D): C `long` resolves per the target's data model.
@@ -70,14 +72,16 @@ abs_long_h="$(pwd)/tests/abi/long.h"
 printf '(import-use "%s")\n(defn use:i64 () (return (lfn 1)))\n' "$abs_long_h" > "$(pwd)/tests/abi/.long_probe.nuc"
 check_long() {  # <triple> <expected-lfn-ir> <expected-llfn-ir>
     local triple="$1" want_l="$2" want_ll="$3"
-    local ir; ir="$(./build/nucleusc --target="$triple" --emit-llvm tests/abi/.long_probe.nuc 2>/dev/null || true)"
-    if printf '%s' "$ir" | grep -q "declare $want_l @lfn(" \
-       && printf '%s' "$ir" | grep -q "declare $want_ll @llfn("; then
+    local tmpfile; tmpfile="$(mktemp)"
+    ./build/nucleusc --target="$triple" --emit-llvm tests/abi/.long_probe.nuc > "$tmpfile" 2>/dev/null || true
+    if grep -q "declare $want_l @lfn(" "$tmpfile" \
+       && grep -q "declare $want_ll @llfn(" "$tmpfile"; then
         echo "PASS  long-abi-$triple"
     else
         echo "FAIL  long-abi-$triple (want lfn:$want_l llfn:$want_ll)"
         fail=1
     fi
+    rm -f "$tmpfile"
 }
 check_long x86_64-pc-linux-gnu    i64 i64   # LP64
 check_long aarch64-apple-darwin   i64 i64   # LP64
