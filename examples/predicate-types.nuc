@@ -1,0 +1,82 @@
+; Stage 14 SM-4 — user STRUCT and UNION *type names* may contain `?` and `!`.
+; The compiler maps each `?`→`_QMARK` and each `!`→`_BANG` in the emitted LLVM
+; TYPE name, exactly as SM-1 did for function/variable names. `(defstruct Full? …)`
+; would previously have emitted `%Full? = type {…}` — invalid LLVM IR that failed
+; downstream with no source-level error. Now both the type-DEFINITION line
+; (`%Full_QMARK = type {…}`) and every type-REFERENCE (a by-value field of this
+; type, a constructor `alloca`, a field-access `getelementptr`) route the name
+; through the single `ir-name-token` transform, so the two sides always spell the
+; type identically. Non-`?`/`!` names (hyphens included) are untouched.
+;
+; SM-4 sinks exercised here:
+;   - defstruct with a `?` name   → %Full_QMARK   (emit-defstruct definition)
+;   - defstruct with a `!` name   → %Reset_BANG   (emit-defstruct definition)
+;   - the `?`-struct as a by-value FIELD of another struct   (type-to-ir reference,
+;     `%Gauge = type { %Full_QMARK, i32 }`)
+;   - the `?`-struct constructed + field-accessed             (alloca + GEP reference)
+;   - defunion with a `?` name    → %Shape_QMARK  (defunion-register definition)
+;     eliminated by `match`                       (type-to-ir reference)
+
+(import-use "stdio.h")
+
+; --- `?`- and `!`-named structs (definition side) ---
+(defstruct Full? level:i32)
+(defstruct Reset! count:i32)
+
+; `Full?` embedded BY VALUE → a type REFERENCE to %Full_QMARK inside %Gauge's
+; own definition. Definition side (emit-defstruct for Gauge) and reference side
+; (type-to-ir for the field) must spell it the same, or the IR is malformed.
+(defstruct Gauge inner:Full? spare:i32)
+
+; A function whose body field-accesses a `?`-named struct: the `(g level)` GEP
+; names %Full_QMARK (a type-to-ir reference).
+(defn is-full:i32 ((g (ref Full?)))
+  (if (>= (g level) 100) (return 1) (return 0)))
+
+; `.&` yields a pointer to the by-value `Full?` field — a %Full_QMARK GEP — and
+; `(_ level)` then GEPs into %Full_QMARK again through that pointer.
+(defn gauge-inner-level:i32 ((gz (ref Gauge)))
+  (return ((.& gz inner) level)))
+
+(defn gauge-spare:i32 ((gz (ref Gauge)))
+  (return (gz spare)))
+
+; --- `?`-named tagged union (definition side, via defunion-register) ---
+(defunion Shape?
+  (circle radius:i32)
+  nothing)
+
+; match over the `?`-named union → type REFERENCE to %Shape_QMARK (ptr scrutinee
+; GEPs into the backing struct).
+(defn shape-area:i32 (s:ptr:Shape?)
+  (match s
+    ((circle radius) (return (* radius radius)))
+    (nothing         (return 0))))
+
+(defn main:i32 ()
+  ; construct + field-access a `?`-named struct
+  (let (a:(ref Full?) (Full? 150)
+        b:(ref Full?) (Full? 50))
+    (printf "is-full 150 = %d\n" (is-full a))     ; 1
+    (printf "is-full 50 = %d\n" (is-full b)))      ; 0
+
+  ; `!`-named struct
+  (let (r:(ref Reset!) (Reset! 7))
+    (printf "reset count = %d\n" (r count)))        ; 7
+
+  ; `?`-struct embedded by value in another struct; build via alloca + field
+  ; sets, then read the nested (%Full_QMARK) field and the scalar field back.
+  (let (gz:(ref Gauge) (alloca Gauge))
+    (.set! (.& gz inner) level 200)
+    (.set! gz spare 9)
+    (printf "gauge inner level = %d\n" (gauge-inner-level gz))  ; 200
+    (printf "gauge spare = %d\n" (gauge-spare gz)))             ; 9
+
+  ; `?`-named union: construct each arm, match
+  (let (c:Shape? (Shape?-circle 6)
+        n:Shape? (Shape?-nothing))
+    (printf "area circle(6) = %d\n" (shape-area (addr-of c)))   ; 36
+    (printf "area nothing = %d\n" (shape-area (addr-of n))))    ; 0
+
+  (printf "done\n")
+  (return 0))

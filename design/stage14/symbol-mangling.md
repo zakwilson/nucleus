@@ -247,6 +247,62 @@ sanitize-for-c-call-sites scope, noted here so they aren't lost):
 
 ### SM-4 — the remaining verbatim sinks
 
+**Status: DONE (2026-07-03).** `%Foo` struct/union type names now route through
+`ir-name-token`. The design's premise that `type-to-ir` is the single type-REFERENCE
+chokepoint proved **incomplete** (ground-verified: `(defstruct Full? …)` + a field
+access emitted `getelementptr inbounds %Full?, …`, a straggler that bypasses
+`type-to-ir` entirely). GEP aggregate-type operands, `alloca`/`load`/`store` type
+operands across `union-emit.nuc` and `nucleusc.nuc` each print the struct name
+**directly** from a StructDef in hand, not via `type-to-ir`. So there is no single
+reference chokepoint. The fix is a StructDef-level cache instead of a per-site wrap:
+
+- **New field `StructDef.ir-name`** (compiler-types.nuc), computed **once** in
+  `register-struct` (abi.nuc — the sole StructDef allocator; `repl-register-node`
+  and every anon/fatptr/env builder route through it, grep-verified) as
+  `(ir-name-token name)`. `sd.name` stays the **raw source spelling and the lookup
+  key** — `lookup-struct` matches a source type token like `Full?` by interned-
+  pointer identity, so mangling `name` would break resolution; `ir-name` is the
+  LLVM spelling only. For a name without `?`/`!`, `ir-name-token` is a pointer-
+  identity no-op, so `ir-name == name` for every existing struct/union and the
+  whole compiler self-IR is byte-identical modulo the mechanical shift below.
+- **Every IR emission site** switched from `(sd name)` to `(sd ir-name)`:
+  `type-to-ir` TY-STRUCT/TY-UNION; the definition emitters (`emit-defstruct`,
+  `emit-pending-struct-ir-type`, `emit-union-ir-type`, and the direct backing-
+  struct line in `defunion-register`); and ~35 GEP/alloca/load/store type-operand
+  sites in `union-emit.nuc`/`nucleusc.nuc`. Diagnostic messages keep `(sd name)`
+  (user-facing = source name). Two sites hold only a name string (not a StructDef):
+  `emit-box-struct-move`'s heap-move load/store and it wrap `(ir-name-token …)`
+  there (`struct-name` must stay source-spelled for the `(sizeof …)` it also feeds,
+  which resolves the struct by source name).
+- **Anon/synth names left alone** (`__anon_struct_h…`, `__anon_union_h…`,
+  `__vfn_env_%d`, `__fatptr`, `__boxedfn.…`, `__dyn.…`): all fixed or already
+  `sanitize-for-ir`'d, so `ir-name-token` is a provable no-op and their unwrapped
+  definition sites agree with the `ir-name` reference side byte-for-byte.
+- **`ir-name-token` (+ `ir-name-append`) RELOCATED** generics.nuc → format.nuc,
+  beside `sanitize-for-ir`/`sanitize-for-c`. Forced by import order: `type-utils.nuc`
+  (#567) and `union-registry.nuc` (#584) are `import-use`d **before** generics.nuc
+  (#604), and `type-to-ir`/`register-struct`/the union emitters can't forward-
+  reference a generics.nuc definition (the SM-3 wall — ground-verified: the direct
+  call errored `unknown: ir-name-token`). SM-3's "wrap at a later call site" cannot
+  apply because `type-to-ir`'s callers are everywhere; relocating the single home
+  (not duplicating — SM-1 §2 preserved) makes it reachable from every consumer.
+- **Out of scope (noted, not type names):** goto/`indirectbr` label names
+  (`%lbl.<arm>`, nucleusc.nuc) still print arm names raw — a distinct surface from
+  `%Foo` type names; C-imported struct types in cheader.nuc emit LLVM names from C
+  identifiers, which cannot contain `?`/`!` (provably safe, and SM-3's domain).
+- **Gates:** `make bootstrap` fixed point (stage1==stage2) holds **in one pass** —
+  the compiler source has no `?`/`!` structs, so the whole transform is inert on it;
+  `build/nucleusc.ll` before/after is *not* byte-identical, but the only shift is the
+  mechanical relocation of `ir-name-token`/`ir-name-append` + their `_QMARK`/`_BANG`
+  string constants (moved earlier → +2 `@.str` renumber) plus the extra `StructDef`
+  field — root-caused, no hyphen regression (no `@arena-alloc`→`@arena_alloc` rename
+  in the normalized diff). 151/151 `make test`. New example
+  `examples/predicate-types.nuc` (+`tests/expected/predicate-types.out`): `?`/`!`
+  structs, a `?`-union with `match`, and a `?`-struct embedded by value in another
+  struct; the emitted `.ll` shows `%Full_QMARK`/`%Reset_BANG`/`%Shape_QMARK`
+  definitions and every reference spelled identically, `%Gauge = type { %Full_QMARK,
+  i32 }` cross-checks def-vs-ref agreement, and `llvm-as` validates the module.
+
 - `%Foo` struct/union type names get the same token map at registration/
   emission (union-registry.nuc:63,120,141-143; nucleusc.nuc:3603) — a
   `?`-named struct is unidiomatic but must not emit illegal IR.

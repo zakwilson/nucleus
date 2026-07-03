@@ -484,6 +484,10 @@
     (fprintf stderr "nucleusc: too many structs\n") (exit 1))
   (let (sd:ptr:StructDef (cast ptr:StructDef (arena-alloc (sizeof StructDef))))
     (.set! sd name name)
+    ; SM-4: precompute the LLVM-safe type name once (ir-name-token is a
+    ; pointer-identity no-op for names without `?`/`!`, so this is byte-identical
+    ; for every existing struct/union and the whole compiler self-IR).
+    (.set! sd ir-name (ir-name-token name))
     (.set! sd num-fields 0)
     (.set! sd emitted 0)
     (.set! sd is-union 0)

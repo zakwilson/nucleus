@@ -63,9 +63,9 @@
     (when (= (tt kind) TY-USIZE)  (return (ptr-int-ir)))
     (when (= (tt kind) TY-SSIZE)  (return (ptr-int-ir)))
     (when (= (tt kind) TY-STRUCT)
-      (return (fmt-s "%%%s" ((cast ptr:StructDef (tt sdef)) name))))
+      (return (fmt-s "%%%s" ((cast ptr:StructDef (tt sdef)) ir-name))))
     (when (= (tt kind) TY-UNION)
-      (return (fmt-s "%%%s" ((cast ptr:StructDef (tt sdef)) name))))
+      (return (fmt-s "%%%s" ((cast ptr:StructDef (tt sdef)) ir-name))))
     (return "?")))
 
 ; Map a Nucleus type to its C representation string.

@@ -1926,7 +1926,7 @@
         gep:ptr (new-tmp))
     (fprintf g-body-stream
       "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
-      gep (sdd name) (pv val) idx)
+      gep (sdd ir-name) (pv val) idx)
     (let (val:ptr (new-tmp))
       (emit-load val (type-to-ir ftype) gep ftype)
       (return (alloc-val ftype val)))))
@@ -1996,7 +1996,7 @@
                 (let (gep:ptr (new-tmp))
                   (fprintf g-body-stream
                     "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
-                    gep (sd name) (p val) idx)
+                    gep (sd ir-name) (p val) idx)
                   (emit-store (type-to-ir ftype) (cv val) gep ftype)))
               (return (alloc-val ty-void null)))))))))
 
@@ -4257,9 +4257,9 @@
         ; Copy the aggregate by value into the heap block (CE-3 path).
         (let (evec:ptr (new-tmp))
           (fprintf g-body-stream "  %s = load %%%s, ptr %s, align 8\n"
-            evec struct-name (vv val))
+            evec (ir-name-token struct-name) (vv val))
           (fprintf g-body-stream "  store %%%s %s, ptr %s, align 8\n"
-            struct-name evec blk))
+            (ir-name-token struct-name) evec blk))
         (return (build-fatptr-val blk vname box-ty))))))
 
 ; TE-6: box an arbitrary concrete VALUE into a `(dyn P)` fat pointer. Unlike a
@@ -4609,7 +4609,7 @@
                 join-frame:i32 0
                 join-depth:i32 -1)
             (fprintf g-body-stream "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 0\n"
-              g0 (sd name) blk)
+              g0 (sd ir-name) blk)
             (fprintf g-body-stream "  store ptr %s, ptr %s, align 8\n" alloc-aptr g0)
             ; Per-capture: store (addr-of cap) into field k+1; join addr-of taints.
             (let (k:i32 0
@@ -4618,7 +4618,7 @@
                 (let (cname:ptr ((cast ptr:Node cur) s)
                       gep:ptr (new-tmp))
                   (fprintf g-body-stream "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
-                    gep (sd name) blk (+ k 1))
+                    gep (sd ir-name) blk (+ k 1))
                   (let (addr-node:ptr (make-cell (cast ptr (intern-symbol "addr-of"))
                                           (make-cell (cast ptr (intern-symbol cname)) null line)
                                           line)
@@ -4657,7 +4657,7 @@
                 (return rv))))))
       ; vfn/mfn: stack alloca + per-field clone/move.
       (do
-        (fprintf g-entry-stream "  %s = alloca %%%s\n" slot (sd name))
+        (fprintf g-entry-stream "  %s = alloca %%%s\n" slot (sd ir-name))
         (let (k:i32 0
               cur:ptr caps)
           (while (!= cur null)
@@ -4667,7 +4667,7 @@
                   gep:ptr (new-tmp))
               (fprintf g-body-stream
                 "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
-                gep (sd name) slot k)
+                gep (sd ir-name) slot k)
               ; Per-capture population: mode 0 = vfn clone, mode 1 = mfn move.
               (if (= mode 0)
                 (if (= (type-conforms-drop fty) 0)
@@ -5832,7 +5832,7 @@
               (set! gep (new-tmp))
               (fprintf g-body-stream
                 "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
-                gep (sd name) (p val) idx))
+                gep (sd ir-name) (p val) idx))
             (let (rt:ptr:Type (cast ptr:Type (make-type TY-PTR)))
               (.set! rt elem ftype)
               ; A field's address inside a (non-null) struct is non-null (ref T).
@@ -5999,7 +5999,7 @@
                 (inc! pos-idx)))))
         (inc! i))
       (let (slot:ptr (new-tmp)
-            sname:ptr (sdef name))
+            sname:ptr (sdef ir-name))
         (fprintf g-entry-stream "  %s = alloca %%%s\n" slot sname)
         (dotimes (k nfields)
           (let (ftype:ptr (aref (cast ptr:ptr (sdef field-types)) k)
@@ -6792,7 +6792,7 @@
                   (die-at ((cast ptr:Node field) line) (fmt-s "defstruct: field '%s' missing :type" fname)))
             (aset! (cast ptr:ptr (sd field-names)) i (intern-str fname))
             (aset! (cast ptr:ptr (sd field-types)) i fty)))
-        (fprintf g-out "%%%s = type { " (name-node s))
+        (fprintf g-out "%%%s = type { " (sd ir-name))
         (dotimes (i nfields)
           (when (!= i 0) (fprintf g-out ", "))
           (fprintf g-out "%s" (type-to-ir (aref (cast ptr:ptr (sd field-types)) i))))

@@ -76,6 +76,34 @@ would need `@"lt?"`). The compiler does not currently quote symbols, so user
 *function* names should stick to `[A-Za-z0-9$._-]`. (`set!`/`inc!`/`lt?`-style
 names are fine for special forms and macros, which never become `@`-symbols.)
 
+## `StructDef.name` is the source spelling / lookup key; `StructDef.ir-name` is the LLVM `%Name`
+
+Two distinct slots (SM-4): **`name`** is the raw source symbol text and the
+**lookup key** — `lookup-struct` matches a source type token (e.g. `Full?`) against
+it by **interned-pointer identity**, so `name` must never be mangled or resolution
+breaks. **`ir-name`** is the LLVM-safe spelling (`?`→`_QMARK`, `!`→`_BANG` via
+`ir-name-token`; every other char, hyphens included, unchanged) and is what **every**
+`%Name` reference and definition prints, so a `(defstruct Full? …)` emits legal
+`%Full_QMARK`, not `%Full?`. `ir-name` is computed **once** in `register-struct`
+(src/abi.nuc) — the sole StructDef allocator (`repl-register-node`, the anon-struct/
+union, fatptr/boxedfn/dyn, and closure-env builders all route through it), so setting
+it there covers 100% of StructDefs. For a name without `?`/`!`, `ir-name-token` is a
+pointer-identity no-op, so `ir-name == name` and the whole compiler self-IR is
+byte-identical.
+
+**There is NO single type-REFERENCE chokepoint.** `type-to-ir` handles Type→IR
+strings, but GEP aggregate-type operands and `alloca`/`load`/`store` type operands
+across `union-emit.nuc`/`nucleusc.nuc` print the struct name **directly** from a
+StructDef in hand (`getelementptr inbounds %<name>, …`), bypassing `type-to-ir`.
+Every one of these must use `(sd ir-name)`, not `(sd name)`. Rule of thumb: a struct
+name going into an IR stream (`g-out`/`g-body-stream`/`g-type-stream`) uses
+`ir-name`; a struct name in a **diagnostic** (`fmt-*`/`die-at`) or in
+**source-symbol construction** (`intern-symbol`, a `(sizeof S)` node whose `S`
+resolves by source name) uses `name`. Missing an IR site fails loudly at the LLVM
+parser (`%Full?` → "expected comma after getelementptr's type"), not silently. Note
+`ir-name` is also an (unrelated) field name on `Sym`/`ProgDefn`/`Method` (the emitted
+`@symbol`); field access is per-struct-type so there is no collision.
+
 ## Struct field names are interned — StructDef builders must use `intern-str`
 
 `struct-field-index` (src/nucleusc.nuc) matches a selector against a struct's

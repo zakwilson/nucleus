@@ -117,7 +117,7 @@
   (let (sdd:ptr:StructDef (cast ptr:StructDef sd))
     (when (!= (sdd emitted) 0) (return))
     (.set! sdd emitted 1)
-    (fprintf g-type-stream "%%%s = type { " (sdd name))
+    (fprintf g-type-stream "%%%s = type { " (sdd ir-name))
     (dotimes (i (sdd num-fields))
       (when (!= i 0) (fprintf g-type-stream ", "))
       (fprintf g-type-stream "%s" (type-to-ir (aref (cast ptr:ptr (sdd field-types)) i))))
@@ -139,9 +139,9 @@
           pad:i32 (- total (abi-sizeof rt)))
       (if (> pad 0)
         (fprintf g-type-stream "%%%s = type { %s, [%d x i8] }\n\n"
-          (sdd name) (type-to-ir rt) pad)
+          (sdd ir-name) (type-to-ir rt) pad)
         (fprintf g-type-stream "%%%s = type { %s }\n\n"
-          (sdd name) (type-to-ir rt))))))
+          (sdd ir-name) (type-to-ir rt))))))
 
 ; Are all of `sd`'s by-value named-type field dependencies already emitted into
 ; the shared type buffer (g-type-bufp)? A field lowers to a `%Name` reference
@@ -858,8 +858,8 @@
                          (!= layout LAYOUT-NICHE-MAYBE) (!= layout LAYOUT-NICHE-ERRPTR))
                 (if (!= union-sd null)
                   (fprintf g-type-stream "%%%s = type { i32, %%%s }\n\n"
-                    name ((cast ptr:StructDef union-sd) name))
-                  (fprintf g-type-stream "%%%s = type { i32 }\n\n" name)))
+                    (sd ir-name) ((cast ptr:StructDef union-sd) ir-name))
+                  (fprintf g-type-stream "%%%s = type { i32 }\n\n" (sd ir-name))))
               (.set! sd emitted 1))
             (let (ud:ptr:UnionDef (cast ptr:UnionDef (arena-alloc (sizeof UnionDef))))
               (conj g-uniondefs (cast ptr ud))
