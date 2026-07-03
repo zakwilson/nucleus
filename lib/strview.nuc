@@ -46,10 +46,12 @@
 ; ---------------------------------------------------------------------------
 ; The view: a borrowed pointer to the first byte plus a byte count. No NUL is
 ; required or assumed; `len` is authoritative.
+;
+; Stage 14 NS-1 (design/stage14/native-strings.md): the `(defstruct StrView
+; ...)` itself now lives in lib/prelude.nuc (beside Node/Maybe) so the type is
+; registered in every compilation unit, including the reader/macros/bootstrap,
+; not just files that `(import-use strview)`. This file keeps every method.
 ; ---------------------------------------------------------------------------
-(defstruct StrView
-  data:(ptr ui8)
-  len:usize)
 
 ; ---------------------------------------------------------------------------
 ; strview-len — the byte length. Trivial accessor; present so callers depend on

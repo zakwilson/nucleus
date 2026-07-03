@@ -110,6 +110,8 @@ All functions are **total**: non-ASCII input returns 0.
 
 `data` points to the first byte of the underlying buffer. `len` is authoritative; the buffer need not be NUL-terminated (except when created via `strview-from-cstr`, in which case `strview-to-cstr` is sound).
 
+The bare struct type is registered in the prelude, so `StrView` is available as a type in every compilation unit without any import. The functions and protocol conformances below still require `(import-use strview)`.
+
 ### Construction
 
 | Function | Signature | Description |
