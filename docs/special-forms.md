@@ -16,6 +16,12 @@ expression's type must match the declared return type; if the last
 expression yields `void` (e.g., a side-effect or no-return call like
 `die-at`), a default zero/null of the return type is emitted.
 
+An explicit `(return expr)` coerces `expr` against the declared return type
+the same way (see [Implicit Type Coercion](types.md#implicit-type-coercion));
+a value that cannot be coerced (e.g. returning a `f64` from an `:i64`
+function) is a compile-time error naming both types, not a raw LLVM-level
+failure.
+
 | Name | Description | C Equivalent |
 |------|-------------|--------------|
 | `do` | Sequence multiple expressions; yields the last | `{ ... }` block |
