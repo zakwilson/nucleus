@@ -721,9 +721,15 @@
   (when (= name "bool")  (return "_Bool"))
   (when (= name "CStr")  (return "const char*"))
   (when (= name "ptr")   (return "void*"))
-  ; Assume struct type — sanitize the name for C (dots from stamped parametric
-  ; instances like Vector.i32 become underscores: Vector_i32).
-  (return (fmt-s "struct %s" (sanitize-for-c name))))
+  ; Assume struct type — sanitize the name for C. `ir-name-token` first maps the
+  ; two LLVM/C-illegal-but-Nucleus-legal symbol chars (`?`→_QMARK, `!`→_BANG) so a
+  ; `?`/`!`-named struct references its real linkable symbol; `sanitize-for-c` then
+  ; blanket-maps the remaining C-illegal chars (dots from stamped parametric
+  ; instances like Vector.i32 become underscores: Vector_i32). Order matters:
+  ; ir-name-token must run before the blanket map, or `?` would collapse to `_`
+  ; and collide (SM-3). For a name with no `?`/`!` ir-name-token is a pointer-
+  ; identity no-op, so existing headers stay byte-identical.
+  (return (fmt-s "struct %s" (sanitize-for-c (ir-name-token name)))))
 
 ; Convert a type AST node to a C type string. Handles SYM types and
 ; (ptr T) / (ptr ptr T) ... lists.
@@ -809,7 +815,9 @@
   ; Skip parametric templates: (defstruct (Name T...) ...) has a list at
   ; position 1, not a sym. Templates define no concrete C type.
   (when (!= ((cast ptr:Node (node-at form 1)) kind) NODE-SYM) (return))
-  (let (name:ptr (sanitize-for-c ((cast ptr:Node (node-at form 1)) s))
+  ; ir-name-token first (`?`→_QMARK / `!`→_BANG), then the blanket C sanitize; see
+  ; type-name-to-c. A no-op for names without `?`/`!`, so headers stay byte-identical.
+  (let (name:ptr (sanitize-for-c (ir-name-token ((cast ptr:Node (node-at form 1)) s)))
         nfields:i32 (- (node-len form) 2))
     (printf "typedef struct {\n")
     (dotimes (i nfields)
@@ -950,7 +958,9 @@
 (defn emit-cheader-defunion:void (form:ptr)
   (let (name-node:ptr:Node (cast ptr:Node (node-at form 1)))
     (when (!= (name-node kind) NODE-SYM) (return))
-    (let (name:ptr (sanitize-for-c (name-node s))
+    ; ir-name-token first (`?`→_QMARK / `!`→_BANG), then the blanket C sanitize; see
+    ; type-name-to-c. A no-op for names without `?`/`!`, so headers stay byte-identical.
+    (let (name:ptr (sanitize-for-c (ir-name-token (name-node s)))
           narms:i32 (- (node-len form) 2)
           npay:i32 0)
       ; Any payload-bearing arm?

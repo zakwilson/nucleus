@@ -66,6 +66,14 @@
 ; [A-Za-z_][A-Za-z0-9_]* and dots are not legal. Used only on the
 ; --emit-cheader path so IR struct names (which legally contain dots) are
 ; unaffected.
+;
+; This is a *blanket* sanitizer: it lossily collapses `?`, `!`, and `-` all to
+; `_`. To name the REAL linkable symbol of a `?`/`!`-bearing name, the caller must
+; run `ir-name-token` (in src/generics.nuc — the shared `?`→_QMARK / `!`→_BANG
+; mnemonic map) FIRST, then hand the result here: `(sanitize-for-c (ir-name-token
+; name))` (SM-3). sanitize-for-c does not call ir-name-token itself because
+; format.nuc is imported before generics.nuc, so ir-name-token is not yet in scope
+; here; the three cheader.nuc call sites compose the two in the correct order.
 (defn sanitize-for-c:ptr (name:ptr)
   (let (n:i64 (strlen name)
         s:ptr (arena-alloc (+ n (cast i64 1)))

@@ -157,6 +157,95 @@ else
 fi
 rm -rf "$ns6_dir"
 
+# Stage 14 SM-3: `?`/`!` symbol mangling survives the export surfaces (.nuch and
+# --emit-cheader). A library exports `?`/`!`-named functions; their public link
+# names carry the SM-1 mnemonic mangling (`?`→_QMARK, `!`→_BANG). The .nuch must
+# round-trip them — solitary names via the shared ns-ir-base derivation, the
+# overloaded `?` pair via each method's stored (defmethod "@sym" ...) string — so
+# an importer re-derives the exact symbols the lib object defines, and the cheader
+# must name those C-legal symbols (never the illegal `full?`). A second fixture
+# checks the SM-3 sanitize-for-c fix: `?`/`!` in struct/union TYPE names.
+sm3_dir="$(mktemp -d)"
+sm3_lib="$(pwd)/tests/fixtures/sm3-predlib.nuc"
+./build/nucleusc --emit-nuch    "$sm3_lib" > "$sm3_dir/lib.nuch" 2>/dev/null || true
+./build/nucleusc --emit-cheader "$sm3_lib" > "$sm3_dir/lib.h"    2>/dev/null || true
+./build/nucleusc --emit-llvm    "$sm3_lib" > "$sm3_dir/lib.ll"   2>/dev/null || true
+
+# 1. The .nuch round-trips both name kinds: solitary `?`/`!` as (declare ...) and
+#    the overloaded `?` pair as (defmethod "@even_QMARK.<tok>" ...) carrying the
+#    stored mangled string verbatim.
+if grep -qF '(declare (full? i32)' "$sm3_dir/lib.nuch" \
+   && grep -qF '(declare (push! i32)' "$sm3_dir/lib.nuch" \
+   && grep -qF '(defmethod "@even_QMARK.i32"' "$sm3_dir/lib.nuch" \
+   && grep -qF '(defmethod "@even_QMARK.i64"' "$sm3_dir/lib.nuch"; then
+    echo "PASS  sm3-nuch-roundtrip"
+else
+    echo "FAIL  sm3-nuch-roundtrip"; fail=1
+fi
+
+# 2. The lib object defines the mnemonic-mangled symbols.
+if grep -qF 'define i32 @full_QMARK' "$sm3_dir/lib.ll" \
+   && grep -qF 'define i32 @push_BANG' "$sm3_dir/lib.ll" \
+   && grep -qF 'define i32 @even_QMARK.i32' "$sm3_dir/lib.ll" \
+   && grep -qF 'define i32 @even_QMARK.i64' "$sm3_dir/lib.ll"; then
+    echo "PASS  sm3-lib-symbols"
+else
+    echo "FAIL  sm3-lib-symbols"; fail=1
+fi
+
+# 3. The cheader names the real C-legal function symbols, never the illegal `full?`.
+if grep -qF 'full_QMARK(' "$sm3_dir/lib.h" \
+   && grep -qF 'push_BANG(' "$sm3_dir/lib.h" \
+   && ! grep -qF 'full?' "$sm3_dir/lib.h"; then
+    echo "PASS  sm3-cheader-fn-legal"
+else
+    echo "FAIL  sm3-cheader-fn-legal"; fail=1
+fi
+
+# 4. Importing the .nuch re-derives the exact symbols the lib object defines, so a
+#    consumer links and runs. Solitary `full?`/`push!` resolve via ns-ir-base;
+#    overloaded `even?` dispatches to @even_QMARK.i32 / .i64 through the imported
+#    defmethod entries. The consumer excludes the prelude (the lib object already
+#    provides it) so the two objects link without duplicate prelude symbols.
+cat > "$sm3_dir/main.nuc" <<EOF
+(exclude-prelude)
+(import-use "$sm3_dir/lib.nuch")
+(declare printf:i32 (fmt:CStr &rest args:i32))
+(defn main:i32 ()
+  (printf "full=%d push=%d even4=%d even7=%d even6L=%d\n"
+    (full? 5) (push! 7) (even? 4) (even? 7) (even? (cast i64 6)))
+  (return 0))
+EOF
+./build/nucleusc --emit-llvm "$sm3_dir/main.nuc" > "$sm3_dir/main.ll" 2>/dev/null || true
+if grep -qF 'call i32 @full_QMARK' "$sm3_dir/main.ll" \
+   && grep -qF 'call i32 @push_BANG' "$sm3_dir/main.ll" \
+   && grep -qF 'call i32 @even_QMARK.i32' "$sm3_dir/main.ll" \
+   && grep -qF 'call i32 @even_QMARK.i64' "$sm3_dir/main.ll"; then
+    echo "PASS  sm3-import-resolves-mangled"
+else
+    echo "FAIL  sm3-import-resolves-mangled"; fail=1
+fi
+if clang "$sm3_dir/lib.ll" "$sm3_dir/main.ll" -o "$sm3_dir/bin" 2>/dev/null \
+   && [ "$("$sm3_dir/bin")" = "full=1 push=8 even4=1 even7=0 even6L=1" ]; then
+    echo "PASS  sm3-nuch-link-and-run"
+else
+    echo "FAIL  sm3-nuch-link-and-run"; fail=1
+fi
+
+# 5. sanitize-for-c maps `?`/`!` in struct/union TYPE names to _QMARK/_BANG (the
+#    SM-3 fix proper), across all three call sites: the defstruct typedef name, the
+#    defunion typedef name, and a `struct <name>` reference in a param.
+./build/nucleusc --emit-cheader tests/fixtures/sm3-typenames.nuc > "$sm3_dir/types.h" 2>/dev/null || true
+if grep -qF '} Full_QMARK;' "$sm3_dir/types.h" \
+   && grep -qF '} Push_BANG;' "$sm3_dir/types.h" \
+   && grep -qF '} Shape_QMARK;' "$sm3_dir/types.h" \
+   && grep -qF 'struct Full_QMARK* f' "$sm3_dir/types.h"; then
+    echo "PASS  sm3-cheader-typenames"
+else
+    echo "FAIL  sm3-cheader-typenames"; fail=1
+fi
+rm -rf "$sm3_dir"
+
 # Stage 13 L1: cfn escape analysis. A cfn captures each used local by reference,
 # so the closure value inherits the captured referent's frame region. Returning
 # it out of that scope would dangle, so compiling the fixture must FAIL with the
