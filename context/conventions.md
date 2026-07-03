@@ -204,12 +204,22 @@ When converting a function or binding from `(ptr T)` to `(ref T)` / `?T`
   cursor walking a nullable link field (e.g. `Node.cdr`, typed `(raw Node)`)
   must itself be `(raw T)`, not `ptr:T`. Older `x:ptr` spellings justified by
   the prescan (e.g. the comment near `import-list-push`) are leftovers.
-- **`type-eq` compares pointer elems, so mixed cond/if joins collapse.**
-  Joining a bare `ptr` value with a `(ref T)`/`(ptr T)` value in a value
-  position `if`/`cond` collapses the phi to void (pre-existing rule); if the
-  result is used, you get a malformed-IR clang error or a flow-check error.
-  Fix by giving the other branch's binding its real element type — never by
-  casting the `ref` side back to bare `ptr`.
+- **Mixed cond/if joins: bare-vs-typed absorbs, differently-typed still
+  collapses.** `type-join` (src/generics.nuc, right after `type-eq`; called
+  from `emit-cond`, `match`-over-unions, and the niche-match/if-some arm
+  helper) is the single join-logic site. Joining a bare, elem-less `ptr`
+  value with a `(ref T)`/`(ptr T)` value in a value-position `if`/`cond` now
+  **absorbs** to `(raw T)` — the bare side is treated as the `void*` escape
+  hatch, so the join takes the typed side's element type at pkind `PTR-RAW`
+  unconditionally (never `pkind-meet`, since the elem-less side's claimed
+  pkind is an unaudited Phase-F default). Joining two pointers with
+  **different, both-typed element types** (`(raw Node)` vs `i32`, two
+  distinct struct types) still collapses the phi to `void` — that remains a
+  real type error; if the result is used, you get a malformed-IR clang error
+  or a flow-check error. Fix that case by giving the other branch's binding
+  its real element type — never by casting the typed side back to bare
+  `ptr`. Design:
+  [stage14/macro-conditional-casts.md](../design/stage14/macro-conditional-casts.md).
 
 ## `(Maybe ptr)` is niche-encoded — `match` works, but the representation is a bare pointer
 
