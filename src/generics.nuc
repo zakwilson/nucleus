@@ -3350,7 +3350,9 @@
       (let (h:ptr (head s)
             hp:ptr (cast ptr head))
         (when (!= (find-macro h) null) (return null))
-        (when (= hp 'gensym) (return ty-ptr))
+        ; Stage 14 MC-2: gensym yields a Node* — type it (raw Node) so it stays
+        ; in lockstep with emit-list's gensym path (ty-raw-node).
+        (when (= hp 'gensym) (return (ty-raw-node)))
         (when (= hp 'funcall-ptr-1) (return ty-ptr))
         (when (= hp 'funcall-ptr-i32) (return ty-i32))
         (when (= hp 'funcall-ptr-i64) (return ty-i64))
@@ -3363,7 +3365,11 @@
         (when (= hp 'let) (return (node-type-block n scope)))
         (when (= hp 'with) (return (node-type-block n scope)))
         (when (= hp 'cond) (return null))
-        (when (= hp 'quote) (return ty-ptr))
+        ; Stage 14 MC-2: plain `quote` yields a Node* — type it (raw Node), in
+        ; lockstep with emit-quote (ty-raw-node). `quasiquote` stays unmodelled
+        ; (null): its result type is expansion-dependent (an unquote can inject
+        ; any type), so emit-qq-form's own (raw Node) type propagates.
+        (when (= hp 'quote) (return (ty-raw-node)))
         (when (= hp 'quasiquote) (return null))
         (when (= hp 'while) (return ty-void))
         (when (= hp 'set!)

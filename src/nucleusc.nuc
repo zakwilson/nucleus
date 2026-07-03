@@ -70,6 +70,10 @@
 ; targets and i64 on LP64 targets, tracking signedness exactly like ui*/i*.
 (defvar ty-usize:ref:Type)
 (defvar ty-ssize:ref:Type)
+; Stage 14 MC-2: cached `(raw Node)` singleton for quasiquote / plain `quote` /
+; `(gensym)` results (all produce a Node*). Built lazily on first use once the
+; `Node` struct is registered (see ty-raw-node); null until then.
+(defvar g-ty-raw-node:ptr)
 
 ; Target descriptor. The compiler emits code for a single target, described
 ; here so the "a pointer is i64" assumption lives in one place instead of being
@@ -968,11 +972,32 @@
             ir-len sid sp)))
       (return tmp))))
 
+; Stage 14 MC-2 (design/stage14/macro-conditional-casts.md): quasiquote results,
+; plain `quote`, and `(gensym)` all produce a Node* — type them (raw Node)
+; instead of bare `ptr` so pure-qq conds type as (raw Node) end to end and a qq
+; result chains member access directly (`(`(a b)` car)`). Built the way
+; emit-defmacro builds (raw Node) for macro params (make-type TY-PTR + elem =
+; Node + PTR-RAW), cached on first success. Falls back to bare ty-ptr when `Node`
+; is not registered — an (exclude-prelude) program can still use quote forms —
+; and does not cache the fallback, so a later use once Node is registered still
+; gets the honest type. `parse-type-name "Node"` would `die-at` on an unknown
+; type, so `lookup-struct` (a non-dying, strcmp-content check — StructDef.name is
+; CStr) guards it.
+(defn ty-raw-node:ptr ()
+  (when (= g-ty-raw-node null)
+    (let (sd:ptr (cast ptr (lookup-struct "Node")))
+      (when (!= sd null)
+        (let (t:ref:Type (make-type TY-PTR))
+          (.set! t elem (parse-type-name "Node" 0))
+          (.set! t pkind PTR-RAW)
+          (set! g-ty-raw-node (cast ptr t))))))
+  (if (= g-ty-raw-node null) (cast ptr ty-ptr) g-ty-raw-node))
+
 (defn emit-quote:ref:Val (call:ptr)
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len call) 2) (die-at (cc line) "quote: expects 1 arg"))
     (let (ref:ptr (emit-quote-tree (node-at call 1)))
-      (return (alloc-val ty-ptr ref)))))
+      (return (alloc-val (ty-raw-node) ref)))))
 
 (defn qq-is-tagged:i32 (n:ptr tag:ptr)
   (when (= n null) (return 0))
@@ -986,7 +1011,7 @@
       (return 0))))
 
 (defn emit-qq-list:ref:Val (list:ptr scope:ref:Scope)
-  (when (= list null) (return (alloc-val ty-ptr "null")))
+  (when (= list null) (return (alloc-val (ty-raw-node) "null")))
   (set! g-qq-used 1)
   (let (lc:ptr:Node (cast ptr:Node list)
         elem:ptr (lc car))
@@ -997,20 +1022,20 @@
             tmp:ptr (new-tmp))
         (fprintf g-body-stream "  %s = call ptr @__append(ptr %s, ptr %s)\n"
                  tmp (a val) (rest val))
-        (return (alloc-val ty-ptr tmp))))
+        (return (alloc-val (ty-raw-node) tmp))))
     (let (head:ref:Val (emit-qq-form elem scope)
           tail:ref:Val (emit-qq-list (lc cdr) scope)
           tmp:ptr (new-tmp))
       (fprintf g-body-stream "  %s = call ptr @__cons(ptr %s, ptr %s)\n"
                tmp (head val) (tail val))
-      (return (alloc-val ty-ptr tmp)))))
+      (return (alloc-val (ty-raw-node) tmp)))))
 
 (defn emit-qq-form:ref:Val (form:ptr scope:ref:Scope)
-  (when (= form null) (return (alloc-val ty-ptr "null")))
+  (when (= form null) (return (alloc-val (ty-raw-node) "null")))
   (let (fn:ptr:Node (cast ptr:Node form))
     (when (!= (fn kind) NODE-CELL)
       (let (ref:ptr (emit-quote-tree form))
-        (return (alloc-val ty-ptr ref))))
+        (return (alloc-val (ty-raw-node) ref))))
     (when (!= (qq-is-tagged form 'unquote) 0)
       (return (emit-node (node-at form 1) scope)))
     (when (!= (qq-is-tagged form 'unquote-splice) 0)
@@ -6280,7 +6305,7 @@
         (when (and (= hp 'gensym) (= (node-len nn) 1))
           (let (tmp:ptr (new-tmp))
             (fprintf g-body-stream "  %s = call ptr @nucleus_gensym()\n" tmp)
-            (return (alloc-val ty-ptr tmp))))
+            (return (alloc-val (ty-raw-node) tmp))))
         (when (= hp 'funcall-ptr-1) (return (emit-funcall-ptr-1 n scope)))
         (when (= hp 'funcall-ptr-i32) (return (emit-funcall-ptr-i32 n scope)))
         (when (= hp 'funcall-ptr-i64) (return (emit-funcall-ptr-i64 n scope)))
