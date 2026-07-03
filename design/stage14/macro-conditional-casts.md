@@ -86,6 +86,20 @@ makes the types honest so the requirement cannot regrow.
 
 ### MC-1 — teach the join to absorb elem-less pointers (`type-join`)
 
+**Status: implemented (2026-07-03).** `type-join(result-type, bty) → ptr` added
+and the three duplicated join sites (`emit-cond`, `match`-over-unions,
+`emit-niche-match-arm`) now call it. Byte-identical: `make bootstrap`'s
+stage1==stage2 held on the first pass (no live bare-vs-typed statement-position
+join exists in the compiler's own source), so the reconverge in §4 was not
+needed. 139 tests pass. **Placement deviation:** `type-join` lives in
+`src/generics.nuc` (right after `type-eq`), *not* `src/type-utils.nuc` as
+sketched below — it calls `type-eq`, which is defined in generics.nuc and is not
+yet in scope at type-utils.nuc's earlier `import-use` point (type-utils@563 <
+generics@600). generics is imported before both `union-emit` and the
+`nucleusc.nuc` `emit-cond` site, so all three callers see it. Confirmed
+`node-type` models neither `cond` (returns null, generics.nuc) nor `match`
+(falls through to null), so no partner change was required.
+
 Factor the three duplicated join-logic sites (ground truth #6) into one shared
 helper next to `pkind-meet` in src/type-utils.nuc:
 
