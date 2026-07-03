@@ -1,0 +1,14 @@
+; Stage 14 LW-4 negative fixture: literal representability check.
+;
+; `300` does not fit `ui8` (max 255). Before LW-4 this silently truncated
+; (`trunc i32 300 to i8` = 44, wrong code with no diagnostic); LW-4 tags every
+; literal-sourced Val (`is-lit`/`lit-i64`, src/compiler-types.nuc) and checks
+; it against the target width at the single int->int chokepoint in
+; `coerce-int-val` (src/abi.nuc), here reached through the tier-2 widening
+; adaptation at the call site. Compiling this must FAIL with:
+;   "integer literal 300 does not fit ui8"
+
+(defn take8:i32 (x:ui8) (return (cast i32 x)))
+
+(defn main:i32 ()
+  (return (take8 300)))

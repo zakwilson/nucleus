@@ -1,0 +1,6 @@
+count=3
+v[1]=7
+after insert v[1]=42
+count=4
+five=5
+take64=5000000000
