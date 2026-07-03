@@ -75,7 +75,7 @@ Pre-declared C standard library functions, available without `extern`. These are
 
 `data` points to the first byte of the underlying buffer. `len` is authoritative; the buffer is **not** NUL-terminated (except when built from a C string, in which case `strview-to-cstr` is sound). Copying a `StrView` copies two words and borrows the bytes — it frees nothing. There is no `Drop` conformance.
 
-Also requires `(import-use hash)` and `(import-use numeric)` (both transitively needed for `Hash`/`Eq` conformances).
+The bare struct type is registered in the prelude and so is available everywhere without an import; the functions and conformances below still require `(import-use strview)` (plus `(import-use hash)` and `(import-use numeric)`, both transitively needed for `Hash`/`Eq`).
 
 ### Functions
 
