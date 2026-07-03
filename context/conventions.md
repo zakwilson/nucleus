@@ -68,13 +68,26 @@ lockstep is not at risk because the abstract scope exists only inside the A2 wal
 during real emission no scope binding is `TY-TYVAR`. If you add a new place that
 manufactures or stores types, keep `TY-TYVAR` confined to the checker.
 
-## `?`/`!` in user function names break LLVM symbols
+## `?`/`!` in names map to `_QMARK`/`_BANG` in emitted symbols
 
-A solitary/overloaded `defn` named `lt?` is emitted as `@lt?` / `@lt?.i32.i32`,
-which is **invalid LLVM IR** (`?` is not in the unquoted-identifier charset; it
-would need `@"lt?"`). The compiler does not currently quote symbols, so user
-*function* names should stick to `[A-Za-z0-9$._-]`. (`set!`/`inc!`/`lt?`-style
-names are fine for special forms and macros, which never become `@`-symbols.)
+A `defn`, struct, or union name may contain `?`/`!` (`full?`, `push!`, `Full?`)
+— `ir-name-token` (`src/format.nuc`) maps each `?`→`_QMARK` and each `!`→`_BANG`
+in the emitted LLVM symbol (`@full_QMARK`, `%Full_QMARK`), applied at the
+base-token layer shared by every ir-name derivation site (solitary/overloaded
+`defn`, `defvar`/`extern` globals, `.nuch` import, REPL, struct/union type
+names — see the `StructDef.name`/`.ir-name` note below); every other
+character, hyphens included, is untouched. A residual illegal character
+(anything outside `[A-Za-z0-9$._-]`) is caught at define/declare emission with
+a clean source-level diagnostic (`check-ir-name-legal`, `src/abi.nuc`) instead
+of a raw LLVM parse error.
+
+If the compiler's own source (`src/`, `lib/`) ever adopts `?`/`!`-suffixed
+names internally — beyond the lib helpers that already do (`contains?`/
+`empty?` on `HashSet`/`HashMap`), which only shifted the self-hosted IR
+because the compiler imports them — the bootstrap output will shift
+(string-pool renumbering) the same way SM-1/SM-3/SM-4 needed a
+`make update-bootstrap` reconverge. Expect the same two-pass reconverge, not
+a bug.
 
 ## `StructDef.name` is the source spelling / lookup key; `StructDef.ir-name` is the LLVM `%Name`
 

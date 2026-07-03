@@ -294,6 +294,17 @@ else
     echo "FAIL  lw-literal-range-rejected"; fail=1
 fi
 
+# Stage 14 SM-5: a name containing a character that is legal in a Nucleus
+# symbol but illegal in an unquoted LLVM identifier (ir-name-token only maps
+# `?`/`!`; the solitary defn path applies no other sanitizing) must be a
+# source-level compiler error, not a raw LLVM parse error at link/verify time.
+sm5_err="$(./build/nucleusc --emit-llvm tests/fixtures/sm5-illegal-char.nuc 2>&1 >/dev/null || true)"
+if printf '%s' "$sm5_err" | grep -q "illegal character '%' in generated symbol for 'weird%name'"; then
+    echo "PASS  sm5-illegal-char-rejected"
+else
+    echo "FAIL  sm5-illegal-char-rejected"; fail=1
+fi
+
 # Stage 13 L8: a public defn whose signature exposes a capturing-closure env
 # type (__vfn_env_N) is not C-callable, so --emit-cheader OMITS its prototype
 # (writing a comment in its place) and the compiler WARNS at the definition. A

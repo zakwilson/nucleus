@@ -479,6 +479,33 @@
     ; Not compatible
     (return null)))
 
+; SM-5 diagnostic backstop (design/stage14/symbol-mangling.md): validate a
+; FINAL ir-name at the point a defn/defvar/struct/union is defined or declared,
+; so an LLVM-illegal character ir-name-token/sanitize-for-ir/sanitize-for-c
+; don't already neutralize (e.g. a literal `%` — legal in a Nucleus symbol per
+; lib/reader.nuc's permissive is-sym-char, but not in an unquoted LLVM
+; identifier) is a source-level compiler error naming the original definition,
+; never a raw LLVM parse error surfacing later at link/verify time.
+; `ir-name-illegal-char` (the pure char-class predicate) lives in format.nuc
+; beside ir-name-token/sanitize-for-ir/sanitize-for-c; this die-at-calling
+; wrapper cannot live there too — format.nuc is import-used (nucleusc.nuc:420)
+; before reader.nuc (507) where die-at is defined, so a call up to die-at from
+; a format.nuc body would be an unresolved forward reference at emit time (the
+; same import-order wall SM-3/SM-4 document). abi.nuc is imported (582) after
+; reader.nuc and before every chokepoint that needs this wrapper
+; (union-registry.nuc 584, generics.nuc 604, cheader.nuc 6921, and
+; nucleusc.nuc's own emit-defvar/emit-extern/emit-defn/emit-defstruct further
+; down that same file), so it is the earliest available home.
+(defn check-ir-name-legal:void (line:i32 orig-name:ptr ir-name:ptr)
+  (let (bad:i32 (ir-name-illegal-char ir-name))
+    (when (>= bad 0)
+      (let (cbuf:ptr (arena-alloc (cast i64 2)))
+        (aset! (cast ptr:i8 cbuf) (cast i64 0) (cast i8 bad))
+        (aset! (cast ptr:i8 cbuf) (cast i64 1) (cast i8 0))
+        (die-at line
+          (fmt-3s "illegal character '%s' in generated symbol for '%s' (ir-name '%s') — LLVM identifiers allow only [A-Za-z0-9$._-]"
+                  cbuf orig-name ir-name))))))
+
 (defn register-struct:ref:StructDef (name:ptr)
   (when (>= (cast i32 (count g-structs)) MAX-STRUCTS)
     (fprintf stderr "nucleusc: too many structs\n") (exit 1))

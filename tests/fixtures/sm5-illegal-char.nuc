@@ -1,0 +1,11 @@
+; Stage 14 SM-5 negative fixture: the diagnostic backstop.
+;
+; `%` is legal in a Nucleus symbol (lib/reader.nuc's is-sym-char is permissive
+; — only whitespace, parens, quote, semicolon, and []{} terminate a symbol —
+; so `weird%name` lexes as one TOK-SYMBOL) but illegal in an unquoted LLVM
+; identifier body ([A-Za-z0-9$._-] only). ir-name-token only maps `?`/`!`, so
+; on the solitary (unmangled) defn path this character reaches ir-name
+; unchanged. Before SM-5 this produced a raw LLVM parse error out of the
+; linker/verifier with no source position; SM-5 must instead FAIL to compile
+; with a clean source-level diagnostic naming the offending symbol.
+(defn weird%name:i32 (n:i32) (return n))
