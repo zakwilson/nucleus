@@ -5356,15 +5356,8 @@
                     bty:ptr (bv type))
                 (if (= result-type null)
                   (set! result-type bty)
-                  (if (= (type-eq bty result-type) 0)
-                    (when (!= ((cast ptr:Type result-type) kind) TY-VOID)
-                      (set! result-type ty-void))
-                    ; Same type, possibly differing pointer kinds: meet them
-                    ; (identity when the kinds already agree).
-                    (when (= ((cast ptr:Type result-type) kind) TY-PTR)
-                      (set! result-type
-                        (type-as-pkind result-type
-                          (pkind-meet (ptr-pkind result-type) (ptr-pkind bty)))))))
+                  ; MC-1: shared join (absorbs bare-vs-typed ptr to (raw E)).
+                  (set! result-type (type-join result-type bty)))
                 (when (= ((cast ptr:Type bty) kind) TY-VOID)
                   (set! result-type ty-void))
                 (set! result-taint (taint-merge result-taint (bv taint)))

@@ -1069,16 +1069,11 @@
                 (let (join-lbl:ptr (fmt-i32-i32 "match.join%d.%d" id ci)
                       bty:ptr (bv type))
                   ; cond's strict cross-branch typing: same type everywhere or
-                  ; the whole form collapses to void; pointer kinds meet.
+                  ; the whole form collapses to void; pointer kinds meet. MC-1's
+                  ; shared type-join also absorbs bare-vs-typed ptr to (raw E).
                   (if (= result-type null)
                     (set! result-type bty)
-                    (if (= (type-eq bty result-type) 0)
-                      (when (!= ((cast ptr:Type result-type) kind) TY-VOID)
-                        (set! result-type ty-void))
-                      (when (= ((cast ptr:Type result-type) kind) TY-PTR)
-                        (set! result-type
-                          (type-as-pkind result-type
-                            (pkind-meet (ptr-pkind result-type) (ptr-pkind bty)))))))
+                    (set! result-type (type-join result-type bty)))
                   (when (= ((cast ptr:Type bty) kind) TY-VOID)
                     (set! result-type ty-void))
                   (set! result-taint (taint-merge result-taint (bv taint)))
@@ -1435,11 +1430,8 @@
             rt:ptr (aref (cast ptr:ptr rtbox) 0))
         (if (= rt null)
           (aset! (cast ptr:ptr rtbox) 0 bty)
-          (if (= (type-eq bty rt) 0)
-            (when (!= ((cast ptr:Type rt) kind) TY-VOID) (aset! (cast ptr:ptr rtbox) 0 (cast ptr ty-void)))
-            (when (= ((cast ptr:Type rt) kind) TY-PTR)
-              (aset! (cast ptr:ptr rtbox) 0
-                (type-as-pkind rt (pkind-meet (ptr-pkind rt) (ptr-pkind bty)))))))
+          ; MC-1: shared join (absorbs bare-vs-typed ptr to (raw E)).
+          (aset! (cast ptr:ptr rtbox) 0 (type-join rt bty)))
         (when (= ((cast ptr:Type bty) kind) TY-VOID) (aset! (cast ptr:ptr rtbox) 0 (cast ptr ty-void)))
         (aset! (cast ptr:ptr ttbox) 0 (taint-merge (aref (cast ptr:ptr ttbox) 0) (bv taint)))
         (fprintf g-body-stream "  br label %%%s\n" join-lbl)

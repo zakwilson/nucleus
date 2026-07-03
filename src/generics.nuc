@@ -134,6 +134,53 @@
         (return 1) (return 0)))
     (return 1)))
 
+; MC-1 (design/stage14/macro-conditional-casts.md): join two branch types for a
+; value-position control-flow merge (cond / match arm / if-some phi). Three
+; sites shared this logic verbatim (emit-cond, emit-match over unions,
+; emit-niche-match-arm); this is the single source of truth.
+;
+; Rules:
+;   - Equal types (type-eq): keep the type, meeting pointer kinds when TY-PTR
+;     (identity when the kinds already agree) — the pre-existing behavior.
+;   - Exactly one side an elem-less bare pointer (void*) and the other a typed
+;     pointer: absorb to (raw E), E = the typed side's elem. This is the
+;     join-site analogue of the void*-flows-into-T* flow-check exemption
+;     (pkind-flow-check, type-utils.nuc). The pkind is PTR-RAW *unconditionally*:
+;     the elem-less side's pkind is an unaudited Phase-F default (quasiquote is
+;     claimed PTR-REF yet can be null), so the join must never manufacture a
+;     non-null claim — the absorbed value is nullable-unchecked raw.
+;   - Otherwise (genuinely different types, or a void branch): collapse to void.
+;
+; Lives in generics.nuc (not type-utils.nuc as the design sketch suggested)
+; because it calls type-eq, which is defined here and is not yet in scope at
+; type-utils.nuc's earlier import point; generics is imported before both
+; union-emit and the nucleusc.nuc emit-cond site, so all three callers see it.
+(defn type-join:ptr (result-type:ptr bty:ptr)
+  ; Equal types: meet pointer kinds (identity when they already agree).
+  (when (!= (type-eq result-type bty) 0)
+    (when (= ((cast ptr:Type result-type) kind) TY-PTR)
+      (return (type-as-pkind result-type
+                (pkind-meet (ptr-pkind result-type) (ptr-pkind bty)))))
+    (return result-type))
+  ; Absorption: an elem-less bare ptr on exactly one side meets a typed ptr at
+  ; (raw E), E = the typed side's elem.
+  (when (and (= ((cast ptr:Type result-type) kind) TY-PTR)
+             (= ((cast ptr:Type bty) kind) TY-PTR))
+    (let (relem:ptr ((cast ptr:Type result-type) elem)
+          belem:ptr ((cast ptr:Type bty) elem))
+      (when (and (= relem null) (!= belem null))
+        (let (jt:ref:Type (make-type TY-PTR))
+          (.set! jt elem belem)
+          (.set! jt pkind PTR-RAW)
+          (return (cast ptr jt))))
+      (when (and (!= relem null) (= belem null))
+        (let (jt:ref:Type (make-type TY-PTR))
+          (.set! jt elem relem)
+          (.set! jt pkind PTR-RAW)
+          (return (cast ptr jt))))))
+  ; Genuinely different types (or a void branch): collapse to void.
+  (return (cast ptr ty-void)))
+
 (defn params-type-eq:i32 (pa:ptr pb:ptr n:i32)
   (dotimes (i n)
     (when (= (type-eq (aref (cast ptr:ptr pa) i) (aref (cast ptr:ptr pb) i)) 0)
