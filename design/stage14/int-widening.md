@@ -239,6 +239,54 @@ byte-identical fixed point afterward, and all 140 `make test` cases pass.
   `ui64`-scale literals lex correctly; oversized literals get a reader
   error with position, per the reader's `!T` error discipline.
 
+**Status: DONE (2026-07-03).** Implemented as a Val-tagged single chokepoint
+plus the lexer path:
+
+- **`Val` carries the literal** (`is-lit:i32`, `lit-i64:i64` in
+  compiler-types.nuc). `emit-int` is the *only* setter; every non-literal Val
+  is `is-lit=0` (arena zero-init). Because every narrowing coercion of a literal
+  routes a literal-tagged Val through `coerce-int-val` — let/defvar init, field
+  store, `aset!`, explicit/implicit `return`, union-variant construction,
+  plain/generic/protocol call args (via `safe-coerce-val`), and binop literal
+  adoption (via `coerce-num-val`) — the representability check lives in exactly
+  **one** place: the int→int branch of `coerce-int-val` (abi.nuc). A tagged Val
+  whose `lit-i64` is not representable in the target dies with
+  `integer literal N does not fit <type>` (`type-spelling`). Typed *values* are
+  untouched (they carry `is-lit=0`; their runtime value is unknown), so the
+  narrowing non-goal holds automatically. The shared predicate is
+  `int-literal-fits:i32(v:i64 t:ptr)` (type-utils.nuc): i1 and 64-bit-wide
+  targets always fit (the latter holds any i64 bit pattern); narrower targets
+  check the exact signed/unsigned range, with bounds built from `bit-shl` (never
+  a >i32 decimal literal, so the predicate is a bootstrap fixed point).
+- **`emit-int` truthful width**: emits `i32` when the value fits (the majority),
+  else `i64`. `node-type`'s NODE-INT branch (generics.nuc) mirrors this
+  exactly (the emit/node-type lockstep); `gcheck`/`valid-walk` are independent
+  def-time walkers that never feed emit, so they were left at `ty-i32`.
+- **Lexer** (`lex-atom`, reader.nuc): `strtol` is run with errno cleared and
+  checked for `ERANGE` (34); a non-negative overflow retries via `strtoull`
+  (ui64/usize scale — bits stored into the signed `i64` field, `%ld` + LLVM
+  two's-complement wrap reproduce the value), and a negative overflow or a value
+  above `u64` is a positioned `report-at` + `(err! parse-error)`. `errno` is
+  reached via a hand-declared `__errno_location` (the header macro is not
+  surfaced by the clang-based header reader); `strtoull` comes from the global
+  `(import-use "stdlib.h")`.
+- **Latent bug fixed**: the FNV hash constants (`-3750763034362895579`,
+  `1099511628211`) were silently i32-truncated by the old `emit-int` — hashing
+  "worked" only because it was self-consistently wrong. LW-4's wide emission
+  makes them correct; `examples/cstr-fold-test.out` was updated to the real
+  FNV-1a of "hello, world" (`1702823495152329533`, verified independently).
+  `examples/types.nuc` deliberately demoed a silent i8 wrap (`(let (byte:i8
+  200))`); it now uses an explicit `(cast i8 200)` (the allowed narrowing
+  escape hatch), preserving `byte = -56`.
+- **Bootstrap**: NOT byte-identical (Val grew → `sizeof Val` renumbers; new
+  error strings shift the pool; corrected FNV constants renumber temps and
+  change the union-shape hash embedded in `%__anon_union_h…` names). The
+  standard reconverge took **two** `update-bootstrap` rounds because the
+  corrected internal FNV constant must propagate one extra generation into the
+  boot binary that computes the union names. All 140 tests pass afterward.
+  `(take64 5000000000)`→`5000000000`, `(take8 300)`→range error, and
+  `ui64`-scale literals (`2^63`, `u64max`) lex correctly; `u64max+1` errors.
+
 ### LW-5 — vestigial-cast sweep + docs
 
 - Delete cast-on-literal forms across src/ (~319), lib/ (~450), examples/
