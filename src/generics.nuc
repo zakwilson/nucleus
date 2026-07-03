@@ -255,31 +255,9 @@
                 ; Resolve the bound return type from the method's return spelling
                 ; (mirrors abstract-call-via-generic): a bare tyvar return picks
                 ; its bound Type*, otherwise parse the (already-concrete) spelling.
+                ; Shared with the adapted-template path (LW-2) via method-bound-ret-type.
                 (when (!= out-ret null)
-                  (let (rnode:ptr (binding-type-node (node-at (m body) 1)))
-                    (if (= rnode null)
-                      (ptr-set! out-ret ty-void)
-                      (let (rt:ptr null)
-                        (when (= (-> rnode (cast ptr:Node _) (_ kind)) NODE-SYM)
-                          (let (ridx:i32 (tyvar-index-of (-> rnode (cast ptr:Node _) (_ s))
-                                                          (m tyvars) (m num-tyvars)))
-                            (when (>= ridx 0) (set! rt (aref (cast ptr:ptr bound) ridx)))))
-                        ; A parametric return type — e.g. (Maybe T) — is a NODE-CELL
-                        ; that still mentions the method's tyvars. Substitute each
-                        ; tyvar with its bound concrete spelling before parsing, so
-                        ; `(Maybe T)` with T:=i32 parses as `(Maybe i32)` rather than
-                        ; failing with "unknown type: T".
-                        (when (= rt null)
-                          (let (ntv:i32 (m num-tyvars)
-                                spellings:ptr (arena-alloc
-                                                (* (cast i64 (+ ntv 1)) (ptr-bytes))))
-                            (dotimes (si ntv)
-                              (aset! (cast ptr:ptr spellings) si
-                                     (type-spelling (aref (cast ptr:ptr bound) si))))
-                            (set! rt (parse-type-from-node
-                                       (subst-tyvars-node rnode (m tyvars) spellings ntv)
-                                       line))))
-                        (ptr-set! out-ret rt)))))
+                  (ptr-set! out-ret (method-bound-ret-type (cast ptr m) bound line)))
                 (return 1)))))))
     (return 0)))
 
@@ -479,25 +457,20 @@
         (die-at line (fmt-s "ambiguous generic match for '%s'" (gg name))))
       (when (= ncand 1)
         (return (generic-instantiate g cand cand-bound argtypes nargs line)))
-      ; tier 2: widen / untyped-int-literal adaptation on a concrete method.
-      (let (wcand:?ptr:Method null
-            wn:i32 0)
-        (dotimes (k (gg num-methods))
-          (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (gg methods)) k)))
-            (when (and (= (m kind) METHOD-USER)
-                       (= (m has-rest) 0) (= (m num-params) nargs))
-              (let (ok:i32 1)
-                (dotimes (a nargs)
-                  (let (is-lit:i32 0)
-                    (when (!= arg-nodes null)
-                      (set! is-lit (node-is-int-literal (aref (cast ptr:ptr arg-nodes) a))))
-                    (when (= (arg-adapts (aref (cast ptr:ptr argtypes) a)
-                                         (aref (cast ptr:ptr (m param-types)) a) is-lit) 0)
-                      (set! ok 0))))
-                (when (!= ok 0) (set! wcand (cast ptr m)) (inc! wn))))))
-        (when (> wn 1)
+      ; tier 2: widen / untyped-int-literal adaptation (§10.3). Concrete
+      ; (METHOD-USER) methods and parametric-struct templates (METHOD-GENERIC,
+      ; LW-1) share one ambiguity pool; a unique template winner is monomorphized
+      ; here against its tyvar-substituted parameter types.
+      (let (wmethod:ptr null
+            wbound:ptr null
+            r:i32 (generic-resolve-adapt-tier g argtypes arg-nodes nargs line
+                    (cast ptr:ptr (addr-of wmethod)) (cast ptr:ptr (addr-of wbound))))
+        (when (= r 3)
           (die-at line (fmt-s "ambiguous overload for '%s' under argument widening" (gg name))))
-        (when (!= wcand null) (return wcand)))
+        (when (= r 1) (return (cast ref:Method wmethod)))
+        (when (= r 2)
+          (return (generic-instantiate g wmethod wbound
+                    (subst-param-types-bound wmethod wbound line) nargs line))))
       (when (!= constraint-fail 0)
         (die-at line
           (fmt-s "no matching method for '%s': arguments do not satisfy the required protocol constraint"
@@ -1312,6 +1285,179 @@
           (return 0))))
     (return 1)))
 
+; ============================================================
+; Stage 14 LW-1/LW-2: literal widening for the template tier
+; ============================================================
+; Template-tier methods (a receiver-inferred generic like `conj`/`invoke` over a
+; parametric struct) are resolved by unify-tpat, which demands an *exact* match on
+; every non-tyvar-binding parameter. So `(conj v 3)` on a `(Vector i64)` — which
+; binds `T=i64` from the receiver and then needs the literal `3` to widen to i64 —
+; failed to resolve, unlike a plain/protocol method (which reaches the tier-2
+; arg-adapts loop). LW-1 extends that adaptation to the template tier; LW-2 mirrors
+; the same tiers in `node-type-call` so the type model does not diverge from emit.
+
+; Resolve a parameter type-pattern node to a concrete Type* under a tyvar binding.
+; A bare tyvar symbol yields its bound Type* directly; anything else (a concrete
+; type, or a parametric application still mentioning tyvars, e.g. `(Maybe T)`) is
+; substituted with the bound spellings and parsed. Every tyvar in `bound` must be
+; non-null (the callers guarantee this before invoking).
+(defn resolve-param-type-bound:?ptr:Type (ptn:ptr tyvars:ptr bound:ptr ntv:i32 line:i32)
+  (when (= ptn null) (return null))
+  (let (pn:ptr:Node (cast ptr:Node ptn))
+    (when (= (pn kind) NODE-SYM)
+      (when (= (strchr (pn s) 58) null)
+        (let (idx:i32 (tyvar-index-of (pn s) tyvars ntv))
+          (when (>= idx 0) (return (aref (cast ptr:ptr bound) idx))))))
+    (let (spellings:ptr (arena-alloc (* (cast i64 (+ ntv 1)) (ptr-bytes))))
+      (dotimes (si ntv)
+        (aset! (cast ptr:ptr spellings) si (type-spelling (aref (cast ptr:ptr bound) si))))
+      (return (parse-type-from-node (subst-tyvars-node ptn tyvars spellings ntv) line)))))
+
+; The concrete return type of a generic template method under a tyvar binding: a
+; bare-tyvar return picks its bound Type*, else the (possibly parametric) return
+; spelling is substituted and parsed. A method with no declared return is `void`.
+; Extracted from generic-binds-for so the exact-template and adapted-template
+; paths compute the return type identically (the node-type↔emit lockstep).
+(defn method-bound-ret-type:?ptr:Type (m:ptr bound:ptr line:i32)
+  (let (mm:ptr:Method (cast ptr:Method m)
+        rnode:ptr (binding-type-node (node-at (mm body) 1)))
+    (when (= rnode null) (return ty-void))
+    (let (rt:ptr null)
+      (when (= (-> rnode (cast ptr:Node _) (_ kind)) NODE-SYM)
+        (let (ridx:i32 (tyvar-index-of (-> rnode (cast ptr:Node _) (_ s))
+                                        (mm tyvars) (mm num-tyvars)))
+          (when (>= ridx 0) (set! rt (aref (cast ptr:ptr bound) ridx)))))
+      (when (= rt null)
+        (set! rt (resolve-param-type-bound rnode (mm tyvars) bound (mm num-tyvars) line)))
+      (return rt))))
+
+; The concrete parameter types of a generic template method under a tyvar binding,
+; as a ptr-array. Used to key generic-instantiate's cache (generic-find-method-exact)
+; on an adapted call, where the raw argument types (e.g. an i32 literal) differ from
+; the stamped method's parameter types (i64) — matching what defn-params-to-types
+; derives from the stamped form.
+(defn subst-param-types-bound:ptr (m:ptr bound:ptr line:i32)
+  (let (mm:ptr:Method (cast ptr:Method m)
+        params-node:ptr (node-at (mm body) 2)
+        nargs:i32 (mm num-params)
+        ntv:i32 (mm num-tyvars)
+        ptypes:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (ptr-bytes))))
+    (dotimes (i nargs)
+      (aset! (cast ptr:ptr ptypes) i
+             (resolve-param-type-bound (binding-type-node (node-at params-node i))
+                                       (mm tyvars) bound ntv line)))
+    (return ptypes)))
+
+; Like generic-method-bind, but admits widen/literal adaptation on the parameters
+; the receiver-and-exact-args pass cannot match exactly (LW-1). Bind the tyvars
+; from every parameter that unifies exactly (unchanged); then require every tyvar
+; bound (adaptation never binds a tyvar); then require each remaining parameter's
+; argument to adapt to its now-concrete (tyvar-substituted) parameter type. A
+; fully-exact bind is rejected here (any-remaining==0) so tier-1 keeps sole
+; ownership of exact template matches and tier-2 never double-counts one. Fills
+; out-bound and returns 1 on an adapted match, else 0.
+(defn generic-method-bind-adapt:i32 (m:ptr argtypes:ptr arg-nodes:ptr nargs:i32
+                                     out-bound:ptr line:i32)
+  (let (mm:ptr:Method (cast ptr:Method m))
+    (when (!= (mm num-params) nargs) (return 0))
+    (let (params-node:ptr (node-at (mm body) 2)
+          ntv:i32 (mm num-tyvars)
+          matched:ptr (arena-alloc (* (cast i64 (+ nargs 1)) 4))
+          saved:ptr (arena-alloc (* (cast i64 (+ ntv 1)) (ptr-bytes)))
+          any-remaining:i32 0)
+      (dotimes (k ntv) (aset! (cast ptr:ptr out-bound) k null))
+      ; Pass 1: bind tyvars from every parameter that unifies exactly. A failed
+      ; unify must leave no partial binding (unify-tpat only sets, never clears),
+      ; so snapshot out-bound and restore on failure; that parameter is deferred to
+      ; pass 2 (its argument checked for widen/literal adaptation).
+      (dotimes (i nargs)
+        (let (ptn:ptr (binding-type-node (node-at params-node i))
+              at:ptr (aref (cast ptr:ptr argtypes) i))
+          (when (or (= ptn null) (= at null)) (return 0))
+          (dotimes (k ntv) (aset! (cast ptr:ptr saved) k (aref (cast ptr:ptr out-bound) k)))
+          (if (!= (unify-tpat ptn at (mm tyvars) ntv out-bound ((cast ptr:Node ptn) line)) 0)
+            (aset! (cast ptr:i32 matched) i 1)
+            (do (aset! (cast ptr:i32 matched) i 0)
+                (set! any-remaining 1)
+                (dotimes (k ntv)
+                  (aset! (cast ptr:ptr out-bound) k (aref (cast ptr:ptr saved) k)))))))
+      ; A fully-exact bind is a tier-1 match — reject so tier-2 never double-counts.
+      (when (= any-remaining 0) (return 0))
+      ; Recover associated tyvars from parametric &where constraints, then require
+      ; every tyvar bound by the exactly-matched parameters (adaptation never binds
+      ; a tyvar, so a tyvar reachable only through a deferred parameter stays null).
+      (when (= (recover-assoc-into (mm tyvars) out-bound ntv
+                                    (mm con-protos) (mm con-vars) (mm con-args) (mm con-nargs)
+                                    (mm num-constraints)
+                                    (-> (mm body) (cast ptr:Node _) (_ line))) 0)
+        (return 0))
+      (dotimes (k ntv)
+        (when (= (aref (cast ptr:ptr out-bound) k) null) (return 0)))
+      ; Pass 2: every deferred parameter's argument must adapt (same rule as the
+      ; plain tier-2: a literal adapts to any int, a typed value only same-sign
+      ; widens) against its now-concrete parameter type.
+      (dotimes (i nargs)
+        (when (= (aref (cast ptr:i32 matched) i) 0)
+          (let (ptn:ptr (binding-type-node (node-at params-node i))
+                at:ptr (aref (cast ptr:ptr argtypes) i)
+                pt:ptr (resolve-param-type-bound ptn (mm tyvars) out-bound ntv line)
+                is-lit:i32 0)
+            (when (= pt null) (return 0))
+            (when (!= arg-nodes null)
+              (set! is-lit (node-is-int-literal (aref (cast ptr:ptr arg-nodes) i))))
+            (when (= (arg-adapts at pt is-lit) 0) (return 0)))))
+      (return 1))))
+
+; The shared tier-2 adaptation pool for generic resolution (LW-1/LW-2). Concrete
+; (METHOD-USER) methods reachable by a widen/literal adaptation and parametric
+; templates (METHOD-GENERIC) reachable by binding the receiver then adapting the
+; rest compete in *one* ambiguity pool. Side-effect-free: no method is instantiated
+; here (the emit caller monomorphizes a template winner; the node-type caller reads
+; its bound return type), so both the dying and the null-returning caller share the
+; identical resolution. Returns 0 = no tier-2 match, 1 = a unique METHOD-USER match
+; (*out-method), 2 = a unique template match (*out-method + *out-bound), 3 = an
+; ambiguous pool (the caller reports/ignores per its mode).
+(defn generic-resolve-adapt-tier:i32 (g:ptr argtypes:ptr arg-nodes:ptr nargs:i32 line:i32
+                                      out-method:ptr:ptr out-bound:ptr:ptr)
+  (let (gg:ptr:Generic (cast ptr:Generic g)
+        wmethod:ptr null
+        wbound:ptr null
+        wn:i32 0)
+    ; METHOD-USER candidates reachable by widen/literal adaptation on every arg. A
+    ; stamped template instance (origin-template ≠ null) is skipped: it is a cache
+    ; of its template, which competes below, so counting both would spuriously read
+    ; as an ambiguous overload after the first widened call instantiates it.
+    (dotimes (k (gg num-methods))
+      (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (gg methods)) k)))
+        (when (and (= (m kind) METHOD-USER)
+                   (= (m origin-template) null)
+                   (= (m has-rest) 0) (= (m num-params) nargs))
+          (let (ok:i32 1)
+            (dotimes (a nargs)
+              (let (is-lit:i32 0)
+                (when (!= arg-nodes null)
+                  (set! is-lit (node-is-int-literal (aref (cast ptr:ptr arg-nodes) a))))
+                (when (= (arg-adapts (aref (cast ptr:ptr argtypes) a)
+                                     (aref (cast ptr:ptr (m param-types)) a) is-lit) 0)
+                  (set! ok 0))))
+            (when (!= ok 0)
+              (set! wmethod (cast ptr m)) (set! wbound null) (inc! wn))))))
+    ; METHOD-GENERIC (template) candidates reachable by receiver-bind + adaptation.
+    (dotimes (k (gg num-methods))
+      (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (gg methods)) k)))
+        (when (= (m kind) METHOD-GENERIC)
+          (let (bound:ptr (arena-alloc (* (cast i64 (+ (m num-tyvars) 1)) (ptr-bytes))))
+            (when (!= (generic-method-bind-adapt (cast ptr m) argtypes arg-nodes nargs bound line) 0)
+              (when (!= (generic-constraints-ok (cast ptr m) bound line) 0)
+                (set! wmethod (cast ptr m)) (set! wbound bound) (inc! wn)))))))
+    (when (> wn 1) (return 3))
+    (when (= wn 0) (return 0))
+    (ptr-set! out-method wmethod)
+    (when (!= wbound null)
+      (ptr-set! out-bound wbound)
+      (return 2))
+    (return 1)))
+
 ; Build a concrete defn form from a generic template + a type-variable binding:
 ; substitute the variables throughout, then drop the &where clause.
 (defn monomorphize-form:ptr (form:ptr tyvars:ptr spellings:ptr ntv:i32 nparams:i32)
@@ -1374,6 +1520,9 @@
               mangled:ptr (mangle-fn-name (gg ir-prefix) (gg name) ptypes nargs)
               job:ptr:MonoJob (new MonoJob))
           (.set! newm ir-name mangled)
+          ; Stage 14 LW-1: mark this as a stamped instance of the template `mm` so
+          ; tier-2 widening resolution treats the two as one overload.
+          (.set! newm origin-template (cast ptr mm))
           ; Record where this instantiation was requested, so a stamp-time emit
           ; error in the body points back here (g-source-path is the call site's).
           (.set! job form stamped)
@@ -3305,11 +3454,14 @@
         (when (!= (g mangled) 0)
           (let (nargs:i32 (- (node-len n) 1)
                 argtypes:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (ptr-bytes)))
+                arg-nodes:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (ptr-bytes)))
                 ok:i32 1)
             (dotimes (i nargs)
-              (let (at:ptr (node-type (node-at n (+ i 1)) scope))
+              (let (anode:ptr (node-at n (+ i 1))
+                    at:ptr (node-type anode scope))
                 (when (= at null) (set! ok 0))
-                (aset! (cast ptr:ptr argtypes) i at)))
+                (aset! (cast ptr:ptr argtypes) i at)
+                (aset! (cast ptr:ptr arg-nodes) i anode)))
             (when (= ok 0) (return null))
             ; First try METHOD-USER (exact match).
             (let (m:?ptr:Method (generic-find-method-exact g argtypes nargs))
@@ -3317,7 +3469,17 @@
             ; Then try METHOD-GENERIC (parametric match with tyvar substitution).
             (let (out-ret:ptr (arena-alloc (ptr-bytes)))
               (when (!= (generic-binds-for g argtypes nargs (cast ptr:ptr out-ret) 0) 0)
-                (return (aref (cast ptr:ptr out-ret) 0)))))))))
+                (return (aref (cast ptr:ptr out-ret) 0))))
+            ; Stage 14 LW-2: mirror emit's generic-resolve tier-2 so a widened
+            ; template/plain call types correctly (the node-type↔emit lockstep).
+            ; Return null (the escape hatch) on ambiguity/no-match — node-type is
+            ; allowed to not-know a type, and must never die here.
+            (let (wmethod:ptr null
+                  wbound:ptr null
+                  r:i32 (generic-resolve-adapt-tier g argtypes arg-nodes nargs 0
+                          (cast ptr:ptr (addr-of wmethod)) (cast ptr:ptr (addr-of wbound))))
+              (when (= r 1) (return (-> wmethod (cast ptr:Method _) (_ ret-type))))
+              (when (= r 2) (return (method-bound-ret-type wmethod wbound 0)))))))))
     (if-some (sym (scope-lookup scope h))
       (let (ft:ptr:Type (cast ptr:Type (sym type)))
         ; A non-function value head is a callable value: mirror the get/invoke desugar.
