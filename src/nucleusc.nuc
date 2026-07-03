@@ -6597,6 +6597,7 @@
         (let (ir-name:ptr (fmt-s "@%s" (ns-ir-base name))
               align:i32 (type-size ty)
               init-ir:ptr null)
+          (check-ir-name-legal (cc line) name ir-name)
           (if (= (node-len cc) 3)
             (set! init-ir (defvar-init-ir (node-at cc 2) ty))
             (let (tk:i32 ((cast ptr:Type ty) kind))
@@ -6780,6 +6781,7 @@
                                e
                                (register-struct (name-node s)))
             nfields:i32 (- (node-len cc) 2))
+        (check-ir-name-legal (name-node line) (name-node s) (sd ir-name))
         (.set! sd field-names (arena-alloc (* (cast i64 nfields) (ptr-bytes))))
         (.set! sd field-types (arena-alloc (* (cast i64 nfields) (ptr-bytes))))
         (.set! sd num-fields nfields)
@@ -6910,6 +6912,7 @@
       ; same name emit-defvar produced. Identity under `user`, so a hand-written
       ; `(extern stderr)` and the bootstrap stay byte-identical.
       (let (ir-name:ptr (fmt-s "@%s" (ns-ir-base name)))
+        (check-ir-name-legal (cc line) name ir-name)
         (fprintf g-out "%s = external global %s\n\n" ir-name (type-to-ir ty))
         (scope-define g-globals name ty ir-name 1)))))
 
@@ -7072,6 +7075,7 @@
             ; their scope binding under @name. Overloaded methods dispatch through
             ; the generic registry, so no bare-name binding is installed.
             (when (= (defn-is-mangled fname) 0)
+              (check-ir-name-legal (cc line) fname (defn-ir-name fname param-types nparams))
               (let (fsym:ref:Sym (scope-define g-globals fname (cast ptr ft)
                                   (defn-ir-name fname param-types nparams) 0))
                 (when (!= is-noreturn 0) (.set! (cast ptr:Sym fsym) noreturn 1))

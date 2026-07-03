@@ -148,3 +148,35 @@
           (set! k (+ k (cast i64 1))))
         (aset! (cast ptr:i8 s) si (cast i8 0))
         (return s)))))
+
+; SM-5 (design/stage14/symbol-mangling.md): a small reusable validity check for
+; a FINAL ir-name — the diagnostic backstop that catches any LLVM-illegal
+; character ir-name-token/sanitize-for-ir/sanitize-for-c don't already handle.
+; ir-name-token only special-cases `?`/`!`; the overloaded/mangled path and the
+; cheader path both end in a blanket sanitize (`[0-9a-zA-Z_.]` / `[A-Za-z0-9_]`
+; respectively) and can never emit anything illegal — this predicate exists for
+; the SOLITARY ir-name path (ns-ir-base / defn-ir-name's fallback / emit-defvar
+; / register-struct's ir-name), which applies only ir-name-token and nothing
+; else. LLVM's unquoted identifier body allows [A-Za-z0-9$._-] — hyphen IS
+; legal, never flag it (that's the whole point of SM-1's targeted-not-blanket
+; approach); `$` is also legal. A leading `@`/`%` SIGIL (present on strings some
+; callers pass whole, e.g. defn-ir-name's "@name") is skipped rather than
+; flagged — it isn't part of the identifier body being validated.
+; Returns the first illegal character code found (scanning after any leading
+; sigil), or -1 if `name` is entirely legal.
+(defn ir-name-illegal-char:i32 (name:ptr)
+  (let (n:i64 (strlen name)
+        i:i64 (cast i64 0))
+    (when (> n (cast i64 0))
+      (let (c0:i32 (bit-and (cast i32 (aref (cast ptr:i8 name) (cast i64 0))) 255))
+        (when (or (= c0 64) (= c0 37)) (set! i (cast i64 1)))))   ; skip @ or %
+    (while (< i n)
+      (let (c:i32 (bit-and (cast i32 (aref (cast ptr:i8 name) i)) 255)
+            is-digit:i1 (!= (isdigit c) 0)
+            is-lower:i1 (and (>= c 97) (<= c 122))
+            is-upper:i1 (and (>= c 65) (<= c 90))
+            is-safe:i1  (or (= c 95) (= c 46) (= c 36) (= c 45))  ; _ . $ -
+            ok:i1       (or is-digit is-lower is-upper is-safe))
+        (when (= ok 0) (return c)))
+      (set! i (+ i (cast i64 1))))
+    (return -1)))

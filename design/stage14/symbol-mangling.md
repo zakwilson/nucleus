@@ -311,6 +311,46 @@ reference chokepoint. The fix is a StructDef-level cache instead of a per-site w
 
 ### SM-5 — diagnostic backstop, docs, adoption
 
+**Status: DONE (2026-07-03).** A pure char-class predicate `ir-name-illegal-char`
+(src/format.nuc, beside `ir-name-token`/`sanitize-for-ir`/`sanitize-for-c`) scans a
+FINAL ir-name and returns the first byte outside LLVM's unquoted-identifier body
+`[A-Za-z0-9$._-]` (a leading `@`/`%` sigil is skipped, since callers like
+`defn-ir-name` pass the whole `"@name"`; hyphen and `$` are legal and never
+flagged — the SM-1 targeted-not-blanket invariant). A die-at-calling wrapper
+`check-ir-name-legal(line, orig-name, ir-name)` (src/abi.nuc, immediately before
+`register-struct`) turns a hit into a clean source-level diagnostic naming the
+original definition. The wrapper lives in abi.nuc, not format.nuc, because format
+is import-used (nucleusc.nuc:420) before reader.nuc (507) where `die-at` is defined
+— the same import-order wall SM-3/SM-4 document; abi.nuc (582) is the earliest home
+reachable by both `die-at` and every chokepoint. Wired into seven define/declare
+chokepoints, one added line each (all downstream of abi.nuc, and the predicate
+auto-skips the `@`/`%` sigil so already-prefixed strings pass straight through):
+`emit-defvar`, `emit-extern`, `emit-defn` (only the `(defn-is-mangled)==0` solitary
+branch — the mangled branch already went through `sanitize-for-ir`), `emit-defstruct`
+(nucleusc.nuc); `defunion-register` (union-registry.nuc); `emit-cheader-defstruct`,
+`emit-cheader-defunion` (cheader.nuc — provably always no-ops since `sanitize-for-c`
+output is `[A-Za-z0-9_]` ⊂ legal, kept for defense-in-depth/consistency). Deliberately
+NOT wired: `type-name-to-c` (no `line` param, recursive, output always legal),
+`register-struct` itself (no `line` param, ~14 mostly-synthetic call sites — the two
+real user-named ones are covered by `emit-defstruct`/`defunion-register` via
+`sd.ir-name` after the fact), stamped parametric-template instance names
+(compiler-composed from safe tokens), and the REPL's own name derivation (its `(defn
+…)` still flows through `emit-defn`, so it is checked there). Verified: a `(defn
+weird%name …)` — `%` is legal in a Nucleus symbol per lib/reader.nuc's permissive
+`is-sym-char` but illegal in an LLVM identifier body, and `ir-name-token` leaves it
+unchanged (the emitted ir-name is literally `@weird%name`) — now fails with
+`illegal character '%' in generated symbol for 'weird%name' (ir-name '@weird%name') —
+LLVM identifiers allow only [A-Za-z0-9$._-]` instead of a downstream LLVM parse
+error. New negative fixture `tests/fixtures/sm5-illegal-char.nuc` + a
+`sm5-illegal-char-rejected` check in tests/run-tests.sh (must-FAIL-with-message
+pattern). The change is purely additive and inert for every existing name (no `?`/`!`
+or other illegal char in src/ or lib/), so `make bootstrap` converges in ONE pass
+(stage1==stage2, byte-identical `build/nucleusc.ll`) with no reconverge; 152/152
+`make test`. Docs deferred out of this task's scope (per the SM-5 task boundary):
+the stale context/build.md gotcha bullets, the docs/functions.md naming section,
+and the stale context/conventions.md note remain for a separate docs pass; lib-helper
+`?`-suffix re-adoption stays the user's optional call.
+
 - At define/declare emission, any *still*-illegal character in a final
   ir-name is a source-level error naming the definition — never again the
   raw LLVM parse error (the backstop for chars beyond `?`/`!`; keeps the

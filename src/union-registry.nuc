@@ -833,6 +833,7 @@
               (set! union-sd (cast ptr (lookup-or-make-anon-union mnames mtypes npay)))))
           ; Backing struct: {tag:i32 [, payload:(union ...)]}.
           (let (sd:ref:StructDef (if-some (e (lookup-struct name)) e (register-struct name)))
+            (check-ir-name-legal line name (sd ir-name))
             (when (!= (sd emitted) 0)
               (die-at line (fmt-s "defunion: '%s' already names a struct" name)))
             (let (bnf:i32 (if (!= union-sd null) 2 1)

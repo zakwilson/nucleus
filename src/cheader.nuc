@@ -819,6 +819,7 @@
   ; type-name-to-c. A no-op for names without `?`/`!`, so headers stay byte-identical.
   (let (name:ptr (sanitize-for-c (ir-name-token ((cast ptr:Node (node-at form 1)) s)))
         nfields:i32 (- (node-len form) 2))
+    (check-ir-name-legal ((cast ptr:Node (node-at form 1)) line) ((cast ptr:Node (node-at form 1)) s) name)
     (printf "typedef struct {\n")
     (dotimes (i nfields)
       (let (field:ptr (node-at form (+ i 2))
@@ -963,6 +964,7 @@
     (let (name:ptr (sanitize-for-c (ir-name-token (name-node s)))
           narms:i32 (- (node-len form) 2)
           npay:i32 0)
+      (check-ir-name-legal (name-node line) (name-node s) name)
       ; Any payload-bearing arm?
       (dotimes (i narms)
         (when (= ((cast ptr:Node (node-at form (+ i 2))) kind) NODE-CELL)
