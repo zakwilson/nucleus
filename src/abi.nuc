@@ -447,6 +447,21 @@
         ; Stage 13 L1: carry the frame-region flag through CStr<->ptr coercion.
         (.set! rv taint-frame (vv taint-frame))
         (return (cast ptr rv))))
+    ; Stage 14 NS-2 (design/stage14/native-strings.md): a StrView borrows to a
+    ; CStr/ptr for free by taking its `data` field — a literal's backing rodata is
+    ; NUL-terminated at data[len], so `data` is a valid char*. Mirrors the
+    ; CStr<->ptr no-op above (the coexistence hinge that keeps every libc/format
+    ; site working once literals are views). DORMANT: nothing in src/ produces a
+    ; StrView value yet (NODE-STR is CStr until NS-3), so `type-is-strview` is 0
+    ; here throughout self-compilation and no extractvalue is emitted →
+    ; byte-identical bootstrap. A general StrView value is one extractvalue; NS-3
+    ; can collapse a *literal* StrView back to its bare GEP.
+    (when (and (!= (type-is-strview src) 0)
+               (or (= dk TY-PTR) (= dk TY-CSTR)))
+      (let (d:ptr (new-tmp))
+        (fprintf g-body-stream "  %s = extractvalue %s %s, 0\n"
+          d (type-to-ir src) (vv val))
+        (return (alloc-val target d))))
     ; Both integers — emit cast if needed
     (when (and (!= (is-int-type src) 0) (!= (is-int-type target) 0))
       ; Stage 14 LW-4 (int-widening.md §"LW-4"): a known integer literal whose
