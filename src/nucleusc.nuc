@@ -802,8 +802,22 @@
       (when (!= t null) (.set! v type t)))
     (return v)))
 
+; Stage 14 LW-4: emit an integer literal at its *truthful* width. The reader
+; lexed the full value into `Node.i` (an i64); we emit at `i32` when the value
+; fits (the overwhelming majority — keeps IR near-identical and preserves the
+; emit-then-coerce path) and at `i64` otherwise, so a large literal carries its
+; real value instead of silently wrapping through a 32-bit constant (the old
+; bug: `5000000000` printed `705032704`; FNV constants truncated). The Val is
+; tagged with the known value so `coerce-int-val` can reject an out-of-range
+; narrowing (`(take8 300)`) at compile time. node-type's NODE-INT branch mirrors
+; this width choice (the emit/node-type lockstep, conventions.md).
 (defn emit-int:ref:Val (n:ptr)
-  (return (alloc-val ty-i32 (fmt-i64 "%ld" ((cast ptr:Node n) i)))))
+  (let (v:i64 ((cast ptr:Node n) i)
+        ty:ptr (if (!= (int-literal-fits v ty-i32) 0) ty-i32 ty-i64)
+        rv:ref:Val (alloc-val ty (fmt-i64 "%ld" v)))
+    (.set! rv is-lit 1)
+    (.set! rv lit-i64 v)
+    (return rv)))
 
 ; Stage 11 M6 (S0): a `\a` / `\newline` / `\u{1F600}` char literal. The reader
 ; lexed the (validated) Unicode scalar value into the node's `i` field; emit it

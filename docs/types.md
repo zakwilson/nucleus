@@ -185,7 +185,13 @@ The following conversions are applied automatically in assignment contexts (`let
 - **Integer ↔ integer**:
   - Same width, different sign (e.g. `i32` ↔ `ui32`): reinterpret, no IR.
   - Widening: `sext` for signed source, `zext` for unsigned source.
-  - Narrowing: `trunc`.
+  - Narrowing: `trunc` — **except** that a narrowing of an integer *literal*
+    whose value does not fit the target type is a **compile-time error**
+    (`integer literal 300 does not fit ui8`), never a silent wrap. This applies
+    only to literals with a known value (`(take8 300)`, `(let (b:i8 200) …)`,
+    `(< u:ui8 300)`); narrowing a typed *value* still truncates (its runtime
+    value is unknown). To deliberately wrap a literal, cast it explicitly:
+    `(cast i8 200)` is `-56`.
 - **`f32` → `f64`**: `fpext`.
 - **User-registered**: any pair declared with `(defcast From To conv-fn)` (see [Top-level forms](toplevel.md)). The compiler emits a call to `conv-fn`. Built-in coercion always wins; `defcast` cannot shadow `sext`/`zext`/`fpext`.
 
@@ -202,6 +208,18 @@ Explicit `(cast ...)` is also still required for cross-kind conversions: `int �
 | `false` | bool (i1) | `0` / `false` |
 | `"…"` string literal | `CStr` | `"…"` (`char*`) |
 | `\a`, `\newline`, `\u{1F600}` char literal | `Char` | `(uint32_t)U'…'` |
+
+**Integer literals** carry their full value (lexed as up to a 64-bit magnitude:
+signed `i64` down to `-2^63`, unsigned up to `2^64-1`; a literal outside that
+range is a positioned reader error). An integer literal has no intrinsic type —
+it *adapts* to whatever integer (or float) type its context needs, wherever the
+value fits: it passes to a wider or narrower parameter, `let`/field slot, or
+binop operand as long as it is representable there (see *Implicit Type
+Coercion*). When a literal's type is not otherwise constrained, it emits as
+`i32` if it fits and `i64` otherwise, so `(take64 5000000000)` yields
+`5000000000` (not a 32-bit wrap) while an out-of-range use like
+`(take-i32 5000000000)` is a compile-time error. (Typed *values*, unlike
+literals, only widen same-sign — see the coercion rules above.)
 
 ## Char literals — `\a`
 

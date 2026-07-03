@@ -294,7 +294,16 @@
   ; borrow, so the *store* sinks enforce only with-taint (taint-frame == 0).
   ; Nested-region store precision is deferred (see lambda.md §Deferred).
   ; Propagated alongside `taint` by every identity-preserving op.
-  taint-frame:i32)
+  taint-frame:i32
+  ; Stage 14 LW-4 (int-widening.md §"LW-4"): 1 when this Val is an integer
+  ; literal whose exact value is known (set only by emit-int). `lit-i64` then
+  ; holds that value. Lets the coercion chokepoint (coerce-int-val) reject an
+  ; out-of-range literal — `(take8 300)` — at compile time instead of silently
+  ; truncating, without needing the source Node at the coercion site. Cleared
+  ; (0) on every non-literal Val (arena zero-init) and never re-set by coercion,
+  ; so a value that has already been widened is not re-checked.
+  is-lit:i32
+  lit-i64:i64)
 
 ; ---- Aggregate ABI lowering (Stage 8 Phase C, x86_64 System V) ----
 ; How a struct-by-value parameter or return is lowered to the platform C ABI.

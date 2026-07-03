@@ -449,6 +449,19 @@
         (return (cast ptr rv))))
     ; Both integers — emit cast if needed
     (when (and (!= (is-int-type src) 0) (!= (is-int-type target) 0))
+      ; Stage 14 LW-4 (int-widening.md §"LW-4"): a known integer literal whose
+      ; value is not representable in the target type is a compile-time error,
+      ; never a silent trunc/wrap. Only genuine literals carry `is-lit` (set by
+      ; emit-int); typed *values* are untouched — their runtime value is unknown,
+      ; and narrowing them stays the caller's existing behavior (a non-goal). This
+      ; is the single chokepoint: let/defvar init, field store, aset!, return,
+      ; union-variant construction, plain/generic call args, and binop literal
+      ; adoption (via coerce-num-val) all route a literal-tagged Val through here.
+      (when (and (!= (vv is-lit) 0)
+                 (= (int-literal-fits (vv lit-i64) target) 0))
+        (die-at line
+          (fmt-2s "integer literal %s does not fit %s"
+            (fmt-i64 "%ld" (vv lit-i64)) (type-spelling target))))
       (let (sw:i32 (int-width src) dw:i32 (int-width target))
         (when (= sw dw)
           ; Same width, different signedness — reinterpret (no IR needed)

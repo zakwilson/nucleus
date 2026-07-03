@@ -18,9 +18,12 @@
 
 (deferror parse-error "parse error")
 
-; ============================================================
-; Character access helper
-; ============================================================
+; glibc/musl expose the thread-local `errno` as `*__errno_location()`. lex-atom
+; reads it to detect strtol/strtoull overflow (LW-4). Declared here (not via an
+; errno.h C-header import) because the header exposes `errno` only as a macro,
+; which the clang-based header reader does not surface. `strtol`/`strtoull` come
+; from the compiler's global (import-use "stdlib.h").
+(declare __errno_location:ptr ())
 
 (defn char-at:i32 (s:ptr pos:i64)
   (return (bit-and (cast i32 (aref (cast ptr:i8 s) pos)) 255)))
@@ -306,10 +309,33 @@
                 (return (err! parse-error))))
           (memcpy buf text len)
           (aset! (cast ptr:i8 buf) len (cast i8 0))
-          (let (t:ptr:Tok (cast ptr:Tok (alloc-tok)))
+          (let (t:ptr:Tok (cast ptr:Tok (alloc-tok))
+                errp:ptr:i32 (cast ptr:i32 (__errno_location))
+                neg:i32 (= (char-at text (cast i64 0)) 45)
+                val:i64 (cast i64 0))
             (.set! t kind TOK-INT)
             (.set! t line start-line)
-            (.set! t i (strtol buf null 10))
+            ; LW-4: parse with overflow detection. strtol silently clamps at
+            ; ±LONG_MAX and sets errno=ERANGE (34 on Linux). A non-negative
+            ; literal that overflows signed i64 may still fit unsigned 64
+            ; (ui64/usize scale), so retry via strtoull; the u64 bits are stored
+            ; into the signed i64 field where `%ld` emission plus LLVM's
+            ; two's-complement wrap reproduce the intended value. A negative
+            ; overflow, or a value above u64, is a positioned reader error.
+            (aset! errp (cast i64 0) 0)
+            (set! val (strtol buf null 10))
+            (if (!= (aref errp (cast i64 0)) 34)
+              (.set! t i val)
+              (do
+                (when (!= neg 0)
+                  (do (report-at start-line "integer literal out of range")
+                      (return (err! parse-error))))
+                (aset! errp (cast i64 0) 0)
+                (set! val (cast i64 (strtoull buf null 10)))
+                (when (= (aref errp (cast i64 0)) 34)
+                  (do (report-at start-line "integer literal out of range")
+                      (return (err! parse-error))))
+                (.set! t i val)))
             (return (ok (cast ptr t))))))
       (when (!= (is-float-literal text len) 0)
         (let (tf:ptr:Tok (cast ptr:Tok (alloc-tok)))

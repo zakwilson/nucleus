@@ -3490,7 +3490,11 @@
 (defn node-type:?ptr:Type (n:ptr scope:ref:Scope)
   (when (= n null) (return ty-void))
   (let (nn:ptr:Node (cast ptr:Node n))
-    (when (= (nn kind) NODE-INT)   (return ty-i32))
+    ; LW-4 lockstep with emit-int: an out-of-i32-range literal types (and emits)
+    ; as i64, everything else as i32. Keeps codegen and the type pass in sync so
+    ; the widened width is not clobbered by emit-node's Rung-3 cross-check.
+    (when (= (nn kind) NODE-INT)
+      (if (!= (int-literal-fits (nn i) ty-i32) 0) (return ty-i32) (return ty-i64)))
     (when (= (nn kind) NODE-FLOAT) (return ty-f64))
     (when (= (nn kind) NODE-STR)   (return ty-cstr))
     (when (= (nn kind) NODE-CHAR)  (return ty-char))
