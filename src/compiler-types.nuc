@@ -113,6 +113,13 @@
 
 (defstruct StructDef
   name:CStr
+  ; The LLVM-safe spelling of `name` for IR emission: `?`→`_QMARK`, `!`→`_BANG`
+  ; (ir-name-token), every other char (hyphens included) unchanged. `name` stays
+  ; the raw source spelling and remains the lookup key (lookup-struct matches by
+  ; interned-pointer identity against the source type token); `ir-name` is what
+  ; every `%Name` reference and definition prints so `%Full?` never reaches LLVM.
+  ; Computed once in register-struct — the single StructDef allocator (SM-4).
+  ir-name:CStr
   field-names:ptr
   field-types:ptr
   num-fields:i32

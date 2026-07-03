@@ -70,10 +70,10 @@
           tag:ptr (new-tmp)
           isok:ptr (new-tmp))
       (fprintf g-entry-stream "  %s = alloca %%%s, align %d\n"
-        base (sd name) (abi-struct-align (cast ptr sd)))
-      (fprintf g-body-stream "  store %%%s %s, ptr %s\n" (sd name) (vv val) base)
+        base (sd ir-name) (abi-struct-align (cast ptr sd)))
+      (fprintf g-body-stream "  store %%%s %s, ptr %s\n" (sd ir-name) (vv val) base)
       (fprintf g-body-stream
-        "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 0\n" tgep (sd name) base)
+        "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 0\n" tgep (sd ir-name) base)
       (fprintf g-body-stream "  %s = load i32, ptr %s, align 4\n" tag tgep)
       (fprintf g-body-stream "  %s = icmp eq i32 %s, %d\n" isok tag oi)
       (fprintf g-body-stream "  br i1 %s, label %%%s, label %%%s\n" isok ok-lbl err-lbl)
@@ -148,10 +148,10 @@
         end-lbl:ptr (fmt-i32 "unwrapor.end%d" id)
         tgep:ptr (new-tmp) tag:ptr (new-tmp) isok:ptr (new-tmp))
     (fprintf g-entry-stream "  %s = alloca %%%s, align %d\n"
-      base (sd name) (abi-struct-align (cast ptr sd)))
-    (fprintf g-body-stream "  store %%%s %s, ptr %s\n" (sd name) (vv val) base)
+      base (sd ir-name) (abi-struct-align (cast ptr sd)))
+    (fprintf g-body-stream "  store %%%s %s, ptr %s\n" (sd ir-name) (vv val) base)
     (fprintf g-body-stream
-      "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 0\n" tgep (sd name) base)
+      "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 0\n" tgep (sd ir-name) base)
     (fprintf g-body-stream "  %s = load i32, ptr %s, align 4\n" tag tgep)
     (fprintf g-body-stream "  %s = icmp eq i32 %s, %d\n" isok tag oi)
     (fprintf g-body-stream "  br i1 %s, label %%%s, label %%%s\n" isok ok-lbl err-lbl)
@@ -447,11 +447,11 @@
                 (udd name) (aref (cast ptr:ptr (udd arm-names)) arm))))
     (let (base:ptr (new-tmp))
       (fprintf g-entry-stream "  %s = alloca %%%s, align %d\n"
-        base (sd name) (abi-struct-align (cast ptr sd)))
+        base (sd ir-name) (abi-struct-align (cast ptr sd)))
       (let (tgep:ptr (new-tmp))
         (fprintf g-body-stream
           "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 0\n"
-          tgep (sd name) base)
+          tgep (sd ir-name) base)
         (fprintf g-body-stream "  store i32 %d, ptr %s, align 4\n" arm tgep))
       (when (> nf 0)
         (let (pp:ptr (new-tmp)
@@ -480,7 +480,7 @@
                     fgep ((cast ptr:StructDef (ptype sdef)) name) pp fi))
                 (emit-store (type-to-ir ftype) (cv val) fgep ftype))))))
       (let (v:ptr (new-tmp))
-        (fprintf g-body-stream "  %s = load %%%s, ptr %s\n" v (sd name) base)
+        (fprintf g-body-stream "  %s = load %%%s, ptr %s\n" v (sd ir-name) base)
         (let (rv:ref:Val (alloc-val (type-for-sdef (cast ptr sd)) v))
           (.set! rv taint taint)
           (return rv))))))
@@ -629,9 +629,9 @@
         none-val:ref:Val (emit-union-construct (cast ptr mudd) noneai none-place 1 scope))
     ; Result slot, defaulted to `none`.
     (fprintf g-entry-stream "  %s = alloca %%%s, align %d\n"
-      mslot (msd name) (abi-struct-align (cast ptr msd)))
+      mslot (msd ir-name) (abi-struct-align (cast ptr msd)))
     (fprintf g-body-stream "  store %%%s %s, ptr %s\n"
-      (msd name) ((cast ptr:Val none-val) val) mslot)
+      (msd ir-name) ((cast ptr:Val none-val) val) mslot)
     ; Token for repair-ty (its mangled name as a CStr), as with-handler's
     ; type-token emits, so the two agree (errors.md §11.2).
     (let (token:ptr (type-mangle-token repair-ty)
@@ -671,16 +671,16 @@
             (fprintf g-body-stream "  %s = load ptr, ptr %s\n" saved (ght ir-name))
             (fprintf g-body-stream
               "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
-              prevgep (hsd name) h (struct-field-index (cast ptr hsd) (intern-str "prev")))
+              prevgep (hsd ir-name) h (struct-field-index (cast ptr hsd) (intern-str "prev")))
             (fprintf g-body-stream "  %s = load ptr, ptr %s\n" prev prevgep)
             (fprintf g-body-stream "  store ptr %s, ptr %s\n" prev (ght ir-name))
             (fprintf g-body-stream
               "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
-              hfngep (hsd name) h (struct-field-index (cast ptr hsd) (intern-str "hfn")))
+              hfngep (hsd ir-name) h (struct-field-index (cast ptr hsd) (intern-str "hfn")))
             (fprintf g-body-stream "  %s = load ptr, ptr %s\n" hfn hfngep)
             (fprintf g-body-stream
               "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
-              ctxgep (hsd name) h (struct-field-index (cast ptr hsd) (intern-str "ctx")))
+              ctxgep (hsd ir-name) h (struct-field-index (cast ptr hsd) (intern-str "ctx")))
             (fprintf g-body-stream "  %s = load ptr, ptr %s\n" ctx ctxgep)
             ; m:(Maybe T) = hfn(ctx, detail) through the struct-return ABI.
             ; Must go through abi-emit-struct-call (not emit-funcall-value):
@@ -691,14 +691,14 @@
                                                      maybe-ty hfn arglist 2))
               (fprintf g-body-stream "  store ptr %s, ptr %s\n" saved (ght ir-name))
               (fprintf g-body-stream "  store %%%s %s, ptr %s\n"
-                (msd name) ((cast ptr:Val mres) val) mslot)
+                (msd ir-name) ((cast ptr:Val mres) val) mslot)
               (fprintf g-body-stream "  br label %%%s\n" join-lbl)))
           ; Join: load the (Maybe T).
           (fprintf g-body-stream "%s:\n" join-lbl)
           (set! g-block-term 0)
           (let (mres-tmp:ptr (new-tmp))
             (fprintf g-body-stream "  %s = load %%%s, ptr %s\n"
-              mres-tmp (msd name) mslot)
+              mres-tmp (msd ir-name) mslot)
             (return (alloc-val maybe-ty mres-tmp))))))))
 
 ; (signal E RepairType [detail]) — standalone handler negotiation (errors.md §4,
@@ -765,9 +765,9 @@
                               (make-cell enode null ln) ln)
               err-val:ref:Val (emit-union-construct (cast ptr udd) errai err-place 1 scope))
           (fprintf g-entry-stream "  %s = alloca %%%s, align %d\n"
-            rslot (rsd name) (abi-struct-align (cast ptr rsd)))
+            rslot (rsd ir-name) (abi-struct-align (cast ptr rsd)))
           (fprintf g-body-stream "  store %%%s %s, ptr %s\n"
-            (rsd name) ((cast ptr:Val err-val) val) rslot)
+            (rsd ir-name) ((cast ptr:Val err-val) val) rslot)
           ; Negotiate with bound handlers: the shared chain walk yields (Maybe T)
           ; (none if no handler matched or it declined).
           (let (m-val:ref:Val (emit-handler-call eid okty detail-val scope ln)
@@ -784,12 +784,12 @@
                 join-lbl:ptr (fmt-i32 "errh.join%d" id))
             ; match m: read its tag; some -> overwrite the slot with (ok v).
             (fprintf g-entry-stream "  %s = alloca %%%s, align %d\n"
-              mslot (msd name) (abi-struct-align (cast ptr msd)))
+              mslot (msd ir-name) (abi-struct-align (cast ptr msd)))
             (fprintf g-body-stream "  store %%%s %s, ptr %s\n"
-              (msd name) ((cast ptr:Val m-val) val) mslot)
+              (msd ir-name) ((cast ptr:Val m-val) val) mslot)
             (fprintf g-body-stream
               "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 0\n"
-              tgep (msd name) mslot)
+              tgep (msd ir-name) mslot)
             (fprintf g-body-stream "  %s = load i32, ptr %s, align 4\n" tag tgep)
             (fprintf g-body-stream "  %s = icmp eq i32 %s, %d\n" issome tag someai)
             (fprintf g-body-stream "  br i1 %s, label %%%s, label %%%s\n"
@@ -813,14 +813,14 @@
                                    (make-cell (cast ptr (intern-symbol "__errh_v")) null ln) ln)
                     ok-val:ref:Val (emit-union-construct (cast ptr udd) okai ok-place 1 scope))
                 (fprintf g-body-stream "  store %%%s %s, ptr %s\n"
-                  (rsd name) ((cast ptr:Val ok-val) val) rslot)
+                  (rsd ir-name) ((cast ptr:Val ok-val) val) rslot)
                 (fprintf g-body-stream "  br label %%%s\n" join-lbl)))
             ; Join: load the (Result T Err) value.
             (fprintf g-body-stream "%s:\n" join-lbl)
             (set! g-block-term 0)
             (let (rv-tmp:ptr (new-tmp))
               (fprintf g-body-stream "  %s = load %%%s, ptr %s\n"
-                rv-tmp (rsd name) rslot)
+                rv-tmp (rsd ir-name) rslot)
               (return (alloc-val rty rv-tmp)))))))))
 
 ; Stamp the value-Maybe template instance (Maybe T) for the handler-call return
@@ -974,7 +974,7 @@
               (set! fa (new-tmp))
               (fprintf g-body-stream
                 "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
-                fa ((cast ptr:StructDef (ptype sdef)) name) pp fi))
+                fa ((cast ptr:StructDef (ptype sdef)) ir-name) pp fi))
             (if (= (b kind) NODE-SYM)
               ; By value: load the field into an ordinary local slot.
               (let (tmp:ptr (new-tmp)
@@ -1468,9 +1468,9 @@
             (set! base (new-tmp))
             (let (sd:ptr:StructDef (cast ptr:StructDef ((cast ptr:UnionDef ud) sdef)))
               (fprintf g-entry-stream "  %s = alloca %%%s, align %d\n"
-                base (sd name) (abi-struct-align (cast ptr sd)))
+                base (sd ir-name) (abi-struct-align (cast ptr sd)))
               (fprintf g-body-stream "  store %%%s %s, ptr %s\n"
-                (sd name) (sv val) base))))
+                (sd ir-name) (sv val) base))))
         (when (and (= (st kind) TY-PTR) (!= (st elem) null))
           (set! ud (cast ptr (uniondef-for-type (st elem))))
           (when (!= ud null)
@@ -1553,7 +1553,7 @@
                 tag:ptr (new-tmp))
             (fprintf g-body-stream
               "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 0\n"
-              tgep (sd name) base)
+              tgep (sd ir-name) base)
             (fprintf g-body-stream "  %s = load i32, ptr %s, align 4\n" tag tgep)
             (return (emit-match-clauses call scope tag "i32"
                                         (cast ptr clause-val) (cast ptr clause-binders)

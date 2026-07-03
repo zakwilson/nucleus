@@ -1,0 +1,8 @@
+is-full 150 = 1
+is-full 50 = 0
+reset count = 7
+gauge inner level = 200
+gauge spare = 9
+area circle(6) = 36
+area nothing = 0
+done
