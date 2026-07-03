@@ -96,43 +96,51 @@ Inside the macro `x` is `(raw Node)`; the spliced `~x` carries no type
 constraint into the expansion. The host compiler types the resulting form
 using its normal rules.
 
-### ⚠ Sharp edge: `cond`/`if` branches and typed slots must share a pointer type
+### ⚠ Sharp edge: `cond`/`if` branches of genuinely different element types collapse to void
 
-`car`/`cdr` — and every macro parameter — have type `(raw Node)`. A `cond`/`if`
-is a *value* expression whose result type is the **unified** type of its
-branches, compared by `type-eq` (the element type **and** the pointer kind must
-match). A `(raw Node)` value does **not** unify with a bare `ptr`, with a
-non-null `ptr:Node`/`ref:Node`, with a differently-typed pointer, or with a
-quasiquoted form (`` `(...) `` evaluates to a bare `ptr`). When the branches
-disagree the expression collapses to `void`, which then fails wherever a
-pointer was expected:
+A `cond`/`if` is a *value* expression whose result type is the **join** of its
+branches. Two pointer branches with different *element* types — `(raw Node)`
+vs `i32`, or two different struct types — do not unify, and the whole
+expression collapses to `void`. That failure then surfaces as:
 
-- a `let`/`set!` reports `init type mismatch` / a type error, and
+- a `let`/`set!` reporting `init type mismatch` / a type error, and
 - a macro whose entire body is such a `cond` **silently returns `null`**,
   surfacing later as `macro '<name>': returned null`.
 
-Fix it by making the branches agree — usually cast the odd branch to a bare
-pointer (`ptr` ↔ `(raw Node)` is a no-op reinterpret, so this is free):
+This is a genuine type error; there's no shortcut but making the branches
+agree on element type.
+
+Mixing a **typed** pointer branch (`(raw Node)`, `ptr:Foo`, `ref:Foo`, ...)
+with a **bare, elem-less** `ptr` branch is *not* a collapse case — the join
+absorbs the bare side into the typed side's element type, producing
+`(raw ElemType)`, with no cast required. This matters constantly in macro
+bodies: quasiquote (`` `(...) ``), `(gensym)`, and the `null` literal are all
+bare `ptr`, so they join freely with a `(raw Node)` branch such as `car`/`cdr`
+or a macro parameter:
 
 ```lisp
-; BAD — (cdr) is (raw Node), the other branch is null → cond collapses to void
-(let (rest:ptr (if (= (n kind) NODE-CELL) ((cast ptr:Node n) cdr) null)) ...)
-
-; GOOD — both branches are bare ptr
-(let (rest:ptr (if (= (n kind) NODE-CELL) (cast ptr ((cast ptr:Node n) cdr)) null)) ...)
+; joins to (raw Node) automatically — no cast needed
+(let (rest (if (= (n kind) NODE-CELL) (n cdr) null)) ...)
 
 ; A variadic-operator macro: the single-arg branch returns the element node,
-; the others are quasiquotes. Cast the bare branch so all branches are `ptr`.
+; the others are quasiquoted forms — both join to (raw Node).
 (defmacro * (&rest args)
-  (cond (= args null)                     `1
-        (= ((cast ptr:Node args) cdr) null)
-          (cast ptr ((cast ptr:Node args) car))   ; ← without (cast ptr …) the
-        true                                       ;   cond is (raw Node)|ptr → void
-          `(_* ~((cast ptr:Node args) car) (* ~@((cast ptr:Node args) cdr)))))
+  (cond (= args null)
+          `1
+        (= (args cdr) null)
+          (args car)
+        true
+          `(_* ~(args car)
+                (* ~@(args cdr)))))
 ```
 
-The same rule governs flow into a declared slot: a `(raw Node)` value flows
-freely into a bare `:ptr` local (exempt — bare `ptr` is `void*` and carries no
-contract), but a **typed** non-null `(ptr T)`/`(ref T)` parameter, `return`, or
-binding **rejects** it (`raw pointer where non-null (ref ...) is required`).
-Bind node values to `:ptr` locals, or cast, when they meet other pointer types.
+Pointer *kind* (`raw` vs. `ref`) is never itself a source of collapse —
+kinds meet (`raw` ⊔ anything = `raw`) rather than needing to match. Only a
+genuine element-type mismatch collapses the join to `void`.
+
+Separately: a `(raw Node)` value flows freely into a bare `:ptr` local (exempt
+— bare `ptr` is `void*` and carries no contract), but a **typed** non-null
+`(ptr T)`/`(ref T)` parameter, `return`, or binding still **rejects** a raw
+(nullable) value (`raw pointer where non-null (ref ...) is required`). Bind
+node values to `:ptr` locals, or narrow first, when they meet other pointer
+types.
