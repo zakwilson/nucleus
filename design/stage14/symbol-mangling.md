@@ -190,6 +190,52 @@ which are the load-bearing gates.
 
 ### SM-3 — export surfaces tell the truth
 
+**Status: DONE (2026-07-03).** The `ir-name-token`-first transform is composed at
+`sanitize-for-c`'s three call sites (all in src/cheader.nuc — the two type-name
+typedef sites `emit-cheader-defstruct`/`emit-cheader-defunion` and the `struct %s`
+reference in `type-name-to-c`) as `(sanitize-for-c (ir-name-token name))`, rather
+than folded inside `sanitize-for-c` itself. Reason: `sanitize-for-c` lives in
+src/format.nuc, which is `import-use`d (nucleusc.nuc:420) *before* generics.nuc
+(604) where `ir-name-token` is defined; imports are processed inline, so a call up
+to `ir-name-token` from a format.nuc body is an unresolved-forward-reference at
+emit time (won't compile), and duplicating the `?`/`!` map into format.nuc would
+violate SM-1 §2's "applied once, one shared helper" invariant. Composing at the
+(post-generics) cheader call sites is functionally exactly "ir-name-token first,
+then the blanket map" while keeping the transform single-homed. Order is
+load-bearing: `ir-name-token` must run *before* the blanket sanitize or `?` would
+collapse to `_` and collide. For a name with no `?`/`!`, `ir-name-token` is a
+pointer-identity no-op, so every existing header stays byte-identical; the
+compiler's own IR shifts only in cheader.nuc's three functions (no string-pool
+change — `_QMARK`/`_BANG` remain @.str.518/519), and `make bootstrap`'s fixed point
+holds in one pass (stage1==stage2). A doc note on `sanitize-for-c` records the
+compose-order contract for future callers.
+
+The `.nuch` round-trip was **ground-verified real, not just design-asserted**
+(2026-07-03): a solitary `full?`/`push!` export as `(declare (full? i32) ...)` and
+re-import through the shared `ns-ir-base` to `@full_QMARK`/`@push_BANG`; an
+overloaded `?` pair (`even?` on i32/i64) exports as
+`(defmethod "@even_QMARK.i32" ...)` / `.i64` carrying the stored mangled string,
+and re-imports to the same symbols. A consumer importing the `.nuch` links against
+the lib object and runs (`full=1 push=8 even4=1 even7=0 even6L=1`) — proving the
+exporter's symbols and the importer's re-derived declarations agree at link time.
+Fixtures `tests/fixtures/sm3-predlib.nuc` (functions, solitary + overloaded) and
+`tests/fixtures/sm3-typenames.nuc` (`?`/`!` struct/union type names); six new
+checks in tests/run-tests.sh (`sm3-nuch-roundtrip`, `sm3-lib-symbols`,
+`sm3-cheader-fn-legal`, `sm3-import-resolves-mangled`, `sm3-nuch-link-and-run`,
+`sm3-cheader-typenames`). `make test` all-green; `make bootstrap` green.
+
+Two **pre-existing gaps observed and left for a future pass** (outside SM-3's
+sanitize-for-c-call-sites scope, noted here so they aren't lost):
+1. `emit-cheader-declare` prints the bare `ns-ir-base(fname)` for *every* function
+   regardless of overload status, so an overloaded function emits N identical
+   prototypes (e.g. two `int32_t even_QMARK(...)` lines) — a C-illegal duplicate.
+   This is general (not `?`-specific) overload-unaware cheader export.
+2. Union arm names, enum variant names, and struct field names are printed *raw*
+   in the cheader (no sanitizer at all), so a `?`/`!`-named arm/variant/field would
+   still emit illegal C. Only the struct/union *type* name goes through
+   sanitize-for-c today. Both are broader cheader-completeness work, not the SM-3
+   symbol-mangling surface.
+
 - `sanitize-for-c` applies `ir-name-token` *first*, then its blanket map —
   cheader prototypes must name the real linkable symbol (`full_QMARK`),
   not a fiction (`full_`).
