@@ -145,6 +145,32 @@ joins.
 
 ### MC-2 — type the Node producers: quasiquote and `gensym` as `(raw Node)`
 
+**Status: implemented (2026-07-03).** A cached `(raw Node)` accessor
+`ty-raw-node` (src/nucleusc.nuc, just before `emit-quote`) builds the type the
+way `emit-defmacro` builds it for macro params (`make-type TY-PTR` + `elem =
+parse-type-name "Node"` + `PTR-RAW`), guarded by a non-dying `lookup-struct
+"Node"` check (`parse-type-name` calls `die-at` on an unknown type, so the
+prompt's `(!= … null)` fallback would not fire — `lookup-struct` is the
+non-dying strcmp-content probe since `StructDef.name` is `CStr`). The fallback
+to bare `ty-ptr` is **not** cached, so a later use once `Node` is registered
+still gets the honest type. Retyped call sites: `emit-quote`, `emit-qq-list`
+(the null, unquote-splice `@__append`, and cons `@__cons` paths), `emit-qq-form`
+(the null and quoted-atom paths), and the `gensym` special form in `emit-list`.
+**Lockstep partner:** `node-type-call` (src/generics.nuc) modelled `quote` and
+`gensym` as `ty-ptr` (non-null, so it overrides the emit-side type via
+`emit-node`'s rung-3 propagation); both were retyped to `(ty-raw-node)`.
+`quasiquote` stays **unmodelled** (`node-type` returns null) because an
+`~unquote` can inject any type — `emit-qq-form`'s own `(raw Node)` then
+propagates for the pure-qq case. `ty-raw-node` lives in nucleusc.nuc; generics'
+`node-type-call` calls it as a forward reference, which resolves through
+nucleusc.nuc's whole-unit defn prescan (the same mechanism by which generics.nuc
+already calls `node-type`/`emit-defn`). Reconverge was required (the compiler's
+own `'sym` quote and node-type sites now emit `call @ty-raw-node()`): two-pass
+refresh, then `stage1.ll == stage2.ll`, 139 tests pass. Verified castless
+chaining: `((quote (a b c)) kind)`, `(((quasiquote (x y z)) car) kind)`, and a
+quote/qq-mixed `cond` in head position all compile and run (they die
+"callable value: not callable" before MC-2).
+
 Retype the results of `emit-qq-list` / `emit-qq-form` (both the cons-building
 and quoted-atom paths) and the `gensym` special form from `ty-ptr` to
 `TY-PTR{elem=Node, pkind=PTR-RAW}`:
