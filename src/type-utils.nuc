@@ -68,6 +68,28 @@
       (return (fmt-s "%%%s" ((cast ptr:StructDef (tt sdef)) ir-name))))
     (return "?")))
 
+; Stage 14 NS-2 (design/stage14/native-strings.md): is Type `t` the prelude
+; `StrView` struct (`{ data:(ptr ui8), len:usize }`, promoted to the prelude in
+; NS-1)? The dormant target-typed emission (emit-string), value coercion
+; (coerce-int-val) and content-comparison (emit-binop-vals) paths use this to
+; recognize a StrView value. The null / non-struct short-circuits keep the
+; self-compile hot path cheap and mean nothing interns "StrView" unless a real
+; struct value is in hand. Nothing in src/ produces a StrView value yet
+; (NODE-STR types as CStr until NS-3), so this returns 0 throughout the
+; compiler's own compilation → the new paths stay inert and the bootstrap is
+; byte-identical. Identity is by the interned struct-name pointer, exactly how
+; lookup-struct keys the registry.
+(defn type-is-strview:i32 (t:ptr)
+  (when (= t null) (return 0))
+  (let (tt:ptr:Type (cast ptr:Type t))
+    (when (!= (tt kind) TY-STRUCT) (return 0))
+    (let (sd:ptr (tt sdef))
+      (when (= sd null) (return 0))
+      (when (= ((cast ptr:StructDef sd) name)
+               ((cast ptr:Node (intern-symbol "StrView")) s))
+        (return 1))
+      (return 0))))
+
 ; Map a Nucleus type to its C representation string.
 ; For function pointer types, returns a simplified "void*" — the full
 ; C function pointer syntax (with return type and params) is handled

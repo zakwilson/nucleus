@@ -790,7 +790,9 @@
     (when (= (nn kind) NODE-INT)   (set! v (emit-int n)))
     (when (= (nn kind) NODE-CHAR)  (set! v (emit-char-literal n)))
     (when (= (nn kind) NODE-FLOAT) (set! v (emit-float n)))
-    (when (= (nn kind) NODE-STR)   (set! v (emit-string n)))
+    ; NS-2: pass a null target — literals stay CStr (bare GEP). NS-3 will thread
+    ; the consumer's expected type here so a StrView context materializes a view.
+    (when (= (nn kind) NODE-STR)   (set! v (emit-string n null)))
     (when (= (nn kind) NODE-SYM)   (set! v (emit-symbol-ref n scope)))
     (when (= (nn kind) NODE-KEYWORD) (set! v (emit-keyword n scope)))
     (when (= (nn kind) NODE-CELL)  (set! v (emit-list n scope)))
@@ -889,14 +891,32 @@
   (let (nn:ptr:Node (cast ptr:Node n))
     (return (alloc-val ty-f64 (float-literal-ir (nn s))))))
 
-(defn emit-string:ref:Val (n:ptr)
+(defn emit-string:ref:Val (n:ptr target:ptr)
   (let (nn:ptr:Node (cast ptr:Node n)
         id:i32 (intern-string (nn s) (cast i32 (strlen (nn s))))
-        ir-len:i32 (+ ((cast ptr:StrLit (invoke g-strs (cast usize id))) len) 1)
+        slen:i32 ((cast ptr:StrLit (invoke g-strs (cast usize id))) len)
+        ir-len:i32 (+ slen 1)
         tmp:ptr (new-tmp))
     (fprintf g-body-stream
       "  %s = getelementptr inbounds [%d x i8], ptr @.str.%d, i64 0, i64 0\n"
       tmp ir-len id)
+    ; Stage 14 NS-2 (design/stage14/native-strings.md): target-typed
+    ; materialization. When the consumer expects a StrView, build the {data,len}
+    ; borrowed view over the (hidden-NUL-terminated) rodata global — `data` is the
+    ; bare GEP above, `len` is the interned byte count (no runtime strlen). DORMANT:
+    ; NODE-STR still types as CStr (NS-3 flips it), and emit-node passes a null
+    ; target, so `type-is-strview` is 0 for every literal and each one falls through
+    ; to the bare-GEP CStr below → byte-identical bootstrap. The GEP is emitted
+    ; unconditionally so the CStr path stays textually identical to before.
+    (when (!= (type-is-strview target) 0)
+      (let (v0:ptr (new-tmp)
+            v1:ptr (new-tmp)
+            svir:ptr (type-to-ir target))
+        (fprintf g-body-stream "  %s = insertvalue %s undef, ptr %s, 0\n"
+          v0 svir tmp)
+        (fprintf g-body-stream "  %s = insertvalue %s %s, %s %d, 1\n"
+          v1 svir v0 (ptr-int-ir) slen)
+        (return (alloc-val target v1))))
     (return (alloc-val ty-cstr tmp))))
 
 ; Keyword literal (Stage 11 cleanup §2). `:foo` self-evaluates to the one
@@ -1544,6 +1564,21 @@
           (aset! (cast ptr:ptr pair) 1 nb)
           (return pair)))))))
 
+; Stage 14 NS-2 (design/stage14/native-strings.md): the `ptr` (char*) operand
+; for a content comparison of a Val that may be a StrView. A StrView yields its
+; `data` field via one extractvalue (the view's bytes); a plain ptr/CStr already
+; IS the pointer and is returned with no extra IR — so the existing CStr/ptr
+; strcmp path allocates no stray tmp and stays byte-identical. DORMANT until a
+; StrView operand exists (NS-3): `type-is-strview` is 0 for every current operand.
+(defn strview-data-ir:ptr (v:ptr)
+  (let (vv:ptr:Val (cast ptr:Val v))
+    (when (!= (type-is-strview (vv type)) 0)
+      (let (d:ptr (new-tmp))
+        (fprintf g-body-stream "  %s = extractvalue %s %s, 0\n"
+          d (type-to-ir (vv type)) (vv val))
+        (return d)))
+    (return (vv val))))
+
 ; Emit an operator's inline instruction given already-emitted operand Vals. This
 ; is the front-end inline peephole (§10.3): a built-in numeric/pointer operator
 ; lowers to a single `add nsw`/`icmp slt`/`fadd`/… instruction, never a call.
@@ -1561,21 +1596,38 @@
     ; content test). strcmp is declared by the prelude's (import-use "string.h"); CStr
     ; only supports = and != for now (no ordering). Two plain `ptr` operands fall
     ; through to the identity comparison below.
-    (when (or (-> av (_ type) (cast ptr:Type _) (_ kind) (= _ TY-CSTR))
-              (-> bv (_ type) (cast ptr:Type _) (_ kind) (= _ TY-CSTR)))
-      (when (or (= (is-ptr-like (av type)) 0) (= (is-ptr-like (bv type)) 0))
-        (die-at line (fmt-s "%s: a CStr compares only with a CStr or pointer" (bop name))))
-      (let (op-name:ptr (bop name))
-        (when (and (!= op-name "=") (!= op-name "!="))
-          (die-at line (fmt-s "%s: CStr supports only = and != (Eq)" op-name)))
-        (let (c:ptr (new-tmp))
-          (fprintf g-body-stream "  %s = call i32 @strcmp(ptr %s, ptr %s)\n"
-            c (av val) (bv val))
-          (let (r:ptr (new-tmp)
-                icmp-op:ptr "eq")
-            (when (= op-name "!=") (set! icmp-op "ne"))
-            (fprintf g-body-stream "  %s = icmp %s i32 %s, 0\n" r icmp-op c)
-            (return (alloc-val ty-i1 r))))))
+    ;
+    ; Stage 14 NS-2 (design/stage14/native-strings.md): a StrView operand is also
+    ; admitted here (against a ptr/CStr/StrView) — its `data` is extracted first
+    ; (strview-data-ir) and the content is strcmp'd, keeping `(= name "lit")`
+    ; exactly as it lowers today once literals become views. DORMANT: no StrView
+    ; value exists yet (NODE-STR is CStr until NS-3), so `av-sv`/`bv-sv` are 0, the
+    ; trigger fires only on CStr as before, strview-data-ir returns the bare ptr
+    ; with no tmp, and this branch is byte-identical. Two plain `ptr` stay `icmp`
+    ; identity (the Node.s interned-symbol path is untouched).
+    (let (av-sv:i32 (type-is-strview (av type))
+          bv-sv:i32 (type-is-strview (bv type))
+          av-cstr:i32 (-> av (_ type) (cast ptr:Type _) (_ kind) (= _ TY-CSTR))
+          bv-cstr:i32 (-> bv (_ type) (cast ptr:Type _) (_ kind) (= _ TY-CSTR)))
+      (when (or (!= av-cstr 0) (!= bv-cstr 0) (!= av-sv 0) (!= bv-sv 0))
+        ; Each operand must be a comparable string kind: ptr-like (ptr/CStr) or a
+        ; StrView. Anything else (int/float/other struct) is a type error.
+        (when (or (and (= (is-ptr-like (av type)) 0) (= av-sv 0))
+                  (and (= (is-ptr-like (bv type)) 0) (= bv-sv 0)))
+          (die-at line (fmt-s "%s: a CStr compares only with a CStr or pointer" (bop name))))
+        (let (op-name:ptr (bop name))
+          (when (and (!= op-name "=") (!= op-name "!="))
+            (die-at line (fmt-s "%s: CStr supports only = and != (Eq)" op-name)))
+          (let (a-ptr:ptr (strview-data-ir a)
+                b-ptr:ptr (strview-data-ir b)
+                c:ptr (new-tmp))
+            (fprintf g-body-stream "  %s = call i32 @strcmp(ptr %s, ptr %s)\n"
+              c a-ptr b-ptr)
+            (let (r:ptr (new-tmp)
+                  icmp-op:ptr "eq")
+              (when (= op-name "!=") (set! icmp-op "ne"))
+              (fprintf g-body-stream "  %s = icmp %s i32 %s, 0\n" r icmp-op c)
+              (return (alloc-val ty-i1 r)))))))
     ; Pointer comparison
     (when (and (-> av (_ type) (cast ptr:Type _) (_ kind) (= _ TY-PTR))
              (-> bv (_ type) (cast ptr:Type _) (_ kind) (= _ TY-PTR)))
