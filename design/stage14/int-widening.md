@@ -123,6 +123,27 @@ a genuine correctness guard, kept as-is (§3 non-goals).
 
 ### LW-1 — extend adaptation to the template tier (fixes Gap A)
 
+**Status: DONE (2026-07-03).** Implemented in `src/generics.nuc`. A shared,
+side-effect-free `generic-resolve-adapt-tier` runs the tier-2 pool for both the
+emit path (`generic-resolve`, dies on ambiguity, monomorphizes a template winner)
+and the type-model path (`node-type-call`, returns null). Template candidates are
+matched by `generic-method-bind-adapt` (bind tyvars from the receiver/exact args,
+then `arg-adapts` each remaining param against its tyvar-substituted type;
+adaptation never binds a tyvar). One subtlety not in the original design: a
+template's own **stamped instance** (created the first time a widened call resolves)
+is a METHOD-USER that *also* adapts, so it would spuriously read as a second
+candidate → false `ambiguous overload` on the *next* widened call. Fixed with a
+`Method.origin-template` marker (set by `generic-instantiate`); the tier-2 USER
+pool skips stamped instances (the template alone covers every widened call, and
+tier-0 still resolves exact-typed calls to the stamped instance). `(conj v 3)` /
+`(insert v 1 7)` / `(v 0)` on a `(Vector i64)` now compile with no casts. Byte
+count of the compiler's own IR was a bootstrap fixed point directly (the compiler
+source casts every affected site, so the new resolution is inert during
+self-compilation); the vestigial casts stay until LW-5. `operator-user-resolve`
+was checked: it only ever scans METHOD-USER methods and has no METHOD-GENERIC
+(template) tier at all — template operators are unreachable through it today, so
+adding widening there would be dead code. Left untouched (see §3 note below).
+
 In generic resolution, template candidates join the adaptation tier: unify
 the receiver and exactly-matching args via `unify-tpat` to bind tyvars
 (unchanged), then for each remaining param apply `arg-adapts` against the
@@ -142,6 +163,24 @@ concrete param (`i:usize`) exactly as it does for plain methods. Two rules:
 reachable there (confirm during implementation).
 
 ### LW-2 — mirror in `node-type-call` (fixes Gap D; lands with LW-1)
+
+**Status: DONE (2026-07-03), landed atomically with LW-1.** `node-type-call`'s
+mangled-generic branch now builds an `arg-nodes` array (needed for literal
+detection) and, after the exact + `generic-binds-for` tiers, calls the shared
+`generic-resolve-adapt-tier` with a non-dying mode: a unique USER match returns
+`(m ret-type)`, a unique template match returns `method-bound-ret-type` (the
+tyvar-substituted return, extracted from `generic-binds-for` so the exact and
+adapted template paths compute the return type identically), and
+ambiguity/no-match returns null (the escape hatch — `node-type` never dies). The
+substituted-return helper is *side-effect-free*: unlike the emit path it never
+instantiates, so the type-model context stays a pure probe. Verified that
+`node-type-call` types a widened `(conj v 3)` as `void` (the resolved template's
+return) rather than the previous null. Note: the value-keyed `(v i)` invoke path
+node-types through `callable-invoke-type`, a *separate* mirror that remains at the
+exact tier (returns null → escape hatch, non-divergent) — the design's Gap D and
+this milestone scope LW-2 to `node-type-call`; extending `callable-invoke-type`
+is deferred (it becomes load-bearing only once LW-5 removes the `(cast usize i)`
+casts at `(v i)` sites in the compiler's own source).
 
 Factor the emit-side resolution so `node-type-call` runs the same tiers —
 ideally both callers share one resolver (with a non-dying variant for the

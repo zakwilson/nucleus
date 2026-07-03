@@ -221,6 +221,8 @@ Vectors are initialised in place — there is no value constructor because a zer
 
 `conj` and `append` are equivalent for `Vector` (both append at the back). `insert` with `i == len` is equivalent to `append`; `i > len` panics.
 
+**Integer literals widen automatically.** A bare integer literal passed as an element, index, or key argument adapts to the method's concrete type without a cast — `(conj v 3)` and `(v 0)` on a `(Vector i64)` widen `3`/`0` to `i64`/`usize` respectively, exactly as plain functions already do. Some examples below still spell the older explicit `(cast usize 1)` form; both compile identically. (An untyped literal only *widens* — an already-typed value of a wider or wrong-sign type still needs an explicit cast, and a call ambiguous between two integer overloads is an error.)
+
 ### Iteration with `VecIter T`
 
 ```lisp

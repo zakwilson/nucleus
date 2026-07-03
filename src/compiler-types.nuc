@@ -360,7 +360,14 @@
   con-args:ptr      ; array of ptr (per constraint: a ptr array of Node*, or null)
   con-nargs:ptr     ; array of i32 (per constraint: count of arg nodes)
   num-constraints:i32
-  checked:i32)      ; A2 def-time check done (so it runs once per template)
+  checked:i32       ; A2 def-time check done (so it runs once per template)
+  ; --- Stage 14 LW-1: stamped-instance marker ---
+  ; For a METHOD-USER produced by monomorphizing a template (generic-instantiate),
+  ; the originating template Method*; null for a hand-written method. Stamped
+  ; instances are caches of their template, so tier-2 widening resolution skips
+  ; them (the template alone covers every widened call) to avoid a false ambiguity
+  ; between a template and its own stamped instance.
+  origin-template:ptr)
 
 (defstruct Generic
   name:CStr
