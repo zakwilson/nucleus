@@ -194,6 +194,35 @@ fixed point is the enforcement gate.
 matching the implicit end-of-body path (7093). On failure: a *source-level*
 error naming the function and types — never again the raw LLVM parse error.
 
+**Status: DONE (2026-07-03).** Implemented in `emit-return`
+(src/nucleusc.nuc): right before the final `ret`/`emit-struct-ret` dispatch,
+the scalar branch (only reached when `g-fn-ret-abi` is null or `ABI-DIRECT`
+— `abi-classify` assigns every other kind to `TY-STRUCT`/`TY-UNION`, so this
+branch never carries an aggregate return type) now coerces the returned
+`Val` against `g-fn-ret-type` via `coerce-int-val`, guarded on
+`g-fn-ret-type != null` (some contexts leave it null; behavior there is
+unchanged — `v`'s own type is used uncoerced as before). On coercion
+failure (`coerce-int-val` returns null) a source-level `die-at` fires at the
+call's line, naming both types via `type-spelling`
+(`"return type mismatch — returned value of type %s does not match
+declared return type %s"`) — adapted from the implicit path's phrasing;
+`fname` isn't available inside `emit-return` (unlike `emit-defn`) so the
+function name is omitted rather than threading new global state through
+just for this message. Verified independent of `pkind-flow-check`: the
+existing `(ref T)`-nullability guard a few lines above (line ~5075-5076)
+only fires on pointer-kind destinations, and `coerce-int-val`'s own
+internal `pkind-flow-check` call (for a `TY-PTR` target) is a same-args
+no-op re-check once the earlier guard has already passed without dying —
+purely int/CStr coercion is orthogonal. `(defn f:i64 () (return 0))` now
+compiles and runs printing `0` (previously an LLVM parse error); a genuine
+mismatch (e.g. `(return 1.5)` in an `:i64`-declared fn) now dies cleanly at
+the source line ("return type mismatch — returned value of type f64 does
+not match declared return type i64") instead of an LLVM parse error. The
+new string literals shifted the compiler's string pool (unrelated
+constants renumbered) — required the standard `make update-bootstrap` +
+`make clean && make` reconverge (conventions.md); `make bootstrap` is a
+byte-identical fixed point afterward, and all 140 `make test` cases pass.
+
 ### LW-4 — truthful literals: range checks + wide emission (fixes Gap C)
 
 - **Representability check**: wherever a literal adapts/coerces and the

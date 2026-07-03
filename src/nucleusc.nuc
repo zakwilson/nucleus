@@ -5078,7 +5078,23 @@
       (if (and (!= g-fn-ret-abi null)
                (!= ((cast ptr:AbiInfo g-fn-ret-abi) kind) ABI-DIRECT))
         (emit-struct-ret (cast ptr v))
-        (fprintf g-body-stream "  ret %s %s\n" (type-to-ir (v type)) (v val)))
+        ; LW-3: coerce the returned value against the declared return type
+        ; before emitting `ret`, mirroring the implicit end-of-body return
+        ; path above (emit-defn: `coerce-int-val last-val ret`). Guard on
+        ; g-fn-ret-type being non-null — some contexts leave it null, and
+        ; today's uncoerced emission is kept there. This branch (ABI-DIRECT
+        ; or no ABI info) never carries a struct/union return type —
+        ; abi-classify only assigns a non-DIRECT kind to TY-STRUCT/TY-UNION —
+        ; so coerce-int-val's int/CStr-only logic is always in-scope here.
+        (if (= g-fn-ret-type null)
+          (fprintf g-body-stream "  ret %s %s\n" (type-to-ir (v type)) (v val))
+          (let (coerced:ptr (coerce-int-val (cast ptr v) g-fn-ret-type (cc line)))
+            (when (= coerced null)
+              (die-at (cc line)
+                (fmt-2s "return type mismatch — returned value of type %s does not match declared return type %s"
+                        (type-spelling (v type)) (type-spelling g-fn-ret-type))))
+            (let (cv:ptr:Val (cast ptr:Val coerced))
+              (fprintf g-body-stream "  ret %s %s\n" (type-to-ir (cv type)) (cv val))))))
       (set! g-block-term 1)
       (return (alloc-val ty-void null)))))
 
