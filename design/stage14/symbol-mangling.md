@@ -150,13 +150,43 @@ naming section.
 
 ### SM-2 — REPL alignment
 
-- The repl.nuc name-derivation sites (161, 228, 248, 275-291, 609-621)
-  use the same shared derivation as batch (`defn-ir-name`/`ir-name-token`
-  composition) instead of raw `sanitize-for-ir(fname)`.
-- Ground-verify the suspected pre-existing hyphen divergence (§1.7): if
-  REPL redefinition of a hyphenated function is broken today, this
-  unification is also that bug's fix; extend the `repl-redefinition` test
-  with a hyphenated and a `?`-named function either way.
+**Status: DONE (2026-07-03).** The redefinition path threads a single
+`fname-ir` binding derived at exactly two root sites: the defvar
+`external global` declaration (repl.nuc:161) and the defn `fname-ir` let
+(repl.nuc:228); the other listed lines (248, 275-291, 609-621) all consume
+that binding, so fixing the two roots fixes the chain. Both switched from
+raw `sanitize-for-ir` to `ns-ir-base` — the *same* function `emit-defvar`
+(nucleusc.nuc:6597) and `defn-ir-name`'s solitary fallback (generics.nuc:567
+→ ns-ir-base) use, so `fname-ir` now equals byte-for-byte the symbol
+`emit-defn`/`emit-defvar` write into the module (`@my-add`, `@even_QMARK`).
+`ns-ir-base` (not bare `ir-name-token`) is correct because it also composes
+`g-current-ns`'s prefix, matching batch if the REPL user does `(ns …)` — and
+it is the identity of `ir-name-token` under the default `user` namespace
+(empty prefix), so the common REPL case is unaffected beyond the `?`/`!`/
+hyphen mapping. `defn-ir-name` itself was *not* used because it prepends `@`
+and takes param-types for the overloaded lookup; the REPL wants the bare
+name and only ever handles the solitary case (one thunk `@fname` + one
+`@fname.tgt` per bare name — overloading isn't representable in this
+machinery), which is precisely `ns-ir-base`.
+
+**Both suspected bugs ground-verified real** (2026-07-03, then fixed): not
+merely redefinition — the *first* definition already broke. A hyphenated
+`(defn my-add …)` emits `define … @my-add(` but the REPL derived
+`fname-ir="my_add"`, so the thunk declared `@my_add`, the `@fname(`→`@impl(`
+rewrite missed (buffer has `@my-add(`), and `update-fn-tgt` looked up the
+non-existent `@my_add.impl.0` → "Symbols not found". A `?`-named
+`(defn even? …)` emits `@even_QMARK` (SM-1) but the REPL derived
+`fname-ir="even_"` → same failure against `@even_.impl.0`. After the fix all
+of hyphen/`?`/`!` round-trip through define/call/redefine/call, including a
+redefinition observed through a *second* function that calls the redefined
+one (thunk dispatch via the corrected name). `tests/repl/redefinition.in`
+and `tests/expected/repl-redefinition.out` extended with a hyphenated
+`my-add` (+ a `use-add` caller proving cross-fn thunk dispatch) and a
+`?`-named `even?` case. `make test` + `make bootstrap` (stage1==stage2)
+green; `build/nucleusc.ll` is *not* byte-identical (repl.nuc is compiled
+into the compiler binary, so swapping its callee changes its IR) — but the
+batch *emission* path is untouched and the bootstrap fixed point holds,
+which are the load-bearing gates.
 
 ### SM-3 — export surfaces tell the truth
 

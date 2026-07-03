@@ -157,8 +157,15 @@
                             vty:ptr (extract-name-and-type var-node (cast ptr:ptr (addr-of vname))
                                                             ((cast ptr:Node var-node) line)))
                         (when (!= vty null)
+                          ; Derive the IR name the same way emit-defvar does
+                          ; (ns-ir-base → ir-name-token), so a hyphenated or
+                          ; `?`/`!`-named REPL global's `external global` decl
+                          ; matches the symbol emit-defvar emitted (SM-2). Raw
+                          ; sanitize-for-ir would drop hyphens (arena-alloc →
+                          ; arena_alloc) and mis-map `?`/`!` (full? → full_ vs
+                          ; batch full_QMARK).
                           (fprintf g-repl-preamble "@%s = external global %s\n"
-                            (sanitize-for-ir vname) (type-to-ir vty))))))
+                            (ns-ir-base vname) (type-to-ir vty))))))
                   (fprintf stderr "  defined\n"))
             (and (!= h null) (= h "defstruct"))
               (do (open-module-streams)
@@ -225,7 +232,18 @@
                   (= fname null)
                     (repl-error (f line) "defn: missing name")
                   true
-                    (let (fname-ir:ptr (sanitize-for-ir fname)
+                    ; Derive fname-ir the same way batch does for a solitary
+                    ; defn: ns-ir-base composes the current namespace's prefix
+                    ; onto ir-name-token(fname), so `?`→_QMARK / `!`→_BANG and
+                    ; hyphens pass through unchanged. This is exactly the symbol
+                    ; emit-defn writes (via defn-ir-name → ns-ir-base), so the
+                    ; thunk / @fname.impl.N / @fname.tgt machinery and the
+                    ; rewrite of "@fname(" all reference the real emitted symbol.
+                    ; Raw sanitize-for-ir diverged (arena-alloc → arena_alloc,
+                    ; full? → full_) and broke redefinition of any such name.
+                    ; The REPL only handles the solitary (non-overloaded) case,
+                    ; which is precisely defn-ir-name's ns-ir-base fallback.
+                    (let (fname-ir:ptr (ns-ir-base fname)
                           is-redef:i32 0
                           old-sym:?ptr:Sym (scope-lookup g-globals fname))
                       (when (!= old-sym null)
