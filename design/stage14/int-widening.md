@@ -289,6 +289,37 @@ plus the lexer path:
 
 ### LW-5 — vestigial-cast sweep + docs
 
+**Status: test/doc slice DONE (2026-07-03); tree-wide cast sweep still
+PENDING (explicitly deferred, see below).** `examples/int-widening.nuc` was
+added: castless `conj`/`insert`/`(v i)` invoke on `(Vector i64)` (LW-1/LW-2),
+a castless explicit `(return 5)` from an `:i64` function (LW-3), and
+`(take64 5000000000)` printing the untruncated value (LW-4) — expected output
+`tests/expected/int-widening.out`. Two negative fixtures were added following
+the `closure-escape-rejected`/`ce3-use-after-move-rejected` idiom in
+`tests/run-tests.sh`: `tests/fixtures/lw-ambiguous-widening.nuc` (an overload
+set with **no exact-i32 candidate** — `x:i64`/`x:ui8` — called with a bare
+literal; both candidates reach the tier-2 adaptation pool, so the call is
+genuinely ambiguous and dies `ambiguous overload for 'f' under argument
+widening`; note the `(f x:i32)`/`(f x:i64)` shape sketched earlier in this doc
+is *not* ambiguous — a literal exact-matches the `i32` candidate at tier 0 and
+tier 0 always wins, so the negative fixture needs two candidates that both
+require widening) and `tests/fixtures/lw-literal-range.nuc` (`(take8 300)` →
+`integer literal 300 does not fit ui8`). `docs/types.md`'s "Implicit Type
+Coercion" and "Literal Values" sections (written during LW-4) were checked
+against LW-1 through LW-4's actual behavior and found already accurate — no
+edit needed. The "fix the strview example's vestigial casts" note was
+checked: the Keyword/StrView example in `docs/types.md` (~line 251-281) has
+no cast at all, and `examples/strview-test.nuc`'s casts are unrelated
+(`cast ptr` for `free`, `cast ui64` widening a return value to match a
+`printf` format spec) — neither is a vestigial int-literal cast LW-1-4 made
+removable, so nothing applied there. 143 tests pass; `make bootstrap` holds
+(no `src`/`lib` changes in this slice).
+
+The tree-wide vestigial-cast deletion below remains **out of scope for this
+slice** and stays deferred to a future pass, per this doc's original
+sequencing note ("LW-5's per-file cast sweep can trail into later slots") —
+casts remain valid no-ops, so leaving them breaks nothing:
+
 - Delete cast-on-literal forms across src/ (~319), lib/ (~450), examples/
   (~222): most are removable *today* (plain paths), the `usize` cluster in
   lib/ becomes removable after LW-1. Per-file, bisectable; since an

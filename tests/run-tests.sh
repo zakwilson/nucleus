@@ -182,6 +182,29 @@ else
     echo "FAIL  ce3-use-after-move-rejected"; fail=1
 fi
 
+# Stage 14 LW-1/LW-2: an overload set with no i32 candidate (x:i64 / x:ui8)
+# called with a bare literal reaches the tier-2 widen/untyped-int-literal
+# adaptation pool on both candidates, so the call is genuinely ambiguous.
+# Compiling the fixture must FAIL with the widening-ambiguity error. (The
+# positive `examples/int-widening.nuc` run covers the unique-widen case; this
+# proves the ambiguity accounting still dies.)
+lw_ambig_err="$(./build/nucleusc --emit-llvm tests/fixtures/lw-ambiguous-widening.nuc 2>&1 >/dev/null || true)"
+if printf '%s' "$lw_ambig_err" | grep -q "ambiguous overload for 'f' under argument widening"; then
+    echo "PASS  lw-ambiguous-widening-rejected"
+else
+    echo "FAIL  lw-ambiguous-widening-rejected"; fail=1
+fi
+
+# Stage 14 LW-4: an out-of-range literal (300 does not fit ui8) must be a
+# compile-time error instead of the old silent trunc-and-wrap. Compiling the
+# fixture must FAIL with the representability error.
+lw_range_err="$(./build/nucleusc --emit-llvm tests/fixtures/lw-literal-range.nuc 2>&1 >/dev/null || true)"
+if printf '%s' "$lw_range_err" | grep -q "integer literal 300 does not fit ui8"; then
+    echo "PASS  lw-literal-range-rejected"
+else
+    echo "FAIL  lw-literal-range-rejected"; fail=1
+fi
+
 # Stage 13 L8: a public defn whose signature exposes a capturing-closure env
 # type (__vfn_env_N) is not C-callable, so --emit-cheader OMITS its prototype
 # (writing a comment in its place) and the compiler WARNS at the definition. A
