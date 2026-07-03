@@ -106,6 +106,32 @@ Repro (verified 2026-07-02, current `build/nucleusc`):
 
 ### SM-1 — the shared token map + chokepoint unification
 
+**Status: DONE (2026-07-03).** `ir-name-token` (+ helper `ir-name-append`) added
+in src/generics.nuc beside `op-name-token`; maps `?`→`_QMARK`, `!`→`_BANG`, all
+other bytes (hyphens included) pass through, with a pointer-unchanged fast path
+for names with neither char. Wired into four sites: `op-name-token`'s
+`sanitize-for-ir` fallthrough (overloaded path), the solitary branch in
+`finalize-generics` (generics.nuc), and `ns-ir-base` (nucleusc.nuc) — the last
+covering `defn-ir-name`'s fallback, `emit-defvar`/`extern` globals, and the
+`.nuch` solitary import + cheader function-name derivation in one chokepoint.
+`_StrMangleShim` and its four dummy conformers deleted from lib/strview-str.nuc;
+`str-empty?` et al. now resolve honestly on the solitary path. The compiler
+imports lib code with overloaded `?` methods (`contains?`/`empty?` on
+HashSet/HashMap), so its own self-compiled IR legitimately shifted
+`@contains_.…`→`@contains_QMARK.…`; this required the standard bootstrap
+reconverge (`make update-bootstrap` then `make clean && make`). Fixed point
+(stage1==stage2) restored; 144/144 tests pass (was 143 + the new example).
+New example `examples/predicate-names.nuc` + `tests/expected/predicate-names.out`;
+`nm` on its binary shows `full_QMARK`, `push_BANG`, `blank_QMARK` (ex-shim
+single-conformer shape), `zeroed_QMARK.pMeters`/`.pSeconds`. Bonus: because the
+fix landed in `ns-ir-base`, `--emit-cheader` now prints the real linkable symbol
+(`full_QMARK`) instead of the prior illegal `full?` for solitary `?`/`!` names —
+partially anticipating SM-3 for that path (the `sanitize-for-c` map and cheader
+overload param-suffix gap remain SM-3). Deferred to SM-5: the now-stale
+`context/build.md` gotcha bullets and the stale `context/conventions.md` note
+"`?`/`!` in user function names break LLVM symbols", plus the `docs/functions.md`
+naming section.
+
 - New `ir-name-token` (src/generics.nuc, beside `op-name-token`):
   replace `?`→`_QMARK`, `!`→`_BANG`, pass everything else through
   unchanged. `op-name-token` applies it before its `sanitize-for-ir`
