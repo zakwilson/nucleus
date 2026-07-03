@@ -1886,10 +1886,15 @@
   (return (fmt-2s "%s__%s" prefix base)))
 
 ; Compose the *current* namespace's ir-prefix onto a bare source name. Used at the
-; solitary-defn / defvar production sites, where the symbol is always defined in
-; the current namespace. Identity under `user` (empty prefix) → byte-identical.
+; solitary-defn / defvar production sites (and the symmetric `.nuch` import /
+; cheader name derivation), where the symbol is always defined in the current
+; namespace. The bare name is first run through ir-name-token so `?`/`!` become
+; `_QMARK`/`_BANG` — the single chokepoint that gives defvar globals, extern
+; re-resolves, and solitary `.nuch` imports the same IR-legal symbol the defn
+; emits. Identity under `user` (empty prefix) and for any name without `?`/`!`
+; (ir-name-token returns it unchanged) → byte-identical bootstrap.
 (defn ns-ir-base:ptr (name:ptr)
-  (return (ns-compose (ns-ir-prefix g-current-ns) name)))
+  (return (ns-compose (ns-ir-prefix g-current-ns) (ir-name-token name))))
 
 ; Index of field `fname` in struct `sd`, or -1. Shared by `.`, the `get`
 ; intrinsic, and the non-emitting type pass so the three cannot drift. `fname`

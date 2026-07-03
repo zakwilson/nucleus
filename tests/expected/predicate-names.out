@@ -1,0 +1,8 @@
+full? 150 = 1
+full? 50 = 0
+push! 41 = 42
+zeroed? meters(0) = 1
+zeroed? seconds(7) = 0
+blank? empty = 1
+blank? named = 0
+done

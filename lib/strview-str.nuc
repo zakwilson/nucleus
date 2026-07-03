@@ -51,23 +51,3 @@
   (strview-ends-with self suffix))
 (defn contains-str?:i32 ((self (ref StrView)) (needle (ref StrView)))
   (strview-contains-str self needle))
-
-; ---------------------------------------------------------------------------
-; Force-mangle shims for `?`-named Str methods.
-;
-; The Nucleus compiler only sanitizes method names (replacing `?` with `_` in
-; the LLVM IR symbol) when a generic has ≥2 implementations (overloaded).
-; The four `?`-named Str methods above are the ONLY implementations so far —
-; all four would be emitted as unmangled `@str-empty?` etc., which LLVM rejects.
-;
-; Fix: register a second implementation on a private dummy struct. This forces
-; the generics to be mangled, producing sanitized names like
-; `@str-empty_.ref.StrView` for the actual StrView dispatch.
-;
-; TODO (S4): remove once CStr or String provides a real second implementation.
-; ---------------------------------------------------------------------------
-(defstruct _StrMangleShim _dummy:i32)
-(defn str-empty?:i32 ((self (ref _StrMangleShim))) 0)
-(defn starts-with?:i32 ((self (ref _StrMangleShim)) (prefix (ref StrView))) 0)
-(defn ends-with?:i32   ((self (ref _StrMangleShim)) (suffix (ref StrView))) 0)
-(defn contains-str?:i32 ((self (ref _StrMangleShim)) (needle (ref StrView))) 0)
