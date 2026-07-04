@@ -345,6 +345,22 @@
   (let (a:ptr:Val (cast ptr:Val av)
         info:ptr:AbiInfo (cast ptr:AbiInfo (abi-classify ((cast ptr:Val av) type)))
         k:i32 ((cast ptr:AbiInfo (abi-classify ((cast ptr:Val av) type))) kind))
+    ; Stage 14 NS-3 (design/stage14/native-strings.md): an *unmaterialized* StrView
+    ; string literal (chameleon: is-lit=1, `val` is the bare data GEP) reaching
+    ; abi-arg-frag is always a variadic argument — a fixed StrView parameter is
+    ; materialized to a real {ptr,len} value (is-lit=0) by the call-site coercion
+    ; loop before this point. A printf-family `%s` expects a char*, so pass the
+    ; literal's data pointer (already `val`) as a plain ptr, byte-identical to the
+    ; old CStr vararg fragment. NOTE the split of responsibility: abi-arg-frag
+    ; CANNOT distinguish a fixed StrView parameter (passed by value = two INTEGER
+    ; eightbytes) from a *materialized* StrView variadic argument (must pass only
+    ; `.data`) — both are is-lit=0 StrView values here. So the materialized-view
+    ; variadic case is collapsed by the caller (emit-call-with-args), which knows
+    ; the fixed/variadic boundary; here we only special-case the chameleon literal,
+    ; which is unambiguously variadic. A fixed StrView value falls through to the
+    ; generic struct ABI (COERCE2), exactly as it must.
+    (when (and (!= (a is-lit) 0) (!= (type-is-strview (a type)) 0))
+      (return (fmt-2s "ptr %s" (a val))))
     (when (= k ABI-DIRECT)
       (return (fmt-2s "%s %s" (type-to-ir (a type)) (a val))))
     (let (ty:ptr (type-to-ir (a type))
@@ -435,6 +451,46 @@
     ; every pre-Stage-10 path is untouched.
     (when (= dk TY-PTR)
       (pkind-flow-check src target line "assignment"))
+    ; Stage 14 NS-3 (design/stage14/native-strings.md): an *unmaterialized* StrView
+    ; string literal (emit-string's default — is-lit=1, `val` is the bare data GEP,
+    ; `lit-i64` the byte length). It adapts to its target with no wasted IR:
+    ;   → ptr / CStr : the literal's data pointer already IS `val` (the backing
+    ;     rodata is NUL-terminated at data[len]), so this is a pure retype, no
+    ;     instruction — exactly today's CStr→ptr no-op. This is what keeps every
+    ;     fprintf/fmt/strcmp/`= "lit"`/`:ptr`-slot site in the compiler's own
+    ;     source byte-identical across the flip.
+    ;   → StrView    : the consumer genuinely wants a view — materialize the
+    ;     {data,len} struct here (deferred from emit-string). Compiler code never
+    ;     hits this (no StrView targets); it is for lib/examples.
+    ; Must precede the `sk == dk` identity return below, or a StrView target would
+    ; pass the chameleon through unmaterialized (a bare ptr typed as %StrView).
+    (when (and (!= (vv is-lit) 0) (!= (type-is-strview src) 0))
+      (when (or (= dk TY-PTR) (= dk TY-CSTR))
+        (let (rv:ptr:Val (cast ptr:Val (alloc-val target (vv val))))
+          (.set! rv taint (vv taint))
+          (.set! rv taint-frame (vv taint-frame))
+          (return (cast ptr rv))))
+      (when (!= (type-is-strview target) 0)
+        (let (v0:ptr (new-tmp)
+              v1:ptr (new-tmp)
+              svir:ptr (type-to-ir target))
+          (fprintf g-body-stream "  %s = insertvalue %s undef, ptr %s, 0\n"
+            v0 svir (vv val))
+          (fprintf g-body-stream "  %s = insertvalue %s %s, %s %ld, 1\n"
+            v1 svir v0 (ptr-int-ir) (vv lit-i64))
+          (return (alloc-val target v1)))))
+    ; Stage 14 NS-3 (design/stage14/native-strings.md): a StrView source (chameleon
+    ; literal or materialized value) whose target is a *different* by-value struct
+    ; must NOT be waved through by the `sk == dk` identity return below — both are
+    ; TY-STRUCT, so that line would reinterpret the StrView (a bare `ptr` for a
+    ; chameleon, a {ptr,len} aggregate for a value) as an unrelated struct and crash
+    ; the LLVM verifier (`store %Box <ptr>`). Fall through to the coercion-failure
+    ; (null) path instead, so the caller (`.set!`/`aset!`/let-init/…) reports a clean
+    ; "type mismatch" diagnostic. StrView→StrView (target IS StrView) drops through to
+    ; the identity return unchanged; StrView→ptr/CStr was already handled above.
+    (when (and (= sk TY-STRUCT) (!= (type-is-strview src) 0)
+               (= dk TY-STRUCT) (= (type-is-strview target) 0))
+      (return null))
     ; Same kind — identity
     (when (= sk dk) (return v))
     ; CStr is an opaque char* — freely interconvertible with a plain pointer,

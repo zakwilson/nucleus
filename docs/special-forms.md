@@ -330,13 +330,17 @@ type. A user `get` takes the selector as an interned symbol (`ptr`):
 **Value-keyed `get` (computed selectors).** Dispatch splits on the selector kind.
 A literal-symbol selector takes the member-access path above (the selector value
 is always an interned symbol `ptr`). A **computed/value selector** — an `i32`, a
-`CStr`, or any non-symbol value — instead resolves the `get` generic on the
-selector's *actual* type, so a parametric `get` override can index by a real key:
+`CStr`, a `StrView` (e.g. a string literal), or any non-symbol value — instead
+resolves the `get` generic on the selector's *actual* type, so a parametric `get`
+override can index by a real key. A string-literal selector resolves against a
+`(Bag K V)` whose `K` is `StrView` directly; if resolution instead finds only a
+`CStr`-keyed method (the common case — collection literals still infer `CStr`
+element/key types), the literal retries once collapsed to `CStr`:
 
 ```lisp
 (defstruct (Bag K V) key:K val:V has:i32)
 (defn (get (Maybe V)) ((self (ref (Bag K V))) key:K) …)   ; value-keyed lookup
-(get bag "hello")    ; CStr selector → the (Bag K V) get method, returns (Maybe V)
+(get bag "hello")    ; StrView literal selector (retries as CStr) → the (Bag K V) get method, returns (Maybe V)
 (get bag 42)         ; i32  selector → the same method
 (get bag 'val)       ; symbol selector → field access, returns the raw V field
 ```

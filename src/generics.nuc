@@ -409,6 +409,21 @@
 (defn arg-adapts:i32 (at:ptr pt:ptr is-lit:i32)
   (when (= at null) (return 0))
   (when (!= (type-eq at pt) 0) (return 1))
+  ; Stage 14 NS-3 (design/stage14/native-strings.md): a StrView (notably a string
+  ; literal, which borrows to a char* for free) adapts to a **CStr** parameter in
+  ; multimethod dispatch — and to CStr *only*, NOT to a bare `ptr`. This exactly
+  ; reproduces the pre-flip dispatch of a CStr literal, which tier-0 exact-matched a
+  ; CStr param but did NOT adapt to a `ptr` param (conventions.md: "pass a literal to
+  ; a plain ptr function freely, but to a ptr multimethod cast explicitly"). Adapting
+  ; to *both* CStr and bare ptr would make a generic overloaded on `(x:CStr)` and
+  ; `(x:ptr)` ambiguous for a literal arg, where before the flip it resolved to the
+  ; CStr overload. The collection literals `#{ "a" "b" }` / `[ "x" ]` still resolve:
+  ; the reader infers a CStr element type (lib/reader.nuc lit-kind-type), so conj's
+  ; bound `elem` param is CStr — this rule adapts the StrView literal to it. The
+  ; compiler declares no StrView-parameter overload, so this cannot be ambiguous.
+  (when (and (!= (type-is-strview at) 0)
+             (= (-> pt (cast ptr:Type _) (_ kind)) TY-CSTR))
+    (return 1))
   (let (a-int:i32 (is-int-type at)   a-flt:i32 (is-float-type at)
         p-int:i32 (is-int-type pt)   p-flt:i32 (is-float-type pt))
     (when (and (!= a-int 0) (!= p-int 0))
@@ -1749,7 +1764,9 @@
   (let (nn:ptr:Node (cast ptr:Node n))
     (when (= (nn kind) NODE-INT)   (return ty-i32))
     (when (= (nn kind) NODE-FLOAT) (return ty-f64))
-    (when (= (nn kind) NODE-STR)   (return ty-cstr))
+    ; Stage 14 NS-3: string literals are StrView (was CStr). Lockstep with
+    ; emit-string / node-type / valid-walk (conventions.md node-type↔emit-node).
+    (when (= (nn kind) NODE-STR)   (return (strview-type)))
     (when (= (nn kind) NODE-CHAR)  (return ty-char))
     (when (= (nn kind) NODE-SYM)   (return (node-type-sym n scope)))
     (when (!= (nn kind) NODE-CELL) (return ty-void))
@@ -2025,7 +2042,9 @@
   (let (nn:ptr:Node (cast ptr:Node n))
     (when (= (nn kind) NODE-INT)   (return ty-i32))
     (when (= (nn kind) NODE-FLOAT) (return ty-f64))
-    (when (= (nn kind) NODE-STR)   (return ty-cstr))
+    ; Stage 14 NS-3: string literals are StrView (was CStr). Lockstep with
+    ; emit-string / node-type / gcheck (conventions.md node-type↔emit-node).
+    (when (= (nn kind) NODE-STR)   (return (strview-type)))
     (when (= (nn kind) NODE-CHAR)  (return ty-char))
     (when (= (nn kind) NODE-SYM)   (return (node-type-sym n scope)))
     (when (!= (nn kind) NODE-CELL) (return ty-void))
@@ -3497,7 +3516,13 @@
     (when (= (nn kind) NODE-INT)
       (if (!= (int-literal-fits (nn i) ty-i32) 0) (return ty-i32) (return ty-i64)))
     (when (= (nn kind) NODE-FLOAT) (return ty-f64))
-    (when (= (nn kind) NODE-STR)   (return ty-cstr))
+    ; Stage 14 NS-3: a string literal now types as StrView (was CStr) — the flip.
+    ; Lockstep with emit-string (nucleusc.nuc) and the gcheck / valid-walk mirrors
+    ; (conventions.md node-type↔emit-node). emit-string emits only the bare GEP and
+    ; returns an *unmaterialized* StrView Val (is-lit=1, val=the data ptr); the
+    ; coercion chokepoints collapse it back to ptr/CStr with no IR (byte-identical)
+    ; or materialize {ptr,len} for a genuine StrView target.
+    (when (= (nn kind) NODE-STR)   (return (strview-type)))
     (when (= (nn kind) NODE-CHAR)  (return ty-char))
     (when (= (nn kind) NODE-SYM)   (return (node-type-sym n scope)))
     ; Keyword literal (Stage 11 cleanup §2): its static type is the `Keyword`
