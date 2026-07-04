@@ -1,0 +1,58 @@
+; Stage 14 defn-signature.md S1 — the new `(defn NAME (params):ret body…)`
+; signature style, matching fn/vfn/mfn/cfn. During S1 the compiler dual-accepts
+; this alongside the legacy `(defn name:ret (params) body…)`; both parse to an
+; identical function (proven byte-identical at the IR level). This program is
+; entirely new-style and exercises: a keyword ret (:i32/:i64), :void, a
+; colon-chain ret (:ptr:Box), a space-separated list-form ret ((Maybe i32)), a
+; new-style defprotocol method sig, new-style overloaded conformer defns, and a
+; bounded-generic template whose return is a type variable (:T) stamped per call.
+(import-use "stdio.h")
+
+; keyword ret :i32
+(defn add (a:i32 b:i32):i32 (+ a b))
+
+; keyword ret :i64
+(defn add64 (a:i64 b:i64):i64 (+ a b))
+
+; void ret in the new position
+(defn banner (n:i32):void (printf "banner=%d\n" n))
+
+; colon-chain keyword ret :ptr:Box
+(defstruct Box v:i32)
+(defvar the-box:Box)
+(defn box-ptr (x:i32):ptr:Box (.set! (addr-of the-box) v x) (addr-of the-box))
+
+; space-separated list-form ret (Maybe i32)
+(defn maybe-pos (x:i32) (Maybe i32)
+  (when (> x 0) (return (some x)))
+  (return none))
+
+; new-style defprotocol method sig: return keyword after the params
+(defprotocol Ord (less (a:Self b:Self):i1))
+
+; new-style overloaded conformer defns
+(defn less (a:i32 b:i32):i1 (< a b))
+(defn less (a:i64 b:i64):i1 (< a b))
+(extend i32 Ord)
+(extend i64 Ord)
+
+; generic template with a tyvar return in new style; stamped at i32 and i64
+(defn my-min (a:T b:T &where (Ord T)):T
+  (let (r:T a)
+    (when (less b a) (set! r b))
+    (return r)))
+
+(defn main:i32 ()
+  (printf "add=%d\n" (add 3 4))
+  (printf "add64=%ld\n" (add64 (cast i64 10) (cast i64 20)))
+  (banner 7)
+  (printf "boxv=%d\n" (_get (box-ptr 42) v))
+  (match (maybe-pos 5)
+    ((some v) (printf "maybe=%d\n" v))
+    (none (printf "maybe=none\n")))
+  (match (maybe-pos (- 0 5))
+    ((some v) (printf "maybe=%d\n" v))
+    (none (printf "maybe=none\n")))
+  (printf "min32=%d\n" (my-min 8 3))
+  (printf "min64=%ld\n" (my-min (cast i64 4) (cast i64 9)))
+  (return 0))

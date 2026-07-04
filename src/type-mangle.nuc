@@ -160,6 +160,20 @@
           (.set! new line (n line))
           (.set! new s ns)
           (return (cast ptr new)))))
+    ; Stage 14 defn-signature.md S1: a new-style return type rides in a
+    ; NODE-KEYWORD (`:T`, `:ptr:T`) at the head of the stamped body tail. Substitute
+    ; its colon-spelling like a symbol but keep it a keyword so fn-parse-ret-type
+    ; re-reads the stamped return correctly. A value keyword whose spelling names no
+    ; tyvar is returned unchanged (subst-tyvars-sym is identity), so legacy bodies
+    ; are unaffected.
+    (when (= (n kind) NODE-KEYWORD)
+      (let (ns:ptr (subst-tyvars-sym (n s) tyvars spellings ntv (n line)))
+        (when (= ns (n s)) (return node))
+        (let (new:ptr:Node (cast ptr:Node (alloc-node)))
+          (.set! new kind NODE-KEYWORD)
+          (.set! new line (n line))
+          (.set! new s ns)
+          (return (cast ptr new)))))
     (when (= (n kind) NODE-CELL)
       (return (make-cell (subst-tyvars-node (n car) tyvars spellings ntv)
                          (subst-tyvars-node (n cdr) tyvars spellings ntv)

@@ -876,15 +876,34 @@
                 (set! cur rest)))))))
     (return 0)))
 
+; The C-header return-type node of a defn form, honoring both signature styles:
+; legacy (`name:ret` / `(name ret)`) recovers it from the name node; new style
+; (S1) takes the index-3 operand, normalized so a keyword ret reads as a symbol
+; type node for type-node-to-c.
+(defn cheader-defn-ret-node:ptr (form:ptr)
+  (let (name-node:ptr (node-at form 1))
+    (when (= (sig-name-is-bare name-node) 0)
+      (return (extract-type-node name-node ((cast ptr:Node name-node) line))))
+    ; New style: the return operand is at index 3. type-node-to-c needs the nested
+    ; type-node form, so a colon-chain spelling (`ptr:Pt`) is split into `(ptr Pt)`
+    ; exactly as the legacy desugar path yields it; a plain spelling stays a symbol
+    ; node; a parenthesized list-form return is used verbatim.
+    (let (rn:ptr:Node (cast ptr:Node (node-at form 3)))
+      (when (or (= (rn kind) NODE-KEYWORD) (= (rn kind) NODE-SYM))
+        (when (!= (strchr (rn s) 58) null)
+          (return (split-colon-segments (rn s) (rn line))))
+        (return (normalize-ret-node (cast ptr rn))))
+      (return (cast ptr rn)))))
+
 (defn emit-cheader-declare:void (form:ptr)
-  ; (defn name:rettype (params...) ...)
+  ; (defn name:rettype (params...) ...)  /  (defn name (params...) rettype ...)
   (let (name-node:ptr (node-at form 1)
         fname:ptr null
         ret-name:ptr null)
     (extract-name-type name-node (cast ptr:ptr (addr-of fname)) (cast ptr:ptr (addr-of ret-name)))
     ; Skip signatures mentioning template-instance types (no C spelling yet).
     (let (skip:i32 (cheader-template-instance
-                     (extract-type-node name-node ((cast ptr:Node name-node) line)))
+                     (cheader-defn-ret-node form))
           params0:ptr (node-at form 2)
           np:i32 (node-len (node-at form 2)))
       (dotimes (pi np)
@@ -899,7 +918,7 @@
     ; type (__vfn_env_N) or a type-erased box type (BoxedFn/dyn) — not C-callable.
     ; A plain fn pointer is fine.
     (let (skip-cl:i32 (cheader-mentions-closure
-                        (extract-type-node name-node ((cast ptr:Node name-node) line)))
+                        (cheader-defn-ret-node form))
           clparams:ptr (node-at form 2)
           clnp:i32 (node-len (node-at form 2)))
       (dotimes (clpi clnp)
@@ -910,7 +929,7 @@
       (when (!= skip-cl 0)
         (printf "/* %s: exposes a closure or type-erased box type; not C-callable, omitted */\n" fname)
         (return)))
-    (let (rtnode:ptr (extract-type-node name-node ((cast ptr:Node name-node) line))
+    (let (rtnode:ptr (cheader-defn-ret-node form)
           ret-c:ptr "void")
       (when (!= rtnode null) (set! ret-c (type-node-to-c rtnode)))
       ; Stage 12 N6: emit the C-legal mangled link name (`geom__area`) for a

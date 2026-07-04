@@ -1,0 +1,4 @@
+; Stage 14 defn-signature.md S1 — a bare-name (new-style) defn that stops before
+; its mandatory return operand must die cleanly with the targeted diagnostic from
+; defn-parse-sig, not a raw crash or a remote type error.
+(defn foo (x:i32))
