@@ -1,0 +1,24 @@
+; Stage 14 NS-4 (design/stage14/native-strings.md): the `c"…"` literal form.
+;
+; A `c` glued directly to a string literal (no whitespace: `c"…"`) is an
+; explicit CStr — the bare char*, no StrView view header and no target-typing —
+; the direct "I mean char*" spelling for FFI/format hot spots. A plain `"…"` is
+; a StrView (NS-3) that still borrows to char* for free via the hidden NUL. This
+; test proves:
+;   (a) a c"…" literal flows into a printf %s vararg as a char*;
+;   (b) a c"…" literal flows into an extern C function expecting char*;
+;   (c) a plain "…" literal still free-coerces to that same char* extern.
+
+(import-use "stdio.h")
+
+; (b)/(c): an extern C function whose sole parameter is char* (CStr).
+(declare strlen:usize (s:CStr))
+
+(defn main:i32 ()
+  ; (a) c"…" as a printf %s vararg — the bare char*, no view header.
+  (printf "cstr=%s\n" c"hello")
+  ; (b) c"…" into the extern expecting char*.
+  (printf "clit-len=%d\n" (cast i32 (strlen c"hello")))
+  ; (c) plain "…" (a StrView literal) free-coerces to char* for the same extern.
+  (printf "view-len=%d\n" (cast i32 (strlen "hello")))
+  (return 0))

@@ -1766,7 +1766,10 @@
     (when (= (nn kind) NODE-FLOAT) (return ty-f64))
     ; Stage 14 NS-3: string literals are StrView (was CStr). Lockstep with
     ; emit-string / node-type / valid-walk (conventions.md node-type↔emit-node).
-    (when (= (nn kind) NODE-STR)   (return (strview-type)))
+    (when (= (nn kind) NODE-STR)
+      ; NS-4: an explicit c"…" literal (reader set Node.i=1) types as CStr, not
+      ; the StrView default — lockstep with emit-string's NS-4 short-circuit.
+      (if (!= (nn i) (cast i64 0)) (return ty-cstr) (return (strview-type))))
     (when (= (nn kind) NODE-CHAR)  (return ty-char))
     (when (= (nn kind) NODE-SYM)   (return (node-type-sym n scope)))
     (when (!= (nn kind) NODE-CELL) (return ty-void))
@@ -2044,7 +2047,10 @@
     (when (= (nn kind) NODE-FLOAT) (return ty-f64))
     ; Stage 14 NS-3: string literals are StrView (was CStr). Lockstep with
     ; emit-string / node-type / gcheck (conventions.md node-type↔emit-node).
-    (when (= (nn kind) NODE-STR)   (return (strview-type)))
+    (when (= (nn kind) NODE-STR)
+      ; NS-4: an explicit c"…" literal (reader set Node.i=1) types as CStr, not
+      ; the StrView default — lockstep with emit-string's NS-4 short-circuit.
+      (if (!= (nn i) (cast i64 0)) (return ty-cstr) (return (strview-type))))
     (when (= (nn kind) NODE-CHAR)  (return ty-char))
     (when (= (nn kind) NODE-SYM)   (return (node-type-sym n scope)))
     (when (!= (nn kind) NODE-CELL) (return ty-void))
@@ -3522,7 +3528,10 @@
     ; returns an *unmaterialized* StrView Val (is-lit=1, val=the data ptr); the
     ; coercion chokepoints collapse it back to ptr/CStr with no IR (byte-identical)
     ; or materialize {ptr,len} for a genuine StrView target.
-    (when (= (nn kind) NODE-STR)   (return (strview-type)))
+    (when (= (nn kind) NODE-STR)
+      ; NS-4: an explicit c"…" literal (reader set Node.i=1) types as CStr, not
+      ; the StrView default — lockstep with emit-string's NS-4 short-circuit.
+      (if (!= (nn i) (cast i64 0)) (return ty-cstr) (return (strview-type))))
     (when (= (nn kind) NODE-CHAR)  (return ty-char))
     (when (= (nn kind) NODE-SYM)   (return (node-type-sym n scope)))
     ; Keyword literal (Stage 11 cleanup §2): its static type is the `Keyword`

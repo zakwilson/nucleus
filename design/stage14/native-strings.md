@@ -270,6 +270,25 @@ methods) — covered by `make test` output diffs, not the bootstrap.
   literal→extern C, `c"…"`→extern.
 - **Refresh**: none (additive).
 
+**Status: done (2026-07-04).** Mechanism = reuse `Node.i` (i64, previously
+unused for `NODE-STR`) as a boolean CStr discriminant (`0` = `StrView` default,
+`1` = explicit `c"…"`) — no new `NodeKind`, so no new dispatch sites, and
+dormant for every existing literal. Reader (`lib/reader.nuc`): `next-tok`
+detects `c` (99) immediately followed by `"` (34) via one-char lookahead,
+consumes both, lexes the body as a plain literal, flags the token `i=1`; the
+`TOK-STRING`→`NODE-STR` conversion copies `(t i)` into `NODE-STR.i`. The three
+`node-type` `NODE-STR` lockstep sites (`src/generics.nuc`) branch `i≠0` →
+`ty-cstr` else `(strview-type)`; `emit-string` (`src/nucleusc.nuc`)
+short-circuits `i≠0` to the bare-GEP `CStr` Val regardless of the ambient
+target, ahead of the NS-3 chameleon logic. Gate met: purely additive/dormant
+(no compiler source uses `c"…"`), so `make bootstrap` is byte-identical on the
+first try with no `update-bootstrap` refresh. `examples/cstr-lit-test.nuc`
+exercises `c"…"`→`printf %s`, `c"…"`→`extern strlen(char*)`, and plain `"…"`→the
+same extern (free coerce, no regression). 154/154 tests. Not carried: quoted
+`c"…"` (`emit-quote-tree` intentionally does not store `Node.i` for `NODE-STR`,
+keeping quoted plain strings byte-identical). Docs/conventions reconciliation is
+NS-6.
+
 ### NS-5 — selective compiler-internal adoption (opt-in, bounded, per-site)
 
 Move chosen `ptr` string sites to `StrView` **only where a carried length removes a

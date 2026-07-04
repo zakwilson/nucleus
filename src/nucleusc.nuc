@@ -900,6 +900,13 @@
     (fprintf g-body-stream
       "  %s = getelementptr inbounds [%d x i8], ptr @.str.%d, i64 0, i64 0\n"
       tmp ir-len id)
+    ; Stage 14 NS-4 (design/stage14/native-strings.md): an explicit c"…" literal
+    ; (the reader set Node.i=1) is a CStr — the bare char*, no StrView view header
+    ; and no target-typing. Return the GEP as CStr regardless of the ambient
+    ; target, short-circuiting the NS-3 StrView logic below. Dormant for the
+    ; compiler's own literals (all i=0 → the StrView path), so byte-identical.
+    (when (!= (nn i) (cast i64 0))
+      (return (alloc-val ty-cstr tmp)))
     ; Stage 14 NS-3 (design/stage14/native-strings.md): the flip — a string
     ; literal now types as StrView (node-type mirrors this at the three lockstep
     ; sites in generics.nuc). Emission stays *target-aware and byte-identical*: the
