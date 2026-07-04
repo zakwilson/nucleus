@@ -900,14 +900,15 @@
     (fprintf g-body-stream
       "  %s = getelementptr inbounds [%d x i8], ptr @.str.%d, i64 0, i64 0\n"
       tmp ir-len id)
-    ; Stage 14 NS-2 (design/stage14/native-strings.md): target-typed
-    ; materialization. When the consumer expects a StrView, build the {data,len}
-    ; borrowed view over the (hidden-NUL-terminated) rodata global — `data` is the
-    ; bare GEP above, `len` is the interned byte count (no runtime strlen). DORMANT:
-    ; NODE-STR still types as CStr (NS-3 flips it), and emit-node passes a null
-    ; target, so `type-is-strview` is 0 for every literal and each one falls through
-    ; to the bare-GEP CStr below → byte-identical bootstrap. The GEP is emitted
-    ; unconditionally so the CStr path stays textually identical to before.
+    ; Stage 14 NS-3 (design/stage14/native-strings.md): the flip — a string
+    ; literal now types as StrView (node-type mirrors this at the three lockstep
+    ; sites in generics.nuc). Emission stays *target-aware and byte-identical*: the
+    ; bare GEP above is the only IR the common (ptr/CStr) case needs.
+    ;
+    ; Eager materialization: when a caller *explicitly* threads a StrView target,
+    ; build the {data,len} view here (data = the bare GEP, len = the interned byte
+    ; count, no runtime strlen). emit-node passes null, so this stays dormant for
+    ; the compiler's own literals.
     (when (!= (type-is-strview target) 0)
       (let (v0:ptr (new-tmp)
             v1:ptr (new-tmp)
@@ -917,7 +918,24 @@
         (fprintf g-body-stream "  %s = insertvalue %s %s, %s %d, 1\n"
           v1 svir v0 (ptr-int-ir) slen)
         (return (alloc-val target v1))))
-    (return (alloc-val ty-cstr tmp))))
+    ; Default path (no threaded target): return an *unmaterialized* StrView
+    ; literal. Only the bare GEP was emitted; the Val carries the data pointer in
+    ; `val` and the byte length in `lit-i64`, with `is-lit=1` marking it a literal
+    ; (a StrView type disambiguates it from an int literal — the only other is-lit
+    ; user). A consumer that wants ptr/CStr *collapses* it back to that bare GEP
+    ; with NO extra IR (coerce-int-val / safe-coerce-val / abi-arg-frag /
+    ; strview-data-ir all special-case this literal), so every fprintf/fmt/strcmp/
+    ; `= "lit"` site in the compiler emits exactly as before → byte-identical
+    ; bootstrap. A consumer that genuinely wants a StrView materializes {ptr,len}
+    ; from these fields (coerce-int-val). If StrView is somehow unregistered (a
+    ; broken prelude), fall back to the old CStr literal — consistent with
+    ; node-type returning null for NODE-STR in that case.
+    (let (svty:ptr (strview-type))
+      (when (= svty null) (return (alloc-val ty-cstr tmp)))
+      (let (rv:ref:Val (alloc-val svty tmp))
+        (.set! rv is-lit 1)
+        (.set! rv lit-i64 (cast i64 slen))
+        (return (cast ptr rv))))))
 
 ; Keyword literal (Stage 11 cleanup §2). `:foo` self-evaluates to the one
 ; canonical `Keyword` value for "foo". Rather than hand-roll the (struct-by-value
@@ -1451,6 +1469,15 @@
         src:ptr (vv type)
         sk:i32 ((cast ptr:Type src) kind)
         dk:i32 ((cast ptr:Type target) kind))
+    ; Stage 14 NS-3 (design/stage14/native-strings.md): a StrView source (notably
+    ; an unmaterialized string literal, whose IR type "%StrView" differs from a
+    ; ptr/CStr parameter's and so reaches the call-site coercion) routes through
+    ; coerce-int-val — it collapses the literal to ptr/CStr with NO IR (keeping the
+    ; compiler's own arg-passing byte-identical) or materializes {ptr,len} for a
+    ; StrView parameter. Placed before the sk==dk short-circuit so a StrView→StrView
+    ; literal materializes rather than passing the chameleon through.
+    (when (!= (type-is-strview src) 0)
+      (return (coerce-int-val v target line)))
     (when (= sk dk) (return v))
     (when (and (!= (is-int-type src) 0) (!= (is-int-type target) 0))
       (return (coerce-int-val v target line)))
@@ -1572,6 +1599,11 @@
 ; StrView operand exists (NS-3): `type-is-strview` is 0 for every current operand.
 (defn strview-data-ir:ptr (v:ptr)
   (let (vv:ptr:Val (cast ptr:Val v))
+    ; Stage 14 NS-3: an *unmaterialized* string literal (is-lit=1, StrView type)
+    ; keeps its data pointer directly in `val` (the bare GEP), so no extractvalue —
+    ; `(= name "lit")` lowers to exactly the same strcmp as the old CStr literal.
+    (when (and (!= (vv is-lit) 0) (!= (type-is-strview (vv type)) 0))
+      (return (vv val)))
     (when (!= (type-is-strview (vv type)) 0)
       (let (d:ptr (new-tmp))
         (fprintf g-body-stream "  %s = extractvalue %s %s, 0\n"
@@ -1719,6 +1751,21 @@
       (let (dst:ptr (parse-type-from-node (cast ptr type-node) (type-node line))
             v:ref:Val (emit-node (node-at cc 2) scope)
             src:ptr (v type))
+        ; Stage 14 NS-3 (design/stage14/native-strings.md): a StrView chameleon
+        ; literal's kind is TY-STRUCT, so the same-kind identity fast path below
+        ; would fire for BOTH `(cast StrView "…")` and `(cast OtherStruct "…")`,
+        ; returning the bare-GEP Val mislabeled as the destination struct (a `ptr`
+        ; typed as `%Dst`) and crashing the LLVM verifier downstream. Route any
+        ; StrView literal cast through the value coercer FIRST — it materializes a
+        ; genuine {ptr,len} for a StrView target, collapses to the bare GEP for a
+        ; ptr/CStr target (no IR, byte-identical to the old CStr cast), and returns
+        ; null → a clean diagnostic for an unrelated struct target. Must precede the
+        ; identity return.
+        (when (and (!= (v is-lit) 0) (!= (type-is-strview src) 0))
+          (let (cv:?ptr:Val (coerce-int-val (cast ptr v) dst (cc line)))
+            (when (= cv null)
+              (die-at (cc line) "cast: unsupported StrView conversion"))
+            (return (cast ref:Val cv))))
         ; Reinterpreting casts preserve pointer identity, so the result keeps
         ; the operand's escape taint (lifecycle.md §2.2).
         (when (= (-> src (cast ptr:Type _) (_ kind)) (-> dst (cast ptr:Type _) (_ kind)))
@@ -1730,6 +1777,18 @@
           (let (rv:ref:Val (alloc-val dst (v val)))
             (val-copy-taint (cast ptr rv) (cast ptr v))
             (return rv)))
+        ; Stage 14 NS-3 (design/stage14/native-strings.md): an explicit cast of a
+        ; StrView to a pointer is the free borrow-to-ptr (`(cast ptr "…")` is common
+        ; in the compiler — string literals stored into ptr registries). Delegates
+        ; to the value coercer so the chameleon-collapse (unmaterialized literal →
+        ; bare GEP, no IR) / extractvalue (general view → `data`) logic lives in one
+        ; place. Byte-identical for `(cast ptr "lit")`: it was a CStr→ptr no-op
+        ; before the flip and stays a no-op after.
+        (when (and (!= (type-is-strview src) 0) (!= (is-ptr-like dst) 0))
+          (let (cv:?ptr:Val (coerce-int-val (cast ptr v) dst (cc line)))
+            (when (= cv null)
+              (die-at (cc line) "cast: unsupported StrView conversion"))
+            (return (cast ref:Val cv))))
         ; Function value <-> pointer: a TY-FN value is already `ptr` in opaque-
         ; pointer IR (a function pointer), so this is a no-IR reinterpret. Needed
         ; e.g. to type-erase a handler fn into a Handler's hfn:ptr (errors.md §11).
@@ -2275,6 +2334,21 @@
           (aset! (cast ptr:ptr argtypes) 0 ct)
           (aset! (cast ptr:ptr argtypes) 1 kt)
           (let (m:?ptr:Method (generic-resolve-nullable g argtypes 2 line))
+            ; Stage 14 NS-3 (design/stage14/native-strings.md): a string-literal key
+            ; is an unmaterialized StrView. `generic-resolve-nullable` matches keys
+            ; exactly (no borrow), so a StrView key does not match a CStr-keyed `get`
+            ; method — the overwhelmingly common case (`(get cstr-map "k")`). If the
+            ; StrView-keyed resolution fails, retry with the free CStr borrow:
+            ; collapse the literal to CStr (a no-IR retype — `val` is the bare GEP)
+            ; and re-resolve. StrView-keyed maps (should any exist) still bind on the
+            ; first attempt, so their behavior is unchanged. Dead for the compiler
+            ; (no value-keyed `get` on a string literal in src/).
+            (when (and (= m null)
+                       (!= (sel-val is-lit) 0)
+                       (!= (type-is-strview kt) 0))
+              (.set! sel-val type ty-cstr)
+              (aset! (cast ptr:ptr argtypes) 1 ty-cstr)
+              (set! m (generic-resolve-nullable g argtypes 2 line)))
             (when (!= m null)
               (let (args:ptr (arena-alloc (* (cast i64 2) (sizeof Val))))
                 (memcpy (ptr+ (cast ptr:Val args) 0) cv (sizeof Val))
@@ -2749,6 +2823,24 @@
               (let (av:ptr:Val (cast ptr:Val (ptr+ (cast ptr:Val args) ri))
                     av-val:ptr (av val)
                     aty:ptr:Type (cast ptr:Type (av type)))
+                ; Stage 14 NS-3: a string-literal &rest arg collapses to CStr so it
+                ; folds into Node.car as a plain pointer — its `val` is already the
+                ; bare data GEP, exactly as a CStr literal did before the flip (no
+                ; inttoptr). Re-read the type after the in-place collapse.
+                (collapse-strlit-cstr (cast ptr av))
+                (set! aty (cast ptr:Type (av type)))
+                ; A *materialized* (non-literal) StrView value is not collapsed by
+                ; collapse-strlit-cstr (that only retypes the chameleon literal);
+                ; its `val` is a real {ptr,len} aggregate that is-ptr-like rejects and
+                ; the inttoptr below cannot take (inttoptr needs an integer operand,
+                ; not a struct). Extract its `.data` pointer so it folds into Node.car
+                ; as a plain char*, matching the literal path.
+                (when (!= (type-is-strview (cast ptr aty)) 0)
+                  (let (d:ptr (new-tmp))
+                    (fprintf g-body-stream "  %s = extractvalue %s %s, 0\n"
+                      d (type-to-ir (cast ptr aty)) av-val)
+                    (set! av-val d)
+                    (set! aty ty-ptr)))
                 ; Coerce non-pointer values to ptr so they fit in Node.car
                 ; (a CStr is already a pointer — no inttoptr).
                 (when (= (is-ptr-like (cast ptr aty)) 0)
@@ -2776,6 +2868,20 @@
         (dotimes (ci ncoerce)
           (let (slot:ptr:Val (cast ptr:Val (ptr+ (cast ptr:Val args) ci))
                              ptype:ptr (aref (cast ptr:ptr (ft0 params)) ci))
+              ; Stage 14 NS-3 (design/stage14/native-strings.md): materialize an
+              ; unmaterialized StrView string literal that flows into a StrView-typed
+              ; parameter. Its IR type already matches the parameter ("%StrView"),
+              ; so the type-to-ir coercion guard below would skip it and pass the
+              ; bare data pointer where a {ptr,len} view is expected; coerce-int-val
+              ; builds the view. Dead for the compiler (no StrView params); a StrView
+              ; literal into a ptr/CStr parameter is collapsed (no IR) by the guard's
+              ; safe-coerce-val path instead.
+              (when (and (!= (slot is-lit) 0)
+                         (!= (type-is-strview (slot type)) 0)
+                         (!= (type-is-strview ptype) 0))
+                (let (nc:ptr (coerce-int-val (cast ptr slot) ptype (cc line)))
+                  (when (and (!= nc null) (!= nc (cast ptr slot)))
+                    (memcpy slot nc (sizeof Val)))))
               ; Stage 13 TE-3: a closure (ref Env) argument flowing into a
               ; BoxedFn-typed parameter is heap-boxed into the shared fat pointer
               ; BEFORE the CE-3 by-value normalization (which would otherwise see a
@@ -2832,6 +2938,26 @@
         (let (av:ptr:Val (cast ptr:Val (ptr+ (cast ptr:Val args) i))
               sep:ptr "")
           (when (!= i 0) (set! sep ", "))
+          ; Stage 14 NS-3 (design/stage14/native-strings.md): a *materialized*
+          ; StrView value flowing into a C variadic slot (index beyond a variadic
+          ; callee's fixed params) must pass only its data pointer — a printf `%s`
+          ; wants a char*, not the {ptr,len} pair as two INTEGER eightbytes (which
+          ; would occupy two vararg slots and shift every later argument, leaking
+          ; the byte length into the next conversion). This is the site that knows
+          ; the fixed/variadic boundary: a fixed StrView PARAMETER (i < num-params)
+          ; is passed by value (COERCE2) and is left untouched; a chameleon literal
+          ; vararg is handled by abi-arg-frag's is-lit guard. So this collapses only
+          ; a genuine StrView VALUE at a variadic position. Dead for the compiler
+          ; (no materialized StrView reaches a vararg in src/), so byte-identical.
+          (when (and (!= (ft0 variadic) 0)
+                     (>= i (ft0 num-params))
+                     (!= (type-is-strview (av type)) 0)
+                     (= (av is-lit) 0))
+            (let (d:ptr (new-tmp))
+              (fprintf g-body-stream "  %s = extractvalue %s %s, 0\n"
+                d (type-to-ir (av type)) (av val))
+              (.set! av type ty-ptr)
+              (.set! av val d)))
           ; abi-arg-frag returns "<ty> <val>" for scalars/pointers (unchanged),
           ; or the byval / register-coerced fragment for a struct-by-value arg
           ; (emitting the materialization instructions as a side effect).
@@ -5463,6 +5589,10 @@
                 (narrow-names scope tfacts))))
           (let (bv:ref:Val (emit-node body-node scope)
                 bterm:i32 g-block-term)
+            ; Stage 14 NS-3: a string-literal cond/if branch collapses to CStr (no
+            ; IR) so the branch join and phi stay a plain pointer, exactly as a
+            ; CStr-literal branch did before the flip. See collapse-strlit-cstr.
+            (collapse-strlit-cstr (cast ptr bv))
             (when (= bterm 0)
               (let (join-lbl:ptr (fmt-i32-i32 "cond.join%d.%d" id i)
                     bty:ptr (bv type))

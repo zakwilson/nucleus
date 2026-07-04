@@ -1063,6 +1063,10 @@
             (while (!= bcur null)
               (set! bv (emit-node ((cast ptr:Node bcur) car) inner))
               (set! bcur ((cast ptr:Node bcur) cdr)))
+            ; Stage 14 NS-3: a match arm ending in a string literal collapses to
+            ; CStr (no IR) so the join/phi stays a plain pointer. See
+            ; collapse-strlit-cstr.
+            (collapse-strlit-cstr (cast ptr bv))
             (emit-scope-cleanups inner)
             (let (bterm:i32 g-block-term)
               (when (= bterm 0)
@@ -1423,6 +1427,9 @@
     (while (!= bcur null)
       (set! bv (emit-node ((cast ptr:Node bcur) car) inner))
       (set! bcur ((cast ptr:Node bcur) cdr)))
+    ; Stage 14 NS-3: a niche/Result match arm ending in a string literal collapses
+    ; to CStr (no IR) so the join/phi stays a plain pointer. See collapse-strlit-cstr.
+    (collapse-strlit-cstr (cast ptr bv))
     (emit-scope-cleanups inner)
     (when (= g-block-term 0)
       (let (join-lbl:ptr (fmt-i32-i32 "match.join%d.%d" id which)

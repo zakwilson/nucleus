@@ -28,7 +28,9 @@
     (printf "copy = foo  : %d\n" (= (cast CStr buf) "foo"))
     (printf "copy ptr==  : %d\n" (= (cast ptr buf) (cast ptr "foo"))))
 
-  ; Through the Eq-bounded generic (T := CStr).
-  (printf "same hi hi  : %d\n" (same "hi" "hi"))
-  (printf "same hi yo  : %d\n" (same "hi" "yo"))
+  ; Through the Eq-bounded generic (T := CStr). Stage 14 NS-3: a bare "…" is now a
+  ; StrView, so cast to CStr to keep binding this generic at CStr (StrView's Eq is
+  ; import-gated in lib/strview.nuc and not pulled in here).
+  (printf "same hi hi  : %d\n" (same (cast CStr "hi") (cast CStr "hi")))
+  (printf "same hi yo  : %d\n" (same (cast CStr "hi") (cast CStr "yo")))
   (return 0))

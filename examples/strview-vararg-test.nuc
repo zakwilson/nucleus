@@ -1,0 +1,25 @@
+; Stage 14 NS-3 (design/stage14/native-strings.md) regression: StrView ABI at
+; call boundaries. Locks in two behaviours that are easy to get wrong together:
+;   (1) a MATERIALIZED StrView passed as a printf `%s` vararg must contribute
+;       ONLY its data pointer (a char*), not the {ptr,len} pair as two variadic
+;       slots — otherwise the carried length leaks into the next conversion
+;       (n would print 5, the length of "hello", instead of 42).
+;   (2) a fixed StrView BY-VALUE parameter must still be passed by value (the
+;       two-eightbyte struct ABI), NOT collapsed to its data pointer — the
+;       variadic collapse in (1) must never touch a fixed parameter.
+(import-use "stdio.h")
+(import-use strview)
+
+; (2) fixed StrView by-value parameter — reads .len via the by-ref accessor.
+(defn sv-len:usize (v:StrView) (return (strview-len (addr-of v))))
+
+(defn main:i32 ()
+  (let (a:StrView "hello"
+        b:StrView "hi")
+    ; (2) by-value StrView params: correct lengths prove the struct ABI holds.
+    (printf "len-a=%llu len-b=%llu\n" (cast ui64 (sv-len a)) (cast ui64 (sv-len b)))
+    ; (1) materialized StrView %s vararg followed by a %d: n must be 42, not 5.
+    (printf "a=%s n=%d\n" a 42)
+    ; a chameleon string literal in the same variadic position stays correct.
+    (printf "lit=%s n=%d\n" "world" 7))
+  (return 0))

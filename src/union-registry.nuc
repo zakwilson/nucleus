@@ -295,6 +295,23 @@
     (.set! t sdef sd)
     (return t)))
 
+; Stage 14 NS-3 (design/stage14/native-strings.md): the Type* for the prelude
+; `StrView` struct — the type a string literal (NODE-STR) carries once the flip
+; lands. Unlike `ty-cstr` (a builtin, init-time global), StrView is a user struct
+; promoted to the prelude in NS-1, so its Type must be resolved dynamically from
+; the struct registry. It is always registered by the time any literal is
+; typed/emitted (prescan-struct-names registers every struct name before any
+; emission, and StrView sits near the top of the prelude), so this returns
+; non-null in practice; a null result (a broken/missing prelude) lets the callers
+; fall back to a bare pointer rather than crash. A fresh Type is built per call
+; (like type-for-sdef); type-eq keys on the sdef pointer, not Type identity, so
+; two StrView Types compare equal. Identity of "StrView" is the interned symbol
+; name, exactly how lookup-struct keys the registry (and type-is-strview matches).
+(defn strview-type:?ptr:Type ()
+  (let (sd:ptr (lookup-struct ((cast ptr:Node (intern-symbol "StrView")) s)))
+    (when (= sd null) (return null))
+    (return (cast ptr (type-for-sdef sd)))))
+
 ; ============================================================
 ; Stage 13 type-erasure (TE-1): the shared fat-pointer aggregate.
 ; ============================================================

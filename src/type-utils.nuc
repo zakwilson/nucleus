@@ -90,6 +90,23 @@
         (return 1))
       (return 0))))
 
+; Stage 14 NS-3 (design/stage14/native-strings.md): collapse an *unmaterialized*
+; StrView string literal (emit-string's chameleon: is-lit=1, StrView type, `val` is
+; the bare data GEP) to a plain CStr in place — a no-IR retype, since the literal's
+; data pointer already IS `val`. Used at every site where a Val's TYPE, not a
+; coercion, drives IR that references its `val`: a cond/match/if-some phi (a
+; `%StrView` phi over bare-ptr operands is malformed) and the &rest fold (which
+; `inttoptr`s a non-ptr-like arg). There the literal must contribute exactly as a
+; CStr literal did before the flip — a plain pointer. A genuine (materialized)
+; StrView value (is-lit=0), whose `val` is a real first-class struct, is left
+; untouched. Returns 1 if it collapsed the Val, else 0.
+(defn collapse-strlit-cstr:i32 (v:ptr)
+  (let (vv:ptr:Val (cast ptr:Val v))
+    (when (and (!= (vv is-lit) 0) (!= (type-is-strview (vv type)) 0))
+      (.set! vv type ty-cstr)
+      (return 1))
+    (return 0)))
+
 ; Map a Nucleus type to its C representation string.
 ; For function pointer types, returns a simplified "void*" — the full
 ; C function pointer syntax (with return type and params) is handled
