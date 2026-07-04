@@ -356,4 +356,16 @@ templates, so a bounded-generic `defn` emits garbage C (`struct T gmax(…)`) in
 **both** styles — the cheader dispatch (`cheader.nuc:1062`) needs a
 `defn-is-generic-template` guard, tracked separately.
 
-Phases S2–S4 pending.
+**Phase S2 — boot refresh: DONE (2026-07-04).** `make update-bootstrap`
+regenerated `boot/nucleusc.ll` from the S1 dual-accept-capable `build/nucleusc`;
+`make windows-boot` regenerated both cross-compiled boot artifacts
+(`boot/nucleusc-x86_64-windows-gnu.ll`, `boot/nucleusc-x86_64-windows-msvc.ll`)
+from that same S1-capable compiler. These three `boot/*.ll` files are the only
+tree changes for this phase. A full `make clean && make && make bootstrap`
+reconverged byte-identical (stage1.ll == stage2.ll — expected, since S1 was
+itself additive and byte-identical) and `make test` passed 162/162. Practical
+effect: the checked-in boot compiler itself now accepts both defn signature
+styles, which is the prerequisite for Phase S3 — the boot must already parse
+new-style syntax before the tree-wide mechanical rewrite can be built with it.
+
+Phases S3–S4 pending.
