@@ -451,6 +451,21 @@
             (.set! tq line line)
             (.set! tq s (rm wrap-sym))
             (return (ok (cast ptr tq)))))))
+    ; Stage 14 NS-4 (design/stage14/native-strings.md): `c"…"` — a `c` glued
+    ; directly to an opening quote with no whitespace — is an explicit CStr
+    ; literal: the bare char* GEP, no StrView view header, no target-typing (the
+    ; direct "I mean char*" spelling for FFI/format hot spots). `c"` adjacency is
+    ; otherwise unreachable — a bare symbol `c` is delimiter-separated from a
+    ; following string — so this is purely additive and no existing source uses
+    ; it. Consume the `c` and the quote, lex the body exactly as a plain literal,
+    ; and flag the token CStr via `i=1`, carried into NODE-STR.i and read by
+    ; emit-string / node-type. A plain `"…"` leaves `i=0` → StrView (NS-3).
+    (when (and (= c 99) (= (char-at g-src (+ g-pos (cast i64 1))) 34))
+      (do (next-char)
+          (next-char)
+          (let (cst:ptr (try (lex-string line)))
+            (.set! (cast ptr:Tok cst) i (cast i64 1))
+            (return (ok cst)))))
     (when (= c 34)
       (do (next-char) (return (lex-string line))))
     ; Char literal (Stage 11 M6 S0): a leading backslash. No current source has a
@@ -772,6 +787,10 @@
       (let (n:ptr:Node (cast ptr:Node (alloc-node)))
         (.set! n kind NODE-STR)
         (.set! n line (t line))
+        ; NS-4: carry the CStr flag (0 = StrView default, 1 = explicit c"…").
+        ; A plain string token has i=0 (arena zero-fill), so this is a no-op for
+        ; every existing literal — byte-identical.
+        (.set! n i (t i))
         (.set! n s (t s))
         (return (ok (cast ptr n)))))
     (when (= (t kind) TOK-SYMBOL)
