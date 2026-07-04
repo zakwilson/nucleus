@@ -549,10 +549,11 @@
 ; If a defn form's name is overloaded, return that method's mangled @-symbol;
 ; else null. Used by .nuch export to declare overloads under their real symbols.
 (defn defn-form-mangled-name:ptr (form:ptr)
-  (let (fname:ptr null
-        ret:ptr (extract-name-and-type (node-at form 1) (cast ptr:ptr (addr-of fname))
-                                        ((cast ptr:Node (node-at form 1)) line)))
-    (when (= ret null) (return null))
+  ; S1: the bare name is all this needs — the former ret extraction served only as
+  ; a malformed-name guard, which defn-name-only's null return now covers. Works
+  ; for both signature styles.
+  (let (fname:ptr (defn-name-only (node-at form 1)))
+    (when (= fname null) (return null))
     (let (g:ptr (generic-lookup fname))
       (when (= g null) (return null))
       (when (= (-> g (cast ptr:Generic _) (_ mangled)) 0) (return null))
@@ -827,7 +828,7 @@
     ; each parameter/return type pattern, a safe upper bound on collectible
     ; tyvars. Add the return-type node count and 1 so the array is never empty.
     (let (np:i32 (node-len params-node)
-          cap:i32 (+ (count-pattern-nodes (binding-type-node name-node)) 1)
+          cap:i32 (+ (count-pattern-nodes (defn-ret-node form)) 1)
           ci:i32 0)
       (while (< ci np)
         (set! cap (+ cap (count-pattern-nodes
@@ -845,7 +846,7 @@
           (collect-pattern-tyvars (binding-type-node (node-at params-node i))
                                   tyvars (cast ptr:i32 (addr-of ntv))))
         (inc! i))
-      (collect-pattern-tyvars (binding-type-node name-node) tyvars (cast ptr:i32 (addr-of ntv)))
+      (collect-pattern-tyvars (defn-ret-node form) tyvars (cast ptr:i32 (addr-of ntv)))
       (return (if (> ntv 0) 1 0))))))
 
 ; A defn is a bounded-generic template — recorded for on-demand monomorphization
@@ -993,7 +994,7 @@
                                 (count-pattern-nodes
                                   (binding-type-node (node-at params-node sb-j))))))
           (set! slot-bound (+ slot-bound
-                              (count-pattern-nodes (binding-type-node name-node))))
+                              (count-pattern-nodes (defn-ret-node form))))
           ; Assoc-type tyvars (A1) appear literally as nodes inside a parametric
           ; constraint's protocol-application `(Proto Arg…)`, so size them by the
           ; same node-walk: walk element 0 of every constraint. A plain (symbol)
@@ -1024,7 +1025,7 @@
           (dotimes (j nparams)
             (collect-pattern-tyvars (binding-type-node (node-at params-node j))
                                     tyvars (cast ptr:i32 (addr-of ntv))))
-          (collect-pattern-tyvars (binding-type-node name-node)
+          (collect-pattern-tyvars (defn-ret-node form)
                                   tyvars (cast ptr:i32 (addr-of ntv)))
           ; Every declared tyvar must be determined (return-only tyvars need dyn,
           ; deferred). Determination is a fixpoint (assoc-types A1 §3.4):
@@ -1336,7 +1337,7 @@
 ; paths compute the return type identically (the node-type↔emit lockstep).
 (defn method-bound-ret-type:?ptr:Type (m:ptr bound:ptr line:i32)
   (let (mm:ptr:Method (cast ptr:Method m)
-        rnode:ptr (binding-type-node (node-at (mm body) 1)))
+        rnode:ptr (defn-ret-node (mm body)))
     (when (= rnode null) (return ty-void))
     (let (rt:ptr null)
       (when (= (-> rnode (cast ptr:Node _) (_ kind)) NODE-SYM)
@@ -1510,8 +1511,21 @@
     (let (stamped:ptr (monomorphize-form (mm body) (mm tyvars) spellings
                                          (mm num-tyvars) (mm num-params))
           sname:ptr null
-          sret:ptr (extract-name-and-type (node-at stamped 1) (cast ptr:ptr (addr-of sname))
-                                          ((cast ptr:Node (node-at stamped 1)) line)))
+          ; S1: a new-style template stamps its return type into the index-3 keyword
+          ; (substituted by subst-tyvars-node's NODE-KEYWORD branch inside
+          ; monomorphize-form); parse it with the fn grammar. Legacy stamped forms
+          ; keep the exact extract-name-and-type parse.
+          s-ret-node:ptr null
+          s-params:ptr null
+          s-bstart:i32 3
+          s-style:i32 (defn-parse-sig stamped (cast ptr:ptr (addr-of sname))
+                        (cast ptr:ptr (addr-of s-ret-node))
+                        (cast ptr:ptr (addr-of s-params))
+                        (cast ptr:i32 (addr-of s-bstart)))
+          sret:ptr (if (!= s-style 0)
+                     (fn-parse-ret-type s-ret-node line)
+                     (extract-name-and-type (node-at stamped 1) (cast ptr:ptr (addr-of sname))
+                                            ((cast ptr:Node (node-at stamped 1)) line))))
       (when (= sret null)
         (die-at line (fmt-s "generic '%s': cannot resolve instantiated return type" (gg name))))
       ; Valid bound (§10.2): dry-run the concrete body before committing it, so an
@@ -1610,8 +1624,18 @@
         params:ptr (node-at sig 1)
         nm:ptr null
         rettail:ptr null)
-    (split-typed (-> name-node (cast ptr:Node _) (_ s))
-                 (cast ptr:ptr (addr-of nm)) (cast ptr:ptr (addr-of rettail)))
+    (if (!= (sig-name-is-bare name-node) 0)
+      ; S1 new style: bare method name at 0, return operand at 2. rettail is the
+      ; return's colon-spelling ("Self", "i32", "ptr:Node"); a list-form return
+      ; leaves it null (→ ty-void here), matching the legacy list-head limitation.
+      (do
+        (set! nm (-> name-node (cast ptr:Node _) (_ s)))
+        (when (>= (node-len sig) 3)
+          (let (rn:ptr:Node (cast ptr:Node (node-at sig 2)))
+            (when (or (= (rn kind) NODE-KEYWORD) (= (rn kind) NODE-SYM))
+              (set! rettail (rn s))))))
+      (split-typed (-> name-node (cast ptr:Node _) (_ s))
+                   (cast ptr:ptr (addr-of nm)) (cast ptr:ptr (addr-of rettail))))
     (when (= nm head)
       (when (= (node-len params) nargs)
         (let (ok:i32 1)
@@ -1676,7 +1700,7 @@
                           (set! ok 0)))))
                   (when (!= ok 0)
                     ; result = m2's return spelling, its tyvars substituted by `bound`
-                    (let (rnode:ptr (binding-type-node (node-at (m2 body) 1)))
+                    (let (rnode:ptr (defn-ret-node (m2 body)))
                       (when (= rnode null) (return ty-void))
                       (when (= (-> rnode (cast ptr:Node _) (_ kind)) NODE-SYM)
                         (let (ridx:i32 (tyvar-index-of (-> rnode (cast ptr:Node _) (_ s))
@@ -1982,7 +2006,7 @@
 ; a bare-tyvar return is the bound type; anything else is parsed concretely.
 (defn template-result-type:ptr (m2:ptr bound:ptr line:i32)
   (let (mm:ptr:Method (cast ptr:Method m2)
-        rnode:ptr (binding-type-node (node-at (mm body) 1)))
+        rnode:ptr (defn-ret-node (mm body)))
     (when (= rnode null) (return ty-void))
     (when (= (-> rnode (cast ptr:Node _) (_ kind)) NODE-SYM)
       (let (ridx:i32 (tyvar-index-of (-> rnode (cast ptr:Node _) (_ s))
@@ -2450,10 +2474,16 @@
           (when (= (cast ptr pp) null) (return 0))
           (when (!= (pp num-sigs) 1) (return 0))
         (let (sig:ptr (aref (cast ptr:ptr (pp sigs)) 0)
-              name-node:ptr (node-at sig 0)
-              params-node:ptr (node-at sig 1)
-              method-name:ptr ((cast ptr:Node (node-at name-node 0)) s)
-              ret-node:ptr (node-at name-node 1)
+              ; S1: route the method name / return / params through the accessor so
+              ; a new-style single-method protocol sig `(m (params) Ret)` works. For
+              ; the legacy list-head `((m Ret) (params))` this reproduces the former
+              ; method-name / ret-node exactly.
+              method-name:ptr null
+              ret-node:ptr null
+              params-node:ptr null
+              fwd-style:i32 (proto-sig-parse sig (cast ptr:ptr (addr-of method-name))
+                              (cast ptr:ptr (addr-of ret-node))
+                              (cast ptr:ptr (addr-of params-node)))
               k:i32 (- (node-len params-node) 1)
               npp:i32 (pp num-params)
               args:ptr (arena-alloc (* (cast i64 npp) (ptr-bytes)))
@@ -2782,8 +2812,14 @@
             name-node:ptr (node-at csig 0)
             params-node:ptr (node-at csig 1)
             mname:ptr null
-            ret:ptr (extract-name-and-type name-node (cast ptr:ptr (addr-of mname))
-                                           ((cast ptr:Node name-node) line)))
+            ret:ptr null)
+        ; S1: a new-style sig carries the (Self-substituted) return at index 2;
+        ; legacy sigs keep the exact extract-name-and-type parse (byte-identical).
+        (if (!= (sig-name-is-bare name-node) 0)
+          (do (set! mname (-> name-node (cast ptr:Node _) (_ s)))
+              (set! ret (fn-parse-ret-type (node-at csig 2) line)))
+          (set! ret (extract-name-and-type name-node (cast ptr:ptr (addr-of mname))
+                                           ((cast ptr:Node name-node) line))))
         (let (nparams:i32 (defn-params-count params-node)
               ptypes:ptr (defn-params-to-types params-node)
               ; Enforce the return type only for a parametric protocol, where the

@@ -319,4 +319,41 @@ identity diff.
 
 ## Status
 
-Design written 2026-07-02; not yet implemented. Phases S1–S4 pending.
+Design written 2026-07-02.
+
+**Phase S1 — dual acceptance: DONE (2026-07-04).** `defn-parse-sig`,
+`sig-name-is-bare`, `legacy-ret-node`, `normalize-ret-node`, `defn-ret-node`, and
+`proto-sig-parse` added near `extract-name-and-type` (nucleusc.nuc). Every read
+site in the inventory routes through them: `emit-defn`, `prescan-defn-signatures`,
+the compile-time block prescan, `desugar-form`'s defn/declare branches, generic
+template registration (`register-generic-defn` / tyvar counting via
+`defn-ret-node`), template stamping (`generic-instantiate` via `defn-parse-sig`,
+plus a new `NODE-KEYWORD` branch in `subst-tyvars-node` so a new-style tyvar
+return `:T` is substituted at stamp time), protocol-sig readers (`proto-sig-parse`,
+`sig-provides-call`, `proto-sigs-resolve`, `emit-dyn-forward`), `extend`/conformance
+comparisons, cheader (`cheader-defn-ret-node`), `.nuch` export
+(`print-defn-name-legacy` normalizes solitary/overloaded defns to the legacy
+`name:ret` spelling the legacy-only declare/defmethod readers consume; templates
+export verbatim in new style) and import (`emit-nuch-declare-import` new-style
+branch; `register-generic-defn` re-registers a verbatim new-style template), the
+toplevel `declare` form, and REPL redefinition (no change needed — it extracts the
+bare `fname` and delegates the sig parse to the patched `emit-defn`/prescan). The
+`fn`-style grammar is reused via `fn-parse-ret-type` (not renamed; its "fn:"
+malformed-ret message is the only cosmetic residue). No source uses the new style
+yet, so the change is additive and the bootstrap fixpoint is **byte-identical**
+(no `update-bootstrap`); a new-style program emits byte-identical IR to its legacy
+twin (verified by diff). Tests: `examples/defn-newstyle.nuc` (+expected),
+`tests/repl/s1-newstyle-defn.in`, and a `run-tests.sh` S1 block over
+`tests/fixtures/s1-sugar-rets.nuc` / `s1-missing-ret.nuc` / `s1-newlib.nuc`.
+
+Deviations/notes: (1) `fn-parse-ret-type` was **not** given the form-name
+parameter — kept as-is; only a rare malformed-ret diagnostic reads "fn:" for a
+defn. (2) The `emit-defn` early `< 4` guard was refined so a bare-name (new-style)
+defn missing its return operand emits `defn-parse-sig`'s **targeted** message
+(error path only; bootstrap IR unaffected); legacy bodyless names keep "bad form".
+(3) Pre-existing, out of S1 scope: `--emit-cheader` does not skip generic
+templates, so a bounded-generic `defn` emits garbage C (`struct T gmax(…)`) in
+**both** styles — the cheader dispatch (`cheader.nuc:1062`) needs a
+`defn-is-generic-template` guard, tracked separately.
+
+Phases S2–S4 pending.

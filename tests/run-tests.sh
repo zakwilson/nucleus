@@ -378,4 +378,107 @@ else
 fi
 rm -rf "$bch_dir"
 
+# Stage 14 defn-signature.md S1 — the new `(defn NAME (params):ret body…)` style
+# is dual-accepted alongside legacy `(defn name:ret (params) …)`, parsing to an
+# identical function (proven byte-identical at the IR level). The
+# `examples/defn-newstyle.nuc` run (byte-checked above) covers the in-process
+# happy path: keyword / list-form / colon-chain / tyvar returns, :void, a
+# new-style defprotocol + extend, and generic stamping. These checks cover the
+# remaining surfaces — the ?/! sugars + `noreturn` in the new ret position, the
+# missing-ret diagnostic, and the cross-unit .nuch / cheader round-trip.
+
+# 1. The ?/! sugar returns (:!ptr:T, :!i32, :?ptr:T) and a trailing `noreturn`
+#    parse in the new position, and the define carries the LLVM noreturn attr.
+s1_sugar_ll="$(mktemp)"
+./build/nucleusc --emit-llvm tests/fixtures/s1-sugar-rets.nuc > "$s1_sugar_ll" 2>/dev/null || true
+if grep -qF 'define ptr @lookup(' "$s1_sugar_ll" \
+   && grep -qF 'define i64 @checked(' "$s1_sugar_ll" \
+   && grep -qF 'define ptr @maybe-pt(' "$s1_sugar_ll" \
+   && grep -qF 'define void @spin(ptr %m.arg) noreturn {' "$s1_sugar_ll"; then
+    echo "PASS  s1-sugar-rets-and-noreturn"
+else
+    echo "FAIL  s1-sugar-rets-and-noreturn"; fail=1
+fi
+rm -f "$s1_sugar_ll"
+
+# 2. A bare-name new-style defn missing its mandatory return operand dies cleanly
+#    with the targeted diagnostic (the same message a stale legacy spelling gets
+#    in Phase S4), not a crash or a remote type error.
+s1_mr_err="$(./build/nucleusc --emit-llvm tests/fixtures/s1-missing-ret.nuc 2>&1 >/dev/null || true)"
+if printf '%s' "$s1_mr_err" | grep -q "expected return type after the parameter list"; then
+    echo "PASS  s1-missing-ret-diagnostic"
+else
+    echo "FAIL  s1-missing-ret-diagnostic"; fail=1
+fi
+
+# 3. Cross-unit: an entirely new-style library round-trips through .nuch and links
+#    with a consumer. Plain solitary defns export as (declare …); the overloaded
+#    pair as (defmethod …); the bounded-generic template verbatim (new-style).
+s1_dir="$(mktemp -d)"
+s1_lib="$(pwd)/tests/fixtures/s1-newlib.nuc"
+./build/nucleusc --emit-nuch    "$s1_lib" > "$s1_dir/lib.nuch" 2>/dev/null || true
+./build/nucleusc --emit-cheader "$s1_lib" > "$s1_dir/lib.h"    2>/dev/null || true
+./build/nucleusc --emit-llvm    "$s1_lib" > "$s1_dir/lib.ll"   2>/dev/null || true
+
+# 3a. The .nuch normalizes solitary/overloaded new-style defns to the legacy
+#     name:ret spelling its (legacy-only) declare/defmethod readers consume, and
+#     exports the generic template verbatim in new style.
+if grep -qF '(declare twice:i32 ((x i32)))' "$s1_dir/lib.nuch" \
+   && grep -qF '(defmethod "@scale.i32" scale:i32 ((x i32)))' "$s1_dir/lib.nuch" \
+   && grep -qF '(defn gmax ((a T) (b T) &where (Ord T)) :T' "$s1_dir/lib.nuch"; then
+    echo "PASS  s1-nuch-export-shapes"
+else
+    echo "FAIL  s1-nuch-export-shapes"; fail=1
+fi
+
+# 3b. The cheader names the plain new-style prototypes correctly.
+if grep -qF 'int32_t twice(int32_t x);' "$s1_dir/lib.h" \
+   && grep -qF 'int32_t add3(int32_t a, int32_t b, int32_t c);' "$s1_dir/lib.h" \
+   && grep -qF 'int32_t scale(int32_t x);' "$s1_dir/lib.h"; then
+    echo "PASS  s1-cheader-plain-prototypes"
+else
+    echo "FAIL  s1-cheader-plain-prototypes"; fail=1
+fi
+
+# 3c. A consumer imports the .nuch, resolves the plain + overloaded symbols, links
+#     against the lib object, and runs. (exclude-prelude so the two objects link
+#     without duplicate prelude symbols; no template call, so no stamping.)
+cat > "$s1_dir/main.nuc" <<EOF
+(exclude-prelude)
+(import-use "$s1_dir/lib.nuch")
+(declare printf:i32 (fmt:CStr &rest args:i32))
+(defn main:i32 ()
+  (printf "twice=%d add3=%d scale32=%d scale64=%ld\n"
+    (twice 21) (add3 1 2 3) (scale 4) (scale (cast i64 5)))
+  (return 0))
+EOF
+./build/nucleusc --emit-llvm "$s1_dir/main.nuc" > "$s1_dir/main.ll" 2>/dev/null || true
+if clang "$s1_dir/lib.ll" "$s1_dir/main.ll" -o "$s1_dir/bin" 2>/dev/null \
+   && [ "$("$s1_dir/bin")" = "twice=42 add3=6 scale32=40 scale64=500" ]; then
+    echo "PASS  s1-nuch-link-and-run"
+else
+    echo "FAIL  s1-nuch-link-and-run"; fail=1
+fi
+
+# 3d. Importing the .nuch re-registers the new-style template so a consumer stamps
+#     it at its call sites (proves register-generic-defn + the stamper handle a
+#     new-style tyvar return arriving verbatim). Emit-only: the template body uses
+#     `if` (a prelude macro), so the consumer keeps the prelude.
+cat > "$s1_dir/tmain.nuc" <<EOF
+(import-use "$s1_dir/lib.nuch")
+(import-use "stdio.h")
+(defn main:i32 ()
+  (printf "gmax32=%d gmax64=%ld\n" (gmax 8 3) (gmax (cast i64 4) (cast i64 9)))
+  (return 0))
+EOF
+./build/nucleusc --emit-llvm "$s1_dir/tmain.nuc" > "$s1_dir/tmain.ll" 2>/dev/null || true
+if grep -qF 'define i32 @gmax.i32.i32(' "$s1_dir/tmain.ll" \
+   && grep -qF 'define i64 @gmax.i64.i64(' "$s1_dir/tmain.ll" \
+   && grep -qF 'call i32 @gmax.i32.i32(' "$s1_dir/tmain.ll"; then
+    echo "PASS  s1-nuch-template-stamps"
+else
+    echo "FAIL  s1-nuch-template-stamps"; fail=1
+fi
+rm -rf "$s1_dir"
+
 exit $fail

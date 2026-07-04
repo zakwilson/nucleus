@@ -1,0 +1,8 @@
+(defn foo (n:i64):i64 (+ n 1))
+(foo (cast i64 10))
+(defn foo (n:i64):i64 (+ n 100))
+(foo (cast i64 10))
+(defn my-add (a:i64 b:i64):i64 (+ a b))
+(my-add (cast i64 2) (cast i64 3))
+(defn seven ():i64 (cast i64 7))
+(seven)

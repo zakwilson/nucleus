@@ -756,6 +756,118 @@
     (return null)))
 
 ; ============================================================
+; Stage 14 defn-signature.md S1 — dual-acceptance signature accessor
+; ============================================================
+; The named-function signature is migrating from the legacy
+;   (defn name:ret (params) body…)
+; to the fn-style
+;   (defn name (params) ret body…)
+; During S1 the compiler accepts BOTH: a bare-symbol name with the return type as
+; its own operand at index 3 (new), or a colon-typed / list-head name carrying the
+; return type (legacy). Every reader of a defn shape funnels through these
+; accessors so the two styles stay in lockstep and byte-identical for legacy code.
+
+; True when a defn / protocol-sig name node is *new-style*: a bare symbol with no
+; embedded return type. Legacy names are a colon-typed symbol (`name:ret`) or a
+; desugared / list-head `(name ret)` cell. This is the single style-detection rule
+; every consumer branches on.
+(defn sig-name-is-bare:i32 (name-node:ptr)
+  (when (= name-node null) (return 0))
+  (let (nn:ptr:Node (cast ptr:Node name-node))
+    (when (= (nn kind) NODE-CELL) (return 0))
+    (when (and (= (nn kind) NODE-SYM) (!= (strchr (nn s) 58) null)) (return 0))
+    (when (= (nn kind) NODE-SYM) (return 1))
+    (return 0)))
+
+; The raw return-type node embedded in a *legacy* defn name node: the type of a
+; desugared / list-head `(name ret)` cell, or (for an un-desugared `name:ret`
+; symbol) the type recovered by desugaring the symbol first. Null if the name
+; carries no return type.
+(defn legacy-ret-node:ptr (name-node:ptr)
+  (let (nn:ptr:Node (cast ptr:Node name-node))
+    (when (= (nn kind) NODE-CELL) (return (binding-type-node name-node)))
+    (when (and (= (nn kind) NODE-SYM) (!= (strchr (nn s) 58) null))
+      (return (binding-type-node (desugar-symbol name-node (nn line)))))
+    (return null)))
+
+; Central signature accessor for a full defn form `(defn NAME …)`. Detects style,
+; writes the bare function name, the *raw* return-type node (a NODE-KEYWORD /
+; NODE-SYM / NODE-CELL, left unparsed — the generic-template path must not eagerly
+; parse a free-tyvar return, per the TY-TYVAR confinement rule), the parameter
+; list node, and the index of the first body form. Returns 1 for new style, 0 for
+; legacy. Diagnostics use the *form's* line (interned name/keyword nodes carry 0).
+(defn defn-parse-sig:i32 (form:ptr out-name:ptr:ptr out-ret-node:ptr:ptr
+                          out-params:ptr:ptr out-body-start:ptr:i32)
+  (let (ff:ptr:Node (cast ptr:Node form)
+        name-node:ptr (node-at form 1))
+    (ptr-set! out-params (node-at form 2))
+    (if (!= (sig-name-is-bare name-node) 0)
+      ; New style: bare name, ret at index 3, body at 4.
+      (do
+        (ptr-set! out-name (-> name-node (cast ptr:Node _) (_ s)))
+        (when (< (node-len form) 4)
+          (die-at (ff line)
+            (fmt-2s "defn '%s': expected return type after the parameter list, e.g. (defn %s (params):i32 …)"
+                    (-> name-node (cast ptr:Node _) (_ s))
+                    (-> name-node (cast ptr:Node _) (_ s)))))
+        (ptr-set! out-ret-node (node-at form 3))
+        (ptr-set! out-body-start 4)
+        (return 1))
+      ; Legacy: return type is embedded in the name node.
+      (do
+        (ptr-set! out-name (defn-name-only name-node))
+        (ptr-set! out-ret-node (legacy-ret-node name-node))
+        (ptr-set! out-body-start 3)
+        (return 0)))))
+
+; Normalize a return-type node so a new-style NODE-KEYWORD ret (`:T`, `:i32`)
+; reads as the equivalent NODE-SYM — making it structurally identical to a legacy
+; desugared return, which the generic type-resolution machinery expects (bare-tyvar
+; detection, tyvar collection, parse-type-from-node). NODE-SYM / NODE-CELL rets and
+; null pass through unchanged, so legacy forms are byte-identical.
+(defn normalize-ret-node:ptr (rn:ptr)
+  (when (= rn null) (return null))
+  (let (rnn:ptr:Node (cast ptr:Node rn))
+    (when (= (rnn kind) NODE-KEYWORD)
+      (let (new:ptr:Node (cast ptr:Node (alloc-node)))
+        (.set! new kind NODE-SYM)
+        (.set! new line (rnn line))
+        (.set! new s (rnn s))
+        (return (cast ptr new))))
+    (return rn)))
+
+; The normalized return-type node of a defn form, style-agnostic and non-dying
+; (null if the form carries no return). Byte-identical to
+; `(binding-type-node name-node)` for a legacy form.
+(defn defn-ret-node:ptr (form:ptr)
+  (let (name-node:ptr (node-at form 1)
+        rn:ptr null)
+    (if (!= (sig-name-is-bare name-node) 0)
+      (when (>= (node-len form) 4) (set! rn (node-at form 3)))
+      (set! rn (legacy-ret-node name-node)))
+    (return (normalize-ret-node rn))))
+
+; Parse a protocol method signature `(name params [ret])` (new style) or the
+; legacy `(name:ret params)` / `((name ret) params)`. Sets *out-name (bare method
+; name), *out-ret-node (normalized ret node; null if none) and *out-params.
+; Returns 1 for new style, 0 for legacy. Byte-identical name/ret/params for the
+; legacy shapes.
+(defn proto-sig-parse:i32 (sig:ptr out-name:ptr:ptr out-ret-node:ptr:ptr out-params:ptr:ptr)
+  (let (name-node:ptr (node-at sig 0))
+    (ptr-set! out-params (node-at sig 1))
+    (if (!= (sig-name-is-bare name-node) 0)
+      (do
+        (ptr-set! out-name (-> name-node (cast ptr:Node _) (_ s)))
+        (if (>= (node-len sig) 3)
+          (ptr-set! out-ret-node (normalize-ret-node (node-at sig 2)))
+          (ptr-set! out-ret-node null))
+        (return 1))
+      (do
+        (ptr-set! out-name (defn-name-only name-node))
+        (ptr-set! out-ret-node (normalize-ret-node (legacy-ret-node name-node)))
+        (return 0)))))
+
+; ============================================================
 ; Expression codegen
 ; ============================================================
 
@@ -4673,10 +4785,18 @@
         name-node:ptr (node-at sig 0)
         params-node:ptr (node-at sig 1)
         mname:ptr null
-        ret-ty:ptr (extract-name-and-type name-node (cast ptr:ptr (addr-of mname)) line)
+        ret-ty:ptr null
         np:i32 (- (node-len params-node) 1)
         box-val:ptr:Val (cast ptr:Val (ptr+ (cast ptr:Val args) 0))
         box-ir:ptr (type-to-ir box-ty))
+    ; S1: a new-style protocol sig `(m (params) :ret)` carries the return at index
+    ; 2; legacy `(m:ret (params))` keeps the exact extract-name-and-type parse
+    ; (byte-identical). Object-safe (v1) methods have no `Self` in the return, so
+    ; the raw sig's return parses concretely without Self substitution.
+    (if (!= (sig-name-is-bare name-node) 0)
+      (do (set! mname (-> name-node (cast ptr:Node _) (_ s)))
+          (set! ret-ty (fn-parse-ret-type (node-at sig 2) line)))
+      (set! ret-ty (extract-name-and-type name-node (cast ptr:ptr (addr-of mname)) line)))
     (when (= ret-ty null) (set! ret-ty ty-void))
     (when (!= (- nargs 1) np)
       (die-at line (fmt-2s "(dyn %s) call: %s expects a different number of arguments"
@@ -7120,7 +7240,18 @@
 
 (defn emit-defn:void (call:ptr)
   (let (cc:ptr:Node (cast ptr:Node call))
-      (when (< (node-len cc) 4) (die-at (cc line) "defn: bad form"))
+      ; S1: a bare-name (new-style) defn that stops before its return operand gets
+      ; the targeted diagnostic from defn-signature.md — the same message a stale
+      ; legacy spelling receives in Phase S4. Every other malformed shape (including
+      ; a bodyless legacy `name:ret`) keeps the generic "bad form". Error-path only;
+      ; no valid defn has < 4 elements, so bootstrap IR is unaffected.
+      (when (< (node-len cc) 4)
+        (if (and (>= (node-len cc) 2) (!= (sig-name-is-bare (node-at cc 1)) 0))
+          (die-at (cc line)
+            (fmt-2s "defn '%s': expected return type after the parameter list, e.g. (defn %s (params):i32 …)"
+                    (-> (node-at cc 1) (cast ptr:Node _) (_ s))
+                    (-> (node-at cc 1) (cast ptr:Node _) (_ s))))
+          (die-at (cc line) "defn: bad form")))
     (let (name-node:ptr (node-at cc 1)
           params-node:ptr (node-at cc 2))
       (when (= (node-is-list params-node) 0)
@@ -7130,9 +7261,21 @@
       ; emits no code itself; it is registered in prescan and monomorphized per
       ; call site.
       (when (!= (defn-is-generic-template call) 0) (return))
+      ; S1: route name/return/body-start through the central accessor. Legacy forms
+      ; keep the exact extract-name-and-type parse (byte-identical); new-style forms
+      ; parse the index-3 return operand with fn-parse-ret-type (the fn grammar).
       (let (fname:ptr null
-            ret:ptr (extract-name-and-type name-node (cast ptr:ptr (addr-of fname))
-                                           ((cast ptr:Node name-node) line)))
+            ret-node:ptr null
+            sig-params:ptr null
+            body-start:i32 3
+            sig-style:i32 (defn-parse-sig call (cast ptr:ptr (addr-of fname))
+                            (cast ptr:ptr (addr-of ret-node))
+                            (cast ptr:ptr (addr-of sig-params))
+                            (cast ptr:i32 (addr-of body-start)))
+            ret:ptr (if (!= sig-style 0)
+                      (fn-parse-ret-type ret-node (cc line))
+                      (extract-name-and-type name-node (cast ptr:ptr (addr-of fname))
+                                             ((cast ptr:Node name-node) line))))
         (when (= ret null)
           (die-at ((cast ptr:Node name-node) line) (fmt-s "defn: missing :type on '%s'" fname)))
         (guard-name-kind fname (cc line) NK-FUNCTION)
@@ -7146,7 +7289,9 @@
         ; trigger this.
         (when (and (= g-defining-private 0) (= g-mono-context null))
           (let (mc:i32 (cheader-mentions-closure
-                         (extract-type-node name-node ((cast ptr:Node name-node) line)))
+                         (if (!= sig-style 0)
+                           ret-node
+                           (extract-type-node name-node ((cast ptr:Node name-node) line))))
                 mcpi:i32 0
                 mcp:i32 (node-len params-node))
             (while (< mcpi mcp)
@@ -7164,15 +7309,16 @@
         ; proper starts at body-start; the flag drives the LLVM `noreturn`
         ; attribute on the define and is recorded on the function's Sym so a
         ; statement-position call terminates its block (terminate-after-noreturn).
-        (let (is-noreturn:i32 0
-              body-start:i32 3)
-          (when (> (node-len cc) 4)
-            (let (b0:ptr (node-at cc 3))
+        ; body-start is 3 (legacy) or 4 (new style) from defn-parse-sig above; an
+        ; optional `noreturn` sits at body-start and shifts the real body one past.
+        (let (is-noreturn:i32 0)
+          (when (> (node-len cc) (+ body-start 1))
+            (let (b0:ptr (node-at cc body-start))
               (when (and (!= b0 null)
                          (= (-> b0 (cast ptr:Node _) (_ kind)) NODE-SYM)
                          (= (-> b0 (cast ptr:Node _) (_ s)) "noreturn"))
                 (set! is-noreturn 1)
-                (set! body-start 4))))
+                (set! body-start (+ body-start 1)))))
         (let (
               raw-nparams:i32 (node-len params-node)
               has-rest:i32 0
@@ -7522,8 +7668,17 @@
                       params-node:ptr (node-at bf 2))
                   (when (!= (node-is-list params-node) 0)
                     (let (fname:ptr null
-                          ret:ptr (extract-name-and-type name-node (cast ptr:ptr (addr-of fname))
-                                                          ((cast ptr:Node name-node) line)))
+                          ct-ret-node:ptr null
+                          ct-params:ptr null
+                          ct-bstart:i32 3
+                          ct-style:i32 (defn-parse-sig (cast ptr bf) (cast ptr:ptr (addr-of fname))
+                                         (cast ptr:ptr (addr-of ct-ret-node))
+                                         (cast ptr:ptr (addr-of ct-params))
+                                         (cast ptr:i32 (addr-of ct-bstart)))
+                          ret:ptr (if (!= ct-style 0)
+                                    (fn-parse-ret-type ct-ret-node ((cast ptr:Node name-node) line))
+                                    (extract-name-and-type name-node (cast ptr:ptr (addr-of fname))
+                                                            ((cast ptr:Node name-node) line))))
                       (when (!= ret null)
                         (let (nparams:i32 (node-len params-node)
                               ptypes:ptr null)
@@ -8124,43 +8279,33 @@
               (return (make-cell (cast ptr head)
                        (make-cell new-name null (f line))
                        (f line))))))
-        ; (declare name:type (params...))
-        ; Stage 10 Phase F1: an optional trailing `noreturn` symbol (e.g.
-        ; (declare repl_throw:void () noreturn)) is detected here and carried
-        ; through verbatim so emit-nuch-declare-import can mark the symbol.
+        ; (declare name:type (params...))            — legacy
+        ; (declare name (params...) ret)             — new style (S1)
+        ; Desugar the name (index 1) and, when present, the param list (index 2);
+        ; everything from index 3 onward (a new-style return operand and/or a
+        ; trailing Stage 10 `noreturn`) rides through verbatim, so emit-nuch-
+        ; declare-import still sees the return type and can mark the symbol. The
+        ; param list is at index 2 in both shapes. This is byte-identical to the
+        ; former legacy-only rebuild for every legacy shape (len 2/3 ± noreturn).
         (when (= h "declare")
           (when (>= (node-len form) 2)
-            (let (nr:i32 0
-                  base-len:i32 (node-len form))
-              (when (>= (node-len form) 3)
-                (let (last:ptr (node-at form (- (node-len form) 1)))
-                  ; an empty param-list () reads as a null car — guard before
-                  ; touching kind/s, or self-compile segfaults on (declare x:i32 ()).
-                  (when (and (!= last null)
-                             (= (-> last (cast ptr:Node _) (_ kind)) NODE-SYM)
-                             (= (-> last (cast ptr:Node _) (_ s)) "noreturn"))
-                    (set! nr 1)
-                    (set! base-len (- base-len 1)))))
-              (let (new-name:ptr (desugar-typed (node-at form 1))
-                    new-params:ptr null
-                    nr-tail:ptr null)
-                (when (!= nr 0)
-                  (set! nr-tail (make-cell (node-at form (- (node-len form) 1)) null (f line))))
-                (when (= base-len 3)
-                  (set! new-params (desugar-params (node-at form 2))))
-                (when (and (= nr 0)
-                           (= new-name (node-at form 1))
-                           (or (= base-len 2) (= new-params (node-at form 2))))
-                  (return form))
-                (when (= base-len 3)
+            (let (new-name:ptr (desugar-typed (node-at form 1)))
+              (if (>= (node-len form) 3)
+                (let (new-params:ptr (desugar-params (node-at form 2))
+                      tail3:ptr (-> f (_ cdr) (cast ptr:Node _) (_ cdr)
+                                      (cast ptr:Node _) (_ cdr)))
+                  (when (and (= new-name (node-at form 1)) (= new-params (node-at form 2)))
+                    (return form))
                   (return (make-cell (cast ptr head)
                            (make-cell new-name
-                             (make-cell new-params nr-tail (f line))
+                             (make-cell new-params tail3 (f line))
                              (f line))
                            (f line))))
-                (return (make-cell (cast ptr head)
-                         (make-cell new-name nr-tail (f line))
-                         (f line)))))))
+                (do
+                  (when (= new-name (node-at form 1)) (return form))
+                  (return (make-cell (cast ptr head)
+                           (make-cell new-name null (f line))
+                           (f line))))))))
         ; (let (bindings...) body...) — desugar binding names
         ; (with (bindings...) body...) — same shape; auto-frees libc-alloc'd bindings
         (when (or (= h "let") (= h "with"))
@@ -8351,8 +8496,17 @@
               (if (!= (defn-is-generic-template (cast ptr f)) 0)
                 (register-generic-defn (cast ptr f) 0)
                 (let (fname:ptr null
-                      ret:ptr (extract-name-and-type name-node (cast ptr:ptr (addr-of fname))
-                                                      ((cast ptr:Node name-node) line)))
+                      ps-ret-node:ptr null
+                      ps-params:ptr null
+                      ps-bstart:i32 3
+                      ps-style:i32 (defn-parse-sig (cast ptr f) (cast ptr:ptr (addr-of fname))
+                                     (cast ptr:ptr (addr-of ps-ret-node))
+                                     (cast ptr:ptr (addr-of ps-params))
+                                     (cast ptr:i32 (addr-of ps-bstart)))
+                      ret:ptr (if (!= ps-style 0)
+                                (fn-parse-ret-type ps-ret-node ((cast ptr:Node name-node) line))
+                                (extract-name-and-type name-node (cast ptr:ptr (addr-of fname))
+                                                        ((cast ptr:Node name-node) line))))
                   (when (!= ret null)
                     (let (nparams:i32 (defn-params-count params-node)
                           ptypes:ptr (defn-params-to-types params-node)

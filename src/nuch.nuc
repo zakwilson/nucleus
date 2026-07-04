@@ -29,10 +29,26 @@
     (print-node (node-at form (+ i 1))))
   (printf ")\n"))
 
+; Print a defn form's name in the legacy `name:ret` / `(name ret)` spelling for a
+; .nuch header, from either signature style (S1). Legacy source prints
+; byte-identically (a plain print-node of the name node); a new-style source is
+; normalized to the legacy spelling so the (legacy-only) .nuch declare/defmethod
+; readers consume it unchanged.
+(defn print-defn-name-legacy:void (form:ptr)
+  (let (name-node:ptr (node-at form 1))
+    (if (!= (sig-name-is-bare name-node) 0)
+      (let (bare:ptr (-> name-node (cast ptr:Node _) (_ s))
+            rn:ptr:Node (cast ptr:Node (node-at form 3)))
+        (cond
+          (= (rn kind) NODE-KEYWORD) (printf "%s:%s" bare (rn s))
+          (= (rn kind) NODE-SYM)     (printf "%s:%s" bare (rn s))
+          true (do (printf "(%s " bare) (print-node (cast ptr rn)) (printf ")"))))
+      (print-node name-node))))
+
 (defn emit-nuch-declare:void (form:ptr)
   (printf "(declare ")
-  ; index 1 is name:rettype, index 2 is param list
-  (print-node (node-at form 1))
+  ; index 1 is name:rettype (legacy) or a new-style bare name; normalize to legacy
+  (print-defn-name-legacy form)
   (printf " (")
   (let (params:ptr (node-at form 2))
     (dotimes (i (node-len params))
@@ -63,7 +79,7 @@
 ;   (defmethod "@area.pCircle" area:i32 ((c (ptr Circle))))
 (defn emit-nuch-defmethod:void (form:ptr mangled:ptr)
   (printf "(defmethod \"%s\" " mangled)
-  (print-node (node-at form 1))
+  (print-defn-name-legacy form)
   (printf " (")
   (let (params:ptr (node-at form 2))
     (dotimes (i (node-len params))
@@ -208,15 +224,29 @@
                      (= (-> last (cast ptr:Node _) (_ s)) "noreturn"))
             (set! is-noreturn 1)
             (set! eff-len (- eff-len 1)))))
-      (when (or (< eff-len 2) (> eff-len 3))
-        (die-at (ff line) "declare: expected (declare name:rettype (params...))"))
+      ; S1: a new-style declare `(declare name (params) :rettype [noreturn])` has a
+      ; bare name and the return operand at index 3 (eff-len 4); legacy keeps
+      ; `(declare name:rettype [(params)] [noreturn])` (eff-len 2 or 3). Both the
+      ; toplevel `declare` form (desugared) and .nuch imports reach here; the .nuch
+      ; writer normalizes to legacy, so .nuch input stays on the legacy path.
       (let (name-node:ptr (node-at form 1)
+            ndi-new:i32 (sig-name-is-bare (node-at form 1))
             params-node:ptr null)
-        (when (= eff-len 3)
-          (set! params-node (node-at form 2)))
+        (if (!= ndi-new 0)
+          (do
+            (when (!= eff-len 4)
+              (die-at (ff line) "declare: expected (declare name (params) :rettype)"))
+            (set! params-node (node-at form 2)))
+          (do
+            (when (or (< eff-len 2) (> eff-len 3))
+              (die-at (ff line) "declare: expected (declare name:rettype (params...))"))
+            (when (= eff-len 3) (set! params-node (node-at form 2)))))
         (let (fname:ptr null
-              ret:ptr (extract-name-and-type name-node (cast ptr:ptr (addr-of fname))
-                                              ((cast ptr:Node name-node) line)))
+              ret:ptr (if (!= ndi-new 0)
+                        (fn-parse-ret-type (node-at form 3) (ff line))
+                        (extract-name-and-type name-node (cast ptr:ptr (addr-of fname))
+                                               ((cast ptr:Node name-node) line))))
+          (when (!= ndi-new 0) (set! fname (-> name-node (cast ptr:Node _) (_ s))))
           (when (= ret null)
             (die-at ((cast ptr:Node name-node) line) (fmt-s "declare: missing :type on '%s'" fname)))
           ; Skip if already defined (e.g. from include or c-include)
