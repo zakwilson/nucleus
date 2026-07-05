@@ -109,13 +109,13 @@ Define a struct and `extend` it with the desired protocol:
 ; A fold function: sum two i64 values.
 (defstruct SumI64 dummy:i32)
 (extend SumI64 (FoldFn i64 i64))
-(defn fold:i64 ((self (ref SumI64)) acc:i64 x:i64)
+(defn fold ((self (ref SumI64)) acc:i64 x:i64):i64
   (return (+ acc x)))
 
 ; A map function: square an i64.
 (defstruct SquareI64 dummy:i32)
 (extend SquareI64 (UnaryFn i64 i64))
-(defn apply:i64 ((self (ref SquareI64)) x:i64)
+(defn apply ((self (ref SquareI64)) x:i64):i64
   (return (* x x)))
 ```
 
@@ -156,9 +156,9 @@ To call `next` on a field stored by value inside a struct, use
 `(.& self fieldname)` to get a `(ref FieldType)`:
 
 ```lisp
-(defn (next (Maybe E)) ((self (ref (MapIter I F)))
+(defn next ((self (ref (MapIter I F)))
                         &where ((Iterator S) I)
-                               ((UnaryFn S E) F))
+                               ((UnaryFn S E) F)) (Maybe E)
   (let ((res (Maybe S)) (next (.& self source)))
     ...))
 ```
@@ -166,9 +166,9 @@ To call `next` on a field stored by value inside a struct, use
 ## `reduce`
 
 ```lisp
-(defn reduce:Acc ((g (ref G)) (init Acc) (it (ref I))
+(defn reduce ((g (ref G)) (init Acc) (it (ref I))
                   &where ((Iterator S) I)
-                         ((FoldFn Acc S) G))
+                         ((FoldFn Acc S) G)):Acc
   ...)
 ```
 
@@ -194,18 +194,18 @@ Chain `[1,2,3,4,5]` → square → keep even → sum (= 4 + 16 = 20):
 
 (defstruct SumI64 dummy:i32)
 (extend SumI64 (FoldFn i64 i64))
-(defn fold:i64 ((self (ref SumI64)) acc:i64 x:i64) (return (+ acc x)))
+(defn fold ((self (ref SumI64)) acc:i64 x:i64):i64 (return (+ acc x)))
 
 (defstruct SquareI64 dummy:i32)
 (extend SquareI64 (UnaryFn i64 i64))
-(defn apply:i64 ((self (ref SquareI64)) x:i64) (return (* x x)))
+(defn apply ((self (ref SquareI64)) x:i64):i64 (return (* x x)))
 
 (defstruct IsEvenI64 dummy:i32)
 (extend IsEvenI64 (UnaryFn i64 i32))
-(defn apply:i32 ((self (ref IsEvenI64)) x:i64)
+(defn apply ((self (ref IsEvenI64)) x:i64):i32
   (return (cast i32 (= (% x (cast i64 2)) (cast i64 0)))))
 
-(defn main:i32 ()
+(defn main ():i32
   (let (arr:ptr:i64 (alloca i64 5))
     (aset! arr 0 (cast i64 1)) (aset! arr 1 (cast i64 2))
     (aset! arr 2 (cast i64 3)) (aset! arr 3 (cast i64 4))

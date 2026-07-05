@@ -34,11 +34,23 @@ a bare `NODE-SYM`, or a `NODE-CELL` `(Maybe i32)`), body starts at **index 4**
 (index 5 with a trailing `noreturn`). `defprotocol` method sigs, `declare`, and the
 `.nuch` `defmethod`/`declare` entries use the same grammar. The old
 return-in-the-name style (`(defn foo:ret (params) …)`, list-head
-`(defn (next (Maybe T)) (params) …)`) is **still dual-accepted** by
-`defn-parse-sig` (nucleusc.nuc) during the Stage 14 migration, but all in-tree
-source is new-style. Every reader of a defn shape must funnel through
-`defn-parse-sig` / `defn-ret-node` / `sig-name-is-bare` so the two styles stay in
-lockstep — **do not hardcode the ret/body index.**
+`(defn (next (Maybe T)) (params) …)`) was **retired in Stage 14 S4** and is now a
+**hard error** — but the *detection* machinery (`sig-name-is-bare` /
+`legacy-ret-node` / `defn-name-only`) is retained so each chokepoint can recognize a
+legacy shape and emit a targeted "legacy 'name:ret' syntax is no longer supported"
+diagnostic quoting the offending name. Every reader of a defn shape must still funnel
+through `defn-parse-sig` / `defn-ret-node` / `sig-name-is-bare` — **do not hardcode
+the ret/body index.**
+
+The legacy hard-error lives at **four** def-time chokepoints, because there is no
+single one: `defn-parse-sig` (plain `defn`/`defn-`), **`register-generic-defn`**
+(bounded-generic *templates* bypass `defn-parse-sig` — the prescan routes them there
+and `emit-defn` returns early for templates), `emit-nuch-declare-import` (`declare`),
+and the sig-storage loop in `protocol-register-form` (protocol method sigs are stored
+verbatim and parsed lazily, so `proto-sig-parse` — which only reads the `(dyn P)`
+forwarding path — is not the registration chokepoint). Any committed `.nuch` you
+import (`src/llvm.nuch` is imported by the compiler itself) must be **new-style** — a
+legacy declare/template there now dies at import.
 
 The trap this bit (design/stage14/defn-signature.md S3): a **new-style body-start
 of 4 vs the legacy 3** must be recomputed anywhere the body is walked from the

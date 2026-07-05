@@ -414,5 +414,55 @@ source style no longer affects it). (4) `comb-shapes.nuc` pre-existing failure n
 above. The rewrite script was treated as throwaway (kept in the session scratchpad,
 not committed).
 
-**Phase S4 — pending** (hard-error legacy spellings; rewrite `docs/`; final boot
-refresh).
+**Phase S4 — retire the legacy style: DONE (2026-07-05).** The legacy `name:ret` /
+list-head `(name ret)` spelling is now a **hard error** at every def-time chokepoint,
+each with the same targeted diagnostic quoting the offending name and saying what
+moved:
+
+- `defn` / `defn-` (plain): `defn-parse-sig`'s legacy branch (nucleusc.nuc) →
+  `defn 'foo': legacy 'name:ret' syntax is no longer supported — write (defn foo
+  (params):ret …)`.
+- `defn` / `defn-` (**bounded-generic template**): a template bypasses
+  `defn-parse-sig` — the prescan routes it to `register-generic-defn` and `emit-defn`
+  returns early for templates — so the same hard-error was added there (generics.nuc),
+  guarded on `sig-name-is-bare`. This gap was not anticipated by the plan (which named
+  `defn-parse-sig` as *the* defn chokepoint).
+- `declare`: `emit-nuch-declare-import`'s legacy branch (nuch.nuc) →
+  `declare 'bar': … — write (declare bar (params) :ret)`.
+- `defprotocol` method sigs: protocol sigs are stored verbatim and parsed lazily, so
+  the one def-time chokepoint is the sig-storage loop in `protocol-register-form`
+  (generics.nuc), not `proto-sig-parse` (which only reads the `(dyn P)` forwarding
+  path). Both were hardened; `proto-sig-parse`'s die is now belt-and-suspenders (a
+  legacy protocol dies at registration first). Message: `protocol method 'area': … —
+  write (area (params):ret)`. The dual-detection machinery (`sig-name-is-bare` /
+  `legacy-ret-node` / `defn-name-only`) is retained exactly, as the plan requires —
+  the diagnostics depend on it.
+
+**Committed `.nuch` files converted first** (prerequisite — hardening the readers
+would otherwise break the build): `src/llvm.nuch` (imported by the compiler itself
+via `src/nucleusc.nuc`), `lib/mathlib.nuch`, and `lib/boxlib.nuch` were legacy-style
+and are now new-style (`src/llvm.nuch` hand-rewritten; the two lib headers regenerated
+via `--emit-nuch`, which S3 flipped to new-style). `lib/mapiterlib.nuch` was already
+empty. `tests/run-tests.sh` heredocs/probes and the `tests/repl/*.in` inputs (which
+the S3 `.nuc`-file rewriter did not touch) were also converted.
+
+Negative-diagnostic tests: `tests/fixtures/s4-legacy-{defn,declare,proto,template}.nuc`
++ a `run-tests.sh` S4 block asserting each dies with its targeted message.
+
+`docs/` rewrite: ~116 mechanical `(defn name:ret …)` / list-head / `(declare
+name:ret …)` code-example sites across 14 files rewritten to new style (paren-aware,
+skipping metasyntactic prose which was hand-fixed); the `docs/toplevel.md` `defn`
+Signature prose rewritten to describe the single accepted grammar (legacy noted as a
+retired hard error); the two `.nuch`-showing docs (`compiler.md`, `generics.md`) use
+the writer's exact keyword-`:ret` output. Design/history docs (this file,
+`examples/*` narrative comments) left intact.
+
+**Boot refresh & gate.** The hardening is bootstrap-neutral in the stage1==stage2
+sense (both stages compile the same new-style source, so the added die-strings pool
+identically) — `make bootstrap` passed before the refresh. The committed `boot/*.ll`
+were nonetheless regenerated from the S4 compiler at this milestone (`make
+update-bootstrap` + Windows IRs); convergence took a **single round** (not the two
+the plan flagged as possible), since bootstrap already held. Final: `make` green,
+`make test` = **166/166**, `make bootstrap` byte-identical. `bin/nucleusc` is
+gitignored (regenerated from `boot/nucleusc.ll`), so only the three `boot/*.ll` are
+tracked boot changes.

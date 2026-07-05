@@ -60,7 +60,7 @@ nuc> (doc malloc)
   kind: fn
   (malloc:ptr (size:ui64))
 
-nuc> (defn add:i32 (a:i32 b:i32) "Add two integers." (return (+ a b)))
+nuc> (defn add (a:i32 b:i32):i32 "Add two integers." (return (+ a b)))
 nuc> (doc add)
   kind: fn
   (add:i32 (a:i32 b:i32))

@@ -225,11 +225,13 @@
                      (= (-> last (cast ptr:Node _) (_ s)) "noreturn"))
             (set! is-noreturn 1)
             (set! eff-len (- eff-len 1)))))
-      ; S1: a new-style declare `(declare name (params) :rettype [noreturn])` has a
-      ; bare name and the return operand at index 3 (eff-len 4); legacy keeps
-      ; `(declare name:rettype [(params)] [noreturn])` (eff-len 2 or 3). Both the
-      ; toplevel `declare` form (desugared) and .nuch imports reach here; the .nuch
-      ; writer normalizes to legacy, so .nuch input stays on the legacy path.
+      ; A new-style declare `(declare name (params) :rettype [noreturn])` has a
+      ; bare name and the return operand at index 3 (eff-len 4). Both the toplevel
+      ; `declare` form (desugared) and .nuch imports reach here; as of S3 the .nuch
+      ; writer emits new-style, so every well-formed input takes the bare-name path.
+      ; S4: the legacy `(declare name:ret [(params)])` shape is retired — detection
+      ; (sig-name-is-bare) stays so the diagnostic can quote the name and say what
+      ; moved.
       (let (name-node:ptr (node-at form 1)
             ndi-new:i32 (sig-name-is-bare (node-at form 1))
             params-node:ptr null)
@@ -238,10 +240,9 @@
             (when (!= eff-len 4)
               (die-at (ff line) "declare: expected (declare name (params) :rettype)"))
             (set! params-node (node-at form 2)))
-          (do
-            (when (or (< eff-len 2) (> eff-len 3))
-              (die-at (ff line) "declare: expected (declare name:rettype (params...))"))
-            (when (= eff-len 3) (set! params-node (node-at form 2)))))
+          (die-at (ff line)
+            (fmt-2s "declare '%s': legacy 'name:ret' syntax is no longer supported — write (declare %s (params) :ret)"
+                    (defn-name-only name-node) (defn-name-only name-node))))
         (let (fname:ptr null
               ret:ptr (if (!= ndi-new 0)
                         (fn-parse-ret-type (node-at form 3) (ff line))

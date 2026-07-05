@@ -973,6 +973,13 @@
         wi:i32 (params-where-index params-node)
         has-where:i32 (if (>= (params-where-index params-node) 0) 1 0))
     (when (= fname null) (die-at (ff line) "defn: malformed generic name"))
+    ; S4: bounded-generic templates bypass defn-parse-sig (the prescan routes them
+    ; here and emit-defn returns early for templates), so hard-error a legacy
+    ; `name:ret` / list-head `(name ret)` name here too, with the same diagnostic.
+    (when (= (sig-name-is-bare name-node) 0)
+      (die-at (ff line)
+        (fmt-2s "defn '%s': legacy 'name:ret' syntax is no longer supported — write (defn %s (params):ret …)"
+                fname fname)))
     (let (raw:i32 (node-len params-node)
           nparams:i32 (if (>= wi 0) wi (defn-params-count params-node)))
       (dotimes (i nparams)
@@ -2728,7 +2735,18 @@
         (when (> nsigs 0)
           (set! sigs (arena-alloc (* (cast i64 nsigs) (ptr-bytes))))
           (dotimes (i nsigs)
-            (aset! (cast ptr:ptr sigs) i (node-at form (+ i 2)))))
+            (let (sig:ptr (node-at form (+ i 2))
+                  snn:ptr (node-at (node-at form (+ i 2)) 0))
+              ; S4: reject a legacy `name:ret` / list-head `(name ret)` method sig
+              ; at registration (protocol sigs are stored verbatim and parsed
+              ; lazily, so this is the one def-time chokepoint). New-style sigs put
+              ; the return after the param list. The guard on defn-name-only keeps a
+              ; genuinely malformed sig on its existing lazy-parse error path.
+              (when (and (= (sig-name-is-bare snn) 0) (!= (defn-name-only snn) null))
+                (die-at (ff line)
+                  (fmt-2s "protocol method '%s': legacy 'name:ret' syntax is no longer supported — write (%s (params):ret)"
+                          (defn-name-only snn) (defn-name-only snn))))
+              (aset! (cast ptr:ptr sigs) i sig))))
         (let (p:ref:Protocol (protocol-new pname sigs nsigs))
           (when (> nparams 0)
             (.set! p params params)
