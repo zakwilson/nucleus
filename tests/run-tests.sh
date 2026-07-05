@@ -69,7 +69,7 @@ done
 # `long` ABI model (Phase D): C `long` resolves per the target's data model.
 # Parse a header with long/long long functions and check the emitted declares.
 abs_long_h="$(pwd)/tests/abi/long.h"
-printf '(import-use "%s")\n(defn use:i64 () (return (lfn 1)))\n' "$abs_long_h" > "$(pwd)/tests/abi/.long_probe.nuc"
+printf '(import-use "%s")\n(defn use () :i64 (return (lfn 1)))\n' "$abs_long_h" > "$(pwd)/tests/abi/.long_probe.nuc"
 check_long() {  # <triple> <expected-lfn-ir> <expected-llfn-ir>
     local triple="$1" want_l="$2" want_ll="$3"
     local tmpfile; tmpfile="$(mktemp)"
@@ -138,8 +138,8 @@ fi
 cat > "$ns6_dir/main.nuc" <<EOF
 (exclude-prelude)
 (import-prefixed "$ns6_dir/lib.nuch" g)
-(declare printf:i32 (fmt:CStr &rest args:i32))
-(defn main:i32 ()
+(declare printf (fmt:CStr &rest args:i32) :i32)
+(defn main () :i32
   (printf "area=%d perimeter=%d\n" (g/area 6 7) (g/perimeter 6 7))
   (return 0))
 EOF
@@ -210,8 +210,8 @@ fi
 cat > "$sm3_dir/main.nuc" <<EOF
 (exclude-prelude)
 (import-use "$sm3_dir/lib.nuch")
-(declare printf:i32 (fmt:CStr &rest args:i32))
-(defn main:i32 ()
+(declare printf (fmt:CStr &rest args:i32) :i32)
+(defn main () :i32
   (printf "full=%d push=%d even4=%d even7=%d even6L=%d\n"
     (full? 5) (push! 7) (even? 4) (even? 7) (even? (cast i64 6)))
   (return 0))
@@ -378,9 +378,9 @@ else
 fi
 rm -rf "$bch_dir"
 
-# Stage 14 defn-signature.md S1 — the new `(defn NAME (params):ret body…)` style
-# is dual-accepted alongside legacy `(defn name:ret (params) …)`, parsing to an
-# identical function (proven byte-identical at the IR level). The
+# Stage 14 defn-signature.md S1 — the new `(defn NAME (params):ret body…)` style.
+# As of Phase S4 it is the ONLY accepted style; the legacy `(defn name:ret
+# (params) …)` spelling is now a hard error (negative checks below). The
 # `examples/defn-newstyle.nuc` run (byte-checked above) covers the in-process
 # happy path: keyword / list-form / colon-chain / tyvar returns, :void, a
 # new-style defprotocol + extend, and generic stamping. These checks cover the
@@ -446,8 +446,8 @@ fi
 cat > "$s1_dir/main.nuc" <<EOF
 (exclude-prelude)
 (import-use "$s1_dir/lib.nuch")
-(declare printf:i32 (fmt:CStr &rest args:i32))
-(defn main:i32 ()
+(declare printf (fmt:CStr &rest args:i32) :i32)
+(defn main () :i32
   (printf "twice=%d add3=%d scale32=%d scale64=%ld\n"
     (twice 21) (add3 1 2 3) (scale 4) (scale (cast i64 5)))
   (return 0))
@@ -467,7 +467,7 @@ fi
 cat > "$s1_dir/tmain.nuc" <<EOF
 (import-use "$s1_dir/lib.nuch")
 (import-use "stdio.h")
-(defn main:i32 ()
+(defn main () :i32
   (printf "gmax32=%d gmax64=%ld\n" (gmax 8 3) (gmax (cast i64 4) (cast i64 9)))
   (return 0))
 EOF
@@ -480,5 +480,39 @@ else
     echo "FAIL  s1-nuch-template-stamps"; fail=1
 fi
 rm -rf "$s1_dir"
+
+# Stage 14 defn-signature.md S4 — the legacy `name:ret` return-in-the-name signature
+# is retired. A colon-bearing (or list-head) defn / declare / protocol-method /
+# generic-template signature must now die with the targeted "legacy 'name:ret'
+# syntax is no longer supported" diagnostic, quoting the offending name, at each
+# chokepoint (defn-parse-sig, emit-nuch-declare-import, protocol-register-form,
+# register-generic-defn).
+s4_defn_err="$(./build/nucleusc --emit-llvm tests/fixtures/s4-legacy-defn.nuc 2>&1 >/dev/null || true)"
+if printf '%s' "$s4_defn_err" | grep -qF "defn 'foo': legacy 'name:ret' syntax is no longer supported"; then
+    echo "PASS  s4-legacy-defn-rejected"
+else
+    echo "FAIL  s4-legacy-defn-rejected"; fail=1
+fi
+
+s4_decl_err="$(./build/nucleusc --emit-llvm tests/fixtures/s4-legacy-declare.nuc 2>&1 >/dev/null || true)"
+if printf '%s' "$s4_decl_err" | grep -qF "declare 'bar': legacy 'name:ret' syntax is no longer supported"; then
+    echo "PASS  s4-legacy-declare-rejected"
+else
+    echo "FAIL  s4-legacy-declare-rejected"; fail=1
+fi
+
+s4_proto_err="$(./build/nucleusc --emit-llvm tests/fixtures/s4-legacy-proto.nuc 2>&1 >/dev/null || true)"
+if printf '%s' "$s4_proto_err" | grep -qF "protocol method 'area': legacy 'name:ret' syntax is no longer supported"; then
+    echo "PASS  s4-legacy-proto-rejected"
+else
+    echo "FAIL  s4-legacy-proto-rejected"; fail=1
+fi
+
+s4_tmpl_err="$(./build/nucleusc --emit-llvm tests/fixtures/s4-legacy-template.nuc 2>&1 >/dev/null || true)"
+if printf '%s' "$s4_tmpl_err" | grep -qF "defn 'gmax': legacy 'name:ret' syntax is no longer supported"; then
+    echo "PASS  s4-legacy-template-rejected"
+else
+    echo "FAIL  s4-legacy-template-rejected"; fail=1
+fi
 
 exit $fail

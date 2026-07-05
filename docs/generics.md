@@ -8,14 +8,14 @@ A `defn` whose name already exists but whose **parameter types differ** does not
 (defstruct Circle rad:i32)
 (defstruct Rect w:i32 h:i32)
 
-(defn area:i32 (c:ptr:Circle) (return (* (* (c rad) (c rad)) 3)))
-(defn area:i32 (s:ptr:Rect)   (return (* (s w) (s h))))
+(defn area (c:ptr:Circle):i32 (return (* (* (c rad) (c rad)) 3)))
+(defn area (s:ptr:Rect):i32   (return (* (s w) (s h))))
 
-(defn kind:i32 (x:i32) (return 1))   ; overload on primitive type
-(defn kind:i32 (x:f64) (return 2))
+(defn kind (x:i32):i32 (return 1))   ; overload on primitive type
+(defn kind (x:f64):i32 (return 2))
 
-(defn sum:i32 (a:i32) (return a))            ; overload on arity
-(defn sum:i32 (a:i32 b:i32) (return (+ a b)))
+(defn sum (a:i32):i32 (return a))            ; overload on arity
+(defn sum (a:i32 b:i32):i32 (return (+ a b)))
 ```
 
 **Symbol mangling.** A name with a single method keeps its unmangled symbol `@name` and stays C-callable. A name with two or more methods becomes an overload set: each method is emitted under a mangled symbol `@name.<tok>...` where each `<tok>` names a parameter type (`i32`, `f64`, `pCircle` for `ptr:Circle`, the struct name for a by-value struct, …). The mangle decision is made after a whole-file prescan, so all methods of a name agree.
@@ -24,7 +24,7 @@ A `defn` whose name already exists but whose **parameter types differ** does not
 
 **Resolution (tiers).** A call resolves in order: **(0)** an exact match (structural type equality: primitives by identity, structs by definition, pointers by pointee); **(1)** a bounded-generic template whose constraints the arguments satisfy; **(2)** a safe **widen / untyped-int-literal** adaptation — an `i32` argument supplied where an `i64` method exists, or a literal `1` supplied where the parameter is `i8`/`f64` (the chosen arguments are coerced to the parameter types). A unique match wins; an ambiguous or absent match is a compile error listing the offending name. *(A `defcast`-based coercion tier is not implemented — no cast-rule registry exists in-tree.)*
 
-**Return types may differ per method** (`(defn parse:i32 …)` vs `(defn parse:f64 …)` is fine since they dispatch on arguments). A return type bound only by no argument (no way to choose from the call) is out of scope.
+**Return types may differ per method** (`(defn parse (…):i32)` vs `(defn parse (…):f64)` is fine since they dispatch on arguments). A return type bound only by no argument (no way to choose from the call) is out of scope.
 
 **Cross-unit.** Overloaded functions export through `.nuch` as `defmethod` forms and dispatch correctly from an importing translation unit (link the importer against the library's `.o`). See [.nuch Header Format](compiler.md#nuch-header-format).
 
@@ -45,8 +45,8 @@ A **protocol** names a capability — a set of required method signatures — an
 `extend Type Protocol` is a **checked, code-free conformance assertion**. It runs after the whole-file prescan: for each required signature it substitutes `Self → Type` and requires that a concrete method already resolves at the exact tier (the implementations are ordinary overloaded `defn`s). It records the `(Type, Protocol)` fact and emits nothing.
 
 ```lisp
-(defn area:i32  (s:ptr:Circle) (return (* (* (s rad) (s rad)) 3)))
-(defn label:ptr (s:ptr:Circle) (return "circle"))
+(defn area (s:ptr:Circle):i32 (return (* (* (s rad) (s rad)) 3)))
+(defn label (s:ptr:Circle):ptr (return "circle"))
 
 (extend Circle Shape)   ; OK — both methods exist for Circle
 ```
@@ -108,7 +108,7 @@ Statically dispatched, zero runtime overhead.
 ```lisp
 (import-use numeric)                      ; Eq / Ord / Num over the operators
 
-(defn maxv:T (a:T b:T &where (Ord T))     ; T is a type variable bounded by Ord
+(defn maxv (a:T b:T &where (Ord T)):T     ; T is a type variable bounded by Ord
   (if (< a b) b a))                       ; operators dispatch on T directly
 
 (maxv 3 9)        ; → stamps @maxv.i32.i32; (< a b) is an inline icmp
@@ -148,7 +148,7 @@ constraint is the standard `Ord`; built-in numeric types conform automatically.
   result type). The check is **lenient**: the only hard def-time error is a
   genuinely unknown function name (a typo) —
   ```lisp
-  (defn maxv:T (a:T b:T &where (Ord T))
+  (defn maxv (a:T b:T &where (Ord T)):T
     (when (greater a b) …))   ; error at the defn: unknown function 'greater'
   ```
   A *known* operation that the abstract interface can't confirm — an operator
@@ -163,7 +163,7 @@ constraint is the standard `Ord`; built-in numeric types conform automatically.
   ```
   The constraint protocol's existence is also checked at the `defn`.
 - **Cross-unit.** A generic template exports verbatim through `.nuch`
-  (`(defn (maxv T) ((a T) (b T) &where (Ord T)) …)`); an importing unit
+  (`(defn maxv ((a T) (b T) &where (Ord T)) :T …)`); an importing unit
   re-registers it (trusting the exporter's A2 check) and stamps its own
   instantiations locally, calling the exporter's concrete protocol methods by
   their mangled symbols.
@@ -193,9 +193,9 @@ When the bound names a **parametric protocol**, the constraint head is a protoco
 
 (defstruct (MapIter I F) source:I f:F)   ; no phantom params
 
-(defn (next (Maybe E)) ((self (ref (MapIter I F)))
+(defn next ((self (ref (MapIter I F)))
                         &where ((Iterator S) I)      ; recover S := I's element
-                               ((UnaryFn S E) F))    ; check S, recover E := F's result
+                               ((UnaryFn S E) F)) (Maybe E)    ; check S, recover E := F's result
   (let ((res (Maybe S)) (next (.& self source)))
     (match res
       ((some v) (return (some (apply (.& self f) v))))
@@ -318,9 +318,9 @@ combinator's recovery reads it:
                ((UnaryFn S i32) F))
 
 ; A generic reduce over any Iterator, element type recovered from its conformance.
-(defn reduce:Acc ((g (ref G)) (init Acc) (it (ref I))
+(defn reduce ((g (ref G)) (init Acc) (it (ref I))
                   &where ((Iterator S) I)
-                         ((FoldFn Acc S) G))
+                         ((FoldFn Acc S) G)):Acc
   ...)
 
 ; Two-level chain: squares of [1,5) filtered to evens, summed = 4+16 = 20.
@@ -358,8 +358,8 @@ and typos caught):
 | **`Valid`** (§10.2) | structural, **inferred from the body** | at the call site |
 
 - **`Any`** is the no-constraint constraint — every type conforms, no methods
-  required. It lets a fully generic function name its variable: `(defn id:T (x:T
-  &where (Any T)) (return x))`. Operations on an `Any`-bound value are deferred to
+  required. It lets a fully generic function name its variable: `(defn id (x:T
+  &where (Any T)):T (return x))`. Operations on an `Any`-bound value are deferred to
   stamp time.
 - **`Struct`** holds for any struct type or pointer-to-struct. (Its member-access
   `get` method is supplied by callable-values; see `design/stage9/callable-values.md`.)
@@ -371,7 +371,7 @@ and typos caught):
   type that can't support an operation is rejected **at the call site**, and so are
   uses of values *derived* from `T`:
   ```lisp
-  (defn twice:T (x:T &where (Valid T)) (+ x x))
+  (defn twice (x:T &where (Valid T)):T (+ x x))
   (twice 21)        ; ok — i32 supports +
   (twice some-ptr)  ; error at this call: 'ptr:Blob' does not satisfy the Valid bound of 'twice'
   ```
@@ -555,7 +555,7 @@ env's `invoke` non-self signature must match the box's `(params…) ret`
 (defstruct Handler action:(BoxedFn (i32) void))
 
 ; defn returning a boxed closure — closes the CE-4 env-naming gap
-(defn make-adder:(BoxedFn (i32) i32) (n:i32)
+(defn make-adder (n:i32) (BoxedFn (i32) i32)
   (return (BoxedFn (i32) i32) (vfn (x:i32):i32 (return (+ x n)))))
 ```
 
@@ -610,14 +610,14 @@ Note the surface difference: a `BoxedFn` is dispatched as a **callable value**
 (defstruct Cat name:ptr)
 (defstruct Dog name:ptr)
 
-(defn describe:void (self:(ref Cat)) (printf "Cat: %s\n" (. self name)))
-(defn describe:void (self:(ref Dog)) (printf "Dog: %s\n" (. self name)))
+(defn describe (self:(ref Cat)):void (printf "Cat: %s\n" (. self name)))
+(defn describe (self:(ref Dog)):void (printf "Dog: %s\n" (. self name)))
 
 (extend Cat Describe)
 (extend Dog Describe)
 
 ; B2 — return type is a protocol name
-(defn make-animal:(dyn Describe) (kind:i32)
+(defn make-animal (kind:i32) (dyn Describe)
   (if (= kind 0)
     (return (dyn Describe) (Cat "Whiskers"))
     (return (dyn Describe) (Dog "Rex"))))

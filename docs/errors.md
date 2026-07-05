@@ -70,11 +70,11 @@ machinery.
 (import-use error)
 (deferror parse-failed "could not parse value")
 
-(defn checked:!i64 (n:i64)
+(defn checked (n:i64):!i64
   (when (< n (cast i64 0)) (return (err parse-failed)))
   (return (ok n)))
 
-(defn doubled:!i64 (n:i64)
+(defn doubled (n:i64):!i64
   (let (v:i64 (try (checked n)))          ; propagate on err
     (return (ok (* v (cast i64 2))))))
 
@@ -176,16 +176,16 @@ not supported in v1.
 
 ; A fallible function. (err config-missing) consults bound handlers first.
 ; err! would bypass them unconditionally.
-(defn load-num:!i64 (n:i64)
+(defn load-num (n:i64):!i64
   (when (= n (cast i64 0))
     (return (err config-missing)))    ; handler may repair → (ok v)
   (return (ok (* n (cast i64 10)))))
 
 ; A repairing handler: (some v) repairs, none declines.
-(defn (repair-from-ctx (Maybe i64)) (ctx:ptr detail:ptr)
+(defn repair-from-ctx (ctx:ptr detail:ptr) (Maybe i64)
   (return (some (deref (cast ptr:i64 ctx)))))
 
-(defn main:i32 ()
+(defn main ():i32
   ; No handler bound: (err config-missing) returns the error value.
   (match (load-num (cast i64 0))
     ((ok v)  (printf "ok %lld\n" v))
@@ -225,12 +225,12 @@ behavior if policy declines:
 (import-use error)
 (deferror out-of-memory "allocation grow needs a policy decision")
 
-(defn grow:i64 (need:i64)
+(defn grow (need:i64):i64
   (match (signal out-of-memory i64 (cast ptr (addr-of need)))
     ((some sz) sz)               ; a handler supplied a size: continue
     (none      (cast i64 0))))   ; declined / no handler: the fallback
 
-(defn (grant-double (Maybe i64)) (ctx:ptr detail:ptr)
+(defn grant-double (ctx:ptr detail:ptr) (Maybe i64)
   (return (some (* (deref (cast ptr:i64 detail)) (cast i64 2)))))
 
 (with-handler (out-of-memory i64 grant-double null)

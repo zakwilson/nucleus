@@ -72,8 +72,8 @@ A `.nuch` file is an S-expression file containing declarations extracted from a 
 
 ```lisp
 ; .nuch header for lib/mathlib.nuc
-(declare square:i32 (x:i32))
-(declare cube:i32 (x:i32))
+(declare square (x:i32) :i32)
+(declare cube (x:i32) :i32)
 ```
 
 Supported forms: `declare` (function signatures), `defstruct`, `defconst`, `defenum`, `defmacro` (full body preserved), `defmethod` (one overloaded method, carrying its mangled symbol explicitly), `defprotocol` / `extend` (protocol definitions and conformance facts, exported verbatim), `defcast` (full form preserved — the conv-fn must already be `declare`d earlier in the same header), and a producing module's `defvar` globals (re-emitted as `extern` so importers see the symbol without its initializer). A solitary function exports as `declare`; an overloaded one exports a `defmethod` per method so each keeps its distinct symbol:
@@ -92,8 +92,8 @@ When the source declares a namespace, its public symbols emit *mangled* link nam
 ```lisp
 ; .nuch header for lib/nsgeom.nuc
 (ns geom)
-(declare (area i32) ((w i32) (h i32)))
-(declare (perimeter i32) ((w i32) (h i32)))
+(declare area ((w i32) (h i32)) :i32)
+(declare perimeter ((w i32) (h i32)) :i32)
 ```
 
 Importing this with `(import-prefixed "nsgeom.nuch" g)` makes `g/area` resolve to `@geom__area` — matching the link name in the library's `.o`. Overloaded methods already carry their fully-mangled symbol on the `defmethod` form (`@geom__area.i32.i32`), so they round-trip unchanged; the `(ns …)` line additionally fixes the link name of *solitary* `declare`d functions and `extern` globals (which the importer otherwise rebuilds from the bare name). A library in the default `user` namespace emits **no** `(ns …)` line and bare names, so its header is byte-identical to before.

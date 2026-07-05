@@ -8,7 +8,7 @@ Examples:
 
 - `(let ((p (ptr (struct x:i32 y:i32))) (alloca (struct x:i32 y:i32))) ...)` — local of anonymous-struct shape
 - `(defstruct Outer (pt (struct x:i32 y:i32)) tag:i32)` — nested by value
-- `(defn take:i32 ((p (ptr (struct x:i32))))  ...)` — parameter typed as anonymous struct pointer
+- `(defn take ((p (ptr (struct x:i32)))):i32  ...)` — parameter typed as anonymous struct pointer
 
 Use `(.& obj field)` to obtain a pointer to a field without loading it. Result is typed `(ptr field-type)`, so it composes with `.set!`, `deref`, and further `.&` calls — e.g. `(.set! (.& o point) x 10)` writes through a value-typed nested struct field.
 
@@ -109,7 +109,7 @@ fully-applied use stamps and memoizes a concrete instance:
   (ok  v:T)
   (err e:E))
 
-(defn (try-div (Result i64 i32)) (a:i64 b:i64)
+(defn try-div (a:i64 b:i64) (Result i64 i32)
   (when (= b (cast i64 0))
     (return (err 1)))          ; return-position target typing
   (return (ok (/ a b))))
@@ -200,11 +200,11 @@ applies.
 (deferror not-found "point not found")
 
 ; !ptr:Pt is (Result (ref Pt) Err) via rule 3: pointer-sized, no struct.
-(defn lookup:!ptr:Pt (p:ptr:Pt good:i32)
+(defn lookup (p:ptr:Pt good:i32):!ptr:Pt
   (when (= good 0) (return (err not-found)))
   (return (ok (cast ref:Pt p))))
 
-(defn main:i32 ()
+(defn main ():i32
   (let (pt:ptr:Pt (cast ptr:Pt (malloc (sizeof Pt))))
     (.set! pt x 42)
     (match (lookup pt 1)
@@ -253,7 +253,7 @@ types, `defn` parameter and return types, `cast` targets, `sizeof` operands, and
 `alloca`/`array` element types. The colon sugar composes:
 
 ```lisp
-(defn count:usize (self:(ref (Vector T)))
+(defn count (self:(ref (Vector T))):usize
   (return (self len)))
 
 (defstruct Tree
@@ -295,10 +295,10 @@ bound by the parametric receiver, not by `&where`. The body is monomorphized
 once per distinct concrete receiver type, reusing the rung-4 monomorphizer.
 
 ```lisp
-(defn count:usize (self:(ref (Vector T)))
+(defn count (self:(ref (Vector T))):usize
   (return (self len)))
 
-(defn push:void ((self (ref (Vector T))) x:T)
+(defn push ((self (ref (Vector T))) x:T):void
   ; ... grow if needed, store x, increment len
   )
 ```
@@ -319,7 +319,7 @@ its return type:
 ; S and E appear in no field; they are bound positionally from the receiver.
 (defstruct (Two I F S E) a:I b:F)
 
-(defn two-s:S ((self (ref (Two I F S E))))   ; returns the 3rd type-argument
+(defn two-s ((self (ref (Two I F S E)))):S   ; returns the 3rd type-argument
   (return (cast S (self a))))
 ```
 
@@ -351,7 +351,7 @@ exports as `Vector_i32`. LLVM IR keeps the dotted name (dots are legal in IR).
 
 **Known limitation (`.nuch` consumer):** when a `declare` form has a
 parametric return type, the list-form name node is required:
-`(declare (p2_make (P2 i32 i32)) (...))`.
+`(declare p2_make (...) (P2 i32 i32))`.
 
 See also `examples/parametric.nuc`, `examples/import-parametric.nuc`, and
 `tests/abi/interop.nuc`.

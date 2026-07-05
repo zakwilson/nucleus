@@ -1,0 +1,4 @@
+; Stage 14 defn-signature.md S4 — a legacy `(declare name:ret (params))` must die
+; with the targeted diagnostic from emit-nuch-declare-import; the new spelling puts
+; the return operand after the parameter list: (declare bar (params) :ret).
+(declare bar:i32 (x:i32))

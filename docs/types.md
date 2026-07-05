@@ -156,11 +156,11 @@ followed by `(` (see *Colon-paren binding sugar* above):
 
 ```lisp
 ; canonical list form
-(defn apply:i32 ((f (fn i32) (i32 i32)) a:i32 b:i32)
+(defn apply ((f (fn i32) (i32 i32)) a:i32 b:i32):i32
   (return (funcall f a b)))
 
 ; colon-paren sugar — equivalent
-(defn apply:i32 (f:(fn i32) (i32 i32) a:i32 b:i32)
+(defn apply (f:(fn i32) (i32 i32) a:i32 b:i32):i32
   (return (funcall f a b)))
 ```
 
@@ -177,7 +177,7 @@ In `let` bindings, the binding name is also a list (or its colon-paren sugar):
 A `defn` function name used in value position decays to a function pointer, matching C semantics:
 
 ```lisp
-(defn add:i32 (a:i32 b:i32) (return (+ a b)))
+(defn add (a:i32 b:i32):i32 (return (+ a b)))
 (apply add 3 4)  ; passes add as a function pointer
 ```
 
@@ -266,7 +266,7 @@ A `Keyword` has static type `Keyword` and conforms to both `Hash` and `Eq`, maki
 (import-use iterator)
 (import-use hashmap)
 
-(defn main:i32 ()
+(defn main ():i32
   ; Self-evaluation.
   (let (k:Keyword :foo)
     (printf "self-eval=%d\n" (if (= k :foo) 1 0)))    ; 1

@@ -22,7 +22,7 @@ Source files contain top-level forms (`defn`, `defvar`, `defstruct`, etc.). A `m
 ```lisp
 (import-use "stdio.h")
 
-(defn main:i32 ()
+(defn main ():i32
   (printf "Hello, world!\n")
   0)
 ```
@@ -31,7 +31,7 @@ Source files contain top-level forms (`defn`, `defvar`, `defstruct`, etc.). A `m
 
 **Functions** — return type follows the function name; parameter types follow each parameter name:
 ```lisp
-(defn add:i32 (a:i32 b:i32)
+(defn add (a:i32 b:i32):i32
   (+ a b))
 ```
 
@@ -57,7 +57,7 @@ Source files contain top-level forms (`defn`, `defvar`, `defstruct`, etc.). A `m
 **Generics** — use protocols and bounded `defn`:
 ```lisp
 (import-use numeric)
-(defn maxv:T (a:T b:T &where (Ord T))
+(defn maxv (a:T b:T &where (Ord T)):T
   (if (< a b) b a))
 (maxv 3 9)    ; → 9 (stamps @maxv.i32.i32)
 (maxv 2.5 1.5) ; → 2.5 (stamps @maxv.f64.f64)
@@ -66,7 +66,7 @@ Source files contain top-level forms (`defn`, `defvar`, `defstruct`, etc.). A `m
 **Errors** — fallible functions return `!T` (= `(Result T Err)`):
 ```lisp
 (deferror not-found "item not found")
-(defn lookup:!i32 (key:i32)
+(defn lookup (key:i32):!i32
   (when (= key 0) (return (err not-found)))
   (return (ok key)))
 (match (lookup 42)

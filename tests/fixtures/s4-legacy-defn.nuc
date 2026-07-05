@@ -1,0 +1,5 @@
+; Stage 14 defn-signature.md S4 — the legacy `(defn name:ret (params) …)` return-
+; in-the-name signature is retired. A colon-bearing defn name must now die with the
+; targeted "legacy 'name:ret' syntax is no longer supported" diagnostic from
+; defn-parse-sig, quoting the offending name.
+(defn foo:i32 (x:i32) x)

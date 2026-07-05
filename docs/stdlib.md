@@ -99,7 +99,7 @@ The bare struct type is registered in the prelude and so is available everywhere
 (import-use strview)
 (import-use hash)
 
-(defn main:i32 ()
+(defn main ():i32
   (let (a:ptr:StrView (strview-from-cstr "hello")
         b:ptr:StrView (strview-from-cstr "hello")
         c:ptr:StrView (strview-from-cstr "world"))
@@ -151,7 +151,7 @@ Keywords are written as `:identifier` in source. The compiler requires `(import-
 (import-use hash)
 (import-use keyword)
 
-(defn main:i32 ()
+(defn main ():i32
   ; Self-evaluation and identity equality.
   (printf "foo=foo? %d\n" (if (= :foo :foo) 1 0))   ; 1
   (printf "foo=bar? %d\n" (if (= :foo :bar) 1 0))   ; 0

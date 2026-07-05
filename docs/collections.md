@@ -156,7 +156,7 @@ Unlike `numeric.nuc`'s code-free operator conformances, these are real method bo
 (import-use strview) (import-use hash) (import-use keyword)
 (import-use allocator) (import-use coll) (import-use iterator) (import-use hashmap)
 
-(defn main:i32 ()
+(defn main ():i32
   (with ((m (ref (HashMap Keyword i32))) (alloca (HashMap Keyword i32)))
     (hashmap-init m)
     (assoc m :width 1920)
@@ -173,7 +173,7 @@ See [Keyword literals](types.md#keyword-literals----foo) in the Types reference 
 
 ```lisp
 (extend MyType Hash)
-(defn hash:usize ((self (ref MyType)))
+(defn hash ((self (ref MyType))):usize
   ...)
 ```
 
@@ -252,7 +252,7 @@ See [Iterators](iterators.md) for `doseq` / `doseq-iter` and the `Iterator` prot
 (import-use iterator)
 (import-use vector)
 
-(defn main:i32 ()
+(defn main ():i32
   (with ((v (ref (Vector i32))) (alloca (Vector i32)))
     (vector-init v)
     (conj v 10) (conj v 20) (conj v 30)
@@ -400,7 +400,7 @@ Iteration order is hash-dependent and unspecified for both `keys` and `vals`.
 (import-use hash)
 (import-use hashmap)
 
-(defn main:i32 ()
+(defn main ():i32
   (with ((m (ref (HashMap CStr i32))) (alloca (HashMap CStr i32)))
     (hashmap-init m)
     (assoc m "one" 1) (assoc m "two" 2) (assoc m "three" 3)
@@ -485,7 +485,7 @@ Iteration order is hash-dependent and unspecified.
 (import-use hash)
 (import-use hashset)
 
-(defn main:i32 ()
+(defn main ():i32
   ; Basic membership
   (with ((s (ref (HashSet CStr))) (alloca (HashSet CStr)))
     (hashset-init s)

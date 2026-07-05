@@ -230,11 +230,11 @@ Both share one mechanism:
   imprecision boundaries of the cheap, intraprocedural tier.
 
 ```lisp
-(defn bad:ptr ()
+(defn bad ():ptr
   (let (x:i32 5)
     (return (addr-of x))))        ; ERROR: address of frame-local 'x' escapes via return
 
-(defn point-x:ref:i32 ((p (ref Point)))
+(defn point-x ((p (ref Point))):ref:i32
   (return (.& p x)))              ; OK: pointee is caller-owned (ref parameter)
 ```
 
@@ -244,7 +244,7 @@ The `Drop` protocol is an ordinary Stage 9 protocol; conforming makes a type
 ```lisp
 (defprotocol Drop
   (drop:void (self:ptr:Self)))
-(defn drop:void (self:ptr:Res) ...)   ; concrete method
+(defn drop (self:ptr:Res):void ...)   ; concrete method
 (extend Res Drop)                      ; checked, code-free conformance
 (with (r:ptr:Res (make-res)) ...)      ; (drop r) fires at scope exit
 ```
@@ -278,8 +278,8 @@ Operators are **ordinary generic functions**. Each built-in operator is a generi
 
 ```lisp
 (defstruct V2 x:i32 y:i32)
-(defn _+:ptr:V2 (a:ptr:V2 b:ptr:V2) …)   ; (+ u v) now dispatches here
-(defn =:i1     (a:ptr:V2 b:ptr:V2) …)    ; (= u v) dispatches here
+(defn _+ (a:ptr:V2 b:ptr:V2):ptr:V2 …)   ; (+ u v) now dispatches here
+(defn = (a:ptr:V2 b:ptr:V2):i1 …)    ; (= u v) dispatches here
 ```
 
 A user operator method is emitted under a mangled symbol (`@add.pV2.pV2`, `@eq.pV2.pV2` — the symbols `+`/`=` are mapped to IR-safe mnemonics). A call with operand types that match no user method falls back to the built-in inline peephole.
@@ -323,7 +323,7 @@ tier 0 and out-ranks the blanket intrinsic, so it owns *all* member access on th
 type. A user `get` takes the selector as an interned symbol (`ptr`):
 
 ```lisp
-(defn get:i32 (self:ptr:Temp sel:ptr)
+(defn get (self:ptr:Temp sel:ptr):i32
   (if (= sel 'f) (return …) (return (. self c))))   ; (t f) and (t c) both route here
 ```
 
@@ -339,7 +339,7 @@ element/key types), the literal retries once collapsed to `CStr`:
 
 ```lisp
 (defstruct (Bag K V) key:K val:V has:i32)
-(defn (get (Maybe V)) ((self (ref (Bag K V))) key:K) …)   ; value-keyed lookup
+(defn get ((self (ref (Bag K V))) key:K) (Maybe V) …)   ; value-keyed lookup
 (get bag "hello")    ; StrView literal selector (retries as CStr) → the (Bag K V) get method, returns (Maybe V)
 (get bag 42)         ; i32  selector → the same method
 (get bag 'val)       ; symbol selector → field access, returns the raw V field
@@ -365,7 +365,7 @@ argument tuple:
 
 ```lisp
 (defstruct Vec data:ptr:i32 len:i32)
-(defn invoke:i32 (self:ptr:Vec i:i32) (return (aref (_get self data) i)))
+(defn invoke (self:ptr:Vec i:i32):i32 (return (aref (_get self data) i)))
 (v 3)          ; ⇒ (invoke v 3) → element access (literal index)
 (let (idx:i32 1) (v idx))   ; ⇒ (invoke v idx) → indexes; NOT a field named idx
 (_get v len)   ; field access — `(v len)` would mis-route to invoke

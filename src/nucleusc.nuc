@@ -813,11 +813,16 @@
         (ptr-set! out-ret-node (node-at form 3))
         (ptr-set! out-body-start 4)
         (return 1))
-      ; Legacy: return type is embedded in the name node.
+      ; S4: the legacy `name:ret` / list-head `(name ret)` signature is retired.
+      ; The dual-detection machinery (sig-name-is-bare / legacy-ret-node /
+      ; defn-name-only) is kept precisely so this diagnostic can recognize the
+      ; legacy shape and quote the offending name; only the *behavior* changed
+      ; from "parse it" to "die with a clear message". (return 0) is unreachable
+      ; — die-at exits — but keeps the branch an i32-yielding terminator.
       (do
-        (ptr-set! out-name (defn-name-only name-node))
-        (ptr-set! out-ret-node (legacy-ret-node name-node))
-        (ptr-set! out-body-start 3)
+        (die-at (ff line)
+          (fmt-2s "defn '%s': legacy 'name:ret' syntax is no longer supported — write (defn %s (params):ret …)"
+                  (defn-name-only name-node) (defn-name-only name-node)))
         (return 0)))))
 
 ; Normalize a return-type node so a new-style NODE-KEYWORD ret (`:T`, `:i32`)
@@ -862,9 +867,12 @@
           (ptr-set! out-ret-node (normalize-ret-node (node-at sig 2)))
           (ptr-set! out-ret-node null))
         (return 1))
+      ; S4: legacy `(name:ret params)` / `((name ret) params)` protocol sigs are
+      ; retired; detection stays so the diagnostic can quote the method name.
       (do
-        (ptr-set! out-name (defn-name-only name-node))
-        (ptr-set! out-ret-node (normalize-ret-node (legacy-ret-node name-node)))
+        (die-at (-> sig (cast ptr:Node _) (_ line))
+          (fmt-2s "protocol method '%s': legacy 'name:ret' syntax is no longer supported — write (%s (params):ret)"
+                  (defn-name-only name-node) (defn-name-only name-node)))
         (return 0)))))
 
 ; ============================================================

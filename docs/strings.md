@@ -119,7 +119,7 @@ In overloaded (`defn`/multimethod) dispatch, a `StrView`-typed argument adapts t
 **`c"…"` — the explicit `CStr` literal.** A `c` glued directly onto the opening quote, with no whitespace between them, spells an explicit `CStr` literal instead of a `StrView` one: the bare `char*` GEP, no `{data,len}` view header, and no target-aware materialization. It is the direct "I mean `char*`" spelling for FFI/format-string hot spots and an honest marker at the call site — purely ergonomic, not required, since a plain `"…"` literal already coerces to `CStr`/`ptr` for free (above). A space keeps the two apart as ordinary tokens (`c "foo"` is the symbol `c` followed by a `StrView` literal); only the glued form `c"foo"` is the `CStr` literal, and only a lowercase `c` triggers it.
 
 ```lisp
-(declare strlen:usize (s:CStr))
+(declare strlen (s:CStr) :usize)
 (printf "%s\n" c"hello")             ; bare char*, no view header
 (printf "%d\n" (cast i32 (strlen c"hello")))
 ```
@@ -341,7 +341,7 @@ Two read-only protocol layers define the public string surface.
 (import-use string)
 (import-use vector)
 
-(defn main:i32 ()
+(defn main ():i32
   (with (s:String (string-new))
     (string-push-char (addr-of s) \H)
     (string-push-char (addr-of s) \i)
@@ -361,7 +361,7 @@ Lazy splitting with no allocation — iterators hold raw pointers into the sourc
 ### `strview-split`
 
 ```lisp
-(defn strview-split:SplitIter ((sv (ref StrView)) (sep (ref StrView))))
+(defn strview-split ((sv (ref StrView)) (sep (ref StrView))):SplitIter)
 ```
 
 Constructs a `SplitIter` that lazily splits `sv` on byte-level separator `sep`.
@@ -378,7 +378,7 @@ Iteration yields all segments, including empty ones. An empty input yields one e
 ### `strview-lines`
 
 ```lisp
-(defn strview-lines:LineIter ((sv (ref StrView))))
+(defn strview-lines ((sv (ref StrView))):LineIter)
 ```
 
 Constructs a `LineIter` that splits `sv` on `\n`, stripping any trailing `\r` from each line (handles `\r\n` line endings).
@@ -488,7 +488,7 @@ All three conformances are **strict**:
 ```lisp
 (import-use parse)
 
-(defn main:i32 ()
+(defn main ():i32
   (let ((sv (ref StrView)) (alloca StrView))
     (.set! sv data (cast ptr:ui8 (cast ptr "42"))
     (.set! sv len  (cast usize 2))
