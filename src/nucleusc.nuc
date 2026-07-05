@@ -9347,6 +9347,14 @@
     (.set! rm wrap-sym wrap-sym)
     (conj g-rmacros (cast ptr rm))))
 
+(defn register-rmacro (prefix:StrView wrap-sym:CStr):void
+  (let (rm:ptr:RMacro (cast ptr:RMacro (arena-alloc (sizeof RMacro)))
+        pp:ptr:StrView (addr-of prefix))
+    (.set! rm prefix (cast ptr (pp data)))
+    (.set! rm prefix-len (cast i32 (pp len)))
+    (.set! rm wrap-sym wrap-sym)
+    (conj g-rmacros (cast ptr rm))))
+
 (defn init-rmacros ():void
   (set! g-rmacros (make-vec))
   ; Register longest prefixes first for correct matching.

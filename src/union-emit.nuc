@@ -81,8 +81,7 @@
       (fprintf g-body-stream "%s:\n" err-lbl)
       (set! g-block-term 0)
       (let (fmt:CStr "nucleus: unwrap on error %s: %s\n"
-            fmt-id:i32 (intern-string "nucleus: unwrap on error %s: %s\n"
-                                      (cast i32 (strlen fmt)))
+            fmt-id:i32 (intern-string "nucleus: unwrap on error %s: %s\n")
             epp:ptr (new-tmp) eid:ptr (new-tmp) eid64:ptr (new-tmp)
             ngep:ptr (new-tmp) nm:ptr (new-tmp)
             mgep:ptr (new-tmp) msg:ptr (new-tmp)
@@ -211,7 +210,7 @@
       (fprintf g-body-stream "%s:\n" err-lbl)
       (set! g-block-term 0)
       (let (fmt:CStr "nucleus: unwrap on error %s: %s\n"
-            fmt-id:i32 (intern-string "nucleus: unwrap on error %s: %s\n" (cast i32 (strlen fmt)))
+            fmt-id:i32 (intern-string "nucleus: unwrap on error %s: %s\n")
             pineg:ptr (new-tmp) eid:ptr (new-tmp) idtr:ptr (new-tmp) eid64:ptr (new-tmp)
             ngep:ptr (new-tmp) nm:ptr (new-tmp) mgep:ptr (new-tmp) msg:ptr (new-tmp)
             ftmp:ptr (new-tmp))

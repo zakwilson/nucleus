@@ -437,6 +437,20 @@
       (if (!= is-lit 0) (return 1) (return 0))))
   (return 0))
 
+; Build a comma-separated string of type spellings for a diagnostic, e.g.
+; "StrView, ptr". argtypes is the parallel array of Type* used by generic-resolve.
+(defn arg-type-spellings (argtypes:ptr nargs:i32):ptr
+  (let (buf:ptr (alloca i8 512)
+        pos:i32 0)
+    (dotimes (i nargs)
+      (when (!= i 0)
+        (set! pos (+ pos (snprintf (ptr+ (cast ptr:i8 buf) (cast i64 pos))
+                                   (cast i64 (- 512 pos)) ", "))))
+      (let (ts:ptr (type-spelling (aref (cast ptr:ptr argtypes) i)))
+        (set! pos (+ pos (snprintf (ptr+ (cast ptr:i8 buf) (cast i64 pos))
+                                   (cast i64 (- 512 pos)) "%s" ts)))))
+    (return (arena-strndup buf (cast i64 pos)))))
+
 ; Select the method of a generic for a concrete argument-type tuple.
 ; Tier 0: an exact concrete method (type-eq on every param) — concrete beats
 ; generic (§8.6). Tier 1: a bounded-generic template whose type variables bind
@@ -491,8 +505,9 @@
         (die-at line
           (fmt-s "no matching method for '%s': arguments do not satisfy the required protocol constraint"
                  (gg name))))
-      (die-at line (fmt-s "no matching method for overloaded '%s' with given argument types"
-                          (gg name))))))
+      (die-at line (fmt-2s "no matching method for overloaded '%s' with argument types (%s)"
+                           (gg name)
+                           (arg-type-spellings argtypes nargs))))))
 
 ; Resolve an operator call to a USER overload (exact, then a unique widen/literal
 ; match), or null to fall back to the built-in numeric/pointer peephole. Unlike
