@@ -16,5 +16,5 @@
 
 (defunion Shape? (circle (r i32)) (square (s i32)))
 
-(defn getn:i32 (f:ptr:Full?)
+(defn getn (f:ptr:Full?):i32
   (return (_get f n)))

@@ -10,7 +10,7 @@
 
 ; A fallible computation. !i64 desugars to (Result i64 Err); (ok v) / (err E)
 ; resolve against the declared return type in return position.
-(defn checked:!i64 (n:i64)
+(defn checked (n:i64):!i64
   (when (= n (cast i64 0))
     (return (err config-missing)))
   (when (< n (cast i64 0))
@@ -19,16 +19,16 @@
 
 ; Propagation: `try` yields the ok value or re-returns the error via err!.
 ; The re-wrap target-types against THIS function's declared return.
-(defn doubled:!i64 (n:i64)
+(defn doubled (n:i64):!i64
   (let (v:i64 (try (checked n)))
     (return (ok (* v (cast i64 2))))))
 
-(defn show:void (r:!i64)
+(defn show (r:!i64):void
   (match r
     ((ok v)  (printf "ok %lld\n" v))
     ((err e) (printf "err %s: %s\n" (err-name e) (err-message e)))))
 
-(defn main:i32 ()
+(defn main ():i32
   ; match on a Result value, both arms.
   (show (checked (cast i64 42)))
   (show (checked (cast i64 0)))

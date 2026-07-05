@@ -58,7 +58,7 @@
 
 ; Abort on intern-table overflow. Non-generic so its libc references resolve
 ; against this file's includes.
-(defn keyword-overflow:void ()
+(defn keyword-overflow ():void
   (fprintf stderr "keyword: intern table full (max %d)\n" KEYWORD-MAX)
   (exit 1))
 
@@ -71,7 +71,7 @@
 ; malloc'd block, wrap them in a heap StrView, compute the byte hash once, assign
 ; the next sequential id, and return the new value.
 ; ---------------------------------------------------------------------------
-(defn keyword-intern:Keyword ((cs CStr))
+(defn keyword-intern ((cs CStr)):Keyword
   ; Lazy table init.
   (when (= g-keyword-table null)
     (set! g-keyword-table (malloc (* (cast i64 KEYWORD-MAX) (sizeof Keyword)))))
@@ -107,7 +107,7 @@
 ; keyword-name — the keyword's name as a (ref StrView) (borrowed; process-lived).
 ; Lets callers print or further-inspect a keyword without touching the layout.
 ; ---------------------------------------------------------------------------
-(defn keyword-name:ref:StrView ((self (ref Keyword)))
+(defn keyword-name ((self (ref Keyword))):ref:StrView
   (return (cast ref:StrView (cast ptr (self name)))))
 
 ; ---------------------------------------------------------------------------
@@ -122,15 +122,15 @@
 ; ---------------------------------------------------------------------------
 
 (extend Keyword Eq)
-(defn =:i1 (a:Keyword b:Keyword)
+(defn = (a:Keyword b:Keyword):i1
   (let (la:Keyword a
         lb:Keyword b)
     (return (if (= ((addr-of la) id) ((addr-of lb) id)) true false))))
-(defn !=:i1 (a:Keyword b:Keyword)
+(defn != (a:Keyword b:Keyword):i1
   (let (la:Keyword a
         lb:Keyword b)
     (return (if (= ((addr-of la) id) ((addr-of lb) id)) false true))))
 
 (extend Keyword Hash)
-(defn hash:usize ((self (ref Keyword)))
+(defn hash ((self (ref Keyword))):usize
   (return (self cached-hash)))

@@ -12,9 +12,9 @@
 (import-use "stdio.h")
 
 ; (b)/(c): an extern C function whose sole parameter is char* (CStr).
-(declare strlen:usize (s:CStr))
+(declare strlen (s:CStr):usize)
 
-(defn main:i32 ()
+(defn main ():i32
   ; (a) c"…" as a printf %s vararg — the bare char*, no view header.
   (printf "cstr=%s\n" c"hello")
   ; (b) c"…" into the extern expecting char*.

@@ -51,7 +51,7 @@
 ; Every valid Char (i.e. one produced by char-from-u32 or a char literal) is
 ; in range; this function does not re-validate.
 ; ---------------------------------------------------------------------------
-(defn char-utf8-len:usize ((c Char))
+(defn char-utf8-len ((c Char)):usize
   (let (n:ui32 (cast ui32 c))
     (when (<= n (cast ui32 127)) (return (cast usize 1)))
     (when (<= n (cast ui32 2047)) (return (cast usize 2)))
@@ -68,7 +68,7 @@
 ;   3 bytes: 1110xxxx 10xxxxxx 10xxxxxx
 ;   4 bytes: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
 ; ---------------------------------------------------------------------------
-(defn char-encode-utf8:usize ((c Char) (buf (ptr ui8)))
+(defn char-encode-utf8 ((c Char) (buf (ptr ui8))):usize
   (let (n:ui32 (cast ui32 c))
     (when (<= n (cast ui32 127))
       (aset! buf (cast i64 0) (cast ui8 n))
@@ -111,14 +111,14 @@
 ; ---------------------------------------------------------------------------
 
 ; Helper: build an error DecodeResult consuming 1 byte.
-(defn decode-err:DecodeResult ()
+(defn decode-err ():DecodeResult
   (let ((r (ref DecodeResult)) (alloca DecodeResult))
     (.set! r ch    \nul)
     (.set! r nbytes (cast usize 1))
     (.set! r ok    0)
     (return (deref r))))
 
-(defn char-decode-utf8:DecodeResult ((p (ptr ui8)) (len usize))
+(defn char-decode-utf8 ((p (ptr ui8)) (len usize)):DecodeResult
   (when (= len (cast usize 0)) (return (decode-err)))
 
   (let (b0:ui32 (cast ui32 (aref p 0)))
@@ -197,7 +197,7 @@
 ; char-to-u32 — reinterpret a Char as a ui32 codepoint value. No-op at IR
 ; level (same width, same bits); present for ergonomics.
 ; ---------------------------------------------------------------------------
-(defn char-to-u32:ui32 ((c Char))
+(defn char-to-u32 ((c Char)):ui32
   (return (cast ui32 c)))
 
 ; ---------------------------------------------------------------------------
@@ -206,7 +206,7 @@
 ;   - Must NOT be a surrogate (U+D800..U+DFFF).
 ; Errors invalid-codepoint on failure.
 ; ---------------------------------------------------------------------------
-(defn char-from-u32:!Char ((n ui32))
+(defn char-from-u32 ((n ui32)):!Char
   (when (> n (cast ui32 1114111))
     (return (err! invalid-codepoint)))
   (when (and (>= n (cast ui32 55296)) (<= n (cast ui32 57343)))
@@ -220,29 +220,29 @@
 ; ---------------------------------------------------------------------------
 
 ; char-is-ascii — 1 if the codepoint is in U+0000..U+007F, else 0.
-(defn char-is-ascii:i32 ((c Char))
+(defn char-is-ascii ((c Char)):i32
   (if (<= (cast ui32 c) (cast ui32 127)) 1 0))
 
 ; char-is-digit — 1 if c is ASCII '0'..'9', else 0.
-(defn char-is-digit:i32 ((c Char))
+(defn char-is-digit ((c Char)):i32
   (let (n:ui32 (cast ui32 c))
     (if (and (>= n (cast ui32 48)) (<= n (cast ui32 57))) 1 0)))
 
 ; char-is-alpha — 1 if c is ASCII 'a'..'z' or 'A'..'Z', else 0.
-(defn char-is-alpha:i32 ((c Char))
+(defn char-is-alpha ((c Char)):i32
   (let (n:ui32 (cast ui32 c))
     (if (or (and (>= n (cast ui32 65)) (<= n (cast ui32 90)))
             (and (>= n (cast ui32 97)) (<= n (cast ui32 122))))
       1 0)))
 
 ; char-is-alnum — 1 if c is ASCII alphanumeric (digit or alpha), else 0.
-(defn char-is-alnum:i32 ((c Char))
+(defn char-is-alnum ((c Char)):i32
   (if (or (= (char-is-digit c) 1) (= (char-is-alpha c) 1)) 1 0))
 
 ; char-is-whitespace — 1 if c is ASCII whitespace, else 0.
 ; ASCII whitespace: space (32), tab (9), newline (10), carriage return (13),
 ; form feed (12), vertical tab (11).
-(defn char-is-whitespace:i32 ((c Char))
+(defn char-is-whitespace ((c Char)):i32
   (let (n:ui32 (cast ui32 c))
     (if (or (= n (cast ui32 32))
             (or (= n (cast ui32 9))
@@ -254,7 +254,7 @@
 
 ; char-ascii-upper — convert ASCII 'a'..'z' to 'A'..'Z'. Total: non-lowercase
 ; ASCII and non-ASCII codepoints are returned unchanged.
-(defn char-ascii-upper:Char ((c Char))
+(defn char-ascii-upper ((c Char)):Char
   (let (n:ui32 (cast ui32 c))
     (if (and (>= n (cast ui32 97)) (<= n (cast ui32 122)))
       (cast Char (- n (cast ui32 32)))
@@ -262,7 +262,7 @@
 
 ; char-ascii-lower — convert ASCII 'A'..'Z' to 'a'..'z'. Total: non-uppercase
 ; ASCII and non-ASCII codepoints are returned unchanged.
-(defn char-ascii-lower:Char ((c Char))
+(defn char-ascii-lower ((c Char)):Char
   (let (n:ui32 (cast ui32 c))
     (if (and (>= n (cast ui32 65)) (<= n (cast ui32 90)))
       (cast Char (+ n (cast ui32 32)))

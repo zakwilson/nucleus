@@ -1,9 +1,9 @@
 (import-use "stdio.h")
 
-(defn sum-i64:i64 (a:i64 b:i64)
+(defn sum-i64 (a:i64 b:i64):i64
   (return (+ a b)))
 
-(defn main:int ()
+(defn main ():int
   (let (big:i64 1000000000
         bump:i64 42)
     (let (total:i64 (sum-i64 big bump))

@@ -48,7 +48,7 @@
 ; `(from-str (cast T 0) sv)`.
 ; ---------------------------------------------------------------------------
 (defprotocol (FromStr R)
-  (from-str:R ((self Self) (sv (ref StrView)))))
+  (from-str ((self Self) (sv (ref StrView))):R))
 
 ; ---------------------------------------------------------------------------
 ; parse macro — type-directed dispatch to FromStr.
@@ -68,7 +68,7 @@
 ; Allocate a NUL-terminated copy of sv's bytes. Caller must free the result.
 ; Precondition: sv.len > 0 (callers check this before calling).
 ; ---------------------------------------------------------------------------
-(defn parse-nul-copy:ptr:ui8 ((sv (ref StrView)))
+(defn parse-nul-copy ((sv (ref StrView))):ptr:ui8
   (let (n:usize (sv len)
         buf:ptr:ui8 (cast ptr:ui8 (malloc (cast i64 (+ n (cast usize 1))))))
     (memcpy (cast ptr buf) (cast ptr (sv data)) (cast i64 n))
@@ -86,7 +86,7 @@
 ; ---------------------------------------------------------------------------
 (extend i32 (FromStr !i32))
 
-(defn from-str:!i32 ((self i32) (sv (ref StrView)))
+(defn from-str ((self i32) (sv (ref StrView))):!i32
   (let (n:usize (sv len))
     ; Empty input.
     (when (= n (cast usize 0))
@@ -124,7 +124,7 @@
 ; ---------------------------------------------------------------------------
 (extend i64 (FromStr !i64))
 
-(defn from-str:!i64 ((self i64) (sv (ref StrView)))
+(defn from-str ((self i64) (sv (ref StrView))):!i64
   (let (n:usize (sv len))
     (when (= n (cast usize 0))
       (return (err! parse-int-error)))
@@ -155,7 +155,7 @@
 ; ---------------------------------------------------------------------------
 (extend f64 (FromStr !f64))
 
-(defn from-str:!f64 ((self f64) (sv (ref StrView)))
+(defn from-str ((self f64) (sv (ref StrView))):!f64
   (let (n:usize (sv len))
     (when (= n (cast usize 0))
       (return (err! parse-float-error)))

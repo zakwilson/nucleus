@@ -23,16 +23,16 @@
 ; errno.h C-header import) because the header exposes `errno` only as a macro,
 ; which the clang-based header reader does not surface. `strtol`/`strtoull` come
 ; from the compiler's global (import-use "stdlib.h").
-(declare __errno_location:ptr ())
+(declare __errno_location ():ptr)
 
-(defn char-at:i32 (s:ptr pos:i64)
+(defn char-at (s:ptr pos:i64):i32
   (return (bit-and (cast i32 (aref (cast ptr:i8 s) pos)) 255)))
 
 ; ============================================================
 ; Error reporting
 ; ============================================================
 
-(defn die-at:void (line:i32 msg:ptr)
+(defn die-at (line:i32 msg:ptr):void
   noreturn
   ; Stage 10 C3: consult the panic-tier debugger hook before aborting. With no
   ; (unhandled-error, i32) handler bound this is a one-load chain walk that
@@ -51,7 +51,7 @@
 ; Stage 10 E4: report a recoverable reader error without aborting. Prints the
 ; same diagnostic `die-at` does (path:line: error: msg, plus the mono-context
 ; note), but returns to the caller, which then propagates `(err! parse-error)`.
-(defn report-at:void (line:i32 msg:ptr)
+(defn report-at (line:i32 msg:ptr):void
   (fprintf stderr "%s:%d: error: %s\n" g-source-path line msg)
   (when (!= g-mono-context null)
     (fprintf stderr "  note: %s\n" g-mono-context)))
@@ -60,17 +60,17 @@
 ; Lexer
 ; ============================================================
 
-(defn peek-char:i32 ()
+(defn peek-char ():i32
   (return (char-at g-src g-pos)))
 
-(defn next-char:i32 ()
+(defn next-char ():i32
   (let (c:i32 (peek-char))
     (when (= c 0) (return 0))
     (set! g-pos (+ g-pos (cast i64 1)))
     (when (= c 10) (inc! g-line))
     (return c)))
 
-(defn skip-ws:void ()
+(defn skip-ws ():void
   (while (!= 0 1)
     (let (c:i32 (peek-char))
       (when (= c 0) (return))
@@ -82,7 +82,7 @@
               (next-char)))
           (return))))))
 
-(defn is-sym-char:i32 (c:i32)
+(defn is-sym-char (c:i32):i32
   (when (= c 0) (return 0))
   (when (!= (isspace c) 0) (return 0))
   (when (= c 40) (return 0))   ; (
@@ -98,7 +98,7 @@
   (when (= c 125) (return 0))  ; }
   (return 1))
 
-(defn lex-string:!ptr (open-line:i32)
+(defn lex-string (open-line:i32):!ptr
   (let (buf:ptr (alloca i8 4096)
         n:i64 (cast i64 0)
         done:i32 0)
@@ -146,21 +146,21 @@
 
 ; ASCII hex digit -> 0..15, or -1 if not a hex digit. Self-contained (no libc
 ; isxdigit dependency), so the reader stays standalone-lexable.
-(defn hex-digit-val:i32 (c:i32)
+(defn hex-digit-val (c:i32):i32
   (when (and (>= c 48) (<= c 57)) (return (- c 48)))     ; 0-9
   (when (and (>= c 97) (<= c 102)) (return (+ (- c 97) 10))) ; a-f
   (when (and (>= c 65) (<= c 70)) (return (+ (- c 65) 10)))  ; A-F
   (return -1))
 
 ; Build a TOK-CHAR with codepoint `cp` at `line`.
-(defn make-char-tok:ptr (cp:i32 line:i32)
+(defn make-char-tok (cp:i32 line:i32):ptr
   (let (t:ptr:Tok (cast ptr:Tok (alloc-tok)))
     (.set! t kind TOK-CHAR)
     (.set! t line line)
     (.set! t i (cast i64 cp))
     (return (cast ptr t))))
 
-(defn lex-char-literal:!ptr (open-line:i32)
+(defn lex-char-literal (open-line:i32):!ptr
   ; Consume the leading backslash.
   (next-char)
   (let (c0:i32 (peek-char))
@@ -234,7 +234,7 @@
 ; `e`/`E`, and consists otherwise of digits and at most one exponent
 ; with optional sign. Also accepts the special tokens `+inf.0`,
 ; `-inf.0`, `+nan.0` (Scheme convention).
-(defn is-float-literal:i32 (text:ptr len:i64)
+(defn is-float-literal (text:ptr len:i64):i32
   (when (<= len (cast i64 0)) (return 0))
   ; Special tokens.
   (when (and (= len (cast i64 6))
@@ -282,7 +282,7 @@
       (when (and (!= saw-e 0) (= digits-exp 0)) (return 0))
       (return 1))))
 
-(defn lex-atom:!ptr ()
+(defn lex-atom ():!ptr
   (let (start-line:i32 g-line
         start:i64 g-pos)
     (while (!= (is-sym-char (peek-char)) 0)
@@ -363,7 +363,7 @@
         (.set! ts s (arena-strndup text len))
         (return (ok (cast ptr ts)))))))
 
-(defn next-tok:!ptr ()
+(defn next-tok ():!ptr
   (skip-ws)
   (let (c:i32 (peek-char)
         line:i32 g-line)
@@ -479,13 +479,13 @@
 ; Reader / AST
 ; ============================================================
 
-(defn peek-tok:!ptr ()
+(defn peek-tok ():!ptr
   (when (= g-peek-valid 0)
     (do (set! g-peek (try (next-tok)))
         (set! g-peek-valid 1)))
   (return (ok g-peek)))
 
-(defn eat-tok:!ptr ()
+(defn eat-tok ():!ptr
   (let (t:ptr (try (peek-tok)))
     (set! g-peek-valid 0)
     (return (ok t))))
@@ -507,23 +507,23 @@
 
 ; Build a single-symbol Node from a C string (interned: identical spellings
 ; share identity, matching reader-produced symbols elsewhere).
-(defn lit-sym:ptr (s:ptr)
+(defn lit-sym (s:ptr):ptr
   (return (cast ptr (intern-symbol s))))
 
 ; Build the node list `( <a> <b> )`.
-(defn lit-list2:ptr (a:ptr b:ptr line:i32)
+(defn lit-list2 (a:ptr b:ptr line:i32):ptr
   (return (cast ptr (make-cell a (make-cell b null line) line))))
 
 ; Build the node list `( <a> <b> <c> )`.
-(defn lit-list3:ptr (a:ptr b:ptr c:ptr line:i32)
+(defn lit-list3 (a:ptr b:ptr c:ptr line:i32):ptr
   (return (cast ptr (make-cell a (make-cell b (make-cell c null line) line) line))))
 
 ; Build `(ref <ty>)` where <ty> is an already-built type node.
-(defn lit-ref:ptr (ty:ptr line:i32)
+(defn lit-ref (ty:ptr line:i32):ptr
   (return (lit-list2 (lit-sym "ref") ty line)))
 
 ; Build `(alloca <ty>)` where <ty> is an already-built type node.
-(defn lit-alloca:ptr (ty:ptr line:i32)
+(defn lit-alloca (ty:ptr line:i32):ptr
   (return (lit-list2 (lit-sym "alloca") ty line)))
 
 ; Classify one literal element node into a coarse "kind": 1 = integer,
@@ -536,7 +536,7 @@
 ; bigval)` on an i32-typed literal truncates. A literal whose natural type is i32
 ; / f64 / CStr matches the corresponding collection element parameter directly,
 ; so the expansion needs no element casts.
-(defn lit-elem-kind:i32 (n:ptr)
+(defn lit-elem-kind (n:ptr):i32
   (let (nn:ptr:Node (cast ptr:Node n))
     (when (= (nn kind) NODE-INT) (return 1))
     (when (= (nn kind) NODE-FLOAT) (return 2))
@@ -544,7 +544,7 @@
     (return 0)))
 
 ; Map an element kind to its type spelling.
-(defn lit-kind-type:ptr (kind:i32)
+(defn lit-kind-type (kind:i32):ptr
   (when (= kind 1) (return "i32"))
   (when (= kind 2) (return "f64"))
   (when (= kind 3) (return "CStr"))
@@ -559,7 +559,7 @@
 ; opening line.
 ;   start=0 stride=1 : every element (vector / set).
 ;   start=0 stride=2 : keys of a map.   start=1 stride=2 : values of a map.
-(defn infer-lit-type:!ptr (head:ptr start:i32 stride:i32 line:i32 bad-msg:ptr mix-msg:ptr)
+(defn infer-lit-type (head:ptr start:i32 stride:i32 line:i32 bad-msg:ptr mix-msg:ptr):!ptr
   (let (cur:ptr head
         idx:i32 0
         kind:i32 0
@@ -588,7 +588,7 @@
 ;   close-kind : TOK-RBRACK or TOK-RBRACE
 ;   open-line  : line of the opening delimiter
 ; Returns the head of the element cell-list (null when empty).
-(defn read-lit-elems:!ptr (what:ptr close-kind:i32 open-line:i32)
+(defn read-lit-elems (what:ptr close-kind:i32 open-line:i32):!ptr
   (let (head:ptr null
         tail:ptr null)
     (while (!= 0 1)
@@ -606,7 +606,7 @@
     (return (ok head))))
 
 ; `[e1 e2 …]` -> Vector literal.
-(defn read-vector-literal:!ptr (line:i32)
+(defn read-vector-literal (line:i32):!ptr
   (let (head:ptr (try (read-lit-elems "vector" TOK-RBRACK line)))
     (when (= head null)
       (do (report-at line "empty vector literal: use (alloca (Vector T)) + vector-init")
@@ -656,7 +656,7 @@
 
 ; `#{e1 e2 …}` -> HashSet literal. Same shape as the Vector literal but stamps
 ; (HashSet E), calls hashset-init, and inserts with `conj` (which == insert).
-(defn read-hashset-literal:!ptr (line:i32)
+(defn read-hashset-literal (line:i32):!ptr
   (let (head:ptr (try (read-lit-elems "set" TOK-RBRACE line)))
     (when (= head null)
       (do (report-at line "empty set literal: use (alloca (HashSet T)) + hashset-init")
@@ -692,7 +692,7 @@
 ; `{k1 v1 k2 v2 …}` -> HashMap literal. Elements come in key/value pairs; an odd
 ; count is an error. Keys infer K, values infer V (each set must agree). Stamps
 ; (HashMap K V), calls hashmap-init, and `assoc`-es each pair.
-(defn read-hashmap-literal:!ptr (line:i32)
+(defn read-hashmap-literal (line:i32):!ptr
   (let (head:ptr (try (read-lit-elems "map" TOK-RBRACE line)))
     (when (= head null)
       (do (report-at line "empty map literal: use (alloca (HashMap K V)) + hashmap-init")
@@ -741,7 +741,7 @@
                                 (make-cell bindings full-body line)
                                 line))))))))))))
 
-(defn read-form:!ptr ()
+(defn read-form ():!ptr
   (let (t:ptr:Tok (cast ptr:Tok (try (eat-tok))))
     (when (= (t kind) TOK-LPAREN) (return (read-list (t line))))
     (when (= (t kind) TOK-LBRACK) (return (read-vector-literal (t line))))
@@ -824,7 +824,7 @@
 ;
 ; Additive: no existing source has a trailing-colon atom adjacent to `(`, so the
 ; bootstrap stays byte-identical. Returns the (possibly fused) child node.
-(defn fuse-colon-paren:!ptr (child:ptr line:i32)
+(defn fuse-colon-paren (child:ptr line:i32):!ptr
   ; Only consider a freshly-lexed symbol/keyword with no token peeked past it.
   (when (or (= child null) (!= g-peek-valid 0)) (return (ok child)))
   (let (cn:ptr:Node (cast ptr:Node child))
@@ -896,7 +896,7 @@
                 (set! result (make-cell name-node (make-cell result null line) line)))
               (return (ok (cast ptr result))))))))))
 
-(defn read-list:!ptr (line:i32)
+(defn read-list (line:i32):!ptr
   (let (head:ptr null
         tail:ptr null)
     (while (!= 0 1)
@@ -914,7 +914,7 @@
           (set! tail cell))))
     (return (ok head))))
 
-(defn read-program:!ptr ()
+(defn read-program ():!ptr
   (let (head:ptr null
         tail:ptr null)
     (while (!= 0 1)
@@ -933,7 +933,7 @@
 ; diagnostic has already been printed at the fault site (report-at), so just
 ; abort the build (exit 1), matching the pre-E4 die-at behavior. The REPL calls
 ; `read-program` directly and `match`es it so a syntax error recovers instead.
-(defn read-program-or-die:ptr ()
+(defn read-program-or-die ():ptr
   (match (read-program)
     ((ok forms) forms)
     ((err e) (do (exit 1) (return null)))))

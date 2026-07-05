@@ -1,13 +1,13 @@
 (import-use "stdio.h")
 
-(defn add-f64:f64 (a:f64 b:f64)
+(defn add-f64 (a:f64 b:f64):f64
   (return (+ a b)))
 
-(defn lt-f64:i32 (a:f64 b:f64)
+(defn lt-f64 (a:f64 b:f64):i32
   (cond (< a b) (return 1)
         true    (return 0)))
 
-(defn main:int ()
+(defn main ():int
   ; Basic literal + arithmetic.
   (let (x:f64 1.5
         y:f64 2.5

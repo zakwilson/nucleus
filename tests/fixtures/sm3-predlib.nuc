@@ -12,14 +12,14 @@
 ; that imports the .nuch — proving the exporter's symbols and the importer's
 ; re-derived declarations agree at link time with no round-trip mismatch.
 
-(defn full?:i32 (n:i32)
+(defn full? (n:i32):i32
   (return (if (> n 0) 1 0)))
 
-(defn push!:i32 (n:i32)
+(defn push! (n:i32):i32
   (return (+ n 1)))
 
-(defn even?:i32 (x:i32)
+(defn even? (x:i32):i32
   (return (if (= (% x 2) 0) 1 0)))
 
-(defn even?:i32 (x:i64)
+(defn even? (x:i64):i32
   (return (if (= (% x (cast i64 2)) (cast i64 0)) 1 0)))

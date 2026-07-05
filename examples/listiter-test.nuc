@@ -18,12 +18,12 @@
 ; FoldFn: add the .i field of each list node (a Node*, arriving as a ptr) to acc.
 (defstruct SumNodeI dummy:i32)
 (extend SumNodeI (FoldFn i64 ptr))
-(defn (fold i64) ((self (ref SumNodeI)) (acc i64) (x ptr))
+(defn fold ((self (ref SumNodeI)) (acc i64) (x ptr)) i64
   (let (n:ptr:Node (cast ptr:Node x))
     (return (+ acc (n i)))))
 
 ; int-node — a fresh INT node carrying value v.
-(defn int-node:ptr (v:i64)
+(defn int-node (v:i64):ptr
   (let (c:ptr:Node (cast ptr:Node (malloc (sizeof Node))))
     (.set! c kind 0)
     (.set! c line 0)
@@ -33,7 +33,7 @@
     (.set! c cdr null)
     (return (cast ptr c))))
 
-(defn main:i32 ()
+(defn main ():i32
   (let (lst:ptr (cons (int-node (cast i64 10))
                       (cons (int-node (cast i64 20))
                             (cons (int-node (cast i64 30))

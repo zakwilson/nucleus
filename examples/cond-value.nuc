@@ -1,6 +1,6 @@
 (import-use "stdio.h")
 
-(defn main:int ()
+(defn main ():int
   (let (a:i64 7
         b:i64 4)
     (let (max:i64 (cond (> a b) a true b))

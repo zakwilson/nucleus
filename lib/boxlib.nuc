@@ -5,8 +5,8 @@
 (defstruct (Box T)
   val:T)
 
-(defn box-get:T ((b (ptr (Box T))))
+(defn box-get ((b (ptr (Box T)))):T
   (return (b val)))
 
-(defn box-set:void ((b (ptr (Box T))) v:T)
+(defn box-set ((b (ptr (Box T))) v:T):void
   (.set! b val v))

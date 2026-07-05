@@ -11,10 +11,10 @@
 (import-use numeric)
 
 ; CStr conforms to Eq (lib/numeric.nuc), so it works in an Eq-bounded generic.
-(defn same:i1 (a:T b:T &where (Eq T))
+(defn same (a:T b:T &where (Eq T)):i1
   (return (= a b)))
 
-(defn main:i32 ()
+(defn main ():i32
   ; Literal vs literal — content comparison.
   (printf "foo = foo   : %d\n" (= "foo" "foo"))
   (printf "foo = bar   : %d\n" (= "foo" "bar"))

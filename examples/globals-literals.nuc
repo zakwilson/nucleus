@@ -13,7 +13,7 @@
 (defconst FORTY-TWO 42)
 (defvar g-const:i32 FORTY-TWO)
 
-(defn main:int ()
+(defn main ():int
   (printf "i32=%d\n" g-int)
   (printf "i64=%ld\n" g-i64)
   (printf "neg=%d\n" g-neg)

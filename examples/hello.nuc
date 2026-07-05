@@ -1,6 +1,6 @@
 (import-use "stdio.h")
 
-(defn main:int ()
+(defn main ():int
   (dotimes (i:i32 4)
     (let (cur:i32 (+ i 1))
       (printf "i = %d j = %d\n" cur (* 2 cur))))

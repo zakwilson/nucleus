@@ -18,7 +18,7 @@
 ; the results. Verifies ok=1, nbytes matches the expected count, and ch is
 ; identical to the original.
 ; Access DecodeResult fields via addr-of (field access requires a pointer).
-(defn test-roundtrip:void ((label CStr) (c Char) (expected-bytes usize))
+(defn test-roundtrip ((label CStr) (c Char) (expected-bytes usize)):void
   (let (buf:ptr (malloc (cast i64 4))
         p:ptr:ui8 (cast ptr:ui8 buf))
     (let (written:usize (char-encode-utf8 c p))
@@ -36,7 +36,7 @@
     (free buf)))
 
 ; --- Check that decoding invalid/truncated bytes returns ok=0 ---
-(defn test-decode-invalid:void ((label CStr) (b0 ui8) (b1 ui8) (b2 ui8) (len usize))
+(defn test-decode-invalid ((label CStr) (b0 ui8) (b1 ui8) (b2 ui8) (len usize)):void
   (let (buf:ptr (malloc (cast i64 4))
         p:ptr:ui8 (cast ptr:ui8 buf))
     (aset! p (cast i64 0) b0)
@@ -46,7 +46,7 @@
       (printf "%s: ok=%d\n" label ((addr-of dr) ok)))
     (free buf)))
 
-(defn main:i32 ()
+(defn main ():i32
   ; --- UTF-8 round-trips ---
   ; 1-byte: U+0041 'A' (ASCII)
   (test-roundtrip "A (1-byte)"     \A              (cast usize 1))

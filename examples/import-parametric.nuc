@@ -6,7 +6,7 @@
 (import-use "stdio.h")
 (import-use boxlib)
 
-(defn main:int ()
+(defn main ():int
   (let ((b (ptr (Box i32))) (alloca (Box i32)))
     (ptr-set! b @((Box i32) 42))
     (printf "box-get=%d\n" (box-get b))

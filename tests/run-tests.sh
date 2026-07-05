@@ -174,8 +174,8 @@ sm3_lib="$(pwd)/tests/fixtures/sm3-predlib.nuc"
 # 1. The .nuch round-trips both name kinds: solitary `?`/`!` as (declare ...) and
 #    the overloaded `?` pair as (defmethod "@even_QMARK.<tok>" ...) carrying the
 #    stored mangled string verbatim.
-if grep -qF '(declare (full? i32)' "$sm3_dir/lib.nuch" \
-   && grep -qF '(declare (push! i32)' "$sm3_dir/lib.nuch" \
+if grep -qF '(declare full? ((n i32)) :i32)' "$sm3_dir/lib.nuch" \
+   && grep -qF '(declare push! ((n i32)) :i32)' "$sm3_dir/lib.nuch" \
    && grep -qF '(defmethod "@even_QMARK.i32"' "$sm3_dir/lib.nuch" \
    && grep -qF '(defmethod "@even_QMARK.i64"' "$sm3_dir/lib.nuch"; then
     echo "PASS  sm3-nuch-roundtrip"
@@ -420,11 +420,11 @@ s1_lib="$(pwd)/tests/fixtures/s1-newlib.nuc"
 ./build/nucleusc --emit-cheader "$s1_lib" > "$s1_dir/lib.h"    2>/dev/null || true
 ./build/nucleusc --emit-llvm    "$s1_lib" > "$s1_dir/lib.ll"   2>/dev/null || true
 
-# 3a. The .nuch normalizes solitary/overloaded new-style defns to the legacy
-#     name:ret spelling its (legacy-only) declare/defmethod readers consume, and
-#     exports the generic template verbatim in new style.
-if grep -qF '(declare twice:i32 ((x i32)))' "$s1_dir/lib.nuch" \
-   && grep -qF '(defmethod "@scale.i32" scale:i32 ((x i32)))' "$s1_dir/lib.nuch" \
+# 3a. The .nuch (S3) emits solitary/overloaded defns in the new-style signature
+#     `NAME (params) :ret` its declare/defmethod readers consume, and exports the
+#     generic template verbatim (also new style).
+if grep -qF '(declare twice ((x i32)) :i32)' "$s1_dir/lib.nuch" \
+   && grep -qF '(defmethod "@scale.i32" scale ((x i32)) :i32)' "$s1_dir/lib.nuch" \
    && grep -qF '(defn gmax ((a T) (b T) &where (Ord T)) :T' "$s1_dir/lib.nuch"; then
     echo "PASS  s1-nuch-export-shapes"
 else

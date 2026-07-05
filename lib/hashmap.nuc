@@ -38,7 +38,7 @@
 ; references against this file's includes; the generic methods call it to keep
 ; consumers' imports clean.
 ; ---------------------------------------------------------------------------
-(defn hashmap-oom:void ()
+(defn hashmap-oom ():void
   (fprintf stderr "hashmap: out of memory\n")
   (exit 1))
 
@@ -74,7 +74,7 @@
 ; Constructor: initialise an empty HashMap with the default (libc) allocator
 ; and an initial capacity of 8 buckets. All states bytes are zeroed (=empty).
 ; ---------------------------------------------------------------------------
-(defn hashmap-init:void ((m (ref (HashMap K V))))
+(defn hashmap-init ((m (ref (HashMap K V)))):void
   (let (init-cap:usize (cast usize 8)
         ksz:usize (* init-cap (cast usize (sizeof K)))
         vsz:usize (* init-cap (cast usize (sizeof V))))
@@ -97,7 +97,7 @@
 ; handle (copied in), mirroring vector-init-alloc / hashset-init-alloc. The three
 ; buffers are allocated through the passed handle, so the map owns its storage
 ; through it (arena = process-lifetime, no per-allocation free).
-(defn hashmap-init-alloc:void ((m (ref (HashMap K V))) (a (ref AllocHandle)))
+(defn hashmap-init-alloc ((m (ref (HashMap K V))) (a (ref AllocHandle))):void
   (let (init-cap:usize (cast usize 8)
         ksz:usize (* init-cap (cast usize (sizeof K)))
         vsz:usize (* init-cap (cast usize (sizeof V))))
@@ -122,7 +122,7 @@
 ; Frees the old three arrays through the stored handle, installs new ones.
 ; old-cap is captured at the top of the outer let so it's visible for frees.
 ; ---------------------------------------------------------------------------
-(defn hashmap-resize:void ((m (ref (HashMap K V))) new-cap:usize)
+(defn hashmap-resize ((m (ref (HashMap K V))) new-cap:usize):void
   (let (ah:ref:AllocHandle (.& m alloc)
         old-cap:usize (m cap)
         ksz-new:usize (* new-cap (cast usize (sizeof K)))
@@ -179,7 +179,7 @@
 (extend (HashMap K V) Drop)
 
 ; assoc: insert or overwrite the value for key. Grows at 75% load.
-(defn assoc:void ((self (ref (HashMap K V))) key:K val:V)
+(defn assoc ((self (ref (HashMap K V))) key:K val:V):void
   ; Grow if count*4 >= cap*3.
   (when (>= (* (self count) (cast usize 4))
             (* (self cap)   (cast usize 3)))
@@ -228,7 +228,7 @@
                   (set! idx (bit-and (+ idx (cast usize 1)) mask)))))))))))
 
 ; dissoc: remove the entry for key (sets state to tombstone). No-op if absent.
-(defn dissoc:void ((self (ref (HashMap K V))) key:K)
+(defn dissoc ((self (ref (HashMap K V))) key:K):void
   (let (mask:usize (- (self cap) (cast usize 1))
         kbuf:ptr:K (cast ptr:K (cast ptr (self keys)))
         sbuf:ptr:ui8 (cast ptr:ui8 (cast ptr (self states))))
@@ -258,7 +258,7 @@
 ; Assoc K V — get: lookup by key, returns (Maybe V).
 ; V is a protocol parameter of Assoc so (Maybe V) is expressible directly.
 ; ---------------------------------------------------------------------------
-(defn (get (Maybe V)) ((self (ref (HashMap K V))) key:K)
+(defn get ((self (ref (HashMap K V))) key:K) (Maybe V)
   (let (mask:usize (- (self cap) (cast usize 1))
         kbuf:ptr:K (cast ptr:K (cast ptr (self keys)))
         vbuf:ptr:V (cast ptr:V (cast ptr (self vals)))
@@ -296,16 +296,16 @@
 ; ---------------------------------------------------------------------------
 
 ; count: number of live (occupied) entries.
-(defn count:usize ((self (ref (HashMap K V))))
+(defn count ((self (ref (HashMap K V)))):usize
   (return (self count)))
 
 ; empty?: 1 if no live entries, else 0.
-(defn empty?:i32 ((self (ref (HashMap K V))))
+(defn empty? ((self (ref (HashMap K V)))):i32
   (return (if (= (self count) (cast usize 0)) 1 0)))
 
 ; conj: insert an entry. The Entry is passed by value; bind it to a local and
 ; `addr-of` to read its fields (the (hash (addr-of k)) idiom), then assoc.
-(defn conj:void ((self (ref (HashMap K V))) elem:(Entry K V))
+(defn conj ((self (ref (HashMap K V))) elem:(Entry K V)):void
   (let (e:(Entry K V) elem)
     (assoc self ((addr-of e) key) ((addr-of e) val))))
 
@@ -313,7 +313,7 @@
 ; Drop conformance: free all three arrays through the stored allocator.
 ; Nulls the pointers and zeroes count/cap so double-drop is safe (no-op).
 ; ---------------------------------------------------------------------------
-(defn drop:void ((self (ptr (HashMap K V))))
+(defn drop ((self (ptr (HashMap K V)))):void
   (when (!= (cast ptr (self keys)) null)
     (let (ah:ref:AllocHandle (.& self alloc)
           cap:usize (self cap))
@@ -343,7 +343,7 @@
 
 (extend (HashMapKeyIter K V) (Iterator K))
 
-(defn (next (Maybe K)) ((self (ref (HashMapKeyIter K V))))
+(defn next ((self (ref (HashMapKeyIter K V)))) (Maybe K)
   (let (kbuf:ptr:K (cast ptr:K (self kbuf))
         sbuf:ptr:ui8 (cast ptr:ui8 (self sbuf)))
     (while (< (self pos) (self cap))
@@ -360,7 +360,7 @@
 
 ; hmap-iter-keys: fill a caller-allocated HashMapKeyIter to scan m's keys.
 ; Borrows the key and states buffers; iterator must not outlive m.
-(defn hmap-iter-keys:void ((it (ref (HashMapKeyIter K V))) (m (ref (HashMap K V))))
+(defn hmap-iter-keys ((it (ref (HashMapKeyIter K V))) (m (ref (HashMap K V)))):void
   (.set! it kbuf (cast ptr (m keys)))
   (.set! it sbuf (cast ptr (m states)))
   (.set! it pos  (cast usize 0))
@@ -385,7 +385,7 @@
 
 (extend (HashMapValIter K V) (Iterator V))
 
-(defn (next (Maybe V)) ((self (ref (HashMapValIter K V))))
+(defn next ((self (ref (HashMapValIter K V)))) (Maybe V)
   (let (vbuf:ptr:V (cast ptr:V (self vbuf))
         sbuf:ptr:ui8 (cast ptr:ui8 (self sbuf)))
     (while (< (self pos) (self cap))
@@ -403,7 +403,7 @@
 ; hmap-iter-vals: fill a caller-allocated HashMapValIter to scan m's values.
 ; Internal helper: the value-returning `vals` (Assoc) wraps it.
 ; Borrows the val and states buffers; iterator must not outlive m.
-(defn hmap-iter-vals:void ((it (ref (HashMapValIter K V))) (m (ref (HashMap K V))))
+(defn hmap-iter-vals ((it (ref (HashMapValIter K V))) (m (ref (HashMap K V)))):void
   (.set! it vbuf (cast ptr (m vals)))
   (.set! it sbuf (cast ptr (m states)))
   (.set! it pos  (cast usize 0))
@@ -417,12 +417,12 @@
 ; ---------------------------------------------------------------------------
 (extend (HashMap K V) (Assoc K V (HashMapKeyIter K V) (HashMapValIter K V)))
 
-(defn keys:(HashMapKeyIter K V) ((self (ref (HashMap K V))))
+(defn keys ((self (ref (HashMap K V)))) (HashMapKeyIter K V)
   (let ((it (ref (HashMapKeyIter K V))) (alloca (HashMapKeyIter K V)))
     (hmap-iter-keys it self)
     (return (deref it))))
 
-(defn vals:(HashMapValIter K V) ((self (ref (HashMap K V))))
+(defn vals ((self (ref (HashMap K V)))) (HashMapValIter K V)
   (let ((it (ref (HashMapValIter K V))) (alloca (HashMapValIter K V)))
     (hmap-iter-vals it self)
     (return (deref it))))
@@ -443,7 +443,7 @@
 
 (extend (HashMapEntryIter K V) (Iterator (Entry K V)))
 
-(defn (next (Maybe (Entry K V))) ((self (ref (HashMapEntryIter K V))))
+(defn next ((self (ref (HashMapEntryIter K V)))) (Maybe (Entry K V))
   (let (kbuf:ptr:K (cast ptr:K (self kbuf))
         vbuf:ptr:V (cast ptr:V (self vbuf))
         sbuf:ptr:ui8 (cast ptr:ui8 (self sbuf)))
@@ -464,7 +464,7 @@
 ; hmap-iter-entries: fill a caller-allocated HashMapEntryIter to scan m's
 ; entries. Internal helper: the value-returning `iter` (Coll) wraps it.
 ; Borrows the key, val and states buffers; iterator must not outlive m.
-(defn hmap-iter-entries:void ((it (ref (HashMapEntryIter K V))) (m (ref (HashMap K V))))
+(defn hmap-iter-entries ((it (ref (HashMapEntryIter K V))) (m (ref (HashMap K V)))):void
   (.set! it kbuf (cast ptr (m keys)))
   (.set! it vbuf (cast ptr (m vals)))
   (.set! it sbuf (cast ptr (m states)))
@@ -480,7 +480,7 @@
 ; ---------------------------------------------------------------------------
 (extend (HashMap K V) (Coll (Entry K V) (HashMapEntryIter K V)))
 
-(defn iter:(HashMapEntryIter K V) ((self (ref (HashMap K V))))
+(defn iter ((self (ref (HashMap K V)))) (HashMapEntryIter K V)
   (let ((it (ref (HashMapEntryIter K V))) (alloca (HashMapEntryIter K V)))
     (hmap-iter-entries it self)
     (return (deref it))))

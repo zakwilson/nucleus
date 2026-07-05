@@ -12,7 +12,7 @@
 (import-use combinators)
 (import-use vector)
 
-(defn main:i32 ()
+(defn main ():i32
   (with ((v (ref (Vector (BoxedFn (i32) i32)))) (alloca (Vector (BoxedFn (i32) i32))))
     (vector-init v)
     ; compose: x -> (x*2)+1

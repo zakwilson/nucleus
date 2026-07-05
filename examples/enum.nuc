@@ -3,7 +3,7 @@
 
 (import-use "stdio.h")
 
-(defn main:int ()
+(defn main ():int
   (printf "RED=%d GREEN=%d BLUE=%d MAX=%d\n" RED GREEN BLUE MAX_VAL)
   (cond (= GREEN 1)
     (printf "GREEN is 1\n"))

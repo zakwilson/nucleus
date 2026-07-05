@@ -20,9 +20,9 @@
 ; registered until the emit phase (signatures referencing it would prescan-fail).
 
 ; offsetof(field) = address-of-field - base, both as integers.
-(defn off:i64 (base:ptr fld:ptr) (return (- (cast i64 fld) (cast i64 base))))
+(defn off (base:ptr fld:ptr):i64 (return (- (cast i64 fld) (cast i64 base))))
 
-(defn main:int ()
+(defn main ():int
   (let (s:ptr:P_i8  (alloca P_i8))  (printf "P_i8 sizeof=%lld a=%lld\n"  (cast i64 (sizeof P_i8))  (off s (.& s a))))
   (let (s:ptr:P_i16 (alloca P_i16)) (printf "P_i16 sizeof=%lld a=%lld\n" (cast i64 (sizeof P_i16)) (off s (.& s a))))
   (let (s:ptr:P_i32 (alloca P_i32)) (printf "P_i32 sizeof=%lld a=%lld\n" (cast i64 (sizeof P_i32)) (off s (.& s a))))

@@ -16,21 +16,21 @@
 ; The mechanism: when a grow can't proceed, ask policy for a replacement size.
 ; signal yields (Maybe i64), eliminated with `match` (value-Maybe is not a
 ; pointer, so if-some/unwrap don't apply). `detail` carries the bytes needed.
-(defn grow:i64 (need:i64)
+(defn grow (need:i64):i64
   (match (signal out-of-memory i64 (cast ptr (addr-of need)))
     ((some sz) sz)               ; a handler supplied a size: continue with it
     (none      (cast i64 0))))   ; declined / no handler: the mechanism's fallback
 
 ; Policy bound near the top of the program: grant twice what was asked, reading
 ; the borrowed `detail`. Returns (Maybe i64); `none` would decline.
-(defn (grant-double (Maybe i64)) (ctx:ptr detail:ptr)
+(defn grant-double (ctx:ptr detail:ptr) (Maybe i64)
   (return (some (* (deref (cast ptr:i64 detail)) (cast i64 2)))))
 
 ; Policy that always declines.
-(defn (always-decline (Maybe i64)) (ctx:ptr detail:ptr)
+(defn always-decline (ctx:ptr detail:ptr) (Maybe i64)
   (return none))
 
-(defn main:i32 ()
+(defn main ():i32
   ; No handler bound: signal finds none -> grow falls back to 0.
   (printf "no-policy: %lld\n" (grow (cast i64 8)))
   ; A granting policy: signal returns (some 16) -> grow continues with it.

@@ -12,7 +12,7 @@
 (import-use hash)
 (import-use hashmap)
 
-(defn main:i32 ()
+(defn main ():i32
   ; CStr-keyed map.
   (with ((m (ref (HashMap CStr i32))) (alloca (HashMap CStr i32)))
     (hashmap-init m)

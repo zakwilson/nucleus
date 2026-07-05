@@ -17,7 +17,7 @@
 ; `x` is a plain frame local (a let binding). The cfn captures it by reference,
 ; so the closure value is tainted with x's frame region. Returning the closure
 ; escapes that region and is rejected.
-(defn escapes:i32 ()
+(defn escapes ():i32
   (let (x:i32 5)
     (let (h:ref:AllocHandle (default-allocator))
       (return (cfn h ():i32 (return x))))))

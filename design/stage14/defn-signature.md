@@ -368,4 +368,51 @@ effect: the checked-in boot compiler itself now accepts both defn signature
 styles, which is the prerequisite for Phase S3 — the boot must already parse
 new-style syntax before the tree-wide mechanical rewrite can be built with it.
 
-Phases S3–S4 pending.
+**Phase S3 — the mechanical rewrite: DONE (2026-07-05).** A paren-aware Python
+rewriter (records byte spans; skips strings/comments/char literals; handles
+multi-line param lists, `&where` clauses spanning lines, the colon-paren-fuse name
+`make-adder:(BoxedFn (i32) i32)`, and both list-head forms) rewrote all of `src/`,
+`lib/`, `examples/`, `tests/` to the new style — **no `.ll`/`.nuch`/`docs/` inputs**.
+Counts: src `defn`=622/`declare`=6, lib `defn`=277/`declare`=1/proto=51, examples+
+tests `defn`=373/`declare`=8/proto=12 (list-head and colon-fuse heads folded into
+`defn`). The five internal synthesis sites emit new-style (lambda lift, closure
+`invoke`/`drop`, defunion arm ctor + its `.nuch` declare reshape, type-erasure
+forwarding; the stamper is style-preserving). The `.nuch` writer flipped to new
+style — `(declare NAME (params) :ret)` / `(defmethod "@sym" NAME (params) :ret)` via
+`emit-nuch-ret` + `defn-name-only` (replacing `print-defn-name-legacy`), and the
+`defmethod` importer + defunion-ctor reshape were updated to the new arity; the
+SM-3 and S1-3a `.nuch` test expectations were updated to match.
+
+One consumer the S1 dual-accept missed had to be fixed: the A2 template body check
+(`check-generic-template`) and the Valid instance walk (`valid-check-instance`)
+hardcoded body-start `3`, so a new-style **CELL return** (`constantly`'s
+`(BoxedFn (V) V)`) was walked as a body form → "unknown function 'V'". Fixed to
+`(if (sig-name-is-bare …) 4 3)` (conventions.md). This is the "genuinely fiddly
+consumer" the Risks section flagged.
+
+**Verification:** the *pure* head-style rewrite of `src/`+`lib/` left
+`build/nucleusc.ll` **byte-identical** to the pre-rewrite baseline (emitted with
+the S2 boot). Across the whole example corpus, compiling the legacy vs new-style
+source with the same compiler produced **byte-identical IR for all 120 compilable
+examples** (the 1 exclusion, `comb-shapes.nuc`, is a pre-existing HEAD failure in a
+compile-time JIT block, not in the test suite). The synthesis-site flip is
+IR-neutral (8 closure/union/dyn examples byte-identical before/after). `make test`
+= **162/162**; `make bootstrap` = **byte-identical (stage1==stage2)** — no
+`update-bootstrap` needed, because the boot only ever compiles `src/` (which has no
+new-style CELL-return template) and both bootstrap stages share the same new source.
+The compiler self-IR does shift vs the pre-S3 baseline, but ~88% of that is `@.str`
+pool renumbering from the new `.nuch`/synthesis format strings; it does not affect
+any compiled user program.
+
+Deviations from ground truth: (1) the gcheck/Valid body-start fix above — an S1
+gap, not anticipated in the S3 plan. (2) The `.nuch` writer now **normalizes to new
+style** (not "template verbatim, plain to legacy" as S1 left it); a still-legacy
+import would export the same new-style entry via `defn-ret-node`. (3) The rewriter
+also rewrote `examples/defn-newstyle.nuc`'s one legacy `main:i32` and the SM-3/S1
+fixtures to new style (the `.nuch` output is writer-normalized, so the fixture
+source style no longer affects it). (4) `comb-shapes.nuc` pre-existing failure noted
+above. The rewrite script was treated as throwaway (kept in the session scratchpad,
+not committed).
+
+**Phase S4 — pending** (hard-error legacy spellings; rewrite `docs/`; final boot
+refresh).

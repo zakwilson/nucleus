@@ -29,7 +29,7 @@
 (import-use string)
 (import-use error)
 
-(defn main:i32 ()
+(defn main ():i32
 
   ; ---- 1. Build "Hello" with push-char ----------------------------------------
   (with ((s (ref String)) (alloca String))

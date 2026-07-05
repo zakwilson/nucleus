@@ -14,7 +14,7 @@
 (import-use hash)
 (import-use hashmap)
 
-(defn main:i32 ()
+(defn main ():i32
   ; ---- 1. Entry round-trip -----------------------------------------------
   (let ((e (ref (Entry i32 i32))) (alloca (Entry i32 i32)))
     (.set! e key 7)

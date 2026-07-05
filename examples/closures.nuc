@@ -30,10 +30,10 @@
 
 ; A top-level defn. It is a plain function pointer and may be passed directly as
 ; the fold function `g` — the non-capturing case, fully C-callable.
-(defn sumsq:i32 ((acc i32) (x i32))
+(defn sumsq ((acc i32) (x i32)):i32
   (return (+ acc (* x x))))
 
-(defn main:i32 ()
+(defn main ():i32
   ; One shared iterator slot. `reduce` advances it to exhaustion, so reset
   ; start/end before each fold.
   (let ((r (ref IntRangeIter)) (alloca IntRangeIter))

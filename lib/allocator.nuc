@@ -73,9 +73,9 @@
 ; the contract so an allocator that needs it has it.
 ; ---------------------------------------------------------------------------
 (defprotocol Allocator
-  ((alloc (raw ui8))   ((self (ref Self)) size:usize align:usize))
-  ((realloc (raw ui8)) ((self (ref Self)) (p (raw ui8)) old:usize new:usize align:usize))
-  (free:void           ((self (ref Self)) (p (raw ui8)) size:usize align:usize)))
+  (alloc   ((self (ref Self)) size:usize align:usize) (raw ui8))
+  (realloc ((self (ref Self)) (p (raw ui8)) old:usize new:usize align:usize) (raw ui8))
+  (free           ((self (ref Self)) (p (raw ui8)) size:usize align:usize):void))
 
 ; ---------------------------------------------------------------------------
 ; 2. AllocKind — the runtime discriminant for AllocHandle dispatch.
@@ -99,14 +99,14 @@
 
 ; (alloc-handle-alloc h size align) -> (raw ui8). Returns null on libc OOM (the
 ; caller checks); the arena arm aborts internally rather than returning null.
-(defn (alloc-handle-alloc (raw ui8)) ((h (ref AllocHandle)) size:usize align:usize)
+(defn alloc-handle-alloc ((h (ref AllocHandle)) size:usize align:usize) (raw ui8)
   (when (= (h kind) ALLOC-ARENA)
     (return (cast (raw ui8) (arena-alloc (cast i64 size)))))
   (return (cast (raw ui8) (malloc (cast i64 size)))))
 
 ; (alloc-handle-realloc h p old new align) -> (raw ui8).
-(defn (alloc-handle-realloc (raw ui8))
-    ((h (ref AllocHandle)) (p (raw ui8)) old:usize new:usize align:usize)
+(defn alloc-handle-realloc
+    ((h (ref AllocHandle)) (p (raw ui8)) old:usize new:usize align:usize) (raw ui8)
   (when (= (h kind) ALLOC-ARENA)
     ; The arena cannot grow a prior allocation in place, so allocate fresh and
     ; copy the smaller of old/new bytes. The old block is abandoned (released
@@ -120,8 +120,8 @@
   (return (cast (raw ui8) (realloc (cast ptr p) (cast i64 new)))))
 
 ; (alloc-handle-free h p size align) -> void.
-(defn alloc-handle-free:void
-    ((h (ref AllocHandle)) (p (raw ui8)) size:usize align:usize)
+(defn alloc-handle-free
+    ((h (ref AllocHandle)) (p (raw ui8)) size:usize align:usize):void
   ; The arena frees nothing per-allocation; the whole arena is released at once.
   (when (= (h kind) ALLOC-ARENA)
     (return))
@@ -139,7 +139,7 @@
 ; Returns the shared default handle. Stable for the process lifetime; callers
 ; store the (ref AllocHandle) in the collections they build. `ref:AllocHandle`
 ; is the colon-chain spelling of `(ref AllocHandle)`.
-(defn default-allocator:ref:AllocHandle ()
+(defn default-allocator ():ref:AllocHandle
   (return (addr-of g-default-alloc)))
 
 ; ---------------------------------------------------------------------------
@@ -150,14 +150,14 @@
 ; ---------------------------------------------------------------------------
 
 ; Initialise a caller-owned slot as a libc handle and return it.
-(defn libc-allocator:ref:AllocHandle ((h (ref AllocHandle)))
+(defn libc-allocator ((h (ref AllocHandle))):ref:AllocHandle
   (.set! h kind ALLOC-LIBC)
   (.set! h data null)
   (return h))
 
 ; Initialise a caller-owned slot as the arena handle and return it. The arena's
 ; state lives in lib/arena.nuc's module globals, so `data` stays null.
-(defn arena-allocator:ref:AllocHandle ((h (ref AllocHandle)))
+(defn arena-allocator ((h (ref AllocHandle))):ref:AllocHandle
   (.set! h kind ALLOC-ARENA)
   (.set! h data null)
   (return h))

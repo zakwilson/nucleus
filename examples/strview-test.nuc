@@ -9,7 +9,7 @@
 (import-use strview)
 (import-use hash)
 
-(defn main:i32 ()
+(defn main ():i32
   ; Build three views: two with identical content, one different.
   (let (a:ptr:StrView (strview-from-cstr "hello")
         b:ptr:StrView (strview-from-cstr "hello")

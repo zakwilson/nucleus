@@ -11,9 +11,9 @@
 (import-use strview)
 
 ; (2) fixed StrView by-value parameter — reads .len via the by-ref accessor.
-(defn sv-len:usize (v:StrView) (return (strview-len (addr-of v))))
+(defn sv-len (v:StrView):usize (return (strview-len (addr-of v))))
 
-(defn main:i32 ()
+(defn main ():i32
   (let (a:StrView "hello"
         b:StrView "hi")
     ; (2) by-value StrView params: correct lengths prove the struct ABI holds.

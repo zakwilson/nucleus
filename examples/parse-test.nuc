@@ -19,7 +19,7 @@
 (import-use strview)
 (import-use parse)
 
-(defn main:i32 ()
+(defn main ():i32
 
   ; ---- 1. i32 success: "42" ---------------------------------------------------
   (let (sv:ptr:StrView (strview-from-cstr "42"))

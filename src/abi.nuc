@@ -15,19 +15,19 @@
 
 ; Check if target is aarch64 (AAPCS64 ABI uses plain pointers for large structs,
 ; not byval attributes).
-(defn abi-is-aarch64:i32 ()
+(defn abi-is-aarch64 ():i32
   (return (if (!= (strstr g-target-triple "aarch64") null) 1 0)))
 
 ; Round x up to a multiple of a (a is a power of two in practice, but the
 ; arithmetic form works for any positive a).
-(defn abi-align-up:i32 (x:i32 a:i32)
+(defn abi-align-up (x:i32 a:i32):i32
   (when (<= a 1) (return x))
   (return (* (/ (+ x (- a 1)) a) a)))
 
 ; ABI alignment of a type in bytes. Scalars use their natural alignment
 ; (== size); pointers/functions use the target pointer alignment; structs use
 ; the max alignment of any field.
-(defn abi-alignof:i32 (t:ptr)
+(defn abi-alignof (t:ptr):i32
   (let (k:i32 ((cast ptr:Type t) kind))
     (when (= k TY-STRUCT)
       (return (abi-struct-align (cast ptr:StructDef ((cast ptr:Type t) sdef)))))
@@ -43,7 +43,7 @@
 ; ABI size of a type in bytes. Unlike type-size (which returns the pointer size
 ; for any struct, sufficient for its by-reference slots), this walks struct
 ; fields so the classifier sees the real aggregate size.
-(defn abi-sizeof:i32 (t:ptr)
+(defn abi-sizeof (t:ptr):i32
   (let (k:i32 ((cast ptr:Type t) kind))
     (when (= k TY-STRUCT)
       (return (abi-struct-size (cast ptr:StructDef ((cast ptr:Type t) sdef)))))
@@ -54,7 +54,7 @@
 
 ; ABI size of an untagged union: the max member size, rounded up to the union's
 ; own (max member) alignment.
-(defn abi-union-size:i32 (sd:ptr)
+(defn abi-union-size (sd:ptr):i32
   (let (sdd:ptr:StructDef (cast ptr:StructDef sd)
         n:i32 (sdd num-fields)
         mx:i32 0)
@@ -64,7 +64,7 @@
     (return (abi-align-up mx (abi-struct-align sd)))))
 
 ; Max field alignment of a struct (its own ABI alignment).
-(defn abi-struct-align:i32 (sd:ptr)
+(defn abi-struct-align (sd:ptr):i32
   (let (sdd:ptr:StructDef (cast ptr:StructDef sd)
         n:i32 (sdd num-fields)
         a:i32 1)
@@ -75,7 +75,7 @@
 
 ; ABI size of a struct: fields laid out with natural padding, total rounded up
 ; to the struct's own alignment (tail padding included).
-(defn abi-struct-size:i32 (sd:ptr)
+(defn abi-struct-size (sd:ptr):i32
   (let (sdd:ptr:StructDef (cast ptr:StructDef sd)
         n:i32 (sdd num-fields)
         off:i32 0)
@@ -90,7 +90,7 @@
 ; of struct sd placed at absolute base offset `base`. Recurses into nested
 ; struct fields by absolute offset. Returns a class code: 0 none, 1 SSE/float,
 ; 2 SSE/double, 3 INTEGER. Higher wins (INTEGER beats SSE; double beats float).
-(defn abi-class-eightbyte:i32 (sd:ptr base:i32 lo:i32)
+(defn abi-class-eightbyte (sd:ptr base:i32 lo:i32):i32
   (let (sdd:ptr:StructDef (cast ptr:StructDef sd)
         n:i32 (sdd num-fields)
         hi:i32 (+ lo 8)
@@ -125,7 +125,7 @@
 ; Coercion IR type for one eightbyte: class `cls` holding `n` bytes (1..8).
 ; INTEGER → i(8·n) for n ≤ 4 (i8/i16/i24/i32), else i64. SSE/double → double.
 ; SSE/float → <2 x float> when the eightbyte is full, else float.
-(defn abi-eightbyte-ir:ptr (cls:i32 n:i32)
+(defn abi-eightbyte-ir (cls:i32 n:i32):ptr
   (when (= cls 2) (return "double"))
   (when (= cls 1)
     (if (= n 8) (return "<2 x float>") (return "float")))
@@ -135,7 +135,7 @@
 
 ; Classify a type for the SysV aggregate ABI. Returns an AbiInfo*. Non-struct
 ; types are ABI-DIRECT (byte-identical to pre-ABI codegen).
-(defn abi-classify:ptr (t:ptr)
+(defn abi-classify (t:ptr):ptr
   (let (info:ptr:AbiInfo (cast ptr:AbiInfo (arena-alloc (sizeof AbiInfo))))
     (.set! info kind ABI-DIRECT)
     (.set! info reg0 null)
@@ -168,7 +168,7 @@
 ; Return type string for a function signature given its return AbiInfo: void for
 ; MEMORY (the value goes through the sret pointer), the coercion reg(s) for
 ; COERCE, or the plain type for DIRECT.
-(defn abi-ret-ir:ptr (info:ptr ret:ptr)
+(defn abi-ret-ir (info:ptr ret:ptr):ptr
   (let (k:i32 ((cast ptr:AbiInfo info) kind))
     (when (= k ABI-MEMORY)  (return "void"))
     (when (= k ABI-COERCE1) (return ((cast ptr:AbiInfo info) reg0)))
@@ -182,7 +182,7 @@
 ; expands to two comma-separated entries; the caller supplies the leading comma.
 ; On aarch64, ABI-MEMORY uses plain `ptr` (no byval attribute); on x86_64, it
 ; uses `ptr byval(%Ty) align N`.
-(defn abi-print-param:void (info:ptr ptype:ptr name:ptr)
+(defn abi-print-param (info:ptr ptype:ptr name:ptr):void
   (let (ii:ptr:AbiInfo (cast ptr:AbiInfo info)
         k:i32 ((cast ptr:AbiInfo info) kind))
     (when (= k ABI-DIRECT)
@@ -215,7 +215,7 @@
 ; and bind it in fn-scope. DIRECT keeps the prior alloca+store (byte-identical).
 ; MEMORY binds the byval pointer directly (it already points at the copy).
 ; COERCE allocas the struct and stores the register arg(s) at their offsets.
-(defn abi-emit-param-prologue:void (fn-scope:ref:Scope pname:ptr ptype:ptr)
+(defn abi-emit-param-prologue (fn-scope:ref:Scope pname:ptr ptype:ptr):void
   (let (info:ptr:AbiInfo (cast ptr:AbiInfo (abi-classify ptype))
         k:i32 ((cast ptr:AbiInfo (abi-classify ptype)) kind)
         slot:ptr (fmt-s "%%%s.addr" pname)
@@ -258,7 +258,7 @@
 ; the aggregate), so scalar/pointer-only self-compilation stays byte-identical.
 ; MEMORY copies through the sret pointer and returns void; COERCE loads the
 ; eightbyte(s) and returns the reg(s).
-(defn emit-struct-ret:void (v:ptr)
+(defn emit-struct-ret (v:ptr):void
   (let (vv:ptr:Val (cast ptr:Val v)
         info:ptr:AbiInfo (cast ptr:AbiInfo g-fn-ret-abi)
         k:i32 ((cast ptr:AbiInfo g-fn-ret-abi) kind))
@@ -341,7 +341,7 @@
 ; args, CE-3 fix (b)) before reaching here, since classification on the arg type
 ; alone cannot distinguish a by-value-struct arg from an ordinary pointer arg.
 ; On aarch64, ABI-MEMORY passes a plain pointer (no byval attribute).
-(defn abi-arg-frag:ptr (av:ptr)
+(defn abi-arg-frag (av:ptr):ptr
   (let (a:ptr:Val (cast ptr:Val av)
         info:ptr:AbiInfo (cast ptr:AbiInfo (abi-classify ((cast ptr:Val av) type)))
         k:i32 ((cast ptr:AbiInfo (abi-classify ((cast ptr:Val av) type))) kind))
@@ -394,7 +394,7 @@
 ; the first-class struct value, and return its Val. `arglist` is the already
 ; built scalar/coerced argument string; `nargs` is the count it holds (so a
 ; MEMORY sret prefix knows whether it needs a separating comma).
-(defn abi-emit-struct-call:ref:Val (info:ptr ret:ptr ir-name:ptr arglist:ptr nargs:i32)
+(defn abi-emit-struct-call (info:ptr ret:ptr ir-name:ptr arglist:ptr nargs:i32):ref:Val
   (let (ii:ptr:AbiInfo (cast ptr:AbiInfo info)
         k:i32 ((cast ptr:AbiInfo info) kind)
         ty:ptr (type-to-ir ret))
@@ -441,7 +441,7 @@
 
 ; Try to coerce a value to a target type. Returns a Val* or null on failure.
 ; Handles: same kind (identity), int-to-int (trunc/sext/zext), same-width sign change.
-(defn coerce-int-val:?ptr:Val (v:ptr target:ptr line:i32)
+(defn coerce-int-val (v:ptr target:ptr line:i32):?ptr:Val
   (let (vv:ptr:Val (cast ptr:Val v)
         src:ptr (vv type)
         sk:i32 (-> src (cast ptr:Type _) (_ kind))
@@ -567,7 +567,7 @@
 ; (union-registry.nuc 584, generics.nuc 604, cheader.nuc 6921, and
 ; nucleusc.nuc's own emit-defvar/emit-extern/emit-defn/emit-defstruct further
 ; down that same file), so it is the earliest available home.
-(defn check-ir-name-legal:void (line:i32 orig-name:ptr ir-name:ptr)
+(defn check-ir-name-legal (line:i32 orig-name:ptr ir-name:ptr):void
   (let (bad:i32 (ir-name-illegal-char ir-name))
     (when (>= bad 0)
       (let (cbuf:ptr (arena-alloc (cast i64 2)))
@@ -577,7 +577,7 @@
           (fmt-3s "illegal character '%s' in generated symbol for '%s' (ir-name '%s') — LLVM identifiers allow only [A-Za-z0-9$._-]"
                   cbuf orig-name ir-name))))))
 
-(defn register-struct:ref:StructDef (name:ptr)
+(defn register-struct (name:ptr):ref:StructDef
   (when (>= (cast i32 (count g-structs)) MAX-STRUCTS)
     (fprintf stderr "nucleusc: too many structs\n") (exit 1))
   (let (sd:ptr:StructDef (cast ptr:StructDef (arena-alloc (sizeof StructDef))))

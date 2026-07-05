@@ -12,7 +12,7 @@
 (import-use iterator)
 (import-use vector)
 
-(defn main:i32 ()
+(defn main ():i32
   ; Stack-allocate a Vector i32 owned by `with`; vector-init sets the libc
   ; allocator and zeroes the fields. `drop` fires automatically at scope exit.
   (with ((v (ref (Vector i32))) (alloca (Vector i32)))

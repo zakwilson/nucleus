@@ -62,12 +62,12 @@
 ;                a legitimate "not found", not an error: returns (Maybe usize).
 ; ---------------------------------------------------------------------------
 (defprotocol (ByteStr ByteI)
-  (byte-len:usize   ((self (ref Self))))
-  (byte-at:!ui8     ((self (ref Self)) i:usize))
-  (bytes:ByteI      ((self (ref Self))))
-  (as-view:StrView  ((self (ref Self))))
-  (sub-bytes:!ptr:StrView ((self (ref Self)) start:usize end:usize))
-  ((byte-find (Maybe usize)) ((self (ref Self)) (needle (ref StrView)))))
+  (byte-len   ((self (ref Self))):usize)
+  (byte-at     ((self (ref Self)) i:usize):!ui8)
+  (bytes      ((self (ref Self))):ByteI)
+  (as-view  ((self (ref Self))):StrView)
+  (sub-bytes ((self (ref Self)) start:usize end:usize):!ptr:StrView)
+  (byte-find ((self (ref Self)) (needle (ref StrView))) (Maybe usize)))
 
 ; ---------------------------------------------------------------------------
 ; Str CharI — the codepoint layer.
@@ -96,13 +96,13 @@
 ;   contains-str?— 1 when self contains the given needle StrView, else 0.
 ; ---------------------------------------------------------------------------
 (defprotocol (Str CharI)
-  (char-count:usize    ((self (ref Self))))
-  (str-empty?:i32      ((self (ref Self))))
-  (char-at:!Char       ((self (ref Self)) i:usize))
-  (chars:CharI         ((self (ref Self))))
-  (starts-with?:i32    ((self (ref Self)) (prefix (ref StrView))))
-  (ends-with?:i32      ((self (ref Self)) (suffix (ref StrView))))
-  (contains-str?:i32   ((self (ref Self)) (needle (ref StrView)))))
+  (char-count    ((self (ref Self))):usize)
+  (str-empty?      ((self (ref Self))):i32)
+  (char-at       ((self (ref Self)) i:usize):!Char)
+  (chars         ((self (ref Self))):CharI)
+  (starts-with?    ((self (ref Self)) (prefix (ref StrView))):i32)
+  (ends-with?      ((self (ref Self)) (suffix (ref StrView))):i32)
+  (contains-str?   ((self (ref Self)) (needle (ref StrView))):i32))
 
 ; Str extends Eq: every type that conforms to Str must also conform to Eq
 ; (content comparison).  This mirrors `(extend Ord Eq)` in lib/numeric.nuc.

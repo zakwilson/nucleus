@@ -8,4 +8,4 @@
 ; unchanged. Before SM-5 this produced a raw LLVM parse error out of the
 ; linker/verifier with no source position; SM-5 must instead FAIL to compile
 ; with a clean source-level diagnostic naming the offending symbol.
-(defn weird%name:i32 (n:i32) (return n))
+(defn weird%name (n:i32):i32 (return n))

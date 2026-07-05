@@ -69,7 +69,7 @@
   cur:StrView)
 
 ; split-iter-done — 1 if the iterator is exhausted (no more segments).
-(defn split-iter-done:i32 ((it (ref SplitIter)))
+(defn split-iter-done ((it (ref SplitIter))):i32
   (return (it done)))
 
 ; split-iter-next — advance to and return the next segment.
@@ -79,7 +79,7 @@
 ; If not found: yield buf[0..rem] (the tail), set done=1.
 ;
 ; Precondition: done == 0.
-(defn split-iter-next:StrView ((it (ref SplitIter)))
+(defn split-iter-next ((it (ref SplitIter))):StrView
   (let (slen:usize (it sep-len)
         rem:usize  (it rem)
         buf:ptr:ui8 (it buf))
@@ -122,7 +122,7 @@
 ; strview-split — construct a SplitIter over sv splitting on sep.
 ; Both sv and sep are borrowed; the caller must keep them alive for the
 ; iterator's lifetime (the iterator holds raw pointers into their buffers).
-(defn strview-split:SplitIter ((sv (ref StrView)) (sep (ref StrView)))
+(defn strview-split ((sv (ref StrView)) (sep (ref StrView))):SplitIter
   (let ((it (ref SplitIter)) (alloca SplitIter))
     (.set! it buf       (sv data))
     (.set! it rem       (sv len))
@@ -151,7 +151,7 @@
 ; ---------------------------------------------------------------------------
 (extend SplitIter (Iterator ptr))
 
-(defn (next (Maybe ptr)) ((self (ref SplitIter)))
+(defn next ((self (ref SplitIter))) (Maybe ptr)
   (when (= (self done) 1) (return none))
   (.set! self cur (split-iter-next self))
   (return (some (.& self cur))))
@@ -169,7 +169,7 @@
   cur:StrView)
 
 ; lines-iter-done — 1 if the iterator is exhausted.
-(defn lines-iter-done:i32 ((it (ref LineIter)))
+(defn lines-iter-done ((it (ref LineIter))):i32
   (return (it done)))
 
 ; lines-iter-next — return the next line (without its trailing newline).
@@ -179,7 +179,7 @@
 ; yields the entire remaining buffer (no trailing newline), sets done=1.
 ;
 ; Precondition: done == 0.
-(defn lines-iter-next:StrView ((it (ref LineIter)))
+(defn lines-iter-next ((it (ref LineIter))):StrView
   (let (buf:ptr:ui8 (it buf)
         rem:usize   (it rem)
         i:usize     (cast usize 0)
@@ -215,7 +215,7 @@
 
 ; strview-lines — construct a LineIter over sv.
 ; Borrowed: caller must keep sv alive for the iterator's lifetime.
-(defn strview-lines:LineIter ((sv (ref StrView)))
+(defn strview-lines ((sv (ref StrView))):LineIter
   (let ((it (ref LineIter)) (alloca LineIter))
     (.set! it buf  (sv data))
     (.set! it rem  (sv len))
@@ -228,7 +228,7 @@
 ; ---------------------------------------------------------------------------
 (extend LineIter (Iterator ptr))
 
-(defn (next (Maybe ptr)) ((self (ref LineIter)))
+(defn next ((self (ref LineIter))) (Maybe ptr)
   (when (= (self done) 1) (return none))
   (.set! self cur (lines-iter-next self))
   (return (some (.& self cur))))

@@ -23,19 +23,19 @@
 ; ---- invoke: an i32 vector, indexable by call. Vec defines `invoke`, so its
 ;      own fields are read with `_get` (the callable form indexes, not gets). ----
 (defstruct Vec data:ptr:i32 len:i32)
-(defn invoke:i32 (self:ptr:Vec i:i32)
+(defn invoke (self:ptr:Vec i:i32):i32
   (return (aref (_get self data) i)))
 
 ; ---- UnaryFn: a function object that adds a fixed delta to its i32 argument ----
 (defstruct Adder delta:i32)
 (extend Adder (UnaryFn i32 i32))
-(defn (apply i32) ((self (ref Adder)) (x i32))
+(defn apply ((self (ref Adder)) (x i32)) i32
   (return (+ x (self delta))))
 
 ; ---- FoldFn: a function object that multiplies accumulator by element ----
 (defstruct Multiplier dummy:i32)
 (extend Multiplier (FoldFn i32 i32))
-(defn (fold i32) ((self (ref Multiplier)) (acc i32) (x i32))
+(defn fold ((self (ref Multiplier)) (acc i32) (x i32)) i32
   (return (* acc x)))
 
 ; ---- A user `get` override: it owns all member access on its type (tier 0
@@ -44,11 +44,11 @@
 ;      field with the `_get` primitive (not head position `(self c)`, which would
 ;      dispatch back into this same method and recurse).
 (defstruct Temp c:i32)
-(defn get:i32 (self:ptr:Temp sel:ptr)
+(defn get (self:ptr:Temp sel:ptr):i32
   (if (= sel 'f) (return (+ (* (_get self c) 2) 30))
                  (return (_get self c))))
 
-(defn main:i32 ()
+(defn main ():i32
   ; Member access by call — the Struct default. (p x) == (_get p x).
   (let (p:ptr:Point (cast ptr:Point (malloc (cast i64 (sizeof Point)))))
     (.set! p x 3)

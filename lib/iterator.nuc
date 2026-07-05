@@ -32,7 +32,7 @@
 ; Uses `(ref Self)` list binding form (colon form doesn't work for paren types).
 ; ---------------------------------------------------------------------------
 (defprotocol (Iterator E)
-  ((next (Maybe E)) ((self (ref Self)))))
+  (next ((self (ref Self))) (Maybe E)))
 
 ; ---------------------------------------------------------------------------
 ; 2. IntRangeIter — iterates i32 values in [start, end).
@@ -44,7 +44,7 @@
 
 (extend IntRangeIter (Iterator i32))
 
-(defn (next (Maybe i32)) ((self (ref IntRangeIter)))
+(defn next ((self (ref IntRangeIter))) (Maybe i32)
   (when (>= (self start) (self end))
     (return none))
   (let (v:i32 (self start))
@@ -63,7 +63,7 @@
 
 (extend I64ArrayIter (Iterator i64))
 
-(defn (next (Maybe i64)) ((self (ref I64ArrayIter)))
+(defn next ((self (ref I64ArrayIter))) (Maybe i64)
   (when (>= (self pos) (self len))
     (return none))
   (let (v:i64 (aref (self data) (cast i64 (self pos))))
@@ -74,13 +74,13 @@
 ; 4. UnaryFn Arg Ret — function objects mapping one value to another.
 ; ---------------------------------------------------------------------------
 (defprotocol (UnaryFn Arg Ret)
-  ((apply Ret) ((self (ref Self)) (x Arg))))
+  (apply ((self (ref Self)) (x Arg)) Ret))
 
 ; ---------------------------------------------------------------------------
 ; 5. FoldFn Acc Elem — binary fold: (acc, elem) -> acc.
 ; ---------------------------------------------------------------------------
 (defprotocol (FoldFn Acc Elem)
-  ((fold Acc) ((self (ref Self)) (acc Acc) (x Elem))))
+  (fold ((self (ref Self)) (acc Acc) (x Elem)) Acc))
 
 ; ---------------------------------------------------------------------------
 ; 6. MapIter I F — generic lazy map. S (source element) and E (result element)
@@ -90,9 +90,9 @@
   source:I
   f:F)
 
-(defn (next (Maybe E)) ((self (ref (MapIter I F)))
+(defn next ((self (ref (MapIter I F)))
                         &where ((Iterator S) I)
-                               ((UnaryFn S E) F))
+                               ((UnaryFn S E) F)) (Maybe E)
   (let ((res (Maybe S)) (next (.& self source)))
     (match res
       ((some v) (return (some (apply (.& self f) v))))
@@ -110,9 +110,9 @@
   source:I
   pred:F)
 
-(defn (next (Maybe S)) ((self (ref (FilterIter I F)))
+(defn next ((self (ref (FilterIter I F)))
                         &where ((Iterator S) I)
-                               ((UnaryFn S i32) F))
+                               ((UnaryFn S i32) F)) (Maybe S)
   (let (done:i32 0)
     (while (= done 0)
       (let ((item (Maybe S)) (next (.& self source)))
@@ -130,9 +130,9 @@
 ; ---------------------------------------------------------------------------
 ; 8. Generic reduce over any Iterator.
 ; ---------------------------------------------------------------------------
-(defn reduce:Acc ((g (ref G)) (init Acc) (it (ref I))
+(defn reduce ((g (ref G)) (init Acc) (it (ref I))
                   &where ((Iterator S) I)
-                         ((FoldFn Acc S) G))
+                         ((FoldFn Acc S) G)):Acc
   (let (acc:Acc init)
     (let (done:i32 0)
       (while (= done 0)

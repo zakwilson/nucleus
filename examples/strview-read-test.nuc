@@ -20,7 +20,7 @@
 
 ; Build a StrView from a raw byte array on the heap.
 ; "héllo" = [0x68, 0xC3, 0xA9, 0x6C, 0x6C, 0x6F] — 6 bytes, 5 codepoints.
-(defn make-hello-utf8:(ptr StrView) ()
+(defn make-hello-utf8 () (ptr StrView)
   (let (buf:ptr:ui8 (cast ptr:ui8 (malloc (cast i64 7)))  ; 6 bytes + NUL
         sv:ptr:StrView (cast ptr:StrView (malloc (cast i64 (sizeof StrView)))))
     ; h é(high) é(low) l l o NUL
@@ -35,7 +35,7 @@
     (.set! sv len  (cast usize 6))
     (return sv)))
 
-(defn main:i32 ()
+(defn main ():i32
   (let (sv:ptr:StrView (make-hello-utf8))
 
     ; --- byte-len and char-count ---

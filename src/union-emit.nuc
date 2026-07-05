@@ -22,7 +22,7 @@
 ; ============================================================
 
 ; (some r) — wrap a non-null (ref T) as (Maybe (ref T)). Pure relabel, no IR.
-(defn emit-some:ref:Val (call:ptr scope:ref:Scope)
+(defn emit-some (call:ptr scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "some expects 1 arg"))
     (let (v:ref:Val (emit-node (node-at cc 1) scope))
@@ -34,7 +34,7 @@
 
 ; (as-ref p) — launder a raw pointer into (Maybe (ref T)): null stays none.
 ; Pure relabel, no IR; the value still has to be narrowed before use.
-(defn emit-as-ref:ref:Val (call:ptr scope:ref:Scope)
+(defn emit-as-ref (call:ptr scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "as-ref expects 1 arg"))
     (let (v:ref:Val (emit-node (node-at cc 1) scope))
@@ -49,7 +49,7 @@
 ; (Stage 10 C3, like die-at), then prints err-name/err-message and aborts (the
 ; panic tier). Printing needs printf in scope (e.g. (import-use "stdio.h")); the abort
 ; is @llvm.trap, so no libc abort symbol is needed.
-(defn emit-unwrap-result:ref:Val (v:ptr ud:ptr scope:ref:Scope line:i32)
+(defn emit-unwrap-result (v:ptr ud:ptr scope:ref:Scope line:i32):ref:Val
   (let (vv:ptr:Val (cast ptr:Val v)
         udd:ptr:UnionDef (cast ptr:UnionDef ud)
         sd:ptr:StructDef (cast ptr:StructDef (udd sdef))
@@ -133,7 +133,7 @@
 
 ; (unwrap-or r default) over a Result: the `ok` payload, or `default` (evaluated
 ; only on the err path; it must satisfy the ok payload type).
-(defn emit-unwrap-or-result:ref:Val (v:ptr ud:ptr default-node:ptr scope:ref:Scope line:i32)
+(defn emit-unwrap-or-result (v:ptr ud:ptr default-node:ptr scope:ref:Scope line:i32):ref:Val
   (let (vv:ptr:Val (cast ptr:Val v)
         udd:ptr:UnionDef (cast ptr:UnionDef ud)
         sd:ptr:StructDef (cast ptr:StructDef (udd sdef))
@@ -192,7 +192,7 @@
 ; the (ref T) pointer; on the err arm print err-name/err-message and abort — the
 ; panic tier, mirroring emit-unwrap-result but discriminated by is-err and with
 ; the id recovered from the sentinel pointer (0 - ptrtoint r) rather than a tag.
-(defn emit-unwrap-niche-errptr:ref:Val (v:ptr elem:ptr scope:ref:Scope line:i32)
+(defn emit-unwrap-niche-errptr (v:ptr elem:ptr scope:ref:Scope line:i32):ref:Val
   (let (vv:ptr:Val (cast ptr:Val v)
         rval:ptr (vv val))
     (when (= (scope-lookup g-globals "printf") null)
@@ -248,7 +248,7 @@
           (.set! rv taint (vv taint))
           (return rv))))))
 
-(defn emit-unwrap:ref:Val (call:ptr scope:ref:Scope)
+(defn emit-unwrap (call:ptr scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "unwrap expects 1 arg"))
     (let (v:ref:Val (emit-node (node-at cc 1) scope))
@@ -280,8 +280,8 @@
 
 ; (unwrap-or r default) over a niche-ERRPTR `!T`: the ok (ref T) pointer, or
 ; `default` (evaluated only on the err arm; must satisfy the (ref T) result).
-(defn emit-unwrap-or-niche-errptr:ref:Val (v:ptr elem:ptr default-node:ptr
-                                           scope:ref:Scope line:i32)
+(defn emit-unwrap-or-niche-errptr (v:ptr elem:ptr default-node:ptr
+                                           scope:ref:Scope line:i32):ref:Val
   (let (vv:ptr:Val (cast ptr:Val v)
         rval:ptr (vv val)
         ref-ty:ptr:Type (cast ptr:Type (make-type TY-PTR))
@@ -324,7 +324,7 @@
 
 ; (unwrap-or m default) — the narrowed value, or `default` (evaluated only on
 ; the none path; it must satisfy the non-null (ref ...) result type).
-(defn emit-unwrap-or:ref:Val (call:ptr scope:ref:Scope)
+(defn emit-unwrap-or (call:ptr scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 3) (die-at (cc line) "unwrap-or expects 2 args"))
     (let (v:ref:Val (emit-node (node-at cc 1) scope))
@@ -380,7 +380,7 @@
 ; narrowing point, so x reads as (ref T) exactly inside the then arm (and stays
 ; Maybe in the else arm). Reuses cond's phi typing, fall-through, and
 ; after-the-form narrowing rules wholesale.
-(defn emit-if-some:ref:Val (call:ptr scope:ref:Scope is-when:i32)
+(defn emit-if-some (call:ptr scope:ref:Scope is-when:i32):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call)
         tag:ptr "if-some")
     (when (!= is-when 0) (set! tag "when-some"))
@@ -434,7 +434,7 @@
 ; and load the whole struct as a first-class value. Argument taints merge
 ; into the result (a with-owned pointer stored into the value escapes with
 ; it, and `return` already rejects tainted values).
-(defn emit-union-construct:ref:Val (ud:ptr arm:i32 call:ptr argi:i32 scope:ref:Scope)
+(defn emit-union-construct (ud:ptr arm:i32 call:ptr argi:i32 scope:ref:Scope):ref:Val
   (let (udd:ptr:UnionDef (cast ptr:UnionDef ud)
         cc:ptr:Node (cast ptr:Node call)
         sd:ptr:StructDef (cast ptr:StructDef (udd sdef))
@@ -492,7 +492,7 @@
 ; parser's `(Maybe (ref T))` / `!T` fast paths and a niche defunion stamp yield.
 ; The pkind alone identifies the niche, so a parser-produced niche and a
 ; defunion-stamped niche dispatch identically (the U4 convergence).
-(defn niche-layout-of:i32 (t:ptr)
+(defn niche-layout-of (t:ptr):i32
   (when (= t null) (return LAYOUT-TAGGED))
   (let (tt:ptr:Type (cast ptr:Type t))
     (when (!= (tt kind) TY-PTR) (return LAYOUT-TAGGED))
@@ -506,8 +506,8 @@
 ;   NICHE-ERRPTR: (ok p)   → p relabeled PTR-ERRPTR (non-null, never top-page)
 ;                 (err E)  → inttoptr(0 - zext(E)) — a top-page sentinel
 ; The eliminators (match/unwrap/null-guard/is-err) read the same encoding back.
-(defn emit-niche-construct:ref:Val (ty:ptr layout:i32 arm:ptr call:ptr argi:i32
-                                    scope:ref:Scope line:i32)
+(defn emit-niche-construct (ty:ptr layout:i32 arm:ptr call:ptr argi:i32
+                                    scope:ref:Scope line:i32):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call)
         elem:ptr (-> (cast ptr:Type ty) (_ elem)))
     (if (= layout LAYOUT-NICHE-MAYBE)
@@ -565,7 +565,7 @@
 ; produced only by union-target-rewrite when the enclosing return type is a
 ; niche (rules 2/3). The encoding target is g-fn-ret-type (the niche pointer);
 ; the arm/args carry the original ok/err/some/none and their operands.
-(defn emit-niche-ctor:ref:Val (call:ptr scope:ref:Scope)
+(defn emit-niche-ctor (call:ptr scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call)
         ln:i32 ((cast ptr:Node call) line)
         ty:ptr g-fn-ret-type
@@ -577,7 +577,7 @@
 
 ; Works for any defunion type, including stamped template instances, which
 ; have no constructor functions of their own.
-(defn emit-make:ref:Val (call:ptr scope:ref:Scope)
+(defn emit-make (call:ptr scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (< (node-len cc) 3)
       (die-at (cc line) "make: expects (make Type arm args...)"))
@@ -619,7 +619,7 @@
 ;
 ; Yields a (Maybe repair-ty) Val, built into a slot defaulted to `none` and
 ; overwritten by the handler's result on a match (avoids a struct phi).
-(defn emit-handler-call:ref:Val (eid:ptr repair-ty:ptr detail-val:ptr scope:ref:Scope line:i32)
+(defn emit-handler-call (eid:ptr repair-ty:ptr detail-val:ptr scope:ref:Scope line:i32):ref:Val
   (let (maybe-ty:ptr (stamp-maybe-type repair-ty line)
         mudd:ptr:UnionDef (cast ptr:UnionDef (uniondef-for-type maybe-ty))
         msd:ptr:StructDef (cast ptr:StructDef (mudd sdef))
@@ -707,7 +707,7 @@
 ; straight back, so the caller decides what to do (continue in place, fall back,
 ; propagate). RepairType is a *type* operand, parsed not evaluated, like
 ; with-handler's type-token. Resolves only when (import error) is in scope.
-(defn emit-signal:ref:Val (call:ptr scope:ref:Scope)
+(defn emit-signal (call:ptr scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call)
         ln:i32 ((cast ptr:Node call) line))
     (when (< (node-len cc) 3)
@@ -737,7 +737,7 @@
 ; `detail` is borrowed for the handler call and never stored (§11.5). E is the
 ; deferror Err value (a compile-time constant in every real use), so building the
 ; err arm and passing E to the find-walk evaluates it twice harmlessly.
-(defn emit-err-handled:ref:Val (call:ptr scope:ref:Scope)
+(defn emit-err-handled (call:ptr scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call)
         ln:i32 ((cast ptr:Node call) line)
         ud:?ptr:UnionDef (result-union-of g-fn-ret-type))
@@ -826,7 +826,7 @@
 ; Stamp the value-Maybe template instance (Maybe T) for the handler-call return
 ; type at an err site (errors.md §11.2). T is the !T's ok payload (a value type
 ; in v1; a (ref X) repair type — niche-encoded Maybe — is unsupported here).
-(defn stamp-maybe-type:ref:Type (t:ptr line:i32)
+(defn stamp-maybe-type (t:ptr line:i32):ref:Type
   (let (ut:?ptr:UnionTemplate (union-template-lookup "Maybe"))
     (when (= ut null)
       (die-at line "err handler: value-Maybe template not in scope (import the prelude)"))
@@ -839,7 +839,7 @@
 ; handler-aware err check (E3) is emitted only then — a program that never
 ; (import error) has no chain to consult, so plain err == err! and the compiler
 ; (which imports no error) self-compiles byte-identically.
-(defn error-lib-in-scope:i32 ()
+(defn error-lib-in-scope ():i32
   (when (= (scope-lookup g-globals "g-handler-top") null) (return 0))
   (when (= (scope-lookup g-globals "err-find-handler") null) (return 0))
   (when (= (cast ptr (lookup-struct (intern-str "Handler"))) null) (return 0))
@@ -848,7 +848,7 @@
 ; True iff `ud`'s `err` arm is the `!T` shape: a single payload field of type
 ; Err (TY-ERR). Only then does errors.md §11.1 emit the handler check; a custom
 ; (Result T NonErr) is a plain union with no implicit machinery.
-(defn result-err-arm-is-err:i32 (ud:ptr)
+(defn result-err-arm-is-err (ud:ptr):i32
   (let (ai:i32 (union-arm-index ud "err"))
     (when (< ai 0) (return 0))
     (let (udd:ptr:UnionDef (cast ptr:UnionDef ud))
@@ -862,7 +862,7 @@
 ; `(arm args...)` for one of its arms, it is construction — rewrite to
 ; (make Type arm args...). Arm names win over functions/macros in exactly this
 ; position; everything else is untouched.
-(defn union-target-rewrite:ptr (form:ptr)
+(defn union-target-rewrite (form:ptr):ptr
   (when (= form null) (return form))
   (when (= g-fn-ret-type null) (return form))
   ; Niche-ERRPTR return (unions.md §6 rule 3): the return type is a bare pointer,
@@ -933,14 +933,14 @@
 ; The EnumDef that owns `member`, or null. Member names are searched across
 ; every registered defenum; the first hit wins (defenum members are global
 ; constants, so a collision already means same-kind reuse).
-(defn enumdef-lookup-member:?ptr:EnumDef (member:ptr)
+(defn enumdef-lookup-member (member:ptr):?ptr:EnumDef
   (dotimes (i (cast i32 (count g-enumdefs)))
     (let (ed:ptr:EnumDef (cast ptr:EnumDef (invoke g-enumdefs (cast usize i))))
       (when (>= (enum-member-index (cast ptr ed) member) 0)
         (return (cast ptr ed)))))
   (return null))
 
-(defn enum-member-index:i32 (ed:ptr member:ptr)
+(defn enum-member-index (ed:ptr member:ptr):i32
   (let (edd:ptr:EnumDef (cast ptr:EnumDef ed))
     (dotimes (i (edd num-members))
       (when (= (strcmp (aref (cast ptr:ptr (edd members)) i) member) 0)
@@ -952,8 +952,8 @@
 ; field by value (a typed copy, like any field load — taint drops), `_`
 ; ignores it, and (ref x) binds a (ref FieldType) aliasing the field in place
 ; (pointer scrutinee only; the alias keeps the scrutinee's escape taint).
-(defn emit-match-binders:void (ud:ptr ai:i32 binders:ptr pp:ptr inner:ref:Scope
-                               is-ptr:i32 staint:ptr line:i32)
+(defn emit-match-binders (ud:ptr ai:i32 binders:ptr pp:ptr inner:ref:Scope
+                               is-ptr:i32 staint:ptr line:i32):void
   (let (udd:ptr:UnionDef (cast ptr:UnionDef ud)
         nf:i32 (aref (cast ptr:i32 (udd arm-nfields)) ai)
         ftypes:ptr (aref (cast ptr:ptr (udd arm-ftypes)) ai)
@@ -1013,9 +1013,9 @@
 ; the join. With no `_` clause the default block is `unreachable` (the match
 ; is exhaustive by construction; a corrupted tag is UB, the C contract).
 ; `ud`/`clause-binders`/`base` are null for the defenum variant.
-(defn emit-match-clauses:ref:Val (call:ptr scope:ref:Scope disc:ptr disc-ty:ptr
+(defn emit-match-clauses (call:ptr scope:ref:Scope disc:ptr disc-ty:ptr
                                   clause-val:ptr clause-binders:ptr ndefault:i32
-                                  ud:ptr is-ptr:i32 base:ptr staint:ptr)
+                                  ud:ptr is-ptr:i32 base:ptr staint:ptr):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call)
         nclauses:i32 (- (node-len cc) 2)
         id:i32 (new-label-id)
@@ -1117,7 +1117,7 @@
 
 ; match over a defenum scrutinee (the §4 freebie): bare member names as
 ; patterns, the same exhaustiveness rule, lowered to the same switch.
-(defn emit-match-enum:ref:Val (call:ptr scope:ref:Scope sv:ptr)
+(defn emit-match-enum (call:ptr scope:ref:Scope sv:ptr):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call)
         svv:ptr:Val (cast ptr:Val sv)
         nclauses:i32 (- (node-len cc) 2)
@@ -1183,7 +1183,7 @@
 ; compare against -4096 (0xFFFF…F000). A valid object address is never ≥ that,
 ; so this cleanly separates the err sentinels (the top page) from real (ok)
 ; pointers with no discriminant word. Returns the SSA name of the i1 result.
-(defn emit-errptr-is-err:ptr (rval:ptr)
+(defn emit-errptr-is-err (rval:ptr):ptr
   (let (pi:ptr (new-tmp)
         thresh:ptr (new-tmp)
         cmp:ptr (new-tmp))
@@ -1199,7 +1199,7 @@
 ; the extracted Err (0 - ptrtoint r, truncated to i32). Parallels the PTR-MAYBE
 ; some/none match lowering, with the ERR_PTR sentinel range as the discriminant.
 ; try/unwrap/unwrap-or route through here, so they need no niche-specific surface.
-(defn emit-match-niche-errptr:ref:Val (call:ptr scope:ref:Scope sv:ptr elem:ptr)
+(defn emit-match-niche-errptr (call:ptr scope:ref:Scope sv:ptr elem:ptr):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call)
         rval:ptr ((cast ptr:Val sv) val)
         staint:ptr ((cast ptr:Val sv) taint)
@@ -1315,7 +1315,7 @@
 ; The some clause binds p = r typed (ref T) (the niche elem); the none clause
 ; has no binder. Parallels the PTR-ERRPTR ok/err match lowering, with the
 ; null pointer as the discriminant.
-(defn emit-match-niche-maybe:ref:Val (call:ptr scope:ref:Scope sv:ptr elem:ptr)
+(defn emit-match-niche-maybe (call:ptr scope:ref:Scope sv:ptr elem:ptr):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call)
         rval:ptr ((cast ptr:Val sv) val)
         staint:ptr ((cast ptr:Val sv) taint)
@@ -1419,9 +1419,9 @@
 ; (unless the block terminated) branch to a per-arm join feeding the end phi.
 ; `vals`/`preds` are the (ref (Vector ptr)) phi-incoming tables; the drain
 ; deferral makes the parametric type safe in this signature (see make-vec).
-(defn emit-niche-match-arm:void (body:ptr inner:ref:Scope
+(defn emit-niche-match-arm (body:ptr inner:ref:Scope
                                  (vals (ref (Vector ptr))) (preds (ref (Vector ptr)))
-                                 rtbox:ptr ttbox:ptr end-lbl:ptr id:i32 which:i32)
+                                 rtbox:ptr ttbox:ptr end-lbl:ptr id:i32 which:i32):void
   (let (bv:ref:Val (alloc-val ty-void null)
         bcur:ptr body)
     (while (!= bcur null)
@@ -1451,7 +1451,7 @@
 ; (unions.md §4). Scrutinee: a defunion value, a ref/ptr to one (auto-deref
 ; for the tag; by-value binders copy payload fields, (ref x) binders alias
 ; them in place), or a defenum integer.
-(defn emit-match:ref:Val (call:ptr scope:ref:Scope)
+(defn emit-match (call:ptr scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (< (node-len cc) 3)
       (die-at (cc line) "match: expects a scrutinee and at least one clause"))
@@ -1567,7 +1567,7 @@
                                         ndefault (cast ptr udd) is-ptr base
                                         (sv taint)))))))))
 
-(defn emit-ptr-add:ref:Val (call:ptr scope:ref:Scope)
+(defn emit-ptr-add (call:ptr scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 3) (die-at (cc line) "ptr+ expects 2 args"))
     (let (p:ref:Val (emit-node (node-at cc 1) scope))
@@ -1595,7 +1595,7 @@
               (val-copy-taint (cast ptr rv) (cast ptr p))
               (return rv))))))))
 
-(defn emit-not:ref:Val (call:ptr scope:ref:Scope)
+(defn emit-not (call:ptr scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "not expects 1 arg"))
     (let (a:ref:Val (emit-node (node-at cc 1) scope))
@@ -1605,7 +1605,7 @@
         (fprintf g-body-stream "  %s = xor i1 %s, 1\n" tmp (a val))
         (return (alloc-val ty-i1 tmp))))))
 
-(defn emit-short-circuit:ref:Val (call:ptr scope:ref:Scope is-and:i32)
+(defn emit-short-circuit (call:ptr scope:ref:Scope is-and:i32):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call)
         tag:ptr "or")
     (when (!= is-and 0) (set! tag "and"))

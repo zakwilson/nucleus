@@ -16,7 +16,7 @@
 
 (defstruct Rec kind:i32 x:i32)
 
-(defn classify:i32 (m:?ptr:Rec)
+(defn classify (m:?ptr:Rec):i32
   ; 3-arg variadic and: each later clause derefs m under the prior non-null.
   (cond (and (!= m null) (= (m kind) 1) (> (m x) 0))
           (return 100)
@@ -25,7 +25,7 @@
         true
           (return 0)))
 
-(defn main:i32 ()
+(defn main ():i32
   (let (r:ptr:Rec (cast ptr:Rec (malloc (cast i64 (sizeof Rec)))))
     (.set! r kind 1)
     (.set! r x 42)

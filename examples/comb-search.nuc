@@ -11,7 +11,7 @@
 (import-use iterator)
 (import-use combinators)
 
-(defn main:i32 ()
+(defn main ():i32
   (with ((v (ref (Vector i32))) (alloca (Vector i32)))
     (vector-init v) (conj v 3) (conj v 1) (conj v 4) (conj v 1) (conj v 5) (conj v 9)
     (let (thr:i32 3)

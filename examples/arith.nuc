@@ -1,6 +1,6 @@
 (import-use "stdio.h")
 
-(defn main:int ()
+(defn main ():int
   (let (a:int 10
         b:int 3)
     (printf "a+b = %d\n" (+ a b))

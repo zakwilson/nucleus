@@ -13,24 +13,24 @@
 
 ; Equality.
 (defprotocol Eq
-  (=:i1  (a:Self b:Self))
-  (!=:i1 (a:Self b:Self)))
+  (=  (a:Self b:Self):i1)
+  (!= (a:Self b:Self):i1))
 
 ; Ordering. Every Ord type is also an Eq type (protocol inheritance).
 (defprotocol Ord
-  (<:i1  (a:Self b:Self))
-  (<=:i1 (a:Self b:Self))
-  (>:i1  (a:Self b:Self))
-  (>=:i1 (a:Self b:Self)))
+  (<  (a:Self b:Self):i1)
+  (<= (a:Self b:Self):i1)
+  (>  (a:Self b:Self):i1)
+  (>= (a:Self b:Self):i1))
 (extend Ord Eq)
 
 ; Arithmetic. Num is {+ - * /} — not % or the bit operators, which belong to a
 ; superset protocol a program can declare separately.
 (defprotocol Num
-  (_+:Self (a:Self b:Self))
-  (_-:Self (a:Self b:Self))
-  (_*:Self (a:Self b:Self))
-  (_/:Self (a:Self b:Self)))
+  (_+ (a:Self b:Self):Self)
+  (_- (a:Self b:Self):Self)
+  (_* (a:Self b:Self):Self)
+  (_/ (a:Self b:Self):Self))
 
 ; Built-in conformances (signed integers and doubles). `(extend T Ord)` records
 ; `(T, Eq)` too, via the Ord→Eq inheritance edge.

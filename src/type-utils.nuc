@@ -8,12 +8,12 @@
 ; Types
 ; ============================================================
 
-(defn make-type:ref:Type (k:i32)
+(defn make-type (k:i32):ref:Type
   (let (t:ref:Type (alloc-type))
     (.set! t kind k)
     (return t)))
 
-(defn types-init:void ()
+(defn types-init ():void
   (set! ty-void (make-type TY-VOID))
   (set! ty-i1   (make-type TY-I1))
   (set! ty-i8   (make-type TY-I8))
@@ -40,7 +40,7 @@
   (set! ty-usize (make-type TY-USIZE))
   (set! ty-ssize (make-type TY-SSIZE)))
 
-(defn type-to-ir:ptr (t:ptr)
+(defn type-to-ir (t:ptr):ptr
   (let (tt:ptr:Type (cast ptr:Type t))
     (when (= (tt kind) TY-VOID)   (return "void"))
     (when (= (tt kind) TY-I1)     (return "i1"))
@@ -79,7 +79,7 @@
 ; compiler's own compilation → the new paths stay inert and the bootstrap is
 ; byte-identical. Identity is by the interned struct-name pointer, exactly how
 ; lookup-struct keys the registry.
-(defn type-is-strview:i32 (t:ptr)
+(defn type-is-strview (t:ptr):i32
   (when (= t null) (return 0))
   (let (tt:ptr:Type (cast ptr:Type t))
     (when (!= (tt kind) TY-STRUCT) (return 0))
@@ -100,7 +100,7 @@
 ; CStr literal did before the flip — a plain pointer. A genuine (materialized)
 ; StrView value (is-lit=0), whose `val` is a real first-class struct, is left
 ; untouched. Returns 1 if it collapsed the Val, else 0.
-(defn collapse-strlit-cstr:i32 (v:ptr)
+(defn collapse-strlit-cstr (v:ptr):i32
   (let (vv:ptr:Val (cast ptr:Val v))
     (when (and (!= (vv is-lit) 0) (!= (type-is-strview (vv type)) 0))
       (.set! vv type ty-cstr)
@@ -111,7 +111,7 @@
 ; For function pointer types, returns a simplified "void*" — the full
 ; C function pointer syntax (with return type and params) is handled
 ; separately in emit-cheader-declare where we have the param names.
-(defn type-to-c:ptr (t:ptr)
+(defn type-to-c (t:ptr):ptr
   (let (tt:ptr:Type (cast ptr:Type t))
     (when (= (tt kind) TY-VOID)   (return "void"))
     (when (= (tt kind) TY-I1)     (return "_Bool"))
@@ -141,20 +141,20 @@
 
 ; The IR type of a pointer-sized integer (size_t / intptr_t) for the target.
 ; All pointer-as-integer codegen routes through this rather than hardcoding i64.
-(defn ptr-int-ir:ptr ()
+(defn ptr-int-ir ():ptr
   (if (= g-target-ptr-bytes 4) "i32" "i64"))
 
 ; The registered singleton type for a pointer-sized integer on the target.
-(defn ptr-int-type:ptr ()
+(defn ptr-int-type ():ptr
   (if (= g-target-ptr-bytes 4) ty-i32 ty-i64))
 
 ; Size in bytes of one host pointer, as an i64 — the element size for the
 ; compiler's own arrays of pointers. Use instead of a literal 8 so the compiler
 ; allocates correctly on hosts where a pointer is not 8 bytes.
-(defn ptr-bytes:i64 ()
+(defn ptr-bytes ():i64
   (cast i64 g-host-ptr-bytes))
 
-(defn type-size:i32 (t:ptr)
+(defn type-size (t:ptr):i32
   (let (tt:ptr:Type (cast ptr:Type t))
     (when (= (tt kind) TY-I1)   (return 1))
     (when (= (tt kind) TY-I8)   (return 1))
@@ -179,7 +179,7 @@
     (when (= (tt kind) TY-UNION) (return g-target-ptr-bytes))
     (return 1)))
 
-(defn is-int-type:i32 (t:ptr)
+(defn is-int-type (t:ptr):i32
   (let (k:i32 ((cast ptr:Type t) kind))
     (when (= k TY-I1) (return 1))
     (when (= k TY-I8) (return 1))
@@ -201,7 +201,7 @@
     (when (= k TY-CHAR)  (return 1))
     (return 0)))
 
-(defn is-float-type:i32 (t:ptr)
+(defn is-float-type (t:ptr):i32
   (let (k:i32 ((cast ptr:Type t) kind))
     (when (= k TY-F32) (return 1))
     (when (= k TY-F64) (return 1))
@@ -211,13 +211,13 @@
 ; TY-PTR and TY-CSTR (a C-string is a `char*`). They are interconvertible with
 ; no IR and zero-initialise to `null`. (TY-FN is deliberately excluded — its
 ; existing call-position handling is unchanged by CStr.)
-(defn is-ptr-like:i32 (t:ptr)
+(defn is-ptr-like (t:ptr):i32
   (let (k:i32 ((cast ptr:Type t) kind))
     (when (= k TY-PTR) (return 1))
     (when (= k TY-CSTR) (return 1))
     (return 0)))
 
-(defn int-width:i32 (t:ptr)
+(defn int-width (t:ptr):i32
   (let (k:i32 ((cast ptr:Type t) kind))
     (when (= k TY-I1) (return 1))
     (when (= k TY-I8) (return 8))
@@ -234,7 +234,7 @@
     (when (= k TY-CHAR)  (return 32))
     (return 0)))
 
-(defn is-unsigned:i32 (t:ptr)
+(defn is-unsigned (t:ptr):i32
   (let (k:i32 ((cast ptr:Type t) kind))
     (when (= k TY-UI8)   (return 1))
     (when (= k TY-UI16)  (return 1))
@@ -254,7 +254,7 @@
 ; large decimal literals so this predicate stays a bootstrap fixed point (a
 ; literal above i32 range in its own source would be wrapped by the old boot
 ; compiler before LW-4's widening lands).
-(defn int-literal-fits:i32 (v:i64 t:ptr)
+(defn int-literal-fits (v:i64 t:ptr):i32
   (let (w:i32 (int-width t))
     (when (<= w 1) (return 1))
     (when (>= w 64) (return 1))
@@ -278,7 +278,7 @@
 
 ; The pointer kind of a type: the Stage 10 contract for TY-PTR, PTR-RAW for
 ; everything else (including non-pointers, so callers can probe freely).
-(defn ptr-pkind:i32 (t:ptr)
+(defn ptr-pkind (t:ptr):i32
   (when (= t null) (return PTR-RAW))
   (let (tt:ptr:Type (cast ptr:Type t))
     (when (!= (tt kind) TY-PTR) (return PTR-RAW))
@@ -286,7 +286,7 @@
 
 ; Clone `t` with pkind=k. Typed-pointer Types may be shared (and bare ptr is a
 ; singleton), so relabeling/narrowing never mutates. Identity when k matches.
-(defn type-as-pkind:ptr (t:ptr k:i32)
+(defn type-as-pkind (t:ptr k:i32):ptr
   (let (src:ptr:Type (cast ptr:Type t))
     (when (= (src pkind) k) (return t))
     (let (dst:ptr:Type (cast ptr:Type (alloc-type)))
@@ -308,7 +308,7 @@
 ; The conservative meet of two pointer kinds for a control-flow join (cond /
 ; if-some phi): raw if either side waived the checks, else Maybe if either
 ; side may be null, else ref.
-(defn pkind-meet:i32 (a:i32 b:i32)
+(defn pkind-meet (a:i32 b:i32):i32
   (when (or (= a PTR-RAW) (= b PTR-RAW)) (return PTR-RAW))
   (when (or (= a PTR-MAYBE) (= b PTR-MAYBE)) (return PTR-MAYBE))
   (return PTR-REF))
@@ -337,7 +337,7 @@
 ; and a typed raw/Maybe source into a typed ref slot is still checked. Direct
 ; analogue of the CStr refinement above; deref safety is enforced separately by
 ; `require-derefable`.
-(defn pkind-flow-check:void (src:ptr dst:ptr line:i32 ctx:ptr)
+(defn pkind-flow-check (src:ptr dst:ptr line:i32 ctx:ptr):void
   (when (or (= src null) (= dst null)) (return))
   (when (!= (ptr-pkind dst) PTR-REF) (return))
   (when (= (ptr-pkind src) PTR-REF) (return))
@@ -353,6 +353,6 @@
 
 ; Deref/field/index gate: a (Maybe (ref T)) value cannot be accessed until
 ; narrowed. Raw stays unchecked (the signed waiver); ref is always safe.
-(defn require-derefable:void (t:ptr line:i32 op:ptr)
+(defn require-derefable (t:ptr line:i32 op:ptr):void
   (when (= (ptr-pkind t) PTR-MAYBE)
     (die-at line (fmt-s "%s: value may be null — narrow with if-some/when-some, unwrap, or a (when (= x null) ...) guard before use" op))))

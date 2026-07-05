@@ -7,22 +7,22 @@
 (import-use "stdlib.h")
 
 (defprotocol Drop
-  (drop:void (self:ptr:Self)))
+  (drop (self:ptr:Self):void))
 
 (defstruct Res id:i32)
 
-(defn drop:void (self:ptr:Res)
+(defn drop (self:ptr:Res):void
   (printf "drop %d\n" (self id))
   (free (cast ptr self)))
 
 (extend Res Drop)
 
-(defn make-res:ptr:Res (id:i32)
+(defn make-res (id:i32):ptr:Res
   (let (r:ptr:Res (cast ptr:Res (malloc 4)))
     (.set! r id id)
     (return r)))
 
-(defn main:i32 ()
+(defn main ():i32
   (defer (printf "bye\n"))
   (with (a:ptr:Res (make-res 1)
          b:ptr:Res (make-res 2))

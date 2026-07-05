@@ -5,28 +5,28 @@
 (import-use "stdio.h")
 
 ; Single optional with a constant default.
-(defn add:int (a:int &optional (b:int 10))
+(defn add (a:int &optional (b:int 10)):int
   (+ a b))
 
 ; Multiple optionals, partial fill.
-(defn triplet:int (a:int &optional (b:int 2) (c:int 3))
+(defn triplet (a:int &optional (b:int 2) (c:int 3)):int
   (+ (+ a b) c))
 
 ; Constant default with no required params.
-(defn just-default:int (&optional (n:int 7))
+(defn just-default (&optional (n:int 7)):int
   n)
 
 ; Non-constant default — call-site evaluated, so each call sees fresh state.
 (defvar counter:int 0)
 
-(defn next-counter:int ()
+(defn next-counter ():int
   (set! counter (+ counter 1))
   counter)
 
-(defn with-counter:int (&optional (n:int (next-counter)))
+(defn with-counter (&optional (n:int (next-counter))):int
   n)
 
-(defn main:i32 ()
+(defn main ():i32
   (printf "%d\n" (add 5))                ; 15
   (printf "%d\n" (add 5 7))              ; 12
   (printf "%d\n" (triplet 1))            ; 6
