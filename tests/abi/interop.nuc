@@ -21,29 +21,29 @@
 
 (import-use "stdio.h")
 
-(declare pair_make:Pair  (a:int b:int))
-(declare pair_sum:int    (p:Pair))
-(declare big_make:Big    (x:i64 y:i64 z:i64))
-(declare big_sum:i64     (b:Big))
-(declare mixed_get:f64   (m:Mixed))
+(declare pair_make  (a:int b:int):Pair)
+(declare pair_sum    (p:Pair):int)
+(declare big_make    (x:i64 y:i64 z:i64):Big)
+(declare big_sum     (b:Big):i64)
+(declare mixed_get   (m:Mixed):f64)
 ; Parametric struct: extern C functions taking/returning (P2 i32 i32) by value.
 ; C side uses typedef struct { int a; int b; } P2i; -- same layout.
-(declare p2_sum:i32 ((p (P2 i32 i32))))
-(declare (p2_make (P2 i32 i32)) (a:i32 b:i32))
+(declare p2_sum ((p (P2 i32 i32))):i32)
+(declare p2_make (a:i32 b:i32) (P2 i32 i32))
 
 ; Nucleus-defined struct functions, to exercise the defn side of the ABI
 ; (prologue reconstruction of struct params; sret / register-coerced returns)
 ; and Nucleus->Nucleus consistency (caller coercion must match callee).
-(defn nuc_pair_make:Pair (a:int b:int)
+(defn nuc_pair_make (a:int b:int):Pair
   (let (q:ptr:Pair (alloca Pair)) (.set! q a a) (.set! q b b) @q))
-(defn nuc_pair_sum:int (p:Pair)
+(defn nuc_pair_sum (p:Pair):int
   (let (q:ptr:Pair (alloca Pair)) (ptr-set! q p) (+ (. q a) (. q b))))
-(defn nuc_big_make:Big (x:i64 y:i64 z:i64)
+(defn nuc_big_make (x:i64 y:i64 z:i64):Big
   (let (q:ptr:Big (alloca Big)) (.set! q x x) (.set! q y y) (.set! q z z) @q))
-(defn nuc_big_sum:i64 (b:Big)
+(defn nuc_big_sum (b:Big):i64
   (let (q:ptr:Big (alloca Big)) (ptr-set! q b) (+ (+ (. q x) (. q y)) (. q z))))
 
-(defn main:int ()
+(defn main ():int
   ; Nucleus -> C
   (let (p:ptr:Pair (alloca Pair))
     (ptr-set! p (pair_make 3 4))

@@ -8,14 +8,14 @@
 
 (import-use prelude)
 
-(defn- helper-add:i32 (a:i32 b:i32)
+(defn- helper-add (a:i32 b:i32):i32
   (return (+ a b)))
 
 (defvar- g-private-counter:i32)
 
 (defconst- PRIVATE-MAX 100)
 
-(defn main:i32 ()
+(defn main ():i32
   (set! g-private-counter 0)
   (let (result:i32 (helper-add 3 4)
         at-max:i32 (helper-add (cast i32 PRIVATE-MAX) 0))

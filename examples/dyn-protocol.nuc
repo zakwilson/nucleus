@@ -22,23 +22,23 @@
 
 ; A single, single-method user protocol: `describe` maps a value to an int.
 (defprotocol Describe
-  ((describe i32) ((self (ref Self)))))
+  (describe ((self (ref Self))) i32))
 
 ; Two DISTINCT concrete types that nominally extend Describe.
 (defstruct Cat n:i32)
 (extend Cat Describe)
-(defn describe:i32 ((self (ref Cat)))
+(defn describe ((self (ref Cat))):i32
   (return (+ 100 (self n))))
 
 (defstruct Dog tag:i32)
 (extend Dog Describe)
-(defn describe:i32 ((self (ref Dog)))
+(defn describe ((self (ref Dog))):i32
   (return (* 10 (self tag))))
 
 ; (B2) A defn whose return type is the unbound-abstract `(dyn Describe)`. Each
 ;      concrete value is boxed at the return site; the returned box owns its heap
 ;      payload and is dropped at the caller's scope.
-(defn make-describable:(dyn Describe) (which:i32)
+(defn make-describable (which:i32) (dyn Describe)
   (if (= which 0)
     (return (Cat 5))
     (return (Dog 7))))
@@ -46,12 +46,12 @@
 ; A defn taking a `(dyn Describe)` BY VALUE — the concrete argument is boxed at the
 ; call site and ownership transfers into the parameter, which dispatches `describe`
 ; through the vtable and then drops the box (frees its heap payload).
-(defn show-it:i32 (d:(dyn Describe))
+(defn show-it (d:(dyn Describe)):i32
   (let (r:i32 (describe d))
     (drop (addr-of d))
     (return r)))
 
-(defn main:i32 ()
+(defn main ():i32
   ; (B2) returned boxes of two different concrete types, each owned by a `with`
   ;      binding and dropped (data freed) at scope exit.
   (with (d0:(dyn Describe) (make-describable 0))

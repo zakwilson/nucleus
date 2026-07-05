@@ -16,23 +16,23 @@
 ; FoldFn: FNV-1a one byte at a time. acc = running i64 hash; x = the byte (ui8).
 (defstruct Fnv1aFold dummy:i32)
 (extend Fnv1aFold (FoldFn i64 ui8))
-(defn (fold i64) ((self (ref Fnv1aFold)) (acc i64) (x ui8))
+(defn fold ((self (ref Fnv1aFold)) (acc i64) (x ui8)) i64
   (return (fnv1a-byte acc (bit-and (cast i64 x) (cast i64 255)))))
 
 ; FoldFn: sum byte values into an i64 accumulator.
 (defstruct ByteSum dummy:i32)
 (extend ByteSum (FoldFn i64 ui8))
-(defn (fold i64) ((self (ref ByteSum)) (acc i64) (x ui8))
+(defn fold ((self (ref ByteSum)) (acc i64) (x ui8)) i64
   (return (+ acc (bit-and (cast i64 x) (cast i64 255)))))
 
 ; fnv-via-reduce — fold the bytes of a ByteIter through FNV-1a, seeded with the
 ; same offset basis strview-hash uses, returning the hash as usize.
-(defn fnv-via-reduce:usize ((it (ref ByteIter)))
+(defn fnv-via-reduce ((it (ref ByteIter))):usize
   (let ((f (ref Fnv1aFold)) (alloca Fnv1aFold)
         (basis i64) -3750763034362895579)
     (return (cast usize (reduce f basis it)))))
 
-(defn main:i32 ()
+(defn main ():i32
   ; ---- 1. CStr byte fold vs strview-hash over the same bytes ----------------
   (let (cs:CStr "hello, world")
     (let (sv:ptr:StrView (strview-from-cstr cs))

@@ -27,16 +27,16 @@
 
 ; 1. Generic method returning a FIELD type (I). All four tyvars I F S E are
 ;    inferred from the receiver; S and E must still bind so the signature parses.
-(defn two-a:I ((self (ref (Two I F S E))))
+(defn two-a ((self (ref (Two I F S E)))):I
   (return (self a)))
 
 ; 2. Generic method whose RETURN type is a phantom param (S), recovered
 ;    positionally from the third receiver type-argument.
-(defn two-s:S ((self (ref (Two I F S E))))
+(defn two-s ((self (ref (Two I F S E)))):S
   (return (cast S (self a))))
 
 ; 3. Generic method whose return type is the fourth (phantom) param (E).
-(defn two-e:E ((self (ref (Two I F S E))))
+(defn two-e ((self (ref (Two I F S E)))):E
   (return (cast E (self a))))
 
 ; LEGACY PATTERN (superseded by associated types, A0–A4): a verbose MapIter-style
@@ -48,13 +48,13 @@
   source:I
   f:F)
 
-(defn miv-e:E ((self (ref (MapIterVerbose I F S E))))
+(defn miv-e ((self (ref (MapIterVerbose I F S E)))):E
   (return (cast E (self f))))
 
-(defn miv-s:S ((self (ref (MapIterVerbose I F S E))))
+(defn miv-s ((self (ref (MapIterVerbose I F S E)))):S
   (return (cast S (self f))))
 
-(defn main:i32 ()
+(defn main ():i32
   ; Concrete instance: I=i32, F=f64, S=i32, E=i64.
   (let ((t (ref (Two i32 f64 i32 i64))) (alloca (Two i32 f64 i32 i64)))
     (ptr-set! t @((Two i32 f64 i32 i64) (cast i32 42) (cast f64 3.14)))

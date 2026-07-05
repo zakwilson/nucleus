@@ -30,15 +30,15 @@
 
 ; A function whose body field-accesses a `?`-named struct: the `(g level)` GEP
 ; names %Full_QMARK (a type-to-ir reference).
-(defn is-full:i32 ((g (ref Full?)))
+(defn is-full ((g (ref Full?))):i32
   (if (>= (g level) 100) (return 1) (return 0)))
 
 ; `.&` yields a pointer to the by-value `Full?` field — a %Full_QMARK GEP — and
 ; `(_ level)` then GEPs into %Full_QMARK again through that pointer.
-(defn gauge-inner-level:i32 ((gz (ref Gauge)))
+(defn gauge-inner-level ((gz (ref Gauge))):i32
   (return ((.& gz inner) level)))
 
-(defn gauge-spare:i32 ((gz (ref Gauge)))
+(defn gauge-spare ((gz (ref Gauge))):i32
   (return (gz spare)))
 
 ; --- `?`-named tagged union (definition side, via defunion-register) ---
@@ -48,12 +48,12 @@
 
 ; match over the `?`-named union → type REFERENCE to %Shape_QMARK (ptr scrutinee
 ; GEPs into the backing struct).
-(defn shape-area:i32 (s:ptr:Shape?)
+(defn shape-area (s:ptr:Shape?):i32
   (match s
     ((circle radius) (return (* radius radius)))
     (nothing         (return 0))))
 
-(defn main:i32 ()
+(defn main ():i32
   ; construct + field-access a `?`-named struct
   (let (a:(ref Full?) (Full? 150)
         b:(ref Full?) (Full? 50))

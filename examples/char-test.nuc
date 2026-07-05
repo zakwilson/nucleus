@@ -2,7 +2,7 @@
 ; Exercises printable scalars (\a), named control codes (\newline), the
 ; \u{XXXX} hex form, `=`/`!=` dispatch on Char, and same-width cast to ui32.
 
-(defn main:i32 ()
+(defn main ():i32
   ; A printable scalar literal is a Char; cast to ui32 yields its codepoint.
   (printf "A=%u\n" (cast ui32 \A))            ; 65
   (printf "a=%u\n" (cast ui32 \a))            ; 97

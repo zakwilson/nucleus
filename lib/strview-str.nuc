@@ -19,17 +19,17 @@
 ; ByteI = ByteIter (defined in strview.nuc).
 ; ---------------------------------------------------------------------------
 (extend StrView (ByteStr ByteIter))
-(defn byte-len:usize ((self (ref StrView)))
+(defn byte-len ((self (ref StrView))):usize
   (strview-byte-len self))
-(defn byte-at:!ui8 ((self (ref StrView)) i:usize)
+(defn byte-at ((self (ref StrView)) i:usize):!ui8
   (strview-byte-at self i))
-(defn bytes:ByteIter ((self (ref StrView)))
+(defn bytes ((self (ref StrView))):ByteIter
   (strview-bytes self))
-(defn as-view:StrView ((self (ref StrView)))
+(defn as-view ((self (ref StrView))):StrView
   (strview-as-view self))
-(defn sub-bytes:!ptr:StrView ((self (ref StrView)) start:usize end:usize)
+(defn sub-bytes ((self (ref StrView)) start:usize end:usize):!ptr:StrView
   (strview-sub-bytes self start end))
-(defn (byte-find (Maybe usize)) ((self (ref StrView)) (needle (ref StrView)))
+(defn byte-find ((self (ref StrView)) (needle (ref StrView))) (Maybe usize)
   (strview-byte-find self needle))
 
 ; ---------------------------------------------------------------------------
@@ -37,17 +37,17 @@
 ; CharI = CharIter (defined in strview.nuc).
 ; ---------------------------------------------------------------------------
 (extend StrView (Str CharIter))
-(defn char-count:usize ((self (ref StrView)))
+(defn char-count ((self (ref StrView))):usize
   (strview-char-count self))
-(defn str-empty?:i32 ((self (ref StrView)))
+(defn str-empty? ((self (ref StrView))):i32
   (strview-empty self))
-(defn char-at:!Char ((self (ref StrView)) i:usize)
+(defn char-at ((self (ref StrView)) i:usize):!Char
   (strview-char-at self i))
-(defn chars:CharIter ((self (ref StrView)))
+(defn chars ((self (ref StrView))):CharIter
   (strview-chars self))
-(defn starts-with?:i32 ((self (ref StrView)) (prefix (ref StrView)))
+(defn starts-with? ((self (ref StrView)) (prefix (ref StrView))):i32
   (strview-starts-with self prefix))
-(defn ends-with?:i32 ((self (ref StrView)) (suffix (ref StrView)))
+(defn ends-with? ((self (ref StrView)) (suffix (ref StrView))):i32
   (strview-ends-with self suffix))
-(defn contains-str?:i32 ((self (ref StrView)) (needle (ref StrView)))
+(defn contains-str? ((self (ref StrView)) (needle (ref StrView))):i32
   (strview-contains-str self needle))

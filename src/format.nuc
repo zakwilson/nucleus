@@ -2,48 +2,48 @@
 ;
 ; Requires: arena (arena-strndup, arena-alloc), snprintf, strlen, isdigit.
 
-(defn fmt-i32:ptr (fmt:ptr d:i32)
+(defn fmt-i32 (fmt:ptr d:i32):ptr
   (let (buf:ptr (alloca i8 256)
         n:i32 (snprintf buf (cast i64 256) fmt d))
     (return (arena-strndup buf (cast i64 n)))))
 
-(defn fmt-i32-i32:ptr (fmt:ptr a:i32 b:i32)
+(defn fmt-i32-i32 (fmt:ptr a:i32 b:i32):ptr
   (let (buf:ptr (alloca i8 256)
         n:i32 (snprintf buf (cast i64 256) fmt a b))
     (return (arena-strndup buf (cast i64 n)))))
 
-(defn fmt-i64:ptr (fmt:ptr d:i64)
+(defn fmt-i64 (fmt:ptr d:i64):ptr
   (let (buf:ptr (alloca i8 256)
         n:i32 (snprintf buf (cast i64 256) fmt d))
     (return (arena-strndup buf (cast i64 n)))))
 
-(defn fmt-s:ptr (fmt:ptr s:ptr)
+(defn fmt-s (fmt:ptr s:ptr):ptr
   (let (buf:ptr (alloca i8 512)
         n:i32 (snprintf buf (cast i64 512) fmt s))
     (return (arena-strndup buf (cast i64 n)))))
 
-(defn fmt-sd:ptr (fmt:ptr s:ptr d:i32)
+(defn fmt-sd (fmt:ptr s:ptr d:i32):ptr
   (let (buf:ptr (alloca i8 512)
         n:i32 (snprintf buf (cast i64 512) fmt s d))
     (return (arena-strndup buf (cast i64 n)))))
 
-(defn fmt-2s:ptr (fmt:ptr s1:ptr s2:ptr)
+(defn fmt-2s (fmt:ptr s1:ptr s2:ptr):ptr
   (let (buf:ptr (alloca i8 512)
         n:i32 (snprintf buf (cast i64 512) fmt s1 s2))
     (return (arena-strndup buf (cast i64 n)))))
 
-(defn fmt-3s:ptr (fmt:ptr s1:ptr s2:ptr s3:ptr)
+(defn fmt-3s (fmt:ptr s1:ptr s2:ptr s3:ptr):ptr
   (let (buf:ptr (alloca i8 512)
         n:i32 (snprintf buf (cast i64 512) fmt s1 s2 s3))
     (return (arena-strndup buf (cast i64 n)))))
 
-(defn fmt-2s-i:ptr (fmt:ptr s1:ptr s2:ptr d:i32)
+(defn fmt-2s-i (fmt:ptr s1:ptr s2:ptr d:i32):ptr
   (let (buf:ptr (alloca i8 512)
         n:i32 (snprintf buf (cast i64 512) fmt s1 s2 d))
     (return (arena-strndup buf (cast i64 n)))))
 
 ; Replace chars invalid in LLVM IR identifiers with underscores.
-(defn sanitize-for-ir:ptr (name:ptr)
+(defn sanitize-for-ir (name:ptr):ptr
   (let (n:i64 (strlen name)
         s:ptr (arena-alloc (+ n (cast i64 1)))
         i:i64 (cast i64 0))
@@ -74,7 +74,7 @@
 ; name))` (SM-3). sanitize-for-c does not call ir-name-token itself because
 ; format.nuc is imported before generics.nuc, so ir-name-token is not yet in scope
 ; here; the three cheader.nuc call sites compose the two in the correct order.
-(defn sanitize-for-c:ptr (name:ptr)
+(defn sanitize-for-c (name:ptr):ptr
   (let (n:i64 (strlen name)
         s:ptr (arena-alloc (+ n (cast i64 1)))
         i:i64 (cast i64 0))
@@ -93,7 +93,7 @@
 
 ; Copy the NUL-terminated C-string `lit` into `dst` at byte offset `off`;
 ; return the offset just past the copied bytes (excludes the terminator).
-(defn ir-name-append:i64 (dst:ptr off:i64 lit:ptr)
+(defn ir-name-append (dst:ptr off:i64 lit:ptr):i64
   (let (m:i64 (strlen lit)
         i:i64 (cast i64 0))
     (while (< i m)
@@ -118,7 +118,7 @@
 ; the compiler's own hyphenated symbols and break the byte-identical bootstrap
 ; (§1.3). Fast path: a name with neither character is returned pointer-unchanged,
 ; so non-`?`/`!` names are a strict no-op.
-(defn ir-name-token:ptr (name:ptr)
+(defn ir-name-token (name:ptr):ptr
   (let (n:i64 (strlen name)
         special:i32 0
         i:i64 (cast i64 0))
@@ -164,7 +164,7 @@
 ; flagged — it isn't part of the identifier body being validated.
 ; Returns the first illegal character code found (scanning after any leading
 ; sigil), or -1 if `name` is entirely legal.
-(defn ir-name-illegal-char:i32 (name:ptr)
+(defn ir-name-illegal-char (name:ptr):i32
   (let (n:i64 (strlen name)
         i:i64 (cast i64 0))
     (when (> n (cast i64 0))

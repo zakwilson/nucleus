@@ -13,7 +13,7 @@
         (= ((cast ptr:Node x) kind) NODE-FLOAT) `(printf "%f\n" ~x)
         true                                    `(printf "%lld\n" (cast i64 ~x))))
 
-(defn main:int ()
+(defn main ():int
   (tprint 42)            ; i32  → "%d\n"
   (tprint "hello")       ; ptr  → "%s\n"
   (tprint 3.14)          ; f64  → "%f\n"

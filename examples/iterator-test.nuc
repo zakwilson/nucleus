@@ -17,7 +17,7 @@
 ; ---------------------------------------------------------------------------
 (defstruct SumI64 dummy:i32)
 (extend SumI64 (FoldFn i64 i64))
-(defn (fold i64) ((self (ref SumI64)) (acc i64) (x i64))
+(defn fold ((self (ref SumI64)) (acc i64) (x i64)) i64
   (return (+ acc x)))
 
 ; ---------------------------------------------------------------------------
@@ -25,7 +25,7 @@
 ; ---------------------------------------------------------------------------
 (defstruct SquareI64 dummy:i32)
 (extend SquareI64 (UnaryFn i64 i64))
-(defn (apply i64) ((self (ref SquareI64)) (x i64))
+(defn apply ((self (ref SquareI64)) (x i64)) i64
   (return (* x x)))
 
 ; ---------------------------------------------------------------------------
@@ -34,14 +34,14 @@
 ; ---------------------------------------------------------------------------
 (defstruct IsEvenI64 dummy:i32)
 (extend IsEvenI64 (UnaryFn i64 i32))
-(defn (apply i32) ((self (ref IsEvenI64)) (x i64))
+(defn apply ((self (ref IsEvenI64)) (x i64)) i32
   (return (cast i32 (= (% x (cast i64 2)) (cast i64 0)))))
 
 ; ---------------------------------------------------------------------------
 ; Helper: run the chain test and return the sum.
 ; Separated into its own function to keep main readable.
 ; ---------------------------------------------------------------------------
-(defn run-chain:i64 (arr:ptr:i64)
+(defn run-chain (arr:ptr:i64):i64
   (let ((sq  (ref SquareI64))  (alloca SquareI64)
         (ev  (ref IsEvenI64))  (alloca IsEvenI64)
         (sm  (ref SumI64))     (alloca SumI64)
@@ -60,7 +60,7 @@
     (memcpy (cast ptr (.& fi pred)) (cast ptr ev) (cast i64 (sizeof IsEvenI64)))
     (return (reduce sm (cast i64 0) fi))))
 
-(defn main:i32 ()
+(defn main ():i32
   ; ---- 1. doseq-iter over a bare IntRangeIter ref (a pure Iterator, not a
   ;         Coll, so it uses the iterator-ref form) ----------------------------
   (let ((r (ref IntRangeIter)) (alloca IntRangeIter))

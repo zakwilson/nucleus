@@ -51,7 +51,7 @@
 ; by value. The StrView borrows the String's buffer; it MUST NOT outlive the
 ; String.
 ; ---------------------------------------------------------------------------
-(defn string-as-view:StrView ((self (ref String)))
+(defn string-as-view ((self (ref String))):StrView
   (let (v:(ref (Vector ui8)) (.& self bytes)
         len:usize (_get v len)
         data:ptr:ui8 (cast ptr:ui8 (cast ptr (_get v data))))
@@ -65,19 +65,19 @@
 ; ---------------------------------------------------------------------------
 
 ; string-new — empty String with the default (libc) allocator.
-(defn string-new:String ()
+(defn string-new ():String
   (let ((s (ref String)) (alloca String))
     (vector-init (.& s bytes))
     (return (deref s))))
 
 ; string-new-alloc — empty String with an explicit allocator handle (copied in).
-(defn string-new-alloc:String ((a (ref AllocHandle)))
+(defn string-new-alloc ((a (ref AllocHandle))):String
   (let ((s (ref String)) (alloca String))
     (vector-init-alloc (.& s bytes) a)
     (return (deref s))))
 
 ; string-with-capacity — empty String (libc allocator) pre-reserving n bytes.
-(defn string-with-capacity:String (n:usize)
+(defn string-with-capacity (n:usize):String
   (let ((s (ref String)) (alloca String))
     (vector-init-capacity (.& s bytes) n)
     (return (deref s))))
@@ -85,7 +85,7 @@
 ; ---------------------------------------------------------------------------
 ; Internal helper: append raw bytes (no UTF-8 check — caller ensures validity).
 ; ---------------------------------------------------------------------------
-(defn string-push-bytes-raw:void ((self (ref String)) (p (ptr ui8)) n:usize)
+(defn string-push-bytes-raw ((self (ref String)) (p (ptr ui8)) n:usize):void
   (let (v:(ref (Vector ui8)) (.& self bytes))
     (dotimes (i:usize n)
       (conj v (aref p (cast i64 i))))))
@@ -97,7 +97,7 @@
 ; string-push-char — append a single Char (always valid UTF-8 by construction).
 ; Reserves capacity, encodes directly into the tail of the Vector buffer, then
 ; bumps the len field by the number of bytes written.
-(defn string-push-char:void ((self (ref String)) c:Char)
+(defn string-push-char ((self (ref String)) c:Char):void
   (let (v:(ref (Vector ui8)) (.& self bytes)
         clen:usize (char-utf8-len c))
     ; Ensure capacity for clen more bytes (reserve takes total slots needed).
@@ -110,7 +110,7 @@
 
 ; string-push-str — append a StrView's bytes, validating UTF-8 first.
 ; Returns !i32 (0 on success): err invalid-utf8 if the StrView contains invalid UTF-8.
-(defn string-push-str:!i32 ((self (ref String)) (s (ref StrView)))
+(defn string-push-str ((self (ref String)) (s (ref StrView))):!i32
   ; Validate UTF-8 of the incoming bytes.
   (let (p:ptr:ui8 (s data)
         n:usize (s len)
@@ -126,7 +126,7 @@
     (return (ok (cast i32 0)))))
 
 ; string-pop-char — remove and return the last codepoint, or none if empty.
-(defn (string-pop-char (Maybe Char)) ((self (ref String)))
+(defn string-pop-char ((self (ref String))) (Maybe Char)
   (let (v:(ref (Vector ui8)) (.& self bytes)
         len:usize (_get v len))
     (when (= len (cast usize 0)) (return none))
@@ -150,14 +150,14 @@
         (return (some (cast Char (cast ui32 65533))))))))
 
 ; string-clear — set len to 0 (keep capacity).
-(defn string-clear:void ((self (ref String)))
+(defn string-clear ((self (ref String))):void
   (.set! (.& self bytes) len (cast usize 0)))
 
 ; string-truncate — truncate to byte_len bytes.
 ; Returns !i32 (0 on success).
 ; Errors: str-index-out-of-bounds if byte_len > current len;
 ;         invalid-char-boundary if byte_len falls mid-codepoint.
-(defn string-truncate:!i32 ((self (ref String)) byte-len:usize)
+(defn string-truncate ((self (ref String)) byte-len:usize):!i32
   (let (v:(ref (Vector ui8)) (.& self bytes)
         cur-len:usize (_get v len))
     (when (> byte-len cur-len)
@@ -173,13 +173,13 @@
 
 ; string-reserve — ensure at least `extra` additional bytes of capacity beyond
 ; the current length.
-(defn string-reserve:void ((self (ref String)) extra:usize)
+(defn string-reserve ((self (ref String)) extra:usize):void
   (let (v:(ref (Vector ui8)) (.& self bytes))
     (reserve v (+ (_get v len) extra))))
 
 ; string-shrink-to-fit — shrink capacity to match len.
 ; Reallocates the buffer to exactly len bytes (or frees if len = 0).
-(defn string-shrink-to-fit:void ((self (ref String)))
+(defn string-shrink-to-fit ((self (ref String))):void
   (let (v:(ref (Vector ui8)) (.& self bytes)
         cur-len:usize (_get v len))
     (when (= cur-len (_get v cap)) (return))  ; already at fit
@@ -204,7 +204,7 @@
 
 ; string-from-view — copy a StrView's bytes into a new String, validating UTF-8.
 ; Returns !String: err invalid-utf8 if the bytes are not valid UTF-8.
-(defn string-from-view:!String ((sv (ref StrView)))
+(defn string-from-view ((sv (ref StrView))):!String
   ; Validate UTF-8 first.
   (let (p:ptr:ui8 (sv data)
         n:usize (sv len)
@@ -223,7 +223,7 @@
 
 ; string-from-cstr-unchecked — copy a CStr's bytes into a new String (no validation).
 ; The caller must ensure the bytes are valid UTF-8.
-(defn string-from-cstr-unchecked:String ((cs CStr))
+(defn string-from-cstr-unchecked ((cs CStr)):String
   (let (p:ptr:ui8 (cast ptr:ui8 (cast ptr cs))
         n:usize (cast usize (strlen (cast ptr cs))))
     (let ((s (ref String)) (alloca String))
@@ -233,7 +233,7 @@
 
 ; string-from-cstr — copy a CStr's bytes into a new String, validating UTF-8.
 ; Returns !String: err invalid-utf8 if the bytes are not valid UTF-8.
-(defn string-from-cstr:!String ((cs CStr))
+(defn string-from-cstr ((cs CStr)):!String
   (let (p:ptr:ui8 (cast ptr:ui8 (cast ptr cs))
         n:usize (cast usize (strlen (cast ptr cs))))
     ; Validate UTF-8.
@@ -257,7 +257,7 @@
 ; The `with` machinery calls `(drop (addr-of binding))` which gives ptr:String.
 ; ---------------------------------------------------------------------------
 (extend String Drop)
-(defn drop:void ((self (ptr String)))
+(defn drop ((self (ptr String))):void
   (drop (.& self bytes)))
 
 ; ---------------------------------------------------------------------------
@@ -266,26 +266,26 @@
 ; ---------------------------------------------------------------------------
 (extend String (ByteStr ByteIter))
 
-(defn byte-len:usize ((self (ref String)))
+(defn byte-len ((self (ref String))):usize
   (let (sv:StrView (string-as-view self))
     (strview-byte-len (addr-of sv))))
 
-(defn byte-at:!ui8 ((self (ref String)) i:usize)
+(defn byte-at ((self (ref String)) i:usize):!ui8
   (let (sv:StrView (string-as-view self))
     (strview-byte-at (addr-of sv) i)))
 
-(defn bytes:ByteIter ((self (ref String)))
+(defn bytes ((self (ref String))):ByteIter
   (let (sv:StrView (string-as-view self))
     (strview-bytes (addr-of sv))))
 
-(defn as-view:StrView ((self (ref String)))
+(defn as-view ((self (ref String))):StrView
   (string-as-view self))
 
-(defn sub-bytes:!ptr:StrView ((self (ref String)) start:usize end:usize)
+(defn sub-bytes ((self (ref String)) start:usize end:usize):!ptr:StrView
   (let (sv:StrView (string-as-view self))
     (strview-sub-bytes (addr-of sv) start end)))
 
-(defn (byte-find (Maybe usize)) ((self (ref String)) (needle (ref StrView)))
+(defn byte-find ((self (ref String)) (needle (ref StrView))) (Maybe usize)
   (let (sv:StrView (string-as-view self))
     (strview-byte-find (addr-of sv) needle)))
 
@@ -295,31 +295,31 @@
 ; ---------------------------------------------------------------------------
 (extend String (Str CharIter))
 
-(defn char-count:usize ((self (ref String)))
+(defn char-count ((self (ref String))):usize
   (let (sv:StrView (string-as-view self))
     (strview-char-count (addr-of sv))))
 
-(defn str-empty?:i32 ((self (ref String)))
+(defn str-empty? ((self (ref String))):i32
   (let (sv:StrView (string-as-view self))
     (strview-empty (addr-of sv))))
 
-(defn char-at:!Char ((self (ref String)) i:usize)
+(defn char-at ((self (ref String)) i:usize):!Char
   (let (sv:StrView (string-as-view self))
     (strview-char-at (addr-of sv) i)))
 
-(defn chars:CharIter ((self (ref String)))
+(defn chars ((self (ref String))):CharIter
   (let (sv:StrView (string-as-view self))
     (strview-chars (addr-of sv))))
 
-(defn starts-with?:i32 ((self (ref String)) (prefix (ref StrView)))
+(defn starts-with? ((self (ref String)) (prefix (ref StrView))):i32
   (let (sv:StrView (string-as-view self))
     (strview-starts-with (addr-of sv) prefix)))
 
-(defn ends-with?:i32 ((self (ref String)) (suffix (ref StrView)))
+(defn ends-with? ((self (ref String)) (suffix (ref StrView))):i32
   (let (sv:StrView (string-as-view self))
     (strview-ends-with (addr-of sv) suffix)))
 
-(defn contains-str?:i32 ((self (ref String)) (needle (ref StrView)))
+(defn contains-str? ((self (ref String)) (needle (ref StrView))):i32
   (let (sv:StrView (string-as-view self))
     (strview-contains-str (addr-of sv) needle)))
 
@@ -328,11 +328,11 @@
 ; Eq methods take Self by VALUE (see strview.nuc and numeric.nuc patterns).
 ; ---------------------------------------------------------------------------
 (extend String Eq)
-(defn =:i1 (a:String b:String)
+(defn = (a:String b:String):i1
   (let (sva:StrView (string-as-view (addr-of a))
         svb:StrView (string-as-view (addr-of b)))
     (if (= (strview-eq (addr-of sva) (addr-of svb)) 1) true false)))
-(defn !=:i1 (a:String b:String)
+(defn != (a:String b:String):i1
   (let (sva:StrView (string-as-view (addr-of a))
         svb:StrView (string-as-view (addr-of b)))
     (if (= (strview-eq (addr-of sva) (addr-of svb)) 1) false true)))
@@ -342,19 +342,19 @@
 ; Ord methods take Self by VALUE (see strview.nuc pattern).
 ; ---------------------------------------------------------------------------
 (extend String Ord)
-(defn <:i1 (a:String b:String)
+(defn < (a:String b:String):i1
   (let (sva:StrView (string-as-view (addr-of a))
         svb:StrView (string-as-view (addr-of b)))
     (if (< (strview-cmp-raw (addr-of sva) (addr-of svb)) 0) true false)))
-(defn <=:i1 (a:String b:String)
+(defn <= (a:String b:String):i1
   (let (sva:StrView (string-as-view (addr-of a))
         svb:StrView (string-as-view (addr-of b)))
     (if (<= (strview-cmp-raw (addr-of sva) (addr-of svb)) 0) true false)))
-(defn >:i1 (a:String b:String)
+(defn > (a:String b:String):i1
   (let (sva:StrView (string-as-view (addr-of a))
         svb:StrView (string-as-view (addr-of b)))
     (if (> (strview-cmp-raw (addr-of sva) (addr-of svb)) 0) true false)))
-(defn >=:i1 (a:String b:String)
+(defn >= (a:String b:String):i1
   (let (sva:StrView (string-as-view (addr-of a))
         svb:StrView (string-as-view (addr-of b)))
     (if (>= (strview-cmp-raw (addr-of sva) (addr-of svb)) 0) true false)))
@@ -364,6 +364,6 @@
 ; Hash protocol receiver is (ref Self).
 ; ---------------------------------------------------------------------------
 (extend String Hash)
-(defn hash:usize ((self (ref String)))
+(defn hash ((self (ref String))):usize
   (let (sv:StrView (string-as-view self))
     (strview-hash (addr-of sv))))

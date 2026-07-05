@@ -10,20 +10,20 @@
 (import-use "stdio.h")
 
 ; Identity over any type at all.
-(defn id:T (x:T &where (Any T))
+(defn id (x:T &where (Any T)):T
   (return x))
 
 ; Pick the first of two same-typed values — again over any type.
-(defn first2:T (a:T b:T &where (Any T))
+(defn first2 (a:T b:T &where (Any T)):T
   (return a))
 
 (defstruct Point x:i32 y:i32)
 
 ; Gated to struct (pointer) types via the Struct blanket protocol.
-(defn boxed:i32 (s:T &where (Struct T))
+(defn boxed (s:T &where (Struct T)):i32
   (return 1))
 
-(defn main:i32 ()
+(defn main ():i32
   (printf "id i32   = %d\n" (id 42))
   (printf "id f64   = %g\n" (id 2.75))
   (printf "first2   = %d\n" (first2 10 20))

@@ -23,10 +23,10 @@
 (import "stdio.h" c)
 
 ; Private function: internal linkage, not importable by other namespaces.
-(defn- double-area:i32 (w:i32 h:i32)
+(defn- double-area (w:i32 h:i32):i32
   (return (* 2 (geom/area w h))))
 
-(defn main:i32 ()
+(defn main ():i32
   ; geom/ prefix from import-prefixed
   (c/printf "geom/area(3,4) = %d\n" (geom/area 3 4))
   ; g/ prefix from export facade (same IR as geom/area)

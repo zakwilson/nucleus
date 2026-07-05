@@ -42,7 +42,7 @@
     (when (less b a) (set! r b))
     (return r)))
 
-(defn main:i32 ()
+(defn main ():i32
   (printf "add=%d\n" (add 3 4))
   (printf "add64=%ld\n" (add64 (cast i64 10) (cast i64 20)))
   (banner 7)

@@ -18,13 +18,13 @@
 ; explicit path: a bare (import-use list) resolves to examples/list.nuc.
 (import-use "lib/list.nuc")
 
-(defn int-node:ptr (val:i64)
+(defn int-node (val:i64):ptr
   (let (c:ptr:Node (cast ptr:Node (malloc (sizeof Node))))
     (.set! c kind 0) (.set! c line 0) (.set! c i val)
     (.set! c s null) (.set! c car null) (.set! c cdr null)
     (return (cast ptr c))))
 
-(defn main:i32 ()
+(defn main ():i32
   ; ===== 1. Vector (i32) =====
   (with ((v (ref (Vector i32))) (alloca (Vector i32)))
     (vector-init v) (conj v 10) (conj v 20) (conj v 30) (conj v 40)

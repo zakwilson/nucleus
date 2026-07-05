@@ -10,7 +10,7 @@
 (import-use string-errors)
 (import-use string-protocols)
 
-(defn main:i32 ()
+(defn main ():i32
   ; Print the error identity values (Err is a distinct ui32-sized type; we
   ; can cast to ui32 and print to prove each deferror compiled and was interned
   ; with a unique non-zero id). We compare pairs to show they are distinct.

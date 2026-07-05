@@ -13,7 +13,7 @@
 (import-use hash)
 (import-use hashmap)
 
-(defn main:i32 ()
+(defn main ():i32
   (with ((m (ref (HashMap i32 i32))) (alloca (HashMap i32 i32)))
     (hashmap-init m)
     (assoc m 1 10)

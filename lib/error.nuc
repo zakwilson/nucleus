@@ -50,7 +50,7 @@
 ; null. Token compare is pointer-identity first (interned), strcmp as the
 ; separate-compilation-safe fallback (§11.2). Called from the compiler-emitted
 ; err site; the typed call + (ok v) re-wrap stay in the compiler.
-(defn err-find-handler:ptr (eid:Err token:ptr)
+(defn err-find-handler (eid:Err token:ptr):ptr
   (let (h:ptr g-handler-top)
     (while (!= h null)
       (let (hh:ptr:Handler (cast ptr:Handler h))

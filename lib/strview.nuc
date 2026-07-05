@@ -57,7 +57,7 @@
 ; strview-len — the byte length. Trivial accessor; present so callers depend on
 ; the operation, not the field layout.
 ; ---------------------------------------------------------------------------
-(defn strview-len:usize ((sv (ref StrView)))
+(defn strview-len ((sv (ref StrView))):usize
   (return (sv len)))
 
 ; ---------------------------------------------------------------------------
@@ -65,7 +65,7 @@
 ; comes first so memcmp is only reached for same-length views (and so two views
 ; of different length never read past either buffer). Returns 1 (equal) / 0.
 ; ---------------------------------------------------------------------------
-(defn strview-eq:i32 ((a (ref StrView)) (b (ref StrView)))
+(defn strview-eq ((a (ref StrView)) (b (ref StrView))):i32
   (when (!= (a len) (b len)) (return 0))
   (when (= (a len) (cast usize 0)) (return 1))
   (let (c:i32 (memcmp (cast ptr (a data)) (cast ptr (b data)) (cast i64 (a len))))
@@ -84,7 +84,7 @@
 
 (extend ByteIter (Iterator ui8))
 
-(defn (next (Maybe ui8)) ((self (ref ByteIter)))
+(defn next ((self (ref ByteIter))) (Maybe ui8)
   (when (>= (self pos) (self len))
     (return none))
   (let (b:ui8 (aref (self buf) (cast i64 (self pos))))
@@ -99,7 +99,7 @@
 ; conformance: it folds exactly `len` bytes instead of stopping at a NUL, so a
 ; StrView over a buffer with embedded NULs still hashes all of its bytes.
 ; ---------------------------------------------------------------------------
-(defn strview-hash:usize ((sv (ref StrView)))
+(defn strview-hash ((sv (ref StrView))):usize
   (let (it:ByteIter (strview-bytes sv))
     (return (cast usize
       (reduce (vfn (h:i64 b:ui8):i64
@@ -115,7 +115,7 @@
 ; (no copy), so the caller must keep the C string alive for the view's lifetime.
 ; Returns a heap pointer the caller owns (free with libc free).
 ; ---------------------------------------------------------------------------
-(defn (strview-from-cstr (ptr StrView)) ((cs CStr))
+(defn strview-from-cstr ((cs CStr)) (ptr StrView)
   (let (sv:ptr:StrView (cast ptr:StrView (malloc (cast i64 (sizeof StrView)))))
     (.set! sv data (cast ptr:ui8 (cast ptr cs)))
     (.set! sv len  (cast usize (strlen (cast ptr cs))))
@@ -128,7 +128,7 @@
 ; from a C string. The view itself does not guarantee termination, so callers on
 ; arbitrary sub-slices must not use this.
 ; ---------------------------------------------------------------------------
-(defn strview-to-cstr:CStr ((sv (ref StrView)))
+(defn strview-to-cstr ((sv (ref StrView))):CStr
   (return (cast CStr (cast ptr (sv data)))))
 
 ; ---------------------------------------------------------------------------
@@ -145,15 +145,15 @@
 ; ---------------------------------------------------------------------------
 
 (extend StrView Hash)
-(defn hash:usize ((self (ref StrView)))
+(defn hash ((self (ref StrView))):usize
   (return (strview-hash self)))
 
 (extend StrView Eq)
-(defn =:i1 (a:StrView b:StrView)
+(defn = (a:StrView b:StrView):i1
   (let (la:StrView a
         lb:StrView b)
     (return (if (= (strview-eq (addr-of la) (addr-of lb)) 1) true false))))
-(defn !=:i1 (a:StrView b:StrView)
+(defn != (a:StrView b:StrView):i1
   (let (la:StrView a
         lb:StrView b)
     (return (if (= (strview-eq (addr-of la) (addr-of lb)) 1) false true))))
@@ -176,7 +176,7 @@
 
 (extend CharIter (Iterator Char))
 
-(defn (next (Maybe Char)) ((self (ref CharIter)))
+(defn next ((self (ref CharIter))) (Maybe Char)
   (when (>= (self pos) (self len))
     (return none))
   (let (rem:usize (- (self len) (self pos))
@@ -197,19 +197,19 @@
 ; ---------------------------------------------------------------------------
 
 ; strview-byte-len — O(1) byte length.
-(defn strview-byte-len:usize ((sv (ref StrView)))
+(defn strview-byte-len ((sv (ref StrView))):usize
   (return (sv len)))
 
 ; strview-byte-at — O(1) byte access with bounds check.
 ; Errors str-index-out-of-bounds when i >= sv.len.
-(defn strview-byte-at:!ui8 ((sv (ref StrView)) i:usize)
+(defn strview-byte-at ((sv (ref StrView)) i:usize):!ui8
   (when (>= i (sv len))
     (return (err! str-index-out-of-bounds)))
   (return (ok (aref (sv data) (cast i64 i)))))
 
 ; strview-bytes — return a ByteIter aliasing sv's buffer (by value).
 ; Drive with (addr-of it) + next (value-return convention from M2/C2.1).
-(defn strview-bytes:ByteIter ((sv (ref StrView)))
+(defn strview-bytes ((sv (ref StrView))):ByteIter
   (let ((it (ref ByteIter)) (alloca ByteIter))
     (.set! it buf (sv data))
     (.set! it pos (cast usize 0))
@@ -217,7 +217,7 @@
     (return (deref it))))
 
 ; strview-as-view — identity: return the StrView by value (two-word copy).
-(defn strview-as-view:StrView ((sv (ref StrView)))
+(defn strview-as-view ((sv (ref StrView))):StrView
   (return (deref sv)))
 
 ; ---------------------------------------------------------------------------
@@ -231,7 +231,7 @@
 ; ---------------------------------------------------------------------------
 
 ; cstr-bytes — a ByteIter over the bytes of cs (by value, value-return convention).
-(defn cstr-bytes:ByteIter (cs:CStr)
+(defn cstr-bytes (cs:CStr):ByteIter
   (let ((it (ref ByteIter)) (alloca ByteIter))
     (.set! it buf (cast ptr:ui8 (cast ptr cs)))
     (.set! it pos (cast usize 0))
@@ -239,7 +239,7 @@
     (return (deref it))))
 
 ; cstr-chars — a CharIter over the UTF-8 codepoints of cs (by value).
-(defn cstr-chars:CharIter (cs:CStr)
+(defn cstr-chars (cs:CStr):CharIter
   (let ((it (ref CharIter)) (alloca CharIter))
     (.set! it buf (cast ptr:ui8 (cast ptr cs)))
     (.set! it pos (cast usize 0))
@@ -263,7 +263,7 @@
 ; (the struct fields arrive as zero when unwrapped via match). This matches the
 ; strview-from-cstr idiom: the two-word wrapper is heap-allocated, but the
 ; bytes are borrowed.
-(defn strview-sub-bytes:!ptr:StrView ((sv (ref StrView)) start:usize end:usize)
+(defn strview-sub-bytes ((sv (ref StrView)) start:usize end:usize):!ptr:StrView
   ; Range check first.
   (when (> start end)
     (return (err! str-index-out-of-bounds)))
@@ -289,7 +289,7 @@
 ;
 ; Empty needle: returns (some 0) — same convention as Rust/C memmem for empty
 ; pattern.  Needle longer than haystack: returns none.
-(defn (strview-byte-find (Maybe usize)) ((sv (ref StrView)) (needle (ref StrView)))
+(defn strview-byte-find ((sv (ref StrView)) (needle (ref StrView))) (Maybe usize)
   (let (nlen:usize (needle len)
         slen:usize (sv len))
     ; Empty needle found at index 0.
@@ -318,7 +318,7 @@
 ; strview-char-count — O(n): count lead bytes (non-continuation bytes).
 ; A UTF-8 continuation byte has bit pattern 10xxxxxx: (b & 0xC0) == 0x80.
 ; Every non-continuation byte starts a new codepoint.
-(defn strview-char-count:usize ((sv (ref StrView)))
+(defn strview-char-count ((sv (ref StrView))):usize
   (let (n:usize (cast usize 0)
         len:usize (sv len)
         p:ptr:ui8 (sv data))
@@ -330,7 +330,7 @@
 
 ; strview-char-at — O(n): nth codepoint (0-indexed).
 ; Errors str-index-out-of-bounds if i is >= the number of codepoints.
-(defn strview-char-at:!Char ((sv (ref StrView)) i:usize)
+(defn strview-char-at ((sv (ref StrView)) i:usize):!Char
   (let (pos:usize (cast usize 0)
         count:usize (cast usize 0)
         len:usize (sv len)
@@ -350,7 +350,7 @@
 
 ; strview-chars — return a CharIter aliasing sv's buffer (by value).
 ; Drive with (addr-of it) + next (value-return convention from M2/C2.1).
-(defn strview-chars:CharIter ((sv (ref StrView)))
+(defn strview-chars ((sv (ref StrView))):CharIter
   (let ((it (ref CharIter)) (alloca CharIter))
     (.set! it buf (sv data))
     (.set! it pos (cast usize 0))
@@ -358,11 +358,11 @@
     (return (deref it))))
 
 ; strview-empty — 1 if the view has zero bytes, else 0.
-(defn strview-empty:i32 ((sv (ref StrView)))
+(defn strview-empty ((sv (ref StrView))):i32
   (if (= (sv len) (cast usize 0)) 1 0))
 
 ; strview-starts-with — 1 if sv begins with prefix (byte-level), else 0.
-(defn strview-starts-with:i32 ((sv (ref StrView)) (prefix (ref StrView)))
+(defn strview-starts-with ((sv (ref StrView)) (prefix (ref StrView))):i32
   (let (plen:usize (prefix len))
     (when (> plen (sv len)) (return 0))
     (when (= plen (cast usize 0)) (return 1))
@@ -370,7 +370,7 @@
       (if (= c 0) 1 0))))
 
 ; strview-ends-with — 1 if sv ends with suffix (byte-level), else 0.
-(defn strview-ends-with:i32 ((sv (ref StrView)) (suffix (ref StrView)))
+(defn strview-ends-with ((sv (ref StrView)) (suffix (ref StrView))):i32
   (let (slen:usize (suffix len)
         svlen:usize (sv len))
     (when (> slen svlen) (return 0))
@@ -382,7 +382,7 @@
       (if (= c 0) 1 0))))
 
 ; strview-contains-str — 1 if sv contains needle as a substring, else 0.
-(defn strview-contains-str:i32 ((sv (ref StrView)) (needle (ref StrView)))
+(defn strview-contains-str ((sv (ref StrView)) (needle (ref StrView))):i32
   (let ((found (Maybe usize)) (strview-byte-find sv needle))
     (match found
       ((some i) 1)
@@ -395,7 +395,7 @@
 ; ---------------------------------------------------------------------------
 
 ; is-ascii-ws — internal helper: 1 if b is an ASCII whitespace byte.
-(defn strview-is-ascii-ws:i32 (b:ui8)
+(defn strview-is-ascii-ws (b:ui8):i32
   (let (n:ui32 (cast ui32 b))
     (if (or (= n (cast ui32 32))
             (or (= n (cast ui32 9))
@@ -404,7 +404,7 @@
       1 0)))
 
 ; strview-trim-start — remove leading ASCII whitespace.
-(defn strview-trim-start:StrView ((sv (ref StrView)))
+(defn strview-trim-start ((sv (ref StrView))):StrView
   (let (p:ptr:ui8 (sv data)
         len:usize (sv len)
         i:usize (cast usize 0))
@@ -416,7 +416,7 @@
       (return (deref result)))))
 
 ; strview-trim-end — remove trailing ASCII whitespace.
-(defn strview-trim-end:StrView ((sv (ref StrView)))
+(defn strview-trim-end ((sv (ref StrView))):StrView
   (let (p:ptr:ui8 (sv data)
         len:usize (sv len))
     (while (and (> len (cast usize 0))
@@ -428,7 +428,7 @@
       (return (deref result)))))
 
 ; strview-trim — remove both leading and trailing ASCII whitespace.
-(defn strview-trim:StrView ((sv (ref StrView)))
+(defn strview-trim ((sv (ref StrView))):StrView
   (let (s:StrView (strview-trim-start sv))
     (return (strview-trim-end (addr-of s)))))
 
@@ -451,7 +451,7 @@
 
 ; strview-cmp-raw — internal helper: negative if a<b, 0 if equal, positive if a>b.
 ; Uses memcmp on min(a.len,b.len) bytes, then compares lengths on tie.
-(defn strview-cmp-raw:i32 ((a (ref StrView)) (b (ref StrView)))
+(defn strview-cmp-raw ((a (ref StrView)) (b (ref StrView))):i32
   (let (alen:usize (a len)
         blen:usize (b len)
         min-len:usize (if (< alen blen) alen blen))
@@ -463,15 +463,15 @@
       (if (> alen blen) (return 1)
         (return 0)))))
 
-(defn <:i1 (a:StrView b:StrView)
+(defn < (a:StrView b:StrView):i1
   (let (la:StrView a lb:StrView b)
     (if (< (strview-cmp-raw (addr-of la) (addr-of lb)) 0) true false)))
-(defn <=:i1 (a:StrView b:StrView)
+(defn <= (a:StrView b:StrView):i1
   (let (la:StrView a lb:StrView b)
     (if (<= (strview-cmp-raw (addr-of la) (addr-of lb)) 0) true false)))
-(defn >:i1 (a:StrView b:StrView)
+(defn > (a:StrView b:StrView):i1
   (let (la:StrView a lb:StrView b)
     (if (> (strview-cmp-raw (addr-of la) (addr-of lb)) 0) true false)))
-(defn >=:i1 (a:StrView b:StrView)
+(defn >= (a:StrView b:StrView):i1
   (let (la:StrView a lb:StrView b)
     (if (>= (strview-cmp-raw (addr-of la) (addr-of lb)) 0) true false)))

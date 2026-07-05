@@ -7,20 +7,20 @@
 (import-use "stdlib.h")
 
 (defprotocol Drop
-  (drop:void (self:ptr:Self)))
+  (drop (self:ptr:Self):void))
 
 (defstruct Res id:i32 buf:ptr)
 
-(defn drop:void (self:ptr:Res)
+(defn drop (self:ptr:Res):void
   (free (self buf)))
 
 (extend Res Drop)
 
-(defn make-res:Res (id:i32)
+(defn make-res (id:i32):Res
   (let (b:ptr (malloc 16))
     (return (Res id b))))
 
-(defn use-after-move:i32 ()
+(defn use-after-move ():i32
   (with (r (make-res 7))
     (with (f (mfn ():i32 (return (. (addr-of r) id))))   ; mfn moves r in
       (return (. (addr-of r) id)))))                     ; use after move -> error

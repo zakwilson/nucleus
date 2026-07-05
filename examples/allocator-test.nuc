@@ -19,7 +19,7 @@
   data:ptr
   cap:usize)
 
-(defn main:i32 ()
+(defn main ():i32
   ; ---- 1. Default (libc) allocator: alloc then free. ----
   (let (d:ref:AllocHandle (default-allocator))
     (let ((p (raw ui8)) (alloc-handle-alloc d (cast usize 32) (cast usize 8)))

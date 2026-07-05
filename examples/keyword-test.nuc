@@ -15,7 +15,7 @@
 (import-use iterator)
 (import-use hashmap)
 
-(defn main:i32 ()
+(defn main ():i32
   ; Self-evaluation: a bare keyword is a value (a Keyword) in value position.
   (let (k:Keyword :foo)
     (printf "self-eval ok=%d\n" (if (= k :foo) 1 0)))       ; self-eval ok=1

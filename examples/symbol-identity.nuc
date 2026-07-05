@@ -2,10 +2,10 @@
 
 (import-use "stdio.h")
 
-(defn show:void (label:ptr eq:bool)
+(defn show (label:ptr eq:bool):void
   (if eq (printf "%s: yes\n" label) (printf "%s: no\n" label)))
 
-(defn main:int ()
+(defn main ():int
   (show "'foo = 'foo"           (= 'foo 'foo))
   (let (a:ptr 'bar
         b:ptr 'bar)

@@ -20,17 +20,17 @@
 
 ; (4) A defn whose return type is a BoxedFn — the anonymous env is not spellable,
 ;     but the BoxedFn handle is. The returned box owns its heap env.
-(defn make-adder:(BoxedFn (i32) i32) (n:i32)
+(defn make-adder (n:i32) (BoxedFn (i32) i32)
   (return (vfn (x:i32):i32 (+ x n))))
 
 ; (3) A struct holding a BoxedFn field. Its Drop drops the box field (frees the
 ;     boxed env) — `(drop (.& self f))` dispatches to the shared box-drop thunk.
 (defstruct Holder f:(BoxedFn (i32) i32))
 (extend Holder Drop)
-(defn drop:void ((self (ptr Holder)))
+(defn drop ((self (ptr Holder))):void
   (drop (.& self f)))
 
-(defn main:i32 ()
+(defn main ():i32
   ; (1) bare-fn box: a non-capturing closure decays to a function pointer, which
   ;     is boxed via a per-signature forwarder thunk (data = a heap cell holding
   ;     the fn pointer). Drops (frees the cell) at scope exit.

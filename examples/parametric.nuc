@@ -25,16 +25,16 @@
 ;    NOTE: parenthesised parameter-type uses list binding form (p (ref ...))
 ;    because the colon form p:(...) does not tokenise for a parenthesised RHS.
 ; ----------------------------------------------------------------
-(defn pair-first:A ((p (ref (Pair A B))))
+(defn pair-first ((p (ref (Pair A B)))):A
   (return (p fst)))
 
-(defn pair-second:B ((p (ref (Pair A B))))
+(defn pair-second ((p (ref (Pair A B)))):B
   (return (p snd)))
 
-(defn box-val:T ((b (ref (Box T))))
+(defn box-val ((b (ref (Box T)))):T
   (return (b val)))
 
-(defn box-len:usize ((b (ref (Box T))))
+(defn box-len ((b (ref (Box T)))):usize
   (return (b len)))
 
 ; ----------------------------------------------------------------
@@ -43,10 +43,10 @@
 ;    method signature can mention both Self and E.
 ; ----------------------------------------------------------------
 (defprotocol (Container E)
-  (get-elem:E ((self (ref Self)) i:usize)))
+  (get-elem ((self (ref Self)) i:usize):E))
 
 ; Concrete implementation for Box T: return the stored value.
-(defn get-elem:T ((self (ref (Box T))) i:usize)
+(defn get-elem ((self (ref (Box T))) i:usize):T
   (return (self val)))
 
 ; Extend the template: every Box T conforms to (Container T).
@@ -57,10 +57,10 @@
 ; 5b. A generic function exercising the conformance.
 ;     Uses structural dispatch — get-elem resolves for any stamped Box instance.
 ; ----------------------------------------------------------------
-(defn show-box:void ((b (ref (Box i32))))
+(defn show-box ((b (ref (Box i32)))):void
   (printf "container elem=%d\n" (get-elem b (cast usize 0))))
 
-(defn main:int ()
+(defn main ():int
   ; 2 + 4. Type application in type position; explicit construction.
   ;   ((Pair i32 i32) 3 4) stamps Pair.i32.i32 and constructs a value.
   (let ((p (ref (Pair i32 i32))) (alloca (Pair i32 i32)))

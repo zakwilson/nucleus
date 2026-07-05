@@ -43,7 +43,7 @@
 
 ; Fold one byte `b` (0..255, passed as i64) into the running hash `h`.
 ; The * is the FNV prime 0x100000001b3 = 1099511628211.
-(defn fnv1a-byte:i64 (h:i64 b:i64)
+(defn fnv1a-byte (h:i64 b:i64):i64
   (set! h (bit-xor h b))
   (set! h (* h (cast i64 1099511628211)))
   (return h))
@@ -51,7 +51,7 @@
 ; Fold the `n` low bytes of integer value `v` (little-endian byte order) into
 ; `h`. Byte order is internal to this hash (never observed), so little-endian is
 ; an arbitrary, consistent choice — equal values always fold identically.
-(defn fnv1a-int:i64 (h:i64 v:i64 n:i32)
+(defn fnv1a-int (h:i64 v:i64 n:i32):i64
   (let (i:i32 0)
     (while (< i n)
       (let (b:i64 (bit-and (bit-shr v (cast i64 (* i 8))) (cast i64 255)))
@@ -63,7 +63,7 @@
 ; The Hash protocol.
 ; ---------------------------------------------------------------------------
 (defprotocol Hash
-  (hash:usize ((self (ref Self)))))
+  (hash ((self (ref Self))):usize))
 
 ; ---------------------------------------------------------------------------
 ; Built-in conformances. Each loads the value through the (ref Self) receiver,
@@ -77,22 +77,22 @@
 ; ---------------------------------------------------------------------------
 
 (extend i32 Hash)
-(defn hash:usize ((self (ref i32)))
+(defn hash ((self (ref i32))):usize
   (let (h:i64 -3750763034362895579)
     (return (cast usize (fnv1a-int h (cast i64 (deref self)) 4)))))
 
 (extend i64 Hash)
-(defn hash:usize ((self (ref i64)))
+(defn hash ((self (ref i64))):usize
   (let (h:i64 -3750763034362895579)
     (return (cast usize (fnv1a-int h (deref self) 8)))))
 
 (extend usize Hash)
-(defn hash:usize ((self (ref usize)))
+(defn hash ((self (ref usize))):usize
   (let (h:i64 -3750763034362895579)
     (return (cast usize (fnv1a-int h (cast i64 (deref self)) 8)))))
 
 (extend CStr Hash)
-(defn hash:usize ((self (ref CStr)))
+(defn hash ((self (ref CStr))):usize
   (let (h:i64 -3750763034362895579
         s:ptr:i8 (cast ptr:i8 (deref self))
         i:i64 0)

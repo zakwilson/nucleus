@@ -8,7 +8,7 @@
 
 (import-prefixed nsgfacade g)
 
-(defn main:i32 ()
+(defn main ():i32
   (printf "export area(3,4) = %d\n" (g/area 3 4))
   (printf "export perimeter(3,4) = %d\n" (g/perimeter 3 4))
   (return 0))

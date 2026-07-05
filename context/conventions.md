@@ -26,6 +26,42 @@ that `node-type` deliberately does not model returns null (codegen then keeps it
 own type) — that's the escape hatch for control-flow/expansion-dependent results
 (`cond`, macros, `quasiquote`), not a license to skip updating modelled forms.
 
+## `defn` signature: return type follows the params (`(defn NAME (params):ret …)`)
+
+The named-function signature is the fn-style `(defn NAME (params):ret body…)` —
+the return type is the operand at **index 3** (a `NODE-KEYWORD` `:i32`/`:ptr:Node`,
+a bare `NODE-SYM`, or a `NODE-CELL` `(Maybe i32)`), body starts at **index 4**
+(index 5 with a trailing `noreturn`). `defprotocol` method sigs, `declare`, and the
+`.nuch` `defmethod`/`declare` entries use the same grammar. The old
+return-in-the-name style (`(defn foo:ret (params) …)`, list-head
+`(defn (next (Maybe T)) (params) …)`) is **still dual-accepted** by
+`defn-parse-sig` (nucleusc.nuc) during the Stage 14 migration, but all in-tree
+source is new-style. Every reader of a defn shape must funnel through
+`defn-parse-sig` / `defn-ret-node` / `sig-name-is-bare` so the two styles stay in
+lockstep — **do not hardcode the ret/body index.**
+
+The trap this bit (design/stage14/defn-signature.md S3): a **new-style body-start
+of 4 vs the legacy 3** must be recomputed anywhere the body is walked from the
+form. The generic-template A2 checker (`check-generic-template`) and the Valid
+instance walk (`valid-check-instance`) both hardcoded `j:i32 3`; with a new-style
+CELL return (e.g. `(defn constantly ((v V) &where (Ord V)) (BoxedFn (V) V) …)`)
+that walked the return `(BoxedFn (V) V)` as a body form and read its `(V …)` as a
+call to an unknown function `V`. Fix: `j = (if (sig-name-is-bare (node-at form 1))
+4 3)`. A bare-symbol or keyword return survives a legacy walk harmlessly (it's just
+a variable ref), so this only surfaces on a **parenthesised** return in a template
+whose body the A2/Valid pass walks — a rare combination that no earlier test hit.
+
+The five internal defn **synthesizers** (lambda lift, closure `invoke`/`drop`,
+defunion arm ctors, type-erasure forwarding methods — all in nucleusc.nuc/
+generics.nuc) build the new-style shape by consing the return operand *between*
+the params node and the body sublist (a bare `NODE-SYM` from `type-spelling`);
+the generic stamper is style-preserving via `monomorphize-form` +
+`subst-tyvars-node`'s keyword branch, so it needs no change. Switching a
+synthesizer's style is **invisible in emitted IR** (ir-names derive from the
+colon-stripped name and the parsed types), so a closure/union program's IR is
+byte-identical across the flip — verify with a before/after `--emit-llvm` diff, not
+`make bootstrap` (both stages share the change).
+
 ## `defn` bodies are not desugared (colon-symbols survive)
 
 `desugar` only rewrites **binding positions** of known forms: the `defn` name and

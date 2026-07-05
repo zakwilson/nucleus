@@ -11,7 +11,7 @@
 (import-use iterator)
 (import-use vector)
 
-(defn main:i32 ()
+(defn main ():i32
   ; i32 element literal.
   (with ((v (ref (Vector i32))) [1 2 3])
     (printf "count=%llu\n" (cast ui64 (count v)))   ; count=3

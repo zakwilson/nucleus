@@ -12,7 +12,7 @@
 (import-use hash)
 (import-use hashset)
 
-(defn main:i32 ()
+(defn main ():i32
 
   ; ----------------------------------------------------------------
   ; 1. Basic CStr insert / contains? / set-remove

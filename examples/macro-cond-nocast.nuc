@@ -35,7 +35,7 @@
         (= (x kind) NODE-FLOAT) `(printf "float %f\n" ~x)
         true                    `(printf "other\n")))
 
-(defn main:int ()
+(defn main ():int
   (printf "%d\n" (sum))              ; 0   — empty
   (printf "%d\n" (sum 7))            ; 7   — single-arg base case (no cast)
   (printf "%d\n" (sum 1 2 3 4))      ; 10  — right-folded _+

@@ -11,7 +11,7 @@
 
 ; A short, dot-free token naming a type for use in mangled symbols. Pointers
 ; get a "p" prefix on their pointee so ptr:Circle and Circle stay distinct.
-(defn type-mangle-token:ptr (t:ptr)
+(defn type-mangle-token (t:ptr):ptr
   (let (tt:ptr:Type (cast ptr:Type t)
         k:i32 (tt kind))
     (when (= k TY-VOID) (return "void"))
@@ -67,7 +67,7 @@
 (defvar (g-fnty-names (ref (Vector ptr))))   ; name strings, parallel
 (defvar (g-fnty-types (ref (Vector ptr))))   ; Type*, parallel
 
-(defn fnty-intern:ptr (t:ptr)
+(defn fnty-intern (t:ptr):ptr
   (dotimes (i (cast i32 (count g-fnty-types)))
     (when (= (invoke g-fnty-types (cast usize i)) t)
       (return (invoke g-fnty-names (cast usize i)))))
@@ -80,7 +80,7 @@
 ; Resolve a "__fnty_<id>" name back to its Type*, so a stamped generic body's
 ; `(ref __fnty_3)` re-parses to the original TY-FN. String compare (the name
 ; reaching here may be a fresh fmt copy, not the cached interned pointer).
-(defn fnty-resolve:ptr (name:ptr)
+(defn fnty-resolve (name:ptr):ptr
   (dotimes (i (cast i32 (count g-fnty-names)))
     (when (= (strcmp (invoke g-fnty-names (cast usize i)) name) 0)
       (return (invoke g-fnty-types (cast usize i)))))
@@ -92,7 +92,7 @@
 ; concrete type for a type variable's occurrences in a retained generic body.
 ; Pointers nest as ptr:elem; structs/primitives are their bare names. A TY-FN
 ; spells to its interned "__fnty_N" name (above), not "ptr".
-(defn type-spelling:ptr (t:ptr)
+(defn type-spelling (t:ptr):ptr
   (let (tt:ptr:Type (cast ptr:Type t)
         k:i32 (tt kind))
     (when (= k TY-VOID) (return "void"))
@@ -121,7 +121,7 @@
         (return (fmt-s "ptr:%s" (type-spelling (tt elem))))))
     (return "ptr")))
 
-(defn tyvar-index-of:i32 (name:CStr tyvars:ptr ntv:i32)
+(defn tyvar-index-of (name:CStr tyvars:ptr ntv:i32):i32
   (dotimes (i ntv)
     (when (= (aref (cast ptr:ptr tyvars) i) name) (return i)))
   (return -1))
@@ -131,7 +131,7 @@
 ; rejoin. Handles both desugared standalone type symbols ("T" → "i32") and the
 ; colon-typed symbols left in un-desugared bodies ("r:T" → "r:i32",
 ; "x:ptr:T" → "x:ptr:Circle").
-(defn subst-tyvars-sym:ptr (s:ptr tyvars:ptr spellings:ptr ntv:i32 line:i32)
+(defn subst-tyvars-sym (s:ptr tyvars:ptr spellings:ptr ntv:i32 line:i32):ptr
   (when (= (strchr s 58) null)
     (let (idx:i32 (tyvar-index-of s tyvars ntv))
       (when (>= idx 0) (return (aref (cast ptr:ptr spellings) idx)))
@@ -149,7 +149,7 @@
 
 ; Deep-copy a node, substituting type variables (by colon-spelling) in every
 ; symbol. Used to stamp a concrete instance from a generic template.
-(defn subst-tyvars-node:ptr (node:ptr tyvars:ptr spellings:ptr ntv:i32)
+(defn subst-tyvars-node (node:ptr tyvars:ptr spellings:ptr ntv:i32):ptr
   (when (= node null) (return null))
   (let (n:ptr:Node (cast ptr:Node node))
     (when (= (n kind) NODE-SYM)

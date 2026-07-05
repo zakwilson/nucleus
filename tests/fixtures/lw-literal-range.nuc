@@ -8,7 +8,7 @@
 ; adaptation at the call site. Compiling this must FAIL with:
 ;   "integer literal 300 does not fit ui8"
 
-(defn take8:i32 (x:ui8) (return (cast i32 x)))
+(defn take8 (x:ui8):i32 (return (cast i32 x)))
 
-(defn main:i32 ()
+(defn main ():i32
   (return (take8 300)))

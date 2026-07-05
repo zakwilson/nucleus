@@ -23,17 +23,17 @@
 (defvar empty:(ptr Link) null)
 
 ; defn return-name (colon-paren) AND defn param (colon-paren).
-(defn with-value:(ptr Link) (l:(ptr Link) v:i32)
+(defn with-value (l:(ptr Link) v:i32) (ptr Link)
   (.set! l value v)
   (return l))
 
 ; defn param (colon-paren); scalar return; walks the chain summing values.
-(defn chain-sum:i32 (l:(ptr Link))
+(defn chain-sum (l:(ptr Link)):i32
   (if (= l null)
     (return 0)
     (return (+ (l value) (chain-sum (l next))))))
 
-(defn main:i32 ()
+(defn main ():i32
   ; let bindings — colon-paren types for two stack-allocated links.
   (let (a:(ptr Link) (alloca Link)
         b:(ptr Link) (alloca Link))

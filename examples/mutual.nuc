@@ -1,18 +1,18 @@
 (import-use "stdio.h")
 
-(defn is-even:int (n:int)
+(defn is-even (n:int):int
   (cond (= n 0)
     (return 1)
     true
     (return (is-odd (- n 1)))))
 
-(defn is-odd:int (n:int)
+(defn is-odd (n:int):int
   (cond (= n 0)
     (return 0)
     true
     (return (is-even (- n 1)))))
 
-(defn main:int ()
+(defn main ():int
   (dotimes (i:i32 6)
     (printf "%d: even=%d odd=%d\n" i (is-even i) (is-odd i)))
   (return 0))

@@ -24,15 +24,15 @@
 
 ; LW-3: explicit `return` of a bare literal from an :i64 function compiles
 ; and coerces the literal to i64 — previously an LLVM parse error.
-(defn five:i64 ()
+(defn five ():i64
   (return 5))
 
 ; LW-4: a literal outside i32 range, passed to and returned from an :i64
 ; function, keeps its full 64-bit value.
-(defn take64:i64 (n:i64)
+(defn take64 (n:i64):i64
   (return n))
 
-(defn main:i32 ()
+(defn main ():i32
   (with ((v (ref (Vector i64))) (alloca (Vector i64)))
     (vector-init v)
 

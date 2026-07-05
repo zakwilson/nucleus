@@ -51,7 +51,7 @@
 ; is monomorphized at the call site and would require the consumer to declare
 ; stderr itself; routing through these helpers keeps that burden here.
 ; ---------------------------------------------------------------------------
-(defn hashset-oom:void ()
+(defn hashset-oom ():void
   (fprintf stderr "hashset: out of memory\n")
   (exit 1))
 
@@ -70,7 +70,7 @@
 ; Initial capacity is 8, which is a power of two and small enough to never
 ; trigger a resize for the first 6 insertions.
 ; ---------------------------------------------------------------------------
-(defn hashset-init:void ((s (ref (HashSet T))))
+(defn hashset-init ((s (ref (HashSet T)))):void
   (let (init-cap:usize (cast usize 8)
         elem-size:usize (cast usize (sizeof T)))
     (libc-allocator (.& s alloc))
@@ -92,7 +92,7 @@
 ; handle (copied in), mirroring vector-init-alloc. The buffers are allocated
 ; through the passed handle, so the set owns its storage through it (arena =
 ; process-lifetime, no per-allocation free).
-(defn hashset-init-alloc:void ((s (ref (HashSet T))) (a (ref AllocHandle)))
+(defn hashset-init-alloc ((s (ref (HashSet T))) (a (ref AllocHandle))):void
   (let (init-cap:usize (cast usize 8)
         elem-size:usize (cast usize (sizeof T)))
     (.set! s alloc (deref a))
@@ -116,7 +116,7 @@
 ; tombstones), then free the old arrays and install the new arrays + cap.
 ; new-cap must be a power of two and >= current count.
 ; ---------------------------------------------------------------------------
-(defn hashset-resize:void ((s (ref (HashSet T))) new-cap:usize)
+(defn hashset-resize ((s (ref (HashSet T))) new-cap:usize):void
   (let (elem-size:usize (cast usize (sizeof T)))
     (let ((new-keys (raw ui8))
           (alloc-handle-alloc (.& s alloc)
@@ -168,7 +168,7 @@
 ; insert: add elem to the set. No-op if already present. Grows by doubling
 ; when load-factor exceeds 3/4 (count*4 >= cap*3).
 ; ---------------------------------------------------------------------------
-(defn insert:void ((self (ref (HashSet T))) elem:T)
+(defn insert ((self (ref (HashSet T))) elem:T):void
   (when (>= (* (self count) (cast usize 4))
             (* (self cap)   (cast usize 3)))
     (hashset-resize self (* (self cap) (cast usize 2))))
@@ -207,7 +207,7 @@
 ; contains?: 1 if elem is in the set, else 0. Skips tombstones, stops on
 ; empty. Set conformance.
 ; ---------------------------------------------------------------------------
-(defn contains?:i32 ((self (ref (HashSet T))) elem:T)
+(defn contains? ((self (ref (HashSet T))) elem:T):i32
   (let (kbuf:ptr:T (cast ptr:T (cast ptr (self keys)))
         sbuf:ptr:ui8 (cast ptr:ui8 (cast ptr (self states)))
         mask:usize (- (self cap) (cast usize 1))
@@ -233,7 +233,7 @@
 ; set-remove: remove elem from the set (tombstone it). No-op if not present.
 ; Named `set-remove` rather than `remove` to avoid shadowing libc `remove`.
 ; ---------------------------------------------------------------------------
-(defn set-remove:void ((self (ref (HashSet T))) elem:T)
+(defn set-remove ((self (ref (HashSet T))) elem:T):void
   (let (kbuf:ptr:T (cast ptr:T (cast ptr (self keys)))
         sbuf:ptr:ui8 (cast ptr:ui8 (cast ptr (self states)))
         mask:usize (- (self cap) (cast usize 1))
@@ -260,14 +260,14 @@
 ; Coll T conformance: count, empty?, conj.
 ; ---------------------------------------------------------------------------
 
-(defn count:usize ((self (ref (HashSet T))))
+(defn count ((self (ref (HashSet T)))):usize
   (return (self count)))
 
-(defn empty?:i32 ((self (ref (HashSet T))))
+(defn empty? ((self (ref (HashSet T)))):i32
   (return (if (= (self count) (cast usize 0)) 1 0)))
 
 ; conj for a set == insert (add a member).
-(defn conj:void ((self (ref (HashSet T))) elem:T)
+(defn conj ((self (ref (HashSet T))) elem:T):void
   (insert self elem))
 
 ; ---------------------------------------------------------------------------
@@ -278,7 +278,7 @@
 ; ---------------------------------------------------------------------------
 
 ; union: add every occupied member of `other` into self.
-(defn union:void ((self (ref (HashSet T))) (other (ref (HashSet T))))
+(defn union ((self (ref (HashSet T))) (other (ref (HashSet T)))):void
   (let (kbuf:ptr:T (cast ptr:T (cast ptr (other keys)))
         sbuf:ptr:ui8 (cast ptr:ui8 (cast ptr (other states)))
         cap:usize (other cap)
@@ -289,7 +289,7 @@
       (set! i (+ i (cast usize 1))))))
 
 ; difference: remove from self every member that is also in other.
-(defn difference:void ((self (ref (HashSet T))) (other (ref (HashSet T))))
+(defn difference ((self (ref (HashSet T))) (other (ref (HashSet T)))):void
   (let (kbuf:ptr:T (cast ptr:T (cast ptr (self keys)))
         sbuf:ptr:ui8 (cast ptr:ui8 (cast ptr (self states)))
         cap:usize (self cap)
@@ -302,7 +302,7 @@
       (set! i (+ i (cast usize 1))))))
 
 ; intersection: keep in self only members also in other.
-(defn intersection:void ((self (ref (HashSet T))) (other (ref (HashSet T))))
+(defn intersection ((self (ref (HashSet T))) (other (ref (HashSet T)))):void
   (let (kbuf:ptr:T (cast ptr:T (cast ptr (self keys)))
         sbuf:ptr:ui8 (cast ptr:ui8 (cast ptr (self states)))
         cap:usize (self cap)
@@ -324,7 +324,7 @@
 ; Drop: free the keys and states buffers through the stored allocator, then
 ; null the pointers and zero count/cap. Null-guarded and idempotent.
 ; ---------------------------------------------------------------------------
-(defn drop:void ((self (ptr (HashSet T))))
+(defn drop ((self (ptr (HashSet T)))):void
   (when (!= (cast ptr (self keys)) null)
     (alloc-handle-free (.& self alloc)
                        (self keys)
@@ -360,7 +360,7 @@
 
 (extend (HashSetIter T) (Iterator T))
 
-(defn (next (Maybe T)) ((self (ref (HashSetIter T))))
+(defn next ((self (ref (HashSetIter T)))) (Maybe T)
   (let (kptr:ptr:T (cast ptr:T (self kbuf))
         sptr:ptr:ui8 (cast ptr:ui8 (self sbuf))
         done:i32 0
@@ -379,7 +379,7 @@
 
 ; hashset-iter: configure `it` to scan `s` from the start (borrowing buffers).
 ; Internal helper: the value-returning `iter` (Coll conformance) wraps it.
-(defn hashset-iter:void ((it (ref (HashSetIter T))) (s (ref (HashSet T))))
+(defn hashset-iter ((it (ref (HashSetIter T))) (s (ref (HashSet T)))):void
   (.set! it kbuf (cast ptr (s keys)))
   (.set! it sbuf (cast ptr (s states)))
   (.set! it pos (cast usize 0))
@@ -393,7 +393,7 @@
 ; ---------------------------------------------------------------------------
 (extend (HashSet T) (Coll T (HashSetIter T)))
 
-(defn iter:(HashSetIter T) ((self (ref (HashSet T))))
+(defn iter ((self (ref (HashSet T)))) (HashSetIter T)
   (let ((it (ref (HashSetIter T))) (alloca (HashSetIter T)))
     (hashset-iter it self)
     (return (deref it))))

@@ -12,7 +12,7 @@
 (import-use hash)
 (import-use hashset)
 
-(defn main:i32 ()
+(defn main ():i32
   (with ((s (ref (HashSet CStr))) #{"a" "b" "c"})
     (printf "count=%llu\n" (cast ui64 (count s)))         ; count=3
     (printf "has-a=%d\n" (contains? s "a"))               ; has-a=1

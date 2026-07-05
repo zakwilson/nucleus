@@ -12,15 +12,15 @@
 ; popen/pclose FFI (used by read-pipe-output)
 ; ============================================================
 
-(declare popen:ptr (cmd:ptr mode:ptr))
-(declare pclose:i32 (stream:ptr))
+(declare popen (cmd:ptr mode:ptr):ptr)
+(declare pclose (stream:ptr):i32)
 
 ; Stage 10 Phase F1: well-known libc functions that never return. A C header
 ; carries no nullability/noreturn metadata we trust (the parser even discards
 ; __attribute__((noreturn))), so recognize the standard noreturn libc functions
 ; by name. A statement-position call to one terminates its block, so a
 ; (when (= x null) (exit 1)) / (abort) guard narrows the tested binding past it.
-(defn c-fn-noreturn:i32 (fname:ptr)
+(defn c-fn-noreturn (fname:ptr):i32
   (when (or (= fname "exit") (= fname "abort")) (return 1))
   (when (or (= fname "_exit") (= fname "_Exit")) (return 1))
   (when (or (= fname "quick_exit") (= fname "abort_handler_s")) (return 1))
@@ -32,14 +32,14 @@
 ; ============================================================
 
 ; Skip whitespace in buffer, returning new position.
-(defn c-skip-ws:i64 (buf:ptr pos:i64 len:i64)
+(defn c-skip-ws (buf:ptr pos:i64 len:i64):i64
   (while (and (< pos len) (!= (isspace (cast i32 (char-at buf pos))) 0))
     (set! pos (+ pos (cast i64 1))))
   (return pos))
 
 ; Read a C identifier or keyword from buffer. Returns the token as a string.
 ; Sets out-end to the position after the token.
-(defn c-read-ident:ptr (buf:ptr pos:i64 len:i64 out-end:ptr:i64)
+(defn c-read-ident (buf:ptr pos:i64 len:i64 out-end:ptr:i64):ptr
   (let (start:i64 pos)
     (while (and (< pos len)
                 (or (!= (isdigit (cast i32 (char-at buf pos))) 0)
@@ -54,7 +54,7 @@
 
 ; Map a C type name to a Nucleus type.
 ; Returns the Type* or null if unknown/skipped.
-(defn c-type-to-nucleus:ptr (name:ptr is-unsigned:i32 is-long:i32 is-short:i32)
+(defn c-type-to-nucleus (name:ptr is-unsigned:i32 is-long:i32 is-short:i32):ptr
   ; Handle base types
   (when (= name "void")  (return ty-void))
   (when (= name "_Bool") (return ty-i1))
@@ -93,7 +93,7 @@
 
 ; Skip balanced parentheses in __attribute__((...)) or similar.
 ; pos should point to the opening '('. Returns position after the matching ')'.
-(defn c-skip-parens:i64 (buf:ptr pos:i64 len:i64)
+(defn c-skip-parens (buf:ptr pos:i64 len:i64):i64
   (let (depth:i32 0)
     (while (< pos len)
       (when (= (char-at buf pos) 40) (inc! depth))
@@ -107,7 +107,7 @@
 ; Parse a C type from the buffer. Handles qualifiers (const, restrict, volatile,
 ; unsigned, signed, long, short, struct), pointer stars.
 ; Returns the Nucleus Type*. Sets out-end to position after the type.
-(defn c-parse-type:ptr (buf:ptr pos:i64 len:i64 out-end:ptr:i64)
+(defn c-parse-type (buf:ptr pos:i64 len:i64 out-end:ptr:i64):ptr
   (let (is-unsigned:i32 0
         is-long:i32 0
         is-short:i32 0
@@ -234,7 +234,7 @@
 ; Expects pos to be at the start of a declaration (after leading whitespace).
 ; Returns 1 if a function declaration was parsed, 0 otherwise.
 ; On success, registers the function in g-globals and emits LLVM declare.
-(defn c-parse-func-decl:i32 (buf:ptr pos:i64 len:i64 out-end:ptr:i64 line:i32)
+(defn c-parse-func-decl (buf:ptr pos:i64 len:i64 out-end:ptr:i64 line:i32):i32
   ; Parse the return type
   (let (ret-end:i64 (cast i64 0)
         ret-type:ptr (c-parse-type buf pos len (cast ptr:i64 (addr-of ret-end))))
@@ -393,7 +393,7 @@
 
 ; Read all output from a popen'd command into a malloc'd buffer.
 ; Returns the buffer (null-terminated). Sets out-len to the length.
-(defn read-pipe-output:ptr (cmd:ptr out-len:ptr:i64)
+(defn read-pipe-output (cmd:ptr out-len:ptr:i64):ptr
   (let (fp:ptr (popen cmd "r"))
     (when (= fp null) (ptr-set! out-len (cast i64 0)) (return null))
     (let (bufsz:i64 (cast i64 65536)
@@ -416,7 +416,7 @@
 ; header-path is e.g. "stdio.h" or "/usr/include/mylib.h".
 ; Size in bytes of C `long` for the configured target's data model (Stage 8):
 ; LP64 -> 8, ILP32 -> 4, LLP64 (Windows) -> 4. `long long` is always 8.
-(defn target-long-size:i32 ()
+(defn target-long-size ():i32
   (when (= ((cast ptr:Target g-target) ptr-size) 4) (return 4))
   (when (!= (strstr ((cast ptr:Target g-target) triple) "windows") null) (return 4))
   (return 8))
@@ -425,7 +425,7 @@
 ; tag-name null means anonymous (memoized by shape); is-union selects the
 ; union registration path (members at offset 0, deferred IR type definition).
 ; Returns the StructDef* or null on skip.
-(defn c-parse-struct-body:ptr (buf:ptr pos:i64 len:i64 out-end:ptr:i64 tag-name:ptr is-union:i32)
+(defn c-parse-struct-body (buf:ptr pos:i64 len:i64 out-end:ptr:i64 tag-name:ptr is-union:i32):ptr
   ; Expect '{' at pos.
   (when (or (>= pos len) (!= (char-at buf pos) 123))
     (ptr-set! out-end pos) (return null))
@@ -530,7 +530,7 @@
 ; Parse a top-level `struct Tag {...};`, `union Tag {...};`, or
 ; `typedef struct|union [Tag] {...} Name;`.
 ; Returns 1 if a definition was consumed, 0 if the caller should fall back.
-(defn c-parse-struct-decl:i32 (buf:ptr pos:i64 len:i64 out-end:ptr:i64 line:i32)
+(defn c-parse-struct-decl (buf:ptr pos:i64 len:i64 out-end:ptr:i64 line:i32):i32
   (let (is-typedef:i32 0
         is-union:i32 0
         te:i64 0
@@ -625,7 +625,7 @@
         (ptr-set! out-end pos)
         (return 1)))))
 
-(defn emit-c-include:void (header-path:ptr line:i32)
+(defn emit-c-include (header-path:ptr line:i32):void
   ; Build clang -E command
   (let (cmd:ptr (alloca i8 512))
     (snprintf cmd (cast i64 512) "clang -E -x c -include %s /dev/null 2>/dev/null" header-path)
@@ -704,7 +704,7 @@
 ; C header emission (--emit-cheader)
 ; ============================================================
 
-(defn type-name-to-c:ptr (name:ptr)
+(defn type-name-to-c (name:ptr):ptr
   (when (= name "void")  (return "void"))
   (when (= name "i1")    (return "_Bool"))
   (when (= name "i8")    (return "int8_t"))
@@ -738,7 +738,7 @@
 ; none sentinels (errors.md §2/§8). Render it as `T*` with a documented comment
 ; rather than the generic `void*`, so the C header is legible. `s` is the type
 ; spelling; returns the C rendering, or null if it is not a niche sugar symbol.
-(defn niche-sym-to-c:ptr (s:ptr)
+(defn niche-sym-to-c (s:ptr):ptr
   (let (c0:i32 (char-at s (cast i64 0)))
     (when (and (!= c0 33) (!= c0 63)) (return null))   ; not ! or ?
     ; The payload must be a pointer spelling: !ptr:T / ?ptr:T / !ref:T / ?ref:T.
@@ -751,7 +751,7 @@
           (return (fmt-s "%s* /* niche: reserved top page = error/none */" elem))))
       (return null))))
 
-(defn type-node-to-c:ptr (tn:ptr)
+(defn type-node-to-c (tn:ptr):ptr
   (when (= tn null) (return "void"))
   (let (n:ptr:Node (cast ptr:Node tn))
     (when (= (n kind) NODE-SYM)
@@ -793,7 +793,7 @@
 ;   - for (name T): the T sym
 ;   - for sym "name:T": a freshly-allocated sym node holding "T"
 ;   - null if no type
-(defn extract-type-node:ptr (binding:ptr line:i32)
+(defn extract-type-node (binding:ptr line:i32):ptr
   (when (= binding null) (return null))
   (let (n:ptr:Node (cast ptr:Node binding))
     (when (= (n kind) NODE-SYM)
@@ -811,7 +811,7 @@
         (return ((cast ptr:Node rest) car))))
     (return null)))
 
-(defn emit-cheader-defstruct:void (form:ptr)
+(defn emit-cheader-defstruct (form:ptr):void
   ; Skip parametric templates: (defstruct (Name T...) ...) has a list at
   ; position 1, not a sym. Templates define no concrete C type.
   (when (!= ((cast ptr:Node (node-at form 1)) kind) NODE-SYM) (return))
@@ -835,7 +835,7 @@
 ; the instance struct is not exported, and mapping it to void* would emit an
 ; ABI-wrong signature (the value is really a by-value tagged struct). Detect it
 ; so the declare can be skipped honestly.
-(defn cheader-template-instance:i32 (tn:ptr)
+(defn cheader-template-instance (tn:ptr):i32
   (when (= tn null) (return 0))
   (let (n:ptr:Node (cast ptr:Node tn))
     (when (!= (n kind) NODE-CELL) (return 0))
@@ -854,7 +854,7 @@
 ; its definition. A plain `fn`/function-pointer type is NOT a closure type (it
 ; is C-ABI). Returns 1 if `tn` mentions such a type, else 0. Unwraps arbitrary
 ; (ref T)/(ptr T) nesting down to the base type symbol.
-(defn cheader-mentions-closure:i32 (tn:ptr)
+(defn cheader-mentions-closure (tn:ptr):i32
   (let (cur:ptr tn)
     (while (!= cur null)
       (let (n:ptr:Node (cast ptr:Node cur))
@@ -880,7 +880,7 @@
 ; legacy (`name:ret` / `(name ret)`) recovers it from the name node; new style
 ; (S1) takes the index-3 operand, normalized so a keyword ret reads as a symbol
 ; type node for type-node-to-c.
-(defn cheader-defn-ret-node:ptr (form:ptr)
+(defn cheader-defn-ret-node (form:ptr):ptr
   (let (name-node:ptr (node-at form 1))
     (when (= (sig-name-is-bare name-node) 0)
       (return (extract-type-node name-node ((cast ptr:Node name-node) line))))
@@ -895,7 +895,7 @@
         (return (normalize-ret-node (cast ptr rn))))
       (return (cast ptr rn)))))
 
-(defn emit-cheader-declare:void (form:ptr)
+(defn emit-cheader-declare (form:ptr):void
   ; (defn name:rettype (params...) ...)  /  (defn name (params...) rettype ...)
   (let (name-node:ptr (node-at form 1)
         fname:ptr null
@@ -953,7 +953,7 @@
                 (printf "void* %s" pname)))))))
     (printf ");\n")))
 
-(defn emit-cheader-defconst:void (form:ptr)
+(defn emit-cheader-defconst (form:ptr):void
   (let (name:ptr ((cast ptr:Node (node-at form 1)) s)
         val-node:ptr:Node (cast ptr:Node (node-at form 2)))
     (when (= (val-node kind) NODE-INT)
@@ -961,7 +961,7 @@
     (when (= (val-node kind) NODE-STR)
       (printf "#define %s \"%s\"\n" name (val-node s)))))
 
-(defn emit-cheader-defenum:void (form:ptr)
+(defn emit-cheader-defenum (form:ptr):void
   (let (name:ptr ((cast ptr:Node (node-at form 1)) s)
         n:i32 (- (node-len form) 2))
     (printf "enum %s {\n" name)
@@ -975,7 +975,7 @@
 ; Export a defunion as its C view (unions.md §3): the tagged struct plus an
 ; enum of tag constants, fully legible and constructible from C. Templates
 ; define no type and are skipped.
-(defn emit-cheader-defunion:void (form:ptr)
+(defn emit-cheader-defunion (form:ptr):void
   (let (name-node:ptr:Node (cast ptr:Node (node-at form 1)))
     (when (!= (name-node kind) NODE-SYM) (return))
     ; ir-name-token first (`?`→_QMARK / `!`→_BANG), then the blanket C sanitize; see
@@ -1025,7 +1025,7 @@
           (printf "\n")))
       (printf "};\n\n"))))
 
-(defn emit-cheader-header:void (forms:ptr source-file:ptr)
+(defn emit-cheader-header (forms:ptr source-file:ptr):void
   ; Stage 12 N6: a namespaced library's public symbols carry a mangled link name
   ; (`@geom__area`), so the C declarations must use that C-legal spelling — never
   ; the Nucleus source name `geom/area` (not a C identifier). Apply a leading

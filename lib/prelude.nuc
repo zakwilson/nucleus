@@ -49,7 +49,7 @@
 ; only an owning (Drop) type hand-writes `clone` via `(extend <S> Clone)`. A
 ; protocol emits no IR, so this is byte-identical for programs that never use it.
 (defprotocol Clone
-  ((clone Self) ((self (ref Self)))))
+  (clone ((self (ref Self))) Self))
 
 ; Stage 10 errors (design/stage10/errors.md §9): the generic Result template,
 ; always available so the `!T` sugar — `(Result T Err)` — works in any program.

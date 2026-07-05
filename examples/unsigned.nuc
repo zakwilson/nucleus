@@ -1,6 +1,6 @@
 (import-use "stdio.h")
 
-(defn main:int ()
+(defn main ():int
   ; Basic unsigned arithmetic
   (let (a:ui32 10
         b:ui32 3)

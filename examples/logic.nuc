@@ -13,7 +13,7 @@
 ; variadic short-circuit — if a later arg were evaluated, the process would die.
 (defvar trap-zero:i32:volatile 0)
 
-(defn main:i32 ()
+(defn main ():i32
   (printf "(and) = %d\n" (cast i32 (and)))
   (printf "(or)  = %d\n" (cast i32 (or)))
 

@@ -28,22 +28,22 @@
 ; the ret position the undetermined E (RECOVERED -> E=i32).
 (defstruct SqFn dummy:i32)
 (extend SqFn (UnaryFn i32 i32))
-(defn (apply i32) ((self (ref SqFn)) (x i32))
+(defn apply ((self (ref SqFn)) (x i32)) i32
   (return (* x x)))
 
 ; EvenPred: i32 -> i32 (truthy = nonzero). Conforms to (UnaryFn i32 i32).
 (defstruct EvenPred dummy:i32)
 (extend EvenPred (UnaryFn i32 i32))
-(defn (apply i32) ((self (ref EvenPred)) (x i32))
+(defn apply ((self (ref EvenPred)) (x i32)) i32
   (if (= (% x 2) 0) (return 1) (return 0)))
 
 ; SumFn: folds (i32 acc, i32 elem) -> i32 by addition. Conforms to (FoldFn i32 i32).
 (defstruct SumFn dummy:i32)
 (extend SumFn (FoldFn i32 i32))
-(defn (fold i32) ((self (ref SumFn)) (acc i32) (x i32))
+(defn fold ((self (ref SumFn)) (acc i32) (x i32)) i32
   (return (+ acc x)))
 
-(defn main:i32 ()
+(defn main ():i32
   ; Level 1: reduce over a MapIter (squares of [1,5)) -> 1+4+9+16 = 30.
   (let ((src (ref IntRangeIter)) (alloca IntRangeIter))
     (.set! src start 1)

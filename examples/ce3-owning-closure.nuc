@@ -24,13 +24,13 @@
 (import-use "stdlib.h")
 
 (defprotocol Drop
-  (drop:void (self:ptr:Self)))
+  (drop (self:ptr:Self):void))
 
 ; An owning resource: holds a heap buffer that `drop` frees. `id` lets us see
 ; which resource drops, and when.
 (defstruct Res id:i32 buf:ptr)
 
-(defn drop:void (self:ptr:Res)
+(defn drop (self:ptr:Res):void
   (printf "drop Res %d\n" (self id))
   (free (self buf)))
 
@@ -38,7 +38,7 @@
 
 ; (b) Returns a Res BY VALUE — the struct-return ABI copies the bytes, so the
 ; caller receives a fully-formed owning value, not a corrupt pointer.
-(defn make-res:Res (id:i32)
+(defn make-res (id:i32):Res
   (let (b:ptr (malloc 16))
     (return (Res id b))))
 
@@ -46,12 +46,12 @@
 ; env (consuming it), so `r`'s own with-cleanup is disarmed. The closure owns
 ; the moved Res and drops it at the closure's own with-scope exit — exactly
 ; once. Returns the moved id so we can observe the data survived the move.
-(defn move-into-closure:i32 ()
+(defn move-into-closure ():i32
   (with (r (make-res 2))
     (with (f (mfn ():i32 (return (. (addr-of r) id))))
       (return (f)))))
 
-(defn main:i32 ()
+(defn main ():i32
   ; 1. (b)+(c): a by-value owning struct, with-bound at the caller, drops at
   ;    scope exit: "use Res 1" then "drop Res 1".
   (with (r (make-res 1))
