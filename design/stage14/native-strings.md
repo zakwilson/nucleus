@@ -305,6 +305,72 @@ may reconverge.
 - **Gate**: per-batch IR diff + `make test` + `make bootstrap`.
 - **Refresh**: per batch as the pool shifts (never overlapping another item's window).
 
+**Status: first NS-5 batch done (2026-07-05).** Two parallel-function migrations
+rather than in-place signature retypes (both keep the old `ptr` function intact
+and add a StrView-native `-sv` sibling, flipping only literal callers — see the
+gotcha below). (1) `intern-string` (`src/scope.nuc:98`) gained
+`intern-string-sv (sv:StrView):i32` beside it; the 2 literal callers
+(`src/union-emit.nuc:84` and `:214`, both the `"nucleus: unwrap on error %s: %s\n"`
+diagnostic-format literal) now call `intern-string-sv "…"` with no `strlen`. The
+other 8 callers pass a `ptr` from `Node.s`/arena/`token` (no upstream length) and
+stay on `intern-string`. (2) `register-rmacro` (`src/nucleusc.nuc:9343`) gained
+`register-rmacro-sv (prefix:StrView wrap-sym:ptr):void`; `init-rmacros`'s 5
+literal callers (`:9353-9357`) now pass `"~@"`/`"~"`/`"'"`/`` "`" ``/`"@"` directly
+— the literal's carried `.len` replaces the `strlen`. `RMacro.prefix` audit: the
+sole consumer (`lib/reader.nuc:429-434`) reads `prefix-len` and indexes
+`prefix` byte-by-byte via `char-at` — never pointer-identity-compared, safe.
+
+**Gotcha — by-value StrView field access needs `(addr-of sv)` first.** A
+function parameter typed `sv:StrView` (by value) is a `TY-STRUCT`, not a
+`TY-PTR`; neither head-position `(sv data)` nor `_get` work (both require a
+pointer-to-struct receiver, per `emit-field-get` at `src/nucleusc.nuc:2172` and
+the callable `get` path — error: "callable value: not callable — no matching
+get/invoke method and not a pointer-to-struct"). The pattern (proven in
+`examples/comb-order.nuc:30` and the `=` conformance at `lib/strview.nuc:152`)
+is to bind `(p:ptr:StrView (addr-of sv))` once, then head-position `(p data)` /
+`(p len)` through the pointer. This is the value-typed analogue of the existing
+`(ref StrView)` access pattern; a `(ref StrView)` param is already a pointer and
+needs no `addr-of`.
+
+**Gotcha — a signature retype breaks ptr callers that the survey missed.**
+`register-rmacro`'s task brief named "all 5 callers" (`init-rmacros`), but a 6th
+caller exists: the `def-rmacro` handler (`src/nucleusc.nuc:8548`) passes
+`(prefix-node s)` — an interned `Node.s` ptr (identity substrate, no carried
+length). An in-place signature **retype** (`ptr`→`StrView`) breaks that caller.
+The correct resolution is **polymorphic overloading** (see conventions.md
+"Prefer overloads over name variants"): define a second `register-rmacro`
+overload `(prefix:StrView wrap-sym:CStr)` alongside the original
+`(prefix:ptr wrap-sym:ptr)`, so literal callers dispatch to the StrView overload
+and `def-rmacro`'s ptr callers dispatch to the original. A distinct
+`register-rmacro-sv` name was the first attempt but is now folded into the
+overload — same for `intern-string-sv`→`intern-string`. **Lesson**: a survey that
+finds "all callers are literals" must grep for the function name across the
+*whole* tree (`src/` + `lib/`), not just the call sites the brief enumerated; and
+when a function has mixed caller types, overload rather than fork the name.
+
+**Dispatch adaptation gotcha.** In multimethod dispatch (`arg-adapts`), a
+`StrView` argument adapts to a `CStr` parameter but **not** to a bare `ptr`
+parameter. The first attempt at the `register-rmacro (prefix:StrView wrap-sym:ptr)`
+overload failed because `"unquote-splice"` (a `StrView` literal) could not adapt
+to the bare `ptr` second parameter — the compiler reported `"no matching method
+for overloaded 'register-rmacro' with given argument types"` (no type detail).
+Typing the second parameter `CStr` instead admits the `StrView` literal via
+dispatch adaptation. To make this class of error self-diagnosing,
+`generic-resolve`'s "no matching method" diagnostic (`src/generics.nuc:494`) now
+prints the caller's argument types via `arg-type-spellings` — e.g. `"no matching
+method for overloaded 'register-rmacro' with argument types (StrView, StrView)"`.
+
+**Gate.** IR diff (`build/nucleusc.ll` before/after, temp names normalized):
+the intended hunks — the new `@intern-string` overload (StrView→arena-strndup),
+2 `@strlen` removals at the flipped `intern-string` sites (literal len `32` baked
+as a constant via `insertvalue`), the `@register-rmacro` overload and 5 call-site
+dispatch changes in `init-rmacros` (lens `2`/`1`/`1`/`1`/`1` baked in), and the
+associated `%StrView` allocas / `insertvalue` / arg-shape changes. No `strcmp`→`icmp`
+regressions. `@strlen` count 47→45 (the 2 intern-string flips; `register-rmacro`'s
+`strlen` instruction remains for the retained `def-rmacro` ptr path — 5 runtime
+invocations eliminated, 1 IR instruction kept). `make test`: 166/166. `make bootstrap`:
+stage1.ll == stage2.ll, byte-identical fixed point.
+
 ### NS-6 — interning reconciliation, docs, conventions
 
 - Document (§1.4) that literal "interning" (`g-strs`) and symbol interning
@@ -319,6 +385,33 @@ may reconverge.
   `StrView`↔`CStr`↔`ptr` coercion lattice. **docs/toplevel.md** if it names the
   literal type.
 - **Scope/Gate**: docs + one conventions note; no IR. Byte-identical.
+
+**Status: done (2026-07-05).** The `conventions.md` "CStr is ABI-identical to
+`ptr`" section was retitled and rewritten as **"The string-type lattice: `ptr` /
+`CStr` / `StrView`"** — it now opens by naming all three types (`ptr` identity,
+`CStr` content-`=` single-word, `StrView` 16-byte borrowed-view struct, the `"…"`
+literal's type since NS-3) and states the interned-`ptr` substrate stays `ptr`.
+Three additions: (1) a **free `StrView`→`CStr`/`ptr` coercion** paragraph (the
+hidden-NUL hinge — a literal's `data[len]` is `\00`, so `data` *is* a sound
+`char*`, no IR for a chameleon, one `extractvalue` for a materialized view; the
+`strview-to-cstr` trust contract is the same shape); (2) the **mixed-operand
+rule** extended — `=`/`!=` fire `strcmp` when either operand is `CStr` *or*
+`StrView`, with a `StrView` operand contributing its `.data` to the `strcmp`; (3)
+the **`Node.s` trap generalized** — never retype an identity-`=` `ptr` to `CStr`
+*or* `StrView`, naming the NS-5 exclusion list (`Node.s`, scope keys,
+struct-field names). The dispatch asymmetry note now records that a `StrView`
+argument adapts to a `CStr` parameter but not a bare `ptr` parameter. The
+interning distinction (§1.4 above) stands as written: `g-strs` is a per-literal
+rodata emitter (content-keyed by table position), symbol interning (`intern-str`)
+is `ptr`-identity dedup — the two were never the same mechanism, and NS-3/NS-5
+changed neither. `docs/strings.md` §3 and `docs/types.md` (the literal-type
+paragraph, the coercion-lattice row, and the `"…"`/`c"…"` literal-type table)
+were already written during NS-3/NS-4 and required no further edit. `docs/toplevel.md`
+does not name the literal's type (it says "string literal" without specifying
+`StrView`/`CStr`, and the `defvar` storage note "storage type must be `ptr`"
+remains correct — the `defvar`-init path emits a GEP ptr regardless of the
+literal's inferred type), so no change was needed there. Gate: docs + one
+conventions note only; no IR, no code, byte-identical by construction.
 
 ---
 

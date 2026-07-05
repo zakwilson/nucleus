@@ -106,6 +106,16 @@
     (conj g-strs (cast ptr sl))
     (return id)))
 
+(defn intern-string (sv:StrView):i32
+  (let (p:ptr:StrView (addr-of sv)
+        id:i32 (cast i32 (count g-strs))
+        sl:ptr:StrLit (cast ptr:StrLit (arena-alloc (sizeof StrLit))))
+    (.set! sl bytes (arena-strndup (cast ptr (p data)) (cast i64 (p len))))
+    (.set! sl len (cast i32 (p len)))
+    (.set! sl id id)
+    (conj g-strs (cast ptr sl))
+    (return id)))
+
 ; ============================================================
 ; Codegen helpers
 ; ============================================================

@@ -204,44 +204,73 @@ slot with the same pattern the macro emitter uses (src/nucleusc.nuc, `make-type 
 + `elem` = `(parse-type-name "Node" 0)` + `pkind PTR-RAW`); `parse-type-name` succeeds
 because `register-struct "Node"` already ran earlier in the same function.
 
-## `CStr` is ABI-identical to `ptr` — gate pointer ABI on `is-ptr-like`, not `TY-PTR`
+## The string-type lattice: `ptr` / `CStr` / `StrView` — gate pointer ABI on `is-ptr-like`, not `TY-PTR`
 
-`TY-CSTR` (the C-string type; string literals are `CStr`) lowers to `ptr` in IR
-and is a plain `char*` at the ABI. It is a *distinct kind* only so `=` / `!=`
-dispatch to a `strcmp` content comparison (`emit-binop-vals`) instead of pointer
-identity. **Everywhere else it must behave exactly like `TY-PTR`:** `type-to-ir`
-→ `ptr`, `type-size` → 8, zero-init → `null`, `cast` to/from `ptr` is a no-op,
-and it must never be `inttoptr`'d (it is already a pointer). A bare `(= (. t
-kind) TY-PTR)` ABI check therefore *misses* `CStr` — use the `is-ptr-like`
-predicate ({`TY-PTR`, `TY-CSTR`}; `TY-FN` deliberately excluded). This bit the
+There are three string-carrying types. `TY-PTR` (bare pointer, identity `=`) and
+`TY-CSTR` (C-string, content `=`) are both single-word, ABI-identical to `ptr`.
+`StrView` (the `"…"` literal type since NS-3, Stage 14) is a 16-byte
+`{data:(ptr ui8), len:usize}` borrowed-view struct — **not** pointer-ABI. A plain
+string literal is `StrView`, not `CStr`; the `c"…"` literal (NS-4) and any
+`:CStr`-typed FFI parameter/return are `CStr`. The interned-symbol substrate
+(`Node.s`, scope keys, struct-field names) stays `ptr` — never retype it (below).
+
+`TY-CSTR` lowers to `ptr` in IR and is a plain `char*` at the ABI. It is a
+*distinct kind* only so `=` / `!=` dispatch to a `strcmp` content comparison
+(`emit-binop-vals`) instead of pointer identity. **Everywhere else it must behave
+exactly like `TY-PTR`:** `type-to-ir` → `ptr`, `type-size` → 8, zero-init →
+`null`, `cast` to/from `ptr` is a no-op, and it must never be `inttoptr`'d (it is
+already a pointer). A bare `(= (. t kind) TY-PTR)` ABI check therefore *misses*
+`CStr` — use the `is-ptr-like` predicate ({`TY-PTR`, `TY-CSTR`}; `TY-FN`
+deliberately excluded, `StrView` is a struct not a pointer). This bit the
 `&rest` arg-folding (`emit-call-with-args`), which `inttoptr`'d any non-`TY-PTR`
 arg and produced invalid `inttoptr ptr→ptr` for a `CStr` rest arg. When adding a
 new pointer/integer ABI decision, branch on `is-ptr-like`.
 
+**`StrView` literal → `CStr`/`ptr` is a free coercion (the hidden-NUL hinge).** A
+`"…"` literal's backing `@.str.N` rodata global is NUL-terminated at `data[len]`
+(the table emitter appends `\00`), so a `StrView` literal coerces freely, in
+value position, to `CStr` or `ptr` by taking `data` — no IR for an unmaterialized
+literal (the chameleon's value *is* `data`), one `extractvalue` for a general
+`StrView` value. This is what keeps every `fprintf`/`snprintf`/`strcmp`/libc
+site in the compiler working unchanged after the NS-3 literal flip. Sound only
+because literals are NUL-terminated; an arbitrary `strview-sub-bytes` slice may
+not be — `strview-to-cstr` carries the same trust contract.
+
 Two deliberate asymmetries: (1) `CStr`↔`ptr` coerce freely in *value* positions
 (`coerce-int-val`) but **not** in multimethod dispatch (`arg-adapts`) — `CStr` is
 distinct there on purpose, so you can overload `CStr` vs `ptr`; pass a literal to
-a plain `ptr` function freely, but to a `ptr` *multimethod* cast explicitly.
+a plain `ptr` function freely, but to a `ptr` *multimethod* cast explicitly. A
+`StrView`-typed argument adapts to a `CStr` parameter but *not* to a bare `ptr`
+parameter (reproducing the pre-NS-3 dispatch a `CStr` literal produced).
 (2) Conformance is keyed by `type-spelling`, which must return `"CStr"` (not the
 fall-through `"ptr"`) or `(extend CStr Eq)` won't match the call-site check.
 
 **Mixed-operand rule (`emit-binop-vals`):** `=`/`!=` fire the strcmp lowering when
-*either* operand is `CStr` (the other must be `ptr`/`CStr`); two plain `ptr` stay
-`icmp` identity. So `(= some-ptr "literal")` is a content test (the literal is
-`CStr`) — this is what lets the compiler write `(= name "i32")` instead of
-`(= (strcmp name "i32") 0)` without retyping `name`. The corollary trap: any value
-you retype `ptr`→`CStr` makes *all* its `=`/`!=` become strcmp, so never retype a
-field/param that is compared for pointer identity (notably **`Node.s`** — the
-interned-symbol path). `strncmp` (prefix) has no operator; leave those as calls.
+*either* operand is `CStr` or `StrView` (the other must be `ptr`/`CStr`/`StrView`;
+a `StrView` operand contributes its `.data` pointer to the `strcmp`); two plain
+`ptr` stay `icmp` identity. So `(= some-ptr "literal")` is a content test (the
+literal is `StrView`) — this is what lets the compiler write `(= name "i32")`
+instead of `(= (strcmp name "i32") 0)` without retyping `name`. The corollary
+trap: any value you retype `ptr`→`CStr` (or `ptr`→`StrView`) makes *all* its
+`=`/`!=` become strcmp, so never retype a field/param that is compared for
+pointer identity — notably **`Node.s`** (the interned-symbol path),
+`scope-define`/`scope-lookup` keys, and struct-field names. This is the NS-5
+exclusion list: identity-substrate `ptr`s stay `ptr`; only adopt `StrView` where
+a carried length removes a `strlen`/re-scan and identity is not at stake.
+`strncmp` (prefix) has no operator; leave those as calls.
 
 **Verifying a behavior-neutral type migration:** retyping `ptr`→`CStr` and
 rewriting `(= (strcmp a b) 0)`→`(= a b)` is **byte-identical at the IR level**
-(`CStr` lowers to `ptr`; the `=` emits the same `strcmp`+`icmp`). So the migration
-is provable: snapshot `build/nucleusc.ll`, migrate, rebuild, `diff`. A non-zero diff
-is a regression — most commonly a both-`ptr` comparison that lost its strcmp (a
-`< call @strcmp` / `> icmp eq ptr` hunk) because neither operand ended up `CStr`;
-fix by giving one side a `CStr` type. `make bootstrap` (stage1==stage2) does **not**
-catch this (both stages share the change); the before/after IR diff does.
+(`CStr` lowers to `ptr`; the `=` emits the same `strcmp`+`icmp`). The NS-3
+literal flip and NS-5 selective adoption are the same shape: target-aware
+emission keeps the compiler's own `ptr`/`CStr`-context literals byte-identical
+(the chameleon collapses to the bare pointer). The migration is provable:
+snapshot `build/nucleusc.ll`, migrate, rebuild, `diff`. A non-zero diff is a
+regression — most commonly a both-`ptr` comparison that lost its strcmp (a
+`< call @strcmp` / `> icmp eq ptr` hunk) because neither operand ended up
+`CStr`/`StrView`; fix by giving one side a `CStr` type. `make bootstrap`
+(stage1==stage2) does **not** catch this (both stages share the change); the
+before/after IR diff does.
 
 ## Member access is head position `(s field)`; `_get` is the bypass primitive
 
@@ -268,6 +297,63 @@ The `->` macro (`lib/macros.nuc`) was extended to substitute `_` in **head**
 position (it scans the whole form, not just args), so a threaded value can land in
 call position: `(-> s (_ field))` ⇒ `(s field)`. The migration rewrites a 1-arg
 `->`-step `(. field)` to `(_ field)` and a normal `(. s field)` to `(s field)`.
+
+## A by-value struct parameter needs `(addr-of v)` before field access
+
+Head-position `(v field)` and `_get` both require a **pointer-to-struct**
+receiver: `emit-field-get` (`src/nucleusc.nuc:2172`) gates on `pt.kind == TY-PTR`
+with a `TY-STRUCT`/`TY-UNION` elem, and the callable `get` path raises "callable
+value: not callable — no matching get/invoke method and not a pointer-to-struct"
+otherwise. A function parameter typed `v:StrView` (by value) is a `TY-STRUCT`,
+not a `TY-PTR` — so `(v data)` / `(_get v data)` both fail at emit time. The
+`(ref StrView)` spelling works because it is already a pointer. For a by-value
+struct param, bind a pointer once and access through it:
+
+```lisp
+(defn intern-string (sv:StrView):i32
+  (let (p:ptr:StrView (addr-of sv) ...)
+    (.set! sl bytes (arena-strndup (cast ptr (p data)) (cast i64 (p len))))))
+```
+
+The `=` conformance (`lib/strview.nuc:152`) and `examples/comb-order.nuc:30`
+(`((addr-of sv) len)`) use the same `addr-of`-then-access shape. A `let`-bound
+struct local is already an alloca (addressable directly); only **by-value
+parameters** need the explicit `addr-of`. (NS-5 adoption.)
+
+## Prefer overloads (polymorphism) over `-sv`/`-by-val`/`-from-x` name variants
+
+Functions that perform the **same operation** and return the **same type** but
+take differently-typed or differently-counted arguments should be **overloaded**
+(multiple `defn`s with the same name), not given distinct names. Different
+argument count is no barrier — Nucleus multimethods dispatch on arity and
+per-argument type adaptation (`arg-adapts`) together. So `intern-string` has one
+`(ptr, i32)` overload and one `(StrView)` overload — not `intern-string` +
+`intern-string-sv`. A caller's argument tuple routes to the matching overload
+automatically; the caller never chooses a suffix.
+
+**When NOT to overload** (the extraordinary circumstances):
+
+- An **unintended polymorphic match would be unsafe** — i.e., the operations are
+  genuinely *different* despite similar names, and a caller's argument types
+  could silently dispatch to the wrong one. (E.g., a `delete` that frees memory
+  vs. a `delete` that clears a collection — overloading would be a footgun.)
+- The function is on the **identity substrate** and the overloads would confuse
+  pointer-identity dispatch (the `Node.s` trap, above).
+
+Both exceptions are rare. When in doubt, overload — the diagnostic
+(`"no matching method for overloaded '%s' with argument types (StrView, ptr)"`,
+src/generics.nuc:arg-type-spellings) names the exact types the caller tried,
+so a mismatch is immediately diagnosable.
+
+**Dispatch adaptation rule** (the practical gotcha): in multimethod dispatch
+(`arg-adapts`), a `StrView` argument adapts to a `CStr` parameter but **not** to
+a bare `ptr` parameter (reproducing the pre-NS-3 dispatch). So an overload
+intended for literal callers should type its string-consuming params `CStr`
+(not bare `ptr`) when the argument will be a `StrView` literal — the `CStr`
+typing admits both `CStr` and `StrView` callers via dispatch, while bare `ptr`
+admits neither. (In *value* positions — `coerce-int-val` — a `StrView` literal
+still coerces freely to `ptr` via the hidden-NUL collapse; the restriction is
+dispatch-only.)
 
 ## C interop invariant
 
