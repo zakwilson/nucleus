@@ -40,7 +40,7 @@ deferred.
 `(Maybe StrView)` fails in JIT modules, `!void` unsupported, struct-in-Result
 returns zeroed fields.
 
-`make-vec`, and especially `cast` over `make-vec` shows a lack of proper constructors
+`make-vec`, and especially `cast` over `make-vec` shows a lack of proper constructors — designed: [stage14/target-typed-constructors.md](stage14/target-typed-constructors.md) (the want channel + `*-new` constructor families)
 
 `doseq` with missing brackets around the binding form segfaults; a friendly error would be better
 
