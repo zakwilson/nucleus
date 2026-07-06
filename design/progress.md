@@ -685,6 +685,7 @@ go-ahead.
 | Parametric generics (generic structs) | Implemented — Stage 11 prereq; see [stage11/progress.md](stage11/progress.md) |
 | Vectors/hashes | Implemented (Stage 11 M3–M5): `Vector`, `HashMap`, `HashSet`, protocols (`Coll`/`Seq`/`Assoc`/`Set`/`Hash`/`Drop`), reader-macro literals `[…]`/`{…}`/`#{…}` — see `design/stage11/progress.md` |
 | Gensym reader macro | `design/stage999-future.md` |
+| Collection constructor ergonomics (target-typed `vector-new` / `*-new-in`; retires `mkvec`/`mkhash`) | Designed — [stage14/target-typed-constructors.md](stage14/target-typed-constructors.md) (TC-1..5) |
 
 ---
 

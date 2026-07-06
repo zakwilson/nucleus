@@ -1,14 +1,16 @@
-# Stage 14 — staging order across the nine workstreams
+# Stage 14 — staging order across the workstreams
 
-The eleven stage-14 designs — [colon-paren-types.md](colon-paren-types.md)
+The twelve stage-14 designs — [colon-paren-types.md](colon-paren-types.md)
 (CP-1..3, **done 2026-07-02**), [macro-conditional-casts.md](macro-conditional-casts.md)
-(MC-1..4), [int-widening.md](int-widening.md) (LW-1..5),
-[symbol-mangling.md](symbol-mangling.md) (SM-1..5),
+(MC-1..4, **done 2026-07-03**), [int-widening.md](int-widening.md)
+(LW-1..5, **done 2026-07-03** except the LW-5 tree-wide cast sweep),
+[symbol-mangling.md](symbol-mangling.md) (SM-1..5, **done 2026-07-03**),
 [native-strings.md](native-strings.md) (NS-1..6),
 [defn-signature.md](defn-signature.md) (S1..4),
 [type-safety.md](type-safety.md) (14.1..14.7),
 [unsafe-namespace.md](unsafe-namespace.md) (UN-1..5),
 [attributes.md](attributes.md) (AT-1..3),
+[target-typed-constructors.md](target-typed-constructors.md) (TC-1..5),
 [avr-targets.md](avr-targets.md) (AVR-0..8), and
 [riscv-linux.md](riscv-linux.md) (RV-0..5) — each carry local sequencing;
 this doc fixes the cross-doc order.
@@ -50,6 +52,17 @@ this doc fixes the cross-doc order.
   cast-*deletion* work (macro casts, vestigial int casts, ceremonial pointer
   casts), or it renames thousands of casts that are about to be deleted.
   UN-1/UN-2 are additive and edge-free; UN-3 carries one reconverging refresh.
+- **{MC-1, LW-1/2, SM} → TC-1/TC-2 (all landed)**: TC's want channel extends
+  LW's shared dying/non-dying resolver, TC-5's branch distribution feeds
+  MC-1's `type-join`, and TC edits resolution in the file SM just renamed
+  through. A completeness review of the MC/LW landings is TC's natural
+  precursor (TC-0).
+- **TC-4 → 14.1/14.3 (soft)**: TC-4 deletes `mkvec`/`mkhash`/`make-vec` and
+  rewrites the registry-construction sites 14.1 is about to retype; landing
+  TC-4 first means 14.1 edits final-form constructor lines once. TC-4 also
+  deletes casts, upstream of UN-4's sweep. TC-4 is a discrete refresh window
+  and stays out of S3's quiet tree; TC-1/2/3/5 are additive/byte-identical
+  and slot into the small band.
 - **AT — declaration attributes**: no edges to the backbone (declaration-form
   parsing only; zero volatile spellings in src/lib, so additive and
   byte-identical). Slots anywhere outside S3's quiet-tree window. One soft
@@ -89,6 +102,13 @@ flight):
    **NS-1 + NS-2 (native-strings substrate) interleave in this small band**
    — additive/dormant, byte-identical, no refresh window; their only edge
    is MC-1 landing first (item 2).
+4½. **TC — target-typed-constructors (TC-1+TC-2 → TC-3 → TC-4 → TC-5).**
+   Prerequisites (MC-1, LW-1/2, SM) all landed. TC-1/2/3/5 are additive and
+   byte-identical (small band); TC-4 (stdlib constructors + compiler
+   adoption + `mkvec`/`mkhash` retirement) is one reconverging refresh,
+   scheduled before 14.1 retypes the same construction sites (see edge) and
+   outside S3's window. TC-5 may move ahead of TC-4 if refresh windows are
+   scarce — they are independent.
 5. **S — defn-signature (S1 → S2 → S3 → S4).** The tree-wide mechanical
    rewrite (S3) wants a quiet tree: nothing else in flight during that
    window. Lands the final signature syntax before 14.3 edits the same
