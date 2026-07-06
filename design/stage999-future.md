@@ -39,3 +39,5 @@ deferred.
 
 `(Maybe StrView)` fails in JIT modules, `!void` unsupported, struct-in-Result
 returns zeroed fields.
+
+`make-vec`, and especially `cast` over `make-vec` shows a lack of proper constructors

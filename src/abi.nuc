@@ -1,3 +1,5 @@
+(import-use arena)
+
 ; ABI lowering — SysV x86_64 and aarch64 struct-by-value classification and coercion.
 ; Source-imported by src/nucleusc.nuc after basic type functions are defined.
 
@@ -580,7 +582,7 @@
 (defn register-struct (name:ptr):ref:StructDef
   (when (>= (cast i32 (count g-structs)) MAX-STRUCTS)
     (fprintf stderr "nucleusc: too many structs\n") (exit 1))
-  (let (sd:ptr:StructDef (cast ptr:StructDef (arena-alloc (sizeof StructDef))))
+  (let (sd:ptr:StructDef (new StructDef))
     (.set! sd name name)
     ; SM-4: precompute the LLVM-safe type name once (ir-name-token is a
     ; pointer-identity no-op for names without `?`/`!`, so this is byte-identical
@@ -593,5 +595,5 @@
     (.set! sd origin-template null)
     (.set! sd origin-args null)
     (.set! sd origin-nargs 0)
-    (conj g-structs (cast ptr sd))
-    (return (cast ref:StructDef sd))))
+    (conj g-structs sd)
+    (return sd)))

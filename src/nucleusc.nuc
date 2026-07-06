@@ -104,7 +104,7 @@
 
 ; Struct registry. (Vector ptr) of StructDef* (each individually arena-allocated,
 ; registration order). count = number of structs; invoke = indexed access.
-(defvar (g-structs (ref (Vector ptr))))
+(defvar (g-structs (ref (Vector (ref StructDef)))))
 ; Stage 10 unions: tagged-sum registry, templates, enum tables, and the list of
 ; untagged-union StructDefs whose IR type definition is still pending. Union IR
 ; needs member sizes (for padding), and members may name structs whose fields
@@ -112,14 +112,14 @@
 ; drain-pending-union-irs, at every module-assembly point (LLVM named types are
 ; order-independent within a module).
 ; (Vector ptr) of UnionDef* (each individually arena-allocated, registration order).
-(defvar (g-uniondefs (ref (Vector ptr))))
+(defvar (g-uniondefs (ref (Vector (ref UnionDef)))))
 ; (Vector ptr) of UnionTemplate* (each individually arena-allocated).
 (defvar (g-union-templates (ref (Vector ptr))))
 ; Stage 11 parametric structs: defstruct-template registry. Inert until a use
 ; `(Vector i32)` in type position fires a stamp (parametric-structs.md §1).
 (defvar (g-struct-templates (ref (Vector ptr))))
 ; (Vector ptr) of EnumDef* (each individually arena-allocated).
-(defvar (g-enumdefs (ref (Vector ptr))))
+(defvar (g-enumdefs (ref (Vector (ref EnumDef)))))
 (defvar (g-pending-unions (ref (Vector ptr))))
 ; Stage 10 errors: the deferror descriptor table, indexed by error id (1-based;
 ; slot 0 reserved). Each entry is the string-table id of the name / message, so
@@ -130,8 +130,8 @@
 ; reserved placeholder ("no error"), conj'd at init so the vector index equals the
 ; runtime id. Each element is a string-table id stored in the ptr slot via an
 ; i64↔ptr cast. The old g-deferrors-len (highest id) is (count - 1).
-(defvar (g-deferror-name-sids (ref (Vector ptr))))
-(defvar (g-deferror-msg-sids (ref (Vector ptr))))
+(defvar (g-deferror-name-sids (ref (Vector i32))))
+(defvar (g-deferror-msg-sids (ref (Vector i32))))
 (defvar g-err-table-used:i32 0)
 
 ; Global scope
@@ -153,7 +153,7 @@
 ; String literal table. (Vector ptr) of StrLit* (each individually
 ; arena-allocated). The interned id is the element's position, so emit sites read
 ; back the StrLit by `(invoke g-strs id)` and emit `@.str.<id>`.
-(defvar (g-strs (ref (Vector ptr))))
+(defvar (g-strs (ref (Vector (ref StrLit)))))
 
 ; Per-function codegen state
 (defvar g-tmp:i32 0)
@@ -175,7 +175,7 @@
 ; (name, total occurrence count, seen-so-far) reset per function by
 ; reset-function-state. g-cur-fname is the @-less IR symbol of the function
 ; currently being emitted (for blockaddress in label-addr).
-(defvar (g-lbl-tbl (ref (Vector ptr))))
+(defvar (g-lbl-tbl (ref (Vector (ref LabelEntry)))))
 (defvar g-cur-fname:ptr)
 
 ; Aggregate return ABI of the function currently being emitted (Stage 8 Phase C).
@@ -192,7 +192,7 @@
 ; written to the decl stream (lazy, used by `unwrap`).
 (defvar g-fn-ret-type:ptr)
 (defvar g-loop-depth:i32 0)
-(defvar (g-nundo (ref (Vector ptr))))
+(defvar (g-nundo (ref (Vector (ref NarrowUndo)))))
 (defvar g-trap-declared:i32 0)
 
 ; Current output stream for top-level emission
@@ -223,7 +223,7 @@
 ; Generic (polymorphism) registry. (Vector ptr) of Generic* (each Generic is
 ; individually arena-allocated; the vector holds the pointers in registration
 ; order). count = number of generics; invoke = indexed access.
-(defvar (g-generics (ref (Vector ptr))))
+(defvar (g-generics (ref (Vector (ref Generic)))))
 
 ; Monomorphization worklist (Stage 9 rung 4): stamped concrete defn forms
 ; awaiting emission. Generic calls resolve + register an instantiation eagerly
@@ -243,7 +243,7 @@
 
 ; Protocol / conformance registries (Stage 9 rung 2). (Vector ptr) of Protocol*
 ; (each individually arena-allocated, in registration order).
-(defvar (g-protocols (ref (Vector ptr))))
+(defvar (g-protocols (ref (Vector (ref Protocol)))))
 ; (Vector ptr) of Conformance* (each individually arena-allocated, registration
 ; order).
 (defvar (g-conformances (ref (Vector ptr))))
@@ -315,7 +315,7 @@
 ; copies in. Populated by emit-defn as it writes each `define`; the captured
 ; signature (ret + param Types + ABI) reproduces the declare losslessly (the
 ; g-globals Sym for an overloaded/generic name carries no usable param array).
-(defvar (g-program-defns (ref (Vector ptr))))
+(defvar (g-program-defns (ref (Vector (ref ProgDefn)))))
 
 ; Compiler mode flags.
 (defvar g-emit-nuch:i32 0)    ; when 1, output .nuch header instead of LLVM IR
@@ -499,6 +499,9 @@
                               (cast usize 8))))
     (vector-init-alloc v (addr-of g-arena-alloc))
     (return v)))
+
+(defmacro mkvec (T)
+  `(make-vec (cast (ref (Vector (ref ~T))) (make-vec))))
 
 ; ============================================================
 ; Reader — imported from lib/reader.nuc
@@ -1014,7 +1017,7 @@
 (defn emit-string (n:ptr target:ptr):ref:Val
   (let (nn:ptr:Node (cast ptr:Node n)
         id:i32 (intern-string (nn s) (cast i32 (strlen (nn s))))
-        slen:i32 ((cast ptr:StrLit (invoke g-strs (cast usize id))) len)
+         slen:i32 ((invoke g-strs (cast usize id)) len)
         ir-len:i32 (+ slen 1)
         tmp:ptr (new-tmp))
     (fprintf g-body-stream
@@ -1097,7 +1100,7 @@
   (let (nn:ptr:Node (cast ptr:Node n))
     (when (= (nn kind) NODE-SYM)
       (let (sid:i32 (intern-string (nn s) (cast i32 (strlen (nn s))))
-            ir-len:i32 (+ ((cast ptr:StrLit (invoke g-strs (cast usize sid))) len) 1)
+            ir-len:i32 (+ ((invoke g-strs (cast usize sid)) len) 1)
             tmp:ptr (new-tmp))
         (fprintf g-body-stream
           "  %s = call ptr @intern-symbol(ptr getelementptr inbounds ([%d x i8], ptr @.str.%d, i64 0, i64 0))\n"
@@ -1141,7 +1144,7 @@
                 (= (nn kind) NODE-FLOAT)
                 (= (nn kind) NODE-KEYWORD))
         (let (sid:i32 (intern-string (nn s) (cast i32 (strlen (nn s))))
-              ir-len:i32 (+ ((cast ptr:StrLit (invoke g-strs (cast usize sid))) len) 1)
+            ir-len:i32 (+ ((invoke g-strs (cast usize sid)) len) 1)
               sp:ptr (new-tmp))
           (fprintf g-body-stream
             "  %s = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %s, i32 0, i32 3\n"
@@ -1252,26 +1255,26 @@
     (return (ss type))))
 
 (defn narrow-mark ():i32
-  (when (= g-nundo null) (set! g-nundo (make-vec)))
+  (when (= g-nundo null) (set! g-nundo (cast (ref (Vector (ref NarrowUndo))) (make-vec))))
   (return (cast i32 (count g-nundo))))
 
 ; Narrow binding `name` (resolved in `scope`) to the non-null view of its
 ; current effective type, pushing an undo entry. No-op unless the binding
 ; currently reads as a local (Maybe (ref T)).
 (defn narrow-apply (scope:ref:Scope name:ptr):void
-  (when (= g-nundo null) (set! g-nundo (make-vec)))
+  (when (= g-nundo null) (set! g-nundo (cast (ref (Vector (ref NarrowUndo))) (make-vec))))
   (let (sym:?ptr:Sym (scope-lookup scope name))
     (when (= sym null) (return))
     (when (= (sym is-local) 0) (return))
     (let (eff:ptr (sym-effective-type sym))
       (when (!= (ptr-pkind eff) PTR-MAYBE) (return))
-      (let (u:ptr:NarrowUndo (new NarrowUndo))
+      (let (u:ref:NarrowUndo (new NarrowUndo))
         (.set! u name name)
         (.set! u scope scope)
         (.set! u old-ntype (sym ntype))
         (.set! u old-ndepth (sym ndepth))
         (.set! u stamp (sym kstamp))
-        (conj g-nundo (cast ptr u)))
+        (conj g-nundo u))
       (.set! sym ntype (type-as-pkind eff PTR-REF))
       (.set! sym ndepth g-loop-depth))))
 
@@ -1283,8 +1286,8 @@
   ; (not the callable form (g-nundo len), which a later dispatch change would
   ; route differently). The pop discards the entry; the buffer is reused.
   (while (> (cast i32 (_get g-nundo len)) mark)
-    (let (u:ptr:NarrowUndo (cast ptr:NarrowUndo
-                             (invoke g-nundo (- (_get g-nundo len) (cast usize 1)))))
+    (let (u:ref:NarrowUndo
+            (invoke g-nundo (- (_get g-nundo len) (cast usize 1))))
       (let (sym:?ptr:Sym (scope-lookup (u scope) (u name)))
         (when (!= sym null)
           (when (= (u stamp) (sym kstamp))
@@ -1301,8 +1304,8 @@
 ; Kill every live narrow (label join points — a backward goto re-enters).
 (defn narrow-kill-all ():void
   (when (= g-nundo null) (return))
-  (doseq (n g-nundo (VecIter ptr))
-    (let (u:ptr:NarrowUndo (cast ptr:NarrowUndo n))
+  (doseq (n g-nundo (VecIter (ref NarrowUndo)))
+    (let (u:ref:NarrowUndo n)
       (let (sym:?ptr:Sym (scope-lookup (u scope) (u name)))
         (when (and (!= sym null) (!= (sym ntype) null))
               (narrow-kill sym))))))
@@ -5992,20 +5995,20 @@
 ; ============================================================
 
 (defn lbl-find (name:ptr):?ptr:LabelEntry
-  (doseq (lbl g-lbl-tbl (VecIter ptr))
-    (let (e:ptr:LabelEntry (cast ptr:LabelEntry lbl))
+  (doseq (lbl g-lbl-tbl (VecIter (ref LabelEntry)))
+    (let (e:ref:LabelEntry lbl)
       (when (= (strcmp (e name) name) 0)
-        (return (cast ptr e)))))
+        (return e))))
   (return null))
 
 (defn lbl-add-occurrence (name:ptr):void
   (let (e:ptr:LabelEntry (cast ptr:LabelEntry (lbl-find name)))
     (when (= (cast ptr e) null)
-      (let (ne:ptr:LabelEntry (cast ptr:LabelEntry (arena-alloc (sizeof LabelEntry))))
+      (let (ne:ref:LabelEntry (cast ref:LabelEntry (arena-alloc (sizeof LabelEntry))))
         (.set! ne name name)
         (.set! ne total 0)
         (.set! ne seen 0)
-        (conj g-lbl-tbl (cast ptr ne))
+        (conj g-lbl-tbl ne)
         (set! e ne)))
     (.set! e total (+ (e total) 1))))
 
@@ -6105,7 +6108,7 @@
         (let (i:usize (cast usize 0)
               first:i32 1)
           (while (< i (count g-lbl-tbl))
-            (let (e:ptr:LabelEntry (cast ptr:LabelEntry (invoke g-lbl-tbl i)))
+            (let (e:ref:LabelEntry (invoke g-lbl-tbl i))
               (when (= first 0) (fprintf g-body-stream ","))
               (set! first 0)
               (fprintf g-body-stream " label %%lbl.%s" (e name)))
@@ -6793,8 +6796,8 @@
         (return NK-SPECIAL))
   (when (!= (primitive-type-named (cast CStr name)) 0)
         (return NK-BUILTIN))
-  (doseq (struct g-structs (VecIter ptr))
-         (when (= ((cast ptr:StructDef struct) name)
+  (doseq (struct g-structs (VecIter ref:StructDef))
+         (when (= (struct name)
                   (cast CStr name))
                (return NK-TYPE)))
   (when (!= (cast ptr (union-template-lookup name)) null)
@@ -6803,9 +6806,9 @@
          (when (= ((cast ptr:MacroDef macro) name)
                   (cast CStr  name))
                (return NK-MACRO)))
-  (doseq (generic g-generics (VecIter ptr))
-           (let (g:ptr:Generic (cast ptr:Generic generic))
-             (when (= ((cast ptr:Generic generic) name)
+  (doseq (generic g-generics (VecIter ref:Generic))
+           (let (g:ptr:Generic generic)
+             (when (= (generic name)
                       name)
                    (return NK-FUNCTION))))
   (let (sc:ptr:Scope (cast ptr:Scope g-globals))
@@ -6998,8 +7001,8 @@
       (let (id:i32 (cast i32 (count g-deferror-name-sids))
             name-sid:i32 (intern-string (name-node s) (cast i32 (strlen (name-node s))))
             msg-sid:i32 (intern-string (msg-node s) (cast i32 (strlen (msg-node s)))))
-        (conj g-deferror-name-sids (cast ptr (cast i64 name-sid)))
-        (conj g-deferror-msg-sids (cast ptr (cast i64 msg-sid)))
+        (conj g-deferror-name-sids name-sid)
+        (conj g-deferror-msg-sids msg-sid)
         (let (sym:ref:Sym (scope-define g-globals (name-node s) (cast ptr ty-err) null 0))
           (.set! sym is-const 1)
           (.set! sym const-val (fmt-i32 "%d" id)))
@@ -7072,11 +7075,11 @@
           (.set! ed name (en s))
           (.set! ed members members)
           (.set! ed num-members n)
-          (conj g-enumdefs (cast ptr ed)))))))
+          (conj g-enumdefs ed))))))
 
 (defn enumdef-lookup (name:ptr):?ptr:EnumDef
-  (dotimes (i (cast i32 (count g-enumdefs)))
-    (let (ed:ptr:EnumDef (cast ptr:EnumDef (invoke g-enumdefs (cast usize i))))
+  (dotimes (i (count g-enumdefs))
+    (let (ed:ptr:EnumDef (invoke g-enumdefs (cast usize i)))
       (when (= (ed name) name)
         (return (cast ptr ed)))))
   (return null))
@@ -8070,7 +8073,7 @@
 
 (defn emit-string-table (out:ptr):void
   (dotimes (i (cast i32 (count g-strs)))
-    (let (sl:ptr:StrLit (cast ptr:StrLit (invoke g-strs (cast usize i)))
+    (let (sl:ref:StrLit (invoke g-strs (cast usize i))
           ir-len:i32 (+ (sl len) 1))
       (fprintf out "@.str.%d = private unnamed_addr constant [%d x i8] c\""
         (sl id) ir-len)
@@ -8098,14 +8101,14 @@
       (when (> i 0) (fprintf out ", "))
       (if (= i 0)
           (fprintf out "ptr null")
-          (fprintf out "ptr @.str.%d" (cast i32 (cast i64 (invoke g-deferror-name-sids (cast usize i)))))))
+          (fprintf out "ptr @.str.%d" (invoke g-deferror-name-sids (cast usize i)))))
     (fprintf out "]\n")
     (fprintf out "@nuc_err_messages = constant [%d x ptr] [" n)
     (dotimes (i n)
       (when (> i 0) (fprintf out ", "))
       (if (= i 0)
           (fprintf out "ptr null")
-          (fprintf out "ptr @.str.%d" (cast i32 (cast i64 (invoke g-deferror-msg-sids (cast usize i)))))))
+          (fprintf out "ptr @.str.%d" (invoke g-deferror-msg-sids (cast usize i)))))
     (fprintf out "]\n\n")))
 
 ; ============================================================
@@ -9508,7 +9511,7 @@
   ; constructed against it, so it has to be live before any of them.
   (arena-allocator (addr-of g-arena-alloc))
   ; String-literal table: empty Vector, grown by intern-string during emit.
-  (set! g-strs (make-vec))
+  (set! g-strs (cast (ref (Vector (ref StrLit))) (make-vec)))
   ; Stage 12 N4: g-current-ns must be set before init-generics (which calls
   ; generic-new → ns-ir-prefix → strcmp(g-current-ns, "user")); intern-str
   ; requires the arena live, which is satisfied by the arena-allocator call above.
@@ -9526,29 +9529,29 @@
   (set! g-host-ptr-bytes (cast i32 (sizeof ptr)))
   (target-init)
   (types-init)
-  (set! g-generics (make-vec))
+  (set! g-generics (mkvec Generic))
   (init-binops)
   (init-generics)
   (init-blanket)
   (set! g-fnty-names (make-vec))
   (set! g-fnty-types (make-vec))
-  (set! g-protocols (make-vec))
+  (set! g-protocols (mkvec Protocol))
   (set! g-conformances (make-vec))
   (set! g-proto-supers (make-vec))
   (set! g-mono-worklist (make-vec))
   (init-rmacros)
-  (set! g-structs (make-vec))
-  (set! g-uniondefs (make-vec))
+  (set! g-structs (mkvec StructDef))
+  (set! g-uniondefs (mkvec UnionDef))
   (set! g-union-templates (make-vec))
   (set! g-struct-templates (make-vec))
   (set! g-tmpl-conformances (make-vec))
-  (set! g-enumdefs (make-vec))
+  (set! g-enumdefs (mkvec EnumDef))
   ; Deferror sid tables: reserve index 0 (the "no error" placeholder) so the
   ; vector index equals the 1-based runtime error id.
-  (set! g-deferror-name-sids (make-vec))
-  (set! g-deferror-msg-sids (make-vec))
-  (conj g-deferror-name-sids (cast ptr 0))
-  (conj g-deferror-msg-sids (cast ptr 0))
+  (set! g-deferror-name-sids (cast (ref (Vector i32)) (make-vec)))
+  (set! g-deferror-msg-sids (cast (ref (Vector i32)) (make-vec)))
+  (conj g-deferror-name-sids 0)
+  (conj g-deferror-msg-sids 0)
   (set! g-err-table-used 0)
   (set! g-prescan-visited null)
   (set! g-import-aliased null)
@@ -9626,7 +9629,7 @@
   (set! g-def-stream  (open_memstream (addr-of g-def-bufp)  (cast ptr (addr-of g-def-sizep))))
   (set! g-decl-out g-decl-stream)
   (set! g-macro-decls (make-vec))
-  (set! g-program-defns (make-vec)))
+  (set! g-program-defns (cast (ref (Vector (ref ProgDefn))) (make-vec))))
 
 ; ============================================================
 ; Close module streams, output IR to stdout (batch mode)
