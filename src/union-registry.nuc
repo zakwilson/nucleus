@@ -585,11 +585,9 @@
   (return null))
 
 (defn union-template-lookup (name:ptr):?ptr:UnionTemplate
-  (dotimes (i (cast i32 (count g-union-templates)))
-    (let (ut:ptr:UnionTemplate (cast ptr:UnionTemplate
-                                 (invoke g-union-templates (cast usize i))))
-      (when (= (ut name) name)
-        (return (cast ptr ut)))))
+  (doseq (ut g-union-templates (VecIter ref:UnionTemplate))
+         (when (= (ut name) name)
+               (return ut)))
   (return null))
 
 ; Stage 11: look up a registered defstruct template by (interned) name. Mirror
@@ -929,7 +927,7 @@
               (die-at (tv line) "defunion: type parameter must be a symbol"))
             (aset! (cast ptr:ptr tyvars) i (tv s))))
         (let (ut:ptr:UnionTemplate (cast ptr:UnionTemplate (arena-alloc (sizeof UnionTemplate))))
-          (conj g-union-templates (cast ptr ut))
+          (conj g-union-templates ut)
           (.set! ut name name)
           (.set! ut tyvars tyvars)
           (.set! ut ntv ntv)
