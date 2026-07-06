@@ -41,3 +41,10 @@ deferred.
 returns zeroed fields.
 
 `make-vec`, and especially `cast` over `make-vec` shows a lack of proper constructors
+
+`doseq` with missing brackets around the binding form segfaults; a friendly error would be better
+
+Having to perform operations on (addr-of entry) in a HashMapEntryIterator is icky
+
+
+in `emit-get-with-callee` when branch A's (Self, ptr) probe misses and the callee type has a registered get, the selector should be re-emitted as a value and dispatched through branch B rather than fallback

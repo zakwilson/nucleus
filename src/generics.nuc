@@ -666,7 +666,9 @@
   ; tyvars wrongly collects __fnty_0, defn-has-receiver-tyvars returns 1, the
   ; stamped method looks like a template, and emit-defn skips its define while the
   ; call site still references its ir-name (undefined symbol at link/parse).
-  (when (!= (fnty-resolve name) null) (return 1))
+  (match (fnty-resolve name)
+         ((some t) (return 1))
+         (none null))
   ; A pointer-kind colon spelling — "ptr:X" / "ref:X" / "raw:X" (the form
   ; type-spelling emits for a TY-PTR with a concrete element type) — is a
   ; concrete type iff its element spelling X is resolvable. Without this, a
@@ -1599,7 +1601,7 @@
           (.set! job context
                  (fmt-2s-i "while instantiating %s (requested at %s:%d)"
                            mangled g-source-path line))
-          (conj g-mono-worklist (cast ptr job))
+          (conj g-mono-worklist job)
           (return newm)))))))
 
 ; ============================================================
@@ -2219,9 +2221,9 @@
 ; persistent cursor makes recursive drains (during imports) never re-emit, and
 ; stamping inside a drained body simply extends the worklist this loop consumes.
 (defn drain-mono-worklist ():void
-  (while (< g-mono-drained (cast i32 (count g-mono-worklist)))
-    (let (job:ptr:MonoJob (cast ptr:MonoJob (invoke g-mono-worklist (cast usize g-mono-drained))))
-      (set! g-mono-drained (+ g-mono-drained 1))
+  (while (< g-mono-drained (count g-mono-worklist))
+    (let (job:ptr:MonoJob (cast ptr:MonoJob (invoke g-mono-worklist g-mono-drained)))
+      (inc! g-mono-drained)
       (set! g-out g-def-stream)
       ; Attach the instantiation context to any error raised while emitting.
       (set! g-mono-context (job context))
@@ -2654,7 +2656,7 @@
                         (.set! job context
                                (fmt-2s-i "while deriving closure conformance to %s (at %s:%d)"
                                          proto g-source-path line))
-                        (conj g-mono-worklist (cast ptr job))))
+                        (conj g-mono-worklist job)))
                     ; Step 10: record the conformance with the recovered args.
                     (conformance-add cvspell proto args npp line)
                     ; Step 11: success.

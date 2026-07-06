@@ -140,7 +140,7 @@
   (set! g-fn-sret-name null)
   (set! g-fn-ret-type null)
   (set! g-loop-depth 0)
-  (set! g-nundo (cast (ref (Vector (ref NarrowUndo))) (make-vec)))
+  (set! g-nundo (mkvec NarrowUndo))
   (set! g-entry-stream (open_memstream (addr-of g-entry-bufp)
                                        (cast ptr (addr-of g-entry-sizep))))
   (set! g-body-stream (open_memstream (addr-of g-body-bufp)

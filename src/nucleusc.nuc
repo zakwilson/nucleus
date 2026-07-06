@@ -120,7 +120,7 @@
 (defvar (g-struct-templates (ref (Vector (ref StructTemplate)))))
 ; (Vector ptr) of EnumDef* (each individually arena-allocated).
 (defvar (g-enumdefs (ref (Vector (ref EnumDef)))))
-(defvar (g-pending-unions (ref (Vector ptr))))
+(defvar (g-pending-unions (ref (Vector (ref StructDef)))))
 ; Stage 10 errors: the deferror descriptor table, indexed by error id (1-based;
 ; slot 0 reserved). Each entry is the string-table id of the name / message, so
 ; the table emits as arrays of `@.str.N` pointers at module assembly. Emitted
@@ -169,7 +169,7 @@
 ; defcast registry (Stage 8). g-cast-rules is a pre-allocated array of CastRule
 ; (length MAX-CAST-RULES), filled by register-cast-rule from `defcast` forms.
 ; (Vector ptr) of CastRule* (each individually arena-allocated, registration order).
-(defvar (g-cast-rules (ref (Vector ptr))))
+(defvar (g-cast-rules (ref (Vector (ref CastRule)))))
 
 ; Label/goto support (Stage 8 C-parity). g-lbl-tbl is a Vec of LabelEntry*
 ; (name, total occurrence count, seen-so-far) reset per function by
@@ -230,8 +230,8 @@
 ; (so the call site can name its symbol) but defer the body emission until the
 ; current function finishes; the worklist is drained at the end of the top-level
 ; loop. g-mono-drained is a persistent cursor so recursive drains never re-emit.
-(defvar (g-mono-worklist (ref (Vector ptr))))
-(defvar g-mono-drained:i32 0)
+(defvar (g-mono-worklist (ref (Vector (ref MonoJob)))))
+(defvar g-mono-drained:usize 0)
 ; Set to the current instantiation's context string while a stamped generic body
 ; is being emitted; die-at appends it as a note so a stamp-time error points back
 ; to the instantiation (and its requesting call site). Null otherwise.
@@ -289,13 +289,13 @@
 
 ; Macro registry. (Vector ptr) of MacroDef* (each individually arena-allocated,
 ; registration order). The element index is also the macro's JIT-name uniquifier.
-(defvar (g-macros (ref (Vector ptr))))
+(defvar (g-macros (ref (Vector (ref MacroDef)))))
 (defvar g-gensym-id:i32 0)
 
 ; Reader macro table
 ; Reader macro table. (Vector ptr) of RMacro* (each individually arena-allocated,
 ; registration order).
-(defvar (g-rmacros (ref (Vector ptr))))
+(defvar (g-rmacros (ref (Vector (ref RMacro)))))
 
 ; Set to 1 once @malloc has been declared via a C-header import (e.g. (import-use "stdlib.h")).
 ; Guards against emitting a duplicate malloc declaration in macro JIT modules.
@@ -501,7 +501,16 @@
     (return v)))
 
 (defmacro mkvec (T)
-  `(make-vec (cast (ref (Vector (ref ~T))) (make-vec))))
+  `(cast (ref (Vector (ref ~T))) (make-vec)))
+
+(defmacro mkhash (kT vT)
+  `(let ((h (ref (HashMap (ref ~kT) (ref ~vT))))
+         (cast (ref (HashMap (ref ~kT) (ref ~vT)))
+               (alloc-handle-alloc (addr-of g-arena-alloc)
+                                   (sizeof (HashMap (ref ~kT) (ref ~vT)))
+                                   (cast usize 8))))
+     (hashmap-init h)
+     h))
 
 ; ============================================================
 ; Reader — imported from lib/reader.nuc
@@ -1262,7 +1271,7 @@
 ; current effective type, pushing an undo entry. No-op unless the binding
 ; currently reads as a local (Maybe (ref T)).
 (defn narrow-apply (scope:ref:Scope name:ptr):void
-  (when (= g-nundo null) (set! g-nundo (cast (ref (Vector (ref NarrowUndo))) (make-vec))))
+  (when (= g-nundo null) (set! g-nundo (mkvec NarrowUndo)))
   (let (sym:?ptr:Sym (scope-lookup scope name))
     (when (= sym null) (return))
     (when (= (sym is-local) 0) (return))
@@ -1581,14 +1590,13 @@
     (.set! cr from from)
     (.set! cr to to)
     (.set! cr ir-name ir-name)
-    (conj g-cast-rules (cast ptr cr))))
+    (conj g-cast-rules cr)))
 
 (defn lookup-cast-rule (from:ptr to:ptr):?ptr:CastRule
-  (doseq (rule g-cast-rules (VecIter ptr))
-           (let (cr:ptr:CastRule (cast ptr:CastRule rule))
-             (when (and (!= (type-eq (cr from) from) 0)
-                        (!= (type-eq (cr to) to) 0))
-                   (return (cast ptr cr)))))
+  (doseq (cr g-cast-rules (VecIter ref:CastRule))
+         (when (and (!= (type-eq (cr from) from) 0)
+                    (!= (type-eq (cr to) to) 0))
+               (return cr)))
   (return null))
 
 ; Coerce a Val to a target type at a call site (or any implicit context):
@@ -3547,7 +3555,7 @@
                 (.set! job context
                        (fmt-2s-i "while emitting lambda %s (defined at %s:%d)"
                                  lifted g-source-path line))
-                (conj g-mono-worklist (cast ptr job))
+                (conj g-mono-worklist job)
                 ; The expression's value: the lifted function pointer.
                 (return (alloc-val (cast ptr ft) irn))))))))))
 
@@ -4023,7 +4031,7 @@
           (.set! job context
                  (fmt-2s-i "while emitting closure invoke %s (defined at %s:%d)"
                            mangled g-source-path line))
-          (conj g-mono-worklist (cast ptr job)))))))
+          (conj g-mono-worklist job))))))
 
 ; Synthesize, register, and queue the closure's `drop` method for an OWNING env.
 ; mode 0/1 (vfn/mfn — at least one field is a Drop type):
@@ -4137,7 +4145,7 @@
         (.set! job context
                (fmt-2s-i "while emitting closure drop %s (defined at %s:%d)"
                          mangled g-source-path line))
-        (conj g-mono-worklist (cast ptr job))))))
+        (conj g-mono-worklist job)))))
 
 ; ============================================================
 ; Stage 13 type-erasure (TE-2): static per-concrete-type vtable synthesis.
@@ -4153,7 +4161,7 @@
 ; box's `vtable` field (TE-3) is set to this global's address at construction.
 ;
 ; Dedup: memoized per (concrete-type spelling, protocol/signature) via parallel
-; arrays (mirrors g-fnty-* in type-mangle.nuc) — reserve-key-first, intern,
+; arrays — reserve-key-first, intern,
 ; reuse — so a second box of the same type shares one global. The vtable symbol
 ; routes through sanitize-for-ir so `!`/`?`/`/` never reach the emitted name.
 ;
@@ -6354,10 +6362,9 @@
 
 ; Find a macro definition by name, or null.
 (defn find-macro (name:ptr):?ptr:MacroDef
-  (dotimes (mi (count g-macros))
-           (let (mdef:ptr:MacroDef (cast ptr:MacroDef (invoke g-macros (cast usize mi))))
-             (when (= (mdef name) name)
-                   (return (cast ptr mdef)))))
+  (doseq (mdef g-macros (VecIter ref:MacroDef))
+           (when (= (mdef name) name)
+                 (return (cast ptr mdef))))
   (return null))
 
 ; Run one expansion of a macro call: invoke the JIT-compiled macro function
@@ -6659,10 +6666,9 @@
       (let (h:ptr (head s)
             hp:ptr (cast ptr head))
         ; Check macro table before special forms.
-        (dotimes (mi (count g-macros))
-          (let (mdef:ptr:MacroDef (cast ptr:MacroDef (invoke g-macros (cast usize mi))))
-            (when (= (mdef name) h)
-                  (return (emit-macro-expand n scope (cast ptr mdef))))))
+        (doseq (mdef g-macros (VecIter ref:MacroDef))
+               (when (= (mdef name) h)
+                     (return (emit-macro-expand n scope (cast ptr mdef)))))
         (when (and (= hp 'gensym) (= (node-len nn) 1))
           (let (tmp:ptr (new-tmp))
             (fprintf g-body-stream "  %s = call ptr @nucleus_gensym()\n" tmp)
@@ -6802,9 +6808,9 @@
                (return NK-TYPE)))
   (when (!= (cast ptr (union-template-lookup name)) null)
         (return NK-TYPE))
-  (doseq (macro g-macros (VecIter ptr))
-         (when (= ((cast ptr:MacroDef macro) name)
-                  (cast CStr  name))
+  (doseq (macro g-macros (VecIter ref:MacroDef))
+         (when (= (macro name)
+                  (cast CStr name))
                (return NK-MACRO)))
   (doseq (generic g-generics (VecIter ref:Generic))
            (let (g:ptr:Generic generic)
@@ -7674,7 +7680,7 @@
         (set! g-qq-used 0)
         (set! g-decl-out ct-decl)
         ; Fresh per-module declare set (see emit-defmacro / macro-jit-ensure-decl).
-        (set! g-macro-decls (make-vec))
+        (set! g-macro-decls (mkvec ptr))
 
         ; Pre-scan: register defn signatures from CT body.
         (let (bi:i32 1)
@@ -7907,7 +7913,7 @@
             (.set! mdef jit-name jit-name)
             (.set! mdef num-params pcount)
             (.set! mdef variadic variadic)
-            (conj g-macros (cast ptr mdef)))
+            (conj g-macros mdef))
 
           ; Flush main streams
           (fflush g-type-stream)
@@ -7928,7 +7934,7 @@
               (set! g-out ct-def)
               ; Fresh per-module declare set: macro bodies that call ordinary
               ; defns (node-at, intern-symbol, ...) get those declared here.
-              (set! g-macro-decls (make-vec))
+              (set! g-macro-decls (mkvec ptr))
 
               ; Set up function codegen state
               (reset-function-state)
@@ -8072,9 +8078,8 @@
 ; ============================================================
 
 (defn emit-string-table (out:ptr):void
-  (dotimes (i (cast i32 (count g-strs)))
-    (let (sl:ref:StrLit (invoke g-strs (cast usize i))
-          ir-len:i32 (+ (sl len) 1))
+  (doseq (sl g-strs (VecIter ref:StrLit))
+    (let (ir-len:i32 (+ (sl len) 1))
       (fprintf out "@.str.%d = private unnamed_addr constant [%d x i8] c\""
         (sl id) ir-len)
       (dotimes (j (sl len))
@@ -9348,7 +9353,7 @@
     (.set! rm prefix prefix)
     (.set! rm prefix-len (cast i32 (strlen prefix)))
     (.set! rm wrap-sym wrap-sym)
-    (conj g-rmacros (cast ptr rm))))
+    (conj g-rmacros rm)))
 
 (defn register-rmacro (prefix:StrView wrap-sym:CStr):void
   (let (rm:ptr:RMacro (cast ptr:RMacro (arena-alloc (sizeof RMacro)))
@@ -9356,10 +9361,10 @@
     (.set! rm prefix (cast ptr (pp data)))
     (.set! rm prefix-len (cast i32 (pp len)))
     (.set! rm wrap-sym wrap-sym)
-    (conj g-rmacros (cast ptr rm))))
+    (conj g-rmacros rm)))
 
 (defn init-rmacros ():void
-  (set! g-rmacros (make-vec))
+  (set! g-rmacros (mkvec RMacro))
   ; Register longest prefixes first for correct matching.
   (register-rmacro "~@" "unquote-splice")
   (register-rmacro "~" "unquote")
@@ -9511,7 +9516,7 @@
   ; constructed against it, so it has to be live before any of them.
   (arena-allocator (addr-of g-arena-alloc))
   ; String-literal table: empty Vector, grown by intern-string during emit.
-  (set! g-strs (cast (ref (Vector (ref StrLit))) (make-vec)))
+  (set! g-strs (mkvec StrLit))
   ; Stage 12 N4: g-current-ns must be set before init-generics (which calls
   ; generic-new → ns-ir-prefix → strcmp(g-current-ns, "user")); intern-str
   ; requires the arena live, which is satisfied by the arena-allocator call above.
@@ -9533,8 +9538,7 @@
   (init-binops)
   (init-generics)
   (init-blanket)
-  (set! g-fnty-names (make-vec))
-  (set! g-fnty-types (make-vec))
+  (set! g-fnty (mkhash CStr ref:Type))
   (set! g-protocols (mkvec Protocol))
   (set! g-conformances (make-vec))
   (set! g-proto-supers (make-vec))
@@ -9558,9 +9562,9 @@
   (set! g-import-prefixes null)
   (set! g-cinclude-collecting 0)
   (set! g-cinclude-collected null)
-  (set! g-pending-unions (make-vec))
-  (set! g-macros (make-vec))
-  (set! g-cast-rules (make-vec))
+  (set! g-pending-unions (mkvec StructDef))
+  (set! g-macros (mkvec MacroDef))
+  (set! g-cast-rules (mkvec CastRule))
   (set! g-globals (scope-new null))
   ; Stage 12: start every compilation unit in the default `user` namespace.
   ; Interned so qualify-name's "is this the user namespace?" check is a pointer
@@ -9628,8 +9632,8 @@
   (set! g-decl-stream (open_memstream (addr-of g-decl-bufp) (cast ptr (addr-of g-decl-sizep))))
   (set! g-def-stream  (open_memstream (addr-of g-def-bufp)  (cast ptr (addr-of g-def-sizep))))
   (set! g-decl-out g-decl-stream)
-  (set! g-macro-decls (make-vec))
-  (set! g-program-defns (cast (ref (Vector (ref ProgDefn))) (make-vec))))
+  (set! g-macro-decls (mkvec ptr))
+  (set! g-program-defns (mkvec ProgDefn)))
 
 ; ============================================================
 ; Close module streams, output IR to stdout (batch mode)
