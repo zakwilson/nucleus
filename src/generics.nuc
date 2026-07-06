@@ -86,10 +86,9 @@
 ; to emit-binop (which performs the numeric type selection), so operator IR is
 ; byte-identical to the pre-dispatch compiler.
 (defn init-generics ():void
-  (dotimes (i (cast i32 (count g-binops)))
-    (let (bop:ptr:BinOp (cast ptr:BinOp (invoke g-binops (cast usize i)))
-          g:ptr (generic-new (bop name))
-          m:ptr:Method (new Method))
+  (doseq (bop g-binops (VecIter ref:BinOp))
+         (let (g:ptr (generic-new (bop name))
+               m:ptr:Method (new Method))
       (.set! m param-types null)
       (.set! m num-params 2)
       (.set! m ret-type null)
