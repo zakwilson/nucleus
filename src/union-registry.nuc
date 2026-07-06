@@ -594,11 +594,9 @@
 ; union-template-lookup. Names compare by pointer equality, so callers pass an
 ; interned head symbol (parametric-structs.md §1).
 (defn struct-template-lookup (name:ptr):?ptr:StructTemplate
-  (dotimes (i (cast i32 (count g-struct-templates)))
-    (let (st:ptr:StructTemplate (cast ptr:StructTemplate
-                                  (invoke g-struct-templates (cast usize i))))
-      (when (= (st name) name)
-        (return (cast ptr st)))))
+  (doseq (st g-struct-templates (VecIter ref:StructTemplate))
+           (when (= (st name) name)
+                 (return st)))
   (return null))
 
 ; The UnionDef behind a type, or null: a defunion value is TY-STRUCT whose
@@ -962,7 +960,7 @@
               (die-at (tv line) "defstruct: type parameter must be a symbol"))
             (aset! (cast ptr:ptr tyvars) i (tv s))))
         (let (st:ptr:StructTemplate (cast ptr:StructTemplate (arena-alloc (sizeof StructTemplate))))
-          (conj g-struct-templates (cast ptr st))
+          (conj g-struct-templates st)
           (.set! st name name)
           (.set! st tyvars tyvars)
           (.set! st ntv ntv)

@@ -2955,12 +2955,9 @@
                                  tyvars:ptr num-tyvars:i32
                                  con-protos:ptr con-vars:ptr con-args:ptr con-nargs:ptr
                                  num-constraints:i32):void
-  (dotimes (i (cast i32 (count g-tmpl-conformances)))
-    (let (c:ptr:TmplConformance (cast ptr:TmplConformance
-                                  (invoke g-tmpl-conformances (cast usize i))))
-      (when (and (= (c template) template) (= (c proto) proto)) (return))))
-  (let (c:ptr:TmplConformance (cast ptr:TmplConformance
-                                (arena-alloc (sizeof TmplConformance))))
+  (doseq (c g-tmpl-conformances (VecIter ref:TmplConformance))
+    (when (and (= (c template) template) (= (c proto) proto)) (return)))
+  (let (c:ptr:TmplConformance (new TmplConformance))
     (.set! c template template)
     (.set! c proto proto)
     (.set! c bindings bindings)
@@ -2972,7 +2969,7 @@
     (.set! c con-args con-args)
     (.set! c con-nargs con-nargs)
     (.set! c num-constraints num-constraints)
-    (conj g-tmpl-conformances (cast ptr c))))
+    (conj g-tmpl-conformances c)))
 
 ; Check (and record) that the concrete instance named `iname`, stamped from
 ; struct template `st` with concrete arg spellings `arg-spellings` (length
