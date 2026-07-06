@@ -117,7 +117,7 @@
 (defvar (g-union-templates (ref (Vector (ref UnionTemplate)))))
 ; Stage 11 parametric structs: defstruct-template registry. Inert until a use
 ; `(Vector i32)` in type position fires a stamp (parametric-structs.md §1).
-(defvar (g-struct-templates (ref (Vector ptr))))
+(defvar (g-struct-templates (ref (Vector (ref StructTemplate)))))
 ; (Vector ptr) of EnumDef* (each individually arena-allocated).
 (defvar (g-enumdefs (ref (Vector (ref EnumDef)))))
 (defvar (g-pending-unions (ref (Vector ptr))))
@@ -262,7 +262,7 @@
 ; and each required method must resolve for the instance. Inert until a stamp
 ; fires, so byte-identical for programs using no parametric protocols.
 ; (Vector ptr) of TmplConformance* (each individually arena-allocated).
-(defvar (g-tmpl-conformances (ref (Vector ptr))))
+(defvar (g-tmpl-conformances (ref (Vector (ref TmplConformance)))))
 
 ; Stage 12 N8: late-binding hooks that bridge a single back-edge each, where an
 ; earlier-imported file must call a function that lives in a later-imported file
@@ -9543,8 +9543,8 @@
   (set! g-structs (mkvec StructDef))
   (set! g-uniondefs (mkvec UnionDef))
   (set! g-union-templates (mkvec UnionTemplate))
-  (set! g-struct-templates (make-vec))
-  (set! g-tmpl-conformances (make-vec))
+  (set! g-struct-templates (mkvec StructTemplate))
+  (set! g-tmpl-conformances (mkvec TmplConformance))
   (set! g-enumdefs (mkvec EnumDef))
   ; Deferror sid tables: reserve index 0 (the "no error" placeholder) so the
   ; vector index equals the 1-based runtime error id.
