@@ -1,3 +1,5 @@
+(import-use arena)
+
 ; Union/struct registry and type-parsing — extracted from src/nucleusc.nuc.
 ; Source-imported by src/nucleusc.nuc after the ABI module is available.
 
@@ -879,8 +881,8 @@
                     (sd ir-name) ((cast ptr:StructDef union-sd) ir-name))
                   (fprintf g-type-stream "%%%s = type { i32 }\n\n" (sd ir-name))))
               (.set! sd emitted 1))
-            (let (ud:ptr:UnionDef (cast ptr:UnionDef (arena-alloc (sizeof UnionDef))))
-              (conj g-uniondefs (cast ptr ud))
+            (let (ud:ptr:UnionDef (new UnionDef))
+              (conj g-uniondefs ud)
               (.set! ud name name)
               (.set! ud sdef (cast ptr sd))
               (.set! ud union-sd union-sd)

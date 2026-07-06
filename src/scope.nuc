@@ -99,21 +99,21 @@
   ; The id is the element's position in g-strs; each StrLit is individually
   ; arena-allocated and its pointer appended in order.
   (let (id:i32 (cast i32 (count g-strs))
-        sl:ptr:StrLit (cast ptr:StrLit (arena-alloc (sizeof StrLit))))
+        sl:ref:StrLit (cast ref:StrLit (arena-alloc (sizeof StrLit))))
     (.set! sl bytes (arena-strndup bytes (cast i64 len)))
     (.set! sl len len)
     (.set! sl id id)
-    (conj g-strs (cast ptr sl))
+    (conj g-strs sl)
     (return id)))
 
 (defn intern-string (sv:StrView):i32
   (let (p:ptr:StrView (addr-of sv)
         id:i32 (cast i32 (count g-strs))
-        sl:ptr:StrLit (cast ptr:StrLit (arena-alloc (sizeof StrLit))))
+        sl:ref:StrLit (cast ref:StrLit (arena-alloc (sizeof StrLit))))
     (.set! sl bytes (arena-strndup (cast ptr (p data)) (cast i64 (p len))))
     (.set! sl len (cast i32 (p len)))
     (.set! sl id id)
-    (conj g-strs (cast ptr sl))
+    (conj g-strs sl)
     (return id)))
 
 ; ============================================================
@@ -134,13 +134,13 @@
   (set! g-tmp 0)
   (set! g-label 0)
   (set! g-block-term 0)
-  (set! g-lbl-tbl (make-vec))
+  (set! g-lbl-tbl (cast (ref (Vector (ref LabelEntry))) (make-vec)))
   (set! g-cur-fname null)
   (set! g-fn-ret-abi null)
   (set! g-fn-sret-name null)
   (set! g-fn-ret-type null)
   (set! g-loop-depth 0)
-  (set! g-nundo (make-vec))
+  (set! g-nundo (cast (ref (Vector (ref NarrowUndo))) (make-vec)))
   (set! g-entry-stream (open_memstream (addr-of g-entry-bufp)
                                        (cast ptr (addr-of g-entry-sizep))))
   (set! g-body-stream (open_memstream (addr-of g-body-bufp)
@@ -155,9 +155,9 @@
 ; content (ir-names are freshly formatted, not interned).
 (defn program-defn-lookup (irn:ptr):?ptr:ProgDefn
   (dotimes (i (cast i32 (count g-program-defns)))
-    (let (pd:ptr:ProgDefn (cast ptr:ProgDefn (invoke g-program-defns (cast usize i))))
+    (let (pd:ref:ProgDefn (invoke g-program-defns (cast usize i)))
       (when (= (strcmp (pd ir-name) irn) (cast i32 0))
-        (return (cast ptr pd)))))
+        (return pd))))
   (return null))
 
 ; Record a program-defined function's signature so macro/CT JIT modules can
@@ -168,10 +168,10 @@
   (when (!= (in-jit-module) 0) (return))
   (when (= irn null) (return))
   (when (!= (cast ptr (program-defn-lookup irn)) null) (return))
-  (let (pd:ptr:ProgDefn (cast ptr:ProgDefn (arena-alloc (sizeof ProgDefn))))
+  (let (pd:ref:ProgDefn (cast ref:ProgDefn (arena-alloc (sizeof ProgDefn))))
     (.set! pd ir-name (intern-str irn))
     (.set! pd ret ret)
     (.set! pd ptypes ptypes)
     (.set! pd nparams nparams)
     (.set! pd variadic variadic)
-    (conj g-program-defns (cast ptr pd))))
+    (conj g-program-defns pd)))

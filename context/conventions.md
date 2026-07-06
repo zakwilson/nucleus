@@ -450,3 +450,25 @@ IR — no `make update-bootstrap` needed. Loops starting at non-zero, with non-u
 stride, or with `inc!` not last do **not** fit `dotimes`; leave them imperative.
 `return` inside a `dotimes` body works (it expands to a `while`), so early-return
 find loops convert fine — just mind the gotcha.
+
+## Prefer `with` to `let` followed by `free`
+
+```lisp
+(let (n:usize (sv len)
+        buf:ptr:ui8 (cast ptr:ui8 (malloc (cast i64 (+ n (cast usize 1))))))
+; ...
+    (free (cast ptr buf)))
+```
+
+is simpler and more reliable as 
+
+```lisp
+(with (n:usize (sv len)
+        buf:ptr:ui8 (cast ptr:ui8 (malloc (cast i64 (+ n (cast usize 1))))))
+; ...
+    )
+```
+
+## Avoid untyped pointers
+
+Passing around untyped pointers and using casts is unsafe and must be reserved as an escape hatch, not standard practice.

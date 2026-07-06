@@ -933,8 +933,8 @@
 ; every registered defenum; the first hit wins (defenum members are global
 ; constants, so a collision already means same-kind reuse).
 (defn enumdef-lookup-member (member:ptr):?ptr:EnumDef
-  (dotimes (i (cast i32 (count g-enumdefs)))
-    (let (ed:ptr:EnumDef (cast ptr:EnumDef (invoke g-enumdefs (cast usize i))))
+  (dotimes (i (count g-enumdefs))
+    (let (ed:ptr:EnumDef (cast ptr:EnumDef (invoke g-enumdefs i)))
       (when (>= (enum-member-index (cast ptr ed) member) 0)
         (return (cast ptr ed)))))
   (return null))

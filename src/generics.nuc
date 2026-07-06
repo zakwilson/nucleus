@@ -1,3 +1,6 @@
+(import-use arena)
+(import-use vector)
+
 ; Generic / polymorphism registry, bounded-generic def-time checking, Stage 11
 ; tyvar-from-receiver inference + structural unification, and the Valid inferred
 ; structural-bound checker. Source-imported by src/nucleusc.nuc before node-type
@@ -15,16 +18,15 @@
 ; ============================================================
 
 (defn generic-lookup (name:ptr):?ptr:Generic
-  (dotimes (i (cast i32 (count g-generics)))
-    (let (g:ptr:Generic (cast ptr:Generic (invoke g-generics (cast usize i))))
-      (when (= (g name) name)
-        (return (cast ptr g)))))
+  (doseq (g g-generics (VecIter (ref Generic)))
+     (when (= (g name) name)
+           (return (cast ptr g))))
   (return null))
 
 (defn generic-new (name:ptr):ref:Generic
   ; Each Generic is individually arena-allocated (pointer-stable for the whole
   ; compilation) and its pointer appended to g-generics in registration order.
-  (let (g:ptr:Generic (cast ptr:Generic (arena-alloc (sizeof Generic))))
+  (let (g:ptr:Generic (new Generic))
     (.set! g name name)
     (.set! g methods (arena-alloc (* (cast i64 4) (ptr-bytes))))
     (.set! g num-methods 0)
@@ -35,19 +37,18 @@
     ; or monomorphization that runs in a later import's namespace still mangles
     ; under this generic's own namespace.
     (.set! g ir-prefix (ns-ir-prefix g-current-ns))
-    (conj g-generics (cast ptr g))
+    (conj g-generics g)
     (return (cast ref:Generic g))))
 
-(defn generic-add-method (g:ptr m:ptr):void
-  (let (gg:ptr:Generic (cast ptr:Generic g))
-    (when (= (gg num-methods) (gg cap))
-      (let (nc:i32 (* (gg cap) 2)
-            nm:ptr (arena-alloc (* (cast i64 nc) (ptr-bytes))))
-        (memcpy nm (gg methods) (* (cast i64 (gg num-methods)) (ptr-bytes)))
-        (.set! gg methods nm)
-        (.set! gg cap nc)))
-    (aset! (cast ptr:ptr (gg methods)) (gg num-methods) m)
-    (.set! gg num-methods (+ (gg num-methods) 1))
+(defn generic-add-method (g:ptr:Generic m:ptr:Method):void
+  (when (= (g num-methods) (g cap))
+        (let (nc:i32 (* (g cap) 2)
+                     nm:ptr (arena-alloc (* (cast i64 nc) (ptr-bytes))))
+          (memcpy nm (g methods) (* (cast i64 (g num-methods)) (ptr-bytes)))
+          (.set! g methods nm)
+          (.set! g cap nc)))
+  (aset! (cast ptr:ptr (g methods)) (g num-methods) m)
+  (.set! g num-methods (+ (g num-methods) 1))
     ; A generic finalized by an earlier unit's prescan (its methods given their
     ; mangling) can gain more methods when a later `import` (processed in the
     ; dispatch loop, after this unit's signature prescan already finalized the
@@ -59,7 +60,8 @@
     ; every method. Safe: this runs in the prescan/import phase, before any of the
     ; affected methods' bodies are emitted, so no already-emitted reference uses a
     ; stale ir-name.
-    (.set! gg finalized 0)))
+
+  (.set! g finalized 0))
 
 ; Remove the first METHOD-USER from generic `g` whose param count and types
 ; match `param-types`/`nparams`. No-op if not found. Called by the REPL to
@@ -98,7 +100,7 @@
       (.set! m fn-type null)
       (.set! m binop (cast ptr bop))
       (.set! m body null)
-      (generic-add-method g (cast ptr m)))))
+      (generic-add-method g m))))
 
 ; Structural type equality. Primitive types are singletons, so pointer equality
 ; handles them; structs are equal iff they share a StructDef; pointers compare
@@ -338,7 +340,7 @@
         (.set! m fn-type (cast ptr ft))
         (.set! m binop null)
         (.set! m body body)
-        (generic-add-method g (cast ptr m))
+        (generic-add-method g m)
         (return m)))))
 
 ; Decide mangling for every not-yet-finalized user generic. A solitary concrete
@@ -666,6 +668,23 @@
   ; stamped method looks like a template, and emit-defn skips its define while the
   ; call site still references its ir-name (undefined symbol at link/parse).
   (when (!= (fnty-resolve name) null) (return 1))
+  ; A pointer-kind colon spelling — "ptr:X" / "ref:X" / "raw:X" (the form
+  ; type-spelling emits for a TY-PTR with a concrete element type) — is a
+  ; concrete type iff its element spelling X is resolvable. Without this, a
+  ; stamped generic whose receiver is (Vector (ref Foo)) has its
+  ; tyvar-substituted arg spelling "ptr:Foo" wrongly collected as a free
+  ; tyvar by collect-pattern-tyvars, so defn-has-receiver-tyvars returns 1,
+  ; the stamped method is mistaken for an unmonomorphized template, and
+  ; emit-defn skips its define while the call site still references its
+  ; ir-name (undefined symbol at parse). Same failure mode as the __fnty_N
+  ; case above (Stage 13 L7); recurses so ptr:ptr:Foo resolves.
+  (when (and (= (strncmp name "ptr:" (cast i64 4)) 0)
+             (!= (tyname-resolvable (ptr+ (cast ptr:i8 name) (cast i64 4))) 0))
+    (return 1))
+  (when (and (or (= (strncmp name "ref:" (cast i64 4)) 0)
+                 (= (strncmp name "raw:" (cast i64 4)) 0))
+             (!= (tyname-resolvable (ptr+ (cast ptr:i8 name) (cast i64 4))) 0))
+    (return 1))
   (return 0))
 
 ; The inner pattern node of a pointer wrapper `(ptr|raw|ref X...)`, mirroring how
@@ -1126,7 +1145,7 @@
               (.set! m num-constraints nc)
               ; Imported templates were checked by the exporting unit; skip A2.
               (.set! m checked trusted)
-              (generic-add-method g (cast ptr m))))))))))
+              (generic-add-method g m)))))))))
 
 ; Try to bind a generic template's type variables from a concrete argument
 ; tuple by structurally unifying each parameter's type pattern against the
@@ -2236,14 +2255,14 @@
   (return null))
 
 (defn protocol-new (name:ptr sigs:ptr num-sigs:i32):ref:Protocol
-  (let (p:ptr:Protocol (cast ptr:Protocol (arena-alloc (sizeof Protocol))))
+  (let (p:ptr:Protocol (new Protocol))
     (.set! p name name)
     (.set! p sigs sigs)
     (.set! p num-sigs num-sigs)
     (.set! p params null)
     (.set! p num-params 0)
-    (conj g-protocols (cast ptr p))
-    (return (cast ref:Protocol p))))
+    (conj g-protocols p)
+    (return p)))
 
 ; Is `name` one of the built-in blanket protocols (§10.1)? Blanket protocols have
 ; automatic conformance — no `extend` is written — so they are consulted before

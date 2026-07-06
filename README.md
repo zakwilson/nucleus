@@ -6,4 +6,6 @@ Nucleus is a new systems programming language. I initially conceived of it as "a
 * Guaranteed non-null reference types
 * Maybe/match semantics for nullables
 * Polymorphic functions dispatched on argument types
-* 
+* Protocols for constraining polymorphic matches
+* Opt-in lexically-enforced lifetimes to prevent both memory leaks and use-after-free
+
