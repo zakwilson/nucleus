@@ -8,6 +8,7 @@
 ; Extracted from nucleusc.nuc → generics.nuc → here (Stage 12 N8).
 
 (import-use list)
+(import-use hashmap)
 
 ; A short, dot-free token naming a type for use in mangled symbols. Pointers
 ; get a "p" prefix on their pointee so ptr:Circle and Circle stay distinct.
@@ -62,29 +63,23 @@
 ; (no TY-FN flows through a generic in the compiler's own source: `make
 ; bootstrap` re-converges with this change).
 (defvar g-fnty-id:i32 0)
-; Parallel (Vector ptr) registries kept in lockstep: g-fnty-names[i] is the
-; "__fnty_<id>" name for the TY-FN Type* g-fnty-types[i]. conj'd together.
-(defvar (g-fnty-names (ref (Vector ptr))))   ; name strings, parallel
-(defvar (g-fnty-types (ref (Vector ptr))))   ; Type*, parallel
+(defvar (g-fnty (ref (HashMap CStr ref:Type))))
 
-(defn fnty-intern (t:ptr):ptr
-  (dotimes (i (cast i32 (count g-fnty-types)))
-    (when (= (invoke g-fnty-types (cast usize i)) t)
-      (return (invoke g-fnty-names (cast usize i)))))
-  (let (name:ptr (intern-str (fmt-i32 "__fnty_%d" g-fnty-id)))
+(defn fnty-intern (t:ref:Type):CStr
+  (doseq (entry g-fnty (HashMapEntryIter CStr ref:Type))
+         (when (= ((addr-of entry) val)
+                  t)
+               (return ((addr-of entry) key))))
+  (let (name:CStr (intern-str (fmt-i32 "__fnty_%d" g-fnty-id)))
     (inc! g-fnty-id)
-    (conj g-fnty-names (cast ptr name))
-    (conj g-fnty-types (cast ptr t))
+    (assoc g-fnty name t)
     (return name)))
 
 ; Resolve a "__fnty_<id>" name back to its Type*, so a stamped generic body's
 ; `(ref __fnty_3)` re-parses to the original TY-FN. String compare (the name
 ; reaching here may be a fresh fmt copy, not the cached interned pointer).
-(defn fnty-resolve (name:ptr):ptr
-  (dotimes (i (cast i32 (count g-fnty-names)))
-    (when (= (strcmp (invoke g-fnty-names (cast usize i)) name) 0)
-      (return (invoke g-fnty-types (cast usize i)))))
-  (return null))
+(defn fnty-resolve (name:CStr):?ref:Type
+  (get g-fnty (cast CStr name)))
 
 ; A type's source spelling as a colon-joined string: the inverse of the type
 ; parser. Serves two roles — the key into the conformance registry (matching the

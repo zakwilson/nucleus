@@ -516,7 +516,7 @@
         ; deferred until member layouts are final (drain-pending-union-irs).
         (do
           (.set! sd is-union 1)
-          (conj g-pending-unions (cast ptr sd)))
+          (conj g-pending-unions sd))
         (do
           (fprintf g-type-stream "%%%s = type { " tag-name)
           (let (i:i32 0)
@@ -592,7 +592,7 @@
                     ; Union alias: same deferred-definition path as the tag.
                     (do
                       (.set! alias is-union 1)
-                      (conj g-pending-unions (cast ptr alias)))
+                      (conj g-pending-unions alias))
                     (do
                       (fprintf g-type-stream "%%%s = type { " tname)
                       (let (i:i32 0
