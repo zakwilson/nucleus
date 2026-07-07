@@ -36,52 +36,45 @@
 
 (defn main ():i32
   ; ---- 1. doseq-split over SplitIter: "a,b,c" on "," -------------------------
-  (let (sv:ptr:StrView (strview-from-cstr "a,b,c")
-        sep:ptr:StrView (strview-from-cstr ","))
-    (let (it:SplitIter (strview-split sv sep))
-      (doseq-split (seg (addr-of it))
-        (print-sv seg)
-        (printf "\n")))
-    (free (cast ptr sep))
-    (free (cast ptr sv)))
+  (with (sv:ptr:StrView (strview-from-cstr "a,b,c")
+         sep:ptr:StrView (strview-from-cstr ",")
+         it:SplitIter (strview-split sv sep))
+    (doseq-split (seg (addr-of it))
+      (print-sv seg)
+      (printf "\n")))
 
   ; ---- 2. reduce over SplitIter: count segments + total length --------------
   ;        "a--b--c" on "--" → 3 segments, total length 3.
-  (let (sv:ptr:StrView (strview-from-cstr "a--b--c")
-        sep:ptr:StrView (strview-from-cstr "--"))
-    (let ((cs (ref CountSeg)) (alloca CountSeg)
-          (ls (ref SegLenSum)) (alloca SegLenSum)
-          it1:SplitIter (strview-split sv sep)
-          it2:SplitIter (strview-split sv sep))
-      (printf "split-count=%lld\n" (reduce cs (cast i64 0) (addr-of it1)))
-      (printf "split-len-total=%lld\n" (reduce ls (cast i64 0) (addr-of it2))))
-    (free (cast ptr sep))
-    (free (cast ptr sv)))
+  (with (sv:ptr:StrView (strview-from-cstr "a--b--c")
+         sep:ptr:StrView (strview-from-cstr "--")
+         (cs (ref CountSeg)) (alloca CountSeg)
+         (ls (ref SegLenSum)) (alloca SegLenSum)
+         it1:SplitIter (strview-split sv sep)
+         it2:SplitIter (strview-split sv sep))
+    (printf "split-count=%lld\n" (reduce cs (cast i64 0) (addr-of it1)))
+    (printf "split-len-total=%lld\n" (reduce ls (cast i64 0) (addr-of it2))))
 
   ; ---- 3. doseq-split over LineIter: 3 lines ---------------------------------
-  (let (sv:ptr:StrView (strview-from-cstr "line1\nline2\nline3"))
-    (let (it:LineIter (strview-lines sv))
-      (doseq-split (ln (addr-of it))
-        (print-sv ln)
-        (printf "\n")))
-    (free (cast ptr sv)))
+  (with (sv:ptr:StrView (strview-from-cstr "line1\nline2\nline3")
+         it:LineIter (strview-lines sv))
+    (doseq-split (ln (addr-of it))
+                 (print-sv ln)
+                 (printf "\n")))
 
   ; ---- 4. parity: Iterator-driven == done-flag-driven, same segments --------
-  (let (sv:ptr:StrView (strview-from-cstr "x,y,z,w")
-        sep:ptr:StrView (strview-from-cstr ","))
-    (let (iter-acc:i32 0
-          it:SplitIter (strview-split sv sep))
-      (doseq-split (seg (addr-of it))
-        (when (> (seg len) (cast usize 0))
-          (set! iter-acc (+ iter-acc (cast i32 (aref (seg data) (cast i64 0)))))))
-      (let (flag-acc:i32 0
-            it2:SplitIter (strview-split sv sep))
-        (doseq-split (s (addr-of it2))
-          (when (> (s len) (cast usize 0))
-            (set! flag-acc (+ flag-acc (cast i32 (aref (s data) (cast i64 0)))))))
-        (printf "parity iter==flag: %d (%d)\n"
-                (cast i32 (if (= iter-acc flag-acc) 1 0)) iter-acc)))
-    (free (cast ptr sep))
-    (free (cast ptr sv)))
+  (with (sv:ptr:StrView (strview-from-cstr "x,y,z,w")
+         sep:ptr:StrView (strview-from-cstr ",")
+         iter-acc:i32 0
+         it:SplitIter (strview-split sv sep))
+    (doseq-split (seg (addr-of it))
+      (when (> (seg len) (cast usize 0))
+            (set! iter-acc (+ iter-acc (cast i32 (aref (seg data) (cast i64 0)))))))
+    (with (flag-acc:i32 0
+           it2:SplitIter (strview-split sv sep))
+      (doseq-split (s (addr-of it2))
+        (when (> (s len) (cast usize 0))
+              (set! flag-acc (+ flag-acc (cast i32 (aref (s data) (cast i64 0)))))))
+      (printf "parity iter==flag: %d (%d)\n"
+              (cast i32 (if (= iter-acc flag-acc) 1 0)) iter-acc)))
 
   (return 0))
