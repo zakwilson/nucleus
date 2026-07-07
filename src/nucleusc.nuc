@@ -244,14 +244,15 @@
 ; Protocol / conformance registries (Stage 9 rung 2). (Vector ptr) of Protocol*
 ; (each individually arena-allocated, in registration order).
 (defvar (g-protocols (ref (Vector (ref Protocol)))))
-; (Vector ptr) of Conformance* (each individually arena-allocated, registration
-; order).
-(defvar (g-conformances (ref (Vector ptr))))
+; (Vector (ref Conformance)) of Conformance* (each individually arena-allocated,
+; registration order).
+(defvar (g-conformances (ref (Vector (ref Conformance)))))
 ; Protocol inheritance edges (Stage 9 §10.3): `(extend Ord Eq)` records that
 ; conforming to Ord additionally requires conforming to Eq. Reuses the
 ; Conformance layout: type-name = sub-protocol, proto-name = required super.
-; (Vector ptr) of Conformance* edges (each individually arena-allocated).
-(defvar (g-proto-supers (ref (Vector ptr))))
+; (Vector (ref Conformance)) of Conformance* edges (each individually arena-
+; allocated).
+(defvar (g-proto-supers (ref (Vector (ref Conformance)))))
 
 ; Stage 11 parametric structs (T4): template-level conformances. A
 ; `(extend (Vector T) (Seq T))` records that *every* stamped instance of the
@@ -284,8 +285,8 @@
 ; Blanket protocols (Stage 9 §10.1): built-in protocols with automatic
 ; conformance — `Any` (every type) and `Struct` (every struct type). Stored as a
 ; small set of names plus a per-name predicate baked into blanket-conforms.
-; (Vector ptr) of blanket-protocol name strings (interned CStr stored as ptr).
-(defvar (g-blanket (ref (Vector ptr))))
+; (Vector CStr) of blanket-protocol name strings.
+(defvar (g-blanket (ref (Vector CStr))))
 
 ; Macro registry. (Vector ptr) of MacroDef* (each individually arena-allocated,
 ; registration order). The element index is also the macro's JIT-name uniquifier.
@@ -307,7 +308,9 @@
 ; needs a `declare` for each so it links the symbol from the -rdynamic host
 ; binary. Reset at the start of each macro/CT module; emit-call-with-args adds an
 ; entry (and emits the declare to g-decl-out) on first reference while redirected.
-(defvar (g-macro-decls (ref (Vector ptr))))
+; (Vector CStr) of macro/CT-module declare-name strings (dedup set, compared by
+; content via strcmp — never by identity).
+(defvar (g-macro-decls (ref (Vector CStr))))
 
 ; Program-defined `defn`s (the `define`s emitted into the main module). Only
 ; these need a fresh `declare` in a macro/CT JIT module — externs and
@@ -634,11 +637,11 @@
     (let (pd:?ptr:ProgDefn (program-defn-lookup irn))
       (when (= pd null) (return))
       ; Dedup within this module.
-      (doseq (m g-macro-decls (VecIter ptr))
+      (doseq (m g-macro-decls (VecIter CStr))
                (when (= (strcmp m irn)
                         0)
                      (return)))
-      (conj g-macro-decls (intern-str irn))
+      (conj g-macro-decls (cast CStr (intern-str irn)))
       ; Variadic prototypes lower trivially (no struct args reach a macro body).
       (when (!= (pd variadic) 0)
         (fprintf g-decl-out "declare %s %s(...)\n" (type-to-ir (pd ret)) irn)
@@ -7680,7 +7683,7 @@
         (set! g-qq-used 0)
         (set! g-decl-out ct-decl)
         ; Fresh per-module declare set (see emit-defmacro / macro-jit-ensure-decl).
-        (set! g-macro-decls (mkvec ptr))
+        (set! g-macro-decls (cast (ref (Vector CStr)) (make-vec)))
 
         ; Pre-scan: register defn signatures from CT body.
         (let (bi:i32 1)
@@ -7934,7 +7937,7 @@
               (set! g-out ct-def)
               ; Fresh per-module declare set: macro bodies that call ordinary
               ; defns (node-at, intern-symbol, ...) get those declared here.
-              (set! g-macro-decls (mkvec ptr))
+              (set! g-macro-decls (cast (ref (Vector CStr)) (make-vec)))
 
               ; Set up function codegen state
               (reset-function-state)
@@ -9375,9 +9378,9 @@
 ; Register the built-in blanket protocols (§10.1). Hardcoded for now; a
 ; user-declarable blanket facility is parked in design/stage999-future.md.
 (defn init-blanket ():void
-  (set! g-blanket (make-vec))
-  (conj g-blanket (cast ptr "Any"))
-  (conj g-blanket (cast ptr "Struct"))
+  (set! g-blanket (cast (ref (Vector CStr)) (make-vec)))
+  (conj g-blanket "Any")
+  (conj g-blanket "Struct")
   ; Stage 12 N8: install the late-binding cross-file hooks (see their defvars).
   ; tmpl-conformance-check-instance (generics.nuc) is called from union-registry
   ; .nuc; stamp-maybe-type (union-emit.nuc) is called from node-type-call (generics
@@ -9540,8 +9543,8 @@
   (init-blanket)
   (set! g-fnty (mkhash CStr ref:Type))
   (set! g-protocols (mkvec Protocol))
-  (set! g-conformances (make-vec))
-  (set! g-proto-supers (make-vec))
+  (set! g-conformances (mkvec Conformance))
+  (set! g-proto-supers (mkvec Conformance))
   (set! g-mono-worklist (make-vec))
   (init-rmacros)
   (set! g-structs (mkvec StructDef))
@@ -9632,7 +9635,7 @@
   (set! g-decl-stream (open_memstream (addr-of g-decl-bufp) (cast ptr (addr-of g-decl-sizep))))
   (set! g-def-stream  (open_memstream (addr-of g-def-bufp)  (cast ptr (addr-of g-def-sizep))))
   (set! g-decl-out g-decl-stream)
-  (set! g-macro-decls (mkvec ptr))
+  (set! g-macro-decls (cast (ref (Vector CStr)) (make-vec)))
   (set! g-program-defns (mkvec ProgDefn)))
 
 ; ============================================================

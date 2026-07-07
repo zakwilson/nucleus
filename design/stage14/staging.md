@@ -88,20 +88,20 @@ flight):
    (byte-identical, no re-baseline; S1 unblocked).
 2. **MC — macro-conditional-casts (MC-1 → MC-2 → MC-3 → MC-4).** Independent
    of CP/S; expected near-byte-identical; removes the join-collapse failure
-   class before signatures start gaining types.
+   class before signatures start gaining types. ✅ Done
 3. **LW — int-widening (LW-1+LW-2 → LW-3 → LW-4 → LW-5).** Small and
    independent (generic-resolution + call/return emit paths — no overlap
    with MC's join sites or S/T's signature surfaces); slots here on the
    small-before-big principle and to precede 14.3 (see edges). LW-5's
-   per-file cast sweep can trail into later slots but not S3's window.
+   per-file cast sweep can trail into later slots but not S3's window. ✅ Done
 4. **SM — symbol-mangling (SM-1 → SM-5).** Small and independent
    (`finalize-generics` naming helpers, repl.nuc, export emitters — LW
    touches generic *resolution*, SM touches generic *naming*; no shared
    lines, order between LW and SM free). Byte-identical gate on SM-1 (no
-   `?`/`!` names in src/; hyphens untouched is the invariant).
+   `?`/`!` names in src/; hyphens untouched is the invariant). 
    **NS-1 + NS-2 (native-strings substrate) interleave in this small band**
    — additive/dormant, byte-identical, no refresh window; their only edge
-   is MC-1 landing first (item 2).
+   is MC-1 landing first (item 2). ✅ Done
 4½. **TC — target-typed-constructors (TC-1+TC-2 → TC-3 → TC-4 → TC-5).**
    Prerequisites (MC-1, LW-1/2, SM) all landed. TC-1/2/3/5 are additive and
    byte-identical (small band); TC-4 (stdlib constructors + compiler
@@ -112,13 +112,13 @@ flight):
 5. **S — defn-signature (S1 → S2 → S3 → S4).** The tree-wide mechanical
    rewrite (S3) wants a quiet tree: nothing else in flight during that
    window. Lands the final signature syntax before 14.3 edits the same
-   lines.
+   lines. ✅ Done
 6. **NS — native-strings flip (NS-3 → NS-4).** The literal type flips
    `CStr` → `StrView` in its own discrete refresh window: after S (the
    flip touches no signature lines and stays out of S3's quiet tree) and
    before T retypes string params to `StrView`. Byte-identical bootstrap
    gate via target-aware emission, proven by the `build/nucleusc.ll`
-   before/after diff; only lib/examples IR moves.
+   before/after diff; only lib/examples IR moves. ✅ Done
 7. **T — type-safety (14.1 → 14.7).** The long haul. 14.1/14.2 have no
    dependency on MC/LW/SM/S/NS and *may* be pulled forward in parallel
    with items 2–4 if throughput matters, but the serial placement keeps
