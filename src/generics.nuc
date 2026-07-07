@@ -2270,7 +2270,7 @@
 ; the nominal conformance registry.
 (defn blanket-lookup (name:CStr):i32
   (dotimes (i (cast i32 (count g-blanket)))
-    (when (= (cast CStr (invoke g-blanket (cast usize i))) name) (return 1)))
+    (when (= (invoke g-blanket (cast usize i)) name) (return 1)))
   (return 0))
 
 ; A name usable as a `&where` constraint: a declared protocol, a blanket protocol
@@ -2353,7 +2353,7 @@
   (set! type-name (strip-ns-qualifier type-name))
   (set! proto-name (strip-ns-qualifier proto-name))
   (dotimes (i (cast i32 (count g-conformances)))
-    (let (c:ptr:Conformance (cast ptr:Conformance (invoke g-conformances (cast usize i))))
+    (let (c:ptr:Conformance (invoke g-conformances (cast usize i)))
       (when (and (= (c type-name) type-name)
                  (= (c proto-name) proto-name))
         (return 1))))
@@ -2371,7 +2371,7 @@
   (set! type-name (strip-ns-qualifier type-name))
   (set! proto-name (strip-ns-qualifier proto-name))
   (dotimes (i (cast i32 (count g-conformances)))
-    (let (c:ptr:Conformance (cast ptr:Conformance (invoke g-conformances (cast usize i))))
+    (let (c:ptr:Conformance (invoke g-conformances (cast usize i)))
       (when (and (= (c type-name) type-name)
                  (= (c proto-name) proto-name))
         (aset! (cast ptr:i32 out-nargs) 0 (c nargs))
@@ -2406,7 +2406,7 @@
   (set! type-name (strip-ns-qualifier type-name))
   (set! proto-name (strip-ns-qualifier proto-name))
   (dotimes (i (cast i32 (count g-conformances)))
-    (let (c:ptr:Conformance (cast ptr:Conformance (invoke g-conformances (cast usize i))))
+    (let (c:ptr:Conformance (invoke g-conformances (cast usize i)))
       (when (and (= (c type-name) type-name) (= (c proto-name) proto-name))
         ; Incoming call supplies no args → nothing to add or check; keep as-is.
         (when (= nargs 0) (return))
@@ -2426,7 +2426,7 @@
     (.set! c proto-name proto-name)
     (.set! c args args)
     (.set! c nargs nargs)
-    (conj g-conformances (cast ptr c))))
+    (conj g-conformances c)))
 
 ; Has a synthesized closure-conformance forwarder with this exact ir-name
 ; already been registered (and thus queued for emission) in generic `gen-name`?
@@ -2670,13 +2670,13 @@
   (set! sub (strip-ns-qualifier sub))
   (set! super (strip-ns-qualifier super))
   (dotimes (i (cast i32 (count g-proto-supers)))
-    (let (e:ptr:Conformance (cast ptr:Conformance (invoke g-proto-supers (cast usize i))))
+    (let (e:ptr:Conformance (invoke g-proto-supers (cast usize i)))
       (when (and (= (e type-name) sub) (= (e proto-name) super))
         (return))))
   (let (e:ptr:Conformance (cast ptr:Conformance (arena-alloc (sizeof Conformance))))
     (.set! e type-name sub)
     (.set! e proto-name super)
-    (conj g-proto-supers (cast ptr e))))
+    (conj g-proto-supers e)))
 
 ; Substitute the type variable `Self` in a colon-typed symbol spelling: split
 ; on ':' and replace any segment that is exactly "Self" with the concrete type
@@ -2935,7 +2935,7 @@
     ; Conforming to `proto-name` requires conforming to each declared super. The
     ; supers are plain (Self-only) protocols here, so they carry no extra params.
     (dotimes (si (cast i32 (count g-proto-supers)))
-      (let (e:ptr:Conformance (cast ptr:Conformance (invoke g-proto-supers (cast usize si))))
+      (let (e:ptr:Conformance (invoke g-proto-supers (cast usize si)))
         (when (= (e type-name) proto-name)
           (verify-conformance-params typename (e proto-name) null 0 line check))))))
 

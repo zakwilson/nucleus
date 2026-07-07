@@ -212,12 +212,12 @@ The precedent that this works: `Node.car`/`cdr` are already `(raw Node)`
 (prelude.nuc:18-19) and `Cleanup.defer-scope` is `ref:Scope`
 (compiler-types.nuc:257). The untyped fields are pure legacy.
 
-### 2. `(Vector ptr)` registries with untyped elements
+### 2. `(Vector ptr)` registries with untyped elements — **DONE (2026-07-06, see §14.1)**
 
-26 globals (tree-wide grep of `defvar (g-… (ref (Vector ptr)))`). Producer idiom
-`(conj g-X (cast ptr rec))` (e.g. abi.nuc:481); consumer idiom
-`(cast ptr:X (invoke g-X (cast usize i)))` (e.g. union-registry.nuc:191,
-generics.nuc:2759). Element types by registry:
+All 26 registries now carry typed elements. (The original census: 26 globals via
+`defvar (g-… (ref (Vector ptr)))`. Producer idiom was `(conj g-X (cast ptr rec))`;
+consumer idiom was `(cast ptr:X (invoke g-X (cast usize i)))`.) Element types by
+registry:
 
 | Registry | Element | Registry | Element |
 |---|---|---|---|
@@ -228,7 +228,7 @@ generics.nuc:2759). Element types by registry:
 | `g-struct-templates` | `StructTemplate` | `g-mono-worklist` | `MonoJob` |
 | `g-strs` | `StrLit` | `g-binops` | `BinOp` |
 | `g-cast-rules` | `CastRule` | `g-macros` | `MacroDef` |
-| `g-macro-decls` | `MacroDef` | `g-rmacros` | `RMacro` |
+| `g-macro-decls` | `CStr` *(name-string dedup set, not MacroDef)* | `g-rmacros` | `RMacro` |
 | `g-program-defns` | `ProgDefn` | `g-lbl-tbl` | `LabelEntry` |
 | `g-nundo` | `NarrowUndo` | `g-pending-unions` | (pending record) |
 | `g-fnty-names` | `CStr` | `g-fnty-types` | `Type` |
@@ -385,7 +385,19 @@ byte-identical. Establishes the two verification methods every phase uses:
 
 No agent work beyond confirming the build is green at HEAD.
 
-### 14.1 — Element-type the registry `Vector`s  *(controlled refresh)*
+### 14.1 — Element-type the registry `Vector`s  *(controlled refresh)* — **DONE (2026-07-06)**
+
+**Status:** complete. All 26 registries carry typed elements; no `(cast ptr:X
+(invoke g-X …))` consume cast remains tree-wide; `make test` 166/166; `make
+bootstrap` reconverges. `g-fnty-names`/`g-fnty-types` were retired altogether
+(replaced by the `g-fnty (HashMap CStr ref:Type)` in type-mangle.nuc during the
+Stage 11/13 work). The final four — `g-conformances`/`g-proto-supers` →
+`(Vector (ref Conformance))`, `g-blanket`/`g-macro-decls` → `(Vector CStr)` —
+landed in one batch. Two doc corrections from the close-out audit: (a) the §2
+table's `g-macro-decls` row was stale (it is a per-JIT-module macro-decl *name*
+dedup set produced by `intern-str` and consumed by `strcmp`, not a `MacroDef`
+registry — the `MacroDef` registry is the separate, already-typed `g-macros`);
+(b) the bootstrap prediction below was over-cautious — see the corrected note.
 
 **Agent: focused-task-implementer** (per-registry batches); build-test-runner
 between. **Read (scoped):** the `make-vec`/`(ref (Vector ptr))` pattern
@@ -402,15 +414,26 @@ registries read during prescan / JIT-macro expansion (start with the coldest).
 **Bootstrap:** controlled refresh — the Vector instance mangles from `%Vector.ptr`
 to `%Vector.<Record>`, and each `conj`/`invoke`/`count`/iterator method stamps for
 the new instance, so IR drifts. Refresh at the end of the phase (not per batch),
-then re-converge. **Watch:** the `(Maybe ptr)`-niche-vs-matchable tension
+then re-converge. *(Correction, verified 2026-07-06: the `make bootstrap`
+fixed-point compares two compilations by the **`bin/nucleusc` binary**, not the
+checked-in `boot/nucleusc.ll`; since `bin/nucleusc` is rebuilt from source each
+run, it already stamps the new typed Vector instances in **both** stages, so the
+fixed point holds **even before** `make update-bootstrap`. The committed
+`boot/*.ll` is only a fallback to rebuild the binary via `ensure-boot` when it
+can't run — so it can be stale without breaking convergence. `make update-bootstrap`
+is still correct to run at the milestone, to keep the fallback IR synced.)*
+**Watch:** the `(Maybe ptr)`-niche-vs-matchable tension
 (conventions.md says matchable; R3 progress says combinators crash over a
 `(VecIter ptr)`). Element-typing does **not** require combinator iteration —
 lookups stay `dotimes` — so this is orthogonal; but if a `(ref X)` element changes
 `(next it)`'s `(Maybe (ref X))` matchability, keep the loop a `dotimes` (idiom
-holds). *(Open question OQ4.)*
+holds). *(Open question OQ4 — resolved: no converted site relied on matching
+`(next it)` over the retyped Vector; lookups stayed `dotimes` and the standard
+pointer-weakening coercion `(ref T)`→`ptr:T` handled every consumer annotation
+without any re-annotation.)*
 
 **Done when:** all 26 registries carry a typed element; no `(cast ptr:X (invoke
-g-X …))` remains; `make bootstrap` re-converges; tests green.
+g-X …))` remains; `make bootstrap` re-converges; tests green. ✓
 
 ### 14.2 — Type the `compiler-types.nuc` cross-reference fields  *(mostly inert)*
 
@@ -583,7 +606,7 @@ batch.
 
 | Phase | Expected bootstrap | Refresh |
 |---|---|---|
-| 14.1 registry element typing | drifts (Vector instance mangles) | controlled, reconverge (end of phase) |
+| 14.1 registry element typing | drifts (Vector instance mangles) | controlled, reconverge (end of phase). **Verified 2026-07-06:** the fixed point held *before* `update-bootstrap` (the convergence test compares the `bin/nucleusc` binary, rebuilt from source each run, not the checked-in `boot/*.ll`); refresh still correct to keep the fallback IR synced. |
 | 14.2 field typing — `(raw T)`/`CStr` | byte-identical | no (verify empty IR diff) |
 | 14.2 field typing — `(ref T)` promotions | drifts (flow checks engage) | controlled, reconverge |
 | 14.3 param/return typing — `(raw T)`/`CStr` | byte-identical | no (verify empty IR diff) |
