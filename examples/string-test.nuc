@@ -85,7 +85,7 @@
 
     ; ---- 5b. string-from-view: invalid UTF-8 → error --------------------------
     ; 0xFF is not a valid UTF-8 lead byte.
-    (let (bad-buf:ptr:ui8 (cast ptr:ui8 (malloc (cast i64 1))))
+    (with (bad-buf:ptr:ui8 (cast ptr:ui8 (malloc (cast i64 1))))
       (aset! bad-buf (cast i64 0) (cast ui8 255))
       (let ((bad-sv (ref StrView)) (alloca StrView))
         (.set! bad-sv data bad-buf)
@@ -95,8 +95,7 @@
             ((ok s3)
              (printf "from-view-bad=ok\n")
              (drop (addr-of s3)))
-            ((err e) (printf "from-view-bad=err\n")))))  ; err
-      (free (cast ptr bad-buf)))
+            ((err e) (printf "from-view-bad=err\n"))))))  ; err
 
     (printf "hello-done\n"))
   ; String `s` drops here automatically.

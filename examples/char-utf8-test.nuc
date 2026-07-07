@@ -19,32 +19,30 @@
 ; identical to the original.
 ; Access DecodeResult fields via addr-of (field access requires a pointer).
 (defn test-roundtrip ((label CStr) (c Char) (expected-bytes usize)):void
-  (let (buf:ptr (malloc (cast i64 4))
-        p:ptr:ui8 (cast ptr:ui8 buf))
-    (let (written:usize (char-encode-utf8 c p))
-      (let (dr:DecodeResult (char-decode-utf8 p written))
-        (printf "%s: len=%llu write=%llu ok=%d decoded=%u match=%d\n"
-          label
-          (cast ui64 expected-bytes)
-          (cast ui64 written)
-          ((addr-of dr) ok)
-          (cast ui32 ((addr-of dr) ch))
-          (if (and (= ((addr-of dr) ok) 1)
-                   (and (= written expected-bytes)
-                        (= ((addr-of dr) nbytes) expected-bytes)))
-            1 0))))
-    (free buf)))
+  (with (buf:ptr (malloc (cast i64 4))
+         p:ptr:ui8 (cast ptr:ui8 buf)
+         written:usize (char-encode-utf8 c p)
+         dr:DecodeResult (char-decode-utf8 p written))
+    (printf "%s: len=%llu write=%llu ok=%d decoded=%u match=%d\n"
+            label
+            (cast ui64 expected-bytes)
+            (cast ui64 written)
+            ((addr-of dr) ok)
+            (cast ui32 ((addr-of dr) ch))
+            (if (and (= ((addr-of dr) ok) 1)
+                     (and (= written expected-bytes)
+                          (= ((addr-of dr) nbytes) expected-bytes)))
+              1 0))))
 
 ; --- Check that decoding invalid/truncated bytes returns ok=0 ---
 (defn test-decode-invalid ((label CStr) (b0 ui8) (b1 ui8) (b2 ui8) (len usize)):void
-  (let (buf:ptr (malloc (cast i64 4))
-        p:ptr:ui8 (cast ptr:ui8 buf))
+  (with (buf:ptr (malloc (cast i64 4))
+         p:ptr:ui8 (cast ptr:ui8 buf))
     (aset! p (cast i64 0) b0)
     (aset! p (cast i64 1) b1)
     (aset! p (cast i64 2) b2)
     (let (dr:DecodeResult (char-decode-utf8 p len))
-      (printf "%s: ok=%d\n" label ((addr-of dr) ok)))
-    (free buf)))
+      (printf "%s: ok=%d\n" label ((addr-of dr) ok)))))
 
 (defn main ():i32
   ; --- UTF-8 round-trips ---

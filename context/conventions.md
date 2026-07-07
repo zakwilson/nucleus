@@ -455,7 +455,7 @@ find loops convert fine — just mind the gotcha.
 
 ```lisp
 (let (n:usize (sv len)
-        buf:ptr:ui8 (cast ptr:ui8 (malloc (cast i64 (+ n (cast usize 1))))))
+      buf:ptr:ui8 (cast ptr:ui8 (malloc (cast i64 (+ n (cast usize 1))))))
 ; ...
     (free (cast ptr buf)))
 ```
@@ -464,11 +464,11 @@ is simpler and more reliable as
 
 ```lisp
 (with (n:usize (sv len)
-        buf:ptr:ui8 (cast ptr:ui8 (malloc (cast i64 (+ n (cast usize 1))))))
+       buf:ptr:ui8 (cast ptr:ui8 (malloc (cast i64 (+ n (cast usize 1))))))
 ; ...
     )
 ```
 
 ## Avoid untyped pointers
 
-Passing around untyped pointers and using casts is unsafe and must be reserved as an escape hatch, not standard practice.
+Passing around untyped pointers and using casts is unsafe and must be reserved as an escape hatch, not standard practice. When using a cast, **always** check whether it's possible to change the design so that all values are well-typed.
