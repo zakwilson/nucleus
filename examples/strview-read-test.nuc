@@ -36,7 +36,7 @@
     (return sv)))
 
 (defn main ():i32
-  (let (sv:ptr:StrView (make-hello-utf8))
+  (with (sv:ptr:StrView (make-hello-utf8))
 
     ; --- byte-len and char-count ---
     (printf "byte-len=%llu\n"   (cast ui64 (byte-len sv)))    ; 6
@@ -73,36 +73,28 @@
         ((err e) (printf "sub-bytes=err\n"))))
 
     ; --- starts-with? prefix "h" ---
-    (let (prefix:ptr:StrView (strview-from-cstr "h"))
-      (printf "starts-with-h=%d\n" (starts-with? sv prefix))    ; 1
-      (free (cast ptr prefix)))
+    (with (prefix:ptr:StrView (strview-from-cstr "h"))
+      (printf "starts-with-h=%d\n" (starts-with? sv prefix)))    ; 1
 
     ; --- ends-with? suffix "llo" ---
-    (let (suffix:ptr:StrView (strview-from-cstr "llo"))
-      (printf "ends-with-llo=%d\n" (ends-with? sv suffix))       ; 1
-      (free (cast ptr suffix)))
+    (with (suffix:ptr:StrView (strview-from-cstr "llo"))
+      (printf "ends-with-llo=%d\n" (ends-with? sv suffix))) ; 1
 
     ; --- contains-str? "ll" ---
-    (let (needle:ptr:StrView (strview-from-cstr "ll"))
-      (printf "contains-ll=%d\n" (contains-str? sv needle))      ; 1
-      (free (cast ptr needle)))
+    (with (needle:ptr:StrView (strview-from-cstr "ll"))
+      (printf "contains-ll=%d\n" (contains-str? sv needle))) ; 1
 
     ; --- str-empty? ---
-    (printf "empty-hello=%d\n" (str-empty? sv))   ; 0
-
-    (free (cast ptr (sv data)))
-    (free (cast ptr sv)))
+    (printf "empty-hello=%d\n" (str-empty? sv)))  ; 0
 
   ; --- strview-trim ---
-  (let (wsv:ptr:StrView (strview-from-cstr "  hello  "))
-    (let (t:StrView (strview-trim wsv))
-      (printf "trim-len=%llu\n" (cast ui64 ((addr-of t) len))))  ; 5
-    (free (cast ptr wsv)))
+  (with (wsv:ptr:StrView (strview-from-cstr "  hello  ")
+        t:StrView (strview-trim wsv))
+    (printf "trim-len=%llu\n" (cast ui64 ((addr-of t) len))))  ; 5
 
   ; --- str-empty? on an empty view ---
-  (let (esv:ptr:StrView (strview-from-cstr ""))
-    (printf "empty-empty=%d\n" (str-empty? esv))  ; 1
-    (free (cast ptr esv)))
+  (with (esv:ptr:StrView (strview-from-cstr ""))
+    (printf "empty-empty=%d\n" (str-empty? esv))) ; 1
 
   (printf "done\n")
   (return 0))

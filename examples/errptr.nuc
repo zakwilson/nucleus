@@ -36,7 +36,7 @@
     ((err e) (printf "err %s: %s\n" (err-name e) (err-message e)))))
 
 (defn main ():i32
-  (let (p:ptr:Pt (cast ptr:Pt (malloc 8)))
+  (with (p:ptr:Pt (cast ptr:Pt (malloc 8)))
     (.set! p x 7)
 
     ; match on a niche Result value, both arms.
@@ -57,7 +57,5 @@
       ((err e) (printf "try err %s\n" (err-name e))))
     (match (lookup-x p (cast i32 -1))
       ((ok v)  (printf "try ok %d\n" v))
-      ((err e) (printf "try err %s\n" (err-name e))))
-
-    (free p))
+      ((err e) (printf "try err %s\n" (err-name e)))))
   0)

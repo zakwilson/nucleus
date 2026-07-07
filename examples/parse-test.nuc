@@ -92,12 +92,11 @@
       ((err e) (printf "i32-ws=err\n"))))
 
   ; ---- 11. i32 error: "42 " (trailing whitespace) -----------------------------
-  (let (sv:ptr:StrView (strview-from-cstr "42 "))
-    (let (r:!i32 (parse i32 sv))
-      (match r
-        ((ok v) (printf "i32-trail=ok\n"))
-        ((err e) (printf "i32-trail=err\n"))))
-    (free (cast ptr sv)))
+  (with (sv:ptr:StrView (strview-from-cstr "42 ")
+         r:!i32 (parse i32 sv))
+    (match r
+      ((ok v) (printf "i32-trail=ok\n"))
+      ((err e) (printf "i32-trail=err\n"))))
 
   ; ---- 12. i32 error: "" (empty) ----------------------------------------------
   (with (sv:ptr:StrView (strview-from-cstr "")

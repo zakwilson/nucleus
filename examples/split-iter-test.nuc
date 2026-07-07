@@ -14,12 +14,11 @@
 
 ; print-sv — print a StrView's bytes (copied to a NUL-terminated temp).
 (defn print-sv ((sv (ref StrView))):void
-  (let (n:usize (sv len)
-        buf:ptr:ui8 (cast ptr:ui8 (malloc (cast i64 (+ n (cast usize 1))))))
+  (with (n:usize (sv len)
+         buf:ptr:ui8 (cast ptr:ui8 (malloc (cast i64 (+ n (cast usize 1))))))
     (memcpy (cast ptr buf) (cast ptr (sv data)) (cast i64 n))
     (aset! buf (cast i64 n) (cast ui8 0))
-    (printf "%s" (cast CStr (cast ptr buf)))
-    (free (cast ptr buf))))
+    (printf "%s" (cast CStr (cast ptr buf)))))
 
 ; FoldFn: sum segment byte-lengths. x is the ptr-encoded (ref StrView).
 (defstruct SegLenSum dummy:i32)

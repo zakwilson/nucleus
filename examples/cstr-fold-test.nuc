@@ -34,36 +34,34 @@
 
 (defn main ():i32
   ; ---- 1. CStr byte fold vs strview-hash over the same bytes ----------------
-  (let (cs:CStr "hello, world")
-    (let (sv:ptr:StrView (strview-from-cstr cs))
-      (let (it:ByteIter (cstr-bytes cs)
-            reduced:usize (fnv-via-reduce (addr-of it))
-            direct:usize  (strview-hash sv))
-        (printf "cstr reduce==direct: %d\n" (cast i32 (if (= reduced direct) 1 0)))
-        (printf "cstr hash=%llu\n" (cast ui64 reduced)))
-      (free (cast ptr sv))))
+  (with (cs:CStr "hello, world"
+         sv:ptr:StrView (strview-from-cstr cs)
+         it:ByteIter (cstr-bytes cs)
+         reduced:usize (fnv-via-reduce (addr-of it))
+         direct:usize  (strview-hash sv))
+    (printf "cstr reduce==direct: %d\n" (cast i32 (if (= reduced direct) 1 0)))
+    (printf "cstr hash=%llu\n" (cast ui64 reduced)))
 
   ; ---- 2. String byte fold (via its StrView) vs strview-hash ----------------
-  (let (s:String (string-from-cstr-unchecked "hello, world"))
-    (let (sv:StrView (string-as-view (addr-of s)))
-      (let (it:ByteIter (strview-bytes (addr-of sv))
-            reduced:usize (fnv-via-reduce (addr-of it))
-            direct:usize  (strview-hash (addr-of sv)))
-        (printf "string reduce==direct: %d\n" (cast i32 (if (= reduced direct) 1 0)))))
-    (drop (addr-of s)))
+  (with (s:String (string-from-cstr-unchecked "hello, world")
+         sv:StrView (string-as-view (addr-of s))
+         it:ByteIter (strview-bytes (addr-of sv))
+         reduced:usize (fnv-via-reduce (addr-of it))
+         direct:usize  (strview-hash (addr-of sv)))
+    (printf "string reduce==direct: %d\n" (cast i32 (if (= reduced direct) 1 0))))
 
-  ; ---- 3. doseq-iter over cstr-bytes: sum byte values -----------------------
+    ; ---- 3. doseq-iter over cstr-bytes: sum byte values -----------------------
   (let (total:i64 0
         it:ByteIter (cstr-bytes "ABC"))
     (doseq-iter (b (addr-of it))
       (set! total (+ total (bit-and (cast i64 b) (cast i64 255)))))
-    ; 'A'+'B'+'C' = 65+66+67 = 198
+      ; 'A'+'B'+'C' = 65+66+67 = 198
     (printf "abc byte-sum=%lld\n" total))
 
-  ; ---- 4. reduce byte-sum over a ByteIter -----------------------------------
+    ; ---- 4. reduce byte-sum over a ByteIter -----------------------------------
   (let ((bs (ref ByteSum)) (alloca ByteSum)
-        (it (ref ByteIter)) (alloca ByteIter))
-    (let (it2:ByteIter (cstr-bytes "ABC"))
-      (printf "abc reduce-sum=%lld\n" (reduce bs (cast i64 0) (addr-of it2)))))
+        (it (ref ByteIter)) (alloca ByteIter)
+        it2:ByteIter (cstr-bytes "ABC"))
+    (printf "abc reduce-sum=%lld\n" (reduce bs (cast i64 0) (addr-of it2))))
 
   (return 0))

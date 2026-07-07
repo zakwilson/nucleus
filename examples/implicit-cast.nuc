@@ -4,9 +4,8 @@
 ; Built-in implicit cast: i32 literal → ui64 (size_t) for malloc.
 ; No (cast i64 ...) wrapper required.
 (defn try-malloc ():i32
-  (let (p:ptr (malloc 16))
+  (with (p:ptr (malloc 16))
     (when (= p null) (return 0))
-    (free p)
     (return 1)))
 
 ; Built-in implicit cast: f32 → f64 (fpext) at call site.

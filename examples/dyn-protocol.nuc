@@ -19,10 +19,11 @@
 (import-use coll)
 (import-use iterator)
 (import-use vector)
+(import-use keyword)
 
 ; A single, single-method user protocol: `describe` maps a value to an int.
 (defprotocol Describe
-  (describe ((self (ref Self))) i32))
+             (describe ((self (ref Self))) i32))
 
 ; Two DISTINCT concrete types that nominally extend Describe.
 (defstruct Cat n:i32)
@@ -38,8 +39,8 @@
 ; (B2) A defn whose return type is the unbound-abstract `(dyn Describe)`. Each
 ;      concrete value is boxed at the return site; the returned box owns its heap
 ;      payload and is dropped at the caller's scope.
-(defn make-describable (which:i32) (dyn Describe)
-  (if (= which 0)
+(defn make-describable (which:Keyword) (dyn Describe)
+  (if (= which :cat)
     (return (Cat 5))
     (return (Dog 7))))
 
@@ -54,9 +55,9 @@
 (defn main ():i32
   ; (B2) returned boxes of two different concrete types, each owned by a `with`
   ;      binding and dropped (data freed) at scope exit.
-  (with (d0:(dyn Describe) (make-describable 0))
+  (with (d0:(dyn Describe) (make-describable :cat))
     (printf "b2 cat: %d\n" (describe d0)))             ; 105
-  (with (d1:(dyn Describe) (make-describable 1))
+  (with (d1:(dyn Describe) (make-describable :dog))
     (printf "b2 dog: %d\n" (describe d1)))             ; 70
 
   ; A concrete value boxed into a `(dyn Describe)` parameter at the call site.
