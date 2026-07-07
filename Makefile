@@ -93,6 +93,7 @@ boot-binary: $(REPL_SHIM_O) | $(BUILD)
 	clang boot/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic -ffast-math -march=native -O3 -o bin/nucleusc
 
 test: $(BIN)
+	@rm -rf $(BUILD)/out
 	./tests/run-tests.sh
 
 # Struct-ABI interop acceptance test (Phase C gate). Not part of `make test`

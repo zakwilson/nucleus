@@ -39,11 +39,26 @@ spawn() {
 # emit → grep → link → run) stay serial within the unit.
 
 run_example() {  # <src>
-  local src="$1" name expected actual_file
+  local src="$1" name expected actual_file build_log
   name="$(basename "$src" .nuc)"
   expected="tests/expected/${name}.out"
   [ -f "$expected" ] || return 0
-  ./build.sh "$src" >/dev/null 2>&1
+  # Never let a stale binary from a prior run mask a compile failure: a
+  # successful old binary would let the diff pass silently. The compiler writes
+  # the binary atomically on success, so removing it first means a missing
+  # binary after build.sh unambiguously signals "did not compile".
+  rm -f "./build/out/$name"
+  build_log="$(mktemp)"
+  # Capture build output and check the exit code explicitly. `set -e` would
+  # otherwise kill this unit silently on a compile error, leaving an empty
+  # result file that the replay loop can flag as failed but cannot explain.
+  if ! ./build.sh "$src" >"$build_log" 2>&1; then
+    echo "FAIL  $name (compile error)"
+    sed 's/^/    /' "$build_log"
+    rm -f "$build_log"
+    return 0
+  fi
+  rm -f "$build_log"
   actual_file="$(mktemp)"
   ./build/out/"$name" > "$actual_file" 2>&1 || true
   if diff -u "$expected" "$actual_file" >/dev/null; then
