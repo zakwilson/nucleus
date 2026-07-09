@@ -8,18 +8,18 @@
 ; ---------------------------------------------------------------------------
 ; USAGE (the working construction pattern):
 ;
-;   (with ((v (ref (Vector i32))) (alloca (Vector i32)))
-;     (vector-init v)          ; empty, default (libc) allocator
+;   (with (v:(ref (Vector i32)) (vector-new))   ; T inferred from declared type
 ;     (conj v 10) (conj v 20)
-;     (printf "%d\n" (v (cast usize 0)))   ; index access -> 10
-;     ...)                     ; (drop v) fires here, freeing the buffer
+;     (printf "%d\n" (v (cast usize 0)))        ; index access -> 10
+;     ...)                      ; (drop v) fires here, freeing the buffer
 ;
-; `vector-init` takes a (ref (Vector T)) so the element type T is inferred from
-; the binding's declared type — there is no zero-arg value constructor because a
-; bare `(vector-new)` has no argument from which to infer T (the result type is
-; not propagated to a tyvar by the compiler). `(alloca (Vector T))` + init is the
-; idiom; it also composes with `with`/Drop, which a returned-by-value Vector
-; cannot (an owning collection may not escape by return without `move`).
+; `vector-new` is a target-typed value constructor: T is bound from the
+; binding's declared type via the want channel (design/stage14/target-typed-
+; constructors.md), and the by-value result materializes into the declared
+; `(ref (Vector T))`. The `*-init` family below stays for caller-managed
+; storage (`(with ((v (ref (Vector T))) (alloca (Vector T))) (vector-init v) …)`);
+; `vector-new-in` allocates the struct itself through a handle and returns an
+; escapable ref. An owning collection may not escape by return without `move`.
 ; ---------------------------------------------------------------------------
 
 (import-use "stdio.h")
@@ -80,6 +80,35 @@
   (.set! v len (cast usize 0))
   (.set! v cap (cast usize 0))
   (.set! v alloc (deref a)))
+
+; ---------------------------------------------------------------------------
+; Value/heap constructors (target-typed — design/stage14/target-typed-
+; constructors.md). T is bound from the binding's declared type via the want
+; channel, so a zero-arg `(vector-new)` resolves at a typed position. The by-
+; value family materializes into a `(ref (Vector T))` binding (TC-3); the `-in`
+; family allocates the struct itself through the handle and returns an
+; escapable ref. The `*-init` family above stays for caller-managed storage.
+; ---------------------------------------------------------------------------
+; by value — stack/binding use (materializes into a declared (ref (Vector T)))
+(defn vector-new () (Vector T)
+  (let (r (alloca (Vector T)))
+    (vector-init r)
+    (return (deref r))))
+(defn vector-new-alloc ((a (ref AllocHandle))) (Vector T)
+  (let (r (alloca (Vector T)))
+    (vector-init-alloc r a)
+    (return (deref r))))
+(defn vector-new-capacity (n:usize) (Vector T)
+  (let (r (alloca (Vector T)))
+    (vector-init-capacity r n)
+    (return (deref r))))
+; heap placement — struct allocated through the handle; returns an escapable ref.
+(defn vector-new-in ((a (ref AllocHandle))) (ref (Vector T))
+  (let (v (cast (ref (Vector T))
+             (alloc-handle-alloc a (sizeof (Vector T)) (cast usize 8))))
+    (vector-init-alloc v a)
+    (return v)))
+
 
 ; ---------------------------------------------------------------------------
 ; Internal: grow the buffer. Doubles capacity (or seeds 4 when empty),

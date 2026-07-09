@@ -1,5 +1,72 @@
 # Stage 14 — Target-typed generic constructors (result-type propagation)
 
+**Status (2026-07-09): TC-1 through TC-4 fully implemented; TC-5 part 1 done, part 2
+remaining.** All gates green: `make` clean, `make test` 168/168, `make bootstrap`
+stage1==stage2. Boot artifacts converged (incl. Windows IRs).
+
+- **TC-1 + TC-2 (the want channel):** the return-only-tyvar registration gate is
+  lifted (a tyvar not determined by any parameter now registers as METHOD-GENERIC;
+  the def-time death is retired). `generic-resolve`, `generic-resolve-adapt-tier`,
+  `generic-method-bind`, `generic-method-bind-adapt`, and `node-type-call` carry a
+  `want:?ptr:Type`; when tyvars remain unbound after args+assoc, `unify-tpat` fills
+  them from the expected type over the return pattern (fill-only — never overrides
+  an arg-derived binding). `g-want-type` is armed at let/with binding inits, `set!`
+  RHS, explicit+implicit `return`, and `.set!` value position, and consumed once at
+  `emit-generic-call` entry. A call that cannot resolve and carries a return-only
+  tyvar reports `cannot infer type variable '%s' for '%s': no expected type at this
+  position — annotate the binding`. **Bug fixed during TC-4a:** `generic-method-bind-adapt`
+  (src/generics.nuc:~1500) early-exited `(when (= any-remaining 0) (return 0))`
+  before want-fill, so a *zero-arg* return-only-tyvar generic never bound — the
+  early-exit now fires only when the binding is actually complete (all tyvars bound).
+
+- **TC-3 (binding materialization):** at `let`/`with` position, a declared
+  `(ref S)` (S a struct) initialized with a by-value `S` materializes:
+  `tc3-emit-binding-init` derives the want via two non-emitting `node-type` probes
+  (whole `(ref S)`, then pointee `S`), emits once, and (iff the resolved init is
+  by-value `S`) `tc3-materialize` allocas a backing slot, stores, binds the ref.
+  Drop/move/escape reuse the existing `with-drop-method` TY-PTR arm. §1.2 residual
+  (stamped parametric by-value drop) verified.
+
+- **TC-4 (constructors + compiler adoption):** added the `*-new` / `*-new-alloc` /
+  `*-new-capacity` (by-value) and `*-new-in` (heap) constructor families to
+  lib/vector.nuc, lib/hashmap.nuc, lib/hashset.nuc (T / K,V bind from the declared
+  type via want). Deleted `make-vec`/`mkvec`/`mkhash` from src/nucleusc.nuc and
+  rewrote all ~43 registry-construction sites to `(vector-new-in (addr-of
+  g-arena-alloc))` / `(hashmap-new-in …)` — the `cast`-over-`make-vec` type hole
+  (stage999-future.md) is retired (element types now honest via want). Reader
+  empty-literal hints retargeted to the new constructors.
+  `examples/constructors.nuc` + `tests/expected/constructors.out` cover stack/
+  with-Drop/explicit-alloc/heap-in-arena/HashMap-two-tyvar/HashSet; a negative
+  fixture `tests/fixtures/tc-cannot-infer-tyvar.nuc` exercises the diagnostic.
+  **Two gcheck fixes were required (TC-4a):** (1) a cell whose head names a
+  registered struct template (`(Vector T)`) is a type operand, not a call; (2) a
+  `ref`/`raw`/`ptr` wrapper-keyword head (`(ref (Vector T))`) is likewise a type
+  spelling — both at src/generics.nuc:~1944. Without these, `(alloca (Vector T))`
+  / `(cast (ref (Vector T)) …)` in a generic body died `in generic body: unknown
+  function`. (The `ref`/`raw`/`ptr` half needed a 2-stage manual bootstrap: the
+  `-in` heap bodies use `(ref (Vector T))`, so the boot had to gain `ref`-
+  recognition before it could compile them — temporarily elide the `-in`
+  constructors, build, refresh, restore, rebuild.)
+
+- **TC-5 part 1 (union target-typing at want positions):** `union-target-rewrite`
+  (src/union-emit.nuc:867) is parameterized by the target type (return-position
+  callers pass `g-fn-ret-type` as before; the new want-position callers —
+  `tc3-emit-binding-init` for let/with inits, and `emit-set` RHS — pass the
+  declared slot type). So `(let (m:(Maybe i32) (some 5)))`, `(let (m:(Maybe i32)
+  none))`, and `(set! m (some 7))` now construct without explicit `make`.
+  Byte-identical/additive (the new positions previously died as unknown arms).
+  The `.set!` value position is deferred — it sits before `(import-use union-emit)`
+  in src/nucleusc.nuc, so `union-target-rewrite` is not in scope there.
+
+- **TC-5 part 2 (value-position distribution) — REMAINING.** The want/rewrite
+  does not yet distribute into `if`/`cond`/`do`/`match`/`let`-body tails, so
+  `(let (m:(Maybe i32) (if c (some 5) none)))` does NOT rewrite the branches (the
+  `if` form itself isn't an arm head). Implementing part 2 means recursing the
+  `union-target-rewrite` into the value-position tail forms of those control
+  constructs (and clearing it in statement positions) — replacing v1's "stays
+  armed through control forms" with precise scoping. This is additive (those
+  positions currently die) and independent of the rest.
+
 Allocating, initializing, and returning collection-template instances is the
 worst ergonomic spot in the language. The canonical local idiom spells the
 type twice and splits construction across two statements
@@ -206,6 +273,13 @@ change for lockstep purposes; the bootstrap fixed point is the gate.
 
 ### TC-3 — binding materialization: value→ref at declared-ref bindings
 
+**Status: implemented (2026-07-08).** See the top-of-file Status note. `tc3-emit-binding-init`
+(src/nucleusc.nuc:5536) + `tc3-materialize` (:5508) implement the two-probe want
+derivation and materialization; `emit-let` (:5632) and `emit-with` (:5709) call them.
+`node-type-call`'s tier-2 (src/generics.nuc:3685) falls back to `g-want-type` so the
+non-emitting probe drives generic resolution. Byte-identical (additive); `make test`
+166/166; `make bootstrap` green. §1.2 residual (stamped parametric by-value drop) verified.
+
 Resolves §1.3. New coercion rule at `let`/`with` binding position only: when
 the declared type is `(ref S)` for a struct `S` and the init value is a
 by-value `S` (type-eq on the pointee), the compiler materializes — allocas
@@ -233,6 +307,16 @@ instead of today's `let: init type mismatch` death. Then:
   parametric by-value drop).
 
 ### TC-4 — stdlib constructors, compiler adoption, retirement sweep
+
+**Status: implemented (2026-07-09).** See the top-of-file Status note. The `*-new` /
+`*-new-alloc` / `*-new-capacity` / `*-new-in` constructor families are in lib/vector.nuc,
+lib/hashmap.nuc, lib/hashset.nuc; `make-vec`/`mkvec`/`mkhash` deleted and all ~43 compiler
+registry sites rewritten to `(vector-new-in (addr-of g-arena-alloc))` / `(hashmap-new-in …)`.
+Two gcheck fixes (struct-template heads + `ref`/`raw`/`ptr` wrapper heads, src/generics.nuc:~1944)
+were required to compile the constructor bodies; the `ref`/`raw`/`ptr` half needed a 2-stage
+manual bootstrap (boot had to gain recognition before it could compile the `-in` bodies).
+Reader hints retargeted; `examples/constructors.nuc` + negative fixture added. Boot converged;
+`make test` 168/168; `make bootstrap` green.
 
 The constructor families, all ordinary generics (the `string-new` shape:
 alloca, init, `(return (deref v))`):
@@ -280,6 +364,14 @@ Adoption and retirement:
   unconstructible, the fixture documents that instead).
 
 ### TC-5 — generalize target typing: unions and value-position distribution
+
+**Status: part 1 implemented (2026-07-09); part 2 remaining.** `union-target-rewrite`
+(src/union-emit.nuc:867) is parameterized by the target type and run at the let/with
+binding-init and `set!` RHS want positions (in addition to return positions), so union
+construction works without explicit `make` there. The `.set!` value position is deferred
+(it sits before `(import-use union-emit)` in src/nucleusc.nuc). Part 2 — distributing the
+rewrite into `if`/`cond`/`do`/`match`/`let`-body value tails — is the remaining work
+(additive; those positions currently die). See the top-of-file Status note.
 
 Two halves, both riding the TC-2 channel:
 

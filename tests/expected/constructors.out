@@ -1,0 +1,6 @@
+vector count=3 first=10
+alloc-vector count=1
+hashmap count=2
+hashset count=2 has100=1
+heap-vector count=1
+done

@@ -856,21 +856,24 @@
         (when (= (cast ptr pty) null) (return 0))
         (return (if (= (pty kind) TY-ERR) 1 0))))))
 
-; Return-position target typing (unions.md §5c): when the enclosing function's
-; declared return type is a defunion and the returned form reads
-; `(arm args...)` for one of its arms, it is construction — rewrite to
-; (make Type arm args...). Arm names win over functions/macros in exactly this
-; position; everything else is untouched.
-(defn union-target-rewrite (form:ptr):ptr
+; Target typing (unions.md §5c, generalized by TC-5): when `target` is a
+; defunion/niche and `form` reads `(arm args...)` for one of its arms, it is
+; construction — rewrite to (make Type arm args...). Arm names win over
+; functions/macros in exactly this position; everything else is untouched.
+; `target` is the enclosing type: the function return type (g-fn-ret-type) at
+; return positions, or the declared slot type at any want position (let/with
+; binding init, set! RHS, .set! value — design/stage14/target-typed-
+; constructors.md §TC-5). A null/non-union target leaves `form` unchanged.
+(defn union-target-rewrite (form:ptr target:ptr):ptr
   (when (= form null) (return form))
-  (when (= g-fn-ret-type null) (return form))
-  ; Niche-ERRPTR return (unions.md §6 rule 3): the return type is a bare pointer,
+  (when (= target null) (return form))
+  ; Niche-ERRPTR target (unions.md §6 rule 3): the target type is a bare pointer,
   ; so uniondef-for-type is null. Rewrite ok/err/err! to the internal
-  ; (__niche-ctor arm args…), which constructs against g-fn-ret-type's encoding.
+  ; (__niche-ctor arm args…), which constructs against target's encoding.
   ; err! == err here (no handler path — a (ref X) repair isn't a struct, so the
-  ; §11 negotiation doesn't apply). Niche-MAYBE returns are left untouched: their
+  ; §11 negotiation doesn't apply). Niche-MAYBE targets are left untouched: their
   ; some/none already lower via emit-some / the null literal (byte-identical).
-  (when (= (niche-layout-of g-fn-ret-type) LAYOUT-NICHE-ERRPTR)
+  (when (= (niche-layout-of target) LAYOUT-NICHE-ERRPTR)
     (when (and (= (-> (cast ptr:Node form) (_ kind)) NODE-CELL) (> (node-len form) 0))
       (let (head:ptr:Node (cast ptr:Node (node-at form 0))
             ln:i32 (-> (cast ptr:Node form) (_ line)))
@@ -884,7 +887,7 @@
                         (make-cell (cast ptr (intern-symbol arm))
                           (-> (cast ptr:Node form) (_ cdr)) ln)
                         ln))))))))
-  (let (ud:?ptr:UnionDef (uniondef-for-type g-fn-ret-type))
+  (let (ud:?ptr:UnionDef (uniondef-for-type target))
     (when (= ud null) (return form))
     (let (udd:ptr:UnionDef (cast ptr:UnionDef ud)
           n:ptr:Node (cast ptr:Node form))
@@ -1020,8 +1023,8 @@
         id:i32 (new-label-id)
         def-lbl:ptr (fmt-i32 "match.def%d" id)
         end-lbl:ptr (fmt-i32 "match.end%d" id)
-        (vals (ref (Vector ptr))) (make-vec)
-        (preds (ref (Vector ptr))) (make-vec)
+        (vals (ref (Vector ptr))) (vector-new-in (addr-of g-arena-alloc))
+        (preds (ref (Vector ptr))) (vector-new-in (addr-of g-arena-alloc))
         result-type:ptr null
         result-taint:ptr null
         ci:i32 0)
@@ -1238,8 +1241,8 @@
           err-lbl:ptr (fmt-i32 "match.err%d" id)
           ok-lbl:ptr (fmt-i32 "match.ok%d" id)
           end-lbl:ptr (fmt-i32 "match.end%d" id)
-          (vals (ref (Vector ptr))) (make-vec)
-          (preds (ref (Vector ptr))) (make-vec)
+          (vals (ref (Vector ptr))) (vector-new-in (addr-of g-arena-alloc))
+          (preds (ref (Vector ptr))) (vector-new-in (addr-of g-arena-alloc))
           ; result-type/result-taint are threaded through both arms; a single-
           ; element i32/ptr array stands in for a by-reference local.
           rtbox:ptr (arena-alloc (ptr-bytes))
@@ -1357,8 +1360,8 @@
           none-lbl:ptr (fmt-i32 "match.none%d" id)
           some-lbl:ptr (fmt-i32 "match.some%d" id)
           end-lbl:ptr (fmt-i32 "match.end%d" id)
-          (vals (ref (Vector ptr))) (make-vec)
-          (preds (ref (Vector ptr))) (make-vec)
+          (vals (ref (Vector ptr))) (vector-new-in (addr-of g-arena-alloc))
+          (preds (ref (Vector ptr))) (vector-new-in (addr-of g-arena-alloc))
           rtbox:ptr (arena-alloc (ptr-bytes))
           ttbox:ptr (arena-alloc (ptr-bytes)))
       (aset! (cast ptr:ptr rtbox) 0 null)
@@ -1632,7 +1635,7 @@
         ; or false (or) — so the lhs's facts hold while it is emitted. This
         ; is what makes (and (!= m null) (m kind)) check.
         (let (scmark:i32 (narrow-mark)
-              (scfacts (ref (Vector ptr))) (make-vec))
+              (scfacts (ref (Vector ptr))) (vector-new-in (addr-of g-arena-alloc)))
           (if (!= is-and 0)
             (test-true-nonnull (node-at cc 1) scfacts)
             (test-false-nonnull (node-at cc 1) scfacts))

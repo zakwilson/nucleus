@@ -111,6 +111,27 @@
         (.set! s cap init-cap)))))
 
 ; ---------------------------------------------------------------------------
+; Value/heap constructors (target-typed — design/stage14/target-typed-
+; constructors.md). T binds from the declared type via the want channel. The
+; by-value family materializes into a `(ref (HashSet T))` binding (TC-3); the
+; `-in` family allocates the struct itself through the handle.
+; ---------------------------------------------------------------------------
+(defn hashset-new () (HashSet T)
+  (let (r (alloca (HashSet T)))
+    (hashset-init r)
+    (return (deref r))))
+(defn hashset-new-alloc ((a (ref AllocHandle))) (HashSet T)
+  (let (r (alloca (HashSet T)))
+    (hashset-init-alloc r a)
+    (return (deref r))))
+(defn hashset-new-in ((a (ref AllocHandle))) (ref (HashSet T))
+  (let (v (cast (ref (HashSet T))
+             (alloc-handle-alloc a (sizeof (HashSet T)) (cast usize 8))))
+    (hashset-init-alloc v a)
+    (return v)))
+
+
+; ---------------------------------------------------------------------------
 ; hashset-resize: internal. Allocate new arrays of new-cap slots, rehash all
 ; OCCUPIED (state == 1) buckets from the old arrays into the new ones (dropping
 ; tombstones), then free the old arrays and install the new arrays + cap.
