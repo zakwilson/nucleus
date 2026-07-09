@@ -116,6 +116,97 @@ lockstep is not at risk because the abstract scope exists only inside the A2 wal
 during real emission no scope binding is `TY-TYVAR`. If you add a new place that
 manufactures or stores types, keep `TY-TYVAR` confined to the checker.
 
+## `gcheck` recognizes type-spelling cells in generic bodies (TC-4a + TC-4b)
+
+A cell whose head names a **registered struct template** — `(Box T)`, `(Vector i32)`,
+`(HashMap K V)` — or a **type-wrapper keyword** (`ref`/`raw`/`ptr` — `(ref (Vector T))`,
+`(raw Node)`) appearing in a generic body is a TYPE operand, not a function call.
+`gcheck` (src/generics.nuc, top of the NODE-CELL symbol-head branch) checks
+`node-template-of` (struct templates) and the `ref`/`raw`/`ptr` keywords, and returns
+null (deferred) instead of falling through to the genuine-call path (which would die
+`in generic body: unknown function 'Box'`/`'ref'` — these are types, not functions).
+This is what lets a generic body use `(alloca (Box T))` / `(cast (ref (Vector T)) x)` /
+`(sizeof (Vector T))` type operands (the TC-4 `*-new`/`*-new-in` constructor body shape).
+Struct-template names and function/generic names do not collide in this codebase, so this
+cannot mask a real call; a compound literal `((Vector i32) v0 …)` has a non-SYM (CELL)
+head and never reaches this check. The precise stamped type is produced at monomorphization;
+for the A2 walk the type is check-only (deferred/null is correct).
+
+**The `ref`/`raw`/`ptr` half needed a 2-stage manual bootstrap.** The `-in` heap
+constructors (`(defn vector-new-in ((a (ref AllocHandle))) (ref (Vector T)) …)`) use
+`(cast (ref (Vector T)) …)` in the body, which needs the wrapper-keyword recognition.
+But that recognition is itself in src/generics.nuc — source the OLD boot compiles — and
+the old boot lacked it, so `make` died on the `-in` bodies (chicken-and-egg). Resolution
+(build.md "Breaking changes the OLD boot can't bridge"): temporarily elide just the `-in`
+constructors, `make` + `make update-bootstrap` (boot gains recognition without the bodies),
+restore the `-in` constructors, `make` again (the new boot compiles them). Generalize this
+whenever a gcheck fix is needed by source the boot must first compile.
+
+**Latent TC-1 bug this surfaced:** `generic-method-bind-adapt` (src/generics.nuc:~1500)
+early-exited `(when (= any-remaining 0) (return 0))` *before* want-fill, so a **zero-arg**
+return-only-tyvar generic (the entire `*-new` family) never bound via the tier-2 path —
+`any-remaining` is trivially 0 when there are no args. The early-exit (meant to skip
+tier-2 double-counting of tier-1 exact matches) now fires only when the binding is actually
+*complete* (all tyvars bound); an incomplete binding falls through to want-fill. Tier-1
+(`generic-method-bind`) never had this bug, so the EMIT path worked — but the non-emitting
+node-type probe (which uses tier-2) returned null, defeating TC-3's materialization probe.
+
+## The byte-identical gate for a self-hosted-compiler edit is `make bootstrap`, not a literal `nucleusc.ll` diff
+
+A change to any function that is itself compiled into the compiler (all of `src/*.nuc`,
+including def-time checkers like `gcheck`) necessarily shifts the compiler's *own* IR —
+so a before/after `./build/nucleusc --emit-llvm src/nucleusc.nuc` diff is **never empty**
+for such a change, even when the change is 100% inert for compiled programs. The
+non-emptiness is: (a) the edited function's body, plus (b) cascading SSA-temp renumbering
+in every later function in the one-module compilation, plus (c) per-use symbol-name
+`@.str` constants for any newly-referenced quoted symbols. To **prove** a self-hosted edit
+is inert for existing programs: (1) `make bootstrap` (stage1==stage2 — the new compiler is
+self-consistent); (2) `make test` green; (3) normalize the diff (strip all `%…` SSA names
+and `@.str.N` numbers) and confirm the *only* remaining change is inside the edited
+function(s). The design docs' "byte-identical (additive)" claims for TC-1/2/3 refer to
+**existing program IR** being unchanged (those phases fire only where today's emit dies),
+*not* to the literal `nucleusc.ll` diff — which a careful read of those phases shows also
+shifted (new `tc3-*` functions, etc.) and was reconciled by the same `make bootstrap` gate.
+
+## The want channel: target-typed construction (TC-1..TC-5)
+
+A one-shot, downward expected-type ("want") flows from declared-type positions into
+generic resolution, filling tyvars the arguments left unbound (design/stage14/target-
+typed-constructors.md). `g-want-type` (src/nucleusc.nuc, beside `g-fn-ret-type`) is
+**armed** (save/set/restore) at let/with binding inits, `set!` RHS, explicit+implicit
+`return`, and `.set!` value position, and **consumed once** at `emit-generic-call` entry
+(read into a local + nulled *before emitting arguments*, so an argument sub-call never
+inherits the outer want). The shared resolver `generic-resolve-adapt-tier` and
+`generic-method-bind(-adapt)` carry a `want:?ptr:Type`; `unify-tpat` fills a still-null
+tyvar slot from want over the method's return pattern (fill-only — sets a null slot,
+`type-eq`s an already-bound one; never overrides an arg-derived binding). A return-only-
+tyvar generic (zero-arg `vector-new`) now registers as METHOD-GENERIC and resolves at a
+typed position; with no want it reports `cannot infer type variable '%s' for '%s': no
+expected type at this position — annotate the binding`.
+
+**node-type must mirror this.** `node-type-call` takes `want`; when a caller hands null
+(the `node-type` dispatcher, gcheck, valid-walk), it falls back to the armed `g-want-type`
+so a non-emitting probe (TC-3's two-probe materialization derivation) drives resolution
+identically to emit. Keep the resolver threaded through both: emit and node-type must not
+diverge on a want-dependent call (the lockstep).
+
+**TC-3 binding materialization:** a declared `(ref S)` binding (S a struct) initialized
+with a by-value `S` (e.g. `(with (v:(ref (Vector i32)) (vector-new)) …)`) materializes —
+`tc3-emit-binding-init` derives the want via two non-emitting probes (whole `(ref S)`,
+then pointee `S`), emits once, and `tc3-materialize` allocas a backing slot + stores +
+binds the ref. The materialized backing is frame storage, dropped through the existing
+`with-drop-method` TY-PTR arm. Methods take `(ref …)`, so no `addr-of` per call (resolves
+the receiver-shape problem).
+
+**TC-5 union target-typing:** `union-target-rewrite` (src/union-emit.nuc) is parameterized
+by the target type and runs at the let/with init and `set!` RHS want positions (not just
+return), so `(let (m:(Maybe i32) (some 5)))` / `(set! m none)` construct without `make`.
+The `.set!` value position is NOT covered (it sits before `(import-use union-emit)` in
+src/nucleusc.nuc, so the function isn't in scope there). Value-position distribution into
+`if`/`cond`/`do`/`match`/`let`-body tails (TC-5 part 2) is **not yet done** — a union arm
+head inside a branch tail is not rewritten.
+
+
 ## `?`/`!` in names map to `_QMARK`/`_BANG` in emitted symbols
 
 A `defn`, struct, or union name may contain `?`/`!` (`full?`, `push!`, `Full?`)

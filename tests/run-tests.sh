@@ -550,6 +550,12 @@ spawn run_reject lw-literal-range-rejected tests/fixtures/lw-literal-range.nuc \
 spawn run_reject sm5-illegal-char-rejected tests/fixtures/sm5-illegal-char.nuc \
   "illegal character '%' in generated symbol for 'weird%name'"
 
+# Stage 14 TC-1: a zero-arg return-only-tyvar generic called with no expected
+# type (no declared binding → no want) must FAIL with the dedicated diagnostic,
+# not the misleading "no matching method".
+spawn run_reject tc-cannot-infer-tyvar tests/fixtures/tc-cannot-infer-tyvar.nuc \
+  "cannot infer type variable 'T' for 'box-empty'"
+
 spawn run_closure_cheader
 
 spawn run_box_cheader

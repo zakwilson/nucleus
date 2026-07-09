@@ -609,7 +609,7 @@
 (defn read-vector-literal (line:i32):!ptr
   (let (head:ptr (try (read-lit-elems "vector" TOK-RBRACK line)))
     (when (= head null)
-      (do (report-at line "empty vector literal: use (alloca (Vector T)) + vector-init")
+      (do (report-at line "empty vector literal: use (vector-new), e.g. (let (v:(ref (Vector T)) (vector-new)) ...)")
           (return (err! parse-error))))
     ; Infer element type from the elements (all must share a kind).
     (let (et:ptr (try (infer-lit-type head 0 1 line
@@ -659,7 +659,7 @@
 (defn read-hashset-literal (line:i32):!ptr
   (let (head:ptr (try (read-lit-elems "set" TOK-RBRACE line)))
     (when (= head null)
-      (do (report-at line "empty set literal: use (alloca (HashSet T)) + hashset-init")
+      (do (report-at line "empty set literal: use (hashset-new), e.g. (let (s:(ref (HashSet T)) (hashset-new)) ...)")
           (return (err! parse-error))))
     (let (et:ptr (try (infer-lit-type head 0 1 line
                         "set literal elements must be scalar literals (int, float, or string)"
@@ -695,7 +695,7 @@
 (defn read-hashmap-literal (line:i32):!ptr
   (let (head:ptr (try (read-lit-elems "map" TOK-RBRACE line)))
     (when (= head null)
-      (do (report-at line "empty map literal: use (alloca (HashMap K V)) + hashmap-init")
+      (do (report-at line "empty map literal: use (hashmap-new), e.g. (let (m:(ref (HashMap K V)) (hashmap-new)) ...)")
           (return (err! parse-error))))
     (when (!= (bit-and (node-len head) 1) 0)
       (do (report-at line "map literal: odd number of elements")

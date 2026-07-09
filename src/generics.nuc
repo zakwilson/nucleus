@@ -252,7 +252,7 @@
         (when (= (m kind) METHOD-GENERIC)
           (let (bound:ptr (arena-alloc (* (cast i64 (+ (m num-tyvars) 1)) (ptr-bytes))))
             (when (and (= (m num-params) nparams)
-                       (!= (generic-method-bind (cast ptr m) param-types nparams bound) 0))
+                       (!= (generic-method-bind (cast ptr m) param-types nparams bound null) 0))
               (when (!= (generic-constraints-ok (cast ptr m) bound line) 0)
                 ; Resolve the bound return type from the method's return spelling
                 ; (mirrors abstract-call-via-generic): a bare tyvar return picks
@@ -461,7 +461,7 @@
 ; a safe widen / untyped-int-literal adaptation on every argument (§10.3); the
 ; caller (emit-generic-call) coerces the args to the chosen params. arg-nodes is
 ; the parallel array of argument source nodes (or null) used to spot literals.
-(defn generic-resolve (g:ptr argtypes:ptr arg-nodes:ptr nargs:i32 line:i32):ref:Method
+(defn generic-resolve (g:ptr argtypes:ptr arg-nodes:ptr nargs:i32 line:i32 want:ptr):ref:Method
   (let (gg:ptr:Generic (cast ptr:Generic g)
         found:?ptr:Method null)
     (dotimes (i (gg num-methods))
@@ -475,15 +475,26 @@
     (let (cand:ptr null
           cand-bound:ptr null
           ncand:i32 0
-          constraint-fail:i32 0)
+          constraint-fail:i32 0
+          ; TC-1: track a generic template that carries a tyvar no parameter
+          ; determines (a return-only tyvar). If resolution fails and such a
+          ; candidate exists, the call needed the want channel (which was null or
+          ; did not unify) — report the dedicated "cannot infer" diagnostic
+          ; instead of the misleading "no matching method".
+          infer-tyvar:ptr null)
       (dotimes (j (gg num-methods))
         (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (gg methods)) j)))
           (when (= (m kind) METHOD-GENERIC)
             (let (bound:ptr (arena-alloc (* (cast i64 (+ (m num-tyvars) 1)) (ptr-bytes))))
-              (when (!= (generic-method-bind (cast ptr m) argtypes nargs bound) 0)
+              (if (!= (generic-method-bind (cast ptr m) argtypes nargs bound want) 0)
                 (if (!= (generic-constraints-ok (cast ptr m) bound line) 0)
                   (do (set! cand (cast ptr m)) (set! cand-bound bound) (inc! ncand))
-                  (set! constraint-fail 1)))))))
+                  (set! constraint-fail 1))
+                ; Bind failed: if this template has a return-only tyvar, record
+                ; its name for the cannot-infer diagnostic.
+                (let (ut:ptr (method-undetermined-tyvar (cast ptr m)))
+                  (when (and (!= ut null) (= infer-tyvar null))
+                    (set! infer-tyvar ut))))))))
       (when (> ncand 1)
         (die-at line (fmt-s "ambiguous generic match for '%s'" (gg name))))
       (when (= ncand 1)
@@ -495,13 +506,17 @@
       (let (wmethod:ptr null
             wbound:ptr null
             r:i32 (generic-resolve-adapt-tier g argtypes arg-nodes nargs line
-                    (cast ptr:ptr (addr-of wmethod)) (cast ptr:ptr (addr-of wbound))))
+                    (cast ptr:ptr (addr-of wmethod)) (cast ptr:ptr (addr-of wbound)) want))
         (when (= r 3)
           (die-at line (fmt-s "ambiguous overload for '%s' under argument widening" (gg name))))
         (when (= r 1) (return (cast ref:Method wmethod)))
         (when (= r 2)
           (return (generic-instantiate g wmethod wbound
                     (subst-param-types-bound wmethod wbound line) nargs line))))
+      (when (!= infer-tyvar null)
+        (die-at line
+          (fmt-2s "cannot infer type variable '%s' for '%s': no expected type at this position — annotate the binding"
+                  infer-tyvar (gg name))))
       (when (!= constraint-fail 0)
         (die-at line
           (fmt-s "no matching method for '%s': arguments do not satisfy the required protocol constraint"
@@ -916,6 +931,27 @@
           (return 0))))
     (return 0)))
 
+; TC-1: the interned name of the first declared tyvar that NO parameter pattern
+; determines (a return-only / otherwise under-determined tyvar), or null when
+; every tyvar is parameter-determined. Such a tyvar can only be filled by the
+; call site's want channel; a call that cannot resolve and has one of these gets
+; the dedicated "cannot infer type variable" diagnostic instead of the misleading
+; "no matching method". Re-derives the registration-time determination signal at
+; resolution time (the `determined` array is not retained on the Method).
+(defn method-undetermined-tyvar (m:ptr):ptr
+  (let (mm:ptr:Method (cast ptr:Method m)
+        nparams:i32 (mm num-params)
+        ntv:i32 (mm num-tyvars)
+        params-node:ptr (node-at (mm body) 2))
+    (dotimes (ti ntv)
+      (let (tvname:ptr (aref (cast ptr:ptr (mm tyvars)) ti)
+            bnd:i32 0)
+        (dotimes (j nparams)
+          (when (!= (pattern-determines-tyvar (binding-type-node (node-at params-node j)) tvname) 0)
+            (set! bnd 1)))
+        (when (= bnd 0) (return tvname))))
+    (return null)))
+
 ; Does the colon-free symbol `tvname` appear anywhere as a leaf of `node`? Used
 ; by the assoc-types (A1) determination fixpoint to test whether a constraint
 ; argument pattern `((Proto Arg…) V)` references a given tyvar. Walks every cell
@@ -1114,11 +1150,14 @@
                                 (inc! ti2)))
                             (inc! ai)))))
                     (inc! ck)))))
-            ; Any tyvar still undetermined is the existing error.
-            (dotimes (ti3 ntv)
-              (when (= (aref (cast ptr:i32 determined) ti3) 0)
-                (die-at (ff line)
-                  (fmt-s "defn: type variable '%s' is not determined by any parameter (return-only generics need dyn, deferred)" (aref (cast ptr:ptr tyvars) ti3))))))
+            ; TC-1: a tyvar not determined by any parameter (a return-only tyvar)
+            ; is no longer a def-time error — it registers as METHOD-GENERIC and
+            ; its determination is deferred to the call site's want channel
+            ; (generic-resolve / generic-method-bind unify the return pattern
+            ; against the expected type). `determined` is retained as advisory
+            ; detection; resolution re-derives the signal via
+            ; method-undetermined-tyvar for the dedicated diagnostic.
+            )
           ; Constraint protocols are validated in the A2 pass (check-generic-
           ; template), which runs after all imports — so a &where may name a
           ; protocol that an `import` provides, while a genuine typo is still
@@ -1294,7 +1333,7 @@
             (inc! ci)))))
     (return 1)))
 
-(defn generic-method-bind (m:ptr argtypes:ptr nargs:i32 out-bound:ptr):i32
+(defn generic-method-bind (m:ptr argtypes:ptr nargs:i32 out-bound:ptr want:ptr):i32
   (let (mm:ptr:Method (cast ptr:Method m))
     (when (!= (mm num-params) nargs) (return 0))
     (let (params-node:ptr (node-at (mm body) 2)
@@ -1316,6 +1355,23 @@
                                     (mm num-constraints)
                                     (-> (mm body) (cast ptr:Node _) (_ line))) 0)
         (return 0))
+      ; TC-1: if tyvars remain unbound after args+assoc, fill them from the
+      ; expected type (want) by unifying the method's return pattern against it.
+      ; unify-tpat only sets a slot that is still null (it does type-eq on an
+      ; already-bound slot), so want fills, never overrides an arg-derived
+      ; binding. Skipped when want is null OR the binding is already complete
+      ; (the common case — every existing generic binds all tyvars from args, so
+      ; this branch is inert under self-compilation and never touches the return
+      ; pattern).
+      (when (!= want null)
+        (let (incomplete:i32 0)
+          (dotimes (k ntv)
+            (when (= (aref (cast ptr:ptr out-bound) k) null) (set! incomplete 1)))
+          (when (!= incomplete 0)
+            (let (rnode:ptr (defn-ret-node (mm body)))
+              (when (!= rnode null)
+                (unify-tpat rnode want (mm tyvars) ntv out-bound
+                            ((cast ptr:Node rnode) line)))))))
       (dotimes (k ntv)
         (when (= (aref (cast ptr:ptr out-bound) k) null) (return 0)))
       (return 1))))
@@ -1416,7 +1472,7 @@
 ; ownership of exact template matches and tier-2 never double-counts one. Fills
 ; out-bound and returns 1 on an adapted match, else 0.
 (defn generic-method-bind-adapt (m:ptr argtypes:ptr arg-nodes:ptr nargs:i32
-                                     out-bound:ptr line:i32):i32
+                                     out-bound:ptr line:i32 want:ptr):i32
   (let (mm:ptr:Method (cast ptr:Method m))
     (when (!= (mm num-params) nargs) (return 0))
     (let (params-node:ptr (node-at (mm body) 2)
@@ -1441,7 +1497,17 @@
                 (dotimes (k ntv)
                   (aset! (cast ptr:ptr out-bound) k (aref (cast ptr:ptr saved) k)))))))
       ; A fully-exact bind is a tier-1 match — reject so tier-2 never double-counts.
-      (when (= any-remaining 0) (return 0))
+      ; But only when the binding is actually COMPLETE: a method whose args all
+      ; matched exactly yet still has an unbound tyvar (notably a zero-arg
+      ; return-only-tyvar generic, or any return-only tyvar not reached by args)
+      ; is NOT a tier-1 match, and must fall through to want-fill (TC-1) below,
+      ; which may complete it. Without this guard a zero-arg generic dies here
+      ; before want-fill ever runs.
+      (when (= any-remaining 0)
+        (let (complete:i32 1)
+          (dotimes (k ntv)
+            (when (= (aref (cast ptr:ptr out-bound) k) null) (set! complete 0)))
+          (when (!= complete 0) (return 0))))
       ; Recover associated tyvars from parametric &where constraints, then require
       ; every tyvar bound by the exactly-matched parameters (adaptation never binds
       ; a tyvar, so a tyvar reachable only through a deferred parameter stays null).
@@ -1450,6 +1516,22 @@
                                     (mm num-constraints)
                                     (-> (mm body) (cast ptr:Node _) (_ line))) 0)
         (return 0))
+      ; TC-1: fill any tyvars still unbound after exact-args+assoc from the
+      ; expected type (want), BEFORE the all-bound check and before pass-2
+      ; adaptation. LW's "adaptation never binds a tyvar" invariant is preserved:
+      ; want-fill is a binding step distinct from the arg adaptation below.
+      ; unify-tpat only sets a still-null slot, so want never overrides an
+      ; arg-derived binding. Skipped when want is null OR the binding is already
+      ; complete (the common case — inert under self-compilation).
+      (when (!= want null)
+        (let (incomplete:i32 0)
+          (dotimes (k ntv)
+            (when (= (aref (cast ptr:ptr out-bound) k) null) (set! incomplete 1)))
+          (when (!= incomplete 0)
+            (let (rnode:ptr (defn-ret-node (mm body)))
+              (when (!= rnode null)
+                (unify-tpat rnode want (mm tyvars) ntv out-bound
+                            ((cast ptr:Node rnode) line)))))))
       (dotimes (k ntv)
         (when (= (aref (cast ptr:ptr out-bound) k) null) (return 0)))
       ; Pass 2: every deferred parameter's argument must adapt (same rule as the
@@ -1477,7 +1559,7 @@
 ; (*out-method), 2 = a unique template match (*out-method + *out-bound), 3 = an
 ; ambiguous pool (the caller reports/ignores per its mode).
 (defn generic-resolve-adapt-tier (g:ptr argtypes:ptr arg-nodes:ptr nargs:i32 line:i32
-                                      out-method:ptr:ptr out-bound:ptr:ptr):i32
+                                      out-method:ptr:ptr out-bound:ptr:ptr want:ptr):i32
   (let (gg:ptr:Generic (cast ptr:Generic g)
         wmethod:ptr null
         wbound:ptr null
@@ -1506,7 +1588,7 @@
       (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (gg methods)) k)))
         (when (= (m kind) METHOD-GENERIC)
           (let (bound:ptr (arena-alloc (* (cast i64 (+ (m num-tyvars) 1)) (ptr-bytes))))
-            (when (!= (generic-method-bind-adapt (cast ptr m) argtypes arg-nodes nargs bound line) 0)
+            (when (!= (generic-method-bind-adapt (cast ptr m) argtypes arg-nodes nargs bound line want) 0)
               (when (!= (generic-constraints-ok (cast ptr m) bound line) 0)
                 (set! wmethod (cast ptr m)) (set! wbound bound) (inc! wn)))))))
     (when (> wn 1) (return 3))
@@ -1728,7 +1810,7 @@
         (let (m2:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (gg methods)) gi)))
           (when (= (m2 kind) METHOD-GENERIC)
             (let (bound:ptr (arena-alloc (* (cast i64 (+ (m2 num-tyvars) 1)) (ptr-bytes))))
-              (when (!= (generic-method-bind (cast ptr m2) argtypes nargs bound) 0)
+              (when (!= (generic-method-bind (cast ptr m2) argtypes nargs bound null) 0)
                 (let (ok:i32 1)
                   (dotimes (ci (m2 num-constraints))
                     (let (uidx:i32 (tyvar-index-of (aref (cast ptr:ptr (m2 con-vars)) ci)
@@ -1847,6 +1929,25 @@
         (return null))
       (let (h:ptr (head s)
             hp:ptr (cast ptr head))
+        ; TC-4: a cell whose head names a REGISTERED STRUCT TEMPLATE is a TYPE
+        ; operand (e.g. (Box T), (Vector i32)), never a function call — struct
+        ; template names and function/generic names do not collide in this
+        ; codebase. Without this, gcheck would walk e.g. (Box T) as an
+        ; unknown-function call (Box is a struct template, not a generic) and
+        ; abort the A2 check with "in generic body: unknown function 'Box'" —
+        ; blocking the TC-4 constructor body shape. Defer (null): the precise
+        ; stamped type is produced at monomorphization; for the A2 walk the
+        ; type is check-only (conventions.md: TY-TYVAR is check-only). This
+        ; recognizes the type-application head only; a compound literal whose
+        ; head is the CELL ((Vector i32) v0 ...) has a non-SYM head and never
+        ; reaches here (node-template-of checks head kind == NODE-SYM).
+        (when (!= (cast ptr (node-template-of n)) null) (return null))
+        ; TC-4: a type-wrapper keyword head (ref/raw/ptr) is likewise a type
+        ; spelling — e.g. (ref (Vector T)), (raw Node) — never a call. Without
+        ; this the heap `-in` constructor body `(cast (ref (Vector T)) …)` dies
+        ; "in generic body: unknown function 'ref'". Defer (null): a check-only
+        ; type pass need not model the wrapper; stamping happens at monomorphize.
+        (when (or (= hp 'ref) (= hp 'raw) (= hp 'ptr)) (return null))
         ; Expand macros (if/when/-> …) so the body is core forms.
         (when (!= (find-macro h) null)
           (let (ex:ptr (macroexpand-form n 1))
@@ -1935,7 +2036,7 @@
             ; Known name, unresolved here: defer to stamp-time. Concrete calls get
             ; a best-effort type; abstract ones stay unknown (null).
             (when (!= any-abstract 0) (return null))
-            (return (node-type-call n scope h))))))))
+            (return (node-type-call n scope h null))))))))
 
 ; Walk only the compound (list) children of a node, checking nested calls but
 ; ignoring bare symbols (which may be type names, field names, or places).
@@ -2094,7 +2195,7 @@
       (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (gg methods)) j)))
         (when (= (m kind) METHOD-GENERIC)
           (let (bound:ptr (arena-alloc (* (cast i64 (+ (m num-tyvars) 1)) (ptr-bytes))))
-            (when (and (!= (generic-method-bind (cast ptr m) argtypes nargs bound) 0)
+            (when (and (!= (generic-method-bind (cast ptr m) argtypes nargs bound null) 0)
                        (!= (generic-constraints-ok (cast ptr m) bound line) 0))
               (return (template-result-type (cast ptr m) bound line)))))))
     (return null)))
@@ -2188,7 +2289,7 @@
             (when (= (scope-lookup scope h) null)
               (die-at line
                 (fmt-2s "type '%s' does not satisfy the Valid bound of '%s'" cty gname)))
-            (return (node-type-call n scope h))))))))
+            (return (node-type-call n scope h null))))))))
 
 ; Run the per-call-site Valid check on a stamped instantiation `stamped` whose
 ; type variables were bound to the concrete types in `bound`. Builds a scope from
@@ -3551,7 +3652,7 @@
 ; user overload's return type, else i1 for comparisons / the first operand's type
 ; (the intrinsic peephole result); overloaded set → the exactly matched method's
 ; return type; solitary/extern → the bound function's return.
-(defn node-type-call (n:ptr scope:ref:Scope h:ptr):?ptr:Type
+(defn node-type-call (n:ptr scope:ref:Scope h:ptr want:ptr):?ptr:Type
   (let (g:?ptr:Generic (generic-lookup h))
     (when (!= g null)
       (let (m0:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (g methods)) 0)))
@@ -3597,10 +3698,20 @@
             ; template/plain call types correctly (the node-type↔emit lockstep).
             ; Return null (the escape hatch) on ambiguity/no-match — node-type is
             ; allowed to not-know a type, and must never die here.
+            ; TC-3: when no explicit want was passed (the normal node-type entry
+            ; points hand null here), fall back to the downward want channel
+            ; g-want-type so a non-emitting probe run from a let/with binding
+            ; init (tc3-emit-binding-init) can fill a return-only tyvar exactly
+            ; as emit would. Safe under the consume-once discipline: g-want-type
+            ; is armed only around a binding-init probe/emit and is null in every
+            ; other node-type context (gcheck/valid-walk run def-time; the Rung-3
+            ; cross-check runs after emit-generic-call already consumed it), so
+            ; self-compilation — which has no return-only generics — is unaffected.
             (let (wmethod:ptr null
                   wbound:ptr null
                   r:i32 (generic-resolve-adapt-tier g argtypes arg-nodes nargs 0
-                          (cast ptr:ptr (addr-of wmethod)) (cast ptr:ptr (addr-of wbound))))
+                          (cast ptr:ptr (addr-of wmethod)) (cast ptr:ptr (addr-of wbound))
+                          (if (!= want null) want g-want-type)))
               (when (= r 1) (return (-> wmethod (cast ptr:Method _) (_ ret-type))))
               (when (= r 2) (return (method-bound-ret-type wmethod wbound 0)))))))))
     (if-some (sym (scope-lookup scope h))
@@ -3729,4 +3840,11 @@
                            (-> n (cast ptr:Node _) (_ line)))))
         (when (= hp 'defer) (return ty-void))
         (when (= hp 'move) (return (node-type (node-at n 1) scope)))
-        (return (node-type-call n scope h))))))
+        ; TC-2/TC-3: node-type-call is passed a null explicit want here, but its
+        ; tier-2 fallback reads the downward want channel (g-want-type) when one
+        ; is armed — i.e. during a non-emitting probe run from a let/with binding
+        ; init (tc3-emit-binding-init). In every other node-type context the
+        ; channel is null, so a want-dependent generic call types as null (the
+        ; documented escape hatch: unknown, not divergent), same as pre-LW-2
+        ; widened calls. TC-5 will distribute the want through control forms.
+        (return (node-type-call n scope h null))))))

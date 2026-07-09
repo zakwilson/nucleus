@@ -191,6 +191,14 @@
 ; "flow narrowing" section); whether `declare void @llvm.trap()` has been
 ; written to the decl stream (lazy, used by `unwrap`).
 (defvar g-fn-ret-type:ptr)
+; TC-2: the downward expected-type ("want") channel. Armed by let/with binding
+; inits, set! RHS, return positions, and field stores (the positions that
+; already declare a type); consumed once at the first generic call emitted in
+; that init (emit-generic-call reads+nulls it before emitting arguments, so an
+; argument sub-call never inherits the outer want). Null when no want is in
+; scope. Carries the same Type* generic-resolve consults to fill tyvars the
+; arguments left unbound (TC-1); node-type mirrors it via the resolver param.
+(defvar g-want-type:ptr)
 (defvar g-loop-depth:i32 0)
 (defvar (g-nundo (ref (Vector (ref NarrowUndo)))))
 (defvar g-trap-declared:i32 0)
@@ -433,10 +441,12 @@
 ; (Stage 11). The compiler's growable pointer tables are (Vector ptr) values;
 ; the globals/locals holding them are typed (ref (Vector ptr)) so use sites call
 ; conj/count/invoke directly (bounds-checked indexing, amortized growth) with no
-; per-use cast. make-vec returns the concrete (ref (Vector ptr)), so construction
-; sites need no cast either. Naming (Vector ptr) in make-vec's *signature* stamps
-; the instance during the defn-signature prescan (which runs before the allocator
-; import is emitted), queuing `%Vector.ptr = type { …, %AllocHandle }` on the
+; per-use cast. `vector-new-in (addr-of g-arena-alloc)` returns the concrete
+; (ref (Vector ptr)) (the element type filled from the slot's declared type via
+; the want channel), so construction sites need no cast either. Naming (Vector ptr)
+; in vector-new-in's *signature* stamps the instance during the defn-signature
+; prescan (which runs before the allocator import is emitted), queuing
+; `%Vector.ptr = type { …, %AllocHandle }` on the
 ; pending-IR list ahead of `%AllocHandle`'s definition. The drain deferral
 ; (pending-union-deps-ready / drain-pending-union-irs) leaves `%Vector.ptr` queued
 ; while `%AllocHandle` is still undefined — so the prelude's macro-JIT module does
@@ -483,37 +493,16 @@
     (return r)))
 
 ; ============================================================
-; Growable pointer vector
+; Growable pointer/hash collections
 ; ============================================================
 ;
-; Backed by lib/vector.nuc's (Vector ptr): bounds-checked indexing (panics on
-; OOB instead of silently corrupting), amortized growth via conj. The compiler
-; only ever stores ptr elements, so make-vec returns the concrete
-; (ref (Vector ptr)) and call sites use conj/count/invoke directly — no per-use
-; casts. The struct and its element buffer are allocated through the shared
-; arena handle (g-arena-alloc, whose free is a no-op), so these process-lifetime
-; tables are never dropped — the faithful match for the old arena-backed Vec.
-
-(defn make-vec () (ref (Vector ptr))
-  (let ((v (ref (Vector ptr)))
-        (cast (ref (Vector ptr))
-          (alloc-handle-alloc (addr-of g-arena-alloc)
-                              (sizeof (Vector ptr))
-                              (cast usize 8))))
-    (vector-init-alloc v (addr-of g-arena-alloc))
-    (return v)))
-
-(defmacro mkvec (T)
-  `(cast (ref (Vector (ref ~T))) (make-vec)))
-
-(defmacro mkhash (kT vT)
-  `(let ((h (ref (HashMap (ref ~kT) (ref ~vT))))
-         (cast (ref (HashMap (ref ~kT) (ref ~vT)))
-               (alloc-handle-alloc (addr-of g-arena-alloc)
-                                   (sizeof (HashMap (ref ~kT) (ref ~vT)))
-                                   (cast usize 8))))
-     (hashmap-init h)
-     h))
+; The compiler's registries are (Vector ptr)/(Vector (ref X)) and one HashMap,
+; built through the shared arena handle (g-arena-alloc, whose free is a no-op)
+; so these process-lifetime tables are never dropped. Construction uses the
+; target-typed lib constructors (design/stage14/target-typed-constructors.md):
+; `(vector-new-in (addr-of g-arena-alloc))` fills the element type from the
+; binding's declared type via the want channel — no per-use cast (the old
+; `make-vec`/`mkvec`/`mkhash` cast-over-arena hole is retired).
 
 ; ============================================================
 ; Reader — imported from lib/reader.nuc
@@ -1267,14 +1256,14 @@
     (return (ss type))))
 
 (defn narrow-mark ():i32
-  (when (= g-nundo null) (set! g-nundo (cast (ref (Vector (ref NarrowUndo))) (make-vec))))
+  (when (= g-nundo null) (set! g-nundo (cast (ref (Vector (ref NarrowUndo))) (vector-new-in (addr-of g-arena-alloc)))))
   (return (cast i32 (count g-nundo))))
 
 ; Narrow binding `name` (resolved in `scope`) to the non-null view of its
 ; current effective type, pushing an undo entry. No-op unless the binding
 ; currently reads as a local (Maybe (ref T)).
 (defn narrow-apply (scope:ref:Scope name:ptr):void
-  (when (= g-nundo null) (set! g-nundo (mkvec NarrowUndo)))
+  (when (= g-nundo null) (set! g-nundo (vector-new-in (addr-of g-arena-alloc))))
   (let (sym:?ptr:Sym (scope-lookup scope name))
     (when (= sym null) (return))
     (when (= (sym is-local) 0) (return))
@@ -1520,7 +1509,7 @@
     (conj g-binops op)))
 
 (defn init-binops ():void
-  (set! g-binops (mkvec BinOp))
+  (set! g-binops (vector-new-in (addr-of g-arena-alloc)))
   (add-binop "_+"     "add nsw"  "add"      0)
   (add-binop "_-"     "sub nsw"  "sub"      0)
   (add-binop "_*"     "mul nsw"  "mul"      0)
@@ -2236,7 +2225,13 @@
             (die-at (fn-node line)
               (fmt-2s ".set!: no field '%s' on struct '%s'" (fn-node s) (sd name))))
           (let (ftype:ptr (aref (cast ptr:ptr (sd field-types)) idx)
-                v:ref:Val (emit-node (node-at cc 3) scope)
+                ; TC-2: arm the want channel with the field's type so a generic
+                ; constructor stored into a field infers a return-only tyvar.
+                v:ref:Val (let (save-want:ptr g-want-type)
+                            (set! g-want-type ftype)
+                            (let (vv:ref:Val (emit-node (node-at cc 3) scope))
+                              (set! g-want-type save-want)
+                              vv))
                 coerced:ptr (coerce-int-val v ftype (cc line)))
             (when (= coerced null)
               (die-at (cc line) (fmt-s ".set!: type mismatch for field '%s'" (fn-node s))))
@@ -2394,7 +2389,7 @@
         (let (m:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (gg methods)) j)))
           (when (= (m kind) METHOD-GENERIC)
             (let (bound:ptr (arena-alloc (* (cast i64 (+ (m num-tyvars) 1)) (ptr-bytes))))
-              (when (!= (generic-method-bind (cast ptr m) argtypes nargs bound) 0)
+              (when (!= (generic-method-bind (cast ptr m) argtypes nargs bound null) 0)
                 (when (!= (generic-constraints-ok (cast ptr m) bound line) 0)
                   (do (set! cand (cast ptr m)) (set! cand-bound bound) (inc! ncand))))))))
       (when (> ncand 1)
@@ -2524,7 +2519,7 @@
     (let (g:ptr (generic-lookup "invoke"))
       (when (= g null)
         (die-at line "value is not callable: no `invoke` method is defined for this type"))
-      (let (m:ref:Method (generic-resolve g argtypes arg-nodes total line))
+      (let (m:ref:Method (generic-resolve g argtypes arg-nodes total line null))
         (return (emit-resolved-call n scope "invoke" m args total line))))))
 
 ; The desugar entry point: an already-emitted non-function head value `callee-val`
@@ -3254,7 +3249,7 @@
           ; Parametric drop (METHOD-GENERIC): resolve+instantiate for this
           ; concrete instance. The conformance check above guarantees a drop
           ; exists, so generic-resolve will not die.
-          (return (generic-resolve g argtypes null 1 0)))))))
+          (return (generic-resolve g argtypes null 1 0 null)))))))
 
 ; unions.md §7: the name of the first defunion arm holding a Drop-conforming
 ; payload field (a pointer to a struct that conforms to Drop), or null.
@@ -5409,7 +5404,15 @@
     ; the box may legitimately leave the frame. Inert when the return type is not
     ; a box (maybe-box-into-slot passes the value through unchanged).
     (let (v:ref:Val (maybe-box-into-slot
-                      (emit-node (union-target-rewrite (node-at cc 1)) scope)
+                      ; TC-2: g-fn-ret-type doubles as the want for return position —
+                      ; arm it around the return-value emit so a generic constructor
+                      ; returned directly infers a return-only tyvar. save/restore so
+                      ; an explicit (return …) does not leak the want past itself.
+                      (let (save-want:ptr g-want-type)
+                        (set! g-want-type g-fn-ret-type)
+                        (let (rv:ref:Val (emit-node (union-target-rewrite (node-at cc 1) g-fn-ret-type) scope))
+                          (set! g-want-type save-want)
+                          rv))
                       g-fn-ret-type scope (cc line)))
       ; Stage 10 escape analysis: returning unwinds every with-scope, so a
       ; tainted value always dangles past its cleanup (lifecycle.md §2.3).
@@ -5477,6 +5480,100 @@
                   (die-at (en line) (fmt-s "binding name ends in ':' (%s) -- write name:(Type) with no space, or (name Type)" es))))))))
       (set! cur ((cast ptr:Node cur) cdr)))))
 
+; TC-3 (design/stage14/target-typed-constructors.md §TC-3): materialize a
+; by-value struct `S` result into a fresh stack slot and yield a `(ref S)` to
+; it. The backing alloca is frame storage (taint-frame, like any alloca ref),
+; so `with` ownership drops it through the EXISTING with-drop-method TY-PTR arm
+; — no new drop logic. Used by tc3-emit-binding-init when a declared `(ref S)`
+; binding is initialized with a by-value `S`.
+(defn tc3-materialize (v:ptr ty:ptr pointee:ptr line:i32):ref:Val
+  (let (vv:ptr:Val (cast ptr:Val v)
+        slot:ptr (fmt-sd "%%tc3.mat.%d" g-tmp))
+    (inc! g-tmp)
+    (fprintf g-entry-stream "  %s = alloca %s, align %d\n"
+      slot (type-to-ir pointee) (type-size pointee))
+    (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
+      (type-to-ir pointee) (vv val) slot (type-size pointee))
+    (let (rv:ptr:Val (cast ptr:Val (alloc-val ty slot)))
+      (.set! rv taint (vv taint))
+      (.set! rv taint-frame (vv taint-frame))
+      (return (cast ref:Val rv)))))
+
+; TC-3: emit a let/with binding init with target-typed materialization. For a
+; declared `(ref S)` where `S` is a struct, derive the want from the declared
+; type via two non-emitting node-type probes (deterministic, two probes max),
+; arm the chosen want, and emit ONCE — avoiding double emission. If the init
+; resolves to a by-value `S`, materialize (alloca backing + store + yield ref);
+; otherwise emit with the declared want and return the value as-is (today's
+; path, byte-identical). Strictly additive: materialization fires only where
+; today's emit dies ("let: init type mismatch"), so existing code is unchanged.
+;
+; Probe 1 arms the whole declared `(ref S)` (what heap constructors return —
+; TC-4); if the init types ref-shaped, bind directly. If probe 1 instead yields
+; the by-value pointee (a concrete constructor ignores want) OR fails to resolve
+; (a return-only-tyvar generic constructor can't fill its tyvar from `(ref S)`),
+; retry with the pointee `S` (probe 2) and arm materialization iff it resolves
+; to by-value `S`.
+(defn tc3-emit-binding-init (bval-node:ptr scope:ref:Scope ty:ptr line:i32):ref:Val
+  ; TC-5: target-type the init form against the declared slot type — rewrites
+  ; `(arm args…)`/none/ok/err into (make Type arm …) when ty is a defunion/niche.
+  ; union-target-rewrite is a no-op for a null/non-union target, so non-union
+  ; bindings are byte-identical. `form` is the (possibly rewritten) init node.
+  (let (form:ptr (union-target-rewrite bval-node ty)
+        tt:ptr:Type (cast ptr:Type ty))
+    ; Fast path: declared type is not (ref S)-to-struct — today's TC-2 arming,
+    ; byte-identical with the pre-TC-3 emit.
+    (when (or (!= (tt kind) TY-PTR) (= (tt elem) null)
+              (!= (-> (tt elem) (cast ptr:Type _) (_ kind)) TY-STRUCT))
+      (let (save:ptr g-want-type)
+        (set! g-want-type ty)
+        (let (vv:ref:Val (emit-node form scope))
+          (set! g-want-type save)
+          (return vv))))
+    ; Declared is (ref S), S a struct: two-probe want derivation.
+    (let (pointee:ptr (tt elem)
+          arm-want:ptr ty
+          mater:i32 0)
+      (let (s1:ptr g-want-type)
+        ; Probe 1: want = declared (ref S). node-type is want-aware (TC-3:
+        ; node-type-call's tier-2 reads g-want-type), so a heap constructor
+        ; returning (ref S) resolves and we bind directly (mater stays 0).
+        (set! g-want-type ty)
+        (let (t1:ptr (node-type bval-node scope))
+          (set! g-want-type s1)
+          ; A concrete constructor ignores want and types as by-value S here —
+          ; arm materialization (the declared want is fine: no tyvars to fill).
+          (when (and (!= t1 null)
+                     (= (-> t1 (cast ptr:Type _) (_ kind)) TY-STRUCT)
+                     (!= (type-eq t1 pointee) 0))
+            (set! mater 1))
+          ; Probe 2: only when probe 1 did not resolve (a return-only-tyvar
+          ; generic by-value constructor). Retry with the pointee S as want.
+          (when (and (= t1 null) (= mater 0))
+            (set! g-want-type pointee)
+            (let (t2:ptr (node-type form scope))
+              (set! g-want-type s1)
+              (when (and (!= t2 null)
+                          (= (-> t2 (cast ptr:Type _) (_ kind)) TY-STRUCT)
+                          (!= (type-eq t2 pointee) 0))
+                (set! mater 1)
+                (set! arm-want pointee))))))
+      ; Emit ONCE with the chosen want.
+      (let (s2:ptr g-want-type)
+        (set! g-want-type arm-want)
+        (let (vv:ref:Val (emit-node form scope))
+          (set! g-want-type s2)
+          (when (= mater 0) (return vv))
+          ; Materialize, but only if the emitted value really is by-value S
+          ; (the probe is non-emitting and could diverge from emit on a control-
+          ; flow/expansion-dependent form; fall back to today's coerce otherwise).
+          (let (vt:ptr ((cast ptr:Val vv) type))
+            (when (and (!= vt null)
+                       (= (-> vt (cast ptr:Type _) (_ kind)) TY-STRUCT)
+                       (!= (type-eq vt pointee) 0))
+              (return (tc3-materialize vv ty pointee line))))
+          (return vv))))))
+
 (defn emit-let (call:ptr scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (or (< (node-len cc) 2) (-> cc (node-at _ 1) (cast ptr:Node _) (_ kind) (!= _ NODE-CELL)))
@@ -5513,7 +5610,13 @@
                 (fprintf g-entry-stream "  %s = alloca %s, align %d\n"
                   slot (type-to-ir ty) align)
                 (let (v:ref:Val (if (= pre-v null)
-                                  (emit-node bval-node inner)
+                                  ; TC-3: emit the init with target-typed
+                                  ; materialization (derived want + value→ref
+                                  ; coercion for a declared (ref S)). CE-1 bare
+                                  ; bindings took the pre-v path (no declared
+                                  ; type) and inherit the surrounding want.
+                                  (tc3-emit-binding-init bval-node inner ty
+                                    ((cast ptr:Node bval-node) line))
                                   (cast ref:Val pre-v))
                       ; Stage 13 TE-3: a closure flowing into a (BoxedFn …) slot is
                       ; heap-boxed into the shared fat pointer here (inert otherwise).
@@ -5587,7 +5690,10 @@
                 (fprintf g-entry-stream "  %s = alloca %s, align %d\n"
                   slot (type-to-ir ty) align)
                 (let (v:ref:Val (if (= pre-v null)
-                                  (emit-node bval-node inner)
+                                  ; TC-3: emit the init with target-typed
+                                  ; materialization (mirror of emit-let).
+                                  (tc3-emit-binding-init bval-node inner ty
+                                    ((cast ptr:Node bval-node) line))
                                   (cast ref:Val pre-v))
                       ; Stage 13 TE-3: a closure flowing into a (BoxedFn …) slot is
                       ; heap-boxed into the shared fat pointer here (inert otherwise).
@@ -5694,8 +5800,8 @@
           id:i32 (new-label-id)
           end-lbl:ptr (fmt-i32 "cond.end%d" id)
           fall-lbl:ptr (fmt-i32 "cond.fall%d" id)
-          (vals (ref (Vector ptr))) (make-vec)
-          (preds (ref (Vector ptr))) (make-vec)
+          (vals (ref (Vector ptr))) (vector-new-in (addr-of g-arena-alloc))
+          (preds (ref (Vector ptr))) (vector-new-in (addr-of g-arena-alloc))
           result-type:ptr null
           result-taint:ptr null
           has-fallthrough:i32 0
@@ -5703,8 +5809,8 @@
           ; subsequent pair (a failed null-test); `after` holds names to
           ; narrow past the cond (a terminated guard body whose predecessors
           ; all terminated too); all-term tracks the latter condition.
-          (acc (ref (Vector ptr))) (make-vec)
-          (after (ref (Vector ptr))) (make-vec)
+          (acc (ref (Vector ptr))) (vector-new-in (addr-of g-arena-alloc))
+          (after (ref (Vector ptr))) (vector-new-in (addr-of g-arena-alloc))
           all-term:i32 1
           i:i32 0)
       (while (< i npairs)
@@ -5739,7 +5845,7 @@
               (fprintf g-body-stream "%s:\n" then-lbl)
               (set! g-block-term 0)
               ; Inside the taken branch the test's non-null facts hold.
-              (let ((tfacts (ref (Vector ptr))) (make-vec))
+              (let ((tfacts (ref (Vector ptr))) (vector-new-in (addr-of g-arena-alloc)))
                 (test-true-nonnull (cast ptr test-node) tfacts)
                 (narrow-names scope tfacts))))
           (let (bv:ref:Val (emit-node body-node scope)
@@ -5838,7 +5944,7 @@
       ; The condition's non-null facts hold inside the body (re-established
       ; by the back-edge re-test); they are undone at loop exit.
       (let (wmark:i32 (narrow-mark)
-            (wfacts (ref (Vector ptr))) (make-vec))
+            (wfacts (ref (Vector ptr))) (vector-new-in (addr-of g-arena-alloc)))
         (test-true-nonnull (node-at cc 1) wfacts)
         (narrow-names scope wfacts)
         (let (i:i32 2)
@@ -5869,8 +5975,16 @@
           (do
           (when (= (sym is-local) 0)
             (die-at (target line) (fmt-s "set!: undefined local '%s'" (target s))))
-          (let (v:ref:Val (emit-node (node-at cc 2) scope)
-                coerced:?ptr:Val (coerce-int-val v (sym type) (cc line)))
+            (let (v:ref:Val
+                   ; TC-2: arm the want channel with the slot's declared type so a
+                   ; generic constructor on the RHS infers a return-only tyvar.
+                   ; TC-5: target-type the RHS (union construction w/o explicit make).
+                   (let (save-want:ptr g-want-type)
+                     (set! g-want-type (sym type))
+                     (let (vv:ref:Val (emit-node (union-target-rewrite (node-at cc 2) (sym type)) scope))
+                       (set! g-want-type save-want)
+                       vv))
+                 coerced:?ptr:Val (coerce-int-val v (sym type) (cc line)))
             (when (= coerced null)
               (die-at (cc line) (fmt-s "set!: type mismatch for '%s'" (target s))))
             ; Stage 10 escape analysis: a with-owned resource may only be
@@ -6545,26 +6659,36 @@
         args:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (sizeof Val)))
         argtypes:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (ptr-bytes)))
         arg-nodes:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (ptr-bytes))))
-    (dotimes (i nargs)
-      (let (anode:ptr (node-at nn (+ i 1))
-            v:ref:Val (emit-node anode scope))
-        (memcpy (ptr+ (cast ptr:Val args) i) v (sizeof Val))
-        (aset! (cast ptr:ptr argtypes) i ((cast ptr:Val v) type))
-        (aset! (cast ptr:ptr arg-nodes) i anode)))
-    ; Stage 13 TE-6: `(dyn P)` method dispatch. When the first argument is a
-    ; `(dyn P)` box and this generic names one of P's methods, the box has no
-    ; concrete receiver method to resolve — forward through the vtable slot instead
-    ; (an indirect call `method(data, args…)`). Inert otherwise (the compiler boxes
-    ; nothing; dyn-canonical is null at every call site during self-compilation).
-    (when (> nargs 0)
-      (let (dbox:ptr (dyn-canonical (aref (cast ptr:ptr argtypes) 0)))
-        (when (!= dbox null)
-          (let (slot:i32 (dyn-method-slot dbox (g name)))
-            (when (>= slot 0)
-              (return (emit-dyn-forward dbox args nargs slot (nn line))))))))
-    (let (m:ref:Method (generic-resolve g argtypes arg-nodes nargs (nn line)))
-      (return (emit-resolved-call n scope (g name) m
-                                  args nargs (nn line))))))
+    ; TC-2: consume the want channel once, at entry and BEFORE emitting any
+    ; argument, so an argument sub-expression that is itself a call never sees
+    ; the outer want. The first generic call emitted in a binding init claims it;
+    ; a control form (if/cond/do/match/let body) leaves g-want-type armed, so the
+    ; first call anywhere in the init is the consumer. `want` is null in every
+    ; non-want context (statement position, most calls) — generic-resolve's tier-0
+    ; ignores it and want only fills tyvars args left unbound, so this is inert
+    ; for every call that resolves without it.
+    (let (want:ptr g-want-type)
+      (set! g-want-type null)
+      (dotimes (i nargs)
+        (let (anode:ptr (node-at nn (+ i 1))
+              v:ref:Val (emit-node anode scope))
+          (memcpy (ptr+ (cast ptr:Val args) i) v (sizeof Val))
+          (aset! (cast ptr:ptr argtypes) i ((cast ptr:Val v) type))
+          (aset! (cast ptr:ptr arg-nodes) i anode)))
+      ; Stage 13 TE-6: `(dyn P)` method dispatch. When the first argument is a
+      ; `(dyn P)` box and this generic names one of P's methods, the box has no
+      ; concrete receiver method to resolve — forward through the vtable slot instead
+      ; (an indirect call `method(data, args…)`). Inert otherwise (the compiler boxes
+      ; nothing; dyn-canonical is null at every call site during self-compilation).
+      (when (> nargs 0)
+        (let (dbox:ptr (dyn-canonical (aref (cast ptr:ptr argtypes) 0)))
+          (when (!= dbox null)
+            (let (slot:i32 (dyn-method-slot dbox (g name)))
+              (when (>= slot 0)
+                (return (emit-dyn-forward dbox args nargs slot (nn line))))))))
+      (let (m:ref:Method (generic-resolve g argtypes arg-nodes nargs (nn line) want))
+        (return (emit-resolved-call n scope (g name) m
+                                    args nargs (nn line)))))))
 
 ; Emit an operator that carries user overloads (§10.3). Emit the operands, then
 ; resolve a user method on the operator's argument types; if one matches, emit a
@@ -7478,10 +7602,20 @@
               (while (< i (node-len cc))
                 ; The tail expression is an implicit return — apply the same
                 ; defunion target typing as an explicit (return ...).
-                (let (bf:ptr (node-at cc i))
-                  (when (= i (- (node-len cc) 1))
-                    (set! bf (union-target-rewrite bf)))
-                  (set! last-val (emit-node bf fn-scope)))
+                (let (bf:ptr (node-at cc i)
+                      is-tail:i32 (if (= i (- (node-len cc) 1)) 1 0))
+                  (when (!= is-tail 0)
+                    (set! bf (union-target-rewrite bf g-fn-ret-type)))
+                  ; TC-2: the tail expression is an implicit return — arm the want
+                  ; channel with g-fn-ret-type so a returned generic constructor
+                  ; infers a return-only tyvar (g-fn-ret-type doubles as the want,
+                  ; same as explicit return). Non-tail body forms are statement
+                  ; positions and stay want-free here.
+                  (let (save-want:ptr g-want-type)
+                    (when (!= is-tail 0) (set! g-want-type g-fn-ret-type))
+                    (let (lv:ref:Val (emit-node bf fn-scope))
+                      (set! g-want-type save-want)
+                      (set! last-val lv))))
                 (inc! i))
               ; Fire function-scope (defer …) cleanups on the implicit-return
               ; fall-off path (explicit returns walk the scope chain instead).
@@ -7683,7 +7817,7 @@
         (set! g-qq-used 0)
         (set! g-decl-out ct-decl)
         ; Fresh per-module declare set (see emit-defmacro / macro-jit-ensure-decl).
-        (set! g-macro-decls (cast (ref (Vector CStr)) (make-vec)))
+        (set! g-macro-decls (cast (ref (Vector CStr)) (vector-new-in (addr-of g-arena-alloc))))
 
         ; Pre-scan: register defn signatures from CT body.
         (let (bi:i32 1)
@@ -7937,7 +8071,7 @@
               (set! g-out ct-def)
               ; Fresh per-module declare set: macro bodies that call ordinary
               ; defns (node-at, intern-symbol, ...) get those declared here.
-              (set! g-macro-decls (cast (ref (Vector CStr)) (make-vec)))
+              (set! g-macro-decls (cast (ref (Vector CStr)) (vector-new-in (addr-of g-arena-alloc))))
 
               ; Set up function codegen state
               (reset-function-state)
@@ -9367,7 +9501,7 @@
     (conj g-rmacros rm)))
 
 (defn init-rmacros ():void
-  (set! g-rmacros (mkvec RMacro))
+  (set! g-rmacros (vector-new-in (addr-of g-arena-alloc)))
   ; Register longest prefixes first for correct matching.
   (register-rmacro "~@" "unquote-splice")
   (register-rmacro "~" "unquote")
@@ -9378,7 +9512,7 @@
 ; Register the built-in blanket protocols (§10.1). Hardcoded for now; a
 ; user-declarable blanket facility is parked in design/stage999-future.md.
 (defn init-blanket ():void
-  (set! g-blanket (cast (ref (Vector CStr)) (make-vec)))
+  (set! g-blanket (cast (ref (Vector CStr)) (vector-new-in (addr-of g-arena-alloc))))
   (conj g-blanket "Any")
   (conj g-blanket "Struct")
   ; Stage 12 N8: install the late-binding cross-file hooks (see their defvars).
@@ -9519,7 +9653,7 @@
   ; constructed against it, so it has to be live before any of them.
   (arena-allocator (addr-of g-arena-alloc))
   ; String-literal table: empty Vector, grown by intern-string during emit.
-  (set! g-strs (mkvec StrLit))
+  (set! g-strs (vector-new-in (addr-of g-arena-alloc)))
   ; Stage 12 N4: g-current-ns must be set before init-generics (which calls
   ; generic-new → ns-ir-prefix → strcmp(g-current-ns, "user")); intern-str
   ; requires the arena live, which is satisfied by the arena-allocator call above.
@@ -9537,26 +9671,26 @@
   (set! g-host-ptr-bytes (cast i32 (sizeof ptr)))
   (target-init)
   (types-init)
-  (set! g-generics (mkvec Generic))
+  (set! g-generics (vector-new-in (addr-of g-arena-alloc)))
   (init-binops)
   (init-generics)
   (init-blanket)
-  (set! g-fnty (mkhash CStr ref:Type))
-  (set! g-protocols (mkvec Protocol))
-  (set! g-conformances (mkvec Conformance))
-  (set! g-proto-supers (mkvec Conformance))
-  (set! g-mono-worklist (make-vec))
+  (set! g-fnty (hashmap-new-in (addr-of g-arena-alloc)))
+  (set! g-protocols (vector-new-in (addr-of g-arena-alloc)))
+  (set! g-conformances (vector-new-in (addr-of g-arena-alloc)))
+  (set! g-proto-supers (vector-new-in (addr-of g-arena-alloc)))
+  (set! g-mono-worklist (vector-new-in (addr-of g-arena-alloc)))
   (init-rmacros)
-  (set! g-structs (mkvec StructDef))
-  (set! g-uniondefs (mkvec UnionDef))
-  (set! g-union-templates (mkvec UnionTemplate))
-  (set! g-struct-templates (mkvec StructTemplate))
-  (set! g-tmpl-conformances (mkvec TmplConformance))
-  (set! g-enumdefs (mkvec EnumDef))
+  (set! g-structs (vector-new-in (addr-of g-arena-alloc)))
+  (set! g-uniondefs (vector-new-in (addr-of g-arena-alloc)))
+  (set! g-union-templates (vector-new-in (addr-of g-arena-alloc)))
+  (set! g-struct-templates (vector-new-in (addr-of g-arena-alloc)))
+  (set! g-tmpl-conformances (vector-new-in (addr-of g-arena-alloc)))
+  (set! g-enumdefs (vector-new-in (addr-of g-arena-alloc)))
   ; Deferror sid tables: reserve index 0 (the "no error" placeholder) so the
   ; vector index equals the 1-based runtime error id.
-  (set! g-deferror-name-sids (cast (ref (Vector i32)) (make-vec)))
-  (set! g-deferror-msg-sids (cast (ref (Vector i32)) (make-vec)))
+  (set! g-deferror-name-sids (cast (ref (Vector i32)) (vector-new-in (addr-of g-arena-alloc))))
+  (set! g-deferror-msg-sids (cast (ref (Vector i32)) (vector-new-in (addr-of g-arena-alloc))))
   (conj g-deferror-name-sids 0)
   (conj g-deferror-msg-sids 0)
   (set! g-err-table-used 0)
@@ -9565,9 +9699,9 @@
   (set! g-import-prefixes null)
   (set! g-cinclude-collecting 0)
   (set! g-cinclude-collected null)
-  (set! g-pending-unions (mkvec StructDef))
-  (set! g-macros (mkvec MacroDef))
-  (set! g-cast-rules (mkvec CastRule))
+  (set! g-pending-unions (vector-new-in (addr-of g-arena-alloc)))
+  (set! g-macros (vector-new-in (addr-of g-arena-alloc)))
+  (set! g-cast-rules (vector-new-in (addr-of g-arena-alloc)))
   (set! g-globals (scope-new null))
   ; Stage 12: start every compilation unit in the default `user` namespace.
   ; Interned so qualify-name's "is this the user namespace?" check is a pointer
@@ -9635,8 +9769,8 @@
   (set! g-decl-stream (open_memstream (addr-of g-decl-bufp) (cast ptr (addr-of g-decl-sizep))))
   (set! g-def-stream  (open_memstream (addr-of g-def-bufp)  (cast ptr (addr-of g-def-sizep))))
   (set! g-decl-out g-decl-stream)
-  (set! g-macro-decls (cast (ref (Vector CStr)) (make-vec)))
-  (set! g-program-defns (mkvec ProgDefn)))
+  (set! g-macro-decls (cast (ref (Vector CStr)) (vector-new-in (addr-of g-arena-alloc))))
+  (set! g-program-defns (vector-new-in (addr-of g-arena-alloc))))
 
 ; ============================================================
 ; Close module streams, output IR to stdout (batch mode)

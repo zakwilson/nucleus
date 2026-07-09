@@ -117,6 +117,27 @@
             (.set! m cap    init-cap)))))))
 
 ; ---------------------------------------------------------------------------
+; Value/heap constructors (target-typed — design/stage14/target-typed-
+; constructors.md). K,V bind from the declared type via the want channel. The
+; by-value family materializes into a `(ref (HashMap K V))` binding (TC-3); the
+; `-in` family allocates the struct itself through the handle.
+; ---------------------------------------------------------------------------
+(defn hashmap-new () (HashMap K V)
+  (let (r (alloca (HashMap K V)))
+    (hashmap-init r)
+    (return (deref r))))
+(defn hashmap-new-alloc ((a (ref AllocHandle))) (HashMap K V)
+  (let (r (alloca (HashMap K V)))
+    (hashmap-init-alloc r a)
+    (return (deref r))))
+(defn hashmap-new-in ((a (ref AllocHandle))) (ref (HashMap K V))
+  (let (v (cast (ref (HashMap K V))
+             (alloc-handle-alloc a (sizeof (HashMap K V)) (cast usize 8))))
+    (hashmap-init-alloc v a)
+    (return v)))
+
+
+; ---------------------------------------------------------------------------
 ; Internal: rehash all occupied buckets from old arrays into new-cap arrays.
 ; new-cap must be a power of two. Tombstones are dropped (not copied).
 ; Frees the old three arrays through the stored handle, installs new ones.
