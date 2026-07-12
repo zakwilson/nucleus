@@ -32,11 +32,11 @@
 (defn abi-alignof (t:ptr):i32
   (let (k:i32 ((cast ptr:Type t) kind))
     (when (= k TY-STRUCT)
-      (return (abi-struct-align (cast ptr:StructDef ((cast ptr:Type t) sdef)))))
+      (return (abi-struct-align ((cast ptr:Type t) sdef))))
     ; A union's alignment is its max member alignment — the same computation
     ; abi-struct-align performs, so it is shared.
     (when (= k TY-UNION)
-      (return (abi-struct-align (cast ptr:StructDef ((cast ptr:Type t) sdef)))))
+      (return (abi-struct-align ((cast ptr:Type t) sdef))))
     (when (= k TY-PTR)  (return g-target-ptr-bytes))
     (when (= k TY-CSTR) (return g-target-ptr-bytes))
     (when (= k TY-FN)   (return g-target-ptr-bytes))
@@ -48,9 +48,9 @@
 (defn abi-sizeof (t:ptr):i32
   (let (k:i32 ((cast ptr:Type t) kind))
     (when (= k TY-STRUCT)
-      (return (abi-struct-size (cast ptr:StructDef ((cast ptr:Type t) sdef)))))
+      (return (abi-struct-size ((cast ptr:Type t) sdef))))
     (when (= k TY-UNION)
-      (return (abi-union-size (cast ptr:StructDef ((cast ptr:Type t) sdef)))))
+      (return (abi-union-size ((cast ptr:Type t) sdef))))
     (when (= k TY-FN) (return g-target-ptr-bytes))
     (return (type-size t))))
 

@@ -591,7 +591,7 @@
       (fprintf out "%s %%a%d" (type-to-ir (aref (cast ptr:ptr (ftt params)) i)) i))
     (fprintf out ") {\nentry:\n")
     (fprintf out "  %%fp = load ptr, ptr @%s.tgt, align 8\n" fname)
-    (if (= ((cast ptr:Type (ftt ret)) kind) TY-VOID)
+    (if (= ((ftt ret) kind) TY-VOID)
       (do (fprintf out "  call void %%fp(")
           (dotimes (i nparams)
             (when (!= i 0) (fprintf out ", "))

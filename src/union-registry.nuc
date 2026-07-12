@@ -31,9 +31,9 @@
     (when (= k TY-PTR)
       (set! h (hash-type h (tt elem))))
     (when (= k TY-STRUCT)
-      (set! h (fnv-str h ((cast ptr:StructDef (tt sdef)) name))))
+      (set! h (fnv-str h ((tt sdef) name))))
     (when (= k TY-UNION)
-      (set! h (fnv-str h ((cast ptr:StructDef (tt sdef)) name))))
+      (set! h (fnv-str h ((tt sdef) name))))
     (when (= k TY-FN)
       (set! h (hash-type h (tt ret)))
       (set! h (fnv-byte h (cast i64 (tt num-params))))
@@ -607,7 +607,7 @@
   (let (tt:ptr:Type (cast ptr:Type t))
     (when (!= (tt kind) TY-STRUCT) (return null))
     (when (= (tt sdef) null) (return null))
-    (return ((cast ptr:StructDef (tt sdef)) udef))))
+    (return ((tt sdef) udef))))
 
 ; The UnionDef behind a Result-shaped value (a tagged sum carrying both an `ok`
 ; arm and an `err` arm), or null. The shared eliminator for `unwrap`/`unwrap-or`
