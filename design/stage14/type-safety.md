@@ -116,8 +116,20 @@ typed elements, yes; type erasure, no) and reuses R2/R3's bootstrap-policy axis
   returns must update the matching `node-type` branch in the same change
   (conventions.md). Field/param retyping that changes a returned `Val`'s element
   type touches both.
-- **LLVM opaque handles stay `ptr`.** `Sym.tracker`/`trace-tracker`/`trace-saved`
+- **LLVM opaque handles stay `ptr`.** `Sym.tracker`/`trace-tracker`
   are LLVM C-API handles with no Nucleus type; they stay `ptr` forever.
+  *(Correction, 2026-07-12: this bullet previously also listed `trace-saved` as an
+  "LLVM opaque handle" — that is wrong; `trace-saved` holds a saved copy of `ir-name`,
+  a C string. It still stays `ptr`, but for the identity reason below, not because it
+  is an LLVM handle.)*
+- **Identity-compared C strings stay `ptr`, not `CStr`.** `Sym.ir-name` (and
+  `trace-saved`, which mirrors it) are freshly-formatted, **non-interned** C strings
+  compared by *pointer identity* (`import-alias-one`) and null-checked
+  (`inject-import-aliases`). A `CStr` retype lowers `=`/`!=` to `strcmp`, and
+  `(= ir-name null)`→`strcmp(x, null)` **crashes**. Content comparison of an ir-name,
+  where genuinely wanted, is already spelled explicitly (`program-defn-lookup`'s
+  `strcmp`). This generalizes the `Node.s` rule to any non-interned, identity-keyed
+  string field.
 - **`?`/`!` stay out of emitted names** and format-helper arity stays exact
   (conventions.md) — unchanged constraints, listed so a sweep doesn't trip them.
 
@@ -197,9 +209,11 @@ at each read site:
 - **`UnionDef`** (139-152): `sdef`/`union-sd`→`StructDef*`, the 5-wide arm arrays
   (`arm-names`→`CStr[]`, `arm-ptypes`→`Type*[]`, `arm-fnames`→`CStr*[]`,
   `arm-ftypes`→`Type**[]`, `arm-nfields`→`i32[]`), `niche-elem`→`Type*`.
-- **`Sym`** (211-246): `type`/`ntype`→`Type*`, `home`/`taint`→`Scope*`,
-  `ir-name`/`const-val`/`cslot`/`src-file`/`docstring`/`trace-saved`→`CStr`,
-  `tracker`/`trace-tracker`→**LLVM opaque, stay `ptr`**.
+- **`Sym`** (211-246): `type`/`ntype`→`(raw Type)`, `home`/`taint`→`(raw Scope)`,
+  `const-val`/`cslot`/`src-file`/`docstring`→`CStr`, `ir-name`/`trace-saved`→
+  **stay `ptr`** (identity-compared / non-interned — see invariants; the census
+  originally listed these two as `CStr`, which is wrong),
+  `tracker`/`trace-tracker`→**LLVM opaque, stay `ptr`**. *(Done 2026-07-12, §14.2.)*
 - **`Scope`** (268-275): `parent`→`Scope*`, `syms`→inline `Sym[]` (see idiom 4),
   `cleanup-slots`→`Cleanup*[]`.
 - **`Val`** (282-297): `type`→`Type*`, `taint`→`Scope*`, `val`→`CStr`.
@@ -436,6 +450,27 @@ without any re-annotation.)*
 g-X …))` remains; `make bootstrap` re-converges; tests green. ✓
 
 ### 14.2 — Type the `compiler-types.nuc` cross-reference fields  *(mostly inert)*
+
+**Status (batch 1, 2026-07-12): `Type` + `Sym` done, byte-identical.** `Type.ret`/
+`elem`→`(raw Type)`, `Type.sdef`→`(raw StructDef)`; `Sym.type`/`ntype`→`(raw Type)`,
+`Sym.home`/`taint`→`(raw Scope)`; `Sym.const-val`/`cslot`/`src-file`/`docstring`→
+`CStr`. **Two census corrections (see below):** `Sym.ir-name` and `Sym.trace-saved`
+stay **`ptr`**, NOT `CStr` — `ir-name` is compared by *pointer identity*
+(`import-alias-one`'s alias-collision check; ir-names are freshly formatted, not
+interned) and null-checked (`inject-import-aliases`), so a `CStr` retype lowers both
+to `strcmp` (the null case emitting the crashing `strcmp(x, null)`). `trace-saved`
+holds a saved copy of `ir-name` (assigned back on untrace), so it must mirror
+`ir-name`'s type. Verification: bare `ptr` is PTR-REF post-Phase-F, but
+`pkind-flow-check` exempts elem-less destinations, so retyping a field to `(raw T)`
+only breaks at an *uncast* read feeding a *typed* `(ref T)` slot — none existed for
+these fields (build was clean without any cursor retypes). Redundant-cast deletions
+were confined to **raw/plain contexts** (field-access-then-use and `sd:ptr`-param
+args); the far more common `(cast ptr:Type (x elem/type/sdef))`→`et:ptr:Type`/
+`ft:ptr:Type`/`sd:ptr:StructDef` *let-binding* idiom keeps its cast (it now asserts
+non-null raw→ref — retyping those locals is 14.3, not here). ~14 casts deleted
+(type-utils/union-registry/nucleusc/repl/abi) + the `defer-scope` cast (now at
+nucleusc.nuc:5371, drifted from :4988). The remaining `compiler-types.nuc` structs
+(StructDef, UnionDef, Scope, Val, Method, …) are future batches.
 
 **Agent: focused-task-implementer** (per-struct batches); systems-impl-engineer
 for `Type`/`Sym` (highest fan-out). **Read (scoped):** the target struct in

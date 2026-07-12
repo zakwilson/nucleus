@@ -3268,7 +3268,7 @@
                 (when (and (= (et kind) TY-STRUCT)
                            (!= (et sdef) null)
                            (!= (conformance-lookup
-                                ((cast ptr:StructDef (et sdef)) name) "Drop") 0))
+                                ((et sdef) name) "Drop") 0))
                   (return (aref (cast ptr:ptr (udd arm-names)) i)))))))))
     (return null)))
 
@@ -5368,7 +5368,7 @@
           (cond (!= (cl defer-node) null)
                   ; defer-scope is set whenever defer-node is (emit-defer) —
                   ; a correlated-fields invariant the pointer kinds can't carry.
-                  (emit-node (cl defer-node) (cast ref:Scope (cl defer-scope)))
+                  (emit-node (cl defer-node) (cl defer-scope))
                 (!= (cl drop-fn) null)
                   (emit-drop-cleanup (cast ptr cl))
                 true
@@ -6299,7 +6299,7 @@
       (let (fn-node:ptr:Node (cast ptr:Node (node-at cc 2)))
         (when (!= (fn-node kind) NODE-SYM)
           (die-at (fn-node line) ".&: field name must be symbol"))
-        (let (sd:ptr:StructDef (cast ptr:StructDef ((cast ptr:Type (pt elem)) sdef))
+        (let (sd:ptr:StructDef (cast ptr:StructDef ((pt elem) sdef))
               idx:i32 (struct-field-idx (cast ptr sd) (fn-node s)))
           (union-field-guard (cast ptr sd) (cc line) ".&")
           (when (< idx 0)

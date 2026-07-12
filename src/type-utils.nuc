@@ -63,9 +63,9 @@
     (when (= (tt kind) TY-USIZE)  (return (ptr-int-ir)))
     (when (= (tt kind) TY-SSIZE)  (return (ptr-int-ir)))
     (when (= (tt kind) TY-STRUCT)
-      (return (fmt-s "%%%s" ((cast ptr:StructDef (tt sdef)) ir-name))))
+      (return (fmt-s "%%%s" ((tt sdef) ir-name))))
     (when (= (tt kind) TY-UNION)
-      (return (fmt-s "%%%s" ((cast ptr:StructDef (tt sdef)) ir-name))))
+      (return (fmt-s "%%%s" ((tt sdef) ir-name))))
     (return "?")))
 
 ; Stage 14 NS-2 (design/stage14/native-strings.md): is Type `t` the prelude
@@ -134,9 +134,9 @@
     (when (= (tt kind) TY-USIZE)  (return "size_t"))
     (when (= (tt kind) TY-SSIZE)  (return "ssize_t"))
     (when (= (tt kind) TY-STRUCT)
-      (return (fmt-s "struct %s" ((cast ptr:StructDef (tt sdef)) name))))
+      (return (fmt-s "struct %s" ((tt sdef) name))))
     (when (= (tt kind) TY-UNION)
-      (return (fmt-s "union %s" ((cast ptr:StructDef (tt sdef)) name))))
+      (return (fmt-s "union %s" ((tt sdef) name))))
     (return "/* unknown */")))
 
 ; The IR type of a pointer-sized integer (size_t / intptr_t) for the target.

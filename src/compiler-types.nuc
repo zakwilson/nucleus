@@ -185,13 +185,13 @@
 
 (defstruct Type
   kind:i32
-  ret:ptr
+  (ret (raw Type))
   params:ptr
   num-params:i32
   variadic:i32
   has-rest:i32
-  elem:ptr
-  sdef:ptr
+  (elem (raw Type))
+  (sdef (raw StructDef))
   ; --- Stage 8 additions ---
   nopt:i32          ; number of trailing &optional params (TY-FN)
   opt-defaults:ptr  ; array of ptr:Node default-value forms for the &optional params
@@ -217,28 +217,39 @@
 
 (defstruct Sym
   name:CStr
-  type:ptr
+  (type (raw Type))
+  ; ir-name stays `ptr` (NOT CStr): it is compared by pointer identity
+  ; (import-alias-one's collision check — ir-names are freshly formatted, not
+  ; interned) and null-checked (inject-import-aliases). A CStr retype would lower
+  ; both to strcmp (the null case crashing on strcmp(x, null)); content
+  ; comparison via strcmp is explicit where wanted (program-defn-lookup).
   ir-name:ptr
   is-local:i32
   is-const:i32
-  const-val:ptr
+  const-val:CStr
   tracker:ptr
   ; --- Stage 8 / REPL introspection additions ---
-  src-file:ptr      ; source file where defined (null if unknown)
+  src-file:CStr     ; source file where defined (null if unknown)
   src-line:i32      ; source line where defined (0 if unknown)
-  trace-tracker:ptr ; resource tracker for a REPL-installed trace wrapper
+  trace-tracker:ptr ; resource tracker for a REPL-installed trace wrapper (LLVM opaque)
+  ; trace-saved stays `ptr` (NOT CStr): it holds a saved copy of `ir-name` and is
+  ; assigned back into `ir-name` on untrace, so it must carry exactly `ir-name`'s
+  ; type — and `ir-name` is `ptr` (pointer-identity, freshly formatted / not
+  ; interned; a CStr retype would strcmp its comparisons). Currently unused (the
+  ; REPL trace feature is dormant), so this is inert either way; ptr is the honest
+  ; resting type for when it revives.
   trace-saved:ptr   ; saved original ir-name while traced
   ; Docstring captured from a defn whose body's first form is a string literal
   ; (with at least one form following it). null otherwise. Used by REPL doc/apropos.
-  docstring:ptr
+  docstring:CStr
   ; --- Stage 10 safety (lifecycle + nullability) ---
-  home:ptr          ; defining Scope* (escape analysis compares scope nesting)
-  taint:ptr         ; owning with-Scope* (or, Stage 13 L1, frame-region Scope*) this value aliases (null = clean)
+  (home (raw Scope))  ; defining Scope* (escape analysis compares scope nesting)
+  (taint (raw Scope)) ; owning with-Scope* (or, Stage 13 L1, frame-region Scope*) this value aliases (null = clean)
   taint-frame:i32   ; Stage 13 L1: 1 = `taint` is a frame-region (addr-of of a plain local), not a with-resource
   owns:i32          ; 1 = this binding armed a `with` cleanup (owning binding)
   moved:i32         ; 1 = consumed by (move ...); any further use is an error
-  cslot:ptr         ; cleanup slot IR name when owns=1 (move disarms by storing null)
-  ntype:ptr         ; flow-narrowed type override (?T read as (ref T)); null = none
+  cslot:CStr        ; cleanup slot IR name when owns=1 (move disarms by storing null)
+  (ntype (raw Type)) ; flow-narrowed type override (?T read as (ref T)); null = none
   ndepth:i32        ; g-loop-depth at which the current narrow was established
   kstamp:i32        ; bumped on each kill (reassignment); stale undo entries skip
   ; Stage 10 Phase F1 (nullability.md §9 finding 1): the callee never returns
