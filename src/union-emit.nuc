@@ -1495,7 +1495,7 @@
         (when (and (= (st kind) TY-PTR) (!= (st elem) null))
           (set! ud (cast ptr (uniondef-for-type (st elem))))
           (when (!= ud null)
-            (require-derefable (cast ptr st) (cc line) "match")
+            (require-derefable st (cc line) "match")
             (set! base (sv val))
             (set! is-ptr 1)))
         (when (= ud null)

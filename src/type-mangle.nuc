@@ -12,8 +12,8 @@
 
 ; A short, dot-free token naming a type for use in mangled symbols. Pointers
 ; get a "p" prefix on their pointee so ptr:Circle and Circle stay distinct.
-(defn type-mangle-token (t:ptr):ptr
-  (let (tt:ptr:Type (cast ptr:Type t)
+(defn type-mangle-token (t:raw:Type):CStr
+  (let (tt:raw:Type t
         k:i32 (tt kind))
     (when (= k TY-VOID) (return "void"))
     (when (= k TY-I1)   (return "i1"))
@@ -87,8 +87,8 @@
 ; concrete type for a type variable's occurrences in a retained generic body.
 ; Pointers nest as ptr:elem; structs/primitives are their bare names. A TY-FN
 ; spells to its interned "__fnty_N" name (above), not "ptr".
-(defn type-spelling (t:ptr):ptr
-  (let (tt:ptr:Type (cast ptr:Type t)
+(defn type-spelling (t:raw:Type):CStr
+  (let (tt:raw:Type t
         k:i32 (tt kind))
     (when (= k TY-VOID) (return "void"))
     (when (= k TY-I1)   (return "i1"))
@@ -109,7 +109,9 @@
     (when (= k TY-ERR)   (return "Err"))
     (when (= k TY-USIZE) (return "usize"))
     (when (= k TY-SSIZE) (return "ssize"))
-    (when (= k TY-FN)    (return (fnty-intern t)))
+    ; t is provably non-null here (its `kind` was already read above), so
+    ; asserting ref is sound — fnty-intern keys its HashMap by Type* identity.
+    (when (= k TY-FN)    (return (fnty-intern (cast ref:Type t))))
     (when (= k TY-PTR)
       (if (= (tt elem) null)
         (return "ptr")
@@ -126,7 +128,7 @@
 ; rejoin. Handles both desugared standalone type symbols ("T" → "i32") and the
 ; colon-typed symbols left in un-desugared bodies ("r:T" → "r:i32",
 ; "x:ptr:T" → "x:ptr:Circle").
-(defn subst-tyvars-sym (s:ptr tyvars:ptr spellings:ptr ntv:i32 line:i32):ptr
+(defn subst-tyvars-sym (s:CStr tyvars:ptr spellings:ptr ntv:i32 line:i32):CStr
   (when (= (strchr s 58) null)
     (let (idx:i32 (tyvar-index-of s tyvars ntv))
       (when (>= idx 0) (return (aref (cast ptr:ptr spellings) idx)))
@@ -144,9 +146,9 @@
 
 ; Deep-copy a node, substituting type variables (by colon-spelling) in every
 ; symbol. Used to stamp a concrete instance from a generic template.
-(defn subst-tyvars-node (node:ptr tyvars:ptr spellings:ptr ntv:i32):ptr
+(defn subst-tyvars-node (node:raw:Node tyvars:ptr spellings:ptr ntv:i32):raw:Node
   (when (= node null) (return null))
-  (let (n:ptr:Node (cast ptr:Node node))
+  (let (n:raw:Node node)
     (when (= (n kind) NODE-SYM)
       (let (ns:ptr (subst-tyvars-sym (n s) tyvars spellings ntv (n line)))
         (when (= ns (n s)) (return node))
@@ -154,7 +156,7 @@
           (.set! new kind NODE-SYM)
           (.set! new line (n line))
           (.set! new s ns)
-          (return (cast ptr new)))))
+          (return new))))
     ; Stage 14 defn-signature.md S1: a new-style return type rides in a
     ; NODE-KEYWORD (`:T`, `:ptr:T`) at the head of the stamped body tail. Substitute
     ; its colon-spelling like a symbol but keep it a keyword so fn-parse-ret-type
@@ -168,7 +170,7 @@
           (.set! new kind NODE-KEYWORD)
           (.set! new line (n line))
           (.set! new s ns)
-          (return (cast ptr new)))))
+          (return new))))
     (when (= (n kind) NODE-CELL)
       (return (make-cell (subst-tyvars-node (n car) tyvars spellings ntv)
                          (subst-tyvars-node (n cdr) tyvars spellings ntv)

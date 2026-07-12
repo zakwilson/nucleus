@@ -40,8 +40,8 @@
   (set! ty-usize (make-type TY-USIZE))
   (set! ty-ssize (make-type TY-SSIZE)))
 
-(defn type-to-ir (t:ptr):ptr
-  (let (tt:ptr:Type (cast ptr:Type t))
+(defn type-to-ir (t:raw:Type):CStr
+  (let (tt:raw:Type t)
     (when (= (tt kind) TY-VOID)   (return "void"))
     (when (= (tt kind) TY-I1)     (return "i1"))
     (when (= (tt kind) TY-I8)     (return "i8"))
@@ -79,13 +79,13 @@
 ; compiler's own compilation → the new paths stay inert and the bootstrap is
 ; byte-identical. Identity is by the interned struct-name pointer, exactly how
 ; lookup-struct keys the registry.
-(defn type-is-strview (t:ptr):i32
+(defn type-is-strview (t:raw:Type):i32
   (when (= t null) (return 0))
-  (let (tt:ptr:Type (cast ptr:Type t))
+  (let (tt:raw:Type t)
     (when (!= (tt kind) TY-STRUCT) (return 0))
-    (let (sd:ptr (tt sdef))
+    (let (sd:raw:StructDef (tt sdef))
       (when (= sd null) (return 0))
-      (when (= ((cast ptr:StructDef sd) name)
+      (when (= (sd name)
                ((cast ptr:Node (intern-symbol "StrView")) s))
         (return 1))
       (return 0))))
@@ -100,8 +100,8 @@
 ; CStr literal did before the flip — a plain pointer. A genuine (materialized)
 ; StrView value (is-lit=0), whose `val` is a real first-class struct, is left
 ; untouched. Returns 1 if it collapsed the Val, else 0.
-(defn collapse-strlit-cstr (v:ptr):i32
-  (let (vv:ptr:Val (cast ptr:Val v))
+(defn collapse-strlit-cstr (v:raw:Val):i32
+  (let (vv:raw:Val v)
     (when (and (!= (vv is-lit) 0) (!= (type-is-strview (vv type)) 0))
       (.set! vv type ty-cstr)
       (return 1))
@@ -111,8 +111,8 @@
 ; For function pointer types, returns a simplified "void*" — the full
 ; C function pointer syntax (with return type and params) is handled
 ; separately in emit-cheader-declare where we have the param names.
-(defn type-to-c (t:ptr):ptr
-  (let (tt:ptr:Type (cast ptr:Type t))
+(defn type-to-c (t:raw:Type):CStr
+  (let (tt:raw:Type t)
     (when (= (tt kind) TY-VOID)   (return "void"))
     (when (= (tt kind) TY-I1)     (return "_Bool"))
     (when (= (tt kind) TY-I8)     (return "int8_t"))
@@ -154,8 +154,8 @@
 (defn ptr-bytes ():i64
   (cast i64 g-host-ptr-bytes))
 
-(defn type-size (t:ptr):i32
-  (let (tt:ptr:Type (cast ptr:Type t))
+(defn type-size (t:raw:Type):i32
+  (let (tt:raw:Type t)
     (when (= (tt kind) TY-I1)   (return 1))
     (when (= (tt kind) TY-I8)   (return 1))
     (when (= (tt kind) TY-I16)  (return 2))
@@ -179,8 +179,8 @@
     (when (= (tt kind) TY-UNION) (return g-target-ptr-bytes))
     (return 1)))
 
-(defn is-int-type (t:ptr):i32
-  (let (k:i32 ((cast ptr:Type t) kind))
+(defn is-int-type (t:raw:Type):i32
+  (let (k:i32 (t kind))
     (when (= k TY-I1) (return 1))
     (when (= k TY-I8) (return 1))
     (when (= k TY-I16) (return 1))
@@ -201,8 +201,8 @@
     (when (= k TY-CHAR)  (return 1))
     (return 0)))
 
-(defn is-float-type (t:ptr):i32
-  (let (k:i32 ((cast ptr:Type t) kind))
+(defn is-float-type (t:raw:Type):i32
+  (let (k:i32 (t kind))
     (when (= k TY-F32) (return 1))
     (when (= k TY-F64) (return 1))
     (return 0)))
@@ -211,14 +211,14 @@
 ; TY-PTR and TY-CSTR (a C-string is a `char*`). They are interconvertible with
 ; no IR and zero-initialise to `null`. (TY-FN is deliberately excluded — its
 ; existing call-position handling is unchanged by CStr.)
-(defn is-ptr-like (t:ptr):i32
-  (let (k:i32 ((cast ptr:Type t) kind))
+(defn is-ptr-like (t:raw:Type):i32
+  (let (k:i32 (t kind))
     (when (= k TY-PTR) (return 1))
     (when (= k TY-CSTR) (return 1))
     (return 0)))
 
-(defn int-width (t:ptr):i32
-  (let (k:i32 ((cast ptr:Type t) kind))
+(defn int-width (t:raw:Type):i32
+  (let (k:i32 (t kind))
     (when (= k TY-I1) (return 1))
     (when (= k TY-I8) (return 8))
     (when (= k TY-I16) (return 16))
@@ -234,8 +234,8 @@
     (when (= k TY-CHAR)  (return 32))
     (return 0)))
 
-(defn is-unsigned (t:ptr):i32
-  (let (k:i32 ((cast ptr:Type t) kind))
+(defn is-unsigned (t:raw:Type):i32
+  (let (k:i32 (t kind))
     (when (= k TY-UI8)   (return 1))
     (when (= k TY-UI16)  (return 1))
     (when (= k TY-UI32)  (return 1))
@@ -254,7 +254,7 @@
 ; large decimal literals so this predicate stays a bootstrap fixed point (a
 ; literal above i32 range in its own source would be wrapped by the old boot
 ; compiler before LW-4's widening lands).
-(defn int-literal-fits (v:i64 t:ptr):i32
+(defn int-literal-fits (v:i64 t:raw:Type):i32
   (let (w:i32 (int-width t))
     (when (<= w 1) (return 1))
     (when (>= w 64) (return 1))
@@ -278,18 +278,18 @@
 
 ; The pointer kind of a type: the Stage 10 contract for TY-PTR, PTR-RAW for
 ; everything else (including non-pointers, so callers can probe freely).
-(defn ptr-pkind (t:ptr):i32
+(defn ptr-pkind (t:raw:Type):i32
   (when (= t null) (return PTR-RAW))
-  (let (tt:ptr:Type (cast ptr:Type t))
+  (let (tt:raw:Type t)
     (when (!= (tt kind) TY-PTR) (return PTR-RAW))
     (return (tt pkind))))
 
 ; Clone `t` with pkind=k. Typed-pointer Types may be shared (and bare ptr is a
 ; singleton), so relabeling/narrowing never mutates. Identity when k matches.
-(defn type-as-pkind (t:ptr k:i32):ptr
-  (let (src:ptr:Type (cast ptr:Type t))
+(defn type-as-pkind (t:raw:Type k:i32):raw:Type
+  (let (src:raw:Type t)
     (when (= (src pkind) k) (return t))
-    (let (dst:ptr:Type (cast ptr:Type (alloc-type)))
+    (let (dst:ref:Type (alloc-type))
       (.set! dst kind        (src kind))
       (.set! dst ret         (src ret))
       (.set! dst params      (src params))
@@ -303,7 +303,7 @@
       (.set! dst param-names (src param-names))
       (.set! dst is-volatile (src is-volatile))
       (.set! dst pkind       k)
-      (return (cast ptr dst)))))
+      (return dst))))
 
 ; The conservative meet of two pointer kinds for a control-flow join (cond /
 ; if-some phi): raw if either side waived the checks, else Maybe if either
@@ -337,15 +337,15 @@
 ; and a typed raw/Maybe source into a typed ref slot is still checked. Direct
 ; analogue of the CStr refinement above; deref safety is enforced separately by
 ; `require-derefable`.
-(defn pkind-flow-check (src:ptr dst:ptr line:i32 ctx:ptr):void
+(defn pkind-flow-check (src:raw:Type dst:raw:Type line:i32 ctx:CStr):void
   (when (or (= src null) (= dst null)) (return))
   (when (!= (ptr-pkind dst) PTR-REF) (return))
   (when (= (ptr-pkind src) PTR-REF) (return))
   ; Untyped (void*) destination carries no non-null contract: an elem-less bare
   ; `ptr` slot names no pointee and cannot be deref'd, so a non-null obligation
   ; on it protects nothing. The flip's teeth stay on typed (ref T)/(ptr T) slots.
-  (when (= ((cast ptr:Type dst) elem) null) (return))
-  (let (sk:i32 ((cast ptr:Type src) kind))
+  (when (= (dst elem) null) (return))
+  (let (sk:i32 (src kind))
     (when (= sk TY-PTR)
       (if (= (ptr-pkind src) PTR-MAYBE)
         (die-at line (fmt-s "%s: value may be null where non-null (ref ...) is required — narrow with if-some/when-some, unwrap, or a null guard" ctx))
@@ -353,6 +353,6 @@
 
 ; Deref/field/index gate: a (Maybe (ref T)) value cannot be accessed until
 ; narrowed. Raw stays unchecked (the signed waiver); ref is always safe.
-(defn require-derefable (t:ptr line:i32 op:ptr):void
+(defn require-derefable (t:raw:Type line:i32 op:CStr):void
   (when (= (ptr-pkind t) PTR-MAYBE)
     (die-at line (fmt-s "%s: value may be null — narrow with if-some/when-some, unwrap, or a (when (= x null) ...) guard before use" op))))

@@ -348,11 +348,44 @@ literal is `StrView`) — this is what lets the compiler write `(= name "i32")`
 instead of `(= (strcmp name "i32") 0)` without retyping `name`. The corollary
 trap: any value you retype `ptr`→`CStr` (or `ptr`→`StrView`) makes *all* its
 `=`/`!=` become strcmp, so never retype a field/param that is compared for
-pointer identity — notably **`Node.s`** (the interned-symbol path),
-`scope-define`/`scope-lookup` keys, and struct-field names. This is the NS-5
-exclusion list: identity-substrate `ptr`s stay `ptr`; only adopt `StrView` where
-a carried length removes a `strlen`/re-scan and identity is not at stake.
-`strncmp` (prefix) has no operator; leave those as calls.
+pointer identity — notably **`Node.s`** (the interned-symbol path) and
+struct-field names. This is the NS-5 exclusion list: identity-substrate
+`ptr`s stay `ptr`; only adopt `StrView` where a carried length removes a
+`strlen`/re-scan and identity is not at stake. `strncmp` (prefix) has no
+operator; leave those as calls.
+
+**Correction (stage14 14.3, 2026-07-12): `scope-define`/`scope-lookup` keys
+are NOT identity-compared** (an earlier version of this note listed them
+alongside `Node.s` as identity-substrate — stale). `Sym.name` has been `CStr`
+since well before Stage 14 (commit 079a0135), so `scope-lookup`'s `(= (sym
+name) key)` already lowers to `strcmp` regardless of the `name`/`key`
+parameter's own declared type (the mixed-operand rule fires off `Sym.name`
+alone) — this is *required*, not incidental: the global scope's namespace
+qualification (`qualify-name`) produces a fresh, non-interned buffer on every
+call, so an identity comparison would never match across two separate lookups
+of the same qualified name. Retyping `scope-define`/`scope-lookup`'s `name`
+param to `CStr` (14.3 batch 1) is therefore inert — verified with a
+byte-identical `build/nucleusc.ll` diff. A stray same-commit comment at
+`qualify-name` ("interned so scope-lookup's pointer-identity comparison
+matches") is *also* stale for the same reason and should be read historically,
+not as current behavior.
+
+**The null-check trap generalizes beyond struct fields to any
+null-checked parameter in the value's call chain.** `Sym.ir-name`/
+`Method.ir-name` stay `ptr` because *they* are null-checked; the same danger
+recurs one hop away wherever a value **derived** from such a field flows
+through a function that null-checks its own parameter with `=`/`!=` before
+using it — the parameter's declared type governs that specific comparison's
+lowering, independent of the field's type. Found the hard way in 14.3 batch 1:
+`program-defn-record (irn:ptr …)` looked like a safe `CStr` retype (matching
+the already-`CStr` `ProgDefn.ir-name` field it stores `irn` into) but the
+function opens with `(when (= irn null) (return))` — a **parameter**
+null-check, not a field one. Retyping `irn` to `CStr` turned that guard into
+`strcmp(irn, null)`, segfaulting on *every* compile (the OLD boot's typecheck
+of the new source can't catch this — it's a runtime behavior change, not a
+type error, so `make` succeeds and the bug only surfaces at `make test`).
+Audit a proposed field-matching retype by grepping the **parameter's own**
+body for `(= name null)`/`(!= name null)`, not just the field's read sites.
 
 **Verifying a behavior-neutral type migration:** retyping `ptr`→`CStr` and
 rewriting `(= (strcmp a b) 0)`→`(= a b)` is **byte-identical at the IR level**
