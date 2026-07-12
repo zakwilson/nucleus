@@ -582,6 +582,54 @@ IR diff.
 **Done when:** the elem-less `:ptr` signature population is materially reduced;
 byte-identical (or re-converged) per batch; tests green.
 
+**Status (batch 1, 2026-07-12): `scope.nuc`/`type-utils.nuc`/`type-mangle.nuc`
+done, byte-identical.** `scope-new`/`scope-define`/`scope-lookup`/
+`scope-push-cleanup`'s `Scope*` param → `(raw Scope)`; `scope-define`'s `type`
+→ `(raw Type)`; every `Type*` param/return across `type-utils.nuc` (`type-to-ir`,
+`type-is-strview`, `type-to-c`, `type-size`, `is-int-type`, `is-float-type`,
+`is-ptr-like`, `int-width`, `is-unsigned`, `int-literal-fits`, `ptr-pkind`,
+`type-as-pkind`, `pkind-flow-check`'s `src`/`dst`, `require-derefable`'s `t`)
+and `type-mangle.nuc` (`type-mangle-token`, `type-spelling`, both param and
+return) → `(raw Type)`/`CStr`; `collapse-strlit-cstr`'s `v` → `(raw Val)`;
+`subst-tyvars-sym`'s `s` (a plain colon-spelling string) → `CStr`;
+`subst-tyvars-node`'s `node` → `(raw Node)` (nullable, matches its `(when (=
+node null) (return null))`); `pkind-flow-check`'s `ctx` and
+`require-derefable`'s `op` (diagnostic-label strings, always literals) →
+`CStr`. Every `tt:ptr:Type (cast ptr:Type t)`-style redundant local cast
+collapsed to a plain rebind (`tt:raw:Type t`); ~15 casts deleted in these three
+files plus 5 more at call sites tree-wide once the callee no longer demanded
+elem-less `ptr` (`require-derefable` call sites in `nucleusc.nuc`×4 and
+`union-emit.nuc`×1 dropped their `(cast ptr pt/ct/st …)` wrapper).
+
+**One genuine non-inert finding (caught only by the empirical IR-diff/test
+gate, not by inspection):** `program-defn-record`'s `irn` parameter looked like
+a safe `CStr` retype by the same reasoning as `ProgDefn.ir-name` (already
+`CStr` since 14.2), but the function immediately does `(when (= irn null)
+(return))` — a **null-check on the parameter itself**, not the field. Retyping
+`irn` to `CStr` turned that guard into `strcmp(irn, null)`, which segfaults on
+every single compile (even `hello.nuc`) since `strcmp` dereferences its second
+argument. `program-defn-lookup`'s `irn` has no such guard (only an explicit
+`strcmp` against the always-non-null `pd ir-name`) and would have been safe as
+`CStr`, but is left `ptr` anyway for consistency with its sibling and to avoid
+inviting the same trap if a null-guard is ever added there. Both stay `ptr`,
+matching the `Sym.ir-name`/`Method.ir-name` precedent (14.2's census) exactly —
+this is the same failure class, just one hop further from the field. Found by
+bisecting a `make test` regression (a universal segfault survived the OLD
+boot's typecheck of the new source, since the bug is a runtime behavior change,
+not a type error) down to this single line; fixed by reverting both
+`program-defn-lookup`/`program-defn-record`'s `irn` to `ptr` with an explanatory
+comment at each site.
+
+Verification: `make test` 168/168; `make bootstrap` fixed point
+(`stage1.ll == stage2.ll`); `build/nucleusc.ll` diffed **byte-identical, zero
+lines** against a from-scratch baseline built with the pre-batch source and the
+same (unmodified) `bin/nucleusc` boot — the strongest check, and the one that
+would have caught the `program-defn-record` regression even without `make
+test`. `examples/and-narrow.nuc` re-run per the close-out checklist (no
+narrowing-affecting promotions in this batch, but confirmed clean regardless).
+Next batch (per the file-cluster order): abi/union-registry/union-emit's own
+signatures.
+
 ### 14.4 — Parallel arrays → array-of-struct  *(controlled refresh)*
 
 **Agent: systems-impl-engineer** (new element structs + layout change); build-test
