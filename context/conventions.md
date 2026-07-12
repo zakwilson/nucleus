@@ -199,12 +199,16 @@ binds the ref. The materialized backing is frame storage, dropped through the ex
 the receiver-shape problem).
 
 **TC-5 union target-typing:** `union-target-rewrite` (src/union-emit.nuc) is parameterized
-by the target type and runs at the let/with init and `set!` RHS want positions (not just
-return), so `(let (m:(Maybe i32) (some 5)))` / `(set! m none)` construct without `make`.
-The `.set!` value position is NOT covered (it sits before `(import-use union-emit)` in
-src/nucleusc.nuc, so the function isn't in scope there). Value-position distribution into
-`if`/`cond`/`do`/`match`/`let`-body tails (TC-5 part 2) is **not yet done** — a union arm
-head inside a branch tail is not rewritten.
+by the target type and runs at the let/with init, `set!` RHS, AND the value-position tails
+of `if`/`cond`/`do`/`let`/`with`/`match` (not just return), so union construction works
+without `make` everywhere a typed value is expected. Distribution: each control-form
+emitter captures the armed want at entry (`my-want`) and re-arms `g-want-type` before
+emitting a value tail — a prior statement (test/scrutinee) may have nulled it via
+emit-generic-call's consume-once, so without the re-arm only the first branch would see it.
+Recursion is natural: each emitter rewrites its own tail, then emit-node dispatches the
+(rewritten) tail, so nested control forms rewrite level by level. The `.set!` value
+position is NOT covered (it sits before `(import-use union-emit)` in src/nucleusc.nuc,
+so the function isn't in scope there).
 
 
 ## `?`/`!` in names map to `_QMARK`/`_BANG` in emitted symbols

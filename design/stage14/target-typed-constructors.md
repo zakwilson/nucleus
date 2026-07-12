@@ -1,8 +1,8 @@
 # Stage 14 — Target-typed generic constructors (result-type propagation)
 
-**Status (2026-07-09): TC-1 through TC-4 fully implemented; TC-5 part 1 done, part 2
-remaining.** All gates green: `make` clean, `make test` 168/168, `make bootstrap`
-stage1==stage2. Boot artifacts converged (incl. Windows IRs).
+**Status (2026-07-09): TC-1 through TC-5 fully implemented.** All gates green:
+`make` clean, `make test` 168/168, `make bootstrap` stage1==stage2. Boot artifacts
+converged (incl. Windows IRs).
 
 - **TC-1 + TC-2 (the want channel):** the return-only-tyvar registration gate is
   lifted (a tyvar not determined by any parameter now registers as METHOD-GENERIC;
@@ -48,24 +48,18 @@ stage1==stage2. Boot artifacts converged (incl. Windows IRs).
   recognition before it could compile them — temporarily elide the `-in`
   constructors, build, refresh, restore, rebuild.)
 
-- **TC-5 part 1 (union target-typing at want positions):** `union-target-rewrite`
-  (src/union-emit.nuc:867) is parameterized by the target type (return-position
-  callers pass `g-fn-ret-type` as before; the new want-position callers —
-  `tc3-emit-binding-init` for let/with inits, and `emit-set` RHS — pass the
-  declared slot type). So `(let (m:(Maybe i32) (some 5)))`, `(let (m:(Maybe i32)
-  none))`, and `(set! m (some 7))` now construct without explicit `make`.
-  Byte-identical/additive (the new positions previously died as unknown arms).
-  The `.set!` value position is deferred — it sits before `(import-use union-emit)`
-  in src/nucleusc.nuc, so `union-target-rewrite` is not in scope there.
-
-- **TC-5 part 2 (value-position distribution) — REMAINING.** The want/rewrite
-  does not yet distribute into `if`/`cond`/`do`/`match`/`let`-body tails, so
-  `(let (m:(Maybe i32) (if c (some 5) none)))` does NOT rewrite the branches (the
-  `if` form itself isn't an arm head). Implementing part 2 means recursing the
-  `union-target-rewrite` into the value-position tail forms of those control
-  constructs (and clearing it in statement positions) — replacing v1's "stays
-  armed through control forms" with precise scoping. This is additive (those
-  positions currently die) and independent of the rest.
+- **TC-5 (union target-typing generalized):** `union-target-rewrite`
+  (src/union-emit.nuc:867) is parameterized by the target type. Part 1: the
+  let/with binding-init and `set!` RHS want positions run it (in addition to
+  return). Part 2: it distributes into the value-position tails of `if`/`cond`/
+  `do`/`let`/`with`/`match` — each emitter captures the armed want at entry and
+  re-arms it before emitting a value tail (a prior test/scrutinee/statement may
+  have consumed it via emit-generic-call's consume-once). So
+  `(let (m:(Maybe i32) (if c (some 5) none)))`, `(cond … (some 5) …)`, match arm
+  bodies, `do` tails, and nested `let`/`with` tails all construct without `make`.
+  Byte-identical/additive (those positions previously died as unknown arms or the
+  `some` special-form's ref requirement). The `.set!` value position is still
+  deferred (it sits before `(import-use union-emit)` in src/nucleusc.nuc).
 
 Allocating, initializing, and returning collection-template instances is the
 worst ergonomic spot in the language. The canonical local idiom spells the
@@ -365,13 +359,17 @@ Adoption and retirement:
 
 ### TC-5 — generalize target typing: unions and value-position distribution
 
-**Status: part 1 implemented (2026-07-09); part 2 remaining.** `union-target-rewrite`
-(src/union-emit.nuc:867) is parameterized by the target type and run at the let/with
-binding-init and `set!` RHS want positions (in addition to return positions), so union
-construction works without explicit `make` there. The `.set!` value position is deferred
-(it sits before `(import-use union-emit)` in src/nucleusc.nuc). Part 2 — distributing the
-rewrite into `if`/`cond`/`do`/`match`/`let`-body value tails — is the remaining work
-(additive; those positions currently die). See the top-of-file Status note.
+**Status: implemented (2026-07-09).** `union-target-rewrite` (src/union-emit.nuc:867)
+is parameterized by the target type and run at the let/with binding-init and `set!`
+RHS want positions (part 1), AND distributed into the value-position tails of
+`if`/`cond`/`do`/`let`/`with`/`match` (part 2) — each of those emitters captures the
+armed want at entry and re-arms it before emitting a value tail (a prior statement
+may have consumed it via emit-generic-call's consume-once). So union construction
+works without explicit `make` everywhere a typed value is expected. Byte-identical/
+additive (the new positions previously died). The `.set!` value position remains
+deferred (it sits before `(import-use union-emit)` in src/nucleusc.nuc). Verified:
+`(let (m:(Maybe i32) (if c (some 5) none)))`, `(cond … (some 5) …)`, `do`/`let`/`with`
+tails, and match arm bodies all construct correctly. See the top-of-file Status note.
 
 Two halves, both riding the TC-2 channel:
 

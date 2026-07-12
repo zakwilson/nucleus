@@ -1020,6 +1020,9 @@
                                   ud:ptr is-ptr:i32 base:ptr staint:ptr):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call)
         nclauses:i32 (- (node-len cc) 2)
+        ; TC-5 part 2: re-arm the want for each arm's value tail (a prior arm
+        ; body or the dispatch may have consumed it).
+        my-want:ptr g-want-type
         id:i32 (new-label-id)
         def-lbl:ptr (fmt-i32 "match.def%d" id)
         end-lbl:ptr (fmt-i32 "match.end%d" id)
@@ -1063,7 +1066,12 @@
           (let (bv:ref:Val (alloc-val ty-void null)
                 bcur:ptr ((cast ptr:Node clause) cdr))
             (while (!= bcur null)
-              (set! bv (emit-node ((cast ptr:Node bcur) car) inner))
+              (let (form:ptr ((cast ptr:Node bcur) car))
+                ; TC-5 part 2: target-type the tail (last) form against the armed want.
+                (when (= ((cast ptr:Node bcur) cdr) null)
+                  (set! g-want-type my-want)
+                  (set! form (union-target-rewrite form my-want)))
+                (set! bv (emit-node form inner)))
               (set! bcur ((cast ptr:Node bcur) cdr)))
             ; Stage 14 NS-3: a match arm ending in a string literal collapses to
             ; CStr (no IR) so the join/phi stays a plain pointer. See
@@ -1457,8 +1465,12 @@
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (< (node-len cc) 3)
       (die-at (cc line) "match: expects a scrutinee and at least one clause"))
-    (let (sv:ref:Val (emit-node (node-at cc 1) scope)
+    (let (my-want:ptr g-want-type
+          sv:ref:Val (emit-node (node-at cc 1) scope)
           st:ptr:Type (cast ptr:Type (sv type)))
+      ; TC-5 part 2: the scrutinee (a generic call) may have consumed the want;
+      ; re-arm so clause/arm-body emitters distribute it to value tails.
+      (set! g-want-type my-want)
       (when (= (niche-layout-of (sv type)) LAYOUT-NICHE-ERRPTR)
         (return (emit-match-niche-errptr call scope (cast ptr sv)
                   (-> (cast ptr:Type (sv type)) (_ elem)))))
