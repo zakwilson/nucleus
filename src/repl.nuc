@@ -446,7 +446,7 @@
                     (reset-function-state)
                     (let (fn-scope:ref:Scope (scope-new g-globals)
                           result:ptr:Val (cast ptr:Val (emit-node (cast ptr f) fn-scope))
-                          result-kind:i32 ((cast ptr:Type (result type)) kind))
+                          result-kind:i32 ((result type) kind))
                       ; Generate the return based on result type
                       (when (= g-block-term 0)
                         (cond (= result-kind TY-VOID)

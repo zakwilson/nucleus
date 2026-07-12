@@ -124,17 +124,17 @@
   field-types:ptr
   num-fields:i32
   emitted:i32       ; type definition already written to IR (vs. name-only pre-registration)
-  src-file:ptr      ; source file where defined (cheader/anon struct provenance)
+  src-file:CStr     ; source file where defined (cheader/anon struct provenance)
   src-line:i32
   ; --- Stage 10 unions ---
   is-union:i32      ; 1 = untagged union: all fields at offset 0, size = max member
-  udef:ptr          ; UnionDef* when this struct is a defunion backing struct, else null
+  (udef (raw UnionDef)) ; UnionDef* when this struct is a defunion backing struct, else null
   ; --- Stage 11 parametric structs (T2): origin of a stamped template instance ---
   ; For a struct produced by struct-template-stamp-types these record which
   ; template it came from and the concrete type arguments, so the method unifier
   ; can recover (template, args) from a concrete `Vector.i32` and bind a tyvar
   ; pattern `(Vector T)` against it. null/0 for an ordinary hand-written struct.
-  origin-template:ptr ; StructTemplate* this instance was stamped from, or null
+  (origin-template (raw StructTemplate)) ; StructTemplate* this instance was stamped from, or null
   origin-args:ptr     ; ptr array of concrete arg Type* (length origin-nargs), or null
   origin-nargs:i32)
 
@@ -145,8 +145,8 @@
 ; memoized anonymous struct of the fields (several).
 (defstruct UnionDef
   name:CStr
-  sdef:ptr          ; backing StructDef (tag [+ payload])
-  union-sd:ptr      ; payload union's StructDef (one member per payload arm), or null
+  (sdef (raw StructDef))      ; backing StructDef (tag [+ payload])
+  (union-sd (raw StructDef))  ; payload union's StructDef (one member per payload arm), or null
   num-arms:i32
   arm-names:ptr     ; ptr array — interned arm name per arm
   arm-ptypes:ptr    ; ptr array — payload Type* per arm (null for payload-less)
@@ -155,7 +155,7 @@
   arm-nfields:ptr   ; ptr:i32 array — field count per arm
   ; --- Stage 10 U4 niche layout (design/stage10/unions.md §6) ---
   layout:i32        ; LAYOUT-ENUM / NICHE-MAYBE / NICHE-ERRPTR / TAGGED
-  niche-elem:ptr    ; for NICHE-MAYBE/ERRPTR: the (ref T) payload's element Type*
+  (niche-elem (raw Type)) ; for NICHE-MAYBE/ERRPTR: the (ref T) payload's element Type*
   src-line:i32)
 
 ; A parameterized defunion template: `(defunion (Result T E) ...)`. Defines no
@@ -164,7 +164,7 @@
   name:CStr
   tyvars:ptr        ; ptr array of tyvar name strings
   ntv:i32
-  form:ptr)         ; retained (defunion (Name T ...) arms...) Node*
+  (form (raw Node))) ; retained (defunion (Name T ...) arms...) Node*
 
 ; A parameterized defstruct template: `(defstruct (Vector T) ...)`. Defines no
 ; type itself; a fully-applied use `(Vector i32)` in type position stamps a
@@ -174,7 +174,7 @@
   name:CStr
   tyvars:ptr        ; ptr array of tyvar name strings
   ntv:i32
-  form:ptr)         ; retained (defstruct (Name T ...) field-specs...) Node*
+  (form (raw Node))) ; retained (defstruct (Name T ...) field-specs...) Node*
 
 ; A defenum's member table, recorded so `match` can check exhaustiveness over
 ; enum constants (the §4 freebie). Member i's value is i.
@@ -277,14 +277,14 @@
 ; A narrowing undo entry (Stage 10 nullability §4). Restores are skipped when
 ; the binding's kstamp moved past `stamp` — a kill (reassignment) is sticky.
 (defstruct NarrowUndo
-  name:ptr
+  name:CStr
   scope:ref:Scope
-  old-ntype:ptr
+  (old-ntype (raw Type))
   old-ndepth:i32
   stamp:i32)
 
 (defstruct Scope
-  parent:ptr
+  (parent (raw Scope))
   syms:ptr
   len:i32
   cap:i32
@@ -298,12 +298,21 @@
   id:i32)
 
 (defstruct Val
-  type:ptr
+  (type (raw Type))
+  ; val stays `ptr` (NOT CStr): no site compares it for identity, but several
+  ; match/cond-join phi accumulators (union-emit.nuc/nucleusc.nuc `(conj vals
+  ; (bv val))`) collect it into a `(Vector ptr)`. `conj`'s generic dispatch
+  ; binds that Vector's tyvar to `ptr` and a CStr argument does not adapt to a
+  ; bare `ptr` parameter (by design — see the string-lattice note in
+  ; conventions.md), so a CStr retype breaks those call sites outright rather
+  ; than staying inert. Plain formatting call sites (fprintf %s, alloc-val's
+  ; plain-function v:ptr param) would have been fine either way; the Vector
+  ; sink is the blocker.
   val:ptr
   ; Stage 10 escape analysis: owning with-Scope* this value aliases (null =
   ; clean). Propagated through identity-preserving ops (cast, ptr+, .&, phi);
   ; dropped by value-copying ops (deref, field load, calls).
-  taint:ptr
+  (taint (raw Scope))
   ; Stage 13 L1 (lambda.md §"Lifetime and escape analysis"): 1 when `taint` is a
   ; *frame-region* — the scope of a plain let/with/param storage whose address
   ; was taken (emit-addr-of's new source) — rather than a `with`-OWNED resource.
@@ -344,16 +353,24 @@
 ; reproduce its `declare`. ir-name is the emitted @symbol; ret + param Types
 ; drive the ABI-lowered declare exactly as emit-defn lowered the `define`.
 (defstruct ProgDefn
-  ir-name:ptr
-  ret:ptr
+  ; ir-name is content-compared: program-defn-lookup matches it via explicit
+  ; strcmp (membership is "by content", not identity — the comment there
+  ; predates this retype), and it is never null-checked before that strcmp.
+  ; Unlike Sym.ir-name/Method.ir-name, safe as CStr.
+  ir-name:CStr
+  (ret (raw Type))
   ptypes:ptr   ; ptr array of param Type*
   nparams:i32
   variadic:i32)
 
 (defstruct BinOp
-  name:ptr
-  instr:ptr
-  instr-u:ptr
+  ; All three are content-only: `name` is only ever content-compared against
+  ; string literals ("=", "!=" in builtin-op-result-type) or formatted into
+  ; diagnostics; `instr`/`instr-u` are LLVM instruction mnemonics formatted
+  ; straight into the IR stream. None are identity-compared.
+  name:CStr
+  instr:CStr
+  instr-u:CStr
   is-cmp:i32)
 
 ; ---- Polymorphism (Stage 9) ----
@@ -365,14 +382,21 @@
 (defstruct Method
   param-types:ptr   ; ptr to array of ptr:Type (length num-params); null for intrinsic
   num-params:i32
-  ret-type:ptr      ; ptr:Type; null for intrinsic
+  (ret-type (raw Type))  ; null for intrinsic
   has-rest:i32
   variadic:i32
   kind:i32          ; one of MethodKind
+  ; ir-name stays `ptr` (NOT CStr): null-checked at generics.nuc's
+  ; defn-ir-name/defn-form-mangled-name (`(!= (-> m ... ir-name) null)`) and at
+  ; generic-method-bind-adapt's mangled-name cache probe (`(!= (m ir-name)
+  ; null)` before a strcmp) — both null-check first for METHOD-INTRINSIC/not-
+  ; yet-mangled methods, whose ir-name is a genuine null (generics.nuc:98/338/
+  ; 1175). A CStr retype turns that null-check into a crashing
+  ; strcmp(x, null). Same class as Sym.ir-name (batch 1).
   ir-name:ptr       ; emitted symbol "@name..." (user methods); null otherwise
-  fn-type:ptr       ; ptr:Type (TY-FN) for user methods; null otherwise
-  binop:ptr         ; ptr:BinOp (intrinsic operators); null otherwise
-  body:ptr          ; retained defn form (generic methods); null otherwise
+  (fn-type (raw Type))  ; TY-FN for user methods; null otherwise
+  (binop (raw BinOp))   ; intrinsic operators; null otherwise
+  (body (raw Node))     ; retained defn form (generic methods); null otherwise
   ; --- METHOD-GENERIC only (Stage 9 rung 4): a bounded generic defn template ---
   tyvars:ptr        ; array of ptr (distinct type-variable name strings)
   num-tyvars:i32
@@ -394,7 +418,7 @@
   ; instances are caches of their template, so tier-2 widening resolution skips
   ; them (the template alone covers every widened call) to avoid a false ambiguity
   ; between a template and its own stamped instance.
-  origin-template:ptr)
+  (origin-template (raw Method)))
 
 (defstruct Generic
   name:CStr
@@ -460,8 +484,8 @@
 ; tyvars introduced by the &where clause), needed to size A4.2's recovery bound
 ; array; for a &where-free extend it equals the template's own tyvar count.
 (defstruct TmplConformance
-  template:ptr      ; StructTemplate*
-  proto:ptr         ; Protocol*
+  (template (raw StructTemplate))
+  (proto (raw Protocol))
   bindings:ptr      ; ptr array of Node* (the proto-app args), or null if none
   nbindings:i32
   ; --- Stage 11 assoc-types (A4): trailing &where clause, or empty ---
@@ -477,43 +501,51 @@
 ; emission, plus a human-readable context ("while instantiating @name.toks…
 ; requested at file:line") attached to any compile error raised while emitting it.
 (defstruct MonoJob
-  form:ptr
-  context:ptr)
+  (form (raw Node))
+  context:CStr)
 
 (defstruct MacroDef
   name:CStr
-  jit-name:ptr
+  jit-name:CStr
   num-params:i32
   variadic:i32
   ; --- Stage 8 / REPL introspection additions ---
-  src-file:ptr
+  src-file:CStr
   src-line:i32
   ; Docstring captured from a defmacro whose body's first form is a string
   ; literal (with at least one form following it). null otherwise.
-  docstring:ptr
+  docstring:CStr
   ; Parameter names array (parallel to the user-declared param list, minus
   ; &rest/&optional keywords) for tooling. null if not captured.
   param-names:ptr)
 
 (defstruct RMacro
-  prefix:ptr
+  ; Both content-only: `prefix` is only ever byte-indexed (char-at) during the
+  ; reader's longest-prefix-match scan (lib/reader.nuc); `wrap-sym` (despite the
+  ; name) is a plain string handed to intern-symbol, which canonicalizes it by
+  ; content — it is never itself a Node/Sym pointer or identity-compared.
+  prefix:CStr
   prefix-len:i32
-  wrap-sym:ptr)
+  wrap-sym:CStr)
 
 ; A label declaration within the current function (Stage 8 goto support).
 ; `total` is the number of (label NAME) occurrences seen in the pre-scan;
 ; `seen` counts how many have been emitted so the last one wins the live BB.
+; `name` is content-compared: lbl-find matches it via explicit strcmp, not
+; identity.
 (defstruct LabelEntry
-  name:ptr
+  name:CStr
   total:i32
   seen:i32)
 
 ; A user-asserted implicit conversion (defcast From To conv-fn). Applied at call
 ; sites by safe-coerce-val when an argument's type differs from the parameter's.
 (defstruct CastRule
-  from:ptr
-  to:ptr
-  ir-name:ptr)
+  (from (raw Type))
+  (to (raw Type))
+  ; ir-name is content-only: safe-coerce-val formats it straight into the
+  ; emitted `call` instruction (never null-checked or identity-compared).
+  ir-name:CStr)
 
 ; A resolved compilation target (Stage 8 cross-compilation). datalayout and
 ; ptr-size come from LLVM for `triple`, so emitted IR matches the target ABI.
