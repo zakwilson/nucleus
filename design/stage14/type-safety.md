@@ -472,6 +472,72 @@ non-null raw→ref — retyping those locals is 14.3, not here). ~14 casts delet
 nucleusc.nuc:5371, drifted from :4988). The remaining `compiler-types.nuc` structs
 (StructDef, UnionDef, Scope, Val, Method, …) are future batches.
 
+**Status (batch 2, 2026-07-12): the remaining 16 structs done, byte-identical.**
+`StructDef.src-file`→`CStr`, `udef`→`(raw UnionDef)`, `origin-template`→
+`(raw StructTemplate)`; `UnionDef.sdef`/`union-sd`→`(raw StructDef)`,
+`niche-elem`→`(raw Type)`; `UnionTemplate.form`/`StructTemplate.form`→
+`(raw Node)`; `Scope.parent`→`(raw Scope)`; `Val.type`→`(raw Type)`,
+`taint`→`(raw Scope)`; `ProgDefn.ir-name`→`CStr`, `ret`→`(raw Type)`;
+`BinOp.name`/`instr`/`instr-u`→`CStr`; `Method.ret-type`/`fn-type`→`(raw Type)`,
+`binop`→`(raw BinOp)`, `body`→`(raw Node)`, `origin-template`→`(raw Method)`;
+`TmplConformance.template`→`(raw StructTemplate)`, `proto`→`(raw Protocol)`;
+`MonoJob.form`→`(raw Node)`, `context`→`CStr`; `MacroDef.jit-name`/`src-file`/
+`docstring`→`CStr`; `RMacro.prefix`/`wrap-sym`→`CStr`; `LabelEntry.name`→`CStr`;
+`CastRule.from`/`to`→`(raw Type)`, `ir-name`→`CStr`; `NarrowUndo.name`→`CStr`,
+`old-ntype`→`(raw Type)`.
+
+**Three census findings beyond the batch-1 identity check, all verified against
+call sites (not guessed):**
+- **`Method.ir-name` stays `ptr`** — same class as `Sym.ir-name`. `defn-ir-name`/
+  `defn-form-mangled-name` (generics.nuc:566/595) and the mangled-name cache probe
+  in `generic-method-bind-adapt` (generics.nuc:2544) null-check it
+  (`(!= (-> m … ir-name) null)`) before any comparison, and it is a genuine null
+  for `METHOD-INTRINSIC`/not-yet-mangled methods (generics.nuc:98/338/1175). A
+  `CStr` retype turns that guard into a crashing `strcmp(x, null)`.
+- **`Val.val` stays `ptr`** — not an identity case, but a *dispatch* one: several
+  match/cond-join phi accumulators (`union-emit.nuc`/`nucleusc.nuc`, `(conj vals
+  (bv val))`) collect it into a `(Vector ptr)`. `conj`'s generic dispatch binds
+  that Vector's element tyvar to `ptr`, and a `CStr` argument does not adapt to a
+  bare `ptr` parameter (arg-adapts treats them as distinct on purpose, per the
+  string-lattice note in conventions.md) — a `CStr` retype broke that call
+  (`no matching method for overloaded 'conj'`) rather than staying inert. Found
+  by attempting the retype and rebuilding, not by inspection alone — a reminder
+  that the identity-comparison checklist doesn't cover every way a field can be
+  non-inert.
+- **`RMacro.wrap-sym` is a plain string despite the name** — never a Node/Sym
+  pointer. It flows only into `intern-symbol` (lib/reader.nuc:452, via
+  `Tok.s`/`TOK-RMACRO`), which canonicalizes by content; `register-rmacro`'s own
+  second overload already declares it `wrap-sym:CStr`. `RMacro.prefix` is only
+  ever byte-indexed (`char-at`) during the reader's longest-prefix-match scan —
+  also plain content, safe as `CStr`.
+- Everything else CStr-retyped (`ProgDefn.ir-name`, `BinOp.name`/`instr`/
+  `instr-u`, `MonoJob.context`, `MacroDef.jit-name`, `LabelEntry.name`,
+  `CastRule.ir-name`, `NarrowUndo.name`) was confirmed content-only by tracing
+  every read site: explicit `strcmp` (`program-defn-lookup`, `lbl-find`),
+  content comparison against string literals already relying on the mixed-
+  operand strcmp rule (`builtin-op-result-type`'s `(= (bop name) "=")`), or
+  formatted straight into an IR/diagnostic stream and never compared.
+  `NarrowUndo.name` in particular only ever flows into `scope-lookup`, which
+  already does a content compare against `Sym.name` (itself `CStr` since Stage
+  12) — so it was never the identity case the field name suggested.
+
+A handful of inline `(cast ptr:X (obj field))` reads with no named local (e.g.
+`((cast ptr:BinOp (m0 binop)) is-cmp)`, `((cast ptr:Type (vv type)) kind)`, the
+`origin-template` identity check in `unify-tpat`) were simplified to direct field
+access — the far more common named-local idiom (`sd:ptr:StructDef (cast
+ptr:StructDef (udd sdef))`) keeps its cast per the batch-1 precedent (14.3
+territory). `make test` 168/168; `make bootstrap` fixed point; `build/nucleusc.ll`
+diffed **byte-identical, zero lines**, against a from-scratch baseline build of
+the pre-batch source with the same (old) boot compiler — stronger than the
+per-batch snapshot check since it also confirms no drift snuck in between
+sub-edits.
+
+All 16 `compiler-types.nuc` structs listed in this section are now done. What's
+left for a hypothetical batch 3 is the parallel/array fields explicitly deferred
+to 14.4 (`field-names`/`field-types`, the `UnionDef` arm arrays, `origin-args`,
+the `Method`/`TmplConformance` `&where` constraint quads) and `Scope.syms`/
+`cleanup-slots` (14.5).
+
 **Agent: focused-task-implementer** (per-struct batches); systems-impl-engineer
 for `Type`/`Sym` (highest fan-out). **Read (scoped):** the target struct in
 compiler-types.nuc; the `emit-*`/`node-type-*`/lookup functions that read its

@@ -267,7 +267,7 @@
     ; By-pointer return (struct literal `(ref S)` / closure `(ref Env)`): the
     ; struct bytes live at `(vv val)`. Load eightbyte(s) / the whole aggregate
     ; straight from that address — never `store` the pointer itself.
-    (when (= ((cast ptr:Type (vv type)) kind) TY-PTR)
+    (when (= ((vv type) kind) TY-PTR)
       (let (ty:ptr (type-to-ir g-fn-ret-type)
             src:ptr (vv val))
         (when (= k ABI-MEMORY)

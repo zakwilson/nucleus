@@ -3028,7 +3028,7 @@
               (let (bcanon:ptr (boxedfn-canonical ptype))
                 (when (and (!= bcanon null)
                            (= (boxedfn-canonical (slot type)) null)
-                           (= ((cast ptr:Type (slot type)) kind) TY-PTR))
+                           (= ((slot type) kind) TY-PTR))
                   (let (boxed:ref:Val (emit-box-closure (cast ptr slot) bcanon scope (cc line)))
                     (memcpy slot (cast ptr boxed) (sizeof Val)))))
               ; Stage 13 TE-6: symmetric path for a concrete value flowing into a
@@ -3037,7 +3037,7 @@
               (let (dcanon:ptr (dyn-canonical ptype))
                 (when (and (!= dcanon null)
                            (= (dyn-canonical (slot type)) null)
-                           (= ((cast ptr:Type (slot type)) kind) TY-PTR))
+                           (= ((slot type) kind) TY-PTR))
                   (let (boxed:ref:Val (emit-box-value (cast ptr slot) dcanon scope (cc line)))
                     (memcpy slot (cast ptr boxed) (sizeof Val)))))
               ; CE-3 (closure-enhancements.md §CE-3) fix (b), symmetric arg path:
@@ -3051,9 +3051,9 @@
               ; type alone and cannot tell a by-value-struct arg from a pointer
               ; arg, so the normalization must happen here, where ptype is known.
               (when (and (= ((cast ptr:Type ptype) kind) TY-STRUCT)
-                         (= ((cast ptr:Type (slot type)) kind) TY-PTR)
-                         (!= ((cast ptr:Type (slot type)) elem) null)
-                         (!= (type-eq ((cast ptr:Type (slot type)) elem) ptype) 0))
+                         (= ((slot type) kind) TY-PTR)
+                         (!= ((slot type) elem) null)
+                         (!= (type-eq ((slot type) elem) ptype) 0))
                 (let (fc:ptr (new-tmp))
                   (emit-load fc (type-to-ir ptype) (slot val) ptype)
                   (.set! slot type ptype)
@@ -5861,7 +5861,7 @@
                   (set! has-fallthrough 1))
                 (set! next-lbl (fmt-i32-i32 "cond.test%d.%d" id (+ i 1))))
               (let (test:ref:Val (emit-node (cast ptr test-node) scope))
-                (when (!= ((cast ptr:Type (test type)) kind) TY-I1)
+                (when (!= ((test type) kind) TY-I1)
                   (die-at (test-node line) "cond: test must be i1"))
                 (fprintf g-body-stream "  br i1 %s, label %%%s, label %%%s\n"
                   (test val) then-lbl next-lbl))
@@ -6253,7 +6253,7 @@
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "goto-ptr: expects 1 ptr arg"))
     (let (v:ref:Val (emit-node (node-at cc 1) scope))
-      (when (!= ((cast ptr:Type (v type)) kind) TY-PTR)
+      (when (!= ((v type) kind) TY-PTR)
         (die-at (cc line) "goto-ptr: arg must be ptr"))
       (do
         (when (= (count g-lbl-tbl) (cast usize 0))

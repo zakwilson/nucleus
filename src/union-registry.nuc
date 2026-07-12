@@ -881,7 +881,7 @@
             (let (ud:ptr:UnionDef (new UnionDef))
               (conj g-uniondefs ud)
               (.set! ud name name)
-              (.set! ud sdef (cast ptr sd))
+              (.set! ud sdef sd)
               (.set! ud union-sd union-sd)
               (.set! ud num-arms narms)
               (.set! ud arm-names arm-names)
@@ -892,7 +892,7 @@
               (.set! ud layout layout)
               (.set! ud niche-elem niche-elem-box)
               (.set! ud src-line line)
-              (.set! sd udef (cast ptr ud))
+              (.set! sd udef ud)
               (return (cast ref:UnionDef ud))))))))))
 
 ; Arm-name duplicate probe over a partially-built name array (registration helper).

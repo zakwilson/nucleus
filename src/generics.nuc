@@ -853,7 +853,7 @@
         (when (!= st null)
           (when (!= (-> at (cast ptr:Type _) (_ kind)) TY-STRUCT) (return 0))
           (let (sd:ptr:StructDef (cast ptr:StructDef (-> at (cast ptr:Type _) (_ sdef))))
-            (when (!= (cast ptr (sd origin-template)) (cast ptr st)) (return 0))
+            (when (!= (sd origin-template) st) (return 0))
             (let (nargs:i32 (- (node-len pat) 1))
               (when (!= nargs (sd origin-nargs)) (return 0))
               (dotimes (i nargs)
@@ -2027,7 +2027,7 @@
             (when (!= g null)
               (let (m0:ptr:Method (cast ptr:Method (aref (cast ptr:ptr (-> g (cast ptr:Generic _) (_ methods))) 0)))
                 (when (= (m0 kind) METHOD-INTRINSIC)
-                  (when (!= ((cast ptr:BinOp (m0 binop)) is-cmp) 0) (return ty-i1))
+                  (when (!= ((m0 binop) is-cmp) 0) (return ty-i1))
                   (return (gcheck (node-at n 1) scope m)))))
             ; A name that is neither a generic nor scope-bound is a typo — error
             ; whether or not an argument is abstract.
