@@ -387,6 +387,22 @@
 ; Dispatch among concrete methods is on the whole argument tuple.
 (defenum MethodKind METHOD-INTRINSIC METHOD-USER METHOD-GENERIC)
 
+; Stage 14 §14.4: one parsed `&where` constraint — either a plain `(Protocol Var)`
+; or the parametric `((Protocol Arg…) Var)` (assoc-types A1). Replaces the former
+; parallel con-protos/con-vars/con-args/con-nargs arrays on Method and
+; TmplConformance with a single indexable record held in a
+; `(Vector (ref Constraint))`. `proto`/`var` are interned name strings and are
+; content-compared everywhere (every comparison already has a CStr operand, so a
+; CStr field is byte-identical in lowering and semantically correct). `args` stays
+; a raw ptr[] of Node* — the protocol-application Arg patterns — with `nargs` its
+; count; null/0 for a plain `(Proto V)` constraint (a ragged sub-array, like
+; Arm.fnames/ftypes).
+(defstruct Constraint
+  proto:CStr        ; protocol name
+  var:CStr          ; conforming type-variable name
+  args:ptr          ; ptr array of Node* (proto-application Args), or null
+  nargs:i32)        ; count of Arg nodes (0 for a plain constraint)
+
 (defstruct Method
   param-types:ptr   ; ptr to array of ptr:Type (length num-params); null for intrinsic
   num-params:i32
@@ -408,16 +424,14 @@
   ; --- METHOD-GENERIC only (Stage 9 rung 4): a bounded generic defn template ---
   tyvars:ptr        ; array of ptr (distinct type-variable name strings)
   num-tyvars:i32
-  con-protos:ptr    ; array of ptr (protocol name per &where constraint)
-  con-vars:ptr      ; array of ptr (type-variable name per constraint; parallel)
-  ; --- Stage 11 assoc-types (A1): parametric &where constraints ---
-  ; For a constraint `((Proto Arg…) V)`, the argument-pattern nodes `Arg…` (each
-  ; a type-spelling Node*, recovered or constrained at dispatch — A2). Parallel
-  ; to con-protos/con-vars: con-args[i] is a ptr array of Node* of length
-  ; con-nargs[i]; for a plain `(Proto V)` constraint con-args[i] is null and
-  ; con-nargs[i] is 0.
-  con-args:ptr      ; array of ptr (per constraint: a ptr array of Node*, or null)
-  con-nargs:ptr     ; array of i32 (per constraint: count of arg nodes)
+  ; --- Stage 11 assoc-types (A1) / Stage 14 §14.4: parsed &where constraints ---
+  ; Each `(Protocol Var)` or parametric `((Proto Arg…) V)` constraint is one
+  ; `(ref Constraint)` record; the whole clause is a `(Vector (ref Constraint))`
+  ; (null for a non-generic method or a template with no &where). `num-constraints`
+  ; is the cached count — the shared length, kept so every
+  ; `(dotimes (i (mm num-constraints)))` loop stays intact rather than becoming a
+  ; null-guarded `(count …)`.
+  (constraints (raw (Vector (ref Constraint))))
   num-constraints:i32
   checked:i32       ; A2 def-time check done (so it runs once per template)
   ; --- Stage 14 LW-1: stamped-instance marker ---
@@ -471,8 +485,10 @@
 (defstruct Conformance
   type-name:CStr
   proto-name:CStr
-  args:ptr          ; ptr array of canonical type-spelling strings, or null
-  nargs:i32)
+  ; Stage 14 §14.4: the retained associated-type arguments as a (Vector CStr) of
+  ; canonical type-spelling strings (value-compared by conformance-args-eq); null
+  ; for a plain (non-parametric) protocol. The count is `(count args)`.
+  (args (raw (Vector CStr))))
 
 ; Stage 11 parametric structs (T4): a recorded template-level conformance from
 ; `(extend (Vector T) (Seq T))`. `template` is the extended struct template;
@@ -485,8 +501,8 @@
 ; ((UnaryFn S E) F))`, whose constraints recover the protocol-application args
 ; (`E`) from the instance's own arg conformances at stamp time (A4.2). The clause
 ; is parsed identically to a `defn`'s &where (parse-where-constraints) and stored
-; here, mirroring the Method constraint fields (con-protos/con-vars/con-args/
-; con-nargs). A `&where`-free extend records `num-constraints = 0`; nothing
+; here, mirroring the Method `constraints` field (a (Vector (ref Constraint))).
+; A `&where`-free extend records `num-constraints = 0`; nothing
 ; downstream changes for it (the bootstrap stays byte-identical, §9). `num-tyvars`
 ; is the count of the conformance's tyvars (the template tyvars plus any assoc
 ; tyvars introduced by the &where clause), needed to size A4.2's recovery bound
@@ -499,10 +515,9 @@
   ; --- Stage 11 assoc-types (A4): trailing &where clause, or empty ---
   tyvars:ptr        ; ptr array of tyvar name strings (template tyvars + assoc), or null
   num-tyvars:i32    ; count of tyvars above (template ntv for a &where-free extend)
-  con-protos:ptr    ; array of ptr (protocol name per &where constraint), or null
-  con-vars:ptr      ; array of ptr (conforming-variable name per constraint), or null
-  con-args:ptr      ; array of ptr (per constraint: a ptr array of Node*, or null)
-  con-nargs:ptr     ; array of i32 (per constraint: count of arg nodes), or null
+  ; Stage 14 §14.4: the parsed &where clause as a (Vector (ref Constraint)),
+  ; mirroring Method; null for a &where-free extend (num-constraints = 0).
+  (constraints (raw (Vector (ref Constraint))))
   num-constraints:i32)  ; 0 for a &where-free extend
 
 ; A queued generic instantiation: the stamped concrete defn form awaiting body
