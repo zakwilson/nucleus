@@ -733,6 +733,151 @@ per the scope decision above, a good point to also start on the `Node*`
 population there, since generics.nuc already leans on the `node-type` half of
 the emit/node-type lockstep.
 
+**Status (batch 3, 2026-07-13): `generics.nuc` done in full — all 128 `defn`s
+surveyed, byte-identical.** This is the largest single-file pass of the phase
+(the file is bigger than batches 1+2 combined); every elem-less `:ptr`
+param/return whose pointee was statically evident was retyped, `(raw T)`-first
+per decision 1, including — per the batch-2 recommendation — the bulk of this
+file's `Node*` population (the design doc's other explicit ask for this
+batch):
+
+- **`Generic*`/`Method*`/`Type*`/`Protocol*`/`StructTemplate*`/
+  `TmplConformance*`/`StructDef*`/`BinOp*` single-object params/locals** across
+  the whole registry/resolution/protocol machinery (`generic-lookup`,
+  `generic-new`, `generic-remove-matching-user-method`, `type-eq`,
+  `type-join`, `generic-find-method-exact`, `generic-binds-for`,
+  `generic-resolve(-adapt-tier)`, `operator-user-resolve`,
+  `generic-method-bind(-adapt)`, `generic-constraints-ok`,
+  `generic-instantiate`, `resolve-param-type-bound`, `method-bound-ret-type`,
+  `subst-param-types-bound`, `caller-has-constraint`, `sig-provides-call`,
+  `abstract-call-via-protocol/-generic`, `gcheck(-walk-children)`,
+  `gbind-decl-type`, `check-generic-template`, `method-has-nested-tyvar`,
+  `method-has-valid`, `template-result-type`, `valid-resolve-type`,
+  `valid-walk(-children)`, `valid-check-instance`, `protocol-lookup`,
+  `protocol-new`, `type-conforms-drop`, `type-trivially-copyable`,
+  `blanket-conforms`, `derive-closure-conformance`, `proto-sigs-resolve`,
+  `builtin-op-result-type`, `method-satisfies-sig`, `tmpl-conformance-add/
+  -check-one/-check-instance/-recheck-stamped`, `callable-get-type/
+  -invoke-type/-value-type`) → `(raw Generic)`/`(raw Method)`/`(raw Type)`/
+  `(raw Protocol)`/`(raw StructTemplate)`/`(raw TmplConformance)`/`(raw
+  StructDef)`/`(raw BinOp)`.
+- **`Node*` params** (the batch-2 recommendation): every `n`/`node`/`form`/
+  `bind-node`/`params-node`/`pat`/`ptn`/`sig`/`sel-node`/`stamped`-shaped
+  single-node param across the generic-registration, A2-checker, and
+  node-type families → `(raw Node)`, including the `node-type`/`gcheck`/
+  `valid-walk` dispatch functions themselves. The lockstep (conventions.md)
+  was not at risk: these are param retypes only, not changes to what `Val`
+  type any `emit-*` function returns — `node-type`'s own per-node-kind
+  *return* typing (the half of the lockstep that must mirror `emit-node`) is
+  untouched.
+- **Generic name/spelling strings** (`name`, `fname`, `proto-name`,
+  `type-name`, `typename`, `gname`, `cty`, `mname`, `iname`, `head`,
+  `ir-prefix`, `mangled`, `sub`/`super`, `cvtype`'s sibling `proto`, etc.) →
+  `CStr`, audited per the traps below.
+- The **want channel** (`want:ptr` in `generic-resolve`,
+  `generic-method-bind(-adapt)`, `generic-resolve-adapt-tier`,
+  `node-type-call`) → `(raw Type)` uniformly, even though the shared global
+  `g-want-type` (nucleusc.nuc) stays untyped `ptr` until the next batch — a
+  bare-ptr argument coerces freely into the newly-typed param (the same free
+  coercion batch 1/2 already proved).
+- ~25 redundant `xx:ptr:X (cast ptr:X yy)` local-cast collapses to plain
+  rebinds, plus a further ~15 now-dead inline `(cast ptr:Type _)`/`(cast
+  ptr:Node _)` wrappers inside `->` chains simplified to direct field access
+  once the chain's head was retyped (e.g. `(-> at (cast ptr:Type _) (_
+  kind))` → `(at kind)`).
+
+**New trap this batch, distinct from anything batch 1/2 hit: a `Node*`
+dispatch-head param compared against a quoted-symbol literal (`(= hp 'let)`)
+is safe to retype to `(raw Node)`, NOT a CStr/identity hazard.** `gcheck`,
+`valid-walk`, and `node-type`'s head-symbol dispatch ladders (mirroring
+`emit-list` in nucleusc.nuc) all bind `hp:ptr (cast ptr head)` — the head
+*Node*, not its string — and dispatch via `(= hp 'let)`/`(= hp 'quote)`/etc.
+`'let` reads as `(quote let)`; `emit-quote-tree`'s `NODE-SYM` case
+(nucleusc.nuc) lowers a quoted bare symbol to a runtime `@intern-symbol(...)`
+call, and `lib/node.nuc`'s `intern-symbol` returns one canonical, memoized
+*Node* per unique spelling (not just an interned string) — so every
+occurrence of a `let`-headed form anywhere, whether parsed from real source or
+materialized by evaluating `'let`, shares the exact same Node pointer. `hp`'s
+comparisons are therefore genuine Node-identity tests, never string
+comparisons — retyping `hp` from bare `ptr` to `(raw Node)` cannot engage the
+CStr/StrView mixed-operand rule (Node is not a string kind), so it is
+IR-neutral regardless of pointer kind. This was verified empirically (byte-
+identical before/after) and is the opposite lesson from the `tvname` trap
+below: not every symbol-shaped comparison is a string comparison — check what
+is actually being compared, not just the local variable's name.
+
+**Identity-comparison trap, same class as batch 2's memo-key finding but a
+direct case this time (not a memo table one hop removed):
+`pattern-determines-tyvar`'s and `node-mentions-tyvar-named`'s `tvname`
+param stay `ptr`, not `CStr`.** Both compare `tvname` directly against `(n
+s)` — `Node.s`, the NS-5 identity substrate, itself never `CStr`. Before this
+batch that `=` was a plain `icmp eq ptr`; retyping `tvname` to `CStr` would be
+the *first* CStr hop in that specific comparison, turning it into a `strcmp`
+that did not exist before — a real, non-inert IR change (extra `call
+@strcmp`), not just a "theoretically fine because interned strings coincide"
+case. The generalizable test used throughout this batch: a comparison is safe
+to make CStr-inert only when it is *already* forced to `strcmp` by the other
+operand (a string literal, or a field/param that was already `CStr` before
+this edit) — if neither side was `CStr`/`StrView` before, introducing one now
+is a genuine, detectable-by-diff behavior change, never "probably fine."
+`make-tyvar-type`'s `m` parameter was left `ptr` for an unrelated, adjacent
+reason: it is a deliberate type pun (a template `Method*` stored through
+`Type.sdef`, which is declared `(raw StructDef)`) confined to the TY-TYVAR
+A2-checker path that never reaches codegen — retyping it would either force a
+type-mismatch at the `.set!` or require an explicit reinterpret-cast that
+obscures the pun further, for no benefit since `TY-TYVAR` never flows to
+`type-to-ir`/codegen anyway (conventions.md's `TY-TYVAR` note).
+
+**No new null-check-on-parameter or conj/dispatch traps found this batch** —
+audited every CStr candidate's own body for `(= param null)`/`(!= param
+null)` and for `conj`-into-`(Vector ptr)` sinks; none of this file's
+string-shaped params hit either shape. Every array-shaped param (`param-
+types`, `argtypes`, `arg-nodes`, `tyvars`, `out-tyvars`, `out-bound`, `bound`,
+`con-protos`/`con-vars`/`con-args`/`con-nargs`, `tyvar-names`, `spellings`,
+`ptypes`, `pspellings`, `arg-spellings`, `bindings`, `sigs`, `args`) was left
+`ptr` — these are genuinely `ptr`-to-`ptr` arrays (14.4's array-of-struct
+territory, not this phase). A handful of **mixed-provenance returns were
+deliberately left `ptr`** rather than promoted to `CStr`/`(raw Type)`/`(raw
+Node)`: any function that can return a `Node.s`-derived identity value down
+one path (`defn-name-only`, `defn-ir-name`, `defn-form-mangled-name`,
+`gbind-name`, `method-undetermined-tyvar`, `tyvar-type-name`,
+`extend-proto-name`) keeps its return as `ptr` on the same NS-5 reasoning as
+`Sym.ir-name`/`Method.ir-name`, even where *other* return paths in the same
+function are freshly-formatted strings that would individually be CStr-safe —
+mixing is not worth the risk for a single return-type annotation. Functions
+resolving through not-yet-typed downstream helpers (`gcheck`, `valid-walk`,
+`sig-provides-call`, `abstract-call-via-protocol/-generic`,
+`template-result-type`, `valid-resolve-type`) similarly kept `ptr` returns.
+
+Verification: `make` clean; `make test` 168/168; `make bootstrap` fixed point
+(`stage1.ll == stage2.ll`); `build/nucleusc.ll` diffed **byte-identical, zero
+lines** against a from-scratch baseline built with the pre-batch source and
+the same unmodified `bin/nucleusc` boot — checked incrementally after each of
+the file's seven logical sections (generic registry; bounded-generic defn;
+constraint resolution/instantiation; tyvar utilities+gcheck+valid-walk;
+protocol/conformance; `emit-extend`+import; node-type family), so the one
+paren-count slip this batch hit (removing a now-redundant `(cast ptr
+...)` wrapper inside a deeply nested `when`/`let` in `prescan-protocols` left
+one extra trailing `)`, caught immediately by `make`'s parse error before it
+could be confused with anything semantic) was caught and fixed within its own
+section rather than surfacing at the end. `examples/and-narrow.nuc` re-run
+clean; no `(ref T)` promotions this batch (every retype was `(raw T)`, `CStr`,
+or a deliberate `ptr`), so no new flow-check obligations were introduced.
+
+**generics.nuc is now fully done for 14.3** — no further elem-less `:ptr`
+signature population remains in this file (confirmed by re-running the
+survey script against the final state: every remaining bare `:ptr` is either
+a `ptr`-to-`ptr` array, an out-param box, or one of the deliberate
+identity/type-pun exceptions documented above). Next batch (per the file-
+cluster order): `nucleusc.nuc` — the largest remaining file, and the one that
+owns the `emit-*`/`emit-node` half of the lockstep, so extra care is needed
+there specifically when a param retype is adjacent to a function whose
+*return Val's type* is also in play (as opposed to this batch, which only
+ever touched param types). `nucleusc.nuc` also has many more `hp`/`h`
+head-dispatch sites in `emit-list` matching the pattern documented above —
+the same `(raw Node)` retype should be safe there too, but verify with the
+same byte-identical-per-section discipline rather than assuming.
+
 ### 14.4 — Parallel arrays → array-of-struct  *(controlled refresh)*
 
 **Agent: systems-impl-engineer** (new element structs + layout change); build-test
