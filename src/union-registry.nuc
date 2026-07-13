@@ -13,7 +13,7 @@
   (set! h (* h (cast i64 1099511628211)))
   (return h))
 
-(defn fnv-str (h:i64 s:ptr):i64
+(defn fnv-str (h:i64 s:CStr):i64
   (let (i:i64 0
         c:i32 (bit-and (cast i32 (aref (cast ptr:i8 s) 0)) 255))
     (while (!= c 0)
@@ -22,9 +22,9 @@
       (set! c (bit-and (cast i32 (aref (cast ptr:i8 s) i)) 255)))
     (return h)))
 
-(defn hash-type (h:i64 t:ptr):i64
+(defn hash-type (h:i64 t:raw:Type):i64
   (when (= t null) (return (fnv-byte h (cast i64 255))))
-  (let (tt:ptr:Type (cast ptr:Type t)
+  (let (tt:raw:Type t
         k:i32 (tt kind))
     (set! h (fnv-byte h (cast i64 k)))
     (set! h (fnv-byte h (cast i64 (tt is-volatile))))
@@ -100,8 +100,8 @@
 
 ; The member a union's IR wrapper struct holds: the first member with maximal
 ; alignment (clang's rule); remaining bytes become an i8 padding array.
-(defn union-repr-member (sd:ptr):i32
-  (let (sdd:ptr:StructDef (cast ptr:StructDef sd)
+(defn union-repr-member (sd:raw:StructDef):i32
+  (let (sdd:raw:StructDef sd
         n:i32 (sdd num-fields)
         best:i32 0
         besta:i32 0)
@@ -115,8 +115,8 @@
 ; with unions; distinguished by is-union == 0. A plain struct line — no
 ; repr-member/padding — so a stamped instance is byte-identical to the
 ; hand-written struct. The `emitted` flag guards double-emit.
-(defn emit-pending-struct-ir-type (sd:ptr):void
-  (let (sdd:ptr:StructDef (cast ptr:StructDef sd))
+(defn emit-pending-struct-ir-type (sd:raw:StructDef):void
+  (let (sdd:raw:StructDef sd)
     (when (!= (sdd emitted) 0) (return))
     (.set! sdd emitted 1)
     (fprintf g-type-stream "%%%s = type { " (sdd ir-name))
@@ -126,8 +126,8 @@
     (fprintf g-type-stream " }\n\n")))
 
 ; Write the deferred `%name = type { repr [, pad] }` definition for one union.
-(defn emit-union-ir-type (sd:ptr):void
-  (let (sdd:ptr:StructDef (cast ptr:StructDef sd))
+(defn emit-union-ir-type (sd:raw:StructDef):void
+  (let (sdd:raw:StructDef sd)
     (when (!= (sdd emitted) 0) (return))
     ; Stage 11: a stamped parametric struct queued on the shared pending list is
     ; not a union — emit a plain struct line instead of the union wrapper.
@@ -159,8 +159,8 @@
 ; a type stamped at prescan (signature occurrence) before the import that defines
 ; its struct-by-value field has run: it stays queued until a later drain, after
 ; that import emits the dependency. See cleanup3.md "two-stage boot refresh".
-(defn pending-union-deps-ready (sd:ptr):i32
-  (let (sdd:ptr:StructDef (cast ptr:StructDef sd)
+(defn pending-union-deps-ready (sd:raw:StructDef):i32
+  (let (sdd:raw:StructDef sd
         n:i32 (sdd num-fields))
     (dotimes (i n)
       (let (ft:ptr:Type (cast ptr:Type (aref (cast ptr:ptr (sdd field-types)) i))
@@ -188,14 +188,14 @@
       (when (!= (pending-union-deps-ready sd) 0)
         (emit-union-ir-type sd)))))
 
-(defn lookup-struct (name:ptr):?ptr:StructDef
+(defn lookup-struct (name:CStr):?ptr:StructDef
   (dotimes (i (cast i32 (count g-structs)))
     (let (sd:ptr:StructDef (cast ptr:StructDef (invoke g-structs (cast usize i))))
       (when (= (sd name) name)
         (return (cast ptr sd)))))
   (return null))
 
-(defn parse-type-name (name:ptr line:i32):ref:Type
+(defn parse-type-name (name:CStr line:i32):ref:Type
   ; Stage 10 errors sugar: ?!T => (Maybe (Result T Err)) — a fallible result
   ; that may be absent. The leading ?! reads as a *value* Maybe over the Result
   ; (errors.md §10): the operand is already a complete value type, so it is not
@@ -286,14 +286,14 @@
       ; niche type, not the (dead) backing struct — union-instance-type decides.
       (let (ud:?ptr:UnionDef ((cast ptr:StructDef sd) udef))
         (when (!= ud null)
-          (return (union-instance-type (cast ptr ud)))))
+          (return (union-instance-type ud))))
       (return (type-for-sdef sd))))
   (die-at line (fmt-s "unknown type: %s" name)))
 
 ; The registered Type for a StructDef — TY-UNION when the def is an untagged
 ; union, TY-STRUCT otherwise (including defunion backing structs).
-(defn type-for-sdef (sd:ptr):ref:Type
-  (let (k:i32 (if (!= ((cast ptr:StructDef sd) is-union) 0) TY-UNION TY-STRUCT)
+(defn type-for-sdef (sd:raw:StructDef):ref:Type
+  (let (k:i32 (if (!= (sd is-union) 0) TY-UNION TY-STRUCT)
         t:ref:Type (make-type k))
     (.set! t sdef sd)
     (return t)))
@@ -578,7 +578,7 @@
 ; {tag:i32, payload:(union ...)} plus an arm table consumed by match/make.
 ; ============================================================
 
-(defn uniondef-lookup (name:ptr):?ptr:UnionDef
+(defn uniondef-lookup (name:CStr):?ptr:UnionDef
   (dotimes (i (cast i32 (count g-uniondefs)))
     (let (ud:ptr:UnionDef (cast ptr:UnionDef (invoke g-uniondefs (cast usize i))))
       (when (= (ud name) name)
@@ -602,9 +602,9 @@
 
 ; The UnionDef behind a type, or null: a defunion value is TY-STRUCT whose
 ; StructDef carries the udef back-pointer.
-(defn uniondef-for-type (t:ptr):?ptr:UnionDef
+(defn uniondef-for-type (t:raw:Type):?ptr:UnionDef
   (when (= t null) (return null))
-  (let (tt:ptr:Type (cast ptr:Type t))
+  (let (tt:raw:Type t)
     (when (!= (tt kind) TY-STRUCT) (return null))
     (when (= (tt sdef) null) (return null))
     (return ((tt sdef) udef))))
@@ -612,7 +612,7 @@
 ; The UnionDef behind a Result-shaped value (a tagged sum carrying both an `ok`
 ; arm and an `err` arm), or null. The shared eliminator for `unwrap`/`unwrap-or`
 ; over `!T` (errors.md §9): `ok` is the success arm, `err` the failure arm.
-(defn result-union-of (t:ptr):?ptr:UnionDef
+(defn result-union-of (t:raw:Type):?ptr:UnionDef
   (let (ud:?ptr:UnionDef (uniondef-for-type t))
     (when (= ud null) (return null))
     (when (< (union-arm-index (cast ptr ud) "ok") 0) (return null))
@@ -620,14 +620,14 @@
     (return ud)))
 
 ; The `ok` arm's payload type for a Result-shaped union type, or null.
-(defn result-ok-type (t:ptr):?ptr:Type
+(defn result-ok-type (t:raw:Type):?ptr:Type
   (let (ud:?ptr:UnionDef (result-union-of t))
     (when (= ud null) (return null))
     (let (oi:i32 (union-arm-index (cast ptr ud) "ok"))
       (return (aref (cast ptr:ptr (ud arm-ptypes)) oi)))))
 
-(defn union-arm-index (ud:ptr name:ptr):i32
-  (let (udd:ptr:UnionDef (cast ptr:UnionDef ud))
+(defn union-arm-index (ud:raw:UnionDef name:CStr):i32
+  (let (udd:raw:UnionDef ud)
     (dotimes (i (udd num-arms))
       (when (= (strcmp (aref (cast ptr:ptr (udd arm-names)) i) name) 0)
         (return i)))
@@ -636,8 +636,8 @@
 ; Byte offset of the payload union inside the backing struct: the i32 tag,
 ; aligned up to the payload's alignment. Computed on demand — member layouts
 ; may involve structs whose fields are registered after the defunion form.
-(defn union-payload-off (ud:ptr):i32
-  (let (udd:ptr:UnionDef (cast ptr:UnionDef ud))
+(defn union-payload-off (ud:raw:UnionDef):i32
+  (let (udd:raw:UnionDef ud)
     (when (= (udd union-sd) null) (return 0))
     (return (abi-align-up 4 (abi-struct-align (udd union-sd))))))
 
@@ -748,7 +748,7 @@
       (set! scur ((cast ptr:Node scur) cdr)))
     (return head)))
 
-(defn defunion-register (name:ptr arms-raw:ptr line:i32):ref:UnionDef
+(defn defunion-register (name:CStr arms-raw:ptr line:i32):ref:UnionDef
   (let (existing:?ptr:UnionDef (uniondef-lookup name))
     (when (!= existing null) (return existing)))
   (when (>= (cast i32 (count g-uniondefs)) MAX-UNIONS)
@@ -896,7 +896,7 @@
               (return (cast ref:UnionDef ud))))))))))
 
 ; Arm-name duplicate probe over a partially-built name array (registration helper).
-(defn union-arm-index-in (name:ptr names:ptr n:i32):i32
+(defn union-arm-index-in (name:CStr names:ptr n:i32):i32
   (dotimes (i n)
     (when (= (strcmp (aref (cast ptr:ptr names) i) name) 0)
       (return i)))
@@ -974,8 +974,8 @@
 ; `(defunion (Maybe2 T) (some v:(ref T)) none)` stamp and `(Maybe (ref T))`
 ; produce identical bits. For LAYOUT-TAGGED/ENUM it is the backing struct type.
 ; pkind is invisible to type-eq/mangle, so this never perturbs other types.
-(defn union-instance-type (ud:ptr):ref:Type
-  (let (udd:ptr:UnionDef (cast ptr:UnionDef ud)
+(defn union-instance-type (ud:raw:UnionDef):ref:Type
+  (let (udd:raw:UnionDef ud
         lay:i32 (udd layout))
     (when (= lay LAYOUT-NICHE-MAYBE)
       (let (pt:ref:Type (make-type TY-PTR))
@@ -993,8 +993,8 @@
 ; `Name.<tok>.<tok>` (type-mangle-token per argument, the generic-fn scheme);
 ; construction is via `make` / return-position target typing — no per-instance
 ; constructor functions are stamped, so cross-unit stamping cannot collide.
-(defn union-template-stamp (ut:ptr use-node:ptr line:i32):ref:Type
-  (let (utt:ptr:UnionTemplate (cast ptr:UnionTemplate ut)
+(defn union-template-stamp (ut:raw:UnionTemplate use-node:ptr line:i32):ref:Type
+  (let (utt:raw:UnionTemplate ut
         nargs:i32 (- (node-len use-node) 1)
         argts:ptr (arena-alloc (* (cast i64 (if (> nargs 0) nargs 1)) (ptr-bytes))))
     (dotimes (i nargs)
@@ -1004,8 +1004,8 @@
 ; Stamp a template instance from already-parsed argument Type*s. Shared by the
 ; node-driven `(Result A B)` path and the `!T` sugar (which has Type* operands,
 ; not nodes). Memoized by the mangled instance name.
-(defn union-template-stamp-types (ut:ptr argts:ptr nargs:i32 line:i32):ref:Type
-  (let (utt:ptr:UnionTemplate (cast ptr:UnionTemplate ut))
+(defn union-template-stamp-types (ut:raw:UnionTemplate argts:ptr nargs:i32 line:i32):ref:Type
+  (let (utt:raw:UnionTemplate ut)
     (when (!= nargs (utt ntv))
       (die-at line
         (fmt-s "%s: wrong number of type arguments for defunion template" (utt name))))
@@ -1016,11 +1016,11 @@
           (aset! (cast ptr:ptr spellings) i (type-spelling at))
           (set! iname (fmt-2s "%s.%s" iname (type-mangle-token at)))))
       (if-some (ud (uniondef-lookup iname))
-        (return (union-instance-type (cast ptr ud)))
+        (return (union-instance-type ud))
         (let (arms:ptr (-> (cast ptr:Node (utt form)) (_ cdr) (cast ptr:Node _) (_ cdr))
               arms-subst:ptr (subst-tyvars-node arms (utt tyvars) spellings (utt ntv))
               ud2:ref:UnionDef (defunion-register iname arms-subst line))
-          (return (union-instance-type (cast ptr ud2))))))))
+          (return (union-instance-type ud2)))))))
 
 ; Stage 11: stamp (and memoize) a concrete instance of a defstruct template
 ; (parametric-structs.md §3). Exact analogue of union-template-stamp-types:
@@ -1034,8 +1034,8 @@
 ;      QUEUE its `%name = type {…}` line on the shared deferred-IR queue (drained
 ;      at module-assembly boundaries, exactly like unions). The result IS an
 ;      ordinary monomorphic TY-STRUCT — no new layout/ABI code.
-(defn struct-template-stamp-types (st:ptr argts:ptr nargs:i32 line:i32):ref:Type
-  (let (stt:ptr:StructTemplate (cast ptr:StructTemplate st))
+(defn struct-template-stamp-types (st:raw:StructTemplate argts:ptr nargs:i32 line:i32):ref:Type
+  (let (stt:raw:StructTemplate st)
     (when (!= nargs (stt ntv))
       (die-at line
         (fmt-s "%s: wrong number of type arguments for defstruct template" (stt name))))
@@ -1116,8 +1116,8 @@
 
 ; Node-driven entry: stamp `(Name A B)` from a use node (mirrors
 ; union-template-stamp). Parses each type argument, then delegates.
-(defn struct-template-stamp (st:ptr use-node:ptr line:i32):ref:Type
-  (let (stt:ptr:StructTemplate (cast ptr:StructTemplate st)
+(defn struct-template-stamp (st:raw:StructTemplate use-node:ptr line:i32):ref:Type
+  (let (stt:raw:StructTemplate st
         nargs:i32 (- (node-len use-node) 1)
         argts:ptr (arena-alloc (* (cast i64 (if (> nargs 0) nargs 1)) (ptr-bytes))))
     (dotimes (i nargs)

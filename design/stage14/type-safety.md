@@ -630,6 +630,109 @@ narrowing-affecting promotions in this batch, but confirmed clean regardless).
 Next batch (per the file-cluster order): abi/union-registry/union-emit's own
 signatures.
 
+**Status (batch 2, 2026-07-13): `abi.nuc`/`union-registry.nuc`/`union-emit.nuc`
+done, byte-identical.** Every elem-less `:ptr` `defn` param/return whose
+pointee was statically evident from the body was retyped, `(raw T)`-first per
+decision 1:
+
+- **`abi.nuc`**: `abi-alignof`/`abi-sizeof`/`abi-classify`'s `t` → `(raw
+  Type)`; `abi-union-size`/`abi-struct-align`/`abi-struct-size`/
+  `abi-class-eightbyte`'s `sd` → `(raw StructDef)`; `abi-eightbyte-ir`/
+  `abi-ret-ir`/`abi-arg-frag`'s return, plus `abi-ret-ir`/`abi-emit-struct-call`'s
+  `info` → `(raw AbiInfo)` and `ret` → `(raw Type)`, `ir-name`/`arglist` →
+  `CStr`; `abi-emit-param-prologue`'s `ptype` → `(raw Type)`, `pname` → `CStr`;
+  `emit-struct-ret`/`abi-arg-frag`/`coerce-int-val`'s `v`/`av` → `(raw Val)`,
+  `coerce-int-val`'s `target` → `(raw Type)`; `check-ir-name-legal`'s
+  `orig-name`/`ir-name` → `CStr`; `register-struct`'s `name` → `CStr` (matches
+  the already-`CStr` `StructDef.name`/`.ir-name` fields from SM-4).
+  `abi-classify`'s return also went `(raw AbiInfo)` (never actually null, but
+  no confirmed non-null invariant worth a `(ref T)` promotion — decision-1
+  default). `abi-class-eightbyte` (the byte-exact SysV classification loop) got
+  **signature-only** changes — no reordering, per the file's leave-alone-the-
+  logic constraint.
+- **`union-registry.nuc`**: `hash-type`/`uniondef-for-type`/`result-union-of`/
+  `result-ok-type`/`type-for-sdef`'s `t`/`sd` → `(raw Type)`/`(raw StructDef)`;
+  `union-arm-index`/`union-payload-off`/`union-instance-type`'s `ud` → `(raw
+  UnionDef)`; `union-template-stamp(-types)`'s `ut` → `(raw UnionTemplate)`;
+  `struct-template-stamp(-types)`'s `st` → `(raw StructTemplate)`; `fnv-str`'s
+  `s`, `lookup-struct`/`parse-type-name`/`uniondef-lookup`/`defunion-register`/
+  `union-arm-index-in`'s `name` → `CStr`.
+- **`union-emit.nuc`**: `v`/`sv`/`av`-shaped Val* params across the
+  `emit-unwrap*`/`emit-match-niche-*`/`emit-match-enum` family → `(raw Val)`;
+  `ud`-shaped UnionDef* params (`emit-union-construct`, `result-err-arm-is-err`,
+  `emit-match-binders`, `emit-match-clauses`) → `(raw UnionDef)`; `elem`/`ty`/
+  `target`/`repair-ty`-shaped Type* params (`emit-unwrap-niche-errptr`,
+  `emit-unwrap-or-niche-errptr`, `niche-layout-of`, `emit-niche-construct`,
+  `union-target-rewrite`, `emit-handler-call`, `stamp-maybe-type`) → `(raw
+  Type)`; `emit-match-binders`/`emit-match-clauses`'s `staint` (a
+  `Sym.taint`-shaped alias) → `(raw Scope)`; `enum-member-index`'s `ed` →
+  `(raw EnumDef)`; `enumdef-lookup-member`/`enum-member-index`'s `member`,
+  `emit-niche-construct`'s `arm` → `CStr`. ~30 redundant casts deleted — both
+  the in-body `xxdd:ptr:X (cast ptr:X xx)` → `xxdd:(raw X) xx` rebind pattern
+  and direct call-site casts (`(cast ptr v)`/`(cast ptr ud)`/`(cast ptr sv)`)
+  that existed only to satisfy a callee's old elem-less `ptr` demand.
+
+**Two traps found this batch, one matching the batch-1 class and one new.**
+
+1. **`abi-print-param`'s `name`** looked like a safe `CStr` retype (every other
+   `*name*`-suffixed param in this batch was) but the function opens by
+   branching on `(= name null)` to distinguish a `define` (real parameter name)
+   from a `declare` (types only — `name` is passed `null`). Retyping to `CStr`
+   would turn that into `strcmp(name, null)`, crashing on every `declare` —
+   exactly the `program-defn-record` shape from batch 1, just a different
+   function. Left `name:ptr` with an explanatory comment at the definition.
+2. **New this batch — identity-keyed memo lookups are not `CStr` candidates,
+   even though they hold string content.** `boxedfn-memo-lookup`/
+   `dyn-memo-lookup`'s `key` and `dyn-type`'s `proto` are compared with plain
+   `=` against entries in a hand-rolled memo array, relying on **pointer
+   identity** (the keys are interned) for the dedup to be correct — the same
+   shape as `Node.s`/struct-field names on the NS-5 exclusion list
+   (conventions.md), just one level removed from a struct field. A `CStr`
+   retype would not crash (interned strings are content-equal wherever they
+   are identity-equal, so the *result* is unchanged today) but would silently
+   swap the comparison from identity to `strcmp`, which is the kind of
+   invisible semantic drift the batch-1 lesson warns against generalizing away
+   from. Since this whole `g-boxedfn-*`/`g-dyn-*`/`fatptr-*` type-erasure-memo
+   family is already flagged in §14.5 ("mind union-registry import ordering")
+   for the hand-rolled-growables pass, it was left entirely untouched here
+   rather than partially migrated — `boxedfn-type`/`dyn-type`/
+   `boxedfn-canonical`/`dyn-canonical`/`dyn-proto-of`/`ensure-fatptr-sdef`/
+   `fatptr-type` all keep their original elem-less `ptr` signatures. (A related
+   reason to leave `boxedfn-type`'s own return as `ptr`: it flows, unmarked,
+   into callers that return it as `ref:Type` — e.g. `parse-type-from-node`'s
+   `(return (boxedfn-type …))` — and retyping the return to `(raw Type)` would
+   newly engage `pkind-flow-check` on that `raw`→`ref` transition, since
+   elem-less `ptr` is flow-exempt but elem-typed `raw` is not. This is a
+   compile-time break, not a runtime trap, but it is the general shape to
+   watch for when a `ptr`-returning helper is consumed by multiple call sites
+   with different downstream expectations.)
+
+**Scope decision, not a trap: `Node*` params were left untouched this batch.**
+Every `call`/`form`/`use-node`/`binders`/`clause-binders`/`arms`/`arms-raw`
+param across all three files stayed elem-less `ptr`. These files are mostly
+`emit-*` functions dispatching on AST shape, and the file-cluster order
+schedules nucleusc.nuc/generics.nuc — where the bulk of `Node*`-typed code and
+the `node-type`↔`emit-node` lockstep discipline (conventions.md) already
+live — as later batches; retyping `Node*` piecemeal in just these three files
+would be inconsistent with the (not-yet-migrated) rest of the codebase for no
+compounding benefit. Recommend picking up `Node*` signature typing together
+with the nucleusc.nuc/generics.nuc batch rather than as a separate pass.
+
+Verification: `make` clean; `make test` 168/168; `make bootstrap` fixed point
+(`stage1.ll == stage2.ll`); `build/nucleusc.ll` diffed **byte-identical, zero
+lines** against the pre-batch baseline (same unmodified `bin/nucleusc` boot) —
+confirmed after *each* file (abi.nuc, then +union-registry.nuc, then
++union-emit.nuc), not just at the end, so any regression would have been
+isolated to a single file's edits. `examples/and-narrow.nuc` re-run clean; no
+`(ref T)` promotions this batch, so the narrowing re-run is a formality (no
+new flow-check obligations were introduced anywhere — every retype was `(raw
+T)`, `CStr`, or left `ptr`, never `(ref T)`).
+
+Next batch (per the file-cluster order): generics.nuc's own signatures — and,
+per the scope decision above, a good point to also start on the `Node*`
+population there, since generics.nuc already leans on the `node-type` half of
+the emit/node-type lockstep.
+
 ### 14.4 — Parallel arrays → array-of-struct  *(controlled refresh)*
 
 **Agent: systems-impl-engineer** (new element structs + layout change); build-test
