@@ -1032,6 +1032,114 @@ discipline, and budgeting extra care for the TE-2/TE-3/TE-4 sections given
 their density and the pre-existing partial-migration state of the type-
 erasure memo family.
 
+**Status (batch 4b, 2026-07-13): `nucleusc.nuc` is now DONE for 14.3 — all
+remaining sections (source lines 3292–end) retyped, byte-identical, verified
+after every section.** Batch 4b resumed at line 3292 and completed all 22
+listed sections in file order: "Stage 13 lambdas/closures", "Stage 13 L4
+closure env + invoke/vfn", "Stage 13 type-erasure TE-2/TE-3/TE-4", "Stage 8
+scalar load/store", "Stage 8 inc!/dec!", "Stage 8 labels and goto", "Stage 8
+struct/array compound literals", "Macro expansion", "List dispatch",
+"Top-level forms", "Name (non-)shadowing", "defn", "Compile-time JIT helpers",
+"compile-time special form", "defmacro top-level form", "String table
+emission", "Driver", "Desugar pass", "Compiler initialization", "Emit
+quasiquote helpers", "Open/close module streams", and "Main entry point".
+**141 `defn` signatures retyped.** Breakdown by target (counting both params
+and the traversal-cursor/param-alias rebinds a retype mandates): `(raw Node)`
+~131, `(raw Type)` ~31, `(raw Val)` ~11, `(raw StructDef)` ~8, `CStr` 31,
+`(raw Scope)` 2, `(raw MacroDef)` 2, `(raw Sym)`/`(raw Cleanup)`/`(raw BinOp)`
+1 each. `make` clean and `build/nucleusc.ll` diffed **byte-identical, zero
+lines** against the pre-batch baseline (same unmodified `bin/nucleusc` boot)
+after *every* section — 13 incremental checkpoints, not just at the end.
+
+**The dominant method this batch was signature-only param retyping, which is
+byte-identical by construction for the special-form/emit-* family.** Once a
+`ptr` param becomes `(raw X)`, every `(cast ptr:X param)` already present in
+the body (the ubiquitous `cc:ptr:Node (cast ptr:Node call)` alias in every
+`emit-*` special form) is a `ptr`→`ptr` no-op, so leaving the body untouched
+is provably inert. This is why `emit-list` — the file's actual head-dispatch
+function the batch-3 note flagged — retyped cleanly with a one-line
+`n:(raw Node)` change and no body edits: its `hp`/`h`/`head` dispatch **locals**
+are derived from `n` and never touched, so the `(= hp 'return)` Node-identity
+ladder is bit-for-bit unchanged. Cursor-collapse and thread-macro cleanup were
+applied only where cheap and adjacent (section 1's `emit-fn`, section 2's
+`fn-*` helpers); the TE-4 and later sections used signature-only edits for
+throughput and safety. **No local was ever eliminated** (the batch-4a
+`safe-coerce-val` trap), so no SSA renumbering occurred anywhere.
+
+**Overloaded-multimethod trap (new this batch, distinct from 4a): `register-rmacro`
+is an overloaded PAIR — `(prefix:ptr wrap-sym:ptr)` and
+`(prefix:StrView wrap-sym:CStr)` — dispatch-distinguished by ptr-vs-StrView.**
+The `(ptr,ptr)` overload serves `emit-def-rmacro`'s `(register-rmacro
+(prefix-node s) (sym-node s))`; the `(StrView,CStr)` overload serves
+`init-rmacros`'s string-literal calls. A bare `ptr` argument does NOT adapt to
+a `CStr` parameter in `arg-adapts` (only `StrView`→`CStr` adapts — the whole
+point of keeping `CStr` distinct is to *allow* `ptr`-vs-`CStr` overloading), so
+retyping the first overload's `prefix`/`wrap-sym` to `CStr` would silently
+break the `(ptr,ptr)` dispatch. **Left both overloads untouched.** Generalizable
+rule: before retyping any string param, confirm the function is a *single* defn
+— an overloaded name may be relying on the `ptr`/`CStr` distinction for
+dispatch (grep `(defn NAME ` and count).
+
+**Identity-vs-content audit outcomes (all confirmed via struct-field types, not
+guessed):** `find-macro`/`enumdef-lookup`/`import-list-has`/`name-existing-kind`
+all `=`-compare a stored name field (`MacroDef.name`/`EnumDef.name`/
+`StructDef.name`/`Generic.name` — every one already `CStr`) against the param,
+so the comparison ALREADY lowers to `strcmp` off the field (the mixed-operand
+rule fires off *either* CStr operand, the scope-lookup precedent), making the
+param's `CStr` retype inert. Conversely `import-alias-one`'s `sym-ir-name`
+stays `ptr`: it is `!=`-compared against **`Sym.ir-name`, which is `ptr` (NS-5
+identity)**, so a `CStr` retype there would newly introduce a `strcmp` — left
+`ptr`. Null-check exemptions kept `ptr`: `admit-erased-conformance`'s
+`proto-name` (`(!= proto-name null)`), `do-import`/`import-key`/
+`emit-import-prefixed`'s `prefix` (`(= prefix null)` guards), `sym-set-src-loc`'s
+`sym` retyped to `(raw Sym)` (raw is nullable, so `(= sym null)` stays `icmp`).
+
+**Scope decisions (left `ptr` deliberately, documented so 4c doesn't re-touch):**
+(1) the type-erasure memo family stayed untouched throughout — `boxedfn-drop-target`
+(explicitly on the exclusion list), `boxedfn-canonical`/`dyn-canonical`/
+`dyn-proto-of`/`boxedfn-sig-token` (union-registry.nuc), and the `g-vtable-*`
+memo (`vtable-memo-lookup`/`-put`, whose `key`/`name` are pointer-identity
+memo keys AND are 14.5-earmarked `g-vtable-keys`/`-names`); the *callers* of
+these (`ensure-box-drop-fn`, `emit-box-*`, `ensure-vtable-for`, etc.) still had
+their *other* params (Type*/Val*/Node*) retyped — a memo value flowing into an
+untouched `ptr` memo param coerces freely. (2) The JIT/LLVM-C-API FFI helpers
+(`jit-add-module`/`-rt`, `jit-call-ct-main-sym`, `make-target-for-triple`,
+`compile-and-link`) and the CLI/filename plumbing (`main`'s `argv`,
+`source-file` chain through `flush-module-ir`/`assemble-module-ir`,
+`add-include-path`/`add-link-arg` — the latter two feed the 14.5-earmarked
+`g-include-paths`/`g-link-args` malloc arrays) kept `ptr` string/buffer params:
+these are LLVM handles / IR text buffers / argv, not compiler-internal
+Node/Type/Val pointers, and carry no `=`/dispatch semantics inside the type
+system. (3) Val-array params under pointer arithmetic (`emit-resolved-call`'s
+`args`, `emit-dyn-forward`'s `args` — `(ptr+ (cast ptr:Val args) i)`) stayed
+`ptr` (14.4's array-of-struct territory, per the batch-4a `emit-call-with-args`
+precedent). (4) Node-tree-building helper *returns* (`fn-rewrite-*`,
+`fn-make-int-node`, `union-ctor-form`, `defvar-init-ir`, `desugar-*`, the
+`import-list-*` builders) kept `ptr` returns — they hand off freshly-built
+`ref:Node`/make-cell trees consumed opaquely by `make-cell`'s `car`/`cdr` ptr
+params, so `(raw Node)` buys nothing and would invite a `ref`→`raw` return
+flow-check; the name-set-list helpers (`fn-bind-let-names`/`-param-names`,
+`apply-leading-ns`) that return a *looked-up* `(raw Node)` value (not a fresh
+`ref`) were the exception and did get `(raw Node)` returns, verified inert.
+
+**No new null-check-on-parameter, conj-dispatch, or SSA-shift traps beyond the
+overload finding.** `kind-noun`'s return retyped `ptr`→`CStr` (diagnostic-label
+helper returning StrView literals; the chameleon collapse makes it byte-identical);
+`fn-parse-ret-type`'s return retyped to `(raw Type)` (returns `ty-void`/parse
+results, all plain pointers, no `ref`→`raw`). `examples/and-narrow.nuc` needs no
+re-run — every retype was `(raw T)`/`CStr`/deliberate-`ptr`, zero `(ref T)`
+promotions, so no new flow-check obligation was introduced.
+
+**Resume point for whoever picks up next: `nucleusc.nuc` is complete for 14.3.**
+The remaining 14.3 candidates are the source-imported sibling files
+`src/repl.nuc`, `src/cheader.nuc`, and `src/nuch.nuc` (inlined into the
+nucleusc.nuc translation unit but physically separate), plus `src/format.nuc`
+if its `ptr` string params warrant CStr — these were out of scope for the
+nucleusc.nuc batches and are the natural batch 4c targets. `src/reader.nuc` /
+`lib/*.nuc` are library files, likely a separate later concern. The full-suite
+`make test` + `make bootstrap` fixed-point verification for batches 4a+4b runs
+in the build-test-runner pipeline stage, not here.
+
 ### 14.4 — Parallel arrays → array-of-struct  *(controlled refresh)*
 
 **Agent: systems-impl-engineer** (new element structs + layout change); build-test
