@@ -878,6 +878,160 @@ head-dispatch sites in `emit-list` matching the pattern documented above —
 the same `(raw Node)` retype should be safe there too, but verify with the
 same byte-identical-per-section discipline rather than assuming.
 
+**Status (batch 4, 2026-07-13): `nucleusc.nuc` started — sections "Global
+variables" through "Special forms" done (source lines 1-3290 of the pre-batch
+file; roughly a third of the file), byte-identical, verified incrementally
+after every section (not just at the end).** `nucleusc.nuc` is far larger
+than any single file in batches 1-3 (10,074 pre-batch lines, 282 `defn`s), so
+per the dispatch brief's explicit expectation this batch covers a clean
+leading portion rather than the whole file. Sections completed, in order:
+"Allocation helpers" (`alloc-val`/`nucleus_gensym`), "AST printer"
+(`fprint-node`/`print-node`/`macro-jit-ensure-decl`/`split-typed`/
+`extract-name-type`/`extract-name-and-type`), "Stage 14 defn-signature.md
+S1" (`sig-name-is-bare`/`legacy-ret-node`/`defn-parse-sig`/
+`normalize-ret-node`/`defn-ret-node`/`proto-sig-parse`), "Expression codegen"
+(`emit-node` itself plus `emit-int`/`emit-char-literal`/`float-literal-ir`/
+`emit-float`/`emit-string`/`emit-keyword`/`emit-quote-tree`/`ty-raw-node`/
+`emit-quote`/`qq-is-tagged`/`emit-qq-list`/`emit-qq-form`/`emit-quasiquote`),
+"Stage 10 flow narrowing + escape analysis" (`sym-effective-type`/
+`narrow-apply`/`narrow-kill`/`node-is-null-sym`/`node-binding-name`/
+`test-true-nonnull`/`test-false-nonnull`/`prescan-kill-sets`/
+`scope-descends`/`taint-merge`/`val-copy-taint`/`taint-store-check`/
+`emit-symbol-ref`), "Binary operations" (`add-binop`/`node-is-int-literal`/
+`float-width`/`coerce-num-val`), "Stage 8 defcast registry"
+(`register-cast-rule`/`lookup-cast-rule`/`safe-coerce-val`/`emit-defcast`/
+`binop-coerce`/`strview-data-ir`/`emit-binop-vals`/`emit-binop`), "Cast"
+(`emit-cast`), "Struct field access" (`union-field-guard`/
+`struct-field-index`/`emit-field-load`/`emit-field-get`/`emit-field-set`),
+"Callable values" (`selector-literal-sym`/`emit-selector-value`/
+`emit-computed-field`/`emit-get-intrinsic`/`generic-resolve-nullable`/
+`generic-has-receiver-method`/`emit-get-with-callee`/
+`emit-invoke-with-callee`/`emit-callable-value`/`emit-get`/`emit-invoke`),
+"sizeof, alloca, array ops, char, pointer ops" (`emit-sizeof`/
+`emit-alloca-form`/`emit-aref`/`emit-aset`/`emit-char`/`emit-addr-of`/
+`emit-funcall-void`/`emit-funcall-ptr-1`/`emit-funcall-ptr-i32`/
+`emit-funcall-ptr-i64`/`emit-funcall-ptr-ptr`/`emit-funcall-value`/
+`emit-funcall`/`emit-deref`/`emit-ptr-set`), the first two functions of
+"Function calls" (`emit-call`/`emit-call-with-args` — signature-only: their
+own deep `args`-array pointer arithmetic, TE-3/TE-6 boxing, and ABI-coercion
+internals were deliberately left untouched as genuine raw-buffer manipulation,
+not single-object casts), and "Special forms" (`is-libc-alloc`/
+`with-drop-method`/`union-drop-arm`/`emit-defer`). ~92 `defn` signatures
+touched: the large majority of params/returns retyped `(raw Node)` (~170
+occurrences counting both params and the traversal-cursor local rebinds this
+mandates), `(raw Type)` (~45), `(raw Val)` (~30), `(raw StructDef)` (~12),
+`(raw Sym)`/`(raw Scope)`/`(raw Generic)` (~7 each), `(raw Method)`/
+`(raw BinOp)`/`(raw UnionDef)` (a handful each), and CStr (~25, mostly
+diagnostic-label params and IR-fragment-string helpers like
+`float-literal-ir`/`emit-quote-tree`'s return, matching the established
+`type-mangle-token`/`abi-ret-ir` precedent from batches 1-2). Dozens of now-
+redundant `xx:ptr:X (cast ptr:X yy)` locals collapsed to plain rebinds per the
+traversal-cursor rule, and the `-> v (_ f) (cast ptr:T _) (_ g)` thread-macro
+idiom simplified to direct `((v f) g)` chains at every site this touched
+(`emit-binop-vals`, `emit-cast`, `emit-aref`/`emit-aset`/`emit-deref`/
+`emit-ptr-set`, `emit-field-get`/`emit-field-set`, `emit-get-intrinsic`,
+`emit-addr-of`, the `emit-funcall-*` family, etc.) — the same simplification
+batch 3 made in generics.nuc, now extended through nucleusc.nuc's own
+`emit-*` family.
+
+**`emit-node`'s own `n` param retyped to `(raw Node)`, and the lockstep held**
+(conventions.md): only `emit-node`'s *parameter* changed; its dispatch
+structure and the `Val`/type it returns down every path are byte-for-byte
+unchanged, so `node-type` (generics.nuc) needed no matching edit. The same
+reasoning applied to every other `emit-*` function touched this batch
+(`emit-int`, `emit-string`, `emit-binop-vals`, `emit-cast`, `emit-field-get`/
+`-set`, `emit-get-intrinsic`, the `emit-funcall-*` family, `emit-call(-with-
+args)`, etc.): param-only retypes, zero changes to what any of them return.
+
+**The `hp`/head-dispatch Node-identity pattern (batch-3 finding) recurred
+several times in this batch's territory and was retyped every time, verified
+empirically byte-identical each time — no new instance of the pattern broke
+it:** `node-is-label-form`'s `(= head 'label)`, `qq-is-tagged`'s
+`(= h tag)`/`(= h null)`, `emit-symbol-ref`'s `(= n 'null)`/`'true`/`'false`/
+`'none)`, and `is-libc-alloc`'s `(= hp 'cast)`/`'malloc`/`'calloc`/`'realloc`/
+`'strdup)`. `emit-list` itself — the file's actual head-dispatch function the
+batch-3 note flagged as the "real" (not lookalike) site — was **not yet
+reached**; it lives in the not-yet-touched "List dispatch" section (see
+below).
+
+**One local-elimination trap, found and fixed within this batch (new, not
+in batches 1-3): collapsing a redundant cast is inert, but eliminating an
+entire local variable is not.** `safe-coerce-val`'s cast-rule branch
+originally bound both `rule:ptr` (from `lookup-cast-rule`) and a second local
+`cr:ptr:CastRule (cast ptr:CastRule rule)` for field access. Retyping `rule`
+to `(raw CastRule)` and then **deleting `cr` entirely**, rewiring its two
+field reads onto `rule` directly, produced a real (48-line) `build/
+nucleusc.ll` diff confined to that one function: one fewer `alloca`/`store`/
+`load` triple shifted every later SSA temp number in the function. Caught
+immediately by the byte-identical gate (not by inspection). Fix: keep `cr` as
+a **plain rebind** (`cr:(raw CastRule) rule`) rather than eliminating it —
+this preserves the exact alloca/instruction count and re-verified byte-
+identical. Generalize: the "collapse `xx:ptr:X (cast ptr:X yy)` to a rebind"
+instruction from batches 1-3 means *retype the cast, keep the local* — merging
+two distinct locals into one (even when semantically redundant) is a genuine,
+detectable IR change, not an inert cleanup. Every other redundant-cast removal
+this batch removed only the cast expression itself (never a whole local
+declaration) and stayed byte-identical throughout, including the cases where
+a `(cast ptr X)` wrapper was deleted at a call site because the callee's
+param was retyped out from under it (e.g. `val-copy-taint`, `struct-field-
+index`/`union-field-guard` call sites, `emit-field-load`, `taint-store-
+check`) — deleting a *call-site cast expression* is fine; deleting a *local
+variable* is the trap.
+
+**No null-check-on-parameter, identity-comparison, or conj-dispatch traps
+found this batch** — every CStr candidate's body was audited for
+`(= param null)`/`(!= param null)` guards and for flow into a `conj`-into-
+`(Vector ptr)` sink before retyping; none of this batch's string-shaped
+params hit either shape. `node-binding-name`'s return was the one deliberate
+exception kept `ptr` (not retyped to CStr) for exactly the batch-2 reason:
+its result is `conj`'d directly into a `(Vector ptr)` fact accumulator in
+`test-true-nonnull`/`test-false-nonnull`, and a CStr argument does not adapt
+to that bare-`ptr` dispatch parameter — now documented inline at its
+definition, matching the `Val.val` precedent. The type-erasure memo family
+(`boxedfn-canonical`/`dyn-canonical`/`boxedfn-drop-target`) was left
+untouched throughout, per the batch-2 decision, and every value flowing into
+one of those functions' still-`ptr` params coerced in freely with no cast
+needed.
+
+**No `(ref T)` promotions this batch** — every retype was `(raw T)`, `CStr`,
+or a deliberate `ptr` left alone, so no new flow-check obligations were
+introduced; `examples/and-narrow.nuc` re-run clean regardless, per the
+close-out checklist.
+
+Verification: `make` clean; `make test` 168/168; `make bootstrap` fixed point
+(`stage1.ll == stage2.ll`); `build/nucleusc.ll` diffed **byte-identical, zero
+lines** against a from-scratch baseline built with the pre-batch source and
+the same unmodified `bin/nucleusc` boot — checked after *every* section
+listed above (not just at the end), catching the `safe-coerce-val`
+local-elimination regression immediately within its own section before it
+could be confused with a later edit.
+
+**`nucleusc.nuc` is NOT done — this is a partial pass on the largest file in
+the phase.** Remaining, in file order, starting from source line 3292 (the
+`; ============` marker immediately after this batch's last completed
+section, "Special forms"): "Stage 13 — lambdas / closures" (design/stage13/
+lambda.md), "Stage 13 L4 — closure environment + `invoke`, and `vfn`",
+"Stage 13 type-erasure TE-2/TE-3/TE-4" (static vtable synthesis, box
+coercion, Drop + forwarding — likely the most intricate remaining territory,
+heavy with the `boxedfn-*`/`dyn-*` type-erasure machinery already flagged as
+partially off-limits per batch 2), "Stage 8 scalar load/store helpers",
+"Stage 8 inc!/dec!", "Stage 8 labels and goto", "Stage 8 struct/array
+compound literals", "Macro expansion", **"List dispatch"** (this is where
+`emit-list` itself lives — the file's actual head-dispatch function that the
+batch-3 note and this batch's dispatch brief both flagged; every `hp`/`h`
+site found so far in *other* functions retyped cleanly, so the same should
+hold for `emit-list`, but verify empirically rather than assuming, per the
+brief), "Top-level forms", "Name (non-)shadowing", "defn", "Compile-time JIT
+helpers", "compile-time special form", "defmacro top-level form", "String
+table emission", "Driver", "Desugar pass" (this is where `desugar-symbol` —
+referenced but not yet retyped by this batch — lives), "Compiler
+initialization", "Emit quasiquote helpers", "Open/close module streams", and
+"Main entry point". Recommend **batch 4b resume at line 3292** ("Stage 13 —
+lambdas / closures"), continuing the same per-section byte-identical
+discipline, and budgeting extra care for the TE-2/TE-3/TE-4 sections given
+their density and the pre-existing partial-migration state of the type-
+erasure memo family.
+
 ### 14.4 — Parallel arrays → array-of-struct  *(controlled refresh)*
 
 **Agent: systems-impl-engineer** (new element structs + layout change); build-test
