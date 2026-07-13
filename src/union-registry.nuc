@@ -624,13 +624,14 @@
   (let (ud:?ptr:UnionDef (result-union-of t))
     (when (= ud null) (return null))
     (let (oi:i32 (union-arm-index (cast ptr ud) "ok"))
-      (return (aref (cast ptr:ptr (ud arm-ptypes)) oi)))))
+      (return ((invoke (ud arms) (cast usize oi)) ptype)))))
 
 (defn union-arm-index (ud:raw:UnionDef name:CStr):i32
   (let (udd:raw:UnionDef ud)
     (dotimes (i (udd num-arms))
-      (when (= (strcmp (aref (cast ptr:ptr (udd arm-names)) i) name) 0)
-        (return i)))
+      (let (arm:ref:Arm (invoke (udd arms) (cast usize i)))
+        (when (= (strcmp (arm name) name) 0)
+          (return i))))
     (return -1)))
 
 ; Byte offset of the payload union inside the backing struct: the i32 tag,
@@ -646,23 +647,23 @@
 ; void* exemption (design/stage10/cleanup-prompt.md "byte-identity guard"): a
 ; niche over a typeless pointer buys no safety and would needlessly churn the
 ; reader's elem-less !ptr, so an elem-less payload stays TAGGED.
-(defn arm-is-typed-ref (arm-ptypes:ptr arm-nfields:ptr i:i32):i32
-  (when (!= (aref (cast ptr:i32 arm-nfields) i) 1) (return 0))
-  (let (pty:ptr:Type (cast ptr:Type (aref (cast ptr:ptr arm-ptypes) i)))
-    (when (= (cast ptr pty) null) (return 0))
+(defn arm-is-typed-ref (arm:ref:Arm):i32
+  (when (!= (arm nfields) 1) (return 0))
+  (let (pty:raw:Type (arm ptype))
+    (when (= pty null) (return 0))
     (when (!= (pty kind) TY-PTR) (return 0))
-    (let (el:ptr (pty elem))
+    (let (el:raw:Type (pty elem))
       (when (= el null) (return 0))
-      (when (= (-> el (cast ptr:Type _) (_ kind)) TY-VOID) (return 0))
+      (when (= (el kind) TY-VOID) (return 0))
       (return 1))))
 
 ; True iff arm `i` carries exactly one field of type Err (TY-ERR) — the err
 ; side of a niche-ERRPTR (errors.md §8: Err is a distinct i32-repr scalar so
 ; rule-3 detection can key on it).
-(defn arm-is-err-field (arm-ptypes:ptr arm-nfields:ptr i:i32):i32
-  (when (!= (aref (cast ptr:i32 arm-nfields) i) 1) (return 0))
-  (let (pty:ptr:Type (cast ptr:Type (aref (cast ptr:ptr arm-ptypes) i)))
-    (when (= (cast ptr pty) null) (return 0))
+(defn arm-is-err-field (arm:ref:Arm):i32
+  (when (!= (arm nfields) 1) (return 0))
+  (let (pty:raw:Type (arm ptype))
+    (when (= pty null) (return 0))
     (return (if (= (pty kind) TY-ERR) 1 0))))
 
 ; The layout engine (design/stage10/unions.md §6) — the U4/A2 convergence step.
@@ -672,39 +673,39 @@
 ; void* exemption keeps the reader's elem-less !ptr TAGGED and the bootstrap
 ; byte-identical. Returns LAYOUT-* ; on a niche, *niche-elem-out (a ptr:ptr) is
 ; set to the (ref T) payload's element Type so codegen can recover T.
-(defn union-layout-classify (arm-names:ptr arm-ptypes:ptr arm-nfields:ptr
+(defn union-layout-classify ((arms (ref (Vector (ref Arm))))
                                  narms:i32 repr:i32 niche-elem-out:ptr line:i32):i32
   (aset! (cast ptr:ptr niche-elem-out) 0 null)
   (when (= repr REPR-TAGGED) (return LAYOUT-TAGGED))
   ; Rule 1: every arm payload-less → just the i32 tag (≅ defenum).
   (let (all-payloadless:i32 1)
     (dotimes (i narms)
-      (when (!= (aref (cast ptr:i32 arm-nfields) i) 0) (set! all-payloadless 0)))
+      (when (!= ((invoke arms (cast usize i)) nfields) 0) (set! all-payloadless 0)))
     (when (!= all-payloadless 0)
       (when (= repr REPR-NICHE)
         (die-at line "&repr niche: an all-payload-less union is an enum, not a niche"))
       (return LAYOUT-ENUM)))
   ; Rules 2 & 3 are two-arm shapes (order-independent in the arms).
   (when (= narms 2)
-    (let (none0:i32 (if (= (aref (cast ptr:i32 arm-nfields) 0) 0) 1 0)
-          none1:i32 (if (= (aref (cast ptr:i32 arm-nfields) 1) 0) 1 0)
-          ref0:i32 (arm-is-typed-ref arm-ptypes arm-nfields 0)
-          ref1:i32 (arm-is-typed-ref arm-ptypes arm-nfields 1)
-          err0:i32 (arm-is-err-field arm-ptypes arm-nfields 0)
-          err1:i32 (arm-is-err-field arm-ptypes arm-nfields 1))
+    (let (arm0:ref:Arm (invoke arms (cast usize 0))
+          arm1:ref:Arm (invoke arms (cast usize 1))
+          none0:i32 (if (= (arm0 nfields) 0) 1 0)
+          none1:i32 (if (= (arm1 nfields) 0) 1 0)
+          ref0:i32 (arm-is-typed-ref arm0)
+          ref1:i32 (arm-is-typed-ref arm1)
+          err0:i32 (arm-is-err-field arm0)
+          err1:i32 (arm-is-err-field arm1))
       ; Rule 2: one payload-less arm, one single typed (ref T) field.
       (when (or (and (!= none0 0) (!= ref1 0))
                 (and (!= ref0 0) (!= none1 0)))
-        (let (ri:i32 (if (!= ref0 0) 0 1))
-          (aset! (cast ptr:ptr niche-elem-out) 0
-            (-> (cast ptr:Type (aref (cast ptr:ptr arm-ptypes) ri)) (_ elem)))
+        (let (ri-arm:ref:Arm (if (!= ref0 0) arm0 arm1))
+          (aset! (cast ptr:ptr niche-elem-out) 0 ((ri-arm ptype) elem))
           (return LAYOUT-NICHE-MAYBE)))
       ; Rule 3: one single typed (ref T) field, one single Err field.
       (when (or (and (!= ref0 0) (!= err1 0))
                 (and (!= err0 0) (!= ref1 0)))
-        (let (ri:i32 (if (!= ref0 0) 0 1))
-          (aset! (cast ptr:ptr niche-elem-out) 0
-            (-> (cast ptr:Type (aref (cast ptr:ptr arm-ptypes) ri)) (_ elem)))
+        (let (ri-arm:ref:Arm (if (!= ref0 0) arm0 arm1))
+          (aset! (cast ptr:ptr niche-elem-out) 0 ((ri-arm ptype) elem))
           (return LAYOUT-NICHE-ERRPTR)))))
   ; Rule 4: the §3 tagged struct.
   (when (= repr REPR-NICHE)
@@ -762,12 +763,7 @@
       (die-at line "defunion: at least one arm required"))
     (when (> narms MAX-UNION-ARMS)
       (die-at line "defunion: too many arms"))
-    (let (arm-names:ptr (arena-alloc (* (cast i64 narms) (ptr-bytes)))
-          arm-ptypes:ptr (arena-alloc (* (cast i64 narms) (ptr-bytes)))
-          arm-fnames:ptr (arena-alloc (* (cast i64 narms) (ptr-bytes)))
-          arm-ftypes:ptr (arena-alloc (* (cast i64 narms) (ptr-bytes)))
-          arm-nfields:ptr (arena-alloc (* (cast i64 narms) (cast i64 4)))
-          ai:i32 0)
+    (let ((arms-vec (ref (Vector (ref Arm)))) (vector-new-in (addr-of g-arena-alloc)))
       (set! cur arms)
       (while (!= cur null)
         (let (arm:ptr:Node (cast ptr:Node ((cast ptr:Node cur) car))
@@ -800,34 +796,36 @@
                       (aset! (cast ptr:ptr fnames) fi (intern-str fname))
                       (aset! (cast ptr:ptr ftypes) fi fty))
                     (inc! fi))))))
-          (when (>= (union-arm-index-in aname arm-names ai) 0)
+          (when (>= (union-arm-index-in aname arms-vec) 0)
             (die-at (arm line) (fmt-s "defunion: duplicate arm '%s'" aname)))
-          (aset! (cast ptr:ptr arm-names) ai (intern-str aname))
-          (aset! (cast ptr:ptr arm-fnames) ai fnames)
-          (aset! (cast ptr:ptr arm-ftypes) ai ftypes)
-          (aset! (cast ptr:i32 arm-nfields) ai nf)
           ; Arm payload: nothing (payload-less), the single field's type, or a
           ; memoized anonymous struct of the fields.
-          (if (= nf 0)
-            (aset! (cast ptr:ptr arm-ptypes) ai null)
-            (if (= nf 1)
-              (aset! (cast ptr:ptr arm-ptypes) ai (aref (cast ptr:ptr ftypes) 0))
-              (aset! (cast ptr:ptr arm-ptypes) ai
-                     (type-for-sdef (lookup-or-make-anon-struct fnames ftypes nf))))))
-        (inc! ai)
+          (let (rec:ref:Arm (new Arm)
+                pty:raw:Type (if (= nf 0)
+                               null
+                               (if (= nf 1)
+                                 (cast raw:Type (aref (cast ptr:ptr ftypes) 0))
+                                 (cast raw:Type
+                                   (type-for-sdef (lookup-or-make-anon-struct fnames ftypes nf))))))
+            (.set! rec name (cast CStr (intern-str aname)))
+            (.set! rec ptype pty)
+            (.set! rec fnames fnames)
+            (.set! rec ftypes ftypes)
+            (.set! rec nfields nf)
+            (conj arms-vec rec)))
         (set! cur ((cast ptr:Node cur) cdr)))
       ; Classify the layout (unions.md §6 — the U4/A2 convergence). The arm
       ; table is now complete; the engine applies rules 1–4 in order, honoring
       ; &repr. Stage 1 records the decision on the UnionDef; the niche layouts
       ; (rules 2/3) are produced by the Type-returning callers (rule 2/3 codegen).
       (let (niche-elem-box:ptr null
-            layout:i32 (union-layout-classify arm-names arm-ptypes arm-nfields
+            layout:i32 (union-layout-classify arms-vec
                           narms repr (cast ptr:ptr (addr-of niche-elem-box)) line))
       ; The payload union: one member per payload-bearing arm, named by the arm.
       (let (npay:i32 0
             i:i32 0)
         (while (< i narms)
-          (when (!= (aref (cast ptr:ptr arm-ptypes) i) null) (inc! npay))
+          (when (!= ((invoke arms-vec (cast usize i)) ptype) null) (inc! npay))
           (inc! i))
         ; A niche layout (rules 2/3) lowers to a bare pointer with no backing
         ; struct or payload union — skip building the anon payload union (which
@@ -841,10 +839,11 @@
                   mi:i32 0)
               (set! i 0)
               (while (< i narms)
-                (when (!= (aref (cast ptr:ptr arm-ptypes) i) null)
-                  (aset! (cast ptr:ptr mnames) mi (aref (cast ptr:ptr arm-names) i))
-                  (aset! (cast ptr:ptr mtypes) mi (aref (cast ptr:ptr arm-ptypes) i))
-                  (inc! mi))
+                (let (arm-rec:ref:Arm (invoke arms-vec (cast usize i)))
+                  (when (!= (arm-rec ptype) null)
+                    (aset! (cast ptr:ptr mnames) mi (arm-rec name))
+                    (aset! (cast ptr:ptr mtypes) mi (arm-rec ptype))
+                    (inc! mi)))
                 (inc! i))
               (set! union-sd (cast ptr (lookup-or-make-anon-union mnames mtypes npay)))))
           ; Backing struct: {tag:i32 [, payload:(union ...)]}.
@@ -884,21 +883,18 @@
               (.set! ud sdef sd)
               (.set! ud union-sd union-sd)
               (.set! ud num-arms narms)
-              (.set! ud arm-names arm-names)
-              (.set! ud arm-ptypes arm-ptypes)
-              (.set! ud arm-fnames arm-fnames)
-              (.set! ud arm-ftypes arm-ftypes)
-              (.set! ud arm-nfields arm-nfields)
+              (.set! ud arms arms-vec)
               (.set! ud layout layout)
               (.set! ud niche-elem niche-elem-box)
               (.set! ud src-line line)
               (.set! sd udef ud)
               (return (cast ref:UnionDef ud))))))))))
 
-; Arm-name duplicate probe over a partially-built name array (registration helper).
-(defn union-arm-index-in (name:CStr names:ptr n:i32):i32
-  (dotimes (i n)
-    (when (= (strcmp (aref (cast ptr:ptr names) i) name) 0)
+; Arm-name duplicate probe over the partially-built arm Vector (registration
+; helper) — scans the arms conj'd so far.
+(defn union-arm-index-in (name:CStr (arms (ref (Vector (ref Arm))))):i32
+  (dotimes (i (cast i32 (count arms)))
+    (when (= (strcmp ((invoke arms (cast usize i)) name) name) 0)
       (return i)))
   (return -1))
 

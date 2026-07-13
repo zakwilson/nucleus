@@ -54,7 +54,7 @@
         udd:raw:UnionDef ud
         sd:raw:StructDef (udd sdef)
         oi:i32 (union-arm-index ud "ok")
-        ok-ty:ptr (aref (cast ptr:ptr (udd arm-ptypes)) oi)
+        ok-ty:ptr ((invoke (udd arms) (cast usize oi)) ptype)
         poff:i32 (union-payload-off ud))
     (when (= (scope-lookup g-globals "printf") null)
       (die-at line "unwrap on a Result needs printf in scope — add (import-use \"stdio.h\")"))
@@ -137,7 +137,7 @@
         udd:raw:UnionDef ud
         sd:raw:StructDef (udd sdef)
         oi:i32 (union-arm-index ud "ok")
-        ok-ty:ptr (aref (cast ptr:ptr (udd arm-ptypes)) oi)
+        ok-ty:ptr ((invoke (udd arms) (cast usize oi)) ptype)
         poff:i32 (union-payload-off ud)
         base:ptr (new-tmp)
         id:i32 (new-label-id)
@@ -437,13 +437,14 @@
   (let (udd:raw:UnionDef ud
         cc:ptr:Node (cast ptr:Node call)
         sd:raw:StructDef (udd sdef)
-        nf:i32 (aref (cast ptr:i32 (udd arm-nfields)) arm)
+        arm-rec:ref:Arm (invoke (udd arms) (cast usize arm))
+        nf:i32 (arm-rec nfields)
         nargs:i32 (- (node-len cc) argi)
         taint:ptr null)
     (when (!= nargs nf)
       (die-at (cc line)
         (fmt-2s "%s: arm '%s' takes a different number of fields"
-                (udd name) (aref (cast ptr:ptr (udd arm-names)) arm))))
+                (udd name) (arm-rec name))))
     (let (base:ptr (new-tmp))
       (fprintf g-entry-stream "  %s = alloca %%%s, align %d\n"
         base (sd ir-name) (abi-struct-align sd))
@@ -454,8 +455,8 @@
         (fprintf g-body-stream "  store i32 %d, ptr %s, align 4\n" arm tgep))
       (when (> nf 0)
         (let (pp:ptr (new-tmp)
-              ftypes:ptr (aref (cast ptr:ptr (udd arm-ftypes)) arm)
-              ptype:ptr:Type (cast ptr:Type (aref (cast ptr:ptr (udd arm-ptypes)) arm)))
+              ftypes:ptr (arm-rec ftypes)
+              ptype:ptr:Type (cast ptr:Type (arm-rec ptype)))
           (fprintf g-body-stream
             "  %s = getelementptr inbounds i8, ptr %s, i64 %d\n"
             pp base (union-payload-off ud))
@@ -466,7 +467,7 @@
               (when (= coerced null)
                 (die-at (cc line)
                   (fmt-2s "%s: type mismatch for a field of arm '%s'"
-                          (udd name) (aref (cast ptr:ptr (udd arm-names)) arm))))
+                          (udd name) (arm-rec name))))
               (set! taint (taint-merge taint (v taint)))
               (let (cv:ptr:Val (cast ptr:Val coerced)
                     fgep:ptr pp)
@@ -850,10 +851,11 @@
 (defn result-err-arm-is-err (ud:raw:UnionDef):i32
   (let (ai:i32 (union-arm-index ud "err"))
     (when (< ai 0) (return 0))
-    (let (udd:raw:UnionDef ud)
-      (when (!= (aref (cast ptr:i32 (udd arm-nfields)) ai) 1) (return 0))
-      (let (pty:ptr:Type (cast ptr:Type (aref (cast ptr:ptr (udd arm-ptypes)) ai)))
-        (when (= (cast ptr pty) null) (return 0))
+    (let (udd:raw:UnionDef ud
+          arm:ref:Arm (invoke (udd arms) (cast usize ai)))
+      (when (!= (arm nfields) 1) (return 0))
+      (let (pty:raw:Type (arm ptype))
+        (when (= pty null) (return 0))
         (return (if (= (pty kind) TY-ERR) 1 0))))))
 
 ; Target typing (unions.md §5c, generalized by TC-5): when `target` is a
@@ -957,9 +959,10 @@
 (defn emit-match-binders (ud:raw:UnionDef ai:i32 binders:ptr pp:ptr inner:ref:Scope
                                is-ptr:i32 staint:raw:Scope line:i32):void
   (let (udd:raw:UnionDef ud
-        nf:i32 (aref (cast ptr:i32 (udd arm-nfields)) ai)
-        ftypes:ptr (aref (cast ptr:ptr (udd arm-ftypes)) ai)
-        ptype:ptr:Type (cast ptr:Type (aref (cast ptr:ptr (udd arm-ptypes)) ai))
+        arm:ref:Arm (invoke (udd arms) (cast usize ai))
+        nf:i32 (arm nfields)
+        ftypes:ptr (arm ftypes)
+        ptype:ptr:Type (cast ptr:Type (arm ptype))
         bcur:ptr binders
         fi:i32 0)
     (while (!= bcur null)
@@ -1525,7 +1528,7 @@
                       (when (< ai 0)
                         (die-at (pat line)
                           (fmt-2s "match: no arm '%s' on '%s'" (pat s) (udd name))))
-                      (when (!= (aref (cast ptr:i32 (udd arm-nfields)) ai) 0)
+                      (when (!= ((invoke (udd arms) (cast usize ai)) nfields) 0)
                         (die-at (pat line)
                           (fmt-s "match: arm '%s' carries a payload — bind its fields with (arm f...)" (pat s))))
                       (aset! (cast ptr:i32 clause-val) ci ai)))
@@ -1540,7 +1543,7 @@
                           (die-at (an line)
                             (fmt-2s "match: no arm '%s' on '%s'" (an s) (udd name))))
                         (when (!= (- (node-len (cast ptr pat)) 1)
-                                  (aref (cast ptr:i32 (udd arm-nfields)) ai))
+                                  ((invoke (udd arms) (cast usize ai)) nfields))
                           (die-at (pat line)
                             (fmt-s "match: arm '%s' binder count does not match its field count (use _ to ignore a field)" (an s))))
                         (aset! (cast ptr:i32 clause-val) ci ai)
@@ -1566,7 +1569,7 @@
                   (when (= hit 0)
                     (die-at (cc line)
                       (fmt-s "match: non-exhaustive — missing arm '%s' (add it or a _ default)"
-                             (aref (cast ptr:ptr (udd arm-names)) ai)))))
+                             ((invoke (udd arms) (cast usize ai)) name)))))
                 (inc! ai))))
           ; Read the tag and hand off to the shared switch/join emitter.
           (let (sd:ptr:StructDef (cast ptr:StructDef (udd sdef))

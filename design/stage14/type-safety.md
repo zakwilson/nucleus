@@ -1230,6 +1230,59 @@ build-test-runner pipeline stage, not here.
 
 ### 14.4 — Parallel arrays → array-of-struct  *(controlled refresh)*
 
+**Status (batch 1 — `UnionDef` arm arrays → `Arm`, 2026-07-13): DONE, controlled
+refresh reconverged in one pass.** Introduced
+`Arm{name:CStr, ptype:(raw Type), fnames:ptr, ftypes:ptr, nfields:i32}`
+(compiler-types.nuc, immediately before `UnionDef`) and replaced `UnionDef`'s five
+parallel arm arrays (`arm-names`/`arm-ptypes`/`arm-fnames`/`arm-ftypes`/
+`arm-nfields`) with a single `(arms (ref (Vector (ref Arm))))` field. `num-arms`
+was **kept** as the cached i32 length (it is the shared count, not one of the
+parallel *data* arrays, and keeping it avoids churning every `(udd num-arms)`
+loop into `(cast i32 (count …))`). Every ragged `(aref (cast ptr:ptr (udd arm-X))
+i)` lockstep walk is gone — reads are now `(invoke (udd arms) (cast usize i))`
+returning a `(ref Arm)` with direct field access (an arm bound once per iteration
+where several of its fields are read). Touched: the build/classify/payload-union
+sites in union-registry.nuc (`defunion-register`, `union-layout-classify`,
+`arm-is-typed-ref`/`arm-is-err-field` refactored to take `(ref Arm)`,
+`union-arm-index`/`union-arm-index-in` refactored to scan the Vector,
+`result-ok-type`); the unwrap/construct/match readers in union-emit.nuc
+(`emit-unwrap-result`, `emit-unwrap-or-result`, `emit-union-construct`,
+`result-err-arm-is-err`, `emit-match-binders`, `emit-match-clauses`);
+`union-drop-arm` (nucleusc.nuc); `repl-declare-union-ctors` (repl.nuc).
+
+Findings worth carrying to the later 14.4 sub-steps:
+- **A `(Vector (ref Arm))` field type resolves inside `compiler-types.nuc`**
+  (imported at nucleusc.nuc:23, long before `(import-use vector)` at :463) because
+  `prescan-imported-types`/`prescan-struct-names` register the `Vector` struct
+  template and the `Arm` name **globally, before any form is emitted** — the same
+  reason the `g-uniondefs` defvar (`(ref (Vector (ref UnionDef)))`, nucleusc.nuc:115)
+  already resolves before the vector import. The pending-IR drain defers the
+  `%Vector.…`/`%AllocHandle` dependency exactly as for the existing registry
+  instances. So a compiler-internal struct **can** hold a typed `Vector` field.
+- **The layout change reconverged in ONE pass** — `make bootstrap` PASSED
+  (`stage1.ll == stage2.ll`) *before* `make update-bootstrap`, contrary to the
+  "controlled refresh drifts" expectation. The refactor changes only the
+  compiler's internal data structures and its arm-reading logic, **not the IR it
+  emits for any construct**, and Vector-instance stamping is deterministic across
+  the old boot and the new compiler — so the old boot emits the new source
+  identically to the new compiler. `update-bootstrap` was still run at the
+  milestone to keep the committed `boot/*.ll` fallback IRs synced. `make test`
+  168/168 throughout.
+- **`arm-fnames` was dead storage** (written by `defunion-register`, read
+  nowhere) on the old `UnionDef`. `Arm.fnames` is likewise write-only today;
+  retained to match this section's named `Arm{…, fnames, …}` shape (a later
+  sub-step folds `fnames`/`ftypes` into a `Field{name,type}` element).
+- **Spelling trap:** `x:ref:(Vector T)` (colon *before* the parametric paren)
+  mis-parses in the reader; use list-form `(x (ref (Vector (ref Arm))))` for
+  params or colon-paren `x:(ref (Vector (ref Arm)))`/list-form for let bindings.
+
+**Remaining batches** (not started): `Constraint{proto,var,args}` for the
+`&where` quad users (generics.nuc), `Field{name,type}` for `StructDef`/`Type`,
+and `Conformance.args` → `(Vector CStr)`. The `count-pattern-nodes` conservative
+arena-sizing deletion (generics.nuc) rides with the `Constraint` batch — note the
+`Arm` arrays had **no** conservative sizing to delete (`narms` is exact from
+`node-len`).
+
 **Agent: systems-impl-engineer** (new element structs + layout change); build-test
 gates. **Read (scoped):** the arm-array build/scan (union-registry.nuc:789-800,
 :611-618); the `&where` quad users (generics.nuc:1250/1389/1433/1678); `Conformance.args`
