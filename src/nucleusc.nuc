@@ -3304,10 +3304,10 @@
 ; import-list-push to cons a NODE-STR cell whose `s` is the bare name). Names
 ; arrive from node-binding-name (arena-strdup'd, not interned), so membership is
 ; by strcmp rather than the pointer `=` import-list-has uses.
-(defn fn-bound-has (list:ptr name:ptr):i32
-  (let (cur:ptr list)
+(defn fn-bound-has (list:(raw Node) name:CStr):i32
+  (let (cur:(raw Node) list)
     (while (!= cur null)
-      (let (entry:ptr:Node (cast ptr:Node cur))
+      (let (entry:(raw Node) cur)
         (when (= (strcmp (entry s) name) 0) (return 1))
         (set! cur (entry cdr))))
     (return 0)))
@@ -3316,7 +3316,7 @@
 ; name slots) to `bound`, returning the extended list. The init expressions are
 ; NOT walked here — the caller walks them in the pre-binding scope so a capture in
 ; an init form is still caught.
-(defn fn-bind-let-names (binds:ptr bound:ptr):ptr
+(defn fn-bind-let-names (binds:(raw Node) bound:(raw Node)):(raw Node)
   (let (i:i32 0
         acc:ptr bound)
     (while (< i (node-len binds))
@@ -3327,7 +3327,7 @@
 
 ; Add a lambda form's own parameter names to `bound`, returning the extended
 ; list. `params` is the parameter list node (index 1 of an fn/vfn/mfn/cfn form).
-(defn fn-bind-param-names (params:ptr bound:ptr):ptr
+(defn fn-bind-param-names (params:(raw Node) bound:(raw Node)):(raw Node)
   (let (acc:ptr bound)
     (dotimes (i (node-len params))
       (let (pn:ptr (node-binding-name (node-at params i)))
@@ -3338,7 +3338,7 @@
 ; sub-form (index 1) is a parameter list whose names bind in its body. `cfn` is
 ; the exception: its index-1 operand is the allocator and the param list is at
 ; index 2 — handled at the call site.
-(defn fn-is-lambda-head (head:ptr):i32
+(defn fn-is-lambda-head (head:CStr):i32
   (when (= (strcmp head "fn") 0) (return 1))
   (when (= (strcmp head "vfn") 0) (return 1))
   (when (= (strcmp head "mfn") 0) (return 1))
@@ -3370,9 +3370,9 @@
 ; or quoted datum that happens to collide with an enclosing local is not
 ; mis-flagged: quoted forms, and the field-name operand of `.`/`_get`/`.&`/
 ; `.set!`.
-(defn fn-capture-walk (node:ptr scope:ref:Scope bound:ptr cap-box:ptr:ptr line:i32):void
+(defn fn-capture-walk (node:(raw Node) scope:ref:Scope bound:(raw Node) cap-box:ptr:ptr line:i32):void
   (when (= node null) (return))
-  (let (nn:ptr:Node (cast ptr:Node node))
+  (let (nn:(raw Node) node)
     ; A bare symbol in value position: classify it.
     (when (= (nn kind) NODE-SYM)
       (let (name:ptr null
@@ -3453,7 +3453,7 @@
 
 ; L3 reject-mode entry point (`fn`): rejects any enclosing-local capture. A thin
 ; wrapper over the shared walker with a null capture box.
-(defn fn-capture-check (node:ptr scope:ref:Scope bound:ptr line:i32):void
+(defn fn-capture-check (node:(raw Node) scope:ref:Scope bound:(raw Node) line:i32):void
   (fn-capture-walk node scope bound (cast ptr:ptr null) line))
 
 ; Parse a lambda return-type operand. The reader lexes a colon-led atom (`:i32`)
@@ -3461,9 +3461,9 @@
 ; …)` spelling lands the return type as a keyword at index 2. A space-separated
 ; bare type symbol or a parenthesised list-form type (`(ref T)`, per the
 ; colon-paren caveat) are also accepted.
-(defn fn-parse-ret-type (node:ptr line:i32):ptr
+(defn fn-parse-ret-type (node:(raw Node) line:i32):(raw Type)
   (when (= node null) (return ty-void))
-  (let (nn:ptr:Node (cast ptr:Node node))
+  (let (nn:(raw Node) node)
     (when (= (nn kind) NODE-KEYWORD) (return (parse-type-name (nn s) line)))
     (when (= (nn kind) NODE-SYM) (return (parse-type-from-node node line)))
     (when (= (nn kind) NODE-CELL) (return (parse-type-from-node node line)))
@@ -3480,9 +3480,9 @@
 ;   4. The value of the expression is the lifted function's pointer — exactly the
 ;      Val a bare defn name decays to in emit-symbol-ref (a TY-FN global yields
 ;      `(alloc-val type ir-name)`).
-(defn emit-fn (call:ptr scope:ref:Scope):ref:Val
-  (let (cc:ptr:Node (cast ptr:Node call)
-        line:i32 ((cast ptr:Node call) line))
+(defn emit-fn (call:(raw Node) scope:ref:Scope):ref:Val
+  (let (cc:(raw Node) call
+        line:i32 (call line))
     (when (< (node-len cc) 4)
       (die-at line "fn: expects (fn (params):ret body…)"))
     (let (params-node:ptr (node-at cc 1)
@@ -3545,8 +3545,7 @@
               (let (defn-sym:ptr (cast ptr (intern-symbol "defn"))
                     name-sym:ptr (cast ptr (intern-symbol lifted))
                     ret-node:ptr (cast ptr (intern-symbol (type-spelling ret)))
-                    body-list:ptr (-> cc (_ cdr) (cast ptr:Node _) (_ cdr)
-                                         (cast ptr:Node _) (_ cdr))
+                    body-list:ptr (-> cc (_ cdr) (_ cdr) (_ cdr))
                     after-ret:ptr (make-cell ret-node body-list line)
                     after-params:ptr (make-cell params-node after-ret line)
                     after-name:ptr (make-cell name-sym after-params line)
@@ -3588,7 +3587,7 @@
 ; method uses its own mangled name — so no already-emitted symbol is renamed.
 ; The closest precedent is finalize-generics' overloaded branch, minus the
 ; re-mangle (which would rename an already-emitted solitary define).
-(defn fn-force-generic-mangled (gname:ptr):void
+(defn fn-force-generic-mangled (gname:CStr):void
   (let (g:ptr (generic-lookup gname))
     (when (!= g null)
       (let (gg:ptr:Generic (cast ptr:Generic g))
@@ -3596,12 +3595,12 @@
         (.set! gg finalized 1)))))
 
 ; The number of captures collected into the NODE-STR list `caps`.
-(defn fn-caps-count (caps:ptr):i32
+(defn fn-caps-count (caps:(raw Node)):i32
   (let (n:i32 0
-        cur:ptr caps)
+        cur:(raw Node) caps)
     (while (!= cur null)
       (inc! n)
-      (set! cur ((cast ptr:Node cur) cdr)))
+      (set! cur (cur cdr)))
     (return n)))
 
 ; Depth of a Scope* in the lexical chain (root = 1). Used by the cfn region
@@ -3610,12 +3609,12 @@
 ; escape sink's direction (lambda.md §"Lifetime and escape analysis": an escape
 ; is rejected when the destination outlives the source's region; the innermost
 ; region is exited first, so joining it makes the closure escape-earliest).
-(defn scope-depth (s:ptr):i32
+(defn scope-depth (s:(raw Scope)):i32
   (let (d:i32 0
-        cur:ptr s)
+        cur:(raw Scope) s)
     (while (!= cur null)
       (inc! d)
-      (set! cur ((cast ptr:Scope cur) parent)))
+      (set! cur (cur parent)))
     (return d)))
 
 ; Construct a NODE-INT literal node (arena zero-fills, so kind defaults to
@@ -3635,9 +3634,9 @@
 ; quoted data is opaque. `caps` is the collected capture-name list; a symbol is
 ; rewritten iff it is in `caps` and not shadowed by `bound`. Returns a new Node
 ; tree (structure-sharing where nothing was rewritten).
-(defn fn-rewrite-captures (node:ptr caps:ptr bound:ptr self-sym:ptr line:i32 mode:i32):ptr
+(defn fn-rewrite-captures (node:(raw Node) caps:(raw Node) bound:(raw Node) self-sym:(raw Node) line:i32 mode:i32):ptr
   (when (= node null) (return null))
-  (let (nn:ptr:Node (cast ptr:Node node))
+  (let (nn:(raw Node) node)
     ; A bare symbol: rewrite to (. self name) iff it is a (non-shadowed) capture.
     (when (= (nn kind) NODE-SYM)
       (let (name:ptr null
@@ -3859,7 +3858,7 @@
 
 ; Rewrite a Node list (cons spine) element-by-element starting at index `start`,
 ; returning a fresh spine. Used for non-symbol-head forms.
-(defn fn-rewrite-list (node:ptr start:i32 caps:ptr bound:ptr self-sym:ptr line:i32 mode:i32):ptr
+(defn fn-rewrite-list (node:(raw Node) start:i32 caps:(raw Node) bound:(raw Node) self-sym:(raw Node) line:i32 mode:i32):ptr
   (let (n:i32 (node-len node)
         head:ptr null
         tail:ptr null
@@ -3873,17 +3872,17 @@
     (return head)))
 
 ; The tail spine (args) of a symbol-headed form: indices 1..end, fresh spine.
-(defn fn-rewrite-list-rest (node:ptr caps:ptr bound:ptr self-sym:ptr line:i32 mode:i32):ptr
+(defn fn-rewrite-list-rest (node:(raw Node) caps:(raw Node) bound:(raw Node) self-sym:(raw Node) line:i32 mode:i32):ptr
   (return (fn-rewrite-list node 1 caps bound self-sym line mode)))
 
 ; A fresh body spine from index `start` (used for let/with/nested-lambda bodies).
-(defn fn-rewrite-list-from (node:ptr start:i32 caps:ptr bound:ptr self-sym:ptr line:i32 mode:i32):ptr
+(defn fn-rewrite-list-from (node:(raw Node) start:i32 caps:(raw Node) bound:(raw Node) self-sym:(raw Node) line:i32 mode:i32):ptr
   (return (fn-rewrite-list node start caps bound self-sym line mode)))
 
 ; Rewrite the init expressions of a let/with binding list: even slots are
 ; binding names (kept verbatim), odd slots are init expressions (rewritten in
 ; the pre-binding `bound` set, matching fn-capture-walk's init handling).
-(defn fn-rewrite-let-binds (binds:ptr caps:ptr bound:ptr self-sym:ptr line:i32 mode:i32):ptr
+(defn fn-rewrite-let-binds (binds:(raw Node) caps:(raw Node) bound:(raw Node) self-sym:(raw Node) line:i32 mode:i32):ptr
   (let (n:i32 (node-len binds)
         head:ptr null
         tail:ptr null)
@@ -3897,7 +3896,7 @@
     (return head)))
 
 ; Build a `(ref <Env>)` Type from the env StructDef.
-(defn fn-env-ref-type (sd:ptr):ptr
+(defn fn-env-ref-type (sd:(raw StructDef)):ptr
   (let (st:ptr:Type (cast ptr:Type (make-type TY-STRUCT))
         pt:ptr:Type (cast ptr:Type (make-type TY-PTR)))
     (.set! st sdef sd)
@@ -3907,7 +3906,7 @@
 
 ; Build a `(ptr <Env>)` Type (the synthesized drop's self param mirrors the
 ; collection idiom — with-cleanup invokes drop with a plain ptr-to-struct).
-(defn fn-env-ptr-type (sd:ptr):ptr
+(defn fn-env-ptr-type (sd:(raw StructDef)):ptr
   (let (st:ptr:Type (cast ptr:Type (make-type TY-STRUCT))
         pt:ptr:Type (cast ptr:Type (make-type TY-PTR)))
     (.set! st sdef sd)
@@ -3921,7 +3920,7 @@
 ; g-out now (the env is monomorphic and fully known here, exactly like a plain
 ; defstruct). `caps` is the capture-name list; `scope` resolves each capture's
 ; Sym for its declared type.
-(defn fn-make-env-struct (caps:ptr scope:ref:Scope line:i32 mode:i32 alloc-field-ty:ptr):ptr
+(defn fn-make-env-struct (caps:(raw Node) scope:ref:Scope line:i32 mode:i32 alloc-field-ty:(raw Type)):ptr
   (let (ncaps:i32 (fn-caps-count caps)
         ; mode 2 (cfn): the env is a struct of POINTERS into the captured locals,
         ; preceded by a leading `__alloc` field holding the (ref AllocHandle) so
@@ -3943,9 +3942,9 @@
         (aset! (cast ptr:ptr (sd field-names)) 0 (intern-str "__alloc"))
         (aset! (cast ptr:ptr (sd field-types)) 0 alloc-field-ty))
       (let (i:i32 0
-            cur:ptr caps)
+            cur:(raw Node) caps)
         (while (!= cur null)
-          (let (cname:ptr ((cast ptr:Node cur) s))
+          (let (cname:ptr (cur s))
             (if-some (csym (scope-lookup scope cname))
               (do
                 (let (fty:ptr (sym-effective-type csym))
@@ -3961,7 +3960,7 @@
                   (aset! (cast ptr:ptr (sd field-types)) (+ off i) fty)))
               (die-at line (fmt-s "vfn: internal — capture '%s' not in scope" cname)))
             (inc! i)
-            (set! cur ((cast ptr:Node cur) cdr)))))
+            (set! cur (cur cdr)))))
       (fprintf g-out "%%%s = type { " ename)
       (dotimes (i nf)
         (when (!= i 0) (fprintf g-out ", "))
@@ -3980,9 +3979,9 @@
 ; generic-instantiate). `params-node` is the lambda's param list; the env type
 ; is prepended as the `self` receiver. Returns nothing — the caller already has
 ; the env value.
-(defn fn-make-invoke-method (env-sd:ptr caps:ptr params-node:ptr ret:ptr
+(defn fn-make-invoke-method (env-sd:(raw StructDef) caps:(raw Node) params-node:(raw Node) ret:(raw Type)
                                   param-types:ptr param-names:ptr nparams:i32
-                                  body-list:ptr line:i32 mode:i32):void
+                                  body-list:(raw Node) line:i32 mode:i32):void
   ; Receiver-extended param Type* array: [(ref Env), p0, p1, …]. This is the
   ; exact signature generic-find-method-exact / defn-ir-name will match on.
   (let (self-ty:ptr (fn-env-ref-type env-sd)
@@ -4000,7 +3999,7 @@
       ; specs. The receiver uses the list form so the env name (which never
       ; contains a colon) is parsed as a type node, not colon-sugar.
       (let (env-ref-node:ptr (make-cell (cast ptr (intern-symbol "ref"))
-                               (make-cell (cast ptr (intern-symbol (-> env-sd (cast ptr:StructDef _) (_ name))))
+                               (make-cell (cast ptr (intern-symbol (env-sd name)))
                                  null line)
                                line)
             self-spec:ptr (make-cell self-sym
@@ -4009,7 +4008,7 @@
             ; Prepend the `self` spec to the ENTIRE original param spine, so the
             ; synthesized params are ((self (ref Env)) p0 p1 …). params-node is a
             ; NODE-CELL whose own spine is the original params; cons self in front.
-            new-params:ptr (make-cell self-spec (cast ptr params-node) line)
+            new-params:ptr (make-cell self-spec params-node line)
             name-sym:ptr (cast ptr (intern-symbol "invoke"))
             ret-node:ptr (cast ptr (intern-symbol (type-spelling ret)))
             defn-sym:ptr (cast ptr (intern-symbol "defn"))
@@ -4054,8 +4053,8 @@
 ;     (alloc-handle-free (. self __alloc) (cast (raw ui8) self) (sizeof Env) (cast usize 8)))
 ; The (Env, Drop) conformance is recorded unconditionally (a cfn always owns its
 ; env storage), so a with-bound cfn arms the cleanup.
-(defn fn-make-drop-method (env-sd:ptr line:i32 mode:i32):void
-  (let (sd:ptr:StructDef (cast ptr:StructDef env-sd)
+(defn fn-make-drop-method (env-sd:(raw StructDef) line:i32 mode:i32):void
+  (let (sd:(raw StructDef) env-sd
         nf:i32 (sd num-fields)
         self-sym:ptr (cast ptr (intern-symbol "self"))
         body:ptr null)
@@ -4211,8 +4210,8 @@
 ; derive-closure-conformance uses to locate a closure's invoke. Names compare by
 ; pointer identity (interned struct name). Returns the method's pre-mangled
 ; ir-name (already including the leading `@`), or null if none is registered.
-(defn vtable-invoke-irname (env-ty:ptr):ptr
-  (let (ev:ptr:Type (cast ptr:Type env-ty))
+(defn vtable-invoke-irname (env-ty:(raw Type)):ptr
+  (let (ev:(raw Type) env-ty)
     (when (!= (ev kind) TY-STRUCT) (return null))
     (let (envname:ptr (-> ev (_ sdef) (cast ptr:StructDef _) (_ name))
           ig:ptr (generic-lookup "invoke"))
@@ -4237,7 +4236,7 @@
 ; null for a non-owning / POD type (the vtable's drop slot is then `null`).
 ; Delegates to with-drop-method (handles the TY-STRUCT→(ref T) self shape and
 ; resolves exact or parametric drop) and reads the resolved method's ir-name.
-(defn vtable-drop-irname (concrete-ty:ptr):ptr
+(defn vtable-drop-irname (concrete-ty:(raw Type)):ptr
   ; TE-4: a cfn env (mode 2 — a leading `__alloc` field) captures by REFERENCE, so
   ; it owns no Drop fields; its synthesized drop merely FREES the env block through
   ; the stored handle. When such an env is boxed the box owns (and frees) its heap
@@ -4246,7 +4245,7 @@
   ; documented cfn-box ownership gap, consistent with the cfn-of-pointer escape open
   ; question.) A vfn/mfn env's drop is field-drops only and composes correctly with
   ; the box's free, so it stays in the slot.
-  (let (ct:ptr:Type (cast ptr:Type concrete-ty))
+  (let (ct:(raw Type) concrete-ty)
     (when (= (ct kind) TY-STRUCT)
       (let (sd:ptr:StructDef (cast ptr:StructDef (ct sdef)))
         (when (and (!= (cast ptr sd) null) (> (sd num-fields) 0)
@@ -4266,7 +4265,7 @@
 ; protocol so the vtable is the 2-slot `{ method0, drop }` layout (drop at index 1)
 ; that the shared @__boxedfn_drop thunk reads verbatim. Dies on a missing protocol,
 ; a multi/parametric protocol (deferred), or a missing concrete impl.
-(defn dyn-vtable-method-irname (concrete-ty:ptr proto:ptr line:i32):ptr
+(defn dyn-vtable-method-irname (concrete-ty:(raw Type) proto:CStr line:i32):ptr
   (let (pp:?ptr:Protocol (protocol-lookup proto))
     (when (= pp null)
       (die-at line (fmt-s "(dyn %s): '%s' is not a declared protocol" proto proto)))
@@ -4302,7 +4301,7 @@
 ; for a BoxedFn (proto "Fn") or the concrete `extend P` impl for a `(dyn P)` box;
 ; slot 1 (drop) is the type's drop thunk (null for a POD/non-owning type). Dies if
 ; the boxed type has no method0 thunk (an invoke/impl is mandatory; drop optional).
-(defn ensure-vtable-for (concrete-ty:ptr proto:ptr line:i32):ptr
+(defn ensure-vtable-for (concrete-ty:(raw Type) proto:CStr line:i32):ptr
   (let (key:ptr (intern-str (fmt-2s "%s/%s" (type-spelling concrete-ty) proto))
         hit:ptr (vtable-memo-lookup key))
     (when (!= hit null) (return hit))
@@ -4346,8 +4345,8 @@
 ; env-receiver scan vtable-invoke-irname uses, but returning the Method so the
 ; structural admission can compare its signature against the box's. Returns null
 ; for a non-struct type or a type with no registered invoke (e.g. a bare `fn`).
-(defn closure-invoke-method (env-ty:ptr):?ptr:Method
-  (let (ev:ptr:Type (cast ptr:Type env-ty))
+(defn closure-invoke-method (env-ty:(raw Type)):?ptr:Method
+  (let (ev:(raw Type) env-ty)
     (when (!= (ev kind) TY-STRUCT) (return null))
     (let (envname:ptr (-> ev (_ sdef) (cast ptr:StructDef _) (_ name))
           ig:ptr (generic-lookup "invoke"))
@@ -4384,7 +4383,7 @@
 ; Coherence (one-conformance-per-(type,proto)) is preserved: derive-closure-
 ; conformance is idempotent on an existing record and the structural BoxedFn match
 ; records nothing (the env's invoke is its sole, fixed callable shape).
-(defn admit-erased-conformance (concrete-ty:ptr box-ty:ptr proto-name:ptr line:i32):i32
+(defn admit-erased-conformance (concrete-ty:(raw Type) box-ty:(raw Type) proto-name:ptr line:i32):i32
   (let (canon:ptr (boxedfn-canonical box-ty))
     ; (a) BoxedFn (Fn-family) box: structural signature match.
     (when (!= canon null)
@@ -4414,7 +4413,7 @@
 ; Build the first-class fat-pointer value {data = blk, vtable = vname} of box type
 ; `box-ty`: alloca the box, store the two pointers, load the aggregate. Shared by
 ; the closure-box and bare-fn-box paths.
-(defn build-fatptr-val (blk:ptr vname:ptr box-ty:ptr):ref:Val
+(defn build-fatptr-val (blk:ptr vname:ptr box-ty:(raw Type)):ref:Val
   (let (box-ir:ptr (type-to-ir box-ty)
         fpslot:ptr (new-tmp))
     (fprintf g-entry-stream "  %s = alloca %s, align 8\n" fpslot box-ir)
@@ -4436,7 +4435,7 @@
 ; from the heap cell `data` and indirect-calls it; the drop slot is null (the box's
 ; @__boxedfn_drop just frees the cell). Memoized per signature (reuses the vtable
 ; memo with an `fnfwd.<sig>` key); the forwarder + vtable are emitted once to g-out.
-(defn ensure-fnfwd-vtable (box-ty:ptr line:i32):ptr
+(defn ensure-fnfwd-vtable (box-ty:(raw Type) line:i32):ptr
   (let (canon:ptr (boxedfn-canonical box-ty)
         bt:ptr:Type (cast ptr:Type canon)
         np:i32 (bt num-params)
@@ -4476,8 +4475,8 @@
 ; still Drop (its @__boxedfn_drop frees the cell; the forwarder's drop slot is
 ; null — there is no env to run). Args at call time go through emit-box-invoke,
 ; whose indirect call lands on the forwarder, which loads+calls the real fn.
-(defn emit-box-bare-fn (v:ptr box-ty:ptr scope:ref:Scope line:i32):ref:Val
-  (let (vv:ptr:Val (cast ptr:Val v)
+(defn emit-box-bare-fn (v:(raw Val) box-ty:(raw Type) scope:ref:Scope line:i32):ref:Val
+  (let (vv:(raw Val) v
         fnty:ptr:Type (cast ptr:Type (vv type))
         canon:ptr (boxedfn-canonical box-ty)
         bt:ptr:Type (cast ptr:Type canon)
@@ -4524,8 +4523,8 @@
 ; TE-4's box-Drop recovers it the same way (or frees directly) — no per-box handle
 ; storage and no leak. A future per-allocator box would prepend an allocator-
 ; handle header word to the heap block; flagged as an Open-Questions change.
-(defn emit-box-closure (v:ptr box-ty:ptr scope:ref:Scope line:i32):ref:Val
-  (let (vv:ptr:Val (cast ptr:Val v)
+(defn emit-box-closure (v:(raw Val) box-ty:(raw Type) scope:ref:Scope line:i32):ref:Val
+  (let (vv:(raw Val) v
         vt:ptr:Type (cast ptr:Type (vv type)))
     ; TE-5: a non-capturing closure decays to a bare `fn` pointer (TY-FN). Box it
     ; via a per-signature forwarder thunk (data = a heap cell holding the fn ptr).
@@ -4560,8 +4559,8 @@
 ; thread the source allocator (the fat pointer has no room for an AllocHandle); it
 ; boxes through default-allocator and @__boxedfn_drop frees through libc free — the
 ; symmetric recovery of the v1 allocator decision (no per-box handle, no leak).
-(defn emit-box-struct-move (v:ptr struct-name:ptr box-ty:ptr vname:ptr scope:ref:Scope line:i32):ref:Val
-  (let (vv:ptr:Val (cast ptr:Val v))
+(defn emit-box-struct-move (v:(raw Val) struct-name:CStr box-ty:(raw Type) vname:ptr scope:ref:Scope line:i32):ref:Val
+  (let (vv:(raw Val) v)
     (when (= (scope-lookup scope "default-allocator") null)
       (die-at line "type-erasure: boxing a value requires (import-use allocator)"))
     (let (ahsym:?ptr:Sym (scope-lookup scope "alloc-handle-alloc"))
@@ -4593,8 +4592,8 @@
 ; so it shares emit-box-struct-move. v1 boxes a struct VALUE produced as a
 ; `(ref Struct)` (a struct literal, a `(default-allocator)`-free local); the drop
 ; slot is the struct's own drop (null for a POD struct → free only).
-(defn emit-box-value (v:ptr box-ty:ptr scope:ref:Scope line:i32):ref:Val
-  (let (vv:ptr:Val (cast ptr:Val v)
+(defn emit-box-value (v:(raw Val) box-ty:(raw Type) scope:ref:Scope line:i32):ref:Val
+  (let (vv:(raw Val) v
         vt:ptr:Type (cast ptr:Type (vv type))
         proto:ptr (dyn-proto-of box-ty))
     (when (or (!= (vt kind) TY-PTR) (= (vt elem) null)
@@ -4620,16 +4619,16 @@
 ; coercion site (let/with binding init, return, call-arg) immediately before
 ; coerce-int-val / safe-coerce-val so the boxed value then coerces as an identity
 ; (same TY-STRUCT box). Inert for any non-box target (the compiler has none).
-(defn maybe-box-into-slot (v:ptr target:ptr scope:ref:Scope line:i32):ref:Val
+(defn maybe-box-into-slot (v:(raw Val) target:(raw Type) scope:ref:Scope line:i32):ref:Val
   (let (bcanon:ptr (boxedfn-canonical target))
     (when (!= bcanon null)
-      (let (vt:ptr (-> v (cast ptr:Val _) (_ type)))
+      (let (vt:ptr (v type))
         ; Already a box (re-binding / passing through an existing BoxedFn value).
         (when (!= (boxedfn-canonical vt) null) (return (cast ref:Val v)))
         (return (emit-box-closure v bcanon scope line))))
     (let (dcanon:ptr (dyn-canonical target))
       (when (!= dcanon null)
-        (let (vt:ptr (-> v (cast ptr:Val _) (_ type)))
+        (let (vt:ptr (v type))
           ; Already a (dyn P) box of the same kind — pass through unchanged.
           (when (!= (dyn-canonical vt) null) (return (cast ref:Val v)))
           (return (emit-box-value v dcanon scope line)))))
@@ -4650,7 +4649,7 @@
 ; g-out; INERT under self-compilation (the compiler boxes nothing).
 (defvar g-boxdrop-emitted:i32 0)
 
-(defn ensure-box-drop-fn (box-ty:ptr line:i32):void
+(defn ensure-box-drop-fn (box-ty:(raw Type) line:i32):void
   ; A `(dyn P)` box is the same fat pointer as a BoxedFn, so it reuses the shared
   ; @__boxedfn_drop thunk verbatim (drop slot at vtable index 1, free `data`).
   (let (canon:ptr (boxedfn-canonical box-ty))
@@ -4725,7 +4724,7 @@
 ; coerced to the box signature's parameter types (carried on the box Type); the
 ; call is type-checked by that signature. Scalar/pointer Fn signatures only (the
 ; live path); a struct-by-value param/ret in a box signature is a TE-5 follow-up.
-(defn emit-box-invoke (n:ptr scope:ref:Scope callee-val:ptr arg-start:i32 nargs:i32):ref:Val
+(defn emit-box-invoke (n:(raw Node) scope:ref:Scope callee-val:(raw Val) arg-start:i32 nargs:i32):ref:Val
   (let (cv:ptr:Val (cast ptr:Val callee-val)
         box-ty:ptr (boxedfn-canonical (cv type))
         bt:ptr:Type (cast ptr:Type box-ty)
@@ -4781,7 +4780,7 @@
 ; argument is a dyn box but whose name is NOT one of P's methods falls through to
 ; ordinary resolution). v1 single-method protocols always answer 0 (method0 at
 ; vtable index 0; the drop slot is index 1, read verbatim by @__boxedfn_drop).
-(defn dyn-method-slot (box-ty:ptr gname:ptr):i32
+(defn dyn-method-slot (box-ty:(raw Type) gname:CStr):i32
   (let (proto:ptr (dyn-proto-of box-ty))
     (when (= proto null) (return -1))
     (let (pp:?ptr:Protocol (protocol-lookup proto))
@@ -4804,7 +4803,7 @@
 ; as the method's `(ref Self)` receiver. Type-checked by the protocol method's sig;
 ; its non-self params and return must be concrete (v1 object-safety: no `Self` in a
 ; non-receiver position — such a method makes the protocol non-boxable).
-(defn emit-dyn-forward (box-ty:ptr args:ptr nargs:i32 slot:i32 line:i32):ref:Val
+(defn emit-dyn-forward (box-ty:(raw Type) args:ptr nargs:i32 slot:i32 line:i32):ref:Val
   (let (proto:ptr (dyn-proto-of box-ty)
         pp:ptr:Protocol (cast ptr:Protocol (protocol-lookup proto))
         sig:ptr (aref (cast ptr:ptr (pp sigs)) slot)
@@ -4901,7 +4900,7 @@
 ; via Clone, else the directed mfn error); 1 = mfn move (a with-owned capture is
 ; routed through the `move` sink to disarm its with-cleanup + mark it consumed,
 ; a non-owned capture is bitwise-copied since move == copy when nothing disarms).
-(defn fn-emit-env-value (env-sd:ptr caps:ptr scope:ref:Scope
+(defn fn-emit-env-value (env-sd:(raw StructDef) caps:(raw Node) scope:ref:Scope
                                  out-owns-drop:ptr:i32 line:i32 mode:i32 alloc-aptr:ptr):ref:Val
   (let (sd:ptr:StructDef (cast ptr:StructDef env-sd)
         slot:ptr (new-tmp))
@@ -5069,7 +5068,7 @@
           (.set! pt pkind PTR-REF)
           (return (alloc-val (cast ptr pt) slot)))))))
 
-(defn emit-vfn (call:ptr scope:ref:Scope):ref:Val
+(defn emit-vfn (call:(raw Node) scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call)
         line:i32 ((cast ptr:Node call) line))
     (when (< (node-len cc) 4)
@@ -5150,7 +5149,7 @@
 ; Because the move clears the source's with-cleanup + taint, an mfn created
 ; inside a `with` may be returned out of it without an escape error (the
 ; export-from-`with` case) — ownership transferred, not a dangling borrow.
-(defn emit-mfn (call:ptr scope:ref:Scope):ref:Val
+(defn emit-mfn (call:(raw Node) scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call)
         line:i32 ((cast ptr:Node call) line))
     (when (< (node-len cc) 4)
@@ -5234,7 +5233,7 @@
 ;     rejected at the existing sinks.
 ; A non-capturing cfn folds to a bare `fn` pointer (zero overhead), dropping the
 ; (unused) allocator operand. A local named `cfn` shadows this keyword.
-(defn emit-cfn (call:ptr scope:ref:Scope):ref:Val
+(defn emit-cfn (call:(raw Node) scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call)
         line:i32 ((cast ptr:Node call) line))
     (when (< (node-len cc) 5)
@@ -5313,7 +5312,7 @@
 ; the armed cleanup a no-op), yield p's value with its escape taint cleared so
 ; it may legitimately return or store out, and mark p consumed — any later use
 ; is "use after move" (a reassignment revives the binding).
-(defn emit-move (call:ptr scope:ref:Scope):ref:Val
+(defn emit-move (call:(raw Node) scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "move expects 1 binding name"))
     (let (tname:ptr (node-binding-name (node-at cc 1)))
@@ -5335,7 +5334,7 @@
 ; when non-null, statically dispatch to the resolved drop method. The null
 ; guard mirrors free(NULL)-is-a-no-op so `move` / (set! name null) disarm
 ; Drop resources exactly like libc ones.
-(defn emit-drop-cleanup (cl:ptr):void
+(defn emit-drop-cleanup (cl:(raw Cleanup)):void
   (let (c:ptr:Cleanup (cast ptr:Cleanup cl)
         tmp:ptr (new-tmp)
         isn:ptr (new-tmp)
@@ -5389,7 +5388,7 @@
       (emit-scope-cleanups cur)
       (set! cur ((cast ptr:Scope cur) parent)))))
 
-(defn emit-return (call:ptr scope:ref:Scope):ref:Val
+(defn emit-return (call:(raw Node) scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (= (node-len cc) 1)
       (emit-walk-cleanups scope)
@@ -5456,7 +5455,7 @@
       (set! g-block-term 1)
       (return (alloc-val ty-void null)))))
 
-(defn emit-do (call:ptr scope:ref:Scope):ref:Val
+(defn emit-do (call:(raw Node) scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call)
         last:ref:Val (alloc-val ty-void null)
         ; TC-5 part 2: a non-tail form may consume the want; re-arm for the tail.
@@ -5476,7 +5475,7 @@
 ; Runs before the even-count check, which would otherwise mask it behind a confusing
 ; "binding list must be even". defn bodies are not desugared, so this is the only
 ; chokepoint that catches a trailing-colon let/with name.
-(defn check-colon-bindings (binds:ptr):void
+(defn check-colon-bindings (binds:(raw Node)):void
   (let (cur:ptr binds)
     (while (!= cur null)
       (let (e:ptr ((cast ptr:Node cur) car))
@@ -5495,7 +5494,7 @@
 ; so `with` ownership drops it through the EXISTING with-drop-method TY-PTR arm
 ; — no new drop logic. Used by tc3-emit-binding-init when a declared `(ref S)`
 ; binding is initialized with a by-value `S`.
-(defn tc3-materialize (v:ptr ty:ptr pointee:ptr line:i32):ref:Val
+(defn tc3-materialize (v:(raw Val) ty:(raw Type) pointee:(raw Type) line:i32):ref:Val
   (let (vv:ptr:Val (cast ptr:Val v)
         slot:ptr (fmt-sd "%%tc3.mat.%d" g-tmp))
     (inc! g-tmp)
@@ -5523,7 +5522,7 @@
 ; (a return-only-tyvar generic constructor can't fill its tyvar from `(ref S)`),
 ; retry with the pointee `S` (probe 2) and arm materialization iff it resolves
 ; to by-value `S`.
-(defn tc3-emit-binding-init (bval-node:ptr scope:ref:Scope ty:ptr line:i32):ref:Val
+(defn tc3-emit-binding-init (bval-node:(raw Node) scope:ref:Scope ty:(raw Type) line:i32):ref:Val
   ; TC-5: target-type the init form against the declared slot type — rewrites
   ; `(arm args…)`/none/ok/err into (make Type arm …) when ty is a defunion/niche.
   ; union-target-rewrite is a no-op for a null/non-union target, so non-union
@@ -5583,7 +5582,7 @@
               (return (tc3-materialize vv ty pointee line))))
           (return vv))))))
 
-(defn emit-let (call:ptr scope:ref:Scope):ref:Val
+(defn emit-let (call:(raw Node) scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (or (< (node-len cc) 2) (-> cc (node-at _ 1) (cast ptr:Node _) (_ kind) (!= _ NODE-CELL)))
       (die-at (cc line) "let: bad form"))
@@ -5671,7 +5670,7 @@
 ; libc allocator call (malloc/calloc/realloc/strdup, optionally wrapped in
 ; cast). Frees fire on fall-through (after the body) and on early `return`
 ; via emit-walk-cleanups in emit-return.
-(defn emit-with (call:ptr scope:ref:Scope):ref:Val
+(defn emit-with (call:(raw Node) scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (or (< (node-len cc) 2) (-> cc (node-at _ 1) (cast ptr:Node _) (_ kind) (!= _ NODE-CELL)))
       (die-at (cc line) "with: bad form"))
@@ -5813,7 +5812,7 @@
 ; cond is then statement-shaped and any caller that uses it in value position
 ; will fail its own type-check downstream. If no clause has `true` as its
 ; test, the implicit fallthrough contributes `undef` of the result type.
-(defn emit-cond (call:ptr scope:ref:Scope):ref:Val
+(defn emit-cond (call:(raw Node) scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call)
         nargs:i32 (- (node-len cc) 1))
     (when (or (< nargs 2) (!= (% nargs 2) 0))
@@ -5946,7 +5945,7 @@
             (.set! rv taint result-taint)
             (return rv)))))))
 
-(defn emit-while (call:ptr scope:ref:Scope):ref:Val
+(defn emit-while (call:(raw Node) scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (< (node-len cc) 2) (die-at (cc line) "while: missing condition"))
     (let (id:i32 (new-label-id)
@@ -5991,7 +5990,7 @@
       (set! g-block-term 0)
       (return (alloc-val ty-void null)))))
 
-(defn emit-set (call:ptr scope:ref:Scope):ref:Val
+(defn emit-set (call:(raw Node) scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 3) (die-at (cc line) "set! expects 2 args"))
     (let (target:ptr:Node (cast ptr:Node (node-at cc 1)))
@@ -6064,7 +6063,7 @@
 ; ============================================================
 
 ; Emit a scalar load into dst-tmp. When `ty` is volatile, emits `load volatile`.
-(defn emit-load (dst-tmp:ptr ir-type:ptr ptr-name:ptr ty:ptr):void
+(defn emit-load (dst-tmp:ptr ir-type:ptr ptr-name:ptr ty:(raw Type)):void
   (let (vol:ptr ""
         align:i32 (type-size ty))
     (when (and (!= ty null) (!= ((cast ptr:Type ty) is-volatile) 0))
@@ -6073,7 +6072,7 @@
       dst-tmp vol ir-type ptr-name align)))
 
 ; Emit a scalar store of `val`. When `ty` is volatile, emits `store volatile`.
-(defn emit-store (ir-type:ptr val:ptr ptr-name:ptr ty:ptr):void
+(defn emit-store (ir-type:ptr val:ptr ptr-name:ptr ty:(raw Type)):void
   (let (vol:ptr ""
         align:i32 (type-size ty))
     (when (and (!= ty null) (!= ((cast ptr:Type ty) is-volatile) 0))
@@ -6082,7 +6081,7 @@
       vol ir-type val ptr-name align)))
 
 ; Store a zero/null of `field-type` into the slot at `gep` (struct/array fill).
-(defn emit-zero-store (field-type:ptr gep:ptr):void
+(defn emit-zero-store (field-type:(raw Type) gep:ptr):void
   (let (ft:ptr:Type (cast ptr:Type field-type)
         ir:ptr (type-to-ir field-type)
         zero:ptr "0")
@@ -6116,7 +6115,7 @@
 ; Stage 8: inc! / dec!
 ; ============================================================
 
-(defn emit-inc-dec (call:ptr scope:ref:Scope op-instr:ptr op-name:ptr):ref:Val
+(defn emit-inc-dec (call:(raw Node) scope:ref:Scope op-instr:ptr op-name:CStr):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) (fmt-s "%s expects 1 arg" op-name)))
     (let (target:ptr:Node (cast ptr:Node (node-at cc 1)))
@@ -6141,24 +6140,24 @@
               (emit-store ir t2 (sym ir-name) (sym type))
               (return (alloc-val ty-void null)))))))))
 
-(defn emit-inc (call:ptr scope:ref:Scope):ref:Val
+(defn emit-inc (call:(raw Node) scope:ref:Scope):ref:Val
   (return (emit-inc-dec call scope "add" "inc!")))
 
-(defn emit-dec (call:ptr scope:ref:Scope):ref:Val
+(defn emit-dec (call:(raw Node) scope:ref:Scope):ref:Val
   (return (emit-inc-dec call scope "sub" "dec!")))
 
 ; ============================================================
 ; Stage 8: labels and goto (incl. computed goto via blockaddress)
 ; ============================================================
 
-(defn lbl-find (name:ptr):?ptr:LabelEntry
+(defn lbl-find (name:CStr):?ptr:LabelEntry
   (doseq (lbl g-lbl-tbl (VecIter (ref LabelEntry)))
     (let (e:ref:LabelEntry lbl)
       (when (= (strcmp (e name) name) 0)
         (return e))))
   (return null))
 
-(defn lbl-add-occurrence (name:ptr):void
+(defn lbl-add-occurrence (name:CStr):void
   (let (e:ptr:LabelEntry (cast ptr:LabelEntry (lbl-find name)))
     (when (= (cast ptr e) null)
       (let (ne:ref:LabelEntry (cast ref:LabelEntry (arena-alloc (sizeof LabelEntry))))
@@ -6171,7 +6170,7 @@
 
 ; Pre-scan a function body form for (label NAME) declarations so forward gotos
 ; and last-decl-wins resolution work. Skips inside quote/quasiquote.
-(defn prescan-labels (form:ptr):void
+(defn prescan-labels (form:(raw Node)):void
   (when (= form null) (return))
   (let (n:ptr:Node (cast ptr:Node form))
     (when (!= (n kind) NODE-CELL) (return))
@@ -6191,7 +6190,7 @@
         (prescan-labels (it car))
         (set! it (cast ptr:Node (it cdr)))))))
 
-(defn emit-label (call:ptr scope:ref:Scope):ref:Val
+(defn emit-label (call:(raw Node) scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "label: expects 1 name"))
     ; Stage 10 narrowing: a label is a potential backward-goto target — a
@@ -6217,7 +6216,7 @@
           (set! g-block-term 0)
           (return (alloc-val ty-void null)))))))
 
-(defn emit-goto (call:ptr scope:ref:Scope):ref:Val
+(defn emit-goto (call:(raw Node) scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "goto: expects 1 label name"))
     (let (nm:ptr:Node (cast ptr:Node (node-at cc 1)))
@@ -6234,7 +6233,7 @@
         (set! g-block-term 0)
         (return (alloc-val ty-void null))))))
 
-(defn emit-label-addr (call:ptr scope:ref:Scope):ref:Val
+(defn emit-label-addr (call:(raw Node) scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "label-addr: expects 1 label name"))
     (let (nm:ptr:Node (cast ptr:Node (node-at cc 1)))
@@ -6252,7 +6251,7 @@
           tmp g-cur-fname (nm s))
         (return (alloc-val ty-ptr tmp))))))
 
-(defn emit-goto-ptr (call:ptr scope:ref:Scope):ref:Val
+(defn emit-goto-ptr (call:(raw Node) scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "goto-ptr: expects 1 ptr arg"))
     (let (v:ref:Val (emit-node (node-at cc 1) scope))
@@ -6280,7 +6279,7 @@
 ; Stage 8: struct/array compound literals and field-address
 ; ============================================================
 
-(defn struct-field-idx (sd:ptr name:ptr):i32
+(defn struct-field-idx (sd:(raw StructDef) name:CStr):i32
   (let (sdef:ptr:StructDef (cast ptr:StructDef sd))
     (dotimes (i (sdef num-fields))
       (when (= (strcmp (aref (cast ptr:ptr (sdef field-names)) i) name) 0)
@@ -6288,7 +6287,7 @@
     (return -1)))
 
 ; (.& p field) -> pointer to the field within struct *p.
-(defn emit-field-addr (call:ptr scope:ref:Scope):ref:Val
+(defn emit-field-addr (call:(raw Node) scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 3) (die-at (cc line) ".& expects 2 args"))
     (let (p:ref:Val (emit-node (node-at cc 1) scope)
@@ -6329,7 +6328,7 @@
                 (return rv)))))))))
 
 ; (array T e0 e1 ... | (idx v) ...) -> ptr:T to a stack array of int elements.
-(defn emit-array-lit (call:ptr scope:ref:Scope):ref:Val
+(defn emit-array-lit (call:(raw Node) scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call)
         nargs:i32 (- (node-len cc) 1))
     (when (< nargs 1)
@@ -6425,7 +6424,7 @@
                 (return (alloc-val (cast ptr pt) slot))))))))))
 
 ; (S e0 e1 ... | (field v) ...) -> ptr:S compound literal (struct-name head).
-(defn emit-struct-lit (call:ptr scope:ref:Scope sd:ptr):ref:Val
+(defn emit-struct-lit (call:(raw Node) scope:ref:Scope sd:(raw StructDef)):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call)
         sdef:ptr:StructDef (cast ptr:StructDef sd)
         nargs:i32 (- (node-len cc) 1)
@@ -6510,7 +6509,7 @@
 ; ============================================================
 
 ; Find a macro definition by name, or null.
-(defn find-macro (name:ptr):?ptr:MacroDef
+(defn find-macro (name:CStr):?ptr:MacroDef
   (doseq (mdef g-macros (VecIter ref:MacroDef))
            (when (= (mdef name) name)
                  (return (cast ptr mdef))))
@@ -6525,7 +6524,7 @@
 ; so downstream errors (e.g. a malformed `cond` from a bad `case`/`if`) point at
 ; the user's code instead of line 0. A non-zero line means the whole subtree is
 ; already attributed (a user argument), so we stop there.
-(defn stamp-macro-lines (node:ptr ln:i32):void
+(defn stamp-macro-lines (node:(raw Node) ln:i32):void
   (when (= node null) (return))
   (let (n:ptr:Node (cast ptr:Node node))
     (when (!= (n line) 0) (return))
@@ -6534,7 +6533,7 @@
       (stamp-macro-lines (n car) ln)
       (stamp-macro-lines (n cdr) ln))))
 
-(defn expand-macro-call (call:ptr macro-def:ptr):ptr
+(defn expand-macro-call (call:(raw Node) macro-def:(raw MacroDef)):ptr
   (let (mdef:ptr:MacroDef (cast ptr:MacroDef macro-def)
         nargs:i32 (- (node-len (cast ptr:Node call)) 1))
     (when (!= (mdef variadic) 0)
@@ -6582,7 +6581,7 @@
 ; Expand a form by macros. depth=1 expands once; depth<0 expands until the
 ; head is no longer a macro (fixpoint). Subforms are not recursed into,
 ; matching Common Lisp macroexpand semantics.
-(defn macroexpand-form (form:ptr depth:i32):ptr
+(defn macroexpand-form (form:(raw Node) depth:i32):ptr
   (let (cur:ptr form
         steps:i32 0
         keep-going:i32 1)
@@ -6603,7 +6602,7 @@
 
 ; Like macroexpand-form but recursively expands subforms after the head
 ; reaches fixpoint. Quoted/quasiquoted forms are left untouched.
-(defn macroexpand-all-form (form:ptr):ptr
+(defn macroexpand-all-form (form:(raw Node)):ptr
   (let (cur:ptr (macroexpand-form form (cast i32 -1)))
     (when (or (= cur null)
               (!= ((cast ptr:Node cur) kind) NODE-CELL))
@@ -6627,7 +6626,7 @@
         (set! it (cast ptr:Node (it cdr))))
       (return out))))
 
-(defn emit-macro-expand (call:ptr scope:ref:Scope macro-def:ptr):ref:Val
+(defn emit-macro-expand (call:(raw Node) scope:ref:Scope macro-def:(raw MacroDef)):ref:Val
   (let (result:ptr (expand-macro-call call macro-def))
     (return (emit-node (desugar result) scope))))
 
@@ -6640,7 +6639,7 @@
 ; parameter type (identity for an exact match, so the IR is unchanged) then
 ; emits the call to the selected symbol. Shared by ordinary overloaded dispatch
 ; and the operator user-overload path.
-(defn emit-resolved-call (n:ptr scope:ref:Scope gname:ptr m:ref:Method args:ptr nargs:i32 line:i32):ref:Val
+(defn emit-resolved-call (n:(raw Node) scope:ref:Scope gname:CStr m:ref:Method args:ptr nargs:i32 line:i32):ref:Val
   (let (ss:ref:Sym (new Sym))
     (when (and (!= (m param-types) null)
                (= (m has-rest) 0)
@@ -6685,7 +6684,7 @@
 
 ; Emit a call to an overloaded generic: emit the arguments, resolve the method
 ; from their concrete types, then emit the call to the selected mangled symbol.
-(defn emit-generic-call (n:ptr scope:ref:Scope g:ref:Generic):ref:Val
+(defn emit-generic-call (n:(raw Node) scope:ref:Scope g:ref:Generic):ref:Val
   (let (nn:ptr:Node (cast ptr:Node n)
         nargs:i32 (- (node-len nn) 1)
         args:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (sizeof Val)))
@@ -6727,7 +6726,7 @@
 ; call to it, otherwise fall back to the built-in numeric/pointer inline peephole
 ; (emit-binop-vals). A pure operator (no user overloads) never reaches here — it
 ; short-circuits to emit-binop in emit-dispatch, preserving byte-identical IR.
-(defn emit-operator-dispatch (n:ptr scope:ref:Scope g:ref:Generic binop:ptr):ref:Val
+(defn emit-operator-dispatch (n:(raw Node) scope:ref:Scope g:ref:Generic binop:(raw BinOp)):ref:Val
   (let (nn:ptr:Node (cast ptr:Node n)
         nargs:i32 (- (node-len nn) 1)
         args:ptr (arena-alloc (* (cast i64 (+ nargs 1)) (sizeof Val)))
@@ -6755,7 +6754,7 @@
 ; resolves user-method-or-inline; overloaded sets dispatch on argument types;
 ; solitary names and C/extern functions fall through to the ordinary scope-bound
 ; call (also byte-identical).
-(defn emit-dispatch (n:ptr scope:ref:Scope h:ptr head:ptr):ref:Val
+(defn emit-dispatch (n:(raw Node) scope:ref:Scope h:CStr head:(raw Node)):ref:Val
   ; Stage 10 (lifecycle.md §2.3): manually dropping a with-owned binding
   ; double-frees — the armed cleanup also fires at scope exit.
   (when (and (= h "drop") (= (node-len n) 2))
@@ -6800,7 +6799,7 @@
           (fmt-s "'%s' is a struct template; construct with the explicit form ((Template <type-args>) field0 field1 ...)" h)))
       (die-at ((cast ptr:Node head) line) (fmt-s "unknown: %s" h)))))
 
-(defn emit-list (n:ptr scope:ref:Scope):ref:Val
+(defn emit-list (n:(raw Node) scope:ref:Scope):ref:Val
   (let (nn:ptr:Node (cast ptr:Node n))
     (when (= (node-len nn) 0) (die-at (nn line) "empty list"))
     (let (head:ptr:Node (cast ptr:Node (node-at nn 0)))
@@ -6956,7 +6955,7 @@
 
 ; The kind currently associated with `name`, or NK-NONE. Highest-priority kind
 ; wins; a lower-priority definer will see the higher kind and report the clash.
-(defn name-existing-kind (name:ptr):i32
+(defn name-existing-kind (name:CStr):i32
   (when (!= (special-form-named (cast CStr name)) 0)
         (return NK-SPECIAL))
   (when (!= (primitive-type-named (cast CStr name)) 0)
@@ -6986,7 +6985,7 @@
             (return NK-VALUE))))))
   (return NK-NONE))
 
-(defn kind-noun (k:i32):ptr
+(defn kind-noun (k:i32):CStr
   (when (= k NK-SPECIAL)  (return "a special form"))
   (when (= k NK-BUILTIN)  (return "a built-in type"))
   (when (= k NK-TYPE)     (return "a type"))
@@ -6997,7 +6996,7 @@
   (return "something"))
 
 ; Error if `name` already names a different kind of thing than `newk`.
-(defn guard-name-kind (name:ptr line:i32 newk:i32):void
+(defn guard-name-kind (name:CStr line:i32 newk:i32):void
   (let (existing:i32 (name-existing-kind name))
     (when (and (!= existing NK-NONE) (!= existing newk))
       (die-at line
@@ -7006,7 +7005,7 @@
 
 ; Record the defining source location on a freshly-defined Sym (used by the
 ; REPL and for error attribution). Tolerates a null sym.
-(defn sym-set-src-loc (sym:ptr line:i32):void
+(defn sym-set-src-loc (sym:(raw Sym) line:i32):void
   (when (= sym null) (return))
   (let (s:ptr:Sym (cast ptr:Sym sym))
     (.set! s src-file g-source-path)
@@ -7014,7 +7013,7 @@
 
 ; Produce the LLVM initializer string for a `defvar` init form at `ty`.
 ; Accepts int / float / string / null / true / false / defconst-name / (char "x").
-(defn defvar-init-ir (init:ptr ty:ptr):ptr
+(defn defvar-init-ir (init:(raw Node) ty:(raw Type)):ptr
   (let (nn:ptr:Node (cast ptr:Node init)
         ty-kind:i32 ((cast ptr:Type ty) kind))
     ; Integer literal: any int type (signed or unsigned).
@@ -7071,7 +7070,7 @@
     (die-at (nn line) "defvar: init must be a literal")
     (return null)))
 
-(defn emit-defvar (call:ptr):void
+(defn emit-defvar (call:(raw Node)):void
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (or (< (node-len cc) 2) (> (node-len cc) 3))
       (die-at (cc line) "defvar: expects name and optional init"))
@@ -7110,7 +7109,7 @@
             (when (!= g-defining-private 0) (.set! (cast ptr:Sym vsym) sym-private 1))
             (sym-set-src-loc (cast ptr vsym) (cc line))))))))
 
-(defn emit-defconst (call:ptr):void
+(defn emit-defconst (call:(raw Node)):void
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 3) (die-at (cc line) "defconst: expects name and value"))
     (let (name:ptr:Node (cast ptr:Node (node-at cc 1))
@@ -7137,7 +7136,7 @@
 ; (emit-toplevel-forms) absorbs it with a local `match` → `exit 1`, matching the
 ; old abort behavior. The success path returns `(ok 0)`. The cascade terminates
 ; at the caller — emit-node and the emit-* spine are never threaded with `try`.
-(defn emit-deferror (call:ptr):!i32
+(defn emit-deferror (call:(raw Node)):!i32
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 3)
       (do (report-at (cc line) "deferror: expects (deferror name \"message\")")
@@ -7176,7 +7175,7 @@
 ; (err-name e) / (err-message e) — descriptor-table accessors over an Err value.
 ; Inline lookups (a GEP+load on the flush-emitted table); a corrupted id is UB,
 ; the same C contract as match's tag switch. `which`: 0 = names, 1 = messages.
-(defn emit-err-accessor (call:ptr scope:ref:Scope which:i32):ref:Val
+(defn emit-err-accessor (call:(raw Node) scope:ref:Scope which:i32):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2)
       (die-at (cc line) "err-name/err-message expects 1 arg"))
@@ -7198,7 +7197,7 @@
 ; (type-token T) — the mangled-name token of type T as a CStr literal. Used by
 ; with-handler to label a handler with its declared repair type; the err site
 ; computes the same token for its own T, so the two agree (errors.md §11.2).
-(defn emit-type-token (call:ptr scope:ref:Scope):ref:Val
+(defn emit-type-token (call:(raw Node) scope:ref:Scope):ref:Val
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2) (die-at (cc line) "type-token expects 1 type arg"))
     (let (ty:ptr (parse-type-from-node (node-at cc 1) (cc line))
@@ -7210,7 +7209,7 @@
         tmp (+ (cast i32 (strlen token)) 1) sid)
       (return (alloc-val ty-cstr tmp)))))
 
-(defn emit-defenum (call:ptr):void
+(defn emit-defenum (call:(raw Node)):void
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (< (node-len cc) 2) (die-at (cc line) "defenum: missing name"))
     (let (i:i32 2)
@@ -7242,14 +7241,14 @@
           (.set! ed num-members n)
           (conj g-enumdefs ed))))))
 
-(defn enumdef-lookup (name:ptr):?ptr:EnumDef
+(defn enumdef-lookup (name:CStr):?ptr:EnumDef
   (dotimes (i (count g-enumdefs))
     (let (ed:ptr:EnumDef (invoke g-enumdefs (cast usize i)))
       (when (= (ed name) name)
         (return (cast ptr ed)))))
   (return null))
 
-(defn emit-defstruct (call:ptr):void
+(defn emit-defstruct (call:(raw Node)):void
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (< (node-len cc) 2) (die-at (cc line) "defstruct: missing name"))
     (let (name-node:ptr:Node (cast ptr:Node (node-at cc 1)))
@@ -7295,7 +7294,7 @@
 ; The synthesized constructor defn for one defunion arm (new-style signature):
 ;   (defn Shape-circle (r:f64) Shape (make Shape circle r))
 ; Built from the original arm AST so field type spellings round-trip exactly.
-(defn union-ctor-form (uname:ptr arm:ptr line:i32):ptr
+(defn union-ctor-form (uname:CStr arm:(raw Node) line:i32):ptr
   (let (an:ptr:Node (cast ptr:Node arm)
         aname:ptr (if (= (an kind) NODE-SYM) (an s)
                     (-> an (node-at _ 0) (cast ptr:Node _) (_ s)))
@@ -7347,7 +7346,7 @@
 ; tagged sum (or template) and emit the per-arm constructor functions
 ; (unions.md §3). Template instances get no constructors — `make` and target
 ; typing construct them — so stamping is collision-free across units.
-(defn emit-defunion (call:ptr):void
+(defn emit-defunion (call:(raw Node)):void
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (< (node-len cc) 3)
       (die-at (cc line) "defunion: expects a name and at least one arm"))
@@ -7380,7 +7379,7 @@
             (set! cur ((cast ptr:Node cur) cdr))))
         (set! g-out saved-out)))))
 
-(defn emit-extern (call:ptr):void
+(defn emit-extern (call:(raw Node)):void
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 2)
       (die-at (cc line) "extern: expects name:type"))
@@ -7424,7 +7423,7 @@
 ; defn
 ; ============================================================
 
-(defn emit-defn (call:ptr):void
+(defn emit-defn (call:(raw Node)):void
   (let (cc:ptr:Node (cast ptr:Node call))
       ; S1: a bare-name (new-style) defn that stops before its return operand gets
       ; the targeted diagnostic from defn-signature.md — the same message a stale
@@ -7819,7 +7818,7 @@
 ; compile-time special form
 ; ============================================================
 
-(defn emit-compile-time (form:ptr):void
+(defn emit-compile-time (form:(raw Node)):void
   ; (compile-time body-form...)
   (let (nforms:i32 (node-len (cast ptr:Node form))
         ff:ptr:Node   (cast ptr:Node form))
@@ -8035,7 +8034,7 @@
 ; defmacro top-level form
 ; ============================================================
 
-(defn emit-defmacro (form:ptr):void
+(defn emit-defmacro (form:(raw Node)):void
   ; (defmacro name (params...) body...)
   (let (ff:ptr:Node (cast ptr:Node form))
     (when (< (node-len ff) 4)
@@ -8289,7 +8288,7 @@
 ; Driver
 ; ============================================================
 
-(defn read-file (path:ptr):ptr
+(defn read-file (path:CStr):ptr
   (let (f:ptr (fopen path "rb"))
     (when (= f null) (perror path) (exit 1))
     (when (!= (fseek f (cast i64 0) 2) 0) (perror "fseek") (exit 1))
@@ -8310,7 +8309,7 @@
 ; Split a symbol string containing : into a list of symbol nodes.
 ; Split a colon-separated symbol string into a flat list of SYM nodes.
 ; "ptr:Node" → (ptr Node), "ptr:ptr:Node" → (ptr ptr Node).
-(defn split-colon-segments (s:ptr line:i32):ptr
+(defn split-colon-segments (s:CStr line:i32):ptr
   (let (result:ptr null
         tail:ptr null
         start:i64 0
@@ -8337,7 +8336,7 @@
 ;   "foo:int"        → (foo int)
 ;   "node:ptr:Node"  → (node (ptr Node))    ; type tail wrapped
 ;   "pp:ptr:ptr:Node"→ (pp (ptr ptr Node))
-(defn desugar-symbol (sym:ptr line:i32):ptr
+(defn desugar-symbol (sym:(raw Node) line:i32):ptr
   (let (result:ptr (split-colon-segments ((cast ptr:Node sym) s) line))
     ; If 3+ segments (name + multi-symbol type), wrap the type tail
     ; in a sublist so the binding becomes (name (seg1 seg2 ...)).
@@ -8350,7 +8349,7 @@
 
 ; Desugar a single typed-name node (symbol with :).
 ; Returns the node unchanged if it has no colon.
-(defn desugar-typed (node:ptr):ptr
+(defn desugar-typed (node:(raw Node)):ptr
   (when (= node null) (return null))
   (let (n:ptr:Node (cast ptr:Node node))
     (when (and (= (n kind) NODE-SYM) (!= (strchr (n s) 58) null))
@@ -8358,7 +8357,7 @@
     (return node)))
 
 ; Desugar a parameter list: each element that is a typed symbol gets split.
-(defn desugar-params (params:ptr):ptr
+(defn desugar-params (params:(raw Node)):ptr
   (when (= params null) (return null))
   (let (n:ptr:Node (cast ptr:Node params))
     (when (!= (n kind) NODE-CELL) (return params))
@@ -8374,7 +8373,7 @@
         (return (cast ptr c))))))
 
 ; Desugar a let binding list: pairs of (name val) where name may be typed.
-(defn desugar-let-bindings (binds:ptr):ptr
+(defn desugar-let-bindings (binds:(raw Node)):ptr
   (when (= binds null) (return null))
   (let (n:ptr:Node (cast ptr:Node binds))
     (when (!= (n kind) NODE-CELL) (return binds))
@@ -8404,7 +8403,7 @@
 ; extern, declare, and let, and desugars only the binding-position symbols.
 ; Expression bodies are NOT desugared (they may contain typed symbols from
 ; macro expansion that should stay as symbols for split-typed in value position).
-(defn desugar (forms:ptr):ptr
+(defn desugar (forms:(raw Node)):ptr
   (when (= forms null) (return null))
   (let (n:ptr:Node (cast ptr:Node forms))
     (when (!= (n kind) NODE-CELL) (return forms))
@@ -8420,7 +8419,7 @@
         (return (cast ptr c))))))
 
 ; Desugar a single form.  Only touches binding positions of known forms.
-(defn desugar-form (form:ptr):ptr
+(defn desugar-form (form:(raw Node)):ptr
   (when (= form null) (return null))
   (let (f:ptr:Node (cast ptr:Node form))
     (when (!= (f kind) NODE-CELL) (return form))
@@ -8531,7 +8530,7 @@
 ; struct names + union templates (names only — no IR, no emission). Registration
 ; is idempotent, so the actual import later is unaffected. C-string imports
 ; (`"stdio.h"`) are skipped (no Nucleus types; reading would invoke clang).
-(defn prescan-imported-types (forms:ptr):void
+(defn prescan-imported-types (forms:(raw Node)):void
   (let (fc:ptr forms)
     (while (!= fc null)
       (let (f:ptr:Node (cast ptr:Node ((cast ptr:Node fc) car)))
@@ -8581,7 +8580,7 @@
                       (set! g-peek-valid save-peek-valid))))))))))
       (set! fc ((cast ptr:Node fc) cdr)))))
 
-(defn prescan-struct-names (forms:ptr):void
+(defn prescan-struct-names (forms:(raw Node)):void
   (let (fc:ptr forms)
     (while (!= fc null)
       (let (f:ptr:Node (cast ptr:Node ((cast ptr:Node fc) car)))
@@ -8614,7 +8613,7 @@
 ; Register the constructor signatures of a (monomorphic) defunion form:
 ; per arm, `Name-arm : Name (field types...)`. Runs in the signature prescan,
 ; after prescan-struct-names registered the backing struct's name.
-(defn prescan-union-ctors (form:ptr):void
+(defn prescan-union-ctors (form:(raw Node)):void
   (let (ff:ptr:Node (cast ptr:Node form)
         name-node:ptr:Node (cast ptr:Node (node-at form 1)))
     (when (!= (name-node kind) NODE-SYM) (return))   ; templates: no constructors
@@ -8665,7 +8664,7 @@
           (set! cur ((cast ptr:Node cur) cdr)))))))
 
 ; Pre-scan a form list and forward-declare all defn signatures in g-globals.
-(defn prescan-defn-signatures (forms:ptr):void
+(defn prescan-defn-signatures (forms:(raw Node)):void
   (let (fc:ptr forms)
     (while (!= fc null)
       (let (f:ptr:Node (cast ptr:Node ((cast ptr:Node fc) car)))
@@ -8712,7 +8711,7 @@
       (set! fc ((cast ptr:Node fc) cdr)))
     (finalize-generics)))
 
-(defn emit-def-rmacro (call:ptr):void
+(defn emit-def-rmacro (call:(raw Node)):void
   (let (cc:ptr:Node (cast ptr:Node call))
     (when (!= (node-len cc) 3)
       (die-at (cc line) "def-rmacro: expects (def-rmacro \"prefix\" symbol)"))
@@ -8730,7 +8729,7 @@
 ; g-ns-seen guard) warns at compile time but is silent under the REPL flag
 ; (g-interactive), where redefinition is the norm. Cross-unit "namespace already
 ; exists" tracking is a later concern (it needs the N2 import-graph machinery).
-(defn emit-ns (form:ptr):void
+(defn emit-ns (form:(raw Node)):void
   (let (ff:ptr:Node (cast ptr:Node form))
     ; The form cell carries the real source line; interned symbol nodes (the
     ; namespace name) have line 0, so use (ff line) for every diagnostic.
@@ -8759,7 +8758,7 @@
 ; C-legal identifier exactly as the namespace-name default is, so a slash lowers to
 ; `__`. Takes effect for symbols defined after this directive in the unit; like
 ; `ns`, a library conventionally places it at the top.
-(defn emit-set-ir-prefix (form:ptr):void
+(defn emit-set-ir-prefix (form:(raw Node)):void
   (let (ff:ptr:Node (cast ptr:Node form))
     (when (!= (node-len form) 2)
       (die-at (ff line) "set-ir-prefix: expected (set-ir-prefix \"prefix\")"))
@@ -8785,7 +8784,7 @@
 ; type and ir-name — a pure resolution alias, no code emitted. Idempotent:
 ; `scope-define` (via `import-alias-one`'s pattern) silently no-ops on a
 ; re-export of the same symbol.
-(defn emit-export (form:ptr):void
+(defn emit-export (form:(raw Node)):void
   (let (ff:ptr:Node (cast ptr:Node form))
     (when (< (node-len form) 2)
       (die-at (ff line) "export: expected (export sym ...)"))
@@ -8813,7 +8812,7 @@
 ; directive is only honored as the first form. Returns the forms with the
 ; directive consumed, or the original forms if absent. A non-leading `ns` (e.g. a
 ; second one) is left for the dispatch loop, which routes it back to emit-ns.
-(defn apply-leading-ns (forms:ptr):ptr
+(defn apply-leading-ns (forms:(raw Node)):(raw Node)
   (when (= (is-leading-ns forms) 0) (return forms))
   (emit-ns ((cast ptr:Node forms) car))
   (return ((cast ptr:Node forms) cdr)))
@@ -8826,7 +8825,7 @@
 ; ir-name into the Generic's solitary method. The form is left in the list so
 ; the dispatch loop re-processes it (a harmless idempotent re-set). Stops at
 ; the first definer so a mid-file `set-ir-prefix` retains in-order semantics.
-(defn apply-early-set-ir-prefix (forms:ptr):void
+(defn apply-early-set-ir-prefix (forms:(raw Node)):void
   (let (fc:ptr forms)
     (while (!= fc null)
       (let (f:ptr:Node (cast ptr:Node ((cast ptr:Node fc) car)))
@@ -8849,7 +8848,7 @@
 
 ; Emit a list of top-level forms (pre-scan + dispatch loop).
 ; Used by main and by emit-import for recursive processing.
-(defn emit-toplevel-forms (forms:ptr):void
+(defn emit-toplevel-forms (forms:(raw Node)):void
   (set! g-toplevel-depth (+ g-toplevel-depth 1))
   ; Stage 12: a leading `(ns NAME)` sets the unit's namespace BEFORE the
   ; prescans register any names, so global keys (and forward references) are
@@ -8999,7 +8998,7 @@
   (set! g-toplevel-depth (- g-toplevel-depth 1)))
 
 ; Check if a path is in a Node-based string list.
-(defn import-list-has (list:ptr path:CStr):i32
+(defn import-list-has (list:(raw Node) path:CStr):i32
   (let (cur:ptr list)
     (while (!= cur null)
       (let (entry:ptr:Node (cast ptr:Node cur))
@@ -9013,7 +9012,7 @@
 ; contributed into the record (start in `i`, end in `line`) so a later import of
 ; the same file under a *different* prefix can alias those already-loaded symbols
 ; without re-emitting the file's code.
-(defn import-list-find (list:ptr path:CStr):ptr
+(defn import-list-find (list:(raw Node) path:CStr):ptr
   (let (cur:ptr list)
     (while (!= cur null)
       (let (entry:ptr:Node (cast ptr:Node cur))
@@ -9026,7 +9025,7 @@
 ; (Returns a fresh non-null cell; spelled :ptr because Node is a prelude type
 ; and the toplevel signature prescan runs before the prelude import — see
 ; design/stage10/nullability.md N2 friction notes.)
-(defn import-list-push (list:ptr path:ptr):ptr
+(defn import-list-push (list:(raw Node) path:CStr):ptr
   (let (n:ref:Node (new Node))
     (.set! n kind NODE-STR)
     (.set! n line 0)
@@ -9040,7 +9039,7 @@
 ; the global scope the file contributed (start in `i`, end in `line`). A later
 ; prefix import of the same file reuses the slice to inject fresh aliases without
 ; re-processing — and re-emitting — the file's definitions.
-(defn import-list-push-slice (list:ptr path:ptr start:i32 end:i32):ptr
+(defn import-list-push-slice (list:(raw Node) path:CStr start:i32 end:i32):ptr
   (let (n:ref:Node (new Node))
     (.set! n kind NODE-STR)
     (.set! n line end)
@@ -9051,12 +9050,12 @@
     (return n)))
 
 ; Remove the head of a Node-based string list, return new head.
-(defn import-list-pop (list:ptr):ptr
+(defn import-list-pop (list:(raw Node)):ptr
   (when (= list null) (return null))
   (return ((cast ptr:Node list) cdr)))
 
 ; Test whether a file exists by attempting to open it.
-(defn file-exists (path:ptr):i32
+(defn file-exists (path:CStr):i32
   (let (f:ptr (fopen path "r"))
     (when (= f null) (return 0))
     (fclose f)
@@ -9067,7 +9066,7 @@
 ; -I include paths; $NUCLEUS_LIB; the compiled-in default install path.
 ; The last two let an installed compiler find its standard libraries
 ; (macros, prelude, …) when run from an arbitrary working directory.
-(defn try-import-path (filename:ptr):ptr
+(defn try-import-path (filename:CStr):ptr
   ; Try directory of the current source file
   (let (pathlen:i64 (cast i64 (strlen g-source-path))
         last-slash:i64 (cast i64 -1))
@@ -9102,7 +9101,7 @@
 
 ; Resolve an import name to a .nuc or .nuch file path.
 ; Tries .nuc first, then .nuch. Returns null if neither found.
-(defn resolve-import (name:ptr line:i32):ptr
+(defn resolve-import (name:CStr line:i32):ptr
   (let (nuc-path:ptr (try-import-path (fmt-s "%s.nuc" name)))
     (when (!= nuc-path null) (return nuc-path)))
   (let (nuch-path:ptr (try-import-path (fmt-s "%s.nuch" name)))
@@ -9117,7 +9116,7 @@
 ; the bare path unchanged, so its dedup key — and the whole bootstrap — stays
 ; byte-identical to before namespaces. The newline separator cannot appear in a
 ; file path or a symbol prefix, so the composite is unambiguous.
-(defn import-key (path:ptr prefix:ptr):ptr
+(defn import-key (path:CStr prefix:ptr):ptr
   (when (or (= prefix null) (= (char-at prefix (cast i64 0)) 0))
     (return path))
   (return (fmt-2s "%s\n%s" path prefix)))
@@ -9129,7 +9128,7 @@
 ; (so the alias key respects the importing namespace and the first-interior-slash
 ; rule). Idempotent: a re-alias to the same ir-name is silently skipped; a
 ; collision (two different symbols claiming one `prefix/name`) warns.
-(defn import-alias-one (sym-name:ptr sym-type:ptr sym-ir-name:ptr prefix:ptr line:i32):void
+(defn import-alias-one (sym-name:CStr sym-type:(raw Type) sym-ir-name:ptr prefix:ptr line:i32):void
   ; Stage 12 N4: a namespaced library stores its symbols under qualified keys
   ; (e.g. "geo/area"). Strip the qualifier so the alias is prefix/bare-name
   ; ("geo/area") rather than prefix/qualified-name ("geo/geo/area"). Identity
@@ -9175,7 +9174,7 @@
 ; `(import "hdr.h" prefix)` as `prefix/name`. Each name resolves to the bare Sym
 ; the header registrar created (or that the prelude already surfaced); the alias
 ; carries that Sym's `@name` ir-name verbatim, so `c/printf` links to `@printf`.
-(defn alias-cinclude-collected (list:ptr prefix:ptr line:i32):void
+(defn alias-cinclude-collected (list:(raw Node) prefix:ptr line:i32):void
   (let (cur:ptr list)
     (while (!= cur null)
       (let (entry:ptr:Node (cast ptr:Node cur)
@@ -9199,7 +9198,7 @@
 ;
 ; A string path (`(import "stdio.h" 'c)`) routes to C-header parsing; the default
 ; prefix for a string import is `c` (handled by the callers).
-(defn do-import (form:ptr name-node:ptr prefix:ptr line:i32):void
+(defn do-import (form:(raw Node) name-node:(raw Node) prefix:ptr line:i32):void
   (let (nn:ptr:Node (cast ptr:Node name-node))
     ; String path → C header (for .h paths) or Nucleus file (for .nuc/.nuch).
     ; C extern symbols keep bare `@name` ir-names; a prefix only adds aliases.
@@ -9414,7 +9413,7 @@
 ; calling it unchanged (byte-identical bootstrap). Good for the REPL and for
 ; libraries; discouraged for deliberate API design. Signature: (import-use NAME)
 ; where NAME is a symbol (Nucleus file) or a string (C header path).
-(defn emit-import-use (form:ptr):void
+(defn emit-import-use (form:(raw Node)):void
   (let (ff:ptr:Node (cast ptr:Node form))
     (when (!= (node-len form) 2)
       (die-at (ff line) "import-use: expected (import-use name)"))
@@ -9426,7 +9425,7 @@
 ; prefix defaults to the library's last path component (or `c` for a C-header
 ; string path) and may be overridden by an explicit second argument. The old
 ; flatten-everything behavior now lives only under `import-use`.
-(defn emit-import (form:ptr):void
+(defn emit-import (form:(raw Node)):void
   (emit-import-prefixed form))
 
 ; `import` with an optional prefix (design decision 5). Signature:
@@ -9437,7 +9436,7 @@
 ; N7 flip the bare `import` keyword binds here (via `emit-import`); the
 ; `import-prefixed` keyword remains as an explicit synonym and underlies
 ; `unsafe-import-private`.
-(defn emit-import-prefixed (form:ptr):void
+(defn emit-import-prefixed (form:(raw Node)):void
   (let (ff:ptr:Node (cast ptr:Node form)
         n:i32 (node-len form))
     (when (or (< n 2) (> n 3))
@@ -9466,7 +9465,7 @@
 ; (`foo.bar.baz` → `baz`). A bare name (or one with no dots) is its own prefix.
 ; Scans for the last `.` inline rather than via strrchr so it depends on no extra
 ; libc declaration beyond what `strlen`/the prelude already provide.
-(defn import-default-prefix (name:ptr):ptr
+(defn import-default-prefix (name:CStr):ptr
   (let (n:i64 (cast i64 (strlen name))
         last-dot:i64 (cast i64 -1))
     (dotimes (i n)
@@ -9482,7 +9481,7 @@
 ; per-import visibility gate until N3's privacy layer), so this currently behaves
 ; like `import-use`: the listed symbols are guaranteed available; the restriction
 ; to *only* those becomes enforceable when N3 adds private/visibility filtering.
-(defn emit-import-only (form:ptr):void
+(defn emit-import-only (form:(raw Node)):void
   (let (ff:ptr:Node (cast ptr:Node form))
     (when (< (node-len form) 2)
       (die-at (ff line) "import-only: expected (import-only lib sym...)"))
@@ -9496,7 +9495,7 @@
 ; Stage 12 N3: sets g-import-include-private so inject-import-aliases exposes
 ; private symbols (sym-private=1) under the prefix. The listed PRIVATESYMS are
 ; advisory (not yet filtered) — any private symbol from the lib is aliased.
-(defn emit-unsafe-import-private (form:ptr):void
+(defn emit-unsafe-import-private (form:(raw Node)):void
   (let (ff:ptr:Node (cast ptr:Node form)
         n:i32 (node-len form))
     (when (< n 3)
@@ -9921,7 +9920,7 @@
 ;
 ; The directive must be the first form in the file. It takes no arguments;
 ; presence anywhere else is treated as a normal (and unknown) top-level form.
-(defn strip-exclude-prelude (forms:ptr):ptr
+(defn strip-exclude-prelude (forms:(raw Node)):ptr
   (when (= forms null) (return null))
   (let (first:ptr ((cast ptr:Node forms) car))
     (when (= first null) (return null))
@@ -9937,7 +9936,7 @@
 ; True if the first form is a leading `(ns NAME)` directive. Stage 12: the
 ; prelude import is spliced AFTER such a directive so that `ns` stays the unit's
 ; first form (apply-leading-ns then consumes it before the prescans).
-(defn is-leading-ns (forms:ptr):i32
+(defn is-leading-ns (forms:(raw Node)):i32
   (when (= forms null) (return 0))
   (let (first:ptr ((cast ptr:Node forms) car))
     (when (= first null) (return 0))
@@ -9953,7 +9952,7 @@
 ; names (`import-use`, not the prefix-qualified `import`). If the unit opens with
 ; a leading `(ns NAME)`, the prelude import is spliced in just after it,
 ; preserving `ns` as the first form so apply-leading-ns sees it.
-(defn prepend-prelude-import (forms:ptr):ptr
+(defn prepend-prelude-import (forms:(raw Node)):ptr
   (let (import-sym:ptr (intern-symbol "import-use")
         name-sym:ptr   (intern-symbol "prelude")
         name-cell:ptr  (make-cell name-sym null 0)
