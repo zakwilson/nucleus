@@ -138,21 +138,29 @@
   origin-args:ptr     ; ptr array of concrete arg Type* (length origin-nargs), or null
   origin-nargs:i32)
 
+; One arm of a defunion (Stage 14 §14.4). Replaces UnionDef's five parallel
+; arm arrays (arm-names/arm-ptypes/arm-fnames/arm-ftypes/arm-nfields, formerly
+; walked in lockstep by index) with one indexable record held in a
+; `(Vector (ref Arm))`. `ptype` is the arm's payload type: null (payload-less),
+; the single field's type (one field), or a memoized anon struct (several).
+; `fnames`/`ftypes` are the per-arm ragged field-name/field-type C arrays (a
+; later 14.4 sub-step folds these into a `Field{name,type}` element).
+(defstruct Arm
+  name:CStr           ; interned arm name
+  (ptype (raw Type))  ; payload Type*, or null for a payload-less arm
+  fnames:ptr          ; per-arm ptr array of interned field-name strings, or null
+  ftypes:ptr          ; per-arm ptr array of field Type*s, or null
+  nfields:i32)        ; field count for this arm
+
 ; A tagged sum (defunion, design/stage10/unions.md §3). The backing
 ; representation is an ordinary struct {tag:i32, payload:(union ...)} held in
-; `sdef`; this record carries the arm table `match` and `make` need. Arm i's
-; payload is: null (payload-less), the single field's type (one field), or a
-; memoized anonymous struct of the fields (several).
+; `sdef`; this record carries the arm table `match` and `make` need.
 (defstruct UnionDef
   name:CStr
   (sdef (raw StructDef))      ; backing StructDef (tag [+ payload])
   (union-sd (raw StructDef))  ; payload union's StructDef (one member per payload arm), or null
-  num-arms:i32
-  arm-names:ptr     ; ptr array — interned arm name per arm
-  arm-ptypes:ptr    ; ptr array — payload Type* per arm (null for payload-less)
-  arm-fnames:ptr    ; ptr array — per arm: ptr array of interned field names
-  arm-ftypes:ptr    ; ptr array — per arm: ptr array of field Type*s
-  arm-nfields:ptr   ; ptr:i32 array — field count per arm
+  num-arms:i32                ; == (count arms); cached length for i32 loops
+  (arms (ref (Vector (ref Arm)))) ; the arm table (was five parallel arm-* arrays)
   ; --- Stage 10 U4 niche layout (design/stage10/unions.md §6) ---
   layout:i32        ; LAYOUT-ENUM / NICHE-MAYBE / NICHE-ERRPTR / TAGGED
   (niche-elem (raw Type)) ; for NICHE-MAYBE/ERRPTR: the (ref T) payload's element Type*

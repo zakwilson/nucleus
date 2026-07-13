@@ -3262,8 +3262,9 @@
 (defn union-drop-arm (ud:(raw UnionDef)):ptr
   (let (udd:(raw UnionDef) ud)
     (dotimes (i (udd num-arms))
-      (let (nf:i32 (aref (cast ptr:i32 (udd arm-nfields)) i)
-            ftypes:ptr (aref (cast ptr:ptr (udd arm-ftypes)) i))
+      (let (arm:ref:Arm (invoke (udd arms) (cast usize i))
+            nf:i32 (arm nfields)
+            ftypes:ptr (arm ftypes))
         (dotimes (j nf)
           (let (ft:(raw Type) (aref (cast ptr:ptr ftypes) j))
             (when (and (= (ft kind) TY-PTR) (!= (ft elem) null))
@@ -3272,7 +3273,7 @@
                            (!= (et sdef) null)
                            (!= (conformance-lookup
                                 ((et sdef) name) "Drop") 0))
-                  (return (aref (cast ptr:ptr (udd arm-names)) i)))))))))
+                  (return (arm name)))))))))
     (return null)))
 
 ; (defer expr) — register expr as an ad-hoc cleanup on the enclosing binding
