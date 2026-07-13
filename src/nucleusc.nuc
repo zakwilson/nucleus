@@ -2155,7 +2155,7 @@
 (defn struct-field-index (sd:(raw StructDef) fname:ptr):i32
   (let (sdd:(raw StructDef) sd)
     (dotimes (i (sdd num-fields))
-      (when (= (aref (cast ptr:ptr (sdd field-names)) i) fname)
+      (when (= ((field-at (sdd fields) i) name) fname)
         (return i)))
     (return -1)))
 
@@ -2166,7 +2166,7 @@
 (defn emit-field-load (p:(raw Val) sd:(raw StructDef) idx:i32):ref:Val
   (let (pv:(raw Val) p
         sdd:(raw StructDef) sd
-        ftype:ptr (aref (cast ptr:ptr (sdd field-types)) idx)
+        ftype:ptr ((field-at (sdd fields) idx) type)
         gep:ptr (new-tmp))
     (fprintf g-body-stream
       "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
@@ -2200,7 +2200,7 @@
           ; typed load straight through the pointer — no GEP, no checks (raw
           ; reinterpretation, exactly cast's contract).
           (when (= ek TY-UNION)
-            (let (ftype:ptr (aref (cast ptr:ptr (sd field-types)) idx)
+            (let (ftype:ptr ((field-at (sd fields) idx) type)
                   v:ptr (new-tmp))
               (emit-load v (type-to-ir ftype) (p val) ftype)
               (return (alloc-val ftype v))))
@@ -2227,7 +2227,7 @@
           (when (< idx 0)
             (die-at (fn-node line)
               (fmt-2s ".set!: no field '%s' on struct '%s'" (fn-node s) (sd name))))
-          (let (ftype:ptr (aref (cast ptr:ptr (sd field-types)) idx)
+          (let (ftype:ptr ((field-at (sd fields) idx) type)
                 ; TC-2: arm the want channel with the field's type so a generic
                 ; constructor stored into a field infers a return-only tyvar.
                 v:ref:Val (let (save-want:ptr g-want-type)
@@ -2293,10 +2293,10 @@
   (let (sdd:(raw StructDef) sd
         nf:i32 (sdd num-fields))
     (when (= nf 0) (die-at line "get: cannot index an empty struct with a computed selector"))
-    (let (ftype:ptr (aref (cast ptr:ptr (sdd field-types)) 0))
+    (let (ftype:ptr ((field-at (sdd fields) 0) type))
       ; Homogeneity gate — a heterogeneous struct has no single result type.
       (dotimes (fi nf)
-        (when (= (type-eq (aref (cast ptr:ptr (sdd field-types)) fi) ftype) 0)
+        (when (= (type-eq ((field-at (sdd fields) fi) type) ftype) 0)
           (die-at line
             (fmt-s "get: computed field access requires a homogeneous struct, but '%s' has fields of differing types"
                    (sdd name)))))
@@ -2312,7 +2312,7 @@
             (let (fsym-node:ref:Node (alloc-node))
               (.set! fsym-node kind NODE-SYM)
               (.set! fsym-node line line)
-              (.set! fsym-node s (aref (cast ptr:ptr (sdd field-names)) k))
+              (.set! fsym-node s ((field-at (sdd fields) k) name))
               (let (fsym:CStr (emit-quote-tree fsym-node)
                     cmp:ptr (new-tmp))
                 (fprintf g-body-stream "  %s = icmp eq ptr %s, %s\n" cmp (sel val) fsym)
@@ -2356,7 +2356,7 @@
             (fmt-2s "get: no field '%s' on struct '%s'" (lit s) (sd name))))
         ; Union member: typed load at offset 0 (mirrors emit-field-get).
         (when (= ek TY-UNION)
-          (let (ftype:ptr (aref (cast ptr:ptr (sd field-types)) idx)
+          (let (ftype:ptr ((field-at (sd fields) idx) type)
                 v:ptr (new-tmp))
             (emit-load v (type-to-ir ftype) (cv val) ftype)
             (return (alloc-val ftype v))))
@@ -3933,15 +3933,14 @@
         nf:i32 (+ ncaps has-alloc)
         ename:ptr (sanitize-for-ir (intern-str (fmt-i32 "__vfn_env_%d" g-vfn-env-id))))
     (inc! g-vfn-env-id)
-    (let (sd:ref:StructDef (register-struct ename))
-      (.set! sd field-names (arena-alloc (* (cast i64 nf) (ptr-bytes))))
-      (.set! sd field-types (arena-alloc (* (cast i64 nf) (ptr-bytes))))
-      (.set! sd num-fields nf)
+    (let (sd:ref:StructDef (register-struct ename)
+          fnm:ptr (arena-alloc (* (cast i64 nf) (ptr-bytes)))
+          ftp:ptr (arena-alloc (* (cast i64 nf) (ptr-bytes))))
       (.set! sd src-file g-source-path)
       (.set! sd src-line line)
       (when (!= has-alloc 0)
-        (aset! (cast ptr:ptr (sd field-names)) 0 (intern-str "__alloc"))
-        (aset! (cast ptr:ptr (sd field-types)) 0 alloc-field-ty))
+        (aset! (cast ptr:ptr fnm) 0 (intern-str "__alloc"))
+        (aset! (cast ptr:ptr ftp) 0 alloc-field-ty))
       (let (i:i32 0
             cur:(raw Node) caps)
         (while (!= cur null)
@@ -3957,15 +3956,16 @@
                       (.set! pt elem fty)
                       (.set! pt pkind PTR-REF)
                       (set! fty (cast ptr pt))))
-                  (aset! (cast ptr:ptr (sd field-names)) (+ off i) (intern-str cname))
-                  (aset! (cast ptr:ptr (sd field-types)) (+ off i) fty)))
+                  (aset! (cast ptr:ptr fnm) (+ off i) (intern-str cname))
+                  (aset! (cast ptr:ptr ftp) (+ off i) fty)))
               (die-at line (fmt-s "vfn: internal — capture '%s' not in scope" cname)))
             (inc! i)
             (set! cur (cur cdr)))))
+      (struct-set-fields sd fnm ftp nf)
       (fprintf g-out "%%%s = type { " ename)
       (dotimes (i nf)
         (when (!= i 0) (fprintf g-out ", "))
-        (fprintf g-out "%s" (type-to-ir (aref (cast ptr:ptr (sd field-types)) i))))
+        (fprintf g-out "%s" (type-to-ir (aref (cast ptr:ptr ftp) i))))
       (fprintf g-out " }\n\n")
       (.set! sd emitted 1)
       (return (cast ptr sd)))))
@@ -4101,9 +4101,9 @@
       ; vfn/mfn: reverse-order (drop (.& self fK)) over the Drop fields. Built
       ; head-first by prepending in forward order → final spine is reverse order.
       (dotimes (k nf)
-        (let (fty:ptr (aref (cast ptr:ptr (sd field-types)) k))
+        (let (fty:ptr ((field-at (sd fields) k) type))
           (when (!= (type-conforms-drop fty) 0)
-                (let (fname:ptr (aref (cast ptr:ptr (sd field-names)) k)
+                (let (fname:ptr ((field-at (sd fields) k) name)
                                 addr:ptr (make-cell (cast ptr (intern-symbol ".&"))
                                                     (make-cell self-sym
                                                                (make-cell (cast ptr (intern-symbol fname)) null line)
@@ -4250,7 +4250,7 @@
     (when (= (ct kind) TY-STRUCT)
       (let (sd:ptr:StructDef (cast ptr:StructDef (ct sdef)))
         (when (and (!= (cast ptr sd) null) (> (sd num-fields) 0)
-                   (= (strcmp (aref (cast ptr:ptr (sd field-names)) 0) "__alloc") 0))
+                   (= (strcmp ((field-at (sd fields) 0) name) "__alloc") 0))
           (return null)))))
   (let (m:?ptr:Method (with-drop-method concrete-ty))
     (when (= m null) (return null))
@@ -4993,8 +4993,8 @@
               cur:ptr caps)
           (while (!= cur null)
             (let (cname:ptr ((cast ptr:Node cur) s)
-                  fty:ptr (aref (cast ptr:ptr (sd field-types)) k)
-                  fty-ir:ptr (type-to-ir (aref (cast ptr:ptr (sd field-types)) k))
+                  fty:ptr ((field-at (sd fields) k) type)
+                  fty-ir:ptr (type-to-ir fty)
                   gep:ptr (new-tmp))
               (fprintf g-body-stream
                 "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
@@ -5123,7 +5123,7 @@
             (let (nf:i32 (-> env-sd (cast ptr:StructDef _) (_ num-fields)))
               (dotimes (fi nf)
                 (when (!= (type-conforms-drop
-                            (aref (cast ptr:ptr (-> env-sd (cast ptr:StructDef _) (_ field-types))) fi)) 0)
+                            ((field-at (-> env-sd (cast ptr:StructDef _) (_ fields)) fi) type)) 0)
                   (set! owns-drop 1))))
             (when (!= owns-drop 0)
               (fn-make-drop-method env-sd line 0))
@@ -5203,7 +5203,7 @@
             (let (nf:i32 (-> env-sd (cast ptr:StructDef _) (_ num-fields)))
               (dotimes (fi nf)
                 (when (!= (type-conforms-drop
-                            (aref (cast ptr:ptr (-> env-sd (cast ptr:StructDef _) (_ field-types))) fi)) 0)
+                            ((field-at (-> env-sd (cast ptr:StructDef _) (_ fields)) fi) type)) 0)
                   (set! owns-drop 1))))
             (when (!= owns-drop 0)
               (fn-make-drop-method env-sd line 0))
@@ -6283,7 +6283,7 @@
 (defn struct-field-idx (sd:(raw StructDef) name:CStr):i32
   (let (sdef:ptr:StructDef (cast ptr:StructDef sd))
     (dotimes (i (sdef num-fields))
-      (when (= (strcmp (aref (cast ptr:ptr (sdef field-names)) i) name) 0)
+      (when (= (strcmp ((field-at (sdef fields) i) name) name) 0)
         (return i)))
     (return -1)))
 
@@ -6308,7 +6308,7 @@
           (when (< idx 0)
             (die-at (fn-node line)
               (fmt-2s ".&: no field '%s' on struct '%s'" (fn-node s) (sd name))))
-          (let (ftype:ptr (aref (cast ptr:ptr (sd field-types)) idx)
+          (let (ftype:ptr ((field-at (sd fields) idx) type)
                 gep:ptr (p val))
             ; A union member's address is the union's address (offset 0).
             (when (!= ek TY-UNION)
@@ -6459,7 +6459,7 @@
                 (die-at (fname-node line)
                   (fmt-s "struct literal: field '%s' specified twice" (fname-node s))))
               (aset! (cast ptr:i32 seen) fidx (cast i32 1))
-              (let (ftype:ptr (aref (cast ptr:ptr (sdef field-types)) fidx)
+              (let (ftype:ptr ((field-at (sdef fields) fidx) type)
                     v:ref:Val (emit-node vexpr scope)
                     coerced:ptr (coerce-int-val v ftype (cc line)))
                 (when (= coerced null)
@@ -6472,7 +6472,7 @@
                 (inc! pos-idx))
               (when (>= pos-idx nfields)
                 (die-at (arg line) "struct literal: too many positional initializers"))
-              (let (ftype:ptr (aref (cast ptr:ptr (sdef field-types)) pos-idx)
+              (let (ftype:ptr ((field-at (sdef fields) pos-idx) type)
                     v:ref:Val (emit-node arg scope)
                     coerced:ptr (coerce-int-val v ftype (cc line)))
                 (when (= coerced null)
@@ -6485,7 +6485,7 @@
             sname:ptr (sdef ir-name))
         (fprintf g-entry-stream "  %s = alloca %%%s\n" slot sname)
         (dotimes (k nfields)
-          (let (ftype:ptr (aref (cast ptr:ptr (sdef field-types)) k)
+          (let (ftype:ptr ((field-at (sdef fields) k) type)
                           ftype-ir:ptr (type-to-ir ftype)
                           gep:ptr (new-tmp))
             (fprintf g-body-stream
@@ -7273,24 +7273,24 @@
                                (register-struct (name-node s)))
             nfields:i32 (- (node-len cc) 2))
         (check-ir-name-legal (name-node line) (name-node s) (sd ir-name))
-        (.set! sd field-names (arena-alloc (* (cast i64 nfields) (ptr-bytes))))
-        (.set! sd field-types (arena-alloc (* (cast i64 nfields) (ptr-bytes))))
-        (.set! sd num-fields nfields)
-        (dotimes (i nfields)
-          (let (field:ptr (node-at cc (+ i 2))
-                          fname:ptr null
-                          fty:ptr (extract-name-and-type field (cast ptr:ptr (addr-of fname))
-                                                         ((cast ptr:Node field) line)))
-            (when (= fty null)
-                  (die-at ((cast ptr:Node field) line) (fmt-s "defstruct: field '%s' missing :type" fname)))
-            (aset! (cast ptr:ptr (sd field-names)) i (intern-str fname))
-            (aset! (cast ptr:ptr (sd field-types)) i fty)))
-        (fprintf g-out "%%%s = type { " (sd ir-name))
-        (dotimes (i nfields)
-          (when (!= i 0) (fprintf g-out ", "))
-          (fprintf g-out "%s" (type-to-ir (aref (cast ptr:ptr (sd field-types)) i))))
-        (fprintf g-out " }\n\n")
-        (.set! sd emitted 1)))))
+        (let (fnm:ptr (arena-alloc (* (cast i64 nfields) (ptr-bytes)))
+              ftp:ptr (arena-alloc (* (cast i64 nfields) (ptr-bytes))))
+          (dotimes (i nfields)
+            (let (field:ptr (node-at cc (+ i 2))
+                            fname:ptr null
+                            fty:ptr (extract-name-and-type field (cast ptr:ptr (addr-of fname))
+                                                           ((cast ptr:Node field) line)))
+              (when (= fty null)
+                    (die-at ((cast ptr:Node field) line) (fmt-s "defstruct: field '%s' missing :type" fname)))
+              (aset! (cast ptr:ptr fnm) i (intern-str fname))
+              (aset! (cast ptr:ptr ftp) i fty)))
+          (struct-set-fields sd fnm ftp nfields)
+          (fprintf g-out "%%%s = type { " (sd ir-name))
+          (dotimes (i nfields)
+            (when (!= i 0) (fprintf g-out ", "))
+            (fprintf g-out "%s" (type-to-ir (aref (cast ptr:ptr ftp) i))))
+          (fprintf g-out " }\n\n")
+          (.set! sd emitted 1))))))
 
 ; The synthesized constructor defn for one defunion arm (new-style signature):
 ;   (defn Shape-circle (r:f64) Shape (make Shape circle r))

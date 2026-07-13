@@ -111,6 +111,18 @@
 ; Struct definitions (ordered by dependency)
 ; ============================================================
 
+; One field of a defstruct (Stage 14 §14.4, batch 3a). Replaces StructDef's two
+; parallel arrays (field-names/field-types, formerly walked in lockstep by
+; index) with one indexable record held in a `(Vector (ref Field))`.
+; `name` stays a bare `ptr` (NOT CStr): struct-field-index matches a selector
+; against it by **pointer identity** (interned-symbol substrate, NS-5 exclusion
+; list); a CStr retype would lower that hot comparison to strcmp. `type` is the
+; field's declared Type* (never null in practice; `(raw Type)` to match the
+; stage-14 Type-pointer idiom and every consumer's `t:raw:Type` parameter).
+(defstruct Field
+  name:ptr           ; interned field-name string (identity-compared — stays ptr)
+  (type (raw Type)))  ; field Type*
+
 (defstruct StructDef
   name:CStr
   ; The LLVM-safe spelling of `name` for IR emission: `?`→`_QMARK`, `!`→`_BANG`
@@ -120,9 +132,12 @@
   ; every `%Name` reference and definition prints so `%Full?` never reaches LLVM.
   ; Computed once in register-struct — the single StructDef allocator (SM-4).
   ir-name:CStr
-  field-names:ptr
-  field-types:ptr
-  num-fields:i32
+  ; The field table (was field-names + field-types parallel arrays). `(raw …)`
+  ; because a name-only pre-registered struct (register-struct) has no fields
+  ; yet — null until struct-set-fields populates it. All reads are guarded by the
+  ; `num-fields`-bounded loops, so field-at's raw→ref assertion is sound.
+  (fields (raw (Vector (ref Field))))
+  num-fields:i32    ; == (count fields); cached length for i32 loops (hot: struct-field-index/ABI)
   emitted:i32       ; type definition already written to IR (vs. name-only pre-registration)
   src-file:CStr     ; source file where defined (cheader/anon struct provenance)
   src-line:i32
