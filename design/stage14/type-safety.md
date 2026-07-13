@@ -1276,12 +1276,64 @@ Findings worth carrying to the later 14.4 sub-steps:
   mis-parses in the reader; use list-form `(x (ref (Vector (ref Arm))))` for
   params or colon-paren `x:(ref (Vector (ref Arm)))`/list-form for let bindings.
 
-**Remaining batches** (not started): `Constraint{proto,var,args}` for the
-`&where` quad users (generics.nuc), `Field{name,type}` for `StructDef`/`Type`,
-and `Conformance.args` → `(Vector CStr)`. The `count-pattern-nodes` conservative
-arena-sizing deletion (generics.nuc) rides with the `Constraint` batch — note the
-`Arm` arrays had **no** conservative sizing to delete (`narms` is exact from
-`node-len`).
+**Status (batch 2 — `&where` quad → `Constraint` + `Conformance.args` →
+`(Vector CStr)`, 2026-07-13): DONE, controlled refresh reconverged in one pass
+(again).** Introduced `Constraint{proto:CStr, var:CStr, args:ptr, nargs:i32}`
+(compiler-types.nuc, immediately before `Method`) and replaced **both** `Method`'s
+and `TmplConformance`'s four parallel `&where` arrays
+(`con-protos`/`con-vars`/`con-args`/`con-nargs`) with a single
+`(constraints (raw (Vector (ref Constraint))))` field, keeping `num-constraints`
+as the cached count (same rationale as `num-arms` in batch 1). `proto`/`var` are
+`CStr` (not the old bare `ptr`): every comparison already had a `CStr`/StrView
+operand on the other side (`tyvar-index-of`'s `name:CStr`, the `tvname`/`tyvar-name`
+locals, the `"Valid"` literal), so the retype is byte-identical in lowering *and*
+semantically honest; `args`/`nargs` stay a ragged `ptr[]`+count (the assoc-type
+Arg-pattern nodes, like `Arm.fnames`/`ftypes`). Converted `Conformance.args` to
+`(raw (Vector CStr))` (dropping the `nargs` field — the count is `(count args)`)
+and folded `conformance-args-eq` into a value-equality helper over two Vectors
+(element type `CStr` makes `!=` a strcmp); `(Vector CStr)` **already existed**
+(`g-blanket`/`g-macro-decls`), so no new instance stamped for it. Every ragged
+`(aref (cast ptr:ptr (mm con-X)) i)` lockstep walk is gone — a constraint is now
+read `(constraints-at (mm constraints) i)` → a `(ref Constraint)` with direct field
+access. Touched: the build/parse/fixpoint sites in generics.nuc
+(`parse-where-constraints` now conjs `(ref Constraint)` records into the Vector;
+`register-generic-defn` and the `emit-extend` `&where` path each create the Vector
+via `(vector-new-in (addr-of g-arena-alloc))` and store it; `tmpl-conformance-add`
+takes the Vector); the readers (`recover-one-constraint`/`recover-assoc-into`,
+`generic-method-bind`/`-adapt`, `generic-constraints-ok`, `caller-has-constraint`,
+`abstract-call-via-protocol`/`-generic`, `check-generic-template`,
+`method-has-valid`, `tmpl-conformance-check-one`); and the
+`conformance-add`/`-args`/`-args-eq` trio.
+
+Findings from batch 2:
+- **`count-pattern-nodes` was NOT deleted — the design's premise was wrong.** It
+  sizes the **`tyvars`** array (`cap`/`slot-bound` in `register-generic-defn`
+  generics.nuc and the `emit-extend` `&where` path), *not* the constraint arrays.
+  The constraint arrays were exactly sized by `nc` (`node-len`-derived), which now
+  becomes the Vector's grow-on-demand count. Since `tyvars` stays a raw arena array
+  in this batch, `count-pattern-nodes` and all its call sites remain live. (The
+  design line ":793-800, :969-976" referred to constraint sizing; those line ranges
+  had already drifted and the code there is tyvar sizing.)
+- **Reconverged in ONE pass again** — `make bootstrap` (`stage1.ll == stage2.ll`)
+  PASSED *before* `make update-bootstrap`, for the same reason as batch 1: the
+  refactor changes only internal data structures + constraint-reading logic, not the
+  IR emitted for any construct, and the new `(Vector (ref Constraint))` instance
+  stamps deterministically across the old boot and the new compiler.
+  `update-bootstrap` still run to sync the committed fallback IRs. `make test`
+  168/168 throughout; round-2 `make clean && make && make bootstrap` PASS.
+- **The nullable `constraints` field forces a `raw→ref` assertion at every `invoke`
+  read.** Most Methods are non-generic (null constraints), so the field is honestly
+  `(raw …)`; the flow-checker then rejects `(invoke (mm constraints) i)` ("raw
+  pointer where non-null (ref …) is required"). Centralized in a `constraints-at`
+  helper (`(cast (ref (Vector (ref Constraint))) cons)` then `invoke`), sound because
+  every call is guarded by `num-constraints > 0`. The two *builder* fixpoints
+  (`register-generic-defn`, `emit-extend`) invoke the freshly-created **local** `ref`
+  Vector directly, so they need no cast. The `conformance-args` return
+  (`(raw (Vector CStr))`, `die-at`-guarded — `die-at` is not known-noreturn, so no
+  narrowing) needed the same one-shot cast before its `invoke` loop.
+
+**Remaining batches** (not started): `Field{name,type}` for `StructDef`/`Type`
+(the last 14.4 sub-step). `Constraint` and `Conformance.args` are **done**.
 
 **Agent: systems-impl-engineer** (new element structs + layout change); build-test
 gates. **Read (scoped):** the arm-array build/scan (union-registry.nuc:789-800,

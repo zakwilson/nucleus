@@ -977,21 +977,20 @@
       (return (node-mentions-tyvar-named (n cdr) tvname)))
     (return 0)))
 
-; Parse a `&where` constraint list into the per-Method constraint arrays
-; (assoc-types A1, factored out for A4 so `emit-extend` can reuse it — design
-; assoc-types-extend.md §5). `params-node` holds the constraint nodes starting at
-; index `base`; there are `nc` of them. Fills, for each constraint i in [0,nc):
-;   con-protos[i] — the protocol name CStr;
-;   con-vars[i]   — the conforming variable name CStr;
-;   con-args[i]   — a ptr[] of the protocol-application Arg nodes (or null for a
-;                   plain `(Proto V)` constraint);
-;   con-nargs[i]  — the Arg count (0 for a plain constraint).
+; Parse a `&where` constraint list into the `constraints` Vector (assoc-types A1,
+; factored out for A4 so `emit-extend` can reuse it — design assoc-types-extend.md
+; §5). `params-node` holds the constraint nodes starting at index `base`; there are
+; `nc` of them. Appends, for each constraint i in [0,nc), one `(ref Constraint)`:
+;   proto  — the protocol name;
+;   var    — the conforming variable name;
+;   args   — a ptr[] of the protocol-application Arg nodes (or null for a plain
+;            `(Proto V)` constraint);
+;   nargs  — the Arg count (0 for a plain constraint).
 ; Every constraint variable and every constraint-Arg tyvar is added to `tyvars`
 ; (size already provisioned by the caller) with `io-ntv` (a ptr:i32 box) bumped.
-; Diagnostics attribute to `line`. This is a verbatim lift of the loop formerly
-; inline in register-generic-defn; behaviour is unchanged.
+; Diagnostics attribute to `line`.
 (defn parse-where-constraints (params-node:raw:Node base:i32 nc:i32
-                                    con-protos:ptr con-vars:ptr con-args:ptr con-nargs:ptr
+                                    (constraints (ref (Vector (ref Constraint))))
                                     tyvars:ptr io-ntv:ptr line:i32):void
   (dotimes (ci nc)
     (let (cnode:ptr (node-at params-node (+ base ci)))
@@ -1002,17 +1001,17 @@
       ; application — assoc-types A1). Element 1 is always the conforming
       ; variable symbol, in tail position, as in `(Ord T)`.
       (let (c0:ptr:Node (cast ptr:Node (node-at cnode 0))
-            vn:ptr:Node (cast ptr:Node (node-at cnode 1)))
+            vn:ptr:Node (cast ptr:Node (node-at cnode 1))
+            rec:ref:Constraint (new Constraint))
+        (.set! rec args null)
+        (.set! rec nargs 0)
         (when (!= (vn kind) NODE-SYM)
           (die-at line "defn: &where constraint must name a protocol and a variable"))
         ; Element 0 may be null when written as the empty list `()` in the
         ; protocol slot; guard the kind read before classifying.
         (if (and (!= (cast ptr c0) null) (= (c0 kind) NODE-SYM))
           ; Plain protocol `(Proto V)`: no associated args.
-          (do
-            (aset! (cast ptr:ptr con-protos) ci (c0 s))
-            (aset! (cast ptr:ptr con-args) ci null)
-            (aset! (cast ptr:i32 con-nargs) ci 0))
+          (.set! rec proto (cast CStr (c0 s)))
           ; Protocol application `((Proto Arg…) V)`: element 0 is a list
           ; whose head names the protocol and whose tail are the argument
           ; patterns. Each Arg is a type-spelling node; any tyvar in it is
@@ -1029,10 +1028,11 @@
                   (let (argn:ptr (node-at (cast ptr c0) (+ ai 1)))
                     (aset! (cast ptr:ptr argv) ai argn)
                     (collect-constraint-arg-tyvars argn tyvars io-ntv)))
-                (aset! (cast ptr:ptr con-protos) ci (hn s))
-                (aset! (cast ptr:ptr con-args) ci argv)
-                (aset! (cast ptr:i32 con-nargs) ci na)))))
-        (aset! (cast ptr:ptr con-vars) ci (vn s))
+                (.set! rec proto (cast CStr (hn s)))
+                (.set! rec args argv)
+                (.set! rec nargs na)))))
+        (.set! rec var (cast CStr (vn s)))
+        (conj constraints rec)
         (when (< (tyvar-index-of (vn s) tyvars (aref (cast ptr:i32 io-ntv) 0)) 0)
           (aset! (cast ptr:ptr tyvars) (aref (cast ptr:i32 io-ntv) 0) (vn s))
           (aset! (cast ptr:i32 io-ntv) 0 (+ (aref (cast ptr:i32 io-ntv) 0) 1)))))))
@@ -1094,17 +1094,14 @@
                                 (count-pattern-nodes
                                   (node-at (node-at params-node (+ (+ wi 1) sb-c)) 0)))))
         (let (cap:i32 (if (> slot-bound 0) slot-bound 1)
-              con-protos:ptr (arena-alloc (* (cast i64 (if (> nc 0) nc 1)) (ptr-bytes)))
-              con-vars:ptr   (arena-alloc (* (cast i64 (if (> nc 0) nc 1)) (ptr-bytes)))
-              con-args:ptr   (arena-alloc (* (cast i64 (if (> nc 0) nc 1)) (ptr-bytes)))
-              con-nargs:ptr  (arena-alloc (* (cast i64 (if (> nc 0) nc 1)) (cast i64 4)))
+              (constraints (ref (Vector (ref Constraint)))) (vector-new-in (addr-of g-arena-alloc))
               tyvars:ptr     (arena-alloc (* (cast i64 cap) (ptr-bytes)))
               ntv:i32 0)
-          ; Parse the &where constraint list into the con-* arrays and collect
-          ; constraint variables + Arg tyvars (assoc-types A1). Shared with
+          ; Parse the &where constraint list into the `constraints` Vector and
+          ; collect constraint variables + Arg tyvars (assoc-types A1). Shared with
           ; emit-extend (A4) via parse-where-constraints.
           (parse-where-constraints params-node (+ wi 1) nc
-                                   con-protos con-vars con-args con-nargs
+                                   constraints
                                    tyvars (cast ptr:i32 (addr-of ntv)) (ff line))
           ; Merge in receiver-inferred tyvars from each parameter and the return
           ; type. These are bound structurally by the unifier (a tyvar nested in a
@@ -1141,13 +1138,14 @@
                 (set! changed 0)
                 (let (ck:i32 0)
                   (while (< ck nc)
-                    (let (vidx:i32 (tyvar-index-of (aref (cast ptr:ptr con-vars) ck) tyvars ntv)
-                          na:i32 (aref (cast ptr:i32 con-nargs) ck))
+                    (let (crec:ref:Constraint (invoke constraints (cast usize ck))
+                          vidx:i32 (tyvar-index-of (crec var) tyvars ntv)
+                          na:i32 (crec nargs))
                       ; Constraint's conforming variable determined and it carries
                       ; recoverable args → each arg-mentioned tyvar is determined.
                       (when (and (>= vidx 0)
                                  (and (!= (aref (cast ptr:i32 determined) vidx) 0) (> na 0)))
-                        (let (argv:ptr (aref (cast ptr:ptr con-args) ck)
+                        (let (argv:ptr (crec args)
                               ai:i32 0)
                           (while (< ai na)
                             (let (argn:ptr (aref (cast ptr:ptr argv) ai)
@@ -1188,10 +1186,7 @@
               (.set! m body form)
               (.set! m tyvars tyvars)
               (.set! m num-tyvars ntv)
-              (.set! m con-protos con-protos)
-              (.set! m con-vars con-vars)
-              (.set! m con-args con-args)
-              (.set! m con-nargs con-nargs)
+              (.set! m constraints constraints)
               (.set! m num-constraints nc)
               ; Imported templates were checked by the exporting unit; skip A2.
               (.set! m checked trusted)
@@ -1222,7 +1217,7 @@
 ; (`((UnaryFn S E) F)`).
 ;
 ;   For each constraint whose conforming variable V is now bound to a concrete
-;   type CV (con-nargs[i] > 0; a plain protocol is skipped):
+;   type CV (the constraint's nargs > 0; a plain protocol is skipped):
 ;     - look up CV's Conformance for Proto;
 ;     - for each Arg[j] paired with the conformance's stored args[j]:
 ;         · Arg[j] an as-yet-unbound declared tyvar → bind it (RECOVER);
@@ -1242,18 +1237,27 @@
 ; Operates on an explicit constraint tuple (assoc-types A4, factored out of the
 ; Method* so emit-extend can reuse the same fixpoint — assoc-types-extend.md §5):
 ;   tyvar-names / num-tyvars — the declared tyvars and their count;
-;   con-protos / con-vars / con-args / con-nargs — the parsed &where arrays;
+;   constraints — the parsed &where clause (Vector (ref Constraint));
 ;   ci — the constraint index; out-bound — the bound[tyvar-index] = Type* array;
 ;   io-changed — a ptr:i32 box set to 1 on a RECOVER; line — diagnostic line for
 ;     the hard-error cases (stale args / arity mismatch).
+; Index the (possibly-null) `constraints` Vector, asserting non-null. Every caller
+; guards the access with `num-constraints` (0 ⇒ the Vector is never indexed), so the
+; raw→ref cast is sound — it centralizes the assertion the flow-checker demands at
+; the `invoke` site (the field is honestly `(raw …)`: most Methods are non-generic
+; and carry no constraints).
+(defn constraints-at ((cons (raw (Vector (ref Constraint)))) i:i32):ref:Constraint
+  (invoke (cast (ref (Vector (ref Constraint))) cons) (cast usize i)))
+
 (defn recover-one-constraint (tyvar-names:ptr num-tyvars:i32
-                                  con-protos:ptr con-vars:ptr con-args:ptr con-nargs:ptr
+                                  (constraints (raw (Vector (ref Constraint))))
                                   ci:i32 out-bound:ptr io-changed:ptr line:i32):i32
-  (let (na:i32 (aref (cast ptr:i32 con-nargs) ci))
+  (let (crec:ref:Constraint (constraints-at constraints ci)
+        na:i32 (crec nargs))
     (when (= na 0) (return 1))
     (let (ntv:i32 num-tyvars
-          proto:ptr (aref (cast ptr:ptr con-protos) ci)
-          vidx:i32 (tyvar-index-of (aref (cast ptr:ptr con-vars) ci) tyvar-names ntv)
+          proto:CStr (crec proto)
+          vidx:i32 (tyvar-index-of (crec var) tyvar-names ntv)
           cv:ptr (if (>= vidx 0) (aref (cast ptr:ptr out-bound) vidx) null))
       ; V not yet bound → defer to a later fixpoint iteration.
       (when (= cv null) (return 1))
@@ -1268,7 +1272,7 @@
                    (= (derive-closure-conformance cv proto line) 0))
           (return 0))
         (let (cn:i32 0
-              cargs:ptr (conformance-args cvspell proto (cast ptr:i32 (addr-of cn))))
+              cargs:(raw (Vector CStr)) (conformance-args cvspell proto (cast ptr:i32 (addr-of cn))))
           ; A recorded conformance with no retained args predates arg retention
           ; (stale .nuch) — a hard, fix-by-recompile error.
           (when (or (= cargs null) (= cn 0))
@@ -1281,10 +1285,11 @@
             (die-at line
               (fmt-2s "constraint '%s' supplies the wrong number of arguments for the conformance of '%s'"
                       proto cvspell)))
-          (let (argv:ptr (aref (cast ptr:ptr con-args) ci))
+          (let (argv:ptr (crec args)
+                cargsv:(ref (Vector CStr)) (cast (ref (Vector CStr)) cargs))
             (dotimes (j na)
               (let (argn:ptr (aref (cast ptr:ptr argv) j)
-                    conspell:ptr (aref (cast ptr:ptr cargs) j)
+                    conspell:CStr (invoke cargsv (cast usize j))
                     an:ptr:Node (cast ptr:Node argn)
                     tidx:i32 -1)
                 ; A bare colon-free symbol naming a declared tyvar may be
@@ -1316,17 +1321,17 @@
 ; parametric `&where` constraint `((Proto Arg…) V)`. A fixpoint, because one
 ; constraint's recovered tyvar (S from `((Iterator S) I)`) can be another's input
 ; (`((UnaryFn S E) F)`). Returns 0 (a soft no-match) when a determined V does not
-; conform to Proto; 1 otherwise. A plain protocol (con-nargs[i] == 0) is skipped,
+; conform to Proto; 1 otherwise. A plain protocol (the constraint's nargs == 0) is skipped,
 ; so this is inert for every non-parametric constraint (e.g. `(Any T)`).
 ;
 ; Factored out of the Method* (assoc-types A4 §5) to operate on an explicit
 ; constraint tuple, so emit-extend can run the identical fixpoint at stamp time:
 ;   tyvar-names / num-tyvars — declared tyvars and count;
 ;   out-bound — mutable bound[tyvar-index] = Type* array (seeded by the caller);
-;   con-protos / con-vars / con-args / con-nargs — the parsed &where arrays;
+;   constraints — the parsed &where clause (Vector (ref Constraint));
 ;   num-constraints — count; line — diagnostic line for hard errors.
 (defn recover-assoc-into (tyvar-names:ptr out-bound:ptr num-tyvars:i32
-                              con-protos:ptr con-vars:ptr con-args:ptr con-nargs:ptr
+                              (constraints (raw (Vector (ref Constraint))))
                               num-constraints:i32 line:i32):i32
   (let (nc:i32 num-constraints)
     (when (= nc 0) (return 1))
@@ -1336,7 +1341,7 @@
         (let (ci:i32 0)
           (while (< ci nc)
             (when (= (recover-one-constraint tyvar-names num-tyvars
-                                             con-protos con-vars con-args con-nargs
+                                             constraints
                                              ci out-bound
                                              (cast ptr:i32 (addr-of changed)) line) 0)
               (return 0))
@@ -1361,7 +1366,7 @@
       ; does not conform — reject this candidate before the all-bound check.
       ; recover-assoc-into runs the shared fixpoint over the Method's fields.
       (when (= (recover-assoc-into (mm tyvars) out-bound (mm num-tyvars)
-                                    (mm con-protos) (mm con-vars) (mm con-args) (mm con-nargs)
+                                    (mm constraints)
                                     (mm num-constraints)
                                     ((mm body) line)) 0)
         (return 0))
@@ -1392,8 +1397,9 @@
   (let (mm:raw:Method m
         nc:i32 (mm num-constraints))
     (dotimes (i nc)
-      (let (proto:ptr (aref (cast ptr:ptr (mm con-protos)) i)
-            var:ptr   (aref (cast ptr:ptr (mm con-vars)) i)
+      (let (crec:ref:Constraint (constraints-at (mm constraints) i)
+            proto:CStr (crec proto)
+            var:CStr   (crec var)
             idx:i32 (tyvar-index-of var (mm tyvars) (mm num-tyvars))
             bt:ptr (aref (cast ptr:ptr bound) idx))
         ; Blanket protocols (§10.1) conform automatically; Valid (§10.2) matches
@@ -1522,7 +1528,7 @@
       ; every tyvar bound by the exactly-matched parameters (adaptation never binds
       ; a tyvar, so a tyvar reachable only through a deferred parameter stays null).
       (when (= (recover-assoc-into (mm tyvars) out-bound ntv
-                                    (mm con-protos) (mm con-vars) (mm con-args) (mm con-nargs)
+                                    (mm constraints)
                                     (mm num-constraints)
                                     ((mm body) line)) 0)
         (return 0))
@@ -1750,9 +1756,10 @@
 (defn caller-has-constraint (m:raw:Method tyvar-name:CStr proto:CStr):i32
   (let (mm:raw:Method m)
     (dotimes (i (mm num-constraints))
-      (when (and (= (aref (cast ptr:ptr (mm con-vars)) i) tyvar-name)
-                 (= (aref (cast ptr:ptr (mm con-protos)) i) proto))
-        (return 1))))
+      (let (crec:ref:Constraint (constraints-at (mm constraints) i))
+        (when (and (= (crec var) tyvar-name)
+                   (= (crec proto) proto))
+          (return 1)))))
   (return 0))
 
 ; Does protocol signature `sig` provide the call `head(argtypes)` for tyvar `ti`
@@ -1804,14 +1811,15 @@
     (dotimes (ti (mm num-tyvars))
       (let (tvname:CStr (aref (cast ptr:ptr (mm tyvars)) ti))
         (dotimes (ci (mm num-constraints))
-          (when (= (aref (cast ptr:ptr (mm con-vars)) ci) tvname)
-            (let (proto:ptr (protocol-lookup (aref (cast ptr:ptr (mm con-protos)) ci)))
+          (let (crec:ref:Constraint (constraints-at (mm constraints) ci))
+           (when (= (crec var) tvname)
+            (let (proto:ptr (protocol-lookup (crec proto)))
               (when (!= proto null)
                 (let (pp:ptr:Protocol (cast ptr:Protocol proto))
                   (dotimes (si (pp num-sigs))
                     (let (rt:ptr (sig-provides-call (aref (cast ptr:ptr (pp sigs)) si)
                                                     head ti m argtypes nargs line))
-                      (when (!= rt null) (return rt))))))))))))
+                      (when (!= rt null) (return rt)))))))))))))
   (return null))
 
 ; Resolve an abstract-argument call against another generic template whose own
@@ -1827,9 +1835,10 @@
               (when (!= (generic-method-bind (cast ptr m2) argtypes nargs bound null) 0)
                 (let (ok:i32 1)
                   (dotimes (ci (m2 num-constraints))
-                    (let (uidx:i32 (tyvar-index-of (aref (cast ptr:ptr (m2 con-vars)) ci)
+                    (let (crec:ref:Constraint (constraints-at (m2 constraints) ci)
+                          uidx:i32 (tyvar-index-of (crec var)
                                                    (m2 tyvars) (m2 num-tyvars))
-                          proto:ptr (aref (cast ptr:ptr (m2 con-protos)) ci)
+                          proto:CStr (crec proto)
                           bt:ptr (aref (cast ptr:ptr bound) uidx))
                       (if (!= (is-tyvar-type bt) 0)
                         (when (= (caller-has-constraint m (tyvar-type-name bt) proto) 0)
@@ -2078,7 +2087,8 @@
     ; Every &where constraint must name a known protocol/blanket/Valid — checked
     ; here (not at prescan) so an imported protocol is already registered.
     (dotimes (ci (mm num-constraints))
-      (let (pnm:ptr (aref (cast ptr:ptr (mm con-protos)) ci))
+      (let (crec:ref:Constraint (constraints-at (mm constraints) ci)
+            pnm:CStr (crec proto))
         (when (= (constraint-proto-known pnm) 0)
           (die-at (form line)
             (fmt-s "defn: &where names unknown protocol '%s'" pnm)))))
@@ -2151,7 +2161,8 @@
 (defn method-has-valid (m:raw:Method):i32
   (let (mm:raw:Method m)
     (dotimes (i (mm num-constraints))
-      (when (= (aref (cast ptr:ptr (mm con-protos)) i) "Valid") (return 1))))
+      (let (crec:ref:Constraint (constraints-at (mm constraints) i))
+        (when (= (crec proto) "Valid") (return 1)))))
   (return 0))
 
 ; The concrete declared type of a binding in a stamped (substituted) body, or
@@ -2486,7 +2497,12 @@
 ; conformance exists or it carries no parametric args (a plain protocol, or a stale
 ; record predating arg retention). The two outcomes — no record vs. record-without-
 ; args — are distinguished by conformance-lookup, which A2 calls first.
-(defn conformance-args (type-name:CStr proto-name:CStr out-nargs:ptr):ptr
+; Length of a retained-arg Vector (0 for the null / no-args case). The cast is a
+; non-null assertion, safe because it only runs on the guarded non-null branch.
+(defn conf-args-count (v:(raw (Vector CStr))):i32
+  (if (= v null) 0 (cast i32 (count (cast (ref (Vector CStr)) v)))))
+
+(defn conformance-args (type-name:CStr proto-name:CStr out-nargs:ptr):(raw (Vector CStr))
   ; Stage 12 N4 (decision 9): canonicalize to the bare key, matching conformance-add.
   (set! type-name (strip-ns-qualifier type-name))
   (set! proto-name (strip-ns-qualifier proto-name))
@@ -2494,20 +2510,26 @@
     (let (c:ptr:Conformance (invoke g-conformances (cast usize i)))
       (when (and (= (c type-name) type-name)
                  (= (c proto-name) proto-name))
-        (aset! (cast ptr:i32 out-nargs) 0 (c nargs))
+        (aset! (cast ptr:i32 out-nargs) 0 (conf-args-count (c args)))
         (return (c args)))))
   (aset! (cast ptr:i32 out-nargs) 0 0)
   (return null))
 
-; Compare two retained-arg arrays of canonical type-spelling strings for equality
-; (content, via strcmp — `args` is a raw `ptr` array so `=` would be pointer
-; identity). Length must match and every spelling must be string-equal.
-(defn conformance-args-eq (a:ptr na:i32 b:ptr nb:i32):i32
-  (when (!= na nb) (return 0))
-  (dotimes (i na)
-    (when (!= (strcmp (aref (cast ptr:ptr a) i) (aref (cast ptr:ptr b) i)) 0)
-      (return 0)))
-  (return 1))
+; Compare two retained-arg Vectors of canonical type-spelling strings for equality
+; (§14.4): the length must match and every spelling must be string-equal. The
+; element type CStr makes `!=` a strcmp, so this is a value comparison. A null
+; Vector is treated as length 0 (a plain protocol carries no args).
+(defn conformance-args-eq (a:(raw (Vector CStr)) b:(raw (Vector CStr))):i32
+  (let (na:i32 (conf-args-count a)
+        nb:i32 (conf-args-count b))
+    (when (!= na nb) (return 0))
+    (when (= na 0) (return 1))
+    (let (av:(ref (Vector CStr)) (cast (ref (Vector CStr)) a)
+          bv:(ref (Vector CStr)) (cast (ref (Vector CStr)) b))
+      (dotimes (i na)
+        (when (!= (invoke av (cast usize i)) (invoke bv (cast usize i)))
+          (return 0))))
+    (return 1)))
 
 ; Record that `type-name` conforms to `proto-name`, retaining the parametric
 ; protocol's bound arguments `args` (length `nargs`, a ptr array of canonical
@@ -2525,28 +2547,33 @@
   ; dispatch-site lookup (also stripped) matches. Identity under `user`.
   (set! type-name (strip-ns-qualifier type-name))
   (set! proto-name (strip-ns-qualifier proto-name))
-  (dotimes (i (cast i32 (count g-conformances)))
-    (let (c:ptr:Conformance (invoke g-conformances (cast usize i)))
-      (when (and (= (c type-name) type-name) (= (c proto-name) proto-name))
-        ; Incoming call supplies no args → nothing to add or check; keep as-is.
-        (when (= nargs 0) (return))
-        ; Existing record has no retained args → upgrade it in place.
-        (when (= (c nargs) 0)
-          (.set! c args args)
-          (.set! c nargs nargs)
-          (return))
-        ; Both sides carry args: they must agree, else it is a coherence error.
-        (when (= (conformance-args-eq (c args) (c nargs) args nargs) 0)
-          (die-at line
-            (fmt-2s "type '%s' re-extends protocol '%s' with different associated arguments"
-                    type-name proto-name)))
-        (return))))
-  (let (c:ptr:Conformance (cast ptr:Conformance (arena-alloc (sizeof Conformance))))
-    (.set! c type-name type-name)
-    (.set! c proto-name proto-name)
-    (.set! c args args)
-    (.set! c nargs nargs)
-    (conj g-conformances c)))
+  ; Materialize the incoming args as a (Vector CStr) — null when there are none —
+  ; so the retained representation is value-comparable (§14.4).
+  (let (av:(raw (Vector CStr)) null)
+    (when (> nargs 0)
+      (let ((v (ref (Vector CStr))) (vector-new-in (addr-of g-arena-alloc)))
+        (dotimes (i nargs) (conj v (cast CStr (aref (cast ptr:ptr args) i))))
+        (set! av (cast (raw (Vector CStr)) v))))
+    (dotimes (i (cast i32 (count g-conformances)))
+      (let (c:ptr:Conformance (invoke g-conformances (cast usize i)))
+        (when (and (= (c type-name) type-name) (= (c proto-name) proto-name))
+          ; Incoming call supplies no args → nothing to add or check; keep as-is.
+          (when (= nargs 0) (return))
+          ; Existing record has no retained args → upgrade it in place.
+          (when (= (c args) null)
+            (.set! c args av)
+            (return))
+          ; Both sides carry args: they must agree, else it is a coherence error.
+          (when (= (conformance-args-eq (c args) av) 0)
+            (die-at line
+              (fmt-2s "type '%s' re-extends protocol '%s' with different associated arguments"
+                      type-name proto-name)))
+          (return))))
+    (let (c:ptr:Conformance (cast ptr:Conformance (arena-alloc (sizeof Conformance))))
+      (.set! c type-name type-name)
+      (.set! c proto-name proto-name)
+      (.set! c args av)
+      (conj g-conformances c))))
 
 ; Has a synthesized closure-conformance forwarder with this exact ir-name
 ; already been registered (and thus queued for emission) in generic `gen-name`?
@@ -3070,12 +3097,12 @@
 ; protocol's extra params (`E`). Idempotent on (template, proto). The per-instance
 ; check is deferred to stamp time (tmpl-conformance-check-instance).
 ; Stage 11 assoc-types (A4): also carries the parsed trailing `&where` clause
-; (tyvars/num-tyvars + con-protos/con-vars/con-args/con-nargs/num-constraints).
+; (tyvars/num-tyvars + the constraints Vector + num-constraints).
 ; A &where-free extend passes the template's own tyvars/ntv, null constraint
 ; arrays, and num-constraints = 0 — identical downstream behaviour to T4.
 (defn tmpl-conformance-add (template:raw:StructTemplate proto:raw:Protocol bindings:ptr nbindings:i32
                                  tyvars:ptr num-tyvars:i32
-                                 con-protos:ptr con-vars:ptr con-args:ptr con-nargs:ptr
+                                 (constraints (raw (Vector (ref Constraint))))
                                  num-constraints:i32):void
   (doseq (c g-tmpl-conformances (VecIter ref:TmplConformance))
     (when (and (= (c template) template) (= (c proto) proto)) (return)))
@@ -3086,10 +3113,7 @@
     (.set! c nbindings nbindings)
     (.set! c tyvars tyvars)
     (.set! c num-tyvars num-tyvars)
-    (.set! c con-protos con-protos)
-    (.set! c con-vars con-vars)
-    (.set! c con-args con-args)
-    (.set! c con-nargs con-nargs)
+    (.set! c constraints constraints)
     (.set! c num-constraints num-constraints)
     (conj g-tmpl-conformances c)))
 
@@ -3148,7 +3172,7 @@
         ; a conforming variable's conformance is not yet recorded for this instance
         ; — defer (a later pass / recheck-stamped will catch it), do not error.
         (when (= (recover-assoc-into (cc tyvars) out-bound ntv
-                                     (cc con-protos) (cc con-vars) (cc con-args) (cc con-nargs)
+                                     (cc constraints)
                                      (cc num-constraints) line) 0)
           (return))
         ; recover-assoc-into fills the associated tyvars; the full map must now be
@@ -3295,7 +3319,7 @@
                 (if (= nc 0)
                   ; --- &where-free extend: the unchanged T4 path ---
                   (tmpl-conformance-add (cast ptr st) (cast ptr proto) proto-args proto-nargs
-                                        (stt tyvars) base-ntv null null null null 0)
+                                        (stt tyvars) base-ntv null 0)
                   ; --- &where-bearing extend: parse + determine (A4.1) ---
                   (do
                     ; Capacity: the template's own tyvars seed the array; each
@@ -3316,10 +3340,7 @@
                                             (count-pattern-nodes
                                               (aref (cast ptr:ptr proto-args) sb-p)))))
                       (let (cap:i32 (if (> slot-bound 0) slot-bound 1)
-                            con-protos:ptr (arena-alloc (* (cast i64 nc) (ptr-bytes)))
-                            con-vars:ptr   (arena-alloc (* (cast i64 nc) (ptr-bytes)))
-                            con-args:ptr   (arena-alloc (* (cast i64 nc) (ptr-bytes)))
-                            con-nargs:ptr  (arena-alloc (* (cast i64 nc) (cast i64 4)))
+                            (constraints (ref (Vector (ref Constraint)))) (vector-new-in (addr-of g-arena-alloc))
                             tyvars:ptr     (arena-alloc (* (cast i64 cap) (ptr-bytes)))
                             ntv:i32 0)
                         ; Seed the tyvars array with the template's own tyvars; they
@@ -3330,7 +3351,7 @@
                         ; Parse the &where constraints (constraints start at node 4),
                         ; collecting constraint vars + Arg tyvars after the seeds.
                         (parse-where-constraints form 4 nc
-                                                 con-protos con-vars con-args con-nargs
+                                                 constraints
                                                  tyvars (cast ptr:i32 (addr-of ntv)) (ff line))
                         ; Collect tyvars appearing in the protocol application
                         ; `(Iterator E)` too, so the §3 determination check can see
@@ -3353,11 +3374,12 @@
                               (set! changed 0)
                               (let (ck:i32 0)
                                 (while (< ck nc)
-                                  (let (vidx:i32 (tyvar-index-of (aref (cast ptr:ptr con-vars) ck) tyvars ntv)
-                                        na:i32 (aref (cast ptr:i32 con-nargs) ck))
+                                  (let (crec:ref:Constraint (invoke constraints (cast usize ck))
+                                        vidx:i32 (tyvar-index-of (crec var) tyvars ntv)
+                                        na:i32 (crec nargs))
                                     (when (and (>= vidx 0)
                                                (and (!= (aref (cast ptr:i32 determined) vidx) 0) (> na 0)))
-                                      (let (argv:ptr (aref (cast ptr:ptr con-args) ck)
+                                      (let (argv:ptr (crec args)
                                             ai:i32 0)
                                         (while (< ai na)
                                           (let (argn:ptr (aref (cast ptr:ptr argv) ai)
@@ -3381,7 +3403,7 @@
                                     (fmt-s "extend: protocol parameter '%s' is not determined by the subject or any &where constraint"
                                            (aref (cast ptr:ptr tyvars) ti))))))))
                         (tmpl-conformance-add (cast ptr st) (cast ptr proto) proto-args proto-nargs
-                                              tyvars ntv con-protos con-vars con-args con-nargs nc))))))
+                                              tyvars ntv constraints nc))))))
               ; Retroactively check instances stamped before this extend was seen.
               ; The just-added conformance is the last element of g-tmpl-conformances.
               (let (ntc:i32 (cast i32 (count g-tmpl-conformances))
