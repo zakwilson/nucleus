@@ -201,7 +201,7 @@
 ; ============================================================
 
 ; Generic string helper used by do-import's extension dispatch (.nuc/.nuch).
-(defn str-ends-with (s:ptr suffix:CStr):i32
+(defn str-ends-with (s:CStr suffix:CStr):i32
   (let (slen:i64 (cast i64 (strlen s))
         suflen:i64 (cast i64 (strlen suffix)))
     (when (> suflen slen) (return 0))
@@ -209,7 +209,7 @@
       (return 1))
     (return 0)))
 
-(defn emit-nuch-declare-import (form:ptr):void
+(defn emit-nuch-declare-import (form:(raw Node)):void
   (let (ff:ptr:Node (cast ptr:Node form))
     ; Stage 10 Phase F1: an optional trailing `noreturn` keyword (carried
     ; verbatim by desugar) marks the declared/extern function as never
@@ -307,7 +307,7 @@
 ; Import one exported overloaded method: register it (with its mangled symbol)
 ; in the generic registry so calls in the importing unit dispatch to it, and
 ; emit an LLVM declare under the mangled symbol (resolved at link time).
-(defn emit-nuch-defmethod-import (form:ptr):void
+(defn emit-nuch-defmethod-import (form:(raw Node)):void
   (let (ff:ptr:Node (cast ptr:Node form))
     ; S3: new-style entry `(defmethod "@sym" NAME (params) :ret)` — the mangled
     ; symbol (1), a bare name (2), the params (3) and the return operand (4).
@@ -341,7 +341,7 @@
 ; A defunion arriving via .nuch: register the type (or template) exactly as
 ; the defining unit did, but emit `declare`s for the arm constructors — their
 ; definitions live in the exporting unit's object file.
-(defn emit-defunion-import (form:ptr):void
+(defn emit-defunion-import (form:(raw Node)):void
   (let (ff:ptr:Node (cast ptr:Node form))
     (when (< (node-len ff) 3)
       (die-at (ff line) "defunion: expects a name and at least one arm"))
@@ -376,7 +376,7 @@
                     (ff line))))))
           (set! g-out saved-out))))))
 
-(defn emit-nuch-import-forms (forms:ptr):void
+(defn emit-nuch-import-forms (forms:(raw Node)):void
   (let (it:ListIter (list-iter forms))
     (doseq-iter (fc (addr-of it))
       (let (f:ptr:Node (cast ptr:Node fc))

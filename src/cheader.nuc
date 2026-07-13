@@ -20,7 +20,7 @@
 ; __attribute__((noreturn))), so recognize the standard noreturn libc functions
 ; by name. A statement-position call to one terminates its block, so a
 ; (when (= x null) (exit 1)) / (abort) guard narrows the tested binding past it.
-(defn c-fn-noreturn (fname:ptr):i32
+(defn c-fn-noreturn (fname:CStr):i32
   (when (or (= fname "exit") (= fname "abort")) (return 1))
   (when (or (= fname "_exit") (= fname "_Exit")) (return 1))
   (when (or (= fname "quick_exit") (= fname "abort_handler_s")) (return 1))
@@ -54,7 +54,7 @@
 
 ; Map a C type name to a Nucleus type.
 ; Returns the Type* or null if unknown/skipped.
-(defn c-type-to-nucleus (name:ptr is-unsigned:i32 is-long:i32 is-short:i32):ptr
+(defn c-type-to-nucleus (name:CStr is-unsigned:i32 is-long:i32 is-short:i32):(raw Type)
   ; Handle base types
   (when (= name "void")  (return ty-void))
   (when (= name "_Bool") (return ty-i1))
@@ -793,7 +793,7 @@
 ;   - for (name T): the T sym
 ;   - for sym "name:T": a freshly-allocated sym node holding "T"
 ;   - null if no type
-(defn extract-type-node (binding:ptr line:i32):ptr
+(defn extract-type-node (binding:(raw Node) line:i32):ptr
   (when (= binding null) (return null))
   (let (n:ptr:Node (cast ptr:Node binding))
     (when (= (n kind) NODE-SYM)
@@ -835,7 +835,7 @@
 ; the instance struct is not exported, and mapping it to void* would emit an
 ; ABI-wrong signature (the value is really a by-value tagged struct). Detect it
 ; so the declare can be skipped honestly.
-(defn cheader-template-instance (tn:ptr):i32
+(defn cheader-template-instance (tn:(raw Node)):i32
   (when (= tn null) (return 0))
   (let (n:ptr:Node (cast ptr:Node tn))
     (when (!= (n kind) NODE-CELL) (return 0))
@@ -854,7 +854,7 @@
 ; its definition. A plain `fn`/function-pointer type is NOT a closure type (it
 ; is C-ABI). Returns 1 if `tn` mentions such a type, else 0. Unwraps arbitrary
 ; (ref T)/(ptr T) nesting down to the base type symbol.
-(defn cheader-mentions-closure (tn:ptr):i32
+(defn cheader-mentions-closure (tn:(raw Node)):i32
   (let (cur:ptr tn)
     (while (!= cur null)
       (let (n:ptr:Node (cast ptr:Node cur))
@@ -880,7 +880,7 @@
 ; legacy (`name:ret` / `(name ret)`) recovers it from the name node; new style
 ; (S1) takes the index-3 operand, normalized so a keyword ret reads as a symbol
 ; type node for type-node-to-c.
-(defn cheader-defn-ret-node (form:ptr):ptr
+(defn cheader-defn-ret-node (form:(raw Node)):ptr
   (let (name-node:ptr (node-at form 1))
     (when (= (sig-name-is-bare name-node) 0)
       (return (extract-type-node name-node ((cast ptr:Node name-node) line))))

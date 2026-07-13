@@ -28,7 +28,7 @@
 ; Emit a structured REPL error. In text mode, prints the legacy
 ; "  error: <msg>\n" form. In JSON mode, prints a single JSON object on
 ; one line: {"file":..,"line":..,"message":..}. line of 0 is omitted.
-(defn repl-error (line:i32 msg:ptr):void
+(defn repl-error (line:i32 msg:CStr):void
   (cond (= g-repl-format 1)
           (do (fprintf stderr "{\"file\":\"")
               (repl-error-json-puts g-source-path)
@@ -111,7 +111,7 @@
 
 ; Process a single REPL form: parse, compile to IR, JIT, and call.
 ; Returns the result type kind (TY-VOID, TY-I32, etc.) or -1 on error.
-(defn repl-eval-form (form:ptr):void
+(defn repl-eval-form (form:(raw Node)):void
   (let (f:ptr:Node (cast ptr:Node form))
     (when (= (cast ptr f) null) (return))
     ; Short-circuit: a bare string literal prints as itself.
@@ -578,9 +578,9 @@
 ; (addr-of foo)) bind to; the tgt global is updated on every redefinition so
 ; callers transparently dispatch to the latest implementation.
 ;
-; ft is a (ptr Type) with kind=TY-FN; type-to-ir handles each parameter and return.
-(defn emit-fn-thunk (out:ptr fname:ptr ft:ptr):void
-  (let (ftt:ptr:Type (cast ptr:Type ft)
+; ft is a (raw Type) with kind=TY-FN; type-to-ir handles each parameter and return.
+(defn emit-fn-thunk (out:ptr fname:ptr ft:(raw Type)):void
+  (let (ftt:(raw Type) ft
         ret-ir:ptr (type-to-ir (ftt ret))
         nparams:i32 (ftt num-params))
     ; Global pointer holding the address of the current implementation.
@@ -608,7 +608,7 @@
 ; Build a tiny module containing the @fname thunk + @fname.tgt global, and add
 ; it to the JIT permanently (no resource tracker). This is the stable public
 ; symbol callers see; on each redefinition, only @fname.tgt is updated.
-(defn jit-thunk-module (line:i32 fname-ir:ptr ft:ptr):void
+(defn jit-thunk-module (line:i32 fname-ir:ptr ft:(raw Type)):void
   (let (buf:ptr null  szp:i64 (cast i64 0)
         s:ptr (open_memstream (addr-of buf) (cast ptr (addr-of szp))))
     (fprintf s "; ModuleID = '<repl-thunk>'\n")
@@ -651,7 +651,7 @@
 
 ; Append ABI-lowered `declare`s for a defunion's arm constructors to the REPL
 ; preamble so later modules can call them (the defining module owns the bodies).
-(defn repl-declare-union-ctors (uname:ptr):void
+(defn repl-declare-union-ctors (uname:CStr):void
   (if-some (ud (uniondef-lookup uname))
     (let (ret:ptr (type-for-sdef (ud sdef))
           ret-info:ptr (abi-classify (type-for-sdef (ud sdef)))

@@ -309,13 +309,18 @@ substrate; Stage 14 only element-types them, §14.1.)*
   dispatch sites tree-wide) and **`NodeKind`** compares — the kind-ladder→`case`
   sweep candidates, **without relayout** (`Type`/`Node` stay structs).
 
-### 6. Elem-less `:ptr` params/returns for statically-known types
+### 6. Elem-less `:ptr` params/returns for statically-known types — **DONE (2026-07-13, see §14.3)**
 
 ~194 `:ptr` params across generics/union files, 62 `defn …:ptr` + ~671 bare-`ptr`
 params in nucleusc.nuc, and nearly every top-level fn in cheader/nuch/repl.
 `scope-define` takes `s:ptr` then casts to `ptr:Scope` (scope.nuc:19). Retyping a
 `ptr`→`(raw T)`/`(ref T)` param or return is ABI/IR-identical (both lower to
 `ptr`). **Fully reachable in `nucleusc.nuc` — see ground-truth correction 1.**
+The elem-less `:ptr` signature population across the whole translation unit
+(scope/type-utils/type-mangle → abi/union-registry/union-emit → generics →
+nucleusc → repl/nuch/cheader) is now retyped per §14.3; the remainder is
+genuinely `ptr`-to-`ptr` arrays (§14.4), identity/memo keys, or LLVM/FFI
+plumbing — not further instances of this idiom.
 
 ### 7. `ptr:ptr`/`ptr:i32` out-parameter boxes
 
@@ -562,7 +567,7 @@ compared by identity). Delete the redundant `(cast ref:Scope (cl defer-scope))`
 casts are gone; `make bootstrap` fixed point (or re-converged for `ref` batches);
 tests green. This is the single biggest cast-deletion phase.
 
-### 14.3 — Type elem-less `:ptr` params/returns  *(mostly inert)*
+### 14.3 — Type elem-less `:ptr` params/returns  *(mostly inert)* — **DONE (2026-07-13)**
 
 **Agent: focused-task-implementer**, dispatched by file cluster
 (scope/type-utils/type-mangle → abi/union-registry/union-emit → generics →
@@ -1063,10 +1068,10 @@ are derived from `n` and never touched, so the `(= hp 'return)` Node-identity
 ladder is bit-for-bit unchanged. Cursor-collapse and thread-macro cleanup were
 applied only where cheap and adjacent (section 1's `emit-fn`, section 2's
 `fn-*` helpers); the TE-4 and later sections used signature-only edits for
-throughput and safety. **No local was ever eliminated** (the batch-4a
+throughput and safety. **No local was ever eliminated** (the batch-4
 `safe-coerce-val` trap), so no SSA renumbering occurred anywhere.
 
-**Overloaded-multimethod trap (new this batch, distinct from 4a): `register-rmacro`
+**Overloaded-multimethod trap (new this batch, distinct from batch 4): `register-rmacro`
 is an overloaded PAIR — `(prefix:ptr wrap-sym:ptr)` and
 `(prefix:StrView wrap-sym:CStr)` — dispatch-distinguished by ptr-vs-StrView.**
 The `(ptr,ptr)` overload serves `emit-def-rmacro`'s `(register-rmacro
@@ -1112,7 +1117,7 @@ these are LLVM handles / IR text buffers / argv, not compiler-internal
 Node/Type/Val pointers, and carry no `=`/dispatch semantics inside the type
 system. (3) Val-array params under pointer arithmetic (`emit-resolved-call`'s
 `args`, `emit-dyn-forward`'s `args` — `(ptr+ (cast ptr:Val args) i)`) stayed
-`ptr` (14.4's array-of-struct territory, per the batch-4a `emit-call-with-args`
+`ptr` (14.4's array-of-struct territory, per the batch-4 `emit-call-with-args`
 precedent). (4) Node-tree-building helper *returns* (`fn-rewrite-*`,
 `fn-make-int-node`, `union-ctor-form`, `defvar-init-ir`, `desugar-*`, the
 `import-list-*` builders) kept `ptr` returns — they hand off freshly-built
@@ -1130,15 +1135,98 @@ results, all plain pointers, no `ref`→`raw`). `examples/and-narrow.nuc` needs 
 re-run — every retype was `(raw T)`/`CStr`/deliberate-`ptr`, zero `(ref T)`
 promotions, so no new flow-check obligation was introduced.
 
-**Resume point for whoever picks up next: `nucleusc.nuc` is complete for 14.3.**
-The remaining 14.3 candidates are the source-imported sibling files
-`src/repl.nuc`, `src/cheader.nuc`, and `src/nuch.nuc` (inlined into the
-nucleusc.nuc translation unit but physically separate), plus `src/format.nuc`
-if its `ptr` string params warrant CStr — these were out of scope for the
-nucleusc.nuc batches and are the natural batch 4c targets. `src/reader.nuc` /
-`lib/*.nuc` are library files, likely a separate later concern. The full-suite
-`make test` + `make bootstrap` fixed-point verification for batches 4a+4b runs
-in the build-test-runner pipeline stage, not here.
+**Status (batch 4c, 2026-07-13): `src/repl.nuc`, `src/nuch.nuc`,
+`src/cheader.nuc` done; `src/format.nuc` deliberately left untouched.
+Byte-identical, verified after every file. 14.3 is now COMPLETE.** Batch 4c
+finished the source-imported sibling files. **16 `defn` signatures retyped**
+(`(raw Node)` ×9, `(raw Type)` ×3, `CStr` ×5), each file diffed
+**byte-identical, zero lines** against the pre-batch baseline (same unmodified
+`bin/nucleusc` boot) immediately after its edits — four incremental checkpoints
+— and a full `make` (compile + clang link) succeeds with the final
+`build/nucleusc.ll` byte-identical to baseline.
+
+- **`repl.nuc` (fully in scope, no carve-outs) — 5 retypes:** `repl-eval-form`'s
+  `form` → `(raw Node)` (signature-only; its `f:ptr:Node (cast ptr:Node form)`
+  alias becomes a raw→ref no-op, left as-is); `emit-fn-thunk`/`jit-thunk-module`'s
+  `ft` → `(raw Type)` (emit-fn-thunk's `ftt:ptr:Type (cast ptr:Type ft)` collapsed
+  to the endorsed rebind `ftt:(raw Type) ft`); `repl-error`'s `msg` and
+  `repl-declare-union-ctors`'s `uname` → `CStr` (diagnostic message / union-name
+  strings, no `=`/identity comparison, flow only into fprintf and a
+  `CStr`-accepting `uniondef-lookup`). **Left `ptr` deliberately:**
+  `repl-error-json-puts`'s `s` (`(= s null)` parameter null-check — the
+  `program-defn-record`/`abi-print-param` trap class, CStr would crash);
+  `repl-read-input`'s return (raw growable stdin buffer, `realloc`'d + `free`'d by
+  caller); `rewrite-first-fname`/`update-fn-tgt`'s `buf`/`fname`/`impl-name`/`out`
+  (IR-text `memcmp`/`fwrite` rewriter + `FILE*` + LLVM-symbol lookup names);
+  `rt`/`fname-ir` in the `repl-jit-module-rt*` family (LLVM resource-tracker
+  handles + IR-symbol text). `repl-register-node` has no `:ptr` param/return so
+  its body `(cast ptr:StructDef …)` was left alone (14.2-style cleanup, out of
+  scope here).
+- **`nuch.nuc` (write-side text emitters carved out) — 5 retypes, all
+  import/utility side:** `str-ends-with`'s `s` → `CStr` (the tail-vs-`suffix`
+  comparison already lowers to `strcmp` off the already-`CStr` `suffix`, so inert);
+  `emit-nuch-declare-import`/`emit-nuch-defmethod-import`/`emit-defunion-import`/
+  `emit-nuch-import-forms`'s `form`/`forms` → `(raw Node)` (signature-only — these
+  *register* declarations/methods/unions and dispatch imported forms; not
+  emitters). **Left `ptr`:** every `emit-nuch-*` write function
+  (`emit-nuch-list`/`defstruct`/`ret`/`declare`/`defconst`/`defenum`/`defmacro`/
+  `defmethod`/`defn`/`defprotocol`/`extend`/`defcast`/`extern`/`header`) — these
+  are the `.nuch` text emitters whose job is `print-node`/`printf`-assembling exact
+  header output (leave-alone table + carve-out reasoning), including their
+  `mangled`/`source-file` string params.
+- **`cheader.nuc` (lexer byte-scanner + C-header emitters carved out) — 6
+  retypes:** the two non-cursor/non-emitter classifiers `c-fn-noreturn`'s `fname`
+  → `CStr` (name comparisons already `strcmp` off string literals) and
+  `c-type-to-nucleus`'s `name` → `CStr` + return → `(raw Type)` (a type *lookup*;
+  its sole consumer `c-parse-type` binds the result to a bare-`ptr` local, so the
+  `(raw Type)` return is flow-exempt and inert); plus the four pure *decision
+  helpers* that return a Node/bool and **do not** emit text —
+  `extract-type-node`/`cheader-defn-ret-node`'s Node param → `(raw Node)`,
+  `cheader-template-instance`/`cheader-mentions-closure`'s `tn` → `(raw Node)`.
+  Two of these (`extract-type-node`, `cheader-mentions-closure`) are also called
+  from the already-done `nucleusc.nuc`; **the `(node-at …)` → `(raw Node)`
+  argument at those cross-file sites (`?ptr:Node` passed to a `(raw Node)` param)
+  coerces cleanly and stays byte-identical** — a niche `(Maybe (ref Node))` weakens
+  to `(raw Node)` exactly as it already weakened to bare `ptr`. **Left `ptr`
+  (carve-out a — lexer byte-cursors):** `c-skip-ws`/`c-read-ident`/`c-skip-parens`/
+  `c-parse-type`/`c-parse-func-decl`/`c-parse-struct-body`/`c-parse-struct-decl`/
+  `read-pipe-output`/`emit-c-include` (all `buf`/`pos`/`len` raw-byte cursors or the
+  clang-`-E` parse driver). **Left `ptr` (carve-out b — C-type-spelling string
+  producers / header emitters):** `type-name-to-c`/`niche-sym-to-c`/`type-node-to-c`
+  and every `emit-cheader-*`. The two FFI `declare`s (`popen`/`pclose`) keep their
+  C-ABI `ptr` params.
+- **`format.nuc` — 0 retypes, left entirely (the conservative call the brief
+  invited).** Every function is either a fixed-arity `snprintf`-vararg wrapper
+  (`fmt-i32`/`fmt-i64`/`fmt-s`/`fmt-sd`/`fmt-2s`/`fmt-3s`/`fmt-2s-i`/`fmt-i32-i32`)
+  or a byte-by-byte string transformer/scanner (`sanitize-for-ir`/`sanitize-for-c`/
+  `ir-name-append`/`ir-name-token`/`ir-name-illegal-char`). The `fmt`/`s` params
+  ARE genuine C-strings, but a `CStr` retype deletes **zero** casts and simplifies
+  **zero** comparisons (they flow straight to `snprintf` as varargs — `is-ptr-like`
+  already treats `CStr`≡`ptr` there), so it clears neither half of the "clearly
+  safe AND clearly beneficial" bar while carrying maximum blast radius (these are
+  the most-called helpers in the tree) and the documented arity/segfault
+  sensitivity. `ir-name-token` in particular is bootstrap-critical (its own comment
+  warns any perturbation renames the compiler's hyphenated symbols) and returns its
+  argument by pointer-identity on the fast path. None warrants a retype.
+
+**One trap worth recording, matching batch 4b's overload finding shape but
+resolved the other way:** the CStr candidates here were all confirmed *single*
+`defn`s (`grep -c "(defn NAME "`), and each string param was audited for a
+`(= param null)` guard (only `repl-error-json-puts`'s `s` had one → left `ptr`),
+for identity comparison against a `ptr`-typed field (none), and for a
+`conj`-into-`(Vector ptr)` sink (none). No new trap class emerged; the batch was
+dominated by signature-only `(raw Node)` param retypes on
+registration/dispatch/decision helpers, which are byte-identical by construction
+(the in-body `(cast ptr:Node param)` alias becomes a raw→ref no-op). No `(ref T)`
+promotions anywhere, so no flow-check obligation was introduced; `examples/and-
+narrow.nuc` needs no re-run.
+
+**14.3 is COMPLETE across the whole compiler translation unit** (scope/type-utils/
+type-mangle → abi/union-registry/union-emit → generics → nucleusc → repl/nuch/
+cheader; format left by design). `src/reader.nuc` / `lib/*.nuc` are library files —
+a separate later concern if pursued at all. The full-suite `make test` +
+`make bootstrap` fixed-point verification for the 14.3 batches runs in the
+build-test-runner pipeline stage, not here.
 
 ### 14.4 — Parallel arrays → array-of-struct  *(controlled refresh)*
 
