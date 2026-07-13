@@ -3618,7 +3618,7 @@
         (let (sd:ptr:StructDef (cast ptr:StructDef (-> tt (_ elem) (cast ptr:Type _) (_ sdef)))
               idx:i32 (struct-field-index (cast ptr sd) (fn-node s)))
           (when (< idx 0) (return null))
-          (return (aref (cast ptr:ptr (sd field-types)) idx)))))))
+          (return ((field-at (sd fields) idx) type)))))))
 
 ; Result type of `(get callee selector)` for callee type `ct` — mirrors
 ; emit-get-with-callee / emit-get-intrinsic so the type pass cannot drift from
@@ -3642,7 +3642,7 @@
             idx:i32 (struct-field-index ((ctt elem) sdef)
                                         (-> lit (cast ptr:Node _) (_ s))))
         (when (< idx 0) (return null))
-        (return (aref (cast ptr:ptr (sd field-types)) idx))))))
+        (return ((field-at (sd fields) idx) type))))))
 
 ; Result type of `(invoke callee arg…)` for callee type `ct` — the tier-0 `invoke`
 ; method's return, else null (mirrors emit-invoke-with-callee at the exact tier).

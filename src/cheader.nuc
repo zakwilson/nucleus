@@ -506,9 +506,7 @@
     (let (existing:ptr (lookup-struct tag-name))
       (when (!= existing null) (return existing)))
     (let (sd:ptr:StructDef (register-struct (arena-strdup tag-name)))
-      (.set! sd field-names fnames)
-      (.set! sd field-types ftypes)
-      (.set! sd num-fields nfields)
+      (struct-set-fields sd fnames ftypes nfields)
       (.set! sd src-file g-source-path)
       (.set! sd src-line 0)
       (if (!= is-union 0)
@@ -583,8 +581,9 @@
               ; Register as a second alias if not already known.
               (when (= (lookup-struct tname) null)
                 (let (alias:ptr:StructDef (register-struct (arena-strdup tname)))
-                  (.set! alias field-names ((cast ptr:StructDef sd) field-names))
-                  (.set! alias field-types ((cast ptr:StructDef sd) field-types))
+                  ; The alias shares the tag's shape; the `fields` Vector is
+                  ; immutable after build, so sharing the handle is sound.
+                  (.set! alias fields ((cast ptr:StructDef sd) fields))
                   (.set! alias num-fields ((cast ptr:StructDef sd) num-fields))
                   (.set! alias src-file g-source-path)
                   (.set! alias src-line 0)
@@ -596,12 +595,11 @@
                     (do
                       (fprintf g-type-stream "%%%s = type { " tname)
                       (let (i:i32 0
-                            nf:i32 ((cast ptr:StructDef sd) num-fields)
-                            fts:ptr ((cast ptr:StructDef sd) field-types))
+                            nf:i32 ((cast ptr:StructDef sd) num-fields))
                         (while (< i nf)
                           (when (!= i 0) (fprintf g-type-stream ", "))
                           (fprintf g-type-stream "%s"
-                            (type-to-ir (aref (cast ptr:ptr fts) i)))
+                            (type-to-ir ((field-at ((cast ptr:StructDef sd) fields) i) type)))
                           (inc! i)))
                       (fprintf g-type-stream " }\n\n"))))))
             (when (!= (cast i64 (strlen tname)) (cast i64 0))

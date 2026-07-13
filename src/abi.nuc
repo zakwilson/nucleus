@@ -15,6 +15,34 @@
 ; Only TY-STRUCT is ever non-DIRECT, so every scalar/pointer path is unchanged.
 ; See design/stage8/platform.md for the reverse-engineered coercion table.
 
+; ============================================================
+; Stage 14 §14.4 batch 3a — StructDef field table accessors.
+; A StructDef's fields are one `(Vector (ref Field))` (was the two parallel
+; arrays field-names/field-types). These are the shared read/build accessors.
+; ============================================================
+
+; Read field `i` of struct `sd`'s field table. The `fields` handle is `(raw …)`
+; (null on a name-only pre-registered struct), so this asserts raw→ref before
+; `invoke` — sound because every caller loops under the `num-fields` bound, so a
+; null `fields` is never indexed.
+(defn field-at (fields:(raw (Vector (ref Field))) i:i32):ref:Field
+  (return (invoke (cast (ref (Vector (ref Field))) fields) (cast usize i))))
+
+; Populate a StructDef's `fields` Vector from parallel name/type arrays and set
+; the cached `num-fields` count. Names are already interned by the caller (the
+; array holds the canonical interned pointers, preserving struct-field-index's
+; identity match); types are the raw Type* pointers. This is the single
+; array→Vector conversion point for every StructDef builder.
+(defn struct-set-fields (sd:(raw StructDef) fnames:ptr ftypes:ptr nfields:i32):void
+  (let ((fields-vec (ref (Vector (ref Field)))) (vector-new-in (addr-of g-arena-alloc)))
+    (dotimes (i:i32 nfields)
+      (let (rec:ref:Field (new Field))
+        (.set! rec name (aref (cast ptr:ptr fnames) i))
+        (.set! rec type (cast raw:Type (aref (cast ptr:ptr ftypes) i)))
+        (conj fields-vec rec)))
+    (.set! sd fields fields-vec)
+    (.set! sd num-fields nfields)))
+
 ; Check if target is aarch64 (AAPCS64 ABI uses plain pointers for large structs,
 ; not byval attributes).
 (defn abi-is-aarch64 ():i32
@@ -61,7 +89,7 @@
         n:i32 (sdd num-fields)
         mx:i32 0)
     (dotimes (i:i32 n)
-      (let (fsz:i32 (abi-sizeof (aref (cast ptr:ptr (sdd field-types)) i)))
+      (let (fsz:i32 (abi-sizeof ((field-at (sdd fields) i) type)))
         (when (> fsz mx) (set! mx fsz))))
     (return (abi-align-up mx (abi-struct-align sd)))))
 
@@ -71,7 +99,7 @@
         n:i32 (sdd num-fields)
         a:i32 1)
     (dotimes (i:i32 n)
-      (let (fa:i32 (abi-alignof (aref (cast ptr:ptr (sdd field-types)) i)))
+      (let (fa:i32 (abi-alignof ((field-at (sdd fields) i) type)))
         (when (> fa a) (set! a fa))))
     (return a)))
 
@@ -82,7 +110,7 @@
         n:i32 (sdd num-fields)
         off:i32 0)
     (dotimes (i:i32 n)
-      (let (ft:ptr (aref (cast ptr:ptr (sdd field-types)) i)
+      (let (ft:ptr ((field-at (sdd fields) i) type)
             fa:i32 (abi-alignof ft))
         (set! off (abi-align-up off fa))
         (set! off (+ off (abi-sizeof ft)))))
@@ -104,7 +132,7 @@
       ; every member is classified against the same base (SysV merges the
       ; classes of all members, which the max-merge below already does).
       (when (!= (sdd is-union) 0) (set! off 0))
-      (let (ft:ptr (aref (cast ptr:ptr (sdd field-types)) i)
+      (let (ft:ptr ((field-at (sdd fields) i) type)
             fa:i32 (abi-alignof ft)
             fsz:i32 (abi-sizeof ft))
         (set! off (abi-align-up off fa))

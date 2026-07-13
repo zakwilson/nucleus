@@ -1332,8 +1332,70 @@ Findings from batch 2:
   (`(raw (Vector CStr))`, `die-at`-guarded — `die-at` is not known-noreturn, so no
   narrowing) needed the same one-shot cast before its `invoke` loop.
 
-**Remaining batches** (not started): `Field{name,type}` for `StructDef`/`Type`
-(the last 14.4 sub-step). `Constraint` and `Conformance.args` are **done**.
+**Status (batch 3a — `StructDef.field-names`/`field-types` → `Field`, 2026-07-13):
+DONE, controlled refresh reconverged in one pass (again).** Introduced
+`Field{name:ptr, type:(raw Type)}` (compiler-types.nuc, immediately before
+`StructDef`) and replaced `StructDef`'s two parallel arrays (`field-names`/
+`field-types`) with a single `(fields (raw (Vector (ref Field))))` field, keeping
+`num-fields` as the cached count (same rationale as `num-arms`/`num-constraints`;
+it is read on the hottest paths — `struct-field-index` and the ABI classifier).
+This is the highest-surface 14.4 batch (~40 `field-names` + ~64 `field-types`
+sites across abi/cheader/compiler-types/union-registry/generics/repl/nucleusc).
+
+- **`Field.name` stays `ptr`, NOT `CStr`** — the batch-2 `Constraint.proto`
+  reasoning (retype to CStr because every comparison already had a CStr operand)
+  does *not* apply. `struct-field-index` (nucleusc.nuc) matches a selector against
+  the field name by **pointer identity** (`(= (field name) fname)`, both interned
+  ptrs) on the hot field-access path; struct-field names are on the NS-5
+  identity-substrate exclusion list. A `CStr` retype would lower that hot compare
+  to `strcmp` (behavior-preserving — interned strings are strcmp-equal — but a
+  perf regression and an IR shift). `Field.type` is `(raw Type)` to match the
+  stage-14 Type-pointer idiom and every consumer's `t:raw:Type` param; `(raw Type)`
+  binds implicitly into the bare-`ptr` locals the readers use and returns fine
+  into a `?ptr:Type` (verified: `callable-get-type` already returns a `(raw Type)`
+  `Method.ret-type` into its `?ptr:Type`).
+- **Two shared accessors, both in abi.nuc** (the earliest field reader, imported
+  before union-registry): `field-at (fields i):ref:Field` (the batch-2
+  `constraints-at` pattern — a `raw→ref` cast then `invoke`, sound because every
+  caller loops under the `num-fields` bound so null `fields` is never indexed) and
+  `struct-set-fields (sd fnames ftypes nf):void` (the single array→Vector
+  conversion point — every builder that had parallel `fnames`/`ftypes` arrays now
+  calls it; loop-in-place builders (emit-defstruct, the vfn/cfn env struct,
+  struct-template-stamp, repl-register-node) were redirected to *local* arrays +
+  one `struct-set-fields` call, keeping their per-field extract/emit logic byte
+  -for-byte). Names are **not** re-interned in `struct-set-fields` — the caller's
+  arrays already hold the canonical interned pointers, preserving identity.
+- **`fields` is `(raw …)` (nullable), unlike `UnionDef.arms` which is `(ref …)`.**
+  `register-struct` (the sole allocator) pre-registers a name-only struct with
+  `num-fields 0` and `fields` null (from `new`); `struct-set-fields` fills it
+  later. So the field is honestly nullable and reads go through the `field-at`
+  cast, exactly the batch-2 nullable-`constraints` situation.
+- **abi.nuc IR-lowering zone: field *access* retyped, algorithm untouched.**
+  `abi-union-size`/`abi-struct-align`/`abi-struct-size`/`abi-class-eightbyte` had
+  their `(aref (cast ptr:ptr (sdd field-types)) i)` reads swapped to
+  `((field-at (sdd fields) i) type)` with the exact same iteration order and
+  merge logic — `field-at` returns the identical `Type*` `aref` did, so the
+  eightbyte classification result is byte-identical. `make abi-test` (`abi-interop`)
+  PASSES, and `make bootstrap` stays byte-identical (the ABI codegen never shifts).
+- **cheader.nuc text emitters: access retyped, string assembly untouched** (the
+  14.3 batch-4c carve-out). The tagged-struct builder calls `struct-set-fields`;
+  the typedef-alias path **shares** the source struct's `fields` Vector handle
+  (immutable after build) + copies `num-fields`; the alias's `%name = type {…}`
+  emit loop reads via `field-at` but keeps its exact fprintf/order.
+- **Reconverged in ONE pass** — `make bootstrap` (`stage1.ll == stage2.ll`)
+  PASSED *before* `make update-bootstrap`, despite touching abi.nuc. The task
+  flagged possible drift, but the emitted IR for every construct (struct layout,
+  ABI classification, field GEPs) is a function of the field *types*, which
+  `field-at` reproduces exactly — the parallel-array→Vector change is invisible in
+  output IR. The OLD boot (parallel-array StructDef internally) and NEW compiler
+  (Vector StructDef) emit identical IR for the new source. `make test` 168/168 and
+  `make abi-test` green throughout; round-2 `make clean && make && make bootstrap`
+  byte-identical.
+
+**Remaining batches** (not started): `Field{name,type}` for **`Type`**
+(`params`/`param-names`/`opt-defaults`, batch 3b — a structurally separate
+parallel-array pair on `Type`, not `StructDef`, with its own large call-site
+footprint). `StructDef`, `Constraint`, and `Conformance.args` are **done**.
 
 **Agent: systems-impl-engineer** (new element structs + layout change); build-test
 gates. **Read (scoped):** the arm-array build/scan (union-registry.nuc:789-800,
