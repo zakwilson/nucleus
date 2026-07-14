@@ -620,3 +620,23 @@
   ns:ptr      ; interned namespace name
   prefix:ptr) ; interned ir-prefix string for that namespace
 
+; Stage 14 §14.5 batch 3 — BoxedFn-instance memo entry: replaces the parallel
+; g-boxedfn-keys/g-boxedfn-types arrays (union-registry.nuc) with one
+; `(Vector (ref BoxedFnEntry))`. `key` is always looked up by pointer identity
+; (never strcmp'd — both sides already interned), so it stays `ptr`, not
+; `CStr`; `ty` is a memoised box Type* looked up by `sdef` pointer identity
+; (boxedfn-canonical), typed `(raw Type)` per the field-typing idiom.
+(defstruct BoxedFnEntry
+  key:ptr        ; interned "BoxedFn.<sig>" memo key
+  ty:(raw Type)) ; the memoised box Type* (carries the Fn signature)
+
+; Stage 14 §14.5 batch 3 — `(dyn P)`-instance memo entry: replaces the
+; parallel g-dyn-keys/g-dyn-types/g-dyn-protos arrays (union-registry.nuc)
+; with one `(Vector (ref DynEntry))`. All fields are identity-compared
+; (never strcmp'd — every key/value is already interned): `key`/`proto` stay
+; `ptr`, `ty` is `(raw Type)` matching BoxedFnEntry.
+(defstruct DynEntry
+  key:ptr        ; interned "dyn.<P>" memo key
+  ty:(raw Type)  ; the memoised box Type*
+  proto:ptr)     ; interned protocol-name string
+
