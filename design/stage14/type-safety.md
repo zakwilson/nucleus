@@ -1609,8 +1609,23 @@ assumed clean. `make test` 168/168; `make bootstrap` fixed point reconverged in
 **one pass**; `make update-bootstrap` refreshed all boot IRs; round-2
 `make clean && make && make bootstrap` byte-identical;
 `drop-defer`/`with-lifecycle`/`with-autofree`/`ce3-owning-closure` examples
-diff-exact against `tests/expected/*.out`. Sub-step 6 (`Scope.syms`) remains
-open — see OQ2, reserved for systems-impl-engineer.
+diff-exact against `tests/expected/*.out`.
+
+**Sub-step 6 (`Scope.syms`): explicitly DEFERRED per OQ2 (2026-07-14), closing
+out 14.5.** No profiling evidence exists anywhere in this repo's design docs
+showing `scope-lookup`'s reverse linear scan is a bottleneck (checked: no
+"profil[e/ing]" hit near `scope-lookup` beyond the original design discussion
+itself). OQ2's own recommendation is to defer this migration *unless*
+profiling shows the hand-rolled growable is a burden — absent that evidence,
+forcing the riskiest migration in this phase (the one carrying a genuine
+pointer-stability hazard: `scope-define`'s `ref:Sym` return into the array,
+scope.nuc:36,43) has cost without a demonstrated benefit. Per 14.5's own
+"Done when" criterion — "the hand-rolled growables are gone **or `Scope.syms`
+explicitly deferred per OQ2**" — this satisfies phase completion. **Phase 14.5
+is now DONE** (sub-steps 1-5 migrated, sub-step 6 deferred by design).
+Revisit only if profiling ever flags `scope-lookup` as hot; the recommended
+approach if revisited is unchanged: `(Vector (ref Sym))`, boxed not inline,
+reserved for systems-impl-engineer given the pointer-stability risk.
 
 **Build, cold-first:**
 1. `g-include-paths`, `g-link-args` (fixed 64-slot `malloc` → `(Vector CStr)`).
