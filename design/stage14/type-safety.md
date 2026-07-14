@@ -1492,8 +1492,8 @@ tests green; boot re-converged.
 for `Scope.syms`. **Read (scoped):** each growable's grow thunk + read sites
 (idiom 4 anchors).
 
-**Status (batch 2, 2026-07-14): DONE, byte-identical bootstrap (one-pass
-reconverge).** Sub-steps 1 and 2 below are both complete — see
+**Status (batch 3, 2026-07-14): DONE, byte-identical bootstrap (one-pass
+reconverge).** Sub-steps 1-3 below are now complete — see
 [progress.md](../progress.md) for the full writeups. Batch 1
 (`g-include-paths`/`g-link-args`): allocator-ordering wrinkle, the
 `conj`-needs-explicit-`CStr`-cast finding, and the manual `-I`/`-l` end-to-end
@@ -1507,7 +1507,44 @@ compilation unit (a null literal cannot be assigned to a `ref`-typed variable
 under the non-null-pointer flow checker), while the vtable memo is never
 reset at all. Also corrected a stale inline comment ("nothing calls
 ensure-vtable-for yet") that no longer matched the tree (TE-3 callers exist).
-Sub-steps 3-6 remain open.
+Batch 3 (`g-boxedfn-keys`/`-types`/`-count`/`-cap`, `g-dyn-keys`/`-types`/
+`-protos`/`-count`/`-cap`, both union-registry.nuc): two new element structs
+in compiler-types.nuc — `BoxedFnEntry{key:ptr, ty:(raw Type)}` (a 2-field
+memo, as anticipated) and `DynEntry{key:ptr, ty:(raw Type), proto:ptr}` (a
+3-field memo — the `(dyn P)` box additionally carries the protocol name,
+confirming the design note's guess) — replacing the two cap-doubling
+parallel-array pairs with `g-boxedfn-table:(ref (Vector (ref BoxedFnEntry)))`
+and `g-dyn-table:(ref (Vector (ref DynEntry)))` (both `ref`, mirroring
+`g-vtable-table`: neither is ever explicitly reset in `compiler-init`, unlike
+`g-ns-prefix-table`). Identity-vs-content audit for both: **all** fields stay
+`ptr`/`(raw Type)`, never `CStr` — `key` is looked up by pointer identity
+(`boxedfn-memo-lookup`/`dyn-memo-lookup`, already interned via `intern-str`
+at the call site) and `ty` is looked up by `sdef` pointer identity
+(`boxedfn-canonical`/`dyn-canonical`/`dyn-proto-of`), matching batch 2's
+`VtableEntry`/`NsPrefixEntry` finding exactly — this family was in fact
+already flagged as identity-keyed by 14.3 batch 2's memo-lookup audit (see
+that batch's note), so this batch only had to confirm, not discover, the
+answer. The union-registry import-ordering caveat turned out to be a
+**non-issue**, same shape as batch 1's arena-ordering finding: union-registry.nuc
+is imported from nucleusc.nuc *after* both `(import-use vector)` and
+`(import-use arena)` have already run (vector.nuc itself pulls in `allocator`
+internally), so by the time these two `defvar`s are parsed, `Vector` and
+`AllocHandle` are already fully registered — no different from `g-vtable-table`'s
+position in nucleusc.nuc, well after the same imports. `pending-union-deps-ready`
+/`drain-pending-union-irs` (union-registry.nuc:158-185) never actually engages
+here: `BoxedFnEntry`/`DynEntry` have no by-value `TY-STRUCT`/`TY-UNION` fields
+(only `ptr`/`(raw Type)`, both pointer-kind, lowering to opaque `ptr` per that
+function's own doc comment), so the stamped `(Vector (ref BoxedFnEntry))`/
+`(Vector (ref DynEntry))` instances never queue a deferred dependency on their
+own account — same as batches 1-2's new Vector instances. Bootstrap reconverged
+in **one pass** (`make bootstrap` PASSED before `update-bootstrap`) — no 2-stage
+manual workaround needed, consistent with every other 14.5 batch so far; the
+change is invisible in emitted IR for any existing `BoxedFn`/`(dyn P)` program
+(the memo's *lookup semantics* are unchanged, only its storage). `make test`
+168/168; `boxedfn`/`dyn-comb`/`dyn-protocol`/`comb-storage` examples diff-exact
+against `tests/expected/*.out`; `make update-bootstrap` refreshed all boot IRs;
+round-2 `make clean && make && make bootstrap` byte-identical. Sub-steps 4-6
+remain open.
 
 **Build, cold-first:**
 1. `g-include-paths`, `g-link-args` (fixed 64-slot `malloc` → `(Vector CStr)`).
@@ -1517,7 +1554,9 @@ Sub-steps 3-6 remain open.
 3. The type-erasure memos `g-boxedfn-*`, `g-dyn-*` — **mind union-registry import
    ordering** (these live in union-registry.nuc, imported early; a
    `(Vector (ref BoxKey))` element there must respect the `AllocHandle` pending-IR
-   drain, union-registry.nuc:159-172).
+   drain, union-registry.nuc:159-172). **DONE (2026-07-14)** — the ordering
+   caveat turned out to be a non-issue (see status note above); one-pass
+   reconverge.
 4. `Generic.methods` (→ `(ref (Vector (ref Method)))`, deleting the grow thunk).
 5. **`Scope.cleanup-slots`** (→ `(ref (Vector (ref Cleanup)))`).
 6. **`Scope.syms`** — *the pointer-stability caveat (systems-impl-engineer).*

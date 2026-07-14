@@ -382,34 +382,26 @@
 ; one spelling → one Type* → one sdef. LAZY like ensure-fatptr-sdef: the
 ; `%__boxedfn.… = type {…}` line is queued only when a signature is first parsed,
 ; so a box-free unit (the whole compiler) emits nothing → byte-identical bootstrap.
-(defvar g-boxedfn-keys:ptr null)   ; array of ptr — interned signature keys
-(defvar g-boxedfn-types:ptr null)  ; array of ptr — parallel box Type* (carries sig)
-(defvar g-boxedfn-count:i32 0)
-(defvar g-boxedfn-cap:i32 0)
+; §14.5 batch 3: the parallel keys/types arrays collapsed into one
+; `(Vector (ref BoxedFnEntry))`. Lazily constructed on first use (mirrors
+; g-vtable-table) — never explicitly reset, so `ref` not `raw`.
+(defvar (g-boxedfn-table (ref (Vector (ref BoxedFnEntry)))))
 
 (defn boxedfn-memo-lookup (key:ptr):ptr
-  (dotimes (i g-boxedfn-count)
-    (when (= (aref (cast ptr:ptr g-boxedfn-keys) i) key)
-      (return (aref (cast ptr:ptr g-boxedfn-types) i))))
+  (when (= g-boxedfn-table null) (return null))
+  (dotimes (i (cast i32 (count g-boxedfn-table)))
+    (let (e:ref:BoxedFnEntry (invoke g-boxedfn-table (cast usize i)))
+      (when (= (e key) key) (return (cast ptr (e ty))))))
   (return null))
 
 (defn boxedfn-memo-put (key:ptr ty:ptr):void
-  (when (= g-boxedfn-cap 0)
-    (set! g-boxedfn-cap 16)
-    (set! g-boxedfn-keys (arena-alloc (* (cast i64 g-boxedfn-cap) (ptr-bytes))))
-    (set! g-boxedfn-types (arena-alloc (* (cast i64 g-boxedfn-cap) (ptr-bytes)))))
-  (when (= g-boxedfn-count g-boxedfn-cap)
-    (let (nc:i32 (* g-boxedfn-cap 2)
-          nk:ptr (arena-alloc (* (cast i64 (* g-boxedfn-cap 2)) (ptr-bytes)))
-          nt:ptr (arena-alloc (* (cast i64 (* g-boxedfn-cap 2)) (ptr-bytes))))
-      (memcpy nk g-boxedfn-keys (* (cast i64 g-boxedfn-count) (ptr-bytes)))
-      (memcpy nt g-boxedfn-types (* (cast i64 g-boxedfn-count) (ptr-bytes)))
-      (set! g-boxedfn-keys nk)
-      (set! g-boxedfn-types nt)
-      (set! g-boxedfn-cap nc)))
-  (aset! (cast ptr:ptr g-boxedfn-keys) g-boxedfn-count key)
-  (aset! (cast ptr:ptr g-boxedfn-types) g-boxedfn-count ty)
-  (inc! g-boxedfn-count))
+  (when (= g-boxedfn-table null)
+    (set! g-boxedfn-table
+      (cast (ref (Vector (ref BoxedFnEntry))) (vector-new-in (addr-of g-arena-alloc)))))
+  (let (rec:ref:BoxedFnEntry (new BoxedFnEntry))
+    (.set! rec key key)
+    (.set! rec ty (cast raw:Type ty))
+    (conj g-boxedfn-table rec)))
 
 ; A dot-free signature token "<rettok>_<p0tok>_<p1tok>…" (each via
 ; type-mangle-token), keying the per-signature box StructDef name and memo entry.
@@ -456,17 +448,18 @@
 ; If `ty` is a BoxedFn instance type, return its canonical box Type* (carrying the
 ; Fn signature in ret/params/num-params); else null. Detection is by StructDef
 ; pointer identity against the memo, so a loaded box value and any re-derived
-; spelling both resolve. INERT until a box type is parsed (count stays 0 in a
-; box-free unit) — the loop never runs, so no IR is affected.
+; spelling both resolve. INERT until a box type is parsed (g-boxedfn-table stays
+; null in a box-free unit) — the null check short-circuits, so no IR is affected.
 (defn boxedfn-canonical (ty:ptr):ptr
   (when (= ty null) (return null))
+  (when (= g-boxedfn-table null) (return null))
   (let (tt:ptr:Type (cast ptr:Type ty))
     (when (!= (tt kind) TY-STRUCT) (return null))
     (let (sd:ptr (tt sdef))
       (when (= sd null) (return null))
-      (dotimes (i g-boxedfn-count)
-        (let (bt:ptr:Type (cast ptr:Type (aref (cast ptr:ptr g-boxedfn-types) i)))
-          (when (= (bt sdef) sd) (return (cast ptr bt)))))
+      (dotimes (i (cast i32 (count g-boxedfn-table)))
+        (let (e:ref:BoxedFnEntry (invoke g-boxedfn-table (cast usize i)))
+          (when (= ((e ty) sdef) sd) (return (cast ptr (e ty))))))
       (return null))))
 
 ; ============================================================
@@ -485,40 +478,27 @@
 ; whole compiler) emits nothing → byte-identical bootstrap. Protocol validation is
 ; deferred to box construction (union-registry is imported before generics, so the
 ; protocol registry is not yet visible here); a parse only stores the name.
-(defvar g-dyn-keys:ptr null)    ; array of ptr — interned "dyn.<P>" keys
-(defvar g-dyn-types:ptr null)   ; array of ptr — parallel box Type*
-(defvar g-dyn-protos:ptr null)  ; array of ptr — parallel interned protocol-name strings
-(defvar g-dyn-count:i32 0)
-(defvar g-dyn-cap:i32 0)
+; §14.5 batch 3: the parallel keys/types/protos arrays collapsed into one
+; `(Vector (ref DynEntry))`. Lazily constructed on first use (mirrors
+; g-vtable-table/g-boxedfn-table) — never explicitly reset, so `ref` not `raw`.
+(defvar (g-dyn-table (ref (Vector (ref DynEntry)))))
 
 (defn dyn-memo-lookup (key:ptr):ptr
-  (dotimes (i g-dyn-count)
-    (when (= (aref (cast ptr:ptr g-dyn-keys) i) key)
-      (return (aref (cast ptr:ptr g-dyn-types) i))))
+  (when (= g-dyn-table null) (return null))
+  (dotimes (i (cast i32 (count g-dyn-table)))
+    (let (e:ref:DynEntry (invoke g-dyn-table (cast usize i)))
+      (when (= (e key) key) (return (cast ptr (e ty))))))
   (return null))
 
 (defn dyn-memo-put (key:ptr ty:ptr proto:ptr):void
-  (when (= g-dyn-cap 0)
-    (set! g-dyn-cap 16)
-    (set! g-dyn-keys (arena-alloc (* (cast i64 g-dyn-cap) (ptr-bytes))))
-    (set! g-dyn-types (arena-alloc (* (cast i64 g-dyn-cap) (ptr-bytes))))
-    (set! g-dyn-protos (arena-alloc (* (cast i64 g-dyn-cap) (ptr-bytes)))))
-  (when (= g-dyn-count g-dyn-cap)
-    (let (nc:i32 (* g-dyn-cap 2)
-          nk:ptr (arena-alloc (* (cast i64 (* g-dyn-cap 2)) (ptr-bytes)))
-          nt:ptr (arena-alloc (* (cast i64 (* g-dyn-cap 2)) (ptr-bytes)))
-          np:ptr (arena-alloc (* (cast i64 (* g-dyn-cap 2)) (ptr-bytes))))
-      (memcpy nk g-dyn-keys (* (cast i64 g-dyn-count) (ptr-bytes)))
-      (memcpy nt g-dyn-types (* (cast i64 g-dyn-count) (ptr-bytes)))
-      (memcpy np g-dyn-protos (* (cast i64 g-dyn-count) (ptr-bytes)))
-      (set! g-dyn-keys nk)
-      (set! g-dyn-types nt)
-      (set! g-dyn-protos np)
-      (set! g-dyn-cap nc)))
-  (aset! (cast ptr:ptr g-dyn-keys) g-dyn-count key)
-  (aset! (cast ptr:ptr g-dyn-types) g-dyn-count ty)
-  (aset! (cast ptr:ptr g-dyn-protos) g-dyn-count proto)
-  (inc! g-dyn-count))
+  (when (= g-dyn-table null)
+    (set! g-dyn-table
+      (cast (ref (Vector (ref DynEntry))) (vector-new-in (addr-of g-arena-alloc)))))
+  (let (rec:ref:DynEntry (new DynEntry))
+    (.set! rec key key)
+    (.set! rec ty (cast raw:Type ty))
+    (.set! rec proto proto)
+    (conj g-dyn-table rec)))
 
 ; The (memoised) `(dyn P)` instance Type for protocol name `proto`. On a miss it
 ; registers a fresh {data:ptr, vtable:ptr} StructDef named `%__dyn.<P>`, queues its
@@ -551,26 +531,28 @@
 ; and any re-derived spelling both resolve). INERT until a `(dyn P)` is parsed.
 (defn dyn-canonical (ty:ptr):ptr
   (when (= ty null) (return null))
+  (when (= g-dyn-table null) (return null))
   (let (tt:ptr:Type (cast ptr:Type ty))
     (when (!= (tt kind) TY-STRUCT) (return null))
     (let (sd:ptr (tt sdef))
       (when (= sd null) (return null))
-      (dotimes (i g-dyn-count)
-        (let (dt:ptr:Type (cast ptr:Type (aref (cast ptr:ptr g-dyn-types) i)))
-          (when (= (dt sdef) sd) (return (cast ptr dt)))))
+      (dotimes (i (cast i32 (count g-dyn-table)))
+        (let (e:ref:DynEntry (invoke g-dyn-table (cast usize i)))
+          (when (= ((e ty) sdef) sd) (return (cast ptr (e ty))))))
       (return null))))
 
 ; The protocol name carried by a `(dyn P)` box Type (the interned symbol string,
 ; usable directly as a `protocol-lookup` key), or null if `ty` is not a dyn box.
 (defn dyn-proto-of (ty:ptr):ptr
   (when (= ty null) (return null))
+  (when (= g-dyn-table null) (return null))
   (let (tt:ptr:Type (cast ptr:Type ty))
     (when (!= (tt kind) TY-STRUCT) (return null))
     (let (sd:ptr (tt sdef))
       (when (= sd null) (return null))
-      (dotimes (i g-dyn-count)
-        (let (dt:ptr:Type (cast ptr:Type (aref (cast ptr:ptr g-dyn-types) i)))
-          (when (= (dt sdef) sd) (return (aref (cast ptr:ptr g-dyn-protos) i)))))
+      (dotimes (i (cast i32 (count g-dyn-table)))
+        (let (e:ref:DynEntry (invoke g-dyn-table (cast usize i)))
+          (when (= ((e ty) sdef) sd) (return (e proto)))))
       (return null))))
 
 ; ============================================================
