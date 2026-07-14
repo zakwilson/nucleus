@@ -1853,6 +1853,79 @@ shape) — all diff-exact/correct, exercising all four layout kinds through both
 edited functions. **This closes the `UnionDef.layout` sweep item.**
 `AbiInfo.kind`/`Type.kind`/`NodeKind` remain for future batches.
 
+**Status (`Type.kind` sweep, batch 1 — `src/type-utils.nuc` + `src/type-mangle.nuc`,
+2026-07-14): DONE, byte-identical, no refresh needed.** Grepped both files for
+`.kind` field access on a `Type` value plus `TY-*` comparisons. Unlike the
+MethodKind/UnionDef.layout files, these two are almost entirely built from
+`(when (= (tt kind) TY-X) (return R)) … (return DEFAULT)` chains, so nearly
+every candidate was a genuine ladder:
+
+- `type-utils.nuc`: **8 ladders converted** — `type-to-ir` (21 `TY-*` arms +
+  default), `type-to-c` (21 arms), `type-size` (19 arms), `int-width` (13
+  arms), plus four smaller-but-still-genuine multi-arm ladders `is-int-type`
+  (11 arms), `is-unsigned` (6 arms), `is-float-type`/`is-ptr-like` (2 arms
+  each). The latter four all return the *same* result (1) across every
+  matched arm with a differing default (0) — unlike the UnionDef.layout
+  sweep's excluded `is-niche` (a single combined `or`/`and` of two constants
+  in one incidental guard expression), these are written as a genuine
+  sequential multi-arm chain over the *same* form each testing a *different*
+  named kind with a sibling arm in the same construct — matching this sweep's
+  established "ladder" criterion (multi-arm, same form, no single-kind
+  guard), not the narrower "combined same-action test" exclusion. Converted
+  for the same documentation-level exhaustiveness value the earlier sweeps
+  established.
+  **Left alone** (genuine single-kind guards, no sibling arm in the
+  construct): `type-is-strview` (one `(!= (tt kind) TY-STRUCT)` check),
+  `ptr-pkind` (one `(!= (tt kind) TY-PTR)` check), `pkind-flow-check` (one
+  `(= sk TY-PTR)` check). `pkind-meet`/`type-as-pkind` dispatch on `PTR-*`
+  pkind values, not `TypeKind`, so out of scope for this sweep entirely.
+- `type-mangle.nuc`: **2 ladders converted**, both full-width — the pointer/
+  struct/fn arms of the `case` are more than a bare literal return
+  (`type-mangle-token`'s `TY-PTR` arm keeps its nested `if`; its and
+  `type-spelling`'s `TY-STRUCT`/`TY-UNION` arms keep the `->` accessor chain;
+  `type-spelling`'s `TY-FN` arm keeps the `fnty-intern` call and its
+  preceding comment) — direct transcription, no incidental guards found in
+  this file at all.
+
+`case`'s syntax reminder: `(case form v1 r1 v2 r2 … default)` expands via
+quasiquote to `(cond (= form v1) r1 (= form v2) r2 … true default)` — the
+trailing unpaired arg is a *required* catch-all (not compiler-checked
+exhaustiveness), and `form` (here `(tt kind)` or a pre-bound `k`) is
+re-evaluated per comparison, so it must stay a pure field/variable read (it
+already was, in every ladder here). No arity limit or awkwardness hit even at
+21 arms — each clause is just two list elements to the reader, and comments
+interleave fine between clauses (confirmed against the `nuch.nuc`/
+`fprint-node` precedent) as long as they sit between a value and its result
+or between a result and the next value, matching how the original `when`-
+chains' own inline comments (the `TY-CHAR`/struct-size doc comments) were
+carried over verbatim onto their case arms.
+
+Verified per protocol: `make clean && make` succeeded against the committed
+boot compiler; `make test` 168/168 green; `make bootstrap` **PASSed directly**
+(`PASS: stage1.ll == stage2.ll`, no `update-bootstrap` needed). A pre-batch
+stash/rebuild-baseline/restore/rebuild `build/nucleusc.ll` diff (same boot
+compiler both sides) was non-empty (294 hunks) but confirmed — by mapping
+every hunk's line number against the function boundaries in the pre-batch
+IR — to fall **entirely inside the 10 edited functions** (`type-to-ir`
+43, `type-to-c` 43, `type-size` 39, `is-int-type` 27, `is-float-type` 5,
+`is-ptr-like` 5, `int-width` 27, `is-unsigned` 13, `type-mangle-token` 46,
+`type-spelling` 46 — summing to exactly 294), zero spillover into any other
+function, zero `@.str` pool drift; the shape is the same branch-label
+renumbering the UnionDef.layout sweep saw (separate `when`/`cond.fallN`/
+`cond.endN` triples collapse into one shared `cond.testN.M`/`cond.thenN.M`
+chain). Given this touches `type-to-ir`/`type-size`/`type-mangle-token`/
+`type-spelling` — used by every function signature, generic instantiation,
+and symbol name in the compiler — the broad example sweep (`hello`,
+`closures`, `generic`, `protocol`, `dyn-comb`, `struct`, `vector-test`,
+`hashmap-test`, `optional`, `boxedfn`) all diff-exact matched
+`tests/expected/*.out`.
+
+This closes batch 1 of the `Type.kind` sweep for `type-utils.nuc` +
+`type-mangle.nuc`. Remaining for follow-up batches: `abi.nuc`'s `Type.kind`
+slice (independently deferred — leave-alone IR zone, §OQ5-adjacent), the
+`generics.nuc` `type-eq` ladder (~line 106-132, not reached this batch), and
+all `NodeKind` compares tree-wide (untouched).
+
 **Build:**
 1. **Pilot — `Cleanup` → `defunion`.** Model the three shapes as arms
    (`(libc-free slot)` / `(drop slot fn ty ret)` / `(defer node scope)`) and
