@@ -1865,6 +1865,19 @@ edited functions. **This closes the `UnionDef.layout` sweep item.**
    `AbiInfo.kind` carrying `reg0`/`reg1`/`size`/`align` payloads). `AbiInfo.kind`
    is optional (abi.nuc is a leave-alone IR zone — do it only if it stays
    byte-identical). `UnionDef.layout`'s `niche-elem` payload rides along.
+   **`MethodKind` DONE (2026-07-14, commit 222f0d1); `UnionDef.layout` DONE
+   (2026-07-14, commit bc7f1ad). `AbiInfo.kind` explicitly SKIPPED (2026-07-14)
+   — per its own "optional" marking, unlike the other two this one carries
+   different payload fields per arm (`reg0`/`reg1` for `ABI-COERCE1`/`-COERCE2`,
+   `size`/`align` for `ABI-MEMORY`), so it can't be pure cond→case sugar over a
+   plain enum — the design doc's own text says it needs `defunion`, a real
+   representation change, in `abi.nuc`, which is independently flagged
+   elsewhere in this doc as a leave-alone IR zone ("byte-exact IR generation;
+   a wrong reorder is an ABI bug"). Given it's marked optional and the
+   remaining `Type.kind`/`NodeKind` sweep (item 3, non-optional, "without
+   relayout") is both larger in value and lower in risk, `AbiInfo.kind` is
+   skipped rather than attempted. Revisit only if a future need for
+   `AbiInfo.kind` exhaustiveness checking arises specifically.**
 3. **`Type.kind` / `NodeKind` ladders** — mechanical kind-ladder→`case` sweep over
    the ~171 dispatch sites **without relayout** (`Type`/`Node` stay structs). This
    is exhaustiveness sugar over the enum, not a representation change.
