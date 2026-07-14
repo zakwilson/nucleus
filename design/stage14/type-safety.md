@@ -2071,6 +2071,138 @@ head-symbol-identity dispatch (b) is heavily intermixed there), `src/
 cheader.nuc` (26), `src/repl.nuc` (16), `src/nuch.nuc` (11), `src/type-
 mangle.nuc` (6) — none touched this batch.
 
+**Status (`NodeKind` sweep, batch 2 — `src/cheader.nuc` + `src/repl.nuc` +
+`src/nuch.nuc` + `src/type-mangle.nuc`, 2026-07-14): DONE, byte-identical, no
+refresh needed.** Audited every raw `NODE-*` hit in all four files (26 + 16 +
+11 + 6 = 59, matching the tree-wide grep) against the same guard discipline.
+Higher hit rate than batch 1 (6 genuine ladders, vs. 1/50) but for a
+structural reason: these files are AST-shaped type/form interpreters
+(`type-node-to-c`, `extract-type-node`, `subst-tyvars-node`, …), which
+naturally dispatch on `NodeKind` more than union-registry/union-emit's
+match-arm-shape code did.
+
+**cheader.nuc — 4 genuine ladders, converted:**
+- `type-node-to-c` (SYM/CELL/default `"void*"`) — the text-emitter carve-out
+  applies (it renders a type node to a C type-string fragment consumed by
+  `printf` callers). The CELL arm does not *always* return internally (when
+  neither the `ptr`-wrapper nor `union` head matches, the original code fell
+  through to a shared trailing `(return "void*")`); naively hoisting that
+  fallthrough as a *second* `"void*"` literal inside the CELL arm would have
+  added a new string-literal occurrence and triggered a large, spurious
+  `@.str.N` pool renumbering (this codebase's string pool is not
+  content-deduplicated — confirmed again here, consistent with the LW-3
+  precedent "any new string literal shifts pool numbering"). Fixed by keeping
+  the shared default **outside** the `case`, exactly mirroring the original's
+  two-sequential-`when`s-then-shared-return shape: `(case (n kind) NODE-SYM
+  (...) NODE-CELL (...) 0) (return "void*")` — the case's own default arm is a
+  discarded `0` (the `niche-layout-of` idiom), and the real fallback stays a
+  single physical `(return "void*")` after the case, reached both when `(n
+  kind)` matches neither name AND when it matches CELL but neither inner
+  `when` fires. Verified this produces a **zero-literal-count-change** diff
+  (see below) — no `@.str` insertion, only a same-count reorder elsewhere.
+- `extract-type-node` (SYM/CELL/default `null`) — direct transcription, both
+  named arms already always return internally so no fallback-return
+  restructuring was needed.
+- `cheader-mentions-closure` (SYM/CELL/default `0`, inside a `while` loop that
+  peels `ptr`/`ref` wrappers) — distinguished from the batch-1 "leave-alone"
+  precedent `union-target-rewrite`'s "narrowing bail-out guards" (which *look*
+  textually identical — `(when (!= (n kind) NODE-CELL) (return form))`) by
+  checking what precedes the negation-guard: in `union-target-rewrite` the
+  preceding SYM-shaped check requires an *additional* content match (`(= (n s)
+  "none")`), so it's a narrow marker-filter that most SYM values fall through
+  — there is no true dedicated SYM arm, so the negation-guard is correctly a
+  standalone single-kind guard. In `cheader-mentions-closure` the preceding
+  `(when (= (n kind) NODE-SYM) ...)` has no such content filter — *every* SYM
+  node enters it and it *always* returns (1 or 0) — making it a genuine,
+  complete SYM arm, so the following `(!= kind CELL)` bail is really "the
+  default for everything else" in a true SYM/CELL/default three-way split.
+  This is the one call in this batch that required judgment beyond pattern-
+  matching the precedent text verbatim; re-read both functions side by side
+  before deciding. The CELL arm's internal `(set! cur ...)` (no `return`) is
+  preserved as a normal, non-returning statement — the `case`, used here as a
+  mid-`while`-body statement (not a value position), simply falls out to loop
+  again, exactly like the original fallthrough.
+- `emit-cheader-defconst` (NODE-INT/NODE-STR, `:void`, no original third
+  branch) — the `niche-layout-of`-style discarded-`0`-default idiom, dispatch
+  only, `printf` calls untouched.
+
+**cheader.nuc — left alone:** `cheader-template-instance`'s two guards
+(`(!= (n kind) NODE-CELL) ...`, `(!= (head kind) NODE-SYM) ...`) compare two
+*different* variables (`n` vs. `head`), not one form twice — not a ladder.
+The `"ptr"`/`"union"` head-symbol content checks inside `type-node-to-c`'s
+CELL arm, the defunion-detection `and`-chains in `emit-cheader-header`
+(checking `f kind`/`head kind` combined with `head s = "defunion"`), and the
+`(if (= (arm kind) NODE-SYM) (arm s) ...)` single-named-kind idiom in
+`emit-cheader-defunion` all match established "combined guard" /
+"single-named-kind if-else" exclusion categories — left untouched.
+
+**nuch.nuc — 1 genuine ladder, converted:** `emit-defunion-import`
+(NODE-CELL "register template + return" / NODE-SYM "the real defunion path" /
+default `die-at "defunion: name must be a symbol"`) — the same
+positive-then-negated-guard shape as `cheader-mentions-closure` above (CELL
+check always returns; the following `(!= kind SYM)` die-at is genuinely the
+complete default for everything that's neither CELL nor SYM), matching batch
+1's `parse-type-from-node` precedent closely. **Left alone:** the
+`f`/head-kind `and`-chains gating `emit-nuch-header`'s and
+`emit-nuch-import-forms`'s head-symbol `case h` dispatch (mechanism (b), out
+of scope), `emit-nuch-declare-import`'s lone `noreturn`-marker content check,
+`emit-nuch-defmethod-import`'s lone `NODE-STR` guard, `emit-nuch-ret`'s
+single-named-kind `if`/`else` (only `NODE-CELL` is named).
+
+**repl.nuc — 0 genuine ladders; a valid, useful finding.** All 16 raw hits
+are either single-kind guards (`(= (f kind) NODE-STR)` short-circuit-print,
+lone `NODE-INT`/`NODE-SYM` checks), guards *combined* with a content
+condition that narrows to a special case rather than dispatching the general
+kind (the `'quote`-peeling checks in `repl-eval-form` and the
+`macroexpand`/`macroexpand-1` handling — CELL-kind is only entered when the
+head is *also* a specific symbol, so most CELL values never reach these
+checks and fall through to the untouched main head-symbol `cond` below), or
+plain NODE-\* constant registrations/comments in `repl-register-node`
+(construction, not dispatch). No conversion made.
+
+**type-mangle.nuc — 1 genuine ladder, converted:** `subst-tyvars-node`
+(NODE-SYM/NODE-KEYWORD/NODE-CELL, each a clean positive check with an
+unconditional action, falling through to a shared default `(return node)`)
+— the cleanest, most unambiguous ladder of the six; all 6 of the file's raw
+`NODE-*` hits belong to this one function (confirming the design doc's
+"different concern (Node values, not Type values)" note from the `Type.kind`
+batch 1 status — this sweep is what resolves that leftover). Direct
+transcription, including the existing Stage-14-defn-signature comment carried
+onto the `NODE-KEYWORD` arm (case arms tolerate an interleaved comment between
+a value and its result, per the established precedent).
+
+Verified per protocol: `make clean && make` succeeded against the committed
+boot compiler; `make test` 168/168 green; `make bootstrap` reported `PASS:
+stage1.ll == stage2.ll` on the **first** pass, no `make update-bootstrap`
+needed. A pre-batch stash/rebuild-baseline/restore/rebuild `build/nucleusc.ll`
+diff (same boot compiler both sides) was 759 lines — mapped by locating each
+touched function's `define` boundary in the pre-batch IR — confirmed to sit
+**entirely inside the six edited functions' own bodies**
+(`subst-tyvars-node`, `type-node-to-c`, `extract-type-node`,
+`cheader-mentions-closure`, `emit-cheader-defconst`, `emit-defunion-import`),
+plus a single harmless same-count `@.str.2375`/`@.str.2376` swap (two adjacent
+string constants exchanging index order because `emit-defunion-import`'s
+`'declare` quote-symbol reference and its `die-at` message text now emit in
+different relative order) — zero net `@.str` pool growth, zero spillover into
+any other function. Beyond the standard union/match example family, this
+batch additionally hand-verified the two functions with no direct test-suite
+exercise for their converted shape: a manual `--emit-nuch`/import round-trip
+(a plain `defunion Shape` plus a parametric `(Box T)` template, covering both
+of `emit-defunion-import`'s named arms end-to-end through JIT-free
+compile+link+run, output `area=9`/`box=42` as expected) and a manual
+`--emit-cheader` run over a fixture combining an int `defconst`, a string
+`defconst`, a `(ptr i32)` struct field, and an anonymous `(union ...)` struct
+field (exercising `emit-cheader-defconst`'s both arms and `type-node-to-c`'s
+CELL-arm `ptr`/`union` head-checks), matching the expected C output exactly.
+The existing `l8-cheader-*`/`l13-cheader-*` suite tests already cover
+`cheader-mentions-closure`'s closure/box-detection paths and passed unchanged.
+
+This closes batch 2 of the `NodeKind` sweep. Remaining for future
+batches/decisions: `src/generics.nuc` (98 raw hits) and `src/nucleusc.nuc`
+(222 raw hits, by far the largest and highest-risk, given heavy
+head-symbol-dispatch mixing) — both untouched, likely warranting a separate
+decision on whether to attempt them at all given the risk profile.
+
 **Build:**
 1. **Pilot — `Cleanup` → `defunion`.** Model the three shapes as arms
    (`(libc-free slot)` / `(drop slot fn ty ret)` / `(defer node scope)`) and

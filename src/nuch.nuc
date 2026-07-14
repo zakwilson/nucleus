@@ -345,35 +345,36 @@
     (when (< (node-len ff) 3)
       (die-at (ff line) "defunion: expects a name and at least one arm"))
     (let (name-node:ptr:Node (cast ptr:Node (node-at form 1)))
-      (when (= (name-node kind) NODE-CELL)
-        (register-union-template (cast ptr ff))
-        (return))
-      (when (!= (name-node kind) NODE-SYM)
-        (die-at (name-node line) "defunion: name must be a symbol"))
-      (when (!= (uniondef-lookup (name-node s)) null) (return))
-      (guard-name-kind (name-node s) (ff line) NK-TYPE)
-      (let (arms:ptr (-> ff (_ cdr) (cast ptr:Node _) (_ cdr)))
-        (defunion-register (name-node s) arms (ff line))
-        ; Constructor declares: (declare Name-arm:Name (fields...)).
-        (let (saved-out:ptr g-out)
-          (set! g-out g-decl-stream)
-          (let (it:ListIter (list-iter arms))
-            (doseq-iter (cur (addr-of it))
-              (let (ctor:ptr:Node (cast ptr:Node
-                                     (union-ctor-form (name-node s)
-                                                      cur (ff line))))
-                ; Reshape the synthesized new-style defn into a new-style declare:
-                ; same bare name (1), same params (2), same return operand (3), no
-                ; body — `(declare NAME (params) RET)`.
-                (emit-nuch-declare-import
-                  (make-cell (cast ptr 'declare)
-                    (make-cell (node-at (cast ptr ctor) 1)
-                      (make-cell (node-at (cast ptr ctor) 2)
-                        (make-cell (node-at (cast ptr ctor) 3) null (ff line))
-                        (ff line))
-                      (ff line))
-                    (ff line))))))
-          (set! g-out saved-out))))))
+      (case (name-node kind)
+        NODE-CELL
+          (do (register-union-template (cast ptr ff)) (return))
+        NODE-SYM
+          (do
+            (when (!= (uniondef-lookup (name-node s)) null) (return))
+            (guard-name-kind (name-node s) (ff line) NK-TYPE)
+            (let (arms:ptr (-> ff (_ cdr) (cast ptr:Node _) (_ cdr)))
+              (defunion-register (name-node s) arms (ff line))
+              ; Constructor declares: (declare Name-arm:Name (fields...)).
+              (let (saved-out:ptr g-out)
+                (set! g-out g-decl-stream)
+                (let (it:ListIter (list-iter arms))
+                  (doseq-iter (cur (addr-of it))
+                    (let (ctor:ptr:Node (cast ptr:Node
+                                           (union-ctor-form (name-node s)
+                                                            cur (ff line))))
+                      ; Reshape the synthesized new-style defn into a new-style declare:
+                      ; same bare name (1), same params (2), same return operand (3), no
+                      ; body — `(declare NAME (params) RET)`.
+                      (emit-nuch-declare-import
+                        (make-cell (cast ptr 'declare)
+                          (make-cell (node-at (cast ptr ctor) 1)
+                            (make-cell (node-at (cast ptr ctor) 2)
+                              (make-cell (node-at (cast ptr ctor) 3) null (ff line))
+                              (ff line))
+                            (ff line))
+                          (ff line))))))
+                (set! g-out saved-out))))
+        (die-at (name-node line) "defunion: name must be a symbol")))))
 
 (defn emit-nuch-import-forms (forms:(raw Node)):void
   (let (it:ListIter (list-iter forms))
