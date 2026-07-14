@@ -1108,12 +1108,15 @@
 ;   - list node ((fn ret-type) (param-types...)) or (fn ret-type): builds TY-FN
 (defn parse-type-from-node (node:ptr line:i32):ref:Type
   (let (n:ptr:Node (cast ptr:Node node))
-    (when (= (n kind) NODE-SYM)
+    (case (n kind)
+      NODE-SYM
+      (do
       ; Colon-sugar in inline type position: "ptr:Node" → (ptr Node).
       (when (!= (strchr (n s) 58) null)
         (return (parse-type-from-node (split-colon-segments (n s) line) line)))
       (return (parse-type-name (n s) line)))
-    (when (= (n kind) NODE-CELL)
+      NODE-CELL
+      (do
       ; Stage 10 Phase F: a list head carrying a ?/! type prefix — produced by the
       ; multi-colon desugar of e.g. ?ptr:Node -> (?ptr Node) or !ptr:Node ->
       ; (!ptr Node). Strip the prefix from the head, parse the remainder as a type,
@@ -1422,4 +1425,4 @@
                  (.set! ft num-params 0)
                  (.set! ft variadic 0)
                  (return ft)))))))
-    (die-at line "unable to parse type expression")))
+    (die-at line "unable to parse type expression"))))
