@@ -3833,10 +3833,12 @@
         ; Stage 14 MC-2: gensym yields a Node* — type it (raw Node) so it stays
         ; in lockstep with emit-list's gensym path (ty-raw-node).
         (when (= hp 'gensym) (return (ty-raw-node)))
-        (when (= hp 'funcall-ptr-1) (return ty-ptr))
-        (when (= hp 'funcall-ptr-i32) (return ty-i32))
-        (when (= hp 'funcall-ptr-i64) (return ty-i64))
-        (when (= hp 'funcall-ptr-ptr) (return ty-ptr))
+        ; Stage 14 UN-2: `unsafe/funcall-ptr-*` mirrors the bare alias (lockstep
+        ; with emit-list's routing in nucleusc.nuc — conventions.md).
+        (when (or (= hp 'funcall-ptr-1) (= hp 'unsafe/funcall-ptr-1)) (return ty-ptr))
+        (when (or (= hp 'funcall-ptr-i32) (= hp 'unsafe/funcall-ptr-i32)) (return ty-i32))
+        (when (or (= hp 'funcall-ptr-i64) (= hp 'unsafe/funcall-ptr-i64)) (return ty-i64))
+        (when (or (= hp 'funcall-ptr-ptr) (= hp 'unsafe/funcall-ptr-ptr)) (return ty-ptr))
         (when (= hp 'return) (return ty-void))
         (when (= hp 'do)
           (if (> (node-len n) 1)
@@ -3863,14 +3865,16 @@
         (when (= hp 'not) (return ty-i1))
         (when (= hp '_and) (return ty-i1))
         (when (= hp '_or) (return ty-i1))
-        (when (= hp 'cast) (return (node-type-cast n)))
+        ; Stage 14 UN-2: `unsafe/cast` mirrors bare `cast` (lockstep).
+        (when (or (= hp 'cast) (= hp 'unsafe/cast)) (return (node-type-cast n)))
         (when (= hp 'as) (return (node-type-as n)))
         (when (= hp 'addr-of) (return (node-type-addr-of n scope)))
         (when (= hp 'funcall-void) (return ty-void))
         (when (= hp 'funcall) (return (node-type-funcall n scope)))
         (when (= hp 'deref) (return (node-type-deref-elem n scope)))
         (when (= hp 'ptr-set!) (return ty-void))
-        (when (= hp 'ptr+) (return (node-type (node-at n 1) scope)))
+        ; Stage 14 UN-2: `unsafe/ptr+` mirrors bare `ptr+` (lockstep).
+        (when (or (= hp 'ptr+) (= hp 'unsafe/ptr+)) (return (node-type (node-at n 1) scope)))
         (when (= hp '_get) (return (node-type-field n scope)))
         (when (= hp '.set!) (return ty-void))
         (when (= hp 'get) (return (node-type-get n scope)))

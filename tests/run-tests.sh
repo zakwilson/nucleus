@@ -598,6 +598,15 @@ spawn run_reject as-raw-to-ref-rejected tests/fixtures/as-raw-to-ref.nuc \
 spawn run_reject as-reinterpret-rejected tests/fixtures/as-reinterpret.nuc \
   "as: reinterpretation from ptr:Sym to ptr:Rec -- use unsafe/cast"
 
+# Stage 14 unsafe-namespace.md UN-2 — `unsafe` is a reserved pseudo-namespace
+# (D1): no user code may declare `(ns unsafe)`, which would make `unsafe/foo`
+# ambiguous between a reserved op and a real namespace member. (The positive
+# `examples/unsafe-spellings.nuc` run — dispatched via the examples/*.nuc loop
+# above — covers the new unsafe/cast, unsafe/ptr+, unsafe/funcall-ptr-i32, and
+# unsafe/import-private routes behaving identically to their bare aliases.)
+spawn run_reject unsafe-ns-reserved-rejected tests/fixtures/unsafe-ns-reserved.nuc \
+  "'unsafe' is a reserved namespace name"
+
 # --- Join + replay --------------------------------------------------------------
 # Wait for all remaining jobs (ignore per-job exit codes — PASS/FAIL is decided
 # by scanning buffered output, since `set -e` does not propagate across `&`).

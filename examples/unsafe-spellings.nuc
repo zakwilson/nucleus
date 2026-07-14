@@ -1,0 +1,57 @@
+; Stage 14 UN-2 — the `unsafe/` reserved-namespace routing
+; (design/stage14/unsafe-namespace.md D1/D2). Every `unsafe/<op>` head is a new
+; head-identity route falling into the EXACT SAME emitter as its bare alias
+; (which stays accepted for now — the tree-wide Class-2 migration to the new
+; spellings is UN-3's job, not this one). This example runs several of the new
+; spellings side by side with their bare counterparts and prints both, so a
+; diff against tests/expected/unsafe-spellings.out proves they behave
+; identically:
+;
+;   - Class 1 (split): unsafe/cast === cast
+;   - Class 2 (moved):  unsafe/ptr+ === ptr+
+;                        unsafe/funcall-ptr-i32 === funcall-ptr-i32
+;                        unsafe/import-private === unsafe-import-private
+(import-use "stdio.h")
+(import-use "stdlib.h")
+; Stage 14 UN-2: pull in lib/unsafe-priv-demo's PUBLIC and PRIVATE symbols under
+; the `pd/` prefix. A plain `(import-prefixed unsafe-priv-demo pd)` would only
+; bring in pd/pub-double (private symbols are filtered unless the
+; g-import-include-private flag is set).
+(unsafe/import-private unsafe-priv-demo pd)
+
+(defstruct Pair a:i32 b:i32)
+
+; A zero-arg function whose address is taken to exercise funcall-ptr-i32.
+(defn zero-arg-answer ():i32
+  (return 42))
+
+(defn main ():i32
+  ; Class 1 — unsafe/cast is today's `cast`, verbatim: same-width sign
+  ; reinterpret, no IR difference between the two spellings.
+  (let (n:i32 -1)
+    (printf "cast            = %u\n" (cast ui32 n))
+    (printf "unsafe/cast     = %u\n" (unsafe/cast ui32 n)))
+
+  ; Class 2 — unsafe/ptr+ is today's `ptr+`, verbatim: both compute the same
+  ; element address, so writes through one are visible through the other.
+  (let (p:ptr:Pair (cast ptr:Pair (malloc (* (cast i64 2) (sizeof Pair)))))
+    (.set! p a 10)
+    (.set! p b 20)
+    (let (q:ptr:Pair (ptr+ p (cast i32 1))
+          r:ptr:Pair (unsafe/ptr+ p (cast i32 1)))
+      (.set! q a 30)
+      (.set! q b 40)
+      (printf "ptr+            = a=%d b=%d\n" (q a) (q b))
+      (printf "unsafe/ptr+     = a=%d b=%d\n" (r a) (r b))))
+
+  ; Class 2 — unsafe/funcall-ptr-i32 is today's `funcall-ptr-i32`, verbatim:
+  ; both splice the same fn-pointer operand into an `i32 ()` indirect call.
+  (let (fp:ptr (cast ptr zero-arg-answer))
+    (printf "funcall-ptr-i32 = %d\n" (funcall-ptr-i32 fp))
+    (printf "unsafe/funcpi32 = %d\n" (unsafe/funcall-ptr-i32 fp)))
+
+  ; Class 2 — unsafe/import-private routed the same as unsafe-import-private:
+  ; both the public and the private symbol resolve under the pd/ prefix.
+  (printf "pd/pub-double   = %d\n" (pd/pub-double 21))
+  (printf "pd/priv-secret  = %d\n" (pd/priv-secret))
+  (return 0))
