@@ -1492,8 +1492,15 @@ tests green; boot re-converged.
 for `Scope.syms`. **Read (scoped):** each growable's grow thunk + read sites
 (idiom 4 anchors).
 
+**Status (batch 1, 2026-07-14): DONE, byte-identical bootstrap (one-pass
+reconverge).** Sub-step 1 below (`g-include-paths`/`g-link-args`) is complete —
+see [progress.md](../progress.md) for the full writeup (allocator-ordering
+wrinkle, the `conj`-needs-explicit-`CStr`-cast finding, and the manual `-I`/`-l`
+end-to-end verification). Sub-steps 2-6 remain open.
+
 **Build, cold-first:**
 1. `g-include-paths`, `g-link-args` (fixed 64-slot `malloc` → `(Vector CStr)`).
+   **DONE (2026-07-14).**
 2. `g-vtable-keys`/`-names`, `g-ns-prefix-keys`/`-vals` (→ parallel `(Vector CStr)`
    or a `{key,val}` element struct).
 3. The type-erasure memos `g-boxedfn-*`, `g-dyn-*` — **mind union-registry import
