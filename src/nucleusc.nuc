@@ -5346,12 +5346,12 @@
 ; the same reason), and a (defer expr) re-emitted in its registration scope.
 (defn emit-scope-cleanups (scope:ref:Scope):void
   (when (= g-block-term 1) (return))
-  (let (sc:ptr:Scope (cast ptr:Scope scope))
-    (when (= (sc ncleanups) 0) (return))
-    (let (slots:ptr:ptr (cast ptr:ptr (sc cleanup-slots))
-          i:i32 (- (sc ncleanups) 1))
+  (let (sc:ptr:Scope (cast ptr:Scope scope)
+        n:i32 (cast i32 (count (sc cleanup-slots))))
+    (when (= n 0) (return))
+    (let (i:i32 (- n 1))
       (while (>= i 0)
-        (let (cl:ptr:Cleanup (cast ptr:Cleanup (aref slots i)))
+        (let (cl:ref:Cleanup (invoke (sc cleanup-slots) (cast usize i)))
           (cond (!= (cl defer-node) null)
                   ; defer-scope is set whenever defer-node is (emit-defer) —
                   ; a correlated-fields invariant the pointer kinds can't carry.

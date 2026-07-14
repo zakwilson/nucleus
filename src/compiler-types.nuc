@@ -321,9 +321,12 @@
   syms:ptr
   len:i32
   cap:i32
-  cleanup-slots:ptr
-  ncleanups:i32
-  ccleanups:i32)
+  ; Stage 14 §14.5 batch 5: was a hand-rolled ptr[]/ncleanups/ccleanups triple
+  ; with a manual cap-doubling grow thunk (scope-push-cleanup); now a Vector.
+  ; `ref`, not `raw`: each Scope is individually arena-allocated once by
+  ; scope-new and never explicitly reset to null (unlike g-ns-prefix-table),
+  ; matching Generic.methods/g-vtable-table/g-boxedfn-table/g-dyn-table.
+  (cleanup-slots (ref (Vector (ref Cleanup)))))
 
 (defstruct StrLit
   bytes:ptr

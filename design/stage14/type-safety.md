@@ -1492,8 +1492,8 @@ tests green; boot re-converged.
 for `Scope.syms`. **Read (scoped):** each growable's grow thunk + read sites
 (idiom 4 anchors).
 
-**Status (batch 4, 2026-07-14): DONE, byte-identical bootstrap (one-pass
-reconverge).** Sub-steps 1-4 below are now complete — see
+**Status (batch 5, 2026-07-14): DONE, byte-identical bootstrap (one-pass
+reconverge).** Sub-steps 1-5 below are now complete — see
 [progress.md](../progress.md) for the full writeups. Batch 1
 (`g-include-paths`/`g-link-args`): allocator-ordering wrinkle, the
 `conj`-needs-explicit-`CStr`-cast finding, and the manual `-I`/`-l` end-to-end
@@ -1581,7 +1581,36 @@ accessor form. `make test` 168/168; `make bootstrap` fixed point reconverged in
 **one pass**; `make update-bootstrap` refreshed all boot IRs; round-2
 `make clean && make && make bootstrap` byte-identical; 25
 assoc/coll/comb/dyn/generic/hashmap/hashset/iterator/protocol/vector examples
-diff-exact against `tests/expected/*.out`. Sub-steps 5-6 remain open.
+diff-exact against `tests/expected/*.out`.
+
+Batch 5 (`Scope.cleanup-slots`/`ncleanups`/`ccleanups`): retired the hand-rolled
+`cleanup-slots:ptr`/`ncleanups:i32`/`ccleanups:i32` triple (compiler-types.nuc)
+and its manual cap-doubling grow thunk (`scope-push-cleanup`, scope.nuc) for a
+single `(cleanup-slots (ref (Vector (ref Cleanup))))` field — `ref`, matching
+`Generic.methods`/`g-vtable-table`/`g-boxedfn-table`/`g-dyn-table` (a `Scope` is
+arena-allocated once by `scope-new` and never explicitly reset to null, unlike
+`g-ns-prefix-table`). `scope-new` now builds the Vector inline
+(`(cast (ref (Vector (ref Cleanup))) (vector-new-in (addr-of g-arena-alloc)))`);
+`scope-push-cleanup` collapsed to one `(conj (sc cleanup-slots) (cast
+ref:Cleanup slot))`. The sole read site, `emit-scope-cleanups` (nucleusc.nuc) —
+which walks armed cleanups in *reverse* registration order at scope exit/early
+return to fire `defer`/Drop/legacy-free actions — converted from
+`(aref (cast ptr:ptr (sc cleanup-slots)) i)` over an `ncleanups`-1-down-to-0
+count to `(invoke (sc cleanup-slots) (cast usize i))` over
+`(cast i32 (count (sc cleanup-slots)))`-1-down-to-0, keeping the reverse-order
+loop shape and the `cl:ref:Cleanup` local's declared type unchanged (only the
+initializer changed, per "retype the cast, keep the local"). Mindful of batch
+4's `->`-threading miss, grepped the whole tree not just for the three field
+names but separately for `(-> ` thread-macro forms and bare `Cleanup` struct
+usage across `src/`/`lib/`/`.nuch` — this batch found **no** grep-invisible
+site: all three fields are read/written in exactly three files
+(`compiler-types.nuc`, `scope.nuc`, `nucleusc.nuc`), confirmed clean rather than
+assumed clean. `make test` 168/168; `make bootstrap` fixed point reconverged in
+**one pass**; `make update-bootstrap` refreshed all boot IRs; round-2
+`make clean && make && make bootstrap` byte-identical;
+`drop-defer`/`with-lifecycle`/`with-autofree`/`ce3-owning-closure` examples
+diff-exact against `tests/expected/*.out`. Sub-step 6 (`Scope.syms`) remains
+open — see OQ2, reserved for systems-impl-engineer.
 
 **Build, cold-first:**
 1. `g-include-paths`, `g-link-args` (fixed 64-slot `malloc` → `(Vector CStr)`).
@@ -1597,7 +1626,10 @@ diff-exact against `tests/expected/*.out`. Sub-steps 5-6 remain open.
 4. `Generic.methods` (→ `(ref (Vector (ref Method)))`, deleting the grow thunk).
    **DONE (2026-07-14)** — plus a new `Vector.remove-at` primitive (see status
    note above); one-pass reconverge.
-5. **`Scope.cleanup-slots`** (→ `(ref (Vector (ref Cleanup)))`).
+5. **`Scope.cleanup-slots`** (→ `(ref (Vector (ref Cleanup)))`). **DONE
+   (2026-07-14)** — deleted `ncleanups`/`ccleanups` and the manual cap-doubling
+   grow thunk in `scope-push-cleanup`; see status note above; one-pass
+   reconverge.
 6. **`Scope.syms`** — *the pointer-stability caveat (systems-impl-engineer).*
    `scope-define` returns a `ref:Sym` *into* the inline array (scope.nuc:36,43);
    an inline-value `(Vector Sym)` relocates on growth and dangles that ref.
