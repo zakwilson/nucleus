@@ -297,15 +297,29 @@
   sym-private:i32)
 
 ; One armed scope-exit cleanup (Stage 10 lifecycle, design/stage10/lifecycle.md).
-; Exactly one shape is set: legacy libc free (only slot), a Drop-protocol call
-; (slot + drop-*), or an ad-hoc (defer expr) re-emitted at each exit path.
-(defstruct Cleanup
-  slot:ptr        ; alloca slot holding the resource pointer (free/drop)
-  drop-fn:ptr     ; IR name of the resolved drop method (Drop cleanups)
-  drop-ty:ptr     ; declared binding Type* (Drop cleanups)
-  drop-ret:ptr    ; drop method return Type* (Drop cleanups)
-  defer-node:ptr  ; retained expression AST (defer cleanups)
-  defer-scope:ref:Scope); scope in which defer-node is re-emitted
+; Stage 14 §14.6 (the defunion pilot): this was a defstruct whose doc-comment
+; said "exactly one shape is set" and whose three shapes were dispatched by
+; null-probing (drop-fn/defer-node) in a `cond` inside emit-scope-cleanups — a
+; closed sum masquerading as a struct. It is now a defunion, so the tag makes the
+; three shapes exhaustive and the dispatch is a match (union-emit's exhaustiveness
+; check). The three arms:
+;   libc-free — legacy libc free(slot) at scope exit (free(NULL) is a no-op, so a
+;               slot disarmed via (set! name null) / `move` is safe).
+;   drop      — Drop-protocol call: load slot, null-guard, statically dispatch to
+;               `dropfn` (the resolved drop method's ir-name); `dropret` types the
+;               call (void or a returned value). The legacy `drop-ty` field was
+;               write-only (set at construction, never read anywhere) — dropped.
+;   defer     — an ad-hoc (defer expr): re-emit `node` in `scope` at each exit.
+; Field types: `slot`/`dropfn` are IR-name strings consumed by fprintf %s so they
+; stay `ptr` (matching the fields they replace and Method.ir-name); `dropret` is a
+; nullable Type* ((raw Type), matching Method.ret-type); `node`/`scope` mirror
+; emit-node's ((raw Node), (ref Scope)) arguments. `Cleanup` is a compiler-runtime
+; type only (never appears in emitted user/JIT IR), so the (Maybe <struct>) JIT
+; gotcha does not apply — its dispatch is on the emit path exclusively.
+(defunion Cleanup
+  (libc-free (slot ptr))
+  (drop (slot ptr) (dropfn ptr) (dropret (raw Type)))
+  (defer (node (raw Node)) (scope (ref Scope))))
 
 ; A narrowing undo entry (Stage 10 nullability §4). Restores are skipped when
 ; the binding's kstamp moved past `stamp` — a kill (reassignment) is sticky.
