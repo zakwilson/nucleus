@@ -1,0 +1,9 @@
+identity        = 42
+widen           = 1000000
+reinterpret     = 4294967295
+fpext           = 3.5000
+defcast-null    = 1
+cstr<->ptr      = greetings
+void-hatch      = kind=7 x=99
+weaken-ref->raw = 7
+weaken->void*   = 0

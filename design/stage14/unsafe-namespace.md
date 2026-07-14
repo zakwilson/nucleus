@@ -279,6 +279,65 @@ dispatch entry, `g-special-form-set` membership, and `node-type-as`
 negative diagnostics exercised the way existing error-path tests do it.
 No source uses `as` yet → bootstrap byte-identical.
 
+**Status (2026-07-14): DONE.** `emit-as` + helpers `as-retype` / `as-die-flow`
+/ `as-ptr-convert` land right after `emit-cast` (src/nucleusc.nuc). The emitter
+is an explicit 8-step ladder, *not* a blind wrapper of `safe-coerce-val`: it
+reuses the existing machinery (`coerce-int-val` for int-widening and the StrView
+collapse, an inline `fpext` for f32→f64, the `lookup-cast-rule` `defcast` call,
+and `is-ptr-like`/`ptr-pkind`/`type-eq` for the pointer classification) but
+gates each case so the *rejected* subset (narrowing, float→int, f64→f32,
+raw/nullable→non-null laundering, ptr↔int, fn↔ptr, element-retyping ptr↔ptr)
+dies with a routing diagnostic instead of silently coercing. Two subtleties
+drove the design:
+
+- **`safe-coerce-val` is too permissive to delegate to wholesale.** Its
+  `sk==dk` identity branch returns the operand *typed as the source*, and for
+  two `TY-PTR` types that means it would accept a `(raw T)`→`(ref T)` launder or
+  a `%Foo`→`%Bar` reinterpret as "identity". And `coerce-int-val` happily
+  `trunc`s a narrowing. So `as` routes every pointer pair through
+  `as-ptr-convert` (which honors the `pkind-flow-check` obligation the D3 table
+  demands and rejects element-retyping) *before* any `type-eq` short-circuit,
+  and rejects int narrowing by width *before* calling `coerce-int-val`.
+- **`type-eq` ignores pkind** (generics.nuc:114 compares only the pointee), so a
+  `type-eq`-based identity fast path would launder `(raw T)`→`(ref T)`. The
+  identity fast path (step 3) therefore only runs *after* the pointer step has
+  consumed every pointer pair; it is reached only by non-pointer same-type
+  values.
+
+Dispatch: `'as` → `emit-as` (nucleusc.nuc emit-list ladder) and `'as` →
+`node-type-as` (generics.nuc node-type ladder); `"as"` added to
+`g-special-form-set` (73 members). Colon-paren sugar needed **no** work — the
+reader's `fuse-colon-paren` (lib/reader.nuc) fuses a colon-chain type argument
+(`ptr:(Vector T)` → `(ptr (Vector T))`) for *every* list element regardless of
+head, so `(as ptr:Rec p)` / `(as raw:Rec r)` parse for free exactly as they do
+for `cast`.
+
+**Lockstep:** `node-type-as` returns `parse-type-from-node` of the target node —
+identical to `node-type-cast`. This is correct because `emit-as` returns a Val
+typed *exactly* the parsed target type on every accepted path (int widening →
+`coerce-int-val target`; f32→f64 → `alloc-val target`; defcast →
+`alloc-val target`; every pointer/identity path → `as-retype …dst`; StrView →
+`coerce-int-val target`). The rung-3 override (nucleusc.nuc:930, emit-node
+replaces a node's propagated type with `node-type`'s answer when non-null) then
+sets the same type it already had — a no-op — so the passes cannot drift. A
+*rejected* `as` dies in `emit-as` before propagating a type, exactly as an
+unsupported `cast` dies in `emit-cast`, so node-type-as returning the target for
+a would-be-rejected form (it does not re-check acceptance) never surfaces.
+
+Verification: `make` succeeded in one pass with the committed boot (the "new
+special-form the OLD boot can't bridge" scenario did **not** occur — UN-1 is
+purely additive and no `src/` uses `as`), `make bootstrap` is byte-identical
+(stage1.ll == stage2.ll, no `update-bootstrap`), `make test` is **172/172**
+(168 baseline + `examples/as-conversions.nuc` + 3 rejection fixtures
+`tests/fixtures/as-{lossy,raw-to-ref,reinterpret}.nuc`). The three routing
+diagnostics, verbatim:
+- lossy: `as: lossy conversion from i32 to i8 -- use unsafe/cast`
+- launder: `as: raw pointer ptr:Rec where non-null ptr:Rec is required -- use as-ref (checked) or unsafe/cast (unchecked assertion)`
+- reinterpret: `as: reinterpretation from ptr:Sym to ptr:Rec -- use unsafe/cast`
+
+(`type-spelling` collapses pkind, so both `raw:Rec` and `ref:Rec` render
+`ptr:Rec` in the launder message — cosmetic; the routing to `as-ref` is intact.)
+
 ### UN-2 — `unsafe/` routing + reservation *(additive; byte-identical)*
 
 **Agent: focused-task-implementer.** Add head-identity routes and

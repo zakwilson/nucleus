@@ -1,0 +1,81 @@
+; Stage 14 UN-1 — the `(as TYPE expr)` statically-safe conversion form
+; (design/stage14/unsafe-namespace.md §D3). `as` accepts exactly what the
+; implicit-coercion machinery accepts in an assignment position, PLUS pure
+; pointer-contract weakening — and refuses everything lossy or contract-
+; manufacturing. This example exercises the full ACCEPTED set end to end:
+;
+;   - identity / same type
+;   - int -> int widening (zext/sext)
+;   - int -> int same-width sign reinterpret (no IR)
+;   - f32 -> f64 (fpext)
+;   - a user `defcast` rule (i64 -> ptr)
+;   - CStr <-> ptr-like (string literal -> ptr, then ptr -> CStr)
+;   - the void* exemption (elem-less bare `ptr` -> typed pointer)
+;   - weakening (ref T) -> (raw T)
+;   - weakening typed pointer -> elem-less bare `ptr`
+;
+; The rejected paths (narrowing, float->int, raw->ref laundering, ptr<->int and
+; element-retyping reinterpretation) are covered by tests/fixtures/as-*.nuc.
+(import-use "stdio.h")
+(import-use "stdlib.h")
+
+(defstruct Rec kind:i32 x:i32)
+
+; A user `defcast` rule: i64 -> ptr (an explicit reinterpretation the user asserts
+; is meaningful). `as` admits registered defcast rules into its safe set exactly
+; as the implicit machinery does.
+(defn id-to-ptr (n:i64):ptr
+  (return (cast ptr n)))
+(defcast i64 ptr id-to-ptr)
+
+; int -> int widening: an i32 parameter widened to i64.
+(defn widen (n:i32):i64
+  (return (as i64 n)))
+
+; int -> int same-width sign reinterpret: i32 -> ui32 (no IR, bit-identical).
+(defn reinterpret-sign (n:i32):ui32
+  (return (as ui32 n)))
+
+; f32 -> f64 (fpext).
+(defn to-f64 (x:f32):f64
+  (return (as f64 x)))
+
+; Produce an f32 value (an f32 literal genuinely needs a narrowing cast — that is
+; `unsafe/cast` / defcast territory, not `as`; here it just feeds the fpext demo).
+(defn seven-halves ():f32
+  (return (cast f32 3.5)))
+
+; weakening (ref Rec) -> (raw Rec): the callee accepts a non-null ref, weakens the
+; contract to a nullable raw, then reads a field through it (raw is derefable).
+(defn peek-kind (r:ref:Rec):i32
+  (let (rr:raw:Rec (as raw:Rec r))
+    (return (rr kind))))
+
+(defn main ():i32
+  ; identity / same type
+  (printf "identity        = %d\n" (as i32 42))
+  ; int widening
+  (printf "widen           = %lld\n" (widen 1000000))
+  ; same-width sign reinterpret: -1:i32 reads back as 4294967295:ui32
+  (printf "reinterpret     = %u\n" (reinterpret-sign -1))
+  ; f32 -> f64
+  (printf "fpext           = %.4f\n" (to-f64 (seven-halves)))
+  ; user defcast rule fires (i64 -> ptr); id-to-ptr(0) is null
+  (let (p:ptr (as ptr (as i64 0)))
+    (printf "defcast-null    = %d\n" (= p null)))
+  ; CStr <-> ptr-like: literal -> bare ptr, then that ptr -> CStr for printf %s
+  (let (sp:ptr (as ptr "greetings"))
+    (printf "cstr<->ptr      = %s\n" (as CStr sp)))
+  ; void* exemption + weakening. Allocate a Rec, obtain a bare `ptr`, then:
+  ;   - (as ptr:Rec p)   the void* hatch: elem-less bare ptr -> typed pointer
+  ;   - (as raw:Rec ...) inside peek-kind: (ref Rec) -> (raw Rec) weakening
+  ;   - (as ptr r)       weakening a typed pointer back to a bare `ptr`
+  (with (p:ptr (malloc (cast i64 (sizeof Rec))))
+    (when (!= p null)
+      (let (r:ptr:Rec (as ptr:Rec p))
+        (.set! r kind 7)
+        (.set! r x 99)
+        (printf "void-hatch      = kind=%d x=%d\n" (r kind) (r x))
+        (printf "weaken-ref->raw = %d\n" (peek-kind r))
+        (printf "weaken->void*   = %d\n" (= (as ptr r) null)))))
+  (return 0))

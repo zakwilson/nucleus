@@ -3584,6 +3584,17 @@
   (let (tn:ptr:Node (cast ptr:Node (node-at n 1)))
     (return (parse-type-from-node (cast ptr tn) (tn line)))))
 
+; Stage 14 UN-1: `(as TYPE expr)` type mirror (node-type<->emit-node lockstep,
+; conventions.md). emit-as (src/nucleusc.nuc) returns a Val typed EXACTLY the
+; parsed target type on every accepted input — same as emit-cast — so the
+; non-emitting type is the parsed target type, identical to node-type-cast. A
+; rejected `as` dies in emit-as before propagating a type, exactly as an
+; unsupported `cast` dies in emit-cast, so the two passes never disagree on any
+; type that actually flows to a parent.
+(defn node-type-as (n:raw:Node):ref:Type
+  (let (tn:ptr:Node (cast ptr:Node (node-at n 1)))
+    (return (parse-type-from-node (cast ptr tn) (tn line)))))
+
 (defn node-type-alloca (n:raw:Node):ref:Type
   (let (tn:ptr:Node (cast ptr:Node (node-at n 1)))
     (let (ty:ptr (parse-type-from-node (cast ptr tn) (tn line))
@@ -3853,6 +3864,7 @@
         (when (= hp '_and) (return ty-i1))
         (when (= hp '_or) (return ty-i1))
         (when (= hp 'cast) (return (node-type-cast n)))
+        (when (= hp 'as) (return (node-type-as n)))
         (when (= hp 'addr-of) (return (node-type-addr-of n scope)))
         (when (= hp 'funcall-void) (return ty-void))
         (when (= hp 'funcall) (return (node-type-funcall n scope)))

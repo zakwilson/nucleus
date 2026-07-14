@@ -1973,6 +1973,138 @@
             (return (alloc-val dst tmp))))))))
 
 ; ============================================================
+; Stage 14 UN-1: the `as` statically-safe conversion form
+; (design/stage14/unsafe-namespace.md §D3). `(as TYPE expr)` accepts exactly (a)
+; what the implicit-coercion machinery accepts in an assignment position, plus
+; (b) pure pointer-contract weakening ((ref T)->(raw T); typed ptr -> elem-less
+; bare `ptr`) — and refuses everything lossy or contract-manufacturing, routing
+; each rejection to the right tool. Unlike `cast`, `as` HONORS pkind-flow-check,
+; closing the raw->ref laundering hole for the safe spelling.
+;
+; node-type-as (src/generics.nuc) mirrors this under the node-type<->emit-node
+; lockstep: emit-as returns a Val typed *exactly* the parsed target type for
+; every accepted input, so node-type-as returns that same parsed target type.
+; ============================================================
+
+; Retype `v` to `dst` with no IR (a pure reinterpret), carrying the operand's
+; escape taint (`as` preserves cast's taint-copy behavior — lifecycle.md §2.2).
+(defn as-retype (v:(raw Val) dst:(raw Type)):ref:Val
+  (let (rv:ref:Val (alloc-val dst (v val)))
+    (val-copy-taint rv v)
+    (return rv)))
+
+; The raw/nullable -> non-null (ref/ptr) laundering diagnostic — `as` honoring
+; pkind-flow-check, routed to the checked `as-ref` launder or the unchecked
+; `unsafe/cast` assertion (never silently laundered as `cast` does).
+(defn as-die-flow (src:(raw Type) dst:(raw Type) line:i32):void
+  (if (= (ptr-pkind src) PTR-MAYBE)
+    (die-at line
+      (fmt-2s "as: nullable pointer %s where non-null %s is required -- narrow with if-some/unwrap, use as-ref (checked), or unsafe/cast (unchecked assertion)"
+        (type-spelling src) (type-spelling dst)))
+    (die-at line
+      (fmt-2s "as: raw pointer %s where non-null %s is required -- use as-ref (checked) or unsafe/cast (unchecked assertion)"
+        (type-spelling src) (type-spelling dst)))))
+
+; Pointer-like (TY-PTR / TY-CSTR) source AND destination. Accepts CStr<->ptr-like,
+; the void* hatch (elem-less bare `ptr` -> typed), and pure weakening ((ref)->(raw),
+; typed -> bare); rejects element-retyping (reinterpretation) and raw/nullable ->
+; non-null (laundering). No IR on any accepted path. Never uses a type-eq identity
+; short-circuit: type-eq ignores pkind, so it would silently launder raw->ref.
+(defn as-ptr-convert (v:(raw Val) src:(raw Type) dst:(raw Type) line:i32):ref:Val
+  (let (sk:i32 (src kind)
+        dk:i32 (dst kind))
+    ; typed/CStr -> elem-less bare `ptr` (void*): weakening, always safe.
+    (when (and (= dk TY-PTR) (= (dst elem) null))
+      (return (as-retype v dst)))
+    ; ptr-like -> CStr: an opaque char*, ptr-compatible, carries no obligation.
+    (when (= dk TY-CSTR)
+      (return (as-retype v dst)))
+    ; here dst is a TYPED pointer (TY-PTR, elem != null).
+    ; CStr -> typed pointer: CStr is ref-compatible (a C string is a non-null
+    ; constant, mirroring pkind-flow-check's CStr refinement).
+    (when (= sk TY-CSTR)
+      (return (as-retype v dst)))
+    ; elem-less bare `ptr` (void*) -> typed pointer: the void* hatch, gated by the
+    ; same flow rule pkind-flow-check applies (bare `ptr` is PTR-REF and passes; a
+    ; bare `raw`/Maybe void* into a non-null slot launders).
+    (when (= (src elem) null)
+      (when (and (= (ptr-pkind dst) PTR-REF) (!= (ptr-pkind src) PTR-REF))
+        (as-die-flow src dst line))
+      (return (as-retype v dst)))
+    ; both typed: the pointee type must match, else this is a reinterpretation.
+    (when (= (type-eq (src elem) (dst elem)) 0)
+      (die-at line
+        (fmt-2s "as: reinterpretation from %s to %s -- use unsafe/cast"
+          (type-spelling src) (type-spelling dst))))
+    ; same pointee: only a non-null obligation can reject (raw/nullable -> ref).
+    (when (and (= (ptr-pkind dst) PTR-REF) (!= (ptr-pkind src) PTR-REF))
+      (as-die-flow src dst line))
+    (return (as-retype v dst))))
+
+(defn emit-as (call:(raw Node) scope:ref:Scope):ref:Val
+  (let (cc:(raw Node) call)
+    (when (!= (node-len cc) 3)
+      (die-at (cc line) "as expects 2 args"))
+    (let (type-node:(raw Node) (node-at cc 1))
+      (let (dst:(raw Type) (parse-type-from-node type-node (type-node line))
+            v:ref:Val (emit-node (node-at cc 2) scope)
+            src:(raw Type) (v type)
+            sk:i32 (src kind)
+            dk:i32 (dst kind))
+        ; 1. StrView source (chameleon literal or value): the coercer collapses a
+        ; literal to ptr/CStr with no IR, materializes a StrView target, or returns
+        ; null for an unrelated struct target (a reinterpretation).
+        (when (!= (type-is-strview src) 0)
+          (let (cv:?ptr:Val (coerce-int-val v dst (cc line)))
+            (when (= cv null)
+              (die-at (cc line)
+                (fmt-2s "as: reinterpretation from %s to %s -- use unsafe/cast"
+                  (type-spelling src) (type-spelling dst))))
+            (return (cast ref:Val cv))))
+        ; 2. pointer-like <-> pointer-like: always route through as-ptr-convert so
+        ; the pkind flow gate fires (a plain identity short-circuit would launder).
+        (when (and (!= (is-ptr-like src) 0) (!= (is-ptr-like dst) 0))
+          (return (as-ptr-convert v src dst (cc line))))
+        ; 3. identity (non-pointer same type): struct, fn, same scalar — no IR.
+        (when (!= (type-eq src dst) 0)
+          (return (as-retype v dst)))
+        ; 4. user `defcast` rule extends the safe set (implicit AND `as`). Every
+        ; registered rule has distinct from/to kinds (emit-defcast rejects the
+        ; built-in same-kind/int/float pairs), so this never shadows steps 5-7.
+        (let (rule:(raw CastRule) (lookup-cast-rule src dst))
+          (when (!= rule null)
+            (let (cr:(raw CastRule) rule
+                  tmp:ptr (new-tmp))
+              (fprintf g-body-stream "  %s = call %s %s(%s %s)\n"
+                tmp (type-to-ir dst) (cr ir-name) (type-to-ir src) (v val))
+              (return (alloc-val dst tmp)))))
+        ; 5. int -> int: widening (zext/sext) and same-width sign reinterpret are
+        ; safe (coerce-int-val emits them / no IR); narrowing is lossy.
+        (when (and (!= (is-int-type src) 0) (!= (is-int-type dst) 0))
+          (when (< (int-width dst) (int-width src))
+            (die-at (cc line)
+              (fmt-2s "as: lossy conversion from %s to %s -- use unsafe/cast"
+                (type-spelling src) (type-spelling dst))))
+          (return (cast ref:Val (coerce-int-val v dst (cc line)))))
+        ; 6. f32 -> f64 (fpext) is safe (widening).
+        (when (and (= sk TY-F32) (= dk TY-F64))
+          (let (tmp:ptr (new-tmp))
+            (fprintf g-body-stream "  %s = fpext float %s to double\n" tmp (v val))
+            (return (alloc-val dst tmp))))
+        ; 7. remaining float conversions (f64->f32, float<->int) are lossy.
+        (when (or (and (!= (is-float-type src) 0) (!= (is-float-type dst) 0))
+                  (and (!= (is-float-type src) 0) (!= (is-int-type dst) 0))
+                  (and (!= (is-int-type src) 0) (!= (is-float-type dst) 0)))
+          (die-at (cc line)
+            (fmt-2s "as: lossy conversion from %s to %s -- use unsafe/cast"
+              (type-spelling src) (type-spelling dst))))
+        ; 8. everything else — ptr<->int, fn<->ptr, unrelated structs — is a
+        ; reinterpretation: route to unsafe/cast.
+        (die-at (cc line)
+          (fmt-2s "as: reinterpretation from %s to %s -- use unsafe/cast"
+            (type-spelling src) (type-spelling dst)))))))
+
+; ============================================================
 ; Struct field access
 ; ============================================================
 
@@ -6836,6 +6968,7 @@
         (when (= hp '_and) (return (emit-short-circuit n scope 1)))
         (when (= hp '_or) (return (emit-short-circuit n scope 0)))
         (when (= hp 'cast) (return (emit-cast n scope)))
+        (when (= hp 'as) (return (emit-as n scope)))
         (when (= hp 'addr-of) (return (emit-addr-of n scope)))
         (when (= hp 'funcall-void) (return (emit-funcall-void n scope)))
         (when (= hp 'funcall) (return (emit-funcall n scope)))
@@ -9601,7 +9734,7 @@
 ; (never dropped, process-lifetime). Members are inserted as bare string literals
 ; (already CStr), and the typed globals need no per-insert cast.
 (defn init-name-sets ():void
-  ; --- special-form-named set (72 members) ---
+  ; --- special-form-named set (73 members) ---
   (set! g-special-form-set
     (cast (ref (HashSet CStr))
       (alloc-handle-alloc (addr-of g-arena-alloc) (sizeof (HashSet CStr)) (cast usize 8))))
@@ -9613,7 +9746,7 @@
        "set!" "inc!" "dec!"
        ; memory / pointers
        "array" "label" "goto" "label-addr" "goto-ptr"
-       "." ".&" "cast" "addr-of" "deref"
+       "." ".&" "cast" "as" "addr-of" "deref"
        "ptr-set!" "ptr+" "_get" ".set!"
        "sizeof" "alloca" "aref" "aset!"
        ; literals / quoting

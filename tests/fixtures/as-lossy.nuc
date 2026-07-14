@@ -1,0 +1,11 @@
+; Stage 14 UN-1 negative fixture: `as` rejects lossy (narrowing) conversions.
+;
+; `(as i8 n)` narrows an i32 to an i8 — a truncation `as` refuses (the implicit
+; machinery would `trunc` it silently; `as` routes the user to `unsafe/cast`).
+; Compiling this must FAIL with:
+;   "as: lossy conversion from i32 to i8 -- use unsafe/cast"
+(defn narrow (n:i32):i8
+  (return (as i8 n)))
+
+(defn main ():i32
+  (return (cast i32 (narrow 42))))
