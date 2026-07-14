@@ -585,6 +585,19 @@ spawn run_reject s4-legacy-proto-rejected tests/fixtures/s4-legacy-proto.nuc \
 spawn run_reject s4-legacy-template-rejected tests/fixtures/s4-legacy-template.nuc \
   "defn 'gmax': legacy 'name:ret' syntax is no longer supported"
 
+# Stage 14 unsafe-namespace.md UN-1 — the `(as TYPE expr)` statically-safe
+# conversion form. Its three rejection categories each route to the right tool:
+#   lossy/narrowing  -> "use unsafe/cast"
+#   raw->ref launder -> mentions "as-ref" (honors pkind-flow-check, which `cast`
+#                       bypasses)
+#   reinterpretation -> "use unsafe/cast"
+spawn run_reject as-lossy-rejected tests/fixtures/as-lossy.nuc \
+  "as: lossy conversion from i32 to i8 -- use unsafe/cast"
+spawn run_reject as-raw-to-ref-rejected tests/fixtures/as-raw-to-ref.nuc \
+  "where non-null ptr:Rec is required -- use as-ref (checked) or unsafe/cast"
+spawn run_reject as-reinterpret-rejected tests/fixtures/as-reinterpret.nuc \
+  "as: reinterpretation from ptr:Sym to ptr:Rec -- use unsafe/cast"
+
 # --- Join + replay --------------------------------------------------------------
 # Wait for all remaining jobs (ignore per-job exit codes — PASS/FAIL is decided
 # by scanning buffered output, since `set -e` does not propagate across `&`).

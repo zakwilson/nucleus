@@ -1,0 +1,15 @@
+; Stage 14 UN-1 negative fixture: `as` rejects reinterpretation.
+;
+; `(as ptr:Rec s)` retypes a `(ptr Sym)` as a `(ptr Rec)` — an element-retyping
+; pointer reinterpretation `as` refuses (there is no meaning-preserving
+; conversion; the user must reach for `unsafe/cast`). Compiling this must FAIL
+; with a message ending in "reinterpretation ... use unsafe/cast".
+(defstruct Rec kind:i32)
+(defstruct Sym name:i32)
+
+(defn retype (s:ptr:Sym):i32
+  (let (r:ptr:Rec (as ptr:Rec s))
+    (return (r kind))))
+
+(defn main ():i32
+  (return 0))
