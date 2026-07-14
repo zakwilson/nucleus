@@ -2394,11 +2394,44 @@ byte-identical if `case`/`cond` lower identically — verify with the IR diff; i
 **Done when:** the closed sums are exhaustiveness-checked; tests green; boot
 re-converged (or byte-identical for the `case` sweeps).
 
+**Status: 14.6 is DONE (2026-07-14).** Pilot (`Cleanup` → `defunion`, commit
+8a58d7c) landed the representation-change half. The `case`-over-enum sweeps
+landed: `MethodKind` (commit 222f0d1, 1/25 genuine sites), `UnionDef.layout`
+(commit bc7f1ad, 2/33), `Type.kind` batch 1 in type-utils.nuc/type-mangle.nuc
+(commit 5acc2a8, 10 ladders) + `type-eq`'s tail dispatch in generics.nuc
+(commit de65454, 1 careful single-function conversion, special-case guards
+left untouched), and `NodeKind` batches 1-3 across union-registry.nuc/
+union-emit.nuc (commit a6bbd72, 1/50), cheader.nuc/repl.nuc/nuch.nuc/
+type-mangle.nuc (commit 9eae3d6, 6/59), and generics.nuc (commit 5f9e432, 16
+ladders — the riskiest batch, since this file is half of the node-type↔
+emit-node lockstep; independently re-verified arm-by-arm with no returned-
+value drift). `AbiInfo.kind` was explicitly skipped (commit 9841a99 — needs a
+real `defunion` with per-arm payloads, lives in the leave-alone `abi.nuc` IR
+zone, marked optional in the design). `src/nucleusc.nuc`'s remaining `NodeKind`
+ladders (in `emit-node`/`emit-list`, ~222 raw `NODE-*` hits, mostly head-
+symbol-identity dispatch not NodeKind-tag dispatch) are deliberately left
+unattempted — that file is the codegen half of the lockstep, where a mistake
+changes *emitted IR* rather than an internal checker's return value, and the
+risk/reward has tipped past what a mechanical batch should take on. If ever
+pursued, treat it as a single-function, slow, manually-verified change (the
+`type-eq` template), never a full-file sweep. Every landed batch: `make
+bootstrap` PASSED directly (no `update-bootstrap` needed — every closed-sum
+conversion so far has been invisible in emitted IR), 168/168 tests, broad
+example verification per batch.
+
 ### 14.7 — Deferred tail (record only)
 
 No build. Confirm the deferred items (§Deferred) are logged with reasons; leave
 `Type`/`Node`-as-`defunion`, `Node.car/cdr` promotion, out-param boxes, import
 lists, and HashMap side indexes for a future stage.
+
+**Status: DONE.** All six items are logged with reasons in the "## Deferred
+(record with reasons)" table above (`Type`→`defunion`, `Node`→`defunion`,
+`Node.car`/`cdr` promotion, out-param boxes, import/prescan cons lists,
+`HashMap` side indexes) — no build required, confirmed as of 14.6's close-out
+(2026-07-14). **This closes out Stage 14 (type-safety) as a phase**: 14.1
+through 14.7 are all done or explicitly deferred with reasons recorded. See
+[progress.md](../progress.md)'s Stage 14 row for the consolidated summary.
 
 ### Close-out (required by AGENTS.md)
 
