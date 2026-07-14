@@ -1725,6 +1725,44 @@ a `conj`-by-value or a by-value function parameter would introduce into the comp
 for the mechanical `case` sweeps. **Read (scoped):** `Cleanup` (compiler-types.nuc:251)
 + its dispatch (nucleusc.nuc:4984-4993); then per sum, its dispatch sites.
 
+**Status (`MethodKind` sweep, 2026-07-14): DONE, byte-identical, no refresh needed.**
+Correction to the plan's premise: this codebase's `case` (`lib/macros.nuc`) is a
+**macro over `cond`**, not a compiler-checked exhaustive match — `(case form v1 r1
+v2 r2 … default)` expands to `(cond (= form v1) r1 (= form v2) r2 … true default)`
+and the trailing unpaired arg is a *required* catch-all, not something the
+compiler verifies covers every enum value. So the "exhaustiveness" this sweep buys
+is documentation-level (a reader sees all enumerated kinds at a glance), not a new
+compiler diagnostic — consistent with `case`'s doc comment ("Because `=` is
+overloadable, case works over any type with an equality," i.e. plain multi-way
+dispatch, no relation to `defunion`/`match`'s tag exhaustiveness).
+
+Auditing every `MethodKind`-comparison site in `src/generics.nuc` (39 raw grep
+hits on `METHOD-INTRINSIC`/`METHOD-USER`/`METHOD-GENERIC`, 14 of them comments,
+25 actual code sites) found exactly **one** genuine multi-arm ladder — the
+method-kind tally in `finalize-generics` (was a 3-branch `cond` keyed on `(mk
+kind)`, generics.nuc:~349) — converted to
+`(case (mk kind) METHOD-GENERIC (set! has-generic 1) METHOD-INTRINSIC (set!
+has-intrinsic 1) (inc! n-user))`. The other 24 code sites are either `.set!`
+constructions (4: `init-generics`, `generic-register-method`,
+`register-generic-defn`, the closure-derive synthesizer) or single-kind
+`when`/`and` guards with no sibling arm on another kind in the same construct
+(20, e.g. `generic-remove-matching-user-method`'s lone `(= (mi kind)
+METHOD-USER)` filter, or `valid-resolve-type`'s three *sequential* single-guard
+tiers in separate loops, which read like a ladder in prose but are not one
+`cond`/`if`-chain) — correctly left as-is per the design doc's guidance not to
+force incidental guards into `case`.
+
+Because the sole converted site's `case` expands via quasiquote to the exact
+same `cond` AST the hand-written code had, the change is expansion-identical,
+not just IR-identical. Verified anyway per protocol: `make clean && make`
+succeeded against the committed boot compiler, `make test` 168/168 green, and a
+stash/rebuild-baseline/restore/rebuild `build/nucleusc.ll` diff against the
+pre-batch source (same boot compiler both sides) was **zero lines** — no
+`make update-bootstrap` needed. The assoc-*/comb-*/dyn-*/generic/protocol
+example family (16 programs) all matched `tests/expected/*.out`. This sweep
+item is complete; `UnionDef.layout`/`AbiInfo.kind`/`Type.kind`/`NodeKind` remain
+for future batches.
+
 **Build:**
 1. **Pilot — `Cleanup` → `defunion`.** Model the three shapes as arms
    (`(libc-free slot)` / `(drop slot fn ty ret)` / `(defer node scope)`) and
