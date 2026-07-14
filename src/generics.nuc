@@ -346,9 +346,10 @@
                 gk:i32 0)
             (while (< gk (cast i32 (count (gg methods))))
               (let (mk:ptr:Method (cast ptr:Method (invoke (gg methods) (cast usize gk))))
-                (cond (= (mk kind) METHOD-GENERIC)   (set! has-generic 1)
-                      (= (mk kind) METHOD-INTRINSIC) (set! has-intrinsic 1)
-                      true                              (inc! n-user)))
+                (case (mk kind)
+                  METHOD-GENERIC   (set! has-generic 1)
+                  METHOD-INTRINSIC (set! has-intrinsic 1)
+                  (inc! n-user)))
               (inc! gk))
             ; A pure operator (only intrinsic seeds, no user/generic methods) needs
             ; no mangling and dispatches via the emit-binop peephole. Leave it
