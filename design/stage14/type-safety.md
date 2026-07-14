@@ -1763,6 +1763,96 @@ example family (16 programs) all matched `tests/expected/*.out`. This sweep
 item is complete; `UnionDef.layout`/`AbiInfo.kind`/`Type.kind`/`NodeKind` remain
 for future batches.
 
+**Status (`UnionDef.layout` sweep, 2026-07-14): DONE, byte-identical, no refresh
+needed.** Grepped `src/union-emit.nuc` + `src/union-registry.nuc` for the field
+name `layout` (confirmed as `UnionDef.layout:i32`, compiler-types.nuc:180 —
+not a separate `ud-layout` accessor) plus the four `LAYOUT-*` constants: 53 raw
+hits (20 comments, 33 actual code sites). Found exactly **two** genuine
+multi-arm ladders, both converted:
+
+- `union-instance-type` (union-registry.nuc): read `lay:i32 (udd layout)` then
+  two sequential `when`/`return` guards on `LAYOUT-NICHE-MAYBE` /
+  `LAYOUT-NICHE-ERRPTR`, falling through to an unconditional final return for
+  everything else (TAGGED/ENUM). Converted to `(case lay LAYOUT-NICHE-MAYBE
+  (let … (return pt)) LAYOUT-NICHE-ERRPTR (let … (return pt)) (return
+  (type-for-sdef (udd sdef))))` — a direct transcription, since `case`'s
+  required trailing default slots in exactly where the unconditional final
+  `return` already sat.
+- `emit-match` (union-emit.nuc): the identical two-guard shape, but keyed on
+  `(niche-layout-of (sv type))` — a *derived* LAYOUT-* value, re-evaluated per
+  comparison (matching `case`'s own doc-comment contract: "`form` is
+  re-evaluated per comparison, so it should be a pure, side-effect-free
+  expression" — `niche-layout-of` is a pure field read, so this holds).
+  Converted to `(case (niche-layout-of (sv type)) LAYOUT-NICHE-ERRPTR (return
+  (emit-match-niche-errptr …)) LAYOUT-NICHE-MAYBE (return
+  (emit-match-niche-maybe …)) 0)`. The trailing `0` is a discarded pass-through
+  default (the same idiom `fprint-node`'s pre-existing `case` already uses at
+  nucleusc.nuc:569) — when neither niche constant matches, the `case`
+  evaluates to `0` and is dropped (used as a statement), so control falls
+  through unchanged to the following, untouched `(when (!= (is-int-type (sv
+  type)) 0) (return (emit-match-enum …)))` and the rest of the function.
+  `niche-layout-of` never returns `LAYOUT-ENUM` (it only distinguishes
+  TAGGED/NICHE-MAYBE/NICHE-ERRPTR from a `Type`'s `kind`/`pkind`), so the
+  ENUM/TAGGED split a few lines later is a genuinely different discriminant
+  (`is-int-type`) and was correctly left outside this `case`.
+
+The other 31 code sites were correctly left alone, matching the MethodKind
+sweep's guidance not to force incidental guards into `case`:
+
+- Two whole-function **producers/classifiers** (`niche-layout-of`,
+  `union-layout-classify`) that *construct* a `LAYOUT-*` value from unrelated
+  predicates (a null check, `Type.kind`/`pkind` checks, arm-shape rules) rather
+  than dispatching on an already-known one — each `return LAYOUT-X` is gated by
+  a *different* expression, not one repeated `form` compared via `=`, so
+  neither is expressible as a single `case` at all.
+- Five **single-kind guards** (`emit-unwrap`/`emit-unwrap-or`'s `(=
+  (niche-layout-of (v type)) LAYOUT-NICHE-ERRPTR)` checks, `emit-niche-ctor`/
+  `emit-make`'s `LAYOUT-TAGGED` guards, `union-target-rewrite`'s
+  `LAYOUT-NICHE-ERRPTR` check) — each names only one of the four constants,
+  with no sibling arm on another kind in the same construct; the code that
+  follows is unrelated (string-arm dispatch, error diagnostics), not a second
+  layout comparison.
+- One **single-named-kind `if`/`else`** (`emit-niche-construct`, whose whole
+  body is devoted to the two niche rules but which names only
+  `LAYOUT-NICHE-MAYBE` explicitly, treating the `else` branch as the implicit
+  ERRPTR case) — left as a plain `if` rather than forced into `case`, since
+  only one of the two kinds is actually named in the construct.
+- Two **combined set-membership tests** (`is-niche` in `defunion-register`,
+  gating whether to build the payload union; and its negation, gating whether
+  to emit the backing struct's IR type) — both `or`/`and` two named constants
+  together, but map both to the *same* action (skip if either matches), so
+  `case` — whose entire value is *different* actions per matched arm — would
+  add ceremony without benefit.
+- The remaining sites are plain assignments/field-writes (`layout:i32
+  (union-layout-classify …)`, `.set! ud layout layout`), not comparisons.
+
+`niche-elem` reads (the `(udd niche-elem)` / `((sv type) elem)` payload
+accesses that ride alongside these `layout` comparisons) were left exactly
+as-is everywhere — a separate field access, never folded into the `case`
+dispatch or any payload shape.
+
+Verified per protocol: `make clean && make` succeeded against the committed
+boot compiler, `make test` 168/168 green, and a stash/rebuild-baseline/
+restore/rebuild `build/nucleusc.ll` diff against the pre-batch source (same
+boot compiler both sides) was non-empty (1228 lines, as expected per
+context/conventions.md's byte-identical-gate note for any edit to compiler-
+internal source) but confirmed to sit **entirely inside the two edited
+functions' own bodies** — `union-instance-type`'s branch-label renumbering
+from merging two guards into one `cond`, and `emit-match`'s local-alloca
+suffix renumbering — with zero `@.str` pool drift and zero spillover into any
+other function across the 113k-line module; no `make update-bootstrap` needed.
+Beyond the assoc-*/comb-*/dyn-*/generic/protocol family the MethodKind sweep
+already covered, this sweep additionally re-ran the union/match/Result/Maybe/
+niche-layout-specific examples: `unions.nuc` (LAYOUT-TAGGED, via `Shape` and
+`(Result i64 i32)` — the latter doesn't niche-encode since its `ok` payload
+`i64` isn't a typed `(ref T)`), `errptr.nuc` (LAYOUT-NICHE-ERRPTR, via
+`!ptr:Pt`), `maybe.nuc`/`optional.nuc`/`value-maybe.nuc` (LAYOUT-NICHE-MAYBE,
+via `?ptr:Pt`), and a one-off all-payload-less `(defunion Signal red yellow
+green)` scratch program (LAYOUT-ENUM, since no shipped example exercises that
+shape) — all diff-exact/correct, exercising all four layout kinds through both
+edited functions. **This closes the `UnionDef.layout` sweep item.**
+`AbiInfo.kind`/`Type.kind`/`NodeKind` remain for future batches.
+
 **Build:**
 1. **Pilot — `Cleanup` → `defunion`.** Model the three shapes as arms
    (`(libc-free slot)` / `(drop slot fn ty ret)` / `(defer node scope)`) and
