@@ -603,3 +603,20 @@
   ptr-size:i32
   ptr-align:i32)
 
+; Stage 14 §14.5 batch 2 — vtable memo entry: replaces the parallel
+; g-vtable-keys/g-vtable-names arrays (nucleusc.nuc) with one
+; `(Vector (ref VtableEntry))`. Both fields are interned strings; the key is
+; always looked up by pointer identity (never strcmp'd), so it stays `ptr`,
+; not `CStr`.
+(defstruct VtableEntry
+  key:ptr    ; interned "(spelling)/(proto)" or "fnfwd.<sig>" memo key
+  name:ptr)  ; interned emitted vtable symbol ("@__vt..."/"@__vtfn...")
+
+; Stage 14 §14.5 batch 2 — per-namespace ir-prefix table entry: replaces the
+; parallel g-ns-prefix-keys/g-ns-prefix-vals arrays (nucleusc.nuc) with one
+; `(Vector (ref NsPrefixEntry))`. Keys compare by interned-pointer identity
+; (ns-ir-prefix-set/-get) — kept `ptr`, not `CStr`.
+(defstruct NsPrefixEntry
+  ns:ptr      ; interned namespace name
+  prefix:ptr) ; interned ir-prefix string for that namespace
+
