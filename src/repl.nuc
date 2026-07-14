@@ -272,8 +272,18 @@
                             (when (!= old-g null)
                               (let (old-ft:ptr:Type (cast ptr:Type (old-sym type)))
                                 (when (= (old-ft kind) TY-FN)
-                                  (generic-remove-matching-user-method
-                                    old-g (old-ft params) (old-ft num-params)))))))
+                                  ; §14.4: materialize the fn Type's param Vector back
+                                  ; into a raw Type*[] — generic-remove-matching-user-method
+                                  ; compares against Method.param-types (still a raw array).
+                                  (let (onp:i32 (old-ft num-params)
+                                        oparr:ptr (if (> onp 0)
+                                                    (arena-alloc (* (cast i64 onp) (ptr-bytes)))
+                                                    null))
+                                    (dotimes (ok onp)
+                                      (aset! (cast ptr:ptr oparr) ok
+                                             (cast ptr ((field-at (old-ft params) ok) type))))
+                                    (generic-remove-matching-user-method
+                                      old-g oparr onp)))))))
                         (open-module-streams)
                         (let (one-form:ptr (make-cell form null (f line)))
                           (prescan-defn-signatures one-form))
@@ -296,7 +306,7 @@
                                   (dotimes (pi (ft num-params))
                                     (when (!= pi 0) (fprintf g-repl-preamble ", "))
                                     (fprintf g-repl-preamble "%s"
-                                             (type-to-ir (aref (cast ptr:ptr (ft params)) pi))))
+                                             (type-to-ir ((field-at (ft params) pi) type))))
                                   (fprintf g-repl-preamble ")\n"))))))
                         ; JIT the impl module under a fresh tracker, renaming
                         ; the captured "@fname-ir(" to "@impl-name(".
@@ -430,7 +440,7 @@
                                 (dotimes (pi (ft num-params))
                                   (when (!= pi 0) (fprintf g-repl-preamble ", "))
                                   (fprintf g-repl-preamble "%s"
-                                           (type-to-ir (aref (cast ptr:ptr (ft params)) pi))))
+                                           (type-to-ir ((field-at (ft params) pi) type))))
                                 (when (!= (ft variadic) 0)
                                   (let (sep:ptr "")
                                     (when (!= (ft num-params) 0) (set! sep ", "))
@@ -588,7 +598,7 @@
     (fprintf out "define %s @%s(" ret-ir fname)
     (dotimes (i nparams)
       (when (!= i 0) (fprintf out ", "))
-      (fprintf out "%s %%a%d" (type-to-ir (aref (cast ptr:ptr (ftt params)) i)) i))
+      (fprintf out "%s %%a%d" (type-to-ir ((field-at (ftt params) i) type)) i))
     (fprintf out ") {\nentry:\n")
     (fprintf out "  %%fp = load ptr, ptr @%s.tgt, align 8\n" fname)
     (if (= ((ftt ret) kind) TY-VOID)
@@ -596,13 +606,13 @@
           (dotimes (i nparams)
             (when (!= i 0) (fprintf out ", "))
             (fprintf out "%s %%a%d"
-                     (type-to-ir (aref (cast ptr:ptr (ftt params)) i)) i))
+                     (type-to-ir ((field-at (ftt params) i) type)) i))
           (fprintf out ")\n  ret void\n}\n\n"))
       (do (fprintf out "  %%r = call %s %%fp(" ret-ir)
           (dotimes (i nparams)
             (when (!= i 0) (fprintf out ", "))
             (fprintf out "%s %%a%d"
-                     (type-to-ir (aref (cast ptr:ptr (ftt params)) i)) i))
+                     (type-to-ir ((field-at (ftt params) i) type)) i))
           (fprintf out ")\n  ret %s %%r\n}\n\n" ret-ir)))))
 
 ; Build a tiny module containing the @fname thunk + @fname.tgt global, and add

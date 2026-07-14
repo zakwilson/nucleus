@@ -269,8 +269,7 @@
                 (aset! (cast ptr:ptr ptypes) j ty-i32))))
           (let (ft:ptr:Type (cast ptr:Type (make-type TY-FN)))
             (.set! ft ret ret)
-            (.set! ft num-params nparams)
-            (.set! ft params ptypes)
+            (type-set-params ft ptypes nparams)
             (.set! ft variadic 0)
             ; Stage 12 N6: a solitary symbol from a namespaced header re-resolves
             ; to its mangled link name. The header's leading `(ns NAME)` has set

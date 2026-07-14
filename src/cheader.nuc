@@ -357,12 +357,7 @@
         ; Register the function
         (let (ft:ptr:Type (cast ptr:Type (make-type TY-FN)))
           (.set! ft ret ret-type)
-          (.set! ft num-params num-params)
-          (.set! ft params (arena-alloc (* (cast i64 num-params) (cast i64 8))))
-          (let (j:i32 0)
-            (while (< j num-params)
-              (aset! (cast ptr:ptr (ft params)) j (aref (cast ptr:ptr param-types) j))
-              (inc! j)))
+          (type-set-params ft param-types num-params)
           (.set! ft variadic is-variadic)
           ; Only register if not already defined
           (when (= (scope-lookup g-globals fname) null)
@@ -379,7 +374,7 @@
               (let (j:i32 0)
               (while (< j num-params)
                 (when (!= j 0) (fprintf g-out ", "))
-                (fprintf g-out "%s" (type-to-ir (aref (cast ptr:ptr (ft params)) j)))
+                (fprintf g-out "%s" (type-to-ir ((field-at (ft params) j) type)))
                 (inc! j)))
               (when (!= is-variadic 0)
                 (let (sep:ptr "")
