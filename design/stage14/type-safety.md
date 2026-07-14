@@ -1492,8 +1492,8 @@ tests green; boot re-converged.
 for `Scope.syms`. **Read (scoped):** each growable's grow thunk + read sites
 (idiom 4 anchors).
 
-**Status (batch 3, 2026-07-14): DONE, byte-identical bootstrap (one-pass
-reconverge).** Sub-steps 1-3 below are now complete — see
+**Status (batch 4, 2026-07-14): DONE, byte-identical bootstrap (one-pass
+reconverge).** Sub-steps 1-4 below are now complete — see
 [progress.md](../progress.md) for the full writeups. Batch 1
 (`g-include-paths`/`g-link-args`): allocator-ordering wrinkle, the
 `conj`-needs-explicit-`CStr`-cast finding, and the manual `-I`/`-l` end-to-end
@@ -1543,8 +1543,45 @@ change is invisible in emitted IR for any existing `BoxedFn`/`(dyn P)` program
 (the memo's *lookup semantics* are unchanged, only its storage). `make test`
 168/168; `boxedfn`/`dyn-comb`/`dyn-protocol`/`comb-storage` examples diff-exact
 against `tests/expected/*.out`; `make update-bootstrap` refreshed all boot IRs;
-round-2 `make clean && make && make bootstrap` byte-identical. Sub-steps 4-6
-remain open.
+round-2 `make clean && make && make bootstrap` byte-identical.
+
+Batch 4 (`Generic.methods`/`num-methods`/`cap`): retired the hand-rolled
+`methods:ptr`/`num-methods:i32`/`cap:i32` triple and its manual cap-doubling
+grow thunk (`generic-add-method`) for a single
+`(methods (ref (Vector (ref Method))))` field — `ref`, matching
+`g-vtable-table`/`g-boxedfn-table`/`g-dyn-table` (a `Generic` is arena-allocated
+once by `generic-new` and never explicitly reset to null). `generic-add-method`
+collapsed to one `conj`. `generic-remove-matching-user-method` (the REPL
+redefinition path) needed a genuinely new primitive — **`Vector` had no delete
+operation**, only `insert` — so `remove-at ((self (ref (Vector T))) i:usize):void`
+was added to `lib/vector.nuc`, mirroring `insert`'s shape (shift `(i,len)` left
+by one, shrink `len`). ~30 read sites across generics.nuc/nucleusc.nuc converted
+from `(dotimes (i (gg num-methods)) (aref (cast ptr:ptr (gg methods)) i))` to
+`(dotimes (i (cast i32 (count (gg methods)))) (invoke (gg methods) (cast usize i)))`,
+keeping every downstream local's declared type unchanged (only the initializer
+changed, per "retype the cast, keep the local"). **Verification-time finding:**
+a mechanical grep-and-replace across the two files caught every site spelled
+`(gg methods)`/`(g methods)`/`(igg methods)`, but missed the one site expressed
+through the `->` threading macro — `gcheck`'s intrinsic-operator peephole
+(`(-> g (cast ptr:Generic _) (_ methods))`, textually invisible to a literal
+search for the field name). Left un-migrated, it kept `aref`'ing the new
+Vector-struct pointer as a raw `Method*[]`, segfaulting deep inside
+`check-generic-templates` — but only for a program exercising the A2 checker on
+a **bounded generic with `&where` constraints** (`reduce`, lib/iterator.nuc), so
+the compiler's own self-compile and plain Vector-only programs built clean while
+`(import-use vector)` alone (pulling in iterator.nuc transitively) crashed every
+target compile. No `gdb`/`valgrind` available in the container; diagnosed via
+`clang -fsanitize=address` (compiler-rt's static archives were missing for this
+clang, so the working recipe was `clang -c -fsanitize=address` on both
+`build/nucleusc.ll` and `src/repl_shim.c`, linked with **`gcc`**, which supplies
+`libasan` — ASan's trace pointed straight at the stray `aref`). Lesson for future
+`.field`-style grep-based migrations: also search for `(-> ` / `_ field)`
+head-position-substitution uses of the field name, not just the literal
+accessor form. `make test` 168/168; `make bootstrap` fixed point reconverged in
+**one pass**; `make update-bootstrap` refreshed all boot IRs; round-2
+`make clean && make && make bootstrap` byte-identical; 25
+assoc/coll/comb/dyn/generic/hashmap/hashset/iterator/protocol/vector examples
+diff-exact against `tests/expected/*.out`. Sub-steps 5-6 remain open.
 
 **Build, cold-first:**
 1. `g-include-paths`, `g-link-args` (fixed 64-slot `malloc` → `(Vector CStr)`).
@@ -1558,6 +1595,8 @@ remain open.
    caveat turned out to be a non-issue (see status note above); one-pass
    reconverge.
 4. `Generic.methods` (→ `(ref (Vector (ref Method)))`, deleting the grow thunk).
+   **DONE (2026-07-14)** — plus a new `Vector.remove-at` primitive (see status
+   note above); one-pass reconverge.
 5. **`Scope.cleanup-slots`** (→ `(ref (Vector (ref Cleanup)))`).
 6. **`Scope.syms`** — *the pointer-stability caveat (systems-impl-engineer).*
    `scope-define` returns a `ref:Sym` *into* the inline array (scope.nuc:36,43);
