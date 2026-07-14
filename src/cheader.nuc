@@ -50,7 +50,7 @@
                             (= (cast i32 (char-at buf pos)) 95)))))
       (set! pos (+ pos (cast i64 1))))
     (ptr-set! out-end pos)
-    (return (arena-strndup (ptr+ (cast ptr:i8 buf) start) (- pos start)))))
+    (return (arena-strndup (unsafe/ptr+ (cast ptr:i8 buf) start) (- pos start)))))
 
 ; Map a C type name to a Nucleus type.
 ; Returns the Type* or null if unknown/skipped.
@@ -394,15 +394,15 @@
     (let (bufsz:i64 (cast i64 65536)
           buf:ptr (malloc bufsz)
           total:i64 (cast i64 0))
-      (let (chunk:i64 (fread (ptr+ (cast ptr:i8 buf) total) (cast i64 1) (- (- bufsz total) (cast i64 1)) fp))
+      (let (chunk:i64 (fread (unsafe/ptr+ (cast ptr:i8 buf) total) (cast i64 1) (- (- bufsz total) (cast i64 1)) fp))
         (set! total (+ total chunk))
         (while (> chunk (cast i64 0))
           (when (>= (+ total (cast i64 1)) bufsz)
              (set! bufsz (* bufsz (cast i64 2)))
              (set! buf (realloc buf bufsz)))
-          (set! chunk (fread (ptr+ (cast ptr:i8 buf) total) (cast i64 1) (- (- bufsz total) (cast i64 1)) fp))
+          (set! chunk (fread (unsafe/ptr+ (cast ptr:i8 buf) total) (cast i64 1) (- (- bufsz total) (cast i64 1)) fp))
           (set! total (+ total chunk))))
-      (ptr-set! (cast ptr:i8 (ptr+ (cast ptr:i8 buf) total)) 0)
+      (ptr-set! (cast ptr:i8 (unsafe/ptr+ (cast ptr:i8 buf) total)) 0)
       (pclose fp)
       (ptr-set! out-len total)
       (return buf))))
@@ -735,12 +735,12 @@
   (let (c0:i32 (char-at s (cast i64 0)))
     (when (and (!= c0 33) (!= c0 63)) (return null))   ; not ! or ?
     ; The payload must be a pointer spelling: !ptr:T / ?ptr:T / !ref:T / ?ref:T.
-    (let (rest:ptr (ptr+ (cast ptr:i8 s) (cast i64 1)))
+    (let (rest:ptr (unsafe/ptr+ (cast ptr:i8 s) (cast i64 1)))
       (when (= (strncmp rest "ptr:" (cast i64 4)) 0)
-        (let (elem:ptr (type-name-to-c (ptr+ (cast ptr:i8 rest) (cast i64 4))))
+        (let (elem:ptr (type-name-to-c (unsafe/ptr+ (cast ptr:i8 rest) (cast i64 4))))
           (return (fmt-s "%s* /* niche: reserved top page = error/none */" elem))))
       (when (= (strncmp rest "ref:" (cast i64 4)) 0)
-        (let (elem:ptr (type-name-to-c (ptr+ (cast ptr:i8 rest) (cast i64 4))))
+        (let (elem:ptr (type-name-to-c (unsafe/ptr+ (cast ptr:i8 rest) (cast i64 4))))
           (return (fmt-s "%s* /* niche: reserved top page = error/none */" elem))))
       (return null))))
 

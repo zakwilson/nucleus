@@ -428,10 +428,10 @@
         pos:i32 0)
     (dotimes (i nargs)
       (when (!= i 0)
-        (set! pos (+ pos (snprintf (ptr+ (cast ptr:i8 buf) (cast i64 pos))
+        (set! pos (+ pos (snprintf (unsafe/ptr+ (cast ptr:i8 buf) (cast i64 pos))
                                    (cast i64 (- 512 pos)) ", "))))
       (let (ts:ptr (type-spelling (aref (cast ptr:ptr argtypes) i)))
-        (set! pos (+ pos (snprintf (ptr+ (cast ptr:i8 buf) (cast i64 pos))
+        (set! pos (+ pos (snprintf (unsafe/ptr+ (cast ptr:i8 buf) (cast i64 pos))
                                    (cast i64 (- 512 pos)) "%s" ts)))))
     (return (arena-strndup buf (cast i64 pos)))))
 
@@ -683,11 +683,11 @@
   ; ir-name (undefined symbol at parse). Same failure mode as the __fnty_N
   ; case above (Stage 13 L7); recurses so ptr:ptr:Foo resolves.
   (when (and (= (strncmp name "ptr:" (cast i64 4)) 0)
-             (!= (tyname-resolvable (ptr+ (cast ptr:i8 name) (cast i64 4))) 0))
+             (!= (tyname-resolvable (unsafe/ptr+ (cast ptr:i8 name) (cast i64 4))) 0))
     (return 1))
   (when (and (or (= (strncmp name "ref:" (cast i64 4)) 0)
                  (= (strncmp name "raw:" (cast i64 4)) 0))
-             (!= (tyname-resolvable (ptr+ (cast ptr:i8 name) (cast i64 4))) 0))
+             (!= (tyname-resolvable (unsafe/ptr+ (cast ptr:i8 name) (cast i64 4))) 0))
     (return 1))
   (return 0))
 

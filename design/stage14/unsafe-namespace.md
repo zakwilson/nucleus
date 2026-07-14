@@ -451,6 +451,48 @@ IR-inert (verify per file with the `build/nucleusc.ll` diff); heads inside
 quasiquoted macro bodies shift the string pool (conventions.md gotcha) — those
 files take the standard reconverging refresh.
 
+**Status (2026-07-14): DONE.** The boot refresh had already landed in the
+prior step of this milestone (`boot/nucleusc.ll` + the two Windows boot IRs
+already carry `unsafe/*` string constants), so this phase was a pure
+mechanical sweep: every bare Class-2 call site in `src/`/`lib/` rewritten to
+its `unsafe/`-prefixed spelling, same emitter, zero semantic change.
+
+- **`ptr+` → `unsafe/ptr+`: 79 sites** across `lib/arena.nuc` (1),
+  `src/scope.nuc` (2), `src/nuch.nuc` (1), `lib/keyword.nuc` (2),
+  `src/cheader.nuc` (7), `src/repl.nuc` (5), `lib/string-split.nuc` (2),
+  `lib/string.nuc` (5), `lib/node.nuc` (3), `src/union-registry.nuc` (4),
+  `lib/strview.nuc` (6), `lib/reader.nuc` (4), `src/generics.nuc` (4),
+  `src/nucleusc.nuc` (33).
+- **`funcall-ptr-*` → `unsafe/funcall-ptr-*`: 4 sites** —
+  `src/nucleusc.nuc:6683` (`funcall-ptr-1`, the macro-JIT invocation path) and
+  `src/repl.nuc:539/543/547` (`funcall-ptr-i32`/`-i64`/`-ptr`, the REPL's
+  result-printing dispatch).
+- **`unsafe-import-private` → `unsafe/import-private`: 0 sites.** Re-grepped
+  per the task's instruction to confirm rather than assume — every remaining
+  hit in the tree is a comment, the `emit-toplevel-forms` case arm, the
+  `prescan-imported-types` string check, or the `emit-unsafe-import-private`
+  definition itself (all UN-2 territory, correctly left alone); no library
+  or compiler source actually invokes the form, so there was nothing to
+  rewrite for this member of the roster.
+- **Macro-body check:** every file touched was audited for `defmacro` forms
+  with quasiquoted bodies (the conventions.md string-pool-shift gotcha).
+  `lib/arena.nuc` and `lib/string-split.nuc` do define macros (`new`,
+  `doseq-split`), but their `ptr+` sites sit in ordinary functions earlier in
+  the file, outside any backtick template. `src/nucleusc.nuc`, `src/repl.nuc`,
+  and `src/nuch.nuc` only contain `"defmacro"` as a case-dispatch string
+  literal (the compiler's own `emit-defmacro` machinery), not an authored
+  macro body. No edited call site landed inside a quasiquoted form.
+- **Verification:** `grep -rn '(ptr+ |(funcall-ptr-[1i]' src lib | grep -v
+  unsafe/` returns only the three comment-line mentions in
+  `src/nucleusc.nuc:2884/2899/2910` (prose, correctly untouched). `make clean
+  && make` succeeded in one pass. `make test` is **174/174** (unchanged from
+  the UN-2 baseline — a pure spelling sweep adds no new tests). `make
+  bootstrap` converged **byte-identical on the first try** (stage1.ll ==
+  stage2.ll) — no macro-body sites meant no reconverging refresh was needed,
+  and `boot/nucleusc.ll` was left untouched by this phase (already current
+  from the prior step), matching the task's guidance not to run
+  `update-bootstrap` redundantly.
+
 ### UN-4 — the `cast` split sweep *(after the deletion work — see §7)*
 
 **Agent: focused-task-implementer** per file cluster; build-test-runner gates.

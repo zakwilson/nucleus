@@ -100,7 +100,7 @@
                  (.set! seg data buf)
                  (.set! seg len  k)
                  ; Advance past this segment and the separator.
-                 (.set! it buf (ptr+ buf (cast i64 (+ k slen))))
+                 (.set! it buf (unsafe/ptr+ buf (cast i64 (+ k slen))))
                  (.set! it rem (- rem (+ k slen)))
                  (return (deref seg))))
               (none
@@ -202,7 +202,7 @@
             (.set! seg data buf)
             (.set! seg len  line-end)
             ; Advance past the '\n'.
-            (.set! it buf (ptr+ buf (cast i64 (+ nl-pos (cast usize 1)))))
+            (.set! it buf (unsafe/ptr+ buf (cast i64 (+ nl-pos (cast usize 1)))))
             (.set! it rem (- rem (+ nl-pos (cast usize 1))))
             (return (deref seg)))))
       (do

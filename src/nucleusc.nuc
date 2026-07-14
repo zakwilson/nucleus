@@ -672,7 +672,7 @@
         (ptr-set! out-type-name null))
       (let (name-len:i64 (- (cast i64 colon) (cast i64 sym)))
         (ptr-set! out-name (arena-strndup sym name-len))
-        (ptr-set! out-type-name (arena-strdup (ptr+ (cast ptr:i8 colon) 1)))))))
+        (ptr-set! out-type-name (arena-strdup (unsafe/ptr+ (cast ptr:i8 colon) 1)))))))
 
 ; Extract name and type-name from a node that is either:
 ;   - a symbol node (possibly containing :) — uses split-typed
@@ -715,7 +715,7 @@
         (when (and (> slen 0) (= (char-at s (- slen 1)) 58))
           (die-at line (fmt-s "binding name ends in ':' (%s) -- write name:(Type) with no space, or (name Type)" s)))
         (when (!= (strchr s 58) null)
-          (let (sec-colon:ptr (strchr (ptr+ (cast ptr:i8 (strchr s 58)) 1) 58))
+          (let (sec-colon:ptr (strchr (unsafe/ptr+ (cast ptr:i8 (strchr s 58)) 1) 58))
             (when (!= sec-colon null)
               ; Multi-colon: desugar to a list and re-dispatch
               (return (extract-name-and-type (desugar-symbol node line)
@@ -2148,7 +2148,7 @@
           (when (and (> idx 0) (!= after 0))
             (set! interior 1)
             (set! ns-part (arena-strndup spelling idx))
-            (set! name-part (arena-strdup (ptr+ (cast ptr:i8 slash) 1))))))
+            (set! name-part (arena-strdup (unsafe/ptr+ (cast ptr:i8 slash) 1))))))
       (when (= interior 0)
         (set! ns-part g-current-ns))
       ; `user` (whether the current namespace or an explicit `user/` qualifier)
@@ -2175,7 +2175,7 @@
             after:i32 (cast i32 (aref (cast ptr:i8 slash) 1)))
         ; Interior slash only (neither leading nor trailing): take the name part.
         (when (and (> idx 0) (!= after 0))
-          (return (intern-str (arena-strdup (ptr+ (cast ptr:i8 slash) 1)))))))
+          (return (intern-str (arena-strdup (unsafe/ptr+ (cast ptr:i8 slash) 1)))))))
     (return spelling)))
 
 ; Stage 12 N4: IR mangling (design/stage12/namespaces.md §"Implementation",
@@ -2593,8 +2593,8 @@
             (when (!= m null)
               (let (sel-val:ref:Val (emit-selector-value sel-node scope)
                     args:ptr (arena-alloc (* (cast i64 2) (sizeof Val))))
-                (memcpy (ptr+ (cast ptr:Val args) 0) cv (sizeof Val))
-                (memcpy (ptr+ (cast ptr:Val args) 1) sel-val (sizeof Val))
+                (memcpy (unsafe/ptr+ (cast ptr:Val args) 0) cv (sizeof Val))
+                (memcpy (unsafe/ptr+ (cast ptr:Val args) 1) sel-val (sizeof Val))
                 (return (emit-resolved-call n scope "get" m args 2 line)))))))
       ; --- Branch B: computed/value selector (value-keyed generic dispatch) ---
       (when (!= g null)
@@ -2621,8 +2621,8 @@
               (set! m (generic-resolve-nullable g argtypes 2 line)))
             (when (!= m null)
               (let (args:ptr (arena-alloc (* (cast i64 2) (sizeof Val))))
-                (memcpy (ptr+ (cast ptr:Val args) 0) cv (sizeof Val))
-                (memcpy (ptr+ (cast ptr:Val args) 1) (cast ptr sel-val) (sizeof Val))
+                (memcpy (unsafe/ptr+ (cast ptr:Val args) 0) cv (sizeof Val))
+                (memcpy (unsafe/ptr+ (cast ptr:Val args) 1) (cast ptr sel-val) (sizeof Val))
                 (return (emit-resolved-call n scope "get" m args 2 line))))))))
     (return (emit-get-intrinsic n scope callee-val sel-node line))))
 
@@ -2641,13 +2641,13 @@
     ; not the `invoke` generic (no method has the box as receiver). Inert otherwise.
     (when (!= (boxedfn-canonical (cv type)) null)
       (return (emit-box-invoke n scope callee-val arg-start nargs)))
-    (memcpy (ptr+ (cast ptr:Val args) 0) cv (sizeof Val))
+    (memcpy (unsafe/ptr+ (cast ptr:Val args) 0) cv (sizeof Val))
     (aset! (cast ptr:ptr argtypes) 0 (cv type))
     (aset! (cast ptr:ptr arg-nodes) 0 null)
     (dotimes (i nargs)
       (let (anode:(raw Node) (node-at n (+ arg-start i))
                       v:ref:Val (emit-node anode scope))
-        (memcpy (ptr+ (cast ptr:Val args) (+ i 1)) v (sizeof Val))
+        (memcpy (unsafe/ptr+ (cast ptr:Val args) (+ i 1)) v (sizeof Val))
         (aset! (cast ptr:ptr argtypes) (+ i 1) (v type))
         (aset! (cast ptr:ptr arg-nodes) (+ i 1) anode)))
     (let (g:(raw Generic) (generic-lookup "invoke"))
@@ -3049,7 +3049,7 @@
           i:i32 0)
       (while (< i nargs)
         (let (v:ref:Val (emit-node (node-at cc (+ i 1)) scope))
-          (memcpy (ptr+ (cast ptr:Val args) i) v (sizeof Val)))
+          (memcpy (unsafe/ptr+ (cast ptr:Val args) i) v (sizeof Val)))
         (inc! i))
       ; Fill defaults for missing trailing &optional args, emitting each default
       ; expression in the caller's scope.
@@ -3062,7 +3062,7 @@
             (while (< oi np)
               (let (default-node:ptr (aref (cast ptr:ptr (ft0 opt-defaults)) (- oi required))
                     v:ref:Val (emit-node default-node scope))
-                (memcpy (ptr+ (cast ptr:Val args) oi) v (sizeof Val)))
+                (memcpy (unsafe/ptr+ (cast ptr:Val args) oi) v (sizeof Val)))
               (inc! oi))
             (set! nargs np))))
       (return (emit-call-with-args call scope sym args nargs)))))
@@ -3090,7 +3090,7 @@
                 ri:i32 nargs)
             (while (> ri fixed)
               (set! ri (- ri 1))
-              (let (av:ptr:Val (cast ptr:Val (ptr+ (cast ptr:Val args) ri))
+              (let (av:ptr:Val (cast ptr:Val (unsafe/ptr+ (cast ptr:Val args) ri))
                     av-val:ptr (av val)
                     aty:ptr:Type (cast ptr:Type (av type)))
                 ; Stage 14 NS-3: a string-literal &rest arg collapses to CStr so it
@@ -3124,7 +3124,7 @@
                     cell av-val prev-name)
                   (set! prev-name cell))))
             ; Place list ptr as the trailing arg slot at index `fixed`.
-            (let (slot:ptr:Val (cast ptr:Val (ptr+ (cast ptr:Val args) fixed)))
+            (let (slot:ptr:Val (cast ptr:Val (unsafe/ptr+ (cast ptr:Val args) fixed)))
               (.set! slot type ty-ptr)
               (.set! slot val prev-name))
             (set! eff-nargs (+ fixed 1)))))
@@ -3136,7 +3136,7 @@
         (when (!= (ft0 has-rest) 0) (set! ncoerce (- (ft0 num-params) 1)))
         (when (> ncoerce eff-nargs) (set! ncoerce eff-nargs))
         (dotimes (ci ncoerce)
-          (let (slot:ptr:Val (cast ptr:Val (ptr+ (cast ptr:Val args) ci))
+          (let (slot:ptr:Val (cast ptr:Val (unsafe/ptr+ (cast ptr:Val args) ci))
                              ptype:ptr ((field-at (ft0 params) ci) type))
               ; Stage 14 NS-3 (design/stage14/native-strings.md): materialize an
               ; unmaterialized StrView string literal that flows into a StrView-typed
@@ -3205,7 +3205,7 @@
         (aset! (cast ptr:i8 arglist) 0 (cast i8 0))
         (set! i 0)
         (while (< i eff-nargs)
-        (let (av:ptr:Val (cast ptr:Val (ptr+ (cast ptr:Val args) i))
+        (let (av:ptr:Val (cast ptr:Val (unsafe/ptr+ (cast ptr:Val args) i))
               sep:ptr "")
           (when (!= i 0) (set! sep ", "))
           ; Stage 14 NS-3 (design/stage14/native-strings.md): a *materialized*
@@ -3231,7 +3231,7 @@
           ; abi-arg-frag returns "<ty> <val>" for scalars/pointers (unchanged),
           ; or the byval / register-coerced fragment for a struct-by-value arg
           ; (emitting the materialization instructions as a side effect).
-          (let (w:i32 (snprintf (ptr+ (cast ptr:i8 arglist) apos)
+          (let (w:i32 (snprintf (unsafe/ptr+ (cast ptr:i8 arglist) apos)
                                 (- (cast i64 2048) apos)
                                 "%s%s" sep
                                 (abi-arg-frag (cast ptr av))))
@@ -3254,13 +3254,13 @@
                 (let (pt:ptr ((field-at (ft params) i) type)
                       sep:ptr "")
                   (when (!= i 0) (set! sep ", "))
-                  (set! w (snprintf (ptr+ (cast ptr:i8 sig) sp) (- (cast i64 512) sp)
+                  (set! w (snprintf (unsafe/ptr+ (cast ptr:i8 sig) sp) (- (cast i64 512) sp)
                                     "%s%s" sep (type-to-ir pt)))
                   (set! sp (+ sp (cast i64 w))))
                 (inc! i))
               (let (va-sep:ptr "")
                 (when (!= (ft num-params) 0) (set! va-sep ", "))
-                (snprintf (ptr+ (cast ptr:i8 sig) sp) (- (cast i64 512) sp)
+                (snprintf (unsafe/ptr+ (cast ptr:i8 sig) sp) (- (cast i64 512) sp)
                           "%s...)" va-sep))
               (if (-> ft (_ ret) (cast ptr:Type _) (_ kind) (= _ TY-VOID))
                 (do
@@ -4928,7 +4928,7 @@
         mname:ptr null
         ret-ty:ptr null
         np:i32 (- (node-len params-node) 1)
-        box-val:ptr:Val (cast ptr:Val (ptr+ (cast ptr:Val args) 0))
+        box-val:ptr:Val (cast ptr:Val (unsafe/ptr+ (cast ptr:Val args) 0))
         box-ir:ptr (type-to-ir box-ty))
     ; S1: a new-style protocol sig `(m (params) :ret)` carries the return at index
     ; 2; legacy `(m:ret (params))` keeps the exact extract-name-and-type parse
@@ -4959,7 +4959,7 @@
             (let (pnode:ptr (node-at params-node (+ i 1))
                   pname:ptr null
                   pty:ptr (extract-name-and-type pnode (cast ptr:ptr (addr-of pname)) line)
-                  av:ptr:Val (cast ptr:Val (ptr+ (cast ptr:Val args) (+ i 1)))
+                  av:ptr:Val (cast ptr:Val (unsafe/ptr+ (cast ptr:Val args) (+ i 1)))
                   coerced:ptr (coerce-int-val (cast ptr av) pty line))
               (when (= coerced null)
                 (die-at line (fmt-2s "(dyn %s) call: argument type does not match %s's signature"
@@ -6680,7 +6680,7 @@
           (fprintf stderr "%s: macro '%s': JIT function not found\n"
                         g-source-path (mdef name))
           (exit 1))
-        (let (result:ptr (funcall-ptr-1 (cast ptr addr) args-arr))
+        (let (result:ptr (unsafe/funcall-ptr-1 (cast ptr addr) args-arr))
           (free args-arr)
           (when (= result null)
             (fprintf stderr "%s: macro '%s': returned null\n"
@@ -6759,7 +6759,7 @@
                (= (m num-params) nargs))
       (let (ci:i32 0)
         (while (< ci nargs)
-          (let (slot:ptr (ptr+ (cast ptr:Val args) ci)
+          (let (slot:ptr (unsafe/ptr+ (cast ptr:Val args) ci)
                 pt:ptr (aref (cast ptr:ptr (m param-types)) ci)
                 na:ptr (coerce-num-val slot pt line))
             (when (and (!= na null) (!= na slot)) (memcpy slot na (sizeof Val))))
@@ -6774,7 +6774,7 @@
                (= (m has-rest) 0)
                (= (m num-params) nargs))
           (dotimes (ci nargs)
-            (let (slot:ptr (ptr+ (cast ptr:Val args) ci)
+            (let (slot:ptr (unsafe/ptr+ (cast ptr:Val args) ci)
                            pt:ptr (aref (cast ptr:ptr (m param-types)) ci)
                            av:ptr:Val (cast ptr:Val slot)
                            aty:ptr:Type (cast ptr:Type (av type))
@@ -6816,7 +6816,7 @@
       (dotimes (i nargs)
         (let (anode:ptr (node-at nn (+ i 1))
               v:ref:Val (emit-node anode scope))
-          (memcpy (ptr+ (cast ptr:Val args) i) v (sizeof Val))
+          (memcpy (unsafe/ptr+ (cast ptr:Val args) i) v (sizeof Val))
           (aset! (cast ptr:ptr argtypes) i ((cast ptr:Val v) type))
           (aset! (cast ptr:ptr arg-nodes) i anode)))
       ; Stage 13 TE-6: `(dyn P)` method dispatch. When the first argument is a
@@ -6848,7 +6848,7 @@
     (dotimes (i nargs)
       (let (anode:ptr (node-at nn (+ i 1))
             v:ref:Val (emit-node anode scope))
-        (memcpy (ptr+ (cast ptr:Val args) i) v (sizeof Val))
+        (memcpy (unsafe/ptr+ (cast ptr:Val args) i) v (sizeof Val))
         (aset! (cast ptr:ptr argtypes) i ((cast ptr:Val v) type))
         (aset! (cast ptr:ptr arg-nodes) i anode)))
     (let (m:?ptr:Method (operator-user-resolve g argtypes arg-nodes nargs))
@@ -6857,7 +6857,7 @@
                                     args nargs (nn line))))
       (when (!= nargs 2)
         (die-at (nn line) (fmt-s "%s expects 2 args" ((cast ptr:BinOp binop) name))))
-      (return (emit-binop-vals (ptr+ (cast ptr:Val args) 0) (ptr+ (cast ptr:Val args) 1)
+      (return (emit-binop-vals (unsafe/ptr+ (cast ptr:Val args) 0) (unsafe/ptr+ (cast ptr:Val args) 1)
                                (aref (cast ptr:ptr arg-nodes) 0) (aref (cast ptr:ptr arg-nodes) 1)
                                binop (nn line))))))
 
@@ -7102,7 +7102,7 @@
                    (return NK-FUNCTION))))
   (let (sc:ptr:Scope (cast ptr:Scope g-globals))
     (dotimes (i (sc len))
-      (let (sym:ptr:Sym (cast ptr:Sym (ptr+ (cast ptr:Sym (sc syms)) i)))
+      (let (sym:ptr:Sym (cast ptr:Sym (unsafe/ptr+ (cast ptr:Sym (sc syms)) i)))
         (when (= (strcmp (sym name) name) 0)
           (if (and (!= (sym type) null)
                    (= (-> sym (_ type) (cast ptr:Type _) (_ kind)) TY-FN))
@@ -7729,7 +7729,7 @@
           (reset-function-state)
           ; g-cur-fname is the @-less IR symbol of this function (for blockaddress
           ; in label-addr). defn-ir-name returns "@sym"; skip the leading '@'.
-          (set! g-cur-fname (ptr+ (cast ptr:i8 (defn-ir-name fname param-types nparams))
+          (set! g-cur-fname (unsafe/ptr+ (cast ptr:i8 (defn-ir-name fname param-types nparams))
                                   (cast i32 1)))
           ; Aggregate return ABI (Stage 8 Phase C): drives the signature, the
           ; sret hidden param, and how `return` lowers a struct value.
@@ -8445,7 +8445,7 @@
     (while (<= i slen)
       (when (or (= i slen) (= (char-at s i) 58))
          (let (seg-len:i64 (- i start)
-                  seg:ptr (arena-strndup (ptr+ (cast ptr:i8 s) start) seg-len)
+                  seg:ptr (arena-strndup (unsafe/ptr+ (cast ptr:i8 s) start) seg-len)
                   n:ptr (intern-symbol seg))
               (let (cell:ptr (make-cell n null line))
                 (when (= tail null) (set! result cell))
@@ -9296,7 +9296,7 @@
   (let (sc:ptr:Scope (cast ptr:Scope g-globals)
         i:i32 start-len)
     (while (< i end-len)
-      (let (sym:ptr:Sym (cast ptr:Sym (ptr+ (cast ptr:Sym (sc syms)) i)))
+      (let (sym:ptr:Sym (cast ptr:Sym (unsafe/ptr+ (cast ptr:Sym (sc syms)) i)))
         ; Skip locals (defensive — import processing only adds globals) and any
         ; entry without an ir-name (e.g. a bare forward signature carries one, but
         ; guard regardless so the alias always points at a real link symbol).
@@ -9609,7 +9609,7 @@
       (when (= (char-at name i) 46)
         (set! last-dot i)))
     (when (< last-dot (cast i64 0)) (return name))
-    (return (arena-strdup (ptr+ (cast ptr:i8 name) (+ last-dot (cast i64 1)))))))
+    (return (arena-strdup (unsafe/ptr+ (cast ptr:i8 name) (+ last-dot (cast i64 1)))))))
 
 ; `import-only` — import a concrete list of symbols (design decision 5).
 ; Signature: (import-only LIB SYM1 SYM2 ...). The listed symbols are brought in
@@ -10158,11 +10158,11 @@
               (= arg "-O3")
                 (set! g-opt-level 3)
               (= (strncmp arg "--target=" (cast i64 9)) 0)
-                (set! g-target-triple-override (ptr+ (cast ptr:i8 arg) (cast i64 9)))
+                (set! g-target-triple-override (unsafe/ptr+ (cast ptr:i8 arg) (cast i64 9)))
               (= (strncmp arg "-I" (cast i64 2)) 0)
                 (if (> (cast i64 (strlen arg)) (cast i64 2))
                   ; -I/path/to/dir (no space)
-                  (add-include-path (ptr+ (cast ptr:i8 arg) (cast i64 2)))
+                  (add-include-path (unsafe/ptr+ (cast ptr:i8 arg) (cast i64 2)))
                   ; -I /path/to/dir (next arg)
                   (do (inc! i)
                       (when (>= i argc)
