@@ -1985,6 +1985,92 @@ programs) — all diff-exact matched `tests/expected/*.out`. This closes the
 `abi.nuc`'s `Type.kind` slice (leave-alone IR zone), and all `NodeKind`
 compares tree-wide remain for future batches.
 
+**Status (`NodeKind` sweep, batch 1 — `src/union-registry.nuc` +
+`src/union-emit.nuc`, 2026-07-14): DONE, byte-identical, no refresh needed.**
+`Node`'s tag field is `kind:i32` (`lib/prelude.nuc:14`); the full `NodeKind`
+enum (`lib/prelude.nuc:29`) is `NODE-INT NODE-STR NODE-SYM NODE-CELL
+NODE-FLOAT NODE-KEYWORD NODE-CHAR` — note this is `NODE-STR`/`NODE-CELL`, not
+`NODE-STRING`/`NODE-LIST` (the illustrative names in the batch brief were
+approximate). Audited every raw `NODE-*` token in both files (18 in
+union-registry.nuc, 32 in union-emit.nuc — 50 total, matching the tree-wide
+grep) against the same guard discipline the `MethodKind`/`UnionDef.layout`
+sweeps established.
+
+**One genuine ladder found and converted:** `parse-type-from-node`
+(union-registry.nuc, the whole-function type-position dispatcher) was
+`(when (= (n kind) NODE-SYM) … (return …)) (when (= (n kind) NODE-CELL) … [the
+entire ptr/ref/raw/Maybe/BoxedFn/dyn/fn/struct-template/union-template/anon-
+struct/anon-union/volatile body]) (die-at line "unable to parse type
+expression")` — two sequential `when`/return guards on different named
+`NodeKind` constants over the same form, falling through to an unconditional
+final `die-at` — the exact shape the `UnionDef.layout` sweep's
+`union-instance-type` conversion already established as genuine (two
+sequential guards + unconditional default = a `case` with a trailing default,
+even though written as separate statements rather than one `cond` node).
+Converted to `(case (n kind) NODE-SYM (do …) NODE-CELL (do …) (die-at line
+"unable to parse type expression"))`. Because `case`'s per-arm slot takes
+exactly one form (unlike `when`, which auto-wraps its body in `(do …)`), each
+arm's original body needed an explicit `(do …)` wrapper — the only new syntax
+introduced; the ~300-line `NODE-CELL` body (including its own internal
+head-symbol-identity dispatch on `'ptr`/`'ref`/`'raw`/`'Maybe`/`'BoxedFn`/
+`'dyn`/`'fn`/`'struct`/`'union` — mechanism (b), out of scope — and its nested
+single-named-kind `if`/`else` sub-checks) was moved verbatim, untouched, into
+the `do`. The edit was done as three surgical, paren-neutral substitutions at
+the two arm-opening boundaries and the trailing default line, rather than a
+full manual reflow of the huge nested body, to avoid a hand-counting error in
+300 lines of pre-existing nesting.
+
+**Everything else in both files was incidental or a different mechanism,
+correctly left alone** — matching the precedent categories verbatim:
+- **Single-kind guards, no sibling arm** (the large majority — e.g.
+  `defunion-strip-repr`'s `(when (!= (m kind) NODE-SYM) (die-at …))`,
+  `register-union-template`/`register-struct-template`'s template-name/
+  type-parameter symbol checks, `union-target-rewrite`'s narrowing bail-out
+  guards `(when (!= (n kind) NODE-CELL) (return form))`/`(when (!= (head
+  kind) NODE-SYM) (return form))`, `emit-match-enum`'s lone `(when (!= (pat
+  kind) NODE-SYM) …)` — enum patterns are always bare symbols, so there is no
+  second kind to name).
+- **Single-named-kind `if`/`else`** (recurs constantly in the match-arm-shape
+  code, all left as plain `if` per the `emit-niche-construct` precedent since
+  only one of the two kinds is actually named in the construct): `defunion-
+  register`'s arm-shape `(if (= (arm kind) NODE-SYM) (set! aname (arm s)) (do
+  … must-be-NODE-CELL …))`; the recurring binder/pattern-shape idiom across
+  `emit-match-binders`/`emit-match`/`emit-match-niche-errptr`/`emit-match-
+  niche-maybe` — `(if (= (pat kind) NODE-SYM) pat (node-at pat 0))`, `(if (=
+  (b kind) NODE-SYM) ⟨by-value bind⟩ (do ⟨(ref x) bind, validates NODE-CELL⟩))`
+  — each names only `NODE-SYM` explicitly, treating the `else`/second branch
+  as the implicit "otherwise it must be a compound pattern" case.
+- **Combined single-kind + content guards** (single incidental checks, not a
+  kind ladder): `(when (and (= (b kind) NODE-SYM) (= (b s) "_")) …)` (wildcard-
+  binder detection), `(when (and (= (a kind) NODE-SYM) (= (strcmp (a s)
+  "&repr") 0)) …)` (marker-token detection), the postfix-`volatile` check
+  inside `parse-type-from-node`'s (untouched) `NODE-CELL` body.
+
+Head-symbol-identity dispatch (`(= head 'ptr)`, `(= head 'raw)`, `(= fn-head
+'fn)`, etc. — mechanism (b)) is pervasive throughout both files' `NODE-CELL`-
+shaped bodies and was correctly left alone everywhere, per the task's explicit
+scope boundary.
+
+Verified per protocol: `make clean && make` succeeded against the committed
+boot compiler on the first try (the paren-neutral three-edit approach held);
+`make test` 168/168 green; `make bootstrap` reported `PASS: stage1.ll ==
+stage2.ll` on the **first** pass — no `make update-bootstrap` needed, matching
+the pilot's prediction that pure `cond`→`case` sugar over an unchanged
+representation is byte-identical without a refresh cycle. The union/match
+example family — `unions`, `errptr`, `maybe`, `optional`, `value-maybe`,
+`generic`, `protocol`, `dyn-comb`, `dyn-protocol`, `struct`, `vector-test`,
+`hashmap-test`, `boxedfn`, `closures`, `assoc-types`,
+`assoc-types-extend-cross` (16 programs, covering symbol patterns, list-
+destructure patterns, niche-Maybe/niche-Errptr patterns, and tagged-enum
+patterns) — all diff-exact matched `tests/expected/*.out`.
+
+This closes batch 1 of the `NodeKind` sweep for `union-registry.nuc` +
+`union-emit.nuc`. Remaining for future batches: `src/generics.nuc` (98 raw
+hits), `src/nucleusc.nuc` (222 — by far the largest and highest-risk, since
+head-symbol-identity dispatch (b) is heavily intermixed there), `src/
+cheader.nuc` (26), `src/repl.nuc` (16), `src/nuch.nuc` (11), `src/type-
+mangle.nuc` (6) — none touched this batch.
+
 **Build:**
 1. **Pilot — `Cleanup` → `defunion`.** Model the three shapes as arms
    (`(libc-free slot)` / `(drop slot fn ty ret)` / `(defer node scope)`) and
