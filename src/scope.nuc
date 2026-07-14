@@ -13,6 +13,7 @@
 (defn scope-new (parent:raw:Scope):ref:Scope
   (let (s:ref:Scope (new Scope))
     (.set! s parent parent)
+    (.set! s cleanup-slots (cast (ref (Vector (ref Cleanup))) (vector-new-in (addr-of g-arena-alloc))))
     (return s)))
 
 (defn scope-define (s:raw:Scope name:CStr type:raw:Type ir-name:ptr is-local:i32):ref:Sym
@@ -79,17 +80,7 @@
 ; return that unwinds past it) by emit-scope-cleanups, in reverse order.
 (defn scope-push-cleanup (s:raw:Scope slot:ptr):void
   (let (sc:raw:Scope s)
-    (when (= (sc ncleanups) (sc ccleanups))
-      (let (nc:i32 4)
-        (when (!= (sc ccleanups) 0) (set! nc (* (sc ccleanups) 2)))
-        (let (ns:ptr (arena-alloc (* (cast i64 nc) (ptr-bytes))))
-          (when (!= (sc ncleanups) 0)
-            (memcpy ns (sc cleanup-slots) (* (cast i64 (sc ncleanups)) (ptr-bytes))))
-          (.set! sc cleanup-slots ns)
-          (.set! sc ccleanups nc))))
-    (let (slots:ptr:ptr (cast ptr:ptr (sc cleanup-slots)))
-      (aset! slots (sc ncleanups) slot)
-      (.set! sc ncleanups (+ (sc ncleanups) 1)))))
+    (conj (sc cleanup-slots) (cast ref:Cleanup slot))))
 
 ; ============================================================
 ; String literal table
