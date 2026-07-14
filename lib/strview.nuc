@@ -180,7 +180,7 @@
   (when (>= (self pos) (self len))
     (return none))
   (let (rem:usize (- (self len) (self pos))
-        dr:DecodeResult (char-decode-utf8 (ptr+ (self buf) (cast i64 (self pos))) rem))
+        dr:DecodeResult (char-decode-utf8 (unsafe/ptr+ (self buf) (cast i64 (self pos))) rem))
     (when (= ((addr-of dr) ok) 1)
       (.set! self pos (+ (self pos) ((addr-of dr) nbytes)))
       (return (some ((addr-of dr) ch))))
@@ -281,7 +281,7 @@
         (return (err! invalid-char-boundary)))))
   ; Build the sub-view — heap-allocate the StrView wrapper, borrow the bytes.
   (let (result:ptr:StrView (cast ptr:StrView (malloc (cast i64 (sizeof StrView)))))
-    (.set! result data (ptr+ (sv data) (cast i64 start)))
+    (.set! result data (unsafe/ptr+ (sv data) (cast i64 start)))
     (.set! result len  (- end start))
     (return (ok result))))
 
@@ -304,7 +304,7 @@
           found:i32 0
           result:usize (cast usize 0))
       (while (and (< i limit) (= found 0))
-        (let (c:i32 (memcmp (cast ptr (ptr+ (sv data) (cast i64 i)))
+        (let (c:i32 (memcmp (cast ptr (unsafe/ptr+ (sv data) (cast i64 i)))
                             (cast ptr (needle data))
                             (cast i64 nlen)))
           (when (= c 0)
@@ -338,7 +338,7 @@
         done:i32 0)
     (while (and (< pos len) (= done 0))
       (let (rem:usize (- len pos)
-            dr:DecodeResult (char-decode-utf8 (ptr+ p (cast i64 pos)) rem))
+            dr:DecodeResult (char-decode-utf8 (unsafe/ptr+ p (cast i64 pos)) rem))
         (when (= count i)
           (when (= ((addr-of dr) ok) 1)
             (return (ok ((addr-of dr) ch))))
@@ -376,7 +376,7 @@
     (when (> slen svlen) (return 0))
     (when (= slen (cast usize 0)) (return 1))
     (let (offset:usize (- svlen slen)
-          c:i32 (memcmp (cast ptr (ptr+ (sv data) (cast i64 offset)))
+          c:i32 (memcmp (cast ptr (unsafe/ptr+ (sv data) (cast i64 offset)))
                         (cast ptr (suffix data))
                         (cast i64 slen)))
       (if (= c 0) 1 0))))
@@ -411,7 +411,7 @@
     (while (and (< i len) (= (strview-is-ascii-ws (aref p (cast i64 i))) 1))
       (set! i (+ i (cast usize 1))))
     (let ((result (ref StrView)) (alloca StrView))
-      (.set! result data (ptr+ p (cast i64 i)))
+      (.set! result data (unsafe/ptr+ p (cast i64 i)))
       (.set! result len  (- len i))
       (return (deref result)))))
 

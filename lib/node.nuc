@@ -53,7 +53,7 @@
         j:i64 (bit-and (intern-hash sp) mask))
     (while (!= 0 1)
       (let (e:ptr:InternEntry (cast ptr:InternEntry
-                                    (ptr+ (cast ptr:InternEntry table) (cast i32 j))))
+                                    (unsafe/ptr+ (cast ptr:InternEntry table) (cast i32 j))))
         (when (= (e spelling) null)
           (.set! e spelling sp)
           (.set! e node nd)
@@ -71,7 +71,7 @@
     (let (i:i32 0)
       (while (< i old-cap)
         (let (e:ptr:InternEntry (cast ptr:InternEntry
-                                      (ptr+ (cast ptr:InternEntry old-table) i)))
+                                      (unsafe/ptr+ (cast ptr:InternEntry old-table) i)))
           (when (!= (e spelling) null)
             (intern-raw-insert new-table new-cap (e spelling) (e node))))
         (inc! i)))))
@@ -87,7 +87,7 @@
         j:i64 (bit-and (intern-hash s) mask))
     (while (!= 0 1)
       (let (e:ptr:InternEntry (cast ptr:InternEntry
-                                    (ptr+ (cast ptr:InternEntry g-intern-table) (cast i32 j))))
+                                    (unsafe/ptr+ (cast ptr:InternEntry g-intern-table) (cast i32 j))))
         (when (= (e spelling) null)
           (let (canon:ptr (arena-strdup s)
                 nd:ref:Node (alloc-node))

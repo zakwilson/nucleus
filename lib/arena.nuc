@@ -43,7 +43,7 @@
   (set! n (bit-and (+ n (cast i64 7)) (cast i64 -8)))
   (when (> (+ g-arena-used n) g-arena-cap)
     (arena-grow n))
-  (let (p:ptr (ptr+ (cast ptr:i8 g-arena) g-arena-used))
+  (let (p:ptr (unsafe/ptr+ (cast ptr:i8 g-arena) g-arena-used))
     (set! g-arena-used (+ g-arena-used n))
     (memset p 0 n)
     (return p)))

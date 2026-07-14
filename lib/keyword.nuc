@@ -80,7 +80,7 @@
         i:usize (cast usize 0))
     ; Look for an existing entry with the same name bytes.
     (while (< i n)
-      (let (e:ptr:Keyword (cast ptr:Keyword (ptr+ tbl (cast i32 i)))
+      (let (e:ptr:Keyword (cast ptr:Keyword (unsafe/ptr+ tbl (cast i32 i)))
             sv:ptr:StrView (cast ptr:StrView (e name)))
         (when (= (strcmp (strview-to-cstr sv) (cast ptr cs)) 0)
           (return (deref e))))
@@ -95,7 +95,7 @@
       (let (sv:ptr:StrView (cast ptr:StrView (malloc (cast i64 (sizeof StrView)))))
         (.set! sv data (cast ptr:ui8 buf))
         (.set! sv len  (cast usize slen))
-        (let (e:ptr:Keyword (cast ptr:Keyword (ptr+ tbl (cast i32 n)))
+        (let (e:ptr:Keyword (cast ptr:Keyword (unsafe/ptr+ tbl (cast i32 n)))
               h:usize (strview-hash sv))
           (.set! e name sv)
           (.set! e id   n)

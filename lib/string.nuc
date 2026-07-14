@@ -103,7 +103,7 @@
     ; Ensure capacity for clen more bytes (reserve takes total slots needed).
     (reserve v (+ (_get v len) clen))
     ; Write directly into the raw buffer at offset len.
-    (let (dst:ptr:ui8 (ptr+ (cast ptr:ui8 (cast ptr (_get v data))) (cast i64 (_get v len))))
+    (let (dst:ptr:ui8 (unsafe/ptr+ (cast ptr:ui8 (cast ptr (_get v data))) (cast i64 (_get v len))))
       (char-encode-utf8 c dst)
       ; Bump len by clen.
       (.set! v len (+ (_get v len) clen)))))
@@ -117,7 +117,7 @@
         pos:usize (cast usize 0))
     (while (< pos n)
       (let (rem:usize (- n pos)
-            dr:DecodeResult (char-decode-utf8 (ptr+ p (cast i64 pos)) rem))
+            dr:DecodeResult (char-decode-utf8 (unsafe/ptr+ p (cast i64 pos)) rem))
         (when (= ((addr-of dr) ok) 0)
           (return (err! invalid-utf8)))
         (set! pos (+ pos ((addr-of dr) nbytes)))))
@@ -141,7 +141,7 @@
         (set! i (- i (cast usize 1))))
       ; Now i points to the start of the last codepoint. Decode it.
       (let (rem:usize (- len i)
-            dr:DecodeResult (char-decode-utf8 (ptr+ p (cast i64 i)) rem))
+            dr:DecodeResult (char-decode-utf8 (unsafe/ptr+ p (cast i64 i)) rem))
         ; Truncate the Vector to i bytes.
         (.set! v len i)
         (when (= ((addr-of dr) ok) 1)
@@ -211,7 +211,7 @@
         pos:usize (cast usize 0))
     (while (< pos n)
       (let (rem:usize (- n pos)
-            dr:DecodeResult (char-decode-utf8 (ptr+ p (cast i64 pos)) rem))
+            dr:DecodeResult (char-decode-utf8 (unsafe/ptr+ p (cast i64 pos)) rem))
         (when (= ((addr-of dr) ok) 0)
           (return (err! invalid-utf8)))
         (set! pos (+ pos ((addr-of dr) nbytes)))))
@@ -240,7 +240,7 @@
     (let (pos:usize (cast usize 0))
       (while (< pos n)
         (let (rem:usize (- n pos)
-              dr:DecodeResult (char-decode-utf8 (ptr+ p (cast i64 pos)) rem))
+              dr:DecodeResult (char-decode-utf8 (unsafe/ptr+ p (cast i64 pos)) rem))
           (when (= ((addr-of dr) ok) 0)
             (return (err! invalid-utf8)))
           (set! pos (+ pos ((addr-of dr) nbytes)))))
