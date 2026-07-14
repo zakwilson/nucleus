@@ -108,18 +108,15 @@
                (= (aa kind) TY-PTR) (= (aa pkind) PTR-REF))
       (return (type-eq (aa elem) b)))
     (when (!= (aa kind) (bb kind)) (return 0))
-    (when (= (aa kind) TY-STRUCT)
-      (if (= (aa sdef) (bb sdef)) (return 1) (return 0)))
-    (when (= (aa kind) TY-UNION)
-      (if (= (aa sdef) (bb sdef)) (return 1) (return 0)))
-    (when (= (aa kind) TY-PTR)
-      (return (type-eq (aa elem) (bb elem))))
-    ; Abstract type variables (A2 check only): equal iff the same variable of the
-    ; same template (sdef = owning Method*, num-params = tyvar index).
-    (when (= (aa kind) TY-TYVAR)
-      (if (and (= (aa sdef) (bb sdef)) (= (aa num-params) (bb num-params)))
-        (return 1) (return 0)))
-    (return 1)))
+    (case (aa kind)
+      TY-STRUCT (if (= (aa sdef) (bb sdef)) (return 1) (return 0))
+      TY-UNION (if (= (aa sdef) (bb sdef)) (return 1) (return 0))
+      TY-PTR (return (type-eq (aa elem) (bb elem)))
+      ; Abstract type variables (A2 check only): equal iff the same variable of
+      ; the same template (sdef = owning Method*, num-params = tyvar index).
+      TY-TYVAR (if (and (= (aa sdef) (bb sdef)) (= (aa num-params) (bb num-params)))
+                 (return 1) (return 0))
+      (return 1))))
 
 ; MC-1 (design/stage14/macro-conditional-casts.md): join two branch types for a
 ; value-position control-flow merge (cond / match arm / if-some phi). Three

@@ -1926,6 +1926,65 @@ slice (independently deferred — leave-alone IR zone, §OQ5-adjacent), the
 `generics.nuc` `type-eq` ladder (~line 106-132, not reached this batch), and
 all `NodeKind` compares tree-wide (untouched).
 
+**Status (`generics.nuc` `type-eq` ladder, 2026-07-14): DONE, byte-identical,
+no refresh needed.** The live function had drifted somewhat from this doc's
+original line-number estimate (it now opens with the identity check and
+null-guard at the top of the function body, before the `let` that binds
+`aa`/`bb`), but its *shape* was exactly as anticipated: a clean, convertible
+tail ladder preceded by guards that are genuinely not part of it. Read in
+full before touching anything, confirming:
+
+- The identity check (`(when (= a b) (return 1))`) and null-guard (`(when
+  (or (= a null) (= b null)) (return 0))`) sit before the `let`, operating on
+  the raw `a`/`b` params.
+- The two Stage 13 L7 special cases (`TY-FN`↔`(ref TY-PTR)` unification —
+  lines 104-109 as of this batch) compare **both** operands' `kind` (and one
+  side's `pkind`) together in an asymmetric way and recurse into `type-eq` on
+  the unwrapped element. This is not a dispatch on one already-known-equal
+  kind value, so it is correctly excluded from the `case` conversion — left
+  byte-for-byte untouched.
+- The `(when (!= (aa kind) (bb kind)) (return 0))` precondition is also a
+  guard, not a ladder member (it's what makes every arm below able to safely
+  test only `(aa kind)`, since `(bb kind)` is now known equal) — left
+  byte-for-byte untouched.
+- The actual ladder (formerly `TY-STRUCT`/`TY-UNION`/`TY-PTR`/`TY-TYVAR`
+  arms, each a `(when (= (aa kind) TY-X) ...)` returning a computed 0/1,
+  falling through to a final `(return 1)`) matched the design doc's
+  description exactly and converted cleanly:
+
+```lisp
+(case (aa kind)
+  TY-STRUCT (if (= (aa sdef) (bb sdef)) (return 1) (return 0))
+  TY-UNION (if (= (aa sdef) (bb sdef)) (return 1) (return 0))
+  TY-PTR (return (type-eq (aa elem) (bb elem)))
+  ; Abstract type variables (A2 check only): equal iff the same variable of
+  ; the same template (sdef = owning Method*, num-params = tyvar index).
+  TY-TYVAR (if (and (= (aa sdef) (bb sdef)) (= (aa num-params) (bb num-params)))
+             (return 1) (return 0))
+  (return 1))
+```
+
+Verified per protocol: `make clean && make` against the committed boot
+compiler; `make test` 168/168; **`make bootstrap` PASSED directly**
+(`PASS: stage1.ll == stage2.ll`, no `update-bootstrap` needed). A pre-batch
+stash/rebuild-baseline/restore/rebuild `build/nucleusc.ll` diff (same boot
+compiler both sides) was 105 lines, confirmed — by locating `define i32
+@type-eq` (line 27652 of the pre-batch IR) and the next `define` (`@type-join`
+at 27892) — to sit **entirely inside `type-eq`'s own body**, zero spillover
+into `type-join` or any other function, zero `@.str` pool drift (the same
+branch-label-renumbering shape every prior 14.6 `case` sweep saw). Given
+`type-eq`'s safety-critical, load-bearing position (called anywhere two types
+are compared — a silently wrong decision here could corrupt monomorphization
+or dispatch anywhere in the type system), ran a wide example sweep beyond the
+standard set, covering generic/protocol/dyn/struct/union-family programs:
+`generic`, `protocol`, `dyn-comb`, `dyn-protocol`, `struct`, `unions`,
+`errptr`, `maybe`, `optional`, `value-maybe`, `vector-test`, `hashmap-test`,
+`boxedfn`, `closures`, `assoc-types`, `assoc-types-extend-cross` (16
+programs) — all diff-exact matched `tests/expected/*.out`. This closes the
+`generics.nuc` `type-eq` sweep item. `AbiInfo.kind` (SKIPPED, optional),
+`abi.nuc`'s `Type.kind` slice (leave-alone IR zone), and all `NodeKind`
+compares tree-wide remain for future batches.
+
 **Build:**
 1. **Pilot — `Cleanup` → `defunion`.** Model the three shapes as arms
    (`(libc-free slot)` / `(drop slot fn ty ret)` / `(defer node scope)`) and
