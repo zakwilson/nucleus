@@ -747,38 +747,40 @@
 (defn type-node-to-c (tn:ptr):ptr
   (when (= tn null) (return "void"))
   (let (n:ptr:Node (cast ptr:Node tn))
-    (when (= (n kind) NODE-SYM)
-      (let (nc:ptr (niche-sym-to-c (n s)))
-        (when (!= nc null) (return nc))
-        (return (type-name-to-c (n s)))))
-    (when (= (n kind) NODE-CELL)
-      (let (head:ptr (n car)
-            rest:ptr (n cdr))
-        (when (and (!= head null)
-                   (and (= ((cast ptr:Node head) kind) NODE-SYM)
-                        (= ((cast ptr:Node head) s) "ptr")))
-          (when (= rest null) (return "void*"))
-          (let (inner:ptr null)
-            (if (= ((cast ptr:Node rest) cdr) null)
-              (set! inner (type-node-to-c ((cast ptr:Node rest) car)))
-              (set! inner (type-node-to-c rest)))
-            (return (fmt-s "%s*" inner))))
-        ; Anonymous union: (union member:type ...) → inline `union { ... }`.
-        (when (and (!= head null)
-                   (and (= ((cast ptr:Node head) kind) NODE-SYM)
-                        (= ((cast ptr:Node head) s) "union")))
-          (let (acc:ptr "union { "
-                cur:ptr rest)
-            (while (!= cur null)
-              (let (member:ptr ((cast ptr:Node cur) car)
-                    mname:ptr null
-                    mtname:ptr null)
-                (extract-name-type member (cast ptr:ptr (addr-of mname)) (cast ptr:ptr (addr-of mtname)))
-                (let (mtnode:ptr (extract-type-node member ((cast ptr:Node member) line)))
-                  (set! acc (fmt-2s "%s%s" acc
-                              (fmt-2s "%s %s; " (type-node-to-c mtnode) mname)))))
-              (set! cur ((cast ptr:Node cur) cdr)))
-            (return (fmt-s "%s}" acc))))))
+    (case (n kind)
+      NODE-SYM
+        (let (nc:ptr (niche-sym-to-c (n s)))
+          (when (!= nc null) (return nc))
+          (return (type-name-to-c (n s))))
+      NODE-CELL
+        (let (head:ptr (n car)
+              rest:ptr (n cdr))
+          (when (and (!= head null)
+                     (and (= ((cast ptr:Node head) kind) NODE-SYM)
+                          (= ((cast ptr:Node head) s) "ptr")))
+            (when (= rest null) (return "void*"))
+            (let (inner:ptr null)
+              (if (= ((cast ptr:Node rest) cdr) null)
+                (set! inner (type-node-to-c ((cast ptr:Node rest) car)))
+                (set! inner (type-node-to-c rest)))
+              (return (fmt-s "%s*" inner))))
+          ; Anonymous union: (union member:type ...) → inline `union { ... }`.
+          (when (and (!= head null)
+                     (and (= ((cast ptr:Node head) kind) NODE-SYM)
+                          (= ((cast ptr:Node head) s) "union")))
+            (let (acc:ptr "union { "
+                  cur:ptr rest)
+              (while (!= cur null)
+                (let (member:ptr ((cast ptr:Node cur) car)
+                      mname:ptr null
+                      mtname:ptr null)
+                  (extract-name-type member (cast ptr:ptr (addr-of mname)) (cast ptr:ptr (addr-of mtname)))
+                  (let (mtnode:ptr (extract-type-node member ((cast ptr:Node member) line)))
+                    (set! acc (fmt-2s "%s%s" acc
+                                (fmt-2s "%s %s; " (type-node-to-c mtnode) mname)))))
+                (set! cur ((cast ptr:Node cur) cdr)))
+              (return (fmt-s "%s}" acc)))))
+      0)
     (return "void*")))
 
 ; Extract the type AST node from a binding form.  Returns:
@@ -789,20 +791,21 @@
 (defn extract-type-node (binding:(raw Node) line:i32):ptr
   (when (= binding null) (return null))
   (let (n:ptr:Node (cast ptr:Node binding))
-    (when (= (n kind) NODE-SYM)
-      (let (tname:ptr null  bname:ptr null)
-        (split-typed (n s) (cast ptr:ptr (addr-of bname)) (cast ptr:ptr (addr-of tname)))
-        (when (= tname null) (return null))
-        (let (tn:ptr:Node (cast ptr:Node (alloc-node)))
-          (.set! tn kind NODE-SYM)
-          (.set! tn line line)
-          (.set! tn s tname)
-          (return (cast ptr tn)))))
-    (when (= (n kind) NODE-CELL)
-      (let (rest:ptr (n cdr))
-        (when (= rest null) (return null))
-        (return ((cast ptr:Node rest) car))))
-    (return null)))
+    (case (n kind)
+      NODE-SYM
+        (let (tname:ptr null  bname:ptr null)
+          (split-typed (n s) (cast ptr:ptr (addr-of bname)) (cast ptr:ptr (addr-of tname)))
+          (when (= tname null) (return null))
+          (let (tn:ptr:Node (cast ptr:Node (alloc-node)))
+            (.set! tn kind NODE-SYM)
+            (.set! tn line line)
+            (.set! tn s tname)
+            (return (cast ptr tn))))
+      NODE-CELL
+        (let (rest:ptr (n cdr))
+          (when (= rest null) (return null))
+          (return ((cast ptr:Node rest) car)))
+      (return null))))
 
 (defn emit-cheader-defstruct (form:ptr):void
   ; Skip parametric templates: (defstruct (Name T...) ...) has a list at
@@ -851,22 +854,25 @@
   (let (cur:ptr tn)
     (while (!= cur null)
       (let (n:ptr:Node (cast ptr:Node cur))
-        (when (= (n kind) NODE-SYM)
-          (when (= (strncmp (n s) "__vfn_env_" (cast i64 10)) 0) (return 1))
-          (return 0))
-        (when (!= (n kind) NODE-CELL) (return 0))
-        (let (head:ptr:Node (cast ptr:Node (n car)))
-          (when (or (= (cast ptr head) null) (!= (head kind) NODE-SYM)) (return 0))
-          (let (hs:ptr (head s))
-            ; Type-erased box types: (BoxedFn …) and (dyn P) carry fat-pointer
-            ; Nucleus semantics with no faithful C spelling.
-            (when (or (= hs "BoxedFn") (= hs "dyn")) (return 1))
-            (when (and (!= hs "ptr") (!= hs "ref")) (return 0))
-            (let (rest:ptr (n cdr))
-              (when (= rest null) (return 0))
-              (if (= ((cast ptr:Node rest) cdr) null)
-                (set! cur ((cast ptr:Node rest) car))
-                (set! cur rest)))))))
+        (case (n kind)
+          NODE-SYM
+            (do
+              (when (= (strncmp (n s) "__vfn_env_" (cast i64 10)) 0) (return 1))
+              (return 0))
+          NODE-CELL
+            (let (head:ptr:Node (cast ptr:Node (n car)))
+              (when (or (= (cast ptr head) null) (!= (head kind) NODE-SYM)) (return 0))
+              (let (hs:ptr (head s))
+                ; Type-erased box types: (BoxedFn …) and (dyn P) carry fat-pointer
+                ; Nucleus semantics with no faithful C spelling.
+                (when (or (= hs "BoxedFn") (= hs "dyn")) (return 1))
+                (when (and (!= hs "ptr") (!= hs "ref")) (return 0))
+                (let (rest:ptr (n cdr))
+                  (when (= rest null) (return 0))
+                  (if (= ((cast ptr:Node rest) cdr) null)
+                    (set! cur ((cast ptr:Node rest) car))
+                    (set! cur rest)))))
+          (return 0))))
     (return 0)))
 
 ; The C-header return-type node of a defn form, honoring both signature styles:
@@ -949,10 +955,10 @@
 (defn emit-cheader-defconst (form:ptr):void
   (let (name:ptr ((cast ptr:Node (node-at form 1)) s)
         val-node:ptr:Node (cast ptr:Node (node-at form 2)))
-    (when (= (val-node kind) NODE-INT)
-      (printf "#define %s %ld\n" name (val-node i)))
-    (when (= (val-node kind) NODE-STR)
-      (printf "#define %s \"%s\"\n" name (val-node s)))))
+    (case (val-node kind)
+      NODE-INT (printf "#define %s %ld\n" name (val-node i))
+      NODE-STR (printf "#define %s \"%s\"\n" name (val-node s))
+      0)))
 
 (defn emit-cheader-defenum (form:ptr):void
   (let (name:ptr ((cast ptr:Node (node-at form 1)) s)
