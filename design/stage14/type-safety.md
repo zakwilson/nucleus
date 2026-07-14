@@ -1661,6 +1661,66 @@ deferred per OQ2); tests green; boot re-converged.
 
 ### 14.6 — Closed sums → `defunion`/`case`  *(pilot then sweep)*
 
+**Status (pilot — `Cleanup` → `defunion`, 2026-07-14): DONE. Bootstrap reconverged
+byte-identically in ONE pass** — the first codegen-adjacent 14.6 change, and it did
+*not* need the drift-then-reconverge cycle the plan anticipated. The `defstruct
+Cleanup` (six `ptr`/`ref` fields, doc-comment "exactly one shape is set") is now:
+
+```
+(defunion Cleanup
+  (libc-free (slot ptr))
+  (drop (slot ptr) (dropfn ptr) (dropret (raw Type)))
+  (defer (node (raw Node)) (scope (ref Scope))))
+```
+
+Field-type/dead-field audit: `slot`/`dropfn` are IR-name strings consumed by
+`fprintf %s` → stay `ptr` (like `Method.ir-name`); `dropret` is a nullable Type\* →
+`(raw Type)` (matches `Method.ret-type`, and the old `(cast ptr:Type (c drop-ret))`
++ null-guard both collapse to direct `(dropret kind)` reads); `node`/`scope` mirror
+`emit-node`'s `((raw Node), (ref Scope))` args. **`drop-ty` was write-only** (set at
+construction, never read anywhere) — dropped, same as `param-names` in 14.4 batch 3b.
+
+Sites touched (all `src/nucleusc.nuc` unless noted): the `defunion` (compiler-
+types.nuc); three construction sites rewritten to arm ctors via `(ptr-set! cl
+(Cleanup-<arm> …))` into a `(new Cleanup)` arena slot (`emit-defer`; the autofree
+and Drop `with` arms) — `ptr-set!` stores the union value through the `(ref Cleanup)`
+with no struct-by-value ABI boundary (unlike a by-value `conj`, which would be the
+compiler's first `byval`/`sret` use and is avoided); the null-probing `cond` in
+`emit-scope-cleanups` → an exhaustive `match` (no `_`, so a fourth shape breaks it
+loudly); `emit-drop-cleanup` re-signatured to take the three payload fields directly
+(`slot`/`dropfn`/`dropret`) instead of `cl:(raw Cleanup)`, deleting the receiver
+cast. `Scope.cleanup-slots` stays `(ref (Vector (ref Cleanup)))` and
+`scope-push-cleanup` stays `(… slot:ptr)` — the Vector still holds heap `(ref
+Cleanup)` pointers, arena-stable across the many compiler frames a Scope outlives.
+
+Why one-pass byte-identical: no codegen *lowering* function changed — only which
+constructs the compiler's own source *uses* (struct+`cond` → `defunion`+`match`).
+Old boot and new compiler lower `defunion`/`match`/`ptr-set!` identically, so
+`old_boot(new_src) == new_compiler(new_src)`. The Cleanup↔Scope mutual reference
+(arm needs `(ref Scope)`, Scope needs `(ref Cleanup)`) resolves because
+`prescan-struct-names` registers every type name before the defunion's ctors emit.
+
+JIT-reachability (plan step 5) confirmed emit-path-only *in the sense that matters*:
+`emit-scope-cleanups` **is** reached when the compiler JIT-compiles a `defmacro`
+body that uses `with`/`defer` (via the `emit-defn` epilogue), but it emits only
+`load ptr`/`call @free`/`br` — never a `%Cleanup` type. `Cleanup` is a compiler-
+runtime type that never appears in any emitted user/JIT module (it lives only in the
+compiler's own batch module, where `%Cleanup` is always defined), so the `(Maybe
+<struct>)` JIT gotcha structurally cannot apply. Verified with a `defmacro` whose
+body mallocs+autofrees inside `with` (JITs and runs clean) plus a standalone program
+mixing all three shapes on one scope (fires `defer` → `drop` → `free` in reverse
+registration order, on both fall-through and early-return paths). 168/168 tests
+green, `make bootstrap` PASS.
+
+**Pilot verdict: the defunion-migration pattern validates cleanly.** The mechanical
+`case`-over-enum sweeps (`MethodKind`, `UnionDef.layout`, `AbiInfo.kind`,
+`Type.kind`/`NodeKind`) should be *even* lower-risk — they change no representation
+(the enum stays), so they are pure `cond`→`case` exhaustiveness sugar and are
+expected byte-identical without any refresh. One reusable idiom worth carrying
+forward: to store a freshly-constructed union *value* into an arena/heap slot from
+source, use `(ptr-set! (new T) (T-arm …))` — it avoids the struct-by-value ABI that
+a `conj`-by-value or a by-value function parameter would introduce into the compiler.
+
 **Agent: systems-impl-engineer** for the `Cleanup` pilot; **focused-task-implementer**
 for the mechanical `case` sweeps. **Read (scoped):** `Cleanup` (compiler-types.nuc:251)
 + its dispatch (nucleusc.nuc:4984-4993); then per sum, its dispatch sites.

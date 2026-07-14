@@ -3283,8 +3283,7 @@
   (let (cc:(raw Node) call)
     (when (!= (node-len cc) 2) (die-at (cc line) "defer expects 1 expression"))
     (let (cl:ref:Cleanup (new Cleanup))
-      (.set! cl defer-node (node-at cc 1))
-      (.set! cl defer-scope scope)
+      (ptr-set! cl (Cleanup-defer (node-at cc 1) scope))
       (scope-push-cleanup scope cl)
       (return (alloc-val ty-void null)))))
 
@@ -5319,23 +5318,22 @@
 ; when non-null, statically dispatch to the resolved drop method. The null
 ; guard mirrors free(NULL)-is-a-no-op so `move` / (set! name null) disarm
 ; Drop resources exactly like libc ones.
-(defn emit-drop-cleanup (cl:(raw Cleanup)):void
-  (let (c:ptr:Cleanup (cast ptr:Cleanup cl)
-        tmp:ptr (new-tmp)
+(defn emit-drop-cleanup (slot:ptr dropfn:ptr dropret:(raw Type)):void
+  (let (tmp:ptr (new-tmp)
         isn:ptr (new-tmp)
         id:i32 (new-label-id)
         do-lbl:ptr (fmt-i32 "drop.do%d" id)
         skip-lbl:ptr (fmt-i32 "drop.skip%d" id))
-    (fprintf g-body-stream "  %s = load ptr, ptr %s, align 8\n" tmp (c slot))
+    (fprintf g-body-stream "  %s = load ptr, ptr %s, align 8\n" tmp slot)
     (fprintf g-body-stream "  %s = icmp eq ptr %s, null\n" isn tmp)
     (fprintf g-body-stream "  br i1 %s, label %%%s, label %%%s\n" isn skip-lbl do-lbl)
     (fprintf g-body-stream "%s:\n" do-lbl)
-    (if (or (= (c drop-ret) null)
-            (= ((cast ptr:Type (c drop-ret)) kind) TY-VOID))
-      (fprintf g-body-stream "  call void %s(ptr %s)\n" (c drop-fn) tmp)
+    (if (or (= dropret null)
+            (= (dropret kind) TY-VOID))
+      (fprintf g-body-stream "  call void %s(ptr %s)\n" dropfn tmp)
       (let (r:ptr (new-tmp))
         (fprintf g-body-stream "  %s = call %s %s(ptr %s)\n"
-          r (type-to-ir (c drop-ret)) (c drop-fn) tmp)))
+          r (type-to-ir dropret) dropfn tmp)))
     (fprintf g-body-stream "  br label %%%s\n" skip-lbl)
     (fprintf g-body-stream "%s:\n" skip-lbl)))
 
@@ -5352,16 +5350,17 @@
     (let (i:i32 (- n 1))
       (while (>= i 0)
         (let (cl:ref:Cleanup (invoke (sc cleanup-slots) (cast usize i)))
-          (cond (!= (cl defer-node) null)
-                  ; defer-scope is set whenever defer-node is (emit-defer) —
-                  ; a correlated-fields invariant the pointer kinds can't carry.
-                  (emit-node (cl defer-node) (cl defer-scope))
-                (!= (cl drop-fn) null)
-                  (emit-drop-cleanup (cast ptr cl))
-                true
-                  (let (tmp:ptr (new-tmp))
-                    (fprintf g-body-stream "  %s = load ptr, ptr %s, align 8\n" tmp (cl slot))
-                    (fprintf g-body-stream "  call void @free(ptr %s)\n" tmp))))
+          ; The tag makes the three shapes exhaustive (was a null-probing cond on
+          ; defer-node then drop-fn, else free). Arm order is irrelevant — match
+          ; dispatches on the stored tag, so the shapes cannot be confused, and
+          ; adding a fourth shape breaks this loudly (no `_` default).
+          (match cl
+            ((defer dnode dscope) (emit-node dnode dscope))
+            ((drop slot dropfn dropret) (emit-drop-cleanup slot dropfn dropret))
+            ((libc-free slot)
+              (let (tmp:ptr (new-tmp))
+                (fprintf g-body-stream "  %s = load ptr, ptr %s, align 8\n" tmp slot)
+                (fprintf g-body-stream "  call void @free(ptr %s)\n" tmp)))))
         (set! i (- i 1))))))
 
 ; Walk the lexical scope chain emitting cleanups at every level. Used by
@@ -5732,8 +5731,8 @@
                           ; aliases a resource freed when this with-scope
                           ; exits (lifecycle.md §2.1).
                           (= autofree 1)
-                            (let (cl:ptr:Cleanup (new Cleanup))
-                              (.set! cl slot slot)
+                            (let (cl:ref:Cleanup (new Cleanup))
+                              (ptr-set! cl (Cleanup-libc-free slot))
                               (scope-push-cleanup inner (cast ptr cl))
                               (.set! sym owns 1)
                               (.set! sym cslot slot)
@@ -5758,11 +5757,9 @@
                                 (inc! g-tmp)
                                 (fprintf g-entry-stream "  %s = alloca ptr, align 8\n" cslot)
                                 (fprintf g-body-stream "  store ptr %s, ptr %s, align 8\n" slot cslot))
-                              (let (cl:ptr:Cleanup (new Cleanup))
-                                (.set! cl slot cslot)
-                                (.set! cl drop-fn (dm ir-name))
-                                (.set! cl drop-ty ty)
-                                (.set! cl drop-ret (dm ret-type))
+                              (let (cl:ref:Cleanup (new Cleanup))
+                                ; drop-ty was write-only in the old struct — omitted.
+                                (ptr-set! cl (Cleanup-drop cslot (dm ir-name) (dm ret-type)))
                                 (scope-push-cleanup inner (cast ptr cl))
                                 (.set! sym owns 1)
                                 (.set! sym cslot cslot)
