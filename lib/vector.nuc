@@ -181,6 +181,17 @@
     (aset! buf (cast i64 i) elem))
   (.set! self len (+ (_get self len) (cast usize 1))))
 
+; remove-at: delete the element at index i, shifting (i,len) left by one.
+; i must be < len (i = len-1 removes the last element). Panics out-of-bounds.
+(defn remove-at ((self (ref (Vector T))) i:usize):void
+  (when (>= i (_get self len)) (vector-bounds "remove-at" i (_get self len)))
+  (let (buf:ptr:T (cast ptr:T (cast ptr (_get self data)))
+        j:usize i)
+    (while (< (+ j (cast usize 1)) (_get self len))
+      (aset! buf (cast i64 j) (aref buf (cast i64 (+ j (cast usize 1)))))
+      (set! j (+ j (cast usize 1)))))
+  (.set! self len (- (_get self len) (cast usize 1))))
+
 ; ---------------------------------------------------------------------------
 ; Capacity operations (STL-like opt-in surface; design §Vector recommends
 ; Minimal + reserve/capacity/with-capacity).

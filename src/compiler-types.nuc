@@ -469,9 +469,13 @@
 
 (defstruct Generic
   name:CStr
-  methods:ptr       ; ptr to array of ptr:Method
-  num-methods:i32
-  cap:i32
+  ; Stage 14 §14.5 batch 4: was a hand-rolled ptr[]/num-methods/cap triple with
+  ; a manual cap-doubling grow thunk (generic-add-method); now a Vector. `ref`,
+  ; not `raw`: never explicitly reset to null (each Generic is individually
+  ; arena-allocated once by generic-new and lives for the whole compilation,
+  ; like g-vtable-table/g-boxedfn-table/g-dyn-table — unlike g-ns-prefix-table,
+  ; which compiler-init nulls once per unit).
+  (methods (ref (Vector (ref Method))))
   finalized:i32     ; mangling decided + solitary scope binding established
   mangled:i32       ; 0 = solitary, unmangled @name (C-callable); 1 = mangled set
   ; Stage 12 N4: the IR-mangling prefix string for this generic's methods (e.g.
