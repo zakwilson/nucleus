@@ -6944,10 +6944,18 @@
           (let (tmp:ptr (new-tmp))
             (fprintf g-body-stream "  %s = call ptr @nucleus_gensym()\n" tmp)
             (return (alloc-val (ty-raw-node) tmp))))
-        (when (= hp 'funcall-ptr-1) (return (emit-funcall-ptr-1 n scope)))
-        (when (= hp 'funcall-ptr-i32) (return (emit-funcall-ptr-i32 n scope)))
-        (when (= hp 'funcall-ptr-i64) (return (emit-funcall-ptr-i64 n scope)))
-        (when (= hp 'funcall-ptr-ptr) (return (emit-funcall-ptr-ptr n scope)))
+        ; Stage 14 UN-2: `unsafe/funcall-ptr-*` is the reserved-namespace spelling
+        ; for the always-unsafe funcall-ptr-* family (design/stage14/unsafe-
+        ; namespace.md D2 Class 2) — routes into the exact same emitter as the
+        ; bare alias, which stays accepted for now (UN-3 migrates call sites).
+        (when (or (= hp 'funcall-ptr-1) (= hp 'unsafe/funcall-ptr-1))
+          (return (emit-funcall-ptr-1 n scope)))
+        (when (or (= hp 'funcall-ptr-i32) (= hp 'unsafe/funcall-ptr-i32))
+          (return (emit-funcall-ptr-i32 n scope)))
+        (when (or (= hp 'funcall-ptr-i64) (= hp 'unsafe/funcall-ptr-i64))
+          (return (emit-funcall-ptr-i64 n scope)))
+        (when (or (= hp 'funcall-ptr-ptr) (= hp 'unsafe/funcall-ptr-ptr))
+          (return (emit-funcall-ptr-ptr n scope)))
         (when (= hp 'return) (return (emit-return n scope)))
         (when (= hp 'do) (return (emit-do n scope)))
         (when (= hp 'let) (return (emit-let n scope)))
@@ -6967,14 +6975,17 @@
         (when (= hp 'not) (return (emit-not n scope)))
         (when (= hp '_and) (return (emit-short-circuit n scope 1)))
         (when (= hp '_or) (return (emit-short-circuit n scope 0)))
-        (when (= hp 'cast) (return (emit-cast n scope)))
+        ; Stage 14 UN-2: `unsafe/cast` is today's `cast`, verbatim (D2 Class 1) —
+        ; same emitter as the bare alias, which stays accepted for now.
+        (when (or (= hp 'cast) (= hp 'unsafe/cast)) (return (emit-cast n scope)))
         (when (= hp 'as) (return (emit-as n scope)))
         (when (= hp 'addr-of) (return (emit-addr-of n scope)))
         (when (= hp 'funcall-void) (return (emit-funcall-void n scope)))
         (when (= hp 'funcall) (return (emit-funcall n scope)))
         (when (= hp 'deref) (return (emit-deref n scope)))
         (when (= hp 'ptr-set!) (return (emit-ptr-set n scope)))
-        (when (= hp 'ptr+) (return (emit-ptr-add n scope)))
+        ; Stage 14 UN-2: `unsafe/ptr+` (D2 Class 2) — same emitter as `ptr+`.
+        (when (or (= hp 'ptr+) (= hp 'unsafe/ptr+)) (return (emit-ptr-add n scope)))
         (when (= hp '_get) (return (emit-field-get n scope)))
         (when (= hp '.) (return (emit-field-get n scope)))
         (when (= hp '.&) (return (emit-field-addr n scope)))
@@ -8661,7 +8672,9 @@
                      (= ph "import-use")
                      (= ph "import-only")
                      (= ph "import-prefixed")
-                     (= ph "unsafe-import-private"))
+                     (= ph "unsafe-import-private")
+                     ; Stage 14 UN-2: reserved-namespace spelling, same shape.
+                     (= ph "unsafe/import-private"))
             (let (nn:ptr:Node (cast ptr:Node (node-at (cast ptr f) 1)))
               (when (= (nn kind) NODE-SYM)
                 (let (path:ptr (resolve-import (nn s) (f line)))
@@ -8852,6 +8865,12 @@
         (die-at (ff line) "ns: namespace must be a symbol"))
       (when (!= (strchr (name-node s) 47) null)
         (die-at (ff line) "ns: namespace name may not contain a slash"))
+      ; Stage 14 UN-2: `unsafe` is a reserved pseudo-namespace (design/stage14/
+      ; unsafe-namespace.md D1) — the `unsafe/<op>` heads are routed by special-
+      ; form dispatch identity, not real namespace resolution, so no user
+      ; namespace may ever claim the `unsafe/` key.
+      (when (= (name-node s) "unsafe")
+        (die-at (ff line) "'unsafe' is a reserved namespace name"))
       ; A second `ns` in this unit warns (compile) / is silent (REPL).
       (when (!= g-ns-seen 0)
         (when (= g-interactive 0)
@@ -9093,6 +9112,11 @@
             'import-prefixed
               (emit-import-prefixed (cast ptr f))
             'unsafe-import-private
+              (emit-unsafe-import-private (cast ptr f))
+            ; Stage 14 UN-2: `unsafe/import-private` is the reserved-namespace
+            ; spelling for `unsafe-import-private` (D2 Class 2) — same emitter,
+            ; the bare alias stays accepted for now.
+            'unsafe/import-private
               (emit-unsafe-import-private (cast ptr f))
             'declare
               (do (set! g-out g-decl-stream) (emit-nuch-declare-import (cast ptr f)))
@@ -9734,7 +9758,10 @@
 ; (never dropped, process-lifetime). Members are inserted as bare string literals
 ; (already CStr), and the typed globals need no per-insert cast.
 (defn init-name-sets ():void
-  ; --- special-form-named set (73 members) ---
+  ; --- special-form-named set (93 members; this count fell out of sync with
+  ; the actual list well before UN-2 — 86 actual vs a stale "73" comment — so
+  ; it is corrected here to the true count: 86 pre-UN-2 + the 7 new unsafe/*
+  ; entries below) ---
   (set! g-special-form-set
     (cast (ref (HashSet CStr))
       (alloc-handle-alloc (addr-of g-arena-alloc) (sizeof (HashSet CStr)) (cast usize 8))))
@@ -9756,6 +9783,12 @@
        ; macros / functions
        "gensym" "funcall" "funcall-void"
        "funcall-ptr-1" "funcall-ptr-i32" "funcall-ptr-i64" "funcall-ptr-ptr"
+       ; Stage 14 UN-2: reserved `unsafe/` pseudo-namespace spellings (D2) —
+       ; each routes to the exact same emitter as its bare alias above, which
+       ; stays accepted for now (UN-3 migrates call sites; UN-5 retires bare).
+       "unsafe/cast" "unsafe/ptr+" "unsafe/import-private"
+       "unsafe/funcall-ptr-1" "unsafe/funcall-ptr-i32"
+       "unsafe/funcall-ptr-i64" "unsafe/funcall-ptr-ptr"
        ; option / result
        "some" "as-ref" "unwrap" "unwrap-or" "if-some" "when-some"
        ; ownership / control

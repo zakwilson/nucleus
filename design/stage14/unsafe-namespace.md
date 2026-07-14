@@ -347,6 +347,99 @@ existing emitter beside its bare alias (which stays accepted for now). Reserve
 the namespace: `(ns unsafe)` → die-at. New-code convention flips here: from
 UN-2 on, new code uses the new spellings.
 
+**Status (2026-07-14): DONE.** Every new `unsafe/<op>` head is an added `or`
+arm on the existing `(when (= hp 'bare-alias) …)` test, in both dispatch
+ladders that must stay in lockstep (conventions.md):
+
+- **emit-list** (`src/nucleusc.nuc`, the same ladder UN-1 landed `as` in):
+  `(when (or (= hp 'cast) (= hp 'unsafe/cast)) (return (emit-cast n scope)))`,
+  and the equivalent `or` for `funcall-ptr-1`/`-i32`/`-i64`/`-ptr` and `ptr+` —
+  each calling the *identical* `emit-*` function as its bare alias, zero
+  reimplementation.
+- **node-type** (`src/generics.nuc`): the same `or` pattern added to the
+  `node-type-cast`/`ty-ptr`/`ty-i32`/`ty-i64`/`node-type (node-at n 1) scope`
+  branches for `cast`/`funcall-ptr-*`/`ptr+` respectively — required by the
+  node-type↔emit-node lockstep (conventions.md); a `unsafe/cast` the emitter
+  accepts must type identically in the non-emitting pass.
+- **`unsafe/import-private`** is not an emit-list/node-type expression — it's a
+  toplevel form dispatched by the `case hp` ladder in `emit-toplevel-forms`
+  (`src/nucleusc.nuc`) — so it needed a different shape: a **duplicate `case`
+  arm** `'unsafe/import-private (emit-unsafe-import-private (cast ptr f))`
+  right after the existing `'unsafe-import-private` arm (a `case` clause is
+  one key per body, unlike `cond`'s `or`-friendly test position). It also
+  needed a matching addition to `prescan-imported-types`'s import-head string
+  check (`(= ph "unsafe/import-private")`) — the toplevel-type-prescan walk
+  that recognizes every import-shaped form to pre-register the imported unit's
+  struct names ahead of this unit's own signature prescan; missing this would
+  have left `unsafe/import-private`'s imported types invisible to signatures
+  in the *same* file, a silent gap rather than a compile error.
+- **`g-special-form-set`** gained all 7 new spellings, grouped together with a
+  comment rather than interleaved with their bare aliases, so the roster added
+  by this phase stays visually greppable. (The set's header comment claimed
+  "73 members" pre-UN-2, but the actual list had drifted to 86 well before
+  this phase — stale since at least before UN-1, which inherited and merely
+  incremented the wrong figure. Corrected here to the true count: 86 → 93.)
+- **`(ns unsafe)` reservation**: `emit-ns` (`src/nucleusc.nuc`) now checks
+  `(= (name-node s) "unsafe")` immediately after the existing
+  slash-in-namespace-name guard, `die-at`ing `'unsafe' is a reserved namespace
+  name`. `name-node s` is a `ptr` (identity-substrate `Node.s`) compared
+  against a string literal — the mixed-operand rule (conventions.md) fires the
+  content-comparing `strcmp` lowering here, not identity, exactly like the
+  neighboring `(= h "defn-")`-style checks elsewhere in the same dispatch
+  loop; this is a content check on purpose (the *spelling* "unsafe" is
+  reserved, not any particular interned Node instance).
+
+Verification: `make` (the current committed boot compiler) succeeded in one
+pass — this is another "new special-form dispatch symbol" scenario like UN-1,
+and again did **not** need the 2-stage manual bootstrap workaround, since
+nothing in `src`/`lib` references any `unsafe/*` spelling yet. `make
+bootstrap` is byte-identical (stage1.ll == stage2.ll, no `update-bootstrap`).
+`make test` is **174/174** (172 UN-1 baseline + 2 new): the positive
+`examples/unsafe-spellings.nuc` runs `unsafe/cast` (same-width sign
+reinterpret), `unsafe/ptr+` (pointer arithmetic — writes through a `ptr+`-
+computed address are visible through the matching `unsafe/ptr+` address, since
+both compute the identical offset), `unsafe/funcall-ptr-i32` (an indirect call
+through a function-pointer value obtained via `(cast ptr some-zero-arg-defn)`,
+which lowers to a no-IR `TY-FN`→`ptr` reinterpret), and `unsafe/import-private`
+(pulling in both the public *and* the private symbol of a new two-symbol demo
+library, `lib/unsafe-priv-demo.nuc`, under a prefix — proving the private
+symbol crossed the `g-import-include-private` gate that a plain
+`import-prefixed` would have filtered) — each printed back to back with its
+bare-spelling counterpart, and the outputs are byte-identical pairs:
+
+```
+cast            = 4294967295
+unsafe/cast     = 4294967295
+ptr+            = a=30 b=40
+unsafe/ptr+     = a=30 b=40
+funcall-ptr-i32 = 42
+unsafe/funcpi32 = 42
+pd/pub-double   = 42
+pd/priv-secret  = 99
+```
+
+The rejection fixture `tests/fixtures/unsafe-ns-reserved.nuc` (`(ns unsafe)`
+as the leading form) dies with the exact designed message: `'unsafe' is a
+reserved namespace name`.
+
+**Deliberately out of scope, left for UN-3/UN-4:** two structural recognizer
+helpers also pattern-match the bare spellings for def-time/syntactic purposes
+— `gcheck-special-form` (`src/generics.nuc`, recognizes a special-form head so
+the generic-template A2 body walk doesn't treat it as an unresolved function
+call) and `is-libc-alloc` (`src/nucleusc.nuc`, recognizes a `cast`-wrapped
+allocator call as a `with`-binding init). Neither was touched — the task's
+explicit roster was head-identity routes + `g-special-form-set` + the `ns`
+reservation, not every place `'cast`/`'ptr+` is compared in the compiler. A
+practical consequence: `(unsafe/cast T x)` used inside a *generic template
+body*, or a `with`-binding init spelled `(with (p:ptr (unsafe/cast ptr
+(malloc …))) …)`, would not be recognized by those two helpers today (the
+first would report an unresolved-function error in the A2 walk; the second
+would just not detect the allocator idiom for whatever purpose it uses that
+for). Neither surfaced in this phase's tests since no such usage was written
+against the new spellings. If UN-3/UN-4's tree-wide migration hits either
+gap, extend both helpers with the same `or`-arm pattern used everywhere else
+in this phase.
+
 ### UN-3 — boot refresh + Class-2 migration *(one controlled refresh)*
 
 **Agents: build-test-runner (refresh), focused-task-implementer (sweep).**
