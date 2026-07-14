@@ -954,17 +954,18 @@
 (defn union-instance-type (ud:raw:UnionDef):ref:Type
   (let (udd:raw:UnionDef ud
         lay:i32 (udd layout))
-    (when (= lay LAYOUT-NICHE-MAYBE)
-      (let (pt:ref:Type (make-type TY-PTR))
-        (.set! pt elem (udd niche-elem))
-        (.set! pt pkind PTR-MAYBE)
-        (return pt)))
-    (when (= lay LAYOUT-NICHE-ERRPTR)
-      (let (pt:ref:Type (make-type TY-PTR))
-        (.set! pt elem (udd niche-elem))
-        (.set! pt pkind PTR-ERRPTR)
-        (return pt)))
-    (return (type-for-sdef (udd sdef)))))
+    (case lay
+      LAYOUT-NICHE-MAYBE
+        (let (pt:ref:Type (make-type TY-PTR))
+          (.set! pt elem (udd niche-elem))
+          (.set! pt pkind PTR-MAYBE)
+          (return pt))
+      LAYOUT-NICHE-ERRPTR
+        (let (pt:ref:Type (make-type TY-PTR))
+          (.set! pt elem (udd niche-elem))
+          (.set! pt pkind PTR-ERRPTR)
+          (return pt))
+      (return (type-for-sdef (udd sdef))))))
 
 ; use `(Name A B)`. The instance is an ordinary defunion named
 ; `Name.<tok>.<tok>` (type-mangle-token per argument, the generic-fn scheme);

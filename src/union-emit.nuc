@@ -1474,12 +1474,14 @@
       ; TC-5 part 2: the scrutinee (a generic call) may have consumed the want;
       ; re-arm so clause/arm-body emitters distribute it to value tails.
       (set! g-want-type my-want)
-      (when (= (niche-layout-of (sv type)) LAYOUT-NICHE-ERRPTR)
-        (return (emit-match-niche-errptr call scope sv
-                  ((sv type) elem))))
-      (when (= (niche-layout-of (sv type)) LAYOUT-NICHE-MAYBE)
-        (return (emit-match-niche-maybe call scope sv
-                  ((sv type) elem))))
+      (case (niche-layout-of (sv type))
+        LAYOUT-NICHE-ERRPTR
+          (return (emit-match-niche-errptr call scope sv
+                    ((sv type) elem)))
+        LAYOUT-NICHE-MAYBE
+          (return (emit-match-niche-maybe call scope sv
+                    ((sv type) elem)))
+        0)
       (when (!= (is-int-type (sv type)) 0)
         (return (emit-match-enum call scope sv)))
       (let (ud:ptr null
