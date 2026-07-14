@@ -401,16 +401,17 @@
 (defvar g-import-include-private:i32 0)
 
 ; Stage 12 N4: per-namespace IR-mangling prefix (design/stage12/namespaces.md
-; §"Implementation", decision 7). Parallel arrays mapping an (interned) namespace
-; name to its (interned, sanitized) ir-prefix string, as set by `set-ir-prefix`.
-; A namespace with no explicit entry defaults to its own name (sanitized) — except
-; `user`, which is the empty prefix (bare ir-names, the byte-identical escape
-; hatch). An entry whose value is the empty string forces bare names regardless of
-; the namespace. Keys compare by interned-pointer identity (ns-ir-prefix-set/-get).
-(defvar g-ns-prefix-keys:ptr)
-(defvar g-ns-prefix-vals:ptr)
-(defvar g-num-ns-prefix:i32 0)
-(defvar g-cap-ns-prefix:i32 0)
+; §"Implementation", decision 7). A `(Vector (ref NsPrefixEntry))` mapping an
+; (interned) namespace name to its (interned, sanitized) ir-prefix string, as
+; set by `set-ir-prefix`. A namespace with no explicit entry defaults to its
+; own name (sanitized) — except `user`, which is the empty prefix (bare
+; ir-names, the byte-identical escape hatch). An entry whose value is the
+; empty string forces bare names regardless of the namespace. Keys compare by
+; interned-pointer identity (ns-ir-prefix-set/-get). Lazily constructed on the
+; first `set-ir-prefix` call (Stage 14 §14.5 batch 2 — was two cap-doubling
+; parallel arrays); `raw` (not `ref`) since compiler-init explicitly resets it
+; to null at the start of every compilation unit.
+(defvar (g-ns-prefix-table (raw (Vector (ref NsPrefixEntry)))))
 
 ; Include path list for -I flag. Null until the first -I flag is parsed (see
 ; add-include-path for the pre-compiler-init allocator note above).
@@ -2081,30 +2082,26 @@
 ; (interned) namespace `ns`. Set by `set-ir-prefix`. Keys compare by pointer
 ; identity; a re-set overwrites the prior value (REPL re-entry, second directive).
 (defn ns-ir-prefix-set (ns:ptr prefix:ptr):void
-  (dotimes (i g-num-ns-prefix)
-    (when (= (aref (cast ptr:ptr g-ns-prefix-keys) i) ns)
-      (aset! (cast ptr:ptr g-ns-prefix-vals) i prefix)
-      (return)))
-  (when (= g-num-ns-prefix g-cap-ns-prefix)
-    (let (nc:i32 8)
-      (when (!= g-cap-ns-prefix 0) (set! nc (* g-cap-ns-prefix 2)))
-      (let (nk:ptr (arena-alloc (* (cast i64 nc) (ptr-bytes)))
-            nv:ptr (arena-alloc (* (cast i64 nc) (ptr-bytes))))
-        (when (!= g-num-ns-prefix 0)
-          (memcpy nk g-ns-prefix-keys (* (cast i64 g-num-ns-prefix) (ptr-bytes)))
-          (memcpy nv g-ns-prefix-vals (* (cast i64 g-num-ns-prefix) (ptr-bytes))))
-        (set! g-ns-prefix-keys nk)
-        (set! g-ns-prefix-vals nv)
-        (set! g-cap-ns-prefix nc))))
-  (aset! (cast ptr:ptr g-ns-prefix-keys) g-num-ns-prefix ns)
-  (aset! (cast ptr:ptr g-ns-prefix-vals) g-num-ns-prefix prefix)
-  (inc! g-num-ns-prefix))
+  (when (= g-ns-prefix-table null)
+    (set! g-ns-prefix-table (vector-new-in (addr-of g-arena-alloc))))
+  (let (tbl:(ref (Vector (ref NsPrefixEntry))) (cast (ref (Vector (ref NsPrefixEntry))) g-ns-prefix-table))
+    (dotimes (i (cast i32 (count tbl)))
+      (let (e:ref:NsPrefixEntry (invoke tbl (cast usize i)))
+        (when (= (e ns) ns)
+          (.set! e prefix prefix)
+          (return))))
+    (let (rec:ref:NsPrefixEntry (new NsPrefixEntry))
+      (.set! rec ns ns)
+      (.set! rec prefix prefix)
+      (conj tbl rec))))
 
 ; The recorded ir-prefix for (interned) namespace `ns`, or null if none was set.
 (defn ns-ir-prefix-get (ns:ptr):ptr
-  (dotimes (i g-num-ns-prefix)
-    (when (= (aref (cast ptr:ptr g-ns-prefix-keys) i) ns)
-      (return (aref (cast ptr:ptr g-ns-prefix-vals) i))))
+  (when (= g-ns-prefix-table null) (return null))
+  (let (tbl:(ref (Vector (ref NsPrefixEntry))) (cast (ref (Vector (ref NsPrefixEntry))) g-ns-prefix-table))
+    (dotimes (i (cast i32 (count tbl)))
+      (let (e:ref:NsPrefixEntry (invoke tbl (cast usize i)))
+        (when (= (e ns) ns) (return (e prefix))))))
   (return null))
 
 ; The effective ir-prefix for namespace `ns` (decision 7):
@@ -4162,49 +4159,35 @@
 ; methods — the vtable just takes their addresses; no new thunks are written. The
 ; box's `vtable` field (TE-3) is set to this global's address at construction.
 ;
-; Dedup: memoized per (concrete-type spelling, protocol/signature) via parallel
-; arrays — reserve-key-first, intern,
-; reuse — so a second box of the same type shares one global. The vtable symbol
-; routes through sanitize-for-ir so `!`/`?`/`/` never reach the emitted name.
+; Dedup: memoized per (concrete-type spelling, protocol/signature) in a
+; `(Vector (ref VtableEntry))` — reserve-key-first, intern, reuse — so a second
+; box of the same type shares one global. The vtable symbol routes through
+; sanitize-for-ir so `!`/`?`/`/` never reach the emitted name.
 ;
 ; Emission target is g-out (mirroring fn-make-env-struct): at box time g-out is
 ; the current module's def stream (batch / CT-JIT / macro-JIT), so the vtable
 ; lands in the same module as the @invoke/@drop thunks it references (those are
 ; queued on g-mono-worklist when the closure is emitted in that module). LLVM
 ; permits a constant to reference function globals defined later in the module.
-;
-; INERTNESS: nothing calls ensure-vtable-for yet (no boxing surface until TE-3),
-; so this emits in zero modules during self-compilation → byte-identical.
-(defvar g-vtable-keys:ptr null)   ; array of ptr — interned "(spelling)/(proto)" keys
-(defvar g-vtable-names:ptr null)  ; array of ptr — parallel "@__vt..." symbol strings
-(defvar g-vtable-count:i32 0)
-(defvar g-vtable-cap:i32 0)
+(defvar (g-vtable-table (ref (Vector (ref VtableEntry)))))
 
 ; Memo lookup: the already-emitted vtable symbol for interned `key`, or null.
 (defn vtable-memo-lookup (key:ptr):ptr
-  (dotimes (i g-vtable-count)
-    (when (= (aref (cast ptr:ptr g-vtable-keys) i) key)
-      (return (aref (cast ptr:ptr g-vtable-names) i))))
+  (when (= g-vtable-table null) (return null))
+  (dotimes (i (cast i32 (count g-vtable-table)))
+    (let (e:ref:VtableEntry (invoke g-vtable-table (cast usize i)))
+      (when (= (e key) key) (return (e name)))))
   (return null))
 
-; Record (key → vtable-symbol), growing the parallel arrays (mirrors fnty-intern).
+; Record (key → vtable-symbol) (mirrors fnty-intern).
 (defn vtable-memo-put (key:ptr name:ptr):void
-  (when (= g-vtable-cap 0)
-    (set! g-vtable-cap 16)
-    (set! g-vtable-keys (arena-alloc (* (cast i64 g-vtable-cap) (ptr-bytes))))
-    (set! g-vtable-names (arena-alloc (* (cast i64 g-vtable-cap) (ptr-bytes)))))
-  (when (= g-vtable-count g-vtable-cap)
-    (let (nc:i32 (* g-vtable-cap 2)
-          nk:ptr (arena-alloc (* (cast i64 (* g-vtable-cap 2)) (ptr-bytes)))
-          nn:ptr (arena-alloc (* (cast i64 (* g-vtable-cap 2)) (ptr-bytes))))
-      (memcpy nk g-vtable-keys (* (cast i64 g-vtable-count) (ptr-bytes)))
-      (memcpy nn g-vtable-names (* (cast i64 g-vtable-count) (ptr-bytes)))
-      (set! g-vtable-keys nk)
-      (set! g-vtable-names nn)
-      (set! g-vtable-cap nc)))
-  (aset! (cast ptr:ptr g-vtable-keys) g-vtable-count key)
-  (aset! (cast ptr:ptr g-vtable-names) g-vtable-count name)
-  (inc! g-vtable-count))
+  (when (= g-vtable-table null)
+    (set! g-vtable-table
+      (cast (ref (Vector (ref VtableEntry))) (vector-new-in (addr-of g-arena-alloc)))))
+  (let (rec:ref:VtableEntry (new VtableEntry))
+    (.set! rec key key)
+    (.set! rec name name)
+    (conj g-vtable-table rec)))
 
 ; The emitted `@invoke.p<Env>.<argtoks>` symbol for a concrete env type: scan the
 ; `invoke` generic for the METHOD-USER whose self param (param-types[0]) is
@@ -9742,10 +9725,7 @@
   ; Stage 12 N4: the per-namespace ir-prefix table starts empty; `user` is the
   ; implicit empty-prefix namespace (handled in ns-ir-prefix), so no entry is
   ; needed for the byte-identical bootstrap path.
-  (set! g-ns-prefix-keys null)
-  (set! g-ns-prefix-vals null)
-  (set! g-num-ns-prefix 0)
-  (set! g-cap-ns-prefix 0))
+  (set! g-ns-prefix-table null))
 
 ; ============================================================
 ; Emit quasiquote helpers (__cons / __append) into the given streams

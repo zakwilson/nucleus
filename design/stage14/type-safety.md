@@ -1492,17 +1492,28 @@ tests green; boot re-converged.
 for `Scope.syms`. **Read (scoped):** each growable's grow thunk + read sites
 (idiom 4 anchors).
 
-**Status (batch 1, 2026-07-14): DONE, byte-identical bootstrap (one-pass
-reconverge).** Sub-step 1 below (`g-include-paths`/`g-link-args`) is complete —
-see [progress.md](../progress.md) for the full writeup (allocator-ordering
-wrinkle, the `conj`-needs-explicit-`CStr`-cast finding, and the manual `-I`/`-l`
-end-to-end verification). Sub-steps 2-6 remain open.
+**Status (batch 2, 2026-07-14): DONE, byte-identical bootstrap (one-pass
+reconverge).** Sub-steps 1 and 2 below are both complete — see
+[progress.md](../progress.md) for the full writeups. Batch 1
+(`g-include-paths`/`g-link-args`): allocator-ordering wrinkle, the
+`conj`-needs-explicit-`CStr`-cast finding, and the manual `-I`/`-l` end-to-end
+verification. Batch 2 (`g-vtable-keys`/`-names`, `g-ns-prefix-keys`/`-vals`):
+each pair became a `{key,val}` element-struct-backed `Vector` as anticipated
+below, but the two tables landed on *different* pointer kinds for the Vector
+handle itself — `g-vtable-table` is `(ref (Vector (ref VtableEntry)))` while
+`g-ns-prefix-table` is `(raw (Vector (ref NsPrefixEntry)))` — because
+`compiler-init` explicitly resets the ns-prefix table to null once per
+compilation unit (a null literal cannot be assigned to a `ref`-typed variable
+under the non-null-pointer flow checker), while the vtable memo is never
+reset at all. Also corrected a stale inline comment ("nothing calls
+ensure-vtable-for yet") that no longer matched the tree (TE-3 callers exist).
+Sub-steps 3-6 remain open.
 
 **Build, cold-first:**
 1. `g-include-paths`, `g-link-args` (fixed 64-slot `malloc` → `(Vector CStr)`).
    **DONE (2026-07-14).**
 2. `g-vtable-keys`/`-names`, `g-ns-prefix-keys`/`-vals` (→ parallel `(Vector CStr)`
-   or a `{key,val}` element struct).
+   or a `{key,val}` element struct). **DONE (2026-07-14).**
 3. The type-erasure memos `g-boxedfn-*`, `g-dyn-*` — **mind union-registry import
    ordering** (these live in union-registry.nuc, imported early; a
    `(Vector (ref BoxKey))` element there must respect the `AllocHandle` pending-IR
