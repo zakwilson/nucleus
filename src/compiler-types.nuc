@@ -209,7 +209,16 @@
 (defstruct Type
   kind:i32
   (ret (raw Type))
-  params:ptr
+  ; Stage 14 §14.4: the TY-FN parameter list as one `(Vector (ref Field))` (was
+  ; the two parallel arrays `params` (Type*[]) and `param-names` (name string[])).
+  ; Each param is a `(ref Field)` whose `type` is the param's declared Type;
+  ; `name` is left null — `param-names` was dead storage (no builder ever
+  ; populated it, and the REPL renders positional pN). `num-params` is the cached
+  ; count, kept as the shared length so every `(dotimes (i (ft num-params)))` loop
+  ; stays intact. Reads go through `field-at` (abi.nuc); builds through
+  ; `type-set-params` (abi.nuc). Nullable (`raw`): a zero-param or non-fn Type
+  ; leaves it null, so `field-at`'s raw→ref cast is guarded by the num-params>0 loops.
+  (params (raw (Vector (ref Field))))
   num-params:i32
   variadic:i32
   has-rest:i32
@@ -217,11 +226,12 @@
   (sdef (raw StructDef))
   ; --- Stage 8 additions ---
   nopt:i32          ; number of trailing &optional params (TY-FN)
-  opt-defaults:ptr  ; array of ptr:Node default-value forms for the &optional params
-  ; Parallel array to `params`: each entry is a `ptr` to the param's declared
-  ; name (arena-owned C string), or null if unknown. Used by the REPL to render
-  ; real parameter names instead of positional pN.
-  param-names:ptr
+  ; A *ragged tail* array of length `nopt` (NOT `num-params`): the default-value
+  ; Node* forms for only the trailing `nopt` &optional params, indexed 0..nopt-1
+  ; (slot k ↔ param index `required + k`, where required = num-params - nopt).
+  ; Because it is not a parallel array to `params`, it stays a raw ptr[] (like
+  ; Constraint.args / Arm.fnames) rather than folding into the Field record.
+  opt-defaults:ptr  ; array of ptr:Node default forms for the trailing &optional params
   ; Volatile qualifier: when set, loads/stores at this type's storage site are
   ; emitted as `load volatile`/`store volatile`. Primitive singletons are shared,
   ; so volatility is represented by cloning the Type via type-with-volatile.

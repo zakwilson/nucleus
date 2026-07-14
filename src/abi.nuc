@@ -43,6 +43,32 @@
     (.set! sd fields fields-vec)
     (.set! sd num-fields nfields)))
 
+; ============================================================
+; Stage 14 §14.4: a TY-FN Type's parameter list is one `(Vector (ref Field))`
+; (was the parallel `params`/`param-names` arrays). These are the shared
+; build accessors; reads reuse `field-at` above (same `(ref Field)` element).
+; ============================================================
+
+; Build a `(Vector (ref Field))` from a raw ptr array of Type* param types.
+; The `name` slot is left null — a Type's params carry no names (`param-names`
+; was dead storage). Shared by `type-set-params` and the BoxedFn signature-token
+; builder (union-registry.nuc), which must walk the same element shape.
+(defn make-param-vec (ptypes:ptr np:i32) (ref (Vector (ref Field)))
+  (let ((pv (ref (Vector (ref Field)))) (vector-new-in (addr-of g-arena-alloc)))
+    (dotimes (i:i32 np)
+      (let (rec:ref:Field (new Field))
+        (.set! rec name null)
+        (.set! rec type (cast raw:Type (aref (cast ptr:ptr ptypes) i)))
+        (conj pv rec)))
+    (return pv)))
+
+; Populate a TY-FN Type's `params` Vector from a raw ptr array of Type* and set
+; the cached `num-params`. The single array→Vector conversion point for every
+; fn-type builder (mirrors struct-set-fields).
+(defn type-set-params (t:(raw Type) ptypes:ptr np:i32):void
+  (.set! t params (make-param-vec ptypes np))
+  (.set! t num-params np))
+
 ; Check if target is aarch64 (AAPCS64 ABI uses plain pointers for large structs,
 ; not byval attributes).
 (defn abi-is-aarch64 ():i32

@@ -300,7 +300,6 @@
       (.set! dst opt-defaults (src opt-defaults))
       (.set! dst elem        (src elem))
       (.set! dst sdef        (src sdef))
-      (.set! dst param-names (src param-names))
       (.set! dst is-volatile (src is-volatile))
       (.set! dst pkind       k)
       (return dst))))

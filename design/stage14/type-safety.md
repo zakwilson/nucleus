@@ -1392,10 +1392,80 @@ sites across abi/cheader/compiler-types/union-registry/generics/repl/nucleusc).
   `make abi-test` green throughout; round-2 `make clean && make && make bootstrap`
   byte-identical.
 
-**Remaining batches** (not started): `Field{name,type}` for **`Type`**
-(`params`/`param-names`/`opt-defaults`, batch 3b — a structurally separate
-parallel-array pair on `Type`, not `StructDef`, with its own large call-site
-footprint). `StructDef`, `Constraint`, and `Conformance.args` are **done**.
+**Status (batch 3b — `Type.params`/`param-names`/`opt-defaults`, 2026-07-14):
+DONE, controlled refresh reconverged in one pass (again).** Folded `Type`'s
+**parallel** param pair (`params` = `Type*[]`, `param-names` = name-string[], both
+length `num-params`) into a single `(params (raw (Vector (ref Field))))` field,
+**reusing batch 3a's `Field{name, type}` struct** (no new element type, matching
+the design's literal `Field{name, type}` suggestion). `num-params` is kept as the
+cached count (same rationale as `num-arms`/`num-constraints`/`num-fields`). This
+closes **14.4 entirely** — every genuine lockstep-walked parallel-array idiom on
+`compiler-types.nuc` (UnionDef arms → `Arm`; Method/TmplConformance `&where` quads
+→ `Constraint`; StructDef `field-names`/`field-types` → `Field`; Type
+`params`/`param-names` → `Field`) is now an array-of-struct.
+
+- **The `opt-defaults` tail asymmetry was resolved by *not* folding it.**
+  `opt-defaults` is a **ragged tail** array of length `nopt` (NOT `num-params`):
+  it holds default-value Node* forms for only the trailing `nopt` &optional params,
+  indexed `0..nopt-1` (slot k ↔ param index `required + k`, `required = num-params
+  - nopt`). It is not a parallel array to `params`, so — exactly like `Constraint.
+  args`, `Arm.fnames`/`ftypes`, and `StructDef.origin-args` (all *single* ragged
+  arrays kept raw by prior batches) — it stays a raw `ptr[]` + `nopt` count,
+  **untouched**. This keeps the tail-offset arithmetic at its two live sites
+  (`emit-call`'s default-fill read `opt-defaults[oi - required]` and `emit-defn`'s
+  build write `opt-defaults[di - required]`) byte-for-byte, eliminating any
+  misalignment risk. A `Field{name, type, default}` fold (default null except on
+  the tail) was considered and rejected: it would either add a mostly-null `default`
+  slot to the *shared* `Field` (churning `StructDef` too) or force a new `Param`
+  struct, for no benefit over leaving the honest ragged tail alone.
+- **`param-names` was dead storage → the field is dropped, not folded live.** No
+  builder ever stored a non-null `Type.param-names` (only the two Type clones
+  propagated it); `emit-defn` builds a *local* `param-names` array for the param
+  prologue but never writes it onto the Type, and the REPL renders positional
+  `%aN`/`pN` (it never reads `Type.param-names`). This is the same "dead parallel
+  array" batch 1 found in `arm-fnames`. So the `param-names` field is deleted and
+  `Field.name` is left null for every Type param (the `make-param-vec` builder does
+  not thread names). Byte-faithful to the current always-null behavior.
+- **Two shared build accessors in abi.nuc** (the earliest field reader, imported
+  before every fn-type builder): `make-param-vec (ptypes np):(ref (Vector (ref
+  Field)))` (builds the Vector with `name` null) and `type-set-params (t ptypes
+  np):void` (the single array→Vector conversion point — `make-param-vec` + set
+  `num-params`; mirrors `struct-set-fields`). **Reads reuse batch 3a's `field-at`**
+  (Type's `params` is the same `(raw (Vector (ref Field)))` element type as
+  StructDef's `fields`), so `((ft params)[i])` → `((field-at (ft params) i) type)`.
+  Every ragged `(aref (cast ptr:ptr (ft params)) i)` walk is gone.
+- **`boxedfn-sig-token` retyped to walk the Vector** (its param went `param-arr:ptr`
+  → `params:(raw (Vector (ref Field)))`, walking via `field-at`). Both callers now
+  pass a Vector: `boxedfn-type` builds the param Vector *once* via `make-param-vec`
+  and reuses that same handle for both the token and the Type's `params` (immutable
+  after build); `ensure-fnfwd-vtable` (nucleusc.nuc) already passed `(bt params)`.
+- **One wholesale-handle site needed a materialize-back** (`repl.nuc`'s redefinition
+  path): `generic-remove-matching-user-method` compares against `Method.param-types`
+  (a *raw* array, untouched this batch) via `params-type-eq`, so the fn Type's param
+  Vector is materialized back into a temp raw `Type*[]` before the call. Localized.
+- **Touched:** compiler-types.nuc (Type struct + comments), abi.nuc (2 new
+  accessors), and the build/read sites in generics.nuc, union-registry.nuc,
+  cheader.nuc (its build-in-place `alloc (ft params)` + copy loop collapsed to one
+  `type-set-params`), nuch.nuc, repl.nuc, nucleusc.nuc, plus the two Type clones
+  (type-utils.nuc `type-as-pkind`, nucleusc.nuc `type-with-volatile` — `params`/
+  `num-params` stay handle-copies; the dead `param-names` copy line is deleted).
+- **Reconverged in ONE pass** — `make bootstrap` (`stage1.ll == stage2.ll`) PASSED
+  *before* `make update-bootstrap`, for the fourth 14.4 batch running: the change is
+  internal representation + param-reading logic only, invisible in emitted IR, and
+  the new Vector-of-Field param lists stamp deterministically across the old boot and
+  the new compiler. `make test` 168/168, `make abi-test` (`abi-interop`) green
+  throughout; round-2 `make clean && make && make bootstrap` byte-identical. Extra
+  territory-specific checks (boxedfn/closures/dyn/fnptr/optional/rest examples diffed
+  against `tests/expected/*.out`) all matched — `optional.nuc` (two trailing
+  optionals + a call-valued default) confirms the untouched opt-defaults tail path.
+
+**14.4 is COMPLETE.** All four lockstep parallel-array idioms are array-of-struct
+(`Arm`, `Constraint`, `Field` ×2). The remaining raw `ptr[]` fields on
+`compiler-types.nuc` — `Constraint.args`, `Arm.fnames`/`ftypes`, `Type.opt-defaults`,
+`StructDef.origin-args`, and the various tyvar/binding name arrays — are all *single*
+ragged arrays with no lockstep partner, deliberately left raw (folding a lone array
+into an element struct buys nothing). `Conformance.args` → `(Vector CStr)` was the
+one non-element-struct conversion (batch 2).
 
 **Agent: systems-impl-engineer** (new element structs + layout change); build-test
 gates. **Read (scoped):** the arm-array build/scan (union-registry.nuc:789-800,

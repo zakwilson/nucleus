@@ -38,7 +38,7 @@
       (set! h (hash-type h (tt ret)))
       (set! h (fnv-byte h (cast i64 (tt num-params))))
       (dotimes (i (tt num-params))
-        (set! h (hash-type h (aref (cast ptr:ptr (tt params)) i)))))
+        (set! h (hash-type h ((field-at (tt params) i) type)))))
     (return h)))
 
 (defn hash-struct-shape (field-names:ptr field-types:ptr nfields:i32):i64
@@ -413,10 +413,13 @@
 
 ; A dot-free signature token "<rettok>_<p0tok>_<p1tok>…" (each via
 ; type-mangle-token), keying the per-signature box StructDef name and memo entry.
-(defn boxedfn-sig-token (param-arr:ptr num-p:i32 ret:ptr):ptr
+; §14.4: `params` is a TY-FN Type's parameter Vector `(Vector (ref Field))`;
+; each param type is read via `field-at`. Both callers (boxedfn-type below and
+; ensure-fnfwd-vtable in nucleusc.nuc) pass a Vector handle.
+(defn boxedfn-sig-token (params:(raw (Vector (ref Field))) num-p:i32 ret:ptr):ptr
   (let (s:ptr (type-mangle-token ret))
     (dotimes (i num-p)
-      (set! s (fmt-2s "%s_%s" s (type-mangle-token (aref (cast ptr:ptr param-arr) i)))))
+      (set! s (fmt-2s "%s_%s" s (type-mangle-token ((field-at params i) type)))))
     (return s)))
 
 ; The (memoised) BoxedFn instance Type for a signature. On a miss it registers a
@@ -424,7 +427,8 @@
 ; per-signature name), queues its IR on the shared pending-union list, builds the
 ; TY-STRUCT Type, stamps the Fn signature onto ret/params/num-params, and memoises.
 (defn boxedfn-type (param-arr:ptr num-p:i32 ret:ptr line:i32):ptr
-  (let (tok:ptr (boxedfn-sig-token param-arr num-p ret)
+  (let ((pvec (ref (Vector (ref Field)))) (make-param-vec param-arr num-p)
+        tok:ptr (boxedfn-sig-token pvec num-p ret)
         key:ptr (intern-str (fmt-s "BoxedFn.%s" tok))
         hit:ptr (boxedfn-memo-lookup key))
     (when (!= hit null) (return hit))
@@ -442,8 +446,9 @@
       (conj g-pending-unions sd)
       (let (t:ref:Type (type-for-sdef (cast ptr sd)))
         ; Carry the Fn signature on the struct Type for invoke-forwarding / boxing.
+        ; Reuse the `pvec` built above (immutable after build) as the param list.
         (.set! t ret ret)
-        (.set! t params param-arr)
+        (.set! t params pvec)
         (.set! t num-params num-p)
         (boxedfn-memo-put key (cast ptr t))
         (return (cast ptr t))))))
@@ -1418,8 +1423,7 @@
                                 (set! cur ((cast ptr:Node cur) cdr))))))))
                     (let (ft:ref:Type (make-type TY-FN))
                       (.set! ft ret ret-type)
-                      (.set! ft params param-arr)
-                      (.set! ft num-params num-p)
+                      (type-set-params ft param-arr num-p)
                       (.set! ft variadic is-va)
                       (return ft)))))))
           ; Head is a symbol "fn" — function pointer with no params: (fn ret-type)
