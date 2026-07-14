@@ -600,13 +600,15 @@
 ; `(name T)` forms.
 (defn defn-name-only (name-node:raw:Node):ptr
   (let (n:raw:Node name-node)
-    (when (= (n kind) NODE-SYM)
-      (let (nm:ptr null tn:ptr null)
-        (split-typed (n s) (cast ptr:ptr (addr-of nm)) (cast ptr:ptr (addr-of tn)))
-        (return nm)))
-    (when (= (n kind) NODE-CELL)
-      (let (c:raw:Node (n car))
-        (when (= (c kind) NODE-SYM) (return (c s)))))
+    (case (n kind)
+      NODE-SYM
+        (let (nm:ptr null tn:ptr null)
+          (split-typed (n s) (cast ptr:ptr (addr-of nm)) (cast ptr:ptr (addr-of tn)))
+          (return nm))
+      NODE-CELL
+        (let (c:raw:Node (n car))
+          (when (= (c kind) NODE-SYM) (return (c s))))
+      0)
     (return null)))
 
 ; The type node of a desugared binding `(name type)`, or null if untyped.
@@ -619,11 +621,14 @@
 (defn node-mentions-tyvar (node:raw:Node tyvars:ptr ntv:i32):i32
   (when (= node null) (return 0))
   (let (n:raw:Node node)
-    (when (= (n kind) NODE-SYM)
-      (if (>= (tyvar-index-of (n s) tyvars ntv) 0) (return 1) (return 0)))
-    (when (= (n kind) NODE-CELL)
-      (when (!= (node-mentions-tyvar (n car) tyvars ntv) 0) (return 1))
-      (return (node-mentions-tyvar (n cdr) tyvars ntv)))
+    (case (n kind)
+      NODE-SYM
+        (if (>= (tyvar-index-of (n s) tyvars ntv) 0) (return 1) (return 0))
+      NODE-CELL
+        (do
+          (when (!= (node-mentions-tyvar (n car) tyvars ntv) 0) (return 1))
+          (return (node-mentions-tyvar (n cdr) tyvars ntv)))
+      0)
     (return 0)))
 
 ; The first n cells of a list as a freshly-consed list (drops the tail).
@@ -751,29 +756,31 @@
 (defn collect-pattern-tyvars (node:raw:Node out-tyvars:ptr io-ntv:ptr):void
   (when (= node null) (return))
   (let (n:raw:Node node)
-    ; A bare symbol in receiver position is collected only via a template-arg
-    ; below; a top-level bare symbol that is a concrete type or a known name is
-    ; not a tyvar here (return-only/standalone `T` is out of scope — bound only
-    ; through the receiver application).
-    (when (= (n kind) NODE-SYM) (return))
-    (when (= (n kind) NODE-CELL)
-      ; Template application: each unresolvable symbol arg is a tyvar; recurse
-      ; into list args (e.g. (HashMap K (Vector V))).
-      (let (st:?ptr:StructTemplate (node-template-of node))
-        (when (!= st null)
-          (let (it:ListIter (list-iter (n cdr)))
-            (doseq-iter (cur (addr-of it))
-              (let (arg:ptr cur
-                    an:ptr:Node (cast ptr:Node arg))
-                (if (= (an kind) NODE-SYM)
-                  (when (= (tyname-resolvable (an s)) 0)
-                    (tyvars-add (an s) out-tyvars io-ntv))
-                  (collect-pattern-tyvars arg out-tyvars io-ntv))))
-          (return)))
-      ; Pointer wrapper: descend into the inner pattern.
-      (when (!= (node-is-ptr-wrapper node) 0)
-        (collect-pattern-tyvars (wrapper-inner-pattern node) out-tyvars io-ntv)
-        (return))))))
+    (case (n kind)
+      ; A bare symbol in receiver position is collected only via a template-arg
+      ; below; a top-level bare symbol that is a concrete type or a known name is
+      ; not a tyvar here (return-only/standalone `T` is out of scope — bound only
+      ; through the receiver application).
+      NODE-SYM (return)
+      NODE-CELL
+        ; Template application: each unresolvable symbol arg is a tyvar; recurse
+        ; into list args (e.g. (HashMap K (Vector V))).
+        (let (st:?ptr:StructTemplate (node-template-of node))
+          (when (!= st null)
+            (let (it:ListIter (list-iter (n cdr)))
+              (doseq-iter (cur (addr-of it))
+                (let (arg:ptr cur
+                      an:ptr:Node (cast ptr:Node arg))
+                  (if (= (an kind) NODE-SYM)
+                    (when (= (tyname-resolvable (an s)) 0)
+                      (tyvars-add (an s) out-tyvars io-ntv))
+                    (collect-pattern-tyvars arg out-tyvars io-ntv)))))
+            (return))
+          ; Pointer wrapper: descend into the inner pattern.
+          (when (!= (node-is-ptr-wrapper node) 0)
+            (collect-pattern-tyvars (wrapper-inner-pattern node) out-tyvars io-ntv)
+            (return)))
+      0)))
 
 ; Collect the type variables appearing in a parametric-constraint argument node
 ; `((Proto Arg…) V)` (assoc-types A1). Unlike a receiver pattern — where a bare
@@ -806,47 +813,51 @@
 (defn unify-tpat (pat:raw:Node at:raw:Type tyvars:ptr ntv:i32 out-bound:ptr line:i32):i32
   (when (or (= pat null) (= at null)) (return 0))
   (let (pn:raw:Node pat)
-    (when (= (pn kind) NODE-SYM)
-      ; A single bare symbol that is a declared tyvar binds directly.
-      (when (= (strchr (pn s) 58) null)
-        (let (idx:i32 (tyvar-index-of (pn s) tyvars ntv))
-          (when (>= idx 0)
-            (let (cur:ptr (aref (cast ptr:ptr out-bound) idx))
-              (if (= cur null)
-                (do (aset! (cast ptr:ptr out-bound) idx at) (return 1))
-                (return (type-eq cur at)))))))
-      ; Otherwise a concrete (possibly colon-sugared) type: parse and compare.
-      (return (type-eq (parse-type-from-node pat line) at)))
-    (when (= (pn kind) NODE-CELL)
-      ; Pointer wrapper vs a concrete pointer: unify element patterns.
-      (when (!= (node-is-ptr-wrapper pat) 0)
-        ; Stage 13 L7: a bare `fn` (function pointer, TY-FN) flowing into a
-        ; `(ref G)`/`(ptr G)` position binds G to the TY-FN itself — the stamped
-        ; body's `(ref G)` becomes `(ref <fn>)`, and the by-value fn pointer
-        ; passed at the call site lands in the param slot as that storage. A
-        ; TY-FN has no `elem`, so unify the inner pattern directly against `at`.
-        (when (= (at kind) TY-FN)
-          (return (unify-tpat (wrapper-inner-pattern pat) at tyvars ntv out-bound line)))
-        (when (!= (at kind) TY-PTR) (return 0))
-        (return (unify-tpat (wrapper-inner-pattern pat)
-                            (at elem)
-                            tyvars ntv out-bound line)))
-      ; Template application vs a stamped instance of the same template.
-      (let (st:?ptr:StructTemplate (node-template-of pat))
-        (when (!= st null)
-          (when (!= (at kind) TY-STRUCT) (return 0))
-          (let (sd:raw:StructDef (at sdef))
-            (when (!= (sd origin-template) st) (return 0))
-            (let (nargs:i32 (- (node-len pat) 1))
-              (when (!= nargs (sd origin-nargs)) (return 0))
-              (dotimes (i nargs)
-                (when (= (unify-tpat (node-at pat (+ i 1))
-                                     (aref (cast ptr:ptr (sd origin-args)) i)
-                                     tyvars ntv out-bound line) 0)
-                  (return 0)))
-              (return 1)))))
-      ; Any other compound type (anonymous struct, fn pointer): parse concretely.
-      (return (type-eq (parse-type-from-node pat line) at)))
+    (case (pn kind)
+      NODE-SYM
+        (do
+          ; A single bare symbol that is a declared tyvar binds directly.
+          (when (= (strchr (pn s) 58) null)
+            (let (idx:i32 (tyvar-index-of (pn s) tyvars ntv))
+              (when (>= idx 0)
+                (let (cur:ptr (aref (cast ptr:ptr out-bound) idx))
+                  (if (= cur null)
+                    (do (aset! (cast ptr:ptr out-bound) idx at) (return 1))
+                    (return (type-eq cur at)))))))
+          ; Otherwise a concrete (possibly colon-sugared) type: parse and compare.
+          (return (type-eq (parse-type-from-node pat line) at)))
+      NODE-CELL
+        (do
+          ; Pointer wrapper vs a concrete pointer: unify element patterns.
+          (when (!= (node-is-ptr-wrapper pat) 0)
+            ; Stage 13 L7: a bare `fn` (function pointer, TY-FN) flowing into a
+            ; `(ref G)`/`(ptr G)` position binds G to the TY-FN itself — the stamped
+            ; body's `(ref G)` becomes `(ref <fn>)`, and the by-value fn pointer
+            ; passed at the call site lands in the param slot as that storage. A
+            ; TY-FN has no `elem`, so unify the inner pattern directly against `at`.
+            (when (= (at kind) TY-FN)
+              (return (unify-tpat (wrapper-inner-pattern pat) at tyvars ntv out-bound line)))
+            (when (!= (at kind) TY-PTR) (return 0))
+            (return (unify-tpat (wrapper-inner-pattern pat)
+                                (at elem)
+                                tyvars ntv out-bound line)))
+          ; Template application vs a stamped instance of the same template.
+          (let (st:?ptr:StructTemplate (node-template-of pat))
+            (when (!= st null)
+              (when (!= (at kind) TY-STRUCT) (return 0))
+              (let (sd:raw:StructDef (at sdef))
+                (when (!= (sd origin-template) st) (return 0))
+                (let (nargs:i32 (- (node-len pat) 1))
+                  (when (!= nargs (sd origin-nargs)) (return 0))
+                  (dotimes (i nargs)
+                    (when (= (unify-tpat (node-at pat (+ i 1))
+                                         (aref (cast ptr:ptr (sd origin-args)) i)
+                                         tyvars ntv out-bound line) 0)
+                      (return 0)))
+                  (return 1)))))
+          ; Any other compound type (anonymous struct, fn pointer): parse concretely.
+          (return (type-eq (parse-type-from-node pat line) at)))
+      0)
     (return 0)))
 
 ; Does this defn signature mention a registered struct template applied to free
@@ -908,18 +919,21 @@
 (defn pattern-determines-tyvar (pat:raw:Node tvname:ptr):i32
   (when (= pat null) (return 0))
   (let (n:raw:Node pat)
-    (when (= (n kind) NODE-SYM)
-      (if (and (= (strchr (n s) 58) null) (= (n s) tvname)) (return 1) (return 0)))
-    (when (= (n kind) NODE-CELL)
-      (when (!= (node-is-ptr-wrapper pat) 0)
-        (return (pattern-determines-tyvar (wrapper-inner-pattern pat) tvname)))
-      (let (st:?ptr:StructTemplate (node-template-of pat))
-        (when (!= st null)
-          (let (it:ListIter (list-iter (n cdr)))
-            (doseq-iter (cur (addr-of it))
-              (when (!= (pattern-determines-tyvar cur tvname) 0)
-                (return 1))))
-          (return 0))))
+    (case (n kind)
+      NODE-SYM
+        (if (and (= (strchr (n s) 58) null) (= (n s) tvname)) (return 1) (return 0))
+      NODE-CELL
+        (do
+          (when (!= (node-is-ptr-wrapper pat) 0)
+            (return (pattern-determines-tyvar (wrapper-inner-pattern pat) tvname)))
+          (let (st:?ptr:StructTemplate (node-template-of pat))
+            (when (!= st null)
+              (let (it:ListIter (list-iter (n cdr)))
+                (doseq-iter (cur (addr-of it))
+                  (when (!= (pattern-determines-tyvar cur tvname) 0)
+                    (return 1))))
+              (return 0))))
+      0)
     (return 0)))
 
 ; TC-1: the interned name of the first declared tyvar that NO parameter pattern
@@ -953,11 +967,14 @@
 (defn node-mentions-tyvar-named (node:raw:Node tvname:ptr):i32
   (when (= node null) (return 0))
   (let (n:raw:Node node)
-    (when (= (n kind) NODE-SYM)
-      (if (and (= (strchr (n s) 58) null) (= (n s) tvname)) (return 1) (return 0)))
-    (when (= (n kind) NODE-CELL)
-      (when (!= (node-mentions-tyvar-named (n car) tvname) 0) (return 1))
-      (return (node-mentions-tyvar-named (n cdr) tvname)))
+    (case (n kind)
+      NODE-SYM
+        (if (and (= (strchr (n s) 58) null) (= (n s) tvname)) (return 1) (return 0))
+      NODE-CELL
+        (do
+          (when (!= (node-mentions-tyvar-named (n car) tvname) 0) (return 1))
+          (return (node-mentions-tyvar-named (n cdr) tvname)))
+      0)
     (return 0)))
 
 ; Parse a `&where` constraint list into the `constraints` Vector (assoc-types A1,
@@ -1889,30 +1906,33 @@
 ; null for an untyped binding (caller infers from the value).
 (defn gbind-decl-type (bind-node:raw:Node m:raw:Method line:i32):ptr
   (let (n:raw:Node bind-node)
-    (when (= (n kind) NODE-SYM)
-      (let (tail:ptr (colon-tail (n s)))
-        (when (= tail null) (return null))
-        (let (idx:i32 (tyvar-index-of tail (m tyvars) (m num-tyvars)))
-          (when (>= idx 0) (return (make-tyvar-type m idx)))
-          (return (parse-type-spelling-str tail line)))))
-    (when (= (n kind) NODE-CELL)
-      (let (tnode:ptr (node-at bind-node 1))
-        (when (= tnode null) (return null))
-        (when (= (-> tnode (cast ptr:Node _) (_ kind)) NODE-SYM)
-          (let (idx:i32 (tyvar-index-of (-> tnode (cast ptr:Node _) (_ s))
-                                        (m tyvars) (m num-tyvars)))
-            (when (>= idx 0) (return (make-tyvar-type m idx)))))
-        (return (parse-type-from-node tnode line))))
+    (case (n kind)
+      NODE-SYM
+        (let (tail:ptr (colon-tail (n s)))
+          (when (= tail null) (return null))
+          (let (idx:i32 (tyvar-index-of tail (m tyvars) (m num-tyvars)))
+            (when (>= idx 0) (return (make-tyvar-type m idx)))
+            (return (parse-type-spelling-str tail line))))
+      NODE-CELL
+        (let (tnode:ptr (node-at bind-node 1))
+          (when (= tnode null) (return null))
+          (when (= (-> tnode (cast ptr:Node _) (_ kind)) NODE-SYM)
+            (let (idx:i32 (tyvar-index-of (-> tnode (cast ptr:Node _) (_ s))
+                                          (m tyvars) (m num-tyvars)))
+              (when (>= idx 0) (return (make-tyvar-type m idx)))))
+          (return (parse-type-from-node tnode line)))
+      0)
     (return null)))
 
 (defn gbind-name (bind-node:raw:Node):ptr
   (let (n:raw:Node bind-node)
-    (when (= (n kind) NODE-SYM)
-      (let (nm:ptr null tail:ptr null)
-        (split-typed (n s) (cast ptr:ptr (addr-of nm)) (cast ptr:ptr (addr-of tail)))
-        (return nm)))
-    (when (= (n kind) NODE-CELL)
-      (return ((n car) s)))
+    (case (n kind)
+      NODE-SYM
+        (let (nm:ptr null tail:ptr null)
+          (split-typed (n s) (cast ptr:ptr (addr-of nm)) (cast ptr:ptr (addr-of tail)))
+          (return nm))
+      NODE-CELL (return ((n car) s))
+      0)
     (return null)))
 
 ; Type-check one node of a generic body in `scope`, against template `m`.
@@ -1921,16 +1941,18 @@
 (defn gcheck (n:raw:Node scope:ref:Scope m:raw:Method):ptr
   (when (= n null) (return ty-void))
   (let (nn:raw:Node n)
-    (when (= (nn kind) NODE-INT)   (return ty-i32))
-    (when (= (nn kind) NODE-FLOAT) (return ty-f64))
-    ; Stage 14 NS-3: string literals are StrView (was CStr). Lockstep with
-    ; emit-string / node-type / valid-walk (conventions.md node-type↔emit-node).
-    (when (= (nn kind) NODE-STR)
-      ; NS-4: an explicit c"…" literal (reader set Node.i=1) types as CStr, not
-      ; the StrView default — lockstep with emit-string's NS-4 short-circuit.
-      (if (!= (nn i) (cast i64 0)) (return ty-cstr) (return (strview-type))))
-    (when (= (nn kind) NODE-CHAR)  (return ty-char))
-    (when (= (nn kind) NODE-SYM)   (return (node-type-sym n scope)))
+    (case (nn kind)
+      NODE-INT   (return ty-i32)
+      NODE-FLOAT (return ty-f64)
+      ; Stage 14 NS-3: string literals are StrView (was CStr). Lockstep with
+      ; emit-string / node-type / valid-walk (conventions.md node-type↔emit-node).
+      NODE-STR
+        ; NS-4: an explicit c"…" literal (reader set Node.i=1) types as CStr, not
+        ; the StrView default — lockstep with emit-string's NS-4 short-circuit.
+        (if (!= (nn i) (cast i64 0)) (return ty-cstr) (return (strview-type)))
+      NODE-CHAR  (return ty-char)
+      NODE-SYM   (return (node-type-sym n scope))
+      0)
     (when (!= (nn kind) NODE-CELL) (return ty-void))
     (when (= (node-len n) 0) (return null))
     (let (head:ptr:Node (cast ptr:Node (node-at n 0)))
@@ -2152,15 +2174,17 @@
 ; null when untyped (the caller infers it from the value).
 (defn valid-decl-type (bind-node:raw:Node line:i32):ptr
   (let (n:raw:Node bind-node)
-    (when (= (n kind) NODE-SYM)
-      (let (nm:ptr null tail:ptr null)
-        (split-typed (n s) (cast ptr:ptr (addr-of nm)) (cast ptr:ptr (addr-of tail)))
-        (when (= tail null) (return null))
-        (return (parse-type-spelling-str tail line))))
-    (when (= (n kind) NODE-CELL)
-      (let (tnode:ptr (node-at bind-node 1))
-        (when (= tnode null) (return null))
-        (return (parse-type-from-node tnode line))))
+    (case (n kind)
+      NODE-SYM
+        (let (nm:ptr null tail:ptr null)
+          (split-typed (n s) (cast ptr:ptr (addr-of nm)) (cast ptr:ptr (addr-of tail)))
+          (when (= tail null) (return null))
+          (return (parse-type-spelling-str tail line)))
+      NODE-CELL
+        (let (tnode:ptr (node-at bind-node 1))
+          (when (= tnode null) (return null))
+          (return (parse-type-from-node tnode line)))
+      0)
     (return null)))
 
 ; The result type of a generic template `m2` for a concrete binding, or null:
@@ -2228,16 +2252,18 @@
 (defn valid-walk (n:raw:Node scope:ref:Scope gname:CStr cty:CStr line:i32):ptr
   (when (= n null) (return ty-void))
   (let (nn:raw:Node n)
-    (when (= (nn kind) NODE-INT)   (return ty-i32))
-    (when (= (nn kind) NODE-FLOAT) (return ty-f64))
-    ; Stage 14 NS-3: string literals are StrView (was CStr). Lockstep with
-    ; emit-string / node-type / gcheck (conventions.md node-type↔emit-node).
-    (when (= (nn kind) NODE-STR)
-      ; NS-4: an explicit c"…" literal (reader set Node.i=1) types as CStr, not
-      ; the StrView default — lockstep with emit-string's NS-4 short-circuit.
-      (if (!= (nn i) (cast i64 0)) (return ty-cstr) (return (strview-type))))
-    (when (= (nn kind) NODE-CHAR)  (return ty-char))
-    (when (= (nn kind) NODE-SYM)   (return (node-type-sym n scope)))
+    (case (nn kind)
+      NODE-INT   (return ty-i32)
+      NODE-FLOAT (return ty-f64)
+      ; Stage 14 NS-3: string literals are StrView (was CStr). Lockstep with
+      ; emit-string / node-type / gcheck (conventions.md node-type↔emit-node).
+      NODE-STR
+        ; NS-4: an explicit c"…" literal (reader set Node.i=1) types as CStr, not
+        ; the StrView default — lockstep with emit-string's NS-4 short-circuit.
+        (if (!= (nn i) (cast i64 0)) (return ty-cstr) (return (strview-type)))
+      NODE-CHAR  (return ty-char)
+      NODE-SYM   (return (node-type-sym n scope))
+      0)
     (when (!= (nn kind) NODE-CELL) (return ty-void))
     (when (= (node-len n) 0) (return null))
     (let (head:ptr:Node (cast ptr:Node (node-at n 0)))
@@ -2830,16 +2856,18 @@
 (defn subst-self-node (node:raw:Node typename:CStr):raw:Node
   (when (= node null) (return null))
   (let (n:raw:Node node)
-    (when (= (n kind) NODE-SYM)
-      (let (ns:ptr:Node (cast ptr:Node (alloc-node)))
-        (.set! ns kind NODE-SYM)
-        (.set! ns line (n line))
-        (.set! ns s (subst-self-sym (n s) typename (n line)))
-        (return (cast ptr ns))))
-    (when (= (n kind) NODE-CELL)
-      (return (make-cell (subst-self-node (n car) typename)
-                         (subst-self-node (n cdr) typename)
-                         (n line))))
+    (case (n kind)
+      NODE-SYM
+        (let (ns:ptr:Node (cast ptr:Node (alloc-node)))
+          (.set! ns kind NODE-SYM)
+          (.set! ns line (n line))
+          (.set! ns s (subst-self-sym (n s) typename (n line)))
+          (return (cast ptr ns)))
+      NODE-CELL
+        (return (make-cell (subst-self-node (n car) typename)
+                           (subst-self-node (n cdr) typename)
+                           (n line)))
+      0)
     (return node)))
 
 ; Deep-copy a (parametric) protocol signature AST, substituting `Self`→typename
@@ -3222,23 +3250,26 @@
 ; writes the application's arg nodes + count through `out-args`/`out-nargs`.
 (defn extend-proto-name (proto-node:raw:Node out-args:ptr:ptr out-nargs:ptr:i32 line:i32):ptr
   (let (pn:raw:Node proto-node)
-    (when (= (pn kind) NODE-SYM)
-      (ptr-set! out-args null)
-      (aset! (cast ptr:i32 out-nargs) 0 0)
-      (return (pn s)))
-    (when (= (pn kind) NODE-CELL)
-      (let (head:ptr:Node (cast ptr:Node (node-at pn 0)))
-        (when (!= (head kind) NODE-SYM)
-          (die-at (pn line) "extend: protocol name must be a symbol"))
-        (let (na:i32 (- (node-len pn) 1)
-              args:ptr null)
-          (when (> na 0)
-            (set! args (arena-alloc (* (cast i64 na) (ptr-bytes))))
-            (dotimes (i na)
-              (aset! (cast ptr:ptr args) i (node-at pn (+ i 1)))))
-          (ptr-set! out-args args)
-          (aset! (cast ptr:i32 out-nargs) 0 na)
-          (return (head s)))))
+    (case (pn kind)
+      NODE-SYM
+        (do
+          (ptr-set! out-args null)
+          (aset! (cast ptr:i32 out-nargs) 0 0)
+          (return (pn s)))
+      NODE-CELL
+        (let (head:ptr:Node (cast ptr:Node (node-at pn 0)))
+          (when (!= (head kind) NODE-SYM)
+            (die-at (pn line) "extend: protocol name must be a symbol"))
+          (let (na:i32 (- (node-len pn) 1)
+                args:ptr null)
+            (when (> na 0)
+              (set! args (arena-alloc (* (cast i64 na) (ptr-bytes))))
+              (dotimes (i na)
+                (aset! (cast ptr:ptr args) i (node-at pn (+ i 1)))))
+            (ptr-set! out-args args)
+            (aset! (cast ptr:i32 out-nargs) 0 na)
+            (return (head s))))
+      0)
     (die-at (pn line) "extend: protocol must be a symbol or (Protocol args...)")
     (return null)))
 
@@ -3261,7 +3292,8 @@
       ; Stage 11 T4: the subject is a struct *template* `(extend (Vector T) (Seq T))`.
       ; Record a template-level conformance; the per-instance check fires at stamp
       ; time, and any already-stamped instance is rechecked now.
-      (when (= (type-node kind) NODE-CELL)
+      (case (type-node kind)
+        NODE-CELL
         (let (thead:ptr:Node (cast ptr:Node (node-at (cast ptr type-node) 0)))
           (when (!= (thead kind) NODE-SYM)
             (die-at (type-node line) "extend: template subject name must be a symbol"))
@@ -3393,7 +3425,8 @@
                     c:ptr:TmplConformance (cast ptr:TmplConformance
                                             (invoke g-tmpl-conformances (cast usize (- ntc 1)))))
                 (tmpl-conformance-recheck-stamped (cast ptr c) (cast ptr st) (ff line)))
-              (return)))))
+              (return))))
+      0)
       ; --- subject is a concrete type (symbol) ---
       (when (!= (type-node kind) NODE-SYM)
         (die-at (type-node line) "extend: subject must be a symbol or struct template"))
@@ -3460,29 +3493,30 @@
           proto-node:ptr:Node (cast ptr:Node (node-at form 2)))
       ; Template subject: delegate to emit-extend (registers the
       ; TmplConformance + &where clause; recovery fires at stamp time here).
-      (when (= (type-node kind) NODE-CELL)
-        (emit-extend form)
-        (return))
-      (when (= (type-node kind) NODE-SYM)
-        (let (proto-args:ptr null
-              proto-nargs:i32 0
-              proto-name:CStr (extend-proto-name proto-node
-                                                (cast ptr:ptr (addr-of proto-args))
-                                                (cast ptr:i32 (addr-of proto-nargs))
-                                                (form line)))
-          ; A protocol-on-protocol inheritance edge keeps its plain-symbol shape.
-          (if (and (!= (protocol-lookup (type-node s)) null) (= proto-nargs 0))
-            (proto-super-add (type-node s) proto-name)
-            (let (pspellings:ptr null)
-              (when (> proto-nargs 0)
-                (set! pspellings (arena-alloc (* (cast i64 proto-nargs) (ptr-bytes))))
-                (dotimes (i proto-nargs)
-                  (aset! (cast ptr:ptr pspellings) i
-                         (type-spelling (parse-type-from-node
-                                          (aref (cast ptr:ptr proto-args) i)
-                                          (form line))))))
-              (verify-conformance-params (type-node s) proto-name pspellings proto-nargs
-                                         (form line) 0))))))))
+      (case (type-node kind)
+        NODE-CELL
+          (do (emit-extend form) (return))
+        NODE-SYM
+          (let (proto-args:ptr null
+                proto-nargs:i32 0
+                proto-name:CStr (extend-proto-name proto-node
+                                                  (cast ptr:ptr (addr-of proto-args))
+                                                  (cast ptr:i32 (addr-of proto-nargs))
+                                                  (form line)))
+            ; A protocol-on-protocol inheritance edge keeps its plain-symbol shape.
+            (if (and (!= (protocol-lookup (type-node s)) null) (= proto-nargs 0))
+              (proto-super-add (type-node s) proto-name)
+              (let (pspellings:ptr null)
+                (when (> proto-nargs 0)
+                  (set! pspellings (arena-alloc (* (cast i64 proto-nargs) (ptr-bytes))))
+                  (dotimes (i proto-nargs)
+                    (aset! (cast ptr:ptr pspellings) i
+                           (type-spelling (parse-type-from-node
+                                            (aref (cast ptr:ptr proto-args) i)
+                                            (form line))))))
+                (verify-conformance-params (type-node s) proto-name pspellings proto-nargs
+                                           (form line) 0))))
+        0))))
 
 ; ############################################################
 ; node-type: non-emitting expression typing (Stage 9 rung 3) —
@@ -3748,34 +3782,36 @@
 (defn node-type (n:raw:Node scope:ref:Scope):?ptr:Type
   (when (= n null) (return ty-void))
   (let (nn:raw:Node n)
-    ; LW-4 lockstep with emit-int: an out-of-i32-range literal types (and emits)
-    ; as i64, everything else as i32. Keeps codegen and the type pass in sync so
-    ; the widened width is not clobbered by emit-node's Rung-3 cross-check.
-    (when (= (nn kind) NODE-INT)
-      (if (!= (int-literal-fits (nn i) ty-i32) 0) (return ty-i32) (return ty-i64)))
-    (when (= (nn kind) NODE-FLOAT) (return ty-f64))
-    ; Stage 14 NS-3: a string literal now types as StrView (was CStr) — the flip.
-    ; Lockstep with emit-string (nucleusc.nuc) and the gcheck / valid-walk mirrors
-    ; (conventions.md node-type↔emit-node). emit-string emits only the bare GEP and
-    ; returns an *unmaterialized* StrView Val (is-lit=1, val=the data ptr); the
-    ; coercion chokepoints collapse it back to ptr/CStr with no IR (byte-identical)
-    ; or materialize {ptr,len} for a genuine StrView target.
-    (when (= (nn kind) NODE-STR)
-      ; NS-4: an explicit c"…" literal (reader set Node.i=1) types as CStr, not
-      ; the StrView default — lockstep with emit-string's NS-4 short-circuit.
-      (if (!= (nn i) (cast i64 0)) (return ty-cstr) (return (strview-type))))
-    (when (= (nn kind) NODE-CHAR)  (return ty-char))
-    (when (= (nn kind) NODE-SYM)   (return (node-type-sym n scope)))
-    ; Keyword literal (Stage 11 cleanup §2): its static type is the `Keyword`
-    ; struct, available only when the program has (import keyword). If the struct
-    ; is registered, report it so the Rung-3 cross-check at the emit site agrees
-    ; with the keyword-intern call's return type; otherwise return null and let
-    ; emit's own type stand (emit-keyword's synthetic call dies with a clear
-    ; "undefined: keyword-intern" if the lib was not imported).
-    (when (= (nn kind) NODE-KEYWORD)
-      (let (sd:?ptr:StructDef (lookup-struct "Keyword"))
-        (when (!= sd null) (return (type-for-sdef sd)))
-        (return null)))
+    (case (nn kind)
+      ; LW-4 lockstep with emit-int: an out-of-i32-range literal types (and emits)
+      ; as i64, everything else as i32. Keeps codegen and the type pass in sync so
+      ; the widened width is not clobbered by emit-node's Rung-3 cross-check.
+      NODE-INT
+        (if (!= (int-literal-fits (nn i) ty-i32) 0) (return ty-i32) (return ty-i64))
+      NODE-FLOAT (return ty-f64)
+      ; Stage 14 NS-3: a string literal now types as StrView (was CStr) — the flip.
+      ; Lockstep with emit-string (nucleusc.nuc) and the gcheck / valid-walk mirrors
+      ; (conventions.md node-type↔emit-node). emit-string emits only the bare GEP and
+      ; returns an *unmaterialized* StrView Val (is-lit=1, val=the data ptr); the
+      ; coercion chokepoints collapse it back to ptr/CStr with no IR (byte-identical)
+      ; or materialize {ptr,len} for a genuine StrView target.
+      NODE-STR
+        ; NS-4: an explicit c"…" literal (reader set Node.i=1) types as CStr, not
+        ; the StrView default — lockstep with emit-string's NS-4 short-circuit.
+        (if (!= (nn i) (cast i64 0)) (return ty-cstr) (return (strview-type)))
+      NODE-CHAR  (return ty-char)
+      NODE-SYM   (return (node-type-sym n scope))
+      ; Keyword literal (Stage 11 cleanup §2): its static type is the `Keyword`
+      ; struct, available only when the program has (import keyword). If the struct
+      ; is registered, report it so the Rung-3 cross-check at the emit site agrees
+      ; with the keyword-intern call's return type; otherwise return null and let
+      ; emit's own type stand (emit-keyword's synthetic call dies with a clear
+      ; "undefined: keyword-intern" if the lib was not imported).
+      NODE-KEYWORD
+        (let (sd:?ptr:StructDef (lookup-struct "Keyword"))
+          (when (!= sd null) (return (type-for-sdef sd)))
+          (return null))
+      0)
     (when (!= (nn kind) NODE-CELL) (return ty-void))
     (when (= (node-len n) 0) (return null))
     (let (head:ptr:Node (cast ptr:Node (node-at n 0)))

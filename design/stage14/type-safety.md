@@ -2203,6 +2203,160 @@ batches/decisions: `src/generics.nuc` (98 raw hits) and `src/nucleusc.nuc`
 head-symbol-dispatch mixing) — both untouched, likely warranting a separate
 decision on whether to attempt them at all given the risk profile.
 
+**Status (`NodeKind` sweep, batch 3 — `src/generics.nuc`, 2026-07-14): DONE,
+byte-identical, no refresh needed.** This is the file flagged as highest-risk
+short of `nucleusc.nuc` itself, since it is the `node-type`/`gcheck`/
+`valid-walk` half of the `node-type`↔`emit-node` lockstep (conventions.md).
+Audited all 97 raw `NODE-*` hits (matching the tree-wide grep) with extra
+caution on any site inside `node-type`, `gcheck`, or `valid-walk` specifically.
+
+**16 genuine ladders found and converted**, falling into two families:
+
+- **The literal-kind ladder, present three times almost verbatim** —
+  `node-type`, `gcheck`, and `valid-walk` each open with a sequential
+  `NODE-INT`/`NODE-FLOAT`/`NODE-STR`/`NODE-CHAR`/`NODE-SYM` (`node-type` alone
+  also has `NODE-KEYWORD`, gated behind an optional-library lookup) run of
+  `(when (= (nn kind) NODE-X) (return ...))` guards, falling through to a
+  shared `(when (!= (nn kind) NODE-CELL) (return ty-void))` default that also
+  doubles as the entry gate into the much larger CELL-dispatch body below.
+  Converted each to `(case (nn kind) NODE-INT ... NODE-FLOAT ... NODE-STR ...
+  NODE-CHAR ... NODE-SYM ... [NODE-KEYWORD ...] 0)` followed by the
+  **untouched** `(when (!= (nn kind) NODE-CELL) (return ty-void))` line and
+  the rest of the function exactly as before — the same "discarded-`0`-default,
+  keep the real fallback as a separate physical statement" idiom the batch-2
+  `type-node-to-c`/`subst-tyvars-node` conversions established, chosen
+  specifically so the huge CELL-handling body (which contains the mechanism-b
+  head-symbol dispatch, out of scope) needed zero internal reflow. Every arm's
+  *action* (which type it returns, or which sub-dispatch it falls into) is
+  byte-for-byte the pre-existing code, only lifted from a `when`-chain into a
+  `case`-arm slot — confirmed by construction (surgical substitution at the
+  arm boundaries only, never touching the arm bodies) and by the IR diff
+  (below).
+- **13 small `NODE-SYM`/`NODE-CELL`(/default) two/three-arm ladders** scattered
+  through the file's type-pattern and AST-shape helpers — the same
+  "SYM-arm-always-returns, CELL-arm-always-returns (or falls to a shared
+  default), unconditional final return" shape the batch-1 `parse-type-from-node`
+  precedent established: `defn-name-only`, `node-mentions-tyvar`,
+  `node-mentions-tyvar-named`, `pattern-determines-tyvar`, `gbind-decl-type`,
+  `gbind-name`, `valid-decl-type`, `subst-self-node` (a near-exact twin of the
+  already-converted `type-mangle.nuc` `subst-tyvars-node`), `extend-proto-name`,
+  and `unify-tpat` (the largest of these — both arms needed an explicit `(do
+  ...)` wrapper since each has multiple top-level body forms, unlike `case`'s
+  single-form-per-arm slot). Two further sites needed the "positive-arm-plus-
+  negated-guard" shape from the batch-1/2 `emit-defunion-import`/
+  `cheader-mentions-closure` precedent (a `NODE-CELL` arm that always returns,
+  immediately followed by a `(when (!= kind NODE-SYM) (die-at ...))` guard that
+  is genuinely the complete default for everything else): `emit-extend`'s
+  template-vs-concrete-subject split, and `register-imported-conformance`'s
+  template-delegate-vs-plain-conformance split (a void function, so — like
+  `collect-pattern-tyvars` below — needed no trailing default statement at
+  all, the `case`'s own close being the function's last form). `collect-
+  pattern-tyvars` is the other void-function case: its `NODE-SYM`/`NODE-CELL`
+  arms are the function's entire body, so the discarded-`0` default is
+  followed by nothing.
+
+Every conversion was verified paren-neutral **before** editing (not just
+after) using a purpose-built global-stack pairing script that reports, for
+every closing paren in the region being touched, which physical open-paren
+character it matches — this caught, ahead of time, a wrong assumption about
+`collect-pattern-tyvars`' and `unify-tpat`'s true nesting (an indentation-
+misleading `(let (st ...) FORM1 FORM2)` whose second form is a sibling of the
+first, not nested inside it) that a naive "count the closing parens" approach
+would have gotten wrong. Same discipline as the batch-1 "three surgical,
+paren-neutral substitutions" note for `parse-type-from-node`'s 300-line body —
+generalized here into a repeatable, scriptable check rather than manual
+counting, specifically because this file's ladders are more deeply and
+irregularly nested than any prior batch's.
+
+**Left alone, correctly, matching every precedent category verbatim:**
+- **Single-kind guards, no sibling arm** (the large majority) —
+  `defn-params-count`/`defn-params-to-types`'s `&rest`/`&optional`
+  content-filtered `NODE-SYM` checks, `count-pattern-nodes`'s lone `NODE-CELL`
+  base case, `resolve-param-type-bound`/`method-bound-ret-type`/
+  `abstract-call-via-generic`'s lone `NODE-SYM` bare-tyvar-return checks,
+  `node-type-block`/`node-type-addr-of`/`node-type-field`'s lone kind guards.
+- **Combined single-kind + content guards** (one incidental check, not a
+  ladder) — `params-where-index`'s `(and (= (e kind) NODE-SYM) (= (e s)
+  "&where"))` marker detection, `register-generic-defn`'s `&rest`-with-generic
+  rejection, `parse-where-constraints`'s protocol-application-marker checks,
+  `derive-closure-conformance`'s invoke-signature `NODE-SYM` param-name match.
+- **Single-named-kind `if`/`else`** — `parse-where-constraints`'s plain-vs-
+  application protocol-slot split (only `NODE-SYM` named, the list case is the
+  implicit else), `protocol-register-form`'s parametric-vs-plain name-position
+  split.
+- **Two-different-variables guards** (textually adjacent but not a ladder,
+  matching the batch-2 `cheader-template-instance` exclusion precedent
+  exactly) — `node-template-of`/`node-is-ptr-wrapper` each test `(n kind)` then
+  `(head kind)`, two distinct nodes, never the same form twice.
+- **Combined OR-same-action** — `sig-provides-call`'s `(or (= (rn kind)
+  NODE-KEYWORD) (= (rn kind) NODE-SYM))`, both mapping to the identical
+  `(set! rettail (rn s))` action.
+- **Construction, not dispatch** — `conf-arg-to-type`'s `(.set! n kind
+  NODE-SYM)` (building a synthetic node), `subst-self-node`'s own `NODE-SYM`
+  arm building a fresh copy node.
+- **Head-symbol-identity dispatch (mechanism b), pervasive and explicitly out
+  of scope** — the ~40-arm `hp`/`'let`/`'with`/`'do`/`'quote`/... dispatch tail
+  of `node-type` (untouched, exactly as it was), `gcheck`'s special-form/
+  protocol/generic-call dispatch section, `emit-extend`'s `'ref`/`'raw`/`'ptr`
+  wrapper-keyword checks — all left byte-for-byte as-is per the task's explicit
+  scope boundary.
+
+**No converted function's return value changed for any input** — every
+conversion is a pure `cond`-chain→`case`-arm relocation with the arm bodies
+moved verbatim (never rewritten), the same "expansion-identical" guarantee the
+`MethodKind` sweep established (`case` macro-expands to the identical `cond`
+AST the hand-written `when`-chain already was). The `node-type`↔`emit-node`
+lockstep is unaffected: `emit-node`/`emit-list` (nucleusc.nuc) were not
+touched this batch, and `node-type`/`gcheck`/`valid-walk`'s typed results for
+every literal/call/form are identical before and after.
+
+Verified per protocol: `make clean && make` succeeded against the committed
+boot compiler; `make test` 168/168 green; **`make bootstrap` reported `PASS:
+stage1.ll == stage2.ll` on the first pass** — no `make update-bootstrap`
+needed, consistent with every prior `case`-sweep batch. A pre-batch
+stash/rebuild-baseline/restore/rebuild `build/nucleusc.ll` diff (same boot
+compiler both sides) was 4847 lines across 318 hunks — mapped, by attributing
+every hunk's line range to the enclosing `define` in the pre-batch IR, to sit
+**entirely inside the 16 edited functions' own bodies** with a hunk count per
+function (`node-type` 103, `gcheck` 40, `valid-walk` 32, `emit-extend` 26,
+`unify-tpat` 23, `collect-pattern-tyvars` 16, `pattern-determines-tyvar` 13,
+`register-imported-conformance` 13, `gbind-decl-type` 10, `extend-proto-name`
+10, `defn-name-only` 6, `node-mentions-tyvar` 6, `node-mentions-tyvar-named` 6,
+`valid-decl-type` 6, `gbind-name` 4, `subst-self-node` 4) summing to exactly
+318 — zero spillover into any other function across the 113k-line module, and
+zero `@.str` pool drift (3020 unique / 3019 physical `@.str.N` globals,
+identical counts before and after). Given this batch converts `node-type`
+itself — the literal-typing half of the compiler's most sensitive invariant —
+plus its `gcheck`/`valid-walk` mirrors, ran the widest example sweep of the
+entire 14.6 series: `hello`, `closures`, `generic`, `protocol`, `dyn-comb`,
+`dyn-protocol`, `struct`, `unions`, `errptr`, `maybe`, `optional`,
+`vector-test`, `hashmap-test`, `boxedfn`, `assoc-types`,
+`assoc-types-extend-cross`, and `and-narrow` (17 programs, including the
+flow-narrowing standing check) — all diff-exact matched `tests/expected/*.out`.
+
+This closes batch 3 of the `NodeKind` sweep and **completes the file-by-file
+audit of `src/generics.nuc`** — all 97 raw hits accounted for, none left
+unconverted out of caution (every genuine ladder found was converted). The
+sole remaining file is `src/nucleusc.nuc` (222 raw hits) — it directly
+contains `emit-node`/`emit-list`, the codegen half of the lockstep, so any
+literal-kind ladder found there sits in the one function where a mistake
+changes *emitted IR* rather than an internal checker's return value. Given
+(a) the sweep's per-file yield has already been on a firmly diminishing-
+returns trajectory in relative terms (1/50, 6/59, then this batch's 16/97 —
+better in absolute count than batch 1 because this file is itself an
+AST-interpreter, but the *value* captured is still pure documentation-level
+exhaustiveness sugar, no behavior change), and (b) `nucleusc.nuc` is the one
+file where that sugar would sit directly beside — or inside — the highest-
+stakes function in the whole compiler, the recommendation is to **close out
+the tree-wide `NodeKind` sweep here** rather than attempt `nucleusc.nuc` as a
+mechanical full-file sweep. If a future session specifically wants
+`emit-node`'s own literal-kind dispatch made exhaustive-looking too, treat it
+as its own single-function, slow, manually-verified change (not a batch sweep)
+given the stakes of an error in the codegen path itself — this doc's
+`type-eq`-sweep precedent (a single hot, safety-critical function, done
+carefully with a wide example sweep) is the template for that, not the
+multi-file batch approach used here.
+
 **Build:**
 1. **Pilot — `Cleanup` → `defunion`.** Model the three shapes as arms
    (`(libc-free slot)` / `(drop slot fn ty ret)` / `(defer node scope)`) and
