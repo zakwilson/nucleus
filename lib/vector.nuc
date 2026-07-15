@@ -10,7 +10,7 @@
 ;
 ;   (with (v:(ref (Vector i32)) (vector-new))   ; T inferred from declared type
 ;     (conj v 10) (conj v 20)
-;     (printf "%d\n" (v (cast usize 0)))        ; index access -> 10
+;     (printf "%d\n" (v 0))        ; index access -> 10
 ;     ...)                      ; (drop v) fires here, freeing the buffer
 ;
 ; `vector-new` is a target-typed value constructor: T is bound from the
@@ -70,15 +70,15 @@
 ; Initialise an empty Vector with the default (libc) allocator.
 (defn vector-init ((v (ref (Vector T)))):void
   (.set! v data null)
-  (.set! v len (cast usize 0))
-  (.set! v cap (cast usize 0))
+  (.set! v len 0)
+  (.set! v cap 0)
   (libc-allocator (.& v alloc)))
 
 ; Initialise an empty Vector with an explicit allocator handle (copied in).
 (defn vector-init-alloc ((v (ref (Vector T))) (a (ref AllocHandle))):void
   (.set! v data null)
-  (.set! v len (cast usize 0))
-  (.set! v cap (cast usize 0))
+  (.set! v len 0)
+  (.set! v cap 0)
   (.set! v alloc (deref a)))
 
 ; ---------------------------------------------------------------------------
@@ -105,7 +105,7 @@
 ; heap placement — struct allocated through the handle; returns an escapable ref.
 (defn vector-new-in ((a (ref AllocHandle))) (ref (Vector T))
   (let (v (cast (ref (Vector T))
-             (alloc-handle-alloc a (sizeof (Vector T)) (cast usize 8))))
+             (alloc-handle-alloc a (sizeof (Vector T)) 8)))
     (vector-init-alloc v a)
     (return v)))
 
@@ -115,15 +115,15 @@
 ; reallocating through the stored allocator. Aborts on OOM.
 ; ---------------------------------------------------------------------------
 (defn vector-grow ((v (ref (Vector T)))):void
-  (let (new-cap:usize (if (= (_get v cap) (cast usize 0))
+  (let (new-cap:usize (if (= (_get v cap) 0)
                         (cast usize 4)
-                        (* (_get v cap) (cast usize 2)))
+                        (* (_get v cap) 2))
         elem-size:usize (cast usize (sizeof T)))
     (let (old-bytes:usize (* (_get v cap) elem-size)
           new-bytes:usize (* new-cap elem-size)
           ah:ref:AllocHandle (.& v alloc))
       (let ((new-data (raw ui8))
-            (alloc-handle-realloc ah (_get v data) old-bytes new-bytes (cast usize 8)))
+            (alloc-handle-realloc ah (_get v data) old-bytes new-bytes 8))
         (when (= (cast ptr new-data) null) (vector-oom))
         (.set! v data new-data)
         (.set! v cap new-cap)))))
@@ -140,11 +140,11 @@
 (defn conj ((self (ref (Vector T))) elem:T):void
   (when (>= (_get self len) (_get self cap)) (vector-grow self))
   (aset! (cast ptr:T (cast ptr (_get self data))) (cast i64 (_get self len)) elem)
-  (.set! self len (+ (_get self len) (cast usize 1))))
+  (.set! self len (+ (_get self len) 1)))
 
 ; empty? -> 1 when len = 0, else 0.
 (defn empty? ((self (ref (Vector T)))):i32
-  (return (if (= (_get self len) (cast usize 0)) 1 0)))
+  (return (if (= (_get self len) 0) 1 0)))
 
 ; ---------------------------------------------------------------------------
 ; Seq T conformance: invoke (index), append, contains?, insert.
@@ -161,11 +161,11 @@
 
 ; contains?: linear scan with =, 1 if found else 0. (Scalar element types.)
 (defn contains? ((self (ref (Vector T))) elem:T):i32
-  (let (i:usize (cast usize 0))
+  (let (i:usize 0)
     (while (< i (_get self len))
       (when (= (aref (cast ptr:T (cast ptr (_get self data))) (cast i64 i)) elem)
         (return 1))
-      (set! i (+ i (cast usize 1))))
+      (set! i (+ i 1)))
     (return 0)))
 
 ; insert: place elem at index i, shifting [i,len) right by one. Grows if full.
@@ -176,10 +176,10 @@
   (let (buf:ptr:T (cast ptr:T (cast ptr (_get self data)))
         j:usize (_get self len))
     (while (> j i)
-      (aset! buf (cast i64 j) (aref buf (cast i64 (- j (cast usize 1)))))
-      (set! j (- j (cast usize 1))))
+      (aset! buf (cast i64 j) (aref buf (cast i64 (- j 1))))
+      (set! j (- j 1)))
     (aset! buf (cast i64 i) elem))
-  (.set! self len (+ (_get self len) (cast usize 1))))
+  (.set! self len (+ (_get self len) 1)))
 
 ; remove-at: delete the element at index i, shifting (i,len) left by one.
 ; i must be < len (i = len-1 removes the last element). Panics out-of-bounds.
@@ -187,10 +187,10 @@
   (when (>= i (_get self len)) (vector-bounds "remove-at" i (_get self len)))
   (let (buf:ptr:T (cast ptr:T (cast ptr (_get self data)))
         j:usize i)
-    (while (< (+ j (cast usize 1)) (_get self len))
-      (aset! buf (cast i64 j) (aref buf (cast i64 (+ j (cast usize 1)))))
-      (set! j (+ j (cast usize 1)))))
-  (.set! self len (- (_get self len) (cast usize 1))))
+    (while (< (+ j 1) (_get self len))
+      (aset! buf (cast i64 j) (aref buf (cast i64 (+ j 1))))
+      (set! j (+ j 1))))
+  (.set! self len (- (_get self len) 1)))
 
 ; ---------------------------------------------------------------------------
 ; Capacity operations (STL-like opt-in surface; design §Vector recommends
@@ -223,10 +223,10 @@
     (alloc-handle-free (.& self alloc)
                        (_get self data)
                        (* (_get self cap) (cast usize (sizeof T)))
-                       (cast usize 8)))
+                       8))
   (.set! self data null)
-  (.set! self len (cast usize 0))
-  (.set! self cap (cast usize 0)))
+  (.set! self len 0)
+  (.set! self cap 0))
 
 ; ---------------------------------------------------------------------------
 ; VecIter T — a forward cursor over a Vector's elements. Iterator T conformance
@@ -256,14 +256,14 @@
 (defn next ((self (ref (VecIter T)))) (Maybe T)
   (when (>= (self pos) (self len)) (return none))
   (let (v:T (aref (cast ptr:T (self data)) (cast i64 (self pos))))
-    (.set! self pos (+ (self pos) (cast usize 1)))
+    (.set! self pos (+ (self pos) 1))
     (return (some v))))
 
 ; iter-init: configure `it` to scan `v` from the start (borrowing its buffer).
 ; Internal helper: the value-returning `iter` (Coll conformance) wraps it.
 (defn iter-init ((it (ref (VecIter T))) (v (ref (Vector T)))):void
   (.set! it data (cast ptr (_get v data)))
-  (.set! it pos (cast usize 0))
+  (.set! it pos 0)
   (.set! it len (_get v len)))
 
 ; ---------------------------------------------------------------------------
