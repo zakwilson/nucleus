@@ -20,10 +20,10 @@
 
 (defn repl-error-json-puts (s:ptr):void
   (when (= s null) (return))
-  (let (i:i64 (cast i64 0))
+  (let (i:i64 0)
     (while (!= (char-at s i) 0)
       (repl-error-json-putc (bit-and (cast i32 (char-at s i)) 255))
-      (set! i (+ i (cast i64 1))))))
+      (set! i (+ i 1)))))
 
 ; Emit a structured REPL error. In text mode, prints the legacy
 ; "  error: <msg>\n" form. In JSON mode, prints a single JSON object on
@@ -41,16 +41,16 @@
 ; Read lines from stdin until parens are balanced, return the accumulated buffer.
 ; Returns null on EOF.
 (defn repl-read-input ():ptr
-  (let (buf:ptr (malloc (cast i64 4096))
-        buf-len:i64 (cast i64 0)
-        buf-cap:i64 (cast i64 4096)
+  (let (buf:ptr (malloc 4096)
+        buf-len:i64 0
+        buf-cap:i64 4096
         depth:i32 0
         got-input:i32 0
         in-string:i32 0
         in-comment:i32 0
         first-line:i32 1)
     (when (= buf null) (perror "malloc") (exit 1))
-    (aset! (cast ptr:i8 buf) (cast i64 0) (cast i8 0))
+    (aset! (cast ptr:i8 buf) 0 0)
     (let (done:i32 0)
       (while (= done 0)
         ; Print prompt
@@ -59,9 +59,9 @@
           (fprintf stderr "...> "))
         (fflush stderr)
         ; Read a line
-        (let (line-buf:ptr (malloc (cast i64 4096)))
+        (let (line-buf:ptr (malloc 4096))
           (when (= line-buf null) (perror "malloc") (exit 1))
-          (when (= (fgets line-buf (cast i32 4096) (cast ptr stdin)) null)
+          (when (= (fgets line-buf 4096 (cast ptr stdin)) null)
              (free line-buf)
                 (if (= got-input 0)
                   (do (free buf) (return null))
@@ -69,27 +69,27 @@
           (when (= done 0)
             (let (line-len:i64 (cast i64 (strlen line-buf)))
               ; Grow buffer if needed
-              (when (> (+ buf-len line-len) (- buf-cap (cast i64 1)))
-                (let (new-cap:i64 (* buf-cap (cast i64 2)))
-                  (while (> (+ buf-len line-len) (- new-cap (cast i64 1)))
-                    (set! new-cap (* new-cap (cast i64 2))))
+              (when (> (+ buf-len line-len) (- buf-cap 1))
+                (let (new-cap:i64 (* buf-cap 2))
+                  (while (> (+ buf-len line-len) (- new-cap 1))
+                    (set! new-cap (* new-cap 2)))
                   (set! buf (realloc buf new-cap))
                   (when (= buf null) (perror "realloc") (exit 1))
                   (set! buf-cap new-cap)))
               (memcpy (unsafe/ptr+ (cast ptr:i8 buf) buf-len) line-buf line-len)
               (set! buf-len (+ buf-len line-len))
-              (aset! (cast ptr:i8 buf) buf-len (cast i8 0))
+              (aset! (cast ptr:i8 buf) buf-len 0)
               (set! got-input 1)
               (set! first-line 0)
               ; Scan the line for paren balance, respecting strings and comments
-              (let (li:i64 (cast i64 0))
+              (let (li:i64 0)
                 (while (< li line-len)
                   (let (c:i32 (bit-and (cast i32 (aref (cast ptr:i8 line-buf) li)) 255))
                     (cond (!= in-comment 0)
                             (when (= c 10) (set! in-comment 0))
                           (!= in-string 0)
                             (cond (= c 92)  ; backslash — skip next char
-                                    (set! li (+ li (cast i64 1)))
+                                    (set! li (+ li 1))
                                   (= c 34)  ; closing quote
                                     (set! in-string 0)
                                   true (do))
@@ -102,7 +102,7 @@
                           (= c 41)  ; close paren
                             (set! depth (- depth 1))
                           true (do)))
-                  (set! li (+ li (cast i64 1)))))
+                  (set! li (+ li 1))))
               (free line-buf)
               ; Done when parens are balanced and we have input
               (when (and (<= depth 0) (!= got-input 0))
@@ -174,7 +174,7 @@
                   ; Append type def to preamble for future modules
                   (drain-pending-union-irs)
                   (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
-                  (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
+                  (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp 0) 0))
                     (fputs g-type-bufp g-repl-preamble))
                   (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
                   (fprintf stderr "  defined\n"))
@@ -195,7 +195,7 @@
                   (drain-pending-union-irs)
                   (fflush g-type-stream)
                   (let (tcopy:ptr null)
-                    (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
+                    (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp 0) 0))
                       (set! tcopy (strdup g-type-bufp)))
                     (repl-jit-module (f line))
                     (when (!= tcopy null)
@@ -210,7 +210,7 @@
                   (set! g-out g-decl-stream)
                   (emit-extern (cast ptr f))
                   (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
-                  (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp (cast i64 0)) 0))
+                  (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp 0) 0))
                     (fputs g-decl-bufp g-repl-preamble))
                   (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp))
             (and (!= h null) (= h "defn"))
@@ -252,7 +252,7 @@
                           (when (!= old-rt null)
                             (let (rerr:ptr (LLVMOrcResourceTrackerRemove old-rt))
                               (when (!= rerr null)
-                                (let (msg:ptr (malloc (cast i64 512)))
+                                (let (msg:ptr (malloc 512))
                                   (snprintf msg (cast i64 512)
                                             "redefinition: tracker remove failed: %s"
                                             (LLVMGetErrorMessage rerr))
@@ -262,7 +262,7 @@
                             (.set! old-sym tracker null))))
                       (let (impl-id:i32 (cast i32 g-defn-impl-counter)
                             impl-name:ptr null)
-                        (set! g-defn-impl-counter (+ g-defn-impl-counter (cast i64 1)))
+                        (set! g-defn-impl-counter (+ g-defn-impl-counter 1))
                         (set! impl-name (fmt-sd "%s.impl.%d" fname-ir impl-id))
                         ; When redefining, remove the old method from the
                         ; generic before prescan adds the new one.
@@ -339,7 +339,7 @@
               (do (set! is-expr 0)
                   ; Default depth: -1 (fixpoint) for macroexpand, 1 for macroexpand-1.
                   ; macroexpand-all uses recursive expansion (depth ignored).
-                  (let (depth:i32 (cast i32 -1)
+                  (let (depth:i32 -1
                         is-all:i32 (= h "macroexpand-all"))
                     (when (= h "macroexpand-1") (set! depth 1))
                     ; Optional second arg overrides the default depth.
@@ -348,7 +348,7 @@
                         (when (= (d-node kind) NODE-INT)
                           (set! depth (cast i32 (d-node i))))))
                     (when (< (node-len f) 2)
-                      (let (msg:ptr (malloc (cast i64 128)))
+                      (let (msg:ptr (malloc 128))
                         (snprintf msg (cast i64 128)
                                   "%s requires a form argument" h)
                         (repl-error (f line) msg)
@@ -412,7 +412,7 @@
                     (drain-pending-union-irs)
                     (fflush g-type-stream)
                     (let (tcopy:ptr null)
-                      (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
+                      (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp 0) 0))
                         (set! tcopy (strdup g-type-bufp)))
                       (repl-jit-module (f line))
                       (when (!= tcopy null)
@@ -504,9 +504,9 @@
                         (when (= result-kind TY-F64) (set! ret-ir "double"))
                         (fprintf g-def-stream "define %s @%s() {\n" ret-ir eval-sym)
                         (fprintf g-def-stream "entry:\n")
-                        (when (and (!= g-entry-bufp null) (!= (char-at g-entry-bufp (cast i64 0)) 0))
+                        (when (and (!= g-entry-bufp null) (!= (char-at g-entry-bufp 0) 0))
                           (fputs g-entry-bufp g-def-stream))
-                        (when (and (!= g-body-bufp null) (!= (char-at g-body-bufp (cast i64 0)) 0))
+                        (when (and (!= g-body-bufp null) (!= (char-at g-body-bufp 0) 0))
                           (fputs g-body-bufp g-def-stream))
                         (fprintf g-def-stream "}\n\n")
                         (free g-entry-bufp)
@@ -519,17 +519,17 @@
                         (repl-jit-module (f line))
                         (set! g-qq-used 0)
                         ; Look up and call the eval function
-                        (let (addr:i64 (cast i64 0))
+                        (let (addr:i64 0)
                           (let (err:ptr (LLVMOrcLLJITLookup g-jit (cast ptr (addr-of addr)) eval-sym))
                             (when (!= err null)
                               (let (em:ptr (LLVMGetErrorMessage err)
-                                    msg:ptr (malloc (cast i64 512)))
+                                    msg:ptr (malloc 512))
                                 (snprintf msg (cast i64 512)
                                           "JIT lookup error: %s" em)
                                 (repl-error (f line) msg)
                                 (free msg))
                               (return))
-                            (when (!= addr (cast i64 0))
+                            (when (!= addr 0)
                               ; Call and print result based on type
                                   (cond (or (= result-kind TY-I32)
                                             (= result-kind TY-I1)
@@ -568,7 +568,7 @@
   (let (pat:ptr (fmt-s "@%s(" fname)
         rep:ptr (fmt-s "@%s(" impl-name)
         n:i64 (cast i64 (strlen buf))
-        i:i64 (cast i64 0)
+        i:i64 0
         done:i32 0)
     (let (pat-len:i64 (cast i64 (strlen pat)))
       (while (and (= done 0) (<= (+ i pat-len) n))
@@ -579,7 +579,7 @@
             (fwrite (unsafe/ptr+ (cast ptr:i8 buf) rest-start) (cast i64 1)
                     (- n rest-start) out))
           (set! done 1))
-        (set! i (+ i (cast i64 1))))
+        (set! i (+ i 1)))
       (when (= done 0)
         (fwrite buf (cast i64 1) n out)))))
 
@@ -619,13 +619,13 @@
 ; it to the JIT permanently (no resource tracker). This is the stable public
 ; symbol callers see; on each redefinition, only @fname.tgt is updated.
 (defn jit-thunk-module (line:i32 fname-ir:ptr ft:(raw Type)):void
-  (let (buf:ptr null  szp:i64 (cast i64 0)
+  (let (buf:ptr null  szp:i64 0
         s:ptr (open_memstream (addr-of buf) (cast ptr (addr-of szp))))
     (fprintf s "; ModuleID = '<repl-thunk>'\n")
     (fprintf s "target triple = \"x86_64-pc-linux-gnu\"\n\n")
     (emit-fn-thunk s fname-ir ft)
     (fclose s)
-    (when (and (!= buf null) (!= (char-at buf (cast i64 0)) 0))
+    (when (and (!= buf null) (!= (char-at buf 0) 0))
       (when (!= (getenv "NUC_REPL_DUMP_IR") null)
         (fprintf stderr "----- THUNK IR -----\n%s----- END -----\n" buf))
       (jit-add-module-rt buf line null))
@@ -635,11 +635,11 @@
 ; store impl-addr into (ptr tgt-addr) so subsequent calls through @<fname-ir>
 ; dispatch to this impl. Returns 0 on success, -1 on error.
 (defn update-fn-tgt (line:i32 fname-ir:ptr impl-name:ptr):i32
-  (let (impl-addr:i64 (cast i64 0)
-        tgt-addr:i64 (cast i64 0)
+  (let (impl-addr:i64 0
+        tgt-addr:i64 0
         err1:ptr (LLVMOrcLLJITLookup g-jit (cast ptr (addr-of impl-addr)) impl-name))
     (when (!= err1 null)
-      (let (msg:ptr (malloc (cast i64 256)))
+      (let (msg:ptr (malloc 256))
         (snprintf msg (cast i64 256)
                   "redefinition: lookup of %s failed: %s"
                   impl-name (LLVMGetErrorMessage err1))
@@ -649,14 +649,14 @@
     (let (tgt-name:ptr (fmt-s "%s.tgt" fname-ir)
           err2:ptr (LLVMOrcLLJITLookup g-jit (cast ptr (addr-of tgt-addr)) tgt-name))
       (when (!= err2 null)
-        (let (msg:ptr (malloc (cast i64 256)))
+        (let (msg:ptr (malloc 256))
           (snprintf msg (cast i64 256)
                     "redefinition: lookup of %s failed: %s"
                     tgt-name (LLVMGetErrorMessage err2))
           (repl-error line msg)
           (free msg))
         (return -1)))
-    (aset! (cast ptr:ptr (cast ptr tgt-addr)) (cast i64 0) (cast ptr impl-addr))
+    (aset! (cast ptr:ptr (cast ptr tgt-addr)) 0 (cast ptr impl-addr))
     (return 0)))
 
 ; Append ABI-lowered `declare`s for a defunion's arm constructors to the REPL
@@ -713,29 +713,29 @@
   (fclose g-type-stream)
   (fclose g-decl-stream)
   (fclose g-def-stream)
-  (let (ir-bufp:ptr null  ir-sizep:i64 (cast i64 0)
+  (let (ir-bufp:ptr null  ir-sizep:i64 0
         irs:ptr (open_memstream (addr-of ir-bufp) (cast ptr (addr-of ir-sizep))))
     (fprintf irs "; ModuleID = '<repl>'\n")
     (fprintf irs "target triple = \"x86_64-pc-linux-gnu\"\n\n")
     ; Preamble (accumulated types + declarations from includes)
     (fflush g-repl-preamble)
-    (when (and (!= g-repl-preamble-bufp null) (!= (char-at g-repl-preamble-bufp (cast i64 0)) 0))
+    (when (and (!= g-repl-preamble-bufp null) (!= (char-at g-repl-preamble-bufp 0) 0))
       (fputs g-repl-preamble-bufp irs))
     ; This module's types
-    (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
+    (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp 0) 0))
       (fputs g-type-bufp irs))
     (emit-string-table irs)
     ; This module's declarations
-    (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp (cast i64 0)) 0))
+    (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp 0) 0))
       (fputs g-decl-bufp irs))
     ; This module's definitions — optionally renaming the first "@<fname>("
     ; to "@<impl-name>(" so the def is JIT'd under a unique impl symbol.
-    (when (and (!= g-def-bufp null) (!= (char-at g-def-bufp (cast i64 0)) 0))
+    (when (and (!= g-def-bufp null) (!= (char-at g-def-bufp 0) 0))
       (if (and (!= fname null) (!= impl-name null))
         (rewrite-first-fname g-def-bufp fname impl-name irs)
         (fputs g-def-bufp irs)))
     (fclose irs)
-    (when (and (!= ir-bufp null) (!= (char-at ir-bufp (cast i64 0)) 0))
+    (when (and (!= ir-bufp null) (!= (char-at ir-bufp 0) 0))
       (when (!= (getenv "NUC_REPL_DUMP_IR") null)
         (fprintf stderr "----- IR -----\n%s----- END -----\n" ir-bufp))
       (jit-add-module-rt ir-bufp line rt))
@@ -757,9 +757,9 @@
   ; already sees them via the preamble — a redefinition error).
   (drain-pending-union-irs)
   (fclose g-type-stream) (fclose g-decl-stream) (fclose g-def-stream)
-  (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
+  (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp 0) 0))
     (fputs g-type-bufp g-repl-preamble))
-  (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp (cast i64 0)) 0))
+  (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp 0) 0))
     (fputs g-decl-bufp g-repl-preamble))
   (free g-type-bufp) (free g-decl-bufp) (free g-def-bufp)
   (fprintf g-repl-preamble "\n"))
@@ -813,7 +813,7 @@
         save-peek:ptr g-peek
         save-peek-valid:i32 g-peek-valid)
     (set! g-src "(import-use macros)")
-    (set! g-pos (cast i64 0))
+    (set! g-pos 0)
     (set! g-line 1)
     (set! g-peek-valid 0)
     (when (= (repl_try) 0)
@@ -838,7 +838,7 @@
   ; Line-buffer stdout so JIT'd printf output is visible immediately even when
   ; the REPL is driven by a pipe (stdin not a tty makes stdout block-buffered
   ; by default). _IOLBF == 1 on glibc.
-  (setvbuf stdout null 1 (cast i64 0))
+  (setvbuf stdout null 1 0)
   (set! g-source-path "<repl>")
   (compiler-init)
   ; Initialize preamble stream
@@ -861,7 +861,7 @@
               (when (!= running 0)
               ; Parse the input
               (set! g-src input)
-              (set! g-pos (cast i64 0))
+              (set! g-pos 0)
               (set! g-line 1)
               (set! g-peek-valid 0)
               (match (read-program)

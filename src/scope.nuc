@@ -157,7 +157,7 @@
 (defn program-defn-lookup (irn:ptr):?ptr:ProgDefn
   (dotimes (i (cast i32 (count g-program-defns)))
     (let (pd:ref:ProgDefn (invoke g-program-defns (cast usize i)))
-      (when (= (strcmp (pd ir-name) irn) (cast i32 0))
+      (when (= (strcmp (pd ir-name) irn) 0)
         (return pd))))
   (return null))
 

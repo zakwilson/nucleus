@@ -10,7 +10,7 @@
 
 (defn fnv-byte (h:i64 b:i64):i64
   (set! h (bit-xor h b))
-  (set! h (* h (cast i64 1099511628211)))
+  (set! h (* h 1099511628211))
   (return h))
 
 (defn fnv-str (h:i64 s:CStr):i64
@@ -18,12 +18,12 @@
         c:i32 (bit-and (cast i32 (aref (cast ptr:i8 s) 0)) 255))
     (while (!= c 0)
       (set! h (fnv-byte h (cast i64 c)))
-      (set! i (+ i (cast i64 1)))
+      (set! i (+ i 1))
       (set! c (bit-and (cast i32 (aref (cast ptr:i8 s) i)) 255)))
     (return h)))
 
 (defn hash-type (h:i64 t:raw:Type):i64
-  (when (= t null) (return (fnv-byte h (cast i64 255))))
+  (when (= t null) (return (fnv-byte h 255)))
   (let (tt:raw:Type t
         k:i32 (tt kind))
     (set! h (fnv-byte h (cast i64 k)))
@@ -45,7 +45,7 @@
   (let (h:i64 -3750763034362895579)
     (dotimes (i nfields)
       (set! h (fnv-str h (aref (cast ptr:ptr field-names) i)))
-      (set! h (fnv-byte h (cast i64 0)))
+      (set! h (fnv-byte h 0))
       (set! h (hash-type h (aref (cast ptr:ptr field-types) i))))
     (return h)))
 
@@ -197,8 +197,8 @@
   ; (errors.md §10): the operand is already a complete value type, so it is not
   ; a niche pointer. Checked before the plain ? below. Needs the value-Maybe and
   ; Result templates (prelude).
-  (when (and (= (char-at name (cast i64 0)) 63) (= (char-at name (cast i64 1)) 33))
-    (let (result-ty:ptr (parse-type-name (unsafe/ptr+ (cast ptr:i8 name) (cast i64 1)) line)
+  (when (and (= (char-at name 0) 63) (= (char-at name 1) 33))
+    (let (result-ty:ptr (parse-type-name (unsafe/ptr+ (cast ptr:i8 name) 1) line)
           ut:?ptr:UnionTemplate (union-template-lookup "Maybe"))
       (when (= ut null)
         (die-at line "?!T: value-Maybe template not in scope (import the prelude)"))
@@ -211,8 +211,8 @@
   ; {tag, T} value-Maybe template (E2) and no longer auto-injects (ref ...). Our
   ; own source spells every nullable-pointer Maybe ?ptr:Foo, so no bare value
   ; ?Foo remains there (byte-identical); value ?Foo now means the value-Maybe.
-  (when (= (char-at name (cast i64 0)) 63)
-    (let (inner:ptr (parse-type-name (unsafe/ptr+ (cast ptr:i8 name) (cast i64 1)) line))
+  (when (= (char-at name 0) 63)
+    (let (inner:ptr (parse-type-name (unsafe/ptr+ (cast ptr:i8 name) 1) line))
       (when (= (-> inner (cast ptr:Type _) (_ kind)) TY-PTR)
         (return (cast ref:Type (type-as-pkind inner PTR-MAYBE))))
       ; Value operand: stamp the value-Maybe template (E2 / errors.md §10).
@@ -226,8 +226,8 @@
   ; positions (no collision with !=, which never parses as a type), and — unlike
   ; ? — takes the payload as written (A1's arbitrary payloads: !i64 is
   ; (Result i64 Err)). !?T composes for free: the rest "?T" recurses here.
-  (when (= (char-at name (cast i64 0)) 33)
-    (let (inner:ptr (parse-type-name (unsafe/ptr+ (cast ptr:i8 name) (cast i64 1)) line)
+  (when (= (char-at name 0) 33)
+    (let (inner:ptr (parse-type-name (unsafe/ptr+ (cast ptr:i8 name) 1) line)
           ut:?ptr:UnionTemplate (union-template-lookup "Result"))
       (when (= ut null)
         (die-at line "!T: (Result T E) template not in scope (import the prelude)"))
@@ -670,8 +670,8 @@
       (return LAYOUT-ENUM)))
   ; Rules 2 & 3 are two-arm shapes (order-independent in the arms).
   (when (= narms 2)
-    (let (arm0:ref:Arm (invoke arms (cast usize 0))
-          arm1:ref:Arm (invoke arms (cast usize 1))
+    (let (arm0:ref:Arm (invoke arms 0)
+          arm1:ref:Arm (invoke arms 1)
           none0:i32 (if (= (arm0 nfields) 0) 1 0)
           none1:i32 (if (= (arm1 nfields) 0) 1 0)
           ref0:i32 (arm-is-typed-ref arm0)
@@ -1125,9 +1125,9 @@
       (let (head0:ptr (n car))
         (when (and (!= head0 null) (= (-> head0 (cast ptr:Node _) (_ kind)) NODE-SYM))
           (let (hs:ptr (-> head0 (cast ptr:Node _) (_ s))
-                c0:i32 (char-at hs (cast i64 0)))
+                c0:i32 (char-at hs 0))
             (when (or (= c0 63) (= c0 33))
-              (let (stripped:ptr (cast ptr (intern-symbol (unsafe/ptr+ (cast ptr:i8 hs) (cast i64 1))))
+              (let (stripped:ptr (cast ptr (intern-symbol (unsafe/ptr+ (cast ptr:i8 hs) 1)))
                     inner-list:ptr (make-cell stripped (n cdr) line)
                     inner:ptr (parse-type-from-node inner-list line))
                 (when (= c0 63)
@@ -1184,8 +1184,8 @@
             (while (!= cur null)
               (inc! nfields)
               (set! cur ((cast ptr:Node cur) cdr)))
-            (let (fnames:ptr (arena-alloc (* (cast i64 nfields) (cast i64 8)))
-                  ftypes:ptr (arena-alloc (* (cast i64 nfields) (cast i64 8)))
+            (let (fnames:ptr (arena-alloc (* (cast i64 nfields) 8))
+                  ftypes:ptr (arena-alloc (* (cast i64 nfields) 8))
                   i:i32 0)
               (set! cur rest)
               (while (!= cur null)

@@ -355,7 +355,7 @@
             (when (or (> n-user 0) (!= has-generic 0))
               (if (and (= has-intrinsic 0)
                        (= has-generic 0) (= n-user 1))
-                (let (m0:ptr:Method (cast ptr:Method (invoke (gg methods) (cast usize 0))))
+                (let (m0:ptr:Method (cast ptr:Method (invoke (gg methods) 0)))
                   (.set! gg mangled 0)
                   ; Stage 12 N4: a solitary (unmangled, C-callable) generic keeps
                   ; `@name`, namespace-prefixed in a non-`user` namespace. The
@@ -682,12 +682,12 @@
   ; emit-defn skips its define while the call site still references its
   ; ir-name (undefined symbol at parse). Same failure mode as the __fnty_N
   ; case above (Stage 13 L7); recurses so ptr:ptr:Foo resolves.
-  (when (and (= (strncmp name "ptr:" (cast i64 4)) 0)
-             (!= (tyname-resolvable (unsafe/ptr+ (cast ptr:i8 name) (cast i64 4))) 0))
+  (when (and (= (strncmp name "ptr:" 4) 0)
+             (!= (tyname-resolvable (unsafe/ptr+ (cast ptr:i8 name) 4)) 0))
     (return 1))
-  (when (and (or (= (strncmp name "ref:" (cast i64 4)) 0)
-                 (= (strncmp name "raw:" (cast i64 4)) 0))
-             (!= (tyname-resolvable (unsafe/ptr+ (cast ptr:i8 name) (cast i64 4))) 0))
+  (when (and (or (= (strncmp name "ref:" 4) 0)
+                 (= (strncmp name "raw:" 4) 0))
+             (!= (tyname-resolvable (unsafe/ptr+ (cast ptr:i8 name) 4)) 0))
     (return 1))
   (return 0))
 
@@ -1123,7 +1123,7 @@
           ;   repeat until no change.
           ; A plain `(Proto V)` constraint has no Arg nodes, so it adds nothing —
           ; identical to the pre-A1 single-pass behaviour.
-          (let (determined:ptr (arena-alloc (* (cast i64 (if (> ntv 0) ntv 1)) (cast i64 4))))
+          (let (determined:ptr (arena-alloc (* (cast i64 (if (> ntv 0) ntv 1)) 4)))
             (dotimes (ti ntv)
               (let (tvname:CStr (aref (cast ptr:ptr tyvars) ti)
                     bnd:i32 0)
@@ -1949,7 +1949,7 @@
       NODE-STR
         ; NS-4: an explicit c"…" literal (reader set Node.i=1) types as CStr, not
         ; the StrView default — lockstep with emit-string's NS-4 short-circuit.
-        (if (!= (nn i) (cast i64 0)) (return ty-cstr) (return (strview-type)))
+        (if (!= (nn i) 0) (return ty-cstr) (return (strview-type)))
       NODE-CHAR  (return ty-char)
       NODE-SYM   (return (node-type-sym n scope))
       0)
@@ -2058,7 +2058,7 @@
             ; Intrinsic operator: best-effort type (i1 for comparisons, else the
             ; first operand's type — possibly the abstract tyvar). Deferred, no error.
             (when (!= g null)
-              (let (m0:ptr:Method (cast ptr:Method (invoke (-> g (cast ptr:Generic _) (_ methods)) (cast usize 0))))
+              (let (m0:ptr:Method (cast ptr:Method (invoke (-> g (cast ptr:Generic _) (_ methods)) 0)))
                 (when (= (m0 kind) METHOD-INTRINSIC)
                   (when (!= ((m0 binop) is-cmp) 0) (return ty-i1))
                   (return (gcheck (node-at n 1) scope m)))))
@@ -2260,7 +2260,7 @@
       NODE-STR
         ; NS-4: an explicit c"…" literal (reader set Node.i=1) types as CStr, not
         ; the StrView default — lockstep with emit-string's NS-4 short-circuit.
-        (if (!= (nn i) (cast i64 0)) (return ty-cstr) (return (strview-type)))
+        (if (!= (nn i) 0) (return ty-cstr) (return (strview-type)))
       NODE-CHAR  (return ty-char)
       NODE-SYM   (return (node-type-sym n scope))
       0)
@@ -2965,7 +2965,7 @@
 (defn builtin-op-result-type (g:raw:Generic ptypes:ptr nparams:i32):ptr
   (let (gg:raw:Generic g)
     (when (= (cast i32 (count (gg methods))) 0) (return null))
-    (let (m0:ptr:Method (cast ptr:Method (invoke (gg methods) (cast usize 0))))
+    (let (m0:ptr:Method (cast ptr:Method (invoke (gg methods) 0)))
       (when (!= (m0 kind) METHOD-INTRINSIC) (return null))
       (when (!= nparams 2) (return null))
       (let (at:ptr (aref (cast ptr:ptr ptypes) 0)
@@ -3381,7 +3381,7 @@
                         ; first base-ntv entries); step = for each constraint whose
                         ; conforming var V is determined, every tyvar appearing in an
                         ; Arg position becomes determined; repeat to fixpoint.
-                        (let (determined:ptr (arena-alloc (* (cast i64 (if (> ntv 0) ntv 1)) (cast i64 4))))
+                        (let (determined:ptr (arena-alloc (* (cast i64 (if (> ntv 0) ntv 1)) 4)))
                           (dotimes (di ntv)
                             (aset! (cast ptr:i32 determined) di (if (< di base-ntv) 1 0)))
                           (let (changed:i32 1)
@@ -3724,7 +3724,7 @@
 (defn node-type-call (n:raw:Node scope:ref:Scope h:CStr want:raw:Type):?ptr:Type
   (let (g:?ptr:Generic (generic-lookup h))
     (when (!= g null)
-      (let (m0:ptr:Method (cast ptr:Method (invoke (g methods) (cast usize 0))))
+      (let (m0:ptr:Method (cast ptr:Method (invoke (g methods) 0)))
         (when (= (m0 kind) METHOD-INTRINSIC)
           ; A user overload of this operator, if any, wins (mirror emit).
           (when (!= (g mangled) 0)
@@ -3809,7 +3809,7 @@
       NODE-STR
         ; NS-4: an explicit c"…" literal (reader set Node.i=1) types as CStr, not
         ; the StrView default — lockstep with emit-string's NS-4 short-circuit.
-        (if (!= (nn i) (cast i64 0)) (return ty-cstr) (return (strview-type)))
+        (if (!= (nn i) 0) (return ty-cstr) (return (strview-type)))
       NODE-CHAR  (return ty-char)
       NODE-SYM   (return (node-type-sym n scope))
       ; Keyword literal (Stage 11 cleanup §2): its static type is the `Keyword`
