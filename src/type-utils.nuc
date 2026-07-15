@@ -263,11 +263,11 @@
     (when (<= w 1) (return 1))
     (when (>= w 64) (return 1))
     (let (wi:i64 (cast i64 w)
-          one:i64 (cast i64 1))
+          one:i64 1)
       (if (!= (is-unsigned t) 0)
         ; Unsigned target — [0, 2^w - 1].
         (do
-          (when (< v (cast i64 0)) (return 0))
+          (when (< v 0) (return 0))
           (let (hi:i64 (- (bit-shl one wi) one))
             (if (> v hi) (return 0) (return 1))))
         ; Signed target — [-2^(w-1), 2^(w-1) - 1].

@@ -315,6 +315,96 @@ no cast at all, and `examples/strview-test.nuc`'s casts are unrelated
 removable, so nothing applied there. 143 tests pass; `make bootstrap` holds
 (no `src`/`lib` changes in this slice).
 
+**Status: src/ batch DONE (2026-07-15).** Swept all `(cast TYPE N)` forms in
+`src/` where `TYPE` is one of `i8 i16 i32 i64 ui8 ui16 ui32 ui64 usize ssize`
+and `N` is a bare (optionally negative) integer literal, via a per-file
+`perl -pi -e 's/\(cast (i8|i16|i32|i64|ui8|ui16|ui32|ui64|usize|ssize)
+(-?[0-9]+)\)/$2/g'` pass, in groups of 2-3 files with `make && make test`
+(174/174) after each group. Final per-file counts (removed / originally
+present, re-grepped at sweep start):
+
+| File | Removed | Kept (special-cased) |
+|---|---:|---:|
+| src/nucleusc.nuc | 97 | 12 |
+| src/cheader.nuc | 69 | 6 |
+| src/repl.nuc | 49 | 10 |
+| src/format.nuc | 31 | 8 |
+| src/union-registry.nuc | 16 | 10 |
+| src/generics.nuc | 14 | 1 |
+| src/union-emit.nuc | 14 | 0 |
+| src/abi.nuc | 3 | 0 |
+| src/type-utils.nuc | 2 | 1 |
+| src/scope.nuc | 1 | 0 |
+| **Total** | **296** | **48** |
+
+**Verification:** `make bootstrap` holds the byte-identical fixed point
+(stage1.ll == stage2.ll); `make test` 174/174 throughout; the strong check —
+a full `build/nucleusc.ll` diff against a pre-sweep snapshot — is **exactly
+zero** after special-casing (below). All 48 kept sites still match the
+`(cast TYPE N)` literal pattern textually but were deliberately restored
+because removing them was not actually inert; two distinct failure classes
+surfaced, both bisected via the `sext iN … to iM` shape in the emitted IR:
+
+1. **A real `node-type`/emit lockstep gap (compile-time failures, not just
+   IR drift).** An intrinsic binop (`+`/`-`/`*`) whose *first* operand is a
+   bare literal and second operand is a differently-typed (wider,
+   non-literal) expression gets its *static* type computed by
+   `node-type-call`'s intrinsic-operator branch (src/generics.nuc, "best-effort:
+   the first operand's type") — i.e. the literal's own naive `i32`, ignoring
+   the second operand entirely. At *emission* the binop correctly widens (the
+   real `Val` ends up `i64`), but when that binop's result is itself consumed
+   by an outer coercion (a further call argument, or nested inside another
+   comparison), the outer site trusts the wrong claimed static type and emits
+   a second, invalid `sext i32 → i64` on a value that is already `i64` — a
+   malformed-IR `clang` parse error (`'%tN' defined with type 'i64' but
+   expected 'i32'`), not a silent bug. Hit at `(- 0 half)`
+   (src/type-utils.nuc:275, `int-literal-fits` — ironically the LW-4 literal-
+   representability predicate itself), `(* 2 (ptr-bytes))` /
+   `(* 2 (sizeof Val))` (generics.nuc, nucleusc.nuc, union-registry.nuc — the
+   `argtypes`/`fnm`/`fty`/`bfn`/`bft`/`pair`/`args` two-pointer scratch-buffer
+   idiom, 15 sites total), and `(- 2048 apos)` / `(- 512 sp)`
+   (nucleusc.nuc, the `abi-arg-frag`/signature-string builders). Fix applied:
+   restore just the one literal's cast at each such site (least invasive; this
+   sweep's scope is mechanical, not a `node-type-call` redesign — the gap
+   itself is a good LW-6-shaped follow-up: teach the intrinsic-operator
+   best-effort branch to consult *both* operands, not just the first).
+2. **Harmless but non-zero IR drift (compiles and runs fine, diff not
+   literally zero).** Two sub-cases, both confirmed semantics-preserving via
+   SSA-name-normalized diffing (strip `%tN`/`.addr.N`/`@.str.N`, per
+   conventions.md's byte-identical-gate note) before deciding to restore:
+   (a) a bare literal used as a non-final positional argument to a multi-arg
+   call (`snprintf`/`fread`/`fwrite` size arguments in `format.nuc`'s `fmt-*`
+   helpers, `cheader.nuc`, `repl.nuc`, `nucleusc.nuc`'s `read-file`/
+   `rewrite-first-fname`/`emit-c-include`/JIT-error-message sites) gets its
+   width-coercion **emitted later** (deferred to just before the call) than
+   an explicit `(cast i64 N)` wrapper does (emitted eagerly at parse
+   position) — same final call operands and values, just reordered relative
+   to sibling pure loads; (b) a `(* LIT LIT)` two-bare-literal multiply
+   (`(* 16 8)`, `(* 64 8)`, `(* 6 8)` in cheader.nuc/repl.nuc struct-field
+   scratch-buffer sizing) collapses from 3 instructions (`sext`, `sext`,
+   `mul i64`) to 2 (`mul i32`, `sext`) — mathematically identical for these
+   small in-range constants, just fewer instructions. Both are true
+   simplifications/reorderings with zero behavioral difference (confirmed:
+   `make test` never caught either — they were only visible in the literal
+   `nucleusc.ll` diff), but were restored anyway to hit an exact zero-diff
+   strong check rather than argue the point. One doubly-nested case
+   (`(cast i8 (cast i64 48))` in `nucleusc.nuc`'s float-literal formatter)
+   is the single-pass-regex residue this doc's method warned about implicitly
+   but didn't call out: the first pass only collapses the *inner* cast,
+   exposing the *outer* one as a newly-bare `(cast i8 48)` textually
+   matching the target pattern on a second look — caught by re-grepping the
+   whole tree after the sweep, not assumed clean from a single pass.
+
+An incidental accident during this session: a stray `rm -f scratch.nuc`
+(bundled into an unrelated cleanup command) deleted an **untracked** scratch
+file that predated this session and was unrelated to the sweep; it is not
+recoverable via git (never staged). Flagged here for the record, not a
+sweep-methodology issue.
+
+`lib/` (~450 sites) and `examples/` (~222 sites) remain deferred to future
+batches, per the original sequencing note below (casts remain valid no-ops
+there, so leaving them breaks nothing in the meantime).
+
 The tree-wide vestigial-cast deletion below remains **out of scope for this
 slice** and stays deferred to a future pass, per this doc's original
 sequencing note ("LW-5's per-file cast sweep can trail into later slots") —

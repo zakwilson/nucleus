@@ -631,9 +631,9 @@
 (defn check-ir-name-legal (line:i32 orig-name:CStr ir-name:CStr):void
   (let (bad:i32 (ir-name-illegal-char ir-name))
     (when (>= bad 0)
-      (let (cbuf:ptr (arena-alloc (cast i64 2)))
-        (aset! (cast ptr:i8 cbuf) (cast i64 0) (cast i8 bad))
-        (aset! (cast ptr:i8 cbuf) (cast i64 1) (cast i8 0))
+      (let (cbuf:ptr (arena-alloc 2))
+        (aset! (cast ptr:i8 cbuf) 0 (cast i8 bad))
+        (aset! (cast ptr:i8 cbuf) 1 0)
         (die-at line
           (fmt-3s "illegal character '%s' in generated symbol for '%s' (ir-name '%s') — LLVM identifiers allow only [A-Za-z0-9$._-]"
                   cbuf orig-name ir-name))))))

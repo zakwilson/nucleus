@@ -973,7 +973,7 @@
     (when (and (> len 0)
                (or (= (char-at lex 0) 43)
                    (= (char-at lex 0) 45)))
-          (aset! (cast ptr:i8 buf) out (cast i8 (char-at lex (cast i64 0))))
+          (aset! (cast ptr:i8 buf) out (cast i8 (char-at lex 0)))
       (set! out (+ out 1))
       (set! in 1))
     ; Integer part: insert leading 0 if absent.
@@ -989,9 +989,9 @@
         (inc! out)))
     ; Decimal point + fraction. Synthesize a `.0` if missing.
     (cond (and (< in len) (= (char-at lex in) 46))
-            (do (aset! (cast ptr:i8 buf) out (cast i8 46))
-                (set! out (+ out (cast i64 1)))
-                (set! in (+ in (cast i64 1)))
+            (do (aset! (cast ptr:i8 buf) out 46)
+                (set! out (+ out 1))
+                (set! in (+ in 1))
                 (let (had-frac-digit:i32 0)
                   (while (and (< in len)
                               (!= (isdigit (char-at lex in)) 0))
@@ -1000,18 +1000,18 @@
                     (inc! in)
                     (set! had-frac-digit 1))
                   (when (= had-frac-digit 0)
-                    (aset! (cast ptr:i8 buf) out (cast i8 48))
-                    (set! out (+ out (cast i64 1))))))
+                    (aset! (cast ptr:i8 buf) out 48)
+                    (set! out (+ out 1)))))
           true
-            (do (aset! (cast ptr:i8 buf) out (cast i8 46))
-                (aset! (cast ptr:i8 buf) (+ out (cast i64 1)) (cast i8 48))
-                (set! out (+ out (cast i64 2)))))
+            (do (aset! (cast ptr:i8 buf) out 46)
+                (aset! (cast ptr:i8 buf) (+ out 1) 48)
+                (set! out (+ out 2))))
     ; Exponent (verbatim).
     (while (< in len)
       (aset! (cast ptr:i8 buf) out (cast i8 (char-at lex in)))
       (inc! out)
       (inc! in))
-    (aset! (cast ptr:i8 buf) out (cast i8 0))
+    (aset! (cast ptr:i8 buf) out 0)
     (return buf)))
 
 (defn emit-float (n:(raw Node)):ref:Val
@@ -1032,7 +1032,7 @@
     ; and no target-typing. Return the GEP as CStr regardless of the ambient
     ; target, short-circuiting the NS-3 StrView logic below. Dormant for the
     ; compiler's own literals (all i=0 → the StrView path), so byte-identical.
-    (when (!= (nn i) (cast i64 0))
+    (when (!= (nn i) 0)
       (return (alloc-val ty-cstr tmp)))
     ; Stage 14 NS-3 (design/stage14/native-strings.md): the flip — a string
     ; literal now types as StrView (node-type mirrors this at the three lockstep
@@ -1291,13 +1291,13 @@
   ; route differently). The pop discards the entry; the buffer is reused.
   (while (> (cast i32 (_get g-nundo len)) mark)
     (let (u:ref:NarrowUndo
-            (invoke g-nundo (- (_get g-nundo len) (cast usize 1))))
+            (invoke g-nundo (- (_get g-nundo len) 1)))
       (let (sym:?ptr:Sym (scope-lookup (u scope) (u name)))
         (when (!= sym null)
           (when (= (u stamp) (sym kstamp))
             (.set! sym ntype (u old-ntype))
             (.set! sym ndepth (u old-ndepth)))))
-      (.set! g-nundo len (- (_get g-nundo len) (cast usize 1))))))
+      (.set! g-nundo len (- (_get g-nundo len) 1)))))
 
 ; Kill a binding's narrow: reassignment invalidates the dominating test.
 (defn narrow-kill (sym:(raw Sym)):void
@@ -1542,7 +1542,7 @@
   (let (nn:(raw Node) n)
     (when (= (nn kind) NODE-INT) (return 1))
     (when (= (nn kind) NODE-CELL)
-      (let (e:(raw Node) (macroexpand-form n (cast i32 -1)))
+      (let (e:(raw Node) (macroexpand-form n -1))
         (when (and (!= e null) (= (e kind) NODE-INT)) (return 1))))
     (return 0)))
 
@@ -2200,14 +2200,14 @@
         (cond
           ; The namespace divider lowers to the `__` separator.
           (= c 47)
-            (do (aset! (cast ptr:i8 s) o (cast i8 95))
-                (aset! (cast ptr:i8 s) (+ o 1) (cast i8 95))
+            (do (aset! (cast ptr:i8 s) o 95)
+                (aset! (cast ptr:i8 s) (+ o 1) 95)
                 (set! o (+ o 2)))
           ok
             (do (aset! (cast ptr:i8 s) o (cast i8 c)) (set! o (+ o 1)))
           true
-            (do (aset! (cast ptr:i8 s) o (cast i8 95)) (set! o (+ o 1))))))
-    (aset! (cast ptr:i8 s) o (cast i8 0))
+            (do (aset! (cast ptr:i8 s) o 95) (set! o (+ o 1))))))
+    (aset! (cast ptr:i8 s) o 0)
     (return s)))
 
 ; Record `prefix` (already sanitized + interned) as the ir-prefix for the
@@ -2257,7 +2257,7 @@
 ; prefix of its *defining* namespace, so a monomorphization stamped while another
 ; namespace is current still mangles correctly.
 (defn ns-compose (prefix:ptr base:ptr):ptr
-  (when (= (char-at prefix (cast i64 0)) 0) (return base))
+  (when (= (char-at prefix 0) 0) (return base))
   (return (fmt-2s "%s__%s" prefix base)))
 
 ; Compose the *current* namespace's ir-prefix onto a bare source name. Used at the
@@ -2811,9 +2811,9 @@
   (let (cc:(raw Node) call)
     (when (!= (node-len cc) 2) (die-at (cc line) "char expects 1 arg"))
     (let (arg:(raw Node) (node-at cc 1))
-      (when (or (!= (arg kind) NODE-STR) (!= (cast i64 (strlen (arg s))) (cast i64 1)))
+      (when (or (!= (arg kind) NODE-STR) (!= (cast i64 (strlen (arg s))) 1))
         (die-at (arg line) "char: arg must be single-char string"))
-      (return (alloc-val ty-char (fmt-i32 "%d" (char-at (arg s) (cast i64 0))))))))
+      (return (alloc-val ty-char (fmt-i32 "%d" (char-at (arg s) 0)))))))
 
 (defn emit-addr-of (call:(raw Node) scope:ref:Scope):ref:Val
   (let (cc:(raw Node) call)
@@ -3202,7 +3202,7 @@
                     (memcpy slot nc (sizeof Val))))))))
       (let (arglist:ptr (alloca i8 2048)
             apos:i64 0)
-        (aset! (cast ptr:i8 arglist) 0 (cast i8 0))
+        (aset! (cast ptr:i8 arglist) 0 0)
         (set! i 0)
         (while (< i eff-nargs)
         (let (av:ptr:Val (cast ptr:Val (unsafe/ptr+ (cast ptr:Val args) i))
@@ -4180,7 +4180,7 @@
 ; via the stored handle (the leading __alloc field), mirroring how a collection's
 ; drop frees its buffer through its stored AllocHandle (lib/vector.nuc):
 ;   (defn drop:void ((self (ptr <Env>)))
-;     (alloc-handle-free (. self __alloc) (cast (raw ui8) self) (sizeof Env) (cast usize 8)))
+;     (alloc-handle-free (. self __alloc) (cast (raw ui8) self) (sizeof Env) 8))
 ; The (Env, Drop) conformance is recorded unconditionally (a cfn always owns its
 ; env storage), so a with-bound cfn arms the cleanup.
 (defn fn-make-drop-method (env-sd:(raw StructDef) line:i32 mode:i32):void
@@ -4211,10 +4211,10 @@
             sizeof-node:ptr (make-cell (cast ptr (intern-symbol "sizeof"))
                               (make-cell (cast ptr (intern-symbol (sd name))) null line)
                               line)
-            ; (cast usize 8) — pointer alignment of the env block.
+            ; 8 — pointer alignment of the env block.
             align-node:ptr (make-cell (cast ptr (intern-symbol "cast"))
                             (make-cell (cast ptr (intern-symbol "usize"))
-                              (make-cell (fn-make-int-node (cast i64 8)) null line)
+                              (make-cell (fn-make-int-node 8) null line)
                               line)
                             line)
             freecall:ptr (make-cell (cast ptr (intern-symbol "alloc-handle-free"))
@@ -6038,7 +6038,7 @@
       ; If every branch terminated (no live phi incomings) and there is no
       ; fallthrough, end-lbl is unreachable — terminate it so callers know
       ; control does not flow past the cond.
-      (when (and (= (count vals) (cast usize 0)) (= has-fallthrough 0))
+      (when (and (= (count vals) 0) (= has-fallthrough 0))
         (fprintf g-body-stream "  unreachable\n")
         (set! g-block-term 1))
       (if (or (= result-type null)
@@ -6048,7 +6048,7 @@
               ty-ir:ptr (type-to-ir result-type))
           (fprintf g-body-stream "  %s = phi %s " tmp ty-ir)
           (dotimes (k (count vals))
-            (when (> k (cast usize 0)) (fprintf g-body-stream ", "))
+            (when (> k 0) (fprintf g-body-stream ", "))
             (fprintf g-body-stream "[ %s, %%%s ]"
               (invoke vals k)
               (invoke preds k)))
@@ -6371,17 +6371,17 @@
       (when (!= ((v type) kind) TY-PTR)
         (die-at (cc line) "goto-ptr: arg must be ptr"))
       (do
-        (when (= (count g-lbl-tbl) (cast usize 0))
+        (when (= (count g-lbl-tbl) 0)
           (die-at (cc line) "goto-ptr: no labels declared in function"))
         (fprintf g-body-stream "  indirectbr ptr %s, [" (v val))
-        (let (i:usize (cast usize 0)
+        (let (i:usize 0
               first:i32 1)
           (while (< i (count g-lbl-tbl))
             (let (e:ref:LabelEntry (invoke g-lbl-tbl i))
               (when (= first 0) (fprintf g-body-stream ","))
               (set! first 0)
               (fprintf g-body-stream " label %%lbl.%s" (e name)))
-            (set! i (+ i (cast usize 1)))))
+            (set! i (+ i 1))))
         (fprintf g-body-stream " ]\n"))
       (let (dead:ptr (fmt-i32 "goto-ptr.dead%d" (new-label-id)))
         (fprintf g-body-stream "%s:\n" dead))
@@ -6452,7 +6452,7 @@
       ; Pass 1: scan inits to compute length and parse designated keys.
       (let (max-idx:i32 -1
             pos-count:i32 0
-            keys:ptr (arena-alloc (* (cast i64 ninits) (cast i64 4))))
+            keys:ptr (arena-alloc (* (cast i64 ninits) 4)))
         (dotimes (i ninits)
           (let (arg:ptr:Node (cast ptr:Node (node-at cc (+ 2 i)))
                 is-designated:i32 0)
@@ -6467,18 +6467,18 @@
                 (when (> (cast i32 k) max-idx) (set! max-idx (cast i32 k)))
                 (aset! (cast ptr:i32 keys) i (cast i32 k)))
               (do
-                (aset! (cast ptr:i32 keys) i (cast i32 -1))
+                (aset! (cast ptr:i32 keys) i -1)
                 (inc! pos-count)))))
         (let (length:i32 pos-count)
           (when (> (+ max-idx 1) length) (set! length (+ max-idx 1)))
           (when (= length 0) (die-at (cc line) "array: at least one initializer required"))
-          (let (vals:ptr (arena-alloc (* (cast i64 length) (cast i64 8)))
-                seen:ptr (arena-alloc (* (cast i64 length) (cast i64 4)))
+          (let (vals:ptr (arena-alloc (* (cast i64 length) 8))
+                seen:ptr (arena-alloc (* (cast i64 length) 4))
                 pos-cursor:i32 0
                 j:i32 0)
             (while (< j length)
               (aset! (cast ptr:ptr vals) j null)
-              (aset! (cast ptr:i32 seen) j (cast i32 0))
+              (aset! (cast ptr:i32 seen) j 0)
               (inc! j))
             ; Place designated inits.
             (set! j 0)
@@ -6488,7 +6488,7 @@
                   (when (!= (aref (cast ptr:i32 seen) k) 0)
                     (die-at ((cast ptr:Node (node-at cc (+ 2 j))) line)
                       (fmt-i32 "array: index %d specified twice" k)))
-                  (aset! (cast ptr:i32 seen) k (cast i32 1))
+                  (aset! (cast ptr:i32 seen) k 1)
                   (let (vexpr:ptr (node-at (cast ptr:Node (node-at cc (+ 2 j))) 1)
                         v:ref:Val (emit-node vexpr scope)
                         coerced:ptr (coerce-int-val v etype (cc line)))
@@ -6511,7 +6511,7 @@
                         coerced:ptr (coerce-int-val v etype (cc line)))
                     (when (= coerced null)
                       (die-at (cc line) "array: type mismatch in positional initializer"))
-                    (aset! (cast ptr:i32 seen) pos-cursor (cast i32 1))
+                    (aset! (cast ptr:i32 seen) pos-cursor 1)
                     (aset! (cast ptr:ptr vals) pos-cursor coerced)
                     (inc! pos-cursor))))
               (inc! j))
@@ -6544,13 +6544,13 @@
         nfields:i32 ((cast ptr:StructDef sd) num-fields))
     (when (> nargs nfields)
       (die-at (cc line) (fmt-s "struct literal: too many initializers for struct '%s'" (sdef name))))
-    (let (vals:ptr (arena-alloc (* (cast i64 nfields) (cast i64 8)))
-          seen:ptr (arena-alloc (* (cast i64 nfields) (cast i64 4)))
+    (let (vals:ptr (arena-alloc (* (cast i64 nfields) 8))
+          seen:ptr (arena-alloc (* (cast i64 nfields) 4))
           pos-idx:i32 0
           i:i32 0)
       (while (< i nfields)
         (aset! (cast ptr:ptr vals) i null)
-        (aset! (cast ptr:i32 seen) i (cast i32 0))
+        (aset! (cast ptr:i32 seen) i 0)
         (inc! i))
       (set! i 0)
       (while (< i nargs)
@@ -6570,7 +6570,7 @@
               (when (!= (aref (cast ptr:i32 seen) fidx) 0)
                 (die-at (fname-node line)
                   (fmt-s "struct literal: field '%s' specified twice" (fname-node s))))
-              (aset! (cast ptr:i32 seen) fidx (cast i32 1))
+              (aset! (cast ptr:i32 seen) fidx 1)
               (let (ftype:ptr ((field-at (sdef fields) fidx) type)
                     v:ref:Val (emit-node vexpr scope)
                     coerced:ptr (coerce-int-val v ftype (cc line)))
@@ -6589,7 +6589,7 @@
                     coerced:ptr (coerce-int-val v ftype (cc line)))
                 (when (= coerced null)
                   (die-at (cc line) "struct literal: type mismatch for positional initializer"))
-                (aset! (cast ptr:i32 seen) pos-idx (cast i32 1))
+                (aset! (cast ptr:i32 seen) pos-idx 1)
                 (aset! (cast ptr:ptr vals) pos-idx coerced)
                 (inc! pos-idx)))))
         (inc! i))
@@ -6716,7 +6716,7 @@
 ; Like macroexpand-form but recursively expands subforms after the head
 ; reaches fixpoint. Quoted/quasiquoted forms are left untouched.
 (defn macroexpand-all-form (form:(raw Node)):ptr
-  (let (cur:ptr (macroexpand-form form (cast i32 -1)))
+  (let (cur:ptr (macroexpand-form form -1))
     (when (or (= cur null)
               (!= ((cast ptr:Node cur) kind) NODE-CELL))
       (return cur))
@@ -6879,7 +6879,7 @@
               (fmt-2s "double drop: '%s' is dropped at `with` scope exit — use (move %s) to take ownership first" tname tname)))))))
   (let (g:?ptr:Generic (generic-lookup h))
     (when (!= g null)
-      (let (m:ptr:Method (cast ptr:Method (invoke (g methods) (cast usize 0))))
+      (let (m:ptr:Method (cast ptr:Method (invoke (g methods) 0)))
         (when (= (m kind) METHOD-INTRINSIC)
           (if (= (g mangled) 0)
             (return (emit-binop n scope (m binop)))
@@ -7191,7 +7191,7 @@
               (die-at (arg line) "defvar: (char ...) requires a single-char string"))
             (when (= (is-int-type ty) 0)
               (die-at (nn line) "defvar: char literal requires integer type"))
-            (return (fmt-i32 "%d" (char-at (arg s) (cast i64 0))))))))
+            (return (fmt-i32 "%d" (char-at (arg s) 0)))))))
     (die-at (nn line) "defvar: init must be a literal")
     (return null)))
 
@@ -7280,7 +7280,7 @@
         (when (and (!= existing null)
                    (!= (existing is-const) 0)
                    (= (-> existing (_ type) (cast ptr:Type _) (_ kind)) TY-ERR))
-          (return (ok (cast i32 0)))))
+          (return (ok 0))))
       (guard-name-kind (name-node s) (cc line) NK-VALUE)
       (when (>= (- (cast i32 (count g-deferror-name-sids)) 1) MAX-DEFERRORS)
         (do (report-at (cc line) "deferror: too many error definitions (id cap 4095)")
@@ -7295,7 +7295,7 @@
         (let (sym:ref:Sym (scope-define g-globals (name-node s) (cast ptr ty-err) null 0))
           (.set! sym is-const 1)
           (.set! sym const-val (fmt-i32 "%d" id)))
-        (return (ok (cast i32 0)))))))
+        (return (ok 0))))))
 
 ; (err-name e) / (err-message e) — descriptor-table accessors over an Err value.
 ; Inline lookups (a GEP+load on the flush-emitted table); a corrupted id is UB,
@@ -7730,7 +7730,7 @@
           ; g-cur-fname is the @-less IR symbol of this function (for blockaddress
           ; in label-addr). defn-ir-name returns "@sym"; skip the leading '@'.
           (set! g-cur-fname (unsafe/ptr+ (cast ptr:i8 (defn-ir-name fname param-types nparams))
-                                  (cast i32 1)))
+                                  1))
           ; Aggregate return ABI (Stage 8 Phase C): drives the signature, the
           ; sret hidden param, and how `return` lowers a struct value.
           (set! g-fn-ret-abi (abi-classify ret))
@@ -7844,9 +7844,9 @@
               (fprintf g-out ") noreturn {\n")
               (fprintf g-out ") {\n"))
             (fprintf g-out "entry:\n")
-            (when (and (!= g-entry-bufp null) (!= (char-at g-entry-bufp (cast i64 0)) 0))
+            (when (and (!= g-entry-bufp null) (!= (char-at g-entry-bufp 0) 0))
               (fputs g-entry-bufp g-out))
-            (when (and (!= g-body-bufp null) (!= (char-at g-body-bufp (cast i64 0)) 0))
+            (when (and (!= g-body-bufp null) (!= (char-at g-body-bufp 0) 0))
               (fputs g-body-bufp g-out))
             (fprintf g-out "}\n\n")
             (free g-entry-bufp)
@@ -8064,9 +8064,9 @@
           (fclose g-body-stream)
           (fprintf ct-def "define void @%s() {\n" ct-sym)
           (fprintf ct-def "entry:\n")
-          (when (and (!= g-entry-bufp null) (!= (char-at g-entry-bufp (cast i64 0)) 0))
+          (when (and (!= g-entry-bufp null) (!= (char-at g-entry-bufp 0) 0))
             (fputs g-entry-bufp ct-def))
-          (when (and (!= g-body-bufp null) (!= (char-at g-body-bufp (cast i64 0)) 0))
+          (when (and (!= g-body-bufp null) (!= (char-at g-body-bufp 0) 0))
             (fputs g-body-bufp ct-def))
           (fprintf ct-def "}\n\n")
           (free g-entry-bufp)
@@ -8118,7 +8118,7 @@
             (fclose ct-def)
 
             ; Assemble full CT module IR in a memstream.
-            (let (ir-bufp:ptr null  ir-sizep:i64 (cast i64 0)
+            (let (ir-bufp:ptr null  ir-sizep:i64 0
                   irs:ptr (open_memstream (addr-of ir-bufp) (cast ptr (addr-of ir-sizep))))
               (fprintf irs "; ModuleID = '<compile-time>'\n")
               (fprintf irs "target triple = \"%s\"\n\n" ((cast ptr:Target g-host-target) triple))
@@ -8126,22 +8126,22 @@
               (when (!= g-interactive 0)
                  (fflush g-repl-preamble)
                     (when (and (!= g-repl-preamble-bufp null)
-                               (!= (char-at g-repl-preamble-bufp (cast i64 0)) 0))
+                               (!= (char-at g-repl-preamble-bufp 0) 0))
                       (fputs g-repl-preamble-bufp irs)))
               ; Type defs: main-so-far + CT-specific
-              (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
+              (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp 0) 0))
                 (fputs g-type-bufp irs))
-              (when (and (!= ct-type-bufp null) (!= (char-at ct-type-bufp (cast i64 0)) 0))
+              (when (and (!= ct-type-bufp null) (!= (char-at ct-type-bufp 0) 0))
                 (fputs ct-type-bufp irs))
               ; String constants (shared)
               (emit-string-table irs)
               ; Declarations: main-so-far + CT-specific
-              (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp (cast i64 0)) 0))
+              (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp 0) 0))
                 (fputs g-decl-bufp irs))
-              (when (and (!= ct-decl-bufp null) (!= (char-at ct-decl-bufp (cast i64 0)) 0))
+              (when (and (!= ct-decl-bufp null) (!= (char-at ct-decl-bufp 0) 0))
                 (fputs ct-decl-bufp irs))
               ; Definitions from CT body + @__compile_time_main
-              (when (and (!= ct-def-bufp null) (!= (char-at ct-def-bufp (cast i64 0)) 0))
+              (when (and (!= ct-def-bufp null) (!= (char-at ct-def-bufp 0) 0))
                 (fputs ct-def-bufp irs))
               (fclose irs)
 
@@ -8276,9 +8276,9 @@
                   (fclose g-body-stream)
                   (fprintf ct-def "define ptr @%s(ptr %%__args.arg) {\n" jit-name)
                   (fprintf ct-def "entry:\n")
-                  (when (and (!= g-entry-bufp null) (!= (char-at g-entry-bufp (cast i64 0)) 0))
+                  (when (and (!= g-entry-bufp null) (!= (char-at g-entry-bufp 0) 0))
                     (fputs g-entry-bufp ct-def))
-                  (when (and (!= g-body-bufp null) (!= (char-at g-body-bufp (cast i64 0)) 0))
+                  (when (and (!= g-body-bufp null) (!= (char-at g-body-bufp 0) 0))
                     (fputs g-body-bufp ct-def))
                   (fprintf ct-def "}\n\n")
                   (free g-entry-bufp)
@@ -8347,16 +8347,16 @@
                     (when (!= g-interactive 0)
                        (fflush g-repl-preamble)
                           (when (and (!= g-repl-preamble-bufp null)
-                                     (!= (char-at g-repl-preamble-bufp (cast i64 0)) 0))
+                                     (!= (char-at g-repl-preamble-bufp 0) 0))
                             (fputs g-repl-preamble-bufp irs)))
-                    (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
+                    (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp 0) 0))
                       (fputs g-type-bufp irs))
                     (emit-string-table irs)
-                    (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp (cast i64 0)) 0))
+                    (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp 0) 0))
                       (fputs g-decl-bufp irs))
-                    (when (and (!= ct-decl-bufp null) (!= (char-at ct-decl-bufp (cast i64 0)) 0))
+                    (when (and (!= ct-decl-bufp null) (!= (char-at ct-decl-bufp 0) 0))
                       (fputs ct-decl-bufp irs))
-                    (when (and (!= ct-def-bufp null) (!= (char-at ct-def-bufp (cast i64 0)) 0))
+                    (when (and (!= ct-def-bufp null) (!= (char-at ct-def-bufp 0) 0))
                       (fputs ct-def-bufp irs))
                     (fclose irs)
                     (jit-add-module ir-bufp (ff line))
@@ -8381,7 +8381,7 @@
             (fprintf out "\\%02X" c)
             (fputc c out))))
       (fprintf out "\\00\", align 1\n")))
-  (when (!= (count g-strs) (cast usize 0)) (fputc 10 out)))
+  (when (!= (count g-strs) 0) (fputc 10 out)))
 
 ; Stage 10 errors: the deferror descriptor table (design/stage10/errors.md §8).
 ; Two arrays of name/message pointers, indexed by error id (slot 0 reserved =
@@ -8390,7 +8390,7 @@
 ; error-free programs (incl. the compiler's own bootstrap) byte-identical.
 (defn emit-deferror-table (out:ptr):void
   ; count == 1 means only the reserved placeholder (no real deferrors).
-  (when (and (= (count g-deferror-name-sids) (cast usize 1)) (= g-err-table-used 0)) (return))
+  (when (and (= (count g-deferror-name-sids) 1) (= g-err-table-used 0)) (return))
   (let (n:i32 (cast i32 (count g-deferror-name-sids)))
     (fprintf out "@nuc_err_names = constant [%d x ptr] [" n)
     (dotimes (i n)
@@ -8414,14 +8414,14 @@
 (defn read-file (path:CStr):ptr
   (let (f:ptr (fopen path "rb"))
     (when (= f null) (perror path) (exit 1))
-    (when (!= (fseek f (cast i64 0) 2) 0) (perror "fseek") (exit 1))
+    (when (!= (fseek f 0 2) 0) (perror "fseek") (exit 1))
     (let (sz:i64 (ftell f))
       (when (< sz 0) (perror "ftell") (exit 1))
       (rewind f)
-      (let (buf:ptr (malloc (+ sz (cast i64 1))))
+      (let (buf:ptr (malloc (+ sz 1)))
         (when (= buf null) (perror "malloc") (exit 1))
         (let (nr:i64 (fread buf (cast i64 1) sz f))
-          (aset! (cast ptr:i8 buf) nr (cast i8 0))
+          (aset! (cast ptr:i8 buf) nr 0)
           (fclose f)
           (return buf))))))
 
@@ -8903,7 +8903,7 @@
         true (die-at (ff line) "set-ir-prefix: argument must be a string literal"))
       ; Empty → bare; otherwise sanitize the override to a C-legal prefix. Both are
       ; interned so the table key/value compare by pointer identity downstream.
-      (if (= (char-at prefix (cast i64 0)) 0)
+      (if (= (char-at prefix 0) 0)
         (ns-ir-prefix-set g-current-ns (intern-str ""))
         (ns-ir-prefix-set g-current-ns (intern-str (ns-prefix-sanitize prefix)))))))
 
@@ -9165,7 +9165,7 @@
   (let (n:ref:Node (new Node))
     (.set! n kind NODE-STR)
     (.set! n line 0)
-    (.set! n i (cast i64 0))
+    (.set! n i 0)
     (.set! n s path)
     (.set! n car null)
     (.set! n cdr list)
@@ -9205,7 +9205,7 @@
 (defn try-import-path (filename:CStr):ptr
   ; Try directory of the current source file
   (let (pathlen:i64 (cast i64 (strlen g-source-path))
-        last-slash:i64 (cast i64 -1))
+        last-slash:i64 -1)
     (dotimes (i pathlen)
       (when (= (char-at g-source-path i) 47)
         (set! last-slash i)))
@@ -9254,7 +9254,7 @@
 ; byte-identical to before namespaces. The newline separator cannot appear in a
 ; file path or a symbol prefix, so the composite is unambiguous.
 (defn import-key (path:CStr prefix:ptr):ptr
-  (when (or (= prefix null) (= (char-at prefix (cast i64 0)) 0))
+  (when (or (= prefix null) (= (char-at prefix 0) 0))
     (return path))
   (return (fmt-2s "%s\n%s" path prefix)))
 
@@ -9386,7 +9386,7 @@
                       (let (src:ptr (read-file path))
                         (set! g-source-path path)
                         (set! g-src src)
-                        (set! g-pos (cast i64 0))
+                        (set! g-pos 0)
                         (set! g-line 1)
                         (set! g-peek-valid 0)
                         (set! g-current-ns (intern-str "user"))
@@ -9416,7 +9416,7 @@
                   (let (pn:ref:Node (new Node))
                     (.set! pn kind NODE-STR)
                     (.set! pn line 0)
-                    (.set! pn i (cast i64 0))
+                    (.set! pn i 0)
                     (.set! pn s prefix)
                     (.set! pn car path)
                     (.set! pn cdr g-import-prefixes)
@@ -9501,7 +9501,7 @@
                 (let (src:ptr (read-file path))
                   (set! g-source-path path)
                   (set! g-src src)
-                  (set! g-pos (cast i64 0))
+                  (set! g-pos 0)
                   (set! g-line 1)
                   (set! g-peek-valid 0)
                   (set! g-current-ns (intern-str "user"))
@@ -9539,7 +9539,7 @@
             (let (pn:ref:Node (new Node))
               (.set! pn kind NODE-STR)
               (.set! pn line 0)
-              (.set! pn i (cast i64 0))
+              (.set! pn i 0)
               (.set! pn s prefix)
               (.set! pn car path)
               (.set! pn cdr g-import-prefixes)
@@ -9604,12 +9604,12 @@
 ; libc declaration beyond what `strlen`/the prelude already provide.
 (defn import-default-prefix (name:CStr):ptr
   (let (n:i64 (cast i64 (strlen name))
-        last-dot:i64 (cast i64 -1))
+        last-dot:i64 -1)
     (dotimes (i n)
       (when (= (char-at name i) 46)
         (set! last-dot i)))
-    (when (< last-dot (cast i64 0)) (return name))
-    (return (arena-strdup (unsafe/ptr+ (cast ptr:i8 name) (+ last-dot (cast i64 1)))))))
+    (when (< last-dot 0) (return name))
+    (return (arena-strdup (unsafe/ptr+ (cast ptr:i8 name) (+ last-dot 1))))))
 
 ; `import-only` — import a concrete list of symbols (design decision 5).
 ; Signature: (import-only LIB SYM1 SYM2 ...). The listed symbols are brought in
@@ -9764,7 +9764,7 @@
   ; entries below) ---
   (set! g-special-form-set
     (cast (ref (HashSet CStr))
-      (alloc-handle-alloc (addr-of g-arena-alloc) (sizeof (HashSet CStr)) (cast usize 8))))
+      (alloc-handle-alloc (addr-of g-arena-alloc) (sizeof (HashSet CStr)) 8)))
   (hashset-init-alloc g-special-form-set (addr-of g-arena-alloc))
   (into g-special-form-set
     #{ ; control flow / binding
@@ -9812,7 +9812,7 @@
   ; --- primitive-type-named set (19 members) ---
   (set! g-primitive-type-set
     (cast (ref (HashSet CStr))
-      (alloc-handle-alloc (addr-of g-arena-alloc) (sizeof (HashSet CStr)) (cast usize 8))))
+      (alloc-handle-alloc (addr-of g-arena-alloc) (sizeof (HashSet CStr)) 8)))
   (hashset-init-alloc g-primitive-type-set (addr-of g-arena-alloc))
   (into g-primitive-type-set
     #{ ; integer types
@@ -9960,13 +9960,13 @@
     (fprintf irs "source_filename = \"%s\"\n" source-file)
     (fprintf irs "target datalayout = \"%s\"\n" ((cast ptr:Target g-target) datalayout))
     (fprintf irs "target triple = \"%s\"\n\n" g-target-triple)
-    (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp (cast i64 0)) 0))
+    (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp 0) 0))
       (fputs g-type-bufp irs))
     (emit-string-table irs)
     (emit-deferror-table irs)
-    (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp (cast i64 0)) 0))
+    (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp 0) 0))
       (fputs g-decl-bufp irs))
-    (when (and (!= g-def-bufp null) (!= (char-at g-def-bufp (cast i64 0)) 0))
+    (when (and (!= g-def-bufp null) (!= (char-at g-def-bufp 0) 0))
       (fputs g-def-bufp irs))
     (fclose irs)
     (free g-type-bufp)
@@ -10021,7 +10021,7 @@
           (LLVMDisposeTargetMachine tm)
           (when (= keep-obj 0)
             ; Build a clang command: clang <obj> -o <out> [link-args...]
-            (let (cmd-bufp:ptr null  cmd-sizep:i64 (cast i64 0)
+            (let (cmd-bufp:ptr null  cmd-sizep:i64 0
                   cmds:ptr (open_memstream (addr-of cmd-bufp) (cast ptr (addr-of cmd-sizep))))
               (fprintf cmds "clang %s -o %s" obj-path out-path)
               (when (!= g-link-args null)
@@ -10157,21 +10157,21 @@
                 (set! g-opt-level 2)
               (= arg "-O3")
                 (set! g-opt-level 3)
-              (= (strncmp arg "--target=" (cast i64 9)) 0)
-                (set! g-target-triple-override (unsafe/ptr+ (cast ptr:i8 arg) (cast i64 9)))
-              (= (strncmp arg "-I" (cast i64 2)) 0)
-                (if (> (cast i64 (strlen arg)) (cast i64 2))
+              (= (strncmp arg "--target=" 9) 0)
+                (set! g-target-triple-override (unsafe/ptr+ (cast ptr:i8 arg) 9))
+              (= (strncmp arg "-I" 2) 0)
+                (if (> (cast i64 (strlen arg)) 2)
                   ; -I/path/to/dir (no space)
-                  (add-include-path (unsafe/ptr+ (cast ptr:i8 arg) (cast i64 2)))
+                  (add-include-path (unsafe/ptr+ (cast ptr:i8 arg) 2))
                   ; -I /path/to/dir (next arg)
                   (do (inc! i)
                       (when (>= i argc)
                         (do (fprintf stderr "-I requires an argument\n") (return 2)))
                       (add-include-path (aref (cast ptr:ptr argv) i))))
-              (or (= (strncmp arg "-l" (cast i64 2)) 0)
-                  (= (strncmp arg "-L" (cast i64 2)) 0))
+              (or (= (strncmp arg "-l" 2) 0)
+                  (= (strncmp arg "-L" 2) 0))
                 (add-link-arg arg)
-              (= (char-at arg (cast i64 0)) 45)
+              (= (char-at arg 0) 45)
                 (do (fprintf stderr "unknown flag: %s\n" arg) (return 2))
               true
                 (if (= source-file null)
@@ -10192,7 +10192,7 @@
 
       ; Lex/parse
       (set! g-src src)
-      (set! g-pos (cast i64 0))
+      (set! g-pos 0)
       (set! g-line 1)
 
       (let (raw-forms:ptr (read-program-or-die))

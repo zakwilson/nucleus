@@ -45,8 +45,8 @@
 ; Replace chars invalid in LLVM IR identifiers with underscores.
 (defn sanitize-for-ir (name:ptr):ptr
   (let (n:i64 (strlen name)
-        s:ptr (arena-alloc (+ n (cast i64 1)))
-        i:i64 (cast i64 0))
+        s:ptr (arena-alloc (+ n 1))
+        i:i64 0)
     (while (< i n)
       (let (c:i32 (bit-and (cast i32 (aref (cast ptr:i8 name) i)) 255)
             is-digit:i1 (!= (isdigit c) 0)
@@ -56,9 +56,9 @@
             ok:i1       (or is-digit is-lower is-upper is-safe))
         (if ok
           (aset! (cast ptr:i8 s) i (cast i8 c))
-          (aset! (cast ptr:i8 s) i (cast i8 95))))
-      (set! i (+ i (cast i64 1))))
-    (aset! (cast ptr:i8 s) n (cast i8 0))
+          (aset! (cast ptr:i8 s) i 95)))
+      (set! i (+ i 1)))
+    (aset! (cast ptr:i8 s) n 0)
     (return s)))
 
 ; Replace chars invalid in C identifiers with underscores.
@@ -76,8 +76,8 @@
 ; here; the three cheader.nuc call sites compose the two in the correct order.
 (defn sanitize-for-c (name:ptr):ptr
   (let (n:i64 (strlen name)
-        s:ptr (arena-alloc (+ n (cast i64 1)))
-        i:i64 (cast i64 0))
+        s:ptr (arena-alloc (+ n 1))
+        i:i64 0)
     (while (< i n)
       (let (c:i32 (bit-and (cast i32 (aref (cast ptr:i8 name) i)) 255)
             is-digit:i1 (!= (isdigit c) 0)
@@ -86,19 +86,19 @@
             ok:i1       (or is-digit is-lower is-upper (= c 95)))
         (if ok
           (aset! (cast ptr:i8 s) i (cast i8 c))
-          (aset! (cast ptr:i8 s) i (cast i8 95))))
-      (set! i (+ i (cast i64 1))))
-    (aset! (cast ptr:i8 s) n (cast i8 0))
+          (aset! (cast ptr:i8 s) i 95)))
+      (set! i (+ i 1)))
+    (aset! (cast ptr:i8 s) n 0)
     (return s)))
 
 ; Copy the NUL-terminated C-string `lit` into `dst` at byte offset `off`;
 ; return the offset just past the copied bytes (excludes the terminator).
 (defn ir-name-append (dst:ptr off:i64 lit:ptr):i64
   (let (m:i64 (strlen lit)
-        i:i64 (cast i64 0))
+        i:i64 0)
     (while (< i m)
       (aset! (cast ptr:i8 dst) (+ off i) (aref (cast ptr:i8 lit) i))
-      (set! i (+ i (cast i64 1))))
+      (set! i (+ i 1)))
     (return (+ off m))))
 
 ; Map the two symbol characters that are legal in Nucleus but illegal in an LLVM
@@ -121,32 +121,32 @@
 (defn ir-name-token (name:ptr):ptr
   (let (n:i64 (strlen name)
         special:i32 0
-        i:i64 (cast i64 0))
+        i:i64 0)
     (while (< i n)
       (let (c:i32 (bit-and (cast i32 (aref (cast ptr:i8 name) i)) 255))
         (when (or (= c 63) (= c 33)) (set! special 1)))
-      (set! i (+ i (cast i64 1))))
+      (set! i (+ i 1)))
     (when (= special 0) (return name))
     ; Sizing pass: `?`→6 bytes (_QMARK), `!`→5 bytes (_BANG), else 1.
-    (let (outn:i64 (cast i64 0)
-          j:i64 (cast i64 0))
+    (let (outn:i64 0
+          j:i64 0)
       (while (< j n)
         (let (c:i32 (bit-and (cast i32 (aref (cast ptr:i8 name) j)) 255))
-          (cond (= c 63) (set! outn (+ outn (cast i64 6)))
-                (= c 33) (set! outn (+ outn (cast i64 5)))
-                true     (set! outn (+ outn (cast i64 1)))))
-        (set! j (+ j (cast i64 1))))
-      (let (s:ptr (arena-alloc (+ outn (cast i64 1)))
-            si:i64 (cast i64 0)
-            k:i64 (cast i64 0))
+          (cond (= c 63) (set! outn (+ outn 6))
+                (= c 33) (set! outn (+ outn 5))
+                true     (set! outn (+ outn 1))))
+        (set! j (+ j 1)))
+      (let (s:ptr (arena-alloc (+ outn 1))
+            si:i64 0
+            k:i64 0)
         (while (< k n)
           (let (c:i32 (bit-and (cast i32 (aref (cast ptr:i8 name) k)) 255))
             (cond (= c 63) (set! si (ir-name-append s si "_QMARK"))
                   (= c 33) (set! si (ir-name-append s si "_BANG"))
                   true     (do (aset! (cast ptr:i8 s) si (cast i8 c))
-                               (set! si (+ si (cast i64 1))))))
-          (set! k (+ k (cast i64 1))))
-        (aset! (cast ptr:i8 s) si (cast i8 0))
+                               (set! si (+ si 1)))))
+          (set! k (+ k 1)))
+        (aset! (cast ptr:i8 s) si 0)
         (return s)))))
 
 ; SM-5 (design/stage14/symbol-mangling.md): a small reusable validity check for
@@ -166,10 +166,10 @@
 ; sigil), or -1 if `name` is entirely legal.
 (defn ir-name-illegal-char (name:ptr):i32
   (let (n:i64 (strlen name)
-        i:i64 (cast i64 0))
-    (when (> n (cast i64 0))
-      (let (c0:i32 (bit-and (cast i32 (aref (cast ptr:i8 name) (cast i64 0))) 255))
-        (when (or (= c0 64) (= c0 37)) (set! i (cast i64 1)))))   ; skip @ or %
+        i:i64 0)
+    (when (> n 0)
+      (let (c0:i32 (bit-and (cast i32 (aref (cast ptr:i8 name) 0)) 255))
+        (when (or (= c0 64) (= c0 37)) (set! i 1))))   ; skip @ or %
     (while (< i n)
       (let (c:i32 (bit-and (cast i32 (aref (cast ptr:i8 name) i)) 255)
             is-digit:i1 (!= (isdigit c) 0)
@@ -178,5 +178,5 @@
             is-safe:i1  (or (= c 95) (= c 46) (= c 36) (= c 45))  ; _ . $ -
             ok:i1       (or is-digit is-lower is-upper is-safe))
         (when (= ok 0) (return c)))
-      (set! i (+ i (cast i64 1))))
+      (set! i (+ i 1)))
     (return -1)))
