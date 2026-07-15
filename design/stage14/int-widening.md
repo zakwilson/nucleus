@@ -401,9 +401,69 @@ file that predated this session and was unrelated to the sweep; it is not
 recoverable via git (never staged). Flagged here for the record, not a
 sweep-methodology issue.
 
-`lib/` (~450 sites) and `examples/` (~222 sites) remain deferred to future
-batches, per the original sequencing note below (casts remain valid no-ops
-there, so leaving them breaks nothing in the meantime).
+**Status: lib/ batch 2 (macro-free files) DONE (2026-07-15).** Swept the 12
+`lib/` files containing **no `defmacro` forms** (deliberately excluded to
+avoid the quasiquote string-pool refresh complication) with the same
+per-file `perl -pi -e 's/\(cast (i8|i16|i32|i64|ui8|ui16|ui32|ui64|usize|
+ssize) (-?[0-9]+)\)/$2/g'` sweep, `make clean && make && make test` after
+each file (174/174 throughout — a full clean rebuild, not incremental
+`make`, was required: `Makefile`'s `COMPILER_DEPS` list only tracks a
+curated subset of `lib/` files for `build/nucleusc`'s rebuild trigger, and
+is missing `lib/vector.nuc`, `lib/hash.nuc`, `lib/hashset.nuc`,
+`lib/hashmap.nuc`, `lib/iterator.nuc`, `lib/list.nuc` — all six are
+transitively imported into the compiler's own compilation, so an
+incremental `make` after editing any of them silently reused a stale
+binary; only a forced clean rebuild caught the one real regression below
+and produced a trustworthy diff). Final per-file counts (re-grepped at
+sweep start — see the file list below for why these differ from the
+originally-scoped estimate):
+
+| File | Removed | Kept (special-cased) |
+|---|---:|---:|
+| lib/char.nuc | 76 | 0 |
+| lib/hashmap.nuc | 69 | 0 |
+| lib/hashset.nuc | 61 | 0 |
+| lib/reader.nuc | 54 | 0 |
+| lib/strview.nuc | 39 | 0 |
+| lib/vector.nuc | 25 | 1 |
+| lib/string.nuc | 18 | 0 |
+| lib/node.nuc | 7 | 0 |
+| lib/keyword.nuc | 5 | 0 |
+| lib/hash.nuc | 3 | 0 |
+| lib/iterator.nuc | 1 | 0 |
+| lib/list.nuc | 1 | 0 |
+| **Total** | **359** | **1** |
+
+(Counts at sweep start were lower than the batch's original scoping scan
+for `char.nuc`/`reader.nuc`/`strview.nuc`/`string.nuc` — expected drift
+between scoping and execution, not a discrepancy; re-grepped per-file
+immediately before editing, per the batch's own instructions.)
+
+**Verification:** `make bootstrap` holds the byte-identical fixed point
+(stage1.ll == stage2.ll); `make test` 174/174 after every file; the strong
+check — a full `build/nucleusc.ll` diff against a pre-sweep snapshot — is
+**exactly zero** after the one special-cased site below. One site hit the
+same class-1 failure src/ batch 1 documented (a bare literal branch of a
+value-position `if` joined against a differently-typed non-literal
+sibling branch defeats the static type model): `lib/vector.nuc`'s
+`vector-grow` computed `new-cap:usize` from `(if (= (_get v cap) 0) 4 (*
+(_get v cap) 2))` — the `4` branch's naive `i32` node-type couldn't join
+against the `(* (_get v cap) 2)` branch's `usize` node-type, so the
+`let`'s declared-type check for `new-cap` died (`let: init type mismatch
+for 'new-cap'`) the moment a real clean rebuild exercised the change (the
+first clean-rebuild attempt in this batch surfaced it; earlier
+same-session incremental `make` runs had masked it per the `COMPILER_DEPS`
+gap above). Fixed by restoring just that one cast (`(cast usize 4)`); the
+sibling `2` literal in the same expression needed no cast (its branch's
+node-type is read from the multiplication's first operand, which is
+already `usize`). Re-verified zero-diff after the fix.
+
+`lib/` (48 sites, the 6 `defmacro`-containing files: `lib/arena.nuc` (7),
+`lib/combinators.nuc` (4), `lib/error.nuc` (1), `lib/macros.nuc` (4),
+`lib/parse.nuc` (22), `lib/string-split.nuc` (10)) and `examples/` (~222
+sites) remain deferred to future batches, per the original sequencing note
+below (casts remain valid no-ops there, so leaving them breaks nothing in
+the meantime).
 
 The tree-wide vestigial-cast deletion below remains **out of scope for this
 slice** and stays deferred to a future pass, per this doc's original

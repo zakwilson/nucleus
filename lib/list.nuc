@@ -26,7 +26,7 @@
   (let (c:ptr:Node (cast ptr:Node (malloc (sizeof Node))))
     (.set! c kind 3)
     (.set! c line 0)
-    (.set! c i (cast i64 0))
+    (.set! c i 0)
     (.set! c s null)
     (.set! c car car)
     (.set! c cdr cdr)

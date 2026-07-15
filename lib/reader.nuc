@@ -66,7 +66,7 @@
 (defn next-char ():i32
   (let (c:i32 (peek-char))
     (when (= c 0) (return 0))
-    (set! g-pos (+ g-pos (cast i64 1)))
+    (set! g-pos (+ g-pos 1))
     (when (= c 10) (inc! g-line))
     (return c)))
 
@@ -100,7 +100,7 @@
 
 (defn lex-string (open-line:i32):!ptr
   (let (buf:ptr (alloca i8 4096)
-        n:i64 (cast i64 0)
+        n:i64 0
         done:i32 0)
     (while (= done 0)
       (let (c:i32 (next-char))
@@ -122,11 +122,11 @@
                 (when (= handled 0)
                   (do (report-at g-line (fmt-i32 "unknown escape \\%c" e))
                       (return (err! parse-error))))))
-            (when (>= n (cast i64 4095))
+            (when (>= n 4095)
               (do (report-at open-line "string literal too long")
                   (return (err! parse-error))))
             (aset! (cast ptr:i8 buf) n (cast i8 c))
-            (set! n (+ n (cast i64 1)))))))
+            (set! n (+ n 1))))))
     (let (t:ptr:Tok (cast ptr:Tok (alloc-tok)))
       (.set! t kind TOK-STRING)
       (.set! t line open-line)
@@ -169,7 +169,7 @@
           (return (err! parse-error))))
     ; `\u{XXXX}` hex form — only when 'u' is immediately followed by '{'. A bare
     ; `\u` (no brace) is the ordinary printable literal for the letter 'u'.
-    (when (and (= c0 117) (= (char-at g-src (+ g-pos (cast i64 1))) 123))
+    (when (and (= c0 117) (= (char-at g-src (+ g-pos 1)) 123))
       (next-char) (next-char)   ; consume 'u' and '{'
       (let (cp:i32 0 ndigits:i32 0 done:i32 0)
         (while (= done 0)
@@ -215,17 +215,17 @@
         (next-char))
       (let (len:i64 (- g-pos start)
             text:ptr (unsafe/ptr+ (cast ptr:i8 g-src) start))
-        (when (= len (cast i64 1))
-          (return (ok (make-char-tok (char-at text (cast i64 0)) open-line))))
+        (when (= len 1)
+          (return (ok (make-char-tok (char-at text 0) open-line))))
         ; Named control codes (string.md §"Char types").
-        (when (= (strncmp text "newline" len) 0)   (when (= len (cast i64 7)) (return (ok (make-char-tok 10 open-line)))))
-        (when (= (strncmp text "return" len) 0)     (when (= len (cast i64 6)) (return (ok (make-char-tok 13 open-line)))))
-        (when (= (strncmp text "tab" len) 0)        (when (= len (cast i64 3)) (return (ok (make-char-tok 9 open-line)))))
-        (when (= (strncmp text "space" len) 0)      (when (= len (cast i64 5)) (return (ok (make-char-tok 32 open-line)))))
-        (when (= (strncmp text "nul" len) 0)        (when (= len (cast i64 3)) (return (ok (make-char-tok 0 open-line)))))
-        (when (= (strncmp text "escape" len) 0)     (when (= len (cast i64 6)) (return (ok (make-char-tok 27 open-line)))))
-        (when (= (strncmp text "backspace" len) 0)  (when (= len (cast i64 9)) (return (ok (make-char-tok 8 open-line)))))
-        (when (= (strncmp text "delete" len) 0)     (when (= len (cast i64 6)) (return (ok (make-char-tok 127 open-line)))))
+        (when (= (strncmp text "newline" len) 0)   (when (= len 7) (return (ok (make-char-tok 10 open-line)))))
+        (when (= (strncmp text "return" len) 0)     (when (= len 6) (return (ok (make-char-tok 13 open-line)))))
+        (when (= (strncmp text "tab" len) 0)        (when (= len 3) (return (ok (make-char-tok 9 open-line)))))
+        (when (= (strncmp text "space" len) 0)      (when (= len 5) (return (ok (make-char-tok 32 open-line)))))
+        (when (= (strncmp text "nul" len) 0)        (when (= len 3) (return (ok (make-char-tok 0 open-line)))))
+        (when (= (strncmp text "escape" len) 0)     (when (= len 6) (return (ok (make-char-tok 27 open-line)))))
+        (when (= (strncmp text "backspace" len) 0)  (when (= len 9) (return (ok (make-char-tok 8 open-line)))))
+        (when (= (strncmp text "delete" len) 0)     (when (= len 6) (return (ok (make-char-tok 127 open-line)))))
         (do (report-at open-line (fmt-s "unknown named char literal '\\%s'" (arena-strndup text len)))
             (return (err! parse-error)))))))
 
@@ -235,16 +235,16 @@
 ; with optional sign. Also accepts the special tokens `+inf.0`,
 ; `-inf.0`, `+nan.0` (Scheme convention).
 (defn is-float-literal (text:ptr len:i64):i32
-  (when (<= len (cast i64 0)) (return 0))
+  (when (<= len 0) (return 0))
   ; Special tokens.
-  (when (and (= len (cast i64 6))
-             (or (= (strncmp text "+inf.0" (cast i64 6)) 0)
-                 (or (= (strncmp text "-inf.0" (cast i64 6)) 0)
-                     (= (strncmp text "+nan.0" (cast i64 6)) 0))))
+  (when (and (= len 6)
+             (or (= (strncmp text "+inf.0" 6) 0)
+                 (or (= (strncmp text "-inf.0" 6) 0)
+                     (= (strncmp text "+nan.0" 6) 0))))
     (return 1))
-  (let (i:i64 (cast i64 0)
-        c0:i32 (char-at text (cast i64 0)))
-    (when (or (= c0 43) (= c0 45)) (set! i (cast i64 1)))
+  (let (i:i64 0
+        c0:i32 (char-at text 0))
+    (when (or (= c0 43) (= c0 45)) (set! i 1))
     (let (start:i64 i
           digits-before:i32 0
           digits-after:i32 0
@@ -254,25 +254,25 @@
       (while (and (< i len)
                   (!= (isdigit (char-at text i)) 0))
         (set! digits-before 1)
-        (set! i (+ i (cast i64 1))))
+        (set! i (+ i 1)))
       (when (and (< i len) (= (char-at text i) 46))
         (set! saw-dot 1)
-        (set! i (+ i (cast i64 1)))
+        (set! i (+ i 1))
         (while (and (< i len)
                     (!= (isdigit (char-at text i)) 0))
           (set! digits-after 1)
-          (set! i (+ i (cast i64 1)))))
+          (set! i (+ i 1))))
       (when (and (< i len)
                  (or (= (char-at text i) 101) (= (char-at text i) 69)))
         (set! saw-e 1)
-        (set! i (+ i (cast i64 1)))
+        (set! i (+ i 1))
         (when (and (< i len)
                    (or (= (char-at text i) 43) (= (char-at text i) 45)))
-          (set! i (+ i (cast i64 1))))
+          (set! i (+ i 1)))
         (while (and (< i len)
                     (!= (isdigit (char-at text i)) 0))
           (set! digits-exp 1)
-          (set! i (+ i (cast i64 1)))))
+          (set! i (+ i 1))))
       (when (!= i len) (return 0))
       ; Must contain a `.` or `e`/`E` to be a float (otherwise it's an int).
       (when (and (= saw-dot 0) (= saw-e 0)) (return 0))
@@ -290,29 +290,29 @@
     (let (len:i64 (- g-pos start)
           text:ptr (unsafe/ptr+ (cast ptr:i8 g-src) start)
           is-int:i32 1
-          i0:i64 (cast i64 0))
-      (when (= len (cast i64 0)) (set! is-int 0))
-      (when (and (> len (cast i64 0))
-               (or (= (char-at text (cast i64 0)) 45)
-                   (= (char-at text (cast i64 0)) 43)))
-        (set! i0 (cast i64 1)))
+          i0:i64 0)
+      (when (= len 0) (set! is-int 0))
+      (when (and (> len 0)
+               (or (= (char-at text 0) 45)
+                   (= (char-at text 0) 43)))
+        (set! i0 1))
       (when (= i0 len) (set! is-int 0))
       (let (i:i64 i0)
         (while (< i len)
           (if (= (isdigit (char-at text i)) 0)
             (do (set! is-int 0) (set! i len))
-            (set! i (+ i (cast i64 1))))))
+            (set! i (+ i 1)))))
       (when (!= is-int 0)
         (let (buf:ptr (alloca i8 64))
-          (when (>= len (cast i64 64))
+          (when (>= len 64)
             (do (report-at start-line "integer literal too long")
                 (return (err! parse-error))))
           (memcpy buf text len)
-          (aset! (cast ptr:i8 buf) len (cast i8 0))
+          (aset! (cast ptr:i8 buf) len 0)
           (let (t:ptr:Tok (cast ptr:Tok (alloc-tok))
                 errp:ptr:i32 (cast ptr:i32 (__errno_location))
-                neg:i32 (= (char-at text (cast i64 0)) 45)
-                val:i64 (cast i64 0))
+                neg:i32 (= (char-at text 0) 45)
+                val:i64 0)
             (.set! t kind TOK-INT)
             (.set! t line start-line)
             ; LW-4: parse with overflow detection. strtol silently clamps at
@@ -322,17 +322,17 @@
             ; into the signed i64 field where `%ld` emission plus LLVM's
             ; two's-complement wrap reproduce the intended value. A negative
             ; overflow, or a value above u64, is a positioned reader error.
-            (aset! errp (cast i64 0) 0)
+            (aset! errp 0 0)
             (set! val (strtol buf null 10))
-            (if (!= (aref errp (cast i64 0)) 34)
+            (if (!= (aref errp 0) 34)
               (.set! t i val)
               (do
                 (when (!= neg 0)
                   (do (report-at start-line "integer literal out of range")
                       (return (err! parse-error))))
-                (aset! errp (cast i64 0) 0)
+                (aset! errp 0 0)
                 (set! val (cast i64 (strtoull buf null 10)))
-                (when (= (aref errp (cast i64 0)) 34)
+                (when (= (aref errp 0) 34)
                   (do (report-at start-line "integer literal out of range")
                       (return (err! parse-error))))
                 (.set! t i val)))
@@ -351,11 +351,11 @@
       ; this is additive (the compiler's own source stays a bootstrap fixed
       ; point). Colon-CHAIN spellings like `ptr:i8` or trailing-colon sugar
       ; `name:` do not begin with ':' and are unaffected.
-      (when (and (> len (cast i64 1)) (= (char-at text (cast i64 0)) 58))
+      (when (and (> len 1) (= (char-at text 0) 58))
         (let (tk:ptr:Tok (cast ptr:Tok (alloc-tok)))
           (.set! tk kind TOK-KEYWORD)
           (.set! tk line start-line)
-          (.set! tk s (arena-strndup (unsafe/ptr+ (cast ptr:i8 text) (cast i64 1)) (- len (cast i64 1))))
+          (.set! tk s (arena-strndup (unsafe/ptr+ (cast ptr:i8 text) 1) (- len 1)))
           (return (ok (cast ptr tk)))))
       (let (ts:ptr:Tok (cast ptr:Tok (alloc-tok)))
         (.set! ts kind TOK-SYMBOL)
@@ -402,7 +402,7 @@
           (.set! trb kind TOK-RBRACK)
           (.set! trb line line)
           (return (ok (cast ptr trb))))))
-    (when (and (= c 35) (= (char-at g-src (+ g-pos (cast i64 1))) 123))
+    (when (and (= c 35) (= (char-at g-src (+ g-pos 1)) 123))
       (do (next-char) (next-char)
         (let (thb:ptr:Tok (cast ptr:Tok (alloc-tok)))
           (.set! thb kind TOK-HASHBRACE)
@@ -460,11 +460,11 @@
     ; it. Consume the `c` and the quote, lex the body exactly as a plain literal,
     ; and flag the token CStr via `i=1`, carried into NODE-STR.i and read by
     ; emit-string / node-type. A plain `"…"` leaves `i=0` → StrView (NS-3).
-    (when (and (= c 99) (= (char-at g-src (+ g-pos (cast i64 1))) 34))
+    (when (and (= c 99) (= (char-at g-src (+ g-pos 1)) 34))
       (do (next-char)
           (next-char)
           (let (cst:ptr (try (lex-string line)))
-            (.set! (cast ptr:Tok cst) i (cast i64 1))
+            (.set! (cast ptr:Tok cst) i 1)
             (return (ok cst)))))
     (when (= c 34)
       (do (next-char) (return (lex-string line))))
@@ -832,16 +832,16 @@
     (let (s:ptr (cn s)
           len:i64 (strlen (cn s)))
       ; Must end in ':' and the next raw stream char must be '(' (no whitespace).
-      (when (or (= len (cast i64 0))
-                (!= (char-at s (- len (cast i64 1))) 58))
+      (when (or (= len 0)
+                (!= (char-at s (- len 1)) 58))
         (return (ok child)))
       (when (!= (peek-char) 40) (return (ok child)))
       ; Read the following parenthesised form once.
       (let (paren-form:ptr (try (read-form))
-            body:ptr (arena-strndup s (- len (cast i64 1))))
+            body:ptr (arena-strndup s (- len 1)))
         ; CP-2a: a bare ':' (NODE-SYM, empty body) fuses to the paren form
         ; directly, so (fn (x:i32):(ref T) ...) reads as (fn (x:i32) (ref T) ...).
-        (when (and (= (cn kind) NODE-SYM) (= len (cast i64 1)))
+        (when (and (= (cn kind) NODE-SYM) (= len 1))
           (return (ok paren-form)))
         ; CP-1 / keyword: split body on ':' into segments. The first segment is
         ; the binding name for NODE-SYM (empty for NODE-KEYWORD, whose leading
@@ -868,7 +868,7 @@
                   (set! tail cell)))
               (if (= colon null)
                 (set! done 1)
-                (set! cur (unsafe/ptr+ (cast ptr:i8 colon) (cast i64 1))))))
+                (set! cur (unsafe/ptr+ (cast ptr:i8 colon) 1)))))
           ; Name part: first segment for NODE-SYM, empty for NODE-KEYWORD.
           (let (name-node:ptr null
                 ctor-list:ptr head)

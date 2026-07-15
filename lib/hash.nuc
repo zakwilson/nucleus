@@ -45,7 +45,7 @@
 ; The * is the FNV prime 0x100000001b3 = 1099511628211.
 (defn fnv1a-byte (h:i64 b:i64):i64
   (set! h (bit-xor h b))
-  (set! h (* h (cast i64 1099511628211)))
+  (set! h (* h 1099511628211))
   (return h))
 
 ; Fold the `n` low bytes of integer value `v` (little-endian byte order) into
@@ -54,7 +54,7 @@
 (defn fnv1a-int (h:i64 v:i64 n:i32):i64
   (let (i:i32 0)
     (while (< i n)
-      (let (b:i64 (bit-and (bit-shr v (cast i64 (* i 8))) (cast i64 255)))
+      (let (b:i64 (bit-and (bit-shr v (cast i64 (* i 8))) 255))
         (set! h (fnv1a-byte h b)))
       (set! i (+ i 1)))
     (return h)))
@@ -99,6 +99,6 @@
     (let (c:i32 (bit-and (cast i32 (aref s 0)) 255))
       (while (!= c 0)
         (set! h (fnv1a-byte h (cast i64 c)))
-        (set! i (+ i (cast i64 1)))
+        (set! i (+ i 1))
         (set! c (bit-and (cast i32 (aref s i)) 255))))
     (return (cast usize h))))

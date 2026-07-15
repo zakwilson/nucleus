@@ -77,21 +77,21 @@
     (set! g-keyword-table (malloc (* (cast i64 KEYWORD-MAX) (sizeof Keyword)))))
   (let (tbl:ptr:Keyword (cast ptr:Keyword g-keyword-table)
         n:usize g-keyword-count
-        i:usize (cast usize 0))
+        i:usize 0)
     ; Look for an existing entry with the same name bytes.
     (while (< i n)
       (let (e:ptr:Keyword (cast ptr:Keyword (unsafe/ptr+ tbl (cast i32 i)))
             sv:ptr:StrView (cast ptr:StrView (e name)))
         (when (= (strcmp (strview-to-cstr sv) (cast ptr cs)) 0)
           (return (deref e))))
-      (set! i (+ i (cast usize 1))))
+      (set! i (+ i 1)))
     ; Miss: append a new entry.
     (when (>= n (cast usize KEYWORD-MAX))
       (keyword-overflow))
     (let (slen:i64 (strlen (cast ptr cs))
           ; Copy the name bytes NUL-terminated so strview-to-cstr stays sound.
-          buf:ptr (malloc (+ slen (cast i64 1))))
-      (memcpy buf (cast ptr cs) (+ slen (cast i64 1)))
+          buf:ptr (malloc (+ slen 1)))
+      (memcpy buf (cast ptr cs) (+ slen 1))
       (let (sv:ptr:StrView (cast ptr:StrView (malloc (cast i64 (sizeof StrView)))))
         (.set! sv data (cast ptr:ui8 buf))
         (.set! sv len  (cast usize slen))
@@ -100,7 +100,7 @@
           (.set! e name sv)
           (.set! e id   n)
           (.set! e cached-hash h)
-          (set! g-keyword-count (+ n (cast usize 1)))
+          (set! g-keyword-count (+ n 1))
           (return (deref e)))))))
 
 ; ---------------------------------------------------------------------------

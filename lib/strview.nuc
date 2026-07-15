@@ -67,7 +67,7 @@
 ; ---------------------------------------------------------------------------
 (defn strview-eq ((a (ref StrView)) (b (ref StrView))):i32
   (when (!= (a len) (b len)) (return 0))
-  (when (= (a len) (cast usize 0)) (return 1))
+  (when (= (a len) 0) (return 1))
   (let (c:i32 (memcmp (cast ptr (a data)) (cast ptr (b data)) (cast i64 (a len))))
     (return (if (= c 0) 1 0))))
 
@@ -88,7 +88,7 @@
   (when (>= (self pos) (self len))
     (return none))
   (let (b:ui8 (aref (self buf) (cast i64 (self pos))))
-    (.set! self pos (+ (self pos) (cast usize 1)))
+    (.set! self pos (+ (self pos) 1))
     (return (some b))))
 
 ; ---------------------------------------------------------------------------
@@ -104,7 +104,7 @@
     (return (cast usize
       (reduce (vfn (h:i64 b:ui8):i64
                 (fnv1a-byte h (cast i64 b)))
-              (cast i64 -3750763034362895579)
+              -3750763034362895579
               (addr-of it))))))
 
 ; ---------------------------------------------------------------------------
@@ -185,8 +185,8 @@
       (.set! self pos (+ (self pos) ((addr-of dr) nbytes)))
       (return (some ((addr-of dr) ch))))
     ; Invalid byte: skip one byte, emit U+FFFD replacement character.
-    (.set! self pos (+ (self pos) (cast usize 1)))
-    (return (some (cast Char (cast ui32 65533))))))
+    (.set! self pos (+ (self pos) 1))
+    (return (some (cast Char 65533)))))
 
 ; ---------------------------------------------------------------------------
 ; S3: StrView read-layer — standalone defn helpers.
@@ -212,7 +212,7 @@
 (defn strview-bytes ((sv (ref StrView))):ByteIter
   (let ((it (ref ByteIter)) (alloca ByteIter))
     (.set! it buf (sv data))
-    (.set! it pos (cast usize 0))
+    (.set! it pos 0)
     (.set! it len (sv len))
     (return (deref it))))
 
@@ -234,7 +234,7 @@
 (defn cstr-bytes (cs:CStr):ByteIter
   (let ((it (ref ByteIter)) (alloca ByteIter))
     (.set! it buf (cast ptr:ui8 (cast ptr cs)))
-    (.set! it pos (cast usize 0))
+    (.set! it pos 0)
     (.set! it len (cast usize (strlen (cast ptr cs))))
     (return (deref it))))
 
@@ -242,7 +242,7 @@
 (defn cstr-chars (cs:CStr):CharIter
   (let ((it (ref CharIter)) (alloca CharIter))
     (.set! it buf (cast ptr:ui8 (cast ptr cs)))
-    (.set! it pos (cast usize 0))
+    (.set! it pos 0)
     (.set! it len (cast usize (strlen (cast ptr cs))))
     (return (deref it))))
 
@@ -271,13 +271,13 @@
     (return (err! str-index-out-of-bounds)))
   ; UTF-8 boundary check: a continuation byte has pattern 10xxxxxx.
   ; start must be 0, sv.len, or a non-continuation byte.
-  (when (and (> start (cast usize 0)) (< start (sv len)))
+  (when (and (> start 0) (< start (sv len)))
     (let (sb:ui8 (aref (sv data) (cast i64 start)))
-      (when (= (bit-and (cast ui32 sb) (cast ui32 192)) (cast ui32 128))
+      (when (= (bit-and (cast ui32 sb) 192) 128)
         (return (err! invalid-char-boundary)))))
-  (when (and (> end (cast usize 0)) (< end (sv len)))
+  (when (and (> end 0) (< end (sv len)))
     (let (eb:ui8 (aref (sv data) (cast i64 end)))
-      (when (= (bit-and (cast ui32 eb) (cast ui32 192)) (cast ui32 128))
+      (when (= (bit-and (cast ui32 eb) 192) 128)
         (return (err! invalid-char-boundary)))))
   ; Build the sub-view — heap-allocate the StrView wrapper, borrow the bytes.
   (let (result:ptr:StrView (cast ptr:StrView (malloc (cast i64 (sizeof StrView)))))
@@ -293,16 +293,16 @@
   (let (nlen:usize (needle len)
         slen:usize (sv len))
     ; Empty needle found at index 0.
-    (when (= nlen (cast usize 0))
-      (return (some (cast usize 0))))
+    (when (= nlen 0)
+      (return (some 0)))
     ; Needle longer than haystack: not found.
     (when (> nlen slen)
       (return none))
     ; Linear scan: for each candidate start position, compare nlen bytes.
-    (let (limit:usize (- slen (- nlen (cast usize 1)))
-          i:usize (cast usize 0)
+    (let (limit:usize (- slen (- nlen 1))
+          i:usize 0
           found:i32 0
-          result:usize (cast usize 0))
+          result:usize 0)
       (while (and (< i limit) (= found 0))
         (let (c:i32 (memcmp (cast ptr (unsafe/ptr+ (sv data) (cast i64 i)))
                             (cast ptr (needle data))
@@ -310,7 +310,7 @@
           (when (= c 0)
             (set! result i)
             (set! found 1)))
-        (set! i (+ i (cast usize 1))))
+        (set! i (+ i 1)))
       (if (= found 1)
         (return (some result))
         (return none)))))
@@ -319,20 +319,20 @@
 ; A UTF-8 continuation byte has bit pattern 10xxxxxx: (b & 0xC0) == 0x80.
 ; Every non-continuation byte starts a new codepoint.
 (defn strview-char-count ((sv (ref StrView))):usize
-  (let (n:usize (cast usize 0)
+  (let (n:usize 0
         len:usize (sv len)
         p:ptr:ui8 (sv data))
     (dotimes (i:usize len)
       (let (b:ui8 (aref p (cast i64 i)))
-        (when (!= (bit-and (cast ui32 b) (cast ui32 192)) (cast ui32 128))
-          (set! n (+ n (cast usize 1))))))
+        (when (!= (bit-and (cast ui32 b) 192) 128)
+          (set! n (+ n 1)))))
     (return n)))
 
 ; strview-char-at — O(n): nth codepoint (0-indexed).
 ; Errors str-index-out-of-bounds if i is >= the number of codepoints.
 (defn strview-char-at ((sv (ref StrView)) i:usize):!Char
-  (let (pos:usize (cast usize 0)
-        count:usize (cast usize 0)
+  (let (pos:usize 0
+        count:usize 0
         len:usize (sv len)
         p:ptr:ui8 (sv data)
         done:i32 0)
@@ -343,9 +343,9 @@
           (when (= ((addr-of dr) ok) 1)
             (return (ok ((addr-of dr) ch))))
           ; Invalid byte at target position: return replacement char U+FFFD.
-          (return (ok (cast Char (cast ui32 65533)))))
+          (return (ok (cast Char 65533))))
         (set! pos (+ pos ((addr-of dr) nbytes)))
-        (set! count (+ count (cast usize 1)))))
+        (set! count (+ count 1))))
     (return (err! str-index-out-of-bounds))))
 
 ; strview-chars — return a CharIter aliasing sv's buffer (by value).
@@ -353,19 +353,19 @@
 (defn strview-chars ((sv (ref StrView))):CharIter
   (let ((it (ref CharIter)) (alloca CharIter))
     (.set! it buf (sv data))
-    (.set! it pos (cast usize 0))
+    (.set! it pos 0)
     (.set! it len (sv len))
     (return (deref it))))
 
 ; strview-empty — 1 if the view has zero bytes, else 0.
 (defn strview-empty ((sv (ref StrView))):i32
-  (if (= (sv len) (cast usize 0)) 1 0))
+  (if (= (sv len) 0) 1 0))
 
 ; strview-starts-with — 1 if sv begins with prefix (byte-level), else 0.
 (defn strview-starts-with ((sv (ref StrView)) (prefix (ref StrView))):i32
   (let (plen:usize (prefix len))
     (when (> plen (sv len)) (return 0))
-    (when (= plen (cast usize 0)) (return 1))
+    (when (= plen 0) (return 1))
     (let (c:i32 (memcmp (cast ptr (sv data)) (cast ptr (prefix data)) (cast i64 plen)))
       (if (= c 0) 1 0))))
 
@@ -374,7 +374,7 @@
   (let (slen:usize (suffix len)
         svlen:usize (sv len))
     (when (> slen svlen) (return 0))
-    (when (= slen (cast usize 0)) (return 1))
+    (when (= slen 0) (return 1))
     (let (offset:usize (- svlen slen)
           c:i32 (memcmp (cast ptr (unsafe/ptr+ (sv data) (cast i64 offset)))
                         (cast ptr (suffix data))
@@ -397,19 +397,19 @@
 ; is-ascii-ws — internal helper: 1 if b is an ASCII whitespace byte.
 (defn strview-is-ascii-ws (b:ui8):i32
   (let (n:ui32 (cast ui32 b))
-    (if (or (= n (cast ui32 32))
-            (or (= n (cast ui32 9))
-                (or (= n (cast ui32 10))
-                    (= n (cast ui32 13)))))
+    (if (or (= n 32)
+            (or (= n 9)
+                (or (= n 10)
+                    (= n 13))))
       1 0)))
 
 ; strview-trim-start — remove leading ASCII whitespace.
 (defn strview-trim-start ((sv (ref StrView))):StrView
   (let (p:ptr:ui8 (sv data)
         len:usize (sv len)
-        i:usize (cast usize 0))
+        i:usize 0)
     (while (and (< i len) (= (strview-is-ascii-ws (aref p (cast i64 i))) 1))
-      (set! i (+ i (cast usize 1))))
+      (set! i (+ i 1)))
     (let ((result (ref StrView)) (alloca StrView))
       (.set! result data (unsafe/ptr+ p (cast i64 i)))
       (.set! result len  (- len i))
@@ -419,9 +419,9 @@
 (defn strview-trim-end ((sv (ref StrView))):StrView
   (let (p:ptr:ui8 (sv data)
         len:usize (sv len))
-    (while (and (> len (cast usize 0))
-                (= (strview-is-ascii-ws (aref p (cast i64 (- len (cast usize 1))))) 1))
-      (set! len (- len (cast usize 1))))
+    (while (and (> len 0)
+                (= (strview-is-ascii-ws (aref p (cast i64 (- len 1)))) 1))
+      (set! len (- len 1)))
     (let ((result (ref StrView)) (alloca StrView))
       (.set! result data p)
       (.set! result len  len)
@@ -455,7 +455,7 @@
   (let (alen:usize (a len)
         blen:usize (b len)
         min-len:usize (if (< alen blen) alen blen))
-    (when (> min-len (cast usize 0))
+    (when (> min-len 0)
       (let (c:i32 (memcmp (cast ptr (a data)) (cast ptr (b data)) (cast i64 min-len)))
         (when (!= c 0) (return c))))
     ; Bytes equal up to min-len; shorter < longer.
