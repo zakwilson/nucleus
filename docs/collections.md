@@ -222,7 +222,7 @@ Vectors are initialised in place — there is no value constructor because a zer
 
 `conj` and `append` are equivalent for `Vector` (both append at the back). `insert` with `i == len` is equivalent to `append`; `i > len` panics. `remove-at` deletes the element at index `i`, shifting `(i, len)` left by one; `i >= len` panics.
 
-**Integer literals widen automatically.** A bare integer literal passed as an element, index, or key argument adapts to the method's concrete type without a cast — `(conj v 3)` and `(v 0)` on a `(Vector i64)` widen `3`/`0` to `i64`/`usize` respectively, exactly as plain functions already do. Some examples below still spell the older explicit `(cast usize 1)` form; both compile identically. (An untyped literal only *widens* — an already-typed value of a wider or wrong-sign type still needs an explicit cast, and a call ambiguous between two integer overloads is an error.)
+**Integer literals widen automatically.** A bare integer literal passed as an element, index, or key argument adapts to the method's concrete type without a cast — `(conj v 3)` and `(v 0)` on a `(Vector i64)` widen `3`/`0` to `i64`/`usize` respectively, exactly as plain functions already do. Some examples below still spell the explicit `(as usize 1)` form; both compile identically. (An untyped literal only *widens* — an already-typed value of a wider or wrong-sign type still needs an explicit `as`/`unsafe/cast`, and a call ambiguous between two integer overloads is an error.)
 
 ### Iteration with `VecIter T`
 
@@ -257,10 +257,10 @@ See [Iterators](iterators.md) for `doseq` / `doseq-iter` and the `Iterator` prot
   (with ((v (ref (Vector i32))) (alloca (Vector i32)))
     (vector-init v)
     (conj v 10) (conj v 20) (conj v 30)
-    (printf "count=%llu\n" (cast ui64 (count v)))     ; count=3
-    (printf "get[1]=%d\n"  (v (cast usize 1)))        ; get[1]=20
-    (insert v (cast usize 1) 15)
-    (printf "after insert: %d\n" (v (cast usize 1)))  ; 15
+    (printf "count=%llu\n" (as ui64 (count v)))     ; count=3
+    (printf "get[1]=%d\n"  (v (as usize 1)))        ; get[1]=20
+    (insert v (as usize 1) 15)
+    (printf "after insert: %d\n" (v (as usize 1)))  ; 15
     (doseq (x v (VecIter i32)) (printf "elem=%d\n" x)))  ; 10 15 20 30
   (return 0))
 ```
@@ -405,12 +405,12 @@ Iteration order is hash-dependent and unspecified for both `keys` and `vals`.
   (with ((m (ref (HashMap CStr i32))) (alloca (HashMap CStr i32)))
     (hashmap-init m)
     (assoc m "one" 1) (assoc m "two" 2) (assoc m "three" 3)
-    (printf "count=%llu\n" (cast ui64 (count m)))  ; 3
+    (printf "count=%llu\n" (as ui64 (count m)))  ; 3
     (match (get m "two")
       ((some v) (printf "two=%d\n" v))             ; two=2
       (none     (printf "absent\n")))
     (dissoc m "one")
-    (printf "count=%llu\n" (cast ui64 (count m)))) ; 2
+    (printf "count=%llu\n" (as ui64 (count m)))) ; 2
   (return 0))
 ```
 
@@ -504,7 +504,7 @@ Iteration order is hash-dependent and unspecified.
       (hashset-init b)
       (insert b 3) (insert b 4) (insert b 5) (insert b 6)
       (union a b)
-      (printf "union count: %llu\n" (cast ui64 (count a))))) ; 6
+      (printf "union count: %llu\n" (as ui64 (count a))))) ; 6
   (return 0))
 ```
 
@@ -528,7 +528,7 @@ outer `with` fires `Drop` at scope exit because every collection conforms to
 
 ```lisp
 (with ((v (ref (Vector i32))) [1 2 3])
-  (printf "%d\n" (v (cast usize 0))))            ; 1
+  (printf "%d\n" (v (as usize 0))))            ; 1
 
 (with ((m (ref (HashMap CStr i32))) {"foo" 42 "bar" 7})
   (match (get m "foo")
@@ -555,7 +555,7 @@ must agree and its values must agree (keys and values are independent). Integers
 always infer `i32` — there is no magnitude-based `i64` promotion, because the
 compiler types every integer literal as `i32` and has no native `i64` integer
 literal. For an `i64` (or other non-default-typed) collection, use the explicit
-`(alloca (Vector T))` + `vector-init` idiom and `(cast T …)` the elements.
+`(alloca (Vector T))` + `vector-init` idiom and `(unsafe/cast T …)` the elements.
 
 **Errors.** Each of these is a compile-time reader error:
 
@@ -575,7 +575,7 @@ paths are reader diagnostics (compile-time `error:` messages), not runtime outpu
 
 **Parametric method parameter syntax.** A parameter or return type written as a parenthesised form may use either the list binding form `(self (ref (Vector T)))` or the colon-paren sugar `self:(ref (Vector T))` (and the chain form `self:ref:(Vector T)`); they are equivalent. A plain-symbol colon chain tokenises correctly: `count:usize`, `self:ptr:Self`.
 
-**`usize` literals.** There is no `usize` literal; always write `(cast usize N)` for index and length values.
+**`usize` literals.** There is no dedicated `usize` literal token; a bare integer literal widens automatically to `usize` wherever a target type is known (call arguments, assignment, comparisons — see above). Where no target type is available, force it explicitly with `(as usize N)`.
 
 **`(Maybe V)` element types.** `(Maybe ptr)` is niche-encoded as a nullable pointer and cannot be used with `match`. Use value types (`i32`, `i64`, `CStr`) as the value type `V` in `HashMap` and the element type in `(Maybe T)` returns.
 

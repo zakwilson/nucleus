@@ -26,11 +26,11 @@ The `\u{…}` form validates that the value is a Unicode scalar value: it must b
 ### Conversion
 
 ```lisp
-(cast ui32 \A)     ; → 65
-(cast Char 65)     ; → \A
+(as ui32 \A)     ; → 65
+(as Char 65)     ; → \A
 ```
 
-`cast` between `Char` and `ui32` is a same-width reinterpret (no IR instruction).
+`as` between `Char` and `ui32` is a same-width reinterpret (no IR instruction).
 
 ### Equality
 
@@ -114,14 +114,14 @@ The bare struct type is registered in the prelude, so `StrView` is available as 
 
 **A bare `"…"` string literal's static type is `StrView`** (not `CStr`). Nothing about *writing* a literal changes; what changes is what type-checking and codegen see it as. Emission stays target-aware: at a `ptr`/`CStr`-typed consumer (a `printf`/libc argument, `strcmp`, `=`/`!=`, a `:CStr`/`:ptr` parameter or slot) the literal collapses to the same bare pointer it always emitted, with no extra IR — no `{data,len}` struct is built. Only when a literal flows into a genuinely `StrView`-typed `let`, field, or parameter does it materialize the two-word view. This is sound because a literal's backing rodata global is always NUL-terminated at `data[len]`, exactly the guarantee `CStr` literals always relied on.
 
-In overloaded (`defn`/multimethod) dispatch, a `StrView`-typed argument adapts to a `CStr`-typed parameter but *not* to a bare `ptr`-typed parameter — this reproduces the dispatch a `CStr` literal produced before this type existed. To bind a bounded generic (e.g. an `Eq`-bounded parameter) at `StrView` from a literal, `(import-use strview)` must be in scope so `StrView`'s protocol conformances are registered; otherwise `cast` the literal to `CStr` explicitly (see `examples/cstr.nuc`). `CStr` itself is unchanged by this: it remains the dedicated FFI `char*` type, still distinct for dispatch, with only `=`/`!=` defined — no existing `:CStr`/`:ptr`-typed signature was retyped, only the literal's own inferred type and its emission changed.
+In overloaded (`defn`/multimethod) dispatch, a `StrView`-typed argument adapts to a `CStr`-typed parameter but *not* to a bare `ptr`-typed parameter — this reproduces the dispatch a `CStr` literal produced before this type existed. To bind a bounded generic (e.g. an `Eq`-bounded parameter) at `StrView` from a literal, `(import-use strview)` must be in scope so `StrView`'s protocol conformances are registered; otherwise `as` the literal to `CStr` explicitly (see `examples/cstr.nuc`). `CStr` itself is unchanged by this: it remains the dedicated FFI `char*` type, still distinct for dispatch, with only `=`/`!=` defined — no existing `:CStr`/`:ptr`-typed signature was retyped, only the literal's own inferred type and its emission changed.
 
 **`c"…"` — the explicit `CStr` literal.** A `c` glued directly onto the opening quote, with no whitespace between them, spells an explicit `CStr` literal instead of a `StrView` one: the bare `char*` GEP, no `{data,len}` view header, and no target-aware materialization. It is the direct "I mean `char*`" spelling for FFI/format-string hot spots and an honest marker at the call site — purely ergonomic, not required, since a plain `"…"` literal already coerces to `CStr`/`ptr` for free (above). A space keeps the two apart as ordinary tokens (`c "foo"` is the symbol `c` followed by a `StrView` literal); only the glued form `c"foo"` is the `CStr` literal, and only a lowercase `c` triggers it.
 
 ```lisp
 (declare strlen (s:CStr) :usize)
 (printf "%s\n" c"hello")             ; bare char*, no view header
-(printf "%d\n" (cast i32 (strlen c"hello")))
+(printf "%d\n" (unsafe/cast i32 (strlen c"hello")))
 ```
 
 See `examples/cstr-lit-test.nuc` for the full contract, including that a plain `"…"` literal still free-coerces into the same `CStr`-typed extern with no regression.
@@ -162,8 +162,8 @@ Both iterators are returned **by value** and alias the StrView's buffer. They mu
 
 ```lisp
 (let (it:ByteIter (strview-bytes sv))
-  (while-let ((some b) (next (addr-of it)))
-    (printf "%d\n" (cast i32 b))))
+  (doseq-iter (b (addr-of it))
+    (printf "%d\n" b)))
 ```
 
 ### Sub-slice
@@ -346,7 +346,7 @@ Two read-only protocol layers define the public string surface.
     (string-push-char (addr-of s) \H)
     (string-push-char (addr-of s) \i)
     (let (sv:StrView (string-as-view (addr-of s)))
-      (printf "%.*s\n" (cast i32 (sv len)) (sv data))))
+      (printf "%.*s\n" (unsafe/cast i32 (sv len)) (sv data))))
   0)
 ```
 
@@ -397,24 +397,25 @@ Constructs a `LineIter` that splits `sv` on `\n`, stripping any trailing `\r` fr
   (let (it:SplitIter (strview-split sv (addr-of sep)))
     (while (not (split-iter-done (addr-of it)))
       (let (seg:StrView (split-iter-next (addr-of it)))
-        (printf "%.*s\n" (cast i32 ((addr-of seg) len)) ((addr-of seg) data))))))
+        (printf "%.*s\n" (unsafe/cast i32 ((addr-of seg) len)) ((addr-of seg) data))))))
 ```
 
 ### `Iterator` conformance and `doseq-split` (Stage 13 R1)
 
-`SplitIter` and `LineIter` also conform to `(Iterator i64)`, so `reduce` /
+`SplitIter` and `LineIter` also conform to `(Iterator ptr)`, so `reduce` /
 `doseq-iter` can drive them. They cannot conform to `(Iterator StrView)`
 directly — `(Maybe StrView)` embeds a struct in the anonymous union, which the
-macro-expansion JIT module cannot resolve — and a niche `(Maybe ptr)` is not
-matchable. Instead `next` stores each segment in the iterator's `cur` slot and
-yields a `(ref StrView)` into it **cast to `i64`** (a tagged, matchable Maybe).
-The `(doseq-split (var iter-ref) body)` macro hides the decode, binding `var` to
-a `(ref StrView)` borrowing `cur` (valid until the next step):
+macro-expansion JIT module cannot resolve. Instead `next` stores each segment
+in the iterator's `cur` slot and yields a `(ref StrView)` into it as a
+niche-encoded, matchable `(Maybe ptr)` (bare pointer). The
+`(doseq-split (var iter-ref) body)` macro hides the decode (recovering the
+concrete pointer type with a single `as`), binding `var` to a `(ref StrView)`
+borrowing `cur` (valid until the next step):
 
 ```lisp
 (let (it:SplitIter (strview-split sv sep))
   (doseq-split (seg (addr-of it))
-    (printf "%.*s\n" (cast i32 (seg len)) (seg data))))
+    (printf "%.*s\n" (unsafe/cast i32 (seg len)) (seg data))))
 ```
 
 The done-flag API (`split-iter-done`/`split-iter-next`, `lines-iter-done`/
@@ -464,10 +465,10 @@ All three return a `StrView` by value that borrows the same underlying bytes. No
 
 ```lisp
 (defmacro parse (ty sv)
-  `(from-str (cast ~ty 0) ~sv))
+  `(from-str (unsafe/cast ~ty 0) ~sv))
 ```
 
-`(parse T sv)` expands to `(from-str (cast T 0) sv)`. The `(cast T 0)` provides a phantom zero value of the target type to select the right conformer.
+`(parse T sv)` expands to `(from-str (unsafe/cast T 0) sv)`. The `(unsafe/cast T 0)` provides a phantom zero value of the target type to select the right conformer — `unsafe/cast` is required here (not `as`) because `T` may bind to a float type, and `int`→`float` is never in `as`'s safe set even for a representable literal like `0`.
 
 ```lisp
 (parse i32 sv)   ; → !i32
@@ -490,8 +491,8 @@ All three conformances are **strict**:
 
 (defn main ():i32
   (let ((sv (ref StrView)) (alloca StrView))
-    (.set! sv data (cast ptr:ui8 (cast ptr "42"))
-    (.set! sv len  (cast usize 2))
+    (.set! sv data (as ptr:ui8 (as ptr "42")))
+    (.set! sv len  2)
     (match (parse i32 sv)
       ((ok n)  (printf "parsed: %d\n" n))
       ((err e) (printf "error: %s\n" (err-name e)))))
@@ -522,10 +523,10 @@ All of these conform to the `Err` type and are usable with `(err-name e)`, `try`
 - **`?` in function names.** Classification functions use `char-is-ascii` etc. without a `?` suffix — `?` is invalid in LLVM IR identifiers for non-generic `defn` names. The `?` suffix is only valid in protocol method names, where the generics machinery sanitizes it.
 - **`string-push-str` and `string-truncate` return `!i32`.** The compiler does not yet support `!void`. Check for `(ok 0)` / `(err e)` or use `try` to propagate.
 - **`sub-bytes` returns `!ptr:StrView`.** The caller owns the `ptr:StrView` wrapper and must `free` it. The bytes are borrowed from the source StrView; do not free `data`.
-- **`SplitIter`/`LineIter` are not `Iterator StrView`.** The `(Maybe StrView)` union type cannot be compiled in JIT macro modules. They instead conform to `(Iterator i64)`, yielding each segment as a `(ref StrView)` cast to `i64`; the `doseq-split` macro decodes it. The `*-iter-done`/`*-iter-next` pair is still available.
+- **`SplitIter`/`LineIter` are not `Iterator StrView`.** The `(Maybe StrView)` union type cannot be compiled in JIT macro modules. They instead conform to `(Iterator ptr)`, yielding each segment as a `(ref StrView)` niche-encoded as a bare `ptr`; the `doseq-split` macro decodes it. The `*-iter-done`/`*-iter-next` pair is still available.
 - **`string-new-alloc` takes `(ref AllocHandle)`.** It copies the handle in; the caller retains ownership of the original.
 - **`CharIter` is lossless but substitutes U+FFFD.** Invalid UTF-8 bytes are never skipped silently — iteration always advances by at least one byte. Invalid bytes produce U+FFFD (the Unicode replacement character) as the yield value rather than an error, so iterating over a `CharIter` always terminates without an error path.
 - **Borrow lifetimes are unchecked.** `ByteIter`, `CharIter`, `SplitIter`, `LineIter`, and sub-views returned by `strview-sub-bytes` all hold raw pointers into their source buffer. There is no compile-time lifetime enforcement — the caller is responsible for keeping the source alive.
 - **A materialized `StrView` at a C variadic call site contributes only its `data` pointer.** Passing a `StrView` value (not a fixed parameter) to a variadic function such as `printf` (`%s`) passes just the `char*`, never the `{data,len}` pair as two variadic slots — otherwise the carried length would occupy an extra vararg slot and shift every later argument's conversion. A *fixed* (non-variadic) `StrView` by-value parameter is unaffected and still receives the full two-eightbyte struct per the platform ABI. See `examples/strview-vararg-test.nuc`.
-- **Coercing a `StrView` to `CStr`/`ptr` (implicitly, or via `cast`) always takes just `data`, unconditionally** — the same trust `strview-to-cstr` above requires: sound only when the view's buffer is actually NUL-terminated at `data[len]`. A string literal and a view built from a `CStr` satisfy this; an arbitrary sub-slice from `strview-sub-bytes` may not.
+- **Coercing a `StrView` to `CStr`/`ptr` (implicitly, or via `as`/`unsafe/cast`) always takes just `data`, unconditionally** — the same trust `strview-to-cstr` above requires: sound only when the view's buffer is actually NUL-terminated at `data[len]`. A string literal and a view built from a `CStr` satisfy this; an arbitrary sub-slice from `strview-sub-bytes` may not.
 - **A quoted `c"…"` inside a macro `quasiquote` does not carry its `CStr` marker.** Quoting deliberately does not preserve the flag through expansion, so a quoted `c"…"` reads back as a plain `StrView` literal at the macro's output site. Write the `c"…"` literal directly in code (outside a quasiquote) when the explicit `CStr` spelling matters.

@@ -2,7 +2,7 @@
 
 ## Anonymous structs
 
-`(struct field:type ...)` is a type expression accepted wherever a type is expected — `let` bindings, `defn` parameter and return types, `defstruct` field types, `(ptr (struct ...))`, casts. Members use the same `name:type` / `(name type)` form as `defstruct`. Anonymous structs are **memoized by structural content**: two `(struct ...)` literals with the same field name+type list share a single underlying `StructDef`, so values flow between sites that spell out the same shape. The synthetic LLVM type name is `%__anon_struct_h<16-hex>`, derived from a 64-bit FNV-1a hash of the field list.
+`(struct field:type ...)` is a type expression accepted wherever a type is expected — `let` bindings, `defn` parameter and return types, `defstruct` field types, `(ptr (struct ...))`, `as`/`unsafe/cast` targets. Members use the same `name:type` / `(name type)` form as `defstruct`. Anonymous structs are **memoized by structural content**: two `(struct ...)` literals with the same field name+type list share a single underlying `StructDef`, so values flow between sites that spell out the same shape. The synthetic LLVM type name is `%__anon_struct_h<16-hex>`, derived from a 64-bit FNV-1a hash of the field list.
 
 Examples:
 
@@ -35,13 +35,13 @@ from C headers; Nucleus code wraps the anonymous form in a `defstruct` field.
 
 Member access goes through a pointer to the union and is a typed load/store at
 offset 0 — reading a member other than the one last written is a
-reinterpretation, exactly `cast`'s contract (no checking; the raw frontier):
+reinterpretation, exactly `unsafe/cast`'s contract (no checking; the raw frontier):
 
 ```lisp
 (defstruct Scalar kind:i32 (data (union as-int:i64 as-float:f64)))
 (let (s:ptr:Scalar (alloca Scalar)
       (d (ptr (union as-int:i64 as-float:f64))) (.& s data))
-  (.set! d as-int (cast i64 42))
+  (.set! d as-int 42)
   (d as-int))
 ```
 
@@ -72,7 +72,7 @@ bound (one-symbol-one-kind); only the prefixed constructors are.
 
 **No raw access outside `match`**: the tag and payload are not readable as
 fields (`(s tag)` is an error directing you to `match`); the escape hatch is
-an explicit `cast` to the representation struct.
+an explicit `unsafe/cast` to the representation struct.
 
 ### `match`
 
@@ -110,7 +110,7 @@ fully-applied use stamps and memoizes a concrete instance:
   (err e:E))
 
 (defn try-div (a:i64 b:i64) (Result i64 i32)
-  (when (= b (cast i64 0))
+  (when (= b 0)
     (return (err 1)))          ; return-position target typing
   (return (ok (/ a b))))
 
@@ -202,10 +202,10 @@ applies.
 ; !ptr:Pt is (Result (ref Pt) Err) via rule 3: pointer-sized, no struct.
 (defn lookup (p:ptr:Pt good:i32):!ptr:Pt
   (when (= good 0) (return (err not-found)))
-  (return (ok (cast ref:Pt p))))
+  (return (ok (as ref:Pt p))))
 
 (defn main ():i32
-  (let (pt:ptr:Pt (cast ptr:Pt (malloc (sizeof Pt))))
+  (let (pt:ptr:Pt (as ptr:Pt (malloc (sizeof Pt))))
     (.set! pt x 42)
     (match (lookup pt 1)
       ((ok q)  (printf "ok x=%d\n" (q x)))
@@ -249,8 +249,8 @@ instances and overloaded-fn mangling). Stamping is memoized: `(Vector i32)` in
 multiple locations produces the same `StructDef`.
 
 Type application is recognized in type position only — after `:`, in field
-types, `defn` parameter and return types, `cast` targets, `sizeof` operands, and
-`alloca`/`array` element types. The colon sugar composes:
+types, `defn` parameter and return types, `as`/`unsafe/cast` targets, `sizeof`
+operands, and `alloca`/`array` element types. The colon sugar composes:
 
 ```lisp
 (defn count (self:(ref (Vector T))):usize
@@ -320,7 +320,7 @@ its return type:
 (defstruct (Two I F S E) a:I b:F)
 
 (defn two-s ((self (ref (Two I F S E)))):S   ; returns the 3rd type-argument
-  (return (cast S (self a))))
+  (return (unsafe/cast S (self a))))
 ```
 
 A call `(two-s t)` with `t:(ref (Two i32 f64 i32 i64))` binds `S := i32` from the

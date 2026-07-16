@@ -103,11 +103,11 @@ The bare struct type is registered in the prelude and so is available everywhere
   (let (a:ptr:StrView (strview-from-cstr "hello")
         b:ptr:StrView (strview-from-cstr "hello")
         c:ptr:StrView (strview-from-cstr "world"))
-    (printf "len=%llu\n"  (cast ui64 (strview-len a)))  ; 5
+    (printf "len=%llu\n"  (as ui64 (strview-len a)))  ; 5
     (printf "a=b? %d\n"   (strview-eq a b))              ; 1
     (printf "a=c? %d\n"   (strview-eq a c))              ; 0
     (printf "cstr=%s\n"   (strview-to-cstr a))           ; hello
-    (free (cast ptr a)) (free (cast ptr b)) (free (cast ptr c)))
+    (free (as ptr a)) (free (as ptr b)) (free (as ptr c)))
   (return 0))
 ```
 
