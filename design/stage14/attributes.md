@@ -250,6 +250,20 @@ the spec it inherits.
   rewritten around the slot, docs/toplevel.md (`defvar` row + the
   storage-class deferral note), stage888-deferred.md pointer, overview.md
   TODO close-out.
+
+  **Status: DONE (2026-07-16).** `examples/volatile.nuc`/`logic.nuc`
+  rewritten to `:volatile` throughout (attribute-slot on the field/let/
+  defvar, `(ptr :volatile i32)` for the pointer-target param); `--emit-llvm`
+  output byte-identical before/after on both files (volatile-marker counts
+  unchanged: 10 in volatile.nuc, 2 in logic.nuc), and compiled-program
+  stdout identical. `docs/types.md`/`docs/builtins.md` volatile sections
+  rewritten with the new spelling primary and the old postfix spellings
+  noted as still-accepted; `docs/toplevel.md`'s `defvar` row rewritten;
+  `design/overview.md`'s TODO item updated to reflect AT-1 done/AT-2 done.
+  `design/stage888-deferred.md` needed no edit — the storage-class item was
+  already removed from that file during the 2026-07-02 prune once this doc
+  absorbed it. `make clean && make` clean, `make test` 178/178 (docs/
+  examples only, no compiler source changed, no bootstrap needed).
 - **AT-3 — retire the old spellings.** Trailing-`volatile` type lists and
   `volatile` colon segments become targeted hard errors suggesting the new
   spelling. stage1 == stage2 throughout; no re-baseline at any phase.

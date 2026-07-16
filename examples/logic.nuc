@@ -11,7 +11,7 @@
 ; Volatile so the optimiser cannot fold (/ 1 trap-zero) into a compile-time
 ; div-by-zero: it traps (SIGFPE) only if reached at runtime. Used to prove the
 ; variadic short-circuit — if a later arg were evaluated, the process would die.
-(defvar trap-zero:i32:volatile 0)
+(defvar :volatile trap-zero:i32 0)
 
 (defn main ():i32
   (printf "(and) = %d\n" (as i32 (and)))
