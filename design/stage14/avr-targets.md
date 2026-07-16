@@ -267,6 +267,61 @@ by this spike (no `src/`/`lib/` changes — pure toolchain verification).
 - Gate: `--target=avr --mcpu=attiny1634 --emit-llvm` on a scalar example
   emits the AVR datalayout/triple and `llc` accepts it.
 
+**Status: DONE (2026-07-16).** Backend registration + `--mcpu`/reloc/ptr-align
+plumbing landed, all keyed on the triple/descriptor so hosted targets are
+byte-identical. Files touched:
+- `src/llvm.nuch`: declared the `LLVMInitializeAVR{TargetInfo,Target,TargetMC,
+  AsmPrinter}` quartet (after the ARM quartet) plus three datalayout-query APIs
+  (`LLVMABIAlignmentOfType`, `LLVMInt8Type`, `LLVMPointerType`) for the
+  ptr-align derivation.
+- `src/nucleusc.nuc`: added the four `LLVMInitializeAVR*` calls to
+  `targets-init-all`; new `--mcpu=<cpu>` flag → `g-mcpu-override` global,
+  parsed beside `--target=`; new `reloc-for-triple` helper (Static(0) when the
+  triple starts with `avr`, PIC(2) otherwise); `make-target-for-triple` gained
+  a `cpu` param, keys reloc off the triple, and now derives `ptr-align` from
+  `LLVMABIAlignmentOfType` on a `ptr` type (x86-64/aarch64 still answer 8, AVR
+  answers 1) rather than `:= ptr-size`; `target-init` passes the mcpu string
+  (host `""`, cross-target the `--mcpu` value — normalized in a value position
+  to avoid a mixed `StrView`/`ptr` `if`-join collapsing to void); the
+  `compile-and-link` `LLVMCreateTargetMachine` threads `(g-target cpu)` and the
+  keyed reloc.
+- `src/compiler-types.nuc`: `Target` struct gained `cpu:ptr` (empty for host
+  targets; never null/compared, so `ptr` not `CStr`).
+
+**One codegen fix was required to meet the gate** and is worth recording,
+because it revises a ground-truth assumption. Ground truth §2.8 claimed a
+minimal program references *zero* runtime symbols; that is now **stale** — every
+program (even `(defn main ():i32 (return 0))`, unless it `(exclude-prelude)`s,
+which also strips the arithmetic operators) force-emits the arena/intern/node
+runtime from `lib/node.nuc`. That runtime uses `unsafe/ptr+`, and `emit-ptr-add`
+(src/union-emit.nuc) was internally inconsistent: it decided whether to
+sign-extend the offset by comparing `(type-size offset) < g-target-ptr-bytes`
+but **hardcoded** the GEP index type and the sext target to `i64`. On any
+non-8-byte target those disagree — on AVR an i32 offset is *not* `< 2`, so the
+sext was skipped, yet the GEP index was still annotated `i64` with the i32
+value: malformed IR that `llc` rejects. Fixed by routing both the coercion and
+the annotation through `ptr-int-ir`/`ptr-int-type` (sext if the offset is
+narrower than ptr-int, trunc if wider). This is byte-identical on hosted targets
+(ptr-int is `i64` there, reproducing the historical `sext i32 -> i64` + `i64`
+GEP; the trunc branch is dead until AVR-2 makes `ptr-int-ir` ternary). Note the
+GEP index still uses the *current binary* `ptr-int-ir` (i64 on AVR), so AVR
+pointer arithmetic is emitted at i64 width — valid, `llc` legalizes it, but the
+i16 optimization remains **AVR-2's** job (bullet 1); AVR-2 flipping `ptr-int-ir`
+to i16 is exactly what activates the new trunc branch.
+
+**Gate verification.** `--target=avr --mcpu=attiny1634 --emit-llvm examples/
+arith.nuc` emits `target datalayout = "e-P1-p:16:8-…"` / `target triple =
+"avr"`; piping through `llc -mtriple=avr -mcpu=attiny1634 -filetype=obj`
+produces a valid `ELF 32-bit … Atmel AVR 8-bit` relocatable. Same for the
+AVR-Dx family core `--mcpu=avrxmega3` (the deviceless AVR32DD20 path). Hosted
+byte-identical proven two ways: `make bootstrap` (stage1.ll == stage2.ll) and an
+old-boot-vs-new `--emit-llvm` diff on `ptr+`-heavy examples (array/comb-storage/
+hello) — empty. `make test` 185/185 (180 baseline + 5 new AVR gates:
+`target-avr`, `avr-emit-{attiny1634,avrxmega3}`, `avr-llc-{…}` — the llc step is
+conditional on `command -v llc`), `make abi-test` PASS. No `update-bootstrap`
+needed. **Object-file/link for AVR (`compile-and-link`) is wired but not gated
+here** — this phase is IR-emission-only; the avr-gcc link driver is AVR-3.
+
 ### AVR-2 — 16-bit correctness
 
 - **`ptr-int-ir`/`ptr-int-type`** (src/type-utils.nuc:105-110): ternary —

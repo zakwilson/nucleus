@@ -103,6 +103,36 @@ run_target_triple() {  # <triple>
   rm -f "$tmpfile"
 }
 
+# Stage 14 AVR-1: cross-emitting for the AVR MCU target. The compiler must
+# register the AVR backend (targets-init-all), emit the AVR datalayout/triple,
+# and thread --mcpu into the TargetMachine. The IR-emission gate: the system
+# `llc` (AVR backend, verified in AVR-0) must lower a scalar example to an AVR
+# object without errors. The llc step is conditional on llc being installed so
+# the suite still runs where the AVR toolchain is absent.
+run_avr_emit() {  # <cpu>
+  local cpu="$1" tmpfile obj
+  tmpfile="$(mktemp)"
+  ./build/nucleusc --target=avr --mcpu="$cpu" --emit-llvm examples/arith.nuc \
+    > "$tmpfile" 2>/dev/null || true
+  if grep -q 'target triple = "avr"' "$tmpfile" \
+     && grep -q 'target datalayout = "e-P1-p:16:8-' "$tmpfile"; then
+    echo "PASS  avr-emit-$cpu"
+  else
+    echo "FAIL  avr-emit-$cpu (datalayout/triple)"
+  fi
+  if command -v llc >/dev/null 2>&1; then
+    obj="$(mktemp)"
+    if llc -mtriple=avr -mcpu="$cpu" -filetype=obj "$tmpfile" -o "$obj" 2>/dev/null \
+       && [ -s "$obj" ]; then
+      echo "PASS  avr-llc-$cpu"
+    else
+      echo "FAIL  avr-llc-$cpu (llc rejected emitted IR)"
+    fi
+    rm -f "$obj"
+  fi
+  rm -f "$tmpfile"
+}
+
 # `long` ABI model (Phase D): C `long` resolves per the target's data model.
 # Parse a header with long/long long functions and check the emitted declares.
 abs_long_h="$(pwd)/tests/abi/long.h"
@@ -495,9 +525,15 @@ for triple in \
     arm-unknown-linux-gnueabihf \
     x86_64-pc-windows-msvc \
     x86_64-pc-windows-gnu \
-    i386-pc-linux-gnu; do
+    i386-pc-linux-gnu \
+    avr; do
   spawn run_target_triple "$triple"
 done
+
+# AVR-1 IR-emission gate: attiny1634 (a listed device) and avrxmega3 (the
+# AVR-Dx family core, used for the deviceless AVR32DD20). Both must lower via llc.
+spawn run_avr_emit attiny1634
+spawn run_avr_emit avrxmega3
 
 spawn check_long x86_64-pc-linux-gnu    i64 i64   # LP64
 spawn check_long aarch64-apple-darwin   i64 i64   # LP64
