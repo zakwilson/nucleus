@@ -224,6 +224,26 @@ the spec it inherits.
   `:thread-local` reserved-with-error, unknown-keyword error. Old spellings
   still accepted (dual acceptance). Additive and byte-identical (ground
   truth 5).
+
+  **Status: DONE (2026-07-16).** `parse-decl-attrs` lives in
+  src/union-registry.nuc alongside a new `attrs-normalize-bindings` helper
+  for the `let`/`with` prefix-operand shape (`(:volatile x:i32 0 …)` is
+  rewritten to the wrapped shape `((:volatile x:i32) 0 …)` before the
+  existing binding-list walk runs). The wrapped shape
+  (`(:volatile field:type)` — struct/union fields, defn params) folds into
+  `extract-name-and-type`/`extract-name-type`, the shared helper every
+  field/param already funnels through, so one change covers all those
+  sites' lockstep automatically; `node-type-block` (src/generics.nuc) is the
+  one `node-type` view needing an explicit mirror. `(ptr :volatile T)` /
+  `(raw :volatile T)` / `(ref :volatile T)` added to all three branches of
+  `parse-type-from-node`. Verified: old and new spellings emit
+  byte-identical LLVM IR on an equivalent test program (module
+  header/filename aside); `:bogus` and `:thread-local` die with the
+  specified messages in every position; `make test` 178/178; `make
+  bootstrap` byte-identical, no `update-bootstrap` (matching ground truth
+  5's zero-blast-radius prediction — no volatile spellings exist in
+  src/lib). `docs/` and `examples/volatile.nuc`/`logic.nuc` deliberately
+  untouched, per AT-2 below.
 - **AT-2 — migration + docs.** Rewrite examples/volatile.nuc and
   examples/logic.nuc to the new spellings; verify by emitted-IR identity
   diff. Docs sweep: docs/types.md + docs/builtins.md volatile sections

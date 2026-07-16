@@ -107,6 +107,16 @@
 (defconst REPR-TAGGED 1)  ; &repr tagged: force the §3 struct (C-consumer opt-out)
 (defconst REPR-NICHE 2)   ; &repr niche: require a niche, error if not nicheable
 
+; Declaration attributes (Stage 14 AT-1, design/stage14/attributes.md). An
+; attribute is a leading keyword literal (`:volatile`) qualifying the declaration
+; that follows it; it never enters type identity, dispatch, or name mangling
+; (§2). parse-decl-attrs (src/union-registry.nuc) is the registry chokepoint; it
+; OR's these DECL-ATTR-* bits into an i32 flag word. Only `:volatile` is a real
+; flag today (it lowers to the existing is-volatile Type flag via
+; type-with-volatile); `:thread-local` is reserved-with-error (§5). Room for
+; future valued attributes (`:align 64`) is left in the registry, none implemented.
+(defconst DECL-ATTR-VOLATILE 1)
+
 ; ============================================================
 ; Struct definitions (ordered by dependency)
 ; ============================================================
