@@ -1,22 +1,21 @@
-; Stage 14 UN-2 — the `unsafe/` reserved-namespace routing
-; (design/stage14/unsafe-namespace.md D1/D2). Every `unsafe/<op>` head is a new
-; head-identity route falling into the EXACT SAME emitter as its bare alias
-; (which stays accepted for now — the tree-wide Class-2 migration to the new
-; spellings is UN-3's job, not this one). This example runs several of the new
-; spellings side by side with their bare counterparts and prints both, so a
-; diff against tests/expected/unsafe-spellings.out proves they behave
-; identically:
+; Stage 14 UN-5 — the bare legacy spellings are retired (design/stage14/
+; unsafe-namespace.md D6): `cast`, `funcall-ptr-*`, `ptr+`, and
+; `unsafe-import-private` are now targeted hard errors naming their
+; replacement instead of silently working as aliases. This example
+; demonstrates the surviving forms — the statically-safe `as` (D3) and the
+; reserved `unsafe/`-prefixed roster (D2) — compiling and running normally:
 ;
-;   - Class 1 (split): unsafe/cast === cast
-;   - Class 2 (moved):  unsafe/ptr+ === ptr+
-;                        unsafe/funcall-ptr-i32 === funcall-ptr-i32
-;                        unsafe/import-private === unsafe-import-private
+;   - Class 1 (split): `as` (safe subset of old `cast`), `unsafe/cast`
+;     (everything else)
+;   - Class 2 (moved):  `unsafe/ptr+`, `unsafe/funcall-ptr-i32`,
+;                        `unsafe/import-private`
 (import-use "stdio.h")
 (import-use "stdlib.h")
-; Stage 14 UN-2: pull in lib/unsafe-priv-demo's PUBLIC and PRIVATE symbols under
-; the `pd/` prefix. A plain `(import-prefixed unsafe-priv-demo pd)` would only
-; bring in pd/pub-double (private symbols are filtered unless the
-; g-import-include-private flag is set).
+; Pull in lib/unsafe-priv-demo's PUBLIC and PRIVATE symbols under the `pd/`
+; prefix. A plain `(import-prefixed unsafe-priv-demo pd)` would only bring in
+; pd/pub-double (private symbols are filtered unless the
+; g-import-include-private flag is set, which only `unsafe/import-private`
+; sets).
 (unsafe/import-private unsafe-priv-demo pd)
 
 (defstruct Pair a:i32 b:i32)
@@ -26,32 +25,31 @@
   (return 42))
 
 (defn main ():i32
-  ; Class 1 — unsafe/cast is today's `cast`, verbatim: same-width sign
-  ; reinterpret, no IR difference between the two spellings.
+  ; `as` — the statically-safe successor to `cast`'s safe subset (D3): a
+  ; same-width sign reinterpret is safe (parity with the implicit machinery).
   (let (n:i32 -1)
-    (printf "cast            = %u\n" (as ui32 n))
+    (printf "as              = %u\n" (as ui32 n)))
+
+  ; `unsafe/cast` — today's `cast`, verbatim (D2 Class 1).
+  (let (n:i32 -1)
     (printf "unsafe/cast     = %u\n" (unsafe/cast ui32 n)))
 
-  ; Class 2 — unsafe/ptr+ is today's `ptr+`, verbatim: both compute the same
-  ; element address, so writes through one are visible through the other.
+  ; `unsafe/ptr+` — pointer arithmetic (D2 Class 2).
   (let (p:ptr:Pair (as ptr:Pair (malloc (* (as i64 2) (sizeof Pair)))))
     (.set! p a 10)
     (.set! p b 20)
-    (let (q:ptr:Pair (ptr+ p 1)
-          r:ptr:Pair (unsafe/ptr+ p 1))
-      (.set! q a 30)
-      (.set! q b 40)
-      (printf "ptr+            = a=%d b=%d\n" (q a) (q b))
+    (let (r:ptr:Pair (unsafe/ptr+ p 1))
+      (.set! r a 30)
+      (.set! r b 40)
       (printf "unsafe/ptr+     = a=%d b=%d\n" (r a) (r b))))
 
-  ; Class 2 — unsafe/funcall-ptr-i32 is today's `funcall-ptr-i32`, verbatim:
-  ; both splice the same fn-pointer operand into an `i32 ()` indirect call.
+  ; `unsafe/funcall-ptr-i32` — an indirect call through a function-pointer
+  ; value (D2 Class 2).
   (let (fp:ptr (unsafe/cast ptr zero-arg-answer))
-    (printf "funcall-ptr-i32 = %d\n" (funcall-ptr-i32 fp))
     (printf "unsafe/funcpi32 = %d\n" (unsafe/funcall-ptr-i32 fp)))
 
-  ; Class 2 — unsafe/import-private routed the same as unsafe-import-private:
-  ; both the public and the private symbol resolve under the pd/ prefix.
+  ; `unsafe/import-private` — pulling in both the public and the private
+  ; symbol of a two-symbol demo library under a prefix.
   (printf "pd/pub-double   = %d\n" (pd/pub-double 21))
   (printf "pd/priv-secret  = %d\n" (pd/priv-secret))
   (return 0))

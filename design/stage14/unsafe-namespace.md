@@ -591,6 +591,76 @@ docs/builtins.md gains an "Unsafe operations" section listing the roster and
 the audit command `grep -rn 'unsafe/' src lib`, docs/macros.md `cast` mentions,
 [progress.md](../progress.md), and this doc's implementation-status section.
 
+**Status (2026-07-16): errors DONE, docs not started (separate pass).** Every
+dispatch site that previously accepted the bare spelling as a silent alias now
+dies with a targeted D6 error instead:
+
+- **emit-list** (`src/nucleusc.nuc`) and **node-type** (`src/generics.nuc`) —
+  the `(when (or (= hp 'bare) (= hp 'unsafe/x)) …)` arms UN-2 added were split:
+  a bare-head arm that `die-at`s, followed by an `unsafe/x`-only arm that keeps
+  calling the exact same emitter/typer as before. Applied to `cast`,
+  `funcall-ptr-1`/`-i32`/`-i64`/`-ptr`, and `ptr+`, in both files (the
+  node-type↔emit-node lockstep — conventions.md).
+- **`emit-toplevel-forms`'s `case hp` ladder** (`src/nucleusc.nuc`) — the
+  `'unsafe-import-private` arm now `die-at`s instead of calling
+  `emit-unsafe-import-private`; the `'unsafe/import-private` arm is untouched.
+- Exact messages (single-quoted names, matching this file's own spelling
+  style): `'cast' was split in Stage 14: use 'as' (safe) or 'unsafe/cast'
+  (unchecked)`; `'funcall-ptr-1' was split in Stage 14: use
+  'unsafe/funcall-ptr-1'` (and the `-i32`/`-i64`/`-ptr` siblings); `'ptr+' was
+  split in Stage 14: use 'unsafe/ptr+'`; `'unsafe-import-private' was split in
+  Stage 14: use 'unsafe/import-private'`.
+- **`g-special-form-set`** membership is unchanged — the bare spellings stay
+  registered so the names remain reserved (a `defn`/`defvar`/etc. still can't
+  shadow `cast`, `ptr+`, etc.); only their *dispatch behavior* changed.
+  `gcheck-special-form` (generics.nuc) and `is-libc-alloc` (nucleusc.nuc) —
+  the two structural recognizers UN-2 explicitly left alone — were left alone
+  again here too: neither emits/types a form, so there is nothing for them to
+  "retire"; a bare `cast` reaching either is still syntactically recognized
+  (harmless), and actually emitting/monomorphizing it hits the real dispatch
+  site above and dies there regardless of which recognizer saw it first.
+- **A real, previously-invisible gap surfaced and was fixed**:
+  `fn-make-drop-method` (nucleusc.nuc, the cfn env-drop synthesizer) built two
+  AST nodes headed by `(intern-symbol "cast")` — a `(cast (raw ui8) self)`
+  pointer reinterpret and a `(cast usize 8)` alignment literal — neither of
+  which the grep-based UN-3/UN-4 sweeps could see (they match literal `(cast
+  `text, not a dynamically-`intern-symbol`'d head). Left as bare `"cast"`,
+  every with-bound closure with an owned env would have died at drop-method
+  emission the instant UN-5 landed. Both now synthesize `"unsafe/cast"`
+  instead (verbatim D2 Class 1: identical emitter, zero behavior change) — a
+  tree-wide `intern-symbol "cast"|"ptr+"|"funcall-ptr` grep after the fix
+  confirms these were the only two live sites of this shape.
+- **The one live diagnostic-string mention UN-4 deferred** —
+  `pkind-flow-check`'s die-at in `src/type-utils.nuc` ("...assert with `(cast
+  (ref T) ...)`") and its preceding doc comment — now say `unsafe/cast`
+  (following its own advice literally would otherwise hit the new hard error).
+- **`examples/unsafe-spellings.nuc`** no longer demonstrates bare spellings
+  side-by-side with their `unsafe/` counterparts (that coexistence premise is
+  gone); it now demonstrates `as` + the `unsafe/`-prefixed roster alone.
+  `tests/expected/unsafe-spellings.out` updated to match. Four new negative
+  fixtures (`tests/fixtures/un5-bare-{cast,ptr-plus,funcall-ptr,import-
+  private}.nuc`) + `run_reject` entries in `tests/run-tests.sh` prove each
+  bare spelling now dies with its exact D6 message. `lib/unsafe-priv-demo.nuc`
+  used no bare spelling and needed no change.
+- **Verification:** post-fix tree-wide grep of `src/`, `lib/`, `examples/`,
+  `tests/` for `(cast `, `(ptr+ `, `(funcall-ptr-[1i]`, and
+  `unsafe-import-private` confirms every remaining hit is a comment/prose
+  mention or one of the new negative fixtures (which intentionally contain the
+  bare spelling as the thing under test). `make clean && make` succeeded in
+  one pass with the committed boot (no new dispatch *symbols* were added, only
+  new arms over already-known `hp` comparisons and new string literals, so
+  this was not a "breaking change the OLD boot can't bridge" case). `make
+  test` **178/178** (174 UN-4 baseline + 4 new `un5-bare-*-rejected` fixtures).
+  `make bootstrap` converged **byte-identical on the first try** (stage1.ll ==
+  stage2.ll) — no `update-bootstrap` needed, matching this table's prediction:
+  the new die-at strings and the flipped dispatch behavior are both
+  source-order-deterministic and exercise no code path in the compiler's own
+  (now bare-spelling-free) self-compilation. `boot/nucleusc.ll`/`bin/nucleusc`
+  intentionally left untouched (consistent with UN-1/UN-2/UN-3 precedent: no
+  refresh needed when already byte-identical).
+- **Docs sweep not started** — deferred to a separate `api-docs-writer` pass
+  per this phase's original agent split.
+
 ---
 
 ## 5. Verification & bootstrap policy

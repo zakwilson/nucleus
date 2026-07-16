@@ -4193,7 +4193,7 @@
 ; via the stored handle (the leading __alloc field), mirroring how a collection's
 ; drop frees its buffer through its stored AllocHandle (lib/vector.nuc):
 ;   (defn drop:void ((self (ptr <Env>)))
-;     (alloc-handle-free (. self __alloc) (cast (raw ui8) self) (sizeof Env) 8))
+;     (alloc-handle-free (. self __alloc) (unsafe/cast (raw ui8) self) (sizeof Env) 8))
 ; The (Env, Drop) conformance is recorded unconditionally (a cfn always owns its
 ; env storage), so a with-bound cfn arms the cleanup.
 (defn fn-make-drop-method (env-sd:(raw StructDef) line:i32 mode:i32):void
@@ -4210,12 +4210,14 @@
                                     (make-cell alloc-sym null line)
                                     line)
                                   line)
-            ; (cast (raw ui8) self) — self is (ptr Env); reinterpret as (raw ui8)
-            ; (both lower to ptr; cast is a no-IR reinterpret).
+            ; (unsafe/cast (raw ui8) self) — self is (ptr Env); reinterpret as
+            ; (raw ui8) (both lower to ptr; unsafe/cast is a no-IR reinterpret).
             raw-ty:ptr (make-cell (as ptr (intern-symbol "raw"))
                           (make-cell (as ptr (intern-symbol "ui8")) null line)
                           line)
-            raw-self:ptr (make-cell (as ptr (intern-symbol "cast"))
+            ; Stage 14 UN-5: bare "cast" is retired — synthesize the
+            ; `unsafe/cast` spelling instead (D2 Class 1: identical emitter).
+            raw-self:ptr (make-cell (as ptr (intern-symbol "unsafe/cast"))
                             (make-cell raw-ty
                               (make-cell self-sym null line)
                               line)
@@ -4224,8 +4226,9 @@
             sizeof-node:ptr (make-cell (as ptr (intern-symbol "sizeof"))
                               (make-cell (as ptr (intern-symbol (sd name))) null line)
                               line)
-            ; 8 — pointer alignment of the env block.
-            align-node:ptr (make-cell (as ptr (intern-symbol "cast"))
+            ; 8 — pointer alignment of the env block. Stage 14 UN-5: bare "cast"
+            ; is retired — synthesize `unsafe/cast` (same emitter as before).
+            align-node:ptr (make-cell (as ptr (intern-symbol "unsafe/cast"))
                             (make-cell (as ptr (intern-symbol "usize"))
                               (make-cell (fn-make-int-node 8) null line)
                               line)
@@ -6961,18 +6964,22 @@
           (let (tmp:ptr (new-tmp))
             (fprintf g-body-stream "  %s = call ptr @nucleus_gensym()\n" tmp)
             (return (alloc-val (ty-raw-node) tmp))))
-        ; Stage 14 UN-2: `unsafe/funcall-ptr-*` is the reserved-namespace spelling
-        ; for the always-unsafe funcall-ptr-* family (design/stage14/unsafe-
-        ; namespace.md D2 Class 2) — routes into the exact same emitter as the
-        ; bare alias, which stays accepted for now (UN-3 migrates call sites).
-        (when (or (= hp 'funcall-ptr-1) (= hp 'unsafe/funcall-ptr-1))
-          (return (emit-funcall-ptr-1 n scope)))
-        (when (or (= hp 'funcall-ptr-i32) (= hp 'unsafe/funcall-ptr-i32))
-          (return (emit-funcall-ptr-i32 n scope)))
-        (when (or (= hp 'funcall-ptr-i64) (= hp 'unsafe/funcall-ptr-i64))
-          (return (emit-funcall-ptr-i64 n scope)))
-        (when (or (= hp 'funcall-ptr-ptr) (= hp 'unsafe/funcall-ptr-ptr))
-          (return (emit-funcall-ptr-ptr n scope)))
+        ; Stage 14 UN-5: the bare `funcall-ptr-*` spellings are retired — each
+        ; now dies with a targeted error naming its `unsafe/`-prefixed
+        ; replacement (design/stage14/unsafe-namespace.md D6). The reserved-
+        ; namespace spelling keeps calling the exact same emitter as before.
+        (when (= hp 'funcall-ptr-1)
+          (die-at (head line) "'funcall-ptr-1' was split in Stage 14: use 'unsafe/funcall-ptr-1'"))
+        (when (= hp 'unsafe/funcall-ptr-1) (return (emit-funcall-ptr-1 n scope)))
+        (when (= hp 'funcall-ptr-i32)
+          (die-at (head line) "'funcall-ptr-i32' was split in Stage 14: use 'unsafe/funcall-ptr-i32'"))
+        (when (= hp 'unsafe/funcall-ptr-i32) (return (emit-funcall-ptr-i32 n scope)))
+        (when (= hp 'funcall-ptr-i64)
+          (die-at (head line) "'funcall-ptr-i64' was split in Stage 14: use 'unsafe/funcall-ptr-i64'"))
+        (when (= hp 'unsafe/funcall-ptr-i64) (return (emit-funcall-ptr-i64 n scope)))
+        (when (= hp 'funcall-ptr-ptr)
+          (die-at (head line) "'funcall-ptr-ptr' was split in Stage 14: use 'unsafe/funcall-ptr-ptr'"))
+        (when (= hp 'unsafe/funcall-ptr-ptr) (return (emit-funcall-ptr-ptr n scope)))
         (when (= hp 'return) (return (emit-return n scope)))
         (when (= hp 'do) (return (emit-do n scope)))
         (when (= hp 'let) (return (emit-let n scope)))
@@ -6992,17 +6999,23 @@
         (when (= hp 'not) (return (emit-not n scope)))
         (when (= hp '_and) (return (emit-short-circuit n scope 1)))
         (when (= hp '_or) (return (emit-short-circuit n scope 0)))
-        ; Stage 14 UN-2: `unsafe/cast` is today's `cast`, verbatim (D2 Class 1) —
-        ; same emitter as the bare alias, which stays accepted for now.
-        (when (or (= hp 'cast) (= hp 'unsafe/cast)) (return (emit-cast n scope)))
+        ; Stage 14 UN-5: bare `cast` is retired — it now dies naming both split
+        ; replacements (D6). `unsafe/cast` (D2 Class 1) keeps calling the same
+        ; emitter as before.
+        (when (= hp 'cast)
+          (die-at (head line) "'cast' was split in Stage 14: use 'as' (safe) or 'unsafe/cast' (unchecked)"))
+        (when (= hp 'unsafe/cast) (return (emit-cast n scope)))
         (when (= hp 'as) (return (emit-as n scope)))
         (when (= hp 'addr-of) (return (emit-addr-of n scope)))
         (when (= hp 'funcall-void) (return (emit-funcall-void n scope)))
         (when (= hp 'funcall) (return (emit-funcall n scope)))
         (when (= hp 'deref) (return (emit-deref n scope)))
         (when (= hp 'ptr-set!) (return (emit-ptr-set n scope)))
-        ; Stage 14 UN-2: `unsafe/ptr+` (D2 Class 2) — same emitter as `ptr+`.
-        (when (or (= hp 'ptr+) (= hp 'unsafe/ptr+)) (return (emit-ptr-add n scope)))
+        ; Stage 14 UN-5: bare `ptr+` is retired (D6); `unsafe/ptr+` (D2 Class 2)
+        ; keeps calling the same emitter as before.
+        (when (= hp 'ptr+)
+          (die-at (head line) "'ptr+' was split in Stage 14: use 'unsafe/ptr+'"))
+        (when (= hp 'unsafe/ptr+) (return (emit-ptr-add n scope)))
         (when (= hp '_get) (return (emit-field-get n scope)))
         (when (= hp '.) (return (emit-field-get n scope)))
         (when (= hp '.&) (return (emit-field-addr n scope)))
@@ -9128,11 +9141,10 @@
               (emit-import-only (as ptr f))
             'import-prefixed
               (emit-import-prefixed (as ptr f))
+            ; Stage 14 UN-5: bare `unsafe-import-private` is retired (D6);
+            ; `unsafe/import-private` keeps calling the same emitter as before.
             'unsafe-import-private
-              (emit-unsafe-import-private (as ptr f))
-            ; Stage 14 UN-2: `unsafe/import-private` is the reserved-namespace
-            ; spelling for `unsafe-import-private` (D2 Class 2) — same emitter,
-            ; the bare alias stays accepted for now.
+              (die-at (f line) "'unsafe-import-private' was split in Stage 14: use 'unsafe/import-private'")
             'unsafe/import-private
               (emit-unsafe-import-private (as ptr f))
             'declare
@@ -9801,8 +9813,10 @@
        "gensym" "funcall" "funcall-void"
        "funcall-ptr-1" "funcall-ptr-i32" "funcall-ptr-i64" "funcall-ptr-ptr"
        ; Stage 14 UN-2: reserved `unsafe/` pseudo-namespace spellings (D2) —
-       ; each routes to the exact same emitter as its bare alias above, which
-       ; stays accepted for now (UN-3 migrates call sites; UN-5 retires bare).
+       ; each routes to the exact same emitter as its bare alias above. UN-5
+       ; retired the bare aliases as dispatch-time hard errors (D6); the bare
+       ; spellings stay in this set only so the names remain reserved (a defn/
+       ; defvar/etc. still may not shadow them).
        "unsafe/cast" "unsafe/ptr+" "unsafe/import-private"
        "unsafe/funcall-ptr-1" "unsafe/funcall-ptr-i32"
        "unsafe/funcall-ptr-i64" "unsafe/funcall-ptr-ptr"

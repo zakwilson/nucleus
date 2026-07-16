@@ -1,0 +1,10 @@
+; Stage 14 UN-5 negative fixture: bare `unsafe-import-private` is retired.
+;
+; `unsafe-import-private` moved to `unsafe/import-private` in UN-2/UN-3
+; (design/stage14/unsafe-namespace.md D2 Class 2), and UN-5 retires the bare
+; spelling as a hard error. Compiling this must FAIL with:
+;   "'unsafe-import-private' was split in Stage 14: use 'unsafe/import-private'"
+(unsafe-import-private unsafe-priv-demo pd)
+
+(defn main ():i32
+  (return 0))
