@@ -628,11 +628,16 @@
 
 ; A resolved compilation target (Stage 8 cross-compilation). datalayout and
 ; ptr-size come from LLVM for `triple`, so emitted IR matches the target ABI.
+; ptr-align is queried from the datalayout (LLVMABIAlignmentOfType on a `ptr`),
+; not assumed equal to ptr-size — AVR aligns pointers at 1 byte. `cpu` is the
+; --mcpu string passed to LLVMCreateTargetMachine (empty "" for host targets;
+; never null, never compared — kept `ptr`).
 (defstruct Target
   triple:ptr
   datalayout:ptr
   ptr-size:i32
-  ptr-align:i32)
+  ptr-align:i32
+  cpu:ptr)
 
 ; Stage 14 §14.5 batch 2 — vtable memo entry: replaces the parallel
 ; g-vtable-keys/g-vtable-names arrays (nucleusc.nuc) with one

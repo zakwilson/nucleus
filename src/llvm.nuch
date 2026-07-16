@@ -11,6 +11,10 @@
 (declare LLVMInitializeARMTarget () :void)
 (declare LLVMInitializeARMTargetMC () :void)
 (declare LLVMInitializeARMAsmPrinter () :void)
+(declare LLVMInitializeAVRTargetInfo () :void)
+(declare LLVMInitializeAVRTarget () :void)
+(declare LLVMInitializeAVRTargetMC () :void)
+(declare LLVMInitializeAVRAsmPrinter () :void)
 (declare LLVMOrcCreateLLJIT (builder:ptr options:ptr) :ptr)
 (declare LLVMOrcLLJITGetMainJITDylib (jit:ptr) :ptr)
 (declare LLVMOrcLLJITGetGlobalPrefix (jit:ptr) :i8)
@@ -40,6 +44,13 @@
 (declare LLVMCopyStringRepOfTargetData (td:ptr) :ptr)
 (declare LLVMDisposeTargetData (td:ptr) :void)
 (declare LLVMPointerSize (td:ptr) :i32)
+; ABI alignment of an LLVM type under a target's datalayout, in bytes. Used to
+; derive Target.ptr-align from the datalayout (AVR aligns pointers at 1 byte,
+; not pointer-size). LLVMInt8Type/LLVMPointerType manufacture an addrspace(0)
+; `ptr` type in the global context to query.
+(declare LLVMABIAlignmentOfType (td:ptr ty:ptr) :i32)
+(declare LLVMInt8Type () :ptr)
+(declare LLVMPointerType (elem:ptr addrspace:i32) :ptr)
 (declare LLVMTargetMachineEmitToFile (tm:ptr mod:ptr filename:ptr filetype:i32 msg:ptr) :i32)
 (declare LLVMDisposeMessage (msg:ptr) :void)
 ; Host CPU detection for -march=native (return strdup'd strings owned by caller).

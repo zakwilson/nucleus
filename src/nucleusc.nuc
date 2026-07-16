@@ -94,6 +94,10 @@
 (defvar g-target:ptr)
 (defvar g-host-target:ptr)
 (defvar g-target-triple-override:ptr)
+; --mcpu=<cpu> override: the CPU/device name passed to LLVMCreateTargetMachine
+; for the cross-target (e.g. "attiny1634"). Null => empty CPU (host default).
+; Only applies to the --target override; the host target always uses "".
+(defvar g-mcpu-override:ptr)
 
 ; Host pointer size in bytes — the platform the compiler itself runs on, used to
 ; size its own arrays-of-pointers. Distinct from g-target-ptr-bytes (the
@@ -9806,11 +9810,24 @@
   (LLVMInitializeARMTargetInfo)
   (LLVMInitializeARMTarget)
   (LLVMInitializeARMTargetMC)
-  (LLVMInitializeARMAsmPrinter))
+  (LLVMInitializeARMAsmPrinter)
+  (LLVMInitializeAVRTargetInfo)
+  (LLVMInitializeAVRTarget)
+  (LLVMInitializeAVRTargetMC)
+  (LLVMInitializeAVRAsmPrinter))
+
+; LLVM RelocMode for a triple: Static(0) for AVR (a freestanding MCU target has
+; no dynamic loader / GOT), PIC(2) otherwise (the hosted default). Keyed off the
+; triple string alone, so every hosted target keeps its previous PIC behavior.
+(defn reloc-for-triple (triple:ptr):i32
+  (if (= (strncmp triple "avr" 3) 0) 0 2))
 
 ; Resolve `triple` to a Target descriptor, pulling the datalayout string and
-; pointer size from LLVM so emitted IR matches the target ABI.
-(defn make-target-for-triple (triple:ptr):ref:Target
+; pointer size from LLVM so emitted IR matches the target ABI. `cpu` is the
+; --mcpu name ("" for host targets). ptr-align is derived from the datalayout
+; via LLVMABIAlignmentOfType on a `ptr` type rather than assumed == ptr-size:
+; x86-64/aarch64 answer 8 either way, AVR answers 1.
+(defn make-target-for-triple (triple:ptr cpu:ptr):ref:Target
   (let (target:ptr null
         terr:ptr null
         tres:i32 (LLVMGetTargetFromTriple triple (addr-of target) (addr-of terr)))
@@ -9818,18 +9835,21 @@
       (fprintf stderr "nucleusc: target lookup failed for '%s': %s\n" triple terr)
       (LLVMDisposeMessage terr)
       (exit 1))
-    (let (tm:ptr (LLVMCreateTargetMachine target triple "" "" 0 2 0))
+    (let (tm:ptr (LLVMCreateTargetMachine target triple cpu "" 0 (reloc-for-triple triple) 0))
       (when (= tm null)
         (fprintf stderr "nucleusc: failed to create TargetMachine for '%s'\n" triple)
         (exit 1))
       (let (td:ptr (LLVMCreateTargetDataLayout tm)
             tgt:ptr:Target (as ptr:Target (arena-alloc (sizeof Target))))
         (let (dl-str:ptr (LLVMCopyStringRepOfTargetData td)
-              psize:i32 (LLVMPointerSize td))
+              psize:i32 (LLVMPointerSize td)
+              ptr-ty:ptr (LLVMPointerType (LLVMInt8Type) 0)
+              palign:i32 (LLVMABIAlignmentOfType td ptr-ty))
           (.set! tgt triple triple)
           (.set! tgt datalayout dl-str)
           (.set! tgt ptr-size psize)
-          (.set! tgt ptr-align psize))
+          (.set! tgt ptr-align palign)
+          (.set! tgt cpu cpu))
         (LLVMDisposeTargetData td)
         (LLVMDisposeTargetMachine tm)
         (return (as ref:Target tgt))))))
@@ -9840,10 +9860,15 @@
 (defn target-init ():void
   (targets-init-all)
   (let (host-triple:ptr (LLVMGetDefaultTargetTriple))
-    (set! g-host-target (make-target-for-triple host-triple))
+    (set! g-host-target (make-target-for-triple host-triple ""))
     (if (= g-target-triple-override null)
       (set! g-target g-host-target)
-      (set! g-target (make-target-for-triple g-target-triple-override))))
+      ; Normalize the --mcpu string in a value position (StrView literal ""
+      ; collapses to its data ptr on set!): a mixed StrView/ptr value-position
+      ; `if` would join to void and emit a bad call argument.
+      (let (mcpu:ptr g-mcpu-override)
+        (when (= mcpu null) (set! mcpu ""))
+        (set! g-target (make-target-for-triple g-target-triple-override mcpu)))))
   (let (tg:ptr:Target (as ptr:Target g-target)
         hg:ptr:Target (as ptr:Target g-host-target))
     (set! g-target-triple (tg triple))
@@ -10103,8 +10128,12 @@
         (fprintf stderr "nucleusc: target lookup failed: %s\n" terr)
         (LLVMDisposeMessage terr)
         (exit 1))
-      ; CodeGenLevel = Default(2), Reloc = PIC(2), CodeModel = Default(0)
-      (let (tm:ptr (LLVMCreateTargetMachine target g-target-triple "" "" g-opt-level 2 0))
+      ; CodeGenLevel = g-opt-level, Reloc keyed on triple (Static(0) for AVR,
+      ; PIC(2) otherwise), CodeModel = Default(0). CPU from the Target descriptor
+      ; (empty "" for host targets; the --mcpu value for a cross-target).
+      (let (tm:ptr (LLVMCreateTargetMachine target g-target-triple
+                     ((as ptr:Target g-target) cpu) "" g-opt-level
+                     (reloc-for-triple g-target-triple) 0))
         (let (out-path:ptr g-output-path
               obj-path:ptr null
               keep-obj:i32 g-emit-obj)
@@ -10261,6 +10290,8 @@
                 (set! g-opt-level 3)
               (= (strncmp arg "--target=" 9) 0)
                 (set! g-target-triple-override (unsafe/ptr+ (as ptr:i8 arg) 9))
+              (= (strncmp arg "--mcpu=" 7) 0)
+                (set! g-mcpu-override (unsafe/ptr+ (as ptr:i8 arg) 7))
               (= (strncmp arg "-I" 2) 0)
                 (if (> (as i64 (strlen arg)) 2)
                   ; -I/path/to/dir (no space)
@@ -10287,7 +10318,7 @@
 
     ; Batch mode — require source file
     (when (= source-file null)
-       (fprintf stderr "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3] [-o <path>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [-i] [--repl-format=text|json] [-I<path>] <file.nuc>\n") (return 2))
+       (fprintf stderr "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3] [-o <path>] [--target=<triple>] [--mcpu=<cpu>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [-i] [--repl-format=text|json] [-I<path>] <file.nuc>\n") (return 2))
     (set! g-source-path source-file)
     (let (src:ptr (read-file source-file))
       (compiler-init)
