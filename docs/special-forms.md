@@ -26,7 +26,7 @@ failure.
 |------|-------------|--------------|
 | `do` | Sequence multiple expressions; yields the last | `{ ... }` block |
 | `let` | Bind local variables; yields the body's last expression | local variable declaration |
-| `with` | Like `let`, but **owns** any binding whose init is a libc allocator (`malloc`/`calloc`/`realloc`/`strdup`, possibly through `cast`) or whose declared type conforms to the `Drop` protocol. Owned bindings are released at scope exit (libc → `free`; Drop → statically dispatched `(drop b)`, null-guarded) in reverse binding order, on fall-through and on early `return`. The compiler verifies at compile time that an owned resource does not **escape** the scope — see [Pointer lifecycle](#pointer-lifecycle-escape-analysis). Use `(move b)` to transfer ownership out. | `let` + scoped `free` / RAII |
+| `with` | Like `let`, but **owns** any binding whose init is a libc allocator (`malloc`/`calloc`/`realloc`/`strdup`, possibly through `as`) or whose declared type conforms to the `Drop` protocol. Owned bindings are released at scope exit (libc → `free`; Drop → statically dispatched `(drop b)`, null-guarded) in reverse binding order, on fall-through and on early `return`. The compiler verifies at compile time that an owned resource does not **escape** the scope — see [Pointer lifecycle](#pointer-lifecycle-escape-analysis). Use `(move b)` to transfer ownership out. | `let` + scoped `free` / RAII |
 | `cond` | Multi-way conditional; yields the matched branch's value (strict-typed across branches) | `if` / `else if` / `else` chain |
 | `case` | Integer-keyed dispatch; lowers to LLVM `switch`. Each clause is `(KEY body...)` where KEY is an integer literal, a list of integer literals, or the symbol `_` (default). With no `_` clause, an unmatched scrutinee hits `unreachable` (UB). Yields the matched branch's value (strict-typed across branches), like `cond`. | `switch` / `default:` |
 | `match` | Eliminate a `defunion` value (or a `defenum` integer) by arm, with exhaustiveness checking. See [Unions and tagged sums](structs-unions.md#unions-and-tagged-sums). | `switch` on the tag |
@@ -45,12 +45,14 @@ failure.
 | `or` | **Variadic prelude macro** that right-folds to the binary `_or` primitive: `(or)`→`false`, `(or x)`→`x`, `(or a b c…)`→`(_or a (or b c…))`. For ≥2 args each operand is i1-checked and evaluated left-to-right, stopping at the first true; cumulative narrowing is preserved. The 1-arg form returns `x` **unchecked**. Fold table: [Variadic logical operators](macros.md#variadic-logical-operators). | `\|\|` (N-ary) |
 | `_and` | Binary short-circuit logical AND primitive — the underscore-prefixed form behind the `and` macro (same split as `_+` behind `+`). Both operands are i1-checked; the RHS is evaluated, and narrows under the LHS, only when the LHS is true. Usable directly for hand-written binary short-circuit. | `&&` |
 | `_or` | Binary short-circuit logical OR primitive — the underscore-prefixed form behind the `or` macro. Both operands are i1-checked; the RHS is evaluated, and narrows under the LHS, only when the LHS is false. Usable directly for hand-written binary short-circuit. | `\|\|` |
-| `cast` | Type cast | `(type)x` |
-| `as` | **Statically-safe** conversion — `(as TYPE expr)`, same shape as `cast`. Accepts exactly what the implicit-coercion machinery accepts in an assignment position (identity, int widening, same-width sign reinterpret, `f32`→`f64`, user `defcast` rules, `CStr`↔pointer, the elem-less-`ptr` `void*` hatch) **plus** pure pointer-contract weakening (`(ref T)`→`(raw T)`; a typed pointer → elem-less bare `ptr`). Refuses everything lossy or contract-manufacturing — narrowing/truncation, `float`→`int`, `f64`→`f32`, `ptr`↔`int`, `fn`↔`ptr`, element-retyping `ptr`↔`ptr` (each routed to `unsafe/cast`) — and, unlike `cast`, **honors the nullability flow check**: a `raw`/nullable pointer into a non-null `(ref T)`/`(ptr T)` slot is rejected (routed to `as-ref` for a runtime-checked launder, or `unsafe/cast` for an unchecked assertion). Use `as` for conversions you can prove correct; reach for `unsafe/cast` only when the compiler refuses. | `static_cast`-ish |
+| `cast` | **Retired in Stage 14** — bare `cast` is now a targeted hard error: `'cast' was split in Stage 14: use 'as' (safe) or 'unsafe/cast' (unchecked)`. Use `as` (below) for statically-safe conversions, `unsafe/cast` (below) for anything lossy or contract-manufacturing. | — |
+| `as` | **Statically-safe** conversion — `(as TYPE expr)`, same shape as `unsafe/cast`. Accepts exactly what the implicit-coercion machinery accepts in an assignment position (identity, int widening, same-width sign reinterpret, `f32`→`f64`, user `defcast` rules, `CStr`↔pointer, the elem-less-`ptr` `void*` hatch) **plus** pure pointer-contract weakening (`(ref T)`→`(raw T)`; a typed pointer → elem-less bare `ptr`). Refuses everything lossy or contract-manufacturing — narrowing/truncation, `float`→`int`, `f64`→`f32`, `ptr`↔`int`, `fn`↔`ptr`, element-retyping `ptr`↔`ptr` (each routed to `unsafe/cast`) — and, unlike `unsafe/cast`, **honors the nullability flow check**: a `raw`/nullable pointer into a non-null `(ref T)`/`(ptr T)` slot is rejected (routed to `as-ref` for a runtime-checked launder, or `unsafe/cast` for an unchecked assertion). Use `as` for conversions you can prove correct; reach for `unsafe/cast` only when the compiler refuses. | `static_cast`-ish |
+| `unsafe/cast` | **Unchecked** type reinterpretation — `(unsafe/cast TYPE expr)`. Today's (pre-Stage-14) `cast`, verbatim: same-kind reinterpret, `ptr`↔`ptr` (any/all element retyping, including `raw`→`ref` laundering with **no** nullability check), `CStr`↔`ptr`, `fn`↔`ptr`, int narrowing/widening, same-width sign reinterpret, `float`↔`float` (`fpext`/`fptrunc`), `int`↔`float` (`sitofp`/`uitofp`/`fptosi`/`fptoui`). Its only "check" is that the kind pair appears in the conversion ladder — no range check, no null check. A strict superset of `as`'s accepted set, so it never blocks a migration; reach for it only when `as` refuses. | `(type)x` |
 | `addr-of` | Take address of a variable. The address of **frame-local storage** (a `let`/`with` value binding or a by-value parameter) is escape-tracked so it cannot be returned — see [Pointer lifecycle](#pointer-lifecycle-escape-analysis); the address of a global or of a reference/pointer binding is not. | `&x` |
 | `deref` | Dereference a pointer (reader sugar: `@p` → `(deref p)`) | `*p` |
 | `ptr-set!` | Write through a pointer; yields the stored value | `*p = val` |
-| `ptr+` | Pointer arithmetic | `p + n` |
+| `ptr+` | **Retired in Stage 14** — bare `ptr+` is now a targeted hard error: `'ptr+' was split in Stage 14: use 'unsafe/ptr+'`. | — |
+| `unsafe/ptr+` | Pointer arithmetic on a **typed** pointer; manufactures a new pointer at an unchecked offset (no bounds check). | `p + n` |
 | `.` | Struct field access; equivalent to head position `(s field)` and lowers to the `_get` primitive for a plain struct. | `s.field` |
 | `_get` | Low-level struct field read (compiler-internal primitive; bypasses any user `get` override). Prefer head position `(s field)` in ordinary code; use `_get` only where head position would dispatch wrongly (a user `get` method reading its own field, or a struct held in a special-form-named variable). | `s.field` |
 | `.set!` | Struct field assignment; yields the stored value | `s.field = val` |
@@ -68,10 +70,13 @@ failure.
 | `compile-time` | Execute body forms at compile time via LLVM JIT; output goes to stderr | — |
 | `funcall` | Call a typed function pointer: `(funcall fn args...)`. The function pointer must have a `TY-FN` type with known return type and parameter types. | `fn(args...)` |
 | `funcall-void` | Call a function pointer with no arguments and no return value | `fn()` |
-| `funcall-ptr-1` | Call a `ptr` function pointer with one `ptr` argument, returning `ptr` | `fn(arg)` |
-| `funcall-ptr-i32` | Call a `ptr` function pointer with no arguments, returning `i32` | `((int(*)())fn)()` |
-| `funcall-ptr-i64` | Call a `ptr` function pointer with no arguments, returning `i64` | `((long(*)())fn)()` |
-| `funcall-ptr-ptr` | Call a `ptr` function pointer with no arguments, returning `ptr` | `((void*(*)())fn)()` |
+| `funcall-ptr-1` `funcall-ptr-i32` `funcall-ptr-i64` `funcall-ptr-ptr` | **Retired in Stage 14** — each bare spelling is now a targeted hard error: `'funcall-ptr-1' was split in Stage 14: use 'unsafe/funcall-ptr-1'` (and the `-i32`/`-i64`/`-ptr` siblings analogously). | — |
+| `unsafe/funcall-ptr-1` | Call a `ptr` function pointer with one `ptr` argument, returning `ptr` — a call signature asserted with no arity/type check against the actual callee | `fn(arg)` |
+| `unsafe/funcall-ptr-i32` | Call a `ptr` function pointer with no arguments, returning `i32` | `((int(*)())fn)()` |
+| `unsafe/funcall-ptr-i64` | Call a `ptr` function pointer with no arguments, returning `i64` | `((long(*)())fn)()` |
+| `unsafe/funcall-ptr-ptr` | Call a `ptr` function pointer with no arguments, returning `ptr` | `((void*(*)())fn)()` |
+| `unsafe-import-private` | **Retired in Stage 14** — bare `unsafe-import-private` is now a targeted hard error: `'unsafe-import-private' was split in Stage 14: use 'unsafe/import-private'`. | — |
+| `unsafe/import-private` | Prefix-qualified import that also reaches a library's private (`defn-`/`defvar-`/etc.) symbols: `(unsafe/import-private lib prefix sym...)`. See [Top-level forms](toplevel.md#top-level-forms). | — |
 | `gensym` | Return a fresh unique symbol `Node*` (e.g. `__gs_0`); for use in macro bodies to avoid variable capture | — |
 | `some` | `(some r)` — wrap a non-null `(ref T)` as `?T` / `(Maybe (ref T))`. Pure relabel, no IR. | — |
 | `as-ref` | `(as-ref p)` — launder a raw pointer into `?T` (null stays none). Pure relabel, no IR; narrow before use. | — |
@@ -201,7 +206,8 @@ analysis"):
 Both share one mechanism:
 
 - Taint follows pointer **identity**: binding a tainted value (`let`/`with`/
-  `set!`), `cast`, `ptr+`, `.&`, `addr-of`, and control-flow joins keep it.
+  `set!`), `as`/`unsafe/cast`, `unsafe/ptr+`, `.&`, `addr-of`, and control-flow
+  joins keep it.
   Copying the pointee **value** out (`deref`, field loads) clears it — so
   `(return (deref p))` and `(return (p count))` are fine.
 - `addr-of` (and `.&` through it) is the **frame-local taint source**. It does
@@ -387,7 +393,9 @@ type) so the result type is well-defined; a heterogeneous struct is a clear erro
 symbol: `((mk-vec) 3)` and `(@p 3)` emit the head once and route the same way. A
 head whose value is a **function pointer** folds to an indirect call, so
 `(f a b)` works for a local/global fn-pointer variable `f` and the explicit
-`funcall`/`funcall-ptr-*` forms are now compiler-internal (still accepted).
+`funcall`/`unsafe/funcall-ptr-*` forms are now compiler-internal (still
+accepted; the bare `funcall-ptr-*` spellings were retired in Stage 14 — see
+the Special Forms table above).
 
 Everything resolves at compile time to a static GEP+load, a direct `call` to a
 resolved method, or an indirect `call` through a fn-pointer — no dispatch object,

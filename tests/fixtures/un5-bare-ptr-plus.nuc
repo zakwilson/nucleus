@@ -1,0 +1,11 @@
+; Stage 14 UN-5 negative fixture: bare `ptr+` is retired.
+;
+; `ptr+` moved wholesale under the reserved `unsafe/` namespace in UN-2/UN-3
+; (design/stage14/unsafe-namespace.md D2 Class 2), and UN-5 retires the bare
+; spelling as a hard error. Compiling this must FAIL with:
+;   "'ptr+' was split in Stage 14: use 'unsafe/ptr+'"
+(defn advance (p:ptr:i32):ptr:i32
+  (return (ptr+ p 1)))
+
+(defn main ():i32
+  (return 0))

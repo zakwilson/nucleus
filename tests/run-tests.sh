@@ -602,10 +602,23 @@ spawn run_reject as-reinterpret-rejected tests/fixtures/as-reinterpret.nuc \
 # (D1): no user code may declare `(ns unsafe)`, which would make `unsafe/foo`
 # ambiguous between a reserved op and a real namespace member. (The positive
 # `examples/unsafe-spellings.nuc` run — dispatched via the examples/*.nuc loop
-# above — covers the new unsafe/cast, unsafe/ptr+, unsafe/funcall-ptr-i32, and
-# unsafe/import-private routes behaving identically to their bare aliases.)
+# above — covers `as` and the unsafe/cast, unsafe/ptr+, unsafe/funcall-ptr-i32,
+# and unsafe/import-private routes.)
 spawn run_reject unsafe-ns-reserved-rejected tests/fixtures/unsafe-ns-reserved.nuc \
   "'unsafe' is a reserved namespace name"
+
+# Stage 14 unsafe-namespace.md UN-5 — the bare legacy spellings (`cast`,
+# `funcall-ptr-*`, `ptr+`, `unsafe-import-private`) are retired: each dispatch
+# site now dies with a targeted error naming its replacement instead of
+# silently working as an alias (D6).
+spawn run_reject un5-bare-cast-rejected tests/fixtures/un5-bare-cast.nuc \
+  "'cast' was split in Stage 14: use 'as' (safe) or 'unsafe/cast' (unchecked)"
+spawn run_reject un5-bare-ptr-plus-rejected tests/fixtures/un5-bare-ptr-plus.nuc \
+  "'ptr+' was split in Stage 14: use 'unsafe/ptr+'"
+spawn run_reject un5-bare-funcall-ptr-rejected tests/fixtures/un5-bare-funcall-ptr.nuc \
+  "'funcall-ptr-i32' was split in Stage 14: use 'unsafe/funcall-ptr-i32'"
+spawn run_reject un5-bare-import-private-rejected tests/fixtures/un5-bare-import-private.nuc \
+  "'unsafe-import-private' was split in Stage 14: use 'unsafe/import-private'"
 
 # --- Join + replay --------------------------------------------------------------
 # Wait for all remaining jobs (ignore per-job exit codes — PASS/FAIL is decided

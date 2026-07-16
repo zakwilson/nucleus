@@ -996,6 +996,40 @@ The `Drop` protocol is an ordinary Stage 9 protocol; conforming makes a type
 (with (r:ptr:Res (make-res)) ...)      ; (drop r) fires at scope exit
 ```
 
+## Unsafe operations
+
+Nucleus reserves the `unsafe/` prefix for operations whose contract the
+compiler cannot verify — the C-replacement escape hatches (Stage 14,
+`design/stage14/unsafe-namespace.md`). `unsafe/` is a **pseudo-namespace**: a
+reserved spelling in the special-form dispatch table, not a resolvable
+module — special forms dispatch on the raw interned head before namespace
+resolution ever runs, so `unsafe/cast` reads as one ordinary symbol with no
+reader change.
+
+The full roster:
+
+| Form | Contract it waives |
+|---|---|
+| `unsafe/cast` | Full reinterpretation: same-kind, `ptr`↔`ptr` (any element, including `raw`→`ref` laundering with no null check), `ptr`↔`int`, `fn`↔`ptr`, int narrow/widen, `float`↔`float`, `int`↔`float`. See [Special Forms](special-forms.md#special-forms). |
+| `unsafe/funcall-ptr-1` / `-i32` / `-i64` / `-ptr` | Calls a `ptr` function pointer under a signature asserted out of thin air — no arity or type check against the actual callee. |
+| `unsafe/ptr+` | Pointer arithmetic — manufactures a new pointer at an unchecked offset; the result carries no bounds guarantee. |
+| `unsafe/import-private` | Reaches past a library's visibility boundary to import its private (`defn-`/`defvar-`/etc.) symbols. |
+
+The statically-safe counterpart is `as` (`(as TYPE expr)`, see [Special
+Forms](special-forms.md#special-forms)) — it accepts everything the
+implicit-coercion machinery already accepts at an assignment boundary, plus
+pure pointer-contract weakening, and honors the nullability flow check that
+`unsafe/cast` does not. The bare (legacy) spellings — `cast`,
+`funcall-ptr-1`/`-i32`/`-i64`/`-ptr`, `ptr+`, and `unsafe-import-private`
+(without the `/`) — are **retired**: each is now a targeted hard error naming
+its `unsafe/`-prefixed (or `as`) replacement, rather than silently working as
+an alias.
+
+**Audit command.** Because every unchecked operation in the compiler's own
+source now carries the `unsafe/` spelling, `grep -rn 'unsafe/' src lib`
+enumerates every contract-subverting site in the tree — the complete list of
+places a memory-safety bug could hide.
+
 ## Binary Operators
 
 | Name | Description | C Equivalent |

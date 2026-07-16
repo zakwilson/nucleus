@@ -22,7 +22,7 @@ Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defin
 
 `case` is multi-way equality dispatch: it compares `form` against each value `vi` with `=` and yields the first matching result `ri`. The final unpaired argument is the **required** default. Because `=` is overloadable, `case` works over any type with an equality (integers, enum constants, symbols, C strings). `form` is re-evaluated per comparison, so it should be side-effect free.
 
-`(import-use arena)` additionally provides `(new T)` — allocate one zeroed `T` from the arena, typed `(ref T)` (non-null: `arena-alloc` aborts on exhaustion rather than returning null). It expands to `(cast (ref T) (arena-alloc (sizeof T)))`, collapsing the cast + `sizeof` boilerplate for the common "allocate a single struct" case. It is **not** in the prelude (it depends on `arena-alloc`), so it requires an explicit `(import-use arena)`.
+`(import-use arena)` additionally provides `(new T)` — allocate one zeroed `T` from the arena, typed `(ref T)` (non-null: `arena-alloc` aborts on exhaustion rather than returning null). It expands to `(as (ref T) (arena-alloc (sizeof T)))`, collapsing the `as` + `sizeof` boilerplate for the common "allocate a single struct" case (`arena-alloc` returns bare `ptr`; retyping it to a non-null `(ref T)` is exactly the elem-less-`ptr` `void*` hatch `as` accepts). It is **not** in the prelude (it depends on `arena-alloc`), so it requires an explicit `(import-use arena)`.
 
 ## Variadic Arithmetic
 
@@ -65,7 +65,9 @@ the argument's structure with member access **without casting**: `(p car)`,
 are themselves `(raw Node)`, so they chain. Use `(p kind)` / `(p s)` / `(p i)`
 / `(p line)` for the other `Node` fields. (Historically these required
 `((cast ptr:Node p) car)` because `car`/`cdr` were untyped `ptr`; that cast is
-now redundant but still compiles — `ptr`↔`(raw Node)` is a no-op reinterpret.)
+now redundant. If written today it would be `((as ptr:Node p) car)` — bare
+`cast` is a Stage 14 hard error — but there's no need to write it at all:
+`ptr`↔`(raw Node)` is a no-op reinterpret the compiler already performs.)
 
 When the macro splices a parameter into its expansion via `~param`, the
 resulting form is compiled as if the user had written that expression directly

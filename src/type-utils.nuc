@@ -320,8 +320,8 @@
 ; element store, argument, return). Only a non-null (ref T) destination adds an
 ; obligation: the source must itself be ref. Widening (ref→raw, ref→Maybe,
 ; raw→Maybe, Maybe→raw) is always allowed; the existing kind/elem rules are
-; unchanged. `cast` does not pass through here, so (cast (ref T) raw) remains
-; the explicit, audited assertion.
+; unchanged. `unsafe/cast` does not pass through here, so
+; (unsafe/cast (ref T) raw) remains the explicit, audited assertion.
 ;
 ; CStr (string-literal / C-string type) is treated as ref-compatible: string
 ; literals are non-null constants, the overwhelmingly common CStr source, and
@@ -352,7 +352,7 @@
     (when (= sk TY-PTR)
       (if (= (ptr-pkind src) PTR-MAYBE)
         (die-at line (fmt-s "%s: value may be null where non-null (ref ...) is required — narrow with if-some/when-some, unwrap, or a null guard" ctx))
-        (die-at line (fmt-s "%s: raw pointer where non-null (ref ...) is required — launder with (as-ref ...) + narrowing, or assert with (cast (ref T) ...)" ctx))))))
+        (die-at line (fmt-s "%s: raw pointer where non-null (ref ...) is required — launder with (as-ref ...) + narrowing, or assert with (unsafe/cast (ref T) ...)" ctx))))))
 
 ; Deref/field/index gate: a (Maybe (ref T)) value cannot be accessed until
 ; narrowed. Raw stays unchecked (the signed waiver); ref is always safe.
