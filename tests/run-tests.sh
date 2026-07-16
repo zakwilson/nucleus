@@ -249,7 +249,7 @@ run_sm3() {
 (declare printf (fmt:CStr &rest args:i32) :i32)
 (defn main () :i32
   (printf "full=%d push=%d even4=%d even7=%d even6L=%d\n"
-    (full? 5) (push! 7) (even? 4) (even? 7) (even? (cast i64 6)))
+    (full? 5) (push! 7) (even? 4) (even? 7) (even? (as i64 6)))
   (return 0))
 EOF
   ./build/nucleusc --emit-llvm "$sm3_dir/main.nuc" > "$sm3_dir/main.ll" 2>/dev/null || true
@@ -440,7 +440,7 @@ run_s1_block() {
 (declare printf (fmt:CStr &rest args:i32) :i32)
 (defn main () :i32
   (printf "twice=%d add3=%d scale32=%d scale64=%ld\n"
-    (twice 21) (add3 1 2 3) (scale 4) (scale (cast i64 5)))
+    (twice 21) (add3 1 2 3) (scale 4) (scale (as i64 5)))
   (return 0))
 EOF
   ./build/nucleusc --emit-llvm "$s1_dir/main.nuc" > "$s1_dir/main.ll" 2>/dev/null || true
@@ -459,7 +459,7 @@ EOF
 (import-use "$s1_dir/lib.nuch")
 (import-use "stdio.h")
 (defn main () :i32
-  (printf "gmax32=%d gmax64=%ld\n" (gmax 8 3) (gmax (cast i64 4) (cast i64 9)))
+  (printf "gmax32=%d gmax64=%ld\n" (gmax 8 3) (gmax (as i64 4) (as i64 9)))
   (return 0))
 EOF
   ./build/nucleusc --emit-llvm "$s1_dir/tmain.nuc" > "$s1_dir/tmain.ll" 2>/dev/null || true

@@ -33,11 +33,11 @@
 ; 2. Generic method whose RETURN type is a phantom param (S), recovered
 ;    positionally from the third receiver type-argument.
 (defn two-s ((self (ref (Two I F S E)))):S
-  (return (cast S (self a))))
+  (return (as S (self a))))
 
 ; 3. Generic method whose return type is the fourth (phantom) param (E).
 (defn two-e ((self (ref (Two I F S E)))):E
-  (return (cast E (self a))))
+  (return (as E (self a))))
 
 ; LEGACY PATTERN (superseded by associated types, A0–A4): a verbose MapIter-style
 ; combinator with explicit phantom params for source/result element types.
@@ -49,23 +49,23 @@
   f:F)
 
 (defn miv-e ((self (ref (MapIterVerbose I F S E)))):E
-  (return (cast E (self f))))
+  (return (as E (self f))))
 
 (defn miv-s ((self (ref (MapIterVerbose I F S E)))):S
-  (return (cast S (self f))))
+  (return (as S (self f))))
 
 (defn main ():i32
   ; Concrete instance: I=i32, F=f64, S=i32, E=i64.
   (let ((t (ref (Two i32 f64 i32 i64))) (alloca (Two i32 f64 i32 i64)))
-    (ptr-set! t @((Two i32 f64 i32 i64) (cast i32 42) (cast f64 3.14)))
+    (ptr-set! t @((Two i32 f64 i32 i64) 42 (as f64 3.14)))
     (printf "a=%d\n" (two-a t))               ; a=42
     (printf "s=%d\n" (two-s t))               ; s=42  (S=i32)
-    (printf "e=%lld\n" (cast i64 (two-e t))))  ; e=42  (E=i64)
+    (printf "e=%lld\n" (as i64 (two-e t))))  ; e=42  (E=i64)
 
   ; MapIterVerbose instance: I=i32, F=i32, S=i64, E=i32.
   (let ((m (ref (MapIterVerbose i32 i32 i64 i32)))
         (alloca (MapIterVerbose i32 i32 i64 i32)))
-    (ptr-set! m @((MapIterVerbose i32 i32 i64 i32) (cast i32 7) (cast i32 99)))
+    (ptr-set! m @((MapIterVerbose i32 i32 i64 i32) 7 99))
     (printf "miv-e=%d\n" (miv-e m))                 ; miv-e=99 (E=i32)
-    (printf "miv-s=%lld\n" (cast i64 (miv-s m))))    ; miv-s=99 (S=i64)
+    (printf "miv-s=%lld\n" (as i64 (miv-s m))))    ; miv-s=99 (S=i64)
   0)

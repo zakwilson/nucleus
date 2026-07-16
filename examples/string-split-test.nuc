@@ -21,10 +21,10 @@
 ; buffer, OR we copy it to a temp buffer).
 (defn print-sv ((sv (ref StrView))):void
   (with (n:usize (sv len)
-         buf:ptr:ui8 (cast ptr:ui8 (malloc (cast i64 (+ n (cast usize 1))))))
-    (memcpy (cast ptr buf) (cast ptr (sv data)) (cast i64 n))
-    (aset! buf (cast i64 n) (cast ui8 0))
-    (printf "%s" (cast CStr (cast ptr buf)))))
+         buf:ptr:ui8 (as ptr:ui8 (malloc (as i64 (+ n 1)))))
+    (memcpy (as ptr buf) (as ptr (sv data)) (as i64 n))
+    (aset! buf (as i64 n) 0)
+    (printf "%s" (as CStr (as ptr buf)))))
 
 (defn main ():i32
 
@@ -51,7 +51,7 @@
          count:i32 0)
     (doseq-split (seg (addr-of it))
                  (set! count (+ count 1))
-                 (printf "empty-seg-len=%llu\n" (cast ui64 (seg len)))
+                 (printf "empty-seg-len=%llu\n" (as ui64 (seg len)))
                  (printf "empty-count=%d\n" count)))
 
   ; ---- 4. Split "a--b--c" on "--" --------------------------------------------
@@ -82,16 +82,16 @@
   ; ---- 7. strview-trim "  hello  " → len=5 -----------------------------------
   (with (sv:ptr:StrView (strview-from-cstr "  hello  ")
         trimmed:StrView (strview-trim sv))
-    (printf "trim-len=%llu\n" (cast ui64 ((addr-of trimmed) len))))
+    (printf "trim-len=%llu\n" (as ui64 ((addr-of trimmed) len))))
 
   ; ---- 8. strview-trim-start "  hello" → len=5 --------------------------------
   (with (sv:ptr:StrView (strview-from-cstr "  hello")
         trimmed:StrView (strview-trim-start sv))
-    (printf "trim-start-len=%llu\n" (cast ui64 ((addr-of trimmed) len))))
+    (printf "trim-start-len=%llu\n" (as ui64 ((addr-of trimmed) len))))
 
   ; ---- 9. strview-trim-end "hello  " → len=5 ----------------------------------
   (with (sv:ptr:StrView (strview-from-cstr "hello  ")
         trimmed:StrView (strview-trim-end sv))
-    (printf "trim-end-len=%llu\n" (cast ui64 ((addr-of trimmed) len))))
+    (printf "trim-end-len=%llu\n" (as ui64 ((addr-of trimmed) len))))
 
   (return 0))

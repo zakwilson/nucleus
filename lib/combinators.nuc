@@ -237,16 +237,16 @@
           (none (set! done 1)))))
     (let (acc:Acc init
           n:usize (count buf)
-          i:i64 (- (cast i64 n) 1))
+          i:i64 (- (as i64 n) 1))
       (while (>= i 0)
-        (set! acc (fold g acc (buf (cast usize i))))
+        (set! acc (fold g acc (buf (as usize i))))
         (set! i (- i 1)))
       (drop buf)
       (return acc))))
 
 ; sum — add every element, seeded at 0. S must be a numeric scalar.
 (defn sum ((it (ref I)) &where ((Iterator S) I)):S
-  (let (acc:S (cast S 0)
+  (let (acc:S (as S 0)
         done:i32 0)
     (while (= done 0)
       (match (next it)
@@ -256,7 +256,7 @@
 
 ; product — multiply every element, seeded at 1. S must be a numeric scalar.
 (defn product ((it (ref I)) &where ((Iterator S) I)):S
-  (let (acc:S (cast S 1)
+  (let (acc:S (as S 1)
         done:i32 0)
     (while (= done 0)
       (match (next it)
@@ -266,7 +266,7 @@
 
 ; min — the least element (by `<`), or 0 for an empty sequence. S scalar.
 (defn min ((it (ref I)) &where ((Iterator S) I)):S
-  (let (acc:S (cast S 0)
+  (let (acc:S (as S 0)
         seen:i32 0
         done:i32 0)
     (while (= done 0)
@@ -280,7 +280,7 @@
 
 ; max — the greatest element (by `<`), or 0 for an empty sequence. S scalar.
 (defn max ((it (ref I)) &where ((Iterator S) I)):S
-  (let (acc:S (cast S 0)
+  (let (acc:S (as S 0)
         seen:i32 0
         done:i32 0)
     (while (= done 0)
@@ -302,33 +302,33 @@
 (defn sort ((cmp (ref C)) (v (ref (Vector T)))
                  &where ((BinaryFn T i32) C)):void
   (let (n:usize (count v)
-        buf:ptr:T (cast ptr:T (cast ptr (_get v data))))
-    (let (i:usize (cast usize 1))
+        buf:ptr:T (as ptr:T (as ptr (_get v data))))
+    (let (i:usize 1)
       (while (< i n)
-        (let (key:T (aref buf (cast i64 i))
-              j:i64 (- (cast i64 i) 1))
+        (let (key:T (aref buf (as i64 i))
+              j:i64 (- (as i64 i) 1))
           (while (and (>= j 0) (!= (apply2 cmp key (aref buf j)) 0))
             (aset! buf (+ j 1) (aref buf j))
             (set! j (- j 1)))
           (aset! buf (+ j 1) key))
-        (set! i (+ i (cast usize 1)))))))
+        (set! i (+ i 1))))))
 
 ; sort-by — in-place ascending insertion sort keyed by a projection. keyf maps
 ; each element to a `<`-comparable key. keyf : (UnaryFn T K).
 (defn sort-by ((keyf (ref F)) (v (ref (Vector T)))
                     &where ((UnaryFn T K) F)):void
   (let (n:usize (count v)
-        buf:ptr:T (cast ptr:T (cast ptr (_get v data))))
-    (let (i:usize (cast usize 1))
+        buf:ptr:T (as ptr:T (as ptr (_get v data))))
+    (let (i:usize 1)
       (while (< i n)
-        (let (key:T (aref buf (cast i64 i))
-              kk:K  (apply keyf (aref buf (cast i64 i)))
-              j:i64 (- (cast i64 i) 1))
+        (let (key:T (aref buf (as i64 i))
+              kk:K  (apply keyf (aref buf (as i64 i)))
+              j:i64 (- (as i64 i) 1))
           (while (and (>= j 0) (< kk (apply keyf (aref buf j))))
             (aset! buf (+ j 1) (aref buf j))
             (set! j (- j 1)))
           (aset! buf (+ j 1) key))
-        (set! i (+ i (cast usize 1)))))))
+        (set! i (+ i 1))))))
 
 ; ===========================================================================
 ; Joinery — "emit each element, separated"
@@ -354,8 +354,8 @@
 ; Internal: append a NUL-terminated C string's bytes to a String.
 (defn join-push-cstr ((s (ref String)) cs:CStr):void
   (string-push-bytes-raw s
-                         (cast (ptr ui8) (cast ptr cs))
-                         (cast usize (strlen (cast ptr cs)))))
+                         (as (ptr ui8) (as ptr cs))
+                         (as usize (strlen (as ptr cs)))))
 
 ; join — build a String by rendering each element to a C string with `renderf`
 ; and concatenating the renderings, separated by `sep`. renderf : (UnaryFn S

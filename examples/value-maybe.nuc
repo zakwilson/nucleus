@@ -9,9 +9,9 @@
 ; (Maybe i64) over a non-pointer. Parenthesized types use the list form in
 ; binding/return positions (the name:(...) colon sugar does not parse there).
 (defn half (n:i64) (Maybe i64)
-  (when (!= (% n (cast i64 2)) (cast i64 0))
+  (when (!= (% n 2) 0)
     (return none))                          ; bare none target-types here
-  (return (some (/ n (cast i64 2)))))        ; (some v) target-types here
+  (return (some (/ n 2))))        ; (some v) target-types here
 
 (defn show ((m (Maybe i64))):void
   (match m
@@ -20,11 +20,11 @@
 
 ; A fallible inner computation, wrapped into a may-be-absent result.
 (defn checked (k:i64):!i64
-  (when (= k (cast i64 0)) (return (err nope)))
+  (when (= k 0) (return (err nope)))
   (return (ok k)))
 
 (defn lookup (k:i64):?!i64
-  (when (< k (cast i64 0)) (return none))    ; absent
+  (when (< k 0) (return none))    ; absent
   (let (rv:!i64 (checked k))                 ; present: an inner Result value
     (return (some rv))))
 
@@ -37,11 +37,11 @@
     (none (printf "absent\n"))))
 
 (defn main ():i32
-  (show (half (cast i64 8)))
-  (show (half (cast i64 7)))
-  (show (make (Maybe i64) some (cast i64 99)))
+  (show (half 8))
+  (show (half 7))
+  (show (make (Maybe i64) some 99))
   (show (make (Maybe i64) none))
-  (show-r (lookup (cast i64 5)))
-  (show-r (lookup (cast i64 0)))
-  (show-r (lookup (cast i64 -1)))
+  (show-r (lookup 5))
+  (show-r (lookup 0))
+  (show-r (lookup -1))
   0)

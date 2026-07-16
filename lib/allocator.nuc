@@ -101,8 +101,8 @@
 ; caller checks); the arena arm aborts internally rather than returning null.
 (defn alloc-handle-alloc ((h (ref AllocHandle)) size:usize align:usize) (raw ui8)
   (when (= (h kind) ALLOC-ARENA)
-    (return (cast (raw ui8) (arena-alloc (cast i64 size)))))
-  (return (cast (raw ui8) (malloc (cast i64 size)))))
+    (return (as (raw ui8) (arena-alloc (as i64 size)))))
+  (return (as (raw ui8) (malloc (as i64 size)))))
 
 ; (alloc-handle-realloc h p old new align) -> (raw ui8).
 (defn alloc-handle-realloc
@@ -111,13 +111,13 @@
     ; The arena cannot grow a prior allocation in place, so allocate fresh and
     ; copy the smaller of old/new bytes. The old block is abandoned (released
     ; wholesale when the arena is reset).
-    (let (np:ptr (arena-alloc (cast i64 new)))
-      (when (!= (cast ptr p) null)
+    (let (np:ptr (arena-alloc (as i64 new)))
+      (when (!= (as ptr p) null)
         (let (n:usize (if (< old new) old new))
-          (memcpy np (cast ptr p) (cast i64 n))))
-      (return (cast (raw ui8) np))))
+          (memcpy np (as ptr p) (as i64 n))))
+      (return (as (raw ui8) np))))
   ; realloc(NULL, n) behaves as malloc(n).
-  (return (cast (raw ui8) (realloc (cast ptr p) (cast i64 new)))))
+  (return (as (raw ui8) (realloc (as ptr p) (as i64 new)))))
 
 ; (alloc-handle-free h p size align) -> void.
 (defn alloc-handle-free
@@ -126,7 +126,7 @@
   (when (= (h kind) ALLOC-ARENA)
     (return))
   ; free(NULL) is a safe no-op in C, so no null guard.
-  (free (cast ptr p)))
+  (free (as ptr p)))
 
 ; ---------------------------------------------------------------------------
 ; 4. The default (libc) allocator. A single process-global handle backs every

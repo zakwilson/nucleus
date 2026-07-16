@@ -14,7 +14,7 @@
 
 (defn main ():i32
   (with ((s (ref (HashSet CStr))) #{"a" "b" "c"})
-    (printf "count=%llu\n" (cast ui64 (count s)))         ; count=3
+    (printf "count=%llu\n" (as ui64 (count s)))         ; count=3
     (printf "has-a=%d\n" (contains? s "a"))               ; has-a=1
     (printf "has-b=%d\n" (contains? s "b"))               ; has-b=1
     (printf "has-c=%d\n" (contains? s "c"))               ; has-c=1
@@ -22,7 +22,7 @@
 
   ; i32 element set literal; duplicate element is deduplicated by insert.
   (with ((n (ref (HashSet i32))) #{10 20 20 30})
-    (printf "ncount=%llu\n" (cast ui64 (count n)))        ; ncount=3
+    (printf "ncount=%llu\n" (as ui64 (count n)))        ; ncount=3
     (printf "has-20=%d\n" (contains? n 20))               ; has-20=1
     (printf "has-99=%d\n" (contains? n 99)))              ; has-99=0
 

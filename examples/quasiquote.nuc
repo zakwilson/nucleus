@@ -7,8 +7,8 @@
 (defstruct Node
   kind:i32 line:i32 i:i64 s:ptr car:ptr cdr:ptr)
 
-(defn first (n:ptr):ptr (return ((cast ptr:Node n) car)))
-(defn rest  (n:ptr):ptr (return ((cast ptr:Node n) cdr)))
+(defn first (n:ptr):ptr (return ((as ptr:Node n) car)))
+(defn rest  (n:ptr):ptr (return ((as ptr:Node n) cdr)))
 
 (defstruct ListIter cur:ptr)
 (extend ListIter (Iterator ptr))
@@ -24,7 +24,7 @@
     (let (first-item:i32 1)
       (printf "(")
       (doseq-iter (elem lit)
-        (let (node:ptr:Node (cast ptr:Node elem))
+        (let (node:ptr:Node (as ptr:Node elem))
           (when (= first-item 0) (printf " "))
           (cond (= (node kind) 0) (printf "%ld" (node i))
                 (= (node kind) 2) (printf "%s" (node s))

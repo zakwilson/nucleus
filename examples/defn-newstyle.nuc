@@ -44,7 +44,7 @@
 
 (defn main ():i32
   (printf "add=%d\n" (add 3 4))
-  (printf "add64=%ld\n" (add64 (cast i64 10) (cast i64 20)))
+  (printf "add64=%ld\n" (add64 10 20))
   (banner 7)
   (printf "boxv=%d\n" (_get (box-ptr 42) v))
   (match (maybe-pos 5)
@@ -54,5 +54,5 @@
     ((some v) (printf "maybe=%d\n" v))
     (none (printf "maybe=none\n")))
   (printf "min32=%d\n" (my-min 8 3))
-  (printf "min64=%ld\n" (my-min (cast i64 4) (cast i64 9)))
+  (printf "min64=%ld\n" (my-min 4 9))
   (return 0))

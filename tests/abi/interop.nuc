@@ -55,7 +55,7 @@
     (printf "big_sum=%lld\n" (big_sum @b)))
   (let (m:ptr:Mixed (alloca Mixed))
     (.set! m i 7)
-    (.set! m f (cast f32 1.5))
+    (.set! m f (unsafe/cast f32 1.5))
     (printf "mixed_get=%.1f\n" (mixed_get @m)))
   ; Nucleus -> Nucleus
   (let (p:ptr:Pair (alloca Pair))

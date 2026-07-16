@@ -13,12 +13,12 @@
 
 (defn drop (self:ptr:Res):void
   (printf "drop %d\n" (self id))
-  (free (cast ptr self)))
+  (free (as ptr self)))
 
 (extend Res Drop)
 
 (defn make-res (id:i32):ptr:Res
-  (let (r:ptr:Res (cast ptr:Res (malloc 4)))
+  (let (r:ptr:Res (as ptr:Res (malloc 4)))
     (.set! r id id)
     (return r)))
 

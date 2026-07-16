@@ -84,7 +84,7 @@
         rem:usize  (it rem)
         buf:ptr:ui8 (it buf))
     ; Search for separator in buf[0..rem).
-    (when (> slen (cast usize 0))
+    (when (> slen 0)
       ; Build a temporary StrView over the remaining buffer for strview-byte-find.
       (let ((haystack (ref StrView)) (alloca StrView))
         (.set! haystack data buf)
@@ -100,7 +100,7 @@
                  (.set! seg data buf)
                  (.set! seg len  k)
                  ; Advance past this segment and the separator.
-                 (.set! it buf (unsafe/ptr+ buf (cast i64 (+ k slen))))
+                 (.set! it buf (unsafe/ptr+ buf (as i64 (+ k slen))))
                  (.set! it rem (- rem (+ k slen)))
                  (return (deref seg))))
               (none
@@ -182,28 +182,28 @@
 (defn lines-iter-next ((it (ref LineIter))):StrView
   (let (buf:ptr:ui8 (it buf)
         rem:usize   (it rem)
-        i:usize     (cast usize 0)
+        i:usize     0
         found:i32   0
-        nl-pos:usize (cast usize 0))
+        nl-pos:usize 0)
     ; Scan for '\n'.
     (while (and (< i rem) (= found 0))
-      (when (= (cast ui32 (aref buf (cast i64 i))) (cast ui32 10))
+      (when (= (as ui32 (aref buf (as i64 i))) 10)
         (set! nl-pos i)
         (set! found 1))
-      (set! i (+ i (cast usize 1))))
+      (set! i (+ i 1)))
     (if (= found 1)
       (do
         ; Found '\n' at nl-pos. Line is buf[0..nl-pos], strip trailing '\r'.
         (let (line-end:usize nl-pos)
-          (when (and (> line-end (cast usize 0))
-                     (= (cast ui32 (aref buf (cast i64 (- line-end (cast usize 1))))) (cast ui32 13)))
-            (set! line-end (- line-end (cast usize 1))))
+          (when (and (> line-end 0)
+                     (= (as ui32 (aref buf (as i64 (- line-end 1)))) 13))
+            (set! line-end (- line-end 1)))
           (let ((seg (ref StrView)) (alloca StrView))
             (.set! seg data buf)
             (.set! seg len  line-end)
             ; Advance past the '\n'.
-            (.set! it buf (unsafe/ptr+ buf (cast i64 (+ nl-pos (cast usize 1)))))
-            (.set! it rem (- rem (+ nl-pos (cast usize 1))))
+            (.set! it buf (unsafe/ptr+ buf (as i64 (+ nl-pos 1))))
+            (.set! it rem (- rem (+ nl-pos 1)))
             (return (deref seg)))))
       (do
         ; No '\n' found: yield the remaining bytes as the last line.
@@ -244,9 +244,9 @@
 ; until the next step). iter-ref is a (ref SplitIter)/(ref LineIter).
 ; ---------------------------------------------------------------------------
 (defmacro doseq-split (binding &rest body)
-  (let (var-sym:ptr  ((cast ptr:Node binding) car)
-        iter-ref:ptr ((cast ptr:Node ((cast ptr:Node binding) cdr)) car)
+  (let (var-sym:ptr  ((unsafe/cast ptr:Node binding) car)
+        iter-ref:ptr ((unsafe/cast ptr:Node ((unsafe/cast ptr:Node binding) cdr)) car)
         raw-sym:ptr  (gensym))
     `(doseq-iter (~raw-sym ~iter-ref)
-       (let ((~var-sym (ref StrView)) (cast ptr:StrView ~raw-sym))
+       (let ((~var-sym (ref StrView)) (as ptr:StrView ~raw-sym))
          ~@body))))

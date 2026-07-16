@@ -8,10 +8,10 @@
 ; tprint: pick a printf format from the literal kind, then splice the
 ; original expression in.
 (defmacro tprint (x)
-  (cond (= ((cast ptr:Node x) kind) NODE-INT)   `(printf "%d\n" ~x)
-        (= ((cast ptr:Node x) kind) NODE-STR)   `(printf "%s\n" ~x)
-        (= ((cast ptr:Node x) kind) NODE-FLOAT) `(printf "%f\n" ~x)
-        true                                    `(printf "%lld\n" (cast i64 ~x))))
+  (cond (= ((unsafe/cast ptr:Node x) kind) NODE-INT)   `(printf "%d\n" ~x)
+        (= ((unsafe/cast ptr:Node x) kind) NODE-STR)   `(printf "%s\n" ~x)
+        (= ((unsafe/cast ptr:Node x) kind) NODE-FLOAT) `(printf "%f\n" ~x)
+        true                                    `(printf "%lld\n" (unsafe/cast i64 ~x))))
 
 (defn main ():int
   (tprint 42)            ; i32  → "%d\n"

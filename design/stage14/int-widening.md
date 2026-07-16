@@ -289,8 +289,10 @@ plus the lexer path:
 
 ### LW-5 — vestigial-cast sweep + docs
 
-**Status: test/doc slice DONE (2026-07-03); tree-wide cast sweep still
-PENDING (explicitly deferred, see below).** `examples/int-widening.nuc` was
+**Status: DONE (2026-07-15).** All batches complete — test/doc slice, src/,
+lib/ (both the macro-free files and the 6 `defmacro`-containing files), and
+examples/. See the per-batch write-ups below for counts, verification, and
+the three documented failure classes. `examples/int-widening.nuc` was
 added: castless `conj`/`insert`/`(v i)` invoke on `(Vector i64)` (LW-1/LW-2),
 a castless explicit `(return 5)` from an `:i64` function (LW-3), and
 `(take64 5000000000)` printing the untruncated value (LW-4) — expected output
@@ -458,35 +460,275 @@ sibling `2` literal in the same expression needed no cast (its branch's
 node-type is read from the multiplication's first operand, which is
 already `usize`). Re-verified zero-diff after the fix.
 
-`lib/` (48 sites, the 6 `defmacro`-containing files: `lib/arena.nuc` (7),
-`lib/combinators.nuc` (4), `lib/error.nuc` (1), `lib/macros.nuc` (4),
-`lib/parse.nuc` (22), `lib/string-split.nuc` (10)) and `examples/` (~222
-sites) remain deferred to future batches, per the original sequencing note
-below (casts remain valid no-ops there, so leaving them breaks nothing in
-the meantime).
+**Status: lib/ defmacro-containing files DONE (2026-07-15).** Swept the 6
+files excluded from batch 2: `lib/arena.nuc`, `lib/combinators.nuc`,
+`lib/error.nuc`, `lib/macros.nuc`, `lib/parse.nuc`, `lib/string-split.nuc`.
+Same per-file `perl -pi -e` sweep, verified per group with `make clean &&
+make && make test` (174/174 throughout).
 
-The tree-wide vestigial-cast deletion below remains **out of scope for this
-slice** and stays deferred to a future pass, per this doc's original
-sequencing note ("LW-5's per-file cast sweep can trail into later slots") —
-casts remain valid no-ops, so leaving them breaks nothing:
+| File | Removed | Kept |
+|---|---:|---:|
+| lib/parse.nuc | 22 | 0 |
+| lib/string-split.nuc | 10 | 0 |
+| lib/arena.nuc | 7 | 0 |
+| lib/combinators.nuc | 4 | 0 |
+| lib/macros.nuc | 4 | 0 |
+| lib/error.nuc | 1 | 0 |
+| **Total** | **48** | **0** |
 
-- Delete cast-on-literal forms across src/ (~319), lib/ (~450), examples/
-  (~222): most are removable *today* (plain paths), the `usize` cluster in
-  lib/ becomes removable after LW-1. Per-file, bisectable; since an
-  explicit `(cast i64 0)` and the implicit coercion emit the same
-  instruction, each file's removal is verifiable by **emitted-IR identity
-  diff** (the CStr-migration technique). Casts remain valid — stragglers
-  break nothing.
-- New test: `examples/int-widening.nuc` — castless collections ops
-  (`conj`/`(v i)`/HashMap), castless explicit returns, a big-literal
-  runtime check printing `5000000000`; negative tests for the ambiguity
-  error and the new range errors (compile-error fixtures, if the harness
-  grows support; otherwise assert via `build.sh` stderr in the test
-  script).
-- docs/types.md: a "widening and literals" section stating the actual
-  rules (literals adapt to any int where they fit; typed values widen
-  same-sign; exact beats widened; ambiguity is an error). Fix the
-  strview example's vestigial casts while touching it.
+**The "quasiquote string-pool refresh complication"** that excluded these
+files from batch 2 turned out to be real but narrow, and confined to
+exactly one file: `lib/macros.nuc`'s four sites (`doseq`, `doseq-iter`,
+`into`, `into-iter`) are not ordinary function bodies — they are the literal
+`` `(cast i32 0)` `` inside each macro's own quasiquote *expansion template*
+(the done-flag init `(let ((~done-sym i32) (cast i32 0)) ...)`). Removing
+one of these changes what code the macro emits at **every** call site
+tree-wide (these four macros are used throughout src/, lib/, and examples/),
+not just locally to the file — a materially larger blast radius than the
+other 47 sites, which all sit in ordinary function bodies. Investigated by
+snapshotting `build/nucleusc.ll` before the `lib/macros.nuc` edit and diffing
+after: the change was a clean, fully-explained removal of exactly 8 rodata
+constants (`@.str.N = ... c"cast\00"` ×4, `c"i32\00"` ×4 — one pair per
+macro, the string literals the quasiquote-building code no longer references
+to construct a `cast`/`i32` node) with **zero** other IR change — no SSA
+renumbering, no function-body differences. `make bootstrap` held the
+byte-identical fixed point on the **first** attempt; no `update-bootstrap`
+reconverge was needed (the string-pool shift was real but self-contained,
+not the kind that cascades into a divergent fixed point). All 6 files: no
+sites required restoring — every cast in this batch was genuinely vestigial.
+
+**Status: examples/ DONE (2026-07-15).** Swept all `.nuc` files under
+`examples/` with cast-on-literal sites (34 files, re-grepped at sweep start:
+231 sites — the doc's original ~222 estimate, expected drift). Grouped 5-6
+files per pass; verified with `make test` after each group (`examples/` is
+not part of `$(BIN)`'s dependency list, so no `make clean && make` was
+needed between groups — only the six lib/ files above required full
+rebuilds). One file, `examples/types.nuc`, was excluded from the sweep
+entirely: its sole site, `(cast i8 200)`, is LW-4's own documented
+narrowing-escape-hatch demo (200 doesn't fit signed i8; removing the cast
+would now be a compile-time range error, not a vestigial no-op) — confirmed
+by a pre-sweep scan of every `(cast TYPE N)` site in scope against its
+target type's representable range, which found this as the only
+out-of-range site tree-wide.
+
+| File | Removed | Kept |
+|---|---:|---:|
+| char-utf8-test.nuc | 40 | 0 |
+| strview-read-test.nuc | 20 | 0 |
+| handlers.nuc | 19 | 0 |
+| allocator-test.nuc | 13 | 0 |
+| errors.nuc | 13 | 0 |
+| comb-shapes.nuc | 11 | 0 |
+| value-maybe.nuc | 11 | 0 |
+| errptr.nuc | 10 | 0 |
+| iterator-test.nuc | 9 | 1 |
+| split-iter-test.nuc | 7 | 2 |
+| implicit-return.nuc | 5 | 1 |
+| listiter-test.nuc | 4 | 1 |
+| cond-value.nuc | 4 | 0 |
+| cstr-fold-test.nuc | 3 | 1 |
+| defn-newstyle.nuc | 4 | 0 |
+| signal.nuc | 5 | 1 |
+| string-protocols-test.nuc | 4 | 0 |
+| vector-lit-test.nuc | 4 | 0 |
+| string-test.nuc | 6 | 0 |
+| unions.nuc | 6 | 0 |
+| vector-test.nuc | 6 | 0 |
+| unsafe-spellings.nuc | 2 | 1 |
+| string-split-test.nuc | 2 | 0 |
+| assoc-iter-return.nuc | 1 | 0 |
+| assoc-types.nuc | 1 | 0 |
+| callable.nuc | 1 | 0 |
+| constructors.nuc | 1 | 0 |
+| implicit-cast.nuc | 1 | 0 |
+| list.nuc | 1 | 0 |
+| parametric.nuc | 3 | 0 |
+| phantom-tyvar-test.nuc | 3 | 0 |
+| rest-defn.nuc | 0 | 1 |
+| unsigned.nuc | 1 | 0 |
+| types.nuc (excluded, see above) | 0 | 1 |
+| **Total** | **221** | **10** |
+
+**Verification:** every example with a `tests/expected/*.out` fixture (32 of
+34) was covered by `make test`; the one without a fixture
+(`examples/comb-shapes.nuc`) was checked by direct compile+run. After the
+full sweep, every `examples/*.nuc` file (not just the swept ones) was
+compiled directly with `build/nucleusc` as a blast-radius check: all compile
+cleanly except two **pre-existing, unrelated** failures confirmed
+independent of this sweep — `comb-shapes.nuc` (a documented HEAD
+compile-time-JIT failure from the S3 defn-signature migration, `design/
+progress.md` line ~502, reproduced identically with the untouched OLD boot
+compiling the untouched original file) and `thread-macros.nuc` (a library-
+style file with no `main`, fails to *link*, not compile — untouched by this
+sweep, no fixture). `make bootstrap` holds the byte-identical fixed point
+throughout (examples/ isn't part of the compiler's own build, so this was
+never at risk, but was re-checked at the end regardless).
+
+**Ten sites were restored**, surfacing two failure classes beyond the one
+src/ batch 1 and lib/ batch 2 already documented (the "first operand's type"
+binop mistype and the if-branch join mistype) — both are the **same root
+cause** (a value-position join or a binop's static type trusting a bare
+literal's naive `i32` over a wider, non-literal sibling) manifesting through
+chokepoints the earlier batches hadn't exercised:
+
+1. **`match` arms join the same way `if`/`cond` branches do** (confirmed:
+   `type-join` is the single shared site, per conventions.md — this is not
+   a new mechanism, just a manifestation the earlier batches didn't hit).
+   `examples/signal.nuc`'s `grow` matched `(signal ...)` (a built-in
+   returning `(Maybe i64)`) with arms `((some sz) sz)` and `(none 0)`; the
+   bare `0` in the `none` arm mistyped the whole match as `i32` while the
+   `some` arm (bound from a real `i64`) was correctly typed — silently
+   wrong output (`granted: 0` instead of `16`) rather than a compile error,
+   because the fallback-path value (0) happens to be numerically identical
+   whether truncated or not, masking the bug in 3 of the 4 printed lines.
+   Only the one branch caught by a differing runtime value (`granted`)
+   exposed it. Bisected by restoring one candidate cast at a time (a nearby
+   `(* (deref ...) 2)` looked equally suspicious but was **not** the cause —
+   `_*`'s first operand is the typed `deref` value, so the "first operand's
+   type" rule types it correctly as `i64`; restoring only the `(none (cast
+   i64 0))` site fixed the output, confirming the match-arm join, not the
+   multiply, was the actual defect). Fix: restored just that one cast.
+2. **A protocol/generic-function constraint check doesn't consult tier-2
+   widening adaptation at all** — a distinct chokepoint from LW-1/LW-2's
+   fix, which scoped specifically to template-tier *method* resolution
+   (`generic-resolve-adapt-tier`), not standalone `&where`-constrained
+   *functions* like `reduce ((f (ref F)) (acc Acc) (it (ref I)) &where
+   ((FoldFn Acc T) F) ...)`. Calling `reduce` with a bare-literal
+   accumulator against a conformance whose `Acc` is `i64` (e.g. `(extend
+   ByteSum (FoldFn i64 ui8))`) now dies at compile time: `constraint
+   'FoldFn' parameter mismatch: expected i32, found i64` — the checker
+   compares the literal's naive `i32` against the conformance's declared
+   `i64` and rejects instead of adapting. Hit in five call sites across four
+   files (`examples/cstr-fold-test.nuc`, `iterator-test.nuc`,
+   `listiter-test.nuc`, `rest-defn.nuc`, `split-iter-test.nuc` ×2) — every
+   `reduce` call in the tree whose `FoldFn` conformance uses `Acc=i64` and
+   whose accumulator argument was a literal that fits `i32` (a literal
+   already outside `i32`'s range, like `lib/strview.nuc:107`'s FNV basis
+   constant, is unaffected — it emits truthfully at `i64` per LW-4 with no
+   ambiguity to adapt). Fix: restored the accumulator's cast at each site;
+   the underlying gap (teach the constraint checker the same tier-2
+   adaptation LW-1/LW-2 gave method resolution) is a further LW-6-shaped
+   follow-up, out of scope for this mechanical sweep.
+
+Both classes were flagged here as LW-6-shaped follow-ups — see LW-6 below,
+which fixes both.
+
+**Grand total across all LW-5 batches:** 924 vestigial `(cast TYPE N)` forms
+removed (test/doc slice's fixture additions aside), 59 kept as deliberate
+narrowing casts or genuine gap workarounds — close to the doc's original
+~991 estimate (counts drifted between scoping and execution throughout, as
+expected and noted per-batch). The tree-wide sweep is complete; remaining
+`(cast TYPE N)` sites are either legitimate narrowing (out-of-range
+literals) or mark one of the two failure classes LW-6 below fixes.
+
+### LW-6 — close the type-join and `&where`-constraint literal-widening gaps
+
+**Status: DONE (2026-07-15).** Both failure classes LW-5 surfaced (§3.5
+above) are root-caused and fixed, not just worked around with restored
+casts.
+
+**Class 1 — `type-join` (src/generics.nuc) collapses any two differently-
+kinded types to `void`, not just structurally incompatible ones.** Ground
+truth: `type-join` is called from `emit-cond`, `emit-match-clauses` (`match`
+over tagged unions, including `defenum` via delegation), and
+`emit-niche-match-arm` (niche `Maybe`/`Result` match, and transitively
+`if-some`/`when-some`/`unwrap-or`'s non-niche path via their own `cond`/
+union-eliminator lowering). None of the three sites' surrounding code
+distinguished "two genuinely incompatible types" (a real error) from "a bare
+int literal vs. a differently-widthed typed sibling" (should widen, exactly
+like `binop-coerce` already does for `+`/`-`/`*`) — both collapsed to `void`,
+silently discarding the phi (`(alloc-val ty-void null)`, no LLVM `phi`
+emitted at all). Traced via `examples/signal.nuc`'s `(match (signal ...)
+((some sz) sz) (none 0))`: `type-join(i64, i32)` (the `some` arm's real i64
+vs. the `none` arm's naive-i32 literal) hit the `void` fallback, and the
+enclosing `grow`'s return coercion silently treated the resulting null-`val`
+Val as `0` — masked in 3 of 4 test lines because the fallback value
+genuinely is `0`, exposed only where a real payload (`16`) was expected.
+`lib/vector.nuc`'s `vector-grow` (LW-5 batch 2's restored `(cast usize 4)`)
+is the same bug through `emit-cond` (an `if`, which `type-join`s just the
+same) — there it surfaced as a compile-time `let: init type mismatch`
+instead, since the joined value flowed into a declared-type check rather
+than a return.
+
+Fix: `type-join` gained two new `i32` params, `result-lit`/`bty-lit` (whether
+the `Val` that produced each side was `Val.is-lit`, LW-4's literal tag).
+When both sides are `is-int-type` and not `type-eq`: exactly one side
+literal → adopt the other (typed) side's type, no coercion instruction
+needed (a literal's emitted operand is a bare decimal constant, valid LLVM
+IR at any integer width — only the phi's declared type changes); both sides
+literal → adopt the wider kind; neither literal (two genuinely different
+*typed* values) → unchanged, still collapses to `void` (int-widening.md §3's
+non-goal: no implicit widening between typed values stands). The three call
+sites (`emit-cond`, `emit-match-clauses`, `emit-niche-match-arm`) each thread
+a running `result-lit` local (`emit-niche-match-arm`'s is a `ltbox` — an
+out-param box, since its two arms are separate function calls, mirroring the
+existing `rtbox`/`ttbox` pattern) computed as `result-lit AND this-arm-lit`
+after every join — true only while every branch folded in so far was itself
+a literal. Verified: `examples/signal.nuc`'s `(none 0)` and `lib/vector.nuc`'s
+`(if (= cap 0) 4 (* cap 2))` both compile castless with correct output
+(the `vector.nuc` fix needed the standard two-stage bootstrap dance —
+`make update-bootstrap` with the cast still in place so the OLD boot's own
+un-fixed `type-join` could compile the fix, then remove the cast and
+rebuild from the new boot — since the OLD boot's compiled-in `type-join` was
+still the buggy one and died on the now-cast-free source under its own
+old semantics, the same class of gcheck bootstrap gotcha conventions.md
+documents).
+
+**Class 2 — a `&where` constraint check doesn't consult tier-2 widening at
+all.** Root cause is one step upstream of where the error message (`recover-
+one-constraint`, generics.nuc) fires: `generic-method-bind`'s tier-1 exact
+unification (`unify-tpat`) eagerly binds a bare-tyvar parameter (`reduce`'s
+`acc:Acc`) from its argument's *naive* type — for a literal, that's `i32`
+regardless of what the type should really be — before the `&where` clause's
+associated-type recovery (`recover-assoc-into`) ever gets a chance to
+determine the same tyvar from a real conformance (`(extend ByteSum (FoldFn
+i64 ui8))`). By the time recovery runs, `Acc` is already (wrongly) bound to
+`i32`, so recovery takes its "CONSTRAIN" path instead of "RECOVER" and dies
+comparing the wrong-already-bound `i32` against the conformance's real
+`i64` — `constraint 'FoldFn' parameter mismatch: expected i32, found i64`.
+Fix: `generic-method-bind` gained an `arg-nodes` parameter (the call-site
+argument nodes, threaded from every caller that has them —
+`generic-resolve`'s tier-1 loop and `valid-resolve-type`; the two callers
+with no real call site, `generic-binds-for`'s signature-only probe and
+`abstract-call-via-generic`'s A2 body-check, pass `null`). Per argument, if
+its param pattern is a bare, still-*unbound* declared tyvar (checked via the
+same `tyvar-index-of` lookup `unify-tpat` itself uses) and
+`node-is-int-literal` says the argument is a literal, the binding is
+*deferred* — collected but not unified — until after `recover-assoc-into`
+runs; only if the tyvar is *still* unbound post-recovery does the deferred
+literal fall back to today's naive binding (the pre-fix behavior, unchanged
+whenever there's no conformance to recover from). The "still unbound at
+this point in the pass" check is required, not optional: an earlier
+non-deferred argument in the *same* pass (e.g. `conj`'s receiver `(self (ref
+(Vector T)))`, a compound pattern processed immediately, binding `T` before
+the bare-tyvar `elem:T` argument is even considered) can already have bound
+the tyvar — deferring unconditionally in that case silently skipped
+`elem`'s unification entirely, letting tier-1 wrongly "succeed" and then
+tier-2 (`generic-resolve-adapt-tier`) *also* independently stamp the same
+template, producing `invalid redefinition of function 'conj.pVector.i64.i64'`
+(caught by `make test` on the first attempt; fixed by adding the unbound
+check before deferring). **Lockstep**: `node-type-call`'s own path to the
+same constraint check (`generic-binds-for`, called with `line=0` — hence the
+`file:0:` in the original error, a probe with no real call-site line) needed
+the identical `arg-nodes` threading, or the *type-model* probe dies on the
+exact same widened call before emission ever runs (`node-type-call` is
+invoked as part of ordinary expression evaluation, not just diagnostics, so
+this wasn't optional). Verified: all five `reduce` call sites LW-5 had to
+cast (`cstr-fold-test.nuc`, `iterator-test.nuc`, `listiter-test.nuc`,
+`rest-defn.nuc`, `split-iter-test.nuc` ×2) now compile with a bare literal
+accumulator and produce byte-identical output to the cast version.
+
+**Verification (both fixes together):** `make clean && make && make test`
+174/174 after each edit; `make bootstrap` holds the byte-identical fixed
+point (a real logic change, not the LW-5 sweep's mechanical no-op, so
+byte-identity here means the compiler's own source doesn't exercise either
+gap anywhere — true for both, confirmed by the fixed point holding without
+needing `update-bootstrap` for the `type-join`/`generic-method-bind` source
+edits themselves, only for the one downstream `lib/vector.nuc` cast
+removal). A full compile-only pass over every `examples/*.nuc` file (the
+LW-5 blast-radius check, re-run) found no new failures beyond the two
+already-documented pre-existing ones (`comb-shapes.nuc`, `thread-macros.nuc`,
+both unrelated to this work).
 
 ## 4. Verification and bootstrap convergence
 

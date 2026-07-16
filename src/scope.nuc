@@ -13,7 +13,7 @@
 (defn scope-new (parent:raw:Scope):ref:Scope
   (let (s:ref:Scope (new Scope))
     (.set! s parent parent)
-    (.set! s cleanup-slots (cast (ref (Vector (ref Cleanup))) (vector-new-in (addr-of g-arena-alloc))))
+    (.set! s cleanup-slots (as (ref (Vector (ref Cleanup))) (vector-new-in (addr-of g-arena-alloc))))
     (return s)))
 
 (defn scope-define (s:raw:Scope name:CStr type:raw:Type ir-name:ptr is-local:i32):ref:Sym
@@ -29,19 +29,19 @@
     (when (= (sc len) (sc cap))
       (let (nc:i32 8)
         (when (!= (sc cap) 0) (set! nc (* (sc cap) 2)))
-        (let (ns:ptr (arena-alloc (* (cast i64 nc) (sizeof Sym))))
+        (let (ns:ptr (arena-alloc (* (as i64 nc) (sizeof Sym))))
           (when (!= (sc len) 0)
-            (memcpy ns (sc syms) (* (cast i64 (sc len)) (sizeof Sym))))
+            (memcpy ns (sc syms) (* (as i64 (sc len)) (sizeof Sym))))
           (.set! sc syms ns)
           (.set! sc cap nc))))
-    (let (sym:ptr:Sym (cast ptr:Sym (unsafe/ptr+ (cast ptr:Sym (sc syms)) (sc len))))
+    (let (sym:ptr:Sym (as ptr:Sym (unsafe/ptr+ (as ptr:Sym (sc syms)) (sc len))))
       (.set! sym name name)
       (.set! sym type type)
       (.set! sym ir-name ir-name)
       (.set! sym is-local is-local)
       (.set! sym home s)
       (.set! sc len (+ (sc len) 1))
-      (return (cast ref:Sym sym)))))
+      (return (as ref:Sym sym)))))
 
 (defn scope-lookup (s:raw:Scope name:CStr):?ptr:Sym
   (let (cur:raw:Scope s)
@@ -58,9 +58,9 @@
         (when (= (sc parent) null)
           (set! key (qualify-name name)))
         (while (>= i 0)
-          (let (sym:ptr:Sym (cast ptr:Sym (unsafe/ptr+ (cast ptr:Sym (sc syms)) i)))
+          (let (sym:ptr:Sym (as ptr:Sym (unsafe/ptr+ (as ptr:Sym (sc syms)) i)))
             (when (= (sym name) key)
-              (return (cast ptr sym))))
+              (return (as ptr sym))))
           (set! i (- i 1)))
         (set! cur (sc parent)))))
   (return null))
@@ -80,7 +80,7 @@
 ; return that unwinds past it) by emit-scope-cleanups, in reverse order.
 (defn scope-push-cleanup (s:raw:Scope slot:ptr):void
   (let (sc:raw:Scope s)
-    (conj (sc cleanup-slots) (cast ref:Cleanup slot))))
+    (conj (sc cleanup-slots) (as ref:Cleanup slot))))
 
 ; ============================================================
 ; String literal table
@@ -89,9 +89,9 @@
 (defn intern-string (bytes:ptr len:i32):i32
   ; The id is the element's position in g-strs; each StrLit is individually
   ; arena-allocated and its pointer appended in order.
-  (let (id:i32 (cast i32 (count g-strs))
-        sl:ref:StrLit (cast ref:StrLit (arena-alloc (sizeof StrLit))))
-    (.set! sl bytes (arena-strndup bytes (cast i64 len)))
+  (let (id:i32 (unsafe/cast i32 (count g-strs))
+        sl:ref:StrLit (as ref:StrLit (arena-alloc (sizeof StrLit))))
+    (.set! sl bytes (arena-strndup bytes (as i64 len)))
     (.set! sl len len)
     (.set! sl id id)
     (conj g-strs sl)
@@ -99,10 +99,10 @@
 
 (defn intern-string (sv:StrView):i32
   (let (p:ptr:StrView (addr-of sv)
-        id:i32 (cast i32 (count g-strs))
-        sl:ref:StrLit (cast ref:StrLit (arena-alloc (sizeof StrLit))))
-    (.set! sl bytes (arena-strndup (cast ptr (p data)) (cast i64 (p len))))
-    (.set! sl len (cast i32 (p len)))
+        id:i32 (unsafe/cast i32 (count g-strs))
+        sl:ref:StrLit (as ref:StrLit (arena-alloc (sizeof StrLit))))
+    (.set! sl bytes (arena-strndup (as ptr (p data)) (as i64 (p len))))
+    (.set! sl len (unsafe/cast i32 (p len)))
     (.set! sl id id)
     (conj g-strs sl)
     (return id)))
@@ -125,7 +125,7 @@
   (set! g-tmp 0)
   (set! g-label 0)
   (set! g-block-term 0)
-  (set! g-lbl-tbl (cast (ref (Vector (ref LabelEntry))) (vector-new-in (addr-of g-arena-alloc))))
+  (set! g-lbl-tbl (unsafe/cast (ref (Vector (ref LabelEntry))) (vector-new-in (addr-of g-arena-alloc))))
   (set! g-cur-fname null)
   (set! g-fn-ret-abi null)
   (set! g-fn-sret-name null)
@@ -133,9 +133,9 @@
   (set! g-loop-depth 0)
   (set! g-nundo (vector-new-in (addr-of g-arena-alloc)))
   (set! g-entry-stream (open_memstream (addr-of g-entry-bufp)
-                                       (cast ptr (addr-of g-entry-sizep))))
+                                       (as ptr (addr-of g-entry-sizep))))
   (set! g-body-stream (open_memstream (addr-of g-body-bufp)
-                                      (cast ptr (addr-of g-body-sizep)))))
+                                      (as ptr (addr-of g-body-sizep)))))
 
 ; True while codegen is redirected into a macro/compile-time JIT module rather
 ; than the main program module (g-decl-out is swapped away from g-decl-stream).
@@ -155,8 +155,8 @@
 ; static ptr/CStr tag, so there is no benefit to retyping here and it would
 ; only invite the same trap the next time a null-guard is added.
 (defn program-defn-lookup (irn:ptr):?ptr:ProgDefn
-  (dotimes (i (cast i32 (count g-program-defns)))
-    (let (pd:ref:ProgDefn (invoke g-program-defns (cast usize i)))
+  (dotimes (i (unsafe/cast i32 (count g-program-defns)))
+    (let (pd:ref:ProgDefn (invoke g-program-defns (as usize i)))
       (when (= (strcmp (pd ir-name) irn) 0)
         (return pd))))
   (return null))
@@ -173,8 +173,8 @@
 (defn program-defn-record (irn:ptr ret:raw:Type ptypes:ptr nparams:i32 variadic:i32):void
   (when (!= (in-jit-module) 0) (return))
   (when (= irn null) (return))
-  (when (!= (cast ptr (program-defn-lookup irn)) null) (return))
-  (let (pd:ref:ProgDefn (cast ref:ProgDefn (arena-alloc (sizeof ProgDefn))))
+  (when (!= (as ptr (program-defn-lookup irn)) null) (return))
+  (let (pd:ref:ProgDefn (as ref:ProgDefn (arena-alloc (sizeof ProgDefn))))
     (.set! pd ir-name (intern-str irn))
     (.set! pd ret ret)
     (.set! pd ptypes ptypes)

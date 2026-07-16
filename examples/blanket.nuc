@@ -27,7 +27,7 @@
   (printf "id i32   = %d\n" (id 42))
   (printf "id f64   = %g\n" (id 2.75))
   (printf "first2   = %d\n" (first2 10 20))
-  (let (p:ptr:Point (cast ptr:Point (malloc (cast i64 (sizeof Point)))))
+  (let (p:ptr:Point (as ptr:Point (malloc (as i64 (sizeof Point)))))
     (.set! p x 5)
     (.set! p y 6)
     ; id returns the same pointer; Struct gate accepts it.

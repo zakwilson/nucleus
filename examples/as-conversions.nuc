@@ -25,7 +25,7 @@
 ; is meaningful). `as` admits registered defcast rules into its safe set exactly
 ; as the implicit machinery does.
 (defn id-to-ptr (n:i64):ptr
-  (return (cast ptr n)))
+  (return (unsafe/cast ptr n)))
 (defcast i64 ptr id-to-ptr)
 
 ; int -> int widening: an i32 parameter widened to i64.
@@ -43,7 +43,7 @@
 ; Produce an f32 value (an f32 literal genuinely needs a narrowing cast — that is
 ; `unsafe/cast` / defcast territory, not `as`; here it just feeds the fpext demo).
 (defn seven-halves ():f32
-  (return (cast f32 3.5)))
+  (return (unsafe/cast f32 3.5)))
 
 ; weakening (ref Rec) -> (raw Rec): the callee accepts a non-null ref, weakens the
 ; contract to a nullable raw, then reads a field through it (raw is derefable).
@@ -70,7 +70,7 @@
   ;   - (as ptr:Rec p)   the void* hatch: elem-less bare ptr -> typed pointer
   ;   - (as raw:Rec ...) inside peek-kind: (ref Rec) -> (raw Rec) weakening
   ;   - (as ptr r)       weakening a typed pointer back to a bare `ptr`
-  (with (p:ptr (malloc (cast i64 (sizeof Rec))))
+  (with (p:ptr (malloc (as i64 (sizeof Rec))))
     (when (!= p null)
       (let (r:ptr:Rec (as ptr:Rec p))
         (.set! r kind 7)

@@ -74,28 +74,28 @@
 (defn keyword-intern ((cs CStr)):Keyword
   ; Lazy table init.
   (when (= g-keyword-table null)
-    (set! g-keyword-table (malloc (* (cast i64 KEYWORD-MAX) (sizeof Keyword)))))
-  (let (tbl:ptr:Keyword (cast ptr:Keyword g-keyword-table)
+    (set! g-keyword-table (malloc (* (as i64 KEYWORD-MAX) (sizeof Keyword)))))
+  (let (tbl:ptr:Keyword (as ptr:Keyword g-keyword-table)
         n:usize g-keyword-count
         i:usize 0)
     ; Look for an existing entry with the same name bytes.
     (while (< i n)
-      (let (e:ptr:Keyword (cast ptr:Keyword (unsafe/ptr+ tbl (cast i32 i)))
-            sv:ptr:StrView (cast ptr:StrView (e name)))
-        (when (= (strcmp (strview-to-cstr sv) (cast ptr cs)) 0)
+      (let (e:ptr:Keyword (as ptr:Keyword (unsafe/ptr+ tbl (unsafe/cast i32 i)))
+            sv:ptr:StrView (as ptr:StrView (e name)))
+        (when (= (strcmp (strview-to-cstr sv) (as ptr cs)) 0)
           (return (deref e))))
       (set! i (+ i 1)))
     ; Miss: append a new entry.
-    (when (>= n (cast usize KEYWORD-MAX))
+    (when (>= n (as usize KEYWORD-MAX))
       (keyword-overflow))
-    (let (slen:i64 (strlen (cast ptr cs))
+    (let (slen:i64 (strlen (as ptr cs))
           ; Copy the name bytes NUL-terminated so strview-to-cstr stays sound.
           buf:ptr (malloc (+ slen 1)))
-      (memcpy buf (cast ptr cs) (+ slen 1))
-      (let (sv:ptr:StrView (cast ptr:StrView (malloc (cast i64 (sizeof StrView)))))
-        (.set! sv data (cast ptr:ui8 buf))
-        (.set! sv len  (cast usize slen))
-        (let (e:ptr:Keyword (cast ptr:Keyword (unsafe/ptr+ tbl (cast i32 n)))
+      (memcpy buf (as ptr cs) (+ slen 1))
+      (let (sv:ptr:StrView (as ptr:StrView (malloc (as i64 (sizeof StrView)))))
+        (.set! sv data (as ptr:ui8 buf))
+        (.set! sv len  (as usize slen))
+        (let (e:ptr:Keyword (as ptr:Keyword (unsafe/ptr+ tbl (unsafe/cast i32 n)))
               h:usize (strview-hash sv))
           (.set! e name sv)
           (.set! e id   n)
@@ -108,7 +108,7 @@
 ; Lets callers print or further-inspect a keyword without touching the layout.
 ; ---------------------------------------------------------------------------
 (defn keyword-name ((self (ref Keyword))):ref:StrView
-  (return (cast ref:StrView (cast ptr (self name)))))
+  (return (as ref:StrView (as ptr (self name)))))
 
 ; ---------------------------------------------------------------------------
 ; Conformances.

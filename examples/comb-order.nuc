@@ -27,7 +27,7 @@
 
 (defn print-string ((s (ref String))):void
   (let (sv:StrView (string-as-view s))
-    (printf "%.*s" (cast i32 ((addr-of sv) len)) (cast ptr ((addr-of sv) data)))))
+    (printf "%.*s" (unsafe/cast i32 ((addr-of sv) len)) (as ptr ((addr-of sv) data)))))
 
 (defn main ():i32
   (with ((v (ref (Vector i32))) (alloca (Vector i32)))

@@ -12,8 +12,8 @@
 ; Compiling this must FAIL with:
 ;   "ambiguous overload for 'f' under argument widening"
 
-(defn f (x:i64):i32 (return (cast i32 x)))
-(defn f (x:ui8):i32 (return (cast i32 x)))
+(defn f (x:i64):i32 (return (unsafe/cast i32 x)))
+(defn f (x:ui8):i32 (return (as i32 x)))
 
 (defn main ():i32
   (return (f 5)))

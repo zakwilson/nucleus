@@ -37,7 +37,7 @@
 (extend Double (UnaryFn i32 i32))
 
 (defn apply ((self (ref Double)) (x i32)) i32
-  (return (* x (cast i32 2))))
+  (return (* x 2)))
 
 ; ---------------------------------------------------------------------------
 ; §2.5 Standalone generic: collect-all.

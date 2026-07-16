@@ -20,30 +20,30 @@
 (defvar g-arena-cap:i64 0)
 
 (defn arena-init ():void
-  (set! g-arena (malloc (cast i64 ARENA-SIZE)))
+  (set! g-arena (malloc (as i64 ARENA-SIZE)))
   (when (= g-arena null)
         (do (perror "arena malloc") (exit 1)))
-  (set! g-arena-used (cast i64 0))
-  (set! g-arena-cap (cast i64 ARENA-SIZE)))
+  (set! g-arena-used 0)
+  (set! g-arena-cap (as i64 ARENA-SIZE)))
 
 (defn arena-grow (min-size:i64):void
   (let (new-cap:i64 g-arena-cap)
     (while (< new-cap min-size)
-      (set! new-cap (* new-cap (cast i64 2))))
+      (set! new-cap (* new-cap 2)))
     (let (new-arena:ptr (malloc new-cap))
       (when (= new-arena null)
         (do (perror "arena grow") (exit 1)))
       (set! g-arena new-arena)
-      (set! g-arena-used (cast i64 0))
+      (set! g-arena-used 0)
       (set! g-arena-cap new-cap))))
 
 (defn arena-alloc (n:i64):ptr
-  (when (= g-arena-cap (cast i64 0))
+  (when (= g-arena-cap 0)
     (arena-init))
-  (set! n (bit-and (+ n (cast i64 7)) (cast i64 -8)))
+  (set! n (bit-and (+ n 7) -8))
   (when (> (+ g-arena-used n) g-arena-cap)
     (arena-grow n))
-  (let (p:ptr (unsafe/ptr+ (cast ptr:i8 g-arena) g-arena-used))
+  (let (p:ptr (unsafe/ptr+ (as ptr:i8 g-arena) g-arena-used))
     (set! g-arena-used (+ g-arena-used n))
     (memset p 0 n)
     (return p)))
@@ -54,12 +54,12 @@
 ; result is a valid, zero-initialised T* — hence the non-null (ref T). Collapses
 ; the cast + sizeof boilerplate for the common "allocate a single struct" case.
 (defmacro new (T)
-  `(cast (ref ~T) (arena-alloc (sizeof ~T))))
+  `(as (ref ~T) (arena-alloc (sizeof ~T))))
 
 (defn arena-strndup (s:ptr n:i64):ptr
-  (let (p:ptr (arena-alloc (+ n (cast i64 1))))
+  (let (p:ptr (arena-alloc (+ n 1)))
     (memcpy p s n)
-    (aset! (cast ptr:i8 p) n (cast i8 0))
+    (aset! (as ptr:i8 p) n 0)
     (return p)))
 
 (defn arena-strdup (s:ptr):ptr

@@ -18,7 +18,7 @@
 (defn main ():i32
   (set! g-private-counter 0)
   (let (result:i32 (helper-add 3 4)
-        at-max:i32 (helper-add (cast i32 PRIVATE-MAX) 0))
+        at-max:i32 (helper-add (as i32 PRIVATE-MAX) 0))
     (inc! g-private-counter)
     (printf "%d\n" result)
     (printf "%d\n" g-private-counter)

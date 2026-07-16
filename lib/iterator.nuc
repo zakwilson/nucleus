@@ -66,7 +66,7 @@
 (defn next ((self (ref I64ArrayIter))) (Maybe i64)
   (when (>= (self pos) (self len))
     (return none))
-  (let (v:i64 (aref (self data) (cast i64 (self pos))))
+  (let (v:i64 (aref (self data) (as i64 (self pos))))
     (.set! self pos (+ (self pos) 1))
     (return (some v))))
 

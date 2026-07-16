@@ -29,16 +29,16 @@
   ; Class 1 — unsafe/cast is today's `cast`, verbatim: same-width sign
   ; reinterpret, no IR difference between the two spellings.
   (let (n:i32 -1)
-    (printf "cast            = %u\n" (cast ui32 n))
+    (printf "cast            = %u\n" (as ui32 n))
     (printf "unsafe/cast     = %u\n" (unsafe/cast ui32 n)))
 
   ; Class 2 — unsafe/ptr+ is today's `ptr+`, verbatim: both compute the same
   ; element address, so writes through one are visible through the other.
-  (let (p:ptr:Pair (cast ptr:Pair (malloc (* (cast i64 2) (sizeof Pair)))))
+  (let (p:ptr:Pair (as ptr:Pair (malloc (* (as i64 2) (sizeof Pair)))))
     (.set! p a 10)
     (.set! p b 20)
-    (let (q:ptr:Pair (ptr+ p (cast i32 1))
-          r:ptr:Pair (unsafe/ptr+ p (cast i32 1)))
+    (let (q:ptr:Pair (ptr+ p 1)
+          r:ptr:Pair (unsafe/ptr+ p 1))
       (.set! q a 30)
       (.set! q b 40)
       (printf "ptr+            = a=%d b=%d\n" (q a) (q b))
@@ -46,7 +46,7 @@
 
   ; Class 2 — unsafe/funcall-ptr-i32 is today's `funcall-ptr-i32`, verbatim:
   ; both splice the same fn-pointer operand into an `i32 ()` indirect call.
-  (let (fp:ptr (cast ptr zero-arg-answer))
+  (let (fp:ptr (unsafe/cast ptr zero-arg-answer))
     (printf "funcall-ptr-i32 = %d\n" (funcall-ptr-i32 fp))
     (printf "unsafe/funcpi32 = %d\n" (unsafe/funcall-ptr-i32 fp)))
 

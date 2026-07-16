@@ -41,7 +41,7 @@
     (conj v 3)
     (conj v 7)
     (conj v 9)
-    (printf "count=%llu\n" (cast ui64 (count v)))         ; count=3
+    (printf "count=%llu\n" (as ui64 (count v)))         ; count=3
 
     ; LW-1: castless invoke, (v i) — the literal index adapts to usize.
     (printf "v[1]=%lld\n" (v 1))                          ; v[1]=7
@@ -49,7 +49,7 @@
     ; LW-1: castless insert — both the index and element literals adapt.
     (insert v 1 42)
     (printf "after insert v[1]=%lld\n" (v 1))             ; after insert v[1]=42
-    (printf "count=%llu\n" (cast ui64 (count v)))         ; count=4
+    (printf "count=%llu\n" (as ui64 (count v)))         ; count=4
 
     (printf "five=%lld\n" (five))                         ; five=5
 

@@ -25,12 +25,12 @@
   ; the CStr `=` is 1 (content) while the raw ptr `=` is 0 (identity).
   (let (buf:ptr:i8 (alloca i8 8))
     (strcpy buf "foo")
-    (printf "copy = foo  : %d\n" (= (cast CStr buf) "foo"))
-    (printf "copy ptr==  : %d\n" (= (cast ptr buf) (cast ptr "foo"))))
+    (printf "copy = foo  : %d\n" (= (as CStr buf) "foo"))
+    (printf "copy ptr==  : %d\n" (= (as ptr buf) (as ptr "foo"))))
 
   ; Through the Eq-bounded generic (T := CStr). Stage 14 NS-3: a bare "…" is now a
   ; StrView, so cast to CStr to keep binding this generic at CStr (StrView's Eq is
   ; import-gated in lib/strview.nuc and not pulled in here).
-  (printf "same hi hi  : %d\n" (same (cast CStr "hi") (cast CStr "hi")))
-  (printf "same hi yo  : %d\n" (same (cast CStr "hi") (cast CStr "yo")))
+  (printf "same hi hi  : %d\n" (same (as CStr "hi") (as CStr "hi")))
+  (printf "same hi yo  : %d\n" (same (as CStr "hi") (as CStr "yo")))
   (return 0))

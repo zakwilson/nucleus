@@ -351,10 +351,15 @@ parameter — kept as-is; only a rare malformed-ret diagnostic reads "fn:" for a
 defn. (2) The `emit-defn` early `< 4` guard was refined so a bare-name (new-style)
 defn missing its return operand emits `defn-parse-sig`'s **targeted** message
 (error path only; bootstrap IR unaffected); legacy bodyless names keep "bad form".
-(3) Pre-existing, out of S1 scope: `--emit-cheader` does not skip generic
-templates, so a bounded-generic `defn` emits garbage C (`struct T gmax(…)`) in
-**both** styles — the cheader dispatch (`cheader.nuc:1062`) needs a
-`defn-is-generic-template` guard, tracked separately.
+(3) Pre-existing, out of S1 scope, closed 2026-07-15: `--emit-cheader` did not
+skip generic templates, so a bounded-generic `defn` emitted garbage C
+(`struct T gmax(…)`) in **both** styles. Fixed by calling the existing
+`defn-is-generic-template` predicate (src/generics.nuc:932 — already the
+single source of truth the prescan and `emit-defn`'s own skip both consult)
+from `emit-cheader-declare` (cheader.nuc), emitting a `/* NAME: generic
+template; not exported */` comment instead. Verified against both template
+shapes (`&where`-bounded and receiver-tyvar-inferred); `make test` 174/174,
+`make bootstrap` holds.
 
 **Phase S2 — boot refresh: DONE (2026-07-04).** `make update-bootstrap`
 regenerated `boot/nucleusc.ll` from the S1 dual-accept-capable `build/nucleusc`;
