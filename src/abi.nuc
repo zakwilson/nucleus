@@ -26,7 +26,7 @@
 ; `invoke` — sound because every caller loops under the `num-fields` bound, so a
 ; null `fields` is never indexed.
 (defn field-at (fields:(raw (Vector (ref Field))) i:i32):ref:Field
-  (return (invoke (cast (ref (Vector (ref Field))) fields) (cast usize i))))
+  (return (invoke (unsafe/cast (ref (Vector (ref Field))) fields) (as usize i))))
 
 ; Populate a StructDef's `fields` Vector from parallel name/type arrays and set
 ; the cached `num-fields` count. Names are already interned by the caller (the
@@ -37,8 +37,8 @@
   (let ((fields-vec (ref (Vector (ref Field)))) (vector-new-in (addr-of g-arena-alloc)))
     (dotimes (i:i32 nfields)
       (let (rec:ref:Field (new Field))
-        (.set! rec name (aref (cast ptr:ptr fnames) i))
-        (.set! rec type (cast raw:Type (aref (cast ptr:ptr ftypes) i)))
+        (.set! rec name (aref (as ptr:ptr fnames) i))
+        (.set! rec type (as raw:Type (aref (as ptr:ptr ftypes) i)))
         (conj fields-vec rec)))
     (.set! sd fields fields-vec)
     (.set! sd num-fields nfields)))
@@ -58,7 +58,7 @@
     (dotimes (i:i32 np)
       (let (rec:ref:Field (new Field))
         (.set! rec name null)
-        (.set! rec type (cast raw:Type (aref (cast ptr:ptr ptypes) i)))
+        (.set! rec type (as raw:Type (aref (as ptr:ptr ptypes) i)))
         (conj pv rec)))
     (return pv)))
 
@@ -163,12 +163,12 @@
             fsz:i32 (abi-sizeof ft))
         (set! off (abi-align-up off fa))
         (let (fabs:i32 (+ base off)
-              fk:i32 ((cast ptr:Type ft) kind))
+              fk:i32 ((as ptr:Type ft) kind))
           ; Does this field overlap [lo, hi)?
           (when (and (< fabs hi) (> (+ fabs fsz) lo))
             (if (or (= fk TY-STRUCT) (= fk TY-UNION))
               (let (sub:i32 (abi-class-eightbyte
-                              ((cast ptr:Type ft) sdef) fabs lo))
+                              ((as ptr:Type ft) sdef) fabs lo))
                 (when (> sub cls) (set! cls sub)))
               (if (!= (is-float-type ft) 0)
                 (let (fc:i32 (if (= fk TY-F64) 2 1))
@@ -192,7 +192,7 @@
 ; Classify a type for the SysV aggregate ABI. Returns an AbiInfo*. Non-struct
 ; types are ABI-DIRECT (byte-identical to pre-ABI codegen).
 (defn abi-classify (t:raw:Type):raw:AbiInfo
-  (let (info:ptr:AbiInfo (cast ptr:AbiInfo (arena-alloc (sizeof AbiInfo))))
+  (let (info:ptr:AbiInfo (as ptr:AbiInfo (arena-alloc (sizeof AbiInfo))))
     (.set! info kind ABI-DIRECT)
     (.set! info reg0 null)
     (.set! info reg1 null)
@@ -321,8 +321,8 @@
 ; eightbyte(s) and returns the reg(s).
 (defn emit-struct-ret (v:raw:Val):void
   (let (vv:raw:Val v
-        info:ptr:AbiInfo (cast ptr:AbiInfo g-fn-ret-abi)
-        k:i32 ((cast ptr:AbiInfo g-fn-ret-abi) kind))
+        info:ptr:AbiInfo (as ptr:AbiInfo g-fn-ret-abi)
+        k:i32 ((as ptr:AbiInfo g-fn-ret-abi) kind))
     ; By-pointer return (struct literal `(ref S)` / closure `(ref Env)`): the
     ; struct bytes live at `(vv val)`. Load eightbyte(s) / the whole aggregate
     ; straight from that address — never `store` the pointer itself.
@@ -527,10 +527,10 @@
     ; pass the chameleon through unmaterialized (a bare ptr typed as %StrView).
     (when (and (!= (vv is-lit) 0) (!= (type-is-strview src) 0))
       (when (or (= dk TY-PTR) (= dk TY-CSTR))
-        (let (rv:ptr:Val (cast ptr:Val (alloc-val target (vv val))))
+        (let (rv:ptr:Val (as ptr:Val (alloc-val target (vv val))))
           (.set! rv taint (vv taint))
           (.set! rv taint-frame (vv taint-frame))
-          (return (cast ptr rv))))
+          (return (as ptr rv))))
       (when (!= (type-is-strview target) 0)
         (let (v0:ptr (new-tmp)
               v1:ptr (new-tmp)
@@ -559,11 +559,11 @@
     ; ptr is expected, and a ptr usable where a CStr slot is declared.
     (when (or (and (= sk TY-CSTR) (= dk TY-PTR))
               (and (= sk TY-PTR) (= dk TY-CSTR)))
-      (let (rv:ptr:Val (cast ptr:Val (alloc-val target (vv val))))
+      (let (rv:ptr:Val (as ptr:Val (alloc-val target (vv val))))
         (.set! rv taint (vv taint))
         ; Stage 13 L1: carry the frame-region flag through CStr<->ptr coercion.
         (.set! rv taint-frame (vv taint-frame))
-        (return (cast ptr rv))))
+        (return (as ptr rv))))
     ; Stage 14 NS-2 (design/stage14/native-strings.md): a StrView borrows to a
     ; CStr/ptr for free by taking its `data` field — a literal's backing rodata is
     ; NUL-terminated at data[len], so `data` is a valid char*. Mirrors the
@@ -632,14 +632,14 @@
   (let (bad:i32 (ir-name-illegal-char ir-name))
     (when (>= bad 0)
       (let (cbuf:ptr (arena-alloc 2))
-        (aset! (cast ptr:i8 cbuf) 0 (cast i8 bad))
-        (aset! (cast ptr:i8 cbuf) 1 0)
+        (aset! (as ptr:i8 cbuf) 0 (unsafe/cast i8 bad))
+        (aset! (as ptr:i8 cbuf) 1 0)
         (die-at line
           (fmt-3s "illegal character '%s' in generated symbol for '%s' (ir-name '%s') — LLVM identifiers allow only [A-Za-z0-9$._-]"
                   cbuf orig-name ir-name))))))
 
 (defn register-struct (name:CStr):ref:StructDef
-  (when (>= (cast i32 (count g-structs)) MAX-STRUCTS)
+  (when (>= (unsafe/cast i32 (count g-structs)) MAX-STRUCTS)
     (fprintf stderr "nucleusc: too many structs\n") (exit 1))
   (let (sd:ptr:StructDef (new StructDef))
     (.set! sd name name)

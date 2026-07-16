@@ -14,8 +14,8 @@
 (defvar trap-zero:i32:volatile 0)
 
 (defn main ():i32
-  (printf "(and) = %d\n" (cast i32 (and)))
-  (printf "(or)  = %d\n" (cast i32 (or)))
+  (printf "(and) = %d\n" (as i32 (and)))
+  (printf "(or)  = %d\n" (as i32 (or)))
 
   ; 1-arg returns the operand UNCHECKED. The operand is an i32 value (not i1),
   ; so the result is the value itself — 5, not 1. This distinguishes the new
@@ -25,17 +25,17 @@
 
   (let (a:i32 2  b:i32 3  c:i32 4  d:i32 5)
     ; 4-arg and: all-true yields true; one false mid-chain yields false.
-    (printf "and4 all  = %d\n" (cast i32 (and (> a 0) (> b 0) (> c 0) (> d 0))))
-    (printf "and4 some = %d\n" (cast i32 (and (> a 0) (> b 0) (< c 0) (> d 0))))
+    (printf "and4 all  = %d\n" (as i32 (and (> a 0) (> b 0) (> c 0) (> d 0))))
+    (printf "and4 some = %d\n" (as i32 (and (> a 0) (> b 0) (< c 0) (> d 0))))
 
     ; 3-arg or: all-false yields false; a later arg true yields true.
-    (printf "or3 none = %d\n" (cast i32 (or (< a 0) (< b 0) (< c 0))))
-    (printf "or3 some = %d\n" (cast i32 (or (< a 0) (< b 0) (> c 0))))
+    (printf "or3 none = %d\n" (as i32 (or (< a 0) (< b 0) (< c 0))))
+    (printf "or3 some = %d\n" (as i32 (or (< a 0) (< b 0) (> c 0))))
 
     ; Short-circuit proof. (or x y z) folds to (_or x (_or y z)); when x is
     ; true the inner (_or y z) — including the div-by-zero in position 3 — is
     ; never evaluated. If the variadic form failed to short-circuit, SIGFPE.
-    (printf "or  sc = %d\n" (cast i32 (or (> a 0) (< b 0) (< (/ 1 trap-zero) 0))))
+    (printf "or  sc = %d\n" (as i32 (or (> a 0) (< b 0) (< (/ 1 trap-zero) 0))))
     ; Symmetric: a variadic (and ...) stops at the first false (position 1).
-    (printf "and sc = %d\n" (cast i32 (and (< a 0) (> b 0) (< (/ 1 trap-zero) 0)))))
+    (printf "and sc = %d\n" (as i32 (and (< a 0) (> b 0) (< (/ 1 trap-zero) 0)))))
   (return 0))

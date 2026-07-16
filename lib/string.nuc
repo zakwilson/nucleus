@@ -54,7 +54,7 @@
 (defn string-as-view ((self (ref String))):StrView
   (let (v:(ref (Vector ui8)) (.& self bytes)
         len:usize (_get v len)
-        data:ptr:ui8 (cast ptr:ui8 (cast ptr (_get v data))))
+        data:ptr:ui8 (as ptr:ui8 (as ptr (_get v data))))
     (let ((sv (ref StrView)) (alloca StrView))
       (.set! sv data data)
       (.set! sv len  len)
@@ -88,7 +88,7 @@
 (defn string-push-bytes-raw ((self (ref String)) (p (ptr ui8)) n:usize):void
   (let (v:(ref (Vector ui8)) (.& self bytes))
     (dotimes (i:usize n)
-      (conj v (aref p (cast i64 i))))))
+      (conj v (aref p (as i64 i))))))
 
 ; ---------------------------------------------------------------------------
 ; Mutation methods.
@@ -103,7 +103,7 @@
     ; Ensure capacity for clen more bytes (reserve takes total slots needed).
     (reserve v (+ (_get v len) clen))
     ; Write directly into the raw buffer at offset len.
-    (let (dst:ptr:ui8 (unsafe/ptr+ (cast ptr:ui8 (cast ptr (_get v data))) (cast i64 (_get v len))))
+    (let (dst:ptr:ui8 (unsafe/ptr+ (as ptr:ui8 (as ptr (_get v data))) (as i64 (_get v len))))
       (char-encode-utf8 c dst)
       ; Bump len by clen.
       (.set! v len (+ (_get v len) clen)))))
@@ -117,7 +117,7 @@
         pos:usize 0)
     (while (< pos n)
       (let (rem:usize (- n pos)
-            dr:DecodeResult (char-decode-utf8 (unsafe/ptr+ p (cast i64 pos)) rem))
+            dr:DecodeResult (char-decode-utf8 (unsafe/ptr+ p (as i64 pos)) rem))
         (when (= ((addr-of dr) ok) 0)
           (return (err! invalid-utf8)))
         (set! pos (+ pos ((addr-of dr) nbytes)))))
@@ -133,21 +133,21 @@
     ; Walk backward to find the start of the last codepoint.
     ; A continuation byte has pattern 10xxxxxx: (b & 0xC0) == 0x80.
     ; The last codepoint start is the last non-continuation byte.
-    (let (p:ptr:ui8 (cast ptr:ui8 (cast ptr (_get v data)))
+    (let (p:ptr:ui8 (as ptr:ui8 (as ptr (_get v data)))
           i:usize (- len 1))
       ; Skip continuation bytes backward.
       (while (and (> i 0)
-                  (= (bit-and (cast ui32 (aref p (cast i64 i))) 192) 128))
+                  (= (bit-and (as ui32 (aref p (as i64 i))) 192) 128))
         (set! i (- i 1)))
       ; Now i points to the start of the last codepoint. Decode it.
       (let (rem:usize (- len i)
-            dr:DecodeResult (char-decode-utf8 (unsafe/ptr+ p (cast i64 i)) rem))
+            dr:DecodeResult (char-decode-utf8 (unsafe/ptr+ p (as i64 i)) rem))
         ; Truncate the Vector to i bytes.
         (.set! v len i)
         (when (= ((addr-of dr) ok) 1)
           (return (some ((addr-of dr) ch))))
         ; Invalid byte — return replacement char U+FFFD.
-        (return (some (cast Char 65533)))))))
+        (return (some (as Char 65533)))))))
 
 ; string-clear — set len to 0 (keep capacity).
 (defn string-clear ((self (ref String))):void
@@ -165,8 +165,8 @@
     ; Check byte boundary: byte_len must not fall on a continuation byte.
     ; A continuation byte has pattern 10xxxxxx (bit-and b 0xC0) == 0x80.
     (when (and (> byte-len 0) (< byte-len cur-len))
-      (let (b:ui8 (aref (cast ptr:ui8 (cast ptr (_get v data))) (cast i64 byte-len)))
-        (when (= (bit-and (cast ui32 b) 192) 128)
+      (let (b:ui8 (aref (as ptr:ui8 (as ptr (_get v data))) (as i64 byte-len)))
+        (when (= (bit-and (as ui32 b) 192) 128)
           (return (err! invalid-char-boundary)))))
     (.set! v len byte-len)
     (return (ok 0))))
@@ -192,7 +192,7 @@
     ; Reallocate to exactly cur-len bytes.
     (let ((new-data (raw ui8))
           (alloc-handle-realloc (.& v alloc) (_get v data) (_get v cap) cur-len 8))
-      (when (= (cast ptr new-data) null)
+      (when (= (as ptr new-data) null)
         (fprintf stderr "string: out of memory in shrink-to-fit\n")
         (exit 1))
       (.set! v data new-data)
@@ -211,7 +211,7 @@
         pos:usize 0)
     (while (< pos n)
       (let (rem:usize (- n pos)
-            dr:DecodeResult (char-decode-utf8 (unsafe/ptr+ p (cast i64 pos)) rem))
+            dr:DecodeResult (char-decode-utf8 (unsafe/ptr+ p (as i64 pos)) rem))
         (when (= ((addr-of dr) ok) 0)
           (return (err! invalid-utf8)))
         (set! pos (+ pos ((addr-of dr) nbytes)))))
@@ -224,8 +224,8 @@
 ; string-from-cstr-unchecked — copy a CStr's bytes into a new String (no validation).
 ; The caller must ensure the bytes are valid UTF-8.
 (defn string-from-cstr-unchecked ((cs CStr)):String
-  (let (p:ptr:ui8 (cast ptr:ui8 (cast ptr cs))
-        n:usize (cast usize (strlen (cast ptr cs))))
+  (let (p:ptr:ui8 (as ptr:ui8 (as ptr cs))
+        n:usize (as usize (strlen (as ptr cs))))
     (let ((s (ref String)) (alloca String))
       (vector-init (.& s bytes))
       (string-push-bytes-raw s p n)
@@ -234,13 +234,13 @@
 ; string-from-cstr — copy a CStr's bytes into a new String, validating UTF-8.
 ; Returns !String: err invalid-utf8 if the bytes are not valid UTF-8.
 (defn string-from-cstr ((cs CStr)):!String
-  (let (p:ptr:ui8 (cast ptr:ui8 (cast ptr cs))
-        n:usize (cast usize (strlen (cast ptr cs))))
+  (let (p:ptr:ui8 (as ptr:ui8 (as ptr cs))
+        n:usize (as usize (strlen (as ptr cs))))
     ; Validate UTF-8.
     (let (pos:usize 0)
       (while (< pos n)
         (let (rem:usize (- n pos)
-              dr:DecodeResult (char-decode-utf8 (unsafe/ptr+ p (cast i64 pos)) rem))
+              dr:DecodeResult (char-decode-utf8 (unsafe/ptr+ p (as i64 pos)) rem))
           (when (= ((addr-of dr) ok) 0)
             (return (err! invalid-utf8)))
           (set! pos (+ pos ((addr-of dr) nbytes)))))

@@ -58,7 +58,7 @@
 ;     Uses structural dispatch — get-elem resolves for any stamped Box instance.
 ; ----------------------------------------------------------------
 (defn show-box ((b (ref (Box i32)))):void
-  (printf "container elem=%d\n" (get-elem b (cast usize 0))))
+  (printf "container elem=%d\n" (get-elem b 0)))
 
 (defn main ():int
   ; 2 + 4. Type application in type position; explicit construction.
@@ -74,12 +74,12 @@
 
   ; 1b + 6. Box with usize length field.
   (let ((b (ref (Box i32))) (alloca (Box i32)))
-    (ptr-set! b @((Box i32) 42 (cast usize 1)))
-    (printf "box val=%d len=%llu\n" (box-val b) (cast ui64 (box-len b))))
+    (ptr-set! b @((Box i32) 42 1))
+    (printf "box val=%d len=%llu\n" (box-val b) (as ui64 (box-len b))))
 
   ; 5b. Parametric protocol: get-elem dispatches to Box T's conforming method.
   (let ((b2 (ref (Box i32))) (alloca (Box i32)))
-    (ptr-set! b2 @((Box i32) 99 (cast usize 1)))
+    (ptr-set! b2 @((Box i32) 99 1))
     (show-box b2))
 
   (return 0))

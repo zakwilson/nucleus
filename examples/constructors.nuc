@@ -18,26 +18,26 @@
     (conj v 10)
     (conj v 20)
     (conj v 30)
-    (printf "vector count=%d first=%d\n" (cast i32 (count v)) (v (cast usize 0))))
+    (printf "vector count=%d first=%d\n" (unsafe/cast i32 (count v)) (v 0)))
 
   ; 2. Explicit allocator handle — vector-new-alloc (libc-backed here).
   (let ((ah (ref AllocHandle)) (alloca AllocHandle))
     (libc-allocator ah)
     (with (v2:(ref (Vector i32)) (vector-new-alloc ah))
       (conj v2 7)
-      (printf "alloc-vector count=%d\n" (cast i32 (count v2)))))
+      (printf "alloc-vector count=%d\n" (unsafe/cast i32 (count v2)))))
 
   ; 3. HashMap — two tyvars (CStr, i32) bound from the declared type.
   (let (m:(ref (HashMap CStr i32)) (hashmap-new))
     (assoc m "alpha" 1)
     (assoc m "beta" 2)
-    (printf "hashmap count=%d\n" (cast i32 (count m))))
+    (printf "hashmap count=%d\n" (unsafe/cast i32 (count m))))
 
   ; 4. HashSet.
   (with (s:(ref (HashSet i32)) (hashset-new))
     (insert s 100)
     (insert s 200)
-    (printf "hashset count=%d has100=%d\n" (cast i32 (count s)) (contains? s 100)))
+    (printf "hashset count=%d has100=%d\n" (unsafe/cast i32 (count s)) (contains? s 100)))
 
   ; 5. Heap placement through the arena handle — returns an escapable ref (the
   ;    mkvec/mkhash replacement). Element type from the declared ref.
@@ -45,7 +45,7 @@
     (arena-allocator arena-h)
     (let (h:(ref (Vector i32)) (vector-new-in arena-h))
       (conj h 42)
-      (printf "heap-vector count=%d\n" (cast i32 (count h)))))
+      (printf "heap-vector count=%d\n" (unsafe/cast i32 (count h)))))
 
   (printf "done\n")
   0)

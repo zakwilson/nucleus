@@ -16,8 +16,8 @@
          c:ptr:StrView (strview-from-cstr "world")
          d:ptr:StrView (strview-from-cstr "hell"))
     ; Length.
-    (printf "len-a=%llu\n" (cast ui64 (strview-len a)))      ; len-a=5
-    (printf "len-d=%llu\n" (cast ui64 (strview-len d)))      ; len-d=4
+    (printf "len-a=%llu\n" (as ui64 (strview-len a)))      ; len-a=5
+    (printf "len-d=%llu\n" (as ui64 (strview-len d)))      ; len-d=4
 
     ; Byte equality: same content equal, different content / length not.
     (printf "a=b? %d\n" (strview-eq a b))                    ; a=b? 1

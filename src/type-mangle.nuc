@@ -33,9 +33,9 @@
           (return "ptr")
           (return (fmt-s "p%s" (type-mangle-token (tt elem)))))
       TY-STRUCT
-        (return (-> tt (_ sdef) (cast ptr:StructDef _) (_ name)))
+        (return (-> tt (_ sdef) (unsafe/cast ptr:StructDef _) (_ name)))
       TY-UNION
-        (return (-> tt (_ sdef) (cast ptr:StructDef _) (_ name)))
+        (return (-> tt (_ sdef) (unsafe/cast ptr:StructDef _) (_ name)))
       TY-FN (return "fn")
       TY-CSTR (return "cstr")
       TY-CHAR (return "Char")
@@ -80,7 +80,7 @@
 ; `(ref __fnty_3)` re-parses to the original TY-FN. String compare (the name
 ; reaching here may be a fresh fmt copy, not the cached interned pointer).
 (defn fnty-resolve (name:CStr):?ref:Type
-  (get g-fnty (cast CStr name)))
+  (get g-fnty (as CStr name)))
 
 ; A type's source spelling as a colon-joined string: the inverse of the type
 ; parser. Serves two roles — the key into the conformance registry (matching the
@@ -104,8 +104,8 @@
       TY-UI64 (return "ui64")
       TY-F32  (return "f32")
       TY-F64  (return "f64")
-      TY-STRUCT (return (-> tt (_ sdef) (cast ptr:StructDef _) (_ name)))
-      TY-UNION  (return (-> tt (_ sdef) (cast ptr:StructDef _) (_ name)))
+      TY-STRUCT (return (-> tt (_ sdef) (unsafe/cast ptr:StructDef _) (_ name)))
+      TY-UNION  (return (-> tt (_ sdef) (unsafe/cast ptr:StructDef _) (_ name)))
       TY-CSTR  (return "CStr")
       TY-CHAR  (return "Char")
       TY-ERR   (return "Err")
@@ -114,7 +114,7 @@
       ; t is provably non-null here (its `kind` was already read above), so
       ; asserting ref is sound — fnty-intern keys its HashMap by Type* identity.
       TY-FN
-        (return (fnty-intern (cast ref:Type t)))
+        (return (fnty-intern (unsafe/cast ref:Type t)))
       TY-PTR
         (if (= (tt elem) null)
           (return "ptr")
@@ -123,7 +123,7 @@
 
 (defn tyvar-index-of (name:CStr tyvars:ptr ntv:i32):i32
   (dotimes (i ntv)
-    (when (= (aref (cast ptr:ptr tyvars) i) name) (return i)))
+    (when (= (aref (as ptr:ptr tyvars) i) name) (return i)))
   (return -1))
 
 ; Substitute type variables inside one symbol's colon spelling: split on ':',
@@ -134,15 +134,15 @@
 (defn subst-tyvars-sym (s:CStr tyvars:ptr spellings:ptr ntv:i32 line:i32):CStr
   (when (= (strchr s 58) null)
     (let (idx:i32 (tyvar-index-of s tyvars ntv))
-      (when (>= idx 0) (return (aref (cast ptr:ptr spellings) idx)))
+      (when (>= idx 0) (return (aref (as ptr:ptr spellings) idx)))
       (return s)))
   (let (segs:ptr (split-colon-segments s line)
         acc:ptr null)
     (let (it:ListIter (list-iter segs))
       (doseq-iter (e (addr-of it))
-        (let (seg:ptr ((cast ptr:Node e) s)
+        (let (seg:ptr ((as ptr:Node e) s)
               idx:i32 (tyvar-index-of seg tyvars ntv)
-              piece:ptr (if (>= idx 0) (aref (cast ptr:ptr spellings) idx) seg))
+              piece:ptr (if (>= idx 0) (aref (as ptr:ptr spellings) idx) seg))
           (if (= acc null) (set! acc piece) (set! acc (fmt-2s "%s:%s" acc piece))))))
     (when (= acc null) (return s))
     (return acc)))
@@ -156,7 +156,7 @@
       NODE-SYM
         (let (ns:ptr (subst-tyvars-sym (n s) tyvars spellings ntv (n line)))
           (when (= ns (n s)) (return node))
-          (let (new:ptr:Node (cast ptr:Node (alloc-node)))
+          (let (new:ptr:Node (as ptr:Node (alloc-node)))
             (.set! new kind NODE-SYM)
             (.set! new line (n line))
             (.set! new s ns)
@@ -170,7 +170,7 @@
       NODE-KEYWORD
         (let (ns:ptr (subst-tyvars-sym (n s) tyvars spellings ntv (n line)))
           (when (= ns (n s)) (return node))
-          (let (new:ptr:Node (cast ptr:Node (alloc-node)))
+          (let (new:ptr:Node (as ptr:Node (alloc-node)))
             (.set! new kind NODE-KEYWORD)
             (.set! new line (n line))
             (.set! new s ns)

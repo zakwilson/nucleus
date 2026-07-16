@@ -11,7 +11,7 @@
 ; :!ptr:Pt — niche-encoded error-union pointer return, in the new position.
 (defn lookup (p:ptr:Pt i:i32):!ptr:Pt
   (when (< i 0) (return (err bad)))
-  (return (ok (cast ref:Pt p))))
+  (return (ok (as ref:Pt p))))
 
 ; :!i32 — tagged error-union return, new position.
 (defn checked (x:i32):!i32

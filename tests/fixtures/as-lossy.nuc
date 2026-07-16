@@ -8,4 +8,4 @@
   (return (as i8 n)))
 
 (defn main ():i32
-  (return (cast i32 (narrow 42))))
+  (return (as i32 (narrow 42))))

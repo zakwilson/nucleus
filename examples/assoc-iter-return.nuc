@@ -72,7 +72,7 @@
                       &where ((IterColl It) C)
                              ((Iterator E) It)):i32
   (let (it:It (mk-iter c))
-    (return (reduce (vfn (acc:i32 x:E):i32 (+ acc 1)) (cast i32 0) (addr-of it)))))
+    (return (reduce (vfn (acc:i32 x:E):i32 (+ acc 1)) 0 (addr-of it)))))
 
 (defn main ():i32
   (let ((s (ref Span)) (alloca Span))

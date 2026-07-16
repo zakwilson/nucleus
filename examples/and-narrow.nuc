@@ -26,13 +26,13 @@
           (return 0)))
 
 (defn main ():i32
-  (with (r:ptr:Rec (cast ptr:Rec (malloc (cast i64 (sizeof Rec)))))
+  (with (r:ptr:Rec (as ptr:Rec (malloc (as i64 (sizeof Rec)))))
     (.set! r kind 1)
     (.set! r x 42)
-    (printf "kind1-big = %d\n" (classify (some (cast ref:Rec r))))
+    (printf "kind1-big = %d\n" (classify (some (as ref:Rec r))))
     (.set! r x -1)
-    (printf "kind1-neg = %d\n" (classify (some (cast ref:Rec r))))
+    (printf "kind1-neg = %d\n" (classify (some (as ref:Rec r))))
     (.set! r kind 2)
-    (printf "kind2     = %d\n" (classify (some (cast ref:Rec r))))
+    (printf "kind2     = %d\n" (classify (some (as ref:Rec r))))
     (printf "none      = %d\n" (classify none)))
   (return 0))

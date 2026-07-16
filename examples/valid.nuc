@@ -16,7 +16,7 @@
 ; A user numeric type, to show Valid is not limited to built-ins.
 (defstruct Q v:i32)
 (defn mkq (n:i32):ptr:Q
-  (let (r:ptr:Q (cast ptr:Q (malloc (cast i64 (sizeof Q))))) (.set! r v n) (return r)))
+  (let (r:ptr:Q (as ptr:Q (malloc (as i64 (sizeof Q))))) (.set! r v n) (return r)))
 (defn _+ (a:ptr:Q b:ptr:Q):ptr:Q (return (mkq (+ (a v) (b v)))))
 (defn <  (a:ptr:Q b:ptr:Q):i1 (return (< (a v) (b v))))
 (defn >  (a:ptr:Q b:ptr:Q):i1 (return (> (a v) (b v))))

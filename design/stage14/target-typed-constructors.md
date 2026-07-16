@@ -58,8 +58,9 @@ converged (incl. Windows IRs).
   `(let (m:(Maybe i32) (if c (some 5) none)))`, `(cond … (some 5) …)`, match arm
   bodies, `do` tails, and nested `let`/`with` tails all construct without `make`.
   Byte-identical/additive (those positions previously died as unknown arms or the
-  `some` special-form's ref requirement). The `.set!` value position is still
-  deferred (it sits before `(import-use union-emit)` in src/nucleusc.nuc).
+  `some` special-form's ref requirement). The `.set!` value position gap (it sat
+  before `(import-use union-emit)` in src/nucleusc.nuc, so `union-target-rewrite`
+  wasn't in scope there) is closed (2026-07-15) — see the TC-5 section below.
 
 Allocating, initializing, and returning collection-template instances is the
 worst ergonomic spot in the language. The canonical local idiom spells the
@@ -359,17 +360,31 @@ Adoption and retirement:
 
 ### TC-5 — generalize target typing: unions and value-position distribution
 
-**Status: implemented (2026-07-09).** `union-target-rewrite` (src/union-emit.nuc:867)
-is parameterized by the target type and run at the let/with binding-init and `set!`
-RHS want positions (part 1), AND distributed into the value-position tails of
-`if`/`cond`/`do`/`let`/`with`/`match` (part 2) — each of those emitters captures the
-armed want at entry and re-arms it before emitting a value tail (a prior statement
-may have consumed it via emit-generic-call's consume-once). So union construction
-works without explicit `make` everywhere a typed value is expected. Byte-identical/
-additive (the new positions previously died). The `.set!` value position remains
-deferred (it sits before `(import-use union-emit)` in src/nucleusc.nuc). Verified:
+**Status: implemented (2026-07-09); `.set!` gap closed (2026-07-15).**
+`union-target-rewrite` (src/union-emit.nuc:867) is parameterized by the target
+type and run at the let/with binding-init and `set!` RHS want positions (part
+1), AND distributed into the value-position tails of `if`/`cond`/`do`/`let`/
+`with`/`match` (part 2) — each of those emitters captures the armed want at
+entry and re-arms it before emitting a value tail (a prior statement may have
+consumed it via emit-generic-call's consume-once). So union construction
+works without explicit `make` everywhere a typed value is expected.
+Byte-identical/additive (the new positions previously died). Verified:
 `(let (m:(Maybe i32) (if c (some 5) none)))`, `(cond … (some 5) …)`, `do`/`let`/`with`
 tails, and match arm bodies all construct correctly. See the top-of-file Status note.
+
+The `.set!` value position gap (it sat before `(import-use union-emit)` in
+src/nucleusc.nuc, so `union-target-rewrite` wasn't in scope at
+`emit-field-set`'s definition point) is now closed: `emit-field-set` was
+relocated to just after the `union-emit` import (nucleusc.nuc's whole-unit
+prescan makes same-file forward calls order-independent, but a
+not-yet-`import-use`d sibling file's symbols are only registered once the
+import is textually reached — moving the *definition*, not the import, was
+the fix, since union-emit.nuc itself depends on nucleusc.nuc helpers defined
+throughout the file). `emit-field-set`'s value expression now runs through
+`union-target-rewrite` against the field's declared type before emission,
+identical to every other want position. Verified: `(.set! h m (some 5))` /
+`(.set! h m none)` on a `(Maybe i32)` field now construct correctly with no
+explicit type annotation. `make test` 174/174, `make bootstrap` holds.
 
 Two halves, both riding the TC-2 channel:
 

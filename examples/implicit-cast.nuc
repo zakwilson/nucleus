@@ -19,19 +19,19 @@
 ; defcast: user-asserted conversion from i64 to ptr.
 ; The conversion function provides the actual reinterpretation.
 (defn id_to_ptr (x:i64):ptr
-  (return (cast ptr x)))
+  (return (unsafe/cast ptr x)))
 
 (defcast i64 ptr id_to_ptr)
 
 (defn show-ptr (p:ptr):void
-  (printf "ptr=%lld\n" (cast i64 p)))
+  (printf "ptr=%lld\n" (unsafe/cast i64 p)))
 
 (defn main ():int
   (printf "malloc-ok=%d\n" (try-malloc))
   ; i32 literal widens to i64 implicitly.
   (show-i64 42)
   ; f32 widens to f64 implicitly.
-  (show-f64 (cast f32 2.5))
+  (show-f64 (unsafe/cast f32 2.5))
   ; defcast fires: i64 → ptr via id_to_ptr.
-  (show-ptr (cast i64 0))
+  (show-ptr 0)
   (return 0))

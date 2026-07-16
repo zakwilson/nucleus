@@ -85,7 +85,7 @@
     (let (sd:raw:StructDef (tt sdef))
       (when (= sd null) (return 0))
       (when (= (sd name)
-               ((cast ptr:Node (intern-symbol "StrView")) s))
+               ((as ptr:Node (intern-symbol "StrView")) s))
         (return 1))
       (return 0))))
 
@@ -150,7 +150,7 @@
 ; compiler's own arrays of pointers. Use instead of a literal 8 so the compiler
 ; allocates correctly on hosts where a pointer is not 8 bytes.
 (defn ptr-bytes ():i64
-  (cast i64 g-host-ptr-bytes))
+  (as i64 g-host-ptr-bytes))
 
 (defn type-size (t:raw:Type):i32
   (let (tt:raw:Type t)
@@ -262,7 +262,7 @@
   (let (w:i32 (int-width t))
     (when (<= w 1) (return 1))
     (when (>= w 64) (return 1))
-    (let (wi:i64 (cast i64 w)
+    (let (wi:i64 (as i64 w)
           one:i64 1)
       (if (!= (is-unsigned t) 0)
         ; Unsigned target — [0, 2^w - 1].
@@ -272,7 +272,7 @@
             (if (> v hi) (return 0) (return 1))))
         ; Signed target — [-2^(w-1), 2^(w-1) - 1].
         (let (half:i64 (bit-shl one (- wi one)))
-          (if (or (< v (- (cast i64 0) half)) (> v (- half one)))
+          (if (or (< v (- (as i64 0) half)) (> v (- half one)))
             (return 0)
             (return 1)))))))
 

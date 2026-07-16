@@ -12,21 +12,21 @@
 ; A fallible function returning !i64. With no handler bound, (err config-missing)
 ; returns the error value; with a matching handler bound, the handler may repair.
 (defn load-num (n:i64):!i64
-  (when (= n (cast i64 0))
+  (when (= n 0)
     (return (err config-missing)))      ; handler may repair → (ok v)
-  (return (ok (* n (cast i64 10)))))
+  (return (ok (* n 10))))
 
 ; Same fault, but err! unconditionally returns the error (never consults a
 ; handler), even when one is bound.
 (defn load-num-forced (n:i64):!i64
-  (when (= n (cast i64 0))
+  (when (= n 0)
     (return (err! config-missing)))
-  (return (ok (* n (cast i64 10)))))
+  (return (ok (* n 10))))
 
 ; (err E detail): the detail pointer is passed to the handler (borrowed) and is
 ; never stored in the error value. Here detail carries an i64* the handler reads.
 (defn load-with-detail (n:i64 d:ptr):!i64
-  (when (= n (cast i64 0))
+  (when (= n 0)
     (return (err config-missing d)))
   (return (ok n)))
 
@@ -39,7 +39,7 @@
 
 ; Repairs config-missing with a fixed value carried in ctx (an i64*).
 (defn repair-from-ctx (ctx:ptr detail:ptr) (Maybe i64)
-  (return (some (deref (cast ptr:i64 ctx)))))
+  (return (some (deref (as ptr:i64 ctx)))))
 
 ; Declines (returns none) — the error propagates unchanged.
 (defn decline (ctx:ptr detail:ptr) (Maybe i64)
@@ -47,7 +47,7 @@
 
 ; Reads the i64 that `detail` points at and repairs with it doubled.
 (defn repair-from-detail (ctx:ptr detail:ptr) (Maybe i64)
-  (return (some (* (deref (cast ptr:i64 detail)) (cast i64 2)))))
+  (return (some (* (deref (as ptr:i64 detail)) 2))))
 
 ; Re-raises inside the handler: per the CL unbind rule (§11.4), the handler runs
 ; with the chain unbound past itself, so this inner err finds only OUTER
@@ -64,25 +64,25 @@
 
 (defn main ():i32
   ; (1) No handler bound: err returns the error value.
-  (show "no-handler" (load-num (cast i64 0)))
-  (show "no-handler-ok" (load-num (cast i64 5)))
+  (show "no-handler" (load-num 0))
+  (show "no-handler-ok" (load-num 5))
 
   ; (2) A repairing handler bound for (config-missing, i64): err → (ok ctx).
-  (let (fixed:i64 (cast i64 777))
-    (with-handler (config-missing i64 repair-from-ctx (cast ptr (addr-of fixed)))
-      (show "repaired" (load-num (cast i64 0)))      ; repaired → ok 777
-      (show "repaired-ok" (load-num (cast i64 5)))   ; no fault → ok 50
+  (let (fixed:i64 777)
+    (with-handler (config-missing i64 repair-from-ctx (as ptr (addr-of fixed)))
+      (show "repaired" (load-num 0))      ; repaired → ok 777
+      (show "repaired-ok" (load-num 5))   ; no fault → ok 50
       ; (3) err! bypasses the bound handler — still the error value.
-      (show "forced" (load-num-forced (cast i64 0)))))
+      (show "forced" (load-num-forced 0))))
 
   ; (4) A declining handler: err propagates the error.
   (with-handler (config-missing i64 decline null)
-    (show "declined" (load-num (cast i64 0))))
+    (show "declined" (load-num 0)))
 
   ; (5) (err E detail): the handler reads the detail pointer.
-  (let (amount:i64 (cast i64 21))
+  (let (amount:i64 21)
     (with-handler (config-missing i64 repair-from-detail null)
-      (show "detail" (load-with-detail (cast i64 0) (cast ptr (addr-of amount))))))
+      (show "detail" (load-with-detail 0 (as ptr (addr-of amount))))))
 
   ; (6) Nested with-handler + CL unbind rule. Outer handler repairs with 42;
   ; the inner handler re-raises config-missing, which (the chain being unbound
@@ -90,19 +90,19 @@
   ; the load-num call sees ok 42.
   (with-handler (config-missing i64 repair-from-42 null)
     (with-handler (config-missing i64 raise-in-handler null)
-      (show "nested" (load-num (cast i64 0)))))
+      (show "nested" (load-num 0))))
 
   ; (7) A different error with no matching handler still propagates.
   (with-handler (config-missing i64 repair-from-42 null)
-    (show "other-err" (checked-parse (cast i64 0))))
+    (show "other-err" (checked-parse 0)))
   0)
 
 ; Outer handler for the nested case: repairs with a constant 42.
 (defn repair-from-42 (ctx:ptr detail:ptr) (Maybe i64)
-  (return (some (cast i64 42))))
+  (return (some 42)))
 
 ; A second fault that raises parse-failed, to show a bound config-missing
 ; handler does not catch a different error id.
 (defn checked-parse (n:i64):!i64
-  (when (= n (cast i64 0)) (return (err parse-failed)))
+  (when (= n 0) (return (err parse-failed)))
   (return (ok n)))

@@ -18,7 +18,7 @@
   ; (a) c"…" as a printf %s vararg — the bare char*, no view header.
   (printf "cstr=%s\n" c"hello")
   ; (b) c"…" into the extern expecting char*.
-  (printf "clit-len=%d\n" (cast i32 (strlen c"hello")))
+  (printf "clit-len=%d\n" (unsafe/cast i32 (strlen c"hello")))
   ; (c) plain "…" (a StrView literal) free-coerces to char* for the same extern.
-  (printf "view-len=%d\n" (cast i32 (strlen "hello")))
+  (printf "view-len=%d\n" (unsafe/cast i32 (strlen "hello")))
   (return 0))

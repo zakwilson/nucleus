@@ -17,7 +17,7 @@
   (let (a:StrView "hello"
         b:StrView "hi")
     ; (2) by-value StrView params: correct lengths prove the struct ABI holds.
-    (printf "len-a=%llu len-b=%llu\n" (cast ui64 (sv-len a)) (cast ui64 (sv-len b)))
+    (printf "len-a=%llu len-b=%llu\n" (as ui64 (sv-len a)) (as ui64 (sv-len b)))
     ; (1) materialized StrView %s vararg followed by a %d: n must be 42, not 5.
     (printf "a=%s n=%d\n" a 42)
     ; a chameleon string literal in the same variadic position stays correct.

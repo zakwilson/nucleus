@@ -507,6 +507,79 @@ so the per-file IR-identity diff is the gate; a mis-classification is caught by
 `as`'s checker at compile time, not by IR drift. Macro-body sites → refresh
 rule as in UN-3.
 
+**Status (2026-07-15): DONE.** All prerequisites (type-safety 14.1-14.7, MC-1-4,
+LW-1-6, defn-signature S1-S4) were complete, unblocking the sweep. Worked file
+cluster by file cluster (`src/` 13 files, `lib/` 18 files, then `examples/` +
+`tests/` in one bulk batch given ~70 small files) with a bulk-convert-`(cast `
+→`(as `-then-fix-via-compile-error loop: `as`'s checker rejects an unsafe
+conversion with a diagnostic naming the exact line and reason, so every
+misclassification surfaced as a compile error to fix, not silent IR drift —
+in practice a stronger, faster-converging gate than the per-file IR-identity
+diff the design sketched, since it needs no snapshot/diff tooling and the
+`unsafe/cast` fallback (D4: a strict superset of `as`, never rejects) means
+an uncertain site can always be resolved by falling back to it with zero risk
+of a wrong answer, only a slightly less precise classification.
+
+**Site counts:** src/ 2,568, lib/ ~603, examples/+tests/ ~306 — 3,477 sites
+classified total (the ground-truth §1.4 census's ~5,340 estimate, less the
+~1,860 the 14.2/14.3/MC-3/LW-5 deletion work already removed before this
+phase started). The large majority became `as`; a substantial minority
+`unsafe/cast`, dominated by a handful of recurring shapes: `node-at`/`.car`/
+`.cdr` AST-cursor results and bare `ptr`-typed function parameters (nullable/
+raw, not `as`-eligible against a non-null target — the single largest
+category by far), `usize`/`i64`→`i32`/`i8` narrowing (`count`/`strlen`/
+`sizeof`/`ptr-bytes` results), int↔ptr reinterprets (pointer-arithmetic
+idioms, JIT addresses, `funcall-ptr-*` targets), fn↔ptr reinterprets
+(type-erased hook installation, indirect-call targets), and struct fields
+typed `(raw T)` (`Type.sdef`, `Type.elem`, `Val.type`, `Field.type`) cast to
+a non-null target — the raw→ref laundering class D2 anticipated, just far
+more numerous in practice than the "~25 `cast ptr:Sym` waivers" estimate
+(that figure was scoped to one specific target type; the general pattern
+recurs for every struct-typed field across the compiler).
+
+**Two real, previously-unknown gaps surfaced and were fixed, not routed
+around:**
+1. **`gcheck-special-form` didn't recognize the `unsafe/` roster inside
+   generic template bodies** — exactly the gap UN-2/UN-3 flagged and
+   deliberately deferred ("a generic-template body... written with the new
+   `unsafe/` spelling would not be recognized... a gap for UN-3/UN-4 to
+   close if it matters" — it did). Hit immediately on `vector-new-in`'s
+   heap-placement cast; without the fix, `(unsafe/cast T x)` inside *any*
+   `&where`-bounded or receiver-tyvar template body died `in generic body:
+   unknown function 'unsafe/cast'` in the A2 checker. Fixed by adding `as`
+   and the four `unsafe/*` forms to `gcheck-special-form` (src/generics.nuc)
+   alongside their bare counterparts — closing this once unblocked every
+   subsequent collection template (`hashmap-new-in` needed the identical
+   fix pattern with zero further gcheck work). Required the standard
+   2-stage bootstrap: temporarily revert the one call site the OLD boot
+   couldn't yet compile, build + `update-bootstrap` with the gcheck fix
+   itself (which the OLD boot *can* compile, since it's ordinary source),
+   then re-apply and rebuild from the new boot.
+2. **int↔float is not in `as`'s safe set at all** (confirmed from the D3
+   table, not assumed: only `f32→f64` float-widening is listed — no
+   int→float or float→int in either direction). `lib/parse.nuc`'s `parse`
+   macro (`` `(from-str (cast ~ty 0) ~sv)` ``, instantiated with a concrete
+   type at every call site) needed `unsafe/cast` because it's called with
+   `f64` among its targets — a literal `0` cast to `f64` is exactly as
+   unsafe by this classification as any other int→float conversion,
+   regardless of representability.
+
+**Verification:** `make test` 174/174 and `make bootstrap` byte-identical
+after every file/batch; a full clean rebuild plus a full `examples/*.nuc`
+blast-radius recompile (every file, not just the fixture-tested ones) found
+zero regressions beyond the two already-documented pre-existing failures
+(`comb-shapes.nuc`, `thread-macros.nuc`). Two cast sites lived outside the
+`.nuc` file-glob the sweep initially covered — `tests/run-tests.sh`'s
+embedded test-program heredocs and `tests/repl/*.in` REPL-transcript
+fixtures — found via a final tree-wide `grep -rn '(cast '` audit and
+converted (simple `i64` literal-widening, safely `as`). That audit leaves
+exactly one live non-comment hit: `pkind-flow-check`'s own die-at message in
+src/type-utils.nuc mentions "cast" as advice prose inside a diagnostic
+string, not a code form — left for UN-5 to respell alongside the rest of
+the docs/messages sweep rather than trigger a further bootstrap reconverge.
+**Every live `(cast T x)` form in the tree is now `(as T x)` or
+`(unsafe/cast T x)`.**
+
 ### UN-5 — retirement + docs
 
 **Agents: focused-task-implementer (errors), api-docs-writer (docs).** Remove

@@ -26,7 +26,7 @@
 (declare __errno_location ():ptr)
 
 (defn char-at (s:ptr pos:i64):i32
-  (return (bit-and (cast i32 (aref (cast ptr:i8 s) pos)) 255)))
+  (return (bit-and (as i32 (aref (as ptr:i8 s) pos)) 255)))
 
 ; ============================================================
 ; Error reporting
@@ -125,13 +125,13 @@
             (when (>= n 4095)
               (do (report-at open-line "string literal too long")
                   (return (err! parse-error))))
-            (aset! (cast ptr:i8 buf) n (cast i8 c))
+            (aset! (as ptr:i8 buf) n (unsafe/cast i8 c))
             (set! n (+ n 1))))))
-    (let (t:ptr:Tok (cast ptr:Tok (alloc-tok)))
+    (let (t:ptr:Tok (as ptr:Tok (alloc-tok)))
       (.set! t kind TOK-STRING)
       (.set! t line open-line)
       (.set! t s (arena-strndup buf n))
-      (return (ok (cast ptr t))))))
+      (return (ok (as ptr t))))))
 
 ; Stage 11 M6 (S0): char literals (design/stage11/string.md §"Char types",
 ; Q-char-literal). Backslash-led so they collide with neither keywords (leading
@@ -154,11 +154,11 @@
 
 ; Build a TOK-CHAR with codepoint `cp` at `line`.
 (defn make-char-tok (cp:i32 line:i32):ptr
-  (let (t:ptr:Tok (cast ptr:Tok (alloc-tok)))
+  (let (t:ptr:Tok (as ptr:Tok (alloc-tok)))
     (.set! t kind TOK-CHAR)
     (.set! t line line)
-    (.set! t i (cast i64 cp))
-    (return (cast ptr t))))
+    (.set! t i (as i64 cp))
+    (return (as ptr t))))
 
 (defn lex-char-literal (open-line:i32):!ptr
   ; Consume the leading backslash.
@@ -214,7 +214,7 @@
       (while (!= (is-sym-char (peek-char)) 0)
         (next-char))
       (let (len:i64 (- g-pos start)
-            text:ptr (unsafe/ptr+ (cast ptr:i8 g-src) start))
+            text:ptr (unsafe/ptr+ (as ptr:i8 g-src) start))
         (when (= len 1)
           (return (ok (make-char-tok (char-at text 0) open-line))))
         ; Named control codes (string.md §"Char types").
@@ -288,7 +288,7 @@
     (while (!= (is-sym-char (peek-char)) 0)
       (next-char))
     (let (len:i64 (- g-pos start)
-          text:ptr (unsafe/ptr+ (cast ptr:i8 g-src) start)
+          text:ptr (unsafe/ptr+ (as ptr:i8 g-src) start)
           is-int:i32 1
           i0:i64 0)
       (when (= len 0) (set! is-int 0))
@@ -308,9 +308,9 @@
             (do (report-at start-line "integer literal too long")
                 (return (err! parse-error))))
           (memcpy buf text len)
-          (aset! (cast ptr:i8 buf) len 0)
-          (let (t:ptr:Tok (cast ptr:Tok (alloc-tok))
-                errp:ptr:i32 (cast ptr:i32 (__errno_location))
+          (aset! (as ptr:i8 buf) len 0)
+          (let (t:ptr:Tok (as ptr:Tok (alloc-tok))
+                errp:ptr:i32 (as ptr:i32 (__errno_location))
                 neg:i32 (= (char-at text 0) 45)
                 val:i64 0)
             (.set! t kind TOK-INT)
@@ -331,18 +331,18 @@
                   (do (report-at start-line "integer literal out of range")
                       (return (err! parse-error))))
                 (aset! errp 0 0)
-                (set! val (cast i64 (strtoull buf null 10)))
+                (set! val (as i64 (strtoull buf null 10)))
                 (when (= (aref errp 0) 34)
                   (do (report-at start-line "integer literal out of range")
                       (return (err! parse-error))))
                 (.set! t i val)))
-            (return (ok (cast ptr t))))))
+            (return (ok (as ptr t))))))
       (when (!= (is-float-literal text len) 0)
-        (let (tf:ptr:Tok (cast ptr:Tok (alloc-tok)))
+        (let (tf:ptr:Tok (as ptr:Tok (alloc-tok)))
           (.set! tf kind TOK-FLOAT)
           (.set! tf line start-line)
           (.set! tf s (arena-strndup text len))
-          (return (ok (cast ptr tf)))))
+          (return (ok (as ptr tf)))))
       ; Keyword literal (Stage 11 cleanup §2): an atom that begins with ':' and
       ; has a non-empty remainder is a keyword. The token carries the NAME only
       ; (the leading colon stripped), so downstream interning and printing never
@@ -352,38 +352,38 @@
       ; point). Colon-CHAIN spellings like `ptr:i8` or trailing-colon sugar
       ; `name:` do not begin with ':' and are unaffected.
       (when (and (> len 1) (= (char-at text 0) 58))
-        (let (tk:ptr:Tok (cast ptr:Tok (alloc-tok)))
+        (let (tk:ptr:Tok (as ptr:Tok (alloc-tok)))
           (.set! tk kind TOK-KEYWORD)
           (.set! tk line start-line)
-          (.set! tk s (arena-strndup (unsafe/ptr+ (cast ptr:i8 text) 1) (- len 1)))
-          (return (ok (cast ptr tk)))))
-      (let (ts:ptr:Tok (cast ptr:Tok (alloc-tok)))
+          (.set! tk s (arena-strndup (unsafe/ptr+ (as ptr:i8 text) 1) (- len 1)))
+          (return (ok (as ptr tk)))))
+      (let (ts:ptr:Tok (as ptr:Tok (alloc-tok)))
         (.set! ts kind TOK-SYMBOL)
         (.set! ts line start-line)
         (.set! ts s (arena-strndup text len))
-        (return (ok (cast ptr ts)))))))
+        (return (ok (as ptr ts)))))))
 
 (defn next-tok ():!ptr
   (skip-ws)
   (let (c:i32 (peek-char)
         line:i32 g-line)
     (when (= c 0)
-      (let (te:ptr:Tok (cast ptr:Tok (alloc-tok)))
+      (let (te:ptr:Tok (as ptr:Tok (alloc-tok)))
         (.set! te kind TOK-EOF)
         (.set! te line line)
-        (return (ok (cast ptr te)))))
+        (return (ok (as ptr te)))))
     (when (= c 40)
       (do (next-char)
-        (let (tl:ptr:Tok (cast ptr:Tok (alloc-tok)))
+        (let (tl:ptr:Tok (as ptr:Tok (alloc-tok)))
           (.set! tl kind TOK-LPAREN)
           (.set! tl line line)
-          (return (ok (cast ptr tl))))))
+          (return (ok (as ptr tl))))))
     (when (= c 41)
       (do (next-char)
-        (let (tr:ptr:Tok (cast ptr:Tok (alloc-tok)))
+        (let (tr:ptr:Tok (as ptr:Tok (alloc-tok)))
           (.set! tr kind TOK-RPAREN)
           (.set! tr line line)
-          (return (ok (cast ptr tr))))))
+          (return (ok (as ptr tr))))))
     ; Collection-literal delimiters (Stage 11 M5). `[` … `]` is a Vector
     ; literal, `{` … `}` a HashMap literal, `#{` … `}` a HashSet literal. The
     ; `#{` two-char sequence must be matched before `#` is lexed as a symbol
@@ -392,46 +392,46 @@
     ; literals, so claiming them as delimiters is non-breaking.
     (when (= c 91)
       (do (next-char)
-        (let (tlb:ptr:Tok (cast ptr:Tok (alloc-tok)))
+        (let (tlb:ptr:Tok (as ptr:Tok (alloc-tok)))
           (.set! tlb kind TOK-LBRACK)
           (.set! tlb line line)
-          (return (ok (cast ptr tlb))))))
+          (return (ok (as ptr tlb))))))
     (when (= c 93)
       (do (next-char)
-        (let (trb:ptr:Tok (cast ptr:Tok (alloc-tok)))
+        (let (trb:ptr:Tok (as ptr:Tok (alloc-tok)))
           (.set! trb kind TOK-RBRACK)
           (.set! trb line line)
-          (return (ok (cast ptr trb))))))
+          (return (ok (as ptr trb))))))
     (when (and (= c 35) (= (char-at g-src (+ g-pos 1)) 123))
       (do (next-char) (next-char)
-        (let (thb:ptr:Tok (cast ptr:Tok (alloc-tok)))
+        (let (thb:ptr:Tok (as ptr:Tok (alloc-tok)))
           (.set! thb kind TOK-HASHBRACE)
           (.set! thb line line)
-          (return (ok (cast ptr thb))))))
+          (return (ok (as ptr thb))))))
     (when (= c 123)
       (do (next-char)
-        (let (tlc:ptr:Tok (cast ptr:Tok (alloc-tok)))
+        (let (tlc:ptr:Tok (as ptr:Tok (alloc-tok)))
           (.set! tlc kind TOK-LBRACE)
           (.set! tlc line line)
-          (return (ok (cast ptr tlc))))))
+          (return (ok (as ptr tlc))))))
     (when (= c 125)
       (do (next-char)
-        (let (trc:ptr:Tok (cast ptr:Tok (alloc-tok)))
+        (let (trc:ptr:Tok (as ptr:Tok (alloc-tok)))
           (.set! trc kind TOK-RBRACE)
           (.set! trc line line)
-          (return (ok (cast ptr trc))))))
+          (return (ok (as ptr trc))))))
     ; Reader macro table lookup — longest prefix match
     (let (best-idx:i32 -1
           best-len:i32 0
           ri:i32 0)
-      (while (< ri (cast i32 (count g-rmacros)))
-        (let (rm:ptr:RMacro (cast ptr:RMacro (invoke g-rmacros (cast usize ri)))
+      (while (< ri (unsafe/cast i32 (count g-rmacros)))
+        (let (rm:ptr:RMacro (as ptr:RMacro (invoke g-rmacros (as usize ri)))
               plen:i32 (rm prefix-len)
               match:i32 1
               j:i32 0)
           (while (< j plen)
-            (when (!= (char-at g-src (+ g-pos (cast i64 j)))
-                      (char-at (rm prefix) (cast i64 j)))
+            (when (!= (char-at g-src (+ g-pos (as i64 j)))
+                      (char-at (rm prefix) (as i64 j)))
               (do (set! match 0)
                   (set! j plen)))
             (set! j (+ j 1)))
@@ -440,17 +440,17 @@
                 (set! best-len plen))))
         (inc! ri))
       (when (>= best-idx 0)
-        (let (rm:ptr:RMacro (cast ptr:RMacro (invoke g-rmacros (cast usize best-idx))))
+        (let (rm:ptr:RMacro (as ptr:RMacro (invoke g-rmacros (as usize best-idx))))
           ; Advance past prefix characters (tracking newlines)
           (let (k:i32 0)
             (while (< k best-len)
               (next-char)
               (inc! k)))
-          (let (tq:ptr:Tok (cast ptr:Tok (alloc-tok)))
+          (let (tq:ptr:Tok (as ptr:Tok (alloc-tok)))
             (.set! tq kind TOK-RMACRO)
             (.set! tq line line)
             (.set! tq s (rm wrap-sym))
-            (return (ok (cast ptr tq)))))))
+            (return (ok (as ptr tq)))))))
     ; Stage 14 NS-4 (design/stage14/native-strings.md): `c"…"` — a `c` glued
     ; directly to an opening quote with no whitespace — is an explicit CStr
     ; literal: the bare char* GEP, no StrView view header, no target-typing (the
@@ -464,7 +464,7 @@
       (do (next-char)
           (next-char)
           (let (cst:ptr (try (lex-string line)))
-            (.set! (cast ptr:Tok cst) i 1)
+            (.set! (as ptr:Tok cst) i 1)
             (return (ok cst)))))
     (when (= c 34)
       (do (next-char) (return (lex-string line))))
@@ -508,15 +508,15 @@
 ; Build a single-symbol Node from a C string (interned: identical spellings
 ; share identity, matching reader-produced symbols elsewhere).
 (defn lit-sym (s:ptr):ptr
-  (return (cast ptr (intern-symbol s))))
+  (return (as ptr (intern-symbol s))))
 
 ; Build the node list `( <a> <b> )`.
 (defn lit-list2 (a:ptr b:ptr line:i32):ptr
-  (return (cast ptr (make-cell a (make-cell b null line) line))))
+  (return (as ptr (make-cell a (make-cell b null line) line))))
 
 ; Build the node list `( <a> <b> <c> )`.
 (defn lit-list3 (a:ptr b:ptr c:ptr line:i32):ptr
-  (return (cast ptr (make-cell a (make-cell b (make-cell c null line) line) line))))
+  (return (as ptr (make-cell a (make-cell b (make-cell c null line) line) line))))
 
 ; Build `(ref <ty>)` where <ty> is an already-built type node.
 (defn lit-ref (ty:ptr line:i32):ptr
@@ -537,7 +537,7 @@
 ; / f64 / CStr matches the corresponding collection element parameter directly,
 ; so the expansion needs no element casts.
 (defn lit-elem-kind (n:ptr):i32
-  (let (nn:ptr:Node (cast ptr:Node n))
+  (let (nn:ptr:Node (as ptr:Node n))
     (when (= (nn kind) NODE-INT) (return 1))
     (when (= (nn kind) NODE-FLOAT) (return 2))
     (when (= (nn kind) NODE-STR) (return 3))
@@ -567,7 +567,7 @@
     (while (!= cur null)
       (when (= (% (- idx start) stride) 0)
         (when (>= idx start)
-          (let (k:i32 (lit-elem-kind ((cast ptr:Node cur) car)))
+          (let (k:i32 (lit-elem-kind ((as ptr:Node cur) car)))
             (when (= k 0)
               (do (report-at line bad-msg)
                   (return (err! parse-error))))
@@ -577,7 +577,7 @@
                 (do (report-at line mix-msg)
                     (return (err! parse-error))))))))
       (set! idx (+ idx 1))
-      (set! cur (cast ptr ((cast ptr:Node cur) cdr))))
+      (set! cur (as ptr ((as ptr:Node cur) cdr))))
     (return (ok (lit-kind-type kind)))))
 
 ; Read literal elements until the given close-token kind, collecting them into a
@@ -592,7 +592,7 @@
   (let (head:ptr null
         tail:ptr null)
     (while (!= 0 1)
-      (let (t:ptr:Tok (cast ptr:Tok (try (peek-tok))))
+      (let (t:ptr:Tok (as ptr:Tok (try (peek-tok))))
         (when (= (t kind) TOK-EOF)
           (do (report-at open-line (fmt-s "unterminated %s literal" what))
               (return (err! parse-error))))
@@ -601,7 +601,7 @@
         (let (child:ptr (try (read-form))
               cell:ptr (make-cell child null open-line))
           (when (= tail null) (set! head cell))
-          (when (!= tail null) (.set! (cast ptr:Node tail) cdr cell))
+          (when (!= tail null) (.set! (as ptr:Node tail) cdr cell))
           (set! tail cell))))
     (return (ok head))))
 
@@ -627,7 +627,7 @@
             ; Body chain, built back-to-front so it ends with the gs symbol.
             ; Start with the trailing `gs` then prepend each (conj gs e), then
             ; finally the (vector-init gs).
-            (let (body:ptr (cast ptr (make-cell gs null line)))
+            (let (body:ptr (as ptr (make-cell gs null line)))
               ; Walk elements in reverse is awkward with a forward list, so build
               ; a forward conj-chain into a temp and splice it. Simpler: collect
               ; conj cells forward, then append the trailing gs.
@@ -635,17 +635,17 @@
                     ctail:ptr null
                     cur2:ptr head)
                 (while (!= cur2 null)
-                  (let (elem:ptr ((cast ptr:Node cur2) car)
+                  (let (elem:ptr ((as ptr:Node cur2) car)
                         conj-form:ptr (lit-list3 (lit-sym "conj") gs elem line)
                         cell:ptr (make-cell conj-form null line))
                     (when (= ctail null) (set! chead cell))
-                    (when (!= ctail null) (.set! (cast ptr:Node ctail) cdr cell))
+                    (when (!= ctail null) (.set! (as ptr:Node ctail) cdr cell))
                     (set! ctail cell))
-                  (set! cur2 (cast ptr ((cast ptr:Node cur2) cdr))))
+                  (set! cur2 (as ptr ((as ptr:Node cur2) cdr))))
                 ; Append trailing `gs` cell to the conj-chain.
                 (let (gscell:ptr (make-cell gs null line))
                   (when (= ctail null) (set! chead gscell))
-                  (when (!= ctail null) (.set! (cast ptr:Node ctail) cdr gscell))
+                  (when (!= ctail null) (.set! (as ptr:Node ctail) cdr gscell))
                   ; Prepend (vector-init gs) to the chain.
                   (let (init-form:ptr (lit-list2 (lit-sym "vector-init") gs line)
                         full-body:ptr (make-cell init-form chead line))
@@ -673,16 +673,16 @@
                   ctail:ptr null
                   cur2:ptr head)
               (while (!= cur2 null)
-                (let (elem:ptr ((cast ptr:Node cur2) car)
+                (let (elem:ptr ((as ptr:Node cur2) car)
                       conj-form:ptr (lit-list3 (lit-sym "conj") gs elem line)
                       cell:ptr (make-cell conj-form null line))
                   (when (= ctail null) (set! chead cell))
-                  (when (!= ctail null) (.set! (cast ptr:Node ctail) cdr cell))
+                  (when (!= ctail null) (.set! (as ptr:Node ctail) cdr cell))
                   (set! ctail cell))
-                (set! cur2 (cast ptr ((cast ptr:Node cur2) cdr))))
+                (set! cur2 (as ptr ((as ptr:Node cur2) cdr))))
               (let (gscell:ptr (make-cell gs null line))
                 (when (= ctail null) (set! chead gscell))
-                (when (!= ctail null) (.set! (cast ptr:Node ctail) cdr gscell))
+                (when (!= ctail null) (.set! (as ptr:Node ctail) cdr gscell))
                 (let (init-form:ptr (lit-list2 (lit-sym "hashset-init") gs line)
                       full-body:ptr (make-cell init-form chead line))
                   (return (ok (make-cell (lit-sym "let")
@@ -718,23 +718,23 @@
                   ctail:ptr null
                   cur2:ptr head)
               (while (!= cur2 null)
-                (let (knode:ptr ((cast ptr:Node cur2) car)
-                      vcell:ptr (cast ptr ((cast ptr:Node cur2) cdr)))
-                  (let (vnode:ptr ((cast ptr:Node vcell) car)
+                (let (knode:ptr ((as ptr:Node cur2) car)
+                      vcell:ptr (as ptr ((as ptr:Node cur2) cdr)))
+                  (let (vnode:ptr ((as ptr:Node vcell) car)
                         ; (assoc gs k v)
-                        assoc-form:ptr (cast ptr (make-cell (lit-sym "assoc")
+                        assoc-form:ptr (as ptr (make-cell (lit-sym "assoc")
                                           (make-cell gs
                                             (make-cell knode
                                               (make-cell vnode null line) line) line)
                                           line))
                         cell:ptr (make-cell assoc-form null line))
                     (when (= ctail null) (set! chead cell))
-                    (when (!= ctail null) (.set! (cast ptr:Node ctail) cdr cell))
+                    (when (!= ctail null) (.set! (as ptr:Node ctail) cdr cell))
                     (set! ctail cell)
-                    (set! cur2 (cast ptr ((cast ptr:Node vcell) cdr))))))
+                    (set! cur2 (as ptr ((as ptr:Node vcell) cdr))))))
               (let (gscell:ptr (make-cell gs null line))
                 (when (= ctail null) (set! chead gscell))
-                (when (!= ctail null) (.set! (cast ptr:Node ctail) cdr gscell))
+                (when (!= ctail null) (.set! (as ptr:Node ctail) cdr gscell))
                 (let (init-form:ptr (lit-list2 (lit-sym "hashmap-init") gs line)
                       full-body:ptr (make-cell init-form chead line))
                   (return (ok (make-cell (lit-sym "let")
@@ -742,7 +742,7 @@
                                 line))))))))))))
 
 (defn read-form ():!ptr
-  (let (t:ptr:Tok (cast ptr:Tok (try (eat-tok))))
+  (let (t:ptr:Tok (as ptr:Tok (try (eat-tok))))
     (when (= (t kind) TOK-LPAREN) (return (read-list (t line))))
     (when (= (t kind) TOK-LBRACK) (return (read-vector-literal (t line))))
     (when (= (t kind) TOK-HASHBRACE) (return (read-hashset-literal (t line))))
@@ -763,28 +763,28 @@
                                (make-cell quoted null (t line))
                                (t line))))))
     (when (= (t kind) TOK-INT)
-      (let (n:ptr:Node (cast ptr:Node (alloc-node)))
+      (let (n:ptr:Node (as ptr:Node (alloc-node)))
         (.set! n kind NODE-INT)
         (.set! n line (t line))
         (.set! n i (t i))
-        (return (ok (cast ptr n)))))
+        (return (ok (as ptr n)))))
     ; Char literal (Stage 11 M6 S0): a NODE-CHAR carrying the validated Unicode
     ; scalar value in `i`. Self-evaluating; the compiler emits it as a Char-typed
     ; i32 constant (emit-char-literal).
     (when (= (t kind) TOK-CHAR)
-      (let (n:ptr:Node (cast ptr:Node (alloc-node)))
+      (let (n:ptr:Node (as ptr:Node (alloc-node)))
         (.set! n kind NODE-CHAR)
         (.set! n line (t line))
         (.set! n i (t i))
-        (return (ok (cast ptr n)))))
+        (return (ok (as ptr n)))))
     (when (= (t kind) TOK-FLOAT)
-      (let (n:ptr:Node (cast ptr:Node (alloc-node)))
+      (let (n:ptr:Node (as ptr:Node (alloc-node)))
         (.set! n kind NODE-FLOAT)
         (.set! n line (t line))
         (.set! n s (t s))
-        (return (ok (cast ptr n)))))
+        (return (ok (as ptr n)))))
     (when (= (t kind) TOK-STRING)
-      (let (n:ptr:Node (cast ptr:Node (alloc-node)))
+      (let (n:ptr:Node (as ptr:Node (alloc-node)))
         (.set! n kind NODE-STR)
         (.set! n line (t line))
         ; NS-4: carry the CStr flag (0 = StrView default, 1 = explicit c"…").
@@ -792,18 +792,18 @@
         ; every existing literal — byte-identical.
         (.set! n i (t i))
         (.set! n s (t s))
-        (return (ok (cast ptr n)))))
+        (return (ok (as ptr n)))))
     (when (= (t kind) TOK-SYMBOL)
       (return (ok (intern-symbol (t s)))))
     ; Keyword literal (Stage 11 cleanup §2): build a NODE-KEYWORD carrying the
     ; name (colon already stripped by the lexer). Self-evaluating; the compiler
     ; lowers it to a keyword-intern call.
     (when (= (t kind) TOK-KEYWORD)
-      (let (n:ptr:Node (cast ptr:Node (alloc-node)))
+      (let (n:ptr:Node (as ptr:Node (alloc-node)))
         (.set! n kind NODE-KEYWORD)
         (.set! n line (t line))
         (.set! n s (t s))
-        (return (ok (cast ptr n)))))
+        (return (ok (as ptr n)))))
     (do (report-at (t line) "unexpected end of input")
         (return (err! parse-error)))))
 
@@ -827,7 +827,7 @@
 (defn fuse-colon-paren (child:ptr line:i32):!ptr
   ; Only consider a freshly-lexed symbol/keyword with no token peeked past it.
   (when (or (= child null) (!= g-peek-valid 0)) (return (ok child)))
-  (let (cn:ptr:Node (cast ptr:Node child))
+  (let (cn:ptr:Node (as ptr:Node child))
     (when (and (!= (cn kind) NODE-SYM) (!= (cn kind) NODE-KEYWORD)) (return (ok child)))
     (let (s:ptr (cn s)
           len:i64 (strlen (cn s)))
@@ -855,26 +855,26 @@
             (let (colon:ptr (strchr cur 58))
               (let (seg-len:i64 0)
                 (if (= colon null)
-                  (set! seg-len (cast i64 (strlen cur)))
-                  (set! seg-len (- (cast i64 colon) (cast i64 cur))))
+                  (set! seg-len (as i64 (strlen cur)))
+                  (set! seg-len (- (unsafe/cast i64 colon) (unsafe/cast i64 cur))))
                 ; An empty segment (e.g. body "a:" from atom "a::") is a reader error.
                 (when (= seg-len 0)
                   (do (report-at line (fmt-s "empty segment in colon-chain '%s' -- write name:k1:(Type) with no '::'" s))
                       (return (err! parse-error))))
-                (let (seg-node:ptr (cast ptr (intern-symbol (arena-strndup cur seg-len)))
+                (let (seg-node:ptr (as ptr (intern-symbol (arena-strndup cur seg-len)))
                       cell:ptr (make-cell seg-node null line))
                   (when (= tail null) (set! head cell))
-                  (when (!= tail null) (.set! (cast ptr:Node tail) cdr cell))
+                  (when (!= tail null) (.set! (as ptr:Node tail) cdr cell))
                   (set! tail cell)))
               (if (= colon null)
                 (set! done 1)
-                (set! cur (unsafe/ptr+ (cast ptr:i8 colon) 1)))))
+                (set! cur (unsafe/ptr+ (as ptr:i8 colon) 1)))))
           ; Name part: first segment for NODE-SYM, empty for NODE-KEYWORD.
           (let (name-node:ptr null
                 ctor-list:ptr head)
             (when (= (cn kind) NODE-SYM)
-              (do (set! name-node ((cast ptr:Node head) car))
-                  (set! ctor-list ((cast ptr:Node head) cdr))))
+              (do (set! name-node ((as ptr:Node head) car))
+                  (set! ctor-list ((as ptr:Node head) cdr))))
             ; Reverse the constructor list, then fold it right-to-left around
             ; the paren form, wrapping the name last if non-empty.
             (let (rev:ptr null
@@ -882,25 +882,25 @@
                   result:ptr paren-form
                   q:ptr null)
               (while (!= p null)
-                (let (nxt:ptr ((cast ptr:Node p) cdr))
-                  (.set! (cast ptr:Node p) cdr rev)
+                (let (nxt:ptr ((as ptr:Node p) cdr))
+                  (.set! (as ptr:Node p) cdr rev)
                   (set! rev p)
                   (set! p nxt)))
               (set! q rev)
               (while (!= q null)
-                (set! result (make-cell ((cast ptr:Node q) car)
+                (set! result (make-cell ((as ptr:Node q) car)
                                         (make-cell result null line)
                                         line))
-                (set! q ((cast ptr:Node q) cdr)))
+                (set! q ((as ptr:Node q) cdr)))
               (when (!= name-node null)
                 (set! result (make-cell name-node (make-cell result null line) line)))
-              (return (ok (cast ptr result))))))))))
+              (return (ok (as ptr result))))))))))
 
 (defn read-list (line:i32):!ptr
   (let (head:ptr null
         tail:ptr null)
     (while (!= 0 1)
-      (let (t:ptr:Tok (cast ptr:Tok (try (peek-tok))))
+      (let (t:ptr:Tok (as ptr:Tok (try (peek-tok))))
         (when (= (t kind) TOK-EOF)
           (do (report-at line "unterminated list")
               (return (err! parse-error))))
@@ -910,7 +910,7 @@
               child:ptr (try (fuse-colon-paren raw line))
               cell:ptr (make-cell child null line))
           (when (= tail null) (set! head cell))
-          (when (!= tail null) (.set! (cast ptr:Node tail) cdr cell))
+          (when (!= tail null) (.set! (as ptr:Node tail) cdr cell))
           (set! tail cell))))
     (return (ok head))))
 
@@ -918,14 +918,14 @@
   (let (head:ptr null
         tail:ptr null)
     (while (!= 0 1)
-      (let (pk:ptr:Tok (cast ptr:Tok (try (peek-tok))))
+      (let (pk:ptr:Tok (as ptr:Tok (try (peek-tok))))
         (when (= (pk kind) TOK-EOF) (return (ok head)))
         (let (form:ptr (try (read-form))
               line:i32 0)
-          (when (!= form null) (set! line ((cast ptr:Node form) line)))
+          (when (!= form null) (set! line ((as ptr:Node form) line)))
           (let (cell:ptr (make-cell form null line))
             (when (= tail null) (set! head cell))
-            (when (!= tail null) (.set! (cast ptr:Node tail) cdr cell))
+            (when (!= tail null) (.set! (as ptr:Node tail) cdr cell))
             (set! tail cell)))))
     (return (ok head))))
 
