@@ -620,6 +620,17 @@ spawn run_reject un5-bare-funcall-ptr-rejected tests/fixtures/un5-bare-funcall-p
 spawn run_reject un5-bare-import-private-rejected tests/fixtures/un5-bare-import-private.nuc \
   "'unsafe-import-private' was split in Stage 14: use 'unsafe/import-private'"
 
+# Stage 14 attributes.md AT-3 — the old postfix volatile spellings are retired:
+# both the list form `(T volatile)` and the colon-sugared `T:volatile` (which
+# reduces to the same trailing-symbol shape via split-colon-segments) now die
+# with a targeted error naming the `:volatile` attribute-slot replacement,
+# instead of silently stripping the trailing symbol and calling
+# type-with-volatile as before AT-3.
+spawn run_reject at3-postfix-volatile-rejected tests/fixtures/at3-postfix-volatile.nuc \
+  "postfix 'volatile' is retired: use the ':volatile' attribute"
+spawn run_reject at3-colon-volatile-rejected tests/fixtures/at3-colon-volatile.nuc \
+  "postfix 'volatile' is retired: use the ':volatile' attribute"
+
 # --- Join + replay --------------------------------------------------------------
 # Wait for all remaining jobs (ignore per-job exit codes — PASS/FAIL is decided
 # by scanning buffered output, since `set -e` does not propagate across `&`).

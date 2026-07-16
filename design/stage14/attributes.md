@@ -268,6 +268,27 @@ the spec it inherits.
   `volatile` colon segments become targeted hard errors suggesting the new
   spelling. stage1 == stage2 throughout; no re-baseline at any phase.
 
+  **Status: DONE (2026-07-16).** The postfix-stripping clause in
+  `parse-type-from-node` (src/union-registry.nuc) that recognized a trailing
+  bare `volatile` symbol and called `type-with-volatile` was replaced with a
+  `die-at` naming the `:volatile` attribute-slot replacement: `"postfix
+  'volatile' is retired: use the ':volatile' attribute (e.g. '(:volatile
+  name:T)' for a declaration, or '(ptr :volatile T)' for a pointer target)"`.
+  One chokepoint covers both retired spellings: `T:volatile` colon-sugar
+  reduces to the identical trailing-symbol list shape via
+  `split-colon-segments` before it ever reaches this clause, so no separate
+  detection was needed for the two source forms. Two negative fixtures added
+  (`tests/fixtures/at3-postfix-volatile.nuc` — `(ptr (i32 volatile))`;
+  `tests/fixtures/at3-colon-volatile.nuc` — `x:i32:volatile`), both asserting
+  the exact message. `docs/types.md`/`docs/builtins.md`'s "still accepted for
+  now" note corrected to "retired: the compiler rejects them". As predicted
+  (ground truth 5 — zero volatile spellings in src/lib), the change is
+  inert for the compiler's own source: `make clean && make` one-pass,
+  `make test` 180/180 (178 baseline + 2 new fixtures), `make bootstrap`
+  byte-identical on the first try — no `update-bootstrap`. **AT-1 through
+  AT-3 all done — the declaration-attributes workstream is closed out** aside
+  from the out-of-scope items (§ Out of scope).
+
 ---
 
 ## 8. Sequencing
