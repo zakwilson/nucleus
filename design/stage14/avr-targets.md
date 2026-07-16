@@ -193,6 +193,64 @@ the simulator (check simavr's device list for attiny1634; qemu-system-avr
 covers only mega parts — an atmega328p smoke target may be the pragmatic
 CI device). Everything below assumes this landed.
 
+**Status: DONE (2026-07-16).** Container rebuilt with the AVR toolchain
+(installed via Arch `pacman`, not Debian `apt`, since this container is Arch):
+`avr-gcc` 14.2.0, `binutils-avr` 2.43.50, `avr-libc` 2.2.1, `simavr` 1.6;
+`clang`/`llc` are LLVM 19.1.7 with the `avr` target registered. **avr-libc
+version 2.2.1 ≥ 2.2 — the Microchip DFP `-B` fallback is *not* needed.** The
+spike (a header-free freestanding C program exercising a `const`/rodata table,
+a `noinline` function call, and a 16-bit multiply + non-power-of-two divide;
+`/tmp/.../scratchpad/spike.c` during the spike) was driven through the
+ground-truth path — `clang --target=avr -Oz -S -emit-llvm` (emits the expected
+`e-P1-p:16:8-…` datalayout / `avr` triple) → `llc -mtriple=avr -mcpu=<cpu>
+-filetype=obj` → `avr-gcc -mmcu=<device>` → `avr-objcopy -O ihex` — for **all
+three** devices, each producing a valid `ELF … Atmel AVR 8-bit` executable and
+an Intel-hex file:
+- **ATtiny1634** (`-mcpu=attiny1634` / `-mmcu=attiny1634`): links, ihex OK,
+  `avr-size` 334 text / 10 data / 2 bss. `avr-objdump` confirms a genuine
+  `call … <compute>` (ground-truth item 4 — plain calls unaffected by the
+  addrspace(1) function-value hazard) and that **both `__mulhi3` *and*
+  `__udivmodhi4` libgcc symbols are linked in** (item 6 — no hardware
+  multiplier on this part, so the multiply is a real libcall). The `const
+  table` lands in **`.data` (RAM)**, i.e. crt-copied from flash at startup —
+  the classic-AVR consts-in-RAM cost of item 5, confirmed.
+- **AVR32DD20**: codegen via family `-mcpu=avrxmega3` (LLVM has no Dx device
+  entry, as predicted), linked with **`-mmcu=avr32dd20`** — **avr-gcc knows the
+  exact device** (`device-specs/specs-avr32dd20` present, alongside
+  `avr16dd20`/`avr64dd20`), so **no `-B` DFP flow and no family-mmcu fallback
+  were required**. Links, ihex OK, `avr-size` 364 text / 2 data / 2 bss. On
+  this mapped-flash part the same `const table` lands in **`.rodata` (flash
+  data-space, addr 0x8164) costing zero RAM** — `.data` shrank 10→2 bytes vs
+  the ATtiny — the modern-AVR half of the item-5 split, confirmed.
+- **ATmega328P** (`-mcpu=atmega328p` / `-mmcu=atmega328p`): the pragmatic
+  simulator target. Links, ihex OK, `avr-size` 316 / 10 / 2. Has a hardware
+  multiplier so only `__udivmodhi4` is pulled in (multiply inlined).
+
+**Simulator: `simavr` on ATmega328P.** `simavr --list-cores` does **not**
+include `attiny1634` (nor any AVR-Dx part), and **`qemu-system-avr` is not
+installed** in the container — so, exactly as the doc anticipated, ATmega328P
+is the pragmatic sim device. `simavr -m atmega328p spike-m328.elf` ran the
+program and **exited cleanly (code 0, not a 10s timeout)**: the spike ends with
+`cli; sleep` (interrupts-off SLEEP), which simavr treats as a permanent-sleep
+deadlock and quits gracefully; `avr-objdump` of `main` shows the full expected
+sequence `call <compute>` → volatile `sts 0x010A/0x010B, …` (store of the
+result to `g_sink`) → `cli` → `sleep`, so the clean exit proves execution
+reached the end of `main`. (This `simavr` build prints no explicit sleep-quit
+message; exit-0-vs-timeout is the observable.) The `.hex` also loads and runs.
+
+**Gaps / deviations from the plan:** (1) container is Arch, so the toolchain
+came from `pacman`, not the Dockerfile `apt` line the plan names — the
+Dockerfile at `/home/node/claude-container` is not reachable from this
+execution environment (the standing blocker noted in the RV-0 progress row);
+the packages are nonetheless present and verified. (2) `attiny1634` has no
+simulator here (simavr lacks it, qemu-system-avr absent) — ATmega328P is the
+CI smoke device, as the doc suggested; running the *reference* devices needs
+hardware or a DFP-aware simulator, deferred to AVR-8. (3) No blockers hit: the
+Dx part needed neither the DFP `-B` flow nor an `avrxmega3` link fallback.
+Nothing in AVR-0 was left open; **AVR-1** (backend registration + `--mcpu`/
+reloc plumbing in the Nucleus compiler) is the next milestone and is untouched
+by this spike (no `src/`/`lib/` changes — pure toolchain verification).
+
 ### AVR-1 — backend registration + CPU/reloc plumbing
 
 - src/llvm.nuch: declare the `LLVMInitializeAVR{TargetInfo,Target,TargetMC,
