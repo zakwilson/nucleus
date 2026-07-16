@@ -622,7 +622,7 @@
   (let (buf:ptr null  szp:i64 0
         s:ptr (open_memstream (addr-of buf) (as ptr (addr-of szp))))
     (fprintf s "; ModuleID = '<repl-thunk>'\n")
-    (fprintf s "target triple = \"x86_64-pc-linux-gnu\"\n\n")
+    (fprintf s "target triple = \"%s\"\n\n" ((as ptr:Target g-host-target) triple))
     (emit-fn-thunk s fname-ir ft)
     (fclose s)
     (when (and (!= buf null) (!= (char-at buf 0) 0))
@@ -716,7 +716,7 @@
   (let (ir-bufp:ptr null  ir-sizep:i64 0
         irs:ptr (open_memstream (addr-of ir-bufp) (as ptr (addr-of ir-sizep))))
     (fprintf irs "; ModuleID = '<repl>'\n")
-    (fprintf irs "target triple = \"x86_64-pc-linux-gnu\"\n\n")
+    (fprintf irs "target triple = \"%s\"\n\n" ((as ptr:Target g-host-target) triple))
     ; Preamble (accumulated types + declarations from includes)
     (fflush g-repl-preamble)
     (when (and (!= g-repl-preamble-bufp null) (!= (char-at g-repl-preamble-bufp 0) 0))

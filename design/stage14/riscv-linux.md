@@ -138,9 +138,25 @@ CI-verifiable end-to-end under qemu.
 
 - Dockerfile: `gcc-riscv64-linux-gnu`, `qemu-user`; rebuild. Verify
   `qemu-riscv64 -L /usr/riscv64-linux-gnu` runs a cross-compiled C hello.
+  **Not started** — `/home/node/claude-container` is not present/mounted
+  in the autopilot execution environment; it is only reachable from the
+  user's interactive session, so this sub-item (and, per §4, all of
+  AVR-0, which shares the same Dockerfile change) is blocked pending the
+  user rebuilding the container.
 - Fix the two hardcoded `"x86_64-pc-linux-gnu"` REPL JIT triples
   (src/repl.nuc:597, 690) → `(g-host-target triple)`. Independent host
   bug fix (helps aarch64 hosts today); byte-identical on x86_64.
+  **Done** — the two sites (now at `src/repl.nuc:625`
+  `jit-thunk-module` and `:719` `repl-jit-module-rt-rewrite`; line numbers
+  shifted since this doc was written) read
+  `((as ptr:Target g-host-target) triple)`, matching the existing pattern
+  at `src/nucleusc.nuc:8225/8446`. Verified twice independently: `make
+  clean && make` clean, `make test` 180/180, `make bootstrap`
+  byte-identical (no `update-bootstrap` needed), REPL smoke check
+  (define/call/redefine via `build/nucleusc -i`) passed. (A pre-existing,
+  unrelated bug was found during the smoke check — REPL `defmacro`
+  segfaults/hangs, reproduces on the pre-fix baseline too — tracked in
+  [../progress.md](../progress.md) "Known constraints / gotchas".)
 
 ### RV-1 — registration + features/ABI plumbing
 
