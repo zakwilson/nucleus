@@ -71,12 +71,12 @@ machinery.
 (deferror parse-failed "could not parse value")
 
 (defn checked (n:i64):!i64
-  (when (< n (cast i64 0)) (return (err parse-failed)))
+  (when (< n 0) (return (err parse-failed)))
   (return (ok n)))
 
 (defn doubled (n:i64):!i64
   (let (v:i64 (try (checked n)))          ; propagate on err
-    (return (ok (* v (cast i64 2))))))
+    (return (ok (* v 2)))))
 
 (match (checked x)
   ((ok v)  ...)
@@ -177,24 +177,24 @@ not supported in v1.
 ; A fallible function. (err config-missing) consults bound handlers first.
 ; err! would bypass them unconditionally.
 (defn load-num (n:i64):!i64
-  (when (= n (cast i64 0))
+  (when (= n 0)
     (return (err config-missing)))    ; handler may repair → (ok v)
-  (return (ok (* n (cast i64 10)))))
+  (return (ok (* n 10))))
 
 ; A repairing handler: (some v) repairs, none declines.
 (defn repair-from-ctx (ctx:ptr detail:ptr) (Maybe i64)
-  (return (some (deref (cast ptr:i64 ctx)))))
+  (return (some (deref (as ptr:i64 ctx)))))
 
 (defn main ():i32
   ; No handler bound: (err config-missing) returns the error value.
-  (match (load-num (cast i64 0))
+  (match (load-num 0)
     ((ok v)  (printf "ok %lld\n" v))
     ((err e) (printf "err: %s\n" (err-name e))))
 
   ; Repairing handler bound for (config-missing, i64): err → (ok 777).
-  (let (fixed:i64 (cast i64 777))
-    (with-handler (config-missing i64 repair-from-ctx (cast ptr (addr-of fixed)))
-      (match (load-num (cast i64 0))
+  (let (fixed:i64 777)
+    (with-handler (config-missing i64 repair-from-ctx (as ptr (addr-of fixed)))
+      (match (load-num 0)
         ((ok v)  (printf "repaired: %lld\n" v))   ; prints: repaired: 777
         ((err e) (printf "err: %s\n" (err-name e))))))
   0)
@@ -226,15 +226,15 @@ behavior if policy declines:
 (deferror out-of-memory "allocation grow needs a policy decision")
 
 (defn grow (need:i64):i64
-  (match (signal out-of-memory i64 (cast ptr (addr-of need)))
+  (match (signal out-of-memory i64 (as ptr (addr-of need)))
     ((some sz) sz)               ; a handler supplied a size: continue
-    (none      (cast i64 0))))   ; declined / no handler: the fallback
+    (none      0)))              ; declined / no handler: the fallback
 
 (defn grant-double (ctx:ptr detail:ptr) (Maybe i64)
-  (return (some (* (deref (cast ptr:i64 detail)) (cast i64 2)))))
+  (return (some (* (deref (as ptr:i64 detail)) 2))))
 
 (with-handler (out-of-memory i64 grant-double null)
-  (grow (cast i64 8)))           ; → 16
+  (grow 8))                      ; → 16
 ```
 
 `signal` requires `(import-use error)` (it references the handler chain). Its result

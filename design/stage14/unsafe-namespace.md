@@ -591,7 +591,7 @@ docs/builtins.md gains an "Unsafe operations" section listing the roster and
 the audit command `grep -rn 'unsafe/' src lib`, docs/macros.md `cast` mentions,
 [progress.md](../progress.md), and this doc's implementation-status section.
 
-**Status (2026-07-16): errors DONE, docs not started (separate pass).** Every
+**Status (2026-07-16): errors DONE, docs DONE (see the docs-sweep bullet at the end of this section).** Every
 dispatch site that previously accepted the bare spelling as a silent alias now
 dies with a targeted D6 error instead:
 
@@ -658,8 +658,31 @@ dies with a targeted D6 error instead:
   (now bare-spelling-free) self-compilation. `boot/nucleusc.ll`/`bin/nucleusc`
   intentionally left untouched (consistent with UN-1/UN-2/UN-3 precedent: no
   refresh needed when already byte-identical).
-- **Docs sweep not started** — deferred to a separate `api-docs-writer` pass
-  per this phase's original agent split.
+- **Docs sweep DONE (2026-07-16, api-docs-writer pass).** The four files this
+  section named — docs/types.md (coercion catalog + the `cast ref:T x`
+  narrowing-assertion example), docs/special-forms.md (`cast`/`ptr+`/
+  `funcall-ptr-*`/`unsafe-import-private` rows split into "retired" + the
+  `unsafe/`-prefixed replacement), docs/builtins.md (new "Unsafe operations"
+  section + `grep -rn 'unsafe/' src lib` audit command), docs/macros.md (`cast`
+  mentions) — are all updated to the `as`/`unsafe/cast` split. A second,
+  exhaustive `grep -rn '(cast \|ptr\+\|funcall-ptr\|unsafe-import-private'
+  docs/` pass beyond that four-file list (matching this file's own D6 error
+  text) additionally found and fixed live bare-spelling code examples in
+  docs/errors.md, docs/stdlib.md, docs/structs-unions.md, docs/strings.md,
+  docs/iterators.md, docs/collections.md, plus stale `unsafe-import-private`
+  mentions in docs/toplevel.md and docs/compiler.md's REPL-supported-forms
+  list, and a generic `funcall-ptr-*` family reference in docs/allocators.md.
+  Every respelling was classified per-site against `build/nucleusc` (not
+  guessed from the D2/D3 tables alone) — several sites simplified to drop the
+  cast entirely where LW-4 literal-widening already makes it redundant, and a
+  stale `(Iterator i64)`/"cast to i64" description of `ListIter`/`SplitIter`/
+  `LineIter` (actually `(Iterator ptr)` since a pre-Stage-14 commit,
+  `97fd3c4`) was corrected in docs/iterators.md and docs/strings.md since it
+  blocked classifying the recovery cast correctly. `docs/builtins.md`'s
+  pre-existing stale duplicate rows (outside the new section) were
+  deliberately left alone, per the frozen-monolith precedent (not in
+  `docs/index.md`). See [progress.md](../progress.md) for the file-by-file
+  summary.
 
 ---
 
