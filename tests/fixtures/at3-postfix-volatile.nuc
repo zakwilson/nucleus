@@ -1,0 +1,10 @@
+; Stage 14 attributes.md AT-3 negative fixture: the retired postfix list-form
+; volatile type spelling `(T volatile)` must now die with a targeted error
+; naming the `:volatile` attribute-slot replacement (design/stage14/
+; attributes.md §3, §7 AT-3). Compiling this must FAIL with:
+;   "postfix 'volatile' is retired: use the ':volatile' attribute"
+(defn bump-counter ((p (ptr (i32 volatile)))):void
+  (ptr-set! p (+ (deref p) 1)))
+
+(defn main ():i32
+  (return 0))

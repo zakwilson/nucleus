@@ -1249,32 +1249,22 @@
                     (aset! (as ptr:ptr argts) 0 inner)
                     (aset! (as ptr:ptr argts) 1 (as ptr ty-err))
                     (return (union-template-stamp-types (as ptr ut) argts 2 line)))))))))
-      ; Postfix volatile: (T volatile) or (T1 T2 ... volatile). Strip the trailing
-      ; 'volatile and recurse on the head, then mark volatile. Placed before ptr/fn
-      ; so (ptr i32 volatile) ≡ volatile (ptr i32).
+      ; AT-3: postfix volatile is retired. (T volatile) / (T1 T2 ... volatile) —
+      ; the list-form spelling — and colon-sugared T:volatile (which reduces to
+      ; this same trailing-symbol shape via split-colon-segments before it ever
+      ; reaches here, so one check catches both source spellings) used to strip
+      ; the trailing 'volatile symbol and mark the head type volatile via
+      ; type-with-volatile. Now a targeted hard error naming the AT-1
+      ; attribute-slot replacement instead. Placed before ptr/fn, same as the
+      ; retired stripping logic was, so the message fires before any other
+      ; parse of the list is attempted.
       (let (nlen:i32 (node-len n))
         (when (>= nlen 2)
           (let (last:ptr:Node (unsafe/cast ptr:Node (node-at n (- nlen 1))))
             (when (and (!= (as ptr last) null)
                        (= (last kind) NODE-SYM)
                        (= (strcmp (last s) "volatile") 0))
-              (let (head-len:i32 (- nlen 1)
-                    inner:ptr null)
-                (if (= head-len 1)
-                  (set! inner (n car))
-                  (let (cur:ptr (as ptr n)
-                        new-head:ptr null
-                        new-tail:ptr null
-                        i:i32 0)
-                    (while (< i head-len)
-                      (let (cell:ptr (make-cell ((unsafe/cast ptr:Node cur) car) null line))
-                        (when (= new-head null) (set! new-head cell))
-                        (when (!= new-tail null) (.set! (unsafe/cast ptr:Node new-tail) cdr cell))
-                        (set! new-tail cell))
-                      (set! cur ((unsafe/cast ptr:Node cur) cdr))
-                      (inc! i))
-                    (set! inner new-head)))
-                (return (type-with-volatile (parse-type-from-node inner line))))))))
+              (die-at line "postfix 'volatile' is retired: use the ':volatile' attribute (e.g. '(:volatile name:T)' for a declaration, or '(ptr :volatile T)' for a pointer target)")))))
       ; Anonymous struct: (struct field:type ...) — memoized by content hash so
       ; two textually-identical shapes share one synthesized StructDef.
       (let (head:ptr (n car))

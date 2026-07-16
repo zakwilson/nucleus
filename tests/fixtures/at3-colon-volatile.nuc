@@ -1,0 +1,9 @@
+; Stage 14 attributes.md AT-3 negative fixture: the retired colon-sugared
+; volatile type spelling `T:volatile` must now die with the same targeted
+; error as the postfix list form (design/stage14/attributes.md §3, §7 AT-3).
+; Compiling this must FAIL with:
+;   "postfix 'volatile' is retired: use the ':volatile' attribute"
+(defn main ():i32
+  (let (x:i32:volatile 0)
+    (set! x 1))
+  (return 0))

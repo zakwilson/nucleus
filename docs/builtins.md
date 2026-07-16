@@ -201,7 +201,7 @@ will not elide, reorder, or coalesce them. Examples:
 
 Volatility lives on the storage site, not the value: `volatile T` and `T` are assignment-compatible, and the qualifier is dropped/added at the access. Bare `ptr` (no element) cannot be made volatile — volatility attaches to the pointee, not to opaque pointers. Attributes never participate in type identity, overload resolution, dispatch, monomorphization, or name mangling — see [stage14/attributes.md](../design/stage14/attributes.md) for the full attribute-slot design.
 
-> The older postfix spellings (`(T volatile)` list form, `T:volatile` colon segment) are still accepted for now — new code should use the `:volatile` attribute-slot spelling above.
+> The older postfix spellings (`(T volatile)` list form, `T:volatile` colon segment) are retired: the compiler rejects them with a targeted error naming the `:volatile` attribute-slot spelling above.
 
 ### Anonymous structs
 
