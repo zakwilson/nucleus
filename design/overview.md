@@ -36,7 +36,7 @@ Nucleus is a replacement for C using Lisp style syntax and macros with LLVM as i
 
 ### TODO/undecided:
 
-- Syntax for storage class specifiers — designed: [stage14/attributes.md](stage14/attributes.md)
+- Syntax for storage class specifiers — resolved by the keyword-attribute slot: [stage14/attributes.md](stage14/attributes.md). `:volatile` is implemented (AT-1 done, migration/docs AT-2 in progress); `:thread-local` is reserved with a diagnostic (blocked on a threading stage); `:static` locals and `:align`/`:section`/`:weak` remain sketched only.
 - Other metadata or compiler hints — same design (the keyword-attribute slot)
 
 ## Design principles

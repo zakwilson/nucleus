@@ -184,14 +184,24 @@ conservatively (`raw` beats `Maybe` beats `ref`).
 
 ### Volatile qualifier
 
-A type can be tagged `volatile` in postfix position — either the list form `(T volatile)` or the sugared `T:volatile`. Loads and stores of a value held at a volatile-qualified storage site (variable, struct field, or pointer target) are emitted as `load volatile` / `store volatile` in LLVM IR; the compiler will not elide, reorder, or coalesce them. Examples:
+Volatility is declared through the **keyword-attribute slot**: a leading
+`:volatile` keyword immediately before the declared name of a variable,
+global, struct/union field, or `defn` param. For a pointer *target* (C's
+`volatile T *`, the MMIO case), the keyword instead moves inside the pointer
+constructor — `(ptr :volatile T)` / `(raw :volatile T)` / `(ref :volatile T)`
+— since pointee volatility must travel with the pointer through params and
+fields. Loads and stores of a value held at a volatile-qualified storage site
+are emitted as `load volatile` / `store volatile` in LLVM IR; the compiler
+will not elide, reorder, or coalesce them. Examples:
 
-- `x:i32:volatile` — local volatile variable (sugared)
-- `(let (x (i32 volatile)) ...)` — same, list form
-- `(defstruct R status:i32:volatile)` — field is volatile
-- `(p (ptr (i32 volatile)))` — pointer to volatile `i32`; deref and `ptr-set!` through `p` are volatile
+- `(defvar :volatile trap-zero:i32 0)` — volatile global
+- `(let (:volatile x:i32 0) ...)` — volatile local (binds to the immediately following name only)
+- `(defstruct R flags:i32 (:volatile status:i32))` — volatile field (parenthesized, keyword head)
+- `(defn bump-counter ((p (ptr :volatile i32))):void ...)` — pointer to volatile `i32`; deref and `ptr-set!` through `p` are volatile
 
-Volatility lives on the storage site, not the value: `volatile T` and `T` are assignment-compatible, and the qualifier is dropped/added at the access. Bare `ptr` (no element) cannot be made volatile — volatility attaches to the pointee, not to opaque pointers.
+Volatility lives on the storage site, not the value: `volatile T` and `T` are assignment-compatible, and the qualifier is dropped/added at the access. Bare `ptr` (no element) cannot be made volatile — volatility attaches to the pointee, not to opaque pointers. Attributes never participate in type identity, overload resolution, dispatch, monomorphization, or name mangling — see [stage14/attributes.md](../design/stage14/attributes.md) for the full attribute-slot design.
+
+> The older postfix spellings (`(T volatile)` list form, `T:volatile` colon segment) are still accepted for now — new code should use the `:volatile` attribute-slot spelling above.
 
 ### Anonymous structs
 
