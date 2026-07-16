@@ -3643,7 +3643,13 @@
 ; let / with: the type of the last body expression, evaluated in a child scope
 ; carrying the binding types (values are irrelevant to typing).
 (defn node-type-block (n:raw:Node scope:ref:Scope):?ptr:Type
-  (let (binds:ptr:Node (unsafe/cast ptr:Node (node-at n 1)))
+  ; AT-1 lockstep with emit-let/emit-with (conventions.md node-type<->emit-node):
+  ; normalize a leading `:volatile` (etc.) into a wrapped binding name so the
+  ; (name value) pairing survives and the binding types register at the right
+  ; slots. Attribute-free lists pass through unchanged.
+  (let (binds:ptr:Node (unsafe/cast ptr:Node
+                         (attrs-normalize-bindings (as ptr (node-at n 1))
+                           ((unsafe/cast ptr:Node n) line))))
     (when (or (= (as ptr binds) null) (!= (binds kind) NODE-CELL)) (return null))
     (let (inner:ref:Scope (scope-new scope)
           i:i32 0

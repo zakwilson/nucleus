@@ -1102,6 +1102,108 @@
       (aset! (as ptr:ptr argts) i (parse-type-from-node (node-at use-node (+ i 1)) line)))
     (return (struct-template-stamp-types st argts nargs line))))
 
+; ============================================================
+; Stage 14 AT-1 — declaration attribute slot (design/stage14/attributes.md)
+; ============================================================
+; A declaration attribute is a leading keyword literal (`:volatile`) qualifying
+; the declaration that follows it — never part of type identity, dispatch, or
+; name mangling (§2). The cond below is the attribute registry: one clause per
+; known attribute (add a row to introduce one), an explicit reserved-with-error
+; row for `:thread-local`, and a catch-all that rejects unknown keywords so a
+; typo (`:volatle`) can never silently no-op.
+;
+; parse-decl-attrs scans zero-or-more leading NODE-KEYWORD operands from a
+; declaration operand list (`cursor` is a cons cell, or null), OR's each
+; recognized attribute's flag bit into *out-flags (a DECL-ATTR-* bitset), and
+; returns the list cursor advanced to the first non-attribute operand (the
+; declared name / element type). Every declaration site funnels its attribute
+; validation through here: def-forms (the keyword is a leading operand),
+; struct/union fields and defn params (the keyword heads the field/param cell,
+; reached via extract-name-and-type), let/with bindings (the keyword is wrapped
+; onto its binding name by attrs-normalize-bindings, then reaches here through
+; extract-name-and-type), and pointer target types `(ptr :volatile T)`.
+(defn parse-decl-attrs (cursor:ptr out-flags:ptr line:i32):ptr
+  (let (flags:i32 0
+        cur:ptr cursor)
+    (while (and (!= cur null)
+                (!= ((unsafe/cast ptr:Node cur) car) null)
+                (= (-> cur (unsafe/cast ptr:Node _) (_ car) (unsafe/cast ptr:Node _) (_ kind))
+                   NODE-KEYWORD))
+      (let (kw:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node cur) car))
+            nm:ptr (kw s))
+        (cond
+          (= nm "volatile")
+            (set! flags (bit-or flags DECL-ATTR-VOLATILE))
+          (= nm "thread-local")
+            (die-at line "thread-local storage requires the threading stage -- see design/stage14/attributes.md §5")
+          true
+            (die-at line (fmt-s "unknown declaration attribute ':%s' (known attributes: :volatile, :thread-local)" nm))))
+      (set! cur ((unsafe/cast ptr:Node cur) cdr)))
+    (aset! (as ptr:i32 out-flags) 0 flags)
+    (return cur)))
+
+; AT-1: normalize a let/with binding list so a prefix attribute keyword becomes a
+; wrapped binding-name cell `(:kw... name)`, restoring strict (name value) pairs.
+;   (:volatile x:i32 0  y:i32 1) -> ((:volatile x:i32) 0  y:i32 1)
+; The wrapped cell then funnels through extract-name-and-type's attribute branch
+; (the single validation chokepoint), exactly like a `(:volatile field:type)`
+; struct field. Returns `binds` unchanged — no allocation — when the list holds
+; no attribute keyword at a name position, so an attribute-free binding list is
+; byte-identical. The fast-path scan only inspects even indices (name positions
+; in a well-formed attribute-free list); a keyword used as a binding *value* sits
+; at an odd index and is left alone.
+(defn attrs-normalize-bindings (binds:ptr line:i32):ptr
+  (when (= binds null) (return binds))
+  (let (has-attr:i32 0
+        idx:i32 0
+        scan:ptr binds)
+    (while (!= scan null)
+      (when (and (= (% idx 2) 0)
+                 (!= ((unsafe/cast ptr:Node scan) car) null)
+                 (= (-> scan (unsafe/cast ptr:Node _) (_ car) (unsafe/cast ptr:Node _) (_ kind))
+                    NODE-KEYWORD))
+        (set! has-attr 1))
+      (set! scan ((unsafe/cast ptr:Node scan) cdr))
+      (inc! idx))
+    (when (= has-attr 0) (return binds)))
+  (let (result:ptr null
+        tail:ptr null
+        cur:ptr binds)
+    (while (!= cur null)
+      ; Collect this binding's leading attribute keywords into (:kw...) list.
+      (let (kw-head:ptr null
+            kw-tail:ptr null)
+        (while (and (!= cur null)
+                    (!= ((unsafe/cast ptr:Node cur) car) null)
+                    (= (-> cur (unsafe/cast ptr:Node _) (_ car) (unsafe/cast ptr:Node _) (_ kind))
+                       NODE-KEYWORD))
+          (let (cell:ptr (make-cell ((unsafe/cast ptr:Node cur) car) null line))
+            (when (= kw-head null) (set! kw-head cell))
+            (when (!= kw-tail null) (.set! (unsafe/cast ptr:Node kw-tail) cdr cell))
+            (set! kw-tail cell))
+          (set! cur ((unsafe/cast ptr:Node cur) cdr)))
+        (when (= cur null)
+          (die-at line "declaration attribute must be followed by a binding name"))
+        (let (name-node:ptr ((unsafe/cast ptr:Node cur) car)
+              wrapped:ptr name-node)
+          (when (!= kw-head null)
+            (.set! (unsafe/cast ptr:Node kw-tail) cdr (make-cell name-node null line))
+            (set! wrapped kw-head))
+          (let (ncell:ptr (make-cell wrapped null line))
+            (when (= result null) (set! result ncell))
+            (when (!= tail null) (.set! (unsafe/cast ptr:Node tail) cdr ncell))
+            (set! tail ncell))
+          (set! cur ((unsafe/cast ptr:Node cur) cdr))
+          ; The value element (verbatim). A missing value is reported downstream
+          ; by the even-count check on the normalized list.
+          (when (!= cur null)
+            (let (vcell:ptr (make-cell ((unsafe/cast ptr:Node cur) car) null line))
+              (when (= result null) (set! result vcell))
+              (when (!= tail null) (.set! (unsafe/cast ptr:Node tail) cdr vcell))
+              (set! tail vcell))
+            (set! cur ((unsafe/cast ptr:Node cur) cdr))))))
+    (return result)))
+
 ; Parse a type from an AST node. Handles:
 ;   - symbol node: delegates to parse-type-name
 ;   - list node (ptr T) or (ptr ptr ... T): builds TY-PTR
@@ -1260,15 +1362,24 @@
         (when (= head 'ptr)
           (let (rest:ptr (n cdr))
             (when (= rest null) (return ty-ptr))
-            (let (elem:ptr null)
-              (if (= ((unsafe/cast ptr:Node rest) cdr) null)
-                (set! elem (parse-type-from-node ((unsafe/cast ptr:Node rest) car) line))
-                (set! elem (parse-type-from-node rest line)))
-              (let (pt:ref:Type (make-type TY-PTR))
-                (.set! pt elem elem)
-                ; Phase F flip: (ptr T) is now non-null, same as (ref T).
-                (.set! pt pkind PTR-REF)
-                (return pt))))))
+            ; AT-1: (ptr :volatile T) — a volatile *pointee* (C's `volatile T *`,
+            ; the MMIO case). The keyword moves inside the constructor and marks
+            ; the element type, not the pointer slot.
+            (let (vflags:i32 0)
+              (set! rest (parse-decl-attrs rest (as ptr:i32 (addr-of vflags)) line))
+              (when (= rest null)
+                (die-at line "ptr: element type required after attribute -- (ptr :volatile T)"))
+              (let (elem:ptr null)
+                (if (= ((unsafe/cast ptr:Node rest) cdr) null)
+                  (set! elem (parse-type-from-node ((unsafe/cast ptr:Node rest) car) line))
+                  (set! elem (parse-type-from-node rest line)))
+                (when (!= (bit-and vflags DECL-ATTR-VOLATILE) 0)
+                  (set! elem (as ptr (type-with-volatile (unsafe/cast ref:Type elem)))))
+                (let (pt:ref:Type (make-type TY-PTR))
+                  (.set! pt elem elem)
+                  ; Phase F flip: (ptr T) is now non-null, same as (ref T).
+                  (.set! pt pkind PTR-REF)
+                  (return pt)))))))
       ; Stage 10 Phase F: (raw T) — a nullable, unchecked pointer to T (today's
       ; raw `(ptr T)` behavior). The blessed spelling for C-boundary and
       ; deliberately-nullable pointers once the flip makes bare `ptr` non-null.
@@ -1277,14 +1388,21 @@
           (let (rest:ptr (n cdr))
             (when (= rest null)
               (die-at line "raw: element type required — (raw T)"))
-            (let (elem:ptr null)
-              (if (= ((unsafe/cast ptr:Node rest) cdr) null)
-                (set! elem (parse-type-from-node ((unsafe/cast ptr:Node rest) car) line))
-                (set! elem (parse-type-from-node rest line)))
-              (let (pt:ref:Type (make-type TY-PTR))
-                (.set! pt elem elem)
-                (.set! pt pkind PTR-RAW)
-                (return pt))))))
+            ; AT-1: (raw :volatile T) — volatile pointee on a nullable pointer.
+            (let (vflags:i32 0)
+              (set! rest (parse-decl-attrs rest (as ptr:i32 (addr-of vflags)) line))
+              (when (= rest null)
+                (die-at line "raw: element type required after attribute -- (raw :volatile T)"))
+              (let (elem:ptr null)
+                (if (= ((unsafe/cast ptr:Node rest) cdr) null)
+                  (set! elem (parse-type-from-node ((unsafe/cast ptr:Node rest) car) line))
+                  (set! elem (parse-type-from-node rest line)))
+                (when (!= (bit-and vflags DECL-ATTR-VOLATILE) 0)
+                  (set! elem (as ptr (type-with-volatile (unsafe/cast ref:Type elem)))))
+                (let (pt:ref:Type (make-type TY-PTR))
+                  (.set! pt elem elem)
+                  (.set! pt pkind PTR-RAW)
+                  (return pt)))))))
       ; Stage 10: (ref T) — a non-null pointer to T. Same shape as (ptr T)
       ; (colon sugar ref:T arrives here too), but the element is required.
       (let (head:ptr (n car))
@@ -1292,14 +1410,21 @@
           (let (rest:ptr (n cdr))
             (when (= rest null)
               (die-at line "ref: element type required — (ref T)"))
-            (let (elem:ptr null)
-              (if (= ((unsafe/cast ptr:Node rest) cdr) null)
-                (set! elem (parse-type-from-node ((unsafe/cast ptr:Node rest) car) line))
-                (set! elem (parse-type-from-node rest line)))
-              (let (pt:ref:Type (make-type TY-PTR))
-                (.set! pt elem elem)
-                (.set! pt pkind PTR-REF)
-                (return pt))))))
+            ; AT-1: (ref :volatile T) — volatile pointee on a non-null pointer.
+            (let (vflags:i32 0)
+              (set! rest (parse-decl-attrs rest (as ptr:i32 (addr-of vflags)) line))
+              (when (= rest null)
+                (die-at line "ref: element type required after attribute -- (ref :volatile T)"))
+              (let (elem:ptr null)
+                (if (= ((unsafe/cast ptr:Node rest) cdr) null)
+                  (set! elem (parse-type-from-node ((unsafe/cast ptr:Node rest) car) line))
+                  (set! elem (parse-type-from-node rest line)))
+                (when (!= (bit-and vflags DECL-ATTR-VOLATILE) 0)
+                  (set! elem (as ptr (type-with-volatile (unsafe/cast ref:Type elem)))))
+                (let (pt:ref:Type (make-type TY-PTR))
+                  (.set! pt elem elem)
+                  (.set! pt pkind PTR-REF)
+                  (return pt)))))))
       ; Stage 10: (Maybe X) — one spelling, two layouts (errors.md §10 / E2).
       ;   (Maybe (ref T)) keeps the N1 niche-encoded pointer (null = none);
       ;   (Maybe T) for any other T stamps the two-arm {tag, T} value union from

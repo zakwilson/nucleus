@@ -680,6 +680,27 @@
 ; Sets out-name and out-type-name.  out-type-name is null if untyped.
 (defn extract-name-type (node:(raw Node) out-name:ptr:ptr out-type-name:ptr:ptr):void
   (let (n:(raw Node) node)
+    ; AT-1: skip leading attribute keywords on a wrapped declaration
+    ; `(:volatile field:type)` and re-derive the inner name / type-name. Validation
+    ; already happened at declaration time (extract-name-and-type), so this is a
+    ; structural skip only — a keyword head never appears in a pre-AT-1 declaration.
+    (when (and (= (n kind) NODE-CELL)
+               (!= (n car) null)
+               (= (-> n (_ car) (unsafe/cast ptr:Node _) (_ kind)) NODE-KEYWORD))
+      (let (rest:(raw Node) node)
+        (while (and (!= rest null)
+                    (!= ((unsafe/cast ptr:Node rest) car) null)
+                    (= (-> rest (_ car) (unsafe/cast ptr:Node _) (_ kind)) NODE-KEYWORD))
+          (set! rest (as raw:Node ((unsafe/cast ptr:Node rest) cdr))))
+        (when (= rest null)
+          (ptr-set! out-name null)
+          (ptr-set! out-type-name null)
+          (return))
+        (let (inner:(raw Node) (if (= ((unsafe/cast ptr:Node rest) cdr) null)
+                                 (as raw:Node ((unsafe/cast ptr:Node rest) car))
+                                 rest))
+          (extract-name-type inner out-name out-type-name)
+          (return))))
     (when (= (n kind) NODE-SYM)
       (split-typed (n s) out-name out-type-name)
       (return))
@@ -705,6 +726,33 @@
 ; For function pointer types: (name (fn ret) (param-types)) → parse-type-from-node on rest
 (defn extract-name-and-type (node:(raw Node) out-name:ptr:ptr line:i32):(raw Type)
   (let (n:(raw Node) node)
+    ; AT-1 (design/stage14/attributes.md): an attribute-annotated declaration is a
+    ; cell whose head is a keyword literal — `(:volatile status:i32)` for a struct
+    ; field / defn param, or the `(:volatile x:i32)` wrapper attrs-normalize-bindings
+    ; produces for a let/with binding. Strip and validate the leading attributes
+    ; (parse-decl-attrs is the registry chokepoint), parse the inner name:type, and
+    ; re-apply `:volatile` to its type — attributes never enter type identity, and
+    ; `:volatile` lowers to the is-volatile Type flag (type-with-volatile) exactly as
+    ; the postfix `(T volatile)`/`T:volatile` spellings do. Only fires on a
+    ; keyword-headed cell, which no pre-AT-1 declaration ever is, so byte-identical.
+    (when (and (= (n kind) NODE-CELL)
+               (!= (n car) null)
+               (= (-> n (_ car) (unsafe/cast ptr:Node _) (_ kind)) NODE-KEYWORD))
+      (let (flags:i32 0
+            rest:(raw Node) (as raw:Node (parse-decl-attrs (as ptr node)
+                                           (as ptr:i32 (addr-of flags)) line)))
+        (when (= rest null)
+          (die-at line "declaration attribute must be followed by a name:type"))
+        (let (inner:(raw Node) (if (= ((unsafe/cast ptr:Node rest) cdr) null)
+                                 (as raw:Node ((unsafe/cast ptr:Node rest) car))
+                                 rest)
+              base:(raw Type) (extract-name-and-type inner out-name line))
+          (when (= base null) (return null))
+          (when (!= (bit-and flags DECL-ATTR-VOLATILE) 0)
+            ; null-checked raw->ref: type-with-volatile takes a non-null Type*
+            ; (there is no `as` spelling for a runtime-null-checked raw->ref).
+            (return (as raw:Type (type-with-volatile (unsafe/cast ref:Type base)))))
+          (return base))))
     ; Simple symbol: name:type[:more] — desugar first if multi-colon,
     ; else use split-typed and parse-type-name on the single tail token.
     (when (= (n kind) NODE-SYM)
@@ -5718,7 +5766,11 @@
   (let (cc:ptr:Node (unsafe/cast ptr:Node call))
     (when (or (< (node-len cc) 2) (-> cc (node-at _ 1) (unsafe/cast ptr:Node _) (_ kind) (!= _ NODE-CELL)))
       (die-at (cc line) "let: bad form"))
-    (let (binds:ptr:Node (unsafe/cast ptr:Node (node-at cc 1)))
+    ; AT-1: normalize a leading `:volatile` (etc.) into a wrapped binding name so
+    ; the (name value) pairing survives; attribute-free lists pass through
+    ; unchanged (byte-identical). extract-name-and-type applies the attribute.
+    (let (binds:ptr:Node (unsafe/cast ptr:Node
+                           (attrs-normalize-bindings (as ptr (node-at cc 1)) (cc line))))
       (check-colon-bindings binds)
       (when (!= (% (node-len binds) 2) 0)
         (die-at (binds line) "let: binding list must be even"))
@@ -5806,7 +5858,9 @@
   (let (cc:ptr:Node (unsafe/cast ptr:Node call))
     (when (or (< (node-len cc) 2) (-> cc (node-at _ 1) (unsafe/cast ptr:Node _) (_ kind) (!= _ NODE-CELL)))
       (die-at (cc line) "with: bad form"))
-    (let (binds:ptr:Node (unsafe/cast ptr:Node (node-at cc 1)))
+    ; AT-1: normalize the attribute slot (see emit-let); byte-identical when absent.
+    (let (binds:ptr:Node (unsafe/cast ptr:Node
+                           (attrs-normalize-bindings (as ptr (node-at cc 1)) (cc line))))
       (check-colon-bindings binds)
       (when (!= (% (node-len binds) 2) 0)
         (die-at (binds line) "with: binding list must be even"))
@@ -7227,42 +7281,59 @@
 
 (defn emit-defvar (call:(raw Node)):void
   (let (cc:ptr:Node (unsafe/cast ptr:Node call))
-    (when (or (< (node-len cc) 2) (> (node-len cc) 3))
+    (when (< (node-len cc) 2)
       (die-at (cc line) "defvar: expects name and optional init"))
-    (let (name-node:ptr (node-at cc 1))
-      (let (name:ptr null
-            ty:ptr (extract-name-and-type name-node (as ptr:ptr (addr-of name))
-                                          ((unsafe/cast ptr:Node name-node) line)))
-        (when (= ty null)
-          (die-at ((unsafe/cast ptr:Node name-node) line) (fmt-s "defvar: missing :type on '%s'" name)))
-        (guard-name-kind name (cc line) NK-VALUE)
-        ; Stage 12 N4: a global emits `@name`, prefixed with the namespace
-        ; ir-prefix in a non-`user` namespace (`@foo__name`). Identity under
-        ; `user`, so the bootstrap is byte-identical.
-        (let (ir-name:ptr (fmt-s "@%s" (ns-ir-base name))
-              align:i32 (type-size ty)
-              init-ir:ptr null)
-          (check-ir-name-legal (cc line) name ir-name)
-          (if (= (node-len cc) 3)
-            (set! init-ir (defvar-init-ir (node-at cc 2) ty))
-            (let (tk:i32 ((as ptr:Type ty) kind))
-              (cond (!= (is-ptr-like ty) 0) (set! init-ir "null")
-                    (or (= tk TY-F32) (= tk TY-F64)) (set! init-ir "0.0")
-                    (= tk TY-I1) (set! init-ir "false")
-                    ; Aggregates (struct/union) cannot use the integer `0`
-                    ; literal — LLVM requires `zeroinitializer` for a default-
-                    ; zero aggregate global.
-                    (or (= tk TY-STRUCT) (= tk TY-UNION)) (set! init-ir "zeroinitializer")
-                    true (set! init-ir "0"))))
-          ; Stage 12 N3: private defvar emits `internal` LLVM linkage.
-          (if (!= g-defining-private 0)
-            (fprintf g-out "%s = internal global %s %s, align %d\n\n"
-              ir-name (type-to-ir ty) init-ir align)
-            (fprintf g-out "%s = global %s %s, align %d\n\n"
-              ir-name (type-to-ir ty) init-ir align))
-          (let (vsym:ref:Sym (scope-define g-globals name ty ir-name 1))
-            (when (!= g-defining-private 0) (.set! (unsafe/cast ptr:Sym vsym) sym-private 1))
-            (sym-set-src-loc (as ptr vsym) (cc line))))))))
+    ; AT-1 (design/stage14/attributes.md §2): the attribute slot sits between the
+    ; `defvar` head and the name — `(defvar :volatile trap-zero:i32 0)`. Strip and
+    ; validate leading keywords, then read the name/init off the advanced cursor.
+    ; No keyword => decl == (cc cdr), name/init unchanged => byte-identical.
+    (let (attr-flags:i32 0
+          decl:ptr (parse-decl-attrs (as ptr (cc cdr)) (as ptr:i32 (addr-of attr-flags)) (cc line)))
+      (when (= decl null)
+        (die-at (cc line) "defvar: expects name and optional init"))
+      (let (declc:ptr:Node (unsafe/cast ptr:Node decl)
+            name-node:ptr (declc car)
+            init-cell:ptr (declc cdr))
+        ; name + optional init; nothing may follow the init.
+        (when (and (!= init-cell null) (!= ((unsafe/cast ptr:Node init-cell) cdr) null))
+          (die-at (cc line) "defvar: expects name and optional init"))
+        (let (name:ptr null
+              ty:ptr (extract-name-and-type name-node (as ptr:ptr (addr-of name))
+                                            ((unsafe/cast ptr:Node name-node) line)))
+          (when (= ty null)
+            (die-at ((unsafe/cast ptr:Node name-node) line) (fmt-s "defvar: missing :type on '%s'" name)))
+          ; :volatile marks the storage slot volatile (lowers to the is-volatile
+          ; Type flag, identical to the postfix spelling `trap-zero:i32:volatile`).
+          (when (!= (bit-and attr-flags DECL-ATTR-VOLATILE) 0)
+            (set! ty (as ptr (type-with-volatile (unsafe/cast ref:Type ty)))))
+          (guard-name-kind name (cc line) NK-VALUE)
+          ; Stage 12 N4: a global emits `@name`, prefixed with the namespace
+          ; ir-prefix in a non-`user` namespace (`@foo__name`). Identity under
+          ; `user`, so the bootstrap is byte-identical.
+          (let (ir-name:ptr (fmt-s "@%s" (ns-ir-base name))
+                align:i32 (type-size ty)
+                init-ir:ptr null)
+            (check-ir-name-legal (cc line) name ir-name)
+            (if (!= init-cell null)
+              (set! init-ir (defvar-init-ir ((unsafe/cast ptr:Node init-cell) car) ty))
+              (let (tk:i32 ((as ptr:Type ty) kind))
+                (cond (!= (is-ptr-like ty) 0) (set! init-ir "null")
+                      (or (= tk TY-F32) (= tk TY-F64)) (set! init-ir "0.0")
+                      (= tk TY-I1) (set! init-ir "false")
+                      ; Aggregates (struct/union) cannot use the integer `0`
+                      ; literal — LLVM requires `zeroinitializer` for a default-
+                      ; zero aggregate global.
+                      (or (= tk TY-STRUCT) (= tk TY-UNION)) (set! init-ir "zeroinitializer")
+                      true (set! init-ir "0"))))
+            ; Stage 12 N3: private defvar emits `internal` LLVM linkage.
+            (if (!= g-defining-private 0)
+              (fprintf g-out "%s = internal global %s %s, align %d\n\n"
+                ir-name (type-to-ir ty) init-ir align)
+              (fprintf g-out "%s = global %s %s, align %d\n\n"
+                ir-name (type-to-ir ty) init-ir align))
+            (let (vsym:ref:Sym (scope-define g-globals name ty ir-name 1))
+              (when (!= g-defining-private 0) (.set! (unsafe/cast ptr:Sym vsym) sym-private 1))
+              (sym-set-src-loc (as ptr vsym) (cc line)))))))))
 
 (defn emit-defconst (call:(raw Node)):void
   (let (cc:ptr:Node (unsafe/cast ptr:Node call))
