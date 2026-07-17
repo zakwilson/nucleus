@@ -1,0 +1,9 @@
+; Stage 14 AVR-6 gap fix — `:const` is a compile-time read-only-storage
+; guarantee, so `set!` against a `:const` defvar global must be rejected at
+; compile time rather than silently emitting a `store` into LLVM `constant`
+; storage (undefined behavior; segfaults at runtime on the host).
+(defvar :const answer:i32 42)
+
+(defn main ():i32
+  (set! answer 10)
+  (return answer))

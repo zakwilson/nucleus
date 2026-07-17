@@ -758,13 +758,18 @@ spawn run_avr5_isr
 # AVR-6 Harvard-hazard gates: (1) the function-value diagnostic fires on AVR and
 # NOT on the host (prog-as-keyed); (2) `:const` emits an LLVM `constant`; (3)
 # `:const` is rejected on a let binding and a struct field (only defvar globals
-# have a global-vs-constant storage class). Compiler-only — no AVR toolchain.
+# have a global-vs-constant storage class); (4) `set!` against a `:const`
+# global is rejected at compile time (gap fix — was previously a silent
+# `store` into read-only storage, UB, segfault at runtime). Compiler-only —
+# no AVR toolchain.
 spawn run_avr6_fnvalue
 spawn run_avr6_const
 spawn run_reject avr6-const-on-let-rejected tests/fixtures/avr6-const-let.nuc \
   "':const' applies only to a defvar global"
 spawn run_reject avr6-const-on-field-rejected tests/fixtures/avr6-const-field.nuc \
   "':const' applies only to a defvar global"
+spawn run_reject avr6-const-mutate-rejected tests/fixtures/avr6-const-mutate-rejected.nuc \
+  "set!: cannot assign to 'answer' -- declared :const"
 
 # RV-1 IR-emission gate: riscv64 datalayout/triple + target-abi=lp64d module flag,
 # and the "features cliff" llc round-trip (hardware mul/fadd.d, no soft-float
