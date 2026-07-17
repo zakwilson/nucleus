@@ -145,14 +145,14 @@ compiler rejects `:const` at any of those sites with a targeted error
 (`':const' applies only to a defvar global, not a field, parameter, or
 binding`).
 
-> **⚠ `set!` is not rejected at compile time.** The compiler does not track
-> `:const`-ness on the symbol after emission, so `(set! name ...)` against a
-> `:const` global still type-checks and emits an ordinary `store` to the
-> now-read-only storage — the compiler does not diagnose this as an error.
-> The store is undefined behavior and typically segfaults at runtime (the
-> storage is mapped read-only). Treat `:const` as a storage-placement
-> directive you must not write through yourself, not as a compiler-enforced
-> immutability guarantee.
+`set!` against a `:const` global is a compile-time error: `(defvar :const
+answer:i32 42) ... (set! answer 10)` dies with `set!: cannot assign to
+'answer' -- declared :const` instead of compiling into a `store` to
+read-only storage. Reads of a `:const` global (`(return answer)`) are
+unaffected — they go through the normal load path. This check covers the
+direct `set!` mutation syntax only; it is not an aliasing analysis (e.g. a
+raw pointer obtained via `addr-of` and written through `ptr-set!` is not
+tracked).
 
 ## Built-in Types
 

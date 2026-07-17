@@ -502,6 +502,20 @@ abi-test` PASS.
   …)` or a `&const` marker — decide at implementation) emitting `constant`
   instead of `global`. Benefits every target; on mapped-flash parts it keeps
   tables out of RAM entirely.
+  **Status: DONE (2026-07-17), including a follow-up gap fix.** Landed as
+  `(defvar :const name:type init)` via the AT-1 attribute registry
+  (`DECL-ATTR-CONST`). The original landing emitted `constant` storage
+  correctly but did not reject `set!` against a `:const` global at compile
+  time — `(set! a-const-global v)` still type-checked and emitted an ordinary
+  `store` into read-only storage (UB, segfaults at runtime on the host). Fixed
+  by adding a distinct `readonly-global:i32` flag on `Sym`
+  (`src/compiler-types.nuc`) — kept separate from `is-const`/`const-val`,
+  which is the unrelated `defconst` compile-time-substituted-value mechanism
+  and would have misrouted ordinary reads through its inline-substitution
+  branch. `emit-defvar` sets the flag post-`scope-define` when
+  `DECL-ATTR-CONST` is set; `emit-set` now `die-at`s
+  (`"set!: cannot assign to '%s' -- declared :const"`) when the flag is set,
+  before the RHS is emitted. See `tests/fixtures/avr6-const-mutate-rejected.nuc`.
 - **Niche collision on mapped-flash parts** (ground truth §2.6): on the
   AVR32DD20, `err E` encodings 0xFFFF−E alias real flash-mapped addresses.
   v1 mitigation: reserve the top 256 bytes of flash in the link (a one-line

@@ -6290,6 +6290,13 @@
           (do
           (when (= (sym is-local) 0)
             (die-at (target line) (fmt-s "set!: undefined local '%s'" (target s))))
+          ; AVR-6 gap fix: a `:const` defvar's storage is LLVM `constant`
+          ; (read-only) — a `set!` against it would emit a `store` into
+          ; read-only storage (undefined behavior, segfaults at runtime on
+          ; the host). Reject at compile time instead, before the RHS is
+          ; even emitted.
+          (when (!= (sym readonly-global) 0)
+            (die-at (target line) (fmt-s "set!: cannot assign to '%s' -- declared :const" (target s))))
             (let (v:ref:Val
                    ; TC-2: arm the want channel with the slot's declared type so a
                    ; generic constructor on the RHS infers a return-only tyvar.
@@ -7436,6 +7443,10 @@
                   ir-name storage (type-to-ir ty) init-ir align)))
             (let (vsym:ref:Sym (scope-define g-globals name ty ir-name 1))
               (when (!= g-defining-private 0) (.set! (unsafe/cast ptr:Sym vsym) sym-private 1))
+              ; AVR-6 gap fix: mark the Sym so `set!` can reject writes to
+              ; this `constant`-storage global at compile time (emit-set).
+              (when (!= (bit-and attr-flags DECL-ATTR-CONST) 0)
+                (.set! (unsafe/cast ptr:Sym vsym) readonly-global 1))
               (sym-set-src-loc (as ptr vsym) (cc line)))))))))
 
 (defn emit-defconst (call:(raw Node)):void

@@ -313,7 +313,16 @@
   ; Stage 12 N3: symbol is private — not importable from another namespace.
   ; Set by `defn-`, `defvar-`, `defconst-`, `defenum-` (private member values).
   ; For link-emitting forms, also implies internal LLVM linkage.
-  sym-private:i32)
+  sym-private:i32
+  ; Stage 14 AVR-6 gap fix: this global's storage is LLVM `constant` (a
+  ; `:const` defvar, DECL-ATTR-CONST) — `set!` against it must be rejected at
+  ; compile time. Distinct from `is-const`/`const-val`, which is the UNRELATED
+  ; `defconst` mechanism (a compile-time-substituted literal VALUE with no
+  ; storage at all — see emit-symbol-ref's is-const branch). A `:const` defvar
+  ; is a real global read through the normal load path, just not writable;
+  ; reusing `is-const` here would misroute its reads through the defconst
+  ; inline-substitution branch. 0 = ordinary mutable global (the default).
+  readonly-global:i32)
 
 ; One armed scope-exit cleanup (Stage 10 lifecycle, design/stage10/lifecycle.md).
 ; Stage 14 §14.6 (the defunion pilot): this was a defstruct whose doc-comment
