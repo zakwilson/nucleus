@@ -91,6 +91,7 @@ Source files contain top-level forms (`defn`, `defvar`, `defstruct`, etc.). A `m
 | [Iterators](iterators.md) | `Iterator` protocol, concrete iterators, lazy combinators, reduce (`lib/iterator.nuc`) |
 | [Collections](collections.md) | Core collection protocols (`Coll`/`Seq`/`Assoc`/`Set`/`Drop`), `Hash`, `Vector`, `HashMap`, `HashSet` (`lib/coll.nuc`, `lib/hash.nuc`, `lib/vector.nuc`, `lib/hashmap.nuc`, `lib/hashset.nuc`) |
 | [Strings](strings.md) | `Char` scalar, `StrView` borrowed slice, `String` owning type, UTF-8 encode/decode, `ByteStr`/`Str` protocols, split, lines, trim, `FromStr`/`parse` (`lib/char.nuc`, `lib/strview.nuc`, `lib/string.nuc`, `lib/parse.nuc`, `lib/string-split.nuc`) |
+| [AVR targets](avr.md) | Cross-compiling to 8-bit AVR microcontrollers: flags, a two-device walkthrough, the v1 profile and its exclusions, MMIO/ISR idioms (`lib/avr.nuc`, `lib/avr/*.nuc`) |
 
 ## Standard library overview
 

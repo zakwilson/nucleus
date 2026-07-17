@@ -116,6 +116,13 @@ abi-test: $(BIN)
 layout-test: $(BIN)
 	NUCLEUSC=$(BIN) ./tests/run-layout-test.sh
 
+# AVR cross-compilation acceptance test (Stage 14 AVR-8 gate): compile+link
+# the four AVR examples, assert avr-size flash/RAM budgets, and run the UART
+# example under simavr. Not part of `make test`; see design/stage14/avr-
+# targets.md and tests/run-avr-test.sh's header comment.
+avr-test: $(BIN)
+	NUCLEUSC=$(BIN) ./tests/run-avr-test.sh
+
 bootstrap: $(BIN) | $(BUILD)/out
 	@echo "=== Stage 2: self-hosted compiler -> nucleusc.nuc ==="
 	$(BIN) --emit-llvm src/nucleusc.nuc > $(BUILD)/stage2.ll
@@ -224,4 +231,4 @@ uninstall:
 	rm -f $(BINDIR)/nucleusc
 	rm -rf $(DESTDIR)$(PREFIX)/share/nucleus
 
-.PHONY: test abi-test layout-test clean bootstrap boot-binary update-bootstrap windows-boot ensure-boot lib-headers lib-cheaders lib-objs lib-so lib install uninstall
+.PHONY: test abi-test layout-test avr-test clean bootstrap boot-binary update-bootstrap windows-boot ensure-boot lib-headers lib-cheaders lib-objs lib-so lib install uninstall
