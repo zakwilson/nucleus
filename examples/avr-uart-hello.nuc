@@ -1,0 +1,62 @@
+; AVR USART0 polled transmit — ATmega328P (the simavr-executable device).
+;
+; Stage 14 AVR-4 (design/stage14/avr-targets.md §5). The behavioural proof of the
+; AVR toolchain: unlike the blink examples (verifiable only by link + size, since
+; the ATtiny1634/AVR-Dx parts are not in `simavr --list-cores`), this runs under
+; `simavr -m atmega328p` and emits observable UART bytes.
+;
+; Minimal USART0 setup + a polling transmit loop (no interrupts, no buffering):
+;   - baud: UBRR0 = F_CPU/(16*baud) - 1. At F_CPU = 8 MHz, 9600 baud -> UBRR0 =
+;     8000000/(16*9600) - 1 = 51 (actual 9615 baud, 0.16% error). Pin the sim
+;     clock to match: `simavr -f 8000000`.
+;   - enable the transmitter (TXEN0 in UCSR0B)
+;   - 8N1 frame: UCSZ01|UCSZ00 in UCSR0C (8 data bits, no parity, 1 stop)
+;   - transmit: spin until UDRE0 (data register empty) in UCSR0A, then store the
+;     byte in UDR0.
+;
+; Build + link + run:
+;   nucleusc --target=avr --mcpu=atmega328p examples/avr-uart-hello.nuc -o u.elf
+;   simavr -m atmega328p -f 8000000 u.elf     # observe repeated "Hi!\n"
+;
+; `(exclude-prelude)` (freestanding, no libc runtime) and only direct calls
+; (no function values — addrspace(1) hazard), same as the blink examples.
+
+(exclude-prelude)
+
+(import-use "lib/avr.nuc")
+(import-use "lib/avr/atmega328p.nuc")
+
+; USART0: 9600 baud @ 8 MHz, 8N1, transmitter enabled.
+(defn uart-init ():void
+  (reg16-write UBRR0 51)
+  (reg8-set-bit! UCSR0B TXEN0)
+  (reg8-write UCSR0C (bit-or (bit-mask UCSZ01) (bit-mask UCSZ00))))
+
+; Spin until the transmit data register is empty (UDRE0 set).
+(defn uart-wait-ready ():void
+  (let (ready:ui8 0)
+    (while (= ready 0)
+      (set! ready (reg8-test-bit UCSR0A UDRE0)))))
+
+(defn uart-tx (b:ui8):void
+  (uart-wait-ready)
+  (reg8-write UDR0 b))
+
+; Transmit "Hi!\n" (ASCII 72 105 33 10).
+(defn uart-print ():void
+  (uart-tx 72)
+  (uart-tx 105)
+  (uart-tx 33)
+  (uart-tx 10))
+
+(defn delay ():void
+  (let (:volatile i:usize 0)
+    (while (< i 20000)
+      (inc! i))))
+
+(defn main ():i32
+  (uart-init)
+  (while true
+    (uart-print)
+    (delay))
+  (return 0))

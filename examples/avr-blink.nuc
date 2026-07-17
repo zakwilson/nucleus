@@ -1,0 +1,37 @@
+; AVR GPIO blink — ATtiny1634 (classic tinyAVR).
+;
+; Stage 14 AVR-4 (design/stage14/avr-targets.md §5). Drives PB0 (Port B, pin 0)
+; as an output and toggles it forever with a busy-wait delay — the "hello world"
+; of a microcontroller. No timers/interrupts (that is AVR-5/AVR-6); a plain
+; counting loop is the correct v1 scope.
+;
+; Build + link for the ATtiny1634 (a real link via the avr-gcc driver, AVR-3):
+;   nucleusc --target=avr --mcpu=attiny1634 examples/avr-blink.nuc -o blink.elf
+;
+; `(exclude-prelude)`: the prelude auto-emits the intern/arena/node runtime,
+; which references host-only libc (`perror`/`malloc`) absent from freestanding
+; avr-libc, so it would fail to link (AVR-1/AVR-3). This program needs none of
+; it — only the AVR MMIO helpers and the device register file, both of which are
+; likewise prelude-free. It also avoids function *values* (an addrspace(1)
+; verifier error on AVR, ground truth §1.4); every call here is direct.
+
+(exclude-prelude)
+
+(import-use "lib/avr.nuc")
+(import-use "lib/avr/attiny1634.nuc")
+
+; Crude busy-wait. A counting loop, no timer. The exact iteration count is not
+; behaviourally verified (the ATtiny1634 is not simavr-simulatable); it exists to
+; make the toggle visible on real hardware.
+(defn delay ():void
+  (let (:volatile i:usize 0)
+    (while (< i 20000)
+      (inc! i))))
+
+(defn main ():i32
+  ; PB0 as output: set its DDRB bit.
+  (reg8-set-bit! DDRB 0)
+  (while true
+    (reg8-toggle-bit! PORTB 0)
+    (delay))
+  (return 0))
