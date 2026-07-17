@@ -133,6 +133,44 @@ run_avr_emit() {  # <cpu>
   rm -f "$tmpfile"
 }
 
+# Stage 14 AVR-2: 16-bit correctness. The design gate is "an AVR-targeted example
+# using usize, sizeof, and a union round-trips through llc cleanly." The fixture
+# exercises usize/sizeof (ptr-int-ir/ptr-int-type → i16, Task 1) and a tagged
+# union round-trip. The load-bearing regression check is the qq-helper fix
+# (Task 2): a runtime quasiquote forces emit-qq-helpers, whose Node cell must be
+# `malloc(i64 22)` (16 + 3*2) with `align 1` on AVR — not the host 40/align 8.
+# llc alone will NOT catch a wrong-but-well-formed malloc size, so we grep the
+# emitted IR directly for the 16-bit-derived literals, then round-trip through
+# llc for both reference devices (attiny1634 + the avrxmega3 family core).
+run_avr2_16bit() {  # <cpu>
+  local cpu="$1" tmpfile obj
+  tmpfile="$(mktemp)"
+  ./build/nucleusc --target=avr --mcpu="$cpu" --emit-llvm tests/fixtures/avr2-16bit.nuc \
+    > "$tmpfile" 2>/dev/null || true
+  # 16-bit correctness in the emitted text: AVR datalayout, sizeof/usize as i16
+  # (ptrtoint to i16), and the qq-helper Node cell as malloc(i64 22) / align 1.
+  if grep -q 'target datalayout = "e-P1-p:16:8-' "$tmpfile" \
+     && grep -q 'ptrtoint ptr .* to i16' "$tmpfile" \
+     && grep -q 'call ptr @malloc(i64 22)' "$tmpfile" \
+     && grep -q 'store ptr %a, ptr %p4, align 1' "$tmpfile" \
+     && ! grep -q 'call ptr @malloc(i64 40)' "$tmpfile"; then
+    echo "PASS  avr2-16bit-$cpu"
+  else
+    echo "FAIL  avr2-16bit-$cpu (16-bit width / qq-helper malloc size or align)"
+  fi
+  if command -v llc >/dev/null 2>&1; then
+    obj="$(mktemp)"
+    if llc -mtriple=avr -mcpu="$cpu" -filetype=obj "$tmpfile" -o "$obj" 2>/dev/null \
+       && [ -s "$obj" ]; then
+      echo "PASS  avr2-llc-$cpu"
+    else
+      echo "FAIL  avr2-llc-$cpu (llc rejected emitted IR)"
+    fi
+    rm -f "$obj"
+  fi
+  rm -f "$tmpfile"
+}
+
 # Stage 14 RV-1: cross-emitting for the riscv64 Linux target. The compiler must
 # register the RISCV backend (targets-init-all), emit the riscv64 datalayout/
 # triple, the `target-abi=lp64d` module flag, and thread the +m,+a,+f,+d,+c
@@ -573,6 +611,11 @@ done
 # AVR-Dx family core, used for the deviceless AVR32DD20). Both must lower via llc.
 spawn run_avr_emit attiny1634
 spawn run_avr_emit avrxmega3
+
+# AVR-2 16-bit correctness gate: usize/sizeof width + qq-helper malloc(22)/align 1,
+# round-tripped through llc for both reference devices.
+spawn run_avr2_16bit attiny1634
+spawn run_avr2_16bit avrxmega3
 
 # RV-1 IR-emission gate: riscv64 datalayout/triple + target-abi=lp64d module flag,
 # and the "features cliff" llc round-trip (hardware mul/fadd.d, no soft-float
