@@ -1134,13 +1134,26 @@
         (cond
           (= nm "volatile")
             (set! flags (bit-or flags DECL-ATTR-VOLATILE))
+          (= nm "const")
+            (set! flags (bit-or flags DECL-ATTR-CONST))
           (= nm "thread-local")
             (die-at line "thread-local storage requires the threading stage -- see design/stage14/attributes.md §5")
           true
-            (die-at line (fmt-s "unknown declaration attribute ':%s' (known attributes: :volatile, :thread-local)" nm))))
+            (die-at line (fmt-s "unknown declaration attribute ':%s' (known attributes: :volatile, :const, :thread-local)" nm))))
       (set! cur ((unsafe/cast ptr:Node cur) cdr)))
     (aset! (as ptr:i32 out-flags) 0 flags)
     (return cur)))
+
+; AVR-6: `:const` is meaningful ONLY on a defvar global — a struct/union field,
+; defn param, let/with binding, or pointer target type has no independent
+; global-vs-constant storage class to select, so a stray `:const` at any of those
+; sites is rejected here rather than silently accepted-and-ignored. `where` names
+; the offending declaration site for the diagnostic. Defined in union-registry so
+; it is visible at both the pointer-target sites below and extract-name-and-type
+; (nucleusc.nuc). No-op when the CONST bit is clear, so existing sites are inert.
+(defn reject-decl-attr-const (flags:i32 line:i32 where:ptr):void
+  (when (!= (bit-and flags DECL-ATTR-CONST) 0)
+    (die-at line (fmt-s "':const' applies only to a defvar global, not %s" where))))
 
 ; AT-1: normalize a let/with binding list so a prefix attribute keyword becomes a
 ; wrapped binding-name cell `(:kw... name)`, restoring strict (name value) pairs.
@@ -1357,6 +1370,7 @@
             ; the element type, not the pointer slot.
             (let (vflags:i32 0)
               (set! rest (parse-decl-attrs rest (as ptr:i32 (addr-of vflags)) line))
+              (reject-decl-attr-const vflags line "a pointer target type")
               (when (= rest null)
                 (die-at line "ptr: element type required after attribute -- (ptr :volatile T)"))
               (let (elem:ptr null)
@@ -1381,6 +1395,7 @@
             ; AT-1: (raw :volatile T) — volatile pointee on a nullable pointer.
             (let (vflags:i32 0)
               (set! rest (parse-decl-attrs rest (as ptr:i32 (addr-of vflags)) line))
+              (reject-decl-attr-const vflags line "a pointer target type")
               (when (= rest null)
                 (die-at line "raw: element type required after attribute -- (raw :volatile T)"))
               (let (elem:ptr null)
@@ -1403,6 +1418,7 @@
             ; AT-1: (ref :volatile T) — volatile pointee on a non-null pointer.
             (let (vflags:i32 0)
               (set! rest (parse-decl-attrs rest (as ptr:i32 (addr-of vflags)) line))
+              (reject-decl-attr-const vflags line "a pointer target type")
               (when (= rest null)
                 (die-at line "ref: element type required after attribute -- (ref :volatile T)"))
               (let (elem:ptr null)

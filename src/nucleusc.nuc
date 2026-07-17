@@ -764,6 +764,12 @@
       (let (flags:i32 0
             rest:(raw Node) (as raw:Node (parse-decl-attrs (as ptr node)
                                            (as ptr:i32 (addr-of flags)) line)))
+        ; AVR-6: `:const` is only valid on a defvar global — every declaration
+        ; that reaches here (struct/union field, defn param, let/with binding) has
+        ; no global-vs-constant storage class to select, so reject rather than
+        ; silently drop the flag. (The defvar path strips `:const` in emit-defvar
+        ; before calling this on the bare name:type, so it never fires there.)
+        (reject-decl-attr-const flags line "a field, parameter, or binding")
         (when (= rest null)
           (die-at line "declaration attribute must be followed by a name:type"))
         (let (inner:(raw Node) (if (= ((unsafe/cast ptr:Node rest) cdr) null)
@@ -1561,6 +1567,19 @@
             (return (alloc-val (sym type) (sym const-val))))
           (when (= (sym is-local) 0)
             (when (-> sym (_ type) (unsafe/cast ptr:Type _) (_ kind) (= _ TY-FN))
+              ; AVR-6 Harvard hazard: on a target whose program memory is a
+              ; distinct address space (prog-as != 0 — AVR's `P1`), a function
+              ; materialized as a first-class data-pointer VALUE is `ptr
+              ; addrspace(1)` where a plain `ptr` is required, an LLVM verifier
+              ; error. Direct calls (routed to emit-call, never here) are fine;
+              ; only value uses — funcall/dyn/BoxedFn sources, let inits, args —
+              ; reach this single materialization chokepoint. v1 diagnoses rather
+              ; than emitting IR the backend rejects; the full addrspace(1)-
+              ; carrying fix is deferred (design/stage14/avr-targets.md §5 AVR-6).
+              (when (!= ((as ptr:Target g-target) prog-as) 0)
+                (die-at (nn line)
+                  (fmt-sd "cannot use function '%s' as a value on this target: functions live in program memory (address space %d) and cannot be materialized as a data pointer -- call it directly instead"
+                    (nn s) ((as ptr:Target g-target) prog-as))))
               (return (alloc-val (sym type) (sym ir-name))))
             (die-at (nn line) (fmt-s "cannot use '%s' as value" (nn s))))
           (let (tmp:ptr (new-tmp))
@@ -4537,7 +4556,27 @@
 ; for a BoxedFn (proto "Fn") or the concrete `extend P` impl for a `(dyn P)` box;
 ; slot 1 (drop) is the type's drop thunk (null for a POD/non-owning type). Dies if
 ; the boxed type has no method0 thunk (an invoke/impl is mandatory; drop optional).
+; AVR-6 Harvard hazard (second path). A type-erasure box (BoxedFn, `dyn`, a
+; boxed closure) stores function pointers as DATA — the vtable is an
+; `internal constant { ptr @forwarder, ... }` and the boxed body `store`s the
+; lifted fn pointer into a heap cell. On a target whose functions live in a
+; distinct program address space (prog-as != 0 — AVR's `P1`), every such fn
+; pointer is `ptr addrspace(1)` where a plain `ptr` is required — an LLVM
+; verifier error (confirmed: boxedfn on AVR fails `llc` at the vtable/indirect
+; call). Unlike a bare-fn value (caught in emit-symbol-ref), a boxed `(fn …)`
+; closure is lambda-lifted and never passes through emit-symbol-ref, so the box
+; construction is diagnosed here instead. Boxed closures / `dyn` / function
+; values are out of scope for AVR v1 (design/stage14/avr-targets.md §3, §5 AVR-6);
+; the full addrspace(1)-carrying fix is deferred. Inert on hosted targets
+; (prog-as == 0), so the compiler's own dyn/BoxedFn self-compile is byte-identical.
+(defn avr-reject-fn-value (line:i32 what:ptr):void
+  (when (!= ((as ptr:Target g-target) prog-as) 0)
+    (die-at line
+      (fmt-sd "%s materializes a function as a data pointer, which is unsupported on this target: functions live in program memory (address space %d) -- boxed closures, `dyn`, and function values are not available on AVR in v1"
+        what ((as ptr:Target g-target) prog-as)))))
+
 (defn ensure-vtable-for (concrete-ty:(raw Type) proto:CStr line:i32):ptr
+  (avr-reject-fn-value line "type-erasure (BoxedFn / dyn) construction")
   (let (key:ptr (intern-str (fmt-2s "%s/%s" (type-spelling concrete-ty) proto))
         hit:ptr (vtable-memo-lookup key))
     (when (!= hit null) (return hit))
@@ -4672,6 +4711,7 @@
 ; @__boxedfn_drop just frees the cell). Memoized per signature (reuses the vtable
 ; memo with an `fnfwd.<sig>` key); the forwarder + vtable are emitted once to g-out.
 (defn ensure-fnfwd-vtable (box-ty:(raw Type) line:i32):ptr
+  (avr-reject-fn-value line "boxing a function into a BoxedFn")
   (let (canon:ptr (boxedfn-canonical box-ty)
         bt:ptr:Type (as ptr:Type canon)
         np:i32 (bt num-params)
@@ -7382,11 +7422,18 @@
                       (or (= tk TY-STRUCT) (= tk TY-UNION)) (set! init-ir "zeroinitializer")
                       true (set! init-ir "0"))))
             ; Stage 12 N3: private defvar emits `internal` LLVM linkage.
-            (if (!= g-defining-private 0)
-              (fprintf g-out "%s = internal global %s %s, align %d\n\n"
-                ir-name (type-to-ir ty) init-ir align)
-              (fprintf g-out "%s = global %s %s, align %d\n\n"
-                ir-name (type-to-ir ty) init-ir align))
+            ; AVR-6: `:const` selects the LLVM `constant` storage class over
+            ; `global` (read-only; on mapped-flash AVR parts it stays out of RAM).
+            ; Four combinations: private/public × global/constant. `storage` binds
+            ; from an if over two StrView literals (homogeneous join, no collapse);
+            ; when the CONST bit is clear it is "global" and both branches are
+            ; byte-identical to the historical output.
+            (let (storage:ptr (if (!= (bit-and attr-flags DECL-ATTR-CONST) 0) "constant" "global"))
+              (if (!= g-defining-private 0)
+                (fprintf g-out "%s = internal %s %s %s, align %d\n\n"
+                  ir-name storage (type-to-ir ty) init-ir align)
+                (fprintf g-out "%s = %s %s %s, align %d\n\n"
+                  ir-name storage (type-to-ir ty) init-ir align)))
             (let (vsym:ref:Sym (scope-define g-globals name ty ir-name 1))
               (when (!= g-defining-private 0) (.set! (unsafe/cast ptr:Sym vsym) sym-private 1))
               (sym-set-src-loc (as ptr vsym) (cc line)))))))))
@@ -9955,6 +10002,34 @@
 ; triple-keyed defaults resolved above (folding an explicit --mcpu in first).
 ; ptr-align is derived from the datalayout via LLVMABIAlignmentOfType on a `ptr`
 ; type rather than assumed == ptr-size: x86-64/aarch64 answer 8 either way, AVR 1.
+; AVR-6: parse the program address space from an LLVM datalayout string. The
+; datalayout is a `-`-separated list of tokens; the program-memory address-space
+; token is exactly `P<n>` (e.g. `P1` on AVR: `e-P1-p:16:8-…`). Scans for a `P` at
+; a token boundary (string start or immediately after a `-`, never a bare
+; substring `P`), reads the following decimal digits, and returns that value; 0
+; when no such token exists (every hosted/RISC-V datalayout has no `P` segment).
+(defn datalayout-prog-as (dl:ptr):i32
+  (when (= dl null) (return 0))
+  (let (n:i64 (as i64 (strlen dl))
+        i:i64 0)
+    (while (< i n)
+      ; 'P' == 80; token boundary is start-of-string or a preceding '-' (45).
+      (when (and (= (char-at dl i) 80)
+                 (or (= i 0) (= (char-at dl (- i 1)) 45)))
+        (let (j:i64 (+ i 1)
+              val:i32 0
+              got:i32 0)
+          ; digits '0'..'9' == 48..57
+          (while (and (< j n)
+                      (>= (char-at dl j) 48)
+                      (<= (char-at dl j) 57))
+            (set! val (+ (* val 10) (- (char-at dl j) 48)))
+            (set! got 1)
+            (inc! j))
+          (when (!= got 0) (return val))))
+      (inc! i))
+    (return 0)))
+
 (defn make-target-for-triple (triple:ptr cpu:ptr):ref:Target
   (let (target:ptr null
         terr:ptr null
@@ -9982,7 +10057,10 @@
           (.set! tgt ptr-align palign)
           (.set! tgt cpu eff-cpu)
           (.set! tgt features eff-features)
-          (.set! tgt abi eff-abi))
+          (.set! tgt abi eff-abi)
+          ; AVR-6: program address space from the datalayout `P<n>` token (1 on
+          ; AVR, 0 everywhere else). Gates the function-value diagnostic.
+          (.set! tgt prog-as (datalayout-prog-as dl-str)))
         (LLVMDisposeTargetData td)
         (LLVMDisposeTargetMachine tm)
         (return (as ref:Target tgt)))))))

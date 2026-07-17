@@ -1,0 +1,6 @@
+; Stage 14 AVR-6 — `:const` is meaningful ONLY on a defvar global. A struct field
+; has no independent global-vs-constant storage class to select, so `:const` on a
+; field is a targeted compile-time error rather than a silently-ignored attribute.
+(defstruct Foo (:const a:i32) b:i32)
+
+(defn main ():i32 (return 0))
