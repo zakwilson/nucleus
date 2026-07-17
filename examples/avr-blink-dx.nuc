@@ -1,0 +1,35 @@
+; AVR GPIO blink — AVR32DD20 (modern AVR-Dx).
+;
+; Stage 14 AVR-4 (design/stage14/avr-targets.md §5). The Dx counterpart of
+; avr-blink. The modern port peripheral exposes dedicated SET/CLR/TGL registers,
+; so the code shape differs meaningfully from the classic read-modify-write
+; blink — that difference is the point of having both examples:
+;   - make PA0 an output by writing a 1-bit to DIRSET (no read needed)
+;   - toggle PA0 by writing a 1-bit to OUTTGL (atomic, no read-modify-write)
+;
+; Build + link (LLVM has no Dx device entry, so codegen uses the family core
+; `avrxmega3` and the exact device goes to the avr-gcc linker via --mmcu):
+;   nucleusc --target=avr --mcpu=avrxmega3 --mmcu=avr32dd20 \
+;            examples/avr-blink-dx.nuc -o blink-dx.elf
+;
+; `(exclude-prelude)` for the same reason as avr-blink (freestanding, no libc
+; runtime); every call is direct (no function values — addrspace(1) hazard).
+
+(exclude-prelude)
+
+(import-use "lib/avr.nuc")
+(import-use "lib/avr/avr32dd20.nuc")
+
+(defn delay ():void
+  (let (:volatile i:usize 0)
+    (while (< i 20000)
+      (inc! i))))
+
+(defn main ():i32
+  ; PA0 as output: write 1 to bit 0 of DIRSET (write-1-to-set semantics).
+  (reg8-write PORTA_DIRSET 1)
+  (while true
+    ; Toggle PA0: write 1 to bit 0 of OUTTGL (write-1-to-toggle semantics).
+    (reg8-write PORTA_OUTTGL 1)
+    (delay))
+  (return 0))

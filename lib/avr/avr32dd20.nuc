@@ -1,0 +1,26 @@
+; AVR32DD20 register addresses (modern AVR-Dx, avr-gcc family `avrxmega3`).
+;
+; Stage 14 AVR-4 (design/stage14/avr-targets.md §5). Hand-written from avr-libc
+; 2.2.1's <avr/ioavr32dd20.h>. The Dx GPIO peripheral is a memory-mapped
+; `PORT_t` struct (register8_t fields, 1 byte each) rather than the classic
+; I/O-space registers, so there is no __SFR_OFFSET here — the field address is
+; the port's base plus the field's byte offset in `PORT_struct`.
+;
+; PORTA base = 0x0400 (ioavr32dd20.h:2574 `#define PORTA (*(PORT_t *) 0x0400)`).
+; Field offsets from the PORT_struct typedef (ioavr32dd20.h:1399):
+;   DIR +0, DIRSET +1, DIRCLR +2, DIRTGL +3,
+;   OUT +4, OUTSET +5, OUTCLR +6, OUTTGL +7, IN +8, ...
+; Unlike classic AVR's read-modify-write, the Dx port exposes dedicated
+; SET/CLR/TGL registers: writing a 1-bit to DIRSET makes that pin an output;
+; writing a 1-bit to OUTTGL toggles that output — no read needed.
+; Decimal values (no 0x hex literal in the reader); hex noted for reference.
+
+(defconst PORTA_DIR     1024)  ; 0x0400  base + 0
+(defconst PORTA_DIRSET  1025)  ; 0x0401  base + 1
+(defconst PORTA_DIRCLR  1026)  ; 0x0402  base + 2
+(defconst PORTA_DIRTGL  1027)  ; 0x0403  base + 3
+(defconst PORTA_OUT     1028)  ; 0x0404  base + 4
+(defconst PORTA_OUTSET  1029)  ; 0x0405  base + 5
+(defconst PORTA_OUTCLR  1030)  ; 0x0406  base + 6
+(defconst PORTA_OUTTGL  1031)  ; 0x0407  base + 7
+(defconst PORTA_IN      1032)  ; 0x0408  base + 8

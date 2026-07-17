@@ -1,0 +1,70 @@
+; AVR memory-mapped I/O (MMIO) helpers.
+;
+; Stage 14 AVR-4 (design/stage14/avr-targets.md §5). Generic, device-agnostic
+; register accessors built on the landed `volatile` support: a special function
+; register (SFR) is just an absolute data-space address, so an MMIO access is a
+; volatile load/store through a pointer materialised from that address with
+; `unsafe/cast` (the integer->pointer escape hatch — a hardware address is not a
+; value the type system can hand out safely).
+;
+; The concrete addresses live in the per-device register files
+; (lib/avr/attiny1634.nuc, lib/avr/avr32dd20.nuc, lib/avr/atmega328p.nuc) as
+; `defconst`s; a program imports one of those plus this file.
+;
+; Self-contained by design: this file imports nothing and uses only
+; compiler-builtin special forms (`let`/`while`/`set!`/`deref`/`ptr-set!`/
+; `unsafe/cast`/`return`) and builtin binops (`bit-and`/`bit-or`/`bit-xor`/
+; `bit-shl`). That keeps it usable from an `(exclude-prelude)` freestanding
+; program — the AVR examples must exclude the prelude, whose auto-emitted
+; intern/arena/node runtime references host-only libc symbols (`perror`/`malloc`)
+; that do not exist in freestanding avr-libc (see AVR-1/AVR-3). Nothing here
+; drags that runtime in.
+;
+; Addresses are `usize` (the target pointer-int width — 16-bit on AVR), so the
+; `unsafe/cast` to a pointer is a clean same-width `inttoptr`.
+
+; --- 8-bit register access ---
+
+(defn reg8-read (addr:usize):ui8
+  (return (deref (unsafe/cast (ptr :volatile ui8) addr))))
+
+(defn reg8-write (addr:usize val:ui8):void
+  (ptr-set! (unsafe/cast (ptr :volatile ui8) addr) val))
+
+; --- 16-bit register access (little-endian pair, e.g. UBRR0/timer counts) ---
+
+(defn reg16-read (addr:usize):ui16
+  (return (deref (unsafe/cast (ptr :volatile ui16) addr))))
+
+(defn reg16-write (addr:usize val:ui16):void
+  (ptr-set! (unsafe/cast (ptr :volatile ui16) addr) val))
+
+; --- bit helpers ---
+
+; 1 << bit, as a ui8 mask. The shift's left operand is written
+; `(unsafe/cast ui8 1)` (not a bare `1`) deliberately: a binop with a
+; bare-int-literal LEFT operand and a typed non-literal RIGHT operand has a
+; node-type/emit mismatch — emit adapts the literal to the right operand's type
+; (i8), but node-type reports the literal's default i32 — which injects a bogus
+; `trunc i32 <i8-value> to i8` when the result flows into a coercion (here, the
+; ui8 return). Typing the `1` makes both shift operands ui8, so node-type and
+; emit agree. (`as` rejects the narrowing i32->ui8 as lossy even for the constant
+; 1; `unsafe/cast` is the escape hatch and is provably safe for a constant 1.
+; shl is non-commutative, so the 1 cannot move to the general literal-right path.)
+(defn bit-mask (bit:ui8):ui8
+  (return (bit-shl (unsafe/cast ui8 1) bit)))
+
+; Nonzero iff `bit` is set in the register at `addr`.
+(defn reg8-test-bit (addr:usize bit:ui8):ui8
+  (return (bit-and (reg8-read addr) (bit-mask bit))))
+
+; Read-modify-write bit operations (classic-AVR idiom; the modern Dx parts use
+; the dedicated SET/CLR/TGL registers directly instead — see avr-blink-dx).
+(defn reg8-set-bit! (addr:usize bit:ui8):void
+  (reg8-write addr (bit-or (reg8-read addr) (bit-mask bit))))
+
+(defn reg8-clear-bit! (addr:usize bit:ui8):void
+  (reg8-write addr (bit-and (reg8-read addr) (bit-xor (bit-mask bit) 255))))
+
+(defn reg8-toggle-bit! (addr:usize bit:ui8):void
+  (reg8-write addr (bit-xor (reg8-read addr) (bit-mask bit))))

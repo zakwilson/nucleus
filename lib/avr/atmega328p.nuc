@@ -1,0 +1,36 @@
+; ATmega328P register addresses (classic megaAVR; the CI-simulatable device).
+;
+; Stage 14 AVR-4 (design/stage14/avr-targets.md §5). Hand-written from avr-libc
+; 2.2.1's <avr/iom328p.h>. This is the one reference device `simavr` can execute
+; (attiny1634 and the AVR-Dx parts are absent from `simavr --list-cores`), so the
+; UART-hello example targets it. Scope: the GPIO Port B (blink) and USART0
+; (polled TX) registers plus the bit positions those examples use.
+;
+; GPIO registers use `_SFR_IO8(io_addr)` = io_addr + 0x20 (classic __SFR_OFFSET;
+; sfr_defs.h:141) — MMIO is a direct data-space access, so +0x20 gives the real
+; memory address. USART0 registers are already `_SFR_MEM8`/`_SFR_MEM16`
+; (absolute memory addresses), so they take NO offset.
+; Decimal values (no 0x hex literal in the reader); hex/header line noted.
+
+; Port B  (iom328p.h:54/64/74)
+(defconst PINB    35)   ; 0x23 = _SFR_IO8(0x03) + 0x20
+(defconst DDRB    36)   ; 0x24 = _SFR_IO8(0x04) + 0x20
+(defconst PORTB   37)   ; 0x25 = _SFR_IO8(0x05) + 0x20
+
+; USART0  (iom328p.h:737..787; all _SFR_MEM — no offset)
+(defconst UCSR0A  192)  ; 0xC0  control/status A (holds UDRE0)
+(defconst UCSR0B  193)  ; 0xC1  control/status B (holds TXEN0/RXEN0)
+(defconst UCSR0C  194)  ; 0xC2  control/status C (frame format)
+(defconst UBRR0   196)  ; 0xC4  baud rate (16-bit, _SFR_MEM16)
+(defconst UBRR0L  196)  ; 0xC4  baud rate low byte
+(defconst UBRR0H  197)  ; 0xC5  baud rate high byte
+(defconst UDR0    198)  ; 0xC6  data register
+
+; USART0 bit positions (iom328p.h)
+(defconst U2X0    1)    ; UCSR0A: double-speed
+(defconst UDRE0   5)    ; UCSR0A: data register empty (TX ready)
+(defconst TXEN0   3)    ; UCSR0B: transmitter enable
+(defconst RXEN0   4)    ; UCSR0B: receiver enable
+(defconst UCSZ00  1)    ; UCSR0C: char size bit 0
+(defconst UCSZ01  2)    ; UCSR0C: char size bit 1  (UCSZ01|UCSZ00 = 8-bit)
+(defconst UCSZ02  2)    ; UCSR0B: char size bit 2
