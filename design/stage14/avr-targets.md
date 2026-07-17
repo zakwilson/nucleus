@@ -581,6 +581,22 @@ byte-identical on the first pass, `make test` (204) and `make abi-test` green.
   assertions (flash/RAM ceilings per device); simulator smoke test (UART
   hello, captured output) for whichever device AVR-0 ground-verified.
   Bootstrap/`make test` remain host-only and untouched.
+
+  **Status: DONE (2026-07-17), harness half.** `tests/run-avr-test.sh` +
+  `make avr-test` (Makefile, alongside `abi-test`/`layout-test`) landed:
+  compiles+links all four examples via the AVR-3 driver, asserts a generous
+  4096-byte-flash/512-byte-RAM ceiling per example (not an exact byte match —
+  a regression gate, not a brittle pin), and runs `avr-uart-hello.nuc` under
+  `simavr -m atmega328p -f 8000000` asserting the captured output contains
+  the transmitted `Hi!` bytes. Gated on `avr-gcc` (SKIPs the whole script)
+  and, independently, `simavr` (SKIPs just the sim step) — same convention as
+  `run_avr3_link`/`run_avr5_isr` in `tests/run-tests.sh`. Confirmed via
+  deliberate breakage (nonexistent example path; a 10-byte ceiling) that the
+  gate FAILs with non-zero exit, then reverted clean. `make clean && make &&
+  make test` stayed 204/204; `make bootstrap` stayed byte-identical; `make
+  abi-test` stayed green — `avr-test` is fully additive. The `docs/avr.md`
+  and design/progress.md/context/build.md narrative bullets below are a
+  separate, subsequent piece of work.
 - `docs/avr.md` (or `docs/cross-compilation.md` §AVR): flags, the two-device
   walkthrough, the v1 profile and its exclusions, the MMIO/ISR idioms.
 - design/progress.md row + context/build.md note (AVR link flow, container
