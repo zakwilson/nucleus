@@ -358,6 +358,49 @@ here** — this phase is IR-emission-only; the avr-gcc link driver is AVR-3.
 - Gate: one command produces a linked `.elf` for each reference device;
   `avr-size` shows a blink program in tens of bytes of data, not hundreds.
 
+**Status: DONE (2026-07-17).** Link-driver + build-flow plumbing landed;
+hosted output byte-identical (`make bootstrap` stage1==stage2 first pass — this
+change only touches `compile-and-link`'s command line and the argv parser, not
+emitted IR). Files touched:
+- `src/nucleusc.nuc`: two new override globals `g-linker-override` /
+  `g-mmcu-override` beside `g-mcpu-override`; three new prefix-matched argv flags
+  in `main` — `--mmcu=<device>` → `g-mmcu-override`, `--linker=<cmd>` →
+  `g-linker-override`, `--link-arg=<arg>` routed through the existing
+  `add-link-arg`/`g-link-args` mechanism (no second list); `compile-and-link`
+  keys the link command on the triple — the driver defaults to `clang` (hosted)
+  / `avr-gcc` (AVR triple, `strncmp … "avr" 3`), `--linker=` overrides either
+  regardless of triple, and on an AVR triple a `-mmcu=<device>` flag is inserted
+  (device := `--mmcu`, else `--mcpu`). The usage string lists the three flags.
+- The StrView/ptr join-collapse gotcha (context/conventions.md) was avoided by
+  the same value-position idiom `target-init` uses for `--mcpu`: `driver:ptr` is
+  initialised to the StrView literal `"clang"` and overridden via statement-form
+  `set!`, never a mixed `StrView`/`ptr` value-position `if`.
+- **No `.hex`/objcopy hook** (deferred to build scripts, per the "worse is
+  better" decision above); no codegen change — this is link-step-only.
+
+**Gate verification.** New fixture `tests/fixtures/avr3-link.nuc` — a
+freestanding MMIO blink with `(exclude-prelude)` (so the always-force-emitted
+intern/arena/node runtime, which references host-only `perror`/`malloc` and
+would fail to link against avr-libc — the AVR-1 correction to ground truth §2.8
+— is not emitted; only compiler-builtin special forms/binops are used) plus a
+direct `next-pattern` call (the addrspace(1)-safe path, ground truth §1.4). One
+compiler command links it to a real `ELF … Atmel AVR 8-bit` executable for both
+reference devices: **ATtiny1634** (`--mcpu=attiny1634`, mcpu==device, no
+separate `--mmcu`) → `avr-size` **278 text / 0 data / 0 bss**; **AVR32DD20**
+(`--mcpu=avrxmega3 --mmcu=avr32dd20`, family codegen + explicit device) → **310
+text / 0 data / 0 bss** — a freestanding handful of bytes, not the kilobytes a
+pulled-in runtime would add; `avr-objdump` confirms a genuine `call
+<next-pattern>`. New harness gate `run_avr3_link` (a real link, not `llc`),
+conditional on `avr-gcc` (SKIPs otherwise, keeping its result line non-empty).
+`make test` 193/193 (191 baseline + 2 AVR-3), `make abi-test` PASS. Verified the
+`--mmcu` value reaches the link line and overrides `--mcpu` (a bogus
+`--mmcu=no-such-device-xyz` is rejected by avr-gcc even with a valid `--mcpu`),
+and that `--linker=<bogus>` invokes that driver name and fails. Note: avr-gcc
+happens to accept `-mmcu=avrxmega3` (an architecture name) so the family case
+without `--mmcu` still links (generic xmega3 layout, no device linker script) —
+the explicit `--mmcu=avr32dd20` is what selects the device-accurate
+`specs-avr32dd20`.
+
 ### AVR-4 — MMIO, device definitions, examples
 
 - `lib/avr.nuc`: MMIO idiom on the landed `volatile` support — `reg8`/
