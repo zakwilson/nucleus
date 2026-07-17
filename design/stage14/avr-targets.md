@@ -431,6 +431,58 @@ the explicit `--mmcu=avr32dd20` is what selects the device-accurate
 - Gate: an ISR-using example links, and `avr-objdump -d` shows the vector
   jump and `reti` epilogue.
 
+**Status: DONE (2026-07-17).** The generic `(fn-attr <name> "<attr>" …)`
+directive landed, hosted output byte-identical (`make bootstrap` stage1==stage2
+first pass — the change is purely additive: a new struct, a new lazily-built
+table, a new directive, and one `emit-defn` split whose emitted bytes are
+unchanged when no `fn-attr` entry matches). Files touched:
+- `src/compiler-types.nuc`: new `FnAttrEntry {name:ptr attr:ptr}` element-struct
+  (the §14.5 batch-2 small-table idiom; `name` identity-compared, `attr` only
+  printed, both interned so both stay `ptr`).
+- `src/nucleusc.nuc`: new `g-fn-attr-table (raw (Vector (ref FnAttrEntry)))`
+  global (reset to null in compiler-init, mirroring `g-ns-prefix-table`);
+  `fn-attr-add` / `emit-fn-attrs-for` helpers (beside `ns-ir-prefix-set/-get`);
+  `emit-fn-attr` directive (beside `emit-set-ir-prefix`, its house-style
+  precedent) with a `'fn-attr` arm in the top-level `case hp` dispatch and
+  `"fn-attr"` added to `g-special-form-set` (reserved — a defn/defvar cannot
+  shadow it); and the `emit-defn` `define`-line suffix, where the historical
+  `") noreturn {\n"` / `") {\n"` fprintf was split so a keyword attr (`noreturn`)
+  and any string attrs (`emit-fn-attrs-for`) can coexist on one line — verified
+  `define void @f() noreturn "signal" {`, `define void @g() noreturn {` (byte-
+  identical), and `define i32 @main() {` (no-attr, unchanged).
+- `lib/avr/atmega328p.nuc`: added the Timer/Counter1 registers
+  (TIMSK1/TCCR1B/TCNT1 + TOIE1/CS10/CS11/CS12) the ISR example configures.
+- `examples/avr-isr.nuc`: a TIMER1_OVF ISR (`__vector_13` on the ATmega328P).
+
+**`defisr` decision.** The design sketched `(defisr <vector> …body)` "wrapping
+both" as a `lib/avr.nuc` macro. That is **not** provided, because this compiler
+does **not expand user macros in top-level position**: the top-level dispatch
+matches literal head symbols (`defn`, `fn-attr`, …) *before* any macro expansion,
+so a top-level `(defmacro defisr …)` call fails as an unknown top-level form —
+verified empirically, and true even for a macro expanding to a *single* `defn`,
+let alone the two sibling forms an ISR needs. Rather than build a whole top-level
+macro-expansion pass (well beyond AVR-5) or bake AVR-specific `__vector_N`/
+`"signal"` logic into a compiler builtin (against the design's layering, which
+keeps `fn-attr` generic and `defisr` a lib convenience), the ISR idiom is the two
+adjacent top-level forms directly — `(fn-attr __vector_N "signal")` then
+`(defn __vector_N ():void …)`, `fn-attr` **first** (consumed at emit-defn time;
+no forward-reference prescan for the table). This is documented as the convention
+in a block comment in `lib/avr.nuc` and demonstrated in `examples/avr-isr.nuc`.
+
+**Gate verification.** `--target=avr --mcpu=atmega328p --emit-llvm
+examples/avr-isr.nuc` emits `define void @__vector_13() "signal" {`. Linking with
+the AVR-3 `avr-gcc` driver produces a valid `ELF … Atmel AVR 8-bit` executable
+(908 text / 0 data / 0 bss). `avr-objdump -d`: the `__vectors` table slot 13
+(byte 0x34 = 13×4) is `jmp 0x2d4 <__vector_13>` — the strong symbol overrode
+avr-libc's weak `__bad_interrupt` default — and `<__vector_13>` opens with the
+interrupt prologue (`push r0` / `in r0, 0x3f` / SREG save + clobbered-reg saves)
+and closes with `out 0x3f, r0` (SREG restore) + `reti`, the return-from-interrupt
+instruction the `"signal"` attribute is specifically what causes the AVR backend
+to emit (a plain `defn` would end in `ret`). New harness gate `run_avr5_isr`
+(link + objdump, gated on avr-gcc/avr-objdump, SKIPs otherwise). `make test`
+194/194 (193 baseline + avr5-isr), `make bootstrap` byte-identical, `make
+abi-test` PASS.
+
 ### AVR-6 — Harvard hazards
 
 - **Function values**: `Target` gains `prog-as:i32` parsed from the

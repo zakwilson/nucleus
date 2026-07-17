@@ -68,3 +68,35 @@
 
 (defn reg8-toggle-bit! (addr:usize bit:ui8):void
   (reg8-write addr (bit-xor (reg8-read addr) (bit-mask bit))))
+
+; --- interrupt service routines (AVR-5) ---
+;
+; An ISR is an ordinary `defn` whose name is the avr-libc vector symbol
+; `__vector_<N>` (where N is the device's 0-based vector number; e.g. on the
+; ATmega328P vector 13 is TIMER1_OVF, so the handler is `__vector_13`), carrying
+; the LLVM `"signal"` string function attribute. That attribute makes the AVR
+; backend emit the interrupt prologue/epilogue — save/restore SREG and the
+; clobbered registers, and return with `reti` instead of `ret`. avr-libc's crt
+; provides the vector table with weak `__vector_N` defaults (each jumping to
+; `__bad_interrupt`); defining the strong `__vector_N` symbol overrides slot N.
+; Use `"interrupt"` instead of `"signal"` for a handler that should run with
+; global interrupts re-enabled (nested interrupts).
+;
+; The design (avr-targets.md §5 AVR-5) sketched a `(defisr <vector> …body)` macro
+; "wrapping both" the `fn-attr` and the `defn`. That is NOT provided, because this
+; compiler does not expand user macros in top-level position: the top-level
+; dispatch matches literal head symbols (`defn`, `defvar`, `fn-attr`, …) before
+; any macro expansion, so a `(defmacro defisr …)` call at the top level fails as
+; an unknown top-level form — even one expanding to a single `defn`, let alone the
+; two sibling forms an ISR needs. The idiom is therefore the two adjacent
+; top-level forms directly:
+;
+;   (fn-attr __vector_13 "signal")     ; MUST come first
+;   (defn __vector_13 ():void
+;     (reg8-toggle-bit! PORTB 0))
+;
+; `fn-attr` MUST precede the `defn` it targets: the attribute is consumed at
+; emit-defn time and there is no forward-reference prescan for the attribute
+; table. In the default `user` namespace the source name emits verbatim, so the
+; strong `@__vector_13` symbol lands exactly where the crt's vector table expects.
+; See examples/avr-isr.nuc for a complete example.

@@ -425,6 +425,17 @@
 ; to null at the start of every compilation unit.
 (defvar (g-ns-prefix-table (raw (Vector (ref NsPrefixEntry)))))
 
+; Stage 14 AVR-5 (design/stage14/avr-targets.md §5 AVR-5): the function-attribute
+; table set by `(fn-attr <name> "<attr>" …)`. A `(Vector (ref FnAttrEntry))`
+; mapping a defn's (interned) source name to an LLVM string function attribute,
+; scanned at emit-defn time to append the inline attribute suffix on the `define`
+; line. There is deliberately NO forward-reference prescan for this table, so a
+; `fn-attr` directive must precede the `defn` it targets in the unit (the dispatch
+; loop processes top-level forms in order). Lazily constructed on the first
+; `fn-attr` call; `raw` (not `ref`) since compiler-init explicitly resets it to
+; null at the start of every compilation unit.
+(defvar (g-fn-attr-table (raw (Vector (ref FnAttrEntry)))))
+
 ; Include path list for -I flag. Null until the first -I flag is parsed (see
 ; add-include-path for the pre-compiler-init allocator note above).
 (defvar (g-include-paths (ref (Vector CStr))))
@@ -2295,6 +2306,39 @@
       (let (e:ref:NsPrefixEntry (invoke tbl (as usize i)))
         (when (= (e ns) ns) (return (e prefix))))))
   (return null))
+
+; Stage 14 AVR-5 (design/stage14/avr-targets.md §5 AVR-5): record LLVM string
+; function attribute `attr` for the (interned) source function name `name`, as set
+; by `(fn-attr …)`. Every attribute is a fresh entry — a function may carry several
+; (accumulated from one `fn-attr` with several strings, or several `fn-attr`s on the
+; same name); emit-fn-attrs-for collects all matching entries. Lazily constructs the
+; table (the §14.5 small-table idiom, mirroring ns-ir-prefix-set) from the shared
+; arena, never dropped (process-lifetime).
+(defn fn-attr-add (name:ptr attr:ptr):void
+  (when (= g-fn-attr-table null)
+    (set! g-fn-attr-table (vector-new-in (addr-of g-arena-alloc))))
+  (let (tbl:(ref (Vector (ref FnAttrEntry))) (unsafe/cast (ref (Vector (ref FnAttrEntry))) g-fn-attr-table))
+    (let (rec:ref:FnAttrEntry (new FnAttrEntry))
+      (.set! rec name name)
+      (.set! rec attr attr)
+      (conj tbl rec))))
+
+; Stage 14 AVR-5: append every recorded string attribute for the (interned) source
+; function name `fname` to g-out — the inline function-attribute suffix on a
+; `define` line, each as a space-prefixed quoted string (e.g. ` "signal"`). LLVM
+; textual IR accepts string attributes directly after the parameter list; the
+; shared `attributes #N = {…}` group is only needed to share a set across
+; functions. Emits nothing (a pure no-op) when the function has no fn-attr entries
+; — so a program that never uses `fn-attr` is byte-identical. Matches by the
+; SOURCE name (the name `fn-attr` was called with), which in the default `user`
+; namespace equals the emitted @-symbol, so no ir-name mangling is involved.
+(defn emit-fn-attrs-for (fname:ptr):void
+  (when (= g-fn-attr-table null) (return))
+  (let (tbl:(ref (Vector (ref FnAttrEntry))) (unsafe/cast (ref (Vector (ref FnAttrEntry))) g-fn-attr-table))
+    (dotimes (i (unsafe/cast i32 (count tbl)))
+      (let (e:ref:FnAttrEntry (invoke tbl (as usize i)))
+        (when (= (e name) fname)
+          (fprintf g-out " \"%s\"" (e attr)))))))
 
 ; The effective ir-prefix for namespace `ns` (decision 7):
 ;   - `user`            → empty string (bare ir-names; the byte-identical hatch);
@@ -7953,9 +7997,16 @@
                 (inc! i)))
             ; Stage 10 Phase F1: the LLVM `noreturn` function attribute lets the
             ; optimizer and verifier know control never returns from this define.
-            (if (!= is-noreturn 0)
-              (fprintf g-out ") noreturn {\n")
-              (fprintf g-out ") {\n"))
+            ; Stage 14 AVR-5: emit-fn-attrs-for then appends any string function
+            ; attributes registered by `(fn-attr fname …)` (e.g. AVR "signal"/
+            ; "interrupt" ISR attributes). Split into pieces so both a keyword attr
+            ; (noreturn) and string attrs can coexist on one `define` line; with no
+            ; fn-attr entries the emitted bytes are exactly the historical
+            ; `") noreturn {\n"` / `") {\n"` (byte-identical for existing programs).
+            (fprintf g-out ")")
+            (when (!= is-noreturn 0) (fprintf g-out " noreturn"))
+            (emit-fn-attrs-for fname)
+            (fprintf g-out " {\n")
             (fprintf g-out "entry:\n")
             (when (and (!= g-entry-bufp null) (!= (char-at g-entry-bufp 0) 0))
               (fputs g-entry-bufp g-out))
@@ -9019,6 +9070,42 @@
         (ns-ir-prefix-set g-current-ns (intern-str ""))
         (ns-ir-prefix-set g-current-ns (intern-str (ns-prefix-sanitize prefix)))))))
 
+; Stage 14 AVR-5 (design/stage14/avr-targets.md §5 AVR-5): `(fn-attr <name>
+; "<attr>" …)` attaches one or more LLVM string function attributes to the `defn`
+; named <name>, appended inline to that function's emitted `define` line. It is
+; deliberately generic — the AVR ISR use ("signal"/"interrupt", what clang lowers
+; `__attribute__((signal))` to) is the first case; later uses include "noinline",
+; "section", "used". The attribute value is stored and emitted verbatim (LLVM
+; accepts arbitrary string attributes), so the grammar admits any string.
+;
+; Registered in the fn-attr table keyed by the SOURCE name and consumed at
+; emit-defn time. There is no forward-reference prescan for this table, so a
+; `fn-attr` directive MUST appear BEFORE the `defn` it targets in the unit
+; (house-style precedent: emit-set-ir-prefix, likewise an order-sensitive
+; top-level directive). In the default `user` namespace the source name equals
+; the emitted @-symbol, so no ir-name plumbing is needed.
+(defn emit-fn-attr (form:(raw Node)):void
+  (let (ff:ptr:Node (unsafe/cast ptr:Node form))
+    (when (< (node-len form) 3)
+      (die-at (ff line) "fn-attr: expected (fn-attr <name> \"attr\" ...)"))
+    (let (name-node:ptr:Node (unsafe/cast ptr:Node (node-at form 1)))
+      (when (!= (name-node kind) NODE-SYM)
+        (die-at (name-node line)
+                "fn-attr: first argument must be a function name symbol"))
+      (let (fname:ptr (name-node s)
+            i:i32 2
+            n:i32 (node-len form))
+        (while (< i n)
+          (let (arg:ptr:Node (unsafe/cast ptr:Node (node-at form i)))
+            (when (!= (arg kind) NODE-STR)
+              (die-at (arg line)
+                      "fn-attr: each attribute must be a string literal"))
+            ; Intern the attribute so the stored pointer is stable and canonical
+            ; (it is only ever printed, never identity-compared). `fname` is
+            ; already the interned symbol spelling, matching emit-defn's `fname`.
+            (fn-attr-add fname (intern-str (arg s))))
+          (inc! i))))))
+
 ; Stage 12 N5: `(export sym1 sym2 ...)` re-exports an explicit list of symbols
 ; under the host namespace's qualified name. Each symbol must already be in scope
 ; (e.g. imported via `import-prefixed`) using its qualified spelling (`ns/name`).
@@ -9128,6 +9215,11 @@
             'set-ir-prefix
               ; Stage 12 N4: override the current namespace's IR-mangling prefix.
               (emit-set-ir-prefix (as ptr f))
+            'fn-attr
+              ; Stage 14 AVR-5: register LLVM string function attributes for a
+              ; later `defn` (must precede that defn in the unit; consumed at
+              ; emit-defn time — no forward-reference prescan for the attr table).
+              (emit-fn-attr (as ptr f))
             'export
               ; Stage 12 N5: re-export symbols under the host namespace's name.
               (emit-export (as ptr f))
@@ -9975,7 +10067,10 @@
        ; Stage 12 N4: namespace IR-prefix override
        "set-ir-prefix"
        ; Stage 12 N5: re-export form
-       "export" }
+       "export"
+       ; Stage 14 AVR-5: LLVM string function-attribute directive (reserved so a
+       ; defn/defvar/etc. cannot shadow it).
+       "fn-attr" }
     (HashSetIter CStr))
   ; --- primitive-type-named set (19 members) ---
   (set! g-primitive-type-set
@@ -10056,7 +10151,10 @@
   ; Stage 12 N4: the per-namespace ir-prefix table starts empty; `user` is the
   ; implicit empty-prefix namespace (handled in ns-ir-prefix), so no entry is
   ; needed for the byte-identical bootstrap path.
-  (set! g-ns-prefix-table null))
+  (set! g-ns-prefix-table null)
+  ; Stage 14 AVR-5: the function-attribute table starts empty (lazily built by the
+  ; first `fn-attr` directive), so no entry is needed for the byte-identical path.
+  (set! g-fn-attr-table null))
 
 ; ============================================================
 ; Emit quasiquote helpers (__cons / __append) into the given streams
