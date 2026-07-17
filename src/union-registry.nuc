@@ -263,6 +263,11 @@
   (when (= name "usize") (return ty-usize))
   (when (= name "ssize") (return ty-ssize))
   (when (= name "f32") (return ty-f32))
+  ; Stage 14 AVR-7: an explicit `:f64`/`double` annotation is a compile-time
+  ; error on AVR (no hardware double). Checked before the resolution below so an
+  ; annotated f64 never reaches codegen; the bare-float-literal default is caught
+  ; separately in emit-float. `f32`/`float` are unaffected. Inert off AVR.
+  (when (or (= name "f64") (= name "double")) (avr-reject-f64 line))
   (when (= name "f64") (return ty-f64))
   (when (= name "float") (return ty-f32))
   (when (= name "double") (return ty-f64))

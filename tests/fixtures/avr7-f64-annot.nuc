@@ -1,0 +1,5 @@
+; Stage 14 AVR-7 (design/stage14/avr-targets.md §5): an explicit :f64 / double
+; type annotation is a compile-time error on AVR (no hardware double) and
+; compiles fine on a hosted target. Caught in parse-type-name (union-registry.nuc).
+(exclude-prelude)
+(defn takes-double (x:f64):f64 (return x))

@@ -1093,6 +1093,13 @@
 
 (defn emit-float (n:(raw Node)):ref:Val
   (let (nn:(raw Node) n)
+    ; Stage 14 AVR-7: a bare float literal defaults to f64, which AVR cannot
+    ; support (no hardware double). This is the second finalization point (the
+    ; first is an explicit :f64/double annotation in parse-type-name): a literal
+    ; whose f64-ness comes only from the default — e.g. `(let (x 1.5) …)`, or a
+    ; literal passed to an f64 parameter — never touches parse-type-name, so it
+    ; must be caught here. Inert off AVR (byte-identical).
+    (avr-reject-f64 (nn line))
     (return (alloc-val ty-f64 (float-literal-ir (nn s))))))
 
 (defn emit-string (n:(raw Node) target:(raw Type)):ref:Val

@@ -74,6 +74,35 @@
 (defn abi-is-aarch64 ():i32
   (return (if (!= (strstr g-target-triple "aarch64") null) 1 0)))
 
+; Check if target is AVR (Stage 14 AVR-7). AVR is an 8-bit target: the SysV
+; eightbyte model (8-byte-register chunks) does not fit, so `abi-classify`
+; routes *every* aggregate (any size) through ABI-MEMORY with aarch64-style
+; plain-pointer passing (no byval — AVR has no such attribute and byval's
+; memcpy semantics don't map to its register-starved codegen). Spelled with the
+; strncmp-prefix convention the rest of the codebase uses for AVR triples
+; (reloc-for-triple / the datalayout is-avr check); AVR triples always begin
+; `avr`. Inert on every hosted/RISC-V target (returns 0) → byte-identical.
+(defn abi-is-avr ():i32
+  (return (if (= (strncmp g-target-triple "avr" 3) 0) 1 0)))
+
+; Stage 14 AVR-7 numerics policy: f64 is unsupported on AVR (8-bit target, no
+; hardware double). Rejected at the two entry points where an f64-typed value is
+; finalized: an explicit `:f64`/`double` annotation (parse-type-name,
+; union-registry.nuc) and a bare float literal's f64 default (emit-float,
+; nucleusc.nuc). Guarded by in-jit-module == 0 so a macro/CT body's compile-time
+; f64 — which runs on the *host* at expansion time and is never emitted into the
+; AVR program module — is unaffected; only the real target module (in-jit-module
+; == 0) is gated. Inert on hosted targets (abi-is-avr == 0), so the compiler's
+; own self-compile and every hosted program are byte-identical. f32 (a different
+; type name, never rejected here) and i64 (correct via libgcc __*di3) are
+; unaffected by design. abi.nuc is imported after scope.nuc (in-jit-module) and
+; reader.nuc (die-at), and before union-registry.nuc / nucleusc.nuc, so this
+; helper is in scope at both check sites.
+(defn avr-reject-f64 (line:i32):void
+  (when (and (!= (abi-is-avr) 0) (= (in-jit-module) 0))
+    (die-at line
+      "f64 is not supported on AVR by default (8-bit target, no hardware double); use f32, or a custom avr-gcc build with the -mdouble=64 multilib if you need genuine f64 -- see design/stage14/avr-targets.md")))
+
 ; Round x up to a multiple of a (a is a power of two in practice, but the
 ; arithmetic form works for any positive a).
 (defn abi-align-up (x:i32 a:i32):i32
@@ -206,6 +235,14 @@
           al:i32 (abi-alignof t))
       (.set! info size sz)
       (.set! info align al)
+      ; Stage 14 AVR-7: on AVR every aggregate (any size) is ABI-MEMORY —
+      ; the SysV eightbyte classifier assumes 8-byte register chunks, which
+      ; don't exist on this 8-bit target. Bypass eightbyte classification
+      ; entirely; the MEMORY value travels by aarch64-style plain pointer
+      ; (abi-print-param / abi-arg-frag). Inert on hosted targets.
+      (when (!= (abi-is-avr) 0)
+        (.set! info kind ABI-MEMORY)
+        (return info))
       (when (> sz 16)
         (.set! info kind ABI-MEMORY)
         (return info))
@@ -252,12 +289,14 @@
         (fprintf g-out "%s %%%s.arg" (type-to-ir ptype) name))
       (return))
     (when (= k ABI-MEMORY)
-      (if (= (abi-is-aarch64) 0)
+      ; x86_64 uses a `byval` attribute; aarch64 AND AVR (Stage 14 AVR-7) pass a
+      ; plain pointer (AVR has no byval concept). byval only when neither.
+      (if (and (= (abi-is-aarch64) 0) (= (abi-is-avr) 0))
         ; x86_64: byval attribute
         (if (= name null)
           (fprintf g-out "ptr byval(%s) align %d" (type-to-ir ptype) (ii align))
           (fprintf g-out "ptr byval(%s) align %d %%%s.arg" (type-to-ir ptype) (ii align) name))
-        ; aarch64: plain pointer
+        ; aarch64 / AVR: plain pointer
         (if (= name null)
           (fprintf g-out "ptr")
           (fprintf g-out "ptr %%%s.arg" name)))
@@ -429,10 +468,12 @@
       (fprintf g-entry-stream "  %s = alloca %s\n" addr ty)
       (fprintf g-body-stream "  store %s %s, ptr %s\n" ty (a val) addr)
       (when (= k ABI-MEMORY)
-        (if (= (abi-is-aarch64) 0)
+        ; x86_64: byval attribute; aarch64 AND AVR (Stage 14 AVR-7): plain
+        ; pointer. byval only when the target is neither aarch64 nor AVR.
+        (if (and (= (abi-is-aarch64) 0) (= (abi-is-avr) 0))
           ; x86_64: byval attribute
           (return (fmt-2s "%s %s" (fmt-sd "ptr byval(%s) align %d" ty (info align)) addr))
-          ; aarch64: plain pointer
+          ; aarch64 / AVR: plain pointer
           (return (fmt-2s "ptr %s" addr))))
       (when (= k ABI-COERCE1)
         (let (r:ptr (new-tmp))
