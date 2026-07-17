@@ -525,18 +525,55 @@ abi-test` PASS.
 
 ### AVR-7 — ABI + numerics policy
 
+**Status: DONE (Stage 14 AVR-7).** All three sub-items landed; `make bootstrap`
+byte-identical on the first pass, `make test` (204) and `make abi-test` green.
+
 - `abi-classify` (src/abi.nuc): add an `abi-is-avr` branch classifying **all
   aggregates as `ABI-MEMORY` with aarch64-style plain-pointer passing** —
   self-consistent for Nucleus↔Nucleus calls, bypassing the SysV eightbyte
   machinery entirely. avr-gcc's register-packing struct ABI (C parity for
   struct-by-value interop) is explicitly deferred; scalar/pointer C interop
   is unaffected (ground truth §2.7).
+  *Implemented:* `abi-is-avr` (strncmp-`avr`-prefix, mirroring `abi-is-aarch64`)
+  routes every aggregate (any size) to `ABI-MEMORY` right after size/align are
+  computed, before the `sz > 16` eightbyte gate. The two MEMORY emission
+  branches (`abi-print-param`, `abi-arg-frag`) fold AVR into the aarch64
+  plain-pointer path (`(and (= (abi-is-aarch64) 0) (= (abi-is-avr) 0))` gates
+  `byval`). `abi-emit-param-prologue`, `emit-struct-ret`, and the callee `sret`
+  return-parameter emission are already architecture-neutral (verified) — no
+  change. Gate: a ≤16-byte `Point` that a host register-coerces (COERCE1) becomes
+  a plain-pointer MEMORY param + `sret` return on AVR (zero `byval`), links via
+  avr-gcc (`tests/fixtures/avr7-struct.nuc`, `run_avr7_struct`).
 - `f64` on AVR: compile-time error with a message naming the `-mdouble=64`
   multilib escape hatch (revisit when ground-verified against the container's
   avr-gcc). `f32` allowed. `i64` allowed (costly but correct via libgcc).
+  *Implemented:* rejected at **both** finalization points (a single-site check
+  would miss one) via a shared `avr-reject-f64` helper (src/abi.nuc): an explicit
+  `:f64`/`double` annotation in `parse-type-name` (union-registry.nuc), and a
+  bare float literal's f64 default in `emit-float` (nucleusc.nuc, since a literal
+  never touches `parse-type-name`). Guarded by `in-jit-module == 0` so a macro/CT
+  body's compile-time f64 (runs on the host, never emitted into the AVR program)
+  is unaffected. `f32`/`i64` confirmed compiling on AVR; `i64` multiply links
+  libgcc `__muldi3` into a working `.elf` (ground-verified). Inert on hosted
+  targets (byte-identical). Gates: `run_avr7_f64`,
+  `tests/fixtures/avr7-{f64-annot,f64-literal,f32,i64}.nuc`.
+  *Note (deferred):* the separate C-header type resolver (cheader.nuc's
+  `double`→ty-f64) is left unguarded — it is the explicitly-deferred struct/C-ABI
+  interop surface, and such an f64-returning C function is uncallable on AVR
+  anyway; every Nucleus-source path to f64 (annotations, literals, Nucleus-written
+  `declare`/`extern` signatures) is covered.
 - Runtime quasiquote on AVR: allowed once AVR-2 makes it correct (it drags in
   `malloc`, which avr-libc provides), but documented as
   budget-inappropriate; no diagnostic.
+  *Verified:* qq codegen is correct on AVR (AVR-2's 16-bit fix; `__cons`/`__append`
+  emit `malloc(i64 22)` — the 16-bit cell size); no compiler diagnostic blocks it.
+  qq's list-cell allocator uses only `malloc` (avr-libc-provided). Caveat for the
+  docs-writer: a qq that constructs *quoted-symbol* leaves also pulls in the
+  interning/arena runtime (`intern-hash`/`arena-alloc`/`alloc-node`/…), which
+  references `perror` (absent from freestanding avr-libc), so such a program fails
+  at **link** — the same prelude-runtime-on-AVR constraint the examples already
+  side-step with `(exclude-prelude)`, orthogonal to qq itself and unchanged by
+  AVR-7. No code added.
 
 ### AVR-8 — tests, docs, progress
 

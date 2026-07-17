@@ -1,0 +1,3 @@
+; Stage 14 AVR-7: i64 is allowed on AVR (costly but correct via libgcc __muldi3).
+(exclude-prelude)
+(defn wide-mul (a:i64 b:i64):i64 (return (_* a b)))

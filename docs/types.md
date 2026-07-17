@@ -190,6 +190,8 @@ A `c"…"` literal — a `c` glued directly onto the opening quote, with no whit
 
 Float literals: `1.5`, `-0.25`, `1e10`, `1.5e-3`, `.5`. Default type is `f64`; narrow with `(unsafe/cast f32 ...)` (lossy — `as` refuses it). Widen `f32`→`f64` with `as` (or `unsafe/cast`); convert int↔float with `unsafe/cast` (int↔float is not in `as`'s safe set). Special values use Scheme syntax: `+inf.0`, `-inf.0`, `+nan.0`. Float arithmetic uses `+ - * / %` and comparisons use `= != < <= > >=` (LLVM `fadd`/`fcmp`); operands must have the same float width — promote with explicit `as` (widening) or `unsafe/cast` (narrowing). Mixing float and integer operands without an explicit `unsafe/cast` is a compile error.
 
+**`f64` is unsupported when `--target=avr`**: AVR has no hardware double, so `f64`/`double` is a compile-time error, whether written as an explicit type annotation or reached only through a bare float literal's default type (`(let (x 1.5) …)` is rejected even with no `f64` text in the source). The error names the `-mdouble=64` avr-gcc multilib escape hatch for a custom AVR build with software double support. `f32` is unaffected, and `i64` remains fully supported (arithmetic links libgcc's software routines, e.g. `__muldi3`). This check applies only to the AVR target module itself — compile-time/macro code always runs on the host regardless of `--target=`, so ordinary `f64` arithmetic inside a `defmacro`/`compile-time` body compiling *for* an AVR program is unaffected.
+
 ## Function Pointer Types
 
 Function pointer types are written as `(fn:rettype (param-types...))` in sugared form, or `((fn rettype) (param-types...))` in desugared/canonical form.

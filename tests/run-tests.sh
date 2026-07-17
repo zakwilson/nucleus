@@ -298,6 +298,98 @@ run_avr6_const() {
   fi
 }
 
+# Stage 14 AVR-7 (design/stage14/avr-targets.md §5): the f64 numerics policy. f64
+# is unsupported on AVR (8-bit target, no hardware double) — a compile-time error
+# naming the -mdouble=64 escape hatch. It is caught at BOTH finalization points:
+# an explicit :f64/double annotation (parse-type-name) AND a bare float literal's
+# f64 default (emit-float) — a diagnostic at only one site would miss the other.
+# The gate is target-keyed like the AVR-6 fn-value one: the SAME fixtures that die
+# on AVR must compile cleanly on the host (f64 is fine there). f32 and i64 must
+# still compile on AVR. Compiler-only (--emit-llvm), so it runs without the AVR
+# toolchain.
+run_avr7_f64() {
+  local annot_avr lit_avr dbl_avr msg pass
+  msg="f64 is not supported on AVR"
+  pass=1
+  # 1. explicit :f64 annotation — AVR rejects, host accepts.
+  annot_avr="$(./build/nucleusc --target=avr --mcpu=attiny1634 --emit-llvm \
+    tests/fixtures/avr7-f64-annot.nuc 2>&1 >/dev/null || true)"
+  printf '%s' "$annot_avr" | grep -qF "$msg" || pass=0
+  ./build/nucleusc --emit-llvm tests/fixtures/avr7-f64-annot.nuc >/dev/null 2>&1 || pass=0
+  # 2. "double" spelling — AVR rejects.
+  dbl_avr="$(./build/nucleusc --target=avr --mcpu=attiny1634 --emit-llvm \
+    tests/fixtures/avr7-f64-annot.nuc 2>&1 >/dev/null || true)"
+  printf '%s' "$dbl_avr" | grep -qF "$msg" || pass=0
+  # 3. bare float literal default (no f64 text) — AVR rejects via emit-float,
+  #    host accepts.
+  lit_avr="$(./build/nucleusc --target=avr --mcpu=attiny1634 --emit-llvm \
+    tests/fixtures/avr7-f64-literal.nuc 2>&1 >/dev/null || true)"
+  printf '%s' "$lit_avr" | grep -qF "$msg" || pass=0
+  ./build/nucleusc --emit-llvm tests/fixtures/avr7-f64-literal.nuc >/dev/null 2>&1 || pass=0
+  if [ "$pass" -eq 1 ]; then
+    echo "PASS  avr7-f64-rejected (annotation + bare literal; host accepts)"
+  else
+    echo "FAIL  avr7-f64-rejected (AVR must reject :f64 and 1.5; host must accept)"
+  fi
+  # 4. f32 is allowed on AVR (emits `float`).
+  if ./build/nucleusc --target=avr --mcpu=attiny1634 --emit-llvm \
+       tests/fixtures/avr7-f32.nuc 2>/dev/null | grep -q 'float'; then
+    echo "PASS  avr7-f32-allowed"
+  else
+    echo "FAIL  avr7-f32-allowed (f32 must compile on AVR)"
+  fi
+  # 5. i64 is allowed on AVR (emits an i64 multiply; libgcc __muldi3 at link).
+  if ./build/nucleusc --target=avr --mcpu=attiny1634 --emit-llvm \
+       tests/fixtures/avr7-i64.nuc 2>/dev/null | grep -q 'mul nsw i64'; then
+    echo "PASS  avr7-i64-allowed"
+  else
+    echo "FAIL  avr7-i64-allowed (i64 must compile on AVR)"
+  fi
+}
+
+# Stage 14 AVR-7: the aggregate ABI. AVR classifies EVERY struct/union (any size)
+# as ABI-MEMORY with aarch64-style plain-pointer passing — no byval, bypassing the
+# SysV eightbyte model that assumes 8-byte register chunks. The gate is target-
+# keyed: the SAME <=16-byte Point struct that a host register-coerces (COERCE1 —
+# `@sum(i32 ...)`, `@mk` returns `i32`) must, on AVR, become a plain-pointer MEMORY
+# param (`@sum(ptr ...)`) and an sret return, with zero `byval`. When avr-gcc is
+# present the fixture is also linked end-to-end (avr-size sanity) to prove llc/
+# avr-gcc accept the emitted ABI. Emission part is compiler-only.
+run_avr7_struct() {
+  local avr_ir host_ir pass
+  pass=1
+  avr_ir="$(./build/nucleusc --target=avr --mcpu=atmega328p --emit-llvm \
+    tests/fixtures/avr7-struct.nuc 2>/dev/null || true)"
+  host_ir="$(./build/nucleusc --emit-llvm tests/fixtures/avr7-struct.nuc 2>/dev/null || true)"
+  # AVR: plain-pointer MEMORY param, sret return, no byval.
+  printf '%s' "$avr_ir" | grep -q 'define i16 @sum(ptr ' || pass=0
+  printf '%s' "$avr_ir" | grep -q 'sret(%Point)' || pass=0
+  printf '%s' "$avr_ir" | grep -q 'byval' && pass=0
+  # Host: the same <=16-byte struct is register-coerced (eightbyte model active),
+  # proving the AVR bypass is target-keyed (host param is NOT a plain ptr).
+  printf '%s' "$host_ir" | grep -q 'define i16 @sum(i32 ' || pass=0
+  if [ "$pass" -eq 1 ]; then
+    echo "PASS  avr7-struct-abi (AVR plain-ptr MEMORY + sret; host register-coerced)"
+  else
+    echo "FAIL  avr7-struct-abi (AVR must use plain-ptr MEMORY/sret, no byval; host register-coerced)"
+  fi
+  # End-to-end link when the AVR toolchain is present.
+  if ! command -v avr-gcc >/dev/null 2>&1; then
+    echo "SKIP  avr7-struct-link (avr-gcc not installed)"
+    return
+  fi
+  local elf
+  elf="$(mktemp -u).elf"
+  ./build/nucleusc --target=avr --mcpu=atmega328p \
+    tests/fixtures/avr7-struct.nuc -o "$elf" 2>/dev/null || true
+  if [ -f "$elf" ] && avr-size "$elf" >/dev/null 2>&1; then
+    echo "PASS  avr7-struct-link"
+    rm -f "$elf"
+  else
+    echo "FAIL  avr7-struct-link (avr-gcc rejected the struct-by-value ABI)"
+  fi
+}
+
 # Stage 14 RV-1: cross-emitting for the riscv64 Linux target. The compiler must
 # register the RISCV backend (targets-init-all), emit the riscv64 datalayout/
 # triple, the `target-abi=lp64d` module flag, and thread the +m,+a,+f,+d,+c
@@ -770,6 +862,14 @@ spawn run_reject avr6-const-on-field-rejected tests/fixtures/avr6-const-field.nu
   "':const' applies only to a defvar global"
 spawn run_reject avr6-const-mutate-rejected tests/fixtures/avr6-const-mutate-rejected.nuc \
   "set!: cannot assign to 'answer' -- declared :const"
+
+# AVR-7 numerics + ABI gates: (1) f64 is rejected on AVR at both finalization
+# points (explicit :f64/double annotation AND bare float literal default) while
+# the same source compiles on the host; f32 and i64 stay allowed on AVR. (2) AVR
+# classifies every aggregate as plain-pointer ABI-MEMORY (no byval) + sret return,
+# target-keyed against the host's register coercion, and links via avr-gcc.
+spawn run_avr7_f64
+spawn run_avr7_struct
 
 # RV-1 IR-emission gate: riscv64 datalayout/triple + target-abi=lp64d module flag,
 # and the "features cliff" llc round-trip (hardware mul/fadd.d, no soft-float
