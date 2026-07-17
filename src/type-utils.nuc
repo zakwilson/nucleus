@@ -139,12 +139,19 @@
 
 ; The IR type of a pointer-sized integer (size_t / intptr_t) for the target.
 ; All pointer-as-integer codegen routes through this rather than hardcoding i64.
+; Ternary over the target pointer width (Stage 14 AVR-2): 2→i16 (AVR), 4→i32
+; (ILP32), else i64 (LP64/LLP64 hosts). Byte-identical on every hosted target,
+; where g-target-ptr-bytes is 8 → "i64", exactly as the prior binary form.
 (defn ptr-int-ir ():ptr
-  (if (= g-target-ptr-bytes 4) "i32" "i64"))
+  (if (= g-target-ptr-bytes 2) "i16"
+    (if (= g-target-ptr-bytes 4) "i32" "i64")))
 
 ; The registered singleton type for a pointer-sized integer on the target.
+; Same 2/4/else-8 selection as ptr-int-ir; ty-i16 is a registered singleton
+; (types-init), so no new registration is needed.
 (defn ptr-int-type ():ptr
-  (if (= g-target-ptr-bytes 4) ty-i32 ty-i64))
+  (if (= g-target-ptr-bytes 2) ty-i16
+    (if (= g-target-ptr-bytes 4) ty-i32 ty-i64)))
 
 ; Size in bytes of one host pointer, as an i64 — the element size for the
 ; compiler's own arrays of pointers. Use instead of a literal 8 so the compiler

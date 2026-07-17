@@ -1,0 +1,33 @@
+; Stage 14 AVR-2 (design/stage14/avr-targets.md §5) — 16-bit correctness gate.
+;
+; Exercises the three things AVR-2 makes correct on a 16-bit-pointer target:
+;   - `usize` / `sizeof`  → ptr-int-ir/ptr-int-type resolve to i16 on AVR
+;     (Task 1), so size_t-typed values and sizeof results are 16-bit.
+;   - a tagged `defunion` + `match` round-trip (plain union, no error niche).
+;   - a runtime quasiquote list, which forces emit-qq-helpers (Task 2): on AVR
+;     the Node cell is `malloc(i64 22)` (16 + 3*2) with every store `align 1`,
+;     not the host `malloc(i64 40)` / `align 8`.
+;
+; Round-trips through `llc` for both reference devices (attiny1634, avrxmega3).
+
+(defunion Shape
+  (circle r:i32)
+  (square s:i32))
+
+(defn shape-measure (sh:Shape):i32
+  (match sh
+    ((circle r) (return (* r r)))
+    ((square s) (return (* s s)))))
+
+(defn main ():i32
+  (let (sz:usize    (as usize (sizeof Shape))
+        sh:Shape    (square 4)
+        area:i32    (shape-measure sh)
+        lst:(raw Node) `(1 2 3))
+    ; Consume sz (usize) via a binop against a bare literal — the literal adapts
+    ; to usize with no cross-target-lossy narrowing `as` (usize is i16 on AVR,
+    ; i64 on hosts). lst's quasiquote init is what forces emit-qq-helpers
+    ; regardless of whether lst is read.
+    (if (and (> sz 0) (!= lst null))
+      (return area)
+      (return 0))))

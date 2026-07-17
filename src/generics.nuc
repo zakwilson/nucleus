@@ -3984,7 +3984,11 @@
         (when (= hp '.set!) (return ty-void))
         (when (= hp 'get) (return (node-type-get n scope)))
         (when (= hp 'invoke) (return (node-type-invoke n scope)))
-        (when (= hp 'sizeof) (return ty-i64))
+        ; sizeof yields a pointer-sized integer (size_t) — mirror emit-sizeof,
+        ; which returns (ptr-int-type). On hosted targets ptr-int-type is ty-i64
+        ; so this is byte-identical; on a 16-bit target (AVR, Stage 14 AVR-2) it
+        ; is i16, keeping the node-type<->emit-node lockstep intact.
+        (when (= hp 'sizeof) (return (ptr-int-type)))
         (when (= hp 'alloca) (return (node-type-alloca n)))
         ; (char "x") is sugar for the \x char literal — a Char value (S0). Must
         ; match emit-char's result type so the Rung-3 cross-check agrees.
