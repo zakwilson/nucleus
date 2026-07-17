@@ -171,6 +171,55 @@ run_avr2_16bit() {  # <cpu>
   rm -f "$tmpfile"
 }
 
+# Stage 14 AVR-3 (design/stage14/avr-targets.md §5): the link driver + build
+# flow. This is the first *end-to-end* AVR gate — a real link, not just IR/llc.
+# On an AVR triple the compiler drives `avr-gcc -mmcu=<device>` (not `clang`) and
+# produces a linked `.elf`. The fixture is a freestanding MMIO blink with
+# `(exclude-prelude)`, so no host-runtime symbols (perror/malloc from the
+# intern/arena runtime) are pulled in — a freestanding program is a handful of
+# bytes, whereas a pulled-in runtime would fail to link (undefined perror) or
+# balloon to kilobytes. avr-size sanity-checks the footprint against that. Gated
+# on avr-gcc so the suite still runs where the full AVR toolchain is absent (a
+# SKIP keeps the result file non-empty — an empty result is treated as FAIL).
+# Covers both reference devices: attiny1634 (mcpu names an exact device, so no
+# separate --mmcu) and the AVR-Dx family core avrxmega3 + --mmcu=avr32dd20 (the
+# family-codegen + explicit-device link path — also the regression proof that
+# --mmcu, not --mcpu, supplies the device name on the AVR link line).
+run_avr3_link() {  # <name> <cpu> [<mmcu>]
+  local name="$1" cpu="$2" mmcu="${3:-}" elf txt dat
+  if ! command -v avr-gcc >/dev/null 2>&1; then
+    echo "SKIP  avr3-link-$name (avr-gcc not installed)"
+    return 0
+  fi
+  elf="$(mktemp).elf"
+  rm -f "$elf"
+  # An actual link (no -c/--emit-llvm): the compiler emits the object and shells
+  # out to avr-gcc, producing the final .elf.
+  if [ -n "$mmcu" ]; then
+    ./build/nucleusc --target=avr --mcpu="$cpu" --mmcu="$mmcu" \
+      tests/fixtures/avr3-link.nuc -o "$elf" 2>/dev/null || true
+  else
+    ./build/nucleusc --target=avr --mcpu="$cpu" \
+      tests/fixtures/avr3-link.nuc -o "$elf" 2>/dev/null || true
+  fi
+  if [ -s "$elf" ] && file "$elf" 2>/dev/null | grep -q 'Atmel AVR 8-bit'; then
+    # avr-size Berkeley columns: text data bss. A freestanding blink is tens of
+    # bytes of data, not the hundreds/kilobytes a host runtime would add; text is
+    # dominated by the device crt/vector table (a few hundred bytes), so a
+    # kilobyte-plus text also signals a pulled-in runtime.
+    set -- $(avr-size "$elf" | awk 'NR==2 {print $1, $2}')
+    txt="${1:-999999}"; dat="${2:-999999}"
+    if [ "$dat" -lt 256 ] && [ "$txt" -lt 4096 ]; then
+      echo "PASS  avr3-link-$name (text=$txt data=$dat)"
+    else
+      echo "FAIL  avr3-link-$name (footprint out of freestanding range: text=$txt data=$dat)"
+    fi
+  else
+    echo "FAIL  avr3-link-$name (no linked .elf produced)"
+  fi
+  rm -f "$elf"
+}
+
 # Stage 14 RV-1: cross-emitting for the riscv64 Linux target. The compiler must
 # register the RISCV backend (targets-init-all), emit the riscv64 datalayout/
 # triple, the `target-abi=lp64d` module flag, and thread the +m,+a,+f,+d,+c
@@ -616,6 +665,12 @@ spawn run_avr_emit avrxmega3
 # round-tripped through llc for both reference devices.
 spawn run_avr2_16bit attiny1634
 spawn run_avr2_16bit avrxmega3
+
+# AVR-3 end-to-end link gate: drive avr-gcc to a linked .elf for both reference
+# devices — attiny1634 (mcpu==device) and avr32dd20 (avrxmega3 family core +
+# explicit --mmcu). Requires the avr-gcc toolchain (SKIPs otherwise).
+spawn run_avr3_link attiny1634 attiny1634
+spawn run_avr3_link avr32dd20 avrxmega3 avr32dd20
 
 # RV-1 IR-emission gate: riscv64 datalayout/triple + target-abi=lp64d module flag,
 # and the "features cliff" llc round-trip (hardware mul/fadd.d, no soft-float

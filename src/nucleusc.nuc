@@ -98,6 +98,14 @@
 ; for the cross-target (e.g. "attiny1634"). Null => empty CPU (host default).
 ; Only applies to the --target override; the host target always uses "".
 (defvar g-mcpu-override:ptr)
+; --linker=<cmd> override: the link-driver command name/path. Null => the
+; triple default (clang for hosted targets, avr-gcc for AVR). When set it wins
+; regardless of triple. General flag — available for every target.
+(defvar g-linker-override:ptr)
+; --mmcu=<device> override: the AVR device name for the link line (-mmcu=).
+; Distinct from --mcpu (the LLVM codegen CPU/family). Null => fall back to
+; g-mcpu-override at link time. Consulted only on an AVR triple; ignored else.
+(defvar g-mmcu-override:ptr)
 
 ; Host pointer size in bytes — the platform the compiler itself runs on, used to
 ; size its own arrays-of-pointers. Distinct from g-target-ptr-bytes (the
@@ -10225,19 +10233,41 @@
               (exit 1)))
           (LLVMDisposeTargetMachine tm)
           (when (= keep-obj 0)
-            ; Build a clang command: clang <obj> -o <out> [link-args...]
-            (let (cmd-bufp:ptr null  cmd-sizep:i64 0
-                  cmds:ptr (open_memstream (addr-of cmd-bufp) (as ptr (addr-of cmd-sizep))))
-              (fprintf cmds "clang %s -o %s" obj-path out-path)
-              (when (!= g-link-args null)
-                (dotimes (j (unsafe/cast i32 (count g-link-args)))
-                  (fprintf cmds " %s" (invoke g-link-args (as usize j)))))
-              (fclose cmds)
-              (let (rc2:i32 (system cmd-bufp))
-                (free cmd-bufp)
-                (when (!= rc2 0)
-                  (fprintf stderr "nucleusc: link step failed (clang exit %d)\n" rc2)
-                  (exit 1))))
+            ; Build the link command: <driver> [-mmcu=<device>] <obj> -o <out>
+            ;   [link-args...]. The driver defaults to clang for hosted triples
+            ; and avr-gcc for an AVR triple; --linker=<cmd> overrides either
+            ; (wins regardless of triple). On an AVR triple a -mmcu=<device>
+            ; flag is inserted, the device being --mmcu if given else --mcpu
+            ; (no device table — a family --mcpu without --mmcu lets avr-gcc
+            ; fail on its own, per design/stage14/avr-targets.md §5 AVR-3).
+            ; driver:ptr is initialised to the StrView literal "clang" and
+            ; overridden via statement-form set! (a mixed StrView/ptr value-
+            ; position `if` would join to void and emit a bad call argument —
+            ; the same idiom target-init uses for the --mcpu string).
+            (let (driver:ptr "clang"
+                  is-avr:i32 (if (= (strncmp g-target-triple "avr" 3) 0) 1 0))
+              (when (!= is-avr 0)
+                (set! driver "avr-gcc"))
+              (when (!= g-linker-override null)
+                (set! driver g-linker-override))
+              (let (cmd-bufp:ptr null  cmd-sizep:i64 0
+                    cmds:ptr (open_memstream (addr-of cmd-bufp) (as ptr (addr-of cmd-sizep))))
+                (fprintf cmds "%s" driver)
+                (when (!= is-avr 0)
+                  (let (device:ptr g-mmcu-override)
+                    (when (= device null) (set! device g-mcpu-override))
+                    (when (!= device null)
+                      (fprintf cmds " -mmcu=%s" device))))
+                (fprintf cmds " %s -o %s" obj-path out-path)
+                (when (!= g-link-args null)
+                  (dotimes (j (unsafe/cast i32 (count g-link-args)))
+                    (fprintf cmds " %s" (invoke g-link-args (as usize j)))))
+                (fclose cmds)
+                (let (rc2:i32 (system cmd-bufp))
+                  (free cmd-bufp)
+                  (when (!= rc2 0)
+                    (fprintf stderr "nucleusc: link step failed (%s exit %d)\n" driver rc2)
+                    (exit 1)))))
             (unlink obj-path)))))))
 
 ; Close module streams; emit either textual IR (--emit-llvm) or an object/binary.
@@ -10366,6 +10396,12 @@
                 (set! g-target-triple-override (unsafe/ptr+ (as ptr:i8 arg) 9))
               (= (strncmp arg "--mcpu=" 7) 0)
                 (set! g-mcpu-override (unsafe/ptr+ (as ptr:i8 arg) 7))
+              (= (strncmp arg "--mmcu=" 7) 0)
+                (set! g-mmcu-override (unsafe/ptr+ (as ptr:i8 arg) 7))
+              (= (strncmp arg "--linker=" 9) 0)
+                (set! g-linker-override (unsafe/ptr+ (as ptr:i8 arg) 9))
+              (= (strncmp arg "--link-arg=" 11) 0)
+                (add-link-arg (unsafe/ptr+ (as ptr:i8 arg) 11))
               (= (strncmp arg "-I" 2) 0)
                 (if (> (as i64 (strlen arg)) 2)
                   ; -I/path/to/dir (no space)
@@ -10392,7 +10428,7 @@
 
     ; Batch mode — require source file
     (when (= source-file null)
-       (fprintf stderr "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3] [-o <path>] [--target=<triple>] [--mcpu=<cpu>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [-i] [--repl-format=text|json] [-I<path>] <file.nuc>\n") (return 2))
+       (fprintf stderr "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3] [-o <path>] [--target=<triple>] [--mcpu=<cpu>] [--mmcu=<device>] [--linker=<cmd>] [--link-arg=<arg>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [-i] [--repl-format=text|json] [-I<path>] <file.nuc>\n") (return 2))
     (set! g-source-path source-file)
     (let (src:ptr (read-file source-file))
       (compiler-init)

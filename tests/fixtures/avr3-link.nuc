@@ -1,0 +1,34 @@
+; Stage 14 AVR-3 (design/stage14/avr-targets.md §5) — link-driver + build-flow
+; gate. This is the first *end-to-end* AVR gate: the compiler must drive
+; `avr-gcc -mmcu=<device>` (not `clang`) and produce a linked `.elf`, not just
+; IR/an object. The runner links it for both reference devices and asserts the
+; `avr-size` footprint is a freestanding-blink handful of bytes, not the
+; kilobytes a pulled-in host runtime would add.
+;
+; A freestanding MCU program: no stdio/printf (avr-libc wires stdio to nothing
+; without custom UART setup), and `(exclude-prelude)` so the intern/arena/node
+; runtime — which references host-only `perror`/`malloc` and would fail to link
+; against avr-libc — is not force-emitted. Only compiler-builtin special forms
+; and binops (`let`/`while`/`deref`/`ptr-set!`/`bit-xor`/`unsafe/cast`) are used,
+; all available without the prelude.
+;
+; The program toggles a memory-mapped I/O port through a volatile pointer, the
+; way an MCU blinks a GPIO, spinning forever. The port address (0x25 =
+; classic-AVR PORTB) is a raw hardware address, materialised with `unsafe/cast`
+; (the integer->pointer escape hatch); `as usize` would reject the `i32` literal
+; as cross-target-lossy on AVR's 16-bit `usize`. `next-pattern` is a direct call
+; — the addrspace(1)-safe path (a function used as a *value* would not verify on
+; AVR; a plain call is fine, per ground truth §1.4 / AVR-0).
+
+(exclude-prelude)
+
+; Compute the next port pattern. A plain direct call — verified AVR-safe.
+(defn next-pattern (cur:ui8):ui8
+  (return (bit-xor cur 32)))
+
+(defn main ():i32
+  (let (port:(ptr :volatile ui8) (unsafe/cast (ptr :volatile ui8) 37))
+    (ptr-set! port 255)
+    (while true
+      (ptr-set! port (next-pattern (deref port)))))
+  (return 0))
