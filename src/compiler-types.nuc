@@ -663,6 +663,20 @@
   ns:ptr      ; interned namespace name
   prefix:ptr) ; interned ir-prefix string for that namespace
 
+; Stage 14 AVR-5 (design/stage14/avr-targets.md §5 AVR-5) — function-attribute
+; entry: maps a `defn`'s source name to one LLVM string function attribute set by
+; `(fn-attr <name> "<attr>" …)`. Stored flat in a `(Vector (ref FnAttrEntry))`
+; (the §14.5 batch-2 small-table idiom, mirroring NsPrefixEntry) and scanned at
+; emit-defn time, collecting every entry whose `name` matches the function being
+; emitted — so a function may carry several attributes (one `fn-attr` call with
+; several strings, or several `fn-attr` calls on the same name). `name` is always
+; looked up by interned-pointer identity (both sides are interned symbol
+; spellings, never strcmp'd), so it stays `ptr`, not `CStr`; `attr` is only ever
+; printed into the IR stream, so it too stays `ptr`.
+(defstruct FnAttrEntry
+  name:ptr   ; interned source function name (fn-attr's target defn)
+  attr:ptr)  ; interned LLVM string attribute (e.g. "signal", "interrupt")
+
 ; Stage 14 §14.5 batch 3 — BoxedFn-instance memo entry: replaces the parallel
 ; g-boxedfn-keys/g-boxedfn-types arrays (union-registry.nuc) with one
 ; `(Vector (ref BoxedFnEntry))`. `key` is always looked up by pointer identity

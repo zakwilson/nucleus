@@ -34,3 +34,15 @@
 (defconst UCSZ00  1)    ; UCSR0C: char size bit 0
 (defconst UCSZ01  2)    ; UCSR0C: char size bit 1  (UCSZ01|UCSZ00 = 8-bit)
 (defconst UCSZ02  2)    ; UCSR0B: char size bit 2
+
+; Timer/Counter1 (16-bit) — AVR-5 ISR example. All _SFR_MEM (absolute addresses,
+; NO +0x20 offset). (iom328p.h:443/524/537)
+(defconst TIMSK1  111)  ; 0x6F  Timer/Counter1 interrupt mask
+(defconst TCCR1B  129)  ; 0x81  Timer/Counter1 control register B
+(defconst TCNT1   132)  ; 0x84  Timer/Counter1 count (16-bit, _SFR_MEM16)
+
+; Timer/Counter1 bit positions (iom328p.h)
+(defconst TOIE1   0)    ; TIMSK1: overflow interrupt enable
+(defconst CS10    0)    ; TCCR1B: clock select bit 0
+(defconst CS11    1)    ; TCCR1B: clock select bit 1
+(defconst CS12    2)    ; TCCR1B: clock select bit 2  (CS12|CS10 = clk/1024)

@@ -220,6 +220,45 @@ run_avr3_link() {  # <name> <cpu> [<mmcu>]
   rm -f "$elf"
 }
 
+# Stage 14 AVR-5 (design/stage14/avr-targets.md §5): ISRs + function attributes.
+# The `(fn-attr <name> "signal")` directive attaches the LLVM AVR "signal"
+# function attribute to a `defn`; an ISR is that attribute on a `defn` named for
+# an avr-libc vector symbol (`__vector_<N>`). The gate is end-to-end: link an
+# ISR example for the ATmega328P (the CI-simulatable device, whose vector 13 is
+# TIMER1_OVF = __vector_13) and confirm via `avr-objdump -d` that (a) the vector
+# table jumps to __vector_13 — the strong symbol overrode avr-libc's weak
+# __bad_interrupt default — and (b) the ISR ends in `reti` (the return-from-
+# interrupt instruction the "signal" attribute is specifically what causes the
+# AVR backend to emit, instead of a plain `ret`). Gated on avr-gcc + avr-objdump
+# (a SKIP keeps the result line non-empty, treated as pass-through, not FAIL).
+run_avr5_isr() {
+  local elf dis
+  if ! command -v avr-gcc >/dev/null 2>&1 || ! command -v avr-objdump >/dev/null 2>&1; then
+    echo "SKIP  avr5-isr (avr-gcc/avr-objdump not installed)"
+    return 0
+  fi
+  elf="$(mktemp).elf"
+  rm -f "$elf"
+  ./build/nucleusc --target=avr --mcpu=atmega328p \
+    examples/avr-isr.nuc -o "$elf" 2>/dev/null || true
+  if [ ! -s "$elf" ] || ! file "$elf" 2>/dev/null | grep -q 'Atmel AVR 8-bit'; then
+    echo "FAIL  avr5-isr (no linked .elf produced)"
+    rm -f "$elf"
+    return 0
+  fi
+  dis="$(avr-objdump -d "$elf" 2>/dev/null)"
+  # (a) the vector table jumps to our handler; (b) the handler ends in reti.
+  # The reti check inspects only the __vector_13 function body (from its label to
+  # the next blank line) so a stray reti elsewhere can't spoof the result.
+  if printf '%s\n' "$dis" | grep -q 'jmp.*<__vector_13>' \
+     && printf '%s\n' "$dis" | awk '/<__vector_13>:/{f=1} f&&/\treti/{print;exit}' | grep -q 'reti'; then
+    echo "PASS  avr5-isr (vector jump + reti epilogue)"
+  else
+    echo "FAIL  avr5-isr (missing vector jump to __vector_13 or reti epilogue)"
+  fi
+  rm -f "$elf"
+}
+
 # Stage 14 RV-1: cross-emitting for the riscv64 Linux target. The compiler must
 # register the RISCV backend (targets-init-all), emit the riscv64 datalayout/
 # triple, the `target-abi=lp64d` module flag, and thread the +m,+a,+f,+d,+c
@@ -671,6 +710,11 @@ spawn run_avr2_16bit avrxmega3
 # explicit --mmcu). Requires the avr-gcc toolchain (SKIPs otherwise).
 spawn run_avr3_link attiny1634 attiny1634
 spawn run_avr3_link avr32dd20 avrxmega3 avr32dd20
+
+# AVR-5 ISR gate: link the ISR example for the ATmega328P and confirm (via
+# avr-objdump) the vector-table jump to __vector_13 and its `reti` epilogue —
+# proof the "signal" function attribute reached the AVR backend.
+spawn run_avr5_isr
 
 # RV-1 IR-emission gate: riscv64 datalayout/triple + target-abi=lp64d module flag,
 # and the "features cliff" llc round-trip (hardware mul/fadd.d, no soft-float

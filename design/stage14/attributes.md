@@ -13,7 +13,14 @@ in.
 Committed now: **`:volatile` migrates to the slot** (retiring the postfix
 type-qualifier spelling). Reserved with a diagnostic but **not implemented**:
 `:thread-local` (blocked on a threading story — see §5). Sketched only:
-`:static`, `:align`, `:section`, `:weak`, ISR/function attributes (§6).
+`:static`, `:align`, `:section`, `:weak` (§6).
+
+**Function attributes shipped, but not through this slot.** §6 sketched
+ISR/function attributes as a candidate `:fn-attr`-on-`defn`-head unification;
+AVR-5 (avr-targets.md §5, done 2026-07-17) decided differently — a standalone,
+order-sensitive top-level directive `(fn-attr name "attr" ...)` (docs/toplevel.md),
+independent of this declaration-attribute slot. The slot remains unused for
+this purpose; see §6 for the as-sketched alternative that was not taken.
 
 ---
 
