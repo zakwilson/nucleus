@@ -124,6 +124,36 @@ Volatility lives on the storage site, not the value: `volatile T` and `T` are as
 
 > The older postfix spellings (`(T volatile)` list form, `T:volatile` colon segment) are retired: the compiler rejects them with a targeted error naming the `:volatile` attribute-slot spelling above.
 
+## Const globals
+
+A `defvar` global can be made read-only through the same keyword-attribute
+slot as `:volatile`: a leading `:const` keyword immediately before the
+declared name. `(defvar :const name:type init)` emits an LLVM `constant`
+in place of the default mutable `global` — the value is placed in read-only
+storage instead of writable data. This is a general, target-independent
+feature (not AVR-specific): on a target with separate program/data memory
+(e.g. AVR), a `constant` global can be kept out of RAM entirely; on other
+targets it is simply placed in read-only data.
+
+- `(defvar :const answer:i32 42)` — emits `@answer = constant i32 42`
+- `(defvar mutable-count:i32 0)` — unmarked, unchanged — emits `@mutable-count = global i32 0`
+
+Unlike `:volatile`, `:const` is meaningful **only** on a `defvar` global — a
+struct/union field, `defn` param, `let`/`with` binding, or pointer target
+type has no independent global-vs-constant storage class to select, and the
+compiler rejects `:const` at any of those sites with a targeted error
+(`':const' applies only to a defvar global, not a field, parameter, or
+binding`).
+
+> **⚠ `set!` is not rejected at compile time.** The compiler does not track
+> `:const`-ness on the symbol after emission, so `(set! name ...)` against a
+> `:const` global still type-checks and emits an ordinary `store` to the
+> now-read-only storage — the compiler does not diagnose this as an error.
+> The store is undefined behavior and typically segfaults at runtime (the
+> storage is mapped read-only). Treat `:const` as a storage-placement
+> directive you must not write through yourself, not as a compiler-enforced
+> immutability guarantee.
+
 ## Built-in Types
 
 | Name | Description | C Equivalent |
