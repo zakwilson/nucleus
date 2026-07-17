@@ -133,6 +133,45 @@ run_avr_emit() {  # <cpu>
   rm -f "$tmpfile"
 }
 
+# Stage 14 RV-1: cross-emitting for the riscv64 Linux target. The compiler must
+# register the RISCV backend (targets-init-all), emit the riscv64 datalayout/
+# triple, the `target-abi=lp64d` module flag, and thread the +m,+a,+f,+d,+c
+# features into the TargetMachine. The load-bearing check is the "features cliff"
+# (design/stage14/riscv-linux.md §1.2): with the correct features llc lowers an
+# i64 multiply to a hardware `mul` and an f64 add to `fadd.d`; with bare RV64I
+# they become `__muldi3`/`__adddf3` soft-float libcalls — a SILENT ABI mismatch
+# with riscv64 glibc (lp64d), not an error. The llc step is conditional on llc
+# being installed (same guard as the AVR gate) so the suite still runs without it.
+run_riscv_emit() {
+  local tmpfile asm
+  tmpfile="$(mktemp)"
+  ./build/nucleusc --target=riscv64-unknown-linux-gnu --emit-llvm \
+    tests/fixtures/riscv-features.nuc > "$tmpfile" 2>/dev/null || true
+  if grep -q 'target triple = "riscv64-unknown-linux-gnu"' "$tmpfile" \
+     && grep -q 'target datalayout = "e-m:e-p:64:64-' "$tmpfile" \
+     && grep -q '!"target-abi", !"lp64d"' "$tmpfile"; then
+    echo "PASS  riscv-emit"
+  else
+    echo "FAIL  riscv-emit (datalayout/triple/module-flags)"
+  fi
+  if command -v llc >/dev/null 2>&1; then
+    asm="$(mktemp)"
+    # The asm mnemonic column is tab-indented; anchor at line start so a `.globl`
+    # of a symbol containing "mul" can't false-match the multiply instruction.
+    if llc -mtriple=riscv64 -mattr=+m,+a,+f,+d,+c -filetype=asm "$tmpfile" -o "$asm" 2>/dev/null \
+       && grep -qE '^[[:space:]]*mul[[:space:]]' "$asm" \
+       && grep -q 'fadd\.d' "$asm" \
+       && ! grep -q '__muldi3' "$asm" \
+       && ! grep -q '__adddf3' "$asm"; then
+      echo "PASS  riscv-llc-features"
+    else
+      echo "FAIL  riscv-llc-features (features cliff: libcalls instead of hardware mul/fadd.d)"
+    fi
+    rm -f "$asm"
+  fi
+  rm -f "$tmpfile"
+}
+
 # `long` ABI model (Phase D): C `long` resolves per the target's data model.
 # Parse a header with long/long long functions and check the emitted declares.
 abs_long_h="$(pwd)/tests/abi/long.h"
@@ -534,6 +573,11 @@ done
 # AVR-Dx family core, used for the deviceless AVR32DD20). Both must lower via llc.
 spawn run_avr_emit attiny1634
 spawn run_avr_emit avrxmega3
+
+# RV-1 IR-emission gate: riscv64 datalayout/triple + target-abi=lp64d module flag,
+# and the "features cliff" llc round-trip (hardware mul/fadd.d, no soft-float
+# libcalls).
+spawn run_riscv_emit
 
 spawn check_long x86_64-pc-linux-gnu    i64 i64   # LP64
 spawn check_long aarch64-apple-darwin   i64 i64   # LP64

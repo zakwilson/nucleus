@@ -174,6 +174,44 @@ CI-verifiable end-to-end under qemu.
   through `llc -mattr=+m,+a,+f,+d,+c` producing `fadd.d`/`mul` (no
   libcalls); existing-target IR byte-identical (no flag, no features).
 
+**Status: Done** (AVR-1 had already landed the shared `cpu`/backend-registration
+plumbing per §4, so RV-1 was the features/abi delta on top of it).
+- `src/llvm.nuch`: added the `LLVMInitializeRISCV{TargetInfo,Target,TargetMC,
+  AsmPrinter}` quartet (beside the AVR quartet); called all four from
+  `targets-init-all` (`src/nucleusc.nuc`).
+- `Target` (`src/compiler-types.nuc`) gained `features:ptr` and `abi:ptr`
+  (alongside AVR-1's `cpu:ptr`). Three triple-keyed resolvers beside
+  `reloc-for-triple`: `cpu-for-triple` (honors an explicit `--mcpu`, else
+  `generic-rv64` for `riscv64`), `features-for-triple` (`+m,+a,+f,+d,+c`),
+  `abi-for-triple` (`lp64d`); all three return `""` for every non-riscv64
+  triple. `make-target-for-triple` resolves the effective cpu/features/abi
+  once (mirroring how `reloc-for-triple` is computed early), passes eff-cpu +
+  eff-features to `LLVMCreateTargetMachine`, and stores all three on the
+  descriptor. `compile-and-link` now reads `features` from the descriptor
+  (was hardcoded `""`); `cpu` already flowed from AVR-1.
+- `assemble-module-ir`: the `target triple` line now ends with a single `\n`;
+  a `!llvm.module.flags = !{!0}` / `!0 = !{i32 1, !"target-abi", !"<abi>"}`
+  block is emitted only when `abi` is non-empty; a trailing `\n` reproduces
+  the prior `\n\n` exactly, so non-riscv IR is byte-identical.
+- Both inline X86-only init blocks (in `jit-ensure-init` and `compile-and-link`)
+  were confirmed redundant and **deleted**: `compiler-init` → `target-init` →
+  `targets-init-all` registers all backends process-wide before either runs, on
+  every code path (batch `main`; batch CT-JIT via `emit-toplevel-forms`; REPL
+  via `repl-main` → `compiler-init` before `repl-preload-macros`). LLVM
+  target-init is idempotent; verified with a REPL define/call/redefine smoke.
+- Test gate: `run_riscv_emit` in `tests/run-tests.sh` (mirrors `run_avr_emit`)
+  asserts the riscv64 datalayout/triple + `target-abi=lp64d` module flag, then
+  (llc-guarded) pipes through `llc -mtriple=riscv64 -mattr=+m,+a,+f,+d,+c` and
+  asserts hardware `mul`/`fadd.d` with no `__muldi3`/`__adddf3` libcalls — the
+  actual features-cliff regression test. Fixture:
+  `tests/fixtures/riscv-features.nuc` (i64 multiply + f64 add; symbol names
+  avoid `mul`/`add` substrings so `.globl` lines can't false-match).
+- Verified: `make clean && make` clean; `make test` 187/187 (185 baseline + the
+  two new riscv gates); `make bootstrap` byte-identical on the first pass (no
+  `update-bootstrap` reconverge needed); `make abi-test` green; host/x86_64/
+  aarch64 `--emit-llvm` byte-identical between the pre-change boot binary and
+  the new build.
+
 ### RV-2 — cross link + qemu test lanes
 
 - `compile-and-link`: triple-keyed link driver (shared with AVR-3) —
