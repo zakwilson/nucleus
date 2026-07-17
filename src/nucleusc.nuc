@@ -7965,11 +7965,10 @@
 
 (defn jit-ensure-init (line:i32):void
   (when (!= g-jit null) (return))
-  ; Initialize x86 target (expands LLVMInitializeNativeTarget)
-  (LLVMInitializeX86TargetInfo)
-  (LLVMInitializeX86Target)
-  (LLVMInitializeX86TargetMC)
-  (LLVMInitializeX86AsmPrinter)
+  ; Backends are already registered process-wide by targets-init-all (called from
+  ; target-init in compiler-init, which runs before any JIT use on every path —
+  ; batch CT-JIT via emit-toplevel-forms, and the REPL via repl-main→compiler-init
+  ; before repl-preload-macros), so no per-call native-target init is needed here.
   ; Create LLJIT
   (let (jit-ref:ptr null
         err:ptr (LLVMOrcCreateLLJIT (addr-of jit-ref) null))
@@ -9814,7 +9813,11 @@
   (LLVMInitializeAVRTargetInfo)
   (LLVMInitializeAVRTarget)
   (LLVMInitializeAVRTargetMC)
-  (LLVMInitializeAVRAsmPrinter))
+  (LLVMInitializeAVRAsmPrinter)
+  (LLVMInitializeRISCVTargetInfo)
+  (LLVMInitializeRISCVTarget)
+  (LLVMInitializeRISCVTargetMC)
+  (LLVMInitializeRISCVAsmPrinter))
 
 ; LLVM RelocMode for a triple: Static(0) for AVR (a freestanding MCU target has
 ; no dynamic loader / GOT), PIC(2) otherwise (the hosted default). Keyed off the
@@ -9822,11 +9825,36 @@
 (defn reloc-for-triple (triple:ptr):i32
   (if (= (strncmp triple "avr" 3) 0) 0 2))
 
+; The three triple-keyed target descriptor defaults for the "features cliff"
+; (design/stage14/riscv-linux.md §1.2): with an empty CPU/features string LLVM
+; codegens bare RV64I with a soft-float ABI that is *silently* incompatible with
+; riscv64 glibc (lp64d). RV64GC / lp64d is the glibc baseline, so a riscv64 triple
+; defaults to CPU generic-rv64, features +m,+a,+f,+d,+c, and the lp64d ABI. Every
+; other triple keeps empty "" for all three (byte-identical hosted-target IR).
+
+; Effective CPU: honor an explicit --mcpu (a non-empty `cpu`) so a future override
+; is never clobbered; otherwise pick the per-triple default.
+(defn cpu-for-triple (triple:ptr cpu:ptr):ptr
+  (when (!= (char-at cpu 0) 0) (return cpu))
+  (when (= (strncmp triple "riscv64" 7) 0) (return "generic-rv64"))
+  (return cpu))
+
+; LLVMCreateTargetMachine features string, keyed on the triple.
+(defn features-for-triple (triple:ptr):ptr
+  (when (= (strncmp triple "riscv64" 7) 0) (return "+m,+a,+f,+d,+c"))
+  (return ""))
+
+; LLVM "target-abi" module-flag value, keyed on the triple.
+(defn abi-for-triple (triple:ptr):ptr
+  (when (= (strncmp triple "riscv64" 7) 0) (return "lp64d"))
+  (return ""))
+
 ; Resolve `triple` to a Target descriptor, pulling the datalayout string and
 ; pointer size from LLVM so emitted IR matches the target ABI. `cpu` is the
-; --mcpu name ("" for host targets). ptr-align is derived from the datalayout
-; via LLVMABIAlignmentOfType on a `ptr` type rather than assumed == ptr-size:
-; x86-64/aarch64 answer 8 either way, AVR answers 1.
+; --mcpu name ("" for host targets); the effective cpu/features/abi are the
+; triple-keyed defaults resolved above (folding an explicit --mcpu in first).
+; ptr-align is derived from the datalayout via LLVMABIAlignmentOfType on a `ptr`
+; type rather than assumed == ptr-size: x86-64/aarch64 answer 8 either way, AVR 1.
 (defn make-target-for-triple (triple:ptr cpu:ptr):ref:Target
   (let (target:ptr null
         terr:ptr null
@@ -9835,7 +9863,10 @@
       (fprintf stderr "nucleusc: target lookup failed for '%s': %s\n" triple terr)
       (LLVMDisposeMessage terr)
       (exit 1))
-    (let (tm:ptr (LLVMCreateTargetMachine target triple cpu "" 0 (reloc-for-triple triple) 0))
+    (let (eff-cpu:ptr (cpu-for-triple triple cpu)
+          eff-features:ptr (features-for-triple triple)
+          eff-abi:ptr (abi-for-triple triple))
+    (let (tm:ptr (LLVMCreateTargetMachine target triple eff-cpu eff-features 0 (reloc-for-triple triple) 0))
       (when (= tm null)
         (fprintf stderr "nucleusc: failed to create TargetMachine for '%s'\n" triple)
         (exit 1))
@@ -9849,10 +9880,12 @@
           (.set! tgt datalayout dl-str)
           (.set! tgt ptr-size psize)
           (.set! tgt ptr-align palign)
-          (.set! tgt cpu cpu))
+          (.set! tgt cpu eff-cpu)
+          (.set! tgt features eff-features)
+          (.set! tgt abi eff-abi))
         (LLVMDisposeTargetData td)
         (LLVMDisposeTargetMachine tm)
-        (return (as ref:Target tgt))))))
+        (return (as ref:Target tgt)))))))
 
 ; Populate g-host-target (always native) and g-target (== host unless
 ; --target=<triple> overrides). Derives g-target-triple / g-target-ptr-bytes so
@@ -10086,7 +10119,17 @@
     (fprintf irs "; ModuleID = '%s'\n" source-file)
     (fprintf irs "source_filename = \"%s\"\n" source-file)
     (fprintf irs "target datalayout = \"%s\"\n" ((as ptr:Target g-target) datalayout))
-    (fprintf irs "target triple = \"%s\"\n\n" g-target-triple)
+    (fprintf irs "target triple = \"%s\"\n" g-target-triple)
+    ; RV-1: pin the psABI in the module (survives --emit-llvm; llc errors loudly
+    ; on a target-abi flag without the matching float feature rather than
+    ; miscompiling). Emitted only when the descriptor carries a non-empty abi, so
+    ; every existing hosted-target module is byte-for-byte unchanged (no flags
+    ; block at all — the blank line below reproduces the prior "\n\n").
+    (let (target-abi:ptr ((as ptr:Target g-target) abi))
+      (when (!= (char-at target-abi 0) 0)
+        (fprintf irs "!llvm.module.flags = !{!0}\n")
+        (fprintf irs "!0 = !{i32 1, !\"target-abi\", !\"%s\"}\n" target-abi)))
+    (fprintf irs "\n")
     (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp 0) 0))
       (fputs g-type-bufp irs))
     (emit-string-table irs)
@@ -10105,12 +10148,9 @@
 ; Parse the in-memory IR, emit an object file, and (unless -c) invoke clang
 ; to link a final binary. Exits with a non-zero status on failure.
 (defn compile-and-link (ir:ptr ir-len:i64 source-file:ptr):void
-  ; Initialize the x86 target — same set as the JIT path.
-  (LLVMInitializeX86TargetInfo)
-  (LLVMInitializeX86Target)
-  (LLVMInitializeX86TargetMC)
-  (LLVMInitializeX86AsmPrinter)
-
+  ; Backends are already registered process-wide by targets-init-all (called from
+  ; target-init in compiler-init, which runs before this on every batch code path),
+  ; so no per-call target init is needed here.
   (let (ctx:ptr (LLVMContextCreate)
         mb:ptr  (LLVMCreateMemoryBufferWithMemoryRangeCopy ir ir-len source-file)
         mod:ptr null
@@ -10129,10 +10169,12 @@
         (LLVMDisposeMessage terr)
         (exit 1))
       ; CodeGenLevel = g-opt-level, Reloc keyed on triple (Static(0) for AVR,
-      ; PIC(2) otherwise), CodeModel = Default(0). CPU from the Target descriptor
-      ; (empty "" for host targets; the --mcpu value for a cross-target).
+      ; PIC(2) otherwise), CodeModel = Default(0). CPU and features from the Target
+      ; descriptor (empty "" for host targets; the effective --mcpu / triple-keyed
+      ; features for a cross-target, e.g. generic-rv64 / +m,+a,+f,+d,+c for riscv64).
       (let (tm:ptr (LLVMCreateTargetMachine target g-target-triple
-                     ((as ptr:Target g-target) cpu) "" g-opt-level
+                     ((as ptr:Target g-target) cpu)
+                     ((as ptr:Target g-target) features) g-opt-level
                      (reloc-for-triple g-target-triple) 0))
         (let (out-path:ptr g-output-path
               obj-path:ptr null

@@ -631,13 +631,20 @@
 ; ptr-align is queried from the datalayout (LLVMABIAlignmentOfType on a `ptr`),
 ; not assumed equal to ptr-size — AVR aligns pointers at 1 byte. `cpu` is the
 ; --mcpu string passed to LLVMCreateTargetMachine (empty "" for host targets;
-; never null, never compared — kept `ptr`).
+; never null, never compared — kept `ptr`). `features` (the LLVMCreateTargetMachine
+; features string, e.g. "+m,+a,+f,+d,+c" for riscv64) and `abi` (the LLVM
+; "target-abi" module-flag value, e.g. "lp64d" for riscv64) are triple-keyed
+; defaults resolved in make-target-for-triple; both are empty "" for every
+; existing hosted triple (so their IR is byte-identical), never null, never
+; compared — kept `ptr`. See design/stage14/riscv-linux.md §5 (RV-1).
 (defstruct Target
   triple:ptr
   datalayout:ptr
   ptr-size:i32
   ptr-align:i32
-  cpu:ptr)
+  cpu:ptr
+  features:ptr
+  abi:ptr)
 
 ; Stage 14 §14.5 batch 2 — vtable memo entry: replaces the parallel
 ; g-vtable-keys/g-vtable-names arrays (nucleusc.nuc) with one
