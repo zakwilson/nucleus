@@ -259,6 +259,45 @@ run_avr5_isr() {
   rm -f "$elf"
 }
 
+# Stage 14 AVR-6 (design/stage14/avr-targets.md §5): the Harvard function-value
+# hazard. On AVR functions live in program memory (addrspace(1)); a function
+# materialized as a first-class DATA pointer value is `ptr addrspace(1)` where a
+# plain `ptr` is required — an LLVM verifier error. v1 diagnoses at compile time
+# rather than emitting IR the backend rejects. The gate is prog-as-keyed (parsed
+# from the datalayout `P<n>` — 1 on AVR, 0 on hosts): the SAME fixture that dies
+# on AVR must compile cleanly on the host, proving the diagnostic is descriptor-
+# keyed. Compiler-only (--emit-llvm), so it runs even without the AVR toolchain.
+run_avr6_fnvalue() {
+  local avr_err host_ok
+  avr_err="$(./build/nucleusc --target=avr --mcpu=attiny1634 --emit-llvm \
+    tests/fixtures/avr6-fnvalue.nuc 2>&1 >/dev/null || true)"
+  if ./build/nucleusc --emit-llvm tests/fixtures/avr6-fnvalue.nuc >/dev/null 2>&1; then
+    host_ok=1
+  else
+    host_ok=0
+  fi
+  if printf '%s' "$avr_err" | grep -qF "cannot use function 'add' as a value on this target" \
+     && [ "$host_ok" -eq 1 ]; then
+    echo "PASS  avr6-fnvalue-diagnostic"
+  else
+    echo "FAIL  avr6-fnvalue-diagnostic (AVR must reject; host must accept)"
+  fi
+}
+
+# Stage 14 AVR-6: the `:const` declaration attribute on a defvar global emits an
+# LLVM `constant` (read-only) instead of a mutable `global`; a plain defvar is
+# unchanged (so existing programs stay byte-identical). Pure emission, host-only.
+run_avr6_const() {
+  local ir
+  ir="$(./build/nucleusc --emit-llvm tests/fixtures/avr6-const.nuc 2>/dev/null || true)"
+  if printf '%s' "$ir" | grep -q '@answer = constant i32 42' \
+     && printf '%s' "$ir" | grep -q '@mutable-count = global i32 0'; then
+    echo "PASS  avr6-const-global"
+  else
+    echo "FAIL  avr6-const-global (:const must emit 'constant'; plain defvar must stay 'global')"
+  fi
+}
+
 # Stage 14 RV-1: cross-emitting for the riscv64 Linux target. The compiler must
 # register the RISCV backend (targets-init-all), emit the riscv64 datalayout/
 # triple, the `target-abi=lp64d` module flag, and thread the +m,+a,+f,+d,+c
@@ -715,6 +754,17 @@ spawn run_avr3_link avr32dd20 avrxmega3 avr32dd20
 # avr-objdump) the vector-table jump to __vector_13 and its `reti` epilogue —
 # proof the "signal" function attribute reached the AVR backend.
 spawn run_avr5_isr
+
+# AVR-6 Harvard-hazard gates: (1) the function-value diagnostic fires on AVR and
+# NOT on the host (prog-as-keyed); (2) `:const` emits an LLVM `constant`; (3)
+# `:const` is rejected on a let binding and a struct field (only defvar globals
+# have a global-vs-constant storage class). Compiler-only — no AVR toolchain.
+spawn run_avr6_fnvalue
+spawn run_avr6_const
+spawn run_reject avr6-const-on-let-rejected tests/fixtures/avr6-const-let.nuc \
+  "':const' applies only to a defvar global"
+spawn run_reject avr6-const-on-field-rejected tests/fixtures/avr6-const-field.nuc \
+  "':const' applies only to a defvar global"
 
 # RV-1 IR-emission gate: riscv64 datalayout/triple + target-abi=lp64d module flag,
 # and the "features cliff" llc round-trip (hardware mul/fadd.d, no soft-float

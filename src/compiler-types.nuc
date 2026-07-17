@@ -115,7 +115,16 @@
 ; flag today (it lowers to the existing is-volatile Type flag via
 ; type-with-volatile); `:thread-local` is reserved-with-error (§5). Room for
 ; future valued attributes (`:align 64`) is left in the registry, none implemented.
+;
+; `:const` (Stage 14 AVR-6, DECL-ATTR-CONST) is meaningful ONLY on a `defvar`
+; global — `(defvar :const name:type init)` emits an LLVM `constant` instead of a
+; `global`, keeping the table out of RAM entirely on mapped-flash AVR parts (and
+; read-only-linkable on every target). Unlike `:volatile` it has no meaning on a
+; let/with binding, struct/union field, defn param, or pointer target type (no
+; independent global-vs-constant storage class to select there); every such site
+; rejects it via reject-decl-attr-const rather than silently ignoring it.
 (defconst DECL-ATTR-VOLATILE 1)
+(defconst DECL-ATTR-CONST 2)
 
 ; ============================================================
 ; Struct definitions (ordered by dependency)
@@ -637,6 +646,10 @@
 ; defaults resolved in make-target-for-triple; both are empty "" for every
 ; existing hosted triple (so their IR is byte-identical), never null, never
 ; compared — kept `ptr`. See design/stage14/riscv-linux.md §5 (RV-1).
+; `prog-as` is the datalayout's program address space (the `P<n>` token; Stage 14
+; AVR-6): 1 on AVR (functions live in program memory, addrspace(1)), 0 on every
+; other target (no `P` token). It gates the AVR-6 function-value diagnostic in
+; emit-symbol-ref — see design/stage14/avr-targets.md §5 (AVR-6).
 (defstruct Target
   triple:ptr
   datalayout:ptr
@@ -644,7 +657,8 @@
   ptr-align:i32
   cpu:ptr
   features:ptr
-  abi:ptr)
+  abi:ptr
+  prog-as:i32)
 
 ; Stage 14 §14.5 batch 2 — vtable memo entry: replaces the parallel
 ; g-vtable-keys/g-vtable-names arrays (nucleusc.nuc) with one

@@ -1,0 +1,15 @@
+; Stage 14 AVR-6 (design/stage14/avr-targets.md §5) — the Harvard function-value
+; hazard. On AVR, functions live in program memory (address space 1); a function
+; materialized as a first-class DATA pointer VALUE is `ptr addrspace(1)` where a
+; plain `ptr` is required — an LLVM verifier error. Here `add` is passed as a
+; value (not called directly), which routes through emit-symbol-ref's TY-FN
+; branch — the single materialization chokepoint. On a hosted target
+; (prog-as == 0) this compiles cleanly; on AVR (prog-as == 1) it is a targeted
+; compile-time error, so the same source proves the diagnostic is prog-as-keyed.
+(defn add (a:i32 b:i32):i32 (return (+ a b)))
+
+(defn apply-binop ((op (fn i32) (i32 i32)) a:i32 b:i32):i32
+  (return (funcall op a b)))
+
+(defn main ():i32
+  (return (apply-binop add 3 4)))
