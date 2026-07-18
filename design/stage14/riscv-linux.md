@@ -8,10 +8,17 @@ two tiers:
 
 - **Tier A — cross-compilation** from x86_64 with the full example/test
   suite executing under `qemu-user`. CI-testable in this container; this is
-  the stage-14 deliverable.
+  the stage-14 deliverable. **Done** (RV-0…RV-3, RV-5 — see §5).
 - **Tier B — native self-hosting** on RISC-V hardware (compiler, JIT,
   macros, REPL), the same bring-up the ARM64 portability work did for
-  aarch64. Specced here, gated on hardware (or `qemu-system`) access.
+  aarch64. Specced here (§5 RV-4), gated on hardware (or `qemu-system`)
+  access. **Deferred/future — not a pending autopilot milestone.**
+  Provisioning a bootable riscv64 Linux guest (kernel + rootfs +
+  toolchain) under `qemu-system-riscv64`, or real riscv64 hardware, is
+  well beyond the container-package fixes the rest of this doc's
+  workstream needed; it requires deliberate user-driven environment
+  setup before any agent session (autopilot or otherwise) should attempt
+  it. Do not dispatch RV-4 as a routine milestone.
 
 Scope is **RV64GC / lp64d** (the `riscv64-unknown-linux-gnu` glibc baseline
 — what Debian's official riscv64 port ships). rv32/ilp32, the vector
@@ -371,14 +378,63 @@ as RV-2, which is *not* a code defect.
   hardware (LLJIT applies host defaults; the tripwire from ground truth
   §1.3 will say loudly).
 
+**Status: Deferred / future — explicitly NOT in scope for this pass or
+for the unattended stage-14 autopilot loop.** Unlike RV-0 through RV-3
+(which needed only a container package or a self-contained code change),
+RV-4 needs a full bootable riscv64 Linux guest — kernel, rootfs, and
+toolchain — under `qemu-system-riscv64`, or real riscv64 hardware. That
+is deliberate, user-driven environment setup, not something an
+autopilot session can provision on its own. Do not attempt RV-4 as a
+routine milestone dispatch; it stays open until a human sets up the
+guest/hardware and hands it off explicitly. The rest of this doc's
+RISC-V workstream (RV-0…RV-3, RV-5 — Tier A: cross-compile + qemu-user)
+is complete and does not depend on RV-4.
+
 ### RV-5 — docs + progress
 
 - design/stage8/platform.md: add riscv64 to the target matrix; fix the
   stale "aarch64 AAPCS fully deferred" note (71a2d9f landed the MEMORY
   branch).
-- context/build.md: riscv link/test flow, boot-IR-per-arch rule, the
-  `llc`-needs-`-mattr` caveat for textual riscv IR.
+- context/build.md: riscv link/test flow, the `llc`-needs-`-mattr`
+  caveat for textual riscv IR.
 - docs cross-compilation section (shared page with AVR), progress.md row.
+
+**Status: Done** (2026-07-18) — documentation-only close-out, no
+compiler code changed.
+- `design/stage8/platform.md`: Phase B's target-matrix bullet list is
+  historical (x86_64/i386/aarch64/arm only, as it was landed) and left
+  unchanged; a new note directly below it says AVR and riscv64
+  registration landed later, in Stage 14, linking to
+  [avr-targets.md](avr-targets.md) and this doc. The stale "Carried
+  forward" ABI note (§ Phase C) is rewritten: AArch64 AAPCS partially
+  landed (commit 71a2d9f, well before Stage 14 — `ABI-MEMORY` plain-pointer
+  passing; HFA float-flattening still deferred), RISC-V lp64d landed its
+  integer-convention aggregate ABI in RV-3 above (same FP-flattening gap
+  as aarch64), Win64/ARM AAPCS/i386 cdecl remain fully deferred.
+- `context/build.md`: the riscv64 link/test-flow bullet already existed
+  from RV-2 (unchanged). Added a new bullet for the `llc`-needs-`-mattr`
+  caveat: a bare `--target=riscv64-... --emit-llvm` `.ll` does not bake
+  in `+m,+a,+f,+d,+c` (those are a `TargetMachine` construction argument,
+  not IR content, unlike the `target-abi` module flag) — hand-feeding
+  that IR to a plain `llc` with no matching `-mattr` silently reproduces
+  the RV64I soft-float features cliff RV-1 exists to prevent for the
+  compiler's own codegen path. (No "boot-IR-per-arch rule" bullet added —
+  that's RV-4 scope and doesn't exist yet.)
+- `docs/compiler.md`: the `--target=`/`--mcpu=` rows already had thorough
+  riscv64 coverage from RV-1/RV-2/RV-3, and `structs-unions.md`'s ABI
+  section was already accurate through RV-3 — both confirmed, not
+  duplicated. The one real gap: the `--linker=` row (and the flags-intro
+  paragraph above the table) named only `clang`/`avr-gcc` as link-driver
+  defaults, omitting riscv64's `riscv64-linux-gnu-gcc` default from RV-2 —
+  fixed in both places. No dedicated `docs/riscv.md` created — the
+  existing `--target=` row coverage is adequate (unlike AVR, which
+  warranted its own `docs/avr.md` for its much larger v1-profile/MMIO/ISR
+  surface).
+- `design/progress.md`: the "14 (RISC-V)" row's status phrase updated to
+  list RV-5 done and RV-4 deferred/future; a closing paragraph appended
+  after the RV-3 narrative spelling out RV-4's deferred status in the
+  same unambiguous terms as this section, so a future autopilot session
+  reading either doc reaches the same conclusion.
 
 ## 6. Verification and bootstrap convergence
 
