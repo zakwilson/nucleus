@@ -224,6 +224,55 @@ plumbing per §4, so RV-1 was the features/abi delta on top of it).
   §2.7).
 - Gate: full example suite green under qemu.
 
+**Status: Done** (2026-07-18) — the RV-2 code path is complete and correct;
+today's `make riscv-test` SKIPs on a container-provisioning gap (below), which
+is *not* a code defect.
+- `compile-and-link` (`src/nucleusc.nuc`) gained an `is-riscv` branch beside
+  AVR-3's `is-avr` in the driver-selection `let`: a triple with the `riscv64`
+  prefix (`(strncmp g-target-triple "riscv64" 7)`, the same idiom
+  `cpu/features/abi-for-triple` use) selects `riscv64-linux-gnu-gcc`. AVR and
+  riscv64 prefixes are mutually exclusive so the two `set!`s never both fire;
+  `--linker=` still overrides either (unchanged precedence). riscv64 needs no
+  extra command-line flag beyond the driver name (no `-mmcu`-equivalent) — the
+  Debian cross gcc carries the sysroot + crt objects, so PIC (kept) links a
+  glibc executable directly. No other change: `reloc-for-triple` already
+  returns PIC(2) for every non-avr triple.
+- `make riscv-test` → `tests/run-riscv-test.sh` (new): modeled on
+  `tests/run-avr-test.sh`. Two-stage SKIP gate — (1) `riscv64-linux-gnu-gcc`
+  and `qemu-riscv64` both on `PATH`; (2) a **capability probe** that actually
+  drives the compiler's compile-and-link path on `examples/hello.nuc` and
+  checks whether the link *succeeds*. Merely finding the driver binary is
+  insufficient: this container has `libc6-riscv64-cross` (runtime shared libs)
+  but **not** `libc6-dev-riscv64-cross` (crt startup objects + headers), so the
+  link fails `cannot find Scrt1.o`. The probe detects that shape and SKIPs with
+  a one-line pointer to the missing package (exit 0) instead of FAILing every
+  example. When a future container gains the `-dev` package the probe links and
+  the full gate runs: for each `examples/*.nuc` with a `tests/expected/<name>.out`,
+  compile `--target=riscv64-unknown-linux-gnu <src> -o <out>` (no
+  `--emit-llvm`/`-c`, so the real link driver is exercised), run under
+  `qemu-riscv64 -L /usr/riscv64-linux-gnu`, diff stdout — same convention as the
+  native `run_example`. Wired into the Makefile as an opt-in target
+  (`riscv-test`, + `.PHONY`) beside `avr-test`; **not** part of `make test`/`make
+  bootstrap`.
+- Verified: `make clean && make` clean; `make test` 204/204 (unchanged — this
+  is additive and touches only a cross-target's link command line); `make
+  bootstrap` byte-identical first pass (no `update-bootstrap`); `make
+  riscv-test` SKIPs cleanly with the crt-gap diagnostic. Link-driver routing
+  proven independently of the crt gap:
+  `./build/nucleusc --target=riscv64-unknown-linux-gnu examples/hello.nuc -o …`
+  fails with `nucleusc: link step failed (riscv64-linux-gnu-gcc exit 256)`
+  after `ld: cannot find Scrt1.o` — i.e. the compiler correctly selected the
+  riscv64 driver and emitted a valid riscv64 object; only the downstream link
+  failed on the missing crt objects (NOT a "clang: unknown target"-shaped
+  error). The moment the container gains `libc6-dev-riscv64-cross`, RV-2 fully
+  passes with no further code change.
+- **Blocked (container provisioning, not code):** installing
+  `libc6-dev-riscv64-cross` is a Dockerfile change reachable only from the
+  user's interactive session (same constraint as RV-0's Dockerfile half); no
+  root/apt inside the autopilot environment. Do **not** work around it
+  (vendoring crt, `-nostartfiles`) — the code is correct and the SKIP is the
+  right behavior until the package lands.
+
 ### RV-3 — aggregate ABI (integer convention)
 
 - `abi-is-riscv` predicate beside `abi-is-aarch64`; classification branch

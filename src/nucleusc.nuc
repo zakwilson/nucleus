@@ -10428,20 +10428,29 @@
           (LLVMDisposeTargetMachine tm)
           (when (= keep-obj 0)
             ; Build the link command: <driver> [-mmcu=<device>] <obj> -o <out>
-            ;   [link-args...]. The driver defaults to clang for hosted triples
-            ; and avr-gcc for an AVR triple; --linker=<cmd> overrides either
-            ; (wins regardless of triple). On an AVR triple a -mmcu=<device>
-            ; flag is inserted, the device being --mmcu if given else --mcpu
-            ; (no device table — a family --mcpu without --mmcu lets avr-gcc
-            ; fail on its own, per design/stage14/avr-targets.md §5 AVR-3).
-            ; driver:ptr is initialised to the StrView literal "clang" and
-            ; overridden via statement-form set! (a mixed StrView/ptr value-
-            ; position `if` would join to void and emit a bad call argument —
-            ; the same idiom target-init uses for the --mcpu string).
+            ;   [link-args...]. The driver defaults to clang for hosted triples,
+            ; avr-gcc for an AVR triple, and riscv64-linux-gnu-gcc for a
+            ; riscv64-linux triple (the Debian cross toolchain — it carries the
+            ; riscv64 sysroot + crt startup objects, which clang would need an
+            ; explicit --sysroot for; riscv64 needs no extra command-line flag
+            ; beyond the driver name, unlike AVR's -mmcu device selection).
+            ; --linker=<cmd> overrides any of them (wins regardless of triple).
+            ; On an AVR triple a -mmcu=<device> flag is inserted, the device
+            ; being --mmcu if given else --mcpu (no device table — a family
+            ; --mcpu without --mmcu lets avr-gcc fail on its own, per
+            ; design/stage14/avr-targets.md §5 AVR-3). driver:ptr is initialised
+            ; to the StrView literal "clang" and overridden via statement-form
+            ; set! (a mixed StrView/ptr value-position `if` would join to void
+            ; and emit a bad call argument — the same idiom target-init uses for
+            ; the --mcpu string). AVR and riscv64 triple prefixes are mutually
+            ; exclusive, so the two set!s never both fire.
             (let (driver:ptr "clang"
-                  is-avr:i32 (if (= (strncmp g-target-triple "avr" 3) 0) 1 0))
+                  is-avr:i32 (if (= (strncmp g-target-triple "avr" 3) 0) 1 0)
+                  is-riscv:i32 (if (= (strncmp g-target-triple "riscv64" 7) 0) 1 0))
               (when (!= is-avr 0)
                 (set! driver "avr-gcc"))
+              (when (!= is-riscv 0)
+                (set! driver "riscv64-linux-gnu-gcc"))
               (when (!= g-linker-override null)
                 (set! driver g-linker-override))
               (let (cmd-bufp:ptr null  cmd-sizep:i64 0
