@@ -131,6 +131,13 @@ avr-test: $(BIN)
 riscv-test: $(BIN)
 	NUCLEUSC=$(BIN) ./tests/run-riscv-test.sh
 
+# RISC-V struct-ABI interop acceptance test (Stage 14 RV-3 gate): the three-
+# direction aggregate-ABI interop (Nucleus<->C, Nucleus<->Nucleus) cross-compiled
+# for riscv64 and run under qemu-riscv64. Not part of `make test`/`make abi-test`;
+# see design/stage14/riscv-linux.md §5 and tests/run-riscv-abi-test.sh's header.
+riscv-abi-test: $(BIN)
+	NUCLEUSC=$(BIN) ./tests/run-riscv-abi-test.sh
+
 bootstrap: $(BIN) | $(BUILD)/out
 	@echo "=== Stage 2: self-hosted compiler -> nucleusc.nuc ==="
 	$(BIN) --emit-llvm src/nucleusc.nuc > $(BUILD)/stage2.ll
@@ -239,4 +246,4 @@ uninstall:
 	rm -f $(BINDIR)/nucleusc
 	rm -rf $(DESTDIR)$(PREFIX)/share/nucleus
 
-.PHONY: test abi-test layout-test avr-test riscv-test clean bootstrap boot-binary update-bootstrap windows-boot ensure-boot lib-headers lib-cheaders lib-objs lib-so lib install uninstall
+.PHONY: test abi-test layout-test avr-test riscv-test riscv-abi-test clean bootstrap boot-binary update-bootstrap windows-boot ensure-boot lib-headers lib-cheaders lib-objs lib-so lib install uninstall

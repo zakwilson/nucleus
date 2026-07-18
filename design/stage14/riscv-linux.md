@@ -288,6 +288,71 @@ is *not* a code defect.
   execution.
 - Gate: riscv abi-test green; existing `make abi-test` untouched.
 
+**Status: Done** (2026-07-18) — the aggregate-ABI classification is complete
+and correct; today's `make riscv-abi-test` SKIPs on the same container crt gap
+as RV-2, which is *not* a code defect.
+- `abi-is-riscv` predicate added in `src/abi.nuc` beside `abi-is-aarch64` /
+  `abi-is-avr`, using the same `(strncmp g-target-triple "riscv64" 7)` idiom
+  as `cpu/features/abi-for-triple`. Recomputed per call (no memo), inert on
+  every non-riscv triple (returns 0).
+- `abi-classify` (`src/abi.nuc`): for a riscv64 triple, both eightbytes of a
+  ≤16-byte aggregate are forced to class 3 (INTEGER), skipping
+  `abi-class-eightbyte`'s field-type walk — a one-line ternary at each of the
+  `c0` and `c1` computations. `n0`/`n1` byte counts and the COERCE1/COERCE2
+  size threshold are unchanged (size-only, already target-agnostic), so the
+  COERCE shapes are reused verbatim with integer-only classes: a small
+  FP-bearing struct now lowers to `i64`/`{i64,i64}` rather than
+  `double`/`<2 x float>`. The >16-byte → ABI-MEMORY branch (and the sret
+  return path) was already target-generic and correct for riscv64's
+  "large aggregate by reference / return via hidden pointer" rule — untouched.
+- The two byval-vs-plain-pointer gates — `abi-print-param` (`define`/`declare`
+  param list) and `abi-arg-frag` (call-site fragment) — gained
+  `(= (abi-is-riscv) 0)` as a third conjunct beside the existing aarch64/AVR
+  exclusions, so a >16-byte riscv64 aggregate passes as a plain `ptr` (no
+  `byval`), matching the riscv64 psABI (same "aarch64-style, no byval" this
+  bullet specified). `and` is a variadic fold (`lib/macros.nuc`), so the
+  3-conjunct form is fine.
+- FP-flattening remains deferred (the documented divergence): a *pure*
+  small FP-bearing struct (e.g. `{f64,f64}`) that the psABI would flatten into
+  FPRs is passed in GPRs instead. The reused interop fixtures never hit this —
+  their only FP-bearing struct is `Mixed {i32,f32}`, whose integer field
+  forces the INTEGER class on *both* x86_64 SysV and the riscv64 psABI (gcc
+  does not flatten a struct that mixes an integer member), so `mixed_get`
+  interoperates exactly. Scalar `f64` args stay `double` (scalar float ABI is
+  unaffected — RV-3 touches aggregate classification only).
+- `make riscv-abi-test` → `tests/run-riscv-abi-test.sh` (new): the same
+  three-direction interop as `tests/run-abi-test.sh` (Nucleus→C, Nucleus→Nucleus,
+  C→Nucleus), reusing `tests/abi/{clib.c,interop.nuc,callee.nuc,driver.c,
+  expected.out}` unchanged, but cross-compiled with
+  `--target=riscv64-unknown-linux-gnu -c` + `riscv64-linux-gnu-gcc` and executed
+  under `qemu-riscv64 -L /usr/riscv64-linux-gnu`. Two-stage SKIP gate identical
+  to `run-riscv-test.sh`: (1) `riscv64-linux-gnu-gcc` + `qemu-riscv64` on
+  `PATH`; (2) a capability probe that links `examples/hello.nuc` through the
+  compiler — a passing probe proves `libc6-dev-riscv64-cross` (crt objects +
+  glibc headers the C fixtures need) is installed. Wired into the Makefile as an
+  opt-in target (`riscv-abi-test` + `.PHONY`); NOT part of `make test`/`make
+  bootstrap`/`make abi-test`.
+- Verified: `make clean && make` clean; `make test` 204/204 (unchanged — all
+  riscv branches are triple-gated, so `g-target-triple == "x86_64-…"` during
+  self-compile never fires them); `make bootstrap` byte-identical on the first
+  pass (no `update-bootstrap` — nothing leaked into the host path); `make
+  abi-test` still PASS (x86_64 gate untouched); `make riscv-abi-test` SKIPs with
+  the crt-gap diagnostic. Classification proven independent of the crt gap by
+  `--target=riscv64-unknown-linux-gnu --emit-llvm` on an f64-bearing fixture:
+  `{f64,f64}` returns `{i64,i64}` and passes `(i64,i64)` (host: `{double,double}`
+  / `(double,double)`); `{f64,i64}` returns `{i64,i64}` (host: `{double,i64}`);
+  a single `f64` (8B struct) returns `i64` (host: `double`); the >16-byte `Big`
+  declare/call/define drop `byval` entirely on riscv (`declare i64
+  @big_sum(ptr)` / `call ... (ptr %t43)`) while host keeps `ptr byval(%Big)
+  align 8`; hosted `--emit-llvm` of both fixtures is byte-identical pre/post.
+  `llc -mtriple=riscv64 -mattr=+m,+a,+f,+d,+c` compiles the riscv IR cleanly
+  (well-formed lowering).
+- **Blocked (container provisioning, not code):** same `libc6-dev-riscv64-cross`
+  gap as RV-2 — installing it is a Dockerfile change reachable only from the
+  user's interactive session. The code is correct and the SKIP is the right
+  behavior until the package lands, at which point `make riscv-abi-test` runs
+  the full three-direction gate under qemu with no further code change.
+
 ### RV-4 — Tier B: native self-hosting (hardware/qemu-system gated)
 
 - `make riscv-boot` modeled on `windows-boot`: cross-emit

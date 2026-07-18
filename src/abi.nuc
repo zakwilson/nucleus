@@ -85,6 +85,19 @@
 (defn abi-is-avr ():i32
   (return (if (= (strncmp g-target-triple "avr" 3) 0) 1 0)))
 
+; Check if target is riscv64 (Stage 14 RV-3). riscv64's lp64d psABI passes and
+; returns small aggregates via the INTEGER convention only in this v1 scope —
+; hard-float FP-flattening of small FP-bearing structs into FPRs is deferred
+; (it needs register-counting classification state, exactly like the aarch64
+; HFA gap; design/stage14/riscv-linux.md §3). So abi-classify forces the INTEGER
+; class for every eightbyte on riscv64 (skipping abi-class-eightbyte's field-type
+; walk), and a >16-byte aggregate travels by aarch64-style plain pointer (no
+; byval — abi-print-param / abi-arg-frag). Spelled with the same strncmp-prefix
+; idiom as abi-is-avr / cpu-for-triple; riscv64 triples always begin `riscv64`.
+; Inert on every hosted/x86_64/aarch64/AVR target (returns 0) → byte-identical.
+(defn abi-is-riscv ():i32
+  (return (if (= (strncmp g-target-triple "riscv64" 7) 0) 1 0)))
+
 ; Stage 14 AVR-7 numerics policy: f64 is unsupported on AVR (8-bit target, no
 ; hardware double). Rejected at the two entry points where an f64-typed value is
 ; finalized: an explicit `:f64`/`double` annotation (parse-type-name,
@@ -246,14 +259,16 @@
       (when (> sz 16)
         (.set! info kind ABI-MEMORY)
         (return info))
+      ; Stage 14 RV-3: on riscv64 every eightbyte is INTEGER (lp64d FP-flattening
+      ; deferred — see abi-is-riscv); skip the field-type walk and force class 3.
       (let (n0:i32 (if (< sz 8) sz 8)
-            c0:i32 (abi-class-eightbyte sd 0 0))
+            c0:i32 (if (!= (abi-is-riscv) 0) 3 (abi-class-eightbyte sd 0 0)))
         (.set! info reg0 (abi-eightbyte-ir c0 n0)))
       (when (<= sz 8)
         (.set! info kind ABI-COERCE1)
         (return info))
       (let (n1:i32 (- sz 8)
-            c1:i32 (abi-class-eightbyte sd 0 8))
+            c1:i32 (if (!= (abi-is-riscv) 0) 3 (abi-class-eightbyte sd 0 8)))
         (.set! info reg1 (abi-eightbyte-ir c1 n1)))
       (.set! info kind ABI-COERCE2)
       (return info))))
@@ -289,14 +304,16 @@
         (fprintf g-out "%s %%%s.arg" (type-to-ir ptype) name))
       (return))
     (when (= k ABI-MEMORY)
-      ; x86_64 uses a `byval` attribute; aarch64 AND AVR (Stage 14 AVR-7) pass a
-      ; plain pointer (AVR has no byval concept). byval only when neither.
-      (if (and (= (abi-is-aarch64) 0) (= (abi-is-avr) 0))
+      ; x86_64 uses a `byval` attribute; aarch64, AVR (Stage 14 AVR-7) AND
+      ; riscv64 (Stage 14 RV-3) pass a plain pointer (AVR has no byval concept;
+      ; riscv64's psABI passes >16-byte aggregates by reference, no byval).
+      ; byval only when the target is none of those three.
+      (if (and (= (abi-is-aarch64) 0) (= (abi-is-avr) 0) (= (abi-is-riscv) 0))
         ; x86_64: byval attribute
         (if (= name null)
           (fprintf g-out "ptr byval(%s) align %d" (type-to-ir ptype) (ii align))
           (fprintf g-out "ptr byval(%s) align %d %%%s.arg" (type-to-ir ptype) (ii align) name))
-        ; aarch64 / AVR: plain pointer
+        ; aarch64 / AVR / riscv64: plain pointer
         (if (= name null)
           (fprintf g-out "ptr")
           (fprintf g-out "ptr %%%s.arg" name)))
@@ -468,12 +485,13 @@
       (fprintf g-entry-stream "  %s = alloca %s\n" addr ty)
       (fprintf g-body-stream "  store %s %s, ptr %s\n" ty (a val) addr)
       (when (= k ABI-MEMORY)
-        ; x86_64: byval attribute; aarch64 AND AVR (Stage 14 AVR-7): plain
-        ; pointer. byval only when the target is neither aarch64 nor AVR.
-        (if (and (= (abi-is-aarch64) 0) (= (abi-is-avr) 0))
+        ; x86_64: byval attribute; aarch64, AVR (Stage 14 AVR-7) AND riscv64
+        ; (Stage 14 RV-3): plain pointer. byval only when the target is none of
+        ; aarch64, AVR, or riscv64.
+        (if (and (= (abi-is-aarch64) 0) (= (abi-is-avr) 0) (= (abi-is-riscv) 0))
           ; x86_64: byval attribute
           (return (fmt-2s "%s %s" (fmt-sd "ptr byval(%s) align %d" ty (info align)) addr))
-          ; aarch64 / AVR: plain pointer
+          ; aarch64 / AVR / riscv64: plain pointer
           (return (fmt-2s "ptr %s" addr))))
       (when (= k ABI-COERCE1)
         (let (r:ptr (new-tmp))
