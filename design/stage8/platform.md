@@ -254,6 +254,13 @@ The required LLVM backends (AArch64, ARM, X86) are all present in a
 standard LLVM build (`llvm-config --targets-built`); no LLVM rebuild is
 needed.
 
+**Landed later, outside Phase B's original scope:** `targets-init-all` was
+extended in Stage 14 to also register AVR ([avr-targets.md](../stage14/avr-targets.md))
+and RISCV ([riscv-linux.md](../stage14/riscv-linux.md)), so `--target=`
+additionally resolves `avr` and `riscv64` triples. See those design docs
+for the target-specific CPU/features/ABI defaults each one needed beyond
+what this Phase B matrix covers.
+
 ## Phase C — ABI lowering (x86_64 System V: done)
 
 Landed in `stage8-c-parity`. Struct-by-value parameters and returns now
@@ -288,10 +295,17 @@ What was implemented (see the spec below for the algorithm):
   idempotent, so dispatch-order redefinition precedence (and the
   type-stream output) is unchanged — bootstrap holds.
 
-Carried forward: the non-x86_64 ABIs (Win64, AArch64 AAPCS, ARM AAPCS,
-i386 cdecl) plug in behind `abi-classify` keyed on `g-target`, deferred
-until host-testable. Bit-fields / `long double` / `_Complex` / unions
-remain out of scope per `design/stage3c.md`.
+Carried forward: **AArch64 AAPCS** partially landed (commit 71a2d9f, well
+before Stage 14) — the `ABI-MEMORY` branch passes a plain pointer instead
+of `byval`, but HFA float-flattening for small FP-bearing structs is still
+deferred. **RISC-V (riscv64 lp64d)** landed its aggregate ABI in Stage 14
+RV-3 ([riscv-linux.md](../stage14/riscv-linux.md)): `abi-is-riscv` forces
+integer-class eightbyte coercion (≤16 bytes) and plain-pointer passing
+(>16 bytes) — the same shape as the aarch64 gap, with FP-flattening of
+*pure* FP-bearing structs likewise deferred. **Win64, ARM AAPCS, and i386
+cdecl** remain fully deferred/unimplemented, still keyed behind
+`abi-classify` on `g-target` until host-testable. Bit-fields / `long
+double` / `_Complex` / unions remain out of scope per `design/stage3c.md`.
 
 ### The bug (now fixed)
 
