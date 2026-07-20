@@ -1,0 +1,15 @@
+; Stage 14 AVR-7: AVR classifies EVERY aggregate as ABI-MEMORY with aarch64-style
+; plain-pointer passing (no byval), bypassing the SysV eightbyte model. Point is
+; 4 bytes (<=16) — on a host it is register-coerced (COERCE1); on AVR it must be
+; a plain-pointer MEMORY param and an sret return. Self-consistent Nucleus<->Nucleus.
+(exclude-prelude)
+(defstruct Point
+  x:i16
+  y:i16)
+(defn mk (a:i16 b:i16):Point
+  (return (Point a b)))
+(defn sum (p:Point):i16
+  (let (pp:ptr:Point (addr-of p))
+    (return (_+ (pp x) (pp y)))))
+(defn main ():i16
+  (return (sum (mk 3 4))))

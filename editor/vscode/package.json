@@ -1,8 +1,8 @@
 {
   "name": "nucleus-lang",
   "displayName": "Nucleus",
-  "description": "Syntax highlighting for the Nucleus programming language",
-  "version": "0.1.0",
+  "description": "Syntax highlighting and indentation support for the Nucleus programming language",
+  "version": "0.2.0",
   "engines": { "vscode": "^1.75.0" },
   "categories": ["Programming Languages"],
   "contributes": {

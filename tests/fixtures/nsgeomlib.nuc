@@ -6,8 +6,8 @@
 ; importer re-resolves geom/area to @geom__area and the names match at link time.
 (ns geom)
 
-(defn area:i32 (w:i32 h:i32)
+(defn area (w:i32 h:i32):i32
   (return (* w h)))
 
-(defn perimeter:i32 (w:i32 h:i32)
+(defn perimeter (w:i32 h:i32):i32
   (return (* 2 (+ w h))))

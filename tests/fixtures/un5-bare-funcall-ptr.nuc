@@ -1,0 +1,13 @@
+; Stage 14 UN-5 negative fixture: bare `funcall-ptr-i32` is retired.
+;
+; The `funcall-ptr-*` family moved wholesale under the reserved `unsafe/`
+; namespace in UN-2/UN-3 (design/stage14/unsafe-namespace.md D2 Class 2), and
+; UN-5 retires the bare spellings as hard errors. Compiling this must FAIL
+; with:
+;   "'funcall-ptr-i32' was split in Stage 14: use 'unsafe/funcall-ptr-i32'"
+(defn answer ():i32
+  (return 42))
+
+(defn main ():i32
+  (let (fp:ptr (unsafe/cast ptr answer))
+    (return (funcall-ptr-i32 fp))))

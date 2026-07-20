@@ -1,4 +1,8 @@
 context/local.md
+context/autopilot.md
+scripts/autopilot/
+.claude/settings.local.json
 build/
 build/out/
 *.o
+bin/nucleusc

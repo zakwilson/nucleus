@@ -1,0 +1,60 @@
+; AVR interrupt service routine — ATmega328P (the CI-simulatable classic part).
+;
+; Stage 14 AVR-5 (design/stage14/avr-targets.md §5). Demonstrates the ISR idiom:
+; an interrupt handler is just a `defn` whose name is the avr-libc vector symbol
+; `__vector_<N>`, carrying the LLVM `"signal"` function attribute so the AVR
+; backend emits the interrupt prologue/epilogue (SREG save/restore + `reti`
+; instead of a plain `ret`). avr-libc's crt provides the vector table with weak
+; `__vector_N` defaults; defining the strong symbol overrides slot N — so the
+; `.vectors` table entry N ends up jumping to our handler.
+;
+; Vector 13 on the ATmega328P is TIMER1_OVF (Timer/Counter1 Overflow;
+; iom328p.h: `#define TIMER1_OVF_vect _VECTOR(13)`, and sfr_defs.h:
+; `#define _VECTOR(N) __vector_ ## N`). So the handler is named `__vector_13`.
+;
+; `defisr` is NOT a macro in this compiler: top-level user macros are not
+; expanded (the toplevel dispatch matches literal head symbols before any macro
+; expansion), so a `defmacro` cannot introduce a top-level definition. The ISR
+; idiom is therefore the two adjacent forms below — the generic `fn-attr`
+; directive followed by the `defn` — with `fn-attr` FIRST (it is consumed at
+; emit-defn time; there is no forward-reference prescan for the attribute table).
+; See the block comment in lib/avr.nuc for the convention.
+;
+; `(exclude-prelude)`: the prelude auto-emits the intern/arena/node runtime, which
+; references host-only libc (`perror`/`malloc`) absent from freestanding avr-libc
+; and would fail to link (AVR-1/AVR-3). This program needs none of it. Every call
+; here is direct (no function *values*, an addrspace(1) verifier error on AVR).
+;
+; Build + link for the ATmega328P (a real link via the avr-gcc driver, AVR-3):
+;   nucleusc --target=avr --mcpu=atmega328p examples/avr-isr.nuc -o isr.elf
+
+(exclude-prelude)
+
+(import-use "lib/avr.nuc")
+(import-use "lib/avr/atmega328p.nuc")
+
+; --- Timer/Counter1 Overflow ISR (vector 13) ---
+; `fn-attr` must precede the `defn` it targets. The "signal" attribute is what
+; makes LLVM's AVR backend end this function in `reti` (and save/restore the
+; registers an interrupt handler must preserve).
+(fn-attr __vector_13 "signal")
+(defn __vector_13 ():void
+  ; Toggle PB0 on each overflow (drives an LED / a scope pin). A plain MMIO
+  ; read-modify-write through the volatile-pointer helpers — no libc, no heap.
+  (reg8-toggle-bit! PORTB 0))
+
+(defn main ():i32
+  ; PB0 as output so the ISR's toggle is observable.
+  (reg8-set-bit! DDRB 0)
+  ; Enable Timer/Counter1 overflow interrupt (TIMSK1 bit TOIE1) and start the
+  ; timer with the /1024 prescaler (TCCR1B bits CS12|CS10). A real program would
+  ; also execute `sei` (global interrupt enable) — the compiler has no inline-asm
+  ; spelling for it yet (out of scope for AVR-5), so on hardware the crt or a C
+  ; shim would set it; the vector wiring and `reti` epilogue this example proves
+  ; are independent of when interrupts are globally enabled.
+  (reg8-set-bit! TIMSK1 TOIE1)
+  (reg8-set-bit! TCCR1B CS10)
+  (reg8-set-bit! TCCR1B CS12)
+  (while true
+    0)
+  (return 0))

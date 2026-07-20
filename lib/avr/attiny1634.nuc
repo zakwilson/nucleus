@@ -1,0 +1,25 @@
+; ATtiny1634 register addresses (classic tinyAVR, avr-gcc family `avr35`).
+;
+; Stage 14 AVR-4 (design/stage14/avr-targets.md §5). Hand-written from avr-libc
+; 2.2.1's <avr/iotn1634.h> — the C header defines SFRs as preprocessor macros,
+; not declarations, so a `--emit-cheader` import sees nothing; these must be
+; transcribed by hand. Scope is limited to the GPIO registers the blink example
+; needs (the full device SFR set is deferred to future ATDF-pack tooling).
+;
+; The GPIO registers are declared in the header via `_SFR_IO8(io_addr)`, which
+; (for non-assembler C compilation) expands to `io_addr + __SFR_OFFSET`, and
+; __SFR_OFFSET is 0x20 for classic AVR (sfr_defs.h:141). Nucleus has no IN/OUT
+; instruction access — MMIO here is a direct data-space load/store — so the real
+; memory address is the I/O address plus 0x20. Each constant below is therefore
+; the header's `_SFR_IO8(x)` operand + 0x20, given in decimal (the reader has no
+; 0x hex literal); the hex value and header line are noted for cross-reference.
+
+; Port B  (iotn1634.h:141/147/153)
+(defconst PINB   43)   ; 0x2B = _SFR_IO8(0x0B) + 0x20
+(defconst DDRB   44)   ; 0x2C = _SFR_IO8(0x0C) + 0x20
+(defconst PORTB  45)   ; 0x2D = _SFR_IO8(0x0D) + 0x20
+
+; Port A  (iotn1634.h:165/175/185)
+(defconst PINA   47)   ; 0x2F = _SFR_IO8(0x0F) + 0x20
+(defconst DDRA   48)   ; 0x30 = _SFR_IO8(0x10) + 0x20
+(defconst PORTA  49)   ; 0x31 = _SFR_IO8(0x11) + 0x20

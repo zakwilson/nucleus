@@ -75,7 +75,7 @@ Pre-declared C standard library functions, available without `extern`. These are
 
 `data` points to the first byte of the underlying buffer. `len` is authoritative; the buffer is **not** NUL-terminated (except when built from a C string, in which case `strview-to-cstr` is sound). Copying a `StrView` copies two words and borrows the bytes — it frees nothing. There is no `Drop` conformance.
 
-Also requires `(import-use hash)` and `(import-use numeric)` (both transitively needed for `Hash`/`Eq` conformances).
+The bare struct type is registered in the prelude and so is available everywhere without an import; the functions and conformances below still require `(import-use strview)` (plus `(import-use hash)` and `(import-use numeric)`, both transitively needed for `Hash`/`Eq`).
 
 ### Functions
 
@@ -99,15 +99,15 @@ Also requires `(import-use hash)` and `(import-use numeric)` (both transitively 
 (import-use strview)
 (import-use hash)
 
-(defn main:i32 ()
+(defn main ():i32
   (let (a:ptr:StrView (strview-from-cstr "hello")
         b:ptr:StrView (strview-from-cstr "hello")
         c:ptr:StrView (strview-from-cstr "world"))
-    (printf "len=%llu\n"  (cast ui64 (strview-len a)))  ; 5
+    (printf "len=%llu\n"  (as ui64 (strview-len a)))  ; 5
     (printf "a=b? %d\n"   (strview-eq a b))              ; 1
     (printf "a=c? %d\n"   (strview-eq a c))              ; 0
     (printf "cstr=%s\n"   (strview-to-cstr a))           ; hello
-    (free (cast ptr a)) (free (cast ptr b)) (free (cast ptr c)))
+    (free (as ptr a)) (free (as ptr b)) (free (as ptr c)))
   (return 0))
 ```
 
@@ -151,7 +151,7 @@ Keywords are written as `:identifier` in source. The compiler requires `(import-
 (import-use hash)
 (import-use keyword)
 
-(defn main:i32 ()
+(defn main ():i32
   ; Self-evaluation and identity equality.
   (printf "foo=foo? %d\n" (if (= :foo :foo) 1 0))   ; 1
   (printf "foo=bar? %d\n" (if (= :foo :bar) 1 0))   ; 0

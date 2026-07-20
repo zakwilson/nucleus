@@ -2,7 +2,7 @@
 
 ## Compiler Flags
 
-By default `nucleusc <file.nuc>` produces a linked native executable (`a.out` unless `-o` is given). The compiler embeds LLVM: it parses its own generated IR, emits an object file via `LLVMTargetMachineEmitToFile`, and shells out to `clang` for the final link step.
+By default `nucleusc <file.nuc>` produces a linked native executable (`a.out` unless `-o` is given). The compiler embeds LLVM: it parses its own generated IR, emits an object file via `LLVMTargetMachineEmitToFile`, and shells out to a link driver for the final link step — `clang` by default, `avr-gcc` on an AVR `--target=`, `riscv64-linux-gnu-gcc` on a `riscv64` `--target=`, or whatever `--linker=` names.
 
 | Flag | Description |
 |------|-------------|
@@ -19,13 +19,17 @@ By default `nucleusc <file.nuc>` produces a linked native executable (`a.out` un
 | `-i` / `--interactive` | Start the REPL (interactive Read-Eval-Print Loop). |
 | `-I<path>` / `-I <path>` | Add a directory to the import search path. Searched after the source file's directory and `lib/`. |
 | `--repl-format=text\|json` | Format for REPL error output. Default `text` (legacy `  error: <msg>` lines). With `json`, each error is emitted as a single-line JSON object: `{"file":..,"line":..,"message":..}`. Suitable for agent-driven REPL sessions. |
-| `--target=<triple>` | Cross-compile: set the output module's target triple and datalayout (sourced from LLVM) instead of the host's. In-process JIT modules (compile-time bodies, `defmacro`, REPL) always stay on the host. Registered backends: X86 (`x86_64`/`i386`), AArch64 (`aarch64`), ARM (`arm`); Linux, Darwin, and Windows (msvc/gnu) triples all resolve. Pointer size, `size_t`, and struct layout follow the selected target. |
+| `--target=<triple>` | Cross-compile: set the output module's target triple and datalayout (sourced from LLVM) instead of the host's. In-process JIT modules (compile-time bodies, `defmacro`, REPL) always stay on the host. Registered backends: X86 (`x86_64`/`i386`), AArch64 (`aarch64`), ARM (`arm`), AVR (`avr`), RISCV (`riscv64`); Linux, Darwin, and Windows (msvc/gnu) triples all resolve. Pointer size, `size_t`, and struct layout follow the selected target. The reloc model is chosen per target (static for `avr`, PIC otherwise). A `riscv64` triple additionally defaults CPU/features/ABI to `generic-rv64` / `+m,+a,+f,+d,+c` / `lp64d` (RV64GC, the glibc-compatible baseline) — LLVM's own empty-features default is bare RV64I with a soft-float ABI, silently incompatible with a real riscv64 Linux target, so a correct default (not a user-supplied flag) is load-bearing here. When the resolved ABI is non-empty, `--emit-llvm` output carries a `!llvm.module.flags` block pinning `target-abi` (e.g. `!"lp64d"`); every other target emits no module-flags block at all. On `riscv64`, struct-by-value follows the lp64d integer calling convention — a struct ≤ 16 bytes is coerced to `i64`/`{i64,i64}` regardless of field types (so a small `double`-bearing struct lowers to integer registers, not FP registers; hard-float flattening of *pure* FP structs is deferred like the aarch64 HFA gap), and a struct over 16 bytes passes as a plain pointer / returns via `sret` (no `byval`) — see [Passing and returning structs by value](structs-unions.md#passing-and-returning-structs-by-value). On `avr`, every struct/union passed or returned by value (any size) uses the aarch64-style plain-pointer `ABI-MEMORY` convention — no `byval`, since the SysV eightbyte register-chunk model that other targets use doesn't fit an 8-bit target with no such registers (see [Passing and returning structs by value](structs-unions.md#passing-and-returning-structs-by-value)) — and `f64`/`double` is a compile-time error (no hardware double), both as an explicit annotation and as a bare float literal's default type; `f32` and `i64` remain fully supported (see [Built-in Types](types.md#built-in-types)). |
+| `--mcpu=<cpu>` | The target CPU/device passed to LLVM's `TargetMachine` (e.g. `--target=avr --mcpu=attiny1634`). Only meaningful with `--target=`; the host target always uses the empty (generic) CPU. For AVR, use the device name when LLVM lists it (`attiny1634`) or the family core for a device LLVM doesn't know (`avrxmega3` covers the AVR-Dx parts). Currently the datalayout for a given triple is CPU-independent, so `--mcpu` selects the codegen ISA, not the ABI. For `riscv64`, `--mcpu` overrides only the CPU (default `generic-rv64`); the `+m,+a,+f,+d,+c` features and `lp64d` ABI module flag are fixed per-triple defaults, unaffected by `--mcpu`. |
+| `--mmcu=<device>` | The AVR device name passed to the link driver as `-mmcu=<device>` (e.g. `--target=avr --mcpu=avrxmega3 --mmcu=avr32dd20`). Only consulted on an AVR triple; ignored otherwise. Distinct from `--mcpu`: `--mcpu` picks the LLVM codegen ISA/family (`avrxmega3` covers a whole AVR-Dx family core), while `--mmcu` picks the exact device for avr-gcc's device-specific linker script and startup code. When `--mmcu` is not given, the link step falls back to the `--mcpu` value — sufficient when `--mcpu` already names an exact device (e.g. `attiny1634`), but a bare family core like `avrxmega3` still links (a generic family layout) rather than erroring, so pass `--mmcu=<device>` explicitly whenever the target is a specific chip. |
+| `--linker=<cmd>` | Override the link-driver command/path used for the final link step. Wins over the triple-based default (`clang` for hosted targets, `avr-gcc` for an AVR `--target=`, `riscv64-linux-gnu-gcc` for a `riscv64` `--target=`) regardless of triple. |
+| `--link-arg=<arg>` | Pass one verbatim argument to the link driver, appended after the object file. Generalizes `-l<lib>`/`-L<dir>` (which route through the same mechanism) to arbitrary linker flags. |
 
 ## REPL
 
 Start with `nucleusc -i`. The REPL reads one form at a time, JIT-compiles it, and prints the result. Multi-line input is supported (the REPL detects unbalanced parentheses and prompts for continuation lines with `...>`).
 
-Supported top-level forms in the REPL: `defn`, `defvar`, `defconst`, `defenum`, `defstruct`, `extern`, `import`, `import-use`, `import-prefixed`, `import-only`, `unsafe-import-private`, `defmacro`, `def-rmacro`, `compile-time`, `macroexpand`, `macroexpand-1`, `macroexpand-all`. Any other form (including bare symbols, integers, and function calls) is evaluated as an expression.
+Supported top-level forms in the REPL: `defn`, `defvar`, `defconst`, `defenum`, `defstruct`, `extern`, `import`, `import-use`, `import-prefixed`, `import-only`, `unsafe/import-private`, `defmacro`, `def-rmacro`, `compile-time`, `macroexpand`, `macroexpand-1`, `macroexpand-all`. Any other form (including bare symbols, integers, and function calls) is evaluated as an expression.
 
 Result printing is type-aware: integer kinds print as decimal, string literals print as `"..."` with escapes, quoted forms (`'foo`, `(quote ...)`) print using the AST printer, and other pointer values print as `#<ptr 0x...>`. The reader rejects `#<...>` syntax with a clear error so a printed unreadable value can't silently round-trip as input.
 
@@ -72,8 +76,8 @@ A `.nuch` file is an S-expression file containing declarations extracted from a 
 
 ```lisp
 ; .nuch header for lib/mathlib.nuc
-(declare square:i32 (x:i32))
-(declare cube:i32 (x:i32))
+(declare square (x:i32) :i32)
+(declare cube (x:i32) :i32)
 ```
 
 Supported forms: `declare` (function signatures), `defstruct`, `defconst`, `defenum`, `defmacro` (full body preserved), `defmethod` (one overloaded method, carrying its mangled symbol explicitly), `defprotocol` / `extend` (protocol definitions and conformance facts, exported verbatim), `defcast` (full form preserved — the conv-fn must already be `declare`d earlier in the same header), and a producing module's `defvar` globals (re-emitted as `extern` so importers see the symbol without its initializer). A solitary function exports as `declare`; an overloaded one exports a `defmethod` per method so each keeps its distinct symbol:
@@ -92,8 +96,8 @@ When the source declares a namespace, its public symbols emit *mangled* link nam
 ```lisp
 ; .nuch header for lib/nsgeom.nuc
 (ns geom)
-(declare (area i32) ((w i32) (h i32)))
-(declare (perimeter i32) ((w i32) (h i32)))
+(declare area ((w i32) (h i32)) :i32)
+(declare perimeter ((w i32) (h i32)) :i32)
 ```
 
 Importing this with `(import-prefixed "nsgeom.nuch" g)` makes `g/area` resolve to `@geom__area` — matching the link name in the library's `.o`. Overloaded methods already carry their fully-mangled symbol on the `defmethod` form (`@geom__area.i32.i32`), so they round-trip unchanged; the `(ns …)` line additionally fixes the link name of *solitary* `declare`d functions and `extern` globals (which the importer otherwise rebuilds from the bare name). A library in the default `user` namespace emits **no** `(ns …)` line and bare names, so its header is byte-identical to before.

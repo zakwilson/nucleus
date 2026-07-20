@@ -1,13 +1,13 @@
 (import-use "stdio.h")
 
-(defn add-f64:f64 (a:f64 b:f64)
+(defn add-f64 (a:f64 b:f64):f64
   (return (+ a b)))
 
-(defn lt-f64:i32 (a:f64 b:f64)
+(defn lt-f64 (a:f64 b:f64):i32
   (cond (< a b) (return 1)
         true    (return 0)))
 
-(defn main:int ()
+(defn main ():int
   ; Basic literal + arithmetic.
   (let (x:f64 1.5
         y:f64 2.5
@@ -24,13 +24,13 @@
   (printf "1.0 < 2.0 = %d\n" (lt-f64 1.0 2.0))
   (printf "2.0 < 1.0 = %d\n" (lt-f64 2.0 1.0))
   ; Int <-> float casts.
-  (let (n:i32 (cast i32 (* 3.7 2.0)))
+  (let (n:i32 (unsafe/cast i32 (* 3.7 2.0)))
     (printf "(i32) (3.7 * 2.0) = %d\n" n))
-  (let (f:f64 (cast f64 7))
+  (let (f:f64 (unsafe/cast f64 7))
     (printf "(f64) 7 = %.1f\n" f))
   ; f64 -> f32 narrowing and widening back.
-  (let (a:f32 (cast f32 1.5)
-        b:f64 (cast f64 a))
+  (let (a:f32 (unsafe/cast f32 1.5)
+        b:f64 (as f64 a))
     (printf "round f64->f32->f64 = %.1f\n" b))
   ; Special values: +inf.0, -inf.0, +nan.0.
   (printf "+inf.0 = %f\n" +inf.0)

@@ -38,7 +38,7 @@
 ; references against this file's includes; the generic methods call it to keep
 ; consumers' imports clean.
 ; ---------------------------------------------------------------------------
-(defn hashmap-oom:void ()
+(defn hashmap-oom ():void
   (fprintf stderr "hashmap: out of memory\n")
   (exit 1))
 
@@ -74,47 +74,68 @@
 ; Constructor: initialise an empty HashMap with the default (libc) allocator
 ; and an initial capacity of 8 buckets. All states bytes are zeroed (=empty).
 ; ---------------------------------------------------------------------------
-(defn hashmap-init:void ((m (ref (HashMap K V))))
-  (let (init-cap:usize (cast usize 8)
-        ksz:usize (* init-cap (cast usize (sizeof K)))
-        vsz:usize (* init-cap (cast usize (sizeof V))))
+(defn hashmap-init ((m (ref (HashMap K V)))):void
+  (let (init-cap:usize 8
+        ksz:usize (* init-cap (as usize (sizeof K)))
+        vsz:usize (* init-cap (as usize (sizeof V))))
     (libc-allocator (.& m alloc))
     (let (ah:ref:AllocHandle (.& m alloc))
-      (let ((kbuf (raw ui8)) (alloc-handle-alloc ah ksz (cast usize 8)))
-        (when (= (cast ptr kbuf) null) (hashmap-oom))
-        (let ((vbuf (raw ui8)) (alloc-handle-alloc ah vsz (cast usize 8)))
-          (when (= (cast ptr vbuf) null) (hashmap-oom))
-          (let ((sbuf (raw ui8)) (alloc-handle-alloc ah init-cap (cast usize 1)))
-            (when (= (cast ptr sbuf) null) (hashmap-oom))
-            (memset (cast ptr sbuf) 0 (cast i64 init-cap))
+      (let ((kbuf (raw ui8)) (alloc-handle-alloc ah ksz 8))
+        (when (= (as ptr kbuf) null) (hashmap-oom))
+        (let ((vbuf (raw ui8)) (alloc-handle-alloc ah vsz 8))
+          (when (= (as ptr vbuf) null) (hashmap-oom))
+          (let ((sbuf (raw ui8)) (alloc-handle-alloc ah init-cap 1))
+            (when (= (as ptr sbuf) null) (hashmap-oom))
+            (memset (as ptr sbuf) 0 (as i64 init-cap))
             (.set! m keys   kbuf)
             (.set! m vals   vbuf)
             (.set! m states sbuf)
-            (.set! m count  (cast usize 0))
+            (.set! m count  0)
             (.set! m cap    init-cap)))))))
 
 ; hashmap-init-alloc: initialise an empty HashMap with an explicit allocator
 ; handle (copied in), mirroring vector-init-alloc / hashset-init-alloc. The three
 ; buffers are allocated through the passed handle, so the map owns its storage
 ; through it (arena = process-lifetime, no per-allocation free).
-(defn hashmap-init-alloc:void ((m (ref (HashMap K V))) (a (ref AllocHandle)))
-  (let (init-cap:usize (cast usize 8)
-        ksz:usize (* init-cap (cast usize (sizeof K)))
-        vsz:usize (* init-cap (cast usize (sizeof V))))
+(defn hashmap-init-alloc ((m (ref (HashMap K V))) (a (ref AllocHandle))):void
+  (let (init-cap:usize 8
+        ksz:usize (* init-cap (as usize (sizeof K)))
+        vsz:usize (* init-cap (as usize (sizeof V))))
     (.set! m alloc (deref a))
     (let (ah:ref:AllocHandle (.& m alloc))
-      (let ((kbuf (raw ui8)) (alloc-handle-alloc ah ksz (cast usize 8)))
-        (when (= (cast ptr kbuf) null) (hashmap-oom))
-        (let ((vbuf (raw ui8)) (alloc-handle-alloc ah vsz (cast usize 8)))
-          (when (= (cast ptr vbuf) null) (hashmap-oom))
-          (let ((sbuf (raw ui8)) (alloc-handle-alloc ah init-cap (cast usize 1)))
-            (when (= (cast ptr sbuf) null) (hashmap-oom))
-            (memset (cast ptr sbuf) 0 (cast i64 init-cap))
+      (let ((kbuf (raw ui8)) (alloc-handle-alloc ah ksz 8))
+        (when (= (as ptr kbuf) null) (hashmap-oom))
+        (let ((vbuf (raw ui8)) (alloc-handle-alloc ah vsz 8))
+          (when (= (as ptr vbuf) null) (hashmap-oom))
+          (let ((sbuf (raw ui8)) (alloc-handle-alloc ah init-cap 1))
+            (when (= (as ptr sbuf) null) (hashmap-oom))
+            (memset (as ptr sbuf) 0 (as i64 init-cap))
             (.set! m keys   kbuf)
             (.set! m vals   vbuf)
             (.set! m states sbuf)
-            (.set! m count  (cast usize 0))
+            (.set! m count  0)
             (.set! m cap    init-cap)))))))
+
+; ---------------------------------------------------------------------------
+; Value/heap constructors (target-typed — design/stage14/target-typed-
+; constructors.md). K,V bind from the declared type via the want channel. The
+; by-value family materializes into a `(ref (HashMap K V))` binding (TC-3); the
+; `-in` family allocates the struct itself through the handle.
+; ---------------------------------------------------------------------------
+(defn hashmap-new () (HashMap K V)
+  (let (r (alloca (HashMap K V)))
+    (hashmap-init r)
+    (return (deref r))))
+(defn hashmap-new-alloc ((a (ref AllocHandle))) (HashMap K V)
+  (let (r (alloca (HashMap K V)))
+    (hashmap-init-alloc r a)
+    (return (deref r))))
+(defn hashmap-new-in ((a (ref AllocHandle))) (ref (HashMap K V))
+  (let (v (unsafe/cast (ref (HashMap K V))
+             (alloc-handle-alloc a (sizeof (HashMap K V)) 8)))
+    (hashmap-init-alloc v a)
+    (return v)))
+
 
 ; ---------------------------------------------------------------------------
 ; Internal: rehash all occupied buckets from old arrays into new-cap arrays.
@@ -122,49 +143,49 @@
 ; Frees the old three arrays through the stored handle, installs new ones.
 ; old-cap is captured at the top of the outer let so it's visible for frees.
 ; ---------------------------------------------------------------------------
-(defn hashmap-resize:void ((m (ref (HashMap K V))) new-cap:usize)
+(defn hashmap-resize ((m (ref (HashMap K V))) new-cap:usize):void
   (let (ah:ref:AllocHandle (.& m alloc)
         old-cap:usize (m cap)
-        ksz-new:usize (* new-cap (cast usize (sizeof K)))
-        vsz-new:usize (* new-cap (cast usize (sizeof V))))
-    (let ((nk (raw ui8)) (alloc-handle-alloc ah ksz-new (cast usize 8)))
-      (when (= (cast ptr nk) null) (hashmap-oom))
-      (let ((nv (raw ui8)) (alloc-handle-alloc ah vsz-new (cast usize 8)))
-        (when (= (cast ptr nv) null) (hashmap-oom))
-        (let ((ns (raw ui8)) (alloc-handle-alloc ah new-cap (cast usize 1)))
-          (when (= (cast ptr ns) null) (hashmap-oom))
-          (memset (cast ptr ns) 0 (cast i64 new-cap))
+        ksz-new:usize (* new-cap (as usize (sizeof K)))
+        vsz-new:usize (* new-cap (as usize (sizeof V))))
+    (let ((nk (raw ui8)) (alloc-handle-alloc ah ksz-new 8))
+      (when (= (as ptr nk) null) (hashmap-oom))
+      (let ((nv (raw ui8)) (alloc-handle-alloc ah vsz-new 8))
+        (when (= (as ptr nv) null) (hashmap-oom))
+        (let ((ns (raw ui8)) (alloc-handle-alloc ah new-cap 1))
+          (when (= (as ptr ns) null) (hashmap-oom))
+          (memset (as ptr ns) 0 (as i64 new-cap))
           ; Rehash every occupied bucket from the old arrays into the new arrays.
-          (let (mask:usize (- new-cap (cast usize 1))
-                old-kbuf:ptr:K (cast ptr:K (cast ptr (m keys)))
-                old-vbuf:ptr:V (cast ptr:V (cast ptr (m vals)))
-                old-sbuf:ptr:ui8 (cast ptr:ui8 (cast ptr (m states)))
-                new-kbuf:ptr:K (cast ptr:K (cast ptr nk))
-                new-vbuf:ptr:V (cast ptr:V (cast ptr nv))
-                new-sbuf:ptr:ui8 (cast ptr:ui8 (cast ptr ns))
-                oi:usize (cast usize 0))
+          (let (mask:usize (- new-cap 1)
+                old-kbuf:ptr:K (as ptr:K (as ptr (m keys)))
+                old-vbuf:ptr:V (as ptr:V (as ptr (m vals)))
+                old-sbuf:ptr:ui8 (as ptr:ui8 (as ptr (m states)))
+                new-kbuf:ptr:K (as ptr:K (as ptr nk))
+                new-vbuf:ptr:V (as ptr:V (as ptr nv))
+                new-sbuf:ptr:ui8 (as ptr:ui8 (as ptr ns))
+                oi:usize 0)
             (while (< oi old-cap)
-              (when (= (cast i32 (aref old-sbuf (cast i64 oi))) (cast i32 1))
+              (when (= (as i32 (aref old-sbuf (as i64 oi))) 1)
                 ; Occupied: re-insert into new arrays.
-                (let (key:K (aref old-kbuf (cast i64 oi))
-                      val:V (aref old-vbuf (cast i64 oi)))
+                (let (key:K (aref old-kbuf (as i64 oi))
+                      val:V (aref old-vbuf (as i64 oi)))
                   (let (k:K key)
                     (let (h:usize (hash (addr-of k))
                           ni:usize (bit-and h mask)
                           done2:i32 0)
                       (while (= done2 0)
-                        (if (= (cast i32 (aref new-sbuf (cast i64 ni))) (cast i32 0))
+                        (if (= (as i32 (aref new-sbuf (as i64 ni))) 0)
                           (do
-                            (aset! new-kbuf (cast i64 ni) key)
-                            (aset! new-vbuf (cast i64 ni) val)
-                            (aset! new-sbuf (cast i64 ni) (cast ui8 1))
+                            (aset! new-kbuf (as i64 ni) key)
+                            (aset! new-vbuf (as i64 ni) val)
+                            (aset! new-sbuf (as i64 ni) 1)
                             (set! done2 1))
-                          (set! ni (bit-and (+ ni (cast usize 1)) mask))))))))
-              (set! oi (+ oi (cast usize 1)))))
+                          (set! ni (bit-and (+ ni 1) mask))))))))
+              (set! oi (+ oi 1))))
           ; Free old arrays.
-          (alloc-handle-free ah (m keys)   (* old-cap (cast usize (sizeof K))) (cast usize 8))
-          (alloc-handle-free ah (m vals)   (* old-cap (cast usize (sizeof V))) (cast usize 8))
-          (alloc-handle-free ah (m states) old-cap                              (cast usize 1))
+          (alloc-handle-free ah (m keys)   (* old-cap (as usize (sizeof K))) 8)
+          (alloc-handle-free ah (m vals)   (* old-cap (as usize (sizeof V))) 8)
+          (alloc-handle-free ah (m states) old-cap                              1)
           ; Install new arrays.
           (.set! m keys   nk)
           (.set! m vals   nv)
@@ -179,112 +200,112 @@
 (extend (HashMap K V) Drop)
 
 ; assoc: insert or overwrite the value for key. Grows at 75% load.
-(defn assoc:void ((self (ref (HashMap K V))) key:K val:V)
+(defn assoc ((self (ref (HashMap K V))) key:K val:V):void
   ; Grow if count*4 >= cap*3.
-  (when (>= (* (self count) (cast usize 4))
-            (* (self cap)   (cast usize 3)))
-    (hashmap-resize self (* (self cap) (cast usize 2))))
-  (let (mask:usize (- (self cap) (cast usize 1))
-        kbuf:ptr:K (cast ptr:K (cast ptr (self keys)))
-        vbuf:ptr:V (cast ptr:V (cast ptr (self vals)))
-        sbuf:ptr:ui8 (cast ptr:ui8 (cast ptr (self states))))
+  (when (>= (* (self count) 4)
+            (* (self cap)   3))
+    (hashmap-resize self (* (self cap) 2)))
+  (let (mask:usize (- (self cap) 1)
+        kbuf:ptr:K (as ptr:K (as ptr (self keys)))
+        vbuf:ptr:V (as ptr:V (as ptr (self vals)))
+        sbuf:ptr:ui8 (as ptr:ui8 (as ptr (self states))))
     (let (k:K key)
       (let (h:usize (hash (addr-of k))
             idx:usize (bit-and h mask)
             done:i32 0
             ; Track first tombstone slot for reuse on absent-key insert.
-            tomb-idx:usize (cast usize 0)
+            tomb-idx:usize 0
             has-tomb:i32 0)
         (while (= done 0)
-          (let (st:i32 (cast i32 (aref sbuf (cast i64 idx))))
-            (if (= st (cast i32 0))
+          (let (st:i32 (as i32 (aref sbuf (as i64 idx))))
+            (if (= st 0)
               ; Empty: key not present. Use tombstone slot if we saw one.
               (do
-                (if (= has-tomb (cast i32 1))
+                (if (= has-tomb 1)
                   (do
-                    (aset! kbuf (cast i64 tomb-idx) key)
-                    (aset! vbuf (cast i64 tomb-idx) val)
-                    (aset! sbuf (cast i64 tomb-idx) (cast ui8 1)))
+                    (aset! kbuf (as i64 tomb-idx) key)
+                    (aset! vbuf (as i64 tomb-idx) val)
+                    (aset! sbuf (as i64 tomb-idx) 1))
                   (do
-                    (aset! kbuf (cast i64 idx) key)
-                    (aset! vbuf (cast i64 idx) val)
-                    (aset! sbuf (cast i64 idx) (cast ui8 1))))
-                (.set! self count (+ (self count) (cast usize 1)))
+                    (aset! kbuf (as i64 idx) key)
+                    (aset! vbuf (as i64 idx) val)
+                    (aset! sbuf (as i64 idx) 1)))
+                (.set! self count (+ (self count) 1))
                 (set! done 1))
-              (if (= st (cast i32 1))
+              (if (= st 1)
                 ; Occupied: check for key match.
-                (if (= (aref kbuf (cast i64 idx)) key)
+                (if (= (aref kbuf (as i64 idx)) key)
                   ; Key matches: overwrite value, count unchanged.
                   (do
-                    (aset! vbuf (cast i64 idx) val)
+                    (aset! vbuf (as i64 idx) val)
                     (set! done 1))
                   ; Different key: probe forward.
-                  (set! idx (bit-and (+ idx (cast usize 1)) mask)))
+                  (set! idx (bit-and (+ idx 1) mask)))
                 ; Tombstone: remember first one, continue probing.
                 (do
-                  (when (= has-tomb (cast i32 0))
+                  (when (= has-tomb 0)
                     (set! tomb-idx idx)
-                    (set! has-tomb (cast i32 1)))
-                  (set! idx (bit-and (+ idx (cast usize 1)) mask)))))))))))
+                    (set! has-tomb 1))
+                  (set! idx (bit-and (+ idx 1) mask)))))))))))
 
 ; dissoc: remove the entry for key (sets state to tombstone). No-op if absent.
-(defn dissoc:void ((self (ref (HashMap K V))) key:K)
-  (let (mask:usize (- (self cap) (cast usize 1))
-        kbuf:ptr:K (cast ptr:K (cast ptr (self keys)))
-        sbuf:ptr:ui8 (cast ptr:ui8 (cast ptr (self states))))
+(defn dissoc ((self (ref (HashMap K V))) key:K):void
+  (let (mask:usize (- (self cap) 1)
+        kbuf:ptr:K (as ptr:K (as ptr (self keys)))
+        sbuf:ptr:ui8 (as ptr:ui8 (as ptr (self states))))
     (let (k:K key)
       (let (h:usize (hash (addr-of k))
             idx:usize (bit-and h mask)
             done:i32 0)
         (while (= done 0)
-          (let (st:i32 (cast i32 (aref sbuf (cast i64 idx))))
-            (if (= st (cast i32 0))
+          (let (st:i32 (as i32 (aref sbuf (as i64 idx))))
+            (if (= st 0)
               ; Empty slot: key not present, stop.
               (set! done 1)
-              (if (= st (cast i32 1))
+              (if (= st 1)
                 ; Occupied: check key.
-                (if (= (aref kbuf (cast i64 idx)) key)
+                (if (= (aref kbuf (as i64 idx)) key)
                   ; Found: mark tombstone, decrement count.
                   (do
-                    (aset! sbuf (cast i64 idx) (cast ui8 2))
-                    (.set! self count (- (self count) (cast usize 1)))
+                    (aset! sbuf (as i64 idx) 2)
+                    (.set! self count (- (self count) 1))
                     (set! done 1))
                   ; Different key: probe forward.
-                  (set! idx (bit-and (+ idx (cast usize 1)) mask)))
+                  (set! idx (bit-and (+ idx 1) mask)))
                 ; Tombstone: continue probing.
-                (set! idx (bit-and (+ idx (cast usize 1)) mask))))))))))
+                (set! idx (bit-and (+ idx 1) mask))))))))))
 
 ; ---------------------------------------------------------------------------
 ; Assoc K V — get: lookup by key, returns (Maybe V).
 ; V is a protocol parameter of Assoc so (Maybe V) is expressible directly.
 ; ---------------------------------------------------------------------------
-(defn (get (Maybe V)) ((self (ref (HashMap K V))) key:K)
-  (let (mask:usize (- (self cap) (cast usize 1))
-        kbuf:ptr:K (cast ptr:K (cast ptr (self keys)))
-        vbuf:ptr:V (cast ptr:V (cast ptr (self vals)))
-        sbuf:ptr:ui8 (cast ptr:ui8 (cast ptr (self states))))
+(defn get ((self (ref (HashMap K V))) key:K) (Maybe V)
+  (let (mask:usize (- (self cap) 1)
+        kbuf:ptr:K (as ptr:K (as ptr (self keys)))
+        vbuf:ptr:V (as ptr:V (as ptr (self vals)))
+        sbuf:ptr:ui8 (as ptr:ui8 (as ptr (self states))))
     (let (k:K key)
       (let (h:usize (hash (addr-of k))
             idx:usize (bit-and h mask)
             done:i32 0)
         (while (= done 0)
-          (let (st:i32 (cast i32 (aref sbuf (cast i64 idx))))
-            (if (= st (cast i32 0))
+          (let (st:i32 (as i32 (aref sbuf (as i64 idx))))
+            (if (= st 0)
               ; Empty: key not present.
               (do
                 (set! done 1)
                 (return none))
-              (if (= st (cast i32 1))
+              (if (= st 1)
                 ; Occupied: check key.
-                (if (= (aref kbuf (cast i64 idx)) key)
+                (if (= (aref kbuf (as i64 idx)) key)
                   ; Hit: return value.
                   (do
                     (set! done 1)
-                    (return (some (aref vbuf (cast i64 idx)))))
+                    (return (some (aref vbuf (as i64 idx)))))
                   ; Different key: probe forward.
-                  (set! idx (bit-and (+ idx (cast usize 1)) mask)))
+                  (set! idx (bit-and (+ idx 1) mask)))
                 ; Tombstone: skip, probe forward.
-                (set! idx (bit-and (+ idx (cast usize 1)) mask))))))
+                (set! idx (bit-and (+ idx 1) mask))))))
         (return none)))))
 
 ; ---------------------------------------------------------------------------
@@ -296,16 +317,16 @@
 ; ---------------------------------------------------------------------------
 
 ; count: number of live (occupied) entries.
-(defn count:usize ((self (ref (HashMap K V))))
+(defn count ((self (ref (HashMap K V)))):usize
   (return (self count)))
 
 ; empty?: 1 if no live entries, else 0.
-(defn empty?:i32 ((self (ref (HashMap K V))))
-  (return (if (= (self count) (cast usize 0)) 1 0)))
+(defn empty? ((self (ref (HashMap K V)))):i32
+  (return (if (= (self count) 0) 1 0)))
 
 ; conj: insert an entry. The Entry is passed by value; bind it to a local and
 ; `addr-of` to read its fields (the (hash (addr-of k)) idiom), then assoc.
-(defn conj:void ((self (ref (HashMap K V))) elem:(Entry K V))
+(defn conj ((self (ref (HashMap K V))) elem:(Entry K V)):void
   (let (e:(Entry K V) elem)
     (assoc self ((addr-of e) key) ((addr-of e) val))))
 
@@ -313,18 +334,18 @@
 ; Drop conformance: free all three arrays through the stored allocator.
 ; Nulls the pointers and zeroes count/cap so double-drop is safe (no-op).
 ; ---------------------------------------------------------------------------
-(defn drop:void ((self (ptr (HashMap K V))))
-  (when (!= (cast ptr (self keys)) null)
+(defn drop ((self (ptr (HashMap K V)))):void
+  (when (!= (as ptr (self keys)) null)
     (let (ah:ref:AllocHandle (.& self alloc)
           cap:usize (self cap))
-      (alloc-handle-free ah (self keys)   (* cap (cast usize (sizeof K))) (cast usize 8))
-      (alloc-handle-free ah (self vals)   (* cap (cast usize (sizeof V))) (cast usize 8))
-      (alloc-handle-free ah (self states) cap                              (cast usize 1))))
+      (alloc-handle-free ah (self keys)   (* cap (as usize (sizeof K))) 8)
+      (alloc-handle-free ah (self vals)   (* cap (as usize (sizeof V))) 8)
+      (alloc-handle-free ah (self states) cap                              1)))
   (.set! self keys   null)
   (.set! self vals   null)
   (.set! self states null)
-  (.set! self count  (cast usize 0))
-  (.set! self cap    (cast usize 0)))
+  (.set! self count  0)
+  (.set! self cap    0))
 
 ; ---------------------------------------------------------------------------
 ; HashMapKeyIter K V — a forward cursor over occupied keys.
@@ -343,27 +364,27 @@
 
 (extend (HashMapKeyIter K V) (Iterator K))
 
-(defn (next (Maybe K)) ((self (ref (HashMapKeyIter K V))))
-  (let (kbuf:ptr:K (cast ptr:K (self kbuf))
-        sbuf:ptr:ui8 (cast ptr:ui8 (self sbuf)))
+(defn next ((self (ref (HashMapKeyIter K V)))) (Maybe K)
+  (let (kbuf:ptr:K (as ptr:K (self kbuf))
+        sbuf:ptr:ui8 (as ptr:ui8 (self sbuf)))
     (while (< (self pos) (self cap))
-      (let (st:i32 (cast i32 (aref sbuf (cast i64 (self pos)))))
-        (if (= st (cast i32 1))
+      (let (st:i32 (as i32 (aref sbuf (as i64 (self pos)))))
+        (if (= st 1)
           ; Occupied: return this key and advance pos.
           (do
-            (let (k:K (aref kbuf (cast i64 (self pos))))
-              (.set! self pos (+ (self pos) (cast usize 1)))
+            (let (k:K (aref kbuf (as i64 (self pos))))
+              (.set! self pos (+ (self pos) 1))
               (return (some k))))
           ; Empty or tombstone: skip.
-          (.set! self pos (+ (self pos) (cast usize 1))))))
+          (.set! self pos (+ (self pos) 1)))))
     (return none)))
 
 ; hmap-iter-keys: fill a caller-allocated HashMapKeyIter to scan m's keys.
 ; Borrows the key and states buffers; iterator must not outlive m.
-(defn hmap-iter-keys:void ((it (ref (HashMapKeyIter K V))) (m (ref (HashMap K V))))
-  (.set! it kbuf (cast ptr (m keys)))
-  (.set! it sbuf (cast ptr (m states)))
-  (.set! it pos  (cast usize 0))
+(defn hmap-iter-keys ((it (ref (HashMapKeyIter K V))) (m (ref (HashMap K V)))):void
+  (.set! it kbuf (as ptr (m keys)))
+  (.set! it sbuf (as ptr (m states)))
+  (.set! it pos  0)
   (.set! it cap  (m cap)))
 
 ; ---------------------------------------------------------------------------
@@ -385,28 +406,28 @@
 
 (extend (HashMapValIter K V) (Iterator V))
 
-(defn (next (Maybe V)) ((self (ref (HashMapValIter K V))))
-  (let (vbuf:ptr:V (cast ptr:V (self vbuf))
-        sbuf:ptr:ui8 (cast ptr:ui8 (self sbuf)))
+(defn next ((self (ref (HashMapValIter K V)))) (Maybe V)
+  (let (vbuf:ptr:V (as ptr:V (self vbuf))
+        sbuf:ptr:ui8 (as ptr:ui8 (self sbuf)))
     (while (< (self pos) (self cap))
-      (let (st:i32 (cast i32 (aref sbuf (cast i64 (self pos)))))
-        (if (= st (cast i32 1))
+      (let (st:i32 (as i32 (aref sbuf (as i64 (self pos)))))
+        (if (= st 1)
           ; Occupied: return this value and advance pos.
           (do
-            (let (v:V (aref vbuf (cast i64 (self pos))))
-              (.set! self pos (+ (self pos) (cast usize 1)))
+            (let (v:V (aref vbuf (as i64 (self pos))))
+              (.set! self pos (+ (self pos) 1))
               (return (some v))))
           ; Empty or tombstone: skip.
-          (.set! self pos (+ (self pos) (cast usize 1))))))
+          (.set! self pos (+ (self pos) 1)))))
     (return none)))
 
 ; hmap-iter-vals: fill a caller-allocated HashMapValIter to scan m's values.
 ; Internal helper: the value-returning `vals` (Assoc) wraps it.
 ; Borrows the val and states buffers; iterator must not outlive m.
-(defn hmap-iter-vals:void ((it (ref (HashMapValIter K V))) (m (ref (HashMap K V))))
-  (.set! it vbuf (cast ptr (m vals)))
-  (.set! it sbuf (cast ptr (m states)))
-  (.set! it pos  (cast usize 0))
+(defn hmap-iter-vals ((it (ref (HashMapValIter K V))) (m (ref (HashMap K V)))):void
+  (.set! it vbuf (as ptr (m vals)))
+  (.set! it sbuf (as ptr (m states)))
+  (.set! it pos  0)
   (.set! it cap  (m cap)))
 
 ; ---------------------------------------------------------------------------
@@ -417,12 +438,12 @@
 ; ---------------------------------------------------------------------------
 (extend (HashMap K V) (Assoc K V (HashMapKeyIter K V) (HashMapValIter K V)))
 
-(defn keys:(HashMapKeyIter K V) ((self (ref (HashMap K V))))
+(defn keys ((self (ref (HashMap K V)))) (HashMapKeyIter K V)
   (let ((it (ref (HashMapKeyIter K V))) (alloca (HashMapKeyIter K V)))
     (hmap-iter-keys it self)
     (return (deref it))))
 
-(defn vals:(HashMapValIter K V) ((self (ref (HashMap K V))))
+(defn vals ((self (ref (HashMap K V)))) (HashMapValIter K V)
   (let ((it (ref (HashMapValIter K V))) (alloca (HashMapValIter K V)))
     (hmap-iter-vals it self)
     (return (deref it))))
@@ -443,32 +464,32 @@
 
 (extend (HashMapEntryIter K V) (Iterator (Entry K V)))
 
-(defn (next (Maybe (Entry K V))) ((self (ref (HashMapEntryIter K V))))
-  (let (kbuf:ptr:K (cast ptr:K (self kbuf))
-        vbuf:ptr:V (cast ptr:V (self vbuf))
-        sbuf:ptr:ui8 (cast ptr:ui8 (self sbuf)))
+(defn next ((self (ref (HashMapEntryIter K V)))) (Maybe (Entry K V))
+  (let (kbuf:ptr:K (as ptr:K (self kbuf))
+        vbuf:ptr:V (as ptr:V (self vbuf))
+        sbuf:ptr:ui8 (as ptr:ui8 (self sbuf)))
     (while (< (self pos) (self cap))
-      (let (st:i32 (cast i32 (aref sbuf (cast i64 (self pos)))))
-        (if (= st (cast i32 1))
+      (let (st:i32 (as i32 (aref sbuf (as i64 (self pos)))))
+        (if (= st 1)
           ; Occupied: build an Entry from this bucket and advance pos.
           (do
             (let ((e (ref (Entry K V))) (alloca (Entry K V)))
-              (.set! e key (aref kbuf (cast i64 (self pos))))
-              (.set! e val (aref vbuf (cast i64 (self pos))))
-              (.set! self pos (+ (self pos) (cast usize 1)))
+              (.set! e key (aref kbuf (as i64 (self pos))))
+              (.set! e val (aref vbuf (as i64 (self pos))))
+              (.set! self pos (+ (self pos) 1))
               (return (some (deref e)))))
           ; Empty or tombstone: skip.
-          (.set! self pos (+ (self pos) (cast usize 1))))))
+          (.set! self pos (+ (self pos) 1)))))
     (return none)))
 
 ; hmap-iter-entries: fill a caller-allocated HashMapEntryIter to scan m's
 ; entries. Internal helper: the value-returning `iter` (Coll) wraps it.
 ; Borrows the key, val and states buffers; iterator must not outlive m.
-(defn hmap-iter-entries:void ((it (ref (HashMapEntryIter K V))) (m (ref (HashMap K V))))
-  (.set! it kbuf (cast ptr (m keys)))
-  (.set! it vbuf (cast ptr (m vals)))
-  (.set! it sbuf (cast ptr (m states)))
-  (.set! it pos  (cast usize 0))
+(defn hmap-iter-entries ((it (ref (HashMapEntryIter K V))) (m (ref (HashMap K V)))):void
+  (.set! it kbuf (as ptr (m keys)))
+  (.set! it vbuf (as ptr (m vals)))
+  (.set! it sbuf (as ptr (m states)))
+  (.set! it pos  0)
   (.set! it cap  (m cap)))
 
 ; ---------------------------------------------------------------------------
@@ -480,7 +501,7 @@
 ; ---------------------------------------------------------------------------
 (extend (HashMap K V) (Coll (Entry K V) (HashMapEntryIter K V)))
 
-(defn iter:(HashMapEntryIter K V) ((self (ref (HashMap K V))))
+(defn iter ((self (ref (HashMap K V)))) (HashMapEntryIter K V)
   (let ((it (ref (HashMapEntryIter K V))) (alloca (HashMapEntryIter K V)))
     (hmap-iter-entries it self)
     (return (deref it))))

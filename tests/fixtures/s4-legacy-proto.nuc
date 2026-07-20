@@ -1,0 +1,5 @@
+; Stage 14 defn-signature.md S4 — a legacy `(name:ret (params))` protocol method
+; signature must die at registration (protocol-register-form) with the targeted
+; diagnostic; the new spelling is (area (params):ret).
+(defprotocol Shape
+  (area:i32 (self:ptr:Self)))

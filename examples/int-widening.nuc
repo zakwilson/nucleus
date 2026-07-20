@@ -1,0 +1,58 @@
+; Stage 14 LW-1..LW-4 — integer literal widening: the residual cast gaps are
+; closed. This is the positive-path complement to the ambiguity/range-error
+; fixtures in tests/fixtures/ (see tests/run-tests.sh, "lw-ambiguous-widening"
+; / "lw-literal-does-not-fit").
+;
+;   - LW-1/LW-2: template-tier methods (the stamped collections API — conj,
+;     insert, (v i) invoke on a parametric struct like (Vector i64)) now
+;     adapt an untyped integer literal argument through the tier-2 widening
+;     pool exactly like a plain function does. No (cast usize ...) /
+;     (cast i64 ...) wrapper is required at these call sites anymore.
+;   - LW-3: an explicit (return LITERAL) in a typed function now coerces
+;     against the declared return type (mirroring the implicit end-of-body
+;     return), instead of emitting a raw, mismatched `ret` that only fails
+;     at the LLVM parse stage.
+;   - LW-4: a literal outside i32 range now emits truthfully at i64 instead
+;     of silently 32-bit-wrapping — (take64 5000000000) prints 5000000000,
+;     never the old wrapped 705032704.
+
+(import-use "stdio.h")
+(import-use allocator)
+(import-use coll)
+(import-use iterator)
+(import-use vector)
+
+; LW-3: explicit `return` of a bare literal from an :i64 function compiles
+; and coerces the literal to i64 — previously an LLVM parse error.
+(defn five ():i64
+  (return 5))
+
+; LW-4: a literal outside i32 range, passed to and returned from an :i64
+; function, keeps its full 64-bit value.
+(defn take64 (n:i64):i64
+  (return n))
+
+(defn main ():i32
+  (with ((v (ref (Vector i64))) (alloca (Vector i64)))
+    (vector-init v)
+
+    ; LW-1: castless conj — the stamped `conj` method on (Vector i64) binds
+    ; T=i64 from the receiver, then adapts each i32 literal element to i64.
+    (conj v 3)
+    (conj v 7)
+    (conj v 9)
+    (printf "count=%llu\n" (as ui64 (count v)))         ; count=3
+
+    ; LW-1: castless invoke, (v i) — the literal index adapts to usize.
+    (printf "v[1]=%lld\n" (v 1))                          ; v[1]=7
+
+    ; LW-1: castless insert — both the index and element literals adapt.
+    (insert v 1 42)
+    (printf "after insert v[1]=%lld\n" (v 1))             ; after insert v[1]=42
+    (printf "count=%llu\n" (as ui64 (count v)))         ; count=4
+
+    (printf "five=%lld\n" (five))                         ; five=5
+
+    ; LW-4: 5000000000 does not fit i32, so it emits at i64 truthfully.
+    (printf "take64=%lld\n" (take64 5000000000)))         ; take64=5000000000
+  (return 0))

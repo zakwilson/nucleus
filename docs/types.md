@@ -10,11 +10,17 @@ Types are attached to names with `:` syntax: `name:type` (e.g., `x:i32`, `main:i
 
 Pointers to a typed element use the `ptr` constructor: `(ptr T)` is a **non-null** pointer to `T`, and `(ptr ptr T)` chains. Bare `ptr` (with no element) is the opaque `void*` pointer — it carries no element contract, so non-null obligations do not apply to it.
 
-In inline type positions (the type argument of `cast`, `sizeof`, `alloca`), either the canonical list form or the colon sugar works: `(cast (ptr Node) x)` and `(cast ptr:Node x)` are equivalent.
+In inline type positions (the type argument of `as`/`unsafe/cast`, `sizeof`, `alloca`), either the canonical list form or the colon sugar works: `(unsafe/cast (ptr Node) x)` and `(unsafe/cast ptr:Node x)` are equivalent.
 
 **Colon-paren binding sugar.** A binding's type may also be a parenthesised form written directly after the colon, with no space: `name:(ref (Vector T))`, `v:(ptr u8)`, `f:(fn i32) (i32 i32)`. In list (binding) context the reader fuses a trailing-colon atom that is *immediately* followed by `(` into the canonical list node `(name <paren-form>)`. So `v:(ref (Vector i32))` is exactly `(v (ref (Vector i32)))`, in both parameter lists and `let` bindings. The fusion only fires when the colon is the last character of the atom and the very next character is `(` (no whitespace); a mid-colon symbol such as `foo:i32` is unaffected.
 
-A **colon *chain* ending in a paren** does **not** work in a binding/`defn`-name position: `name:ref:(Vector T)` fuses to `(name:ref (Vector T))`, and the binding extractor takes `name:ref` as the name verbatim (it does not re-split the interior colon), so the wrapper segment is lost and the name registers wrong. Use the single trailing-colon sugar `name:(ref (Vector T))` (fuses to `(name (ref (Vector T)))`) or the canonical list form `(name (ref (Vector T)))` instead. This applies to a parametric *return* type on a `defn` name too: write `(make-vec (ref (Vector ptr)))`, not `make-vec:ref:(Vector ptr)`.
+**Colon-chain fuse.** A colon chain ending in a paren also works: `name:k1:…:kN:(T …)` reads as `(name (k1 (… (kN (T …)))))`. The first segment is the binding name; each remaining segment wraps the paren form right-to-left as a unary constructor application — e.g. `v:ref:(Vector i32)` → `(v (ref (Vector i32)))`, `p:ptr:ptr:(fn i32)` → `(p (ptr (ptr (fn i32))))`. (The reader does not validate that segments are pointer-kind constructors — `a:Foo:(T)` fuses to `(a (Foo (T)))` and the type parser rejects the unknown segment naturally. An empty interior segment `a::(T)` is a reader error.) This applies to a parametric *return* type on a `defn` name too: `make-vec:ref:(Vector ptr)` reads as `(make-vec (ref (Vector ptr)))`. Either the colon-chain sugar or the canonical list form works in every binding position.
+
+**Return-position lone-colon fuse.** A bare `:` immediately before `(` fuses to the paren form itself, with no name, so a parenthesised return type in `fn`/`defn`/lambda position may be written `):(T …)`. Thus `(fn (x:i32):(ref T) …)` reads as `(fn (x:i32) (ref T) …)`, and a keyword with a trailing colon followed by `(` fuses too (`:ptr:(Vector T)` → `(ptr (Vector T))`). This makes parenthesised returns use the same colon discipline as scalar returns — no space-separated exception is required.
+
+**Whitespace near-miss.** Adjacency remains **required**: the sigil binds tight (matching `:keyword` lexing; fusing across whitespace could rewrite quoted data at a distance). If a binding name ends in `:` but is *not* adjacent to `(` — e.g. `x: (raw Node)` — the compiler reports a clear fatal error: `binding name ends in ':' (<atom>) -- write name:(Type) with no space, or (name Type)`. Write `name:(Type …)` with no space, or the canonical list form `(name Type …)`. A trailing-colon symbol in value or quoted positions stays legal.
+
+**Quoted-data caveat.** The fuse fires syntactically, whether or not the form is quoted — so `'(foo:(bar))` reads as `'((foo (bar)))`. Authors of quoted data (or data that will be `read` at runtime) should space the paren: `'(foo: (bar))` or `'(foo (bar))`.
 
 Desugar operates on binding positions in `defn`, `defvar`, `defstruct`, `extern`, `declare`, and `let`. Expression bodies are not desugared; typed symbols in value position (e.g., from macro expansion) are handled by the compiler directly.
 
@@ -52,8 +58,11 @@ slots but not into a non-null `(ptr T)`/`(ref T)` slot.
 
 Only a **typed** non-null destination adds obligations: a `raw` or `?T` value
 may not flow into a `(ptr T)`/`(ref T)` slot (binding, `set!`, field/element
-store, argument, return) — narrow first, or assert with `(cast ref:T x)` (the
-audited C-boundary escape hatch). An elem-less bare `ptr` (`void*`) slot carries
+store, argument, return) — narrow first, or assert with `(unsafe/cast ref:T x)`
+(the audited C-boundary escape hatch — `as` refuses this exact conversion,
+routing to `as-ref` for a checked launder or `unsafe/cast` for the unchecked
+assertion; see [Implicit Type Coercion](#implicit-type-coercion)). An elem-less
+bare `ptr` (`void*`) slot carries
 no contract and is exempt. Widening (non-null→raw, non-null→`?T`, raw↔`?T`) is
 always allowed. `none` is the null `?T` literal. Stack addresses are non-null by
 construction: `(addr-of x)`, `(.& p f)`, `(alloca T)`, `(array T …)`, and a
@@ -88,21 +97,62 @@ conservatively (`raw` beats `Maybe` beats `ref`).
 > versus a bare `ptr`, a `ptr:i8`, or a quasiquoted `` `(...) `` (bare `ptr`) —
 > do **not** unify; the `cond`/`if` collapses to `void`. That then fails
 > wherever a value was expected (`let`/`set!` `init type mismatch`; a macro
-> body returns `null`). Make the branches agree — usually `(cast ptr <branch>)`
-> the odd one (`ptr` ↔ `(raw Node)` is a no-op reinterpret). This bites most
+> body returns `null`). Make the branches agree — usually `(as ptr <branch>)`
+> the odd one (`ptr` ↔ `(raw Node)` is a no-op reinterpret — exactly the
+> pointer-contract weakening `as` accepts). This bites most
 > often in macros and AST-walking code; see the "Sharp edge" section in
 > [macros.md](macros.md).
 
 ## Volatile qualifier
 
-A type can be tagged `volatile` in postfix position — either the list form `(T volatile)` or the sugared `T:volatile`. Loads and stores of a value held at a volatile-qualified storage site (variable, struct field, or pointer target) are emitted as `load volatile` / `store volatile` in LLVM IR; the compiler will not elide, reorder, or coalesce them. Examples:
+Volatility is declared through the **keyword-attribute slot**: a leading
+`:volatile` keyword immediately before the declared name of a variable,
+global, struct/union field, or `defn` param. For a pointer *target* (C's
+`volatile T *`, the MMIO case), the keyword instead moves inside the pointer
+constructor — `(ptr :volatile T)` / `(raw :volatile T)` / `(ref :volatile T)`
+— since pointee volatility must travel with the pointer through params and
+fields. Loads and stores of a value held at a volatile-qualified storage site
+are emitted as `load volatile` / `store volatile` in LLVM IR; the compiler
+will not elide, reorder, or coalesce them. Examples:
 
-- `x:i32:volatile` — local volatile variable (sugared)
-- `(let (x (i32 volatile)) ...)` — same, list form
-- `(defstruct R status:i32:volatile)` — field is volatile
-- `(p (ptr (i32 volatile)))` — pointer to volatile `i32`; deref and `ptr-set!` through `p` are volatile
+- `(defvar :volatile trap-zero:i32 0)` — volatile global
+- `(let (:volatile x:i32 0) ...)` — volatile local (binds to the immediately following name only)
+- `(defstruct R flags:i32 (:volatile status:i32))` — volatile field (parenthesized, keyword head)
+- `(defn bump-counter ((p (ptr :volatile i32))):void ...)` — pointer to volatile `i32`; deref and `ptr-set!` through `p` are volatile
 
-Volatility lives on the storage site, not the value: `volatile T` and `T` are assignment-compatible, and the qualifier is dropped/added at the access. Bare `ptr` (no element) cannot be made volatile — volatility attaches to the pointee, not to opaque pointers.
+Volatility lives on the storage site, not the value: `volatile T` and `T` are assignment-compatible, and the qualifier is dropped/added at the access. Bare `ptr` (no element) cannot be made volatile — volatility attaches to the pointee, not to opaque pointers. Attributes never participate in type identity, overload resolution, dispatch, monomorphization, or name mangling — see [stage14/attributes.md](../design/stage14/attributes.md) for the full attribute-slot design.
+
+> The older postfix spellings (`(T volatile)` list form, `T:volatile` colon segment) are retired: the compiler rejects them with a targeted error naming the `:volatile` attribute-slot spelling above.
+
+## Const globals
+
+A `defvar` global can be made read-only through the same keyword-attribute
+slot as `:volatile`: a leading `:const` keyword immediately before the
+declared name. `(defvar :const name:type init)` emits an LLVM `constant`
+in place of the default mutable `global` — the value is placed in read-only
+storage instead of writable data. This is a general, target-independent
+feature (not AVR-specific): on a target with separate program/data memory
+(e.g. AVR), a `constant` global can be kept out of RAM entirely; on other
+targets it is simply placed in read-only data.
+
+- `(defvar :const answer:i32 42)` — emits `@answer = constant i32 42`
+- `(defvar mutable-count:i32 0)` — unmarked, unchanged — emits `@mutable-count = global i32 0`
+
+Unlike `:volatile`, `:const` is meaningful **only** on a `defvar` global — a
+struct/union field, `defn` param, `let`/`with` binding, or pointer target
+type has no independent global-vs-constant storage class to select, and the
+compiler rejects `:const` at any of those sites with a targeted error
+(`':const' applies only to a defvar global, not a field, parameter, or
+binding`).
+
+`set!` against a `:const` global is a compile-time error: `(defvar :const
+answer:i32 42) ... (set! answer 10)` dies with `set!: cannot assign to
+'answer' -- declared :const` instead of compiling into a `store` to
+read-only storage. Reads of a `:const` global (`(return answer)`) are
+unaffected — they go through the normal load path. This check covers the
+direct `set!` mutation syntax only; it is not an aliasing analysis (e.g. a
+raw pointer obtained via `addr-of` and written through `ptr-set!` is not
+tracked).
 
 ## Built-in Types
 
@@ -126,15 +176,21 @@ Volatility lives on the storage site, not the value: `volatile T` and `T` are as
 | `Char` | A 32-bit Unicode scalar value (codepoint) | `uint32_t` |
 | `void` | No value | `void` |
 
-Pointer size and the target are not hardcoded as `i64`/`8` throughout codegen: a target descriptor (`g-target-triple`, `g-target-ptr-bytes`, defaulting to `x86_64-pc-linux-gnu` / 8 bytes) drives the emitted `target triple`, pointer/`CStr` type sizes and alignments, and the width of `sizeof` (a pointer-sized `size_t`). To target a 32-bit platform, set `g-target-ptr-bytes` to 4. (The macro/`compile-time` JIT still targets the host. One remaining 64-bit assumption is the hand-written `__cons`/`__append` IR in `emit-qq-helpers`.)
+Pointer size and the target are not hardcoded as `i64`/`8` throughout codegen: a target descriptor (`g-target-triple`, `g-target-ptr-bytes`, defaulting to `x86_64-pc-linux-gnu` / 8 bytes) drives the emitted `target triple`, pointer/`CStr` type sizes and alignments, and the width of `sizeof` (a pointer-sized `size_t`). To target a 32-bit or 16-bit platform, set `g-target-ptr-bytes` to 4 or 2 respectively. (The macro/`compile-time` JIT still targets the host.)
 
 **`usize` and `ssize`** are the portable index and length types for pointer-sized arithmetic. They resolve to the target's pointer-width integer at compile time: `i32` on ILP32 (4-byte pointer) targets and `i64` on LP64 (8-byte pointer) targets. `usize` is unsigned; `ssize` is signed. They are valid in any type position and are handled correctly by `sizeof`, type mangling, `type-eq`, and arithmetic operators. Use `usize` for lengths, counts, and non-negative offsets; use `ssize` for signed differences or offsets that may be negative. Both participate in the standard numeric promotions and are mangled distinctly (e.g. `usize`, `ssize`) in method symbols and stamped struct names.
 
-`CStr` is the type of a string literal — a C `char*`. It lowers to `ptr` (same ABI) and flows into any `ptr`-typed C function with no cast, but it is a **distinct type for operator dispatch**: `=` / `!=` on two `CStr` do a `strcmp` **content** comparison (so equal text compares equal across distinct buffers), whereas `=` on two raw `ptr` is pointer identity. `CStr` conforms to the `Eq` protocol (`lib/numeric.nuc`), so it works in an `Eq`-bounded generic; it is not `Ord` (no ordering — out of scope here, along with Unicode). Only `=` / `!=` are defined; other operators on `CStr` are an error. A `CStr` and a `ptr` are freely interconvertible with `cast` (no IR) and coerce automatically in value positions (assignment, return, field/array store); a string literal also passes directly to a plain `ptr` parameter. (Multimethod dispatch treats `CStr` as distinct — overload on `CStr` explicitly, or `cast` to `ptr`.) `strcmp` must be declared, which the prelude's `(import-use "string.h")` provides. Example: `examples/cstr.nuc`.
+**A bare `"…"` string literal has static type `StrView`**, not `CStr` — a borrowed `{data:(ptr ui8), len:usize}` view over the literal's rodata storage (see [Strings](strings.md) for the full `StrView` API). `StrView` is a library struct, but its bare type is promoted into the prelude, so it is available everywhere without an import; its methods and protocol conformances still require `(import-use strview)`. A literal's backing storage is always NUL-terminated at `data[len]` (the same rodata global `CStr` literals always used), so a `StrView` value coerces to `CStr`/`ptr` **for free** (no IR) at any assignment, call argument, `as`/`unsafe/cast`, or return boundary, by taking `data` — this is what keeps every existing `:CStr`/`:ptr`-typed function, `printf`/libc call, and `strcmp`-style `=`/`!=` comparison working with a string literal unchanged. Only when a literal flows into a genuinely `StrView`-typed slot does it materialize the two-word `{data,len}` struct. In overloaded (`defn`/multimethod) dispatch, a `StrView`-typed argument adapts to a `CStr` parameter but *not* to a bare `ptr` parameter, reproducing the resolution a `CStr` literal produced before this type existed. A materialized `StrView` passed to a C variadic parameter (e.g. `printf`'s `%s`) contributes only its `data` pointer, never the two-word struct; a *fixed* (non-variadic) `StrView` by-value parameter is unaffected and still receives the full two-eightbyte struct per the platform ABI (`examples/strview-vararg-test.nuc`).
 
-**`Char`** is a single Unicode scalar value — a codepoint in `0..=0x10FFFF` excluding the UTF-16 surrogate range `0xD800..=0xDFFF` (Rust's `char` model; "character" means codepoint, not grapheme cluster). It is a **built-in distinct 32-bit scalar over `ui32`**, the same kind of distinct scalar `CStr` is: it lowers to IR `i32` (C `uint32_t`, size 4) and participates in the integer operators, but it is its own type for dispatch. `=` / `!=` on two `Char` compare codepoints (`(= \a \a)` is true, `(= \a \b)` is false), and a `Char`-vs-int overload is distinguishable. A same-width `cast` between `Char` and `ui32`/`i32` is a no-op reinterpret (`(cast ui32 \A)` is `65`). Because `Char` is distinct, two *typed* operands of different kind do **not** silently unify: `(= \a (cast ui32 65))` is a compile error (`operand type mismatch`) — cast one side explicitly. An untyped integer literal still adapts to a `Char` operand, so `(= \a 97)` is allowed. Write a `Char` value with a [char literal](#char-literals--a) (below) or, equivalently, the `(char "x")` form. (The `Char` UTF-8 encode/decode and classification library is a separate task.)
+`CStr` is the C-interop `char*` type — the FFI boundary type a `:CStr`-typed parameter, field, or return expects. It lowers to `ptr` (same ABI) and flows into any `ptr`-typed C function with no cast, but it is a **distinct type for operator dispatch**: `=` / `!=` on two `CStr` (or a `CStr`/`ptr`/`StrView` mix) do a `strcmp`-style **content** comparison (so equal text compares equal across distinct buffers), whereas `=` on two raw `ptr` is pointer identity. `CStr` conforms to the `Eq` protocol (`lib/numeric.nuc`), so it works in an `Eq`-bounded generic; it is not `Ord` (no ordering — out of scope here, along with Unicode). Only `=` / `!=` are defined; other operators on `CStr` are an error. A `CStr` and a `ptr` are freely interconvertible with `as` (no IR) and coerce automatically in value positions (assignment, return, field/array store). (Multimethod dispatch treats `CStr` as distinct — overload on `CStr` explicitly, or `as` to `ptr`.) `strcmp` must be declared, which the prelude's `(import-use "string.h")` provides. To bind an `Eq`-bounded generic at `StrView` from a literal, `(import-use strview)` must be in scope; otherwise `as` the literal to `CStr` explicitly. Example: `examples/cstr.nuc`.
 
-Float literals: `1.5`, `-0.25`, `1e10`, `1.5e-3`, `.5`. Default type is `f64`; narrow with `(cast f32 ...)`. Widen `f32`→`f64` and convert int↔float with `cast`. Special values use Scheme syntax: `+inf.0`, `-inf.0`, `+nan.0`. Float arithmetic uses `+ - * / %` and comparisons use `= != < <= > >=` (LLVM `fadd`/`fcmp`); operands must have the same float width — promote with explicit `cast`. Mixing float and integer operands without a cast is a compile error.
+A `c"…"` literal — a `c` glued directly onto the opening quote, with no whitespace — is an explicit `CStr` literal: the bare `char*` GEP, no `{data,len}` view header, and no target-typing. It is the direct "I mean `char*`" spelling for FFI/format-string hot spots; the free `StrView`→`CStr` coercion above already covers the same cases, so `c"…"` is ergonomic, not required. A space keeps the tokens apart (`c "foo"` is the symbol `c` followed by an ordinary `StrView` literal); only the glued, lowercase-`c` form is the literal. See [Strings](strings.md) §3 and `examples/cstr-lit-test.nuc`.
+
+**`Char`** is a single Unicode scalar value — a codepoint in `0..=0x10FFFF` excluding the UTF-16 surrogate range `0xD800..=0xDFFF` (Rust's `char` model; "character" means codepoint, not grapheme cluster). It is a **built-in distinct 32-bit scalar over `ui32`**, the same kind of distinct scalar `CStr` is: it lowers to IR `i32` (C `uint32_t`, size 4) and participates in the integer operators, but it is its own type for dispatch. `=` / `!=` on two `Char` compare codepoints (`(= \a \a)` is true, `(= \a \b)` is false), and a `Char`-vs-int overload is distinguishable. A same-width `as` (or `unsafe/cast`) between `Char` and `ui32`/`i32` is a no-op reinterpret (`(as ui32 \A)` is `65`). Because `Char` is distinct, two *typed* operands of different kind do **not** silently unify: `(= \a (as ui32 65))` is a compile error (`operand type mismatch`) — convert one side explicitly with `as`. An untyped integer literal still adapts to a `Char` operand, so `(= \a 97)` is allowed. Write a `Char` value with a [char literal](#char-literals--a) (below) or, equivalently, the `(char "x")` form. (The `Char` UTF-8 encode/decode and classification library is a separate task.)
+
+Float literals: `1.5`, `-0.25`, `1e10`, `1.5e-3`, `.5`. Default type is `f64`; narrow with `(unsafe/cast f32 ...)` (lossy — `as` refuses it). Widen `f32`→`f64` with `as` (or `unsafe/cast`); convert int↔float with `unsafe/cast` (int↔float is not in `as`'s safe set). Special values use Scheme syntax: `+inf.0`, `-inf.0`, `+nan.0`. Float arithmetic uses `+ - * / %` and comparisons use `= != < <= > >=` (LLVM `fadd`/`fcmp`); operands must have the same float width — promote with explicit `as` (widening) or `unsafe/cast` (narrowing). Mixing float and integer operands without an explicit `unsafe/cast` is a compile error.
+
+**`f64` is unsupported when `--target=avr`**: AVR has no hardware double, so `f64`/`double` is a compile-time error, whether written as an explicit type annotation or reached only through a bare float literal's default type (`(let (x 1.5) …)` is rejected even with no `f64` text in the source). The error names the `-mdouble=64` avr-gcc multilib escape hatch for a custom AVR build with software double support. `f32` is unaffected, and `i64` remains fully supported (arithmetic links libgcc's software routines, e.g. `__muldi3`). This check applies only to the AVR target module itself — compile-time/macro code always runs on the host regardless of `--target=`, so ordinary `f64` arithmetic inside a `defmacro`/`compile-time` body compiling *for* an AVR program is unaffected.
 
 ## Function Pointer Types
 
@@ -146,11 +202,11 @@ followed by `(` (see *Colon-paren binding sugar* above):
 
 ```lisp
 ; canonical list form
-(defn apply:i32 ((f (fn i32) (i32 i32)) a:i32 b:i32)
+(defn apply ((f (fn i32) (i32 i32)) a:i32 b:i32):i32
   (return (funcall f a b)))
 
 ; colon-paren sugar — equivalent
-(defn apply:i32 (f:(fn i32) (i32 i32) a:i32 b:i32)
+(defn apply (f:(fn i32) (i32 i32) a:i32 b:i32):i32
   (return (funcall f a b)))
 ```
 
@@ -167,25 +223,33 @@ In `let` bindings, the binding name is also a list (or its colon-paren sugar):
 A `defn` function name used in value position decays to a function pointer, matching C semantics:
 
 ```lisp
-(defn add:i32 (a:i32 b:i32) (return (+ a b)))
+(defn add (a:i32 b:i32):i32 (return (+ a b)))
 (apply add 3 4)  ; passes add as a function pointer
 ```
 
 ## Implicit Type Coercion
 
-The following conversions are applied automatically in assignment contexts (`let`, `set!`, `.set!`, `aset!`, `ptr-set!`, implicit return) **and at function call sites** (both direct calls and `funcall`):
+The following conversions are applied automatically in assignment contexts (`let`, `set!`, `.set!`, `aset!`, `ptr-set!`, implicit and explicit `return`) **and at function call sites** (both direct calls and `funcall`). This is exactly the safe set `as` (see [Special Forms](special-forms.md#special-forms)) also accepts when written explicitly, plus `as`'s own pointer-contract-weakening allowance; `unsafe/cast` accepts this same set **and** everything lossy or contract-manufacturing besides (narrowing, `float`↔`int`, `ptr`↔`int`, `fn`↔`ptr`, element-retyping pointers, and laundering a `raw`/nullable pointer into a non-null slot):
 
-- **Pointer ↔ pointer** (any element types): identity, no IR. `ptr`, `ptr:Node`, `ptr:i8` are interchangeable at boundaries; the cast only matters when the result feeds a typed-pointer-only operation (`.`, `aref`, `aset!`, `ptr+`, `deref`).
+- **Pointer ↔ pointer** (any element types): identity, no IR. `ptr`, `ptr:Node`, `ptr:i8` are interchangeable at boundaries; the cast only matters when the result feeds a typed-pointer-only operation (`.`, `aref`, `aset!`, `unsafe/ptr+`, `deref`).
+- **`StrView` → `CStr` / `ptr`**: takes the view's `data` field — no IR for an unmaterialized string literal (whose value already *is* `data`), one `extractvalue` for a general `StrView` value. Trusts that the buffer is NUL-terminated at `data[len]`, always true for a literal but not guaranteed for an arbitrary sub-slice (see [Strings — Gotchas and constraints](strings.md)).
 - **Integer ↔ integer**:
   - Same width, different sign (e.g. `i32` ↔ `ui32`): reinterpret, no IR.
   - Widening: `sext` for signed source, `zext` for unsigned source.
-  - Narrowing: `trunc`.
+  - Narrowing: `trunc` — **except** that a narrowing of an integer *literal*
+    whose value does not fit the target type is a **compile-time error**
+    (`integer literal 300 does not fit ui8`), never a silent wrap. This applies
+    only to literals with a known value (`(take8 300)`, `(let (b:i8 200) …)`,
+    `(< u:ui8 300)`); narrowing a typed *value* still truncates (its runtime
+    value is unknown). To deliberately wrap a literal, cast it explicitly with
+    `unsafe/cast` (narrowing is lossy, outside `as`'s safe set):
+    `(unsafe/cast i8 200)` is `-56`.
 - **`f32` → `f64`**: `fpext`.
 - **User-registered**: any pair declared with `(defcast From To conv-fn)` (see [Top-level forms](toplevel.md)). The compiler emits a call to `conv-fn`. Built-in coercion always wins; `defcast` cannot shadow `sext`/`zext`/`fpext`.
 
-Binary operators do *not* coerce — both operands must already match in kind. Mixing float and integer operands, or mixed-sign integer operands (e.g. `i32 + ui32`), or operands of different integer widths (e.g. `i64 + i32-literal`) are compile errors at the operator. Use explicit `(cast ...)` on the binop side.
+Binary operators do *not* coerce — both operands must already match in kind. Mixing float and integer operands, or mixed-sign integer operands (e.g. `i32 + ui32`), or operands of different integer widths (e.g. `i64 + i32-literal`) are compile errors at the operator. Use an explicit `(as ...)` (widening / same-width sign reinterpret) or `(unsafe/cast ...)` (narrowing, `float`↔`int`) on the binop side.
 
-Explicit `(cast ...)` is also still required for cross-kind conversions: `int ↔ ptr`, `int ↔ float`, `ptr ↔ float`, and `f64 → f32` narrowing.
+Explicit `(unsafe/cast ...)` is also still required for cross-kind conversions: `int ↔ ptr`, `int ↔ float`, `ptr ↔ float`, and `f64 → f32` narrowing — none of these are in `as`'s safe set.
 
 ## Literal Values
 
@@ -194,8 +258,21 @@ Explicit `(cast ...)` is also still required for cross-kind conversions: `int �
 | `null` | ptr | `NULL` |
 | `true` | bool (i1) | `1` / `true` |
 | `false` | bool (i1) | `0` / `false` |
-| `"…"` string literal | `CStr` | `"…"` (`char*`) |
+| `"…"` string literal | `StrView` | `"…"` (a `char*`/`{ptr,len}` view — see above) |
+| `c"…"` string literal | `CStr` | `"…"` (bare `char*`, no view header) |
 | `\a`, `\newline`, `\u{1F600}` char literal | `Char` | `(uint32_t)U'…'` |
+
+**Integer literals** carry their full value (lexed as up to a 64-bit magnitude:
+signed `i64` down to `-2^63`, unsigned up to `2^64-1`; a literal outside that
+range is a positioned reader error). An integer literal has no intrinsic type —
+it *adapts* to whatever integer (or float) type its context needs, wherever the
+value fits: it passes to a wider or narrower parameter, `let`/field slot, or
+binop operand as long as it is representable there (see *Implicit Type
+Coercion*). When a literal's type is not otherwise constrained, it emits as
+`i32` if it fits and `i64` otherwise, so `(take64 5000000000)` yields
+`5000000000` (not a 32-bit wrap) while an out-of-range use like
+`(take-i32 5000000000)` is a compile-time error. (Typed *values*, unlike
+literals, only widen same-sign — see the coercion rules above.)
 
 ## Char literals — `\a`
 
@@ -210,9 +287,9 @@ A **char literal** is a backslash followed by one of three forms, evaluating to 
 The `\u{…}` form is validated at read time: a value above `0x10FFFF`, a UTF-16 surrogate (`0xD800..=0xDFFF`), an empty or non-hex body, or an unknown `\name` is a reader error (`invalid-codepoint` / `unknown named char literal`). A lone printable form is exactly the byte after the backslash, so a single-character spelling like `\u` (no brace) is the letter `u`, not a malformed escape.
 
 ```lisp
-(printf "%u\n" (cast ui32 \A))          ; 65
-(printf "%u\n" (cast ui32 \newline))    ; 10
-(printf "%u\n" (cast ui32 \u{1F600}))   ; 128512
+(printf "%u\n" (as ui32 \A))            ; 65
+(printf "%u\n" (as ui32 \newline))      ; 10
+(printf "%u\n" (as ui32 \u{1F600}))     ; 128512
 (printf "%d\n" (if (= \a \a) 1 0))      ; 1
 ```
 
@@ -236,7 +313,7 @@ A `Keyword` has static type `Keyword` and conforms to both `Hash` and `Eq`, maki
 (import-use iterator)
 (import-use hashmap)
 
-(defn main:i32 ()
+(defn main ():i32
   ; Self-evaluation.
   (let (k:Keyword :foo)
     (printf "self-eval=%d\n" (if (= k :foo) 1 0)))    ; 1

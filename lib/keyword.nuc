@@ -58,7 +58,7 @@
 
 ; Abort on intern-table overflow. Non-generic so its libc references resolve
 ; against this file's includes.
-(defn keyword-overflow:void ()
+(defn keyword-overflow ():void
   (fprintf stderr "keyword: intern table full (max %d)\n" KEYWORD-MAX)
   (exit 1))
 
@@ -71,44 +71,44 @@
 ; malloc'd block, wrap them in a heap StrView, compute the byte hash once, assign
 ; the next sequential id, and return the new value.
 ; ---------------------------------------------------------------------------
-(defn keyword-intern:Keyword ((cs CStr))
+(defn keyword-intern ((cs CStr)):Keyword
   ; Lazy table init.
   (when (= g-keyword-table null)
-    (set! g-keyword-table (malloc (* (cast i64 KEYWORD-MAX) (sizeof Keyword)))))
-  (let (tbl:ptr:Keyword (cast ptr:Keyword g-keyword-table)
+    (set! g-keyword-table (malloc (* (as i64 KEYWORD-MAX) (sizeof Keyword)))))
+  (let (tbl:ptr:Keyword (as ptr:Keyword g-keyword-table)
         n:usize g-keyword-count
-        i:usize (cast usize 0))
+        i:usize 0)
     ; Look for an existing entry with the same name bytes.
     (while (< i n)
-      (let (e:ptr:Keyword (cast ptr:Keyword (ptr+ tbl (cast i32 i)))
-            sv:ptr:StrView (cast ptr:StrView (e name)))
-        (when (= (strcmp (strview-to-cstr sv) (cast ptr cs)) 0)
+      (let (e:ptr:Keyword (as ptr:Keyword (unsafe/ptr+ tbl (unsafe/cast i32 i)))
+            sv:ptr:StrView (as ptr:StrView (e name)))
+        (when (= (strcmp (strview-to-cstr sv) (as ptr cs)) 0)
           (return (deref e))))
-      (set! i (+ i (cast usize 1))))
+      (set! i (+ i 1)))
     ; Miss: append a new entry.
-    (when (>= n (cast usize KEYWORD-MAX))
+    (when (>= n (as usize KEYWORD-MAX))
       (keyword-overflow))
-    (let (slen:i64 (strlen (cast ptr cs))
+    (let (slen:i64 (strlen (as ptr cs))
           ; Copy the name bytes NUL-terminated so strview-to-cstr stays sound.
-          buf:ptr (malloc (+ slen (cast i64 1))))
-      (memcpy buf (cast ptr cs) (+ slen (cast i64 1)))
-      (let (sv:ptr:StrView (cast ptr:StrView (malloc (cast i64 (sizeof StrView)))))
-        (.set! sv data (cast ptr:ui8 buf))
-        (.set! sv len  (cast usize slen))
-        (let (e:ptr:Keyword (cast ptr:Keyword (ptr+ tbl (cast i32 n)))
+          buf:ptr (malloc (+ slen 1)))
+      (memcpy buf (as ptr cs) (+ slen 1))
+      (let (sv:ptr:StrView (as ptr:StrView (malloc (as i64 (sizeof StrView)))))
+        (.set! sv data (as ptr:ui8 buf))
+        (.set! sv len  (as usize slen))
+        (let (e:ptr:Keyword (as ptr:Keyword (unsafe/ptr+ tbl (unsafe/cast i32 n)))
               h:usize (strview-hash sv))
           (.set! e name sv)
           (.set! e id   n)
           (.set! e cached-hash h)
-          (set! g-keyword-count (+ n (cast usize 1)))
+          (set! g-keyword-count (+ n 1))
           (return (deref e)))))))
 
 ; ---------------------------------------------------------------------------
 ; keyword-name — the keyword's name as a (ref StrView) (borrowed; process-lived).
 ; Lets callers print or further-inspect a keyword without touching the layout.
 ; ---------------------------------------------------------------------------
-(defn keyword-name:ref:StrView ((self (ref Keyword)))
-  (return (cast ref:StrView (cast ptr (self name)))))
+(defn keyword-name ((self (ref Keyword))):ref:StrView
+  (return (as ref:StrView (as ptr (self name)))))
 
 ; ---------------------------------------------------------------------------
 ; Conformances.
@@ -122,15 +122,15 @@
 ; ---------------------------------------------------------------------------
 
 (extend Keyword Eq)
-(defn =:i1 (a:Keyword b:Keyword)
+(defn = (a:Keyword b:Keyword):i1
   (let (la:Keyword a
         lb:Keyword b)
     (return (if (= ((addr-of la) id) ((addr-of lb) id)) true false))))
-(defn !=:i1 (a:Keyword b:Keyword)
+(defn != (a:Keyword b:Keyword):i1
   (let (la:Keyword a
         lb:Keyword b)
     (return (if (= ((addr-of la) id) ((addr-of lb) id)) false true))))
 
 (extend Keyword Hash)
-(defn hash:usize ((self (ref Keyword)))
+(defn hash ((self (ref Keyword))):usize
   (return (self cached-hash)))

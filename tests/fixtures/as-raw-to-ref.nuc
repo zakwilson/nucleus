@@ -1,0 +1,15 @@
+; Stage 14 UN-1 negative fixture: `as` HONORS pkind-flow-check.
+;
+; `(as ref:Rec r)` launders a nullable `raw` pointer into a non-null `ref` — the
+; exact hole `cast` leaves open (emit-cast bypasses pkind-flow-check). `as` closes
+; it for the safe spelling, routing to the checked `as-ref` launder or the
+; unchecked `unsafe/cast` assertion. Compiling this must FAIL with a message
+; mentioning "as-ref".
+(defstruct Rec kind:i32)
+
+(defn deref-raw (r:raw:Rec):i32
+  (let (rf:ref:Rec (as ref:Rec r))
+    (return (rf kind))))
+
+(defn main ():i32
+  (return (deref-raw null)))

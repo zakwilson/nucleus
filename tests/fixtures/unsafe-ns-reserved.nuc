@@ -1,0 +1,13 @@
+; Stage 14 UN-2 negative fixture: `(ns unsafe)` is rejected.
+;
+; `unsafe` is a reserved pseudo-namespace (design/stage14/unsafe-namespace.md
+; D1) — the `unsafe/<op>` heads are routed by special-form head-identity
+; dispatch, not real namespace resolution, so no user code may ever declare a
+; real namespace called `unsafe` (that would make `unsafe/whatever` ambiguous
+; between "reserved op" and "someone's namespace member"). Compiling this must
+; FAIL with:
+;   "'unsafe' is a reserved namespace name"
+(ns unsafe)
+
+(defn noop ():i32
+  (return 0))

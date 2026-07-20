@@ -36,8 +36,8 @@
 
 (extend Double (UnaryFn i32 i32))
 
-(defn (apply i32) ((self (ref Double)) (x i32))
-  (return (* x (cast i32 2))))
+(defn apply ((self (ref Double)) (x i32)) i32
+  (return (* x 2)))
 
 ; ---------------------------------------------------------------------------
 ; §2.5 Standalone generic: collect-all.
@@ -45,8 +45,8 @@
 ; (Iterator E) is both a bound (I must conform to Iterator) and the extraction
 ; (E := I's element type). One constraint, both jobs.
 ; ---------------------------------------------------------------------------
-(defn collect-all:void ((it (ref I)) (out (ref (Vector E)))
-                        &where ((Iterator E) I))
+(defn collect-all ((it (ref I)) (out (ref (Vector E)))
+                        &where ((Iterator E) I)):void
   (into-iter out it))
 
 ; ---------------------------------------------------------------------------
@@ -55,7 +55,7 @@
 ; recovering a free variable. A mismatch (e.g. an (Iterator i64) iterator) is a
 ; compile-time constraint-mismatch error.
 ; ---------------------------------------------------------------------------
-(defn sum-i32-iter:i32 ((it (ref I)) &where ((Iterator i32) I))
+(defn sum-i32-iter ((it (ref I)) &where ((Iterator i32) I)):i32
   (return (sum it)))
 
 ; ---------------------------------------------------------------------------
@@ -69,7 +69,7 @@
 ;   (sum-i32-iter ai))
 ; ---------------------------------------------------------------------------
 
-(defn main:i32 ()
+(defn main ():i32
   ; Concrete instance: I = IntRangeIter (yields i32 -> S=i32),
   ;                    F = Double       ((UnaryFn i32 i32) -> checks S=i32, E=i32).
   (let ((mi (ref (MapIter IntRangeIter Double)))

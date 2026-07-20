@@ -11,12 +11,12 @@
 ; A named UnaryFn conformer for flat-map: x -> a fresh Vector [x, x+k].
 (defstruct ExpandFn k:i32)
 (extend ExpandFn (UnaryFn i32 (Vector i32)))
-(defn (apply (Vector i32)) ((self (ref ExpandFn)) (x i32))
+(defn apply ((self (ref ExpandFn)) (x i32)) (Vector i32)
   (let ((r (ref (Vector i32))) (alloca (Vector i32)))
     (vector-init r) (conj r x) (conj r (+ x (self k)))
     (return (deref r))))
 
-(defn show:void (label:CStr (v (ref (Vector i32))))
+(defn show (label:CStr (v (ref (Vector i32)))):void
   (printf "%s[" label)
   (let (first:i32 1)
     (doseq (x v (VecIter i32))
@@ -25,7 +25,7 @@
       (set! first 0)))
   (printf "]\n"))
 
-(defn main:i32 ()
+(defn main ():i32
   (with ((v (ref (Vector i32))) (alloca (Vector i32)))
     (vector-init v) (conj v 1) (conj v 2) (conj v 3)
     (let (k:i32 10

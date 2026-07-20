@@ -8,39 +8,41 @@
 ; Extracted from nucleusc.nuc → generics.nuc → here (Stage 12 N8).
 
 (import-use list)
+(import-use hashmap)
 
 ; A short, dot-free token naming a type for use in mangled symbols. Pointers
 ; get a "p" prefix on their pointee so ptr:Circle and Circle stay distinct.
-(defn type-mangle-token:ptr (t:ptr)
-  (let (tt:ptr:Type (cast ptr:Type t)
+(defn type-mangle-token (t:raw:Type):CStr
+  (let (tt:raw:Type t
         k:i32 (tt kind))
-    (when (= k TY-VOID) (return "void"))
-    (when (= k TY-I1)   (return "i1"))
-    (when (= k TY-I8)   (return "i8"))
-    (when (= k TY-I16)  (return "i16"))
-    (when (= k TY-I32)  (return "i32"))
-    (when (= k TY-I64)  (return "i64"))
-    (when (= k TY-UI8)  (return "u8"))
-    (when (= k TY-UI16) (return "u16"))
-    (when (= k TY-UI32) (return "u32"))
-    (when (= k TY-UI64) (return "u64"))
-    (when (= k TY-F32)  (return "f32"))
-    (when (= k TY-F64)  (return "f64"))
-    (when (= k TY-PTR)
-      (if (= (tt elem) null)
-        (return "ptr")
-        (return (fmt-s "p%s" (type-mangle-token (tt elem))))))
-    (when (= k TY-STRUCT)
-      (return (-> tt (_ sdef) (cast ptr:StructDef _) (_ name))))
-    (when (= k TY-UNION)
-      (return (-> tt (_ sdef) (cast ptr:StructDef _) (_ name))))
-    (when (= k TY-FN) (return "fn"))
-    (when (= k TY-CSTR) (return "cstr"))
-    (when (= k TY-CHAR) (return "Char"))
-    (when (= k TY-ERR)   (return "Err"))
-    (when (= k TY-USIZE) (return "usize"))
-    (when (= k TY-SSIZE) (return "ssize"))
-    (return "x")))
+    (case k
+      TY-VOID (return "void")
+      TY-I1   (return "i1")
+      TY-I8   (return "i8")
+      TY-I16  (return "i16")
+      TY-I32  (return "i32")
+      TY-I64  (return "i64")
+      TY-UI8  (return "u8")
+      TY-UI16 (return "u16")
+      TY-UI32 (return "u32")
+      TY-UI64 (return "u64")
+      TY-F32  (return "f32")
+      TY-F64  (return "f64")
+      TY-PTR
+        (if (= (tt elem) null)
+          (return "ptr")
+          (return (fmt-s "p%s" (type-mangle-token (tt elem)))))
+      TY-STRUCT
+        (return (-> tt (_ sdef) (unsafe/cast ptr:StructDef _) (_ name)))
+      TY-UNION
+        (return (-> tt (_ sdef) (unsafe/cast ptr:StructDef _) (_ name)))
+      TY-FN (return "fn")
+      TY-CSTR (return "cstr")
+      TY-CHAR (return "Char")
+      TY-ERR   (return "Err")
+      TY-USIZE (return "usize")
+      TY-SSIZE (return "ssize")
+      (return "x"))))
 
 ; ============================================================
 ; Stage 13 L7 — distinct, round-trippable spelling for TY-FN.
@@ -62,29 +64,23 @@
 ; (no TY-FN flows through a generic in the compiler's own source: `make
 ; bootstrap` re-converges with this change).
 (defvar g-fnty-id:i32 0)
-; Parallel (Vector ptr) registries kept in lockstep: g-fnty-names[i] is the
-; "__fnty_<id>" name for the TY-FN Type* g-fnty-types[i]. conj'd together.
-(defvar (g-fnty-names (ref (Vector ptr))))   ; name strings, parallel
-(defvar (g-fnty-types (ref (Vector ptr))))   ; Type*, parallel
+(defvar (g-fnty (ref (HashMap CStr ref:Type))))
 
-(defn fnty-intern:ptr (t:ptr)
-  (dotimes (i (cast i32 (count g-fnty-types)))
-    (when (= (invoke g-fnty-types (cast usize i)) t)
-      (return (invoke g-fnty-names (cast usize i)))))
-  (let (name:ptr (intern-str (fmt-i32 "__fnty_%d" g-fnty-id)))
+(defn fnty-intern (t:ref:Type):CStr
+  (doseq (entry g-fnty (HashMapEntryIter CStr ref:Type))
+         (when (= ((addr-of entry) val)
+                  t)
+               (return ((addr-of entry) key))))
+  (let (name:CStr (intern-str (fmt-i32 "__fnty_%d" g-fnty-id)))
     (inc! g-fnty-id)
-    (conj g-fnty-names (cast ptr name))
-    (conj g-fnty-types (cast ptr t))
+    (assoc g-fnty name t)
     (return name)))
 
 ; Resolve a "__fnty_<id>" name back to its Type*, so a stamped generic body's
 ; `(ref __fnty_3)` re-parses to the original TY-FN. String compare (the name
 ; reaching here may be a fresh fmt copy, not the cached interned pointer).
-(defn fnty-resolve:ptr (name:ptr)
-  (dotimes (i (cast i32 (count g-fnty-names)))
-    (when (= (strcmp (invoke g-fnty-names (cast usize i)) name) 0)
-      (return (invoke g-fnty-types (cast usize i)))))
-  (return null))
+(defn fnty-resolve (name:CStr):?ref:Type
+  (get g-fnty (as CStr name)))
 
 ; A type's source spelling as a colon-joined string: the inverse of the type
 ; parser. Serves two roles — the key into the conformance registry (matching the
@@ -92,38 +88,42 @@
 ; concrete type for a type variable's occurrences in a retained generic body.
 ; Pointers nest as ptr:elem; structs/primitives are their bare names. A TY-FN
 ; spells to its interned "__fnty_N" name (above), not "ptr".
-(defn type-spelling:ptr (t:ptr)
-  (let (tt:ptr:Type (cast ptr:Type t)
+(defn type-spelling (t:raw:Type):CStr
+  (let (tt:raw:Type t
         k:i32 (tt kind))
-    (when (= k TY-VOID) (return "void"))
-    (when (= k TY-I1)   (return "i1"))
-    (when (= k TY-I8)   (return "i8"))
-    (when (= k TY-I16)  (return "i16"))
-    (when (= k TY-I32)  (return "i32"))
-    (when (= k TY-I64)  (return "i64"))
-    (when (= k TY-UI8)  (return "ui8"))
-    (when (= k TY-UI16) (return "ui16"))
-    (when (= k TY-UI32) (return "ui32"))
-    (when (= k TY-UI64) (return "ui64"))
-    (when (= k TY-F32)  (return "f32"))
-    (when (= k TY-F64)  (return "f64"))
-    (when (= k TY-STRUCT) (return (-> tt (_ sdef) (cast ptr:StructDef _) (_ name))))
-    (when (= k TY-UNION) (return (-> tt (_ sdef) (cast ptr:StructDef _) (_ name))))
-    (when (= k TY-CSTR)  (return "CStr"))
-    (when (= k TY-CHAR)  (return "Char"))
-    (when (= k TY-ERR)   (return "Err"))
-    (when (= k TY-USIZE) (return "usize"))
-    (when (= k TY-SSIZE) (return "ssize"))
-    (when (= k TY-FN)    (return (fnty-intern t)))
-    (when (= k TY-PTR)
-      (if (= (tt elem) null)
-        (return "ptr")
-        (return (fmt-s "ptr:%s" (type-spelling (tt elem))))))
-    (return "ptr")))
+    (case k
+      TY-VOID (return "void")
+      TY-I1   (return "i1")
+      TY-I8   (return "i8")
+      TY-I16  (return "i16")
+      TY-I32  (return "i32")
+      TY-I64  (return "i64")
+      TY-UI8  (return "ui8")
+      TY-UI16 (return "ui16")
+      TY-UI32 (return "ui32")
+      TY-UI64 (return "ui64")
+      TY-F32  (return "f32")
+      TY-F64  (return "f64")
+      TY-STRUCT (return (-> tt (_ sdef) (unsafe/cast ptr:StructDef _) (_ name)))
+      TY-UNION  (return (-> tt (_ sdef) (unsafe/cast ptr:StructDef _) (_ name)))
+      TY-CSTR  (return "CStr")
+      TY-CHAR  (return "Char")
+      TY-ERR   (return "Err")
+      TY-USIZE (return "usize")
+      TY-SSIZE (return "ssize")
+      ; t is provably non-null here (its `kind` was already read above), so
+      ; asserting ref is sound — fnty-intern keys its HashMap by Type* identity.
+      TY-FN
+        (return (fnty-intern (unsafe/cast ref:Type t)))
+      TY-PTR
+        (if (= (tt elem) null)
+          (return "ptr")
+          (return (fmt-s "ptr:%s" (type-spelling (tt elem)))))
+      (return "ptr"))))
 
-(defn tyvar-index-of:i32 (name:CStr tyvars:ptr ntv:i32)
+(defn tyvar-index-of (name:CStr tyvars:ptr ntv:i32):i32
   (dotimes (i ntv)
-    (when (= (aref (cast ptr:ptr tyvars) i) name) (return i)))
+    (when (= (aref (as ptr:ptr tyvars) i) name) (return i)))
   (return -1))
 
 ; Substitute type variables inside one symbol's colon spelling: split on ':',
@@ -131,37 +131,52 @@
 ; rejoin. Handles both desugared standalone type symbols ("T" → "i32") and the
 ; colon-typed symbols left in un-desugared bodies ("r:T" → "r:i32",
 ; "x:ptr:T" → "x:ptr:Circle").
-(defn subst-tyvars-sym:ptr (s:ptr tyvars:ptr spellings:ptr ntv:i32 line:i32)
+(defn subst-tyvars-sym (s:CStr tyvars:ptr spellings:ptr ntv:i32 line:i32):CStr
   (when (= (strchr s 58) null)
     (let (idx:i32 (tyvar-index-of s tyvars ntv))
-      (when (>= idx 0) (return (aref (cast ptr:ptr spellings) idx)))
+      (when (>= idx 0) (return (aref (as ptr:ptr spellings) idx)))
       (return s)))
   (let (segs:ptr (split-colon-segments s line)
         acc:ptr null)
     (let (it:ListIter (list-iter segs))
       (doseq-iter (e (addr-of it))
-        (let (seg:ptr ((cast ptr:Node e) s)
+        (let (seg:ptr ((as ptr:Node e) s)
               idx:i32 (tyvar-index-of seg tyvars ntv)
-              piece:ptr (if (>= idx 0) (aref (cast ptr:ptr spellings) idx) seg))
+              piece:ptr (if (>= idx 0) (aref (as ptr:ptr spellings) idx) seg))
           (if (= acc null) (set! acc piece) (set! acc (fmt-2s "%s:%s" acc piece))))))
     (when (= acc null) (return s))
     (return acc)))
 
 ; Deep-copy a node, substituting type variables (by colon-spelling) in every
 ; symbol. Used to stamp a concrete instance from a generic template.
-(defn subst-tyvars-node:ptr (node:ptr tyvars:ptr spellings:ptr ntv:i32)
+(defn subst-tyvars-node (node:raw:Node tyvars:ptr spellings:ptr ntv:i32):raw:Node
   (when (= node null) (return null))
-  (let (n:ptr:Node (cast ptr:Node node))
-    (when (= (n kind) NODE-SYM)
-      (let (ns:ptr (subst-tyvars-sym (n s) tyvars spellings ntv (n line)))
-        (when (= ns (n s)) (return node))
-        (let (new:ptr:Node (cast ptr:Node (alloc-node)))
-          (.set! new kind NODE-SYM)
-          (.set! new line (n line))
-          (.set! new s ns)
-          (return (cast ptr new)))))
-    (when (= (n kind) NODE-CELL)
-      (return (make-cell (subst-tyvars-node (n car) tyvars spellings ntv)
-                         (subst-tyvars-node (n cdr) tyvars spellings ntv)
-                         (n line))))
-    (return node)))
+  (let (n:raw:Node node)
+    (case (n kind)
+      NODE-SYM
+        (let (ns:ptr (subst-tyvars-sym (n s) tyvars spellings ntv (n line)))
+          (when (= ns (n s)) (return node))
+          (let (new:ptr:Node (as ptr:Node (alloc-node)))
+            (.set! new kind NODE-SYM)
+            (.set! new line (n line))
+            (.set! new s ns)
+            (return new)))
+      ; Stage 14 defn-signature.md S1: a new-style return type rides in a
+      ; NODE-KEYWORD (`:T`, `:ptr:T`) at the head of the stamped body tail. Substitute
+      ; its colon-spelling like a symbol but keep it a keyword so fn-parse-ret-type
+      ; re-reads the stamped return correctly. A value keyword whose spelling names no
+      ; tyvar is returned unchanged (subst-tyvars-sym is identity), so legacy bodies
+      ; are unaffected.
+      NODE-KEYWORD
+        (let (ns:ptr (subst-tyvars-sym (n s) tyvars spellings ntv (n line)))
+          (when (= ns (n s)) (return node))
+          (let (new:ptr:Node (as ptr:Node (alloc-node)))
+            (.set! new kind NODE-KEYWORD)
+            (.set! new line (n line))
+            (.set! new s ns)
+            (return new)))
+      NODE-CELL
+        (return (make-cell (subst-tyvars-node (n car) tyvars spellings ntv)
+                           (subst-tyvars-node (n cdr) tyvars spellings ntv)
+                           (n line)))
+      (return node))))

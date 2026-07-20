@@ -10,22 +10,22 @@
 (import-use numeric)
 
 ; clampv uses only < and >, so it is valid for any ordered/comparable type.
-(defn clampv:T (x:T lo:T hi:T &where (Valid T))
+(defn clampv (x:T lo:T hi:T &where (Valid T)):T
   (if (< x lo) lo (if (> x hi) hi x)))
 
 ; A user numeric type, to show Valid is not limited to built-ins.
 (defstruct Q v:i32)
-(defn mkq:ptr:Q (n:i32)
-  (let (r:ptr:Q (cast ptr:Q (malloc (cast i64 (sizeof Q))))) (.set! r v n) (return r)))
-(defn _+:ptr:Q (a:ptr:Q b:ptr:Q) (return (mkq (+ (a v) (b v)))))
-(defn <:i1  (a:ptr:Q b:ptr:Q) (return (< (a v) (b v))))
-(defn >:i1  (a:ptr:Q b:ptr:Q) (return (> (a v) (b v))))
+(defn mkq (n:i32):ptr:Q
+  (let (r:ptr:Q (as ptr:Q (malloc (as i64 (sizeof Q))))) (.set! r v n) (return r)))
+(defn _+ (a:ptr:Q b:ptr:Q):ptr:Q (return (mkq (+ (a v) (b v)))))
+(defn <  (a:ptr:Q b:ptr:Q):i1 (return (< (a v) (b v))))
+(defn >  (a:ptr:Q b:ptr:Q):i1 (return (> (a v) (b v))))
 
 ; A derived-value chain: (twice x) is a value derived from T whose own use must
 ; also resolve. For i32, twice→i32 then + → i32; the whole chain is checked.
-(defn twice:T (x:T &where (Valid T)) (+ x x))
+(defn twice (x:T &where (Valid T)):T (+ x x))
 
-(defn main:i32 ()
+(defn main ():i32
   ; Built-in numerics.
   (printf "clamp 5 1 9   = %d\n" (clampv 5 1 9))
   (printf "clamp 12 1 9  = %d\n" (clampv 12 1 9))

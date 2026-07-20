@@ -1,34 +1,138 @@
-; ABI lowering — SysV x86_64 struct-by-value classification and coercion.
+(import-use arena)
+
+; ABI lowering — SysV x86_64 and aarch64 struct-by-value classification and coercion.
 ; Source-imported by src/nucleusc.nuc after basic type functions are defined.
 
 ; ============================================================
-; Aggregate ABI lowering — x86_64 System V (Stage 8 Phase C)
+; Aggregate ABI lowering — x86_64 System V and aarch64 (Stage 8 Phase C)
 ; ============================================================
 ; Struct-by-value parameters and returns must follow the platform C ABI, not
 ; LLVM's default by-value aggregate passing (which is not ABI-correct). The
 ; classifier below ports clang's eightbyte model: a struct ≤16 bytes is split
 ; into one or two eightbytes, each classified INTEGER or SSE and coerced to a
-; register type; >16 bytes goes through memory (byval param / sret return).
+; register type; >16 bytes goes through memory (byval param / sret return on
+; x86_64, plain pointer on aarch64).
 ; Only TY-STRUCT is ever non-DIRECT, so every scalar/pointer path is unchanged.
 ; See design/stage8/platform.md for the reverse-engineered coercion table.
 
+; ============================================================
+; Stage 14 §14.4 batch 3a — StructDef field table accessors.
+; A StructDef's fields are one `(Vector (ref Field))` (was the two parallel
+; arrays field-names/field-types). These are the shared read/build accessors.
+; ============================================================
+
+; Read field `i` of struct `sd`'s field table. The `fields` handle is `(raw …)`
+; (null on a name-only pre-registered struct), so this asserts raw→ref before
+; `invoke` — sound because every caller loops under the `num-fields` bound, so a
+; null `fields` is never indexed.
+(defn field-at (fields:(raw (Vector (ref Field))) i:i32):ref:Field
+  (return (invoke (unsafe/cast (ref (Vector (ref Field))) fields) (as usize i))))
+
+; Populate a StructDef's `fields` Vector from parallel name/type arrays and set
+; the cached `num-fields` count. Names are already interned by the caller (the
+; array holds the canonical interned pointers, preserving struct-field-index's
+; identity match); types are the raw Type* pointers. This is the single
+; array→Vector conversion point for every StructDef builder.
+(defn struct-set-fields (sd:(raw StructDef) fnames:ptr ftypes:ptr nfields:i32):void
+  (let ((fields-vec (ref (Vector (ref Field)))) (vector-new-in (addr-of g-arena-alloc)))
+    (dotimes (i:i32 nfields)
+      (let (rec:ref:Field (new Field))
+        (.set! rec name (aref (as ptr:ptr fnames) i))
+        (.set! rec type (as raw:Type (aref (as ptr:ptr ftypes) i)))
+        (conj fields-vec rec)))
+    (.set! sd fields fields-vec)
+    (.set! sd num-fields nfields)))
+
+; ============================================================
+; Stage 14 §14.4: a TY-FN Type's parameter list is one `(Vector (ref Field))`
+; (was the parallel `params`/`param-names` arrays). These are the shared
+; build accessors; reads reuse `field-at` above (same `(ref Field)` element).
+; ============================================================
+
+; Build a `(Vector (ref Field))` from a raw ptr array of Type* param types.
+; The `name` slot is left null — a Type's params carry no names (`param-names`
+; was dead storage). Shared by `type-set-params` and the BoxedFn signature-token
+; builder (union-registry.nuc), which must walk the same element shape.
+(defn make-param-vec (ptypes:ptr np:i32) (ref (Vector (ref Field)))
+  (let ((pv (ref (Vector (ref Field)))) (vector-new-in (addr-of g-arena-alloc)))
+    (dotimes (i:i32 np)
+      (let (rec:ref:Field (new Field))
+        (.set! rec name null)
+        (.set! rec type (as raw:Type (aref (as ptr:ptr ptypes) i)))
+        (conj pv rec)))
+    (return pv)))
+
+; Populate a TY-FN Type's `params` Vector from a raw ptr array of Type* and set
+; the cached `num-params`. The single array→Vector conversion point for every
+; fn-type builder (mirrors struct-set-fields).
+(defn type-set-params (t:(raw Type) ptypes:ptr np:i32):void
+  (.set! t params (make-param-vec ptypes np))
+  (.set! t num-params np))
+
+; Check if target is aarch64 (AAPCS64 ABI uses plain pointers for large structs,
+; not byval attributes).
+(defn abi-is-aarch64 ():i32
+  (return (if (!= (strstr g-target-triple "aarch64") null) 1 0)))
+
+; Check if target is AVR (Stage 14 AVR-7). AVR is an 8-bit target: the SysV
+; eightbyte model (8-byte-register chunks) does not fit, so `abi-classify`
+; routes *every* aggregate (any size) through ABI-MEMORY with aarch64-style
+; plain-pointer passing (no byval — AVR has no such attribute and byval's
+; memcpy semantics don't map to its register-starved codegen). Spelled with the
+; strncmp-prefix convention the rest of the codebase uses for AVR triples
+; (reloc-for-triple / the datalayout is-avr check); AVR triples always begin
+; `avr`. Inert on every hosted/RISC-V target (returns 0) → byte-identical.
+(defn abi-is-avr ():i32
+  (return (if (= (strncmp g-target-triple "avr" 3) 0) 1 0)))
+
+; Check if target is riscv64 (Stage 14 RV-3). riscv64's lp64d psABI passes and
+; returns small aggregates via the INTEGER convention only in this v1 scope —
+; hard-float FP-flattening of small FP-bearing structs into FPRs is deferred
+; (it needs register-counting classification state, exactly like the aarch64
+; HFA gap; design/stage14/riscv-linux.md §3). So abi-classify forces the INTEGER
+; class for every eightbyte on riscv64 (skipping abi-class-eightbyte's field-type
+; walk), and a >16-byte aggregate travels by aarch64-style plain pointer (no
+; byval — abi-print-param / abi-arg-frag). Spelled with the same strncmp-prefix
+; idiom as abi-is-avr / cpu-for-triple; riscv64 triples always begin `riscv64`.
+; Inert on every hosted/x86_64/aarch64/AVR target (returns 0) → byte-identical.
+(defn abi-is-riscv ():i32
+  (return (if (= (strncmp g-target-triple "riscv64" 7) 0) 1 0)))
+
+; Stage 14 AVR-7 numerics policy: f64 is unsupported on AVR (8-bit target, no
+; hardware double). Rejected at the two entry points where an f64-typed value is
+; finalized: an explicit `:f64`/`double` annotation (parse-type-name,
+; union-registry.nuc) and a bare float literal's f64 default (emit-float,
+; nucleusc.nuc). Guarded by in-jit-module == 0 so a macro/CT body's compile-time
+; f64 — which runs on the *host* at expansion time and is never emitted into the
+; AVR program module — is unaffected; only the real target module (in-jit-module
+; == 0) is gated. Inert on hosted targets (abi-is-avr == 0), so the compiler's
+; own self-compile and every hosted program are byte-identical. f32 (a different
+; type name, never rejected here) and i64 (correct via libgcc __*di3) are
+; unaffected by design. abi.nuc is imported after scope.nuc (in-jit-module) and
+; reader.nuc (die-at), and before union-registry.nuc / nucleusc.nuc, so this
+; helper is in scope at both check sites.
+(defn avr-reject-f64 (line:i32):void
+  (when (and (!= (abi-is-avr) 0) (= (in-jit-module) 0))
+    (die-at line
+      "f64 is not supported on AVR by default (8-bit target, no hardware double); use f32, or a custom avr-gcc build with the -mdouble=64 multilib if you need genuine f64 -- see design/stage14/avr-targets.md")))
+
 ; Round x up to a multiple of a (a is a power of two in practice, but the
 ; arithmetic form works for any positive a).
-(defn abi-align-up:i32 (x:i32 a:i32)
+(defn abi-align-up (x:i32 a:i32):i32
   (when (<= a 1) (return x))
   (return (* (/ (+ x (- a 1)) a) a)))
 
 ; ABI alignment of a type in bytes. Scalars use their natural alignment
 ; (== size); pointers/functions use the target pointer alignment; structs use
 ; the max alignment of any field.
-(defn abi-alignof:i32 (t:ptr)
-  (let (k:i32 ((cast ptr:Type t) kind))
+(defn abi-alignof (t:raw:Type):i32
+  (let (k:i32 (t kind))
     (when (= k TY-STRUCT)
-      (return (abi-struct-align (cast ptr:StructDef ((cast ptr:Type t) sdef)))))
+      (return (abi-struct-align (t sdef))))
     ; A union's alignment is its max member alignment — the same computation
     ; abi-struct-align performs, so it is shared.
     (when (= k TY-UNION)
-      (return (abi-struct-align (cast ptr:StructDef ((cast ptr:Type t) sdef)))))
+      (return (abi-struct-align (t sdef))))
     (when (= k TY-PTR)  (return g-target-ptr-bytes))
     (when (= k TY-CSTR) (return g-target-ptr-bytes))
     (when (= k TY-FN)   (return g-target-ptr-bytes))
@@ -37,44 +141,44 @@
 ; ABI size of a type in bytes. Unlike type-size (which returns the pointer size
 ; for any struct, sufficient for its by-reference slots), this walks struct
 ; fields so the classifier sees the real aggregate size.
-(defn abi-sizeof:i32 (t:ptr)
-  (let (k:i32 ((cast ptr:Type t) kind))
+(defn abi-sizeof (t:raw:Type):i32
+  (let (k:i32 (t kind))
     (when (= k TY-STRUCT)
-      (return (abi-struct-size (cast ptr:StructDef ((cast ptr:Type t) sdef)))))
+      (return (abi-struct-size (t sdef))))
     (when (= k TY-UNION)
-      (return (abi-union-size (cast ptr:StructDef ((cast ptr:Type t) sdef)))))
+      (return (abi-union-size (t sdef))))
     (when (= k TY-FN) (return g-target-ptr-bytes))
     (return (type-size t))))
 
 ; ABI size of an untagged union: the max member size, rounded up to the union's
 ; own (max member) alignment.
-(defn abi-union-size:i32 (sd:ptr)
-  (let (sdd:ptr:StructDef (cast ptr:StructDef sd)
+(defn abi-union-size (sd:raw:StructDef):i32
+  (let (sdd:raw:StructDef sd
         n:i32 (sdd num-fields)
         mx:i32 0)
     (dotimes (i:i32 n)
-      (let (fsz:i32 (abi-sizeof (aref (cast ptr:ptr (sdd field-types)) i)))
+      (let (fsz:i32 (abi-sizeof ((field-at (sdd fields) i) type)))
         (when (> fsz mx) (set! mx fsz))))
     (return (abi-align-up mx (abi-struct-align sd)))))
 
 ; Max field alignment of a struct (its own ABI alignment).
-(defn abi-struct-align:i32 (sd:ptr)
-  (let (sdd:ptr:StructDef (cast ptr:StructDef sd)
+(defn abi-struct-align (sd:raw:StructDef):i32
+  (let (sdd:raw:StructDef sd
         n:i32 (sdd num-fields)
         a:i32 1)
     (dotimes (i:i32 n)
-      (let (fa:i32 (abi-alignof (aref (cast ptr:ptr (sdd field-types)) i)))
+      (let (fa:i32 (abi-alignof ((field-at (sdd fields) i) type)))
         (when (> fa a) (set! a fa))))
     (return a)))
 
 ; ABI size of a struct: fields laid out with natural padding, total rounded up
 ; to the struct's own alignment (tail padding included).
-(defn abi-struct-size:i32 (sd:ptr)
-  (let (sdd:ptr:StructDef (cast ptr:StructDef sd)
+(defn abi-struct-size (sd:raw:StructDef):i32
+  (let (sdd:raw:StructDef sd
         n:i32 (sdd num-fields)
         off:i32 0)
     (dotimes (i:i32 n)
-      (let (ft:ptr (aref (cast ptr:ptr (sdd field-types)) i)
+      (let (ft:ptr ((field-at (sdd fields) i) type)
             fa:i32 (abi-alignof ft))
         (set! off (abi-align-up off fa))
         (set! off (+ off (abi-sizeof ft)))))
@@ -84,8 +188,8 @@
 ; of struct sd placed at absolute base offset `base`. Recurses into nested
 ; struct fields by absolute offset. Returns a class code: 0 none, 1 SSE/float,
 ; 2 SSE/double, 3 INTEGER. Higher wins (INTEGER beats SSE; double beats float).
-(defn abi-class-eightbyte:i32 (sd:ptr base:i32 lo:i32)
-  (let (sdd:ptr:StructDef (cast ptr:StructDef sd)
+(defn abi-class-eightbyte (sd:raw:StructDef base:i32 lo:i32):i32
+  (let (sdd:raw:StructDef sd
         n:i32 (sdd num-fields)
         hi:i32 (+ lo 8)
         off:i32 0
@@ -96,17 +200,17 @@
       ; every member is classified against the same base (SysV merges the
       ; classes of all members, which the max-merge below already does).
       (when (!= (sdd is-union) 0) (set! off 0))
-      (let (ft:ptr (aref (cast ptr:ptr (sdd field-types)) i)
+      (let (ft:ptr ((field-at (sdd fields) i) type)
             fa:i32 (abi-alignof ft)
             fsz:i32 (abi-sizeof ft))
         (set! off (abi-align-up off fa))
         (let (fabs:i32 (+ base off)
-              fk:i32 ((cast ptr:Type ft) kind))
+              fk:i32 ((as ptr:Type ft) kind))
           ; Does this field overlap [lo, hi)?
           (when (and (< fabs hi) (> (+ fabs fsz) lo))
             (if (or (= fk TY-STRUCT) (= fk TY-UNION))
               (let (sub:i32 (abi-class-eightbyte
-                              (cast ptr:StructDef ((cast ptr:Type ft) sdef)) fabs lo))
+                              ((as ptr:Type ft) sdef) fabs lo))
                 (when (> sub cls) (set! cls sub)))
               (if (!= (is-float-type ft) 0)
                 (let (fc:i32 (if (= fk TY-F64) 2 1))
@@ -119,7 +223,7 @@
 ; Coercion IR type for one eightbyte: class `cls` holding `n` bytes (1..8).
 ; INTEGER → i(8·n) for n ≤ 4 (i8/i16/i24/i32), else i64. SSE/double → double.
 ; SSE/float → <2 x float> when the eightbyte is full, else float.
-(defn abi-eightbyte-ir:ptr (cls:i32 n:i32)
+(defn abi-eightbyte-ir (cls:i32 n:i32):CStr
   (when (= cls 2) (return "double"))
   (when (= cls 1)
     (if (= n 8) (return "<2 x float>") (return "float")))
@@ -129,63 +233,90 @@
 
 ; Classify a type for the SysV aggregate ABI. Returns an AbiInfo*. Non-struct
 ; types are ABI-DIRECT (byte-identical to pre-ABI codegen).
-(defn abi-classify:ptr (t:ptr)
-  (let (info:ptr:AbiInfo (cast ptr:AbiInfo (arena-alloc (sizeof AbiInfo))))
+(defn abi-classify (t:raw:Type):raw:AbiInfo
+  (let (info:ptr:AbiInfo (as ptr:AbiInfo (arena-alloc (sizeof AbiInfo))))
     (.set! info kind ABI-DIRECT)
     (.set! info reg0 null)
     (.set! info reg1 null)
     (.set! info size 0)
     (.set! info align 0)
-    (when (and (!= ((cast ptr:Type t) kind) TY-STRUCT)
-               (!= ((cast ptr:Type t) kind) TY-UNION))
-      (return (cast ptr info)))
-    (let (sd:ptr (cast ptr ((cast ptr:Type t) sdef))
+    (when (and (!= (t kind) TY-STRUCT)
+               (!= (t kind) TY-UNION))
+      (return info))
+    (let (sd:raw:StructDef (t sdef)
           sz:i32 (abi-sizeof t)
           al:i32 (abi-alignof t))
       (.set! info size sz)
       (.set! info align al)
+      ; Stage 14 AVR-7: on AVR every aggregate (any size) is ABI-MEMORY —
+      ; the SysV eightbyte classifier assumes 8-byte register chunks, which
+      ; don't exist on this 8-bit target. Bypass eightbyte classification
+      ; entirely; the MEMORY value travels by aarch64-style plain pointer
+      ; (abi-print-param / abi-arg-frag). Inert on hosted targets.
+      (when (!= (abi-is-avr) 0)
+        (.set! info kind ABI-MEMORY)
+        (return info))
       (when (> sz 16)
         (.set! info kind ABI-MEMORY)
-        (return (cast ptr info)))
+        (return info))
+      ; Stage 14 RV-3: on riscv64 every eightbyte is INTEGER (lp64d FP-flattening
+      ; deferred — see abi-is-riscv); skip the field-type walk and force class 3.
       (let (n0:i32 (if (< sz 8) sz 8)
-            c0:i32 (abi-class-eightbyte (cast ptr:StructDef sd) 0 0))
+            c0:i32 (if (!= (abi-is-riscv) 0) 3 (abi-class-eightbyte sd 0 0)))
         (.set! info reg0 (abi-eightbyte-ir c0 n0)))
       (when (<= sz 8)
         (.set! info kind ABI-COERCE1)
-        (return (cast ptr info)))
+        (return info))
       (let (n1:i32 (- sz 8)
-            c1:i32 (abi-class-eightbyte (cast ptr:StructDef sd) 0 8))
+            c1:i32 (if (!= (abi-is-riscv) 0) 3 (abi-class-eightbyte sd 0 8)))
         (.set! info reg1 (abi-eightbyte-ir c1 n1)))
       (.set! info kind ABI-COERCE2)
-      (return (cast ptr info)))))
+      (return info))))
 
 ; Return type string for a function signature given its return AbiInfo: void for
 ; MEMORY (the value goes through the sret pointer), the coercion reg(s) for
 ; COERCE, or the plain type for DIRECT.
-(defn abi-ret-ir:ptr (info:ptr ret:ptr)
-  (let (k:i32 ((cast ptr:AbiInfo info) kind))
+(defn abi-ret-ir (info:raw:AbiInfo ret:raw:Type):CStr
+  (let (k:i32 (info kind))
     (when (= k ABI-MEMORY)  (return "void"))
-    (when (= k ABI-COERCE1) (return ((cast ptr:AbiInfo info) reg0)))
+    (when (= k ABI-COERCE1) (return (info reg0)))
     (when (= k ABI-COERCE2)
       (return (fmt-2s "{ %s, %s }"
-                ((cast ptr:AbiInfo info) reg0) ((cast ptr:AbiInfo info) reg1))))
+                (info reg0) (info reg1))))
     (return (type-to-ir ret))))
 
 ; Print one lowered parameter to g-out. `name` is the param name for a `define`
 ; (emits the `%name.arg` operand) or null for a `declare` (types only). COERCE2
 ; expands to two comma-separated entries; the caller supplies the leading comma.
-(defn abi-print-param:void (info:ptr ptype:ptr name:ptr)
-  (let (ii:ptr:AbiInfo (cast ptr:AbiInfo info)
-        k:i32 ((cast ptr:AbiInfo info) kind))
+; On aarch64, ABI-MEMORY uses plain `ptr` (no byval attribute); on x86_64, it
+; uses `ptr byval(%Ty) align N`.
+; `name` stays elem-less `ptr` (not CStr): it is null-checked (`= name null`)
+; below to distinguish a `define` (real param name) from a `declare` (types
+; only, name is null) — a CStr retype would turn that guard into
+; `strcmp(name, null)`, which crashes (the batch-1 null-check-on-parameter
+; trap, conventions.md).
+(defn abi-print-param (info:raw:AbiInfo ptype:raw:Type name:ptr):void
+  (let (ii:raw:AbiInfo info
+        k:i32 (info kind))
     (when (= k ABI-DIRECT)
       (if (= name null)
         (fprintf g-out "%s" (type-to-ir ptype))
         (fprintf g-out "%s %%%s.arg" (type-to-ir ptype) name))
       (return))
     (when (= k ABI-MEMORY)
-      (if (= name null)
-        (fprintf g-out "ptr byval(%s) align %d" (type-to-ir ptype) (ii align))
-        (fprintf g-out "ptr byval(%s) align %d %%%s.arg" (type-to-ir ptype) (ii align) name))
+      ; x86_64 uses a `byval` attribute; aarch64, AVR (Stage 14 AVR-7) AND
+      ; riscv64 (Stage 14 RV-3) pass a plain pointer (AVR has no byval concept;
+      ; riscv64's psABI passes >16-byte aggregates by reference, no byval).
+      ; byval only when the target is none of those three.
+      (if (and (= (abi-is-aarch64) 0) (= (abi-is-avr) 0) (= (abi-is-riscv) 0))
+        ; x86_64: byval attribute
+        (if (= name null)
+          (fprintf g-out "ptr byval(%s) align %d" (type-to-ir ptype) (ii align))
+          (fprintf g-out "ptr byval(%s) align %d %%%s.arg" (type-to-ir ptype) (ii align) name))
+        ; aarch64 / AVR / riscv64: plain pointer
+        (if (= name null)
+          (fprintf g-out "ptr")
+          (fprintf g-out "ptr %%%s.arg" name)))
       (return))
     (when (= k ABI-COERCE1)
       (if (= name null)
@@ -201,9 +332,9 @@
 ; and bind it in fn-scope. DIRECT keeps the prior alloca+store (byte-identical).
 ; MEMORY binds the byval pointer directly (it already points at the copy).
 ; COERCE allocas the struct and stores the register arg(s) at their offsets.
-(defn abi-emit-param-prologue:void (fn-scope:ref:Scope pname:ptr ptype:ptr)
-  (let (info:ptr:AbiInfo (cast ptr:AbiInfo (abi-classify ptype))
-        k:i32 ((cast ptr:AbiInfo (abi-classify ptype)) kind)
+(defn abi-emit-param-prologue (fn-scope:ref:Scope pname:CStr ptype:raw:Type):void
+  (let (info:raw:AbiInfo (abi-classify ptype)
+        k:i32 ((abi-classify ptype) kind)
         slot:ptr (fmt-s "%%%s.addr" pname)
         arg:ptr (fmt-s "%%%s.arg" pname))
     (when (= k ABI-DIRECT)
@@ -219,14 +350,14 @@
     ; COERCE1 / COERCE2: materialize the register arg(s) back into a struct slot.
     (fprintf g-entry-stream "  %s = alloca %s\n" slot (type-to-ir ptype))
     (if (= k ABI-COERCE1)
-      (fprintf g-entry-stream "  store %s %s, ptr %s\n" ((cast ptr:AbiInfo info) reg0) arg slot)
+      (fprintf g-entry-stream "  store %s %s, ptr %s\n" (info reg0) arg slot)
       (let (gp:ptr null)
         (fprintf g-entry-stream "  store %s %%%s.arg.0, ptr %s\n"
-          ((cast ptr:AbiInfo info) reg0) pname slot)
+          (info reg0) pname slot)
         (set! gp (new-tmp))
         (fprintf g-entry-stream "  %s = getelementptr i8, ptr %s, i64 8\n" gp slot)
         (fprintf g-entry-stream "  store %s %%%s.arg.1, ptr %s\n"
-          ((cast ptr:AbiInfo info) reg1) pname gp)))
+          (info reg1) pname gp)))
     (scope-define fn-scope pname ptype slot 1)))
 
 ; Emit a struct return for the current function per g-fn-ret-abi. `v` is the
@@ -244,14 +375,14 @@
 ; the aggregate), so scalar/pointer-only self-compilation stays byte-identical.
 ; MEMORY copies through the sret pointer and returns void; COERCE loads the
 ; eightbyte(s) and returns the reg(s).
-(defn emit-struct-ret:void (v:ptr)
-  (let (vv:ptr:Val (cast ptr:Val v)
-        info:ptr:AbiInfo (cast ptr:AbiInfo g-fn-ret-abi)
-        k:i32 ((cast ptr:AbiInfo g-fn-ret-abi) kind))
+(defn emit-struct-ret (v:raw:Val):void
+  (let (vv:raw:Val v
+        info:ptr:AbiInfo (as ptr:AbiInfo g-fn-ret-abi)
+        k:i32 ((as ptr:AbiInfo g-fn-ret-abi) kind))
     ; By-pointer return (struct literal `(ref S)` / closure `(ref Env)`): the
     ; struct bytes live at `(vv val)`. Load eightbyte(s) / the whole aggregate
     ; straight from that address — never `store` the pointer itself.
-    (when (= ((cast ptr:Type (vv type)) kind) TY-PTR)
+    (when (= ((vv type) kind) TY-PTR)
       (let (ty:ptr (type-to-ir g-fn-ret-type)
             src:ptr (vv val))
         (when (= k ABI-MEMORY)
@@ -285,7 +416,7 @@
         (return)))
     ; First-class struct value — the original (byte-identical) path: `.val`
     ; holds the aggregate, so store it / round it through memory directly.
-    (let (ty:ptr (type-to-ir ((cast ptr:Val v) type)))
+    (let (ty:ptr (type-to-ir (v type)))
       (when (= k ABI-MEMORY)
         (fprintf g-body-stream "  store %s %s, ptr %s\n" ty (vv val) g-fn-sret-name)
         (fprintf g-body-stream "  ret void\n")
@@ -326,10 +457,27 @@
 ; Env)` pointer is normalized to first-class at the call site (emit-call-with-
 ; args, CE-3 fix (b)) before reaching here, since classification on the arg type
 ; alone cannot distinguish a by-value-struct arg from an ordinary pointer arg.
-(defn abi-arg-frag:ptr (av:ptr)
-  (let (a:ptr:Val (cast ptr:Val av)
-        info:ptr:AbiInfo (cast ptr:AbiInfo (abi-classify ((cast ptr:Val av) type)))
-        k:i32 ((cast ptr:AbiInfo (abi-classify ((cast ptr:Val av) type))) kind))
+; On aarch64, ABI-MEMORY passes a plain pointer (no byval attribute).
+(defn abi-arg-frag (av:raw:Val):CStr
+  (let (a:raw:Val av
+        info:raw:AbiInfo (abi-classify (av type))
+        k:i32 ((abi-classify (av type)) kind))
+    ; Stage 14 NS-3 (design/stage14/native-strings.md): an *unmaterialized* StrView
+    ; string literal (chameleon: is-lit=1, `val` is the bare data GEP) reaching
+    ; abi-arg-frag is always a variadic argument — a fixed StrView parameter is
+    ; materialized to a real {ptr,len} value (is-lit=0) by the call-site coercion
+    ; loop before this point. A printf-family `%s` expects a char*, so pass the
+    ; literal's data pointer (already `val`) as a plain ptr, byte-identical to the
+    ; old CStr vararg fragment. NOTE the split of responsibility: abi-arg-frag
+    ; CANNOT distinguish a fixed StrView parameter (passed by value = two INTEGER
+    ; eightbytes) from a *materialized* StrView variadic argument (must pass only
+    ; `.data`) — both are is-lit=0 StrView values here. So the materialized-view
+    ; variadic case is collapsed by the caller (emit-call-with-args), which knows
+    ; the fixed/variadic boundary; here we only special-case the chameleon literal,
+    ; which is unambiguously variadic. A fixed StrView value falls through to the
+    ; generic struct ABI (COERCE2), exactly as it must.
+    (when (and (!= (a is-lit) 0) (!= (type-is-strview (a type)) 0))
+      (return (fmt-2s "ptr %s" (a val))))
     (when (= k ABI-DIRECT)
       (return (fmt-2s "%s %s" (type-to-ir (a type)) (a val))))
     (let (ty:ptr (type-to-ir (a type))
@@ -337,7 +485,14 @@
       (fprintf g-entry-stream "  %s = alloca %s\n" addr ty)
       (fprintf g-body-stream "  store %s %s, ptr %s\n" ty (a val) addr)
       (when (= k ABI-MEMORY)
-        (return (fmt-2s "%s %s" (fmt-sd "ptr byval(%s) align %d" ty (info align)) addr)))
+        ; x86_64: byval attribute; aarch64, AVR (Stage 14 AVR-7) AND riscv64
+        ; (Stage 14 RV-3): plain pointer. byval only when the target is none of
+        ; aarch64, AVR, or riscv64.
+        (if (and (= (abi-is-aarch64) 0) (= (abi-is-avr) 0) (= (abi-is-riscv) 0))
+          ; x86_64: byval attribute
+          (return (fmt-2s "%s %s" (fmt-sd "ptr byval(%s) align %d" ty (info align)) addr))
+          ; aarch64 / AVR / riscv64: plain pointer
+          (return (fmt-2s "ptr %s" addr))))
       (when (= k ABI-COERCE1)
         (let (r:ptr (new-tmp))
           (fprintf g-body-stream "  %s = load %s, ptr %s\n" r (info reg0) addr)
@@ -359,9 +514,9 @@
 ; the first-class struct value, and return its Val. `arglist` is the already
 ; built scalar/coerced argument string; `nargs` is the count it holds (so a
 ; MEMORY sret prefix knows whether it needs a separating comma).
-(defn abi-emit-struct-call:ref:Val (info:ptr ret:ptr ir-name:ptr arglist:ptr nargs:i32)
-  (let (ii:ptr:AbiInfo (cast ptr:AbiInfo info)
-        k:i32 ((cast ptr:AbiInfo info) kind)
+(defn abi-emit-struct-call (info:raw:AbiInfo ret:raw:Type ir-name:CStr arglist:CStr nargs:i32):ref:Val
+  (let (ii:raw:AbiInfo info
+        k:i32 (info kind)
         ty:ptr (type-to-ir ret))
     (when (= k ABI-MEMORY)
       (let (slot:ptr (new-tmp)
@@ -406,16 +561,56 @@
 
 ; Try to coerce a value to a target type. Returns a Val* or null on failure.
 ; Handles: same kind (identity), int-to-int (trunc/sext/zext), same-width sign change.
-(defn coerce-int-val:?ptr:Val (v:ptr target:ptr line:i32)
-  (let (vv:ptr:Val (cast ptr:Val v)
-        src:ptr (vv type)
-        sk:i32 (-> src (cast ptr:Type _) (_ kind))
-        dk:i32 (-> target (cast ptr:Type _) (_ kind)))
+(defn coerce-int-val (v:raw:Val target:raw:Type line:i32):?ptr:Val
+  (let (vv:raw:Val v
+        src:raw:Type (vv type)
+        sk:i32 (src kind)
+        dk:i32 (target kind))
     ; Stage 10: pointer-kind flow gate — raw/Maybe may not flow into a
     ; non-null (ref T) slot. Engages only when the destination is ref, so
     ; every pre-Stage-10 path is untouched.
     (when (= dk TY-PTR)
       (pkind-flow-check src target line "assignment"))
+    ; Stage 14 NS-3 (design/stage14/native-strings.md): an *unmaterialized* StrView
+    ; string literal (emit-string's default — is-lit=1, `val` is the bare data GEP,
+    ; `lit-i64` the byte length). It adapts to its target with no wasted IR:
+    ;   → ptr / CStr : the literal's data pointer already IS `val` (the backing
+    ;     rodata is NUL-terminated at data[len]), so this is a pure retype, no
+    ;     instruction — exactly today's CStr→ptr no-op. This is what keeps every
+    ;     fprintf/fmt/strcmp/`= "lit"`/`:ptr`-slot site in the compiler's own
+    ;     source byte-identical across the flip.
+    ;   → StrView    : the consumer genuinely wants a view — materialize the
+    ;     {data,len} struct here (deferred from emit-string). Compiler code never
+    ;     hits this (no StrView targets); it is for lib/examples.
+    ; Must precede the `sk == dk` identity return below, or a StrView target would
+    ; pass the chameleon through unmaterialized (a bare ptr typed as %StrView).
+    (when (and (!= (vv is-lit) 0) (!= (type-is-strview src) 0))
+      (when (or (= dk TY-PTR) (= dk TY-CSTR))
+        (let (rv:ptr:Val (as ptr:Val (alloc-val target (vv val))))
+          (.set! rv taint (vv taint))
+          (.set! rv taint-frame (vv taint-frame))
+          (return (as ptr rv))))
+      (when (!= (type-is-strview target) 0)
+        (let (v0:ptr (new-tmp)
+              v1:ptr (new-tmp)
+              svir:ptr (type-to-ir target))
+          (fprintf g-body-stream "  %s = insertvalue %s undef, ptr %s, 0\n"
+            v0 svir (vv val))
+          (fprintf g-body-stream "  %s = insertvalue %s %s, %s %ld, 1\n"
+            v1 svir v0 (ptr-int-ir) (vv lit-i64))
+          (return (alloc-val target v1)))))
+    ; Stage 14 NS-3 (design/stage14/native-strings.md): a StrView source (chameleon
+    ; literal or materialized value) whose target is a *different* by-value struct
+    ; must NOT be waved through by the `sk == dk` identity return below — both are
+    ; TY-STRUCT, so that line would reinterpret the StrView (a bare `ptr` for a
+    ; chameleon, a {ptr,len} aggregate for a value) as an unrelated struct and crash
+    ; the LLVM verifier (`store %Box <ptr>`). Fall through to the coercion-failure
+    ; (null) path instead, so the caller (`.set!`/`aset!`/let-init/…) reports a clean
+    ; "type mismatch" diagnostic. StrView→StrView (target IS StrView) drops through to
+    ; the identity return unchanged; StrView→ptr/CStr was already handled above.
+    (when (and (= sk TY-STRUCT) (!= (type-is-strview src) 0)
+               (= dk TY-STRUCT) (= (type-is-strview target) 0))
+      (return null))
     ; Same kind — identity
     (when (= sk dk) (return v))
     ; CStr is an opaque char* — freely interconvertible with a plain pointer,
@@ -423,13 +618,41 @@
     ; ptr is expected, and a ptr usable where a CStr slot is declared.
     (when (or (and (= sk TY-CSTR) (= dk TY-PTR))
               (and (= sk TY-PTR) (= dk TY-CSTR)))
-      (let (rv:ptr:Val (cast ptr:Val (alloc-val target (vv val))))
+      (let (rv:ptr:Val (as ptr:Val (alloc-val target (vv val))))
         (.set! rv taint (vv taint))
         ; Stage 13 L1: carry the frame-region flag through CStr<->ptr coercion.
         (.set! rv taint-frame (vv taint-frame))
-        (return (cast ptr rv))))
+        (return (as ptr rv))))
+    ; Stage 14 NS-2 (design/stage14/native-strings.md): a StrView borrows to a
+    ; CStr/ptr for free by taking its `data` field — a literal's backing rodata is
+    ; NUL-terminated at data[len], so `data` is a valid char*. Mirrors the
+    ; CStr<->ptr no-op above (the coexistence hinge that keeps every libc/format
+    ; site working once literals are views). DORMANT: nothing in src/ produces a
+    ; StrView value yet (NODE-STR is CStr until NS-3), so `type-is-strview` is 0
+    ; here throughout self-compilation and no extractvalue is emitted →
+    ; byte-identical bootstrap. A general StrView value is one extractvalue; NS-3
+    ; can collapse a *literal* StrView back to its bare GEP.
+    (when (and (!= (type-is-strview src) 0)
+               (or (= dk TY-PTR) (= dk TY-CSTR)))
+      (let (d:ptr (new-tmp))
+        (fprintf g-body-stream "  %s = extractvalue %s %s, 0\n"
+          d (type-to-ir src) (vv val))
+        (return (alloc-val target d))))
     ; Both integers — emit cast if needed
     (when (and (!= (is-int-type src) 0) (!= (is-int-type target) 0))
+      ; Stage 14 LW-4 (int-widening.md §"LW-4"): a known integer literal whose
+      ; value is not representable in the target type is a compile-time error,
+      ; never a silent trunc/wrap. Only genuine literals carry `is-lit` (set by
+      ; emit-int); typed *values* are untouched — their runtime value is unknown,
+      ; and narrowing them stays the caller's existing behavior (a non-goal). This
+      ; is the single chokepoint: let/defvar init, field store, aset!, return,
+      ; union-variant construction, plain/generic call args, and binop literal
+      ; adoption (via coerce-num-val) all route a literal-tagged Val through here.
+      (when (and (!= (vv is-lit) 0)
+                 (= (int-literal-fits (vv lit-i64) target) 0))
+        (die-at line
+          (fmt-2s "integer literal %s does not fit %s"
+            (fmt-i64 "%ld" (vv lit-i64)) (type-spelling target))))
       (let (sw:i32 (int-width src) dw:i32 (int-width target))
         (when (= sw dw)
           ; Same width, different signedness — reinterpret (no IR needed)
@@ -447,11 +670,42 @@
     ; Not compatible
     (return null)))
 
-(defn register-struct:ref:StructDef (name:ptr)
-  (when (>= (cast i32 (count g-structs)) MAX-STRUCTS)
+; SM-5 diagnostic backstop (design/stage14/symbol-mangling.md): validate a
+; FINAL ir-name at the point a defn/defvar/struct/union is defined or declared,
+; so an LLVM-illegal character ir-name-token/sanitize-for-ir/sanitize-for-c
+; don't already neutralize (e.g. a literal `%` — legal in a Nucleus symbol per
+; lib/reader.nuc's permissive is-sym-char, but not in an unquoted LLVM
+; identifier) is a source-level compiler error naming the original definition,
+; never a raw LLVM parse error surfacing later at link/verify time.
+; `ir-name-illegal-char` (the pure char-class predicate) lives in format.nuc
+; beside ir-name-token/sanitize-for-ir/sanitize-for-c; this die-at-calling
+; wrapper cannot live there too — format.nuc is import-used (nucleusc.nuc:420)
+; before reader.nuc (507) where die-at is defined, so a call up to die-at from
+; a format.nuc body would be an unresolved forward reference at emit time (the
+; same import-order wall SM-3/SM-4 document). abi.nuc is imported (582) after
+; reader.nuc and before every chokepoint that needs this wrapper
+; (union-registry.nuc 584, generics.nuc 604, cheader.nuc 6921, and
+; nucleusc.nuc's own emit-defvar/emit-extern/emit-defn/emit-defstruct further
+; down that same file), so it is the earliest available home.
+(defn check-ir-name-legal (line:i32 orig-name:CStr ir-name:CStr):void
+  (let (bad:i32 (ir-name-illegal-char ir-name))
+    (when (>= bad 0)
+      (let (cbuf:ptr (arena-alloc 2))
+        (aset! (as ptr:i8 cbuf) 0 (unsafe/cast i8 bad))
+        (aset! (as ptr:i8 cbuf) 1 0)
+        (die-at line
+          (fmt-3s "illegal character '%s' in generated symbol for '%s' (ir-name '%s') — LLVM identifiers allow only [A-Za-z0-9$._-]"
+                  cbuf orig-name ir-name))))))
+
+(defn register-struct (name:CStr):ref:StructDef
+  (when (>= (unsafe/cast i32 (count g-structs)) MAX-STRUCTS)
     (fprintf stderr "nucleusc: too many structs\n") (exit 1))
-  (let (sd:ptr:StructDef (cast ptr:StructDef (arena-alloc (sizeof StructDef))))
+  (let (sd:ptr:StructDef (new StructDef))
     (.set! sd name name)
+    ; SM-4: precompute the LLVM-safe type name once (ir-name-token is a
+    ; pointer-identity no-op for names without `?`/`!`, so this is byte-identical
+    ; for every existing struct/union and the whole compiler self-IR).
+    (.set! sd ir-name (ir-name-token name))
     (.set! sd num-fields 0)
     (.set! sd emitted 0)
     (.set! sd is-union 0)
@@ -459,5 +713,5 @@
     (.set! sd origin-template null)
     (.set! sd origin-args null)
     (.set! sd origin-nargs 0)
-    (conj g-structs (cast ptr sd))
-    (return (cast ref:StructDef sd))))
+    (conj g-structs sd)
+    (return sd)))

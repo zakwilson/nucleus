@@ -13,16 +13,16 @@
 (defconst FORTY-TWO 42)
 (defvar g-const:i32 FORTY-TWO)
 
-(defn main:int ()
+(defn main ():int
   (printf "i32=%d\n" g-int)
   (printf "i64=%ld\n" g-i64)
   (printf "neg=%d\n" g-neg)
   (printf "str=%s\n" g-str)
-  (printf "null=%d\n" (cast i32 (null? g-null)))
-  (printf "t=%d f=%d\n" (cast i32 g-true) (cast i32 g-false))
-  (printf "f32=%.2f\n" (cast f64 g-f32))
+  (printf "null=%d\n" (as i32 (null? g-null)))
+  (printf "t=%d f=%d\n" (as i32 g-true) (as i32 g-false))
+  (printf "f32=%.2f\n" (as f64 g-f32))
   (printf "f64=%.15f\n" g-f64)
-  (printf "char=%c\n" (cast i32 g-char))
+  (printf "char=%c\n" (as i32 g-char))
   (printf "const=%d\n" g-const)
   ; set! through these globals also has to work.
   (set! g-int 100)

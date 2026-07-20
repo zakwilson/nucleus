@@ -1,0 +1,8 @@
+; Stage 14 UN-5 negative fixture: bare `cast` is retired.
+;
+; The legacy unqualified `cast` special form was split in Stage 14 UN-1/UN-4
+; into `as` (statically safe) and `unsafe/cast` (unchecked) — design/
+; stage14/unsafe-namespace.md D6. Compiling this must FAIL with:
+;   "'cast' was split in Stage 14: use 'as' (safe) or 'unsafe/cast' (unchecked)"
+(defn main ():i32
+  (return (cast i32 0)))

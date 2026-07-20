@@ -3,7 +3,7 @@
 
 (import-use "stdio.h")
 
-(defn main:int ()
+(defn main ():int
   ; Positional struct literal.
   (let (p:ptr:Point (Point 10 20))
     (printf "p = %d,%d\n" (. p x) (. p y)))

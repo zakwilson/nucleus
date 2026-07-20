@@ -2,7 +2,7 @@
 (import-use "stdlib.h")
 (import-use "string.h")
 
-(defn main:i32 ()
+(defn main ():i32
   (with (s:ptr (malloc 64))
     (memcpy s "C header import works" 22)
     (printf "%s\n" s)

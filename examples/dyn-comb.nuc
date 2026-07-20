@@ -13,24 +13,24 @@
 (import-use vector)
 
 (defprotocol Render
-  ((render i32) ((self (ref Self)))))
+  (render ((self (ref Self))) i32))
 
 (defstruct Circle r:i32)
 (extend Circle Render)
-(defn render:i32 ((self (ref Circle)))
+(defn render ((self (ref Circle))):i32
   (return (* 3 (self r))))
 
 (defstruct Square s:i32)
 (extend Square Render)
-(defn render:i32 ((self (ref Square)))
+(defn render ((self (ref Square))):i32
   (return (* (self s) (self s))))
 
 (defstruct Label text:i32)
 (extend Label Render)
-(defn render:i32 ((self (ref Label)))
+(defn render ((self (ref Label))):i32
   (return (+ 1000 (self text))))
 
-(defn main:i32 ()
+(defn main ():i32
   (with ((v (ref (Vector (dyn Render)))) (alloca (Vector (dyn Render))))
     (vector-init v)
     (let (c:(dyn Render) (Circle 5)

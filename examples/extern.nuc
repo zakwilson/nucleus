@@ -1,6 +1,6 @@
 (import-use "stdio.h")
 (extern stderr:ptr)
 
-(defn main:int ()
+(defn main ():int
   (fprintf stderr "hello from stderr\n")
   (return 0))

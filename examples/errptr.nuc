@@ -18,46 +18,44 @@
 
 ; A fallible lookup returning a niche-encoded pointer-or-error. (ok p) / (err E)
 ; resolve against the declared return type in return position (target typing).
-(defn lookup:!ptr:Pt (p:ptr:Pt i:i32)
-  (when (< i (cast i32 0))
+(defn lookup (p:ptr:Pt i:i32):!ptr:Pt
+  (when (< i 0)
     (return (err bad-index)))
-  (when (> i (cast i32 0))
+  (when (> i 0)
     (return (err! not-found)))      ; err! is identical here (no handler path for a niche)
-  (return (ok (cast ref:Pt p))))
+  (return (ok (as ref:Pt p))))
 
 ; Propagation with `try`: yields the ok pointer or re-returns the error.
-(defn lookup-x:!i32 (p:ptr:Pt i:i32)
+(defn lookup-x (p:ptr:Pt i:i32):!i32
   (let (q:ref:Pt (try (lookup p i)))
     (return (ok (q x)))))
 
-(defn show:void (r:!ptr:Pt)
+(defn show (r:!ptr:Pt):void
   (match r
     ((ok q)  (printf "ok x=%d\n" (q x)))
     ((err e) (printf "err %s: %s\n" (err-name e) (err-message e)))))
 
-(defn main:i32 ()
-  (let (p:ptr:Pt (cast ptr:Pt (malloc 8)))
+(defn main ():i32
+  (with (p:ptr:Pt (as ptr:Pt (malloc 8)))
     (.set! p x 7)
 
     ; match on a niche Result value, both arms.
-    (show (lookup p (cast i32 0)))
-    (show (lookup p (cast i32 1)))
-    (show (lookup p (cast i32 -1)))
+    (show (lookup p 0))
+    (show (lookup p 1))
+    (show (lookup p -1))
 
     ; unwrap on the ok arm yields the (ref T) pointer.
-    (printf "unwrap %d\n" ((unwrap (lookup p (cast i32 0))) x))
+    (printf "unwrap %d\n" ((unwrap (lookup p 0)) x))
 
     ; unwrap-or supplies a default (ref T) on the err arm (evaluated only then).
-    (printf "unwrap-or ok  %d\n" ((unwrap-or (lookup p (cast i32 0)) (cast ref:Pt p)) x))
-    (printf "unwrap-or err %d\n" ((unwrap-or (lookup p (cast i32 1)) (cast ref:Pt p)) x))
+    (printf "unwrap-or ok  %d\n" ((unwrap-or (lookup p 0) (as ref:Pt p)) x))
+    (printf "unwrap-or err %d\n" ((unwrap-or (lookup p 1) (as ref:Pt p)) x))
 
     ; try: success propagates the value, failure propagates the error.
-    (match (lookup-x p (cast i32 0))
+    (match (lookup-x p 0)
       ((ok v)  (printf "try ok %d\n" v))
       ((err e) (printf "try err %s\n" (err-name e))))
-    (match (lookup-x p (cast i32 -1))
+    (match (lookup-x p -1)
       ((ok v)  (printf "try ok %d\n" v))
-      ((err e) (printf "try err %s\n" (err-name e))))
-
-    (free p))
+      ((err e) (printf "try err %s\n" (err-name e)))))
   0)

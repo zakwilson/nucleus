@@ -1,0 +1,18 @@
+; Stage 14 TC-1 negative fixture: a zero-arg return-only-tyvar generic called
+; with NO expected type (no declared binding type → no want channel) must FAIL
+; with the dedicated "cannot infer type variable" diagnostic, not the misleading
+; "no matching method". T appears only in the return spelling, so with no want
+; to fill it the call is unresolvable. Compiling this must FAIL with:
+;   "cannot infer type variable 'T' for 'box-empty'"
+
+(defstruct (Box T) (val i32))
+
+(defn box-empty () (Box T)
+  (let (r (alloca (Box T)))
+    (.set! r val 0)
+    (return (deref r))))
+
+(defn main ():i32
+  ; No declared type on b → no want in scope → T cannot be inferred.
+  (let (b (box-empty))
+    (return ((addr-of b) val))))

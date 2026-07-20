@@ -11,10 +11,10 @@
 (import-use numeric)
 
 ; CStr conforms to Eq (lib/numeric.nuc), so it works in an Eq-bounded generic.
-(defn same:i1 (a:T b:T &where (Eq T))
+(defn same (a:T b:T &where (Eq T)):i1
   (return (= a b)))
 
-(defn main:i32 ()
+(defn main ():i32
   ; Literal vs literal — content comparison.
   (printf "foo = foo   : %d\n" (= "foo" "foo"))
   (printf "foo = bar   : %d\n" (= "foo" "bar"))
@@ -25,10 +25,12 @@
   ; the CStr `=` is 1 (content) while the raw ptr `=` is 0 (identity).
   (let (buf:ptr:i8 (alloca i8 8))
     (strcpy buf "foo")
-    (printf "copy = foo  : %d\n" (= (cast CStr buf) "foo"))
-    (printf "copy ptr==  : %d\n" (= (cast ptr buf) (cast ptr "foo"))))
+    (printf "copy = foo  : %d\n" (= (as CStr buf) "foo"))
+    (printf "copy ptr==  : %d\n" (= (as ptr buf) (as ptr "foo"))))
 
-  ; Through the Eq-bounded generic (T := CStr).
-  (printf "same hi hi  : %d\n" (same "hi" "hi"))
-  (printf "same hi yo  : %d\n" (same "hi" "yo"))
+  ; Through the Eq-bounded generic (T := CStr). Stage 14 NS-3: a bare "…" is now a
+  ; StrView, so cast to CStr to keep binding this generic at CStr (StrView's Eq is
+  ; import-gated in lib/strview.nuc and not pulled in here).
+  (printf "same hi hi  : %d\n" (same (as CStr "hi") (as CStr "hi")))
+  (printf "same hi yo  : %d\n" (same (as CStr "hi") (as CStr "yo")))
   (return 0))

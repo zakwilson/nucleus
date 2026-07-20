@@ -29,7 +29,7 @@
 (import-use string)
 (import-use error)
 
-(defn main:i32 ()
+(defn main ():i32
 
   ; ---- 1. Build "Hello" with push-char ----------------------------------------
   (with ((s (ref String)) (alloca String))
@@ -41,23 +41,23 @@
     (string-push-char s \l)
     (string-push-char s \o)
 
-    (printf "byte-len=%llu\n" (cast ui64 (byte-len s)))     ; 5
-    (printf "char-count=%llu\n" (cast ui64 (char-count s))) ; 5
+    (printf "byte-len=%llu\n" (as ui64 (byte-len s)))     ; 5
+    (printf "char-count=%llu\n" (as ui64 (char-count s))) ; 5
 
     ; ---- 2. chars iteration --------------------------------------------------
     (let (ci:CharIter (chars s))
       (doseq-iter (c (addr-of ci))
-        (printf "char=%u\n" (cast ui32 c))))  ; 72 101 108 108 111
+        (printf "char=%u\n" (as ui32 c))))  ; 72 101 108 108 111
 
     ; ---- 3. string-push-str: append " World" ----------------------------------
     (let ((needle (ref StrView)) (alloca StrView))
-      (.set! needle data (cast ptr:ui8 (cast ptr " World")))
-      (.set! needle len  (cast usize 6))
+      (.set! needle data (as ptr:ui8 (as ptr " World")))
+      (.set! needle len  6)
       (let (r:!i32 (string-push-str s needle))
         (match r
           ((ok _) (printf "push-str=ok\n"))
           ((err e) (printf "push-str=err\n"))))
-      (printf "byte-len-after=%llu\n" (cast ui64 (byte-len s))) ; 11
+      (printf "byte-len-after=%llu\n" (as ui64 (byte-len s))) ; 11
       ; Print as CStr using strview-to-cstr on as-view.
       (let (sv:StrView (as-view s))
         (printf "content=%s\n" (strview-to-cstr (addr-of sv)))))  ; Hello World
@@ -65,14 +65,14 @@
     ; ---- 4. string-pop-char: pop 'd' -----------------------------------------
     (let ((popped (Maybe Char)) (string-pop-char s))
       (match popped
-        ((some c) (printf "popped=%u\n" (cast ui32 c)))   ; 100 (= 'd')
+        ((some c) (printf "popped=%u\n" (as ui32 c)))   ; 100 (= 'd')
         (none (printf "popped=none\n"))))
-    (printf "byte-len-after-pop=%llu\n" (cast ui64 (byte-len s))) ; 10
+    (printf "byte-len-after-pop=%llu\n" (as ui64 (byte-len s))) ; 10
 
     ; ---- 5a. string-from-view: success path ------------------------------------
     (let ((sv2 (ref StrView)) (alloca StrView))
-      (.set! sv2 data (cast ptr:ui8 (cast ptr "hi")))
-      (.set! sv2 len  (cast usize 2))
+      (.set! sv2 data (as ptr:ui8 (as ptr "hi")))
+      (.set! sv2 len  2)
       (let (r2:!String (string-from-view sv2))
         (match r2
           ((ok s2)
@@ -85,18 +85,18 @@
 
     ; ---- 5b. string-from-view: invalid UTF-8 → error --------------------------
     ; 0xFF is not a valid UTF-8 lead byte.
-    (let (bad-buf:ptr:ui8 (cast ptr:ui8 (malloc (cast i64 1))))
-      (aset! bad-buf (cast i64 0) (cast ui8 255))
+    (let (bad-buf:ptr:ui8 (as ptr:ui8 (malloc 1)))
+      (aset! bad-buf 0 255)
       (let ((bad-sv (ref StrView)) (alloca StrView))
         (.set! bad-sv data bad-buf)
-        (.set! bad-sv len  (cast usize 1))
+        (.set! bad-sv len  1)
         (let (r3:!String (string-from-view bad-sv))
           (match r3
             ((ok s3)
              (printf "from-view-bad=ok\n")
              (drop (addr-of s3)))
             ((err e) (printf "from-view-bad=err\n")))))  ; err
-      (free (cast ptr bad-buf)))
+      (free (as ptr bad-buf)))
 
     (printf "hello-done\n"))
   ; String `s` drops here automatically.
@@ -137,7 +137,7 @@
           k2:String (string-from-cstr-unchecked "beta"))
       (assoc m k1 42)
       (assoc m k2 99))
-    (printf "hmap-count=%llu\n" (cast ui64 (count m)))   ; 2
+    (printf "hmap-count=%llu\n" (as ui64 (count m)))   ; 2
 
     ; Look up by freshly-constructed equal keys.
     ; Use (string-from-cstr-unchecked "...") as the selector expression so

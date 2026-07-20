@@ -1,0 +1,4 @@
+; Stage 14 defn-signature.md S4 — a bounded-generic template bypasses defn-parse-sig
+; (the prescan routes it to register-generic-defn), so its legacy `name:ret` name is
+; hard-errored there too, with the same diagnostic.
+(defn gmax:T (a:T b:T &where (Ord T)) a)

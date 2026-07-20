@@ -5,40 +5,40 @@
 (import-use "stdlib.h")
 (import-use "string.h")
 
-(defn fall-through:void ()
+(defn fall-through ():void
   (with (p:ptr:i32 (malloc 16))
     (ptr-set! p 7)
     (printf "fall-through: %d\n" (deref p))))
 
-(defn early-return:i32 (flag:i32)
+(defn early-return (flag:i32):i32
   (with (p:ptr:i32 (malloc 16))
     (ptr-set! p 42)
     (cond (= flag 1) (return (deref p)))
     (return (+ (deref p) 1))))
 
-(defn nested:void ()
+(defn nested ():void
   (with (a:ptr:i32 (malloc 16))
     (ptr-set! a 10)
     (with (b:ptr:i32 (calloc 4 4))
       (ptr-set! b 20)
       (printf "nested: %d %d\n" (deref a) (deref b)))))
 
-(defn strdup-bind:void ()
+(defn strdup-bind ():void
   (with (s:ptr (strdup "world"))
     (printf "hello %s\n" s)))
 
-(defn realloc-bind:void ()
+(defn realloc-bind ():void
   (with (p:ptr (malloc 8))
     (set! p (realloc p 32))
     (printf "realloc ok\n")))
 
-(defn mixed:void ()
+(defn mixed ():void
   (with (n:i32 99
          p:ptr:i32 (malloc 16))
     (ptr-set! p n)
     (printf "mixed: %d\n" (deref p))))
 
-(defn main:int ()
+(defn main ():int
   (fall-through)
   (printf "early(1) = %d\n" (early-return 1))
   (printf "early(0) = %d\n" (early-return 0))

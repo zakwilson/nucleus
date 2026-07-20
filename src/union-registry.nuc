@@ -1,3 +1,5 @@
+(import-use arena)
+
 ; Union/struct registry and type-parsing — extracted from src/nucleusc.nuc.
 ; Source-imported by src/nucleusc.nuc after the ABI module is available.
 
@@ -6,68 +8,66 @@
 ; content hash so two textually-identical shapes share one StructDef.
 ; ============================================================
 
-(defn fnv-byte:i64 (h:i64 b:i64)
+(defn fnv-byte (h:i64 b:i64):i64
   (set! h (bit-xor h b))
-  (set! h (* h (cast i64 1099511628211)))
+  (set! h (* h 1099511628211))
   (return h))
 
-(defn fnv-str:i64 (h:i64 s:ptr)
+(defn fnv-str (h:i64 s:CStr):i64
   (let (i:i64 0
-        c:i32 (bit-and (cast i32 (aref (cast ptr:i8 s) 0)) 255))
+        c:i32 (bit-and (as i32 (aref (as ptr:i8 s) 0)) 255))
     (while (!= c 0)
-      (set! h (fnv-byte h (cast i64 c)))
-      (set! i (+ i (cast i64 1)))
-      (set! c (bit-and (cast i32 (aref (cast ptr:i8 s) i)) 255)))
+      (set! h (fnv-byte h (as i64 c)))
+      (set! i (+ i 1))
+      (set! c (bit-and (as i32 (aref (as ptr:i8 s) i)) 255)))
     (return h)))
 
-(defn hash-type:i64 (h:i64 t:ptr)
-  (when (= t null) (return (fnv-byte h (cast i64 255))))
-  (let (tt:ptr:Type (cast ptr:Type t)
+(defn hash-type (h:i64 t:raw:Type):i64
+  (when (= t null) (return (fnv-byte h 255)))
+  (let (tt:raw:Type t
         k:i32 (tt kind))
-    (set! h (fnv-byte h (cast i64 k)))
-    (set! h (fnv-byte h (cast i64 (tt is-volatile))))
+    (set! h (fnv-byte h (as i64 k)))
+    (set! h (fnv-byte h (as i64 (tt is-volatile))))
     (when (= k TY-PTR)
       (set! h (hash-type h (tt elem))))
     (when (= k TY-STRUCT)
-      (set! h (fnv-str h ((cast ptr:StructDef (tt sdef)) name))))
+      (set! h (fnv-str h ((tt sdef) name))))
     (when (= k TY-UNION)
-      (set! h (fnv-str h ((cast ptr:StructDef (tt sdef)) name))))
+      (set! h (fnv-str h ((tt sdef) name))))
     (when (= k TY-FN)
       (set! h (hash-type h (tt ret)))
-      (set! h (fnv-byte h (cast i64 (tt num-params))))
+      (set! h (fnv-byte h (as i64 (tt num-params))))
       (dotimes (i (tt num-params))
-        (set! h (hash-type h (aref (cast ptr:ptr (tt params)) i)))))
+        (set! h (hash-type h ((field-at (tt params) i) type)))))
     (return h)))
 
-(defn hash-struct-shape:i64 (field-names:ptr field-types:ptr nfields:i32)
+(defn hash-struct-shape (field-names:ptr field-types:ptr nfields:i32):i64
   (let (h:i64 -3750763034362895579)
     (dotimes (i nfields)
-      (set! h (fnv-str h (aref (cast ptr:ptr field-names) i)))
-      (set! h (fnv-byte h (cast i64 0)))
-      (set! h (hash-type h (aref (cast ptr:ptr field-types) i))))
+      (set! h (fnv-str h (aref (as ptr:ptr field-names) i)))
+      (set! h (fnv-byte h 0))
+      (set! h (hash-type h (aref (as ptr:ptr field-types) i))))
     (return h)))
 
-(defn lookup-or-make-anon-struct:ref:StructDef (field-names:ptr field-types:ptr nfields:i32)
+(defn lookup-or-make-anon-struct (field-names:ptr field-types:ptr nfields:i32):ref:StructDef
   (let (hash:i64 (hash-struct-shape field-names field-types nfields)
         synth:ptr (fmt-i64 "__anon_struct_h%016lx" hash)
         sd:ptr (lookup-struct synth))
     (when (= sd null)
       (set! sd (register-struct synth))
-      (let (sd2:ptr:StructDef (cast ptr:StructDef sd))
-        (.set! sd2 field-names field-names)
-        (.set! sd2 field-types field-types)
-        (.set! sd2 num-fields nfields)
+      (let (sd2:ptr:StructDef (as ptr:StructDef sd))
+        (struct-set-fields sd2 field-names field-types nfields)
         (.set! sd2 emitted 1)
         (.set! sd2 src-file g-source-path)
         (.set! sd2 src-line 0))
       (fprintf g-type-stream "%%%s = type { " synth)
       (dotimes (i nfields)
         (when (!= i 0) (fprintf g-type-stream ", "))
-        (fprintf g-type-stream "%s" (type-to-ir (aref (cast ptr:ptr field-types) i))))
+        (fprintf g-type-stream "%s" (type-to-ir (aref (as ptr:ptr field-types) i))))
       (fprintf g-type-stream " }\n\n"))
     ; Both arms leave sd non-null, but the set!-kill is sticky across the join
     ; (nullability.md §4) — assert rather than re-test.
-    (return (cast ref:StructDef sd))))
+    (return (as ref:StructDef sd))))
 
 ; ============================================================
 ; Stage 10: untagged unions (design/stage10/unions.md §2). Anonymous and
@@ -79,32 +79,30 @@
 ; module-assembly point (named types are order-independent in a module).
 ; ============================================================
 
-(defn lookup-or-make-anon-union:ref:StructDef (field-names:ptr field-types:ptr nfields:i32)
+(defn lookup-or-make-anon-union (field-names:ptr field-types:ptr nfields:i32):ref:StructDef
   (let (hash:i64 (hash-struct-shape field-names field-types nfields)
         synth:ptr (fmt-i64 "__anon_union_h%016lx" hash)
         sd:ptr (lookup-struct synth))
     (when (= sd null)
       (set! sd (register-struct synth))
-      (let (sd2:ptr:StructDef (cast ptr:StructDef sd))
-        (.set! sd2 field-names field-names)
-        (.set! sd2 field-types field-types)
-        (.set! sd2 num-fields nfields)
+      (let (sd2:ptr:StructDef (as ptr:StructDef sd))
+        (struct-set-fields sd2 field-names field-types nfields)
         (.set! sd2 is-union 1)
         (.set! sd2 emitted 0)
         (.set! sd2 src-file g-source-path)
-        (.set! sd2 src-line 0))
-      (conj g-pending-unions sd))
-    (return (cast ref:StructDef sd))))
+        (.set! sd2 src-line 0)
+        (conj g-pending-unions sd2)))
+    (return (as ref:StructDef sd))))
 
 ; The member a union's IR wrapper struct holds: the first member with maximal
 ; alignment (clang's rule); remaining bytes become an i8 padding array.
-(defn union-repr-member:i32 (sd:ptr)
-  (let (sdd:ptr:StructDef (cast ptr:StructDef sd)
+(defn union-repr-member (sd:raw:StructDef):i32
+  (let (sdd:raw:StructDef sd
         n:i32 (sdd num-fields)
         best:i32 0
         besta:i32 0)
     (dotimes (i n)
-      (let (fa:i32 (abi-alignof (aref (cast ptr:ptr (sdd field-types)) i)))
+      (let (fa:i32 (abi-alignof ((field-at (sdd fields) i) type)))
         (when (> fa besta) (set! besta fa) (set! best i))))
     (return best)))
 
@@ -113,19 +111,19 @@
 ; with unions; distinguished by is-union == 0. A plain struct line — no
 ; repr-member/padding — so a stamped instance is byte-identical to the
 ; hand-written struct. The `emitted` flag guards double-emit.
-(defn emit-pending-struct-ir-type:void (sd:ptr)
-  (let (sdd:ptr:StructDef (cast ptr:StructDef sd))
+(defn emit-pending-struct-ir-type (sd:raw:StructDef):void
+  (let (sdd:raw:StructDef sd)
     (when (!= (sdd emitted) 0) (return))
     (.set! sdd emitted 1)
-    (fprintf g-type-stream "%%%s = type { " (sdd name))
+    (fprintf g-type-stream "%%%s = type { " (sdd ir-name))
     (dotimes (i (sdd num-fields))
       (when (!= i 0) (fprintf g-type-stream ", "))
-      (fprintf g-type-stream "%s" (type-to-ir (aref (cast ptr:ptr (sdd field-types)) i))))
+      (fprintf g-type-stream "%s" (type-to-ir ((field-at (sdd fields) i) type))))
     (fprintf g-type-stream " }\n\n")))
 
 ; Write the deferred `%name = type { repr [, pad] }` definition for one union.
-(defn emit-union-ir-type:void (sd:ptr)
-  (let (sdd:ptr:StructDef (cast ptr:StructDef sd))
+(defn emit-union-ir-type (sd:raw:StructDef):void
+  (let (sdd:raw:StructDef sd)
     (when (!= (sdd emitted) 0) (return))
     ; Stage 11: a stamped parametric struct queued on the shared pending list is
     ; not a union — emit a plain struct line instead of the union wrapper.
@@ -134,14 +132,14 @@
       (return))
     (.set! sdd emitted 1)
     (let (ri:i32 (union-repr-member sd)
-          rt:ptr (aref (cast ptr:ptr (sdd field-types)) ri)
+          rt:ptr ((field-at (sdd fields) ri) type)
           total:i32 (abi-union-size sd)
           pad:i32 (- total (abi-sizeof rt)))
       (if (> pad 0)
         (fprintf g-type-stream "%%%s = type { %s, [%d x i8] }\n\n"
-          (sdd name) (type-to-ir rt) pad)
+          (sdd ir-name) (type-to-ir rt) pad)
         (fprintf g-type-stream "%%%s = type { %s }\n\n"
-          (sdd name) (type-to-ir rt))))))
+          (sdd ir-name) (type-to-ir rt))))))
 
 ; Are all of `sd`'s by-value named-type field dependencies already emitted into
 ; the shared type buffer (g-type-bufp)? A field lowers to a `%Name` reference
@@ -157,18 +155,18 @@
 ; a type stamped at prescan (signature occurrence) before the import that defines
 ; its struct-by-value field has run: it stays queued until a later drain, after
 ; that import emits the dependency. See cleanup3.md "two-stage boot refresh".
-(defn pending-union-deps-ready:i32 (sd:ptr)
-  (let (sdd:ptr:StructDef (cast ptr:StructDef sd)
+(defn pending-union-deps-ready (sd:raw:StructDef):i32
+  (let (sdd:raw:StructDef sd
         n:i32 (sdd num-fields))
     (dotimes (i n)
-      (let (ft:ptr:Type (cast ptr:Type (aref (cast ptr:ptr (sdd field-types)) i))
+      (let (ft:ptr:Type (unsafe/cast ptr:Type ((field-at (sdd fields) i) type))
             fk:i32 (ft kind))
         (when (or (= fk TY-STRUCT) (= fk TY-UNION))
-          (let (dep:ptr:StructDef (cast ptr:StructDef (ft sdef)))
+          (let (dep:ptr:StructDef (unsafe/cast ptr:StructDef (ft sdef)))
             ; A null sdef (shape-only / unresolved) cannot be a satisfied named
             ; dependency; treat as not-ready so we defer rather than emit a
             ; dangling %ref.
-            (when (= (cast ptr dep) null) (return 0))
+            (when (= (as ptr dep) null) (return 0))
             (when (= (dep emitted) 0) (return 0)))))))
   (return 1))
 
@@ -179,64 +177,64 @@
 ; retried on the next drain — by which point the import that defines the
 ; dependency will have emitted it. Called before each module assembly (batch
 ; output, compile-time JIT, macro JIT, REPL).
-(defn drain-pending-union-irs:void ()
+(defn drain-pending-union-irs ():void
   (when (= g-pending-unions null) (return))
-  (dotimes (i (cast i32 (count g-pending-unions)))
-    (let (sd:ptr (invoke g-pending-unions (cast usize i)))
+  (dotimes (i (unsafe/cast i32 (count g-pending-unions)))
+    (let (sd:ptr (invoke g-pending-unions (as usize i)))
       (when (!= (pending-union-deps-ready sd) 0)
         (emit-union-ir-type sd)))))
 
-(defn lookup-struct:?ptr:StructDef (name:ptr)
-  (dotimes (i (cast i32 (count g-structs)))
-    (let (sd:ptr:StructDef (cast ptr:StructDef (invoke g-structs (cast usize i))))
+(defn lookup-struct (name:CStr):?ptr:StructDef
+  (dotimes (i (unsafe/cast i32 (count g-structs)))
+    (let (sd:ptr:StructDef (as ptr:StructDef (invoke g-structs (as usize i))))
       (when (= (sd name) name)
-        (return (cast ptr sd)))))
+        (return (as ptr sd)))))
   (return null))
 
-(defn parse-type-name:ref:Type (name:ptr line:i32)
+(defn parse-type-name (name:CStr line:i32):ref:Type
   ; Stage 10 errors sugar: ?!T => (Maybe (Result T Err)) — a fallible result
   ; that may be absent. The leading ?! reads as a *value* Maybe over the Result
   ; (errors.md §10): the operand is already a complete value type, so it is not
   ; a niche pointer. Checked before the plain ? below. Needs the value-Maybe and
   ; Result templates (prelude).
-  (when (and (= (char-at name (cast i64 0)) 63) (= (char-at name (cast i64 1)) 33))
-    (let (result-ty:ptr (parse-type-name (ptr+ (cast ptr:i8 name) (cast i64 1)) line)
+  (when (and (= (char-at name 0) 63) (= (char-at name 1) 33))
+    (let (result-ty:ptr (parse-type-name (unsafe/ptr+ (as ptr:i8 name) 1) line)
           ut:?ptr:UnionTemplate (union-template-lookup "Maybe"))
       (when (= ut null)
         (die-at line "?!T: value-Maybe template not in scope (import the prelude)"))
       (let (argts:ptr (arena-alloc (ptr-bytes)))
-        (aset! (cast ptr:ptr argts) 0 result-ty)
-        (return (union-template-stamp-types (cast ptr ut) argts 1 line)))))
+        (aset! (as ptr:ptr argts) 0 result-ty)
+        (return (union-template-stamp-types (as ptr ut) argts 1 line)))))
   ; Stage 10 sugar: ?T => (Maybe T), uniform (Phase F). A pointer operand
   ; (e.g. ?ptr:Node, ?ref:Node) niche-encodes (one pointer, null = none) by
   ; relabeling its kind to Maybe. A value operand (?Node) stamps the two-arm
   ; {tag, T} value-Maybe template (E2) and no longer auto-injects (ref ...). Our
   ; own source spells every nullable-pointer Maybe ?ptr:Foo, so no bare value
   ; ?Foo remains there (byte-identical); value ?Foo now means the value-Maybe.
-  (when (= (char-at name (cast i64 0)) 63)
-    (let (inner:ptr (parse-type-name (ptr+ (cast ptr:i8 name) (cast i64 1)) line))
-      (when (= (-> inner (cast ptr:Type _) (_ kind)) TY-PTR)
-        (return (cast ref:Type (type-as-pkind inner PTR-MAYBE))))
+  (when (= (char-at name 0) 63)
+    (let (inner:ptr (parse-type-name (unsafe/ptr+ (as ptr:i8 name) 1) line))
+      (when (= (-> inner (unsafe/cast ptr:Type _) (_ kind)) TY-PTR)
+        (return (unsafe/cast ref:Type (type-as-pkind inner PTR-MAYBE))))
       ; Value operand: stamp the value-Maybe template (E2 / errors.md §10).
       (let (ut:?ptr:UnionTemplate (union-template-lookup "Maybe"))
         (when (= ut null)
           (die-at line "?T: value-Maybe template not in scope (import the prelude)"))
         (let (argts:ptr (arena-alloc (ptr-bytes)))
-          (aset! (cast ptr:ptr argts) 0 inner)
-          (return (union-template-stamp-types (cast ptr ut) argts 1 line))))))
+          (aset! (as ptr:ptr argts) 0 inner)
+          (return (union-template-stamp-types (as ptr ut) argts 1 line))))))
   ; Stage 10 errors sugar: !T => (Result T Err). Recognized only in type
   ; positions (no collision with !=, which never parses as a type), and — unlike
   ; ? — takes the payload as written (A1's arbitrary payloads: !i64 is
   ; (Result i64 Err)). !?T composes for free: the rest "?T" recurses here.
-  (when (= (char-at name (cast i64 0)) 33)
-    (let (inner:ptr (parse-type-name (ptr+ (cast ptr:i8 name) (cast i64 1)) line)
+  (when (= (char-at name 0) 33)
+    (let (inner:ptr (parse-type-name (unsafe/ptr+ (as ptr:i8 name) 1) line)
           ut:?ptr:UnionTemplate (union-template-lookup "Result"))
       (when (= ut null)
         (die-at line "!T: (Result T E) template not in scope (import the prelude)"))
-      (let (argts:ptr (arena-alloc (* (cast i64 2) (ptr-bytes))))
-        (aset! (cast ptr:ptr argts) 0 inner)
-        (aset! (cast ptr:ptr argts) 1 (cast ptr ty-err))
-        (return (union-template-stamp-types (cast ptr ut) argts 2 line)))))
+      (let (argts:ptr (arena-alloc (* (as i64 2) (ptr-bytes))))
+        (aset! (as ptr:ptr argts) 0 inner)
+        (aset! (as ptr:ptr argts) 1 (as ptr ty-err))
+        (return (union-template-stamp-types (as ptr ut) argts 2 line)))))
   ; Colon-sugar reaching the string parser (only via the ?/!/?! recursion on a
   ; pointer operand, e.g. "ptr:Node" after stripping the leading ?): delegate to
   ; the node parser. Bare type names elsewhere never contain a colon, so this is
@@ -265,6 +263,11 @@
   (when (= name "usize") (return ty-usize))
   (when (= name "ssize") (return ty-ssize))
   (when (= name "f32") (return ty-f32))
+  ; Stage 14 AVR-7: an explicit `:f64`/`double` annotation is a compile-time
+  ; error on AVR (no hardware double). Checked before the resolution below so an
+  ; annotated f64 never reaches codegen; the bare-float-literal default is caught
+  ; separately in emit-float. `f32`/`float` are unaffected. Inert off AVR.
+  (when (or (= name "f64") (= name "double")) (avr-reject-f64 line))
   (when (= name "f64") (return ty-f64))
   (when (= name "float") (return ty-f32))
   (when (= name "double") (return ty-f64))
@@ -272,8 +275,9 @@
   ; resolves back to the original function-pointer Type*. This is what lets a
   ; stamped generic body's `(ref __fnty_3)` re-parse to the fn's TY-FN, so the
   ; forwarding call on the function pointer can be reconstructed at emit time.
-  (let (ft:ptr (fnty-resolve name))
-    (when (!= ft null) (return (cast ref:Type ft))))
+  (match (fnty-resolve name)
+         ((some ft) (return ft))
+         (none null))
   ; Stage 12 N4: a struct/union type spelling may be namespace-qualified
   ; (`coll/Vector`); the type registry is keyed by the bare name, so strip the
   ; qualifier before lookup. Identity under `user` (no slash) → byte-identical.
@@ -281,19 +285,36 @@
     (when (!= sd null)
       ; A niche defunion (unions.md §6 rules 2/3) resolves to its bare-pointer
       ; niche type, not the (dead) backing struct — union-instance-type decides.
-      (let (ud:?ptr:UnionDef ((cast ptr:StructDef sd) udef))
+      (let (ud:?ptr:UnionDef ((as ptr:StructDef sd) udef))
         (when (!= ud null)
-          (return (union-instance-type (cast ptr ud)))))
+          (return (union-instance-type ud))))
       (return (type-for-sdef sd))))
   (die-at line (fmt-s "unknown type: %s" name)))
 
 ; The registered Type for a StructDef — TY-UNION when the def is an untagged
 ; union, TY-STRUCT otherwise (including defunion backing structs).
-(defn type-for-sdef:ref:Type (sd:ptr)
-  (let (k:i32 (if (!= ((cast ptr:StructDef sd) is-union) 0) TY-UNION TY-STRUCT)
+(defn type-for-sdef (sd:raw:StructDef):ref:Type
+  (let (k:i32 (if (!= (sd is-union) 0) TY-UNION TY-STRUCT)
         t:ref:Type (make-type k))
     (.set! t sdef sd)
     (return t)))
+
+; Stage 14 NS-3 (design/stage14/native-strings.md): the Type* for the prelude
+; `StrView` struct — the type a string literal (NODE-STR) carries once the flip
+; lands. Unlike `ty-cstr` (a builtin, init-time global), StrView is a user struct
+; promoted to the prelude in NS-1, so its Type must be resolved dynamically from
+; the struct registry. It is always registered by the time any literal is
+; typed/emitted (prescan-struct-names registers every struct name before any
+; emission, and StrView sits near the top of the prelude), so this returns
+; non-null in practice; a null result (a broken/missing prelude) lets the callers
+; fall back to a bare pointer rather than crash. A fresh Type is built per call
+; (like type-for-sdef); type-eq keys on the sdef pointer, not Type identity, so
+; two StrView Types compare equal. Identity of "StrView" is the interned symbol
+; name, exactly how lookup-struct keys the registry (and type-is-strview matches).
+(defn strview-type ():?ptr:Type
+  (let (sd:ptr (lookup-struct ((as ptr:Node (intern-symbol "StrView")) s)))
+    (when (= sd null) (return null))
+    (return (as ptr (type-for-sdef sd)))))
 
 ; ============================================================
 ; Stage 13 type-erasure (TE-1): the shared fat-pointer aggregate.
@@ -325,21 +346,21 @@
 ; struct line at drain time; the `emitted` flag guards double-emit). Both fields
 ; are opaque `ptr`, so the type has no named dependency and emits on the next
 ; drain. Idempotent — subsequent calls return the cached def.
-(defn ensure-fatptr-sdef:ptr ()
+(defn ensure-fatptr-sdef ():ptr
   (when (!= g-fatptr-sdef null) (return g-fatptr-sdef))
   (let (nm:ptr (intern-str (sanitize-for-ir "__fatptr"))
         sd:ref:StructDef (register-struct nm))
-    (.set! sd field-names (arena-alloc (* (cast i64 2) (ptr-bytes))))
-    (.set! sd field-types (arena-alloc (* (cast i64 2) (ptr-bytes))))
-    (aset! (cast ptr:ptr (sd field-names)) 0 (intern-str "data"))
-    (aset! (cast ptr:ptr (sd field-names)) 1 (intern-str "vtable"))
-    (aset! (cast ptr:ptr (sd field-types)) 0 (cast ptr ty-ptr))
-    (aset! (cast ptr:ptr (sd field-types)) 1 (cast ptr ty-ptr))
-    (.set! sd num-fields 2)
+    (let (fnm:ptr (arena-alloc (* (as i64 2) (ptr-bytes)))
+          fty:ptr (arena-alloc (* (as i64 2) (ptr-bytes))))
+      (aset! (as ptr:ptr fnm) 0 (intern-str "data"))
+      (aset! (as ptr:ptr fnm) 1 (intern-str "vtable"))
+      (aset! (as ptr:ptr fty) 0 (as ptr ty-ptr))
+      (aset! (as ptr:ptr fty) 1 (as ptr ty-ptr))
+      (struct-set-fields sd fnm fty 2))
     (.set! sd src-file g-source-path)
     (.set! sd src-line 0)
-    (conj g-pending-unions (cast ptr sd))
-    (set! g-fatptr-sdef (cast ptr sd))
+    (conj g-pending-unions sd)
+    (set! g-fatptr-sdef (as ptr sd))
     (return g-fatptr-sdef)))
 
 ; The fat-pointer Type (TY-STRUCT over the StructDef above), memoized so every
@@ -347,9 +368,9 @@
 ; this as the slot/binding type and to build the fat-pointer Val; it constructs
 ; a value by alloca'ing this type, storing the heap `data` ptr into field 0 and
 ; the TE-2 vtable address into field 1, then loading the first-class aggregate.
-(defn fatptr-type:ptr ()
+(defn fatptr-type ():ptr
   (when (= g-fatptr-type null)
-    (set! g-fatptr-type (cast ptr (type-for-sdef (ensure-fatptr-sdef)))))
+    (set! g-fatptr-type (as ptr (type-for-sdef (ensure-fatptr-sdef)))))
   (return g-fatptr-type))
 
 ; ============================================================
@@ -366,86 +387,84 @@
 ; one spelling → one Type* → one sdef. LAZY like ensure-fatptr-sdef: the
 ; `%__boxedfn.… = type {…}` line is queued only when a signature is first parsed,
 ; so a box-free unit (the whole compiler) emits nothing → byte-identical bootstrap.
-(defvar g-boxedfn-keys:ptr null)   ; array of ptr — interned signature keys
-(defvar g-boxedfn-types:ptr null)  ; array of ptr — parallel box Type* (carries sig)
-(defvar g-boxedfn-count:i32 0)
-(defvar g-boxedfn-cap:i32 0)
+; §14.5 batch 3: the parallel keys/types arrays collapsed into one
+; `(Vector (ref BoxedFnEntry))`. Lazily constructed on first use (mirrors
+; g-vtable-table) — never explicitly reset, so `ref` not `raw`.
+(defvar (g-boxedfn-table (ref (Vector (ref BoxedFnEntry)))))
 
-(defn boxedfn-memo-lookup:ptr (key:ptr)
-  (dotimes (i g-boxedfn-count)
-    (when (= (aref (cast ptr:ptr g-boxedfn-keys) i) key)
-      (return (aref (cast ptr:ptr g-boxedfn-types) i))))
+(defn boxedfn-memo-lookup (key:ptr):ptr
+  (when (= g-boxedfn-table null) (return null))
+  (dotimes (i (unsafe/cast i32 (count g-boxedfn-table)))
+    (let (e:ref:BoxedFnEntry (invoke g-boxedfn-table (as usize i)))
+      (when (= (e key) key) (return (as ptr (e ty))))))
   (return null))
 
-(defn boxedfn-memo-put:void (key:ptr ty:ptr)
-  (when (= g-boxedfn-cap 0)
-    (set! g-boxedfn-cap 16)
-    (set! g-boxedfn-keys (arena-alloc (* (cast i64 g-boxedfn-cap) (ptr-bytes))))
-    (set! g-boxedfn-types (arena-alloc (* (cast i64 g-boxedfn-cap) (ptr-bytes)))))
-  (when (= g-boxedfn-count g-boxedfn-cap)
-    (let (nc:i32 (* g-boxedfn-cap 2)
-          nk:ptr (arena-alloc (* (cast i64 (* g-boxedfn-cap 2)) (ptr-bytes)))
-          nt:ptr (arena-alloc (* (cast i64 (* g-boxedfn-cap 2)) (ptr-bytes))))
-      (memcpy nk g-boxedfn-keys (* (cast i64 g-boxedfn-count) (ptr-bytes)))
-      (memcpy nt g-boxedfn-types (* (cast i64 g-boxedfn-count) (ptr-bytes)))
-      (set! g-boxedfn-keys nk)
-      (set! g-boxedfn-types nt)
-      (set! g-boxedfn-cap nc)))
-  (aset! (cast ptr:ptr g-boxedfn-keys) g-boxedfn-count key)
-  (aset! (cast ptr:ptr g-boxedfn-types) g-boxedfn-count ty)
-  (inc! g-boxedfn-count))
+(defn boxedfn-memo-put (key:ptr ty:ptr):void
+  (when (= g-boxedfn-table null)
+    (set! g-boxedfn-table
+      (unsafe/cast (ref (Vector (ref BoxedFnEntry))) (vector-new-in (addr-of g-arena-alloc)))))
+  (let (rec:ref:BoxedFnEntry (new BoxedFnEntry))
+    (.set! rec key key)
+    (.set! rec ty (as raw:Type ty))
+    (conj g-boxedfn-table rec)))
 
 ; A dot-free signature token "<rettok>_<p0tok>_<p1tok>…" (each via
 ; type-mangle-token), keying the per-signature box StructDef name and memo entry.
-(defn boxedfn-sig-token:ptr (param-arr:ptr num-p:i32 ret:ptr)
+; §14.4: `params` is a TY-FN Type's parameter Vector `(Vector (ref Field))`;
+; each param type is read via `field-at`. Both callers (boxedfn-type below and
+; ensure-fnfwd-vtable in nucleusc.nuc) pass a Vector handle.
+(defn boxedfn-sig-token (params:(raw (Vector (ref Field))) num-p:i32 ret:ptr):ptr
   (let (s:ptr (type-mangle-token ret))
     (dotimes (i num-p)
-      (set! s (fmt-2s "%s_%s" s (type-mangle-token (aref (cast ptr:ptr param-arr) i)))))
+      (set! s (fmt-2s "%s_%s" s (type-mangle-token ((field-at params i) type)))))
     (return s)))
 
 ; The (memoised) BoxedFn instance Type for a signature. On a miss it registers a
 ; fresh {data:ptr, vtable:ptr} StructDef (mirroring ensure-fatptr-sdef but with a
 ; per-signature name), queues its IR on the shared pending-union list, builds the
 ; TY-STRUCT Type, stamps the Fn signature onto ret/params/num-params, and memoises.
-(defn boxedfn-type:ptr (param-arr:ptr num-p:i32 ret:ptr line:i32)
-  (let (tok:ptr (boxedfn-sig-token param-arr num-p ret)
+(defn boxedfn-type (param-arr:ptr num-p:i32 ret:ptr line:i32):ptr
+  (let ((pvec (ref (Vector (ref Field)))) (make-param-vec param-arr num-p)
+        tok:ptr (boxedfn-sig-token pvec num-p ret)
         key:ptr (intern-str (fmt-s "BoxedFn.%s" tok))
         hit:ptr (boxedfn-memo-lookup key))
     (when (!= hit null) (return hit))
     (let (nm:ptr (intern-str (sanitize-for-ir (fmt-s "__boxedfn.%s" tok)))
           sd:ref:StructDef (register-struct nm))
-      (.set! sd field-names (arena-alloc (* (cast i64 2) (ptr-bytes))))
-      (.set! sd field-types (arena-alloc (* (cast i64 2) (ptr-bytes))))
-      (aset! (cast ptr:ptr (sd field-names)) 0 (intern-str "data"))
-      (aset! (cast ptr:ptr (sd field-names)) 1 (intern-str "vtable"))
-      (aset! (cast ptr:ptr (sd field-types)) 0 (cast ptr ty-ptr))
-      (aset! (cast ptr:ptr (sd field-types)) 1 (cast ptr ty-ptr))
-      (.set! sd num-fields 2)
+      (let (fnm:ptr (arena-alloc (* (as i64 2) (ptr-bytes)))
+            fty:ptr (arena-alloc (* (as i64 2) (ptr-bytes))))
+        (aset! (as ptr:ptr fnm) 0 (intern-str "data"))
+        (aset! (as ptr:ptr fnm) 1 (intern-str "vtable"))
+        (aset! (as ptr:ptr fty) 0 (as ptr ty-ptr))
+        (aset! (as ptr:ptr fty) 1 (as ptr ty-ptr))
+        (struct-set-fields sd fnm fty 2))
       (.set! sd src-file g-source-path)
       (.set! sd src-line 0)
-      (conj g-pending-unions (cast ptr sd))
-      (let (t:ref:Type (type-for-sdef (cast ptr sd)))
+      (conj g-pending-unions sd)
+      (let (t:ref:Type (type-for-sdef (as ptr sd)))
         ; Carry the Fn signature on the struct Type for invoke-forwarding / boxing.
+        ; Reuse the `pvec` built above (immutable after build) as the param list.
         (.set! t ret ret)
-        (.set! t params param-arr)
+        (.set! t params pvec)
         (.set! t num-params num-p)
-        (boxedfn-memo-put key (cast ptr t))
-        (return (cast ptr t))))))
+        (boxedfn-memo-put key (as ptr t))
+        (return (as ptr t))))))
 
 ; If `ty` is a BoxedFn instance type, return its canonical box Type* (carrying the
 ; Fn signature in ret/params/num-params); else null. Detection is by StructDef
 ; pointer identity against the memo, so a loaded box value and any re-derived
-; spelling both resolve. INERT until a box type is parsed (count stays 0 in a
-; box-free unit) — the loop never runs, so no IR is affected.
-(defn boxedfn-canonical:ptr (ty:ptr)
+; spelling both resolve. INERT until a box type is parsed (g-boxedfn-table stays
+; null in a box-free unit) — the null check short-circuits, so no IR is affected.
+(defn boxedfn-canonical (ty:ptr):ptr
   (when (= ty null) (return null))
-  (let (tt:ptr:Type (cast ptr:Type ty))
+  (when (= g-boxedfn-table null) (return null))
+  (let (tt:ptr:Type (as ptr:Type ty))
     (when (!= (tt kind) TY-STRUCT) (return null))
     (let (sd:ptr (tt sdef))
       (when (= sd null) (return null))
-      (dotimes (i g-boxedfn-count)
-        (let (bt:ptr:Type (cast ptr:Type (aref (cast ptr:ptr g-boxedfn-types) i)))
-          (when (= (bt sdef) sd) (return (cast ptr bt)))))
+      (dotimes (i (unsafe/cast i32 (count g-boxedfn-table)))
+        (let (e:ref:BoxedFnEntry (invoke g-boxedfn-table (as usize i)))
+          (when (= ((e ty) sdef) sd) (return (as ptr (e ty))))))
       (return null))))
 
 ; ============================================================
@@ -464,40 +483,27 @@
 ; whole compiler) emits nothing → byte-identical bootstrap. Protocol validation is
 ; deferred to box construction (union-registry is imported before generics, so the
 ; protocol registry is not yet visible here); a parse only stores the name.
-(defvar g-dyn-keys:ptr null)    ; array of ptr — interned "dyn.<P>" keys
-(defvar g-dyn-types:ptr null)   ; array of ptr — parallel box Type*
-(defvar g-dyn-protos:ptr null)  ; array of ptr — parallel interned protocol-name strings
-(defvar g-dyn-count:i32 0)
-(defvar g-dyn-cap:i32 0)
+; §14.5 batch 3: the parallel keys/types/protos arrays collapsed into one
+; `(Vector (ref DynEntry))`. Lazily constructed on first use (mirrors
+; g-vtable-table/g-boxedfn-table) — never explicitly reset, so `ref` not `raw`.
+(defvar (g-dyn-table (ref (Vector (ref DynEntry)))))
 
-(defn dyn-memo-lookup:ptr (key:ptr)
-  (dotimes (i g-dyn-count)
-    (when (= (aref (cast ptr:ptr g-dyn-keys) i) key)
-      (return (aref (cast ptr:ptr g-dyn-types) i))))
+(defn dyn-memo-lookup (key:ptr):ptr
+  (when (= g-dyn-table null) (return null))
+  (dotimes (i (unsafe/cast i32 (count g-dyn-table)))
+    (let (e:ref:DynEntry (invoke g-dyn-table (as usize i)))
+      (when (= (e key) key) (return (as ptr (e ty))))))
   (return null))
 
-(defn dyn-memo-put:void (key:ptr ty:ptr proto:ptr)
-  (when (= g-dyn-cap 0)
-    (set! g-dyn-cap 16)
-    (set! g-dyn-keys (arena-alloc (* (cast i64 g-dyn-cap) (ptr-bytes))))
-    (set! g-dyn-types (arena-alloc (* (cast i64 g-dyn-cap) (ptr-bytes))))
-    (set! g-dyn-protos (arena-alloc (* (cast i64 g-dyn-cap) (ptr-bytes)))))
-  (when (= g-dyn-count g-dyn-cap)
-    (let (nc:i32 (* g-dyn-cap 2)
-          nk:ptr (arena-alloc (* (cast i64 (* g-dyn-cap 2)) (ptr-bytes)))
-          nt:ptr (arena-alloc (* (cast i64 (* g-dyn-cap 2)) (ptr-bytes)))
-          np:ptr (arena-alloc (* (cast i64 (* g-dyn-cap 2)) (ptr-bytes))))
-      (memcpy nk g-dyn-keys (* (cast i64 g-dyn-count) (ptr-bytes)))
-      (memcpy nt g-dyn-types (* (cast i64 g-dyn-count) (ptr-bytes)))
-      (memcpy np g-dyn-protos (* (cast i64 g-dyn-count) (ptr-bytes)))
-      (set! g-dyn-keys nk)
-      (set! g-dyn-types nt)
-      (set! g-dyn-protos np)
-      (set! g-dyn-cap nc)))
-  (aset! (cast ptr:ptr g-dyn-keys) g-dyn-count key)
-  (aset! (cast ptr:ptr g-dyn-types) g-dyn-count ty)
-  (aset! (cast ptr:ptr g-dyn-protos) g-dyn-count proto)
-  (inc! g-dyn-count))
+(defn dyn-memo-put (key:ptr ty:ptr proto:ptr):void
+  (when (= g-dyn-table null)
+    (set! g-dyn-table
+      (unsafe/cast (ref (Vector (ref DynEntry))) (vector-new-in (addr-of g-arena-alloc)))))
+  (let (rec:ref:DynEntry (new DynEntry))
+    (.set! rec key key)
+    (.set! rec ty (as raw:Type ty))
+    (.set! rec proto proto)
+    (conj g-dyn-table rec)))
 
 ; The (memoised) `(dyn P)` instance Type for protocol name `proto`. On a miss it
 ; registers a fresh {data:ptr, vtable:ptr} StructDef named `%__dyn.<P>`, queues its
@@ -505,51 +511,53 @@
 ; protocol name in the parallel memo. Mirrors boxedfn-type exactly (same layout, so
 ; the same CE-3 COERCE2 ABI), differing only in the carried datum (protocol name vs
 ; Fn signature).
-(defn dyn-type:ptr (proto:ptr line:i32)
+(defn dyn-type (proto:ptr line:i32):ptr
   (let (key:ptr (intern-str (fmt-s "dyn.%s" proto))
         hit:ptr (dyn-memo-lookup key))
     (when (!= hit null) (return hit))
     (let (nm:ptr (intern-str (sanitize-for-ir (fmt-s "__dyn.%s" proto)))
           sd:ref:StructDef (register-struct nm))
-      (.set! sd field-names (arena-alloc (* (cast i64 2) (ptr-bytes))))
-      (.set! sd field-types (arena-alloc (* (cast i64 2) (ptr-bytes))))
-      (aset! (cast ptr:ptr (sd field-names)) 0 (intern-str "data"))
-      (aset! (cast ptr:ptr (sd field-names)) 1 (intern-str "vtable"))
-      (aset! (cast ptr:ptr (sd field-types)) 0 (cast ptr ty-ptr))
-      (aset! (cast ptr:ptr (sd field-types)) 1 (cast ptr ty-ptr))
-      (.set! sd num-fields 2)
+      (let (fnm:ptr (arena-alloc (* (as i64 2) (ptr-bytes)))
+            fty:ptr (arena-alloc (* (as i64 2) (ptr-bytes))))
+        (aset! (as ptr:ptr fnm) 0 (intern-str "data"))
+        (aset! (as ptr:ptr fnm) 1 (intern-str "vtable"))
+        (aset! (as ptr:ptr fty) 0 (as ptr ty-ptr))
+        (aset! (as ptr:ptr fty) 1 (as ptr ty-ptr))
+        (struct-set-fields sd fnm fty 2))
       (.set! sd src-file g-source-path)
       (.set! sd src-line 0)
-      (conj g-pending-unions (cast ptr sd))
-      (let (t:ref:Type (type-for-sdef (cast ptr sd)))
-        (dyn-memo-put key (cast ptr t) proto)
-        (return (cast ptr t))))))
+      (conj g-pending-unions sd)
+      (let (t:ref:Type (type-for-sdef (as ptr sd)))
+        (dyn-memo-put key (as ptr t) proto)
+        (return (as ptr t))))))
 
 ; If `ty` is a `(dyn P)` instance type, return its canonical box Type*; else null.
 ; Detection is by StructDef pointer identity against the memo (a loaded box value
 ; and any re-derived spelling both resolve). INERT until a `(dyn P)` is parsed.
-(defn dyn-canonical:ptr (ty:ptr)
+(defn dyn-canonical (ty:ptr):ptr
   (when (= ty null) (return null))
-  (let (tt:ptr:Type (cast ptr:Type ty))
+  (when (= g-dyn-table null) (return null))
+  (let (tt:ptr:Type (as ptr:Type ty))
     (when (!= (tt kind) TY-STRUCT) (return null))
     (let (sd:ptr (tt sdef))
       (when (= sd null) (return null))
-      (dotimes (i g-dyn-count)
-        (let (dt:ptr:Type (cast ptr:Type (aref (cast ptr:ptr g-dyn-types) i)))
-          (when (= (dt sdef) sd) (return (cast ptr dt)))))
+      (dotimes (i (unsafe/cast i32 (count g-dyn-table)))
+        (let (e:ref:DynEntry (invoke g-dyn-table (as usize i)))
+          (when (= ((e ty) sdef) sd) (return (as ptr (e ty))))))
       (return null))))
 
 ; The protocol name carried by a `(dyn P)` box Type (the interned symbol string,
 ; usable directly as a `protocol-lookup` key), or null if `ty` is not a dyn box.
-(defn dyn-proto-of:ptr (ty:ptr)
+(defn dyn-proto-of (ty:ptr):ptr
   (when (= ty null) (return null))
-  (let (tt:ptr:Type (cast ptr:Type ty))
+  (when (= g-dyn-table null) (return null))
+  (let (tt:ptr:Type (as ptr:Type ty))
     (when (!= (tt kind) TY-STRUCT) (return null))
     (let (sd:ptr (tt sdef))
       (when (= sd null) (return null))
-      (dotimes (i g-dyn-count)
-        (let (dt:ptr:Type (cast ptr:Type (aref (cast ptr:ptr g-dyn-types) i)))
-          (when (= (dt sdef) sd) (return (aref (cast ptr:ptr g-dyn-protos) i)))))
+      (dotimes (i (unsafe/cast i32 (count g-dyn-table)))
+        (let (e:ref:DynEntry (invoke g-dyn-table (as usize i)))
+          (when (= ((e ty) sdef) sd) (return (e proto)))))
       (return null))))
 
 ; ============================================================
@@ -558,70 +566,67 @@
 ; {tag:i32, payload:(union ...)} plus an arm table consumed by match/make.
 ; ============================================================
 
-(defn uniondef-lookup:?ptr:UnionDef (name:ptr)
-  (dotimes (i (cast i32 (count g-uniondefs)))
-    (let (ud:ptr:UnionDef (cast ptr:UnionDef (invoke g-uniondefs (cast usize i))))
+(defn uniondef-lookup (name:CStr):?ptr:UnionDef
+  (dotimes (i (unsafe/cast i32 (count g-uniondefs)))
+    (let (ud:ptr:UnionDef (as ptr:UnionDef (invoke g-uniondefs (as usize i))))
       (when (= (ud name) name)
-        (return (cast ptr ud)))))
+        (return (as ptr ud)))))
   (return null))
 
-(defn union-template-lookup:?ptr:UnionTemplate (name:ptr)
-  (dotimes (i (cast i32 (count g-union-templates)))
-    (let (ut:ptr:UnionTemplate (cast ptr:UnionTemplate
-                                 (invoke g-union-templates (cast usize i))))
-      (when (= (ut name) name)
-        (return (cast ptr ut)))))
+(defn union-template-lookup (name:ptr):?ptr:UnionTemplate
+  (doseq (ut g-union-templates (VecIter ref:UnionTemplate))
+         (when (= (ut name) name)
+               (return ut)))
   (return null))
 
 ; Stage 11: look up a registered defstruct template by (interned) name. Mirror
 ; union-template-lookup. Names compare by pointer equality, so callers pass an
 ; interned head symbol (parametric-structs.md §1).
-(defn struct-template-lookup:?ptr:StructTemplate (name:ptr)
-  (dotimes (i (cast i32 (count g-struct-templates)))
-    (let (st:ptr:StructTemplate (cast ptr:StructTemplate
-                                  (invoke g-struct-templates (cast usize i))))
-      (when (= (st name) name)
-        (return (cast ptr st)))))
+(defn struct-template-lookup (name:ptr):?ptr:StructTemplate
+  (doseq (st g-struct-templates (VecIter ref:StructTemplate))
+           (when (= (st name) name)
+                 (return st)))
   (return null))
 
 ; The UnionDef behind a type, or null: a defunion value is TY-STRUCT whose
 ; StructDef carries the udef back-pointer.
-(defn uniondef-for-type:?ptr:UnionDef (t:ptr)
+(defn uniondef-for-type (t:raw:Type):?ptr:UnionDef
   (when (= t null) (return null))
-  (let (tt:ptr:Type (cast ptr:Type t))
+  (let (tt:raw:Type t)
     (when (!= (tt kind) TY-STRUCT) (return null))
     (when (= (tt sdef) null) (return null))
-    (return ((cast ptr:StructDef (tt sdef)) udef))))
+    (return ((tt sdef) udef))))
 
 ; The UnionDef behind a Result-shaped value (a tagged sum carrying both an `ok`
 ; arm and an `err` arm), or null. The shared eliminator for `unwrap`/`unwrap-or`
 ; over `!T` (errors.md §9): `ok` is the success arm, `err` the failure arm.
-(defn result-union-of:?ptr:UnionDef (t:ptr)
+(defn result-union-of (t:raw:Type):?ptr:UnionDef
   (let (ud:?ptr:UnionDef (uniondef-for-type t))
     (when (= ud null) (return null))
-    (when (< (union-arm-index (cast ptr ud) "ok") 0) (return null))
-    (when (< (union-arm-index (cast ptr ud) "err") 0) (return null))
+    (when (< (union-arm-index (as ptr ud) "ok") 0) (return null))
+    (when (< (union-arm-index (as ptr ud) "err") 0) (return null))
     (return ud)))
 
 ; The `ok` arm's payload type for a Result-shaped union type, or null.
-(defn result-ok-type:?ptr:Type (t:ptr)
+(defn result-ok-type (t:raw:Type):?ptr:Type
   (let (ud:?ptr:UnionDef (result-union-of t))
     (when (= ud null) (return null))
-    (let (oi:i32 (union-arm-index (cast ptr ud) "ok"))
-      (return (aref (cast ptr:ptr (ud arm-ptypes)) oi)))))
+    (let (oi:i32 (union-arm-index (as ptr ud) "ok"))
+      (return ((invoke (ud arms) (as usize oi)) ptype)))))
 
-(defn union-arm-index:i32 (ud:ptr name:ptr)
-  (let (udd:ptr:UnionDef (cast ptr:UnionDef ud))
+(defn union-arm-index (ud:raw:UnionDef name:CStr):i32
+  (let (udd:raw:UnionDef ud)
     (dotimes (i (udd num-arms))
-      (when (= (strcmp (aref (cast ptr:ptr (udd arm-names)) i) name) 0)
-        (return i)))
+      (let (arm:ref:Arm (invoke (udd arms) (as usize i)))
+        (when (= (strcmp (arm name) name) 0)
+          (return i))))
     (return -1)))
 
 ; Byte offset of the payload union inside the backing struct: the i32 tag,
 ; aligned up to the payload's alignment. Computed on demand — member layouts
 ; may involve structs whose fields are registered after the defunion form.
-(defn union-payload-off:i32 (ud:ptr)
-  (let (udd:ptr:UnionDef (cast ptr:UnionDef ud))
+(defn union-payload-off (ud:raw:UnionDef):i32
+  (let (udd:raw:UnionDef ud)
     (when (= (udd union-sd) null) (return 0))
     (return (abi-align-up 4 (abi-struct-align (udd union-sd))))))
 
@@ -630,23 +635,23 @@
 ; void* exemption (design/stage10/cleanup-prompt.md "byte-identity guard"): a
 ; niche over a typeless pointer buys no safety and would needlessly churn the
 ; reader's elem-less !ptr, so an elem-less payload stays TAGGED.
-(defn arm-is-typed-ref:i32 (arm-ptypes:ptr arm-nfields:ptr i:i32)
-  (when (!= (aref (cast ptr:i32 arm-nfields) i) 1) (return 0))
-  (let (pty:ptr:Type (cast ptr:Type (aref (cast ptr:ptr arm-ptypes) i)))
-    (when (= (cast ptr pty) null) (return 0))
+(defn arm-is-typed-ref (arm:ref:Arm):i32
+  (when (!= (arm nfields) 1) (return 0))
+  (let (pty:raw:Type (arm ptype))
+    (when (= pty null) (return 0))
     (when (!= (pty kind) TY-PTR) (return 0))
-    (let (el:ptr (pty elem))
+    (let (el:raw:Type (pty elem))
       (when (= el null) (return 0))
-      (when (= (-> el (cast ptr:Type _) (_ kind)) TY-VOID) (return 0))
+      (when (= (el kind) TY-VOID) (return 0))
       (return 1))))
 
 ; True iff arm `i` carries exactly one field of type Err (TY-ERR) — the err
 ; side of a niche-ERRPTR (errors.md §8: Err is a distinct i32-repr scalar so
 ; rule-3 detection can key on it).
-(defn arm-is-err-field:i32 (arm-ptypes:ptr arm-nfields:ptr i:i32)
-  (when (!= (aref (cast ptr:i32 arm-nfields) i) 1) (return 0))
-  (let (pty:ptr:Type (cast ptr:Type (aref (cast ptr:ptr arm-ptypes) i)))
-    (when (= (cast ptr pty) null) (return 0))
+(defn arm-is-err-field (arm:ref:Arm):i32
+  (when (!= (arm nfields) 1) (return 0))
+  (let (pty:raw:Type (arm ptype))
+    (when (= pty null) (return 0))
     (return (if (= (pty kind) TY-ERR) 1 0))))
 
 ; The layout engine (design/stage10/unions.md §6) — the U4/A2 convergence step.
@@ -656,39 +661,39 @@
 ; void* exemption keeps the reader's elem-less !ptr TAGGED and the bootstrap
 ; byte-identical. Returns LAYOUT-* ; on a niche, *niche-elem-out (a ptr:ptr) is
 ; set to the (ref T) payload's element Type so codegen can recover T.
-(defn union-layout-classify:i32 (arm-names:ptr arm-ptypes:ptr arm-nfields:ptr
-                                 narms:i32 repr:i32 niche-elem-out:ptr line:i32)
-  (aset! (cast ptr:ptr niche-elem-out) 0 null)
+(defn union-layout-classify ((arms (ref (Vector (ref Arm))))
+                                 narms:i32 repr:i32 niche-elem-out:ptr line:i32):i32
+  (aset! (as ptr:ptr niche-elem-out) 0 null)
   (when (= repr REPR-TAGGED) (return LAYOUT-TAGGED))
   ; Rule 1: every arm payload-less → just the i32 tag (≅ defenum).
   (let (all-payloadless:i32 1)
     (dotimes (i narms)
-      (when (!= (aref (cast ptr:i32 arm-nfields) i) 0) (set! all-payloadless 0)))
+      (when (!= ((invoke arms (as usize i)) nfields) 0) (set! all-payloadless 0)))
     (when (!= all-payloadless 0)
       (when (= repr REPR-NICHE)
         (die-at line "&repr niche: an all-payload-less union is an enum, not a niche"))
       (return LAYOUT-ENUM)))
   ; Rules 2 & 3 are two-arm shapes (order-independent in the arms).
   (when (= narms 2)
-    (let (none0:i32 (if (= (aref (cast ptr:i32 arm-nfields) 0) 0) 1 0)
-          none1:i32 (if (= (aref (cast ptr:i32 arm-nfields) 1) 0) 1 0)
-          ref0:i32 (arm-is-typed-ref arm-ptypes arm-nfields 0)
-          ref1:i32 (arm-is-typed-ref arm-ptypes arm-nfields 1)
-          err0:i32 (arm-is-err-field arm-ptypes arm-nfields 0)
-          err1:i32 (arm-is-err-field arm-ptypes arm-nfields 1))
+    (let (arm0:ref:Arm (invoke arms 0)
+          arm1:ref:Arm (invoke arms 1)
+          none0:i32 (if (= (arm0 nfields) 0) 1 0)
+          none1:i32 (if (= (arm1 nfields) 0) 1 0)
+          ref0:i32 (arm-is-typed-ref arm0)
+          ref1:i32 (arm-is-typed-ref arm1)
+          err0:i32 (arm-is-err-field arm0)
+          err1:i32 (arm-is-err-field arm1))
       ; Rule 2: one payload-less arm, one single typed (ref T) field.
       (when (or (and (!= none0 0) (!= ref1 0))
                 (and (!= ref0 0) (!= none1 0)))
-        (let (ri:i32 (if (!= ref0 0) 0 1))
-          (aset! (cast ptr:ptr niche-elem-out) 0
-            (-> (cast ptr:Type (aref (cast ptr:ptr arm-ptypes) ri)) (_ elem)))
+        (let (ri-arm:ref:Arm (if (!= ref0 0) arm0 arm1))
+          (aset! (as ptr:ptr niche-elem-out) 0 ((ri-arm ptype) elem))
           (return LAYOUT-NICHE-MAYBE)))
       ; Rule 3: one single typed (ref T) field, one single Err field.
       (when (or (and (!= ref0 0) (!= err1 0))
                 (and (!= err0 0) (!= ref1 0)))
-        (let (ri:i32 (if (!= ref0 0) 0 1))
-          (aset! (cast ptr:ptr niche-elem-out) 0
-            (-> (cast ptr:Type (aref (cast ptr:ptr arm-ptypes) ri)) (_ elem)))
+        (let (ri-arm:ref:Arm (if (!= ref0 0) arm0 arm1))
+          (aset! (as ptr:ptr niche-elem-out) 0 ((ri-arm ptype) elem))
           (return LAYOUT-NICHE-ERRPTR)))))
   ; Rule 4: the §3 tagged struct.
   (when (= repr REPR-NICHE)
@@ -705,40 +710,40 @@
 ; by its mode (`tagged` or `niche`). Returns the filtered arm chain (the &repr
 ; pair removed) and writes the parsed REPR-* mode to *repr-out. With no marker,
 ; returns the chain unchanged and REPR-AUTO.
-(defn defunion-strip-repr:ptr (arms:ptr repr-out:ptr line:i32)
-  (aset! (cast ptr:i32 repr-out) 0 REPR-AUTO)
+(defn defunion-strip-repr (arms:ptr repr-out:ptr line:i32):ptr
+  (aset! (as ptr:i32 repr-out) 0 REPR-AUTO)
   (let (head:ptr null
         tail:ptr null
         scur:ptr arms)
     (while (!= scur null)
-      (let (a:ptr:Node (cast ptr:Node ((cast ptr:Node scur) car)))
+      (let (a:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node scur) car)))
         (if (and (= (a kind) NODE-SYM) (= (strcmp (a s) "&repr") 0))
-          (let (mcell:ptr ((cast ptr:Node scur) cdr))
+          (let (mcell:ptr ((unsafe/cast ptr:Node scur) cdr))
             (when (= mcell null)
               (die-at line "defunion: &repr needs a mode (tagged or niche)"))
-            (let (m:ptr:Node (cast ptr:Node ((cast ptr:Node mcell) car)))
+            (let (m:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node mcell) car)))
               (when (!= (m kind) NODE-SYM)
                 (die-at (m line) "defunion: &repr mode must be a symbol"))
               (if (= (strcmp (m s) "tagged") 0)
-                (aset! (cast ptr:i32 repr-out) 0 REPR-TAGGED)
+                (aset! (as ptr:i32 repr-out) 0 REPR-TAGGED)
                 (if (= (strcmp (m s) "niche") 0)
-                  (aset! (cast ptr:i32 repr-out) 0 REPR-NICHE)
+                  (aset! (as ptr:i32 repr-out) 0 REPR-NICHE)
                   (die-at (m line) "defunion: &repr mode must be `tagged` or `niche`"))))
             (set! scur mcell))   ; advance past the mode; the cdr step skips it
-          (let (cell:ptr (make-cell (cast ptr a) null line))
+          (let (cell:ptr (make-cell (as ptr a) null line))
             (when (= head null) (set! head cell))
-            (when (!= tail null) (.set! (cast ptr:Node tail) cdr cell))
+            (when (!= tail null) (.set! (unsafe/cast ptr:Node tail) cdr cell))
             (set! tail cell))))
-      (set! scur ((cast ptr:Node scur) cdr)))
+      (set! scur ((unsafe/cast ptr:Node scur) cdr)))
     (return head)))
 
-(defn defunion-register:ref:UnionDef (name:ptr arms-raw:ptr line:i32)
+(defn defunion-register (name:CStr arms-raw:ptr line:i32):ref:UnionDef
   (let (existing:?ptr:UnionDef (uniondef-lookup name))
     (when (!= existing null) (return existing)))
-  (when (>= (cast i32 (count g-uniondefs)) MAX-UNIONS)
+  (when (>= (unsafe/cast i32 (count g-uniondefs)) MAX-UNIONS)
     (die-at line "too many defunions"))
   (let (repr-box:i32 REPR-AUTO
-        arms:ptr (defunion-strip-repr arms-raw (cast ptr:i32 (addr-of repr-box)) line)
+        arms:ptr (defunion-strip-repr arms-raw (as ptr:i32 (addr-of repr-box)) line)
         repr:i32 repr-box
         narms:i32 (node-len arms)
         cur:ptr arms)
@@ -746,15 +751,10 @@
       (die-at line "defunion: at least one arm required"))
     (when (> narms MAX-UNION-ARMS)
       (die-at line "defunion: too many arms"))
-    (let (arm-names:ptr (arena-alloc (* (cast i64 narms) (ptr-bytes)))
-          arm-ptypes:ptr (arena-alloc (* (cast i64 narms) (ptr-bytes)))
-          arm-fnames:ptr (arena-alloc (* (cast i64 narms) (ptr-bytes)))
-          arm-ftypes:ptr (arena-alloc (* (cast i64 narms) (ptr-bytes)))
-          arm-nfields:ptr (arena-alloc (* (cast i64 narms) (cast i64 4)))
-          ai:i32 0)
+    (let ((arms-vec (ref (Vector (ref Arm)))) (vector-new-in (addr-of g-arena-alloc)))
       (set! cur arms)
       (while (!= cur null)
-        (let (arm:ptr:Node (cast ptr:Node ((cast ptr:Node cur) car))
+        (let (arm:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node cur) car))
               aname:ptr null
               fnames:ptr null
               ftypes:ptr null
@@ -762,56 +762,58 @@
           (if (= (arm kind) NODE-SYM)
             (set! aname (arm s))
             (do
-              (when (or (!= (arm kind) NODE-CELL) (= (node-len (cast ptr arm)) 0))
+              (when (or (!= (arm kind) NODE-CELL) (= (node-len (as ptr arm)) 0))
                 (die-at (arm line) "defunion: arm must be `name` or `(name field:type ...)`"))
-              (let (an:ptr:Node (cast ptr:Node (node-at (cast ptr arm) 0)))
+              (let (an:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr arm) 0)))
                 (when (!= (an kind) NODE-SYM)
                   (die-at (an line) "defunion: arm name must be a symbol"))
                 (set! aname (an s)))
-              (set! nf (- (node-len (cast ptr arm)) 1))
+              (set! nf (- (node-len (as ptr arm)) 1))
               (when (> nf 0)
-                (set! fnames (arena-alloc (* (cast i64 nf) (ptr-bytes))))
-                (set! ftypes (arena-alloc (* (cast i64 nf) (ptr-bytes))))
+                (set! fnames (arena-alloc (* (as i64 nf) (ptr-bytes))))
+                (set! ftypes (arena-alloc (* (as i64 nf) (ptr-bytes))))
                 (let (fi:i32 0)
                   (while (< fi nf)
-                    (let (field:ptr (node-at (cast ptr arm) (+ fi 1))
+                    (let (field:ptr (node-at (as ptr arm) (+ fi 1))
                           fname:ptr null
-                          fty:ptr (extract-name-and-type field (cast ptr:ptr (addr-of fname))
-                                                          ((cast ptr:Node field) line)))
+                          fty:ptr (extract-name-and-type field (as ptr:ptr (addr-of fname))
+                                                          ((unsafe/cast ptr:Node field) line)))
                       (when (= fty null)
-                        (die-at ((cast ptr:Node field) line)
+                        (die-at ((unsafe/cast ptr:Node field) line)
                           (fmt-s "defunion: field '%s' missing :type" fname)))
-                      (aset! (cast ptr:ptr fnames) fi (intern-str fname))
-                      (aset! (cast ptr:ptr ftypes) fi fty))
+                      (aset! (as ptr:ptr fnames) fi (intern-str fname))
+                      (aset! (as ptr:ptr ftypes) fi fty))
                     (inc! fi))))))
-          (when (>= (union-arm-index-in aname arm-names ai) 0)
+          (when (>= (union-arm-index-in aname arms-vec) 0)
             (die-at (arm line) (fmt-s "defunion: duplicate arm '%s'" aname)))
-          (aset! (cast ptr:ptr arm-names) ai (intern-str aname))
-          (aset! (cast ptr:ptr arm-fnames) ai fnames)
-          (aset! (cast ptr:ptr arm-ftypes) ai ftypes)
-          (aset! (cast ptr:i32 arm-nfields) ai nf)
           ; Arm payload: nothing (payload-less), the single field's type, or a
           ; memoized anonymous struct of the fields.
-          (if (= nf 0)
-            (aset! (cast ptr:ptr arm-ptypes) ai null)
-            (if (= nf 1)
-              (aset! (cast ptr:ptr arm-ptypes) ai (aref (cast ptr:ptr ftypes) 0))
-              (aset! (cast ptr:ptr arm-ptypes) ai
-                     (type-for-sdef (lookup-or-make-anon-struct fnames ftypes nf))))))
-        (inc! ai)
-        (set! cur ((cast ptr:Node cur) cdr)))
+          (let (rec:ref:Arm (new Arm)
+                pty:raw:Type (if (= nf 0)
+                               null
+                               (if (= nf 1)
+                                 (as raw:Type (aref (as ptr:ptr ftypes) 0))
+                                 (as raw:Type
+                                   (type-for-sdef (lookup-or-make-anon-struct fnames ftypes nf))))))
+            (.set! rec name (as CStr (intern-str aname)))
+            (.set! rec ptype pty)
+            (.set! rec fnames fnames)
+            (.set! rec ftypes ftypes)
+            (.set! rec nfields nf)
+            (conj arms-vec rec)))
+        (set! cur ((unsafe/cast ptr:Node cur) cdr)))
       ; Classify the layout (unions.md §6 — the U4/A2 convergence). The arm
       ; table is now complete; the engine applies rules 1–4 in order, honoring
       ; &repr. Stage 1 records the decision on the UnionDef; the niche layouts
       ; (rules 2/3) are produced by the Type-returning callers (rule 2/3 codegen).
       (let (niche-elem-box:ptr null
-            layout:i32 (union-layout-classify arm-names arm-ptypes arm-nfields
-                          narms repr (cast ptr:ptr (addr-of niche-elem-box)) line))
+            layout:i32 (union-layout-classify arms-vec
+                          narms repr (as ptr:ptr (addr-of niche-elem-box)) line))
       ; The payload union: one member per payload-bearing arm, named by the arm.
       (let (npay:i32 0
             i:i32 0)
         (while (< i narms)
-          (when (!= (aref (cast ptr:ptr arm-ptypes) i) null) (inc! npay))
+          (when (!= ((invoke arms-vec (as usize i)) ptype) null) (inc! npay))
           (inc! i))
         ; A niche layout (rules 2/3) lowers to a bare pointer with no backing
         ; struct or payload union — skip building the anon payload union (which
@@ -820,32 +822,32 @@
                                    (= layout LAYOUT-NICHE-ERRPTR)) 1 0)
               union-sd:ptr null)
           (when (and (> npay 0) (= is-niche 0))
-            (let (mnames:ptr (arena-alloc (* (cast i64 npay) (ptr-bytes)))
-                  mtypes:ptr (arena-alloc (* (cast i64 npay) (ptr-bytes)))
+            (let (mnames:ptr (arena-alloc (* (as i64 npay) (ptr-bytes)))
+                  mtypes:ptr (arena-alloc (* (as i64 npay) (ptr-bytes)))
                   mi:i32 0)
               (set! i 0)
               (while (< i narms)
-                (when (!= (aref (cast ptr:ptr arm-ptypes) i) null)
-                  (aset! (cast ptr:ptr mnames) mi (aref (cast ptr:ptr arm-names) i))
-                  (aset! (cast ptr:ptr mtypes) mi (aref (cast ptr:ptr arm-ptypes) i))
-                  (inc! mi))
+                (let (arm-rec:ref:Arm (invoke arms-vec (as usize i)))
+                  (when (!= (arm-rec ptype) null)
+                    (aset! (as ptr:ptr mnames) mi (arm-rec name))
+                    (aset! (as ptr:ptr mtypes) mi (arm-rec ptype))
+                    (inc! mi)))
                 (inc! i))
-              (set! union-sd (cast ptr (lookup-or-make-anon-union mnames mtypes npay)))))
+              (set! union-sd (as ptr (lookup-or-make-anon-union mnames mtypes npay)))))
           ; Backing struct: {tag:i32 [, payload:(union ...)]}.
           (let (sd:ref:StructDef (if-some (e (lookup-struct name)) e (register-struct name)))
+            (check-ir-name-legal line name (sd ir-name))
             (when (!= (sd emitted) 0)
               (die-at line (fmt-s "defunion: '%s' already names a struct" name)))
             (let (bnf:i32 (if (!= union-sd null) 2 1)
-                  bfn:ptr (arena-alloc (* (cast i64 2) (ptr-bytes)))
-                  bft:ptr (arena-alloc (* (cast i64 2) (ptr-bytes))))
-              (aset! (cast ptr:ptr bfn) 0 (intern-str "tag"))
-              (aset! (cast ptr:ptr bft) 0 ty-i32)
+                  bfn:ptr (arena-alloc (* (as i64 2) (ptr-bytes)))
+                  bft:ptr (arena-alloc (* (as i64 2) (ptr-bytes))))
+              (aset! (as ptr:ptr bfn) 0 (intern-str "tag"))
+              (aset! (as ptr:ptr bft) 0 ty-i32)
               (when (!= union-sd null)
-                (aset! (cast ptr:ptr bfn) 1 (intern-str "payload"))
-                (aset! (cast ptr:ptr bft) 1 (type-for-sdef union-sd)))
-              (.set! sd field-names bfn)
-              (.set! sd field-types bft)
-              (.set! sd num-fields bnf)
+                (aset! (as ptr:ptr bfn) 1 (intern-str "payload"))
+                (aset! (as ptr:ptr bft) 1 (type-for-sdef union-sd)))
+              (struct-set-fields sd bfn bft bnf)
               (.set! sd src-file g-source-path)
               (.set! sd src-line line)
               ; Header-emit modes (--emit-nuch/--emit-cheader) prescan defn
@@ -858,58 +860,55 @@
                          (!= layout LAYOUT-NICHE-MAYBE) (!= layout LAYOUT-NICHE-ERRPTR))
                 (if (!= union-sd null)
                   (fprintf g-type-stream "%%%s = type { i32, %%%s }\n\n"
-                    name ((cast ptr:StructDef union-sd) name))
-                  (fprintf g-type-stream "%%%s = type { i32 }\n\n" name)))
+                    (sd ir-name) ((as ptr:StructDef union-sd) ir-name))
+                  (fprintf g-type-stream "%%%s = type { i32 }\n\n" (sd ir-name))))
               (.set! sd emitted 1))
-            (let (ud:ptr:UnionDef (cast ptr:UnionDef (arena-alloc (sizeof UnionDef))))
-              (conj g-uniondefs (cast ptr ud))
+            (let (ud:ptr:UnionDef (new UnionDef))
+              (conj g-uniondefs ud)
               (.set! ud name name)
-              (.set! ud sdef (cast ptr sd))
+              (.set! ud sdef sd)
               (.set! ud union-sd union-sd)
               (.set! ud num-arms narms)
-              (.set! ud arm-names arm-names)
-              (.set! ud arm-ptypes arm-ptypes)
-              (.set! ud arm-fnames arm-fnames)
-              (.set! ud arm-ftypes arm-ftypes)
-              (.set! ud arm-nfields arm-nfields)
+              (.set! ud arms arms-vec)
               (.set! ud layout layout)
               (.set! ud niche-elem niche-elem-box)
               (.set! ud src-line line)
-              (.set! sd udef (cast ptr ud))
-              (return (cast ref:UnionDef ud))))))))))
+              (.set! sd udef ud)
+              (return (as ref:UnionDef ud))))))))))
 
-; Arm-name duplicate probe over a partially-built name array (registration helper).
-(defn union-arm-index-in:i32 (name:ptr names:ptr n:i32)
-  (dotimes (i n)
-    (when (= (strcmp (aref (cast ptr:ptr names) i) name) 0)
+; Arm-name duplicate probe over the partially-built arm Vector (registration
+; helper) — scans the arms conj'd so far.
+(defn union-arm-index-in (name:CStr (arms (ref (Vector (ref Arm))))):i32
+  (dotimes (i (unsafe/cast i32 (count arms)))
+    (when (= (strcmp ((invoke arms (as usize i)) name) name) 0)
       (return i)))
   (return -1))
 
 ; Register `(defunion (Name T ...) arms...)` as a template. Defines no type;
 ; uses stamp instances via union-template-stamp.
-(defn register-union-template:void (form:ptr)
-  (let (ff:ptr:Node (cast ptr:Node form)
-        head:ptr:Node (cast ptr:Node (node-at form 1))
-        name-node:ptr:Node (cast ptr:Node (node-at (cast ptr head) 0)))
+(defn register-union-template (form:ptr):void
+  (let (ff:ptr:Node (unsafe/cast ptr:Node form)
+        head:ptr:Node (unsafe/cast ptr:Node (node-at form 1))
+        name-node:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr head) 0)))
     (when (!= (name-node kind) NODE-SYM)
       (die-at (head line) "defunion: template name must be a symbol"))
     (let (name:ptr (name-node s)
-          ntv:i32 (- (node-len (cast ptr head)) 1))
+          ntv:i32 (- (node-len (as ptr head)) 1))
       (when (< ntv 1)
         (die-at (head line) "defunion: template needs at least one type parameter"))
       ; Re-import of the same template (e.g. via .nuch) is a no-op.
       (when (!= (union-template-lookup name) null) (return))
       (guard-name-kind name (ff line) NK-TYPE)
-      (when (>= (cast i32 (count g-union-templates)) MAX-UNION-TEMPLATES)
+      (when (>= (unsafe/cast i32 (count g-union-templates)) MAX-UNION-TEMPLATES)
         (die-at (ff line) "too many defunion templates"))
-      (let (tyvars:ptr (arena-alloc (* (cast i64 ntv) (ptr-bytes))))
+      (let (tyvars:ptr (arena-alloc (* (as i64 ntv) (ptr-bytes))))
         (dotimes (i ntv)
-          (let (tv:ptr:Node (cast ptr:Node (node-at (cast ptr head) (+ i 1))))
+          (let (tv:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr head) (+ i 1))))
             (when (!= (tv kind) NODE-SYM)
               (die-at (tv line) "defunion: type parameter must be a symbol"))
-            (aset! (cast ptr:ptr tyvars) i (tv s))))
-        (let (ut:ptr:UnionTemplate (cast ptr:UnionTemplate (arena-alloc (sizeof UnionTemplate))))
-          (conj g-union-templates (cast ptr ut))
+            (aset! (as ptr:ptr tyvars) i (tv s))))
+        (let (ut:ptr:UnionTemplate (as ptr:UnionTemplate (arena-alloc (sizeof UnionTemplate))))
+          (conj g-union-templates ut)
           (.set! ut name name)
           (.set! ut tyvars tyvars)
           (.set! ut ntv ntv)
@@ -921,30 +920,30 @@
 ; struct-template-stamp-types. Re-import (idempotent prescan, .nuch) is a no-op.
 ; A name list with no parameters — `(Foo)` — is an error (parametric-structs.md
 ; §2): use a plain `defstruct`.
-(defn register-struct-template:void (form:ptr)
-  (let (ff:ptr:Node (cast ptr:Node form)
-        head:ptr:Node (cast ptr:Node (node-at form 1))
-        name-node:ptr:Node (cast ptr:Node (node-at (cast ptr head) 0)))
+(defn register-struct-template (form:ptr):void
+  (let (ff:ptr:Node (unsafe/cast ptr:Node form)
+        head:ptr:Node (unsafe/cast ptr:Node (node-at form 1))
+        name-node:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr head) 0)))
     (when (!= (name-node kind) NODE-SYM)
       (die-at (head line) "defstruct: template name must be a symbol"))
     (let (name:ptr (name-node s)
-          ntv:i32 (- (node-len (cast ptr head)) 1))
+          ntv:i32 (- (node-len (as ptr head)) 1))
       (when (< ntv 1)
         (die-at (head line) "defstruct: template needs at least one type parameter — use a plain defstruct"))
       ; Re-import of the same template (e.g. via .nuch, or the idempotent prescan
       ; pass) is a no-op.
       (when (!= (struct-template-lookup name) null) (return))
       (guard-name-kind name (ff line) NK-TYPE)
-      (when (>= (cast i32 (count g-struct-templates)) MAX-STRUCT-TEMPLATES)
+      (when (>= (unsafe/cast i32 (count g-struct-templates)) MAX-STRUCT-TEMPLATES)
         (die-at (ff line) "too many defstruct templates"))
-      (let (tyvars:ptr (arena-alloc (* (cast i64 ntv) (ptr-bytes))))
+      (let (tyvars:ptr (arena-alloc (* (as i64 ntv) (ptr-bytes))))
         (dotimes (i ntv)
-          (let (tv:ptr:Node (cast ptr:Node (node-at (cast ptr head) (+ i 1))))
+          (let (tv:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr head) (+ i 1))))
             (when (!= (tv kind) NODE-SYM)
               (die-at (tv line) "defstruct: type parameter must be a symbol"))
-            (aset! (cast ptr:ptr tyvars) i (tv s))))
-        (let (st:ptr:StructTemplate (cast ptr:StructTemplate (arena-alloc (sizeof StructTemplate))))
-          (conj g-struct-templates (cast ptr st))
+            (aset! (as ptr:ptr tyvars) i (tv s))))
+        (let (st:ptr:StructTemplate (as ptr:StructTemplate (arena-alloc (sizeof StructTemplate))))
+          (conj g-struct-templates st)
           (.set! st name name)
           (.set! st tyvars tyvars)
           (.set! st ntv ntv)
@@ -957,53 +956,54 @@
 ; `(defunion (Maybe2 T) (some v:(ref T)) none)` stamp and `(Maybe (ref T))`
 ; produce identical bits. For LAYOUT-TAGGED/ENUM it is the backing struct type.
 ; pkind is invisible to type-eq/mangle, so this never perturbs other types.
-(defn union-instance-type:ref:Type (ud:ptr)
-  (let (udd:ptr:UnionDef (cast ptr:UnionDef ud)
+(defn union-instance-type (ud:raw:UnionDef):ref:Type
+  (let (udd:raw:UnionDef ud
         lay:i32 (udd layout))
-    (when (= lay LAYOUT-NICHE-MAYBE)
-      (let (pt:ref:Type (make-type TY-PTR))
-        (.set! pt elem (udd niche-elem))
-        (.set! pt pkind PTR-MAYBE)
-        (return pt)))
-    (when (= lay LAYOUT-NICHE-ERRPTR)
-      (let (pt:ref:Type (make-type TY-PTR))
-        (.set! pt elem (udd niche-elem))
-        (.set! pt pkind PTR-ERRPTR)
-        (return pt)))
-    (return (type-for-sdef (udd sdef)))))
+    (case lay
+      LAYOUT-NICHE-MAYBE
+        (let (pt:ref:Type (make-type TY-PTR))
+          (.set! pt elem (udd niche-elem))
+          (.set! pt pkind PTR-MAYBE)
+          (return pt))
+      LAYOUT-NICHE-ERRPTR
+        (let (pt:ref:Type (make-type TY-PTR))
+          (.set! pt elem (udd niche-elem))
+          (.set! pt pkind PTR-ERRPTR)
+          (return pt))
+      (return (type-for-sdef (udd sdef))))))
 
 ; use `(Name A B)`. The instance is an ordinary defunion named
 ; `Name.<tok>.<tok>` (type-mangle-token per argument, the generic-fn scheme);
 ; construction is via `make` / return-position target typing — no per-instance
 ; constructor functions are stamped, so cross-unit stamping cannot collide.
-(defn union-template-stamp:ref:Type (ut:ptr use-node:ptr line:i32)
-  (let (utt:ptr:UnionTemplate (cast ptr:UnionTemplate ut)
+(defn union-template-stamp (ut:raw:UnionTemplate use-node:ptr line:i32):ref:Type
+  (let (utt:raw:UnionTemplate ut
         nargs:i32 (- (node-len use-node) 1)
-        argts:ptr (arena-alloc (* (cast i64 (if (> nargs 0) nargs 1)) (ptr-bytes))))
+        argts:ptr (arena-alloc (* (as i64 (if (> nargs 0) nargs 1)) (ptr-bytes))))
     (dotimes (i nargs)
-      (aset! (cast ptr:ptr argts) i (parse-type-from-node (node-at use-node (+ i 1)) line)))
+      (aset! (as ptr:ptr argts) i (parse-type-from-node (node-at use-node (+ i 1)) line)))
     (return (union-template-stamp-types ut argts nargs line))))
 
 ; Stamp a template instance from already-parsed argument Type*s. Shared by the
 ; node-driven `(Result A B)` path and the `!T` sugar (which has Type* operands,
 ; not nodes). Memoized by the mangled instance name.
-(defn union-template-stamp-types:ref:Type (ut:ptr argts:ptr nargs:i32 line:i32)
-  (let (utt:ptr:UnionTemplate (cast ptr:UnionTemplate ut))
+(defn union-template-stamp-types (ut:raw:UnionTemplate argts:ptr nargs:i32 line:i32):ref:Type
+  (let (utt:raw:UnionTemplate ut)
     (when (!= nargs (utt ntv))
       (die-at line
         (fmt-s "%s: wrong number of type arguments for defunion template" (utt name))))
-    (let (spellings:ptr (arena-alloc (* (cast i64 nargs) (ptr-bytes)))
+    (let (spellings:ptr (arena-alloc (* (as i64 nargs) (ptr-bytes)))
           iname:ptr (utt name))
       (dotimes (i nargs)
-        (let (at:ptr (aref (cast ptr:ptr argts) i))
-          (aset! (cast ptr:ptr spellings) i (type-spelling at))
+        (let (at:ptr (aref (as ptr:ptr argts) i))
+          (aset! (as ptr:ptr spellings) i (type-spelling at))
           (set! iname (fmt-2s "%s.%s" iname (type-mangle-token at)))))
       (if-some (ud (uniondef-lookup iname))
-        (return (union-instance-type (cast ptr ud)))
-        (let (arms:ptr (-> (cast ptr:Node (utt form)) (_ cdr) (cast ptr:Node _) (_ cdr))
+        (return (union-instance-type ud))
+        (let (arms:ptr (-> (unsafe/cast ptr:Node (utt form)) (_ cdr) (unsafe/cast ptr:Node _) (_ cdr))
               arms-subst:ptr (subst-tyvars-node arms (utt tyvars) spellings (utt ntv))
               ud2:ref:UnionDef (defunion-register iname arms-subst line))
-          (return (union-instance-type (cast ptr ud2))))))))
+          (return (union-instance-type ud2)))))))
 
 ; Stage 11: stamp (and memoize) a concrete instance of a defstruct template
 ; (parametric-structs.md §3). Exact analogue of union-template-stamp-types:
@@ -1017,16 +1017,16 @@
 ;      QUEUE its `%name = type {…}` line on the shared deferred-IR queue (drained
 ;      at module-assembly boundaries, exactly like unions). The result IS an
 ;      ordinary monomorphic TY-STRUCT — no new layout/ABI code.
-(defn struct-template-stamp-types:ref:Type (st:ptr argts:ptr nargs:i32 line:i32)
-  (let (stt:ptr:StructTemplate (cast ptr:StructTemplate st))
+(defn struct-template-stamp-types (st:raw:StructTemplate argts:ptr nargs:i32 line:i32):ref:Type
+  (let (stt:raw:StructTemplate st)
     (when (!= nargs (stt ntv))
       (die-at line
         (fmt-s "%s: wrong number of type arguments for defstruct template" (stt name))))
-    (let (spellings:ptr (arena-alloc (* (cast i64 nargs) (ptr-bytes)))
+    (let (spellings:ptr (arena-alloc (* (as i64 nargs) (ptr-bytes)))
           iname:ptr (stt name))
       (dotimes (i nargs)
-        (let (at:ptr (aref (cast ptr:ptr argts) i))
-          (aset! (cast ptr:ptr spellings) i (type-spelling at))
+        (let (at:ptr (aref (as ptr:ptr argts) i))
+          (aset! (as ptr:ptr spellings) i (type-spelling at))
           (set! iname (fmt-2s "%s.%s" iname (type-mangle-token at)))))
       ; Intern so the lookup-struct / register-struct name comparison (which is
       ; pointer-identity) memoizes across uses within the unit.
@@ -1041,7 +1041,7 @@
       (let (sd:ref:StructDef (register-struct iname)
             ; The template form's field specs are everything after the (Name T...)
             ; head: (defstruct (Name T..) f0 f1 ...) → cdr-cdr.
-            fields-tmpl:ptr (-> (cast ptr:Node (stt form)) (_ cdr) (cast ptr:Node _) (_ cdr))
+            fields-tmpl:ptr (-> (unsafe/cast ptr:Node (stt form)) (_ cdr) (unsafe/cast ptr:Node _) (_ cdr))
             fields:ptr (subst-tyvars-node fields-tmpl (stt tyvars) spellings (stt ntv))
             nfields:i32 (node-len fields)
             cur:ptr fields)
@@ -1049,37 +1049,37 @@
         ; (template, args) from a concrete instance to bind a pattern `(Vector T)`
         ; against a concrete `Vector.i32`. Copy the arg Type*s into a stable arena
         ; array, since the caller's `argts` may be reused.
-        (let (origin-args:ptr (arena-alloc (* (cast i64 (if (> nargs 0) nargs 1)) (ptr-bytes))))
+        (let (origin-args:ptr (arena-alloc (* (as i64 (if (> nargs 0) nargs 1)) (ptr-bytes))))
           (dotimes (oi nargs)
-            (aset! (cast ptr:ptr origin-args) oi (aref (cast ptr:ptr argts) oi)))
+            (aset! (as ptr:ptr origin-args) oi (aref (as ptr:ptr argts) oi)))
           (.set! sd origin-template st)
           (.set! sd origin-args origin-args)
           (.set! sd origin-nargs nargs))
-        (.set! sd field-names (arena-alloc (* (cast i64 nfields) (ptr-bytes))))
-        (.set! sd field-types (arena-alloc (* (cast i64 nfields) (ptr-bytes))))
-        (.set! sd num-fields nfields)
-        (.set! sd src-file g-source-path)
-        (.set! sd src-line line)
-        (let (fi:i32 0)
-          (set! cur fields)
-          (while (!= cur null)
-            (let (field:ptr ((cast ptr:Node cur) car)
-                  fname:ptr null
-                  fty:ptr (extract-name-and-type field (cast ptr:ptr (addr-of fname))
-                                                 ((cast ptr:Node field) line)))
-              (when (= fty null)
-                (die-at ((cast ptr:Node field) line)
-                  (fmt-2s "defstruct template %s: field '%s' missing :type" (stt name) fname)))
-              (aset! (cast ptr:ptr (sd field-names)) fi (intern-str fname))
-              (aset! (cast ptr:ptr (sd field-types)) fi fty))
-            (inc! fi)
-            (set! cur ((cast ptr:Node cur) cdr))))
+        (let (fnm:ptr (arena-alloc (* (as i64 nfields) (ptr-bytes)))
+              ftp:ptr (arena-alloc (* (as i64 nfields) (ptr-bytes))))
+          (.set! sd src-file g-source-path)
+          (.set! sd src-line line)
+          (let (fi:i32 0)
+            (set! cur fields)
+            (while (!= cur null)
+              (let (field:ptr ((unsafe/cast ptr:Node cur) car)
+                    fname:ptr null
+                    fty:ptr (extract-name-and-type field (as ptr:ptr (addr-of fname))
+                                                   ((unsafe/cast ptr:Node field) line)))
+                (when (= fty null)
+                  (die-at ((unsafe/cast ptr:Node field) line)
+                    (fmt-2s "defstruct template %s: field '%s' missing :type" (stt name) fname)))
+                (aset! (as ptr:ptr fnm) fi (intern-str fname))
+                (aset! (as ptr:ptr ftp) fi fty))
+              (inc! fi)
+              (set! cur ((unsafe/cast ptr:Node cur) cdr))))
+          (struct-set-fields sd fnm ftp nfields))
         ; Queue the `%name = type {…}` IR on the shared deferred queue. emit-pending
         ; -struct-ir-type writes the plain struct line at drain time; the `emitted`
         ; flag guards double-emit. Deferring (rather than emitting inline) keeps a
         ; mid-function stamp from interleaving into a def-stream body, the same
         ; discipline unions use.
-        (conj g-pending-unions (cast ptr sd))
+        (conj g-pending-unions sd)
         ; Stage 11 T4: per-instance protocol conformance check. For each template
         ; conformance recorded via `(extend (Vector T) (Seq T))`, substitute this
         ; instance's concrete args into the protocol bindings and confirm every
@@ -1093,88 +1093,196 @@
         ; before any user struct template is stamped; a null hook (no parametric
         ; protocols loaded yet) means there is nothing to check.
         (when (!= g-tmpl-conf-check-hook null)
-          (funcall (cast ((fn void) (ptr ptr ptr i32 i32)) g-tmpl-conf-check-hook)
+          (funcall (unsafe/cast ((fn void) (ptr ptr ptr i32 i32)) g-tmpl-conf-check-hook)
                    st iname spellings nargs line))
         (return (type-for-sdef sd))))))
 
 ; Node-driven entry: stamp `(Name A B)` from a use node (mirrors
 ; union-template-stamp). Parses each type argument, then delegates.
-(defn struct-template-stamp:ref:Type (st:ptr use-node:ptr line:i32)
-  (let (stt:ptr:StructTemplate (cast ptr:StructTemplate st)
+(defn struct-template-stamp (st:raw:StructTemplate use-node:ptr line:i32):ref:Type
+  (let (stt:raw:StructTemplate st
         nargs:i32 (- (node-len use-node) 1)
-        argts:ptr (arena-alloc (* (cast i64 (if (> nargs 0) nargs 1)) (ptr-bytes))))
+        argts:ptr (arena-alloc (* (as i64 (if (> nargs 0) nargs 1)) (ptr-bytes))))
     (dotimes (i nargs)
-      (aset! (cast ptr:ptr argts) i (parse-type-from-node (node-at use-node (+ i 1)) line)))
+      (aset! (as ptr:ptr argts) i (parse-type-from-node (node-at use-node (+ i 1)) line)))
     (return (struct-template-stamp-types st argts nargs line))))
+
+; ============================================================
+; Stage 14 AT-1 — declaration attribute slot (design/stage14/attributes.md)
+; ============================================================
+; A declaration attribute is a leading keyword literal (`:volatile`) qualifying
+; the declaration that follows it — never part of type identity, dispatch, or
+; name mangling (§2). The cond below is the attribute registry: one clause per
+; known attribute (add a row to introduce one), an explicit reserved-with-error
+; row for `:thread-local`, and a catch-all that rejects unknown keywords so a
+; typo (`:volatle`) can never silently no-op.
+;
+; parse-decl-attrs scans zero-or-more leading NODE-KEYWORD operands from a
+; declaration operand list (`cursor` is a cons cell, or null), OR's each
+; recognized attribute's flag bit into *out-flags (a DECL-ATTR-* bitset), and
+; returns the list cursor advanced to the first non-attribute operand (the
+; declared name / element type). Every declaration site funnels its attribute
+; validation through here: def-forms (the keyword is a leading operand),
+; struct/union fields and defn params (the keyword heads the field/param cell,
+; reached via extract-name-and-type), let/with bindings (the keyword is wrapped
+; onto its binding name by attrs-normalize-bindings, then reaches here through
+; extract-name-and-type), and pointer target types `(ptr :volatile T)`.
+(defn parse-decl-attrs (cursor:ptr out-flags:ptr line:i32):ptr
+  (let (flags:i32 0
+        cur:ptr cursor)
+    (while (and (!= cur null)
+                (!= ((unsafe/cast ptr:Node cur) car) null)
+                (= (-> cur (unsafe/cast ptr:Node _) (_ car) (unsafe/cast ptr:Node _) (_ kind))
+                   NODE-KEYWORD))
+      (let (kw:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node cur) car))
+            nm:ptr (kw s))
+        (cond
+          (= nm "volatile")
+            (set! flags (bit-or flags DECL-ATTR-VOLATILE))
+          (= nm "const")
+            (set! flags (bit-or flags DECL-ATTR-CONST))
+          (= nm "thread-local")
+            (die-at line "thread-local storage requires the threading stage -- see design/stage14/attributes.md §5")
+          true
+            (die-at line (fmt-s "unknown declaration attribute ':%s' (known attributes: :volatile, :const, :thread-local)" nm))))
+      (set! cur ((unsafe/cast ptr:Node cur) cdr)))
+    (aset! (as ptr:i32 out-flags) 0 flags)
+    (return cur)))
+
+; AVR-6: `:const` is meaningful ONLY on a defvar global — a struct/union field,
+; defn param, let/with binding, or pointer target type has no independent
+; global-vs-constant storage class to select, so a stray `:const` at any of those
+; sites is rejected here rather than silently accepted-and-ignored. `where` names
+; the offending declaration site for the diagnostic. Defined in union-registry so
+; it is visible at both the pointer-target sites below and extract-name-and-type
+; (nucleusc.nuc). No-op when the CONST bit is clear, so existing sites are inert.
+(defn reject-decl-attr-const (flags:i32 line:i32 where:ptr):void
+  (when (!= (bit-and flags DECL-ATTR-CONST) 0)
+    (die-at line (fmt-s "':const' applies only to a defvar global, not %s" where))))
+
+; AT-1: normalize a let/with binding list so a prefix attribute keyword becomes a
+; wrapped binding-name cell `(:kw... name)`, restoring strict (name value) pairs.
+;   (:volatile x:i32 0  y:i32 1) -> ((:volatile x:i32) 0  y:i32 1)
+; The wrapped cell then funnels through extract-name-and-type's attribute branch
+; (the single validation chokepoint), exactly like a `(:volatile field:type)`
+; struct field. Returns `binds` unchanged — no allocation — when the list holds
+; no attribute keyword at a name position, so an attribute-free binding list is
+; byte-identical. The fast-path scan only inspects even indices (name positions
+; in a well-formed attribute-free list); a keyword used as a binding *value* sits
+; at an odd index and is left alone.
+(defn attrs-normalize-bindings (binds:ptr line:i32):ptr
+  (when (= binds null) (return binds))
+  (let (has-attr:i32 0
+        idx:i32 0
+        scan:ptr binds)
+    (while (!= scan null)
+      (when (and (= (% idx 2) 0)
+                 (!= ((unsafe/cast ptr:Node scan) car) null)
+                 (= (-> scan (unsafe/cast ptr:Node _) (_ car) (unsafe/cast ptr:Node _) (_ kind))
+                    NODE-KEYWORD))
+        (set! has-attr 1))
+      (set! scan ((unsafe/cast ptr:Node scan) cdr))
+      (inc! idx))
+    (when (= has-attr 0) (return binds)))
+  (let (result:ptr null
+        tail:ptr null
+        cur:ptr binds)
+    (while (!= cur null)
+      ; Collect this binding's leading attribute keywords into (:kw...) list.
+      (let (kw-head:ptr null
+            kw-tail:ptr null)
+        (while (and (!= cur null)
+                    (!= ((unsafe/cast ptr:Node cur) car) null)
+                    (= (-> cur (unsafe/cast ptr:Node _) (_ car) (unsafe/cast ptr:Node _) (_ kind))
+                       NODE-KEYWORD))
+          (let (cell:ptr (make-cell ((unsafe/cast ptr:Node cur) car) null line))
+            (when (= kw-head null) (set! kw-head cell))
+            (when (!= kw-tail null) (.set! (unsafe/cast ptr:Node kw-tail) cdr cell))
+            (set! kw-tail cell))
+          (set! cur ((unsafe/cast ptr:Node cur) cdr)))
+        (when (= cur null)
+          (die-at line "declaration attribute must be followed by a binding name"))
+        (let (name-node:ptr ((unsafe/cast ptr:Node cur) car)
+              wrapped:ptr name-node)
+          (when (!= kw-head null)
+            (.set! (unsafe/cast ptr:Node kw-tail) cdr (make-cell name-node null line))
+            (set! wrapped kw-head))
+          (let (ncell:ptr (make-cell wrapped null line))
+            (when (= result null) (set! result ncell))
+            (when (!= tail null) (.set! (unsafe/cast ptr:Node tail) cdr ncell))
+            (set! tail ncell))
+          (set! cur ((unsafe/cast ptr:Node cur) cdr))
+          ; The value element (verbatim). A missing value is reported downstream
+          ; by the even-count check on the normalized list.
+          (when (!= cur null)
+            (let (vcell:ptr (make-cell ((unsafe/cast ptr:Node cur) car) null line))
+              (when (= result null) (set! result vcell))
+              (when (!= tail null) (.set! (unsafe/cast ptr:Node tail) cdr vcell))
+              (set! tail vcell))
+            (set! cur ((unsafe/cast ptr:Node cur) cdr))))))
+    (return result)))
 
 ; Parse a type from an AST node. Handles:
 ;   - symbol node: delegates to parse-type-name
 ;   - list node (ptr T) or (ptr ptr ... T): builds TY-PTR
 ;   - list node ((fn ret-type) (param-types...)) or (fn ret-type): builds TY-FN
-(defn parse-type-from-node:ref:Type (node:ptr line:i32)
-  (let (n:ptr:Node (cast ptr:Node node))
-    (when (= (n kind) NODE-SYM)
+(defn parse-type-from-node (node:ptr line:i32):ref:Type
+  (let (n:ptr:Node (unsafe/cast ptr:Node node))
+    (case (n kind)
+      NODE-SYM
+      (do
       ; Colon-sugar in inline type position: "ptr:Node" → (ptr Node).
       (when (!= (strchr (n s) 58) null)
         (return (parse-type-from-node (split-colon-segments (n s) line) line)))
       (return (parse-type-name (n s) line)))
-    (when (= (n kind) NODE-CELL)
+      NODE-CELL
+      (do
       ; Stage 10 Phase F: a list head carrying a ?/! type prefix — produced by the
       ; multi-colon desugar of e.g. ?ptr:Node -> (?ptr Node) or !ptr:Node ->
       ; (!ptr Node). Strip the prefix from the head, parse the remainder as a type,
       ; then apply the prefix's sugar (? = niche/value Maybe; ! = (Result T Err)).
       ; Bare ?Foo / !Foo never reach here (single token, handled in parse-type-name).
       (let (head0:ptr (n car))
-        (when (and (!= head0 null) (= (-> head0 (cast ptr:Node _) (_ kind)) NODE-SYM))
-          (let (hs:ptr (-> head0 (cast ptr:Node _) (_ s))
-                c0:i32 (char-at hs (cast i64 0)))
+        (when (and (!= head0 null) (= (-> head0 (unsafe/cast ptr:Node _) (_ kind)) NODE-SYM))
+          (let (hs:ptr (-> head0 (unsafe/cast ptr:Node _) (_ s))
+                c0:i32 (char-at hs 0))
             (when (or (= c0 63) (= c0 33))
-              (let (stripped:ptr (cast ptr (intern-symbol (ptr+ (cast ptr:i8 hs) (cast i64 1))))
+              (let (stripped:ptr (as ptr (intern-symbol (unsafe/ptr+ (as ptr:i8 hs) 1)))
                     inner-list:ptr (make-cell stripped (n cdr) line)
                     inner:ptr (parse-type-from-node inner-list line))
                 (when (= c0 63)
-                  (when (= (-> inner (cast ptr:Type _) (_ kind)) TY-PTR)
-                    (return (cast ref:Type (type-as-pkind inner PTR-MAYBE))))
+                  (when (= (-> inner (unsafe/cast ptr:Type _) (_ kind)) TY-PTR)
+                    (return (unsafe/cast ref:Type (type-as-pkind inner PTR-MAYBE))))
                   ; Value operand: stamp the value-Maybe template (Phase F uniform ?).
                   (let (ut:?ptr:UnionTemplate (union-template-lookup "Maybe"))
                     (when (= ut null)
                       (die-at line "?T: value-Maybe template not in scope (import the prelude)"))
                     (let (argts:ptr (arena-alloc (ptr-bytes)))
-                      (aset! (cast ptr:ptr argts) 0 inner)
-                      (return (union-template-stamp-types (cast ptr ut) argts 1 line)))))
+                      (aset! (as ptr:ptr argts) 0 inner)
+                      (return (union-template-stamp-types (as ptr ut) argts 1 line)))))
                 (let (ut:?ptr:UnionTemplate (union-template-lookup "Result"))
                   (when (= ut null)
                     (die-at line "!T: (Result T E) template not in scope (import the prelude)"))
-                  (let (argts:ptr (arena-alloc (* (cast i64 2) (ptr-bytes))))
-                    (aset! (cast ptr:ptr argts) 0 inner)
-                    (aset! (cast ptr:ptr argts) 1 (cast ptr ty-err))
-                    (return (union-template-stamp-types (cast ptr ut) argts 2 line)))))))))
-      ; Postfix volatile: (T volatile) or (T1 T2 ... volatile). Strip the trailing
-      ; 'volatile and recurse on the head, then mark volatile. Placed before ptr/fn
-      ; so (ptr i32 volatile) ≡ volatile (ptr i32).
+                  (let (argts:ptr (arena-alloc (* (as i64 2) (ptr-bytes))))
+                    (aset! (as ptr:ptr argts) 0 inner)
+                    (aset! (as ptr:ptr argts) 1 (as ptr ty-err))
+                    (return (union-template-stamp-types (as ptr ut) argts 2 line)))))))))
+      ; AT-3: postfix volatile is retired. (T volatile) / (T1 T2 ... volatile) —
+      ; the list-form spelling — and colon-sugared T:volatile (which reduces to
+      ; this same trailing-symbol shape via split-colon-segments before it ever
+      ; reaches here, so one check catches both source spellings) used to strip
+      ; the trailing 'volatile symbol and mark the head type volatile via
+      ; type-with-volatile. Now a targeted hard error naming the AT-1
+      ; attribute-slot replacement instead. Placed before ptr/fn, same as the
+      ; retired stripping logic was, so the message fires before any other
+      ; parse of the list is attempted.
       (let (nlen:i32 (node-len n))
         (when (>= nlen 2)
-          (let (last:ptr:Node (cast ptr:Node (node-at n (- nlen 1))))
-            (when (and (!= (cast ptr last) null)
+          (let (last:ptr:Node (unsafe/cast ptr:Node (node-at n (- nlen 1))))
+            (when (and (!= (as ptr last) null)
                        (= (last kind) NODE-SYM)
                        (= (strcmp (last s) "volatile") 0))
-              (let (head-len:i32 (- nlen 1)
-                    inner:ptr null)
-                (if (= head-len 1)
-                  (set! inner (n car))
-                  (let (cur:ptr (cast ptr n)
-                        new-head:ptr null
-                        new-tail:ptr null
-                        i:i32 0)
-                    (while (< i head-len)
-                      (let (cell:ptr (make-cell ((cast ptr:Node cur) car) null line))
-                        (when (= new-head null) (set! new-head cell))
-                        (when (!= new-tail null) (.set! (cast ptr:Node new-tail) cdr cell))
-                        (set! new-tail cell))
-                      (set! cur ((cast ptr:Node cur) cdr))
-                      (inc! i))
-                    (set! inner new-head)))
-                (return (type-with-volatile (parse-type-from-node inner line))))))))
+              (die-at line "postfix 'volatile' is retired: use the ':volatile' attribute (e.g. '(:volatile name:T)' for a declaration, or '(ptr :volatile T)' for a pointer target)")))))
       ; Anonymous struct: (struct field:type ...) — memoized by content hash so
       ; two textually-identical shapes share one synthesized StructDef.
       (let (head:ptr (n car))
@@ -1185,22 +1293,22 @@
             (set! cur rest)
             (while (!= cur null)
               (inc! nfields)
-              (set! cur ((cast ptr:Node cur) cdr)))
-            (let (fnames:ptr (arena-alloc (* (cast i64 nfields) (cast i64 8)))
-                  ftypes:ptr (arena-alloc (* (cast i64 nfields) (cast i64 8)))
+              (set! cur ((unsafe/cast ptr:Node cur) cdr)))
+            (let (fnames:ptr (arena-alloc (* (as i64 nfields) 8))
+                  ftypes:ptr (arena-alloc (* (as i64 nfields) 8))
                   i:i32 0)
               (set! cur rest)
               (while (!= cur null)
-                (let (field:ptr ((cast ptr:Node cur) car)
+                (let (field:ptr ((unsafe/cast ptr:Node cur) car)
                       fname:ptr null
-                      fty:ptr (extract-name-and-type field (cast ptr:ptr (addr-of fname)) line))
+                      fty:ptr (extract-name-and-type field (as ptr:ptr (addr-of fname)) line))
                   (when (= fty null)
                     (die-at line (fmt-s "struct: field '%s' missing :type" fname)))
                   ; Intern so field-name pointer-equality works at access sites.
-                  (aset! (cast ptr:ptr fnames) i (intern-str fname))
-                  (aset! (cast ptr:ptr ftypes) i fty))
+                  (aset! (as ptr:ptr fnames) i (intern-str fname))
+                  (aset! (as ptr:ptr ftypes) i fty))
                 (inc! i)
-                (set! cur ((cast ptr:Node cur) cdr)))
+                (set! cur ((unsafe/cast ptr:Node cur) cdr)))
               (let (sd:ptr (lookup-or-make-anon-struct fnames ftypes nfields)
                     t:ref:Type (make-type TY-STRUCT))
                 (.set! t sdef sd)
@@ -1216,23 +1324,23 @@
             (set! cur rest)
             (while (!= cur null)
               (inc! nfields)
-              (set! cur ((cast ptr:Node cur) cdr)))
+              (set! cur ((unsafe/cast ptr:Node cur) cdr)))
             (when (= nfields 0)
               (die-at line "union: at least one member required"))
-            (let (fnames:ptr (arena-alloc (* (cast i64 nfields) (ptr-bytes)))
-                  ftypes:ptr (arena-alloc (* (cast i64 nfields) (ptr-bytes)))
+            (let (fnames:ptr (arena-alloc (* (as i64 nfields) (ptr-bytes)))
+                  ftypes:ptr (arena-alloc (* (as i64 nfields) (ptr-bytes)))
                   i:i32 0)
               (set! cur rest)
               (while (!= cur null)
-                (let (field:ptr ((cast ptr:Node cur) car)
+                (let (field:ptr ((unsafe/cast ptr:Node cur) car)
                       fname:ptr null
-                      fty:ptr (extract-name-and-type field (cast ptr:ptr (addr-of fname)) line))
+                      fty:ptr (extract-name-and-type field (as ptr:ptr (addr-of fname)) line))
                   (when (= fty null)
                     (die-at line (fmt-s "union: member '%s' missing :type" fname)))
-                  (aset! (cast ptr:ptr fnames) i (intern-str fname))
-                  (aset! (cast ptr:ptr ftypes) i fty))
+                  (aset! (as ptr:ptr fnames) i (intern-str fname))
+                  (aset! (as ptr:ptr ftypes) i fty))
                 (inc! i)
-                (set! cur ((cast ptr:Node cur) cdr)))
+                (set! cur ((unsafe/cast ptr:Node cur) cdr)))
               (let (sd:ptr (lookup-or-make-anon-union fnames ftypes nfields)
                     t:ref:Type (make-type TY-UNION))
                 (.set! t sdef sd)
@@ -1242,35 +1350,45 @@
       ; (parametric-structs.md §3). The colon-sugar composes for free: ptr:T and
       ; (ref ...) reach here through the recursion above / the ptr/ref branches
       ; below with the inner (Vector i32) parsed via this same routine.
-      (let (head:ptr:Node (cast ptr:Node (n car)))
-        (when (and (!= (cast ptr head) null) (= (head kind) NODE-SYM))
+      (let (head:ptr:Node (unsafe/cast ptr:Node (n car)))
+        (when (and (!= (as ptr head) null) (= (head kind) NODE-SYM))
           (let (st:ptr (struct-template-lookup (head s)))
             (when (!= st null)
-              (return (struct-template-stamp st (cast ptr n) line))))))
+              (return (struct-template-stamp st (as ptr n) line))))))
       ; A parameterized defunion use: (Result A B) stamps (and memoizes) a
       ; concrete instance of the template (unions.md §5). `Maybe` is excluded —
       ; it has bespoke handling below (one spelling, two layouts: niche pointer
       ; for (Maybe (ref T)), value stamp otherwise).
-      (let (head:ptr:Node (cast ptr:Node (n car)))
-        (when (and (!= (cast ptr head) null)
+      (let (head:ptr:Node (unsafe/cast ptr:Node (n car)))
+        (when (and (!= (as ptr head) null)
                    (= (head kind) NODE-SYM) (!= (head s) "Maybe"))
           (let (ut:ptr (union-template-lookup (head s)))
             (when (!= ut null)
-              (return (union-template-stamp ut (cast ptr n) line))))))
+              (return (union-template-stamp ut (as ptr n) line))))))
       ; Check for pointer constructor: (ptr T) or (ptr ptr T) ...
       (let (head:ptr (n car))
         (when (= head 'ptr)
           (let (rest:ptr (n cdr))
             (when (= rest null) (return ty-ptr))
-            (let (elem:ptr null)
-              (if (= ((cast ptr:Node rest) cdr) null)
-                (set! elem (parse-type-from-node ((cast ptr:Node rest) car) line))
-                (set! elem (parse-type-from-node rest line)))
-              (let (pt:ref:Type (make-type TY-PTR))
-                (.set! pt elem elem)
-                ; Phase F flip: (ptr T) is now non-null, same as (ref T).
-                (.set! pt pkind PTR-REF)
-                (return pt))))))
+            ; AT-1: (ptr :volatile T) — a volatile *pointee* (C's `volatile T *`,
+            ; the MMIO case). The keyword moves inside the constructor and marks
+            ; the element type, not the pointer slot.
+            (let (vflags:i32 0)
+              (set! rest (parse-decl-attrs rest (as ptr:i32 (addr-of vflags)) line))
+              (reject-decl-attr-const vflags line "a pointer target type")
+              (when (= rest null)
+                (die-at line "ptr: element type required after attribute -- (ptr :volatile T)"))
+              (let (elem:ptr null)
+                (if (= ((unsafe/cast ptr:Node rest) cdr) null)
+                  (set! elem (parse-type-from-node ((unsafe/cast ptr:Node rest) car) line))
+                  (set! elem (parse-type-from-node rest line)))
+                (when (!= (bit-and vflags DECL-ATTR-VOLATILE) 0)
+                  (set! elem (as ptr (type-with-volatile (unsafe/cast ref:Type elem)))))
+                (let (pt:ref:Type (make-type TY-PTR))
+                  (.set! pt elem elem)
+                  ; Phase F flip: (ptr T) is now non-null, same as (ref T).
+                  (.set! pt pkind PTR-REF)
+                  (return pt)))))))
       ; Stage 10 Phase F: (raw T) — a nullable, unchecked pointer to T (today's
       ; raw `(ptr T)` behavior). The blessed spelling for C-boundary and
       ; deliberately-nullable pointers once the flip makes bare `ptr` non-null.
@@ -1279,14 +1397,22 @@
           (let (rest:ptr (n cdr))
             (when (= rest null)
               (die-at line "raw: element type required — (raw T)"))
-            (let (elem:ptr null)
-              (if (= ((cast ptr:Node rest) cdr) null)
-                (set! elem (parse-type-from-node ((cast ptr:Node rest) car) line))
-                (set! elem (parse-type-from-node rest line)))
-              (let (pt:ref:Type (make-type TY-PTR))
-                (.set! pt elem elem)
-                (.set! pt pkind PTR-RAW)
-                (return pt))))))
+            ; AT-1: (raw :volatile T) — volatile pointee on a nullable pointer.
+            (let (vflags:i32 0)
+              (set! rest (parse-decl-attrs rest (as ptr:i32 (addr-of vflags)) line))
+              (reject-decl-attr-const vflags line "a pointer target type")
+              (when (= rest null)
+                (die-at line "raw: element type required after attribute -- (raw :volatile T)"))
+              (let (elem:ptr null)
+                (if (= ((unsafe/cast ptr:Node rest) cdr) null)
+                  (set! elem (parse-type-from-node ((unsafe/cast ptr:Node rest) car) line))
+                  (set! elem (parse-type-from-node rest line)))
+                (when (!= (bit-and vflags DECL-ATTR-VOLATILE) 0)
+                  (set! elem (as ptr (type-with-volatile (unsafe/cast ref:Type elem)))))
+                (let (pt:ref:Type (make-type TY-PTR))
+                  (.set! pt elem elem)
+                  (.set! pt pkind PTR-RAW)
+                  (return pt)))))))
       ; Stage 10: (ref T) — a non-null pointer to T. Same shape as (ptr T)
       ; (colon sugar ref:T arrives here too), but the element is required.
       (let (head:ptr (n car))
@@ -1294,14 +1420,22 @@
           (let (rest:ptr (n cdr))
             (when (= rest null)
               (die-at line "ref: element type required — (ref T)"))
-            (let (elem:ptr null)
-              (if (= ((cast ptr:Node rest) cdr) null)
-                (set! elem (parse-type-from-node ((cast ptr:Node rest) car) line))
-                (set! elem (parse-type-from-node rest line)))
-              (let (pt:ref:Type (make-type TY-PTR))
-                (.set! pt elem elem)
-                (.set! pt pkind PTR-REF)
-                (return pt))))))
+            ; AT-1: (ref :volatile T) — volatile pointee on a non-null pointer.
+            (let (vflags:i32 0)
+              (set! rest (parse-decl-attrs rest (as ptr:i32 (addr-of vflags)) line))
+              (reject-decl-attr-const vflags line "a pointer target type")
+              (when (= rest null)
+                (die-at line "ref: element type required after attribute -- (ref :volatile T)"))
+              (let (elem:ptr null)
+                (if (= ((unsafe/cast ptr:Node rest) cdr) null)
+                  (set! elem (parse-type-from-node ((unsafe/cast ptr:Node rest) car) line))
+                  (set! elem (parse-type-from-node rest line)))
+                (when (!= (bit-and vflags DECL-ATTR-VOLATILE) 0)
+                  (set! elem (as ptr (type-with-volatile (unsafe/cast ref:Type elem)))))
+                (let (pt:ref:Type (make-type TY-PTR))
+                  (.set! pt elem elem)
+                  (.set! pt pkind PTR-REF)
+                  (return pt)))))))
       ; Stage 10: (Maybe X) — one spelling, two layouts (errors.md §10 / E2).
       ;   (Maybe (ref T)) keeps the N1 niche-encoded pointer (null = none);
       ;   (Maybe T) for any other T stamps the two-arm {tag, T} value union from
@@ -1313,20 +1447,20 @@
             (when (= rest null)
               (die-at line "Maybe: payload type required — (Maybe T) or (Maybe (ref T))"))
             (let (inner:ptr null)
-              (if (= ((cast ptr:Node rest) cdr) null)
-                (set! inner (parse-type-from-node ((cast ptr:Node rest) car) line))
+              (if (= ((unsafe/cast ptr:Node rest) cdr) null)
+                (set! inner (parse-type-from-node ((unsafe/cast ptr:Node rest) car) line))
                 (set! inner (parse-type-from-node rest line)))
               ; Pointer payload that is non-null (ref T): niche-encode in place.
-              (when (and (= (-> inner (cast ptr:Type _) (_ kind)) TY-PTR)
+              (when (and (= (-> inner (unsafe/cast ptr:Type _) (_ kind)) TY-PTR)
                          (= (ptr-pkind inner) PTR-REF))
-                (return (cast ref:Type (type-as-pkind inner PTR-MAYBE))))
+                (return (unsafe/cast ref:Type (type-as-pkind inner PTR-MAYBE))))
               ; Any other payload: stamp the value-Maybe template.
               (let (ut:?ptr:UnionTemplate (union-template-lookup "Maybe"))
                 (when (= ut null)
                   (die-at line "(Maybe T): value-Maybe template not in scope (import the prelude)"))
                 (let (argts:ptr (arena-alloc (ptr-bytes)))
-                  (aset! (cast ptr:ptr argts) 0 inner)
-                  (return (union-template-stamp-types (cast ptr ut) argts 1 line))))))))
+                  (aset! (as ptr:ptr argts) 0 inner)
+                  (return (union-template-stamp-types (as ptr ut) argts 1 line))))))))
       ; Stage 13 TE-5: (BoxedFn (param-types…) ret) — the shared fat pointer
       ; (TE-1) specialised to the Fn family (design/stage13/type-erasure.md). Each
       ; signature is a distinct {data,vtable} instance type. Additive: no existing
@@ -1335,24 +1469,24 @@
         (when (= head 'BoxedFn)
           (let (plist-node:ptr (n cdr))
             (when (or (= plist-node null)
-                      (= ((cast ptr:Node plist-node) cdr) null))
+                      (= ((unsafe/cast ptr:Node plist-node) cdr) null))
               (die-at line "BoxedFn: expects (BoxedFn (param-types…) ret)"))
-            (let (params-list:ptr ((cast ptr:Node plist-node) car)
-                  ret-node:ptr (-> plist-node (cast ptr:Node _) (_ cdr) (cast ptr:Node _) (_ car))
+            (let (params-list:ptr ((unsafe/cast ptr:Node plist-node) car)
+                  ret-node:ptr (-> plist-node (unsafe/cast ptr:Node _) (_ cdr) (unsafe/cast ptr:Node _) (_ car))
                   num-p:i32 0
                   cur:ptr null)
               (set! cur params-list)
-              (while (!= cur null) (inc! num-p) (set! cur ((cast ptr:Node cur) cdr)))
+              (while (!= cur null) (inc! num-p) (set! cur ((unsafe/cast ptr:Node cur) cdr)))
               (let (param-arr:ptr (if (> num-p 0)
-                                    (arena-alloc (* (cast i64 num-p) (ptr-bytes)))
-                                    (cast ptr null))
+                                    (arena-alloc (* (as i64 num-p) (ptr-bytes)))
+                                    (as ptr null))
                     pi:i32 0)
                 (set! cur params-list)
                 (while (!= cur null)
-                  (aset! (cast ptr:ptr param-arr) pi
-                         (parse-type-from-node ((cast ptr:Node cur) car) line))
+                  (aset! (as ptr:ptr param-arr) pi
+                         (parse-type-from-node ((unsafe/cast ptr:Node cur) car) line))
                   (inc! pi)
-                  (set! cur ((cast ptr:Node cur) cdr)))
+                  (set! cur ((unsafe/cast ptr:Node cur) cdr)))
                 (let (ret-ty:ptr (parse-type-from-node ret-node line))
                   (return (boxedfn-type param-arr num-p ret-ty line))))))))
       ; Stage 13 TE-6: (dyn P) — the shared fat pointer (TE-1) erasing a value of
@@ -1366,9 +1500,9 @@
       (let (head:ptr (n car))
         (when (= head 'dyn)
           (let (rest:ptr (n cdr))
-            (when (or (= rest null) (= ((cast ptr:Node rest) car) null))
+            (when (or (= rest null) (= ((unsafe/cast ptr:Node rest) car) null))
               (die-at line "(dyn P): expects (dyn Protocol)"))
-            (let (pnode:ptr:Node (cast ptr:Node ((cast ptr:Node rest) car)))
+            (let (pnode:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node rest) car)))
               (when (!= (pnode kind) NODE-SYM)
                 (die-at line "(dyn P): protocol must be a bare symbol (parametric protocols are not boxable)"))
               (return (dyn-type (pnode s) line))))))
@@ -1376,43 +1510,42 @@
       (let (head:ptr (n car))
         (when (!= head null)
           ; Head is a list (fn ret-type) — function pointer with params
-         (when (= ((cast ptr:Node head) kind) NODE-CELL)
-           (let (fn-head:ptr ((cast ptr:Node head) car))
+         (when (= ((unsafe/cast ptr:Node head) kind) NODE-CELL)
+           (let (fn-head:ptr ((unsafe/cast ptr:Node head) car))
              (when (= fn-head 'fn)
                 ; Parse return type from (fn ret-type)
-                (let (ret-node:ptr ((cast ptr:Node head) cdr)
+                (let (ret-node:ptr ((unsafe/cast ptr:Node head) cdr)
                       ret-type:ptr ty-void)
                   (when (and (!= ret-node null)
-                             (!= ((cast ptr:Node ret-node) car) null))
-                    (set! ret-type (parse-type-from-node ((cast ptr:Node ret-node) car) line)))
+                             (!= ((unsafe/cast ptr:Node ret-node) car) null))
+                    (set! ret-type (parse-type-from-node ((unsafe/cast ptr:Node ret-node) car) line)))
                   ; Parse parameter types from the second element (param-types...)
                   (let (params-node:ptr (n cdr)
                         num-p:i32 0
                         param-arr:ptr null
                         is-va:i32 0)
                     (when (!= params-node null)
-                      (let (plist:ptr ((cast ptr:Node params-node) car))
+                      (let (plist:ptr ((unsafe/cast ptr:Node params-node) car))
                         (when (!= plist null)
                           ; Count params
                           (let (cur:ptr plist
                                 count:i32 0)
                             (while (!= cur null)
                               (inc! count)
-                              (set! cur ((cast ptr:Node cur) cdr)))
+                              (set! cur ((unsafe/cast ptr:Node cur) cdr)))
                             (set! num-p count)
-                            (set! param-arr (arena-alloc (* (cast i64 count) (ptr-bytes))))
+                            (set! param-arr (arena-alloc (* (as i64 count) (ptr-bytes))))
                             ; Parse each param type
                             (set! cur plist)
                             (let (pi:i32 0)
                               (while (!= cur null)
-                                (aset! (cast ptr:ptr param-arr) pi
-                                       (parse-type-from-node ((cast ptr:Node cur) car) line))
+                                (aset! (as ptr:ptr param-arr) pi
+                                       (parse-type-from-node ((unsafe/cast ptr:Node cur) car) line))
                                 (inc! pi)
-                                (set! cur ((cast ptr:Node cur) cdr))))))))
+                                (set! cur ((unsafe/cast ptr:Node cur) cdr))))))))
                     (let (ft:ref:Type (make-type TY-FN))
                       (.set! ft ret ret-type)
-                      (.set! ft params param-arr)
-                      (.set! ft num-params num-p)
+                      (type-set-params ft param-arr num-p)
                       (.set! ft variadic is-va)
                       (return ft)))))))
           ; Head is a symbol "fn" — function pointer with no params: (fn ret-type)
@@ -1420,12 +1553,12 @@
              (let (ret-node:ptr (n cdr)
                                 ret-type:ptr ty-void)
                (when (and (!= ret-node null)
-                          (!= ((cast ptr:Node ret-node) car) null))
-                 (set! ret-type (parse-type-from-node ((cast ptr:Node ret-node) car) line)))
+                          (!= ((unsafe/cast ptr:Node ret-node) car) null))
+                 (set! ret-type (parse-type-from-node ((unsafe/cast ptr:Node ret-node) car) line)))
                (let (ft:ref:Type (make-type TY-FN))
                  (.set! ft ret ret-type)
                  (.set! ft params null)
                  (.set! ft num-params 0)
                  (.set! ft variadic 0)
                  (return ft)))))))
-    (die-at line "unable to parse type expression")))
+    (die-at line "unable to parse type expression"))))

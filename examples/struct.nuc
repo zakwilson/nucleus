@@ -2,7 +2,7 @@
 
 (import-use "stdio.h")
 
-(defn main:int ()
+(defn main ():int
   (let (p:ptr:Point (alloca Point))
     (.set! p x 10)
     (.set! p y 20)

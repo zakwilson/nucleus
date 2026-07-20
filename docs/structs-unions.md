@@ -2,19 +2,19 @@
 
 ## Anonymous structs
 
-`(struct field:type ...)` is a type expression accepted wherever a type is expected — `let` bindings, `defn` parameter and return types, `defstruct` field types, `(ptr (struct ...))`, casts. Members use the same `name:type` / `(name type)` form as `defstruct`. Anonymous structs are **memoized by structural content**: two `(struct ...)` literals with the same field name+type list share a single underlying `StructDef`, so values flow between sites that spell out the same shape. The synthetic LLVM type name is `%__anon_struct_h<16-hex>`, derived from a 64-bit FNV-1a hash of the field list.
+`(struct field:type ...)` is a type expression accepted wherever a type is expected — `let` bindings, `defn` parameter and return types, `defstruct` field types, `(ptr (struct ...))`, `as`/`unsafe/cast` targets. Members use the same `name:type` / `(name type)` form as `defstruct`. Anonymous structs are **memoized by structural content**: two `(struct ...)` literals with the same field name+type list share a single underlying `StructDef`, so values flow between sites that spell out the same shape. The synthetic LLVM type name is `%__anon_struct_h<16-hex>`, derived from a 64-bit FNV-1a hash of the field list.
 
 Examples:
 
 - `(let ((p (ptr (struct x:i32 y:i32))) (alloca (struct x:i32 y:i32))) ...)` — local of anonymous-struct shape
 - `(defstruct Outer (pt (struct x:i32 y:i32)) tag:i32)` — nested by value
-- `(defn take:i32 ((p (ptr (struct x:i32))))  ...)` — parameter typed as anonymous struct pointer
+- `(defn take ((p (ptr (struct x:i32)))):i32  ...)` — parameter typed as anonymous struct pointer
 
 Use `(.& obj field)` to obtain a pointer to a field without loading it. Result is typed `(ptr field-type)`, so it composes with `.set!`, `deref`, and further `.&` calls — e.g. `(.set! (.& o point) x 10)` writes through a value-typed nested struct field.
 
 ## Passing and returning structs by value
 
-A struct used directly (not behind `ptr`) as a `defn`/`declare` parameter or return type is passed/returned per the **platform C ABI**, so it interoperates correctly with C functions compiled by the system `cc`. On x86_64 System V this means small structs are coerced into registers (e.g. `{i32,i32}` → one `i64`; a struct with a `float` field whose eightbyte also holds an integer → `i64`), and structs larger than 16 bytes are passed `byval` / returned via a hidden `sret` pointer. Other targets' ABIs are not yet implemented (see `design/stage8/platform.md`). A struct value is produced by dereferencing a pointer (`@p`) and consumed by storing the call result (`(ptr-set! q (make ...))`); field *access* still requires a pointer (`(. p f)` needs `p : (ptr S)`), so to read fields of a by-value struct parameter, first store it: `(let (q:ptr:S (alloca S)) (ptr-set! q p) (. q f))`. A function may take or return a struct defined anywhere in the same compilation unit or an import — struct definitions are registered before function signatures are resolved.
+A struct used directly (not behind `ptr`) as a `defn`/`declare` parameter or return type is passed/returned per the **platform C ABI**, so it interoperates correctly with C functions compiled by the system `cc`. On x86_64 System V this means small structs are coerced into registers (e.g. `{i32,i32}` → one `i64`; a struct with a `float` field whose eightbyte also holds an integer → `i64`), and structs larger than 16 bytes are passed `byval` / returned via a hidden `sret` pointer. aarch64, `avr`, and `riscv64` instead pass every `ABI-MEMORY`-classified struct as a plain pointer (no `byval` — none of those targets' ABIs has that attribute); on `avr` this applies to **every** struct/union regardless of size, not just those over 16 bytes, because the SysV eightbyte classifier's register-sized-chunk model has no counterpart on an 8-bit target — `abi-classify` bypasses eightbyte classification for `avr` entirely rather than adapting it. On `riscv64` (lp64d), a struct ≤ 16 bytes is coerced through the **integer** calling convention — every eightbyte is passed/returned as an integer register (`i64` / `{i64,i64}`) regardless of its field types, so a small struct with a `double` field lowers to `i64`, not `double`. The psABI's hard-float flattening of *pure* small floating-point structs into FP registers is **deferred** (the same gap as aarch64's HFA case): a `{f64,f64}` or `{f32,f32}` passed by value between Nucleus and C on riscv64 will diverge from the cross `gcc`, whereas any struct with at least one integer field (which forces the integer class on both sides) and all scalar/pointer interop are exact. A struct value is produced by dereferencing a pointer (`@p`) and consumed by storing the call result (`(ptr-set! q (make ...))`); field *access* still requires a pointer (`(. p f)` needs `p : (ptr S)`), so to read fields of a by-value struct parameter, first store it: `(let (q:ptr:S (alloca S)) (ptr-set! q p) (. q f))`. A function may take or return a struct defined anywhere in the same compilation unit or an import — struct definitions are registered before function signatures are resolved.
 
 ## C header struct ingestion
 
@@ -35,13 +35,13 @@ from C headers; Nucleus code wraps the anonymous form in a `defstruct` field.
 
 Member access goes through a pointer to the union and is a typed load/store at
 offset 0 — reading a member other than the one last written is a
-reinterpretation, exactly `cast`'s contract (no checking; the raw frontier):
+reinterpretation, exactly `unsafe/cast`'s contract (no checking; the raw frontier):
 
 ```lisp
 (defstruct Scalar kind:i32 (data (union as-int:i64 as-float:f64)))
 (let (s:ptr:Scalar (alloca Scalar)
       (d (ptr (union as-int:i64 as-float:f64))) (.& s data))
-  (.set! d as-int (cast i64 42))
+  (.set! d as-int 42)
   (d as-int))
 ```
 
@@ -72,7 +72,7 @@ bound (one-symbol-one-kind); only the prefixed constructors are.
 
 **No raw access outside `match`**: the tag and payload are not readable as
 fields (`(s tag)` is an error directing you to `match`); the escape hatch is
-an explicit `cast` to the representation struct.
+an explicit `unsafe/cast` to the representation struct.
 
 ### `match`
 
@@ -109,8 +109,8 @@ fully-applied use stamps and memoizes a concrete instance:
   (ok  v:T)
   (err e:E))
 
-(defn (try-div (Result i64 i32)) (a:i64 b:i64)
-  (when (= b (cast i64 0))
+(defn try-div (a:i64 b:i64) (Result i64 i32)
+  (when (= b 0)
     (return (err 1)))          ; return-position target typing
   (return (ok (/ a b))))
 
@@ -125,9 +125,9 @@ Construction is via `(make (Result i64 i32) ok v)` or **target typing**: in
 `return` position of a function declared to return a `defunion` (or template
 instance), a bare `(arm args...)` resolves against the declared type. The
 rewrite applies only to the directly returned form, not through `if`/`cond`
-branches. Note that the `name:(Type ...)` colon sugar does not parse for
-parenthesized types — use the list form `(name (Result i64 i32))` in binding
-positions.
+branches. The `name:(Type ...)` colon-paren sugar works for parenthesized
+types — `r:(Result i64 i32)` (and the chain form `r:ref:(…)`) read directly
+in binding positions, equivalent to the list form `(name (Result i64 i32))`.
 
 `.nuch` headers export `defunion` forms verbatim (template or monomorphic);
 importers re-register the type and stamp their own instances. `--emit-cheader`
@@ -200,12 +200,12 @@ applies.
 (deferror not-found "point not found")
 
 ; !ptr:Pt is (Result (ref Pt) Err) via rule 3: pointer-sized, no struct.
-(defn lookup:!ptr:Pt (p:ptr:Pt good:i32)
+(defn lookup (p:ptr:Pt good:i32):!ptr:Pt
   (when (= good 0) (return (err not-found)))
-  (return (ok (cast ref:Pt p))))
+  (return (ok (as ref:Pt p))))
 
-(defn main:i32 ()
-  (let (pt:ptr:Pt (cast ptr:Pt (malloc (sizeof Pt))))
+(defn main ():i32
+  (let (pt:ptr:Pt (as ptr:Pt (malloc (sizeof Pt))))
     (.set! pt x 42)
     (match (lookup pt 1)
       ((ok q)  (printf "ok x=%d\n" (q x)))
@@ -249,11 +249,11 @@ instances and overloaded-fn mangling). Stamping is memoized: `(Vector i32)` in
 multiple locations produces the same `StructDef`.
 
 Type application is recognized in type position only — after `:`, in field
-types, `defn` parameter and return types, `cast` targets, `sizeof` operands, and
-`alloca`/`array` element types. The colon sugar composes:
+types, `defn` parameter and return types, `as`/`unsafe/cast` targets, `sizeof`
+operands, and `alloca`/`array` element types. The colon sugar composes:
 
 ```lisp
-(defn count:usize (self:(ref (Vector T)))
+(defn count (self:(ref (Vector T))):usize
   (return (self len)))
 
 (defstruct Tree
@@ -281,10 +281,11 @@ A **bare `(Vector v0 v1 ...)` in value position is a compile error** for a
 template name — it is ambiguous (is `v0` a type argument or the first field?)
 and the diagnostic points at the explicit two-level form.
 
-**Known limitation:** the colon binding sugar does not work when the RHS is a
-parenthesized type: `name:(ref (Vector T))` does not tokenize. Use the list
-binding form instead: `(name (ref (Vector T)))`. This is a pre-existing
-tokenizer limitation (not specific to parametric structs).
+The colon binding sugar now works when the RHS is a parenthesized type:
+`name:(ref (Vector T))` fuses in the reader, and the chain form
+`name:ref:(Vector T)` works too — both equivalent to the list binding form
+`(name (ref (Vector T)))`. (Earlier this did not tokenize; the Stage 14
+colon-paren fuse closed that gap.)
 
 ### Methods over a template
 
@@ -294,10 +295,10 @@ bound by the parametric receiver, not by `&where`. The body is monomorphized
 once per distinct concrete receiver type, reusing the rung-4 monomorphizer.
 
 ```lisp
-(defn count:usize (self:(ref (Vector T)))
+(defn count (self:(ref (Vector T))):usize
   (return (self len)))
 
-(defn push:void ((self (ref (Vector T))) x:T)
+(defn push ((self (ref (Vector T))) x:T):void
   ; ... grow if needed, store x, increment len
   )
 ```
@@ -318,8 +319,8 @@ its return type:
 ; S and E appear in no field; they are bound positionally from the receiver.
 (defstruct (Two I F S E) a:I b:F)
 
-(defn two-s:S ((self (ref (Two I F S E))))   ; returns the 3rd type-argument
-  (return (cast S (self a))))
+(defn two-s ((self (ref (Two I F S E)))):S   ; returns the 3rd type-argument
+  (return (unsafe/cast S (self a))))
 ```
 
 A call `(two-s t)` with `t:(ref (Two i32 f64 i32 i64))` binds `S := i32` from the
@@ -350,7 +351,7 @@ exports as `Vector_i32`. LLVM IR keeps the dotted name (dots are legal in IR).
 
 **Known limitation (`.nuch` consumer):** when a `declare` form has a
 parametric return type, the list-form name node is required:
-`(declare (p2_make (P2 i32 i32)) (...))`.
+`(declare p2_make (...) (P2 i32 i32))`.
 
 See also `examples/parametric.nuc`, `examples/import-parametric.nuc`, and
 `tests/abi/interop.nuc`.
