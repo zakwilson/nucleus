@@ -1,0 +1,6 @@
+as              = 4294967295
+unsafe/cast     = 4294967295
+unsafe/ptr+     = a=30 b=40
+unsafe/funcpi32 = 42
+pd/pub-double   = 42
+pd/priv-secret  = 99

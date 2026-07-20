@@ -16,7 +16,7 @@
 (import-use numeric)
 (import-use combinators)
 
-(defn main:i32 ()
+(defn main ():i32
   ; compose / comp — `(compose g f)` boxes `x → (g (f x))`.
   (with (c1:(BoxedFn (i32) i32) (compose (fn (x:i32):i32 (+ x 1)) (fn (x:i32):i32 (* x 2))))
     (printf "compose((+1),(*2))(10) = %d\n" (c1 10)))            ; 21

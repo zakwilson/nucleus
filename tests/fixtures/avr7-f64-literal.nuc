@@ -1,0 +1,7 @@
+; Stage 14 AVR-7: a bare float literal defaults to f64. It carries NO :f64/double
+; annotation, so parse-type-name never sees it — the rejection must fire in
+; emit-float (nucleusc.nuc). Rejected on AVR, accepted on host.
+(exclude-prelude)
+(defn go (p:ptr):void
+  (let (x 1.5)
+    (aset! (as ptr:i8 p) 0 0)))

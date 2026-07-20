@@ -8,5 +8,21 @@
   "surroundingPairs": [
     ["(", ")"],
     ["\"", "\""]
+  ],
+  "indentationRules": {
+    "increaseIndentPattern": "^\\s*\\((defn|defmacro|defstruct|defenum|defunion|defprotocol|while|do|compile-time|let|with|match|cond|case|fn|vfn|mfn|cfn|doseq|dotimes|for|if|when|unless)\\b.*\\([^\\)]*$",
+    "decreaseIndentPattern": "^\\s*\\)",
+    "unIndentedLinePattern": "^\\s*(;.*|$)"
+  },
+  "onEnterRules": [
+    {
+      "beforeText": "^\\s*\\((defn|defmacro|defstruct|defenum|defunion|defprotocol|while|do|compile-time|let|with|match|cond|case|fn|vfn|mfn|cfn|doseq|dotimes|for|if|when|unless)\\b.*\\)$",
+      "afterText": "^\\s*\\)$",
+      "action": { "indent": "indentOut" }
+    },
+    {
+      "beforeText": "^\\s*\\((defn|defmacro|defstruct|defenum|defunion|defprotocol|while|do|compile-time|let|with|match|cond|case|fn|vfn|mfn|cfn|doseq|dotimes|for|if|when|unless)\\b.*\\($",
+      "action": { "indent": "indent" }
+    }
   ]
 }

@@ -14,7 +14,7 @@
 (import-use hash)
 (import-use hashmap)
 
-(defn main:i32 ()
+(defn main ():i32
   ; ---- 1. Entry round-trip -----------------------------------------------
   (let ((e (ref (Entry i32 i32))) (alloca (Entry i32 i32)))
     (.set! e key 7)
@@ -49,7 +49,7 @@
       (.set! e key 6)
       (.set! e val 600)
       (conj m (deref e)))
-    (printf "conj count=%llu\n" (cast ui64 (count m)))      ; conj count=2
+    (printf "conj count=%llu\n" (as ui64 (count m)))      ; conj count=2
     (match (get m 5)
       ((some v) (printf "get 5=%d\n" v))                    ; get 5=500
       (none     (printf "get 5=absent\n")))

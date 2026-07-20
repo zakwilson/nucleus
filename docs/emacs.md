@@ -13,6 +13,37 @@ Add `editor/` to `load-path` and `(require 'nucleus-mode)`. Visiting any
 turns on automatically and `editor/nucleus-repl.el` is autoloaded on
 first use.
 
+## Indentation
+
+`nucleus-mode` indents with `lisp-indent-line` driven by a custom
+`nucleus-indent-function`, mirroring the formatting used throughout `src/`
+and `lib/`. The rules:
+
+- **Default** — a continuation line aligns with the previous form at the
+  same nesting level (standard Lisp "indent under the first argument").
+- **Body forms** of `defn`, `defmacro`, `defstruct`, `defenum`,
+  `defunion`, `defprotocol`, `while`, `do`, `compile-time`, and the
+  standard macros `if`, `when`, `unless`, `for`, `dotimes`, `doseq`,
+  `doseq-iter`, `into`, `into-iter` indent **two** spaces past the form's
+  opening paren.
+- **`let` / `with`** — `(let (bindings…) body…)`:
+  - continuation lines *inside* the binding list align **under the first
+    binding** (one space past the binding-list paren);
+  - the binding list is a flat sequence of `(binding-spec init)` pairs;
+    when an `init` (the second half of a pair) starts on its own line it
+    indents **two** spaces past its binding-spec;
+  - the *body* (after the binding list closes) indents two spaces past the
+    `let`/`with` open paren.
+- **`match`** — argument lines (the arms) indent two spaces past the
+  `match` open paren.
+- **`cond`** — flat `test result …` clauses: tests align with the first
+  test; results sit two columns to the right of the test column.
+
+A comment-only line is indented to the following form's column (falling
+back to the previous non-blank line's column before a dedent); this keeps
+`indent-region` from re-entering the `lisp-indent-line` / `indent-for-comment`
+loop on comment-only lines.
+
 ## Starting the REPL
 
 `M-x run-nucleus` (alias `M-x nucleus-repl`) launches
@@ -60,7 +91,7 @@ nuc> (doc malloc)
   kind: fn
   (malloc:ptr (size:ui64))
 
-nuc> (defn add:i32 (a:i32 b:i32) "Add two integers." (return (+ a b)))
+nuc> (defn add (a:i32 b:i32):i32 "Add two integers." (return (+ a b)))
 nuc> (doc add)
   kind: fn
   (add:i32 (a:i32 b:i32))

@@ -43,32 +43,32 @@ Both conform to `(Iterator i32)` / `(Iterator i64)` respectively.
 ## More concrete iterators (Stage 13 R1)
 
 These conformers let `reduce` / `doseq-iter` reach cons-cell lists, C strings,
-and string segments. They share one design constraint: an `Iterator`'s element
-type must give a **tagged, matchable `(Maybe E)`** because `reduce`/`doseq-iter`
-eliminate it with `match`. The matchable scalar Maybes are `(Maybe i32)` /
-`(Maybe i64)` / `(Maybe ui8)` / `(Maybe Char)`. `(Maybe ptr)` is **niche-encoded**
-(a bare nullable pointer) and is *not* matchable, and `(Maybe StrView)` (any
-struct payload) fails in the macro-expansion JIT module (see
-[strings](strings.md) and `context/build.md`). So an iterator whose logical
-element is a pointer or a struct yields it **cast to `i64`** — the same encoding
-`I64ArrayIter` uses — and the consumer recovers it with a `cast`.
+and string segments. `(Maybe StrView)` and other struct-payload Maybes fail to
+compile in the macro-expansion JIT module (see [strings](strings.md) and
+`context/build.md`), so an iterator whose logical element is a pointer or a
+struct instead yields it as a **niche-encoded `(Maybe ptr)`** — a bare nullable
+pointer, the same representation `?T` uses. `match`/`reduce`/`doseq-iter` all
+accept it directly (representation-transparent elimination — see
+[Unions and tagged sums](structs-unions.md#unions-and-tagged-sums)), and the
+consumer recovers the concrete pointer type with a single `as` (bare `ptr` →
+typed pointer is `as`'s elem-less-`ptr` "void*" hatch).
 
 | Type (lib) | Conforms to | `next` yields | Recover with |
 |------------|-------------|---------------|--------------|
 | `ByteIter` (`strview`) | `(Iterator ui8)` | each byte | — (scalar) |
 | `CharIter` (`strview`) | `(Iterator Char)` | each UTF-8 codepoint | — (scalar) |
-| `ListIter` (`list`) | `(Iterator i64)` | each cons element (a `Node*`, cast to `i64`) | `(cast ptr:Node (cast ptr e))` |
-| `SplitIter` (`string-split`) | `(Iterator i64)` | each segment as a `(ref StrView)` into the iterator's `cur` slot, cast to `i64` | `(cast ptr:StrView (cast ptr e))` |
-| `LineIter` (`string-split`) | `(Iterator i64)` | each line (same encoding as `SplitIter`) | `(cast ptr:StrView (cast ptr e))` |
+| `ListIter` (`list`) | `(Iterator ptr)` | each cons element as a bare `Node*` | `(as ptr:Node e)` |
+| `SplitIter` (`string-split`) | `(Iterator ptr)` | each segment as a `(ref StrView)` into the iterator's `cur` slot, yielded as a bare `ptr` | `(as ptr:StrView e)` |
+| `LineIter` (`string-split`) | `(Iterator ptr)` | each line (same encoding as `SplitIter`) | `(as ptr:StrView e)` |
 
 **Cons-cell lists — `ListIter`.** `(list-iter lst)` returns a `ListIter` by
 value positioned at the head of a cons-cell list (`null` = empty). Drive it with
-`doseq-iter` or `reduce`; each element arrives as the `Node*` cast to `i64`.
+`doseq-iter` or `reduce`; each element arrives as a bare `Node*` pointer.
 
 ```lisp
 (let (it:ListIter (list-iter lst))
   (doseq-iter (x (addr-of it))
-    (printf "%lld\n" ((cast ptr:Node (cast ptr x)) i))))
+    (printf "%lld\n" ((as ptr:Node x) i))))
 ```
 
 **C strings and Strings — byte/char folds.** `(cstr-bytes cs)` / `(cstr-chars cs)`
@@ -78,7 +78,7 @@ This lets the FNV byte hash be written as a `reduce` over the byte iterator that
 matches `strview-hash` exactly. See `examples/cstr-fold-test.nuc`.
 
 **Lazy string splitting — `SplitIter` / `LineIter`.** These conform to
-`(Iterator i64)` (previously a done-flag-only API). The `(doseq-split (var iter-ref) body)`
+`(Iterator ptr)` (previously a done-flag-only API). The `(doseq-split (var iter-ref) body)`
 macro (`lib/string-split.nuc`) hides the decode, binding `var` to a
 `(ref StrView)` borrowing the iterator's `cur` slot (valid until the next step):
 
@@ -109,13 +109,13 @@ Define a struct and `extend` it with the desired protocol:
 ; A fold function: sum two i64 values.
 (defstruct SumI64 dummy:i32)
 (extend SumI64 (FoldFn i64 i64))
-(defn fold:i64 ((self (ref SumI64)) acc:i64 x:i64)
+(defn fold ((self (ref SumI64)) acc:i64 x:i64):i64
   (return (+ acc x)))
 
 ; A map function: square an i64.
 (defstruct SquareI64 dummy:i32)
 (extend SquareI64 (UnaryFn i64 i64))
-(defn apply:i64 ((self (ref SquareI64)) x:i64)
+(defn apply ((self (ref SquareI64)) x:i64):i64
   (return (* x x)))
 ```
 
@@ -147,8 +147,8 @@ combinator's field:
 ```lisp
 (let ((mi (ref (MapIter I64ArrayIter SquareI64)))
       (alloca (MapIter I64ArrayIter SquareI64)))
-  (memcpy (cast ptr (.& mi source)) (cast ptr src) (cast i64 (sizeof I64ArrayIter)))
-  (memcpy (cast ptr (.& mi f))      (cast ptr sq)  (cast i64 (sizeof SquareI64)))
+  (memcpy (as ptr (.& mi source)) (as ptr src) (sizeof I64ArrayIter))
+  (memcpy (as ptr (.& mi f))      (as ptr sq)  (sizeof SquareI64))
   ...)
 ```
 
@@ -156,9 +156,9 @@ To call `next` on a field stored by value inside a struct, use
 `(.& self fieldname)` to get a `(ref FieldType)`:
 
 ```lisp
-(defn (next (Maybe E)) ((self (ref (MapIter I F)))
+(defn next ((self (ref (MapIter I F)))
                         &where ((Iterator S) I)
-                               ((UnaryFn S E) F))
+                               ((UnaryFn S E) F)) (Maybe E)
   (let ((res (Maybe S)) (next (.& self source)))
     ...))
 ```
@@ -166,9 +166,9 @@ To call `next` on a field stored by value inside a struct, use
 ## `reduce`
 
 ```lisp
-(defn reduce:Acc ((g (ref G)) (init Acc) (it (ref I))
+(defn reduce ((g (ref G)) (init Acc) (it (ref I))
                   &where ((Iterator S) I)
-                         ((FoldFn Acc S) G))
+                         ((FoldFn Acc S) G)):Acc
   ...)
 ```
 
@@ -181,7 +181,7 @@ Because `MapIter` and `FilterIter` conform to `Iterator`, `reduce` can consume
 them directly:
 
 ```lisp
-(reduce sm (cast i64 0) fi)   ; fi: any (ref (Iterator i64))-conforming type
+(reduce sm 0 fi)   ; fi: any (ref (Iterator i64))-conforming type
 ```
 
 ## End-to-end example
@@ -194,37 +194,37 @@ Chain `[1,2,3,4,5]` → square → keep even → sum (= 4 + 16 = 20):
 
 (defstruct SumI64 dummy:i32)
 (extend SumI64 (FoldFn i64 i64))
-(defn fold:i64 ((self (ref SumI64)) acc:i64 x:i64) (return (+ acc x)))
+(defn fold ((self (ref SumI64)) acc:i64 x:i64):i64 (return (+ acc x)))
 
 (defstruct SquareI64 dummy:i32)
 (extend SquareI64 (UnaryFn i64 i64))
-(defn apply:i64 ((self (ref SquareI64)) x:i64) (return (* x x)))
+(defn apply ((self (ref SquareI64)) x:i64):i64 (return (* x x)))
 
 (defstruct IsEvenI64 dummy:i32)
 (extend IsEvenI64 (UnaryFn i64 i32))
-(defn apply:i32 ((self (ref IsEvenI64)) x:i64)
-  (return (cast i32 (= (% x (cast i64 2)) (cast i64 0)))))
+(defn apply ((self (ref IsEvenI64)) x:i64):i32
+  (return (as i32 (= (% x 2) 0))))
 
-(defn main:i32 ()
+(defn main ():i32
   (let (arr:ptr:i64 (alloca i64 5))
-    (aset! arr 0 (cast i64 1)) (aset! arr 1 (cast i64 2))
-    (aset! arr 2 (cast i64 3)) (aset! arr 3 (cast i64 4))
-    (aset! arr 4 (cast i64 5))
+    (aset! arr 0 1) (aset! arr 1 2)
+    (aset! arr 2 3) (aset! arr 3 4)
+    (aset! arr 4 5)
     (let ((sq  (ref SquareI64)) (alloca SquareI64))
     (let ((ev  (ref IsEvenI64)) (alloca IsEvenI64))
     (let ((sm  (ref SumI64))    (alloca SumI64))
     (let ((src (ref I64ArrayIter)) (alloca I64ArrayIter))
-      (.set! src data arr) (.set! src pos (cast usize 0)) (.set! src len (cast usize 5))
+      (.set! src data arr) (.set! src pos 0) (.set! src len 5)
       (let ((mi (ref (MapIter I64ArrayIter SquareI64)))
             (alloca (MapIter I64ArrayIter SquareI64)))
-        (memcpy (cast ptr (.& mi source)) (cast ptr src) (cast i64 (sizeof I64ArrayIter)))
-        (memcpy (cast ptr (.& mi f))      (cast ptr sq)  (cast i64 (sizeof SquareI64)))
+        (memcpy (as ptr (.& mi source)) (as ptr src) (sizeof I64ArrayIter))
+        (memcpy (as ptr (.& mi f))      (as ptr sq)  (sizeof SquareI64))
         (let ((fi (ref (FilterIter (MapIter I64ArrayIter SquareI64) IsEvenI64)))
               (alloca (FilterIter (MapIter I64ArrayIter SquareI64) IsEvenI64)))
-          (memcpy (cast ptr (.& fi source)) (cast ptr mi)
-                  (cast i64 (sizeof (MapIter I64ArrayIter SquareI64))))
-          (memcpy (cast ptr (.& fi pred)) (cast ptr ev) (cast i64 (sizeof IsEvenI64)))
-          (printf "sum=%lld\n" (reduce sm (cast i64 0) fi)))))))))
+          (memcpy (as ptr (.& fi source)) (as ptr mi)
+                  (sizeof (MapIter I64ArrayIter SquareI64)))
+          (memcpy (as ptr (.& fi pred)) (as ptr ev) (sizeof IsEvenI64))
+          (printf "sum=%lld\n" (reduce sm 0 fi)))))))))
   (return 0))
 ```
 

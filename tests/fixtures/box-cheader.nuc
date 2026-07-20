@@ -13,16 +13,16 @@
 
 ; Minimal protocol for the dyn test case.
 (defprotocol Showable
-  ((show i32) ((self (ref Self)))))
+  (show ((self (ref Self))) i32))
 
 ; Exposes a BoxedFn return type -> omitted from the C header, warned at definition.
-(defn make-boxed:(BoxedFn (i32) i32) ()
+(defn make-boxed () (BoxedFn (i32) i32)
   (return 0))
 
 ; Exposes a dyn parameter -> omitted from the C header, warned at definition.
-(defn use-dyn:i32 ((s (dyn Showable)))
+(defn use-dyn ((s (dyn Showable))):i32
   (return 0))
 
 ; A plain function (function-pointer-compatible) signature -> emitted normally.
-(defn plain-fn:i32 ((x i32) (y i32))
+(defn plain-fn ((x i32) (y i32)):i32
   (return (+ x y)))

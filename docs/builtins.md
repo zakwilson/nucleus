@@ -82,8 +82,8 @@ A `.nuch` file is an S-expression file containing declarations extracted from a 
 
 ```lisp
 ; .nuch header for lib/mathlib.nuc
-(declare square:i32 (x:i32))
-(declare cube:i32 (x:i32))
+(declare square (x:i32) :i32)
+(declare cube (x:i32) :i32)
 ```
 
 Supported forms: `declare` (function signatures), `defstruct`, `defconst`, `defenum`, `defmacro` (full body preserved), `defmethod` (one overloaded method, carrying its mangled symbol explicitly), `defprotocol` / `extend` (protocol definitions and conformance facts, exported verbatim), `defcast` (full form preserved — the conv-fn must already be `declare`d earlier in the same header), and a producing module's `defvar` globals (re-emitted as `extern` so importers see the symbol without its initializer). A solitary function exports as `declare`; an overloaded one exports a `defmethod` per method so each keeps its distinct symbol:
@@ -113,7 +113,7 @@ Importing a `.nuch` with `defmethod` forms registers the methods for dispatch in
 | `import-prefixed` | Explicit spelling of prefix-qualified `import`: `(import-prefixed lib [prefix])`. Identical to `import`. | — |
 | `import-only` | Import a concrete list of symbols: `(import-only lib sym1 sym2 ...)`. Listed symbols are brought in under their bare names. | — |
 | `unsafe-import-private` | Prefix-qualified import that also reaches a library's private symbols: `(unsafe-import-private lib prefix sym...)`. | — |
-| `declare` | Declare an external function signature `(declare name:rettype (params...))`. Used in `.nuch` header files and at the top level. | function prototype |
+| `declare` | Declare an external function signature `(declare name (params...) :rettype)`. Used in `.nuch` header files and at the top level. | function prototype |
 | `extern` | Declare a foreign global variable `(extern name:type)`. The compiler emits `@name = external global T`, leaving storage and initialization to the linker. Works for both C-defined and Nucleus-defined producers; the matching `defvar` may live in another `.o` file. | `extern` declaration |
 | `defmacro` | Define a compile-time macro `(defmacro name (params...) body...)`. Supports `&rest` for variadic macros: `(defmacro name (a b &rest rest) ...)` — `rest` receives a cons list of remaining args. Parameters (and the `&rest` list) are typed `(raw Node)` inside the body, so `(p car)`, `(p cdr)`, chains like `((p cdr) car)`, `(p kind)`, and `(p s)` work directly with no `(cast ptr:Node ...)`. The macro can splice a parameter into a quasiquote regardless of the value type the user-supplied expression evaluates to at the call site — see [Macros and pass-through arguments](#macros-and-pass-through-arguments) below (note the `cond`/`if` branch-unification sharp edge). | macro |
 | `defcast` | Register an implicit conversion `(defcast From To conv-fn)`. `conv-fn` must be a unary function with signature `To (From)` already in scope; the compiler emits a call to it whenever an arg of `From` is supplied where `To` is expected. Pairs already covered by built-in coercion (identity, int↔int, `f32`→`f64`) are rejected at registration. Rules are unidirectional and non-transitive — declare each direction explicitly, and chain through an intermediate type by writing the chain yourself. Exported in `.nuch` headers. | implicit conversion |
@@ -184,14 +184,24 @@ conservatively (`raw` beats `Maybe` beats `ref`).
 
 ### Volatile qualifier
 
-A type can be tagged `volatile` in postfix position — either the list form `(T volatile)` or the sugared `T:volatile`. Loads and stores of a value held at a volatile-qualified storage site (variable, struct field, or pointer target) are emitted as `load volatile` / `store volatile` in LLVM IR; the compiler will not elide, reorder, or coalesce them. Examples:
+Volatility is declared through the **keyword-attribute slot**: a leading
+`:volatile` keyword immediately before the declared name of a variable,
+global, struct/union field, or `defn` param. For a pointer *target* (C's
+`volatile T *`, the MMIO case), the keyword instead moves inside the pointer
+constructor — `(ptr :volatile T)` / `(raw :volatile T)` / `(ref :volatile T)`
+— since pointee volatility must travel with the pointer through params and
+fields. Loads and stores of a value held at a volatile-qualified storage site
+are emitted as `load volatile` / `store volatile` in LLVM IR; the compiler
+will not elide, reorder, or coalesce them. Examples:
 
-- `x:i32:volatile` — local volatile variable (sugared)
-- `(let (x (i32 volatile)) ...)` — same, list form
-- `(defstruct R status:i32:volatile)` — field is volatile
-- `(p (ptr (i32 volatile)))` — pointer to volatile `i32`; deref and `ptr-set!` through `p` are volatile
+- `(defvar :volatile trap-zero:i32 0)` — volatile global
+- `(let (:volatile x:i32 0) ...)` — volatile local (binds to the immediately following name only)
+- `(defstruct R flags:i32 (:volatile status:i32))` — volatile field (parenthesized, keyword head)
+- `(defn bump-counter ((p (ptr :volatile i32))):void ...)` — pointer to volatile `i32`; deref and `ptr-set!` through `p` are volatile
 
-Volatility lives on the storage site, not the value: `volatile T` and `T` are assignment-compatible, and the qualifier is dropped/added at the access. Bare `ptr` (no element) cannot be made volatile — volatility attaches to the pointee, not to opaque pointers.
+Volatility lives on the storage site, not the value: `volatile T` and `T` are assignment-compatible, and the qualifier is dropped/added at the access. Bare `ptr` (no element) cannot be made volatile — volatility attaches to the pointee, not to opaque pointers. Attributes never participate in type identity, overload resolution, dispatch, monomorphization, or name mangling — see [stage14/attributes.md](../design/stage14/attributes.md) for the full attribute-slot design.
+
+> The older postfix spellings (`(T volatile)` list form, `T:volatile` colon segment) are retired: the compiler rejects them with a targeted error naming the `:volatile` attribute-slot spelling above.
 
 ### Anonymous structs
 
@@ -201,7 +211,7 @@ Examples:
 
 - `(let ((p (ptr (struct x:i32 y:i32))) (alloca (struct x:i32 y:i32))) ...)` — local of anonymous-struct shape
 - `(defstruct Outer (pt (struct x:i32 y:i32)) tag:i32)` — nested by value
-- `(defn take:i32 ((p (ptr (struct x:i32))))  ...)` — parameter typed as anonymous struct pointer
+- `(defn take ((p (ptr (struct x:i32)))):i32  ...)` — parameter typed as anonymous struct pointer
 
 Use `(.& obj field)` to obtain a pointer to a field without loading it. Result is typed `(ptr field-type)`, so it composes with `.set!`, `deref`, and further `.&` calls — e.g. `(.set! (.& o point) x 10)` writes through a value-typed nested struct field.
 
@@ -310,7 +320,7 @@ fully-applied use stamps and memoizes a concrete instance:
   (ok  v:T)
   (err e:E))
 
-(defn (try-div (Result i64 i32)) (a:i64 b:i64)
+(defn try-div (a:i64 b:i64) (Result i64 i32)
   (when (= b (cast i64 0))
     (return (err 1)))          ; return-position target typing
   (return (ok (/ a b))))
@@ -326,9 +336,9 @@ Construction is via `(make (Result i64 i32) ok v)` or **target typing**: in
 `return` position of a function declared to return a `defunion` (or template
 instance), a bare `(arm args...)` resolves against the declared type. The
 rewrite applies only to the directly returned form, not through `if`/`cond`
-branches. Note that the `name:(Type ...)` colon sugar does not parse for
-parenthesized types — use the list form `(name (Result i64 i32))` in binding
-positions.
+branches. The `name:(Type ...)` colon-paren sugar works for parenthesized
+types — `r:(Result i64 i32)` (and the chain form `r:ref:(…)`) read directly
+in binding positions, equivalent to the list form `(name (Result i64 i32))`.
 
 `.nuch` headers export `defunion` forms verbatim (template or monomorphic);
 importers re-register the type and stamp their own instances. `--emit-cheader`
@@ -401,11 +411,11 @@ applies.
 (deferror not-found "point not found")
 
 ; !ptr:Pt is (Result (ref Pt) Err) via rule 3: pointer-sized, no struct.
-(defn lookup:!ptr:Pt (p:ptr:Pt good:i32)
+(defn lookup (p:ptr:Pt good:i32):!ptr:Pt
   (when (= good 0) (return (err not-found)))
   (return (ok (cast ref:Pt p))))
 
-(defn main:i32 ()
+(defn main ():i32
   (let (pt:ptr:Pt (cast ptr:Pt (malloc (sizeof Pt))))
     (.set! pt x 42)
     (match (lookup pt 1)
@@ -454,7 +464,7 @@ types, `defn` parameter and return types, `cast` targets, `sizeof` operands, and
 `alloca`/`array` element types. The colon sugar composes:
 
 ```lisp
-(defn count:usize (self:(ref (Vector T)))
+(defn count (self:(ref (Vector T))):usize
   (return (self len)))
 
 (defstruct Tree
@@ -482,10 +492,11 @@ A **bare `(Vector v0 v1 ...)` in value position is a compile error** for a
 template name — it is ambiguous (is `v0` a type argument or the first field?)
 and the diagnostic points at the explicit two-level form.
 
-**Known limitation:** the colon binding sugar does not work when the RHS is a
-parenthesized type: `name:(ref (Vector T))` does not tokenize. Use the list
-binding form instead: `(name (ref (Vector T)))`. This is a pre-existing
-tokenizer limitation (not specific to parametric structs).
+The colon binding sugar now works when the RHS is a parenthesized type:
+`name:(ref (Vector T))` fuses in the reader, and the chain form
+`name:ref:(Vector T)` works too — both equivalent to the list binding form
+`(name (ref (Vector T)))`. (Earlier this did not tokenize; the Stage 14
+colon-paren fuse closed that gap.)
 
 ### Methods over a template
 
@@ -495,10 +506,10 @@ bound by the parametric receiver, not by `&where`. The body is monomorphized
 once per distinct concrete receiver type, reusing the rung-4 monomorphizer.
 
 ```lisp
-(defn count:usize (self:(ref (Vector T)))
+(defn count (self:(ref (Vector T))):usize
   (return (self len)))
 
-(defn push:void ((self (ref (Vector T))) x:T)
+(defn push ((self (ref (Vector T))) x:T):void
   ; ... grow if needed, store x, increment len
   )
 ```
@@ -528,7 +539,7 @@ exports as `Vector_i32`. LLVM IR keeps the dotted name (dots are legal in IR).
 
 **Known limitation (`.nuch` consumer):** when a `declare` form has a
 parametric return type, the list-form name node is required:
-`(declare (p2_make (P2 i32 i32)) (...))`.
+`(declare p2_make (...) (P2 i32 i32))`.
 
 See also `examples/parametric.nuc`, `examples/import-parametric.nuc`, and
 `tests/abi/interop.nuc`.
@@ -604,9 +615,10 @@ After the Phase F flip `?` is uniform `(Maybe T)` (no `(ref …)` injection), so
 nullable pointer). The
 `(Result T E)` template now lives in the prelude, always available. Because the
 toplevel signature prescan now resolves imported (prelude) types, `name:!Config`
-parses in ordinary signatures — which is the point of the sugar, since
-`name:(Result Config Err)` does not parse (parenthesized type in a colon
-position). `!` over a parenthesized payload has no sugar; write
+parses in ordinary signatures. (`name:(Result Config Err)` now parses too via
+the colon-paren sugar, so `!` is no longer *required* for that — but it
+remains the terser spelling and composes with the `?!` value-Maybe-over-Result
+sugar.) `!` over a parenthesized payload has no sugar; write
 `(Result (ref FILE) Err)` longhand.
 
 **Construction.** In `return` position (and the implicit-return tail) of a
@@ -634,11 +646,11 @@ machinery.
 (import-use error)
 (deferror parse-failed "could not parse value")
 
-(defn checked:!i64 (n:i64)
+(defn checked (n:i64):!i64
   (when (< n (cast i64 0)) (return (err parse-failed)))
   (return (ok n)))
 
-(defn doubled:!i64 (n:i64)
+(defn doubled (n:i64):!i64
   (let (v:i64 (try (checked n)))          ; propagate on err
     (return (ok (* v (cast i64 2))))))
 
@@ -738,16 +750,16 @@ not supported in v1.
 
 ; A fallible function. (err config-missing) consults bound handlers first.
 ; err! would bypass them unconditionally.
-(defn load-num:!i64 (n:i64)
+(defn load-num (n:i64):!i64
   (when (= n (cast i64 0))
     (return (err config-missing)))    ; handler may repair → (ok v)
   (return (ok (* n (cast i64 10)))))
 
 ; A repairing handler: (some v) repairs, none declines.
-(defn (repair-from-ctx (Maybe i64)) (ctx:ptr detail:ptr)
+(defn repair-from-ctx (ctx:ptr detail:ptr) (Maybe i64)
   (return (some (deref (cast ptr:i64 ctx)))))
 
-(defn main:i32 ()
+(defn main ():i32
   ; No handler bound: (err config-missing) returns the error value.
   (match (load-num (cast i64 0))
     ((ok v)  (printf "ok %lld\n" v))
@@ -787,12 +799,12 @@ behavior if policy declines:
 (import-use error)
 (deferror out-of-memory "allocation grow needs a policy decision")
 
-(defn grow:i64 (need:i64)
+(defn grow (need:i64):i64
   (match (signal out-of-memory i64 (cast ptr (addr-of need)))
     ((some sz) sz)               ; a handler supplied a size: continue
     (none      (cast i64 0))))   ; declined / no handler: the fallback
 
-(defn (grant-double (Maybe i64)) (ctx:ptr detail:ptr)
+(defn grant-double (ctx:ptr detail:ptr) (Maybe i64)
   (return (some (* (deref (cast ptr:i64 detail)) (cast i64 2)))))
 
 (with-handler (out-of-memory i64 grant-double null)
@@ -989,10 +1001,44 @@ The `Drop` protocol is an ordinary Stage 9 protocol; conforming makes a type
 ```
 (defprotocol Drop
   (drop:void (self:ptr:Self)))
-(defn drop:void (self:ptr:Res) ...)   ; concrete method
+(defn drop (self:ptr:Res):void ...)   ; concrete method
 (extend Res Drop)                      ; checked, code-free conformance
 (with (r:ptr:Res (make-res)) ...)      ; (drop r) fires at scope exit
 ```
+
+## Unsafe operations
+
+Nucleus reserves the `unsafe/` prefix for operations whose contract the
+compiler cannot verify — the C-replacement escape hatches (Stage 14,
+`design/stage14/unsafe-namespace.md`). `unsafe/` is a **pseudo-namespace**: a
+reserved spelling in the special-form dispatch table, not a resolvable
+module — special forms dispatch on the raw interned head before namespace
+resolution ever runs, so `unsafe/cast` reads as one ordinary symbol with no
+reader change.
+
+The full roster:
+
+| Form | Contract it waives |
+|---|---|
+| `unsafe/cast` | Full reinterpretation: same-kind, `ptr`↔`ptr` (any element, including `raw`→`ref` laundering with no null check), `ptr`↔`int`, `fn`↔`ptr`, int narrow/widen, `float`↔`float`, `int`↔`float`. See [Special Forms](special-forms.md#special-forms). |
+| `unsafe/funcall-ptr-1` / `-i32` / `-i64` / `-ptr` | Calls a `ptr` function pointer under a signature asserted out of thin air — no arity or type check against the actual callee. |
+| `unsafe/ptr+` | Pointer arithmetic — manufactures a new pointer at an unchecked offset; the result carries no bounds guarantee. |
+| `unsafe/import-private` | Reaches past a library's visibility boundary to import its private (`defn-`/`defvar-`/etc.) symbols. |
+
+The statically-safe counterpart is `as` (`(as TYPE expr)`, see [Special
+Forms](special-forms.md#special-forms)) — it accepts everything the
+implicit-coercion machinery already accepts at an assignment boundary, plus
+pure pointer-contract weakening, and honors the nullability flow check that
+`unsafe/cast` does not. The bare (legacy) spellings — `cast`,
+`funcall-ptr-1`/`-i32`/`-i64`/`-ptr`, `ptr+`, and `unsafe-import-private`
+(without the `/`) — are **retired**: each is now a targeted hard error naming
+its `unsafe/`-prefixed (or `as`) replacement, rather than silently working as
+an alias.
+
+**Audit command.** Because every unchecked operation in the compiler's own
+source now carries the `unsafe/` spelling, `grep -rn 'unsafe/' src lib`
+enumerates every contract-subverting site in the tree — the complete list of
+places a memory-safety bug could hide.
 
 ## Binary Operators
 
@@ -1023,8 +1069,8 @@ Operators are **ordinary generic functions** (§10.3). Each built-in operator is
 
 ```lisp
 (defstruct V2 x:i32 y:i32)
-(defn _+:ptr:V2 (a:ptr:V2 b:ptr:V2) …)   ; (+ u v) now dispatches here
-(defn =:i1     (a:ptr:V2 b:ptr:V2) …)    ; (= u v) dispatches here
+(defn _+ (a:ptr:V2 b:ptr:V2):ptr:V2 …)   ; (+ u v) now dispatches here
+(defn = (a:ptr:V2 b:ptr:V2):i1 …)    ; (= u v) dispatches here
 ```
 
 A user operator method is emitted under a mangled symbol (`@add.pV2.pV2`, `@eq.pV2.pV2` — the symbols `+`/`=` are mapped to IR-safe mnemonics). A call with operand types that match no user method falls back to the built-in inline peephole.
@@ -1039,21 +1085,21 @@ A `defn` whose name already exists but whose **parameter types differ** does not
 (defstruct Circle rad:i32)
 (defstruct Rect w:i32 h:i32)
 
-(defn area:i32 (c:ptr:Circle) (return (* (* (. c rad) (. c rad)) 3)))
-(defn area:i32 (s:ptr:Rect)   (return (* (. s w) (. s h))))
+(defn area (c:ptr:Circle):i32 (return (* (* (. c rad) (. c rad)) 3)))
+(defn area (s:ptr:Rect):i32   (return (* (. s w) (. s h))))
 
-(defn kind:i32 (x:i32) (return 1))   ; overload on primitive type
-(defn kind:i32 (x:f64) (return 2))
+(defn kind (x:i32):i32 (return 1))   ; overload on primitive type
+(defn kind (x:f64):i32 (return 2))
 
-(defn sum:i32 (a:i32) (return a))            ; overload on arity
-(defn sum:i32 (a:i32 b:i32) (return (+ a b)))
+(defn sum (a:i32):i32 (return a))            ; overload on arity
+(defn sum (a:i32 b:i32):i32 (return (+ a b)))
 ```
 
 **Symbol mangling.** A name with a single method keeps its unmangled symbol `@name` and stays C-callable. A name with two or more methods becomes an overload set: each method is emitted under a mangled symbol `@name.<tok>...` where each `<tok>` names a parameter type (`i32`, `f64`, `pCircle` for `ptr:Circle`, the struct name for a by-value struct, …). The mangle decision is made after a whole-file prescan, so all methods of a name agree.
 
 **Resolution (tiers).** A call resolves in order: **(0)** an exact match (structural type equality: primitives by identity, structs by definition, pointers by pointee); **(1)** a bounded-generic template whose constraints the arguments satisfy; **(2)** a safe **widen / untyped-int-literal** adaptation — an `i32` argument supplied where an `i64` method exists, or a literal `1` supplied where the parameter is `i8`/`f64` (the chosen arguments are coerced to the parameter types). A unique match wins; an ambiguous or absent match is a compile error listing the offending name. *(A `defcast`-based coercion tier is not implemented — no cast-rule registry exists in-tree.)*
 
-**Return types may differ per method** (`(defn parse:i32 …)` vs `(defn parse:f64 …)` is fine since they dispatch on arguments). A return type bound only by no argument (no way to choose from the call) is out of scope.
+**Return types may differ per method** (`(defn parse (…):i32)` vs `(defn parse (…):f64)` is fine since they dispatch on arguments). A return type bound only by no argument (no way to choose from the call) is out of scope.
 
 **Cross-unit.** Overloaded functions export through `.nuch` as `defmethod` forms and dispatch correctly from an importing translation unit (link the importer against the library's `.o`). See [.nuch Header Format](#nuch-header-format).
 
@@ -1074,8 +1120,8 @@ A **protocol** names a capability — a set of required method signatures — an
 `extend Type Protocol` is a **checked, code-free conformance assertion**. It runs after the whole-file prescan: for each required signature it substitutes `Self → Type` and requires that a concrete method already resolves at the exact tier (the implementations are ordinary overloaded `defn`s). It records the `(Type, Protocol)` fact and emits nothing.
 
 ```lisp
-(defn area:i32  (s:ptr:Circle) (return (* (* (. s rad) (. s rad)) 3)))
-(defn label:ptr (s:ptr:Circle) (return "circle"))
+(defn area (s:ptr:Circle):i32 (return (* (* (. s rad) (. s rad)) 3)))
+(defn label (s:ptr:Circle):ptr (return "circle"))
 
 (extend Circle Shape)   ; OK — both methods exist for Circle
 ```
@@ -1103,7 +1149,7 @@ Statically dispatched, zero runtime overhead.
 ```lisp
 (import-use numeric)                      ; Eq / Ord / Num over the operators
 
-(defn maxv:T (a:T b:T &where (Ord T))     ; T is a type variable bounded by Ord
+(defn maxv (a:T b:T &where (Ord T)):T     ; T is a type variable bounded by Ord
   (if (< a b) b a))                       ; operators dispatch on T directly
 
 (maxv 3 9)        ; → stamps @maxv.i32.i32; (< a b) is an inline icmp
@@ -1140,7 +1186,7 @@ constraint is the standard `Ord`; built-in numeric types conform automatically.
   result type). The check is **lenient**: the only hard def-time error is a
   genuinely unknown function name (a typo) —
   ```lisp
-  (defn maxv:T (a:T b:T &where (Ord T))
+  (defn maxv (a:T b:T &where (Ord T)):T
     (when (greater a b) …))   ; error at the defn: unknown function 'greater'
   ```
   A *known* operation that the abstract interface can't confirm — an operator
@@ -1155,7 +1201,7 @@ constraint is the standard `Ord`; built-in numeric types conform automatically.
   ```
   The constraint protocol's existence is also checked at the `defn`.
 - **Cross-unit.** A generic template exports verbatim through `.nuch`
-  (`(defn (maxv T) ((a T) (b T) &where (Ord T)) …)`); an importing unit
+  (`(defn maxv ((a T) (b T) &where (Ord T)) T …)`); an importing unit
   re-registers it (trusting the exporter's A2 check) and stamps its own
   instantiations locally, calling the exporter's concrete protocol methods by
   their mangled symbols.
@@ -1183,8 +1229,8 @@ and typos caught):
 | **`Valid`** (§10.2) | structural, **inferred from the body** | at the call site |
 
 - **`Any`** is the no-constraint constraint — every type conforms, no methods
-  required. It lets a fully generic function name its variable: `(defn id:T (x:T
-  &where (Any T)) (return x))`. Operations on an `Any`-bound value are deferred to
+  required. It lets a fully generic function name its variable: `(defn id (x:T
+  &where (Any T)):T (return x))`. Operations on an `Any`-bound value are deferred to
   stamp time.
 - **`Struct`** holds for any struct type or pointer-to-struct. (Its member-access
   `get` method is supplied by callable-values; see `design/stage9/callable-values.md`.)
@@ -1196,7 +1242,7 @@ and typos caught):
   type that can't support an operation is rejected **at the call site**, and so are
   uses of values *derived* from `T`:
   ```lisp
-  (defn twice:T (x:T &where (Valid T)) (+ x x))
+  (defn twice (x:T &where (Valid T)):T (+ x x))
   (twice 21)        ; ok — i32 supports +
   (twice some-ptr)  ; error at this call: 'ptr:Blob' does not satisfy the Valid bound of 'twice'
   ```
@@ -1249,7 +1295,7 @@ tier 0 and out-ranks the blanket intrinsic, so it owns *all* member access on th
 type. A user `get` takes the selector as an interned symbol (`ptr`):
 
 ```lisp
-(defn get:i32 (self:ptr:Temp sel:ptr)
+(defn get (self:ptr:Temp sel:ptr):i32
   (if (= sel 'f) (return …) (return (. self c))))   ; (t f) and (t c) both route here
 ```
 
@@ -1261,7 +1307,7 @@ selector's *actual* type, so a parametric `get` override can index by a real key
 
 ```lisp
 (defstruct (Bag K V) key:K val:V has:i32)
-(defn (get (Maybe V)) ((self (ref (Bag K V))) key:K) …)   ; value-keyed lookup
+(defn get ((self (ref (Bag K V))) key:K) (Maybe V) …)   ; value-keyed lookup
 (get bag "hello")    ; CStr selector → the (Bag K V) get method, returns (Maybe V)
 (get bag 42)         ; i32  selector → the same method
 (get bag 'val)       ; symbol selector → field access, returns the raw V field
@@ -1283,7 +1329,7 @@ tuple:
 
 ```lisp
 (defstruct Vec data:ptr:i32 len:i32)
-(defn invoke:i32 (self:ptr:Vec i:i32) (return (aref (_get self data) i)))
+(defn invoke (self:ptr:Vec i:i32):i32 (return (aref (_get self data) i)))
 (v 3)          ; ⇒ (invoke v 3) → element access (literal index)
 (let (idx:i32 1) (v idx))   ; ⇒ (invoke v idx) → indexes; NOT a field named idx
 (_get v len)   ; field access — `(v len)` would mis-route to invoke
@@ -1296,7 +1342,7 @@ For parametric function-object conformance, use `(UnaryFn Arg Ret)` and
 (import-use iterator)
 (defstruct Adder delta:i32)
 (extend Adder (UnaryFn i32 i32))
-(defn (apply i32) ((self (ref Adder)) (x i32))
+(defn apply ((self (ref Adder)) (x i32)) i32
   (return (+ x (self delta))))
 ; (apply adder 37) → 42  when delta=5
 ```
@@ -1381,7 +1427,7 @@ Function pointer types are written as `(fn:rettype (param-types...))` in sugared
 In parameter position (where `(` would terminate the symbol for colon sugar), use the canonical list form:
 
 ```lisp
-(defn apply:i32 ((f (fn i32) (i32 i32)) a:i32 b:i32)
+(defn apply ((f (fn i32) (i32 i32)) a:i32 b:i32):i32
   (return (funcall f a b)))
 ```
 
@@ -1395,13 +1441,13 @@ In `let` bindings, the binding name is also a list:
 A `defn` function name used in value position decays to a function pointer, matching C semantics:
 
 ```lisp
-(defn add:i32 (a:i32 b:i32) (return (+ a b)))
+(defn add (a:i32 b:i32):i32 (return (+ a b)))
 (apply add 3 4)  ; passes add as a function pointer
 ```
 
 ### Implicit Type Coercion
 
-The following conversions are applied automatically in assignment contexts (`let`, `set!`, `.set!`, `aset!`, `ptr-set!`, implicit return) **and at function call sites** (both direct calls and `funcall`):
+The following conversions are applied automatically in assignment contexts (`let`, `set!`, `.set!`, `aset!`, `ptr-set!`, implicit and explicit `return`) **and at function call sites** (both direct calls and `funcall`):
 
 - **Pointer ↔ pointer** (any element types): identity, no IR. `ptr`, `ptr:Node`, `ptr:i8` are interchangeable at boundaries; the cast only matters when the result feeds a typed-pointer-only operation (`.`, `aref`, `aset!`, `ptr+`, `deref`).
 - **Integer ↔ integer**:

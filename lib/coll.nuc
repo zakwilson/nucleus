@@ -52,10 +52,10 @@
 ; is value-return only — one convention. It must itself conform to (Iterator E).
 ; ---------------------------------------------------------------------------
 (defprotocol (Coll E It)
-  (count:usize  ((self (ref Self))))
-  (conj:void    ((self (ref Self)) elem:E))
-  (empty?:i32   ((self (ref Self))))
-  (iter:It      ((self (ref Self)))))
+  (count  ((self (ref Self))):usize)
+  (conj    ((self (ref Self)) elem:E):void)
+  (empty?   ((self (ref Self))):i32)
+  (iter      ((self (ref Self))):It))
 
 ; ---------------------------------------------------------------------------
 ; Seq E — ordered, index-addressable sequences (a practical subset of the
@@ -66,10 +66,10 @@
 ;   insert    -> insert at an index, shifting the tail right, MUTATING
 ; ---------------------------------------------------------------------------
 (defprotocol (Seq E)
-  (invoke:E      ((self (ref Self)) i:usize))
-  (append:void   ((self (ref Self)) elem:E))
-  (contains?:i32 ((self (ref Self)) elem:E))
-  (insert:void   ((self (ref Self)) i:usize elem:E)))
+  (invoke      ((self (ref Self)) i:usize):E)
+  (append   ((self (ref Self)) elem:E):void)
+  (contains? ((self (ref Self)) elem:E):i32)
+  (insert   ((self (ref Self)) i:usize elem:E):void))
 
 ; ---------------------------------------------------------------------------
 ; Assoc K V Ki Vi — associative (key -> value) maps.
@@ -91,11 +91,11 @@
 ; standalone (C2.2d, design/stage11/cleanup2.md).
 ; ---------------------------------------------------------------------------
 (defprotocol (Assoc K V Ki Vi)
-  (assoc:void        ((self (ref Self)) key:K val:V))
-  (dissoc:void       ((self (ref Self)) key:K))
-  ((get (Maybe V))   ((self (ref Self)) key:K))
-  (keys:Ki           ((self (ref Self))))
-  (vals:Vi           ((self (ref Self)))))
+  (assoc        ((self (ref Self)) key:K val:V):void)
+  (dissoc       ((self (ref Self)) key:K):void)
+  (get   ((self (ref Self)) key:K) (Maybe V))
+  (keys           ((self (ref Self))):Ki)
+  (vals           ((self (ref Self))):Vi))
 
 ; ---------------------------------------------------------------------------
 ; Set E — sets of unique members (the in-place, mutating algebra).
@@ -110,10 +110,10 @@
 ; design/stage11/cleanup2.md), not because it is inexpressible.
 ; ---------------------------------------------------------------------------
 (defprotocol (Set E)
-  (union:void        ((self (ref Self)) (other (ref Self))))
-  (difference:void   ((self (ref Self)) (other (ref Self))))
-  (intersection:void ((self (ref Self)) (other (ref Self))))
-  (contains?:i32     ((self (ref Self)) elem:E)))
+  (union        ((self (ref Self)) (other (ref Self))):void)
+  (difference   ((self (ref Self)) (other (ref Self))):void)
+  (intersection ((self (ref Self)) (other (ref Self))):void)
+  (contains?     ((self (ref Self)) elem:E):i32))
 
 ; ---------------------------------------------------------------------------
 ; Drop — the Stage 10 lifecycle protocol. An owning collection conforms so a
@@ -127,4 +127,4 @@
 ; (examples/drop-defer.nuc does), in a unit that does not import this one.
 ; ---------------------------------------------------------------------------
 (defprotocol Drop
-  (drop:void (self:ptr:Self)))
+  (drop (self:ptr:Self):void))

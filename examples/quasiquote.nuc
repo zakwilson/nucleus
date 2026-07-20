@@ -7,24 +7,24 @@
 (defstruct Node
   kind:i32 line:i32 i:i64 s:ptr car:ptr cdr:ptr)
 
-(defn first:ptr (n:ptr) (return ((cast ptr:Node n) car)))
-(defn rest:ptr  (n:ptr) (return ((cast ptr:Node n) cdr)))
+(defn first (n:ptr):ptr (return ((as ptr:Node n) car)))
+(defn rest  (n:ptr):ptr (return ((as ptr:Node n) cdr)))
 
 (defstruct ListIter cur:ptr)
 (extend ListIter (Iterator ptr))
-(defn (next (Maybe ptr)) ((self (ref ListIter)))
+(defn next ((self (ref ListIter))) (Maybe ptr)
   (let (c:ptr (self cur))
     (when (= c null) (return none))
     (.set! self cur (rest c))
     (return (some (first c)))))
 
-(defn print-list:void (n:ptr)
+(defn print-list (n:ptr):void
   (let ((lit (ref ListIter)) (alloca ListIter))
     (.set! lit cur n)
     (let (first-item:i32 1)
       (printf "(")
       (doseq-iter (elem lit)
-        (let (node:ptr:Node (cast ptr:Node elem))
+        (let (node:ptr:Node (as ptr:Node elem))
           (when (= first-item 0) (printf " "))
           (cond (= (node kind) 0) (printf "%ld" (node i))
                 (= (node kind) 2) (printf "%s" (node s))
@@ -32,7 +32,7 @@
           (set! first-item 0)))
       (printf ")\n"))))
 
-(defn main:int ()
+(defn main ():int
   (let (x:ptr 'hello
         xs:ptr '(a b c))
     (print-list `(1 2 3))

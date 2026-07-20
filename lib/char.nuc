@@ -51,12 +51,12 @@
 ; Every valid Char (i.e. one produced by char-from-u32 or a char literal) is
 ; in range; this function does not re-validate.
 ; ---------------------------------------------------------------------------
-(defn char-utf8-len:usize ((c Char))
-  (let (n:ui32 (cast ui32 c))
-    (when (<= n (cast ui32 127)) (return (cast usize 1)))
-    (when (<= n (cast ui32 2047)) (return (cast usize 2)))
-    (when (<= n (cast ui32 65535)) (return (cast usize 3)))
-    (return (cast usize 4))))
+(defn char-utf8-len ((c Char)):usize
+  (let (n:ui32 (as ui32 c))
+    (when (<= n 127) (return 1))
+    (when (<= n 2047) (return 2))
+    (when (<= n 65535) (return 3))
+    (return 4)))
 
 ; ---------------------------------------------------------------------------
 ; char-encode-utf8 — encode c into buf (caller must provide ≥4 bytes).
@@ -68,31 +68,31 @@
 ;   3 bytes: 1110xxxx 10xxxxxx 10xxxxxx
 ;   4 bytes: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
 ; ---------------------------------------------------------------------------
-(defn char-encode-utf8:usize ((c Char) (buf (ptr ui8)))
-  (let (n:ui32 (cast ui32 c))
-    (when (<= n (cast ui32 127))
-      (aset! buf (cast i64 0) (cast ui8 n))
-      (return (cast usize 1)))
-    (when (<= n (cast ui32 2047))
+(defn char-encode-utf8 ((c Char) (buf (ptr ui8))):usize
+  (let (n:ui32 (as ui32 c))
+    (when (<= n 127)
+      (aset! buf 0 (unsafe/cast ui8 n))
+      (return 1))
+    (when (<= n 2047)
       ; 110xxxxx
-      (aset! buf (cast i64 0) (cast ui8 (bit-or (cast ui32 192) (bit-shr n (cast ui32 6)))))
+      (aset! buf 0 (unsafe/cast ui8 (bit-or 192 (bit-shr n 6))))
       ; 10xxxxxx
-      (aset! buf (cast i64 1) (cast ui8 (bit-or (cast ui32 128) (bit-and n (cast ui32 63)))))
-      (return (cast usize 2)))
-    (when (<= n (cast ui32 65535))
+      (aset! buf 1 (unsafe/cast ui8 (bit-or 128 (bit-and n 63))))
+      (return 2))
+    (when (<= n 65535)
       ; 1110xxxx
-      (aset! buf (cast i64 0) (cast ui8 (bit-or (cast ui32 224) (bit-shr n (cast ui32 12)))))
+      (aset! buf 0 (unsafe/cast ui8 (bit-or 224 (bit-shr n 12))))
       ; 10xxxxxx
-      (aset! buf (cast i64 1) (cast ui8 (bit-or (cast ui32 128) (bit-and (bit-shr n (cast ui32 6)) (cast ui32 63)))))
+      (aset! buf 1 (unsafe/cast ui8 (bit-or 128 (bit-and (bit-shr n 6) 63))))
       ; 10xxxxxx
-      (aset! buf (cast i64 2) (cast ui8 (bit-or (cast ui32 128) (bit-and n (cast ui32 63)))))
-      (return (cast usize 3)))
+      (aset! buf 2 (unsafe/cast ui8 (bit-or 128 (bit-and n 63))))
+      (return 3))
     ; 4-byte: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
-    (aset! buf (cast i64 0) (cast ui8 (bit-or (cast ui32 240) (bit-shr n (cast ui32 18)))))
-    (aset! buf (cast i64 1) (cast ui8 (bit-or (cast ui32 128) (bit-and (bit-shr n (cast ui32 12)) (cast ui32 63)))))
-    (aset! buf (cast i64 2) (cast ui8 (bit-or (cast ui32 128) (bit-and (bit-shr n (cast ui32 6)) (cast ui32 63)))))
-    (aset! buf (cast i64 3) (cast ui8 (bit-or (cast ui32 128) (bit-and n (cast ui32 63)))))
-    (return (cast usize 4))))
+    (aset! buf 0 (unsafe/cast ui8 (bit-or 240 (bit-shr n 18))))
+    (aset! buf 1 (unsafe/cast ui8 (bit-or 128 (bit-and (bit-shr n 12) 63))))
+    (aset! buf 2 (unsafe/cast ui8 (bit-or 128 (bit-and (bit-shr n 6) 63))))
+    (aset! buf 3 (unsafe/cast ui8 (bit-or 128 (bit-and n 63))))
+    (return 4)))
 
 ; ---------------------------------------------------------------------------
 ; char-decode-utf8 — decode one codepoint from p[0..len).
@@ -111,82 +111,82 @@
 ; ---------------------------------------------------------------------------
 
 ; Helper: build an error DecodeResult consuming 1 byte.
-(defn decode-err:DecodeResult ()
+(defn decode-err ():DecodeResult
   (let ((r (ref DecodeResult)) (alloca DecodeResult))
     (.set! r ch    \nul)
-    (.set! r nbytes (cast usize 1))
+    (.set! r nbytes 1)
     (.set! r ok    0)
     (return (deref r))))
 
-(defn char-decode-utf8:DecodeResult ((p (ptr ui8)) (len usize))
-  (when (= len (cast usize 0)) (return (decode-err)))
+(defn char-decode-utf8 ((p (ptr ui8)) (len usize)):DecodeResult
+  (when (= len 0) (return (decode-err)))
 
-  (let (b0:ui32 (cast ui32 (aref p 0)))
+  (let (b0:ui32 (as ui32 (aref p 0)))
 
     ; --- 1-byte (ASCII): 0xxxxxxx ---
-    (when (= (bit-and b0 (cast ui32 128)) (cast ui32 0))
+    (when (= (bit-and b0 128) 0)
       (let ((r (ref DecodeResult)) (alloca DecodeResult))
-        (.set! r ch     (cast Char b0))
-        (.set! r nbytes (cast usize 1))
+        (.set! r ch     (as Char b0))
+        (.set! r nbytes 1)
         (.set! r ok     1)
         (return (deref r))))
 
     ; --- 2-byte: 110xxxxx 10xxxxxx ---
-    (when (= (bit-and b0 (cast ui32 224)) (cast ui32 192))
-      (when (< len (cast usize 2)) (return (decode-err)))
-      (let (b1:ui32 (cast ui32 (aref p (cast i64 1))))
-        (when (!= (bit-and b1 (cast ui32 192)) (cast ui32 128)) (return (decode-err)))
-        (let (cp:ui32 (bit-or (bit-shl (bit-and b0 (cast ui32 31)) (cast ui32 6))
-                              (bit-and b1 (cast ui32 63))))
+    (when (= (bit-and b0 224) 192)
+      (when (< len 2) (return (decode-err)))
+      (let (b1:ui32 (as ui32 (aref p 1)))
+        (when (!= (bit-and b1 192) 128) (return (decode-err)))
+        (let (cp:ui32 (bit-or (bit-shl (bit-and b0 31) 6)
+                              (bit-and b1 63)))
           ; Overlong: must be >= 0x80
-          (when (< cp (cast ui32 128)) (return (decode-err)))
+          (when (< cp 128) (return (decode-err)))
           (let ((r (ref DecodeResult)) (alloca DecodeResult))
-            (.set! r ch     (cast Char cp))
-            (.set! r nbytes (cast usize 2))
+            (.set! r ch     (as Char cp))
+            (.set! r nbytes 2)
             (.set! r ok     1)
             (return (deref r))))))
 
     ; --- 3-byte: 1110xxxx 10xxxxxx 10xxxxxx ---
-    (when (= (bit-and b0 (cast ui32 240)) (cast ui32 224))
-      (when (< len (cast usize 3)) (return (decode-err)))
-      (let (b1:ui32 (cast ui32 (aref p (cast i64 1)))
-            b2:ui32 (cast ui32 (aref p (cast i64 2))))
-        (when (!= (bit-and b1 (cast ui32 192)) (cast ui32 128)) (return (decode-err)))
-        (when (!= (bit-and b2 (cast ui32 192)) (cast ui32 128)) (return (decode-err)))
-        (let (cp:ui32 (bit-or (bit-shl (bit-and b0 (cast ui32 15)) (cast ui32 12))
-                       (bit-or (bit-shl (bit-and b1 (cast ui32 63)) (cast ui32 6))
-                               (bit-and b2 (cast ui32 63)))))
+    (when (= (bit-and b0 240) 224)
+      (when (< len 3) (return (decode-err)))
+      (let (b1:ui32 (as ui32 (aref p 1))
+            b2:ui32 (as ui32 (aref p 2)))
+        (when (!= (bit-and b1 192) 128) (return (decode-err)))
+        (when (!= (bit-and b2 192) 128) (return (decode-err)))
+        (let (cp:ui32 (bit-or (bit-shl (bit-and b0 15) 12)
+                       (bit-or (bit-shl (bit-and b1 63) 6)
+                               (bit-and b2 63))))
           ; Overlong: must be >= 0x800
-          (when (< cp (cast ui32 2048)) (return (decode-err)))
+          (when (< cp 2048) (return (decode-err)))
           ; Surrogates: U+D800..U+DFFF
-          (when (and (>= cp (cast ui32 55296)) (<= cp (cast ui32 57343)))
+          (when (and (>= cp 55296) (<= cp 57343))
             (return (decode-err)))
           (let ((r (ref DecodeResult)) (alloca DecodeResult))
-            (.set! r ch     (cast Char cp))
-            (.set! r nbytes (cast usize 3))
+            (.set! r ch     (as Char cp))
+            (.set! r nbytes 3)
             (.set! r ok     1)
             (return (deref r))))))
 
     ; --- 4-byte: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx ---
-    (when (= (bit-and b0 (cast ui32 248)) (cast ui32 240))
-      (when (< len (cast usize 4)) (return (decode-err)))
-      (let (b1:ui32 (cast ui32 (aref p (cast i64 1)))
-            b2:ui32 (cast ui32 (aref p (cast i64 2)))
-            b3:ui32 (cast ui32 (aref p (cast i64 3))))
-        (when (!= (bit-and b1 (cast ui32 192)) (cast ui32 128)) (return (decode-err)))
-        (when (!= (bit-and b2 (cast ui32 192)) (cast ui32 128)) (return (decode-err)))
-        (when (!= (bit-and b3 (cast ui32 192)) (cast ui32 128)) (return (decode-err)))
-        (let (cp:ui32 (bit-or (bit-shl (bit-and b0 (cast ui32 7)) (cast ui32 18))
-                       (bit-or (bit-shl (bit-and b1 (cast ui32 63)) (cast ui32 12))
-                        (bit-or (bit-shl (bit-and b2 (cast ui32 63)) (cast ui32 6))
-                                (bit-and b3 (cast ui32 63))))))
+    (when (= (bit-and b0 248) 240)
+      (when (< len 4) (return (decode-err)))
+      (let (b1:ui32 (as ui32 (aref p 1))
+            b2:ui32 (as ui32 (aref p 2))
+            b3:ui32 (as ui32 (aref p 3)))
+        (when (!= (bit-and b1 192) 128) (return (decode-err)))
+        (when (!= (bit-and b2 192) 128) (return (decode-err)))
+        (when (!= (bit-and b3 192) 128) (return (decode-err)))
+        (let (cp:ui32 (bit-or (bit-shl (bit-and b0 7) 18)
+                       (bit-or (bit-shl (bit-and b1 63) 12)
+                        (bit-or (bit-shl (bit-and b2 63) 6)
+                                (bit-and b3 63)))))
           ; Overlong: must be >= 0x10000
-          (when (< cp (cast ui32 65536)) (return (decode-err)))
+          (when (< cp 65536) (return (decode-err)))
           ; Must be <= U+10FFFF
-          (when (> cp (cast ui32 1114111)) (return (decode-err)))
+          (when (> cp 1114111) (return (decode-err)))
           (let ((r (ref DecodeResult)) (alloca DecodeResult))
-            (.set! r ch     (cast Char cp))
-            (.set! r nbytes (cast usize 4))
+            (.set! r ch     (as Char cp))
+            (.set! r nbytes 4)
             (.set! r ok     1)
             (return (deref r))))))
 
@@ -197,8 +197,8 @@
 ; char-to-u32 — reinterpret a Char as a ui32 codepoint value. No-op at IR
 ; level (same width, same bits); present for ergonomics.
 ; ---------------------------------------------------------------------------
-(defn char-to-u32:ui32 ((c Char))
-  (return (cast ui32 c)))
+(defn char-to-u32 ((c Char)):ui32
+  (return (as ui32 c)))
 
 ; ---------------------------------------------------------------------------
 ; char-from-u32 — construct a Char from a raw codepoint value, validating:
@@ -206,12 +206,12 @@
 ;   - Must NOT be a surrogate (U+D800..U+DFFF).
 ; Errors invalid-codepoint on failure.
 ; ---------------------------------------------------------------------------
-(defn char-from-u32:!Char ((n ui32))
-  (when (> n (cast ui32 1114111))
+(defn char-from-u32 ((n ui32)):!Char
+  (when (> n 1114111)
     (return (err! invalid-codepoint)))
-  (when (and (>= n (cast ui32 55296)) (<= n (cast ui32 57343)))
+  (when (and (>= n 55296) (<= n 57343))
     (return (err! invalid-codepoint)))
-  (return (ok (cast Char n))))
+  (return (ok (as Char n))))
 
 ; ---------------------------------------------------------------------------
 ; Classification — ASCII-only for now (stage888: full Unicode tables).
@@ -220,50 +220,50 @@
 ; ---------------------------------------------------------------------------
 
 ; char-is-ascii — 1 if the codepoint is in U+0000..U+007F, else 0.
-(defn char-is-ascii:i32 ((c Char))
-  (if (<= (cast ui32 c) (cast ui32 127)) 1 0))
+(defn char-is-ascii ((c Char)):i32
+  (if (<= (as ui32 c) 127) 1 0))
 
 ; char-is-digit — 1 if c is ASCII '0'..'9', else 0.
-(defn char-is-digit:i32 ((c Char))
-  (let (n:ui32 (cast ui32 c))
-    (if (and (>= n (cast ui32 48)) (<= n (cast ui32 57))) 1 0)))
+(defn char-is-digit ((c Char)):i32
+  (let (n:ui32 (as ui32 c))
+    (if (and (>= n 48) (<= n 57)) 1 0)))
 
 ; char-is-alpha — 1 if c is ASCII 'a'..'z' or 'A'..'Z', else 0.
-(defn char-is-alpha:i32 ((c Char))
-  (let (n:ui32 (cast ui32 c))
-    (if (or (and (>= n (cast ui32 65)) (<= n (cast ui32 90)))
-            (and (>= n (cast ui32 97)) (<= n (cast ui32 122))))
+(defn char-is-alpha ((c Char)):i32
+  (let (n:ui32 (as ui32 c))
+    (if (or (and (>= n 65) (<= n 90))
+            (and (>= n 97) (<= n 122)))
       1 0)))
 
 ; char-is-alnum — 1 if c is ASCII alphanumeric (digit or alpha), else 0.
-(defn char-is-alnum:i32 ((c Char))
+(defn char-is-alnum ((c Char)):i32
   (if (or (= (char-is-digit c) 1) (= (char-is-alpha c) 1)) 1 0))
 
 ; char-is-whitespace — 1 if c is ASCII whitespace, else 0.
 ; ASCII whitespace: space (32), tab (9), newline (10), carriage return (13),
 ; form feed (12), vertical tab (11).
-(defn char-is-whitespace:i32 ((c Char))
-  (let (n:ui32 (cast ui32 c))
-    (if (or (= n (cast ui32 32))
-            (or (= n (cast ui32 9))
-                (or (= n (cast ui32 10))
-                    (or (= n (cast ui32 13))
-                        (or (= n (cast ui32 12))
-                            (= n (cast ui32 11)))))))
+(defn char-is-whitespace ((c Char)):i32
+  (let (n:ui32 (as ui32 c))
+    (if (or (= n 32)
+            (or (= n 9)
+                (or (= n 10)
+                    (or (= n 13)
+                        (or (= n 12)
+                            (= n 11))))))
       1 0)))
 
 ; char-ascii-upper — convert ASCII 'a'..'z' to 'A'..'Z'. Total: non-lowercase
 ; ASCII and non-ASCII codepoints are returned unchanged.
-(defn char-ascii-upper:Char ((c Char))
-  (let (n:ui32 (cast ui32 c))
-    (if (and (>= n (cast ui32 97)) (<= n (cast ui32 122)))
-      (cast Char (- n (cast ui32 32)))
+(defn char-ascii-upper ((c Char)):Char
+  (let (n:ui32 (as ui32 c))
+    (if (and (>= n 97) (<= n 122))
+      (as Char (- n 32))
       c)))
 
 ; char-ascii-lower — convert ASCII 'A'..'Z' to 'a'..'z'. Total: non-uppercase
 ; ASCII and non-ASCII codepoints are returned unchanged.
-(defn char-ascii-lower:Char ((c Char))
-  (let (n:ui32 (cast ui32 c))
-    (if (and (>= n (cast ui32 65)) (<= n (cast ui32 90)))
-      (cast Char (+ n (cast ui32 32)))
+(defn char-ascii-lower ((c Char)):Char
+  (let (n:ui32 (as ui32 c))
+    (if (and (>= n 65) (<= n 90))
+      (as Char (+ n 32))
       c)))

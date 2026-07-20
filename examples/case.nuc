@@ -8,7 +8,7 @@
 (import-use "stdio.h")
 
 ; Dispatch over integer literals, with a default arm.
-(defn name-digit:ptr (n:i32)
+(defn name-digit (n:i32):ptr
   (case n
     0 "zero"
     1 "one"
@@ -17,7 +17,7 @@
     "many"))
 
 ; case works over any type with an `=`.
-(defn is-vowel:i32 (c:i32)
+(defn is-vowel (c:i32):i32
   (case c
     97  1     ; a
     101 1     ; e
@@ -26,7 +26,7 @@
     117 1     ; u
     0))
 
-(defn main:i32 ()
+(defn main ():i32
   (printf "%s\n" (name-digit 0))
   (printf "%s\n" (name-digit 2))
   (printf "%s\n" (name-digit 9))

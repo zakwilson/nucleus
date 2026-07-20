@@ -37,9 +37,10 @@ After the Phase F flip `?` is uniform `(Maybe T)` (no `(ref …)` injection), so
 nullable pointer). The
 `(Result T E)` template now lives in the prelude, always available. Because the
 toplevel signature prescan now resolves imported (prelude) types, `name:!Config`
-parses in ordinary signatures — which is the point of the sugar, since
-`name:(Result Config Err)` does not parse (parenthesized type in a colon
-position). `!` over a parenthesized payload has no sugar; write
+parses in ordinary signatures. (`name:(Result Config Err)` now parses too via
+the colon-paren sugar, so `!` is no longer *required* for that — but it
+remains the terser spelling and composes with the `?!` value-Maybe-over-Result
+sugar.) `!` over a parenthesized payload has no sugar; write
 `(Result (ref FILE) Err)` longhand.
 
 ## Constructing and eliminating `!T`
@@ -69,13 +70,13 @@ machinery.
 (import-use error)
 (deferror parse-failed "could not parse value")
 
-(defn checked:!i64 (n:i64)
-  (when (< n (cast i64 0)) (return (err parse-failed)))
+(defn checked (n:i64):!i64
+  (when (< n 0) (return (err parse-failed)))
   (return (ok n)))
 
-(defn doubled:!i64 (n:i64)
+(defn doubled (n:i64):!i64
   (let (v:i64 (try (checked n)))          ; propagate on err
-    (return (ok (* v (cast i64 2))))))
+    (return (ok (* v 2)))))
 
 (match (checked x)
   ((ok v)  ...)
@@ -175,25 +176,25 @@ not supported in v1.
 
 ; A fallible function. (err config-missing) consults bound handlers first.
 ; err! would bypass them unconditionally.
-(defn load-num:!i64 (n:i64)
-  (when (= n (cast i64 0))
+(defn load-num (n:i64):!i64
+  (when (= n 0)
     (return (err config-missing)))    ; handler may repair → (ok v)
-  (return (ok (* n (cast i64 10)))))
+  (return (ok (* n 10))))
 
 ; A repairing handler: (some v) repairs, none declines.
-(defn (repair-from-ctx (Maybe i64)) (ctx:ptr detail:ptr)
-  (return (some (deref (cast ptr:i64 ctx)))))
+(defn repair-from-ctx (ctx:ptr detail:ptr) (Maybe i64)
+  (return (some (deref (as ptr:i64 ctx)))))
 
-(defn main:i32 ()
+(defn main ():i32
   ; No handler bound: (err config-missing) returns the error value.
-  (match (load-num (cast i64 0))
+  (match (load-num 0)
     ((ok v)  (printf "ok %lld\n" v))
     ((err e) (printf "err: %s\n" (err-name e))))
 
   ; Repairing handler bound for (config-missing, i64): err → (ok 777).
-  (let (fixed:i64 (cast i64 777))
-    (with-handler (config-missing i64 repair-from-ctx (cast ptr (addr-of fixed)))
-      (match (load-num (cast i64 0))
+  (let (fixed:i64 777)
+    (with-handler (config-missing i64 repair-from-ctx (as ptr (addr-of fixed)))
+      (match (load-num 0)
         ((ok v)  (printf "repaired: %lld\n" v))   ; prints: repaired: 777
         ((err e) (printf "err: %s\n" (err-name e))))))
   0)
@@ -224,16 +225,16 @@ behavior if policy declines:
 (import-use error)
 (deferror out-of-memory "allocation grow needs a policy decision")
 
-(defn grow:i64 (need:i64)
-  (match (signal out-of-memory i64 (cast ptr (addr-of need)))
+(defn grow (need:i64):i64
+  (match (signal out-of-memory i64 (as ptr (addr-of need)))
     ((some sz) sz)               ; a handler supplied a size: continue
-    (none      (cast i64 0))))   ; declined / no handler: the fallback
+    (none      0)))              ; declined / no handler: the fallback
 
-(defn (grant-double (Maybe i64)) (ctx:ptr detail:ptr)
-  (return (some (* (deref (cast ptr:i64 detail)) (cast i64 2)))))
+(defn grant-double (ctx:ptr detail:ptr) (Maybe i64)
+  (return (some (* (deref (as ptr:i64 detail)) 2))))
 
 (with-handler (out-of-memory i64 grant-double null)
-  (grow (cast i64 8)))           ; → 16
+  (grow 8))                      ; → 16
 ```
 
 `signal` requires `(import-use error)` (it references the handler chain). Its result

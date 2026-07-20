@@ -25,7 +25,7 @@ both the name's return type and `(raw ui8)` parameters use the list binding form
 
 A collection stores **one** allocator handle field and dispatches through it
 without knowing the concrete backend — the design's "stored field" plumbing. The
-protocol system is static-only (no vtables) and `funcall-ptr-*` cannot call a
+protocol system is static-only (no vtables) and `unsafe/funcall-ptr-*` cannot call a
 3+-arg function pointer, so dispatch is a **tagged handle**, not a vtable:
 
 ```lisp

@@ -11,48 +11,48 @@
 (defmacro + (&rest args)
   (cond (= args null)
     `0
-    (= ((cast ptr:Node args) cdr) null)
-    (cast ptr ((cast ptr:Node args) car))
+    (= (args cdr) null)
+    (args car)
     true
-    `(_+ ~((cast ptr:Node args) car)
-           (+ ~@((cast ptr:Node args) cdr)))))
+    `(_+ ~(args car)
+           (+ ~@(args cdr)))))
 
 (defmacro * (&rest args)
   (cond (= args null)
           `1
-        (= ((cast ptr:Node args) cdr) null)
-          (cast ptr ((cast ptr:Node args) car))
+        (= (args cdr) null)
+          (args car)
         true
-          `(_* ~((cast ptr:Node args) car)
-                (* ~@((cast ptr:Node args) cdr)))))
+          `(_* ~(args car)
+                (* ~@(args cdr)))))
 
 ; Subtraction: unary negates; n-ary left-folds (matches Common Lisp).
 (defmacro - (&rest args)
   (cond (= args null)
           `0
-        (= ((cast ptr:Node args) cdr) null)
-          `(_- 0 ~((cast ptr:Node args) car))
-        (= ((cast ptr:Node ((cast ptr:Node args) cdr)) cdr) null)
-          `(_- ~((cast ptr:Node args) car)
-                ~((cast ptr:Node ((cast ptr:Node args) cdr)) car))
+        (= (args cdr) null)
+          `(_- 0 ~(args car))
+        (= ((args cdr) cdr) null)
+          `(_- ~(args car)
+                ~((args cdr) car))
         true
-          `(- (_- ~((cast ptr:Node args) car)
-                   ~((cast ptr:Node ((cast ptr:Node args) cdr)) car))
-              ~@((cast ptr:Node ((cast ptr:Node args) cdr)) cdr))))
+          `(- (_- ~(args car)
+                   ~((args cdr) car))
+              ~@((args cdr) cdr))))
 
 ; Division: unary is reciprocal (integer: 1/x); n-ary left-folds.
 (defmacro / (&rest args)
   (cond (= args null)
           `1
-        (= ((cast ptr:Node args) cdr) null)
-          `(_/ 1 ~((cast ptr:Node args) car))
-        (= ((cast ptr:Node ((cast ptr:Node args) cdr)) cdr) null)
-          `(_/ ~((cast ptr:Node args) car)
-                ~((cast ptr:Node ((cast ptr:Node args) cdr)) car))
+        (= (args cdr) null)
+          `(_/ 1 ~(args car))
+        (= ((args cdr) cdr) null)
+          `(_/ ~(args car)
+                ~((args cdr) car))
         true
-          `(/ (_/ ~((cast ptr:Node args) car)
-                   ~((cast ptr:Node ((cast ptr:Node args) cdr)) car))
-              ~@((cast ptr:Node ((cast ptr:Node args) cdr)) cdr))))
+          `(/ (_/ ~(args car)
+                   ~((args cdr) car))
+              ~@((args cdr) cdr))))
 
 ; variadic logic
 ;   (and)         => true
@@ -61,20 +61,20 @@
 (defmacro and (&rest args)
   (cond (= args null)
           `true
-        (= ((cast ptr:Node args) cdr) null)
-          (cast ptr ((cast ptr:Node args) car))
+        (= (args cdr) null)
+          (args car)
         true
-          `(_and ~((cast ptr:Node args) car)
-                 (and ~@((cast ptr:Node args) cdr)))))
+          `(_and ~(args car)
+                 (and ~@(args cdr)))))
 
 (defmacro or (&rest args)
   (cond (= args null)
           `false
-        (= ((cast ptr:Node args) cdr) null)
-          (cast ptr ((cast ptr:Node args) car))
+        (= (args cdr) null)
+          (args car)
         true
-          `(_or ~((cast ptr:Node args) car)
-                (or ~@((cast ptr:Node args) cdr)))))
+          `(_or ~(args car)
+                (or ~@(args cdr)))))
 
 ; (if test then else) — binary conditional over cond.
 (defmacro if (test then else)
@@ -89,20 +89,20 @@
 ; enum constants, symbols, C strings). `form` is re-evaluated per comparison, so
 ; it should be a pure, side-effect-free expression.
 (defmacro case (form &rest clauses)
-  (let (acc:ptr null
-        cur:ptr clauses)
+  (let ((acc (raw Node)) null
+        (cur (raw Node)) clauses)
     (while (!= cur null)
-      (let (rest:ptr ((cast ptr:Node cur) cdr))
+      (let ((rest (raw Node)) (cur cdr))
         (if (= rest null)
           ; Lone trailing element: the default arm.
           (do
-            (set! acc `(~@acc true ~((cast ptr:Node cur) car)))
+            (set! acc `(~@acc true ~(cur car)))
             (set! cur null))
           ; A value/result pair.
           (do
-            (set! acc `(~@acc (= ~form ~((cast ptr:Node cur) car))
-                              ~((cast ptr:Node rest) car)))
-            (set! cur ((cast ptr:Node rest) cdr))))))
+            (set! acc `(~@acc (= ~form ~(cur car))
+                              ~(rest car)))
+            (set! cur (rest cdr))))))
     `(cond ~@acc)))
 
 ; (when condition body) — one-armed conditional; body only if condition is true.
@@ -185,7 +185,7 @@
         coll-expr:ptr ((binding cdr) car)
         it-type:ptr   (((binding cdr) cdr) car))
     `(let ((~it-sym ~it-type) (iter ~coll-expr))
-       (let ((~done-sym i32) (cast i32 0))
+       (let ((~done-sym i32) 0)
          (while (= ~done-sym 0)
            (match (next (addr-of ~it-sym))
              ((some ~var-sym) (do ~@body))
@@ -206,7 +206,7 @@
   (let (done-sym:ptr  (gensym)
         var-sym:ptr   (binding car)
         iter-ref:ptr  ((binding cdr) car))
-    `(let ((~done-sym i32) (cast i32 0))
+    `(let ((~done-sym i32) 0)
        (while (= ~done-sym 0)
          (match (next ~iter-ref)
            ((some ~var-sym) (do ~@body))
@@ -228,7 +228,7 @@
         it-sym:ptr   (gensym)
         x-sym:ptr    (gensym))
     `(let ((~it-sym ~it-type) (iter ~src-coll))
-       (let ((~done-sym i32) (cast i32 0))
+       (let ((~done-sym i32) 0)
          (while (= ~done-sym 0)
            (match (next (addr-of ~it-sym))
              ((some ~x-sym) (conj ~coll-sym ~x-sym))
@@ -242,7 +242,7 @@
 (defmacro into-iter (coll-sym iter-ref)
   (let (done-sym:ptr (gensym)
         x-sym:ptr    (gensym))
-    `(let ((~done-sym i32) (cast i32 0))
+    `(let ((~done-sym i32) 0)
        (while (= ~done-sym 0)
          (match (next ~iter-ref)
            ((some ~x-sym) (conj ~coll-sym ~x-sym))
@@ -260,11 +260,11 @@
 ;   (-> x f g)                 expands to (g (f x))              [bare symbols]
 ;   (-> x)                     expands to x                      [identity]
 (defmacro -> (x &rest forms)
-  (let (result:ptr x
+  (let ((result (raw Node)) x
         (current (raw Node)) forms)
     (while (!= current null)
       (let ((form (raw Node)) (current car))
-        (if (= ((cast ptr:Node form) kind) NODE-CELL)
+        (if (= (form kind) NODE-CELL)
           (do
             ; Scan the whole form (head + args) for the _ placeholder. Scanning
             ; the head lets a threaded value land in call position, e.g.

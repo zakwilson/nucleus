@@ -2,63 +2,63 @@
 ;
 ; Requires: arena (arena-strndup, arena-alloc), snprintf, strlen, isdigit.
 
-(defn fmt-i32:ptr (fmt:ptr d:i32)
+(defn fmt-i32 (fmt:ptr d:i32):ptr
   (let (buf:ptr (alloca i8 256)
-        n:i32 (snprintf buf (cast i64 256) fmt d))
-    (return (arena-strndup buf (cast i64 n)))))
+        n:i32 (snprintf buf (as i64 256) fmt d))
+    (return (arena-strndup buf (as i64 n)))))
 
-(defn fmt-i32-i32:ptr (fmt:ptr a:i32 b:i32)
+(defn fmt-i32-i32 (fmt:ptr a:i32 b:i32):ptr
   (let (buf:ptr (alloca i8 256)
-        n:i32 (snprintf buf (cast i64 256) fmt a b))
-    (return (arena-strndup buf (cast i64 n)))))
+        n:i32 (snprintf buf (as i64 256) fmt a b))
+    (return (arena-strndup buf (as i64 n)))))
 
-(defn fmt-i64:ptr (fmt:ptr d:i64)
+(defn fmt-i64 (fmt:ptr d:i64):ptr
   (let (buf:ptr (alloca i8 256)
-        n:i32 (snprintf buf (cast i64 256) fmt d))
-    (return (arena-strndup buf (cast i64 n)))))
+        n:i32 (snprintf buf (as i64 256) fmt d))
+    (return (arena-strndup buf (as i64 n)))))
 
-(defn fmt-s:ptr (fmt:ptr s:ptr)
+(defn fmt-s (fmt:ptr s:ptr):ptr
   (let (buf:ptr (alloca i8 512)
-        n:i32 (snprintf buf (cast i64 512) fmt s))
-    (return (arena-strndup buf (cast i64 n)))))
+        n:i32 (snprintf buf (as i64 512) fmt s))
+    (return (arena-strndup buf (as i64 n)))))
 
-(defn fmt-sd:ptr (fmt:ptr s:ptr d:i32)
+(defn fmt-sd (fmt:ptr s:ptr d:i32):ptr
   (let (buf:ptr (alloca i8 512)
-        n:i32 (snprintf buf (cast i64 512) fmt s d))
-    (return (arena-strndup buf (cast i64 n)))))
+        n:i32 (snprintf buf (as i64 512) fmt s d))
+    (return (arena-strndup buf (as i64 n)))))
 
-(defn fmt-2s:ptr (fmt:ptr s1:ptr s2:ptr)
+(defn fmt-2s (fmt:ptr s1:ptr s2:ptr):ptr
   (let (buf:ptr (alloca i8 512)
-        n:i32 (snprintf buf (cast i64 512) fmt s1 s2))
-    (return (arena-strndup buf (cast i64 n)))))
+        n:i32 (snprintf buf (as i64 512) fmt s1 s2))
+    (return (arena-strndup buf (as i64 n)))))
 
-(defn fmt-3s:ptr (fmt:ptr s1:ptr s2:ptr s3:ptr)
+(defn fmt-3s (fmt:ptr s1:ptr s2:ptr s3:ptr):ptr
   (let (buf:ptr (alloca i8 512)
-        n:i32 (snprintf buf (cast i64 512) fmt s1 s2 s3))
-    (return (arena-strndup buf (cast i64 n)))))
+        n:i32 (snprintf buf (as i64 512) fmt s1 s2 s3))
+    (return (arena-strndup buf (as i64 n)))))
 
-(defn fmt-2s-i:ptr (fmt:ptr s1:ptr s2:ptr d:i32)
+(defn fmt-2s-i (fmt:ptr s1:ptr s2:ptr d:i32):ptr
   (let (buf:ptr (alloca i8 512)
-        n:i32 (snprintf buf (cast i64 512) fmt s1 s2 d))
-    (return (arena-strndup buf (cast i64 n)))))
+        n:i32 (snprintf buf (as i64 512) fmt s1 s2 d))
+    (return (arena-strndup buf (as i64 n)))))
 
 ; Replace chars invalid in LLVM IR identifiers with underscores.
-(defn sanitize-for-ir:ptr (name:ptr)
+(defn sanitize-for-ir (name:ptr):ptr
   (let (n:i64 (strlen name)
-        s:ptr (arena-alloc (+ n (cast i64 1)))
-        i:i64 (cast i64 0))
+        s:ptr (arena-alloc (+ n 1))
+        i:i64 0)
     (while (< i n)
-      (let (c:i32 (bit-and (cast i32 (aref (cast ptr:i8 name) i)) 255)
+      (let (c:i32 (bit-and (as i32 (aref (as ptr:i8 name) i)) 255)
             is-digit:i1 (!= (isdigit c) 0)
             is-lower:i1 (and (>= c 97) (<= c 122))
             is-upper:i1 (and (>= c 65) (<= c 90))
             is-safe:i1  (or (= c 95) (= c 46))
             ok:i1       (or is-digit is-lower is-upper is-safe))
         (if ok
-          (aset! (cast ptr:i8 s) i (cast i8 c))
-          (aset! (cast ptr:i8 s) i (cast i8 95))))
-      (set! i (+ i (cast i64 1))))
-    (aset! (cast ptr:i8 s) n (cast i8 0))
+          (aset! (as ptr:i8 s) i (unsafe/cast i8 c))
+          (aset! (as ptr:i8 s) i 95)))
+      (set! i (+ i 1)))
+    (aset! (as ptr:i8 s) n 0)
     (return s)))
 
 ; Replace chars invalid in C identifiers with underscores.
@@ -66,19 +66,117 @@
 ; [A-Za-z_][A-Za-z0-9_]* and dots are not legal. Used only on the
 ; --emit-cheader path so IR struct names (which legally contain dots) are
 ; unaffected.
-(defn sanitize-for-c:ptr (name:ptr)
+;
+; This is a *blanket* sanitizer: it lossily collapses `?`, `!`, and `-` all to
+; `_`. To name the REAL linkable symbol of a `?`/`!`-bearing name, the caller must
+; run `ir-name-token` (in src/generics.nuc — the shared `?`→_QMARK / `!`→_BANG
+; mnemonic map) FIRST, then hand the result here: `(sanitize-for-c (ir-name-token
+; name))` (SM-3). sanitize-for-c does not call ir-name-token itself because
+; format.nuc is imported before generics.nuc, so ir-name-token is not yet in scope
+; here; the three cheader.nuc call sites compose the two in the correct order.
+(defn sanitize-for-c (name:ptr):ptr
   (let (n:i64 (strlen name)
-        s:ptr (arena-alloc (+ n (cast i64 1)))
-        i:i64 (cast i64 0))
+        s:ptr (arena-alloc (+ n 1))
+        i:i64 0)
     (while (< i n)
-      (let (c:i32 (bit-and (cast i32 (aref (cast ptr:i8 name) i)) 255)
+      (let (c:i32 (bit-and (as i32 (aref (as ptr:i8 name) i)) 255)
             is-digit:i1 (!= (isdigit c) 0)
             is-lower:i1 (and (>= c 97) (<= c 122))
             is-upper:i1 (and (>= c 65) (<= c 90))
             ok:i1       (or is-digit is-lower is-upper (= c 95)))
         (if ok
-          (aset! (cast ptr:i8 s) i (cast i8 c))
-          (aset! (cast ptr:i8 s) i (cast i8 95))))
-      (set! i (+ i (cast i64 1))))
-    (aset! (cast ptr:i8 s) n (cast i8 0))
+          (aset! (as ptr:i8 s) i (unsafe/cast i8 c))
+          (aset! (as ptr:i8 s) i 95)))
+      (set! i (+ i 1)))
+    (aset! (as ptr:i8 s) n 0)
     (return s)))
+
+; Copy the NUL-terminated C-string `lit` into `dst` at byte offset `off`;
+; return the offset just past the copied bytes (excludes the terminator).
+(defn ir-name-append (dst:ptr off:i64 lit:ptr):i64
+  (let (m:i64 (strlen lit)
+        i:i64 0)
+    (while (< i m)
+      (aset! (as ptr:i8 dst) (+ off i) (aref (as ptr:i8 lit) i))
+      (set! i (+ i 1)))
+    (return (+ off m))))
+
+; Map the two symbol characters that are legal in Nucleus but illegal in an LLVM
+; unquoted identifier — `?` and `!` — to greppable, C-linkable mnemonic escapes
+; (`?`→`_QMARK`, `!`→`_BANG`; Clojure's munge precedent). EVERY OTHER CHARACTER,
+; crucially the hyphen, passes through byte-for-byte. This is the shared base-name
+; transform on every ir-name production path: the function/variable naming layer
+; (op-name-token's overloaded path, the solitary-defn branch, ns-ir-base, and thus
+; emit-defvar / .nuch import) AND the LLVM struct/union type-name layer (type-to-ir
+; references + emit-defstruct / emit-pending-struct-ir-type / emit-union-ir-type /
+; defunion-register definitions). It lives here in format.nuc — beside
+; sanitize-for-ir / sanitize-for-c — rather than beside op-name-token in
+; generics.nuc, because type-utils.nuc and union-registry.nuc are import-used
+; before generics.nuc, so a call up to a generics.nuc definition would be an
+; unresolved forward reference at emit time (the SM-3 import-order wall). Routing a
+; non-`?`/`!` char through it — or ever calling sanitize-for-ir here — would rename
+; the compiler's own hyphenated symbols and break the byte-identical bootstrap
+; (§1.3). Fast path: a name with neither character is returned pointer-unchanged,
+; so non-`?`/`!` names are a strict no-op.
+(defn ir-name-token (name:ptr):ptr
+  (let (n:i64 (strlen name)
+        special:i32 0
+        i:i64 0)
+    (while (< i n)
+      (let (c:i32 (bit-and (as i32 (aref (as ptr:i8 name) i)) 255))
+        (when (or (= c 63) (= c 33)) (set! special 1)))
+      (set! i (+ i 1)))
+    (when (= special 0) (return name))
+    ; Sizing pass: `?`→6 bytes (_QMARK), `!`→5 bytes (_BANG), else 1.
+    (let (outn:i64 0
+          j:i64 0)
+      (while (< j n)
+        (let (c:i32 (bit-and (as i32 (aref (as ptr:i8 name) j)) 255))
+          (cond (= c 63) (set! outn (+ outn 6))
+                (= c 33) (set! outn (+ outn 5))
+                true     (set! outn (+ outn 1))))
+        (set! j (+ j 1)))
+      (let (s:ptr (arena-alloc (+ outn 1))
+            si:i64 0
+            k:i64 0)
+        (while (< k n)
+          (let (c:i32 (bit-and (as i32 (aref (as ptr:i8 name) k)) 255))
+            (cond (= c 63) (set! si (ir-name-append s si "_QMARK"))
+                  (= c 33) (set! si (ir-name-append s si "_BANG"))
+                  true     (do (aset! (as ptr:i8 s) si (unsafe/cast i8 c))
+                               (set! si (+ si 1)))))
+          (set! k (+ k 1)))
+        (aset! (as ptr:i8 s) si 0)
+        (return s)))))
+
+; SM-5 (design/stage14/symbol-mangling.md): a small reusable validity check for
+; a FINAL ir-name — the diagnostic backstop that catches any LLVM-illegal
+; character ir-name-token/sanitize-for-ir/sanitize-for-c don't already handle.
+; ir-name-token only special-cases `?`/`!`; the overloaded/mangled path and the
+; cheader path both end in a blanket sanitize (`[0-9a-zA-Z_.]` / `[A-Za-z0-9_]`
+; respectively) and can never emit anything illegal — this predicate exists for
+; the SOLITARY ir-name path (ns-ir-base / defn-ir-name's fallback / emit-defvar
+; / register-struct's ir-name), which applies only ir-name-token and nothing
+; else. LLVM's unquoted identifier body allows [A-Za-z0-9$._-] — hyphen IS
+; legal, never flag it (that's the whole point of SM-1's targeted-not-blanket
+; approach); `$` is also legal. A leading `@`/`%` SIGIL (present on strings some
+; callers pass whole, e.g. defn-ir-name's "@name") is skipped rather than
+; flagged — it isn't part of the identifier body being validated.
+; Returns the first illegal character code found (scanning after any leading
+; sigil), or -1 if `name` is entirely legal.
+(defn ir-name-illegal-char (name:ptr):i32
+  (let (n:i64 (strlen name)
+        i:i64 0)
+    (when (> n 0)
+      (let (c0:i32 (bit-and (as i32 (aref (as ptr:i8 name) 0)) 255))
+        (when (or (= c0 64) (= c0 37)) (set! i 1))))   ; skip @ or %
+    (while (< i n)
+      (let (c:i32 (bit-and (as i32 (aref (as ptr:i8 name) i)) 255)
+            is-digit:i1 (!= (isdigit c) 0)
+            is-lower:i1 (and (>= c 97) (<= c 122))
+            is-upper:i1 (and (>= c 65) (<= c 90))
+            is-safe:i1  (or (= c 95) (= c 46) (= c 36) (= c 45))  ; _ . $ -
+            ok:i1       (or is-digit is-lower is-upper is-safe))
+        (when (= ok 0) (return c)))
+      (set! i (+ i 1)))
+    (return -1)))

@@ -1,0 +1,20 @@
+; Stage 14 SM-3: fixture for the `sanitize-for-c` `?`/`!` type-name mapping.
+;
+; `?`/`!`-named struct/union TYPE names are unidiomatic (and their LLVM IR type
+; name `%Full?` is still SM-4 territory), but --emit-cheader must name the real
+; C-legal linkable spelling, not collapse `?`/`!` into a lossy `_`. This fixture
+; exercises all three sanitize-for-c call sites:
+;   * emit-cheader-defstruct — the typedef name (Full? → Full_QMARK, Push! → Push_BANG)
+;   * emit-cheader-defunion  — the union typedef name (Shape? → Shape_QMARK)
+;   * type-name-to-c         — a `struct <name>` reference in a param (Full? → Full_QMARK)
+; Compiled with --emit-cheader only (a syntactic walk that never emits the SM-4
+; `%Full?` IR type name).
+
+(defstruct Full? (n i32))
+
+(defstruct Push! (v i32))
+
+(defunion Shape? (circle (r i32)) (square (s i32)))
+
+(defn getn (f:ptr:Full?):i32
+  (return (_get f n)))

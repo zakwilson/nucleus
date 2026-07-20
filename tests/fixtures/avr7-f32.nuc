@@ -1,0 +1,3 @@
+; Stage 14 AVR-7: f32 is allowed on AVR (single-precision, libgcc-supported).
+(exclude-prelude)
+(defn idf (a:f32):f32 (return a))

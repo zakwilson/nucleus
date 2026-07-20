@@ -12,7 +12,7 @@
 (import-use hash)
 (import-use hashset)
 
-(defn main:i32 ()
+(defn main ():i32
 
   ; ----------------------------------------------------------------
   ; 1. Basic CStr insert / contains? / set-remove
@@ -23,11 +23,11 @@
     (insert s "dog")
     (insert s "cat")
     (insert s "fish")
-    (printf "count after 3 inserts: %llu\n" (cast ui64 (count s)))   ; 3
+    (printf "count after 3 inserts: %llu\n" (as ui64 (count s)))   ; 3
 
     ; Duplicate insert must not double-count.
     (insert s "dog")
-    (printf "count after dup insert: %llu\n" (cast ui64 (count s)))  ; 3
+    (printf "count after dup insert: %llu\n" (as ui64 (count s)))  ; 3
 
     (printf "contains dog: %d\n"  (contains? s "dog"))   ; 1
     (printf "contains cat: %d\n"  (contains? s "cat"))   ; 1
@@ -35,7 +35,7 @@
 
     ; Remove "cat" and verify count drops and lookup returns 0.
     (set-remove s "cat")
-    (printf "count after remove: %llu\n" (cast ui64 (count s)))     ; 2
+    (printf "count after remove: %llu\n" (as ui64 (count s)))     ; 2
     (printf "contains cat after remove: %d\n" (contains? s "cat"))  ; 0
     (printf "contains dog after remove: %d\n" (contains? s "dog"))) ; 1
 
@@ -48,7 +48,7 @@
     (hashset-init r)
     (insert r 1) (insert r 2) (insert r 3) (insert r 4) (insert r 5)
     (insert r 6) (insert r 7) (insert r 8) (insert r 9)
-    (printf "count after 9 inserts: %llu\n" (cast ui64 (count r)))  ; 9
+    (printf "count after 9 inserts: %llu\n" (as ui64 (count r)))  ; 9
     ; Spot-check a few members after resize.
     (printf "contains 1 after resize: %d\n" (contains? r 1))   ; 1
     (printf "contains 5 after resize: %d\n" (contains? r 5))   ; 1
@@ -72,7 +72,7 @@
       (hashset-init b)
       (insert b 3) (insert b 4) (insert b 5) (insert b 6)
       (union a b)
-      (printf "union count: %llu\n" (cast ui64 (count a)))       ; 6
+      (printf "union count: %llu\n" (as ui64 (count a)))       ; 6
       (printf "union has 1: %d\n" (contains? a 1))               ; 1
       (printf "union has 6: %d\n" (contains? a 6))               ; 1
       (printf "union has 7: %d\n" (contains? a 7))))             ; 0
@@ -85,7 +85,7 @@
       (hashset-init b)
       (insert b 3) (insert b 4) (insert b 5) (insert b 6)
       (intersection a b)
-      (printf "intersection count: %llu\n" (cast ui64 (count a))) ; 2
+      (printf "intersection count: %llu\n" (as ui64 (count a))) ; 2
       (printf "intersection has 3: %d\n" (contains? a 3))         ; 1
       (printf "intersection has 4: %d\n" (contains? a 4))         ; 1
       (printf "intersection has 1: %d\n" (contains? a 1))))       ; 0
@@ -98,7 +98,7 @@
       (hashset-init b)
       (insert b 3) (insert b 4) (insert b 5) (insert b 6)
       (difference a b)
-      (printf "difference count: %llu\n" (cast ui64 (count a)))  ; 2
+      (printf "difference count: %llu\n" (as ui64 (count a)))  ; 2
       (printf "difference has 1: %d\n" (contains? a 1))          ; 1
       (printf "difference has 2: %d\n" (contains? a 2))          ; 1
       (printf "difference has 3: %d\n" (contains? a 3))))        ; 0

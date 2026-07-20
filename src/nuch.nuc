@@ -17,59 +17,76 @@
 ; .nuch header emission
 ; ============================================================
 
-(defn emit-nuch-list:void (form:ptr)
+(defn emit-nuch-list (form:ptr):void
   (dotimes (i (node-len form))
-    (when (!= i 0) (fputc 32 (cast ptr stdout)))
+    (when (!= i 0) (fputc 32 (as ptr stdout)))
     (print-node (node-at form i))))
 
-(defn emit-nuch-defstruct:void (form:ptr)
+(defn emit-nuch-defstruct (form:ptr):void
   (printf "(defstruct ")
   (dotimes (i (- (node-len form) 1))
-    (when (!= i 0) (fputc 32 (cast ptr stdout)))
+    (when (!= i 0) (fputc 32 (as ptr stdout)))
     (print-node (node-at form (+ i 1))))
   (printf ")\n"))
 
-(defn emit-nuch-declare:void (form:ptr)
-  (printf "(declare ")
-  ; index 1 is name:rettype, index 2 is param list
-  (print-node (node-at form 1))
-  (printf " (")
+; Emit a new-style return operand for a .nuch declare/defmethod entry: ` :spell`
+; for a scalar / colon-chain type (a NODE-SYM after defn-ret-node normalization,
+; whose `s` carries the full colon spelling), or ` (T…)` for a parenthesised list
+; type (NODE-CELL). The leading space keeps it space-separated from the params —
+; exactly as the verbatim template export space-separates its ` :T` via print-node.
+; Style-agnostic: defn-ret-node recovers the return from either signature style.
+(defn emit-nuch-ret (form:ptr):void
+  (let (rn:ptr (defn-ret-node form))
+    (when (= rn null) (return))
+    (let (rnn:ptr:Node (as ptr:Node rn))
+      (if (= (rnn kind) NODE-CELL)
+        (do (fputc 32 (as ptr stdout)) (print-node rn))
+        (printf " :%s" (rnn s))))))
+
+; S3: a .nuch header names functions in the new signature style — `NAME (params)
+; :ret` — matching every rewritten source form. Both signature styles funnel
+; through the bare name (defn-name-only) + normalized return (emit-nuch-ret), so a
+; still-legacy source (e.g. an unmigrated import) exports the same new-style entry.
+(defn emit-nuch-declare (form:ptr):void
+  (printf "(declare %s (" (defn-name-only (node-at form 1)))
   (let (params:ptr (node-at form 2))
     (dotimes (i (node-len params))
-      (when (!= i 0) (fputc 32 (cast ptr stdout)))
+      (when (!= i 0) (fputc 32 (as ptr stdout)))
       (print-node (node-at params i))))
-  (printf "))\n"))
+  (printf ")")
+  (emit-nuch-ret form)
+  (printf ")\n"))
 
-(defn emit-nuch-defconst:void (form:ptr)
+(defn emit-nuch-defconst (form:ptr):void
   (printf "(defconst ")
   (print-node (node-at form 1))
   (printf " ")
   (print-node (node-at form 2))
   (printf ")\n"))
 
-(defn emit-nuch-defenum:void (form:ptr)
+(defn emit-nuch-defenum (form:ptr):void
   (printf "(defenum")
   (dotimes (i (- (node-len form) 1))
-    (fputc 32 (cast ptr stdout))
+    (fputc 32 (as ptr stdout))
     (print-node (node-at form (+ i 1))))
   (printf ")\n"))
 
-(defn emit-nuch-defmacro:void (form:ptr)
+(defn emit-nuch-defmacro (form:ptr):void
   (print-node form)
   (printf "\n"))
 
 ; Export one overloaded method, carrying its mangled symbol explicitly so the
-; importer can declare it and register it for dispatch:
-;   (defmethod "@area.pCircle" area:i32 ((c (ptr Circle))))
-(defn emit-nuch-defmethod:void (form:ptr mangled:ptr)
-  (printf "(defmethod \"%s\" " mangled)
-  (print-node (node-at form 1))
-  (printf " (")
+; importer can declare it and register it for dispatch (new-style signature):
+;   (defmethod "@area.pCircle" area ((c (ptr Circle))) :i32)
+(defn emit-nuch-defmethod (form:ptr mangled:ptr):void
+  (printf "(defmethod \"%s\" %s (" mangled (defn-name-only (node-at form 1)))
   (let (params:ptr (node-at form 2))
     (dotimes (i (node-len params))
-      (when (!= i 0) (fputc 32 (cast ptr stdout)))
+      (when (!= i 0) (fputc 32 (as ptr stdout)))
       (print-node (node-at params i))))
-  (printf "))\n"))
+  (printf ")")
+  (emit-nuch-ret form)
+  (printf ")\n"))
 
 ; A solitary function exports as a plain (declare ...); an overloaded one
 ; exports a (defmethod ...) per method so each keeps its distinct symbol. A
@@ -79,7 +96,7 @@
 ; tyvars, so defn-form-mangled-name's concrete param-type parse would die
 ; `unknown type: T`. defn-is-generic-template is the same predicate the prescan
 ; and emit-defn skip consult, so the three never disagree.
-(defn emit-nuch-defn:void (form:ptr)
+(defn emit-nuch-defn (form:ptr):void
   (when (!= (defn-is-generic-template form) 0)
     (print-node form)
     (printf "\n")
@@ -91,7 +108,7 @@
 
 ; Protocols and conformances export verbatim — the importer re-registers them
 ; (and trusts the recorded conformance rather than re-checking).
-(defn emit-nuch-defprotocol:void (form:ptr)
+(defn emit-nuch-defprotocol (form:ptr):void
   (print-node form)
   (printf "\n"))
 
@@ -103,28 +120,28 @@
 ; own unit (register-imported-conformance → emit-extend). For a `&where`-free
 ; extend (node-len == 3) this prints `(extend Subject Protocol)`, byte-identical
 ; to the previous subject+protocol-only emission.
-(defn emit-nuch-extend:void (form:ptr)
+(defn emit-nuch-extend (form:ptr):void
   (printf "(extend")
   (dotimes (i (- (node-len form) 1))
-    (fputc 32 (cast ptr stdout))
+    (fputc 32 (as ptr stdout))
     (print-node (node-at form (+ i 1))))
   (printf ")\n"))
 
 ; Cast rules export verbatim (the conv-fn is exported separately as a declare,
 ; which must precede this form in the header). The importer re-runs emit-defcast.
-(defn emit-nuch-defcast:void (form:ptr)
+(defn emit-nuch-defcast (form:ptr):void
   (print-node form)
   (printf "\n"))
 
 ; A module's top-level globals export as `extern` so importers see the symbol
 ; without its initializer (the producing module owns the definition). Index 1 is
 ; the desugared name:type node; any initializer is intentionally dropped.
-(defn emit-nuch-extern:void (form:ptr)
+(defn emit-nuch-extern (form:ptr):void
   (printf "(extern ")
   (print-node (node-at form 1))
   (printf ")\n"))
 
-(defn emit-nuch-header:void (forms:ptr source-file:ptr)
+(defn emit-nuch-header (forms:ptr source-file:ptr):void
   ; Stage 12 N6: a leading `(ns NAME)` / `set-ir-prefix` must take effect BEFORE
   ; the prescans, exactly as emit-toplevel-forms does it, so finalize-generics
   ; (called at the end of prescan-defn-signatures) bakes the namespace-mangled
@@ -155,28 +172,28 @@
         (printf "(set-ir-prefix \"%s\")\n" override))))
   (let (it:ListIter (list-iter forms))
     (doseq-iter (fc (addr-of it))
-      (let (f:ptr:Node (cast ptr:Node fc))
-        (when (and (!= (cast ptr f) null)
+      (let (f:ptr:Node (unsafe/cast ptr:Node fc))
+        (when (and (!= (as ptr f) null)
                    (= (f kind) NODE-CELL)
-                   (> (node-len (cast ptr f)) 0)
-                   (-> f (node-at _ 0) (cast ptr:Node _) (_ kind) (= _ NODE-SYM)))
-          (let (h:ptr (-> f (node-at _ 0) (cast ptr:Node _) (_ s)))
+                   (> (node-len (as ptr f)) 0)
+                   (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ kind) (= _ NODE-SYM)))
+          (let (h:ptr (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ s)))
             (case h
-              "defstruct"    (emit-nuch-defstruct (cast ptr f))
+              "defstruct"    (emit-nuch-defstruct (as ptr f))
               ; defunion exports verbatim (template or monomorphic); the
               ; importer registers the type and declares the constructors.
-              "defunion"     (do (print-node (cast ptr f)) (printf "\n"))
-              "defn"         (emit-nuch-defn (cast ptr f))
-              "defprotocol"  (emit-nuch-defprotocol (cast ptr f))
-              "extend"       (emit-nuch-extend (cast ptr f))
-              "defcast"      (emit-nuch-defcast (cast ptr f))
-              "defvar"       (emit-nuch-extern (cast ptr f))
-              "defconst"     (emit-nuch-defconst (cast ptr f))
+              "defunion"     (do (print-node (as ptr f)) (printf "\n"))
+              "defn"         (emit-nuch-defn (as ptr f))
+              "defprotocol"  (emit-nuch-defprotocol (as ptr f))
+              "extend"       (emit-nuch-extend (as ptr f))
+              "defcast"      (emit-nuch-defcast (as ptr f))
+              "defvar"       (emit-nuch-extern (as ptr f))
+              "defconst"     (emit-nuch-defconst (as ptr f))
               ; deferror exports verbatim; the importer re-registers it, getting
               ; a fresh id in its own dense order (ids are per-build).
-              "deferror"     (do (print-node (cast ptr f)) (printf "\n"))
-              "defenum"      (emit-nuch-defenum (cast ptr f))
-              "defmacro"     (emit-nuch-defmacro (cast ptr f))
+              "deferror"     (do (print-node (as ptr f)) (printf "\n"))
+              "defenum"      (emit-nuch-defenum (as ptr f))
+              "defmacro"     (emit-nuch-defmacro (as ptr f))
               0)))))))
 
 ; ============================================================
@@ -184,16 +201,16 @@
 ; ============================================================
 
 ; Generic string helper used by do-import's extension dispatch (.nuc/.nuch).
-(defn str-ends-with:i32 (s:ptr suffix:CStr)
-  (let (slen:i64 (cast i64 (strlen s))
-        suflen:i64 (cast i64 (strlen suffix)))
+(defn str-ends-with (s:CStr suffix:CStr):i32
+  (let (slen:i64 (as i64 (strlen s))
+        suflen:i64 (as i64 (strlen suffix)))
     (when (> suflen slen) (return 0))
-    (when (= (ptr+ (cast ptr:i8 s) (- slen suflen)) suffix)
+    (when (= (unsafe/ptr+ (as ptr:i8 s) (- slen suflen)) suffix)
       (return 1))
     (return 0)))
 
-(defn emit-nuch-declare-import:void (form:ptr)
-  (let (ff:ptr:Node (cast ptr:Node form))
+(defn emit-nuch-declare-import (form:(raw Node)):void
+  (let (ff:ptr:Node (unsafe/cast ptr:Node form))
     ; Stage 10 Phase F1: an optional trailing `noreturn` keyword (carried
     ; verbatim by desugar) marks the declared/extern function as never
     ; returning — e.g. (declare repl_throw:void () noreturn). eff-len is the
@@ -204,21 +221,36 @@
       (when (>= (node-len form) 3)
         (let (last:ptr (node-at form (- (node-len form) 1)))
           (when (and (!= last null)
-                     (= (-> last (cast ptr:Node _) (_ kind)) NODE-SYM)
-                     (= (-> last (cast ptr:Node _) (_ s)) "noreturn"))
+                     (= (-> last (unsafe/cast ptr:Node _) (_ kind)) NODE-SYM)
+                     (= (-> last (unsafe/cast ptr:Node _) (_ s)) "noreturn"))
             (set! is-noreturn 1)
             (set! eff-len (- eff-len 1)))))
-      (when (or (< eff-len 2) (> eff-len 3))
-        (die-at (ff line) "declare: expected (declare name:rettype (params...))"))
+      ; A new-style declare `(declare name (params) :rettype [noreturn])` has a
+      ; bare name and the return operand at index 3 (eff-len 4). Both the toplevel
+      ; `declare` form (desugared) and .nuch imports reach here; as of S3 the .nuch
+      ; writer emits new-style, so every well-formed input takes the bare-name path.
+      ; S4: the legacy `(declare name:ret [(params)])` shape is retired — detection
+      ; (sig-name-is-bare) stays so the diagnostic can quote the name and say what
+      ; moved.
       (let (name-node:ptr (node-at form 1)
+            ndi-new:i32 (sig-name-is-bare (node-at form 1))
             params-node:ptr null)
-        (when (= eff-len 3)
-          (set! params-node (node-at form 2)))
+        (if (!= ndi-new 0)
+          (do
+            (when (!= eff-len 4)
+              (die-at (ff line) "declare: expected (declare name (params) :rettype)"))
+            (set! params-node (node-at form 2)))
+          (die-at (ff line)
+            (fmt-2s "declare '%s': legacy 'name:ret' syntax is no longer supported — write (declare %s (params) :ret)"
+                    (defn-name-only name-node) (defn-name-only name-node))))
         (let (fname:ptr null
-              ret:ptr (extract-name-and-type name-node (cast ptr:ptr (addr-of fname))
-                                              ((cast ptr:Node name-node) line)))
+              ret:ptr (if (!= ndi-new 0)
+                        (fn-parse-ret-type (node-at form 3) (ff line))
+                        (extract-name-and-type name-node (as ptr:ptr (addr-of fname))
+                                               ((as ptr:Node name-node) line))))
+          (when (!= ndi-new 0) (set! fname (-> name-node (unsafe/cast ptr:Node _) (_ s))))
           (when (= ret null)
-            (die-at ((cast ptr:Node name-node) line) (fmt-s "declare: missing :type on '%s'" fname)))
+            (die-at ((as ptr:Node name-node) line) (fmt-s "declare: missing :type on '%s'" fname)))
           ; Skip if already defined (e.g. from include or c-include)
           (when (!= (scope-lookup g-globals fname) null) (return))
           (let (nparams:i32 0
@@ -226,19 +258,18 @@
           (when (!= params-node null)
             (set! nparams (node-len params-node)))
           (when (> nparams 0)
-            (set! ptypes (arena-alloc (* (cast i64 nparams) (ptr-bytes)))))
+            (set! ptypes (arena-alloc (* (as i64 nparams) (ptr-bytes)))))
           (dotimes (j nparams)
             (let (p:ptr (node-at params-node j)
                   pn:ptr null
-                  pty:ptr (extract-name-and-type p (cast ptr:ptr (addr-of pn))
-                                                  ((cast ptr:Node p) line)))
+                  pty:ptr (extract-name-and-type p (as ptr:ptr (addr-of pn))
+                                                  ((as ptr:Node p) line)))
               (if (!= pty null)
-                (aset! (cast ptr:ptr ptypes) j pty)
-                (aset! (cast ptr:ptr ptypes) j ty-i32))))
-          (let (ft:ptr:Type (cast ptr:Type (make-type TY-FN)))
+                (aset! (as ptr:ptr ptypes) j pty)
+                (aset! (as ptr:ptr ptypes) j ty-i32))))
+          (let (ft:ptr:Type (as ptr:Type (make-type TY-FN)))
             (.set! ft ret ret)
-            (.set! ft num-params nparams)
-            (.set! ft params ptypes)
+            (type-set-params ft ptypes nparams)
             (.set! ft variadic 0)
             ; Stage 12 N6: a solitary symbol from a namespaced header re-resolves
             ; to its mangled link name. The header's leading `(ns NAME)` has set
@@ -248,23 +279,23 @@
             ; against g-current-ns (`geom/area`) independently. Identity under
             ; `user`, so non-namespaced headers stay byte-identical.
             (let (link-ir:ptr (fmt-s "@%s" (ns-ir-base fname)))
-            (let (dsym:ref:Sym (scope-define g-globals fname (cast ptr ft)
+            (let (dsym:ref:Sym (scope-define g-globals fname (as ptr ft)
                                 link-ir 0))
-              (when (!= is-noreturn 0) (.set! (cast ptr:Sym dsym) noreturn 1)))
+              (when (!= is-noreturn 0) (.set! (as ptr:Sym dsym) noreturn 1)))
             ; Emit LLVM declare, lowering struct-by-value params/return to the
             ; platform C ABI (sret / byval / register coercion) just like a defn.
-            (let (ret-info:ptr:AbiInfo (cast ptr:AbiInfo (abi-classify ret)))
+            (let (ret-info:ptr:AbiInfo (unsafe/cast ptr:AbiInfo (abi-classify ret)))
               (fprintf g-out "declare %s %s(" (abi-ret-ir ret-info ret) link-ir)
               (let (need-comma:i32 0)
-                (when (= ((cast ptr:AbiInfo ret-info) kind) ABI-MEMORY)
+                (when (= ((as ptr:AbiInfo ret-info) kind) ABI-MEMORY)
                   (fprintf g-out "ptr sret(%s) align %d"
-                    (type-to-ir ret) ((cast ptr:AbiInfo ret-info) align))
+                    (type-to-ir ret) ((as ptr:AbiInfo ret-info) align))
                   (set! need-comma 1))
                 (dotimes (j nparams)
                   (when (!= need-comma 0) (fprintf g-out ", "))
                   (abi-print-param
-                   (abi-classify (aref (cast ptr:ptr ptypes) j))
-                   (aref (cast ptr:ptr ptypes) j)
+                   (abi-classify (aref (as ptr:ptr ptypes) j))
+                   (aref (as ptr:ptr ptypes) j)
                    null)
                   (set! need-comma 1)))
               ; Stage 10 Phase F1: trailing LLVM `noreturn` function attribute.
@@ -275,79 +306,84 @@
 ; Import one exported overloaded method: register it (with its mangled symbol)
 ; in the generic registry so calls in the importing unit dispatch to it, and
 ; emit an LLVM declare under the mangled symbol (resolved at link time).
-(defn emit-nuch-defmethod-import:void (form:ptr)
-  (let (ff:ptr:Node (cast ptr:Node form))
-    (when (!= (node-len form) 4)
-      (die-at (ff line) "defmethod: expected (defmethod \"@sym\" name:rettype (params...))"))
-    (let (sym-node:ptr:Node (cast ptr:Node (node-at form 1))
-          name-node:ptr (node-at form 2)
+(defn emit-nuch-defmethod-import (form:(raw Node)):void
+  (let (ff:ptr:Node (unsafe/cast ptr:Node form))
+    ; S3: new-style entry `(defmethod "@sym" NAME (params) :ret)` — the mangled
+    ; symbol (1), a bare name (2), the params (3) and the return operand (4).
+    (when (!= (node-len form) 5)
+      (die-at (ff line) "defmethod: expected (defmethod \"@sym\" name (params...) :ret)"))
+    (let (sym-node:ptr:Node (unsafe/cast ptr:Node (node-at form 1))
+          name-node:ptr:Node (unsafe/cast ptr:Node (node-at form 2))
           params-node:ptr (node-at form 3))
       (when (!= (sym-node kind) NODE-STR)
         (die-at (sym-node line) "defmethod: first element must be the mangled symbol string"))
       (let (mangled:ptr (sym-node s)
-            fname:ptr null
-            ret:ptr (extract-name-and-type name-node (cast ptr:ptr (addr-of fname))
-                                            ((cast ptr:Node name-node) line)))
+            fname:ptr (name-node s)
+            ret:ptr (fn-parse-ret-type (node-at form 4) (ff line)))
         (when (= ret null)
-          (die-at ((cast ptr:Node name-node) line) "defmethod: missing return type"))
+          (die-at (ff line) "defmethod: missing return type"))
         (let (nparams:i32 (defn-params-count params-node)
               ptypes:ptr (defn-params-to-types params-node)
               has-rest:i32 (if (< (defn-params-count params-node)
                                   (node-len params-node)) 1 0)
               m:ptr (generic-register-method fname ret ptypes nparams has-rest 0 null))
-          (.set! (cast ptr:Method m) ir-name mangled)
+          (.set! (as ptr:Method m) ir-name mangled)
           (let (g:ptr (generic-lookup fname))
-            (.set! (cast ptr:Generic g) mangled 1)
-            (.set! (cast ptr:Generic g) finalized 1))
+            (.set! (as ptr:Generic g) mangled 1)
+            (.set! (as ptr:Generic g) finalized 1))
           (fprintf g-out "declare %s %s(" (type-to-ir ret) mangled)
           (dotimes (j nparams)
             (when (!= j 0) (fprintf g-out ", "))
-            (fprintf g-out "%s" (type-to-ir (aref (cast ptr:ptr ptypes) j))))
+            (fprintf g-out "%s" (type-to-ir (aref (as ptr:ptr ptypes) j))))
           (fprintf g-out ")\n"))))))
 
 ; A defunion arriving via .nuch: register the type (or template) exactly as
 ; the defining unit did, but emit `declare`s for the arm constructors — their
 ; definitions live in the exporting unit's object file.
-(defn emit-defunion-import:void (form:ptr)
-  (let (ff:ptr:Node (cast ptr:Node form))
+(defn emit-defunion-import (form:(raw Node)):void
+  (let (ff:ptr:Node (unsafe/cast ptr:Node form))
     (when (< (node-len ff) 3)
       (die-at (ff line) "defunion: expects a name and at least one arm"))
-    (let (name-node:ptr:Node (cast ptr:Node (node-at form 1)))
-      (when (= (name-node kind) NODE-CELL)
-        (register-union-template (cast ptr ff))
-        (return))
-      (when (!= (name-node kind) NODE-SYM)
-        (die-at (name-node line) "defunion: name must be a symbol"))
-      (when (!= (uniondef-lookup (name-node s)) null) (return))
-      (guard-name-kind (name-node s) (ff line) NK-TYPE)
-      (let (arms:ptr (-> ff (_ cdr) (cast ptr:Node _) (_ cdr)))
-        (defunion-register (name-node s) arms (ff line))
-        ; Constructor declares: (declare Name-arm:Name (fields...)).
-        (let (saved-out:ptr g-out)
-          (set! g-out g-decl-stream)
-          (let (it:ListIter (list-iter arms))
-            (doseq-iter (cur (addr-of it))
-              (let (ctor:ptr:Node (cast ptr:Node
-                                     (union-ctor-form (name-node s)
-                                                      cur (ff line))))
-                ; Reshape the synthesized defn into a declare: same name node,
-                ; same params, no body.
-                (emit-nuch-declare-import
-                  (make-cell (cast ptr 'declare)
-                    (make-cell (node-at (cast ptr ctor) 1)
-                      (make-cell (node-at (cast ptr ctor) 2) null (ff line))
-                      (ff line))
-                    (ff line))))))
-          (set! g-out saved-out))))))
+    (let (name-node:ptr:Node (unsafe/cast ptr:Node (node-at form 1)))
+      (case (name-node kind)
+        NODE-CELL
+          (do (register-union-template (as ptr ff)) (return))
+        NODE-SYM
+          (do
+            (when (!= (uniondef-lookup (name-node s)) null) (return))
+            (guard-name-kind (name-node s) (ff line) NK-TYPE)
+            (let (arms:ptr (-> ff (_ cdr) (unsafe/cast ptr:Node _) (_ cdr)))
+              (defunion-register (name-node s) arms (ff line))
+              ; Constructor declares: (declare Name-arm:Name (fields...)).
+              (let (saved-out:ptr g-out)
+                (set! g-out g-decl-stream)
+                (let (it:ListIter (list-iter arms))
+                  (doseq-iter (cur (addr-of it))
+                    (let (ctor:ptr:Node (as ptr:Node
+                                           (union-ctor-form (name-node s)
+                                                            cur (ff line))))
+                      ; Reshape the synthesized new-style defn into a new-style declare:
+                      ; same bare name (1), same params (2), same return operand (3), no
+                      ; body — `(declare NAME (params) RET)`.
+                      (emit-nuch-declare-import
+                        (make-cell (as ptr 'declare)
+                          (make-cell (node-at (as ptr ctor) 1)
+                            (make-cell (node-at (as ptr ctor) 2)
+                              (make-cell (node-at (as ptr ctor) 3) null (ff line))
+                              (ff line))
+                            (ff line))
+                          (ff line))))))
+                (set! g-out saved-out))))
+        (die-at (name-node line) "defunion: name must be a symbol")))))
 
-(defn emit-nuch-import-forms:void (forms:ptr)
+(defn emit-nuch-import-forms (forms:(raw Node)):void
   (let (it:ListIter (list-iter forms))
     (doseq-iter (fc (addr-of it))
-      (let (f:ptr:Node (cast ptr:Node fc))
-        (when (and (!= (cast ptr f) null) (= (f kind) NODE-CELL)
-                   (> (node-len (cast ptr f)) 0)
-                   (-> f (node-at _ 0) (cast ptr:Node _) (_ kind) (= _ NODE-SYM)))
-          (let (h:ptr (-> f (node-at _ 0) (cast ptr:Node _) (_ s)))
+      (let (f:ptr:Node (unsafe/cast ptr:Node fc))
+        (when (and (!= (as ptr f) null) (= (f kind) NODE-CELL)
+                   (> (node-len (as ptr f)) 0)
+                   (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ kind) (= _ NODE-SYM)))
+          (let (h:ptr (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ s)))
             (case h
               ; Stage 12 N6: a namespaced library's header opens with `(ns NAME)`
               ; (and optionally `(set-ir-prefix ...)`). Honor them so the importer
@@ -357,38 +393,38 @@
               ; set it to `user` for this unit, restoring it afterward, so the
               ; namespace state is scoped to the header and never leaks.
               "ns"
-                (emit-ns (cast ptr f))
+                (emit-ns (as ptr f))
               "set-ir-prefix"
-                (emit-set-ir-prefix (cast ptr f))
+                (emit-set-ir-prefix (as ptr f))
               "defstruct"
-                (do (set! g-out g-type-stream) (emit-defstruct (cast ptr f)))
+                (do (set! g-out g-type-stream) (emit-defstruct (as ptr f)))
               "defunion"
-                (do (set! g-out g-type-stream) (emit-defunion-import (cast ptr f)))
+                (do (set! g-out g-type-stream) (emit-defunion-import (as ptr f)))
               "declare"
-                (do (set! g-out g-decl-stream) (emit-nuch-declare-import (cast ptr f)))
+                (do (set! g-out g-decl-stream) (emit-nuch-declare-import (as ptr f)))
               "defmethod"
-                (do (set! g-out g-decl-stream) (emit-nuch-defmethod-import (cast ptr f)))
+                (do (set! g-out g-decl-stream) (emit-nuch-defmethod-import (as ptr f)))
               "defn"
                 ; Only bounded-generic templates are exported as whole defns;
                 ; register (exporter-verified, so trusted) so calls in this
                 ; unit can instantiate them.
-                (register-generic-defn (cast ptr f) 1)
+                (register-generic-defn (as ptr f) 1)
               "defprotocol"
-                (protocol-register-form (cast ptr f))
+                (protocol-register-form (as ptr f))
               "extend"
-                (register-imported-conformance (cast ptr f))
+                (register-imported-conformance (as ptr f))
               "defcast"
-                (emit-defcast (cast ptr f))
+                (emit-defcast (as ptr f))
               "extern"
-                (do (set! g-out g-decl-stream) (emit-extern (cast ptr f)))
+                (do (set! g-out g-decl-stream) (emit-extern (as ptr f)))
               "defconst"
-                (emit-defconst (cast ptr f))
+                (emit-defconst (as ptr f))
               "defenum"
-                (emit-defenum (cast ptr f))
+                (emit-defenum (as ptr f))
               "defmacro"
-                (emit-defmacro (cast ptr f))
+                (emit-defmacro (as ptr f))
               "def-rmacro"
-                (emit-def-rmacro (cast ptr f))
+                (emit-def-rmacro (as ptr f))
               0)))))
   ; Finalize any newly-imported generic templates so their names dispatch
   ; through the registry (imported concrete methods finalize themselves).

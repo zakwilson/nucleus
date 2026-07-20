@@ -1,0 +1,64 @@
+; Stage 14 SM-1 — user function names may contain `?` and `!`. The compiler maps
+; each `?` to `_QMARK` and each `!` to `_BANG` in the emitted LLVM symbol (every
+; other character, hyphens included, passes through unchanged), giving user names
+; full parity with the builtins `set!`, `empty?`, `contains?`. Before SM-1 a plain
+; `(defn full?:i32 …)` emitted `define i32 @full?(…)` — invalid LLVM IR that failed
+; at the object/link step with no source-level error.
+;
+; This exercises the four naming paths the fix routes through `ir-name-token`:
+;   - a plain solitary `defn` with a `?` name        → full?   (solitary path)
+;   - a plain solitary `defn` with a `!` name        → push!   (solitary path)
+;   - an OVERLOADED `?` name (two receiver types)     → zeroed?   (op-name-token /
+;                                                        mangled path)
+;   - a SINGLE-CONFORMER protocol `?` method          → blank?  (solitary path —
+;                                                        the exact shape that used
+;                                                        to need the _StrMangleShim
+;                                                        dummy conformer)
+
+(import-use "stdio.h")
+
+; --- plain solitary defns: one `?`, one `!` ---
+(defn full? (n:i32):i32
+  (if (>= n 100) (return 1) (return 0)))
+
+(defn push! (x:i32):i32
+  (return (+ x 1)))
+
+; --- overloaded `?`-named method: two distinct receiver structs share `zeroed?`,
+;     forcing the mangled (op-name-token) path. ---
+(defstruct Meters v:i32)
+(defstruct Seconds v:i32)
+
+(defn zeroed? ((self (ref Meters))):i32
+  (if (= (self v) 0) (return 1) (return 0)))
+(defn zeroed? ((self (ref Seconds))):i32
+  (if (= (self v) 0) (return 1) (return 0)))
+
+; --- single-conformer protocol method with a `?` name: exactly the shape that
+;     used to require the _StrMangleShim dummy conformer. Now honest on the
+;     solitary path. ---
+(defprotocol Blankable
+  (blank? ((self (ref Self))) i32))
+
+(defstruct Label text:i32)   ; 0 = blank, nonzero = has text
+(extend Label Blankable)
+(defn blank? ((self (ref Label))):i32
+  (if (= (self text) 0) (return 1) (return 0)))
+
+(defn main ():i32
+  (printf "full? 150 = %d\n" (full? 150))       ; 1
+  (printf "full? 50 = %d\n" (full? 50))         ; 0
+  (printf "push! 41 = %d\n" (push! 41))         ; 42
+
+  (let (m:(ref Meters) (Meters 0)
+        s:(ref Seconds) (Seconds 7))
+    (printf "zeroed? meters(0) = %d\n" (zeroed? m))    ; 1
+    (printf "zeroed? seconds(7) = %d\n" (zeroed? s)))  ; 0
+
+  (let (blank-label:(ref Label) (Label 0)
+        named-label:(ref Label) (Label 5))
+    (printf "blank? empty = %d\n" (blank? blank-label))   ; 1
+    (printf "blank? named = %d\n" (blank? named-label)))  ; 0
+
+  (printf "done\n")
+  (return 0))

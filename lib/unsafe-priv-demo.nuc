@@ -1,0 +1,12 @@
+; Stage 14 UN-2 demo library (design/stage14/unsafe-namespace.md): a public and
+; a private symbol, used by examples/unsafe-spellings.nuc to exercise
+; `unsafe/import-private` pulling the private symbol in under a prefix — a
+; plain `import-prefixed` would skip it (private symbols are filtered in
+; inject-import-aliases, src/nucleusc.nuc, unless g-import-include-private is
+; set, which only `unsafe-import-private`/`unsafe/import-private` do).
+
+(defn pub-double (x:i32):i32
+  (return (* x 2)))
+
+(defn- priv-secret ():i32
+  (return 99))

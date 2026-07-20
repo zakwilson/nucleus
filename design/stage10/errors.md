@@ -519,7 +519,7 @@ mechanism), so there is no collision with `!=` — `!=` never occurs where a
 type is parsed. The sugar is not just brevity: `name:(Result Config Err)`
 does not parse (the U3 limitation on parenthesized types in colon
 positions), while `name:!Config` does, so `!T` is what makes Result returns
-usable in ordinary signatures.
+usable in ordinary signatures. *(Superseded 2026-07-02 by [stage14/colon-paren-types.md](../stage14/colon-paren-types.md) — `name:(Result Config Err)` now parses via the colon-paren fuse; `!` remains the terser spelling.)*
 
 One deliberate asymmetry, flagged for sign-off (§13): `?T` injects `(ref …)`
 (its historical pointer-only meaning) while `!T` takes T as written — A1's

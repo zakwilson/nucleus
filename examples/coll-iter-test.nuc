@@ -22,7 +22,7 @@
 (import-use hashset)
 (import-use hashmap)
 
-(defn main:i32 ()
+(defn main ():i32
   ; ---- 1. Vector via generic doseq ---------------------------------------
   (with ((v (ref (Vector i32))) (alloca (Vector i32)))
     (vector-init v)

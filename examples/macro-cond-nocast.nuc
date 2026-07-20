@@ -1,0 +1,49 @@
+; MC-3 (design/stage14/macro-conditional-casts.md): macros whose bodies branch
+; on argument shape no longer need casts. Macro params are already (raw Node),
+; quasiquote/gensym results are (raw Node) (MC-2), and a value-position cond/if
+; join absorbs an elem-less bare pointer (null, bare quote) into the typed side
+; (MC-1). So a castless shape-dispatching macro compiles and runs.
+
+(import-use "stdio.h")
+
+; 1. Castless variadic operator — mirrors the now-castless + / * in lib/macros.nuc.
+;    The single-arg base case returns the bare macro param `(args car)`, a
+;    (raw Node), joined with the quasiquote branches (also (raw Node)) — no cast.
+(defmacro sum (&rest args)
+  (cond (= args null)
+          `0
+        (= (args cdr) null)
+          (args car)
+        true
+          `(_+ ~(args car) (sum ~@(args cdr)))))
+
+; 2. Castless (if … (n cdr) null) slot init: bind `tail` to the argument form's
+;    cdr when it is a cell, else null. (raw Node) ⊔ null absorbs to (raw Node)
+;    (MC-1), so the local needs no cast. Dispatch on whether the tail is empty.
+(defmacro tail-tag (form)
+  (let ((tail (raw Node)) (if (= (form kind) NODE-CELL) (form cdr) null))
+    (if (= tail null)
+      `(printf "no-tail\n")
+      `(printf "has-tail\n"))))
+
+; 3. Shape-dispatching macro (tprint-style), castless: dispatch on the literal
+;    KIND of the argument. `(x kind)` needs no (cast ptr:Node …); the quasiquote
+;    branches all join as (raw Node).
+(defmacro describe (x)
+  (cond (= (x kind) NODE-INT)   `(printf "int %d\n" ~x)
+        (= (x kind) NODE-STR)   `(printf "str %s\n" ~x)
+        (= (x kind) NODE-FLOAT) `(printf "float %f\n" ~x)
+        true                    `(printf "other\n")))
+
+(defn main ():int
+  (printf "%d\n" (sum))              ; 0   — empty
+  (printf "%d\n" (sum 7))            ; 7   — single-arg base case (no cast)
+  (printf "%d\n" (sum 1 2 3 4))      ; 10  — right-folded _+
+  (tail-tag x)                       ; no-tail  — symbol form, kind != NODE-CELL
+  (tail-tag (a))                     ; no-tail  — cell with empty cdr
+  (tail-tag (a b))                   ; has-tail — cell with non-empty cdr
+  (describe 42)                      ; int 42
+  (describe "hi")                    ; str hi
+  (describe 2.5)                     ; float 2.500000
+  (describe (1 2))                   ; other    — default branch
+  (return 0))

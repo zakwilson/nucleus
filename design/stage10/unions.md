@@ -269,6 +269,7 @@ union/niche cases in the `tests/layout/` C-oracle corpus. Implementation notes:
 - The `name:(Type args)` colon sugar does not parse for parenthesized types;
   binding positions use the list form: `(defn (f (Result i64 i32)) ...)`,
   `(let ((r (Result i64 i32)) init) ...)`.
+  *(Superseded 2026-07-02 by [stage14/colon-paren-types.md](../stage14/colon-paren-types.md) — the colon-paren and colon-chain sugars now parse; `name:(Type …)` and `name:ref:(Type …)` both work.)*
 - §7 Drop: v1 rejects an owning `with` binding of a union with
   Drop-conforming arm payloads unless the union itself conforms to Drop
   (`union-drop-arm` / the check in `emit-with`); the compiler-emitted

@@ -25,12 +25,12 @@
 
 ; Value-keyed lookup: a parametric (METHOD-GENERIC) `get` returning (Maybe V).
 ; Reached only for computed/value selectors via emit-get-with-callee Branch B.
-(defn (get (Maybe V)) ((self (ref (Bag K V))) key:K)
+(defn get ((self (ref (Bag K V))) key:K) (Maybe V)
   (if (and (!= (self has) 0) (= (self key) key))
     (return (some (self val)))
     (return none)))
 
-(defn main:i32 ()
+(defn main ():i32
   ; --- CStr key: value selector -> generic get ---
   (let ((sbag (ref (Bag CStr i32))) (alloca (Bag CStr i32)))
     (.set! sbag key "hello")

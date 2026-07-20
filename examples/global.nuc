@@ -2,11 +2,11 @@
 
 (import-use "stdio.h")
 
-(defn bump:int ()
+(defn bump ():int
   (set! counter (+ counter 1))
   (return counter))
 
-(defn main:int ()
+(defn main ():int
   (printf "%d\n" (bump))
   (printf "%d\n" (bump))
   (printf "%d\n" (bump))

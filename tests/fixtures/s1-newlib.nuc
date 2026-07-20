@@ -1,0 +1,29 @@
+; Stage 14 defn-signature.md S1 — fixture for the new-style cross-unit round-trip.
+;
+; An entirely new-style `(defn NAME (params):ret body…)` library. tests/run-tests.sh
+; compiles it to a .nuch header and an object, then links a consumer that imports the
+; .nuch by path — proving new-style solitary defns export as (declare …), an
+; overloaded pair as (defmethod …), and a bounded-generic template verbatim, and that
+; the importer re-derives symbols that match the lib object at link time.
+
+; A local Ord capability so the template is self-contained across the .nuch.
+(defprotocol Ord (less (a:Self b:Self):i1))
+(defn less (a:i32 b:i32):i1 (< a b))
+(defn less (a:i64 b:i64):i1 (< a b))
+(extend i32 Ord)
+(extend i64 Ord)
+
+; Plain solitary defns — export as (declare (twice i32) ((x i32))) etc.
+(defn twice (x:i32):i32 (* x 2))
+(defn add3 (a:i32 b:i32 c:i32):i32 (+ (+ a b) c))
+
+; Overloaded pair — export as a (defmethod "@sym" …) per method.
+(defn scale (x:i32):i32 (* x 10))
+(defn scale (x:i64):i64 (* x (as i64 100)))
+
+; Bounded-generic template with a tyvar return — exported verbatim (new-style),
+; re-registered by the importer, and stamped at the consumer's call site. Body uses
+; only the `if` special form + the imported `less` method, so it stamps cleanly in a
+; consumer that excludes the prelude.
+(defn gmax (a:T b:T &where (Ord T)):T
+  (if (less a b) b a))

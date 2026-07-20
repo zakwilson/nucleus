@@ -1,0 +1,25 @@
+; Stage 14 SM-3: fixture for the `?`/`!` symbol-mangling .nuch / --emit-cheader
+; round-trip test.
+;
+; A library exporting `?`- and `!`-named functions. Its public symbols carry the
+; SM-1 mnemonic-mangled link names (`?`→_QMARK, `!`→_BANG):
+;   * `full?` / `push!` are SOLITARY defns → the ns-ir-base path → @full_QMARK /
+;     @push_BANG (a plain (declare ...) in the .nuch).
+;   * `even?` is OVERLOADED (i32 and i64 conformers) → the mangle-fn-name path →
+;     @even_QMARK.i32 / @even_QMARK.i64 (a (defmethod "@sym" ...) per method in the
+;     .nuch, each carrying its stored mangled string verbatim).
+; tests/run-tests.sh compiles this to a .nuch and a .ll, then links a consumer
+; that imports the .nuch — proving the exporter's symbols and the importer's
+; re-derived declarations agree at link time with no round-trip mismatch.
+
+(defn full? (n:i32):i32
+  (return (if (> n 0) 1 0)))
+
+(defn push! (n:i32):i32
+  (return (+ n 1)))
+
+(defn even? (x:i32):i32
+  (return (if (= (% x 2) 0) 1 0)))
+
+(defn even? (x:i64):i32
+  (return (if (= (% x (as i64 2)) (as i64 0)) 1 0)))

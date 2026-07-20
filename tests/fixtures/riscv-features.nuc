@@ -1,0 +1,21 @@
+; Stage 14 RV-1 "features cliff" fixture (design/stage14/riscv-linux.md §1.2).
+; Exercises an i64 integer multiply and an f64 add so the RV-1 llc round-trip can
+; distinguish hardware `mul`/`fadd.d` (correct +m,+a,+f,+d,+c features) from the
+; `__muldi3`/`__adddf3` soft-float libcalls that bare RV64I emits — a SILENT ABI
+; mismatch with riscv64 glibc (lp64d) if the features default is wrong.
+;
+; Function names deliberately avoid the substrings `mul`/`fadd`/`add` so the asm
+; symbol-declaration lines (`.globl <name>`) can't be mistaken by the gate's grep
+; for the actual instructions.
+(import-use "stdio.h")
+
+(defn prod64 (a:i64 b:i64):i64
+  (return (* a b)))
+
+(defn sum64 (a:f64 b:f64):f64
+  (return (+ a b)))
+
+(defn main ():int
+  (printf "%ld\n" (prod64 3 4))
+  (printf "%f\n" (sum64 1.5 2.5))
+  (return 0))

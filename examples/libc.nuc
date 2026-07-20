@@ -2,7 +2,7 @@
 (import-use "stdlib.h")
 (import-use "string.h")
 
-(defn main:int ()
+(defn main ():int
   (let (s:ptr "hello"
         n:i64 (strlen s))
     (printf "len = %lld\n" n)

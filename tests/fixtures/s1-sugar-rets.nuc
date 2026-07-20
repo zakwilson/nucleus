@@ -1,0 +1,28 @@
+; Stage 14 defn-signature.md S1 — the new-style ret operand carries the `?`/`!`
+; sugars and an optional trailing `noreturn`, exactly as the legacy name:ret did.
+; Compile-only: the harness asserts this emits cleanly and that `noreturn` lands
+; on the define. Each function is solitary (always emitted).
+(import-use "stdio.h")
+(import-use error)
+
+(defstruct Pt x:i32 y:i32)
+(deferror bad "bad")
+
+; :!ptr:Pt — niche-encoded error-union pointer return, in the new position.
+(defn lookup (p:ptr:Pt i:i32):!ptr:Pt
+  (when (< i 0) (return (err bad)))
+  (return (ok (as ref:Pt p))))
+
+; :!i32 — tagged error-union return, new position.
+(defn checked (x:i32):!i32
+  (when (< x 0) (return (err bad)))
+  (return (ok x)))
+
+; :?ptr:Pt — nullable pointer return (Maybe (ref Pt)), new position.
+(defn maybe-pt (give:i1 p:ptr:Pt):?ptr:Pt
+  (if give (return (as-ref p)) (return none)))
+
+; `noreturn` sits AFTER the ret operand in the new style (it moved from index 3
+; to index 4). Body never returns, so the define carries the LLVM noreturn attr.
+(defn spin (m:CStr):void noreturn
+  (while (= 0 0) (printf "%s\n" m)))

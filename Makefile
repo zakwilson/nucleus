@@ -1,8 +1,41 @@
 CC           := clang
 CFLAGS       := -std=c11 -Wall -Wextra -Wpedantic -O0 -g
-LLVM_CFLAGS  := $(shell llvm-config --cflags 2>/dev/null)
-LLVM_LDFLAGS := $(shell llvm-config --ldflags 2>/dev/null)
-LLVM_LIBS    := $(shell llvm-config --libs orcjit core irreader 2>/dev/null)
+
+# LLVM detection: try llvm-config, then versioned names (Alpine: llvm21-config,
+# Debian: llvm-config-19). Fall back to -lLLVM monolithic shared lib if no
+# llvm-config is found (Alpine's llvm21 package may not ship llvm-config on PATH).
+LLVM_CONFIG  := $(shell which llvm-config 2>/dev/null || \
+                          which llvm-config-21 2>/dev/null || \
+                          which llvm-config-20 2>/dev/null || \
+                          which llvm-config-19 2>/dev/null || \
+                          ls /usr/lib/llvm21/bin/llvm-config 2>/dev/null || \
+                          ls /usr/lib/llvm19/bin/llvm-config 2>/dev/null || \
+                          echo "")
+ifneq ($(LLVM_CONFIG),)
+  LLVM_CFLAGS  := $(shell $(LLVM_CONFIG) --cflags 2>/dev/null)
+  LLVM_LDFLAGS := $(shell $(LLVM_CONFIG) --link-shared --ldflags 2>/dev/null)
+  LLVM_LIBS    := $(shell $(LLVM_CONFIG) --link-shared --libs orcjit core irreader 2>/dev/null)
+  LLVM_SYSLIBS := $(shell $(LLVM_CONFIG) --link-shared --system-libs 2>/dev/null)
+  # If --link-shared produced nothing (static-only install), fall back to static libs.
+  ifeq ($(LLVM_LIBS),)
+    LLVM_LDFLAGS := $(shell $(LLVM_CONFIG) --ldflags 2>/dev/null)
+    LLVM_LIBS    := $(shell $(LLVM_CONFIG) --libs orcjit core irreader 2>/dev/null)
+    LLVM_SYSLIBS := $(shell $(LLVM_CONFIG) --system-libs 2>/dev/null)
+  endif
+  # If both shared and static produced nothing, fall back to monolithic shared lib.
+  ifeq ($(LLVM_LIBS),)
+    LLVM_LDFLAGS :=
+    LLVM_LIBS    := -lLLVM
+    LLVM_SYSLIBS :=
+  endif
+else
+  # No llvm-config found — assume monolithic shared lib (Alpine, some distros).
+  LLVM_CFLAGS  :=
+  LLVM_LDFLAGS :=
+  LLVM_LIBS    := -lLLVM
+  LLVM_SYSLIBS :=
+endif
+$(info LLVM: config=$(LLVM_CONFIG) ldflags=$(LLVM_LDFLAGS) libs=$(LLVM_LIBS) syslibs=$(LLVM_SYSLIBS))
 BUILD        := build
 BIN          := $(BUILD)/nucleusc
 
@@ -20,15 +53,35 @@ REPL_SHIM_O  := $(BUILD)/repl_shim.o
 # `declare`s, resolved at link time.) The prelude chain (prelude -> macros,
 # node -> arena) is auto-prepended into every batch compile, including the
 # compiler's own. lib/reader.nuc was the gap that previously let reader edits
-# go unrebuilt.
+# go unrebuilt; lib/vector.nuc, lib/hash.nuc, lib/hashset.nuc,
+# lib/hashmap.nuc, lib/list.nuc, lib/iterator.nuc, lib/allocator.nuc,
+# lib/coll.nuc, and lib/seq.nuc (the full transitive closure pulled in via
+# src/generics.nuc's `(import-use vector)`, src/nucleusc.nuc's `(import-use
+# vector/hash/hashset)`, and src/type-mangle.nuc / src/nuch.nuc's
+# `(import-use list/hashmap)`) were the same class of gap, found during
+# LW-5 batch 2 (stage14): editing any of them changed `build/nucleusc.ll`
+# but incremental `make` didn't detect it, silently reusing a stale binary.
 COMPILER_DEPS := src/nucleusc.nuc src/compiler-types.nuc src/type-utils.nuc src/type-mangle.nuc src/scope.nuc src/abi.nuc src/union-registry.nuc src/generics.nuc src/union-emit.nuc src/repl.nuc src/cheader.nuc src/nuch.nuc \
                  src/format.nuc \
                  lib/prelude.nuc lib/macros.nuc lib/node.nuc lib/arena.nuc \
-                 lib/error.nuc lib/reader.nuc
+                 lib/error.nuc lib/reader.nuc \
+                 lib/vector.nuc lib/hash.nuc lib/hashset.nuc lib/hashmap.nuc \
+                 lib/list.nuc lib/iterator.nuc lib/allocator.nuc lib/coll.nuc \
+                 lib/seq.nuc
 
-$(BIN): $(COMPILER_DEPS) $(REPL_SHIM_O) | $(BUILD) ensure-boot
+$(BIN): $(COMPILER_DEPS) $(REPL_SHIM_O) $(BUILD)/llvm-stamp | $(BUILD) ensure-boot
 	$(BOOT) --emit-llvm src/nucleusc.nuc > $(BUILD)/nucleusc.ll
-	clang $(BUILD)/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl -rdynamic -ffast-math -march=native -O3 -o $@
+	clang $(BUILD)/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic -ffast-math -march=native -O3 -o $@
+
+# Content stamp of the linked LLVM version. A build/nucleusc carried across an
+# LLVM switch (e.g. a build dir shared between host and container) is linked
+# against a libLLVM the loader can't find; timestamps alone would leave it
+# stale-but-"up-to-date". The stamp only changes when the version string does,
+# so it forces exactly one relink per toolchain change.
+LLVM_VERSION := $(if $(LLVM_CONFIG),$(shell $(LLVM_CONFIG) --version 2>/dev/null),unknown)
+$(BUILD)/llvm-stamp: FORCE | $(BUILD)
+	@echo "$(LLVM_VERSION)" | cmp -s - $@ 2>/dev/null || echo "$(LLVM_VERSION)" > $@
+FORCE:
 
 $(REPL_SHIM_O): src/repl_shim.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -42,14 +95,15 @@ ensure-boot: $(REPL_SHIM_O) | $(BUILD)
 	@$(BOOT) --help >/dev/null 2>&1; ec=$$?; \
 	if [ $$ec -eq 126 ] || [ $$ec -eq 127 ]; then \
 		echo "bin/nucleusc: cannot execute (exit $$ec), rebuilding from boot/nucleusc.ll ..."; \
-		clang boot/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl -rdynamic -O3 -o $(BOOT); \
+		clang boot/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic -O3 -o $(BOOT); \
 	fi
 
 # Force-rebuild the bootstrap binary from the committed IR (boot/nucleusc.ll).
 boot-binary: $(REPL_SHIM_O) | $(BUILD)
-	clang boot/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl -rdynamic -ffast-math -march=native -O3 -o bin/nucleusc
+	clang boot/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic -ffast-math -march=native -O3 -o bin/nucleusc
 
 test: $(BIN)
+	@rm -rf $(BUILD)/out
 	./tests/run-tests.sh
 
 # Struct-ABI interop acceptance test (Phase C gate). Not part of `make test`
@@ -62,10 +116,32 @@ abi-test: $(BIN)
 layout-test: $(BIN)
 	NUCLEUSC=$(BIN) ./tests/run-layout-test.sh
 
+# AVR cross-compilation acceptance test (Stage 14 AVR-8 gate): compile+link
+# the four AVR examples, assert avr-size flash/RAM budgets, and run the UART
+# example under simavr. Not part of `make test`; see design/stage14/avr-
+# targets.md and tests/run-avr-test.sh's header comment.
+avr-test: $(BIN)
+	NUCLEUSC=$(BIN) ./tests/run-avr-test.sh
+
+# RISC-V cross-compilation acceptance test (Stage 14 RV-2 gate): compile+link
+# each example via the real compile-and-link path (riscv64-linux-gnu-gcc link
+# driver) and run it under qemu-riscv64, diffing tests/expected/. Not part of
+# `make test`; see design/stage14/riscv-linux.md §5 and
+# tests/run-riscv-test.sh's header comment.
+riscv-test: $(BIN)
+	NUCLEUSC=$(BIN) ./tests/run-riscv-test.sh
+
+# RISC-V struct-ABI interop acceptance test (Stage 14 RV-3 gate): the three-
+# direction aggregate-ABI interop (Nucleus<->C, Nucleus<->Nucleus) cross-compiled
+# for riscv64 and run under qemu-riscv64. Not part of `make test`/`make abi-test`;
+# see design/stage14/riscv-linux.md §5 and tests/run-riscv-abi-test.sh's header.
+riscv-abi-test: $(BIN)
+	NUCLEUSC=$(BIN) ./tests/run-riscv-abi-test.sh
+
 bootstrap: $(BIN) | $(BUILD)/out
 	@echo "=== Stage 2: self-hosted compiler -> nucleusc.nuc ==="
 	$(BIN) --emit-llvm src/nucleusc.nuc > $(BUILD)/stage2.ll
-	clang $(BUILD)/stage2.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) -ldl -rdynamic -ffast-math -march=native -ffast-math -march=native -O3 -o $(BUILD)/nucleusc-stage2
+	clang $(BUILD)/stage2.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic -ffast-math -march=native -ffast-math -march=native -O3 -o $(BUILD)/nucleusc-stage2
 	@echo "=== Fixed-point test ==="
 	diff $(BUILD)/nucleusc.ll $(BUILD)/stage2.ll
 	@echo "PASS: stage1.ll == stage2.ll"
@@ -170,4 +246,4 @@ uninstall:
 	rm -f $(BINDIR)/nucleusc
 	rm -rf $(DESTDIR)$(PREFIX)/share/nucleus
 
-.PHONY: test abi-test layout-test clean bootstrap boot-binary update-bootstrap windows-boot ensure-boot lib-headers lib-cheaders lib-objs lib-so lib install uninstall
+.PHONY: test abi-test layout-test avr-test riscv-test riscv-abi-test clean bootstrap boot-binary update-bootstrap windows-boot ensure-boot lib-headers lib-cheaders lib-objs lib-so lib install uninstall

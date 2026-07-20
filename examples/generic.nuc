@@ -7,11 +7,11 @@
 
 ; A capability: any type that can be ordered.
 (defprotocol Ord
-  (less:i1 (a:Self b:Self)))
+  (less (a:Self b:Self):i1))
 
 ; Concrete implementations are ordinary overloaded defns (the Option-1 substrate).
-(defn less:i1 (a:i32 b:i32) (return (< a b)))
-(defn less:i1 (a:f64 b:f64) (return (< a b)))
+(defn less (a:i32 b:i32):i1 (return (< a b)))
+(defn less (a:f64 b:f64):i1 (return (< a b)))
 
 ; Code-free conformance assertions.
 (extend i32 Ord)
@@ -21,18 +21,18 @@
 ; (B1: an abstract return bound by a parameter), and (less a b) dispatches to the
 ; concrete method for whichever type T is instantiated to. The body is stamped
 ; once per concrete type and cached.
-(defn maxv:T (a:T b:T &where (Ord T))
+(defn maxv (a:T b:T &where (Ord T)):T
   (let (r:T a)
     (when (less a b) (set! r b))
     (return r)))
 
 ; Same constraint, a different generic: clamp x up to a lower bound.
-(defn clamp-lo:T (x:T lo:T &where (Ord T))
+(defn clamp-lo (x:T lo:T &where (Ord T)):T
   (let (r:T x)
     (when (less x lo) (set! r lo))
     (return r)))
 
-(defn main:int ()
+(defn main ():int
   (printf "max i32 = %d\n" (maxv 3 9))
   (printf "max i32 = %d\n" (maxv 20 7))
   (printf "max f64 = %g\n" (maxv 2.5 1.5))

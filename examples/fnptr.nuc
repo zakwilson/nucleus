@@ -1,16 +1,16 @@
 (import-use "stdio.h")
 
-(defn add:i32 (a:i32 b:i32) (return (+ a b)))
-(defn mul:i32 (a:i32 b:i32) (return (* a b)))
-(defn neg:i32 (x:i32) (return (- 0 x)))
+(defn add (a:i32 b:i32):i32 (return (+ a b)))
+(defn mul (a:i32 b:i32):i32 (return (* a b)))
+(defn neg (x:i32):i32 (return (- 0 x)))
 
-(defn apply-binop:i32 ((op (fn i32) (i32 i32)) a:i32 b:i32)
+(defn apply-binop ((op (fn i32) (i32 i32)) a:i32 b:i32):i32
   (return (funcall op a b)))
 
-(defn apply-unop:i32 ((op (fn i32) (i32)) x:i32)
+(defn apply-unop ((op (fn i32) (i32)) x:i32):i32
   (return (funcall op x)))
 
-(defn main:i32 ()
+(defn main ():i32
   (printf "add: %d\n" (apply-binop add 3 4))
   (printf "mul: %d\n" (apply-binop mul 3 4))
   (printf "neg: %d\n" (apply-unop neg 5))

@@ -1,6 +1,6 @@
 (import-use "stdio.h")
 
-(defn main:int ()
+(defn main ():int
   ; Basic unsigned arithmetic
   (let (a:ui32 10
         b:ui32 3)
@@ -19,14 +19,14 @@
 
   ; Unsigned bitwise
   (let (v:ui32 255)
-    (printf "shr: %u\n" (bit-shr v (cast ui32 2))))
+    (printf "shr: %u\n" (bit-shr v 2)))
 
   ; Cast unsigned to wider unsigned (zext)
   (let (s:ui8 200)
-    (printf "zext: %lu\n" (cast ui64 s)))
+    (printf "zext: %lu\n" (as ui64 s)))
 
   ; Cast signed to unsigned (same width, reinterpret)
   (let (n:i32 -1)
-    (printf "reinterpret: %u\n" (cast ui32 n)))
+    (printf "reinterpret: %u\n" (as ui32 n)))
 
   (return 0))

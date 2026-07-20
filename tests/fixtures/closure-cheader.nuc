@@ -15,9 +15,9 @@
 
 ; Exposes a closure env type by reference -> omitted from the C header, warned
 ; at the definition.
-(defn apply-closure:i32 ((c (ref __vfn_env_0)) (x i32))
+(defn apply-closure ((c (ref __vfn_env_0)) (x i32)):i32
   (return x))
 
 ; A plain function (function-pointer-compatible) signature -> emitted normally.
-(defn plain-fn:i32 ((x i32) (y i32))
+(defn plain-fn ((x i32) (y i32)):i32
   (return (+ x y)))

@@ -1,0 +1,55 @@
+; Stage 14 UN-5 — the bare legacy spellings are retired (design/stage14/
+; unsafe-namespace.md D6): `cast`, `funcall-ptr-*`, `ptr+`, and
+; `unsafe-import-private` are now targeted hard errors naming their
+; replacement instead of silently working as aliases. This example
+; demonstrates the surviving forms — the statically-safe `as` (D3) and the
+; reserved `unsafe/`-prefixed roster (D2) — compiling and running normally:
+;
+;   - Class 1 (split): `as` (safe subset of old `cast`), `unsafe/cast`
+;     (everything else)
+;   - Class 2 (moved):  `unsafe/ptr+`, `unsafe/funcall-ptr-i32`,
+;                        `unsafe/import-private`
+(import-use "stdio.h")
+(import-use "stdlib.h")
+; Pull in lib/unsafe-priv-demo's PUBLIC and PRIVATE symbols under the `pd/`
+; prefix. A plain `(import-prefixed unsafe-priv-demo pd)` would only bring in
+; pd/pub-double (private symbols are filtered unless the
+; g-import-include-private flag is set, which only `unsafe/import-private`
+; sets).
+(unsafe/import-private unsafe-priv-demo pd)
+
+(defstruct Pair a:i32 b:i32)
+
+; A zero-arg function whose address is taken to exercise funcall-ptr-i32.
+(defn zero-arg-answer ():i32
+  (return 42))
+
+(defn main ():i32
+  ; `as` — the statically-safe successor to `cast`'s safe subset (D3): a
+  ; same-width sign reinterpret is safe (parity with the implicit machinery).
+  (let (n:i32 -1)
+    (printf "as              = %u\n" (as ui32 n)))
+
+  ; `unsafe/cast` — today's `cast`, verbatim (D2 Class 1).
+  (let (n:i32 -1)
+    (printf "unsafe/cast     = %u\n" (unsafe/cast ui32 n)))
+
+  ; `unsafe/ptr+` — pointer arithmetic (D2 Class 2).
+  (let (p:ptr:Pair (as ptr:Pair (malloc (* (as i64 2) (sizeof Pair)))))
+    (.set! p a 10)
+    (.set! p b 20)
+    (let (r:ptr:Pair (unsafe/ptr+ p 1))
+      (.set! r a 30)
+      (.set! r b 40)
+      (printf "unsafe/ptr+     = a=%d b=%d\n" (r a) (r b))))
+
+  ; `unsafe/funcall-ptr-i32` — an indirect call through a function-pointer
+  ; value (D2 Class 2).
+  (let (fp:ptr (unsafe/cast ptr zero-arg-answer))
+    (printf "unsafe/funcpi32 = %d\n" (unsafe/funcall-ptr-i32 fp)))
+
+  ; `unsafe/import-private` — pulling in both the public and the private
+  ; symbol of a two-symbol demo library under a prefix.
+  (printf "pd/pub-double   = %d\n" (pd/pub-double 21))
+  (printf "pd/priv-secret  = %d\n" (pd/priv-secret))
+  (return 0))

@@ -62,21 +62,49 @@
             "2": { "name": "keyword.control.nucleus" },
             "3": { "name": "entity.name.nucleus" }
           }
+        },
+        {
+          "match": "(\\()(defunion|defprotocol)\\s+([^ :)]+)",
+          "captures": {
+            "2": { "name": "keyword.control.nucleus" },
+            "3": { "name": "entity.name.type.nucleus" }
+          }
+        },
+        {
+          "match": "(\\()(defcast|def-rmacro)\\s+([^ :)]+)",
+          "captures": {
+            "2": { "name": "keyword.control.nucleus" },
+            "3": { "name": "entity.name.function.nucleus" }
+          }
+        },
+        {
+          "match": "(\\()(deferror)\\s+([^ :)]+)",
+          "captures": {
+            "2": { "name": "keyword.control.nucleus" },
+            "3": { "name": "variable.other.nucleus" }
+          }
+        },
+        {
+          "match": "(\\()(import|import-use|import-prefixed|import-only|unsafe-import-private|ns|export|exclude-prelude|set-ir-prefix|declare|extend)\\s+([^ :)]+)",
+          "captures": {
+            "2": { "name": "keyword.control.nucleus" },
+            "3": { "name": "entity.name.nucleus" }
+          }
         }
       ]
     },
     "keyword": {
-      "match": "(?<=\\()(?:defn|defmacro|defvar|defconst|defenum|defstruct|include|extern|let|cond|while|do|return|set!|inc!|cast|sizeof|alloca|char|addr-of|deref|ptr-set!|ptr\\+|aref|aset!|and|or|not|quote|quasiquote|compile-time|funcall-void|funcall-ptr-1|gensym|\\.set!|\\.)(?=[\\s)])",
+      "match": "(?<=\\()(?:defn-|defn|defvar-|defvar|defconst-|defconst|defenum-|defenum|defstruct-|defstruct|defunion-|defunion|defprotocol-|defprotocol|defmacro-|defmacro|defcast|def-rmacro|deferror|extend|import-prefixed|import-only|import-use|unsafe-import-private|import|exclude-prelude|set-ir-prefix|declare|extern|include|ns|export|funcall-ptr-ptr|funcall-ptr-i64|funcall-ptr-i32|funcall-ptr-1|funcall-void|funcall|fn|vfn|mfn|cfn|do|let|with|cond|case|match|make|while|return|set!|inc!|dec!|label|label-addr|goto-ptr|goto|cast|addr-of|deref|ptr-set!|ptr\\+|aref|aset!|sizeof|alloca|char|quote|quasiquote|compile-time|gensym|some|none|as-ref|unwrap-or|unwrap|if-some|when-some|move|defer|if|when|unless|and|or|not|_and|_or|zero?|null?|for|dotimes|doseq-iter|doseq|into-iter|into|->|unquote-splice|unquote|get|invoke|\\.set!|\\.&|\\.|_get)(?=[\\s)])",
       "name": "keyword.control.nucleus"
     },
     "type": {
-      "match": "\\b(?:i1|i8|i16|i32|i64|ptr|void|int|bool)\\b",
+      "match": "\\b(?:i1|i8|i16|i32|i64|ui8|ui16|ui32|ui64|f32|f64|int|bool|void|ptr|usize|ssize|float|double|ref|raw|CStr|Char|StrView|Self)\\b",
       "name": "storage.type.nucleus"
     },
     "constant": {
       "patterns": [
         {
-          "match": "\\b(?:null|true|false)\\b",
+          "match": "\\b(?:null|true|false|none)\\b",
           "name": "constant.language.nucleus"
         },
         {
