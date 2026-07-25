@@ -48,3 +48,13 @@ Having to perform operations on (addr-of entry) in a HashMapEntryIterator is ick
 
 
 in `emit-get-with-callee` when branch A's (Self, ptr) probe misses and the callee type has a registered get, the selector should be re-emitted as a value and dispatched through branch B rather than fallback
+
+## Errata
+
+Target-type widening: do we need to require `as` when the return-type is smaller than the target type?
+
+Offset-based C struct reflection for Doom Dehacked patch support was reported as absent with no equivalent
+
+Colon-typed defconst seems to have an issue
+
+Fixed-size array fields in structs
