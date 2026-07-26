@@ -701,6 +701,62 @@ run_w4a_sibling_forward() {
 # plain function-pointer-compatible defn is emitted normally. The fixture
 # declares a __vfn_env_0 struct by hand to stand in for a synthesized env (real
 # envs are created post-prescan, so they cannot appear in source signatures).
+# Stage 15 W3a: the opaque-misuse diagnostic names the C declaration's own
+# header and line ("declared at ./tests/fixtures/cheader-opaque.h:11"). The path
+# is host-dependent for a system header, so run_reject_at pins only the message
+# prefix; this pins the provenance itself — a nonzero line against the fixture
+# header. Recovered from clang -E's `# N "file"` linemarkers, so a regression in
+# that tracking shows up here as `:0` rather than silently degrading.
+run_w3a_opaque_provenance() {
+  local err
+  err="$(./build/nucleusc --emit-llvm tests/fixtures/w3a-opaque-sizeof.nuc 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | grep -qE 'declared at [^ ]*tests/fixtures/cheader-opaque\.h:11;'; then
+    echo "PASS  w3a-opaque-provenance"
+  else
+    echo "FAIL  w3a-opaque-provenance"
+    echo "    expected: declared at <...>/tests/fixtures/cheader-opaque.h:11;"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+  fi
+}
+
+# Stage 15 W3a: SDL2/SDL_mixer.h declares `typedef struct Mix_Music Mix_Music;`
+# (opaque — no body in any header) and `typedef struct Mix_Chunk { … } Mix_Chunk;`
+# (fully defined) in the same file, so one import exercises both shapes.
+# Compile-only: linking would need -lSDL2_mixer and run-tests.sh has no
+# per-test link-flag mechanism. SKIPs cleanly where SDL2 headers are absent.
+#
+# Checks the emitted IR, not just exit 0: the defined struct must get a real
+# layout AND a real GEP, and the opaque one must NEVER appear as an LLVM
+# aggregate type (it may only ever be a `ptr`).
+run_w3a_sdl_mixer() {
+  local hdr ir err
+  hdr=""
+  for d in /usr/include /usr/local/include; do
+    [ -f "$d/SDL2/SDL_mixer.h" ] && hdr="$d/SDL2/SDL_mixer.h"
+  done
+  if [ -z "$hdr" ]; then
+    echo "PASS  w3a-sdl-mixer (SKIP: SDL2/SDL_mixer.h not installed)"
+    return 0
+  fi
+  ir="$(mktemp)"
+  err="$(./build/nucleusc --emit-llvm tests/fixtures/w3a-sdl-mixer.nuc 2>&1 >"$ir" || true)"
+  if [ -n "$err" ]; then
+    echo "FAIL  w3a-sdl-mixer (compile error)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  elif ! grep -q '^%Mix_Chunk = type' "$ir"; then
+    echo "FAIL  w3a-sdl-mixer (defined Mix_Chunk has no LLVM layout)"
+  elif ! grep -q 'getelementptr inbounds %Mix_Chunk' "$ir"; then
+    echo "FAIL  w3a-sdl-mixer (Mix_Chunk field access not emitted)"
+  elif ! grep -q 'call void @Mix_FreeMusic(ptr ' "$ir"; then
+    echo "FAIL  w3a-sdl-mixer (opaque handle not passed as a plain pointer)"
+  elif grep -q '%Mix_Music' "$ir"; then
+    echo "FAIL  w3a-sdl-mixer (opaque Mix_Music leaked into IR as an aggregate type)"
+  else
+    echo "PASS  w3a-sdl-mixer"
+  fi
+  rm -f "$ir"
+}
+
 run_closure_cheader() {
   local ch_dir ch_warn
   ch_dir="$(mktemp -d)"
@@ -1403,6 +1459,45 @@ spawn run_reject_at w4d-macro-too-many-args tests/fixtures/w4d-macro-too-many-ar
 spawn run_reject_at w4d-macro-too-few-args tests/fixtures/w4d-macro-too-few-args.nuc \
   "tests/fixtures/w4d-macro-too-few-args.nuc:12: error:" \
   "macro 'case': expects at least 1 args, got 0"
+
+# --- Stage 15 W3a: opaque forward-declared C types ---------------------------
+# design/stage15-stress-test/cheader.md §1.6. `struct Foo;` used to be skipped
+# outright, so the type never registered and any later `ptr:Foo` died
+# `unknown type: Foo` — C's standard opaque-handle idiom (FILE, SDL_Window,
+# Mix_Music) was simply unusable. It now registers layout-less, is legal behind
+# a pointer, and every by-value use is refused at its own line naming the header
+# declaration. The runnable half is examples/cheader-opaque.nuc (a real
+# fopen/fprintf/fgets round trip through `ptr:FILE`, plus forward-declaration-
+# then-definition upgrades); the rejections are pinned here.
+spawn run_reject_at w3a-opaque-sizeof tests/fixtures/w3a-opaque-sizeof.nuc \
+  "tests/fixtures/w3a-opaque-sizeof.nuc:8: error:" \
+  "sizeof: 'CHOpaque' is an opaque type declared at "
+spawn run_reject_at w3a-opaque-alloca tests/fixtures/w3a-opaque-alloca.nuc \
+  "tests/fixtures/w3a-opaque-alloca.nuc:6: error:" \
+  "alloca: 'CHOpaque' is an opaque type declared at "
+spawn run_reject_at w3a-opaque-field tests/fixtures/w3a-opaque-field.nuc \
+  "tests/fixtures/w3a-opaque-field.nuc:7: error:" \
+  "field access: 'CHOpaque' is an opaque type declared at "
+spawn run_reject_at w3a-opaque-param tests/fixtures/w3a-opaque-param.nuc \
+  "tests/fixtures/w3a-opaque-param.nuc:6: error:" \
+  "defn parameter: 'CHOpaque' is an opaque type declared at "
+spawn run_reject_at w3a-opaque-return tests/fixtures/w3a-opaque-return.nuc \
+  "tests/fixtures/w3a-opaque-return.nuc:5: error:" \
+  "defn return type: 'CHOpaque' is an opaque type declared at "
+# The declaration line inside the message must be a real one — the header:line
+# provenance is recovered from clang -E's linemarkers, and a 0 there would be as
+# useless as the `:0:` W4a removed from the location prefix.
+spawn run_w3a_opaque_provenance
+# W3a also gave `unknown type:` a location: resolving a defn signature used to
+# blame the defn's NAME node, an interned NODE-SYM whose line is always 0. Both
+# halves (parameter, return) are pinned, and both fixtures also feed the
+# run_no_line_zero sweep above.
+spawn run_reject_at w3a-unknown-type-param tests/fixtures/w3a-unknown-type-param.nuc \
+  "tests/fixtures/w3a-unknown-type-param.nuc:6: error:" "unknown type: NoSuchTypeHere"
+spawn run_reject_at w3a-unknown-type-return tests/fixtures/w3a-unknown-type-return.nuc \
+  "tests/fixtures/w3a-unknown-type-return.nuc:3: error:" "unknown type: AlsoNoSuchType"
+# One real third-party header must give BOTH shapes from a single import.
+spawn run_w3a_sdl_mixer
 
 # --- Stage 15 W4e: docs/stdlib.md's availability table is generated ---------
 spawn run_stdlib_table

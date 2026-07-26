@@ -2844,6 +2844,10 @@
           (die-at (node-line (as ptr fn-node) (cc line)) "_get: field name must be symbol"))
         (let (sd:(raw StructDef) ((pt elem) sdef)
               idx:i32 (struct-field-index sd (fn-node s)))
+          ; W3a: an opaque type has no fields at all, so "no field 'x'" would be
+          ; a misleading answer — the layout is simply not visible here.
+          (reject-opaque-type (pt elem) (node-line (as ptr fn-node) (cc line))
+                              "field access")
           (union-field-guard sd (cc line) "_get")
           (when (< idx 0)
             (die-at (node-line (as ptr fn-node) (cc line))
@@ -2953,6 +2957,9 @@
     (require-derefable ct line "field access")
     (let (sd:(raw StructDef) ((ct elem) sdef)
           lit:(raw Node) (selector-literal-sym sel-node))
+      ; W3a: head-position `(handle field)` on an opaque type — same rule as the
+      ; `_get` path above, which this mirrors.
+      (reject-opaque-type (ct elem) line "field access")
       (union-field-guard sd line "get")
       (when (= lit null)
         (when (= ek TY-UNION)
@@ -3214,6 +3221,9 @@
     (let (tn:(raw Node) (node-at cc 1))
       (let (ty:(raw Type) (parse-type-from-node tn (tn line))
             gep:ptr (new-tmp))
+        ; W3a: an opaque C type has no size. Refuse here rather than emitting a
+        ; GEP over an undefined `%Foo` (or, worse, a plausible-looking number).
+        (reject-opaque-type ty (node-line (as ptr tn) (cc line)) "sizeof")
         (fprintf g-body-stream "  %s = getelementptr %s, ptr null, i32 1\n"
           gep (type-to-ir ty))
         (let (sz:ptr (new-tmp))
@@ -3230,6 +3240,8 @@
       (let (ty:(raw Type) (parse-type-from-node tn (tn line))
             slot:ptr (new-tmp)
             pt:ref:Type (make-type TY-PTR))
+        ; W3a: no layout means no stack slot can be reserved for it.
+        (reject-opaque-type ty (node-line (as ptr tn) (cc line)) "alloca")
         (.set! pt elem ty)
         ; alloca always yields a valid, non-null stack address (ref T).
         (.set! pt pkind PTR-REF)
@@ -8229,6 +8241,10 @@
                                                            ((unsafe/cast ptr:Node field) line)))
               (when (= fty null)
                     (die-at ((unsafe/cast ptr:Node field) line) (fmt-s "defstruct: field '%s' missing :type" fname)))
+              ; W3a: a by-value field of an opaque C type has no size, so the
+              ; enclosing struct has no layout either. `ptr:Foo` is the fix.
+              (reject-opaque-type fty
+                (node-line (as ptr field) (cc line)) "defstruct field")
               (aset! (as ptr:ptr fnm) i (intern-str fname))
               (aset! (as ptr:ptr ftp) i fty)))
           (struct-set-fields sd fnm ftp nfields)
@@ -8415,6 +8431,10 @@
                                              ((unsafe/cast ptr:Node name-node) line))))
         (when (= ret null)
           (die-at ((unsafe/cast ptr:Node name-node) line) (fmt-s "defn: missing :type on '%s'" fname)))
+        ; W3a: a by-value return of an opaque C type has no ABI classification
+        ; (no size, no layout) — refuse at the signature, where the line is exact,
+        ; rather than at type-to-ir's ambient-line backstop.
+        (reject-opaque-type ret (cc line) "defn return type")
         (guard-name-kind fname (cc line) NK-FUNCTION)
         ; L8: warn when a public defn's signature exposes a capturing-closure env
         ; type (__vfn_env_N) or a type-erased box type (BoxedFn/dyn) — it is
@@ -8523,6 +8543,10 @@
                                                              ((unsafe/cast ptr:Node spec) line)))
                           (when (= pty null)
                             (die-at ((unsafe/cast ptr:Node p) line) (fmt-s "defn: missing :type on param '%s'" pname)))
+                          ; W3a: a by-value parameter of an opaque C type cannot
+                          ; be passed (no size, no ABI class).
+                          (reject-opaque-type pty
+                            (node-line (as ptr spec) (cc line)) "defn parameter")
                           ; The &rest parameter receives a Node* cons-list head.
                           ; The user's declared type annotates element type only;
                           ; the actual param is always ptr.
@@ -9311,20 +9335,28 @@
 
 ; Desugar a single typed-name node (symbol with :).
 ; Returns the node unchanged if it has no colon.
-(defn desugar-typed (node:(raw Node)):ptr
+;
+; Stage 15 W3a: `encl` is the enclosing form's line, used as the line stamped on
+; the cells this produces. A colon-typed binding name is a bare NODE-SYM, and an
+; interned symbol node's own `line` is always 0 (W4a / lib/node.nuc node-line) —
+; so without the fallback every desugared `(name (ptr T))` cell carried line 0,
+; and every diagnostic raised off a defn parameter, defvar/extern/declare name,
+; defstruct field or let/with binding name reported `:0:`. That is what made
+; `(defn f (m:ptr:Nope):i32 …)` report `unknown type: Nope` with no location.
+(defn desugar-typed (node:(raw Node) encl:i32):ptr
   (when (= node null) (return null))
   (let (n:ptr:Node (unsafe/cast ptr:Node node))
     (when (and (= (n kind) NODE-SYM) (!= (strchr (n s) 58) null))
-      (return (desugar-symbol node (n line))))
+      (return (desugar-symbol node (node-line (as ptr node) encl))))
     (return node)))
 
 ; Desugar a parameter list: each element that is a typed symbol gets split.
-(defn desugar-params (params:(raw Node)):ptr
+(defn desugar-params (params:(raw Node) encl:i32):ptr
   (when (= params null) (return null))
   (let (n:ptr:Node (unsafe/cast ptr:Node params))
     (when (!= (n kind) NODE-CELL) (return params))
-    (let (new-car:ptr (desugar-typed (n car))
-          new-cdr:ptr (desugar-params (n cdr)))
+    (let (new-car:ptr (desugar-typed (n car) (node-line (as ptr params) encl))
+          new-cdr:ptr (desugar-params (n cdr) encl))
       (when (and (= new-car (n car)) (= new-cdr (n cdr)))
         (return params))
       (let (c:ptr:Node (as ptr:Node (alloc-node)))
@@ -9335,7 +9367,7 @@
         (return (as ptr c))))))
 
 ; Desugar a let binding list: pairs of (name val) where name may be typed.
-(defn desugar-let-bindings (binds:(raw Node)):ptr
+(defn desugar-let-bindings (binds:(raw Node) encl:i32):ptr
   (when (= binds null) (return null))
   (let (n:ptr:Node (unsafe/cast ptr:Node binds))
     (when (!= (n kind) NODE-CELL) (return binds))
@@ -9350,7 +9382,7 @@
               elem:ptr (cn car)
               new-elem:ptr elem)
           (when (= (% idx 2) 0)
-            (set! new-elem (desugar-typed elem)))
+            (set! new-elem (desugar-typed elem (node-line cur encl))))
           (when (!= new-elem elem) (set! changed 1))
           (let (cell:ptr (make-cell new-elem null (cn line)))
             (when (= tail null) (set! result cell))
@@ -9392,8 +9424,8 @@
         ; (defn name:type (params...) body...)
         (when (= h "defn")
           (when (>= (node-len form) 3)
-            (let (new-name:ptr (desugar-typed (node-at form 1))
-                  new-params:ptr (desugar-params (node-at form 2)))
+            (let (new-name:ptr (desugar-typed (node-at form 1) (f line))
+                  new-params:ptr (desugar-params (node-at form 2) (f line)))
               (when (and (= new-name (node-at form 1))
                          (= new-params (node-at form 2)))
                 (return form))
@@ -9408,7 +9440,7 @@
         ; (defvar name:type [init])
         (when (= h "defvar")
           (when (>= (node-len form) 2)
-            (let (new-name:ptr (desugar-typed (node-at form 1)))
+            (let (new-name:ptr (desugar-typed (node-at form 1) (f line)))
               (when (= new-name (node-at form 1)) (return form))
               (return (make-cell (as ptr head)
                        (make-cell new-name
@@ -9419,7 +9451,7 @@
         (when (= h "defstruct")
           (when (>= (node-len form) 2)
             ; Desugar fields (positions 2+)
-            (let (new-rest:ptr (desugar-params ((unsafe/cast ptr:Node (f cdr)) cdr)))
+            (let (new-rest:ptr (desugar-params ((unsafe/cast ptr:Node (f cdr)) cdr) (f line)))
               (when (= new-rest ((unsafe/cast ptr:Node (f cdr)) cdr))
                 (return form))
               (return (make-cell (as ptr head)
@@ -9430,7 +9462,7 @@
         ; (extern name:type)
         (when (= h "extern")
           (when (= (node-len form) 2)
-            (let (new-name:ptr (desugar-typed (node-at form 1)))
+            (let (new-name:ptr (desugar-typed (node-at form 1) (f line)))
               (when (= new-name (node-at form 1)) (return form))
               (return (make-cell (as ptr head)
                        (make-cell new-name null (f line))
@@ -9445,9 +9477,9 @@
         ; former legacy-only rebuild for every legacy shape (len 2/3 ± noreturn).
         (when (= h "declare")
           (when (>= (node-len form) 2)
-            (let (new-name:ptr (desugar-typed (node-at form 1)))
+            (let (new-name:ptr (desugar-typed (node-at form 1) (f line)))
               (if (>= (node-len form) 3)
-                (let (new-params:ptr (desugar-params (node-at form 2))
+                (let (new-params:ptr (desugar-params (node-at form 2) (f line))
                       tail3:ptr (-> f (_ cdr) (unsafe/cast ptr:Node _) (_ cdr)
                                       (unsafe/cast ptr:Node _) (_ cdr)))
                   (when (and (= new-name (node-at form 1)) (= new-params (node-at form 2)))
@@ -9466,7 +9498,7 @@
         ; (with (bindings...) body...) — same shape; auto-frees libc-alloc'd bindings
         (when (or (= h "let") (= h "with"))
           (when (>= (node-len form) 2)
-            (let (new-binds:ptr (desugar-let-bindings (node-at form 1)))
+            (let (new-binds:ptr (desugar-let-bindings (node-at form 1) (f line)))
               (when (= new-binds (node-at form 1)) (return form))
               (return (make-cell (as ptr head)
                        (make-cell new-binds
@@ -9515,6 +9547,19 @@
                      ; Stage 14 UN-2: reserved-namespace spelling, same shape.
                      (= ph "unsafe/import-private"))
             (let (nn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr f) 1)))
+              ; Stage 15 W3a: a C-header string import (`(import-use "stdio.h")`).
+              ; Recover just its OPAQUE type names (cheader-prescan-opaque), so a
+              ; defn signature in this unit may name a C handle type
+              ; (`m:ptr:Mix_Music`) — the signature prescan below runs before any
+              ; import is processed, so import-time registration is too late. A
+              ; `.nuc`/`.nuch` string path is a Nucleus file (do-import treats it
+              ; as one) and is left to the symbol branch's shape.
+              (when (and (= (nn kind) NODE-STR)
+                         (= (str-ends-with (nn s) ".nuc") 0)
+                         (= (str-ends-with (nn s) ".nuch") 0)
+                         (= (import-list-has g-prescan-visited (nn s)) 0))
+                (set! g-prescan-visited (import-list-push g-prescan-visited (nn s)))
+                (cheader-prescan-opaque (nn s)))
               (when (= (nn kind) NODE-SYM)
                 (let (path:ptr (resolve-import (nn s) (f line)))
                   (when (and (!= path null)
@@ -9661,10 +9706,16 @@
                                      (as ptr:ptr (addr-of ps-ret-node))
                                      (as ptr:ptr (addr-of ps-params))
                                      (as ptr:i32 (addr-of ps-bstart)))
+                      ; W3a: `name-node` is the defn's NAME — an interned
+                      ; NODE-SYM whose own line is always 0 — so resolving the
+                      ; signature's types against it reported every failure
+                      ; (`unknown type: T`) at `:0:`. Borrow the return operand's
+                      ; own line, falling back to the defn form's.
                       ret:ptr (if (!= ps-style 0)
-                                (fn-parse-ret-type ps-ret-node ((unsafe/cast ptr:Node name-node) line))
+                                (fn-parse-ret-type ps-ret-node
+                                  (node-line ps-ret-node (f line)))
                                 (extract-name-and-type name-node (as ptr:ptr (addr-of fname))
-                                                        ((unsafe/cast ptr:Node name-node) line))))
+                                                        (f line))))
                   (when (!= ret null)
                     (let (nparams:i32 (defn-params-count params-node)
                           ptypes:ptr (defn-params-to-types params-node)

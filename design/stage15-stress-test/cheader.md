@@ -174,3 +174,198 @@ lines 1-175) rather than re-deriving. For §1.6 specifically, two lines suffice:
 * `docs/` documents opaque types, the skip-with-warning policy, and the
   declaration-precedence rule. Note in `design/stage3b-interop.md` /
   `stage3c.md` whether W3 changes their conclusions.
+
+---
+
+## W3a as built (§1.6 — opaque forward-declared types)
+
+**Status: done.** `make test` 255 PASS / 0 FAIL (was 245); `make bootstrap`
+byte-identical without a boot reconverge; `make lib-cheaders`, `make lib-headers`
+and the emitted IR of every `lib/*.nuc` and `examples/*.nuc` byte-identical
+against a compiler built from the pre-change tree.
+
+W3b (the §1.5 validity gate) and W3c (§1.4 typedef chains + declaration
+precedence) are untouched and remain open.
+
+### Representation
+
+`StructDef` gained two slots (`src/compiler-types.nuc`):
+
+* **`opaque:i32`** — 1 means *the name is known, the layout is not*. Set only by
+  the cheader path. Cleared in **`struct-set-fields`** (`src/abi.nuc`), the single
+  chokepoint every field-populating path funnels through (`emit-defstruct`, the
+  `.nuch` import, the cheader body parser, the anon-struct/union memoizer, the
+  closure-env and fatptr builders) — so "acquires a layout" and "stops being
+  opaque" cannot drift apart.
+* **`alias-of (raw StructDef)`** — for a C `typedef struct Tag Name;`, the `Tag`
+  entry. `lookup-struct` is keyed by name, so an alias must be its own StructDef;
+  this link is the only thing connecting the two, and it is what lets a later
+  `struct Tag { … }` upgrade an alias registered while the tag was still opaque.
+
+An opaque entry is deliberately **not** the same state as a name-only
+pre-registration by `prescan-struct-names`: the latter's layout arrives later in
+the same unit, and nothing may reference it by value before it does.
+
+### Upgrade paths
+
+Three, all routed through one emitter (`cheader-struct-define` /
+`cheader-adopt-shape`, `src/cheader.nuc`) so an upgraded tag is
+indistinguishable in the IR from one whose body came first — exactly one
+`%Tag = type { … }` line, or one `g-pending-unions` entry for a union:
+
+1. `struct Tag;` … `struct Tag { … };` — `c-parse-struct-body`'s
+   already-registered branch used to `return existing` untouched (which would
+   have pinned the tag opaque forever); it now fills the existing StructDef in
+   place, keeping the pointer identity every `ptr:Tag` Type already handed out
+   depends on.
+2. `typedef struct Tag { … } Name;` after a `struct Tag;` — this shape parses its
+   body **anonymously** and never registers `Tag` at all, so the tag is adopted
+   from the anon shape explicitly.
+3. `typedef struct Tag Name;` where `Name` was forward-declared — the alias
+   registration path upgrades an existing opaque entry instead of skipping it
+   (`(when (= (lookup-struct tname) null) …)` previously meant "already known,
+   leave alone").
+
+### Diagnostics
+
+`reject-opaque-type` + `opaque-sdef-of` live in **`src/type-utils.nuc`**, not
+beside `register-struct` in `abi.nuc`: `type-to-ir` is in type-utils and a call
+from there up into abi.nuc would be an unresolved cross-import forward reference
+(the wall SM-5 documents). Message shape:
+
+```
+<path>:<line>: error: sizeof: 'CHOpaque' is an opaque type declared at ./foo.h:11; only pointers to it are valid
+```
+
+Six explicit call sites, each with a node in hand so the location is exact:
+`emit-sizeof`, `emit-alloca-form`, `emit-field-get` and `emit-get-intrinsic`
+(beside the existing `union-field-guard` — the same guard slot), `emit-defn`'s
+parameter loop and return type, and `emit-defstruct`'s field loop. Plus a
+**backstop in `type-to-ir`'s TY-STRUCT/TY-UNION branch** using the ambient
+`g-form-line`, so no path can put an undefined `%Foo` into an IR stream and turn
+a source-level mistake into an LLVM parse error thousands of lines later. All 149
+`type-to-ir` call sites are IR emission (no describe-only caller), so the backstop
+cannot fire during a probe.
+
+The header:line provenance comes from clang -E's `# N "file"` linemarkers, which
+the top-level scan loop now records (`cheader-note-linemarker` /
+`cheader-line-at`, best-effort by construction and never used to make a
+decision). Before this, a cheader StructDef recorded `g-source-path` — the `.nuc`
+file that did the importing — and line 0.
+
+### Premises in the brief/spec that proved wrong
+
+1. **"The fix is small and local: one branch."** It is not, for two reasons the
+   spec did not anticipate:
+
+   * **`c-parse-type` had to be taught to *ignore* opaque tags.** Its
+     `struct Tag` lookup is reached only for a **by-value** `struct Tag` in a
+     parameter, return, or field position, and it returns `ty-ptr` for an
+     *unregistered* tag. Registering opaque types without guarding it would have
+     turned those into `TY-STRUCT` and emitted `declare void @f(%Tag)` for an
+     undefined `%Tag` — trading today's wrong-ABI pointer for invalid IR, i.e.
+     manufacturing more of the §1.5 failure this stage exists to remove.
+     Converting those into a skip-with-warning is W3b's job; W3a preserves the
+     status quo exactly.
+   * **The spec's own §1.6 probe cannot pass from import-time registration
+     alone.** `(defn f (w:ptr:SDL_Window):i32 …)` resolves its types in
+     `prescan-defn-signatures`, which runs **before any import is processed**, and
+     `prescan-imported-types` deliberately skips C-string imports ("no Nucleus
+     types; reading would invoke clang"). So a C header type in a **signature**
+     was unresolvable independently of opaque registration. W3a adds
+     `cheader-prescan-opaque` — a name-only scan (`cheader-scan-opaque-decl`)
+     hooked into `prescan-imported-types` — that registers exactly the names the
+     real import will define, so the real import then upgrades the same entries
+     and emits the same single type definition. This also fixed the neighbouring
+     asymmetry (`ptr:Mix_Music` resolving in a signature while the fully-defined
+     `ptr:Mix_Chunk` did not).
+
+2. **"`unknown type:` currently reports `:0:` … W4a did not reach this one."**
+   True, and the root cause is one level up from the raise: `prescan-defn-signatures`
+   resolved a signature's types against `((ptr:Node name-node) line)` — the defn's
+   **name**, an interned NODE-SYM whose line is always 0 — and `desugar-typed`
+   stamped every desugared binding cell with `(n line)` from the same kind of
+   interned symbol. Fixed at both: the prescan borrows the return operand's line
+   (falling back to the defn form's), and `desugar-typed` / `desugar-params` /
+   `desugar-let-bindings` now take an `encl` fallback line from the enclosing
+   form. That last change gives a real line to *every* diagnostic raised off a
+   defn parameter, `defvar`/`extern`/`declare` name, `defstruct` field, or
+   `let`/`with` binding name — the parameter case now reports the parameter
+   **list's** line rather than the defn's.
+
+3. **"`SDL2/SDL.h` does not import cleanly — it dies in the §1.5 invalid-IR
+   path."** Both halves were true, but they are sequenced: the *old* compiler
+   never reached §1.5 for the spec's two-line probe, because it died first at
+   `unknown type: SDL_Window` (`:0:`). §1.6 is now fixed for it — the probe's
+   `--emit-llvm` exits 0 — and it fails at the §1.5 defect only when the IR is
+   actually parsed (`nucleusc … -o out` → `declare void @_mm_clflush(void, ptr)`,
+   "void type only allowed for function results"). **`--emit-llvm` never parses
+   the IR**, so exit 0 there is not evidence of a valid module; W3b's gate is
+   unchanged and still needed. `SDL2/SDL_mixer.h` remains the clean §1.6 vehicle.
+
+4. **`MAX-STRUCTS` (256) is now reachable.** It was a per-program-types bound;
+   opaque registration makes the registry scale with *header* size instead.
+   Measured: `SDL.h` + `SDL_mixer.h` + `png.h` in one unit needs **between 200 and
+   256** slots (fails at 200, passes at 256) — one more umbrella header would have
+   broken it. Raised to 1024; `g-structs` is a `Vector`, so the constant is only a
+   runaway-growth guard, not a preallocation.
+
+### Incidental fix: preprocessed-header caching (and a latent double-free-shaped bug)
+
+`clang -E -x c -include <path> /dev/null` is a pure function of the path, but a C
+header import is deliberately **not** deduplicated (each import may alias under a
+different prefix), so a header was preprocessed once per `(import-use …)` naming
+it — and W3a's name pre-scan would have added one more. `cheader-preprocess` now
+caches the text by path: a `hello.nuc` build went from **5 clang invocations to
+3**, and is ~30% faster end to end than before W3a rather than ~40% slower.
+
+Sharing the buffer surfaced that `emit-c-include` ended with **`(free buf)`**.
+With a fresh buffer per call that was correct; with a shared one it left every
+later reader walking freed memory, which presented as a *hang* (the parser
+looping over garbage), not a crash — and only on the **second** import of the
+same header, i.e. not in any single-header test. Removed; the cache owns the
+buffer, and since nothing ever freed the buffers that outlive the parse anyway,
+total allocation strictly went down.
+
+### Tests
+
+* `examples/cheader-opaque.nuc` + `tests/expected/cheader-opaque.out` +
+  `tests/fixtures/cheader-opaque.h` — the **runnable** half: a real
+  `tmpfile`/`fprintf`/`fseek`/`fgets`/`fclose` round trip through `ptr:FILE`
+  (including a `defn` whose parameter is `ptr:FILE`), a never-defined tag and a
+  typedef alias of one used as pointers, and all three upgrade orderings.
+* `tests/fixtures/w3a-opaque-{sizeof,alloca,field,param,return}.nuc` — pinned with
+  `run_reject_at`, so the message text **and** the `<path>:<line>:` prefix are
+  both asserted. They use the fixture header's `CHOpaque`, not `FILE`:
+  whether `FILE` is opaque depends on the host libc's `struct _IO_FILE` body, and
+  a rejection test must not.
+* `run_w3a_opaque_provenance` — pins the `declared at <header>:11` half (the path
+  is host-dependent for a system header, so `run_reject_at` cannot).
+* `run_w3a_sdl_mixer` — compile-only (linking needs `-lSDL2_mixer`;
+  `run-tests.sh` has no per-test link-flag mechanism), SKIPs cleanly without the
+  SDL2 headers. Asserts the **emitted IR**: `%Mix_Chunk` has a real layout and a
+  real GEP, the opaque handle is passed as a plain `ptr`, and `%Mix_Music` never
+  appears as an LLVM aggregate type.
+* `tests/fixtures/w3a-unknown-type-{param,return}.nuc` — the located
+  `unknown type:`; also feed the `run_no_line_zero` sweep.
+
+### Header ladder reached
+
+* **Rung 1** (`<unistd.h>`, `<fcntl.h>`): imports cleanly; the §1.4 `off_t`
+  defect is untouched (W3c).
+* **Rung 3** (`SDL2/SDL_mixer.h`): opaque `Mix_Music` and fully-defined
+  `Mix_Chunk` both usable from one import, in signature position — the accept
+  criterion for §1.6.
+* **Rung 2** (`SDL2/SDL.h`): §1.6 no longer blocks it (`ptr:SDL_Window` resolves);
+  blocked on **§1.5** only.
+
+### Newly observed, not fixed here
+
+* **`Uint8`/`Uint32`-typed fields degrade to `ptr`.** `Mix_Chunk.volume`
+  (`Uint8`) types as `ptr`, so `(c volume)` fails a `return type mismatch` while
+  `(c allocated)` (`int`) works. This is §1.4's typedef-chain defect showing up in
+  a *field* rather than a return type; W3c should cover it. It is why the
+  SDL_mixer fixture reads `allocated`.
+* A `struct Tag *fn(…);` at header top level still registers only the tag and
+  skips the function (pre-existing); the tag being registered opaque is new and
+  makes `ptr:Tag` usable, which is a strict improvement.

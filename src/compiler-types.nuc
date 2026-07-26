@@ -4,7 +4,12 @@
 ; Constants
 ; ============================================================
 
-(defconst MAX-STRUCTS 256)
+; Stage 15 W3a: opaque forward declarations from a C header now each take a
+; registry slot (a mainstream umbrella header such as SDL2/SDL.h carries ~21
+; `struct X;` forward decls plus their typedef aliases), so the cap is no longer
+; bounded by the number of *Nucleus* types in a program. g-structs is a Vector,
+; so the cap is purely a runaway-growth guard, not a preallocation size.
+(defconst MAX-STRUCTS 1024)
 (defconst MAX-CAST-RULES 256)
 ; Stage 10 unions (design/stage10/unions.md)
 (defconst MAX-UNIONS 128)
@@ -160,6 +165,23 @@
   emitted:i32       ; type definition already written to IR (vs. name-only pre-registration)
   src-file:CStr     ; source file where defined (cheader/anon struct provenance)
   src-line:i32
+  ; --- Stage 15 W3a: opaque (forward-declared) C types ---
+  ; 1 = the type's NAME is known but its LAYOUT is not: a C header forward
+  ; declaration (`struct Foo;` / `typedef struct Foo Foo;`) with no body in any
+  ; header we parsed, or a body the C parser could not represent. Such a type is
+  ; legal only behind a pointer (`ptr:Foo` / `(ref Foo)` — the C opaque-handle
+  ; idiom); every use that needs a size or a layout is rejected with a located
+  ; diagnostic (reject-opaque-type, src/type-utils.nuc) instead of emitting a
+  ; reference to an LLVM type that was never defined. Cleared by
+  ; struct-set-fields — the single chokepoint that gives a StructDef its layout —
+  ; so a later full definition upgrades the entry in place.
+  opaque:i32
+  ; For a C `typedef struct Tag Name;` alias, the StructDef of `Tag`. The alias
+  ; is a separate registry entry (lookup-struct is keyed by name) that shares the
+  ; tag's shape; this link is what lets a later `struct Tag { … }` body upgrade
+  ; every alias registered before it (struct-upgrade-aliases, src/cheader.nuc).
+  ; null for every non-alias StructDef.
+  (alias-of (raw StructDef))
   ; --- Stage 10 unions ---
   is-union:i32      ; 1 = untagged union: all fields at offset 0, size = max member
   (udef (raw UnionDef)) ; UnionDef* when this struct is a defunion backing struct, else null

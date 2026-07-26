@@ -31,6 +31,63 @@
 ; C header parsing (clang -E)
 ; ============================================================
 
+; Stage 15 W3a: provenance of the declaration currently being parsed, so a
+; diagnostic about an opaque type can name the *header* and line it was declared
+; on rather than the .nuc file that imported it (g-source-path). clang -E keeps
+; `# <line> "<file>"` linemarkers in its output; emit-c-include records the most
+; recent one and the buffer offset just past it, and cheader-line-at recovers a
+; line by counting the newlines in between. Best effort by construction (a
+; linemarker inside a struct body is not re-read), which is the right bar for a
+; provenance note — it is never used to make a decision.
+; (Set at the top of emit-c-include, before any declaration is parsed; a global
+; string *initializer* would have to be an LLVM constant, so it is assigned
+; there rather than here.)
+(defvar g-cheader-file:CStr)
+(defvar g-cheader-dline:i32 1)
+(defvar g-cheader-dpos:i64 0)
+
+; Stage 15 W3b: set by c-parse-type when it meets a by-value aggregate it has no
+; layout for, cleared per declaration by c-parse-func-decl (which is what makes
+; it declaration-scoped). A global rather than an out parameter because
+; c-parse-type has six call sites across three parse paths and only the
+; function-declaration path acts on it. Declared here, above c-parse-type, since
+; a global must be defined before the first form that references it.
+(defvar g-cheader-unrep:i32 0)
+
+; The source line of buffer offset `pos`, per the last recorded linemarker.
+(defn cheader-line-at (buf:ptr pos:i64):i32
+  (let (n:i32 g-cheader-dline
+        i:i64 g-cheader-dpos)
+    (while (< i pos)
+      (when (= (char-at buf i) 10) (inc! n))
+      (set! i (+ i 1)))
+    (return n)))
+
+; Record a `# <line> "<file>"` linemarker occupying [pos, nl-end). `nl-end` is
+; the offset of the first character of the following line.
+(defn cheader-note-linemarker (buf:ptr pos:i64 nl-end:i64 len:i64):void
+  (let (p:i64 (+ pos 1))
+    ; digits (the line number of the NEXT line)
+    (set! p (c-skip-ws buf p len))
+    (let (start:i64 p
+          v:i32 0)
+      (while (and (< p nl-end) (!= (isdigit (as i32 (char-at buf p))) 0))
+        (set! v (+ (* v 10) (- (as i32 (char-at buf p)) 48)))
+        (set! p (+ p 1)))
+      ; A `#pragma`/`#ident` line (no digits) carries no position information.
+      (when (= p start) (return))
+      (set! g-cheader-dline v)
+      (set! g-cheader-dpos nl-end)
+      ; optional "file"
+      (set! p (c-skip-ws buf p len))
+      (when (and (< p nl-end) (= (char-at buf p) 34))
+        (set! p (+ p 1))
+        (let (fstart:i64 p)
+          (while (and (< p nl-end) (!= (char-at buf p) 34))
+            (set! p (+ p 1)))
+          (set! g-cheader-file (arena-strndup (unsafe/ptr+ (as ptr:i8 buf) fstart)
+                                              (- p fstart))))))))
+
 ; Skip whitespace in buffer, returning new position.
 (defn c-skip-ws (buf:ptr pos:i64 len:i64):i64
   (while (and (< pos len) (!= (isspace (as i32 (char-at buf pos))) 0))
@@ -103,6 +160,33 @@
           (return (+ pos 1))))
       (set! pos (+ pos 1)))
     (return pos)))
+
+; Stage 15 W3b: consume a run of C type qualifiers at `pos`, returning the
+; position after the last one (leading whitespace is skipped either way).
+;
+; C permits a qualifier *anywhere* in a declaration-specifier sequence and after
+; every `*`, so `int const *p` ("east const") denotes exactly the same type as
+; `const int *p`. Nucleus models neither, and the emitted LLVM type is identical
+; with or without them, so the parser consumes and discards a qualifier in every
+; legal position rather than representing it. Before this existed the parser
+; handled only the *leading* position: an east qualifier terminated the type, and
+; the qualifier token was then consumed as the parameter's *name*, leaving the
+; following `*p` to start a phantom SECOND parameter that defaulted to `ptr`
+; (cheader.md §1.5 — `void _mm_clflush(void const *__p)` became
+; `declare void @_mm_clflush(void, ptr)`, and `int const *p` the silently
+; representable-but-wrong `(i32, ptr)`).
+(defn c-skip-type-quals (buf:ptr pos:i64 len:i64):i64
+  (let (p:i64 (c-skip-ws buf pos len)
+        more:i32 1)
+    (while (!= more 0)
+      (set! more 0)
+      (let (te:i64 0
+            t:ptr (c-read-ident buf p len (as ptr:i64 (addr-of te))))
+        (when (or (= t "const") (= t "volatile") (= t "restrict")
+                  (= t "__restrict") (= t "__restrict__") (= t "_Atomic"))
+          (set! p (c-skip-ws buf te len))
+          (set! more 1))))
+    (return p)))
 
 ; Parse a C type from the buffer. Handles qualifiers (const, restrict, volatile,
 ; unsigned, signed, long, short, struct), pointer stars.
@@ -180,24 +264,17 @@
                         (set! pos (c-skip-parens buf pos len))))
                 true
                   (do (set! base-name tok) (set! pos tok-end) (set! done 1))))))))
-    ; Count pointer stars
-    (set! pos (c-skip-ws buf pos len))
+    ; W3b: qualifiers that trail the base type (`int const *p`) belong to the
+    ; declaration specifiers, not to the declarator — consume them here, before
+    ; the declarator is looked for. Runs for every base kind (builtin, typedef
+    ; name, `struct Tag`), since the specifier loop above exits through this
+    ; point in all of them.
+    (set! pos (c-skip-type-quals buf pos len))
+    ; Count pointer stars, each optionally followed by its own qualifiers
+    ; (`char * const p`, `int * restrict p`).
     (while (and (< pos len) (= (char-at buf pos) 42))
       (inc! ptr-depth)
-      (set! pos (+ pos 1))
-      (set! pos (c-skip-ws buf pos len))
-      ; Skip const/restrict after *
-      (let (check:i32 1)
-        (while (!= check 0)
-          (set! check 0)
-          (let (te:i64 0
-                t:ptr (c-read-ident buf pos len (as ptr:i64 (addr-of te))))
-            (when (or (= t "const")
-                      (or (= t "restrict")
-                          (= t "__restrict")))
-               (set! pos te)
-               (set! pos (c-skip-ws buf pos len))
-               (set! check 1))))))
+      (set! pos (c-skip-type-quals buf (+ pos 1) len)))
     (ptr-set! out-end pos)
     ; Struct/union base. struct {...} / struct Tag {...} parse the body to a
     ; TY-STRUCT (TY-UNION for unions); Tag references look up by tag;
@@ -212,11 +289,31 @@
             (ptr-set! out-end sd-end)
             (when (!= sd null)
               (return (as ptr (type-for-sdef sd))))
+            ; W3b: a BY-VALUE aggregate whose body we could not parse. `ptr` is
+            ; kept (a TY-STRUCT with no layout would put an undefined `%Tag` in
+            ; the IR), but the enclosing declaration is now recorded as one the
+            ; importer cannot describe — c-decl-skip-reason turns it into a
+            ; located skip-with-warning instead of a wrong-ABI declaration.
+            (set! g-cheader-unrep 1)
             (return ty-ptr)))
         (when (!= tag null)
           (let (sd:ptr (lookup-struct tag))
-            (when (!= sd null)
+            ; W3a: an OPAQUE tag must keep resolving to bare `ptr` here, exactly
+            ; as an unregistered tag did before opaque registration existed. This
+            ; branch is reached only for a BY-VALUE `struct Tag` in a parameter,
+            ; return, or field position — a shape the parser cannot lower at all
+            ; without a layout — and turning it into a TY-STRUCT would put an
+            ; undefined `%Tag` into a `declare`, i.e. trade today's wrong-ABI
+            ; pointer for invalid IR. Converting these into a skip-with-warning
+            ; is W3b's validity gate (cheader.md §1.5), not this phase.
+            (when (and (!= sd null)
+                       (= (-> sd (unsafe/cast ptr:StructDef _) (_ opaque)) 0))
               (return (as ptr (type-for-sdef sd))))))
+        ; W3b: fell through — a by-value `struct Tag` whose tag is opaque or
+        ; unknown. Same reasoning as the unparsable-body case above: keep `ptr`,
+        ; but mark the declaration unrepresentable so it is skipped rather than
+        ; silently given the wrong ABI.
+        (set! g-cheader-unrep 1)
         (return ty-ptr)))
     ; Resolve base type
     (when (= base-name null)
@@ -230,13 +327,94 @@
       (when (> ptr-depth 0) (return ty-ptr))
       (return base-type))))
 
+; ============================================================
+; Stage 15 W3b: the validity gate on a synthesized `declare` (cheader.md §1.5)
+;
+; A declaration the parser recognized as a function but cannot faithfully
+; describe must be SKIPPED with a located warning, not emitted. The alternative
+; is what §1.5 documented: `declare void @_mm_clflush(void, ptr)` reaching the
+; LLVM parser thousands of lines later as `failed to parse generated IR`, with no
+; indication of which header or which function caused it.
+;
+; The gate sits *after* successful recognition, deliberately. The "this is not a
+; function declaration at all" path (c-parse-func-decl returning 0) stays silent:
+; every typedef, variable, `static inline` body and macro remnant in a
+; preprocessed header goes through it legitimately, so warning there would bury
+; the real signal.
+;
+; Note what the gate cannot do: an unknown *type name* is not detectable here.
+; `c-parse-type` resolves an unfollowed typedef to `ptr` (cheader.md §1.4 —
+; `off_t`, `Uint8`), which is representable, so gating on "unresolved type names"
+; as the spec suggests would mean skipping a large fraction of every real header.
+; That is W3c's problem to fix at the source (resolve the chain), not this gate's
+; to paper over. The gate covers exactly the shapes that are *invalid or
+; meaningless as IR*.
+; ============================================================
+
+; Parameter-array capacity. Both a real bound (the array is a fixed arena block)
+; and the gate's cap: a declaration with more parameters than this is skipped
+; rather than silently truncated. Before W3b the array was 16 entries and
+; `num-params` was incremented past it, so `type-set-params` read off the end.
+(defconst C-MAX-PARAMS 32)
+
+; Function names already warned about, so a header imported twice (imports are
+; deliberately not deduplicated — each may alias under a different prefix) or
+; included transitively by two headers warns once. Node-cell string list, the
+; same shape as the import lists and the preprocessed-text cache.
+(defvar (g-cheader-skipped (raw Node)))
+
+(defn cheader-skip-warned (fname:CStr):i32
+  (let (cur:ptr g-cheader-skipped)
+    (while (!= cur null)
+      (let (e:ptr:Node (unsafe/cast ptr:Node cur))
+        (when (= (as CStr (e s)) fname) (return 1))
+        (set! cur (e cdr)))))
+  (return 0))
+
+; `<header>:<line>: warning: …` — the same shape as the compiler's other
+; warnings, but located in the C header (g-cheader-file / the clang -E
+; linemarkers) rather than in the .nuc file that imported it.
+(defn cheader-warn-skip (fname:CStr why:ptr dline:i32):void
+  (when (!= (cheader-skip-warned fname) 0) (return))
+  (set! g-cheader-skipped (import-list-push g-cheader-skipped fname))
+  (fprintf stderr "%s:%d: warning: skipping C declaration '%s': %s\n"
+           g-cheader-file dline fname why))
+
+; The reason this declaration cannot be emitted, or null if it can.
+;
+; The result is `ptr`, deliberately NOT `CStr`: the caller null-checks it, and a
+; `CStr`-typed operand makes `=`/`!=` lower to `strcmp` — `strcmp(why, NULL)`
+; segfaults the compiler with empty output (conventions.md, the string-type
+; lattice). Only the message *content* matters here, never its identity.
+(defn c-decl-skip-reason (unrep:i32 ret-type:raw:Type ptypes:ptr np:i32):ptr
+  (when (!= unrep 0)
+    (return "a by-value struct/union parameter or return type with no known layout"))
+  (when (> np C-MAX-PARAMS)
+    (return (fmt-i32 "more than %d parameters" C-MAX-PARAMS)))
+  (when (= ret-type null) (return "an unparsed return type"))
+  (when (!= (opaque-sdef-of ret-type) null) (return "an opaque return type"))
+  (dotimes (i:i32 np)
+    (let (pt:(raw Type) (as raw:Type (aref (as ptr:ptr ptypes) i)))
+      (when (= pt null) (return "an unparsed parameter type"))
+      ; `void` is legal only as a whole (empty) parameter list, which is consumed
+      ; before any parameter is recorded — so a recorded void parameter is always
+      ; a mis-parse, and `declare void @f(void, ptr)` is the IR LLVM rejects.
+      (when (= (pt kind) TY-VOID) (return "a 'void' parameter"))
+      (when (!= (opaque-sdef-of pt) null) (return "an opaque parameter type"))))
+  (return null))
+
 ; Parse one C function declaration from the buffer.
 ; Expects pos to be at the start of a declaration (after leading whitespace).
 ; Returns 1 if a function declaration was parsed, 0 otherwise.
 ; On success, registers the function in g-globals and emits LLVM declare.
 (defn c-parse-func-decl (buf:ptr pos:i64 len:i64 out-end:ptr:i64 line:i32):i32
+  ; W3b: the gate's per-declaration state. Cleared here rather than at the
+  ; c-parse-type call sites so a nested struct-body parse cannot leak a flag set
+  ; by an earlier top-level declaration into this one.
+  (set! g-cheader-unrep 0)
   ; Parse the return type
   (let (ret-end:i64 0
+        decl-start:i64 pos
         ret-type:ptr (c-parse-type buf pos len (as ptr:i64 (addr-of ret-end))))
     (set! pos ret-end)
     (set! pos (c-skip-ws buf pos len))
@@ -252,10 +430,16 @@
          (ptr-set! out-end pos) (return 0))
       (set! pos (+ pos 1))
       ; Parse parameters
-      (let (param-types:ptr (arena-alloc (* (as i64 16) (as i64 8)))
+      (let (param-types:ptr (arena-alloc (* (as i64 C-MAX-PARAMS) (as i64 8)))
             num-params:i32 0
             is-variadic:i32 0
-            pdone:i32 0)
+            pdone:i32 0
+            ; W3b: the declaration-level accumulator for "contains a by-value
+            ; aggregate with no layout". Seeded with the return type's verdict
+            ; (g-cheader-unrep was cleared at function entry, immediately before
+            ; the return type was parsed); each parameter contributes below,
+            ; *after* the post-parse type overrides have had their say.
+            unrep:i32 g-cheader-unrep)
         (while (= pdone 0)
           (set! pos (c-skip-ws buf pos len))
           (when (>= pos len) (set! pdone 1))
@@ -285,7 +469,9 @@
                          (set! pos (+ after-void 1))
                          (set! pdone 1)))))
                 (when (= pdone 0)
-                  ; Parse parameter type
+                  ; Parse parameter type. W3b: clear the by-value-aggregate flag
+                  ; first so it reports on THIS parameter only.
+                  (set! g-cheader-unrep 0)
                   (let (ptype-end:i64 0
                         ptype:ptr (c-parse-type buf pos len (as ptr:i64 (addr-of ptype-end))))
                     (set! pos ptype-end)
@@ -297,6 +483,10 @@
                       ; Skip second paren group (arg types)
                       (when (and (< pos len) (= (char-at buf pos) 40))
                         (set! pos (c-skip-parens buf pos len)))
+                      ; A pointer-to-function parameter is a pointer whatever its
+                      ; return/argument types were, so an aggregate met while
+                      ; parsing them says nothing about this parameter.
+                      (set! g-cheader-unrep 0)
                       (set! ptype ty-ptr))
                     ; Skip parameter name (if present)
                     (when (and (< pos len)
@@ -315,9 +505,20 @@
                         (set! pos (+ pos 1)))
                       (when (< pos len) (set! pos (+ pos 1)))
                       (set! pos (c-skip-ws buf pos len))
+                      ; An array parameter decays to a pointer in C, so an
+                      ; element type with no layout is not passed by value and
+                      ; the declaration stays representable — glibc's
+                      ; `utimensat(int, const char *, const struct timespec [2],
+                      ; int)` is the case that proved this must clear the flag.
+                      (set! g-cheader-unrep 0)
                       (set! ptype ty-ptr))
-                    ; Store parameter type
-                    (when (< num-params 16)
+                    ; W3b: this parameter's contribution to the gate, taken after
+                    ; every override above.
+                    (when (!= g-cheader-unrep 0) (set! unrep 1))
+                    ; Store parameter type. Over capacity the count still grows,
+                    ; so the gate below sees the real arity and skips the
+                    ; declaration instead of emitting a truncated one.
+                    (when (< num-params C-MAX-PARAMS)
                       (aset! (as ptr:ptr param-types) num-params ptype))
                     (inc! num-params)
                     (set! pos (c-skip-ws buf pos len))
@@ -347,6 +548,17 @@
         (when (and (< pos len) (= (char-at buf pos) 59))
           (set! pos (+ pos 1)))
         (ptr-set! out-end pos)
+        ; W3b validity gate (cheader.md §1.5). The declaration is consumed either
+        ; way — `out-end` is already past its semicolon, so returning 1 keeps the
+        ; caller from rescanning it — but a declaration the importer cannot
+        ; describe is dropped with a located warning instead of registered. Before
+        ; the collect-mode push: aliasing a name that was never registered would
+        ; produce a dangling `prefix/name`.
+        (let (why:ptr (c-decl-skip-reason unrep (as raw:Type ret-type)
+                                          param-types num-params))
+          (when (!= why null)
+            (cheader-warn-skip (as CStr fname) why (cheader-line-at buf decl-start))
+            (return 1)))
         ; Stage 12: in collect mode (a prefixed C-header import), record every
         ; parsed function name so the importer can alias it as prefix/name —
         ; even one the prelude already registered, which the new/existing guard
@@ -386,6 +598,48 @@
                 (fprintf g-out ")\n"))))
         (return 1)))))
 
+; ============================================================
+; Preprocessed-header cache (Stage 15 W3a)
+;
+; `clang -E -x c -include <path> /dev/null` takes no other input, so its output is
+; a pure function of the header path. The same header is preprocessed several
+; times per compilation — once per `(import-use "<path>")` that names it (a C
+; header import is deliberately NOT deduplicated, since each import may alias
+; under a different prefix), plus once for the W3a opaque name pre-scan. Caching
+; the text by path collapses that to one clang run per distinct header: a
+; `hello.nuc` build went from 5 preprocessor invocations to 3 even after W3a added
+; its pre-scan pass. The buffers were never freed before either (they outlive the
+; parse via the Types built from them), so this strictly reduces allocation.
+;
+; The cache reuses a Node cell as its record, exactly as the import lists do:
+; `s` = header path, `car` = the buffer, `i` = its length.
+; ============================================================
+(defvar (g-cheader-cache (raw Node)))
+
+(defn cheader-preprocess (header-path:ptr out-len:ptr:i64):ptr
+  (let (cur:ptr g-cheader-cache)
+    (while (!= cur null)
+      (let (e:ptr:Node (unsafe/cast ptr:Node cur))
+        (when (= (as CStr (e s)) (as CStr header-path))
+          (ptr-set! out-len (e i))
+          (return (as ptr (e car))))
+        (set! cur (e cdr)))))
+  (let (cmd:ptr (alloca i8 512))
+    (snprintf cmd (as i64 512) "clang -E -x c -include %s /dev/null 2>/dev/null" header-path)
+    (let (buf-len:i64 0
+          buf:ptr (read-pipe-output cmd (as ptr:i64 (addr-of buf-len))))
+      (when (= buf null) (ptr-set! out-len 0) (return null))
+      (let (n:ref:Node (new Node))
+        (.set! n kind NODE-STR)
+        (.set! n line 0)
+        (.set! n i buf-len)
+        (.set! n s (intern-str header-path))
+        (.set! n car buf)
+        (.set! n cdr g-cheader-cache)
+        (set! g-cheader-cache (as raw:Node n)))
+      (ptr-set! out-len buf-len)
+      (return buf))))
+
 ; Read all output from a popen'd command into a malloc'd buffer.
 ; Returns the buffer (null-terminated). Sets out-len to the length.
 (defn read-pipe-output (cmd:ptr out-len:ptr:i64):ptr
@@ -416,11 +670,91 @@
   (when (!= (strstr ((as ptr:Target g-target) triple) "windows") null) (return 4))
   (return 8))
 
+; Stage 15 W3a: give a header-derived StructDef its fields and write its LLVM
+; type definition. Factored out of c-parse-struct-body so the fresh-registration
+; path and the opaque-upgrade path emit *exactly* the same definition — a tag
+; that was forward-declared first must end up indistinguishable from one whose
+; body came first.
+(defn cheader-struct-define (sd:ptr:StructDef fnames:ptr ftypes:ptr
+                             nfields:i32 is-union:i32):void
+  ; struct-set-fields also clears `opaque` (abi.nuc) — the layout is now known.
+  (struct-set-fields sd fnames ftypes nfields)
+  (if (!= is-union 0)
+    ; Named union: members at offset 0; the IR type definition is deferred
+    ; until member layouts are final (drain-pending-union-irs).
+    (do
+      (.set! sd is-union 1)
+      (conj g-pending-unions sd))
+    (do
+      (fprintf g-type-stream "%%%s = type { " (sd ir-name))
+      (let (i:i32 0)
+        (while (< i nfields)
+          (when (!= i 0) (fprintf g-type-stream ", "))
+          (fprintf g-type-stream "%s" (type-to-ir (aref (as ptr:ptr ftypes) i)))
+          (inc! i)))
+      (fprintf g-type-stream " }\n\n"))))
+
+; Stage 15 W3a: make `dst` share `src`'s layout and write `dst`'s own LLVM type
+; definition. Used for a `typedef struct Tag Name;` alias entry (which is a
+; separate registry entry because lookup-struct is keyed by name) and to upgrade
+; an entry that was registered opaque before its definition was reached. The
+; `fields` Vector is immutable after build, so sharing the handle is sound.
+(defn cheader-adopt-shape (dst:ptr:StructDef src:ptr:StructDef):void
+  (.set! dst fields (src fields))
+  (.set! dst num-fields (src num-fields))
+  (.set! dst opaque 0)
+  (if (!= (src is-union) 0)
+    ; Union: same deferred-definition path as the tag (drain-pending-union-irs).
+    (do
+      (.set! dst is-union 1)
+      (conj g-pending-unions dst))
+    (do
+      (fprintf g-type-stream "%%%s = type { " (dst ir-name))
+      (let (k:i32 0
+            nf:i32 (src num-fields))
+        (while (< k nf)
+          (when (!= k 0) (fprintf g-type-stream ", "))
+          (fprintf g-type-stream "%s"
+            (type-to-ir ((field-at (src fields) k) type)))
+          (inc! k)))
+      (fprintf g-type-stream " }\n\n"))))
+
+; Stage 15 W3a: propagate a just-upgraded tag's layout to every
+; `typedef struct Tag Name;` alias that was registered while Tag was still
+; opaque. `alias-of` is the only link between the two registry entries.
+(defn struct-upgrade-aliases (tag:ptr:StructDef):void
+  (dotimes (i (unsafe/cast i32 (count g-structs)))
+    (let (a:ptr:StructDef (as ptr:StructDef (invoke g-structs (as usize i))))
+      (when (and (= (as ptr (a alias-of)) (as ptr tag)) (!= (a opaque) 0))
+        (cheader-adopt-shape a tag)))))
+
+; Stage 15 W3a: register a C type whose name is known but whose layout is not —
+; `struct Foo;` (a forward declaration) or the `Foo` of
+; `typedef struct Bar Foo;`. `ptr:Foo` then resolves; any by-value use is
+; rejected with this declaration's header:line (reject-opaque-type). Returns the
+; entry (existing or new); never overwrites an already-known layout, so a
+; repeated forward declaration — glibc's stdio.h carries `struct _IO_FILE;`
+; three times — and a forward declaration *after* the definition are both no-ops.
+(defn cheader-register-opaque (name:ptr line:i32 is-union:i32
+                               alias-of-sd:raw):ptr
+  (let (existing:ptr (lookup-struct name))
+    (when (!= existing null) (return existing)))
+  (let (sd:ptr:StructDef (register-struct (intern-str name)))
+    (.set! sd opaque 1)
+    (.set! sd is-union is-union)
+    (.set! sd alias-of (as raw:StructDef alias-of-sd))
+    (.set! sd src-file g-cheader-file)
+    (.set! sd src-line line)
+    (return (as ptr sd))))
+
 ; Parse a C struct/union body `{ field; field; ... }` into a StructDef.
 ; tag-name null means anonymous (memoized by shape); is-union selects the
 ; union registration path (members at offset 0, deferred IR type definition).
 ; Returns the StructDef* or null on skip.
 (defn c-parse-struct-body (buf:ptr pos:i64 len:i64 out-end:ptr:i64 tag-name:ptr is-union:i32):ptr
+  ; W3a: the declaration's own header:line, captured before `pos` advances, so a
+  ; later diagnostic about this type points at the C declaration.
+  (let (decl-line:i32 (cheader-line-at buf pos))
   ; Expect '{' at pos.
   (when (or (>= pos len) (!= (char-at buf pos) 123))
     (ptr-set! out-end pos) (return null))
@@ -498,27 +832,23 @@
       (if (!= is-union 0)
         (return (lookup-or-make-anon-union fnames ftypes nfields))
         (return (lookup-or-make-anon-struct fnames ftypes nfields))))
+    ; W3a: an entry may already exist under this tag. A *defined* one is returned
+    ; unchanged (a header included twice, or the tag also declared in Nucleus
+    ; source). An *opaque* one — a `struct Tag;` forward declaration seen earlier,
+    ; which is the order real C headers use — is upgraded IN PLACE: the same
+    ; StructDef*, so every `ptr:Tag` Type already handed out gains the layout too.
     (let (existing:ptr (lookup-struct tag-name))
-      (when (!= existing null) (return existing)))
+      (when (!= existing null)
+        (let (esd:ptr:StructDef (as ptr:StructDef existing))
+          (when (= (esd opaque) 0) (return existing))
+          (cheader-struct-define esd fnames ftypes nfields is-union)
+          (struct-upgrade-aliases esd)
+          (return existing))))
     (let (sd:ptr:StructDef (register-struct (arena-strdup tag-name)))
-      (struct-set-fields sd fnames ftypes nfields)
-      (.set! sd src-file g-source-path)
-      (.set! sd src-line 0)
-      (if (!= is-union 0)
-        ; Named union: members at offset 0; the IR type definition is
-        ; deferred until member layouts are final (drain-pending-union-irs).
-        (do
-          (.set! sd is-union 1)
-          (conj g-pending-unions sd))
-        (do
-          (fprintf g-type-stream "%%%s = type { " tag-name)
-          (let (i:i32 0)
-            (while (< i nfields)
-              (when (!= i 0) (fprintf g-type-stream ", "))
-              (fprintf g-type-stream "%s" (type-to-ir (aref (as ptr:ptr ftypes) i)))
-              (inc! i)))
-          (fprintf g-type-stream " }\n\n")))
-      (return sd))))
+      (.set! sd src-file g-cheader-file)
+      (.set! sd src-line decl-line)
+      (cheader-struct-define sd fnames ftypes nfields is-union)
+      (return sd)))))
 
 ; Parse a top-level `struct Tag {...};`, `union Tag {...};`, or
 ; `typedef struct|union [Tag] {...} Name;`.
@@ -550,19 +880,64 @@
     (set! pos (c-skip-ws buf pos len))
     (let (tag:ptr null
           tag-end:i64 0
+          tag-line:i32 (cheader-line-at buf pos)
           maybe-tag:ptr (c-read-ident buf pos len (as ptr:i64 (addr-of tag-end))))
       (when (!= (as i64 (strlen maybe-tag)) 0)
         (set! tag maybe-tag)
         (set! pos tag-end)
         (set! pos (c-skip-ws buf pos len)))
-      ; Expect '{' for a definition (forward decls/uses fall back to skip).
+      ; W3a (cheader.md §1.6): no '{' means no body here. `struct Foo;` /
+      ; `typedef struct Foo Bar;` is C's opaque-handle idiom — the type NAME is
+      ; real even though its layout is not, and skipping the declaration outright
+      ; (the pre-W3a behavior) is what made every SDL handle type and `FILE`
+      ; unusable. Register the tag (and, for a typedef, the alias) as opaque so
+      ; `ptr:Foo` resolves; a by-value use is refused later with this header:line.
       (when (or (>= pos len) (!= (char-at buf pos) 123))
-        (ptr-set! out-end pos) (return 0))
+        (when (= tag null)
+          (ptr-set! out-end pos) (return 0))
+        (let (tag-sd:ptr (cheader-register-opaque tag tag-line is-union null))
+          (when (>= pos len)
+            (ptr-set! out-end pos) (return 0))
+          (if (!= is-typedef 0)
+            ; `typedef struct Foo Bar;` — Bar is a second opaque entry sharing
+            ; Foo's (future) layout through alias-of. When Bar spells the same
+            ; name as Foo (`typedef struct Mix_Music Mix_Music;`, the common
+            ; idiom) cheader-register-opaque finds the tag entry and returns it
+            ; untouched.
+            (let (ne:i64 0
+                  tname:ptr (c-read-ident buf pos len (as ptr:i64 (addr-of ne))))
+              (when (= (as i64 (strlen tname)) 0)
+                ; Not a plain identifier — `*Bar`, `(*fp)(…)`, an array
+                ; declarator. The tag is registered; the declaration itself is
+                ; a shape we do not model, so fall back to the caller's skip.
+                (ptr-set! out-end pos) (return 0))
+              (cheader-register-opaque tname tag-line is-union (as raw:StructDef tag-sd))
+              (set! pos ne))
+            ; Plain `struct Foo;`. Anything else after the tag (a `*` declarator,
+            ; a variable name, a function declarator) is not a forward declaration.
+            (when (!= (char-at buf pos) 59)
+              (ptr-set! out-end pos) (return 0)))
+          (set! pos (c-skip-ws buf pos len))
+          (when (and (< pos len) (= (char-at buf pos) 59))
+            (set! pos (+ pos 1)))
+          (ptr-set! out-end pos)
+          (return 1)))
       (let (body-end:i64 0
             sd:ptr (c-parse-struct-body buf pos len
                                         (as ptr:i64 (addr-of body-end))
                                         (if (!= is-typedef 0) null tag) is-union))
         (set! pos body-end)
+        ; W3a: a `typedef struct Tag { … } Name;` parses its body ANONYMOUSLY
+        ; (memoized by shape) and never registers `Tag` itself — so when `Tag`
+        ; was forward-declared earlier in the header it would stay opaque
+        ; forever. Adopt the shape into it (and into its own aliases) here.
+        (when (and (!= sd null) (!= is-typedef 0) (!= tag null))
+          (let (tsd:ptr (lookup-struct tag))
+            (when (!= tsd null)
+              (let (tsd2:ptr:StructDef (as ptr:StructDef tsd))
+                (when (!= (tsd2 opaque) 0)
+                  (cheader-adopt-shape tsd2 (as ptr:StructDef sd))
+                  (struct-upgrade-aliases tsd2))))))
         ; For typedef, the typedef name comes after the body and may
         ; differ from the inner tag. Register a separate StructDef
         ; under the typedef name pointing at the same shape — but if
@@ -573,30 +948,19 @@
                 tname:ptr (c-read-ident buf pos len (as ptr:i64 (addr-of ne))))
             (when (and (!= sd null)
                        (!= (as i64 (strlen tname)) 0))
-              ; Register as a second alias if not already known.
-              (when (= (lookup-struct tname) null)
-                (let (alias:ptr:StructDef (register-struct (arena-strdup tname)))
-                  ; The alias shares the tag's shape; the `fields` Vector is
-                  ; immutable after build, so sharing the handle is sound.
-                  (.set! alias fields ((as ptr:StructDef sd) fields))
-                  (.set! alias num-fields ((as ptr:StructDef sd) num-fields))
-                  (.set! alias src-file g-source-path)
-                  (.set! alias src-line 0)
-                  (if (!= is-union 0)
-                    ; Union alias: same deferred-definition path as the tag.
-                    (do
-                      (.set! alias is-union 1)
-                      (conj g-pending-unions alias))
-                    (do
-                      (fprintf g-type-stream "%%%s = type { " tname)
-                      (let (i:i32 0
-                            nf:i32 ((as ptr:StructDef sd) num-fields))
-                        (while (< i nf)
-                          (when (!= i 0) (fprintf g-type-stream ", "))
-                          (fprintf g-type-stream "%s"
-                            (type-to-ir ((field-at ((as ptr:StructDef sd) fields) i) type)))
-                          (inc! i)))
-                      (fprintf g-type-stream " }\n\n"))))))
+              ; Register as a second alias if not already known. W3a: an entry
+              ; that already exists because the alias name was forward-declared
+              ; opaque is upgraded in place instead of being skipped.
+              (let (prior:ptr (lookup-struct tname))
+                (if (= prior null)
+                  (let (alias:ptr:StructDef (register-struct (arena-strdup tname)))
+                    (.set! alias alias-of (as raw:StructDef sd))
+                    (.set! alias src-file g-cheader-file)
+                    (.set! alias src-line tag-line)
+                    (cheader-adopt-shape alias (as ptr:StructDef sd)))
+                  (let (psd:ptr:StructDef (as ptr:StructDef prior))
+                    (when (!= (psd opaque) 0)
+                      (cheader-adopt-shape psd (as ptr:StructDef sd)))))))
             (when (!= (as i64 (strlen tname)) 0)
               (set! pos ne))))
         ; Skip trailing __attribute__ if any.
@@ -618,12 +982,171 @@
         (ptr-set! out-end pos)
         (return 1)))))
 
+; ============================================================
+; Stage 15 W3a: opaque-name pre-scan for the signature prescan
+;
+; prescan-defn-signatures resolves every defn signature in a unit BEFORE any
+; import is processed, and prescan-imported-types deliberately skips C-string
+; imports (running clang for every header would double the preprocessing cost of
+; a build). That is exactly why `(defn play (m:ptr:Mix_Music):i32 …)` reported
+; `unknown type: Mix_Music` — and it is unaffected by registering opaque types at
+; import time, because the signature is resolved first. An opaque handle type in
+; a signature is *the* thing a C library API wants, so this recovers the
+; forward-declaration shapes ahead of the signature prescan.
+;
+; It is deliberately a NAME scan, not a second parse: only `struct X;` /
+; `union X;` / `typedef struct X Y;` (no `{`) register anything. A declaration
+; with a body is left entirely to the real import — which then upgrades these
+; entries in place (cheader-adopt-shape / the opaque branch of
+; c-parse-struct-body), so this pass emits no IR of its own and cannot change
+; what a body-bearing declaration produces.
+; ============================================================
+
+; Advance past the end of the current declaration: the next `;` at brace depth 0,
+; consuming balanced `{}` bodies whole. Linemarkers encountered on the way are
+; recorded so provenance stays accurate across a multi-line declaration.
+(defn cheader-skip-to-semi (buf:ptr pos:i64 len:i64):i64
+  (let (p:i64 pos
+        depth:i32 0
+        done:i32 0)
+    (while (and (= done 0) (< p len))
+      (let (c:i32 (as i32 (char-at buf p)))
+        (cond
+          (= c 123) (do (inc! depth) (set! p (+ p 1)))
+          (= c 125) (do (when (> depth 0) (set! depth (- depth 1)))
+                        (set! p (+ p 1)))
+          (= c 59)  (do (set! p (+ p 1)) (when (= depth 0) (set! done 1)))
+          (= c 35)  (let (dstart:i64 p)
+                      (while (and (< p len) (!= (char-at buf p) 10))
+                        (set! p (+ p 1)))
+                      (when (< p len) (set! p (+ p 1)))
+                      (cheader-note-linemarker buf dstart p len))
+          true      (set! p (+ p 1)))))
+    (return p)))
+
+; Skip a balanced `{ … }` starting at `pos` (which must be at `{`). Returns the
+; position just past the matching `}`.
+(defn cheader-skip-braces (buf:ptr pos:i64 len:i64):i64
+  (let (p:i64 (+ pos 1)
+        depth:i32 1)
+    (while (and (< p len) (> depth 0))
+      (let (c:i32 (as i32 (char-at buf p)))
+        (when (= c 123) (inc! depth))
+        (when (= c 125) (set! depth (- depth 1))))
+      (set! p (+ p 1)))
+    (return p)))
+
+; Scan one top-level construct at `pos`, registering the type NAME it introduces.
+; Returns the position to resume from.
+;
+; Which name is registered mirrors the real import exactly: the TAG of
+; `struct Tag …` and the DECLARATOR of `typedef struct [Tag] {…} Name;`. That
+; equality is what keeps this pass free of IR consequences — the real import then
+; upgrades the same entry in place and writes the same single `%X = type {…}` it
+; always did, rather than defining a second name.
+(defn cheader-scan-opaque-decl (buf:ptr pos:i64 len:i64):i64
+  (let (te:i64 0
+        tok:ptr (c-read-ident buf pos len (as ptr:i64 (addr-of te)))
+        is-typedef:i32 0
+        is-union:i32 0
+        p:i64 pos)
+    ; Punctuation (not an identifier): step one character so the caller's loop
+    ; always makes progress.
+    (when (= (as i64 (strlen tok)) 0) (return (+ pos 1)))
+    (set! p te)
+    (when (= tok "typedef")
+      (set! is-typedef 1)
+      (set! p (c-skip-ws buf p len))
+      (let (te2:i64 0
+            t2:ptr (c-read-ident buf p len (as ptr:i64 (addr-of te2))))
+        (when (and (!= t2 "struct") (!= t2 "union"))
+          (return (cheader-skip-to-semi buf p len)))
+        (when (= t2 "union") (set! is-union 1))
+        (set! p te2)))
+    (when (= is-typedef 0)
+      (cond
+        (= tok "struct") 0
+        (= tok "union")  (set! is-union 1)
+        true             (return (cheader-skip-to-semi buf p len))))
+    ; Optional tag, then optional body.
+    (set! p (c-skip-ws buf p len))
+    (let (decl-line:i32 (cheader-line-at buf p)
+          tend:i64 0
+          tag:ptr (c-read-ident buf p len (as ptr:i64 (addr-of tend)))
+          has-tag:i32 0)
+      (when (!= (as i64 (strlen tag)) 0)
+        (set! has-tag 1)
+        (set! p (c-skip-ws buf tend len)))
+      (when (>= p len) (return (cheader-skip-to-semi buf p len)))
+      (if (= (char-at buf p) 123)
+        ; Body present. Register the name the real import will define, so a defn
+        ; signature may name a fully-defined C struct too (`ptr:Mix_Chunk`), not
+        ; only an opaque handle.
+        (do
+          (set! p (cheader-skip-braces buf p len))
+          (if (!= is-typedef 0)
+            (let (ne:i64 0
+                  dname:ptr (c-read-ident buf (c-skip-ws buf p len) len
+                                          (as ptr:i64 (addr-of ne))))
+              (when (!= (as i64 (strlen dname)) 0)
+                (cheader-register-opaque dname decl-line is-union null)))
+            (when (!= has-tag 0)
+              (cheader-register-opaque tag decl-line is-union null))))
+        ; No body.
+        (when (!= has-tag 0)
+          (if (!= is-typedef 0)
+            ; `typedef struct X Y;` — register the tag, then Y as its alias. A
+            ; non-identifier here (`*Y`, `(*fp)(…)`) is a pointer/function typedef
+            ; we do not model, so only the tag is worth recording.
+            (let (ne:i64 0
+                  tname:ptr (c-read-ident buf p len (as ptr:i64 (addr-of ne)))
+                  tag-sd:ptr (cheader-register-opaque tag decl-line is-union null))
+              (when (!= (as i64 (strlen tname)) 0)
+                (cheader-register-opaque tname decl-line is-union
+                                         (as raw:StructDef tag-sd))))
+            ; `struct X;` (a forward declaration) or a `struct X *…` use — the tag
+            ; names a real type either way.
+            (cheader-register-opaque tag decl-line is-union null))))
+      (return (cheader-skip-to-semi buf p len)))))
+
+; Pre-register a C header's opaque type names. Never emits IR, never registers a
+; function, and never reports an error: a header that fails to preprocess here
+; fails again (with a diagnostic) at the real import.
+(defn cheader-prescan-opaque (header-path:ptr):void
+  (let (buf-len:i64 0
+        buf:ptr (cheader-preprocess header-path (as ptr:i64 (addr-of buf-len))))
+    (when (= buf null) (return))
+    (set! g-cheader-file (as CStr header-path))
+    (set! g-cheader-dline 1)
+    (set! g-cheader-dpos 0)
+    (let (pos:i64 0
+          prev:i64 -1)
+      (while (< pos buf-len)
+        (set! prev pos)
+        (set! pos (c-skip-ws buf pos buf-len))
+        (when (< pos buf-len)
+          (if (= (char-at buf pos) 35)
+            (let (dstart:i64 pos)
+              (while (and (< pos buf-len) (!= (char-at buf pos) 10))
+                (set! pos (+ pos 1)))
+              (when (< pos buf-len) (set! pos (+ pos 1)))
+              (cheader-note-linemarker buf dstart pos buf-len))
+            (set! pos (cheader-scan-opaque-decl buf pos buf-len))))
+        ; Progress guard (mirrors emit-c-include's): never spin.
+        (when (<= pos prev) (set! pos (+ prev 1)))))))
+
 (defn emit-c-include (header-path:ptr line:i32):void
-  ; Build clang -E command
-  (let (cmd:ptr (alloca i8 512))
-    (snprintf cmd (as i64 512) "clang -E -x c -include %s /dev/null 2>/dev/null" header-path)
-    (let (buf-len:i64 0
-          buf:ptr (read-pipe-output cmd (as ptr:i64 (addr-of buf-len))))
+  ; W3a: reset the linemarker provenance for this header. Until the first
+  ; `# N "file"` marker is seen, attribute declarations to the header we were
+  ; asked to import (never to line 0 — a `:0:` in a diagnostic is exactly what
+  ; W4a's guard forbids).
+  (set! g-cheader-file (as CStr header-path))
+  (set! g-cheader-dline 1)
+  (set! g-cheader-dpos 0)
+  ; The preprocessed text is cached by path (cheader-preprocess) — the same header
+  ; is imported by many library files, and the W3a name pre-scan reads it too.
+  (let (buf-len:i64 0)
+    (let (buf:ptr (cheader-preprocess header-path (as ptr:i64 (addr-of buf-len))))
       (when (= buf null)
         (die-at line (fmt-s "c-include: failed to preprocess '%s'" header-path)))
       ; Parse declarations
@@ -635,11 +1158,15 @@
           (set! pos (c-skip-ws buf pos buf-len))
           (when (< pos buf-len)
             (if (= (char-at buf pos) 35)
-              ; Skip # line directives
-              (do (while (and (< pos buf-len) (!= (char-at buf pos) 10))
+              ; Skip # line directives. W3a: record the linemarker first, so a
+              ; declaration parsed below can be attributed to the real header and
+              ; line rather than to the .nuc file that imported it.
+              (let (dstart:i64 pos)
+                  (while (and (< pos buf-len) (!= (char-at buf pos) 10))
                     (set! pos (+ pos 1)))
                   (when (< pos buf-len)
-                    (set! pos (+ pos 1))))
+                    (set! pos (+ pos 1)))
+                  (cheader-note-linemarker buf dstart pos buf-len))
               ; Try to read an identifier to check what kind of declaration
               (let (tok-end:i64 0
                     tok:ptr (c-read-ident buf pos buf-len (as ptr:i64 (addr-of tok-end))))
@@ -690,8 +1217,12 @@
                               (set! pos (+ pos 1)))))))))          ; Safety: if pos didn't advance, force it forward to avoid infinite loop
           (when (= pos prev-pos)
             (set! pos (+ pos 1)))))  ; closes when, while
-      (free buf))                               ; let(pos) close + free in let(buf-len)
-    (fprintf g-out "\n")))                      ; let(cmd), defn
+      ; W3a: `buf` belongs to the cheader-preprocess cache now — it is shared with
+      ; every other import of this header and with the opaque name pre-scan, so it
+      ; must NOT be freed here (the former `(free buf)` left every later reader
+      ; walking freed memory).
+      )                                         ; let(pos) close, in let(buf)
+    (fprintf g-out "\n")))                      ; let(buf-len), defn
 
 ; ============================================================
 ; C header emission (--emit-cheader)

@@ -18,7 +18,52 @@ A struct used directly (not behind `ptr`) as a `defn`/`declare` parameter or ret
 
 ## C header struct ingestion
 
-C headers consumed via `(import-use "foo.h")` or `(import "foo.h" prefix)` now register their `struct Foo { ... };` and `typedef struct { ... } Bar;` definitions as Nucleus structs with the same name. Anonymous inline struct fields are registered as memoized anonymous structs (same `__anon_struct_h<hex>` machinery). Pass-by-value parameters typed as a C struct work through this path. `union { ... }` fields, named unions, and `typedef union` are registered as untagged union types (see [Untagged `(union ...)`](#untagged-union-)); headers like SDL's or pthread's no longer degrade over them. Field types that the parser cannot represent yet (arrays, bitfields, multi-declarator lines like `int a, b;`) cause the whole struct to be skipped — registered as opaque `ptr` at use sites — rather than registering a layout-incompatible partial struct.
+C headers consumed via `(import-use "foo.h")` or `(import "foo.h" prefix)` now register their `struct Foo { ... };` and `typedef struct { ... } Bar;` definitions as Nucleus structs with the same name. Anonymous inline struct fields are registered as memoized anonymous structs (same `__anon_struct_h<hex>` machinery). Pass-by-value parameters typed as a C struct work through this path. `union { ... }` fields, named unions, and `typedef union` are registered as untagged union types (see [Untagged `(union ...)`](#untagged-union-)); headers like SDL's or pthread's no longer degrade over them. Field types that the parser cannot represent yet (arrays, bitfields, multi-declarator lines like `int a, b;`) cause the whole struct to be skipped — it becomes an **opaque type** (below) rather than a layout-incompatible partial struct.
+
+A header's type names are visible to `defn` **signatures** in the importing unit,
+not only inside function bodies — `(defn play (m:ptr:Mix_Music):i32 …)` resolves,
+even though signatures are resolved before imports are processed.
+
+## Opaque (forward-declared) C types
+
+A C header may name a type without defining it:
+
+```c
+struct SDL_Window;                        /* forward declaration    */
+typedef struct Mix_Music Mix_Music;       /* opaque handle typedef  */
+```
+
+This is C's standard opaque-handle idiom, and `FILE` is an instance of it on
+glibc. Nucleus registers the **name** with no layout, so:
+
+* **`ptr:Foo` / `(ref Foo)` / `(raw Foo)` are legal** — everywhere, including in
+  a `defn` signature. That is all a handle needs, and it is exactly what C
+  permits.
+* **Every by-value use is refused**, with the source location of the misuse *and*
+  the header and line the type was declared on:
+
+  ```
+  prog.nuc:8: error: sizeof: 'CHOpaque' is an opaque type declared at
+  ./foo.h:11; only pointers to it are valid
+  ```
+
+  The refused constructions are `(sizeof Foo)`, `(alloca Foo)`, field access
+  through a `ptr:Foo`, a by-value `defn` parameter or return type, and a
+  by-value `defstruct` field. A size is never guessed: a silently wrong one
+  would misjudge an allocation.
+* **A definition arriving later upgrades the entry in place.** Real headers write
+  `struct Foo;` first and `struct Foo { … };` afterwards (glibc's `<stdio.h>`
+  declares `struct _IO_FILE;` three times before defining it); the tag keeps its
+  identity, so a `ptr:Foo` written before the definition sees the fields. The
+  upgrade also reaches any `typedef struct Foo Bar;` alias registered while the
+  tag was still opaque.
+
+A type stays opaque either because no header in the translation unit defines it,
+or because its definition uses a construct the C declaration parser cannot
+represent (bitfields, arrays, multi-declarator lines) — `FILE` is the second
+kind. Both are usable as handles; neither can be used by value. `examples/cheader-opaque.nuc`
+is a worked example (a real `fopen`/`fprintf`/`fgets` round trip through
+`ptr:FILE`).
 
 ## Unions and tagged sums
 
