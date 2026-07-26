@@ -45,12 +45,259 @@ Remaining for follow-up 14.6 batches: `AbiInfo.kind` (explicitly SKIPPED, option
   **NS-6 done (2026-07-05)** — interning reconciliation, docs, conventions. `context/conventions.md`'s "`CStr` is ABI-identical to `ptr`" section was retitled **"The string-type lattice: `ptr` / `CStr` / `StrView`"** and rewritten to name all three types up front (`ptr` identity-`=`, `CStr` content-`=` single-word, `StrView` 16-byte borrowed-view struct — the `"…"` literal's type since NS-3) and state the interned-`ptr` substrate stays `ptr`. Three additions: (1) a free `StrView`→`CStr`/`ptr` coercion paragraph (the hidden-NUL hinge — a literal's `data[len]` is `\00`, so `data` is a sound `char*`; no IR for a chameleon, one `extractvalue` for a materialized view); (2) the mixed-operand `=`/`!=` rule extended to fire `strcmp` when either operand is `CStr` *or* `StrView` (a `StrView` operand contributes its `.data`); (3) the `Node.s` trap generalized — never retype an identity-`=` `ptr` to `CStr` *or* `StrView`, naming the NS-5 exclusion list (`Node.s`, scope keys, struct-field names). The dispatch asymmetry note now records that a `StrView` argument adapts to a `CStr` parameter but not a bare `ptr` parameter. The interning distinction (`g-strs` per-literal rodata emitter vs `intern-str` `ptr`-identity dedup — §1.4 of the design doc) is unchanged and documented. `docs/strings.md` §3 and `docs/types.md` were already written during NS-3/NS-4 (the literal-type paragraph, the coercion-lattice row, the `"…"`/`c"…"` literal-type table) and needed no further edit; `docs/toplevel.md` does not name the literal's type and needed none. Gate: docs + one conventions note only; no IR, no code, byte-identical by construction. The native-strings workstream is **complete** (NS-1 through NS-6 all done). Further `StrView` adoption in `src/` is possible (the remaining 8 `intern-string` ptr callers, format helpers, sanitize seams) but is now ordinary per-site optimization work, not a tracked phase. | [stage14/native-strings.md](stage14/native-strings.md) |
 | 14 (target-typed-ctors) | Target-typed generic constructors — a one-shot downward expected-type ("want") channel from declared-type positions (let/with init, `set!` RHS, `return`, `.set!` value) into generic resolution, filling tyvars the arguments left unbound; lifts the return-only-tyvar registration gate so zero-arg constructors become value-returning generics | **TC-1 + TC-2 done (2026-07-08); the def-time gate "type variable '%s' is not determined by any parameter" is retired (return-only tyvars register as METHOD-GENERIC; `determined` retained as advisory, re-derived at resolution via `method-undetermined-tyvar` for the dedicated diagnostic). `generic-resolve`/`generic-resolve-adapt-tier`/`generic-method-bind`/`generic-method-bind-adapt`/`node-type-call` (src/generics.nuc) carry a `want:?ptr:Type`; when tyvars stay unbound after args+assoc, `unify-tpat` fills them from want over the return pattern (fill-only — sets a still-null slot, never overrides an arg binding; inert when want is null or the bind is already complete, so every existing generic is untouched). New `g-want-type` (src/nucleusc.nuc:194, beside `g-fn-ret-type`) is armed at `emit-let`/`emit-with` binding inits, `emit-set` RHS, explicit + implicit `emit-return`, and `emit-field-set` value position (save/set/restore), and consumed once at `emit-generic-call` entry (read into a local + nulled before emitting arguments, so an argument sub-call never inherits the outer want). `generic-resolve` now reports `cannot infer type variable '%s' for '%s': no expected type at this position — annotate the binding` (via `method-undetermined-tyvar`) instead of the misleading `no matching method`. node-type mirror: `node-type-call` takes want; checker/dispatcher callers (gcheck, valid-walk, the `node-type` dispatcher) pass `null` → a want-dependent call types as null (the documented escape hatch). **Gate**: `make` clean; `make bootstrap` stage1==stage2 (byte-identical, additive by construction — no return-only generics exist in-tree, want is only consulted when tyvars stay unbound); scratch test proves want fills T=i32 (a `(Box i32)` binding stamps `%Box.i32`) and the no-want case yields the new diagnostic. `make test` green except one **pre-existing, unrelated** failure (`examples/string-test.nuc:91`, Stage-10 escape analysis × the `with`-refactor commit `0d1ac6a`; reproduces with committed pre-TC `bin/nucleusc`). **TC-3 done (2026-07-08)** — binding materialization (value→ref at declared-ref bindings). New coercion rule at `let`/`with` binding position only: when the declared type is `(ref S)` for a struct `S` and the init value is a by-value `S`, the compiler materializes — allocas an `S` backing slot, stores the value, and binds the name as the ref to that slot — instead of today's `let: init type mismatch` death. Implementation: `tc3-emit-binding-init` (src/nucleusc.nuc:5536) + `tc3-materialize` (:5508) factor the want-derivation + emit-once + materialize logic shared by `emit-let` (:5632) and `emit-with` (:5709). The want passed to the init is derived from the declared type via two non-emitting `node-type` probes (deterministic, two probes max): probe 1 arms the whole `(ref S)` (what heap constructors return — TC-4); probe 2, only if probe 1 fails to resolve, arms the pointee `S` and arms materialization iff the resolved return is by-value `S`. To make the probe drive generic resolution, `node-type-call`'s tier-2 (src/generics.nuc:3685) now falls back to the armed `g-want-type` when no explicit want is passed — safe under the consume-once discipline (the channel is nulled before any stamping/cross-check, so self-compilation, which has no return-only generics, is unaffected). Drop/move/escape need **no new rules**: the materialized backing is frame storage, and `with` ownership drops it through the existing `with-drop-method` TY-PTR arm. **§1.2 residual verified**: a stamped parametric `(Box i32)` with a printing `drop`, bound via `with`, prints `body 42 / dropped box 42 / end` (the METHOD-GENERIC drop instantiation at with-drop-method works). **Test**: a concrete `make-res` by-value constructor bound `(let ((v (ref Res)) (make-res)) (v n))` returns 42 (was: `let: init type mismatch`); emitted IR shows the `%tc3.mat.N = alloca %Res` + `store %Res` + `store ptr %tc3.mat.N` shape; with a Drop method + `with`, the drop fires at scope end. **Gate**: `make` clean; `make test` 166/166; `make bootstrap` stage1==stage2 (byte-identical, additive — materialization fires only where today's emit dies, so no compiler-internal binding shifts). **TC-4/TC-5 remain.** Boundary note for TC-4: a generic function returning a struct-template type is still rejected at def-time — `(defn make-box ((v T)):Box …)` dies `unknown type: Box` (union-registry.nuc:291), and `(defn vec-empty () (Vector T) …)` dies `unable to parse type expression`; the struct-template-as-type-in-generic-context resolution is TC-4's prerequisite. TC-3's materialization rule is independent and fully exercised via concrete constructors regardless. **TC-4a done (2026-07-08)** — the gcheck A2 false-positive for struct-template type operands is fixed. `gcheck` (src/generics.nuc:~1934) now recognizes a cell whose head names a registered struct template (via `node-template-of`) and defers (returns null) instead of walking it as an unknown-function call, so `(alloca (Box T))` / `(cast (Box T) x)` / `(sizeof (Vector T))` type operands in a generic body no longer die `in generic body: unknown function 'Box'`. Chosen integration: struct-template-head recognition only (not form-specific alloca/cast/sizeof skipping) — it is the most direct fix for the root cause (struct-template cells mis-walked as calls) and handles every type-operand position uniformly; no new helper function (inlined one `when`). Inert for existing code: after full SSA-temp + `@.str.N` normalization the only self-IR change is inside `gcheck` (gcheck is itself compiled into the compiler, so the literal `nucleusc.ll` before/after diff is non-empty — the real byte-identical gate for a self-hosted-compiler edit is `make bootstrap` stage1==stage2 + per-program IR identity, both green); `make test` 166/166. Verified: local `(defstruct (Box T) (val i32))` + `box-empty` body `(let (s (alloca (Box T))) (.set! s val 0) (return (deref s)))` bound `(let (b:(Box i32) (box-empty)) …)` prints `0`; real `Vector` via `(defn vec-ensure-fresh ((r (ref (Vector T)))) (let (tmp (alloca (Vector T))) (vector-init tmp) (conj tmp 7)))` + `conj` prints `len=1`. **TC-4b still needed:** (1) `gbind-decl-type` dies on a *declared* struct-template binding type mentioning a tyvar (`(let ((s (ref (Box T))) …) …)` → `unknown type: T`) — the design's constructors use untyped bindings inferred from `alloca`, so this doesn't block the `vector-new` family but should be deferred for robustness; (2) zero-arg return-only-tyvar constructor calls need TC-4b's `*-new` library + want positions. **TC-4b done (2026-07-09)** — added the `*-new`/`*-new-alloc`/`*-new-capacity`/`*-new-in` constructor families to lib/vector.nuc, lib/hashmap.nuc, lib/hashset.nuc (T / K,V bind from the declared type via want). Deleted `make-vec`/`mkvec`/`mkhash` from src/nucleusc.nuc and rewrote all ~43 compiler registry-construction sites to `(vector-new-in (addr-of g-arena-alloc))` / `(hashmap-new-in …)` — the `cast`-over-`make-vec` type hole (stage999-future.md) is retired (element types now honest via want). Reader empty-literal hints retargeted; `examples/constructors.nuc` + negative fixture `tests/fixtures/tc-cannot-infer-tyvar.nuc` added. A second gcheck fix was required: `ref`/`raw`/`ptr` wrapper-keyword heads (`(ref (Vector T))`) are now type spellings too (src/generics.nuc:~1948) — needed for the `-in` heap bodies; it required a 2-stage manual bootstrap (boot had to gain recognition before compiling those bodies). Also fixed a latent TC-1 bug surfaced by zero-arg constructors: `generic-method-bind-adapt` (~:1500) early-exited `(when (= any-remaining 0) (return 0))` before want-fill, so a zero-arg return-only-tyvar generic never bound — the early-exit now fires only when the binding is complete. **TC-5 part 1 done (2026-07-09)** — `union-target-rewrite` (src/union-emit.nuc:867) parameterized by target type; run at let/with binding-init and `set!` RHS want positions (not just return), so union construction works without explicit `make` there. **TC-5 part 2 done (2026-07-09)** — the rewrite distributes into the value-position tails of `if`/`cond`/`do`/`let`/`with`/`match`: each emitter captures the armed want at entry and re-arms it before emitting a value tail (a prior test/scrutinee/statement may have consumed it via emit-generic-call's consume-once), so `(let (m:(Maybe i32) (if c (some 5) none)))` constructs both arms. Byte-identical/additive (those positions previously died). **The full TC-1..TC-5 design is now implemented.** **`.set!` value-position gap closed (2026-07-15)**: `emit-field-set` was relocated to just after `(import-use union-emit)` in src/nucleusc.nuc (it was defined before the import, so `union-target-rewrite` wasn't in scope at its definition point — nucleusc.nuc's own whole-unit prescan makes same-file forward calls order-independent, but a not-yet-imported sibling file's symbols aren't registered until the import is textually reached); its value expression now runs through `union-target-rewrite` against the field's type, so `(.set! h m (some 5))` on a `(Maybe i32)` field constructs correctly with no explicit annotation, matching every other want position. `make test` 174/174, `make bootstrap` holds. **Gate (all)**: `make` clean; `make test` 168/168; `make bootstrap` stage1==stage2; boot artifacts (incl. Windows IRs) converged. || [stage14/target-typed-constructors.md](stage14/target-typed-constructors.md) |
 | 14 (defn-signature) | `defn` return type after the parameter list — dual-accept `(defn name (params):ret body…)` (matching `fn`/`vfn`/`mfn`/`cfn`) alongside legacy `(defn name:ret (params) …)`, funneling every read site through one accessor as the prerequisite cleanup for the 14.3 param/return-typing work | **S1 done (2026-07-04); S2 done (2026-07-04); S3 done (2026-07-05); S4 done (2026-07-05)** — `defn-parse-sig` + `sig-name-is-bare`/`legacy-ret-node`/`normalize-ret-node`/`defn-ret-node`/`proto-sig-parse` (nucleusc.nuc) are the single style-detection/return-extraction chokepoint; a legacy form routes to the exact `extract-name-and-type`/`binding-type-node` parse (byte-identical), a new-style form reads the index-3 ret operand with the `fn` grammar (`fn-parse-ret-type`, reused as-is). Wired through `emit-defn`, `prescan-defn-signatures`, the compile-time block prescan, `desugar-form` (defn ret rides untouched in the body tail; declare rebuilt to preserve index-3+), generic template registration + tyvar counting (`defn-ret-node`), template stamping (`generic-instantiate` + a new `NODE-KEYWORD` branch in `subst-tyvars-node` so a new-style `:T` return substitutes at stamp time), protocol-sig readers (`proto-sig-parse`, `sig-provides-call`, `proto-sigs-resolve`, and `emit-dyn-forward` — the one read site the in-progress diff missed, which returned `void` for a new-style `(dyn P)` method), `extend`/conformance comparisons, cheader (`cheader-defn-ret-node`), `.nuch` export (`print-defn-name-legacy` normalizes solitary/overloaded to legacy `name:ret`; templates export verbatim new-style) + import (`emit-nuch-declare-import` new-style branch; `register-generic-defn` re-registers a verbatim new-style template), the toplevel `declare`, and REPL redefinition (needs no change — extracts the bare `fname`, delegates the sig parse to the patched `emit-defn`/prescan). The `emit-defn` early `<4` guard now emits `defn-parse-sig`'s targeted "expected return type after the parameter list" for a bare-name missing-ret (error path only; legacy bodyless names keep "bad form"). Change is additive — no source uses the new style yet — so **`make bootstrap` is byte-identical, no `update-bootstrap`**; a new-style program emits IR byte-identical to its legacy twin (verified by diff). Tests (+8, 162/162): `examples/defn-newstyle.nuc`, `tests/repl/s1-newstyle-defn.in`, and a `run-tests.sh` S1 block (`s1-sugar-rets`/`s1-missing-ret`/`s1-newlib` fixtures) covering keyword/`:void`/colon-chain/list-form/`?`/`!`-sugar/tyvar returns, `noreturn` in the new slot, the missing-ret diagnostic, and the cross-unit `.nuch`/cheader round-trip (plain + overloaded link-and-run, template stamps). Pre-existing out-of-scope gap, closed 2026-07-15: `--emit-cheader` did not skip generic templates (garbage C in **both** styles). `emit-cheader-declare` (cheader.nuc) now calls the existing `defn-is-generic-template` (src/generics.nuc:932 — already the prescan/emit-defn skip's shared predicate; no new logic needed, just reuse it) and skips with a `/* NAME: generic template; not exported */` comment. Verified against both `&where`-bounded and receiver-tyvar-inferred templates; `make test` 174/174, `make bootstrap` holds.
+| 15 (stress test) | Stress testing — deficiencies found porting Doom to Nucleus ([stage15-stress-test/overview.md](stage15-stress-test/overview.md)) | **W4a done** — no compiler diagnostic reports `:0:` any more: the whole name-resolution family (`unknown:`/`undefined:`, `let`/`with` initializers, retired special-form spellings, `defvar` initializers, `match` arm patterns, `addr-of`/`set!`/`goto`/`export` subjects) now names the line of the *reference*, plus a did-you-mean over the registered-name table and a `no unary 'bit-not'; write (bit-xor x -1)` rewrite hint; guarded by a suite-wide `:0:` sweep over every fixture. **W4b done** — `defconst`'s type-annotation mistake (`(defconst K:i32 2)`, silently registered under the wrong key) is now rejected at its own line; the same silent-registration bug, found by sweeping every sibling top-level definer, is fixed the same way in `defenum`/`defstruct`/`defprotocol`/`defmacro`/`defunion`/`deferror` (worst case: `defstruct` crashed into a confusing `:0:` diagnostic, not silence). **W4c done** — an unterminated form now reports two locations: the innermost unclosed form's opening line (which it already did — the doc's premise that it blamed the *outermost* was wrong) plus a `note:` naming the first line that opens a new form in column 0 while a form is still open, the closer it is waiting for, and how many forms are open there; depth tracking spans `(`/`[`/`{`/`#{`, an excess `)` gets the opening line of the form it would have closed, and the extra-`)`-in-a-`let`-binding-list shape (which leaves an **even** binding list, so the spec's proposed odd-count check could not have caught it) is diagnosed in `emit-let`/`emit-with` instead. **W4d done** — `case`'s documented-but-wrong nested-clause form now names the real flat syntax (fixed at `emit-invoke-with-callee`, not inside the macro body — a `defmacro` body cannot call `die-at`, confirmed empirically); one-armed `if` says `if requires an else branch; use (when test then…) for a guard`; the generic macro-arity messages now name the macro and both counts instead of a bare `macro: wrong number of args`/`macro: not enough args`. No `lib/macros.nuc` changes, so `make bootstrap` was byte-identical on the first pass. **W4e done** — two parts: `docs/stdlib.md`'s hand-curated availability table (wrong in both directions — `close`/`dup`/`dup2`/`isspace`/`isdigit` claimed but unavailable, ~190 real names undocumented) replaced by `scripts/gen-stdlib-table.py`, which probes the full transitive header chain the prelude actually pulls in (`stdio.h`+`stdlib.h`+`string.h`, not just `string.h`) against `build/nucleusc --emit-llvm` and is wired into the suite (`run_stdlib_table`, fails only on a false claim, not on host-legitimate incompleteness); `docs/special-forms.md`'s `case` row (a nonexistent `switch`/`unreachable` lowering) deleted — `case` is a macro (`lib/macros.nuc:91`) and belongs solely in `docs/macros.md`'s Standard Macros table, which already had it right; `addr-of`'s row restated positively (passing a frame-local address as a call argument is an allowed borrow — verified by compiling and running the C out-parameter idiom before documenting it) instead of reading as more restrictive than reality; `docs/toplevel.md`/`docs/errors.md` gained the "takes no type annotation" note on `defstruct`/`defunion`/`defprotocol`/`defmacro`/`deferror` (had it only on `defconst`/`defenum` before, despite W4b fixing all seven identically). `make test` 231/231 throughout W4; `make bootstrap` byte-identical at every chunk. **All of W4 (a–e) is now done; W1/W2/W3/W5/W6 remain not started** — stage-scoped detail in the new [stage15-stress-test/progress.md](stage15-stress-test/progress.md) | [stage15-stress-test/diagnostics.md](stage15-stress-test/diagnostics.md), [stage15-stress-test/progress.md](stage15-stress-test/progress.md) |
 
   **S2 done (2026-07-04)** — boot refresh: `make update-bootstrap` regenerated `boot/nucleusc.ll` from the S1 dual-accept-capable `build/nucleusc`, and `make windows-boot` regenerated both cross-compiled boot artifacts (`boot/nucleusc-x86_64-windows-gnu.ll`, `boot/nucleusc-x86_64-windows-msvc.ll`) from that same S1-capable compiler; these three `boot/*.ll` files are the only tree changes. A full `make clean && make && make bootstrap` reconverged byte-identical (stage1.ll == stage2.ll, as expected since S1 was itself additive/byte-identical) and `make test` passed 162/162. Practical effect: the checked-in boot compiler now itself accepts both defn signature styles — the prerequisite for S3 (the tree-wide mechanical rewrite to new-style syntax), which needs a boot that can already parse what it's about to be fed. S3 and S4 remain pending.
   **S3 done (2026-07-05)** — the tree-wide mechanical rewrite to new style. A paren-aware Python rewriter (byte-span-recording s-expr parser; skips strings/comments/char literals; handles multi-line param lists, line-spanning `&where`, the colon-paren-fuse name `make-adder:(BoxedFn (i32) i32)`, and both list-head forms) rewrote `src/` (`defn`=622/`declare`=6), `lib/` (`defn`=277/`declare`=1/proto=51), and `examples/`+`tests/` (`defn`=373/`declare`=8/proto=12) — **no `.ll`/`.nuch`/`docs/` inputs**. The five internal synthesizers emit new-style (lambda lift, closure `invoke`/`drop`, defunion arm ctor + its `.nuch` declare reshape, type-erasure forwarding; the stamper is style-preserving). The `.nuch` writer flipped to new style — `(declare NAME (params) :ret)` / `(defmethod "@sym" NAME (params) :ret)` via `emit-nuch-ret`+`defn-name-only` (retiring `print-defn-name-legacy`); the `defmethod` importer + defunion-ctor reshape moved to the new arity; SM-3/S1-3a `.nuch` test expectations updated. One S1-missed consumer fixed: `check-generic-template` and `valid-check-instance` hardcoded body-start `3`, so a new-style **CELL return** (`constantly`'s `(BoxedFn (V) V)`) was walked as a body form → "unknown function 'V'"; now `(if (sig-name-is-bare …) 4 3)` (conventions.md). Verification: the pure head-rewrite of `src/`+`lib/` kept `build/nucleusc.ll` **byte-identical**; compiling legacy vs new-style source with one compiler produced **byte-identical IR for all 120 compilable examples** (excl. `comb-shapes.nuc`, a pre-existing HEAD compile-time-JIT failure not in the suite); the synthesis flip is IR-neutral (8 closure/union/dyn examples identical before/after). `make test` 162/162; `make bootstrap` byte-identical (no `update-bootstrap` — the boot only compiles `src/`, which has no new-style CELL-return template).
   **S4 done (2026-07-05)** — retire the legacy style. The legacy `name:ret` / list-head `(name ret)` spelling is now a **hard error** at every def-time chokepoint, each with the same targeted diagnostic quoting the offending name: `defn-parse-sig`'s legacy branch (plain `defn`/`defn-`), `register-generic-defn` (the **bounded-generic-template** path, which bypasses `defn-parse-sig` — the prescan routes templates there and `emit-defn` returns early for them; a gap the plan's "one accessor" framing missed), `emit-nuch-declare-import` (`declare`), and the sig-storage loop in `protocol-register-form` (protocol method sigs — stored verbatim + lazily parsed, so `proto-sig-parse`, which only reads the `(dyn P)` path, was hardened too as belt-and-suspenders). The dual-detection machinery (`sig-name-is-bare`/`legacy-ret-node`/`defn-name-only`) is retained exactly — the diagnostics depend on it. **Committed `.nuch` files were converted first** (else hardening the readers breaks the build): `src/llvm.nuch` (imported by the compiler itself), `lib/mathlib.nuch`, `lib/boxlib.nuch` legacy→new-style; `tests/run-tests.sh` heredocs/probes and `tests/repl/*.in` inputs (S3's `.nuc`-only rewriter skipped them) converted too. Negative tests: `tests/fixtures/s4-legacy-{defn,declare,proto,template}.nuc` + a `run-tests.sh` S4 block asserting each dies with its message. `docs/` rewrite: ~116 code-example sites across 14 files → new style (paren-aware rewriter + hand-fixed metasyntactic prose and colon-paren-fuse heads); `docs/toplevel.md` `defn` Signature prose rewritten to one grammar (legacy = retired hard error); the two `.nuch`-showing docs use the writer's exact keyword-`:ret` output. The hardening is bootstrap-neutral (both stages compile the same new-style source), so `make bootstrap` held before the refresh; the three `boot/*.ll` were nonetheless regenerated from the S4 compiler (`update-bootstrap` + Windows IRs) at this milestone, converging in a **single round**. Final: `make` green, `make test` **166/166**, `make bootstrap` byte-identical (`bin/nucleusc` is gitignored/regenerated from `boot/nucleusc.ll`). | [stage14/defn-signature.md](stage14/defn-signature.md) |
 
 ---
+
+## Stage 15 W4a — located name-resolution diagnostics (2026-07-25)
+
+Spec: [stage15-stress-test/diagnostics.md](stage15-stress-test/diagnostics.md)
+§W4a (with a "W4a as built" addendum correcting the doc's stated ground truth).
+
+**No compiler diagnostic reports `:0:`.** All seven confirmed line-0 cases now
+name the line of the reference. 211 tests pass; `make bootstrap` is
+byte-identical (stage1 == stage2) with no reconverge, as a diagnostics-only
+change must be.
+
+- **Root cause** was not "a registration phase lost the node" but the reader:
+  `read-form` **interns** symbol nodes, so all occurrences of a spelling share
+  one `Node` whose `line` is 0. Any diagnostic whose subject is a symbol had
+  nothing to report. Interning cannot be removed (symbol identity is compared
+  by pointer throughout the compiler), and a line must never be *written* into
+  a symbol node — which the compiler was doing: `stamp-macro-lines` stamped
+  symbol children with the macro call site's line, so after the first expansion
+  mentioning `x`, every diagnostic anywhere about any `x` reported that call
+  site. Now skipped.
+- **Fix, two mechanisms.** ~110 raise sites borrow the enclosing form's line via
+  a new `node-line` helper (`lib/node.nuc`) — the enclosing node is already in
+  hand at each. `emit-symbol-ref`, reached from `emit-node` with only the
+  operand and with 98 `emit-node` call sites upstream, instead takes an explicit
+  `line:i32` filled from `g-form-line`, an ambient enclosing line maintained
+  with strict save/restore in `emit-node` (the single dispatcher) — the same
+  shape as the already-ambient `g-source-path`/`g-mono-context` that `die-at`
+  reads for the other two components of a location.
+- **Did-you-mean** over generics/macros/type-names/globals by Levenshtein
+  distance, with a length-scaled allowance (`< 4` chars none, 4-6 one edit, 7+
+  two) so short names never draw a coincidental match, plus a small
+  wrong-mental-model table (`bit-not` → `(bit-xor x -1)`).
+- **Regression protection**: `run_no_line_zero` compiles every
+  `tests/fixtures/*.nuc` and fails on any `:0:`; `run_reject` now fails on `:0:`
+  for every existing and future rejection test; `run_reject_at` pins
+  message + `<path>:<line>:` for five new fixtures. Both guards verified against
+  a negative control (reintroduce the bug → they fail; restore → they pass).
+- **Incidental**: `boot/nucleusc.ll` had been un-buildable since
+  `04c55ec Merge stage14` — the merge duplicated the `@emit-keyword` definition,
+  so `clang` rejected the module and any fresh checkout failed at
+  `make boot-binary`. Repaired (deleted the stale copy, which also carried a
+  cross-side `@.str.775` reference through a `[15 x i8]` GEP); a whole-file
+  audit of every `@.str.N` reference against its definition found no other
+  damage.
+
+
+## Stage 15 W4b — `defconst` annotation rejected + sibling-definer sweep (2026-07-25)
+
+Spec: [stage15-stress-test/diagnostics.md](stage15-stress-test/diagnostics.md)
+§W4b (with a "W4b as built" addendum recording the sweep table).
+
+**Decision: reject.** `(defconst K:i32 2)` used to register nothing under the
+lookupable name `K` — `desugar` never rewrites a `defconst` name, so the whole
+colon-typed spelling `"K:i32"` became the scope key, and every later use of
+`K` died `undefined: K` with no diagnostic at the definition. `emit-defconst`
+now rejects both surface shapes (a bare symbol with an embedded `:`, and the
+colon-paren-fused `(K (i32))` cell) at the `defconst` line: `defconst: takes
+no type annotation; write (defconst K 2)`.
+
+- **Sibling sweep confirmed the same bug in every other top-level definer
+  whose name is never annotated** (`defenum`, `defstruct`, `defprotocol`,
+  `defmacro`, `defunion`, `deferror`) — none of their arity/shape checks were
+  wrong, only the annotation check was missing. A shared helper,
+  `reject-colon-in-def-name` (`src/nucleusc.nuc`), covers the bare-symbol
+  shape uniformly without disturbing a definer's own legitimate parametric
+  head (`(defstruct (Vector T) …)` and friends); the colon-paren-fused cell
+  shape needed a per-definer check (to avoid misfiring on that same
+  legitimate parametric head).
+- **Worst finding: `defstruct`.** `(defstruct S:i32 …)` didn't fail silently
+  *or* cleanly — it registered a `StructDef` under the literal key and then
+  crashed downstream into `illegal character ':' in generated symbol`,
+  reported at line 0 (an interned `NODE-SYM`'s own line is always 0 — the
+  exact defect class W4a exists to eliminate, missed there because a
+  colon-annotated `defstruct` name wasn't among W4a's six confirmed cases).
+- **Also found and fixed, outside the annotation theme**: `defvar`'s
+  "missing :type" diagnostic (the plausible mistake for the one definer whose
+  annotation is *required*) was correctly worded but reported line 0 —
+  `emit-defvar` read a bare `NODE-SYM`'s own `line` directly instead of
+  borrowing the enclosing form's via `node-line`. Same class as W4a, found by
+  sweeping `defvar` for arity/annotation mistakes the same way as its
+  siblings.
+- **9 new regression fixtures** (`tests/fixtures/w4b-*.nuc` + tightening the
+  previously-loose `w4a-defconst-annotated.nuc`), each wired with
+  `run_reject_at` (message + `<path>:<line>:` prefix). `make test`: 220/220
+  (211 + 9). `make bootstrap`: stage1 == stage2, byte-identical, no
+  reconverge — a diagnostics-only change must not move IR.
+
+
+## Stage 15 W4c — unterminated forms point at the imbalance (2026-07-25)
+
+Spec: [stage15-stress-test/diagnostics.md](stage15-stress-test/diagnostics.md)
+§W4c (with a "W4c as built" addendum correcting two of the section's premises).
+
+**Premise correction #1: the reader already reported the *innermost* unclosed
+form's line**, not the outermost — `read-list` is recursive, so at EOF the
+deepest invocation reports and the enclosing ones propagate `(err! parse-error)`
+silently. The first number was never wrong; the missing half was always the
+second number. **Premise correction #2: the spec's "odd element count in a `let`
+binding list" check already exists** (`emit-let`/`emit-with`'s even-count check)
+and **would not have caught the spec's own repro** — an extra `)` after a
+binding's *value* leaves an **even** binding list (`(a:i32 1)`) and pushes the
+next binding into the body.
+
+- **The second location.** `next-tok` now maintains a bracket depth over all
+  four bracket kinds (`(` `[` `{` `#{`) and records the first `(` that starts a
+  line in column 0 while the depth is already nonzero — the first point at which
+  a missing closer became observable. `report-unterminated` (`lib/reader.nuc`)
+  prints it as a `  note:` line beside the existing primary location, naming the
+  closer the form is waiting for and how many forms were open there (= how many
+  closers are missing). With no candidate (imbalance in the file's last form) it
+  says the file simply ends unterminated rather than inventing a number. The
+  column test is a one-character lookbehind at token-production time, so no
+  column counter is threaded through `next-char`. Still on the `report-at` +
+  `err!` path — REPL recovery unaffected.
+- **Heuristic validated, not assumed:** a scan of `src/`, `lib/`, `examples/`,
+  `tests/fixtures/`, `tests/repl/` found **zero** column-0 `(` at nonzero depth,
+  so idiomatic Nucleus produces no false candidates.
+- **The `let` shape, fixed at the layer that can see it.** In the balanced
+  variant the file parses *correctly*, so no reader check could apply;
+  `check-stray-typed-body` (`src/nucleusc.nuc`, called from `emit-let`/
+  `emit-with`) turns the old `undefined: b:i32` into `let: 'b:i32' is a body
+  form, not a binding -- an extra ')' probably ended the binding list early`.
+  In the unbalanced variant the reader keeps `unexpected )` (the only defensible
+  primary location) but a negative-depth test adds the opening line of the form
+  that already closed, bounding the search to one top-level form.
+- **6 new regression fixtures** (`tests/fixtures/w4c-*.nuc`), each wired with
+  the existing `run_reject_at` pinning the whole primary line in `loc` and the
+  note's second number in `pattern`. All six negative-controlled against the
+  pre-change boot compiler (each assertion fails there). `make test`: 226/226
+  (220 + 6). `make bootstrap`: stage1 == stage2, byte-identical, no reconverge.
+
+
+## Stage 15 W4d — errors that name the macro instead of the mistake (2026-07-25)
+
+Spec: [stage15-stress-test/diagnostics.md](stage15-stress-test/diagnostics.md)
+§W4d (with a "W4d as built" addendum recording the site decision).
+
+**Premise correction: the macro-body fix the spec calls "cheap" is not
+possible without new library plumbing.** Confirmed empirically, not by
+inspection: a `defmacro` body calling `die-at` fails to compile with `unknown:
+die-at`. A macro body is ordinary user-scope Nucleus code JIT-compiled through
+the same per-macro sub-module every macro invocation resolves through, and
+`die-at`/`report-at` (`lib/reader.nuc`) are imported only by the compiler's own
+source (`src/nucleusc.nuc`), not by the prelude every ordinary program
+(including `case`, itself shipped in `lib/macros.nuc`) auto-imports.
+
+- **`case`'s documented-but-wrong nested-clause form.** Fixed instead at
+  `emit-invoke-with-callee` (`src/nucleusc.nuc`), the one chokepoint every
+  non-callable call head funnels through — a new `case-clause-hint` helper
+  recognizes a bare `NODE-INT` or bound `_` symbol in head position (never a
+  genuine call) and replaces the old opaque "value is not callable: no
+  \`invoke\` method is defined for this type" with a message naming the real
+  `case` syntax, still located at the offending clause's own (reader-sourced,
+  unshifted) line. More general than the letter of the spec: it also catches a
+  bare integer literal called anywhere, not just inside `case`, at no extra
+  cost. Because the fix only replaces text at an already-fatal call, it cannot
+  change any program's pass/fail outcome.
+- **The generic macro-arity messages** (`expand-macro-call`,
+  `src/nucleusc.nuc`) went from a `%s`-less `(fmt-s "macro: wrong number of
+  args" 0)` (a dummy `0` arg fed to a format string with no `%s`, naming
+  neither macro nor counts) to `macro '<name>': expects <N> args, got <M>` /
+  `macro '<name>': expects at least <N> args, got <M>`, via a new `fmt-s-2i`
+  helper (`src/format.nuc`, string + two ints — the fixed-arity format-helper
+  rule required a new shape, not overloading an existing one).
+- **One-armed `if`** (`(if test then)`, no `else`) gets its own exact wording
+  ahead of the generic message: `if requires an else branch; use (when test
+  then…) for a guard`. Only the arity diagnostic changed — `if`'s expansion is
+  untouched.
+- **4 new regression fixtures** (`tests/fixtures/w4d-*.nuc`), each wired with
+  `run_reject_at`. `examples/case.nuc` (the real flat syntax) already
+  regression-checks via the standard `examples/*.nuc` + `tests/expected/`
+  loop, so no new fixture was needed for it. `make test`: 230/230 (226 + 4).
+  `make bootstrap`: stage1 == stage2, byte-identical, **no `make
+  update-bootstrap` reconverge needed** — both changes live entirely in
+  `src/nucleusc.nuc`/`src/format.nuc`, never touching `lib/macros.nuc`, so the
+  auto-imported-macros string-pool-shift hazard never arises.
+
+## Stage 15 W4e — generated stdlib table + docs truthfulness sweep (2026-07-25)
+
+Spec: [stage15-stress-test/diagnostics.md](stage15-stress-test/diagnostics.md)
+§W4e (with "W4e (generated table) as built" and "W4e (docs) as built"
+addenda). Two independent parts, both touching only `docs/`, `scripts/`, and
+the test harness — no compiler-source or `lib/` changes, so both were
+structurally guaranteed bootstrap-neutral (confirmed anyway per the brief).
+
+**Generated table.** `docs/stdlib.md`'s hand-curated "no import needed"
+availability table was wrong in both directions: `close`/`dup`/`dup2`/
+`isspace`/`isdigit` were claimed available but die `unknown: <name>` (the
+entire former "ctype"/"unistd" sections were never reachable from the
+prelude's actual transitive header chain on any host), while ~190 real names
+(`getenv`, `fopen`/`fwrite`/`fclose`, `snprintf`, `strcasecmp`, `qsort`,
+`strdup`, `arc4random`, …) were available but undocumented. Root cause is
+bigger than the brief's own ground truth stated: the prelude pulls in not
+just `string.h` but `stdio.h` + `stdlib.h` + `string.h` transitively (via
+`lib/node.nuc` → `lib/arena.nuc`). Fixed by `scripts/gen-stdlib-table.py`,
+which enumerates every top-level C declaration across that three-header
+chain (`clang -E`, paren/brace-depth-tracked scan) and probes each against
+`build/nucleusc --emit-llvm`, dropping any candidate whose signature it
+isn't confident mapping (`div_t`-style struct returns, `va_list`, `long
+double`). Wired into the suite as `run_stdlib_table`: fails only when a name
+the **committed** doc claims as available no longer probes as available on
+the host running the suite (a real regression), not merely because a
+different host's libc has a different available set (host-dependence is
+inherent — glibc vs musl — so requiring an exact match would make the check
+fail spuriously on a musl runner). `make gen-stdlib-table` regenerates the
+doc; the suite unit only checks. Table grew from 25 hand-curated rows to 220
+probe-confirmed rows.
+
+**Docs truthfulness.** `docs/special-forms.md`'s `case` table row described a
+lowering that has never existed for it — LLVM `switch`, `(KEY body...)`
+clauses, an `_` default arm, `unreachable` on no match. `case` is a macro
+(`lib/macros.nuc:91`, `(defmacro case (form &rest clauses) ...)`) expanding
+to `cond` over flat `(case form v1 r1 v2 r2 ... default)` value/result pairs
+— the row was both false and misfiled (special-forms.md documents no other
+pure-sugar macro; `if`/`when`/`unless`/`dotimes`/`->` all live solely in
+`docs/macros.md`, which already had the correct `case` entry). Fixed by
+deleting the row rather than rewriting it — the one correct copy already
+existed. Separately, the `addr-of` row said a frame-local address "is
+escape-tracked so it cannot be returned," which is true but reads as more
+restrictive than reality and is exactly what led the Doom port to almost
+invent a return-struct workaround instead of the ordinary C out-parameter
+idiom: passing `(addr-of local)` as a call argument is an allowed borrow
+(only `return` and stores into longer-lived memory are the actual escape
+sinks — the file's own "Pointer lifecycle" section already said this
+correctly, 150 lines below the table). Restated positively in the table row
+with the out-parameter idiom as the worked example, verified by compiling
+and running it (`build/nucleusc`; prints `a=41 b=99`, confirming the callee's
+write through the passed address is visible to the caller) before writing it
+down. A full sweep of the rest of `docs/special-forms.md`'s concrete,
+checkable claims (zero-overhead field access, `goto`/`label`/`goto-ptr`
+resolution and duplicate-label precedence, struct-literal name-shadow
+rejection, array-literal designated+positional fill and implicit length,
+`and`-chain narrowing/short-circuit) against two-line `build/nucleusc`
+probes found nothing else wrong. Also closed a related gap the brief's
+checklist flagged: `docs/toplevel.md` had W4b's "takes no type annotation"
+note on `defconst`/`defenum` but not on `defstruct`/`defunion`/`defprotocol`/
+`defmacro`, and `docs/errors.md` didn't have it on `deferror` — all seven
+definers got the identical W4b fix, so all seven now say so (each
+re-verified against `build/nucleusc` before writing, not copied from the
+design doc).
+
+`make test`: 231/231 (unchanged from the generated-table part — this part
+touched only docs). `make bootstrap`: byte-identical. Full detail (including
+the negative controls run against the suite check and the complete
+row-by-row sweep table) in `diagnostics.md`'s two "as built" addenda and in
+the new [stage15-stress-test/progress.md](stage15-stress-test/progress.md).
 
 ## Deferral-doc cleanup (2026-07-02)
 

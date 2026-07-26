@@ -1,0 +1,10 @@
+; Stage 15 W4a / findings §3.5: a same-file forward reference to a `defvar`.
+; Whether this resolves is W1's business; W4a's contract is that the failure
+; carries a real location (enforced by the run_no_line_zero sweep).
+(defn use-it ():i32
+  (return gv))
+
+(defvar gv:i32 4)
+
+(defn main ():i32
+  (return (use-it)))

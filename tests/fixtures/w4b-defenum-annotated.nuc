@@ -1,0 +1,12 @@
+; Stage 15 W4b sibling sweep (design/stage15-stress-test/diagnostics.md
+; §W4b): `defenum`'s own name never takes a type annotation. Before the fix,
+; a bare colon-typed name ("E:i32") sailed past `emit-defenum`'s checks
+; unchanged and silently registered nothing under a lookupable "E" -- the
+; flat members (A, B, C) still defined fine as plain i32 constants, so the
+; only observable symptom was that the EnumDef itself (used by
+; tyname-resolvable / match exhaustiveness) silently vanished. Now rejected
+; at the `defenum` line.
+(defenum E:i32 A B C)
+
+(defn main ():i32
+  (return B))

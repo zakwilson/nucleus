@@ -37,6 +37,31 @@
 (defvar g-peek:ptr)
 (defvar g-peek-valid:i32 0)
 
+; Stage 15 W4c (design/stage15-stress-test/diagnostics.md §W4c): bracket-balance
+; tracking, maintained in `next-tok` as each token is produced and consumed only
+; by reader diagnostics. All four are reset at the top of `read-program`, which
+; is the single entry point for reading a whole file (batch, import, and REPL
+; alike); reads never interleave, so no save/restore is needed at the import
+; sites that already save g-src/g-pos/g-line/g-peek.
+;
+; g-paren-depth counts every bracket kind the lexer knows — `(` `[` `{` `#{` —
+; and is deliberately NOT clamped at zero: a negative depth at an `unexpected )`
+; is exactly "this `)` has no matching open anywhere", which distinguishes a
+; stray top-level `)` from a `)` that merely turned up where a form was expected
+; (e.g. inside an unclosed `[…]`).
+(defvar g-paren-depth:i32 0)
+; Opening line of the `(` that most recently took the depth from 0 to 1 — the
+; top-level form currently being read, or the last one completed.
+(defvar g-form-open-line:i32 0)
+; The W4c heuristic itself: line of the FIRST `(` that starts a line in column 0
+; while the depth is already nonzero, plus that depth. That is the first point at
+; which an earlier missing `)` became observable — a new top-level form swallowed
+; by an unclosed one — and it localizes the mistake far better than the innermost
+; unclosed form's own opening line. 0 means "no such line" (the imbalance is in
+; the file's last top-level form), in which case no second number is reported.
+(defvar g-col0-open-line:i32 0)
+(defvar g-col0-open-depth:i32 0)
+
 ; Singleton types
 (defvar ty-void:ref:Type)
 (defvar ty-i1:ref:Type)
@@ -256,6 +281,23 @@
 ; is being emitted; die-at appends it as a note so a stamp-time error points back
 ; to the instantiation (and its requesting call site). Null otherwise.
 (defvar g-mono-context:ptr)
+; Stage 15 W4a: the source line of the innermost enclosing form currently being
+; emitted — the "line half" of a diagnostic location, ambient exactly like
+; `g-source-path` is its file half (both are read by die-at/report-at).
+;
+; It exists because a bare symbol node is an interned singleton with no
+; per-occurrence line (lib/node.nuc `node-line`), so `emit-symbol-ref` — reached
+; from `emit-node`, which is handed only the operand — has no node to blame when
+; a lookup fails. `emit-node` is the single dispatcher every operand passes
+; through, so it maintains this with strict save/restore: on entry it adopts the
+; node's own line when the node has one (cells/literals do), and restores the
+; caller's on exit. The value therefore always names the innermost enclosing
+; form with a real line, which is the reference's line.
+;
+; Every *other* W4a fix takes its line from a node the raising code already
+; holds (lib/node.nuc `node-line` + the enclosing form's line); this global is
+; consumed in exactly one place, emit-node's NODE-SYM branch.
+(defvar g-form-line:i32 0)
 ; Nesting depth of emit-toplevel-forms (imports recurse). The A2 generic-body
 ; check runs only at the outermost level — after every import has registered its
 ; names and with g-source-path restored to the unit being compiled.
@@ -697,6 +739,27 @@
         (ptr-set! out-name (arena-strndup sym name-len))
         (ptr-set! out-type-name (arena-strdup (unsafe/ptr+ (as ptr:i8 colon) 1)))))))
 
+; W4b sibling sweep (design/stage15-stress-test/diagnostics.md): the defconst
+; bug generalizes -- none of defenum/defprotocol/defmacro/defunion/deferror's
+; own NAME position takes a type annotation (only defvar's binding legitimately
+; does), yet before this check a bare symbol whose spelling embeds ':' (e.g.
+; "E:i32") silently registered under that literal, unlookupable key at every
+; one of them, exactly like the original defconst bug -- `desugar` never
+; rewrites a definer's own name (context/conventions.md), so the colon-typed
+; spelling survives as one undesugared NODE-SYM straight into the registry.
+; Call this first, before any other dispatch on `name` (including a CELL/
+; template-head check), in every top-level definer whose name is never
+; annotated. It is a no-op for a CELL name (a legitimate template head, or
+; handled by the caller) and for a plain symbol with no colon.
+(defn reject-colon-in-def-name (name:(raw Node) word:CStr fallback-line:i32):void
+  (let (nn:(raw Node) name)
+    (when (= (nn kind) NODE-SYM)
+      (let (base:ptr null tyname:ptr null)
+        (split-typed (nn s) (as ptr:ptr (addr-of base)) (as ptr:ptr (addr-of tyname)))
+        (when (!= tyname null)
+          (die-at fallback-line
+            (fmt-3s "%s: takes no type annotation; write (%s %s ...)" word word base)))))))
+
 ; Extract name and type-name from a node that is either:
 ;   - a symbol node (possibly containing :) — uses split-typed
 ;   - a list node (name type ...) from desugar — extracts car/cadr strings
@@ -990,14 +1053,22 @@
     (when (= (node-is-label-form n) 0)
       (return (alloc-val ty-void null))))
   (let (nn:(raw Node) n
+        ; Stage 15 W4a: adopt this node's line as the ambient diagnostic line for
+        ; the duration of its emission, and restore the caller's on the way out
+        ; (the single maintenance point for g-form-line — see its defvar). A node
+        ; with no line of its own (an interned symbol; a macro-synthesized cell
+        ; that stamp-macro-lines could not attribute) leaves the enclosing form's
+        ; line standing, which is exactly what its diagnostics should blame.
+        saved-form-line:i32 g-form-line
         v:ref:Val (alloc-val ty-void null))
+    (when (!= (nn line) 0) (set! g-form-line (nn line)))
     (when (= (nn kind) NODE-INT)   (set! v (emit-int n)))
     (when (= (nn kind) NODE-CHAR)  (set! v (emit-char-literal n)))
     (when (= (nn kind) NODE-FLOAT) (set! v (emit-float n)))
     ; NS-2: pass a null target — literals stay CStr (bare GEP). NS-3 will thread
     ; the consumer's expected type here so a StrView context materializes a view.
     (when (= (nn kind) NODE-STR)   (set! v (emit-string n null)))
-    (when (= (nn kind) NODE-SYM)   (set! v (emit-symbol-ref n scope)))
+    (when (= (nn kind) NODE-SYM)   (set! v (emit-symbol-ref n scope g-form-line)))
     (when (= (nn kind) NODE-KEYWORD) (set! v (emit-keyword n scope)))
     (when (= (nn kind) NODE-CELL)  (set! v (emit-list n scope)))
     ; Rung 3: the type a node contributes to its parent is the shared node-type
@@ -1006,6 +1077,9 @@
     ; returns null for the forms it does not model; those keep emit's own type.
     (let (t:ptr (node-type n scope))
       (when (!= t null) (.set! v type t)))
+    ; Restore last: node-type raises its own diagnostics (the retired-spelling
+    ; checks in node-type-call) and must see this node's line too.
+    (set! g-form-line saved-form-line)
     (return v)))
 
 ; Stage 14 LW-4: emit an integer literal at its *truthful* width. The reader
@@ -1555,7 +1629,129 @@
       (die-at line
         (fmt-s "%s: resource bound by `with` escapes via store into longer-lived memory — use (move ...) to transfer ownership" op)))))
 
-(defn emit-symbol-ref (n:(raw Node) scope:ref:Scope):ref:Val
+; ============================================================
+; Unresolved-name diagnostics (Stage 15 W4a)
+; ============================================================
+
+; Levenshtein edit distance between two names, used only to suggest a spelling
+; on an unresolved name. Returns a value > `limit` as soon as the answer cannot
+; matter, so the common case (every registered name, scanned once per failed
+; lookup) costs a length comparison. Allocation is a pair of DP rows, freed
+; before returning.
+(defconst NAME-SUGGEST-MAX 2)
+
+; How many edits may separate `name` from a name worth suggesting. The allowance
+; grows with length, and short names get none at all: without this, `K` "matches"
+; the binop `%` at distance 1 and `gv` matches `_+`, which is worse than saying
+; nothing. 4-6 characters buy one edit, 7 and up buy two.
+(defn name-suggest-limit (name:CStr):i32
+  (let (n:i32 (unsafe/cast i32 (strlen name)))
+    (when (< n 4) (return 0))
+    (when (< n 7) (return 1))
+    (return NAME-SUGGEST-MAX)))
+
+(defn name-edit-distance (a:CStr b:CStr limit:i32):i32
+  (let (la:i32 (unsafe/cast i32 (strlen a))
+        lb:i32 (unsafe/cast i32 (strlen b))
+        result:i32 99)
+    ; A length gap wider than the allowance needs at least that many edits.
+    (when (> (- la lb) limit) (return 99))
+    (when (> (- lb la) limit) (return 99))
+    ; NOTE (W2/§1.2): `(* 4 (as i64 (+ lb 1)))` mis-types — a literal-LEFT binop
+    ; is typed i32 by node-type while emit widens to i64, so the i64 binding gets
+    ; a bogus `sext i32 <i64 value>`. Widen the whole product instead.
+    (let (row-bytes:i64 (as i64 (* 4 (+ lb 1)))
+          prev:ptr:i32 (as ptr:i32 (malloc row-bytes))
+          cur:ptr:i32 (as ptr:i32 (malloc row-bytes)))
+      (dotimes (j (+ lb 1)) (aset! prev j j))
+      (dotimes (i0 la)
+        (aset! cur 0 (+ i0 1))
+        (dotimes (j0 lb)
+          (let (cost:i32 (if (= (char-at a (as i64 i0)) (char-at b (as i64 j0))) 0 1)
+                d:i32 (+ (aref prev j0) cost)
+                ins:i32 (+ (aref cur j0) 1)
+                del:i32 (+ (aref prev (+ j0 1)) 1))
+            (when (< ins d) (set! d ins))
+            (when (< del d) (set! d del))
+            (aset! cur (+ j0 1) d)))
+        (dotimes (j (+ lb 1)) (aset! prev j (aref cur j))))
+      (set! result (aref prev lb))
+      (free (as ptr prev))
+      (free (as ptr cur)))
+    (return result)))
+
+; The closest registered spelling to `name`, or null when nothing is close
+; enough (see name-suggest-limit). Searched over the same four registries
+; `name-existing-kind` consults — functions/multimethods, macros, struct and
+; union type names, and global values — which is exactly the set a reference in
+; value or head position can resolve against. Returns `ptr`, not `CStr`: the
+; result is null-checked by the caller, and a CStr null-check lowers to
+; strcmp(x, null) (conventions.md).
+(defn closest-known-name (name:CStr):ptr
+  (let (limit:i32 (name-suggest-limit name))
+    (when (= limit 0) (return null))
+    (let (best:ptr null
+          best-d:i32 (+ limit 1))
+      (doseq (generic g-generics (VecIter ref:Generic))
+        (let (d:i32 (name-edit-distance name (generic name) limit))
+          (when (< d best-d)
+            (set! best-d d)
+            (set! best (as ptr (generic name))))))
+      (doseq (macro g-macros (VecIter ref:MacroDef))
+        (let (d:i32 (name-edit-distance name (macro name) limit))
+          (when (< d best-d)
+            (set! best-d d)
+            (set! best (as ptr (macro name))))))
+      (doseq (struct g-structs (VecIter ref:StructDef))
+        (let (d:i32 (name-edit-distance name (struct name) limit))
+          (when (< d best-d)
+            (set! best-d d)
+            (set! best (as ptr (struct name))))))
+      (let (sc:ptr:Scope (as ptr:Scope g-globals))
+        (dotimes (i (sc len))
+          (let (sym:ptr:Sym (as ptr:Sym (unsafe/ptr+ (as ptr:Sym (sc syms)) i))
+                d:i32 (name-edit-distance name (sym name) limit))
+            (when (< d best-d)
+              (set! best-d d)
+              (set! best (as ptr (sym name)))))))
+      (return best))))
+
+; Spellings that do not exist and never will, where the useful answer is a
+; rewrite rather than a nearby name. Kept deliberately small — the general
+; did-you-mean above covers typos; this table covers *wrong mental models*.
+; Returns the complete replacement message, or null. (`ptr`, not `CStr`, for
+; the null-check reason above.)
+(defn known-name-correction (name:CStr):ptr
+  ; Nucleus has no unary bitwise complement (design/stage15-stress-test/
+  ; ergonomics.md §4.3). W5b adds `bit-not` as a real macro; until then, and for
+  ; any spelling it does not cover, point at the two-operand form.
+  (when (= name "bit-not") (return (as ptr "no unary 'bit-not'; write (bit-xor x -1)")))
+  (when (= name "bitnot")  (return (as ptr "no unary 'bitnot'; write (bit-xor x -1)")))
+  (when (= name "lognot")  (return (as ptr "no unary 'lognot'; write (bit-xor x -1)")))
+  (return null))
+
+; The message for a name that did not resolve. `verb` is "unknown" (head
+; position — no function/macro/special form by that name) or "undefined" (value
+; position — no binding by that name).
+(defn unresolved-name-message (verb:CStr name:CStr):ptr
+  (let (fix:ptr (known-name-correction name))
+    (when (!= fix null) (return fix)))
+  (let (near:ptr (closest-known-name name))
+    (when (= near null) (return (fmt-2s "%s: %s" verb name)))
+    (return (fmt-3s "%s: %s (did you mean '%s'?)" verb name near))))
+
+(defn unknown-name-message (name:CStr):ptr
+  (return (unresolved-name-message "unknown" name)))
+
+(defn undefined-name-message (name:CStr):ptr
+  (return (unresolved-name-message "undefined" name)))
+
+; `line` is the source line to blame for a failure here. A bare symbol node is
+; an interned singleton with no per-occurrence line of its own (lib/node.nuc
+; `node-line`), so the caller supplies the enclosing form's line: emit-node hands
+; over the ambient g-form-line it maintains, emit-dispatch the call cell's line.
+; Stage 15 W4a: before this, every raise below reported `:0:`.
+(defn emit-symbol-ref (n:(raw Node) scope:ref:Scope line:i32):ref:Val
   (let (nn:(raw Node) n)
     (when (= n 'null)  (return (alloc-val ty-raw "null")))
     (when (= n 'true)  (return (alloc-val ty-i1 "1")))
@@ -1569,7 +1765,7 @@
       (if-some (sym (scope-lookup scope lookup-name))
         (do
           (when (!= (sym moved) 0)
-            (die-at (nn line) (fmt-s "use after move: '%s'" (nn s))))
+            (die-at (node-line n line) (fmt-s "use after move: '%s'" (nn s))))
           (when (!= (sym is-const) 0)
             (return (alloc-val (sym type) (sym const-val))))
           (when (= (sym is-local) 0)
@@ -1584,11 +1780,11 @@
               ; than emitting IR the backend rejects; the full addrspace(1)-
               ; carrying fix is deferred (design/stage14/avr-targets.md §5 AVR-6).
               (when (!= ((as ptr:Target g-target) prog-as) 0)
-                (die-at (nn line)
+                (die-at (node-line n line)
                   (fmt-sd "cannot use function '%s' as a value on this target: functions live in program memory (address space %d) and cannot be materialized as a data pointer -- call it directly instead"
                     (nn s) ((as ptr:Target g-target) prog-as))))
               (return (alloc-val (sym type) (sym ir-name))))
-            (die-at (nn line) (fmt-s "cannot use '%s' as value" (nn s))))
+            (die-at (node-line n line) (fmt-s "cannot use '%s' as value" (nn s))))
           (let (tmp:ptr (new-tmp))
             (emit-load tmp (type-to-ir (sym type)) (sym ir-name) (sym type))
             ; Stage 10: the read uses the flow-narrowed view of the binding's
@@ -1597,7 +1793,7 @@
               (.set! rv taint (sym taint))
               (.set! rv taint-frame (sym taint-frame))
               (return rv))))
-        (die-at (nn line) (fmt-s "undefined: %s" (nn s)))))))
+        (die-at (node-line n line) (undefined-name-message (as CStr (nn s))))))))
 
 ; ============================================================
 ; Binary operations
@@ -1737,7 +1933,7 @@
           from:(raw Type) (parse-type-from-node from-node (cc line))
           to:(raw Type)   (parse-type-from-node to-node   (cc line)))
       (when (!= (fn-node kind) NODE-SYM)
-        (die-at (fn-node line) "defcast: conv-fn must be a symbol"))
+        (die-at (node-line (as ptr fn-node) (cc line)) "defcast: conv-fn must be a symbol"))
       ; Reject pairs already covered by built-in safe-coerce rules.
       (let (fk:i32 (from kind)
             tk:i32 (to kind))
@@ -1753,24 +1949,24 @@
         (die-at (cc line) "defcast: a rule for this pair is already registered"))
       (let (sym:ptr (scope-lookup g-globals (fn-node s)))
         (when (= sym null)
-          (die-at (fn-node line) (fmt-s "defcast: unknown function '%s'" (fn-node s))))
+          (die-at (node-line (as ptr fn-node) (cc line)) (fmt-s "defcast: unknown function '%s'" (fn-node s))))
         (let (ss:(raw Sym) sym
               ft:(raw Type) (ss type))
           (when (!= (ft kind) TY-FN)
-            (die-at (fn-node line) (fmt-s "defcast: '%s' is not a function" (fn-node s))))
+            (die-at (node-line (as ptr fn-node) (cc line)) (fmt-s "defcast: '%s' is not a function" (fn-node s))))
           (when (!= (ft num-params) 1)
-            (die-at (fn-node line) (fmt-s "defcast: '%s' must take exactly one argument" (fn-node s))))
+            (die-at (node-line (as ptr fn-node) (cc line)) (fmt-s "defcast: '%s' must take exactly one argument" (fn-node s))))
           (when (!= (ft variadic) 0)
-            (die-at (fn-node line) (fmt-s "defcast: '%s' must not be variadic" (fn-node s))))
+            (die-at (node-line (as ptr fn-node) (cc line)) (fmt-s "defcast: '%s' must not be variadic" (fn-node s))))
           (when (!= (ft has-rest) 0)
-            (die-at (fn-node line) (fmt-s "defcast: '%s' must not use &rest" (fn-node s))))
+            (die-at (node-line (as ptr fn-node) (cc line)) (fmt-s "defcast: '%s' must not use &rest" (fn-node s))))
           (let (param0:ptr ((field-at (ft params) 0) type))
             (when (= (type-eq param0 from) 0)
-              (die-at (fn-node line)
+              (die-at (node-line (as ptr fn-node) (cc line))
                 (fmt-2s "defcast: '%s' parameter type does not match From; expected %s"
                   (fn-node s) (type-to-ir from)))))
           (when (= (type-eq (ft ret) to) 0)
-            (die-at (fn-node line)
+            (die-at (node-line (as ptr fn-node) (cc line))
               (fmt-2s "defcast: '%s' return type does not match To; expected %s"
                 (fn-node s) (type-to-ir to))))
           (register-cast-rule from to (ss ir-name)))))))
@@ -2450,12 +2646,12 @@
       (require-derefable pt (cc line) "field access")
       (let (fn-node:(raw Node) (node-at cc 2))
         (when (!= (fn-node kind) NODE-SYM)
-          (die-at (fn-node line) "_get: field name must be symbol"))
+          (die-at (node-line (as ptr fn-node) (cc line)) "_get: field name must be symbol"))
         (let (sd:(raw StructDef) ((pt elem) sdef)
               idx:i32 (struct-field-index sd (fn-node s)))
           (union-field-guard sd (cc line) "_get")
           (when (< idx 0)
-            (die-at (fn-node line)
+            (die-at (node-line (as ptr fn-node) (cc line))
               (fmt-2s "_get: no field '%s' on struct '%s'" (fn-node s) (sd name))))
           ; Union member: every member sits at offset 0, so the access is a
           ; typed load straight through the pointer — no GEP, no checks (raw
@@ -2712,6 +2908,26 @@
                 (return (emit-resolved-call n scope "get" m args 2 line))))))))
     (return (emit-get-intrinsic n scope callee-val sel-node line))))
 
+; Stage 15 W4d (design/stage15-stress-test/diagnostics.md §W4d): a bare integer
+; literal (or a bound `_`) in call/head position is never a valid call — the
+; overwhelmingly common cause is `docs/special-forms.md`'s now-fixed but still
+; muscle-memory nested-clause `case` shape, `(case x (0 body) (1 body) ...)`,
+; where `(0 body)` is parsed as "call the integer 0". Detected here rather than
+; inside the `case` macro body: a macro body is ordinary user-scope Nucleus code
+; JIT-compiled through the same path as any `defmacro`, and `die-at`/`report-at`
+; (lib/reader.nuc) are only in scope for the compiler's own source (which
+; explicitly imports reader.nuc) — not for a user program's macro expansions.
+; Confirmed empirically: a `defmacro` body calling `die-at` fails to compile
+; with `unknown: die-at`. Fixing the message at this one chokepoint instead is
+; strictly more general — it also catches the identical mistake spelled outside
+; a `case` form (any integer literal called as a function) — at no extra cost.
+(defn case-clause-hint (head-node:(raw Node)):ptr
+  (when (= (head-node kind) NODE-INT)
+    (return (fmt-i64 "%ld is not callable -- an integer literal can never appear in call position; if you meant a `case` clause: case takes flat value/result pairs, not clauses: (case x 1 \"one\" 2 \"two\" \"other\")" (head-node i))))
+  (when (and (= (head-node kind) NODE-SYM) (= (head-node s) "_"))
+    (return (as ptr "'_' is not callable in this position; if you meant a `case` clause: case takes flat value/result pairs, not clauses: (case x 1 \"one\" 2 \"two\" \"other\")")))
+  (return null))
+
 ; Resolve `(invoke callee arg…)` for an already-emitted callee value. The callee
 ; is the first dispatch argument; the rest are emitted here. Dispatch is ordinary
 ; multimethod resolution over the `invoke` generic — a type "becomes callable" by
@@ -2738,7 +2954,11 @@
         (aset! (as ptr:ptr arg-nodes) (+ i 1) anode)))
     (let (g:(raw Generic) (generic-lookup "invoke"))
       (when (= g null)
-        (die-at line "value is not callable: no `invoke` method is defined for this type"))
+        (let (head-node:(raw Node) (node-at n (- arg-start 1))
+              hint:ptr (case-clause-hint head-node))
+          (if (!= hint null)
+            (die-at line hint)
+            (die-at line "value is not callable: no `invoke` method is defined for this type"))))
       (let (m:ref:Method (generic-resolve g argtypes arg-nodes total line null))
         (return (emit-resolved-call n scope "invoke" m args total line))))))
 
@@ -2898,7 +3118,7 @@
     (when (!= (node-len cc) 2) (die-at (cc line) "char expects 1 arg"))
     (let (arg:(raw Node) (node-at cc 1))
       (when (or (!= (arg kind) NODE-STR) (!= (as i64 (strlen (arg s))) 1))
-        (die-at (arg line) "char: arg must be single-char string"))
+        (die-at (node-line (as ptr arg) (cc line)) "char: arg must be single-char string"))
       (return (alloc-val ty-char (fmt-i32 "%d" (char-at (arg s) 0)))))))
 
 (defn emit-addr-of (call:(raw Node) scope:ref:Scope):ref:Val
@@ -2906,10 +3126,10 @@
     (when (!= (node-len cc) 2) (die-at (cc line) "addr-of expects 1 arg"))
     (let (target:(raw Node) (node-at cc 1))
       (when (!= (target kind) NODE-SYM)
-        (die-at (target line) "addr-of: target must be symbol"))
+        (die-at (node-line (as ptr target) (cc line)) "addr-of: target must be symbol"))
       (let (sym:?ptr:Sym (scope-lookup scope (target s)))
         (when (= sym null)
-          (die-at (target line) (fmt-s "addr-of: undefined '%s'" (target s))))
+          (die-at (node-line (as ptr target) (cc line)) (fmt-s "addr-of: undefined '%s'" (target s))))
         ; CE-3 (closure-enhancements.md §CE-3): a moved-out binding is consumed,
         ; so taking its address is a use-after-move just like reading it
         ; (emit-symbol-ref). Newly reachable now that struct-VALUE with-bindings
@@ -2917,9 +3137,9 @@
         ; is through its address — so an unchecked addr-of would silently revive a
         ; moved struct value.
         (when (!= (sym moved) 0)
-          (die-at (target line) (fmt-s "use after move: '%s'" (target s))))
+          (die-at (node-line (as ptr target) (cc line)) (fmt-s "use after move: '%s'" (target s))))
         (when (= ((sym type) kind) TY-FN)
-          (die-at (target line) (fmt-s "addr-of: cannot take address of function '%s'" (target s))))
+          (die-at (node-line (as ptr target) (cc line)) (fmt-s "addr-of: cannot take address of function '%s'" (target s))))
         (let (pt:ref:Type (make-type TY-PTR))
           (.set! pt elem (sym type))
           ; The address of a binding's slot is always a valid, non-null address,
@@ -3132,12 +3352,12 @@
       (require-derefable pt (cc line) ".set!")
       (let (fn-node:(raw Node) (node-at cc 2))
         (when (!= (fn-node kind) NODE-SYM)
-          (die-at (fn-node line) ".set!: field name must be symbol"))
+          (die-at (node-line (as ptr fn-node) (cc line)) ".set!: field name must be symbol"))
         (let (sd:(raw StructDef) ((pt elem) sdef)
               idx:i32 (struct-field-index sd (fn-node s)))
           (union-field-guard sd (cc line) ".set!")
           (when (< idx 0)
-            (die-at (fn-node line)
+            (die-at (node-line (as ptr fn-node) (cc line))
               (fmt-2s ".set!: no field '%s' on struct '%s'" (fn-node s) (sd name))))
           (let (ftype:ptr ((field-at (sd fields) idx) type)
                 ; TC-2: arm the want channel with the field's type so a generic
@@ -5759,7 +5979,10 @@
 ; "binding list must be even". defn bodies are not desugared, so this is the only
 ; chokepoint that catches a trailing-colon let/with name.
 (defn check-colon-bindings (binds:(raw Node)):void
-  (let (cur:ptr binds)
+  ; W4a: the offending element is a bare symbol (no line of its own), so blame
+  ; the binding list's own opening line.
+  (let (encl:i32 (node-line (as ptr binds) 0)
+        cur:ptr binds)
     (while (!= cur null)
       (let (e:ptr ((unsafe/cast ptr:Node cur) car))
         (when (!= e null)
@@ -5768,8 +5991,41 @@
               (let (es:ptr (en s)
                     elen:i64 (as i64 (strlen (en s))))
                 (when (and (> elen 0) (= (char-at es (- elen 1)) 58))
-                  (die-at (en line) (fmt-s "binding name ends in ':' (%s) -- write name:(Type) with no space, or (name Type)" es))))))))
+                  (die-at (node-line (as ptr en) encl) (fmt-s "binding name ends in ':' (%s) -- write name:(Type) with no space, or (name Type)" es))))))))
       (set! cur ((unsafe/cast ptr:Node cur) cdr)))))
+
+; Stage 15 W4c (design/stage15-stress-test/diagnostics.md §W4c): a let/with BODY
+; form that is a bare colon-typed symbol is never a meaningful expression — it is
+; the residue of a binding that fell out of the binding list because an extra `)`
+; closed the list early:
+;
+;   (let (a:i32 1)          <- the `)` here ends the binding list
+;         b:i32 2)          <- `b:i32` and `2` are now BODY forms
+;     ...
+;
+; Note the binding list left behind is `(a:i32 1)`, an EVEN two elements, so the
+; existing even-count check cannot see this; and the reader cannot see it either,
+; because the file is still perfectly balanced when the user compensates with one
+; fewer `)` at the end. It surfaced as `undefined: b:i32`, which names the
+; symptom. Diagnosed here, before the body is emitted, so the message names the
+; cause. Gated on the spelling not resolving in scope, so it can only ever
+; replace a diagnostic that was already fatal — never pre-empt a working program.
+(defn check-stray-typed-body (cc:(raw Node) scope:ref:Scope kw:CStr):void
+  (let (n:i32 (node-len (as ptr cc))
+        j:i32 2)
+    (while (< j n)
+      (let (e:ptr (node-at (as ptr cc) j))
+        (when (!= e null)
+          (let (en:ptr:Node (unsafe/cast ptr:Node e))
+            (when (and (= (en kind) NODE-SYM)
+                       (!= (strchr (en s) 58) null)
+                       (= (scope-lookup scope (en s)) null))
+              ; W4a: the offending element is an interned symbol with no line of
+              ; its own, so blame the enclosing let/with form's line.
+              (die-at (node-line (as ptr en) (node-line (as ptr cc) 0))
+                (fmt-2s "%s: '%s' is a body form, not a binding -- an extra ')' probably ended the binding list early"
+                  kw (en s)))))))
+      (inc! j))))
 
 ; TC-3 (design/stage14/target-typed-constructors.md §TC-3): materialize a
 ; by-value struct `S` result into a fresh stack slot and yield a `(ref S)` to
@@ -5884,7 +6140,7 @@
                 bval-node:ptr (node-at binds (+ i 1)))
             (let (name:ptr null
                   ty:ptr (extract-name-and-type bname (as ptr:ptr (addr-of name))
-                                                ((unsafe/cast ptr:Node bname) line))
+                                                (node-line bname (cc line)))
                   pre-v:ptr null)
               ; CE-1 (closure-enhancements.md §CE-1): env-type inference. A bare-
               ; symbol binding with no spelled type — which previously always died
@@ -5898,7 +6154,7 @@
                 (set! pre-v (as ptr (emit-node bval-node inner)))
                 (set! ty ((as ptr:Val pre-v) type)))
               (when (= ty null)
-                (die-at ((unsafe/cast ptr:Node bname) line) (fmt-s "let: missing :type on '%s'" name)))
+                (die-at (node-line bname (cc line)) (fmt-s "let: missing :type on '%s'" name)))
               (let (slot:ptr (fmt-sd "%%%s.addr.%d" name g-tmp)
                     align:i32 (type-size ty))
                 (inc! g-tmp)
@@ -5911,15 +6167,15 @@
                                   ; bindings took the pre-v path (no declared
                                   ; type) and inherit the surrounding want.
                                   (tc3-emit-binding-init bval-node inner ty
-                                    ((unsafe/cast ptr:Node bval-node) line))
+                                    (node-line bval-node (cc line)))
                                   (as ref:Val pre-v))
                       ; Stage 13 TE-3: a closure flowing into a (BoxedFn …) slot is
                       ; heap-boxed into the shared fat pointer here (inert otherwise).
                       coerced:ptr (coerce-int-val
-                                    (maybe-box-into-slot v ty inner ((unsafe/cast ptr:Node bval-node) line))
-                                    ty ((unsafe/cast ptr:Node bval-node) line)))
+                                    (maybe-box-into-slot v ty inner (node-line bval-node (cc line)))
+                                    ty (node-line bval-node (cc line))))
                   (when (= coerced null)
-                    (die-at ((unsafe/cast ptr:Node bval-node) line)
+                    (die-at (node-line bval-node (cc line))
                       (fmt-s "let: init type mismatch for '%s'" name)))
                   (let (cv:ptr:Val (unsafe/cast ptr:Val coerced))
                     (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
@@ -5936,6 +6192,9 @@
                                  (= (ptr-pkind ((as ptr:Val v) type)) PTR-REF))
                         (narrow-apply inner name))))))))
           (set! i (+ i 2)))
+        ; W4c: catch a binding that an extra `)` pushed out of the binding list
+        ; before the body emits it as an undefined name.
+        (check-stray-typed-body (as ptr cc) inner "let")
         (let (last:ref:Val (alloc-val ty-void null)
               ; TC-5 part 2: re-arm the outer want for the body tail (a binding
               ; init or prior body form may have consumed it).
@@ -5974,7 +6233,7 @@
                 bval-node:ptr (node-at binds (+ i 1)))
             (let (name:ptr null
                   ty:ptr (extract-name-and-type bname (as ptr:ptr (addr-of name))
-                                                ((unsafe/cast ptr:Node bname) line))
+                                                (node-line bname (cc line)))
                   pre-v:ptr null)
               ; CE-1 (closure-enhancements.md §CE-1): env-type inference, mirror of
               ; emit-let. A bare-symbol binding with no spelled type adopts the type
@@ -5986,7 +6245,7 @@
                 (set! pre-v (as ptr (emit-node bval-node inner)))
                 (set! ty ((as ptr:Val pre-v) type)))
               (when (= ty null)
-                (die-at ((unsafe/cast ptr:Node bname) line) (fmt-s "with: missing :type on '%s'" name)))
+                (die-at (node-line bname (cc line)) (fmt-s "with: missing :type on '%s'" name)))
               (let (slot:ptr (fmt-sd "%%%s.addr.%d" name g-tmp)
                     align:i32 (type-size ty)
                     autofree:i32 (is-libc-alloc bval-node))
@@ -5997,17 +6256,17 @@
                                   ; TC-3: emit the init with target-typed
                                   ; materialization (mirror of emit-let).
                                   (tc3-emit-binding-init bval-node inner ty
-                                    ((unsafe/cast ptr:Node bval-node) line))
+                                    (node-line bval-node (cc line)))
                                   (as ref:Val pre-v))
                       ; Stage 13 TE-3: a closure flowing into a (BoxedFn …) slot is
                       ; heap-boxed into the shared fat pointer here (inert otherwise).
                       ; (TE-4 wires the box's Drop; for now an unboxed with-binding
                       ; of a BoxedFn is non-owning — with-drop-method box-ty = null.)
                       coerced:ptr (coerce-int-val
-                                    (maybe-box-into-slot v ty inner ((unsafe/cast ptr:Node bval-node) line))
-                                    ty ((unsafe/cast ptr:Node bval-node) line)))
+                                    (maybe-box-into-slot v ty inner (node-line bval-node (cc line)))
+                                    ty (node-line bval-node (cc line))))
                   (when (= coerced null)
-                    (die-at ((unsafe/cast ptr:Node bval-node) line)
+                    (die-at (node-line bval-node (cc line))
                       (fmt-s "with: init type mismatch for '%s'" name)))
                   (let (cv:ptr:Val (unsafe/cast ptr:Val coerced))
                     (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
@@ -6079,6 +6338,9 @@
                                  (= (ptr-pkind ((as ptr:Val v) type)) PTR-REF))
                         (narrow-apply inner name))))))))
           (set! i (+ i 2)))
+        ; W4c: mirror of emit-let — catch a binding that an extra `)` pushed out
+        ; of the binding list before the body emits it as an undefined name.
+        (check-stray-typed-body (as ptr cc) inner "with")
         (let (last:ref:Val (alloc-val ty-void null)
               my-want:ptr g-want-type
               j:i32 2)
@@ -6152,7 +6414,7 @@
                 (set! next-lbl (fmt-i32-i32 "cond.test%d.%d" id (+ i 1))))
               (let (test:ref:Val (emit-node (as ptr test-node) scope))
                 (when (!= ((test type) kind) TY-I1)
-                  (die-at (test-node line) "cond: test must be i1"))
+                  (die-at (node-line (as ptr test-node) (cc line)) "cond: test must be i1"))
                 (fprintf g-body-stream "  br i1 %s, label %%%s, label %%%s\n"
                   (test val) then-lbl next-lbl))
               (fprintf g-body-stream "%s:\n" then-lbl)
@@ -6286,7 +6548,7 @@
     (when (!= (node-len cc) 3) (die-at (cc line) "set! expects 2 args"))
     (let (target:ptr:Node (unsafe/cast ptr:Node (node-at cc 1)))
       (when (!= (target kind) NODE-SYM)
-        (die-at (target line) "set!: target must be symbol"))
+        (die-at (node-line (as ptr target) (cc line)) "set!: target must be symbol"))
       ; Strip any :type annotation so typed names from macro expansions resolve.
       (let (set-name:ptr null
             set-type-ignored:ptr null)
@@ -6296,14 +6558,14 @@
         (if-some (sym (scope-lookup scope set-name))
           (do
           (when (= (sym is-local) 0)
-            (die-at (target line) (fmt-s "set!: undefined local '%s'" (target s))))
+            (die-at (node-line (as ptr target) (cc line)) (fmt-s "set!: undefined local '%s'" (target s))))
           ; AVR-6 gap fix: a `:const` defvar's storage is LLVM `constant`
           ; (read-only) — a `set!` against it would emit a `store` into
           ; read-only storage (undefined behavior, segfaults at runtime on
           ; the host). Reject at compile time instead, before the RHS is
           ; even emitted.
           (when (!= (sym readonly-global) 0)
-            (die-at (target line) (fmt-s "set!: cannot assign to '%s' -- declared :const" (target s))))
+            (die-at (node-line (as ptr target) (cc line)) (fmt-s "set!: cannot assign to '%s' -- declared :const" (target s))))
             (let (v:ref:Val
                    ; TC-2: arm the want channel with the slot's declared type so a
                    ; generic constructor on the RHS infers a return-only tyvar.
@@ -6354,7 +6616,7 @@
                 (let (rv:ref:Val (alloc-val (sym type) (cv val)))
                   (.set! rv taint vtaint)
                   (return rv))))))
-          (die-at (target line) (fmt-s "set!: undefined local '%s'" (target s))))))))
+          (die-at (node-line (as ptr target) (cc line)) (fmt-s "set!: undefined local '%s'" (target s))))))))
 
 ; ============================================================
 ; Stage 8: scalar load/store helpers (volatile-aware)
@@ -6417,7 +6679,7 @@
     (when (!= (node-len cc) 2) (die-at (cc line) (fmt-s "%s expects 1 arg" op-name)))
     (let (target:ptr:Node (unsafe/cast ptr:Node (node-at cc 1)))
       (when (!= (target kind) NODE-SYM)
-        (die-at (target line) (fmt-s "%s: target must be symbol" op-name)))
+        (die-at (node-line (as ptr target) (cc line)) (fmt-s "%s: target must be symbol" op-name)))
       ; Strip any :type annotation so typed names from macro expansions resolve.
       (let (nm:ptr null
             type-ignored:ptr null)
@@ -6426,7 +6688,7 @@
                      (as ptr:ptr (addr-of type-ignored)))
         (let (sym:?ptr:Sym (scope-lookup scope nm))
           (when (or (= sym null) (= (sym is-local) 0))
-            (die-at (target line) (fmt-s "%s: undefined local" op-name)))
+            (die-at (node-line (as ptr target) (cc line)) (fmt-s "%s: undefined local" op-name)))
           (when (= (is-int-type (sym type)) 0)
             (die-at (cc line) (fmt-s "%s: must be integer" op-name)))
           (let (ir:ptr (type-to-ir (sym type))
@@ -6495,7 +6757,7 @@
     (narrow-kill-all)
     (let (nm:ptr:Node (unsafe/cast ptr:Node (node-at cc 1)))
       (when (!= (nm kind) NODE-SYM)
-        (die-at (nm line) "label: name must be symbol"))
+        (die-at (node-line (as ptr nm) (cc line)) "label: name must be symbol"))
       (let (e:ptr:LabelEntry (unsafe/cast ptr:LabelEntry (lbl-find (nm s))))
         (when (= (as ptr e) null)
           ; Pre-scan missed this label (e.g. from a macro expansion). Treat as a
@@ -6518,10 +6780,10 @@
     (when (!= (node-len cc) 2) (die-at (cc line) "goto: expects 1 label name"))
     (let (nm:ptr:Node (unsafe/cast ptr:Node (node-at cc 1)))
       (when (!= (nm kind) NODE-SYM)
-        (die-at (nm line) "goto: name must be symbol"))
+        (die-at (node-line (as ptr nm) (cc line)) "goto: name must be symbol"))
       (let (e:ptr:LabelEntry (unsafe/cast ptr:LabelEntry (lbl-find (nm s))))
         (when (= (as ptr e) null)
-          (die-at (nm line) (fmt-s "goto: no such label '%s' in function" (nm s))))
+          (die-at (node-line (as ptr nm) (cc line)) (fmt-s "goto: no such label '%s' in function" (nm s))))
         (fprintf g-body-stream "  br label %%lbl.%s\n" (nm s))
         ; Start a fresh dead BB so subsequent forms in a do/let body have a valid
         ; insertion point. LLVM eliminates it (no predecessors).
@@ -6535,10 +6797,10 @@
     (when (!= (node-len cc) 2) (die-at (cc line) "label-addr: expects 1 label name"))
     (let (nm:ptr:Node (unsafe/cast ptr:Node (node-at cc 1)))
       (when (!= (nm kind) NODE-SYM)
-        (die-at (nm line) "label-addr: name must be symbol"))
+        (die-at (node-line (as ptr nm) (cc line)) "label-addr: name must be symbol"))
       (let (e:ptr:LabelEntry (unsafe/cast ptr:LabelEntry (lbl-find (nm s))))
         (when (= (as ptr e) null)
-          (die-at (nm line) (fmt-s "label-addr: no such label '%s' in function" (nm s)))))
+          (die-at (node-line (as ptr nm) (cc line)) (fmt-s "label-addr: no such label '%s' in function" (nm s)))))
       (when (= g-cur-fname null)
         (die-at (cc line) "label-addr: not inside a function"))
       (let (tmp:ptr (new-tmp))
@@ -6597,12 +6859,12 @@
       (require-derefable pt (cc line) ".&")
       (let (fn-node:ptr:Node (unsafe/cast ptr:Node (node-at cc 2)))
         (when (!= (fn-node kind) NODE-SYM)
-          (die-at (fn-node line) ".&: field name must be symbol"))
+          (die-at (node-line (as ptr fn-node) (cc line)) ".&: field name must be symbol"))
         (let (sd:ptr:StructDef (unsafe/cast ptr:StructDef ((pt elem) sdef))
               idx:i32 (struct-field-idx (as ptr sd) (fn-node s)))
           (union-field-guard (as ptr sd) (cc line) ".&")
           (when (< idx 0)
-            (die-at (fn-node line)
+            (die-at (node-line (as ptr fn-node) (cc line))
               (fmt-2s ".&: no field '%s' on struct '%s'" (fn-node s) (sd name))))
           (let (ftype:ptr ((field-at (sd fields) idx) type)
                 gep:ptr (p val))
@@ -6647,7 +6909,7 @@
             (if (!= is-designated 0)
               (let (k:i64 ((unsafe/cast ptr:Node (node-at arg 0)) i))
                 (when (< k 0)
-                  (die-at (arg line) "array: designated index must be non-negative"))
+                  (die-at (node-line (as ptr arg) (cc line)) "array: designated index must be non-negative"))
                 (when (> (unsafe/cast i32 k) max-idx) (set! max-idx (unsafe/cast i32 k)))
                 (aset! (as ptr:i32 keys) i (unsafe/cast i32 k)))
               (do
@@ -6749,10 +7011,10 @@
                   vexpr:ptr (node-at arg 1)
                   fidx:i32 (struct-field-idx sd (fname-node s)))
               (when (< fidx 0)
-                (die-at (fname-node line)
+                (die-at (node-line (as ptr fname-node) (cc line))
                   (fmt-s "struct literal: no field '%s'" (fname-node s))))
               (when (!= (aref (as ptr:i32 seen) fidx) 0)
-                (die-at (fname-node line)
+                (die-at (node-line (as ptr fname-node) (cc line))
                   (fmt-s "struct literal: field '%s' specified twice" (fname-node s))))
               (aset! (as ptr:i32 seen) fidx 1)
               (let (ftype:ptr ((field-at (sdef fields) fidx) type)
@@ -6767,7 +7029,7 @@
                           (!= (aref (as ptr:i32 seen) pos-idx) 0))
                 (inc! pos-idx))
               (when (>= pos-idx nfields)
-                (die-at (arg line) "struct literal: too many positional initializers"))
+                (die-at (node-line (as ptr arg) (cc line)) "struct literal: too many positional initializers"))
               (let (ftype:ptr ((field-at (sdef fields) pos-idx) type)
                     v:ref:Val (emit-node arg scope)
                     coerced:ptr (coerce-int-val v ftype (cc line)))
@@ -6824,6 +7086,15 @@
 (defn stamp-macro-lines (node:(raw Node) ln:i32):void
   (when (= node null) (return))
   (let (n:ptr:Node (unsafe/cast ptr:Node node))
+    ; Stage 15 W4a: NEVER stamp a symbol node. A symbol is an interned singleton
+    ; shared by every occurrence of that spelling program-wide (lib/node.nuc
+    ; `node-line`), so writing a line into it is observed by every *other*
+    ; occurrence too — the first macro expansion mentioning `x` would make every
+    ; later diagnostic about any `x` anywhere report that macro's call line.
+    ; Symbols legitimately have no line; their diagnostics borrow the enclosing
+    ; form's, which this function does attribute. (Symbols have no children, so
+    ; skipping them costs no traversal.)
+    (when (= (n kind) NODE-SYM) (return))
     (when (!= (n line) 0) (return))
     (.set! n line ln)
     (when (= (n kind) NODE-CELL)
@@ -6836,11 +7107,19 @@
     (when (!= (mdef variadic) 0)
       (when (< nargs (- (mdef num-params) 1))
         (die-at ((unsafe/cast ptr:Node call) line)
-                (fmt-s "macro: not enough args" 0))))
+                (fmt-s-2i "macro '%s': expects at least %d args, got %d"
+                          (mdef name) (- (mdef num-params) 1) nargs))))
     (when (= (mdef variadic) 0)
       (when (!= nargs (mdef num-params))
-        (die-at ((unsafe/cast ptr:Node call) line)
-                (fmt-s "macro: wrong number of args" 0))))
+        ; Stage 15 W4d: a one-armed `(if test then)` is the single most common
+        ; fixed-arity macro miscall (C/JS habit carried over) -- name the fix
+        ; directly rather than a generic arg-count message.
+        (if (and (= (mdef name) "if") (= nargs 2))
+          (die-at ((unsafe/cast ptr:Node call) line)
+                  (as ptr "if requires an else branch; use (when test then…) for a guard"))
+          (die-at ((unsafe/cast ptr:Node call) line)
+                  (fmt-s-2i "macro '%s': expects %d args, got %d"
+                            (mdef name) (mdef num-params) nargs)))))
     (let (args-arr:ptr (malloc (* (as i64 (mdef num-params)) (ptr-bytes)))
           regular-params:i32 (mdef num-params))
       (when (!= (mdef variadic) 0)
@@ -7081,7 +7360,7 @@
       (when (and (-> sym (_ type) (unsafe/cast ptr:Type _) (_ kind) (= _ TY-FN))
                  (= (sym is-local) 0))
         (return (emit-call n scope sym)))
-      (return (emit-callable-value n scope (emit-symbol-ref head scope))))
+      (return (emit-callable-value n scope (emit-symbol-ref head scope ((unsafe/cast ptr:Node n) line)))))
     ; No symbol: struct-name-as-constructor (S init...) -> ptr:S compound
     ; literal, else unknown.
     (do
@@ -7092,9 +7371,9 @@
       ; position is ambiguous (type arg vs first field value) and is an error.
       ; Point at the explicit ((Template <type-args>) field0 ...) form.
       (when (!= (as ptr (struct-template-lookup h)) null)
-        (die-at ((unsafe/cast ptr:Node head) line)
+        (die-at (node-line head ((unsafe/cast ptr:Node n) line))
           (fmt-s "'%s' is a struct template; construct with the explicit form ((Template <type-args>) field0 field1 ...)" h)))
-      (die-at ((unsafe/cast ptr:Node head) line) (fmt-s "unknown: %s" h)))))
+      (die-at (node-line head ((unsafe/cast ptr:Node n) line)) (unknown-name-message h)))))
 
 (defn emit-list (n:(raw Node) scope:ref:Scope):ref:Val
   (let (nn:ptr:Node (unsafe/cast ptr:Node n))
@@ -7133,16 +7412,16 @@
         ; replacement (design/stage14/unsafe-namespace.md D6). The reserved-
         ; namespace spelling keeps calling the exact same emitter as before.
         (when (= hp 'funcall-ptr-1)
-          (die-at (head line) "'funcall-ptr-1' was split in Stage 14: use 'unsafe/funcall-ptr-1'"))
+          (die-at (node-line head (nn line)) "'funcall-ptr-1' was split in Stage 14: use 'unsafe/funcall-ptr-1'"))
         (when (= hp 'unsafe/funcall-ptr-1) (return (emit-funcall-ptr-1 n scope)))
         (when (= hp 'funcall-ptr-i32)
-          (die-at (head line) "'funcall-ptr-i32' was split in Stage 14: use 'unsafe/funcall-ptr-i32'"))
+          (die-at (node-line head (nn line)) "'funcall-ptr-i32' was split in Stage 14: use 'unsafe/funcall-ptr-i32'"))
         (when (= hp 'unsafe/funcall-ptr-i32) (return (emit-funcall-ptr-i32 n scope)))
         (when (= hp 'funcall-ptr-i64)
-          (die-at (head line) "'funcall-ptr-i64' was split in Stage 14: use 'unsafe/funcall-ptr-i64'"))
+          (die-at (node-line head (nn line)) "'funcall-ptr-i64' was split in Stage 14: use 'unsafe/funcall-ptr-i64'"))
         (when (= hp 'unsafe/funcall-ptr-i64) (return (emit-funcall-ptr-i64 n scope)))
         (when (= hp 'funcall-ptr-ptr)
-          (die-at (head line) "'funcall-ptr-ptr' was split in Stage 14: use 'unsafe/funcall-ptr-ptr'"))
+          (die-at (node-line head (nn line)) "'funcall-ptr-ptr' was split in Stage 14: use 'unsafe/funcall-ptr-ptr'"))
         (when (= hp 'unsafe/funcall-ptr-ptr) (return (emit-funcall-ptr-ptr n scope)))
         (when (= hp 'return) (return (emit-return n scope)))
         (when (= hp 'do) (return (emit-do n scope)))
@@ -7167,7 +7446,7 @@
         ; replacements (D6). `unsafe/cast` (D2 Class 1) keeps calling the same
         ; emitter as before.
         (when (= hp 'cast)
-          (die-at (head line) "'cast' was split in Stage 14: use 'as' (safe) or 'unsafe/cast' (unchecked)"))
+          (die-at (node-line head (nn line)) "'cast' was split in Stage 14: use 'as' (safe) or 'unsafe/cast' (unchecked)"))
         (when (= hp 'unsafe/cast) (return (emit-cast n scope)))
         (when (= hp 'as) (return (emit-as n scope)))
         (when (= hp 'addr-of) (return (emit-addr-of n scope)))
@@ -7178,7 +7457,7 @@
         ; Stage 14 UN-5: bare `ptr+` is retired (D6); `unsafe/ptr+` (D2 Class 2)
         ; keeps calling the same emitter as before.
         (when (= hp 'ptr+)
-          (die-at (head line) "'ptr+' was split in Stage 14: use 'unsafe/ptr+'"))
+          (die-at (node-line head (nn line)) "'ptr+' was split in Stage 14: use 'unsafe/ptr+'"))
         (when (= hp 'unsafe/ptr+) (return (emit-ptr-add n scope)))
         (when (= hp '_get) (return (emit-field-get n scope)))
         (when (= hp '.) (return (emit-field-get n scope)))
@@ -7332,49 +7611,52 @@
 
 ; Produce the LLVM initializer string for a `defvar` init form at `ty`.
 ; Accepts int / float / string / null / true / false / defconst-name / (char "x").
-(defn defvar-init-ir (init:(raw Node) ty:(raw Type)):ptr
+; `encl` is the enclosing `defvar` form's line, blamed when the init node is a
+; bare symbol (`null`/`true`/`false`/a defconst name) — an interned singleton
+; with no line of its own (lib/node.nuc `node-line`). Stage 15 W4a.
+(defn defvar-init-ir (init:(raw Node) ty:(raw Type) encl:i32):ptr
   (let (nn:ptr:Node (unsafe/cast ptr:Node init)
         ty-kind:i32 ((unsafe/cast ptr:Type ty) kind))
     ; Integer literal: any int type (signed or unsigned).
     (when (= (nn kind) NODE-INT)
       (when (= (is-int-type ty) 0)
-        (die-at (nn line)
+        (die-at (node-line init encl)
           (fmt-s "defvar: integer literal incompatible with type %s" (type-to-ir ty))))
       (return (fmt-i64 "%ld" (nn i))))
     ; Float literal: f32 or f64. LLVM accepts the same decimal/hex form for both.
     (when (= (nn kind) NODE-FLOAT)
       (when (= (is-float-type ty) 0)
-        (die-at (nn line)
+        (die-at (node-line init encl)
           (fmt-s "defvar: float literal incompatible with type %s" (type-to-ir ty))))
       (return (float-literal-ir (nn s))))
     ; String literal: ptr type. Intern into the string table and refer to it
     ; as @.str.N (decays to a byte pointer for printf consumers).
     (when (= (nn kind) NODE-STR)
       (when (!= ty-kind TY-PTR)
-        (die-at (nn line) "defvar: string literal requires ptr type"))
+        (die-at (node-line init encl) "defvar: string literal requires ptr type"))
       (let (sid:i32 (intern-string (nn s) (unsafe/cast i32 (strlen (nn s)))))
         (return (fmt-i32 "@.str.%d" sid))))
     ; Symbol literal: null, true, false, or a defconst/defenum name.
     (when (= (nn kind) NODE-SYM)
       (when (= (strcmp (nn s) "null") 0)
         (when (!= ty-kind TY-PTR)
-          (die-at (nn line) "defvar: null requires ptr type"))
+          (die-at (node-line init encl) "defvar: null requires ptr type"))
         (return "null"))
       (when (= (strcmp (nn s) "true") 0)
         (when (!= ty-kind TY-I1)
-          (die-at (nn line) "defvar: true requires i1/bool type"))
+          (die-at (node-line init encl) "defvar: true requires i1/bool type"))
         (return "true"))
       (when (= (strcmp (nn s) "false") 0)
         (when (!= ty-kind TY-I1)
-          (die-at (nn line) "defvar: false requires i1/bool type"))
+          (die-at (node-line init encl) "defvar: false requires i1/bool type"))
         (return "false"))
       (let (sym:?ptr:Sym (scope-lookup g-globals (nn s)))
         (when (and (!= sym null) (!= (sym is-const) 0))
           (when (= (is-int-type ty) 0)
-            (die-at (nn line)
+            (die-at (node-line init encl)
               (fmt-s "defvar: constant '%s' incompatible with non-integer type" (nn s))))
           (return (sym const-val))))
-      (die-at (nn line) (fmt-s "defvar: unsupported init symbol '%s'" (nn s))))
+      (die-at (node-line init encl) (fmt-s "defvar: unsupported init symbol '%s'" (nn s))))
     ; (char "x") — char literal, one byte stored in an int field.
     (when (and (= (nn kind) NODE-CELL) (= (node-len nn) 2))
       (let (head:ptr:Node (unsafe/cast ptr:Node (node-at nn 0)))
@@ -7382,11 +7664,11 @@
           (let (arg:ptr:Node (unsafe/cast ptr:Node (node-at nn 1)))
             (when (or (!= (arg kind) NODE-STR)
                       (!= (strlen (arg s)) 1))
-              (die-at (arg line) "defvar: (char ...) requires a single-char string"))
+              (die-at (node-line (as ptr arg) encl) "defvar: (char ...) requires a single-char string"))
             (when (= (is-int-type ty) 0)
-              (die-at (nn line) "defvar: char literal requires integer type"))
+              (die-at (node-line init encl) "defvar: char literal requires integer type"))
             (return (fmt-i32 "%d" (char-at (arg s) 0)))))))
-    (die-at (nn line) "defvar: init must be a literal")
+    (die-at (node-line init encl) "defvar: init must be a literal")
     (return null)))
 
 (defn emit-defvar (call:(raw Node)):void
@@ -7408,10 +7690,19 @@
         (when (and (!= init-cell null) (!= ((unsafe/cast ptr:Node init-cell) cdr) null))
           (die-at (cc line) "defvar: expects name and optional init"))
         (let (name:ptr null
-              ty:ptr (extract-name-and-type name-node (as ptr:ptr (addr-of name))
-                                            ((unsafe/cast ptr:Node name-node) line)))
+              ; W4b sibling sweep: `name-node` is frequently a bare NODE-SYM
+              ; (the common `(defvar x:i32 0)` shape), whose own `line` is
+              ; always 0 (interned symbols carry no line — context/
+              ; conventions.md). Reading `(name-node line)` directly here
+              ; used to leak that 0 into both extract-name-and-type's
+              ; internal fallback and the "missing :type" die-at below,
+              ; reporting `:0:` for the plain, very-plausible mistake
+              ; `(defvar x 0)` (no type at all). node-line borrows the
+              ; enclosing `defvar` form's real line instead.
+              name-line:i32 (node-line (as ptr name-node) (cc line))
+              ty:ptr (extract-name-and-type name-node (as ptr:ptr (addr-of name)) name-line))
           (when (= ty null)
-            (die-at ((unsafe/cast ptr:Node name-node) line) (fmt-s "defvar: missing :type on '%s'" name)))
+            (die-at name-line (fmt-s "defvar: missing :type on '%s'" name)))
           ; :volatile marks the storage slot volatile (lowers to the is-volatile
           ; Type flag, identical to the postfix spelling `trap-zero:i32:volatile`).
           (when (!= (bit-and attr-flags DECL-ATTR-VOLATILE) 0)
@@ -7425,7 +7716,7 @@
                 init-ir:ptr null)
             (check-ir-name-legal (cc line) name ir-name)
             (if (!= init-cell null)
-              (set! init-ir (defvar-init-ir ((unsafe/cast ptr:Node init-cell) car) ty))
+              (set! init-ir (defvar-init-ir ((unsafe/cast ptr:Node init-cell) car) ty (cc line)))
               (let (tk:i32 ((as ptr:Type ty) kind))
                 (cond (!= (is-ptr-like ty) 0) (set! init-ir "null")
                       (or (= tk TY-F32) (= tk TY-F64)) (set! init-ir "0.0")
@@ -7461,6 +7752,34 @@
     (when (!= (node-len cc) 3) (die-at (cc line) "defconst: expects name and value"))
     (let (name:ptr:Node (unsafe/cast ptr:Node (node-at cc 1))
           val:ptr:Node (unsafe/cast ptr:Node (node-at cc 2)))
+      ; W4b (design/stage15-stress-test/diagnostics.md): `defconst` takes no
+      ; type annotation -- its value is always ty-i32 from an integer literal,
+      ; so there is nothing an annotation could mean. Before this check, a
+      ; colon-typed name silently registered under the WRONG key: `desugar`
+      ; never rewrites a `defconst` name (only defn/defvar/extern/declare
+      ; names, defstruct fields, and let/with binding names are desugared —
+      ; see context/conventions.md), so `K:i32` arrived as one undesugared
+      ; NODE-SYM whose spelling is literally "K:i32", passed the old
+      ; `(!= (name kind) NODE-SYM)` check unchanged, and got registered under
+      ; that literal, unlookupable name -- every later use of `K` then died
+      ; `undefined: K` with no diagnostic at the definition. Reject both
+      ; surface shapes: a bare symbol whose spelling embeds ':' ("K:i32"), and
+      ; the colon-paren-fused CELL shape ("K:(i32)" -> (K (i32)), produced by
+      ; `fuse-colon-paren` in lib/reader.nuc) which would otherwise fall into
+      ; the generic, misleading "name must be symbol" die below.
+      (when (= (name kind) NODE-SYM)
+        (let (base:ptr null tyname:ptr null)
+          (split-typed (name s) (as ptr:ptr (addr-of base)) (as ptr:ptr (addr-of tyname)))
+          (when (!= tyname null)
+            (die-at (cc line)
+              (fmt-sd "defconst: takes no type annotation; write (defconst %s %d)"
+                      base (if (= (val kind) NODE-INT) (unsafe/cast i32 (val i)) 0))))))
+      (when (= (name kind) NODE-CELL)
+        (let (base-node:(raw Node) (name car))
+          (when (and (!= base-node null) (= (base-node kind) NODE-SYM))
+            (die-at (node-line (as ptr name) (cc line))
+              (fmt-sd "defconst: takes no type annotation; write (defconst %s %d)"
+                      (base-node s) (if (= (val kind) NODE-INT) (unsafe/cast i32 (val i)) 0))))))
       (when (!= (name kind) NODE-SYM)
         (die-at (name line) "defconst: name must be symbol"))
       (when (!= (val kind) NODE-INT)
@@ -7490,6 +7809,19 @@
           (return (err! malformed-form))))
     (let (name-node:ptr:Node (unsafe/cast ptr:Node (node-at cc 1))
           msg-node:ptr:Node (unsafe/cast ptr:Node (node-at cc 2)))
+      ; W4b sibling sweep: a colon-typed name ("MyErr:i32") silently registered
+      ; under that literal, unlookupable key -- the same defconst-shaped bug
+      ; (see reject-colon-in-def-name). deferror uses report-at + (err!
+      ; malformed-form) rather than die-at (its own established non-aborting
+      ; convention, per the comment above emit-deferror), so this is a bespoke
+      ; check rather than a call to the shared die-at-based helper.
+      (when (= (name-node kind) NODE-SYM)
+        (let (base:ptr null tyname:ptr null)
+          (split-typed (name-node s) (as ptr:ptr (addr-of base)) (as ptr:ptr (addr-of tyname)))
+          (when (!= tyname null)
+            (do (report-at (cc line)
+                  (fmt-s "deferror: takes no type annotation; write (deferror %s \"message\")" base))
+                (return (err! malformed-form))))))
       (when (!= (name-node kind) NODE-SYM)
         (do (report-at (name-node line) "deferror: name must be a symbol")
             (return (err! malformed-form))))
@@ -7559,6 +7891,22 @@
 (defn emit-defenum (call:(raw Node)):void
   (let (cc:ptr:Node (unsafe/cast ptr:Node call))
     (when (< (node-len cc) 2) (die-at (cc line) "defenum: missing name"))
+    (let (enum-name-node:ptr:Node (unsafe/cast ptr:Node (node-at cc 1)))
+      (reject-colon-in-def-name (as raw:Node enum-name-node) "defenum" (cc line))
+      ; W4b sibling sweep: defenum has no template/parametric-name concept
+      ; (unlike defstruct/defprotocol/defunion), so any CELL name here can
+      ; only be the colon-paren-fused single-annotation shape ("E:(i32)" ->
+      ; (E (i32))). Before this check, a CELL name-node silently skipped
+      ; EnumDef registration below (its own `(= (en kind) NODE-SYM)` guard)
+      ; while the flat member loop still ran and defined A/B/C fine — so the
+      ; mistake was invisible unless the enum's own type name was later
+      ; referenced (e.g. as a generic receiver's tyvar-vs-concrete-type check
+      ; in generics.nuc's tyname-resolvable).
+      (when (= (enum-name-node kind) NODE-CELL)
+        (let (base-node:(raw Node) (enum-name-node car))
+          (when (and (!= base-node null) (= (base-node kind) NODE-SYM))
+            (die-at (node-line (as ptr enum-name-node) (cc line))
+              (fmt-s "defenum: takes no type annotation; write (defenum %s ...)" (base-node s)))))))
     (let (i:i32 2)
       (while (< i (node-len cc))
         (let (name:ptr:Node (unsafe/cast ptr:Node (node-at cc i)))
@@ -7599,6 +7947,15 @@
   (let (cc:ptr:Node (unsafe/cast ptr:Node call))
     (when (< (node-len cc) 2) (die-at (cc line) "defstruct: missing name"))
     (let (name-node:ptr:Node (unsafe/cast ptr:Node (node-at cc 1)))
+      ; W4b sibling sweep: a bare colon-typed name ("S:i32") used to sail past
+      ; the `!= NODE-SYM` check below unchanged and register a StructDef under
+      ; that literal spelling, which then failed downstream at
+      ; check-ir-name-legal with a confusing "illegal character ':'" message
+      ; reported at line 0 (S:i32 is an interned NODE-SYM, whose own `line` is
+      ; always 0 — the W4a class of bug, resurfacing here because this specific
+      ; failure mode wasn't among W4a's confirmed cases). Reject up front, at
+      ; the defstruct line, before any of that.
+      (reject-colon-in-def-name (as raw:Node name-node) "defstruct" (cc line))
       ; Stage 11: a parameterized head — `(defstruct (Vector T) ...)` — is a
       ; template; defines no type, emits no IR (parametric-structs.md §2). A use
       ; `(Vector i32)` in type position stamps a concrete instance.
@@ -7698,6 +8055,10 @@
     (when (< (node-len cc) 3)
       (die-at (cc line) "defunion: expects a name and at least one arm"))
     (let (name-node:ptr:Node (unsafe/cast ptr:Node (node-at cc 1)))
+      ; W4b sibling sweep: a bare colon-typed name ("U:i32") used to sail past
+      ; the `!= NODE-SYM` check below unchanged and register the UnionDef
+      ; under that literal, unlookupable key — the same defconst-shaped bug.
+      (reject-colon-in-def-name (as raw:Node name-node) "defunion" (cc line))
       ; Parameterized head — a template; defines no type, emits no code.
       (when (= (name-node kind) NODE-CELL)
         (register-union-template (as ptr cc))
@@ -7865,14 +8226,14 @@
               (when (= (sp kind) NODE-SYM)
                     (when (= (sp s) "&rest")
                           (when (!= si (- raw-nparams 2))
-                                (die-at (sp line) "defn: &rest must be second-to-last param"))
+                                (die-at (node-line (as ptr sp) (cc line)) "defn: &rest must be second-to-last param"))
                           (when (!= has-rest 0)
-                                (die-at (sp line) "defn: multiple &rest in params"))
+                                (die-at (node-line (as ptr sp) (cc line)) "defn: multiple &rest in params"))
                           (set! has-rest 1)
                           (set! rest-idx si))
                     (when (= (sp s) "&optional")
                           (when (!= opt-idx -1)
-                                (die-at (sp line) "defn: multiple &optional in params"))
+                                (die-at (node-line (as ptr sp) (cc line)) "defn: multiple &optional in params"))
                           (set! opt-idx si)))))
           (when (and (!= opt-idx -1) (!= has-rest 0))
             (die-at ((unsafe/cast ptr:Node (node-at params-node opt-idx)) line)
@@ -8392,6 +8753,12 @@
       (die-at (ff line) "defmacro: expects name, params, and body"))
     (let (name-node:ptr:Node (unsafe/cast ptr:Node (node-at ff 1))
           params-node:ptr (node-at ff 2))
+      ; W4b sibling sweep: a bare colon-typed name ("m:i32") used to sail past
+      ; the `!= NODE-SYM` check below unchanged and register the macro under
+      ; that literal, unlookupable key — the same defconst-shaped bug (the
+      ; call site then failed as an ordinary "unknown: m" at the use, with no
+      ; diagnostic at the definition).
+      (reject-colon-in-def-name (as raw:Node name-node) "defmacro" (ff line))
       (when (!= (name-node kind) NODE-SYM)
         (die-at (name-node line) "defmacro: name must be symbol"))
       (when (= (node-is-list params-node) 0)
@@ -8407,7 +8774,7 @@
             (let (vp:ptr:Node (unsafe/cast ptr:Node (node-at params-node vi)))
               (when (= (vp s) "&rest")
                     (when (!= vi (- num-params 2))
-                          (die-at (vp line) "defmacro: &rest must be second-to-last param"))
+                          (die-at (node-line (as ptr vp) (ff line)) "defmacro: &rest must be second-to-last param"))
                     (set! variadic 1)
                     (set! pcount (- num-params 1)))))
         ; Collect param names, skipping &rest keyword.
@@ -9155,7 +9522,7 @@
       (die-at (ff line) "fn-attr: expected (fn-attr <name> \"attr\" ...)"))
     (let (name-node:ptr:Node (unsafe/cast ptr:Node (node-at form 1)))
       (when (!= (name-node kind) NODE-SYM)
-        (die-at (name-node line)
+        (die-at (node-line (as ptr name-node) (ff line))
                 "fn-attr: first argument must be a function name symbol"))
       (let (fname:ptr (name-node s)
             i:i32 2
@@ -9163,7 +9530,7 @@
         (while (< i n)
           (let (arg:ptr:Node (unsafe/cast ptr:Node (node-at form i)))
             (when (!= (arg kind) NODE-STR)
-              (die-at (arg line)
+              (die-at (node-line (as ptr arg) (ff line))
                       "fn-attr: each attribute must be a string literal"))
             ; Intern the attribute so the stored pointer is stable and canonical
             ; (it is only ever printed, never identity-compared). `fname` is
@@ -9188,11 +9555,11 @@
       (while (< i n)
         (let (arg:ptr:Node (unsafe/cast ptr:Node (node-at form i)))
           (when (!= (arg kind) NODE-SYM)
-            (die-at (arg line) "export: each argument must be a symbol"))
+            (die-at (node-line (as ptr arg) (ff line)) "export: each argument must be a symbol"))
           (let (spelling:ptr (arg s)
                 sym:?ptr:Sym (scope-lookup g-globals spelling))
             (when (= sym null)
-              (die-at (arg line) (fmt-s "export: symbol not found: '%s'" spelling)))
+              (die-at (node-line (as ptr arg) (ff line)) (fmt-s "export: symbol not found: '%s'" spelling)))
             ; Strip the source namespace qualifier to get the bare name, then
             ; let scope-define qualify it against g-current-ns.
             (let (bare:ptr (strip-ns-qualifier spelling))
@@ -9267,7 +9634,7 @@
                   (!= (f kind) NODE-CELL)
                   (= (node-len (as ptr f)) 0)
                   (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ kind) (!= _ NODE-SYM)))
-              (die-at (f line)
+              (die-at (node-line (as ptr f) ((unsafe/cast ptr:Node fc) line))
                       "top-level form must be a list starting with a symbol"))
         (let (h:ptr (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ s))
               hp:ptr (-> f (node-at _ 0)))

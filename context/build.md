@@ -33,6 +33,32 @@
 - **Do not redirect native stdout with PowerShell `>`** — Windows PowerShell 5.1 re-encodes it as UTF-16-with-BOM, corrupting the `.ll`. `build.ps1` uses `Start-Process -RedirectStandardOutput`, which preserves the child's raw bytes.
 - Win64 aggregate ABI at the C boundary is **not** correct yet (Phase C did SysV only); the compiler itself never hits this because its own IR passes only pointers (no real `byval`/`sret`), so it still bootstraps on Win64.
 
+## Merging a branch merges `boot/nucleusc.ll` **textually** — verify it still builds
+
+`boot/nucleusc.ll` is a ~100k-line generated file that git will happily
+three-way merge. A merge can keep *both* sides' copies of a function, producing
+an LLVM module with a duplicate definition that `clang` rejects
+(`invalid redefinition of function '<name>'`). This actually happened at
+`04c55ec Merge stage14`, which duplicated `@emit-keyword`; the duplicate also
+carried a `@.str.N` reference from the *other* side's string pool, so the second
+copy indexed `"_get"` (5 bytes) through a `[15 x i8]` GEP. Nobody noticed for
+two commits because `bin/nucleusc` is `.gitignore`d: existing checkouts kept
+using a locally built pre-merge binary, and only a **fresh checkout** (or a
+`rm bin/nucleusc`) hits the `make boot-binary` path that actually parses the IR.
+
+After any merge that touches `boot/*.ll`:
+
+1. `rm -f bin/nucleusc && make` — forces the rebuild-from-IR path.
+2. Duplicate check: `grep -oE "^define [^@]*@[-A-Za-z0-9_.$]+" boot/nucleusc.ll | sed 's/.*@//' | sort | uniq -d` must print nothing.
+3. String-pool consistency: every `[N x i8], ptr @.str.M` reference's `N` must
+   equal the `[N x i8]` in `@.str.M`'s definition. A mismatch means a block came
+   from the other merge side. (A short python scan over the file is enough; one
+   mismatch is how the `@emit-keyword` duplicate was localized.)
+
+Prefer regenerating the file from a known-good compiler over hand-editing it —
+but a surgical delete of a provably stale duplicate is a legitimate repair when
+the merge damage is confined and verified by (2) and (3).
+
 ## Updating bootstrap artifacts
 
 Run `make update-bootstrap` **only at a stable milestone**:

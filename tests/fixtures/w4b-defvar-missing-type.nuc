@@ -1,0 +1,11 @@
+; Stage 15 W4b sibling sweep (design/stage15-stress-test/diagnostics.md
+; §W4b): found while probing `defvar` for the same class of bug. `defvar`
+; legitimately requires a type annotation (unlike its siblings above), so
+; `(defvar x 3)` -- no annotation at all -- is the plausible mistake here.
+; The diagnostic already existed and was correctly worded, but reported line
+; 0: `name-node` is a bare NODE-SYM (an interned symbol with no per-
+; occurrence line), and emit-defvar read `(name-node line)` directly instead
+; of borrowing the enclosing form's line via `node-line`.
+(defvar x 3)
+
+(defn main ():i32 (return x))

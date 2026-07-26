@@ -1,0 +1,9 @@
+; Stage 15 W4b sibling sweep (design/stage15-stress-test/diagnostics.md
+; §W4b): before the fix, a bare colon-typed macro name ("m:i32") sailed past
+; `emit-defmacro`'s `!= NODE-SYM` check unchanged and registered the macro
+; under that literal, unlookupable key -- compiling with NO diagnostic at the
+; definition; the call site then failed as an unrelated "unknown: m". Now
+; rejected at the `defmacro` line.
+(defmacro m:i32 (x) x)
+
+(defn main ():i32 (m 1))

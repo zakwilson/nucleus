@@ -1,0 +1,7 @@
+; Stage 15 W4a / findings §3.7: `null` as a `CStr` defvar initializer. Whether
+; this becomes legal is W5's business; W4a's contract is that today's rejection
+; carries a real location (enforced by the run_no_line_zero sweep).
+(defvar- g:CStr null)
+
+(defn main ():i32
+  (return 0))

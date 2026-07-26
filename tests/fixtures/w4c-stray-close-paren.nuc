@@ -1,0 +1,14 @@
+; Stage 15 W4c (design/stage15-stress-test/diagnostics.md §W4c). The same
+; extra-`)`-in-a-let-binding-list mistake as w4c-let-extra-paren.nuc, but without
+; the compensating omission at the end, so the file no longer balances and the
+; reader reaches the excess `)` first. Paren counting cannot know WHICH `)` was
+; the intruder -- reporting the excess one is the only defensible primary
+; location -- but the note bounds the search to a single top-level form.
+; Before: `unexpected )` at line 13 and nothing else.
+; After:  the same error plus the opening line of the form the `)` would have
+;   closed, which is already closed -- so the stray `)` is between the two.
+(defn main ():i32
+  (let (a:i32 1)
+        b:i32 2)
+    (return (+ a b))))
+(defn other ():i32 (return 0))

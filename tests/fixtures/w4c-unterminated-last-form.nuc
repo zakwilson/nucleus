@@ -1,0 +1,10 @@
+; Stage 15 W4c (design/stage15-stress-test/diagnostics.md §W4c).
+; The imbalance is in the file's LAST top-level form, so no line ever opens a
+; new form in column 0 while a form is still open -- there is no second location
+; to report. The diagnostic must say the file simply ends unterminated and must
+; NOT invent a second number.
+(defn other ():i32 (return 0))
+(defn main ():i32
+  (let (a:i32 1)
+    (let (b:i32 2)
+      (return (+ a b))

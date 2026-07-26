@@ -1,0 +1,9 @@
+; Stage 15 W4c (design/stage15-stress-test/diagnostics.md §W4c).
+; Depth tracking covers every bracket kind the reader knows -- `(`/`)`, `[`/`]`
+; (vector), `{`/`}` (map), `#{`/`}` (set) -- not just parentheses. Here a vector
+; literal is left unclosed; the column-0 heuristic still fires, and the note
+; names the bracket the form is actually waiting for (`]`, not `)`).
+(defn main ():i32
+  (with (v:(ref (Vector i32)) [1 2 3
+    (return 0)
+(defn other ():i32 (return 0))

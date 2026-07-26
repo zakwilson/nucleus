@@ -728,7 +728,7 @@
                 (aset! (as ptr:i32 repr-out) 0 REPR-TAGGED)
                 (if (= (strcmp (m s) "niche") 0)
                   (aset! (as ptr:i32 repr-out) 0 REPR-NICHE)
-                  (die-at (m line) "defunion: &repr mode must be `tagged` or `niche`"))))
+                  (die-at (node-line (as ptr m) line) "defunion: &repr mode must be `tagged` or `niche`"))))
             (set! scur mcell))   ; advance past the mode; the cdr step skips it
           (let (cell:ptr (make-cell (as ptr a) null line))
             (when (= head null) (set! head cell))
@@ -763,10 +763,10 @@
             (set! aname (arm s))
             (do
               (when (or (!= (arm kind) NODE-CELL) (= (node-len (as ptr arm)) 0))
-                (die-at (arm line) "defunion: arm must be `name` or `(name field:type ...)`"))
+                (die-at (node-line (as ptr arm) line) "defunion: arm must be `name` or `(name field:type ...)`"))
               (let (an:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr arm) 0)))
                 (when (!= (an kind) NODE-SYM)
-                  (die-at (an line) "defunion: arm name must be a symbol"))
+                  (die-at (node-line (as ptr an) line) "defunion: arm name must be a symbol"))
                 (set! aname (an s)))
               (set! nf (- (node-len (as ptr arm)) 1))
               (when (> nf 0)
@@ -777,15 +777,15 @@
                     (let (field:ptr (node-at (as ptr arm) (+ fi 1))
                           fname:ptr null
                           fty:ptr (extract-name-and-type field (as ptr:ptr (addr-of fname))
-                                                          ((unsafe/cast ptr:Node field) line)))
+                                                          (node-line field line)))
                       (when (= fty null)
-                        (die-at ((unsafe/cast ptr:Node field) line)
+                        (die-at (node-line field line)
                           (fmt-s "defunion: field '%s' missing :type" fname)))
                       (aset! (as ptr:ptr fnames) fi (intern-str fname))
                       (aset! (as ptr:ptr ftypes) fi fty))
                     (inc! fi))))))
           (when (>= (union-arm-index-in aname arms-vec) 0)
-            (die-at (arm line) (fmt-s "defunion: duplicate arm '%s'" aname)))
+            (die-at (node-line (as ptr arm) line) (fmt-s "defunion: duplicate arm '%s'" aname)))
           ; Arm payload: nothing (payload-less), the single field's type, or a
           ; memoized anonymous struct of the fields.
           (let (rec:ref:Arm (new Arm)
@@ -891,11 +891,21 @@
         head:ptr:Node (unsafe/cast ptr:Node (node-at form 1))
         name-node:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr head) 0)))
     (when (!= (name-node kind) NODE-SYM)
-      (die-at (head line) "defunion: template name must be a symbol"))
+      (die-at (node-line (as ptr head) (ff line)) "defunion: template name must be a symbol"))
     (let (name:ptr (name-node s)
           ntv:i32 (- (node-len (as ptr head)) 1))
       (when (< ntv 1)
-        (die-at (head line) "defunion: template needs at least one type parameter"))
+        (die-at (node-line (as ptr head) (ff line)) "defunion: template needs at least one type parameter"))
+      ; W4b sibling sweep: a single parameter that is itself a CELL (not a
+      ; bare tyvar symbol) can only be the colon-paren-fused shape
+      ; ("U:(i32)" -> (U (i32))) — a genuine template's extra parameters are
+      ; always bare symbols (T, K, V, ...). Give the annotation-specific
+      ; message here rather than falling into the generic, misleading "type
+      ; parameter must be a symbol" below.
+      (when (and (= ntv 1)
+                 (= (-> head (node-at _ 1) (unsafe/cast ptr:Node _) (_ kind)) NODE-CELL))
+        (die-at (node-line (as ptr head) (ff line))
+          (fmt-s "defunion: takes no type annotation; write (defunion %s ...)" name)))
       ; Re-import of the same template (e.g. via .nuch) is a no-op.
       (when (!= (union-template-lookup name) null) (return))
       (guard-name-kind name (ff line) NK-TYPE)
@@ -905,7 +915,7 @@
         (dotimes (i ntv)
           (let (tv:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr head) (+ i 1))))
             (when (!= (tv kind) NODE-SYM)
-              (die-at (tv line) "defunion: type parameter must be a symbol"))
+              (die-at (node-line (as ptr tv) (ff line)) "defunion: type parameter must be a symbol"))
             (aset! (as ptr:ptr tyvars) i (tv s))))
         (let (ut:ptr:UnionTemplate (as ptr:UnionTemplate (arena-alloc (sizeof UnionTemplate))))
           (conj g-union-templates ut)
@@ -925,11 +935,21 @@
         head:ptr:Node (unsafe/cast ptr:Node (node-at form 1))
         name-node:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr head) 0)))
     (when (!= (name-node kind) NODE-SYM)
-      (die-at (head line) "defstruct: template name must be a symbol"))
+      (die-at (node-line (as ptr head) (ff line)) "defstruct: template name must be a symbol"))
     (let (name:ptr (name-node s)
           ntv:i32 (- (node-len (as ptr head)) 1))
       (when (< ntv 1)
-        (die-at (head line) "defstruct: template needs at least one type parameter — use a plain defstruct"))
+        (die-at (node-line (as ptr head) (ff line)) "defstruct: template needs at least one type parameter — use a plain defstruct"))
+      ; W4b sibling sweep: a single parameter that is itself a CELL (not a
+      ; bare tyvar symbol) can only be the colon-paren-fused shape
+      ; ("S:(i32)" -> (S (i32))) — a genuine template's extra parameters are
+      ; always bare symbols (T, K, V, ...). Give the annotation-specific
+      ; message here rather than falling into the generic, misleading "type
+      ; parameter must be a symbol" below.
+      (when (and (= ntv 1)
+                 (= (-> head (node-at _ 1) (unsafe/cast ptr:Node _) (_ kind)) NODE-CELL))
+        (die-at (node-line (as ptr head) (ff line))
+          (fmt-s "defstruct: takes no type annotation; write (defstruct %s ...)" name)))
       ; Re-import of the same template (e.g. via .nuch, or the idempotent prescan
       ; pass) is a no-op.
       (when (!= (struct-template-lookup name) null) (return))
@@ -940,7 +960,7 @@
         (dotimes (i ntv)
           (let (tv:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr head) (+ i 1))))
             (when (!= (tv kind) NODE-SYM)
-              (die-at (tv line) "defstruct: type parameter must be a symbol"))
+              (die-at (node-line (as ptr tv) (ff line)) "defstruct: type parameter must be a symbol"))
             (aset! (as ptr:ptr tyvars) i (tv s))))
         (let (st:ptr:StructTemplate (as ptr:StructTemplate (arena-alloc (sizeof StructTemplate))))
           (conj g-struct-templates st)

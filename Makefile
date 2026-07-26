@@ -138,6 +138,17 @@ riscv-test: $(BIN)
 riscv-abi-test: $(BIN)
 	NUCLEUSC=$(BIN) ./tests/run-riscv-abi-test.sh
 
+# Regenerate docs/stdlib.md's availability tables by probing $(BIN) (Stage 15
+# W4e, design/stage15-stress-test/diagnostics.md §W4e) -- the doc is generated,
+# not hand-curated, since the "no import needed" set is host/libc-dependent
+# (see the doc's own framing paragraph and context/build.md's musl note). The
+# regenerated-vs-committed check runs as part of `make test` (the
+# `stdlib-table-generated` unit in tests/run-tests.sh); this target is the
+# convenience entry point for actually updating the doc after a toolchain/libc
+# change.
+gen-stdlib-table: $(BIN)
+	python3 scripts/gen-stdlib-table.py
+
 bootstrap: $(BIN) | $(BUILD)/out
 	@echo "=== Stage 2: self-hosted compiler -> nucleusc.nuc ==="
 	$(BIN) --emit-llvm src/nucleusc.nuc > $(BUILD)/stage2.ll
@@ -246,4 +257,4 @@ uninstall:
 	rm -f $(BINDIR)/nucleusc
 	rm -rf $(DESTDIR)$(PREFIX)/share/nucleus
 
-.PHONY: test abi-test layout-test avr-test riscv-test riscv-abi-test clean bootstrap boot-binary update-bootstrap windows-boot ensure-boot lib-headers lib-cheaders lib-objs lib-so lib install uninstall
+.PHONY: test abi-test layout-test avr-test riscv-test riscv-abi-test gen-stdlib-table clean bootstrap boot-binary update-bootstrap windows-boot ensure-boot lib-headers lib-cheaders lib-objs lib-so lib install uninstall

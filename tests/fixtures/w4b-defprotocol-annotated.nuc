@@ -1,0 +1,13 @@
+; Stage 15 W4b sibling sweep (design/stage15-stress-test/diagnostics.md
+; §W4b): before the fix, a bare colon-typed protocol name ("P:i32") sailed
+; past `protocol-register-form`'s plain-symbol branch unchanged and
+; registered the Protocol under that literal, unlookupable key -- compiling
+; with NO diagnostic at all at the definition; a later `(extend Foo P)`
+; failed with the unrelated "unknown protocol 'P'". Now rejected at the
+; `defprotocol` line.
+(defstruct Foo (x i32))
+(defprotocol P:i32 (bar (self:ptr:Self):i32))
+(defn bar (f:ptr:Foo):i32 (return (f x)))
+(extend Foo P)
+
+(defn main ():i32 0)

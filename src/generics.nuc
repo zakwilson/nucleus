@@ -1097,7 +1097,7 @@
       (dotimes (i nparams)
         (let (p:ptr:Node (unsafe/cast ptr:Node (node-at params-node i)))
           (when (and (= (p kind) NODE-SYM) (= (p s) "&rest"))
-            (die-at (p line) "defn: &rest combined with a generic method is not supported yet"))))
+            (die-at (node-line (as ptr p) (ff line)) "defn: &rest combined with a generic method is not supported yet"))))
       (let (nc:i32 (if (>= wi 0) (- raw (+ wi 1)) 0))
         (when (and (!= has-where 0) (< nc 1))
           (die-at (ff line) "defn: &where requires at least one (Protocol Var) constraint"))
@@ -1332,17 +1332,17 @@
                     (if (= cur null)
                       ; RECOVER: bind the tyvar to the stored arg type.
                       (do (aset! (as ptr:ptr out-bound) tidx
-                                 (conf-arg-to-type conspell (an line)))
+                                 (conf-arg-to-type conspell (node-line (as ptr an) line)))
                           (aset! (as ptr:i32 io-changed) 0 1))
                       ; CONSTRAIN: an already-bound tyvar must agree.
                       (when (!= (strcmp (type-spelling cur) conspell) 0)
-                        (die-at (an line)
+                        (die-at (node-line (as ptr an) line)
                           (fmt-3s "constraint '%s' parameter mismatch: expected %s, found %s"
                                   proto (type-spelling cur) conspell)))))
                   ; CONSTRAIN: a concrete arg pattern must equal the stored arg.
-                  (let (cty:ptr (parse-type-from-node argn (an line)))
+                  (let (cty:ptr (parse-type-from-node argn (node-line (as ptr an) line)))
                     (when (!= (strcmp (type-spelling cty) conspell) 0)
-                      (die-at (an line)
+                      (die-at (node-line (as ptr an) line)
                         (fmt-3s "constraint '%s' parameter mismatch: expected %s, found %s"
                                 proto (type-spelling cty) conspell)))))))
             (return 1)))))))
@@ -2984,6 +2984,13 @@
           pname:ptr null
           params:ptr null
           nparams:i32 0)
+      ; W4b sibling sweep (design/stage15-stress-test/diagnostics.md): a bare
+      ; colon-typed name ("P:i32") used to sail past the plain-symbol branch
+      ; below unchanged and register the Protocol under that literal,
+      ; unlookupable key — the same defconst-shaped bug (an `extend Foo P`
+      ; then failed as an unrelated "unknown protocol 'P'", with no
+      ; diagnostic at the definition).
+      (reject-colon-in-def-name (as raw:Node name-node) "defprotocol" (ff line))
       ; Parametric protocol: name position is a list `(Seq E ...)` — head is the
       ; protocol name, the rest are the extra parameter names (beyond Self).
       (if (= (name-node kind) NODE-CELL)
@@ -2995,6 +3002,16 @@
           (when (< nparams 1)
             (die-at (name-node line)
               "defprotocol: parametric protocol needs at least one parameter — use a plain defprotocol"))
+          ; W4b: a single parameter that is itself a CELL (not a bare tyvar
+          ; symbol) can only be the colon-paren-fused shape ("P:(i32)" ->
+          ; (P (i32))) — a genuine parametric protocol's extra parameters are
+          ; always bare symbols (E, K, V, ...). Give the annotation-specific
+          ; message here rather than falling into the generic, misleading
+          ; "protocol parameter must be a symbol" below.
+          (when (and (= nparams 1)
+                     (= (-> name-node (node-at _ 1) (unsafe/cast ptr:Node _) (_ kind)) NODE-CELL))
+            (die-at (name-node line)
+              (fmt-s "defprotocol: takes no type annotation; write (defprotocol %s ...)" (head s))))
           (set! params (arena-alloc (* (as i64 nparams) (ptr-bytes))))
           (dotimes (pi nparams)
             (let (pv:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr name-node) (+ pi 1))))
@@ -3372,7 +3389,7 @@
                            (extend-proto-name proto-node
                                               (as ptr:ptr (addr-of proto-args))
                                               (as ptr:i32 (addr-of proto-nargs))
-                                              (proto-node line))))
+                                              (node-line (as ptr proto-node) (ff line)))))
       ; Stage 11 T4: the subject is a struct *template* `(extend (Vector T) (Seq T))`.
       ; Record a template-level conformance; the per-instance check fires at stamp
       ; time, and any already-stamped instance is rechecked now.
@@ -3380,20 +3397,20 @@
         NODE-CELL
         (let (thead:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr type-node) 0)))
           (when (!= (thead kind) NODE-SYM)
-            (die-at (type-node line) "extend: template subject name must be a symbol"))
+            (die-at (node-line (as ptr type-node) (ff line)) "extend: template subject name must be a symbol"))
           ; Stage 12 N4: a qualified template head (`coll/Vector`) resolves to the
           ; bare-keyed template registry. Identity under `user`.
           (let (st:?ptr:StructTemplate (struct-template-lookup (strip-ns-qualifier (thead s))))
             (when (= (as ptr st) null)
-              (die-at (type-node line)
+              (die-at (node-line (as ptr type-node) (ff line))
                 (fmt-s "extend: '%s' is not a struct template" (thead s))))
             (let (proto:?ptr:Protocol (protocol-lookup proto-name))
               (when (= (as ptr proto) null)
-                (die-at (proto-node line) (fmt-s "extend: unknown protocol '%s'" proto-name)))
+                (die-at (node-line (as ptr proto-node) (ff line)) (fmt-s "extend: unknown protocol '%s'" proto-name)))
               ; The protocol application must supply exactly the protocol's extra
               ; params, each bound positionally to one of the template's tyvars.
               (when (!= proto-nargs (-> proto (unsafe/cast ptr:Protocol _) (_ num-params)))
-                (die-at (proto-node line)
+                (die-at (node-line (as ptr proto-node) (ff line))
                   (fmt-s "extend: protocol '%s' expects a different number of parameters" proto-name)))
               ; Stage 11 assoc-types (A4.1): parse a trailing `&where` clause, if
               ; present, into the conformance's constraint arrays and run the
@@ -3498,7 +3515,7 @@
                               (dotimes (ti ntv)
                                 (when (and (= (aref (as ptr:i32 determined) ti) 0)
                                            (!= (node-mentions-tyvar-named argn (aref (as ptr:ptr tyvars) ti)) 0))
-                                  (die-at (proto-node line)
+                                  (die-at (node-line (as ptr proto-node) (ff line))
                                     (fmt-s "extend: protocol parameter '%s' is not determined by the subject or any &where constraint"
                                            (aref (as ptr:ptr tyvars) ti))))))))
                         (tmpl-conformance-add (as ptr st) (as ptr proto) proto-args proto-nargs
@@ -3513,7 +3530,7 @@
       0)
       ; --- subject is a concrete type (symbol) ---
       (when (!= (type-node kind) NODE-SYM)
-        (die-at (type-node line) "extend: subject must be a symbol or struct template"))
+        (die-at (node-line (as ptr type-node) (ff line)) "extend: subject must be a symbol or struct template"))
       ; Stage 12 N4 (decision 9): the subject type and protocol may be written
       ; qualified (`coll/Vector`, `coll/Seq`) from another namespace; canonicalize
       ; to the bare registry identity so every lookup below — and the recorded
@@ -3524,7 +3541,7 @@
         ; bare-symbol protocol form participates in inheritance.
         (when (and (!= (protocol-lookup typename) null) (= proto-nargs 0))
           (when (= (protocol-lookup proto-name) null)
-            (die-at (proto-node line)
+            (die-at (node-line (as ptr proto-node) (ff line))
               (fmt-s "extend: '%s' is a protocol, so its supertype '%s' must be a protocol too"
                      typename proto-name)))
           (proto-super-add typename proto-name)
@@ -3534,12 +3551,12 @@
         (when (and (!= (blanket-lookup proto-name) 0) (= proto-nargs 0)) (return))
         (let (proto:?ptr:Protocol (protocol-lookup proto-name))
           (when (= (as ptr proto) null)
-            (die-at (proto-node line) (fmt-s "extend: unknown protocol '%s'" proto-name)))
+            (die-at (node-line (as ptr proto-node) (ff line)) (fmt-s "extend: unknown protocol '%s'" proto-name)))
           ; Validate single-token subject types eagerly for a clean diagnostic.
           (when (= (strchr typename 58) null)
-            (parse-type-name typename (type-node line)))
+            (parse-type-name typename (node-line (as ptr type-node) (ff line))))
           (when (!= proto-nargs (-> proto (unsafe/cast ptr:Protocol _) (_ num-params)))
-            (die-at (proto-node line)
+            (die-at (node-line (as ptr proto-node) (ff line))
               (fmt-s "extend: protocol '%s' expects a different number of parameters" proto-name)))
           ; Concrete protocol params (`(Seq i32)`): canonicalize each arg's spelling.
           (let (pspellings:ptr null)
@@ -3548,7 +3565,7 @@
               (dotimes (i proto-nargs)
                 (aset! (as ptr:ptr pspellings) i
                        (type-spelling (parse-type-from-node
-                                        (aref (as ptr:ptr proto-args) i) (proto-node line))))))
+                                        (aref (as ptr:ptr proto-args) i) (node-line (as ptr proto-node) (ff line)))))))
             (verify-conformance-params typename proto-name pspellings proto-nargs (ff line) 1)))))))
 
 ; Import side: trust the exporting unit's check; record the fact (and recurse
@@ -3927,16 +3944,16 @@
         ; routing in nucleusc.nuc (lockstep — conventions.md). `unsafe/
         ; funcall-ptr-*` keeps typing exactly as before.
         (when (= hp 'funcall-ptr-1)
-          (die-at (head line) "'funcall-ptr-1' was split in Stage 14: use 'unsafe/funcall-ptr-1'"))
+          (die-at (node-line head (nn line)) "'funcall-ptr-1' was split in Stage 14: use 'unsafe/funcall-ptr-1'"))
         (when (= hp 'unsafe/funcall-ptr-1) (return ty-ptr))
         (when (= hp 'funcall-ptr-i32)
-          (die-at (head line) "'funcall-ptr-i32' was split in Stage 14: use 'unsafe/funcall-ptr-i32'"))
+          (die-at (node-line head (nn line)) "'funcall-ptr-i32' was split in Stage 14: use 'unsafe/funcall-ptr-i32'"))
         (when (= hp 'unsafe/funcall-ptr-i32) (return ty-i32))
         (when (= hp 'funcall-ptr-i64)
-          (die-at (head line) "'funcall-ptr-i64' was split in Stage 14: use 'unsafe/funcall-ptr-i64'"))
+          (die-at (node-line head (nn line)) "'funcall-ptr-i64' was split in Stage 14: use 'unsafe/funcall-ptr-i64'"))
         (when (= hp 'unsafe/funcall-ptr-i64) (return ty-i64))
         (when (= hp 'funcall-ptr-ptr)
-          (die-at (head line) "'funcall-ptr-ptr' was split in Stage 14: use 'unsafe/funcall-ptr-ptr'"))
+          (die-at (node-line head (nn line)) "'funcall-ptr-ptr' was split in Stage 14: use 'unsafe/funcall-ptr-ptr'"))
         (when (= hp 'unsafe/funcall-ptr-ptr) (return ty-ptr))
         (when (= hp 'return) (return ty-void))
         (when (= hp 'do)
@@ -3967,7 +3984,7 @@
         ; Stage 14 UN-5: bare `cast` is retired (D6); `unsafe/cast` mirrors what
         ; bare `cast` used to (lockstep).
         (when (= hp 'cast)
-          (die-at (head line) "'cast' was split in Stage 14: use 'as' (safe) or 'unsafe/cast' (unchecked)"))
+          (die-at (node-line head (nn line)) "'cast' was split in Stage 14: use 'as' (safe) or 'unsafe/cast' (unchecked)"))
         (when (= hp 'unsafe/cast) (return (node-type-cast n)))
         (when (= hp 'as) (return (node-type-as n)))
         (when (= hp 'addr-of) (return (node-type-addr-of n scope)))
@@ -3978,7 +3995,7 @@
         ; Stage 14 UN-5: bare `ptr+` is retired (D6); `unsafe/ptr+` mirrors what
         ; bare `ptr+` used to (lockstep).
         (when (= hp 'ptr+)
-          (die-at (head line) "'ptr+' was split in Stage 14: use 'unsafe/ptr+'"))
+          (die-at (node-line head (nn line)) "'ptr+' was split in Stage 14: use 'unsafe/ptr+'"))
         (when (= hp 'unsafe/ptr+) (return (node-type (node-at n 1) scope)))
         (when (= hp '_get) (return (node-type-field n scope)))
         (when (= hp '.set!) (return ty-void))
