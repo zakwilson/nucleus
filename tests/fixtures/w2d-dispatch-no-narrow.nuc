@@ -1,0 +1,16 @@
+; Stage 15 W2d negative: multimethod dispatch admits a float LITERAL into a
+; narrower float parameter, but never a typed f64 VALUE. Dispatch selects which
+; function runs, so silently narrowing a runtime value to pick an overload is a
+; different (and worse) decision than narrowing into a slot the programmer
+; annotated — the same rule the integer branch of `arg-adapts` already enforces
+; with its int-width test. Once the callee IS chosen, coerce-int-val narrows
+; silently; that asymmetry is deliberate.
+(import-use "stdio.h")
+
+(defn tk (x:f32):i32 (printf "f32 %f\n" (as f64 x)) (return 0))
+(defn tk (x:i32):i32 (printf "i32 %d\n" x) (return 0))
+
+(defn main ():i32
+  (let (d:f64 2.5)
+    (tk d))
+  (return 0))

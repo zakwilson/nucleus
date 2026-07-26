@@ -1,0 +1,114 @@
+; Stage 15 W2b — a named integer constant behaves like the literal it names
+; (design/stage15-stress-test/literal-typing.md §3.1).
+;
+; Before W2b, `emit-defconst` registered the name as an ordinary global `Sym`
+; typed `ty-i32`, and a reference emitted a concretely-typed i32 `Val` with no
+; literal provenance. Two consequences, both fixed here:
+;
+;   - `(defconst K 512)` + `(<= ans:ui32 K)` died "mixed signed/unsigned
+;     operands" while the identical program spelled `(<= ans:ui32 512)`
+;     compiled. Naming a constant changed how it typed.
+;   - `ty-i32` was hardcoded while `const-val` carried the full decimal string,
+;     so `(defconst BIG 5000000000)` emitted the i32 constant `5000000000` and
+;     `(let (x:i64 BIG) …)` printed 705032704 — a silent wrong answer.
+;
+; The provenance lives on the `Sym` (`const-lit` / `const-lit-i64`) and is read
+; by both halves of the node-type↔emit lockstep through the single shared rule
+; `binop-result-type` (src/nucleusc.nuc). Result types are observed via the
+; `tkind` overload set, so a wrong unification prints a wrong type name rather
+; than hiding in the IR; every constant line is paired with the equivalent
+; inline-literal line, and the two must agree.
+
+(import-use "stdio.h")
+
+(defn tkind (v:i32):CStr  (return "i32"))
+(defn tkind (v:i64):CStr  (return "i64"))
+(defn tkind (v:ui32):CStr (return "ui32"))
+(defn tkind (v:ui64):CStr (return "ui64"))
+
+(defconst K 512)
+(defconst BIG 5000000000)
+(defconst SMALL 42)
+
+(defenum Color RED GREEN BLUE)
+
+(defvar s32:i32  7)
+(defvar s64:i64  7)
+(defvar u32:ui32 7)
+(defvar u64:ui64 7)
+
+; The signedness probe: 4000000000 has the i32 sign bit set, so a ui32 value
+; that leaked back into a *signed* comparison would read as -294967296 and flip
+; every ordering below.
+(defvar ubig:ui32 4000000000)
+
+; §3.8: a `defvar` initialized from a named constant folds at the constant's
+; truthful width — `i64` here, where the pre-W2b hardcoded `ty-i32` wrapped it.
+(defvar gbig:i64 BIG)
+
+(defn main ():i32
+  ; ---- §3.1 repro: the exact program from the findings ----------------------
+  ; `(<= ans K)` with ans:ui32 used to die; it must now compile AND give the
+  ; same answer as the inline-literal spelling on the next line.
+  (let (ans:ui32 9)
+    (printf "repro  %d %d\n" (if (<= ans K) 1 0) (if (<= ans 512) 1 0)))
+
+  ; ---- the matrix: a defconst against {i32, i64, ui32, ui64}, both orders ----
+  ; Mirrors examples/binop-literal-typing.nuc's W2a matrix so the two cannot
+  ; drift: a named literal must unify exactly as the bare one does.
+  (printf "const-first   %s %s %s %s\n"
+    (tkind (* K s32)) (tkind (* K s64)) (tkind (* K u32)) (tkind (* K u64)))
+  (printf "lit-first     %s %s %s %s\n"
+    (tkind (* 512 s32)) (tkind (* 512 s64)) (tkind (* 512 u32)) (tkind (* 512 u64)))
+  (printf "const-second  %s %s %s %s\n"
+    (tkind (* s32 K)) (tkind (* s64 K)) (tkind (* u32 K)) (tkind (* u64 K)))
+  (printf "lit-second    %s %s %s %s\n"
+    (tkind (* s32 512)) (tkind (* s64 512)) (tkind (* u32 512)) (tkind (* u64 512)))
+  ; Two named constants: neither is typed, so LW-4's widths settle it — i32
+  ; unless the value does not fit, exactly as two bare literals do.
+  (printf "both-const    %s %s %s\n"
+    (tkind (* K SMALL)) (tkind (* BIG SMALL)) (tkind (* SMALL BIG)))
+  (printf "both-lit      %s %s %s\n"
+    (tkind (* 512 42)) (tkind (* 5000000000 42)) (tkind (* 42 5000000000)))
+
+  ; ---- comparisons: always i1, but the operand unification decides the
+  ;      signed-vs-unsigned lowering ----------------------------------------
+  (printf "cmp-const  %d %d %d %d\n"
+    (if (< K s32) 1 0) (if (< K s64) 1 0) (if (< K u32) 1 0) (if (< K u64) 1 0))
+  (printf "cmp-lit    %d %d %d %d\n"
+    (if (< 512 s32) 1 0) (if (< 512 s64) 1 0) (if (< 512 u32) 1 0) (if (< 512 u64) 1 0))
+  (printf "cmp-rev-const  %d %d %d %d\n"
+    (if (> s32 K) 1 0) (if (> s64 K) 1 0) (if (> u32 K) 1 0) (if (> u64 K) 1 0))
+  (printf "cmp-rev-lit    %d %d %d %d\n"
+    (if (> s32 512) 1 0) (if (> s64 512) 1 0) (if (> u32 512) 1 0) (if (> u64 512) 1 0))
+  ; Unsigned ordering survives the unification: a signed lowering would read
+  ; ubig as -294967296 and print 0 instead of 1.
+  (printf "unsigned   %d %d\n" (if (> ubig SMALL) 1 0) (if (< SMALL ubig) 1 0))
+
+  ; ---- the BIG truncation: the constant keeps its real value ---------------
+  (let (x:i64 BIG)
+    (printf "big %ld %s\n" x (tkind (+ BIG 0))))
+  ; A `defvar` initialized from a constant (§3.8) still folds, now at the
+  ; constant's truthful width.
+  (printf "big-global %ld\n" gbig)
+
+  ; ---- the vararg path: a constant in a C variadic slot --------------------
+  ; The Val now carries is-lit provenance; that must not disturb how it is
+  ; passed to a variadic callee.
+  (printf "vararg %d %d %ld\n" SMALL RED BIG)
+
+  ; ---- defenum members get the same treatment as defconst ------------------
+  ; An enum member carries no distinct nominal type (its Sym type is plain
+  ; i32), so withholding literal provenance would recreate the same wart one
+  ; level over: `(= c:ui32 GREEN)` must compile exactly as `(= c:ui32 1)` does.
+  (let (c:ui32 1)
+    (printf "enum  %d %d %s\n" (if (= c GREEN) 1 0) (if (= c 1) 1 0)
+      (tkind (+ BLUE s64))))
+
+  ; ---- a shadowing local is NOT a literal ---------------------------------
+  ; The provenance is read through the *scope*, not from the global table, so a
+  ; local binding that shadows the constant is an ordinary typed value.
+  (let (K:i64 3)
+    (printf "shadow %s %ld\n" (tkind (* K 2)) (* K 2)))
+
+  (return 0))

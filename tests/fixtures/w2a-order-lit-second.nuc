@@ -1,0 +1,10 @@
+; Stage 15 W2a operand-order symmetry, spelling B: the literal SECOND.
+; The mirror of w2a-order-lit-first.nuc — see that file for the contract.
+(defvar cl:ui32 5)
+
+(defn main ():i32
+  (let (t:ui32 9
+        prod:ui32 (* cl 2))
+    (when (> t prod) (return 1))
+    (when (> t (* cl 2)) (return 2)))
+  (return 0))

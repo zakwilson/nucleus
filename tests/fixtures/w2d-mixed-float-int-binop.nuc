@@ -1,0 +1,10 @@
+; Stage 15 W2d negative (the W2a boundary it inherits): a float literal adapts
+; to a float OPERAND, never to an integer one. `(* n 2.0)` with n:i32 stays the
+; "mixed float and non-float operands" error; only `(* alpha 2.0)` with an f32
+; operand unifies.
+(import-use "stdio.h")
+
+(defn main ():i32
+  (let (n:i32 3)
+    (printf "%d\n" (as i32 (* n 2.0))))
+  (return 0))

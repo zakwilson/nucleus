@@ -1,0 +1,10 @@
+; Stage 15 W2b: the global-initializer path (`defvar-init-ir`, src/nucleusc.nuc)
+; is a SECOND literal-narrowing site, outside coerce-int-val's chokepoint — it
+; hands a decimal string straight to LLVM, which truncates `i32 5000000000` to
+; 705032704 without complaint. A global and a local must reject the same
+; out-of-range constant.
+(defconst BIG 5000000000)
+(defvar g:i32 BIG)
+
+(defn main ():i32
+  (return g))

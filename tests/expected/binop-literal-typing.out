@@ -1,0 +1,17 @@
+lit-first   i32 i64 ui32 ui64
+lit-second  i32 i64 ui32 ui64
+both-typed  i32 i64 ui32 ui64
+widen       i64 i64 ui64 ui64
+both-lit    i32 i64 i64
+cmp-lit-first  1 1 1 1
+cmp-lit-second 1 1 1 1
+cmp-both-typed 0 0 0 0
+cmp-both-lit   1 1
+order  ui32 ui32
+order-cmp  0 0
+unsigned   1 1
+unsigned-div 2000000000
+malloc 1
+f32 f32 f32 1.00
+f64 f64 f64
+int-lit-to-float f32 f32
