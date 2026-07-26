@@ -41,7 +41,14 @@
         (.set! rec type (as raw:Type (aref (as ptr:ptr ftypes) i)))
         (conj fields-vec rec)))
     (.set! sd fields fields-vec)
-    (.set! sd num-fields nfields)))
+    (.set! sd num-fields nfields)
+    ; W3a: giving a StructDef its layout is exactly what stops it being opaque.
+    ; This is the single chokepoint every field-populating path funnels through
+    ; (emit-defstruct, the .nuch import, the cheader struct-body parser, the
+    ; anon-struct/union memoizer, the closure-env and fatptr builders), so a
+    ; forward-declared C tag whose real definition arrives later upgrades in
+    ; place here rather than at each of those call sites.
+    (.set! sd opaque 0)))
 
 ; ============================================================
 ; Stage 14 §14.4: a TY-FN Type's parameter list is one `(Vector (ref Field))`
@@ -745,6 +752,14 @@
     (.set! sd ir-name (ir-name-token name))
     (.set! sd num-fields 0)
     (.set! sd emitted 0)
+    ; W3a: a fresh registration is not opaque — `opaque` marks a type whose
+    ; layout is known to be *unavailable* (a C forward declaration), which only
+    ; the cheader parser sets. A name-only pre-registration by
+    ; prescan-struct-names is a different state: its layout arrives later in the
+    ; same unit, and until it does nothing may reference the type by value anyway
+    ; (the definition is emitted before any use is compiled).
+    (.set! sd opaque 0)
+    (.set! sd alias-of null)
     (.set! sd is-union 0)
     (.set! sd udef null)
     (.set! sd origin-template null)

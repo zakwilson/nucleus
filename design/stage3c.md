@@ -65,6 +65,16 @@ Nucleus structs currently use LLVM's default struct layout, which matches the C 
 
 Many C libraries use opaque struct pointers (`typedef struct Foo *FooRef`). The current parser maps all pointers to `ptr`, which is correct for the LLVM level but loses documentation value. Consider whether to preserve typedef names as aliases.
 
+**Partly resolved (Stage 15 W3a, [stage15-stress-test/cheader.md](stage15-stress-test/cheader.md) §1.6).**
+The *tag* form is now handled: `struct Foo;` / `typedef struct Foo Foo;` registers
+a layout-less type, so `ptr:Foo` is a real named type rather than a bare `ptr`,
+and every by-value use is refused with the header:line the type was declared on.
+This changes that conclusion — the name is no longer lost. What this section
+describes and W3a does **not** cover is the *pointer* typedef
+(`typedef struct Foo *FooRef;`): the tag is registered, but `FooRef` itself is
+still dropped, because the compiler has no pointer-typedef aliasing mechanism to
+register it into. That remains open.
+
 ## Type system gaps
 
 ### `const` and `volatile` qualifiers

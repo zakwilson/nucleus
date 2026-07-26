@@ -2,9 +2,10 @@
 
 Back to [../progress.md](../progress.md). Stage overview: [overview.md](overview.md).
 
-**W4 and W2 are complete** (W2a/W2b/W2c/W2d all landed). **W1, W3, W5, W6 are
-not started** — no code or docs exist for the not-started items yet beyond their
-spec docs ([resolution.md](resolution.md),
+**W4 and W2 are complete** (W2a/W2b/W2c/W2d all landed). **W3a is done**
+(§1.6, opaque forward-declared C types); **W3b** (§1.5) and **W3c** (§1.4)
+remain. **W1, W5, W6 are not started** — no code or docs exist for the
+not-started items yet beyond their spec docs ([resolution.md](resolution.md),
 [literal-typing.md](literal-typing.md), [cheader.md](cheader.md),
 [ergonomics.md](ergonomics.md), [nullability.md](nullability.md)).
 
@@ -44,6 +45,38 @@ trap that cost the most time: the variadic operator macros wrap the tail, so
 `(* v K)` expands to `(_* v (* K))` and a binop's **second** operand node is a
 CELL, not the bare symbol — a predicate over binop operands must macroexpand it,
 or the fix silently works in operand-1 position only.
+
+## W3 — C header interop
+
+Spec: [cheader.md](cheader.md) (with a "W3a as built" addendum carrying the
+premise corrections, the representation/upgrade design, and the full test
+inventory).
+
+| Chunk | What landed | Status |
+|---|---|---|
+| **W3a** | §1.6 — a C header's `struct Foo;` / `typedef struct Foo Foo;` was **skipped entirely**, so the type never registered and a later `ptr:Foo` died `unknown type: Foo`: C's standard opaque-handle idiom, which made every SDL handle type and `FILE` unusable and forced the Doom port to hand-mirror them. Now registered layout-less (`StructDef.opaque`, cleared in `struct-set-fields` — the single chokepoint every field-populating path funnels through, so "acquires a layout" and "stops being opaque" cannot drift), legal behind a pointer everywhere including a `defn` signature, and refused by value at six sites (`sizeof`, `alloca`, both field-access paths, `defn` parameter + return, `defstruct` field) with the misuse's own line **and** the header:line the type was declared on, recovered from clang -E's linemarkers. A later definition upgrades the entry **in place** through one shared emitter, in all three orderings real headers use (`struct Tag;` then `struct Tag {…};`; then via `typedef struct Tag {…} Name;`, whose body parses anonymously and never registered the tag at all; and a `typedef struct Tag Name;` alias registered while the tag was opaque, linked by a new `StructDef.alias-of`). Two premises corrected: the fix is **not** "one branch" — `c-parse-type` had to be taught to keep returning `ptr` for an opaque tag (its by-value `struct Tag` lookup would otherwise have emitted `declare void @f(%Tag)` for an undefined type, manufacturing more of the §1.5 invalid-IR failure this stage exists to remove), and the spec's own §1.6 probe cannot pass from import-time registration at all, because `prescan-defn-signatures` resolves signatures **before** any import runs and `prescan-imported-types` skips C-string imports by design — so W3a adds a name-only `cheader-prescan-opaque` pass that registers exactly the names the real import will define (which also made a fully-defined `ptr:Mix_Chunk` usable in a signature, not just the opaque `ptr:Mix_Music`). `unknown type:` also gained a location: the prescan resolved a signature against the defn's **name** node (an interned NODE-SYM, line always 0) and `desugar-typed` stamped every desugared binding cell from the same kind of node — both now borrow the enclosing form's line, which gives a real line to every diagnostic raised off a defn parameter, `defvar`/`extern`/`declare` name, `defstruct` field or `let`/`with` binding name. Incidental: `MAX-STRUCTS` 256 → 1024 (measured: three mainstream umbrella headers in one unit need between 200 and 256 slots), and preprocessed header text is now cached by path — 5 clang invocations → 3 for a `hello.nuc` build, ~30% faster than before W3a — which surfaced that `emit-c-include` ended with `(free buf)`, correct with a per-call buffer but a use-after-free (presenting as a *hang*, only on the second import of the same header) once shared. 10 new checks. | **Done** |
+| **W3b** | §1.5 — a conservative validity gate on every synthesized `declare` (`SDL2/SDL.h` still emits `declare void @_mm_clflush(void, ptr)`, invalid IR discovered only at the end of compilation). Not started. | Not started |
+| **W3c** | §1.4 — `off_t`'s typedef chain resolving to `ptr`, and the declaration-precedence rule between a header-derived `declare` and an explicit one. Not started. | Not started |
+
+### Test/bootstrap status after W3a
+
+`make test` **255/255** (245 → 255). `make bootstrap` stage1 == stage2
+byte-identical on the first pass, no `make update-bootstrap` reconverge.
+Because W3 touches shared code, inertness was verified beyond the fixed point:
+`make lib-cheaders`, `make lib-headers`, and the emitted LLVM IR of **every**
+`lib/*.nuc` and `examples/*.nuc` are byte-identical against a compiler built
+from the pre-change tree (`git archive HEAD` + the committed boot compiler).
+
+### New limitations discovered during W3a (not fixed here)
+
+* **`Uint8`/`Uint32`-typed struct fields degrade to `ptr`.** `Mix_Chunk.volume`
+  (`Uint8`) types as `ptr`, so `(c volume)` fails `return type mismatch` while
+  `(c allocated)` (`int`) works. This is §1.4's typedef-chain defect surfacing in
+  a *field* rather than a return type — W3c's scope. It is why the SDL_mixer
+  fixture reads `allocated`.
+* **`--emit-llvm` exiting 0 is not evidence of valid IR** — it writes the
+  textual module without parsing it. The spec's `SDL2/SDL.h` probe now exits 0
+  under `--emit-llvm` (§1.6 fixed) and still fails under `-o` (§1.5 open).
 
 ## W4 — Diagnostics: locations and silent failures
 

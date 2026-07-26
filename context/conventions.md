@@ -801,3 +801,101 @@ Found in Stage 14 AVR-7: `avr-reject-f64` (src/abi.nuc) checks `abi-is-avr` (its
 The colon-*paren* fused shape (`K:(i32)` → the reader's `fuse-colon-paren` producing the CELL `(K (i32))`) needs a **definer-specific** check instead of a shared one, because `defstruct`/`defprotocol`/`defunion` have a *legitimate* CELL name — a parametric template head (`(Vector T)`, `(Seq E)`, `(Wrap T)`). The distinguishing test: a genuine template's extra elements are always bare symbols (tyvar names); the fused-annotation shape's second element is itself a nested CELL (the read paren-form). So the check is "exactly one extra element, and it's a CELL, not a SYM" — never "any CELL name", which would misfire on every real template. `defconst`/`defenum`/`defmacro`/`deferror` have no template concept at all, so for them any CELL name is unconditionally the fused-annotation mistake.
 
 If a **new** top-level definer is added in the future, give its own name the same treatment from day one — don't wait for a user to trip over the silent-misregistration shape first.
+
+## A C header's type names are NOT visible to `prescan-defn-signatures` by default
+
+Two prescans run per unit, in this order, **before any `(import …)` form is
+processed**: `prescan-imported-types` (walks the import tree and registers
+imported *Nucleus* struct names) and then `prescan-defn-signatures` (resolves
+every `defn` signature's parameter and return types). `prescan-imported-types`
+deliberately **skips C-string imports** (`(import-use "stdio.h")`) — reading one
+means shelling out to `clang -E`. So a C header type named in a `defn`
+**signature** cannot resolve from import-time registration, no matter what the
+import registers: the signature was resolved first. A type named only inside a
+function **body** is fine (bodies are emitted after the import).
+
+Stage 15 W3a closes this for the cheader path with `cheader-prescan-opaque`
+(`src/cheader.nuc`), hooked into `prescan-imported-types`' new NODE-STR branch.
+It is a deliberate **name-only** scan (`cheader-scan-opaque-decl`), not a second
+parse, and it registers *exactly* the names the real import will define — the tag
+of `struct Tag …`, the declarator of `typedef struct [Tag] {…} Name;`. That
+equality is load-bearing: the real import then finds those entries and upgrades
+them **in place**, emitting the same single `%X = type {…}` it always did. Register
+a *different* name (e.g. also the tag of a `typedef struct Tag {…} Name;`) and the
+upgrade defines a second LLVM type that no existing program had — the IR is no
+longer byte-identical. If you extend the pre-scan, keep it name-for-name with
+`c-parse-struct-decl`.
+
+## A C header is preprocessed once per import — `cheader-preprocess` caches by path
+
+`clang -E -x c -include <path> /dev/null` takes no other input, so its output is a
+pure function of the path; but a C header import is deliberately **not**
+deduplicated (each import may alias under a different prefix), so a header was
+re-preprocessed for every `(import-use "<path>")` naming it. `cheader-preprocess`
+(`src/cheader.nuc`) caches the text by path, reusing a Node cell as the record
+(`s` = path, `car` = buffer, `i` = length) the way the import lists do.
+
+The trap this exposed, worth generalizing: **`emit-c-include` used to end with
+`(free buf)`.** Correct while each call owned a fresh buffer; a use-after-free the
+moment the buffer is shared. It did not crash — it presented as a **hang**, the
+declaration parser looping over garbage — and only on the **second** import of the
+same header, so no single-header test could see it. When you make a
+previously-per-call resource shared, grep the old owner for `free`.
+
+## Opaque (layout-less) types: `StructDef.opaque`, cleared at the layout chokepoint
+
+A C forward declaration (`struct Foo;`, `typedef struct Foo Foo;`) registers a
+`StructDef` whose **name** is known and whose **layout** is not (`opaque:i32` = 1,
+Stage 15 W3a). Three rules keep this coherent:
+
+- **`opaque` is cleared in `struct-set-fields`** (`src/abi.nuc`), not at the call
+  sites. That is the single chokepoint every field-populating path funnels through
+  (`emit-defstruct`, the `.nuch` import, the cheader body parser, the anon
+  struct/union memoizer, the closure-env and fatptr builders), so "acquires a
+  layout" and "stops being opaque" cannot drift apart.
+- **`c-parse-type` must keep returning `ty-ptr` for an opaque tag.** Its
+  `lookup-struct` on a `struct Tag` base is reached *only* for a **by-value**
+  `struct Tag` in a C parameter/return/field position, and it returned `ty-ptr` for
+  an *unregistered* tag. Once opaque tags exist, letting that branch produce a
+  `TY-STRUCT` emits `declare void @f(%Tag)` for a `%Tag` that has no definition —
+  trading a wrong-ABI pointer for invalid IR. Converting those declarations into a
+  skip-with-warning is W3b's validity gate, not something to improvise here.
+- **Refuse by-value use at the site, and keep a `type-to-ir` backstop.**
+  `reject-opaque-type` / `opaque-sdef-of` live in `src/type-utils.nuc` (not beside
+  `register-struct` in `abi.nuc`: `type-to-ir` is in type-utils, and a call from
+  there up into abi.nuc is an unresolved cross-import forward reference — the same
+  wall SM-5 documents). Six explicit call sites carry a real line
+  (`emit-sizeof`, `emit-alloca-form`, `emit-field-get`, `emit-get-intrinsic`,
+  `emit-defn` params + return, `emit-defstruct` fields); the `type-to-ir`
+  TY-STRUCT/TY-UNION backstop uses the ambient `g-form-line` and catches
+  everything else, so an undefined `%Foo` can never reach an IR stream and become
+  an LLVM parse error thousands of lines away. Never substitute a size.
+
+## `desugar-typed` needs the enclosing form's line (the interned-symbol line-0 class, again)
+
+`desugar-symbol`/`split-colon-segments` stamp the cells they build with a line
+handed in by the caller. `desugar-typed` used to pass `(n line)` from the node
+being desugared — but that node is a **colon-typed binding name**, i.e. an
+interned `NODE-SYM`, whose line is always 0. Every desugared `(name (ptr T))`
+binding cell therefore carried line 0, and every diagnostic raised off a `defn`
+parameter, a `defvar`/`extern`/`declare` name, a `defstruct` field, or a
+`let`/`with` binding name reported `:0:`. `desugar-typed` / `desugar-params` /
+`desugar-let-bindings` now take an `encl:i32` fallback (Stage 15 W3a) filled from
+the enclosing form (`(f line)` in `desugar-form`, the binding-list cell in
+`desugar-params`), applied with `node-line`.
+
+The sibling half: **`prescan-defn-signatures` resolved a signature's types against
+`((ptr:Node name-node) line)` — the defn's own NAME** — which is the same
+interned-symbol-line-0 shape one level up. It now borrows the return operand's
+line, falling back to the defn form's. When a *registration/prescan* phase raises
+a diagnostic, check what node it is blaming: a definer's name is never a usable
+line source.
+
+## `MAX-STRUCTS` scales with imported header size, not program size
+
+`MAX-STRUCTS` (`src/compiler-types.nuc`) is a runaway-growth guard on `g-structs`
+(a `Vector`, so it is not a preallocation). It used to bound roughly "types this
+program defines"; since W3a registers every C header type name it bounds "types
+every imported header names". Measured: `SDL2/SDL.h` + `SDL2/SDL_mixer.h` +
+`png.h` in one unit needs between 200 and 256 slots — the old 256 was one umbrella
+header from breaking. Now 1024.

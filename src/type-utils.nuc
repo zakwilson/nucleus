@@ -40,7 +40,58 @@
   (set! ty-usize (make-type TY-USIZE))
   (set! ty-ssize (make-type TY-SSIZE)))
 
+; ============================================================
+; Stage 15 W3a: opaque (forward-declared) C types
+; (design/stage15-stress-test/cheader.md §1.6)
+;
+; A C header's `struct Foo;` / `typedef struct Foo Foo;` names a type whose
+; layout the translation unit never sees — the standard opaque-handle idiom
+; (SDL_Window, Mix_Music, FILE). The registry entry carries the name so
+; `ptr:Foo` resolves, and `StructDef.opaque` records that its size/alignment/
+; fields are unknown. Everything that needs a layout must refuse it *at the
+; source*, with the header location the declaration came from, rather than
+; emitting `%Foo` and letting the LLVM parser fail thousands of lines later —
+; and never silently substituting a zero or pointer-sized "size", which would
+; miscompile an allocation.
+;
+; These live here (not abi.nuc beside register-struct) because `type-to-ir` — the
+; single funnel through which a struct type reaches an IR stream as an aggregate
+; — is in this file, and a call from here up into abi.nuc would be an unresolved
+; forward reference across the import boundary (the same wall SM-5 documents).
+; ============================================================
+
+; The opaque StructDef behind `t`, or null. Only a by-value struct/union type
+; qualifies: a POINTER to an opaque type is exactly what is legal, and its own
+; kind is TY-PTR, so it never matches here.
+(defn opaque-sdef-of (t:raw:Type):(raw StructDef)
+  (when (= t null) (return null))
+  (let (tt:raw:Type t)
+    (when (and (!= (tt kind) TY-STRUCT) (!= (tt kind) TY-UNION)) (return null))
+    (when (= (tt sdef) null) (return null))
+    (let (sd:(raw StructDef) (tt sdef))
+      (when (= (sd opaque) 0) (return null))
+      (return sd))))
+
+; Reject a by-value use of an opaque type. `what` names the construct doing the
+; use ("sizeof", "alloca", "field access", "defn parameter", …) so the message
+; says which rule was broken as well as which type broke it. No-op for every
+; non-opaque type, so this is free to call from any type-consuming site.
+(defn reject-opaque-type (t:raw:Type line:i32 what:CStr):void
+  (let (sd:(raw StructDef) (opaque-sdef-of t))
+    (when (!= sd null)
+      (let (loc:ptr (fmt-sd "%s:%d" (sd src-file) (sd src-line)))
+        (die-at line
+          (fmt-3s "%s: '%s' is an opaque type declared at %s; only pointers to it are valid"
+                  what (sd name) loc))))))
+
 (defn type-to-ir (t:raw:Type):CStr
+  ; W3a backstop: an opaque type has no LLVM definition, so printing `%Foo` here
+  ; would produce IR the LLVM parser rejects with no source location at all.
+  ; Every site that can reasonably name a by-value opaque type checks first with
+  ; its own node's line (emit-sizeof / emit-alloca-form / field access / defn
+  ; params + return / defstruct fields); this catches the remainder — a `let`
+  ; binding, a store, a .nuch declare — using the ambient innermost-form line.
+  (reject-opaque-type t g-form-line "type")
   (let (tt:raw:Type t)
     (case (tt kind)
       TY-VOID   (return "void")
