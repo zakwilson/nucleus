@@ -1,0 +1,19 @@
+; Stage 15 W4d (design/stage15-stress-test/diagnostics.md §W4d): `case`'s real
+; syntax (lib/macros.nuc:91, examples/case.nuc) is FLAT value/result pairs --
+; `(case x 1 "one" 2 "two" default)` -- not the nested-clause integer-switch
+; shape `docs/special-forms.md` used to (wrongly) document. This file is
+; exactly that documented-but-wrong shape: `(0 (printf ...))` parses as "call
+; the integer 0 with one argument", not as a clause.
+;
+; Before: `value is not callable: no \`invoke\` method is defined for this
+; type` -- names the mechanism, not the mistake.
+; After:  a message naming the real syntax, located at the offending clause
+; (line 16, the `(0 ...)` clause) rather than the `case` form itself.
+(import-use "stdio.h")
+
+(defn main ():i32
+  (case 1
+    (0 (printf "zero\n"))
+    (1 (printf "one\n"))
+    (_ (printf "other\n")))
+  (return 0))

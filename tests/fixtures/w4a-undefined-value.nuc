@@ -1,0 +1,8 @@
+; Stage 15 W4a: a reference to a name that was never defined. The subject is a
+; bare symbol, which is an interned singleton with no line of its own — before
+; W4a this reported `:0:`. It must name the line of the REFERENCE (line 8).
+(defn helper ():i32
+  (return 1))
+
+(defn main ():i32
+  (return missing-thing))

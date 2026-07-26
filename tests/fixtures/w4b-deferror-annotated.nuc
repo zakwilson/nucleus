@@ -1,0 +1,9 @@
+; Stage 15 W4b sibling sweep (design/stage15-stress-test/diagnostics.md
+; §W4b): before the fix, a bare colon-typed error name ("MyErr:i32") sailed
+; past `emit-deferror`'s `!= NODE-SYM` check unchanged and registered the Err
+; constant under that literal, unlookupable key -- compiling with NO
+; diagnostic at the definition; the use site then failed as an unrelated
+; "undefined: MyErr". Now rejected at the `deferror` line.
+(deferror MyErr:i32 "bad")
+
+(defn main ():!i32 (return (err! MyErr)))

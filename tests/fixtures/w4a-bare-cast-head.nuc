@@ -1,0 +1,9 @@
+; Stage 15 W4a: a retired special-form spelling in head position. The head is an
+; interned symbol, so the "'cast' was split in Stage 14" diagnostic used to
+; report `:0:`; it must blame the enclosing form (line 7).
+(defstruct P (x i32))
+
+(defn main ():i32
+  (let (q (cast ptr:P null))
+    (.set! q x 3))
+  (return 0))

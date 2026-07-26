@@ -1,0 +1,10 @@
+; Stage 15 W4a / findings §3.2: `defconst` with a type annotation registered
+; nothing, so every use failed with no diagnostic at the definition. W4b
+; (design/stage15-stress-test/diagnostics.md §W4b) decided to REJECT the
+; annotation at the `defconst` line itself, rather than accept it as a type —
+; pinned by run_reject_at below. (Originally left loose here, asserting only
+; "no :0:", so W4b could tighten it once the decision was made.)
+(defconst K:i32 2)
+
+(defn main ():i32
+  (return K))

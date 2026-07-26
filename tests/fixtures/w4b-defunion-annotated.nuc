@@ -1,0 +1,8 @@
+; Stage 15 W4b sibling sweep (design/stage15-stress-test/diagnostics.md
+; §W4b): before the fix, a bare colon-typed union name ("U:i32") sailed past
+; `emit-defunion`'s `!= NODE-SYM` check unchanged and registered the
+; UnionDef under that literal, unlookupable key -- the same silent-
+; registration bug as the others. Now rejected at the `defunion` line.
+(defunion U:i32 (A x:i32) B)
+
+(defn main ():i32 0)

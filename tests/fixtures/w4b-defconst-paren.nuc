@@ -1,0 +1,10 @@
+; Stage 15 W4b (design/stage15-stress-test/diagnostics.md §W4b): the
+; colon-paren-fused shape of the same mistake. `K:(i32)` lexes as the atom
+; "K:" immediately followed by "(i32)" and `fuse-colon-paren`
+; (lib/reader.nuc) fuses them into the CELL `(K (i32))` before `emit-defconst`
+; ever sees it -- so this must be rejected too, with the same message, not
+; the generic "defconst: name must be symbol".
+(defconst K:(i32) 2)
+
+(defn main ():i32
+  (return K))

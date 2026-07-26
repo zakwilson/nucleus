@@ -1,0 +1,9 @@
+; Stage 15 W4a: a `let` binding initialized with the bare symbol `null` into a
+; non-null (ref P) slot. The init node is an interned symbol with no line, so
+; the flow diagnostic used to report `:0:`; it must blame the `let` (line 7).
+(defstruct P (x i32))
+
+(defn main ():i32
+  (let (q:ptr:P null)
+    (.set! q x 3))
+  (return 0))

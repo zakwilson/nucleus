@@ -1,0 +1,18 @@
+; Stage 15 W4c (design/stage15-stress-test/diagnostics.md §W4c).
+; 8 nesting levels with SIX `)` missing. The innermost unclosed form is now a
+; `let` in the middle of the nest (line 12), and the note reports both the
+; column-0 line that first ran past the imbalance (line 18) and how many forms
+; were open there -- the count is the "how many `)` are missing" the port's
+; external Python paren-counter existed to produce.
+(defn main ():i32
+  (let (v0:i32 0)
+    (let (v1:i32 1)
+      (let (v2:i32 2)
+        (let (v3:i32 3)
+          (let (v4:i32 4)
+            (let (v5:i32 5)
+              (let (v6:i32 6)
+                (let (v7:i32 7)
+                  (return v7)
+)))
+(defn other ():i32 (return 0))

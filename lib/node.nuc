@@ -120,6 +120,25 @@
       (set! nn (as ptr:Node n)))
     (return k)))
 
+; Source line to blame for a diagnostic about `n`, given the line of the
+; enclosing form.
+;
+; A bare symbol node is an *interned singleton* shared by every occurrence of
+; that spelling in the whole program (see intern-symbol above and read-form's
+; TOK-SYMBOL branch), so it cannot carry a per-occurrence line — `(sym line)` is
+; always 0. Every other node kind (cells, ints, strings, chars, floats,
+; keywords) is freshly allocated per occurrence and does carry its reader line.
+;
+; So a diagnostic whose subject is (or may be) a symbol must borrow the line of
+; the enclosing form, which its emitter has in hand. Writing a line *into* a
+; symbol node is never correct: it would be observed by every other occurrence
+; of the same spelling anywhere in the program.
+(defn node-line (n:ptr encl:i32):i32
+  (when (= n null) (return encl))
+  (let (ln:i32 ((as ptr:Node n) line))
+    (when (= ln 0) (return encl))
+    (return ln)))
+
 (defn node-is-list (n:ptr):i32
   (when (= n null) (return 1))
   (when (= ((as ptr:Node n) kind) NODE-CELL) (return 1))

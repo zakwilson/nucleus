@@ -1,0 +1,23 @@
+; Stage 15 W4c (design/stage15-stress-test/diagnostics.md §W4c).
+; The accept criterion's shape: 8 nesting levels with ONE `)` missing from the
+; closing run, so `defn main` never closes and the next top-level form is read
+; as part of its body.
+; Before: `unterminated list` at line 12 and nothing else. The innermost unclosed
+;   form's opening line was already reported (the design doc's "reports where the
+;   form starts" is accurate but incomplete) -- it says where the reader ran out
+;   of input, not where the `)` went missing.
+; After:  the same primary location PLUS the second number that localizes it:
+;   line 23 opens a new top-level form in column 0 while a form is still open, so
+;   the missing `)` is above line 23.
+(defn main ():i32
+  (let (v0:i32 0)
+    (let (v1:i32 1)
+      (let (v2:i32 2)
+        (let (v3:i32 3)
+          (let (v4:i32 4)
+            (let (v5:i32 5)
+              (let (v6:i32 6)
+                (let (v7:i32 7)
+                  (return v7)
+))))))))
+(defn other ():i32 (return 0))

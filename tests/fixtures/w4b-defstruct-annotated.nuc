@@ -1,0 +1,11 @@
+; Stage 15 W4b sibling sweep (design/stage15-stress-test/diagnostics.md
+; §W4b): the worst sibling found -- before the fix, a bare colon-typed
+; struct name ("S:i32") sailed past `emit-defstruct`'s `!= NODE-SYM` check
+; unchanged, registered a StructDef under that literal spelling, and then
+; failed downstream at `check-ir-name-legal` with a confusing "illegal
+; character ':'" message reported at line 0 (S:i32 is an interned NODE-SYM,
+; whose own `line` is always 0). Now rejected at the `defstruct` line with a
+; message that names the actual mistake.
+(defstruct S:i32 (f i32))
+
+(defn main ():i32 0)

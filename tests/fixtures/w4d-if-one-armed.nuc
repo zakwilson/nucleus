@@ -1,0 +1,12 @@
+; Stage 15 W4d (design/stage15-stress-test/diagnostics.md §W4d): a one-armed
+; `(if test then)` — no `else` — used to die `macro: wrong number of args`,
+; naming the mechanism (a macro arity check) rather than the fix. `if` is
+; `(defmacro if (test then else))` (lib/macros.nuc:80), a fixed 3-arg macro;
+; there is no one-armed `if` in this language, only `when`/`unless` for a
+; guard. After this fix: `if requires an else branch; use (when test then…)
+; for a guard`, located at the `if` form's own line (line 11).
+(import-use "stdio.h")
+
+(defn main ():i32
+  (if (= 1 1) (printf "y\n"))
+  (return 0))

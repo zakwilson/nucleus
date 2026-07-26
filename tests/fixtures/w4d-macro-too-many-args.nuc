@@ -1,0 +1,12 @@
+; Stage 15 W4d (design/stage15-stress-test/diagnostics.md §W4d): the generic
+; fixed-arity mismatch message. Before this fix, every fixed-arity macro
+; called with the wrong argument count died with the bare, unlocated-by-name
+; `macro: wrong number of args` (naming neither the macro nor the counts).
+; `for` is `(defmacro for (init test step body))` (lib/macros.nuc), a fixed
+; 4-arg macro; this call passes 5. After: `macro 'for': expects 4 args, got
+; 5`, located at the call's own line (line 11).
+(import-use "stdio.h")
+
+(defn main ():i32
+  (for (i:i32 0) (< i 3) (inc! i) (printf "x\n") 99)
+  (return 0))

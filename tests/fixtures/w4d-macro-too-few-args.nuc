@@ -1,0 +1,13 @@
+; Stage 15 W4d (design/stage15-stress-test/diagnostics.md §W4d): the generic
+; variadic-too-few-args message (the "not enough args" sibling of the
+; fixed-arity message above). Before this fix, a variadic macro called with
+; fewer than its required leading args died with the bare `macro: not enough
+; args` (naming neither the macro nor the counts). `case` is
+; `(defmacro case (form &rest clauses))` (lib/macros.nuc:91) -- `form` is
+; required, so a bare `(case)` is missing it. After: `macro 'case': expects at
+; least 1 args, got 0`, located at the call's own line (line 12).
+(import-use "stdio.h")
+
+(defn main ():i32
+  (case)
+  (return 0))

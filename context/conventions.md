@@ -260,6 +260,92 @@ parser (`%Full?` → "expected comma after getelementptr's type"), not silently.
 `ir-name` is also an (unrelated) field name on `Sym`/`ProgDefn`/`Method` (the emitted
 `@symbol`); field access is per-struct-type so there is no collision.
 
+## Symbol nodes are interned singletons — they have **no line**, and you must never write one
+
+`lib/reader.nuc` `read-form` handles `TOK-SYMBOL` as
+`(return (ok (intern-symbol (t s))))`: every occurrence of a spelling anywhere
+in the program is the **same `Node`**, and `intern-symbol` sets its `line` to 0.
+Every other node kind (`NODE-INT`, `NODE-STR`, `NODE-CHAR`, `NODE-FLOAT`,
+`NODE-KEYWORD`, and cells via `make-cell`) is allocated per occurrence and does
+carry its reader line.
+
+Two consequences, both load-bearing:
+
+- **`(sym line)` is 0, so a diagnostic whose subject is (or may be) a symbol
+  must borrow the enclosing form's line.** Use `node-line` (`lib/node.nuc`):
+  `(die-at (node-line subject (cc line)) …)` — it returns the node's own line
+  when it has one and the fallback otherwise, so the same expression is correct
+  whether the subject turns out to be a symbol or a cell. Stage 15 W4a converted
+  ~110 raise sites to this shape. The guard that keeps it that way is
+  `run_no_line_zero` in `tests/run-tests.sh` (compiles every fixture, fails on
+  any `:0:`) plus a `:0:` check inside `run_reject` itself.
+- **Never `(.set! sym line …)`.** The write is observed by every *other*
+  occurrence of that spelling in the program. `stamp-macro-lines`
+  (`src/nucleusc.nuc`) used to do exactly this while attributing macro
+  expansions, so after the first expansion mentioning `x`, every later
+  diagnostic about any `x` anywhere reported that macro's call line. It now
+  skips `NODE-SYM` outright (symbols have no children, so nothing is lost).
+
+Interning is not removable: symbol identity is compared **by pointer**
+throughout the compiler (`(= n 'null)`, `(= head 'label)`, the special-form
+`case hp` dispatch), so per-occurrence symbol nodes would break resolution
+wholesale.
+
+`emit-symbol-ref` is the one site that cannot be handed a node — `emit-node`
+dispatches to it with only the operand, and `emit-node` has ~98 call sites. It
+takes an explicit `line:i32` parameter filled from **`g-form-line`**, an ambient
+"innermost enclosing form line" maintained with strict save/restore in
+`emit-node`. That global is the *only* dynamic part of the scheme; it is the
+line half of a diagnostic location, ambient exactly like `g-source-path` is its
+file half. If you add a new emitter, you get it for free — but if you add a new
+*raise*, prefer `node-line` with a node you already hold.
+
+## Reader diagnostics: the innermost unclosed form is already blamed; bracket depth lives in `next-tok`
+
+`read-list` is recursive, so at EOF the **deepest** invocation runs `report-at`
+first and every enclosing one just propagates its `(err! parse-error)` through
+`try` without reporting again. An `unterminated list` therefore names the
+**innermost** still-open form's opening line, not the outermost — do not
+"fix" it to report the innermost; it already does. (Stage 15 W4c's design doc
+asserted the opposite; measured false.)
+
+Bracket balance is tracked in `next-tok` (`reader-open-bracket` /
+`reader-close-bracket`, `lib/reader.nuc`) as each bracket **token** is produced,
+covering `(`/`)`, `[`/`]`, `{`/`}`, `#{`/`}`. Two properties are load-bearing:
+the depth is **not clamped at zero** (a negative depth is exactly "this closer
+has no matching opener", which is what distinguishes a stray top-level `)` from
+a `)` inside an unclosed `[…]`), and because it counts tokens rather than
+characters it is immune to a bracket inside a string literal or comment — unlike
+a naive external paren counter. The four globals (`g-paren-depth`,
+`g-form-open-line`, `g-col0-open-line`, `g-col0-open-depth`, declared in
+`src/nucleusc.nuc` beside `g-peek`) are reset at the top of **`read-program`**,
+not save/restored at the three import sites that save `g-src`/`g-pos`/`g-line`:
+`read-program` is the single whole-file read entry (batch, import, REPL) and
+reads never interleave, because an import is processed during *emission*, after
+the importing file's own read has completed.
+
+Column-0 detection needs no column counter: at the moment a bracket token is
+produced `g-pos` still points at the bracket, so `g-src[g-pos-1] == '\n'` is
+exactly "this bracket is the first character on its line". Prefer that
+lookbehind to threading a column through `next-char` — one fewer invariant a
+future lexer path can forget. (Verified: idiomatic Nucleus has **zero** column-0
+`(` at nonzero depth across `src/`, `lib/`, `examples/`, `tests/`, which is what
+makes "a column-0 `(` while a form is open" a reliable imbalance signal.)
+
+## An extra `)` in a `let` binding list leaves an EVEN binding list
+
+The even-count check in `emit-let`/`emit-with` catches an extra `)` after a
+binding **name** (`(let (a:i32 1` / `b:i32)` → 3 elements, odd). It cannot catch
+an extra `)` after a binding's **value** (`(let (a:i32 1)` / `b:i32 2)` →
+`(a:i32 1)`, 2 elements, even), which instead pushes the next binding into the
+**body**. If the author compensates with one fewer `)` at the end, the file
+parses *correctly* — so this is invisible to the reader too, and used to surface
+only as `undefined: b:i32` at the use. `check-stray-typed-body`
+(`src/nucleusc.nuc`, W4c) diagnoses it: a `let`/`with` body form that is a bare
+colon-typed `NODE-SYM` not resolvable in scope is never a meaningful expression.
+When reasoning about binding-list mistakes, keep the two shapes distinct — they
+have different element parities, different failure modes, and different layers.
+
 ## Struct field names are interned — StructDef builders must use `intern-str`
 
 `struct-field-index` (src/nucleusc.nuc) matches a selector against a struct's
@@ -626,3 +712,11 @@ When gating a language feature that's only unsafe when a *value* (as opposed to 
 Found in Stage 14 AVR-7: `avr-reject-f64` (src/abi.nuc) checks `abi-is-avr` (itself gated on `g-target-triple`) to reject `f64` when compiling an AVR *program*. Without also checking `(= (in-jit-module) 0)`, the same check would misfire on a `compile-time`/`defmacro` body's ordinary `f64` math while compiling an AVR target program — that host-side JIT sub-compilation still sees `g-target-triple == "avr"`, even though it emits into a host-triple module and runs in-process on the host.
 
 **When adding a compile-time diagnostic (or any target-conditional codegen choice) keyed on `g-target-triple` or a predicate built on it, always AND in `(= (in-jit-module) 0)`** unless the check is genuinely target-triple-driven pure IR-shape logic that's supposed to apply inside JIT modules too (e.g. `ptr-int-ir`, which correctly wants the *active* module's pointer width, not the outer target's). The distinguishing question: does this check describe "what target program will eventually run" (needs the `in-jit-module` guard — it should only fire for the real target module) or "what module is being emitted right now" (does not — `g-host-target`/`g-target` already track that correctly without help)?
+
+## A top-level definer's own NAME position is never desugared — the "silent misregistration" bug generalizes across every definer
+
+`desugar` only rewrites binding *positions* it explicitly lists (the `defn` name and param list, `defvar`/`extern`/`declare` names, `defstruct` fields, `let`/`with` binding names — see the `defn` bodies note above); a top-level definer's own name (`defconst`/`defenum`/`defprotocol`/`defmacro`/`defunion`/`deferror`) is not on that list. So a colon-typed spelling on one of these names (`(defconst K:i32 2)`) arrives as a single undesugared `NODE-SYM` whose spelling is *literally* `"K:i32"`, and unless the definer's emitter explicitly rejects it, it registers under that literal, unlookupable key — no diagnostic at the definition, and a disconnected failure (or nothing at all) wherever the name is actually used. Stage 15 W4b found this exact bug independently in `defconst`, `defenum`, `defprotocol`, `defmacro`, `defunion`, and `deferror` — six definers, one root cause. The fix is `reject-colon-in-def-name` (`src/nucleusc.nuc`, beside `split-typed`): call it first, before any other dispatch on the name (including a definer's own CELL/template-head check), in any top-level definer whose name is never legitimately annotated.
+
+The colon-*paren* fused shape (`K:(i32)` → the reader's `fuse-colon-paren` producing the CELL `(K (i32))`) needs a **definer-specific** check instead of a shared one, because `defstruct`/`defprotocol`/`defunion` have a *legitimate* CELL name — a parametric template head (`(Vector T)`, `(Seq E)`, `(Wrap T)`). The distinguishing test: a genuine template's extra elements are always bare symbols (tyvar names); the fused-annotation shape's second element is itself a nested CELL (the read paren-form). So the check is "exactly one extra element, and it's a CELL, not a SYM" — never "any CELL name", which would misfire on every real template. `defconst`/`defenum`/`defmacro`/`deferror` have no template concept at all, so for them any CELL name is unconditionally the fused-annotation mistake.
+
+If a **new** top-level definer is added in the future, give its own name the same treatment from day one — don't wait for a user to trip over the silent-misregistration shape first.

@@ -57,6 +57,58 @@
     (fprintf stderr "  note: %s\n" g-mono-context)))
 
 ; ============================================================
+; Bracket-balance tracking (Stage 15 W4c)
+;
+; design/stage15-stress-test/diagnostics.md §W4c. An unterminated form is
+; reported at the innermost unclosed form's opening line, which past a few
+; nesting levels is only half a location: with eight `let`s open, "line 8" says
+; where the compiler ran out of input, not where the `)` went missing. The other
+; half is the first line that opens a NEW form in column 0 while a form is still
+; open — the first point at which the imbalance became observable. Idiomatic
+; Nucleus never indents a continuation line to column 0 (verified: zero
+; occurrences of a column-0 `(` at nonzero depth across src/, lib/, examples/,
+; and tests/), so a column-0 open at depth > 0 is always a top-level form that an
+; earlier missing `)` swallowed.
+;
+; Both numbers are collected WHILE SCANNING — no second pass over the source.
+; The column test is a single-character lookbehind at the moment the token is
+; produced (`g-pos` still points at the bracket, so `g-src[g-pos-1] == '\n'` is
+; exactly "this bracket is the first character on its line"), which is why the
+; lexer needs no column counter threaded through `next-char`.
+; ============================================================
+
+; Called from `next-tok` for each opening bracket, BEFORE g-pos advances past it.
+; `is-paren` is 1 only for `(`: a top-level form is always a parenthesised list,
+; so `[`/`{`/`#{` contribute to the depth but are never column-0 candidates.
+(defn reader-open-bracket (line:i32 is-paren:i32):void
+  (when (= g-paren-depth 0)
+    (set! g-form-open-line line))
+  (when (and (!= is-paren 0) (> g-paren-depth 0) (= g-col0-open-line 0)
+             (or (= g-pos 0) (= (char-at g-src (- g-pos 1)) 10)))
+    (set! g-col0-open-line line)
+    (set! g-col0-open-depth g-paren-depth))
+  (set! g-paren-depth (+ g-paren-depth 1)))
+
+; Called from `next-tok` for each closing bracket (`)`, `]`, `}`). Not clamped —
+; see the g-paren-depth commentary in src/nucleusc.nuc.
+(defn reader-close-bracket ():void
+  (set! g-paren-depth (- g-paren-depth 1)))
+
+; Report an unterminated bracket: the opening line as the primary location, plus
+; the second location that actually localizes the mistake. `closer` is the
+; bracket the form is waiting for (")", "]", "}"), named in the note so the
+; advice is right for a vector/map/set literal too. When there is no column-0
+; candidate the imbalance is inside the file's last top-level form, and we say
+; only how many forms were left open — never a bogus second number.
+(defn report-unterminated (open-line:i32 msg:ptr closer:ptr):void
+  (report-at open-line msg)
+  (if (and (!= g-col0-open-line 0) (!= g-col0-open-line open-line))
+    (fprintf stderr "  note: line %d starts a new form in column 0 while %d form(s) are still open -- a '%s' is probably missing before line %d\n"
+      g-col0-open-line g-col0-open-depth closer g-col0-open-line)
+    (fprintf stderr "  note: end of file reached with %d form(s) still open\n"
+      g-paren-depth)))
+
+; ============================================================
 ; Lexer
 ; ============================================================
 
@@ -373,13 +425,15 @@
         (.set! te line line)
         (return (ok (as ptr te)))))
     (when (= c 40)
-      (do (next-char)
+      (do (reader-open-bracket line 1)
+          (next-char)
         (let (tl:ptr:Tok (as ptr:Tok (alloc-tok)))
           (.set! tl kind TOK-LPAREN)
           (.set! tl line line)
           (return (ok (as ptr tl))))))
     (when (= c 41)
-      (do (next-char)
+      (do (reader-close-bracket)
+          (next-char)
         (let (tr:ptr:Tok (as ptr:Tok (alloc-tok)))
           (.set! tr kind TOK-RPAREN)
           (.set! tr line line)
@@ -391,31 +445,36 @@
     ; previously symbol chars but appear in current source only inside string
     ; literals, so claiming them as delimiters is non-breaking.
     (when (= c 91)
-      (do (next-char)
+      (do (reader-open-bracket line 0)
+          (next-char)
         (let (tlb:ptr:Tok (as ptr:Tok (alloc-tok)))
           (.set! tlb kind TOK-LBRACK)
           (.set! tlb line line)
           (return (ok (as ptr tlb))))))
     (when (= c 93)
-      (do (next-char)
+      (do (reader-close-bracket)
+          (next-char)
         (let (trb:ptr:Tok (as ptr:Tok (alloc-tok)))
           (.set! trb kind TOK-RBRACK)
           (.set! trb line line)
           (return (ok (as ptr trb))))))
     (when (and (= c 35) (= (char-at g-src (+ g-pos 1)) 123))
-      (do (next-char) (next-char)
+      (do (reader-open-bracket line 0)
+          (next-char) (next-char)
         (let (thb:ptr:Tok (as ptr:Tok (alloc-tok)))
           (.set! thb kind TOK-HASHBRACE)
           (.set! thb line line)
           (return (ok (as ptr thb))))))
     (when (= c 123)
-      (do (next-char)
+      (do (reader-open-bracket line 0)
+          (next-char)
         (let (tlc:ptr:Tok (as ptr:Tok (alloc-tok)))
           (.set! tlc kind TOK-LBRACE)
           (.set! tlc line line)
           (return (ok (as ptr tlc))))))
     (when (= c 125)
-      (do (next-char)
+      (do (reader-close-bracket)
+          (next-char)
         (let (trc:ptr:Tok (as ptr:Tok (alloc-tok)))
           (.set! trc kind TOK-RBRACE)
           (.set! trc line line)
@@ -594,7 +653,8 @@
     (while (!= 0 1)
       (let (t:ptr:Tok (as ptr:Tok (try (peek-tok))))
         (when (= (t kind) TOK-EOF)
-          (do (report-at open-line (fmt-s "unterminated %s literal" what))
+          (do (report-unterminated open-line (fmt-s "unterminated %s literal" what)
+                (if (= close-kind TOK-RBRACK) "]" "}"))
               (return (err! parse-error))))
         (when (= (t kind) close-kind)
           (do (try (eat-tok)) (return (ok head))))
@@ -755,6 +815,16 @@
           (return (err! parse-error))))
     (when (= (t kind) TOK-RPAREN)
       (do (report-at (t line) "unexpected )")
+          ; W4c: a NEGATIVE depth means this `)` has no matching `(` anywhere —
+          ; as opposed to a `)` that merely turned up where a form was expected
+          ; (inside an unclosed `[…]`, say), where the bracket it closes is real.
+          ; The form it would have closed is already closed, so the stray `)` (or
+          ; the one that closed a form too early) is between that form's opening
+          ; line and here. This is the shape an extra `)` in a `let` binding list
+          ; produces once the file no longer balances.
+          (when (and (< g-paren-depth 0) (!= g-form-open-line 0))
+            (fprintf stderr "  note: the form opened at line %d is already closed -- look for an extra ')' between lines %d and %d\n"
+              g-form-open-line g-form-open-line (t line)))
           (return (err! parse-error))))
     (when (= (t kind) TOK-RMACRO)
       (let (quoted:ptr (try (read-form))
@@ -902,7 +972,7 @@
     (while (!= 0 1)
       (let (t:ptr:Tok (as ptr:Tok (try (peek-tok))))
         (when (= (t kind) TOK-EOF)
-          (do (report-at line "unterminated list")
+          (do (report-unterminated line "unterminated list" ")")
               (return (err! parse-error))))
         (when (= (t kind) TOK-RPAREN)
           (do (try (eat-tok)) (return (ok head))))
@@ -915,18 +985,36 @@
     (return (ok head))))
 
 (defn read-program ():!ptr
+  ; W4c: the bracket-balance trackers are scoped to one whole-file read.
+  ; read-program is the single entry point for that (batch driver, import, and
+  ; REPL all call it) and reads never interleave — an import's read runs only
+  ; after the importing file's own read has completed — so resetting here is the
+  ; complete hygiene; the import sites that save/restore g-src/g-pos/g-line need
+  ; no counterpart for these.
+  (set! g-paren-depth 0)
+  (set! g-form-open-line 0)
+  (set! g-col0-open-line 0)
+  (set! g-col0-open-depth 0)
   (let (head:ptr null
         tail:ptr null)
     (while (!= 0 1)
       (let (pk:ptr:Tok (as ptr:Tok (try (peek-tok))))
         (when (= (pk kind) TOK-EOF) (return (ok head)))
-        (let (form:ptr (try (read-form))
-              line:i32 0)
-          (when (!= form null) (set! line ((as ptr:Node form) line)))
-          (let (cell:ptr (make-cell form null line))
-            (when (= tail null) (set! head cell))
-            (when (!= tail null) (.set! (as ptr:Node tail) cdr cell))
-            (set! tail cell)))))
+        ; Stage 15 W4a: seed the spine cell with the line of the form's FIRST
+        ; TOKEN, then prefer the form's own line when it has one. Identical for
+        ; every list/literal (whose line is that same token's), but it gives a
+        ; top-level *bare symbol* — an interned singleton with no line — a real
+        ; location, so "top-level form must be a list..." no longer reports :0:.
+        (let (start-line:i32 (pk line))
+          (let (form:ptr (try (read-form))
+                line:i32 start-line)
+            (when (!= form null)
+              (let (fl:i32 ((as ptr:Node form) line))
+                (when (!= fl 0) (set! line fl))))
+            (let (cell:ptr (make-cell form null line))
+              (when (= tail null) (set! head cell))
+              (when (!= tail null) (.set! (as ptr:Node tail) cdr cell))
+              (set! tail cell))))))
     (return (ok head))))
 
 ; Stage 10 E4 boundary: batch-compile driver entry. On a parse error the

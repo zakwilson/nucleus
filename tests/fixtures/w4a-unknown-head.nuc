@@ -1,0 +1,5 @@
+; Stage 15 W4a: an unresolved name in HEAD position. `bit-not` does not exist
+; (there is no unary bitwise complement — findings §4.3), so the diagnostic is a
+; targeted rewrite hint rather than a bare "unknown". Reported at line 5.
+(defn main ():i32
+  (return (bit-not 3)))

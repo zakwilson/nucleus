@@ -25,6 +25,111 @@ By default `nucleusc <file.nuc>` produces a linked native executable (`a.out` un
 | `--linker=<cmd>` | Override the link-driver command/path used for the final link step. Wins over the triple-based default (`clang` for hosted targets, `avr-gcc` for an AVR `--target=`, `riscv64-linux-gnu-gcc` for a `riscv64` `--target=`) regardless of triple. |
 | `--link-arg=<arg>` | Pass one verbatim argument to the link driver, appended after the object file. Generalizes `-l<lib>`/`-L<dir>` (which route through the same mechanism) to arbitrary linker flags. |
 
+## Diagnostics
+
+Every compiler error is printed as
+
+```
+<path>:<line>: error: <message>
+```
+
+on stderr, optionally followed by an indented `  note:` line (used to point a
+monomorphization failure back at the instantiation that requested it).
+
+**Every diagnostic names a real line.** This is a guarantee, not a
+best-effort: the test suite compiles every fixture and fails if any diagnostic
+reports `:0:`. It is worth stating explicitly because a whole family of errors
+— unresolved names, `let`/`with` initializers, retired special-form spellings,
+`defvar` initializers, `match` arm patterns — used to report line 0.
+
+The reason is worth knowing if you work on the compiler: **a bare symbol node
+has no source line.** The reader interns symbols, so all occurrences of a
+spelling anywhere in the program share one `Node`, and a per-occurrence line
+cannot be stored on it (writing one would be visible to every other
+occurrence). A diagnostic whose subject is a symbol therefore borrows the line
+of the *enclosing form*, which does carry one — `node-line`
+(`lib/node.nuc`) is the helper that expresses this, and `emit-node` maintains
+the ambient enclosing line for the one site that cannot be handed a node
+(`emit-symbol-ref`, reached with only the operand).
+
+### Did-you-mean
+
+An unresolved name is checked against the registered functions, macros, type
+names, and globals, and a near-miss is named:
+
+```
+t.nuc:4: error: unknown: printfx (did you mean 'printf'?)
+t.nuc:7: error: unknown: close (did you mean 'fclose'?)
+```
+
+The allowance scales with length — names under 4 characters get no suggestion,
+4–6 characters allow one edit, 7 and up allow two — so a short name never draws
+a coincidental match.
+
+Some spellings are wrong mental models rather than typos, and get a rewrite
+instead of a nearby name. There is no unary bitwise complement:
+
+```
+t.nuc:1: error: no unary 'bit-not'; write (bit-xor x -1)
+```
+
+### Unbalanced brackets
+
+An unterminated form reports **two** locations: the opening line of the
+innermost form that was still waiting for its closer, and — on a `note:` line —
+the first line that opens a *new* form in column 0 while some form was still
+open. The second number is the one that localizes the mistake, because a
+top-level form starting inside another form is the first point at which a
+missing closer becomes observable. The note also says how many forms were open
+there, which is how many closers are missing.
+
+```
+t.nuc:12: error: unterminated list
+  note: line 23 starts a new form in column 0 while 1 form(s) are still open -- a ')' is probably missing before line 23
+```
+
+If the imbalance is inside the file's *last* top-level form there is no such
+line, and the note says so rather than inventing a number:
+
+```
+t.nuc:9: error: unterminated list
+  note: end of file reached with 3 form(s) still open
+```
+
+All four bracket kinds participate — `(`/`)`, `[`/`]` (vector literal),
+`{`/`}` (map literal), `#{`/`}` (set literal) — and the note names the closer
+the unterminated form is actually waiting for.
+
+The mirror-image mistake, an *extra* closer, is reported where the excess
+closer is (paren counting cannot know which one was the intruder) together with
+the opening line of the form it would have closed, which bounds the search to a
+single top-level form:
+
+```
+t.nuc:13: error: unexpected )
+  note: the form opened at line 10 is already closed -- look for an extra ')' between lines 10 and 13
+```
+
+One extra-closer mistake does not reach the reader at all: an extra `)` inside a
+`let`/`with` binding list ends the list early and turns the next binding into a
+body form, and if the file is otherwise balanced it parses fine. That is
+diagnosed at the `let`:
+
+```
+(let (a:i32 1)      ; <- this ')' ends the binding list
+      b:i32 2)      ; <- so b:i32 and 2 are body forms
+  ...)
+```
+
+```
+t.nuc:11: error: let: 'b:i32' is a body form, not a binding -- an extra ')' probably ended the binding list early
+```
+
+Note the binding list left behind (`(a:i32 1)`) has an *even* element count, so
+the separate "binding list must be even" check — which fires when an extra `)`
+lands after a binding *name* instead of after its value — does not see this
+shape.
+
 ## REPL
 
 Start with `nucleusc -i`. The REPL reads one form at a time, JIT-compiles it, and prints the result. Multi-line input is supported (the REPL detects unbalanced parentheses and prompts for continuation lines with `...>`).

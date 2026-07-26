@@ -1,0 +1,13 @@
+; Stage 15 W4c (design/stage15-stress-test/diagnostics.md §W4c), the "related
+; shape worth a dedicated diagnostic": an extra `)` inside a multi-binding `let`
+; ends the binding list early and silently turns the next binding into a body
+; statement. Note this leaves the binding list at an EVEN element count
+; (`(a:i32 1)` -- two elements), so the pre-existing "binding list must be even"
+; check cannot see it; and when the user compensates with one fewer `)` at the
+; end (as here) the file still balances, so the reader cannot see it either.
+; Before: `undefined: b:i32` -- correct location, but it names the symptom.
+; After:  the message names the cause, at the `let`'s own line.
+(defn main ():i32
+  (let (a:i32 1)
+        b:i32 2)
+    (return (+ a b)))
