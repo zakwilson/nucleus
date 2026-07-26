@@ -1,0 +1,9 @@
+; Stage 15 W3a: an opaque type has no visible fields at all, so "no field 'x'"
+; would be a misleading answer.
+(import-use "tests/fixtures/cheader-opaque.h")
+
+(defn peek (h:ptr:CHOpaque):i32
+  (return
+    (h x)))
+
+(defn main ():i32 (return 0))

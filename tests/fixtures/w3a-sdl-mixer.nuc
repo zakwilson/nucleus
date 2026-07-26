@@ -1,0 +1,17 @@
+; Stage 15 W3a: one real third-party header must give BOTH shapes.
+; SDL2/SDL_mixer.h declares `typedef struct Mix_Music Mix_Music;` (opaque — no
+; body anywhere) and `typedef struct Mix_Chunk { … } Mix_Chunk;` (fully defined)
+; in the same file. Compile-only: linking would need -lSDL2_mixer, and
+; tests/run-tests.sh has no per-test link-flag mechanism.
+(import-use "SDL2/SDL_mixer.h")
+
+; Opaque handle in a defn signature — all a handle needs.
+(defn free-music (m:ptr:Mix_Music):i32
+  (Mix_FreeMusic (as ptr m))
+  (return 0))
+
+; The defined struct from the same header keeps its layout and field access.
+(defn chunk-allocated (c:ptr:Mix_Chunk):i32
+  (return (c allocated)))
+
+(defn main ():i32 (return 0))

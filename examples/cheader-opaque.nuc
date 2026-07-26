@@ -1,0 +1,56 @@
+; Stage 15 W3a (design/stage15-stress-test/cheader.md §1.6): opaque
+; forward-declared C types.
+;
+; A C header's `struct Foo;` / `typedef struct Foo Foo;` names a type whose
+; layout the translation unit never sees — the standard opaque-handle idiom.
+; Nucleus registers the name so `ptr:Foo` resolves (all a handle needs), in
+; signature position as well as inside a body, and refuses every by-value use
+; with a located diagnostic (see tests/fixtures/w3a-opaque-*.nuc).
+(import-use "stdio.h")
+(import-use "tests/fixtures/cheader-opaque.h")
+
+; `FILE` is opaque through plain <stdio.h>: glibc defines struct _IO_FILE with
+; bitfields, which the C declaration parser cannot represent, so the tag stays
+; layout-less. That is exactly the case that used to die `unknown type: FILE`.
+; Note the handle appears in a defn SIGNATURE, not just a local binding.
+(defn write-line (f:ptr:FILE s:CStr):i32
+  (return (fprintf f "%s\n" s)))
+
+; A never-defined tag and a typedef alias of one, both pointer-only.
+(defn handles-null (p:raw:CHOpaque h:raw:CHHandle):i32
+  (return (+ (if (= p null) 1 0) (if (= h null) 10 0))))
+
+(defn main ():i32
+  (let (f:ptr:FILE (tmpfile))
+    (when (= f null)
+      (printf "tmpfile failed\n")
+      (return 1))
+    (write-line f "opaque-handle")
+    (fseek f (as i64 0) 0)
+    (let (buf:ptr:i8 (alloca i8 64))
+      (when (!= (fgets (as ptr buf) 64 f) null)
+        (printf "read=%s" (as ptr buf))))
+    (fclose f))
+  (printf "handles=%d\n" (handles-null null null))
+  ; CHLater was forward-declared before its definition; the definition upgraded
+  ; the opaque entry in place, so its fields are usable.
+  (let (l:ptr:CHLater (alloca CHLater))
+    (.set! l a 40)
+    (.set! l b 2)
+    (printf "later=%d\n" (+ (l a) (l b))))
+  ; The upgrade propagated to a typedef alias registered while the tag was
+  ; still opaque.
+  (let (al:ptr:CHAliasedLater (alloca CHAliasedLater))
+    (.set! al v 7)
+    (printf "aliased=%d\n" (al v)))
+  ; ... including when the alias is a DISTINCT name, so it really is a second
+  ; registry entry linked to the tag (the `typedef struct _IO_FILE FILE;` shape).
+  (let (r:ptr:CHRef (alloca CHRef))
+    (.set! r q 9)
+    (printf "aliased-name=%d\n" (r q)))
+  ; And to a tag whose definition arrived via `typedef struct Tag { … } Name;`,
+  ; whose body the parser handles anonymously.
+  (let (t:ptr:CHTypedefLater (alloca CHTypedefLater))
+    (.set! t w 5)
+    (printf "typedef-later=%d\n" (t w)))
+  (return 0))

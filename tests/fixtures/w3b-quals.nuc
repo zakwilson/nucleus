@@ -1,0 +1,13 @@
+; Stage 15 W3b: the C type-qualifier matrix (tests/fixtures/w3b-quals.h).
+; run_w3b_quals asserts the exact `declare` line the importer emits for every
+; spelling in that header — arity and types both.
+(import-use "tests/fixtures/w3b-quals.h")
+
+; Use one of them so the import is not merely parsed. `w3b_int_const`'s C
+; declaration is `void w3b_int_const(int const *p)`: one pointer parameter, which
+; before W3b was mis-parsed as two.
+(defn call-it (p:ptr):i32
+  (w3b_int_const p)
+  (return 0))
+
+(defn main ():i32 (return 0))

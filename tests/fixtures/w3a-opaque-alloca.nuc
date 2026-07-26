@@ -1,0 +1,7 @@
+; Stage 15 W3a: no layout means no stack slot can be reserved.
+(import-use "tests/fixtures/cheader-opaque.h")
+
+(defn main ():i32
+  (let (p:ptr:CHOpaque
+          (alloca CHOpaque))
+    (return 0)))
