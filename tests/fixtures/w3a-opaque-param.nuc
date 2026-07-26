@@ -1,0 +1,9 @@
+; Stage 15 W3a: a by-value parameter of an opaque type has no size and no ABI
+; classification. `ptr:CHOpaque` is the fix.
+(import-use "tests/fixtures/cheader-opaque.h")
+
+(defn take
+      (h:CHOpaque):i32
+  (return 0))
+
+(defn main ():i32 (return 0))

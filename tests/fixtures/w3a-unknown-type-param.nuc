@@ -1,0 +1,9 @@
+; Stage 15 W3a: `unknown type:` raised while resolving a defn SIGNATURE used to
+; report `:0:` — the type is resolved against the defn's NAME node, an interned
+; NODE-SYM whose own line is always 0 (the W4a class of bug). The parameter list
+; and the return operand carry real lines; borrow them.
+(defn takes-missing
+      (m:ptr:NoSuchTypeHere):i32
+  (return 0))
+
+(defn main ():i32 (return 0))

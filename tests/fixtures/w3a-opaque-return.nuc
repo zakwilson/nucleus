@@ -1,0 +1,9 @@
+; Stage 15 W3a: same rule for a by-value return — the signature is refused
+; before the body is ever emitted.
+(import-use "tests/fixtures/cheader-opaque.h")
+
+(defn make-one
+      ():CHOpaque
+  (return (make-one)))
+
+(defn main ():i32 (return 0))

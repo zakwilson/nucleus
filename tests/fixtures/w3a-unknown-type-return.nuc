@@ -1,0 +1,6 @@
+; Stage 15 W3a: the return half of the same fix.
+(defn returns-missing
+      ():ptr:AlsoNoSuchType
+  (return null))
+
+(defn main ():i32 (return 0))

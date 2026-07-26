@@ -1,0 +1,6 @@
+read=opaque-handle
+handles=11
+later=42
+aliased=7
+aliased-name=9
+typedef-later=5
