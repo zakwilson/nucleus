@@ -26,6 +26,87 @@ that `node-type` deliberately does not model returns null (codegen then keeps it
 own type) — that's the escape hatch for control-flow/expansion-dependent results
 (`cond`, macros, `quasiquote`), not a license to skip updating modelled forms.
 
+**The structural fix for this class is a shared rule function, not two mirrored
+copies.** Stage 15 W2a is the worked example: `node-type-call`'s intrinsic-binop
+branch returned *operand 1's type alone* while `emit-binop-vals`/`binop-coerce`
+unified both operands, so `(* 4096 (as i64 X))` emitted `i64` but typed `i32`
+(the argument coercer then stacked a bogus `sext i32 <i64 value>`) and
+`(> t:ui32 (* 2 cl:ui32))` was rejected as mixed-sign while `(* cl 2)` compiled.
+The rule now lives in exactly one function — **`binop-result-type`**
+(`src/nucleusc.nuc`, immediately above `binop-coerce`) — which `binop-coerce`
+calls for the type decision (it keeps only the value-level cast emission) and
+`node-type-call` (`src/generics.nuc`) calls for the propagated type. Prefer this
+shape whenever a typing rule is non-trivial: mirroring the *logic* in both files
+is what drifts; mirroring a *call* cannot. Note the direction is fine even
+though `nucleusc.nuc` imports `generics.nuc` and not vice versa — every `.nuc`
+inlines into one translation unit and `prescan-defn-signatures` registers
+`nucleusc.nuc`'s own signatures before any form is emitted, so `generics.nuc`
+forward-references into `nucleusc.nuc` (it already did, for `macroexpand-form`).
+
+Two follow-on lessons from W2b, which extended that same rule to make a
+`defconst`/`defenum` name behave like the literal it stands for:
+
+- **A binop operand node is often a CELL, not the bare operand.** The variadic
+  operator macros wrap the tail: `(* v K)` expands to `(_* v (* K))`, so the
+  *second* operand node handed to `binop-result-type` is `(* K)`, never the
+  symbol `K`. `node-is-int-literal` macroexpands a CELL for exactly this reason,
+  and any new predicate over a binop operand must do the same — W2b's first cut
+  did not, and the fix worked in operand-1 position while silently not working
+  in operand-2 position, reintroducing the very order-asymmetry W2a removed. The
+  §3.1 repro (`(<= ans K)`, a direct binop) does not catch it; only a `+`/`*`
+  spelling does. Test both positions **and** both a macro and a non-macro
+  operator.
+- **Resolving a name needs the scope, not `g-globals`.** A `defconst` always
+  lives in the global scope, so consulting `g-globals` directly looks like a
+  free way to avoid threading a scope parameter. It is wrong: a local binding
+  shadows the constant, and a shadowed local is an ordinary typed value.
+  `binop-result-type`/`binop-coerce`/`emit-binop-vals` each carry a
+  `scope:(raw Scope)` for this; `tests/fixtures/w2b-shadow-local.nuc` is the
+  guard. Provenance that depends on *what a name means here* must be looked up
+  through the scope chain that emission itself used.
+
+## `coerce-int-val` is THE coercion chokepoint — and one caller reads a null return as "do nothing"
+
+Despite the name, `coerce-int-val` (`src/abi.nuc`) is not integer-specific: it
+is the single implicit-coercion chokepoint for `ptr`/`CStr`/`StrView`, integers,
+and (since Stage 15 W2d) floats. Everything that assigns a value into a *typed
+slot* routes through it — `let`/`with` init, `set!`, `.set!` field store,
+explicit and implicit `return`, struct-literal and array initializers (positional
+**and** designated are separate call sites), union-variant construction — plus
+`coerce-num-val` (binops) and `safe-coerce-val` (call arguments) which delegate
+to it. **Add a new implicit conversion here, not at the call sites.**
+
+The trap that makes a missing case cost double: those callers do not agree on
+what a null return means. All of the typed-slot ones raise a "type mismatch"
+diagnostic — but the argument loop in `emit-call-with-args`
+(`src/nucleusc.nuc`) deliberately **leaves the argument untouched**
+("preserving the prior pass-through behavior"). So one absent conversion is a
+*rejection* in eight positions and a silent *miscompile* in the ninth. W2d found
+exactly this: `coerce-int-val` had no float case, so `(let (a:f32 0.0) …)` died
+`let: init type mismatch` while `(take 2.5)` against `(defn take (x:f32) …)`
+compiled clean, emitted `call float @take(double 2.5)`, and printed `0.000000`.
+When auditing a coercion gap, check the argument path separately — it will not
+have told you.
+
+Two related facts worth having:
+
+- **A float constant for LLVM's `float` type usually cannot be written in
+  decimal.** LLVM accepts a decimal only when it round-trips exactly, so
+  `float 3.14` is `error: floating point constant invalid for type` while
+  `float 1.5` is fine — which is how `(defvar g:f32 1.5)` looked like proof
+  that the `defvar` path worked. The general spelling is the hex form (the 64
+  bits of the double the float widens to, `0x40091EB860000000` for `3.14f`),
+  produced by `f32-const-ir` (`src/nucleusc.nuc`). A *global initializer* is a
+  constant, so it cannot be repaired with an `fptrunc` instruction the way every
+  value position can — it needs the literal re-rendered at the target width.
+- **The compiler's own link flags are part of its constant-folding semantics.**
+  Folding a literal at compile time evaluates it in the *compiler* process, so
+  `-ffast-math` on `build/nucleusc` (FTZ/DAZ via `crtfastmath.o`) silently
+  folded every denormal single to zero. It was removed from the Makefile in
+  W2d and must not come back; the compiler does no FP work of its own, so it
+  bought nothing. Any future compile-time evaluation of target arithmetic
+  inherits this constraint.
+
 ## `defn` signature: return type follows the params (`(defn NAME (params):ret …)`)
 
 The named-function signature is the fn-style `(defn NAME (params):ret body…)` —

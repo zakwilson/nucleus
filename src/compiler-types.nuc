@@ -279,6 +279,18 @@
   is-local:i32
   is-const:i32
   const-val:CStr
+  ; Stage 15 W2b (design/stage15-stress-test/literal-typing.md): this `is-const`
+  ; symbol stands for a bare INTEGER LITERAL, so a reference to it adapts at a
+  ; use site exactly as the literal it names would (`(<= ans:ui32 K)` compiles
+  ; iff `(<= ans:ui32 512)` does — naming a constant must not change how it
+  ; types). Set by `defconst`/`defenum` (and the REPL's hand-registered NODE-*
+  ; mirror); deliberately NOT set by `deferror`, whose constants are `Err`-typed
+  ; and must never unify with a plain integer. `const-lit-i64` carries the VALUE,
+  ; not just the flag, so the emitted Val can be tagged `is-lit`/`lit-i64` and
+  ; the LW-4 range check in coerce-int-val rejects an out-of-range narrowing
+  ; instead of silently wrapping it.
+  const-lit:i32
+  const-lit-i64:i64
   tracker:ptr
   ; --- Stage 8 / REPL introspection additions ---
   src-file:CStr     ; source file where defined (null if unknown)
@@ -408,7 +420,24 @@
   ; (0) on every non-literal Val (arena zero-init) and never re-set by coercion,
   ; so a value that has already been widened is not re-checked.
   is-lit:i32
-  lit-i64:i64)
+  lit-i64:i64
+  ; Stage 15 W2d (design/stage15-stress-test/literal-typing.md §3.6): the float
+  ; counterpart of is-lit/lit-i64 — 1 when this Val is a *float* literal whose
+  ; exact value is known (set only by emit-float), with `lit-f64` holding the
+  ; value the reader's lexeme denotes. A bare float literal is typed f64, so
+  ; without this the coercion chokepoint (coerce-int-val) could only reach an
+  ; f32 target by emitting an `fptrunc` of a double constant; with it the
+  ; literal is re-rendered at the target width as a plain LLVM constant, no
+  ; instruction — exactly the courtesy an integer literal has had since LW-4.
+  ; A DELIBERATELY separate flag rather than a third overload of `is-lit`
+  ; (which already means "int literal" and, with a StrView type, "unmaterialized
+  ; string literal"): every existing `is-lit` reader would otherwise have to be
+  ; audited for float reachability, and two of them (abi-arg-frag, the variadic
+  ; StrView collapse) sit on the vararg path where a float genuinely appears.
+  ; Cleared (0) on every non-literal Val (arena zero-init) and never re-set by
+  ; coercion, so an already-narrowed value is not re-folded.
+  is-flit:i32
+  lit-f64:f64)
 
 ; ---- Aggregate ABI lowering (Stage 8 Phase C, x86_64 System V) ----
 ; How a struct-by-value parameter or return is lowered to the platform C ABI.

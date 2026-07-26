@@ -1,6 +1,19 @@
 CC           := clang
 CFLAGS       := -std=c11 -Wall -Wextra -Wpedantic -O0 -g
 
+# Native link flags for the compiler binary itself.
+#
+# `-ffast-math` USED to be here and was removed in Stage 15 W2d: on Linux/x86 it
+# links crtfastmath.o, which sets FTZ/DAZ in MXCSR for the whole *compiler*
+# process. Since W2d the compiler constant-folds float literals to their target
+# width with host floating point (`f32-const-ir`, src/nucleusc.nuc), so a
+# flush-to-zero process silently folded every denormal literal to 0 —
+# `(defvar d:f32 1e-45)` emitted `float 0x0000000000000000` where clang emits
+# `float 0x36A0000000000000`. The compiler performs no floating-point work of
+# its own, so fast-math bought nothing and cost correctness. Do not add it back;
+# a compiler must evaluate constants under strict IEEE semantics.
+NATIVE_OPT   := -march=native -O3
+
 # LLVM detection: try llvm-config, then versioned names (Alpine: llvm21-config,
 # Debian: llvm-config-19). Fall back to -lLLVM monolithic shared lib if no
 # llvm-config is found (Alpine's llvm21 package may not ship llvm-config on PATH).
@@ -71,7 +84,7 @@ COMPILER_DEPS := src/nucleusc.nuc src/compiler-types.nuc src/type-utils.nuc src/
 
 $(BIN): $(COMPILER_DEPS) $(REPL_SHIM_O) $(BUILD)/llvm-stamp | $(BUILD) ensure-boot
 	$(BOOT) --emit-llvm src/nucleusc.nuc > $(BUILD)/nucleusc.ll
-	clang $(BUILD)/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic -ffast-math -march=native -O3 -o $@
+	clang $(BUILD)/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic $(NATIVE_OPT) -o $@
 
 # Content stamp of the linked LLVM version. A build/nucleusc carried across an
 # LLVM switch (e.g. a build dir shared between host and container) is linked
@@ -95,12 +108,12 @@ ensure-boot: $(REPL_SHIM_O) | $(BUILD)
 	@$(BOOT) --help >/dev/null 2>&1; ec=$$?; \
 	if [ $$ec -eq 126 ] || [ $$ec -eq 127 ]; then \
 		echo "bin/nucleusc: cannot execute (exit $$ec), rebuilding from boot/nucleusc.ll ..."; \
-		clang boot/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic -O3 -o $(BOOT); \
+		clang boot/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic $(NATIVE_OPT) -o $(BOOT); \
 	fi
 
 # Force-rebuild the bootstrap binary from the committed IR (boot/nucleusc.ll).
 boot-binary: $(REPL_SHIM_O) | $(BUILD)
-	clang boot/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic -ffast-math -march=native -O3 -o bin/nucleusc
+	clang boot/nucleusc.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic $(NATIVE_OPT) -o bin/nucleusc
 
 test: $(BIN)
 	@rm -rf $(BUILD)/out
@@ -152,7 +165,7 @@ gen-stdlib-table: $(BIN)
 bootstrap: $(BIN) | $(BUILD)/out
 	@echo "=== Stage 2: self-hosted compiler -> nucleusc.nuc ==="
 	$(BIN) --emit-llvm src/nucleusc.nuc > $(BUILD)/stage2.ll
-	clang $(BUILD)/stage2.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic -ffast-math -march=native -ffast-math -march=native -O3 -o $(BUILD)/nucleusc-stage2
+	clang $(BUILD)/stage2.ll $(REPL_SHIM_O) $(LLVM_LDFLAGS) $(LLVM_LIBS) $(LLVM_SYSLIBS) -ldl -rdynamic $(NATIVE_OPT) -o $(BUILD)/nucleusc-stage2
 	@echo "=== Fixed-point test ==="
 	diff $(BUILD)/nucleusc.ll $(BUILD)/stage2.ll
 	@echo "PASS: stage1.ll == stage2.ll"

@@ -188,9 +188,15 @@ A `c"…"` literal — a `c` glued directly onto the opening quote, with no whit
 
 **`Char`** is a single Unicode scalar value — a codepoint in `0..=0x10FFFF` excluding the UTF-16 surrogate range `0xD800..=0xDFFF` (Rust's `char` model; "character" means codepoint, not grapheme cluster). It is a **built-in distinct 32-bit scalar over `ui32`**, the same kind of distinct scalar `CStr` is: it lowers to IR `i32` (C `uint32_t`, size 4) and participates in the integer operators, but it is its own type for dispatch. `=` / `!=` on two `Char` compare codepoints (`(= \a \a)` is true, `(= \a \b)` is false), and a `Char`-vs-int overload is distinguishable. A same-width `as` (or `unsafe/cast`) between `Char` and `ui32`/`i32` is a no-op reinterpret (`(as ui32 \A)` is `65`). Because `Char` is distinct, two *typed* operands of different kind do **not** silently unify: `(= \a (as ui32 65))` is a compile error (`operand type mismatch`) — convert one side explicitly with `as`. An untyped integer literal still adapts to a `Char` operand, so `(= \a 97)` is allowed. Write a `Char` value with a [char literal](#char-literals--a) (below) or, equivalently, the `(char "x")` form. (The `Char` UTF-8 encode/decode and classification library is a separate task.)
 
-Float literals: `1.5`, `-0.25`, `1e10`, `1.5e-3`, `.5`. Default type is `f64`; narrow with `(unsafe/cast f32 ...)` (lossy — `as` refuses it). Widen `f32`→`f64` with `as` (or `unsafe/cast`); convert int↔float with `unsafe/cast` (int↔float is not in `as`'s safe set). Special values use Scheme syntax: `+inf.0`, `-inf.0`, `+nan.0`. Float arithmetic uses `+ - * / %` and comparisons use `= != < <= > >=` (LLVM `fadd`/`fcmp`); operands must have the same float width — promote with explicit `as` (widening) or `unsafe/cast` (narrowing). Mixing float and integer operands without an explicit `unsafe/cast` is a compile error.
+Float literals: `1.5`, `-0.25`, `1e10`, `1.5e-3`, `.5`. Special values use Scheme syntax: `+inf.0`, `-inf.0`, `+nan.0`. Float arithmetic uses `+ - * / %` and comparisons use `= != < <= > >=` (LLVM `fadd`/`fcmp`).
 
-**`f64` is unsupported when `--target=avr`**: AVR has no hardware double, so `f64`/`double` is a compile-time error, whether written as an explicit type annotation or reached only through a bare float literal's default type (`(let (x 1.5) …)` is rejected even with no `f64` text in the source). The error names the `-mdouble=64` avr-gcc multilib escape hatch for a custom AVR build with software double support. `f32` is unaffected, and `i64` remains fully supported (arithmetic links libgcc's software routines, e.g. `__muldi3`). This check applies only to the AVR target module itself — compile-time/macro code always runs on the host regardless of `--target=`, so ordinary `f64` arithmetic inside a `defmacro`/`compile-time` body compiling *for* an AVR program is unaffected.
+**A float literal is untyped: it adapts to whatever float width the position wants**, and only falls back to `f64` when nothing asks for anything else. That covers both a binop operand — with `alpha:f32`, `(* alpha 2.0)` and `(* 2.0 alpha)` are both `f32`, in either order — and every *typed target* position: `(let (a:f32 0.1) …)`, `with`, `(set! a 0.1)`, `(.set! p x 0.1)`, `(return 0.1)` from an `f32` function (explicit or implicit), an `f32` field in a struct literal, an `f32` element in an `(array f32 …)`, an `f32` argument at a call, and an `f32` `defvar` initializer. None of these need an `(unsafe/cast f32 …)` wrapper, and the literal is rounded to single precision at compile time — no conversion instruction is emitted.
+
+A bare float literal with no target is `f64`, so `(let (b 0.1) …)` and `(let (b:f64 0.1) …)` are both `f64`; adaptation never makes an unrequested `f32`. Two *typed* float operands of different width widen to the wider (`f32 * f64` is `f64`). Mixing float and integer operands without an explicit `unsafe/cast` is a compile error — a float literal adapts only to a *float* target, never to an integer one (`(let (a:i32 1.5) …)` is rejected).
+
+A `f64` **value** (not a literal) narrows into an `f32` target implicitly and silently, with an `fptrunc`, the same way an `i64` value narrows into an `i32` slot; the explicit `(as f32 d)` spelling still refuses it as lossy and routes you to `(unsafe/cast f32 d)`. See [Implicit Type Coercion](#implicit-type-coercion) below for the full rule.
+
+**`f64` is unsupported when `--target=avr`**: AVR has no hardware double, so `f64`/`double` is a compile-time error, whether written as an explicit type annotation or reached only through a bare float literal's default type (`(let (x 1.5) …)` is rejected even with no `f64` text in the source). The error names the `-mdouble=64` avr-gcc multilib escape hatch for a custom AVR build with software double support. `f32` *types* are unaffected, and `i64` remains fully supported (arithmetic links libgcc's software routines, e.g. `__muldi3`). **A float *literal* is rejected on AVR even in an `f32` position** (`(let (a:f32 1.5) …)`), because the check fires when the literal is emitted, before its target width is known; this predates the W2d literal adaptation — `(unsafe/cast f32 1.5)` was rejected at the same point — so an AVR program currently cannot spell a floating-point constant at all. Lifting it is AVR work, not literal-typing work. This check applies only to the AVR target module itself — compile-time/macro code always runs on the host regardless of `--target=`, so ordinary `f64` arithmetic inside a `defmacro`/`compile-time` body compiling *for* an AVR program is unaffected.
 
 ## Function Pointer Types
 
@@ -244,12 +250,65 @@ The following conversions are applied automatically in assignment contexts (`let
     value is unknown). To deliberately wrap a literal, cast it explicitly with
     `unsafe/cast` (narrowing is lossy, outside `as`'s safe set):
     `(unsafe/cast i8 200)` is `-56`.
-- **`f32` → `f64`**: `fpext`.
+- **Float ↔ float**:
+  - Widening `f32` → `f64`: `fpext`.
+  - Narrowing `f64` → `f32`: `fptrunc` for a *value*, and for a float **literal**
+    no instruction at all — the literal is re-rendered as a single-precision
+    constant at compile time. So `(let (a:f32 0.1) …)`, `(set! a 0.1)`,
+    `(return 0.1)` from an `f32` function, `(P 0.1 0.2)` into `f32` fields,
+    `(array f32 0.1)`, `(.set! p x 0.1)` and `(take 0.1)` against
+    `(defn take (x:f32) …)` all work with the bare literal — no
+    `(unsafe/cast f32 0.1)` wrapper. The narrowing of a *value* is silent, the
+    same way a narrowing integer assignment is silent (see the `trunc` bullet
+    above); unlike the integer case there is no range check, because float
+    overflow saturates to `±inf` by IEEE rule rather than wrapping.
+  - Rounding is decimal → `f64` → `f32` (two roundings), which is exactly what
+    the explicit `(unsafe/cast f32 3.14)` spelling has always done. In practice
+    this agrees with C's `3.14f` for essentially every constant, and `f32`
+    arithmetic is otherwise bit-exact with C `float`.
 - **User-registered**: any pair declared with `(defcast From To conv-fn)` (see [Top-level forms](toplevel.md)). The compiler emits a call to `conv-fn`. Built-in coercion always wins; `defcast` cannot shadow `sext`/`zext`/`fpext`.
 
-Binary operators do *not* coerce — both operands must already match in kind. Mixing float and integer operands, or mixed-sign integer operands (e.g. `i32 + ui32`), or operands of different integer widths (e.g. `i64 + i32-literal`) are compile errors at the operator. Use an explicit `(as ...)` (widening / same-width sign reinterpret) or `(unsafe/cast ...)` (narrowing, `float`↔`int`) on the binop side.
+**Binary operators unify their two operands** by exactly one rule, and the
+result type is that unified type (a comparison always yields `bool`). The rule is
+**symmetric in operand order** — `(* 2 x)` and `(* x 2)` type identically:
 
-Explicit `(unsafe/cast ...)` is also still required for cross-kind conversions: `int ↔ ptr`, `int ↔ float`, `ptr ↔ float`, and `f64 → f32` narrowing — none of these are in `as`'s safe set.
+- An **untyped literal adapts to the other operand's type**: an integer literal
+  to any integer *or* float operand (`(+ x:i64 1)`, `(* 2 u:ui32)`,
+  `(* d:f64 2)`), a float literal to any *float* operand
+  (`(* alpha:f32 2.0)` is `f32`, not `f64`). Two untyped literals fall back to
+  `i32`, or `i64` when either value does not fit.
+- A name bound by **`defconst` or a `defenum` member counts as that literal** —
+  naming a constant does not change how it types. `(defconst K 512)` then
+  `(<= ans:ui32 K)` behaves exactly as `(<= ans:ui32 512)`, in either operand
+  order. A *local* binding that shadows the constant is an ordinary typed
+  value, not a literal.
+- **Two typed operands of the same kind widen** to the wider one:
+  `(+ i32-value i64-value)` is `i64`, `(+ f32-value f64-value)` is `f64`.
+- Everything else is a compile error at the operator: a float operand against an
+  integer operand (`float and non-float operands`), mixed-sign integers such as
+  `i32 + ui32` (`mixed signed/unsigned operands`), and a typed `Char` against a
+  typed non-`Char` integer (`operand type mismatch`). Fix these with an explicit
+  `(as ...)` (widening / same-width sign reinterpret) or `(unsafe/cast ...)`
+  (narrowing, `float`↔`int`) on the binop side — the compiler will not
+  sign-reinterpret or truncate a *typed* value for you.
+
+Only a literal adapts freely; a typed value still obeys the coercion rules above.
+
+Explicit `(unsafe/cast ...)` is also still required for cross-kind conversions: `int ↔ ptr`, `int ↔ float`, and `ptr ↔ float` — none of these are in `as`'s safe set.
+
+`f64 → f32` is a special case: the **implicit** coercion at a typed slot performs
+it (silently for a value, exactly as an `i64 → i32` assignment does), but the
+**explicit** `(as f32 d)` still refuses it as lossy and routes you to
+`(unsafe/cast f32 d)`. That asymmetry is not float-specific — `(as i32 n:i64)`
+is refused for the same reason while `(let (a:i32 n) …)` truncates — and is a
+standing question about implicit narrowing in general, not about floats.
+
+**Multimethod dispatch is stricter than assignment.** A float *literal* adapts
+to a narrower float parameter when selecting an overload (`(over 0.1)` picks
+`(defn over (x:f32) …)`), but a typed `f64` *value* does not — dispatch never
+narrows a runtime value to choose which function runs. Cast at the call, or add
+the overload. This mirrors the integer rule, where a typed `i64` value likewise
+only ever dispatches to an `i64`-or-wider parameter.
 
 ## Literal Values
 
@@ -273,6 +332,12 @@ Coercion*). When a literal's type is not otherwise constrained, it emits as
 `5000000000` (not a 32-bit wrap) while an out-of-range use like
 `(take-i32 5000000000)` is a compile-time error. (Typed *values*, unlike
 literals, only widen same-sign — see the coercion rules above.)
+
+The same width rule and the same range check apply to a **named** constant. A
+`defconst` is typed by its value, not fixed at `i32`: `(defconst BIG
+5000000000)` is `i64`, so `(let (x:i64 BIG) …)` yields `5000000000`, while
+`(let (x:i32 BIG) …)` and `(defvar g:i32 BIG)` are compile-time errors rather
+than a silent 32-bit wrap. Enum members are always small enough to be `i32`.
 
 ## Char literals — `\a`
 

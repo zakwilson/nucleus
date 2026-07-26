@@ -1082,18 +1082,28 @@
     (set! g-form-line saved-form-line)
     (return v)))
 
-; Stage 14 LW-4: emit an integer literal at its *truthful* width. The reader
-; lexed the full value into `Node.i` (an i64); we emit at `i32` when the value
-; fits (the overwhelming majority — keeps IR near-identical and preserves the
-; emit-then-coerce path) and at `i64` otherwise, so a large literal carries its
-; real value instead of silently wrapping through a 32-bit constant (the old
-; bug: `5000000000` printed `705032704`; FNV constants truncated). The Val is
-; tagged with the known value so `coerce-int-val` can reject an out-of-range
-; narrowing (`(take8 300)`) at compile time. node-type's NODE-INT branch mirrors
-; this width choice (the emit/node-type lockstep, conventions.md).
+; Stage 14 LW-4: the *truthful* width of an integer literal whose value is `v`
+; — `i32` when it fits (the overwhelming majority — keeps IR near-identical and
+; preserves the emit-then-coerce path), `i64` otherwise, so a large literal
+; carries its real value instead of silently wrapping through a 32-bit constant
+; (the old bug: `5000000000` printed `705032704`; FNV constants truncated).
+;
+; Stage 15 W2b made this a shared function rather than three copies of the same
+; `if`: `emit-int` below, `emit-defconst` (which hardcoded `ty-i32` and so
+; reproduced the very wrapping bug LW-4 fixed for inline literals — `(defconst
+; BIG 5000000000)` printed `705032704`), and `node-type`'s NODE-INT branch
+; (src/generics.nuc, the emit/node-type lockstep). One rule, one home; see the
+; `binop-result-type` note below for why that shape is the anti-drift device.
+(defn int-literal-type (v:i64):ref:Type
+  (when (!= (int-literal-fits v ty-i32) 0) (return ty-i32))
+  (return ty-i64))
+
+; Emit an integer literal at its truthful width (int-literal-type above). The
+; Val is tagged with the known value so `coerce-int-val` can reject an
+; out-of-range narrowing (`(take8 300)`) at compile time.
 (defn emit-int (n:(raw Node)):ref:Val
   (let (v:i64 (n i)
-        ty:ptr (if (!= (int-literal-fits v ty-i32) 0) ty-i32 ty-i64)
+        ty:ptr (as ptr (int-literal-type v))
         rv:ref:Val (alloc-val ty (fmt-i64 "%ld" v)))
     (.set! rv is-lit 1)
     (.set! rv lit-i64 v)
@@ -1165,6 +1175,54 @@
     (aset! (as ptr:i8 buf) out 0)
     (return buf)))
 
+; Stage 15 W2d (design/stage15-stress-test/literal-typing.md §3.6): the VALUE a
+; float-literal lexeme denotes, as a host double. The three Scheme-style special
+; tokens are spelled out because `strtod` does not know them; every other lexeme
+; the reader accepts (`1e3`, `.5`, `2.`, `-0.75`) is exactly what `strtod`
+; accepts, so no normalization is needed here — `float-literal-ir` above
+; normalizes for LLVM's *printer*, this parses for LLVM's *value*. Keeping the
+; two in one place would be nice but they answer different questions; they are
+; kept adjacent instead, and both are exercised by every f32 literal.
+(defn float-literal-value (lex:CStr):f64
+  (when (= lex "+inf.0") (return (strtod "inf" null)))
+  (when (= lex "-inf.0") (return (strtod "-inf" null)))
+  (when (= lex "+nan.0") (return (strtod "nan" null)))
+  (return (strtod lex null)))
+
+; Stage 15 W2d: render `d` as an LLVM constant valid for the `float` type.
+;
+; LLVM only accepts a *decimal* floating-point constant for `float` when the
+; value round-trips exactly (`float 3.14` is rejected outright —
+; "floating point constant invalid for type"), so the general spelling is the
+; hexadecimal form: the 64 bits of the DOUBLE that the intended float value
+; widens to. `(as f64 (unsafe/cast f32 d))` performs exactly that round trip —
+; one round-to-nearest to single, then an exact widening back — and the bit
+; pattern is read out through the value's own storage, since Nucleus has no
+; bitcast operator. Output matches clang byte for byte (`3.14f` →
+; 0x40091EB860000000).
+;
+; Note the rounding here is the same double-rounding (decimal → f64 → f32) that
+; `(unsafe/cast f32 3.14)` has always performed; W2d makes the conversion
+; implicit but does not add a rounding step (literal-typing.md §W2d).
+; An out-of-range magnitude saturates to ±inf, as it does in C (`float d =
+; 1e300;` is a clang warning, not an error) — deliberately NOT the LW-4
+; integer treatment, see "the range check that isn't" in the W2d design note.
+(defn f32-const-ir (d:f64):CStr
+  (let (r:f64 (as f64 (unsafe/cast f32 d))
+        p:ptr:f64 (addr-of r)
+        bits:i64 (deref (unsafe/cast ptr:i64 p)))
+    (return (fmt-i64 "0x%016lX" bits))))
+
+; Stage 15 W2d: THE rule for "what text does this float literal have at this
+; width" — one home, called by both the global-initializer path
+; (`defvar-init-ir`) and the value path (`emit-float` → the literal fold in
+; `coerce-int-val`), the same shape W2a used for `binop-result-type` and W2b
+; for `int-literal-type`. An f64 target keeps the historical lexeme
+; normalization verbatim, so every existing program's IR is byte-identical.
+(defn float-literal-ir-at (lex:CStr ty:(raw Type)):CStr
+  (when (= (ty kind) TY-F32) (return (f32-const-ir (float-literal-value lex))))
+  (return (float-literal-ir lex)))
+
 (defn emit-float (n:(raw Node)):ref:Val
   (let (nn:(raw Node) n)
     ; Stage 14 AVR-7: a bare float literal defaults to f64, which AVR cannot
@@ -1174,7 +1232,14 @@
     ; literal passed to an f64 parameter — never touches parse-type-name, so it
     ; must be caught here. Inert off AVR (byte-identical).
     (avr-reject-f64 (nn line))
-    (return (alloc-val ty-f64 (float-literal-ir (nn s))))))
+    ; Stage 15 W2d: tag the Val with the literal's value so the coercion
+    ; chokepoint can re-render it at an f32 target with no instruction. The
+    ; literal's OWN type stays f64 — adaptation is the consumer's decision, made
+    ; where the target type is known, exactly as for an integer literal.
+    (let (rv:ref:Val (alloc-val ty-f64 (float-literal-ir (nn s))))
+      (.set! rv is-flit 1)
+      (.set! rv lit-f64 (float-literal-value (nn s)))
+      (return rv))))
 
 (defn emit-string (n:(raw Node) target:(raw Type)):ref:Val
   (let (nn:(raw Node) n
@@ -1657,9 +1722,12 @@
     ; A length gap wider than the allowance needs at least that many edits.
     (when (> (- la lb) limit) (return 99))
     (when (> (- lb la) limit) (return 99))
-    ; NOTE (W2/§1.2): `(* 4 (as i64 (+ lb 1)))` mis-types — a literal-LEFT binop
-    ; is typed i32 by node-type while emit widens to i64, so the i64 binding gets
-    ; a bogus `sext i32 <i64 value>`. Widen the whole product instead.
+    ; NOTE (W2a/§1.2): `(* 4 (as i64 (+ lb 1)))` used to mis-type — a literal-LEFT
+    ; binop was typed i32 by node-type while emit widened to i64, so the i64
+    ; binding got a bogus `sext i32 <i64 value>`. Fixed (binop-result-type is now
+    ; the one shared rule), so either spelling is correct today; this one is kept
+    ; because the committed boot compiler predates the fix and still mis-emits
+    ; the literal-left form, which would break `make`.
     (let (row-bytes:i64 (as i64 (* 4 (+ lb 1)))
           prev:ptr:i32 (as ptr:i32 (malloc row-bytes))
           cur:ptr:i32 (as ptr:i32 (malloc row-bytes)))
@@ -1767,7 +1835,19 @@
           (when (!= (sym moved) 0)
             (die-at (node-line n line) (fmt-s "use after move: '%s'" (nn s))))
           (when (!= (sym is-const) 0)
-            (return (alloc-val (sym type) (sym const-val))))
+            (let (cv:ref:Val (alloc-val (sym type) (sym const-val)))
+              ; Stage 15 W2b: a `defconst`/`defenum` name stands for the integer
+              ; literal it was defined with, so its Val carries the same
+              ; `is-lit`/`lit-i64` provenance emit-int gives an inline literal.
+              ; Two consequences, both wanted: the operand adapts at a binop
+              ; (via binop-result-type's scope-aware literal test), and
+              ; coerce-int-val's LW-4 range check rejects a narrowing the value
+              ; does not survive rather than wrapping it silently. `deferror`
+              ; constants leave const-lit at 0 — an `Err` is not an int literal.
+              (when (!= (sym const-lit) 0)
+                (.set! cv is-lit 1)
+                (.set! cv lit-i64 (sym const-lit-i64)))
+              (return cv)))
           (when (= (sym is-local) 0)
             (when (-> sym (_ type) (unsafe/cast ptr:Type _) (_ kind) (= _ TY-FN))
               ; AVR-6 Harvard hazard: on a target whose program memory is a
@@ -1839,6 +1919,70 @@
         (when (and (!= e null) (= (e kind) NODE-INT)) (return 1))))
     (return 0)))
 
+; Stage 15 W2a: the float counterpart of node-is-int-literal. A bare float
+; literal has no width of its own (the reader types it f64), so in a binary
+; operation against an f32 operand it adapts to that operand's width instead of
+; forcing the whole expression to double — the same courtesy an int literal has
+; had since Stage 9 §10.1. Unlike an int literal it adapts only to a *float*
+; type: a float literal against an int operand stays the "mixed float and
+; non-float operands" error it is today.
+(defn node-is-float-literal (n:(raw Node)):i32
+  (when (= n null) (return 0))
+  (let (nn:(raw Node) n)
+    (when (= (nn kind) NODE-FLOAT) (return 1))
+    (when (= (nn kind) NODE-CELL)
+      (let (e:(raw Node) (macroexpand-form n -1))
+        (when (and (!= e null) (= (e kind) NODE-FLOAT)) (return 1))))
+    (return 0)))
+
+; Stage 15 W2b (design/stage15-stress-test/literal-typing.md §3.1): true if `n`
+; is a bare symbol naming a `defconst`/`defenum` member — i.e. a *name for* an
+; integer literal, which must adapt at a use site exactly as the literal it
+; stands for. `(defconst K 512)` + `(<= ans:ui32 K)` was rejected as
+; mixed-signed while the identical program spelled `(<= ans:ui32 512)`
+; compiled; naming a constant must not change how it types.
+;
+; Scope is required and cannot be shortcut to `g-globals`: a `defconst` always
+; lives in the global scope, but a local binding of the same name shadows it
+; (`(let (K:i32 3) …)`), and a shadowed local is emphatically not a literal.
+; `scope` is nullable — a caller that has no scope (none today) simply gets 0,
+; the conservative answer.
+(defn node-is-const-int-literal (n:(raw Node) scope:(raw Scope)):i32
+  (when (= n null) (return 0))
+  (when (= scope null) (return 0))
+  (let (nn:(raw Node) n)
+    ; Like node-is-int-literal, see through the variadic operator macros'
+    ; single-arg wrappers. This is not an optimization — it is required: `(* v
+    ; K)` expands to `(_* v (* K))`, so the binop's SECOND operand node is the
+    ; cell `(* K)`, never the bare symbol. Without this the fix worked in
+    ; operand-1 position and silently did not in operand-2 position, exactly
+    ; the order-dependence W2a existed to remove.
+    (when (= (nn kind) NODE-CELL)
+      (let (e:(raw Node) (macroexpand-form n -1))
+        (when (or (= e null) (= (e kind) NODE-CELL)) (return 0))
+        (set! nn e)))
+    (when (!= (nn kind) NODE-SYM) (return 0))
+    ; Strip a trailing :type annotation the same way emit-symbol-ref does, so
+    ; the two passes resolve the identical Sym.
+    (let (lookup-name:ptr null
+          ignored-type:ptr null)
+      (split-typed (nn s) (as ptr:ptr (addr-of lookup-name))
+                          (as ptr:ptr (addr-of ignored-type)))
+      (if-some (sym (scope-lookup scope lookup-name))
+        (return (sym const-lit))
+        (return 0)))))
+
+; Stage 15 W2b: THE test for "this binop operand is an untyped integer literal
+; and may adopt the other operand's type" — a bare literal (W2a) or a name bound
+; to one (W2b). Used only by `binop-result-type`, so emit and node-type ask the
+; same question of the same operand. NOT wired into the multimethod-dispatch
+; `is-lit` flags in src/generics.nuc (arg-adapts): those decide *overload
+; selection*, and widening the literal set there would silently re-route
+; existing dispatch. Extending them is a separate, deliberate change.
+(defn operand-is-int-literal (n:(raw Node) scope:(raw Scope)):i32
+  (when (!= (node-is-int-literal n) 0) (return 1))
+  (return (node-is-const-int-literal n scope)))
+
 (defn float-width (t:(raw Type)):i32
   (let (k:i32 (t kind))
     (when (= k TY-F32) (return 32))
@@ -1861,13 +2005,13 @@
         (fprintf g-body-stream "  %s = %s %s %s to %s\n"
           tmp instr (type-to-ir src) (vv val) (type-to-ir target))
         (return (alloc-val target tmp))))
+    ; Stage 15 W2d: float→float lives in coerce-int-val (the shared coercion
+    ; chokepoint) so the binop path and every typed-slot path fold a float
+    ; literal by the same rule; this was a second copy of the fpext/fptrunc
+    ; emission until W2d, and the binop side is exactly where an unfolded
+    ; `fptrunc double 2.0 to float` would have shown up in `(* alpha:f32 2.0)`.
     (when (and (!= (is-float-type src) 0) (!= (is-float-type target) 0))
-      (let (tmp:ptr (new-tmp)
-            instr:ptr "fpext")
-        (when (< (float-width target) (float-width src)) (set! instr "fptrunc"))
-        (fprintf g-body-stream "  %s = %s %s %s to %s\n"
-          tmp instr (type-to-ir src) (vv val) (type-to-ir target))
-        (return (alloc-val target tmp))))
+      (return (coerce-int-val v target line)))
     (return null)))
 
 ; ============================================================
@@ -1910,10 +2054,16 @@
     (when (= sk dk) (return v))
     (when (and (!= (is-int-type src) 0) (!= (is-int-type target) 0))
       (return (coerce-int-val v target line)))
-    (when (and (= sk TY-F32) (= dk TY-F64))
-      (let (tmp:ptr (new-tmp))
-        (fprintf g-body-stream "  %s = fpext float %s to double\n" tmp (vv val))
-        (return (alloc-val target tmp))))
+    ; Stage 15 W2d: any float→float pair, not just the widening f32→f64 this
+    ; used to spell inline. The narrowing direction was the silent
+    ; **miscompile**: a null return here does not raise, it leaves the argument
+    ; untouched (see the comment at the emit-call-with-args coercion loop), so
+    ; `(take 2.5)` against `(defn take (x:f32) …)` emitted
+    ; `call float @take(double 2.5)` and printed 0.000000. The widening branch
+    ; produces byte-identical IR through coerce-int-val (same `fpext float …
+    ; to double` text), so existing f32→f64 argument passing is unchanged.
+    (when (and (!= (is-float-type src) 0) (!= (is-float-type target) 0))
+      (return (coerce-int-val v target line)))
     (let (rule:(raw CastRule) (lookup-cast-rule src target))
       (when (!= rule null)
         (let (cr:(raw CastRule) rule
@@ -1971,46 +2121,90 @@
                 (fn-node s) (type-to-ir to))))
           (register-cast-rule from to (ss ir-name)))))))
 
+; ------------------------------------------------------------
+; Stage 15 W2a (design/stage15-stress-test/literal-typing.md): THE single type
+; rule for a binary operator's operands. Both halves of the node-type↔emit-node
+; lockstep (conventions.md) call it: `binop-coerce` below for the value-level
+; adaptation it emits, and `node-type-call` (src/generics.nuc, intrinsic-binop
+; branch) for the type a binop contributes to its parent. Before W2a the type
+; pass returned *operand 1's type alone* while emit unified both, so
+; `(* 4096 (as i64 X))` emitted i64 but typed i32 (a bogus `sext i32 <i64>` from
+; the argument coercer) and `(> t:ui32 (* 2 cl:ui32))` was rejected as
+; mixed-sign. Do not re-derive this rule at a call site — a second copy is how it
+; drifted the first time.
+;
+; Returns the type both operands unify to, or null when they cannot be
+; reconciled *here* (the caller's own checks then report it — node-type is
+; allowed to not know and must never die; emit-binop-vals raises the
+; mixed-sign / operand-mismatch diagnostics). Literalness is probed only after
+; the types are known to differ, so the same-type hot path costs nothing.
+(defn binop-result-type (at:(raw Type) bt:(raw Type) a-node:(raw Node) b-node:(raw Node)
+                         scope:(raw Scope)):?ptr:Type
+  (when (= at null) (return null))
+  (when (= bt null) (return null))
+  (when (!= (type-eq at bt) 0) (return at))
+  (let (a-num:i32 (or (!= (is-int-type at) 0) (!= (is-float-type at) 0))
+        b-num:i32 (or (!= (is-int-type bt) 0) (!= (is-float-type bt) 0)))
+    (when (or (= a-num 0) (= b-num 0)) (return null)))
+  ; Stage 15 W2b: `scope` is what makes a *named* literal (`defconst`/`defenum`)
+  ; count as one — see operand-is-int-literal. Both callers supply the scope the
+  ; operands were resolved in, so emit and node-type classify identically.
+  (let (a-lit:i32 (operand-is-int-literal a-node scope)
+        b-lit:i32 (operand-is-int-literal b-node scope))
+    ; An untyped int literal adopts the other operand's numeric type (Stage 9
+    ; §10.1) — including a float type, via coerce-num-val's sitofp/uitofp. Two
+    ; int literals fall through to the widening path below, where emit-int's
+    ; LW-4 widths (i32, or i64 when the value does not fit) settle it.
+    (when (and (!= a-lit 0) (= b-lit 0)) (return bt))
+    (when (and (!= b-lit 0) (= a-lit 0)) (return at))
+    ; W2a: the same courtesy for a float literal, but only against a *float*
+    ; operand — `(* alpha:f32 2.0)` is f32, while `(* n:i32 2.0)` stays the
+    ; "mixed float and non-float operands" error. Probed after the int-literal
+    ; branches so `(+ 1.0 2)` keeps typing f64 (the int literal adapts to the
+    ; float literal's f64, as today), and only when a float operand is in play.
+    (when (and (= a-lit 0) (= b-lit 0)
+               (or (!= (is-float-type at) 0) (!= (is-float-type bt) 0)))
+      (let (a-flit:i32 (node-is-float-literal a-node)
+            b-flit:i32 (node-is-float-literal b-node))
+        (when (and (!= a-flit 0) (= b-flit 0) (!= (is-float-type bt) 0)) (return bt))
+        (when (and (!= b-flit 0) (= a-flit 0) (!= (is-float-type at) 0)) (return at))))
+    ; Both typed: int+float (non-literal) needs an explicit cast.
+    (when (and (!= (is-float-type at) 0) (!= (is-int-type bt) 0)) (return null))
+    (when (and (!= (is-int-type at) 0) (!= (is-float-type bt) 0)) (return null))
+    ; Char is a distinct scalar (Stage 11 M6 S0): a typed Char must not silently
+    ; unify with a same-width non-Char int (e.g. ui32). Bail so the kind-mismatch
+    ; check in emit-binop-vals reports it; the programmer casts explicitly. (An
+    ; untyped int *literal* still adapts to Char via the literal branches above —
+    ; only two typed, differently-kinded operands are rejected.)
+    (when (and (or (= (at kind) TY-CHAR)
+                   (= (bt kind) TY-CHAR))
+               (!= (at kind)
+                   (bt kind)))
+      (return null))
+    (when (!= (is-float-type at) 0)
+      (when (>= (float-width at) (float-width bt)) (return at))
+      (return bt))
+    ; Two typed ints of differing signedness are a real error — never
+    ; sign-reinterpret one into the other. Report null so emit-binop-vals'
+    ; "mixed signed/unsigned operands" diagnostic fires.
+    (when (!= (is-unsigned at) (is-unsigned bt)) (return null))
+    (when (>= (int-width at) (int-width bt)) (return at))
+    (return bt)))
+
 ; The widen / untyped-int-literal resolution tier for a binary operator
-; (Stage 9 §10.3). Untyped int literals (a-node/b-node denoting an int literal)
-; adopt the other operand's numeric type; otherwise the narrower int/float widens
-; to the wider. Returns a 2-element Val* array [a' b'] sharing a type, or null
-; when no adaptation applies (operands already match, or can't be reconciled
-; here — the caller's checks then fire). Literalness is probed only after the
-; types are known to differ, so the same-type hot path costs nothing.
-(defn binop-coerce (a:(raw Val) b:(raw Val) a-node:(raw Node) b-node:(raw Node) line:i32):ptr
+; (Stage 9 §10.3). The *type* decision is `binop-result-type` above (shared with
+; node-type); this is the value-level half — it emits the casts that put both
+; operands at that type. Returns a 2-element Val* array [a' b'] sharing a type,
+; or null when no adaptation applies (operands already match, or can't be
+; reconciled here — the caller's checks then fire).
+(defn binop-coerce (a:(raw Val) b:(raw Val) a-node:(raw Node) b-node:(raw Node)
+                    scope:(raw Scope) line:i32):ptr
   (let (at:(raw Type) (a type)
         bt:(raw Type) (b type))
+    ; Already the same type: nothing to emit. (binop-result-type would answer
+    ; `at`; short-circuiting keeps the hot path free of a redundant coerce pair.)
     (when (!= (type-eq at bt) 0) (return null))
-    (let (a-num:i32 (or (!= (is-int-type at) 0) (!= (is-float-type at) 0))
-          b-num:i32 (or (!= (is-int-type bt) 0) (!= (is-float-type bt) 0)))
-      (when (or (= a-num 0) (= b-num 0)) (return null)))
-    (let (a-lit:i32 (node-is-int-literal a-node)
-          b-lit:i32 (node-is-int-literal b-node))
-    (let (target:ptr null)
-      (cond (and (!= a-lit 0) (= b-lit 0)) (set! target bt)
-            (and (!= b-lit 0) (= a-lit 0)) (set! target at)
-            true
-              (do
-                ; Both typed: int+float (non-literal) needs an explicit cast.
-                (when (and (!= (is-float-type at) 0) (!= (is-int-type bt) 0)) (return null))
-                (when (and (!= (is-int-type at) 0) (!= (is-float-type bt) 0)) (return null))
-                ; Char is a distinct scalar (Stage 11 M6 S0): a typed Char must not
-                ; silently unify with a same-width non-Char int (e.g. ui32). Bail
-                ; so the kind-mismatch check in emit-binop-vals reports it; the
-                ; programmer casts explicitly. (An untyped int *literal* still
-                ; adapts to Char via the literal branches above — only two typed,
-                ; differently-kinded operands are rejected.)
-                (when (and (or (= (at kind) TY-CHAR)
-                               (= (bt kind) TY-CHAR))
-                           (!= (at kind)
-                               (bt kind)))
-                  (return null))
-                (if (!= (is-float-type at) 0)
-                  (if (>= (float-width at) (float-width bt)) (set! target at) (set! target bt))
-                  (do
-                    (when (!= (is-unsigned at) (is-unsigned bt)) (return null))
-                    (if (>= (int-width at) (int-width bt)) (set! target at) (set! target bt))))))
+    (let (target:?ptr:Type (binop-result-type at bt a-node b-node scope))
       (when (= target null) (return null))
       (let (na:ptr (coerce-num-val a target line)
             nb:ptr (coerce-num-val b target line))
@@ -2018,7 +2212,7 @@
         (let (pair:ptr (arena-alloc (* (as i64 2) (ptr-bytes))))
           (aset! (as ptr:ptr pair) 0 na)
           (aset! (as ptr:ptr pair) 1 nb)
-          (return pair)))))))
+          (return pair))))))
 
 ; Stage 14 NS-2 (design/stage14/native-strings.md): the `ptr` (char*) operand
 ; for a content comparison of a Val that may be a StrView. A StrView yields its
@@ -2047,7 +2241,8 @@
 ; untyped int literals for the widen/adapt tier when the operand types differ. For
 ; operands that already share a type, the IR is byte-identical to the pre-Stage-9
 ; emit-binop (binop-coerce returns null and nothing is inserted).
-(defn emit-binop-vals (a:(raw Val) b:(raw Val) a-node:(raw Node) b-node:(raw Node) op:(raw BinOp) line:i32):ref:Val
+(defn emit-binop-vals (a:(raw Val) b:(raw Val) a-node:(raw Node) b-node:(raw Node) op:(raw BinOp)
+                       scope:(raw Scope) line:i32):ref:Val
   (let (bop:(raw BinOp) op
         av:(raw Val) a
         bv:(raw Val) b)
@@ -2098,7 +2293,7 @@
             tmp (bop instr) (av val) (bv val))
           (return (alloc-val ty-i1 tmp)))))
     ; Widen / adapt mixed numeric operands (untyped int literals + int/float widening).
-    (let (adapted:ptr (binop-coerce a b a-node b-node line))
+    (let (adapted:ptr (binop-coerce a b a-node b-node scope line))
       (when (!= adapted null)
         (set! av (as ptr:Val (aref (as ptr:ptr adapted) 0)))
         (set! bv (as ptr:Val (aref (as ptr:ptr adapted) 1)))))
@@ -2166,7 +2361,7 @@
       (die-at (cc line) (fmt-s "%s expects 2 args" (bop name))))
     (let (a:ref:Val (emit-node (node-at cc 1) scope)
           b:ref:Val (emit-node (node-at cc 2) scope))
-      (return (emit-binop-vals a b (node-at cc 1) (node-at cc 2) op (cc line))))))
+      (return (emit-binop-vals a b (node-at cc 1) (node-at cc 2) op scope (cc line))))))
 
 ; ============================================================
 ; Cast
@@ -7322,7 +7517,7 @@
         (die-at (nn line) (fmt-s "%s expects 2 args" ((unsafe/cast ptr:BinOp binop) name))))
       (return (emit-binop-vals (unsafe/ptr+ (as ptr:Val args) 0) (unsafe/ptr+ (as ptr:Val args) 1)
                                (aref (as ptr:ptr arg-nodes) 0) (aref (as ptr:ptr arg-nodes) 1)
-                               binop (nn line))))))
+                               binop scope (nn line))))))
 
 ; Unified dispatch tail for emit-list: the head symbol `h` is neither a macro
 ; nor a special form. Resolve it through the generic registry — a pure operator
@@ -7622,13 +7817,32 @@
       (when (= (is-int-type ty) 0)
         (die-at (node-line init encl)
           (fmt-s "defvar: integer literal incompatible with type %s" (type-to-ir ty))))
+      ; Stage 15 W2b: this is a *second* literal-narrowing site, outside
+      ; coerce-int-val's chokepoint — a global initializer is a decimal string
+      ; handed straight to LLVM, which truncates `i32 5000000000` to 705032704
+      ; without complaint. Apply LW-4's range rule here too, so a global and a
+      ; local reject the same out-of-range literal. (Pre-existing for inline
+      ; literals, not introduced by W2b; found while fixing the named case.)
+      (when (= (int-literal-fits (nn i) ty) 0)
+        (die-at (node-line init encl)
+          (fmt-2s "defvar: integer literal %s does not fit %s"
+            (fmt-i64 "%ld" (nn i)) (type-spelling ty))))
       (return (fmt-i64 "%ld" (nn i))))
-    ; Float literal: f32 or f64. LLVM accepts the same decimal/hex form for both.
+    ; Float literal: f32 or f64.
+    ; Stage 15 W2d: the old comment here claimed "LLVM accepts the same
+    ; decimal/hex form for both" — measured FALSE. LLVM accepts a decimal
+    ; constant for `float` only when it round-trips exactly, so
+    ; `(defvar gf:f32 1.5)` happened to work while `(defvar gf:f32 3.14)`
+    ; emitted `@gf = global float 3.14` and died at IR-parse time with
+    ; "floating point constant invalid for type". A global initializer is a
+    ; constant, so unlike every other position it cannot be fixed with an
+    ; `fptrunc` instruction — it needs the literal rendered at the target width,
+    ; which is exactly what `float-literal-ir-at` is for.
     (when (= (nn kind) NODE-FLOAT)
       (when (= (is-float-type ty) 0)
         (die-at (node-line init encl)
           (fmt-s "defvar: float literal incompatible with type %s" (type-to-ir ty))))
-      (return (float-literal-ir (nn s))))
+      (return (float-literal-ir-at (nn s) ty)))
     ; String literal: ptr type. Intern into the string table and refer to it
     ; as @.str.N (decays to a byte pointer for printf consumers).
     (when (= (nn kind) NODE-STR)
@@ -7655,6 +7869,14 @@
           (when (= (is-int-type ty) 0)
             (die-at (node-line init encl)
               (fmt-s "defvar: constant '%s' incompatible with non-integer type" (nn s))))
+          ; Stage 15 W2b: a named literal narrows exactly as the literal it
+          ; names — `(defvar g:i32 BIG)` is the same silent LLVM truncation as
+          ; `(defvar g:i32 5000000000)` and gets the same rejection.
+          (when (and (!= (sym const-lit) 0)
+                     (= (int-literal-fits (sym const-lit-i64) ty) 0))
+            (die-at (node-line init encl)
+              (fmt-3s "defvar: constant '%s' (%s) does not fit %s"
+                (nn s) (fmt-i64 "%ld" (sym const-lit-i64)) (type-spelling ty))))
           (return (sym const-val))))
       (die-at (node-line init encl) (fmt-s "defvar: unsupported init symbol '%s'" (nn s))))
     ; (char "x") — char literal, one byte stored in an int field.
@@ -7785,9 +8007,22 @@
       (when (!= (val kind) NODE-INT)
         (die-at (val line) "defconst: value must be integer literal"))
       (guard-name-kind (name s) (cc line) NK-VALUE)
-      (let (sym:ref:Sym (scope-define g-globals (name s) ty-i32 null 0))
+      ; Stage 15 W2b: the constant's type is the literal's *truthful* width
+      ; (int-literal-type — emit-int's LW-4 rule, shared, not re-derived). This
+      ; was hardcoded `ty-i32` while `const-val` carried the full decimal string,
+      ; so `(defconst BIG 5000000000)` emitted the i32 constant `5000000000` and
+      ; `(let (x:i64 BIG) …)` printed 705032704 — the exact silent wrap LW-4 had
+      ; already fixed for inline literals. (The spec doc's premise that such
+      ; constants "are stored i64 today" was wrong; measured.)
+      (let (sym:ref:Sym (scope-define g-globals (name s)
+                          (as ptr (int-literal-type (val i))) null 0))
         (.set! sym is-const 1)
         (.set! sym const-val (fmt-i64 "%ld" (val i)))
+        ; W2b: the name stands for the literal — carry the VALUE, not just a
+        ; flag, so a reference adapts at a use site (binop-result-type) and an
+        ; out-of-range narrowing is caught (coerce-int-val) rather than wrapped.
+        (.set! sym const-lit 1)
+        (.set! sym const-lit-i64 (val i))
         ; Stage 12 N3: mark private when defined via `defconst-`.
         (when (!= g-defining-private 0) (.set! sym sym-private 1))))))
 
@@ -7916,6 +8151,15 @@
           (let (sym:ref:Sym (scope-define g-globals (name s) ty-i32 null 0))
             (.set! sym is-const 1)
             (.set! sym const-val (fmt-i32 "%d" (- i 2)))
+            ; Stage 15 W2b: an enum member is a named integer literal too — it
+            ; carries no distinct nominal type (its Sym type is plain i32, and
+            ; `match` exhaustiveness keys off the EnumDef, not the type), so
+            ; withholding literal provenance here would recreate the very wart
+            ; W2b removes one level over: `(= c:ui32 RED)` rejected while
+            ; `(= c:ui32 0)` compiles. The ordinal always fits i32, so no
+            ; int-literal-type call is needed (unlike defconst).
+            (.set! sym const-lit 1)
+            (.set! sym const-lit-i64 (as i64 (- i 2)))
             ; Stage 12 N3: mark private when defined via `defenum-`.
             (when (!= g-defining-private 0) (.set! sym sym-private 1))))
         (inc! i)))

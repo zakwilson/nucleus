@@ -904,6 +904,105 @@ run_stdlib_table() {
   printf '%s\n' "$out" | sed 's/^/    /'
 }
 
+# Stage 15 W2a: `(* 2 cl)` and `(* cl 2)` must be indistinguishable. The two
+# fixtures differ only in the operands of a `*` whose right-hand side is a ui32
+# global; before W2a the literal-first spelling typed the product i32 (operand
+# 1's type alone) and died "mixed signed/unsigned operands" while the
+# literal-second spelling compiled.
+#
+# "Identical IR" cannot mean byte-identical text: the emitter preserves source
+# operand order, so `mul i32 2, %t2` vs `mul i32 %t2, 2` is an unavoidable and
+# meaningless difference (and the module header carries the file path). Both are
+# normalized away below -- the module header, and the operand order *within*
+# genuinely commutative instructions only. Everything that carries typing
+# information -- the IR types, the opcodes (`mul` vs `mul nsw`, `udiv` vs
+# `sdiv`, `icmp ugt` vs `icmp sgt`), the instruction sequence, and the operand
+# order of NON-commutative instructions such as icmp -- is compared verbatim.
+run_w2a_order_identical() {
+  local d a b
+  d="$(mktemp -d)"
+  ./build/nucleusc --emit-llvm tests/fixtures/w2a-order-lit-first.nuc \
+    > "$d/first.ll" 2>"$d/first.err" || true
+  ./build/nucleusc --emit-llvm tests/fixtures/w2a-order-lit-second.nuc \
+    > "$d/second.ll" 2>"$d/second.err" || true
+  if [ -s "$d/first.err" ] || [ -s "$d/second.err" ]; then
+    echo "FAIL  w2a-operand-order-identical (compile error)"
+    sed 's/^/    /' "$d/first.err" "$d/second.err"
+    rm -rf "$d"
+    return 0
+  fi
+  for f in first second; do
+    grep -v -e '^; ModuleID' -e '^source_filename' "$d/$f.ll" \
+      | awk '
+          function ncommas(s,   i, c) {
+            c = 0
+            for (i = 1; i <= length(s); i++) if (substr(s, i, 1) == ",") c++
+            return c
+          }
+          {
+            line = $0
+            if (line ~ /^  %[A-Za-z0-9_.]+ = (add|mul|and|or|xor|fadd|fmul)[ ]/ \
+                && ncommas(line) == 1) {
+              ci = index(line, ", ")
+              head = substr(line, 1, ci - 1)
+              b = substr(line, ci + 2)
+              si = 0
+              for (i = length(head); i > 0; i--) {
+                if (substr(head, i, 1) == " ") { si = i; break }
+              }
+              a = substr(head, si + 1)
+              if (a > b) { t = a; a = b; b = t }
+              line = substr(head, 1, si) a ", " b
+            }
+            print line
+          }' > "$d/$f.norm"
+  done
+  if diff -u "$d/first.norm" "$d/second.norm" >/dev/null; then
+    echo "PASS  w2a-operand-order-identical"
+  else
+    echo "FAIL  w2a-operand-order-identical"
+    diff -u "$d/first.norm" "$d/second.norm" | sed 's/^/    /' || true
+  fi
+  rm -rf "$d"
+}
+
+# Stage 15 W2d accept criterion (design/stage15-stress-test/literal-typing.md):
+# a `float`-typed DSP kernel written with bare float literals — no
+# `(unsafe/cast f32 …)` anywhere — must produce output identical to the
+# equivalent C program, compared as exact 32-bit patterns and not just as
+# rounded decimals. The two sources are checked in side by side
+# (tests/fixtures/w2d-dsp-biquad.{nuc,c}) so the comparison is reproducible.
+#
+# The Nucleus side goes through the real compile-and-link path (`-o`), not
+# `--emit-llvm`: `--emit-llvm` never parses the IR it writes, so it cannot catch
+# an invalid float constant (`float 3.14`) or a type-mismatched call operand.
+# The C side is built with -ffp-contract=off; see the fixture's header.
+run_w2d_dsp_bitexact() {
+  local d
+  d="$(mktemp -d)"
+  if ! ./build/nucleusc tests/fixtures/w2d-dsp-biquad.nuc -o "$d/nuc" >"$d/nuc.log" 2>&1; then
+    echo "FAIL  w2d-dsp-bitexact (nucleus compile error)"
+    sed 's/^/    /' "$d/nuc.log"
+    rm -rf "$d"
+    return 0
+  fi
+  if ! clang -O2 -ffp-contract=off -o "$d/c" tests/fixtures/w2d-dsp-biquad.c >"$d/c.log" 2>&1; then
+    echo "FAIL  w2d-dsp-bitexact (C reference compile error)"
+    sed 's/^/    /' "$d/c.log"
+    rm -rf "$d"
+    return 0
+  fi
+  "$d/nuc" > "$d/nuc.out" 2>&1 || true
+  "$d/c"   > "$d/c.out"   2>&1 || true
+  if diff -u "$d/c.out" "$d/nuc.out" >/dev/null; then
+    echo "PASS  w2d-dsp-bitexact"
+  else
+    echo "FAIL  w2d-dsp-bitexact (float kernel does not match C bit-for-bit)"
+    diff -u "$d/c.out" "$d/nuc.out" | sed 's/^/    /' || true
+  fi
+  rm -rf "$d"
+}
+
 # --- Dispatch sequence (original top-to-bottom order) ---------------------------
 
 for src in examples/*.nuc; do
@@ -1112,6 +1211,78 @@ spawn run_reject at3-postfix-volatile-rejected tests/fixtures/at3-postfix-volati
   "postfix 'volatile' is retired: use the ':volatile' attribute"
 spawn run_reject at3-colon-volatile-rejected tests/fixtures/at3-colon-volatile.nuc \
   "postfix 'volatile' is retired: use the ':volatile' attribute"
+
+# --- Stage 15 W2a: binop literal typing -------------------------------------
+# design/stage15-stress-test/literal-typing.md §W2a. A binop's statically
+# inferred type now equals the type it emits, because both halves call one
+# shared rule (`binop-result-type`, src/nucleusc.nuc). The positive matrix
+# ({literal-first, literal-second, both-typed, both-literal} x {i32, i64, ui32,
+# ui64} x {arith, comparison}, plus the f32 float-literal case and the two
+# original repros) is examples/binop-literal-typing.nuc, run by the
+# examples/*.nuc loop above against tests/expected/binop-literal-typing.out --
+# result types are observed via multimethod dispatch, so a wrong unification
+# prints a wrong type name instead of hiding in the IR.
+#
+# Here: the operand-order equivalence, and the negative half. Unifying operand
+# types must NOT silently sign-reinterpret two TYPED operands of different
+# signedness -- only an untyped literal adapts -- so the mixed-sign diagnostic
+# has to survive the fix, in both the arithmetic and comparison forms.
+spawn run_w2a_order_identical
+spawn run_reject_at w2a-mixed-sign tests/fixtures/w2a-mixed-sign.nuc \
+  "tests/fixtures/w2a-mixed-sign.nuc:10: error:" \
+  "mixed signed/unsigned operands — use explicit cast"
+spawn run_reject_at w2a-mixed-sign-cmp tests/fixtures/w2a-mixed-sign-cmp.nuc \
+  "tests/fixtures/w2a-mixed-sign-cmp.nuc:11: error:" \
+  ">: mixed signed/unsigned operands — use explicit cast"
+
+# --- Stage 15 W2b: a named integer constant behaves like the literal ---------
+# design/stage15-stress-test/literal-typing.md section W2b. The positive matrix
+# (a defconst against {i32, i64, ui32, ui64} in both operand orders, each line
+# paired with the identical inline-literal spelling; the enum-member case; the
+# BIG-value case; the vararg path) is examples/defconst-literal-typing.nuc, run
+# by the examples/*.nuc loop above. The committed boot compiler FAILS to compile
+# that file, which is the teeth.
+#
+# Here: the negative half. Two properties must survive the fix -- the provenance
+# is read through the SCOPE (so a shadowing local is not a literal), and it
+# carries the VALUE (so an out-of-range narrowing is rejected rather than
+# wrapped, at both the coerce-int-val chokepoint and the global-initializer
+# path, and for a named constant exactly as for the literal it names).
+spawn run_reject_at w2b-shadow-local tests/fixtures/w2b-shadow-local.nuc \
+  "tests/fixtures/w2b-shadow-local.nuc:12: error:" \
+  "<: mixed signed/unsigned operands — use explicit cast"
+spawn run_reject_at w2b-const-narrow tests/fixtures/w2b-const-narrow.nuc \
+  "tests/fixtures/w2b-const-narrow.nuc:10: error:" \
+  "integer literal 5000000000 does not fit i32"
+spawn run_reject_at w2b-defvar-const-narrow tests/fixtures/w2b-defvar-const-narrow.nuc \
+  "tests/fixtures/w2b-defvar-const-narrow.nuc:7: error:" \
+  "defvar: constant 'BIG' (5000000000) does not fit i32"
+spawn run_reject_at w2b-defvar-lit-narrow tests/fixtures/w2b-defvar-lit-narrow.nuc \
+  "tests/fixtures/w2b-defvar-lit-narrow.nuc:5: error:" \
+  "defvar: integer literal 5000000000 does not fit i32"
+
+# --- Stage 15 W2d: float literals adapt to an f32 target ---------------------
+# design/stage15-stress-test/literal-typing.md section W2d. The positive matrix
+# (every position that used to reject an f32 target -- let/with init, set!,
+# .set!, explicit and implicit return, struct-literal and array initializers,
+# call arguments, the defvar global initializer -- checked by VALUE, plus the
+# f64 lanes that must stay f64) is examples/float-literal-typing.nuc, run by the
+# examples/*.nuc loop above. The bit-exactness accept criterion is
+# run_w2d_dsp_bitexact.
+#
+# Here: the three boundaries the fix must NOT cross. A float literal adapts to a
+# float target only (not an integer slot, not an integer binop operand), and
+# multimethod dispatch admits a float literal but never a typed f64 value.
+spawn run_w2d_dsp_bitexact
+spawn run_reject_at w2d-float-into-int tests/fixtures/w2d-float-into-int.nuc \
+  "tests/fixtures/w2d-float-into-int.nuc:9: error:" \
+  "let: init type mismatch for 'a'"
+spawn run_reject_at w2d-mixed-float-int-binop tests/fixtures/w2d-mixed-float-int-binop.nuc \
+  "tests/fixtures/w2d-mixed-float-int-binop.nuc:9: error:" \
+  "mixed float and non-float operands — use explicit cast"
+spawn run_reject_at w2d-dispatch-no-narrow tests/fixtures/w2d-dispatch-no-narrow.nuc \
+  "tests/fixtures/w2d-dispatch-no-narrow.nuc:15: error:" \
+  "no matching method for overloaded 'tk' with argument types (f64)"
 
 # --- Stage 15 W4a: located diagnostics --------------------------------------
 # design/stage15-stress-test/diagnostics.md §W4a. Every entry below reported
