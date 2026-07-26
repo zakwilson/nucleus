@@ -1,0 +1,11 @@
+; Stage 15 W2d negative: a float literal adapts only to a FLOAT target.
+; Making `(let (a:f32 0.0) …)` work must not also make a float literal fall
+; into an integer slot — that stays an explicit-cast decision, exactly as it
+; was before W2d, because the value is not representable rather than merely
+; narrower.
+(import-use "stdio.h")
+
+(defn main ():i32
+  (let (a:i32 1.5)
+    (printf "%d\n" a))
+  (return 0))

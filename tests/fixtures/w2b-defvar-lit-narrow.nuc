@@ -1,0 +1,8 @@
+; Stage 15 W2b: the same global-initializer check for an INLINE literal. This
+; case predates W2b (LW-4 covered locals and call arguments but never global
+; initializers), and was found only while fixing the named-constant one; it is
+; recorded here so the two spellings stay pinned together.
+(defvar g:i32 5000000000)
+
+(defn main ():i32
+  (return g))

@@ -1,0 +1,103 @@
+; Stage 15 W2a — a binary operator's statically inferred type equals the type it
+; actually emits (design/stage15-stress-test/literal-typing.md).
+;
+; Before W2a, `node-type` of a binop returned *operand 1's type alone* while emit
+; unified both operands, so the two disagreed and every downstream consumer
+; trusted the wrong one:
+;
+;   - `(malloc (* 4096 (as i64 (sizeof i32))))` emitted an i64 product but typed
+;     it i32, so the argument coercer inserted `sext i32 <an i64 value>` and the
+;     module failed to parse.
+;   - `(> t:ui32 (* 2 cl:ui32))` was rejected as mixed-signed/unsigned because
+;     the inner product typed as the literal's i32 — while `(* cl 2)` compiled.
+;   - `(* alpha:f32 2.0)` widened to double and then stored into a float slot.
+;
+; Both halves now call one shared rule, `binop-result-type` (src/nucleusc.nuc),
+; so they cannot drift again. The `tkind` overload set below is the type
+; observation: multimethod dispatch picks the overload matching the operand
+; type the expression actually carries, so a wrong result type prints a wrong
+; name (or fails to compile) rather than hiding in the IR.
+
+(import-use "stdio.h")
+(import-use "stdlib.h")
+
+(defn tkind (v:i32):CStr  (return "i32"))
+(defn tkind (v:i64):CStr  (return "i64"))
+(defn tkind (v:ui32):CStr (return "ui32"))
+(defn tkind (v:ui64):CStr (return "ui64"))
+(defn tkind (v:f32):CStr  (return "f32"))
+(defn tkind (v:f64):CStr  (return "f64"))
+
+(defvar s32:i32  7)
+(defvar s64:i64  7)
+(defvar u32:ui32 7)
+(defvar u64:ui64 7)
+
+; The signedness probe: 4000000000 has the i32 sign bit set, so a ui32 value
+; that leaks back to a *signed* comparison reads as -294967296 and every
+; ordering below flips.
+(defvar ubig:ui32 4000000000)
+
+(defn main ():i32
+  ; ---- the matrix: {lit-first, lit-second, both-typed, both-lit} x
+  ;                  {i32, i64, ui32, ui64}, arithmetic ------------------------
+  (printf "lit-first   %s %s %s %s\n"
+    (tkind (* 2 s32)) (tkind (* 2 s64)) (tkind (* 2 u32)) (tkind (* 2 u64)))
+  (printf "lit-second  %s %s %s %s\n"
+    (tkind (* s32 2)) (tkind (* s64 2)) (tkind (* u32 2)) (tkind (* u64 2)))
+  (printf "both-typed  %s %s %s %s\n"
+    (tkind (* s32 s32)) (tkind (* s64 s64)) (tkind (* u32 u32)) (tkind (* u64 u64)))
+  ; Two typed operands of the same signedness widen to the wider one, in either
+  ; order — the operand-order symmetry that literal-first used to break.
+  (printf "widen       %s %s %s %s\n"
+    (tkind (* s32 s64)) (tkind (* s64 s32)) (tkind (* u32 u64)) (tkind (* u64 u32)))
+  ; Both untyped: emit-int's LW-4 widths settle it (i32, or i64 when the value
+  ; does not fit), in either operand order.
+  (printf "both-lit    %s %s %s\n"
+    (tkind (* 2 3)) (tkind (* 5000000000 2)) (tkind (* 2 5000000000)))
+
+  ; ---- the same matrix, comparisons: always i1, but the *operand* unification
+  ;      decides signed vs unsigned lowering -------------------------------
+  (printf "cmp-lit-first  %d %d %d %d\n"
+    (if (< 5 s32) 1 0) (if (< 5 s64) 1 0) (if (< 5 u32) 1 0) (if (< 5 u64) 1 0))
+  (printf "cmp-lit-second %d %d %d %d\n"
+    (if (> s32 5) 1 0) (if (> s64 5) 1 0) (if (> u32 5) 1 0) (if (> u64 5) 1 0))
+  (printf "cmp-both-typed %d %d %d %d\n"
+    (if (> s32 s32) 1 0) (if (> s64 s64) 1 0) (if (> u32 u32) 1 0) (if (> u64 u64) 1 0))
+  (printf "cmp-both-lit   %d %d\n" (if (> 3 2) 1 0) (if (> 5000000000 2) 1 0))
+
+  ; ---- §1.3 repro: the nested product, both operand orders ------------------
+  ; `(* 2 ubig)` used to type i32 and die "mixed signed/unsigned operands"; the
+  ; two spellings must now agree on both the result type and the value.
+  (printf "order  %s %s\n" (tkind (* 2 ubig)) (tkind (* ubig 2)))
+  (let (t:ui32 9)
+    (printf "order-cmp  %d %d\n"
+      (if (> t (* 2 ubig)) 1 0)
+      (if (> t (* ubig 2)) 1 0)))
+  ; Unsigned ordering survives the unification: signed lowering would read
+  ; ubig as -294967296 and print 0 / 1 instead.
+  (printf "unsigned   %d %d\n" (if (> ubig 5) 1 0) (if (< 5 ubig) 1 0))
+  (printf "unsigned-div %u\n" (/ ubig 2))
+
+  ; ---- §1.2 repro: a literal-first product feeding a typed i64 parameter ----
+  ; The product is i64; nothing may insert `sext i32 <i64 value>` on top of it.
+  (let (p:ptr (malloc (* 4096 (as i64 (sizeof i32)))))
+    (printf "malloc %d\n" (if (!= p null) 1 0))
+    (free p))
+
+  ; ---- §3.6 repro: a float literal adapts to an f32 operand ----------------
+  ; `(* alpha 2.0)` is f32, not double: the literal takes the operand's width
+  ; instead of forcing the whole expression up to double.
+  (let (alpha:f32 (unsafe/cast f32 0.5))
+    (let (b:f32 (* alpha 2.0))
+      (printf "f32 %s %s %.2f\n" (tkind b) (tkind (* 2.0 alpha)) (as f64 b))))
+  ; An f64 operand still wins against an f32 operand (both typed, no literal),
+  ; and a float literal against a plain f64 stays f64.
+  (let (d:f64 2.5
+        e:f32 (unsafe/cast f32 1.5))
+    (printf "f64 %s %s\n" (tkind (* d e)) (tkind (* d 2.0))))
+  ; An int literal against a float operand still converts to the float type.
+  (let (g:f32 (unsafe/cast f32 3.0))
+    (printf "int-lit-to-float %s %s\n" (tkind (* g 2)) (tkind (* 2 g))))
+
+  (return 0))

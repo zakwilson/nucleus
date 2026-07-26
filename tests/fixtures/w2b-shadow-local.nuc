@@ -1,0 +1,13 @@
+; Stage 15 W2b: literal provenance is read through the *scope*, not from the
+; global symbol table. A `defconst` always lives in the globals, but a local
+; binding of the same name shadows it — and a shadowed local is an ordinary
+; typed value, not a literal. Short-cutting the lookup to `g-globals` (which
+; would have avoided threading a scope into `binop-result-type`) would make this
+; program compile and silently reinterpret `K`'s sign.
+(defconst K 512)
+(defvar uv:ui32 7)
+
+(defn main ():i32
+  (let (K:i32 3)
+    (when (< K uv) (return 1)))
+  (return 0))

@@ -1,0 +1,15 @@
+; Stage 15 W2a operand-order symmetry, spelling A: the literal FIRST.
+; Paired with w2a-order-lit-second.nuc, which differs only in the operands of
+; the `*`. tests/run-tests.sh `run_w2a_order_identical` emits both and requires
+; the IR to match once the module header and the operand order *within* the
+; commutative `mul` are normalized away — i.e. same types, same opcodes, same
+; instruction sequence. Before W2a the literal-first spelling typed the product
+; i32 and died "mixed signed/unsigned operands" while this one compiled.
+(defvar cl:ui32 5)
+
+(defn main ():i32
+  (let (t:ui32 9
+        prod:ui32 (* 2 cl))
+    (when (> t prod) (return 1))
+    (when (> t (* 2 cl)) (return 2)))
+  (return 0))

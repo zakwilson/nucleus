@@ -1,0 +1,11 @@
+; Stage 15 W2a: unifying a binop's operand types must NOT silently
+; sign-reinterpret two *typed* operands of different signedness. Only an untyped
+; literal adapts; `x:i32` against `u:ui32` stays the explicit-cast error it has
+; always been (src/nucleusc.nuc binop-result-type returns null for this pair, so
+; emit-binop-vals' diagnostic still fires).
+(defvar sv:i32  7)
+(defvar uv:ui32 7)
+
+(defn main ():i32
+  (let (r:i32 (* sv uv))
+    (return r)))

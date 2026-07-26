@@ -1,0 +1,72 @@
+; Stage 15 W2d accept test (design/stage15-stress-test/literal-typing.md §W2d):
+; a `float`-typed DSP kernel written with bare float literals — no
+; `(unsafe/cast f32 …)` anywhere — whose output must match the equivalent C
+; program BIT FOR BIT. Its twin is tests/fixtures/w2d-dsp-biquad.c; the two are
+; compared by `run_w2d_dsp_bitexact` in tests/run-tests.sh.
+;
+; What it exercises, all in one kernel:
+;   - float literals adapting at a `let` binding init (every coefficient),
+;   - float literals adapting in binop position (the input generator),
+;   - a float literal adapting at a call argument and at a `return`,
+;   - f32 arithmetic itself being bit-exact with C `float`.
+;
+; Every arithmetic expression is fully parenthesised into BINARY operations on
+; purpose: Nucleus's variadic `+`/`*` macros expand right-associatively
+; (`(+ a b c)` → `a + (b + c)`) while C's `+` is left-associative, and for
+; floating point those are different numbers. Writing both sides as explicit
+; binary trees removes the associativity question from the comparison, so a
+; difference in output means a difference in *rounding*, which is what the test
+; is actually about.
+;
+; Results are printed as the exact 32-bit pattern as well as %.9g (nine
+; significant digits round-trip an IEEE single), so a one-ulp divergence cannot
+; hide behind a rounded decimal.
+
+(import-use "stdio.h")
+
+(defconst NSAMP 24)
+
+; The IEEE bit pattern of a float, via its own storage — Nucleus has no bitcast
+; operator. The C twin uses memcpy for the same reason.
+(defn f32-bits (x:f32):ui32
+  (let (v:f32 x
+        p:ptr:f32 (addr-of v))
+    (return (deref (unsafe/cast ptr:ui32 p)))))
+
+; A float literal at a `return` (the position that used to die "return type
+; mismatch — returned value of type f64 does not match declared return type f32").
+(defn dc-offset ():f32 (return 0.125))
+
+; A float literal at a call argument (the position that used to MISCOMPILE:
+; `call float @scale(double 0.75)`).
+(defn scale (x:f32 k:f32):f32 (return (* x k)))
+
+(defn main ():i32
+  ; Direct-form-I biquad coefficients. Bare literals into f32 slots.
+  (let (b0:f32 0.29289323
+        b1:f32 0.58578646
+        b2:f32 0.29289323
+        a1:f32 -0.0
+        a2:f32 0.17157288
+        x1:f32 0.0  x2:f32 0.0
+        y1:f32 0.0  y2:f32 0.0
+        ; The input generator's state, and a triangular-window accumulator.
+        u:f32 1.0
+        acc:f32 0.0)
+    (dotimes (n:i32 NSAMP)
+      ; Input generator: bare float literals in binop position against an f32.
+      ; `u` decays; an alternating kick keeps the spectrum interesting.
+      (set! u (+ (* u 0.6) (if (= (% n 2) 0) -0.125 0.25)))
+      (let (x:f32 (+ u (dc-offset))
+            y:f32 0.0)
+        (set! y (- (- (+ (+ (* b0 x) (* b1 x1)) (* b2 x2)) (* a1 y1)) (* a2 y2)))
+        (set! x2 x1) (set! x1 x)
+        (set! y2 y1) (set! y1 y)
+        ; Triangular window over the block, built from literals.
+        (let (half:f32 (/ (unsafe/cast f32 NSAMP) 2.0)
+              d:f32 (- (unsafe/cast f32 n) half)
+              wgt:f32 (- 1.0 (/ (if (< d 0.0) (- 0.0 d) d) half)))
+          (set! acc (+ acc (scale y wgt))))
+        (printf "%2d %08X %.9g\n" n (f32-bits y) (as f64 y))))
+    (printf "acc %08X %.9g\n" (f32-bits acc) (as f64 acc)))
+  (return 0))

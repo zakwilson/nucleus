@@ -1,0 +1,11 @@
+; Stage 15 W2b: the provenance carries the constant's VALUE, not just a flag —
+; so a named literal that does not fit the slot it flows into is rejected at
+; compile time by the same LW-4 check an inline literal hits (coerce-int-val,
+; src/abi.nuc), instead of being silently truncated. This is the half of the
+; §3.1 fix that keeps "a constant behaves like the literal" from meaning
+; "a constant wraps like an untagged i32".
+(defconst BIG 5000000000)
+
+(defn main ():i32
+  (let (x:i32 BIG)
+    (return x)))

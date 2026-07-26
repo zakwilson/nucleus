@@ -1,0 +1,12 @@
+; Stage 15 W2a: the comparison form of the same rule. A comparison's *result*
+; type is i1 regardless, but its operands still unify — and two typed operands
+; of different signedness have no unification, so the mixed-sign diagnostic must
+; survive W2a. (This is the case the `(> t:ui32 (* 2 cl:ui32))` fix must not
+; swallow: there the inner product genuinely IS ui32; here the operands genuinely
+; disagree.)
+(defvar sv:i32  7)
+(defvar uv:ui32 7)
+
+(defn main ():i32
+  (when (> sv uv) (return 1))
+  (return 0))

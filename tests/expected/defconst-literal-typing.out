@@ -1,0 +1,17 @@
+repro  1 1
+const-first   i32 i64 ui32 ui64
+lit-first     i32 i64 ui32 ui64
+const-second  i32 i64 ui32 ui64
+lit-second    i32 i64 ui32 ui64
+both-const    i32 i64 i64
+both-lit      i32 i64 i64
+cmp-const  0 0 0 0
+cmp-lit    0 0 0 0
+cmp-rev-const  0 0 0 0
+cmp-rev-lit    0 0 0 0
+unsigned   1 1
+big 5000000000 i64
+big-global 5000000000
+vararg 42 0 5000000000
+enum  1 1 i64
+shadow i64 6

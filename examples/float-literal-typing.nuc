@@ -1,0 +1,131 @@
+; Stage 15 W2d — a float literal adapts to an `f32` target in every position an
+; integer literal already adapts in (design/stage15-stress-test/literal-typing.md
+; §3.6), and a float value narrows through the same shared coercion chokepoint.
+;
+; Before W2d, `coerce-int-val` (src/abi.nuc) had NO float case at all. That one
+; hole produced two opposite symptoms:
+;
+;   - Every position that reads a null coercion as a type error REJECTED an f32
+;     target: `(let (a:f32 0.0) …)`, `set!`, `.set!`, explicit and implicit
+;     `return`, struct-literal and array initializers. Every float constant in
+;     f32 code had to be spelled `(unsafe/cast f32 1.0)`.
+;   - The ONE position that reads a null coercion as "leave the argument alone"
+;     — the call-argument loop in `emit-call-with-args` — silently MISCOMPILED:
+;     `(take 2.5)` against `(defn take (x:f32) …)` emitted
+;     `call float @take(double 2.5)` and printed 0.000000.
+;
+; Not one of the lines below needs a cast now, and every one of them is checked
+; by VALUE, not by "it compiled". The `tkind` overload set observes the static
+; type the same way examples/binop-literal-typing.nuc does: a wrong unification
+; prints a wrong type name instead of hiding in the IR.
+;
+; The values are printed with %.9g — nine significant digits round-trip an IEEE
+; single exactly, so `0.100000001` vs `0.1` is the visible difference between a
+; value that really went through `float` and one that stayed `double`.
+
+(import-use "stdio.h")
+
+(defn tkind (v:f32):CStr (return "f32"))
+(defn tkind (v:f64):CStr (return "f64"))
+(defn tkind (v:i32):CStr (return "i32"))
+
+; The literal 0.1 is not representable in either width, so it is the sharpest
+; probe available: as a double it prints 0.1, as a float 0.100000001.
+(defvar gf:f32 0.1)
+(defvar gd:f64 0.1)
+; The global-initializer path is a *constant*, not an instruction, so it cannot
+; be fixed with an fptrunc; it needs the literal re-rendered at the target width.
+; `(defvar gpi:f32 3.14)` used to emit `@gpi = global float 3.14` and die at
+; IR-parse time ("floating point constant invalid for type") — LLVM accepts a
+; decimal constant for `float` only when it round-trips exactly, which is why
+; `(defvar g:f32 1.5)` happened to work and made this look fixed.
+(defvar gpi:f32 3.14)
+(defvar ginf:f32 +inf.0)
+(defvar gninf:f32 -inf.0)
+; A denormal single. The compiler folds this with host floating point, so a
+; compiler process running with flush-to-zero enabled (the `-ffast-math` the
+; Makefile used to link it with) silently produced 0 here.
+(defvar gden:f32 1e-45)
+
+(defstruct P (x f32) (y f32) (w f64))
+
+(defn take (x:f32):f32 (return x))
+(defn giveback ():f32 (return 0.1))
+(defn giveback-implicit ():f32 0.1)
+
+; An OVERLOADED callee: dispatch must admit the literal too, or the same wart
+; reappears one level over — solitary `(take 0.1)` working while overloaded
+; `(over 0.1)` reports "no matching method … (f64)".
+(defn over (x:f32):CStr (return "f32-overload"))
+(defn over (x:i32):CStr (return "i32-overload"))
+
+(defn main ():i32
+  ; ---- binding inits: f32 adapts, f64 is untouched, bare infers f64 ----------
+  (let (a:f32 0.1
+        b:f64 0.1
+        c    0.1)
+    (printf "let         %s %.9g | %s %.17g | %s %.17g\n"
+      (tkind a) (as f64 a) (tkind b) b (tkind c) c))
+  (with (w:f32 0.1)
+    (printf "with        %s %.9g\n" (tkind w) (as f64 w)))
+
+  ; ---- set! -----------------------------------------------------------------
+  (let (s:f32 0.0)
+    (set! s 0.1)
+    (printf "set!        %s %.9g\n" (tkind s) (as f64 s)))
+
+  ; ---- explicit and implicit return -----------------------------------------
+  (printf "return      %s %.9g\n" (tkind (giveback)) (as f64 (giveback)))
+  (printf "return-impl %s %.9g\n"
+    (tkind (giveback-implicit)) (as f64 (giveback-implicit)))
+
+  ; ---- struct literal (positional + designated) and .set! field store --------
+  (let (p:ptr:P (P 0.1 0.2 0.1))
+    (printf "struct-pos  %s %.9g %.9g | %s %.17g\n"
+      (tkind (p x)) (as f64 (p x)) (as f64 (p y)) (tkind (p w)) (p w))
+    (.set! p x 0.3)
+    (printf "field-set   %.9g\n" (as f64 (p x))))
+  (let (q:ptr:P (P (y 0.1) (x 0.2)))
+    (printf "struct-desg %.9g %.9g\n" (as f64 (q x)) (as f64 (q y))))
+
+  ; ---- array literal (positional + designated) ------------------------------
+  (let (ar:ptr:f32 (array f32 0.1 0.2 (4 0.3)))
+    (printf "array       %.9g %.9g %.9g %.9g\n"
+      (as f64 (aref ar 0)) (as f64 (aref ar 1))
+      (as f64 (aref ar 2)) (as f64 (aref ar 4))))
+
+  ; ---- call arguments: the silent miscompile --------------------------------
+  ; A literal, and a genuine f64 *value* (which narrows, silently, exactly as an
+  ; i64 value narrows into an i32 slot — Option A of the W2d design note).
+  (let (d:f64 3.9)
+    (printf "arg-lit     %s %.9g\n" (tkind (take 0.1)) (as f64 (take 0.1)))
+    (printf "arg-value   %s %.9g\n" (tkind (take d)) (as f64 (take d))))
+
+  ; ---- overload dispatch ----------------------------------------------------
+  (printf "dispatch    %s %s\n" (over 0.1) (over 3))
+
+  ; ---- widening still works in both directions ------------------------------
+  (let (f:f32 0.1
+        g:f64 (as f64 f))
+    (printf "widen       %s %.17g\n" (tkind g) g))
+
+  ; ---- binops (W2a's half, kept as a regression) ----------------------------
+  (let (alpha:f32 0.5)
+    (printf "binop       %s %.9g | %s %.9g\n"
+      (tkind (* alpha 2.0)) (as f64 (* alpha 2.0))
+      (tkind (* 2.0 alpha)) (as f64 (* 2.0 alpha))))
+
+  ; ---- globals, including the constants that could not be spelled at all -----
+  (printf "global      %s %.9g | %s %.17g\n"
+    (tkind gf) (as f64 gf) (tkind gd) gd)
+  (printf "global-pi   %.9g\n" (as f64 gpi))
+  (printf "global-spec %.9g %.9g %.9g\n"
+    (as f64 ginf) (as f64 gninf) (as f64 gden))
+
+  ; ---- the special tokens in value position ---------------------------------
+  (let (pi:f32 +inf.0
+        ni:f32 -inf.0
+        dn:f32 1e-45)
+    (printf "local-spec  %.9g %.9g %.9g\n" (as f64 pi) (as f64 ni) (as f64 dn)))
+
+  (return 0))
