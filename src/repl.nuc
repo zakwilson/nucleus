@@ -793,14 +793,21 @@
   ; Add Node IR type to preamble
   (fprintf g-repl-preamble "%%Node = type { i32, i32, i64, ptr, ptr, ptr }\n\n")
   ; Register NODE-* constants
+  ; Stage 15 W2b: these mirror `defenum NODE-*` in lib/prelude.nuc, so they get
+  ; the same literal provenance emit-defenum sets — otherwise a REPL session
+  ; would type `(= k:ui32 NODE-SYM)` differently from a batch compile.
   (let (sym:ref:Sym (scope-define g-globals "NODE-INT" (as ptr ty-i32) null 0))
-    (.set! sym is-const 1) (.set! sym const-val "0"))
+    (.set! sym is-const 1) (.set! sym const-val "0")
+    (.set! sym const-lit 1) (.set! sym const-lit-i64 (as i64 0)))
   (let (sym:ref:Sym (scope-define g-globals "NODE-STR" (as ptr ty-i32) null 0))
-    (.set! sym is-const 1) (.set! sym const-val "1"))
+    (.set! sym is-const 1) (.set! sym const-val "1")
+    (.set! sym const-lit 1) (.set! sym const-lit-i64 (as i64 1)))
   (let (sym:ref:Sym (scope-define g-globals "NODE-SYM" (as ptr ty-i32) null 0))
-    (.set! sym is-const 1) (.set! sym const-val "2"))
+    (.set! sym is-const 1) (.set! sym const-val "2")
+    (.set! sym const-lit 1) (.set! sym const-lit-i64 (as i64 2)))
   (let (sym:ref:Sym (scope-define g-globals "NODE-CELL" (as ptr ty-i32) null 0))
-    (.set! sym is-const 1) (.set! sym const-val "3")))
+    (.set! sym is-const 1) (.set! sym const-val "3")
+    (.set! sym const-lit 1) (.set! sym const-lit-i64 (as i64 3))))
 
 ; Auto-import lib/macros.nuc so the standard macros (if, when, unless, for,
 ; dotimes, ->) are available at the REPL without an explicit (import-use macros).

@@ -2,11 +2,48 @@
 
 Back to [../progress.md](../progress.md). Stage overview: [overview.md](overview.md).
 
-Only **W4** has landed anything. **W1, W2, W3, W5, W6 are not started** — no
-code or docs exist for them yet beyond their spec docs
-([resolution.md](resolution.md), [literal-typing.md](literal-typing.md),
-[cheader.md](cheader.md), [ergonomics.md](ergonomics.md),
-[nullability.md](nullability.md)).
+**W4 and W2 are complete** (W2a/W2b/W2c/W2d all landed). **W1, W3, W5, W6 are
+not started** — no code or docs exist for the not-started items yet beyond their
+spec docs ([resolution.md](resolution.md),
+[literal-typing.md](literal-typing.md), [cheader.md](cheader.md),
+[ergonomics.md](ergonomics.md), [nullability.md](nullability.md)).
+
+## W2 — `node-type` ↔ `emit` literal-operand lockstep
+
+Spec: [literal-typing.md](literal-typing.md) (with a "W2a as built" addendum
+carrying the premise corrections and the full test/doc inventory).
+
+| Chunk | What landed | Status |
+|---|---|---|
+| **W2a** | `node-type` of a binary operator returned *operand 1's type alone* while emit unified both operands, so the static type and the emitted type disagreed and downstream consumers trusted the wrong one: `(malloc (* 4096 (as i64 (sizeof i32))))` emitted `i64` but typed `i32`, and the argument coercer stacked a bogus `sext i32 <i64 value>` on it; `(> t:ui32 (* 2 cl:ui32))` was rejected as mixed-sign while `(* cl 2)` compiled. The type rule now lives in exactly **one** function, `binop-result-type` (`src/nucleusc.nuc`, immediately above `binop-coerce`), called by `binop-coerce` for the type decision (it keeps only its value-level cast emission) and by `node-type-call` (`src/generics.nuc`) for the propagated type. A binop's result is now the *unified* operand type and is symmetric in operand order. Also fixed the float direction found alongside the two specced repros: an untyped **float** literal now adapts to an `f32` operand (`(* alpha:f32 2.0)` is `f32`, not `double`-then-mis-stored) via a new `node-is-float-literal`; it still adapts only to a *float* operand, never an integer one. Two typed operands of different signedness are **still** rejected — the unification never sign-reinterprets. 4 new checks (the type matrix as a run example, the operand-order IR equivalence, two mixed-sign rejections). | **Done** |
+| **W2b** | `defconst` provenance (§3.1) — a named constant now types like the literal it stands for, in both operand orders and on both sides of the lockstep. Carrier: two new `Sym` fields (`const-lit`, `const-lit-i64`) set by `emit-defconst`/`emit-defenum` (and the REPL's `NODE-*` mirror) but deliberately **not** by `deferror` (an `Err` is `is-int-type`-true and must not unify with plain integers); the *value* rides along, not just a flag, so `emit-symbol-ref` can tag the Val `is-lit`/`lit-i64` exactly as `emit-int` does. The single rule stays single: `binop-result-type` gained a `scope` parameter and calls one new predicate `operand-is-int-literal`; the scope is threaded (through `binop-coerce` and `emit-binop-vals`, whose two callers both already had one) rather than shortcut to `g-globals`, because a **local binding shadows the constant** and a shadowed local is not a literal. Also fixed the silent-wrong-answer half: `emit-defconst` hardcoded `ty-i32` while `const-val` carried the full decimal string, so `(defconst BIG 5000000000)` printed `705032704`; constants are now typed at `emit-int`'s LW-4 width, shared as `int-literal-type` and called from all three former copies (`emit-int`, `emit-defconst`, `node-type`'s NODE-INT). Carrying the value arms the existing `coerce-int-val` range check, and a **second, pre-existing narrowing hole** found while fixing it — `defvar-init-ir` hands a decimal string straight to LLVM, which truncates `i32 5000000000` without complaint — is closed for the named *and* inline spellings. `defenum` members get the same treatment (they carry no distinct nominal type, so withholding it would recreate the wart one level over). 5 new checks. | **Done** |
+| **W2c** | Doc-only: `defvar` initialized from a `defconst`/`defenum` already works (§3.8); the docs implied "init must be a literal" forbade it. Folded into W2b's doc pass — the `defvar` rows in `docs/toplevel.md`/`docs/builtins.md` now say the restriction is about *expressions* and that a named constant is the preferred spelling for a named bound. | **Done** |
+| **W2d** | Float literals in **non-binop** coercion positions (§3.6). The finding was bigger than specced: `coerce-int-val` (`src/abi.nuc` — despite the name, THE implicit-coercion chokepoint for ptr/CStr/StrView/int alike) had **no float case at all**, and its callers disagree on what a null return means. Eight typed-slot positions raised a type error (`let`/`with`, `set!`, `.set!` field store, explicit *and implicit* `return`, struct-literal and array initializers — positional and designated); the ninth, `emit-call-with-args`, treats null as "leave the argument alone" and so **silently miscompiled**, emitting `call float @take(double 2.5)` for `(take 2.5)` and printing `0.000000`. A **third** bug surfaced in the position the brief recorded as already working: LLVM accepts a decimal constant for `float` only when it round-trips exactly, so `(defvar g:f32 1.5)` worked while `(defvar g:f32 3.14)` emitted `@g = global float 3.14` and died at IR-parse time — and a global initializer is a constant, so it cannot be repaired with an `fptrunc`. All fixed at the one chokepoint: `coerce-int-val` gains a float↔float branch (a float **literal** re-renders as a constant at the target width, no instruction; a value gets `fpext`/`fptrunc`), and `coerce-num-val` + `safe-coerce-val` delegate to it instead of carrying copies. New `Val.is-flit`/`lit-f64` (deliberately separate from `is-lit`, which already carries two meanings) plus three renderers — `float-literal-value`, `f32-const-ir`, `float-literal-ir-at`. **Decision: Option A** — a non-literal `f64`→`f32` narrows silently, because `coerce-int-val`'s integer branch five lines up already does exactly that (measured: `(let (b:i64 300000000000 a:i32 b) …)` prints `-647710720` today) and C converts implicitly at every one of these positions. Dispatch is deliberately stricter: `arg-adapts` admits a float *literal* into a narrower float parameter (strictly additive — tier 0 still claims an exact `f64` overload) but never a typed `f64` value. Also removed `-ffast-math` from the compiler's own link line: it set FTZ/DAZ process-wide, folding every denormal literal to zero. 5 new checks, incl. the spec's accept criterion — a float DSP kernel bit-exact with C at `-O0` and `-O2`. | **Done** |
+
+### Test/bootstrap status after W2a/W2b/W2d
+
+`make test` **245/245** (231 → 235 after W2a → 240 after W2b → 245 after W2d);
+`make avr-test`, `make abi-test`, `make layout-test` also green. `make bootstrap` stage1 == stage2
+byte-identical on the first pass, no `make update-bootstrap` reconverge — as the
+spec required: the compiler's own source compiles today, so the fix may only
+affect programs that previously errored or mis-emitted.
+
+Two premise corrections worth carrying forward (detail in the spec's addendum):
+the predicate is named **`node-is-int-literal`**, not `is-untyped-int-literal`;
+and the §1.2/§3.6 repros **do not fail under `--emit-llvm`** (which writes
+textual IR without parsing it) — reproducing them needs the compile-and-link
+path. The `(as i64 (* 4 (+ lb 1)))` workaround in `name-edit-distance` is now
+redundant but deliberately left in place, since the committed boot compiler
+predates the fix.
+
+W2b's own premise corrections: the spec's "constants that do not fit `i32` are
+stored `i64` today" was **false** (they were stored `ty-i32` and wrapped), and
+W4b's rejection of `(defconst K:i32 512)` does leave W2b unconstrained on the
+annotated-constant question — confirmed against the compiler, not assumed. The
+trap that cost the most time: the variadic operator macros wrap the tail, so
+`(* v K)` expands to `(_* v (* K))` and a binop's **second** operand node is a
+CELL, not the bare symbol — a predicate over binop operands must macroexpand it,
+or the fix silently works in operand-1 position only.
 
 ## W4 — Diagnostics: locations and silent failures
 

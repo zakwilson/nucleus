@@ -667,6 +667,43 @@
           (fprintf g-body-stream "  %s = %s %s %s to %s\n"
             tmp instr (type-to-ir src) (vv val) (type-to-ir target))
           (return (alloc-val target tmp)))))
+    ; Stage 15 W2d (design/stage15-stress-test/literal-typing.md §3.6): both
+    ; floats. Before this, `coerce-int-val` had NO float case at all, and the two
+    ; consequences were opposite: every position that treats a null return as a
+    ; type error (let/with init, set!, .set! field store, explicit and implicit
+    ; return, struct-literal and array positional initializers) rejected
+    ; `(let (a:f32 0.0) …)` outright, while the ONE position that treats a null
+    ; return as "leave the argument alone" — the call-argument coercion in
+    ; emit-call-with-args, via safe-coerce-val — silently passed a `double` to a
+    ; `float` parameter and miscompiled (`call float @take(double 2.5)` printed
+    ; 0.000000). Both are fixed here, at the shared chokepoint.
+    ;
+    ; A float LITERAL adapts with no IR: it is re-rendered as a constant at the
+    ; target's width (float-literal-ir-at's rule, reached through f32-const-ir
+    ; since a literal Val is always f64). This is the §3.6 finding — a float
+    ; constant in f32 code no longer needs `(unsafe/cast f32 …)`.
+    ;
+    ; A non-literal narrows SILENTLY (`fptrunc`) — Option A of the W2d design
+    ; note. This is not a new policy: `coerce-int-val`'s integer branch a few
+    ; lines up silently truncates an i64 value into an i32 slot at these exact
+    ; same positions, and only range-checks *literals*. Floats now behave the
+    ; same way. (Both share the standing tension that the explicit `(as f32 d)`
+    ; spelling rejects the conversion as lossy while the implicit one at a typed
+    ; slot does not; that is one language-wide question about implicit narrowing,
+    ; already true for integers, and if it is ever revisited it must be revisited
+    ; here — for both — not for floats alone.)
+    (when (and (!= (is-float-type src) 0) (!= (is-float-type target) 0))
+      ; Only f64→f32 can reach the fold: emit-float types every literal f64, and
+      ; f64→f64 already returned at the `sk == dk` identity line above. Anything
+      ; else (a widening of an already-narrowed value) takes the instruction path.
+      (when (and (!= (vv is-flit) 0) (= (target kind) TY-F32))
+        (return (alloc-val target (f32-const-ir (vv lit-f64)))))
+      (let (tmp:ptr (new-tmp)
+            instr:ptr "fpext")
+        (when (< (float-width target) (float-width src)) (set! instr "fptrunc"))
+        (fprintf g-body-stream "  %s = %s %s %s to %s\n"
+          tmp instr (type-to-ir src) (vv val) (type-to-ir target))
+        (return (alloc-val target tmp))))
     ; Not compatible
     (return null)))
 

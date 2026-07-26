@@ -417,11 +417,13 @@
               (.set! gg finalized 1)))))
       (inc! gi))))
 
-; Can an argument of type `at` (an untyped int literal when is-lit≠0) be passed
-; to a parameter of type `pt` by exact match or a safe widen / literal adaptation
-; (§10.3 resolution tiers)? Widening never narrows a typed value; an untyped int
-; literal adapts to any integer (and to a float) since its value is known.
-(defn arg-adapts (at:raw:Type pt:raw:Type is-lit:i32):i32
+; Can an argument of type `at` (an untyped int literal when is-lit≠0, an untyped
+; float literal when is-flit≠0) be passed to a parameter of type `pt` by exact
+; match or a safe widen / literal adaptation (§10.3 resolution tiers)? Widening
+; never narrows a typed value; an untyped int literal adapts to any integer (and
+; to a float) since its value is known, and since Stage 15 W2d an untyped float
+; literal likewise adapts to a narrower float parameter.
+(defn arg-adapts (at:raw:Type pt:raw:Type is-lit:i32 is-flit:i32):i32
   (when (= at null) (return 0))
   (when (!= (type-eq at pt) 0) (return 1))
   ; Stage 14 NS-3 (design/stage14/native-strings.md): a StrView (notably a string
@@ -447,7 +449,21 @@
         (return 1))
       (return 0))
     (when (and (!= a-flt 0) (!= p-flt 0))
-      (if (>= (float-width pt) (float-width at)) (return 1) (return 0)))
+      (when (>= (float-width pt) (float-width at)) (return 1))
+      ; Stage 15 W2d (design/stage15-stress-test/literal-typing.md §3.6): an
+      ; untyped float literal adapts DOWN to a narrower float parameter, exactly
+      ; as an untyped int literal adapts to any integer above. Without this a
+      ; solitary `(defn take (x:f32) …)` accepted `(take 2.5)` while an
+      ; *overloaded* one rejected it ("no matching method … (f64)") — the same
+      ; wart one level over that W2b closed for `defenum` members. Strictly
+      ; additive: tier 0 (generic-find-method-exact) still claims an exact f64
+      ; overload first, so no existing call is re-routed; this only turns
+      ; previously-unresolvable calls into resolvable ones. A typed f64 VALUE
+      ; still does not adapt — dispatch never narrows a runtime value, the same
+      ; rule the integer branch above enforces with its int-width test, and
+      ; deliberately stricter than the silent `fptrunc` coerce-int-val performs
+      ; once the callee has already been chosen.
+      (if (!= is-flit 0) (return 1) (return 0)))
     (when (and (!= a-int 0) (!= p-flt 0))
       (if (!= is-lit 0) (return 1) (return 0))))
   (return 0))
@@ -560,11 +576,17 @@
                      (= (m has-rest) 0) (= (m num-params) nargs))
             (let (ok:i32 1)
               (dotimes (a nargs)
-                (let (is-lit:i32 0)
+                (let (is-lit:i32 0
+                      is-flit:i32 0)
                   (when (!= arg-nodes null)
-                    (set! is-lit (node-is-int-literal (aref (as ptr:ptr arg-nodes) a))))
+                    (set! is-lit (node-is-int-literal (aref (as ptr:ptr arg-nodes) a)))
+                    ; W2d: mutually exclusive, and node-is-float-literal
+                    ; macroexpands a cell operand — skip the second walk when the
+                    ; first already answered.
+                    (when (= is-lit 0)
+                      (set! is-flit (node-is-float-literal (aref (as ptr:ptr arg-nodes) a)))))
                   (when (= (arg-adapts (aref (as ptr:ptr argtypes) a)
-                                       (aref (as ptr:ptr (m param-types)) a) is-lit) 0)
+                                       (aref (as ptr:ptr (m param-types)) a) is-lit is-flit) 0)
                     (set! ok 0))))
               (when (!= ok 0) (set! wcand (as ptr m)) (inc! wn))))))
       (when (= wn 1) (return wcand)))
@@ -1634,11 +1656,14 @@
           (let (ptn:ptr (binding-type-node (node-at params-node i))
                 at:ptr (aref (as ptr:ptr argtypes) i)
                 pt:ptr (resolve-param-type-bound ptn (mm tyvars) out-bound ntv line)
-                is-lit:i32 0)
+                is-lit:i32 0
+                is-flit:i32 0)
             (when (= pt null) (return 0))
             (when (!= arg-nodes null)
-              (set! is-lit (node-is-int-literal (aref (as ptr:ptr arg-nodes) i))))
-            (when (= (arg-adapts at pt is-lit) 0) (return 0)))))
+              (set! is-lit (node-is-int-literal (aref (as ptr:ptr arg-nodes) i)))
+              (when (= is-lit 0)
+                (set! is-flit (node-is-float-literal (aref (as ptr:ptr arg-nodes) i)))))
+            (when (= (arg-adapts at pt is-lit is-flit) 0) (return 0)))))
       (return 1))))
 
 ; The shared tier-2 adaptation pool for generic resolution (LW-1/LW-2). Concrete
@@ -1667,11 +1692,14 @@
                    (= (m has-rest) 0) (= (m num-params) nargs))
           (let (ok:i32 1)
             (dotimes (a nargs)
-              (let (is-lit:i32 0)
+              (let (is-lit:i32 0
+                    is-flit:i32 0)
                 (when (!= arg-nodes null)
-                  (set! is-lit (node-is-int-literal (aref (as ptr:ptr arg-nodes) a))))
+                  (set! is-lit (node-is-int-literal (aref (as ptr:ptr arg-nodes) a)))
+                  (when (= is-lit 0)
+                    (set! is-flit (node-is-float-literal (aref (as ptr:ptr arg-nodes) a)))))
                 (when (= (arg-adapts (aref (as ptr:ptr argtypes) a)
-                                     (aref (as ptr:ptr (m param-types)) a) is-lit) 0)
+                                     (aref (as ptr:ptr (m param-types)) a) is-lit is-flit) 0)
                   (set! ok 0))))
             (when (!= ok 0)
               (set! wmethod (as ptr m)) (set! wbound null) (inc! wn))))))
@@ -2303,11 +2331,17 @@
                      (and (= (m has-rest) 0) (= (m num-params) nargs)))
             (let (ok:i32 1)
               (dotimes (a nargs)
-                (let (is-lit:i32 0)
+                (let (is-lit:i32 0
+                      is-flit:i32 0)
                   (when (!= arg-nodes null)
-                    (set! is-lit (node-is-int-literal (aref (as ptr:ptr arg-nodes) a))))
+                    (set! is-lit (node-is-int-literal (aref (as ptr:ptr arg-nodes) a)))
+                    ; W2d: mutually exclusive, and node-is-float-literal
+                    ; macroexpands a cell operand — skip the second walk when the
+                    ; first already answered.
+                    (when (= is-lit 0)
+                      (set! is-flit (node-is-float-literal (aref (as ptr:ptr arg-nodes) a)))))
                   (when (= (arg-adapts (aref (as ptr:ptr argtypes) a)
-                                       (aref (as ptr:ptr (m param-types)) a) is-lit) 0)
+                                       (aref (as ptr:ptr (m param-types)) a) is-lit is-flit) 0)
                     (set! ok 0))))
               (when (!= ok 0) (set! wcand (as ptr m)) (inc! wn))))))
       (when (= wn 1) (return (-> wcand (unsafe/cast ptr:Method _) (_ ret-type)))))
@@ -3850,7 +3884,24 @@
                   (when (!= um null) (return (um ret-type)))))))
           (let (bop:ptr:BinOp (unsafe/cast ptr:BinOp (m0 binop)))
             (when (!= (bop is-cmp) 0) (return ty-i1))
-            (return (node-type (node-at n 1) scope))))
+            ; Stage 15 W2a: a binop's result type is the type its operands
+            ; *unify* to, from the one shared rule emit's binop-coerce uses
+            ; (binop-result-type, src/nucleusc.nuc) — not operand 1's type
+            ; alone. Returning operand 1's type made `(* 4096 (as i64 X))` type
+            ; i32 while emit produced i64 (the argument coercer then inserted a
+            ; bogus `sext i32 <i64 value>`) and made `(> t:ui32 (* 2 cl:ui32))`
+            ; fail the mixed-sign check that `(* cl 2)` passed. Null (an operand
+            ; node-type does not model, or a pair this rule cannot reconcile) is
+            ; the usual escape hatch: emit's own unified type then stands.
+            (when (!= (node-len n) 3) (return null))
+            (let (a-node:raw:Node (node-at n 1)
+                  b-node:raw:Node (node-at n 2))
+              ; W2b: `scope` goes in too, so a `defconst`/`defenum` operand is
+              ; classified as the literal it names on this side exactly as it is
+              ; on emit's (binop-coerce) — the lockstep, again, by shared call.
+              (return (binop-result-type (node-type a-node scope)
+                                         (node-type b-node scope)
+                                         a-node b-node scope)))))
         (when (!= (g mangled) 0)
           (let (nargs:i32 (- (node-len n) 1)
                 argtypes:ptr (arena-alloc (* (as i64 (+ nargs 1)) (ptr-bytes)))
@@ -3904,8 +3955,9 @@
       ; LW-4 lockstep with emit-int: an out-of-i32-range literal types (and emits)
       ; as i64, everything else as i32. Keeps codegen and the type pass in sync so
       ; the widened width is not clobbered by emit-node's Rung-3 cross-check.
-      NODE-INT
-        (if (!= (int-literal-fits (nn i) ty-i32) 0) (return ty-i32) (return ty-i64))
+      ; W2b turned that shared width choice into one function (int-literal-type,
+      ; src/nucleusc.nuc) rather than a copy here and a copy in emit-int.
+      NODE-INT   (return (int-literal-type (nn i)))
       NODE-FLOAT (return ty-f64)
       ; Stage 14 NS-3: a string literal now types as StrView (was CStr) — the flip.
       ; Lockstep with emit-string (nucleusc.nuc) and the gcheck / valid-walk mirrors
