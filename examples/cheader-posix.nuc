@@ -1,0 +1,61 @@
+; Stage 15 W3c (design/stage15-stress-test/cheader.md §1.4) — rung 1 of the
+; header ladder, end to end and RUNNABLE: open/write/lseek/read/close driven
+; entirely through `(import-use "fcntl.h")` / `(import-use "unistd.h")`, with no
+; hand-written `declare` anywhere.
+;
+; The load-bearing part is `lseek`, whose return type and second parameter are
+; both `off_t` — a two-level typedef chain (`off_t` -> `__off_t` -> `long int`).
+; Before W3c the header importer resolved any unfollowed typedef to `ptr`, so
+; this imported as `declare ptr @lseek(i32, ptr, i32)`: the offset argument could
+; not be passed as an integer and the returned position could not be used as one.
+; Here both are used as plain i64 arithmetic, so a regression fails at compile
+; time rather than silently.
+;
+; Only libc is called — tests/run-tests.sh has no per-test link-flag mechanism.
+
+(import-use "stdio.h")
+(import-use "stdlib.h")
+(import-use "fcntl.h")
+(import-use "unistd.h")
+
+; open(2) flags are preprocessor macros, and Nucleus consumes C functions and
+; data structures but deliberately not C macros (design/overview.md), so the
+; three this program needs are spelled out. Linux/glibc values.
+(defconst O-RDONLY 0)
+(defconst O-WRONLY 1)
+(defconst O-CREAT 64)     ; 0100
+(defconst O-TRUNC 512)    ; 01000
+(defconst SEEK-SET 0)
+(defconst SEEK-END 2)
+(defconst MODE-644 420)   ; 0644
+
+(defn main ():i32
+  (let (path:CStr "/tmp/nucleus-cheader-posix.tmp"
+        text:CStr "hello, header\n"
+        wfd:i32 (open path (+ O-WRONLY (+ O-CREAT O-TRUNC)) MODE-644))
+    (when (< wfd 0)
+      (printf "open for write failed\n")
+      (return 1))
+    ; write(2) returns ssize_t; count is size_t.
+    (let (wrote:i64 (write wfd (as ptr text) (as ui64 14)))
+      (printf "wrote %lld\n" wrote))
+    (close wfd)
+
+    (let (rfd:i32 (open path O-RDONLY 0))
+      (when (< rfd 0)
+        (printf "open for read failed\n")
+        (return 1))
+      ; lseek's off_t return used as an INTEGER, which is the whole point.
+      (let (size:i64 (lseek rfd (as i64 0) SEEK-END))
+        (printf "size %lld\n" size)
+        (printf "size+1 %lld\n" (+ size 1)))
+      ; ... and its off_t argument passed as an integer.
+      (let (pos:i64 (lseek rfd (as i64 7) SEEK-SET))
+        (printf "pos %lld\n" pos))
+      (let (buf:ptr (alloca i8 32)
+            got:i64 (read rfd buf (as ui64 6)))
+        (ptr-set! (as ptr:i8 (unsafe/ptr+ (as ptr:i8 buf) got)) 0)
+        (printf "read %lld '%s'\n" got buf))
+      (close rfd))
+    (unlink path)
+    (return 0)))

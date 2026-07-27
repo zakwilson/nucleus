@@ -54,6 +54,209 @@
 ; a global must be defined before the first form that references it.
 (defvar g-cheader-unrep:i32 0)
 
+; Stage 15 W3c: *why* the flag above is set, so the skip warning names the
+; offending type rather than a single catch-all sentence. Only meaningful while
+; g-cheader-unrep is non-zero; every site that raises the flag sets this in the
+; same breath (cheader-mark-unrep), and the accumulating caller
+; (c-parse-func-decl) copies the FIRST reason it sees into a local, so a later
+; parameter whose flag is subsequently cleared cannot rewrite the message.
+(defvar g-cheader-unrep-why:ptr)
+; W3c: 1 when the reason is "Nucleus has no type this wide/shaped" rather than
+; "the importer could not read the header" — see cheader-record-skip for why the
+; two are reported differently.
+(defvar g-cheader-unrep-quiet:i32 0)
+
+(defn cheader-mark-unrep (why:ptr quiet:i32):void
+  (set! g-cheader-unrep 1)
+  (set! g-cheader-unrep-why why)
+  (set! g-cheader-unrep-quiet quiet))
+
+; ============================================================
+; Stage 15 W3c: the C typedef table (cheader.md §1.4)
+;
+; Before this, `c-parse-type` resolved every name it did not recognize as a
+; builtin to `ptr`, so EVERY scalar typedef degraded — `off_t f(int)` imported as
+; `declare ptr @f(i32)`, and so did SDL's `Uint8`/`Uint32` and even a one-level
+; `typedef int myint;`. Only `size_t`/`ssize_t` resolved, and only because
+; c-type-to-nucleus hardcodes those two names.
+;
+; A typedef is resolved ONCE, at the point its `typedef` declaration is parsed,
+; and the table stores the *resolved* Type. Two consequences are worth keeping:
+;
+;   * A chain (`off_t` → `__off_t` → `long int`) costs one lookup at each use,
+;     not a walk — the intermediate entry was already collapsed.
+;   * A cycle is impossible by construction. A name can only ever resolve against
+;     entries recorded strictly before it, so a malformed `typedef foo foo;`
+;     records `foo` as unrepresentable instead of looping forever.
+;
+; A record whose `car` is null means "this is a real C type name and we cannot
+; represent it" (an array typedef, a typedef of an unparsable aggregate). That is
+; deliberately distinct from an *absent* record: a by-value use of either is
+; refused, but the messages differ, and only the recorded form proves the name
+; was declared rather than merely unknown.
+;
+; The record reuses a Node cell, exactly as the import lists and the
+; preprocessed-text cache do: `s` = the typedef name, `car` = the resolved Type*
+; (or null), `cdr` = the next entry.
+; ============================================================
+(defvar (g-cheader-typedefs (raw Node)))
+
+(defn c-typedef-find (name:CStr):(raw Node)
+  (let (cur:ptr g-cheader-typedefs)
+    (while (!= cur null)
+      (let (e:ptr:Node (unsafe/cast ptr:Node cur))
+        (when (= (as CStr (e s)) name) (return (as raw:Node e)))
+        (set! cur (e cdr)))))
+  (return null))
+
+; Record `name` as resolving to `ty` (null = known but not representable).
+; Idempotent: a header imported twice, or included transitively by two headers,
+; re-declares the same typedef and must not grow the table without bound.
+(defn c-typedef-record (name:ptr ty:ptr):void
+  (when (!= (c-typedef-find (as CStr name)) null) (return))
+  (let (n:ref:Node (new Node))
+    (.set! n kind NODE-STR)
+    (.set! n line 0)
+    (.set! n s (intern-str name))
+    (.set! n car ty)
+    (.set! n cdr g-cheader-typedefs)
+    (set! g-cheader-typedefs (as raw:Node n))))
+
+; ============================================================
+; Stage 15 W3c: declaration precedence (cheader.md §1.4)
+;
+; **An explicit `(declare …)` wins over a header-derived declaration of the same
+; function, regardless of which comes first in the file, and a signature
+; mismatch warns naming both sources.**
+;
+; Measured before the rule existed, both orders were silent and they disagreed
+; with each other:
+;
+;   (declare lseek (fd:i32 off:i64 whence:i32):i64)   ; -> declare i64 @lseek(i32, i64, i32)
+;   (import-use "unistd.h")                           ;    the header's copy is dropped
+;
+;   (import-use "unistd.h")                           ; -> declare ptr @lseek(i32, ptr, i32)
+;   (declare lseek (fd:i32 off:i64 whence:i32):i64)   ;    the USER's copy is dropped
+;
+; i.e. *first* wins, not "last wins" as the spec supposed — but the second
+; ordering is the dangerous one either way: the user wrote an explicit, correct
+; declaration and the header quietly replaced it, which is precisely how §1.4
+; cost a debugging session.
+;
+; Order-independence needs the explicit names known *before* any import runs, so
+; `prescan-explicit-declares` collects them from the unit's top-level forms in
+; `emit-toplevel-forms`, beside the other prescans. A header declaration whose
+; name is on that list is then never registered and never emitted: exactly one
+; `declare` reaches the IR (LLVM rejects a second one for the same symbol even
+; when the two agree), and it is the user's.
+;
+; Scope: the list is per-compilation and is fed by every `.nuc` unit's own
+; prescan, so a source-imported library's declares also outrank a header import
+; that follows them. A `declare` arriving from a `.nuch` header is not on the
+; list (its forms are read during emission, too late to precede a C import) and
+; keeps the previous first-wins behaviour.
+; ============================================================
+
+; One declaration site — either the unit's explicit `declare` (file/line in the
+; .nuc source, `sig` filled in when it is emitted) or a suppressed header-derived
+; one (file/line in the C header, `sig` known immediately).
+;
+; `name`/`file`/`sig` are `ptr`, not `CStr`: `sig` is null-checked (an explicit
+; declare's signature is unknown until it is emitted) and a `CStr` operand would
+; lower that guard to `strcmp(sig, null)` — the crash conventions.md records.
+(defstruct CDeclSite
+  name:ptr
+  file:ptr
+  line:i32
+  sig:ptr
+  warned:i32
+  ; The explicit `(declare …)` form itself, so a header import that stands down
+  ; for this name can emit it *there* rather than leaving the name undefined
+  ; between the import and the declare's own position (see
+  ; cheader-yield-to-explicit-declare). Null on a shadow entry.
+  (form (raw Node))
+  (next (raw CDeclSite)))
+
+(defvar (g-explicit-declares (raw CDeclSite)))
+(defvar (g-cheader-shadowed (raw CDeclSite)))
+
+(defn cdecl-site-find (list:(raw CDeclSite) fname:CStr):(raw CDeclSite)
+  (let (cur:ptr list)
+    (while (!= cur null)
+      (let (e:ptr:CDeclSite (as ptr:CDeclSite cur))
+        (when (= (as CStr (e name)) fname) (return (as raw:CDeclSite e)))
+        (set! cur (e next)))))
+  (return null))
+
+(defn cheader-explicit-declare-site (fname:CStr):(raw CDeclSite)
+  (return (cdecl-site-find g-explicit-declares fname)))
+
+; Render a function signature the way its `declare` line reads — `i64 (i32, i64,
+; i32)`, `void (ptr, ...)`. Two declarations that render identically are
+; ABI-identical, which is exactly the equivalence the precedence rule needs; and
+; the rendering is what the conflict warning shows, so the user sees the two
+; signatures side by side rather than being told only that they differ.
+(defn c-fn-sig-render (ret:raw:Type ptypes:ptr np:i32 variadic:i32):ptr
+  (let (acc:ptr (fmt-s "%s (" (type-to-ir (as ptr ret))))
+    (dotimes (i:i32 np)
+      (when (!= i 0) (set! acc (fmt-s "%s, " acc)))
+      (set! acc (fmt-2s "%s%s" acc (type-to-ir (aref (as ptr:ptr ptypes) i)))))
+    (when (!= variadic 0)
+      (if (= np 0)
+        (set! acc (fmt-s "%s..." acc))
+        (set! acc (fmt-s "%s, ..." acc))))
+    (return (fmt-s "%s)" acc))))
+
+(defn cdecl-site-push (list:(raw CDeclSite) fname:ptr file:ptr line:i32
+                       sig:ptr form:(raw Node)):(raw CDeclSite)
+  (let (e:ptr:CDeclSite (new CDeclSite))
+    (.set! e name (intern-str fname))
+    (.set! e file file)
+    (.set! e line line)
+    (.set! e sig sig)
+    (.set! e warned 0)
+    (.set! e form form)
+    (.set! e next list)
+    (return (as raw:CDeclSite e))))
+
+; `<nuc file>:<line>: warning: …` — blamed on the *explicit* declaration, which
+; is the one the author can act on, and naming the header declaration it
+; overrides. Deduplicated on the site: a C header import is deliberately not
+; deduplicated, so without this a conflict warns once per import of the header.
+(defn cheader-warn-decl-conflict (site:(raw CDeclSite) hdr:(raw CDeclSite)):void
+  (when (or (= (as ptr site) null) (= (as ptr hdr) null)) (return))
+  (let (s:ptr:CDeclSite (unsafe/cast ptr:CDeclSite site)
+        h:ptr:CDeclSite (unsafe/cast ptr:CDeclSite hdr))
+    (when (!= (s warned) 0) (return))
+    (.set! s warned 1)
+    (let (hloc:ptr (fmt-sd "%s:%d" (h file) (h line))
+          lead:ptr (fmt-3s "declaration of '%s' as %s conflicts with %s"
+                           (s name) (s sig) hloc)
+          full:ptr (fmt-2s "%s, which declares it as %s; the explicit declaration wins"
+                           lead (h sig)))
+      (fprintf stderr "%s:%d: warning: %s\n" (s file) (s line) full))))
+
+; Collect every top-level `(declare NAME …)` in this unit. Runs with the other
+; prescans in emit-toplevel-forms — i.e. before ANY import of this unit is
+; processed — which is what makes the precedence rule order-independent.
+(defn prescan-explicit-declares (forms:(raw Node)):void
+  (let (fc:ptr forms)
+    (while (!= fc null)
+      (let (f:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node fc) car)))
+        (when (and (!= (as ptr f) null)
+                   (= (f kind) NODE-CELL)
+                   (>= (node-len (as ptr f)) 2)
+                   (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ kind) (= _ NODE-SYM))
+                   (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ s) (= _ "declare")))
+          (let (nn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr f) 1)))
+            (when (and (= (nn kind) NODE-SYM)
+                       (= (as ptr (cheader-explicit-declare-site (as CStr (nn s)))) null))
+              (set! g-explicit-declares
+                    (cdecl-site-push g-explicit-declares (nn s)
+                                     g-source-path (f line) null
+                                     (as raw:Node f)))))))
+      (set! fc ((unsafe/cast ptr:Node fc) cdr)))))
+
 ; The source line of buffer offset `pos`, per the last recorded linemarker.
 (defn cheader-line-at (buf:ptr pos:i64):i32
   (let (n:i32 g-cheader-dline
@@ -198,7 +401,8 @@
         base-name:ptr null
         ptr-depth:i32 0
         is-struct:i32 0
-        is-union:i32 0)
+        is-union:i32 0
+        is-enum:i32 0)
     ; Parse type qualifiers and specifiers
     (let (done:i32 0)
       (while (= done 0)
@@ -258,6 +462,18 @@
                   (do (set! is-struct 1) (set! pos tok-end))
                 (= tok "union")
                   (do (set! is-struct 1) (set! is-union 1) (set! pos tok-end))
+                ; W3c: `enum` was not a specifier at all, so `enum Tag e` read
+                ; `enum` as the base type (unresolved → `ptr`) and `Tag` as the
+                ; declarator name — the parameter's real name then began a
+                ; phantom next one, the same shape W3b found for east
+                ; qualifiers. A C enum's underlying type is implementation-
+                ; defined but is `int` on every target this compiler emits for,
+                ; and that is what clang lowers an enum parameter to. The
+                ; optional tag is read by the next loop iteration (as base-name,
+                ; exactly like `struct Tag`); an optional `{…}` body is consumed
+                ; in the is-enum block below.
+                (= tok "enum")
+                  (do (set! is-enum 1) (set! pos tok-end))
                 (= tok "__attribute__")
                   (do (set! pos (c-skip-ws buf tok-end len))
                       (when (and (< pos len) (= (char-at buf pos) 40))
@@ -276,6 +492,21 @@
       (inc! ptr-depth)
       (set! pos (c-skip-type-quals buf (+ pos 1) len)))
     (ptr-set! out-end pos)
+    ; W3c: enum base. The specifier loop has already taken an optional tag into
+    ; `base-name`; what may remain is an inline `{ … }` enumerator list (for
+    ; `enum { A, B } x` the loop stopped at the `{` without consuming anything,
+    ; so the qualifier/`*` runs below have to be redone after it).
+    (when (!= is-enum 0)
+      (let (look:i64 (c-skip-ws buf pos len))
+        (when (and (< look len) (= (char-at buf look) 123))
+          (set! look (cheader-skip-braces buf look len))
+          (set! look (c-skip-type-quals buf look len))
+          (while (and (< look len) (= (char-at buf look) 42))
+            (inc! ptr-depth)
+            (set! look (c-skip-type-quals buf (+ look 1) len)))
+          (ptr-set! out-end look)))
+      (when (> ptr-depth 0) (return ty-ptr))
+      (return ty-i32))
     ; Struct/union base. struct {...} / struct Tag {...} parse the body to a
     ; TY-STRUCT (TY-UNION for unions); Tag references look up by tag;
     ; pointer-to-aggregate collapses to ptr.
@@ -294,7 +525,8 @@
             ; the IR), but the enclosing declaration is now recorded as one the
             ; importer cannot describe — c-decl-skip-reason turns it into a
             ; located skip-with-warning instead of a wrong-ABI declaration.
-            (set! g-cheader-unrep 1)
+            (cheader-mark-unrep
+              "a by-value struct/union whose body the parser could not read" 0)
             (return ty-ptr)))
         (when (!= tag null)
           (let (sd:ptr (lookup-struct tag))
@@ -313,7 +545,13 @@
         ; unknown. Same reasoning as the unparsable-body case above: keep `ptr`,
         ; but mark the declaration unrepresentable so it is skipped rather than
         ; silently given the wrong ABI.
-        (set! g-cheader-unrep 1)
+        ; (`tag` and the fallback spelling are bound through a `ptr` local: a
+        ; value-position `if` joining a bare `ptr` with a `StrView` literal
+        ; collapses to void — conventions.md, the mixed cond/if join rule.)
+        (let (tn:ptr tag)
+          (when (= tn null) (set! tn "struct"))
+          (cheader-mark-unrep
+            (fmt-s "a by-value '%s' with no known layout" tn) 0))
         (return ty-ptr)))
     ; Resolve base type
     (when (= base-name null)
@@ -321,10 +559,48 @@
         (when (or (!= is-unsigned 0) (or (!= is-short 0) (!= is-long 0)))
           (set! base-name "int"))
         (when (= base-name null) (return ty-ptr)))
-    (let (base-type:ptr (c-type-to-nucleus base-name is-unsigned is-long is-short))
-      (when (= base-type null) (set! base-type ty-ptr))
-      ; Apply pointer depth
+    (let (base-type:ptr (c-type-to-nucleus base-name is-unsigned is-long is-short)
+          td:ptr (as ptr (c-typedef-find (as CStr base-name))))
+      ; W3c: not a builtin — consult the typedef table (cheader.md §1.4). The
+      ; entry already holds the fully-resolved type, so a chain costs one lookup.
+      (when (and (= base-type null) (!= td null))
+        (set! base-type (as ptr ((unsafe/cast ptr:Node td) car))))
+      ; W3c: a typedef NAME for a C aggregate is registered as a StructDef, not
+      ; in the typedef table (c-parse-struct-decl owns that path), so resolve it
+      ; the same way the `struct Tag` branch above does — a known layout gives
+      ; the real TY-STRUCT, an opaque one stays `ptr` and marks the declaration.
+      (when (= base-type null)
+        (let (sd:ptr (lookup-struct base-name))
+          (when (and (!= sd null)
+                     (= (-> sd (unsafe/cast ptr:StructDef _) (_ opaque)) 0))
+            (set! base-type (as ptr (type-for-sdef (as ptr:StructDef sd)))))))
+      ; Apply pointer depth. A pointer to anything is `ptr` in Nucleus, so an
+      ; unresolvable POINTEE is harmless and must not mark the declaration —
+      ; `struct _IO_FILE *` and `void (*)(int)` are perfectly describable.
       (when (> ptr-depth 0) (return ty-ptr))
+      (when (= base-type null)
+        ; W3c: a BY-VALUE type we could not resolve. The spec's rule for §1.4 is
+        ; that a typedef the parser cannot follow must be an error or a skip,
+        ; never a silent `ptr` — so keep `ptr` in the Type (a TY-STRUCT with no
+        ; layout would put an undefined `%X` in the IR) but mark the enclosing
+        ; declaration, which turns it into a located skip-with-warning naming the
+        ; type. This is the "no unresolved type names" gate arm the W3b spec
+        ; asked for and W3b correctly refused to implement while every unfollowed
+        ; typedef still resolved to `ptr`.
+        ; `long double` is the one BUILTIN spelling c-type-to-nucleus refuses
+        ; (x86-64 lowers it to the 80-bit x87 type, which Nucleus has no
+        ; spelling for), so name it accurately rather than blaming `double`.
+        (cond
+          (and (!= is-long 0) (= base-name "double"))
+            (cheader-mark-unrep
+              "a by-value 'long double' (no Nucleus type is that wide)" 1)
+          (!= td null)
+            (cheader-mark-unrep
+              (fmt-s "a by-value '%s' (a typedef of a type with no Nucleus representation)" base-name) 1)
+          true
+            (cheader-mark-unrep
+              (fmt-s "a by-value parameter or return of unknown type '%s'" base-name) 1))
+        (return ty-ptr))
       (return base-type))))
 
 ; ============================================================
@@ -342,13 +618,14 @@
 ; preprocessed header goes through it legitimately, so warning there would bury
 ; the real signal.
 ;
-; Note what the gate cannot do: an unknown *type name* is not detectable here.
-; `c-parse-type` resolves an unfollowed typedef to `ptr` (cheader.md §1.4 —
-; `off_t`, `Uint8`), which is representable, so gating on "unresolved type names"
-; as the spec suggests would mean skipping a large fraction of every real header.
-; That is W3c's problem to fix at the source (resolve the chain), not this gate's
-; to paper over. The gate covers exactly the shapes that are *invalid or
-; meaningless as IR*.
+; W3b noted that the spec's suggested "no unresolved type names" arm was not
+; implementable *at the time*, because an unfollowed typedef resolved to `ptr` —
+; which is representable, so the arm would have skipped a large fraction of every
+; real header. W3c removed that objection by resolving the chain at the source
+; (the typedef table above): an unresolved BY-VALUE base type is now genuinely
+; rare, so `c-parse-type` marks it through the same g-cheader-unrep channel and
+; the arm exists after all. A pointer to an unresolvable type is still fine and
+; is deliberately not marked — every C pointer is `ptr`.
 ; ============================================================
 
 ; Parameter-array capacity. Both a real bound (the array is a fixed arena block)
@@ -357,28 +634,50 @@
 ; `num-params` was incremented past it, so `type-set-params` read off the end.
 (defconst C-MAX-PARAMS 32)
 
-; Function names already warned about, so a header imported twice (imports are
-; deliberately not deduplicated — each may alias under a different prefix) or
-; included transitively by two headers warns once. Node-cell string list, the
-; same shape as the import lists and the preprocessed-text cache.
-(defvar (g-cheader-skipped (raw Node)))
-
-(defn cheader-skip-warned (fname:CStr):i32
-  (let (cur:ptr g-cheader-skipped)
-    (while (!= cur null)
-      (let (e:ptr:Node (unsafe/cast ptr:Node cur))
-        (when (= (as CStr (e s)) fname) (return 1))
-        (set! cur (e cdr)))))
-  (return 0))
-
-; `<header>:<line>: warning: …` — the same shape as the compiler's other
-; warnings, but located in the C header (g-cheader-file / the clang -E
-; linemarkers) rather than in the .nuc file that imported it.
-(defn cheader-warn-skip (fname:CStr why:ptr dline:i32):void
-  (when (!= (cheader-skip-warned fname) 0) (return))
-  (set! g-cheader-skipped (import-list-push g-cheader-skipped fname))
-  (fprintf stderr "%s:%d: warning: skipping C declaration '%s': %s\n"
-           g-cheader-file dline fname why))
+; Record that `fname`'s declaration was skipped, and — when `loud` — say so on
+; stderr immediately. `g-cheader-skipped` (declared in nucleusc.nuc, above
+; `unresolved-name-message`, so the *use*-site diagnostic can read it) is keyed
+; by function name and deduplicated: a C header import is deliberately not
+; deduplicated (each import may alias under a different prefix) and umbrella
+; headers include each other transitively, so one skipped function would
+; otherwise be recorded and warned about many times per build.
+;
+; **Two tiers, and the split is deliberate (W3c).** W3b made every skip an
+; always-on stderr warning and measured the volume at zero, which made "always
+; on" free. W3c's typedef resolution changed that measurement: with the chain
+; followed, an unresolvable *by-value* type is detectable, and the standard
+; headers contain ~45 of them — `long double` throughout <math.h>/<stdlib.h>,
+; `_Float128`/`_Float16` in the glibc and clang intrinsics headers,
+; `SDL_JoystickGUID` in SDL2. Every one is a true positive, and every one is
+; irrelevant to a build that never calls the function; six of them landed in the
+; REPL's startup banner. So:
+;
+;   * **loud** — the importer could not *parse* what the header said (an
+;     unreadable aggregate body, a `void` parameter, an opaque type, an
+;     over-long parameter list). These are compiler-side limitations worth
+;     surfacing on sight, and they still measure zero across the standard
+;     headers, so W3b's always-on policy is kept verbatim for them.
+;   * **quiet** — the declaration was parsed correctly and names a type Nucleus
+;     has no equivalent for. Recorded only; `unresolved-name-message` delivers
+;     it, with this same header:line and reason, at the point someone actually
+;     calls the function.
+;
+; Neither tier is silent: a quiet skip that matters always becomes a located
+; error, which is strictly more precise than a warning thousands of lines
+; earlier that nothing connects to the call.
+(defn cheader-record-skip (fname:CStr why:ptr dline:i32 loud:i32):void
+  (when (!= (cheader-skip-note fname) null) (return))
+  (let (note:ptr (fmt-2s "%s: %s" (fmt-sd "%s:%d" g-cheader-file dline) why)
+        n:ref:Node (new Node))
+    (.set! n kind NODE-STR)
+    (.set! n line 0)
+    (.set! n s (intern-str (as ptr fname)))
+    (.set! n car note)
+    (.set! n cdr g-cheader-skipped)
+    (set! g-cheader-skipped (as raw:Node n))
+    (when (!= loud 0)
+      (fprintf stderr "%s:%d: warning: skipping C declaration '%s': %s\n"
+               g-cheader-file dline fname why))))
 
 ; The reason this declaration cannot be emitted, or null if it can.
 ;
@@ -386,9 +685,13 @@
 ; `CStr`-typed operand makes `=`/`!=` lower to `strcmp` — `strcmp(why, NULL)`
 ; segfaults the compiler with empty output (conventions.md, the string-type
 ; lattice). Only the message *content* matters here, never its identity.
-(defn c-decl-skip-reason (unrep:i32 ret-type:raw:Type ptypes:ptr np:i32):ptr
-  (when (!= unrep 0)
-    (return "a by-value struct/union parameter or return type with no known layout"))
+; W3c: `unrep-why` replaces W3b's boolean — the accumulated first reason
+; c-parse-type could not describe some type in this declaration, or null when it
+; described them all. Carrying the message instead of a flag is what lets one arm
+; cover both W3b's layout-less aggregates and W3c's unresolvable type names while
+; still naming the offending type in the warning.
+(defn c-decl-skip-reason (unrep-why:ptr ret-type:raw:Type ptypes:ptr np:i32):ptr
+  (when (!= unrep-why null) (return unrep-why))
   (when (> np C-MAX-PARAMS)
     (return (fmt-i32 "more than %d parameters" C-MAX-PARAMS)))
   (when (= ret-type null) (return "an unparsed return type"))
@@ -434,12 +737,17 @@
             num-params:i32 0
             is-variadic:i32 0
             pdone:i32 0
-            ; W3b: the declaration-level accumulator for "contains a by-value
-            ; aggregate with no layout". Seeded with the return type's verdict
+            ; W3b: the declaration-level accumulator for "contains a type this
+            ; parser cannot describe". Seeded with the return type's verdict
             ; (g-cheader-unrep was cleared at function entry, immediately before
             ; the return type was parsed); each parameter contributes below,
-            ; *after* the post-parse type overrides have had their say.
-            unrep:i32 g-cheader-unrep)
+            ; *after* the post-parse type overrides have had their say. W3c holds
+            ; the *reason* rather than a flag, and keeps the FIRST one: a later
+            ; parameter can raise the global and then have it cleared by the
+            ; function-pointer / array override, which would otherwise leave a
+            ; stale message attached to an earlier parameter's verdict.
+            unrep-why:ptr (if (!= g-cheader-unrep 0) g-cheader-unrep-why null)
+            unrep-quiet:i32 (if (!= g-cheader-unrep 0) g-cheader-unrep-quiet 0))
         (while (= pdone 0)
           (set! pos (c-skip-ws buf pos len))
           (when (>= pos len) (set! pdone 1))
@@ -514,7 +822,9 @@
                       (set! ptype ty-ptr))
                     ; W3b: this parameter's contribution to the gate, taken after
                     ; every override above.
-                    (when (!= g-cheader-unrep 0) (set! unrep 1))
+                    (when (and (!= g-cheader-unrep 0) (= unrep-why null))
+                      (set! unrep-why g-cheader-unrep-why)
+                      (set! unrep-quiet g-cheader-unrep-quiet))
                     ; Store parameter type. Over capacity the count still grows,
                     ; so the gate below sees the real arity and skips the
                     ; declaration instead of emitting a truncated one.
@@ -554,10 +864,17 @@
         ; describe is dropped with a located warning instead of registered. Before
         ; the collect-mode push: aliasing a name that was never registered would
         ; produce a dangling `prefix/name`.
-        (let (why:ptr (c-decl-skip-reason unrep (as raw:Type ret-type)
+        (let (why:ptr (c-decl-skip-reason unrep-why (as raw:Type ret-type)
                                           param-types num-params))
           (when (!= why null)
-            (cheader-warn-skip (as CStr fname) why (cheader-line-at buf decl-start))
+            ; W3c: only a reason that came through the unrep channel can be
+            ; quiet; every other arm (void parameter, opaque type, arity cap,
+            ; unparsed type) is a parse-side limitation and stays loud, exactly
+            ; as W3b left it.
+            (let (loud:i32 1)
+              (when (and (= why unrep-why) (!= unrep-quiet 0)) (set! loud 0))
+              (cheader-record-skip (as CStr fname) why
+                                   (cheader-line-at buf decl-start) loud))
             (return 1)))
         ; Stage 12: in collect mode (a prefixed C-header import), record every
         ; parsed function name so the importer can alias it as prefix/name —
@@ -566,6 +883,21 @@
         (when (!= g-cinclude-collecting 0)
           (set! g-cinclude-collected
                 (import-list-push g-cinclude-collected fname)))
+        ; W3c precedence (cheader.md §1.4): an explicit `(declare …)` anywhere in
+        ; this unit outranks the header's copy, whichever comes first. Record the
+        ; header-derived signature for the conflict message and drop this
+        ; declaration — registering it would make the *header* win when it
+        ; precedes the declare, and emitting a second `declare` for the same
+        ; symbol is invalid IR even when the two agree. Placed after the
+        ; collect-mode push so a prefixed import still aliases `prefix/name` onto
+        ; the explicit declaration's Sym.
+        (when (!= (as ptr (cheader-explicit-declare-site (as CStr fname))) null)
+          (cheader-yield-to-explicit-declare
+            (as CStr fname)
+            (c-fn-sig-render (as raw:Type ret-type) param-types num-params
+                             is-variadic)
+            (cheader-line-at buf decl-start))
+          (return 1))
         ; Register the function
         (let (ft:ptr:Type (as ptr:Type (make-type TY-FN)))
           (.set! ft ret ret-type)
@@ -580,18 +912,45 @@
                   (.set! (as ptr:Sym csym) noreturn 1)))
               (when (= fname "malloc")
                 (set! g-malloc-decl-done 1))
-              ; Emit LLVM declare
-
-              (fprintf g-out "declare %s @%s(" (type-to-ir ret-type) fname)
-              (let (j:i32 0)
-              (while (< j num-params)
-                (when (!= j 0) (fprintf g-out ", "))
-                (fprintf g-out "%s" (type-to-ir ((field-at (ft params) j) type)))
-                (inc! j)))
-              (when (!= is-variadic 0)
-                (let (sep:ptr "")
-                  (when (!= num-params 0) (set! sep ", "))
-                  (fprintf g-out "%s..." sep)))
+              ; Emit LLVM declare, lowering a struct-by-value parameter or return
+              ; to the platform C ABI (sret / byval / register coercion) exactly
+              ; as `emit-nuch-declare-import` and `emit-defn` do.
+              ;
+              ; W3c: this path used to print the raw `type-to-ir` of every
+              ; parameter and the return. That was invisible until typedef
+              ; resolution landed, because glibc names every by-value aggregate
+              ; through a typedef and an unfollowed typedef was `ptr` — so the
+              ; C-header path had literally never emitted a struct by value.
+              ; With the chain followed, `div`/`ldiv`/`lldiv`/`fopencookie`
+              ; appear, and printing `%div_t` there would disagree with the ABI
+              ; the *call site* already lowers through abi-classify. For every
+              ; scalar and pointer declaration abi-classify is ABI-DIRECT and
+              ; both helpers reduce to `type-to-ir`, so the emitted text is
+              ; byte-identical to the former loop.
+              (let (ret-info:ptr:AbiInfo
+                      (unsafe/cast ptr:AbiInfo (abi-classify (as raw:Type ret-type))))
+                (fprintf g-out "declare %s @%s("
+                         (abi-ret-ir (as raw:AbiInfo ret-info) (as raw:Type ret-type))
+                         fname)
+                (let (need-comma:i32 0)
+                  (when (= ((as ptr:AbiInfo ret-info) kind) ABI-MEMORY)
+                    (fprintf g-out "ptr sret(%s) align %d"
+                             (type-to-ir ret-type)
+                             ((as ptr:AbiInfo ret-info) align))
+                    (set! need-comma 1))
+                  (let (j:i32 0)
+                    (while (< j num-params)
+                      (when (!= need-comma 0) (fprintf g-out ", "))
+                      (abi-print-param
+                        (abi-classify (as raw:Type ((field-at (ft params) j) type)))
+                        (as raw:Type ((field-at (ft params) j) type))
+                        null)
+                      (set! need-comma 1)
+                      (inc! j)))
+                  (when (!= is-variadic 0)
+                    (let (sep:ptr "")
+                      (when (!= need-comma 0) (set! sep ", "))
+                      (fprintf g-out "%s..." sep)))))
               ; Stage 10 Phase F1: trailing LLVM `noreturn` function attribute.
               (if (!= (c-fn-noreturn fname) 0)
                 (fprintf g-out ") noreturn\n")
@@ -692,7 +1051,17 @@
           (when (!= i 0) (fprintf g-type-stream ", "))
           (fprintf g-type-stream "%s" (type-to-ir (aref (as ptr:ptr ftypes) i)))
           (inc! i)))
-      (fprintf g-type-stream " }\n\n"))))
+      (fprintf g-type-stream " }\n\n")
+      ; W3c: `emitted` means exactly "this type's definition is already in the
+      ; shared type buffer", and it is what pending-union-deps-ready consults
+      ; before writing a queued union whose field names this struct. The cheader
+      ; path writes its `%X = type {…}` line directly rather than through
+      ; emit-struct-ir-type, so it has to set the flag itself — without it, a C
+      ; union with a struct member (SDL's `SDL_WindowShapeParams`, whose
+      ; `SDL_Color` member only became a real TY-STRUCT once W3c resolved the
+      ; typedef) was deferred on every drain and its `%…` type never appeared,
+      ; while the struct that *contained* the union referenced it.
+      (.set! sd emitted 1))))
 
 ; Stage 15 W3a: make `dst` share `src`'s layout and write `dst`'s own LLVM type
 ; definition. Used for a `typedef struct Tag Name;` alias entry (which is a
@@ -717,7 +1086,10 @@
           (fprintf g-type-stream "%s"
             (type-to-ir ((field-at (src fields) k) type)))
           (inc! k)))
-      (fprintf g-type-stream " }\n\n"))))
+      (fprintf g-type-stream " }\n\n")
+      ; W3c: see cheader-struct-define — the alias's definition is now in the
+      ; shared type buffer, so a queued union naming it must count it as ready.
+      (.set! dst emitted 1))))
 
 ; Stage 15 W3a: propagate a just-upgraded tag's layout to every
 ; `typedef struct Tag Name;` alias that was registered while Tag was still
@@ -982,6 +1354,86 @@
         (ptr-set! out-end pos)
         (return 1)))))
 
+; Stage 15 W3c (cheader.md §1.4): record a NON-aggregate top-level typedef —
+; `typedef long int __off_t;`, `typedef __off_t off_t;`,
+; `typedef unsigned char Uint8;`, `typedef char *string_t;`,
+; `typedef int (*handler)(int);`, `typedef enum { … } E;`,
+; `typedef struct Foo *FooPtr;`.
+;
+; Called only after `c-parse-struct-decl` has DECLINED the declaration, so every
+; `typedef struct|union …` shape that introduces a named aggregate is handled
+; there and cannot reach here — which is what keeps W3a's opaque-registration and
+; in-place-upgrade paths untouched by this function.
+;
+; Returns 1 when the declaration was consumed. A name is recorded even when its
+; type is not representable (recording null): that is how a later by-value use
+; gets a located skip naming the type, instead of the pre-W3c silent `ptr`.
+(defn c-parse-typedef-decl (buf:ptr pos:i64 len:i64 out-end:ptr:i64):i32
+  (let (te:i64 0
+        tok:ptr (c-read-ident buf pos len (as ptr:i64 (addr-of te))))
+    (when (!= tok "typedef") (ptr-set! out-end pos) (return 0))
+    (let (save-unrep:i32 g-cheader-unrep
+          save-why:ptr g-cheader-unrep-why
+          save-quiet:i32 g-cheader-unrep-quiet
+          tend:i64 0
+          bad:i32 0
+          name:ptr null
+          base:ptr null)
+      ; c-parse-type's unrep channel is scoped to a FUNCTION declaration
+      ; (c-parse-func-decl clears it at entry). A typedef is parsed outside one,
+      ; so save/restore rather than let this parse leak a verdict sideways.
+      (set! g-cheader-unrep 0)
+      (set! base (c-parse-type buf (c-skip-ws buf te len) len
+                               (as ptr:i64 (addr-of tend))))
+      (when (!= g-cheader-unrep 0) (set! bad 1))
+      (set! g-cheader-unrep save-unrep)
+      (set! g-cheader-unrep-why save-why)
+      (set! g-cheader-unrep-quiet save-quiet)
+      (let (p:i64 (c-skip-ws buf tend len))
+        ; `(*name)(args)` — a function-pointer typedef, which is a pointer
+        ; whatever its return and argument types are. It has to be recognized
+        ; HERE: the naive fallback would take `int` for the declarator of
+        ; `typedef int (*handler)(int);` and the declaration would look like a
+        ; function literally named `int` (the trap W3b recorded when it declined
+        ; to extend the struct fallback to `typedef`).
+        (when (and (< p len) (= (char-at buf p) 40))
+          (let (q:i64 (c-skip-ws buf (+ p 1) len)
+                stars:i32 0)
+            (while (and (< q len) (= (char-at buf q) 42))
+              (inc! stars)
+              (set! q (c-skip-type-quals buf (+ q 1) len)))
+            (let (ne:i64 0
+                  fpn:ptr (c-read-ident buf q len (as ptr:i64 (addr-of ne))))
+              (when (and (> stars 0) (!= (as i64 (strlen fpn)) 0))
+                (set! name fpn)
+                (set! base ty-ptr)
+                (set! bad 0))))
+          (set! p (c-skip-parens buf p len))
+          (set! p (c-skip-ws buf p len))
+          (when (and (< p len) (= (char-at buf p) 40))
+            (set! p (c-skip-parens buf p len))))
+        (when (= name null)
+          (let (ne:i64 0
+                dn:ptr (c-read-ident buf p len (as ptr:i64 (addr-of ne))))
+            ; No declarator identifier — a shape not modelled at all. Decline, so
+            ; nothing is recorded under a name that is not the declarator's.
+            (when (= (as i64 (strlen dn)) 0)
+              (ptr-set! out-end pos) (return 0))
+            (set! name dn)
+            (set! p ne)))
+        (set! p (c-skip-ws buf p len))
+        ; An array declarator (`typedef int v4[4];`). The element type is known,
+        ; but this parser has no C array type and a by-value use would silently
+        ; take the ELEMENT's ABI — record the name as known-but-unrepresentable.
+        (when (and (< p len) (= (char-at buf p) 91)) (set! bad 1))
+        ; A comma-separated declarator list (`typedef int a, *b;`) gives each
+        ; declarator its own pointer depth, which a single-declarator parse
+        ; cannot recover. Only the first is recorded; the rest stay unknown,
+        ; which the by-value gate reports rather than mis-typing.
+        (c-typedef-record name (if (!= bad 0) null base))
+        (ptr-set! out-end (cheader-skip-to-semi buf p len))
+        (return 1)))))
+
 ; ============================================================
 ; Stage 15 W3a: opaque-name pre-scan for the signature prescan
 ;
@@ -1174,7 +1626,28 @@
                 ; Process extern/implicit function declarations and top-level type declarations.
                 ; musl (Alpine ARM64) omits `extern` on function declarations, so we try
                 ; c-parse-func-decl for any non-struct/union/typedef token.
+                ;
+                ; Stage 15 W3b: the `true` clause used to sit OUTSIDE this cond — a
+                ; stray `)` (introduced with union support) closed the cond after the
+                ; struct branch, leaving `true` as a no-op statement and running the
+                ; function-declaration parse *unconditionally*. So every top-level
+                ; struct/union/typedef was followed, in the same iteration, by a
+                ; function parse starting at whatever whitespace the struct parse
+                ; stopped on. Two consequences: the declaration after a type
+                ; declaration was attributed to the type declaration's line (the W3b
+                ; skip warning's `header:line` was short by the intervening blank
+                ; lines), and a second forward declaration immediately after a first
+                ; (`struct Foo;` / `struct Bar;`) was consumed by the function parse's
+                ; not-a-function fallback without ever being registered.
                 (cond
+                  ; W3c: glibc writes `__extension__ typedef long long int
+                  ; __quad_t;` for every type it defines with a `long long`, so
+                  ; without this the whole `__quad_t`/`__u_quad_t` family (and
+                  ; anything typedef'd from them) stayed unresolved. Consume the
+                  ; keyword and re-dispatch on the token that follows; the loop's
+                  ; progress guard covers the no-advance case.
+                  (= tok "__extension__")
+                    (set! pos tok-end)
                   (or (= tok "union") (or (= tok "struct") (= tok "typedef")))
                     ; struct/union/typedef -> layout.
                     (let (decl-end:i64 0
@@ -1182,11 +1655,43 @@
                                                       (as ptr:i64 (addr-of decl-end)) line))
                       (if (!= ok 0)
                         (set! pos decl-end)
-                        (do ; Not a struct — skip to semicolon
-                         (while (and (< pos buf-len) (!= (char-at buf pos) 59))
-                           (set! pos (+ pos 1)))
-                         (when (< pos buf-len)
-                              (set! pos (+ pos 1)))))))
+                        ; W3c: not an aggregate declaration. A scalar / pointer /
+                        ; function-pointer / enum typedef is recorded here
+                        ; (cheader.md §1.4); anything else falls through to the
+                        ; function parser and then to the original
+                        ; skip-to-semicolon.
+                        (let (td-end:i64 0
+                              tdok:i32 (c-parse-typedef-decl buf pos buf-len
+                                                             (as ptr:i64 (addr-of td-end))))
+                          (if (!= tdok 0)
+                            (set! pos td-end)
+                            ; W3c: a declaration whose first token is
+                            ; `struct`/`union` but which is a FUNCTION —
+                            ; `struct Tag *f(int);` written without `extern`.
+                            ; The type parser registers the tag and declines, and
+                            ; before this the declaration was then silently
+                            ; dropped: nothing is synthesized, so W3b's gate
+                            ; cannot see it either. Invisible on glibc, which
+                            ; always writes `extern`; musl deliberately omits it
+                            ; (context/build.md), so on Alpine this dropped every
+                            ; function returning a `struct X *`.
+                            ;
+                            ; Restricted to the `struct`/`union` tokens, per
+                            ; W3b's note: running the function parser for
+                            ; `typedef` too would read `typedef int (*h)(int);`
+                            ; as a function literally named `int`. `typedef` has
+                            ; already had its own parser above.
+                            (let (fn-end:i64 0
+                                  fnok:i32 (if (= tok "typedef") 0
+                                             (c-parse-func-decl buf pos buf-len
+                                               (as ptr:i64 (addr-of fn-end)) line)))
+                              (if (!= fnok 0)
+                                (set! pos fn-end)
+                                (do ; Neither a type nor a function — skip to `;`
+                                 (while (and (< pos buf-len) (!= (char-at buf pos) 59))
+                                   (set! pos (+ pos 1)))
+                                 (when (< pos buf-len)
+                                      (set! pos (+ pos 1))))))))))
                   true
                     ; Try function declaration (handles both `extern int foo(...)` and
                     ; bare `int foo(...)` — c-parse-type skips `extern` internally).
@@ -1214,7 +1719,7 @@
                                                    (!= (char-at buf pos) 10))))
                                 (set! pos (+ pos 1))))
                             (when (< pos buf-len)
-                              (set! pos (+ pos 1)))))))))          ; Safety: if pos didn't advance, force it forward to avoid infinite loop
+                              (set! pos (+ pos 1))))))))))          ; Safety: if pos didn't advance, force it forward to avoid infinite loop
           (when (= pos prev-pos)
             (set! pos (+ pos 1)))))  ; closes when, while
       ; W3a: `buf` belongs to the cheader-preprocess cache now — it is shared with

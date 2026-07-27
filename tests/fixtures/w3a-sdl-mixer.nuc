@@ -14,4 +14,15 @@
 (defn chunk-allocated (c:ptr:Mix_Chunk):i32
   (return (c allocated)))
 
+; Stage 15 W3c (cheader.md §1.4): `Mix_Chunk.volume` is a `Uint8` and `alen` a
+; `Uint32` — SDL typedefs of builtin integers. W3a recorded that both degraded
+; to `ptr`, so `(c volume)` failed a return-type mismatch while the plain `int`
+; `allocated` beside it worked; this is the rung-3 accept test for the typedef
+; chain reaching a struct FIELD rather than a return type.
+(defn chunk-volume (c:ptr:Mix_Chunk):ui8
+  (return (c volume)))
+
+(defn chunk-alen (c:ptr:Mix_Chunk):ui32
+  (return (c alen)))
+
 (defn main ():i32 (return 0))

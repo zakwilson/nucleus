@@ -209,6 +209,46 @@
       (return 1))
     (return 0)))
 
+; Stage 15 W3c fallout (cheader.md, "Unnamed `declare` parameters carry types"):
+; a `declare` parameter list admits an UNNAMED parameter written as its bare type
+; — `(declare lseek (i32 i64 i32):i64)` — alongside the named `name:type` form
+; docs/toplevel.md documents. An element carrying no `name:type` annotation is
+; therefore a *type operand*, not an untyped name, and is parsed as one here.
+;
+; It used to fall back to `ty-i32`, so every non-`i32` unnamed parameter silently
+; declared the wrong ABI — including the compiler's own
+; `(declare repl_print_f64 (ptr):void)`, which declared an `i32` parameter and
+; worked only because x86-64 SysV happens to pass a pointer and an `i32` in the
+; same register. The default also defeated W3c's declaration-precedence rule: a
+; bare-list `declare` that *agreed* with the C header rendered as all-`i32`,
+; overrode the header's correct signature, and warned about a conflict that did
+; not exist.
+;
+; A spelling that does not name a type raises the ordinary located
+; `unknown type: …` through parse-type-name / parse-type-from-node. Defaulting is
+; what produced the defect; there is nothing to fall back to.
+(defn declare-param-type (node:(raw Node) line:i32):(raw Type)
+  (when (= node null) (die-at line "declare: empty parameter"))
+  (let (n:(raw Node) node)
+    ; `&rest`/`&optional` are defn-only, and none of the machinery a declaration
+    ; would need exists: `variadic` is hardcoded 0 here and `has-rest` is never
+    ; set, so the marker was simply counted as an ordinary (i32) parameter —
+    ; `(declare myfn (a:i32 &rest xs:ptr):i32)` emitted
+    ; `declare i32 @myfn(i32, i32, ptr)`, two phantom parameters and no rest
+    ; folding at any call site. Refuse it rather than mistype it. (A C variadic
+    ; function needs no marker: call arity is not checked against a declaration,
+    ; so the extra arguments ride the call site, which is how the C ABI passes
+    ; them anyway. Importing the function's header is the precise route.)
+    (when (and (= (n kind) NODE-SYM)
+               (or (= (n s) "&rest") (= (n s) "&optional")))
+      (die-at line
+        (fmt-s "declare: '%s' is not supported in a declaration -- declare the fixed parameters only (extra arguments are passed positionally at the call site)"
+               (n s))))
+    ; A keyword operand (`:i64`) carries the spelling without the colon, exactly
+    ; as a return operand does (fn-parse-ret-type).
+    (when (= (n kind) NODE-KEYWORD) (return (parse-type-name (n s) line)))
+    (return (parse-type-from-node (as ptr node) line))))
+
 (defn emit-nuch-declare-import (form:(raw Node)):void
   (let (ff:ptr:Node (unsafe/cast ptr:Node form))
     ; Stage 10 Phase F1: an optional trailing `noreturn` keyword (carried
@@ -260,13 +300,34 @@
           (when (> nparams 0)
             (set! ptypes (arena-alloc (* (as i64 nparams) (ptr-bytes)))))
           (dotimes (j nparams)
+            ; A parameter node is either an annotated `name:type` (a colon symbol,
+            ; or the `(name type)` cell desugar produces) or a bare type operand.
+            ; The line must be borrowed from the enclosing form: an unannotated
+            ; parameter is an interned NODE-SYM, whose own line is always 0 (W4a).
             (let (p:ptr (node-at params-node j)
                   pn:ptr null
-                  pty:ptr (extract-name-and-type p (as ptr:ptr (addr-of pn))
-                                                  ((as ptr:Node p) line)))
-              (if (!= pty null)
-                (aset! (as ptr:ptr ptypes) j pty)
-                (aset! (as ptr:ptr ptypes) j ty-i32))))
+                  pline:i32 (node-line p (ff line))
+                  pty:ptr (extract-name-and-type p (as ptr:ptr (addr-of pn)) pline))
+              (when (= pty null)
+                (set! pty (declare-param-type (as raw:Node p) pline)))
+              (aset! (as ptr:ptr ptypes) j pty)))
+          ; Stage 15 W3c declaration precedence (cheader.md §1.4). Record this
+          ; declaration's rendered signature on its prescanned site, so a C
+          ; header import LATER in the unit can compare against it; and if a
+          ; header import EARLIER already stood down for this name, compare now
+          ; and warn. Only a top-level `(declare …)` in a .nuc unit has a site
+          ; (prescan-explicit-declares); a .nuch-borne declare has none and is
+          ; unaffected.
+          (let (site:ptr (as ptr (cheader-explicit-declare-site (as CStr fname))))
+            (when (!= site null)
+              (let (msig:ptr (c-fn-sig-render (as raw:Type ret) ptypes nparams 0)
+                    shadow:ptr (as ptr (cdecl-site-find g-cheader-shadowed
+                                                        (as CStr fname))))
+                (.set! (as ptr:CDeclSite site) sig msig)
+                (when (and (!= shadow null)
+                           (!= (as CStr ((as ptr:CDeclSite shadow) sig)) (as CStr msig)))
+                  (cheader-warn-decl-conflict (as raw:CDeclSite site)
+                                              (as raw:CDeclSite shadow))))))
           (let (ft:ptr:Type (as ptr:Type (make-type TY-FN)))
             (.set! ft ret ret)
             (type-set-params ft ptypes nparams)

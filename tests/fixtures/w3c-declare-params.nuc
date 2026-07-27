@@ -1,0 +1,59 @@
+; Stage 15 W3c fallout (cheader.md, "Unnamed `declare` parameters carry types").
+;
+; A `declare` parameter list admits two spellings — a named `name:type` and a
+; bare type — and docs/toplevel.md documents both. The bare list used to IGNORE
+; every written type and emit `i32` for every parameter, so it was correct
+; exactly when the signature was all-`i32`; `(declare f1 (i64):i64)` emitted
+; `declare i64 @f1(i32)`.
+;
+; Every pair below is the SAME signature written both ways. The test asserts the
+; exact `declare` line for both members, so a silent default cannot pass: the
+; pair is the invariant, not any one row.
+
+; --- integers, both widths and both signednesses -----------------------------
+(declare w3d_bare_1 (i64):i64)
+(declare w3d_named_1 (a:i64):i64)
+
+(declare w3d_bare_2 (i32 i64):i64)
+(declare w3d_named_2 (a:i32 b:i64):i64)
+
+; Order matters: the defect made every position i32, so a pair that differs only
+; by operand order is what proves the type is read per position.
+(declare w3d_bare_3 (i64 i32):i64)
+(declare w3d_named_3 (a:i64 b:i32):i64)
+
+(declare w3d_bare_4 (i8 ui8 i16 ui16 ui32 ui64):void)
+(declare w3d_named_4 (a:i8 b:ui8 c:i16 d:ui16 e:ui32 f:ui64):void)
+
+; --- floats, pointer-sized aliases, and the non-integer scalars --------------
+(declare w3d_bare_5 (f64 f32):void)
+(declare w3d_named_5 (a:f64 b:f32):void)
+
+(declare w3d_bare_6 (usize ssize bool Char):i32)
+(declare w3d_named_6 (a:usize b:ssize c:bool d:Char):i32)
+
+; --- pointers ----------------------------------------------------------------
+(declare w3d_bare_7 (ptr CStr i64):i64)
+(declare w3d_named_7 (a:ptr b:CStr c:i64):i64)
+
+; --- a named parameter beside bare ones in one list --------------------------
+(declare w3d_mixed (i64 count:i32 f64):void)
+
+; --- a by-value struct in unnamed position takes the same C ABI as a named one
+(defstruct W3dPair a:i32 b:i64)
+(declare w3d_bare_8 (W3dPair i32):void)
+(declare w3d_named_8 (p:W3dPair n:i32):void)
+
+; --- a keyword operand spells a type in this position too, as it does for the
+; --- return operand.
+(declare w3d_kw (:i64 :f64):i64)
+
+; --- DECIDED (docs/toplevel.md): an element carrying a `name:type` annotation is
+; --- a NAMED parameter, exactly as in a `defn`. `ptr:W3dPair` is therefore a
+; --- parameter *named* `ptr` whose type is `W3dPair`, passed by value — not a
+; --- pointer to W3dPair. Write `p:ptr:W3dPair` (or a bare `ptr`) for a pointer.
+; --- Pinned so the reading stays a decision rather than an accident.
+(declare w3d_annot (ptr:W3dPair):void)
+(declare w3d_ptr_named (p:ptr:W3dPair):void)
+
+(defn main ():i32 (return 0))

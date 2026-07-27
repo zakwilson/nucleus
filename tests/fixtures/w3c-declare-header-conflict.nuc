@@ -1,0 +1,8 @@
+; Stage 15 W3c fallout: the other half of w3c-declare-header-match.nuc — a
+; bare-type list that genuinely DISAGREES with <unistd.h> (`whence` as i64 rather
+; than i32) must still warn naming both sources, and the explicit declaration
+; must still win. Silencing the false conflict must not silence the real one.
+(import-use "unistd.h")
+(declare lseek (i32 i64 i64):i64)
+
+(defn main ():i32 (return 0))

@@ -1,0 +1,14 @@
+; Stage 15 W3b: the validity gate on a synthesized `declare`
+; (design/stage15-stress-test/cheader.md §1.5). run_w3b_skip asserts that the
+; representable declaration survives, the three unrepresentable ones are absent
+; from the IR, and each is reported with its own `<header>:<line>:`.
+(import-use "tests/fixtures/w3b-skip.h")
+
+; The one declaration in that header the importer CAN describe. Calling it keeps
+; the test honest: a gate that skipped everything would still pass an
+; absence-only assertion.
+(defn use-it (p:ptr):i32
+  (w3b_keep p)
+  (return 0))
+
+(defn main ():i32 (return 0))

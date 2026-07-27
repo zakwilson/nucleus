@@ -1,0 +1,6 @@
+; Stage 15 W3c fallout: an unnamed `declare` parameter is a TYPE operand, so a
+; spelling that names no type is a located error. Silently defaulting it to `i32`
+; is precisely what hid the original defect, so there is nothing to fall back to.
+(declare w3d_unknown (i64 NoSuchDeclParamType):void)
+
+(defn main ():i32 (return 0))

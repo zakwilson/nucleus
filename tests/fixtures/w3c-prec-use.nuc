@@ -1,0 +1,20 @@
+; Stage 15 W3c (cheader.md §1.4): the header import stands down for `strchr`,
+; but code BETWEEN the import and the explicit `declare` must still resolve the
+; name — so the explicit declaration has to be emitted at the point of first
+; need, not merely deferred. (Suppressing the header's copy and waiting is what
+; broke examples/cstr-lit-test.nuc, whose `(declare strlen …)` follows a prelude
+; import that already calls strlen: `unknown: strlen`.)
+;
+; The explicit signature deliberately differs from string.h's (`c` as i64) so
+; the emitted `declare` proves WHICH declaration won, not merely that one exists.
+(import-use "stdio.h")
+(import-use "string.h")
+
+(defn find-c (s:CStr):ptr
+  (return (strchr (as ptr s) (as i64 99))))
+
+(declare strchr (s:ptr c:i64):ptr)
+
+(defn main ():i32
+  (printf "%s\n" (find-c "abcdef"))
+  (return 0))

@@ -81,6 +81,20 @@ register it into. That remains open.
 
 C qualifiers are stripped during parsing. This is correct for code generation (LLVM handles const through metadata, not types) but loses intent information.
 
+**Corrected (Stage 15 W3b, [stage15-stress-test/cheader.md](stage15-stress-test/cheader.md) §1.5).**
+"Stripped during parsing" was true only in the **leading** position. A qualifier
+after the base type (`int const *p`, which C permits and which denotes the same
+type) terminated the type; its token was eaten as the parameter name and the
+following `*p` began a phantom second parameter defaulting to `ptr` — so
+`void f(int const *p)` imported as a *two*-parameter `(i32, ptr)` function, and
+`void _mm_clflush(void const *)` (reached transitively from `SDL2/SDL.h`) as the
+IR-invalid `declare void @_mm_clflush(void, ptr)`. `const`, `volatile`,
+`restrict`/`__restrict`/`__restrict__` and `_Atomic` are now consumed and
+discarded in **every** position C allows them: anywhere in the
+declaration-specifier sequence and after each `*`. The section's conclusion
+stands (qualifiers carry no information Nucleus models); only the claim that they
+were already being stripped was wrong.
+
 ### `restrict` pointers
 
 The `restrict` qualifier is stripped. LLVM can use `noalias` for optimization, but this is low priority.
@@ -110,3 +124,49 @@ macOS and Windows have different system header layouts and ABI conventions. The 
 ## init-libc replacement ✓
 
 The hardcoded `init-libc` table has been removed. Both `(include module)` and REPL startup now use C header parsing via `clang -E`. The REPL pre-loads stdio.h, stdlib.h, string.h, ctype.h, and unistd.h at startup. All libc functions from those headers are available, not just the previously hardcoded subset.
+
+## Does W3 strengthen the case for replacing the hand-rolled parser with libclang?
+
+**Marginally — and less than expected.** Stage 15 W3 (see
+[stage15-stress-test/cheader.md](stage15-stress-test/cheader.md)) put the
+hand-rolled parser through three mainstream umbrella headers (`SDL2/SDL.h`,
+`SDL2/SDL_mixer.h`, `png.h`) plus the POSIX/libc set. Every defect it turned up
+was small and local once located:
+
+* a qualifier position the grammar had simply forgotten (W3b, §1.5);
+* a stray `)` that made the top-level two-way dispatch fall through (W3b);
+* a forward declaration branch that returned early instead of registering a
+  name (W3a, §1.6);
+* a 16-entry parameter array that was written past (W3b);
+* a `(free buf)` that became a use-after-free when the preprocessed text was
+  cached (W3a).
+
+None of these argues for a different architecture; each is a few lines. The
+class this note expected to be the real argument — **following typedef chains
+through a real system header** (`off_t` → `__off_t` → `long int`, SDL's `Uint32`
+→ `unsigned int`) — turned out **not** to need a scoped symbol table over the
+preprocessed unit. W3c settled it with a **flat name→type table resolved at the
+point each `typedef` is parsed**: a C `typedef` at file scope is visible from
+there to the end of the translation unit, and the preprocessed text is scanned in
+order, so an entry can only ever resolve against entries recorded strictly before
+it. That collapses a chain to one lookup, makes a cycle impossible by
+construction, and is roughly 80 lines. Neighbouring gaps it exposed (`enum` was
+not a declaration specifier; `__extension__` was not consumed) were a few lines
+each.
+
+So the prediction here was wrong in the direction that matters: **the typedef
+work did not move the needle toward libclang.** What remains genuinely awkward by
+hand is narrower and more structural — the **declarator grammar inside a struct
+body**: array fields (`Uint8 data[16]`), bitfields, and multi-declarator lines
+(`int a, b;`) all make the body parser abandon the whole struct. That is what
+keeps `FILE` and SDL's `SDL_GUID` opaque. It is a real recursive-declarator
+problem rather than a lookup problem, and it is the first place a real C front end
+would pay for itself. The type-system gaps beside it (`long double`, `_Float128`,
+`_Float16` — 156 skipped declarations across the standard headers) are not parser
+problems at all and libclang would not help with them.
+
+The safety net matters here too: since W3b, a declaration the parser cannot
+faithfully describe is **skipped with a located warning** rather than emitted as
+invalid IR, so the cost of a remaining parser gap is a named missing function
+instead of a failed build. That materially lowers the pressure to replace the
+parser wholesale.

@@ -494,10 +494,16 @@ run_ns6() {
   # The consumer excludes the prelude (the lib object already provides it) so the
   # two objects link without duplicate prelude symbols. It needs only `printf`
   # (declared) and the imported geom symbols, so no prelude operators are used.
+  # printf is declared with its FIXED parameter only: Nucleus has no variadic-
+  # `declare` spelling, call arity is not checked against a declaration, and the
+  # extra arguments ride the call site — which is how the C ABI passes them. (This
+  # and the two sibling sites below used to write `(fmt:CStr &rest args:i32)`,
+  # which did nothing but add two phantom i32 parameters to the declaration: the
+  # calls here pass 3-6 arguments to it. `&rest` in a declaration is now refused.)
   cat > "$ns6_dir/main.nuc" <<EOF
 (exclude-prelude)
 (import-prefixed "$ns6_dir/lib.nuch" g)
-(declare printf (fmt:CStr &rest args:i32) :i32)
+(declare printf (fmt:CStr):i32)
 (defn main () :i32
   (printf "area=%d perimeter=%d\n" (g/area 6 7) (g/perimeter 6 7))
   (return 0))
@@ -572,7 +578,7 @@ run_sm3() {
   cat > "$sm3_dir/main.nuc" <<EOF
 (exclude-prelude)
 (import-use "$sm3_dir/lib.nuch")
-(declare printf (fmt:CStr &rest args:i32) :i32)
+(declare printf (fmt:CStr):i32)
 (defn main () :i32
   (printf "full=%d push=%d even4=%d even7=%d even6L=%d\n"
     (full? 5) (push! 7) (even? 4) (even? 7) (even? (as i64 6)))
@@ -745,6 +751,12 @@ run_w3a_sdl_mixer() {
     printf '%s\n' "$err" | sed 's/^/    /'
   elif ! grep -q '^%Mix_Chunk = type' "$ir"; then
     echo "FAIL  w3a-sdl-mixer (defined Mix_Chunk has no LLVM layout)"
+  elif ! grep -q '^%Mix_Chunk = type { i32, ptr, i32, i8 }$' "$ir"; then
+    # W3c: `alen` (Uint32) and `volume` (Uint8) are typedefs of builtin
+    # integers. Before the typedef chain was followed they were `ptr`, giving
+    # `{ i32, ptr, ptr, ptr }` — a wrong layout, silently.
+    echo "FAIL  w3a-sdl-mixer (Mix_Chunk field types did not resolve through their typedefs)"
+    grep '^%Mix_Chunk = type' "$ir" | sed 's/^/    got: /'
   elif ! grep -q 'getelementptr inbounds %Mix_Chunk' "$ir"; then
     echo "FAIL  w3a-sdl-mixer (Mix_Chunk field access not emitted)"
   elif ! grep -q 'call void @Mix_FreeMusic(ptr ' "$ir"; then
@@ -754,6 +766,418 @@ run_w3a_sdl_mixer() {
   else
     echo "PASS  w3a-sdl-mixer"
   fi
+  rm -f "$ir"
+}
+
+# Stage 15 W3b: the C type-qualifier matrix (cheader.md §1.5).
+#
+# A qualifier is legal anywhere in a declaration-specifier sequence and after
+# every `*`; the importer used to accept only the LEADING position, so an "east"
+# qualifier terminated the type and its token was eaten as the parameter NAME,
+# leaving `*p` to start a phantom second parameter that defaulted to `ptr`. Only
+# the `void` spelling produced IR LLVM rejects (`declare void @f(void, ptr)`);
+# `int const *p` produced the far more dangerous `declare void @f(i32, ptr)` —
+# wrong arity, wrong ABI, silently accepted at every stage. No validity gate can
+# catch that one, which is why the parse fix is the primary deliverable and this
+# test asserts the exact emitted signature rather than merely "it compiled".
+#
+# Both halves of the matrix are pinned — the previously broken spellings AND the
+# previously correct ones — so a future "fix" cannot trade one for the other.
+run_w3b_quals() {
+  local ir err expected got line name bad
+  ir="$(mktemp)"
+  err="$(./build/nucleusc --emit-llvm tests/fixtures/w3b-quals.nuc 2>&1 >"$ir" || true)"
+  if [ -n "$err" ]; then
+    echo "FAIL  w3b-quals (compile error)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+    rm -f "$ir"
+    return 0
+  fi
+  # The emitted IR must also PARSE: --emit-llvm never reads back what it writes,
+  # so exit 0 above proves nothing about validity (this is exactly how the
+  # `(void, ptr)` shape survived to the end of a build).
+  if ! llvm-as "$ir" -o /dev/null 2>/dev/null; then
+    echo "FAIL  w3b-quals (emitted IR does not parse)"
+    rm -f "$ir"
+    return 0
+  fi
+  bad=0
+  # name<TAB>expected declare line
+  while IFS='|' read -r name expected; do
+    [ -z "$name" ] && continue
+    got="$(grep -E "^declare [^@]*@$name\(" "$ir" || true)"
+    if [ "$got" != "$expected" ]; then
+      echo "FAIL  w3b-quals ($name)"
+      echo "    expected: $expected"
+      echo "    got:      ${got:-<no declare emitted>}"
+      bad=1
+    fi
+  done <<'EOF'
+w3b_void_const|declare void @w3b_void_const(ptr)
+w3b_int_const|declare void @w3b_int_const(ptr)
+w3b_int_volatile|declare void @w3b_int_volatile(ptr)
+w3b_struct_const|declare void @w3b_struct_const(ptr)
+w3b_ulong_const|declare void @w3b_ulong_const(ptr)
+w3b_long_const|declare void @w3b_long_const(ptr)
+w3b_double_const|declare void @w3b_double_const(ptr)
+w3b_int_const_val|declare void @w3b_int_const_val(i32)
+w3b_atomic|declare void @w3b_atomic(ptr)
+w3b_const_void|declare void @w3b_const_void(ptr)
+w3b_char_star_const|declare void @w3b_char_star_const(ptr)
+w3b_const_char_star_const|declare void @w3b_const_char_star_const(ptr)
+w3b_volatile_int|declare void @w3b_volatile_int(ptr)
+w3b_int_restrict|declare void @w3b_int_restrict(ptr)
+w3b_no_params|declare void @w3b_no_params()
+w3b_variadic|declare void @w3b_variadic(ptr, ...)
+w3b_east_restrict|declare void @w3b_east_restrict(ptr)
+w3b_ret_int|declare i32 @w3b_ret_int(ptr)
+w3b_ret_east|declare ptr @w3b_ret_east()
+EOF
+  [ "$bad" = 0 ] && echo "PASS  w3b-quals"
+  rm -f "$ir"
+}
+
+# Stage 15 W3b: the validity gate — a declaration the importer recognizes as a
+# function but cannot faithfully describe is SKIPPED with a located warning
+# rather than emitted as IR for the LLVM parser to choke on much later.
+#
+# Asserts all three halves: the representable declaration survives, the three
+# unrepresentable ones are absent from the IR, and each warning names the C
+# header and the declaration's own line (not the .nuc file that imported it).
+run_w3b_skip() {
+  local ir err bad line
+  ir="$(mktemp)"
+  err="$(./build/nucleusc --emit-llvm tests/fixtures/w3b-skip.nuc 2>&1 >"$ir" || true)"
+  bad=0
+  if ! grep -q '^declare void @w3b_keep(ptr)$' "$ir"; then
+    echo "FAIL  w3b-skip (representable declaration was not imported)"
+    bad=1
+  fi
+  for sym in w3b_skip_byval w3b_skip_void w3b_skip_many; do
+    if grep -q "@$sym" "$ir"; then
+      echo "FAIL  w3b-skip ($sym reached the IR instead of being skipped)"
+      bad=1
+    fi
+  done
+  # `<header>:<line>:` — the line is the declaration's own, recovered from
+  # clang -E's linemarkers, so an off-by-N in that tracking fails here.
+  while IFS='|' read -r line want; do
+    [ -z "$line" ] && continue
+    if ! printf '%s' "$err" | grep -qF "w3b-skip.h:$line: warning: skipping C declaration $want"; then
+      echo "FAIL  w3b-skip (missing warning at line $line: $want)"
+      printf '%s\n' "$err" | sed 's/^/    got: /'
+      bad=1
+    fi
+  done <<'EOF'
+20|'w3b_skip_byval': a by-value 'W3bHidden' with no known layout
+24|'w3b_skip_void': a 'void' parameter
+29|'w3b_skip_many': more than 32 parameters
+EOF
+  # What survived must still be valid IR.
+  if ! llvm-as "$ir" -o /dev/null 2>/dev/null; then
+    echo "FAIL  w3b-skip (emitted IR does not parse)"
+    bad=1
+  fi
+  [ "$bad" = 0 ] && echo "PASS  w3b-skip"
+  rm -f "$ir"
+}
+
+# Stage 15 W3b: the §1.5 accept criterion. `(import-use "SDL2/SDL.h")` reaches
+# the x86 intrinsics headers transitively, whose `void _mm_clflush(void const *)`
+# imported as `declare void @_mm_clflush(void, ptr)` and killed the entire
+# compilation at `failed to parse generated IR`.
+#
+# Built with `-o` — a REAL link, which is the only thing that parses the module.
+# The fixture calls no SDL function, so no -lSDL2 is needed (run-tests.sh has no
+# per-test link-flag mechanism). SKIPs cleanly where SDL2 is not installed.
+run_w3b_sdl() {
+  local hdr out err ir
+  hdr=""
+  for d in /usr/include /usr/local/include; do
+    [ -f "$d/SDL2/SDL.h" ] && hdr="$d/SDL2/SDL.h"
+  done
+  if [ -z "$hdr" ]; then
+    echo "PASS  w3b-sdl (SKIP: SDL2/SDL.h not installed)"
+    return 0
+  fi
+  out="$(mktemp -u)"
+  err="$(./build/nucleusc tests/fixtures/w3b-sdl.nuc -o "$out" 2>&1 || true)"
+  if [ ! -x "$out" ]; then
+    echo "FAIL  w3b-sdl (compile/link failed)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+    rm -f "$out"
+    return 0
+  fi
+  if [ "$("$out" 2>&1)" != "w3b-sdl ok" ]; then
+    echo "FAIL  w3b-sdl (linked binary did not run)"
+    rm -f "$out"
+    return 0
+  fi
+  # The intrinsic that used to produce the invalid `(void, ptr)` must now be a
+  # single pointer parameter — pinned so the gate cannot silently "fix" this by
+  # skipping the declaration instead of parsing it.
+  ir="$(mktemp)"
+  ./build/nucleusc --emit-llvm tests/fixtures/w3b-sdl.nuc >"$ir" 2>/dev/null || true
+  if ! grep -q '^declare void @_mm_clflush(ptr)$' "$ir"; then
+    echo "FAIL  w3b-sdl (_mm_clflush not imported as a single pointer parameter)"
+    grep -n '_mm_clflush' "$ir" | sed 's/^/    got: /'
+  elif [ -n "$err" ]; then
+    echo "FAIL  w3b-sdl (unexpected diagnostics)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  else
+    echo "PASS  w3b-sdl"
+  fi
+  rm -f "$out" "$ir"
+}
+
+# Stage 15 W3c: the C typedef matrix (cheader.md §1.4).
+#
+# `c-parse-type` used to resolve any name it did not recognize as a builtin to
+# `ptr`, so EVERY scalar typedef degraded — `off_t`, SDL's `Uint8`/`Uint32`, even
+# a one-level `typedef int myint;`. Only `size_t`/`ssize_t` worked, and only
+# because they are hardcoded. The wrong rows all compiled cleanly, so this
+# asserts the exact emitted `declare` line, never "it compiled".
+run_w3c_typedef() {
+  local ir err bad name expected got
+  ir="$(mktemp)"
+  err="$(./build/nucleusc --emit-llvm tests/fixtures/w3c-typedef.nuc 2>&1 >"$ir" || true)"
+  if [ -n "$err" ]; then
+    echo "FAIL  w3c-typedef (unexpected diagnostics)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+    rm -f "$ir"
+    return 0
+  fi
+  if ! llvm-as "$ir" -o /dev/null 2>/dev/null; then
+    echo "FAIL  w3c-typedef (emitted IR does not parse)"
+    rm -f "$ir"
+    return 0
+  fi
+  bad=0
+  while IFS='|' read -r name expected; do
+    [ -z "$name" ] && continue
+    got="$(grep -E "^declare [^@]*@$name\(" "$ir" || true)"
+    if [ "$got" != "$expected" ]; then
+      echo "FAIL  w3c-typedef ($name)"
+      echo "    expected: $expected"
+      echo "    got:      ${got:-<no declare emitted>}"
+      bad=1
+    fi
+  done <<'EOF'
+w3c_f_off|declare i64 @w3c_f_off(i32)
+w3c_f_off3|declare i64 @w3c_f_off3()
+w3c_f_u8|declare i8 @w3c_f_u8()
+w3c_f_u32|declare i32 @w3c_f_u32()
+w3c_f_i16|declare i16 @w3c_f_i16()
+w3c_f_int|declare i32 @w3c_f_int()
+w3c_f_f32|declare float @w3c_f_f32()
+w3c_f_f64|declare double @w3c_f_f64()
+w3c_f_u64|declare i64 @w3c_f_u64()
+w3c_f_size|declare i64 @w3c_f_size()
+w3c_f_takes|declare i32 @w3c_f_takes(i64, i8, i32, i16)
+w3c_f_str|declare ptr @w3c_f_str(ptr, ptr)
+w3c_f_handler|declare void @w3c_f_handler(ptr, ptr)
+w3c_f_enum|declare i32 @w3c_f_enum(i32)
+w3c_f_opaque|declare ptr @w3c_f_opaque(ptr)
+w3c_f_pairp|declare i32 @w3c_f_pairp(ptr)
+w3c_f_noextern|declare ptr @w3c_f_noextern(i32)
+w3c_f_noextern_u|declare ptr @w3c_f_noextern_u(i32)
+EOF
+  # A by-value use of an array typedef has no Nucleus representation: skipped,
+  # never given the element type's ABI.
+  if grep -q '@w3c_f_vec' "$ir"; then
+    echo "FAIL  w3c-typedef (by-value array typedef reached the IR)"
+    bad=1
+  fi
+  # ... and a *use* of the skipped name says why, naming the header and line —
+  # this is where the skip is reported, instead of a warning on every build.
+  got="$(printf '(import-use "./tests/fixtures/w3c-typedef.h")\n(defn main ():i32 (return (w3c_f_vec null)))\n' > "$ir.use.nuc"; ./build/nucleusc --emit-llvm "$ir.use.nuc" 2>&1 >/dev/null || true)"
+  if ! printf '%s' "$got" | grep -q "w3c_f_vec' — its C header declaration was skipped (.*w3c-typedef.h:"; then
+    echo "FAIL  w3c-typedef (use of a skipped declaration was not diagnosed)"
+    printf '%s\n' "$got" | sed 's/^/    got: /'
+    bad=1
+  fi
+  # Struct FIELD types resolve through their typedefs too — the shape W3a
+  # recorded as newly observed (Mix_Chunk.volume, a Uint8, typed as ptr).
+  if ! grep -q '^%w3c_fields = type { i8, i32, i64, ptr }$' "$ir"; then
+    echo "FAIL  w3c-typedef (struct field types did not resolve through typedefs)"
+    grep '^%w3c_fields = type' "$ir" | sed 's/^/    got: /'
+    bad=1
+  fi
+  [ "$bad" = 0 ] && echo "PASS  w3c-typedef"
+  rm -f "$ir" "$ir.use.nuc"
+}
+
+# Stage 15 W3c: declaration precedence (cheader.md §1.4).
+#
+# An explicit `(declare …)` wins over a header-derived declaration of the same
+# function REGARDLESS OF ORDER, and a signature mismatch warns naming both
+# sources. Before the rule, both orders were silent and disagreed: the one that
+# came first won, so `(import-use "unistd.h")` above a hand-written `lseek`
+# quietly replaced the author's correct declaration — the failure §1.4 cost a
+# debugging session over.
+#
+# Both orders are asserted, plus the case where the name is USED between the
+# import and the declare (which is why the header's copy cannot simply be
+# dropped and the explicit one left to emit at its own position).
+run_w3c_precedence() {
+  local ir err bad n
+  bad=0
+  ir="$(mktemp)"
+  for n in first second; do
+    err="$(./build/nucleusc --emit-llvm "tests/fixtures/w3c-prec-$n.nuc" 2>&1 >"$ir" || true)"
+    # Exactly one declaration reaches the IR — LLVM rejects a second `declare`
+    # for the same symbol even when the two agree.
+    if [ "$(grep -c '^declare .*@lseek(' "$ir")" != "1" ]; then
+      echo "FAIL  w3c-precedence ($n: expected exactly one lseek declaration)"
+      grep -n '@lseek' "$ir" | sed 's/^/    got: /'
+      bad=1
+    fi
+    # ...and it is the author's, not the header's (i32 whence).
+    if ! grep -q '^declare i64 @lseek(i32, i64, i64)$' "$ir"; then
+      echo "FAIL  w3c-precedence ($n: the header declaration won)"
+      grep -n '@lseek' "$ir" | sed 's/^/    got: /'
+      bad=1
+    fi
+    # The conflict warns, blamed on the .nuc declaration and naming the header.
+    if ! printf '%s' "$err" | grep -q "w3c-prec-$n.nuc:.*declaration of 'lseek' as i64 (i32, i64, i64) conflicts with .*unistd.h:.*declares it as i64 (i32, i64, i32); the explicit declaration wins"; then
+      echo "FAIL  w3c-precedence ($n: conflict not diagnosed naming both sources)"
+      printf '%s\n' "$err" | sed 's/^/    got: /'
+      bad=1
+    fi
+    if ! llvm-as "$ir" -o /dev/null 2>/dev/null; then
+      echo "FAIL  w3c-precedence ($n: emitted IR does not parse)"
+      bad=1
+    fi
+  done
+  # A use BETWEEN the import and the declare still resolves, against the
+  # explicit signature.
+  err="$(./build/nucleusc --emit-llvm tests/fixtures/w3c-prec-use.nuc 2>&1 >"$ir" || true)"
+  if [ "$(grep -c '^declare .*@strchr(' "$ir")" != "1" ] \
+     || ! grep -q '^declare ptr @strchr(ptr, i64)$' "$ir"; then
+    echo "FAIL  w3c-precedence (use-before-declare: wrong or duplicated strchr declaration)"
+    grep -n '^declare .*@strchr(' "$ir" | sed 's/^/    got: /'
+    bad=1
+  fi
+  if ! grep -qE 'call ptr @strchr\(ptr [^,]+, i64 ' "$ir"; then
+    echo "FAIL  w3c-precedence (use-before-declare: call did not resolve to the explicit signature)"
+    bad=1
+  fi
+  if ! llvm-as "$ir" -o /dev/null 2>/dev/null; then
+    echo "FAIL  w3c-precedence (use-before-declare: emitted IR does not parse)"
+    bad=1
+  fi
+  [ "$bad" = 0 ] && echo "PASS  w3c-precedence"
+  rm -f "$ir"
+}
+
+# Stage 15 W3c fallout: a `declare` parameter list's UNNAMED spelling carries
+# types. Every written type was ignored and emitted as `i32`, so the bare list
+# was correct exactly when the signature was all-`i32` — including the compiler's
+# own `(declare repl_print_f64 (ptr):void)`, which declared an `i32` parameter
+# against a C shim taking a pointer.
+#
+# The pairs in the fixture are the same signature written both ways, so the
+# assertion is that the two spellings AGREE; a default cannot satisfy both sides
+# of a pair whose named half is already correct.
+run_w3c_declare_params() {
+  local ir err bad name expected got
+  ir="$(mktemp)"
+  err="$(./build/nucleusc --emit-llvm tests/fixtures/w3c-declare-params.nuc 2>&1 >"$ir" || true)"
+  if [ -n "$err" ]; then
+    echo "FAIL  w3c-declare-params (unexpected diagnostics)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+    rm -f "$ir"
+    return 0
+  fi
+  if ! llvm-as "$ir" -o /dev/null 2>/dev/null; then
+    echo "FAIL  w3c-declare-params (emitted IR does not parse)"
+    rm -f "$ir"
+    return 0
+  fi
+  bad=0
+  while IFS='|' read -r name expected; do
+    [ -z "$name" ] && continue
+    got="$(grep -E "^declare [^@]*@$name\(" "$ir" || true)"
+    if [ "$got" != "$expected" ]; then
+      echo "FAIL  w3c-declare-params ($name)"
+      echo "    expected: $expected"
+      echo "    got:      ${got:-<no declare emitted>}"
+      bad=1
+    fi
+  done <<'EOF'
+w3d_bare_1|declare i64 @w3d_bare_1(i64)
+w3d_named_1|declare i64 @w3d_named_1(i64)
+w3d_bare_2|declare i64 @w3d_bare_2(i32, i64)
+w3d_named_2|declare i64 @w3d_named_2(i32, i64)
+w3d_bare_3|declare i64 @w3d_bare_3(i64, i32)
+w3d_named_3|declare i64 @w3d_named_3(i64, i32)
+w3d_bare_4|declare void @w3d_bare_4(i8, i8, i16, i16, i32, i64)
+w3d_named_4|declare void @w3d_named_4(i8, i8, i16, i16, i32, i64)
+w3d_bare_5|declare void @w3d_bare_5(double, float)
+w3d_named_5|declare void @w3d_named_5(double, float)
+w3d_bare_6|declare i32 @w3d_bare_6(i64, i64, i1, i32)
+w3d_named_6|declare i32 @w3d_named_6(i64, i64, i1, i32)
+w3d_bare_7|declare i64 @w3d_bare_7(ptr, ptr, i64)
+w3d_named_7|declare i64 @w3d_named_7(ptr, ptr, i64)
+w3d_mixed|declare void @w3d_mixed(i64, i32, double)
+w3d_kw|declare i64 @w3d_kw(i64, double)
+w3d_annot|declare void @w3d_annot(i64, i64)
+w3d_ptr_named|declare void @w3d_ptr_named(ptr)
+EOF
+  # A by-value struct in unnamed position takes the platform C ABI, exactly like
+  # a named one: {i32, i64} is two INTEGER eightbytes, so both spellings coerce
+  # to (i64, i64) — never a raw %W3dPair and never the i32 default.
+  got="$(grep -E '^declare void @w3d_bare_8\(' "$ir" || true)"
+  if [ "$got" != "declare void @w3d_bare_8(i64, i64, i32)" ] \
+     || [ "$(grep -c '^declare void @w3d_named_8(i64, i64, i32)$' "$ir")" != "1" ]; then
+    echo "FAIL  w3c-declare-params (by-value struct parameter ABI)"
+    grep -E '^declare void @w3d_(bare|named)_8\(' "$ir" | sed 's/^/    got: /'
+    bad=1
+  fi
+  [ "$bad" = 0 ] && echo "PASS  w3c-declare-params"
+  rm -f "$ir"
+}
+
+# The precedence interaction the parameter defect broke: a bare-list `declare`
+# that AGREES with the C header must not warn (it rendered as all-`i32`, so it
+# "conflicted" with every non-i32 header signature and the wrong one won), while
+# one that genuinely differs must still warn and still win.
+run_w3c_declare_header() {
+  local ir err bad
+  bad=0
+  ir="$(mktemp)"
+
+  err="$(./build/nucleusc --emit-llvm tests/fixtures/w3c-declare-header-match.nuc 2>&1 >"$ir" || true)"
+  if [ -n "$err" ]; then
+    echo "FAIL  w3c-declare-header (a declaration matching the header still diagnosed)"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+    bad=1
+  fi
+  if [ "$(grep -c '^declare .*@lseek(' "$ir")" != "1" ] \
+     || ! grep -q '^declare i64 @lseek(i32, i64, i32)$' "$ir"; then
+    echo "FAIL  w3c-declare-header (match: wrong or duplicated lseek declaration)"
+    grep -n '^declare .*@lseek(' "$ir" | sed 's/^/    got: /'
+    bad=1
+  fi
+  if ! llvm-as "$ir" -o /dev/null 2>/dev/null; then
+    echo "FAIL  w3c-declare-header (match: emitted IR does not parse)"
+    bad=1
+  fi
+
+  err="$(./build/nucleusc --emit-llvm tests/fixtures/w3c-declare-header-conflict.nuc 2>&1 >"$ir" || true)"
+  if ! printf '%s' "$err" | grep -q "w3c-declare-header-conflict.nuc:.*declaration of 'lseek' as i64 (i32, i64, i64) conflicts with .*unistd.h:.*declares it as i64 (i32, i64, i32); the explicit declaration wins"; then
+    echo "FAIL  w3c-declare-header (conflict: a real mismatch was not diagnosed)"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+    bad=1
+  fi
+  if [ "$(grep -c '^declare .*@lseek(' "$ir")" != "1" ] \
+     || ! grep -q '^declare i64 @lseek(i32, i64, i64)$' "$ir"; then
+    echo "FAIL  w3c-declare-header (conflict: the explicit declaration did not win)"
+    grep -n '^declare .*@lseek(' "$ir" | sed 's/^/    got: /'
+    bad=1
+  fi
+
+  [ "$bad" = 0 ] && echo "PASS  w3c-declare-header"
   rm -f "$ir"
 }
 
@@ -892,7 +1316,7 @@ run_s1_block() {
   cat > "$s1_dir/main.nuc" <<EOF
 (exclude-prelude)
 (import-use "$s1_dir/lib.nuch")
-(declare printf (fmt:CStr &rest args:i32) :i32)
+(declare printf (fmt:CStr):i32)
 (defn main () :i32
   (printf "twice=%d add3=%d scale32=%d scale64=%ld\n"
     (twice 21) (add3 1 2 3) (scale 4) (scale (as i64 5)))
@@ -1498,6 +1922,41 @@ spawn run_reject_at w3a-unknown-type-return tests/fixtures/w3a-unknown-type-retu
   "tests/fixtures/w3a-unknown-type-return.nuc:3: error:" "unknown type: AlsoNoSuchType"
 # One real third-party header must give BOTH shapes from a single import.
 spawn run_w3a_sdl_mixer
+
+# --- Stage 15 W3b: C type qualifiers + the declare validity gate -------------
+# design/stage15-stress-test/cheader.md §1.5. Two independent deliverables:
+# the PARSE fix (qualifiers are legal after the base type, not only before it —
+# `int const *p` was importing as a TWO-parameter function) and the GATE (a
+# recognized declaration the importer cannot describe is skipped with a located
+# warning instead of emitted as invalid IR). The gate does not subsume the parse
+# fix: `(i32, ptr)` passes any reasonable gate, so only the matrix catches it.
+spawn run_w3b_quals
+spawn run_w3b_skip
+spawn run_w3b_sdl
+
+# --- Stage 15 W3c: typedef chains + declaration precedence -------------------
+# design/stage15-stress-test/cheader.md §1.4. Two deliverables again: the typedef
+# TABLE (an unfollowed typedef resolved to `ptr`, so `off_t`/`Uint8`/`Uint32` and
+# every scalar alias silently degraded, in return types, parameters AND struct
+# fields) and the PRECEDENCE rule (an explicit `declare` beats a header-derived
+# one whichever comes first, and a mismatch warns naming both sources).
+spawn run_w3c_typedef
+spawn run_w3c_precedence
+# W3c fallout: `declare`'s bare (unnamed) parameter spelling ignored every
+# written type and emitted `i32`. The matrix pins both spellings against each
+# other; the header pair pins the precedence interaction it broke — an explicit
+# declaration MATCHING the header must be silent, a differing one must still
+# warn and win.
+spawn run_w3c_declare_params
+spawn run_w3c_declare_header
+# A parameter spelling that names no type is a located error, not a default —
+# and `&rest`/`&optional` are defn-only (the marker used to be counted as an
+# extra i32 parameter, so the declared arity silently disagreed).
+spawn run_reject_at w3c-declare-unknown-type tests/fixtures/w3c-declare-unknown-type.nuc \
+  "tests/fixtures/w3c-declare-unknown-type.nuc:4: error:" "unknown type: NoSuchDeclParamType"
+spawn run_reject_at w3c-declare-rest tests/fixtures/w3c-declare-rest.nuc \
+  "tests/fixtures/w3c-declare-rest.nuc:6: error:" \
+  "declare: '&rest' is not supported in a declaration"
 
 # --- Stage 15 W4e: docs/stdlib.md's availability table is generated ---------
 spawn run_stdlib_table
