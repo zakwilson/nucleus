@@ -1,0 +1,16 @@
+; Stage 15 W3c: drive tests/fixtures/w3c-typedef.h through the C header importer.
+; run_w3c_typedef asserts the exact `declare` line for every function in it.
+(import-use "./tests/fixtures/w3c-typedef.h")
+
+; The typedef'd struct's fields must type from the resolved typedefs, not `ptr`.
+; This is the `Mix_Chunk.volume` shape W3a recorded as newly observed: reading a
+; `Uint8` field failed a return-type mismatch while the plain `int` beside it
+; worked.
+(defn w3c-read-vol (p:ptr:w3c_fields):ui8
+  (return (p vol)))
+
+(defn w3c-read-pos (p:ptr:w3c_fields):i64
+  (return (p pos)))
+
+(defn main ():i32
+  (return 0))

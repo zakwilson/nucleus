@@ -1,0 +1,7 @@
+; Stage 15 W3c (cheader.md §1.4): declaration precedence, explicit `declare`
+; FIRST. The explicit signature deliberately disagrees with unistd.h's
+; (`whence` as i64 rather than i32) so the conflict is observable; the rule is
+; that the explicit one wins and the mismatch warns naming both sources.
+(declare lseek (fd:i32 off:i64 whence:i64):i64)
+(import-use "unistd.h")
+(defn main ():i32 (return 0))

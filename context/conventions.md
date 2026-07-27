@@ -899,3 +899,266 @@ program defines"; since W3a registers every C header type name it bounds "types
 every imported header names". Measured: `SDL2/SDL.h` + `SDL2/SDL_mixer.h` +
 `png.h` in one unit needs between 200 and 256 slots — the old 256 was one umbrella
 header from breaking. Now 1024.
+
+## A dangling `true` clause is the tell for a `cond` that closed one paren early
+
+`cond` clauses are `test body test body …`. If an extra `)` closes the `cond`
+after an earlier clause, the remaining `test`/`body` pairs become **sibling
+statements** of the `cond`: the stray `true` is a bare no-op expression (no
+warning — `true` is a perfectly good statement), and each remaining body runs
+**unconditionally**, right after whichever branch the truncated `cond` took. The
+program still compiles, still passes its tests, and is subtly wrong in a way that
+does not look like a control-flow bug.
+
+Found in Stage 15 W3b: `emit-c-include`'s top-level two-way dispatch
+(`struct`/`union`/`typedef` → the type-declaration parser, else → the
+function-declaration parser) had been a fall-through since `6ef16dc Add union
+types`, so a function parse ran after *every* type declaration, starting at
+whatever whitespace the type parse had stopped on. Symptoms were indirect: a
+header-import warning reported the *preceding* declaration's line, and two
+consecutive `struct Foo;` forward declarations lost the second. Neither looks
+like "the cond is broken".
+
+Two habits that catch it: (1) treat a `true` clause whose body is at a different
+paren depth from its siblings as suspect — run a depth counter over the form
+rather than eyeballing the closers; (2) when a location or an ordering is "off by
+a bit" but the computation that produced it checks out, verify the *caller's*
+control flow before re-deriving the computation. In W3b the line arithmetic
+(`cheader-line-at`) was correct the whole time; the position handed to it was
+produced by a branch that should never have run.
+
+## The C typedef table resolves at RECORD time — which is what makes chains and cycles free
+
+`c-parse-typedef-decl` (`src/cheader.nuc`, Stage 15 W3c) records a non-aggregate
+`typedef` into `g-cheader-typedefs` as a Node cell (`s` = name, `car` = the
+**already-resolved** `Type*`). Resolving at the point the `typedef` is parsed —
+rather than walking the chain at each use — buys two properties that are easy to
+lose if someone "simplifies" it into a lazy walk:
+
+- **A chain costs one lookup.** `off_t` → `__off_t` → `long int` is collapsed
+  when `off_t` is recorded, because `__off_t` was recorded first.
+- **A cycle is impossible by construction.** A name can only ever resolve
+  against entries recorded strictly *before* it (the preprocessed text is
+  scanned in order and a C file-scope typedef is visible from its declaration
+  onward), so a malformed `typedef foo foo;` records `foo` as unrepresentable
+  instead of looping forever. There is no cycle check, and none is needed.
+
+`c-parse-typedef-decl` is reached from `emit-c-include`'s dispatch **only after
+`c-parse-struct-decl` declines**, which is what keeps W3a's opaque
+registration/upgrade paths untouched: every `typedef struct|union …` shape that
+introduces a named aggregate is handled there and can never reach the scalar
+path. A record whose `car` is null means "real C type name, no Nucleus
+representation" and is deliberately distinct from an *absent* record.
+
+Two adjacent parser facts, both found because the table is useless without them:
+**`enum` was not a declaration specifier at all** (so `enum Tag e` read `enum` as
+the base type and `Tag` as the declarator name — the identical phantom-parameter
+shape W3b found for east qualifiers), and **`__extension__` was not consumed at
+top level**, which hid glibc's entire `__quad_t` family (`__extension__ typedef
+long long int __quad_t;`). When adding a C declaration-specifier keyword, check
+both the specifier loop in `c-parse-type` *and* the top-level dispatch in
+`emit-c-include`.
+
+**`size_t`/`ssize_t` stay hardcoded in `c-type-to-nucleus`, on purpose.**
+`clang -E` preprocesses for the *host* even under `--target=`, so letting
+`<stddef.h>`'s own typedef win would make `size_t`'s width follow the
+preprocessing host rather than the emission target.
+
+## An unreachable code path is not a correct one — two cheader defects that only became reachable in W3c
+
+Both were pre-existing and both were invisible for as long as an unfollowed
+typedef resolved to `ptr`. The general lesson: when you fix a coercion or
+resolution that used to collapse everything to one type, re-audit every consumer
+that *never saw the other types*.
+
+- **`c-parse-func-decl` never applied the aggregate C ABI.** It printed the raw
+  `type-to-ir` of each parameter and the return, unlike `emit-nuch-declare-import`
+  and `emit-defn`, which route through `abi-classify`. Harmless only because
+  glibc names every by-value aggregate through a typedef and every typedef was
+  `ptr` — so the C-header path had *literally never* emitted a struct by value.
+  With chains followed, `div`/`ldiv`/`lldiv`/`fopencookie` appear and a raw
+  `%div_t` in a `declare` disagrees with the ABI the call site already lowers.
+  Now routed through `abi-classify`/`abi-ret-ir`/`abi-print-param`; for a scalar
+  or pointer these reduce to `type-to-ir`, so the text is byte-identical.
+- **The cheader path never set `StructDef.emitted`.** `cheader-struct-define` /
+  `cheader-adopt-shape` write their `%X = type {…}` line straight to
+  `g-type-stream` rather than through `emit-struct-ir-type`, and `emitted` is
+  exactly what `pending-union-deps-ready` consults before writing a queued union
+  whose field names that struct. SDL's `SDL_WindowShapeParams` (a union with an
+  `SDL_Color` member) was therefore deferred on **every** drain and never
+  defined, while `%SDL_WindowShapeMode`, which contains it, referenced it —
+  `use of undefined type`. If you add a fourth place that writes a struct type
+  line directly, set `emitted` there too.
+
+## An import-time warning's volume is a function of what the compiler can currently detect
+
+W3b made every skipped C declaration an always-on stderr warning and justified
+it with a measured volume of **zero**. That measurement was an artifact of the
+§1.4 defect: while every unfollowed typedef resolved to `ptr`, nothing *could*
+be detected. The moment W3c followed the chains, `(import-use "SDL2/SDL.h")`
+produced **165** genuinely unrepresentable by-value declarations (149
+`long double`, 7 `_Float128`, 6 `SDL_JoystickGUID`, 2 `SDL_GUID`, 1
+`_Float16`) — six of them in the REPL's startup banner and six in every `make`
+of the compiler itself.
+
+The resolution is a two-tier policy worth reusing for any "we could not import
+X" diagnostic:
+
+- **Loud at the point of discovery** when the *compiler* failed (a parse it
+  could not do). These are potentially fixable in the compiler and stay
+  always-on with W3b's wording and dedup.
+- **Recorded, and reported at the point of USE**, when the *language* has no
+  equivalent. `g-cheader-skipped` (declared in `src/nucleusc.nuc`'s globals
+  block, above `unresolved-name-message`, for ordering) holds a pre-formatted
+  `"<header>:<line>: <reason>"` per function name; `unresolved-name-message`
+  checks it before the did-you-mean and emits
+  `unknown: 'strtold' — its C header declaration was skipped (…)`. This is
+  strictly *more* precise than a warning: same header, line and reason, but
+  attached to the call site instead of appearing thousands of lines earlier
+  with nothing connecting it to the use.
+
+Before assuming "always on costs nothing", ask what the measurement was
+*conditioned on*.
+
+## Declaration precedence: suppressing the loser is not enough — the winner must be emitted where the loser was
+
+Stage 15 W3c's rule is "an explicit `(declare …)` beats a C header's
+declaration of the same function, in either order". Order-independence comes
+from `prescan-explicit-declares` (`src/cheader.nuc`, called from
+`emit-toplevel-forms` beside the other prescans, so it runs before *any* import
+of that unit), and the header's copy is then never registered and never emitted —
+LLVM rejects a second `declare` for the same symbol **even when the two agree**.
+
+The trap: simply dropping the header's copy leaves the name **undefined between
+the import and the explicit declare's own position**. Measured —
+`examples/cstr-lit-test.nuc` declares `strlen` at line 15, and `lib/arena.nuc`
+calls it from inside the prelude import that precedes it, so suppression alone
+broke that build with `unknown: strlen`. The fix is to emit the explicit
+declaration *at the point of first need*
+(`cheader-yield-to-explicit-declare`, `src/nucleusc.nuc`); its own form later
+becomes an idempotent no-op because `emit-nuch-declare-import` already returns
+early for a registered name. Generalize: whenever a later definition is made to
+win over an earlier one in a single-pass compiler, the winner has to be *hoisted*
+to the loser's position, not merely preferred.
+
+Two placement notes. **`cheader-yield-to-explicit-declare` lives in
+`nucleusc.nuc`, below both `(import-use cheader)` and `(import-use nuch)`,
+because cheader.nuc is imported one line above nuch.nuc and therefore cannot
+name `emit-nuch-declare-import`** — the ordinal prescan rule again. cheader.nuc
+reaches back into it fine, since `prescan-defn-signatures` registers every
+nucleusc.nuc signature before the first form of any import is emitted. And
+signatures are compared by their **rendered `declare` text** (`c-fn-sig-render`),
+never `type-eq`: `type-eq` treats any two `TY-FN` as equal, and the rendering is
+what the diagnostic has to show anyway.
+
+## Skipping is a legitimate outcome for an imported C declaration — but only for what is *invalid*, not what is merely *wrong*
+
+`c-decl-skip-reason` (`src/cheader.nuc`, Stage 15 W3b) gates every synthesized
+`declare` from a C header: a by-value struct/union with no known layout, a
+recorded `void` parameter, an opaque parameter/return type, or an arity over
+`C-MAX-PARAMS` are skipped with `<header>:<line>: warning: skipping C
+declaration '<name>': <reason>` instead of emitted. This converts "header X
+explodes at `failed to parse generated IR` thousands of lines later" into "header
+X's function Y was skipped", which is diagnosable and survivable.
+
+Three properties are load-bearing:
+
+- **The gate runs only after the declaration was *recognized* as a function.**
+  The `c-parse-func-decl`-returns-0 path stays silent: every typedef, variable,
+  `static inline` body and macro remnant in a preprocessed header goes through it
+  legitimately, and warning there buries the signal completely.
+- **It cannot see a wrong-but-representable declaration, and must not try.** The
+  corollary from W3b's own finding: `void f(int const *p)` importing as the
+  two-parameter `(i32, ptr)` was invisible to *any* gate, which is why the parse
+  fix, not the gate, was the deliverable. (W3b also recorded that the spec's
+  "unresolved type names" arm was unimplementable *because* an unfollowed typedef
+  resolved to `ptr`. W3c removed that objection at the source — see the typedef
+  table note above — so the arm now exists: a by-value parameter or return whose
+  base type cannot be resolved marks the declaration through the same
+  `g-cheader-unrep` channel. A *pointer* to an unresolvable type is deliberately
+  still `ptr`; every C pointer is one machine word.)
+- **Warnings are deduplicated by function name.** A C header import is
+  deliberately not deduplicated (each import may alias under a different prefix)
+  and umbrella headers include each other transitively, so without the dedup
+  (`g-cheader-skipped`, a Node-cell string list) one skipped function warns many
+  times per build.
+
+Measured volume of the **loud** arms remains **zero** across stdio, stdlib,
+string, unistd, fcntl, math, time, sys/stat, pthread, netinet/in, signal, png,
+`SDL2/SDL.h` and `SDL2/SDL_mixer.h`. W3c's arm is reported at the point of use
+instead (see "An import-time warning's volume…" above) — that measurement was
+conditioned on the §1.4 defect and did not survive it.
+
+## C type qualifiers are legal *after* the base type too (`int const *p`)
+
+A C declaration-specifier sequence admits `const`/`volatile`/`restrict`/`_Atomic`
+**anywhere**, and each `*` admits its own run of them. `int const *p` and
+`const int *p` denote the same type. Nucleus models none of this and emits the
+same LLVM type either way, so `c-skip-type-quals` (`src/cheader.nuc`) consumes
+and discards a qualifier run at every legal position — after the specifier loop
+and after each `*` — rather than representing it.
+
+The failure mode when a position is missed is worth remembering because it is
+*not* a parse error: the qualifier token gets consumed as the **declarator name**
+and the rest of the declarator (`*p`) starts a phantom **next parameter**. So a
+one-parameter function silently imports as a two-parameter one with a fabricated
+trailing `ptr`. Only the `void` base spelling produces IR LLVM rejects; every
+other base produces a representable, wrong-ABI declaration that nothing
+downstream can detect. When extending the C declarator grammar, test the emitted
+`declare` line's **arity**, not merely that the header compiled.
+
+## A "no annotation here" null is a *decision point*, not a default
+
+`extract-name-and-type` returns null for **any** node that carries no
+`name:type` annotation — which includes every legitimate bare *type* spelling.
+A caller that treats that null as "untyped, assume `i32`" silently mistypes
+every spelling the grammar deliberately allows. Stage 15's `declare` fix is the
+worked example: `emit-nuch-declare-import` (`src/nuch.nuc`) wrote `ty-i32` on
+null, so `(declare f (i64 ptr ui32):i64)` emitted `declare i64 @f(i32, i32,
+i32)` — wrong for every parameter, and *correct exactly when the signature was
+all-`i32`*, which is why it survived years of use including the compiler's own
+`(declare repl_print_f64 (ptr):void)`. Each caller must decide what the null
+means for its form and act on it: `emit-fn` dies (`fn: missing :type on param`),
+`declare` now parses the node as a **type operand** (`declare-param-type`),
+`defn` still defaults. When you add a caller, pick deliberately — and prefer an
+error or a parse over a default, because a default is undiagnosable by
+construction.
+
+Two corollaries from the same fix:
+
+- **Route an unparsed type operand through `parse-type-name` /
+  `parse-type-from-node` and you get a located diagnostic for free**
+  (`unknown type: X` / `unable to parse type expression`). Do not hand-roll a
+  "known types" check beside them.
+- **Desugar erases the name-vs-type distinction in a parameter list.**
+  `desugar-params` splits every colon symbol, so an unnamed `ptr:FILE` and a
+  named `p:ptr:FILE` both reach the emitter as cells (`(ptr FILE)` /
+  `(p (ptr FILE))`). Distinguishing them at emit time would mean asking *what
+  the head names* — C's typedef ambiguity, with a keyword list to keep in sync
+  with `parse-type-from-node`, and it would silently retype a generated `.nuch`
+  for the legal `(defn addone (ptr:i32):i32 …)`. So in a `declare`, an annotated
+  element is a **named parameter** and `(declare f (ptr:FILE):void)` means a
+  parameter *named* `ptr` of type `FILE`. Bare `ptr` is the unnamed-pointer
+  spelling; a typed pointer parameter is named.
+
+## A tree-wide grep for a spelling must include `tests/run-tests.sh` heredocs
+
+Test programs are not all files. `tests/run-tests.sh` writes several `.nuc`
+consumers inline with `cat > … <<EOF`, so a `grep -r` over `*.nuc`/`*.nuch` —
+however careful — reports zero uses of a construct that three tests depend on.
+Stage 15's `declare` fix hit exactly this: a scan concluded nothing used
+`&rest` in a `declare`, and `make test` then failed five assertions in the
+`n6` / `sm3` / `s1` `.nuch` link-and-run consumers, all three of which generate
+`(declare printf (fmt:CStr &rest args:i32) :i32)` from a heredoc. Grep
+`tests/run-tests.sh` itself (and any other harness that generates sources)
+before concluding a spelling is unused — or just treat `make test` as the
+authority, which is what it is.
+
+Worth knowing alongside it: **call arity is not checked against a
+declaration.** `(declare printf (fmt:CStr):i32)` followed by
+`(printf "a=%d b=%d\n" 42 26)` emits
+`call i32 @printf(ptr %t0, i32 42, i32 26)` — the call site's own signature
+governs codegen, so extra arguments ride through. That is how the three
+harness sites call a C variadic without a variadic-`declare` spelling (Nucleus
+has none), and it is why the `&rest` marker they used was contributing nothing
+but phantom parameters.

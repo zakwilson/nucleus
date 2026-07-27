@@ -1,0 +1,6 @@
+; Stage 15 W3c: the same conflict with the two forms in the OPPOSITE order —
+; the dangerous one, where the header import used to silently replace the
+; author's declaration. The outcome must be identical to w3c-prec-first.nuc.
+(import-use "unistd.h")
+(declare lseek (fd:i32 off:i64 whence:i64):i64)
+(defn main ():i32 (return 0))

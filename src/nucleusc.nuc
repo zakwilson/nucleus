@@ -429,6 +429,16 @@
 ; g-globals delta alone would miss it.
 (defvar g-cinclude-collecting:i32)
 (defvar g-cinclude-collected:ptr)
+; Stage 15 W3b/W3c: C-header function declarations the importer recognized but
+; could not describe (cheader.md §1.4/§1.5). One Node cell per function name,
+; deduplicated: `s` = the function name, `car` = a pre-formatted
+; "<header>:<line>: <reason>" note. Written by cheader.nuc's
+; `cheader-record-skip`; read by `unresolved-name-message` (just below the
+; globals block, well before `(import-use cheader)`) so a *use* of a skipped
+; name says why it is missing instead of offering a spelling correction. The
+; global lives here rather than in cheader.nuc for exactly that ordering reason
+; — the same arrangement `g-cinclude-collected` above already uses.
+(defvar (g-cheader-skipped (raw Node)))
 ; Stage 10: files whose types have already been pre-scanned for the signature
 ; prescan (so prelude types like Node/Result and the !T sugar resolve in the
 ; current unit's defn signatures, ahead of the actual import). Idempotent
@@ -1801,7 +1811,30 @@
 ; The message for a name that did not resolve. `verb` is "unknown" (head
 ; position — no function/macro/special form by that name) or "undefined" (value
 ; position — no binding by that name).
+; The "<header>:<line>: <reason>" note recorded when this name's C declaration
+; was skipped by the importer, or null. Node-cell list walk, the same shape as
+; the import lists (see g-cheader-skipped above).
+(defn cheader-skip-note (fname:CStr):ptr
+  (let (cur:ptr g-cheader-skipped)
+    (while (!= cur null)
+      (let (e:ptr:Node (unsafe/cast ptr:Node cur))
+        (when (= (as CStr (e s)) fname) (return (as ptr (e car))))
+        (set! cur (e cdr)))))
+  (return null))
+
 (defn unresolved-name-message (verb:CStr name:CStr):ptr
+  ; Stage 15 W3c: a name whose C-header declaration was *skipped* is not merely
+  ; unknown — the header declared it and the importer could not describe it. Say
+  ; so, with the header, line and reason, rather than offering a did-you-mean
+  ; that will not help. This is where the skip diagnosis is delivered: reporting
+  ; every skip at import time instead put ~45 warnings on every build that
+  ; touched <math.h>, <stdlib.h> or SDL2 (all real — `long double`, `_Float128`,
+  ; `SDL_JoystickGUID`), including six in the REPL banner, which is exactly the
+  ; "bury the signal" failure W3b's own warning policy was written to avoid.
+  (let (skipped:ptr (cheader-skip-note name))
+    (when (!= skipped null)
+      (return (fmt-3s "%s: '%s' — its C header declaration was skipped (%s)"
+                      verb name skipped))))
   (let (fix:ptr (known-name-correction name))
     (when (!= fix null) (return fix)))
   (let (near:ptr (closest-known-name name))
@@ -8385,6 +8418,46 @@
 
 (import-use cheader)
 (import-use nuch)
+
+; Stage 15 W3c (cheader.md §1.4): settle the precedence between a C-header
+; declaration and this unit's explicit `(declare …)` of the same function.
+; Called from `c-parse-func-decl`, which has already decided to stand down.
+;
+; It lives HERE rather than in cheader.nuc for an ordering reason worth naming:
+; cheader.nuc is imported one line above nuch.nuc, so at the moment its forms are
+; emitted `emit-nuch-declare-import` does not yet exist as a name. This wrapper
+; sits below both imports and can call it; cheader.nuc in turn reaches this
+; function because `prescan-defn-signatures` registers every nucleusc.nuc
+; signature before the first form of any import is emitted.
+;
+; The interesting half is the *early emission*. Simply dropping the header's
+; declaration and waiting for the explicit one is wrong: everything between the
+; import and the declare's own position would fail to resolve. (Measured —
+; `examples/cstr-lit-test.nuc` declares `strlen` at line 15, and `lib/arena.nuc`
+; calls it from inside the prelude import that precedes it, so suppression alone
+; broke that build with `unknown: strlen`.) Emitting the explicit declaration at
+; the point of first need keeps exactly one `declare` in the module, gives it the
+; author's signature, and leaves the later `(declare …)` form an idempotent
+; no-op — `emit-nuch-declare-import` already returns early for an
+; already-registered name.
+(defn cheader-yield-to-explicit-declare (fname:CStr hsig:ptr hline:i32):void
+  (when (= (as ptr (cdecl-site-find g-cheader-shadowed fname)) null)
+    (set! g-cheader-shadowed
+          (cdecl-site-push g-cheader-shadowed (as ptr fname) g-cheader-file
+                           hline hsig null)))
+  (let (site:ptr (as ptr (cheader-explicit-declare-site fname)))
+    (when (= site null) (return))
+    (if (= (scope-lookup g-globals fname) null)
+      ; The explicit declare has not been reached yet — emit it now. It records
+      ; its own signature on the site and raises the conflict warning itself.
+      (emit-nuch-declare-import ((as ptr:CDeclSite site) form))
+      ; Already emitted (it precedes this import), so its signature is on the
+      ; site; compare here instead.
+      (when (and (!= ((as ptr:CDeclSite site) sig) null)
+                 (!= (as CStr ((as ptr:CDeclSite site) sig)) (as CStr hsig)))
+        (cheader-warn-decl-conflict (as raw:CDeclSite site)
+                                    (cdecl-site-find g-cheader-shadowed fname))))))
+
 (import-use repl)
 
 ; ============================================================
@@ -9919,6 +9992,12 @@
   ; are already processed in dependency order by the time they are reached).
   (when (= g-toplevel-depth 1)
     (prescan-imported-types forms))
+  ; Stage 15 W3c: the unit's explicit `(declare …)` names, collected before any
+  ; import is processed so the "explicit declare wins over a header-derived one"
+  ; rule is order-independent (cheader.md §1.4). Per unit, not just the
+  ; outermost: a source-imported library's declares outrank a header import that
+  ; follows them, for the same reason.
+  (prescan-explicit-declares forms)
   (prescan-struct-names forms)
   (prescan-protocols forms)
   (prescan-defn-signatures forms)

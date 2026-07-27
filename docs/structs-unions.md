@@ -61,9 +61,167 @@ glibc. Nucleus registers the **name** with no layout, so:
 A type stays opaque either because no header in the translation unit defines it,
 or because its definition uses a construct the C declaration parser cannot
 represent (bitfields, arrays, multi-declarator lines) — `FILE` is the second
-kind. Both are usable as handles; neither can be used by value. `examples/cheader-opaque.nuc`
+kind, and SDL's `SDL_GUID` (`struct { Uint8 data[16]; }`) is another. Both are
+usable as handles; neither can be used by value. `examples/cheader-opaque.nuc`
 is a worked example (a real `fopen`/`fprintf`/`fgets` round trip through
 `ptr:FILE`).
+
+A function declaration whose first token is `struct` or `union` and which omits
+`extern` — `struct Tag *f(int);` — is imported normally. glibc always writes
+`extern`, but musl deliberately omits it, so on Alpine every function returning a
+`struct X *` used to be dropped without a word.
+
+## Type qualifiers in imported declarations
+
+`const`, `volatile`, `restrict` (and its `__restrict` / `__restrict__`
+spellings) and `_Atomic` are accepted **everywhere C allows them** — anywhere in
+the declaration-specifier sequence, before or after the base type, and after
+every `*`. They carry no information Nucleus models and do not change the
+emitted type, so the importer consumes and discards them:
+
+```c
+const int *p        int const *p        int * const p
+volatile int *p     int volatile *p     int const * restrict const p
+```
+
+all import as a single `ptr` parameter. This matters more than it looks: before
+Stage 15 W3b only the *leading* position was handled, so an "east" qualifier
+ended the type, its token was eaten as the parameter's name, and the following
+`*p` began a phantom **second** parameter — `void f(int const *p)` imported as a
+two-parameter `(i32, ptr)` function. Only the `void` spelling produced IR that
+LLVM rejected; the rest were silently wrong at the ABI.
+
+## Typedefs in imported declarations
+
+A C `typedef` of a scalar, pointer, function pointer or enum resolves to the type
+it names, **transitively**:
+
+```c
+typedef long int __off_t;
+typedef __off_t  off_t;          /* off_t -> __off_t -> long int -> i64 */
+typedef unsigned char Uint8;     /* -> ui8  */
+typedef unsigned int  Uint32;    /* -> ui32 */
+typedef char        *string_t;   /* -> ptr  */
+typedef int   (*handler)(int);   /* -> ptr  */
+typedef enum { A, B } mode_t2;   /* -> i32  (a C enum's underlying type) */
+typedef struct Foo   *FooPtr;    /* -> ptr  */
+```
+
+Resolution happens where the `typedef` is parsed, so a chain costs one lookup at
+each use and a self-referential typedef cannot loop. `enum` is understood as a
+declaration specifier too, tagged (`enum Tag e`) or inline (`enum { A, B } e`),
+and lowers to `i32`. A `typedef` of a struct or union keeps going through the
+struct registry, so it can be used as `ptr:Name` and — when its layout is known —
+by value.
+
+This applies uniformly to **return types, parameters and struct fields**. Before
+Stage 15 W3c an unfollowed typedef resolved to `ptr`, so `lseek` imported as
+`declare ptr @lseek(i32, ptr, i32)` (its `off_t` return *and* its `off_t`
+parameter both wrong), and a `Uint8` struct field typed as a pointer — giving a
+wrong struct *layout*, silently. `examples/cheader-posix.nuc` is a worked example:
+`open`/`write`/`lseek`/`read`/`close` driven entirely through `<fcntl.h>` and
+`<unistd.h>`, using `lseek`'s `off_t` as an integer on both sides.
+
+A typedef the parser cannot follow is **never silently `ptr`**. The name is
+recorded as known-but-unrepresentable and any *by-value* use of it is refused
+(below); a *pointer* to it stays `ptr`, which is correct — every C pointer is one
+machine word. In practice the unrepresentable set is `long double`, `_Float128`,
+`_Float16`, an array typedef (`typedef int v4[4];`), and a typedef of a struct
+whose body the parser could not read.
+
+## Declaration precedence: an explicit `declare` wins
+
+When a unit contains both an explicit `(declare NAME …)` and a C header that
+declares the same function, **the explicit declaration wins, whichever comes
+first in the file**, and a signature mismatch warns naming both sources:
+
+```
+prog.nuc:2: warning: declaration of 'lseek' as i64 (i32, i64, i64) conflicts
+with /usr/include/unistd.h:339, which declares it as i64 (i32, i64, i32);
+the explicit declaration wins
+```
+
+Exactly one `declare` reaches the emitted module — LLVM rejects a second one for
+the same symbol even when the two agree. If the explicit declaration follows the
+import, it is emitted at the import's position rather than its own, so code
+between the two still resolves the name.
+
+Before this rule both orders were silent and disagreed with each other: whichever
+came first won. The dangerous ordering is `import` then `declare`, where the
+header quietly replaced the author's correct declaration.
+
+A `declare` arriving from an imported `.nuch` header is not covered — its forms
+are read during emission, too late to precede a C import — and keeps the older
+first-wins behaviour.
+
+The comparison is over the **rendered signature**, so a declaration that agrees
+with the header is silent. Note that this only works if the declaration says what
+you meant: write each parameter's type, named (`whence:i32`) or bare (`i32`) —
+both carry it. See [`declare`](toplevel.md) for the parameter grammar.
+
+## Declarations the importer skips
+
+A C declaration the importer recognizes as a function but cannot faithfully
+describe is **skipped**, never emitted. Two reporting tiers:
+
+**Reported immediately, on stderr**, when the importer could not *parse* what the
+header said:
+
+```
+/usr/include/foo.h:412: warning: skipping C declaration 'foo_apply': a by-value
+'FooCtx' with no known layout
+```
+
+The warning names the **C header and the declaration's own line** (recovered from
+`clang -E`'s linemarkers), not the `.nuc` file that imported it. It is always on —
+there is no flag — and deduplicated by function name, so a header imported twice
+or pulled in transitively by two others reports once. The volume is nil in
+practice: `<stdio.h>`, `<stdlib.h>`, `<string.h>`, `<unistd.h>`, `<fcntl.h>`,
+`<time.h>`, `<math.h>`, `<signal.h>`, `<pthread.h>`, `<netinet/in.h>`,
+`<sys/stat.h>`, `png.h`, `SDL2/SDL.h` and `SDL2/SDL_mixer.h` each import with
+zero such warnings.
+
+**Reported at the point of use**, when the declaration parsed correctly but names
+a type Nucleus has no equivalent for:
+
+```
+prog.nuc:12: error: unknown: 'strtold' — its C header declaration was skipped
+(/usr/include/stdlib.h:127: a by-value 'long double' (no Nucleus type is that
+wide))
+```
+
+These are common and irrelevant to a build that never calls the function —
+`<math.h>` alone contributes ~30 `long double` entries, and importing
+`SDL2/SDL.h` reaches 165 across everything it pulls in — so warning about each at
+import time would bury the tier above. Nothing is silent either way: the reason,
+header and line are delivered exactly where they matter.
+
+A declaration is skipped when it has:
+
+* a **by-value struct or union** parameter or return type with no known layout
+  (an opaque tag, or a body the parser could not represent) — there is no LLVM
+  type to name, and substituting a pointer would silently use the wrong ABI;
+* a **`void` parameter** in a non-empty parameter list — never valid C, always a
+  mis-parse, and the exact shape LLVM rejects with *"void type only allowed for
+  function results"*;
+* an **opaque** parameter or return type;
+* a **by-value parameter or return whose type could not be resolved** — an
+  unfollowable typedef, or a builtin Nucleus has no width for (`long double`,
+  `_Float128`);
+* **more than 32 parameters** (the importer's fixed parameter array), so a
+  truncated signature is never registered.
+
+Skipping is a deliberate destination, not a failure mode: a program that gets 95%
+of a header plus three named diagnostics is in far better shape than one that gets
+`failed to parse generated IR` from the LLVM parser thousands of lines after the
+import.
+
+A **struct-by-value parameter or return that *is* representable** is lowered
+through the same platform C ABI as a `defn` or a `.nuch` `declare` — so
+`div`/`ldiv`/`lldiv` import as `declare i64 @div(i32, i32)` /
+`declare { i64, i64 } @ldiv(i64, i64)`, and `fopencookie`'s 32-byte struct
+parameter as `ptr byval(%cookie_io_functions_t) align 8`, matching what the call
+site emits.
 
 ## Unions and tagged sums
 
