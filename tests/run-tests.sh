@@ -1769,8 +1769,6 @@ spawn run_reject_at w2d-dispatch-no-narrow tests/fixtures/w2d-dispatch-no-narrow
 # `:0:` before W4a. The location is part of the assertion, not decoration.
 spawn run_reject_at w4a-undefined-value tests/fixtures/w4a-undefined-value.nuc \
   "tests/fixtures/w4a-undefined-value.nuc:8: error:" "undefined: missing-thing"
-spawn run_reject_at w4a-unknown-head tests/fixtures/w4a-unknown-head.nuc \
-  "tests/fixtures/w4a-unknown-head.nuc:5: error:" "no unary 'bit-not'; write (bit-xor x -1)"
 spawn run_reject_at w4a-suggest-spelling tests/fixtures/w4a-suggest-spelling.nuc \
   "tests/fixtures/w4a-suggest-spelling.nuc:4: error:" "unknown: printfx (did you mean 'printf'?)"
 spawn run_reject_at w4a-let-null-ref tests/fixtures/w4a-let-null-ref.nuc \

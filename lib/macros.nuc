@@ -76,6 +76,9 @@
           `(_or ~(args car)
                 (or ~@(args cdr)))))
 
+(defmacro bit-not (x)
+  `(bit-xor ~x -1))
+
 ; (if test then else) — binary conditional over cond.
 (defmacro if (test then else)
   `(cond ~test ~then true ~else))
