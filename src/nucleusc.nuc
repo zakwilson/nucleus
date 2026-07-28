@@ -1794,20 +1794,6 @@
               (set! best (as ptr (sym name)))))))
       (return best))))
 
-; Spellings that do not exist and never will, where the useful answer is a
-; rewrite rather than a nearby name. Kept deliberately small — the general
-; did-you-mean above covers typos; this table covers *wrong mental models*.
-; Returns the complete replacement message, or null. (`ptr`, not `CStr`, for
-; the null-check reason above.)
-(defn known-name-correction (name:CStr):ptr
-  ; Nucleus has no unary bitwise complement (design/stage15-stress-test/
-  ; ergonomics.md §4.3). W5b adds `bit-not` as a real macro; until then, and for
-  ; any spelling it does not cover, point at the two-operand form.
-  (when (= name "bit-not") (return (as ptr "no unary 'bit-not'; write (bit-xor x -1)")))
-  (when (= name "bitnot")  (return (as ptr "no unary 'bitnot'; write (bit-xor x -1)")))
-  (when (= name "lognot")  (return (as ptr "no unary 'lognot'; write (bit-xor x -1)")))
-  (return null))
-
 ; The message for a name that did not resolve. `verb` is "unknown" (head
 ; position — no function/macro/special form by that name) or "undefined" (value
 ; position — no binding by that name).
@@ -1835,8 +1821,6 @@
     (when (!= skipped null)
       (return (fmt-3s "%s: '%s' — its C header declaration was skipped (%s)"
                       verb name skipped))))
-  (let (fix:ptr (known-name-correction name))
-    (when (!= fix null) (return fix)))
   (let (near:ptr (closest-known-name name))
     (when (= near null) (return (fmt-2s "%s: %s" verb name)))
     (return (fmt-3s "%s: %s (did you mean '%s'?)" verb name near))))
