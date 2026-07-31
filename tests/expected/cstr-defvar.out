@@ -1,0 +1,8 @@
+len clit=5 plain=5 const=6 priv=7
+vals hello world frozen private
+strcmp clit=0 plain=0
+null=1 noinit=1 nonnull=1
+mut=assigned mut-null=0
+heaped=heaped len=6
+content-eq=1 ptr-identity=0
+clit-vs-plain=0 clit-vs-clit=1

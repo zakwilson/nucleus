@@ -283,8 +283,11 @@
   (let (raw:i32 (node-len params-node)
         n:i32 (node-len params-node))
     (dotimes (i raw)
-      (let (sp:ptr:Node (unsafe/cast ptr:Node (node-at params-node i)))
-        (when (= (sp kind) NODE-SYM)
+      ; W5f: a malformed parameter may be NULL (an empty list `()` reads as a
+      ; null node). It is certainly not an &rest/&optional marker; the located
+      ; diagnostic is emit-defn's job, so just don't dereference it here.
+      (let (sp:(raw Node) (as raw:Node (node-at params-node i)))
+        (when (and (!= sp null) (= (sp kind) NODE-SYM))
           (when (= (sp s) "&rest") (set! n (- n 1)))
           (when (= (sp s) "&optional") (set! n (- n 1))))))
     (return n)))
@@ -298,8 +301,10 @@
         rest-idx:i32 -1
         opt-idx:i32 -1)
     (dotimes (si raw)
-      (let (sp:ptr:Node (unsafe/cast ptr:Node (node-at params-node si)))
-        (when (= (sp kind) NODE-SYM)
+      ; W5f: see defn-params-count — a NULL (empty-list) parameter is not a
+      ; marker and must not be dereferenced during the prescan.
+      (let (sp:(raw Node) (as raw:Node (node-at params-node si)))
+        (when (and (!= sp null) (= (sp kind) NODE-SYM))
           (when (= (sp s) "&rest") (set! has-rest 1) (set! rest-idx si))
           (when (= (sp s) "&optional") (set! opt-idx si)))))
     (let (nparams:i32 raw)
@@ -320,8 +325,14 @@
                   ; Optional params are (name:type default) lists — type is on the head.
                   (when (and (!= opt-idx -1) (> i opt-idx))
                     (set! spec (node-at p 0)))
-                  (let (pty:ptr (extract-name-and-type spec (as ptr:ptr (addr-of pn))
-                                                       ((unsafe/cast ptr:Node spec) line)))
+                  ; W5f: a NULL (empty-list) parameter gets the same `i32`
+                  ; placeholder this loop already uses for an untyped one — the
+                  ; prescan only registers a signature; emit-defn raises the real,
+                  ; located diagnostic before any of this reaches codegen.
+                  (let (pty:ptr (if (= spec null)
+                                  (as ptr null)
+                                  (extract-name-and-type spec (as ptr:ptr (addr-of pn))
+                                                         (node-line spec 0))))
                     (when (= pty null) (set! pty ty-i32))
                     (when (and (!= has-rest 0) (= di (- nparams 1)))
                       (set! pty ty-ptr))
@@ -643,8 +654,10 @@
 (defn params-where-index (params-node:raw:Node):i32
   (let (raw:i32 (node-len params-node))
     (dotimes (i raw)
-      (let (e:ptr:Node (unsafe/cast ptr:Node (node-at params-node i)))
-        (when (and (= (e kind) NODE-SYM) (= (e s) "&where"))
+      ; W5f: an empty list `()` among the params is a NULL node — never a
+      ; `&where` marker, and not to be dereferenced.
+      (let (e:(raw Node) (as raw:Node (node-at params-node i)))
+        (when (and (!= e null) (= (e kind) NODE-SYM) (= (e s) "&where"))
           (return i))))
     (return -1)))
 
@@ -666,6 +679,9 @@
 
 ; The type node of a desugared binding `(name type)`, or null if untyped.
 (defn binding-type-node (bind-node:raw:Node):raw:Node
+  ; W5f: an empty list `()` in a binding position is a NULL node — it carries no
+  ; type node, and must not be dereferenced.
+  (when (= bind-node null) (return null))
   (let (n:raw:Node bind-node)
     (when (= (n kind) NODE-CELL) (return (node-at bind-node 1)))
     (return null)))
@@ -935,9 +951,11 @@
           ntv:i32 0
           i:i32 0)
       (while (< i np)
-        (let (p:ptr:Node (unsafe/cast ptr:Node (node-at params-node i)))
+        ; W5f: a NULL (empty-list `()`) parameter is not a marker; skip the
+        ; dereference and let emit-defn diagnose it.
+        (let (p:(raw Node) (as raw:Node (node-at params-node i)))
           ; Skip &where / &rest / &optional markers and their constraint lists.
-          (when (and (= (p kind) NODE-SYM)
+          (when (and (!= p null) (= (p kind) NODE-SYM)
                      (or (= (p s) "&where") (= (p s) "&rest") (= (p s) "&optional")))
             (return (if (> ntv 0) 1 0)))
           (collect-pattern-tyvars (binding-type-node (node-at params-node i))
@@ -3691,6 +3709,65 @@
       (when (= sym null) (return null))
       (return (sym-effective-type sym)))))
 
+; Stage 15 W5d (design/stage15-stress-test/ergonomics.md §3.10): the type a
+; let/with binding actually takes when its declared type is an elem-LESS pointer
+; and its initializer is literally an `(array T …)` compound literal. The
+; literal yields `ptr:T`, but a bare `ptr` annotation erased the element type,
+; so `(aref a i)` / `(deref a)` / `(a field)` on the local all died "operand
+; must be typed pointer" and the workable spellings were the fully-annotated
+; `a:ptr:T` or a bare (untyped) binding name — both of which already worked, so
+; the wart was the *annotated-but-imprecise* middle case alone. The binding now
+; adopts the literal's element type while keeping the DECLARED pointer kind and
+; volatility: the annotation still says everything it said, plus the element it
+; had no way to say.
+;
+; Deliberately SYNTACTIC — an `(array …)` init specifically, not a general
+; "adopt the init's element type whenever the declaration is elem-less" rule.
+; A bare `:ptr` is this language's void*-style erasure hatch and it erases the
+; *nullability claim* as well as the element type (pkind-flow-check exempts an
+; elem-less target). Adopting elem in general would (a) re-route multimethod
+; dispatch — `type-eq` compares pointer elements, so a `ptr:Node` argument does
+; NOT match a `ptr` parameter — across the ~1550 bare `:ptr` bindings in this
+; compiler alone, and (b) either keep a non-null claim over a nullable source or
+; silently downgrade what the author declared. An `(array …)` literal has
+; neither problem: it is an alloca, so always non-null, and its element type is
+; spelled by the author *in the initializer*, so nothing is inferred that a
+; reader of the binding cannot see.
+;
+; IR-inert by construction: every pointer lowers to `ptr` with size 8, so the
+; binding's alloca, its store and its coercion are identical either way — only
+; the type recorded in the SCOPE changes. Returns `ty` unchanged in every other
+; case, including a null `ty` (the CE-1 bare-name path fills that in from the
+; emitted value, and that path already carries the element type).
+;
+; Called from emit-let/emit-with (nucleusc.nuc) and mirrored in node-type-block
+; below, so the two passes agree on the binding type (the node-type<->emit-node
+; lockstep, conventions.md): one rule function both sides call, never two copies.
+(defn array-lit-binding-type (ty:(raw Type) init:(raw Node)):?ptr:Type
+  (when (or (= ty null) (= init null)) (return ty))
+  (let (tt:(raw Type) ty)
+    (when (or (!= (tt kind) TY-PTR) (!= (tt elem) null)) (return ty))
+    (let (n:(raw Node) init)
+      (when (!= (n kind) NODE-CELL) (return ty))
+      ; `(array T …)` is at least a head and an element type.
+      (when (< (node-len (as ptr n)) 2) (return ty))
+      (let (head:ptr (node-at (as ptr n) 0))
+        (when (= head null) (return ty))
+        ; Symbol Nodes are interned singletons, so the head identity test is a
+        ; pointer compare against the quoted symbol (see gcheck-special-form).
+        (when (!= head (as ptr 'array)) (return ty))
+        (let (etype-node:ptr (node-at (as ptr n) 1))
+          (when (= etype-node null) (return ty))
+          (let (etype:ptr (as ptr (parse-type-from-node etype-node
+                                    (node-line etype-node
+                                      (node-line (as ptr n) 0)))))
+            (when (= etype null) (return ty))
+            (let (rt:ptr:Type (as ptr:Type (make-type TY-PTR)))
+              (.set! rt elem etype)
+              (.set! rt pkind (tt pkind))
+              (.set! rt is-volatile (tt is-volatile))
+              (return (as ptr rt)))))))))
+
 ; let / with: the type of the last body expression, evaluated in a child scope
 ; carrying the binding types (values are irrelevant to typing).
 (defn node-type-block (n:raw:Node scope:ref:Scope):?ptr:Type
@@ -3710,6 +3787,10 @@
               name:ptr null
               ty:ptr (extract-name-and-type bname (as ptr:ptr (addr-of name))
                                             ((unsafe/cast ptr:Node bname) line)))
+          ; W5d (§3.10) lockstep with emit-let/emit-with: an `(array T …)` init
+          ; refines an elem-less declared pointer to `ptr:T`, so a probe over the
+          ; body types `(aref a i)` exactly as emission does.
+          (set! ty (array-lit-binding-type ty (node-at (as ptr binds) (+ i 1))))
           (when (!= ty null) (scope-define inner name ty name 1)))
         (set! i (+ i 2)))
       (let (last:ptr null

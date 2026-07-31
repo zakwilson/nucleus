@@ -171,6 +171,25 @@
                 (when (= e 48)  (do (set! c 0)  (set! handled 1)))
                 (when (= e 92)  (do (set! c 92) (set! handled 1)))
                 (when (= e 34)  (do (set! c 34) (set! handled 1)))
+                ; `\xHH` — a raw byte as one or two hex digits (Stage 15 W5a).
+                ; Deliberately **capped at two digits**, unlike C, which is
+                ; greedy: in C `"\x41BC"` is a single (overflowing) character,
+                ; whereas here it is `A`, `B`, `C`. Two digits address every
+                ; practical case for a byte-oriented literal without C's
+                ; run-on footgun. One digit is accepted (`"\xa"` == `"\x0a"`)
+                ; because the following character is unambiguous either way.
+                (when (= e 120)
+                  (let (h1:i32 (hex-digit-val (peek-char)))
+                    (when (< h1 0)
+                      (do (report-at g-line "\\x escape needs at least one hex digit")
+                          (return (err! parse-error))))
+                    (next-char)
+                    (set! c h1)
+                    (let (h2:i32 (hex-digit-val (peek-char)))
+                      (when (>= h2 0)
+                        (do (next-char)
+                            (set! c (+ (* c 16) h2)))))
+                    (set! handled 1)))
                 (when (= handled 0)
                   (do (report-at g-line (fmt-i32 "unknown escape \\%c" e))
                       (return (err! parse-error))))))
@@ -894,6 +913,45 @@
 ;
 ; Additive: no existing source has a trailing-colon atom adjacent to `(`, so the
 ; bootstrap stays byte-identical. Returns the (possibly fused) child node.
+
+; True iff `form` is a `(fn …)`-headed list — the return-type half of a function
+; pointer type. Used by the colon-paren fuse below to decide whether a second,
+; immediately-adjacent parenthesised group is this type's parameter list.
+(defn is-fn-type-form (form:ptr):i32
+  (when (= form null) (return 0))
+  (let (f:(raw Node) (as raw:Node form))
+    (when (!= (f kind) NODE-CELL) (return 0))
+    (let (h:(raw Node) (as raw:Node (f car)))
+      (when (= h null) (return 0))
+      (when (!= (h kind) NODE-SYM) (return 0))
+      (return (if (= (strcmp (h s) "fn") 0) 1 0)))))
+
+; W5f: a function-pointer type is TWO parenthesised groups — `(fn ret)` followed
+; by the parameter list — so the single-group colon-paren fuse above cannot
+; express it. `f:(fn i32)` alone fuses to `(f (fn i32))`, a *zero-parameter* fn
+; type, and the parameter list that follows is left dangling as a sibling of the
+; binding: silently mistyped in a defn param list, and (when it is the empty list
+; `()`, which reads as a NULL node) a null member in a `(struct …)`/`(union …)`
+; type expression that crashed the compiler.
+;
+; So: when the just-read colon-paren form is `(fn …)`-headed and the very next
+; raw character is `(` with no intervening whitespace, absorb that group too and
+; return the nested canonical spelling `((fn ret) (params))` — exactly what
+; `parse-type-from-node`'s function-pointer branch consumes. The name/colon-chain
+; wrapping then proceeds unchanged, so `acv:(fn void)()` reads as
+; `(acv ((fn void) ()))` and `p:ptr:(fn i32)(i32)` as `(p (ptr ((fn i32) (i32))))`.
+;
+; Adjacency is required (as it is for the first group): a *space*-separated
+; second group is genuinely ambiguous with the next binding in the enclosing
+; list — in `(f:(fn i32) (i32 i32) a:i32)` nothing distinguishes the parameter
+; list from a `(name type)` binding — so it is not absorbed.
+(defn fuse-fn-params (paren-form:ptr line:i32):!ptr
+  (when (= (is-fn-type-form paren-form) 0) (return (ok paren-form)))
+  (when (!= g-peek-valid 0) (return (ok paren-form)))
+  (when (!= (peek-char) 40) (return (ok paren-form)))
+  (let (plist:ptr (try (read-form)))
+    (return (ok (make-cell paren-form (make-cell plist null line) line)))))
+
 (defn fuse-colon-paren (child:ptr line:i32):!ptr
   ; Only consider a freshly-lexed symbol/keyword with no token peeked past it.
   (when (or (= child null) (!= g-peek-valid 0)) (return (ok child)))
@@ -906,8 +964,9 @@
                 (!= (char-at s (- len 1)) 58))
         (return (ok child)))
       (when (!= (peek-char) 40) (return (ok child)))
-      ; Read the following parenthesised form once.
-      (let (paren-form:ptr (try (read-form))
+      ; Read the following parenthesised form once, plus (for a `(fn …)` head)
+      ; the immediately-adjacent parameter-list group.
+      (let (paren-form:ptr (try (fuse-fn-params (try (read-form)) line))
             body:ptr (arena-strndup s (- len 1)))
         ; CP-2a: a bare ':' (NODE-SYM, empty body) fuses to the paren form
         ; directly, so (fn (x:i32):(ref T) ...) reads as (fn (x:i32) (ref T) ...).

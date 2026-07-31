@@ -116,6 +116,12 @@ The bare struct type is registered in the prelude, so `StrView` is available as 
 
 In overloaded (`defn`/multimethod) dispatch, a `StrView`-typed argument adapts to a `CStr`-typed parameter but *not* to a bare `ptr`-typed parameter — this reproduces the dispatch a `CStr` literal produced before this type existed. To bind a bounded generic (e.g. an `Eq`-bounded parameter) at `StrView` from a literal, `(import-use strview)` must be in scope so `StrView`'s protocol conformances are registered; otherwise `as` the literal to `CStr` explicitly (see `examples/cstr.nuc`). `CStr` itself is unchanged by this: it remains the dedicated FFI `char*` type, still distinct for dispatch, with only `=`/`!=` defined — no existing `:CStr`/`:ptr`-typed signature was retyped, only the literal's own inferred type and its emission changed.
 
+**Escapes inside a literal** — `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, and `\xHH`
+(a raw byte, **capped at two hex digits**, unlike C's greedy `\x`) — are decoded
+by the reader and apply identically to `"…"` and `c"…"`. See
+[Types — String literal escapes](types.md#string-literal-escapes--n-xhh) for
+the full table, the two-digit rationale, and the embedded-NUL limitation.
+
 **`c"…"` — the explicit `CStr` literal.** A `c` glued directly onto the opening quote, with no whitespace between them, spells an explicit `CStr` literal instead of a `StrView` one: the bare `char*` GEP, no `{data,len}` view header, and no target-aware materialization. It is the direct "I mean `char*`" spelling for FFI/format-string hot spots and an honest marker at the call site — purely ergonomic, not required, since a plain `"…"` literal already coerces to `CStr`/`ptr` for free (above). A space keeps the two apart as ordinary tokens (`c "foo"` is the symbol `c` followed by a `StrView` literal); only the glued form `c"foo"` is the `CStr` literal, and only a lowercase `c` triggers it.
 
 ```lisp

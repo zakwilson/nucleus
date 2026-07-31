@@ -1,0 +1,8 @@
+; Stage 15 W5c: widening the `defvar` string-literal gate from `TY-PTR` to
+; `is-ptr-like` admits `CStr` — it must NOT admit anything else. A string
+; literal in an integer-typed global is still rejected, at its own line, and the
+; diagnostic now names the offending type.
+(defvar g:i32 "not a pointer")
+
+(defn main ():i32
+  (return g))

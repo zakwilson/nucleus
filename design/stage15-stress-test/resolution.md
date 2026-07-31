@@ -110,10 +110,16 @@ or the behaviour has changed. **Verify before designing** — see §3 of
 > aliasing path, and reports at a real line (line 0 here was fixed by W4a). There
 > is no `duplicate method signature` to chase and nothing to repair in
 > `emit-import-prefixed` — the "fix *that* to give the `circular import`
-> diagnostic instead" clause of W1d below is **moot**. Whether the port hit the
-> aliasing path via some other spelling (a prefixed or path-form import) is
-> untested; if W1d wants that reassurance, probe those spellings specifically
-> rather than assuming this result covers them.
+> diagnostic instead" clause of W1d below is **moot**.
+>
+> **Path-form follow-up, probed 2026-07-31.** The paragraph above flagged the
+> other spellings as untested. The **path form** is now tested and behaves
+> identically: with `(import "<abs>/sx.nuc")` and `(import "<abs>/sy.nuc")` in the
+> two files, the result is
+> `sy.nuc:1: error: import: circular import of '<abs>/sx.nuc'`. Both the bare and
+> path spellings reach the same `g-importing` guard, so neither is the route to
+> §2.4's reported error. **`import-prefixed` remains unprobed** — probe it only if
+> W1d's decision actually turns on it.
 
 ---
 

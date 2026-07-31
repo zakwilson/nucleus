@@ -1,0 +1,11 @@
+tics 3
+tick
+think 41
+ret 7
+n 99
+tick
+think 41
+ret 7
+size 8
+apply2 7
+let 11

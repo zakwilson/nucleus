@@ -1,0 +1,53 @@
+; Stage 15 W5a (design/stage15-stress-test/ergonomics.md): `\xHH` escapes in
+; string literals.
+;
+; A `\x` escape consumes **one or two** hex digits and produces exactly one
+; byte. The two-digit cap is deliberate and is the one place this diverges from
+; C: C's `\x` is greedy (it absorbs every following hex digit, so `"\x41BC"` is
+; a single overflowing character), while here a third hex character is an
+; ordinary literal character. This test pins that behaviour down:
+;   (a) the motivating case — a four-byte magic number `"MUS\x1a"`;
+;   (b) one digit is accepted (`"\xa"` == `"\x0a"`);
+;   (c) the cap — `"\x41BC"` is four characters: 0x41 'A', then 'B', 'C';
+;   (d) upper- and lower-case hex digits both work, across the full byte range;
+;   (e) `\x00` truncates the literal exactly like the pre-existing `\0` — a
+;       string literal cannot carry an embedded NUL (see below);
+;   (f) `\x` composes with the pre-existing escapes in one literal.
+;
+; On (e): `lex-string` counts the decoded bytes, but the token stores them as a
+; NUL-terminated `char*` and the byte count is dropped, so a literal's length is
+; recovered downstream with `strlen`. An embedded NUL therefore ends the literal.
+; That is pre-existing behaviour shared with `\0` — `"x\0y"` and `"x\x00y"` are
+; both length 1 — not something `\x` introduces, and out of scope for W5a. The
+; assertion below pins the current behaviour so a future fix to the token
+; representation is a deliberate, visible change rather than a silent one.
+
+(import-use strview)
+
+; Print a literal's bytes as hex. StrView arrives by value (a TY-STRUCT), so
+; bind a pointer once and read fields through it (context/conventions.md,
+; "A by-value struct parameter needs (addr-of v) before field access").
+(defn dump (label:CStr s:StrView):void
+  (let (p:ptr:StrView (addr-of s)
+        n:i32 (unsafe/cast i32 (p len)))
+    (printf "%s len=%d bytes=" label n)
+    (dotimes (i:i32 n)
+      (printf " %02x" (as i32 (aref (p data) (as i64 i)))))
+    (printf "\n")))
+
+(defn main ():i32
+  ; (a) The motivating case: a four-byte magic number, no byte-by-byte poking.
+  (dump "mus" "MUS\x1a")
+  ; (b) A single hex digit.
+  (dump "one" "\xa")
+  ; (c) The two-digit cap: 'A' then the literal characters 'B' and 'C'.
+  (dump "capped" "\x41BC")
+  ; (d) Case-insensitive hex digits over the full byte range.
+  (dump "hexcase" "\xff\xFF\xaB\xAb")
+  ; (e) `\x00` truncates, identically to the pre-existing `\0`. Both print
+  ; len=1: the literal ends at the NUL.
+  (dump "nul-hex" "a\x00b")
+  (dump "nul-oct" "a\0b")
+  ; (f) Mixed with the pre-existing escapes.
+  (dump "mixed" "\t\x1b[0m\n")
+  (return 0))

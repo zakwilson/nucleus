@@ -620,6 +620,48 @@
       (return null))
     ; Same kind — identity
     (when (= sk dk) (return v))
+    ; Stage 15 W5d (design/stage15-stress-test/ergonomics.md §3.9): a
+    ; pointer-to-S value flowing into a BY-VALUE S slot is loaded here. A struct
+    ; compound literal `(S …)` is alloca-backed and evaluates to `(ref S)`, so
+    ; before this EVERY by-value struct slot rejected it: `(array S (S 1 2) …)`
+    ; died "array: type mismatch in positional initializer" and each element had
+    ; to be spelled `(deref (S 1 2))` — the wart that made a generated table
+    ; (Doom's 967-row `states[]`) unwritable in its natural form.
+    ;
+    ; This is not a new language liberty. The ARGUMENT position has done exactly
+    ; this since Stage 13 CE-3 (the by-value normalization in emit-call-with-args
+    ; loads a `(ref S)` argument for a by-value S parameter), so `(take (S 1 2))`
+    ; already worked while `(let (v:S (S 1 2)) …)` did not. The rule now applies
+    ; at the typed-slot positions that share this chokepoint too: let/with init,
+    ; set!, `.set!` field store, ptr-set!/aset!, explicit and implicit return,
+    ; struct-literal field and array (positional and designated) initializers,
+    ; and union-variant construction.
+    ;
+    ; NOT reachable from the call-argument path, so arguments stay byte-identical
+    ; twice over: safe-coerce-val delegates only StrView/int↔int/float↔float/
+    ; defcast pairs down here (a ptr→struct pair falls through to its own null
+    ; return), and the CE-3 block runs before it in any case.
+    ;
+    ; The emitted IR is exactly what the explicit `(deref …)` spelling produces
+    ; (emit-deref = require-derefable + one load of the pointee), so this is a
+    ; second spelling of one code path, not a second code path — and it costs one
+    ; load per element, never a copy loop: the N elements of an array literal are
+    ; N independent loads, the same shape and count `(deref …)` already emitted.
+    ;
+    ; `type-eq` lives in generics.nuc, which is imported AFTER abi.nuc, so its
+    ; TY-STRUCT rule (same StructDef) is spelled out inline rather than called —
+    ; a forward reference would not resolve when abi.nuc's bodies emit.
+    (when (and (= sk TY-PTR) (= dk TY-STRUCT) (!= (src elem) null))
+      (let (pointee:raw:Type (src elem))
+        (when (and (= (pointee kind) TY-STRUCT)
+                   (!= (target sdef) null)
+                   (= (pointee sdef) (target sdef)))
+          ; Stage 10: loading through a `?T` needs the same narrowing `deref`
+          ; demands. A compound literal is `(ref S)` and passes untouched.
+          (require-derefable src line "assignment")
+          (let (tmp:ptr (new-tmp))
+            (emit-load tmp (type-to-ir target) (vv val) target)
+            (return (alloc-val target tmp))))))
     ; CStr is an opaque char* — freely interconvertible with a plain pointer,
     ; no IR (both lower to `ptr`). Keeps string literals (CStr) usable wherever a
     ; ptr is expected, and a ptr usable where a CStr slot is declared.

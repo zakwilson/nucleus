@@ -1,0 +1,88 @@
+; Stage 15 W5c (design/stage15-stress-test/ergonomics.md §W5c, findings §3.7):
+; a `defvar` global may be typed `CStr`.
+;
+; Before W5c all three spellings failed — `(defvar g:CStr "")` and
+; `(defvar g:CStr c"")` died "string literal requires ptr type", and
+; `(defvar g:CStr null)` died "null requires ptr type" — because
+; `defvar-init-ir` gated both on a bare `TY-PTR` kind rather than on
+; `is-ptr-like`. `CStr` is ABI-identical to `ptr` (context/conventions.md's
+; string-type lattice: same `ptr` IR type, one word, `null` zero-init), so the
+; rejection was an untested corner, not a policy. The workaround was to declare
+; the global `ptr` and `(as CStr …)` at every read site.
+;
+; BOTH literal spellings are accepted. A plain `"…"` is a `StrView` (Stage 14
+; NS-3) and `c"…"` is a raw `CStr` (NS-4), but at a global initializer the
+; distinction has already collapsed: the backing `@.str.N` rodata is
+; NUL-terminated either way, so an unmaterialized literal's value simply IS its
+; `data` pointer — the same hidden-NUL free coercion `coerce-int-val` performs
+; in value position. A plain `"…"` was already accepted here for a `ptr` global
+; before W5c, so accepting it for `CStr` removes an asymmetry rather than
+; adding one.
+;
+; This test proves the globals are real `char*`s by handing them to libc
+; functions declared `const char *`, not merely by compiling.
+
+(import-use "stdio.h")
+
+; Extern C functions whose parameters are char* (CStr).
+(declare strlen (s:CStr):usize)
+(declare strcmp (a:CStr b:CStr):i32)
+(declare strdup (s:CStr):CStr)
+
+; --- every init form W5c makes legal ----------------------------------------
+(defvar g-clit:CStr c"hello")           ; explicit CStr literal (NS-4)
+(defvar g-plain:CStr "world")           ; plain "…" literal (StrView → CStr)
+(defvar g-null:CStr null)               ; explicit null
+(defvar g-noinit:CStr)                  ; no init → null (already worked)
+(defvar :const g-const:CStr c"frozen")  ; :const storage class
+(defvar- g-priv:CStr c"private")        ; private definer — findings §3.7
+(defvar g-mut:CStr null)                ; written by set! below
+
+(defn main ():i32
+  ; (1) Read a CStr global and pass it to a libc function taking const char*.
+  (printf "len clit=%d plain=%d const=%d priv=%d\n"
+    (unsafe/cast i32 (strlen g-clit))
+    (unsafe/cast i32 (strlen g-plain))
+    (unsafe/cast i32 (strlen g-const))
+    (unsafe/cast i32 (strlen g-priv)))
+
+  ; (2) As a printf %s vararg — the bare char*, no StrView view header.
+  (printf "vals %s %s %s %s\n" g-clit g-plain g-const g-priv)
+
+  ; (3) Through strcmp, against both literal spellings.
+  (printf "strcmp clit=%d plain=%d\n"
+    (strcmp g-clit c"hello")
+    (strcmp g-plain "world"))
+
+  ; (4) The null-initialised globals really are null. This is the spelling that
+  ;     SEGFAULTED before W5c: `=` against a CStr lowered to a strcmp content
+  ;     comparison even when the other operand was the `null` literal, emitting
+  ;     `strcmp(ptr %t0, ptr null)` — undefined behaviour in C, and a crash
+  ;     under glibc. It is now the `icmp eq ptr` identity test it always should
+  ;     have been.
+  (printf "null=%d noinit=%d nonnull=%d\n"
+    (if (= g-null null) 1 0)
+    (if (= g-noinit null) 1 0)
+    (if (!= g-clit null) 1 0))
+
+  ; (5) `set!` writes a CStr global, including from a runtime (heap) string.
+  (set! g-mut c"assigned")
+  (printf "mut=%s mut-null=%d\n" g-mut (if (= g-mut null) 1 0))
+  (set! g-mut (strdup c"heaped"))
+  (printf "heaped=%s len=%d\n" g-mut (unsafe/cast i32 (strlen g-mut)))
+
+  ; (6) `=` on a CStr global is a CONTENT comparison, not pointer identity —
+  ;     this is what distinguishes the global's `CStr` type from a bare `ptr`.
+  ;     `g-mut` is a fresh heap copy, so the two pointers genuinely differ:
+  ;     content-eq is 1 while the same operands compared as bare `ptr` (which
+  ;     lowers to `icmp eq ptr` identity) are 0.
+  (printf "content-eq=%d ptr-identity=%d\n"
+    (if (= g-mut c"heaped") 1 0)
+    (if (= (unsafe/cast ptr g-mut) (unsafe/cast ptr c"heaped")) 1 0))
+
+  ; (7) A CStr global compared against another CStr global (both non-null)
+  ;     still strcmps.
+  (printf "clit-vs-plain=%d clit-vs-clit=%d\n"
+    (if (= g-clit g-plain) 1 0)
+    (if (= g-clit c"hello") 1 0))
+  (return 0))

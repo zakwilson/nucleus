@@ -1,0 +1,12 @@
+; Stage 15 W5d (ergonomics.md §3.10): the element-type refinement is SYNTACTIC
+; — it fires for an `(array T …)` initializer and nothing else. A bare `:ptr`
+; annotation is this language's void*-style erasure hatch: it drops the element
+; type AND the nullability claim on purpose, and a general "adopt the init's
+; element type" rule would re-route multimethod dispatch (`type-eq` compares
+; pointer elements, so a `ptr:i32` argument does not match a `ptr` parameter)
+; across every such binding. This fixture pins that boundary: a bare `:ptr`
+; bound from an `alloca` stays elem-less, so `aref` on it is still an error.
+(defn main ():i32
+  (let (p:ptr (alloca i32 4))
+    (printf "%d\n" (aref p 0)))
+  (return 0))

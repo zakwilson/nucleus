@@ -652,6 +652,21 @@ run_reject_at() {  # <name> <fixture> <loc-prefix> <pattern>
   fi
 }
 
+# The inverse of run_reject: a fixture that must COMPILE CLEAN. For pinning a
+# deliberate carve-out, where the risk is that a later, stricter check swallows
+# a spelling that is supposed to stay legal — run_no_line_zero only sweeps for
+# `:0:`, and would not notice a fixture that started failing outright.
+run_accepts() {  # <name> <fixture>
+  local name="$1" fixture="$2" err
+  err="$(./build/nucleusc --emit-llvm "$fixture" 2>&1 >/dev/null || true)"
+  if [ -z "$err" ]; then
+    echo "PASS  $name"
+  else
+    echo "FAIL  $name (must compile clean, but the compiler complained)"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+  fi
+}
+
 # Stage 15 W4a accept criterion: NO compiler diagnostic may report line 0.
 # Every tests/fixtures/*.nuc is a potential error producer, so compile them all
 # and fail if any stderr carries a `:0:` location. This is the check that stops
@@ -1692,6 +1707,14 @@ spawn run_reject at3-postfix-volatile-rejected tests/fixtures/at3-postfix-volati
 spawn run_reject at3-colon-volatile-rejected tests/fixtures/at3-colon-volatile.nuc \
   "postfix 'volatile' is retired: use the ':volatile' attribute"
 
+# --- Stage 15 W5a: `\x` string escapes --------------------------------------
+# design/stage15-stress-test/ergonomics.md §W5a. A `\x` escape with no
+# following hex digit is a reader error. The pattern includes the `:6:` line
+# prefix on purpose: the diagnostic must be attributed to the literal's own
+# line, never line 0 (cf. run_no_line_zero).
+spawn run_reject w5a-hex-escape-no-digit-rejected tests/fixtures/w5a-hex-escape-no-digit.nuc \
+  "w5a-hex-escape-no-digit.nuc:6: error: \\x escape needs at least one hex digit"
+
 # --- Stage 15 W2a: binop literal typing -------------------------------------
 # design/stage15-stress-test/literal-typing.md §W2a. A binop's statically
 # inferred type now equals the type it emits, because both halves call one
@@ -1812,6 +1835,24 @@ spawn run_reject_at w4b-deferror-annotated tests/fixtures/w4b-deferror-annotated
 # message but at line 0 (name-node is a bare interned NODE-SYM).
 spawn run_reject_at w4b-defvar-missing-type tests/fixtures/w4b-defvar-missing-type.nuc \
   "tests/fixtures/w4b-defvar-missing-type.nuc:9: error:" "defvar: missing :type on 'x'"
+
+# --- Stage 15 W5f: an empty list `()` never segfaults ------------------------
+# design/stage15-stress-test/ergonomics.md §W5f. `()` reads as a NULL node (an
+# empty cons list), and a raw `(n kind)` / `(n line)` on it faults. Each fixture
+# below was a confirmed SIGSEGV-with-no-output before W5f; run_reject_at fails on
+# a crash too (no message to grep), so these double as segfault regressions.
+spawn run_reject_at w5f-empty-union-member tests/fixtures/w5f-empty-union-member.nuc \
+  "tests/fixtures/w5f-empty-union-member.nuc:11: error:" \
+  "expected a name:type declaration, found the empty list '()'"
+spawn run_reject_at w5f-empty-param tests/fixtures/w5f-empty-param.nuc \
+  "tests/fixtures/w5f-empty-param.nuc:7: error:" \
+  "expected a name:type declaration, found the empty list '()'"
+spawn run_reject_at w5f-empty-expr tests/fixtures/w5f-empty-expr.nuc \
+  "tests/fixtures/w5f-empty-expr.nuc:6: error:" \
+  "'()' is not an expression -- the empty list has no value"
+spawn run_reject_at w5f-empty-defunion-arm tests/fixtures/w5f-empty-defunion-arm.nuc \
+  "tests/fixtures/w5f-empty-defunion-arm.nuc:4: error:" \
+  "defunion: arm cannot be the empty list '()'"
 
 # --- Stage 15 W4c: unterminated forms point at the imbalance -----------------
 # design/stage15-stress-test/diagnostics.md §W4c. The reader already reported the
@@ -1958,6 +1999,68 @@ spawn run_reject_at w3c-declare-rest tests/fixtures/w3c-declare-rest.nuc \
 
 # --- Stage 15 W4e: docs/stdlib.md's availability table is generated ---------
 spawn run_stdlib_table
+
+# --- Stage 15 W5c: a `defvar` global may be typed CStr ----------------------
+# design/stage15-stress-test/ergonomics.md §W5c (findings §3.7). The positive
+# matrix -- both literal spellings (plain "…" and c"…"), explicit `null`, no
+# init, `:const`, the private `defvar-`, `set!`, and every global handed to a
+# libc function declared `const char *` -- is examples/cstr-defvar.nuc, run by
+# the examples/*.nuc loop above against tests/expected/cstr-defvar.out. It is
+# checked BY VALUE (strlen/strcmp results, %s output) rather than by exit code,
+# because "it compiles" was never the question: the pre-W5c workaround compiled
+# too. That example also pins the segfault W5c fixed -- `(= cstr null)` lowered
+# to `strcmp(ptr, null)`, undefined behaviour in C and a crash under glibc.
+#
+# Here: the boundary the widened gate must NOT cross. `defvar-init-ir` now gates
+# a string literal and `null` on `is-ptr-like` instead of a bare `TY-PTR` kind,
+# which admits `CStr` -- and must still admit nothing else.
+spawn run_reject_at w5c-string-into-int tests/fixtures/w5c-string-into-int.nuc \
+  "tests/fixtures/w5c-string-into-int.nuc:5: error:" \
+  "defvar: string literal requires ptr or CStr type, not i32"
+spawn run_reject_at w5c-null-into-int tests/fixtures/w5c-null-into-int.nuc \
+  "tests/fixtures/w5c-null-into-int.nuc:4: error:" \
+  "defvar: null requires ptr or CStr type, not i32"
+#
+# The carve-out, pinned in the other direction. `CStr` is flow-exempt (a null
+# `char*` is ordinary C), and `defvar-init-ir` states that exemption as its own
+# early return rather than letting it ride on `is-ptr-like`. There is a KNOWN,
+# SEPARATE null-safety hole in the `TY-PTR` path beside it -- the global
+# initializer is a constant renderer that never routes through `coerce-int-val`,
+# so `(defvar g:ptr:Thing null)` compiles and segfaults where the identical
+# local is rejected. Closing that is Stage 15 W6; when it lands, the new pkind
+# check belongs on the ptr path only, and this test is what fails if `CStr` gets
+# swept up with it.
+spawn run_accepts w5c-cstr-null-exempt tests/fixtures/w5c-cstr-null-exempt.nuc
+
+# --- Stage 15 W5d: array literal ergonomics ---------------------------------
+# design/stage15-stress-test/ergonomics.md §3.9 + §3.10. The positive matrix is
+# examples/array-literal-ergonomics.nuc, run by the examples/*.nuc loop above:
+# bare struct compound literals as array elements (positional, designated and
+# mixed with the old `(deref …)` spelling), the zero-fill of an unspecified
+# struct/CStr slot, the same relaxation at the sibling typed slots (local, field,
+# aset!, by-value return), and the §3.10 `:ptr` bindings. The committed boot
+# compiler FAILS on that file (`array: type mismatch in positional initializer`),
+# which is the teeth.
+#
+# Here: the three boundaries the relaxations must NOT cross.
+# 1. §3.9 stays type-directed — a compound literal of a DIFFERENT struct is
+#    still a mismatch (the load is gated on the pointee's StructDef).
+# 2. The implicit load is a `deref`, so it inherits `deref`'s Stage 10
+#    obligation: a `?T` source must be narrowed first, or the sugar would be a
+#    nullability hole the explicit spelling does not have.
+# 3. §3.10 is SYNTACTIC (an `(array T …)` init and nothing else). A bare `:ptr`
+#    is the void*-style erasure hatch; inferring the element type generally
+#    would re-route multimethod dispatch across every such binding, so a `:ptr`
+#    bound from an `alloca` must stay elem-less.
+spawn run_reject_at w5d-array-wrong-struct tests/fixtures/w5d-array-wrong-struct.nuc \
+  "tests/fixtures/w5d-array-wrong-struct.nuc:9: error:" \
+  "array: type mismatch in positional initializer"
+spawn run_reject_at w5d-struct-slot-maybe-null tests/fixtures/w5d-struct-slot-maybe-null.nuc \
+  "tests/fixtures/w5d-struct-slot-maybe-null.nuc:12: error:" \
+  "assignment: value may be null"
+spawn run_reject_at w5d-elemless-not-inferred tests/fixtures/w5d-elemless-not-inferred.nuc \
+  "tests/fixtures/w5d-elemless-not-inferred.nuc:11: error:" \
+  "aref: operand must be typed pointer"
 
 # --- Join + replay --------------------------------------------------------------
 # Wait for all remaining jobs (ignore per-job exit codes — PASS/FAIL is decided

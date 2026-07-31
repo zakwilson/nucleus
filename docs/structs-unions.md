@@ -16,6 +16,39 @@ Use `(.& obj field)` to obtain a pointer to a field without loading it. Result i
 
 A struct used directly (not behind `ptr`) as a `defn`/`declare` parameter or return type is passed/returned per the **platform C ABI**, so it interoperates correctly with C functions compiled by the system `cc`. On x86_64 System V this means small structs are coerced into registers (e.g. `{i32,i32}` → one `i64`; a struct with a `float` field whose eightbyte also holds an integer → `i64`), and structs larger than 16 bytes are passed `byval` / returned via a hidden `sret` pointer. aarch64, `avr`, and `riscv64` instead pass every `ABI-MEMORY`-classified struct as a plain pointer (no `byval` — none of those targets' ABIs has that attribute); on `avr` this applies to **every** struct/union regardless of size, not just those over 16 bytes, because the SysV eightbyte classifier's register-sized-chunk model has no counterpart on an 8-bit target — `abi-classify` bypasses eightbyte classification for `avr` entirely rather than adapting it. On `riscv64` (lp64d), a struct ≤ 16 bytes is coerced through the **integer** calling convention — every eightbyte is passed/returned as an integer register (`i64` / `{i64,i64}`) regardless of its field types, so a small struct with a `double` field lowers to `i64`, not `double`. The psABI's hard-float flattening of *pure* small floating-point structs into FP registers is **deferred** (the same gap as aarch64's HFA case): a `{f64,f64}` or `{f32,f32}` passed by value between Nucleus and C on riscv64 will diverge from the cross `gcc`, whereas any struct with at least one integer field (which forces the integer class on both sides) and all scalar/pointer interop are exact. A struct value is produced by dereferencing a pointer (`@p`) and consumed by storing the call result (`(ptr-set! q (make ...))`); field *access* still requires a pointer (`(. p f)` needs `p : (ptr S)`), so to read fields of a by-value struct parameter, first store it: `(let (q:ptr:S (alloca S)) (ptr-set! q p) (. q f))`. A function may take or return a struct defined anywhere in the same compilation unit or an import — struct definitions are registered before function signatures are resolved.
 
+### Compound literals in by-value struct positions
+
+A `(S …)` compound literal is alloca-backed and evaluates to `(ref S)`, not to a
+struct *value*. Wherever a by-value `S` is expected, the pointer is loaded
+implicitly — one `load`, the same instruction `(deref …)` emits — so the literal
+can be written directly:
+
+```lisp
+(defstruct P (x i32) (y i32))
+(defstruct Row (p P) (n i32))
+
+(defn mk (a:i32):P (return (P a (* a 2))))     ; by-value return
+
+(let (tbl:ptr:P (array P (P 1 2) (P 3 4))      ; array element
+      v:P       (P 5 6)                        ; let / with binding
+      r:ptr:Row (Row (P 7 8) 9)                ; struct-typed field
+      m:P       (mk 3))
+  (aset! tbl 1 (P 10 11)))                     ; element store
+```
+
+The same applies to `set!`, `ptr-set!`, `.set!`, union-variant construction, and
+call arguments (which have always accepted it). Two constraints:
+
+* The struct type must match exactly — a compound literal of a *different*
+  struct in an `S` slot is still a type mismatch.
+* The conversion is a `deref`, so it carries `deref`'s obligation: a `?T` source
+  must be narrowed (`if-some` / `when-some` / `unwrap` / a null guard) first.
+
+The explicit `(deref (S …))` spelling remains valid everywhere and emits
+byte-identical IR; the two are interchangeable, including within one `(array S …)`.
+Unspecified slots of an `(array S …)` and omitted fields of a struct literal
+zero-fill, struct-, union- and `CStr`-typed slots included.
+
 ## C header struct ingestion
 
 C headers consumed via `(import-use "foo.h")` or `(import "foo.h" prefix)` now register their `struct Foo { ... };` and `typedef struct { ... } Bar;` definitions as Nucleus structs with the same name. Anonymous inline struct fields are registered as memoized anonymous structs (same `__anon_struct_h<hex>` machinery). Pass-by-value parameters typed as a C struct work through this path. `union { ... }` fields, named unions, and `typedef union` are registered as untagged union types (see [Untagged `(union ...)`](#untagged-union-)); headers like SDL's or pthread's no longer degrade over them. Field types that the parser cannot represent yet (arrays, bitfields, multi-declarator lines like `int a, b;`) cause the whole struct to be skipped — it becomes an **opaque type** (below) rather than a layout-incompatible partial struct.
@@ -251,6 +284,38 @@ reinterpretation, exactly `unsafe/cast`'s contract (no checking; the raw frontie
 `abi-classify` extends to unions (every member classified at offset 0, classes
 merged per SysV), and `sizeof`/layout agree with the platform C compiler
 (gated by `make layout-test`).
+
+**Function-pointer members are supported** — this is C's `actionf_t` idiom, one
+slot shared by several function arities (the shape a state table carries in
+every row). A member's type is a normal function-pointer type, so it may be
+written in the canonical list form or with the colon-paren sugar, whose
+parameter-list group must be *adjacent* to `(fn ret)` (see
+[Function Pointer Types](types.md#function-pointer-types)):
+
+```lisp
+(defstruct Row
+  tics:i32
+  (action (union acv:(fn void)()          ; void (*)(void)
+                 ac1:(fn i32)(ptr)        ; int (*)(void *)
+                 n:i32)))                 ; ... sharing the slot with a scalar
+
+(let (r:ptr:Row (alloca Row)
+      (slot (ptr (union acv:(fn void)() ac1:(fn i32)(ptr) n:i32))) (.& r action))
+  (.set! slot acv some-void-fn)
+  (funcall (slot acv)))
+```
+
+The union is one pointer wide, so it is bit-identical to the plain-`ptr`-field
+alternative (`(unsafe/cast ptr some-fn)` stored, `funcall`ed back per call site)
+— the union simply names each intended signature instead of re-deriving it at
+every use. `--emit-cheader` renders it as an ordinary C `union { void* acv;
+void* ac1; int32_t n; }` member, and `--emit-nuch` round-trips it as the
+canonical nested form `((fn void) ())` with the same memoization hash.
+
+A member position must be a `name:type` / `(name type)` declaration: a stray
+empty list `()` there is a located error, not a crash. (Before Stage 15 W5f the
+whole construct segfaulted the compiler at `defstruct` registration, because
+`acv:(fn void)()` left the `()` dangling as an extra, null member.)
 
 ### `defunion` — tagged sums
 

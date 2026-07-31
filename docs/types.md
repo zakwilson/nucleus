@@ -10,9 +10,15 @@ Types are attached to names with `:` syntax: `name:type` (e.g., `x:i32`, `main:i
 
 Pointers to a typed element use the `ptr` constructor: `(ptr T)` is a **non-null** pointer to `T`, and `(ptr ptr T)` chains. Bare `ptr` (with no element) is the opaque `void*` pointer — it carries no element contract, so non-null obligations do not apply to it.
 
+Because bare `ptr` erases the element type, operations that need one (`aref`, `aset!`, `deref`, `unsafe/ptr+`, field access) reject it. The one place the element type is recovered automatically is an **`(array T …)` initializer**: `(let (a:ptr (array i32 1 2 3)) (aref a 1))` binds `a` as `ptr:i32`, because the element type is spelled in the initializer itself. This is deliberately limited to that syntactic form — a bare `:ptr` bound from anything else (a function result, `alloca`, `addr-of`) stays elem-less, since erasing the element type is exactly what a `void*` annotation is for. Where you want the element type from any other initializer, either spell it (`a:ptr:i32`) or omit the annotation entirely (a bare binding name adopts the initializer's full type).
+
 In inline type positions (the type argument of `as`/`unsafe/cast`, `sizeof`, `alloca`), either the canonical list form or the colon sugar works: `(unsafe/cast (ptr Node) x)` and `(unsafe/cast ptr:Node x)` are equivalent.
 
-**Colon-paren binding sugar.** A binding's type may also be a parenthesised form written directly after the colon, with no space: `name:(ref (Vector T))`, `v:(ptr u8)`, `f:(fn i32) (i32 i32)`. In list (binding) context the reader fuses a trailing-colon atom that is *immediately* followed by `(` into the canonical list node `(name <paren-form>)`. So `v:(ref (Vector i32))` is exactly `(v (ref (Vector i32)))`, in both parameter lists and `let` bindings. The fusion only fires when the colon is the last character of the atom and the very next character is `(` (no whitespace); a mid-colon symbol such as `foo:i32` is unaffected.
+**Colon-paren binding sugar.** A binding's type may also be a parenthesised form written directly after the colon, with no space: `name:(ref (Vector T))`, `v:(ptr u8)`, `f:(fn i32)(i32 i32)`. In list (binding) context the reader fuses a trailing-colon atom that is *immediately* followed by `(` into the canonical list node `(name <paren-form>)`. So `v:(ref (Vector i32))` is exactly `(v (ref (Vector i32)))`, in both parameter lists and `let` bindings. The fusion only fires when the colon is the last character of the atom and the very next character is `(` (no whitespace); a mid-colon symbol such as `foo:i32` is unaffected.
+
+**Function-pointer types take a second, adjacent group.** A function pointer type is *two* parenthesised groups — `(fn ret)` and its parameter list — so the colon-paren fuse absorbs one more group when the first is `(fn …)`-headed **and the next character is `(` with no space**: `f:(fn i32)(i32 i32)` reads as `(f ((fn i32) (i32 i32)))`, and `acv:(fn void)()` (the zero-parameter case) as `(acv ((fn void) ()))`. Adjacency is required, exactly as for the first group — a *space*-separated second group is genuinely ambiguous with the next binding in the enclosing list (in `(f:(fn i32) (i32 i32) a:i32)` nothing distinguishes the parameter list from a `(name type)` binding), so it is not absorbed and `f` would be typed as a zero-parameter function pointer. `name:(fn ret)` with no following group is a *zero-parameter* function pointer, which is well-defined and useful (C's `ret (*)(void)`); it is only a mistake when you meant to give it parameters.
+
+The corollary, since absorption is driven purely by adjacency: **put a space between a `(fn ret)` type and a parenthesised initializer.** `(let (f:(fn i32) (choose)) …)` binds `f` to the result of `(choose)`; written without the space, `(choose)` is absorbed as the type's parameter list and the binding list is left with an odd element count (a located `let: binding list must be even`). This is the same discipline the first group already requires — an adjacent `(` after a trailing colon always belongs to the type.
 
 **Colon-chain fuse.** A colon chain ending in a paren also works: `name:k1:…:kN:(T …)` reads as `(name (k1 (… (kN (T …)))))`. The first segment is the binding name; each remaining segment wraps the paren form right-to-left as a unary constructor application — e.g. `v:ref:(Vector i32)` → `(v (ref (Vector i32)))`, `p:ptr:ptr:(fn i32)` → `(p (ptr (ptr (fn i32))))`. (The reader does not validate that segments are pointer-kind constructors — `a:Foo:(T)` fuses to `(a (Foo (T)))` and the type parser rejects the unknown segment naturally. An empty interior segment `a::(T)` is a reader error.) This applies to a parametric *return* type on a `defn` name too: `make-vec:ref:(Vector ptr)` reads as `(make-vec (ref (Vector ptr)))`. Either the colon-chain sugar or the canonical list form works in every binding position.
 
@@ -182,7 +188,7 @@ Pointer size and the target are not hardcoded as `i64`/`8` throughout codegen: a
 
 **A bare `"…"` string literal has static type `StrView`**, not `CStr` — a borrowed `{data:(ptr ui8), len:usize}` view over the literal's rodata storage (see [Strings](strings.md) for the full `StrView` API). `StrView` is a library struct, but its bare type is promoted into the prelude, so it is available everywhere without an import; its methods and protocol conformances still require `(import-use strview)`. A literal's backing storage is always NUL-terminated at `data[len]` (the same rodata global `CStr` literals always used), so a `StrView` value coerces to `CStr`/`ptr` **for free** (no IR) at any assignment, call argument, `as`/`unsafe/cast`, or return boundary, by taking `data` — this is what keeps every existing `:CStr`/`:ptr`-typed function, `printf`/libc call, and `strcmp`-style `=`/`!=` comparison working with a string literal unchanged. Only when a literal flows into a genuinely `StrView`-typed slot does it materialize the two-word `{data,len}` struct. In overloaded (`defn`/multimethod) dispatch, a `StrView`-typed argument adapts to a `CStr` parameter but *not* to a bare `ptr` parameter, reproducing the resolution a `CStr` literal produced before this type existed. A materialized `StrView` passed to a C variadic parameter (e.g. `printf`'s `%s`) contributes only its `data` pointer, never the two-word struct; a *fixed* (non-variadic) `StrView` by-value parameter is unaffected and still receives the full two-eightbyte struct per the platform ABI (`examples/strview-vararg-test.nuc`).
 
-`CStr` is the C-interop `char*` type — the FFI boundary type a `:CStr`-typed parameter, field, or return expects. It lowers to `ptr` (same ABI) and flows into any `ptr`-typed C function with no cast, but it is a **distinct type for operator dispatch**: `=` / `!=` on two `CStr` (or a `CStr`/`ptr`/`StrView` mix) do a `strcmp`-style **content** comparison (so equal text compares equal across distinct buffers), whereas `=` on two raw `ptr` is pointer identity. `CStr` conforms to the `Eq` protocol (`lib/numeric.nuc`), so it works in an `Eq`-bounded generic; it is not `Ord` (no ordering — out of scope here, along with Unicode). Only `=` / `!=` are defined; other operators on `CStr` are an error. A `CStr` and a `ptr` are freely interconvertible with `as` (no IR) and coerce automatically in value positions (assignment, return, field/array store). (Multimethod dispatch treats `CStr` as distinct — overload on `CStr` explicitly, or `as` to `ptr`.) `strcmp` must be declared, which the prelude's `(import-use "string.h")` provides. To bind an `Eq`-bounded generic at `StrView` from a literal, `(import-use strview)` must be in scope; otherwise `as` the literal to `CStr` explicitly. Example: `examples/cstr.nuc`.
+`CStr` is the C-interop `char*` type — the FFI boundary type a `:CStr`-typed parameter, field, or return expects. It lowers to `ptr` (same ABI) and flows into any `ptr`-typed C function with no cast, but it is a **distinct type for operator dispatch**: `=` / `!=` on two `CStr` (or a `CStr`/`ptr`/`StrView` mix) do a `strcmp`-style **content** comparison (so equal text compares equal across distinct buffers), whereas `=` on two raw `ptr` is pointer identity. **Comparing against the `null` literal is the one exception: `(= s null)` / `(!= s null)` on a `CStr` is a pointer-identity test, not a content comparison** — `strcmp(s, NULL)` is undefined behaviour in C, so a null check is always a null check. This makes the ordinary `(if (= s null) …)` guard safe on a `CStr` parameter, local, field, or global. (A `StrView` is a two-word struct and can never be null; compare its `data` field if you need that.) `CStr` conforms to the `Eq` protocol (`lib/numeric.nuc`), so it works in an `Eq`-bounded generic; it is not `Ord` (no ordering — out of scope here, along with Unicode). Only `=` / `!=` are defined; other operators on `CStr` are an error. A `CStr` and a `ptr` are freely interconvertible with `as` (no IR) and coerce automatically in value positions (assignment, return, field/array store). (Multimethod dispatch treats `CStr` as distinct — overload on `CStr` explicitly, or `as` to `ptr`.) `strcmp` must be declared, which the prelude's `(import-use "string.h")` provides. To bind an `Eq`-bounded generic at `StrView` from a literal, `(import-use strview)` must be in scope; otherwise `as` the literal to `CStr` explicitly. Example: `examples/cstr.nuc`.
 
 A `c"…"` literal — a `c` glued directly onto the opening quote, with no whitespace — is an explicit `CStr` literal: the bare `char*` GEP, no `{data,len}` view header, and no target-typing. It is the direct "I mean `char*`" spelling for FFI/format-string hot spots; the free `StrView`→`CStr` coercion above already covers the same cases, so `c"…"` is ergonomic, not required. A space keeps the tokens apart (`c "foo"` is the symbol `c` followed by an ordinary `StrView` literal); only the glued, lowercase-`c` form is the literal. See [Strings](strings.md) §3 and `examples/cstr-lit-test.nuc`.
 
@@ -202,9 +208,13 @@ A `f64` **value** (not a literal) narrows into an `f32` target implicitly and si
 
 Function pointer types are written as `(fn:rettype (param-types...))` in sugared form, or `((fn rettype) (param-types...))` in desugared/canonical form.
 
-In parameter and `let`-binding positions, either the canonical list form or the
-colon-paren sugar works — the reader fuses a trailing-colon name immediately
-followed by `(` (see *Colon-paren binding sugar* above):
+In parameter, `let`-binding, struct-field and union-member positions, either the
+canonical list form or the colon-paren sugar works — the reader fuses a
+trailing-colon name immediately followed by `(`, then absorbs the adjacent
+parameter-list group (see *Colon-paren binding sugar* above). **Both parenthesised
+groups must be adjacent — `f:(fn i32)(i32 i32)`, not `f:(fn i32) (i32 i32)`**; a
+space-separated second group is a separate element of the enclosing list, which
+leaves `f` typed as a *zero-parameter* function pointer.
 
 ```lisp
 ; canonical list form
@@ -212,7 +222,7 @@ followed by `(` (see *Colon-paren binding sugar* above):
   (return (funcall f a b)))
 
 ; colon-paren sugar — equivalent
-(defn apply (f:(fn i32) (i32 i32) a:i32 b:i32):i32
+(defn apply (f:(fn i32)(i32 i32) a:i32 b:i32):i32
   (return (funcall f a b)))
 ```
 
@@ -222,7 +232,7 @@ In `let` bindings, the binding name is also a list (or its colon-paren sugar):
 (let ((f (fn i32) (i32 i32)) some-function)   ; list form
   (funcall f 1 2))
 
-(let (f:(fn i32) (i32 i32) some-function)     ; colon-paren sugar
+(let (f:(fn i32)(i32 i32) some-function)      ; colon-paren sugar
   (funcall f 1 2))
 ```
 
@@ -239,6 +249,7 @@ The following conversions are applied automatically in assignment contexts (`let
 
 - **Pointer ↔ pointer** (any element types): identity, no IR. `ptr`, `ptr:Node`, `ptr:i8` are interchangeable at boundaries; the cast only matters when the result feeds a typed-pointer-only operation (`.`, `aref`, `aset!`, `unsafe/ptr+`, `deref`).
 - **`StrView` → `CStr` / `ptr`**: takes the view's `data` field — no IR for an unmaterialized string literal (whose value already *is* `data`), one `extractvalue` for a general `StrView` value. Trusts that the buffer is NUL-terminated at `data[len]`, always true for a literal but not guaranteed for an arbitrary sub-slice (see [Strings — Gotchas and constraints](strings.md)).
+- **`ptr:S` → by-value `S`** (`S` a struct): one `load` of the pointee — the implicit form of `(deref p)`. This is what lets a `(S …)` compound literal, which is alloca-backed and evaluates to `(ref S)`, be written directly wherever a by-value `S` is expected: an element of an `(array S …)`, a struct-typed field in another struct literal, a `let`/`with` binding declared `:S`, an `aset!`/`ptr-set!` element store, and an implicit or explicit `return` from an `S`-returning function. Argument positions have always accepted it. The element type must match exactly (a compound literal of a *different* struct is still a type mismatch), and because the conversion is a `deref` it carries `deref`'s obligation: a `?T` source must be narrowed first. The explicit `(deref (S …))` spelling remains valid and emits byte-identical IR.
 - **Integer ↔ integer**:
   - Same width, different sign (e.g. `i32` ↔ `ui32`): reinterpret, no IR.
   - Widening: `sext` for signed source, `zext` for unsigned source.
@@ -338,6 +349,52 @@ The same width rule and the same range check apply to a **named** constant. A
 5000000000)` is `i64`, so `(let (x:i64 BIG) …)` yields `5000000000`, while
 `(let (x:i32 BIG) …)` and `(defvar g:i32 BIG)` are compile-time errors rather
 than a silent 32-bit wrap. Enum members are always small enough to be `i32`.
+
+## String literal escapes — `\n`, `\xHH`
+
+Inside a `"…"` (or `c"…"`) string literal, a backslash introduces an escape.
+The complete set:
+
+| Escape | Byte | Notes |
+|--------|------|-------|
+| `\n` | 0x0A | newline |
+| `\t` | 0x09 | tab |
+| `\r` | 0x0D | carriage return |
+| `\0` | 0x00 | NUL — but see the truncation note below |
+| `\\` | 0x5C | a literal backslash |
+| `\"` | 0x22 | a literal double quote |
+| `\xHH` | 0x00–0xFF | a raw byte as **one or two** hex digits, either case |
+
+Any other character after a backslash is a positioned reader error
+(`unknown escape \<c>`); a `\x` with no following hex digit is likewise an
+error (`\x escape needs at least one hex digit`).
+
+**`\x` is capped at two hex digits — this is a deliberate difference from C.**
+C's `\x` is *greedy*: it consumes every following hex digit, so C's `"\x41BC"`
+is a single character whose value overflows. Nucleus stops after two digits, so
+`"\x41BC"` is the three characters `A`, `B`, `C` (0x41, then the ordinary
+literal characters `B` and `C`). Two digits express every byte, so the cap costs
+nothing in practice and removes C's run-on footgun. One digit is accepted where
+unambiguous — `"\xa"` and `"\x0a"` are the same byte.
+
+```lisp
+"MUS\x1a"        ; four bytes: 'M' 'U' 'S' 0x1A
+"\x1b[0m"        ; an ANSI reset sequence
+"\xff\xFF"       ; two 0xFF bytes — hex digits are case-insensitive
+"\x41BC"         ; three characters: 'A' 'B' 'C'  (NOT one, as in C)
+```
+
+Note the `\x` spelling means something different in the two literal contexts:
+inside a string, `"\x41"` is the escape for byte 0x41, while the standalone
+*char literal* `\x` is the single printable character `x` (codepoint 120) — char
+literals use `\u{…}` for a hex codepoint, as described in the next section.
+
+**A string literal cannot carry an embedded NUL.** The reader decodes escapes
+into a counted buffer, but the token stores the result as a NUL-terminated
+`char*` and the count is dropped, so the literal's length is recovered
+downstream with `strlen`. Both `"x\0y"` and `"x\x00y"` are therefore length 1,
+truncated at the NUL. Build byte strings containing a zero byte at runtime
+instead (see [Strings](strings.md)).
 
 ## Char literals — `\a`
 
