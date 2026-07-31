@@ -64,13 +64,4 @@ Fixed-size array fields in structs
 
 Duplicate defmacro silently first-wins. 
 
-maybe struct field access should be quoted
-```
-(let (k:CStr "foo"
-     (m (ref (HashMap CStr i32))) {"foo" 1 "bar" 0})
-  (m k))
-  
-; error: get: no field 'k' on struct 'HashMap.cstr.i32'
-; I expected a lookup here
-
-```
+Quoted symbols work for struct field access, but bare symbols are also allowed and can collide with callable values by shadowing variables. Globals aren't allowed and should be.

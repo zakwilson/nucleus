@@ -383,16 +383,18 @@ new source, and W1a's reconverge left it current.
   regression — the message would fall through to "not defined anywhere in this
   compilation unit", which is more wrong than the tautology.
 
-## W7 — The bare-symbol selector always means "field name" (design only)
+## W7 — The bare-symbol selector always means "field name"
 
-**Status: designed, not implemented.** Spec:
-[selector-ambiguity.md](selector-ambiguity.md).
+**Status: done** (options B + D + E). Spec:
+[selector-ambiguity.md](selector-ambiguity.md). **Provenance: the author's own
+stress testing of the language, not the Doom port** — this item has no `§`
+number in `NUCLEUS-FINDINGS.md`.
 
 Reported from `examples/hashmap-lit-test.nuc`, whose working tree now binds
 `k:CStr "foo"` and calls `(m k)`. That fails —
 `get: no field 'k' on struct 'HashMap.cstr.i32'` — while `(m "foo")` succeeds.
-**This is the one failing test in the suite** (296 pass, 1 fail); it is the
-reproducer, not a regression.
+It was the one failing test in the suite when the work started (296 pass, 1
+fail) — the reproducer, not a regression. The suite is now **300 pass, 0 fail**.
 
 * **Root cause is two-part.** `selector-literal-sym` (`nucleusc.nuc:3234`)
   classifies a selector by node kind alone — any `NODE-SYM` is a field name,
@@ -449,3 +451,47 @@ reproducer, not a regression.
   deliberate migration *to* head-position field access, and `_get` survives
   either way (a user `get` reading its own fields still needs the bypass —
   `(self 'cap)` still dispatches into the same method).
+
+### W7 as built
+
+Three changes in `src/nucleusc.nuc`, plus two new predicates beside
+`selector-literal-sym`:
+
+* **B — the demotion** (`emit-get-with-callee`). A bare symbol demotes to a value
+  selector when `callee-has-field` is 0 and `selector-shadowed-by-local` is 1.
+  `(= sym sel-node)` is the bare-vs-quoted discriminator — `selector-literal-sym`
+  returns the node itself for a bare symbol and the *inner* node for `'sym` — so a
+  quoted selector is never demoted.
+* **`selector-shadowed-by-local` accepts locals only.** Globals would be far too
+  broad: every function lives in the global scope, so accepting non-locals would
+  demote `(sd name)` the moment any global named `name` existed.
+* **The design's proposed extra gate was unnecessary and was dropped.** The spec
+  suggested gating the demotion on the local's type actually resolving a `get`, to
+  keep a plain-struct typo's diagnostic. Not needed: when Branch B finds no method
+  it falls through to `emit-get-intrinsic`, which re-reads the still-symbol
+  `sel-node` and reports the same "no field" error on its own.
+* **D — the `invoke`→`get` fallback** (`emit-invoke-with-callee`), gated on
+  `generic-has-receiver-method` returning 0. **Gating on that probe rather than
+  resolving through `generic-resolve-nullable` is load-bearing:** the nullable
+  resolver omits tier-2 untyped-literal widening, so putting it on the primary
+  path would have silently regressed `(v 3)`. The probe is side-effect-free and
+  tolerates a null generic, leaving the ordinary invoke path untouched.
+* **E — the diagnostic** (`emit-get-intrinsic`), via `fmt-3s`, fires only when the
+  missing field name is a local binding.
+
+**Verification.** `bin/nucleusc` is the pre-change compiler (rebuilt from
+`boot/nucleusc.ll`), so emitting IR for every example with both binaries is a
+direct A/B: **135 byte-identical, 0 differing, 1 newly compiling**
+(`hashmap-lit-test`), 1 failing on both. `make bootstrap` passes. Tests 296/1 →
+**300/0**, the three new units being `selector-value` (positive matrix),
+`w7-local-not-a-field` (the hint) and `w7-plain-typo` (the hint must not leak onto
+an ordinary typo).
+
+**Unrelated pre-existing failure noticed, not fixed:** `examples/comb-shapes.nuc`
+fails identically on both compilers with `as: lossy conversion from usize to i32`
+at line 36, and has no `tests/expected/` entry so the suite never ran it.
+
+**Known limits, deliberate:** a field name wins over a same-named local
+(`(m count)` is the field); globals never demote. `(invoke m count)` is the escape
+hatch for both. `_get` is not retired — a user `get` reading its own fields still
+needs the bypass, since `(self 'cap)` dispatches back into that same method.

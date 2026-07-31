@@ -724,6 +724,21 @@ hazards — both bit the `.`→head-position migration and are why `_get` still 
   `(_get cond f)`); a reserved-named **`->` base** (`(-> cond … (. type))`) is not
   caught and must be renamed.
 
+**A bare selector falls back to a value when the callee has no such field (W7).**
+`(s field)` still names a field whenever `s`'s type *has* that field — that rule
+is unchanged and is why the two hazards above still bite. But when the callee
+provably has no such field and the symbol is a **local** binding, the selector is
+demoted to a value, so `(m k)` on a `(HashMap CStr i32)` looks up by `k` instead
+of dying with "no field 'k'". Two things this does **not** do, both deliberate:
+a **field name wins** over a same-named local (`(m count)` is `HashMap`'s `count`
+field), and **globals never demote** (every function is in the global scope, so
+demoting on globals would re-interpret `(sd name)` the moment a global `name`
+existed). For both, `(invoke m count)` is the always-a-value escape hatch —
+`invoke` now falls back to `get` when no `invoke` method accepts the receiver.
+The demotion cannot change code that compiled before: any such site resolves its
+field, so the gate is false there (verified by A/B-diffing emitted IR for every
+example against the pre-change compiler — 135 byte-identical, 0 differing).
+
 The `->` macro (`lib/macros.nuc`) was extended to substitute `_` in **head**
 position (it scans the whole form, not just args), so a threaded value can land in
 call position: `(-> s (_ field))` ⇒ `(s field)`. The migration rewrites a 1-arg

@@ -1,0 +1,9 @@
+; Stage 15 W7: the selector names a local, but the callee has no such field AND
+; no `get` method can take it — the miss must still be reported, now with the
+; hint that a bare selector always names a field.
+(import-use "stdio.h")
+(defstruct Point x:i32 y:i32)
+(defn main ():i32
+  (let (p:ptr:Point (alloca Point) k:i32 1)
+    (printf "%d\n" (p k))
+    (return 0)))
