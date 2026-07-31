@@ -53,6 +53,7 @@ Each has a spec doc (source of truth) and is dispatched from
 | **W4** | Diagnostics: locations and silent failures | §5.1 §5.2 §5.3 §3.2 §6.1 §6.2 | Medium | [diagnostics.md](diagnostics.md) |
 | **W5** | Ergonomic gaps and the union crash (**W5a/W5b/W5c/W5d/W5f done** — §4.4 `\xHH` string escapes; §4.3 unary `bit-not` as a macro over `(bit-xor x -1)`, and W4a's stopgap suggestion removed with it; §3.7 `CStr`-typed `defvar`; §3.9+§3.10 array-literal ergonomics; §1.1 the union/function-pointer segfault — which was **not a union bug at all** but a colon-paren *reader* gap: a function-pointer type is two paren groups and the fuse absorbed one, so the stray `()` read as a NULL node that ten sites dereferenced. Only W5e remains, sequenced after W1) | §1.1 §2.5 §4.3 §4.4 §3.7 §3.9 §3.10 | Medium | [ergonomics.md](ergonomics.md) |
 | **W6** | Nullability flow typing (**design only**) | §3.3 | Design | [nullability.md](nullability.md) |
+| **W7** | The bare-symbol selector always means "field name" (**design only, written**) — `(m k)` / `(get m k)` on a `HashMap` dies with `no field 'k' on struct 'HashMap.cstr.i32'` because `selector-literal-sym` classifies a selector by node kind alone and `emit-get-with-callee` has no edge from its symbol branch back to its value branch; `(invoke m k)` cannot serve as the escape hatch because `invoke` never falls back to `get`. Blast radii measured by instrumenting the emitter: scope-first resolution would silently re-interpret **79** sites in the compiler's own source and break every user `get` that reads its own fields, so it is rejected; the `invoke`-symmetric rule (a value-keyed-`get` type gives up callable field access) costs **26** lines, 23 of them mechanical `_get` conversions in `lib/hashmap.nuc`, the stdlib's only value-keyed `get`; **marked selectors** (a field name must be written `'field`/`:field`, freeing bare symbols to be variables as they are everywhere else) costs **~3,800** sites, of which **0** are currently quoted. Concludes marked selectors are the correct end state — selector position is the *only* place in the language where a bare symbol is not a variable reference, and the other options are tiebreak rules for an ambiguity it deletes — but sequences the zero-risk pair (`invoke`→`get` fallback + "field-first, value fallback") into this stage and the migration into its own, since the reader already lexes both marks and the rewrite is automatable from `g-source-path` locations. | — | Small now / Large for the end state | [selector-ambiguity.md](selector-ambiguity.md) |
 
 Deferred to a later stage, with reasons, in [prompt.md](prompt.md) §7: struct
 packing (§4.1) and fixed-size array fields (§4.2) — both real gaps, both wanting
@@ -72,7 +73,10 @@ W1 is last despite being ranked first, because it is the only item that changes
 risk to the bootstrap fixed point. It should land against a green tree with the
 diagnostics already improved.
 
-W6 is a document and can be written at any point.
+W6 is a document and can be written at any point. W7 likewise — it is written,
+and its implementation is independent of every other item (it touches only
+`emit-get-with-callee`/`emit-invoke-with-callee` and, in the recommended variant,
+`lib/hashmap.nuc`).
 
 ## Definition of success for the stage
 

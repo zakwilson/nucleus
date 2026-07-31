@@ -289,7 +289,10 @@
         (when (!= ud null)
           (return (union-instance-type ud))))
       (return (type-for-sdef sd))))
-  (die-at line (fmt-s "unknown type: %s" name)))
+  ; Stage 15 W1c: `unknown-type-message` (src/nucleusc.nuc) says plainly that
+  ; the name is defined nowhere in the unit, and — for §2.7's reachability
+  ; constraint, which W1 keeps — names the on-path file that does define it.
+  (die-at line (unknown-type-message name)))
 
 ; The registered Type for a StructDef — TY-UNION when the def is an untagged
 ; union, TY-STRUCT otherwise (including defunion backing structs).
@@ -862,13 +865,38 @@
               ; A niche layout (rules 2/3) lowers to a bare pointer and never
               ; references this backing struct, so its IR type is not emitted
               ; (the §3 struct that would defeat the whole point of the niche).
-              (when (and (!= g-type-stream null)
-                         (!= layout LAYOUT-NICHE-MAYBE) (!= layout LAYOUT-NICHE-ERRPTR))
-                (if (!= union-sd null)
-                  (fprintf g-type-stream "%%%s = type { i32, %%%s }\n\n"
-                    (sd ir-name) ((as ptr:StructDef union-sd) ir-name))
-                  (fprintf g-type-stream "%%%s = type { i32 }\n\n" (sd ir-name))))
-              (.set! sd emitted 1))
+              ;
+              ; Stage 15 W1a: the backing struct's line names the anon payload
+              ; union, which is on the DEFERRED queue — so writing it here is only
+              ; safe while that union will land in the very next drain (every
+              ; module assembly is preceded by one). When the union's own named
+              ; dependency is still unemitted — a struct payload such as
+              ; `!String`, whose `%String` arrives with a later import — the union
+              ; stays queued across an unbounded number of module assemblies, and
+              ; each of them (a `compile-time` block, a `defmacro` JIT module)
+              ; would carry `%X = type { i32, %anon }` with `%anon` undefined:
+              ;   (compile-time …) (import-use string) (defn f (…):!String …)
+              ; reproduces it on the pre-W1a compiler. Queue the backing struct in
+              ; that case so the shared drain writes it after the union, in
+              ; dependency order. `is-union` is 0 here, so the queue emits it via
+              ; emit-pending-struct-ir-type, whose text is identical to the
+              ; fprintf below. The condition is exactly "would dangle", so every
+              ; scalar/pointer payload (`!i32`, `!ptr`, `!raw:Node` — all the
+              ; compiler's own) keeps the eager write and its IR position.
+              (if (and (!= g-type-stream null)
+                       (!= layout LAYOUT-NICHE-MAYBE) (!= layout LAYOUT-NICHE-ERRPTR)
+                       (!= union-sd null)
+                       (= ((as ptr:StructDef union-sd) emitted) 0)
+                       (= (pending-union-deps-ready union-sd) 0))
+                (conj g-pending-unions sd)
+                (do
+                  (when (and (!= g-type-stream null)
+                             (!= layout LAYOUT-NICHE-MAYBE) (!= layout LAYOUT-NICHE-ERRPTR))
+                    (if (!= union-sd null)
+                      (fprintf g-type-stream "%%%s = type { i32, %%%s }\n\n"
+                        (sd ir-name) ((as ptr:StructDef union-sd) ir-name))
+                      (fprintf g-type-stream "%%%s = type { i32 }\n\n" (sd ir-name))))
+                  (.set! sd emitted 1))))
             (let (ud:ptr:UnionDef (new UnionDef))
               (conj g-uniondefs ud)
               (.set! ud name name)
