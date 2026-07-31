@@ -2373,6 +2373,28 @@ spawn run_w1c_unreachable_file
 spawn run_w1c_defined_nowhere
 spawn run_w1c_unreachable_type
 
+# --- Stage 15 W7: a bare selector symbol may be a value ---------------------
+# design/stage15-stress-test/selector-ambiguity.md. The positive matrix is
+# examples/selector-value.nuc, run by the examples/*.nuc loop above against
+# tests/expected/selector-value.out: a local key in head position, through
+# `get`, and through `invoke` (which now falls back to `get`); a string-literal
+# key; an absent key; plain field access with a same-named local in scope; and
+# the collision case where the local names a REAL field, which still resolves to
+# the field with `invoke` as the escape hatch. Checked by value, not by exit
+# code — "it compiles" was never the question for the field-access half.
+#
+# Here: the boundary the demotion must NOT cross. The selector falls back to a
+# value reading only when the callee provably has no such field AND the name is
+# a local; a genuine miss must still be reported.
+spawn run_reject_at w7-local-not-a-field tests/fixtures/w7-local-not-a-field.nuc \
+  "tests/fixtures/w7-local-not-a-field.nuc:8: error:" \
+  "and 'k' is a local binding here, but a bare symbol in selector position always names a field"
+# And the hint must not leak onto an ordinary typo — no local named `zz`, so the
+# message stays the plain unadorned one.
+spawn run_reject_at w7-plain-typo tests/fixtures/w7-plain-typo.nuc \
+  "tests/fixtures/w7-plain-typo.nuc:7: error:" \
+  "get: no field 'zz' on struct 'Point'"
+
 # --- Join + replay --------------------------------------------------------------
 # Wait for all remaining jobs (ignore per-job exit codes — PASS/FAIL is decided
 # by scanning buffered output, since `set -e` does not propagate across `&`).

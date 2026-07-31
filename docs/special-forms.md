@@ -313,6 +313,26 @@ longer use the callable form for field access: read its fields with `_get`/`.fie
 still treats a single literal-symbol argument as a field selector via the raw `_get`
 intrinsic, so `(p x)` ≡ `(_get p x)` is unchanged and zero-overhead.
 
+**A bare symbol names a field — unless the callee has no such field.** Selector
+position is the one place in Nucleus where a bare symbol is not a variable
+reference, so `(p x)` reads the field `x` even when a local named `x` is in scope.
+That rule is unchanged. What it no longer does is *foreclose* the value reading:
+when the callee provably has **no** field of that name and the symbol **is** a
+local binding, the selector falls back to being a value. So a key held in a local
+works in head position:
+
+```lisp
+(with ((m (ref (HashMap CStr i32))) {"foo" 42}
+       k:CStr "foo")
+  (m k))         ; ⇒ (get m <value of k>) → (some 42) — `HashMap` has no field `k`
+```
+
+Two deliberate limits. A **field name wins** over a same-named local — `(m count)`
+reads `HashMap`'s `count` field, not the entry under key `"count"`. And only
+**locals** demote, never globals: every function lives in the global scope too, so
+demoting on globals would re-interpret `(sd name)` the moment any global named
+`name` existed. Both cases have the same escape hatch — see `invoke` below.
+
 **`get` — member access (the `Struct` default).** Every struct conforms to the
 built-in `Struct` blanket protocol, whose `get` is supplied by an **intrinsic**: a
 literal selector const-folds to a static `getelementptr`+`load`, **identical to the
@@ -337,7 +357,9 @@ type. A user `get` takes the selector as an interned symbol (`ptr`):
 
 **Value-keyed `get` (computed selectors).** Dispatch splits on the selector kind.
 A literal-symbol selector takes the member-access path above (the selector value
-is always an interned symbol `ptr`). A **computed/value selector** — an `i32`, a
+is always an interned symbol `ptr`) — except for the bare-symbol fallback noted
+earlier, where a symbol naming no field of the callee but naming a local instead
+takes the value path below. A **computed/value selector** — an `i32`, a
 `CStr`, a `StrView` (e.g. a string literal), or any non-symbol value — instead
 resolves the `get` generic on the selector's *actual* type, so a parametric `get`
 override can index by a real key. A string-literal selector resolves against a
@@ -379,10 +401,25 @@ argument tuple:
 (_get v len)   ; field access — `(v len)` would mis-route to invoke
 ```
 
+**`invoke` falls back to `get`.** If no `invoke` method accepts the receiver, a
+one-argument `(invoke callee arg)` retries the resolution against the `get`
+generic. This makes `invoke` the unambiguous **always-a-value** spelling, pairing
+with `'sym` as the always-a-name one:
+
+```lisp
+(m 'count)          ; the `count` FIELD — quote it to mean the name
+(invoke m count)    ; the value under key `count` — invoke it to mean the value
+```
+
+That is the escape hatch for both limits noted above: a selector colliding with a
+real field name, and a global used as a key. A `HashMap` exposes its lookup as
+`get` and has no `invoke` at all, so `(invoke m k)` reaches it through this path.
+
 For parametric function-object conformance use `(UnaryFn Arg Ret)` and
 `(FoldFn Acc Elem)` from `lib/iterator.nuc`
 (see [Generics](generics.md#associated-type-bounds-where-protocol-arg--var)).
-See `examples/callable.nuc` for a full demonstration.
+See `examples/callable.nuc` for a full demonstration, and
+`examples/selector-value.nuc` for the bare-symbol-as-value matrix.
 
 **Computed selector (`get` only).** An *explicit* `(get callee expr)` whose
 selector is a compound expression (not a bare/quoted symbol) reads a field chosen

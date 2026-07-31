@@ -1,0 +1,69 @@
+; Stage 15 W7 — a bare symbol in selector position may be a *value*.
+;
+; design/stage15-stress-test/selector-ambiguity.md
+;
+; A bare symbol after a callee has always named a *field*, which makes selector
+; position the only place in Nucleus where a bare symbol is not a variable
+; reference. That is fine for a plain struct, but it made `(m k)` on a
+; `(HashMap CStr i32)` fail with "no field 'k'" while `(m "foo")` worked — the
+; value reading was unreachable once the selector was classified as a symbol.
+;
+; The rule now: a bare symbol still names a field whenever the callee *has* that
+; field; it falls back to the value reading only when the callee provably does
+; not and the name is a local binding. So plain field access is untouched, and
+; the collision case (a local whose name IS a field) still resolves to the field
+; — with `invoke` as the explicit always-a-value escape hatch.
+
+(import-use "stdio.h")
+(import-use allocator)
+(import-use coll)
+(import-use iterator)
+(import-use hash)
+(import-use hashmap)
+
+(defstruct Point x:i32 y:i32)
+
+(defn main ():i32
+  ; --- plain struct: a bare symbol still names a field, even when a local
+  ;     of the same name is in scope (the field wins) ---
+  (let (p:ptr:Point (alloca Point)
+        x:i32 99)
+    (.set! p x 3)
+    (.set! p y 4)
+    (printf "field=%d local=%d quoted=%d\n" (p x) x (get p 'x)))  ; 3 99 3
+
+  (with ((m (ref (HashMap CStr i32))) {"foo" 42 "bar" 7}
+         k:CStr "foo"
+         miss:CStr "nope")
+    ; --- the fix: a local key in head position ---
+    (match (m k)
+      ((some v) (printf "head=%d\n" v))                           ; 42
+      (none     (printf "head=absent\n")))
+    ; --- and through the explicit `get` form ---
+    (match (get m k)
+      ((some v) (printf "get=%d\n" v))                            ; 42
+      (none     (printf "get=absent\n")))
+    ; --- and through `invoke`, which now falls back to `get` ---
+    (match (invoke m k)
+      ((some v) (printf "invoke=%d\n" v))                         ; 42
+      (none     (printf "invoke=absent\n")))
+    ; --- a string literal key still works (it always did) ---
+    (match (m "bar")
+      ((some v) (printf "literal=%d\n" v))                        ; 7
+      (none     (printf "literal=absent\n")))
+    ; --- a local key that is genuinely absent ---
+    (match (m miss)
+      ((some v) (printf "missing=%d\n" v))
+      (none     (printf "missing=absent\n"))))                    ; absent
+
+  ; --- the collision: a local named after a real HashMap field. The FIELD
+  ;     wins (unchanged behaviour); `invoke` is the escape hatch. ---
+  (with ((c (ref (HashMap CStr i32))) {"count" 5}
+         count:CStr "count")
+    (printf "count-field=%llu\n" (as ui64 (c count)))             ; 1 — the field
+    (match (invoke c count)
+      ((some v) (printf "count-key=%d\n" v))                      ; 5 — the value
+      (none     (printf "count-key=absent\n"))))
+
+  (printf "done\n")
+  (return 0))

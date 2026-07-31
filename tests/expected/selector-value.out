@@ -1,0 +1,9 @@
+field=3 local=99 quoted=3
+head=42
+get=42
+invoke=42
+literal=7
+missing=absent
+count-field=1
+count-key=5
+done
