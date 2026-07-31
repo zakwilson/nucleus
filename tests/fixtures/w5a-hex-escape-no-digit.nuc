@@ -1,0 +1,7 @@
+; Stage 15 W5a: a `\x` escape with no following hex digit is a reader error,
+; reported at the literal's own line (line 6 below) — never line 0.
+(defn main ():i32
+  (printf "%s\n" "ok")
+  ; `\xZZ` — 'Z' is not a hex digit, so this `\x` has zero digits.
+  (printf "%s\n" "bad\xZZ")
+  (return 0))

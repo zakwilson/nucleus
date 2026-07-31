@@ -1,0 +1,7 @@
+; Stage 15 W5c: the companion to w5c-string-into-int for the `null` initializer.
+; `is-ptr-like` admits `ptr` and `CStr` only — `null` in an integer-typed global
+; is still rejected, at its own line.
+(defvar g:i32 null)
+
+(defn main ():i32
+  (return g))

@@ -1,0 +1,13 @@
+; Stage 15 W5f: an empty list `()` in a `(union ...)` member position reads as a
+; NULL node. Before W5f the anonymous-union member loop dereferenced it and the
+; compiler segfaulted with no output at all. It must be a located diagnostic.
+;
+; (This is also the shape the W5f crash arrived in: `acv:(fn void)()` used to
+; leave the `()` dangling as a separate member. That spelling now fuses into the
+; function-pointer type, so only a genuinely stray `()` reaches here.)
+
+(defstruct Row
+  tics:i32
+  (action (union as-int:i64 ())))
+
+(defn main ():i32 (return 0))

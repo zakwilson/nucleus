@@ -1,0 +1,10 @@
+; Stage 15 W5f: an empty list `()` in a defn parameter list reads as a NULL node.
+; It reached six separate raw dereferences (the signature prescan, the
+; &rest/&optional scan, the closure-exposure warning scan, and the parameter
+; loop itself) before W5f; all of them now route through the null-safe
+; `node-line` / an explicit guard, so this is a located diagnostic.
+
+(defn takes-a-hole (a:i32 ()):i32
+  (return a))
+
+(defn main ():i32 (return (takes-a-hole 1)))

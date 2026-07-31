@@ -775,6 +775,13 @@
 ;   - a list node (name type ...) from desugar — extracts car/cadr strings
 ; Sets out-name and out-type-name.  out-type-name is null if untyped.
 (defn extract-name-type (node:(raw Node) out-name:ptr:ptr out-type-name:ptr:ptr):void
+  ; W5f: an empty list `()` in a declaration position is a NULL node — report it
+  ; as "untyped, unnamed" and let the caller's own diagnostic fire, rather than
+  ; dereferencing it. (The fatal counterpart lives in extract-name-and-type.)
+  (when (= node null)
+    (ptr-set! out-name null)
+    (ptr-set! out-type-name null)
+    (return))
   (let (n:(raw Node) node)
     ; AT-1: skip leading attribute keywords on a wrapped declaration
     ; `(:volatile field:type)` and re-derive the inner name / type-name. Validation
@@ -821,6 +828,15 @@
 ; For simple types: (name type-sym) → parse-type-name
 ; For function pointer types: (name (fn ret) (param-types)) → parse-type-from-node on rest
 (defn extract-name-and-type (node:(raw Node) out-name:ptr:ptr line:i32):(raw Type)
+  ; W5f: an empty list `()` in a declaration position reads as a NULL node
+  ; (read-list returns null for a zero-element list, and read-list then wraps it
+  ; in a cell whose car is null). Every caller — `(struct …)`/`(union …)` members,
+  ; defstruct fields, defn params, let/with bindings, defunion arm fields — reaches
+  ; this shared chokepoint, and each would otherwise dereference the null here.
+  ; Diagnose with the enclosing form's line instead of faulting.
+  (when (= node null)
+    (ptr-set! out-name null)
+    (die-at line "expected a name:type declaration, found the empty list '()'"))
   (let (n:(raw Node) node)
     ; AT-1 (design/stage14/attributes.md): an attribute-annotated declaration is a
     ; cell whose head is a keyword literal — `(:volatile status:i32)` for a struct
@@ -1062,6 +1078,13 @@
   (when (!= g-block-term 0)
     (when (= (node-is-label-form n) 0)
       (return (alloc-val ty-void null))))
+  ; W5f: `()` in expression position reads as a NULL node (read-list returns null
+  ; for a zero-element list), and every line/kind read below dereferences it. No
+  ; working program can reach here with null — this deref has always faulted — so
+  ; diagnosing is strictly an improvement over the segfault. The ambient
+  ; g-form-line is the enclosing form's, which is the only location `()` has.
+  (when (= n null)
+    (die-at g-form-line "'()' is not an expression -- the empty list has no value"))
   (let (nn:(raw Node) n
         ; Stage 15 W4a: adopt this node's line as the ambient diagnostic line for
         ; the duration of its emission, and restore the caller's on the way out
@@ -2278,11 +2301,33 @@
     ; trigger fires only on CStr as before, strview-data-ir returns the bare ptr
     ; with no tmp, and this branch is byte-identical. Two plain `ptr` stay `icmp`
     ; identity (the Node.s interned-symbol path is untouched).
+    ;
+    ; Stage 15 W5c: comparing against the `null` LITERAL is an identity test, not
+    ; a content test — it must NOT reach the strcmp lowering. `strcmp(x, NULL)`
+    ; is undefined behaviour in C and segfaults under glibc, so this branch could
+    ; never have been right for a null operand and no correct program can depend
+    ; on it. Measured before the fix: `(defvar g:CStr null)` + `(= g null)`
+    ; emitted `call i32 @strcmp(ptr %t0, ptr null)` and the program died with
+    ; SIGSEGV. The hazard is NOT specific to globals — a `CStr` parameter or
+    ; local null-checked with `=` lowered identically (this is conventions.md's
+    ; documented "null-check trap", which until now could only be avoided by
+    ; never giving a null-checked value the `CStr` type). W5c makes a `CStr`
+    ; global spellable, so the trap became reachable by ordinary code and is
+    ; closed here rather than documented as a footgun.
+    ;
+    ; Restricted to a ptr-like partner: a `StrView` is a 16-byte struct and can
+    ; never be null, so `(= sv null)` is left exactly as it was (out of scope).
+    (let (a-null:i32 (node-is-null-sym a-node)
+          b-null:i32 (node-is-null-sym b-node)
+          null-cmp:i32 0)
+      (when (and (!= a-null 0) (!= (is-ptr-like (bv type)) 0)) (set! null-cmp 1))
+      (when (and (!= b-null 0) (!= (is-ptr-like (av type)) 0)) (set! null-cmp 1))
     (let (av-sv:i32 (type-is-strview (av type))
           bv-sv:i32 (type-is-strview (bv type))
           av-cstr:i32 (= ((av type) kind) TY-CSTR)
           bv-cstr:i32 (= ((bv type) kind) TY-CSTR))
-      (when (or (!= av-cstr 0) (!= bv-cstr 0) (!= av-sv 0) (!= bv-sv 0))
+      (when (and (= null-cmp 0)
+                 (or (!= av-cstr 0) (!= bv-cstr 0) (!= av-sv 0) (!= bv-sv 0)))
         ; Each operand must be a comparable string kind: ptr-like (ptr/CStr) or a
         ; StrView. Anything else (int/float/other struct) is a type error.
         (when (or (and (= (is-ptr-like (av type)) 0) (= av-sv 0))
@@ -2300,10 +2345,15 @@
                   icmp-op:ptr "eq")
               (when (= op-name "!=") (set! icmp-op "ne"))
               (fprintf g-body-stream "  %s = icmp %s i32 %s, 0\n" r icmp-op c)
-              (return (alloc-val ty-i1 r)))))))
-    ; Pointer comparison
-    (when (and (= ((av type) kind) TY-PTR)
-             (= ((bv type) kind) TY-PTR))
+              (return (alloc-val ty-i1 r))))))))
+    ; Pointer comparison.
+    ; Stage 15 W5c: `is-ptr-like`, not TY-PTR — the only way a `CStr` operand
+    ; reaches here is the null-literal escape above (any other CStr comparison
+    ; already returned from the strcmp branch), so this admits exactly
+    ; `(= cstr-value null)` and lowers it to the `icmp eq ptr` identity test it
+    ; always should have been. Both-`ptr` behaviour is unchanged.
+    (when (and (!= (is-ptr-like (av type)) 0)
+             (!= (is-ptr-like (bv type)) 0))
       (when (!= (bop is-cmp) 0)
         (let (tmp:ptr (new-tmp))
           (fprintf g-body-stream "  %s = %s ptr %s, %s\n"
@@ -4227,7 +4277,7 @@
           (let (pname:ptr null
                           pty:ptr (extract-name-and-type (node-at params-node pi)
                                                          (as ptr:ptr (addr-of pname))
-                                                         ((unsafe/cast ptr:Node (node-at params-node pi)) line)))
+                                                         (node-line (node-at params-node pi) line)))
             (when (= pty null)
                   (die-at line (fmt-s "fn: missing :type on param '%s'" pname)))
             (aset! (as ptr:ptr param-types) pi pty)
@@ -5828,7 +5878,7 @@
             (let (pname:ptr null
                             pty:ptr (extract-name-and-type (node-at params-node pi)
                                                            (as ptr:ptr (addr-of pname))
-                                                           ((unsafe/cast ptr:Node (node-at params-node pi)) line)))
+                                                           (node-line (node-at params-node pi) line)))
               (when (= pty null)
                     (die-at line (fmt-s "vfn: missing :type on param '%s'" pname)))
               (aset! (as ptr:ptr param-types) pi pty)
@@ -5909,7 +5959,7 @@
             (let (pname:ptr null
                             pty:ptr (extract-name-and-type (node-at params-node pi)
                                                            (as ptr:ptr (addr-of pname))
-                                                           ((unsafe/cast ptr:Node (node-at params-node pi)) line)))
+                                                           (node-line (node-at params-node pi) line)))
               (when (= pty null)
                     (die-at line (fmt-s "mfn: missing :type on param '%s'" pname)))
               (aset! (as ptr:ptr param-types) pi pty)
@@ -6011,7 +6061,7 @@
               (let (pname:ptr null
                               pty:ptr (extract-name-and-type (node-at params-node pi)
                                                              (as ptr:ptr (addr-of pname))
-                                                             ((unsafe/cast ptr:Node (node-at params-node pi)) line)))
+                                                             (node-line (node-at params-node pi) line)))
                 (when (= pty null)
                       (die-at line (fmt-s "cfn: missing :type on param '%s'" pname)))
                 (aset! (as ptr:ptr param-types) pi pty)
@@ -6379,6 +6429,12 @@
                 (set! ty ((as ptr:Val pre-v) type)))
               (when (= ty null)
                 (die-at (node-line bname (cc line)) (fmt-s "let: missing :type on '%s'" name)))
+              ; Stage 15 W5d (ergonomics.md §3.10): an `(array T …)` initializer
+              ; refines an elem-less declared pointer to `ptr:T`, so `(aref a i)`
+              ; works on a binding annotated with the bare `ptr`. IR-inert (every
+              ; pointer allocas/stores identically); see array-lit-binding-type
+              ; (generics.nuc), which node-type-block calls too — the lockstep.
+              (set! ty (array-lit-binding-type ty bval-node))
               (let (slot:ptr (fmt-sd "%%%s.addr.%d" name g-tmp)
                     align:i32 (type-size ty))
                 (inc! g-tmp)
@@ -6470,6 +6526,9 @@
                 (set! ty ((as ptr:Val pre-v) type)))
               (when (= ty null)
                 (die-at (node-line bname (cc line)) (fmt-s "with: missing :type on '%s'" name)))
+              ; W5d (§3.10), mirror of emit-let: an `(array T …)` initializer
+              ; refines an elem-less declared pointer to `ptr:T`.
+              (set! ty (array-lit-binding-type ty bval-node))
               (let (slot:ptr (fmt-sd "%%%s.addr.%d" name g-tmp)
                     align:i32 (type-size ty)
                     autofree:i32 (is-libc-alloc bval-node))
@@ -6869,9 +6928,24 @@
   (let (ft:ptr:Type (unsafe/cast ptr:Type field-type)
         ir:ptr (type-to-ir field-type)
         zero:ptr "0")
-    (when (= (ft kind) TY-PTR) (set! zero "null"))
+    ; Stage 15 W5d: the pointer test is `is-ptr-like`, not a bare TY-PTR kind —
+    ; a `CStr` (and a `TY-FN` function pointer) lowers to `ptr` in IR, and
+    ; `store ptr 0` is an LLVM parse error ("integer constant must have integer
+    ; type"). This is the exact TY-PTR-vs-is-ptr-like trap conventions.md
+    ; documents, found via an unfilled slot in `(array CStr (1 c"x"))` and an
+    ; omitted `CStr` field in a struct literal. Behaviour for TY-PTR itself is
+    ; unchanged ("null"), so every zero-fill that worked before is byte-identical.
+    (when (!= (is-ptr-like ft) 0) (set! zero "null"))
+    (when (= (ft kind) TY-FN) (set! zero "null"))
     (when (= (ft kind) TY-F32) (set! zero "0.000000e+00"))
     (when (= (ft kind) TY-F64) (set! zero "0.000000e+00"))
+    ; Stage 15 W5d: an aggregate slot zero-fills with `zeroinitializer`;
+    ; `store %P 0` is the same LLVM parse error. Reachable from an unspecified
+    ; slot in an `(array S …)` — a sparse/designated table of structs, which is
+    ; precisely the shape §3.9's relaxation makes writable — and from a struct
+    ; literal that omits a struct-typed (or StrView-typed) field.
+    (when (or (= (ft kind) TY-STRUCT) (= (ft kind) TY-UNION))
+      (set! zero "zeroinitializer"))
     (fprintf g-body-stream "  store %s %s, ptr %s\n" ir zero gep)))
 
 ; Return a copy of `t` with is-volatile=1. Primitive type singletons are shared,
@@ -7872,18 +7946,70 @@
         (die-at (node-line init encl)
           (fmt-s "defvar: float literal incompatible with type %s" (type-to-ir ty))))
       (return (float-literal-ir-at (nn s) ty)))
-    ; String literal: ptr type. Intern into the string table and refer to it
-    ; as @.str.N (decays to a byte pointer for printf consumers).
+    ; String literal: any pointer-like type (`ptr` or `CStr`). Intern into the
+    ; string table and refer to it as @.str.N (decays to a byte pointer for
+    ; printf consumers).
+    ;
+    ; Stage 15 W5c: this gate was `(!= ty-kind TY-PTR)`, which rejected a
+    ; `CStr`-typed global outright. `CStr` is ABI-identical to `ptr`
+    ; (context/conventions.md's string-type lattice) — same `ptr` IR type, same
+    ; single word, same `null` zero-init — so there was never a representation
+    ; reason for the rejection; it was an untested corner, not a policy. Gate on
+    ; `is-ptr-like` per that note's standing rule ("when adding a new
+    ; pointer/integer ABI decision, branch on `is-ptr-like`", not on TY-PTR).
+    ;
+    ; BOTH literal spellings are accepted, for `ptr` and `CStr` alike. A plain
+    ; `"…"` is a `StrView` since NS-3 and `c"…"` is a raw `CStr` (NS-4), but at
+    ; a *global initializer* the distinction has already collapsed: the backing
+    ; `@.str.N` rodata is NUL-terminated either way, so an unmaterialized
+    ; literal's value simply *is* its `data` pointer — the hidden-NUL free
+    ; coercion `coerce-int-val` performs in value position, which likewise
+    ; admits a StrView literal into a `ptr` *and* a `CStr` target without
+    ; distinguishing them. A plain `"…"` was already accepted here for `ptr`
+    ; before W5c, so rejecting it only for `CStr` would have invented an
+    ; asymmetry the value path does not have.
     (when (= (nn kind) NODE-STR)
-      (when (!= ty-kind TY-PTR)
-        (die-at (node-line init encl) "defvar: string literal requires ptr type"))
+      (when (= (is-ptr-like ty) 0)
+        (die-at (node-line init encl)
+          (fmt-s "defvar: string literal requires ptr or CStr type, not %s"
+            (type-spelling ty))))
       (let (sid:i32 (intern-string (nn s) (unsafe/cast i32 (strlen (nn s)))))
         (return (fmt-i32 "@.str.%d" sid))))
     ; Symbol literal: null, true, false, or a defconst/defenum name.
     (when (= (nn kind) NODE-SYM)
+      ; Stage 15 W5c: `is-ptr-like`, not `TY-PTR` — a `CStr` global zero-inits to
+      ; `null` exactly as a `ptr` one does (same reasoning as the NODE-STR gate
+      ; above). `emit-defvar`'s *no-init* default already branched on
+      ; `is-ptr-like`, so `(defvar g:CStr)` emitted `global ptr null` while the
+      ; explicit `(defvar g:CStr null)` was rejected — this closes that split.
       (when (= (strcmp (nn s) "null") 0)
-        (when (!= ty-kind TY-PTR)
-          (die-at (node-line init encl) "defvar: null requires ptr type"))
+        ; --- CStr: an EXPLICIT, permanent exemption ---------------------------
+        ; `CStr` is the C `char*` FFI type and is **flow-exempt** by design
+        ; (context/conventions.md's string-type lattice groups it with `void*`
+        ; as outside the Phase-F non-null regime): a null `char*` is ordinary,
+        ; meaningful C, and `(defvar g:CStr null)` is exactly the "not yet set"
+        ; global this item exists to enable. Handled here as its own early
+        ; return rather than by falling through the `is-ptr-like` test below, so
+        ; that the exemption is stated rather than incidental.
+        ;
+        ; DO NOT fold this back into the ptr path. A KNOWN, SEPARATE null-safety
+        ; hole lives in the `TY-PTR` branch immediately below: this global
+        ; initializer is a constant renderer that never routes through
+        ; `coerce-int-val`, so `pkind-flow-check` never runs and
+        ; `(defvar g:ptr:Thing null)` / `(defvar g:(ref Thing) null)` compile
+        ; clean and segfault at runtime, while the identical *local* binding is
+        ; correctly rejected. Closing that is a separate change (Stage 15 W6,
+        ; nullability) and it must add its pkind check to the ptr branch only —
+        ; `CStr` must keep compiling. W5c deliberately neither widened nor
+        ; closed that hole: swapping `TY-PTR` for `is-ptr-like` adds exactly
+        ; `TY-CSTR` to the accepted set and leaves every pkind of `TY-PTR`
+        ; accepted exactly as before (verified by measurement, not inspection).
+        (when (= ty-kind TY-CSTR) (return "null"))
+        ; --- ptr (all pkinds) — the null-safety hole described above lives here.
+        (when (= (is-ptr-like ty) 0)
+          (die-at (node-line init encl)
+            (fmt-s "defvar: null requires ptr or CStr type, not %s"
+              (type-spelling ty))))
         (return "null"))
       (when (= (strcmp (nn s) "true") 0)
         (when (!= ty-kind TY-I1)
@@ -8252,12 +8378,16 @@
         (let (fnm:ptr (arena-alloc (* (as i64 nfields) (ptr-bytes)))
               ftp:ptr (arena-alloc (* (as i64 nfields) (ptr-bytes))))
           (dotimes (i nfields)
+            ; W5f: `field` may be NULL — an empty list `()` in the field list
+            ; reads as a null node — so its line must come from the null-safe
+            ; `node-line` (which also upgrades an interned symbol field's line-0
+            ; to the defstruct's own line), never a raw `(field line)` deref.
             (let (field:ptr (node-at cc (+ i 2))
                             fname:ptr null
                             fty:ptr (extract-name-and-type field (as ptr:ptr (addr-of fname))
-                                                           ((unsafe/cast ptr:Node field) line)))
+                                                           (node-line field (cc line))))
               (when (= fty null)
-                    (die-at ((unsafe/cast ptr:Node field) line) (fmt-s "defstruct: field '%s' missing :type" fname)))
+                    (die-at (node-line field (cc line)) (fmt-s "defstruct: field '%s' missing :type" fname)))
               ; W3a: a by-value field of an opaque C type has no size, so the
               ; enclosing struct has no layout either. `ptr:Foo` is the fix.
               (reject-opaque-type fty
@@ -8509,9 +8639,12 @@
                 mcpi:i32 0
                 mcp:i32 (node-len params-node))
             (while (< mcpi mcp)
+              ; W5f: a parameter may be NULL (an empty list `()` reads as a null
+              ; node) — `extract-type-node` tolerates that, but computing its line
+              ; with a raw deref did not. `node-line` is the null-safe accessor.
               (when (!= (cheader-mentions-closure
                           (extract-type-node (node-at params-node mcpi)
-                                             ((unsafe/cast ptr:Node (node-at params-node mcpi)) line))) 0)
+                                             (node-line (node-at params-node mcpi) (cc line)))) 0)
                 (set! mc 1))
               (inc! mcpi))
             (when (!= mc 0)
@@ -8543,8 +8676,11 @@
           ; param itself is the trailing entry. &optional comes after all required
           ; params; everything after it (until end or &rest) is an optional spec.
           (dotimes (si raw-nparams)
-            (let (sp:ptr:Node (unsafe/cast ptr:Node (node-at params-node si)))
-              (when (= (sp kind) NODE-SYM)
+            ; W5f: a parameter may be NULL — an empty list `()` in the parameter
+            ; list reads as a null node. It is not an &rest/&optional marker;
+            ; the param loop below raises the located diagnostic for it.
+            (let (sp:(raw Node) (as raw:Node (node-at params-node si)))
+              (when (and (!= sp null) (= (sp kind) NODE-SYM))
                     (when (= (sp s) "&rest")
                           (when (!= si (- raw-nparams 2))
                                 (die-at (node-line (as ptr sp) (cc line)) "defn: &rest must be second-to-last param"))
@@ -8592,14 +8728,18 @@
                         (when (!= is-opt 0)
                           ; Optional param: a 2-element list (name:type default).
                           (when (or (= (node-is-list p) 0) (!= (node-len p) 2))
-                            (die-at ((unsafe/cast ptr:Node p) line)
+                            (die-at (node-line p (cc line))
                               "defn: &optional param must be (name:type default)"))
                           (set! spec (node-at p 0))
                           (set! default-node (node-at p 1)))
+                        ; W5f: `spec`/`p` may be NULL (an empty list `()` in the
+                        ; parameter list reads as a null node), and a plain
+                        ; `name:type` param is an interned symbol whose own line
+                        ; is 0 — `node-line` handles both.
                         (let (pty:ptr (extract-name-and-type spec (as ptr:ptr (addr-of pname))
-                                                             ((unsafe/cast ptr:Node spec) line)))
+                                                             (node-line spec (cc line))))
                           (when (= pty null)
-                            (die-at ((unsafe/cast ptr:Node p) line) (fmt-s "defn: missing :type on param '%s'" pname)))
+                            (die-at (node-line p (cc line)) (fmt-s "defn: missing :type on param '%s'" pname)))
                           ; W3a: a by-value parameter of an opaque C type cannot
                           ; be passed (no size, no ABI class).
                           (reject-opaque-type pty
@@ -9096,8 +9236,10 @@
         (let (variadic:i32 0
               pcount:i32 num-params)
           (dotimes (vi num-params)
-            (let (vp:ptr:Node (unsafe/cast ptr:Node (node-at params-node vi)))
-              (when (= (vp s) "&rest")
+            ; W5f: a NULL (empty-list `()`) param is not `&rest`; the loop below
+            ; raises the located "param must be a symbol" diagnostic for it.
+            (let (vp:(raw Node) (as raw:Node (node-at params-node vi)))
+              (when (and (!= vp null) (= (vp s) "&rest"))
                     (when (!= vi (- num-params 2))
                           (die-at (node-line (as ptr vp) (ff line)) "defmacro: &rest must be second-to-last param"))
                     (set! variadic 1)
@@ -9109,9 +9251,13 @@
           (when (> pcount 0)
             (set! pnames (arena-alloc (* (as i64 pcount) (ptr-bytes)))))
           (while (< pi num-params)
-            (let (p:ptr:Node (unsafe/cast ptr:Node (node-at params-node pi)))
+            (let (p:(raw Node) (as raw:Node (node-at params-node pi)))
+              ; W5f: `()` reads as a NULL node — same user error as a non-symbol
+              ; param, reported at the defmacro's line (a null node has none).
+              (when (= p null)
+                (die-at (ff line) "defmacro: param must be a symbol"))
               (when (!= (p kind) NODE-SYM)
-                (die-at (p line) "defmacro: param must be a symbol"))
+                (die-at (node-line (as ptr p) (ff line)) "defmacro: param must be a symbol"))
               (when (!= (p s) "&rest")
                   (aset! (as ptr:ptr pnames) ai (p s))
                   (inc! ai)))

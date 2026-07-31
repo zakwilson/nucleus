@@ -1,0 +1,11 @@
+; Stage 15 W5d (ergonomics.md §3.9): the relaxation that lets a bare struct
+; compound literal be an array element must stay type-directed. A compound
+; literal of a DIFFERENT struct is still a type mismatch — the load fires only
+; when the pointee's StructDef is the element type's own.
+(defstruct P (x i32) (y i32))
+(defstruct Q (a i32))
+
+(defn main ():i32
+  (let (tbl:ptr:P (array P (P 1 2) (Q 3)))
+    (printf "%d\n" ((unsafe/ptr+ tbl 0) x)))
+  (return 0))

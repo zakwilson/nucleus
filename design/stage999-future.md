@@ -35,6 +35,10 @@ deferred.
 * `set!` should take multiple pairs like `let` and/or be polymorphic
 * `inc!`/`dec!` predate macros; they should probably become macros over `set!`
 
+## macrolet
+
+Lexically scoped macros are useful, especially when it's desirable to capture symbols from the enclosing scope. Toplevel macros also capture, but that's a footgun because their behavior will vary by call site.
+
 ## errata
 
 `(Maybe StrView)` fails in JIT modules, `!void` unsupported, struct-in-Result
@@ -49,7 +53,6 @@ Having to perform operations on (addr-of entry) in a HashMapEntryIterator is ick
 
 in `emit-get-with-callee` when branch A's (Self, ptr) probe misses and the callee type has a registered get, the selector should be re-emitted as a value and dispatched through branch B rather than fallback
 
-## Errata
 
 Target-type widening: do we need to require `as` when the return-type is smaller than the target type?
 
@@ -58,3 +61,16 @@ Offset-based C struct reflection for Doom Dehacked patch support was reported as
 Colon-typed defconst seems to have an issue
 
 Fixed-size array fields in structs
+
+Duplicate defmacro silently first-wins. 
+
+maybe struct field access should be quoted
+```
+(let (k:CStr "foo"
+     (m (ref (HashMap CStr i32))) {"foo" 1 "bar" 0})
+  (m k))
+  
+; error: get: no field 'k' on struct 'HashMap.cstr.i32'
+; I expected a lookup here
+
+```

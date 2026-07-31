@@ -8,7 +8,9 @@ qualifiers + the `declare` validity gate — `SDL2/SDL.h` now imports, links and
 runs) and **W3c is done** (§1.4, typedef chains + declaration precedence — the
 header ladder is closed and all three rungs are reached, plus a follow-up fix to
 `declare`'s unnamed parameter parse that W3c's precedence rule surfaced), so
-**all of W3 is complete**. **W1, W5, W6 are not started** — no code or docs exist for the
+**all of W3 is complete**. **W5 is nearly done** — W5a, W5b, W5c, W5d and W5f
+landed; only W5e remains (it is sequenced after W1). **W6's design document is written**
+([nullability.md](nullability.md)); **W1 is not started** — no code or docs exist for the
 not-started items yet beyond their spec docs ([resolution.md](resolution.md),
 [literal-typing.md](literal-typing.md), [cheader.md](cheader.md),
 [ergonomics.md](ergonomics.md), [nullability.md](nullability.md)).
@@ -153,6 +155,97 @@ previously-valid program).
 ### Deferred / not applicable within W4
 
 Nothing in W4's own scope was deferred — all five chunks (W4a–W4e) reached
-**Done**. The stage's other five items (W1, W2, W3, W5, W6) are simply not
-started; see [overview.md](overview.md) for the planned ordering
-(W4→W2→W3→W5→W1, W6 design-only) and rationale.
+**Done**. (At the time this was written the stage's other five items were all
+unstarted; W2 and W3 have since completed, and W5 is partly done — see the
+sections above and below, and [overview.md](overview.md) for the planned ordering
+`W4→W2→W3→W5→W1`, W6 design-only.)
+
+## W5 — Ergonomic gaps and the union crash
+
+Spec: [ergonomics.md](ergonomics.md). Partly done; the remaining sub-items are
+independent and are the stage's parallel fan-out (see
+[prompt.md](prompt.md) §4).
+
+| Chunk | What landed | Status |
+|---|---|---|
+| **W5a** | §4.4 — `"MUS\x1a"` died `unknown escape \x`, forcing the Doom port to poke a four-byte magic number into an `(alloca ui8 N)` byte by byte. Added a `\xHH` arm to `lex-string`'s escape chain (`lib/reader.nuc`), reusing the existing `hex-digit-val` helper; purely additive, and it sits entirely before the `(>= n 4095)` buffer guard and the single-byte `aset!`, so neither moved. **Decision: capped at two hex digits**, taking the spec's recommendation — C's `\x` is greedy, so C's `"\x41BC"` is one overflowing character while here it is the three characters `A`, `B`, `C`. One digit is accepted where unambiguous (`"\xa"` == `"\x0a"`). A `\x` with no hex digit is a located reader error, and the fixture pins the `:6:` line prefix rather than merely scanning for `:0:`. Verified by running, not by reading IR: `"MUS\x1a"` → `4d 55 53 1a`. Premise correction: `ergonomics.md` said reader.nuc "already supports `\a`, `\newline`, `\u{…}`" — those are *char* literals (`lex-char-literal`), a different function; the string escape table was a flat six-entry list, and `docs/` had never documented string-literal escapes at all, so the table in `docs/types.md` is new rather than an edit. 2 new checks. | **Done** |
+| **W5b** | §4.3 — no unary `bit-not`, so C's `~x` had to be written `(bit-xor x -1)` by hand. Added as a one-argument macro in `lib/macros.nuc:79` expanding to exactly that, per the repo's "prefer macros over builtins" principle: correct for two's complement at every width, no codegen. W4a's stopgap correction-table entry (`bit-not` → "no unary 'bit-not'; write (bit-xor x -1)") was removed when it landed, as `ergonomics.md` required, and W5b's section was removed from that spec doc. Verified against `build/nucleusc`: `(bit-not 3)` is `-4`. | **Done** |
+| **W5c** | §3.7 — a `defvar` global may now be typed `CStr`. `defvar-init-ir`'s string-literal and `null` gates tested a bare `TY-PTR` kind where the standing rule is `is-ptr-like`; both now accept `CStr` and name the offending type on rejection. **Both** literal spellings are accepted, for `ptr` and `CStr` alike — a plain `"…"` was *already* accepted here for `ptr`, and at a global initializer the `StrView`/`CStr` distinction has collapsed (the `@.str.N` rodata is NUL-terminated either way), so accepting only `c"…"` would have invented an asymmetry the value path does not have. **The line-0 half of the finding did not reproduce** — W4 had already fixed it. **The finding was bigger than specced:** making the spelling compile exposed a *segfault*. `emit-binop-vals` fires its strcmp content-comparison whenever either operand is `CStr`/`StrView` — including against the `null` literal — so `(= g null)` emitted `strcmp(ptr %t0, ptr null)`, UB in C and a crash under glibc (measured: exit 139). Pre-existing and not global-specific (a `CStr` *parameter* null-checked with `=` lowered identically — `conventions.md`'s documented "null-check trap"), but W5c promotes it from a compiler-internals hazard to something ordinary user code hits immediately, so it was fixed: the strcmp branch is suppressed when either operand *node* is the symbol `null` and the other is `is-ptr-like`, and the identity gate below was widened to `is-ptr-like` so the escape lands on `icmp eq ptr`. Strictly a bug fix (no correct program can depend on UB) and inert for the compiler's own IR (`boot/nucleusc.ll` has zero `strcmp(ptr %x, ptr null)`). Deliberately out of scope: `(as CStr …)` in an initializer (the general expressions-aren't-literals rule, identical for `(as ptr …)`) and `StrView`-typed globals (needs aggregate constant initializers). 4 new checks. | **Done** |
+| **W5d** | §3.9 + §3.10 — array-literal ergonomics. **§3.9 was fixed at the shared chokepoint, not at the array literal**, and the spec's "inserting one load, not new machinery" prediction held exactly: `coerce-int-val` (`src/abi.nuc`) now loads a `ptr:S` into a by-value `S` slot when the pointee's StructDef *is* the target's. The decisive measurement is that the ARGUMENT position already did precisely this (Stage 13 CE-3's by-value normalization in `emit-call-with-args`), so `(take (P 1 2))` compiled while `(let (v:P (P 1 2)) …)` did not — the fix is one rule reaching the other eight typed slots, not a new liberty. Verified byte-for-byte: the 1000-row table compiles to **identical IR** under the bare and `(deref …)` spellings (only the module-ID line differs), 1000 allocas + 1000 loads, linear. `safe-coerce-val` never delegates a ptr→struct pair down, so the argument path cannot even reach the new branch. **§3.10 was narrower than the finding claimed** — `(let (a:ptr:ptr …))` and an *unannotated* binding both already worked, so the wart was the annotated-but-imprecise middle case alone, and it is not ptr-of-ptr-specific (`(array i32 …)` bound to `:ptr` failed identically). Fixed with a deliberately **syntactic** rule (`array-lit-binding-type`, `src/generics.nuc`, called by `emit-let`/`emit-with` and mirrored in `node-type-block` — one rule function, two callers, per the lockstep): an `(array T …)` init refines an elem-less declared pointer to `ptr:T`, keeping the declared pkind and volatility. The general "adopt the init's element type" rule was **rejected on measurement**, not taste: `type-eq` compares pointer elements, so adopting an elem re-routes multimethod dispatch, and a bare `:ptr` also erases the *nullability claim* (`pkind-flow-check` exempts an elem-less target) — there are ~1550 bare `:ptr` bindings in this compiler, 113 of them from `addr-of` alone. **Two pre-existing crashes found on the path this opens** (both confirmed against the pre-W5d binary): `emit-zero-store` emitted `store %P 0` for a struct slot and `store ptr 0` for a `CStr`/`TY-FN` slot, both LLVM parse errors — so a *sparse* `(array S …)`, exactly the shape a generated table with holes has, produced unparseable IR. Fixed with `zeroinitializer` for aggregates and the standing `is-ptr-like` test for pointers (`conventions.md`'s documented TY-PTR-vs-is-ptr-like trap, hit again). Proof of confinement: a per-function normalized diff of the compiler's own IR shows **exactly** the 5 edited functions plus the 1 added one changed, nothing else — the refinement never fires in `src/` (no `(array …)` there). 4 new checks. | **Done** |
+| **W5e** | `defn-` name isolation (§2.5) — a design decision, sequenced after W1 because it touches the same global-key scheme. | Not started |
+| **W5f** | **The spec's framing was wrong: this was never a union bug.** Unions carry function-pointer members fine — `(union acv:(fn void) i:i32)` and the list form `(union (acv (fn void)()))` compile today and always did; nothing in `src/union-registry.nuc` was at fault. The bisect that settles it: swapping `union`→`struct` in the repro crashes **identically** on the pre-change compiler (independently re-confirmed from the orchestrating session: old compiler exit 139 on *both* forms, new compiler exit 0 on both). The real cause is that **the colon-paren reader fuse cannot express a function-pointer type**: such a type is *two* parenthesised groups, `(fn ret)` + params, and `fuse-colon-paren` absorbed only one — so `acv:(fn void)()` read as the member `(acv (fn void))` **plus a stray `()` member**, and `()` reads as a NULL node, which the member loop dereferenced. The same gap silently mistyped every other binding position: the spelling `docs/types.md` documented, `f:(fn i32) (i32 i32)`, **never worked** (`f` bound as a zero-parameter fn, `(i32 i32)` became a junk extra parameter, dying only at the call site with `call: expected 0 args, got -1`). Fix: `fuse-fn-params` (`lib/reader.nuc`) absorbs an *adjacent* second group after a `(fn …)`-headed colon-paren form and returns the nested canonical `((fn ret) (params))` — composing for free with the colon chain and the lone-colon return fuse. Adjacency is required (a space-separated group is genuinely ambiguous with the next binding), so the docs were corrected rather than the reader made ambiguous. Second half: `()`→NULL is a general segfault trap, so ten raw derefs across `src/nucleusc.nuc` / `src/generics.nuc` / `src/union-registry.nuc` (the two `extract-name-*` chokepoints, `emit-node`, the defstruct field loop, `emit-defn`'s &rest/&optional scan + L8 warning scan + param loop, the four signature-prescan helpers, `defunion-strip-repr`, `emit-defmacro`) now route through the null-safe `node-line` or an explicit guard — every one a confirmed SIGSEGV before, every one a **located** diagnostic after. `--emit-cheader` renders the union as C `union { void* acv; void* ac1; int32_t n; }` (the C-interop invariant holds) and `--emit-nuch` round-trips it to the same `__anon_union_h…` memoization hash. 5 new checks. | **Done** |
+
+### Test/bootstrap status after W5a/W5b/W5c/W5d/W5f
+
+**Measured on the integrated tree, after all five landed together: `make test`
+279/279, 0 FAIL; `make bootstrap` stage1 == stage2 byte-identical on the first
+pass; `make abi-test` and `make layout-test` green.** Each chunk was developed
+independently, so this is the number that matters — the per-chunk counts below
+are each relative to that chunk's own base and do not sum.
+
+`make test` **274/274** (264 → 266 with W5a's two checks → 270 with W5c's four:
+`examples/cstr-defvar.nuc`, two reject fixtures, and the `w5c-cstr-null-exempt`
+carve-out tripwire → 274 with W5d's four: `examples/array-literal-ergonomics.nuc`
+and three reject fixtures pinning the boundaries the two relaxations must not
+cross). `make bootstrap` stage1 == stage2 byte-identical on the first pass for
+all of them, no `make update-bootstrap` reconverge — expected: no compiler source
+uses a `\x` escape, `boot/nucleusc.ll` contains zero `strcmp(ptr %x, ptr null)`,
+and `src/`+`lib/` contain no `(array …)` literal and no by-value struct slot fed
+a pointer, so none of the changes moves the compiler's own IR. W5d verified that
+claim directly rather than inferring it: a per-function normalized diff
+(`%`-names and `@.str.N` numbers stripped) of `build/nucleusc.ll` before/after
+shows exactly `coerce-int-val`, `emit-let`, `emit-with`, `emit-zero-store`,
+`node-type-block` changed and `array-lit-binding-type` added — zero collateral
+movement across the other 950 functions. The `run_no_line_zero` sweep stays
+green.
+
+**W5d timing guard** (landmine: a fix that made each element copy quadratically
+would pass every small test and destroy the generated-table use case). A 1000-row
+`(array St …)` of a 3-field struct, best of 5 on this host:
+
+| | compile+link | `--emit-llvm` only |
+|---|---|---|
+| before, `(deref (St …))` spelling | 0.272 s | 0.153 s |
+| after, `(deref (St …))` spelling | 0.265 s | 0.151 s |
+| after, bare `(St …)` spelling | 0.259 s | 0.146 s |
+
+Unchanged, and the last two rows emit **byte-identical IR** (1000 allocas, 1000
+loads — linear).
+
+### W5c ↔ W6 null-safety hole: disjoint, with the carve-out pinned
+
+`defvar`'s global initializer bypasses the null-safety check —
+`(defvar g:ptr:Thing null)` compiles clean and segfaults at runtime while the
+identical *local* is rejected, because this constant renderer never routes
+through `coerce-int-val` and so never runs `pkind-flow-check`. Independently
+confirmed from the orchestrating session, not just reported. **W5c neither
+widened nor closed it**, verified by measurement: the old gate accepted every
+`TY-PTR` regardless of pkind, the new one accepts `TY-PTR ∪ TY-CSTR`, so the
+delta is exactly `{TY-CSTR}`, and both repro programs behave identically before
+and after. Closing the hole is tracked under W6's §3.4 triage, and it must add
+its pkind check to the **ptr path only** — `CStr` is flow-exempt (a null
+`char*` is ordinary C). `defvar-init-ir` states that exemption as its own
+commented early return rather than letting it ride on `is-ptr-like`, and
+`tests/fixtures/w5c-cstr-null-exempt.nuc` (via the new `run_accepts` helper)
+fails if a stricter check ever sweeps `CStr` up with `ptr`.
+
+### New limitations discovered during W5 (not fixed here)
+
+* **A string literal cannot carry an embedded NUL.** `lex-string` decodes
+  escapes into a *counted* buffer, but the token stores the result via
+  `arena-strndup` as a NUL-terminated `char*` on `Tok.s` and **drops the
+  count**; the length is re-derived downstream with `strlen`. So `"x\0y"` and
+  `"x\x00y"` are both length 1, truncated at the NUL. This is pre-existing
+  behaviour of the token representation, shared with the long-standing `\0`
+  escape — `\x` does not introduce it. Fix direction: carry a `len` beside
+  `Tok.s`. `examples/hex-escape-test.nuc` pins the current behaviour so a future
+  fix is a deliberate, visible change rather than a silent one; documented in
+  `docs/types.md`. Found during W5a.
+* **`boot/nucleusc.ll` is unbuildable at commit `04c55ec` ("Merge stage14").**
+  It carries **two** `@emit-keyword` definitions, the second corrupt (its GEP
+  claims `[15 x i8]` but points at a `[5 x i8]` string constant) — evidently a
+  bad merge resolution of the generated artifact. `make` fails at `ensure-boot`
+  in any fresh checkout of that commit. **The current branch is unaffected**
+  (verified: one definition at `HEAD`, and `make` rebuilds cleanly), so this is
+  historical, but a clean clone pinned to `04c55ec` cannot bootstrap. Found
+  during W5a.

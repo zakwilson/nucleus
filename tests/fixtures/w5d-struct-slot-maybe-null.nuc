@@ -1,0 +1,15 @@
+; Stage 15 W5d (ergonomics.md §3.9): the implicit load into a by-value struct
+; slot is a `deref`, so it carries `deref`'s Stage 10 obligation — a `?T` source
+; must be narrowed first. Without this the sugar would be a silent hole in the
+; nullability system that the explicit `(deref m)` spelling does not have.
+(defstruct P (x i32) (y i32))
+
+(defn pick (c:i32):?ptr:P
+  (when (= c 0) (return null))
+  (return (P 1 2)))
+
+(defn main ():i32
+  (let (m:?ptr:P (pick 1)
+        v:P m)
+    (printf "%d\n" ((addr-of v) x)))
+  (return 0))

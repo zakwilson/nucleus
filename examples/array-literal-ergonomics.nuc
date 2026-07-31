@@ -1,0 +1,89 @@
+; Stage 15 W5d — array literal ergonomics
+; (design/stage15-stress-test/ergonomics.md §3.9, §3.10)
+;
+; §3.9  A struct compound literal is alloca-backed and evaluates to `(ref S)`,
+;       so a by-value `S` slot used to reject it and every element of an
+;       `(array S …)` had to be spelled `(deref (S …))`. A pointer-to-S now
+;       loads into a by-value S slot at the shared coercion chokepoint, which is
+;       the same rule the ARGUMENT position has had since Stage 13 CE-3.
+;       The `(deref …)` spelling keeps working — this is a relaxation, and the
+;       two spellings emit byte-identical IR.
+;
+; §3.10 An `(array T …)` initializer refines an elem-less `:ptr` annotation to
+;       `ptr:T`, so `(aref a i)` works on the local without an `unsafe/cast`.
+
+(defstruct P (x i32) (y i32))
+(defstruct Row (p P) (n i32))
+(defstruct Named (s CStr) (n i32))
+
+(defn mk (a:i32):P (return (P a (* a 2))))
+
+(defn sum-x (tbl:ptr:P n:i32):i32
+  (let (acc:i32 0)
+    (dotimes (i:i32 n)
+      (set! acc (+ acc ((unsafe/ptr+ tbl i) x))))
+    (return acc)))
+
+(defn main ():i32
+  ; --- §3.9: bare struct compound literals as array elements ----------------
+  (let (tbl:ptr:P (array P (P 1 2) (P 3 4)))
+    (printf "bare:      %d %d %d %d\n"
+      ((unsafe/ptr+ tbl 0) x) ((unsafe/ptr+ tbl 0) y)
+      ((unsafe/ptr+ tbl 1) x) ((unsafe/ptr+ tbl 1) y)))
+
+  ; The explicit `(deref …)` spelling still compiles, and mixes freely with the
+  ; bare one in a single literal.
+  (let (mix:ptr:P (array P (deref (P 5 6)) (P 7 8)))
+    (printf "mixed:     %d %d %d %d\n"
+      ((unsafe/ptr+ mix 0) x) ((unsafe/ptr+ mix 0) y)
+      ((unsafe/ptr+ mix 1) x) ((unsafe/ptr+ mix 1) y)))
+
+  ; Designated initializers take the bare spelling too. The unspecified slots
+  ; zero-fill — a struct slot needs `zeroinitializer`, not the scalar `0`.
+  (let (sparse:ptr:P (array P (P 1 1) (3 (P 9 9))))
+    (printf "sparse:    %d %d %d %d\n"
+      ((unsafe/ptr+ sparse 0) x) ((unsafe/ptr+ sparse 1) x)
+      ((unsafe/ptr+ sparse 3) x) ((unsafe/ptr+ sparse 3) y)))
+
+  ; A CStr slot zero-fills to `null` (it lowers to `ptr`, so the scalar `0` was
+  ; an LLVM parse error) — both in an array and in an omitted struct field.
+  (let (names:ptr:CStr (array CStr (1 c"two")))
+    (printf "cstr:      %d %s\n"
+      (if (= (aref names 0) null) 1 0) (aref names 1)))
+  (let (nm:ptr:Named (Named))
+    (printf "omitted:   %d %d\n" (if (= (nm s) null) 1 0) (nm n)))
+
+  ; The same relaxation at the other typed slots that share the chokepoint:
+  ; a struct-typed local, a struct-typed field in a struct literal, an `aset!`
+  ; element store, and a by-value return.
+  (let (v:P (P 11 22))
+    (printf "local:     %d %d\n" ((addr-of v) x) ((addr-of v) y)))
+  (let (r:ptr:Row (Row (P 33 44) 55))
+    (printf "field:     %d %d %d\n" ((.& r p) x) ((.& r p) y) (r n)))
+  (let (slots:ptr:P (array P (P 0 0) (P 0 0)))
+    (aset! slots 1 (P 66 77))
+    (printf "aset:      %d %d\n" ((unsafe/ptr+ slots 1) x) ((unsafe/ptr+ slots 1) y)))
+  (let (ret:P (mk 21))
+    (printf "return:    %d %d\n" ((addr-of ret) x) ((addr-of ret) y)))
+
+  ; A multi-row table, the shape this exists for (a generated `states[]`).
+  (let (rows:ptr:P (array P (P 1 0) (P 2 0) (P 3 0) (P 4 0)
+                            (P 5 0) (P 6 0) (P 7 0) (P 8 0)))
+    (printf "table:     %d\n" (sum-x rows 8)))
+
+  ; --- §3.10: an (array T …) init refines a bare `:ptr` binding -------------
+  (let (a:ptr (array ptr "one" "two"))
+    (printf "ptr elems: %s %s\n" (aref a 0) (aref a 1)))
+  (let (b:ptr (array i32 10 20 30))
+    (printf "i32 elems: %d %d\n" (aref b 1) (aref b 2)))
+  (with (c:ptr (array i32 5 6 7))
+    (printf "with:      %d\n" (aref c 2)))
+  ; The element type may itself be a struct: the binding becomes ptr:P, so
+  ; `deref`/`aref` work on it directly.
+  (let (d:ptr (array P (P 88 99)))
+    (printf "struct el: %d %d\n" ((unsafe/ptr+ d 0) x) ((unsafe/ptr+ d 0) y)))
+  ; A fully-annotated binding is unchanged (it always worked).
+  (let (e:ptr:i32 (array i32 4 5 6))
+    (printf "annotated: %d\n" (aref e 0)))
+
+  (return 0))

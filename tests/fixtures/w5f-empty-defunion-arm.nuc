@@ -1,0 +1,8 @@
+; Stage 15 W5f: an empty list `()` among a defunion's arms reads as a NULL node.
+; `defunion-strip-repr` dereferenced it before the arm loop ever ran.
+
+(defunion Shape
+  (circle r:f64)
+  ())
+
+(defn main ():i32 (return 0))

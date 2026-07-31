@@ -88,6 +88,39 @@ compiled clean, emitted `call float @take(double 2.5)`, and printed `0.000000`.
 When auditing a coercion gap, check the argument path separately — it will not
 have told you.
 
+**The argument path is not merely a different *reaction* to a null return — it
+often does not reach `coerce-int-val` at all.** `safe-coerce-val` delegates down
+only for StrView, int↔int, float↔float and `defcast` pairs; every other pair
+falls through to its *own* null return. And `emit-call-with-args` performs
+several conversions *before* it, of which the load-bearing one is **CE-3's
+by-value struct normalization** (Stage 13): if the parameter is a by-value `S`
+and the argument is a pointer to that same `S`, it loads the pointee. So the
+argument position accepted `(take (P 1 2))` for two stages while every *typed
+slot* rejected the identical `(let (v:P (P 1 2)) …)` — the same rule living in
+one place and not the other. Stage 15 W5d added the ptr→by-value-struct load to
+`coerce-int-val`, which is what makes a bare `(S …)` compound literal legal as
+an `(array S …)` element, a struct-typed field of another literal, a `:S`
+binding, an `aset!` store, and a by-value `return`. When you find an asymmetry
+between "works as an argument" and "rejected at a slot", look for a
+pre-`safe-coerce-val` normalization in `emit-call-with-args` before concluding
+the chokepoint has the rule.
+
+**A conversion added here that is a `deref` must carry `deref`'s obligation.**
+The ptr→struct load calls `require-derefable` (`src/type-utils.nuc`) exactly as
+`emit-deref`/`aref`/`aset!` do, so a `?T` source is rejected with the narrowing
+diagnostic rather than silently loaded. Sugar that lowers to an unsafe operation
+must not be safer-looking than the explicit spelling it replaces.
+
+**`abi.nuc` bodies cannot call `generics.nuc`.** `coerce-int-val` needed
+`type-eq` and could not have it: `nucleusc.nuc` imports `abi` (line ~664) before
+`generics` (~686), and an imported module's bodies emit when it is processed, so
+only *earlier* imports plus `nucleusc.nuc`'s own prescanned signatures resolve.
+(`alloc-val`/`emit-load` live in `nucleusc.nuc` and are forward-referenced
+freely; `type-eq` is not.) W5d spells out `type-eq`'s TY-STRUCT rule — same
+`StructDef` — inline instead. The general rule: from an imported module you may
+call *up* into `nucleusc.nuc` and *back* into earlier imports, never *forward*
+into a later one.
+
 Two related facts worth having:
 
 - **A float constant for LLVM's `float` type usually cannot be written in
@@ -466,6 +499,78 @@ slot with the same pattern the macro emitter uses (src/nucleusc.nuc, `make-type 
 + `elem` = `(parse-type-name "Node" 0)` + `pkind PTR-RAW`); `parse-type-name` succeeds
 because `register-struct "Node"` already ran earlier in the same function.
 
+## `()` reads as a **NULL node** — never deref a user-supplied node without `node-line`/a guard
+
+`read-list` returns `head`, which starts null, so the empty list `()` reads as a
+**null `Node*`** — and `read-list` then wraps it in an ordinary cell whose `car`
+is null. So any list a user writes can contain a null element, in any position:
+a `(struct …)`/`(union …)` member, a `defstruct` field, a `defn`/`defmacro`
+parameter, a `defunion` arm, a `let`/`with` binding, or an expression. Nucleus
+does not null-check field access on a `(raw Node)`, so a bare `(n kind)` /
+`(n s)` / `(n line)` on such an element **segfaults the compiler with no output
+at all** — which is exactly what Stage 15 W5f was reported as ("union with a
+function-pointer member segfaults"; ten separate sites were faulting).
+
+Two rules when you touch a loop over user-written list elements:
+
+- **Never compute a diagnostic's line with `((unsafe/cast ptr:Node x) line)`.**
+  Use `(node-line x <enclosing-line>)` (`lib/node.nuc`) — it is null-safe *and*
+  it upgrades an interned symbol's always-0 line to the enclosing form's (the
+  W4a `:0:` class). The two are the same fix; the raw deref is never right.
+  Note the trap this hides: the line argument is evaluated **before** the callee
+  runs, so a null guard inside `extract-name-and-type` does not save a caller
+  that dereferenced the node to build that callee's `line` argument.
+- **Guard before a `kind`/`s` test in a marker scan.** `&rest`/`&optional`/
+  `&where`/`&repr` scans run over the raw element list before any validation, so
+  they see the null first. Bind the element as `(raw Node)` and `(and (!= e null)
+  (= (e kind) NODE-SYM))`.
+
+The shared chokepoints now diagnose rather than fault — `extract-name-and-type`
+(struct/union members, defstruct fields, defn params, let/with bindings,
+defunion arm fields) and `emit-node` (expression position) — so a **new** loop
+usually only needs the two rules above rather than its own message. Guards are
+error-path-only and cannot move emitted IR, so they never disturb the bootstrap.
+
+See also "Symbol nodes are interned singletons" above: `node-line` is the single
+accessor that answers both hazards, which is why "use `node-line`" is the whole
+rule rather than two.
+
+## A function-pointer type is TWO parenthesised groups — the colon-paren fuse must absorb both
+
+`(fn ret)` and its parameter list are separate list elements
+(`((fn ret) (params))` canonical), so the colon-paren binding fuse
+(`fuse-colon-paren`, `lib/reader.nuc`) — which absorbs *one* paren form after a
+trailing-colon atom — cannot express a function-pointer type by itself.
+`fuse-fn-params` (added in W5f, called from `fuse-colon-paren` right after the
+first `read-form`) absorbs a **second, immediately-adjacent** group when the
+first is `(fn …)`-headed, producing the nested `((fn ret) (params))` — which
+`extract-name-and-type`'s CELL branch passes straight to
+`parse-type-from-node`'s fn branch, and which composes for free with the
+colon-chain wrap (`p:ptr:(fn i32)(i32)`) and the lone-colon return fuse.
+
+Two things to know before touching this:
+
+- **Adjacency is load-bearing, not a stylistic choice.** A *space*-separated
+  second group cannot be absorbed: in `(f:(fn i32) (i32 i32) a:i32)` nothing
+  distinguishes the parameter list from a `(name type)` binding of the enclosing
+  list. `docs/types.md` documented the spaced spelling for years and it **never
+  worked** — `f` bound as a zero-parameter fn and `(i32 i32)` became a junk
+  parameter, so the mistake only surfaced at the call site
+  (`call: expected 0 args, got -1`). It is still accepted silently; see the W5f
+  deferral note.
+- **`name:(fn ret)` with no following group is legal and means *zero*
+  parameters** (C's `ret (*)(void)`), so the absorption cannot be made
+  mandatory.
+
+The one new footgun, accepted deliberately: in a `let`/`with` binding list the
+element after the name *is the initializer*, so `(let (f:(fn i32)(choose)) …)`
+now absorbs `(choose)` as the parameter list. That fails **loudly and located**
+(`let: binding list must be even`, because the pair became one element), no
+existing source in the tree writes it, and the fix is a space. There is no
+better rule available — the reader has no type context, and a single-symbol
+parameter list `(i32)` is structurally identical to a single-symbol call
+`(choose)`.
+
 ## The string-type lattice: `ptr` / `CStr` / `StrView` — gate pointer ABI on `is-ptr-like`, not `TY-PTR`
 
 There are three string-carrying types. `TY-PTR` (bare pointer, identity `=`) and
@@ -487,6 +592,18 @@ deliberately excluded, `StrView` is a struct not a pointer). This bit the
 `&rest` arg-folding (`emit-call-with-args`), which `inttoptr`'d any non-`TY-PTR`
 arg and produced invalid `inttoptr ptr→ptr` for a `CStr` rest arg. When adding a
 new pointer/integer ABI decision, branch on `is-ptr-like`.
+
+This trap has now been hit **three** times: the `&rest` folding above, W5c's
+`defvar-init-ir` string-literal/`null` gates, and W5d's `emit-zero-store`, which
+filled an unspecified slot with the scalar `0` for anything that was not
+`TY-PTR`/`TY-F32`/`TY-F64` — so a `CStr` or `TY-FN` slot got `store ptr 0` and a
+struct/union slot got `store %P 0`, both rejected by the LLVM parser with
+*"integer constant must have integer type"* (an aggregate zero is
+`zeroinitializer`, and only aggregates and pointers have a spelling other than
+`0`). Each instance was a *constant/ABI decision written as a kind test*. When
+you add one, the question is never "is this `TY-PTR`" but "what does this type
+lower to" — and for zero-fill specifically, remember the third bucket: scalars
+(`0`), pointers-of-any-flavour (`null`), and aggregates (`zeroinitializer`).
 
 **`StrView` literal → `CStr`/`ptr` is a free coercion (the hidden-NUL hinge).** A
 `"…"` literal's backing `@.str.N` rodata global is NUL-terminated at `data[len]`
@@ -553,6 +670,25 @@ of the new source can't catch this — it's a runtime behavior change, not a
 type error, so `make` succeeds and the bug only surfaces at `make test`).
 Audit a proposed field-matching retype by grepping the **parameter's own**
 body for `(= name null)`/`(!= name null)`, not just the field's read sites.
+
+**Correction (Stage 15 W5c): the `= null` half of this trap is FIXED — a
+comparison against the `null` literal no longer lowers to `strcmp`.**
+`emit-binop-vals` now suppresses the strcmp branch when either *operand node*
+is the symbol `null` and the other operand is `is-ptr-like`, emitting the
+`icmp eq ptr` identity test instead. `strcmp(x, NULL)` is undefined behaviour
+in C and segfaulted under glibc, so no correct program could depend on the old
+lowering; the fix is strictly a bug fix. Consequence for the paragraph above:
+`(when (= irn null) …)` in a `CStr`-typed parameter's body is now **safe**, and
+a null-check alone is no longer a reason to keep a value `ptr`. This was found
+while making a `CStr`-typed `defvar` spellable — `(defvar g:CStr null)` would
+otherwise have compiled into a global whose only natural use crashed.
+
+**What remains a trap is the identity-vs-content half**, which is unchanged:
+retyping a value `ptr`→`CStr` still turns every `=`/`!=` against *another
+string* into a content comparison, so an identity-substrate value (`Node.s`,
+struct-field names, any interned pointer compared for sameness) must still stay
+`ptr`. Audit for `(= a b)` where both sides are strings and sameness — not
+equal text — is the question.
 
 **Verifying a behavior-neutral type migration:** retyping `ptr`→`CStr` and
 rewriting `(= (strcmp a b) 0)`→`(= a b)` is **byte-identical at the IR level**

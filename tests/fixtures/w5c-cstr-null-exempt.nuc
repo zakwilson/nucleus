@@ -1,0 +1,20 @@
+; Stage 15 W5c: `CStr` is FLOW-EXEMPT and a null-initialised `CStr` global must
+; keep compiling.
+;
+; This fixture exists as a tripwire for a KNOWN, SEPARATE null-safety hole that
+; W5c deliberately did not close: `defvar`'s global initializer is a constant
+; renderer that never routes through `coerce-int-val`, so `pkind-flow-check`
+; never runs and `(defvar g:ptr:Thing null)` compiles clean then segfaults at
+; runtime, while the identical *local* binding is correctly rejected. Closing
+; that is Stage 15 W6 (nullability).
+;
+; When W6 adds the missing pkind check to `defvar-init-ir`'s `null` branch, it
+; must add it to the `TY-PTR` path ONLY. `CStr` is the C `char*` FFI type, where
+; a null pointer is ordinary and meaningful, and is grouped with `void*` outside
+; the Phase-F non-null regime by context/conventions.md's string-type lattice.
+; If this file ever fails to compile, that carve-out has been lost.
+(defvar g-null:CStr null)
+(defvar g-noinit:CStr)
+
+(defn main ():i32
+  (if (= g-null null) (return 0) (return 1)))

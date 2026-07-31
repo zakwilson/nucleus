@@ -1,0 +1,7 @@
+; Stage 15 W5f: an empty list `()` in *expression* position reads as a NULL node
+; and used to segfault emit-node on its very first field read. `()` has no value,
+; so it is a located diagnostic blamed on the enclosing form.
+
+(defn main ():i32
+  (let (a:i32 ())
+    (return a)))

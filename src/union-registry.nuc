@@ -716,10 +716,16 @@
         tail:ptr null
         scur:ptr arms)
     (while (!= scur null)
+      ; W5f: an empty list `()` among the arms reads as a NULL node; diagnose
+      ; rather than dereference it.
+      (when (= ((unsafe/cast ptr:Node scur) car) null)
+        (die-at line "defunion: arm cannot be the empty list '()' -- write `name` or `(name field:type ...)`"))
       (let (a:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node scur) car)))
         (if (and (= (a kind) NODE-SYM) (= (strcmp (a s) "&repr") 0))
           (let (mcell:ptr ((unsafe/cast ptr:Node scur) cdr))
-            (when (= mcell null)
+            ; A missing mode, or an empty-list `()` mode (a NULL node), are the
+            ; same user error; neither may reach the NODE-SYM check below.
+            (when (or (= mcell null) (= ((unsafe/cast ptr:Node mcell) car) null))
               (die-at line "defunion: &repr needs a mode (tagged or niche)"))
             (let (m:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node mcell) car)))
               (when (!= (m kind) NODE-SYM)

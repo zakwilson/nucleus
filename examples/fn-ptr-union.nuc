@@ -1,0 +1,81 @@
+; Stage 15 W5f — a union with function-pointer members.
+;
+; This models C's `actionf_t`: several function arities sharing one slot, the
+; shape Doom's 967-row `states[]` table carries in every row. All four spellings
+; the W5f accept criteria name are exercised here:
+;
+;   1. `(fn void)()`                     — zero-parameter function pointer
+;   2. `(fn i32)(ptr)`                   — one-parameter function pointer
+;   3. a union mixing a fn-ptr with a scalar
+;   4. the standalone (non-struct-field) union — a global and a local
+;
+; The colon-paren spelling `name:(fn ret)(params)` requires the parameter-list
+; group to be *adjacent* to `(fn ret)` (no space), exactly like the colon-paren
+; type sugar itself; the canonical list form `(name (fn ret) (params))` also works.
+
+; ---- the actions the union slot can hold -------------------------------------
+
+(defn tick ():void
+  (printf "tick\n"))
+
+(defn think (arg:ptr):i32
+  (printf "think %d\n" (deref (unsafe/cast ptr:i32 arg)))
+  (return 7))
+
+(defn add (a:i32 b:i32):i32 (return (+ a b)))
+
+; The same adjacent colon-paren rule in the other binding positions: a defn
+; parameter and a `let` binding. Both are equivalent to the canonical list form
+; `(f (fn i32) (i32 i32))`.
+(defn apply2 (f:(fn i32)(i32 i32) a:i32 b:i32):i32
+  (return (funcall f a b)))
+
+; ---- 1 + 2 + 3: a struct field holding a union of two fn arities and a scalar -
+
+(defstruct Row
+  tics:i32
+  (action (union acv:(fn void)() ac1:(fn i32)(ptr) n:i32)))
+
+; ---- 4: standalone — the same union type outside any struct ------------------
+
+(defvar g-slot:(union acv:(fn void)() ac1:(fn i32)(ptr) n:i32))
+
+(defn main ():i32
+  (let (r:ptr:Row (alloca Row)
+        (slot (ptr (union acv:(fn void)() ac1:(fn i32)(ptr) n:i32))) (.& r action)
+        v:i32 41)
+    (.set! r tics 3)
+    (printf "tics %d\n" (r tics))
+
+    ; 1. round-trip a zero-arg function pointer through the union member
+    (.set! slot acv tick)
+    (funcall (slot acv))
+
+    ; 2. round-trip a one-arg function pointer through the *same* slot
+    (.set! slot ac1 think)
+    (printf "ret %d\n" (funcall (slot ac1) (unsafe/cast ptr (addr-of v))))
+
+    ; 3. the scalar member shares the slot (an untagged reinterpretation)
+    (.set! slot n 99)
+    (printf "n %d\n" (slot n))
+
+    ; 4a. the standalone global union
+    (let (gp:(ptr (union acv:(fn void)() ac1:(fn i32)(ptr) n:i32)) (addr-of g-slot))
+      (.set! gp acv tick)
+      (funcall (gp acv)))
+
+    ; 4b. a standalone local union — never a struct field
+    (let (lp:(ptr (union acv:(fn void)() ac1:(fn i32)(ptr) n:i32))
+              (alloca (union acv:(fn void)() ac1:(fn i32)(ptr) n:i32)))
+      (.set! lp ac1 think)
+      (printf "ret %d\n" (funcall (lp ac1) (unsafe/cast ptr (addr-of v)))))
+
+    ; The union is one pointer wide — same as the plain-`ptr`-plus-cast idiom
+    ; it replaces.
+    (printf "size %d\n" (unsafe/cast i32 (sizeof (union acv:(fn void)() ac1:(fn i32)(ptr) n:i32))))
+
+    ; The same reader rule in a defn parameter and a let binding.
+    (printf "apply2 %d\n" (apply2 add 3 4))
+    (let (h:(fn i32)(i32 i32) add)
+      (printf "let %d\n" (funcall h 5 6)))
+    (return 0)))
