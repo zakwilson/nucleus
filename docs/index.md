@@ -78,7 +78,7 @@ Source files contain top-level forms (`defn`, `defvar`, `defstruct`, etc.). A `m
 
 | Document | Contents |
 |----------|----------|
-| [Compiler](compiler.md) | Flags (`-O`, `--emit-llvm`, `--target`, …), diagnostics (locations + did-you-mean), REPL, `.nuch` header format |
+| [Compiler](compiler.md) | Flags (`-O`, `--emit-llvm`, `--target`, …), diagnostics (locations, unresolved names, did-you-mean), REPL, `.nuch` header format |
 | [Top-level forms](toplevel.md) | `defn`, `defvar`, `defstruct`, `defunion`, `defprotocol`, `import`, `defmacro`, … |
 | [Types](types.md) | Built-in types, pointer kinds (`ptr`/`ref`/`raw`/`?T`), volatile, function pointer types, coercions, literals, keyword literals (`:foo`), symbols |
 | [Structs and unions](structs-unions.md) | Anonymous structs, passing by value, `defunion`, `match`, niche layout, parametric struct templates |

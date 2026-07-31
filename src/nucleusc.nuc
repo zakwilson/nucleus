@@ -444,6 +444,18 @@
 ; current unit's defn signatures, ahead of the actual import). Idempotent
 ; registration, so this only avoids redundant I/O and import cycles.
 (defvar g-prescan-visited:ptr)
+; Stage 15 W1a (design/stage15-stress-test/resolution.md): resolved `.nuc` paths
+; whose protocols AND defn signatures have already been registered by the
+; whole-graph signature prescan (`prescan-imported-signatures`). Unlike the type
+; prescan above, signature registration is NOT idempotent —
+; `generic-register-method` appends unconditionally and `generic-add-method`
+; clears `finalized`, so a second pass over the same file makes every one of its
+; signatures look like a duplicate overload. `emit-toplevel-forms` therefore
+; skips its own protocol/signature prescan for a path on this list.
+(defvar g-prescan-sigs:ptr)
+; Stage 15 W1c: the compilation unit's root source path, recorded by
+; `emit-toplevel-forms` at depth 1. Diagnostic-only — see `path-in-unit`.
+(defvar g-unit-entry-path:ptr)
 
 ; Stage 12 namespaces (design/stage12/namespaces.md). The current compilation
 ; unit's namespace name (an interned CStr). The default is "user", whose globals
@@ -1817,6 +1829,255 @@
               (set! best (as ptr (sym name)))))))
       (return best))))
 
+; ============================================================
+; Stage 15 W1c — the unreachable-file note
+; (design/stage15-stress-test/resolution.md §W1c)
+; ============================================================
+;
+; W1a made every reachable file's signatures visible to every other, so an
+; `unknown:` for a function that exists *in the unit* is now impossible. What
+; remains is a typo, a genuinely absent symbol — or §2.7's reachability
+; constraint, which W1 deliberately keeps: the name IS defined, in a file that
+; sits on the import search path and that no import in this unit reaches. That
+; last case is the one the post-W1a mental model ("it's in my project, so it
+; resolves") makes confusing, so name the file.
+;
+; **Error path only.** Both callers of `unresolved-name-message`
+; (`emit-symbol-ref`, `emit-dispatch`) and the `unknown type:` raise in
+; `parse-type-name` are `die-at`, which is `noreturn` — so the scan below runs
+; at most once per compile, with the process already committed to failing. Do
+; not call it from a speculative or recoverable path; a directory walk plus a
+; file read per candidate is affordable here and nowhere else.
+
+; POSIX directory enumeration. Declared here rather than imported from
+; <dirent.h>: the C-header reader registers `struct dirent` as *opaque* (its
+; `char d_name[256]` member is a shape the declaration parser declines), so a
+; field access on it is refused — and the scan needs only the name. The
+; compiler already depends on POSIX process/pipe calls (`popen`/`pclose`,
+; src/cheader.nuc) to run `clang -E`, so this adds no new platform class.
+(declare opendir (path:CStr):ptr)
+(declare readdir (d:ptr):ptr)
+(declare closedir (d:ptr):i32)
+
+; Byte offset of `d_name` within `struct dirent` on 64-bit glibc and musl:
+; ino_t(8) + off_t(8) + unsigned short(2) + unsigned char(1). POSIX does not fix
+; the layout, so this is *validated, not trusted*: a directory entry is used only
+; when the bytes at this offset are a short NUL-terminated string ending in
+; `.nuc`/`.nuch` (`nuc-source-name`). On a platform whose layout differs, the
+; scan simply finds nothing and the diagnostic degrades to its primary text — it
+; can never put garbage in a message. The read stays inside the kernel-filled
+; dirent buffer either way, because `d_name` is the last member and is
+; NUL-terminated.
+(defconst DIRENT-D-NAME-OFFSET 19)
+
+; Does `fname` name a Nucleus source file? The length bound is what keeps a
+; wrong DIRENT-D-NAME-OFFSET harmless (see above) and bounds the path we build.
+(defn nuc-source-name (fname:CStr):i32
+  (let (n:i64 (as i64 (strlen fname)))
+    (when (or (< n 5) (> n 250)) (return 0))
+    (when (= (as CStr (unsafe/ptr+ (as ptr:i8 fname) (- n 4))) ".nuc") (return 1))
+    (when (and (> n 5)
+               (= (as CStr (unsafe/ptr+ (as ptr:i8 fname) (- n 5))) ".nuch"))
+      (return 1))
+    (return 0)))
+
+; Is the byte range [start, end) of `text` exactly the spelling `s`?
+(defn text-token-is (text:CStr start:i64 end:i64 s:CStr):i32
+  (let (n:i64 (as i64 (strlen s)))
+    (when (!= (- end start) n) (return 0))
+    (let (k:i64 0)
+      (while (< k n)
+        (when (!= (char-at text (+ start k)) (char-at s k)) (return 0))
+        (set! k (+ k 1))))
+    (return 1)))
+
+; A character that continues a symbol token. Everything a reader treats as a
+; delimiter ends one: whitespace, the bracket family, `;` and `"`.
+(defn source-name-char (c:i32):i32
+  (when (<= c 32) (return 0))
+  (when (or (= c 40) (= c 41)) (return 0))      ; ( )
+  (when (or (= c 91) (= c 93)) (return 0))      ; [ ]
+  (when (or (= c 123) (= c 125)) (return 0))    ; { }
+  (when (or (= c 59) (= c 34)) (return 0))      ; ; "
+  (return 1))
+
+; Does the token at [start, end) name a top-level definer that introduces a name
+; in the namespace we are looking in? `want-type` selects the TYPE namespace
+; (what `unknown type:` consults) over the value/head namespace. `declare` and
+; `defmethod` are the `.nuch` spellings.
+;
+; A trailing `-` (the private-definer suffix — `defn-`, `defstruct-`, … see
+; docs/toplevel.md) is dropped before comparing, so the private half of every
+; pair is covered by one rule and cannot drift out of sync with the public half.
+; A private definition is still worth naming: privacy is per *namespace*, so a
+; same-namespace file that simply was not imported is exactly the case this note
+; exists for. No non-definer spelling is at risk — dropping the `-` from an
+; unrelated trailing-hyphen name still does not produce a definer keyword.
+(defn text-token-is-definer (text:CStr start:i64 end:i64 want-type:i32):i32
+  (let (e:i64 end)
+    (when (and (> e start) (= (char-at text (- e 1)) 45))
+      (set! e (- e 1)))
+    (when (!= want-type 0)
+      (when (!= (text-token-is text start e "defstruct") 0) (return 1))
+      (when (!= (text-token-is text start e "defunion") 0) (return 1))
+      (when (!= (text-token-is text start e "defprotocol") 0) (return 1))
+      (return 0))
+    (when (!= (text-token-is text start e "defn") 0) (return 1))
+    (when (!= (text-token-is text start e "defmacro") 0) (return 1))
+    (when (!= (text-token-is text start e "defvar") 0) (return 1))
+    (when (!= (text-token-is text start e "defconst") 0) (return 1))
+    (when (!= (text-token-is text start e "defenum") 0) (return 1))
+    (when (!= (text-token-is text start e "deferror") 0) (return 1))
+    (when (!= (text-token-is text start e "extern") 0) (return 1))
+    (when (!= (text-token-is text start e "declare") 0) (return 1))
+    (when (!= (text-token-is text start e "defmethod") 0) (return 1)))
+  (return 0))
+
+; Does the source text `text` (length `len`) define `name` with a top-level
+; definer? A deliberately TEXTUAL scan: re-entering `read-program`/`desugar`
+; from a diagnostic path would clobber g-src / g-pos / g-line / g-source-path /
+; g-peek / g-peek-valid while a message is being composed, for no benefit.
+;
+; Line comments and string literals are skipped, so the two obvious
+; false-positive sources are out; a definer spelled inside a quasiquoted macro
+; body could still match, which is exactly why the caller phrases the result as
+; a `note:` and keeps the primary error text true on its own.
+(defn text-defines-name (text:CStr len:i64 name:CStr want-type:i32):i32
+  (let (i:i64 0)
+    (while (< i len)
+      (let (c:i32 (char-at text i))
+        (cond
+          (= c 59)                                  ; `;` — comment to end of line
+            (while (and (< i len) (!= (char-at text i) 10)) (set! i (+ i 1)))
+          (= c 34)                                  ; `"` — string literal
+            (do
+              (set! i (+ i 1))
+              (while (and (< i len) (!= (char-at text i) 34))
+                (when (= (char-at text i) 92) (set! i (+ i 1)))
+                (set! i (+ i 1)))
+              (set! i (+ i 1)))
+          (= c 40)                                  ; `(` — a form; is it a definer?
+            (do
+              (set! i (+ i 1))
+              (while (and (< i len) (<= (char-at text i) 32)) (set! i (+ i 1)))
+              (let (kw-start:i64 i)
+                (while (and (< i len) (!= (source-name-char (char-at text i)) 0))
+                  (set! i (+ i 1)))
+                (when (!= (text-token-is-definer text kw-start i want-type) 0)
+                  (while (and (< i len) (<= (char-at text i) 32)) (set! i (+ i 1)))
+                  ; A parametric definer names its head inside a nested list:
+                  ; `(defstruct (Vector T) …)`. Step into it.
+                  (when (and (< i len) (= (char-at text i) 40))
+                    (set! i (+ i 1))
+                    (while (and (< i len) (<= (char-at text i) 32)) (set! i (+ i 1))))
+                  (let (nm-start:i64 i)
+                    (while (and (< i len) (!= (source-name-char (char-at text i)) 0))
+                      (set! i (+ i 1)))
+                    (when (!= (text-token-is text nm-start i name) 0) (return 1))))))
+          true (set! i (+ i 1))))))
+  (return 0))
+
+; Read `path` and ask whether it defines `name`. Non-fatal at every step (unlike
+; `read-file`, which exits): this is a hint, so an unreadable or absurdly large
+; file is simply not a match.
+(defn file-defines-name (path:CStr name:CStr want-type:i32):i32
+  (let (f:ptr (fopen path "rb"))
+    (when (= f null) (return 0))
+    (when (!= (fseek f 0 2) 0) (fclose f) (return 0))
+    (let (sz:i64 (ftell f))
+      (when (or (< sz 0) (> sz 4194304)) (fclose f) (return 0))
+      (rewind f)
+      (let (buf:ptr (malloc (+ sz 1)))
+        (when (= buf null) (fclose f) (return 0))
+        (let (nr:i64 (fread buf (as i64 1) sz f))
+          (aset! (as ptr:i8 buf) nr 0)
+          (fclose f)
+          (let (hit:i32 (text-defines-name (as CStr buf) nr name want-type))
+            (free buf)
+            (return hit)))))))
+
+; Is this resolved path already part of the compilation unit? A file in the unit
+; cannot be the answer — if it were, the name would have resolved. The three
+; lists together are every way a `.nuc` file enters the unit *through an import*:
+; the type prescan's walk, W1a's signature prescan walk, and import emission.
+; The unit's ROOT is on none of them (nothing imports it), which is what the last
+; two checks are for — `g-source-path` covers it only while the root is the file
+; being emitted, so `g-unit-entry-path` covers the rest of the compile.
+(defn path-in-unit (path:CStr):i32
+  (when (!= (import-list-has g-prescan-visited path) 0) (return 1))
+  (when (!= (import-list-has g-prescan-sigs path) 0) (return 1))
+  (when (!= (import-list-has g-imported path) 0) (return 1))
+  (when (= path (as CStr g-source-path)) (return 1))
+  (when (and (!= g-unit-entry-path null) (= path (as CStr g-unit-entry-path)))
+    (return 1))
+  (return 0))
+
+; Scan one directory (non-recursive) for a `.nuc`/`.nuch` file outside the unit
+; that defines `name`. First match wins and stops the scan.
+(defn scan-dir-for-definer (dir:CStr name:CStr want-type:i32):ptr
+  (let (d:ptr (opendir dir))
+    (when (= d null) (return null))
+    (while true
+      (let (e:ptr (readdir d))
+        (when (= e null)
+          (closedir d)
+          (return null))
+        (let (fname:CStr (as CStr (unsafe/ptr+ (as ptr:i8 e) DIRENT-D-NAME-OFFSET)))
+          (when (!= (nuc-source-name fname) 0)
+            (let (path:ptr (fmt-2s "%s/%s" dir fname))
+              (when (= (path-in-unit (as CStr path)) 0)
+                (when (!= (file-defines-name (as CStr path) name want-type) 0)
+                  (closedir d)
+                  (return path)))))))))
+  (return null))
+
+; The directory of the file currently being emitted, or null when it has none
+; (a bare filename in the cwd). Mirrors `try-import-path`'s first search step,
+; so the note names files the author could have imported by bare name.
+(defn source-file-dir ():ptr
+  (let (pathlen:i64 (as i64 (strlen g-source-path))
+        last-slash:i64 -1)
+    (dotimes (i pathlen)
+      (when (= (char-at g-source-path i) 47)
+        (set! last-slash i)))
+    (when (< last-slash 0) (return null))
+    (return (strndup g-source-path last-slash))))
+
+; The path of a Nucleus source file that is on the import search path, is NOT
+; part of this compilation unit, and defines `name` — or null. Searches exactly
+; the directories `resolve-import` searches first: the current source file's
+; directory, `lib/` relative to cwd, and each `-I` directory. ($NUCLEUS_LIB and
+; the compiled-in install prefix are deliberately left out: a file there is a
+; *stdlib* file the user cannot add to their project by editing an import, so
+; naming it would be advice they cannot act on.)
+(defn unreachable-definer-file (name:CStr want-type:i32):ptr
+  (let (scanned:ptr null)
+    (let (own-dir:ptr (source-file-dir))
+      (when (!= own-dir null)
+        (set! scanned (import-list-push scanned (as CStr own-dir)))
+        (let (hit:ptr (scan-dir-for-definer (as CStr own-dir) name want-type))
+          (when (!= hit null) (return hit)))))
+    (when (= (import-list-has scanned "lib") 0)
+      (set! scanned (import-list-push scanned "lib"))
+      (let (hit:ptr (scan-dir-for-definer "lib" name want-type))
+        (when (!= hit null) (return hit))))
+    (when (!= g-include-paths null)
+      (dotimes (j (unsafe/cast i32 (count g-include-paths)))
+        (let (dir:CStr (invoke g-include-paths (as usize j)))
+          (when (= (import-list-has scanned dir) 0)
+            (set! scanned (import-list-push scanned dir))
+            (let (hit:ptr (scan-dir-for-definer dir name want-type))
+              (when (!= hit null) (return hit))))))))
+  (return null))
+
+; The `note:` line naming the file, appended to the primary message by every
+; unresolved-name diagnostic. `die-at`/`report-at` print the message verbatim
+; after the `path:line: error: ` prefix, so an embedded newline lays the note
+; out exactly like the existing mono-context note.
+(defn unreachable-file-note (name:CStr path:CStr):ptr
+  (return (fmt-2s "'%s' is defined in %s, which no import in this unit reaches"
+                  name path)))
+
 ; The message for a name that did not resolve. `verb` is "unknown" (head
 ; position — no function/macro/special form by that name) or "undefined" (value
 ; position — no binding by that name).
@@ -1844,9 +2105,35 @@
     (when (!= skipped null)
       (return (fmt-3s "%s: '%s' — its C header declaration was skipped (%s)"
                       verb name skipped))))
+  ; Stage 15 W1c, tier 2. The name resolved nowhere in the unit — but it may be
+  ; defined in a file the import graph never reaches. Naming that file is
+  ; strictly more actionable than a spelling guess (it says which import to
+  ; add), so it takes precedence over the did-you-mean and suppresses it: the
+  ; two would otherwise offer contradictory diagnoses of the same failure. They
+  ; rarely collide anyway — the scan matches the name EXACTLY, so a genuine
+  ; misspelling finds no file and falls straight through to tier 3.
+  (let (elsewhere:ptr (unreachable-definer-file name 0))
+    (when (!= elsewhere null)
+      (return (fmt-3s "%s: %s — not defined anywhere in this compilation unit\n  note: %s"
+                      verb name (unreachable-file-note name (as CStr elsewhere))))))
   (let (near:ptr (closest-known-name name))
-    (when (= near null) (return (fmt-2s "%s: %s" verb name)))
-    (return (fmt-3s "%s: %s (did you mean '%s'?)" verb name near))))
+    (when (!= near null)
+      (return (fmt-3s "%s: %s (did you mean '%s'?)" verb name near)))
+    ; Tier 4: the common typo with nothing close enough to suggest. Say plainly
+    ; what was checked — post-W1a that is the whole unit, not "everything
+    ; imported so far", and the old bare `unknown: <name>` did not say so.
+    (return (fmt-2s "%s: %s — not defined anywhere in this compilation unit" verb name))))
+
+; Stage 15 W1c: the same treatment for §2.7's TYPE reachability constraint,
+; which W1 deliberately does not remove — a struct/union/protocol named in a
+; unit must still be defined in a reachable file. Raised by `parse-type-name`
+; (src/union-registry.nuc), which calls up into this file.
+(defn unknown-type-message (name:CStr):ptr
+  (let (elsewhere:ptr (unreachable-definer-file name 1))
+    (when (!= elsewhere null)
+      (return (fmt-2s "unknown type: %s — not defined anywhere in this compilation unit\n  note: %s"
+                      name (unreachable-file-note name (as CStr elsewhere))))))
+  (return (fmt-s "unknown type: %s — not defined anywhere in this compilation unit" name)))
 
 (defn unknown-name-message (name:CStr):ptr
   (return (unresolved-name-message "unknown" name)))
@@ -9929,6 +10216,101 @@
       (set! fc ((unsafe/cast ptr:Node fc) cdr)))
     (finalize-generics)))
 
+; Stage 15 W1a/W1b (design/stage15-stress-test/resolution.md) — the second
+; whole-graph prescan pass. `prescan-imported-types` (pass 1, above) has already
+; walked the import graph and registered every reachable file's struct/union type
+; NAMES; this pass walks the same graph and registers every reachable file's
+; PROTOCOLS and DEFN SIGNATURES. After it, a cross-file function reference
+; resolves on *reachability* rather than on import order — the old rule was purely
+; ordinal ("X may reference a function in Y iff Y begins processing before X is
+; emitted"), which made a mutually recursive pair inexpressible with
+; import-what-you-use discipline in *any* ordering.
+;
+; Two passes rather than one: a signature's types must resolve against the WHOLE
+; graph's type names, so registering names and signatures in a single walk would
+; reintroduce exactly the ordering dependency this removes, one level down (file F
+; prescanned before a sibling G that their parent imports after it).
+;
+; The traversal is PRE-order (a file's own signatures, then its imports') and this
+; runs *after* the outermost unit's own prescans, so the sequence of registrations
+; — and therefore of parametric-instance stampings, which are memoized on first
+; use and queued for IR in stamp order — is the same one today's interleaved
+; prescan/emit walk produces. Only the *timing* moves: everything is registered
+; before any form is emitted.
+;
+; W1b: each visited file's own leading `(ns …)` / `set-ir-prefix` is applied while
+; prescanning it, and restored afterwards, exactly as `emit-toplevel-forms` and
+; `do-import` do. Defn signatures are namespace-qualified — `scope-define`
+; qualifies the key against `g-current-ns` and `generic-new` snapshots the
+; namespace's ir-prefix — so prescanning a namespaced file under the *importer's*
+; namespace would register it under the wrong key and bake the wrong ir-name.
+; (Pass 1 does not need this: it registers struct names only, which are unqualified.)
+;
+; Skips, each for a specific reason:
+;   * a path already on `g-prescan-sigs` — the graph may reach it twice (diamond);
+;   * a path already on `g-imported` — the REPL processes one import per command,
+;     so a later command's walk can reach a file the session has already loaded,
+;     whose signatures are therefore already registered;
+;   * a `.nuch` header — its importer (`emit-nuch-import-forms`) deliberately does
+;     NOT run `prescan-defn-signatures`; declares/defmethods/templates each have
+;     their own registration path, so prescanning here would double-register;
+;   * a C-header string import — reading one shells out to clang (pass 1's rule).
+; Only the NODE-SYM spelling is walked, matching pass 1 (a `.nuc`/`.nuch` *string*
+; path import is left to emission, as it is today).
+(defn prescan-imported-signatures (forms:(raw Node)):void
+  (let (fc:ptr forms)
+    (while (!= fc null)
+      (let (f:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node fc) car)))
+        (when (and (!= (as ptr f) null) (= (f kind) NODE-CELL)
+                   (>= (node-len (as ptr f)) 2)
+                   (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ kind) (= _ NODE-SYM)))
+          (let (ph:ptr (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ s)))
+           (when (or (and (= ph "import") (= (node-len (as ptr f)) 2))
+                     (= ph "import-use")
+                     (= ph "import-only")
+                     (= ph "import-prefixed")
+                     (= ph "unsafe-import-private")
+                     (= ph "unsafe/import-private"))
+            (let (nn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr f) 1)))
+              (when (= (nn kind) NODE-SYM)
+                (let (path:ptr (resolve-import (nn s) (f line)))
+                  (when (and (!= path null)
+                             (= (str-ends-with path ".nuch") 0)
+                             (= (import-list-has g-prescan-sigs path) 0)
+                             (= (as ptr (import-list-find g-imported path)) null))
+                    (set! g-prescan-sigs (import-list-push g-prescan-sigs path))
+                    (let (save-src:ptr g-src
+                          save-pos:i64 g-pos
+                          save-line:i32 g-line
+                          save-path:ptr g-source-path
+                          save-peek:ptr g-peek
+                          save-peek-valid:i32 g-peek-valid
+                          save-ns:ptr g-current-ns
+                          save-ns-seen:i32 g-ns-seen)
+                      (let (src:ptr (read-file path))
+                        (set! g-source-path path)
+                        (set! g-src src)
+                        (set! g-pos 0)
+                        (set! g-line 1)
+                        (set! g-peek-valid 0)
+                        (set! g-current-ns (intern-str "user"))
+                        (set! g-ns-seen 0)
+                        (let (ifs:ptr (apply-leading-ns (desugar (read-program-or-die))))
+                          (apply-early-set-ir-prefix ifs)
+                          (prescan-protocols ifs)
+                          (prescan-defn-signatures ifs)
+                          (prescan-imported-signatures ifs))
+                        (free src))
+                      (set! g-source-path save-path)
+                      (set! g-src save-src)
+                      (set! g-pos save-pos)
+                      (set! g-line save-line)
+                      (set! g-peek save-peek)
+                      (set! g-peek-valid save-peek-valid)
+                      (set! g-current-ns save-ns)
+                      (set! g-ns-seen save-ns-seen))))))))))
+      (set! fc ((unsafe/cast ptr:Node fc) cdr)))))
+
 (defn emit-def-rmacro (call:(raw Node)):void
   (let (cc:ptr:Node (unsafe/cast ptr:Node call))
     (when (!= (node-len cc) 3)
@@ -10110,6 +10492,19 @@
 ; Used by main and by emit-import for recursive processing.
 (defn emit-toplevel-forms (forms:(raw Node)):void
   (set! g-toplevel-depth (+ g-toplevel-depth 1))
+  ; Stage 15 W1c: remember the unit's root file. It is the one file in the unit
+  ; that appears on none of the import lists (nothing imports it), so
+  ; `path-in-unit` would otherwise let the unreachable-file scan name it — a
+  ; note saying "no import reaches your own entry point" is true and useless.
+  (when (= g-toplevel-depth 1)
+    (set! g-unit-entry-path g-source-path))
+  ; Stage 15 W1a: has this file's protocol/signature prescan already been done by
+  ; the whole-graph walk below? Sampled BEFORE the walk runs, and keyed on the
+  ; file path (`g-source-path` is set to the resolved path by do-import before it
+  ; calls us; the outermost unit's own path is never on the list, since the walk
+  ; only records *imported* files). Registration is not idempotent — see
+  ; g-prescan-sigs — so the answer decides whether the two prescans run at all.
+  (let (sigs-done:i32 (import-list-has g-prescan-sigs g-source-path))
   ; Stage 12: a leading `(ns NAME)` sets the unit's namespace BEFORE the
   ; prescans register any names, so global keys (and forward references) are
   ; qualified consistently from the first definition onward.
@@ -10129,8 +10524,24 @@
   ; follows them, for the same reason.
   (prescan-explicit-declares forms)
   (prescan-struct-names forms)
-  (prescan-protocols forms)
-  (prescan-defn-signatures forms)
+  ; Stage 15 W1a: skip when the whole-graph walk already registered this file's
+  ; protocols and signatures. `finalize-generics` still runs at exactly the point
+  ; prescan-defn-signatures would have called it, so a generic that gained methods
+  ; since (a `.nuch` defmethod import, a REPL redefinition) is still mangled at the
+  ; same moment as before — only the *registration* moved earlier.
+  (if (= sigs-done 0)
+    (do
+      (prescan-protocols forms)
+      (prescan-defn-signatures forms))
+    (finalize-generics))
+  ; Stage 15 W1a: outermost unit only — register every reachable file's protocols
+  ; and defn signatures now, so cross-file references resolve on reachability
+  ; instead of import order. Runs AFTER this unit's own prescans so the whole
+  ; registration sequence matches today's interleaved order (see the function's
+  ; header comment); pass 1 (types) above must precede this unit's signatures and
+  ; therefore stays where it is.
+  (when (= g-toplevel-depth 1)
+    (prescan-imported-signatures forms))
   (let (fc:ptr forms)
     (while (!= fc null)
       (let (f:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node fc) car)))
@@ -10270,7 +10681,7 @@
     (check-generic-templates))
   ; Emit the bodies of any generic instantiations these forms triggered.
   (drain-mono-worklist)
-  (set! g-toplevel-depth (- g-toplevel-depth 1)))
+  (set! g-toplevel-depth (- g-toplevel-depth 1))))
 
 ; Check if a path is in a Node-based string list.
 (defn import-list-has (list:(raw Node) path:CStr):i32
@@ -10511,7 +10922,7 @@
                       (set! end-len ((unsafe/cast ptr:Node loaded) line)))
                   (do
                     (when (!= (import-list-has g-importing path) 0)
-                      (die-at line (fmt-s "import: circular import of '%s'" name)))
+                      (die-at line (fmt-s "import: circular import of '%s' -- remove this back-import; a cross-file reference does not require an import, so two mutually dependent files can both be imported by a common parent, in any order" name)))
                     (set! start-len ((as ptr:Scope g-globals) len))
                     (let (save-src:ptr g-src
                           save-pos:i64 g-pos
@@ -10619,7 +11030,7 @@
               ; Cycle detection keys on the file alone — a file that is mid-import
               ; is circular regardless of prefix.
               (when (!= (import-list-has g-importing path) 0)
-                (die-at line (fmt-s "import: circular import of '%s'" name)))
+                (die-at line (fmt-s "import: circular import of '%s' -- remove this back-import; a cross-file reference does not require an import, so two mutually dependent files can both be imported by a common parent, in any order" name)))
               (set! start-len ((as ptr:Scope g-globals) len))
               ; Save reader state
               (let (save-src:ptr g-src
@@ -11102,6 +11513,8 @@
   (conj g-deferror-msg-sids 0)
   (set! g-err-table-used 0)
   (set! g-prescan-visited null)
+  (set! g-prescan-sigs null)
+  (set! g-unit-entry-path null)
   (set! g-import-aliased null)
   (set! g-import-prefixes null)
   (set! g-cinclude-collecting 0)

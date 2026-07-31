@@ -9,8 +9,12 @@ runs) and **W3c is done** (§1.4, typedef chains + declaration precedence — th
 header ladder is closed and all three rungs are reached, plus a follow-up fix to
 `declare`'s unnamed parameter parse that W3c's precedence rule surfaced), so
 **all of W3 is complete**. **W5 is nearly done** — W5a, W5b, W5c, W5d and W5f
-landed; only W5e remains (it is sequenced after W1). **W6's design document is written**
-([nullability.md](nullability.md)); **W1 is not started** — no code or docs exist for the
+landed; only W5e remains (it is sequenced after W1). **W1a + W1b + W1c are done**
+(whole-unit signature resolution, and the diagnostic surface that goes with it —
+see the W1 section below); W1e is resolved by obsolescence, so **W1d (mutual-import
+policy) is the only W1 chunk still open**, and it is a decision rather than a
+defect. **W6's design document is written**
+([nullability.md](nullability.md)) — no code or docs exist for the
 not-started items yet beyond their spec docs ([resolution.md](resolution.md),
 [literal-typing.md](literal-typing.md), [cheader.md](cheader.md),
 [ergonomics.md](ergonomics.md), [nullability.md](nullability.md)).
@@ -249,3 +253,199 @@ fails if a stricter check ever sweeps `CStr` up with `ptr`.
   (verified: one definition at `HEAD`, and `make` rebuilds cleanly), so this is
   historical, but a clean clone pinned to `04c55ec` cannot bootstrap. Found
   during W5a.
+
+---
+
+## W1 — Whole-unit signature resolution
+
+Spec: [resolution.md](resolution.md) (with a "W1a/W1b as built" addendum at the
+bottom carrying the answers to the design's open questions).
+
+| Chunk | What landed | Status |
+|---|---|---|
+| **W1a + W1b** | Cross-file function references now resolve on **reachability**, not import order — the ordinal rule *"X may reference a function in Y ⟺ Y begins processing before X is emitted"* is retired. Mechanism: a **second** whole-graph prescan pass, `prescan-imported-signatures` (`src/nucleusc.nuc`), walking the same depth-first import graph as `prescan-imported-types` and registering every reachable `.nuc` file's **protocols** and **defn signatures**. Two passes, not one: a signature's types must resolve against the *whole* graph's type names, and a one-pass walk would prescan file F before a sibling G their parent imports after it — the compiler's own `src/generics.nuc` (signatures naming `Method`/`Generic` from the sibling `src/compiler-types.nuc`) would have hit that immediately. Registration is **not idempotent** (possibility (3) of the design's list: `generic-register-method` appends unconditionally and `generic-add-method` clears `finalized`, so a second pass makes every signature a duplicate overload), so `g-prescan-sigs` records each prescanned path and `emit-toplevel-forms` skips its own protocol/signature prescan for it — while still calling `finalize-generics` at exactly the same point, so only *registration* moves earlier. The duplicate-signature check is untouched: two files defining the same name+arity still error. W1b is part of it, not a follow-up: the walk applies each visited file's own leading `(ns …)`/`set-ir-prefix` and restores afterwards, because `scope-define` qualifies a global's key against `g-current-ns` and `generic-new` snapshots the namespace ir-prefix that `finalize-generics` bakes into the solitary method's ir-name. `finalize-generics` needed no register/finalize split — per-file is safe by the same reasoning `generic-add-method`'s own comment records. `.nuch` headers are deliberately excluded from the new pass (their importer never runs `prescan-defn-signatures`; entries arrive as `declare`/`defmethod`/template-`defn` with their own registration paths), as are C-header string imports (reading one shells out to clang) and any path already on `g-imported` (the REPL loads one import per command). | **Done** |
+| **W1c** | The unresolved-name diagnostic now distinguishes the three failures W1a left behind, at one chokepoint each: `unresolved-name-message` (`unknown:`/`undefined:`) and — for §2.7's type reachability constraint, which W1 keeps — a new `unknown-type-message` called from `parse-type-name` (`src/union-registry.nuc`). Tier order, unchanged at the top: the **C-header skip note** (W3c) first, then the new **unreachable-file note**, then the did-you-mean, then a plain *"not defined anywhere in this compilation unit"*. The middle tier is the point of the chunk — on failure the compiler scans the `.nuc`/`.nuch` files in exactly the directories `resolve-import` searches (the current source file's directory, `lib/`, each `-I`), skips every file already in the unit (`g-prescan-visited` / `g-prescan-sigs` / `g-imported`, plus the unit's root, which is on none of those lists and gained `g-unit-entry-path` for that reason), and names the first file outside the unit that defines the name: `note: 'y-later' is defined in ./yf.nuc, which no import in this unit reaches`. It suppresses the did-you-mean rather than stacking with it — naming the file is a strictly better answer than guessing a spelling, and the two collide almost never because the scan matches the name *exactly*. Deliberate implementation choices: a **textual** scan of file bytes (re-entering `read-program`/`desugar` from a diagnostic would clobber `g-src`/`g-pos`/`g-line`/`g-source-path`/`g-peek` mid-message for no benefit), skipping line comments and string literals so the two obvious false-positive sources are out; **error path only** — both callers of `unresolved-name-message` and the `unknown type:` raise are `die-at`, which is `noreturn`, so the scan runs at most once per compile and cost is unobservable (a failing fixture compiles in the same 0.135 s as a clean one). Directory enumeration uses hand-declared POSIX `opendir`/`readdir`/`closedir` (the C-header reader registers `struct dirent` as *opaque* — its `char d_name[256]` member defeats the declaration parser — so a field access on it is refused); the `d_name` byte offset is **validated, not trusted**: an entry is used only if the bytes there are a short NUL-terminated name ending `.nuc`/`.nuch`, so a platform with a different layout finds nothing rather than printing garbage. `$NUCLEUS_LIB` and the install prefix are deliberately *not* scanned — a stdlib file is not something the user can fix by editing an import. | **Done** |
+| **W1d** | Mutual-import policy (keep `circular import` a hard error vs. allow cycles). | Not started — decision pending; the current hard error is pinned by a test so relaxing it stays deliberate |
+| **W1e** | `declare` as a forward prototype. | **Resolved by obsolescence, no mechanism built** — the design's shape-3 hazard (`declare` + a reachable `defn` → `duplicate method signature`) does not reproduce, and W1a makes the mechanism that prevents it fire *more* often: `emit-nuch-declare-import` returns early when the name is already in `g-globals`, so a `declare` matching a reachable solitary `defn` is a complete no-op |
+
+### The defect W1a exposed (pre-existing, fixed here)
+
+`defunion-register` (`src/union-registry.nuc`) wrote a union backing struct's
+`%X = type { i32, %__anon_union_… }` line **eagerly** while the anon payload union
+it names sat on the deferred `g-pending-unions` queue. For a scalar payload the
+union lands at the very next drain; for a **struct** payload (`!String`) it waits
+for `%String`, which arrives with a later import — and every module assembled in
+between (a `compile-time` block, a `defmacro` JIT module) carries the reference
+with no definition. Reproduces on the committed boot compiler:
+
+```lisp
+(compile-time (printf "ct ran\n"))
+(import-use string)
+(defn wrap (sv:StrView):!String (return (string-from-view sv)))
+(defn main ():i32 (return 0))
+```
+
+→ `use of undefined type named '__anon_union_h5cc06870e474e483'`. W1a widens the
+dangling window to the whole build (the stamp now happens during the prescan),
+which is how eleven examples surfaced it at once. Fixed at the root: the backing
+struct is queued instead of written eagerly **exactly when writing it now would
+dangle**, so it emits after its payload union, in dependency order; the queued
+renderer's text is character-identical, and a scalar/pointer payload keeps the
+eager write and its IR position.
+
+### The second defect W1a fixed: a symbol mangled *after* it was emitted
+
+`emit-defn` reads `defn-ir-name` at emission time and `finalize-generics` decides
+solitary-vs-mangled from the method set known *then*. Under the ordinal rule a
+file could be emitted before a later import registered a second method of the
+same name: the definition went out as the solitary `@append` while every call
+site emitted afterwards went through generic dispatch and named
+`@append.ptr.ptr`. On the committed boot compiler,
+`(import-use "lib/list.nuc")` + `(import-use vector)` + a call to `append`
+emits `define ptr @append` and `call ptr @append.ptr.ptr`, and the link dies
+`use of undefined value`. W1a makes the decision final before the first `define`
+is written. This is why `examples/rest-defn.nuc` and `examples/string-test.nuc`
+are the only two programs in the tree whose IR changed by more than type-line
+order: their symbols are now the correct (mangled) ones.
+
+### Pre- vs post-W1a sweep, every `lib/` and `examples/` program
+
+| Outcome | Count |
+|---|---|
+| Byte-identical IR | 104 |
+| Type-definition **order** only (normalized-identical) | 55 |
+| Real IR difference — the late-overload symbol fix | 2 |
+| Compiled before, fails now | **0** |
+| Failed before, compiles now | 5 (`lib/string.nuc` via the anon-union fix; four W5-era features the committed boot predates) |
+
+### Test/bootstrap status after W1a/W1b
+
+`make test` **293 PASS / 0 FAIL** (279 before; +14 units:
+`w1-mutual-order1/2`, `w1-ns-order1/2`, `w1-diamond`, `w1-two-routes`,
+`w1-two-higher`, `w1-duplicate-rejected`, `w1-missing-rejected`,
+`w1-declare-cycle-breaker`, `w1-declare-plus-import`,
+`w1-circular-still-errors`, `w1-deferred-union-payload`,
+`w1-late-overload-symbol`). Every positive unit
+compiles, **links and runs**, asserting the program's exit status — an exit-0
+compile alone would not catch a call routed to the wrong symbol.
+`make abi-test` and `make layout-test` both PASS.
+
+**`make bootstrap` was not byte-identical on the first pass**, and unlike every
+earlier Stage 15 chunk this one is *expected* to move IR: front-loading the
+signature prescan front-loads the first stamp of every parametric instance an
+imported file's signatures mention, and a stamp is what queues its
+`%Name = type {…}` line. The diff was proven inert before reconverging: 44
+changed lines, **all** of them type definitions moving within the type section;
+sorting the type-definition lines in both files makes them **byte-identical**, so
+the *set* of definitions is unchanged and **zero** `declare`/`define`/string-table
+/function-body lines differ. LLVM named struct types are order-independent within
+a module (the deferred queue's own header comment says so, and the pre-W1a output
+already contained forward references among these very lines). The new compiler is
+a fixed point on its own — recompiling `src/nucleusc.nuc` with a binary built from
+its own output reproduces that output byte-for-byte — so the `make bootstrap`
+diff was purely "stage1 comes from the old boot". Reconverged per
+[../../context/build.md](../../context/build.md).
+
+### Test/bootstrap status after W1c
+
+`make test` **297 PASS / 0 FAIL** (293 before; +4 units: `w1c-unreachable-file`,
+`w1c-note-advice-works`, `w1c-defined-nowhere`, `w1c-unreachable-type`). The
+note unit and its negative control are one pair on purpose: the same sibling
+file that produces the note must, once imported, compile **link and run** — the
+note has to be advice that works, and the scan must not fire on a definition the
+unit already reaches. `make bootstrap` **byte-identical on the first pass**
+(W1c touches only error paths and message text, so it cannot move emitted IR);
+`make abi-test` and `make layout-test` both PASS. The committed
+`boot/nucleusc.ll` is deliberately **not** refreshed — it still bootstraps the
+new source, and W1a's reconverge left it current.
+
+### Corrections to the W1c brief
+
+* **`docs/errors.md` is not where these messages are documented.** It covers the
+  Stage 10 `!T` / `Err` value-channel error *handling* system. Compiler
+  diagnostics live in `docs/compiler.md`; its "Did-you-mean" section became
+  "Unresolved names" and now documents all four tiers, with a cross-link from
+  the reachability bullet in `docs/toplevel.md`.
+* **The uncertainty about fatal callers resolves cleanly.** Both callers of
+  `unresolved-name-message` (`emit-symbol-ref`'s value position,
+  `emit-dispatch`'s head position) and `parse-type-name`'s `unknown type:` raise
+  are `die-at`, which carries `noreturn`. No speculative or recoverable caller
+  exists, so no gate on the scan was needed. (In the REPL `die-at` unwinds via
+  `repl_throw` instead of `exit`, which is still the error path — one scan per
+  failed command, verified interactively.)
+* **Pre-existing quirk found, deliberately not fixed here.** A reference to a
+  namespaced function by its *unqualified* name reports
+  `unknown: thing (did you mean 'thing'?)` — `closest-known-name` searches
+  `Generic.name` (the bare spelling) while the scope key is `ns/thing`, so the
+  suggestion is the identical text. That is a W4a namespace-suggestion gap, not
+  a W1c one; the right message names the *qualified* spelling, which is a
+  separate change. Suppressing an identical suggestion alone would be a
+  regression — the message would fall through to "not defined anywhere in this
+  compilation unit", which is more wrong than the tautology.
+
+## W7 — The bare-symbol selector always means "field name" (design only)
+
+**Status: designed, not implemented.** Spec:
+[selector-ambiguity.md](selector-ambiguity.md).
+
+Reported from `examples/hashmap-lit-test.nuc`, whose working tree now binds
+`k:CStr "foo"` and calls `(m k)`. That fails —
+`get: no field 'k' on struct 'HashMap.cstr.i32'` — while `(m "foo")` succeeds.
+**This is the one failing test in the suite** (296 pass, 1 fail); it is the
+reproducer, not a regression.
+
+* **Root cause is two-part.** `selector-literal-sym` (`nucleusc.nuc:3234`)
+  classifies a selector by node kind alone — any `NODE-SYM` is a field name,
+  scope and the callee's field set are never consulted — and
+  `emit-get-with-callee` (`:3418`) has **no edge from its symbol branch back to
+  its value branch**, so once classified the value reading is unreachable even
+  when the field reading provably cannot work. Separately,
+  `emit-invoke-with-callee` (`:3491`) never falls back to `get`, so
+  `(invoke m k)` — the form whose arguments *are* values — cannot serve as the
+  escape hatch. The only working spelling today is to obfuscate the selector
+  into a compound expression, `(m (as CStr k))`.
+* **Blast radii were measured, not estimated.** Two temporary probes were added
+  to Branch A and the compiler plus every file in `examples/` was compiled;
+  probes then removed and the tree verified back to its original state.
+  Scope-first resolution would silently re-interpret **79** sites in the
+  compiler's own source (`name` ×27, `line` ×17, `s` ×6, `ty` ×5, …) and turn
+  `examples/get-dispatch-test.nuc:29`'s `(= (self key) key)` into infinite
+  recursion — the exact hazard `context/conventions.md` says `_get` exists to
+  avoid. The `invoke`-symmetric rule costs **26** distinct lines, 23 of them
+  mechanical `_get` conversions inside `lib/hashmap.nuc`.
+* **`lib/hashmap.nuc:282` is the stdlib's only value-keyed `get`,** which is why
+  the principled option is affordable.
+* **Marked selectors were evaluated as the end state** (option F, added on
+  review). Requiring `'field`/`:field` frees bare symbols to mean variables as
+  they do everywhere else — **selector position is the only place in the language
+  where a bare symbol is not a variable reference**, which is why the reported
+  bug is the rule working as designed rather than a corner case. Measured at
+  **~3,800** sites (4,151 emit-time occurrences compiling the compiler, the gap
+  being template re-emission), of which **0** are currently quoted, against
+  **49** static `_get` uses.
+* **Both marks already exist in the reader.** `'sym` is accepted by
+  `selector-literal-sym` today. `:foo` lexes to a `NODE-KEYWORD`
+  (`lib/reader.nuc:887`) that the compiler already treats as a *compile-time*
+  name for type spellings (`type-mangle.nuc:165-174`) and declaration attributes
+  (`union-registry.nuc:1174`) — and `(p :x)` is unused in selector position
+  today (it lowers to a runtime `keyword-intern` and dies with "no `invoke`
+  method"), so the syntax is free to claim. `'field` is the safer claim; `:` is
+  the most overloaded character in the language and the type-spelling
+  interaction must be checked first. Note `p.x` is **not** available — it lexes
+  as a single symbol.
+* **The migration is automatable.** `g-source-path` is swapped per
+  source-imported file, so a `--warn-bare-selector` mode can emit exact
+  `file:line: field` triples for a structural rewriter — the compiler is the only
+  thing that knows which `(a b)` forms are field accesses rather than calls.
+  Staged accept-both → warn-and-rewrite → flip, the same shape as the Stage 10
+  Phase F nullability flip, so no step is both breaking and unverifiable.
+* **Recommendation: `invoke`→`get` fallback + "field-first, value fallback" in
+  this stage; marked selectors as their own stage.** The zero-risk pair fixes the
+  reported bug now and forecloses nothing (the demotion rule is deleted wholesale
+  when marked selectors land, and the `invoke` fallback is wanted under them
+  too). The `invoke`-symmetric rule is the option to **skip** if marked selectors
+  are on the roadmap — it costs 26 lines of churn to buy a rule they immediately
+  replace. Counter-consideration recorded: marked selectors reverse Stage 9's
+  deliberate migration *to* head-position field access, and `_get` survives
+  either way (a user `get` reading its own fields still needs the bypass —
+  `(self 'cap)` still dispatches into the same method).

@@ -716,6 +716,296 @@ run_w4a_sibling_forward() {
   rm -rf "$d"
 }
 
+# --- Stage 15 W1: whole-unit signature resolution ----------------------------
+# design/stage15-stress-test/resolution.md. A `defn` in ANY reachable file of the
+# compilation unit is callable from any other; import order does not affect
+# resolution. Each unit below writes its files, compiles+LINKS, runs the program
+# and checks its exit status — an exit-0 compile alone would not catch a call
+# routed to the wrong symbol.
+
+# Compile+link+run one multi-file program and assert its exit status.
+#   w1_run <name> <dir> <main.nuc> <expected-status>
+w1_run() {
+  local name="$1" d="$2" mainsrc="$3" want="$4" err got
+  err="$(./build/nucleusc -I "$d" -o "$d/$name.bin" "$mainsrc" 2>&1 >/dev/null || true)"
+  if [ ! -x "$d/$name.bin" ]; then
+    echo "FAIL  $name (compile/link error)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+    return 0
+  fi
+  set +e; "$d/$name.bin"; got=$?; set -e
+  if [ "$got" = "$want" ]; then
+    echo "PASS  $name"
+  else
+    echo "FAIL  $name (expected exit $want, got $got)"
+  fi
+}
+
+# The shape that actually motivates W1 (resolution.md's corrected repro E): two
+# files that depend on each other's functions, each importing what it uses.
+# Before W1a this failed in BOTH orders — `mx.nuc:1: unknown: y-later` one way,
+# `my.nuc:1: unknown: x-helper` the other — because signature registration was
+# purely ordinal. The back-import stays out of it (a mutual `(import …)` pair is
+# still `circular import`, checked separately below): the parent imports both.
+run_w1_mutual() {
+  local d
+  d="$(mktemp -d)"
+  printf '(defn x-uses ():i32 (return (y-later)))\n(defn x-helper ():i32 (return 7))\n' > "$d/w1-mx.nuc"
+  printf '(defn y-later ():i32 (return (x-helper)))\n' > "$d/w1-my.nuc"
+  printf '(import w1-mx)\n(import w1-my)\n(defn main ():i32 (return (x-uses)))\n' > "$d/w1-m1.nuc"
+  printf '(import w1-my)\n(import w1-mx)\n(defn main ():i32 (return (x-uses)))\n' > "$d/w1-m2.nuc"
+  w1_run w1-mutual-order1 "$d" "$d/w1-m1.nuc" 7
+  w1_run w1-mutual-order2 "$d" "$d/w1-m2.nuc" 7
+  rm -rf "$d"
+}
+
+# W1b: the same, across namespaces. A defn signature is namespace-qualified —
+# scope-define qualifies the key and generic-new snapshots the ir-prefix — so the
+# whole-graph prescan must apply each visited file's OWN leading `(ns …)`.
+# Prescanning nsa under the importer's namespace would register `a-thing` under
+# the wrong key and mangle it under the wrong prefix; before W1a the
+# `(import nsa)`-first order failed with `unknown: beta/b-thing`.
+run_w1_ns() {
+  local d
+  d="$(mktemp -d)"
+  printf '(ns w1alpha)\n(defn a-thing ():i32 (return (w1beta/b-thing)))\n' > "$d/w1-nsa.nuc"
+  printf '(ns w1beta)\n(defn b-thing ():i32 (return 42))\n' > "$d/w1-nsb.nuc"
+  printf '(import w1-nsa)\n(import w1-nsb)\n(defn main ():i32 (return (w1alpha/a-thing)))\n' > "$d/w1-nm1.nuc"
+  printf '(import w1-nsb)\n(import w1-nsa)\n(defn main ():i32 (return (w1alpha/a-thing)))\n' > "$d/w1-nm2.nuc"
+  w1_run w1-ns-order1 "$d" "$d/w1-nm1.nuc" 42
+  w1_run w1-ns-order2 "$d" "$d/w1-nm2.nuc" 42
+  rm -rf "$d"
+}
+
+# The port's harder graph shapes, all of which worked before W1a and must keep
+# working (the walk dedups on resolved path, so a file reached twice is
+# prescanned once):
+#   diamond      — two importers of one shared leaf;
+#   two-routes   — one file reachable both directly and through a chain;
+#   two-higher   — a file forward-referencing up into two independent higher
+#                  files with no chaining between them.
+run_w1_graph_shapes() {
+  local d
+  d="$(mktemp -d)"
+  printf '(defn w1-leaf ():i32 (return 5))\n' > "$d/w1-leaf.nuc"
+  printf '(import w1-leaf)\n(defn w1-dl ():i32 (return (w1-leaf)))\n' > "$d/w1-dl.nuc"
+  printf '(import w1-leaf)\n(defn w1-dr ():i32 (return (+ (w1-leaf) 1)))\n' > "$d/w1-dr.nuc"
+  printf '(import w1-dl)\n(import w1-dr)\n(defn main ():i32 (return (+ (w1-dl) (w1-dr))))\n' > "$d/w1-diamond.nuc"
+  w1_run w1-diamond "$d" "$d/w1-diamond.nuc" 11
+
+  # w1-leaf is reachable directly AND through w1-dl; neither route may re-emit it.
+  printf '(import w1-dl)\n(import w1-leaf)\n(defn main ():i32 (return (+ (w1-dl) (w1-leaf))))\n' > "$d/w1-routes.nuc"
+  w1_run w1-two-routes "$d" "$d/w1-routes.nuc" 10
+
+  printf '(defn w1-hi-a ():i32 (return 3))\n' > "$d/w1-hi-a.nuc"
+  printf '(defn w1-hi-b ():i32 (return 4))\n' > "$d/w1-hi-b.nuc"
+  printf '(defn w1-low ():i32 (return (* (w1-hi-a) (w1-hi-b))))\n' > "$d/w1-low.nuc"
+  printf '(import w1-hi-a)\n(import w1-hi-b)\n(import w1-low)\n(defn main ():i32 (return (w1-low)))\n' > "$d/w1-higher.nuc"
+  w1_run w1-two-higher "$d" "$d/w1-higher.nuc" 12
+  rm -rf "$d"
+}
+
+# The two things W1a must NOT relax. (1) Two files defining the same name+arity
+# are still a duplicate — silent last-wins would be a worse regression than the
+# bug W1a fixes. (2) A name defined nowhere in the graph is still `unknown:`.
+run_w1_still_rejects() {
+  local d err
+  d="$(mktemp -d)"
+  printf '(defn w1-dupe (n:i32):i32 (return n))\n' > "$d/w1-dup-a.nuc"
+  printf '(defn w1-dupe (n:i32):i32 (return (+ n 1)))\n' > "$d/w1-dup-b.nuc"
+  printf '(import w1-dup-a)\n(import w1-dup-b)\n(defn main ():i32 (return (w1-dupe 1)))\n' > "$d/w1-dup.nuc"
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/w1-dup.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | grep -q "duplicate method signature for overloaded 'w1-dupe'"; then
+    echo "PASS  w1-duplicate-rejected"
+  else
+    echo "FAIL  w1-duplicate-rejected"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+  fi
+
+  printf '(import w1-dup-a)\n(defn main ():i32 (return (w1-nowhere)))\n' > "$d/w1-missing.nuc"
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/w1-missing.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | grep -q 'unknown: w1-nowhere'; then
+    echo "PASS  w1-missing-rejected"
+  else
+    echo "FAIL  w1-missing-rejected"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+  fi
+  rm -rf "$d"
+}
+
+# resolution.md W1e: `(declare f …)` as the cross-file cycle-breaker keeps
+# working. Once the whole-graph prescan registers every reachable signature,
+# EVERY such declare matches a reachable defn — emit-nuch-declare-import's
+# "already in g-globals" early return is what keeps that a no-op instead of a
+# duplicate, so this is the guard on that interaction.
+run_w1_declare_cycle_breaker() {
+  local d
+  d="$(mktemp -d)"
+  printf '(declare w1-a-fn (i32):i32)\n(defn w1-b-fn (n:i32):i32 (if (= n 0) (return 2) (return (w1-a-fn (- n 1)))))\n' > "$d/w1-bf3.nuc"
+  printf '(import w1-bf3)\n(defn w1-a-fn (n:i32):i32 (if (= n 0) (return 1) (return (w1-b-fn (- n 1)))))\n' > "$d/w1-af3.nuc"
+  printf '(import w1-af3)\n(defn main ():i32 (return (w1-a-fn 3)))\n' > "$d/w1-decl1.nuc"
+  w1_run w1-declare-cycle-breaker "$d" "$d/w1-decl1.nuc" 2
+  # The declare and a reachable defn of the same name coexisting in one unit.
+  printf '(import w1-af3)\n(import w1-bf3)\n(defn main ():i32 (return (w1-a-fn 3)))\n' > "$d/w1-decl2.nuc"
+  w1_run w1-declare-plus-import "$d" "$d/w1-decl2.nuc" 2
+  rm -rf "$d"
+}
+
+# A mutual `(import …)` pair is still a hard `circular import` error (W1d is a
+# separate decision). Pinned so relaxing it is a deliberate act, not a side
+# effect: the diagnostic must name the file and land on a real line.
+run_w1_circular_still_errors() {
+  local d err
+  d="$(mktemp -d)"
+  printf '(import w1-cb)\n(defn w1-ca-fn (n:i32):i32 (if (= n 0) (return 1) (return (w1-cb-fn (- n 1)))))\n' > "$d/w1-ca.nuc"
+  printf '(import w1-ca)\n(defn w1-cb-fn (n:i32):i32 (if (= n 0) (return 2) (return (w1-ca-fn (- n 1)))))\n' > "$d/w1-cb.nuc"
+  printf '(import w1-ca)\n(defn main ():i32 (return (w1-ca-fn 3)))\n' > "$d/w1-circ.nuc"
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/w1-circ.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | grep -q ':0:'; then
+    echo "FAIL  w1-circular-still-errors (diagnostic reports line 0)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  elif printf '%s' "$err" | grep -q "w1-cb.nuc:1: error: import: circular import of 'w1-ca'"; then
+    echo "PASS  w1-circular-still-errors"
+  else
+    echo "FAIL  w1-circular-still-errors"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+  fi
+  rm -rf "$d"
+}
+
+# The deferral defect W1a exposed, fixed in defunion-register (union-registry.nuc)
+# and reproducible on the PRE-W1a compiler: a union backing struct's
+# `%X = type { i32, %anon }` line was written eagerly while its anon payload union
+# sat on the deferred queue waiting for a struct payload's own type (`%String`,
+# defined by a LATER import). Every module assembled in between — here a
+# `compile-time` block that precedes the import — carried the reference with no
+# definition and died `use of undefined type named '__anon_union_…'`.
+run_w1_deferred_union_payload() {
+  local d err
+  d="$(mktemp -d)"
+  cat > "$d/w1-ctdefer.nuc" <<'EOF'
+(compile-time (printf "ct ran\n"))
+(import-use string)
+(defn w1-wrap (sv:StrView):!String (return (string-from-view sv)))
+(defn main ():i32 (return 0))
+EOF
+  err="$(./build/nucleusc --emit-llvm "$d/w1-ctdefer.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | grep -q 'undefined type'; then
+    echo "FAIL  w1-deferred-union-payload"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+  else
+    echo "PASS  w1-deferred-union-payload"
+  fi
+  rm -rf "$d"
+}
+
+# The second pre-existing defect W1a fixes, and the one with teeth: a function
+# emitted BEFORE a later import overloads its name got the solitary `@name`
+# symbol, while every call site after that import went through generic dispatch
+# and emitted the mangled `@name.<tok>` — an undefined symbol. `lib/list.nuc`'s
+# concrete `append` plus `lib/vector.nuc`'s `append` template is the shape:
+# the pre-W1a compiler emits `define ptr @append` and
+# `call ptr @append.ptr.ptr`, and the link dies `use of undefined value`.
+# Registering every reachable signature before any emission makes the
+# solitary-vs-mangled decision final before the first `define` is written.
+run_w1_late_overload_symbol() {
+  local d ir
+  d="$(mktemp -d)"
+  cat > "$d/w1-late.nuc" <<'EOF'
+(import-use "lib/list.nuc")
+(import-use vector)
+(defn main ():i32
+  (let (c:ptr (make-cell null null 0)
+        r:ptr (append c c))
+    (return 0)))
+EOF
+  ir="$(./build/nucleusc --emit-llvm "$d/w1-late.nuc" 2>/dev/null || true)"
+  if printf '%s' "$ir" | grep -q '^define ptr @append\.ptr\.ptr(' \
+     && ! printf '%s' "$ir" | grep -qE '^define ptr @append\(' ; then
+    echo "PASS  w1-late-overload-symbol"
+  else
+    echo "FAIL  w1-late-overload-symbol (definition and call sites disagree on the mangled name)"
+    printf '%s' "$ir" | grep -E '@append' | sed 's/^/    /' | head -6
+  fi
+  rm -rf "$d"
+}
+
+# --- Stage 15 W1c: the unreachable-file note ---------------------------------
+# design/stage15-stress-test/resolution.md §W1c. W1a made a name that exists
+# anywhere in the unit resolve, so the surviving `unknown:`/`undefined:` cases
+# are a typo, a genuinely absent symbol, or §2.7's reachability constraint (the
+# name IS defined, in a file no import reaches). The three units below pin one
+# tier each, plus the negative control that keeps the scan from firing on a
+# reachable definition.
+
+# Tier 2: the name is defined in a sibling .nuc that sits on the -I path and on
+# the entry file's own directory, and that nothing imports. The note must name
+# THAT file, and the primary error must still be true on its own.
+run_w1c_unreachable_file() {
+  local d err
+  d="$(mktemp -d)"
+  printf '(defn w1c-elsewhere ():i32 (return 7))\n' > "$d/w1c-other.nuc"
+  printf '(defn main ():i32 (return (w1c-elsewhere)))\n' > "$d/w1c-main.nuc"
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/w1c-main.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | grep -q ':0:'; then
+    echo "FAIL  w1c-unreachable-file (diagnostic reports line 0)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  elif printf '%s' "$err" | grep -qF 'unknown: w1c-elsewhere — not defined anywhere in this compilation unit' \
+     && printf '%s' "$err" | grep -qF "note: 'w1c-elsewhere' is defined in $d/w1c-other.nuc, which no import in this unit reaches"; then
+    echo "PASS  w1c-unreachable-file"
+  else
+    echo "FAIL  w1c-unreachable-file"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+  fi
+
+  # Negative control: adding the import makes it compile, link and run — the
+  # note must be advice that actually works, and the scan must not fire on a
+  # definition the unit already reaches.
+  printf '(import w1c-other)\n(defn main ():i32 (return (w1c-elsewhere)))\n' > "$d/w1c-fixed.nuc"
+  w1_run w1c-note-advice-works "$d" "$d/w1c-fixed.nuc" 7
+  rm -rf "$d"
+}
+
+# Tier 4: nothing on the search path defines it. The message must say so
+# plainly — the old text was a bare `unknown: <name>`, which after W1a reads as
+# "not imported yet" when it now means "not in the unit at all".
+run_w1c_defined_nowhere() {
+  local d err
+  d="$(mktemp -d)"
+  printf '(defn main ():i32 (return (w1c-absent-everywhere)))\n' > "$d/w1c-none.nuc"
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/w1c-none.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | grep -qF 'unknown: w1c-absent-everywhere — not defined anywhere in this compilation unit' \
+     && ! printf '%s' "$err" | grep -q 'note:'; then
+    echo "PASS  w1c-defined-nowhere"
+  else
+    echo "FAIL  w1c-defined-nowhere"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+  fi
+  rm -rf "$d"
+}
+
+# §2.7's TYPE reachability constraint stays a rule; W1c only improves its
+# message. A struct named in a signature but defined in an unreached file gets
+# the same note, from `parse-type-name`'s `unknown type:` raise.
+run_w1c_unreachable_type() {
+  local d err
+  d="$(mktemp -d)"
+  printf '(defstruct W1cWidget (a i32))\n' > "$d/w1c-ty.nuc"
+  printf '(defn w1c-take (w:ptr:W1cWidget):i32 (return 0))\n(defn main ():i32 (return 0))\n' > "$d/w1c-tymain.nuc"
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/w1c-tymain.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | grep -q ':0:'; then
+    echo "FAIL  w1c-unreachable-type (diagnostic reports line 0)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  elif printf '%s' "$err" | grep -qF 'unknown type: W1cWidget — not defined anywhere in this compilation unit' \
+     && printf '%s' "$err" | grep -qF "note: 'W1cWidget' is defined in $d/w1c-ty.nuc, which no import in this unit reaches"; then
+    echo "PASS  w1c-unreachable-type"
+  else
+    echo "FAIL  w1c-unreachable-type"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+  fi
+  rm -rf "$d"
+}
+
 # Stage 13 L8: a public defn whose signature exposes a capturing-closure env
 # type (__vfn_env_N) is not C-callable, so --emit-cheader OMITS its prototype
 # (writing a comment in its place) and the compiler WARNS at the definition. A
@@ -2061,6 +2351,27 @@ spawn run_reject_at w5d-struct-slot-maybe-null tests/fixtures/w5d-struct-slot-ma
 spawn run_reject_at w5d-elemless-not-inferred tests/fixtures/w5d-elemless-not-inferred.nuc \
   "tests/fixtures/w5d-elemless-not-inferred.nuc:11: error:" \
   "aref: operand must be typed pointer"
+
+# --- Stage 15 W1: whole-unit signature resolution ----------------------------
+# design/stage15-stress-test/resolution.md. Cross-file function references now
+# resolve on reachability, not import order. The two order-pair units are the
+# teeth (both fail on the committed boot compiler); the graph-shape and
+# still-rejects units are the regressions that matter.
+spawn run_w1_mutual
+spawn run_w1_ns
+spawn run_w1_graph_shapes
+spawn run_w1_still_rejects
+spawn run_w1_declare_cycle_breaker
+spawn run_w1_circular_still_errors
+spawn run_w1_deferred_union_payload
+spawn run_w1_late_overload_symbol
+# W1c: the diagnostic surface. The did-you-mean tier it sits above is pinned by
+# w4a-suggest-spelling; the note deliberately suppresses that tier (they would
+# otherwise offer two diagnoses of one failure), which is why the suggestion
+# fixture and w1c-unreachable-file are complementary, not redundant.
+spawn run_w1c_unreachable_file
+spawn run_w1c_defined_nowhere
+spawn run_w1c_unreachable_type
 
 # --- Join + replay --------------------------------------------------------------
 # Wait for all remaining jobs (ignore per-job exit codes — PASS/FAIL is decided

@@ -28,6 +28,50 @@
 | `fn-attr` | Attach one or more LLVM string function attributes to a `defn`: `(fn-attr name "attr" ...)`. `name` is a bare function-name symbol (not a string) matched against the target `defn`'s source name (equal to the emitted `@`-symbol in the default `user` namespace); each remaining argument must be a string literal. Attributes accumulate — several strings in one call, or several `fn-attr` calls naming the same function, all apply — and are stored/emitted verbatim (Nucleus does not validate the string; an unrecognized attribute is an LLVM-level error, not a compiler diagnostic). Emitted as a space-prefixed quoted attribute directly on that function's `define` line (e.g. `define void @tick() "signal" {`), coexisting with `noreturn` when both apply. **The `fn-attr` directive must appear before the `defn` it targets** — there is no forward-reference prescan for the attribute table (the same order-sensitive-directive pattern as `set-ir-prefix`, above, which likewise takes effect only for what follows it in source order). Deliberately generic: the first consumer is AVR interrupt handlers (the `"signal"`/`"interrupt"` attributes make the AVR backend emit the interrupt prologue/epilogue and `reti` instead of `ret`; see the block comment in `lib/avr.nuc` and `examples/avr-isr.nuc`), but any LLVM function-attribute string works the same way. A unit that never calls `fn-attr` is byte-identical to before this directive existed. | — (closest C analogue: `__attribute__((...))` on a function declaration) |
 | Private definers: `defn-` `defvar-` `defconst-` `defenum-` `defstruct-` `defunion-` `defmacro-` `defprotocol-` | The `-` suffix marks a definition as private to its namespace. Private symbols are not placed in the module's export table and cannot be imported by other namespaces. For link-emitting forms (`defn-`, `defvar-`), the LLVM symbol also receives internal linkage (`define internal` / `internal global`), preventing link-time name collisions with other translation units — equivalent to C `static`. For compile-time-only forms (`defconst-`, `defenum-`, `defstruct-`, `defunion-`, `defmacro-`, `defprotocol-`), there is no linkage dimension; private means the name is invisible to importers. All other semantics (type checking, overloading, parametric templates, protocol conformance) are identical to the public form. | `static` function / `static` global (for `defn-` / `defvar-`); — for compile-time-only forms |
 
+## Cross-file resolution: reachability, not import order
+
+**A `defn` in any reachable file of the compilation unit is callable from any
+other; import order does not affect resolution.** A file is *reachable* when some
+chain of `import` forms leads to it from the file being compiled. Before any form
+is emitted, the compiler walks the whole import graph and registers every
+reachable file's type names, protocols and `defn` signatures, so a call resolves
+against the entire unit rather than against the part of it processed so far.
+
+Consequences worth knowing:
+
+* **Mutually dependent files need no ordering trick, and no import edge between
+  them.** Two files whose functions call each other are spelled by having a
+  common parent `import` both — in either order, and with *neither* importing
+  the other. An import establishes *reachability*, not visibility: once both
+  files are in the unit, each one's functions resolve from the other. Two files
+  importing *each other* is still `import: circular import`, and the cycle is
+  now unnecessary rather than merely unsupported.
+
+  If one of the pair must also be importable on its own, `(declare f
+  (params):ret)` is the spelling — see the `declare` bullet below.
+* **Reordering imports cannot break a build.** Alphabetizing an import list, or
+  inserting a new import anywhere, changes nothing about which names resolve.
+* **`(declare f (params):ret)` is still available** as a local prototype, and
+  matching a real `defn` of the same name is not a redefinition — the
+  declaration stands down for the definition. It is no longer *needed* for
+  cross-file references.
+* **Reachability is still required.** A `defn` in a file that no import chain
+  reaches is not part of the unit and does not resolve — order is what stopped
+  mattering, not reachability. The same holds for a struct type named in a
+  signature: its defining file must be reachable. When the name *is* defined in
+  a file the compiler can see on the import search path, the diagnostic says so
+  and names it, so the fix is a one-line import — see
+  [Unresolved names](compiler.md#unresolved-names).
+* **A name overloaded anywhere in the unit gets the mangled symbol everywhere.**
+  Whether a `defn` keeps the plain `@name` LLVM symbol or gets an overload-mangled
+  one is decided from the *whole* unit's method set, before any function is
+  emitted — so it no longer depends on where in the import order the second
+  overload happens to appear. If you link C against a Nucleus function, make sure
+  no other reachable file overloads its name (or expose a uniquely named wrapper).
+* Everything else about a name — visibility (`defn-`), namespaces, and prefix
+  qualification — is unchanged; only *when* a file's signatures become visible
+  moved.
+
 ## One symbol, one kind
 
 A symbol may name only **one** kind of thing: a special form, a built-in type (`i32`, `ptr`, `double`, …), a struct type, a protocol, a macro, a function, or a value (`defvar`/`defconst`/`defenum` member/`extern`). Defining a name that already names a *different* kind is an error, e.g. `(defn double …)` clashes with the `double` type alias, and `(defstruct i32 …)` clashes with the built-in type. Same-kind reuse is still allowed: overloaded `defn` (multimethods) and REPL/`defstruct` redefinition. This keeps name resolution unambiguous across the language's namespaces.

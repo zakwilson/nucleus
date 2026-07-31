@@ -52,10 +52,44 @@ of the *enclosing form*, which does carry one — `node-line`
 the ambient enclosing line for the one site that cannot be handed a node
 (`emit-symbol-ref`, reached with only the operand).
 
-### Did-you-mean
+### Unresolved names
 
-An unresolved name is checked against the registered functions, macros, type
-names, and globals, and a near-miss is named:
+`unknown: <name>` is a name in head position with no function, macro or special
+form behind it; `undefined: <name>` is the same failure in value position. Since
+resolution is by [reachability, not import
+order](toplevel.md#cross-file-resolution-reachability-not-import-order), a name
+defined *anywhere in the compilation unit* resolves — so an unresolved name is
+one of three things, and the message says which.
+
+**1. The C header declared it, and the importer could not describe it.** The
+header, line and reason, instead of a spelling guess:
+
+```
+prog.nuc:12: error: unknown: 'strtold' — its C header declaration was skipped
+  (/usr/include/stdlib.h:114: a by-value parameter or return of unknown type 'long double')
+```
+
+**2. It is defined in a file that no import reaches.** Reachability is still
+required (a file outside the unit is not part of the program), but the compiler
+looks for the name in the `.nuc` / `.nuch` files on its import search path — the
+current file's directory, `lib/`, and each `-I` directory — and names the one
+that defines it. The fix is to import that file:
+
+```
+main.nuc:1: error: unknown: y-later — not defined anywhere in this compilation unit
+  note: 'y-later' is defined in ./yf.nuc, which no import in this unit reaches
+```
+
+The same note is attached to `unknown type:`, which is how the reachability rule
+shows up for a struct, union or protocol named in a signature.
+
+This search is a textual scan of files outside the unit, run only on the way to
+aborting the compile, so it is a `note:` — the primary error above it is true on
+its own. It suppresses the did-you-mean below, since naming the file is a
+strictly better answer than guessing at a spelling.
+
+**3. Nothing defines it.** The common typo. A near-miss among the registered
+functions, macros, type names and globals is named:
 
 ```
 t.nuc:4: error: unknown: printfx (did you mean 'printf'?)
@@ -64,7 +98,12 @@ t.nuc:7: error: unknown: close (did you mean 'fclose'?)
 
 The allowance scales with length — names under 4 characters get no suggestion,
 4–6 characters allow one edit, 7 and up allow two — so a short name never draws
-a coincidental match.
+a coincidental match. With nothing close enough, the message states what was
+searched:
+
+```
+t.nuc:4: error: unknown: qzx-frobnicate — not defined anywhere in this compilation unit
+```
 
 Some spellings are wrong mental models rather than typos, and get a rewrite
 instead of a nearby name. There is no unary bitwise complement:
