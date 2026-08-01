@@ -1,0 +1,14 @@
+; Stage 15 W5e negative fixture: a namespace name may not begin with `#`.
+;
+; W5e (design/stage15-stress-test/ergonomics.md §W5e) gives every file that uses
+; a private definer an *implicit* namespace of its own, named `#p1`, `#p2`, …,
+; and keys that file's private names under it (`#p1/helper`). Those keys are
+; ordinary `<ns>/<name>` spellings — that is what makes `qualify-name`
+; idempotent on them and `strip-ns-qualifier` able to recover the bare name — so
+; the only thing keeping a synthetic key from colliding with a user one is that
+; `#` cannot start a user namespace. Compiling this must FAIL with:
+;   "a namespace name may not begin with '#'"
+(ns #p1)
+
+(defn noop ():i32
+  (return 0))

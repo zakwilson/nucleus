@@ -24,8 +24,13 @@
     ; qualify-name returns the bare name unchanged, so the key — and the whole
     ; bootstrap — is byte-identical. Only the lookup KEY (`name`) is qualified;
     ; `ir-name` is untouched (mangling is a separate, later concern).
+    ; Stage 15 W5e: a *private* definer in the default `user` namespace is keyed
+    ; under its file's implicit namespace (`#p1/helper`), so two files may each
+    ; define a private `helper`. priv-key-define is the identity whenever no
+    ; private definer is active — which is every definition in this compiler's
+    ; own source — so the key, and the bootstrap, are unchanged.
     (when (= (sc parent) null)
-      (set! name (qualify-name name)))
+      (set! name (qualify-name (priv-key-define name))))
     (when (= (sc len) (sc cap))
       (let (nc:i32 8)
         (when (!= (sc cap) 0) (set! nc (* (sc cap) 2)))
@@ -55,8 +60,14 @@
             ; binding still shadows a global before we ever reach the qualifier.
             ; Under `user`, qualify-name is identity — bootstrap byte-identical.
             key:CStr name)
+        ; Stage 15 W5e: a reference to a name this file declared with a private
+        ; definer resolves to that file's own key first — a file's private
+        ; definition shadows a public one elsewhere, exactly as a namespace-local
+        ; name shadows an imported one. priv-key-use is the identity when the
+        ; current file owns no private names (and a single null check when the
+        ; unit has none at all).
         (when (= (sc parent) null)
-          (set! key (qualify-name name)))
+          (set! key (qualify-name (priv-key-use name))))
         (while (>= i 0)
           (let (sym:ptr:Sym (as ptr:Sym (unsafe/ptr+ (as ptr:Sym (sc syms)) i)))
             (when (= (sym name) key)

@@ -456,6 +456,20 @@
 ; Stage 15 W1c: the compilation unit's root source path, recorded by
 ; `emit-toplevel-forms` at depth 1. Diagnostic-only — see `path-in-unit`.
 (defvar g-unit-entry-path:ptr)
+; Stage 15 W1d (Option 2): every circular import that `do-import` *skipped*
+; instead of erroring. One Node cell per skip: `s` = the path that was already
+; in progress (the cycle partner), `car` = the path of the file whose `import`
+; form was skipped, `line` = that form's line. Never popped — a cycle is a
+; property of the whole unit and the diagnostics that read this list all fire
+; long after the cycle has unwound. Read only from diagnostic paths, so it can
+; never move emitted IR.
+(defvar g-import-cycles:ptr)
+; Stage 15 W1d: prefixes whose alias injection was suppressed by a circular
+; skip. `s` = the prefix, `car` = the in-progress path it would have aliased.
+; A skipped re-entry has no global-scope slice (the partner is mid-emission), so
+; `prefix/name` cannot be bound; a *use* of such a prefix is diagnosed against
+; this list rather than falling through to a bare "not defined anywhere".
+(defvar g-cycle-prefixes:ptr)
 
 ; Stage 12 namespaces (design/stage12/namespaces.md). The current compilation
 ; unit's namespace name (an interned CStr). The default is "user", whose globals
@@ -488,6 +502,21 @@
 ; parallel arrays); `raw` (not `ref`) since compiler-init explicitly resets it
 ; to null at the start of every compilation unit.
 (defvar (g-ns-prefix-table (raw (Vector (ref NsPrefixEntry)))))
+
+; Stage 15 W5e (design/stage15-stress-test/ergonomics.md §W5e): the file-private
+; name table. One `PrivFile` per source file that used a private definer while
+; the default `user` namespace was current; `null` until the first such definer,
+; which is what keeps every program (and this compiler, which uses none) on
+; exactly the pre-W5e path. `raw`: compiler-init resets it per unit, like
+; g-ns-prefix-table.
+(defvar (g-priv-files (raw (Vector (ref PrivFile)))))
+; Memo for `priv-file-current`: the `g-source-path` POINTER the cached answer was
+; computed for, and that answer (which may legitimately be null — "this file owns
+; no private names"). Path strings are arena-allocated once per file and never
+; freed, so pointer identity is a sound cache key. Invalidated by setting the
+; path back to null whenever a PrivFile is created.
+(defvar g-priv-cache-path:ptr null)
+(defvar (g-priv-cache (raw PrivFile)))
 
 ; Stage 14 AVR-5 (design/stage14/avr-targets.md §5 AVR-5): the function-attribute
 ; table set by `(fn-attr <name> "<attr>" …)`. A `(Vector (ref FnAttrEntry))`
@@ -1963,6 +1992,27 @@
               (let (kw-start:i64 i)
                 (while (and (< i len) (!= (source-name-char (char-at text i)) 0))
                   (set! i (+ i 1)))
+                ; Stage 15 W1d: `(defenum Color RED GREEN BLUE)` introduces the
+                ; MEMBER names into the value namespace, not just `Color` — and
+                ; a member is exactly what a cycle partner reaches for. Every
+                ; remaining token of the form is a member, so scan them all.
+                ; (Bail on a nested `(` or a string: neither occurs in a
+                ; well-formed defenum, and continuing would leave the outer walk
+                ; mid-form.) Also fixes the same blind spot in W1c's
+                ; unreachable-definer note, which this scan backs.
+                (when (and (= want-type 0)
+                           (!= (text-token-is text kw-start i "defenum") 0))
+                  (let (j:i64 i
+                        scanning:i32 1)
+                    (while (and (!= scanning 0) (< j len))
+                      (while (and (< j len) (<= (char-at text j) 32)) (set! j (+ j 1)))
+                      (if (or (>= j len)
+                              (= (source-name-char (char-at text j)) 0))
+                        (set! scanning 0)
+                        (let (ms:i64 j)
+                          (while (and (< j len) (!= (source-name-char (char-at text j)) 0))
+                            (set! j (+ j 1)))
+                          (when (!= (text-token-is text ms j name) 0) (return 1)))))))
                 (when (!= (text-token-is-definer text kw-start i want-type) 0)
                   (while (and (< i len) (<= (char-at text i) 32)) (set! i (+ i 1)))
                   ; A parametric definer names its head inside a nested list:
@@ -2078,6 +2128,91 @@
   (return (fmt-2s "'%s' is defined in %s, which no import in this unit reaches"
                   name path)))
 
+; ============================================================
+; Stage 15 W1d — diagnosing what a legal import cycle still cannot do.
+;
+; A circular `(import)` is no longer an error: `do-import` skips the re-entry
+; and records the edge (note-import-cycle). Cross-file *function* references
+; survive that, because W1a registers every reachable file's signatures before
+; any emission. Three kinds of entity do not, because they only exist once their
+; defining file has been EMITTED, and a cycle member's body is emitted before
+; the rest of the file it back-imports:
+;
+;   * `defmacro` / `defconst` / `defenum` names (g-macros and the constant
+;     bindings are written by their emitters);
+;   * struct and union LAYOUTS (`emit-defstruct` populates the field table that
+;     `struct-field-index` and `abi-sizeof` read);
+;   * `prefix/name` aliases (`do-import` aliases over the global-scope slice a
+;     completed file contributed; a skipped re-entry has no slice).
+;
+; Each of the three would otherwise fail with a *true but misleading* message —
+; "not defined anywhere in this compilation unit" for a name that is right there
+; in the unit, "no field 'x' on struct 'S'" for a struct that does have that
+; field, or an unlocated LLVM parse error on an `i0` aggregate. These helpers
+; supply the real reason. All of them short-circuit on `g-import-cycles == null`,
+; so they cost nothing and change nothing for a unit with no cycle — which is
+; every unit that compiled before W1d, since a cycle was a hard error.
+; ============================================================
+
+; "<path> is in an import cycle with <partner>", or a partnerless fallback.
+(defn import-cycle-note (defpath:CStr):ptr
+  (let (partner:ptr (import-cycle-partner defpath))
+    (when (= partner null)
+      (return (fmt-s "%s is part of an import cycle in this unit" defpath)))
+    (return (fmt-2s "%s is in an import cycle with %s" defpath (as CStr partner)))))
+
+; The shared closing advice. Kept in one place so the macro/const/enum, layout
+; and prefix messages cannot drift apart on what the user should actually do.
+(defn import-cycle-advice ():CStr
+  (return "break the cycle -- a cross-file reference does not require an import, so a common parent can import both files instead"))
+
+; Tier 2a: a `prefix/name` whose prefix names a file this unit imports
+; circularly. The skipped re-entry injected no aliases, so the qualified
+; spelling resolves nowhere even though the bare name does.
+(defn cycle-prefix-message (verb:CStr name:CStr):ptr
+  (when (= g-cycle-prefixes null) (return null))
+  (let (n:i64 (as i64 (strlen name))
+        slash:i64 -1)
+    (dotimes (i n)
+      (when (and (< slash 0) (= (char-at name i) 47))
+        (set! slash i)))
+    (when (<= slash 0) (return null))
+    (let (prefix:ptr (strndup name slash)
+          bare:ptr (arena-strdup (unsafe/ptr+ (as ptr:i8 name) (+ slash 1)))
+          path:ptr (cycle-suppressed-prefix-path (as CStr prefix)))
+      (when (= path null) (return null))
+      (let (head:ptr (fmt-3s "%s: %s — the prefix '%s' has no aliases here: it names a file this unit imports circularly, which was still being emitted when the back-import was reached"
+                             verb name prefix)
+            note:ptr (fmt-3s "  note: %s defines '%s'; refer to it unqualified (an import establishes reachability, not visibility), or %s"
+                             (as CStr path) bare (import-cycle-advice)))
+        (return (fmt-2s "%s\n%s" head note))))))
+
+; Tier 2b: the name IS defined in this unit, by a file the unit imports
+; circularly, but by a definer whose effect is emission-time.
+(defn cycle-definer-message (verb:CStr name:CStr):ptr
+  (when (= g-import-cycles null) (return null))
+  (let (defpath:ptr (cycle-definer-file name 0))
+    (when (= defpath null) (return null))
+    (let (head:ptr (fmt-2s "%s: %s — defined in a file this unit imports circularly, and not registered yet at this point"
+                           verb name)
+          note:ptr (fmt-2s "  note: %s; a cycle resolves function signatures but not macros, constants or enum members, which register only when their file is emitted -- and a cycle member's body is emitted before the rest of the file it back-imports. Either %s"
+                           (import-cycle-note (as CStr defpath)) (import-cycle-advice)))
+      (return (fmt-2s "%s\n%s" head note)))))
+
+; The layout message, used by reject-cycle-pending-layout (src/type-utils.nuc).
+; `what` names the construct that needed the layout ("defn parameter",
+; "field access", "struct literal", …), matching reject-opaque-type's wording.
+(defn cycle-layout-message (sname:CStr what:CStr):ptr
+  (let (defpath:ptr (cycle-definer-file sname 1)
+        where:ptr "it is defined in a file this unit imports circularly")
+    (when (!= defpath null)
+      (set! where (import-cycle-note (as CStr defpath))))
+    (let (head:ptr (fmt-2s "%s: '%s' has no layout at this point — its definition has not been emitted yet"
+                           what sname)
+          note:ptr (fmt-2s "  note: %s; a cycle resolves function signatures but not struct layouts, so across a cycle a type is usable only behind a pointer. Either use ptr:%s here, or "
+                           where sname))
+      (return (fmt-3s "%s\n%s%s" head note (import-cycle-advice))))))
+
 ; The message for a name that did not resolve. `verb` is "unknown" (head
 ; position — no function/macro/special form by that name) or "undefined" (value
 ; position — no binding by that name).
@@ -2105,6 +2240,15 @@
     (when (!= skipped null)
       (return (fmt-3s "%s: '%s' — its C header declaration was skipped (%s)"
                       verb name skipped))))
+  ; Stage 15 W1d, tier 2a/2b. Before blaming reachability, check the one way a
+  ; name can be *in* this unit and still not resolve: it comes from a file the
+  ; unit imports circularly, and its definer only takes effect at emission time.
+  ; Both return null instantly when the unit has no skipped cycle. The prefix
+  ; tier runs first because a `prefix/name` never matches a definer scan.
+  (let (cyc:ptr (cycle-prefix-message verb name))
+    (when (!= cyc null) (return cyc)))
+  (let (cyc:ptr (cycle-definer-message verb name))
+    (when (!= cyc null) (return cyc)))
   ; Stage 15 W1c, tier 2. The name resolved nowhere in the unit — but it may be
   ; defined in a file the import graph never reaches. Naming that file is
   ; strictly more actionable than a spelling guess (it says which import to
@@ -3146,6 +3290,172 @@
 (defn ns-ir-base (name:ptr):ptr
   (return (ns-compose (ns-ir-prefix g-current-ns) (ir-name-token name))))
 
+; ============================================================
+; Stage 15 W5e — file-scoped private names
+; (design/stage15-stress-test/ergonomics.md §W5e)
+; ============================================================
+;
+; A private definer (`defn-`/`defvar-`/`defconst-`/`defenum-`) means "private to
+; a namespace", and every file that declares no `(ns …)` shares the single `user`
+; namespace — so two files privately defining `helper` collided. W5e gives each
+; such file an *implicit* namespace of its own, used ONLY for the names its
+; private definers introduce: `helper` in `a.nuc` is keyed `#p1/helper` and in
+; `b.nuc` `#p2/helper`, while every public name in both files stays bare.
+;
+; The whole mechanism is expressed in the Stage 12 namespace vocabulary rather
+; than beside it: the key is an ordinary `<ns>/<name>` spelling, so `qualify-name`
+; is idempotent on it, `strip-ns-qualifier` recovers the bare name (which is what
+; makes `import-alias-one` correct for free), and the synthetic namespace's
+; registered ir-prefix flows through `ns-compose`/`mangle-fn-name` unchanged.
+;
+; A file with an explicit `(ns …)` is deliberately NOT given a private namespace:
+; there, `defn-` already means "private to *this* namespace", which is a real,
+; user-chosen scope. Two files in one explicit namespace still collide, and the
+; duplicate-signature diagnostic says so.
+;
+; Everything below short-circuits on `g-priv-files == null` — no private definer
+; anywhere in the unit — so a program that uses none (this compiler included)
+; takes exactly the pre-W5e path and emits byte-identical IR.
+
+; The synthetic namespace of a private key, or null if `name` is not one. A
+; private key always begins `#p`; `#` cannot start a user namespace (emit-ns
+; rejects it), so this test cannot misfire on a real qualified spelling.
+(defn priv-qualifier-of (name:CStr):CStr
+  (when (= (char-at name 0) 35) ; '#'
+    (let (slash:ptr (strchr name 47))
+      (when (!= slash null)
+        (let (idx:i64 (- (unsafe/cast i64 (as ptr:i8 slash)) (unsafe/cast i64 (as ptr:i8 name)))
+              after:i32 (as i32 (aref (as ptr:i8 slash) 1)))
+          (when (and (> idx 0) (!= after 0))
+            (return (intern-str (arena-strndup name idx))))))))
+  (return null))
+
+; `name` with any synthetic private qualifier removed; identity for every other
+; spelling (including a real `geom/area`, whose qualifier must be preserved).
+; Used wherever a private key has to be rendered back as the source name: the
+; emitted IR symbol base and the duplicate-definition diagnostic.
+(defn strip-priv-qualifier (name:CStr):CStr
+  (when (= (as ptr (priv-qualifier-of name)) null) (return name))
+  (return (strip-ns-qualifier name)))
+
+; The PrivFile owning `path`, creating it (and its synthetic namespace + ir-prefix
+; registration) on first use. The ir-prefix is `<basename>_pN` — readable in the
+; emitted IR, and unique even when two directories hold the same basename because
+; N is the 1-based creation order.
+(defn priv-file-for-path (path:ptr):ref:PrivFile
+  (when (= g-priv-files null)
+    (set! g-priv-files (vector-new-in (addr-of g-arena-alloc))))
+  (let (tbl:(ref (Vector (ref PrivFile))) (unsafe/cast (ref (Vector (ref PrivFile))) g-priv-files))
+    (dotimes (i (unsafe/cast i32 (count tbl)))
+      (let (pf:ref:PrivFile (invoke tbl (as usize i)))
+        (when (= (strcmp (pf path) path) 0) (return pf))))
+    (let (n:i32 (+ (unsafe/cast i32 (count tbl)) 1)
+          base:ptr (path-basename-token path)
+          pf:ref:PrivFile (new PrivFile))
+      (.set! pf path (intern-str path))
+      (.set! pf ns (intern-str (fmt-i32 "#p%d" n)))
+      (.set! pf prefix (intern-str (fmt-sd "%s_p%d" base n)))
+      (.set! pf names (vector-new-in (addr-of g-arena-alloc)))
+      (ns-ir-prefix-set (pf ns) (pf prefix))
+      (conj tbl pf)
+      ; A path that previously answered "owns no private names" now owns some.
+      (set! g-priv-cache-path null)
+      (set! g-priv-cache null)
+      (return pf))))
+
+; The file component of `path`, without directories or extension, sanitized to a
+; C-legal identifier fragment. Only ever used to make an emitted symbol readable.
+(defn path-basename-token (path:CStr):CStr
+  (let (n:i64 (as i64 (strlen path))
+        start:i64 0
+        end:i64 n
+        i:i64 0)
+    ; Last '/' → start of the basename.
+    (while (< i n)
+      (when (= (char-at path i) 47) (set! start (+ i 1)))
+      (inc! i))
+    ; Last '.' at or after that → start of the extension. Scanning backwards and
+    ; clamping j to `start` on the first hit ends the loop at the LAST dot.
+    (let (j:i64 n)
+      (while (> j start)
+        (set! j (- j 1))
+        (when (= (char-at path j) 46)
+          (set! end j)
+          (set! j start))))
+    ; A dotfile or an empty basename leaves nothing to name it with; fall back to
+    ; the whole path (sanitizing makes the separators legal).
+    (when (<= end start) (set! start 0) (set! end n))
+    (return (ns-prefix-sanitize (arena-strndup (unsafe/ptr+ (as ptr:i8 path) start)
+                                               (- end start))))))
+
+; The PrivFile of the file currently being processed, or null. Memoized on the
+; `g-source-path` pointer: paths are arena-allocated once per file and never
+; freed, so identity is a sound key, and the memo makes this a single compare on
+; the hot lookup path.
+(defn priv-file-current ():?ptr:PrivFile
+  (when (= g-priv-files null) (return null))
+  (when (= g-source-path null) (return null))
+  (when (= g-priv-cache-path g-source-path) (return (as ptr g-priv-cache)))
+  (let (tbl:(ref (Vector (ref PrivFile))) (unsafe/cast (ref (Vector (ref PrivFile))) g-priv-files)
+        r:ptr null)
+    (dotimes (i (unsafe/cast i32 (count tbl)))
+      (let (pf:ref:PrivFile (invoke tbl (as usize i)))
+        (when (= (strcmp (pf path) g-source-path) 0) (set! r (as ptr pf)))))
+    (set! g-priv-cache-path g-source-path)
+    (set! g-priv-cache (unsafe/cast (raw PrivFile) r))
+    (return r)))
+
+; The PrivFile a definer being registered *right now* belongs to, or null. Only a
+; private definer in the default `user` namespace gets one: in an explicit
+; namespace `defn-` already denotes a real, user-chosen private scope.
+(defn priv-owner-file ():?ptr:PrivFile
+  (when (= g-defining-private 0) (return null))
+  (when (!= (strcmp g-current-ns "user") 0) (return null))
+  (when (= g-source-path null) (return null))
+  (return (as ptr (priv-file-for-path g-source-path))))
+
+; DEFINE side: the key to register `name` under. When a private definer is active
+; this declares `name` file-private (idempotently — the same defn is registered by
+; both the signature prescan and `emit-defn`) and returns its file-scoped key;
+; otherwise `name` is returned unchanged.
+(defn priv-key-define (name:CStr):CStr
+  (let (pf:?ptr:PrivFile (priv-owner-file))
+    (when (= pf null) (return name))
+    ; An already-qualified spelling (a re-registration of a key we produced, or a
+    ; genuinely namespaced name) is left alone.
+    (when (!= (strchr name 47) null) (return name))
+    (let (p:ptr:PrivFile (unsafe/cast ptr:PrivFile pf))
+      (dotimes (i (unsafe/cast i32 (count (p names))))
+        (let (pn:ref:PrivName (invoke (p names) (as usize i)))
+          (when (= (pn bare) name) (return (pn key)))))
+      (let (pn:ref:PrivName (new PrivName))
+        (.set! pn bare (intern-str name))
+        (.set! pn key (intern-str (fmt-2s "%s/%s" (p ns) name)))
+        (conj (p names) pn)
+        (return (pn key))))))
+
+; USE side: the key a reference to `name` from the file currently being processed
+; resolves to — the file-scoped key when this file privately defines `name`
+; (a file's own private definition shadows any public one elsewhere, exactly as a
+; namespace-local name shadows an imported one), else `name` unchanged.
+(defn priv-key-use (name:CStr):CStr
+  (let (pf:?ptr:PrivFile (priv-file-current))
+    (when (= pf null) (return name))
+    (let (p:ptr:PrivFile (unsafe/cast ptr:PrivFile pf))
+      (dotimes (i (unsafe/cast i32 (count (p names))))
+        (let (pn:ref:PrivName (invoke (p names) (as usize i)))
+          (when (= (pn bare) name) (return (pn key)))))
+      (return name))))
+
+; The IR base symbol for a definer's own name: `ns-ir-base`, except that a
+; private definer in `user` composes its file's synthetic prefix instead, so
+; `helper` in `a.nuc` emits `@a_p1__helper`. Identity (and therefore
+; byte-identical) whenever no private definer is active.
+(defn def-ir-base (name:ptr):ptr
+  (let (pf:?ptr:PrivFile (priv-owner-file))
+    (when (= pf null) (return (ns-ir-base name)))
+    (return (ns-compose ((unsafe/cast ptr:PrivFile pf) prefix) (ir-name-token name)))))
+
 ; Index of field `fname` in struct `sd`, or -1. Shared by `.`, the `get`
 ; intrinsic, and the non-emitting type pass so the three cannot drift. `fname`
 ; and the stored field names are interned, so this is a pointer-identity scan.
@@ -3202,6 +3512,11 @@
           ; a misleading answer — the layout is simply not visible here.
           (reject-opaque-type (pt elem) (node-line (as ptr fn-node) (cc line))
                               "field access")
+          ; W1d: same reasoning for a layout the import cycle has not produced
+          ; yet — the field table is empty, so "no field 'x'" would blame the
+          ; field rather than the cycle.
+          (reject-cycle-pending-sdef sd (node-line (as ptr fn-node) (cc line))
+                                     "field access")
           (union-field-guard sd (cc line) "_get")
           (when (< idx 0)
             (die-at (node-line (as ptr fn-node) (cc line))
@@ -3341,6 +3656,7 @@
       ; W3a: head-position `(handle field)` on an opaque type — same rule as the
       ; `_get` path above, which this mirrors.
       (reject-opaque-type (ct elem) line "field access")
+      (reject-cycle-pending-sdef sd line "field access")
       (union-field-guard sd line "get")
       (when (= lit null)
         (when (= ek TY-UNION)
@@ -3997,6 +4313,8 @@
           (die-at (node-line (as ptr fn-node) (cc line)) ".set!: field name must be symbol"))
         (let (sd:(raw StructDef) ((pt elem) sdef)
               idx:i32 (struct-field-index sd (fn-node s)))
+          (reject-cycle-pending-sdef sd (node-line (as ptr fn-node) (cc line))
+                                     "field assignment")
           (union-field-guard sd (cc line) ".set!")
           (when (< idx 0)
             (die-at (node-line (as ptr fn-node) (cc line))
@@ -7528,6 +7846,9 @@
           (die-at (node-line (as ptr fn-node) (cc line)) ".&: field name must be symbol"))
         (let (sd:ptr:StructDef (unsafe/cast ptr:StructDef ((pt elem) sdef))
               idx:i32 (struct-field-idx (as ptr sd) (fn-node s)))
+          (reject-cycle-pending-sdef (as ptr sd)
+                                     (node-line (as ptr fn-node) (cc line))
+                                     "field address")
           (union-field-guard (as ptr sd) (cc line) ".&")
           (when (< idx 0)
             (die-at (node-line (as ptr fn-node) (cc line))
@@ -7654,6 +7975,9 @@
         sdef:ptr:StructDef (unsafe/cast ptr:StructDef sd)
         nargs:i32 (- (node-len cc) 1)
         nfields:i32 ((unsafe/cast ptr:StructDef sd) num-fields))
+    ; W1d: a cycle-pending layout has nfields == 0, so every initializer would
+    ; look like one too many. Say what actually went wrong.
+    (reject-cycle-pending-sdef sd (cc line) "struct literal")
     (when (> nargs nfields)
       (die-at (cc line) (fmt-s "struct literal: too many initializers for struct '%s'" (sdef name))))
     (let (vals:ptr (arena-alloc (* (as i64 nfields) 8))
@@ -8360,24 +8684,40 @@
         ; return rather than by falling through the `is-ptr-like` test below, so
         ; that the exemption is stated rather than incidental.
         ;
-        ; DO NOT fold this back into the ptr path. A KNOWN, SEPARATE null-safety
-        ; hole lives in the `TY-PTR` branch immediately below: this global
-        ; initializer is a constant renderer that never routes through
-        ; `coerce-int-val`, so `pkind-flow-check` never runs and
-        ; `(defvar g:ptr:Thing null)` / `(defvar g:(ref Thing) null)` compile
-        ; clean and segfault at runtime, while the identical *local* binding is
-        ; correctly rejected. Closing that is a separate change (Stage 15 W6,
-        ; nullability) and it must add its pkind check to the ptr branch only —
-        ; `CStr` must keep compiling. W5c deliberately neither widened nor
-        ; closed that hole: swapping `TY-PTR` for `is-ptr-like` adds exactly
-        ; `TY-CSTR` to the accepted set and leaves every pkind of `TY-PTR`
-        ; accepted exactly as before (verified by measurement, not inspection).
+        ; DO NOT fold this back into the ptr path. W5c left a KNOWN, SEPARATE
+        ; null-safety hole in the `TY-PTR` branch below; W6 (see the note there)
+        ; has since closed it with a `pkind-flow-check`, and the only reason
+        ; `CStr` survives that check today is an implementation detail —
+        ; `ptr-pkind` answers PTR-RAW for every non-`TY-PTR` kind, so a `CStr`
+        ; destination falls out of `pkind-flow-check` at its first line. That is
+        ; an accident, not the policy. Keeping the exemption as its own early
+        ; return states it. tests/fixtures/w5c-cstr-null-exempt.nuc is the
+        ; tripwire that fails if a later tightening sweeps `CStr` up with `ptr`.
         (when (= ty-kind TY-CSTR) (return "null"))
-        ; --- ptr (all pkinds) — the null-safety hole described above lives here.
+        ; --- ptr (all pkinds) -------------------------------------------------
         (when (= (is-ptr-like ty) 0)
           (die-at (node-line init encl)
             (fmt-s "defvar: null requires ptr or CStr type, not %s"
               (type-spelling ty))))
+        ; Stage 15 W6 (nullability): close the global-initializer half of the
+        ; Phase-F non-null gate. This function is a *constant renderer* — it
+        ; never routes through `coerce-int-val` (src/abi.nuc), the chokepoint
+        ; where every value-position assignment gets its `pkind-flow-check` — so
+        ; before this line `(defvar g:ptr:Thing null)` / `(defvar g:(ref Thing)
+        ; null)` compiled clean and segfaulted on first use, while the identical
+        ; *local* `(let (p:ptr:Thing null) …)` was correctly rejected.
+        ;
+        ; Call the SAME predicate the local path calls rather than re-deriving
+        ; its rules, so the two cannot drift. `null`'s own type is `ty-raw` —
+        ; exactly what `emit-symbol-ref` gives the `null` symbol in value
+        ; position — and `pkind-flow-check` then supplies all three carve-outs
+        ; for free: a `(raw T)` / `?T` destination is not PTR-REF so it returns
+        ; at once, and an elem-less bare `ptr` (the `void*` escape hatch, ~1550
+        ; bindings in this compiler's own source) is exempt by its
+        ; untyped-destination refinement. Only a typed non-null pointer — `ptr:T`
+        ; post-flip and its `(ref T)` spelling — rejects, and with the same
+        ; wording the local path uses.
+        (pkind-flow-check ty-raw ty (node-line init encl) "defvar")
         (return "null"))
       (when (= (strcmp (nn s) "true") 0)
         (when (!= ty-kind TY-I1)
@@ -8456,7 +8796,12 @@
           ; Stage 12 N4: a global emits `@name`, prefixed with the namespace
           ; ir-prefix in a non-`user` namespace (`@foo__name`). Identity under
           ; `user`, so the bootstrap is byte-identical.
-          (let (ir-name:ptr (fmt-s "@%s" (ns-ir-base name))
+          ; Stage 15 W5e: def-ir-base is ns-ir-base plus the owning file's
+          ; private prefix when this is a `defvar-` in the default `user`
+          ; namespace — so two files' private `g-counter`s emit two distinct
+          ; `internal` globals instead of two `@g-counter` definitions (which
+          ; LLVM rejected with an unlocated parse error).
+          (let (ir-name:ptr (fmt-s "@%s" (def-ir-base name))
                 align:i32 (type-size ty)
                 init-ir:ptr null)
             (check-ir-name-legal (cc line) name ir-name)
@@ -8760,6 +9105,10 @@
               ; enclosing struct has no layout either. `ptr:Foo` is the fix.
               (reject-opaque-type fty
                 (node-line (as ptr field) (cc line)) "defstruct field")
+              ; W1d: a by-value field whose type the cycle has not laid out yet
+              ; would give THIS struct a wrong size and wrong offsets.
+              (reject-cycle-pending-layout fty
+                (node-line (as ptr field) (cc line)) "defstruct field")
               (aset! (as ptr:ptr fnm) i (intern-str fname))
               (aset! (as ptr:ptr ftp) i fty)))
           (struct-set-fields sd fnm ftp nfields)
@@ -8990,6 +9339,7 @@
         ; (no size, no layout) — refuse at the signature, where the line is exact,
         ; rather than at type-to-ir's ambient-line backstop.
         (reject-opaque-type ret (cc line) "defn return type")
+        (reject-cycle-pending-layout ret (cc line) "defn return type")
         (guard-name-kind fname (cc line) NK-FUNCTION)
         ; L8: warn when a public defn's signature exposes a capturing-closure env
         ; type (__vfn_env_N) or a type-erased box type (BoxedFn/dyn) — it is
@@ -9111,6 +9461,8 @@
                           ; W3a: a by-value parameter of an opaque C type cannot
                           ; be passed (no size, no ABI class).
                           (reject-opaque-type pty
+                            (node-line (as ptr spec) (cc line)) "defn parameter")
+                          (reject-cycle-pending-layout pty
                             (node-line (as ptr spec) (cc line)) "defn parameter")
                           ; The &rest parameter receives a Node* cons-list head.
                           ; The user's declared type annotates element type only;
@@ -10261,6 +10613,15 @@
                    (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ kind) (= _ NODE-SYM)))
           (let (ph3:ptr (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ s)))
             (when (or (= ph3 "defn") (= ph3 "defn-"))
+          ; Stage 15 W5e: signature registration happens HERE, before any form is
+          ; emitted (W1a), so the private flag the top-level dispatch loop sets
+          ; around `emit-defn` is not yet on. Arm it for the registration so the
+          ; name is keyed under this file's implicit private namespace, and
+          ; recorded as private for the duplicate-definition diagnostic. Restored
+          ; immediately: a prescan walks a whole file's forms in one call, and
+          ; the very next `defn` must register publicly.
+          (let (save-priv:i32 g-defining-private)
+            (set! g-defining-private (if (= ph3 "defn-") 1 0))
           (let (name-node:ptr (node-at (as ptr f) 1)
                 params-node:ptr (node-at (as ptr f) 2))
             (when (!= (node-is-list params-node) 0)
@@ -10293,7 +10654,8 @@
                           has-rest:i32 (if (< (defn-params-count params-node)
                                               (node-len params-node)) 1 0))
                       (generic-register-method fname ret ptypes nparams has-rest 0
-                                               (as ptr f))))))))))))
+                                               (as ptr f))))))))
+            (set! g-defining-private save-priv))))))
       (set! fc ((unsafe/cast ptr:Node fc) cdr)))
     (finalize-generics)))
 
@@ -10427,6 +10789,12 @@
       ; namespace may ever claim the `unsafe/` key.
       (when (= (name-node s) "unsafe")
         (die-at (ff line) "'unsafe' is a reserved namespace name"))
+      ; Stage 15 W5e: `#…` is the reserved shape for the implicit per-file
+      ; namespace that keys a file's private definers (`#p1`, `#p2`, …). Keeping
+      ; it unspellable is what guarantees a synthetic key can never collide with
+      ; a user one.
+      (when (= (char-at (name-node s) 0) 35)
+        (die-at (ff line) "ns: a namespace name may not begin with '#' (reserved for file-private scopes)"))
       ; A second `ns` in this unit warns (compile) / is silent (REPL).
       (when (!= g-ns-seen 0)
         (when (= g-interactive 0)
@@ -10821,6 +11189,87 @@
   (when (= list null) (return null))
   (return ((unsafe/cast ptr:Node list) cdr)))
 
+; Stage 15 W1d (Option 2). Record a circular import that was *skipped* rather
+; than rejected: `path` is the cycle partner that is already mid-import, and the
+; file doing the importing is whatever `g-source-path` names right now. `prefix`
+; is non-null for the prefix-qualified spelling (`(import foo)`), whose alias
+; injection is necessarily suppressed — the partner has not finished emitting,
+; so it has no global-scope slice to alias over.
+;
+; Both lists are diagnostic-only and grow at most once per cycle edge, so this
+; costs nothing on a compiling program and cannot perturb emitted IR.
+(defn note-import-cycle (path:CStr prefix:ptr line:i32):void
+  (let (n:ref:Node (new Node))
+    (.set! n kind NODE-STR)
+    (.set! n line line)
+    (.set! n i 0)
+    (.set! n s path)
+    (.set! n car (unsafe/cast ptr:Node g-source-path))
+    (.set! n cdr g-import-cycles)
+    (set! g-import-cycles (as ptr n)))
+  (when (!= prefix null)
+    (let (p:ref:Node (new Node))
+      (.set! p kind NODE-STR)
+      (.set! p line line)
+      (.set! p i 0)
+      (.set! p s prefix)
+      (.set! p car (unsafe/cast ptr:Node path))
+      (.set! p cdr g-cycle-prefixes)
+      (set! g-cycle-prefixes (as ptr p)))))
+
+; Is `path` a member of some import cycle this unit skipped? (Either end of the
+; edge counts — a cycle is symmetric, and the diagnostics want to know "is this
+; file entangled", not "which way did the skip point".)
+(defn path-in-import-cycle (path:CStr):i32
+  (let (cur:ptr g-import-cycles)
+    (while (!= cur null)
+      (let (e:ptr:Node (unsafe/cast ptr:Node cur))
+        (when (= (as CStr (e s)) path) (return 1))
+        (when (and (!= (as ptr (e car)) null)
+                   (= (as CStr (as ptr (e car))) path))
+          (return 1))
+        (set! cur (e cdr)))))
+  (return 0))
+
+; The cycle partner recorded for `path`, i.e. the other file of the edge — used
+; to name both files in a diagnostic. Null when `path` is in no skipped cycle.
+(defn import-cycle-partner (path:CStr):ptr
+  (let (cur:ptr g-import-cycles)
+    (while (!= cur null)
+      (let (e:ptr:Node (unsafe/cast ptr:Node cur))
+        (when (= (as CStr (e s)) path) (return (as ptr (e car))))
+        (when (and (!= (as ptr (e car)) null)
+                   (= (as CStr (as ptr (e car))) path))
+          (return (e s)))
+        (set! cur (e cdr)))))
+  (return null))
+
+; The in-progress path whose `prefix/…` aliases a circular skip suppressed, or
+; null if `prefix` was never suppressed.
+(defn cycle-suppressed-prefix-path (prefix:CStr):ptr
+  (let (cur:ptr g-cycle-prefixes)
+    (while (!= cur null)
+      (let (e:ptr:Node (unsafe/cast ptr:Node cur))
+        (when (= (as CStr (e s)) prefix) (return (as ptr (e car))))
+        (set! cur (e cdr)))))
+  (return null))
+
+; Search every skipped-cycle file for a top-level definer of `name`, using the
+; same textual scan W1c's unreachable-file note uses. Returns the defining path
+; or null. `want-type` selects the type namespace, exactly as in
+; `unreachable-definer-file`.
+(defn cycle-definer-file (name:CStr want-type:i32):ptr
+  (let (cur:ptr g-import-cycles)
+    (while (!= cur null)
+      (let (e:ptr:Node (unsafe/cast ptr:Node cur))
+        (when (!= (file-defines-name (as CStr (e s)) name want-type) 0)
+          (return (e s)))
+        (when (and (!= (as ptr (e car)) null)
+                   (!= (file-defines-name (as CStr (as ptr (e car))) name want-type) 0))
+          (return (as ptr (e car))))
+        (set! cur (e cdr)))))
+  (return null))
+
 ; Test whether a file exists by attempting to open it.
 (defn file-exists (path:CStr):i32
   (let (f:ptr (fopen path "r"))
@@ -11002,8 +11451,18 @@
                   (do (set! start-len (unsafe/cast i32 ((unsafe/cast ptr:Node loaded) i)))
                       (set! end-len ((unsafe/cast ptr:Node loaded) line)))
                   (do
+                    ; Stage 15 W1d (Option 2): a cycle is legal. The partner is
+                    ; mid-emission higher up this stack and will finish on its
+                    ; own; every cross-file reference already resolves from the
+                    ; whole-graph signature prescan (W1a), so there is nothing
+                    ; left to do here. Record the edge for the diagnostics that
+                    ; cover the three emission-time couplings a cycle cannot
+                    ; satisfy (macros, layouts, prefix aliases) and return —
+                    ; deliberately WITHOUT recording the path on g-imported,
+                    ; which stays the "finished" list.
                     (when (!= (import-list-has g-importing path) 0)
-                      (die-at line (fmt-s "import: circular import of '%s' -- remove this back-import; a cross-file reference does not require an import, so two mutually dependent files can both be imported by a common parent, in any order" name)))
+                      (note-import-cycle path prefix line)
+                      (return))
                     (set! start-len ((as ptr:Scope g-globals) len))
                     (let (save-src:ptr g-src
                           save-pos:i64 g-pos
@@ -11109,9 +11568,12 @@
                 (set! end-len ((unsafe/cast ptr:Node loaded) line)))
             (do
               ; Cycle detection keys on the file alone — a file that is mid-import
-              ; is circular regardless of prefix.
+              ; is circular regardless of prefix. Stage 15 W1d (Option 2): the
+              ; cycle is legal and the re-entry is simply skipped; see the twin
+              ; site in the string-path branch above for the reasoning.
               (when (!= (import-list-has g-importing path) 0)
-                (die-at line (fmt-s "import: circular import of '%s' -- remove this back-import; a cross-file reference does not require an import, so two mutually dependent files can both be imported by a common parent, in any order" name)))
+                (note-import-cycle path prefix line)
+                (return))
               (set! start-len ((as ptr:Scope g-globals) len))
               ; Save reader state
               (let (save-src:ptr g-src
@@ -11217,10 +11679,22 @@
           (when (!= (pn kind) NODE-SYM)
             (die-at (ff line) "import: prefix must be a symbol"))
           (set! prefix (pn s)))
-        ; Default prefix: a string path defaults to `c`; a symbol defaults to its
-        ; last path component (`foo.bar.baz` → `baz`; `foo/bar` keeps its name).
+        ; Default prefix: a symbol defaults to its last dotted component
+        ; (`foo.bar.baz` → `baz`; `foo/bar` keeps its name). A string path
+        ; defaults to `c` only when it is a C HEADER — a `.nuc`/`.nuch` string
+        ; path is a Nucleus file (do-import treats it as one) and defaults from
+        ; its basename, exactly as the symbol spelling does.
+        ;
+        ; Stage 15 W1d: before this, EVERY string import defaulted to `c`, so a
+        ; second `.nuc` path import in one file died `prefix 'c' is already bound
+        ; to '<first path>'` — naming a prefix the author never wrote, for a
+        ; conflict that does not exist. The two spellings of the same import now
+        ; derive the same prefix.
         (if (= (name-node kind) NODE-STR)
-          (set! prefix "c")
+          (if (or (!= (str-ends-with (name-node s) ".nuc") 0)
+                  (!= (str-ends-with (name-node s) ".nuch") 0))
+            (set! prefix (path-import-default-prefix (name-node s) (ff line)))
+            (set! prefix "c"))
           (when (= (name-node kind) NODE-SYM)
             (set! prefix (import-default-prefix (name-node s))))))
       (when (= prefix null)
@@ -11241,6 +11715,30 @@
         (set! last-dot i)))
     (when (< last-dot 0) (return name))
     (return (arena-strdup (unsafe/ptr+ (as ptr:i8 name) (+ last-dot 1))))))
+
+; Stage 15 W1d: default prefix for a `.nuc`/`.nuch` STRING-path import — the
+; basename with its extension removed, then the same last-dotted-component rule
+; the symbol spelling uses, so `(import "lib/list.nuc")` and `(import list)` both
+; bind `list/…`. Note the path is used verbatim (do-import does not run
+; resolve-import on a string path), so the basename is taken from what the author
+; wrote; two paths with the same basename collide, which is the same
+; already-bound diagnostic the symbol form gives and is fixed the same way — an
+; explicit second operand.
+(defn path-import-default-prefix (path:CStr line:i32):ptr
+  (let (n:i64 (as i64 (strlen path))
+        base:i64 0
+        end:i64 (as i64 (strlen path)))
+    (dotimes (i n)
+      (when (= (char-at path i) 47)
+        (set! base (+ i 1))))
+    (if (!= (str-ends-with path ".nuch") 0)
+      (set! end (- end 5))
+      (when (!= (str-ends-with path ".nuc") 0) (set! end (- end 4))))
+    (when (<= end base)
+      (die-at line
+        (fmt-2s "import: cannot derive a prefix from path '%s' -- give one explicitly, as (import \"%s\" name)" path path)))
+    (let (stem:ptr (strndup (unsafe/ptr+ (as ptr:i8 path) base) (- end base)))
+      (return (import-default-prefix (as CStr stem))))))
 
 ; `import-only` — import a concrete list of symbols (design decision 5).
 ; Signature: (import-only LIB SYM1 SYM2 ...). The listed symbols are brought in
@@ -11596,6 +12094,8 @@
   (set! g-prescan-visited null)
   (set! g-prescan-sigs null)
   (set! g-unit-entry-path null)
+  (set! g-import-cycles null)
+  (set! g-cycle-prefixes null)
   (set! g-import-aliased null)
   (set! g-import-prefixes null)
   (set! g-cinclude-collecting 0)
@@ -11615,7 +12115,12 @@
   (set! g-ns-prefix-table null)
   ; Stage 14 AVR-5: the function-attribute table starts empty (lazily built by the
   ; first `fn-attr` directive), so no entry is needed for the byte-identical path.
-  (set! g-fn-attr-table null))
+  (set! g-fn-attr-table null)
+  ; Stage 15 W5e: the file-private name table starts empty (lazily built by the
+  ; first private definer). A null table is the byte-identical fast path.
+  (set! g-priv-files null)
+  (set! g-priv-cache-path null)
+  (set! g-priv-cache null))
 
 ; ============================================================
 ; Emit quasiquote helpers (__cons / __append) into the given streams

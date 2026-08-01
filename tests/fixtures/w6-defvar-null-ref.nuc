@@ -1,0 +1,11 @@
+; Stage 15 W6 (nullability): the `(ref T)` spelling of a typed non-null pointer
+; rejects a `null` global initializer exactly as `ptr:T` does — they are the
+; same type post-Phase-F, and the check is `pkind-flow-check` (which keys on the
+; pointer KIND, not on the surface spelling), so a divergence here would mean
+; the spelling had stopped resolving to PTR-REF.
+(defstruct Thing (x i32))
+
+(defvar g:(ref Thing) null)
+
+(defn main ():i32
+  (return (g x)))

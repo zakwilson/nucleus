@@ -250,6 +250,18 @@
     (when (and (!= (t kind) TY-STRUCT)
                (!= (t kind) TY-UNION))
       (return info))
+    ; Stage 15 W1d: this is the single chokepoint every by-value struct
+    ; parameter, argument and return funnels through (emit-defn, the `declare`
+    ; emitter, emit-call-with-args, emit-return/emit-struct-ret), which makes it
+    ; the one place that catches BOTH sides of a cycle-crossing by-value struct.
+    ; Without it the definition side classifies a 0-byte aggregate and emits
+    ; `define … @f(i0 %v.arg)` while the call side (emitted after the layout
+    ; landed) passes two i64s — a mismatch whose only symptom is an unlocated
+    ; "failed to parse generated IR" from the LLVM parser. The ambient
+    ; g-form-line is the fallback location, exactly as in type-to-ir's opaque
+    ; backstop; emit-defn's parameter and return sites check first with their own
+    ; node's line. No-op unless the unit has a skipped import cycle.
+    (reject-cycle-pending-layout t g-form-line "by-value struct")
     (let (sd:raw:StructDef (t sdef)
           sz:i32 (abi-sizeof t)
           al:i32 (abi-alignof t))

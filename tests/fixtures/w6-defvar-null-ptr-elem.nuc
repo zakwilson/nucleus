@@ -1,0 +1,14 @@
+; Stage 15 W6 (nullability): a global `defvar` whose declared type is a TYPED
+; non-null pointer may not be initialized to `null`.
+;
+; `defvar-init-ir` is a constant renderer — it never routes through
+; `coerce-int-val`, the chokepoint that carries `pkind-flow-check` — so before
+; W6 this compiled clean and segfaulted on first use, while the identical local
+; `(let (p:ptr:Thing null) …)` was correctly rejected. The two paths now call
+; the same predicate, so they reject the same programs with the same wording.
+(defstruct Thing (x i32))
+
+(defvar g:ptr:Thing null)
+
+(defn main ():i32
+  (return (g x)))

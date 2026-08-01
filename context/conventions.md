@@ -6,7 +6,18 @@ When a feature in a design document gets implemented, add a **Status:** note but
 
 ## Format helpers are fixed-arity (`src/format.nuc`)
 
-`fmt-s` takes **exactly one** `%s` argument; `fmt-i32` exactly one `%d`/`%ld`, etc. They are plain functions, not variadic. Passing a format string with more conversions than the helper's parameter count makes `snprintf` read a garbage vararg and typically **segfaults the compiler** (no error — just a crash with empty output). For multiple substitutions use the dedicated variants: `fmt-2s` (two strings), `fmt-sd` (string + int), `fmt-i32-i32` (two ints), `fmt-2s-i` (two strings + int). If you need a new shape, add a helper in `src/format.nuc` rather than overloading an existing one.
+`fmt-s` takes **exactly one** `%s` argument; `fmt-i32` exactly one `%d`/`%ld`, etc. They are plain functions, not variadic. Passing a format string with more conversions than the helper's parameter count makes `snprintf` read a garbage vararg and typically **segfaults the compiler** (no error — just a crash with empty output). For multiple substitutions use the dedicated variants: `fmt-2s` (two strings), `fmt-sd` (string + int), `fmt-i32-i32` (two ints), `fmt-2s-i` (two strings + int). If you need a new shape, add a helper in `src/format.nuc` rather than overloading an existing one. **Three strings is the widest shape that exists (`fmt-3s`)** — compose in two calls (`(fmt-2s "%s\n%s" head note)`) rather than adding a `%s` a helper cannot feed.
+
+**Buffer size is a second, quieter trap (fixed in Stage 15 W1d — know it, don't
+re-break it).** Each helper formats into a fixed `alloca` and then called
+`arena-strndup buf n` with **`snprintf`'s return value**, which is the length the
+output *would* have had, not what was written — so any over-long message
+`memcpy`'d past the end of a stack buffer. It became reachable once diagnostics
+started embedding absolute file paths (W1c's unreachable-definer note, W1d's
+import-cycle notes): two long paths plus prose overruns 512 bytes silently. Every
+helper now clamps through **`fmt-take`**, and the string-carrying ones hold 1024.
+If you add a helper, clamp with `fmt-take`; if a new diagnostic comes back
+truncated mid-sentence, the message is over the cap, not the formatter.
 
 ## `node-type` mirrors `emit-node` (keep them in lockstep)
 
@@ -120,6 +131,39 @@ freely; `type-eq` is not.) W5d spells out `type-eq`'s TY-STRUCT rule — same
 `StructDef` — inline instead. The general rule: from an imported module you may
 call *up* into `nucleusc.nuc` and *back* into earlier imports, never *forward*
 into a later one.
+
+**There is a SECOND value-into-a-typed-slot path that does not route through
+`coerce-int-val` at all: `defvar-init-ir` (`src/nucleusc.nuc`), the global
+initializer.** An LLVM global initializer is a *constant*, so it cannot be built
+by emitting instructions — `defvar-init-ir` renders a literal directly into the
+`@g = global …` line and re-derives, by hand, whatever rules the chokepoint
+applies to the same value in a *local* slot. Every rule it forgets is a silent
+divergence between `(defvar g:T lit)` and `(let (x:T lit) …)`, and this has now
+bitten **three** times, each found while working on something else:
+
+- **W2b, integer narrowing.** The decimal string went straight to LLVM, which
+  truncates `i32 5000000000` to `705032704` without complaint, while the local
+  was rejected. Fixed with an `int-literal-fits` call here.
+- **W2d, float width.** LLVM accepts a decimal for `float` only when it
+  round-trips exactly, so `(defvar g:f32 3.14)` emitted IR-invalid
+  `global float 3.14` — and unlike every value position it could not be repaired
+  with an `fptrunc`, because there is no instruction to emit. Fixed by
+  re-rendering the literal at the target width (`float-literal-ir-at`).
+- **W6, nullability.** `pkind-flow-check` never ran, so
+  `(defvar g:ptr:Thing null)` compiled clean and segfaulted on first use while
+  `(let (p:ptr:Thing null) …)` was correctly rejected. Fixed by calling
+  `pkind-flow-check` here with `ty-raw` as the source type — exactly what
+  `emit-symbol-ref` gives the `null` symbol in value position.
+
+The lesson is the shape of the fix, not the individual bugs: **call the shared
+predicate rather than re-deriving its conditions.** W6's version is the model —
+`pkind-flow-check` carries three carve-outs (`CStr` is ref-compatible, an
+elem-less bare `ptr` destination has no non-null contract, a non-`PTR-REF`
+destination is unconstrained) and calling it inherits all three, where a
+hand-written `(= (ty pkind) PTR-REF)` test would have re-broken the ~1550 bare
+`:ptr` bindings in this compiler's own source. When you add an implicit
+conversion or a slot-entry check to `coerce-int-val`, **ask whether the constant
+renderer needs the same rule**, and if so give it the same *call*, not a copy.
 
 Two related facts worth having:
 
@@ -1375,6 +1419,65 @@ with the direct self-consistency check `context/build.md` describes (compile
 — they must be identical), which tells you the new compiler is a fixed point
 independently of what the committed boot does.
 
+## An import cycle is legal — and the line between "resolves" and "does not" is *emission*
+
+Stage 15 W1d: `do-import` **skips** a re-entry of a path already on `g-importing`
+instead of erroring (`note-import-cycle` + `return`, at both the `NODE-SYM` and
+the `NODE-STR`-`.nuc`-path branch). The skipped path is deliberately **not**
+pushed onto `g-imported` — that list means *finished*, and its
+`[start-len, end-len)` slice is what a later prefixed import replays.
+
+The rule that predicts every remaining failure: **a cycle member's body is
+emitted before the rest of the file it back-imports**, so anything that file
+defines after its own `import` form has not run yet. Therefore:
+
+- **Signatures survive** (W1a registers them graph-wide before any emission), so
+  function calls in both directions resolve. This is the whole feature.
+- **`(sizeof S)` and `(alloca S)` survive** — measured, and it contradicts what
+  the design doc predicted. They lower to a GEP/`alloca` over the LLVM *named*
+  type, and LLVM resolves `%S` from the `%S = type {…}` line emitted later in the
+  same module. A named struct type may be forward-referenced in textual IR. Do
+  not "fix" these; a rejection there is a false diagnostic.
+- **Anything reading the compiler's OWN field table or `abi-sizeof` does not.**
+  That is field get/set/address, struct literals, a by-value field of another
+  struct, and by-value parameters/returns/arguments. The last was a *silent
+  miscompile*: `abi-classify` sized the unlaid-out struct at 0 and emitted
+  `define i32 @f(i0 %v.arg)` against a call site passing two `i64`s, whose only
+  symptom was an unlocated `failed to parse generated IR`.
+- **Macros, `defconst` and `defenum` members do not** (registered by their
+  emitters), and **`prefix/name` aliases do not** (no slice for a skipped
+  re-entry). Note the bare `(import foo)` spelling *is* the prefixed one, so a
+  cycle written that way always suppresses an alias set; it is harmless only
+  because the language's rule is that a cross-file reference needs no
+  qualification.
+
+Two implementation notes worth reusing:
+
+- **`abi-classify` (`src/abi.nuc`) is the single chokepoint for by-value struct
+  ABI** — `emit-defn`, the `declare` emitter, `emit-call-with-args` and
+  `emit-return`/`emit-struct-ret` all funnel through it. One check there covers
+  the definition side *and* the call side. Sites with a real node still check
+  first (`emit-defn` params/return) so the message gets an exact line rather
+  than the ambient `g-form-line`.
+- **`emitted == 0`, not `num-fields == 0`, is "has no layout".** A legitimate
+  `(defstruct Empty)` has zero fields *after* emission; only `emitted`
+  distinguishes it from a name-only pre-registration. `sdef-layout-pending` /
+  `reject-cycle-pending-layout` / `reject-cycle-pending-sdef` live in
+  `src/type-utils.nuc` beside `reject-opaque-type` and mirror its site list —
+  `type-utils` precedes `abi` in the import order, so `abi.nuc` can call them
+  but not vice versa.
+
+Everything W1d added is gated on `g-import-cycles != null`, which is why
+`make bootstrap` was byte-identical on the first pass and an old-vs-new
+`--emit-llvm` sweep over `examples/` + `lib/` was 168/168 identical: a cycle was
+a hard error before, so no *compiling* program can reach any of it.
+
+**Latent, still unfixed:** the same `i0` miscompile is reachable *without* a
+cycle — `(defn f (v:S) …)` textually before `(defstruct S …)` in one file — since
+`prescan-struct-names` registers the name and emission fills the layout later.
+W1d deliberately did not ungate the check for it (the bootstrap risk is real and
+the shape is not what W1d was scoped for).
+
 ## Signature registration is NOT idempotent — a second prescan of one file is a duplicate-overload error
 
 `generic-register-method` (`src/generics.nuc`) appends a `Method` to the named
@@ -1526,3 +1629,69 @@ once per compile — a directory walk plus a file read per candidate is invisibl
 on a speculative or recoverable path would be a real cost. In the REPL `die-at`
 unwinds via `repl_throw` rather than `exit`, which is still one run per *failed*
 command.
+
+## A per-file scope is cheapest expressed as a *namespace*, not as a visibility filter
+
+Stage 15 W5e made a private definer (`defn-`/`defvar-`/`defconst-`/`defenum-`) in
+a file with no `(ns …)` private to that **file** rather than to the shared `user`
+namespace. The obvious implementation — keep the bare key and filter candidates
+by "which file owns this?" at every lookup — is the expensive one: it needs a
+new field on both `Sym` and `Generic`, a visibility test inside `scope-lookup`'s
+backwards scan (the compiler's hottest loop), and a *two-tier* scan to get
+shadowing right, because a backwards scan returns the most recent match and the
+private one is not necessarily it.
+
+Putting the scope in the **key** instead removes all of that. The key is an
+ordinary namespace-qualified spelling — `#p1/helper` — so:
+
+- `qualify-name` is **idempotent** on it (interior slash, ns-part ≠ `user`), so
+  `scope-define`/`scope-lookup` need one call each and nothing downstream cares;
+- `strip-ns-qualifier` recovers the bare name, which is why
+  `import-alias-one` — and therefore `unsafe/import-private` — kept working with
+  **no change at all**;
+- the synthetic namespace's ir-prefix, registered through the existing
+  `ns-ir-prefix-set`, flows through `ns-compose`/`mangle-fn-name` unchanged, so
+  the solitary and overloaded symbol spellings both fall out
+  (`@a_p1__helper`, `@a_p1__helper.i32`);
+- shadowing (a file's private name beating a public one elsewhere) is automatic:
+  the two are different keys, and the private probe simply runs first.
+
+Two things that make the scheme safe:
+
+- **The synthetic namespace must be unspellable.** `emit-ns` rejects a
+  `#`-leading name; that one guard is the whole argument that a synthetic key
+  can never collide with a user one. Prefer this to hoping nobody types it.
+- **Feature tables must start `null`, and every entry point must short-circuit
+  on that.** `g-priv-files` is null until the first private definer, so a unit
+  that uses none — this compiler included — runs the identical pre-W5e code path
+  and emits identical IR. This is the same shape as `g-ns-prefix-table` and
+  `g-fn-attr-table`, and it is what lets a change to `scope-lookup` and
+  `generic-lookup` (called on every name in every program) be provably free.
+
+**Two registries answer a name, not one.** `finalize-generics` binds a *solitary*
+generic into `g-globals` and `emit-dispatch` falls through to `scope-lookup` for
+it, while an *overloaded* one dispatches through `g-generics` and never touches
+the scope. Any change to how a name is keyed must therefore land in **both**
+`scope-lookup`/`scope-define` (`src/scope.nuc`) and `generic-lookup`/
+`generic-register-method` (`src/generics.nuc`), or the solitary and overloaded
+halves of the same feature silently disagree. Note the define/use asymmetry that
+falls out: `generic-register-method` must use an **exact** probe
+(`generic-lookup-exact`) because its key is already final — routing it through
+the private-preferring `generic-lookup` would fold a file's *public* `helper`
+into its own *private* `helper`'s generic.
+
+**And the timing rule W1a set still governs.** A private name's key is fixed
+during `prescan-defn-signatures`, which runs before any form is emitted — but
+that prescan does **not** set `g-defining-private` (only the top-level dispatch
+loop does, around `emit-defn`). A new per-definer property that must be known at
+*registration* time has to be armed in the prescan too, or it is silently absent
+for exactly the pass that decides the key.
+
+**A census of the compiler's own source can retire a design hedge outright.**
+W5e's spec hedged toward the weaker option because the stronger one "moves IR".
+`src/` uses **zero** private definers and `lib/` exactly one (in a demo the
+compiler does not import), so no private-definer change can move `make bootstrap`
+at all — and the hedge, plus a subtler "only qualify on collision" variant with a
+real `finalized`-is-sticky hazard, both evaporated. Count before you hedge; and
+count with an anchored pattern (`grep -nE '^[[:space:]]*\(defn- '`), since a
+`-o` match of `(defn-` also hits every `(defn-parse-sig …)` call in the tree.
