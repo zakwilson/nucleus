@@ -14,8 +14,14 @@
 > **W1c IMPLEMENTED 2026-07-31** — the diagnostic surface now distinguishes a
 > typo, a genuinely absent name, and a name defined in a file no import reaches
 > (which it names). See "W1c as built", also at the bottom. **W1e is resolved by
-> obsolescence** (no mechanism built). **W1d is the only chunk still open** and
-> is a policy decision, not a defect.
+> obsolescence** (no mechanism built).
+>
+> **W1d IMPLEMENTED 2026-07-31 as Option 2** — import cycles are legal. Note the
+> W1d section below carries **two** decision boxes: Option 1 was decided and
+> built first, then the user chose Option 2 the same day and it was built over
+> the top. The Option 1 box is preserved as superseded, because its reasoning
+> about what W1a did to the *recommended* spelling is still what `docs/` teaches;
+> read the SUPERSEDED box that follows it for what actually shipped.
 
 **Findings:** §2.1 (order-dependent registration), §2.2 (a direct import can be
 actively wrong), §2.3 (`declare` is not a forward prototype), §2.4 (mutual
@@ -330,6 +336,118 @@ situation.
 >
 > `run_w1_circular_still_errors` (`tests/run-tests.sh`) pins the hard error, so
 > relaxing it later stays a deliberate act.
+
+> **SUPERSEDED — Decision (2026-07-31, later the same day): the user chose
+> Option 2. Cycles are legal. IMPLEMENTED.** The Option 1 box above is kept in
+> full: its reasoning about *why the advice changed meaning under W1a* is still
+> correct and is still what `docs/` teaches as the **recommended** spelling. What
+> changed is only that the compiler now also *allows* the cycle instead of
+> refusing it. The deliberate act the pinned test existed to force is this box.
+>
+> **Mechanism.** Both `g-importing` sites in `do-import` (`src/nucleusc.nuc`, the
+> `NODE-STR` `.nuc`-path branch and the `NODE-SYM` branch) call
+> `note-import-cycle` and `return` instead of `die-at`. The skipped path is
+> deliberately **not** added to `g-imported` — that list stays "finished files",
+> and its `[start-len, end-len)` slice is what a later prefixed import reuses.
+> Emission is therefore idempotent per path exactly as the spec asked: each file
+> emits once, at first reach. Measured working: two-file cycles in both
+> compilation orders, three-file cycles, self-import, and the `import-use`
+> (prefix-null) spelling.
+>
+> **The bootstrap prediction held.** `make bootstrap` was byte-identical on the
+> first pass, and a pre/post `--emit-llvm` sweep over `examples/` + `lib/` was
+> 168 files byte-identical, 0 differing. Both follow from the same argument the
+> Option 1 box made: any program that reaches the guard today is already a hard
+> error, so no *compiling* program's emission order can move.
+>
+> **What is diagnosed rather than supported.** Scope was fixed up front: **no
+> macro prescan** (registering macros early means *emitting and JIT-compiling*
+> them early — its own stage). So each emission-time coupling gets a located,
+> specific diagnostic naming the cycle. The Option 1 box listed three; measuring
+> them corrected two entries and turned up a fourth:
+>
+> 1. **`defmacro` — confirmed**, and it is joined by `defconst` and `defenum`
+>    *members* (the box did not separate these from the layout item; they are
+>    name-registration failures, not layout failures, and they share a
+>    chokepoint). All three now route through two new tiers in
+>    `unresolved-name-message` — `cycle-prefix-message` and
+>    `cycle-definer-message` — placed above W1c's unreachable-file tier. The
+>    definer scan (`text-defines-name`) gained a `defenum`-member sweep: it
+>    matched only the token after the keyword, i.e. the enum's *name*, so
+>    `W1-BLUE` was invisible. That also closed the same blind spot in W1c's
+>    unreachable-file note.
+> 2. **`defconst`/`defenum`/`defstruct` layouts — the layout half was
+>    HALF WRONG.** The box said "a *body* taking `(sizeof S)` … does not
+>    [survive]". Measured: **`(sizeof S)` across a cycle is correct**, and so is
+>    `(alloca S)` — both lower to a GEP/alloca over the LLVM *named* type, which
+>    LLVM resolves from the `%S = type {…}` line emitted later in the same
+>    module. What genuinely breaks is anything that reads the **compiler's own**
+>    field table or `abi-sizeof`: field access/assignment/address, struct
+>    literals, a by-value field of another struct, and by-value parameters,
+>    returns and arguments. `cycle-pending-sdef` /
+>    `reject-cycle-pending-layout` / `reject-cycle-pending-sdef`
+>    (`src/type-utils.nuc`, beside `reject-opaque-type`, whose site list they
+>    mirror) cover these.
+> 3. **The prefix-alias slice — confirmed**, and it matters more than the box
+>    implies, because the bare `(import foo)` spelling *is* the prefixed one
+>    (prefix defaults to the lib name). A cycle written with `(import …)`
+>    therefore always suppresses an alias set. It is harmless as long as the
+>    files refer to each other unqualified — which is the language's actual rule
+>    — and `cycle-prefix-message` says exactly that when they do not.
+> 4. **NEW, and the one with teeth: a by-value struct at an ABI boundary was a
+>    silent miscompile.** `abi-classify` sized a not-yet-laid-out struct at 0 and
+>    emitted `define i32 @f(i0 %v.arg)` on the definition side against a call
+>    site that passed two `i64`s. The only symptom was an **unlocated**
+>    `failed to parse generated IR` pointing into the generated file. The check
+>    lives in `abi-classify` itself (`src/abi.nuc`) — the single chokepoint
+>    `emit-defn`, the `declare` emitter, `emit-call-with-args` and
+>    `emit-return`/`emit-struct-ret` all funnel through — with `emit-defn`'s
+>    parameter and return sites checking first so the common case gets an exact
+>    line instead of the ambient `g-form-line`.
+>
+> Every one of these is gated on `g-import-cycles != null`, so the whole
+> diagnostic surface is dead code for any unit without a cycle — which is every
+> unit that compiled before this change.
+>
+> **Also fixed here (pre-existing, reproduces on the committed boot):** two `.nuc`
+> *string-path* imports in one file died `import: prefix 'c' is already bound to
+> '<first path>'`. `emit-import-prefixed` defaulted **every** `NODE-STR` import's
+> prefix to `c` — correct for a C header, wrong for a Nucleus path, which
+> `do-import` already treats as a Nucleus file. A `.nuc`/`.nuch` path now defaults
+> from its **basename** (`path-import-default-prefix`, beside
+> `import-default-prefix`), the same rule the symbol spelling uses, so
+> `(import "lib/list.nuc")` and `(import list)` both bind `list/…`. Two paths with
+> the same basename now collide under a prefix the author can recognize, fixed the
+> same way as for symbols — an explicit second operand. Chosen over "derive from
+> the full resolved path" because `do-import` does **not** run `resolve-import` on
+> a string path (it uses the string verbatim), so the basename is the only stable
+> component; and over "leave `.nuc` paths prefixless" because the bare `import`
+> keyword is defined to be the prefix-qualified one.
+>
+> **Also fixed (memory safety, found while writing these messages):**
+> `src/format.nuc`'s helpers passed `snprintf`'s return — the length the output
+> *would* have had — straight to `arena-strndup`, which `memcpy`s that many bytes
+> out of a fixed stack buffer. Any diagnostic longer than the buffer was a stack
+> over-read, reachable today via W1c's absolute-path notes. All helpers now clamp
+> through `fmt-take`, and the string-carrying ones moved 512 → 1024 so a
+> two-path cycle note fits whole.
+>
+> **If a future stage wants full cycles**, item 1 is still the thing to scope
+> first, and it is still a macro *prescan* — i.e. a design for emitting and
+> JIT-compiling macro bodies ahead of their file's emission. Items 2 and 4 would
+> be a graph-wide **layout** prescan, which is a separate and probably larger
+> problem: front-loading `defstruct` emission reorders the type section for every
+> program (see conventions.md, "Front-loading a prescan reorders the type
+> section"), so it cannot be additive the way W1a's signature prescan was.
+>
+> **Tests.** `run_w1_circular_still_errors` is replaced — not deleted — by
+> `run_w1d_cycle_accepts` (5 units: both orders, `import-use`, three-file,
+> self-import; each compiles, links, runs and asserts an exit status),
+> `run_w1d_cycle_diagnoses` (8 units: macro, defconst, defenum member, field
+> assignment, struct literal, by-value parameter, prefix alias, plus
+> duplicate-still-rejected-inside-a-cycle), and `run_w1d_path_prefix` (4 units).
+> Both orders return *different* values (2 and 1), so they cannot pass by
+> accident against one shared answer. 303 → 319 PASS, 0 FAIL.
 
 ### W1e — `declare` as a forward prototype (§2.3)
 

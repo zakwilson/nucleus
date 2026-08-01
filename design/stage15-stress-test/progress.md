@@ -2,22 +2,47 @@
 
 Back to [../progress.md](../progress.md). Stage overview: [overview.md](overview.md).
 
-**W4 and W2 are complete** (W2a/W2b/W2c/W2d all landed). **W3a is done**
-(§1.6, opaque forward-declared C types) and **W3b is done** (§1.5, C type
-qualifiers + the `declare` validity gate — `SDL2/SDL.h` now imports, links and
-runs) and **W3c is done** (§1.4, typedef chains + declaration precedence — the
-header ladder is closed and all three rungs are reached, plus a follow-up fix to
-`declare`'s unnamed parameter parse that W3c's precedence rule surfaced), so
-**all of W3 is complete**. **W5 is nearly done** — W5a, W5b, W5c, W5d and W5f
-landed; only W5e remains (it is sequenced after W1). **W1a + W1b + W1c are done**
-(whole-unit signature resolution, and the diagnostic surface that goes with it —
-see the W1 section below); W1e is resolved by obsolescence, so **W1d (mutual-import
-policy) is the only W1 chunk still open**, and it is a decision rather than a
-defect. **W6's design document is written**
-([nullability.md](nullability.md)) — no code or docs exist for the
-not-started items yet beyond their spec docs ([resolution.md](resolution.md),
-[literal-typing.md](literal-typing.md), [cheader.md](cheader.md),
-[ergonomics.md](ergonomics.md), [nullability.md](nullability.md)).
+**All seven original work items (W1–W7) are done**, and the external
+regression — the only test that proves that half of the stage achieved its
+purpose (`prompt.md` §6) — passed on 2026-08-01: see "The external Doom-port
+regression" section near the end of this document for the two findings that
+run produced.
+
+**The stage was then reopened, the same day, with two new items.** **W8**
+(combined declaration and initialization) and **W9** (six defects found while
+measuring W8's design) were added by the author's direction; see their sections
+at the end of this document. **The W1–W7 record below is unchanged** — the new
+scope is additional, not a revision of anything already closed. Both new items
+follow directly from findings W1–W7 produced: W8's G-0 is the Doom-port
+regression run's `defconst`/`defenum` finding and W8's G-5 is its
+`(defvar- g:ptr:T null)` finding, both recorded in that section as top
+candidates for a next stage and now assigned within this one.
+
+**W4, W2 and W3 are complete** (W2a–d; W3a §1.6 opaque forward-declared C
+types; W3b §1.5 C type qualifiers + the `declare` validity gate — `SDL2/SDL.h`
+imports, links and runs; W3c §1.4 typedef chains + declaration precedence, the
+header ladder closed on all three rungs, plus the `declare`-parameter parsing
+fallout it surfaced). **W5 is complete** — W5a/b/c/d/f landed earlier, and
+**W5e (`defn-` name isolation) landed 2026-08-01**, decided as Option 1 in its
+unconditional form; see the W5 section below. **W1 is complete** — W1a/b/c
+were already done; **W1d (mutual-import policy) landed 2026-07-31 as Option 2**
+(import cycles are legal), **superseding** the Option 1 decision the same spec
+doc had recorded and built earlier the same day — see the W1 section below and
+[resolution.md](resolution.md)'s two inline decision boxes, which this
+document does not duplicate. W1e stays resolved by obsolescence. **W6's
+design document is written** ([nullability.md](nullability.md)); its §3.4
+triage item **landed 2026-07-31** — a `null` global initializer into a typed
+non-null pointer (`ptr:T` / `(ref T)`) is rejected with the same diagnostic
+the identical local gets, closing the `defvar-init-ir`-bypasses-
+`pkind-flow-check` hole W5c pinned. Flow typing proper (nullability.md §4
+onward) remains design-only, by design — see the W6 section below for what was
+measured while closing §3.4 and deliberately left open. **W7 is done** — see
+its own section near the end, unchanged since it landed before this closing
+pass.
+
+**Gate for W1–W7: `make test` 328 PASS / 0 FAIL; `make bootstrap`
+byte-identical on the first pass; `make abi-test` and `make layout-test`
+green.** W8 and W9 are unbuilt and not covered by it.
 
 ## W2 — `node-type` ↔ `emit` literal-operand lockstep
 
@@ -166,9 +191,7 @@ sections above and below, and [overview.md](overview.md) for the planned orderin
 
 ## W5 — Ergonomic gaps and the union crash
 
-Spec: [ergonomics.md](ergonomics.md). Partly done; the remaining sub-items are
-independent and are the stage's parallel fan-out (see
-[prompt.md](prompt.md) §4).
+Spec: [ergonomics.md](ergonomics.md). **All six sub-items done.**
 
 | Chunk | What landed | Status |
 |---|---|---|
@@ -176,7 +199,7 @@ independent and are the stage's parallel fan-out (see
 | **W5b** | §4.3 — no unary `bit-not`, so C's `~x` had to be written `(bit-xor x -1)` by hand. Added as a one-argument macro in `lib/macros.nuc:79` expanding to exactly that, per the repo's "prefer macros over builtins" principle: correct for two's complement at every width, no codegen. W4a's stopgap correction-table entry (`bit-not` → "no unary 'bit-not'; write (bit-xor x -1)") was removed when it landed, as `ergonomics.md` required, and W5b's section was removed from that spec doc. Verified against `build/nucleusc`: `(bit-not 3)` is `-4`. | **Done** |
 | **W5c** | §3.7 — a `defvar` global may now be typed `CStr`. `defvar-init-ir`'s string-literal and `null` gates tested a bare `TY-PTR` kind where the standing rule is `is-ptr-like`; both now accept `CStr` and name the offending type on rejection. **Both** literal spellings are accepted, for `ptr` and `CStr` alike — a plain `"…"` was *already* accepted here for `ptr`, and at a global initializer the `StrView`/`CStr` distinction has collapsed (the `@.str.N` rodata is NUL-terminated either way), so accepting only `c"…"` would have invented an asymmetry the value path does not have. **The line-0 half of the finding did not reproduce** — W4 had already fixed it. **The finding was bigger than specced:** making the spelling compile exposed a *segfault*. `emit-binop-vals` fires its strcmp content-comparison whenever either operand is `CStr`/`StrView` — including against the `null` literal — so `(= g null)` emitted `strcmp(ptr %t0, ptr null)`, UB in C and a crash under glibc (measured: exit 139). Pre-existing and not global-specific (a `CStr` *parameter* null-checked with `=` lowered identically — `conventions.md`'s documented "null-check trap"), but W5c promotes it from a compiler-internals hazard to something ordinary user code hits immediately, so it was fixed: the strcmp branch is suppressed when either operand *node* is the symbol `null` and the other is `is-ptr-like`, and the identity gate below was widened to `is-ptr-like` so the escape lands on `icmp eq ptr`. Strictly a bug fix (no correct program can depend on UB) and inert for the compiler's own IR (`boot/nucleusc.ll` has zero `strcmp(ptr %x, ptr null)`). Deliberately out of scope: `(as CStr …)` in an initializer (the general expressions-aren't-literals rule, identical for `(as ptr …)`) and `StrView`-typed globals (needs aggregate constant initializers). 4 new checks. | **Done** |
 | **W5d** | §3.9 + §3.10 — array-literal ergonomics. **§3.9 was fixed at the shared chokepoint, not at the array literal**, and the spec's "inserting one load, not new machinery" prediction held exactly: `coerce-int-val` (`src/abi.nuc`) now loads a `ptr:S` into a by-value `S` slot when the pointee's StructDef *is* the target's. The decisive measurement is that the ARGUMENT position already did precisely this (Stage 13 CE-3's by-value normalization in `emit-call-with-args`), so `(take (P 1 2))` compiled while `(let (v:P (P 1 2)) …)` did not — the fix is one rule reaching the other eight typed slots, not a new liberty. Verified byte-for-byte: the 1000-row table compiles to **identical IR** under the bare and `(deref …)` spellings (only the module-ID line differs), 1000 allocas + 1000 loads, linear. `safe-coerce-val` never delegates a ptr→struct pair down, so the argument path cannot even reach the new branch. **§3.10 was narrower than the finding claimed** — `(let (a:ptr:ptr …))` and an *unannotated* binding both already worked, so the wart was the annotated-but-imprecise middle case alone, and it is not ptr-of-ptr-specific (`(array i32 …)` bound to `:ptr` failed identically). Fixed with a deliberately **syntactic** rule (`array-lit-binding-type`, `src/generics.nuc`, called by `emit-let`/`emit-with` and mirrored in `node-type-block` — one rule function, two callers, per the lockstep): an `(array T …)` init refines an elem-less declared pointer to `ptr:T`, keeping the declared pkind and volatility. The general "adopt the init's element type" rule was **rejected on measurement**, not taste: `type-eq` compares pointer elements, so adopting an elem re-routes multimethod dispatch, and a bare `:ptr` also erases the *nullability claim* (`pkind-flow-check` exempts an elem-less target) — there are ~1550 bare `:ptr` bindings in this compiler, 113 of them from `addr-of` alone. **Two pre-existing crashes found on the path this opens** (both confirmed against the pre-W5d binary): `emit-zero-store` emitted `store %P 0` for a struct slot and `store ptr 0` for a `CStr`/`TY-FN` slot, both LLVM parse errors — so a *sparse* `(array S …)`, exactly the shape a generated table with holes has, produced unparseable IR. Fixed with `zeroinitializer` for aggregates and the standing `is-ptr-like` test for pointers (`conventions.md`'s documented TY-PTR-vs-is-ptr-like trap, hit again). Proof of confinement: a per-function normalized diff of the compiler's own IR shows **exactly** the 5 edited functions plus the 1 added one changed, nothing else — the refinement never fires in `src/` (no `(array …)` there). 4 new checks. | **Done** |
-| **W5e** | `defn-` name isolation (§2.5) — a design decision, sequenced after W1 because it touches the same global-key scheme. | Not started |
+| **W5e** | `defn-` name isolation (§2.5), sequenced after W1 (both touch the global-key scheme) and landed 2026-08-01. Decided by **census, not taste**: `src/` contains **zero** private definers of any kind (`defn-`/`defvar-`/`defconst-`/`defenum-`/`defstruct-`/`defunion-`/`defmacro-`/`defprotocol-`), and `lib/` has exactly one `defn-`, not on the compiler's import graph — **the compiler uses no private definer at all**, so no private-definer change can move the bootstrap, which removed the reason to hedge toward a cheaper variant. **Outcome: Option 1, unconditional.** The cheaper "qualify only on collision" alternative was **rejected**: its sole advantage (byte-identical IR) was already free at the unconditional form's cost, and it carries a real hazard — `finalize-generics` stamps an ir-name and sets `finalized = 1`, so a name that looked unique when its generic finalized cannot be renamed when a later file registers a colliding one; unconditional file-qualification is order-independent by construction. Mechanism: the scope lives in the **key**, not a lookup filter — a private definer in a file with no `(ns …)` is keyed under a synthetic per-file namespace, `#p1/helper`. Because that is an ordinary `<ns>/<name>` spelling, `qualify-name` is idempotent on it and `strip-ns-qualifier` recovers the bare name (`import-alias-one`/`unsafe/import-private` needed **no change**), and the synthetic namespace's ir-prefix flows through the existing `ns-compose`/`mangle-fn-name` path. Private-shadows-public fell out of the key scheme rather than being designed in. Sites: `src/compiler-types.nuc:756,767` (`PrivName`/`PrivFile`) and `:670` (`Method.src-file`/`src-ns`/`priv`); `src/nucleusc.nuc:512` (globals), `:3323–3466` (`priv-*` family), `:8804` (`emit-defvar` ir-name), `:10616` (prescan arms `g-defining-private`), `:10797` (`emit-ns` rejects a `#`-leading name), `:12119` (reset); `src/scope.nuc:33,70` (`priv-key-define`/`priv-key-use`, one call each — covers `defn-`/`defvar-`/`defconst-`/`defenum-` at once); `src/generics.nuc:24,30,56,377,417,484,504,700`. Everything short-circuits on `g-priv-files == null`, so a unit with no private definer takes the identical pre-W5e path. **A second, unreported defect fell out of the same census, worse than the one reported, and is fixed by the same mechanism:** `defvar-` collided too — two files with `(defvar- g:i32 …)` emitted two `@g = internal global` lines, `--emit-llvm` exited 0, and the **link** died pointing at raw IR with no source location. New duplicate-definition diagnostic names both files at a real `file:line:`: `duplicate definition of 'helper' — the same parameter types are already defined at a.nuc:1`, with a `note:` stating the rule (a public name must be unique unit-wide; `defn-` scopes a name to its own file in the default `user` namespace; a private pair can only collide inside an **explicit** namespace, and that branch says so precisely). **Premise correction:** ergonomics.md's "the error surfaces in whichever file was written *second*" is **pre-W1 framing** — since W1a it is detected in the prescan and fails in *every* import order; the file it *names* is the one prescanned second (measured by swapping the two `import-use` lines). The "names a function its author has never seen" half was accurate. The spec's implicit framing that this is a `defn-`-only problem was also wrong — see the `defvar-` defect above. Research trap worth recording: `grep -oE '\(defn-'` matches every `(defn-parse-sig …)` *call* in the tree and `-o` truncates the token so a follow-up `grep -v` cannot filter it out; anchor with `grep -nE '^[[:space:]]*\(defn- '`. **Left undone, deliberately:** the REPL still rejects `defn-` outright (pre-existing, top-level dispatch never had the private definers); `compile-time` cannot call a same-file function, private or public (pre-existing, reproduces on the old compiler); `defstruct-`/`defunion-`/`defprotocol-`/`defmacro-` keep *namespace*-level privacy, since they name types and macros, which are bare-keyed and globally identified by design (Stage 12 decision 9 — a qualified type reference must resolve to the same `StructDef` from any namespace) — file-scoping those is a separate, larger question. Tests: `run_w5e_private_isolated`/`run_w5e_still_rejects`, 9 units — positive units **link and run**, asserting an exit status encoding both files' answers (`a*10+b`), because a wrongly-routed call links fine and only shows in the value; 2 pre-existing pins on the old duplicate-definition text updated (`w1-duplicate-rejected`, `w1d-cycle-duplicate-rejected`), both still asserting rejection. 319 → 328 PASS, 0 FAIL. Bootstrap byte-identical on the first pass; sweep of every `examples/`+`lib/` program: 160 byte-identical, 5 differing — all five the private-definer files, every hunk an `internal`-symbol rename (`@helper-add` → `@private_defn_p1__helper-add`). Full account: [ergonomics.md](ergonomics.md)'s W5e "as built" section. | **Done** |
 | **W5f** | **The spec's framing was wrong: this was never a union bug.** Unions carry function-pointer members fine — `(union acv:(fn void) i:i32)` and the list form `(union (acv (fn void)()))` compile today and always did; nothing in `src/union-registry.nuc` was at fault. The bisect that settles it: swapping `union`→`struct` in the repro crashes **identically** on the pre-change compiler (independently re-confirmed from the orchestrating session: old compiler exit 139 on *both* forms, new compiler exit 0 on both). The real cause is that **the colon-paren reader fuse cannot express a function-pointer type**: such a type is *two* parenthesised groups, `(fn ret)` + params, and `fuse-colon-paren` absorbed only one — so `acv:(fn void)()` read as the member `(acv (fn void))` **plus a stray `()` member**, and `()` reads as a NULL node, which the member loop dereferenced. The same gap silently mistyped every other binding position: the spelling `docs/types.md` documented, `f:(fn i32) (i32 i32)`, **never worked** (`f` bound as a zero-parameter fn, `(i32 i32)` became a junk extra parameter, dying only at the call site with `call: expected 0 args, got -1`). Fix: `fuse-fn-params` (`lib/reader.nuc`) absorbs an *adjacent* second group after a `(fn …)`-headed colon-paren form and returns the nested canonical `((fn ret) (params))` — composing for free with the colon chain and the lone-colon return fuse. Adjacency is required (a space-separated group is genuinely ambiguous with the next binding), so the docs were corrected rather than the reader made ambiguous. Second half: `()`→NULL is a general segfault trap, so ten raw derefs across `src/nucleusc.nuc` / `src/generics.nuc` / `src/union-registry.nuc` (the two `extract-name-*` chokepoints, `emit-node`, the defstruct field loop, `emit-defn`'s &rest/&optional scan + L8 warning scan + param loop, the four signature-prescan helpers, `defunion-strip-repr`, `emit-defmacro`) now route through the null-safe `node-line` or an explicit guard — every one a confirmed SIGSEGV before, every one a **located** diagnostic after. `--emit-cheader` renders the union as C `union { void* acv; void* ac1; int32_t n; }` (the C-interop invariant holds) and `--emit-nuch` round-trips it to the same `__anon_union_h…` memoization hash. 5 new checks. | **Done** |
 
 ### Test/bootstrap status after W5a/W5b/W5c/W5d/W5f
@@ -233,6 +256,47 @@ commented early return rather than letting it ride on `is-ptr-like`, and
 `tests/fixtures/w5c-cstr-null-exempt.nuc` (via the new `run_accepts` helper)
 fails if a stricter check ever sweeps `CStr` up with `ptr`.
 
+**Closed 2026-07-31** — see [nullability.md](nullability.md) §1.5 *Status*.
+`defvar-init-ir`'s `null` branch (`src/nucleusc.nuc:8395`) now calls the *same*
+`pkind-flow-check` the local path calls, with the same raw type
+`emit-symbol-ref` gives the `null` symbol in value position (source type
+`ty-raw`, ctx `"defvar"`), so the global path runs the *same* predicate as the
+local path instead of re-deriving it — which is what makes the carve-outs
+automatic rather than something to re-implement: `(raw T)`/`?T` are not
+`PTR-REF` and return at once; an elem-less bare `ptr` — the `void*` escape
+hatch, ~1550 bindings in the compiler's own source — is exempt via the
+untyped-destination refinement; `CStr` keeps its own explicit early return
+*above* the check (pinned by the W5c tripwire), because `ptr-pkind` answering
+`PTR-RAW` for every non-`TY-PTR` kind is an accident of the encoding, not the
+policy, and must not be relied on here. The diagnostic body is identical to
+the local path's. Tests 300 → 303.
+
+**Measured, and deliberately left open — the no-init spelling.** A
+balanced-paren census of every `defvar` form in `src/ lib/ examples/
+tests/fixtures/`: **254** forms, **115** with no initializer, of which **53**
+declare a non-null element-typed pointer — 20 `ty-*:ref:Type` singletons,
+`g-globals:ref:Scope`, and 32 registry tables spelled
+`(ref (Vector …))`/`(ref (HashSet …))`/`(ref (HashMap …))`, all in the
+compiler's own source, all process-lifetime singletons filled by
+`types-init`/`compiler-init` immediately after definition. `emit-defvar`'s
+no-init default still emits `global ptr null` for any `is-ptr-like` type, so
+**`(defvar g:ptr:Thing)` still produces exactly the IR the fix now rejects for
+`(defvar g:ptr:Thing null)`** — an author blocked by the new error can get the
+old, unsound behaviour back by deleting the word `null`. Closing that is not a
+check but a language question (deferred initialization of a non-null global);
+it belongs to W6 proper, and this asymmetry is exactly what the external Doom
+port hit 13 times (see "The external Doom-port regression" below).
+
+**Premise correction.** The brief that shaped this fix predicted "a rejection
+path cannot move IR", which held for *IR* but not for the *tree*:
+`examples/colon-paren-types.nuc:23` terminated a hand-rolled linked list with
+`(defvar empty:(ptr Link) null)`, and `make test` failed on it once the fix
+landed. `nullability.md` §1.5's "zero compiler churn" measurement had scanned
+`src/`+`lib/` only; `examples/` turned out to be a separate gate. Fixed by
+moving `Link.next`, the global, and `chain-sum`'s parameter to `(raw Link)` —
+the nullable kind the design doc itself prescribes for this idiom — with
+runtime output byte-for-byte unchanged.
+
 ### New limitations discovered during W5 (not fixed here)
 
 * **A string literal cannot carry an embedded NUL.** `lex-string` decodes
@@ -265,7 +329,7 @@ bottom carrying the answers to the design's open questions).
 |---|---|---|
 | **W1a + W1b** | Cross-file function references now resolve on **reachability**, not import order — the ordinal rule *"X may reference a function in Y ⟺ Y begins processing before X is emitted"* is retired. Mechanism: a **second** whole-graph prescan pass, `prescan-imported-signatures` (`src/nucleusc.nuc`), walking the same depth-first import graph as `prescan-imported-types` and registering every reachable `.nuc` file's **protocols** and **defn signatures**. Two passes, not one: a signature's types must resolve against the *whole* graph's type names, and a one-pass walk would prescan file F before a sibling G their parent imports after it — the compiler's own `src/generics.nuc` (signatures naming `Method`/`Generic` from the sibling `src/compiler-types.nuc`) would have hit that immediately. Registration is **not idempotent** (possibility (3) of the design's list: `generic-register-method` appends unconditionally and `generic-add-method` clears `finalized`, so a second pass makes every signature a duplicate overload), so `g-prescan-sigs` records each prescanned path and `emit-toplevel-forms` skips its own protocol/signature prescan for it — while still calling `finalize-generics` at exactly the same point, so only *registration* moves earlier. The duplicate-signature check is untouched: two files defining the same name+arity still error. W1b is part of it, not a follow-up: the walk applies each visited file's own leading `(ns …)`/`set-ir-prefix` and restores afterwards, because `scope-define` qualifies a global's key against `g-current-ns` and `generic-new` snapshots the namespace ir-prefix that `finalize-generics` bakes into the solitary method's ir-name. `finalize-generics` needed no register/finalize split — per-file is safe by the same reasoning `generic-add-method`'s own comment records. `.nuch` headers are deliberately excluded from the new pass (their importer never runs `prescan-defn-signatures`; entries arrive as `declare`/`defmethod`/template-`defn` with their own registration paths), as are C-header string imports (reading one shells out to clang) and any path already on `g-imported` (the REPL loads one import per command). | **Done** |
 | **W1c** | The unresolved-name diagnostic now distinguishes the three failures W1a left behind, at one chokepoint each: `unresolved-name-message` (`unknown:`/`undefined:`) and — for §2.7's type reachability constraint, which W1 keeps — a new `unknown-type-message` called from `parse-type-name` (`src/union-registry.nuc`). Tier order, unchanged at the top: the **C-header skip note** (W3c) first, then the new **unreachable-file note**, then the did-you-mean, then a plain *"not defined anywhere in this compilation unit"*. The middle tier is the point of the chunk — on failure the compiler scans the `.nuc`/`.nuch` files in exactly the directories `resolve-import` searches (the current source file's directory, `lib/`, each `-I`), skips every file already in the unit (`g-prescan-visited` / `g-prescan-sigs` / `g-imported`, plus the unit's root, which is on none of those lists and gained `g-unit-entry-path` for that reason), and names the first file outside the unit that defines the name: `note: 'y-later' is defined in ./yf.nuc, which no import in this unit reaches`. It suppresses the did-you-mean rather than stacking with it — naming the file is a strictly better answer than guessing a spelling, and the two collide almost never because the scan matches the name *exactly*. Deliberate implementation choices: a **textual** scan of file bytes (re-entering `read-program`/`desugar` from a diagnostic would clobber `g-src`/`g-pos`/`g-line`/`g-source-path`/`g-peek` mid-message for no benefit), skipping line comments and string literals so the two obvious false-positive sources are out; **error path only** — both callers of `unresolved-name-message` and the `unknown type:` raise are `die-at`, which is `noreturn`, so the scan runs at most once per compile and cost is unobservable (a failing fixture compiles in the same 0.135 s as a clean one). Directory enumeration uses hand-declared POSIX `opendir`/`readdir`/`closedir` (the C-header reader registers `struct dirent` as *opaque* — its `char d_name[256]` member defeats the declaration parser — so a field access on it is refused); the `d_name` byte offset is **validated, not trusted**: an entry is used only if the bytes there are a short NUL-terminated name ending `.nuc`/`.nuch`, so a platform with a different layout finds nothing rather than printing garbage. `$NUCLEUS_LIB` and the install prefix are deliberately *not* scanned — a stdlib file is not something the user can fix by editing an import. | **Done** |
-| **W1d** | Mutual-import policy (keep `circular import` a hard error vs. allow cycles). | Not started — decision pending; the current hard error is pinned by a test so relaxing it stays deliberate |
+| **W1d** | Mutual-import policy — decided twice the same day. First **Option 1** (keep `circular import` a hard error; now-correct advice since W1a made "a common parent imports both, neither imports the other" the recommended, order-independent spelling). Then **SUPERSEDED by the user's choice of Option 2**: import cycles are legal. Both `g-importing` sites in `do-import` (`src/nucleusc.nuc`, the `NODE-STR` `.nuc`-path branch and the `NODE-SYM` branch) now call `note-import-cycle` and `return` instead of `die-at`. The skipped path is deliberately **not** pushed onto `g-imported` — that list means *finished*, and its `[start-len, end-len)` slice is what a later prefixed import replays — so emission is idempotent per path: each file emits once, at first reach. Four things a cycle does not carry, because each exists only once a file has been *emitted* and a cycle member's body is emitted before the rest of its back-import — diagnosed, not supported, all gated on `g-import-cycles != null` so a unit with no cycle takes the identical pre-W1d path: (1) a `defmacro` the partner defines (registers at emission time; no macro prescan exists, and adding one means emitting *and JIT-compiling* the macro body early — its own stage); (2) a `defconst`/`defenum` **member** the partner defines (a name-registration failure, not layout — `text-defines-name` gained a member sweep, since it previously matched only the enum's own name, closing the same blind spot in W1c's unreachable-file note); (3) a struct/union **layout** the partner defines — field access/assignment/address, a struct literal, a by-value field/param/return/arg (`cycle-pending-sdef`/`reject-cycle-pending-layout`/`reject-cycle-pending-sdef`, `src/type-utils.nuc`, mirroring `reject-opaque-type`'s site list); **`(sizeof S)`/`(alloca S)` across a cycle are NOT in this list** — measured to work, since both lower to a GEP/alloca over the LLVM *named* type, resolved from the `%S = type {…}` line LLVM finds later in the same module — the design doc's premise that these fail was wrong; (4) a `prefix/name` alias over a cycle member (the bare `(import foo)` spelling *is* the prefixed one, so a cycle written with it always suppresses an alias set). A **fifth, unspecced coupling was found by measurement, and it was the only silent one**: a by-value struct at an ABI boundary — `abi-classify` sized the unlaid-out struct at 0 and emitted `define i32 @f(i0 %v.arg)` against a call site passing two `i64`s, surfacing only as an unlocated `failed to parse generated IR`; now checked in `abi-classify` itself, the one chokepoint `emit-defn`/`declare`/`emit-call-with-args`/`emit-return` all funnel through. **Also fixed here (pre-existing, reproduces on the committed boot):** `emit-import-prefixed` defaulted **every** `NODE-STR` import's prefix to `"c"` — correct for a C header, wrong for a `.nuc` path — so two Nucleus string-path imports in one file collided on a prefix the author never wrote; a `.nuc`/`.nuch` path now defaults from its **basename** (`path-import-default-prefix`), the same rule the symbol spelling already used. **Also fixed (memory safety, found while lengthening these diagnostics):** `src/format.nuc`'s helpers passed `snprintf`'s return — the length the output *would* have had — straight to `arena-strndup`, which `memcpy`s that many bytes out of a fixed stack buffer; any diagnostic longer than the buffer was a stack over-read. All helpers now clamp through `fmt-take`; string-carrying ones moved 512 → 1024. **Bootstrap prediction held**: `make bootstrap` byte-identical on the first pass (any program that reaches the guard today is already a hard error, so no *compiling* program's emission order can move) — confirmed further with a pre/post `--emit-llvm` sweep over `examples/`+`lib/`, 168 byte-identical, 0 differing. Tests: `run_w1_circular_still_errors` **replaced, not deleted**, by `run_w1d_cycle_accepts` (5 units — both orders, `import-use`, three-file, self-import; each compiles, links, runs, asserting an exit status, and the two orders return *different* values so they cannot pass by shared accident), `run_w1d_cycle_diagnoses` (8 units — one per coupling above, plus duplicate-still-rejected-inside-a-cycle), `run_w1d_path_prefix` (4 units). 303 → 319 PASS, 0 FAIL. **If a future stage wants full cycles**, the macro prescan is still the thing to scope first; the layout couplings would need a separate graph-wide layout prescan, which reorders the type section for every program and so cannot be additive the way W1a's signature prescan was. Full account: [resolution.md](resolution.md)'s W1d section, in particular the SUPERSEDED box. | **Done** |
 | **W1e** | `declare` as a forward prototype. | **Resolved by obsolescence, no mechanism built** — the design's shape-3 hazard (`declare` + a reachable `defn` → `duplicate method signature`) does not reproduce, and W1a makes the mechanism that prevents it fire *more* often: `emit-nuch-declare-import` returns early when the name is already in `g-globals`, so a `declare` matching a reachable solitary `defn` is a complete no-op |
 
 ### The defect W1a exposed (pre-existing, fixed here)
@@ -495,3 +559,197 @@ at line 36, and has no `tests/expected/` entry so the suite never ran it.
 (`(m count)` is the field); globals never demote. `(invoke m count)` is the escape
 hatch for both. `_get` is not retired — a user `get` reading its own fields still
 needs the bypass, since `(self 'cap)` dispatches back into that same method.
+
+---
+
+## The external Doom-port regression (2026-08-01)
+
+This is `prompt.md` §6's "only test that proves the stage achieved its
+purpose" — the ~25,000-line Doom port at `/home/zak/code/nuc-doom-claude`
+rebuilt against the finished compiler with its two named workarounds removed:
+`src/g_game.nuc`'s load-bearing import ordering (`s_sound` is now imported
+**last**, well after `p_map` is expanded inside `p_spec`'s chain, and all five
+of the forward references that mandated the old order resolve regardless), and
+the `(as ui32 SOME_DEFCONST)` comparison casts across `p_enemy`, `p_map`,
+`p_telept`, `r_main`, `r_plane`, `tables` and `video`. Both gates are bit-exact:
+
+```
+== test_demo: 182 checks passed, 0 failed ==
+ALL 35 TICS BIT-EXACT
+
+== test_demo_monsters: 1654 checks passed, 0 failed ==
+ALL 150 TICS BIT-EXACT (WITH MONSTERS, vs the real engine)
+```
+
+The port's working tree already carried the 8 files with the workarounds
+removed from a prior session; this pass ran the build and demo gates against
+the compiler landed here, fixed one stale comment
+(`src/g_game.nuc:57-61`, which still said mutual imports were a hard error),
+and committed nothing in either repo — the port was not otherwise restructured.
+
+**Two findings came out of the run. Recording both prominently — they are the
+stage's most important output after the gates themselves:**
+
+1. **The W6 §3.4 fix broke 13 sites in the port**, all one shape:
+   `(defvar- g-X:ptr:T null)`, the lazily-initialized process-lifetime
+   singleton idiom (`g-mobjinfo`, `g-weaponinfo`, `g-channels`, `g-spmus`,
+   `g-intercepts`, `g-demo-p`, `g-players`, `g-music`, `g-sfx`, `g-tmbbox`,
+   `g-heightlist`, `g-sprnames`, `g-states`). Resolved by **deleting the
+   redundant ` null`**, a pure deletion that emits identical IR — but only
+   because the no-init spelling is still accepted (see "W5c ↔ W6 null-safety
+   hole" above). This is the asymmetry that section flags, hit by the first
+   external program to meet the fix, 13 times across ~60 files. It is direct
+   evidence for prioritizing the deferred-initialization language question in
+   W6 proper, ahead of flow typing itself.
+2. **`defconst`/`defenum` are still import-order dependent.** W1 covered
+   `defn` signatures and protocols only. Verified against the current
+   compiler: two sibling files where `ca.nuc` references a `defconst` defined
+   in `cb.nuc`, with a common parent importing both — `(import cb) (import
+   ca)` runs and returns 42, `(import ca) (import cb)` dies. **The diagnostic
+   asserts something false**: `ca.nuc:1: error: undefined: MYK — not defined
+   anywhere in this compilation unit`, when `MYK` *is* in the unit and merely
+   not yet processed (W1c's unreachable-file note correctly does not fire,
+   since `cb.nuc` is reachable — the note's job is a different failure mode).
+   This is the constraint that still forces `p_spec` to lead the port's
+   import list; the port documents it as `NUCLEUS-FINDINGS.md` §12 and the
+   `g_game.nuc` comment block explains it. **Record it as the top candidate
+   for the next stage**, alongside the already-listed struct packing
+   (`prompt.md` §7, §4.1) and fixed-size array fields (§4.2).
+
+Neither finding is a defect introduced here — (1) is the pre-existing W6 §3.4
+hole in a different spelling, recorded as deliberately open; (2) is
+`defconst`/`defenum` ordinal registration, which W1's signature-and-protocol
+prescan never claimed to cover.
+
+**Both are now assigned, within this stage rather than a future one:** (2) is
+**W8's G-0** and (1) is **W8's G-5**. See the W8 section below.
+
+---
+
+## W8 — Combined declaration and initialization *(added 2026-08-01; designed, not started)*
+
+**Spec: [../global-init.md](../global-init.md)** — the source of truth. This
+section records the filing and the shape of the item; it does not restate the
+design.
+
+**Headline goal: eliminate `compiler-init`, or reduce it to a few genuinely
+special cases.** A global that should not be nullable is declared and
+initialized in **one** operation, and the startup mechanism is **zero-cost when
+unused**: a program with no runtime initializer emits no `@__nucleus_init`, no
+`llvm.global_ctors` entry and no synthesized `main`. That is a hard requirement
+with a stated reason (microcontroller binary size), not an optimization.
+
+**Why it is in this stage.** It is the answer to the thing W6 §1.5 explicitly
+parked. W6 closed `(defvar g:ptr:T null)` and left `(defvar g:ptr:T)` open,
+because closing it needs *a way to express deferred initialization of a non-null
+global*, which the language does not have. The Doom-port regression run then hit
+that asymmetry 13 times in one afternoon, and the compiler's own census found 53
+instances of it in `src/`+`lib/`. Both findings above are sub-items of this one.
+
+**Staging** (`global-init.md` §5): **G-0** value names resolve on reachability
+(prerequisite, and shippable on its own — this is finding (2) above) → **G-1**
+constant expressions in `defvar-init-ir` → **G-2** an `(array T N)` type +
+constant aggregate initializers → **G-3** `@__nucleus_init`, emitted only when
+the queue is non-empty → **G-4** the ordering diagnostic and the `docs/` rule →
+**G-5** eliminate `compiler-init`, then flip (this is finding (1) above).
+
+**What the design measured, in one line each** — the numbers a future
+implementer should not re-derive:
+
+* **`compiler-init` is 51 statements** and runs **exactly once per process**
+  (`nucleusc.nuc:12507` batch, `repl.nuc:850` REPL, mutually exclusive). **30
+  statements become combined declaration+initialization, covering 48 globals**
+  (3 constant, 45 runtime); **20 statements are dead** — they restate the
+  `defvar` zero default and no per-unit reset is load-bearing; **1 statement is
+  the residue**, `(target-init)`, which reads argv and so can never be an
+  initializer.
+* **The compiler's `defvar` census is 174 forms** (164 `src/`, 10 `lib/`), 114
+  with no initializer, of which **53** are non-null element-typed. 51 of those
+  53 have exactly one `(set! …)` site in the whole tree.
+* **The do-nothing alternative is priced exactly**: re-spelling the 53 as
+  `raw:T` costs **249 flow violations across 197 lines and 10 files**, measured
+  with a warn-only compiler built in scratch (control run: 0).
+* **The external corpus is 20-of-21 static**: of the Doom port's 21 hand-rolled
+  `ensure-*` lazy initializers, 9 are constant tables and 11 are fixed-size
+  zero-filled buffers; only 1 is genuinely runtime. This justifies shipping the
+  static half first. **It is no longer the deciding corpus** — the compiler is —
+  and per the author's direction **the port is not to be converted yet**.
+
+**Two premise corrections the design made against its own first draft**, both
+by reading `src/`, and both worth carrying forward because they change what has
+to be built:
+
+1. **The `g-arena-alloc` migration blocker dissolves.** The first draft called
+   it "a fourth bucket no initializer expression can express" — an
+   out-parameter-mutated by-value `AllocHandle`. But `AllocHandle` is
+   `{kind:i32, data:ptr}` and the arena handle is `{ALLOC-ARENA, null}`: a
+   **compile-time constant struct**, reachable by the static half alone, with no
+   ordering rule, no value-returning constructor and no placeholder. The arena
+   itself is lazily initialized by `arena-alloc` (`lib/arena.nuc:41`), so there
+   is no "arena live first" constraint either. The constant form also *fixes* a
+   live latent split: `add-include-path`/`add-link-arg` run before
+   `compiler-init` and today silently get libc-backed vectors.
+2. **A synthesized `main` wrapper is incompatible with zero-cost-when-unused.**
+   The rename happens in `emit-defn`, long before the compiler knows whether any
+   runtime initializer exists. The requirement therefore *simplifies* the
+   per-triple mechanism split rather than complicating it:
+   `ctor-mechanism-for-triple` returns `global_ctors` or `none`, and on a triple
+   with no working append-only mechanism a non-empty queue is a **located
+   error**, never a dead section (which is what AVR's `.init_array` already is —
+   emitted, linked, occupying RAM, never executed, no diagnostic).
+
+**A third finding, new to the design and not previously recorded anywhere:**
+`g-vtable-table`, `g-boxedfn-table` and `g-dyn-table` are declared
+`(ref (Vector …))` — non-null — and are **never initialized at all**, being
+lazily built behind a `(when (= g-X null) …)` guard. That is W6 §1.5's
+unsoundness in a *third* spelling, and G-5 cannot close the hole without ruling
+on it (eager initializer, or honest `raw`).
+
+**One question the design leaves open**, recorded in `global-init.md` §4.6:
+whether a global in `section ".ctors"` with avr-gcc's word relocation is walked
+by `__do_global_ctors`. If yes, AVR gains an append-only mechanism; if no, AVR
+programs with runtime initializers get a located error. Neither answer blocks
+G-0 through G-5.
+
+---
+
+## W9 — Six defects found while measuring W8's design *(added 2026-08-01; reported, not fixed)*
+
+**Enumerated in [../global-init.md](../global-init.md) §7.** All six are
+pre-existing and independent of W1–W7; all were hit while measuring, not
+synthesized.
+
+| # | Defect | Note |
+|---|---|---|
+| 1 | **`make lib-objs` / `make lib-so` broken**, reproducing on the committed boot compiler | `lib/arena.nuc` and `lib/node.nuc` die `duplicate definition of 'arena-init' / 'alloc-node'` (the auto-prepended prelude chain imports the entry file itself, and the entry file is on no dedup list); `lib/reader.nuc` dies `undefined: stderr` |
+| 2 | **Two separately compiled Nucleus objects cannot be linked** | each inlines the whole prelude, so `build/lib/vector.o` and `build/lib/hashmap.o` share **7** duplicate public global definitions (`@g-arena`, `@g-intern-table`, …) and `ld` refuses. `exclude-prelude` works; a non-freestanding library is currently unlinkable |
+| 3 | **`--emit-cheader` does not export globals** | a `defvar` reaches the `.nuch` as `(extern …)` but gets no `extern T name;` line in the C header, so a C consumer cannot reach it |
+| 4 | **`--emit-cheader` emits hyphenated, invalid C identifiers** | see the precision note below |
+| 5 | **`(exclude-prelude)` in an *imported* file dies `unknown top-level form`** | rather than being ignored or diagnosed as "must be the first form of the unit". `strip-exclude-prelude` (`nucleusc.nuc:12375`) is consulted only for the entry file |
+| 6 | **`undefined: X — not defined anywhere in this compilation unit`** for a name that *is* in the unit, merely unprocessed | **overlaps W8's G-0; not filed twice** |
+
+**Defect 4, with the precision that says what the fix is.** Independently
+confirmed: `(defstruct My-Rec (a-field i32))` + `(defn my-func (x:i32):i32 …)`
+emits `int32_t a-field;` and `int32_t my-func(int32_t x);` — while the struct
+**type** name is correctly sanitized to `My_Rec`. So `sanitize-for-c` reaches
+type names but **not** field names or function names: it is applied at exactly
+three sites (`cheader.nuc:1761` `type-name-to-c`, `:1852` `defstruct` type name,
+`:2025` `defunion` type name) and at none of the `defstruct` field names
+(`:1862`), the `defunion` arm names and `%s_%s` enum tag constants (`:2044`,
+`:2056`, `:2066`), or `emit-cheader-declare`'s prototype name (`:1938`, which
+routes through `ns-ir-base` for the namespace prefix but never through
+`sanitize-for-c`). **The fix is a missed call site, not a missing mechanism.**
+It breaks C interop for any hyphenated name, which is most of them.
+
+**Defect 6 and W8's G-0.** G-0 fixes the *cause* — value names would resolve on
+reachability rather than import order, and the message would stop firing for
+names that are in the unit. Until then the message deserves a **W1c-style
+note**: W1c established exactly this pattern for exactly this shape of failure
+(a diagnostic that asserts something false because it cannot distinguish two
+causes), and appending a note is the change with the smallest blast radius —
+it breaks no `grep -qF` pin in the test suite.
+
+**Defects 1 and 2 are directly relevant to W8**, not incidental: they are the
+multi-TU mode `global-init.md` §2.4 relies on for its finding that an
+initializer list reachable only from the consumer's `main` cannot initialize a
+library.

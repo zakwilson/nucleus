@@ -14,21 +14,29 @@
 (import-use "stdio.h")
 (import-use "stdlib.h")
 
-; defstruct field — colon-paren pointer field.
+; defstruct field — colon-paren pointer field. The chain is NUL-terminated, so
+; the link-to-next slot is the NULLABLE pointer kind: `raw`, not `ptr`. (Stage 15
+; W6: `(defvar empty:(ptr Link) null)` used to compile — `defvar`'s global
+; initializer is a constant renderer that skipped `pkind-flow-check` — while the
+; identical local was rejected. Now that both paths agree, the terminator has to
+; be spelled honestly. `(raw Link)` is the same colon-paren sugar this file
+; exists to exercise, and `(ptr Link)` still appears below in `with-value`, the
+; `let` bindings, and the lambda.)
 (defstruct Link
   value:i32
-  next:(ptr Link))
+  next:(raw Link))
 
 ; defvar — global with a colon-paren type.
-(defvar empty:(ptr Link) null)
+(defvar empty:(raw Link) null)
 
 ; defn return-name (colon-paren) AND defn param (colon-paren).
 (defn with-value (l:(ptr Link) v:i32) (ptr Link)
   (.set! l value v)
   (return l))
 
-; defn param (colon-paren); scalar return; walks the chain summing values.
-(defn chain-sum (l:(ptr Link)):i32
+; defn param (colon-paren); scalar return; walks the chain summing values. Takes
+; the nullable kind: it is handed `(l next)` recursively and null-tests it.
+(defn chain-sum (l:(raw Link)):i32
   (if (= l null)
     (return 0)
     (return (+ (l value) (chain-sum (l next))))))

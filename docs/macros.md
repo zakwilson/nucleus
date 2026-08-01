@@ -12,6 +12,7 @@ Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defin
 | `unless` | `(unless condition body...)` | `(cond (not condition) (do body...))` |
 | `zero?` | `(zero? x)` | `(= x 0)` |
 | `null?` | `(null? x)` | `(= x null)` |
+| `bit-not` | `(bit-not x)` | `(bit-xor x -1)` — unary bitwise complement, correct at any width in two's complement |
 | `for` | `(for (var:type init) test step body)` | `(let (var:type init) (while test body step))` |
 | `dotimes` | `(dotimes (var:type n) body)` | `(let (var:type 0) (while (< var n) body (inc! var)))` |
 | `doseq` | `(doseq (var coll-expr IterType) body...)` | Iterate a **collection** conforming to `(Coll E It)`: calls `(iter coll-expr)` to get a fresh `IterType` by value, binds it to a typed local, and drives `(next (addr-of it))` each step, binding each element to `var`. `IterType` must be named explicitly because `let` bindings have no type inference and `addr-of` requires a named local (not an rvalue). `IterType` examples: `(VecIter i32)`, `(HashSetIter i32)`, `(HashMapEntryIter CStr i32)`. See [Iterators](iterators.md). |

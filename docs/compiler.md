@@ -105,13 +105,6 @@ searched:
 t.nuc:4: error: unknown: qzx-frobnicate — not defined anywhere in this compilation unit
 ```
 
-Some spellings are wrong mental models rather than typos, and get a rewrite
-instead of a nearby name. There is no unary bitwise complement:
-
-```
-t.nuc:1: error: no unary 'bit-not'; write (bit-xor x -1)
-```
-
 ### Unbalanced brackets
 
 An unterminated form reports **two** locations: the opening line of the

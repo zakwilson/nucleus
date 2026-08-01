@@ -209,6 +209,39 @@ p34.nuc:8: error: assignment: raw pointer where non-null (ref ...) is required �
    null)` legal, the tightened global gate must carve `CStr` out explicitly or it
    will re-reject W5c's accept criterion.
 
+**Status: item 2 landed (2026-07-31), exactly as recommended.** `defvar-init-ir`
+(`src/nucleusc.nuc`) now calls `pkind-flow-check ty-raw ty …` on the `null`
+branch, after the `CStr` early return — the *same* predicate the local path calls
+rather than a re-derivation, so its three exemptions (`(raw T)`/`?T` not being
+`PTR-REF`, and the elem-less-`ptr` untyped-destination refinement) come for free
+and the two paths cannot drift. `ty-raw` is precisely the type
+`emit-symbol-ref` gives the `null` symbol in value position. Ctx string is
+`"defvar"`, so the message body matches the local's word for word.
+Fixtures: `tests/fixtures/w6-defvar-null-{ptr-elem,ref,accepts}.nuc`.
+
+*Two corrections to the blast-radius measurement above.* (a) The scan covered
+`src/`+`lib/` only. Widening it to `examples/` finds a **seventh** site —
+`examples/colon-paren-types.nuc:23`, `(defvar empty:(ptr Link) null)`, the
+NUL-terminator of a hand-rolled linked list, whose `next` field and `chain-sum`
+parameter are `(ptr Link)` for the same reason. It is the one place in the tree
+that actually relied on the hole, and it was fixed the way the doc prescribes for
+the port: the three nullable slots became `(raw Link)`. The example's output is
+unchanged and its actual subject (colon-paren type sugar) is untouched — `(raw
+Link)` is the same sugar, and `(ptr Link)` still appears in `with-value`, the
+`let` bindings and the lambda. (b) "Zero compiler churn" holds: `make bootstrap`
+was byte-identical on the first pass, since the change only adds a rejection.
+
+The **no-initializer** sibling — `emit-defvar`'s default path emits `global ptr
+null` for any `is-ptr-like` type, so `(defvar g:ptr:Thing)` is the same unsound
+null-in-a-non-null-slot wearing a different spelling — was measured and
+deliberately **left open**: the compiler's own source has **53** such globals (20
+`ty-*:ref:Type`, `g-globals:ref:Scope`, and 32 `(ref (Vector …))`/`(ref (HashSet
+…))`/`(ref (HashMap …))` registry tables), every one a process-lifetime singleton
+filled by `types-init`/`compiler-init` after definition. Closing it is not a
+check but a language question — deferred initialization of a non-null global — and
+answering it with `?T` + narrowing would touch every use of `ty-i32` and friends.
+It belongs to W6 proper, not to this triage item.
+
 ---
 
 ## 2. Two live soundness bugs in the existing engine

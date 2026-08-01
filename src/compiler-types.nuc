@@ -561,7 +561,16 @@
   ; instances are caches of their template, so tier-2 widening resolution skips
   ; them (the template alone covers every widened call) to avoid a false ambiguity
   ; between a template and its own stamped instance.
-  (origin-template (raw Method)))
+  (origin-template (raw Method))
+  ; --- Stage 15 W5e: provenance, for the duplicate-signature diagnostic ---
+  ; The source file this method was registered from (`g-source-path` at
+  ; registration; null for a synthesized method with no source file) and whether
+  ; it came from a *private* definer. `finalize-generics` needs both to name the
+  ; OTHER definition's file and to phrase the namespace rule correctly — the
+  ; `Method.body` Node carries a line but no file.
+  src-file:CStr
+  src-ns:CStr
+  priv:i32)
 
 (defstruct Generic
   name:CStr
@@ -736,6 +745,30 @@
 (defstruct NsPrefixEntry
   ns:ptr      ; interned namespace name
   prefix:ptr) ; interned ir-prefix string for that namespace
+
+; Stage 15 W5e (design/stage15-stress-test/ergonomics.md §W5e) — one name a file
+; declared with a private definer (`defn-`, `defvar-`, `defconst-`, `defenum-`)
+; while the default `user` namespace was current. `bare` is the source spelling;
+; `key` is the file-scoped scope/generic key the definer was registered under
+; (`"#pN/bare"`, an ordinary namespace-qualified spelling whose namespace is the
+; synthetic per-file one — so `qualify-name` is idempotent on it and every
+; existing keying rule applies unchanged). Both are interned.
+(defstruct PrivName
+  bare:CStr
+  key:CStr)
+
+; The set of file-private names owned by one source file, plus the synthetic
+; namespace that keys them. `ns` is `#pN` (N = 1-based creation order); `prefix`
+; is its registered IR prefix (`<basename>_pN`), so a private solitary defn emits
+; `@<basename>_pN__<name>` and an overloaded one `@<basename>_pN__<name>.tok…` —
+; both fall out of the pre-existing `ns-compose`/`mangle-fn-name` path. A `#`
+; cannot begin a user namespace name (rejected in `emit-ns`), so `#pN` can never
+; collide with one.
+(defstruct PrivFile
+  path:CStr   ; interned source path that owns these names
+  ns:CStr     ; interned synthetic namespace ("#pN")
+  prefix:CStr ; interned IR prefix for that namespace
+  (names (ref (Vector (ref PrivName)))))
 
 ; Stage 14 AVR-5 (design/stage14/avr-targets.md §5 AVR-5) — function-attribute
 ; entry: maps a `defn`'s source name to one LLVM string function attribute set by

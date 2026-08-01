@@ -1,0 +1,37 @@
+; Stage 15 W6 (nullability): the boundary the new global-initializer
+; `pkind-flow-check` must NOT cross. Everything here is a NULLABLE or
+; contract-free pointer destination, so `null` stays legal — only a TYPED
+; non-null pointer (`ptr:T` / `(ref T)`, pinned by w6-defvar-null-ptr-elem.nuc
+; and w6-defvar-null-ref.nuc) rejects.
+;
+; The elem-less `ptr` cases are the load-bearing ones: bare `ptr` is PTR-REF
+; since the Phase-F flip, so it is only `pkind-flow-check`'s untyped-destination
+; refinement ("a non-null obligation on a slot that names no pointee protects
+; nothing") that keeps them compiling — and this compiler's own source has
+; ~1550 such bindings. `CStr` has its own explicit early return upstream and is
+; pinned separately by w5c-cstr-null-exempt.nuc; it is repeated here so a single
+; file shows the whole accepted set.
+(defstruct Thing (x i32))
+
+; Elem-less `ptr` — the void*-style escape hatch, with and without an init.
+(defvar g-bare:ptr null)
+(defvar g-bare-noinit:ptr)
+
+; `raw` — the nullable pointer kind, in both spellings.
+(defvar g-raw:(raw Thing) null)
+(defvar g-raw-colon:raw:Thing null)
+
+; `?T` — may-be-null, narrowed at use.
+(defvar g-maybe:?ptr:Thing null)
+
+; `CStr` — permanently flow-exempt (a null `char*` is ordinary C).
+(defvar g-cstr:CStr null)
+
+(defn main ():i32
+  (when (!= g-bare null) (return 1))
+  (when (!= g-bare-noinit null) (return 2))
+  (when (!= g-raw null) (return 3))
+  (when (!= g-raw-colon null) (return 4))
+  (when (!= g-maybe null) (return 5))
+  (when (!= g-cstr null) (return 6))
+  (return 0))

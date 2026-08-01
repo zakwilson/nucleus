@@ -17,11 +17,26 @@
 ; Generic (polymorphism) registry
 ; ============================================================
 
-(defn generic-lookup (name:CStr):?ptr:Generic
+; Exact registry probe: the Generic stored under precisely this key, or null.
+; The DEFINE side uses this (the caller has already computed the key it wants);
+; use sites go through generic-lookup below, which first tries the current file's
+; private key.
+(defn generic-lookup-exact (name:CStr):?ptr:Generic
   (doseq (g g-generics (VecIter (ref Generic)))
      (when (= (g name) name)
            (return (as ptr g))))
   (return null))
+
+(defn generic-lookup (name:CStr):?ptr:Generic
+  ; Stage 15 W5e: a name this file declared with `defn-` is keyed under the
+  ; file's implicit namespace, and shadows a public generic of the same name.
+  ; priv-key-use is the identity for every other name, so this is one extra
+  ; compare — and, when the unit has no private definer at all, one null check.
+  (let (k:CStr (priv-key-use name))
+    (when (!= k name)
+      (let (pg:?ptr:Generic (generic-lookup-exact k))
+        (when (!= pg null) (return pg)))))
+  (return (generic-lookup-exact name)))
 
 (defn generic-new (name:CStr):ref:Generic
   ; Each Generic is individually arena-allocated (pointer-stable for the whole
@@ -34,7 +49,14 @@
     ; Stage 12 N4: snapshot the defining namespace's ir-prefix now, so a finalize
     ; or monomorphization that runs in a later import's namespace still mangles
     ; under this generic's own namespace.
-    (.set! g ir-prefix (ns-ir-prefix g-current-ns))
+    ; Stage 15 W5e: a file-private key (`#p1/helper`) carries its own synthetic
+    ; namespace, whose registered prefix is what makes the emitted symbol both
+    ; legal and unique — read it from the key rather than from g-current-ns
+    ; (which is `user`, the empty prefix, for exactly these definitions).
+    (let (pq:CStr (priv-qualifier-of name))
+      (if (= (as ptr pq) null)
+        (.set! g ir-prefix (ns-ir-prefix g-current-ns))
+        (.set! g ir-prefix (ns-ir-prefix pq))))
     (conj g-generics g)
     (return (as ref:Generic g))))
 
@@ -345,8 +367,16 @@
 ; finalize-generics once the full method set per name is known.
 (defn generic-register-method (fname:CStr ret:raw:Type param-types:ptr nparams:i32
                                    has-rest:i32 variadic:i32 body:raw:Node):ref:Method
-  (let (g:ptr (generic-lookup fname))
-    (when (= g null) (set! g (generic-new fname)))
+  ; Stage 15 W5e: a private definer in the default `user` namespace registers
+  ; under its file's implicit-namespace key, so two files' private `helper`s are
+  ; two Generics and neither the duplicate-signature check nor dispatch ever sees
+  ; the other. Identity for a public definer → the registry, and the bootstrap,
+  ; are unchanged. generic-lookup-exact (not generic-lookup) because the key is
+  ; already final here: a public `helper` in a file that also defines a private
+  ; one must not be folded into the private generic.
+  (let (key:CStr (priv-key-define fname)
+        g:ptr (generic-lookup-exact key))
+    (when (= g null) (set! g (generic-new key)))
     (let (ft:ptr:Type (as ptr:Type (make-type TY-FN)))
       (.set! ft ret ret)
       (type-set-params ft param-types nparams)
@@ -363,8 +393,50 @@
         (.set! m fn-type (as ptr ft))
         (.set! m binop null)
         (.set! m body body)
+        ; W5e: provenance for the duplicate-signature diagnostic, which must name
+        ; the OTHER definition's file — a Method.body Node carries a line but no
+        ; file — and phrase the namespace rule according to whether the pair is
+        ; public or private.
+        (.set! m src-file g-source-path)
+        (.set! m src-ns g-current-ns)
+        (.set! m priv g-defining-private)
         (generic-add-method g m)
         (return m)))))
+
+; Stage 15 W5e: the message for two definitions of one name with identical
+; parameter types. Both definitions' FILES are named (a Method.body Node carries a
+; line but no file, which is why generic-register-method records src-file), and
+; the note states the rule that was actually violated:
+;
+;   * a private pair can only reach here from an EXPLICIT namespace — in the
+;     default `user` namespace W5e keys each file's private names separately, so
+;     two files' private `helper`s are two Generics and never meet. So the note
+;     for a private pair is precisely "privacy is per namespace, not per file".
+;   * anything else is a public collision, which stays an error by design: a
+;     public name must be unique across the whole unit.
+(defn duplicate-signature-message (g:raw:Generic later:raw:Method earlier:raw:Method):CStr
+  (let (gg:raw:Generic g
+        a:raw:Method later
+        b:raw:Method earlier
+        bare:CStr (strip-priv-qualifier (gg name))
+        bnode:(raw Node) (b body)
+        bline:i32 0
+        afile:CStr (a src-file)
+        bfile:CStr (b src-file)
+        ansname:CStr (a src-ns))
+    (when (!= bnode null) (set! bline ((unsafe/cast ptr:Node bnode) line)))
+    (when (= afile null) (set! afile "<unknown file>"))
+    (when (= bfile null) (set! bfile "<unknown file>"))
+    (when (= ansname null) (set! ansname "user"))
+    (let (head:CStr (fmt-2s "duplicate definition of '%s' — the same parameter types are already defined at %s"
+                            bare (fmt-sd "%s:%d" bfile bline))
+          note:CStr null)
+      (if (and (!= (a priv) 0) (!= (b priv) 0))
+        (set! note (fmt-s "`defn-` makes a name private to its NAMESPACE, not to its file, and both definitions are in namespace '%s'. Rename one, or give one file an (ns ...) of its own."
+                          ansname))
+        (set! note (fmt-s "'%s' is public, and a public name must be unique across the whole compilation unit. Declare one with `defn-` — in the default `user` namespace a private name is scoped to its own file, so the two files may each have their own — or rename one."
+                          bare)))
+      (return (fmt-2s "%s\n  note: %s" head note)))))
 
 ; Decide mangling for every not-yet-finalized user generic. A solitary concrete
 ; name keeps its unmangled @name and is bound in g-globals (so forward references
@@ -403,7 +475,13 @@
                   ; `@name`, namespace-prefixed in a non-`user` namespace. The
                   ; scope key (gg name) stays the bare/qualified storage key
                   ; (qualified by scope-define); only the ir-name is prefixed.
-                  (.set! m0 ir-name (fmt-s "@%s" (ns-compose (gg ir-prefix) (ir-name-token (gg name)))))
+                  ; W5e: a file-private key (`#p1/helper`) carries its namespace
+                  ; in the key itself, so the ir-name base is the BARE name and
+                  ; the synthetic prefix (snapshotted into gg ir-prefix by
+                  ; generic-new) supplies `a_p1__`. strip-priv-qualifier is the
+                  ; identity for every non-private key.
+                  (.set! m0 ir-name (fmt-s "@%s" (ns-compose (gg ir-prefix)
+                                                   (ir-name-token (strip-priv-qualifier (gg name))))))
                   (scope-define g-globals (gg name) (m0 fn-type) (m0 ir-name) 0))
                 (do
                   (.set! gg mangled 1)
@@ -420,10 +498,11 @@
                                                                (mj param-types)
                                                                (mi num-params)) 0))
                                   (die-at (-> mi (_ body) (unsafe/cast ptr:Node _) (_ line))
-                                    (fmt-s "duplicate method signature for overloaded '%s'" (gg name)))))
+                                    (duplicate-signature-message gg mi mj))))
                               (inc! j)))
                           (.set! mi ir-name
-                            (mangle-fn-name (gg ir-prefix) (gg name) (mi param-types) (mi num-params)))))
+                            (mangle-fn-name (gg ir-prefix) (strip-priv-qualifier (gg name))
+                                            (mi param-types) (mi num-params)))))
                       (inc! i)))))
               (.set! gg finalized 1)))))
       (inc! gi))))
@@ -615,8 +694,10 @@
   ; Stage 12 N4: a solitary (non-overloaded) defn keeps `@name` but, in a
   ; non-`user` namespace, prefixes the base with the namespace ir-prefix
   ; (`@foo__name`). ns-ir-base is the identity under `user` (empty prefix), so the
-  ; bootstrap stays byte-identical.
-  (return (fmt-s "@%s" (ns-ir-base fname))))
+  ; bootstrap stays byte-identical. Stage 15 W5e: def-ir-base additionally applies
+  ; the owning file's private prefix when a private definer is being processed, so
+  ; this fallback cannot hand two files' private `helper`s the same `@helper`.
+  (return (fmt-s "@%s" (def-ir-base fname))))
 
 (defn defn-is-mangled (fname:CStr):i32
   (let (g:ptr (generic-lookup fname))

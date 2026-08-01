@@ -1,52 +1,73 @@
 ; Formatting helpers — arena-backed sprintf wrappers.
 ;
 ; Requires: arena (arena-strndup, arena-alloc), snprintf, strlen, isdigit.
+;
+; ARITY IS FIXED (context/conventions.md): each helper takes exactly the number
+; of conversions its name says. A format string with MORE conversions than the
+; helper has parameters makes snprintf read a garbage vararg and typically
+; segfaults the compiler. Add a new shape here rather than overloading one.
+;
+; TRUNCATION (Stage 15 W1d): `snprintf` returns the length the output WOULD have
+; had, not what it wrote — so `arena-strndup buf n` with an over-long result
+; memcpy'd past the end of the stack buffer. Every helper now clamps through
+; `fmt-take`. This became reachable once diagnostics started embedding absolute
+; file paths (W1c's unreachable-definer note, W1d's import-cycle notes): two
+; long paths plus prose overruns a 512-byte buffer with no warning at all. The
+; string-carrying helpers also moved 512 → 1024 so those messages fit whole
+; rather than being clamped mid-sentence.
+
+; Bytes actually available in `buf` after an `snprintf` of capacity `cap`:
+; snprintf's return is the unbounded length, and it NUL-terminates at cap-1.
+(defn fmt-take (n:i32 cap:i32):i64
+  (when (< n 0) (return 0))
+  (when (>= n cap) (return (as i64 (- cap 1))))
+  (return (as i64 n)))
 
 (defn fmt-i32 (fmt:ptr d:i32):ptr
   (let (buf:ptr (alloca i8 256)
         n:i32 (snprintf buf (as i64 256) fmt d))
-    (return (arena-strndup buf (as i64 n)))))
+    (return (arena-strndup buf (fmt-take n 256)))))
 
 (defn fmt-i32-i32 (fmt:ptr a:i32 b:i32):ptr
   (let (buf:ptr (alloca i8 256)
         n:i32 (snprintf buf (as i64 256) fmt a b))
-    (return (arena-strndup buf (as i64 n)))))
+    (return (arena-strndup buf (fmt-take n 256)))))
 
 (defn fmt-i64 (fmt:ptr d:i64):ptr
   (let (buf:ptr (alloca i8 256)
         n:i32 (snprintf buf (as i64 256) fmt d))
-    (return (arena-strndup buf (as i64 n)))))
+    (return (arena-strndup buf (fmt-take n 256)))))
 
 (defn fmt-s (fmt:ptr s:ptr):ptr
-  (let (buf:ptr (alloca i8 512)
-        n:i32 (snprintf buf (as i64 512) fmt s))
-    (return (arena-strndup buf (as i64 n)))))
+  (let (buf:ptr (alloca i8 1024)
+        n:i32 (snprintf buf (as i64 1024) fmt s))
+    (return (arena-strndup buf (fmt-take n 1024)))))
 
 (defn fmt-sd (fmt:ptr s:ptr d:i32):ptr
-  (let (buf:ptr (alloca i8 512)
-        n:i32 (snprintf buf (as i64 512) fmt s d))
-    (return (arena-strndup buf (as i64 n)))))
+  (let (buf:ptr (alloca i8 1024)
+        n:i32 (snprintf buf (as i64 1024) fmt s d))
+    (return (arena-strndup buf (fmt-take n 1024)))))
 
 (defn fmt-2s (fmt:ptr s1:ptr s2:ptr):ptr
-  (let (buf:ptr (alloca i8 512)
-        n:i32 (snprintf buf (as i64 512) fmt s1 s2))
-    (return (arena-strndup buf (as i64 n)))))
+  (let (buf:ptr (alloca i8 1024)
+        n:i32 (snprintf buf (as i64 1024) fmt s1 s2))
+    (return (arena-strndup buf (fmt-take n 1024)))))
 
 (defn fmt-3s (fmt:ptr s1:ptr s2:ptr s3:ptr):ptr
-  (let (buf:ptr (alloca i8 512)
-        n:i32 (snprintf buf (as i64 512) fmt s1 s2 s3))
-    (return (arena-strndup buf (as i64 n)))))
+  (let (buf:ptr (alloca i8 1024)
+        n:i32 (snprintf buf (as i64 1024) fmt s1 s2 s3))
+    (return (arena-strndup buf (fmt-take n 1024)))))
 
 (defn fmt-2s-i (fmt:ptr s1:ptr s2:ptr d:i32):ptr
-  (let (buf:ptr (alloca i8 512)
-        n:i32 (snprintf buf (as i64 512) fmt s1 s2 d))
-    (return (arena-strndup buf (as i64 n)))))
+  (let (buf:ptr (alloca i8 1024)
+        n:i32 (snprintf buf (as i64 1024) fmt s1 s2 d))
+    (return (arena-strndup buf (fmt-take n 1024)))))
 
 ; One string, two ints (Stage 15 W4d: "macro '%s': expects %d args, got %d").
 (defn fmt-s-2i (fmt:ptr s:ptr a:i32 b:i32):ptr
-  (let (buf:ptr (alloca i8 512)
-        n:i32 (snprintf buf (as i64 512) fmt s a b))
-    (return (arena-strndup buf (as i64 n)))))
+  (let (buf:ptr (alloca i8 1024)
+        n:i32 (snprintf buf (as i64 1024) fmt s a b))
+    (return (arena-strndup buf (fmt-take n 1024)))))
 
 ; Replace chars invalid in LLVM IR identifiers with underscores.
 (defn sanitize-for-ir (name:ptr):ptr

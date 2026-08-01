@@ -107,6 +107,132 @@ they will conflict.
 names both definitions' files. If option 1: two files may each define a private
 `ensure-channels`; a public collision still errors.
 
+**Status: DONE (2026-08-01). Outcome: Option 1, in its unconditional form.**
+
+**One framing above is wrong and worth correcting: "the error surfaces in
+whichever file was written *second*".** That was true pre-W1. Since W1a's
+whole-graph signature prescan the collision is detected during the *prescan*, so
+it is import-*order*-independent in the sense that matters — it fails in every
+order — but the file the message names is still the one prescanned second
+(measured: swapping the two `import-use` lines swaps which file is blamed). The
+old message named only that one file, which is exactly the "naming a function its
+author has never seen" complaint; that half of the finding was accurate.
+
+### The measurement that decided it
+
+The question Option 1 turns on is: *how many private definers exist in code whose
+IR must not move?* Answer, over `src/` + `lib/`:
+
+| definer | `src/` | `lib/` |
+|---|---|---|
+| `defn-` | **0** | 1 (`lib/unsafe-priv-demo.nuc`, not on the compiler's import graph) |
+| `defvar-` `defconst-` `defenum-` `defstruct-` `defunion-` `defmacro-` `defprotocol-` | **0** | **0** |
+
+**The compiler uses no private definer at all**, so *no* private-definer change
+can move `make bootstrap` — which removes the entire reason the spec hedged
+towards Option 2. The cheaper "bare ir-name when the name is unique in the unit,
+file-qualified only on collision" variant was therefore **rejected**: its only
+advantage was leaving today's IR untouched, which the unconditional form already
+does for the compiler, and it carries a real hazard — `finalize-generics` stamps
+an ir-name and sets `finalized = 1`, so a name that looked unique when its
+generic finalized cannot be renamed when a *later* file registers a colliding
+one. Unconditional file-qualification is order-independent by construction.
+
+Measured cost, `--emit-llvm` sweep of every `examples/` + `lib/` program, old
+compiler vs new: **160 byte-identical, 5 differing, 0 differing for any other
+reason.** All five are the private-definer files (`examples/private-defn.nuc`,
+`examples/cstr-defvar.nuc`, `examples/namespaces.nuc`,
+`lib/unsafe-priv-demo.nuc`, `examples/unsafe-spellings.nuc`) and every hunk in
+them is a rename of an `internal` symbol plus its uses — e.g.
+`@helper-add` → `@private_defn_p1__helper-add`. `make bootstrap` was
+**byte-identical on the first pass**, no reconverge needed.
+
+A second defect fell out of the same census, worse than the one reported:
+**`defvar-` collided too, and its symptom was an unlocated LLVM parse error.**
+Two files with `(defvar- g:i32 …)` emitted two `@g = internal global` lines into
+one module; `--emit-llvm` exited 0 and the link died pointing at raw IR with no
+source location. It is fixed by the same mechanism. (`defconst-`/`defenum-` are
+compile-time only and happened to work by emission order; they are now keyed
+properly rather than by luck.)
+
+### What was built
+
+A private definer in a file with **no `(ns …)`** is keyed under an *implicit
+per-file namespace*. The whole thing is expressed in Stage 12's namespace
+vocabulary rather than beside it: the key is an ordinary `<ns>/<name>` spelling
+(`#p1/helper`), so `qualify-name` is idempotent on it, `strip-ns-qualifier`
+recovers the bare name (which is what makes `import-alias-one`, and therefore
+`unsafe/import-private`, correct with no change at all), and the synthetic
+namespace's registered ir-prefix flows through the existing
+`ns-compose`/`mangle-fn-name` path to give `@a_p1__helper` (solitary) or
+`@a_p1__helper.i32` (overloaded).
+
+* `PrivName`/`PrivFile` (`src/compiler-types.nuc`) + `g-priv-files` and the
+  `priv-*` family (`src/nucleusc.nuc`, beside `qualify-name`). Everything
+  short-circuits on `g-priv-files == null`, so a unit with no private definer
+  takes exactly the pre-W5e path.
+* `scope-define`/`scope-lookup` (`src/scope.nuc`) gained one call each:
+  `priv-key-define` on the define side, `priv-key-use` on the use side. That one
+  pair covers `defn-` (solitary), `defvar-`, `defconst-` and `defenum-` at once.
+* `generic-lookup` split into `generic-lookup-exact` (define side, key already
+  final) and a private-preferring wrapper (use side); `generic-new` reads the
+  ir-prefix from the key's own qualifier; `generic-register-method` keys through
+  `priv-key-define` and records `src-file`/`src-ns`/`priv` on the `Method`.
+* `prescan-defn-signatures` arms `g-defining-private` for a `defn-` — signature
+  registration happens before any form is emitted (W1a), so the dispatch loop's
+  flag is not yet on at that point.
+* `emit-ns` rejects a `#`-leading namespace name; that unspellability is the
+  whole collision argument for the synthetic keys.
+
+**A file's private name shadows a public one elsewhere**, which fell out of the
+key scheme rather than being designed in, and is the right rule: it is the same
+shadowing a namespace-local name gets over an imported one.
+
+### The diagnostic
+
+The public collision still errors, at a real `file:line:`, and now names **both**
+files and states the rule:
+
+```
+b.nuc:1: error: duplicate definition of 'helper' — the same parameter types are already defined at a.nuc:1
+  note: 'helper' is public, and a public name must be unique across the whole compilation unit. Declare one with `defn-` — in the default `user` namespace a private name is scoped to its own file, so the two files may each have their own — or rename one.
+```
+
+A private pair can now only collide inside an **explicit** namespace, so that
+branch of the message says precisely what is true there — which is the spec's
+Option-2 wording, preserved for the case that still errors:
+
+```
+  note: `defn-` makes a name private to its NAMESPACE, not to its file, and both
+  definitions are in namespace 'geom'. Rename one, or give one file an (ns ...) of its own.
+```
+
+### Tests
+
+`run_w5e_private_isolated` and `run_w5e_still_rejects` (`tests/run-tests.sh`) —
+nine units. The positive ones **link and run**, asserting an exit status that
+encodes *both* files' answers (`a*10+b`), because a call routed to the wrong
+file's symbol links perfectly and only shows up in the value. Covered: `defn-`
+in both import orders, `defvar-`, private-shadows-public in both orders,
+overloaded privates (the mangled path), the public collision, the
+same-namespace private collision, and `tests/fixtures/w5e-ns-hash-reserved.nuc`
+for the `#`-namespace guard.
+
+### Left undone, deliberately
+
+* **The REPL still rejects `defn-` outright** (`unknown: defn-`) — its top-level
+  dispatch never had the private definers. Pre-existing and unchanged; verified
+  identical on the pre-W5e compiler.
+* **`compile-time` cannot call a function defined in the same file**, private or
+  public (`JIT session error: Symbols not found`). Pre-existing, orthogonal, and
+  reproduces on the old compiler; W5e only changes the symbol name in that
+  message.
+* `defstruct-`/`defunion-`/`defprotocol-`/`defmacro-` keep namespace-level
+  privacy: they introduce *type*/macro registry names, which are bare-keyed and
+  globally identified by design (a qualified type reference must resolve to the
+  same `StructDef` from any namespace — Stage 12 decision 9). Making those
+  file-scoped is a separate, larger question.
+
 ## W5f — union with a function-pointer member (§1.1) — medium, crash
 
 **Status: DONE (2026-07-31). Outcome: working code, not a diagnostic.**

@@ -745,8 +745,9 @@ w1_run() {
 # files that depend on each other's functions, each importing what it uses.
 # Before W1a this failed in BOTH orders — `mx.nuc:1: unknown: y-later` one way,
 # `my.nuc:1: unknown: x-helper` the other — because signature registration was
-# purely ordinal. The back-import stays out of it (a mutual `(import …)` pair is
-# still `circular import`, checked separately below): the parent imports both.
+# purely ordinal. The back-import stays out of it — this is the common-parent
+# spelling, which W1d's Option 2 keeps valid and recommended even though a mutual
+# `(import …)` pair is now legal too (run_w1d_cycle_accepts, below).
 run_w1_mutual() {
   local d
   d="$(mktemp -d)"
@@ -815,7 +816,7 @@ run_w1_still_rejects() {
   printf '(defn w1-dupe (n:i32):i32 (return (+ n 1)))\n' > "$d/w1-dup-b.nuc"
   printf '(import w1-dup-a)\n(import w1-dup-b)\n(defn main ():i32 (return (w1-dupe 1)))\n' > "$d/w1-dup.nuc"
   err="$(./build/nucleusc -I "$d" --emit-llvm "$d/w1-dup.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -q "duplicate method signature for overloaded 'w1-dupe'"; then
+  if printf '%s' "$err" | grep -q "duplicate definition of 'w1-dupe'"; then
     echo "PASS  w1-duplicate-rejected"
   else
     echo "FAIL  w1-duplicate-rejected"
@@ -851,23 +852,275 @@ run_w1_declare_cycle_breaker() {
   rm -rf "$d"
 }
 
-# A mutual `(import …)` pair is still a hard `circular import` error (W1d is a
-# separate decision). Pinned so relaxing it is a deliberate act, not a side
-# effect: the diagnostic must name the file and land on a real line.
-run_w1_circular_still_errors() {
-  local d err
+# --- Stage 15 W1d: a mutual `(import …)` pair is LEGAL -----------------------
+# resolution.md "W1d — mutual imports", Option 2 (chosen 2026-07-31, superseding
+# the Option 1 decision recorded the same day). `do-import` skips a re-entry of
+# an in-progress path instead of erroring, so a cycle compiles; W1a already
+# registers every reachable file's signatures before any emission, so every
+# cross-file reference in the cycle resolves.
+#
+# This block REPLACES `run_w1_circular_still_errors`, which pinned the old hard
+# error. That test was doing its job — the policy changed, so the pin moved with
+# it. What it guarded (the diagnostic must be located, and relaxing the rule must
+# be deliberate) is preserved: the positive cases below compile, LINK and run,
+# and each of the four couplings a cycle still cannot satisfy is pinned to a
+# located, specific diagnostic.
+
+# Multi-file rejection: write files into <dir>, compile <main>, require <pattern>
+# in stderr and no `:0:` — the same location guarantee run_reject gives the
+# single-fixture rejections.
+w1_reject_multi() {  # <name> <dir> <main.nuc> <pattern>
+  local name="$1" d="$2" mainsrc="$3" pattern="$4" err
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$mainsrc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | grep -q ':0:'; then
+    echo "FAIL  $name (diagnostic reports line 0)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  elif printf '%s' "$err" | grep -qF "$pattern"; then
+    echo "PASS  $name"
+  else
+    echo "FAIL  $name"
+    echo "    expected: $pattern"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+  fi
+}
+
+# The headline: two files that import each other, compiled from either end.
+# `w1-ca-fn 3` walks a→b→a→b and returns 2; `w1-cb-fn 3` walks b→a→b→a and
+# returns 1, so the two orders cannot pass by accident with one shared answer.
+# Also covers the flatten spelling (`import-use`, prefix == null), a three-file
+# cycle, and a file that imports itself — all four reach the same guard.
+run_w1d_cycle_accepts() {
+  local d
   d="$(mktemp -d)"
   printf '(import w1-cb)\n(defn w1-ca-fn (n:i32):i32 (if (= n 0) (return 1) (return (w1-cb-fn (- n 1)))))\n' > "$d/w1-ca.nuc"
   printf '(import w1-ca)\n(defn w1-cb-fn (n:i32):i32 (if (= n 0) (return 2) (return (w1-ca-fn (- n 1)))))\n' > "$d/w1-cb.nuc"
-  printf '(import w1-ca)\n(defn main ():i32 (return (w1-ca-fn 3)))\n' > "$d/w1-circ.nuc"
-  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/w1-circ.nuc" 2>&1 >/dev/null || true)"
+  printf '(import w1-ca)\n(defn main ():i32 (return (w1-ca-fn 3)))\n' > "$d/w1-circ1.nuc"
+  printf '(import w1-cb)\n(defn main ():i32 (return (w1-cb-fn 3)))\n' > "$d/w1-circ2.nuc"
+  w1_run w1d-cycle-order1 "$d" "$d/w1-circ1.nuc" 2
+  w1_run w1d-cycle-order2 "$d" "$d/w1-circ2.nuc" 1
+
+  printf '(import-use w1-cub)\n(defn w1-cua ():i32 (return (+ (w1-cub) 1)))\n' > "$d/w1-cua.nuc"
+  printf '(import-use w1-cua)\n(defn w1-cub ():i32 (return 5))\n' > "$d/w1-cub.nuc"
+  printf '(import-use w1-cua)\n(defn main ():i32 (return (w1-cua)))\n' > "$d/w1-cu.nuc"
+  w1_run w1d-cycle-import-use "$d" "$d/w1-cu.nuc" 6
+
+  printf '(import w1-t3b)\n(defn w1-f3a (n:i32):i32 (if (= n 0) (return 1) (return (w1-f3b (- n 1)))))\n' > "$d/w1-t3a.nuc"
+  printf '(import w1-t3c)\n(defn w1-f3b (n:i32):i32 (if (= n 0) (return 2) (return (w1-f3c (- n 1)))))\n' > "$d/w1-t3b.nuc"
+  printf '(import w1-t3a)\n(defn w1-f3c (n:i32):i32 (if (= n 0) (return 3) (return (w1-f3a (- n 1)))))\n' > "$d/w1-t3c.nuc"
+  printf '(import w1-t3a)\n(defn main ():i32 (return (w1-f3a 5)))\n' > "$d/w1-t3.nuc"
+  w1_run w1d-cycle-three-file "$d" "$d/w1-t3.nuc" 3
+
+  printf '(import w1-self)\n(defn w1-self-fn ():i32 (return 9))\n' > "$d/w1-self.nuc"
+  printf '(import w1-self)\n(defn main ():i32 (return (w1-self-fn)))\n' > "$d/w1-selfm.nuc"
+  w1_run w1d-cycle-self-import "$d" "$d/w1-selfm.nuc" 9
+  rm -rf "$d"
+}
+
+# The couplings a legal cycle still cannot satisfy. Each is emission-time — a
+# cycle member's body is emitted BEFORE the rest of the file it back-imports, so
+# anything that file defines after its own `import` has not run yet. Every one
+# of these used to fail with a message that blamed the wrong thing:
+#   macro/const/enum → "not defined anywhere in this compilation unit" (it is);
+#   layout           → "no field 'x' on struct 'S'" (it has that field), or, for
+#                      a by-value struct at an ABI boundary, an `i0` aggregate
+#                      and an UNLOCATED "failed to parse generated IR";
+#   prefix alias     → "not defined anywhere" for a name that is in the unit.
+run_w1d_cycle_diagnoses() {
+  local d
+  d="$(mktemp -d)"
+
+  # 1. A macro defined by the cycle partner.
+  printf '(import w1-mcb)\n(defmacro w1-amac (x) `(+ ,x 100))\n(defn w1-mca ():i32 (return 1))\n' > "$d/w1-mca.nuc"
+  printf '(import w1-mca)\n(defn w1-mcb (n:i32):i32 (return (w1-amac n)))\n' > "$d/w1-mcb.nuc"
+  printf '(import w1-mca)\n(defn main ():i32 (return (w1-mcb 5)))\n' > "$d/w1-mcm.nuc"
+  w1_reject_multi w1d-cycle-macro-diagnosed "$d" "$d/w1-mcm.nuc" \
+    "unknown: w1-amac — defined in a file this unit imports circularly"
+
+  # 2a. A defconst from the cycle partner.
+  printf '(import w1-kcb)\n(defconst W1-KA 42)\n(defn w1-kca ():i32 (return 1))\n' > "$d/w1-kca.nuc"
+  printf '(import w1-kca)\n(defn w1-kcb ():i32 (return W1-KA))\n' > "$d/w1-kcb.nuc"
+  printf '(import w1-kca)\n(defn main ():i32 (return (w1-kcb)))\n' > "$d/w1-kcm.nuc"
+  w1_reject_multi w1d-cycle-defconst-diagnosed "$d" "$d/w1-kcm.nuc" \
+    "undefined: W1-KA — defined in a file this unit imports circularly"
+
+  # 2b. A defenum MEMBER from the cycle partner. The definer scan matches the
+  # token after the keyword, which for `defenum` is the enum's name — so this
+  # also pins the member sweep added for it.
+  printf '(import w1-ecb)\n(defenum W1Color W1-RED W1-GREEN W1-BLUE)\n(defn w1-eca ():i32 (return 1))\n' > "$d/w1-eca.nuc"
+  printf '(import w1-eca)\n(defn w1-ecb ():i32 (return W1-BLUE))\n' > "$d/w1-ecb.nuc"
+  printf '(import w1-eca)\n(defn main ():i32 (return (w1-ecb)))\n' > "$d/w1-ecm.nuc"
+  w1_reject_multi w1d-cycle-defenum-diagnosed "$d" "$d/w1-ecm.nuc" \
+    "undefined: W1-BLUE — defined in a file this unit imports circularly"
+
+  # 3a. A field access on a struct the partner has not laid out yet.
+  printf '(import w1-scb)\n(defstruct W1SC\n  x:i32\n  y:i32)\n(defn w1-sca ():i32 (return 1))\n' > "$d/w1-sca.nuc"
+  printf '(import w1-sca)\n(defn w1-scb (p:ptr:W1SC):i32 (.set! p x 11) (return (p x)))\n' > "$d/w1-scb.nuc"
+  printf '(import w1-sca)\n(defn main ():i32 (return 0))\n' > "$d/w1-scm.nuc"
+  w1_reject_multi w1d-cycle-layout-diagnosed "$d" "$d/w1-scm.nuc" \
+    "field assignment: 'W1SC' has no layout at this point"
+
+  # 3b. A struct literal — nfields is 0, so every initializer looked like one
+  # too many.
+  printf '(import w1-lcb)\n(defstruct W1LC\n  x:i32\n  y:i32)\n(defn w1-lca ():i32 (return 1))\n' > "$d/w1-lca.nuc"
+  printf '(import w1-lca)\n(defn w1-lcb ():i32 (let (v:W1LC (W1LC 1 2)) (return 0)))\n' > "$d/w1-lcb.nuc"
+  printf '(import w1-lca)\n(defn main ():i32 (return 0))\n' > "$d/w1-lcm.nuc"
+  w1_reject_multi w1d-cycle-structlit-diagnosed "$d" "$d/w1-lcm.nuc" \
+    "struct literal: 'W1LC' has no layout at this point"
+
+  # 3c. The silent one: a by-value struct parameter. abi-classify sized the
+  # unlaid-out struct at 0 and emitted `define … @f(i0 %v.arg)` against a call
+  # site that passed two i64s. The only symptom was an unlocated LLVM parse
+  # error thousands of lines away.
+  printf '(import w1-bcb)\n(defstruct W1BC\n  x:i32\n  y:i32\n  z:i32\n  w:i32)\n(defn w1-bca ():i32 (return 1))\n' > "$d/w1-bca.nuc"
+  printf '(import w1-bca)\n(defn w1-bcb (v:W1BC):i32 (return 7))\n' > "$d/w1-bcb.nuc"
+  printf '(import w1-bca)\n(defn main ():i32 (return 0))\n' > "$d/w1-bcm.nuc"
+  w1_reject_multi w1d-cycle-byval-diagnosed "$d" "$d/w1-bcm.nuc" \
+    "defn parameter: 'W1BC' has no layout at this point"
+
+  # 4. A `prefix/name` over a cycle member. The skipped re-entry has no
+  # global-scope slice, so no aliases were injected; the bare name works.
+  printf '(import w1-pcb)\n(defn w1-pca (n:i32):i32 (return (+ n 1)))\n' > "$d/w1-pca.nuc"
+  printf '(import w1-pca)\n(defn w1-pcb (n:i32):i32 (return (w1-pca/w1-pca n)))\n' > "$d/w1-pcb.nuc"
+  printf '(import w1-pca)\n(defn main ():i32 (return (w1-pcb 5)))\n' > "$d/w1-pcm.nuc"
+  w1_reject_multi w1d-cycle-prefix-diagnosed "$d" "$d/w1-pcm.nuc" \
+    "the prefix 'w1-pca' has no aliases here"
+
+  # And the rule the skip must NOT relax: two files defining the same name+arity
+  # are still a duplicate even when they are cycle partners. Silent last-wins
+  # here would be a worse regression than the error W1d removed.
+  printf '(import w1-dcb)\n(defn w1-dcdup (n:i32):i32 (return n))\n' > "$d/w1-dca.nuc"
+  printf '(import w1-dca)\n(defn w1-dcdup (n:i32):i32 (return (+ n 1)))\n' > "$d/w1-dcb.nuc"
+  printf '(import w1-dca)\n(defn main ():i32 (return (w1-dcdup 1)))\n' > "$d/w1-dcm.nuc"
+  w1_reject_multi w1d-cycle-duplicate-rejected "$d" "$d/w1-dcm.nuc" \
+    "duplicate definition of 'w1-dcdup'"
+  rm -rf "$d"
+}
+
+# Two `.nuc` STRING-path imports in one file. Pre-existing bug (reproduces on the
+# committed boot): emit-import-prefixed defaulted EVERY NODE-STR import's prefix
+# to `c` — right for a C header, wrong for a Nucleus path — so the second one
+# died `prefix 'c' is already bound to '<first path>'`, naming a prefix the
+# author never wrote. A `.nuc`/`.nuch` path now defaults from its basename, the
+# same rule the symbol spelling uses, so both prefixes work and an explicit
+# second operand still wins.
+# --- Stage 15 W5e: `defn-` name isolation -----------------------------------
+# design/stage15-stress-test/ergonomics.md §W5e. A private definer in a file with
+# no `(ns …)` is keyed under that file's implicit namespace, so two files may each
+# define a private `helper`. Exit codes, not just "it compiles": a wrongly-routed
+# call links fine and returns the OTHER file's answer, which only a value check
+# catches. Each unit encodes both files' answers in one exit status.
+run_w5e_private_isolated() {
+  local d
+  d="$(mktemp -d)"
+  # 11 and 22; main returns a*10+b so either half being wrong changes the code.
+  printf '(defn- w5e-h ():i32 (return 1))\n(defn w5e-a ():i32 (return (w5e-h)))\n' > "$d/w5e-pa.nuc"
+  printf '(defn- w5e-h ():i32 (return 2))\n(defn w5e-b ():i32 (return (w5e-h)))\n' > "$d/w5e-pb.nuc"
+  printf '(import-use w5e-pa)\n(import-use w5e-pb)\n(defn main ():i32 (return (+ (* 10 (w5e-a)) (w5e-b))))\n' > "$d/w5e-p1.nuc"
+  printf '(import-use w5e-pb)\n(import-use w5e-pa)\n(defn main ():i32 (return (+ (* 10 (w5e-a)) (w5e-b))))\n' > "$d/w5e-p2.nuc"
+  w1_run w5e-private-defn-order1 "$d" "$d/w5e-p1.nuc" 12
+  w1_run w5e-private-defn-order2 "$d" "$d/w5e-p2.nuc" 12
+
+  # `defvar-` is the same class and had a worse symptom: two `@g` definitions in
+  # one module, rejected by the LLVM parser with no source location at all.
+  printf '(defvar- w5e-g:i32 3)\n(defn w5e-va ():i32 (return w5e-g))\n' > "$d/w5e-va.nuc"
+  printf '(defvar- w5e-g:i32 4)\n(defn w5e-vb ():i32 (return w5e-g))\n' > "$d/w5e-vb.nuc"
+  printf '(import-use w5e-va)\n(import-use w5e-vb)\n(defn main ():i32 (return (+ (* 10 (w5e-va)) (w5e-vb))))\n' > "$d/w5e-v1.nuc"
+  w1_run w5e-private-defvar "$d" "$d/w5e-v1.nuc" 34
+
+  # A file's own private definition shadows a public one of the same name
+  # elsewhere — exactly as a namespace-local name shadows an imported one — and
+  # the public name is still reachable from everywhere else.
+  printf '(defn- w5e-s ():i32 (return 1))\n(defn w5e-sa ():i32 (return (w5e-s)))\n' > "$d/w5e-sa.nuc"
+  printf '(defn w5e-s ():i32 (return 9))\n(defn w5e-sc ():i32 (return (w5e-s)))\n' > "$d/w5e-sc.nuc"
+  printf '(import-use w5e-sa)\n(import-use w5e-sc)\n(defn main ():i32 (return (+ (* 100 (w5e-sa)) (+ (* 10 (w5e-sc)) (w5e-s)))))\n' > "$d/w5e-s1.nuc"
+  printf '(import-use w5e-sc)\n(import-use w5e-sa)\n(defn main ():i32 (return (+ (* 100 (w5e-sa)) (+ (* 10 (w5e-sc)) (w5e-s)))))\n' > "$d/w5e-s2.nuc"
+  w1_run w5e-private-shadows-public-order1 "$d" "$d/w5e-s1.nuc" 199
+  w1_run w5e-private-shadows-public-order2 "$d" "$d/w5e-s2.nuc" 199
+
+  # Overloaded privates: two files each defining TWO private `w5e-o` methods
+  # exercises the mangled path (per-method `@<file>_pN__w5e-o.<tok>`) rather than
+  # the solitary one, and would collide on the bare mangled name without W5e.
+  printf '(defn- w5e-o (n:i32):i32 (return 1))\n(defn- w5e-o (a:i32 b:i32):i32 (return 2))\n(defn w5e-oa ():i32 (return (+ (w5e-o 0) (w5e-o 0 0))))\n' > "$d/w5e-oa.nuc"
+  printf '(defn- w5e-o (n:i32):i32 (return 10))\n(defn- w5e-o (a:i32 b:i32):i32 (return 20))\n(defn w5e-ob ():i32 (return (+ (w5e-o 0) (w5e-o 0 0))))\n' > "$d/w5e-ob.nuc"
+  printf '(import-use w5e-oa)\n(import-use w5e-ob)\n(defn main ():i32 (return (+ (w5e-oa) (w5e-ob))))\n' > "$d/w5e-o1.nuc"
+  w1_run w5e-private-overloaded "$d" "$d/w5e-o1.nuc" 33
+  rm -rf "$d"
+}
+
+# What W5e must NOT relax. A PUBLIC name is still unique across the whole unit,
+# and `defn-` in an explicit namespace is still private to that namespace — two
+# files sharing one `(ns …)` still collide. Both diagnostics must name BOTH
+# files and state the rule.
+run_w5e_still_rejects() {
+  local d err
+  d="$(mktemp -d)"
+  printf '(defn w5e-pub ():i32 (return 1))\n' > "$d/w5e-ca.nuc"
+  printf '(defn w5e-pub ():i32 (return 2))\n' > "$d/w5e-cb.nuc"
+  printf '(import-use w5e-ca)\n(import-use w5e-cb)\n(defn main ():i32 (return (w5e-pub)))\n' > "$d/w5e-c1.nuc"
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/w5e-c1.nuc" 2>&1 >/dev/null || true)"
   if printf '%s' "$err" | grep -q ':0:'; then
-    echo "FAIL  w1-circular-still-errors (diagnostic reports line 0)"
+    echo "FAIL  w5e-public-collision-rejected (diagnostic reports line 0)"
     printf '%s\n' "$err" | sed 's/^/    /'
-  elif printf '%s' "$err" | grep -q "w1-cb.nuc:1: error: import: circular import of 'w1-ca'"; then
-    echo "PASS  w1-circular-still-errors"
+  elif printf '%s' "$err" | grep -qF "duplicate definition of 'w5e-pub'" \
+    && printf '%s' "$err" | grep -qF "$d/w5e-ca.nuc:1" \
+    && printf '%s' "$err" | grep -qF "$d/w5e-cb.nuc:1" \
+    && printf '%s' "$err" | grep -qF 'a public name must be unique'; then
+    echo "PASS  w5e-public-collision-rejected"
   else
-    echo "FAIL  w1-circular-still-errors"
+    echo "FAIL  w5e-public-collision-rejected"
+    echo "    expected: both files named, plus the public-uniqueness rule"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+  fi
+
+  printf '(ns w5eg)\n(defn- w5e-nsh ():i32 (return 1))\n(defn w5e-na ():i32 (return (w5e-nsh)))\n' > "$d/w5e-na.nuc"
+  printf '(ns w5eg)\n(defn- w5e-nsh ():i32 (return 2))\n(defn w5e-nb ():i32 (return (w5e-nsh)))\n' > "$d/w5e-nb.nuc"
+  printf '(import-use w5e-na)\n(import-use w5e-nb)\n(defn main ():i32 (return 0))\n' > "$d/w5e-n1.nuc"
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/w5e-n1.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | grep -q ':0:'; then
+    echo "FAIL  w5e-ns-private-collision-rejected (diagnostic reports line 0)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  elif printf '%s' "$err" | grep -qF "duplicate definition of 'w5e-nsh'" \
+    && printf '%s' "$err" | grep -qF "$d/w5e-na.nuc:2" \
+    && printf '%s' "$err" | grep -qF "$d/w5e-nb.nuc:2" \
+    && printf '%s' "$err" | grep -qF "private to its NAMESPACE" \
+    && printf '%s' "$err" | grep -qF "namespace 'w5eg'"; then
+    echo "PASS  w5e-ns-private-collision-rejected"
+  else
+    echo "FAIL  w5e-ns-private-collision-rejected"
+    echo "    expected: both files named, plus the per-namespace privacy rule"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+  fi
+  rm -rf "$d"
+}
+
+run_w1d_path_prefix() {
+  local d err
+  d="$(mktemp -d)"
+  printf '(defn w1-ppa ():i32 (return 3))\n' > "$d/w1-ppa.nuc"
+  printf '(defn w1-ppb ():i32 (return 4))\n' > "$d/w1-ppb.nuc"
+  printf '(import "%s/w1-ppa.nuc")\n(import "%s/w1-ppb.nuc")\n(defn main ():i32 (return (+ (w1-ppa/w1-ppa) (w1-ppb/w1-ppb))))\n' \
+    "$d" "$d" > "$d/w1-pp.nuc"
+  w1_run w1d-two-path-imports "$d" "$d/w1-pp.nuc" 7
+
+  printf '(import "%s/w1-ppa.nuc" alpha)\n(defn main ():i32 (return (alpha/w1-ppa)))\n' "$d" > "$d/w1-ppx.nuc"
+  w1_run w1d-path-explicit-prefix "$d" "$d/w1-ppx.nuc" 3
+
+  # A C header string path still defaults to `c` — the rule only changed for
+  # `.nuc`/`.nuch`.
+  printf '(import "stdio.h")\n(defn main ():i32 (c/printf "w1d\\n") (return 0))\n' > "$d/w1-ppc.nuc"
+  w1_run w1d-cheader-prefix-unchanged "$d" "$d/w1-ppc.nuc" 0
+
+  # Two different files whose basenames collide is a real conflict, and now
+  # reports the prefix the author would actually recognize.
+  mkdir -p "$d/sub"
+  printf '(defn w1-ppa2 ():i32 (return 5))\n' > "$d/sub/w1-ppa.nuc"
+  printf '(import "%s/w1-ppa.nuc")\n(import "%s/sub/w1-ppa.nuc")\n(defn main ():i32 (return 0))\n' \
+    "$d" "$d" > "$d/w1-ppdup.nuc"
+  err="$(./build/nucleusc --emit-llvm "$d/w1-ppdup.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | grep -qF "import: prefix 'w1-ppa' is already bound to"; then
+    echo "PASS  w1d-path-prefix-collision"
+  else
+    echo "FAIL  w1d-path-prefix-collision"
     printf '%s\n' "$err" | sed 's/^/    got: /'
   fi
   rm -rf "$d"
@@ -2313,14 +2566,39 @@ spawn run_reject_at w5c-null-into-int tests/fixtures/w5c-null-into-int.nuc \
 #
 # The carve-out, pinned in the other direction. `CStr` is flow-exempt (a null
 # `char*` is ordinary C), and `defvar-init-ir` states that exemption as its own
-# early return rather than letting it ride on `is-ptr-like`. There is a KNOWN,
-# SEPARATE null-safety hole in the `TY-PTR` path beside it -- the global
-# initializer is a constant renderer that never routes through `coerce-int-val`,
-# so `(defvar g:ptr:Thing null)` compiles and segfaults where the identical
-# local is rejected. Closing that is Stage 15 W6; when it lands, the new pkind
-# check belongs on the ptr path only, and this test is what fails if `CStr` gets
-# swept up with it.
+# early return rather than letting it ride on `is-ptr-like`. W6 (below) has since
+# added a `pkind-flow-check` to the `TY-PTR` path beside it; this test is what
+# fails if `CStr` ever gets swept up with `ptr`.
 spawn run_accepts w5c-cstr-null-exempt tests/fixtures/w5c-cstr-null-exempt.nuc
+
+# --- Stage 15 W6: null into a non-null global -------------------------------
+# `defvar-init-ir` is a CONSTANT RENDERER: it never routes through
+# `coerce-int-val` (src/abi.nuc), the chokepoint every value-position assignment
+# passes for its Phase-F `pkind-flow-check`. So `(defvar g:ptr:Thing null)`
+# compiled clean and segfaulted on first use, while the identical local
+# `(let (p:ptr:Thing null) …)` was correctly rejected -- one rule living in one
+# path and not the other. The fix calls the SAME predicate from the global path
+# (source type = `ty-raw`, exactly what `emit-symbol-ref` gives the `null`
+# symbol), so the two cannot drift; these tests pin both directions.
+#
+# Rejections: a TYPED non-null pointer, in both spellings. The location is pinned
+# (not just the message) because the init node is the interned symbol `null`,
+# whose own line is always 0 -- the diagnostic has to borrow the enclosing
+# `defvar` form's line via `node-line`, and a regression there reports `:0:`.
+spawn run_reject_at w6-defvar-null-ptr-elem tests/fixtures/w6-defvar-null-ptr-elem.nuc \
+  "tests/fixtures/w6-defvar-null-ptr-elem.nuc:11: error:" \
+  "defvar: raw pointer where non-null (ref ...) is required"
+spawn run_reject_at w6-defvar-null-ref tests/fixtures/w6-defvar-null-ref.nuc \
+  "tests/fixtures/w6-defvar-null-ref.nuc:8: error:" \
+  "defvar: raw pointer where non-null (ref ...) is required"
+#
+# Acceptances: every NULLABLE or contract-free pointer destination stays legal --
+# elem-less bare `ptr` (with and without an init), `(raw T)` / `raw:T`, `?ptr:T`,
+# and `CStr`. The bare-`ptr` cases are the load-bearing ones: `ptr` is PTR-REF
+# since the Phase-F flip, so only `pkind-flow-check`'s untyped-destination
+# refinement keeps them compiling, and this compiler's own source has ~1550 such
+# bindings -- narrowing that refinement would take the bootstrap with it.
+spawn run_accepts w6-defvar-null-accepts tests/fixtures/w6-defvar-null-accepts.nuc
 
 # --- Stage 15 W5d: array literal ergonomics ---------------------------------
 # design/stage15-stress-test/ergonomics.md §3.9 + §3.10. The positive matrix is
@@ -2362,7 +2640,9 @@ spawn run_w1_ns
 spawn run_w1_graph_shapes
 spawn run_w1_still_rejects
 spawn run_w1_declare_cycle_breaker
-spawn run_w1_circular_still_errors
+spawn run_w1d_cycle_accepts
+spawn run_w1d_cycle_diagnoses
+spawn run_w1d_path_prefix
 spawn run_w1_deferred_union_payload
 spawn run_w1_late_overload_symbol
 # W1c: the diagnostic surface. The did-you-mean tier it sits above is pinned by
@@ -2372,6 +2652,15 @@ spawn run_w1_late_overload_symbol
 spawn run_w1c_unreachable_file
 spawn run_w1c_defined_nowhere
 spawn run_w1c_unreachable_type
+
+# --- Stage 15 W5e: `defn-` name isolation -----------------------------------
+# design/stage15-stress-test/ergonomics.md §W5e. Sequenced after W1 because it is
+# the same key scheme: W1a's whole-graph signature prescan is what makes a
+# private name's key final before any form is emitted.
+spawn run_w5e_private_isolated
+spawn run_w5e_still_rejects
+spawn run_reject w5e-ns-hash-reserved tests/fixtures/w5e-ns-hash-reserved.nuc \
+  "a namespace name may not begin with '#'"
 
 # --- Stage 15 W7: a bare selector symbol may be a value ---------------------
 # design/stage15-stress-test/selector-ambiguity.md. The positive matrix is
