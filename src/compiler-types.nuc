@@ -44,6 +44,24 @@
 (defconst NK-FUNCTION 6)
 (defconst NK-VALUE 7)     ; defvar / defconst / defenum member / extern
 
+; Stage 15 W8 G-4 (design/global-init.md §4.2): `Sym.defvar-state`, the answer
+; to "has this global's `defvar` been REACHED yet?" — a question G-0 made
+; distinct from "does this name resolve?". Since G-0 every reachable file's
+; `defvar` names are registered by `prescan-value-names` before any form is
+; emitted, so a name resolving says nothing about whether its initializer has
+; run. Emission registers a SECOND Sym for the same key (scope-define appends,
+; scope-lookup scans backwards), so the state a lookup reports flips from
+; DECLARED to REACHED exactly when `emit-defvar` runs — no separate registry,
+; and immune to the Sym array's realloc-and-memcpy growth, which a saved Sym*
+; would not be.
+;
+; 0 (the arena's zero) means "not a `defvar` global at all" — a function, an
+; `extern`, a `defconst`/`defenum` member, a local. Those are outside the rule:
+; a constant has no storage to initialize, and another translation unit's
+; global is not ours to sequence.
+(defconst DEFVAR-DECLARED 1)  ; prescan-defvar-name registered it; not yet emitted
+(defconst DEFVAR-REACHED 2)   ; emit-defvar has emitted its @g = global line
+
 ; Node struct and NODE-* kinds come from lib/prelude.nuc (imported below).
 
 ; Type kinds. TY-TYVAR is an abstract type variable used only by the Stage 9
@@ -371,7 +389,12 @@
   ; is a real global read through the normal load path, just not writable;
   ; reusing `is-const` here would misroute its reads through the defconst
   ; inline-substitution branch. 0 = ordinary mutable global (the default).
-  readonly-global:i32)
+  readonly-global:i32
+  ; Stage 15 W8 G-4: DEFVAR-DECLARED / DEFVAR-REACHED / 0 — see the comment at
+  ; those two constants. Written only by `prescan-defvar-name` (1) and
+  ; `emit-defvar` (2); read only by `defvar-check-init-order`, which is on a
+  ; dying path, so no emitted IR depends on it.
+  defvar-state:i32)
 
 ; One armed scope-exit cleanup (Stage 10 lifecycle, design/stage10/lifecycle.md).
 ; Stage 14 §14.6 (the defunion pilot): this was a defstruct whose doc-comment

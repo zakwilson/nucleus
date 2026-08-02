@@ -2046,6 +2046,193 @@ here; both are independent of global initialization.** They are also in §7.
 * `docs/toplevel.md`'s `defvar` entry, and `docs/types.md`: the new initializer
   grammar.
 
+---
+
+#### G-4 as built — 2026-08-02
+
+**Done.** One walk, one per-symbol check, one new `Sym` field, and the docs
+paragraph §4.1 asked for.
+
+| Piece | Where | What |
+|---|---|---|
+| `DEFVAR-DECLARED` / `DEFVAR-REACHED` | `compiler-types.nuc:62`/`63` | the two states; **0** is "not a `defvar` global at all" |
+| `Sym.defvar-state` | `compiler-types.nuc:397` | the field |
+| the DECLARED mark | `nucleusc.nuc:11806` | in `prescan-defvar-name` |
+| the REACHED mark | `nucleusc.nuc:9890` | in `emit-defvar`, on the Sym it registers *after* the `@g = global` line |
+| `defvar-blame-forward-ref` | `nucleusc.nuc:9679` | one symbol → silence, or the located both-sites diagnostic |
+| `defvar-check-init-order` | `nucleusc.nuc:9719` | the walk, with the three skipped heads |
+| the call | `nucleusc.nuc:9848` | `emit-defvar`, inside the run-time-initializer block |
+
+**Question 1 — "has not yet been reached" is EMISSION, and G-0 is what made it a
+separate question at all.** Before G-0 the two coincided: a forward-named global
+did not resolve, so "reference to an unreached `defvar`" and "undefined name"
+were the same event. G-0 registers every reachable file's `defvar` names before
+the first form is emitted — *deliberately*, since §4.1's whole argument that this
+step is not a re-run of the ordinal rule W1 retired depends on resolution being
+order-free. So a successful `scope-lookup` now proves nothing here, and asking
+resolution would have produced a check that fires on nothing.
+
+The mechanism separates them **without a second registry**, and the shape is the
+reusable part. G-0 already registers each `defvar` name *twice* — once in the
+prescan, once at emission — and `scope-define` appends while `scope-lookup`
+scans backwards, so a lookup returns the prescan Sym before emission and the
+emission Sym after. Marking the two differently makes the state a reference sees
+flip at exactly the right instant, for free. Two properties made this the right
+choice over the obvious alternative of a list of already-emitted globals:
+
+* **A saved `Sym*` goes stale.** `scope-define` grows the scope by
+  `arena-alloc` + `memcpy` into a *new* array, so a pointer captured before a
+  growth points into the old buffer. A membership test by pointer identity would
+  have been silently wrong for any unit large enough to grow the global scope —
+  i.e. all of them. A field travels with the `memcpy`.
+* **The 0 state does real work.** A function, an `extern`, a `.nuch`-imported
+  global and a `defconst`/`defenum` member all keep the arena's zero and are
+  outside the rule by construction, rather than by a list of exclusions the next
+  definer-kind would have to be added to. `extern` is *deliberately* outside it:
+  its storage belongs to another translation unit and cross-TU initialization
+  order is unspecified here for the same reason it is in C++ (§4.1).
+
+The check therefore never reports "undefined" — resolution keeps that answer,
+and keeps it order-independent.
+
+**Question 2 — `(addr-of g)` is NOT a read, and the measurement below is why
+that is not a convenience.** A global's address is a link-time constant that
+requires no initialization to have happened; it is exactly what G-1 folds to a
+bare `@g`. Reading the *value* is what gets a zero. So `addr-of`'s operand is
+skipped, subtree and all. Two in-tree consequences:
+
+* `examples/g1-const-init.nuc` already ships a forward `(addr-of
+  g-later-target)` in a *constant* initializer and must keep compiling.
+* `tests/fixtures/g4-addr-of-forward.nuc` pins the **run-time** path, where the
+  exemption is a real carve-out rather than a consequence of the check not
+  running: the initializer is a call (so it is queued and the check does run) and
+  the forward `(addr-of …)` sits in its argument. `run_g4_order` links it and
+  asserts the dereferenced value, so a pointer that came out wrong fails rather
+  than compiles.
+
+**What the check ran into on this compiler's own source — and the number that
+matters for G-5.** As shipped it fires nowhere in `src/` or `lib/`, and that is
+not informative on its own: all 178 top-level `defvar`s there have a literal,
+`null`, or absent initializer, so **none has a run-time initializer for the
+check to examine**. The load-bearing measurement is the forward-looking one,
+over the 42 `(set! g-… …)` statements in `compiler-init` that G-5 converts:
+
+* **19 of the 42 syntactically name another global.** In every one of the 19 the
+  named global is `g-arena-alloc`, and in every one it is named **inside
+  `(addr-of …)`** — the `(vector-new-in (addr-of g-arena-alloc))` shape.
+* **With the `addr-of` exemption: 0 rejections.** G-5 is unblocked as written.
+* **Without it: 8 rejections** — `g-structs` (`:144`), `g-uniondefs` (`:152`),
+  `g-union-templates` (`:154`), `g-struct-templates` (`:157`), `g-enumdefs`
+  (`:159`), `g-pending-unions` (`:160`), `g-deferror-name-sids` (`:170`) and
+  `g-deferror-msg-sids` (`:171`), each declared above `g-arena-alloc` at
+  `nucleusc.nuc:182`. That is precisely §4.1 consequence 2 / §2.10's known
+  one-line reorder, which is reassuring about the rule's calibration: the strict
+  reading finds exactly the sites the design already knew about, and no others.
+
+**The residual `g-arena-alloc` hazard is real, is the laundered case, and is
+already accounted for.** `vector-new-in` reads the handle *through* the pointer
+it is given, so an initializer running before `g-arena-alloc`'s own would build
+a libc-backed Vector — undetectable here by construction, and exactly why §4.4
+item 5 makes a positive `ALLOC-ARENA` assertion part of G-5 rather than trusting
+a green `make test`. §2.10's answer dissolves it anyway: once the handle is a
+**constant** initializer it is applied by the loader before any initializer runs,
+so there is no window. G-5 should keep both — the constant handle *and* the
+assertion.
+
+**Placement: the check runs on the RUN-TIME path only.** A constant initializer
+is folded from literals, named constants, `(sizeof T)`, `(as T x)` and
+addresses, not one of which reads a global's value, so there is nothing there to
+check. Confining it to the run-time branch also removes a whole class of false
+positive for free: the constant-aggregate grammar's designated **field names**
+(`(P (y 9))`) and index cells are selectors, not references, and a walk over
+them would have rejected any program with a global spelled like one of its
+struct's fields. A non-constant *element* inside a constant aggregate never
+reaches the check either — an element must be constant regardless of order, and
+it keeps G-2's better "init must be a compile-time constant" wording.
+
+**Two more skipped heads, one of them an admitted false negative.** `quote` and
+`quasiquote` subtrees are not walked: the symbols inside a `quote` are *data*,
+so walking them would reject `(defvar g:(raw Node) (quote (b c)))` for "naming"
+a global it never reads. A quasiquote's `~b` unquote genuinely *is* a read and
+is given up with the rest of the subtree — deliberately, because a false
+positive breaks a program that compiles today, while a missed diagnosis lands in
+a class already documented as incomplete.
+
+**The diagnostics.** Both name both sites at real `file:line:`s; the note's
+location comes from the target Sym's `src-file`/`src-line`, which
+`sym-set-src-loc` filled during the **prescan** with `g-source-path` set to the
+file being walked — which is what makes "name the other site" possible at all
+for a `defvar` that has not been emitted yet.
+
+```
+demo.nuc:12: error: defvar: the initializer for 'a' names global 'b', whose own
+  defvar has not been reached yet -- it still holds its zero at this point
+  note: 'b' is declared at demo.nuc:13; initializers run in the order their
+  defvars are reached (source order within a file, import order across files), so
+  move that defvar above this one -- unless it depends on this one in turn, which
+  is a cycle no order satisfies
+```
+
+The self-reference case gets its own wording, because "both sites" would
+otherwise be the same line printed twice:
+
+```
+demo.nuc:6: error: defvar: the initializer for 'g' names 'g' itself, whose defvar
+  has not been reached yet -- the slot still holds its zero
+  note: a global's initializer runs at the point its own defvar is reached, so it
+  cannot read the global it is initializing
+```
+
+The advice clause is hedged on purpose: a genuine **cycle** reaches the same
+message (§4.2 predicted correctly that it needs no machinery of its own — the
+first of the pair always names a global the second has not reached), and
+reordering is exactly what cannot fix one (§4.1 consequence 3).
+
+**Verification.**
+
+* `run_g4_order` links and **runs** four programs, asserting exit status: a
+  same-file backward reference (42); the cross-file pair in the good import
+  order (42) *and* the reversed order refused with both files named at real
+  lines — §4.1 consequence 1 made observable; the run-time `(addr-of g)` forward
+  (7); and the laundered gap (10).
+* Three `run_reject_at` fixtures — forward reference, cycle, self-reference —
+  each pinning the error's own location **and** the note's, so one call covers
+  both halves of "name both sites".
+* Two `run_accepts` fixtures pin the carve-outs as compile-clean, so a later
+  stricter walk that swallowed either fails here.
+* `tests/fixtures/g4-laundered-call.nuc` pins the **known gap** by value, and
+  says so in its header comment: `main` returns `(+ 10 g4-lc-dst)`, so today's
+  undetected forward read reads as exit 10 and any future fix reads as 109 and
+  fails loudly rather than passing quietly.
+* **`make test` 396 → 406 PASS / 0 FAIL** (`NUCLEUS_TEST_JOBS=1`).
+  `make abi-test`, `make layout-test`, `make avr-test` green.
+* **`make bootstrap` byte-identical on the first pass**, as predicted — the
+  check writes to no IR stream and only ever raises, and the `Sym` field is
+  compiler-internal state.
+* An old-vs-new `--emit-llvm` sweep over every `examples/`, `lib/`, `lib/avr/`
+  and `tests/fixtures/` program, against a baseline compiler built from this
+  tree with exactly the G-4 edits reverted: **216 byte-identical, 0 differing, 0
+  regressed**; the only three programs that changed status are the three new
+  rejection fixtures. A second sweep compared **stderr** across the 119
+  programs both compilers refuse: **335 diagnostics byte-identical, 3 changed**,
+  and the 3 are those same new fixtures. No existing program's IR and no
+  existing program's diagnostic moved.
+
+**Deliberately not built.**
+
+* **Macro-expanding the initializer before the walk.** The variadic operator
+  macros wrap their tail but keep every operand as a leaf, so `(+ b 1)` is
+  already visible without expansion. A macro that *manufactures* a global
+  reference out of nothing is undetected, which is the same laundering boundary
+  by another route.
+* **Distinguishing a `set!` TARGET inside an initializer from a read.** The
+  message says "names", not "reads", so it stays true for the pathological
+  `(defvar a:i32 (do (set! b 1) 2))`; a write to a not-yet-initialized global is
+  its own (worse) ordering bug and refusing it is not wrong.
+* **Any use of the new `Sym.defvar-state` beyond this check.** It has exactly
+  one reader, on a dying path — the property that made adding it provably inert.
+* **The flip and the `compiler-init` migration** — G-5, unchanged.
+
 ### G-5 — eliminate `compiler-init`, then flip
 
 This is the step acceptance criterion (A) names, and the flip (B) falls out of

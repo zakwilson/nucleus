@@ -830,6 +830,29 @@ you add one, the question is never "is this `TY-PTR`" but "what does this type
 lower to" — and for zero-fill specifically, remember the third bucket: scalars
 (`0`), pointers-of-any-flavour (`null`), and aggregates (`zeroinitializer`).
 
+**`TY-FN` is NOT in `is-ptr-like`, and it is not going to be — admit it by name.**
+The exclusion is deliberate and load-bearing (`is-ptr-like` also gates the free
+`ptr`↔`CStr` value coercion and the `=`/`!=` strcmp lowering, neither of which a
+function pointer should join), so every site that needs "lowers to `ptr`" in the
+*storage/constant* sense spells it as an extra arm beside the predicate:
+`emit-zero-store` has `(when (= (ft kind) TY-FN) (set! zero "null"))` next to its
+`is-ptr-like` line, `type-zero-const-ir` has the same, and W8's fn-pointer-global
+fix added the third — `defvar-init-ir`'s `null` gate. Widening `is-ptr-like`
+itself to "fix" the next one would silently make `(= some-fn-ptr some-cstr)` a
+`strcmp`. Note that `abi-alignof`/`abi-sizeof` already answer `g-target-ptr-bytes`
+for `TY-FN` while **`type-size` does not** — it falls through to `1`, so every
+fn-pointer global/local/field slot is emitted `align 1`. Valid but conservative
+IR; if you fix it, know that it moves the IR of every fn-pointer-slot program
+(`examples/fnptr.nuc`, `fn-ptr-union.nuc`, `l7-probe.nuc`) though not the
+compiler's own, which contains no `TY-FN` slot.
+
+**And `TY-FN` is not a pointer *kind* either — `ptr-pkind` answers `PTR-RAW` for
+it, like every non-`TY-PTR` kind.** So a fn pointer is outside the Phase-F
+non-null regime by construction and `null` is its honest zero; the non-null
+spelling people reach for, `ptr:(fn …)` / `(ref (fn …))`, is a pointer *to* a
+function pointer and is still `PTR-REF`. Before concluding a `pkind-flow-check`
+carve-out is a hole, check which of the two the destination actually is.
+
 **`StrView` literal → `CStr`/`ptr` is a free coercion (the hidden-NUL hinge).** A
 `"…"` literal's backing `@.str.N` rodata global is NUL-terminated at `data[len]`
 (the table emitter appends `\00`), so a `StrView` literal coerces freely, in
@@ -1706,6 +1729,64 @@ which of the two shapes it has — `generic-register-method` appends *methods* a
 they are emission-time state rather than a name binding: the `deferror` id table,
 whose dense ids are allocated in emission order, and `g-enumdefs`, which `match`
 exhaustiveness reads and which is capped at `MAX-ENUMS`.)
+
+**Front-loading a definition makes every "is this name already taken?" check
+able to see the definer's OWN registration — so such a check must classify the
+Sym precisely, not approximately.** G-0 shipped with exactly this bug and it took
+a separate session to find: `name-existing-kind` (`src/nucleusc.nuc`) called any
+global `Sym` carrying a `TY-FN` type *a function*, which was harmless while only
+`emit-defn` could produce one — and became "`'h' already names a function`" for
+`(defvar h:(fn i32)(i32) …)` the moment `prescan-defvar-name` defined that Sym
+before `emit-defvar`'s `guard-name-kind` ran. The `defvar` collided with itself.
+The fix is the discriminator the rest of the compiler already uses:
+**`is-local` 0 + `TY-FN` is a function; `is-local` 1 + `TY-FN` is a
+fn-pointer-typed value** — `emit-dispatch`'s "a defn/extern symbol (is-local 0,
+TY-FN) is a direct call" is the same two-conjunct test, and every
+function-registering path (`emit-defn`, `emit-extern`'s sibling in
+`emit-nuch-declare-import`, the C-header path, `finalize-generics`) passes 0
+while `emit-defvar`/`prescan-defvar-name` pass 1. Generalize: when you move a
+registration earlier, grep for every predicate that *reads* that registry and
+ask whether it can now see the form's own entry — an approximate classifier that
+was only ever asked about other people's Syms starts being asked about the
+caller's.
+
+The reason this one was cheap to fix safely is worth copying too:
+`name-existing-kind` has exactly **one** caller (`guard-name-kind`) whose only
+effect is `die-at`. So no *compiling* program can observe a change to its return
+value — the blast radius is exactly "which programs are rejected", which is what
+made a one-conjunct edit provable rather than merely plausible. Check that shape
+(one caller, raise-only) before assuming a classifier edit needs a bootstrap
+reconverge.
+
+**Front-loading also SPLITS one question into two, and the second one needs its
+own state.** Before G-0, "does this name resolve?" and "has its definition been
+processed yet?" were the same event — a forward name simply did not resolve.
+After it they are independent, and any check that wants the *second* one must
+ask for it explicitly; asking resolution produces a check that fires on nothing.
+W8 G-4's initializer-ordering diagnostic is the worked example, and its
+mechanism costs nothing because **the double registration is already there**:
+`prescan-value-names` defines the Sym, `emit-defvar` defines a second one for
+the same key, `scope-define` appends and `scope-lookup` scans backwards — so
+marking the two differently (`Sym.defvar-state`, DECLARED vs REACHED) makes the
+state a *reference* sees flip at exactly the moment the definition is emitted,
+with no new registry and no ordering bookkeeping.
+
+Two things about that shape generalize:
+
+- **Put the state on the registry ENTRY, never in a side list of pointers.**
+  `scope-define` grows a scope by `arena-alloc` + `memcpy` into a *new* array,
+  so a `Sym*` captured before a growth points into the stale buffer — a
+  membership test by pointer identity is silently wrong for any unit big enough
+  to grow the global scope, i.e. all of them. A field travels with the `memcpy`;
+  read it off a *fresh* `scope-lookup`.
+- **Let the zero value mean "not my business".** `defvar-state` 0 covers a
+  function, an `extern`, a `.nuch`-imported global and a `defconst` member all
+  at once, so they are outside the rule by construction instead of by an
+  exclusion list the next definer-kind would have to be added to.
+
+And when you add such a field, check the one-caller/raise-only shape above: G-4's
+has exactly one reader, on a dying path, which is what made a new `Sym` field
+provably unable to move any emitted IR.
 
 Three collaborators of that walk, each a trap on its own:
 

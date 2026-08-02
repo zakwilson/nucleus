@@ -1,0 +1,13 @@
+; Stage 15 W8 G-4: a genuine initializer CYCLE — `a` reads `b`, `b` reads `a`,
+; both syntactically. §4.2 predicts this needs no cycle machinery of its own:
+; whichever of the two is emitted first names a global the other has not
+; reached, so the plain forward-reference check catches it. The error is
+; therefore reported at the FIRST of the pair.
+;
+; Unlike a forward reference, a cycle is not fixable by reordering (§4.1
+; consequence 3) — one of the two initializers has to stop depending on the
+; other.
+(defvar g4-cyc-a:i32 (+ g4-cyc-b 1))
+(defvar g4-cyc-b:i32 (+ g4-cyc-a 1))
+
+(defn main ():i32 (return (+ g4-cyc-a g4-cyc-b)))

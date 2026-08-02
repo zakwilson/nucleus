@@ -1648,6 +1648,51 @@ G3EOF
   rm -rf "$d"
 }
 
+# --- Stage 15 W8 G-4: the initializer-ordering diagnostic --------------------
+# design/global-init.md §4.2. The rejections are `run_reject_at` fixtures below;
+# this unit is the other half — every shape the check must keep ACCEPTING, each
+# linked, run, and asserted BY VALUE. "It compiles" cannot tell an initializer
+# that ran from one that silently kept its zero, which is the exact failure the
+# diagnostic exists to prevent.
+run_g4_order() {
+  local d err
+  d="$(mktemp -d)"
+
+  # 1. Same-file BACKWARD reference — the legal direction, and the one the
+  #    forward fixture is the mirror of. 41 + 1 = 42.
+  printf '(defn g4-c ():i32 (return 41))\n(defvar g4-b:i32 (g4-c))\n(defvar g4-a:i32 (+ g4-b 1))\n(defn main ():i32 (return g4-a))\n' > "$d/g4-back.nuc"
+  w1_run g4-backward-ref "$d" "$d/g4-back.nuc" 42
+
+  # 2. Cross-file, both import orders. This is §4.1 consequence 1 made visible:
+  #    the good order links and returns 42, the reversed one is refused. Only a
+  #    cross-FILE case can check that the note names the other file's path —
+  #    a same-file fixture cannot tell a real lookup from an echo of its own.
+  printf '(defn g4-xc ():i32 (return 40))\n(defvar g4-xbase:i32 (g4-xc))\n' > "$d/g4xa.nuc"
+  printf '(defvar g4-xderived:i32 (+ g4-xbase 2))\n(defn g4-xget ():i32 (return g4-xderived))\n' > "$d/g4xb.nuc"
+  printf '(import g4xa)\n(import g4xb)\n(defn main ():i32 (return (g4-xget)))\n' > "$d/g4-ok.nuc"
+  printf '(import g4xb)\n(import g4xa)\n(defn main ():i32 (return (g4-xget)))\n' > "$d/g4-bad.nuc"
+  w1_run g4-cross-file-order "$d" "$d/g4-ok.nuc" 42
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/g4-bad.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | grep -qF "$d/g4xb.nuc:1: error: defvar: the initializer for 'g4-xderived' names global 'g4-xbase'" \
+     && printf '%s' "$err" | grep -qF "note: 'g4-xbase' is declared at $d/g4xa.nuc:2"; then
+    echo "PASS  g4-cross-file-both-sites"
+  else
+    echo "FAIL  g4-cross-file-both-sites (the diagnostic must name both files at real lines)"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+  fi
+
+  # 3. `(addr-of g)` forward, on the RUN-TIME path — the decision this step had
+  #    to make, asserted by dereferencing the pointer rather than by compiling.
+  w1_run g4-addr-of-forward "$d" tests/fixtures/g4-addr-of-forward.nuc 7
+
+  # 4. The KNOWN GAP, pinned by value: a forward read laundered through a call
+  #    is not detected, so the global keeps its zero. Exit 10 is the gap; a
+  #    future fix would make it 109 and fail here rather than pass quietly.
+  w1_run g4-laundered-gap "$d" tests/fixtures/g4-laundered-call.nuc 10
+
+  rm -rf "$d"
+}
+
 # What G-0 must NOT relax. The message it removes is a *false* one — a name that
 # genuinely is not in the unit must still say so, W1c's unreachable-file note
 # must still fire for a value (it is what makes "not defined anywhere" useful
@@ -3007,13 +3052,15 @@ spawn run_stdlib_table
 #
 # Here: the boundary the widened gate must NOT cross. `defvar-init-ir` now gates
 # a string literal and `null` on `is-ptr-like` instead of a bare `TY-PTR` kind,
-# which admits `CStr` -- and must still admit nothing else.
+# which admits `CStr` -- and must still admit nothing else. (The `null` gate also
+# admits TY-FN by name since the fn-pointer-global fix below, which is why its
+# message names three admissible spellings; a string literal still does not.)
 spawn run_reject_at w5c-string-into-int tests/fixtures/w5c-string-into-int.nuc \
   "tests/fixtures/w5c-string-into-int.nuc:5: error:" \
   "defvar: string literal requires ptr or CStr type, not i32"
 spawn run_reject_at w5c-null-into-int tests/fixtures/w5c-null-into-int.nuc \
   "tests/fixtures/w5c-null-into-int.nuc:4: error:" \
-  "defvar: null requires ptr or CStr type, not i32"
+  "defvar: null requires ptr, CStr or a function-pointer type, not i32"
 #
 # The carve-out, pinned in the other direction. `CStr` is flow-exempt (a null
 # `char*` is ordinary C), and `defvar-init-ir` states that exemption as its own
@@ -3050,6 +3097,31 @@ spawn run_reject_at w6-defvar-null-ref tests/fixtures/w6-defvar-null-ref.nuc \
 # refinement keeps them compiling, and this compiler's own source has ~1550 such
 # bindings -- narrowing that refinement would take the bootstrap with it.
 spawn run_accepts w6-defvar-null-accepts tests/fixtures/w6-defvar-null-accepts.nuc
+
+# --- Stage 15 W8: a function-pointer-typed global ---------------------------
+# `(defvar h:(fn ret)(params) …)` could not be declared at all. Two stacked
+# defects: `name-existing-kind` called any TY-FN-typed global Sym "a function",
+# so once G-0's prescan defined that Sym the `defvar` collided with itself; and
+# behind it `defvar-init-ir`'s `null` gate tested `is-ptr-like`, which excludes
+# TY-FN by design. The positive matrix -- explicit `null`, no init, a runtime
+# initializer, `set!`, both call spellings, and reassignment -- is
+# examples/fnptr-global.nuc, run by the examples/*.nuc loop above against
+# tests/expected/fnptr-global.out and checked BY VALUE: a hook wired to the
+# wrong symbol, or an @__nucleus_init that never ran, links and exits 0.
+#
+# The two boundaries that must hold. First, the null admission is TY-FN-only:
+# `ptr:(fn …)` is a pointer TO a function pointer, an ordinary PTR-REF, and W6's
+# gate still refuses `null` there. The location is pinned for the same reason
+# W6's are -- the init node is the interned symbol `null`, whose own line is 0.
+spawn run_reject_at w8-fnptr-null-still-gated tests/fixtures/w8-fnptr-null-still-gated.nuc \
+  "tests/fixtures/w8-fnptr-null-still-gated.nuc:12: error:" \
+  "defvar: raw pointer where non-null (ref ...) is required"
+# Second, the `is-local` conjunct must not silence a real cross-kind collision.
+# g0-value-fn-collision-order1/2 pin the plain (i32-typed) shape; this is the
+# fn-typed one, i.e. exactly the shape the new conjunct changes the answer for.
+spawn run_reject_at w8-fnptr-global-name-collision tests/fixtures/w8-fnptr-global-name-collision.nuc \
+  "tests/fixtures/w8-fnptr-global-name-collision.nuc:15: error:" \
+  "'f' already names a function — a symbol may name only one kind of thing"
 
 # --- Stage 15 W5d: array literal ergonomics ---------------------------------
 # design/stage15-stress-test/ergonomics.md §3.9 + §3.10. The positive matrix is
@@ -3250,6 +3322,29 @@ spawn run_reject_at g3-init-in-compile-time tests/fixtures/g3-init-in-compile-ti
 spawn run_reject_at g3-init-const-storage tests/fixtures/g3-init-const-storage.nuc \
   "tests/fixtures/g3-init-const-storage.nuc:6: error:" \
   "is :const, so its initializer must be a compile-time constant"
+
+# --- Stage 15 W8 G-4: the initializer-ordering diagnostic --------------------
+# design/global-init.md §4.2. The accepting half — including the `(addr-of g)`
+# decision and the known laundered-through-a-call gap — is run_g4_order above,
+# by VALUE. Here: the refusals, each of which must name BOTH sites at real
+# file:line:s. Note the second argument of each pair pins the NOTE's location,
+# i.e. the target `defvar`, so one call covers both halves of "name both sites".
+spawn run_g4_order
+spawn run_reject_at g4-forward-ref tests/fixtures/g4-forward-ref.nuc \
+  "tests/fixtures/g4-forward-ref.nuc:12: error: defvar: the initializer for 'g4-fwd-a' names global 'g4-fwd-b', whose own defvar has not been reached yet" \
+  "note: 'g4-fwd-b' is declared at tests/fixtures/g4-forward-ref.nuc:13"
+spawn run_reject_at g4-init-cycle tests/fixtures/g4-init-cycle.nuc \
+  "tests/fixtures/g4-init-cycle.nuc:10: error: defvar: the initializer for 'g4-cyc-a' names global 'g4-cyc-b'" \
+  "note: 'g4-cyc-b' is declared at tests/fixtures/g4-init-cycle.nuc:11"
+spawn run_reject_at g4-self-ref tests/fixtures/g4-self-ref.nuc \
+  "tests/fixtures/g4-self-ref.nuc:6: error: defvar: the initializer for 'g4-self' names 'g4-self' itself" \
+  "note: a global's initializer runs at the point its own defvar is reached, so it cannot read the global it is initializing"
+# The two carve-outs, pinned as ACCEPTING here as well as by value above: a
+# later, stricter walk that swallowed either would break programs that compile
+# today (examples/g1-const-init.nuc's forward `(addr-of g-later-target)` is the
+# in-tree instance of the first).
+spawn run_accepts g4-addr-of-forward-clean tests/fixtures/g4-addr-of-forward.nuc
+spawn run_accepts g4-laundered-call-clean tests/fixtures/g4-laundered-call.nuc
 
 # --- Stage 15 W5e: `defn-` name isolation -----------------------------------
 # design/stage15-stress-test/ergonomics.md §W5e. Sequenced after W1 because it is

@@ -1,0 +1,24 @@
+; Stage 15 W8 G-4, the `(addr-of g)` decision, pinned.
+;
+; `(addr-of g)` is NOT a read and is never flagged by the ordering check, even
+; when `g`'s `defvar` comes later. A global's address is a link-time constant
+; that requires no initialization to have happened — G-1 folds it to a bare
+; `@g` — and this compiler's own source depends on the property
+; (`(vector-new-in (addr-of g-arena-alloc))`). Reading the *value* is what gets
+; a zero; taking the address does not.
+;
+; The forward `(addr-of g)` in a CONSTANT initializer is already covered by
+; examples/g1-const-init.nuc. This fixture covers the RUN-TIME path, where the
+; exemption is a deliberate carve-out in the walk rather than a consequence of
+; the check not running at all: the initializer is a call (so it is queued for
+; `@__nucleus_init` and the ordering check does run), and the forward
+; `(addr-of …)` sits inside its argument.
+;
+; The dereference in `main` is what makes the pointer's correctness observable;
+; `run_g4_order` links and runs this shape and asserts the value.
+(defn g4-ao-wrap (p:ptr:i32):ptr:i32 (return p))
+
+(defvar g4-ao-p:ptr:i32 (g4-ao-wrap (addr-of g4-ao-target)))
+(defvar g4-ao-target:i32 7)
+
+(defn main ():i32 (return (deref g4-ao-p)))

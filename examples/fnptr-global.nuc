@@ -1,0 +1,84 @@
+; A function-pointer-typed GLOBAL: `(defvar h:(fn ret)(params) …)`.
+;
+; `examples/fnptr.nuc` covers the fn-pointer *parameter* and *local*; this is
+; the global. Until the Stage 15 W8 fix it could not be declared at all — two
+; independent defects stacked on the same spelling:
+;
+;   1. `name-existing-kind` classified ANY global Sym carrying a `TY-FN` type as
+;      "a function", so once W8 G-0's `prescan-value-names` began defining the
+;      Sym during the whole-graph prescan, `emit-defvar`'s `guard-name-kind`
+;      found it and the `defvar` collided with ITSELF
+;      ("'h' already names a function"). It now also asks `is-local`, the same
+;      two-conjunct test `emit-dispatch` already uses to tell a `defn` from a
+;      fn-pointer-typed value.
+;   2. Behind that, `defvar-init-ir`'s `null` gate tested `is-ptr-like`, which
+;      deliberately excludes `TY-FN` — so even before (1) existed the explicit
+;      `null` initializer was refused, while the *implicit* zero for the same
+;      slot was already `null` (`type-zero-const-ir`'s TY-FN arm).
+;
+; Everything below is asserted BY VALUE, not by exit code: a hook wired to the
+; wrong symbol, or an initializer that never ran, compiles and links perfectly
+; and is only visible in what the call returns.
+
+(import-use "stdio.h")
+
+(defn twice (x:i32):i32 (return (* 2 x)))
+(defn negate (x:i32):i32 (return (- 0 x)))
+(defn forty-two ():i32 (return 42))
+
+; A function-returning-a-function-pointer, so the runtime-initialized global
+; below has something to be initialized FROM.
+(defn pick-hook ():(fn i32)() (return forty-two))
+
+; --- 1: explicit `null` -------------------------------------------------------
+; A function pointer carries no non-null contract: `ptr-pkind` answers PTR-RAW
+; for every non-TY-PTR kind, and `(fn ret)(params)` is the whole spelling — the
+; wrapper forms `ptr:(fn …)` / `(ref (fn …))` denote a pointer *to* a function
+; pointer and still reject `null`. So `null` is a fn pointer's honest "not wired
+; yet" value, exactly as for `CStr`, and this is the shape a conditionally
+; installed hook needs.
+(defvar h-null:(fn i32)(i32) null)
+
+; --- 2: no initializer at all -------------------------------------------------
+; The slot's implicit zero — byte-identical IR to (1), which is the whole
+; argument for accepting (1) rather than refusing it.
+(defvar h-zero:(fn i32)(i32))
+
+; --- 3: initialized at the declaration ----------------------------------------
+; Not a compile-time constant, so it runs from `@__nucleus_init` (W8 G-3). This
+; is the shape a combined declaration+initialization of a compiler hook takes.
+(defvar h-init:(fn i32)() (pick-hook))
+
+; Is a function-pointer slot currently null? `(= h null)` does not compile yet —
+; `emit-binop-vals`' null-literal escape and its pointer-comparison arm both
+; gate on `is-ptr-like`, which excludes TY-FN, so the comparison falls through
+; to the numeric path and dies "= expects integer operands". That gap is
+; pre-existing and general (a fn-pointer *parameter* or *local* null-checks the
+; same way), independent of this fix; the explicit reinterpret is the escape
+; hatch until it is closed.
+(defn hook-unset (h:(fn i32)(i32)):i32
+  (if (= (unsafe/cast ptr h) null) (return 1) (return 0)))
+
+(defn main ():i32
+  ; A null hook reads back null — the point of allowing the spelling.
+  (printf "h-null  before = %d\n" (hook-unset h-null))
+  (printf "h-zero  before = %d\n" (hook-unset h-zero))
+
+  ; Assign a function and call through it. `(h-null 21)` is the direct-call
+  ; spelling, `funcall` the explicit one; both must reach `twice`, so the
+  ; printed value distinguishes a correctly wired hook from a wrong one.
+  (set! h-null twice)
+  (printf "h-null  after  = %d\n" (hook-unset h-null))
+  (printf "h-null  (21)   = %d\n" (h-null 21))
+  (printf "h-null  funcall= %d\n" (funcall h-null 50))
+
+  ; Reassign: the global is a mutable slot, not a second name for `twice`.
+  (set! h-null negate)
+  (printf "h-null  (21)   = %d\n" (h-null 21))
+
+  (set! h-zero twice)
+  (printf "h-zero  (16)   = %d\n" (h-zero 16))
+
+  ; The declaration-site initializer ran before `main`.
+  (printf "h-init  ()     = %d\n" (h-init))
+  (return 0))

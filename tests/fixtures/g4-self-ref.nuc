@@ -1,0 +1,8 @@
+; Stage 15 W8 G-4: the degenerate cycle — a global whose initializer reads
+; itself. It falls out of the same check (a `defvar`'s own Sym is still
+; DECLARED while its initializer is being classified, since `emit-defvar`
+; registers the REACHED one only after the `@g = global` line is written), but
+; it gets its own wording: "both sites" would otherwise be the same line twice.
+(defvar g4-self:i32 (+ g4-self 1))
+
+(defn main ():i32 (return g4-self))
