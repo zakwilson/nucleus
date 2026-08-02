@@ -1,0 +1,5 @@
+; Stage 15 W8 G-1: a call is still not a constant. The operator is identified
+; before its operands are folded, so this reports "not a constant" rather than
+; a division-by-zero the program never performs.
+(defn g1-f (x:i32):i32 (return x))
+(defvar g1-nc:i32 (+ 1 (g1-f 2)))

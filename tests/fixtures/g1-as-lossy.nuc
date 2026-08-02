@@ -1,0 +1,5 @@
+; Stage 15 W8 G-1: `(as T x)` inside a fold uses the SAME narrowing rule
+; `emit-as` uses (`as-int-narrowing`, src/type-utils.nuc), so a constant that
+; only fits i64 cannot be cast down with the safe cast here either.
+(defconst G1BIG 5000000000)
+(defvar g1-lossy:i32 (as i32 G1BIG))

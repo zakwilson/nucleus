@@ -1,0 +1,3 @@
+; Stage 15 W8 G-1: a shift count outside [0,64) is `poison` in LLVM, so the
+; runtime path has no answer either; the fold refuses it with a located message.
+(defvar g1-sh:i64 (bit-shl 1 64))

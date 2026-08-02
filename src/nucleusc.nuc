@@ -2138,8 +2138,14 @@
 ; defining file has been EMITTED, and a cycle member's body is emitted before
 ; the rest of the file it back-imports:
 ;
-;   * `defmacro` / `defconst` / `defenum` names (g-macros and the constant
-;     bindings are written by their emitters);
+;   * `defmacro` names, plus `deferror` ids and `extern` declarations (each is
+;     written by its emitter). Stage 15 W8 G-0 REMOVED `defconst` / `defenum` /
+;     `defvar` from this list: `prescan-value-names` now registers value names
+;     on the same whole-graph walk that registers signatures, so a constant,
+;     enum member or global defined by a cycle partner resolves (measured: all
+;     three compile, link and return the right value across a cycle). The
+;     scan behind `cycle-definer-file` is deliberately left broad — it is shared
+;     with W1c's unreachable-definer note, which still needs every definer.
 ;   * struct and union LAYOUTS (`emit-defstruct` populates the field table that
 ;     `struct-field-index` and `abi-sizeof` read);
 ;   * `prefix/name` aliases (`do-import` aliases over the global-scope slice a
@@ -2195,7 +2201,13 @@
     (when (= defpath null) (return null))
     (let (head:ptr (fmt-2s "%s: %s — defined in a file this unit imports circularly, and not registered yet at this point"
                            verb name)
-          note:ptr (fmt-2s "  note: %s; a cycle resolves function signatures but not macros, constants or enum members, which register only when their file is emitted -- and a cycle member's body is emitted before the rest of the file it back-imports. Either %s"
+          ; Stage 15 W8 G-0 rewrote this sentence. It used to say "not macros,
+          ; constants or enum members"; the value half moved into the prescan, so
+          ; the only names left registering at emission time are macros,
+          ; `deferror` ids and `extern` declarations. Keep it accurate — a note
+          ; that names a coupling the compiler no longer has sends the reader to
+          ; break a cycle they do not need to break.
+          note:ptr (fmt-2s "  note: %s; a cycle resolves function signatures and value names before any emission, but a macro, deferror id or extern declaration registers only when its file is emitted -- and a cycle member's body is emitted before the rest of the file it back-imports. Either %s"
                            (import-cycle-note (as CStr defpath)) (import-cycle-advice)))
       (return (fmt-2s "%s\n%s" head note)))))
 
@@ -3066,8 +3078,11 @@
               (return (alloc-val dst tmp)))))
         ; 5. int -> int: widening (zext/sext) and same-width sign reinterpret are
         ; safe (coerce-int-val emits them / no IR); narrowing is lossy.
+        ; The narrowing test lives in `as-int-narrowing` (src/type-utils.nuc) so
+        ; the constant folder in `defvar-init-ir` (Stage 15 W8 G-1) asks the same
+        ; question of the same rule rather than mirroring this comparison.
         (when (and (!= (is-int-type src) 0) (!= (is-int-type dst) 0))
-          (when (< (int-width dst) (int-width src))
+          (when (!= (as-int-narrowing src dst) 0)
             (die-at (cc line)
               (fmt-2s "as: lossy conversion from %s to %s -- use unsafe/cast"
                 (type-spelling src) (type-spelling dst))))
@@ -8599,6 +8614,287 @@
     (.set! s src-file g-source-path)
     (.set! s src-line line)))
 
+; ============================================================
+; Stage 15 W8 G-1 — constant expressions in a global initializer
+; (design/global-init.md §5 "G-1"; §3 Option 3b)
+; ============================================================
+;
+; An LLVM global initializer is a *constant*: there is no instruction stream to
+; emit into, so an initializer expression is either evaluated by the compiler or
+; refused. G-1 evaluates the integer subset here, with **no JIT** — §3's Option
+; 3a is rejected on measured grounds (a CT/macro JIT module can reference
+; neither a program `defvar` nor a program `defn`; a fold that runs in the host
+; process is cross-compilation-unsound, the `-ffast-math` hazard
+; context/conventions.md already records; and it can never yield a runtime
+; address).
+;
+; TYPING DISCIPLINE. A folded expression's result is treated as an *untyped
+; integer literal of that value* — precisely what `(defvar g:T 5)` is — so the
+; W2b range gate `int-literal-fits` at the destination is the single check for a
+; folded value and a written one alike, reached through the same call.
+; `(defvar g:i32 (* BIG 2))` is therefore rejected for exactly the reason
+; `(defvar g:i32 BIG)` is, rather than wrapping.
+;
+; OVERFLOW. Evaluation is in signed 64-bit, matching an untyped literal, and
+; every operation that can leave that range is a *located compile-time error*,
+; never a wrap: `+`/`-`/`*` overflow, `/` and `%` by zero or the INT64_MIN/-1
+; pair, and a shift count outside [0,64). A silent wrap here would be the W2b
+; bug in a new spelling. The overflow tests run BEFORE the operation, because the
+; compiler's own `+`/`-`/`*` emit `add nsw` / `sub nsw` / `mul nsw` and
+; inspecting an overflowed result would be inspecting LLVM poison.
+
+; The i64 bounds. Built with a shift rather than written as decimal literals:
+; `-9223372036854775808` has no positive spelling `strtoll` accepts, and
+; `(- (bit-shl 1 63) 1)` would itself be a signed-overflow subtraction. `shl` and
+; `xor` carry no `nsw`, so both of these are well-defined bit operations.
+(defn cfold-i64-min ():i64
+  (let (one:i64 1) (return (bit-shl one 63))))
+
+(defn cfold-i64-max ():i64
+  (return (bit-not (cfold-i64-min))))
+
+(defn cfold-overflow (line:i32):void
+  (die-at line "defvar: constant initializer overflows 64-bit signed integer arithmetic"))
+
+(defn cfold-add (a:i64 b:i64 line:i32):i64
+  (when (and (> b 0) (> a (- (cfold-i64-max) b))) (cfold-overflow line))
+  (when (and (< b 0) (< a (- (cfold-i64-min) b))) (cfold-overflow line))
+  (return (+ a b)))
+
+(defn cfold-sub (a:i64 b:i64 line:i32):i64
+  (when (and (< b 0) (> a (+ (cfold-i64-max) b))) (cfold-overflow line))
+  (when (and (> b 0) (< a (+ (cfold-i64-min) b))) (cfold-overflow line))
+  (return (- a b)))
+
+; The four sign quadrants each reduce to one comparison against a truncating
+; quotient, which is exact here: truncation toward zero is floor for a positive
+; quotient and ceiling for a negative one, and both are the bound the test wants.
+; `-1 * INT64_MIN` is the one product no quotient test can screen (the quotient
+; itself traps), so it is screened first, both ways round.
+(defn cfold-mul (a:i64 b:i64 line:i32):i64
+  (when (or (= a 0) (= b 0)) (return 0))
+  (when (and (= a -1) (= b (cfold-i64-min))) (cfold-overflow line))
+  (when (and (= b -1) (= a (cfold-i64-min))) (cfold-overflow line))
+  (let (mx:i64 (cfold-i64-max)
+        mn:i64 (cfold-i64-min))
+    (cond (and (> a 0) (> b 0)) (when (> a (/ mx b)) (cfold-overflow line))
+          (and (> a 0) (< b 0)) (when (< b (/ mn a)) (cfold-overflow line))
+          (and (< a 0) (> b 0)) (when (< a (/ mn b)) (cfold-overflow line))
+          true                  (when (< a (/ mx b)) (cfold-overflow line))))
+  (return (* a b)))
+
+(defn cfold-div (a:i64 b:i64 line:i32):i64
+  (when (= b 0) (die-at line "defvar: division by zero in constant initializer"))
+  (when (and (= a (cfold-i64-min)) (= b -1)) (cfold-overflow line))
+  (return (/ a b)))
+
+(defn cfold-rem (a:i64 b:i64 line:i32):i64
+  (when (= b 0) (die-at line "defvar: remainder by zero in constant initializer"))
+  ; INT64_MIN % -1 is mathematically 0 but traps on x86 `idiv`. Answer it
+  ; directly rather than executing the instruction to find that out.
+  (when (= b -1) (return 0))
+  (return (% a b)))
+
+; A shift count outside [0,64) is `poison` in LLVM, so the runtime path has no
+; answer to give either; refusing it at the fold is strictly more informative
+; than baking poison into a constant.
+(defn cfold-shift (a:i64 b:i64 left:i32 line:i32):i64
+  (when (or (< b 0) (>= b 64))
+    (die-at line
+      (fmt-i64 "defvar: shift amount %ld out of range in constant initializer (must be 0..63)" b)))
+  (if (!= left 0) (return (bit-shl a b)) (return (bit-shr a b))))
+
+; The foldable binary operators, by their POST-macroexpansion spelling: the
+; variadic `+`/`-`/`*`/`/` and `bit-not` are macros (lib/macros.nuc) that expand
+; to these, so a source-level `(+ a b c)` arrives as nested `_+` cells.
+; Comparisons and `_and`/`_or` are deliberately absent — they yield i1 and belong
+; to a value domain this folder does not model (see the G-1 record).
+; 0 means "not a foldable operator".
+(defn cfold-op-code (h:ptr):i32
+  (cond (= h "_+")      (return 1)
+        (= h "_-")      (return 2)
+        (= h "_*")      (return 3)
+        (= h "_/")      (return 4)
+        (= h "%")       (return 5)
+        (= h "bit-and") (return 6)
+        (= h "bit-or")  (return 7)
+        (= h "bit-xor") (return 8)
+        (= h "bit-shl") (return 9)
+        (= h "bit-shr") (return 10)
+        true            (return 0)))
+
+; `bit-shr` folds as an ARITHMETIC shift, matching the `ashr` the binop table
+; selects for the signed operand types two untyped literals produce.
+(defn cfold-apply (op:i32 a:i64 b:i64 line:i32):i64
+  (case op
+    1  (return (cfold-add a b line))
+    2  (return (cfold-sub a b line))
+    3  (return (cfold-mul a b line))
+    4  (return (cfold-div a b line))
+    5  (return (cfold-rem a b line))
+    6  (return (bit-and a b))
+    7  (return (bit-or a b))
+    8  (return (bit-xor a b))
+    9  (return (cfold-shift a b 1 line))
+    10 (return (cfold-shift a b 0 line))
+    (return 0)))
+
+; `(sizeof T)` as a constant. The value path lowers `sizeof` to a GEP over the
+; LLVM *named* type and lets LLVM compute it; a constant initializer cannot, so
+; this asks the compiler's own layout model instead — `abi-sizeof`, the same one
+; the SysV classifier uses and `make abi-test` / `make layout-test` gate.
+;
+; That swap has one consequence the GEP form does not have, and it is exactly
+; what src/type-utils.nuc's W1d note warns about: LLVM resolves `%Name` from a
+; `%Name = type {…}` line emitted anywhere in the module, but `abi-sizeof` reads
+; the compiler's own field table, which an import cycle may not have populated
+; yet. So this site needs `reject-cycle-pending-layout` where `emit-sizeof` does
+; not — otherwise a cross-cycle `(sizeof S)` would silently fold to 0.
+(defn cfold-sizeof (tn:(raw Node) line:i32):i64
+  (let (tl:i32 (node-line (as ptr tn) line)
+        ty:(raw Type) (parse-type-from-node (as ptr tn) tl))
+    (reject-opaque-type ty tl "sizeof")
+    (reject-cycle-pending-layout ty tl "sizeof")
+    (return (as i64 (abi-sizeof ty)))))
+
+; Evaluate `n` as an integer constant expression. Returns 1 and stores the value
+; through `out` on success; 0 when `n` is simply not a constant expression (the
+; caller then reports the whole initializer). A *malformed* constant expression —
+; overflow, division by zero, a lossy `as` — is a `die-at` here rather than a 0,
+; because "this is arithmetic and it is wrong" is a different answer from "this
+; is not arithmetic".
+;
+; `encl` is the enclosing form's line, blamed when a sub-node has none of its own
+; (interned symbols carry line 0 — context/conventions.md).
+(defn const-fold-int (n:(raw Node) out:ptr:i64 encl:i32):i32
+  (when (= n null) (return 0))
+  ; Expand the head to fixpoint at every level: `(+ a b)` is a MACRO call, and
+  ; the tail-wrapping expansion means an operand is frequently a CELL rather than
+  ; the bare operand (`(* v K)` → `(_* v (* K))`). This is the same expander
+  ; `node-is-int-literal` uses, for the same reason.
+  (let (e:ptr (macroexpand-form n -1))
+    (when (= e null) (return 0))
+    (let (ee:ptr:Node (unsafe/cast ptr:Node e)
+          nl:i32 (node-line e encl))
+      ; a) an integer literal
+      (when (= (ee kind) NODE-INT)
+        (aset! out 0 (ee i))
+        (return 1))
+      ; b) a name bound by `defconst` / `defenum`. The provenance read here is
+      ; W2b's (`const-lit` + `const-lit-i64`), which G-0 additionally arms at
+      ; PRESCAN time — so a constant referenced before its own definition folds
+      ; identically to one referenced after it. A constant that is not an integer
+      ; literal (a `deferror` id carries `is-const` but not `const-lit`) is not
+      ; foldable and falls through to 0.
+      (when (= (ee kind) NODE-SYM)
+        (let (nm:ptr null
+              ignored:ptr null)
+          (split-typed (ee s) (as ptr:ptr (addr-of nm)) (as ptr:ptr (addr-of ignored)))
+          (let (sym:?ptr:Sym (scope-lookup g-globals nm))
+            (when (and (!= sym null) (!= (sym is-const) 0) (!= (sym const-lit) 0))
+              (aset! out 0 (sym const-lit-i64))
+              (return 1))))
+        (return 0))
+      (when (!= (ee kind) NODE-CELL) (return 0))
+      (let (nargs:i32 (- (node-len (as ptr ee)) 1)
+            hd:ptr (node-at (as ptr ee) 0))
+        (when (= hd null) (return 0))
+        (when (!= ((unsafe/cast ptr:Node hd) kind) NODE-SYM) (return 0))
+        ; (sizeof T)
+        (when (and (= hd 'sizeof) (= nargs 1))
+          (aset! out 0 (cfold-sizeof (node-at (as ptr ee) 1) nl))
+          (return 1))
+        ; (char "x") — the same one-byte literal defvar-init-ir renders directly,
+        ; repeated here so it composes: `(+ (char "a") 1)`.
+        (when (and (= hd 'char) (= nargs 1))
+          (let (arg:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr ee) 1)))
+            (when (or (= (as ptr arg) null)
+                      (!= (arg kind) NODE-STR)
+                      (!= (strlen (arg s)) 1))
+              (die-at nl "defvar: (char ...) requires a single-char string"))
+            (aset! out 0 (as i64 (char-at (arg s) 0)))
+            (return 1)))
+        ; (as T x) at an INTEGER T. The narrowing rule is `as-int-narrowing`
+        ; (src/type-utils.nuc), the same call `emit-as` step 5 makes, so the two
+        ; positions cannot drift on what `as` may narrow. The source type is the
+        ; folded value's truthful width (`int-literal-type`, W2b's shared rule).
+        ; A non-integer T is left to defvar-init-ir's own `as` branch.
+        (when (and (= hd 'as) (= nargs 2))
+          (let (dst:(raw Type) (parse-type-from-node (node-at (as ptr ee) 1) nl))
+            (when (= (is-int-type dst) 0) (return 0))
+            (let (v:i64 0)
+              (when (= (const-fold-int (node-at (as ptr ee) 2)
+                                       (as ptr:i64 (addr-of v)) nl) 0)
+                (return 0))
+              (let (src:(raw Type) (int-literal-type v))
+                (when (!= (as-int-narrowing src dst) 0)
+                  (die-at nl
+                    (fmt-2s "as: lossy conversion from %s to %s -- use unsafe/cast"
+                      (type-spelling src) (type-spelling dst)))))
+              (aset! out 0 v)
+              (return 1))))
+        ; arithmetic / bit operators. The operator is identified BEFORE the
+        ; operands are folded, so a non-constant call whose arguments happen to
+        ; be malformed arithmetic — `(f (/ 1 0))` — reports "not a constant"
+        ; rather than a division-by-zero the program never performs.
+        (when (= nargs 2)
+          (let (op:i32 (cfold-op-code ((unsafe/cast ptr:Node hd) s)))
+            (when (!= op 0)
+              (let (a:i64 0
+                    b:i64 0)
+                (when (= (const-fold-int (node-at (as ptr ee) 1)
+                                         (as ptr:i64 (addr-of a)) nl) 0)
+                  (return 0))
+                (when (= (const-fold-int (node-at (as ptr ee) 2)
+                                         (as ptr:i64 (addr-of b)) nl) 0)
+                  (return 0))
+                (aset! out 0 (cfold-apply op a b nl))
+                (return 1)))))
+        (return 0)))))
+
+; `(addr-of g)` as a global initializer: the address of another global is a
+; link-time constant, so `@g` is a legal initializer operand — and it is provably
+; non-null, which makes this the one G-1 spelling that can initialize a
+; **non-null** `(ref T)` global with no runtime store at all (design/
+; global-init.md §3 Option 3b, "interaction with the nullability fix").
+;
+; The resolution rules mirror `emit-addr-of`'s, minus the two that are
+; meaningless at file scope: a global is never moved, and it has no frame region
+; to escape from. A forward reference resolves because G-0's `prescan-defvar-name`
+; registers the Sym — with the same `def-ir-base` symbol, under the same
+; `g-defining-private` arming — before any form is emitted, and LLVM's textual
+; parser resolves a forward `@g` at end of module.
+(defn defvar-addr-of-ir (target:(raw Node) ty:(raw Type) line:i32):ptr
+  (when (= target null)
+    (die-at line "defvar: addr-of target must be a symbol"))
+  (let (tn:ptr:Node (unsafe/cast ptr:Node target))
+    (when (!= (tn kind) NODE-SYM)
+      (die-at line "defvar: addr-of target must be a symbol"))
+    (let (sym:?ptr:Sym (scope-lookup g-globals (tn s)))
+      (when (= sym null)
+        (die-at line (fmt-s "defvar: addr-of: undefined '%s'" (tn s))))
+      ; A `defconst` / `defenum` member / `deferror` id is a compile-time value
+      ; with no storage, so there is no address to take.
+      (when (or (!= (sym is-const) 0) (= (sym ir-name) null))
+        (die-at line
+          (fmt-s "defvar: addr-of: '%s' is a compile-time constant and has no address"
+            (tn s))))
+      (when (= ((sym type) kind) TY-FN)
+        (die-at line
+          (fmt-s "defvar: addr-of: cannot take the address of function '%s'" (tn s))))
+      (when (= (is-ptr-like ty) 0)
+        (die-at line
+          (fmt-s "defvar: addr-of requires ptr or CStr type, not %s" (type-spelling ty))))
+      ; The address of a global IS a `(ref T)`. Handing pkind-flow-check a
+      ; PTR-REF source is what admits it into a non-null slot — the same call the
+      ; `null` branch below makes with `ty-raw`, so the two spellings move
+      ; together if the flow rule ever changes.
+      (let (pt:ref:Type (make-type TY-PTR))
+        (.set! pt elem (sym type))
+        (.set! pt pkind PTR-REF)
+        (pkind-flow-check (as ptr pt) ty line "defvar")
+        (return (sym ir-name))))))
+
 ; Produce the LLVM initializer string for a `defvar` init form at `ty`.
 ; Accepts int / float / string / null / true / false / defconst-name / (char "x").
 ; `encl` is the enclosing `defvar` form's line, blamed when the init node is a
@@ -8753,7 +9049,45 @@
             (when (= (is-int-type ty) 0)
               (die-at (node-line init encl) "defvar: char literal requires integer type"))
             (return (fmt-i32 "%d" (char-at (arg s) 0)))))))
-    (die-at (node-line init encl) "defvar: init must be a literal")
+    ; ---- Stage 15 W8 G-1: constant expressions ------------------------------
+    ; Every shape below dies today with "init must be a literal", so no program
+    ; that compiles now can have its IR moved by adding them — which is why the
+    ; design predicts a byte-identical bootstrap for this step.
+    (when (= (nn kind) NODE-CELL)
+      (let (nargs0:i32 (- (node-len (as ptr nn)) 1)
+            hd0:ptr (node-at (as ptr nn) 0))
+        (when (and (!= hd0 null) (= ((unsafe/cast ptr:Node hd0) kind) NODE-SYM))
+          ; `(as T x)` at a POINTER-LIKE destination — the shape §1b names, and
+          ; the one W5c's progress note recorded as out of scope under "the
+          ; general expressions-aren't-literals rule". G-1 IS that rule changing,
+          ; not an exception carved into it. Rendered by recursion at `T` and
+          ; then put through the same pkind gate `as-ptr-convert` applies in
+          ; value position, so `(as (raw T) null)` cannot launder a null into a
+          ; `(ref T)` global.
+          (when (and (= hd0 'as) (= nargs0 2))
+            (let (dst:(raw Type) (parse-type-from-node (node-at (as ptr nn) 1)
+                                                       (node-line init encl)))
+              (when (and (!= (is-ptr-like dst) 0) (!= (is-ptr-like ty) 0))
+                (let (rendered:ptr (defvar-init-ir (node-at (as ptr nn) 2) dst encl))
+                  (pkind-flow-check dst ty (node-line init encl) "defvar")
+                  (return rendered)))))
+          ; `(addr-of g)` — the address of another global.
+          (when (and (= hd0 'addr-of) (= nargs0 1))
+            (return (defvar-addr-of-ir (node-at (as ptr nn) 1) ty (node-line init encl)))))))
+    ; An integer destination folds an arbitrary integer constant expression. The
+    ; result is an untyped literal of that value, so it faces the SAME
+    ; `int-literal-fits` gate the written literal above faces — a folded
+    ; `(* 2000000000 3)` is rejected exactly as the written `6000000000` is.
+    (when (!= (is-int-type ty) 0)
+      (let (folded:i64 0)
+        (when (!= (const-fold-int init (as ptr:i64 (addr-of folded)) encl) 0)
+          (when (= (int-literal-fits folded ty) 0)
+            (die-at (node-line init encl)
+              (fmt-2s "defvar: constant expression value %s does not fit %s"
+                (fmt-i64 "%ld" folded) (type-spelling ty))))
+          (return (fmt-i64 "%ld" folded)))))
+    (die-at (node-line init encl)
+      "defvar: init must be a compile-time constant (a literal, a named constant, or an expression over them)")
     (return null)))
 
 (defn emit-defvar (call:(raw Node)):void
@@ -10659,6 +10993,156 @@
       (set! fc ((unsafe/cast ptr:Node fc) cdr)))
     (finalize-generics)))
 
+; ============================================================
+; Stage 15 W8 G-0 (design/global-init.md §5) — the VALUE half of W1a's
+; whole-graph prescan.
+;
+; W1a made `defn` signatures, protocols and type names resolve on *reachability*
+; rather than import order. Value names — `defvar`, `defconst`, `defenum` members
+; — were left behind: they were registered by their emitters, so a reference to
+; one that had not been emitted yet died `undefined: X — not defined anywhere in
+; this compilation unit`, asserting something false about a name that is in the
+; unit (global-init.md §2.5 records the four probes). These three functions
+; register the same bindings the emitters do, at the point W1a registers
+; signatures — before any form of any reachable file is emitted.
+;
+; REGISTRATION ONLY. Nothing here writes to an IR stream: the `@g = global …`
+; line still comes out of `emit-defvar`, in its own file's emission position, and
+; a reference emitted before it is an ordinary forward reference to a module-level
+; global, which LLVM's textual parser resolves at end of module (verified).
+;
+; The emitters still register too, so each value name is defined twice in
+; `g-globals` (prescan, then emission). That is deliberate and it is the cheap
+; half of the not-idempotent problem W1a had to solve for signatures: unlike
+; `generic-register-method`, `scope-define` appends and `scope-lookup` scans
+; backwards, so a re-definition of an identical binding is inert — the emission
+; copy simply wins, exactly as it does today for the *same* name defined twice by
+; two files. There is therefore no relaxation of any duplicate check here: two
+; `defvar`s of one name still emit two `@g = global` lines (rejected at the LLVM
+; parse), and two `defn`s of one signature still hit `finalize-generics`'
+; duplicate-definition diagnostic. Per-path skipping is still what keeps the
+; SIGNATURE pass single-shot (`g-prescan-sigs`); these run under exactly the same
+; guard, so a file is never value-prescanned twice.
+;
+; Namespaces are applied by the caller (`prescan-imported-signatures` saves and
+; restores `g-current-ns`/`g-ns-seen` and applies each visited file's own leading
+; `(ns …)` / `set-ir-prefix`), and W5e's synthetic per-file private namespace is
+; reproduced by arming `g-defining-private` around a `defvar-`/`defconst-`/
+; `defenum-` — `scope-define` keys through `priv-key-define` and `def-ir-base`
+; composes the file's private ir-prefix, both of which read that flag. Without the
+; arming a private value would register under the public key and emit under a
+; different symbol than the one the prescan advertised.
+;
+; Malformed forms are SKIPPED, never diagnosed: every shape check below has a
+; matching `die-at` in the emitter, and moving a diagnostic earlier would move
+; which error a broken file reports first. The one thing the prescan does not
+; tolerate is an unresolvable *type*, because `extract-name-and-type` dies on its
+; own — the same constraint `prescan-defn-signatures` has carried since W1a, and
+; the reason W1c's `unknown type: X` reachability rule (resolution.md §2.7) now
+; covers a `defvar`'s type exactly as it covers a `defn` parameter's.
+; ============================================================
+
+; The `defvar`/`defvar-` half: the same Sym `emit-defvar` defines, minus the
+; `@g = global …` line, the `type-size` alignment and the name-kind guard.
+(defn prescan-defvar-name (form:(raw Node)):void
+  (let (cc:ptr:Node (unsafe/cast ptr:Node form))
+    (when (< (node-len cc) 2) (return))
+    (let (attr-flags:i32 0
+          decl:ptr (parse-decl-attrs (as ptr (cc cdr))
+                     (as ptr:i32 (addr-of attr-flags)) (cc line)))
+      (when (= decl null) (return))
+      (let (declc:ptr:Node (unsafe/cast ptr:Node decl)
+            name-node:ptr (declc car)
+            name:ptr null
+            name-line:i32 (node-line (as ptr name-node) (cc line))
+            ty:ptr (extract-name-and-type name-node (as ptr:ptr (addr-of name)) name-line))
+        ; No type annotation: `(defvar x 0)` is an error emit-defvar reports.
+        (when (or (= ty null) (= name null)) (return))
+        (when (!= (bit-and attr-flags DECL-ATTR-VOLATILE) 0)
+          (set! ty (as ptr (type-with-volatile (unsafe/cast ref:Type ty)))))
+        (let (vsym:ref:Sym (scope-define g-globals name ty
+                             (fmt-s "@%s" (def-ir-base name)) 1))
+          (when (!= g-defining-private 0)
+            (.set! (unsafe/cast ptr:Sym vsym) sym-private 1))
+          ; AVR-6: a `:const` global is not assignable; emit-set reads this flag,
+          ; and a `set!` emitted before the defvar's own file must see it too.
+          (when (!= (bit-and attr-flags DECL-ATTR-CONST) 0)
+            (.set! (unsafe/cast ptr:Sym vsym) readonly-global 1))
+          (sym-set-src-loc (as ptr vsym) (cc line)))))))
+
+; The `defconst`/`defconst-` half. The value is an integer literal and is
+; therefore available here, so the constant carries its full W2b provenance
+; (`int-literal-type`'s truthful width plus `const-lit`/`const-lit-i64`) rather
+; than only its name — a forward reference must type exactly as a backward one.
+(defn prescan-defconst-name (form:(raw Node)):void
+  (let (cc:ptr:Node (unsafe/cast ptr:Node form))
+    (when (!= (node-len cc) 3) (return))
+    (let (name:ptr:Node (unsafe/cast ptr:Node (node-at cc 1))
+          val:ptr:Node (unsafe/cast ptr:Node (node-at cc 2)))
+      (when (or (= (as ptr name) null) (= (as ptr val) null)) (return))
+      (when (!= (name kind) NODE-SYM) (return))
+      (when (!= (val kind) NODE-INT) (return))
+      ; A colon-typed name ("K:i32") is W4b's rejected shape; leave it to
+      ; emit-defconst, which explains it.
+      (when (!= (strchr (name s) 58) null) (return))
+      (let (sym:ref:Sym (scope-define g-globals (name s)
+                          (as ptr (int-literal-type (val i))) null 0))
+        (.set! sym is-const 1)
+        (.set! sym const-val (fmt-i64 "%ld" (val i)))
+        (.set! sym const-lit 1)
+        (.set! sym const-lit-i64 (val i))
+        (when (!= g-defining-private 0) (.set! sym sym-private 1))))))
+
+; The `defenum`/`defenum-` half: the MEMBER names (the enum's own type name is a
+; type, and W1c deliberately keeps type reachability as it is). The EnumDef table
+; that `match` exhaustiveness reads is NOT registered here — it is emission-time
+; state keyed by the enum's type name, not a value binding, and front-loading it
+; would change `g-enumdefs` order against MAX-ENUMS for no G-0 benefit.
+(defn prescan-defenum-names (form:(raw Node)):void
+  (let (cc:ptr:Node (unsafe/cast ptr:Node form))
+    (when (< (node-len cc) 2) (return))
+    (let (i:i32 2)
+      (while (< i (node-len cc))
+        (let (name:ptr:Node (unsafe/cast ptr:Node (node-at cc i)))
+          (when (and (!= (as ptr name) null) (= (name kind) NODE-SYM))
+            (let (sym:ref:Sym (scope-define g-globals (name s) ty-i32 null 0))
+              (.set! sym is-const 1)
+              (.set! sym const-val (fmt-i32 "%d" (- i 2)))
+              (.set! sym const-lit 1)
+              (.set! sym const-lit-i64 (as i64 (- i 2)))
+              (when (!= g-defining-private 0) (.set! sym sym-private 1)))))
+        (inc! i)))))
+
+; Pre-scan one file's top-level forms and register every value name it defines.
+; Runs immediately after `prescan-defn-signatures` for the same form list, under
+; the same per-path guard, with the file's namespace already applied.
+(defn prescan-value-names (forms:(raw Node)):void
+  (let (fc:ptr forms)
+    (while (!= fc null)
+      (let (f:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node fc) car)))
+        (when (and (!= (as ptr f) null) (= (f kind) NODE-CELL)
+                   (>= (node-len (as ptr f)) 2)
+                   (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ kind) (= _ NODE-SYM)))
+          (let (h:ptr (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ s))
+                priv:i32 (if (or (= h "defvar-") (= h "defconst-") (= h "defenum-")) 1 0))
+            (when (or (= h "defvar") (= h "defvar-")
+                      (= h "defconst") (= h "defconst-")
+                      (= h "defenum") (= h "defenum-"))
+              ; W5e: the top-level dispatch loop arms this around the emitter, so
+              ; the prescan must arm it too or a private name registers under the
+              ; public key. Restored immediately — the very next form may be public.
+              (let (save-priv:i32 g-defining-private)
+                (set! g-defining-private priv)
+                (cond
+                  (or (= h "defvar") (= h "defvar-"))
+                    (prescan-defvar-name (as ptr f))
+                  (or (= h "defconst") (= h "defconst-"))
+                    (prescan-defconst-name (as ptr f))
+                  true
+                    (prescan-defenum-names (as ptr f)))
+                (set! g-defining-private save-priv))))))
+      (set! fc ((unsafe/cast ptr:Node fc) cdr)))))
+
 ; Stage 15 W1a/W1b (design/stage15-stress-test/resolution.md) — the second
 ; whole-graph prescan pass. `prescan-imported-types` (pass 1, above) has already
 ; walked the import graph and registered every reachable file's struct/union type
@@ -10742,6 +11226,9 @@
                           (apply-early-set-ir-prefix ifs)
                           (prescan-protocols ifs)
                           (prescan-defn-signatures ifs)
+                          ; Stage 15 W8 G-0: the value half, registered under the
+                          ; same per-path guard and the same applied namespace.
+                          (prescan-value-names ifs)
                           (prescan-imported-signatures ifs))
                         (free src))
                       (set! g-source-path save-path)
@@ -10981,7 +11468,13 @@
   (if (= sigs-done 0)
     (do
       (prescan-protocols forms)
-      (prescan-defn-signatures forms))
+      (prescan-defn-signatures forms)
+      ; Stage 15 W8 G-0: this file's own value names, so a `defn` body may name a
+      ; `defvar`/`defconst`/`defenum` member declared LATER in the same file. The
+      ; unit's root file is on no import list, so this is the only place it is
+      ; reached; an imported file already walked by prescan-imported-signatures
+      ; takes the `sigs-done` branch and is not re-registered.
+      (prescan-value-names forms))
     (finalize-generics))
   ; Stage 15 W1a: outermost unit only — register every reachable file's protocols
   ; and defn signatures now, so cross-file references resolve on reachability

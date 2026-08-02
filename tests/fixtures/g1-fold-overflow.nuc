@@ -1,0 +1,3 @@
+; Stage 15 W8 G-1: folding is signed 64-bit and an overflow is a located error,
+; never a wrap. 4e9 * 4e9 = 1.6e19, past INT64_MAX.
+(defvar g1-ovf:i64 (* 4000000000 4000000000))

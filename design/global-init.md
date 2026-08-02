@@ -1,9 +1,11 @@
 # Global initialization — combining declaration with initialization
 
-**Status: design, 2026-08-01. No `src/` change.** Written against
-`stage15-stress-test` at `591deba`. Every number below is measured against
-`build/nucleusc` at that commit; probes are recorded inline so they can be
-re-run.
+**Status: design, 2026-08-01. G-0 IMPLEMENTED 2026-08-01, G-1 IMPLEMENTED
+2026-08-02 (§5); G-2..G-5 not started.** Written against `stage15-stress-test`
+at `591deba`. Every number below
+is measured against `build/nucleusc` at that commit; probes are recorded inline so
+they can be re-run. §2.5's four probes have since been fixed by G-0 and carry a
+box saying so.
 
 **Filed as Stage 15 W8** ([stage15-stress-test/overview.md](stage15-stress-test/overview.md)).
 This document is its specification; the stage docs reference it rather than
@@ -302,6 +304,10 @@ consumer's `main` cannot initialize a library. Only a linker-collected section
 (`.init_array`) crosses that boundary.
 
 ### 2.5 Value names are still order-dependent — same-file *and* cross-file
+
+> **Fixed 2026-08-01 by G-0** (§5). Everything below is the pre-G-0 measurement
+> and is retained as the record of what the probes were; all four now pass in
+> both orders and same-file forward. See §5's "G-0 as built".
 
 W1's whole-graph prescan covers `defn` signatures, protocols and struct/union
 type *names*. It does **not** cover value names. Measured, all four failing:
@@ -960,13 +966,16 @@ files.**
    (including `g-arena-alloc`) with zero ordering surface.
 
 **The live precedent, and this design's effect on it.** `defvar`, `defconst`
-and `defenum` names are *already* import-order dependent (§2.5), with a
-diagnostic that falsely claims the name is not defined anywhere. This design is
+and `defenum` names were *already* import-order dependent (§2.5), with a
+diagnostic that falsely claimed the name is not defined anywhere. This design is
 **not orthogonal** to that: G-0 (§5) fixes it, and must, because an initializer
 expression naming another global would otherwise fail at name resolution before
 any ordering question arose. Fixing it also *narrows* the ordinal surface: after
 G-0 the only thing import order affects is initializer *sequencing*, not what
-resolves — which is exactly the line W1 drew.
+resolves — which is exactly the line W1 drew. **G-0 landed 2026-08-01**, so that
+narrowing is now a fact rather than a plan: nothing in the language is
+order-dependent for *resolution* except a string-path import, and the ordering
+policy above governs sequencing alone.
 
 ### 4.2 Dependencies between initializers
 
@@ -1241,6 +1250,115 @@ name that is in the unit; `make bootstrap` diff, if non-empty, proven inert the
 way W1a's 44 type lines were. **This is shippable on its own** and fixes a
 finding the port reported independently (§3.5, §3.2).
 
+---
+
+#### G-0 as built — 2026-08-01
+
+**Done.** `prescan-value-names` + three per-definer helpers
+(`prescan-defvar-name`, `prescan-defconst-name`, `prescan-defenum-names`), all in
+`src/nucleusc.nuc` immediately after `prescan-defn-signatures`. Called from
+exactly two places, both under the guard W1a already established: inside
+`prescan-imported-signatures`' per-file block (after `prescan-defn-signatures`,
+before the recursion) and inside `emit-toplevel-forms`' `(= sigs-done 0)` branch
+(which is what covers the unit's **root** file, on no import list, and therefore
+the same-file forward reference). `.nuch` headers and C-header string imports stay
+excluded for free — both skips are path-level tests in the walk this rides on, and
+`emit-nuch-header`/`emit-nuch-import-forms` never route through
+`emit-toplevel-forms`.
+
+**All four §2.5 probes pass**, each compiled, linked and run:
+
+| Probe | before | after |
+|---|---|---|
+| `defn` body reads a `defvar` declared later in the same file | `error: undefined: gv` | exit 7 |
+| `(import cb)` then `(import ca)`, `defconst` | exit 42 | exit 42 |
+| imports swapped | `error: undefined: MYK` | exit 42 |
+| same shape, `defenum` member / `defvar`, both orders | error in one order | exit 1 / exit 33, both orders |
+
+**Two design premises were wrong, both in the safe direction.**
+
+1. **Registration idempotency was not a problem to solve here.** W1a's per-path
+   skip exists because `generic-register-method` *appends a Method and
+   `finalize-generics` then compares them*, so a second prescan is a duplicate.
+   `scope-define` appends a *binding* and `scope-lookup` scans backwards; a
+   second identical definition is inert. So the prescan copy and the emitter's
+   copy coexist by construction, no new guard was needed, and **no duplicate
+   check was relaxed**: two `defvar`s of one name still emit two
+   `@g = global` lines and LLVM still rejects them (measured, unchanged), and
+   two `defn`s of one signature still hit `finalize-generics`. Worth recording
+   that duplicate `defconst`s across two files were *already* a silent last-wins
+   before this change — that is a pre-existing gap, not one G-0 opened, and it is
+   unchanged.
+2. **G-0 makes W1d's cycle diagnostic for constants obsolete outright**, as the
+   brief suspected. The walk visits both members of a cycle, so a `defconst`,
+   `defenum` member and `defvar` from a cycle partner now all compile, link and
+   return the right value (42 / 2 / 77). `cycle-definer-message`'s note was
+   rewritten (it claimed "not macros, constants or enum members"; it now names
+   macros, `deferror` ids and `extern` declarations, which is what actually
+   remains), and the two units that pinned the old behaviour were **replaced**,
+   not deleted: `w1d-cycle-deferror-diagnosed` keeps the diagnostic pinned for a
+   name a cycle still cannot carry, and `run_g0_cycle_values` pins the three that
+   now work, by value.
+
+**A latent silent wrong answer fell out, unrelated to ordering.** A `defconst-`
+referenced from *earlier in its own file* resolved, before G-0, to another file's
+**public** constant of the same spelling — compiled clean and returned 7 instead
+of 61. W5e's key scheme was right; the private key simply did not exist yet when
+the reader was emitted, while the public one did. G-0 fixes it because the
+prescan arms `g-defining-private`. Pinned by `g0-private-const-forward`.
+
+**Bootstrap: reconverged, and the diff was proven inert first.** The first pass
+diffed by **48 type-definition lines (24 moved), and nothing else** — front-loading
+`defvar` type resolution front-loads the parametric-instance stamps that queue
+`%Name = type {…}` lines, exactly the W1a class. Proof, before any
+`make update-bootstrap`: zero non-`%Name = type` lines differ; sorting the
+type-definition lines makes the two files byte-identical; and the new compiler is
+a fixed point independently of the stale boot (`build/nucleusc` → stage2.ll →
+stage2 binary → stage3.ll, byte-identical). Old-vs-new `--emit-llvm` sweep of
+every `examples/`, `lib/`, `lib/avr/` and `tests/fixtures/` program against a
+compiler built from HEAD's source: **203 byte-identical, 1 type-order-only
+(`examples/fn-ptr-union.nuc`, one anonymous-union line moved), 0 genuinely
+different, 0 regressed**, 2 newly compiling (the new example, and
+`tests/fixtures/w4a-defvar-forward.nuc`, whose header comment left this question
+open for W1 and has been updated). Post-reconverge `make bootstrap` is
+byte-identical; `make test` 328 → **347 PASS / 0 FAIL**; `make abi-test` and
+`make layout-test` green.
+
+**Deliberately not built** (each a separate question, none needed by G-1..G-5):
+
+* **`deferror` and `extern` are not prescanned.** A `deferror`'s dense id is
+  allocated in emission order and an `extern` is a declaration with its own
+  emitter; neither is a value *binding*. They are what keeps
+  `cycle-definer-message` reachable, which is why the diagnostic still has a
+  pinning test.
+* **`g-enumdefs` is not front-loaded.** `prescan-defenum-names` registers the
+  member *bindings* only, not the EnumDef table `match` exhaustiveness reads —
+  that is emission-time state keyed by the enum's type name, capped by
+  `MAX-ENUMS`, and front-loading it would move `g-enumdefs` order for no G-0
+  benefit. A `match` over a cross-file enum is unchanged.
+* **String-path imports (`(import-use "lib/foo.nuc")`) and `.nuch` headers are
+  still ordinal**, for values exactly as they already were for functions —
+  measured both ways, so G-0 introduces no asymmetry between the two kinds of
+  name. Neither prescan walks a NODE-STR `.nuc` path, and the sig walk skips
+  `.nuch` deliberately. Both are noted in `docs/toplevel.md`. One thing improved
+  for free: because the root/unwalked-file branch of `emit-toplevel-forms` now
+  runs the value prescan, a *cycle* written with string paths resolves its own
+  file's constants.
+
+  **These two are the whole remaining surface of W9 defect 6's misleading
+  message, and they are why the interim W1c-style note was NOT added.** In the
+  post-G-0 tree the message fires for a value name that is genuinely absent (the
+  message is true), one defined only in an unreached file (W1c's note already
+  names it), one from a cycle partner's macro/`deferror`/`extern` (W1d's note
+  already explains it), or one behind these two spellings — where the right fix
+  is to extend the walk (or to phrase a note about *how* the file was imported),
+  not to add a third value-specific note that whoever extends the walk would
+  then have to remove. Filed as a **W1 follow-up**, not a W8 one, because it
+  affects `defn` identically.
+* **A `defvar`'s type must now be reachable at prescan time**, joining `defn`
+  signature types under W1c's §2.7 rule. Measured against the whole tree: no file
+  in `src/`, `lib/`, `examples/` or `tests/fixtures/` regressed.
+
 ### G-1 — constant expressions in `defvar-init-ir`
 
 Fold, in the renderer, with no JIT: arithmetic and bit ops over integer literals
@@ -1254,6 +1372,166 @@ exception to it); the address of another global; `(char "x")` (already present).
 per `context/conventions.md`'s standing rule for this function, **call the
 shared predicate, do not re-derive it**. `make bootstrap` byte-identical (every
 new shape is one that dies today).
+
+---
+
+#### G-1 as built — 2026-08-02
+
+**Done.** One evaluator plus two renderer branches, all in `src/nucleusc.nuc`
+immediately above `defvar-init-ir`, plus one predicate extracted into
+`src/type-utils.nuc`.
+
+| Piece | Where | What |
+|---|---|---|
+| `const-fold-int` | `nucleusc.nuc:8769` | node → i64. Returns 1/0; a *malformed* constant expression dies here instead. |
+| `cfold-add/sub/mul/div/rem/shift` | `nucleusc.nuc:8659`–`8706` | overflow/zero/shift-range-checked i64 primitives |
+| `cfold-i64-min` / `-max` / `-overflow` | `nucleusc.nuc:8650`–`8657` | bounds and the shared diagnostic |
+| `cfold-op-code` / `cfold-apply` | `nucleusc.nuc:8713`, `8728` | the foldable operator table |
+| `cfold-sizeof` | `nucleusc.nuc:8753` | `(sizeof T)` via `abi-sizeof` |
+| `defvar-addr-of-ir` | `nucleusc.nuc:8867` | `(addr-of g)` → `@g` |
+| renderer: `(as T x)` at a ptr-like dest | `nucleusc.nuc:9060` | recursion + `pkind-flow-check` |
+| renderer: `(addr-of g)` | `nucleusc.nuc:9074` | |
+| renderer: integer fold + `int-literal-fits` | `nucleusc.nuc:9077` | |
+| `as-int-narrowing` | `type-utils.nuc:397` | **shared** with `emit-as` step 5 (`nucleusc.nuc:3085`) |
+
+**What folds.** Arithmetic `+ - * / %` (including unary `-`); bit operations
+`bit-and bit-or bit-xor bit-shl bit-shr bit-not`; over integer literals,
+`defconst`/`defenum` names, `(char "x")`, `(sizeof T)`, and `(as IntT x)` — to
+any depth, in any mix. At a pointer-like destination, `(as PtrT x)` (which is
+what makes `(as CStr "…")` legal) and `(addr-of other-global)`. Every shape is
+covered by `examples/g1-const-init.nuc`, which **prints** each folded value: the
+characteristic failure of a constant folder is the wrong number, and an exit-0
+compile cannot see it.
+
+**W5c's `(as CStr …)` note is superseded, not excepted.** `design/stage15-
+stress-test/progress.md`'s W5c entry records `(as CStr "…")` in an initializer as
+deliberately out of scope under "the general expressions-aren't-literals rule".
+G-1 *is* that rule changing. The W5c entry is left as the accurate historical
+record of what W5c decided; the supersession belongs at the stage level.
+
+**What deliberately does not fold, and why.**
+
+* **Float arithmetic.** `(defvar g:f32 3.14)` already works and re-renders at the
+  target width through `float-literal-ir-at`; `(+ 1.0 2.0)` does not fold. Two
+  reasons: folding target FP in the compiler process is the `-ffast-math` hazard
+  `context/conventions.md` records (removed from the Makefile in W2d and must not
+  come back), and the only interesting `as` spelling is already rejected in value
+  position — measured: `(as f32 1.5)` dies `as: lossy conversion from f64 to f32`,
+  because a float literal is f64 and `as` never narrows. So a float `as` fold
+  could only have *diverged* from the value path.
+* **Comparisons, `and`, `or`, `not`.** They produce `i1`, a second value domain
+  the folder does not model, and `_and`/`_or` are short-circuit special forms
+  rather than binops. `(defvar g:bool true)` is the spelling.
+* **Aggregates** — struct literals, array literals, the `(array T N)` type. That
+  is G-2, deliberately untouched.
+* **Anything requiring evaluation** — a call, an allocation, a read of another
+  global's *value* (as opposed to its address).
+
+**Typing discipline: a folded result is an untyped integer literal of that
+value.** No result *type* is tracked through the fold. This is a deliberate
+rejection of the obvious alternative (carrying a `Type` alongside the i64), which
+would have needed the folder to re-derive `binop-result-type`'s rule for operator
+results — precisely the mirrored-logic shape W2a exists to delete. Consequences,
+both stated rather than incidental:
+
+* the W2b range gate is exactly the literal's: `(defvar g:i32 (* BIG 2))` is
+  rejected by the same `int-literal-fits` call that rejects
+  `(defvar g:i32 6000000000)`, in the same wording family;
+* `(sizeof T)` loses its `usize` provenance inside a fold, so
+  `(defvar g:i32 (as i32 (sizeof S)))` is accepted here while the value-position
+  `(as i32 (sizeof S))` is refused as lossy. The fold is *better informed* (it has
+  the number), so this is permissive, never wrong. The converse wart is
+  `(as i8 5)`, refused in both positions because `int-literal-type 5` is `i32` and
+  `as` compares widths, not values — an `emit-as` over-strictness that predates
+  G-1 and that the shared predicate faithfully reproduces rather than papering
+  over on one side only.
+
+**Overflow, division by zero, shift overflow — the three decisions.**
+
+* **Overflow: fold in i64, reject at the fold, then range-check the result at the
+  destination.** Both halves are real. `(* 2000000000 3)` = 6000000000 is
+  computed exactly and then refused by `int-literal-fits` at an `i32`
+  destination; `(* 4000000000 4000000000)` leaves i64 and is refused *during* the
+  fold with `constant initializer overflows 64-bit signed integer arithmetic`.
+  Silent wrapping happens in neither. The overflow tests run **before** the
+  operation, not after: the compiler's own `+`/`-`/`*` emit `add nsw`/`sub
+  nsw`/`mul nsw`, so inspecting an overflowed result would be inspecting LLVM
+  poison. The four sign quadrants of the multiply test reduce to one comparison
+  against a truncating quotient (exact, since truncation toward zero is floor for
+  a positive quotient and ceiling for a negative one), with `-1 * INT64_MIN`
+  screened first because the quotient test for it traps.
+* **Division/remainder by zero: a located compile-time error**
+  (`division by zero in constant initializer` / `remainder by zero …`). Not
+  executed — executing it would SIGFPE the compiler — and not emitted as poison.
+  `INT64_MIN / -1` is refused as overflow; `INT64_MIN % -1` answers `0` directly
+  (mathematically correct, and the instruction traps).
+* **Shift count outside [0,64): a located compile-time error.** LLVM's answer is
+  `poison`, so the runtime path has no value to be consistent with; refusing is
+  strictly more informative than baking poison into a constant.
+
+**The three inherited checks still fire, each pinned at a real `file:line:`.**
+
+| Check | Fixture | Diagnostic |
+|---|---|---|
+| `int-literal-fits` on the folded value | `g1-fold-range.nuc:5` | `constant expression value 6000000000 does not fit i32` |
+| `pkind-flow-check` through the new `as` branch | `g1-as-null-launder.nuc:7` | `raw pointer where non-null (ref ...) is required` |
+| `as-int-narrowing` (shared with `emit-as`) | `g1-as-lossy.nuc:5` | `as: lossy conversion from i64 to i32` |
+
+`float-literal-ir-at` is untouched and unbypassable: there is no float fold, so
+every float initializer still reaches the existing branch (verified —
+`(defvar g:f32 3.14)` still emits `float 0x40091EB860000000`).
+
+**One check G-1 had to ADD that the value path does not need.** `emit-sizeof`
+lowers to a GEP over the LLVM *named* type, which LLVM resolves from a
+`%Name = type {…}` line emitted anywhere in the module. The fold cannot: it reads
+the compiler's own field table via `abi-sizeof`. That is exactly the split
+`src/type-utils.nuc`'s W1d note warns about, so `cfold-sizeof` calls
+**`reject-cycle-pending-layout`** as well as `reject-opaque-type` — without it a
+`(sizeof S)` across an import cycle would have silently folded to **0**. Verified:
+it now reports `sizeof: 'CA' has no layout at this point` with W1d's cycle note.
+
+**Cross-compilation.** `abi-sizeof`/`type-size` key off `g-target-ptr-bytes`, the
+**output** target, so the fold is target-correct by construction — measured:
+`(defvar g:i32 (sizeof ptr))` emits `2` under `--target=avr-unknown-unknown` and
+`8` on the host. (One residual, pre-existing and not introduced here: inside a
+`compile-time` block the JIT module runs on the *host* while `type-size` still
+answers for the output target. Every `type-size` consumer already has that
+property; no shape in the tree hits it.)
+
+**Verification.**
+
+* `examples/g1-const-init.nuc` compiles, links and runs, and cross-checks every
+  folded `sizeof` against the runtime `sizeof` in the same program — it prints
+  `agree` per type, so a divergence between `abi-sizeof` and LLVM's layout fails
+  the suite rather than passing quietly. All four agree today.
+* Four cross-file units (`run_g1_fold_cross_file`) compile, link and run,
+  asserting the exit status: a constant folded from a not-yet-emitted file in
+  **both** import orders (42), a `defconst-` folded from earlier in its own file
+  while another file defines the same spelling publicly (45, not 63), and
+  `(addr-of g)` across files where the target is defined later (88).
+* Nine `run_reject_at` fixtures, each pinned at a real `file:line:`.
+* **`make test` 347 → 361 PASS / 0 FAIL** (the brief's baseline of 346 was one
+  low; 347 measured directly before any G-1 change, matching G-0's report).
+  `make abi-test` and `make layout-test` green.
+* **`make bootstrap` byte-identical on the first pass**, as predicted — every
+  shape G-1 adds is one that died before it, so no program's IR could move.
+
+**One pre-existing soundness gap this made visible** (reported, not fixed —
+fixing it would change the value path, which was out of scope, and it is a
+`pkind-flow-check` carve-out, not a renderer bug). `pkind-flow-check` only
+diagnoses a **TY-PTR** source, so a `CStr` source flows into a non-null
+`(ref T)` unchecked — the "CStr is ref-compatible" carve-out. Therefore
+`(defvar g:ptr:T (as CStr null))` compiles to `@g = global ptr null` in a
+non-null slot. The identical local, `(let (p:ptr:T (as CStr null)) …)`, is
+**equally** accepted, by this compiler and by the pre-G-1 boot — so the renderer
+matches the chokepoint exactly, which is the G-1 contract; what is wrong is the
+carve-out, in both positions at once. W9-class; the fix belongs with whatever
+revisits `CStr`'s exemption from the Phase-F regime.
+
+**A second, cosmetic pre-existing wart:** `int-literal-fits` returns 1 for any
+value at width ≤ 1, so `(defvar g:i1 5)` emits `global i1 5`. LLVM accepts and
+truncates it to `true`. G-1 gives it a second spelling (`(+ 2 3)`) but does not
+change the behaviour; the old boot emits the identical line for the literal.
 
 ### G-2 — aggregate globals: `(array T N)` type + constant aggregate initializers
 

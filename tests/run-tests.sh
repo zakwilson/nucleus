@@ -936,21 +936,23 @@ run_w1d_cycle_diagnoses() {
   w1_reject_multi w1d-cycle-macro-diagnosed "$d" "$d/w1-mcm.nuc" \
     "unknown: w1-amac — defined in a file this unit imports circularly"
 
-  # 2a. A defconst from the cycle partner.
-  printf '(import w1-kcb)\n(defconst W1-KA 42)\n(defn w1-kca ():i32 (return 1))\n' > "$d/w1-kca.nuc"
-  printf '(import w1-kca)\n(defn w1-kcb ():i32 (return W1-KA))\n' > "$d/w1-kcb.nuc"
-  printf '(import w1-kca)\n(defn main ():i32 (return (w1-kcb)))\n' > "$d/w1-kcm.nuc"
-  w1_reject_multi w1d-cycle-defconst-diagnosed "$d" "$d/w1-kcm.nuc" \
-    "undefined: W1-KA — defined in a file this unit imports circularly"
-
-  # 2b. A defenum MEMBER from the cycle partner. The definer scan matches the
-  # token after the keyword, which for `defenum` is the enum's name — so this
-  # also pins the member sweep added for it.
-  printf '(import w1-ecb)\n(defenum W1Color W1-RED W1-GREEN W1-BLUE)\n(defn w1-eca ():i32 (return 1))\n' > "$d/w1-eca.nuc"
-  printf '(import w1-eca)\n(defn w1-ecb ():i32 (return W1-BLUE))\n' > "$d/w1-ecb.nuc"
-  printf '(import w1-eca)\n(defn main ():i32 (return (w1-ecb)))\n' > "$d/w1-ecm.nuc"
-  w1_reject_multi w1d-cycle-defenum-diagnosed "$d" "$d/w1-ecm.nuc" \
-    "undefined: W1-BLUE — defined in a file this unit imports circularly"
+  # 2. A `deferror` id from the cycle partner. This unit REPLACES
+  # `w1d-cycle-defconst-diagnosed` and `w1d-cycle-defenum-diagnosed`, which
+  # pinned the same diagnostic for a `defconst` and a `defenum` member. Stage 15
+  # W8 G-0 moved value-name registration into the whole-graph prescan, so those
+  # two names now RESOLVE across a cycle — the diagnostic they pinned can no
+  # longer fire for them, and the positive replacements live in
+  # run_g0_cycle_values below (compile + link + run, asserting the value, not
+  # just exit 0). What those tests guarded is preserved here and there: a name
+  # that a cycle genuinely cannot carry must still be diagnosed with the
+  # located, cycle-specific message rather than the misleading "not defined
+  # anywhere in this compilation unit", and `deferror` is such a name (its id is
+  # allocated by `emit-deferror`, at emission time). `extern` is the other one.
+  printf '(import w1-dfb)\n(deferror W1Boom "boom")\n(defn w1-dfa ():i32 (return 1))\n' > "$d/w1-dfa.nuc"
+  printf '(import w1-dfa)\n(defn w1-dfb ():i32 (return (as i32 W1Boom)))\n' > "$d/w1-dfb.nuc"
+  printf '(import w1-dfa)\n(defn main ():i32 (return (w1-dfb)))\n' > "$d/w1-dfm.nuc"
+  w1_reject_multi w1d-cycle-deferror-diagnosed "$d" "$d/w1-dfm.nuc" \
+    "undefined: W1Boom — defined in a file this unit imports circularly"
 
   # 3a. A field access on a struct the partner has not laid out yet.
   printf '(import w1-scb)\n(defstruct W1SC\n  x:i32\n  y:i32)\n(defn w1-sca ():i32 (return 1))\n' > "$d/w1-sca.nuc"
@@ -1256,6 +1258,248 @@ run_w1c_unreachable_type() {
     echo "FAIL  w1c-unreachable-type"
     printf '%s\n' "$err" | sed 's/^/    got: /'
   fi
+  rm -rf "$d"
+}
+
+# --- Stage 15 W8 G-0: value names resolve on reachability --------------------
+# design/global-init.md §5 (G-0) / §2.5. W1a did this for `defn` signatures,
+# protocols and type names; `defvar` / `defconst` / `defenum` members were left
+# registering at emission time, so a reference to one that had not been emitted
+# yet died `undefined: X — not defined anywhere in this compilation unit` for a
+# name that IS in the unit. `prescan-value-names` registers them on the same
+# whole-graph walk.
+#
+# Every positive unit compiles, LINKS and RUNS, asserting the program's exit
+# status: an exit-0 compile would not catch a value resolved to the wrong
+# constant, and the two import orders return the same number, so a wrong answer
+# here is only visible in the value.
+
+# The three cross-file probes, in both import orders. `w1_run` compiles+links+
+# runs and asserts the exit status.
+run_g0_value_order() {
+  local d
+  d="$(mktemp -d)"
+
+  # defconst: probe 2/3 of global-init.md §2.5. Order 1 worked before G-0;
+  # order 2 died. Both must now return 42.
+  printf '(defn g0-use-const ():i32 (return G0-MYK))\n' > "$d/g0-ca.nuc"
+  printf '(defconst G0-MYK 42)\n' > "$d/g0-cb.nuc"
+  printf '(import g0-cb)\n(import g0-ca)\n(defn main ():i32 (return (g0-use-const)))\n' > "$d/g0-c1.nuc"
+  printf '(import g0-ca)\n(import g0-cb)\n(defn main ():i32 (return (g0-use-const)))\n' > "$d/g0-c2.nuc"
+  w1_run g0-defconst-order1 "$d" "$d/g0-c1.nuc" 42
+  w1_run g0-defconst-order2 "$d" "$d/g0-c2.nuc" 42
+
+  # defenum MEMBER: probe 4. GREEN is ordinal 1, so a member resolved to the
+  # wrong ordinal (or to the enum's own name) shows up in the exit status.
+  printf '(defn g0-use-enum ():i32 (return G0-GREEN))\n' > "$d/g0-ea.nuc"
+  printf '(defenum G0Color G0-RED G0-GREEN G0-BLUE)\n' > "$d/g0-eb.nuc"
+  printf '(import g0-eb)\n(import g0-ea)\n(defn main ():i32 (return (g0-use-enum)))\n' > "$d/g0-e1.nuc"
+  printf '(import g0-ea)\n(import g0-eb)\n(defn main ():i32 (return (g0-use-enum)))\n' > "$d/g0-e2.nuc"
+  w1_run g0-defenum-order1 "$d" "$d/g0-e1.nuc" 1
+  w1_run g0-defenum-order2 "$d" "$d/g0-e2.nuc" 1
+
+  # defvar: a real global, so this also pins that a `load` emitted BEFORE the
+  # `@g = global` line is a legal forward reference, and that a `set!` through
+  # the prescan-registered Sym writes the same storage the emitter defines
+  # (33 + 4 = 37).
+  printf '(defn g0-use-var ():i32 (set! g0-gv (+ g0-gv 4)) (return g0-gv))\n' > "$d/g0-va.nuc"
+  printf '(defvar g0-gv:i32 33)\n' > "$d/g0-vb.nuc"
+  printf '(import g0-vb)\n(import g0-va)\n(defn main ():i32 (return (g0-use-var)))\n' > "$d/g0-v1.nuc"
+  printf '(import g0-va)\n(import g0-vb)\n(defn main ():i32 (return (g0-use-var)))\n' > "$d/g0-v2.nuc"
+  w1_run g0-defvar-order1 "$d" "$d/g0-v1.nuc" 37
+  w1_run g0-defvar-order2 "$d" "$d/g0-v2.nuc" 37
+  rm -rf "$d"
+}
+
+# W1b's half of G-0: `scope-define` qualifies a global's key against
+# `g-current-ns`, so the prescan must apply each visited file's own leading
+# `(ns …)`. Prescanning a namespaced file under the IMPORTER's namespace would
+# register the value under an unlookupable key — and W5e's synthetic per-file
+# private namespace is the same mechanism one level down, so a `defconst-`
+# forward-referenced inside its own file must resolve while staying invisible
+# outside it.
+run_g0_value_scoping() {
+  local d err
+  d="$(mktemp -d)"
+  # The namespaced file's own constant is declared AFTER the function that reads
+  # it, so the prescan is what resolves both the bare in-namespace reference and
+  # the qualified cross-file one. 55 either way.
+  printf '(ns g0alpha)\n(defn g0-ns-get ():i32 (return G0-NSK))\n(defconst G0-NSK 55)\n' > "$d/g0-nsa.nuc"
+  printf '(defn g0-ns-user ():i32 (return g0alpha/G0-NSK))\n' > "$d/g0-nsb.nuc"
+  printf '(import g0-nsb)\n(import g0-nsa)\n(defn main ():i32 (return (g0-ns-user)))\n' > "$d/g0-ns1.nuc"
+  printf '(import g0-nsb)\n(import g0-nsa)\n(defn main ():i32 (return (g0alpha/g0-ns-get)))\n' > "$d/g0-ns2.nuc"
+  w1_run g0-ns-qualified-value "$d" "$d/g0-ns1.nuc" 55
+  w1_run g0-ns-internal-forward "$d" "$d/g0-ns2.nuc" 55
+
+  # …and the key really is namespace-qualified: the bare spelling must NOT leak
+  # into a file outside the namespace. Registering it under the importer's `user`
+  # namespace would make this compile, which is the exact W1b failure.
+  printf '(import g0-nsa)\n(defn main ():i32 (return G0-NSK))\n' > "$d/g0-ns3.nuc"
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/g0-ns3.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | grep -q 'undefined: G0-NSK'; then
+    echo "PASS  g0-ns-value-not-leaked"
+  else
+    echo "FAIL  g0-ns-value-not-leaked"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+  fi
+
+  # A private constant, forward-referenced from earlier in its OWN file: the
+  # prescan must key it under the file's synthetic `#pN/` namespace, exactly as
+  # the emitter does, or the reader resolves to nothing — or, worse, to another
+  # file's public name of the same spelling. That "worse" is not hypothetical:
+  # on the pre-G-0 compiler this program COMPILES CLEAN and returns 7, the other
+  # file's PUBLIC constant, because the private key did not exist yet when the
+  # reader was emitted. A silent wrong answer, which is why this unit runs the
+  # program and checks the value instead of checking that it compiles.
+  printf '(defn g0-priv-get ():i32 (return G0-SECRET))\n(defconst- G0-SECRET 61)\n' > "$d/g0-pa.nuc"
+  printf '(defconst G0-SECRET 7)\n' > "$d/g0-pb.nuc"
+  printf '(import g0-pb)\n(import g0-pa)\n(defn main ():i32 (return (g0-priv-get)))\n' > "$d/g0-p1.nuc"
+  w1_run g0-private-const-forward "$d" "$d/g0-p1.nuc" 61
+
+  # …and it stays private: another file may not see it.
+  printf '(import g0-pa)\n(defn main ():i32 (return G0-OTHER-SECRET))\n' > "$d/g0-p2.nuc"
+  printf '(defconst- G0-OTHER-SECRET 3)\n(defn g0-pc ():i32 (return G0-OTHER-SECRET))\n' > "$d/g0-pc.nuc"
+  printf '(import g0-pc)\n(defn main ():i32 (return G0-OTHER-SECRET))\n' > "$d/g0-p3.nuc"
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/g0-p3.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | grep -q 'undefined: G0-OTHER-SECRET'; then
+    echo "PASS  g0-private-const-stays-private"
+  else
+    echo "FAIL  g0-private-const-stays-private"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+  fi
+  rm -rf "$d"
+}
+
+# The positive replacements for `w1d-cycle-defconst-diagnosed` and
+# `w1d-cycle-defenum-diagnosed`, which pinned the OLD behaviour (both were a
+# located "defined in a file this unit imports circularly" rejection). G-0
+# registers value names before any emission, and the whole-graph walk visits
+# both members of a cycle, so those two names now resolve — the rejection they
+# pinned cannot fire for them any more. What the old tests guarded is preserved:
+# `w1d-cycle-deferror-diagnosed` keeps the diagnostic itself pinned for a name a
+# cycle still cannot carry, and these three assert the VALUE, not just exit 0.
+run_g0_cycle_values() {
+  local d
+  d="$(mktemp -d)"
+  printf '(import g0-kcb)\n(defconst G0-KA 42)\n(defn g0-kca ():i32 (return 1))\n' > "$d/g0-kca.nuc"
+  printf '(import g0-kca)\n(defn g0-kcb ():i32 (return G0-KA))\n' > "$d/g0-kcb.nuc"
+  printf '(import g0-kca)\n(defn main ():i32 (return (g0-kcb)))\n' > "$d/g0-kcm.nuc"
+  w1_run g0-cycle-defconst "$d" "$d/g0-kcm.nuc" 42
+
+  printf '(import g0-ecb)\n(defenum G0CColor G0C-RED G0C-GREEN G0C-BLUE)\n(defn g0-eca ():i32 (return 1))\n' > "$d/g0-eca.nuc"
+  printf '(import g0-eca)\n(defn g0-ecb ():i32 (return G0C-BLUE))\n' > "$d/g0-ecb.nuc"
+  printf '(import g0-eca)\n(defn main ():i32 (return (g0-ecb)))\n' > "$d/g0-ecm.nuc"
+  w1_run g0-cycle-defenum "$d" "$d/g0-ecm.nuc" 2
+
+  printf '(import g0-vcb)\n(defvar g0-vg:i32 77)\n(defn g0-vca ():i32 (return 1))\n' > "$d/g0-vca.nuc"
+  printf '(import g0-vca)\n(defn g0-vcb ():i32 (return g0-vg))\n' > "$d/g0-vcb.nuc"
+  printf '(import g0-vca)\n(defn main ():i32 (return (g0-vcb)))\n' > "$d/g0-vcm.nuc"
+  w1_run g0-cycle-defvar "$d" "$d/g0-vcm.nuc" 77
+  rm -rf "$d"
+}
+
+# --- Stage 15 W8 G-1: constant expressions in a global initializer -----------
+# design/global-init.md §5 "G-1". The shape matrix (arithmetic, bit ops, sizeof,
+# `as`, `(char "x")`, `addr-of`, and a same-file forward constant) is
+# examples/g1-const-init.nuc, which prints every folded value — a folder's
+# characteristic failure is the WRONG NUMBER, which an exit-0 compile cannot see.
+# What is left here is the part that needs more than one file: a constant folded
+# from a file the unit has not emitted yet, in both import orders, and a private
+# constant that must not be shadowed by another file's public spelling. Both
+# read W2b's `const-lit` provenance, which G-0 arms on the whole-graph prescan.
+run_g1_fold_cross_file() {
+  local d
+  d="$(mktemp -d)"
+
+  # g1-xb has NO import of g1-xa: the fold resolves G1XK purely by reachability.
+  # Order 2 emits g1-xb's `@g1-xv = global` line before g1-xa is processed at
+  # all, so a fold that read only already-emitted state would get nothing.
+  printf '(defconst G1XK 7)\n' > "$d/g1-xa.nuc"
+  printf '(defvar g1-xv:i32 (* G1XK 6))\n(defn g1-xget ():i32 (return g1-xv))\n' > "$d/g1-xb.nuc"
+  printf '(import g1-xa)\n(import g1-xb)\n(defn main ():i32 (return (g1-xget)))\n' > "$d/g1-x1.nuc"
+  printf '(import g1-xb)\n(import g1-xa)\n(defn main ():i32 (return (g1-xget)))\n' > "$d/g1-x2.nuc"
+  w1_run g1-fold-cross-order1 "$d" "$d/g1-x1.nuc" 42
+  w1_run g1-fold-cross-order2 "$d" "$d/g1-x2.nuc" 42
+
+  # W5e's private key, one level down from run_g0_value_scoping's version: the
+  # folded initializer sits EARLIER in the file than the `defconst-` it reads,
+  # and another file defines the same spelling publicly. 9*5 = 45 is the private
+  # constant; 9*7 = 63 would be the public one leaking in.
+  printf '(defvar g1-pv:i32 (* G1PK 9))\n(defconst- G1PK 5)\n(defn g1-pget ():i32 (return g1-pv))\n' > "$d/g1-pa.nuc"
+  printf '(defconst G1PK 7)\n' > "$d/g1-pb.nuc"
+  printf '(import g1-pb)\n(import g1-pa)\n(defn main ():i32 (return (g1-pget)))\n' > "$d/g1-p1.nuc"
+  w1_run g1-fold-private-const "$d" "$d/g1-p1.nuc" 45
+
+  # `(addr-of g)` across files, where the target global is defined in a file
+  # emitted AFTER the initializer that takes its address: the emitted `@g` is a
+  # forward reference LLVM resolves at end of module, and the Sym (and therefore
+  # the symbol spelling) comes from G-0's prescan.
+  printf '(defvar g1-atgt:i32 88)\n' > "$d/g1-aa.nuc"
+  printf '(defvar g1-aptr:ptr:i32 (addr-of g1-atgt))\n(defn g1-aget ():i32 (return (deref g1-aptr)))\n' > "$d/g1-ab.nuc"
+  printf '(import g1-ab)\n(import g1-aa)\n(defn main ():i32 (return (g1-aget)))\n' > "$d/g1-a1.nuc"
+  w1_run g1-addr-of-cross-file "$d" "$d/g1-a1.nuc" 88
+  rm -rf "$d"
+}
+
+# What G-0 must NOT relax. The message it removes is a *false* one — a name that
+# genuinely is not in the unit must still say so, W1c's unreachable-file note
+# must still fire for a value (it is what makes "not defined anywhere" useful
+# rather than merely true), and two files defining one global must still be
+# rejected rather than becoming a silent last-wins.
+run_g0_still_rejects() {
+  local d err
+  d="$(mktemp -d)"
+
+  printf '(defn main ():i32 (return g0-absent-everywhere))\n' > "$d/g0-none.nuc"
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/g0-none.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | grep -qF 'undefined: g0-absent-everywhere — not defined anywhere in this compilation unit' \
+     && ! printf '%s' "$err" | grep -q 'note:'; then
+    echo "PASS  g0-value-defined-nowhere"
+  else
+    echo "FAIL  g0-value-defined-nowhere"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+  fi
+
+  # W1c tier 2 for a VALUE: defined in a sibling file nothing imports.
+  printf '(defconst G0-UNREACHED 5)\n' > "$d/g0-far.nuc"
+  printf '(defn main ():i32 (return G0-UNREACHED))\n' > "$d/g0-farmain.nuc"
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/g0-farmain.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | grep -q ':0:'; then
+    echo "FAIL  g0-value-unreachable-file (diagnostic reports line 0)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  elif printf '%s' "$err" | grep -qF 'undefined: G0-UNREACHED — not defined anywhere in this compilation unit' \
+     && printf '%s' "$err" | grep -qF "note: 'G0-UNREACHED' is defined in $d/g0-far.nuc, which no import in this unit reaches"; then
+    echo "PASS  g0-value-unreachable-file"
+  else
+    echo "FAIL  g0-value-unreachable-file"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+  fi
+
+  # Two files, one global name. Both `@g0-dupg = global` lines are still
+  # emitted, so this is still rejected — the prescan registering the name twice
+  # must not turn it into a silent last-wins.
+  printf '(defvar g0-dupg:i32 1)\n' > "$d/g0-da.nuc"
+  printf '(defvar g0-dupg:i32 2)\n' > "$d/g0-db.nuc"
+  printf '(import g0-da)\n(import g0-db)\n(defn main ():i32 (return g0-dupg))\n' > "$d/g0-dm.nuc"
+  err="$(./build/nucleusc -I "$d" -o "$d/g0-dm.bin" "$d/g0-dm.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | grep -qF "redefinition of global '@g0-dupg'" && [ ! -x "$d/g0-dm.bin" ]; then
+    echo "PASS  g0-duplicate-global-rejected"
+  else
+    echo "FAIL  g0-duplicate-global-rejected"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+  fi
+
+  # A value name and a function name still may not collide, in either order —
+  # the prescan registers both, so the cross-kind guard fires whichever file is
+  # emitted first.
+  printf '(defvar g0-collide:i32 1)\n' > "$d/g0-ka.nuc"
+  printf '(defn g0-collide ():i32 (return 2))\n' > "$d/g0-kb.nuc"
+  printf '(import g0-ka)\n(import g0-kb)\n(defn main ():i32 (return 0))\n' > "$d/g0-km1.nuc"
+  printf '(import g0-kb)\n(import g0-ka)\n(defn main ():i32 (return 0))\n' > "$d/g0-km2.nuc"
+  w1_reject_multi g0-value-fn-collision-order1 "$d" "$d/g0-km1.nuc" \
+    "'g0-collide' already names a function"
+  w1_reject_multi g0-value-fn-collision-order2 "$d" "$d/g0-km2.nuc" \
+    "'g0-collide' already names a function"
   rm -rf "$d"
 }
 
@@ -2652,6 +2896,55 @@ spawn run_w1_late_overload_symbol
 spawn run_w1c_unreachable_file
 spawn run_w1c_defined_nowhere
 spawn run_w1c_unreachable_type
+
+# --- Stage 15 W8 G-0: value names resolve on reachability --------------------
+# design/global-init.md §5. The value half of W1: `defvar`/`defconst`/`defenum`
+# members register in the whole-graph prescan, so a reference to one no longer
+# depends on import order or on position within a file. The order-pair units are
+# the teeth (each order-2 unit fails on the committed boot compiler); the
+# still-rejects unit is the regression guard, and the same-file forward
+# reference is examples/g0-forward-value.nuc.
+spawn run_g0_value_order
+spawn run_g0_value_scoping
+spawn run_g0_cycle_values
+spawn run_g0_still_rejects
+
+# --- Stage 15 W8 G-1: constant expressions in a global initializer -----------
+# design/global-init.md §5 "G-1". Positives live in examples/g1-const-init.nuc
+# (printed values, so a wrong fold is visible) plus the cross-file unit below.
+# The rejections pin that folding did NOT open a hole in the three checks the
+# constant renderer already carried: the W2b range gate on the folded value, the
+# W6 nullability gate through the new `as` branch, and `emit-as`'s narrowing
+# rule — plus the arithmetic faults folding introduces, each of which must be a
+# located diagnostic rather than a wrap, a SIGFPE in the compiler, or poison.
+spawn run_g1_fold_cross_file
+spawn run_reject_at g1-fold-range tests/fixtures/g1-fold-range.nuc \
+  "tests/fixtures/g1-fold-range.nuc:5: error:" \
+  "defvar: constant expression value 6000000000 does not fit i32"
+spawn run_reject_at g1-fold-overflow tests/fixtures/g1-fold-overflow.nuc \
+  "tests/fixtures/g1-fold-overflow.nuc:3: error:" \
+  "defvar: constant initializer overflows 64-bit signed integer arithmetic"
+spawn run_reject_at g1-div-zero tests/fixtures/g1-div-zero.nuc \
+  "tests/fixtures/g1-div-zero.nuc:4: error:" \
+  "defvar: division by zero in constant initializer"
+spawn run_reject_at g1-rem-zero tests/fixtures/g1-rem-zero.nuc \
+  "tests/fixtures/g1-rem-zero.nuc:2: error:" \
+  "defvar: remainder by zero in constant initializer"
+spawn run_reject_at g1-shift-range tests/fixtures/g1-shift-range.nuc \
+  "tests/fixtures/g1-shift-range.nuc:3: error:" \
+  "defvar: shift amount 64 out of range in constant initializer"
+spawn run_reject_at g1-as-lossy tests/fixtures/g1-as-lossy.nuc \
+  "tests/fixtures/g1-as-lossy.nuc:5: error:" \
+  "as: lossy conversion from i64 to i32 -- use unsafe/cast"
+spawn run_reject_at g1-as-null-launder tests/fixtures/g1-as-null-launder.nuc \
+  "tests/fixtures/g1-as-null-launder.nuc:7: error:" \
+  "defvar: raw pointer where non-null (ref ...) is required"
+spawn run_reject_at g1-addr-of-const tests/fixtures/g1-addr-of-const.nuc \
+  "tests/fixtures/g1-addr-of-const.nuc:4: error:" \
+  "defvar: addr-of: 'G1K' is a compile-time constant and has no address"
+spawn run_reject_at g1-not-constant tests/fixtures/g1-not-constant.nuc \
+  "tests/fixtures/g1-not-constant.nuc:5: error:" \
+  "defvar: init must be a compile-time constant"
 
 # --- Stage 15 W5e: `defn-` name isolation -----------------------------------
 # design/stage15-stress-test/ergonomics.md §W5e. Sequenced after W1 because it is

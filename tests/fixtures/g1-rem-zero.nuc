@@ -1,0 +1,2 @@
+; Stage 15 W8 G-1: the remainder half of the division-by-zero rule.
+(defvar g1-rz:i32 (% 10 0))
