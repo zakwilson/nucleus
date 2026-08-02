@@ -1,0 +1,10 @@
+(defn rmk ():i32 (return 77))
+(defvar rg:i32 (rmk))
+rg
+(defvar rc:i32 (+ 20 22))
+rc
+(defn rbump ():i32 (set! rg (+ rg 1)) (return rg))
+(rbump)
+rg
+(import-use "tests/fixtures/g3-repl-lib.nuc")
+(g3-rlib-get)

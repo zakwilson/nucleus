@@ -1,0 +1,10 @@
+; Stage 15 W8 G-3: a runtime `defvar` initializer lowers to an ordinary `set!`,
+; so §2.8's `pkind-flow-check` applies with NO second nullability rule -- a
+; `(raw T)` value into a non-null `ptr:T` global is refused here exactly as it
+; is in a function body, and located at the `defvar` the user wrote. This is the
+; acceptance criterion the whole design exists for: `(defvar g:ptr:T (mk))`
+; typechecks with `g` reading as non-null.
+(defstruct G3Thing n:i32)
+(defn g3-mkraw ():(raw G3Thing) (return null))
+(defvar g3-t:ptr:G3Thing (g3-mkraw))
+(defn main ():i32 (return 0))

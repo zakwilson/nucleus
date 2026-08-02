@@ -1,0 +1,8 @@
+; Stage 15 W8 G-3 (design/global-init.md §2.9, §4.5): a compile-time or macro
+; JIT module has no program globals and never reaches the drain point at
+; `emit-toplevel-forms` depth 1, so an initializer queued from one would simply
+; never run. Refuse, located, rather than leave a silent zero.
+(compile-time
+  (defvar g3-ctv:i32 (g3-ct-mk))
+  (defn g3-ct-mk ():i32 (return 3)))
+(defn main ():i32 (return 0))

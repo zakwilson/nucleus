@@ -1,0 +1,7 @@
+; Stage 15 W8 G-3: the runtime lowering is a `set!`, so an initializer whose
+; type does not fit the slot is caught by the same `coerce-int-val` chokepoint
+; every assignment goes through -- located at the `defvar`, not at the
+; synthesized form.
+(defn g3-mkstr ():CStr (return c"nope"))
+(defvar g3-bad:i32 (g3-mkstr))
+(defn main ():i32 (return 0))

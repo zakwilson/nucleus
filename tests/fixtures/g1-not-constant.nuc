@@ -1,5 +1,14 @@
-; Stage 15 W8 G-1: a call is still not a constant. The operator is identified
-; before its operands are folded, so this reports "not a constant" rather than
-; a division-by-zero the program never performs.
+; Stage 15 W8 G-1: a call is still not a constant. Partly SUPERSEDED by G-3 —
+; see the note below the two forms, which is why the subject is now an aggregate
+; ELEMENT rather than the scalar slot this fixture originally used.
 (defn g1-f (x:i32):i32 (return x))
-(defvar g1-nc:i32 (+ 1 (g1-f 2)))
+(defvar g1-arr:(array i32 2) (array i32 1 (+ 1 (g1-f 2))))
+
+; G-3 (design/global-init.md §5) made the ORIGINAL subject of this fixture —
+; `(defvar g1-nc:i32 (+ 1 (g1-f 2)))` — legal: at a scalar slot it is a RUNTIME
+; initializer, queued for @__nucleus_init, and examples/g3-runtime-init.nuc runs
+; exactly that shape and prints the value. What still carries this diagnostic,
+; and must, is an aggregate element: an LLVM aggregate constant is filled at
+; link time and there is no `set!` that could fill one slot of it, so `(array T
+; …)` stays constant-only. The subject changed; the message and the `:5:` the
+; harness asserts did not.

@@ -77,6 +77,55 @@ check_example blink       examples/avr-blink.nuc        attiny1634 >"$TMP/blink.
 check_example blink-dx    examples/avr-blink-dx.nuc     avrxmega3  avr32dd20 >"$TMP/blink-dx.elfpath"
 check_example uart-hello  examples/avr-uart-hello.nuc   atmega328p >"$TMP/uart-hello.elfpath"
 check_example isr         examples/avr-isr.nuc          atmega328p >"$TMP/isr.elfpath"
+check_example global-init examples/avr-global-init.nuc  attiny1634 >"$TMP/global-init.elfpath"
+
+# --- Stage 15 W8 G-3: global initializers on a `none`-mechanism target -------
+# design/global-init.md §4.6/§4.8. Two halves, and both matter:
+#
+#  (a) ZERO COST. examples/avr-global-init.nuc (linked + budgeted above) has
+#      only CONSTANT initializers, so the queue is empty and the emitted IR must
+#      contain no `@__nucleus_init` and no `llvm.global_ctors` — not a dead one,
+#      not an empty one, none. This is the microcontroller half of the tripwire
+#      in tests/run-tests.sh; it is asserted on the target the requirement was
+#      stated for, not only on the host.
+#
+#  (b) LOUD REFUSAL. tests/fixtures/avr-runtime-init.nuc asks for a run-time
+#      initializer. AVR has no verified append-only startup mechanism (§2.6:
+#      LLVM's `.init_array` lands in RAM, avr-libc walks an empty `.ctors`), so
+#      this must be a located error naming the offending `defvar` — never a
+#      constructor that is emitted, linked, occupies RAM and never runs.
+#
+# Both use --emit-llvm rather than a link, because what is asserted is the IR's
+# content and the diagnostic, neither of which needs avr-gcc. They still sit
+# here rather than in run-tests.sh because they are --target=avr behaviour.
+ZC_LL="$TMP/avr-global-init.ll"
+if ! "$NUCLEUSC" --target=avr --mcpu=attiny1634 --emit-llvm examples/avr-global-init.nuc \
+     >"$ZC_LL" 2>"$TMP/zc.err"; then
+  echo "FAIL  avr-test-g3-zero-cost (compile failed)"
+  sed 's/^/      /' "$TMP/zc.err"
+  FAILED=1
+elif grep -qE '__nucleus_init|global_ctors' "$ZC_LL"; then
+  echo "FAIL  avr-test-g3-zero-cost (constant-only unit emitted startup-constructor machinery)"
+  grep -nE '__nucleus_init|global_ctors' "$ZC_LL" | sed 's/^/      /'
+  FAILED=1
+else
+  echo "PASS  avr-test-g3-zero-cost (no @__nucleus_init, no llvm.global_ctors)"
+fi
+
+RT_ERR="$TMP/avr-runtime-init.err"
+if "$NUCLEUSC" --target=avr --mcpu=attiny1634 --emit-llvm tests/fixtures/avr-runtime-init.nuc \
+     >/dev/null 2>"$RT_ERR"; then
+  echo "FAIL  avr-test-g3-no-mechanism (a run-time initializer was accepted for avr)"
+  FAILED=1
+elif ! grep -q "tests/fixtures/avr-runtime-init.nuc:18: error:" "$RT_ERR" \
+     || ! grep -q "'g-seed' needs a run-time initializer" "$RT_ERR" \
+     || ! grep -q "has no startup-constructor mechanism" "$RT_ERR"; then
+  echo "FAIL  avr-test-g3-no-mechanism (wrong diagnostic or wrong location)"
+  sed 's/^/      /' "$RT_ERR"
+  FAILED=1
+else
+  echo "PASS  avr-test-g3-no-mechanism (located error naming the offending defvar)"
+fi
 
 # Simulator smoke test: the real behavioral gate. Run the UART example under
 # simavr -m atmega328p (the device AVR-0 ground-verified against simavr's

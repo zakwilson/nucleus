@@ -1,8 +1,8 @@
 # Global initialization — combining declaration with initialization
 
-**Status: design, 2026-08-01. G-0 IMPLEMENTED 2026-08-01, G-1 and G-2
+**Status: design, 2026-08-01. G-0 IMPLEMENTED 2026-08-01, G-1, G-2 and G-3
 IMPLEMENTED 2026-08-02 (§5); G-2's `g-arena-alloc` conversion deliberately
-split out (see the G-2 as-built record); G-3..G-5 not started.** Written against `stage15-stress-test`
+split out (see the G-2 as-built record); G-4 and G-5 not started.** Written against `stage15-stress-test`
 at `591deba`. Every number below
 is measured against `build/nucleusc` at that commit; probes are recorded inline so
 they can be re-run. §2.5's four probes have since been fixed by G-0 and carry a
@@ -1837,6 +1837,204 @@ emitted IR contains no `__nucleus_init` and no `global_ctors`.
 *Deferred within this step:* the AVR `.ctors` measurement (§4.6). It converts
 `none` to a third answer and is the only open question in this design.
 
+---
+
+#### G-3 as built — 2026-08-02
+
+**Done**, with `make bootstrap` byte-identical on the first pass exactly as
+predicted, and with one hole in the spec's own §4.5 found and closed (the REPL's
+*import* route, below).
+
+| Piece | Where | What |
+|---|---|---|
+| `InitJob` | `compiler-types.nuc:688` | `{form, ns, path, line, name}` |
+| `g-init-worklist` / `g-init-drained` | `nucleusc.nuc:290`/`291` | the queue + persistent cursor, mirroring `g-mono-worklist` |
+| `g-defvar-soft` | `nucleusc.nuc:358` | the one-shot "this may turn out not to be constant" flag |
+| `defvar-const-init-ir` | `nucleusc.nuc:9536` | **the** classifier |
+| `defvar-queue-init` | `nucleusc.nuc:9582` | builds `(set! name init)`, appends the job |
+| the two soft returns | `nucleusc.nuc:9443`, `9503` | in `defvar-init-ir`, at the "unsupported init symbol" and terminal raises |
+| `emit-defvar`'s classify + refuse + queue | `nucleusc.nuc:9649`–`9684` | |
+| `CTOR-NONE` / `CTOR-GLOBAL-CTORS` / `ctor-mechanism-for-triple` | `nucleusc.nuc:13038`–`13056` | beside `reloc-`/`cpu-`/`features-`/`abi-for-triple` |
+| `init-emit-function` | `nucleusc.nuc:12009` | emits the function, or nothing |
+| `drain-init-worklist` | `nucleusc.nuc:12051` | the batch drain + the registration global |
+| the drain call | `nucleusc.nuc:12284` | `emit-toplevel-forms`, depth 1, before `drain-mono-worklist` |
+| `repl-emit-init-fn` / `repl-run-init-fn` | `repl.nuc:128`–`145` | the REPL's JIT-and-call pair |
+| REPL `defvar` arm / `import-use` arm | `repl.nuc:189`, `466` | both routes |
+
+**The queue predicate is `defvar-init-ir`'s own answer, obtained rather than
+re-derived.** `g-defvar-soft` is armed by `defvar-const-init-ir` around exactly
+one call and turns the renderer's terminal *"init must be a compile-time
+constant"* raise into a `null` return. Every other diagnostic inside the
+renderer still fires — a range violation, a `pkind-flow-check` failure, an
+arithmetic fault, a malformed `(char …)` — because a malformed *constant* is an
+error, not a runtime initializer. The flag is 0 during aggregate **element**
+rendering, so an element that is not constant remains the hard error it has
+always been. That single distinction is what keeps this from being a second
+classifier, which §4.8 turns on and which this stage has been bitten by twice.
+
+**An aggregate destination needed one extra rule, and finding it was the useful
+part.** The first cut classified "not a constant aggregate" as "runtime", which
+is right for a CELL and wrong for a leaf: `(defvar p:P 5)` became
+`set!: type mismatch for 'p'`, losing G-2's better *"a `P` slot must be
+initialized with a `(P …)` compound literal"*. The rule now is: at a struct or
+union slot, `const-struct-lit?` (the same gate `defvar-write-const` applies)
+decides constant; a **leaf** node that is not one cannot be a compound literal
+at all, so it is a type error and is handed back to the renderer for the better
+message; a **CELL** that is not one is an expression, and an expression at an
+aggregate slot is exactly a runtime initializer. The one shape this costs is
+`(defvar p2:P p1)`, a whole-struct copy from another global, which `set!` would
+accept — deliberately traded for the diagnostic.
+
+**`(array T N)` is constant-only, and that is a consequence of G-2, not a
+limitation invented here.** G-2 ruled that an array binding names storage no
+assignment can target (`emit-set` refuses one), so there is no `set!` for a
+runtime lowering to produce. `defvar-write-const` keeps its existing
+diagnostic, which is *still true* only because of this restriction — a struct
+slot's message had to be re-scoped for the same reason.
+
+**Three positions where a runtime initializer has nowhere to run, each refused
+with a located error rather than left as a silent zero.** All three are
+`emit-defvar`, so the message names the `defvar`, not a synthesized form:
+
+| Position | Why | Fixture |
+|---|---|---|
+| inside `compile-time` / `defmacro` | §2.9: that module has no program globals and never reaches a drain point | `g3-init-in-compile-time.nuc` |
+| a `:const` global | LLVM `constant` storage is read-only; `emit-set` refuses a store for the same reason | `g3-init-const-storage.nuc` |
+| a `none`-mechanism triple | §4.6/§2.6 | `tests/fixtures/avr-runtime-init.nuc` |
+
+The CT case is worth calling out: it is not hypothetical hygiene. `emit-defvar`
+is reachable from `emit-compile-time`'s own dispatch (`nucleusc.nuc:10706`),
+which never routes through `emit-toplevel-forms`, so without the guard the job
+would sit in the queue and the global would keep its zero with no diagnostic
+anywhere — the same silent-dead-constructor shape §4.6 refuses on AVR.
+
+**The spec's §4.5 was incomplete about the REPL, and the gap was measured, not
+reasoned about.** §4.5 and G-3's own text say "run the initializer immediately
+at the `defvar`", and `repl.nuc`'s `defvar` arm is indeed one route. It is not
+the only one: `(import-use "lib.nuc")` at the REPL goes through
+`emit-import-use` → `emit-toplevel-forms` at **depth 1** → `drain-init-worklist`,
+which appended `llvm.global_ctors` into a module ORC then JITed — and ORC has no
+initializer entry point (§2.9), so the entry was registered and never run.
+Measured: the imported global read back **0**. Fixed by making
+`drain-init-worklist` return early under `g-interactive` and giving the REPL two
+helpers it calls at *both* routes (emit before `repl-jit-module`, call after —
+the function must be in the module, the symbol must exist). The linkage differs
+on purpose: `internal` in batch (reachable only through `llvm.global_ctors`, and
+two Nucleus objects must not collide on the symbol), external in the REPL so
+`LLVMOrcLLJITLookup` can find it. `tests/repl/g3-init.in` pins both routes.
+
+**Reach order falls out; per-job context does not.** The queue is appended in
+`emit-defvar`, which runs in reach order, so the order rule needs no sorting
+step. But the *drain* happens at the end of the outermost unit, long after
+`g-current-ns` and `g-source-path` have moved on — which is why the job record
+carries them and `init-emit-function` restores them around each `set!`.
+Verified by a fixture that initializes a namespaced global, a **private**
+`defvar-` from a `defn-` in the same imported file (private resolution is
+`priv-key-use`, which reads `g-source-path`), and a `(Vector i32)` global from a
+generic — the last of which is why the drain is placed **before**
+`drain-mono-worklist`: an initializer body can stamp a generic, and the existing
+drain that follows emits it.
+
+**Zero cost when unused, and how it is proven rather than asserted.** The queue,
+the function and the registration global are produced at one point and nowhere
+else; an empty queue returns from `drain-init-worklist` having written nothing.
+`run_g3_zero_cost` compiles a unit using **every** constant-initializer shape
+G-1/G-2 added (folded arithmetic, `(as CStr …)`, `(addr-of g)`, an array
+literal, a zero-filled array, a struct literal, a pointer-to-anonymous-table)
+and asserts the IR contains neither `__nucleus_init` nor `global_ctors` — an
+empty file could not catch a classifier that quietly routed a foldable
+initializer down the runtime path. The **same function** then adds one runtime
+initializer to the identical unit and asserts both artefacts *do* appear, so
+deleting the feature outright cannot pass the tripwire. `make avr-test` carries
+the same pair of assertions under `--target=avr`, on the target the requirement
+was stated for.
+
+**Verification.**
+
+* `examples/g3-runtime-init.nuc` compiles, links, runs and **prints** every
+  value — a startup initializer's characteristic failure is that it never ran,
+  and the slot's zero is indistinguishable from a clean compile unless you look.
+  Covers a call, ordering (`g-after` sees `g-n`'s value), a non-null `ptr:T`, a
+  by-value struct, a `CStr`, a function pointer, and constant initializers
+  coexisting in the same unit.
+* `run_g3_library`: `--emit-nuch` + two separately compiled `.o`s, a library
+  with **no Nucleus `main`**, whose global is initialized by its own object's
+  `.init_array` entry and read correctly by the consumer. The library is
+  `(exclude-prelude)` and that is forced, not stylistic — **W9 defect 2 is worse
+  than "7 duplicate prelude globals"**: two prelude-carrying Nucleus objects
+  duplicate the prelude's *functions* too (`arena-init`, `arena-alloc`,
+  `arena-strndup`, …), re-measured here. §2.4 used the same route. This is the
+  narrowest fixture that genuinely exercises the multi-TU path without fixing
+  that defect, which is not G-3 work.
+* Four `run_reject_at` fixtures, each pinned at a real `file:line:`: the
+  nullability inheritance (`assignment: raw pointer where non-null (ref ...) is
+  required`, at the `defvar`), the type mismatch, and the CT/`:const` refusals.
+* `tests/repl/g3-init.in`: a directly typed runtime `defvar`, a constant one, a
+  later `set!`, and the `import-use` route.
+* `make avr-test`: `examples/avr-global-init.nuc` links and stays in budget with
+  no constructor machinery; `tests/fixtures/avr-runtime-init.nuc` is refused
+  with the located message.
+* **`make test` 385 → 393 PASS / 0 FAIL** (`NUCLEUS_TEST_JOBS=1`; the parallel
+  count wobbles, W9 item 10). `make abi-test`, `make layout-test`,
+  `make avr-test` green.
+* **`make bootstrap` byte-identical on the first pass.** Additionally, an
+  old-vs-new `--emit-llvm` sweep of every `examples/`, `lib/`, `lib/avr/` and
+  `tests/fixtures/` program against a baseline compiler **built from HEAD's
+  source** (not `bin/nucleusc`, which lags — G-0's finding): **210
+  byte-identical, 0 differing, 0 regressed**, 3 newly compiling (the new
+  fixtures). A second sweep over the *rejection* fixtures compared **stderr**:
+  113 byte-identical diagnostics, 4 changed — and all four are the new G-3
+  fixtures. So no existing program's IR and no existing program's diagnostic
+  moved.
+
+**Two pre-existing defects this step ran into. Both reported, neither fixed
+here; both are independent of global initialization.** They are also in §7.
+
+1. **A `defvar` whose declared type is a function-pointer type cannot be
+   declared at all** — with or without an initializer. `(defvar g:(fn i32)(i32)
+   null)` dies *"'g' already names a function"*. `name-existing-kind`
+   (`nucleusc.nuc:8703`) classifies **any** global Sym whose type is `TY-FN` as
+   `NK-FUNCTION`, and since G-0 `prescan-defvar-name` defines that Sym before
+   `emit-defvar` runs, so the `defvar` collides with itself. **This is a G-0
+   regression** (reproduced identically on the committed boot). It matters for
+   G-5: §2.12 counts two fn-pointer hooks among the 48 globals `compiler-init`
+   initializes. The discriminator already exists and is exact — a function's Sym
+   is registered with `is-local = 0` (`defn`, cheader, `.nuch declare`), a
+   global variable's with `1` (`defvar`, `extern`) — so the fix is one added
+   conjunct, and it is *provably inert*: `name-existing-kind` has exactly one
+   caller (`guard-name-kind`, which only ever raises), and no program in the
+   tree can currently contain the shape it would newly admit. Left out of G-3
+   because it is a name-kind change with its own verification, not a
+   global-initializer one. `examples/g3-runtime-init.nuc` uses the bare-`ptr`
+   escape hatch and says why.
+2. **`aref` emits its GEP index as a hardcoded `i64` on every target**, so on
+   AVR (16-bit pointers) any index narrower than `i64` produces IR the LLVM
+   parser rejects — `'%t3' defined with type 'i32' but expected 'i64'`. It does
+   not go through `ptr-int-ir`, which AVR-2 introduced for exactly this class.
+   Identical on the committed boot; unrelated to arrays specifically (a plain
+   `ptr:ui8` reproduces it). `examples/avr-global-init.nuc` widens its index and
+   says why.
+
+**Deliberately not built.**
+
+* **The AVR `.ctors` measurement** (§4.6) — the design's single open question,
+  deferred *within* this step by the spec. `none` remains AVR's v1 answer.
+* **The `compiler-init` migration and the `g-arena-alloc` conversion.** G-3
+  builds the mechanism; G-2b/G-5 convert the compiler. Nothing in `src/` or
+  `lib/` has a runtime initializer today, which is why the bootstrap could not
+  move.
+* **The ordering diagnostic** (§4.2) — G-4. The order rule is implemented and
+  documented; what is missing is the refusal for a syntactically-visible
+  forward reference.
+* **The flip** — rejecting `(defvar g:ptr:T)` — G-5.
+* **Deduplicating `__nucleus_init` across translation units.** Not needed: the
+  symbol is `internal`, so two Nucleus objects each get their own and both run.
+  Worth knowing before anyone makes it external.
+* **A second init function per priority level.** `llvm.global_ctors` takes a
+  priority and this always emits 65535. There is no shape that wants another
+  value, and adding one would need an ordering policy §4.1 deliberately does not
+  have.
+
 ### G-4 — the ordering diagnostic and the docs rule
 
 * Reject a `defvar` initializer that syntactically names a global whose `defvar`
@@ -1984,6 +2182,44 @@ reproduce on the committed boot compiler, neither is fixed here.**
    solitary-`defn` path does not reach it. This is very likely *why* finding 7
    above has gone unnoticed: the diagnostic that would have segfaulted is
    unreachable. The two should be fixed together.
+
+**Two more, found while building G-3 (2026-08-02). Both reproduce on the
+committed boot compiler, neither is fixed here, and neither has anything to do
+with global initialization.**
+
+9. **A `defvar` whose declared type is a function-pointer type cannot be
+   declared at all**, with or without an initializer:
+   `(defvar g:(fn i32)(i32) null)` dies *"'g' already names a function — a
+   symbol may name only one kind of thing"*. `name-existing-kind`
+   (`nucleusc.nuc:8703`) classifies **any** global `Sym` whose type is `TY-FN`
+   as `NK-FUNCTION`, and since **G-0** `prescan-defvar-name` defines that `Sym`
+   before `emit-defvar` runs — so the `defvar` collides with itself. This is a
+   G-0 regression, not an old wart; it is on the committed boot because that
+   boot post-dates G-0.
+
+   It matters for **G-5**: §2.12 counts two fn-pointer hooks among the 48
+   globals `compiler-init` initializes, and they cannot be spelled as typed
+   globals until this is fixed (the bare-`ptr` escape hatch works, at the cost
+   of the type).
+
+   The discriminator already exists and is exact: a *function*'s Sym is
+   registered with `is-local = 0` (`emit-defn` `:10382`, the cheader parser
+   `cheader.nuc:908`, the `.nuch` declare importer `nuch.nuc:343`), a *global
+   variable*'s with `1` (`emit-defvar` `:9715`, `emit-extern` `:10134`). So the
+   fix is one added conjunct on the `TY-FN` test — and it is provably inert:
+   `name-existing-kind` has exactly one caller, `guard-name-kind`, which only
+   ever raises, and no program in the tree can currently contain the shape the
+   change would newly admit.
+
+10. **`aref` emits its GEP index as a hardcoded `i64` on every target.** On AVR
+    (16-bit pointers) any index narrower than `i64` therefore produces IR the
+    LLVM parser rejects: `'%t3' defined with type 'i32' but expected 'i64'`,
+    surfacing at the link step rather than as a compiler diagnostic. It does not
+    route through `ptr-int-ir` (`type-utils.nuc`), which AVR-2 added for exactly
+    this class of "the index/offset width is the *target's*, not 64" decision.
+    Reproduces identically on the committed boot and is not array-specific — a
+    plain `(defvar g:ptr:ui8)` with an `i32` index does it too.
+    `examples/avr-global-init.nuc` widens its index to `i64` and says why.
 
 ---
 

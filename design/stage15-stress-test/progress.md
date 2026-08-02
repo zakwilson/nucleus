@@ -16,9 +16,9 @@ scope is additional, not a revision of anything already closed. Both new items
 follow directly from findings W1–W7 produced: W8's G-0 is the Doom-port
 regression run's `defconst`/`defenum` finding and W8's G-5 is its
 `(defvar- g:ptr:T null)` finding, both recorded in that section as top
-candidates for a next stage and now assigned within this one. **W8's G-0 and
-G-1 have since landed** (2026-08-01, 2026-08-02), taking W9 from six items to
-ten; G-2 onward is not started.
+candidates for a next stage and now assigned within this one. **W8's G-0, G-1
+and G-2 have since landed** (2026-08-01, 2026-08-02, 2026-08-02), taking W9
+from six items to thirteen; G-3 onward is not started.
 
 **W4, W2 and W3 are complete** (W2a–d; W3a §1.6 opaque forward-declared C
 types; W3b §1.5 C type qualifiers + the `declare` validity gate — `SDL2/SDL.h`
@@ -628,7 +628,7 @@ prescan never claimed to cover.
 
 ---
 
-## W8 — Combined declaration and initialization *(added 2026-08-01; G-0 done 2026-08-01, G-1 done 2026-08-02, G-2 onward not started)*
+## W8 — Combined declaration and initialization *(added 2026-08-01; G-0 done 2026-08-01, G-1 and G-2 done 2026-08-02, G-3 onward not started)*
 
 **Spec: [../global-init.md](../global-init.md)** — the source of truth. This
 section records the filing and the shape of the item; it does not restate the
@@ -713,24 +713,27 @@ by `__do_global_ctors`. If yes, AVR gains an append-only mechanism; if no, AVR
 programs with runtime initializers get a located error. Neither answer blocks
 G-0 through G-5.
 
-### G-0 and G-1 as built
+### G-0, G-1 and G-2 as built
 
-[../global-init.md](../global-init.md)'s "G-0 as built" and "G-1 as built"
-sections are the source of truth; this table summarizes rather than restates
-them.
+[../global-init.md](../global-init.md)'s "G-0 as built", "G-1 as built" and
+"G-2 as built" sections are the source of truth; this table summarizes rather
+than restates them.
 
 | Chunk | What landed | Status |
 |---|---|---|
 | **G-0** | Value names resolve on reachability. `prescan-value-names` (`src/nucleusc.nuc:10797`) extends W1a's whole-graph walk to `defvar`/`defconst`/`defenum`, registering the same `Sym` the emitter would, minus the `@g = global` line; two call sites, both under W1a's existing guard, one of which covers the unit's root file and hence the same-file forward reference. All four of `global-init.md` §2.5's probes now resolve in both import orders. **Two premises were corrected, both in the safe direction**: registration here needed no idempotency guard (`scope-lookup` scans backwards, so a second identical definition is inert — unlike a second `generic-register-method` pass, which *would* duplicate), and duplicate `defconst`s across two files were *already* a silent last-wins before this change, unchanged by it, with the real enforcement being LLVM rejecting two `@g = global` lines for one name. **A latent silent-wrong-answer bug was found and fixed**: a `defconst-` referenced from earlier in its own file resolved to *another file's* public constant of the same spelling, compiling clean and returning the wrong number — G-0 fixes it because the prescan arms `g-defining-private` before the reader reaches the reference. **W1d's cycle diagnostic became partly obsolete**: constants, enum members and `defvar`s now work across a cycle, so `cycle-definer-message`'s note was narrowed to what remains unreachable (macros, `deferror` ids, `extern`), and the two units pinning the old behaviour were **replaced**, not deleted. `make bootstrap` moved by 48 type-definition lines (24 relocations) — proven inert the W1a way (zero non-`%Name = type` lines differed, sorting the type lines made the files byte-identical, stage2→stage3 byte-identical) — then reconverged. **W9 defect 6 is closed at the cause** for the two import shapes G-0 covers; the interim W1c-style note was deliberately declined. **Follow-up filed under W1, not W8**: the prescan still does not cover string-path `.nuc` imports or `.nuch` headers, affecting `defn` and value names identically. Tests 328 → 347. | **Done (2026-08-01)** |
 | **G-1** | Constant expressions in `defvar-init-ir`. Folds, with no JIT: `+ - * / %` (including unary `-`), `bit-and`/`bit-or`/`bit-xor`/`bit-shl`/`bit-shr`/`bit-not` over integer literals and `defconst`/`defenum` names, `(char "x")`, `(sizeof T)`, and `(as IntT x)` to any depth; at a pointer destination, `(as PtrT x)` — including `(as CStr "…")` — and `(addr-of other-global)`. **Supersedes, rather than contradicts, the W5c entry above**: W5c recorded `(as CStr "…")` in an initializer as out of scope under "the general expressions-aren't-literals rule" — G-1 *is* that rule changing, not an exception carved into it; the W5c entry stands as an accurate record of what W5c decided at the time. Deliberately does **not** fold floats (folding target FP in the compiler process is the `-ffast-math` hazard [../../context/conventions.md](../../context/conventions.md) records, and the only interesting spelling — `(as f32 1.5)` — is already refused in value position), comparisons/`and`/`or` (an `i1` domain the folder does not model), or aggregates (that is G-2). Overflow is **both** fold-then-range-check and reject-at-the-fold, never a silent wrap; division/remainder by zero and a shift outside `[0,64)` are located compile-time errors rather than executed (which would SIGFPE the compiler) or emitted as poison. The inherited checks demonstrably still fire on folded values (`int-literal-fits`, `pkind-flow-check`, and a newly-extracted shared `as-int-narrowing` in `src/type-utils.nuc:397` that `emit-as` now calls instead of duplicating). **One check G-1 had to add that the value path does not need**: `emit-sizeof` lowers to a GEP over the LLVM named type, resolved late, while the fold reads the compiler's field table via `abi-sizeof` — so `cfold-sizeof` also calls `reject-cycle-pending-layout`, without which a cross-cycle `(sizeof S)` would have silently folded to **0**. Cross-compilation verified sound: `(sizeof ptr)` folds to 2 on AVR, 8 on host. Tests 347 → 361. `make bootstrap` byte-identical on the first pass, as predicted — every shape G-1 adds is one that died before it. | **Done (2026-08-02)** |
+| **G-2** | `(array T N)` type + constant aggregate initializers, usable in **both** storage positions — a `defvar` type and a `defstruct`/anonymous-struct-or-union field type — which is the same feature the port reports separately as a Major finding (`NUCLEUS-FINDINGS.md` §4.2, "no fixed-size array struct fields"). All five spec shapes landed: the bare type, `zeroinitializer` for no-init, a constant array aggregate, `(defvar g:ptr:T (array T lit…))` → `@g.data` + non-null `@g = global ptr @g.data`, and a constant struct literal; element values route through G-1's existing folder, so `(array i32 (* 2 3) SOME_CONST)` works. **Central decision: an array is a VALUE in storage and DECAYS to `(ref T)` on read** — C's model, forced by the C-interop invariant (`struct { int xs[4]; }` must lay out identically on both sides) rather than chosen by preference; the pre-existing `(array T lit…)` *expression* already allocas and decays, so a non-decaying *type* would give one spelling two meanings, and non-decay would need machinery (by-value copy, ABI classification, a round-trippable spelling) nothing else needs. Arrays are refused everywhere a value copy would be implied — by-value param/return, `let`/`with`, `ptr:(array …)`, generic argument, nested array, `set!`/`.set!` target — each with a located diagnostic naming the `ptr:T` spelling that works. **Containment is one consumed-once permission** (`g-array-ok`), armed by the four permitting sites and read-and-cleared in `parse-type-from-node`, rather than N per-position refusals — nesting (`(array (array i32 2) 3)`, `(Vector (array i32 4))`, …) falls out free for constructors added later, with no per-constructor check. **Three findings**: `abi-class-eightbyte`'s per-field body defaulted every non-struct, non-float field to INTEGER, which is silently wrong for `{float[2]}` (right size, wrong register class — invisible to any size/offset check, caught only by `abi-test`; fixed by extracting `abi-class-type-at` so the array case recurses per element); `type-size` is the **element** size/alignment, not `N*sizeof(T)` — every caller feeds it into an `align N` operand, which must be a power of two, so `abi-sizeof` is the real size, the same split `TY-STRUCT` already has; and a `defvar`'s type resolves **twice** (G-0's prescan, then emission) but macros register only at emission, so a third **provisional** length state was added in which `type-to-ir` dies rather than silently emitting a legal `[0 x i32]` (a flexible array member, which would have been silent). **The spec's own *Verify* clause was self-contradictory**: it demanded both converting `g-arena-alloc` to its constant form and a byte-identical bootstrap, and those cannot both hold — the committed boot compiler cannot parse a constant struct initializer at all, so any in-compiler use of G-2 fails `make` itself before `make bootstrap` can run. **Resolved by splitting**: the array feature shipped byte-identical; the `g-arena-alloc` conversion is deferred as G-2b/G-5 work and was **de-risked, not merely deferred** — reproduced end-to-end (compiled, linked, ran), yielding two facts the follow-up now has: `null` into `AllocHandle.data` passes the Phase-F gate because `data` is the elem-less bare-`ptr` carve-out, and no source reorder is needed, since §2.10's reorder is a *runtime*-ordering requirement (G-3's, not this one's). Struct-packing deferral holds, now **measured** rather than assumed — all six layout shapes and four ABI shapes match the platform C compiler with natural alignment alone; nothing in G-2 wanted an attribute. Tests 361 → 385 (counted with `NUCLEUS_TEST_JOBS=1`; the parallel count wobbles between 383 and 385, W9 item 10). `make bootstrap` byte-identical on the first pass — every G-2 shape is one that died before it. `make abi-test`/`make layout-test` both **extended** for the new type (six array-field layout shapes, four by-value array-field ABI shapes) rather than a parallel mechanism invented. | **Done (2026-08-02)** |
 
-### Test/bootstrap status after G-0/G-1
+### Test/bootstrap status after G-0/G-1/G-2
 
-`make test` **361 PASS / 0 FAIL**, `make bootstrap` byte-identical (`PASS:
-stage1.ll == stage2.ll`), `make abi-test` and `make layout-test` green. Full
-account, including every fixture and the exact `file:line:` each inherited
-check pins: [../global-init.md](../global-init.md)'s "G-0 as built" and "G-1 as
-built" sections.
+`make test` **385 PASS / 0 FAIL** (counted with `NUCLEUS_TEST_JOBS=1` — see W9
+item 10 below), `make bootstrap` byte-identical (`PASS: stage1.ll ==
+stage2.ll`) on the first pass, `make abi-test` and `make layout-test` green
+(both extended with new array shapes). Full account, including every fixture
+and the exact `file:line:` each inherited check pins:
+[../global-init.md](../global-init.md)'s "G-0 as built", "G-1 as built" and
+"G-2 as built" sections.
 
 **Three items G-1 reported but did not fix, added to the W9 list below as
 defects 7–9:**
@@ -763,15 +766,57 @@ for what was the same tree, and a bare `w1d` token appears alone on output line
 but it makes any PASS *count* unreliable by ±1 and could in principle mask a
 dropped unit.
 
+**Two items G-2 reported but did not fix, added to the W9 list below as
+defects 11–12** (this pair is also [../global-init.md](../global-init.md)
+§7's own #7/#8, added there the same day):
+
+1. Three `fmt-s` call sites pass **two** substitutions to a one-argument
+   helper: `call: expected %d args, got %d` (~`nucleusc.nuc:4313`), `(dyn
+   %s): '%s' is not a declared protocol` (~`:5824`), and `BoxedFn call:
+   expected %d args, got %d` (~`:6310`). Exactly the fixed-arity trap
+   [../../context/conventions.md](../../context/conventions.md) opens with —
+   `snprintf` reads a garbage vararg and the compiler segfaults with no
+   output — found by grepping after hitting the identical mistake fresh in
+   new G-2 code, where it segfaulted immediately. These are cold diagnostic
+   paths a green suite has never executed. Not fixed: the mechanical repair
+   (`fmt-i32-i32`/`fmt-2s`) moves the compiler's own IR, so it belongs in a
+   change that is already reconverging.
+2. A wrong-arity call to a solitary `defn` is not diagnosed at all: `(f 1
+   2)` against a one-parameter `(defn f (a:i32):i32 …)` compiles clean and
+   emits `call i32 @f(i32 1, i32 2)`. Reproduces on `build/nucleusc` **and**
+   the committed `bin/nucleusc`, so pre-existing. Very likely *why* item 1
+   above has gone unnoticed — the `call: expected %d args, got %d` check
+   exists but the solitary-`defn` path never reaches it. Notable because
+   arity overloading is on the port's `NUCLEUS-FINDINGS.md` §7 "things that
+   worked well" list: the *overloaded* call path checks arity, the solitary
+   path does not.
+
+**A third item, found closing out this stage record rather than by G-2
+itself, added below as defect 13:** `parse-type-from-node`'s `die-at "unable
+to parse type expression"` is a label-less trailing arm of `case (n kind)` —
+reachable only for a `NodeKind` outside `{NODE-SYM, NODE-CELL}`. For an
+unrecognized `NODE-CELL` head (e.g. `(nosuch i32)` as a field type) the
+`NODE-CELL` arm's `do` block matches no known shape and falls through to a
+null value instead of ever reaching that arm, so `(defstruct S (xs (nosuch
+i32)))` reports the misleading `defstruct: field 'xs' missing :type` rather
+than a diagnostic naming `nosuch`. Empirically confirmed against
+`build/nucleusc`; pre-existing.
+
 ---
 
-## W9 — Ten defects found while measuring W8's design *(added 2026-08-01; extended 2026-08-02; reported, not fixed)*
+## W9 — Thirteen defects found while measuring W8's design *(added 2026-08-01; extended 2026-08-02 for G-1's four, extended again 2026-08-02 for G-2's three; reported, not fixed)*
 
 **The original six are enumerated in [../global-init.md](../global-init.md)
 §7. Four more (7–10) were found measuring G-1 and re-verifying G-0/G-1's test
 counts, and are recorded here only — they postdate §7's list and are not
-folded back into `global-init.md`.** All ten are pre-existing and independent
-of W1–W7; all were hit while measuring, not synthesized.
+folded back into `global-init.md`. Two more (11–12) were found building G-2
+and correspond to `global-init.md` §7's own additions #7 and #8** (a matched
+pair added there the same day — that numbering is independent of this
+table's, since the four G-1-era items above were never folded back into §7
+either). **A final defect (13) was found while closing out this stage record
+and is recorded here only.** All thirteen are pre-existing and independent of
+W1–W7; all were hit while measuring, verifying, or documenting, not
+synthesized.
 
 | # | Defect | Note |
 |---|---|---|
@@ -785,6 +830,9 @@ of W1–W7; all were hit while measuring, not synthesized.
 | 8 | **`emit-as`'s int→int rule ignores the literal value on the `Val`**, found measuring G-1 | `(as i8 5)` is refused as lossy even though 5 fits — the same over-strictness [../stage14/int-widening.md](../stage14/int-widening.md)'s LW-4 fixed elsewhere; a ~3-line shared fix, declined here because it would have made G-1's bootstrap diff unprovable |
 | 9 | **`(defvar g:i1 5)` emits `global i1 5`, silently truncated to `true` by LLVM**, found measuring G-1 | `int-literal-fits` returns 1 at width ≤ 1; pre-existing — the old boot emits the identical line for the bare literal — G-1 merely gives it a second spelling |
 | 10 | **`tests/run-tests.sh` PASS counts are unreliable by ±1**, a test-harness finding unrelated to W8's design | parallel unit stdout can interleave, splitting a `PASS  <name>` line across two lines — measured: three consecutive runs of the same tree all reported 361, but earlier runs reported 346 vs 347 and 360 vs 361 for what was the same tree, and a bare `w1d` token appeared alone on output line 314 in one capture; does not affect FAIL detection (0 FAIL held every time) but could in principle mask a dropped unit |
+| 11 | **Three `fmt-s` call sites pass two substitutions to a one-argument helper**, found building G-2 | `call: expected %d args, got %d` (~`nucleusc.nuc:4313`), `(dyn %s): '%s' is not a declared protocol` (~`:5824`), `BoxedFn call: expected %d args, got %d` (~`:6310`) — the fixed-arity trap [../../context/conventions.md](../../context/conventions.md) opens with; `snprintf` reads a garbage vararg and the compiler segfaults with no output. Found by grepping after hitting the identical mistake fresh in new G-2 code, where it segfaulted immediately. A matched pair with defect 12: both are cold diagnostic paths a green suite has never executed |
+| 12 | **A wrong-arity call to a solitary `defn` is not diagnosed**, found building G-2 | `(f 1 2)` against a one-parameter `(defn f (a:i32):i32 …)` compiles clean and emits `call i32 @f(i32 1, i32 2)` — reproduces on `build/nucleusc` **and** the committed `bin/nucleusc`, so pre-existing. The `call: expected %d args, got %d` check exists (defect 11's first site) but the solitary-`defn` path never reaches it, very likely why defect 11 has gone unnoticed. Arity overloading is on the port's `NUCLEUS-FINDINGS.md` §7 "things that worked well" list — the *overloaded* call path checks arity, the solitary path does not |
+| 13 | **`parse-type-from-node` silently returns null for an unknown cell head** | its `die-at "unable to parse type expression"` is a label-less trailing arm of `case (n kind)`, reachable only for a `NodeKind` outside `{NODE-SYM, NODE-CELL}`; for an unrecognized `NODE-CELL` head (e.g. `(nosuch i32)`) the `NODE-CELL` arm's `do` block matches no shape and falls through to null instead, so `(defstruct S (xs (nosuch i32)))` reports the misleading `defstruct: field 'xs' missing :type` rather than a diagnostic naming `nosuch`. Empirically confirmed against `build/nucleusc`; pre-existing |
 
 **Defect 4, with the precision that says what the fix is.** Independently
 confirmed: `(defstruct My-Rec (a-field i32))` + `(defn my-func (x:i32):i32 …)`
