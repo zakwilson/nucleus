@@ -167,7 +167,84 @@
       TY-SSIZE  (return (ptr-int-ir))
       TY-STRUCT (return (fmt-s "%%%s" ((tt sdef) ir-name)))
       TY-UNION  (return (fmt-s "%%%s" ((tt sdef) ir-name)))
+      ; Stage 15 W8 G-2: `[N x T]`. Two-step format because the widest helper
+      ; taking (int, string) in that order does not exist — fmt-sd is (string,
+      ; int). Composing two fixed-arity calls is the documented alternative to
+      ; adding a helper shape (context/conventions.md, format-helper arity).
+      TY-ARRAY  (do
+                  ; A zero length is the PROVISIONAL marker the prescan leaves
+                  ; behind (g-array-ok mode 2, src/nucleusc.nuc); the parser
+                  ; refuses a real `(array T 0)`. Reaching IR with one would mean
+                  ; a prescan type escaped into codegen — fail loudly instead of
+                  ; emitting a plausible `[0 x i32]` (legal LLVM: a flexible
+                  ; array member).
+                  (when (<= (tt arr-len) 0)
+                    (die-at g-form-line "internal: a provisional (prescan) array type reached code generation"))
+                  (return (fmt-2s "[%s x %s]"
+                            (fmt-i32 "%d" (tt arr-len))
+                            (type-to-ir (tt elem)))))
       (return "?"))))
+
+; ============================================================
+; Stage 15 W8 G-2 — fixed-size arrays (design/global-init.md §5)
+; ============================================================
+
+; Build the `(array T N)` type. The single constructor, so `arr-len` can never
+; be left at 0 by a caller that forgot it.
+(defn array-type (elem:(raw Type) n:i32):ref:Type
+  (let (t:ref:Type (make-type TY-ARRAY))
+    (.set! t elem elem)
+    (.set! t arr-len n)
+    (return t)))
+
+; THE decay rule, in one function that both codegen and the non-emitting type
+; pass CALL (never mirror — conventions.md's node-type<->emit-node lockstep).
+;
+; An array is a *storage* type: it exists in a `defvar` slot and in a
+; `defstruct` field, and nowhere else. Read in any value position it yields the
+; ADDRESS of element 0, typed `(ref T)` — C's array-to-pointer decay. `(ref …)`
+; and not `(raw …)` because the address of a global or of a field inside a live
+; struct is never null, which is what lets `(defvar g:ptr:T (array T …))` (§2.7's
+; `@g = global ptr @g.data`) satisfy the Phase-F non-null contract with no
+; runtime code.
+;
+; Identity for every other kind, so callers can apply it unconditionally.
+(defn array-decay (t:(raw Type)):(raw Type)
+  (when (= t null) (return t))
+  (let (tt:(raw Type) t)
+    (when (!= (tt kind) TY-ARRAY) (return t))
+    (let (pt:ref:Type (make-type TY-PTR))
+      (.set! pt elem (tt elem))
+      (.set! pt pkind PTR-REF)
+      (return (as raw:Type pt)))))
+
+; The zero-value constant text for a global initializer slot of type `ty`.
+; Three buckets, exactly as context/conventions.md's TY-PTR-vs-is-ptr-like note
+; sets out: pointers of any flavour (`null`), aggregates (`zeroinitializer`),
+; and scalars (`0` / `0.0` / `false`). Shared by emit-defvar's no-init default
+; and the G-2 constant-aggregate renderer's unspecified slots, so a zeroed
+; `defvar` and a zeroed array element can never disagree.
+(defn type-zero-const-ir (ty:(raw Type)):CStr
+  (let (tt:(raw Type) ty
+        tk:i32 (tt kind))
+    (when (!= (is-ptr-like ty) 0) (return "null"))
+    (when (or (= tk TY-F32) (= tk TY-F64)) (return "0.0"))
+    (when (= tk TY-I1) (return "false"))
+    (when (or (= tk TY-STRUCT) (= tk TY-UNION) (= tk TY-ARRAY))
+      (return "zeroinitializer"))
+    (when (= tk TY-FN) (return "null"))
+    (return "0")))
+
+; Refuse an `(array T N)` where only a first-class value type is meaningful.
+; Backstop for the positions parse-type-from-node's g-array-ok gate cannot see
+; because the Type arrives already parsed (the ABI classifier, a `set!` target).
+(defn reject-array-type (t:(raw Type) line:i32 what:CStr):void
+  (when (= t null) (return))
+  (let (tt:(raw Type) t)
+  (when (= (tt kind) TY-ARRAY)
+    (die-at line
+      (fmt-s "%s: an (array T N) is storage, not a value -- it decays to a pointer when read, so pass or store ptr:T (or (ref T)) instead"
+        what)))))
 
 ; Stage 14 NS-2 (design/stage14/native-strings.md): is Type `t` the prelude
 ; `StrView` struct (`{ data:(ptr ui8), len:usize }`, promoted to the prelude in
@@ -237,6 +314,11 @@
       TY-SSIZE  (return "ssize_t")
       TY-STRUCT (return (fmt-s "struct %s" ((tt sdef) name)))
       TY-UNION  (return (fmt-s "union %s" ((tt sdef) name)))
+      ; Stage 15 W8 G-2: C's array declarator is POSTFIX (`int xs[4];`), so the
+      ; element type alone belongs here and the `[N]` is appended by the
+      ; declarator site (emit-cheader-defstruct). A prefix rendering would be
+      ; syntactically wrong C wherever it were pasted.
+      TY-ARRAY  (return (type-to-c (tt elem)))
       (return "/* unknown */"))))
 
 ; The IR type of a pointer-sized integer (size_t / intptr_t) for the target.
@@ -285,6 +367,12 @@
       ; conservative slot size/alignment for it (structs are handled by-reference).
       TY-STRUCT (return g-target-ptr-bytes)
       TY-UNION  (return g-target-ptr-bytes)
+      ; Stage 15 W8 G-2: like the struct case above, this is the conservative
+      ; slot ALIGNMENT, not the aggregate's size — every caller of type-size in
+      ; an `align N` operand needs a power of two, and `N * sizeof(T)` is not
+      ; one (`alloca [3 x i32], align 12` is invalid IR). The real size lives in
+      ; abi-sizeof, which is what `sizeof` and the layout walk read.
+      TY-ARRAY  (return (type-size (tt elem)))
       (return 1))))
 
 (defn is-int-type (t:raw:Type):i32

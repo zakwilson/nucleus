@@ -12,6 +12,51 @@ Examples:
 
 Use `(.& obj field)` to obtain a pointer to a field without loading it. Result is typed `(ptr field-type)`, so it composes with `.set!`, `deref`, and further `.&` calls — e.g. `(.set! (.& o point) x 10)` writes through a value-typed nested struct field.
 
+## Fixed-size array fields
+
+A field may have the type `(array T N)` — a fixed-size array stored **inline**,
+laid out exactly as C's `T name[N];`:
+
+```lisp
+(defstruct Row tag:i8 (cells (array i32 4)) mark:i8)
+;  C: struct { int8_t tag; int32_t cells[4]; int8_t mark; };   sizeof 24
+```
+
+This works for a `defstruct` field, an anonymous `(struct …)` member and an
+anonymous `(union …)` member alike — one rule for "a field of an aggregate".
+Size, alignment and every field offset match the platform C ABI, and a
+by-value struct with an array field is classified for passing element by
+element (so `struct { float v[2]; }` travels in an SSE register). Both are
+gated: `make layout-test` diffs Nucleus's `sizeof`/`offsetof` against the
+platform C compiler's, and `make abi-test` links a Nucleus caller against a C
+callee.
+
+**Reading an array field decays it to `(ref T)`** — the address of element 0,
+via the field GEP with no load — so it is directly indexable:
+
+```lisp
+(defn row-sum ((r (ref Row))):i32
+  (+ (aref (r cells) 0) (aref (r cells) 1)))
+```
+
+Consequently an array field cannot be assigned as a whole (`(.set! r cells …)`
+is refused, as `s.xs = …` is in C); write through the decayed pointer with
+`aset!`, or copy with `memcpy`. `(.& r cells)` gives the same address as
+`(r cells)`.
+
+A `defvar` of a struct with an array field can be given a constant initializer
+that nests both — see
+[Global initializers](toplevel.md#global-initializers):
+
+```lisp
+(defvar g-row:Row (Row 1 (array i32 9 8 7 6) 2))
+```
+
+`--emit-cheader` renders the field with C's postfix declarator; `--emit-nuch`
+round-trips the `(array T N)` spelling unchanged. See
+[Fixed-size arrays](types.md#fixed-size-arrays--array-t-n) for the type's full
+rules, including where it is refused.
+
 ## Passing and returning structs by value
 
 A struct used directly (not behind `ptr`) as a `defn`/`declare` parameter or return type is passed/returned per the **platform C ABI**, so it interoperates correctly with C functions compiled by the system `cc`. On x86_64 System V this means small structs are coerced into registers (e.g. `{i32,i32}` → one `i64`; a struct with a `float` field whose eightbyte also holds an integer → `i64`), and structs larger than 16 bytes are passed `byval` / returned via a hidden `sret` pointer. aarch64, `avr`, and `riscv64` instead pass every `ABI-MEMORY`-classified struct as a plain pointer (no `byval` — none of those targets' ABIs has that attribute); on `avr` this applies to **every** struct/union regardless of size, not just those over 16 bytes, because the SysV eightbyte classifier's register-sized-chunk model has no counterpart on an 8-bit target — `abi-classify` bypasses eightbyte classification for `avr` entirely rather than adapting it. On `riscv64` (lp64d), a struct ≤ 16 bytes is coerced through the **integer** calling convention — every eightbyte is passed/returned as an integer register (`i64` / `{i64,i64}`) regardless of its field types, so a small struct with a `double` field lowers to `i64`, not `double`. The psABI's hard-float flattening of *pure* small floating-point structs into FP registers is **deferred** (the same gap as aarch64's HFA case): a `{f64,f64}` or `{f32,f32}` passed by value between Nucleus and C on riscv64 will diverge from the cross `gcc`, whereas any struct with at least one integer field (which forces the integer class on both sides) and all scalar/pointer interop are exact. A struct value is produced by dereferencing a pointer (`@p`) and consumed by storing the call result (`(ptr-set! q (make ...))`); field *access* still requires a pointer (`(. p f)` needs `p : (ptr S)`), so to read fields of a by-value struct parameter, first store it: `(let (q:ptr:S (alloca S)) (ptr-set! q p) (. q f))`. A function may take or return a struct defined anywhere in the same compilation unit or an import — struct definitions are registered before function signatures are resolved.

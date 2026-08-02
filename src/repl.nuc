@@ -154,7 +154,13 @@
                   (let (var-node:ptr (node-at form 1))
                     (when (!= var-node null)
                       (let (vname:ptr null
-                            vty:ptr (extract-name-and-type var-node (as ptr:ptr (addr-of vname))
+                            ; G-2: this re-resolves the SAME defvar type node
+                            ; emit-defvar just resolved, so it needs the same
+                            ; `(array T N)` permission — otherwise an array
+                            ; global JITs but its `external global` preamble
+                            ; line is never written and the next form dies
+                            ; "use of undefined value '@g'".
+                            vty:ptr (extract-decl-name-and-type var-node (as ptr:ptr (addr-of vname))
                                                             ((as ptr:Node var-node) line)))
                         (when (!= vty null)
                           ; Derive the IR name the same way emit-defvar does

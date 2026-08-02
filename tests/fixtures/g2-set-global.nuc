@@ -1,0 +1,5 @@
+; Stage 15 W8 G-2: an array global names storage, so `set!` has no meaning.
+(defvar g:(array i32 2))
+(defn main ():i32
+  (set! g 0)
+  (return 0))

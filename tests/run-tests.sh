@@ -1441,6 +1441,99 @@ run_g1_fold_cross_file() {
   rm -rf "$d"
 }
 
+# --- Stage 15 W8 G-2: the (array T N) type + constant aggregates -------------
+# design/global-init.md §5 "G-2". The five shapes' positive matrix is
+# examples/g2-array-init.nuc (printed values, so a wrong constant is visible).
+# What needs more than one file, or a non-`--emit-llvm` output mode, is here:
+# the C header's postfix array declarator (checked by COMPILING the header and
+# comparing offsets against Nucleus's own), and the .nuch round-trip.
+run_g2_cheader() {
+  local d out
+  d="$(mktemp -d)"
+  cat > "$d/g2h.nuc" <<'G2EOF'
+(defconst G2N 3)
+(defstruct G2Rec tag:i8 (cells (array i32 4)) (names (array CStr G2N)) mark:i8)
+G2EOF
+  cat > "$d/g2h.c" <<'G2EOF'
+#include <stdio.h>
+#include <stddef.h>
+#include "g2h.h"
+int main(void){ printf("%zu %zu %zu %zu\n", sizeof(G2Rec), offsetof(G2Rec,cells), offsetof(G2Rec,names), offsetof(G2Rec,mark)); return 0; }
+G2EOF
+  cat > "$d/g2n.nuc" <<'G2EOF'
+(import-use "stdio.h")
+(defconst G2N 3)
+(defstruct G2Rec tag:i8 (cells (array i32 4)) (names (array CStr G2N)) mark:i8)
+(defn g2off (base:ptr fld:ptr):i64 (return (- (unsafe/cast i64 fld) (unsafe/cast i64 base))))
+(defn main ():i32
+  (let (s:ptr:G2Rec (alloca G2Rec))
+    (printf "%lld %lld %lld %lld\n" (as i64 (sizeof G2Rec))
+      (g2off s (.& s cells)) (g2off s (.& s names)) (g2off s (.& s mark))))
+  (return 0))
+G2EOF
+  if ! ./build/nucleusc --emit-cheader "$d/g2h.nuc" > "$d/g2h.h" 2>"$d/err"; then
+    echo "FAIL  g2-cheader-array-field (--emit-cheader failed)"; sed 's/^/    /' "$d/err"; rm -rf "$d"; return 0
+  fi
+  # The declarator must be postfix C: `int32_t cells[4];`, and a named extent
+  # must survive as the name (the header exports `#define G2N 3` beside it).
+  if ! grep -q 'int32_t cells\[4\];' "$d/g2h.h" || ! grep -q 'names\[G2N\];' "$d/g2h.h"; then
+    echo "FAIL  g2-cheader-array-field (declarator not postfix C)"
+    grep -n 'cells\|names' "$d/g2h.h" | sed 's/^/    /'
+    rm -rf "$d"; return 0
+  fi
+  if ! cc -I"$d" "$d/g2h.c" -o "$d/g2c" 2>"$d/err"; then
+    echo "FAIL  g2-cheader-array-field (generated header does not compile as C)"; sed 's/^/    /' "$d/err"; rm -rf "$d"; return 0
+  fi
+  if ! ./build/nucleusc "$d/g2n.nuc" -o "$d/g2nbin" 2>"$d/err"; then
+    echo "FAIL  g2-cheader-array-field (nucleus side failed)"; sed 's/^/    /' "$d/err"; rm -rf "$d"; return 0
+  fi
+  if [ "$("$d/g2c")" = "$("$d/g2nbin")" ]; then
+    echo "PASS  g2-cheader-array-field"
+  else
+    echo "FAIL  g2-cheader-array-field (C and Nucleus disagree on layout)"
+    echo "    C:       $("$d/g2c")"
+    echo "    Nucleus: $("$d/g2nbin")"
+  fi
+  rm -rf "$d"
+}
+
+# A `.nuch` header must round-trip an array field: emit it, import it back, and
+# use the field. `emit-nuch-defstruct` prints the field forms verbatim, so what
+# this really pins is that the IMPORT side re-parses `(array T N)` into the same
+# layout — the sizeof is compared against the original unit's.
+run_g2_nuch() {
+  local d
+  d="$(mktemp -d)"
+  cat > "$d/g2lib.nuc" <<'G2EOF'
+(defconst G2K 3)
+(defstruct G2Box (slots (array i32 G2K)) n:i32)
+; An array-typed global exports as `(extern (g2tab (array i32 4)))`, so the
+; IMPORT side's `extern` path has to accept an array type too -- a library that
+; emits a header its own consumer cannot read is the failure this pins.
+(defvar g2tab:(array i32 4) (array i32 100 200 300 400))
+G2EOF
+  cat > "$d/g2use.nuc" <<'G2EOF'
+(import-use g2lib)
+(defn main ():i32
+  (let (b:ptr:G2Box (alloca G2Box))
+    (aset! (b slots) 2 7)
+    (.set! b n 9)
+    (return (+ (aref (b slots) 2) (+ (b n) (+ (unsafe/cast i32 (sizeof G2Box)) (aref g2tab 1)))))))
+G2EOF
+  if ! ./build/nucleusc --emit-nuch "$d/g2lib.nuc" > "$d/g2lib.nuch" 2>"$d/err"; then
+    echo "FAIL  g2-nuch-array-field (--emit-nuch failed)"; sed 's/^/    /' "$d/err"; rm -rf "$d"; return 0
+  fi
+  if ! grep -q '(array i32 G2K)' "$d/g2lib.nuch"; then
+    echo "FAIL  g2-nuch-array-field (array field not exported)"; sed 's/^/    /' "$d/g2lib.nuch"; rm -rf "$d"; return 0
+  fi
+  if ! grep -q '(extern (g2tab (array i32 4)))' "$d/g2lib.nuch"; then
+    echo "FAIL  g2-nuch-array-field (array-typed defvar not exported as an extern)"; sed 's/^/    /' "$d/g2lib.nuch"; rm -rf "$d"; return 0
+  fi
+  # 7 + 9 + sizeof(G2Box) + g2tab[1] = 7 + 9 + 16 + 200 = 232
+  w1_run g2-nuch-array-field "$d" "$d/g2use.nuc" 232
+  rm -rf "$d"
+}
+
 # What G-0 must NOT relax. The message it removes is a *false* one — a name that
 # genuinely is not in the unit must still say so, W1c's unreachable-file note
 # must still fire for a value (it is what makes "not defined anywhere" useful
@@ -2945,6 +3038,76 @@ spawn run_reject_at g1-addr-of-const tests/fixtures/g1-addr-of-const.nuc \
 spawn run_reject_at g1-not-constant tests/fixtures/g1-not-constant.nuc \
   "tests/fixtures/g1-not-constant.nuc:5: error:" \
   "defvar: init must be a compile-time constant"
+
+# --- Stage 15 W8 G-2: the (array T N) type + constant aggregates -------------
+# design/global-init.md §5 "G-2". The five shapes are exercised positively by
+# examples/g2-array-init.nuc (run by the examples/*.nuc loop above, printing
+# every value), the by-value ABI of an array FIELD by `make abi-test`, and the
+# field's size/offset against the platform C compiler by `make layout-test`.
+# The rejections below pin the containment rule that makes the decay model
+# coherent: an array is STORAGE, legal only as a defvar type or an aggregate's
+# field type, and refused — at a real file:line — everywhere a value copy would
+# be implied.
+spawn run_g2_cheader
+spawn run_g2_nuch
+spawn run_accepts g2-anon-struct-field tests/fixtures/g2-anon-struct-field.nuc
+spawn run_reject_at g2-array-param tests/fixtures/g2-array-param.nuc \
+  "tests/fixtures/g2-array-param.nuc:4: error:" \
+  "(array T N) is a storage type"
+spawn run_reject_at g2-array-return tests/fixtures/g2-array-return.nuc \
+  "tests/fixtures/g2-array-return.nuc:3: error:" \
+  "(array T N) is a storage type"
+spawn run_reject_at g2-array-let tests/fixtures/g2-array-let.nuc \
+  "tests/fixtures/g2-array-let.nuc:4: error:" \
+  "(array T N) is a storage type"
+spawn run_reject_at g2-array-ptr-elem tests/fixtures/g2-array-ptr-elem.nuc \
+  "tests/fixtures/g2-array-ptr-elem.nuc:4: error:" \
+  "(array T N) is a storage type"
+spawn run_reject_at g2-array-nested tests/fixtures/g2-array-nested.nuc \
+  "tests/fixtures/g2-array-nested.nuc:3: error:" \
+  "(array T N) is a storage type"
+spawn run_reject_at g2-array-generic-arg tests/fixtures/g2-array-generic-arg.nuc \
+  "tests/fixtures/g2-array-generic-arg.nuc:5: error:" \
+  "(array T N) is a storage type"
+spawn run_reject_at g2-len-nonconst tests/fixtures/g2-len-nonconst.nuc \
+  "tests/fixtures/g2-len-nonconst.nuc:4: error:" \
+  "(array T N): length must be a compile-time integer constant"
+spawn run_reject_at g2-len-zero tests/fixtures/g2-len-zero.nuc \
+  "tests/fixtures/g2-len-zero.nuc:4: error:" \
+  "(array T N): length must be positive, got 0"
+spawn run_reject_at g2-index-range tests/fixtures/g2-index-range.nuc \
+  "tests/fixtures/g2-index-range.nuc:3: error:" \
+  "index 5 is out of range for a 3-element array"
+spawn run_reject_at g2-index-twice tests/fixtures/g2-index-twice.nuc \
+  "tests/fixtures/g2-index-twice.nuc:3: error:" \
+  "index 1 specified twice"
+spawn run_reject_at g2-too-many tests/fixtures/g2-too-many.nuc \
+  "tests/fixtures/g2-too-many.nuc:3: error:" \
+  "too many initializers for a 2-element array"
+spawn run_reject_at g2-elem-mismatch tests/fixtures/g2-elem-mismatch.nuc \
+  "tests/fixtures/g2-elem-mismatch.nuc:3: error:" \
+  "array initializer element type i64 does not match the declared element type i32"
+spawn run_reject_at g2-elem-range tests/fixtures/g2-elem-range.nuc \
+  "tests/fixtures/g2-elem-range.nuc:4: error:" \
+  "defvar: constant expression value 6000000000 does not fit i32"
+spawn run_reject_at g2-scalar-init tests/fixtures/g2-scalar-init.nuc \
+  "tests/fixtures/g2-scalar-init.nuc:2: error:" \
+  "slot must be initialized with an (array T ...) literal"
+spawn run_reject_at g2-struct-scalar-init tests/fixtures/g2-struct-scalar-init.nuc \
+  "tests/fixtures/g2-struct-scalar-init.nuc:5: error:" \
+  "a P slot must be initialized with a (P ...) compound literal"
+spawn run_reject_at g2-struct-field-twice tests/fixtures/g2-struct-field-twice.nuc \
+  "tests/fixtures/g2-struct-field-twice.nuc:3: error:" \
+  "defvar: field 'x' specified twice"
+spawn run_reject_at g2-struct-no-field tests/fixtures/g2-struct-no-field.nuc \
+  "tests/fixtures/g2-struct-no-field.nuc:3: error:" \
+  "defvar: no field 'z' on struct 'P'"
+spawn run_reject_at g2-field-assign tests/fixtures/g2-field-assign.nuc \
+  "tests/fixtures/g2-field-assign.nuc:5: error:" \
+  ".set!: field 'xs': an (array T N) is storage, not a value"
+spawn run_reject_at g2-set-global tests/fixtures/g2-set-global.nuc \
+  "tests/fixtures/g2-set-global.nuc:4: error:" \
+  "set!: 'g': an (array T N) is storage, not a value"
 
 # --- Stage 15 W5e: `defn-` name isolation -----------------------------------
 # design/stage15-stress-test/ergonomics.md §W5e. Sequenced after W1 because it is

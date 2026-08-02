@@ -8,6 +8,18 @@ When a feature in a design document gets implemented, add a **Status:** note but
 
 `fmt-s` takes **exactly one** `%s` argument; `fmt-i32` exactly one `%d`/`%ld`, etc. They are plain functions, not variadic. Passing a format string with more conversions than the helper's parameter count makes `snprintf` read a garbage vararg and typically **segfaults the compiler** (no error — just a crash with empty output). For multiple substitutions use the dedicated variants: `fmt-2s` (two strings), `fmt-sd` (string + int), `fmt-i32-i32` (two ints), `fmt-2s-i` (two strings + int). If you need a new shape, add a helper in `src/format.nuc` rather than overloading an existing one. **Three strings is the widest shape that exists (`fmt-3s`)** — compose in two calls (`(fmt-2s "%s\n%s" head note)`) rather than adding a `%s` a helper cannot feed.
 
+**This trap is not "you might forget" — it is that a violation on a COLD error
+path is invisible forever.** The failure is a bare SIGSEGV with no output, so it
+is only observable if the diagnostic actually fires. Grepping for it in W8 G-2
+found **three pre-existing violations** in `src/nucleusc.nuc` (`call: expected
+%d args, got %d`, `(dyn %s): '%s' is not a declared protocol`, `BoxedFn call:
+expected %d args, got %d`) that a green 385-test suite had never executed —
+and, relatedly, that a wrong-arity call to a solitary `defn` is not diagnosed at
+all today, which is very likely *why* the first of them was never reached. Both
+are reported in `design/global-init.md` §7 (items 7 and 8). When you add a
+diagnostic, count the conversions against the helper's parameter count by
+hand; when you touch this area, grep `fmt-s "[^"]*%[sd][^"]*%'` and friends.
+
 **Buffer size is a second, quieter trap (fixed in Stage 15 W1d — know it, don't
 re-break it).** Each helper formats into a fixed `alloca` and then called
 `arena-strndup buf n` with **`snprintf`'s return value**, which is the length the
@@ -407,6 +419,95 @@ Recursion is natural: each emitter rewrites its own tail, then emit-node dispatc
 position is NOT covered (it sits before `(import-use union-emit)` in src/nucleusc.nuc,
 so the function isn't in scope there).
 
+
+## A "this spelling is legal only HERE" rule is one consumed-once permission, not N refusals
+
+Stage 15 W8 G-2 added `(array T N)`, a **storage** type meaningful in exactly
+two declaration positions (a `defvar` type, an aggregate's field type) and
+unsound everywhere a value copy is implied. The obvious implementation is a
+`reject-<thing>` call at each position that must refuse — and it is the shape
+that drifts: every position added later silently *accepts*, and nobody notices
+until a program miscompiles.
+
+The shape that does not drift is a **one-shot permission the parser consumes**.
+`g-array-ok` (`src/nucleusc.nuc`, beside `g-form-line`) is armed by the four
+sites that want an array and read-and-cleared at the top of
+`parse-type-from-node` — the same consume-once discipline `emit-generic-call`
+applies to `g-want-type`. The payoff is that **nesting falls out for free**:
+`(ptr (array i32 4))` consumes the permission at the outer parse, so the
+recursion into the element sees 0 and is refused — and so are
+`(array (array i32 2) 3)`, `(Vector (array i32 4))`, `(Maybe (array …))` and
+every constructor added in future, with no per-constructor check. Default is
+refuse; the permitted set is enumerable by grepping the arm sites.
+
+An explicit `reject-array-type` still exists in `src/type-utils.nuc`, but only
+for the two positions the *syntactic* gate cannot see because the Type arrives
+already parsed: `abi-classify` (a by-value parameter/return) and the
+`set!`/`.set!` targets. That is the right division — gate the spelling where it
+is spelled, backstop the type where it is used.
+
+**One wrinkle worth knowing before you copy the pattern: a `defvar`'s type is
+resolved TWICE**, once by G-0's `prescan-value-names` and once by `emit-defvar`.
+If the permitted construct needs anything the prescan does not have, the two
+resolutions disagree about what is legal. Here the array *length* is a constant
+expression folded by `const-fold-int`, which routes through `macroexpand-form`
+— and **macros are registered only when their file is emitted**, so at prescan
+time `(array i32 (_* K 2))` folds and `(array i32 (* K 2))` does not. The fix is
+a third permission state (mode 2, "provisional"): the prescan resolves the
+element and leaves the length 0 without folding, which is sound because a
+prescan Sym exists only so a forward *reference* resolves and every read of an
+array binding goes through `array-decay` (which reads `elem`, never `arr-len`).
+The claim is *checked* rather than asserted — a real `(array T 0)` is refused at
+parse, so a zero length can only be provisional, and `type-to-ir` dies on one
+rather than emitting `[0 x i32]`, which is legal LLVM (a flexible array member)
+and would therefore have been silent.
+
+## A new `TY-*` kind: the reach list, and the two sites that are silently wrong if missed
+
+From the same step, as a checklist for the next one. Adding a type kind touches:
+`type-to-ir`, `type-to-c`, `type-size`, `abi-sizeof`, `abi-alignof`,
+`abi-class-eightbyte`, `type-eq`, `hash-type`, `type-mangle-token`,
+`type-spelling`, `emit-zero-store`, the `defvar` zero default,
+`parse-type-from-node`, plus every `node-type` mirror of an emitter you change.
+Two of those fail *silently* rather than loudly:
+
+- **`type-size` is an ALIGNMENT as often as it is a size.** Its result is fed
+  straight into `align N` operands (`emit-defvar`, `emit-load`/`emit-store`,
+  `emit-alloca-form`), which LLVM requires to be a power of two. `TY-STRUCT`
+  returns the pointer size for exactly this reason, and `TY-ARRAY` returns the
+  *element*'s size, not `N * sizeof(T)` — `alloca [3 x i32], align 12` is
+  invalid IR. The real size lives in `abi-sizeof`, which is what `sizeof` and
+  the layout walk read. If you add a kind whose "size" is not a power of two,
+  answer `type-size` with its alignment and put the size in `abi-sizeof`.
+- **`abi-class-eightbyte`'s per-field fall-through was `not a struct, not a
+  float → INTEGER`.** A new aggregate-ish kind inherits that, and for an array
+  of *integers* it is accidentally right, so every size/offset check passes.
+  `struct { float v[2]; }` is where it breaks: 8 bytes either way, but the value
+  travels in `rdi` instead of `xmm0`, so C and Nucleus disagree only **at the
+  call**. `make layout-test` cannot see it; only `make abi-test` can. The
+  per-field body is now factored into `abi-class-type-at` so a composite kind
+  has somewhere to recurse — use it rather than adding a fourth arm to the loop.
+
+Two more that are loud but easy to forget: **`type-with-volatile`
+(`src/nucleusc.nuc`) is the one Type-cloning site** and must copy any new field
+(a dropped `arr-len` becomes a zero-length array), and **`type-spelling` must
+stay honest about round-tripping** — it is a conformance-registry key and a
+generic-substitution replacement text, so a kind with no colon spelling is only
+safe if that kind is refused in every position where the spelling is re-parsed.
+
+## A decay rule belongs in ONE function that emit and node-type both CALL
+
+`array-decay` (`src/type-utils.nuc`) maps `TY-ARRAY` → `(ref T)` and is the
+identity for everything else, so callers apply it unconditionally. It is called
+from `emit-symbol-ref`, `emit-field-load`, the two union-member load arms,
+`emit-field-addr` and `emit-alloca-form` — and from `node-type-sym`,
+`node-type-field`, `callable-get-type` and `node-type-alloca`. That is the
+`node-type`↔`emit-node` lockstep applied to a *type transformation* rather than
+a typing rule, and it is the same lesson W2a's `binop-result-type` teaches:
+mirroring the logic drifts, mirroring a call cannot. `node-type-alloca` is the
+one that bit — it independently re-parses the type operand, so it needed both
+the decay *and* the permission arm, or the non-emitting pass rejected what
+codegen accepted.
 
 ## `?`/`!` in names map to `_QMARK`/`_BANG` in emitted symbols
 

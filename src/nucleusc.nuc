@@ -298,6 +298,37 @@
 ; holds (lib/node.nuc `node-line` + the enclosing form's line); this global is
 ; consumed in exactly one place, emit-node's NODE-SYM branch.
 (defvar g-form-line:i32 0)
+; Stage 15 W8 G-2 (design/global-init.md §5): "an `(array T N)` spelling is
+; permitted at the very next type parse". An array is a STORAGE type — it is
+; meaningful only as a `defvar` type and as a `defstruct`/`(struct …)` field
+; type, and would silently miscompile as a by-value parameter, return, local
+; binding or pointer element. Rather than N refusals scattered across every
+; other position (which is the shape that drifts), permission is granted at the
+; four sites that want it and `parse-type-from-node` CONSUMES it once on entry,
+; exactly as `g-want-type` is consumed once by `emit-generic-call`.
+;
+; Consume-once is what makes nesting fall out for free: `(ptr (array i32 4))`
+; consumes the permission at the outer parse, so the recursion into the element
+; sees 0 and the array is refused — and so are `(array (array i32 2) 3)`,
+; `(Vector (array i32 4))` and every other nesting, with no per-constructor
+; check. Armed with strict save/set/restore (`g-array-ok` is 0 everywhere else).
+;
+; Three states, because the type is resolved TWICE for a `defvar` — once by
+; G-0's `prescan-value-names` and once by `emit-defvar`:
+;   0  refused
+;   1  permitted; the length is folded (emission)
+;   2  permitted, PROVISIONAL; the length is left 0 (prescan)
+; Mode 2 exists because the length is a constant expression and `const-fold-int`
+; goes through `macroexpand-form`, while macros are registered only when their
+; file is EMITTED (the same structural property W1d and G-0 record). So
+; `(array i32 (* K 2))` cannot fold during a prescan and `(array i32 (_* K 2))`
+; can — a divergence, if the prescan tried. It does not: the prescan's Sym
+; exists purely so a forward *reference* resolves, every read of an array
+; binding goes through `array-decay` (which reads `elem`, never `arr-len`), and
+; `emit-defvar` re-resolves the real type and re-defines the Sym. `type-to-ir`
+; asserts that a provisional length never reaches IR, so the invariant is
+; checked rather than merely asserted in this comment.
+(defvar g-array-ok:i32 0)
 ; Nesting depth of emit-toplevel-forms (imports recurse). The A2 generic-body
 ; check runs only at the outermost level — after every import has registered its
 ; names and with g-source-path restored to the unit being compiled.
@@ -868,6 +899,29 @@
 ; Returns the Type* or null if untyped. Sets out-name.
 ; For simple types: (name type-sym) → parse-type-name
 ; For function pointer types: (name (fn ret) (param-types)) → parse-type-from-node on rest
+; Stage 15 W8 G-2: `extract-name-and-type` for a declaration whose type may be a
+; fixed-size array — a `defvar` and a struct/union field, and nothing else. Arms
+; the one-shot permission (`g-array-ok`, declared above) that
+; `parse-type-from-node` consumes on entry, then clears it so the flag is 0
+; everywhere else by construction. Every OTHER caller of extract-name-and-type —
+; defn params, let/with bindings, defunion arm fields, the .nuch and cheader
+; importers — keeps calling the bare version and therefore refuses an array with
+; the located message the gate raises.
+(defn extract-decl-name-and-type (node:(raw Node) out-name:ptr:ptr line:i32):(raw Type)
+  (set! g-array-ok 1)
+  (let (t:(raw Type) (extract-name-and-type node out-name line))
+    (set! g-array-ok 0)
+    (return t)))
+
+; The prescan's variant: an array type resolves to its element type with a
+; PROVISIONAL length (see g-array-ok mode 2 above). Used by prescan-defvar-name
+; alone.
+(defn extract-decl-name-and-type-provisional (node:(raw Node) out-name:ptr:ptr line:i32):(raw Type)
+  (set! g-array-ok 2)
+  (let (t:(raw Type) (extract-name-and-type node out-name line))
+    (set! g-array-ok 0)
+    (return t)))
+
 (defn extract-name-and-type (node:(raw Node) out-name:ptr:ptr line:i32):(raw Type)
   ; W5f: an empty list `()` in a declaration position reads as a NULL node
   ; (read-list returns null for a zero-element list, and read-list then wraps it
@@ -2348,6 +2402,14 @@
                     (nn s) ((as ptr:Target g-target) prog-as))))
               (return (alloc-val (sym type) (sym ir-name))))
             (die-at (node-line n line) (fmt-s "cannot use '%s' as value" (nn s))))
+          ; Stage 15 W8 G-2: an `(array T N)`-typed binding DECAYS — reading it
+          ; yields the address of element 0, not a loaded aggregate. The Sym's
+          ; ir-name already IS that address (`@g` for a global, the alloca slot
+          ; for a local), so this is the load being skipped, not an extra
+          ; instruction. `array-decay` (src/type-utils.nuc) is the shared rule
+          ; node-type-sym calls too, so the two passes cannot drift.
+          (when (= (-> sym (_ type) (unsafe/cast ptr:Type _) (_ kind)) TY-ARRAY)
+            (return (alloc-val (array-decay (sym type)) (sym ir-name))))
           (let (tmp:ptr (new-tmp))
             (emit-load tmp (type-to-ir (sym type)) (sym ir-name) (sym type))
             ; Stage 10: the read uses the flow-narrowed view of the binding's
@@ -3502,6 +3564,13 @@
     (fprintf g-body-stream
       "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
       gep (sdd ir-name) (pv val) idx)
+    ; Stage 15 W8 G-2: an `(array T N)` field decays — the GEP already holds
+    ; the address of element 0 (the field's address and its first element's
+    ; address coincide), so the read is the GEP with no load. Shared rule
+    ; (array-decay); node-type-field / callable-get-type call the same one.
+    ; This is the chokepoint BOTH `_get` and head-position `(s field)` reach.
+    (when (= ((as ptr:Type ftype) kind) TY-ARRAY)
+      (return (alloc-val (array-decay ftype) gep)))
     (let (val:ptr (new-tmp))
       (emit-load val (type-to-ir ftype) gep ftype)
       (return (alloc-val ftype val)))))
@@ -3542,6 +3611,10 @@
           (when (= ek TY-UNION)
             (let (ftype:ptr ((field-at (sd fields) idx) type)
                   v:ptr (new-tmp))
+              ; G-2: an array member decays to the union's own address (every
+              ; member is at offset 0), same rule as the struct-field path.
+              (when (= ((as ptr:Type ftype) kind) TY-ARRAY)
+                (return (alloc-val (array-decay ftype) (p val))))
               (emit-load v (type-to-ir ftype) (p val) ftype)
               (return (alloc-val ftype v))))
           (return (emit-field-load p sd idx)))))))
@@ -3695,6 +3768,9 @@
         (when (= ek TY-UNION)
           (let (ftype:ptr ((field-at (sd fields) idx) type)
                 v:ptr (new-tmp))
+            ; G-2 array decay, mirroring emit-field-get's union arm.
+            (when (= ((as ptr:Type ftype) kind) TY-ARRAY)
+              (return (alloc-val (array-decay ftype) (cv val))))
             (emit-load v (type-to-ir ftype) (cv val) ftype)
             (return (alloc-val ftype v))))
         (return (emit-field-load callee-val sd idx))))))
@@ -3985,6 +4061,10 @@
   (let (cc:(raw Node) call)
     (when (!= (node-len cc) 2) (die-at (cc line) "sizeof expects 1 arg"))
     (let (tn:(raw Node) (node-at cc 1))
+      ; G-2: `(sizeof (array T N))` is meaningful and is how a program asks for
+      ; the table's byte size. parse-type-from-node consumes the flag on entry,
+      ; so no restore is needed.
+      (set! g-array-ok 1)
       (let (ty:(raw Type) (parse-type-from-node tn (tn line))
             gep:ptr (new-tmp))
         ; W3a: an opaque C type has no size. Refuse here rather than emitting a
@@ -4003,12 +4083,21 @@
     (when (and (!= (node-len cc) 2) (!= (node-len cc) 3))
       (die-at (cc line) "alloca expects 1 or 2 args"))
     (let (tn:(raw Node) (node-at cc 1))
+      ; G-2: `(alloca (array T N))` reserves a zero-length-free fixed frame
+      ; table and, like every other array read, hands back the decayed `ptr:T`
+      ; (below) rather than a pointer-to-array.
+      (set! g-array-ok 1)
       (let (ty:(raw Type) (parse-type-from-node tn (tn line))
             slot:ptr (new-tmp)
             pt:ref:Type (make-type TY-PTR))
         ; W3a: no layout means no stack slot can be reserved for it.
         (reject-opaque-type ty (node-line (as ptr tn) (cc line)) "alloca")
-        (.set! pt elem ty)
+        ; G-2: `(alloca (array T N))` yields `ptr:T`, not `ptr:(array T N)` —
+        ; the same decay a read of an array-typed slot performs, so the result
+        ; is directly `aref`-able. The alloca's own IR type stays `[N x T]`.
+        (if (= ((unsafe/cast ptr:Type ty) kind) TY-ARRAY)
+          (.set! pt elem ((unsafe/cast ptr:Type ty) elem))
+          (.set! pt elem ty))
         ; alloca always yields a valid, non-null stack address (ref T).
         (.set! pt pkind PTR-REF)
         (if (= (node-len cc) 3)
@@ -4334,6 +4423,13 @@
           (when (< idx 0)
             (die-at (node-line (as ptr fn-node) (cc line))
               (fmt-2s ".set!: no field '%s' on struct '%s'" (fn-node s) (sd name))))
+          ; Stage 15 W8 G-2: an array field is not assignable as a whole, exactly
+          ; as in C (`s.xs = …` is not an expression there either). Refuse here,
+          ; before the RHS is emitted, rather than letting coerce-int-val answer
+          ; with a generic "type mismatch" that does not say why.
+          (reject-array-type ((field-at (sd fields) idx) type)
+            (node-line (as ptr fn-node) (cc line))
+            (fmt-s ".set!: field '%s'" (fn-node s)))
           (let (ftype:ptr ((field-at (sd fields) idx) type)
                 ; TC-2: arm the want channel with the field's type so a generic
                 ; constructor stored into a field infers a return-only tyvar.
@@ -7550,6 +7646,11 @@
           ; even emitted.
           (when (!= (sym readonly-global) 0)
             (die-at (node-line (as ptr target) (cc line)) (fmt-s "set!: cannot assign to '%s' -- declared :const" (target s))))
+          ; Stage 15 W8 G-2: an `(array T N)` binding names storage, not a
+          ; value — assigning a whole array is not an operation (in C either).
+          ; Refuse before the RHS is emitted, with a message that says why.
+          (reject-array-type (sym type) (node-line (as ptr target) (cc line))
+            (fmt-s "set!: '%s'" (target s)))
             (let (v:ref:Val
                    ; TC-2: arm the want channel with the slot's declared type so a
                    ; generic constructor on the RHS infers a return-only tyvar.
@@ -7640,6 +7741,10 @@
     (when (= (ft kind) TY-FN) (set! zero "null"))
     (when (= (ft kind) TY-F32) (set! zero "0.000000e+00"))
     (when (= (ft kind) TY-F64) (set! zero "0.000000e+00"))
+    ; Stage 15 W8 G-2: an array slot is an aggregate, so it takes the same
+    ; `zeroinitializer` the struct/union arm below takes — `store [4 x i32] 0`
+    ; is the same LLVM parse error W5d found for `store %P 0`.
+    (when (= (ft kind) TY-ARRAY) (set! zero "zeroinitializer"))
     ; Stage 15 W5d: an aggregate slot zero-fills with `zeroinitializer`;
     ; `store %P 0` is the same LLVM parse error. Reachable from an unspecified
     ; slot in an `(array S …)` — a sparse/designated table of structs, which is
@@ -7667,6 +7772,9 @@
       (.set! dst sdef        (src sdef))
       (.set! dst is-volatile 1)
       (.set! dst pkind       (src pkind))
+      ; Stage 15 W8 G-2: the array length is part of the type; a clone that
+      ; dropped it would silently become a zero-length array.
+      (.set! dst arr-len     (src arr-len))
       (return dst))))
 
 ; ============================================================
@@ -7876,6 +7984,13 @@
               (fprintf g-body-stream
                 "  %s = getelementptr inbounds %%%s, ptr %s, i32 0, i32 %d\n"
                 gep (sd ir-name) (p val) idx))
+            ; Stage 15 W8 G-2: `.&` on an `(array T N)` field would otherwise
+            ; produce `ptr:(array T N)` — a pointer-to-array, whose only legal
+            ; uses are the ones an array type is refused in. The address is
+            ; numerically the same either way, so hand back the decayed
+            ; `ptr:T`, matching what a plain read of the field gives.
+            (when (= ((as ptr:Type ftype) kind) TY-ARRAY)
+              (set! ftype (as ptr ((array-decay ftype) elem))))
             (let (rt:ptr:Type (as ptr:Type (make-type TY-PTR)))
               (.set! rt elem ftype)
               ; A field's address inside a (non-null) struct is non-null (ref T).
@@ -8751,6 +8866,7 @@
 ; yet. So this site needs `reject-cycle-pending-layout` where `emit-sizeof` does
 ; not — otherwise a cross-cycle `(sizeof S)` would silently fold to 0.
 (defn cfold-sizeof (tn:(raw Node) line:i32):i64
+  (set! g-array-ok 1)   ; G-2: `(sizeof (array T N))` folds, like every sizeof
   (let (tl:i32 (node-line (as ptr tn) line)
         ty:(raw Type) (parse-type-from-node (as ptr tn) tl))
     (reject-opaque-type ty tl "sizeof")
@@ -8894,6 +9010,260 @@
         (.set! pt pkind PTR-REF)
         (pkind-flow-check (as ptr pt) ty line "defvar")
         (return (sym ir-name))))))
+
+; ============================================================
+; Stage 15 W8 G-2 — constant aggregates (design/global-init.md §5)
+; ============================================================
+;
+; These STREAM to `g-out` rather than returning a string, and that is a
+; correctness requirement, not a style choice. The `fmt-*` helpers format into a
+; fixed buffer and clamp through `fmt-take` (context/conventions.md), so an
+; accumulate-with-fmt-2s renderer would silently TRUNCATE any table longer than
+; ~1KB — which is every table this feature exists for (the port's `mobjinfo` is
+; 137 × 3 fields). Streaming has no length limit and no quadratic copying.
+;
+; Nesting is uniform: an element is written as `<type> <constant>`, and
+; `defvar-write-const` dispatches on the element's own type, so an array of
+; structs, a struct with an array field, and an array of arrays all fall out of
+; the same two functions.
+
+; Is `n` an `(array …)` compound literal?
+(defn const-array-lit? (n:(raw Node)):i32
+  (when (= n null) (return 0))
+  (let (nn:(raw Node) n)
+    (when (!= (nn kind) NODE-CELL) (return 0))
+    (when (< (node-len (as ptr nn)) 2) (return 0))
+    (when (= (node-at (as ptr nn) 0) 'array) (return 1))
+    (return 0)))
+
+; Is `n` a compound literal `(S …)` whose head names struct `sd`?
+(defn const-struct-lit? (n:(raw Node) sd:(raw StructDef)):i32
+  (when (or (= n null) (= sd null)) (return 0))
+  (let (nn:(raw Node) n)
+    (when (!= (nn kind) NODE-CELL) (return 0))
+    (when (< (node-len (as ptr nn)) 1) (return 0))
+    (let (hd:(raw Node) (node-at (as ptr nn) 0))
+      (when (or (= hd null) (!= (hd kind) NODE-SYM)) (return 0))
+      (when (= (lookup-struct (hd s)) (as ptr sd)) (return 1))
+      (return 0))))
+
+; Distribute an `(array T e…)` literal's elements into `slots` (length `n`,
+; pre-filled with null), honouring the designated form `(index value)` exactly
+; as emit-array-lit does in value position. An unfilled slot stays null and is
+; written as the type's zero.
+(defn const-array-place (init:(raw Node) slots:ptr n:i32 encl:i32):void
+  (let (cc:ptr:Node (unsafe/cast ptr:Node init)
+        ninits:i32 (- (node-len (as ptr init)) 2)
+        pos-cursor:i32 0)
+    ; Pass 1: designated indices, so positional fills skip the slots they claim
+    ; (same two-pass order emit-array-lit uses).
+    (dotimes (i ninits)
+      (let (arg:(raw Node) (node-at (as ptr cc) (+ 2 i))
+            aline:i32 (node-line (as ptr arg) encl))
+        (when (and (!= arg null) (= (arg kind) NODE-CELL) (= (node-len (as ptr arg)) 2)
+                   (!= (node-at (as ptr arg) 0) null)
+                   (= (-> (node-at (as ptr arg) 0) (unsafe/cast ptr:Node _) (_ kind)) NODE-INT))
+          (let (k:i64 (-> (node-at (as ptr arg) 0) (unsafe/cast ptr:Node _) (_ i)))
+            (when (< k 0)
+              (die-at aline "defvar: array initializer: designated index must be non-negative"))
+            (when (>= k (as i64 n))
+              (die-at aline
+                (fmt-i32-i32 "defvar: array initializer: index %d is out of range for a %d-element array"
+                  (unsafe/cast i32 k) n)))
+            (when (!= (aref (as ptr:ptr slots) (unsafe/cast i32 k)) null)
+              (die-at aline
+                (fmt-i32 "defvar: array initializer: index %d specified twice" (unsafe/cast i32 k))))
+            (aset! (as ptr:ptr slots) (unsafe/cast i32 k) (as ptr arg))))))
+    ; Pass 2: positional initializers fill the next unclaimed slot.
+    (dotimes (i ninits)
+      (let (arg:(raw Node) (node-at (as ptr cc) (+ 2 i))
+            aline:i32 (node-line (as ptr arg) encl)
+            designated:i32 0)
+        (when (and (!= arg null) (= (arg kind) NODE-CELL) (= (node-len (as ptr arg)) 2)
+                   (!= (node-at (as ptr arg) 0) null)
+                   (= (-> (node-at (as ptr arg) 0) (unsafe/cast ptr:Node _) (_ kind)) NODE-INT))
+          (set! designated 1))
+        (when (= designated 0)
+          (while (and (< pos-cursor n)
+                      (!= (aref (as ptr:ptr slots) pos-cursor) null))
+            (inc! pos-cursor))
+          (when (>= pos-cursor n)
+            (die-at aline
+              (fmt-i32 "defvar: array initializer: too many initializers for a %d-element array" n)))
+          (aset! (as ptr:ptr slots) pos-cursor (as ptr arg))
+          (inc! pos-cursor))))))
+
+; The element type an `(array T …)` literal declares, plus (through `out-len`)
+; the length it implies: one past the highest designated index, or the number of
+; positional initializers, whichever is larger. Used for the `(defvar g:ptr:T
+; (array T …))` shape, where the literal alone fixes the table's shape.
+(defn const-array-lit-etype (init:(raw Node) out-len:ptr:i32 encl:i32):(raw Type)
+  (let (cc:ptr:Node (unsafe/cast ptr:Node init)
+        nargs:i32 (- (node-len (as ptr init)) 1))
+    (when (< nargs 1)
+      (die-at (node-line init encl) "defvar: (array T …): element type required"))
+    (let (etn:ptr (node-at (as ptr cc) 1)
+          ety:(raw Type) (parse-type-from-node etn (node-line etn encl))
+          ninits:i32 (- nargs 1)
+          maxi:i32 -1
+          pos:i32 0)
+      (dotimes (i ninits)
+        (let (arg:(raw Node) (node-at (as ptr cc) (+ 2 i)))
+          (if (and (!= arg null) (= (arg kind) NODE-CELL) (= (node-len (as ptr arg)) 2)
+                   (!= (node-at (as ptr arg) 0) null)
+                   (= (-> (node-at (as ptr arg) 0) (unsafe/cast ptr:Node _) (_ kind)) NODE-INT))
+            (let (k:i64 (-> (node-at (as ptr arg) 0) (unsafe/cast ptr:Node _) (_ i)))
+              (when (> k (as i64 maxi)) (set! maxi (unsafe/cast i32 k))))
+            (inc! pos))))
+      (let (n:i32 pos)
+        (when (> (+ maxi 1) n) (set! n (+ maxi 1)))
+        (when (<= n 0)
+          (die-at (node-line init encl)
+            "defvar: (array T …): at least one initializer is required to size the table"))
+        (ptr-set! out-len n))
+      (return ety))))
+
+; Write the LLVM constant for a value of type `ty` initialized by `init`.
+; Aggregates stream their bracketed/braced element list; everything else defers
+; to defvar-init-ir, so every scalar rule (integer folding, range checks, float
+; re-rendering at the target width, `pkind-flow-check`, `(as CStr …)`,
+; `(addr-of g)`) applies to an ELEMENT exactly as it applies to a whole global.
+(defn defvar-write-const (init:(raw Node) ty:(raw Type) encl:i32):void
+  (let (tt:(raw Type) ty
+        tk:i32 (tt kind))
+    (when (= tk TY-ARRAY)
+      (when (= (const-array-lit? init) 0)
+        (die-at (node-line init encl)
+          (fmt-s "defvar: an %s slot must be initialized with an (array T ...) literal"
+            (type-spelling ty))))
+      (let (ety:(raw Type) (tt elem)
+            n:i32 (tt arr-len)
+            lit-ety:(raw Type) (parse-type-from-node (node-at (as ptr init) 1)
+                                 (node-line (node-at (as ptr init) 1) encl)))
+        (when (= (type-eq lit-ety ety) 0)
+          (die-at (node-line init encl)
+            (fmt-2s "defvar: array initializer element type %s does not match the declared element type %s"
+              (type-spelling lit-ety) (type-spelling ety))))
+        (let (slots:ptr (arena-alloc (* (as i64 n) (ptr-bytes)))
+              ety-ir:CStr (type-to-ir ety))
+          (dotimes (i n) (aset! (as ptr:ptr slots) i null))
+          (const-array-place init slots n encl)
+          (fprintf g-out "[")
+          (dotimes (i n)
+            (when (!= i 0) (fprintf g-out ", "))
+            (fprintf g-out "%s " ety-ir)
+            (let (slot:(raw Node) (as raw:Node (aref (as ptr:ptr slots) i)))
+              (if (= slot null)
+                (fprintf g-out "%s" (type-zero-const-ir ety))
+                ; A designated element is the cell `(index value)`; a positional
+                ; one is the value itself.
+                (if (and (= (slot kind) NODE-CELL) (= (node-len (as ptr slot)) 2)
+                         (!= (node-at (as ptr slot) 0) null)
+                         (= (-> (node-at (as ptr slot) 0) (unsafe/cast ptr:Node _) (_ kind)) NODE-INT))
+                  (defvar-write-const (as raw:Node (node-at (as ptr slot) 1)) ety encl)
+                  (defvar-write-const slot ety encl)))))
+          (fprintf g-out "]"))
+        (return)))
+    (when (or (= tk TY-STRUCT) (= tk TY-UNION))
+      (let (sd:(raw StructDef) (tt sdef))
+        (when (= (const-struct-lit? init sd) 0)
+          (die-at (node-line init encl)
+            (fmt-2s "defvar: a %s slot must be initialized with a (%s ...) compound literal"
+              (sd name) (sd name))))
+        (when (!= (sd is-union) 0)
+          (die-at (node-line init encl)
+            (fmt-s "defvar: '%s' is a union -- a constant union initializer has no unambiguous member; leave it zero-initialized and assign a member at run time"
+              (sd name))))
+        (reject-cycle-pending-sdef sd (node-line init encl) "struct literal")
+        (let (nfields:i32 (sd num-fields)
+              nargs:i32 (- (node-len (as ptr init)) 1)
+              slots:ptr (arena-alloc (* (as i64 (+ nfields 1)) (ptr-bytes)))
+              pos-idx:i32 0)
+          (when (> nargs nfields)
+            (die-at (node-line init encl)
+              (fmt-s "defvar: too many initializers for struct '%s'" (sd name))))
+          (dotimes (i nfields) (aset! (as ptr:ptr slots) i null))
+          ; Designated `(field value)` first, so positional fills skip them —
+          ; the same order emit-struct-lit uses in value position.
+          (dotimes (i nargs)
+            (let (arg:(raw Node) (node-at (as ptr init) (+ 1 i))
+                  aline:i32 (node-line (as ptr arg) encl))
+              (when (and (!= arg null) (= (arg kind) NODE-CELL) (= (node-len (as ptr arg)) 2)
+                         (!= (node-at (as ptr arg) 0) null)
+                         (= (-> (node-at (as ptr arg) 0) (unsafe/cast ptr:Node _) (_ kind)) NODE-SYM))
+                (let (fnn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr arg) 0))
+                      fidx:i32 (struct-field-idx (as ptr sd) (fnn s)))
+                  (when (< fidx 0)
+                    (die-at aline (fmt-2s "defvar: no field '%s' on struct '%s'" (fnn s) (sd name))))
+                  (when (!= (aref (as ptr:ptr slots) fidx) null)
+                    (die-at aline (fmt-s "defvar: field '%s' specified twice" (fnn s))))
+                  (aset! (as ptr:ptr slots) fidx (as ptr arg))))))
+          (dotimes (i nargs)
+            (let (arg:(raw Node) (node-at (as ptr init) (+ 1 i))
+                  aline:i32 (node-line (as ptr arg) encl)
+                  designated:i32 0)
+              (when (and (!= arg null) (= (arg kind) NODE-CELL) (= (node-len (as ptr arg)) 2)
+                         (!= (node-at (as ptr arg) 0) null)
+                         (= (-> (node-at (as ptr arg) 0) (unsafe/cast ptr:Node _) (_ kind)) NODE-SYM))
+                (set! designated 1))
+              (when (= designated 0)
+                (while (and (< pos-idx nfields)
+                            (!= (aref (as ptr:ptr slots) pos-idx) null))
+                  (inc! pos-idx))
+                (when (>= pos-idx nfields)
+                  (die-at aline
+                    (fmt-s "defvar: too many positional initializers for struct '%s'" (sd name))))
+                (aset! (as ptr:ptr slots) pos-idx (as ptr arg))
+                (inc! pos-idx))))
+          (fprintf g-out "{")
+          (dotimes (i nfields)
+            (when (!= i 0) (fprintf g-out ","))
+            (let (ftype:(raw Type) ((field-at (sd fields) i) type))
+              (fprintf g-out " %s " (type-to-ir ftype))
+              (let (slot:(raw Node) (as raw:Node (aref (as ptr:ptr slots) i)))
+                (if (= slot null)
+                  (fprintf g-out "%s" (type-zero-const-ir ftype))
+                  (if (and (= (slot kind) NODE-CELL) (= (node-len (as ptr slot)) 2)
+                           (!= (node-at (as ptr slot) 0) null)
+                           (= (-> (node-at (as ptr slot) 0) (unsafe/cast ptr:Node _) (_ kind)) NODE-SYM))
+                    (defvar-write-const (as raw:Node (node-at (as ptr slot) 1)) ftype encl)
+                    (defvar-write-const slot ftype encl))))))
+          (fprintf g-out " }"))
+        (return)))
+    (fprintf g-out "%s" (defvar-init-ir init ty encl))))
+
+; G-2 shape 4 (design/global-init.md §2.7, measured end-to-end there):
+; `(defvar g:ptr:T (array T e…))` becomes
+;   @g.data = internal global [N x T] [ … ], align A
+;   @g      = global ptr @g.data,             align 8
+; The pointer is the address of a global, so it is provably non-null with no
+; runtime code — which is exactly what lets it satisfy the Phase-F contract for
+; a `ptr:T` / `(ref T)` global. Emits the backing global (g-out is already the
+; def stream at this point, and this runs before the `@g` line is written, so
+; the two land in dependency order) and returns the symbol to point at.
+(defn defvar-emit-array-backing (ir-name:ptr init:(raw Node) ty:(raw Type) encl:i32):ptr
+  (let (n:i32 0
+        ety:(raw Type) (const-array-lit-etype init (as ptr:i32 (addr-of n)) encl))
+    ; An elem-less destination (bare `ptr`, `CStr`) claims nothing about the
+    ; element type, so there is nothing to check; a typed one must agree.
+    (let (tt:(raw Type) ty
+          dst-elem:(raw Type) (tt elem))
+      (when (and (!= dst-elem null) (= (type-eq dst-elem ety) 0))
+        (die-at (node-line init encl)
+          (fmt-2s "defvar: array initializer element type %s does not match the declared pointer element type %s"
+            (type-spelling ety) (type-spelling dst-elem)))))
+    (let (at:(raw Type) (as raw:Type (array-type ety n))
+          data-name:ptr (fmt-s "%s.data" ir-name))
+      (fprintf g-out "%s = internal global %s " data-name (type-to-ir at))
+      (defvar-write-const init at encl)
+      (fprintf g-out ", align %d\n" (type-size at))
+      ; Same call the `(addr-of g)` branch makes, with the same PTR-REF source:
+      ; the flow rule lives in one predicate, never re-derived here.
+      (let (pt:ref:Type (make-type TY-PTR))
+        (.set! pt elem ety)
+        (.set! pt pkind PTR-REF)
+        (pkind-flow-check (as ptr pt) ty (node-line init encl) "defvar"))
+      (return data-name))))
 
 ; Produce the LLVM initializer string for a `defvar` init form at `ty`.
 ; Accepts int / float / string / null / true / false / defconst-name / (char "x").
@@ -9119,7 +9489,9 @@
               ; `(defvar x 0)` (no type at all). node-line borrows the
               ; enclosing `defvar` form's real line instead.
               name-line:i32 (node-line (as ptr name-node) (cc line))
-              ty:ptr (extract-name-and-type name-node (as ptr:ptr (addr-of name)) name-line))
+              ; G-2: a defvar's own type may be `(array T N)` — one of the two
+              ; storage positions the array type exists for.
+              ty:ptr (extract-decl-name-and-type name-node (as ptr:ptr (addr-of name)) name-line))
           (when (= ty null)
             (die-at name-line (fmt-s "defvar: missing :type on '%s'" name)))
           ; :volatile marks the storage slot volatile (lowers to the is-volatile
@@ -9137,19 +9509,24 @@
           ; LLVM rejected with an unlocated parse error).
           (let (ir-name:ptr (fmt-s "@%s" (def-ir-base name))
                 align:i32 (type-size ty)
-                init-ir:ptr null)
+                init-ir:ptr null
+                init-node:(raw Node) null)
             (check-ir-name-legal (cc line) name ir-name)
-            (if (!= init-cell null)
-              (set! init-ir (defvar-init-ir ((unsafe/cast ptr:Node init-cell) car) ty (cc line)))
-              (let (tk:i32 ((as ptr:Type ty) kind))
-                (cond (!= (is-ptr-like ty) 0) (set! init-ir "null")
-                      (or (= tk TY-F32) (= tk TY-F64)) (set! init-ir "0.0")
-                      (= tk TY-I1) (set! init-ir "false")
-                      ; Aggregates (struct/union) cannot use the integer `0`
-                      ; literal — LLVM requires `zeroinitializer` for a default-
-                      ; zero aggregate global.
-                      (or (= tk TY-STRUCT) (= tk TY-UNION)) (set! init-ir "zeroinitializer")
-                      true (set! init-ir "0"))))
+            (when (!= init-cell null)
+              (set! init-node (as raw:Node ((unsafe/cast ptr:Node init-cell) car))))
+            ; G-2 shape 4: a pointer-typed global initialized with an array
+            ; literal gets a `@g.data` backing global and points at it.
+            (when (and (!= init-node null)
+                       (!= (is-ptr-like ty) 0)
+                       (!= (const-array-lit? init-node) 0))
+              (set! init-ir (defvar-emit-array-backing ir-name init-node ty (cc line))))
+            ; No initializer: the type's zero. G-2 moved the three-bucket rule
+            ; (pointers `null`, aggregates `zeroinitializer` — which now covers
+            ; `(array T N)` as well — everything else `0`/`0.0`/`false`) into
+            ; `type-zero-const-ir` so the constant-aggregate renderer's
+            ; unspecified slots use the identical rule rather than a copy of it.
+            (when (and (= init-ir null) (= init-node null))
+              (set! init-ir (type-zero-const-ir ty)))
             ; Stage 12 N3: private defvar emits `internal` LLVM linkage.
             ; AVR-6: `:const` selects the LLVM `constant` storage class over
             ; `global` (read-only; on mapped-flash AVR parts it stays out of RAM).
@@ -9157,12 +9534,20 @@
             ; from an if over two StrView literals (homogeneous join, no collapse);
             ; when the CONST bit is clear it is "global" and both branches are
             ; byte-identical to the historical output.
+            ; G-2 split this from one fprintf into three so a constant aggregate
+            ; can be STREAMED between the prefix and the suffix. The bytes are
+            ; identical for every pre-G-2 shape (init-ir non-null → one "%s"),
+            ; which is why the bootstrap does not move; streaming matters because
+            ; a `fmt-*`-accumulated table would silently clamp at ~1KB
+            ; (context/conventions.md, format-helper buffer sizes).
             (let (storage:ptr (if (!= (bit-and attr-flags DECL-ATTR-CONST) 0) "constant" "global"))
               (if (!= g-defining-private 0)
-                (fprintf g-out "%s = internal %s %s %s, align %d\n\n"
-                  ir-name storage (type-to-ir ty) init-ir align)
-                (fprintf g-out "%s = %s %s %s, align %d\n\n"
-                  ir-name storage (type-to-ir ty) init-ir align)))
+                (fprintf g-out "%s = internal %s %s " ir-name storage (type-to-ir ty))
+                (fprintf g-out "%s = %s %s " ir-name storage (type-to-ir ty)))
+              (if (!= init-ir null)
+                (fprintf g-out "%s" init-ir)
+                (defvar-write-const init-node ty (cc line)))
+              (fprintf g-out ", align %d\n\n" align))
             (let (vsym:ref:Sym (scope-define g-globals name ty ir-name 1))
               (when (!= g-defining-private 0) (.set! (unsafe/cast ptr:Sym vsym) sym-private 1))
               ; AVR-6 gap fix: mark the Sym so `set!` can reject writes to
@@ -9431,7 +9816,10 @@
             ; to the defstruct's own line), never a raw `(field line)` deref.
             (let (field:ptr (node-at cc (+ i 2))
                             fname:ptr null
-                            fty:ptr (extract-name-and-type field (as ptr:ptr (addr-of fname))
+                            ; G-2: a defstruct field's type may be `(array T N)`
+                            ; — the second (and, per the port's Major finding,
+                            ; the load-bearing) storage position.
+                            fty:ptr (extract-decl-name-and-type field (as ptr:ptr (addr-of fname))
                                                            (node-line field (cc line))))
               (when (= fty null)
                     (die-at (node-line field (cc line)) (fmt-s "defstruct: field '%s' missing :type" fname)))
@@ -9552,7 +9940,12 @@
     (let (arg1:ptr (node-at cc 1)
           name:ptr null
           ty:ptr null)
-      (set! ty (extract-name-and-type arg1 (as ptr:ptr (addr-of name))
+      ; G-2: `--emit-nuch` exports an array-typed `defvar` as
+      ; `(extern (g (array i32 3)))`, so this — the import side of that export —
+      ; is a declaration position and grants the same permission emit-defvar
+      ; does. Without it a library with an array global emits a header its own
+      ; consumer cannot read.
+      (set! ty (extract-decl-name-and-type arg1 (as ptr:ptr (addr-of name))
                                       ((unsafe/cast ptr:Node arg1) line)))
       (when (= ty null)
         (die-at ((unsafe/cast ptr:Node arg1) line)
@@ -11055,7 +11448,11 @@
             name-node:ptr (declc car)
             name:ptr null
             name-line:i32 (node-line (as ptr name-node) (cc line))
-            ty:ptr (extract-name-and-type name-node (as ptr:ptr (addr-of name)) name-line))
+            ; G-2: the prescan resolves the very same type node and must not
+            ; refuse what emission accepts — but it must not fold an array
+            ; length either (macros are not registered yet), so it takes the
+            ; provisional variant.
+            ty:ptr (extract-decl-name-and-type-provisional name-node (as ptr:ptr (addr-of name)) name-line))
         ; No type annotation: `(defvar x 0)` is an error emit-defvar reports.
         (when (or (= ty null) (= name null)) (return))
         (when (!= (bit-and attr-flags DECL-ATTR-VOLATILE) 0)

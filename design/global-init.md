@@ -1,7 +1,8 @@
 # Global initialization — combining declaration with initialization
 
-**Status: design, 2026-08-01. G-0 IMPLEMENTED 2026-08-01, G-1 IMPLEMENTED
-2026-08-02 (§5); G-2..G-5 not started.** Written against `stage15-stress-test`
+**Status: design, 2026-08-01. G-0 IMPLEMENTED 2026-08-01, G-1 and G-2
+IMPLEMENTED 2026-08-02 (§5); G-2's `g-arena-alloc` conversion deliberately
+split out (see the G-2 as-built record); G-3..G-5 not started.** Written against `stage15-stress-test`
 at `591deba`. Every number below
 is measured against `build/nucleusc` at that commit; probes are recorded inline so
 they can be re-run. §2.5's four probes have since been fixed by G-0 and carry a
@@ -1557,6 +1558,248 @@ Optionally, and **not as a gate**: rewrite the port's
 the IR while the demo gates stay bit-exact — a second corpus for the same
 machinery, scheduled when convenient (§4.4).
 
+---
+
+#### G-2 as built — 2026-08-02
+
+**Done, with one deliberate split** (see "The `g-arena-alloc` tension" below):
+all five shapes plus the `defstruct` array field landed with `make bootstrap`
+byte-identical on the first pass; the `g-arena-alloc` conversion did **not**
+land, because the same *Verify* clause demands it and byte-identical bootstrap
+in one breath and those cannot both hold.
+
+**The central decision: an array is a VALUE in storage and DECAYS on read.**
+The spec left this open, and it determines nearly everything else, so it is
+stated here rather than left implicit in the code.
+
+`(array T N)` is a **storage type**: N values of T laid out inline, exactly as
+C's `T x[N]`. It is legal in precisely two declaration positions — a `defvar`
+type and a field of an aggregate (`defstruct`, and the anonymous `(struct …)` /
+`(union …)` member lists) — plus `(sizeof (array T N))` and
+`(alloca (array T N))`. Read in **any** value position it yields the address of
+element 0, typed `(ref T)`.
+
+Three reasons, in decreasing order of force:
+
+1. **The C interop invariant decides it.** `context/conventions.md` requires
+   every Nucleus type to be representable in C, and the whole point of the
+   feature — the port's Major finding — is `struct { int xs[4]; }` laying out
+   the same on both sides. C's array-in-struct is inline value storage. There
+   was no second option here, and `make layout-test` now gates it against the
+   platform C compiler.
+2. **The decay half was already the language's answer.** The pre-existing
+   `(array T lit…)` *expression* (`emit-array-lit`) allocas `[N x T]` and
+   returns `ptr:T`. Making the *type* behave differently in value position
+   would have given one spelling two meanings. §2.7's measured target form
+   (`@g.data` + `@g = global ptr @g.data`) is that same decay at file scope.
+3. **A non-decaying array would need machinery nothing else needs.** By-value
+   parameters, returns and assignment of an aggregate whose size is unbounded
+   in the type — `abi-classify` would have to grow an array arm, `set!` an
+   aggregate copy, and `type-spelling` a round-trippable spelling. Refusing
+   those positions costs one diagnostic and buys the whole rest of the design.
+
+The corollary is that **arrays are refused everywhere a value copy would be
+implied** — by-value parameter, return, `let`/`with` binding, pointer element,
+generic type argument, nested array, `set!` target, `.set!` field target — each
+with a located diagnostic naming the `ptr:T` spelling that works.
+
+**Containment is ONE gate, not N refusals.** The obvious implementation
+(`reject-array-type` at every position that must refuse) is the shape that
+drifts: a position added later silently accepts. Instead `g-array-ok`
+(`src/nucleusc.nuc`, beside `g-form-line`) is a one-shot permission that the
+four permitting sites arm and `parse-type-from-node` **consumes on entry**, the
+same consume-once discipline `emit-generic-call` applies to `g-want-type`.
+Nesting then falls out for free with no per-constructor check: `(ptr (array i32
+4))` consumes the permission at the outer parse, so the recursion into the
+element sees 0 — and so do `(array (array i32 2) 3)`, `(Vector (array i32 4))`,
+`(Maybe (array …))` and every other nesting, present and future.
+`reject-array-type` (`src/type-utils.nuc`) survives only as a backstop for the
+two positions the syntactic gate cannot see, where a Type arrives already
+parsed: `abi-classify` and the `set!`/`.set!` targets.
+
+The permitting sites are `extract-decl-name-and-type` (a thin arm-and-clear
+wrapper over `extract-name-and-type`, called by `emit-defvar`,
+`emit-defstruct`'s field loop, the anonymous struct/union member loops,
+`emit-extern`, the REPL's preamble re-resolution) and three direct arms in
+`emit-sizeof`, `emit-alloca-form` and `cfold-sizeof`.
+
+**A third permission state exists, and the reason is a real divergence.** A
+`defvar`'s type is resolved **twice**: once by G-0's `prescan-value-names` and
+once by `emit-defvar`. The length is a constant expression evaluated by G-1's
+`const-fold-int`, which routes through `macroexpand-form` — and **macros are
+registered only when their file is emitted** (the same structural property W1d
+and G-0 record). So during a prescan `(array i32 (_* K 2))` folds and
+`(array i32 (* K 2))` does not: the two resolutions would disagree about
+whether the same source is legal. `g-array-ok` mode **2** ("provisional") is
+the resolution — the prescan builds the array type with the element resolved
+and the length left at 0, and does not fold. That is sound because the prescan's
+Sym exists only so a forward *reference* resolves, and every read of an
+array-typed binding goes through `array-decay`, which reads `elem` and never
+`arr-len`; `emit-defvar` then re-resolves the real type (macros registered) and
+re-defines the Sym. The claim is *checked*, not merely asserted: a real
+`(array T 0)` is refused at parse, so a zero length can only be provisional, and
+`type-to-ir` dies on one rather than emitting a plausible `[0 x i32]` (which is
+legal LLVM — a flexible array member — and would therefore have been silent).
+
+**What the new type kind touched, subsystem by subsystem.**
+
+| Subsystem | Change | Note |
+|---|---|---|
+| `TypeKind` / `Type` | `TY-ARRAY` appended last; new `arr-len:i32` | `compiler-types.nuc` |
+| Type cloning | `type-with-volatile` copies `arr-len` | the one Type-cloning site; a miss would silently make a zero-length array |
+| `type-to-ir` | `[N x T]`, plus the provisional-length assert | `type-utils.nuc` |
+| `type-size` | **element** size, i.e. the slot ALIGNMENT — not `N*sizeof(T)` | every caller uses it in an `align N` operand, which must be a power of two; `alloca [3 x i32], align 12` is invalid IR. The real size is `abi-sizeof`, exactly as for `TY-STRUCT`. |
+| `type-to-c` | the **element** type only | C's array declarator is postfix; the `[N]` is appended by `emit-cheader-defstruct` |
+| `abi-sizeof` / `abi-alignof` | `N * sizeof(T)` / `alignof(T)` | |
+| `abi-class-eightbyte` | **restructured**: the per-field body extracted into `abi-class-type-at`, which the array case recurses into per element | see below — this is the one that would have been silently wrong |
+| `abi-classify` | `reject-array-type` backstop | an array param would otherwise have become a legal-but-not-C-ABI `[4 x i32] %x.arg` |
+| `parse-type-from-node` | the `(array T N)` branch + the consume-once gate | placed ahead of the template lookups so a user template named `array` cannot capture the spelling |
+| `type-eq` / `hash-type` | element **and** length | |
+| `type-mangle-token` | `a<N>_<elem>` | unreachable today; the old fall-through `"x"` collided with every unmodelled kind |
+| `type-spelling` | `(array T N)` — diagnostic-only, deliberately **not** round-trippable | sound only because arrays are refused in every position where the spelling has to re-parse (conformance keys, generic substitution) |
+| `emit-symbol-ref` / `emit-field-load` / the two union-member arms / `emit-field-addr` / `emit-alloca-form` | decay, via the shared `array-decay` | |
+| `node-type-sym` / `node-type-field` / `callable-get-type` / `node-type-alloca` | the same `array-decay` **call** | the lockstep; `node-type-alloca` also had to arm the gate, or the non-emitting pass rejected what codegen accepted |
+| `emit-zero-store` / `emit-defvar`'s no-init default | `zeroinitializer` | the three-bucket rule moved into `type-zero-const-ir`, now shared with the aggregate renderer's unspecified slots |
+| `emit-set` / `emit-field-set` | refuse | before the RHS is emitted, so the message names the cause |
+| `emit-cheader-defstruct` | `T name[N];` | |
+| `emit-extern` | permits an array type | `--emit-nuch` exports an array `defvar` as `(extern (g (array i32 3)))`; without this the import side could not read the header the export side wrote |
+| `repl.nuc`'s `defvar` arm | permits an array type | the preamble's `external global` line is written from a *second* resolution of the same type node |
+
+**Three things surprised me.**
+
+1. **`abi-class-eightbyte` was the real hazard, and it is invisible without a
+   float array.** Its field loop ended `not a struct, not a float → INTEGER`, so
+   an array field fell into INTEGER wholesale. For `struct { int v[2]; }` that
+   is accidentally right; for `struct { float v[2]; }` it is wrong in a way no
+   size or offset check can see — the struct is 8 bytes either way, but the
+   value travels in `rdi` instead of `xmm0`, so C and Nucleus disagree only at
+   the *call*. `make layout-test` cannot catch it. `tests/abi/`'s new `FArr2`
+   is what does: the emitted declaration must be
+   `declare double @farr2_sum(<2 x float>)`, and it is.
+2. **`--emit-cheader` cannot fold a named length, and must not try.** The
+   cheader pass never runs the emitter, so a `defconst` is not in the value
+   scope during it and `(array CStr N)` does not fold. The first cut died with a
+   `:0:` diagnostic. The right answer is not to fold harder but to notice that
+   the header *already exports* `#define N 3` beside the struct: the extent is
+   emitted **verbatim** when it is a bare name, giving correct C that keeps the
+   symbolic size. Only a computed length whose constants this pass cannot see is
+   an error, and it now carries the field's line.
+3. **`fmt-s` with two `%s` segfaulted the compiler**, in my own new code, within
+   an hour of reading the note that says so. It is worth recording that the trap
+   is not "you might forget" — it is that the failure is a bare SIGSEGV with no
+   output, so a one-line diagnostic path that is never exercised by a passing
+   test can carry it indefinitely. Which is exactly what a grep then found in
+   **three pre-existing sites** (§7).
+
+**The `g-arena-alloc` tension — the spec is internally inconsistent, and this
+is the resolution.** The *Verify* clause above requires both (a) `g-arena-alloc`
+converted to its constant form as the first in-compiler use and (b)
+`make bootstrap` byte-identical. They are incompatible, and not marginally:
+
+* The committed boot compiler cannot parse a constant struct initializer at all
+  (measured: `bin/nucleusc` on `(defvar h:AllocHandle (AllocHandle ALLOC-ARENA
+  null))` dies `defvar: init must be a literal`, and on `(defvar g:(array i32
+  4))` dies `defvar: missing :type on 'g'`). So **any** in-compiler use of G-2
+  makes `make` itself fail, before `make bootstrap` can even run — this is
+  `context/build.md`'s "breaking changes the OLD boot can't bridge", needing a
+  2-stage manual bootstrap and a `make update-bootstrap` reconverge.
+* §4.4 already places the `g-arena-alloc` conversion in the **migration** list
+  (item 2), whose home is G-5, and §4.7 already predicts G-5 "**will** move the
+  compiler's IR substantially and is a deliberate reconverge". The G-2 *Verify*
+  clause pulled one migration item forward without noticing it also carries
+  G-5's bootstrap cost.
+
+**Resolution: split.** G-2 is the feature, bootstrap byte-identical. The
+conversion is a separate step (call it G-2b, or fold it into G-5). It is
+de-risked rather than merely deferred — the exact form was reproduced and
+measured end to end:
+
+```lisp
+(defvar g-ah:AllocHandle (AllocHandle ALLOC-ARENA null))
+;  → @g-ah = global %AllocHandle { i32 1, ptr null }, align 8
+```
+
+compiled, linked and ran; a `(vector-new-in (addr-of g-ah))` built from it
+reports `kind = ALLOC-ARENA` in its copied handle. Two facts the follow-up needs
+and now has:
+
+* **`null` into `AllocHandle.data` passes the Phase-F gate**, because `data` is
+  an elem-less bare `ptr` — the `void*` escape hatch `pkind-flow-check` exempts.
+  This was not obvious and is the one thing that could have blocked the whole
+  approach.
+* **No source reorder is needed for this step.** §2.10 calls for moving
+  `g-arena-alloc` (`:182`) above the first registry (`:144`); that is a
+  requirement of a *runtime* initializer ordering rule, i.e. G-3. A constant
+  initializer is link-time and correct before any code runs, so the reorder
+  belongs with G-3/G-5, not here.
+
+The procedure, when it is taken: (1) edit `nucleusc.nuc:182` and delete
+`compiler-init`'s `(arena-allocator (addr-of g-arena-alloc))`; (2) `make` will
+fail, so build with the G-2 compiler directly (`build/nucleusc --emit-llvm
+src/nucleusc.nuc`) and link that; (3) `make test` / `abi-test` / `layout-test`;
+(4) prove the diff inert — normalized per-function diff plus an old-vs-new
+`--emit-llvm` sweep of every `examples/`, `lib/` and `tests/fixtures/` program,
+with the **baseline compiler built from HEAD's source**, not from `bin/nucleusc`
+(G-0's finding: the committed boot lags HEAD and manufactures phantom entries);
+(5) `make update-bootstrap`, then `make clean && make && make bootstrap`. The
+positive `ALLOC-ARENA` assertion §4.4 requires belongs in the same step, since
+it is the thing that makes the conversion checkable rather than silent.
+
+**Verification.**
+
+* `examples/g2-array-init.nuc` compiles, links and runs, **printing** every
+  value of all five shapes — a constant aggregate's characteristic failure is
+  the wrong bytes at the wrong offset, which an exit-0 compile cannot see. It
+  also cross-checks three folded `sizeof`s and two field offsets against
+  field-address arithmetic, printing `agree`/`DISAGREE` per measurement.
+* **`make layout-test` extended with six array-field shapes** — `int[4]` alone,
+  with a leading and a trailing scalar, `char[3]` (alignment 1), `double[2]`
+  (alignment 8), an array of structs, and an array of array-bearing structs. The
+  measurement that matters is the offset of the field **after** the array, which
+  moves if the array's size is computed wrong. The C oracle's copies live in
+  `tests/layout/structs.h` behind `NUCLEUS_LAYOUT_C_ORACLE` (only `layout.c`
+  defines it), because the Nucleus C-header parser skips array declarators by
+  design; the Nucleus side `defstruct`s the matching shapes.
+* **`make abi-test` extended with four by-value array-field structs** —
+  `{int[2]}` (one INTEGER eightbyte), `{float[2]}` (one SSE eightbyte), `{int[4]}`
+  (two INTEGER eightbytes) and `{int[6]}` (MEMORY). Verified in the emitted IR:
+  `i64`, `<2 x float>`, `{i64,i64}`, `byval`/`sret` respectively, matched
+  against an all-C reference build.
+* **21 rejection fixtures**, each pinned at a real `file:line:` by
+  `run_reject_at`, plus one `run_accepts` (an anonymous `(struct …)` member may
+  be an array) and a REPL session.
+* `run_g2_cheader` **compiles the generated C header with the platform `cc`**
+  and diffs its `sizeof`/`offsetof` against the Nucleus unit's — checking the
+  header is not merely plausible text.
+* `run_g2_nuch` round-trips an array field **and** an array-typed `defvar`
+  through `--emit-nuch`, then links and asserts an exit status.
+* **`make test` 361 → 385 PASS / 0 FAIL** (counted with `NUCLEUS_TEST_JOBS=1`;
+  the parallel count wobbles between 383 and 385 on this host, which is W9
+  item 10). `make abi-test` and `make layout-test` green.
+* **`make bootstrap` byte-identical on the first pass** — every G-2 shape is one
+  that died before it, so no existing program's IR could move.
+
+**Deliberately not built.**
+
+* **Multi-dimensional arrays.** `(array (array T M) N)` is refused by the same
+  consume-once gate that refuses `(ptr (array …))`. Nothing in the port or the
+  compiler wants one, and the decay story for a 2-D array (`ptr:(array T M)`,
+  a type that is itself refused) needs the pointer-to-array case first.
+* **Pointer-to-array**, for the same reason.
+* **Whole-array assignment and by-value array parameters/returns.** These are
+  the positions the value-vs-decay ruling closes; C does not have them either.
+* **Struct packing and alignment attributes.** Out of scope per
+  `design/stage15-stress-test/prompt.md` §7, and — measured, not assumed — not
+  needed: all six layout shapes and all four ABI shapes match the platform C
+  compiler with natural alignment alone. Nothing in G-2 wanted an attribute.
+* **Converting the Doom port.** Not a gate (the 2026-08-01 ruling), and the
+  user directed it not be converted unless a test needed one; the fixtures above
+  are the second corpus instead.
+* **The C-header parser reading array declarators.** `(import "foo.h")` still
+  registers a struct with an array member as opaque. That is the *import*
+  direction; G-2 delivers the *export* direction (`--emit-cheader`). Worth
+  doing, but it is cheader work, not array-type work.
+
 ### G-3 — `@__nucleus_init`, emitted only when non-empty
 
 A `defvar` initializer that G-1/G-2 cannot fold is queued (a `MonoJob`-shaped
@@ -1670,9 +1913,10 @@ second corpus once (2) has proven the machinery on the compiler.
 ## 7. Bugs and gaps found while measuring (reported, not fixed)
 
 **Filed as Stage 15 W9** — see
-[stage15-stress-test/overview.md](stage15-stress-test/overview.md). All six are
+[stage15-stress-test/overview.md](stage15-stress-test/overview.md). All are
 pre-existing and independent of this design; #6 overlaps G-0 and is not filed
 twice (G-0 fixes the cause; the message wants a W1c-style note in the interim).
+#7 and #8 were added by G-2 (2026-08-02) and are a matched pair.
 
 1. **`make lib-objs` / `make lib-so` is broken**, pre-existing, and reproduces on
    the committed boot compiler. Three `lib/*.nuc` files cannot be compiled
@@ -1715,6 +1959,31 @@ twice (G-0 fixes the cause; the message wants a W1c-style note in the interim).
    compilation unit` for a `defvar`/`defconst`/`defenum` that *is* in the unit
    but has not been processed yet. G-0 fixes the cause; the message should also
    gain a W1c-style note in the interim.
+
+**Two more, found while building G-2 (2026-08-02). Both pre-existing, both
+reproduce on the committed boot compiler, neither is fixed here.**
+
+7. **Three `fmt-s` call sites pass TWO substitutions to a one-argument
+   helper** — `nucleusc.nuc`'s `call: expected %d args, got %d` (~:4313),
+   `(dyn %s): '%s' is not a declared protocol` (~:5824), and
+   `BoxedFn call: expected %d args, got %d` (~:6310). This is exactly the
+   fixed-arity trap `context/conventions.md` opens with: `snprintf` reads a
+   garbage vararg and the compiler **segfaults with no output**. Found by
+   grepping after making the identical mistake in new G-2 code (where it did
+   segfault, immediately). They survive because these particular diagnostic
+   paths appear to be unreachable or near-unreachable today — which is the
+   lesson, not the excuse: a fixed-arity violation on a cold error path is
+   invisible to a green suite indefinitely. The fix is mechanical (`fmt-i32-i32`
+   / `fmt-2s`) but it moves the compiler's own IR, so it belongs in a change
+   that is already reconverging.
+8. **A wrong-arity call to a solitary `defn` is not diagnosed.** Measured:
+   `(defn f (a:i32):i32 …)` called as `(f 1 2)` compiles clean and emits
+   `call i32 @f(i32 1, i32 2)` against a one-parameter definition — on
+   `build/nucleusc` **and** on `bin/nucleusc`, so it is not new. The
+   `call: expected %d args, got %d` check at `nucleusc.nuc:~4311` exists but the
+   solitary-`defn` path does not reach it. This is very likely *why* finding 7
+   above has gone unnoticed: the diagnostic that would have segfaulted is
+   unreachable. The two should be fixed together.
 
 ---
 

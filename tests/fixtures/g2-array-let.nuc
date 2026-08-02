@@ -1,0 +1,5 @@
+; Stage 15 W8 G-2: a local binding of array type. The spelling that works is
+; `(alloca (array i32 4))`, which yields the decayed ptr:i32.
+(defn main ():i32
+  (let (a:(array i32 4) 0)
+    (return 0)))

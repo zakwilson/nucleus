@@ -4,6 +4,7 @@
  * same lines from Nucleus's layout walk; run-layout-test.sh diffs them. */
 #include <stdio.h>
 #include <stddef.h>
+#define NUCLEUS_LAYOUT_C_ORACLE 1
 #include "structs.h"
 
 #define SZ(S)     (long long)sizeof(struct S)
@@ -47,5 +48,13 @@ int main(void) {
     printf("NICHE_MAYBE sizeof=%lld\n",  (long long)sizeof(struct Pt *));
     printf("NICHE_ERRPTR sizeof=%lld\n", (long long)sizeof(struct Pt *));
     printf("NICHE_okptr_roundtrip=%d\n", 1);
+
+    /* Stage 15 W8 G-2: fixed-size array fields. */
+    printf("A_plain sizeof=%lld xs=%lld\n", SZ(A_plain), OFF(A_plain, xs));
+    printf("A_head sizeof=%lld tag=%lld xs=%lld tail=%lld\n", SZ(A_head), OFF(A_head, tag), OFF(A_head, xs), OFF(A_head, tail));
+    printf("A_byte sizeof=%lld b=%lld tail=%lld\n", SZ(A_byte), OFF(A_byte, b), OFF(A_byte, tail));
+    printf("A_wide sizeof=%lld tag=%lld v=%lld tail=%lld\n", SZ(A_wide), OFF(A_wide, tag), OFF(A_wide, v), OFF(A_wide, tail));
+    printf("A_nest sizeof=%lld pts=%lld z=%lld\n", SZ(A_nest), OFF(A_nest, pts), OFF(A_nest, z));
+    printf("A_ofarr sizeof=%lld rows=%lld tail=%lld\n", SZ(A_ofarr), OFF(A_ofarr, rows), OFF(A_ofarr, tail));
     return 0;
 }

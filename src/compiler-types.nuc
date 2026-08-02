@@ -73,7 +73,16 @@
                   ; IR `i32` (C `uint32_t`), so `=`/`!=` dispatch on `Char` and a
                   ; `Char`-vs-int overload stay distinct. Appended last to keep the
                   ; existing TypeKind ordinals unchanged.
-                  TY-CHAR)
+                  TY-CHAR
+                  ; Stage 15 W8 G-2 (design/global-init.md §5): a fixed-size
+                  ; array `(array T N)` — `elem` = T, `arr-len` = N. A STORAGE
+                  ; type only: legal as a `defvar` type and a `defstruct` field
+                  ; type, refused everywhere else (parse-type-from-node's
+                  ; g-array-ok gate). In every value position it DECAYS to
+                  ; `(ref T)` — the address of element 0 — exactly as C does,
+                  ; via the one shared rule `array-decay` (src/type-utils.nuc).
+                  ; Appended last, same reasoning as TY-CHAR above.
+                  TY-ARRAY)
 
 ; Pointer kinds (Stage 10 nullability, design/stage10/nullability.md). A
 ; compile-time contract carried on TY-PTR types; all three lower to IR `ptr`
@@ -279,7 +288,13 @@
   is-volatile:i32
   ; Pointer kind (Stage 10): PTR-RAW / PTR-REF / PTR-MAYBE for TY-PTR.
   ; Shared Types are never mutated — clone via type-as-pkind.
-  pkind:i32)
+  pkind:i32
+  ; Stage 15 W8 G-2: element count of a TY-ARRAY (`elem` carries T). Zero for
+  ; every other kind. Read by type-to-ir / abi-sizeof / abi-class-eightbyte /
+  ; type-eq / hash-type / the constant-aggregate renderer; anything that CLONES
+  ; a Type must copy it (type-with-volatile, src/nucleusc.nuc — the one such
+  ; site today).
+  arr-len:i32)
 
 (defstruct Tok
   kind:i32

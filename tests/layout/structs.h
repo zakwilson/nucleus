@@ -51,3 +51,21 @@ struct UAnon   { int kind; union { int word; double real; } data; char tail; };
  * C it is just a `struct Pt *` — pointer-sized, with the documented reserved
  * top-page range for error sentinels (errors.md §2/§8). */
 struct Pt { int x; int y; };
+
+/* Stage 15 W8 G-2: fixed-size array fields (`(array T N)`). The Nucleus
+ * C-header parser deliberately skips array declarators (see the note at the top
+ * of this file), so these shapes cannot round-trip through an import the way
+ * every struct above does — layout.nuc declares the matching shapes with its
+ * own `defstruct` + `(array T N)` instead, and this block is compiled only by
+ * the C oracle (layout.c defines NUCLEUS_LAYOUT_C_ORACLE before including).
+ * The interesting measurements are the offset of the field AFTER an array (the
+ * one that moves if the array's size is computed wrong) and the enclosing
+ * struct's alignment, which must come from the ELEMENT type. */
+#ifdef NUCLEUS_LAYOUT_C_ORACLE
+struct A_plain  { int xs[4]; };
+struct A_head   { char tag; int xs[4]; char tail; };
+struct A_byte   { char b[3]; char tail; };
+struct A_wide   { char tag; double v[2]; char tail; };
+struct A_nest   { struct Inner pts[3]; long long z; };
+struct A_ofarr  { struct A_plain rows[2]; char tail; };
+#endif

@@ -1,0 +1,4 @@
+; Stage 15 W8 G-2: the literal's declared element type must match the slot's.
+(defvar g:(array i32 2)
+  (array i64 1 2))
+(defn main ():i32 (return 0))

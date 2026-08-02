@@ -1,0 +1,5 @@
+; Stage 15 W8 G-2: an ELEMENT is an ordinary constant initializer, so every G-1
+; rule applies one level down -- here W2b's range gate on the folded value.
+(defvar g:(array i32 2)
+  (array i32 1 (* 2000000000 3)))
+(defn main ():i32 (return 0))

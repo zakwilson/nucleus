@@ -42,6 +42,13 @@
       TY-ERR   (return "Err")
       TY-USIZE (return "usize")
       TY-SSIZE (return "ssize")
+      ; Stage 15 W8 G-2: `a<N>_<elem>` — a token legal in an LLVM symbol name and
+      ; distinct per length, so two array shapes can never collide. Unreachable
+      ; today (an array cannot be a parameter or a generic argument), but the
+      ; fall-through "x" would have collided with every other unmodelled kind.
+      TY-ARRAY (return (fmt-2s "a%s_%s"
+                         (fmt-i32 "%d" (tt arr-len))
+                         (type-mangle-token (tt elem))))
       (return "x"))))
 
 ; ============================================================
@@ -119,6 +126,16 @@
         (if (= (tt elem) null)
           (return "ptr")
           (return (fmt-s "ptr:%s" (type-spelling (tt elem)))))
+      ; Stage 15 W8 G-2. This spelling is DIAGNOSTIC-ONLY and deliberately not
+      ; round-trippable through parse-type-name: type-spelling's round-trip
+      ; contract exists for conformance keys and generic substitution, and an
+      ; array can be neither (it is refused in every position a tyvar or an
+      ; `extend` subject can occupy). Rendering the honest source spelling beats
+      ; the old fall-through, which called every array "ptr".
+      TY-ARRAY
+        (return (fmt-2s "(array %s %s)"
+                  (type-spelling (tt elem))
+                  (fmt-i32 "%d" (tt arr-len))))
       (return "ptr"))))
 
 (defn tyvar-index-of (name:CStr tyvars:ptr ntv:i32):i32

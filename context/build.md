@@ -25,6 +25,29 @@
 - The self-hosted compiler and its bootstrap artifacts are linked against the system LLVM (19+). The Makefile auto-detects `llvm-config` (trying versioned names like `llvm-config-21`, `llvm21-config`, and common Alpine paths), preferring `--link-shared` for the monolithic shared lib, falling back to static component libs, then to bare `-lLLVM` if neither works. A diagnostic line (`LLVM: config=... ldflags=... libs=...`) prints at build time so link failures can be diagnosed remotely.
 - **`-O`N` currently sets only the LLVM *codegen* level** (instruction selection / register allocation / scheduling), passed to `LLVMCreateTargetMachine` in `compile-and-link`. The LLVM **middle-end** pass pipeline (`mem2reg`, `instcombine`, LICM, GVN, vectorizers) is **not yet wired**: `compile-and-link` goes straight from `LLVMCreateTargetMachine` to `LLVMTargetMachineEmitToFile`. The PassBuilder C API (`LLVMRunPasses`, `LLVMCreatePassBuilderOptions`) is already declared in `src/llvm.nuch` (in the linked `libLLVM-19.so`, no Makefile/link change needed), so wiring it in is the open optimization work tracked in `design/stage999-future.md`. `--emit-llvm` always emits **unoptimized** textual IR, which also means the bootstrap fixed-point check (which goes through `--emit-llvm`) is structurally immune to optimization-level changes.
 
+## `make layout-test` / `make abi-test`: what each one can and cannot catch
+
+Two different gates against the platform C ABI, and they do not overlap.
+`make layout-test` (`tests/layout/`) compares `sizeof` and every field offset —
+it catches a wrong *size or alignment*. `make abi-test` (`tests/abi/`) links a
+Nucleus caller against a `cc`-compiled callee — it catches a wrong *calling
+convention*. A by-value struct can have byte-identical layout on both sides and
+still be passed in the wrong register class, which only `abi-test` sees
+(Stage 15 W8 G-2's `struct { float v[2]; }`: 8 bytes either way, but SSE vs
+INTEGER). Run both after any change to `abi-classify`, `abi-sizeof`,
+`abi-alignof` or `abi-class-eightbyte`.
+
+Extending them has one non-obvious constraint each. **`tests/layout/structs.h`
+is imported by `layout.nuc` as a C header**, so a shape the Nucleus C-header
+parser cannot represent (an array declarator, a bitfield) cannot live there
+unguarded — it would register as an opaque `ptr` and collide with the Nucleus
+side's own `defstruct`. G-2's array shapes therefore sit behind
+`#ifdef NUCLEUS_LAYOUT_C_ORACLE`, which only `layout.c` defines, with `layout.nuc`
+declaring the matching shapes itself. **`tests/abi/expected.out` must come from
+an all-C reference build**, never from the Nucleus output being tested — write a
+throwaway C `main` against `tests/abi/clib.c`, run it, and paste its lines in;
+the print ORDER must match `interop.nuc`'s, since the harness diffs.
+
 ## Windows build (Phase F, untested on this Linux host)
 
 - `build.ps1` is the PowerShell counterpart of the Makefile/`build.sh` flow: compile `repl_shim` → ensure a boot compiler exists (build from committed Windows boot IR if `bin\nucleusc.exe` is missing) → self-host (`--emit-llvm` → clang link). `bootstrap.bat [mingw|msvc]` is a cmd.exe wrapper over `build.ps1 -Bootstrap`.

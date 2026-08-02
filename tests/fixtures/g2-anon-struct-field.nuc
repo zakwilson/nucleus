@@ -1,0 +1,5 @@
+; Stage 15 W8 G-2 POSITIVE: an anonymous `(struct ...)` member may be an array
+; on exactly the same terms a defstruct field may -- one rule for "a field of an
+; aggregate", not two. run_accepts pins that this stays legal.
+(defvar g:(struct tag:i8 (cells (array i32 3)))) 
+(defn main ():i32 (return 0))
