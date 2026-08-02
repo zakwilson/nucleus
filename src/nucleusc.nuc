@@ -277,6 +277,18 @@
 ; loop. g-mono-drained is a persistent cursor so recursive drains never re-emit.
 (defvar (g-mono-worklist (ref (Vector (ref MonoJob)))))
 (defvar g-mono-drained:usize 0)
+
+; Stage 15 W8 G-3 (design/global-init.md §5, §4.8): runtime global initializers
+; awaiting emission into the single synthesized `@__nucleus_init`. A `defvar`
+; whose initializer `defvar-init-ir` could not render as a constant is appended
+; here in reach order and drained at `emit-toplevel-forms` depth 1 — the one
+; point at which every top-level form of every reachable file has been walked,
+; so "is the queue empty?" is EXACT rather than an approximation. Nothing about
+; the runtime half is emitted anywhere else, which is what makes the feature
+; cost exactly zero bytes for a program that has no runtime initializer.
+; g-init-drained is a persistent cursor, mirroring g-mono-drained.
+(defvar (g-init-worklist (ref (Vector (ref InitJob)))))
+(defvar g-init-drained:usize 0)
 ; Set to the current instantiation's context string while a stamped generic body
 ; is being emitted; die-at appends it as a note so a stamp-time error points back
 ; to the instantiation (and its requesting call site). Null otherwise.
@@ -329,6 +341,21 @@
 ; asserts that a provisional length never reaches IR, so the invariant is
 ; checked rather than merely asserted in this comment.
 (defvar g-array-ok:i32 0)
+; Stage 15 W8 G-3: "this initializer may turn out not to be constant". Armed
+; (save/set/restore) only around `defvar-const-init-ir`'s single classifying
+; call into `defvar-init-ir`, where it turns that function's terminal
+; "init must be a compile-time constant" raise into a `null` return. Every
+; OTHER diagnostic inside the renderer still fires unchanged, because a
+; malformed constant, an out-of-range literal or a nullability violation is an
+; error, not a runtime initializer.
+;
+; This flag is the whole reason there is exactly ONE constant-vs-runtime
+; classifier rather than two: the queue decision is the renderer's own answer,
+; not a predicate that re-derives its conditions (context/conventions.md's
+; standing rule for `defvar-init-ir`, and the property §4.8 turns on). It is 0
+; during aggregate element rendering, so an element that is not constant is
+; still the hard error it has always been.
+(defvar g-defvar-soft:i32 0)
 ; Nesting depth of emit-toplevel-forms (imports recurse). The A2 generic-body
 ; check runs only at the outermost level — after every import has registered its
 ; names and with g-source-path restored to the unit being compiled.
@@ -9407,6 +9434,13 @@
               (fmt-3s "defvar: constant '%s' (%s) does not fit %s"
                 (nn s) (fmt-i64 "%ld" (sym const-lit-i64)) (type-spelling ty))))
           (return (sym const-val))))
+      ; G-3: a name that is not `null`/`true`/`false` and not a `defconst` is a
+      ; read of another global — a run-time value, not a constant. Soft mode
+      ; reports that; the hard path (an aggregate ELEMENT) keeps the diagnostic,
+      ; because an element must be constant. Without this, `(defvar a:i32 b)`
+      ; would be refused while `(defvar a:i32 (+ b 0))` — which reaches the
+      ; terminal fall-through below — was accepted, an arbitrary asymmetry.
+      (when (!= g-defvar-soft 0) (return null))
       (die-at (node-line init encl) (fmt-s "defvar: unsupported init symbol '%s'" (nn s))))
     ; (char "x") — char literal, one byte stored in an int field.
     (when (and (= (nn kind) NODE-CELL) (= (node-len nn) 2))
@@ -9439,6 +9473,11 @@
                                                        (node-line init encl)))
               (when (and (!= (is-ptr-like dst) 0) (!= (is-ptr-like ty) 0))
                 (let (rendered:ptr (defvar-init-ir (node-at (as ptr nn) 2) dst encl))
+                  ; G-3: in soft mode the recursion may report "not a constant";
+                  ; the whole `as` is then a runtime initializer and the pkind
+                  ; gate belongs to the `set!` that lowers it, not here. Inert
+                  ; outside soft mode, where the recursion cannot return null.
+                  (when (= rendered null) (return null))
                   (pkind-flow-check dst ty (node-line init encl) "defvar")
                   (return rendered)))))
           ; `(addr-of g)` — the address of another global.
@@ -9456,9 +9495,102 @@
               (fmt-2s "defvar: constant expression value %s does not fit %s"
                 (fmt-i64 "%ld" folded) (type-spelling ty))))
           (return (fmt-i64 "%ld" folded)))))
+    ; Stage 15 W8 G-3: this is THE constant-vs-runtime decision point, and the
+    ; only one. Under `g-defvar-soft` (armed solely by `defvar-const-init-ir`)
+    ; the answer "no constant rendering exists" comes back as `null` and the
+    ; initializer is queued for `@__nucleus_init`; otherwise it is the error it
+    ; has always been. Nothing anywhere else re-derives this question.
+    (when (!= g-defvar-soft 0) (return null))
     (die-at (node-line init encl)
       "defvar: init must be a compile-time constant (a literal, a named constant, or an expression over them)")
     (return null)))
+
+; ============================================================
+; Stage 15 W8 G-3 — the runtime-initializer queue (design/global-init.md §5)
+; ============================================================
+
+; The single constant-vs-runtime classifier. Returns 1 when `init` HAS a
+; compile-time constant rendering at `ty`, 0 when it is a RUNTIME initializer
+; that must be queued for `@__nucleus_init`.
+;
+; On 1 it stores through `out-ir` either the rendered constant string, or
+; `null` meaning "this is an aggregate — stream it with `defvar-write-const`".
+; An aggregate constant cannot be returned as a string: the `fmt-*` helpers
+; clamp at ~1KB (context/conventions.md) and these tables are unbounded, which
+; is exactly why G-2 made the aggregate renderer stream.
+;
+; This is NOT a second predicate sitting beside the renderer. For a scalar
+; destination the answer IS `defvar-init-ir`'s, obtained by arming
+; `g-defvar-soft` for precisely that one call; for an aggregate destination it
+; is `const-array-lit?` / `const-struct-lit?`, the same two functions
+; `defvar-write-const` gates on. §4.8's zero-cost guarantee turns on there
+; being exactly one classifier, and `context/conventions.md`'s standing rule
+; for `defvar-init-ir` is to call the shared predicate rather than re-derive
+; its conditions — this stage has been bitten by re-derivation twice.
+;
+; `(array T N)` is deliberately constant-only. G-2 ruled that an array binding
+; names storage no assignment can target (`emit-set` refuses one), so there is
+; no `set!` for a runtime lowering to produce; `defvar-write-const` keeps
+; raising its existing diagnostic, which names the `ptr:T` + `(array T lit…)`
+; spelling that does work.
+(defn defvar-const-init-ir (init:(raw Node) ty:(raw Type) encl:i32 out-ir:ptr):i32
+  (aset! (as ptr:ptr out-ir) 0 null)
+  (let (tt:(raw Type) ty
+        tk:i32 (tt kind))
+    (when (= tk TY-ARRAY) (return 1))
+    (when (or (= tk TY-STRUCT) (= tk TY-UNION))
+      ; The constant grammar at an aggregate slot is a compound literal, and
+      ; `const-struct-lit?` is the same gate `defvar-write-const` applies, so
+      ; the two cannot disagree about what is constant.
+      (when (!= (const-struct-lit? init (tt sdef)) 0) (return 1))
+      ; Not this struct's literal. A LEAF node — an integer/float/string
+      ; literal, `null`, a bare name — cannot be a compound literal at all, so
+      ; it is a type error, and `defvar-write-const`'s diagnostic (which names
+      ; the `(S …)` spelling that works) is a better answer than the `set!`
+      ; lowering could give; hand it back. A CELL that is not this struct's
+      ; literal is an expression, and an expression at an aggregate slot is
+      ; exactly a run-time initializer.
+      ;
+      ; The one shape this costs is `(defvar p2:P p1)` — a whole-struct copy
+      ; from another global, which `set!` would accept. Deliberate: it is worth
+      ; less than the diagnostic, and the explicit spelling is one `set!` in an
+      ; init function.
+      (when (!= ((unsafe/cast ptr:Node init) kind) NODE-CELL) (return 1))
+      (return 0))
+    (let (saved:i32 g-defvar-soft
+          rendered:ptr null)
+      (set! g-defvar-soft 1)
+      (set! rendered (defvar-init-ir init ty encl))
+      (set! g-defvar-soft saved)
+      (when (= rendered null) (return 0))
+      (aset! (as ptr:ptr out-ir) 0 rendered)
+      (return 1))))
+
+; Append a runtime initializer to the queue, in reach order.
+;
+; The emitted form is an ordinary `(set! name init)`. That is the whole
+; lowering, and it is what makes §2.8's `pkind-flow-check` apply with no second
+; nullability path: the store runs through `coerce-int-val` exactly as a
+; hand-written assignment does, so a `(raw T)` value into a `ptr:T` global is
+; refused here for the same reason and with the same wording it is refused in a
+; function body.
+;
+; Every cell carries the `defvar`'s line, so a diagnostic raised while emitting
+; the initializer at drain time is located at the `defvar` the user wrote —
+; interned symbols (the `set!` head and the target name) have no line of their
+; own (context/conventions.md).
+(defn defvar-queue-init (name:CStr init:(raw Node) line:i32):void
+  (let (args:ptr (as ptr (make-cell (as ptr (intern-symbol name))
+                                    (as ptr (make-cell (as ptr init) null line))
+                                    line))
+        form:ptr (as ptr (make-cell (as ptr (intern-symbol "set!")) args line))
+        job:ptr:InitJob (new InitJob))
+    (.set! job form (as raw:Node form))
+    (.set! job ns g-current-ns)
+    (.set! job path g-source-path)
+    (.set! job line line)
+    (.set! job name name)
+    (conj g-init-worklist job)))
 
 (defn emit-defvar (call:(raw Node)):void
   (let (cc:ptr:Node (unsafe/cast ptr:Node call))
@@ -9510,7 +9642,11 @@
           (let (ir-name:ptr (fmt-s "@%s" (def-ir-base name))
                 align:i32 (type-size ty)
                 init-ir:ptr null
-                init-node:(raw Node) null)
+                init-node:(raw Node) null
+                ; G-3: set when the classifier below reports that this
+                ; initializer has no constant rendering. The slot then gets the
+                ; type's zero and the initializer is queued for @__nucleus_init.
+                runtime-init:i32 0)
             (check-ir-name-legal (cc line) name ir-name)
             (when (!= init-cell null)
               (set! init-node (as raw:Node ((unsafe/cast ptr:Node init-cell) car))))
@@ -9520,12 +9656,40 @@
                        (!= (is-ptr-like ty) 0)
                        (!= (const-array-lit? init-node) 0))
               (set! init-ir (defvar-emit-array-backing ir-name init-node ty (cc line))))
-            ; No initializer: the type's zero. G-2 moved the three-bucket rule
-            ; (pointers `null`, aggregates `zeroinitializer` — which now covers
-            ; `(array T N)` as well — everything else `0`/`0.0`/`false`) into
-            ; `type-zero-const-ir` so the constant-aggregate renderer's
-            ; unspecified slots use the identical rule rather than a copy of it.
-            (when (and (= init-ir null) (= init-node null))
+            ; G-3: ask the classifier ONCE, for every shape shape 4 did not
+            ; already render. A 0 answer is "runtime initializer"; a 1 answer
+            ; with a null string is "constant aggregate — stream it below".
+            (when (and (= init-ir null) (!= init-node null))
+              (let (rendered:ptr null)
+                (if (= (defvar-const-init-ir init-node ty (cc line)
+                         (as ptr (addr-of rendered))) 0)
+                  (set! runtime-init 1)
+                  (set! init-ir rendered))))
+            (when (!= runtime-init 0)
+              ; §2.9 / §4.5: a compile-time or macro JIT module has no program
+              ; globals and never reaches a drain point, so an initializer
+              ; queued from one would simply never run. Refuse, located, rather
+              ; than leave a silent zero.
+              (when (!= (in-jit-module) 0)
+                (die-at (cc line)
+                  (fmt-s "defvar: '%s' needs a run-time initializer, which a compile-time or macro body cannot have -- that module has no program globals"
+                    name)))
+              ; `:const` storage is LLVM `constant` (read-only), so there is no
+              ; store that could initialize it — `emit-set` refuses one for the
+              ; same reason. Say so here, where the cause is.
+              (when (!= (bit-and attr-flags DECL-ATTR-CONST) 0)
+                (die-at (cc line)
+                  (fmt-s "defvar: '%s' is :const, so its initializer must be a compile-time constant -- read-only storage cannot be written at startup"
+                    name)))
+              (defvar-queue-init name init-node (cc line)))
+            ; No initializer (or a runtime one, whose slot starts at zero and is
+            ; filled by @__nucleus_init): the type's zero. G-2 moved the
+            ; three-bucket rule (pointers `null`, aggregates `zeroinitializer` —
+            ; which now covers `(array T N)` as well — everything else
+            ; `0`/`0.0`/`false`) into `type-zero-const-ir` so the
+            ; constant-aggregate renderer's unspecified slots use the identical
+            ; rule rather than a copy of it.
+            (when (and (= init-ir null) (or (= init-node null) (!= runtime-init 0)))
               (set! init-ir (type-zero-const-ir ty)))
             ; Stage 12 N3: private defvar emits `internal` LLVM linkage.
             ; AVR-6: `:const` selects the LLVM `constant` storage class over
@@ -11821,6 +11985,101 @@
                 (return)))))
       (set! fc ((unsafe/cast ptr:Node fc) cdr)))))
 
+; ============================================================
+; Stage 15 W8 G-3 — @__nucleus_init (design/global-init.md §5, §4.8)
+; ============================================================
+
+; Emit every queued runtime initializer into ONE nullary function named `sym`.
+; Returns 1 if a function was emitted, 0 if the queue was empty — and when it is
+; empty, not one byte is written. This function is where the zero-cost
+; guarantee lives: the queue, the function and (in the caller) the registration
+; global are the complete set of artefacts the runtime half produces, and all
+; three are produced here and nowhere else in the pipeline.
+;
+; `g-out` must already be the definition stream. `internal` picks LLVM linkage:
+; the batch path wants `internal` (the symbol is reachable only through
+; `llvm.global_ctors`, and two Nucleus objects must not collide on it), the
+; REPL wants external so `LLVMOrcLLJITLookup` can find it.
+;
+; Each job restores the namespace and source path its `defvar` was reached in
+; before its `set!` is emitted, so a name resolves — and any diagnostic is
+; located — exactly as it would have at the `defvar` itself. That is why the
+; job record carries them: the drain happens at the end of the outermost unit,
+; long after those globals have moved on.
+(defn init-emit-function (sym:ptr internal:i32):i32
+  (when (>= g-init-drained (count g-init-worklist)) (return 0))
+  (reset-function-state)
+  (let (save-ns:ptr g-current-ns
+        save-path:ptr g-source-path
+        save-line:i32 g-form-line)
+    (let (fn-scope:ref:Scope (scope-new g-globals))
+      (while (< g-init-drained (count g-init-worklist))
+        (let (job:ptr:InitJob (as ptr:InitJob (invoke g-init-worklist g-init-drained)))
+          (inc! g-init-drained)
+          (set! g-current-ns (job ns))
+          (set! g-source-path (job path))
+          (set! g-form-line (job line))
+          (emit-node (as ptr (job form)) fn-scope))))
+    (set! g-current-ns save-ns)
+    (set! g-source-path save-path)
+    (set! g-form-line save-line))
+  (when (= g-block-term 0)
+    (fprintf g-body-stream "  ret void\n"))
+  (fclose g-entry-stream)
+  (fclose g-body-stream)
+  (if (!= internal 0)
+    (fprintf g-out "define internal void @%s() {\n" sym)
+    (fprintf g-out "define void @%s() {\n" sym))
+  (fprintf g-out "entry:\n")
+  (when (and (!= g-entry-bufp null) (!= (char-at g-entry-bufp 0) 0))
+    (fputs g-entry-bufp g-out))
+  (when (and (!= g-body-bufp null) (!= (char-at g-body-bufp 0) 0))
+    (fputs g-body-bufp g-out))
+  (fprintf g-out "}\n\n")
+  (free g-entry-bufp)
+  (free g-body-bufp)
+  (set! g-entry-bufp null)
+  (set! g-body-bufp null)
+  (return 1))
+
+; The batch drain, called once per compilation at `emit-toplevel-forms` depth 1
+; — the one point at which every top-level form of every reachable file has been
+; walked, so "is the queue empty?" is EXACT rather than an over- or
+; under-approximation (§4.8). An empty queue returns here having written
+; nothing, which is why a program with no runtime initializer is byte-for-byte
+; what it was before this feature existed.
+(defn drain-init-worklist ():void
+  (when (>= g-init-drained (count g-init-worklist)) (return))
+  ; §4.5: the REPL is NOT a triple case. Its modules are JITed, and LLVM 19's
+  ; ORC C API has no initializer entry point (§2.9), so an appended
+  ; `llvm.global_ctors` here would be precisely the silently-dead section §4.6
+  ; refuses on AVR — the initializer would be emitted, registered, and never
+  ; run. The REPL drains this same queue itself (`repl-emit-init-fn`) and CALLS
+  ; the function once the module is JITed; leaving the queue intact here is what
+  ; routes an `import-use`d library's initializer through that path as well as a
+  ; directly typed `defvar`'s. Measured: without this the imported global read
+  ; back 0.
+  (when (!= g-interactive 0) (return))
+  ; A target with no verified append-only startup mechanism refuses, naming the
+  ; `defvar` that made the queue non-empty (§4.6). Reported before anything is
+  ; emitted, so a NONE target never carries a dead constructor.
+  (when (= (ctor-mechanism-for-triple g-target-triple) CTOR-NONE)
+    (let (job:ptr:InitJob (as ptr:InitJob (invoke g-init-worklist g-init-drained)))
+      (set! g-source-path (job path))
+      (die-at (job line)
+        (fmt-2s "defvar: '%s' needs a run-time initializer, and target '%s' has no startup-constructor mechanism -- give it a compile-time constant initializer, or declare it without one and assign it explicitly"
+          (job name) g-target-triple))))
+  (set! g-out g-def-stream)
+  (when (!= (init-emit-function "__nucleus_init" 1) 0)
+    ; The registration global, appended right here. This is the whole of
+    ; "registration must be append-only": one global, emitted after the queue is
+    ; known non-empty, so nothing about it can leak into a program that has no
+    ; runtime initializer. It crosses translation units — a library object's
+    ; `.init_array` entry runs even when `main` is in another TU and is not
+    ; Nucleus at all (§2.4), which is the case no synthetic entry point covers.
+    (fprintf g-def-stream
+      "@llvm.global_ctors = appending global [1 x { i32, ptr, ptr }] [{ i32, ptr, ptr } { i32 65535, ptr @__nucleus_init, ptr null }]\n\n")))
+
 ; Emit a list of top-level forms (pre-scan + dispatch loop).
 ; Used by main and by emit-import for recursive processing.
 (defn emit-toplevel-forms (forms:(raw Node)):void
@@ -12017,7 +12276,12 @@
   ; before the worklist drain, so a body error lands at the defn (ahead of any A1
   ; stamp-time error from instantiation).
   (when (= g-toplevel-depth 1)
-    (check-generic-templates))
+    (check-generic-templates)
+    ; Stage 15 W8 G-3: synthesize @__nucleus_init from the runtime-initializer
+    ; queue. Depth 1 only — every reachable file has been walked by now, so the
+    ; queue is complete — and BEFORE the mono drain, so a generic instantiated
+    ; by an initializer body is emitted by the drain that follows.
+    (drain-init-worklist))
   ; Emit the bodies of any generic instantiations these forms triggered.
   (drain-mono-worklist)
   (set! g-toplevel-depth (- g-toplevel-depth 1))))
@@ -12765,6 +13029,33 @@
   (when (= (strncmp triple "riscv64" 7) 0) (return "lp64d"))
   (return ""))
 
+; Stage 15 W8 G-3 (design/global-init.md §4.6, §4.8): how a synthesized
+; `@__nucleus_init` gets run before `main`. Two v1 answers, and a mechanism
+; qualifies only if it can be emitted ENTIRELY at the drain point, appending to
+; the module — which is what rules a synthesized `main` wrapper out of v1 (the
+; rename would have to happen in `emit-defn`, long before the queue's emptiness
+; is known, and `main` is only conventionally the last form).
+(defconst CTOR-NONE 0)
+(defconst CTOR-GLOBAL-CTORS 1)
+
+; Keyed off the triple string alone, the same idiom as reloc-/cpu-/features-/
+; abi-for-triple above.
+;
+; AVR gets NONE, and that is a measurement, not caution (§2.6): LLVM emits
+; `.init_array` into AVR's *data* region while avr-libc's `__do_global_ctors`
+; walks `__ctors_start..__ctors_end`, which the linker leaves empty — so the
+; constructor is emitted, linked, occupies RAM and never executes, with no
+; diagnostic anywhere. Under the zero-cost rule that is doubly wrong: it spends
+; exactly the resource the rule exists to protect. A non-empty queue on a NONE
+; target is therefore a located error naming the offending `defvar`, never a
+; dead section. Whether a `section ".ctors"` global with the word-address
+; relocation avr-gcc's linker script collects would work is the one open
+; question this design leaves; if it does, AVR gains a third answer here and
+; nothing else changes.
+(defn ctor-mechanism-for-triple (triple:ptr):i32
+  (when (= (strncmp triple "avr" 3) 0) (return CTOR-NONE))
+  (return CTOR-GLOBAL-CTORS))
+
 ; Resolve `triple` to a Target descriptor, pulling the datalayout string and
 ; pointer size from LLVM so emitted IR matches the target ABI. `cpu` is the
 ; --mcpu name ("" for host targets); the effective cpu/features/abi are the
@@ -12967,6 +13258,10 @@
   (set! g-conformances (vector-new-in (addr-of g-arena-alloc)))
   (set! g-proto-supers (vector-new-in (addr-of g-arena-alloc)))
   (set! g-mono-worklist (vector-new-in (addr-of g-arena-alloc)))
+  ; Stage 15 W8 G-3: the runtime-initializer queue. Allocating an empty Vector
+  ; is compiler-side state only — it emits nothing, so the zero-cost rule is
+  ; untouched.
+  (set! g-init-worklist (vector-new-in (addr-of g-arena-alloc)))
   (init-rmacros)
   (set! g-structs (vector-new-in (addr-of g-arena-alloc)))
   (set! g-uniondefs (vector-new-in (addr-of g-arena-alloc)))

@@ -1,0 +1,7 @@
+; Stage 15 W8 G-3: `:const` selects LLVM `constant` storage, which is read-only
+; -- `emit-set` already refuses a `set!` against it, and the runtime lowering IS
+; a `set!`. Say so at the `defvar`, where the cause is, rather than at the
+; synthesized assignment.
+(defn g3-seed ():i32 (return 9))
+(defvar :const g3-ro:i32 (g3-seed))
+(defn main ():i32 (return 0))

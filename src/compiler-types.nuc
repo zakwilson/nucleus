@@ -676,6 +676,22 @@
   (form (raw Node))
   context:CStr)
 
+; Stage 15 W8 G-3 (design/global-init.md §5): a queued *runtime* global
+; initializer — a `defvar` whose initializer G-1/G-2 could not render as a
+; constant. `form` is the synthesized `(set! name init)` that @__nucleus_init
+; emits; the other three restore the emission context the `defvar` was reached
+; in, because the drain happens later, at the end of the outermost unit:
+; `ns` for name qualification (qualify-name), `path` for private-name
+; resolution (priv-key-use reads g-source-path) and for the file half of any
+; diagnostic, `line` for its line half. `name` is the global's source spelling,
+; carried only so the no-mechanism diagnostic (§4.6) can name it.
+(defstruct InitJob
+  (form (raw Node))
+  ns:CStr
+  path:CStr
+  line:i32
+  name:CStr)
+
 (defstruct MacroDef
   name:CStr
   jit-name:CStr

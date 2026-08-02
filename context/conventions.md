@@ -216,6 +216,21 @@ hand-written `(= (ty pkind) PTR-REF)` test would have re-broken the ~1550 bare
 conversion or a slot-entry check to `coerce-int-val`, **ask whether the constant
 renderer needs the same rule**, and if so give it the same *call*, not a copy.
 
+**Since Stage 15 W8 G-3 the renderer is also the CLASSIFIER, and the mechanism
+is worth copying.** An initializer it cannot render is no longer an error — it
+is a *runtime* initializer, queued for `@__nucleus_init`. The obvious
+implementation is a `defvar-init-const?` predicate beside the renderer; that is
+a second classifier and it drifts. Instead `g-defvar-soft` (`src/nucleusc.nuc`,
+beside `g-array-ok`) is armed by `defvar-const-init-ir` around **one** call and
+turns only the renderer's *terminal* "init must be a compile-time constant"
+raise into a `null` return. Every other raise inside it still fires, and that
+line is the whole design: a malformed constant, an out-of-range literal or a
+nullability violation is an **error**, not a runtime initializer. The flag is 0
+during aggregate *element* rendering, so an element must still be constant.
+Generalize as: when a function that currently *dies* has to start answering a
+question instead, soften exactly the "I don't recognise this" exit and leave the
+"I recognise it and it's wrong" exits alone.
+
 Two related facts worth having:
 
 - **A float constant for LLVM's `float` type usually cannot be written in
@@ -299,6 +314,32 @@ standalone symbol nodes — that handles both shapes uniformly.
 ## Colon-binding diagnostics span multiple chokepoints (CP-3)
 
 A trailing-colon binding name (the whitespace near-miss, e.g. `x: (raw Node)`) is **not** caught by a single chokepoint — the desugar/emit split means top-level and body-local bindings take different paths. `split-colon-segments`/`desugar-symbol` only cover **top-level** binding positions (defvar/defn-name/params); a `defn` body is not desugared (see the note above), so a `let`/`with` inside a body never reaches the desugar path — `emit-let`/`emit-with`'s even-count check masks it first. And `defstruct` field CELLs bypass colon desugar entirely. CP-3 therefore needs complementary checks at three sites: `split-colon-segments` (desugar path), `extract-name-and-type` (both the SYM and CELL branches, emit-time), and a `check-colon-bindings` scan in `emit-let`/`emit-with` before the even-count check. Lesson: don't assume a single chokepoint for binding-name diagnostics — when adding one, audit both the desugar and emit trees for every binding-introducing form.
+
+## A drain at `emit-toplevel-forms` depth 1 has a SECOND caller: the REPL
+
+`emit-toplevel-forms` at `g-toplevel-depth == 1` is the natural place to do
+whole-unit work — `check-generic-templates`, `drain-mono-worklist`, and (Stage
+15 W8 G-3) `drain-init-worklist` all live there, because by then every
+top-level form of every reachable file has been walked. The trap is assuming
+that point is only ever reached from the batch driver. **It is not: a REPL
+`(import-use …)` calls `emit-import-use` → `emit-toplevel-forms` at depth 1**,
+and what it produces goes into a module ORC then JITs.
+
+That matters whenever the drained artefact only works in a *linked* program.
+G-3's registration global is the worked example: `drain-init-worklist` appended
+`@llvm.global_ctors`, which is correct for a batch object and inert in a JIT
+module — LLVM 19's ORC C API has no initializer entry point — so an
+`import-use`d library's global initializer was registered and never ran, and
+the global silently read back 0. The fix is a `g-interactive` early return in
+the drain plus an explicit JIT-and-call in **both** REPL routes (the `defvar`
+arm and the import arm), which is why `repl-emit-init-fn`/`repl-run-init-fn`
+exist as a pair — emit before `repl-jit-module` (the function must be in the
+module), call after it (the symbol must exist).
+
+So: if you add a depth-1 drain, ask what it emits and whether the JIT can honour
+it. Note the symmetry with §4.6's AVR rule in `design/global-init.md` — "a
+mechanism that is emitted but never runs" is the same defect in both places, and
+neither is visible without looking at the value.
 
 ## Emitting a function mid-emission needs the worklist, not a direct `emit-defn`
 

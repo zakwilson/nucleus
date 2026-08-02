@@ -1,0 +1,8 @@
+g-n       = 500
+g-after   = 501
+g-pt      = 3,4
+g-origin  = 11,22
+g-label   = runtime
+g-hook()  = 42
+g-const   = 300
+g-tab[2]  = 9

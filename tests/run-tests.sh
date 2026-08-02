@@ -1534,6 +1534,120 @@ G2EOF
   rm -rf "$d"
 }
 
+# --- Stage 15 W8 G-3: @__nucleus_init, emitted only when non-empty -----------
+# design/global-init.md §5 "G-3". The positive matrix is
+# examples/g3-runtime-init.nuc (printed values — a startup initializer's
+# characteristic failure is that it never ran, and the slot's zero is
+# indistinguishable from a successful compile unless you look at it). What needs
+# more than one file, or the IR rather than the program, is here.
+
+# THE GATE (§4.8). A unit with no runtime initializer must emit NOTHING: no
+# @__nucleus_init, no llvm.global_ctors, no registration global of any kind.
+# The stated reason is microcontroller binary size, so this is a hard
+# requirement on the feature rather than a nicety, and it is the property that
+# keeps the bootstrap byte-identical through this step.
+#
+# Deliberately checked against a unit that uses EVERY constant-initializer shape
+# G-1/G-2 added, not an empty file: the failure mode this guards against is a
+# classifier that quietly routes a foldable initializer down the runtime path,
+# which an empty file could never see. tests/run-avr-test.sh carries the same
+# assertion for --target=avr, on the target the requirement was stated for.
+run_g3_zero_cost() {
+  local d ll
+  d="$(mktemp -d)"
+  cat > "$d/g3zc.nuc" <<'G3EOF'
+(defconst G3K 6)
+(defstruct G3P x:i32 y:i32)
+(defvar g3-lit:i32 41)
+(defvar g3-fold:i32 (* G3K 7))
+(defvar g3-str:CStr (as CStr "zero-cost"))
+(defvar g3-addr:ptr:i32 (addr-of g3-lit))
+(defvar g3-arr:(array i32 3) (array i32 1 2 3))
+(defvar g3-zeros:(array i32 4))
+(defvar g3-struct:G3P (G3P 1 2))
+(defvar g3-tabp:ptr:i32 (array i32 9 8 7))
+(defn main ():i32 (return (+ g3-lit (+ g3-fold (aref g3-arr 0)))))
+G3EOF
+  ll="$d/g3zc.ll"
+  if ! ./build/nucleusc --emit-llvm "$d/g3zc.nuc" > "$ll" 2>"$d/err"; then
+    echo "FAIL  g3-zero-cost (compile failed)"; sed 's/^/    /' "$d/err"; rm -rf "$d"; return 0
+  fi
+  if grep -qE '__nucleus_init|global_ctors' "$ll"; then
+    echo "FAIL  g3-zero-cost (a constant-only unit emitted startup-constructor machinery)"
+    grep -nE '__nucleus_init|global_ctors' "$ll" | sed 's/^/    /'
+    rm -rf "$d"; return 0
+  fi
+  # The complement, in the same function so the two can never drift apart: add
+  # ONE runtime initializer to the identical unit and both artefacts must appear.
+  # Without this half, deleting the whole feature would still pass the tripwire.
+  sed 's|^(defn main|(defvar g3-rt:i32 (g3-call))\n(defn g3-call ():i32 (return 5))\n(defn main|' \
+    "$d/g3zc.nuc" > "$d/g3rt.nuc"
+  if ! ./build/nucleusc --emit-llvm "$d/g3rt.nuc" > "$d/g3rt.ll" 2>"$d/err"; then
+    echo "FAIL  g3-zero-cost (runtime-initializer variant failed to compile)"; sed 's/^/    /' "$d/err"; rm -rf "$d"; return 0
+  fi
+  if ! grep -q 'define internal void @__nucleus_init()' "$d/g3rt.ll" \
+     || ! grep -q '@llvm.global_ctors = appending global' "$d/g3rt.ll"; then
+    echo "FAIL  g3-zero-cost (one runtime initializer did NOT produce the machinery)"
+    rm -rf "$d"; return 0
+  fi
+  echo "PASS  g3-zero-cost"
+  rm -rf "$d"
+}
+
+# The multi-TU case, and the one that justifies llvm.global_ctors over every
+# synthetic-entry-point option (§2.4, §4.3): a LIBRARY with no Nucleus `main`,
+# exported as `.nuch` + a separately compiled `.o`, whose global is initialized
+# by its own object's `.init_array` entry. `main` lives in the consumer's
+# translation unit and never calls anything to make this happen.
+#
+# The library is `(exclude-prelude)` and that is NOT incidental: two separately
+# compiled Nucleus objects cannot currently be linked at all, because both carry
+# the prelude's globals AND its functions (`arena-init`, `g-arena`, …) with
+# external linkage — W9 defect 2, measured again here. §2.4 was measured by the
+# same route. Fixing that is not G-3 work; this is the narrowest fixture that
+# genuinely exercises the multi-TU path without it.
+run_g3_library() {
+  local d
+  d="$(mktemp -d)"
+  mkdir -p "$d/libsrc" "$d/inc"
+  # No `main`, no explicit init entry point, and the initializer is a call.
+  cat > "$d/libsrc/g3lib.nuc" <<'G3EOF'
+(exclude-prelude)
+(defvar g3-lib-n:i32 (g3-lib-compute))
+(defn g3-lib-compute ():i32 (return 42))
+(defn g3-lib-get ():i32 (return g3-lib-n))
+G3EOF
+  cat > "$d/g3user.nuc" <<'G3EOF'
+(import g3lib)
+(defn main ():i32
+  (when (!= g3-lib-n 42) (return 1))
+  (when (!= (g3-lib-get) 42) (return 2))
+  (return 0))
+G3EOF
+  if ! ./build/nucleusc --emit-nuch "$d/libsrc/g3lib.nuc" > "$d/inc/g3lib.nuch" 2>"$d/err"; then
+    echo "FAIL  g3-library-nuch (--emit-nuch failed)"; sed 's/^/    /' "$d/err"; rm -rf "$d"; return 0
+  fi
+  if ! grep -q '(extern (g3-lib-n i32))' "$d/inc/g3lib.nuch"; then
+    echo "FAIL  g3-library-nuch (global not exported)"; sed 's/^/    /' "$d/inc/g3lib.nuch"; rm -rf "$d"; return 0
+  fi
+  if ! ./build/nucleusc -c -o "$d/g3lib.o" "$d/libsrc/g3lib.nuc" 2>"$d/err"; then
+    echo "FAIL  g3-library-nuch (library object failed)"; sed 's/^/    /' "$d/err"; rm -rf "$d"; return 0
+  fi
+  if ! ./build/nucleusc -c -o "$d/g3user.o" -I "$d/inc" "$d/g3user.nuc" 2>"$d/err"; then
+    echo "FAIL  g3-library-nuch (consumer object failed)"; sed 's/^/    /' "$d/err"; rm -rf "$d"; return 0
+  fi
+  if ! clang "$d/g3user.o" "$d/g3lib.o" -o "$d/g3user" 2>"$d/err"; then
+    echo "FAIL  g3-library-nuch (link failed)"; sed 's/^/    /' "$d/err"; rm -rf "$d"; return 0
+  fi
+  set +e; "$d/g3user"; local got=$?; set -e
+  if [ "$got" = 0 ]; then
+    echo "PASS  g3-library-nuch"
+  else
+    echo "FAIL  g3-library-nuch (library initializer did not run: exit $got)"
+  fi
+  rm -rf "$d"
+}
+
 # What G-0 must NOT relax. The message it removes is a *false* one — a name that
 # genuinely is not in the unit must still say so, W1c's unreachable-file note
 # must still fire for a value (it is what makes "not defined anywhere" useful
@@ -3108,6 +3222,34 @@ spawn run_reject_at g2-field-assign tests/fixtures/g2-field-assign.nuc \
 spawn run_reject_at g2-set-global tests/fixtures/g2-set-global.nuc \
   "tests/fixtures/g2-set-global.nuc:4: error:" \
   "set!: 'g': an (array T N) is storage, not a value"
+
+# --- Stage 15 W8 G-3: @__nucleus_init ----------------------------------------
+# design/global-init.md §5 "G-3". The positive matrix is
+# examples/g3-runtime-init.nuc (values printed, not merely compiled). The two
+# multi-file / IR-level checks are here, and the AVR half — the `none`
+# mechanism's located refusal, plus zero-cost measured on the target the
+# requirement was stated for — is in tests/run-avr-test.sh.
+spawn run_g3_zero_cost
+spawn run_g3_library
+# The queue predicate is `defvar-init-ir`'s own answer, so a runtime initializer
+# inherits every check the constant renderer already applied at the same slot —
+# §2.8's `pkind-flow-check` most of all, which is the whole acceptance argument
+# for combining declaration with initialization. Pinned at the `defvar`, not at
+# some synthesized set! the user never wrote.
+spawn run_reject_at g3-init-raw-into-ref tests/fixtures/g3-init-raw-into-ref.nuc \
+  "tests/fixtures/g3-init-raw-into-ref.nuc:9: error:" \
+  "raw pointer where non-null (ref ...) is required"
+spawn run_reject_at g3-init-type-mismatch tests/fixtures/g3-init-type-mismatch.nuc \
+  "tests/fixtures/g3-init-type-mismatch.nuc:6: error:" \
+  "set!: type mismatch for 'g3-bad'"
+# Positions where a runtime initializer has nowhere to run. Each must be a
+# located refusal rather than a slot that silently stays zero.
+spawn run_reject_at g3-init-in-compile-time tests/fixtures/g3-init-in-compile-time.nuc \
+  "tests/fixtures/g3-init-in-compile-time.nuc:6: error:" \
+  "a compile-time or macro body cannot have"
+spawn run_reject_at g3-init-const-storage tests/fixtures/g3-init-const-storage.nuc \
+  "tests/fixtures/g3-init-const-storage.nuc:6: error:" \
+  "is :const, so its initializer must be a compile-time constant"
 
 # --- Stage 15 W5e: `defn-` name isolation -----------------------------------
 # design/stage15-stress-test/ergonomics.md §W5e. Sequenced after W1 because it is

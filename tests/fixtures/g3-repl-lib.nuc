@@ -1,0 +1,9 @@
+; Stage 15 W8 G-3 (design/global-init.md §4.5): imported by tests/repl/g3-init.in
+; to pin the REPL's OTHER route to a runtime initializer. A `defvar` reached
+; through `import-use` queues exactly as a directly typed one does, and
+; `drain-init-worklist` leaves it alone under `g-interactive` so the REPL can
+; JIT-and-call it instead of appending an `llvm.global_ctors` entry ORC would
+; never run. Before that split the global read back 0 here, silently.
+(defvar g3-rlib-n:i32 (g3-rlib-mk))
+(defn g3-rlib-mk ():i32 (return 64))
+(defn g3-rlib-get ():i32 (return g3-rlib-n))

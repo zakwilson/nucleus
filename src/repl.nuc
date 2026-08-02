@@ -109,6 +109,41 @@
                 (set! done 1)))))))
     (return buf)))
 
+; Stage 15 W8 G-3, the REPL half (design/global-init.md §4.5). There is no queue
+; to accumulate across a session, because each form is its own unit: a `defvar`
+; whose initializer is not constant — whether typed directly or reached through
+; an `import-use` — is initialized IMMEDIATELY, by emitting a nullary init
+; function into the module the global was JITed into and calling it right after.
+;
+; `llvm.global_ctors` is deliberately never emitted here: LLVM 19's ORC C API
+; has no initializer entry point (§2.9), so a registration global would be
+; exactly the silently-dead section §4.6 refuses on AVR. `drain-init-worklist`
+; returns early under `g-interactive` for the same reason, leaving the queue for
+; these two functions.
+;
+; Split in two around the JIT step: emit BEFORE `repl-jit-module` (the function
+; has to be in the module), call AFTER it (the symbol has to exist). The linkage
+; is external so `LLVMOrcLLJITLookup` can find it — the batch path's `internal`
+; would be invisible.
+(defn repl-emit-init-fn ():ptr
+  (when (>= g-init-drained (count g-init-worklist)) (return null))
+  (let (sym:ptr (fmt-i64 "__nucleus_init_%ld" (as i64 g-repl-id)))
+    (inc! g-repl-id)
+    (set! g-out g-def-stream)
+    (when (= (init-emit-function sym 0) 0) (return null))
+    (return sym)))
+
+(defn repl-run-init-fn (sym:ptr line:i32):void
+  (when (= sym null) (return))
+  (let (addr:i64 0
+        err:ptr (LLVMOrcLLJITLookup g-jit (as ptr (addr-of addr)) sym))
+    (when (!= err null)
+      (LLVMConsumeError err)
+      (repl-error line "JIT lookup error: global initializer")
+      (return))
+    (when (!= addr 0)
+      (funcall-void (unsafe/cast ptr addr)))))
+
 ; Process a single REPL form: parse, compile to IR, JIT, and call.
 ; Returns the result type kind (TY-VOID, TY-I32, etc.) or -1 on error.
 (defn repl-eval-form (form:(raw Node)):void
@@ -146,10 +181,14 @@
             (and (!= h null) (= h "defenum"))
               (do (emit-defenum (as ptr f)) (set! is-expr 0))
             (and (!= h null) (= h "defvar"))
+              ; Stage 15 W8 G-3 (design/global-init.md §4.5): a non-constant
+              ; initializer runs immediately — see repl-emit-init-fn above.
               (do (open-module-streams)
                   (set! g-out g-decl-stream)
                   (emit-defvar (as ptr f))
-                  (repl-jit-module (f line))
+                  (let (init-sym:ptr (repl-emit-init-fn))
+                    (repl-jit-module (f line))
+                    (repl-run-init-fn init-sym (f line)))
                   ; Add external global reference to preamble AFTER successful JIT
                   (let (var-node:ptr (node-at form 1))
                     (when (!= var-node null)
@@ -417,10 +456,19 @@
                     ; early append would define every type twice.
                     (drain-pending-union-irs)
                     (fflush g-type-stream)
-                    (let (tcopy:ptr null)
+                    ; G-3 (§4.5): an imported file's `defvar` with a run-time
+                    ; initializer queues exactly as a directly typed one does,
+                    ; and `drain-init-worklist` deliberately leaves it alone
+                    ; under `g-interactive`. Drain it here, into this module,
+                    ; and call it after the JIT — otherwise the import would
+                    ; register an `llvm.global_ctors` entry ORC never runs and
+                    ; the global would silently read back its zero (measured).
+                    (let (init-sym:ptr (repl-emit-init-fn)
+                          tcopy:ptr null)
                       (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp 0) 0))
                         (set! tcopy (strdup g-type-bufp)))
                       (repl-jit-module (f line))
+                      (repl-run-init-fn init-sym (f line))
                       (when (!= tcopy null)
                         (fputs tcopy g-repl-preamble)
                         (free tcopy)))

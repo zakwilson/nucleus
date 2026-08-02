@@ -1,0 +1,21 @@
+; Stage 15 W8 G-3 (design/global-init.md §4.6): on a triple whose
+; `ctor-mechanism-for-triple` answer is `none`, a non-empty runtime-initializer
+; queue is a LOCATED ERROR naming the offending `defvar` — never a silently dead
+; `.init_array` section. §2.6 measured that LLVM's `.init_array` lands in AVR
+; RAM while avr-libc's `__do_global_ctors` walks `__ctors_start..__ctors_end`,
+; which the linker leaves empty: the constructor is emitted, linked, occupies
+; RAM and never runs, with no diagnostic anywhere. Under the zero-cost rule
+; (§4.8) that is doubly wrong — it spends exactly the resource the rule exists
+; to protect.
+;
+; Checked by tests/run-avr-test.sh. The positive complement is
+; examples/avr-global-init.nuc, whose initializers are all constant and which
+; therefore links with no `@__nucleus_init` and no `llvm.global_ctors` at all.
+(exclude-prelude)
+
+(defn seed ():ui16 (return 1234))
+
+(defvar g-seed:ui16 (seed))
+
+(defn main ():i32
+  (return (unsafe/cast i32 g-seed)))

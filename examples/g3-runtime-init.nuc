@@ -1,0 +1,84 @@
+; Stage 15 W8 G-3 (design/global-init.md §5 "G-3"): a `defvar` initializer that
+; G-1/G-2 cannot fold into a constant runs at startup, from a single synthesized
+; `void @__nucleus_init()` registered with `llvm.global_ctors`.
+;
+; Every runtime-initialized global below dies on a pre-G-3 compiler with
+; "defvar: init must be a compile-time constant". Each value is PRINTED rather
+; than merely compiled: the characteristic failure of a startup initializer is
+; that it never ran, and the slot's zero is indistinguishable from a successful
+; compile unless the value is looked at. `main` is an ordinary `defn` — nothing
+; renames or wraps it (§4.8 rules a `main` wrapper out of v1) — so if the
+; constructor did not run, every line below prints the zero.
+
+(import-use "stdio.h")
+
+(defconst BASE 100)
+
+(defstruct Pt x:i32 y:i32)
+
+; --- 1a: the plain case — a call ---------------------------------------------
+(defvar g-n:i32 (compute))
+
+; --- ordering: initializers run in the order their defvars are REACHED --------
+; `g-after` reads `g-n`, whose defvar precedes it, so it sees the initialized
+; value (501, not 1). The reverse order would read the slot's zero; G-4 adds the
+; diagnostic for that syntactically-visible half.
+(defvar g-after:i32 (+ g-n 1))
+
+; --- a non-null pointer global, filled at startup -----------------------------
+; `ptr:Pt` is non-null under the Phase-F regime, and this typechecks because the
+; initializer lowers to an ordinary `set!` — §2.8's `pkind-flow-check` applies
+; with no second nullability rule. Returning `(raw Pt)` here is rejected.
+(defvar g-pt:ptr:Pt (make-pt 3 4))
+
+; --- a by-value struct global -------------------------------------------------
+(defvar g-origin:Pt (make-pt-val 11 22))
+
+; --- a CStr global ------------------------------------------------------------
+(defvar g-label:CStr (pick-label 1))
+
+; --- a function-pointer hook (one of the compiler's own §2.12 shapes) ---------
+; Spelled through the bare-`ptr` escape hatch, NOT as `(defvar g-hook:(fn i32)
+; (i32) …)`, because a `defvar` whose declared type is a function-pointer type
+; cannot be declared AT ALL today — with or without an initializer. See the G-3
+; as-built record in design/global-init.md and §7: `name-existing-kind`
+; classifies any global Sym with a `TY-FN` type as "a function", and since G-0
+; the prescan defines that Sym before `emit-defvar` runs, so the `defvar`
+; collides with itself. Independent of G-3; reported, not fixed here.
+(defvar g-hook:ptr (pick-hook))
+
+; --- constant initializers in the SAME unit stay constant ---------------------
+; These are rendered by G-1/G-2 into the `@g = global …` line and are not in the
+; queue at all; they are here so the unit proves the two halves coexist.
+(defvar g-const:i32 (* BASE 3))
+(defvar g-tab:(array i32 3) (array i32 7 8 9))
+
+(defn compute ():i32 (return (* BASE 5)))
+
+(defn make-pt (x:i32 y:i32):ptr:Pt
+  (let (p:ptr:Pt (as ptr:Pt (malloc (sizeof Pt))))
+    (.set! p x x)
+    (.set! p y y)
+    (return p)))
+
+(defn make-pt-val (x:i32 y:i32):Pt
+  (let (p:Pt (Pt x y))
+    (return p)))
+
+(defn pick-label (which:i32):CStr
+  (if (= which 1) (return c"runtime") (return c"other"))
+  (return c"other"))
+
+(defn forty-two ():i32 (return 42))
+(defn pick-hook ():ptr (return (unsafe/cast ptr forty-two)))
+
+(defn main ():i32
+  (printf "g-n       = %d\n" g-n)
+  (printf "g-after   = %d\n" g-after)
+  (printf "g-pt      = %d,%d\n" (g-pt x) (g-pt y))
+  (printf "g-origin  = %d,%d\n" ((addr-of g-origin) x) ((addr-of g-origin) y))
+  (printf "g-label   = %s\n" g-label)
+  (printf "g-hook()  = %d\n" (unsafe/funcall-ptr-i32 g-hook))
+  (printf "g-const   = %d\n" g-const)
+  (printf "g-tab[2]  = %d\n" (aref g-tab 2))
+  (return 0))
