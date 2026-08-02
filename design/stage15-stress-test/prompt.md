@@ -23,7 +23,7 @@ landed anyway (see §0 and §4 below).
 
 ## 0. Status
 
-**W1–W7: every item Done.** **W8 and W9: added 2026-08-01, not started.**
+**W1–W7: every item Done.** **W8 and W9: added 2026-08-01, both now Done/reconciled** (2026-08-02).
 
 | Item | Status |
 |---|---|
@@ -38,12 +38,15 @@ landed anyway (see §0 and §4 below).
 | **W1e** — `declare` as a forward prototype | **Resolved by obsolescence**, no mechanism built |
 | **W6** — Nullability flow typing | Design document **written** ([nullability.md](nullability.md)); its **§3.4 triage item landed** (a `null` global initializer into a typed non-null pointer is rejected like the identical local). Flow typing proper (§4 onward of the design) remains **design-only**, as scoped — no narrowing engine changes shipped in this stage. |
 | **W7** — The bare-symbol selector always means "field name" | **Done** (options B + D + E; provenance: the author's own stress testing, not the Doom port — no `§` number) |
-| **W8** — Combined declaration and initialization | **Designed, not started.** Spec: [../global-init.md](../global-init.md). Added to the stage 2026-08-01. |
-| **W9** — Six defects found while measuring W8's design | **Reported, not fixed.** Enumerated in [../global-init.md](../global-init.md) §7. Added to the stage 2026-08-01. |
+| **W8** — Combined declaration and initialization | **Done.** All six steps (G-0 through G-5) landed 2026-08-01/2026-08-02, plus one regression fix between G-3 and G-4. `compiler-init` is eliminated (52 statements → 0) and `(defvar g:ptr:T)` with no initializer is now rejected. Spec: [../global-init.md](../global-init.md). Added to the stage 2026-08-01. |
+| **W9** — Defects found while measuring W8's design | **Reconciled at stage close: twenty found, two now fixed, eighteen open.** Reported except where fixed. [../global-init.md](../global-init.md) §7 and [progress.md](progress.md) are both source lists; `progress.md`'s W9 table is the reconciled union. Added to the stage 2026-08-01. |
 
-**Gate for W1–W7:** `make test` **328 PASS / 0 FAIL**; `make bootstrap`
-byte-identical on the first pass; `make abi-test` and `make layout-test`
-green. W8 and W9 have not been built and are not covered by it.
+**Gate for W1–W7 at the time they closed:** `make test` **328 PASS / 0 FAIL**;
+`make bootstrap` byte-identical on the first pass; `make abi-test` and
+`make layout-test` green. **Gate for the whole stage, now that W8 has also
+landed:** `make test` **410 PASS / 0 FAIL** (`NUCLEUS_TEST_JOBS=1`);
+`make bootstrap` reconverged and passing; `make abi-test`, `make layout-test`
+and `make avr-test` green.
 
 **The external regression — the only test that proves the stage achieved its
 purpose (§6) — passed on 2026-08-01.** The Doom port at
@@ -312,10 +315,14 @@ Done, independent of every other item, before this closing pass began. See
 [progress.md](progress.md)'s W7 section for the full account — nothing about
 it changed during this closing pass.
 
-### W8 — Combined declaration and initialization *(added 2026-08-01; designed, not started)*
+### W8 — Combined declaration and initialization *(added 2026-08-01; done — all six steps G-0 through G-5 landed 2026-08-01/2026-08-02)*
 
 **Spec: [../global-init.md](../global-init.md).** It is the source of truth and
-this section deliberately does not duplicate it.
+this section deliberately does not duplicate it; see its "G-0 as built" through
+"G-5 as built" sections, and [progress.md](progress.md)'s "G-0 through G-5 as
+built" table, for what actually shipped. Both acceptance criteria are met:
+(A) `compiler-init` is gone (52 statements → 0), and (B) `(defvar g:ptr:T)`
+with no initializer is now a located error.
 
 **Headline goal: eliminate `compiler-init`, or reduce it to a few genuinely
 special cases.** A global that should not be nullable is **declared and
@@ -327,11 +334,13 @@ size.
 
 Three things about it that a dispatcher should know before reading the spec:
 
-* **It closes what W6 §1.5 parked.** `(defvar g:ptr:T)` still emits the
-  identical unsound `global ptr null` that the explicit-`null` spelling now
-  rejects. W6 could not close it because the language has no way to express
-  deferred initialization of a non-null global. That is what this item builds.
-  It is also §7's `emit-defvar` bullet below, now assigned rather than deferred.
+* **It closes what W6 §1.5 parked.** `(defvar g:ptr:T)` used to emit the
+  identical unsound `global ptr null` that the explicit-`null` spelling was
+  already rejecting; W6 could not close it because the language had no way to
+  express deferred initialization of a non-null global. G-3 built that way
+  (a synthesized startup initializer), and G-5's flip now rejects the
+  no-initializer spelling too. That is also §7's `emit-defvar` bullet below,
+  now closed rather than merely assigned.
 * **Its G-0 subsumes §7's `defconst`/`defenum` import-order bullet** — the
   Doom-port regression run's second finding. G-0 is a prerequisite for the rest
   of W8 (an initializer expression can name another global, and would hit name
@@ -343,11 +352,16 @@ Three things about it that a dispatcher should know before reading the spec:
   to be incompatible with zero-cost-when-unused. Both corrections are recorded
   in place, per this stage's practice.
 
-### W9 — Six defects found while measuring W8's design *(added 2026-08-01; reported, not fixed)*
+### W9 — Defects found while measuring W8's design *(added 2026-08-01; reconciled 2026-08-02 to twenty found, two now fixed, eighteen open)*
 
-**Enumerated in [../global-init.md](../global-init.md) §7.** All six are
-pre-existing, none was introduced by W1–W7, and all were hit while measuring —
-not synthesized:
+**The original six, below, are enumerated in [../global-init.md](../global-init.md)
+§7.** All six are pre-existing, none was introduced by W1–W7, and all were hit
+while measuring — not synthesized. Building the rest of W8 (G-1 through G-5)
+found fourteen more, two of which are now fixed (a fn-pointer-typed `defvar`
+collision, and `emit-as` not arming the want channel for a return-only-tyvar
+generic); [progress.md](progress.md)'s W9 table is the full, reconciled
+twenty-item account and is the one to read for the current state — this
+section is kept as the record of the original six:
 
 1. **`make lib-objs` / `make lib-so` are broken**, and reproduce on the
    committed boot compiler. `lib/arena.nuc` and `lib/node.nuc` die `duplicate
@@ -481,29 +495,34 @@ not synthesized:
 
 * **Replacing the hand-rolled C parser with libclang.** W3 met its bar
   without it (all three header-ladder rungs reached). Still not acted on.
-* **Struct packing (§4.1) and fixed-size array struct fields (§4.2).** Both
-  real gaps, both genuinely painful in the port, both wanting a
-  layout-attribute design that overlaps
-  [stage14/attributes.md](../stage14/attributes.md)'s reserved-but-unimplemented
-  `:align`/`:section` slots. Still the top layout-design candidates for the
-  next stage.
-* **`defconst`/`defenum` members are still import-order dependent — the
-  Doom-port regression run's finding. Now assigned: it is W8's G-0**
-  ([../global-init.md](../global-init.md) §5), which extends W1a's whole-graph
-  walk to value names and is shippable on its own. W1 covered `defn` signatures and
+* **Struct packing (§4.1)** remains deferred — it wants a layout-attribute
+  design that overlaps [stage14/attributes.md](../stage14/attributes.md)'s
+  reserved-but-unimplemented `:align`/`:section` slots. Still the top
+  layout-design candidate for the next stage. **Fixed-size array struct
+  fields (§4.2) are no longer deferred**: W8's **G-2** (done 2026-08-02)
+  delivered `(array T N)` as one feature at both a `defvar` and a `defstruct`
+  field, and **measured, rather than assumed, that it needs nothing from the
+  attribute design** — all six of G-2's layout shapes and four of its ABI
+  shapes match the platform C compiler with natural alignment alone.
+* **`defconst`/`defenum` members were still import-order dependent — the
+  Doom-port regression run's finding. Now DONE, as W8's G-0**
+  ([../global-init.md](../global-init.md) §5, done 2026-08-01), which extends
+  W1a's whole-graph walk to value names. W1 covered `defn` signatures and
   protocols only; a name defined in a sibling file and referenced before that
-  sibling is processed dies with a diagnostic that asserts it is "not defined
-  anywhere in this compilation unit," which is false — it is merely not yet
-  processed. Fixing this is architecturally the same shape of problem W1a
-  solved for signatures (a whole-graph prescan), scoped separately here
-  because `defconst`/`defenum` **values**, unlike signatures, are needed at
-  *emission* time, not just at resolution time, so a naive prescan is not
-  automatically additive the way W1a's was.
+  sibling is processed used to die with a diagnostic that asserted it was "not
+  defined anywhere in this compilation unit," which was false — it was merely
+  not yet processed. Fixed the same way W1a solved it for signatures (a
+  whole-graph prescan), scoped separately because `defconst`/`defenum`
+  **values**, unlike signatures, are needed at *emission* time, not just at
+  resolution time, so a naive prescan was not automatically additive the way
+  W1a's was.
 * **`emit-defvar`'s no-initializer unsoundness — the second Doom-port
   finding, and a duplicate of W6 §3.4's deliberately-left-open item, not a
-  new one. Now assigned: it is W8's G-5** ([../global-init.md](../global-init.md)
-  §5). `(defvar g:ptr:Thing)` still emits the same `global ptr null`
-  the §3.4 fix now rejects for the explicit `null` spelling. Recorded twice
+  new one. Now DONE, as W8's G-5's flip** ([../global-init.md](../global-init.md)
+  §5, done 2026-08-02). `(defvar g:ptr:Thing)` used to emit the same
+  `global ptr null` the §3.4 fix already rejected for the explicit `null`
+  spelling; it is now a located error, closing
+  [nullability.md](nullability.md) §1.5's remaining half. Recorded twice
   (here and in W6's own section) because it was hit twice: once by the
   compiler's own 53-site census, once by the external port 13 times. W8 is the
   answer to "closing it needs a way to express deferred initialization of a

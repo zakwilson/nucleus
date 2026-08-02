@@ -1,8 +1,11 @@
 # Global initialization — combining declaration with initialization
 
-**Status: design, 2026-08-01. G-0 IMPLEMENTED 2026-08-01, G-1, G-2 and G-3
-IMPLEMENTED 2026-08-02 (§5); G-2's `g-arena-alloc` conversion deliberately
-split out (see the G-2 as-built record); G-4 and G-5 not started.** Written against `stage15-stress-test`
+**Status: design, 2026-08-01; IMPLEMENTED — all six steps G-0 through G-5
+landed 2026-08-01/2026-08-02 (§5), plus one regression-fix interlude between
+G-3 and G-4. G-2's `g-arena-alloc` conversion, deliberately split out at the
+time (see the G-2 as-built record), landed as part of G-5. Acceptance
+criteria (A) `compiler-init` eliminated and (B) the no-initializer flip are
+both met — see the G-5 as-built record.** Written against `stage15-stress-test`
 at `591deba`. Every number below
 is measured against `build/nucleusc` at that commit; probes are recorded inline so
 they can be re-run. §2.5's four probes have since been fixed by G-0 and carry a
@@ -10,7 +13,10 @@ box saying so.
 
 **Filed as Stage 15 W8** ([stage15-stress-test/overview.md](stage15-stress-test/overview.md)).
 This document is its specification; the stage docs reference it rather than
-restating it. The six defects §7 reports are filed separately as **W9**.
+restating it. §7's defects (grown from six to twelve as G-2/G-3/G-5 surfaced
+more) are filed separately as **W9**; the stage's own
+[progress.md](stage15-stress-test/progress.md) reconciles §7 against its own
+independently-found defects into one twenty-item list, two of them now fixed.
 
 **Provenance.** Stage 15's W6 closed the `(defvar g:ptr:T null)` half of the
 §3.4 nullability hole and *deliberately left the no-initializer half open* —
@@ -2523,13 +2529,20 @@ no such justification. Filed in §7.
 
 ---
 
-## 7. Bugs and gaps found while measuring (reported, not fixed)
+## 7. Bugs and gaps found while measuring (reported except where marked FIXED)
 
 **Filed as Stage 15 W9** — see
 [stage15-stress-test/overview.md](stage15-stress-test/overview.md). All are
 pre-existing and independent of this design; #6 overlaps G-0 and is not filed
 twice (G-0 fixes the cause; the message wants a W1c-style note in the interim).
-#7 and #8 were added by G-2 (2026-08-02) and are a matched pair.
+#7 and #8 were added by G-2 (2026-08-02) and are a matched pair. #9 and #10
+were added by G-3, #11 and #12 by G-5; **#9 was fixed in the interlude
+between G-3 and G-4, and #12 was fixed in G-5 itself** — both marked FIXED
+below rather than removed. [stage15-stress-test/progress.md](stage15-stress-test/progress.md)'s
+W9 table reconciles this list against three more defects that were never
+filed here, found alongside the interlude and documented only inline in
+`examples/fnptr-global.nuc`, for a reconciled total of twenty found, two
+fixed, eighteen open.
 
 1. **`make lib-objs` / `make lib-so` is broken**, pre-existing, and reproduces on
    the committed boot compiler. Three `lib/*.nuc` files cannot be compiled
@@ -2598,12 +2611,13 @@ reproduce on the committed boot compiler, neither is fixed here.**
    above has gone unnoticed: the diagnostic that would have segfaulted is
    unreachable. The two should be fixed together.
 
-**Two more, found while building G-3 (2026-08-02). Both reproduce on the
-committed boot compiler, neither is fixed here, and neither has anything to do
-with global initialization.**
+**Two more, found while building G-3 (2026-08-02). Both reproduced on the
+committed boot compiler and neither has anything to do with global
+initialization; #9 is now fixed, #10 is not.**
 
-9. **A `defvar` whose declared type is a function-pointer type cannot be
-   declared at all**, with or without an initializer:
+9. **FIXED, in the interlude between G-3 and G-4 (2026-08-02).** A `defvar`
+   whose declared type is a function-pointer type could not be
+   declared at all, with or without an initializer:
    `(defvar g:(fn i32)(i32) null)` dies *"'g' already names a function — a
    symbol may name only one kind of thing"*. `name-existing-kind`
    (`nucleusc.nuc:8703`) classifies **any** global `Sym` whose type is `TY-FN`
@@ -2625,6 +2639,16 @@ with global initialization.**
    `name-existing-kind` has exactly one caller, `guard-name-kind`, which only
    ever raises, and no program in the tree can currently contain the shape the
    change would newly admit.
+
+   **Fixed exactly this way**, plus a second, stacked defect it exposed:
+   `defvar-init-ir`'s `null` gate tested `is-ptr-like`, which deliberately
+   excludes `TY-FN`, so even with the collision fixed the explicit `null`
+   initializer was refused while the slot's implicit zero was already `null`;
+   a third by-name arm now admits `null` for `TY-FN` without widening
+   `is-ptr-like` itself. `examples/fnptr-global.nuc` and
+   `tests/fixtures/w8-fnptr-global-name-collision.nuc` /
+   `w8-fnptr-null-still-gated.nuc` pin both halves. Landed in the same commit
+   as G-4 (`aa24eae`).
 
 10. **`aref` emits its GEP index as a hardcoded `i64` on every target.** On AVR
     (16-bit pointers) any index narrower than `i64` therefore produces IR the
