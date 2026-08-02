@@ -242,6 +242,21 @@ check but a language question — deferred initialization of a non-null global �
 answering it with `?T` + narrowing would touch every use of `ty-i32` and friends.
 It belongs to W6 proper, not to this triage item.
 
+**Closure note, 2026-08-02.** The no-initializer half recorded above as open is
+now closed, by **W8's G-5** ([../global-init.md](../global-init.md)):
+`(defvar g:ptr:T)` — a `PTR-REF` global with an element type and no initializer
+at all — is rejected with a located error, exactly as the explicit-`null`
+spelling has been since item 2 above landed. `ptr:T` means non-null at a global
+as it does everywhere else, and the language gap this section identified (no
+way to express deferred initialization of a non-null global) is what G-0
+through G-3 built to make the rejection safe to add: `(defvar g:ptr:T
+(make-thing))` now typechecks with `g` non-null, whether `make-thing` is a
+compile-time constant (G-1/G-2) or a runtime call run from `@__nucleus_init`
+before `main` (G-3). This closes the triage recorded above without revising
+it — the "not part of W6, needs no flow analysis" verdict above was correct,
+and this is exactly the "deferred-initialization language question" the
+section said the fix belonged to.
+
 ---
 
 ## 2. Two live soundness bugs in the existing engine
