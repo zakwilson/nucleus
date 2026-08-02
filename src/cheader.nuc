@@ -1843,6 +1843,41 @@
           (return ((unsafe/cast ptr:Node rest) car)))
       (return null))))
 
+; Stage 15 W8 G-2: is this type node an `(array T N)`? Returns the node itself
+; (so the caller can read the element type and the extent) or null.
+(defn cheader-array-field-node (tn:(raw Node)):ptr
+  (when (= tn null) (return null))
+  (let (n:ptr:Node (unsafe/cast ptr:Node tn))
+    (when (!= (n kind) NODE-CELL) (return null))
+    (when (!= (node-len (as ptr n)) 3) (return null))
+    (let (hd:(raw Node) (node-at (as ptr n) 0))
+      (when (or (= hd null) (!= (hd kind) NODE-SYM)) (return null))
+      (when (!= (as ptr hd) (as ptr 'array)) (return null))
+      (return (as ptr n)))))
+
+; The extent text of an `(array T N)` node, for the C declarator's `[...]`.
+;
+; Tries the SAME constant folder the type parser uses, so a literal (and any
+; constant that is registered by the time the header is emitted) exports as a
+; number. A bare NAME that does not fold is exported VERBATIM rather than
+; refused: `--emit-cheader` does not run the emitter, so a `defconst` is never
+; entered in the value scope during this pass — but it IS exported as a
+; `#define` by emit-cheader-defconst, so `int32_t names[N];` is correct C and
+; keeps the symbolic size the source wrote. Anything else (a computed length
+; whose constants this pass cannot see) is a located error, never a guess.
+(defn cheader-array-extent (an:ptr encl:i32):CStr
+  (let (len:i64 0
+        lnn:ptr (node-at an 2)
+        lline:i32 (node-line lnn encl))
+    (when (!= (const-fold-int (as raw:Node lnn)
+                              (as ptr:i64 (addr-of len))
+                              lline) 0)
+      (return (as CStr (fmt-i64 "%ld" len))))
+    (let (ln:ptr:Node (unsafe/cast ptr:Node lnn))
+      (when (= (ln kind) NODE-SYM) (return (as CStr (ln s)))))
+    (die-at lline "--emit-cheader: (array T N): length must be a literal, a named constant, or a constant expression over them")
+    (return c"")))
+
 (defn emit-cheader-defstruct (form:ptr):void
   ; Skip parametric templates: (defstruct (Name T...) ...) has a list at
   ; position 1, not a sym. Templates define no concrete C type.
@@ -1860,7 +1895,17 @@
         (extract-name-type field (as ptr:ptr (addr-of fname)) (as ptr:ptr (addr-of tname)))
         (let (tnode:ptr (extract-type-node field ((unsafe/cast ptr:Node field) line)))
           (when (!= tnode null)
-            (printf "    %s %s;\n" (type-node-to-c tnode) fname)))))
+            ; Stage 15 W8 G-2: C's array declarator is postfix, so an
+            ; `(array T N)` field is `T name[N];` — the element type before the
+            ; name and the extent after it. Nothing else about this line changes;
+            ; in particular `fname` is still emitted unsanitized (W9 defect 4 is
+            ; a separate item and is neither fixed nor worsened here).
+            (let (an:ptr (cheader-array-field-node tnode))
+              (if (!= an null)
+                (printf "    %s %s[%s];\n"
+                  (type-node-to-c (node-at an 1)) fname
+                  (cheader-array-extent an ((unsafe/cast ptr:Node field) line)))
+                (printf "    %s %s;\n" (type-node-to-c tnode) fname)))))))
     (printf "} %s;\n\n" name)))
 
 ; A defunion-template instance type ((Result i64 i32)) has no C spelling yet —

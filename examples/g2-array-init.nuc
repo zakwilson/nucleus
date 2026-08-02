@@ -1,0 +1,140 @@
+; Stage 15 W8 G-2 (design/global-init.md §5 "G-2"): the `(array T N)` type and
+; constant aggregate initializers.
+;
+; Every `defvar` and `defstruct` below dies on a pre-G-2 compiler ("no such
+; type" / "init must be a compile-time constant"). Each value is PRINTED rather
+; than merely compiled, for the same reason examples/g1-const-init.nuc prints:
+; the characteristic failure of a constant aggregate is the wrong bytes at the
+; wrong offset, and an exit-0 compile cannot see that. The layout block
+; additionally cross-checks the compiler's own `abi-sizeof` (which is what
+; `sizeof` on an array type folds through, and what the SysV classifier reads)
+; against LLVM's real layout, measured by field-address arithmetic — if the two
+; ever disagree this prints DISAGREE rather than passing quietly.
+
+(import-use "stdio.h")
+
+(defconst SLOTS 4)
+(defenum Level LOW MID HIGH)
+
+(defstruct Pt x:i32 y:i32)
+
+; --- shape 1+2: an (array T N) defvar type, no initializer -> zeroinitializer
+(defvar g-zeros:(array i32 8))
+; The length is a constant EXPRESSION, folded by G-1's shared folder.
+(defvar g-sized:(array i16 (* SLOTS 2)))
+
+; --- shape 3: (array T N) with a constant aggregate initializer -------------
+(defvar g-table:(array i32 5) (array i32 10 20 30))
+; Elements are ordinary constant initializers, so every G-1 rule applies one
+; level down: arithmetic, named constants, `(char "x")`, `(sizeof T)`.
+(defvar g-folded:(array i32 4) (array i32 (* SLOTS 3) SLOTS HIGH (char "A")))
+; Designated indices, sparse: the unspecified slots take the element type's zero.
+(defvar g-sparse:(array i32 6) (array i32 (0 100) (5 500)))
+; A pointer element type zero-fills to `null`, not `0`.
+(defvar g-strs:(array CStr 3) (array CStr (as CStr "alpha") (2 (as CStr "gamma"))))
+
+; --- shape 4: a pointer global backed by an anonymous constant table --------
+; Emits `@g-names.data = internal global [3 x ptr] […]` plus
+; `@g-names = global ptr @g-names.data` — provably non-null with no runtime code
+; (design/global-init.md §2.7), which is why `ptr:CStr` (non-null since the
+; Phase-F flip) accepts it.
+(defvar g-names:ptr:CStr (array CStr (as CStr "red") (as CStr "green") (as CStr "blue")))
+(defvar g-primes:ptr:i32 (array i32 2 3 5 7 11))
+
+; --- shape 5: a constant struct literal -------------------------------------
+(defvar g-origin:Pt (Pt 3 4))
+; Designated by field name, with the unnamed field zero-filled.
+(defvar g-unit:Pt (Pt (y 9)))
+
+; --- the two features together: arrays of structs, structs with array fields -
+(defvar g-corners:(array Pt 3) (array Pt (Pt 1 2) (2 (Pt 7 8))))
+
+(defstruct Row tag:i8 (cells (array i32 4)) mark:i8)
+(defvar g-row:Row (Row 1 (array i32 9 8 7 6) 2))
+
+; A field-of-array-of-struct, one more level of nesting.
+(defstruct Grid (pts (array Pt 2)) n:i32)
+(defvar g-grid:Grid (Grid (array Pt (Pt 11 12) (Pt 13 14)) 2))
+
+; offsetof(field) = address-of-field - base, both as integers.
+(defn off (base:ptr fld:ptr):i64
+  (return (- (unsafe/cast i64 fld) (unsafe/cast i64 base))))
+
+(defn agree (a:i64 b:i64):CStr
+  (if (= a b) (return c"agree") (return c"DISAGREE")))
+
+(defn main ():i32
+  ; --- shape 2: zero-initialized storage ------------------------------------
+  (printf "zeros %d %d %d\n" (aref g-zeros 0) (aref g-zeros 3) (aref g-zeros 7))
+  (printf "sized %d %d\n" (as i32 (aref g-sized 0)) (as i32 (aref g-sized 7)))
+
+  ; --- shape 3: constant aggregates -----------------------------------------
+  (printf "table %d %d %d %d %d\n"
+    (aref g-table 0) (aref g-table 1) (aref g-table 2) (aref g-table 3) (aref g-table 4))
+  (printf "folded %d %d %d %d\n"
+    (aref g-folded 0) (aref g-folded 1) (aref g-folded 2) (aref g-folded 3))
+  (printf "sparse %d %d %d %d\n"
+    (aref g-sparse 0) (aref g-sparse 1) (aref g-sparse 4) (aref g-sparse 5))
+  (printf "strs %s %d %s\n"
+    (aref g-strs 0) (if (= (aref g-strs 1) null) 1 0) (aref g-strs 2))
+
+  ; --- shape 4: pointer + backing table -------------------------------------
+  (printf "names %s %s %s\n" (aref g-names 0) (aref g-names 1) (aref g-names 2))
+  (printf "primes %d %d %d\n" (aref g-primes 0) (aref g-primes 2) (aref g-primes 4))
+  ; The whole point of the `@g.data` shape: the pointer is non-null before any
+  ; code runs, with no initializer function anywhere.
+  (printf "names-non-null %d\n" (if (= (unsafe/cast i64 g-names) 0) 0 1))
+
+  ; --- shape 5: constant struct literals ------------------------------------
+  (let (o:ptr:Pt (addr-of g-origin)
+        u:ptr:Pt (addr-of g-unit))
+    (printf "origin %d %d\n" (o x) (o y))
+    (printf "unit %d %d\n" (u x) (u y)))
+
+  ; --- arrays of structs, structs of arrays ---------------------------------
+  (let (c0:Pt (aref g-corners 0)
+        c1:Pt (aref g-corners 1)
+        c2:Pt (aref g-corners 2))
+    (let (p0:ptr:Pt (addr-of c0)
+          p1:ptr:Pt (addr-of c1)
+          p2:ptr:Pt (addr-of c2))
+      (printf "corners %d %d %d %d %d %d\n"
+        (p0 x) (p0 y) (p1 x) (p1 y) (p2 x) (p2 y))))
+
+  (let (r:ptr:Row (addr-of g-row))
+    ; Reading the array FIELD decays to `ptr:i32` — the GEP, no load.
+    (printf "row %d %d %d %d %d %d\n"
+      (as i32 (r tag))
+      (aref (r cells) 0) (aref (r cells) 1) (aref (r cells) 2) (aref (r cells) 3)
+      (as i32 (r mark))))
+
+  (let (g:ptr:Grid (addr-of g-grid))
+    (let (q0:Pt (aref (g pts) 0)
+          q1:Pt (aref (g pts) 1))
+      (let (z0:ptr:Pt (addr-of q0)
+            z1:ptr:Pt (addr-of q1))
+        (printf "grid %d %d %d %d %d\n" (z0 x) (z0 y) (z1 x) (z1 y) (g n)))))
+
+  ; --- a local fixed-size table ---------------------------------------------
+  ; `(alloca (array T N))` reserves N slots and hands back the decayed `ptr:T`.
+  (let (buf:ptr:i32 (alloca (array i32 4)))
+    (aset! buf 0 41)
+    (aset! buf 3 44)
+    (printf "alloca %d %d\n" (aref buf 0) (aref buf 3)))
+
+  ; --- layout: the folded sizes against LLVM's own -------------------------
+  (printf "sizeof-array %d %d %d\n"
+    (unsafe/cast i32 (sizeof (array i32 5)))
+    (unsafe/cast i32 (sizeof (array i16 8)))
+    (unsafe/cast i32 (sizeof (array Pt 3))))
+  (let (r:ptr:Row (addr-of g-row)
+        g:ptr:Grid (addr-of g-grid))
+    (printf "row-layout %d %s %s\n"
+      (unsafe/cast i32 (sizeof Row))
+      ; cells starts at offset 4 (i8 + 3 pad), mark at 20, total 24.
+      (agree (off (unsafe/cast ptr r) (unsafe/cast ptr (.& r cells))) 4)
+      (agree (off (unsafe/cast ptr r) (unsafe/cast ptr (.& r mark))) 20))
+    (printf "grid-layout %d %s\n"
+      (unsafe/cast i32 (sizeof Grid))
+      (agree (off (unsafe/cast ptr g) (unsafe/cast ptr (.& g n))) 16)))
+  (return 0))

@@ -1,0 +1,18 @@
+zeros 0 0 0
+sized 0 0
+table 10 20 30 0 0
+folded 12 4 2 65
+sparse 100 0 0 500
+strs alpha 1 gamma
+names red green blue
+primes 2 5 11
+names-non-null 1
+origin 3 4
+unit 0 9
+corners 1 2 0 0 7 8
+row 1 9 8 7 6 2
+grid 11 12 13 14 2
+alloca 41 44
+sizeof-array 20 16 24
+row-layout 24 agree agree
+grid-layout 20 agree

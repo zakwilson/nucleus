@@ -1,0 +1,4 @@
+; Stage 15 W8 G-2: a designated field given twice in a constant struct literal.
+(defstruct P x:i32 y:i32)
+(defvar p:P (P (x 1) (x 2)))
+(defn main ():i32 (return 0))

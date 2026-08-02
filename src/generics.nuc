@@ -134,6 +134,13 @@
       TY-STRUCT (if (= (aa sdef) (bb sdef)) (return 1) (return 0))
       TY-UNION (if (= (aa sdef) (bb sdef)) (return 1) (return 0))
       TY-PTR (return (type-eq (aa elem) (bb elem)))
+      ; Stage 15 W8 G-2: same element type AND same length. Reached from the
+      ; constant-aggregate renderer, which checks the element type an
+      ; `(array T …)` literal declares against the one its destination slot
+      ; declares.
+      TY-ARRAY (if (and (= (aa arr-len) (bb arr-len))
+                        (!= (type-eq (aa elem) (bb elem)) 0))
+                 (return 1) (return 0))
       ; Abstract type variables (A2 check only): equal iff the same variable of
       ; the same template (sdef = owning Method*, num-params = tyvar index).
       TY-TYVAR (if (and (= (aa sdef) (bb sdef)) (= (aa num-params) (bb num-params)))
@@ -3788,7 +3795,11 @@
                  (as ptr:ptr (addr-of lookup-name)) (as ptr:ptr (addr-of ignored)))
     (let (sym:?ptr:Sym (scope-lookup scope lookup-name))
       (when (= sym null) (return null))
-      (return (sym-effective-type sym)))))
+      ; Stage 15 W8 G-2 lockstep with emit-symbol-ref (conventions.md
+      ; node-type<->emit-node): reading an `(array T N)` binding yields the
+      ; decayed `(ref T)`, never the aggregate. One shared rule, called from
+      ; both sides — array-decay is identity for every other kind.
+      (return (array-decay (sym-effective-type sym))))))
 
 ; Stage 15 W5d (design/stage15-stress-test/ergonomics.md §3.10): the type a
 ; let/with binding actually takes when its declared type is an elem-LESS pointer
@@ -3900,9 +3911,17 @@
 
 (defn node-type-alloca (n:raw:Node):ref:Type
   (let (tn:ptr:Node (unsafe/cast ptr:Node (node-at n 1)))
+    ; Stage 15 W8 G-2 lockstep with emit-alloca-form (conventions.md
+    ; node-type<->emit-node): it arms the one-shot `(array T N)` permission and
+    ; decays the result to `ptr:T`, so this must do both — otherwise
+    ; `(alloca (array i32 4))` types as an error in the non-emitting pass while
+    ; codegen accepts it, which is the divergence the lockstep exists to stop.
+    (set! g-array-ok 1)
     (let (ty:ptr (parse-type-from-node (as ptr tn) (tn line))
           pt:ref:Type (make-type TY-PTR))
-      (.set! pt elem ty)
+      (if (= ((unsafe/cast ptr:Type ty) kind) TY-ARRAY)
+        (.set! pt elem ((unsafe/cast ptr:Type ty) elem))
+        (.set! pt elem ty))
       ; alloca always yields a valid, non-null stack address (ref T).
       (.set! pt pkind PTR-REF)
       (return pt))))
@@ -3949,7 +3968,8 @@
         (let (sd:ptr:StructDef (unsafe/cast ptr:StructDef (-> tt (_ elem) (unsafe/cast ptr:Type _) (_ sdef)))
               idx:i32 (struct-field-index (as ptr sd) (fn-node s)))
           (when (< idx 0) (return null))
-          (return ((field-at (sd fields) idx) type)))))))
+          ; G-2 lockstep with emit-field-load: an array field decays.
+          (return (array-decay ((field-at (sd fields) idx) type))))))))
 
 ; Result type of `(get callee selector)` for callee type `ct` — mirrors
 ; emit-get-with-callee / emit-get-intrinsic so the type pass cannot drift from
@@ -3973,7 +3993,8 @@
             idx:i32 (struct-field-index ((ctt elem) sdef)
                                         (-> lit (unsafe/cast ptr:Node _) (_ s))))
         (when (< idx 0) (return null))
-        (return ((field-at (sd fields) idx) type))))))
+        ; G-2 lockstep with emit-get-intrinsic -> emit-field-load: array decay.
+        (return (array-decay ((field-at (sd fields) idx) type)))))))
 
 ; Result type of `(invoke callee arg…)` for callee type `ct` — the tier-0 `invoke`
 ; method's return, else null (mirrors emit-invoke-with-callee at the exact tier).

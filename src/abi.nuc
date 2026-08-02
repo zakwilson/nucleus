@@ -143,6 +143,8 @@
     (when (= k TY-PTR)  (return g-target-ptr-bytes))
     (when (= k TY-CSTR) (return g-target-ptr-bytes))
     (when (= k TY-FN)   (return g-target-ptr-bytes))
+    ; Stage 15 W8 G-2: C's rule — an array's alignment is its element's.
+    (when (= k TY-ARRAY) (return (abi-alignof (t elem))))
     (return (type-size t))))
 
 ; ABI size of a type in bytes. Unlike type-size (which returns the pointer size
@@ -155,6 +157,10 @@
     (when (= k TY-UNION)
       (return (abi-union-size (t sdef))))
     (when (= k TY-FN) (return g-target-ptr-bytes))
+    ; Stage 15 W8 G-2: C's rule — N * sizeof(T), where sizeof(T) already
+    ; includes T's own tail padding, so no extra rounding is needed (an array's
+    ; alignment equals its element's, so the total is already a multiple of it).
+    (when (= k TY-ARRAY) (return (* (t arr-len) (abi-sizeof (t elem)))))
     (return (type-size t))))
 
 ; ABI size of an untagged union: the max member size, rounded up to the union's
@@ -211,21 +217,47 @@
             fa:i32 (abi-alignof ft)
             fsz:i32 (abi-sizeof ft))
         (set! off (abi-align-up off fa))
-        (let (fabs:i32 (+ base off)
-              fk:i32 ((as ptr:Type ft) kind))
+        (let (fabs:i32 (+ base off))
           ; Does this field overlap [lo, hi)?
           (when (and (< fabs hi) (> (+ fabs fsz) lo))
-            (if (or (= fk TY-STRUCT) (= fk TY-UNION))
-              (let (sub:i32 (abi-class-eightbyte
-                              ((as ptr:Type ft) sdef) fabs lo))
-                (when (> sub cls) (set! cls sub)))
-              (if (!= (is-float-type ft) 0)
-                (let (fc:i32 (if (= fk TY-F64) 2 1))
-                  (when (> fc cls) (set! cls fc)))
-                (set! cls 3)))))     ; integer / pointer → INTEGER
+            (let (sub:i32 (abi-class-type-at ft fabs lo))
+              (when (> sub cls) (set! cls sub)))))
         (set! off (+ off fsz)))
       (inc! i))
     (return cls)))
+
+; The class contribution of ONE value of type `ft` placed at absolute offset
+; `fabs`, for the eightbyte [lo, lo+8). Extracted from abi-class-eightbyte's
+; field loop in Stage 15 W8 G-2 so the array case has somewhere to recurse: an
+; `(array T N)` field is N consecutive T values, each of which classifies on its
+; own, and only the ones overlapping this eightbyte contribute. Merging the
+; classes of an array of floats element-by-element is what keeps
+; `struct { float v[2]; }` an SSE eightbyte (`<2 x float>`) instead of being
+; swept into INTEGER by the old "not a struct, not a float → 3" fall-through.
+(defn abi-class-type-at (ft:raw:Type fabs:i32 lo:i32):i32
+  (let (ftt:raw:Type ft
+        fk:i32 (ftt kind))
+    (when (or (= fk TY-STRUCT) (= fk TY-UNION))
+      (return (abi-class-eightbyte (ftt sdef) fabs lo)))
+    (when (= fk TY-ARRAY)
+      (let (et:raw:Type (ftt elem)
+            esz:i32 (abi-sizeof (ftt elem))
+            n:i32 (ftt arr-len)
+            hi:i32 (+ lo 8)
+            cls:i32 0)
+        ; A zero-size element would make the scan below non-terminating in the
+        ; "skip to the first overlapping element" sense; it cannot occur (every
+        ; representable type has size ≥ 1) but the guard states it.
+        (when (<= esz 0) (return 0))
+        (dotimes (k n)
+          (let (eabs:i32 (+ fabs (* k esz)))
+            (when (and (< eabs hi) (> (+ eabs esz) lo))
+              (let (sub:i32 (abi-class-type-at et eabs lo))
+                (when (> sub cls) (set! cls sub))))))
+        (return cls)))
+    (when (!= (is-float-type ft) 0)
+      (if (= fk TY-F64) (return 2) (return 1)))
+    (return 3)))     ; integer / pointer → INTEGER
 
 ; Coercion IR type for one eightbyte: class `cls` holding `n` bytes (1..8).
 ; INTEGER → i(8·n) for n ≤ 4 (i8/i16/i24/i32), else i64. SSE/double → double.
@@ -247,6 +279,13 @@
     (.set! info reg1 null)
     (.set! info size 0)
     (.set! info align 0)
+    ; Stage 15 W8 G-2 backstop. Every by-value parameter, argument and return
+    ; funnels through here, and an `(array T N)` in any of those positions is
+    ; refused at parse time (parse-type-from-node's g-array-ok gate) — but that
+    ; gate is syntactic, so this catches a Type that arrived some other way
+    ; (a `.nuch` re-parse, a stamped generic) before it becomes an ABI-DIRECT
+    ; `[4 x i32] %x.arg`, which is legal LLVM and is NOT the C ABI.
+    (reject-array-type t g-form-line "by-value parameter or return")
     (when (and (!= (t kind) TY-STRUCT)
                (!= (t kind) TY-UNION))
       (return info))

@@ -7,5 +7,13 @@ n2n pair=3,4 sum=7
 n2n big=100,200,300 sum=600
 p2_make=3,4
 p2_sum=7
+iarr2_make=11,22
+iarr2_sum=33
+farr2_make=1.50,2.25
+farr2_sum=3.75
+iarr4_make=5,6,7,8
+iarr4_sum=26
+abig_make=1,6
+abig_sum=21
 c2n pair=3,4 sum=7
 c2n big=100,200,300 sum=600

@@ -178,6 +178,7 @@ tracked).
 | `usize` | Unsigned pointer-sized integer (resolves to `i32` on ILP32 targets, `i64` on LP64) | `size_t` |
 | `ssize` | Signed pointer-sized integer (resolves to `i32` on ILP32 targets, `i64` on LP64) | `ssize_t` / `ptrdiff_t` |
 | `ptr` | Opaque pointer | `void*` |
+| `(array T N)` | Fixed-size array of N `T`; storage only, decays to `(ref T)` on read (see [Fixed-size arrays](#fixed-size-arrays--array-t-n)) | `T x[N]` |
 | `CStr` | C-style (null-terminated) string | `char*` |
 | `Char` | A 32-bit Unicode scalar value (codepoint) | `uint32_t` |
 | `void` | No value | `void` |
@@ -205,6 +206,60 @@ A bare float literal with no target is `f64`, so `(let (b 0.1) …)` and `(let (
 A `f64` **value** (not a literal) narrows into an `f32` target implicitly and silently, with an `fptrunc`, the same way an `i64` value narrows into an `i32` slot; the explicit `(as f32 d)` spelling still refuses it as lossy and routes you to `(unsafe/cast f32 d)`. See [Implicit Type Coercion](#implicit-type-coercion) below for the full rule.
 
 **`f64` is unsupported when `--target=avr`**: AVR has no hardware double, so `f64`/`double` is a compile-time error, whether written as an explicit type annotation or reached only through a bare float literal's default type (`(let (x 1.5) …)` is rejected even with no `f64` text in the source). The error names the `-mdouble=64` avr-gcc multilib escape hatch for a custom AVR build with software double support. `f32` *types* are unaffected, and `i64` remains fully supported (arithmetic links libgcc's software routines, e.g. `__muldi3`). **A float *literal* is rejected on AVR even in an `f32` position** (`(let (a:f32 1.5) …)`), because the check fires when the literal is emitted, before its target width is known; this predates the W2d literal adaptation — `(unsafe/cast f32 1.5)` was rejected at the same point — so an AVR program currently cannot spell a floating-point constant at all. Lifting it is AVR work, not literal-typing work. This check applies only to the AVR target module itself — compile-time/macro code always runs on the host regardless of `--target=`, so ordinary `f64` arithmetic inside a `defmacro`/`compile-time` body compiling *for* an AVR program is unaffected.
+
+## Fixed-size arrays — `(array T N)`
+
+`(array T N)` is a fixed-size array of `N` values of `T`, laid out inline exactly
+as C's `T x[N]`. `N` is a compile-time constant *expression* — a literal, a
+`defconst` / `defenum` name, or arithmetic over them — evaluated by the same
+folder a [global initializer](toplevel.md#global-initializers) uses.
+
+It is a **storage** type, so it is valid in exactly these positions:
+
+* a `defvar` type — `(defvar g-table:(array i32 256))`
+* a field of an aggregate — a `defstruct` field, or a member of an anonymous
+  `(struct …)` / `(union …)`
+* `(sizeof (array T N))`
+* `(alloca (array T N))`, which reserves `N` slots of frame storage
+
+**Reading an array decays it to a pointer**, exactly as in C: the value of an
+array-typed global, field, or `alloca` is the address of element 0, typed
+`(ref T)`. Nothing is loaded and nothing is copied.
+
+```lisp
+(defstruct Row tag:i8 (cells (array i32 4)) mark:i8)   ; C: struct { int8_t tag; int32_t cells[4]; int8_t mark; }
+
+(defn row-first ((r (ref Row))):i32
+  (aref (r cells) 0))          ; (r cells) is ptr:i32 — a GEP, no load
+
+(defn scratch ():i32
+  (let (buf:ptr:i32 (alloca (array i32 64)))   ; 64 slots of frame storage
+    (aset! buf 0 1)
+    (aref buf 0)))
+```
+
+Because it decays, an array is **refused** wherever a whole-array *value* would
+have to exist — a by-value parameter or return, a `let` / `with` binding type, a
+pointer element (`ptr:(array T N)`), a generic type argument, a nested array
+(`(array (array T M) N)`), and as the target of `set!` or `.set!`. Each is a
+compile-time error naming the `ptr:T` spelling that works. C has the same
+restrictions for the same reason.
+
+Layout, size and alignment match the platform C ABI: `sizeof` is
+`N * sizeof(T)`, alignment is `T`'s, and a struct containing an array field
+classifies for by-value passing element by element — so `struct { float v[2]; }`
+travels in an SSE register, as C does it. This is gated by `make layout-test`
+and `make abi-test`.
+
+`--emit-cheader` renders an array field with C's postfix declarator
+(`int32_t cells[4];`), keeping a named extent symbolic when the header also
+exports the constant. `--emit-nuch` round-trips `(array T N)` unchanged, for both
+a field and an array-typed global (exported as `(extern (g (array i32 3)))`).
+
+For *initializing* one, see
+[Global initializers](toplevel.md#global-initializers); for the array
+**literal** used in expression position, see
+[Special Forms](special-forms.md).
 
 ## Function Pointer Types
 

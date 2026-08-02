@@ -1,0 +1,4 @@
+; Stage 15 W8 G-2: the same designated index given twice.
+(defvar g:(array i32 4)
+  (array i32 (1 10) (1 20)))
+(defn main ():i32 (return 0))

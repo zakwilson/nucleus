@@ -1,0 +1,6 @@
+; Stage 15 W8 G-2: a struct slot takes a compound literal, not a scalar. Before
+; G-2 this reported "integer literal incompatible with type %P", which named the
+; IR type rather than the source type and did not say what WOULD work.
+(defstruct P x:i32 y:i32)
+(defvar p:P 5)
+(defn main ():i32 (return 0))

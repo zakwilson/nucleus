@@ -1,0 +1,4 @@
+; Stage 15 W8 G-2: a nested array. Refused by the same consume-once permission
+; that refuses (ptr (array …)); multi-dimensional arrays are not in v1.
+(defvar g:(array (array i32 2) 3))
+(defn main ():i32 (return 0))

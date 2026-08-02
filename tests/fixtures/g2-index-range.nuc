@@ -1,0 +1,4 @@
+; Stage 15 W8 G-2: a designated index past the end of the declared array.
+(defvar g:(array i32 3)
+  (array i32 (0 10) (5 50)))
+(defn main ():i32 (return 0))

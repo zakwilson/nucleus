@@ -19,6 +19,17 @@
 ; bodies here (sizeof / a `?ptr:Pt` value), since a C-header-imported Pt is not
 ; registered until the emit phase (signatures referencing it would prescan-fail).
 
+; Stage 15 W8 G-2: fixed-size array fields (`(array T N)`). These shapes are
+; declared HERE rather than imported, because the C-header parser skips array
+; declarators by design; structs.h carries byte-identical C copies behind
+; NUCLEUS_LAYOUT_C_ORACLE, which only layout.c (the oracle) defines.
+(defstruct A_plain (xs (array i32 4)))
+(defstruct A_head  tag:i8 (xs (array i32 4)) tail:i8)
+(defstruct A_byte  (b (array i8 3)) tail:i8)
+(defstruct A_wide  tag:i8 (v (array f64 2)) tail:i8)
+(defstruct A_nest  (pts (array Inner 3)) z:i64)
+(defstruct A_ofarr (rows (array A_plain 2)) tail:i8)
+
 ; offsetof(field) = address-of-field - base, both as integers.
 (defn off (base:ptr fld:ptr):i64 (return (- (unsafe/cast i64 fld) (unsafe/cast i64 base))))
 
@@ -58,4 +69,18 @@
     (let (m:?ptr:Pt (some (as ref:Pt pt))
           back:ref:Pt (unwrap m))
       (printf "NICHE_okptr_roundtrip=%d\n" (if (= (unsafe/cast i64 back) (unsafe/cast i64 pt)) 1 0))))
+  ; Stage 15 W8 G-2: fixed-size array fields. The shapes are declared in
+  ; Nucleus below (the C-header parser skips array declarators, so structs.h's
+  ; copies are oracle-only, behind NUCLEUS_LAYOUT_C_ORACLE) and measured the
+  ; same way every struct above is: `sizeof` plus field-address arithmetic.
+  ; What this pins is that an array field's SIZE (N * sizeof(T)) and ALIGNMENT
+  ; (the element's, not the aggregate's) agree with the platform C ABI — get
+  ; either wrong and the offset of the field AFTER the array moves.
+  (let (s:ptr:A_plain (alloca A_plain)) (printf "A_plain sizeof=%lld xs=%lld\n" (as i64 (sizeof A_plain)) (off s (.& s xs))))
+  (let (s:ptr:A_head (alloca A_head)) (printf "A_head sizeof=%lld tag=%lld xs=%lld tail=%lld\n" (as i64 (sizeof A_head)) (off s (.& s tag)) (off s (.& s xs)) (off s (.& s tail))))
+  (let (s:ptr:A_byte (alloca A_byte)) (printf "A_byte sizeof=%lld b=%lld tail=%lld\n" (as i64 (sizeof A_byte)) (off s (.& s b)) (off s (.& s tail))))
+  (let (s:ptr:A_wide (alloca A_wide)) (printf "A_wide sizeof=%lld tag=%lld v=%lld tail=%lld\n" (as i64 (sizeof A_wide)) (off s (.& s tag)) (off s (.& s v)) (off s (.& s tail))))
+  (let (s:ptr:A_nest (alloca A_nest)) (printf "A_nest sizeof=%lld pts=%lld z=%lld\n" (as i64 (sizeof A_nest)) (off s (.& s pts)) (off s (.& s z))))
+  (let (s:ptr:A_ofarr (alloca A_ofarr)) (printf "A_ofarr sizeof=%lld rows=%lld tail=%lld\n" (as i64 (sizeof A_ofarr)) (off s (.& s rows)) (off s (.& s tail))))
+
   (return 0))

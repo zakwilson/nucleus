@@ -1,0 +1,6 @@
+; Stage 15 W8 G-2: an array field is not assignable as a whole (nor is it in C).
+(defstruct S (xs (array i32 2)))
+(defvar s:S)
+(defn main ():i32
+  (.set! (addr-of s) xs 0)
+  (return 0))

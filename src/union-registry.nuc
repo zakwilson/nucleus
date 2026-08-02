@@ -30,6 +30,11 @@
     (set! h (fnv-byte h (as i64 (tt is-volatile))))
     (when (= k TY-PTR)
       (set! h (hash-type h (tt elem))))
+    ; Stage 15 W8 G-2: two array types are the same shape only if both the
+    ; element type and the length match, so both go into the hash.
+    (when (= k TY-ARRAY)
+      (set! h (fnv-byte h (as i64 (tt arr-len))))
+      (set! h (hash-type h (tt elem))))
     (when (= k TY-STRUCT)
       (set! h (fnv-str h ((tt sdef) name))))
     (when (= k TY-UNION)
@@ -1281,7 +1286,13 @@
 ;   - list node (ptr T) or (ptr ptr ... T): builds TY-PTR
 ;   - list node ((fn ret-type) (param-types...)) or (fn ret-type): builds TY-FN
 (defn parse-type-from-node (node:ptr line:i32):ref:Type
-  (let (n:ptr:Node (unsafe/cast ptr:Node node))
+  (let (n:ptr:Node (unsafe/cast ptr:Node node)
+        ; Stage 15 W8 G-2: consume the one-shot `(array T N)` permission (see
+        ; g-array-ok, src/nucleusc.nuc). Read-and-clear on entry, so every
+        ; nested parse this call makes sees 0 and an array can appear only at
+        ; the very type node a permitting site handed us.
+        array-ok:i32 g-array-ok)
+    (set! g-array-ok 0)
     (case (n kind)
       NODE-SYM
       (do
@@ -1337,6 +1348,50 @@
                        (= (last kind) NODE-SYM)
                        (= (strcmp (last s) "volatile") 0))
               (die-at line "postfix 'volatile' is retired: use the ':volatile' attribute (e.g. '(:volatile name:T)' for a declaration, or '(ptr :volatile T)' for a pointer target)")))))
+      ; Stage 15 W8 G-2 (design/global-init.md §5): `(array T N)` — a fixed-size
+      ; array of N values of T, laid out inline exactly as C's `T x[N]`. Placed
+      ; ahead of the struct/union-template lookups so the spelling cannot be
+      ; captured by a user template that happens to be named `array`.
+      ;
+      ; The length is an arbitrary integer CONSTANT EXPRESSION, evaluated by
+      ; G-1's `const-fold-int` — the same folder `defvar-init-ir` uses, called
+      ; rather than re-derived (context/conventions.md's standing rule for this
+      ; area), so `(array i32 (* 2 SLOTS))` works and a malformed length gets
+      ; G-1's located overflow / divide-by-zero diagnostics for free.
+      (let (head:ptr (n car))
+        (when (= head 'array)
+          (when (= array-ok 0)
+            (die-at line "(array T N) is a storage type: it is valid only as a defvar type or a defstruct / (struct ...) field type -- everywhere else use ptr:T, the pointer an array decays to when it is read"))
+          (when (!= (node-len n) 3)
+            (die-at line "(array T N): expects an element type and a constant length -- e.g. (array i32 8)"))
+          (let (etn:ptr (node-at n 1)
+                lnn:ptr (node-at n 2)
+                lline:i32 (node-line lnn line)
+                et:ptr (as ptr (parse-type-from-node etn (node-line etn line)))
+                len:i64 0)
+            ; An element with no layout would give the array a wrong size and
+            ; the enclosing struct wrong offsets — the same two obligations a
+            ; by-value defstruct field carries (W3a / W1d).
+            (reject-opaque-type et (node-line etn line) "array element")
+            (reject-cycle-pending-layout et (node-line etn line) "array element")
+            ; Mode 2 = the prescan: leave the length provisional (0) rather than
+            ; folding it, because macros are not registered during a prescan and
+            ; folding there would accept `(_* K 2)` while refusing `(* K 2)`.
+            ; See g-array-ok's note in src/nucleusc.nuc.
+            (when (= array-ok 2) (return (array-type et 0)))
+            (when (= (const-fold-int lnn (as ptr:i64 (addr-of len)) lline) 0)
+              (die-at lline "(array T N): length must be a compile-time integer constant"))
+            (when (<= len 0)
+              (die-at lline
+                (fmt-i64 "(array T N): length must be positive, got %ld" len)))
+            ; Sizes are computed in i32 throughout the layout walk (abi-sizeof),
+            ; so refuse an array whose total byte size would not fit rather than
+            ; wrapping into a plausible-looking small number.
+            (let (total:i64 (* len (as i64 (abi-sizeof et))))
+              (when (> total 2147483647)
+                (die-at lline
+                  (fmt-i64 "(array T N): total size %ld bytes exceeds the 2147483647-byte limit" total))))
+            (return (array-type et (unsafe/cast i32 len))))))
       ; Anonymous struct: (struct field:type ...) — memoized by content hash so
       ; two textually-identical shapes share one synthesized StructDef.
       (let (head:ptr (n car))
@@ -1355,7 +1410,10 @@
               (while (!= cur null)
                 (let (field:ptr ((unsafe/cast ptr:Node cur) car)
                       fname:ptr null
-                      fty:ptr (extract-name-and-type field (as ptr:ptr (addr-of fname)) line))
+                      ; G-2: an anonymous struct's field is a field, so it may
+                      ; be an `(array T N)` on the same terms a defstruct field
+                      ; may — one rule for "a field of an aggregate", not two.
+                      fty:ptr (extract-decl-name-and-type field (as ptr:ptr (addr-of fname)) line))
                   (when (= fty null)
                     (die-at line (fmt-s "struct: field '%s' missing :type" fname)))
                   ; Intern so field-name pointer-equality works at access sites.
@@ -1388,7 +1446,9 @@
               (while (!= cur null)
                 (let (field:ptr ((unsafe/cast ptr:Node cur) car)
                       fname:ptr null
-                      fty:ptr (extract-name-and-type field (as ptr:ptr (addr-of fname)) line))
+                      ; G-2: same for an anonymous union member (C's
+                      ; `union { char b[4]; int w; }`).
+                      fty:ptr (extract-decl-name-and-type field (as ptr:ptr (addr-of fname)) line))
                   (when (= fty null)
                     (die-at line (fmt-s "union: member '%s' missing :type" fname)))
                   (aset! (as ptr:ptr fnames) i (intern-str fname))

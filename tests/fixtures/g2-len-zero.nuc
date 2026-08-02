@@ -1,0 +1,5 @@
+; Stage 15 W8 G-2: a zero (or negative) length. Zero doubles as the internal
+; "provisional prescan type" marker, so it must never be a legal source length.
+(defconst N 0)
+(defvar g:(array i32 N))
+(defn main ():i32 (return 0))

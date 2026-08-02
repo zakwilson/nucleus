@@ -1,0 +1,5 @@
+; Stage 15 W8 G-2: the length is a compile-time constant expression, folded by
+; G-1's shared folder. A run-time value is not one.
+(defvar k:i32 3)
+(defvar g:(array i32 k))
+(defn main ():i32 (return 0))

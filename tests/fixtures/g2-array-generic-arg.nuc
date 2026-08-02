@@ -1,0 +1,6 @@
+; Stage 15 W8 G-2: an array as a generic type argument. Refused, which is what
+; lets type-spelling render an array diagnostically without having to make the
+; spelling round-trip through parse-type-name.
+(import-use vector)
+(defvar g:(Vector (array i32 2)))
+(defn main ():i32 (return 0))

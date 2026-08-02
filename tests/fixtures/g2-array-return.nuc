@@ -1,0 +1,5 @@
+; Stage 15 W8 G-2: likewise as a return type — C cannot return an array either.
+(defstruct S a:i32)
+(defn make ():(array i32 4)
+  (return 0))
+(defn main ():i32 (return 0))

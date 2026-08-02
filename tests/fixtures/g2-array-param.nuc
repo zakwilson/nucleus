@@ -1,0 +1,6 @@
+; Stage 15 W8 G-2: an (array T N) is storage, not a value type. As a by-value
+; parameter it would need an aggregate copy the C ABI does not have (C decays
+; an array parameter to a pointer), so it is refused where the type is written.
+(defn take ((xs (array i32 4))):i32
+  (return (aref xs 0)))
+(defn main ():i32 (return 0))
