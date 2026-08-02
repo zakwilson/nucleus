@@ -54,6 +54,16 @@ inlines into one translation unit and `prescan-defn-signatures` registers
 `nucleusc.nuc`'s own signatures before any form is emitted, so `generics.nuc`
 forward-references into `nucleusc.nuc` (it already did, for `macroexpand-form`).
 
+The shape recurs whenever a *second* position has to decide a question an
+emitter already decides. Stage 15 W8 G-1's `as-int-narrowing`
+(`src/type-utils.nuc`) is the smaller worked example: the int→int safety rule
+for `as` — widening safe, narrowing lossy — is now one function that both
+`emit-as` step 5 and the global-initializer constant folder *call*, rather than
+one `(< (int-width dst) (int-width src))` written twice. Even a one-comparison
+rule is worth extracting once a second asker exists; the cost is four lines and
+the alternative is a divergence nobody notices until a program compiles in one
+position and is refused in the other.
+
 Two follow-on lessons from W2b, which extended that same rule to make a
 `defconst`/`defenum` name behave like the literal it stands for:
 
@@ -154,6 +164,35 @@ bitten **three** times, each found while working on something else:
   `(let (p:ptr:Thing null) …)` was correctly rejected. Fixed by calling
   `pkind-flow-check` here with `ty-raw` as the source type — exactly what
   `emit-symbol-ref` gives the `null` symbol in value position.
+
+**Since Stage 15 W8 G-1 the renderer also FOLDS**: an integer destination
+accepts an arbitrary constant expression (arithmetic/bit ops over literals,
+`defconst`/`defenum` names, `(char "x")`, `(sizeof T)` and `(as IntT x)`), and a
+pointer-like destination accepts `(as PtrT x)` — which is what makes
+`(as CStr "…")` legal — and `(addr-of other-global)`. Three things about that
+are worth knowing before you touch it:
+
+- **A folded result is treated as an untyped integer literal of that value**, so
+  it faces the *same* `int-literal-fits` call a written literal faces and no
+  second range rule exists. No result `Type` is tracked through the fold; a
+  proposal to track one is a proposal to re-derive `binop-result-type` in a
+  second place, which is the shape W2a exists to delete.
+- **Folding introduces arithmetic faults the renderer never had.** They are
+  located `die-at`s, never a wrap or a poisoned constant: `+`/`-`/`*` overflow
+  out of i64, `/` and `%` by zero (executing it would SIGFPE *the compiler*),
+  `INT64_MIN / -1`, and a shift count outside `[0,64)`. The overflow tests must
+  run **before** the operation — the compiler's own `+`/`-`/`*` emit `add nsw`
+  etc., so inspecting an overflowed result is inspecting LLVM poison.
+- **`(sizeof T)` in the renderer is NOT the same computation as `(sizeof T)` in
+  a function body**, and the difference needs an extra guard. `emit-sizeof`
+  emits a GEP over the LLVM *named* type, which LLVM resolves from a
+  `%Name = type {…}` line anywhere in the module; the fold has no instruction
+  stream and must ask `abi-sizeof`, which reads the compiler's own field table.
+  That table is empty for a struct an import cycle has not laid out yet — the
+  case `src/type-utils.nuc`'s W1d note describes — so `cfold-sizeof` calls
+  `reject-cycle-pending-layout` in addition to `reject-opaque-type`. Without it
+  a cross-cycle `(sizeof S)` folds silently to **0**. Any future constant
+  evaluation of a *layout* question inherits this obligation.
 
 The lesson is the shape of the fix, not the individual bugs: **call the shared
 predicate rather than re-deriving its conditions.** W6's version is the model —
@@ -1444,12 +1483,20 @@ defines after its own `import` form has not run yet. Therefore:
   miscompile*: `abi-classify` sized the unlaid-out struct at 0 and emitted
   `define i32 @f(i0 %v.arg)` against a call site passing two `i64`s, whose only
   symptom was an unlocated `failed to parse generated IR`.
-- **Macros, `defconst` and `defenum` members do not** (registered by their
-  emitters), and **`prefix/name` aliases do not** (no slice for a skipped
+- **Macros, `deferror` ids and `extern` declarations do not** (registered by
+  their emitters), and **`prefix/name` aliases do not** (no slice for a skipped
   re-entry). Note the bare `(import foo)` spelling *is* the prefixed one, so a
   cycle written that way always suppresses an alias set; it is harmless only
   because the language's rule is that a cross-file reference needs no
   qualification.
+- **`defconst`/`defenum` members and `defvar` globals DO, since Stage 15 W8
+  G-0** — `prescan-value-names` registers them on the same whole-graph walk that
+  registers signatures, so all three compile, link and return the right value
+  across a cycle. This retired two pinning tests
+  (`w1d-cycle-defconst-diagnosed`, `w1d-cycle-defenum-diagnosed`) and one clause
+  of `cycle-definer-message`'s note. The *scan* behind it
+  (`text-defines-name`) is deliberately still broad — it is shared with W1c's
+  unreachable-definer note, which needs every definer.
 
 Two implementation notes worth reusing:
 
@@ -1499,6 +1546,24 @@ holds the prescanned paths and `emit-toplevel-forms` samples it against
 `finalize-generics` at the point `prescan-defn-signatures` would have, or a
 generic that gained methods from a `.nuch` `defmethod` import or a REPL
 redefinition mangles at a different moment than before.
+
+**But the VALUE half of the same walk is idempotent, and that asymmetry is the
+whole design of W8 G-0.** `prescan-value-names` (`src/nucleusc.nuc`, beside
+`prescan-defn-signatures`) registers `defvar` / `defconst` / `defenum` names into
+`g-globals` through `scope-define`, which **appends** while `scope-lookup` scans
+**backwards** — so a second definition of an identical binding is inert and the
+emitter's own registration simply wins. G-0 therefore needs *no* per-path skip of
+its own (it rides the existing `g-prescan-sigs` guard) and, crucially, relaxes no
+duplicate check: two `defvar`s of one name still emit two `@g = global` lines and
+LLVM still rejects them. Before assuming a registry needs a dedup guard, check
+which of the two shapes it has — `generic-register-method` appends *methods* and
+`finalize-generics` then compares them, `scope-define` appends *bindings* and
+`scope-lookup` never compares. Only the first is order-sensitive.
+
+(Two things the value pass deliberately does **not** front-load, both because
+they are emission-time state rather than a name binding: the `deferror` id table,
+whose dense ids are allocated in emission order, and `g-enumdefs`, which `match`
+exhaustiveness reads and which is capped at `MAX-ENUMS`.)
 
 Three collaborators of that walk, each a trap on its own:
 
@@ -1681,11 +1746,22 @@ the private-preferring `generic-lookup` would fold a file's *public* `helper`
 into its own *private* `helper`'s generic.
 
 **And the timing rule W1a set still governs.** A private name's key is fixed
-during `prescan-defn-signatures`, which runs before any form is emitted — but
-that prescan does **not** set `g-defining-private` (only the top-level dispatch
-loop does, around `emit-defn`). A new per-definer property that must be known at
-*registration* time has to be armed in the prescan too, or it is silently absent
-for exactly the pass that decides the key.
+during the prescan, which runs before any form is emitted, while
+`g-defining-private` is otherwise set only by the top-level dispatch loop around
+the emitter. So **every prescan that registers a name must arm the flag itself**
+— `prescan-defn-signatures` does (around each `defn-`), and W8 G-0's
+`prescan-value-names` does (around each `defvar-`/`defconst-`/`defenum-`). A new
+per-definer property that must be known at *registration* time has to be armed in
+the prescan too, or it is silently absent for exactly the pass that decides the
+key.
+
+The cost of getting that wrong is a **silent wrong answer**, not a diagnostic,
+and G-0 found a live instance: before it, a `defconst-` referenced from *earlier
+in its own file* resolved to another file's **public** constant of the same
+spelling (measured: returned 7 instead of 61, compiled clean), because the
+private key did not exist yet when the reader was emitted while the public one
+did. A test for a private-name feature must therefore link and run and assert the
+*value*; "it compiles" cannot distinguish the two answers.
 
 **A census of the compiler's own source can retire a design hedge outright.**
 W5e's spec hedged toward the weaker option because the stronger one "moves IR".

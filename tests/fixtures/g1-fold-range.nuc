@@ -1,0 +1,5 @@
+; Stage 15 W8 G-1: the FOLDED value faces the same `int-literal-fits` range gate
+; the written literal faces. `(* 2000000000 3)` is 6000000000, so this must be
+; rejected exactly as `(defvar g:i32 6000000000)` is — not truncated by LLVM to
+; 1705032704 the way the pre-W2b renderer would have.
+(defvar g1-range:i32 (* 2000000000 3))

@@ -1,0 +1,41 @@
+; Stage 15 W8 G-0 (design/global-init.md §5). A value name resolves on
+; REACHABILITY, not on position: a function body may name a `defvar`, a
+; `defconst` or a `defenum` member that is declared LATER in the same file,
+; exactly as it may already call a `defn` declared later.
+;
+; Before G-0 every reader below died `undefined: <name> — not defined anywhere in
+; this compilation unit`, which was false: the name is right there, twelve lines
+; down. `prescan-value-names` registers all three before any form is emitted.
+;
+; The forward-declared `defvar` also exercises the emitted shape: the reader's
+; `load` names `@g0-counter` before the `@g0-counter = global` line exists in the
+; module, which LLVM's textual parser resolves at end of module.
+(import-use "stdio.h")
+
+(defn read-counter ():i32
+  (return g0-counter))
+
+(defn read-limit ():i32
+  (return G0-LIMIT))
+
+(defn read-shade ():i32
+  (return G0-AMBER))
+
+(defn bump-counter ():void
+  (set! g0-counter (+ g0-counter 1)))
+
+(defvar g0-counter:i32 10)
+(defconst G0-LIMIT 99)
+(defenum G0Shade G0-BLACK G0-AMBER G0-WHITE)
+
+(defn main ():i32
+  (printf "counter = %d\n" (read-counter))
+  (bump-counter)
+  (printf "counter = %d\n" (read-counter))
+  (printf "limit = %d\n" (read-limit))
+  (printf "shade = %d\n" (read-shade))
+  ; A forward-referenced defconst keeps its literal provenance (W2b), so it
+  ; still adapts to the other operand's type instead of forcing i32.
+  (let (room:ui32 (- (as ui32 G0-LIMIT) (as ui32 (read-counter))))
+    (printf "room = %u\n" room))
+  (return 0))

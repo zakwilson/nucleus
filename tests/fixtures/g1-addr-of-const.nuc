@@ -1,0 +1,4 @@
+; Stage 15 W8 G-1: a `defconst` is a compile-time value with no storage, so it
+; has no address for `(addr-of ...)` to take.
+(defconst G1K 5)
+(defvar g1-ac:ptr:i32 (addr-of G1K))

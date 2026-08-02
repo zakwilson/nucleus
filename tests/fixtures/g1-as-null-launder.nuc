@@ -1,0 +1,7 @@
+; Stage 15 W8 G-1: the nullability gate still fires through the new `(as T x)`
+; branch. `(as (raw T) null)` renders legally at `(raw T)`, and the OUTER
+; conversion into a non-null `ptr:T` global is then put through the same
+; `pkind-flow-check` the value path's as-ptr-convert applies -- otherwise this
+; would be a fresh way to launder a null into a slot W6 just closed.
+(defstruct G1Thing (x i32))
+(defvar g1-launder:ptr:G1Thing (as (raw G1Thing) null))

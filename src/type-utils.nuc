@@ -386,6 +386,17 @@
             (return 1)))))))
 
 ; ============================================================
+; Stage 15 W8 G-1 (design/global-init.md §5 "G-1"): THE int->int rule for the
+; safe cast `as` — a widening (or a same-width sign reinterpret) is safe, a
+; narrowing is lossy and must be spelled `unsafe/cast`. Extracted as a shared
+; predicate because there are now TWO askers: `emit-as` step 5 (the value path)
+; and `const-fold-int` (the global-initializer constant folder, which has no
+; instruction stream to emit into and so decides the same question by hand).
+; context/conventions.md's standing rule for exactly this shape: mirroring the
+; *logic* in two places drifts, mirroring a *call* cannot.
+(defn as-int-narrowing (src:raw:Type dst:raw:Type):i32
+  (if (< (int-width dst) (int-width src)) (return 1) (return 0)))
+
 ; Stage 10: pointer kinds (design/stage10/nullability.md)
 ; ============================================================
 

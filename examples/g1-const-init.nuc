@@ -1,0 +1,99 @@
+; Stage 15 W8 G-1 (design/global-init.md §5 "G-1"): constant EXPRESSIONS in a
+; global initializer, folded in the renderer with no JIT.
+;
+; Every `defvar` below dies with "init must be a literal" on a pre-G-1 compiler.
+; Each one is printed rather than merely compiled: the characteristic failure of
+; a constant folder is producing the *wrong number*, which an exit-0 compile
+; cannot see. The `sizeof` block additionally cross-checks each folded size
+; against the runtime `sizeof` (a GEP LLVM evaluates), because the fold answers
+; from the compiler's own layout model instead — if the two ever disagree, this
+; example prints DISAGREE rather than passing quietly.
+
+(import-use "stdio.h")
+
+(defconst K 512)
+(defconst NEG -3)
+(defenum Color RED GREEN BLUE)
+
+(defstruct Small (a i8) (b i64))
+(defstruct Nested (p Small) (q i32))
+
+; --- arithmetic over integer literals and named constants -------------------
+(defvar g-add:i32       (+ 1 2 3 4))
+(defvar g-sub:i32       (- 100 K))
+(defvar g-mul:i64       (* K K K))
+(defvar g-div:i32       (/ K 7))
+(defvar g-rem:i32       (% K 7))
+(defvar g-neg:i32       (- NEG))
+(defvar g-mixed:i32     (+ (* K 2) (/ K 4) NEG))
+; Truncation toward zero, matching the `sdiv`/`srem` the value path emits.
+(defvar g-div-neg:i32   (/ -7 2))
+(defvar g-rem-neg:i32   (% -7 2))
+
+; --- bit operations ---------------------------------------------------------
+(defvar g-and:i32       (bit-and 255 K))
+(defvar g-or:i32        (bit-or 255 K))
+(defvar g-xor:i32       (bit-xor 255 K))
+(defvar g-shl:i64       (bit-shl 1 40))
+(defvar g-shr:i32       (bit-shr K 4))
+; `bit-shr` folds as an ARITHMETIC shift, matching the binop table's `ashr` for
+; the signed types two untyped literals produce: -16 >> 2 == -4, not 2^62-4.
+(defvar g-shr-neg:i32   (bit-shr -16 2))
+(defvar g-not:i32       (bit-not K))
+
+; --- enum members -----------------------------------------------------------
+(defvar g-enum:i32      (* BLUE 100))
+
+; --- a constant defined LATER in the same file ------------------------------
+; G-0's prescan arms `const-lit`/`const-lit-i64` before any form is emitted, so
+; a forward-referenced constant must fold identically to a backward-referenced
+; one. This is the direction that did not resolve at all before G-0.
+(defvar g-fwd:i32       (* LATER 3))
+(defconst LATER 11)
+
+; --- (sizeof T) -------------------------------------------------------------
+(defvar g-sz-i32:i32    (sizeof i32))
+(defvar g-sz-ptr:i32    (sizeof ptr))
+(defvar g-sz-small:i32  (sizeof Small))
+(defvar g-sz-nested:i32 (sizeof Nested))
+(defvar g-sz-arith:i32  (* (sizeof Small) 4))
+
+; --- (as T lit), including (as CStr "…") ------------------------------------
+; W5c recorded `(as CStr "…")` in an initializer as out of scope under "the
+; general expressions-aren't-literals rule". G-1 is that rule changing.
+(defvar g-as-i64:i64    (as i64 (* K K)))
+(defvar g-as-cstr:CStr  (as CStr "doom"))
+(defvar g-as-ptr:ptr    (as CStr "hello"))
+
+; --- (char "x") -------------------------------------------------------------
+(defvar g-char:i32      (char "A"))
+(defvar g-char-arith:i32 (+ (char "a") 2))
+
+; --- the address of another global ------------------------------------------
+; A global's address is a link-time constant AND provably non-null, so this is
+; the one G-1 spelling that fills a non-null `ptr:T` slot with no runtime store.
+(defvar g-target:i32 4242)
+(defvar g-addr:ptr:i32       (addr-of g-target))
+(defvar g-addr-fwd:ptr:i32   (addr-of g-later-target))
+(defvar g-later-target:i32 99)
+
+(defn agree (folded:i32 runtime:i64):CStr
+  (if (= (as i64 folded) runtime) (return "agree") (return "DISAGREE")))
+
+(defn main ():i32
+  (printf "arith %d %d %lld %d %d %d %d %d %d\n"
+    g-add g-sub g-mul g-div g-rem g-neg g-mixed g-div-neg g-rem-neg)
+  (printf "bits %d %d %d %lld %d %d %d\n"
+    g-and g-or g-xor g-shl g-shr g-shr-neg g-not)
+  (printf "names %d %d\n" g-enum g-fwd)
+  (printf "sizeof %d %d %d %d %d\n"
+    g-sz-i32 g-sz-ptr g-sz-small g-sz-nested g-sz-arith)
+  (printf "sizeof-vs-runtime %s %s %s %s\n"
+    (agree g-sz-i32    (as i64 (sizeof i32)))
+    (agree g-sz-ptr    (as i64 (sizeof ptr)))
+    (agree g-sz-small  (as i64 (sizeof Small)))
+    (agree g-sz-nested (as i64 (sizeof Nested))))
+  (printf "as %lld %s %s\n" g-as-i64 g-as-cstr g-as-ptr)
+  (printf "char %d %d\n" g-char g-char-arith)
+  (printf "addr %d %d\n" (deref g-addr) (deref g-addr-fwd))
+  (return 0))

@@ -9,14 +9,16 @@ regression" section near the end of this document for the two findings that
 run produced.
 
 **The stage was then reopened, the same day, with two new items.** **W8**
-(combined declaration and initialization) and **W9** (six defects found while
+(combined declaration and initialization) and **W9** (defects found while
 measuring W8's design) were added by the author's direction; see their sections
 at the end of this document. **The W1–W7 record below is unchanged** — the new
 scope is additional, not a revision of anything already closed. Both new items
 follow directly from findings W1–W7 produced: W8's G-0 is the Doom-port
 regression run's `defconst`/`defenum` finding and W8's G-5 is its
 `(defvar- g:ptr:T null)` finding, both recorded in that section as top
-candidates for a next stage and now assigned within this one.
+candidates for a next stage and now assigned within this one. **W8's G-0 and
+G-1 have since landed** (2026-08-01, 2026-08-02), taking W9 from six items to
+ten; G-2 onward is not started.
 
 **W4, W2 and W3 are complete** (W2a–d; W3a §1.6 opaque forward-declared C
 types; W3b §1.5 C type qualifiers + the `declare` validity gate — `SDL2/SDL.h`
@@ -626,7 +628,7 @@ prescan never claimed to cover.
 
 ---
 
-## W8 — Combined declaration and initialization *(added 2026-08-01; designed, not started)*
+## W8 — Combined declaration and initialization *(added 2026-08-01; G-0 done 2026-08-01, G-1 done 2026-08-02, G-2 onward not started)*
 
 **Spec: [../global-init.md](../global-init.md)** — the source of truth. This
 section records the filing and the shape of the item; it does not restate the
@@ -711,13 +713,65 @@ by `__do_global_ctors`. If yes, AVR gains an append-only mechanism; if no, AVR
 programs with runtime initializers get a located error. Neither answer blocks
 G-0 through G-5.
 
+### G-0 and G-1 as built
+
+[../global-init.md](../global-init.md)'s "G-0 as built" and "G-1 as built"
+sections are the source of truth; this table summarizes rather than restates
+them.
+
+| Chunk | What landed | Status |
+|---|---|---|
+| **G-0** | Value names resolve on reachability. `prescan-value-names` (`src/nucleusc.nuc:10797`) extends W1a's whole-graph walk to `defvar`/`defconst`/`defenum`, registering the same `Sym` the emitter would, minus the `@g = global` line; two call sites, both under W1a's existing guard, one of which covers the unit's root file and hence the same-file forward reference. All four of `global-init.md` §2.5's probes now resolve in both import orders. **Two premises were corrected, both in the safe direction**: registration here needed no idempotency guard (`scope-lookup` scans backwards, so a second identical definition is inert — unlike a second `generic-register-method` pass, which *would* duplicate), and duplicate `defconst`s across two files were *already* a silent last-wins before this change, unchanged by it, with the real enforcement being LLVM rejecting two `@g = global` lines for one name. **A latent silent-wrong-answer bug was found and fixed**: a `defconst-` referenced from earlier in its own file resolved to *another file's* public constant of the same spelling, compiling clean and returning the wrong number — G-0 fixes it because the prescan arms `g-defining-private` before the reader reaches the reference. **W1d's cycle diagnostic became partly obsolete**: constants, enum members and `defvar`s now work across a cycle, so `cycle-definer-message`'s note was narrowed to what remains unreachable (macros, `deferror` ids, `extern`), and the two units pinning the old behaviour were **replaced**, not deleted. `make bootstrap` moved by 48 type-definition lines (24 relocations) — proven inert the W1a way (zero non-`%Name = type` lines differed, sorting the type lines made the files byte-identical, stage2→stage3 byte-identical) — then reconverged. **W9 defect 6 is closed at the cause** for the two import shapes G-0 covers; the interim W1c-style note was deliberately declined. **Follow-up filed under W1, not W8**: the prescan still does not cover string-path `.nuc` imports or `.nuch` headers, affecting `defn` and value names identically. Tests 328 → 347. | **Done (2026-08-01)** |
+| **G-1** | Constant expressions in `defvar-init-ir`. Folds, with no JIT: `+ - * / %` (including unary `-`), `bit-and`/`bit-or`/`bit-xor`/`bit-shl`/`bit-shr`/`bit-not` over integer literals and `defconst`/`defenum` names, `(char "x")`, `(sizeof T)`, and `(as IntT x)` to any depth; at a pointer destination, `(as PtrT x)` — including `(as CStr "…")` — and `(addr-of other-global)`. **Supersedes, rather than contradicts, the W5c entry above**: W5c recorded `(as CStr "…")` in an initializer as out of scope under "the general expressions-aren't-literals rule" — G-1 *is* that rule changing, not an exception carved into it; the W5c entry stands as an accurate record of what W5c decided at the time. Deliberately does **not** fold floats (folding target FP in the compiler process is the `-ffast-math` hazard [../../context/conventions.md](../../context/conventions.md) records, and the only interesting spelling — `(as f32 1.5)` — is already refused in value position), comparisons/`and`/`or` (an `i1` domain the folder does not model), or aggregates (that is G-2). Overflow is **both** fold-then-range-check and reject-at-the-fold, never a silent wrap; division/remainder by zero and a shift outside `[0,64)` are located compile-time errors rather than executed (which would SIGFPE the compiler) or emitted as poison. The inherited checks demonstrably still fire on folded values (`int-literal-fits`, `pkind-flow-check`, and a newly-extracted shared `as-int-narrowing` in `src/type-utils.nuc:397` that `emit-as` now calls instead of duplicating). **One check G-1 had to add that the value path does not need**: `emit-sizeof` lowers to a GEP over the LLVM named type, resolved late, while the fold reads the compiler's field table via `abi-sizeof` — so `cfold-sizeof` also calls `reject-cycle-pending-layout`, without which a cross-cycle `(sizeof S)` would have silently folded to **0**. Cross-compilation verified sound: `(sizeof ptr)` folds to 2 on AVR, 8 on host. Tests 347 → 361. `make bootstrap` byte-identical on the first pass, as predicted — every shape G-1 adds is one that died before it. | **Done (2026-08-02)** |
+
+### Test/bootstrap status after G-0/G-1
+
+`make test` **361 PASS / 0 FAIL**, `make bootstrap` byte-identical (`PASS:
+stage1.ll == stage2.ll`), `make abi-test` and `make layout-test` green. Full
+account, including every fixture and the exact `file:line:` each inherited
+check pins: [../global-init.md](../global-init.md)'s "G-0 as built" and "G-1 as
+built" sections.
+
+**Three items G-1 reported but did not fix, added to the W9 list below as
+defects 7–9:**
+
+1. A pre-existing soundness gap made visible, not introduced, by G-1:
+   `pkind-flow-check` only diagnoses a `TY-PTR` source, so a `CStr` source
+   flows into a non-null `(ref T)` unchecked, and `(defvar g:ptr:T (as CStr
+   null))` compiles to a null in a non-null slot. The identical *local* is
+   **equally** accepted, by this compiler and by the pre-G-1 boot — the
+   renderer matches the chokepoint exactly, which is the G-1 contract; the
+   carve-out itself is what is wrong, in both positions at once.
+2. `emit-as`'s int→int rule ignores the literal value on the `Val`, so
+   `(as i8 5)` is refused as lossy even though 5 fits — the same
+   over-strictness [../stage14/int-widening.md](../stage14/int-widening.md)'s
+   LW-4 fixed elsewhere. A ~3-line shared fix, **deliberately declined**,
+   because it changes the value path and would have made G-1's bootstrap diff
+   unprovable.
+3. `(defvar g:i1 5)` emits `global i1 5`, which LLVM silently truncates to
+   `true`, because `int-literal-fits` returns 1 at width ≤ 1. Pre-existing —
+   the old boot emits the identical line for the bare literal — G-1 merely
+   gives it a second spelling (`(+ 2 3)`).
+
+**A fourth item, orthogonal to G-0/G-1 and found while re-verifying their test
+counts, added below as defect 10**: `tests/run-tests.sh` spawns units in
+parallel and their stdout can interleave, so a `PASS  <name>` line is
+occasionally split across two lines. Measured: three consecutive runs of the
+same tree all report 361, but earlier runs reported 346 vs 347 and 360 vs 361
+for what was the same tree, and a bare `w1d` token appears alone on output line
+314 in one capture. It does not affect FAIL detection (0 FAIL held every time),
+but it makes any PASS *count* unreliable by ±1 and could in principle mask a
+dropped unit.
+
 ---
 
-## W9 — Six defects found while measuring W8's design *(added 2026-08-01; reported, not fixed)*
+## W9 — Ten defects found while measuring W8's design *(added 2026-08-01; extended 2026-08-02; reported, not fixed)*
 
-**Enumerated in [../global-init.md](../global-init.md) §7.** All six are
-pre-existing and independent of W1–W7; all were hit while measuring, not
-synthesized.
+**The original six are enumerated in [../global-init.md](../global-init.md)
+§7. Four more (7–10) were found measuring G-1 and re-verifying G-0/G-1's test
+counts, and are recorded here only — they postdate §7's list and are not
+folded back into `global-init.md`.** All ten are pre-existing and independent
+of W1–W7; all were hit while measuring, not synthesized.
 
 | # | Defect | Note |
 |---|---|---|
@@ -726,7 +780,11 @@ synthesized.
 | 3 | **`--emit-cheader` does not export globals** | a `defvar` reaches the `.nuch` as `(extern …)` but gets no `extern T name;` line in the C header, so a C consumer cannot reach it |
 | 4 | **`--emit-cheader` emits hyphenated, invalid C identifiers** | see the precision note below |
 | 5 | **`(exclude-prelude)` in an *imported* file dies `unknown top-level form`** | rather than being ignored or diagnosed as "must be the first form of the unit". `strip-exclude-prelude` (`nucleusc.nuc:12375`) is consulted only for the entry file |
-| 6 | **`undefined: X — not defined anywhere in this compilation unit`** for a name that *is* in the unit, merely unprocessed | **overlaps W8's G-0; not filed twice** |
+| 6 | **`undefined: X — not defined anywhere in this compilation unit`** for a name that *is* in the unit, merely unprocessed | **overlaps W8's G-0; not filed twice.** G-0 has since closed the cause for the two import shapes it covers (plain and `import-use` symbol imports); the residual surface is string-path `.nuc` imports and `.nuch` headers, filed under W1 |
+| 7 | **`pkind-flow-check`'s `CStr` carve-out accepts a null through a non-null `(ref T)`**, found measuring G-1 | only diagnoses a `TY-PTR` source, so `(defvar g:ptr:T (as CStr null))` compiles to a null in a non-null slot — and so does the identical *local*, by this compiler and the pre-G-1 boot alike; the renderer matches the chokepoint exactly, so the carve-out itself is what is wrong, in both positions at once |
+| 8 | **`emit-as`'s int→int rule ignores the literal value on the `Val`**, found measuring G-1 | `(as i8 5)` is refused as lossy even though 5 fits — the same over-strictness [../stage14/int-widening.md](../stage14/int-widening.md)'s LW-4 fixed elsewhere; a ~3-line shared fix, declined here because it would have made G-1's bootstrap diff unprovable |
+| 9 | **`(defvar g:i1 5)` emits `global i1 5`, silently truncated to `true` by LLVM**, found measuring G-1 | `int-literal-fits` returns 1 at width ≤ 1; pre-existing — the old boot emits the identical line for the bare literal — G-1 merely gives it a second spelling |
+| 10 | **`tests/run-tests.sh` PASS counts are unreliable by ±1**, a test-harness finding unrelated to W8's design | parallel unit stdout can interleave, splitting a `PASS  <name>` line across two lines — measured: three consecutive runs of the same tree all reported 361, but earlier runs reported 346 vs 347 and 360 vs 361 for what was the same tree, and a bare `w1d` token appeared alone on output line 314 in one capture; does not affect FAIL detection (0 FAIL held every time) but could in principle mask a dropped unit |
 
 **Defect 4, with the precision that says what the fix is.** Independently
 confirmed: `(defstruct My-Rec (a-field i32))` + `(defn my-func (x:i32):i32 …)`
@@ -741,13 +799,17 @@ routes through `ns-ir-base` for the namespace prefix but never through
 `sanitize-for-c`). **The fix is a missed call site, not a missing mechanism.**
 It breaks C interop for any hyphenated name, which is most of them.
 
-**Defect 6 and W8's G-0.** G-0 fixes the *cause* — value names would resolve on
-reachability rather than import order, and the message would stop firing for
-names that are in the unit. Until then the message deserves a **W1c-style
-note**: W1c established exactly this pattern for exactly this shape of failure
-(a diagnostic that asserts something false because it cannot distinguish two
-causes), and appending a note is the change with the smallest blast radius —
-it breaks no `grep -qF` pin in the test suite.
+**Defect 6 and W8's G-0 — closed at the cause, 2026-08-01.** G-0 fixes the
+*cause* rather than the message: value names now resolve on reachability
+rather than import order, so the diagnostic stops firing for a `defvar`/
+`defconst`/`defenum` name that is in the unit, for both import shapes the new
+prescan walks (plain and `import-use` symbol imports). A W1c-style interim
+note on the message itself — the smallest-blast-radius fallback, since W1c
+established exactly this pattern for exactly this shape of failure — was
+**deliberately declined** once the cause-level fix landed the same day. The
+message can still fire truthfully for the residual surface G-0 does not walk:
+string-path `.nuc` imports and `.nuch` headers, filed as a W1 follow-up rather
+than reopening this defect.
 
 **Defects 1 and 2 are directly relevant to W8**, not incidental: they are the
 multi-TU mode `global-init.md` §2.4 relies on for its finding that an
