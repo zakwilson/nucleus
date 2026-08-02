@@ -1,0 +1,18 @@
+; Stage 15 W8 (fn-pointer globals): `name-existing-kind` no longer calls a
+; TY-FN-typed global "a function" on the strength of its type alone — it also
+; asks `is-local`, which `emit-defvar` (and G-0's `prescan-defvar-name`) set to
+; 1 while every function-registering path sets it to 0.
+;
+; The risk in that second conjunct is that it silences a GENUINE cross-kind
+; collision. It must not: a real `defn` and a same-named function-pointer
+; `defvar` are still two kinds of thing under one symbol, and one of them would
+; emit `@f = global ptr null` alongside `define i32 @f(i32)`. The plain
+; (non-fn-typed) collision is pinned by g0-value-fn-collision-order1/2; this is
+; the fn-typed shape, the one the fix touches.
+
+(defn f (x:i32):i32 (return x))
+
+(defvar f:(fn i32)(i32) null)
+
+(defn main ():i32
+  (return (f 0)))

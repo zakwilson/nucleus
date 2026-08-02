@@ -1,0 +1,15 @@
+; Stage 15 W8 (fn-pointer globals): the `null` gate in `defvar-init-ir` was
+; widened to admit a bare function-pointer type — `(defvar h:(fn i32)(i32) null)`
+; is legal, because a TY-FN slot carries no non-null contract and its implicit
+; zero is already `null`.
+;
+; This is the boundary that widening must NOT cross. `ptr:(fn i32)(i32)` is a
+; *pointer to* a function pointer, i.e. an ordinary PTR-REF typed pointer, so
+; W6's `pkind-flow-check` still refuses `null` there. If this fixture ever
+; compiles, the TY-FN admission has leaked past the kind it was written for and
+; re-opened the hole W6 closed.
+
+(defvar hp:ptr:(fn i32)(i32) null)
+
+(defn main ():i32
+  (return (unsafe/cast i32 (deref hp))))

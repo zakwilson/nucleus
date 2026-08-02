@@ -5,7 +5,7 @@
 | `defn` | Define a function. **Signature.** The mandatory return type is written as its own operand after the parameter list (`(defn name (params):ret body…)`), matching the anonymous forms `fn`/`vfn`/`mfn`/`cfn`. A parenthesized return type is written space-separated or with the `:(…)` lone-colon fuse — `(defn name (params) (Maybe i32) …)` / `(defn name (params):(Maybe i32) …)`. An optional `noreturn` attribute follows the return type. `defprotocol` method signatures and `declare` use the same grammar. (The legacy return-in-the-name spelling `(defn name:ret (params) …)` was retired in Stage 14 and is now a hard error.) Supports `&rest` for variadic functions: `(defn name (a:t &rest xs:elem) ...)`. The rest parameter receives a `Node*` cons-list head built at the call site (so each call site emits `@make-cell` calls and the program must define a compatible `make-cell`). The element type annotation is documentation only — non-`ptr` args are `inttoptr`'d into `Node.car`. `&rest` functions are not directly C-callable; calling through a function pointer requires manually constructing the rest list. `&rest` must be the second-to-last param. Supports `&optional` for trailing parameters with defaults: `(defn name (a:t &optional (b:t default) ...) ...)`. Each `&optional` param must be a 2-element list `(name:type default-expr)`. Defaults are evaluated at the call site in the caller's scope (Common Lisp semantics), so non-constant defaults like `(next-counter)` produce a fresh value per call. Implicit casts apply to defaults. The compiled function has fixed maximum arity at the LLVM/C ABI level — calling through a function pointer or from C requires supplying every argument including the optional ones. `&optional` cannot be combined with `&rest`. A struct-by-value parameter or return is lowered to the platform C ABI (see [Passing and returning structs by value](structs-unions.md#passing-and-returning-structs-by-value)). **Docstring**: if the first body form is a string literal AND there is at least one more form after it, that string is captured as the function's docstring (visible via `(doc fn)` and `(apropos)`); a function whose body is a single string literal is treated as returning the string, not as having a docstring. The same convention applies to `defmacro`. **Overloadable:** defining `defn` again with the same name but different parameter types adds a method — see [Polymorphism](generics.md#polymorphism-overloaded-defn-multimethods). | function definition |
 | `defconst` | Define a compile-time constant `(defconst name value)`, where `value` is an integer literal. **The name behaves exactly like the literal it stands for**: it is typed by its value (`i32`, or `i64` when the value does not fit — `(defconst BIG 5000000000)` is `i64`), it *adapts* to the other operand of a binary operator the way a bare literal does (`(<= ans:ui32 K)` compiles iff `(<= ans:ui32 512)` does, in either operand order), and it is rejected — not silently wrapped — where its value does not fit the slot it flows into. See [Integer literals](types.md#integer-literals) and [Binary operators](types.md#implicit-type-coercion). The name takes **no** type annotation — `(defconst K:i32 2)` is rejected (`defconst: takes no type annotation; write (defconst K 2)`) rather than silently accepted, since the value already determines the type. | `#define` / `enum` constant |
 | `defenum` | Define an enumeration `(defenum Name member ...)` — a flat list of member names, each bound to its 0-based ordinal as an `i32` constant. A member is a named integer literal and adapts at a use site exactly as `defconst` does (`(= c:ui32 GREEN)` is as legal as `(= c:ui32 1)`). Like `defconst`, the enum's own name takes no type annotation. | `enum` |
-| `defvar` | Define a global variable `(defvar name:type [init])`. The optional init is preferably a **compile-time constant** — a literal, a name bound by `defconst` / `defenum`, or a constant *expression* over them — which is baked into the emitted global and costs nothing at run time; an initializer the compiler cannot fold (a call, an allocation, a read of another global) is also legal and runs at **startup, before `main`**, as an ordinary assignment, so `(defvar g:ptr:T (make-thing))` typechecks with `g` non-null. See [Global initializers](#global-initializers) for the constant grammar and the arithmetic rules, and [Run-time initializers](#run-time-initializers) for the ordering rule, the zero-cost-when-unused guarantee, and the targets (AVR) that refuse one. An integer initializer, literal, named or folded, that does not fit the declared type is a compile-time error rather than a silent truncation. Omitted inits default to zero / `null` / `false`; a global of **aggregate** type (struct, union, or `(array T N)`) with no init is zero-filled (`zeroinitializer`), so e.g. `(defvar g:MyStruct)` and `(defvar g:(array i32 256))` are valid. `set!` works on the result. The symbol is exported with default linkage and is visible to C consumers (`extern T name;`) and other Nucleus modules (`(extern name:type)`). **Storage class specifiers:** file-scope `static` is the private definer `defvar-` (internal linkage); `register` is a no-op (LLVM ignores it); `thread_local` is reserved in the declaration-attribute slot (`:thread-local`) but not yet implemented — it errors with a targeted diagnostic pointing at the threading-stage blocker (`design/stage14/attributes.md` §5). Function-scope `static` locals and `:align`/`:section`/`:weak` are sketched but not implemented (same doc, §6). Function attributes ARE implemented (Stage 14 AVR-5) — but as the separate top-level `fn-attr` directive below, not as a keyword in this decl-attribute slot. C's global `const` is the `:const` declaration attribute (Stage 14 AVR-6): `(defvar :const name:type init)` emits an LLVM `constant` instead of `global`, and is rejected everywhere else the attribute registry applies since only a `defvar` global has an independent storage class to select — see [Const globals](types.md#const-globals). | global variable definition |
+| `defvar` | Define a global variable `(defvar name:type [init])`. **The initializer grammar has three tiers.** (1) A **compile-time constant** — a literal, a `defconst` / `defenum` name, a constant *expression* over them (arithmetic, bit operations, `(sizeof T)`, `(as T x)`), `(addr-of g)`, and constant **aggregates**: an `(array T …)` literal and an `(S …)` struct literal, nested to any depth. These are baked into the emitted global, applied by the loader before any code runs, and cost nothing. (2) Anything else — a call, an allocation, a read of another global — is a **run-time initializer**: the slot is emitted zero-filled and the initializer runs at **startup, before `main`**, as an ordinary assignment, so `(defvar g:ptr:T (make-thing))` typechecks with `g` non-null. (3) **Refused:** a run-time initializer at an `(array T N)` slot, for a `:const` global, or inside a `compile-time` / `defmacro` body; a non-constant *element* of a constant aggregate; a scalar at an aggregate slot; and an initializer that syntactically names a global whose own `defvar` has not been reached yet (the error names both sites). See [Global initializers](#global-initializers) for the constant grammar and the arithmetic rules, and [Run-time initializers](#run-time-initializers) for the ordering rule and its diagnostic, the zero-cost-when-unused guarantee, and the targets (AVR) that refuse one. An integer initializer, literal, named or folded, that does not fit the declared type is a compile-time error rather than a silent truncation. Omitted inits default to zero / `null` / `false`; a global of **aggregate** type (struct, union, or `(array T N)`) with no init is zero-filled (`zeroinitializer`), so e.g. `(defvar g:MyStruct)` and `(defvar g:(array i32 256))` are valid. `set!` works on the result. The symbol is exported with default linkage and is visible to C consumers (`extern T name;`) and other Nucleus modules (`(extern name:type)`). **Storage class specifiers:** file-scope `static` is the private definer `defvar-` (internal linkage); `register` is a no-op (LLVM ignores it); `thread_local` is reserved in the declaration-attribute slot (`:thread-local`) but not yet implemented — it errors with a targeted diagnostic pointing at the threading-stage blocker (`design/stage14/attributes.md` §5). Function-scope `static` locals and `:align`/`:section`/`:weak` are sketched but not implemented (same doc, §6). Function attributes ARE implemented (Stage 14 AVR-5) — but as the separate top-level `fn-attr` directive below, not as a keyword in this decl-attribute slot. C's global `const` is the `:const` declaration attribute (Stage 14 AVR-6): `(defvar :const name:type init)` emits an LLVM `constant` instead of `global`, and is rejected everywhere else the attribute registry applies since only a `defvar` global has an independent storage class to select — see [Const globals](types.md#const-globals). | global variable definition |
 | `defstruct` | Define a struct type, or a parametric struct template when the name is a list: `(defstruct (Name T ...) ...)`. Like `defconst`, a **bare** (non-template) name takes no type annotation — `(defstruct S:i32 (f i32))` is rejected (`defstruct: takes no type annotation; write (defstruct S ...)`); a genuine template head such as `(Vector T)` is unaffected. See [Parametric struct templates](structs-unions.md#parametric-struct-templates-defstruct-name-t-). | `struct` |
 | `defunion` | Define a tagged sum `(defunion Name (arm field:type ...) ... bare-arm)` or a template `(defunion (Name T ...) ...)`. Like `defconst`, a **bare** (non-template) name takes no type annotation — `(defunion U:i32 (a x:i32) b)` is rejected (`defunion: takes no type annotation; write (defunion U ...)`); a genuine template head is unaffected. See [Unions and tagged sums](structs-unions.md#unions-and-tagged-sums). | tagged `struct {int tag; union {...} payload;}` |
 | `defprotocol` | Define a protocol: a named set of required method signatures (types may mention `Self` and extra element parameters). Compile-time only; emits no code. Like `defconst`, a **bare** (non-parametric) name takes no type annotation — `(defprotocol P:i32 ...)` is rejected (`defprotocol: takes no type annotation; write (defprotocol P ...)`); a genuine parametric head such as `(Seq E)` is unaffected. See [Protocols](generics.md#protocols-defprotocol-and-extend) and [Parametric protocols](generics.md#parametric-protocols). | — (concept: interface/trait) |
@@ -125,10 +125,15 @@ Consequences worth knowing:
 
   If you hit one of these, the fix is the common-parent spelling above, or
   moving the shared macro/error/type into a third file both import.
-* **Reordering imports cannot break a build.** Alphabetizing an import list, or
-  inserting a new import anywhere, changes nothing about which names resolve.
-  This includes `defvar` initializers: they are constants, applied before any
-  code runs, so no reordering can change one.
+* **Reordering imports cannot change what resolves.** Alphabetizing an import
+  list, or inserting a new import anywhere, changes nothing about which names a
+  program sees. It *can* change the order **run-time initializers** run in —
+  that is a sequencing question rather than a resolution one, and it is the one
+  place in the language where import order is observable. A *constant*
+  initializer has no order at all: it is applied by the loader before any code
+  runs. See [Order](#order) below, and
+  [Resolution is order-free; initialization is not](#resolution-is-order-free-initialization-is-not)
+  for why the two rules are not in tension.
 * **`(declare f (params):ret)` is still available** as a local prototype, and
   matching a real `defn` of the same name is not a redefinition — the
   declaration stands down for the definition. It is no longer *needed* for
@@ -160,6 +165,35 @@ Consequences worth knowing:
   start, so a forward reference to one inside its own file resolves to it and
   not to some other file's public name of the same spelling.
 
+### Resolution is order-free; initialization is not
+
+The rule above says import order does not affect resolution. The rule under
+[Order](#order) says a run-time initializer runs when its `defvar` is reached,
+which *is* import order. These are not in tension, and the difference is worth
+stating plainly because they look alike:
+
+* **Resolution has exactly one right answer, independent of order.** Whether
+  `LIMIT` names that `defconst` does not depend on where anything sits; an
+  order-dependent answer was simply a bug, which is what the reachability rule
+  above fixed. An import establishes *reachability*, not visibility.
+* **Initialization is inherently sequential.** Two assignments cannot both run
+  first, so *some* order has to exist and be specified. Making it emission order
+  is a choice about sequencing, not a return to the ordinal resolution rule that
+  was retired. C++ has the same rule within a translation unit, and leaves it
+  unspecified across them.
+
+The two stay separate because nothing about initialization feeds back into
+resolution: every reachable file's `defvar` / `defconst` / `defenum` names are
+registered before the first form is emitted, so a `defvar` initializer naming a
+global declared later still *resolves* to it. That is why the forward-reference
+case gets an ordering diagnostic naming both sites rather than an "undefined"
+error — the compiler knows exactly what the name means and is objecting to
+*when*, not to *what*.
+
+In short: **what a name means never depends on order; when a global's
+initializer runs always does** — and only for a run-time initializer, since a
+constant one has no order at all.
+
 ## Global initializers
 
 A `defvar` initializer is preferably a value the compiler can compute while
@@ -185,9 +219,14 @@ ordering rule, what it costs, and the targets on which it is refused.
   storage is NUL-terminated and an unmaterialized literal's value simply *is*
   its `data` pointer.
 * `null`, at a **nullable** pointer destination only: `CStr`, an elem-less bare
-  `ptr`, or `(raw T)` / `?T`. A *typed non-null* pointer (`ptr:T`, `(ref T)`)
-  rejects it with the same diagnostic the identical local binding gets, since a
-  non-null slot holding `null` compiles clean and faults on first use.
+  `ptr`, `(raw T)` / `?T`, or a **function-pointer type** `(fn ret)(params)` —
+  the pointer kinds do not apply to a fn pointer, so it is nullable like `CStr`,
+  and the implicit zero for the same slot is `null` anyway (see
+  [Function-pointer globals](types.md#function-pointer-globals)). A *typed
+  non-null* pointer (`ptr:T`, `(ref T)`) rejects it with the same diagnostic the
+  identical local binding gets, since a non-null slot holding `null` compiles
+  clean and faults on first use — and that includes `ptr:(fn ret)(params)`,
+  which is a pointer *to* a function pointer, not a function pointer.
 * `true` / `false`, at `i1` / `bool` only.
 * `(char "x")`, at any int type.
 
@@ -338,6 +377,10 @@ refused — see the list after next.
   `(sizeof S)` answers from the compiler's layout table here rather than from
   LLVM, so across an import cycle it is refused with the same message a by-value
   use gets, instead of silently folding to zero.
+* **An initializer that names a global whose own `defvar` has not been reached
+  yet** — including the two-global cycle. The error names both sites; see
+  [Order](#order), which also states exactly which forward references the
+  compiler can and cannot see.
 
 ## Run-time initializers
 
@@ -373,19 +416,63 @@ in one operation.
 
 **Initializers run in the order their `defvar` forms are reached during
 compilation** — source order within a file, import order across files (an
-imported file's forms are reached where its `import` appears).
+imported file's forms are reached where its `import` appears). This is the same
+rule C++ uses within a translation unit.
 
 ```lisp
 (defvar g-n:i32     (compute))    ; runs first
 (defvar g-after:i32 (+ g-n 1))    ; runs second, and sees g-n's value
 ```
 
-Reading a global whose `defvar` has **not** been reached yet gets that slot's
-zero, not its initialized value. This is the same rule C++ uses within a
-translation unit, and it is a *sequencing* rule only — it does not affect what
-names *resolve*, which stays reachability-based (see
-[Cross-file resolution](#cross-file-resolution-reachability-not-import-order)).
-Where an initializer needs another global's value, move the declaration.
+Reading a global whose `defvar` has **not** been reached yet would get that
+slot's zero rather than its initialized value. **When the compiler can see that
+happening it refuses to compile the program**, naming both sites:
+
+```lisp
+(defvar g-after:i32 (+ g-n 1))    ; error, at this line
+(defvar g-n:i32     (compute))
+```
+
+```
+demo.nuc:1: error: defvar: the initializer for 'g-after' names global 'g-n',
+  whose own defvar has not been reached yet -- it still holds its zero at this point
+  note: 'g-n' is declared at demo.nuc:2; initializers run in the order their
+  defvars are reached (source order within a file, import order across files),
+  so move that defvar above this one -- unless it depends on this one in turn,
+  which is a cycle no order satisfies
+```
+
+Swapping the two forms is the fix. Across files, the same diagnostic names the
+other file and line, and the fix is to move the `import` (or the `defvar`).
+
+**What the check does and does not see.** The boundary is exact, and the half it
+cannot see is a permanent limit rather than an unfinished feature:
+
+* **A name written in the initializer is checked.** `(defvar a:i32 (+ b 1))`,
+  `(defvar a:i32 b)`, a call *through* a function-pointer global — anything that
+  spells the global's name in the initializer expression.
+* **A read reached through a call is not checked, and cannot be.** In
+  `(defvar a:i32 (f))` where `f`'s body reads `b`, nothing in `a`'s initializer
+  mentions `b`. Detecting it needs whole-program summaries of what every callee
+  reads, which Nucleus does not do and does not plan to. Such a read silently
+  gets the zero. If an initializer calls something that touches other globals,
+  their `defvar`s must come first, and it is on you to arrange that.
+* **`(addr-of g)` is not a read** and is never flagged, even when `g`'s `defvar`
+  comes later. A global's address is a link-time constant that needs no
+  initialization to have happened; the *value* is the thing that would be zero.
+* **A cycle** — `a`'s initializer names `b` and `b`'s names `a` — is caught by
+  the same rule, since whichever runs first names a global the other has not
+  reached. Unlike a plain forward reference it cannot be fixed by reordering;
+  one of the two dependencies has to go. A cycle laundered through calls is, as
+  above, not detected: both globals simply read zeros.
+* **The compiler does not compute an initialization order for you.** It reports
+  and refuses; it never reorders. That is deliberate — a correct automatic order
+  needs the same interprocedural analysis the second bullet rules out.
+
+None of this affects what names *resolve*: an initializer naming a global
+declared later still resolves to it, which is why the error above talks about
+ordering rather than saying "undefined". See
+[Resolution is order-free; initialization is not](#resolution-is-order-free-initialization-is-not).
 
 ### Cost, and targets that refuse
 

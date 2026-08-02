@@ -38,14 +38,14 @@
 (defvar g-label:CStr (pick-label 1))
 
 ; --- a function-pointer hook (one of the compiler's own §2.12 shapes) ---------
-; Spelled through the bare-`ptr` escape hatch, NOT as `(defvar g-hook:(fn i32)
-; (i32) …)`, because a `defvar` whose declared type is a function-pointer type
-; cannot be declared AT ALL today — with or without an initializer. See the G-3
-; as-built record in design/global-init.md and §7: `name-existing-kind`
-; classifies any global Sym with a `TY-FN` type as "a function", and since G-0
+; Spelled with its real function-pointer type. This used to need the bare-`ptr`
+; escape hatch plus an `unsafe/cast`, because a `defvar` whose declared type was
+; a function-pointer type could not be declared AT ALL — `name-existing-kind`
+; classified any global Sym with a `TY-FN` type as "a function", and since G-0
 ; the prescan defines that Sym before `emit-defvar` runs, so the `defvar`
-; collides with itself. Independent of G-3; reported, not fixed here.
-(defvar g-hook:ptr (pick-hook))
+; collided with itself. Fixed in W8; the dedicated matrix (explicit `null`, no
+; init, `set!`, both call spellings) is examples/fnptr-global.nuc.
+(defvar g-hook:(fn i32)() (pick-hook))
 
 ; --- constant initializers in the SAME unit stay constant ---------------------
 ; These are rendered by G-1/G-2 into the `@g = global …` line and are not in the
@@ -70,7 +70,7 @@
   (return c"other"))
 
 (defn forty-two ():i32 (return 42))
-(defn pick-hook ():ptr (return (unsafe/cast ptr forty-two)))
+(defn pick-hook ():(fn i32)() (return forty-two))
 
 (defn main ():i32
   (printf "g-n       = %d\n" g-n)
@@ -78,7 +78,7 @@
   (printf "g-pt      = %d,%d\n" (g-pt x) (g-pt y))
   (printf "g-origin  = %d,%d\n" ((addr-of g-origin) x) ((addr-of g-origin) y))
   (printf "g-label   = %s\n" g-label)
-  (printf "g-hook()  = %d\n" (unsafe/funcall-ptr-i32 g-hook))
+  (printf "g-hook()  = %d\n" (g-hook))
   (printf "g-const   = %d\n" g-const)
   (printf "g-tab[2]  = %d\n" (aref g-tab 2))
   (return 0))

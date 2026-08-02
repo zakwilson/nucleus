@@ -1,0 +1,25 @@
+; Stage 15 W8 G-4: this fixture pins a KNOWN GAP, not an intended feature.
+;
+; `g4-lc-dst`'s initializer reads `g4-lc-src` — a global whose own `defvar` is
+; reached later — but it does so THROUGH A CALL, so no syntactic reference to
+; `g4-lc-src` appears in the initializer and the ordering check cannot see it.
+; Detecting this needs callee effect summaries, which
+; design/stage15-stress-test/nullability.md §9 declares a permanent non-goal,
+; and design/global-init.md §4.2 and §6 adopt the same boundary. The compiler's
+; own shape, `(vector-new-in (addr-of g-arena-alloc))`, is this case.
+;
+; So this compiles, and `g4-lc-dst` ends up **0**, not 99. `run_g4_order` links
+; and runs it and asserts the observed value: `main` returns `(+ 10 g4-lc-dst)`,
+; so the gap reads as exit 10 and a future fix that closed it — either by
+; diagnosing the shape or by ordering the initializers — would read as 109 and
+; fail loudly here rather than passing quietly.
+;
+; The directly-spelled version of the same dependency, `(defvar g4-lc-dst:i32
+; g4-lc-src)`, IS rejected; see g4-forward-ref.nuc.
+(defn g4-lc-seed ():i32 (return 99))
+(defn g4-lc-read ():i32 (return g4-lc-src))
+
+(defvar g4-lc-dst:i32 (g4-lc-read))
+(defvar g4-lc-src:i32 (g4-lc-seed))
+
+(defn main ():i32 (return (+ 10 g4-lc-dst)))

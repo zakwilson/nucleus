@@ -144,6 +144,14 @@ targets it is simply placed in read-only data.
 - `(defvar :const answer:i32 42)` — emits `@answer = constant i32 42`
 - `(defvar mutable-count:i32 0)` — unmarked, unchanged — emits `@mutable-count = global i32 0`
 
+**A `:const` global's initializer must be a compile-time constant.** The whole
+constant grammar is available — a folded expression, `(as CStr "…")`,
+`(addr-of g)`, an `(array T …)` or `(S …)` literal — but the run-time
+initializer route is not: read-only storage cannot be written at startup, so
+`(defvar :const g:i32 (compute))` is refused with a message saying so rather
+than compiling into a store that would fault. See
+[Global initializers](toplevel.md#global-initializers) for the full grammar.
+
 Unlike `:volatile`, `:const` is meaningful **only** on a `defvar` global — a
 struct/union field, `defn` param, `let`/`with` binding, or pointer target
 type has no independent global-vs-constant storage class to select, and the
@@ -256,7 +264,12 @@ and `make abi-test`.
 exports the constant. `--emit-nuch` round-trips `(array T N)` unchanged, for both
 a field and an array-typed global (exported as `(extern (g (array i32 3)))`).
 
-For *initializing* one, see
+An `(array T N)` global's initializer must be a **compile-time constant** — an
+`(array T …)` literal, or nothing at all (`zeroinitializer`). There is no
+run-time route for one, because an array binding names storage that `set!`
+cannot target, so there is no assignment a startup initializer could perform;
+the pointer form (`(defvar g:ptr:T (make-table))`) is what to declare when the
+table has to be built at run time. For the constant grammar, see
 [Global initializers](toplevel.md#global-initializers); for the array
 **literal** used in expression position, see
 [Special Forms](special-forms.md).
@@ -299,6 +312,41 @@ A `defn` function name used in value position decays to a function pointer, matc
 (defn add (a:i32 b:i32):i32 (return (+ a b)))
 (apply add 3 4)  ; passes add as a function pointer
 ```
+
+### Function-pointer globals
+
+A `defvar` may be typed with a function-pointer type — the *hook* shape, where a
+slot is declared once and filled in later:
+
+```lisp
+(defvar g-hook:(fn i32)(i32) null)   ; declared unwired
+(defvar g-zero:(fn i32)(i32))        ; identical: the implicit zero is null
+(defvar g-init:(fn i32)() (pick))    ; run-time initializer: filled at startup
+
+(defn main ():i32
+  (set! g-hook add1)                 ; assign any matching function
+  (return (g-hook 41)))              ; call through it — funcall also works
+```
+
+**A function pointer is nullable and carries no non-null contract.** The pointer
+kinds (`ref`/`raw`/`?T`) apply to `ptr`, not to `(fn ret)(params)`, so `null` is
+a fn pointer's ordinary "not wired yet" value — the same status `CStr` and an
+elem-less bare `ptr` have. Note the distinction from the *wrapper* spellings:
+`ptr:(fn ret)(params)` and `(ref (fn ret)(params))` are pointers **to** a
+function pointer, are non-null like any other typed pointer, and reject a `null`
+initializer.
+
+A hook filled by a [run-time initializer](toplevel.md#run-time-initializers) is
+subject to the ordering rule like any other global, and calling *through* a hook
+counts as reading it: `(defvar g-v:i32 (g-late 3))` above `(defvar g-late:(fn
+i32)(i32) …)` is refused with both sites named, since `g-late` would still be
+`null` when `g-v`'s initializer ran.
+
+Two current rough edges. `(= h null)` on a function pointer does not compile
+(`= expects integer operands`) — test it with an explicit reinterpret,
+`(= (unsafe/cast ptr h) null)`. And a function-pointer slot is emitted with
+`align 1` rather than the pointer alignment; this is valid but conservative IR,
+not a miscompile.
 
 ## Implicit Type Coercion
 

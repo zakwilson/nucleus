@@ -8724,8 +8724,24 @@
     (dotimes (i (sc len))
       (let (sym:ptr:Sym (as ptr:Sym (unsafe/ptr+ (as ptr:Sym (sc syms)) i)))
         (when (= (strcmp (sym name) name) 0)
+          ; A TY-FN type alone does NOT make this binding a function: a
+          ; function-pointer-typed *global* (`(defvar g:(fn i32)(i32) …)`) is a
+          ; TY-FN-typed value. `is-local` is the discriminator every other site
+          ; already uses for exactly this question — `emit-dispatch`'s
+          ; "a defn/extern symbol (is-local 0, TY-FN) is a direct call" is the
+          ; same two-conjunct test — because `emit-defn`/`emit-extern`/the
+          ; `.nuch` and C-header declare paths all register a function with
+          ; is-local 0, while `emit-defvar` (and G-0's `prescan-defvar-name`)
+          ; register a global value with 1.
+          ;
+          ; Without the second conjunct a fn-pointer `defvar` collided with
+          ; ITSELF once G-0 started defining its Sym during the whole-graph
+          ; prescan: the prescan's Sym was already in `g-globals` when
+          ; `emit-defvar` ran its `guard-name-kind`, so the value was reported
+          ; as "already names a function".
           (if (and (!= (sym type) null)
-                   (= (-> sym (_ type) (unsafe/cast ptr:Type _) (_ kind)) TY-FN))
+                   (= (-> sym (_ type) (unsafe/cast ptr:Type _) (_ kind)) TY-FN)
+                   (= (sym is-local) 0))
             (return NK-FUNCTION)
             (return NK-VALUE))))))
   (return NK-NONE))
@@ -9387,10 +9403,29 @@
         ; return states it. tests/fixtures/w5c-cstr-null-exempt.nuc is the
         ; tripwire that fails if a later tightening sweeps `CStr` up with `ptr`.
         (when (= ty-kind TY-CSTR) (return "null"))
-        ; --- ptr (all pkinds) -------------------------------------------------
-        (when (= (is-ptr-like ty) 0)
+        ; --- ptr (all pkinds) + TY-FN -----------------------------------------
+        ; `is-ptr-like` is {TY-PTR, TY-CSTR}: TY-FN is deliberately NOT a member
+        ; (src/type-utils.nuc), so it is admitted by name here rather than by
+        ; widening that predicate — exactly how `emit-zero-store` and
+        ; `type-zero-const-ir` already spell the same three-way rule.
+        ;
+        ; A function pointer is `ptr` in IR and its slot's implicit zero is
+        ; ALREADY `null` (`type-zero-const-ir`'s TY-FN arm), so rejecting the
+        ; explicit spelling reproduced precisely the split W5c closed for
+        ; `CStr`: `(defvar hook:(fn i32)(i32))` emitted `global ptr null` while
+        ; `(defvar hook:(fn i32)(i32) null)` was refused.
+        ;
+        ; This does not re-open W6's hole. That hole is a PTR-REF *destination*
+        ; accepting null, and a TY-FN destination can never be one: `ptr-pkind`
+        ; answers PTR-RAW for every non-`TY-PTR` kind, and `(fn ret)(params)` is
+        ; the whole function-pointer spelling — the wrapper forms `ptr:(fn …)` /
+        ; `(ref (fn …))` denote a pointer *to* a function pointer, are still
+        ; PTR-REF, and still reject null through the `pkind-flow-check` below.
+        ; So the non-null contract that exists is untouched; TY-FN simply never
+        ; carried one, like `CStr` and the elem-less `void*` ptr.
+        (when (and (= (is-ptr-like ty) 0) (!= ty-kind TY-FN))
           (die-at (node-line init encl)
-            (fmt-s "defvar: null requires ptr or CStr type, not %s"
+            (fmt-s "defvar: null requires ptr, CStr or a function-pointer type, not %s"
               (type-spelling ty))))
         ; Stage 15 W6 (nullability): close the global-initializer half of the
         ; Phase-F non-null gate. This function is a *constant renderer* — it
@@ -9592,6 +9627,124 @@
     (.set! job name name)
     (conj g-init-worklist job)))
 
+; ============================================================
+; Stage 15 W8 G-4 — the initializer-ordering diagnostic
+; (design/global-init.md §4.2)
+; ============================================================
+;
+; §4.1 settles the order rule: a run-time initializer runs when its `defvar` is
+; *reached* during emission — source order within a file, import order across
+; files. §4.2 settles how much of the resulting hazard is checkable, and draws
+; the boundary exactly:
+;
+; * A **syntactic** reference is checkable. `(defvar a:i32 (+ b 1))` either has
+;   `b`'s `defvar` before `a`'s in emission order or it does not, and answering
+;   that is one lookup.
+; * A reference **laundered through a call** is not, and is not going to be: it
+;   needs callee effect summaries, which `design/stage15-stress-test/
+;   nullability.md` §9 declares a permanent non-goal for exactly this reason.
+;   This compiler's own shape, `(vector-new-in (addr-of g-arena-alloc))`, is
+;   that case. It is undiagnosed and **documented as undiagnosed**
+;   (docs/toplevel.md) — the honest boundary W6 §4.5 draws, not a silent gap.
+; * A genuine **cycle** falls out of the same check with no cycle machinery of
+;   its own: whichever of the two is emitted first names a global the other has
+;   not reached. Through calls it is likewise invisible and becomes a read of a
+;   zero.
+; * A computed **topological order** is a non-goal (§6): same analysis, same
+;   reason.
+;
+; Two questions §4.2 left open, decided here:
+;
+; 1. **"Not yet reached" is about EMISSION, not resolution**, and the two are
+;    now genuinely different questions. Before G-0 they coincided — a forward
+;    name simply did not resolve. G-0 made every reachable file's `defvar` names
+;    resolve before the first form is emitted, *precisely* so that resolution
+;    stopped being ordinal (§4.1's argument for why this is not the rule W1
+;    retired depends on it). So a successful `scope-lookup` proves nothing here,
+;    and this check reads `Sym.defvar-state` instead: the prescan's Sym says
+;    DECLARED, and `emit-defvar` appends a second Sym for the same key saying
+;    REACHED. This check therefore never reports "undefined" — that is still
+;    resolution's answer, and it is still order-independent.
+; 2. **`(addr-of g)` is not a read.** A global's address is a link-time constant
+;    that requires no initialization to have happened — it is exactly what G-1
+;    folds to a bare `@g` — so taking it before the target's `defvar` is
+;    legitimate, and this compiler's own source does it. Reading the *value*
+;    (`(+ g 1)`) is what gets a zero. `examples/g1-const-init.nuc` already ships
+;    the forward `(addr-of g-later-target)` shape and must keep compiling;
+;    `tests/fixtures/g4-addr-of-forward-ok.nuc` pins the decision on the
+;    run-time path too, where the exemption is not incidental.
+;
+; Blame one symbol named by an initializer. Silent unless it resolves to a
+; global whose own `defvar` is still only DECLARED.
+(defn defvar-blame-forward-ref (name:CStr self:CStr encl:i32):void
+  (let (sym:?ptr:Sym (scope-lookup g-globals name))
+    ; Unresolved is not this check's business: an initializer naming nothing is
+    ; already `undefined: x` from the emitter that lowers it, and answering here
+    ; would put a resolution verdict in an ordering diagnostic.
+    (when (= sym null) (return))
+    ; A `defconst` / `defenum` member / `deferror` id is a compile-time value
+    ; with no storage, so there is no initialization for it to be waiting on.
+    (when (!= (sym is-const) 0) (return))
+    ; 0 covers a function, an `extern`, and a `.nuch`-imported global. An
+    ; `extern` is deliberately outside the rule: its storage belongs to another
+    ; translation unit and cross-TU initialization order is unspecified here for
+    ; the same reason it is in C++ (§4.1).
+    (when (!= (sym defvar-state) DEFVAR-DECLARED) (return))
+    (when (= name self)
+      (die-at encl
+        (fmt-2s "%s\n%s"
+          (fmt-2s "defvar: the initializer for '%s' names '%s' itself, whose defvar has not been reached yet -- the slot still holds its zero"
+            name name)
+          "  note: a global's initializer runs at the point its own defvar is reached, so it cannot read the global it is initializing")))
+    (let (site:ptr (as ptr "elsewhere in this compilation unit"))
+      ; src-file/src-line come from `sym-set-src-loc`, which the prescan runs
+      ; with `g-source-path` set to the file it is walking — so the note's
+      ; location is the target's OWN file even though the target has not been
+      ; emitted yet, which is what makes "name both sites" possible at all.
+      (when (!= (sym src-file) null)
+        (set! site (fmt-sd "%s:%d" (as ptr (sym src-file)) (sym src-line))))
+      (die-at encl
+        (fmt-2s "%s\n%s"
+          (fmt-2s "defvar: the initializer for '%s' names global '%s', whose own defvar has not been reached yet -- it still holds its zero at this point"
+            self name)
+          ; The advice is hedged deliberately: a genuine CYCLE reaches this same
+          ; message (§4.2 — it needs no machinery of its own), and reordering is
+          ; exactly what cannot fix one (§4.1 consequence 3).
+          (fmt-2s "  note: '%s' is declared at %s; initializers run in the order their defvars are reached (source order within a file, import order across files), so move that defvar above this one -- unless it depends on this one in turn, which is a cycle no order satisfies"
+            name site))))))
+
+; Walk an initializer expression, blaming every symbol it names. `self` is the
+; name being defined, so `(defvar a:i32 (+ a 1))` reports itself rather than a
+; note pointing back at its own line.
+(defn defvar-check-init-order (n:(raw Node) self:CStr encl:i32):void
+  (when (= n null) (return))
+  (let (nn:ptr:Node (unsafe/cast ptr:Node n))
+    (when (= (nn kind) NODE-SYM)
+      (defvar-blame-forward-ref (as CStr (nn s)) self encl)
+      (return))
+    (when (!= (nn kind) NODE-CELL) (return))
+    ; Three heads whose operands are not value reads, skipped subtree and all:
+    ;   `addr-of`     — an address, not a value (see the decision above);
+    ;   `quote` /     — the symbols inside are DATA. Walking them would reject
+    ;   `quasiquote`    `(defvar g:(raw Node) (quote (b c)))` for "naming" a
+    ;                   global `b` it never reads. A quasiquote's `~b` unquote
+    ;                   IS a read, and is given up with the rest of the subtree:
+    ;                   a false positive breaks a program that compiles today,
+    ;                   which is strictly worse than a missed diagnosis in a
+    ;                   class that is already documented as incomplete.
+    (let (hd:ptr (node-at (as ptr nn) 0))
+      (when (and (!= hd null)
+                 (= ((unsafe/cast ptr:Node hd) kind) NODE-SYM)
+                 (or (= hd 'addr-of) (= hd 'quote) (= hd 'quasiquote)))
+        (return)))
+    ; Head position included on purpose: a call through a function-POINTER
+    ; global — `(g-hook 1)` — reads that global's value like any other use.
+    (let (i:i32 0
+          n-elems:i32 (node-len (as ptr nn)))
+      (while (< i n-elems)
+        (defvar-check-init-order (as raw:Node (node-at (as ptr nn) i)) self encl)
+        (inc! i)))))
+
 (defn emit-defvar (call:(raw Node)):void
   (let (cc:ptr:Node (unsafe/cast ptr:Node call))
     (when (< (node-len cc) 2)
@@ -9681,6 +9834,18 @@
                 (die-at (cc line)
                   (fmt-s "defvar: '%s' is :const, so its initializer must be a compile-time constant -- read-only storage cannot be written at startup"
                     name)))
+              ; G-4 (§4.2): the ordering diagnostic runs here, on the RUN-TIME
+              ; path only. A constant initializer is folded from literals, named
+              ; constants, `(sizeof T)`, `(as T x)` and addresses — not one of
+              ; which reads a global's value — so there is nothing for it to
+              ; check, and confining it here is also what keeps it free of false
+              ; positives on the constant-aggregate grammar, whose designated
+              ; field names (`(P (y 9))`) and index cells are selectors rather
+              ; than references. An initializer with a non-constant ELEMENT
+              ; inside a constant aggregate never reaches this point either: an
+              ; element must be constant regardless of order, and it keeps the
+              ; better "init must be a compile-time constant" diagnostic.
+              (defvar-check-init-order init-node (as CStr name) (cc line))
               (defvar-queue-init name init-node (cc line)))
             ; No initializer (or a runtime one, whose slot starts at zero and is
             ; filled by @__nucleus_init): the type's zero. G-2 moved the
@@ -9718,6 +9883,11 @@
               ; this `constant`-storage global at compile time (emit-set).
               (when (!= (bit-and attr-flags DECL-ATTR-CONST) 0)
                 (.set! (unsafe/cast ptr:Sym vsym) readonly-global 1))
+              ; G-4: the `@g = global` line is out, so this global's `defvar` has
+              ; now been REACHED — every initializer emitted after this point may
+              ; read its value. A later `scope-lookup` finds this Sym rather than
+              ; the prescan's (backwards scan), which is the whole mechanism.
+              (.set! (unsafe/cast ptr:Sym vsym) defvar-state DEFVAR-REACHED)
               (sym-set-src-loc (as ptr vsym) (cc line)))))))))
 
 (defn emit-defconst (call:(raw Node)):void
@@ -11629,6 +11799,11 @@
           ; and a `set!` emitted before the defvar's own file must see it too.
           (when (!= (bit-and attr-flags DECL-ATTR-CONST) 0)
             (.set! (unsafe/cast ptr:Sym vsym) readonly-global 1))
+          ; G-4: this Sym is the "declared, not yet reached" half of the pair.
+          ; `emit-defvar` appends a second Sym for the same key with
+          ; DEFVAR-REACHED, and scope-lookup's backwards scan is what makes the
+          ; state a reference sees flip at exactly the right moment.
+          (.set! (unsafe/cast ptr:Sym vsym) defvar-state DEFVAR-DECLARED)
           (sym-set-src-loc (as ptr vsym) (cc line)))))))
 
 ; The `defconst`/`defconst-` half. The value is an integer literal and is
