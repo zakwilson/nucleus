@@ -3346,6 +3346,29 @@ spawn run_reject_at g4-self-ref tests/fixtures/g4-self-ref.nuc \
 spawn run_accepts g4-addr-of-forward-clean tests/fixtures/g4-addr-of-forward.nuc
 spawn run_accepts g4-laundered-call-clean tests/fixtures/g4-laundered-call.nuc
 
+# --- Stage 15 W8 G-5: eliminate compiler-init, then flip ---------------------
+# design/global-init.md §5 "G-5". The migration itself is verified by the whole
+# suite (the compiler that runs every test below IS the migrated compiler), plus
+# `assert-compiler-arena-backed`, which main/repl-main call on every invocation.
+#
+# The FLIP (acceptance criterion (B)): a `defvar` whose type is a non-null typed
+# pointer must be initialized. This closes nullability.md §1.5's remaining half
+# and makes `ptr:T` mean non-null at a global as it does everywhere else.
+spawn run_reject_at g5-noinit-ref tests/fixtures/g5-noinit-ref.nuc \
+  "tests/fixtures/g5-noinit-ref.nuc:12: error:" \
+  "defvar: 'g5-thing' has a non-null pointer type but no initializer"
+# ...and the note that tells you the two ways out, which is the whole reason the
+# rule is tolerable at all.
+spawn run_reject_at g5-noinit-ref-note tests/fixtures/g5-noinit-ref.nuc \
+  "tests/fixtures/g5-noinit-ref.nuc:12: error:" \
+  "declare it nullable with \`raw\`"
+# The carve-outs the flip must NOT swallow, all four in one fixture: `raw`, `?T`,
+# an elem-less bare `ptr` (~1550 of them in this compiler's own source), and
+# CStr. These are pkind-flow-check's own exemptions, inherited by calling it
+# rather than re-derived — a hand-written `(= (ty pkind) PTR-REF)` here would
+# have broken every bare `:ptr` global in the tree.
+spawn run_accepts g5-noinit-carve-outs tests/fixtures/g5-noinit-raw-ok.nuc
+
 # --- Stage 15 W5e: `defn-` name isolation -----------------------------------
 # design/stage15-stress-test/ergonomics.md §W5e. Sequenced after W1 because it is
 # the same key scheme: W1a's whole-graph signature prescan is what makes a

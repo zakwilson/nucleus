@@ -398,19 +398,15 @@
 ; §14.5 batch 3: the parallel keys/types arrays collapsed into one
 ; `(Vector (ref BoxedFnEntry))`. Lazily constructed on first use (mirrors
 ; g-vtable-table) — never explicitly reset, so `ref` not `raw`.
-(defvar (g-boxedfn-table (ref (Vector (ref BoxedFnEntry)))))
+(defvar (g-boxedfn-table (ref (Vector (ref BoxedFnEntry)))) (vector-new-in (addr-of g-arena-alloc)))
 
 (defn boxedfn-memo-lookup (key:ptr):ptr
-  (when (= g-boxedfn-table null) (return null))
   (dotimes (i (unsafe/cast i32 (count g-boxedfn-table)))
     (let (e:ref:BoxedFnEntry (invoke g-boxedfn-table (as usize i)))
       (when (= (e key) key) (return (as ptr (e ty))))))
   (return null))
 
 (defn boxedfn-memo-put (key:ptr ty:ptr):void
-  (when (= g-boxedfn-table null)
-    (set! g-boxedfn-table
-      (unsafe/cast (ref (Vector (ref BoxedFnEntry))) (vector-new-in (addr-of g-arena-alloc)))))
   (let (rec:ref:BoxedFnEntry (new BoxedFnEntry))
     (.set! rec key key)
     (.set! rec ty (as raw:Type ty))
@@ -494,19 +490,15 @@
 ; §14.5 batch 3: the parallel keys/types/protos arrays collapsed into one
 ; `(Vector (ref DynEntry))`. Lazily constructed on first use (mirrors
 ; g-vtable-table/g-boxedfn-table) — never explicitly reset, so `ref` not `raw`.
-(defvar (g-dyn-table (ref (Vector (ref DynEntry)))))
+(defvar (g-dyn-table (ref (Vector (ref DynEntry)))) (vector-new-in (addr-of g-arena-alloc)))
 
 (defn dyn-memo-lookup (key:ptr):ptr
-  (when (= g-dyn-table null) (return null))
   (dotimes (i (unsafe/cast i32 (count g-dyn-table)))
     (let (e:ref:DynEntry (invoke g-dyn-table (as usize i)))
       (when (= (e key) key) (return (as ptr (e ty))))))
   (return null))
 
 (defn dyn-memo-put (key:ptr ty:ptr proto:ptr):void
-  (when (= g-dyn-table null)
-    (set! g-dyn-table
-      (unsafe/cast (ref (Vector (ref DynEntry))) (vector-new-in (addr-of g-arena-alloc)))))
   (let (rec:ref:DynEntry (new DynEntry))
     (.set! rec key key)
     (.set! rec ty (as raw:Type ty))

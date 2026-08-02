@@ -13,32 +13,16 @@
     (.set! t kind k)
     (return t)))
 
-(defn types-init ():void
-  (set! ty-void (make-type TY-VOID))
-  (set! ty-i1   (make-type TY-I1))
-  (set! ty-i8   (make-type TY-I8))
-  (set! ty-i16  (make-type TY-I16))
-  (set! ty-i32  (make-type TY-I32))
-  (set! ty-i64  (make-type TY-I64))
-  (set! ty-ui8  (make-type TY-UI8))
-  (set! ty-ui16 (make-type TY-UI16))
-  (set! ty-ui32 (make-type TY-UI32))
-  (set! ty-ui64 (make-type TY-UI64))
-  (set! ty-f32  (make-type TY-F32))
-  (set! ty-f64  (make-type TY-F64))
-  (set! ty-cstr (make-type TY-CSTR))
-  (set! ty-char (make-type TY-CHAR))
-  (set! ty-err  (make-type TY-ERR))
-  (set! ty-ptr  (make-type TY-PTR))
-  ; Phase F flip: bare `ptr` / the ty-ptr singleton is now non-null (PTR-REF),
-  ; what `(ref T)` means. Nullable pointers use `raw` / `(raw T)` instead.
-  (.set! ty-ptr pkind PTR-REF)
-  (set! ty-raw  (make-type TY-PTR))
-  (.set! ty-raw pkind PTR-RAW)
-  (set! ty-maybe-ptr (make-type TY-PTR))
-  (.set! ty-maybe-ptr pkind PTR-MAYBE)
-  (set! ty-usize (make-type TY-USIZE))
-  (set! ty-ssize (make-type TY-SSIZE)))
+; Stage 15 W8 G-5: the three pointer-kind singletons are the only `ty-*` that
+; were construct-then-mutate rather than construct, so they are the one
+; value-returning builder §4.4 item 1 asks for. `types-init` is gone — each
+; `ty-X` is now its own `(defvar ty-X:ref:Type (make-type TY-X))` in
+; nucleusc.nuc, which is what lets the singletons keep their non-null `ref:Type`
+; declaration honestly.
+(defn make-ptr-type (pk:i32):ref:Type
+  (let (t:ref:Type (make-type TY-PTR))
+    (.set! t pkind pk)
+    (return t)))
 
 ; ============================================================
 ; Stage 15 W3a: opaque (forward-declared) C types

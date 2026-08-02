@@ -1,0 +1,3 @@
+global handle kind = 1 (ALLOC-ARENA=1)
+vector handle kind = 1
+vector count = 2 sum = 42

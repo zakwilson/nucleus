@@ -11,9 +11,17 @@
 ; ============================================================
 
 (defn scope-new (parent:raw:Scope):ref:Scope
-  (let (s:ref:Scope (new Scope))
+  ; The Vector is bound before it is stored rather than written inline through
+  ; an `(as (ref (Vector (ref Cleanup))) …)`: a binding is a declared-type
+  ; position the want channel has always armed, so `vector-new-in`'s return-only
+  ; tyvar is inferred from the annotation regardless of which element type the
+  ; unit stamped first. (`emit-as` arms the want too as of Stage 15 W8 G-5, but
+  ; this spelling does not depend on that and is clearer about where T comes
+  ; from.)
+  (let (s:ref:Scope (new Scope)
+        cs:(ref (Vector (ref Cleanup))) (vector-new-in (addr-of g-arena-alloc)))
     (.set! s parent parent)
-    (.set! s cleanup-slots (as (ref (Vector (ref Cleanup))) (vector-new-in (addr-of g-arena-alloc))))
+    (.set! s cleanup-slots cs)
     (return s)))
 
 (defn scope-define (s:raw:Scope name:CStr type:raw:Type ir-name:ptr is-local:i32):ref:Sym

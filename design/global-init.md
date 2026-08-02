@@ -2268,6 +2268,234 @@ second corpus once (2) has proven the machinery on the compiler.
 
 ---
 
+#### G-5 as built — 2026-08-02
+
+**Done. `compiler-init` is gone**, not reduced: the function no longer exists.
+Its 52 statements resolved almost exactly as §2.12 predicted — 48 globals became
+combined declaration+initializations, 20 statements were dead and were deleted,
+and exactly one, `(target-init)`, was genuinely special and is now called
+directly from `main` (after the argv loop) and from `repl-main`. Acceptance
+criterion (A) is met in its strongest form, and (B) — rejecting
+`(defvar g:ptr:T)` — is in, closing `nullability.md` §1.5's remaining half.
+
+| Piece | Where | What |
+|---|---|---|
+| `defvar-require-init` | `nucleusc.nuc:9864` | the flip: PTR-REF + an elem type + no init ⇒ located error |
+| the call | `nucleusc.nuc` `emit-defvar`, after `guard-name-kind` | fires only when `init-cell` is null |
+| `assert-compiler-arena-backed` | `nucleusc.nuc:708` | §4.4 item 5's positive assertion |
+| its two callers | `nucleusc.nuc:13936` (`main`), `repl.nuc:908` | so every suite compile runs it |
+| `g-arena-alloc` (constant) | `nucleusc.nuc:698` | `(AllocHandle ALLOC-ARENA null)` |
+| `g-current-ns` (moved up) | `nucleusc.nuc:159` | above `g-generics`, whose builder reads it |
+| `make-ptr-type` | `type-utils.nuc:22` | `types-init`'s only construct-then-mutate case |
+| `build-deferror-sids` | `nucleusc.nuc:734` | one builder, both sid tables |
+| `build-binops` | `nucleusc.nuc:2551` | `add-binop` now takes the vector |
+| `build-rmacros` / `build-blanket` | `nucleusc.nuc:13258` / `:13274` | ditto for `register-rmacro` |
+| `build-special-form-set` / `build-primitive-type-set` | `nucleusc.nuc:13462` / `:13522` | `init-name-sets` split in two |
+| `generic-alloc` / `build-generics` | `generics.nuc:45` / `:112` | the `init-generics` fold |
+| the want arm in `emit-as` | `nucleusc.nuc` `emit-as` | a prerequisite defect, below |
+
+**The survivor list is exactly one, and it is `(target-init)`** — as §2.12 C
+predicted. It is special for two independent reasons, either of which alone
+would disqualify it: it **reads argv** (`--target=` / `--mcpu=`, parsed by
+`main`'s flag loop, which a load-time initializer cannot see), and it **sets
+five globals from one call**, deriving them from each other. That is
+configuration, not construction. Nothing else survived: the seven helper
+functions (`types-init`, `init-name-sets`, `init-binops`, `init-generics`,
+`init-blanket`, `init-rmacros`) are deleted outright, replaced by builders that
+are each some global's initializer.
+
+**Ruling on the three lazily-built erasure registries (§2.12 D): EAGER, and two
+more with them.** `g-vtable-table`, `g-boxedfn-table` and `g-dyn-table` now have
+`(vector-new-in (addr-of g-arena-alloc))` initializers and all six lazy guards
+are deleted, as are the two `g-nundo` guards and the `g-include-paths` /
+`g-link-args` pair (the same shape, and §2.12 D says so). The reasoning:
+
+* **`raw` would have been a relabelling, not a fix.** These globals are null for
+  a while and then never again; spelling that `raw` is *honest*, but it makes
+  the nullable type permanent — every read site keeps a null test forever, and
+  the type stops carrying the fact that after startup the value is always there.
+  §2.11 prices the casts; the standing cost is worse than the count suggests.
+* **Eager costs three empty Vector headers**, arena-allocated, in the
+  compiler's own process. That is the entire price, and it deletes eleven
+  guard sites.
+* **For `g-include-paths` / `g-link-args` eager is a repair, not a trade.**
+  They were built during argv parsing, before `compiler-init` armed the
+  allocator, so they were silently libc-backed for their whole lifetime while
+  every other compiler collection was arena-backed (`context/build.md` recorded
+  the split as a fact to work around). The constant handle plus a load-time
+  initializer removes both halves; the note in `context/build.md` is now
+  obsolete and has been rewritten.
+
+**Verification of the migration.** `examples/g5-arena-backed.nuc` +
+`tests/expected/g5-arena-backed.out` pin the §2.10 mechanism at the language
+level — a constant `AllocHandle` global, a Vector built from it by a startup
+initializer, and a read-back of the handle the Vector *copied at construction*
+(not a re-read of the global, which is the distinction that matters: a Vector
+built before the constant took effect stays libc-backed even once the global
+reads ALLOC-ARENA). `assert-compiler-arena-backed` makes the same two assertions
+about the compiler's own `g-arena-alloc` and `g-structs`, from `main` and
+`repl-main`, so all 410 suite compiles execute it. Both are required: the
+example pins the mechanism independently of the compiler's source, the assertion
+pins the compiler independently of the example.
+
+**Three premises in §2.12 / §4.4 measured false. All three are load-bearing.**
+
+1. **§2.10's source reorder goes the wrong way.** §2.10/§4.4 item 2 say
+   `g-arena-alloc` must move UP, above the first registry at `:144`, so the
+   `(vector-new-in (addr-of g-arena-alloc))` initializers do not
+   forward-reference it. Upward is **impossible**: a constant struct literal
+   needs `AllocHandle`'s *layout*, and `lib/allocator.nuc` is not imported until
+   `(import-use vector)` around `:640` — at `:182` the renderer sees a fieldless
+   registry entry and dies *"too many initializers for struct 'AllocHandle'"*.
+   Upward is also **unnecessary**, for the reason §2.10 itself supplies: a
+   constant initializer is applied by the loader, so it has no order at all
+   (§4.1 consequence 4), and every reference to it is `(addr-of …)` — an
+   address, which G-4 already exempts. So the move is *downward*, to just after
+   the collections import.
+2. **A SECOND reorder is needed, and it is the one nobody predicted.**
+   `build-generics` → `generic-alloc` → `ns-ir-prefix g-current-ns` →
+   `strcmp(g-current-ns, "user")`. `g-current-ns` was declared at `:538`,
+   `g-generics` at `:271`, so the initializer would have run `strcmp` on a null
+   pointer. The dependency is laundered through two calls, so G-4's syntactic
+   check cannot see it *by construction* — this is exactly the class §4.2 says
+   is "documented, not diagnosed", and here it was a segfault waiting at process
+   start. `g-current-ns` moved to `:159`. The old `compiler-init` knew about it
+   (its comment says "must be set before init-generics"); the census did not
+   carry the comment forward.
+3. **The two late-binding hooks CANNOT be constant initializers.** §2.12 A1
+   counts them among the 3 constants. A constant `@fn` reference needs the
+   callee's name to resolve at the *defvar's own* emission point — and the whole
+   reason these hooks exist is that the callee lives in a **later** import: the
+   defvar must sit above the file that reads the hook (`union-registry.nuc`)
+   while the callee is defined below it (`generics.nuc` / `union-emit.nuc`).
+   There is no position that satisfies both. They are run-time initializers
+   (`(unsafe/cast ptr f)`), installed by `@__nucleus_init` before `main` — the
+   same instant, relative to any source being read, at which `init-blanket` used
+   to install them. So the split is **1 constant + 47 runtime**, not 3 + 45.
+
+**And two counts that were merely stale, both by exactly one, both G-3's own
+doing.** §2.12 says 51 statements and 41 `set!`; the function had **52** and
+**42**. §2.2's census says 53 non-null element-typed no-init globals; there are
+**54**. The extra statement and the extra global are the same thing —
+`g-init-worklist`, which G-3 added after the census was taken. Every other
+number in §2.12 verified exactly: 20 dead statements, 20 `ty-*` singletons, 19
+registries set directly in the body, 5 via helpers, 3 lazily-built erasure
+registries, 2 at argv time, 4 per function/module.
+
+**A prerequisite defect the migration exposed, fixed at its root: `as` did not
+arm the want channel.** `(as (ref (Vector (ref Cleanup))) (vector-new-in …))` in
+`scope-new` (`scope.nuc:16`) is a return-only-tyvar generic in `as`-operand
+position. `emit-as` emitted its operand without arming `g-want-type`, so the
+call resolved against whichever `(Vector T)` instance the unit had stamped
+**first**. It read correctly for the whole life of the compiler only because
+that call site *was* the first `vector-new-in` emitted; the migration stamped
+`(Vector i32)` earlier (`build-deferror-sids`) and it immediately resolved to
+`Vector.i32`, caught by `as`'s own reinterpretation check. The `unsafe/cast`
+spelling of the same shape takes the wrong vector **with no diagnostic at all**.
+`as` names a type at that position exactly as a `let` binding, a `set!` target,
+a `return` and a `.set!` field do, and it was the one such position missing from
+TC-2's arm list; it now arms with save/restore. Proven inert for every program
+in the tree by the sweep below. `scope-new` was additionally rewritten to bind
+before it stores, which does not depend on the fix and says where `T` comes
+from.
+
+**Bootstrap: the IR moved, deliberately, and the move is fully accounted for.**
+Note first that the standard converge cycle in `context/build.md` **cannot** run
+here: its first `make` uses the committed `bin/nucleusc`, which predates G-1/G-3
+and dies *"defvar: init must be a literal"* on the migrated source. This is
+`build.md`'s chicken-and-egg case with a shortcut available — HEAD (pre-G-5) was
+already converged and its compiler already has G-3, so the intermediate compiler
+C0 exists without eliding anything. Sequence used: C0 compiled the migrated
+source to C1; **C1 compiled itself to byte-identical IR** (the fixed-point
+proof, independent of any committed artefact); then `make update-bootstrap`,
+`make clean && make && make bootstrap`, which passes.
+
+*Per-function normalized diff* of `build/nucleusc.ll` (`%`-names and `@.str.N`
+numbers stripped), old = HEAD built in a scratch worktree (itself verified a
+fixed point), new = post-G-5:
+
+* **1024 functions byte-identical.** 22 changed, 9 removed, 14 added.
+* The 9 removed are the 7 deleted helpers (`compiler-init`, `types-init`,
+  `init-name-sets`, `init-binops`, `init-generics`, `init-blanket`,
+  `init-rmacros`) plus two monomorphized instances that were re-stamped under a
+  different element token.
+* The 14 added are the 10 new builders/assertions, `defvar-require-init`,
+  `__nucleus_init`, and those two re-stamps.
+* The 22 changed are exactly the functions edited — `emit-defvar`, `emit-as`,
+  `scope-new`, `generic-new`, `add-binop`, `main`, `repl-main`, the six memo
+  lookup/put pairs whose guards were deleted, the three `narrow-*`,
+  `add-include-path` / `add-link-arg`, and the two `g-include-paths` /
+  `g-link-args` readers. **Nothing else moved.**
+
+*Top-level (non-function) lines*, order-insensitive: **3 removed, 7 added**, and
+every one is named:
+removed — a duplicate `"user"` string constant (the second
+`(set! g-current-ns (intern-str "user"))` collapsed into one initializer), the
+`"x86_64-pc-linux-gnu"` string (a deleted dead target pre-set), and
+`@g-arena-alloc = global %AllocHandle zeroinitializer`;
+added — five `@.str` constants for the two new diagnostics and the assertion
+messages, `@g-arena-alloc = global %AllocHandle { i32 1, ptr null }`, and the
+`@llvm.global_ctors` entry.
+
+*Old-vs-new `--emit-llvm` sweep*, baseline built from HEAD's source in a scratch
+worktree (never from `bin/nucleusc`, which lags — G-0's finding), over every
+`examples/`, `lib/`, `lib/avr/` and `tests/fixtures/` program: **218
+byte-identical, 0 differing, 0 regressed.** The only status change in the tree
+is `tests/fixtures/g5-noinit-ref.nuc`, the new flip fixture. A second sweep
+compared **stderr** across the 122 programs both compilers refuse: **0
+diagnostics changed.** So no existing program's IR and no existing program's
+diagnostic moved — including under the `emit-as` want arm, which is the change
+with the widest theoretical blast radius.
+
+**What the flip newly rejected in-repo: nothing outside `src/`.** The warn stage
+(step 3) was built first precisely to measure this, and it reported **54 sites,
+all in the compiler's own source, zero in `lib/`, `examples/` or
+`tests/fixtures/`** — 216 programs compiled clean under the warning. All 54 are
+the migration's own corpus, so the flip cost no collateral edits at all. No
+declaration was weakened to accommodate it.
+
+**Tests.** `make test` **406 → 410 PASS / 0 FAIL** (`NUCLEUS_TEST_JOBS=1`; the
+parallel count wobbles, W9 item 10). The four new units:
+`examples/g5-arena-backed.nuc` (values printed, not merely compiled),
+`g5-noinit-ref` and `g5-noinit-ref-note` (the flip's error and its note, pinned
+at a real `file:line:`), and `g5-noinit-carve-outs` — one `run_accepts` fixture
+carrying all four exemptions (`raw`, `?T`, elem-less bare `ptr`, `CStr`), which
+is what would fail loudly if the predicate were ever re-derived by hand instead
+of asking `ptr-pkind` + `elem`. `make abi-test`, `make layout-test`,
+`make avr-test` all green; `make bootstrap` reconverged.
+
+**Deliberately not done.**
+
+* **The 20 dead-statement deletions are not a separate commit.** §5 suggested
+  they be one, on the grounds that they move IR on their own. They do — they
+  account for two of the three removed top-level lines — but they are not
+  separable *in the working tree*: `compiler-init` no longer exists, so there is
+  no function left to delete them from. Nothing is committed (per instruction);
+  they are enumerable from the per-function diff.
+* **The Doom port** (§4.4) — not a gate, and directed not to be converted.
+* **The AVR `.ctors` measurement** (§4.6) — still the design's single open
+  question. `none` remains AVR's answer and `make avr-test` still pins both
+  halves.
+* **Retiring the two late-binding hooks.** Finding 3 above shows they are
+  structurally forced to be run-time initializers, which weakens the §2.12 A1
+  argument that they were a free mechanical win, but the hook *mechanism* is an
+  import-graph question, not a global-initialization one.
+* **`(defvar g:S)` for a struct `S` still needs no initializer.** An aggregate's
+  zero is a valid value of its own type; only a pointer's zero is a value its
+  type forbids. Extending the rule to aggregates would be a different (and much
+  larger) claim about definite initialization.
+
+**One unrelated hole found in passing, reported not fixed: a `defvar` may be
+declared TWICE with no diagnostic.** Two `(defvar g-current-ns:ptr)` forms
+(transiently present while moving the declaration) emitted two
+`@g-current-ns = global ptr null` lines, which the LLVM parser rejects with an
+unlocated error far from the cause. `guard-name-kind` compares NK-VALUE against
+NK-VALUE, finds them equal, and says nothing. Same-kind reuse is deliberate for
+overloaded `defn` and REPL redefinition, but a batch `defvar` redefinition has
+no such justification. Filed in §7.
+
+---
+
 ## 6. Non-goals
 
 * **Callee effect summaries / interprocedural initializer dependency analysis.**
@@ -2407,6 +2635,30 @@ with global initialization.**
     Reproduces identically on the committed boot and is not array-specific — a
     plain `(defvar g:ptr:ui8)` with an `i32` index does it too.
     `examples/avr-global-init.nuc` widens its index to `i64` and says why.
+
+11. **A `defvar` may be declared TWICE in one unit with no diagnostic**, emitting
+    two `@g = global …` lines that the LLVM parser then rejects with an
+    unlocated error a long way from the cause. Found by G-5 while relocating a
+    declaration (two `(defvar g-current-ns:ptr)` forms were transiently live).
+    `guard-name-kind` compares the existing kind NK-VALUE against the new kind
+    NK-VALUE, finds them equal, and permits it — the same-kind allowance that
+    exists for overloaded `defn` and REPL redefinition, applied where neither
+    justification holds. A batch `defvar` redefinition should be a located
+    error naming both sites, exactly as W1c's two-files-define-one-global check
+    already does across files. Reproduces on the committed boot.
+
+12. **`as` did not arm the want channel — FIXED in G-5**, listed here because it
+    is a general typing defect rather than a global-initialization one, and
+    because the *class* is worth keeping visible. `(as T expr)` names a type at
+    its operand's position exactly as a `let`/`with` binding, a `set!` target, a
+    `return` and a `.set!` field do, but `emit-as` emitted the operand without
+    setting `g-want-type`. A generic whose type variable appears only in its
+    return type therefore resolved against whichever instance the unit had
+    stamped **first**. In the `as` spelling that surfaces as `as`'s own
+    reinterpretation error; in the `unsafe/cast` spelling it is silent and takes
+    the wrong instance. Every other declared-type position was already on TC-2's
+    arm list; this one was missed. Proven inert for the whole tree by G-5's
+    sweep.
 
 ---
 

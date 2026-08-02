@@ -1,0 +1,15 @@
+; Stage 15 W8 G-5, step 4 — the flip (design/global-init.md §5 G-5, acceptance
+; criterion (B); closes design/stage15-stress-test/nullability.md §1.5's
+; remaining half). A global whose declared type is a NON-NULL typed pointer may
+; no longer be left uninitialized: the slot would take type-zero-const-ir's
+; `null`, i.e. exactly the value the type promises it can never hold.
+;
+; Every other position in the language has refused this since Phase F. The
+; global declaration was the last hole, and it was only tolerable while there
+; was no way to write the initializer at all (G-1/G-2/G-3 supplied one).
+(defstruct Thing v:i32)
+
+(defvar g5-thing:ptr:Thing)
+
+(defn main ():i32
+  (return (g5-thing v)))

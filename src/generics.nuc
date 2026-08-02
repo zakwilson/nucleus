@@ -38,9 +38,13 @@
         (when (!= pg null) (return pg)))))
   (return (generic-lookup-exact name)))
 
-(defn generic-new (name:CStr):ref:Generic
+; Allocate + initialise a Generic WITHOUT registering it. Split out in Stage 15
+; W8 G-5 because `build-generics` — which is `g-generics`' own initializer —
+; cannot append to `g-generics` while `g-generics` is still being computed.
+; `generic-new` below is this plus the registration, so the two cannot drift.
+(defn generic-alloc (name:CStr):ref:Generic
   ; Each Generic is individually arena-allocated (pointer-stable for the whole
-  ; compilation) and its pointer appended to g-generics in registration order.
+  ; compilation).
   (let (g:ptr:Generic (new Generic))
     (.set! g name name)
     (.set! g methods (unsafe/cast (ref (Vector (ref Method))) (vector-new-in (addr-of g-arena-alloc))))
@@ -57,8 +61,13 @@
       (if (= (as ptr pq) null)
         (.set! g ir-prefix (ns-ir-prefix g-current-ns))
         (.set! g ir-prefix (ns-ir-prefix pq))))
-    (conj g-generics g)
     (return (as ref:Generic g))))
+
+; …and its pointer appended to g-generics in registration order.
+(defn generic-new (name:CStr):ref:Generic
+  (let (g:ref:Generic (generic-alloc name))
+    (conj g-generics g)
+    (return g)))
 
 (defn generic-add-method (g:ptr:Generic m:ptr:Method):void
   (conj (g methods) (as ref:Method m))
@@ -93,10 +102,18 @@
 ; Seed the operator family as intrinsic generics. Each intrinsic method defers
 ; to emit-binop (which performs the numeric type selection), so operator IR is
 ; byte-identical to the pre-dispatch compiler.
-(defn init-generics ():void
-  (doseq (bop g-binops (VecIter ref:BinOp))
-         (let (g:ptr (generic-new (bop name))
-               m:ptr:Method (new Method))
+; Stage 15 W8 G-5 (§2.12 A2): folded into `g-generics`' initializer. It is the
+; one statement of the old `compiler-init` that set no global of its own — it
+; expressed a RELATION between two globals (seed g-generics from g-binops), and
+; a builder is exactly the shape a relation wants. `g-binops` is declared above
+; `g-generics` in nucleusc.nuc, so it is initialized first; `g-current-ns` had
+; to be moved above them both, because `generic-alloc` reads it through
+; `ns-ir-prefix`.
+(defn build-generics ():(ref (Vector (ref Generic)))
+  (let (v:(ref (Vector (ref Generic))) (vector-new-in (addr-of g-arena-alloc)))
+    (doseq (bop g-binops (VecIter ref:BinOp))
+           (let (g:ptr (generic-alloc (bop name))
+                 m:ptr:Method (new Method))
       (.set! m param-types null)
       (.set! m num-params 2)
       (.set! m ret-type null)
@@ -107,7 +124,9 @@
       (.set! m fn-type null)
       (.set! m binop (as ptr bop))
       (.set! m body null)
-      (generic-add-method g m))))
+      (generic-add-method g m)
+      (conj v (as ref:Generic g))))
+    (return v)))
 
 ; Structural type equality. Primitive types are singletons, so pointer equality
 ; handles them; structs are equal iff they share a StructDef; pointers compare

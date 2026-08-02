@@ -62,39 +62,45 @@
 (defvar g-col0-open-line:i32 0)
 (defvar g-col0-open-depth:i32 0)
 
-; Singleton types
-(defvar ty-void:ref:Type)
-(defvar ty-i1:ref:Type)
-(defvar ty-i8:ref:Type)
-(defvar ty-i16:ref:Type)
-(defvar ty-i32:ref:Type)
-(defvar ty-i64:ref:Type)
-(defvar ty-ptr:ref:Type)
-(defvar ty-ui8:ref:Type)
-(defvar ty-ui16:ref:Type)
-(defvar ty-ui32:ref:Type)
-(defvar ty-ui64:ref:Type)
-(defvar ty-f32:ref:Type)
-(defvar ty-f64:ref:Type)
-(defvar ty-cstr:ref:Type)
+; Singleton types. Stage 15 W8 G-5: each is built by its own initializer rather
+; than by a `types-init` pass, so the `ref:Type` on the declaration is true from
+; process start instead of true-after-someone-remembers-to-call-init. They are
+; the first initializers to run (source order, and this is the top of the file);
+; `make-type` needs only the arena, which `arena-alloc` brings up lazily.
+(defvar ty-void:ref:Type (make-type TY-VOID))
+(defvar ty-i1:ref:Type   (make-type TY-I1))
+(defvar ty-i8:ref:Type   (make-type TY-I8))
+(defvar ty-i16:ref:Type  (make-type TY-I16))
+(defvar ty-i32:ref:Type  (make-type TY-I32))
+(defvar ty-i64:ref:Type  (make-type TY-I64))
+; Phase F flip: bare `ptr` / the ty-ptr singleton is non-null (PTR-REF), what
+; `(ref T)` means. Nullable pointers use `raw` / `(raw T)` instead.
+(defvar ty-ptr:ref:Type  (make-ptr-type PTR-REF))
+(defvar ty-ui8:ref:Type  (make-type TY-UI8))
+(defvar ty-ui16:ref:Type (make-type TY-UI16))
+(defvar ty-ui32:ref:Type (make-type TY-UI32))
+(defvar ty-ui64:ref:Type (make-type TY-UI64))
+(defvar ty-f32:ref:Type  (make-type TY-F32))
+(defvar ty-f64:ref:Type  (make-type TY-F64))
+(defvar ty-cstr:ref:Type (make-type TY-CSTR))
 ; Stage 11 M6 (S0): the `Char` scalar singleton — a distinct 32-bit built-in over
 ; `ui32` (design/stage11/string.md §"Char types"), the model for char literals.
-(defvar ty-char:ref:Type)
+(defvar ty-char:ref:Type (make-type TY-CHAR))
 ; Stage 10 Phase F: bare `raw` — a nullable, unchecked pointer singleton
 ; (PTR-RAW). The flip makes bare `ptr` non-null, so `raw` is the spelling that
 ; keeps today's raw/nullable pointer behavior; `null`'s type and C-boundary
 ; pointers are raw. ABI-identical to bare `ptr` (both lower to IR `ptr`).
-(defvar ty-raw:ref:Type)
+(defvar ty-raw:ref:Type  (make-ptr-type PTR-RAW))
 ; Stage 10 errors: the Err scalar singleton (i32-repr, distinct kind).
-(defvar ty-err:ref:Type)
+(defvar ty-err:ref:Type  (make-type TY-ERR))
 ; Stage 10: the type of `none` — an elem-less (Maybe (ref ?)) that coerces
 ; into any concrete ?T slot exactly as `null` coerces into any (ptr T).
-(defvar ty-maybe-ptr:ref:Type)
+(defvar ty-maybe-ptr:ref:Type (make-ptr-type PTR-MAYBE))
 ; Stage 11: pointer-sized integer singletons. usize is unsigned (like C size_t),
 ; ssize is signed (like C ssize_t / ptrdiff_t). Both lower to i32 on ILP32
 ; targets and i64 on LP64 targets, tracking signedness exactly like ui*/i*.
-(defvar ty-usize:ref:Type)
-(defvar ty-ssize:ref:Type)
+(defvar ty-usize:ref:Type (make-type TY-USIZE))
+(defvar ty-ssize:ref:Type (make-type TY-SSIZE))
 ; Stage 14 MC-2: cached `(raw Node)` singleton for quasiquote / plain `quote` /
 ; `(gensym)` results (all produce a Node*). Built lazily on first use once the
 ; `Node` struct is registered (see ty-raw-node); null until then.
@@ -102,7 +108,7 @@
 
 ; Target descriptor. The compiler emits code for a single target, described
 ; here so the "a pointer is i64" assumption lives in one place instead of being
-; scattered as literal 8s / i64s through codegen. Set in compiler-init; defaults
+; scattered as literal 8s / i64s through codegen. Set by target-init; defaults
 ; describe x86_64 Linux. To target a 32-bit platform, set g-target-ptr-bytes to
 ; 4 (and g-target-triple accordingly) — type sizes, alignments, sizeof, and the
 ; size/pointer-sized integer type all follow. (The macro/CT JIT still runs on
@@ -135,13 +141,26 @@
 ; Host pointer size in bytes — the platform the compiler itself runs on, used to
 ; size its own arrays-of-pointers. Distinct from g-target-ptr-bytes (the
 ; platform being compiled *for*): when cross-compiling they differ. Initialised
-; from (sizeof ptr) in compiler-init; the literal default covers allocations
+; from LLVM's host target by target-init; the literal default covers allocations
 ; before init runs.
 (defvar g-host-ptr-bytes:i32 8)
 
+; Stage 12 namespaces (design/stage12/namespaces.md). The current compilation
+; unit's namespace name (an interned CStr). The default is "user", whose globals
+; are stored under *bare* keys so existing lookups (and the whole bootstrap) are
+; byte-identical. A leading `(ns foo)` form sets this; it is saved/restored
+; across imports (each imported unit starts in "user").
+;
+; G-5: declared HERE, above g-generics (below), because `build-generics` calls
+; `generic-new` → `ns-ir-prefix g-current-ns` → `strcmp(g-current-ns, "user")`.
+; That dependency is laundered through two calls, so G-4's syntactic
+; forward-reference check cannot see it — the second of the two source reorders
+; this migration needs (§2.10 predicted only the g-arena-alloc one).
+(defvar g-current-ns:ptr (intern-str "user"))
+
 ; Struct registry. (Vector ptr) of StructDef* (each individually arena-allocated,
 ; registration order). count = number of structs; invoke = indexed access.
-(defvar (g-structs (ref (Vector (ref StructDef)))))
+(defvar (g-structs (ref (Vector (ref StructDef)))) (vector-new-in (addr-of g-arena-alloc)))
 ; Stage 10 unions: tagged-sum registry, templates, enum tables, and the list of
 ; untagged-union StructDefs whose IR type definition is still pending. Union IR
 ; needs member sizes (for padding), and members may name structs whose fields
@@ -149,15 +168,15 @@
 ; drain-pending-union-irs, at every module-assembly point (LLVM named types are
 ; order-independent within a module).
 ; (Vector ptr) of UnionDef* (each individually arena-allocated, registration order).
-(defvar (g-uniondefs (ref (Vector (ref UnionDef)))))
+(defvar (g-uniondefs (ref (Vector (ref UnionDef)))) (vector-new-in (addr-of g-arena-alloc)))
 ; (Vector ptr) of UnionTemplate* (each individually arena-allocated).
-(defvar (g-union-templates (ref (Vector (ref UnionTemplate)))))
+(defvar (g-union-templates (ref (Vector (ref UnionTemplate)))) (vector-new-in (addr-of g-arena-alloc)))
 ; Stage 11 parametric structs: defstruct-template registry. Inert until a use
 ; `(Vector i32)` in type position fires a stamp (parametric-structs.md §1).
-(defvar (g-struct-templates (ref (Vector (ref StructTemplate)))))
+(defvar (g-struct-templates (ref (Vector (ref StructTemplate)))) (vector-new-in (addr-of g-arena-alloc)))
 ; (Vector ptr) of EnumDef* (each individually arena-allocated).
-(defvar (g-enumdefs (ref (Vector (ref EnumDef)))))
-(defvar (g-pending-unions (ref (Vector (ref StructDef)))))
+(defvar (g-enumdefs (ref (Vector (ref EnumDef)))) (vector-new-in (addr-of g-arena-alloc)))
+(defvar (g-pending-unions (ref (Vector (ref StructDef)))) (vector-new-in (addr-of g-arena-alloc)))
 ; Stage 10 errors: the deferror descriptor table, indexed by error id (1-based;
 ; slot 0 reserved). Each entry is the string-table id of the name / message, so
 ; the table emits as arrays of `@.str.N` pointers at module assembly. Emitted
@@ -167,30 +186,27 @@
 ; reserved placeholder ("no error"), conj'd at init so the vector index equals the
 ; runtime id. Each element is a string-table id stored in the ptr slot via an
 ; i64↔ptr cast. The old g-deferrors-len (highest id) is (count - 1).
-(defvar (g-deferror-name-sids (ref (Vector i32))))
-(defvar (g-deferror-msg-sids (ref (Vector i32))))
+(defvar (g-deferror-name-sids (ref (Vector i32))) (build-deferror-sids))
+(defvar (g-deferror-msg-sids (ref (Vector i32))) (build-deferror-sids))
 (defvar g-err-table-used:i32 0)
 
 ; Global scope
-(defvar g-globals:ref:Scope)
+(defvar g-globals:ref:Scope (scope-new null))
 
-; Shared arena allocator handle backing every compiler-owned collection (the
-; Vector pointer tables and the two HashSet name-kind sets). The arena's free is
-; a no-op, so these process-lifetime globals are never dropped — the faithful
-; match for the original arena-backed tables. Initialised once, first thing in
-; compiler-init (ALLOC-ARENA is non-zero, so it needs explicit init).
-(defvar g-arena-alloc:AllocHandle)
+; g-arena-alloc — the shared allocator handle — is declared further down, right
+; after `(import-use vector)` brings in `%AllocHandle`'s layout. Its constant
+; initializer needs that layout; nothing here needs its VALUE, only its address.
 
-; Name-kind membership sets (built once in compiler-init; never dropped).
+; Name-kind membership sets (built by their own initializers; never dropped).
 ; special-form-named and primitive-type-named consult these instead of long
 ; string-comparison chains.
-(defvar (g-special-form-set (ref (HashSet CStr))))
-(defvar (g-primitive-type-set (ref (HashSet CStr))))
+(defvar (g-special-form-set (ref (HashSet CStr))) (build-special-form-set))
+(defvar (g-primitive-type-set (ref (HashSet CStr))) (build-primitive-type-set))
 
 ; String literal table. (Vector ptr) of StrLit* (each individually
 ; arena-allocated). The interned id is the element's position, so emit sites read
 ; back the StrLit by `(invoke g-strs id)` and emit `@.str.<id>`.
-(defvar (g-strs (ref (Vector (ref StrLit)))))
+(defvar (g-strs (ref (Vector (ref StrLit)))) (vector-new-in (addr-of g-arena-alloc)))
 
 ; Per-function codegen state
 (defvar g-tmp:i32 0)
@@ -206,13 +222,13 @@
 ; defcast registry (Stage 8). g-cast-rules is a pre-allocated array of CastRule
 ; (length MAX-CAST-RULES), filled by register-cast-rule from `defcast` forms.
 ; (Vector ptr) of CastRule* (each individually arena-allocated, registration order).
-(defvar (g-cast-rules (ref (Vector (ref CastRule)))))
+(defvar (g-cast-rules (ref (Vector (ref CastRule)))) (vector-new-in (addr-of g-arena-alloc)))
 
 ; Label/goto support (Stage 8 C-parity). g-lbl-tbl is a Vec of LabelEntry*
 ; (name, total occurrence count, seen-so-far) reset per function by
 ; reset-function-state. g-cur-fname is the @-less IR symbol of the function
 ; currently being emitted (for blockaddress in label-addr).
-(defvar (g-lbl-tbl (ref (Vector (ref LabelEntry)))))
+(defvar (g-lbl-tbl (ref (Vector (ref LabelEntry)))) (vector-new-in (addr-of g-arena-alloc)))
 (defvar g-cur-fname:ptr)
 
 ; Aggregate return ABI of the function currently being emitted (Stage 8 Phase C).
@@ -237,7 +253,7 @@
 ; arguments left unbound (TC-1); node-type mirrors it via the resolver param.
 (defvar g-want-type:ptr)
 (defvar g-loop-depth:i32 0)
-(defvar (g-nundo (ref (Vector (ref NarrowUndo)))))
+(defvar (g-nundo (ref (Vector (ref NarrowUndo)))) (vector-new-in (addr-of g-arena-alloc)))
 (defvar g-trap-declared:i32 0)
 
 ; Current output stream for top-level emission
@@ -263,19 +279,19 @@
 
 ; BinOp table
 ; (Vector ptr) of BinOp* (each individually arena-allocated, registration order).
-(defvar (g-binops (ref (Vector (ref BinOp)))))
+(defvar (g-binops (ref (Vector (ref BinOp)))) (build-binops))
 
 ; Generic (polymorphism) registry. (Vector ptr) of Generic* (each Generic is
 ; individually arena-allocated; the vector holds the pointers in registration
 ; order). count = number of generics; invoke = indexed access.
-(defvar (g-generics (ref (Vector (ref Generic)))))
+(defvar (g-generics (ref (Vector (ref Generic)))) (build-generics))
 
 ; Monomorphization worklist (Stage 9 rung 4): stamped concrete defn forms
 ; awaiting emission. Generic calls resolve + register an instantiation eagerly
 ; (so the call site can name its symbol) but defer the body emission until the
 ; current function finishes; the worklist is drained at the end of the top-level
 ; loop. g-mono-drained is a persistent cursor so recursive drains never re-emit.
-(defvar (g-mono-worklist (ref (Vector (ref MonoJob)))))
+(defvar (g-mono-worklist (ref (Vector (ref MonoJob)))) (vector-new-in (addr-of g-arena-alloc)))
 (defvar g-mono-drained:usize 0)
 
 ; Stage 15 W8 G-3 (design/global-init.md §5, §4.8): runtime global initializers
@@ -287,7 +303,7 @@
 ; the runtime half is emitted anywhere else, which is what makes the feature
 ; cost exactly zero bytes for a program that has no runtime initializer.
 ; g-init-drained is a persistent cursor, mirroring g-mono-drained.
-(defvar (g-init-worklist (ref (Vector (ref InitJob)))))
+(defvar (g-init-worklist (ref (Vector (ref InitJob)))) (vector-new-in (addr-of g-arena-alloc)))
 (defvar g-init-drained:usize 0)
 ; Set to the current instantiation's context string while a stamped generic body
 ; is being emitted; die-at appends it as a note so a stamp-time error points back
@@ -363,16 +379,16 @@
 
 ; Protocol / conformance registries (Stage 9 rung 2). (Vector ptr) of Protocol*
 ; (each individually arena-allocated, in registration order).
-(defvar (g-protocols (ref (Vector (ref Protocol)))))
+(defvar (g-protocols (ref (Vector (ref Protocol)))) (vector-new-in (addr-of g-arena-alloc)))
 ; (Vector (ref Conformance)) of Conformance* (each individually arena-allocated,
 ; registration order).
-(defvar (g-conformances (ref (Vector (ref Conformance)))))
+(defvar (g-conformances (ref (Vector (ref Conformance)))) (vector-new-in (addr-of g-arena-alloc)))
 ; Protocol inheritance edges (Stage 9 §10.3): `(extend Ord Eq)` records that
 ; conforming to Ord additionally requires conforming to Eq. Reuses the
 ; Conformance layout: type-name = sub-protocol, proto-name = required super.
 ; (Vector (ref Conformance)) of Conformance* edges (each individually arena-
 ; allocated).
-(defvar (g-proto-supers (ref (Vector (ref Conformance)))))
+(defvar (g-proto-supers (ref (Vector (ref Conformance)))) (vector-new-in (addr-of g-arena-alloc)))
 
 ; Stage 11 parametric structs (T4): template-level conformances. A
 ; `(extend (Vector T) (Seq T))` records that *every* stamped instance of the
@@ -383,7 +399,7 @@
 ; and each required method must resolve for the instance. Inert until a stamp
 ; fires, so byte-identical for programs using no parametric protocols.
 ; (Vector ptr) of TmplConformance* (each individually arena-allocated).
-(defvar (g-tmpl-conformances (ref (Vector (ref TmplConformance)))))
+(defvar (g-tmpl-conformances (ref (Vector (ref TmplConformance)))) (vector-new-in (addr-of g-arena-alloc)))
 
 ; Stage 12 N8: late-binding hooks that bridge a single back-edge each, where an
 ; earlier-imported file must call a function that lives in a later-imported file
@@ -392,31 +408,40 @@
 ; invisible at runtime. Declared as plain `ptr` (so the bootstrap host can null-
 ; initialise the global); the call sites cast back to the precise fn type.
 ;
+; G-5 correction to §2.12 A1: these two are NOT constant initializers, and
+; cannot be. A constant `@fn` reference would need the function's name to
+; resolve at the defvar's own emission point, and the whole reason these hooks
+; exist is that the callee lives in a LATER import — the defvar must sit above
+; the file that reads the hook (union-registry.nuc) while the callee is defined
+; below it (generics.nuc / union-emit.nuc). So they are run-time initializers,
+; installed by `@__nucleus_init` before `main` — the same instant, relative to
+; any source being read, at which `init-blanket` used to install them.
+;
 ; g-tmpl-conf-check-hook: the per-instance protocol conformance check
 ; (tmpl-conformance-check-instance, in generics.nuc) is invoked from union-
 ; registry.nuc (struct-template-stamp-types), imported BEFORE generics.nuc.
-(defvar g-tmpl-conf-check-hook:ptr null)
+(defvar g-tmpl-conf-check-hook:ptr (unsafe/cast ptr tmpl-conformance-check-instance))
 
 ; g-stamp-maybe-type-hook: stamp-maybe-type (in union-emit.nuc) is invoked from
 ; node-type-call (in generics.nuc, imported BEFORE union-emit.nuc) to type the
 ; `signal` form's (Maybe RepairType) result.
-(defvar g-stamp-maybe-type-hook:ptr null)
+(defvar g-stamp-maybe-type-hook:ptr (unsafe/cast ptr stamp-maybe-type))
 
 ; Blanket protocols (Stage 9 §10.1): built-in protocols with automatic
 ; conformance — `Any` (every type) and `Struct` (every struct type). Stored as a
 ; small set of names plus a per-name predicate baked into blanket-conforms.
 ; (Vector CStr) of blanket-protocol name strings.
-(defvar (g-blanket (ref (Vector CStr))))
+(defvar (g-blanket (ref (Vector CStr))) (build-blanket))
 
 ; Macro registry. (Vector ptr) of MacroDef* (each individually arena-allocated,
 ; registration order). The element index is also the macro's JIT-name uniquifier.
-(defvar (g-macros (ref (Vector (ref MacroDef)))))
+(defvar (g-macros (ref (Vector (ref MacroDef)))) (vector-new-in (addr-of g-arena-alloc)))
 (defvar g-gensym-id:i32 0)
 
 ; Reader macro table
 ; Reader macro table. (Vector ptr) of RMacro* (each individually arena-allocated,
 ; registration order).
-(defvar (g-rmacros (ref (Vector (ref RMacro)))))
+(defvar (g-rmacros (ref (Vector (ref RMacro)))) (build-rmacros))
 
 ; Set to 1 once @malloc has been declared via a C-header import (e.g. (import-use "stdlib.h")).
 ; Guards against emitting a duplicate malloc declaration in macro JIT modules.
@@ -430,7 +455,7 @@
 ; entry (and emits the declare to g-decl-out) on first reference while redirected.
 ; (Vector CStr) of macro/CT-module declare-name strings (dedup set, compared by
 ; content via strcmp — never by identity).
-(defvar (g-macro-decls (ref (Vector CStr))))
+(defvar (g-macro-decls (ref (Vector CStr))) (vector-new-in (addr-of g-arena-alloc)))
 
 ; Program-defined `defn`s (the `define`s emitted into the main module). Only
 ; these need a fresh `declare` in a macro/CT JIT module — externs and
@@ -438,7 +463,7 @@
 ; copies in. Populated by emit-defn as it writes each `define`; the captured
 ; signature (ret + param Types + ABI) reproduces the declare losslessly (the
 ; g-globals Sym for an overloaded/generic name carries no usable param array).
-(defvar (g-program-defns (ref (Vector (ref ProgDefn)))))
+(defvar (g-program-defns (ref (Vector (ref ProgDefn)))) (vector-new-in (addr-of g-arena-alloc)))
 
 ; Compiler mode flags.
 (defvar g-emit-nuch:i32 0)    ; when 1, output .nuch header instead of LLVM IR
@@ -447,9 +472,10 @@
 (defvar g-emit-obj:i32 0)     ; when 1 (-c), emit a .o file instead of linking a binary
 (defvar g-output-path:ptr)    ; -o <path>; null = default ("a.out")
 ; argv-style pass-through args appended to the link line. Null until the first
-; -l/-L flag is parsed (may be constructed before compiler-init runs, so the
-; arena allocator is not yet armed — see add-link-arg).
-(defvar (g-link-args (ref (Vector CStr))))
+; -l/-L flag is parsed. G-5: built by @__nucleus_init before main, from the
+; load-time-constant arena handle, so it is arena-backed like everything else
+; (it used to be lazily malloc-backed — see add-link-arg).
+(defvar (g-link-args (ref (Vector CStr))) (vector-new-in (addr-of g-arena-alloc)))
 (defvar g-interactive:i32 0)  ; when 1, run in REPL mode (-i / --interactive)
 (defvar g-repl-format:i32 0)  ; 0 = text (default), 1 = json (one JSON object per error)
 (defvar g-opt-level:i32 0)    ; -O0..-O3; LLVMCodeGenOptLevel: None=0, Less=1, Default=2, Aggressive=3
@@ -529,13 +555,8 @@
 ; this list rather than falling through to a bare "not defined anywhere".
 (defvar g-cycle-prefixes:ptr)
 
-; Stage 12 namespaces (design/stage12/namespaces.md). The current compilation
-; unit's namespace name (an interned CStr). The default is "user", whose globals
-; are stored under *bare* keys so existing lookups (and the whole bootstrap) are
-; byte-identical. A leading `(ns foo)` form sets this; it is saved/restored
-; across imports (each imported unit starts in "user"). Initialized in
-; compiler-init, since interning needs the arena live.
-(defvar g-current-ns:ptr)
+; g-current-ns is declared near the top of the file (above g-generics, whose
+; builder reads it through generic-new → ns-ir-prefix).
 ; Set once a leading `ns` directive has been consumed in the current unit. A
 ; second `ns` warns at compile time (silent under the REPL flag). Reset per unit.
 (defvar g-ns-seen:i32 0)
@@ -557,15 +578,16 @@
 ; empty string forces bare names regardless of the namespace. Keys compare by
 ; interned-pointer identity (ns-ir-prefix-set/-get). Lazily constructed on the
 ; first `set-ir-prefix` call (Stage 14 §14.5 batch 2 — was two cap-doubling
-; parallel arrays); `raw` (not `ref`) since compiler-init explicitly resets it
-; to null at the start of every compilation unit.
+; parallel arrays); `raw` (not `ref`) because it is genuinely null until the
+; first `set-ir-prefix` — which is what `raw` means, and what makes the G-5 flip
+; leave it alone.
 (defvar (g-ns-prefix-table (raw (Vector (ref NsPrefixEntry)))))
 
 ; Stage 15 W5e (design/stage15-stress-test/ergonomics.md §W5e): the file-private
 ; name table. One `PrivFile` per source file that used a private definer while
 ; the default `user` namespace was current; `null` until the first such definer,
 ; which is what keeps every program (and this compiler, which uses none) on
-; exactly the pre-W5e path. `raw`: compiler-init resets it per unit, like
+; exactly the pre-W5e path. `raw`: genuinely null until then, like
 ; g-ns-prefix-table.
 (defvar (g-priv-files (raw (Vector (ref PrivFile)))))
 ; Memo for `priv-file-current`: the `g-source-path` POINTER the cached answer was
@@ -583,13 +605,12 @@
 ; line. There is deliberately NO forward-reference prescan for this table, so a
 ; `fn-attr` directive must precede the `defn` it targets in the unit (the dispatch
 ; loop processes top-level forms in order). Lazily constructed on the first
-; `fn-attr` call; `raw` (not `ref`) since compiler-init explicitly resets it to
-; null at the start of every compilation unit.
+; `fn-attr` call; `raw` (not `ref`) because it is genuinely null until then.
 (defvar (g-fn-attr-table (raw (Vector (ref FnAttrEntry)))))
 
 ; Include path list for -I flag. Null until the first -I flag is parsed (see
-; add-include-path for the pre-compiler-init allocator note above).
-(defvar (g-include-paths (ref (Vector CStr))))
+; add-include-path).
+(defvar (g-include-paths (ref (Vector CStr))) (vector-new-in (addr-of g-arena-alloc)))
 
 ; stdlib (malloc/free/exit) is included here — after defmacro and defvar —
 ; so that g-decl-bufp is free of malloc when macro JIT modules are assembled.
@@ -641,6 +662,63 @@
 (import-use hash)
 (import-use hashset)
 
+; Shared arena allocator handle backing every compiler-owned collection (the
+; Vector pointer tables and the two HashSet name-kind sets). The arena's free is
+; a no-op, so these process-lifetime globals are never dropped — the faithful
+; match for the original arena-backed tables.
+;
+; Stage 15 W8 G-5 (design/global-init.md §2.10): this is a CONSTANT. The value
+; `arena-allocator` used to write in at run time is `{ALLOC-ARENA, null}` — two
+; constants — so it renders as `@g-arena-alloc = global %AllocHandle { i32 1,
+; ptr null }` and the loader applies it before a single line of code runs. Three
+; consequences, all load-bearing:
+;   * every registry is arena-backed no matter what order the runtime
+;     initializers run in — the ordering hazard §2.10 opens is dissolved, not
+;     merely scheduled around;
+;   * `add-include-path` / `add-link-arg`, which run during argv parsing (before
+;     even `@__nucleus_init`, on the `-I`/`-l` path), no longer get libc-backed
+;     Vectors from a still-zero handle — the split `context/build.md` documented
+;     is gone;
+;   * the failure mode of getting it wrong is SILENT (a zero-filled handle reads
+;     as ALLOC-LIBC), so `assert-compiler-arena-backed` below asserts the value
+;     positively rather than trusting a green test suite.
+;
+; §2.10 predicted this defvar would have to move UP, above the first registry at
+; the top of the file, so the `(vector-new-in (addr-of g-arena-alloc))`
+; initializers would not forward-reference it. Measured, the move is the
+; opposite one and for a different reason. Upward is impossible: a constant
+; struct literal needs `AllocHandle`'s LAYOUT, and `lib/allocator.nuc` is not
+; imported until `(import-use vector)` directly above — at the old `:182` the
+; renderer sees a fieldless registry entry and dies "too many initializers for
+; struct 'AllocHandle'". Upward is also unnecessary: a constant initializer is
+; applied by the loader, so it has no order (§4.1 consequence 4), and every
+; reference to it is `(addr-of …)` — an address, which G-4 already exempts
+; because it is a link-time constant requiring no initialization to have
+; happened.
+(defvar g-arena-alloc:AllocHandle (AllocHandle ALLOC-ARENA null))
+
+; Stage 15 W8 G-5 (§4.4 item 5): the migration's one silent failure mode. A
+; zero-filled AllocHandle reads as ALLOC-LIBC, so getting `g-arena-alloc`'s
+; constant wrong would quietly make all 30+ compiler registries malloc-backed
+; instead of arena-backed — every test would still pass. This asserts the value
+; positively at run time, on the handle the registries were actually built
+; through (`(v alloc)` is the by-value copy `vector-init-alloc` took at
+; construction, not a re-read of the global), and it is called from `main` and
+; from `repl-main` so the suite runs it on every single compile.
+(defn assert-compiler-arena-backed ():void
+  (let (h:ptr:AllocHandle (as ptr:AllocHandle (addr-of g-arena-alloc)))
+    (when (!= (h kind) ALLOC-ARENA)
+      (fprintf stderr "internal error: g-arena-alloc is not ALLOC-ARENA (kind=%d) -- every compiler registry is malloc-backed\n" (h kind))
+      (exit 1)))
+  ; …and on a registry, which is the property that actually matters: the handle
+  ; is copied BY VALUE into each Vector at construction, so a Vector built before
+  ; the constant took effect would stay libc-backed for its whole lifetime even
+  ; with the global reading ALLOC-ARENA now.
+  (let (a:ptr:AllocHandle (as ptr:AllocHandle (.& g-structs alloc)))
+    (when (!= (a kind) ALLOC-ARENA)
+      (fprintf stderr "internal error: g-structs is not arena-backed (kind=%d)\n" (a kind))
+      (exit 1))))
+
 ; ============================================================
 ; Allocation helpers
 ; ============================================================
@@ -648,6 +726,16 @@
 ; Arena-backed allocators: arena-alloc aborts on exhaustion, never null.
 (defn alloc-tok ():ref:Tok
   (return (as ref:Tok (arena-alloc (sizeof Tok)))))
+
+; G-5 (§2.12 A2): the deferror sid tables are construct-then-populate — index 0
+; is a reserved "no error" placeholder so the vector index equals the 1-based
+; runtime error id — so they need a value-returning builder. One builder, both
+; tables.
+(defn build-deferror-sids ():(ref (Vector i32))
+  (let (v:(ref (Vector i32))
+          (unsafe/cast (ref (Vector i32)) (vector-new-in (addr-of g-arena-alloc))))
+    (conj v 0)
+    (return v)))
 
 (defn nucleus_gensym ():(raw Node)
   (let (id:i32 g-gensym-id)
@@ -1637,14 +1725,12 @@
     (return (ss type))))
 
 (defn narrow-mark ():i32
-  (when (= g-nundo null) (set! g-nundo (unsafe/cast (ref (Vector (ref NarrowUndo))) (vector-new-in (addr-of g-arena-alloc)))))
   (return (unsafe/cast i32 (count g-nundo))))
 
 ; Narrow binding `name` (resolved in `scope`) to the non-null view of its
 ; current effective type, pushing an undo entry. No-op unless the binding
 ; currently reads as a local (Maybe (ref T)).
 (defn narrow-apply (scope:ref:Scope name:CStr):void
-  (when (= g-nundo null) (set! g-nundo (vector-new-in (addr-of g-arena-alloc))))
   (let (sym:?ptr:Sym (scope-lookup scope name))
     (when (= sym null) (return))
     (when (= (sym is-local) 0) (return))
@@ -1663,7 +1749,6 @@
 ; Undo narrows back to `mark` (a branch/region boundary). Entries whose
 ; binding was killed after the push are skipped.
 (defn narrow-restore (mark:i32):void
-  (when (= g-nundo null) (return))
   ; Read/shrink the undo stack's len via the explicit raw field intrinsic _get
   ; (not the callable form (g-nundo len), which a later dispatch change would
   ; route differently). The pop discards the entry; the buffer is reused.
@@ -2192,7 +2277,7 @@
       (set! scanned (import-list-push scanned "lib"))
       (let (hit:ptr (scan-dir-for-definer "lib" name want-type))
         (when (!= hit null) (return hit))))
-    (when (!= g-include-paths null)
+    (do
       (dotimes (j (unsafe/cast i32 (count g-include-paths)))
         (let (dir:CStr (invoke g-include-paths (as usize j)))
           (when (= (import-list-has scanned dir) 0)
@@ -2451,32 +2536,37 @@
 ; Binary operations
 ; ============================================================
 
-(defn add-binop (name:CStr instr:CStr instr-u:CStr is-cmp:i32):void
+; G-5: `add-binop` appends to the vector it is HANDED rather than to the global,
+; because `build-binops` runs as `g-binops`' own initializer — the global is
+; still null while its value is being built. Same shape as `build-rmacros` /
+; `build-generics` below; a builder may never name the global it initializes.
+(defn add-binop (v:(ref (Vector (ref BinOp))) name:CStr instr:CStr instr-u:CStr is-cmp:i32):void
   (let (op:ptr:BinOp (as ptr:BinOp (arena-alloc (sizeof BinOp))))
     (.set! op name name)
     (.set! op instr instr)
     (.set! op instr-u instr-u)
     (.set! op is-cmp is-cmp)
-    (conj g-binops op)))
+    (conj v (as ref:BinOp op))))
 
-(defn init-binops ():void
-  (set! g-binops (vector-new-in (addr-of g-arena-alloc)))
-  (add-binop "_+"     "add nsw"  "add"      0)
-  (add-binop "_-"     "sub nsw"  "sub"      0)
-  (add-binop "_*"     "mul nsw"  "mul"      0)
-  (add-binop "_/"     "sdiv"     "udiv"     0)
-  (add-binop "%"       "srem"     "urem"     0)
-  (add-binop "bit-and" "and"      "and"      0)
-  (add-binop "bit-or"  "or"       "or"       0)
-  (add-binop "bit-xor" "xor"      "xor"      0)
-  (add-binop "bit-shl" "shl"      "shl"      0)
-  (add-binop "bit-shr" "ashr"     "lshr"     0)
-  (add-binop "="       "icmp eq"  "icmp eq"  1)
-  (add-binop "!="      "icmp ne"  "icmp ne"  1)
-  (add-binop "<"       "icmp slt" "icmp ult" 1)
-  (add-binop "<="      "icmp sle" "icmp ule" 1)
-  (add-binop ">"       "icmp sgt" "icmp ugt" 1)
-  (add-binop ">="      "icmp sge" "icmp uge" 1))
+(defn build-binops ():(ref (Vector (ref BinOp)))
+  (let (v:(ref (Vector (ref BinOp))) (vector-new-in (addr-of g-arena-alloc)))
+    (add-binop v "_+"     "add nsw"  "add"      0)
+    (add-binop v "_-"     "sub nsw"  "sub"      0)
+    (add-binop v "_*"     "mul nsw"  "mul"      0)
+    (add-binop v "_/"     "sdiv"     "udiv"     0)
+    (add-binop v "%"       "srem"     "urem"     0)
+    (add-binop v "bit-and" "and"      "and"      0)
+    (add-binop v "bit-or"  "or"       "or"       0)
+    (add-binop v "bit-xor" "xor"      "xor"      0)
+    (add-binop v "bit-shl" "shl"      "shl"      0)
+    (add-binop v "bit-shr" "ashr"     "lshr"     0)
+    (add-binop v "="       "icmp eq"  "icmp eq"  1)
+    (add-binop v "!="      "icmp ne"  "icmp ne"  1)
+    (add-binop v "<"       "icmp slt" "icmp ult" 1)
+    (add-binop v "<="      "icmp sle" "icmp ule" 1)
+    (add-binop v ">"       "icmp sgt" "icmp ugt" 1)
+    (add-binop v ">="      "icmp sge" "icmp uge" 1)
+    (return v)))
 
 ; True if a node denotes an untyped integer literal, so it may adapt to the type
 ; of the other operand in a binary operation (Stage 9 §10.1). Sees through the
@@ -3134,7 +3224,24 @@
       (die-at (cc line) "as expects 2 args"))
     (let (type-node:(raw Node) (node-at cc 1))
       (let (dst:(raw Type) (parse-type-from-node type-node (type-node line))
-            v:ref:Val (emit-node (node-at cc 2) scope)
+            ; TC-2 want channel: `as` NAMES a type at this position, exactly as a
+            ; let/with binding, a `set!` target, a `return` or a `.set!` field
+            ; does — so it must arm `g-want-type` for its operand. It was the one
+            ; declared-type position missing from that list, and the omission is
+            ; not academic: a return-only-tyvar generic in operand position
+            ; (`(as (ref (Vector (ref Cleanup))) (vector-new-in …))` — scope.nuc's
+            ; `scope-new`) resolved instead against whichever instance happened to
+            ; be stamped FIRST in the unit. It read correctly only because that
+            ; call site also *was* the compiler's first `vector-new-in`; stamping
+            ; any other element type earlier silently retargeted it, and the
+            ; `unsafe/cast` spelling of the same shape takes the wrong vector with
+            ; no diagnostic at all. Save/restore, so the want does not leak past
+            ; the operand.
+            v:ref:Val (let (save-want:ptr g-want-type)
+                        (set! g-want-type (as ptr dst))
+                        (let (vv:ref:Val (emit-node (node-at cc 2) scope))
+                          (set! g-want-type save-want)
+                          vv))
             src:(raw Type) (v type)
             sk:i32 (src kind)
             dk:i32 (dst kind))
@@ -5764,11 +5871,10 @@
 ; lands in the same module as the @invoke/@drop thunks it references (those are
 ; queued on g-mono-worklist when the closure is emitted in that module). LLVM
 ; permits a constant to reference function globals defined later in the module.
-(defvar (g-vtable-table (ref (Vector (ref VtableEntry)))))
+(defvar (g-vtable-table (ref (Vector (ref VtableEntry)))) (vector-new-in (addr-of g-arena-alloc)))
 
 ; Memo lookup: the already-emitted vtable symbol for interned `key`, or null.
 (defn vtable-memo-lookup (key:ptr):ptr
-  (when (= g-vtable-table null) (return null))
   (dotimes (i (unsafe/cast i32 (count g-vtable-table)))
     (let (e:ref:VtableEntry (invoke g-vtable-table (as usize i)))
       (when (= (e key) key) (return (e name)))))
@@ -5776,9 +5882,6 @@
 
 ; Record (key → vtable-symbol) (mirrors fnty-intern).
 (defn vtable-memo-put (key:ptr name:ptr):void
-  (when (= g-vtable-table null)
-    (set! g-vtable-table
-      (unsafe/cast (ref (Vector (ref VtableEntry))) (vector-new-in (addr-of g-arena-alloc)))))
   (let (rec:ref:VtableEntry (new VtableEntry))
     (.set! rec key key)
     (.set! rec name name)
@@ -9745,6 +9848,28 @@
         (defvar-check-init-order (as raw:Node (node-at (as ptr nn) i)) self encl)
         (inc! i)))))
 
+; Stage 15 W8 G-5 step 4 — the flip (design/global-init.md §5 G-5, and the
+; remaining half of nullability.md §1.5). A `defvar` whose declared type is a
+; NON-NULL typed pointer must be initialized: without an initializer the slot
+; gets `type-zero-const-ir`'s `null`, which is exactly the value the type
+; promises it can never hold. Every other position in the language has enforced
+; this since Phase F; the global declaration was the one hole left, and it was
+; only tolerable while there was no way to write the initializer at all.
+;
+; The predicate is `pkind-flow-check`'s, deliberately: PTR-REF destination, and
+; an element type. Both carve-outs are inherited rather than re-derived —
+; `CStr` is TY-CSTR (ptr-pkind PTR-RAW) and an elem-less bare `ptr` names no
+; pointee, so neither carries a non-null contract. `raw`/`(raw T)`/`?T` are
+; unaffected: a nullable global with no initializer is honest and stays legal.
+(defn defvar-require-init (name:CStr ty:(raw Type) line:i32):void
+  (when (!= (ptr-pkind ty) PTR-REF) (return))
+  (when (= (ty elem) null) (return))
+  (die-at line
+    (fmt-2s "%s\n%s"
+      (fmt-s "defvar: '%s' has a non-null pointer type but no initializer -- the slot would start as null, which is exactly the value its type says it can never hold"
+        name)
+      "  note: give it an initializer, or declare it nullable with `raw` (`(raw T)` / `raw:T`) if it genuinely may be null before first use")))
+
 (defn emit-defvar (call:(raw Node)):void
   (let (cc:ptr:Node (unsafe/cast ptr:Node call))
     (when (< (node-len cc) 2)
@@ -9784,6 +9909,9 @@
           (when (!= (bit-and attr-flags DECL-ATTR-VOLATILE) 0)
             (set! ty (as ptr (type-with-volatile (unsafe/cast ref:Type ty)))))
           (guard-name-kind name (cc line) NK-VALUE)
+          ; G-5 step 4: a non-null typed-pointer global must be initialized.
+          (when (= init-cell null)
+            (defvar-require-init name (as raw:Type ty) (cc line)))
           ; Stage 12 N4: a global emits `@name`, prefixed with the namespace
           ; ir-prefix in a non-`user` namespace (`@foo__name`). Identity under
           ; `user`, so the bootstrap is byte-identical.
@@ -10697,8 +10825,8 @@
 (defn jit-ensure-init (line:i32):void
   (when (!= g-jit null) (return))
   ; Backends are already registered process-wide by targets-init-all (called from
-  ; target-init in compiler-init, which runs before any JIT use on every path —
-  ; batch CT-JIT via emit-toplevel-forms, and the REPL via repl-main→compiler-init
+  ; target-init, which runs before any JIT use on every path —
+  ; batch CT-JIT via emit-toplevel-forms, and the REPL via repl-main
   ; before repl-preload-macros), so no per-call native-target init is needed here.
   ; Create LLJIT
   (let (jit-ref:ptr null
@@ -12628,7 +12756,7 @@
     (when (!= (file-exists candidate) 0)
       (return candidate)))
   ; Try -I include paths
-  (when (!= g-include-paths null)
+  (do
     (dotimes (j (unsafe/cast i32 (count g-include-paths)))
       (let (candidate:ptr (fmt-2s "%s/%s" (invoke g-include-paths (as usize j)) filename))
         (when (!= (file-exists candidate) 0)
@@ -13118,37 +13246,37 @@
     (.set! rm wrap-sym wrap-sym)
     (conj g-rmacros rm)))
 
-(defn register-rmacro (prefix:StrView wrap-sym:CStr):void
+; G-5: appends to the vector it is handed — see add-binop's note.
+(defn register-rmacro (v:(ref (Vector (ref RMacro))) prefix:StrView wrap-sym:CStr):void
   (let (rm:ptr:RMacro (as ptr:RMacro (arena-alloc (sizeof RMacro)))
         pp:ptr:StrView (addr-of prefix))
     (.set! rm prefix (as ptr (pp data)))
     (.set! rm prefix-len (unsafe/cast i32 (pp len)))
     (.set! rm wrap-sym wrap-sym)
-    (conj g-rmacros rm)))
+    (conj v (as ref:RMacro rm))))
 
-(defn init-rmacros ():void
-  (set! g-rmacros (vector-new-in (addr-of g-arena-alloc)))
-  ; Register longest prefixes first for correct matching.
-  (register-rmacro "~@" "unquote-splice")
-  (register-rmacro "~" "unquote")
-  (register-rmacro "'" "quote")
-  (register-rmacro "`" "quasiquote")
-  (register-rmacro "@" "deref"))
+(defn build-rmacros ():(ref (Vector (ref RMacro)))
+  (let (v:(ref (Vector (ref RMacro))) (vector-new-in (addr-of g-arena-alloc)))
+    ; Register longest prefixes first for correct matching.
+    (register-rmacro v "~@" "unquote-splice")
+    (register-rmacro v "~" "unquote")
+    (register-rmacro v "'" "quote")
+    (register-rmacro v "`" "quasiquote")
+    (register-rmacro v "@" "deref")
+    (return v)))
 
 ; Register the built-in blanket protocols (§10.1). Hardcoded for now; a
 ; user-declarable blanket facility is parked in design/stage999-future.md.
-(defn init-blanket ():void
-  (set! g-blanket (unsafe/cast (ref (Vector CStr)) (vector-new-in (addr-of g-arena-alloc))))
-  (conj g-blanket "Any")
-  (conj g-blanket "Struct")
-  ; Stage 12 N8: install the late-binding cross-file hooks (see their defvars).
-  ; tmpl-conformance-check-instance (generics.nuc) is called from union-registry
-  ; .nuc; stamp-maybe-type (union-emit.nuc) is called from node-type-call (generics
-  ; .nuc). Both callees are registered by the time init-blanket's body emits (it is
-  ; defined after both imports), and the install runs during compiler init, before
-  ; any source is read.
-  (set! g-tmpl-conf-check-hook (unsafe/cast ptr tmpl-conformance-check-instance))
-  (set! g-stamp-maybe-type-hook (unsafe/cast ptr stamp-maybe-type)))
+; G-5: the two late-binding hooks `init-blanket` used to install are now
+; CONSTANT initializers on their own defvars — the address of a function is a
+; link-time constant, so the loader applies them and there is no install step
+; left to forget. What remains here is the blanket-protocol name list.
+(defn build-blanket ():(ref (Vector CStr))
+  (let (v:(ref (Vector CStr))
+          (unsafe/cast (ref (Vector CStr)) (vector-new-in (addr-of g-arena-alloc))))
+    (conj v "Any")
+    (conj v "Struct")
+    (return v)))
 
 ; Register the LLVM backends the --target matrix can select (X86 + AArch64 +
 ; ARM, covering Linux/Darwin/Windows variants). Safe to call repeatedly.
@@ -13322,22 +13450,25 @@
     (set! g-host-ptr-bytes (hg ptr-size))))
 
 ; Build the two name-kind membership sets used by special-form-named and
-; primitive-type-named. Called once from compiler-init before any parsing
-; occurs. The sets are heap-malloc'd and never dropped (batch-process lifetime).
+; primitive-type-named. Each runs once, as its global's own initializer, before
+; any parsing occurs. The sets are heap-malloc'd and never dropped (batch-process lifetime).
 ; Each set is allocated from the shared arena (one raw->ref cast per set) and
 ; initialised with hashset-init-alloc so it owns its buffers through g-arena-alloc
 ; (never dropped, process-lifetime). Members are inserted as bare string literals
 ; (already CStr), and the typed globals need no per-insert cast.
-(defn init-name-sets ():void
+; G-5: `init-name-sets` split into two value-returning builders, one per set —
+; §4.4 item 1. Each still allocates through g-arena-alloc and is never dropped
+; (process lifetime).
+(defn build-special-form-set ():(ref (HashSet CStr))
   ; --- special-form-named set (93 members; this count fell out of sync with
   ; the actual list well before UN-2 — 86 actual vs a stale "73" comment — so
   ; it is corrected here to the true count: 86 pre-UN-2 + the 7 new unsafe/*
   ; entries below) ---
-  (set! g-special-form-set
-    (unsafe/cast (ref (HashSet CStr))
-      (alloc-handle-alloc (addr-of g-arena-alloc) (sizeof (HashSet CStr)) 8)))
-  (hashset-init-alloc g-special-form-set (addr-of g-arena-alloc))
-  (into g-special-form-set
+  (let (s:(ref (HashSet CStr))
+          (unsafe/cast (ref (HashSet CStr))
+            (alloc-handle-alloc (addr-of g-arena-alloc) (sizeof (HashSet CStr)) 8)))
+  (hashset-init-alloc s (addr-of g-arena-alloc))
+  (into s
     #{ ; control flow / binding
        "let" "with" "do" "cond" "return" "while"
        ; mutation
@@ -13385,12 +13516,15 @@
        ; defn/defvar/etc. cannot shadow it).
        "fn-attr" }
     (HashSetIter CStr))
-  ; --- primitive-type-named set (19 members) ---
-  (set! g-primitive-type-set
-    (unsafe/cast (ref (HashSet CStr))
-      (alloc-handle-alloc (addr-of g-arena-alloc) (sizeof (HashSet CStr)) 8)))
-  (hashset-init-alloc g-primitive-type-set (addr-of g-arena-alloc))
-  (into g-primitive-type-set
+  (return s)))
+
+; --- primitive-type-named set (19 members) ---
+(defn build-primitive-type-set ():(ref (HashSet CStr))
+  (let (s:(ref (HashSet CStr))
+          (unsafe/cast (ref (HashSet CStr))
+            (alloc-handle-alloc (addr-of g-arena-alloc) (sizeof (HashSet CStr)) 8)))
+  (hashset-init-alloc s (addr-of g-arena-alloc))
+  (into s
     #{ ; integer types
        "int" "bool" "i1" "i8" "i16" "i32" "i64"
        "ui8" "ui16" "ui32" "ui64"
@@ -13398,89 +13532,21 @@
        "f32" "f64" "float" "double"
        ; pointer / special
        "ptr" "void" "CStr" "Err" }
-    (HashSetIter CStr)))
+    (HashSetIter CStr))
+  (return s)))
 
-(defn compiler-init ():void
-  ; Shared arena allocator handle. Must be first: every compiler collection (the
-  ; name-kind HashSets built by init-name-sets, and every make-vec) is
-  ; constructed against it, so it has to be live before any of them.
-  (arena-allocator (addr-of g-arena-alloc))
-  ; String-literal table: empty Vector, grown by intern-string during emit.
-  (set! g-strs (vector-new-in (addr-of g-arena-alloc)))
-  ; Stage 12 N4: g-current-ns must be set before init-generics (which calls
-  ; generic-new → ns-ir-prefix → strcmp(g-current-ns, "user")); intern-str
-  ; requires the arena live, which is satisfied by the arena-allocator call above.
-  (set! g-current-ns (intern-str "user"))
-  (set! g-ns-seen 0)
-  ; Membership sets for special-form-named / primitive-type-named predicates.
-  ; Must be first: name-shadowing checks call these predicates as soon as any
-  ; top-level definer is encountered.
-  (init-name-sets)
-  ; Target descriptor (single source of truth for the "pointer is i64"
-  ; assumption). target-init below resolves it from LLVM (host, or --target).
-  (set! g-target-triple "x86_64-pc-linux-gnu")
-  (set! g-target-ptr-bytes 8)
-  ; Host pointer size — actual width of a pointer in this running compiler.
-  (set! g-host-ptr-bytes (unsafe/cast i32 (sizeof ptr)))
-  (target-init)
-  (types-init)
-  (set! g-generics (vector-new-in (addr-of g-arena-alloc)))
-  (init-binops)
-  (init-generics)
-  (init-blanket)
-  (set! g-fnty (hashmap-new-in (addr-of g-arena-alloc)))
-  (set! g-protocols (vector-new-in (addr-of g-arena-alloc)))
-  (set! g-conformances (vector-new-in (addr-of g-arena-alloc)))
-  (set! g-proto-supers (vector-new-in (addr-of g-arena-alloc)))
-  (set! g-mono-worklist (vector-new-in (addr-of g-arena-alloc)))
-  ; Stage 15 W8 G-3: the runtime-initializer queue. Allocating an empty Vector
-  ; is compiler-side state only — it emits nothing, so the zero-cost rule is
-  ; untouched.
-  (set! g-init-worklist (vector-new-in (addr-of g-arena-alloc)))
-  (init-rmacros)
-  (set! g-structs (vector-new-in (addr-of g-arena-alloc)))
-  (set! g-uniondefs (vector-new-in (addr-of g-arena-alloc)))
-  (set! g-union-templates (vector-new-in (addr-of g-arena-alloc)))
-  (set! g-struct-templates (vector-new-in (addr-of g-arena-alloc)))
-  (set! g-tmpl-conformances (vector-new-in (addr-of g-arena-alloc)))
-  (set! g-enumdefs (vector-new-in (addr-of g-arena-alloc)))
-  ; Deferror sid tables: reserve index 0 (the "no error" placeholder) so the
-  ; vector index equals the 1-based runtime error id.
-  (set! g-deferror-name-sids (unsafe/cast (ref (Vector i32)) (vector-new-in (addr-of g-arena-alloc))))
-  (set! g-deferror-msg-sids (unsafe/cast (ref (Vector i32)) (vector-new-in (addr-of g-arena-alloc))))
-  (conj g-deferror-name-sids 0)
-  (conj g-deferror-msg-sids 0)
-  (set! g-err-table-used 0)
-  (set! g-prescan-visited null)
-  (set! g-prescan-sigs null)
-  (set! g-unit-entry-path null)
-  (set! g-import-cycles null)
-  (set! g-cycle-prefixes null)
-  (set! g-import-aliased null)
-  (set! g-import-prefixes null)
-  (set! g-cinclude-collecting 0)
-  (set! g-cinclude-collected null)
-  (set! g-pending-unions (vector-new-in (addr-of g-arena-alloc)))
-  (set! g-macros (vector-new-in (addr-of g-arena-alloc)))
-  (set! g-cast-rules (vector-new-in (addr-of g-arena-alloc)))
-  (set! g-globals (scope-new null))
-  ; Stage 12: start every compilation unit in the default `user` namespace.
-  ; Interned so qualify-name's "is this the user namespace?" check is a pointer
-  ; compare. Bare keys in `user` keep the bootstrap byte-identical.
-  (set! g-current-ns (intern-str "user"))
-  (set! g-ns-seen 0)
-  ; Stage 12 N4: the per-namespace ir-prefix table starts empty; `user` is the
-  ; implicit empty-prefix namespace (handled in ns-ir-prefix), so no entry is
-  ; needed for the byte-identical bootstrap path.
-  (set! g-ns-prefix-table null)
-  ; Stage 14 AVR-5: the function-attribute table starts empty (lazily built by the
-  ; first `fn-attr` directive), so no entry is needed for the byte-identical path.
-  (set! g-fn-attr-table null)
-  ; Stage 15 W5e: the file-private name table starts empty (lazily built by the
-  ; first private definer). A null table is the byte-identical fast path.
-  (set! g-priv-files null)
-  (set! g-priv-cache-path null)
-  (set! g-priv-cache null))
+; Stage 15 W8 G-5 — `compiler-init` is gone (design/global-init.md §5 G-5,
+; acceptance criterion (A)). Its 52 statements resolved as §2.12 measured them:
+; 48 globals became combined declaration+initializations at their own `defvar`,
+; 20 statements were dead restatements of the `defvar` zero default and were
+; deleted, and exactly one — `(target-init)` — was genuinely special and is now
+; called directly from `main` (and from `repl-main`) right after argv parsing.
+;
+; `target-init` is special for two independent reasons, both of which rule out
+; expressing it as an initializer: it READS ARGV (`--target=` / `--mcpu=`, which
+; `main`'s flag loop parses, and which a load-time initializer cannot see), and
+; it sets FIVE globals from one call, deriving them from each other. That is
+; configuration, not construction.
 
 ; ============================================================
 ; Emit quasiquote helpers (__cons / __append) into the given streams
@@ -13613,7 +13679,7 @@
 ; to link a final binary. Exits with a non-zero status on failure.
 (defn compile-and-link (ir:ptr ir-len:i64 source-file:ptr):void
   ; Backends are already registered process-wide by targets-init-all (called from
-  ; target-init in compiler-init, which runs before this on every batch code path),
+  ; target-init, which runs before this on every batch code path),
   ; so no per-call target init is needed here.
   (let (ctx:ptr (LLVMContextCreate)
         mb:ptr  (LLVMCreateMemoryBufferWithMemoryRangeCopy ir ir-len source-file)
@@ -13692,9 +13758,8 @@
                     (when (!= device null)
                       (fprintf cmds " -mmcu=%s" device))))
                 (fprintf cmds " %s -o %s" obj-path out-path)
-                (when (!= g-link-args null)
-                  (dotimes (j (unsafe/cast i32 (count g-link-args)))
-                    (fprintf cmds " %s" (invoke g-link-args (as usize j)))))
+                (dotimes (j (unsafe/cast i32 (count g-link-args)))
+                  (fprintf cmds " %s" (invoke g-link-args (as usize j))))
                 (fclose cmds)
                 (let (rc2:i32 (system cmd-bufp))
                   (free cmd-bufp)
@@ -13777,20 +13842,18 @@
         (return ns-cell)))
     (return (make-cell import-form forms 0))))
 
-; Called from argv parsing in `main`, which runs BEFORE `compiler-init` — so
-; `g-arena-alloc` may not have been switched to ALLOC-ARENA yet. That is
-; harmless: an AllocHandle defvar zero-fills to kind=ALLOC-LIBC, so
-; `vector-new-in` here just backs the vector with plain malloc/realloc
-; (the handle is copied into the Vector by value, so it keeps that backing
-; for its lifetime regardless of when compiler-init later runs).
+; Called from argv parsing in `main`. These used to be lazily constructed here,
+; which — because argv parsing ran before `compiler-init` armed the allocator —
+; left the `-I`/`-l` vectors libc-backed for their whole lifetime while every
+; other compiler collection was arena-backed (the split `context/build.md`
+; recorded). G-5 removes both halves of that: `g-arena-alloc` is a load-time
+; constant, and these vectors are built by `@__nucleus_init`, which the loader
+; runs before `main` is entered. So the lazy guard is gone and the backing is
+; uniform.
 (defn add-include-path (path:ptr):void
-  (when (= g-include-paths null)
-    (set! g-include-paths (unsafe/cast (ref (Vector CStr)) (vector-new-in (addr-of g-arena-alloc)))))
   (conj g-include-paths (as CStr path)))
 
 (defn add-link-arg (arg:ptr):void
-  (when (= g-link-args null)
-    (set! g-link-args (unsafe/cast (ref (Vector CStr)) (vector-new-in (addr-of g-arena-alloc)))))
   (conj g-link-args (as CStr arg)))
 
 (defn main (argc:i32 argv:ptr):int
@@ -13864,7 +13927,13 @@
        (fprintf stderr "usage: nucleusc [--emit-llvm|-S] [-c] [-O0|-O1|-O2|-O3] [-o <path>] [--target=<triple>] [--mcpu=<cpu>] [--mmcu=<device>] [--linker=<cmd>] [--link-arg=<arg>] [-l<lib>] [-L<dir>] [--emit-nuch] [--emit-cheader] [-i] [--repl-format=text|json] [-I<path>] <file.nuc>\n") (return 2))
     (set! g-source-path source-file)
     (let (src:ptr (read-file source-file))
-      (compiler-init)
+      ; G-5: `compiler-init` is gone. Every global it used to build is now built
+      ; by its own `defvar` initializer — the constants by the loader, the rest
+      ; by `@__nucleus_init` before this function was entered. What is left is
+      ; the one genuinely special case: `target-init` reads the `--target=` /
+      ; `--mcpu=` flags the loop above just parsed, so it cannot run any earlier.
+      (target-init)
+      (assert-compiler-arena-backed)
 
       ; Lex/parse
       (set! g-src src)
