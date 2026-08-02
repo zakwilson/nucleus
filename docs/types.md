@@ -74,6 +74,26 @@ always allowed. `none` is the null `?T` literal. Stack addresses are non-null by
 construction: `(addr-of x)`, `(.& p f)`, `(alloca T)`, `(array T …)`, and a
 `(S …)` compound literal all yield `(ref T)`.
 
+**A global declared non-null must be initialized.** `(defvar g:ptr:T)` with no
+initializer is a compile-time error: with no initializer the slot takes the
+type's zero, which for a pointer is `null` — exactly the value the type says it
+can never hold. The rule is the same one every other position enforces, and it
+applies at a global only because there is now a way to write the initializer
+(see [Run-time initializers](toplevel.md#run-time-initializers)).
+
+```lisp
+(defvar g:ptr:Thing)              ; error: non-null pointer type but no initializer
+(defvar g:ptr:Thing (make-thing)) ; fine — the run-time initializer runs before main
+(defvar g:(raw Thing))            ; fine — `raw` is honestly nullable
+(defvar g:?ptr:Thing)             ; fine — a Maybe pointer may be none
+(defvar g:ptr)                    ; fine — an elem-less bare `ptr` names no pointee
+(defvar g:CStr)                   ; fine — CStr is not a typed pointer kind
+```
+
+The two carve-outs in that list are `pkind-flow-check`'s own, not extra
+exceptions invented for globals: a bare `ptr` (`void*`) carries no non-null
+contract because it names no pointee, and `CStr` is its own type kind.
+
 **Uniform `?` (Maybe)**: `?T` ≡ `(Maybe T)` with no
 auto-`ref` injection. For a **pointer** operand it niche-encodes
 (`?ptr:T` / `?ref:T` ≡ `(Maybe (ref T))`, one pointer, `null` = none); for a

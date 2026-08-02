@@ -617,7 +617,8 @@
   ; not `raw`: never explicitly reset to null (each Generic is individually
   ; arena-allocated once by generic-new and lives for the whole compilation,
   ; like g-vtable-table/g-boxedfn-table/g-dyn-table — unlike g-ns-prefix-table,
-  ; which compiler-init nulls once per unit).
+  ; which used to be nulled once per unit by compiler-init; since Stage 15 W8
+  ; G-5 that reset is gone and the table simply starts at its defvar zero).
   (methods (ref (Vector (ref Method))))
   finalized:i32     ; mangling decided + solitary scope binding established
   mangled:i32       ; 0 = solitary, unmangled @name (C-callable); 1 = mangled set

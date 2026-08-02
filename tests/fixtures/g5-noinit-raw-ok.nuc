@@ -1,0 +1,19 @@
+; The other side of the flip: the carve-outs must STAY legal, or the rule would
+; be "every global needs an initializer", which is not what was decided. All
+; four of these compile clean.
+(defstruct Thing v:i32)
+
+; 1. `raw` — honestly nullable. This is the escape hatch the diagnostic names.
+(defvar (g5r-raw (raw Thing)))
+; 2. `?T` — a Maybe pointer is nullable by construction.
+(defvar g5r-maybe:?ptr:Thing)
+; 3. an elem-less bare `ptr` — names no pointee, so it carries no non-null
+;    contract (pkind-flow-check's own carve-out, inherited rather than copied;
+;    ~1550 of these exist in this compiler's source).
+(defvar g5r-bare:ptr)
+; 4. CStr — TY-CSTR, not TY-PTR, so ptr-pkind reads PTR-RAW.
+(defvar g5r-cstr:CStr)
+
+(defn main ():i32
+  (return (+ (if (= (as ptr g5r-raw) null) 1 0)
+             (if (= (as ptr g5r-bare) null) 1 0))))

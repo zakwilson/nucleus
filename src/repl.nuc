@@ -901,7 +901,11 @@
   ; by default). _IOLBF == 1 on glibc.
   (setvbuf stdout null 1 0)
   (set! g-source-path "<repl>")
-  (compiler-init)
+  ; G-5: see main. `target-init` is the residue of `compiler-init`; the REPL has
+  ; no argv overrides of its own but still needs the host Target resolved before
+  ; the first JIT module is built.
+  (target-init)
+  (assert-compiler-arena-backed)
   ; Initialize preamble stream
   (set! g-repl-preamble (open_memstream (addr-of g-repl-preamble-bufp)
                                          (as ptr (addr-of g-repl-preamble-sizep))))

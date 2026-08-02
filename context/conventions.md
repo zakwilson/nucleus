@@ -176,6 +176,15 @@ bitten **three** times, each found while working on something else:
   `(let (p:ptr:Thing null) …)` was correctly rejected. Fixed by calling
   `pkind-flow-check` here with `ty-raw` as the source type — exactly what
   `emit-symbol-ref` gives the `null` symbol in value position.
+- **W8 G-5, the OTHER half of the same hole: no initializer at all.**
+  `(defvar g:ptr:Thing)` took `type-zero-const-ir`'s `null` — the identical
+  wrong value, reached by writing less rather than more. `defvar-require-init`
+  (`src/nucleusc.nuc`, beside `emit-defvar`) now refuses it, and it asks the
+  **same two questions `pkind-flow-check` asks** — `(= (ptr-pkind ty) PTR-REF)`
+  and `(!= (ty elem) null)` — rather than re-deriving them, so the `CStr` and
+  elem-less-bare-`ptr` carve-outs come along for free. A hand-written
+  `(= (ty kind) TY-PTR)` test here would have rejected ~1550 legitimate bare
+  `:ptr` globals in this compiler's own source.
 
 **Since Stage 15 W8 G-1 the renderer also FOLDS**: an integer destination
 accepts an arbitrary constant expression (arithmetic/bit ops over literals,
@@ -314,6 +323,76 @@ standalone symbol nodes — that handles both shapes uniformly.
 ## Colon-binding diagnostics span multiple chokepoints (CP-3)
 
 A trailing-colon binding name (the whitespace near-miss, e.g. `x: (raw Node)`) is **not** caught by a single chokepoint — the desugar/emit split means top-level and body-local bindings take different paths. `split-colon-segments`/`desugar-symbol` only cover **top-level** binding positions (defvar/defn-name/params); a `defn` body is not desugared (see the note above), so a `let`/`with` inside a body never reaches the desugar path — `emit-let`/`emit-with`'s even-count check masks it first. And `defstruct` field CELLs bypass colon desugar entirely. CP-3 therefore needs complementary checks at three sites: `split-colon-segments` (desugar path), `extract-name-and-type` (both the SYM and CELL branches, emit-time), and a `check-colon-bindings` scan in `emit-let`/`emit-with` before the even-count check. Lesson: don't assume a single chokepoint for binding-name diagnostics — when adding one, audit both the desugar and emit trees for every binding-introducing form.
+
+## A global's initializer may not name the global it initializes — builders take the collection
+
+Stage 15 W8 G-5 turned ~48 of the compiler's globals into combined
+declaration+initializations. Four of the helpers that built them
+(`init-binops`, `init-rmacros`, `init-blanket`, `init-generics`) appended to the
+global they were building — `(conj g-binops op)` — which is fine from a separate
+`compiler-init` and **impossible** from the global's own initializer: the slot
+is still null while its value is being computed. The fix is uniform and worth
+copying: the appender takes the collection as its **first parameter**
+(`add-binop`, `register-rmacro`), and the builder creates a local, fills it, and
+returns it. Where the appender is also called from ordinary code, split rather
+than re-point — `generic-alloc` (allocate + initialise) and `generic-new`
+(`generic-alloc` + `conj g-generics`) in `src/generics.nuc` are the worked
+example, so the registration and the construction cannot drift.
+
+Two related facts from the same step:
+
+- **A `defvar` whose initializer is a constant STRUCT literal must be declared
+  after the struct's layout is available**, not merely after its name resolves.
+  `g-arena-alloc` could not move above the first registry as
+  `design/global-init.md` §2.10 planned, because `%AllocHandle` comes in with
+  `(import-use vector)` far below; the renderer sees a fieldless registry entry
+  and dies *"too many initializers for struct 'AllocHandle'"*. It did not need
+  to move up: a constant initializer is applied by the loader, so it has no
+  order, and every reference to it is `(addr-of …)`, which is an address rather
+  than a read.
+- **A `(defvar g:ptr (addr-of-ish some-function))` cannot be a constant when the
+  function is defined in a LATER import.** A constant `@fn` reference is
+  resolved at the defvar's own emission point. The compiler's two late-binding
+  hooks are structurally unable to satisfy that — the defvar must sit above the
+  file that *reads* the hook and the callee is defined below it — so they stay
+  run-time initializers. If a hook global looks like it "should" be a constant,
+  check which side of the import edge the callee is on.
+
+## An ordering dependency laundered through two calls is invisible to every check
+
+Also G-5. `g-generics`' builder calls `generic-alloc` → `ns-ir-prefix` →
+`strcmp(g-current-ns, "user")`. Nothing in the initializer *names*
+`g-current-ns`, so G-4's syntactic forward-reference check cannot see it by
+construction (`design/global-init.md` §4.2 declares this class permanently
+undetectable — it needs callee effect summaries). Declaring `g-generics` above
+`g-current-ns` would have `strcmp`'d a null pointer at process start, before
+`main`.
+
+The practical rule when you give a global a runtime initializer: **read the
+callee's body, not just the initializer expression.** The old imperative init
+function often *documented* the dependency in a comment (`compiler-init`'s said
+"g-current-ns must be set before init-generics"); a census of `set!` statements
+does not carry those comments forward.
+
+## A "value from a call" position that omits the want channel resolves by stamp order
+
+`g-want-type` (TC-2) is armed at let/with binding inits, `set!` RHS, explicit and
+implicit `return`, `.set!` value position — and, since G-5, at **`as`**. `as` was
+the missing one, and the failure it produced is the model for the class: a
+generic whose type variable appears only in its *return* type
+(`vector-new-in`, the whole `*-new` family) has no argument to bind from, so
+with no want it resolves against whichever instance the unit stamped **first**.
+`scope-new`'s `(as (ref (Vector (ref Cleanup))) (vector-new-in …))` read
+correctly for the compiler's whole life only because that call site *was* the
+first `vector-new-in` emitted; stamping any other element type earlier
+retargeted it. In the `as` spelling that surfaces as `as`'s own reinterpretation
+error; **in the `unsafe/cast` spelling it is completely silent.**
+
+Two takeaways. First, if you add a position that names a type, ask whether it
+arms the want — the arm sites are enumerable by grepping `g-want-type`. Second,
+when a construction site's element type comes from an annotation, prefer binding
+it (`(let (v:(ref (Vector T)) (vector-new-in a)) …)`) over casting it; the
+binding has always armed the want and says where `T` comes from.
 
 ## A drain at `emit-toplevel-forms` depth 1 has a SECOND caller: the REPL
 

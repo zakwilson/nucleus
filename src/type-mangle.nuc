@@ -71,7 +71,7 @@
 ; (no TY-FN flows through a generic in the compiler's own source: `make
 ; bootstrap` re-converges with this change).
 (defvar g-fnty-id:i32 0)
-(defvar (g-fnty (ref (HashMap CStr ref:Type))))
+(defvar (g-fnty (ref (HashMap CStr ref:Type))) (hashmap-new-in (addr-of g-arena-alloc)))
 
 (defn fnty-intern (t:ref:Type):CStr
   (doseq (entry g-fnty (HashMapEntryIter CStr ref:Type))
