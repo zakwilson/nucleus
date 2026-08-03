@@ -1,0 +1,9 @@
+; Stage 15 W9 defect 12: a wrong-arity call to a SOLITARY `defn` (one resolved
+; by name through the Scope, not through the overload registry) was not
+; diagnosed at all — `(f 1 2)` emitted `call i32 @f(i32 1, i32 2)`, linked, and
+; ran. The overloaded path diagnoses it implicitly, because a method only
+; matches at `num-params == nargs`; this path never compared the counts.
+(defn f (x:i32):i32 (return x))
+
+(defn main ():i32
+  (return (f 1 2)))

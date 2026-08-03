@@ -1,0 +1,12 @@
+; Stage 15 W9 defect 11, site 1 of 4: `call: expected %d args, got %d` was
+; written with a ONE-substitution helper (`fmt-s`) and two substitutions, so
+; snprintf read a garbage vararg for the second `%d`. Because both conversions
+; are `%d` this did not crash — it printed a garbage COUNT ("got 100"), which
+; is why nothing noticed. This is the fn-pointer (indirect) call path, which
+; is where that diagnostic has always lived; it is NOT the solitary-`defn`
+; path defect 12 fixes.
+(defn add (a:i32 b:i32):i32 (return (+ a b)))
+
+(defn main ():i32
+  (let (f:(fn i32)(i32 i32) add)
+    (return (f 1))))

@@ -9,16 +9,35 @@ When a feature in a design document gets implemented, add a **Status:** note but
 `fmt-s` takes **exactly one** `%s` argument; `fmt-i32` exactly one `%d`/`%ld`, etc. They are plain functions, not variadic. Passing a format string with more conversions than the helper's parameter count makes `snprintf` read a garbage vararg and typically **segfaults the compiler** (no error — just a crash with empty output). For multiple substitutions use the dedicated variants: `fmt-2s` (two strings), `fmt-sd` (string + int), `fmt-i32-i32` (two ints), `fmt-2s-i` (two strings + int). If you need a new shape, add a helper in `src/format.nuc` rather than overloading an existing one. **Three strings is the widest shape that exists (`fmt-3s`)** — compose in two calls (`(fmt-2s "%s\n%s" head note)`) rather than adding a `%s` a helper cannot feed.
 
 **This trap is not "you might forget" — it is that a violation on a COLD error
-path is invisible forever.** The failure is a bare SIGSEGV with no output, so it
-is only observable if the diagnostic actually fires. Grepping for it in W8 G-2
-found **three pre-existing violations** in `src/nucleusc.nuc` (`call: expected
-%d args, got %d`, `(dyn %s): '%s' is not a declared protocol`, `BoxedFn call:
-expected %d args, got %d`) that a green 385-test suite had never executed —
-and, relatedly, that a wrong-arity call to a solitary `defn` is not diagnosed at
-all today, which is very likely *why* the first of them was never reached. Both
-are reported in `design/global-init.md` §7 (items 7 and 8). When you add a
-diagnostic, count the conversions against the helper's parameter count by
-hand; when you touch this area, grep `fmt-s "[^"]*%[sd][^"]*%'` and friends.
+path is invisible forever**, and it has **two** failure modes, only one of which
+is loud. Over-supplying (a format with more conversions than the helper feeds)
+crashes only when the garbage vararg is used as a *pointer*: a trailing `%s`
+segfaults with no output, but a trailing `%d` prints a **garbage number** —
+`call: expected 2 args, got 100` — which is a silently wrong diagnostic and
+therefore worse. Under-supplying (fewer arguments than the helper has
+parameters) is silent in both directions.
+
+Stage 15 W9 swept **every** helper against its own parameter count and found
+**seven** pre-existing violations, not the three a `fmt-s`-only grep had
+recorded: four over-supplied (`call: expected %d args, got %d`, `BoxedFn call:
+expected %d args, got %d`, `(dyn %s): '%s' is not a declared protocol`, and
+`extend: '%s' is a protocol, so its supertype '%s' must be a protocol too` in
+`generics.nuc` — the one the `fmt-s` grep missed) and three under-supplied
+(`(fmt-sd "%%tc3.mat.%d" g-tmp)`, two `(fmt-2s "ptr %s" x)` in `abi.nuc`).
+All seven are fixed, and each of the four diagnostics now has a test
+(`tests/fixtures/w9-*`) — **a corrected format string that nothing executes is
+one edit away from regressing**, which is the durable half of the fix.
+
+Two structural consequences worth keeping:
+
+- **Every one of the seven was also a wrong-arity CALL**, so the Stage 15 W9
+  call-arity check (`call-arity-ok` / `check-call-arity`, `src/nucleusc.nuc`)
+  now catches this whole class at the language level. The hand-count is still
+  worth doing when you *write* a diagnostic, but it is no longer the only net.
+- **Sweeping by grep is what under-counted it.** A scanner that parses each
+  `(fmt-* "…" …)` call and compares the format's conversion count against the
+  helper's parameter count finds all of them in one pass; a regex over `fmt-s`
+  finds the ones you already suspect. Prefer the former.
 
 **Buffer size is a second, quieter trap (fixed in Stage 15 W1d — know it, don't
 re-break it).** Each helper formats into a fixed `alloca` and then called

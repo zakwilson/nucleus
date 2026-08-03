@@ -3939,7 +3939,13 @@
         (let (m:(raw Method) (invoke (gg methods) (as usize j)))
           (when (= (m kind) METHOD-GENERIC)
             (let (bound:ptr (arena-alloc (* (as i64 (+ (m num-tyvars) 1)) (ptr-bytes))))
-              (when (!= (generic-method-bind m argtypes nargs bound null) 0)
+              ; Stage 15 W9 defect 12 (found by the new arity check): this call
+              ; was missing its trailing `arg-nodes` argument, so the callee read
+              ; an uninitialized register as the argument-node array. This
+              ; resolver has no argument nodes to offer — it types from
+              ; `argtypes` alone — so the honest value is null, which
+              ; generic-method-bind's literal-spotting path already guards.
+              (when (!= (generic-method-bind m argtypes nargs bound null null) 0)
                 (when (!= (generic-constraints-ok m bound line) 0)
                   (do (set! cand m) (set! cand-bound bound) (inc! ncand))))))))
       (when (> ncand 1)
@@ -4431,6 +4437,69 @@
         (fprintf g-body-stream "  %s = call ptr %s()\n" tmp (fn val))
         (return (alloc-val ty-ptr tmp))))))
 
+; ------------------------------------------------------------
+; The call-arity rule, in ONE function every call path CALLS (Stage 15 W9
+; defect 12; context/conventions.md "mirror a call, not the logic"). Before
+; this, the rule was written inline at the indirect-call and BoxedFn sites and
+; **not at all** on the solitary-`defn` path, so `(f 1 2)` against a
+; one-parameter `f` emitted `call i32 @f(i32 1, i32 2)` and linked.
+;
+; `sig` is the callee's signature-carrying Type. That is a TY-FN for a `defn` /
+; `extern` / `declare` / function-pointer value, but a **TY-STRUCT** for a
+; `(BoxedFn …)`/`(dyn P)` fat pointer, which carries `ret`/`params`/`num-params`
+; on the struct Type (union-registry.nuc `boxedfn-type`) — so this must NOT gate
+; on `kind == TY-FN` or the box path would silently stop being checked.
+;
+; The five shapes, and why each is admissible:
+;   variadic  (a C header's `int printf(const char*, ...)`): only the fixed
+;              prefix is constrained.
+;   open-tail: the callee's signature came from a `declare` rather than a body
+;              the compiler has seen. Nucleus has no `...` spelling, so a C
+;              variadic function is declared with its fixed parameters only and
+;              the extra arguments ride the call site (docs/toplevel.md, and the
+;              very idiom nuch.nuc's `&rest`-in-a-declaration diagnostic points
+;              at). Same rule as `variadic`; carried separately because it is a
+;              property of the SYMBOL, not of the signature.
+;   &rest:     the trailing parameter is the folded Node list, so the fixed
+;              prefix is num-params-1 and anything at or above it is legal.
+;   &optional: the trailing `nopt` parameters may be omitted; `emit-call` then
+;              fills each from its default expression.
+;   otherwise: exactly num-params.
+; A zero-filled non-fn Type answers variadic/has-rest/nopt = 0 and num-params 0,
+; i.e. the exact rule — which is what a box wants.
+(defn call-arity-ok (sig:(raw Type) nargs:i32 open-tail:i32):i32
+  (when (= sig null) (return 1))
+  (let (np:i32 (sig num-params))
+    (when (or (!= (sig variadic) 0) (!= open-tail 0)) (return (if (< nargs np) 0 1)))
+    (when (!= (sig has-rest) 0) (return (if (< nargs (- np 1)) 0 1)))
+    (when (!= (sig nopt) 0)
+      (when (< nargs (- np (sig nopt))) (return 0))
+      (return (if (> nargs np) 0 1)))
+    (return (if (!= nargs np) 0 1))))
+
+; Raise the located arity diagnostic for a call the rule above rejects. `name`
+; is the callee spelling, or null for an indirect/anonymous callee, in which
+; case `what` ("call", "BoxedFn call") is the diagnostic subject. The subject is
+; formatted only on the failure path, so the check costs nothing on the hot
+; direct-call path.
+(defn check-call-arity (what:ptr name:ptr sig:(raw Type) nargs:i32
+                        open-tail:i32 line:i32):void
+  (when (!= (call-arity-ok sig nargs open-tail) 0) (return))
+  (let (subject:ptr what
+        np:i32 (sig num-params))
+    (when (!= name null) (set! subject (fmt-s "call to '%s'" name)))
+    (when (or (!= (sig variadic) 0) (!= open-tail 0))
+      (die-at line (fmt-s-2i "%s: expected at least %d args, got %d" subject np nargs)))
+    (when (!= (sig has-rest) 0)
+      (die-at line
+        (fmt-s-2i "%s: expected at least %d args, got %d" subject (- np 1) nargs)))
+    (when (!= (sig nopt) 0)
+      (when (< nargs (- np (sig nopt)))
+        (die-at line (fmt-s-2i "%s: expected at least %d args, got %d"
+                               subject (- np (sig nopt)) nargs)))
+      (die-at line (fmt-s-2i "%s: expected at most %d args, got %d" subject np nargs)))
+    (die-at line (fmt-s-2i "%s: expected %d args, got %d" subject np nargs))))
+
 ; Indirect call of an already-emitted function-pointer value `fn-val`; arguments
 ; are node-at(arg-start)..end. Shared by the explicit `funcall` surface and the
 ; call position — a TY-FN value in head position folds to this, so `funcall` is
@@ -4440,11 +4509,8 @@
         fv:(raw Val) fn-val
         fn-type:(raw Type) (fv type)
         ret-type:(raw Type) (fn-type ret)
-        np:i32 (fn-type num-params)
         nargs:i32 (- (node-len cc) arg-start))
-    (when (!= nargs np)
-      (die-at (cc line)
-        (fmt-s "call: expected %d args, got %d" (as i64 np) (as i64 nargs))))
+    (check-call-arity "call" null fn-type nargs 0 (cc line))
     (let (arg-vals:ptr (arena-alloc (* (as i64 (+ nargs 1)) (ptr-bytes)))
           i:i32 0)
       (while (< i nargs)
@@ -4603,6 +4669,16 @@
     ; &optional callee: the arg buffer may need to grow up to num-params.
     (when (and (!= ft0 null) (= (ft0 kind) TY-FN))
       (when (> (ft0 num-params) max-args) (set! max-args (ft0 num-params))))
+    ; Stage 15 W9 defect 12: the solitary-`defn` call path had NO arity check at
+    ; all — `(f 1 2)` against a one-parameter `f` emitted `call i32 @f(i32 1,
+    ; i32 2)` and linked. The overloaded path diagnoses it implicitly (a method
+    ; only matches at `num-params == nargs`, so a wrong count falls out as "no
+    ; matching method"); this path resolves the callee by NAME, so nothing ever
+    ; compared the counts. Checked here, before any argument is emitted, so the
+    ; diagnostic is the first thing reported and no argument's own errors mask
+    ; it. `&rest` / `&optional` / a variadic `declare` are all admitted by the
+    ; shared rule — the check is one CALL, not a second copy of the rule.
+    (check-call-arity "call" (ss name) ft0 nargs (ss extern-decl) (cc line))
     ; Stage 10 escape analysis (lifecycle.md §2.3): manually freeing a
     ; with-owned binding double-frees — the armed cleanup also fires at scope
     ; exit. (free (move p)) is the sanctioned spelling: move disarms first.
@@ -4620,12 +4696,13 @@
           (memcpy (unsafe/ptr+ (as ptr:Val args) i) v (sizeof Val)))
         (inc! i))
       ; Fill defaults for missing trailing &optional args, emitting each default
-      ; expression in the caller's scope.
+      ; expression in the caller's scope. The former `too few args` / `too many
+      ; args` pair that stood here re-derived the &optional bounds; the shared
+      ; `check-call-arity` above now owns that rule and has already rejected
+      ; both, so `required <= nargs <= np` holds by the time we get here.
       (when (and (= (ft0 kind) TY-FN) (!= (ft0 nopt) 0))
         (let (np:i32 (ft0 num-params)
               required:i32 (- (ft0 num-params) (ft0 nopt)))
-          (when (< nargs required) (die-at (cc line) (fmt-s "%s: too few args" (ss name))))
-          (when (> nargs np) (die-at (cc line) (fmt-s "%s: too many args" (ss name))))
           (let (oi:i32 nargs)
             (while (< oi np)
               (let (default-node:ptr (aref (as ptr:ptr (ft0 opt-defaults)) (- oi required))
@@ -5412,12 +5489,17 @@
         (when (= (strcmp h ".set!") 0)
           (let (subj:ptr (fn-rewrite-captures (node-at node 1) caps bound self-sym line mode)
                 val:ptr (fn-rewrite-captures (node-at node 3) caps bound self-sym line mode))
+            ; Stage 15 W9 defect 12 (found by the new arity check): the OUTER
+            ; make-cell was missing its `line` argument, so the rewritten
+            ; `.set!` cell of a closure capture took an uninitialized register
+            ; as its line. Every sibling cell here passes `line`.
             (return (make-cell (as ptr hd)
                       (make-cell subj
                         (make-cell (node-at node 2)
                           (make-cell val null line)
                           line)
-                        line)))))
+                        line)
+                      line))))
         ; set! on a captured name: rewrite to a field store so that mutations
         ; of the capture persist across invoke calls (mode 0/1) or write back
         ; through the captured pointer (mode 2 cfn).
@@ -5951,7 +6033,7 @@
 (defn dyn-vtable-method-irname (concrete-ty:(raw Type) proto:CStr line:i32):ptr
   (let (pp:?ptr:Protocol (protocol-lookup proto))
     (when (= pp null)
-      (die-at line (fmt-s "(dyn %s): '%s' is not a declared protocol" proto proto)))
+      (die-at line (fmt-2s "(dyn %s): '%s' is not a declared protocol" proto proto)))
     (let (ppp:ptr:Protocol (as ptr:Protocol pp))
       (when (!= (ppp num-sigs) 1)
         (die-at line (fmt-s "(dyn %s): only single-method protocols are boxable in v1" proto)))
@@ -6433,12 +6515,9 @@
         box-ty:ptr (boxedfn-canonical (cv type))
         bt:ptr:Type (unsafe/cast ptr:Type box-ty)
         line:i32 (-> n (unsafe/cast ptr:Node _) (_ line))
-        np:i32 (bt num-params)
         ret-ty:ptr (bt ret)
         box-ir:ptr (type-to-ir box-ty))
-    (when (!= nargs np)
-      (die-at line (fmt-s "BoxedFn call: expected %d args, got %d"
-                          (as i64 np) (as i64 nargs))))
+    (check-call-arity "BoxedFn call" null box-ty nargs 0 line)
     (let (data:ptr (new-tmp)
           vt:ptr (new-tmp))
       (fprintf g-body-stream "  %s = extractvalue %s %s, 0\n" data box-ir (cv val))
@@ -7236,7 +7315,7 @@
 ; binding is initialized with a by-value `S`.
 (defn tc3-materialize (v:(raw Val) ty:(raw Type) pointee:(raw Type) line:i32):ref:Val
   (let (vv:ptr:Val (unsafe/cast ptr:Val v)
-        slot:ptr (fmt-sd "%%tc3.mat.%d" g-tmp))
+        slot:ptr (fmt-i32 "%%tc3.mat.%d" g-tmp))
     (inc! g-tmp)
     (fprintf g-entry-stream "  %s = alloca %s, align %d\n"
       slot (type-to-ir pointee) (type-size pointee))

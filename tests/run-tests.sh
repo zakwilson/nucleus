@@ -3400,6 +3400,59 @@ spawn run_reject_at w7-plain-typo tests/fixtures/w7-plain-typo.nuc \
   "tests/fixtures/w7-plain-typo.nuc:7: error:" \
   "get: no field 'zz' on struct 'Point'"
 
+# --- Stage 15 W9 defects 11 + 12 -----------------------------------------------
+# design/stage15-stress-test/progress.md, W9 rows 11 and 12 — a matched pair.
+#
+# Defect 11: FOUR call sites passed more substitutions than their fixed-arity
+# format helper takes (context/conventions.md opens with this trap), so snprintf
+# read a garbage vararg. The two `%d %d` sites printed a garbage COUNT rather
+# than crashing ("got 100", "got 115"), which is why nobody noticed; the two
+# `%s %s` sites dereferenced the garbage and SEGFAULTED the compiler with no
+# output at all. All four were cold paths a green suite had never executed, so
+# the durable half of the fix is that each now HAS a test: a corrected format
+# string nothing runs is one edit away from regressing.
+spawn run_reject_at w9-fnptr-arity tests/fixtures/w9-fnptr-arity.nuc \
+  "tests/fixtures/w9-fnptr-arity.nuc:12: error:" \
+  "call: expected 2 args, got 1"
+spawn run_reject_at w9-boxedfn-arity tests/fixtures/w9-boxedfn-arity.nuc \
+  "tests/fixtures/w9-boxedfn-arity.nuc:9: error:" \
+  "BoxedFn call: expected 1 args, got 2"
+# The two that SEGFAULTED before the fix (both substitutions are `%s`).
+spawn run_reject_at w9-dyn-not-protocol tests/fixtures/w9-dyn-not-protocol.nuc \
+  "tests/fixtures/w9-dyn-not-protocol.nuc:24: error:" \
+  "(dyn dp/Describe): 'dp/Describe' is not a declared protocol"
+spawn run_reject_at w9-extend-super-not-protocol tests/fixtures/w9-extend-super-not-protocol.nuc \
+  "tests/fixtures/w9-extend-super-not-protocol.nuc:11: error:" \
+  "extend: 'Describe' is a protocol, so its supertype 'Plain' must be a protocol too"
+
+# Defect 12: a wrong-arity call to a SOLITARY `defn` was not diagnosed at all —
+# `(f 1 2)` against a one-parameter `f` emitted `call i32 @f(i32 1, i32 2)`,
+# linked and ran. The rule now lives in ONE function (`call-arity-ok` /
+# `check-call-arity`, src/nucleusc.nuc) that the direct, indirect and BoxedFn
+# paths all CALL, so they cannot drift. Both directions are errors.
+spawn run_reject_at w9-call-too-many tests/fixtures/w9-call-too-many.nuc \
+  "tests/fixtures/w9-call-too-many.nuc:9: error:" \
+  "call to 'f': expected 1 args, got 2"
+spawn run_reject_at w9-call-too-few tests/fixtures/w9-call-too-few.nuc \
+  "tests/fixtures/w9-call-too-few.nuc:9: error:" \
+  "call to 'f': expected 2 args, got 1"
+# The legitimately variable arities: `&optional` is a band, `&rest` is a floor.
+spawn run_reject_at w9-optional-too-many tests/fixtures/w9-optional-too-many.nuc \
+  "tests/fixtures/w9-optional-too-many.nuc:7: error:" \
+  "call to 'opt': expected at most 2 args, got 3"
+spawn run_reject_at w9-rest-too-few tests/fixtures/w9-rest-too-few.nuc \
+  "tests/fixtures/w9-rest-too-few.nuc:7: error:" \
+  "call to 'r': expected at least 2 args, got 1"
+# A `declare`d signature is OPEN-TAILED: Nucleus has no `...` spelling, so the
+# documented way to call a C variadic function is to declare its fixed
+# parameters and let the extras ride the call site. This is the carve-out the
+# check must not swallow — three tests above (n6/sm3/s1) already depend on it.
+spawn run_accepts w9-declare-open-tail tests/fixtures/w9-declare-open-tail.nuc
+# ...but the fixed prefix is still asserted, so too FEW is an error.
+spawn run_reject_at w9-declare-too-few tests/fixtures/w9-declare-too-few.nuc \
+  "tests/fixtures/w9-declare-too-few.nuc:9: error:" \
+  "call to 'some-c-fn': expected at least 2 args, got 1"
+
 # --- Join + replay --------------------------------------------------------------
 # Wait for all remaining jobs (ignore per-job exit codes — PASS/FAIL is decided
 # by scanning buffered output, since `set -e` does not propagate across `&`).

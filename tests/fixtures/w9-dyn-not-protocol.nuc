@@ -1,0 +1,26 @@
+; Stage 15 W9 defect 11, site 3 of 4: `(dyn %s): '%s' is not a declared protocol`
+; — two `%s` fed by a ONE-substitution helper, so the pre-fix compiler
+; SEGFAULTS with no output when it fires.
+;
+; Reaching it takes a namespace-qualified protocol, and that is itself a
+; separate, pre-existing inconsistency worth knowing about: `conformance-lookup`
+; canonicalizes its key with `strip-ns-qualifier` (Stage 12 N4 decision 9) while
+; `protocol-lookup` does not. So `(extend Cat dp/Describe)` registers the
+; conformance under the bare `Describe`, `admit-erased-conformance` finds it and
+; admits the box, and then `dyn-vtable-method-irname` looks the protocol up
+; under the QUALIFIED spelling and finds nothing. That mismatch is what makes
+; this diagnostic reachable at all; fixing it is out of scope here, and if it is
+; ever fixed this fixture must be re-pointed at whatever still reaches the
+; message rather than deleted.
+(import-use "stdio.h")
+(import-use allocator)
+(import-prefixed w9-dynprotolib dp)
+
+(defstruct Cat n:i32)
+(extend Cat dp/Describe)
+(defn describe ((self (ref Cat))):i32 (return (+ 100 (self n))))
+
+(defn boxed ():(dyn dp/Describe)
+  (return (Cat 5)))
+
+(defn main ():i32 (return 0))
