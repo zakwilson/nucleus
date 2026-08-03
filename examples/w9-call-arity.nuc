@@ -1,0 +1,69 @@
+; Stage 15 W9 defect 12 — the POSITIVE half of the new call-arity check.
+;
+; Until this stage a wrong-arity call to a solitary `defn` was not diagnosed at
+; all: `(f 1 2)` against a one-parameter `f` emitted `call i32 @f(i32 1, i32 2)`,
+; linked and ran. The rejections are `tests/fixtures/w9-call-*`; this file is the
+; other side — every call shape whose arity is legitimately VARIABLE, or which
+; routes around the direct path entirely, and which the check must therefore keep
+; accepting. Asserted BY VALUE, not by exit code: a check that quietly swallowed
+; one of these would still link.
+;
+; The other variable-arity shape — a hand-written `(declare printf (fmt:CStr))`
+; called with extra arguments, which is the documented way to reach a C variadic
+; function (Nucleus has no `...` spelling, and `&rest` is refused in a
+; declaration) — needs a unit with no header-derived `printf` to shadow, so it
+; is pinned separately by `tests/fixtures/w9-declare-open-tail.nuc`.
+(import-use "stdio.h")
+(import-use allocator)
+
+; --- 1: &optional — 1, 2 or 3 arguments are all legal -------------------------
+(defn opt3 (a:i32 &optional (b:i32 20) (c:i32 300)):i32
+  (return (+ a (+ b c))))
+
+; --- 2: &rest — the fixed prefix is num-params-1, the tail folds --------------
+(defn count-rest (base:i32 &rest xs:i64):i32
+  (let (n:i32 0
+        cur:ptr xs)
+    (while (!= cur null)
+      (inc! n)
+      (set! cur ((as ptr:Node cur) cdr)))
+    (return (+ base n))))
+
+; --- 3: overloaded `defn` (multimethod) — resolved by argument TYPE, not name -
+(defn kind-of (x:i32):i32 (return 1))
+(defn kind-of (x:i64):i32 (return 2))
+
+; --- 4: bounded-generic template — stamped per instantiation ------------------
+(defn ident (x:T &where (Any T)):T
+  (return x))
+
+; --- 5: protocol method — dispatched through the generic registry -------------
+(defprotocol Sized (size-of ((self (ref Self))) i32))
+(defstruct Blob n:i32)
+(extend Blob Sized)
+(defn size-of ((self (ref Blob))):i32 (return (* 2 (self n))))
+
+; --- 6: fn-pointer call — the indirect path, checked against the VALUE's type -
+(defn add2 (a:i32 b:i32):i32 (return (+ a b)))
+
+(defn main ():i32
+  ; &optional at each admissible arity
+  (printf "opt3   %d %d %d\n" (opt3 1) (opt3 1 2) (opt3 1 2 3))
+  ; &rest at the fixed prefix and above
+  (printf "rest   %d %d %d\n" (count-rest 0) (count-rest 0 7) (count-rest 0 7 8 9))
+  ; overloaded defn
+  (printf "over   %d %d\n" (kind-of 1) (kind-of (as i64 1)))
+  ; generic template
+  (printf "gener  %d\n" (ident 41))
+  ; protocol method through a nominal conformance
+  (with ((b (ref Blob)) (Blob 21))
+    (printf "proto  %d\n" (size-of b)))
+  ; fn-pointer value called indirectly
+  (let (fp:(fn i32)(i32 i32) add2)
+    (printf "fnptr  %d\n" (fp 40 2)))
+  ; BoxedFn: an erased closure handle, arity-checked against the box signature
+  (with (bf:(BoxedFn (i32) i32) (fn (x:i32):i32 (+ x 1)))
+    (printf "boxed  %d\n" (bf 41)))
+  ; a C variadic call with NO variadic arguments at all
+  (printf "done\n")
+  (return 0))

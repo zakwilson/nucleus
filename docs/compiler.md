@@ -105,6 +105,43 @@ searched:
 t.nuc:4: error: unknown: qzx-frobnicate — not defined anywhere in this compilation unit
 ```
 
+### Call arity
+
+A call must supply an admissible number of arguments, and the rule depends on
+what the callee's signature says:
+
+| Callee | Admissible argument count |
+|---|---|
+| an ordinary `defn` / `extern` | exactly `num-params` |
+| a `defn` with `&optional` | `num-params - <optional count>` … `num-params` |
+| a `defn` with `&rest` | at least `num-params - 1` (the rest slot folds the tail) |
+| a function imported from a C header, declared variadic (`printf`) | at least the fixed prefix |
+| a hand-written `declare` | at least `num-params` — see below |
+| a function-pointer value called indirectly | exactly `num-params` |
+| a `(BoxedFn …)` / `(dyn P)` handle | exactly the box signature's `num-params` |
+
+```
+t.nuc:9: error: call to 'f': expected 1 args, got 2
+t.nuc:9: error: call to 'f': expected 2 args, got 1
+t.nuc:7: error: call to 'opt': expected at most 2 args, got 3
+t.nuc:7: error: call to 'r': expected at least 2 args, got 1
+```
+
+**A hand-written `declare` is open-tailed.** A `declare` is a prototype you
+*assert*, not a body the compiler has seen, and Nucleus has no `...` spelling
+(`&rest` / `&optional` are `defn`-only and are [rejected in a
+declaration](toplevel.md)). So declaring a C variadic function means declaring
+its fixed parameters and letting the extra arguments ride the call site, and the
+arity check admits that: more arguments than parameters is legal against a
+declared signature, *fewer* is still an error. Importing the function's C header
+instead (`(import "stdio.h")`) is the precise route — the header carries a real
+variadic flag, so the fixed prefix is checked exactly and the tail is free.
+
+An **overloaded** name (two or more `defn`s sharing a spelling), a multimethod,
+a protocol method and a bounded-generic template are resolved by argument
+*types*, so a wrong count is reported as a resolution failure — `no matching
+method for overloaded 'f' with argument types (…)` — rather than by this check.
+
 ### Unbalanced brackets
 
 An unterminated form reports **two** locations: the opening line of the

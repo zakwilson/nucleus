@@ -27,6 +27,12 @@ Documentation for the current state of the language lives in the docs directory.
 
 **Before finishing a task**, review what has changed and update the language documentation.
 
+## Comments
+
+Add comments to compiler code only when necessary to explain why a particular implementation was chosen, so that future maintainers can make an informed decision about whether to revisit the decision, or to explain an implemantion that is non-obvious to a competent developer. Comments should be terse and use clear language.
+
+Prefer short references to design documents over a paragraph of explanation.
+
 ## Context files
 
 - [context/conventions.md](context/conventions.md) — **required reading before writing or modifying compiler code.** Curated, non-obvious gotchas: the `node-type`↔`emit-node` cross-file lockstep, format-helper arity (mismatch segfaults the compiler), `CStr`/`is-ptr-like` ABI, struct-field interning, `_get` vs head-position member access, bootstrap convergence. Reading it first prevents self-compilation breaks.

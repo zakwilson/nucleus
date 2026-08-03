@@ -394,7 +394,23 @@
   ; those two constants. Written only by `prescan-defvar-name` (1) and
   ; `emit-defvar` (2); read only by `defvar-check-init-order`, which is on a
   ; dying path, so no emitted IR depends on it.
-  defvar-state:i32)
+  defvar-state:i32
+  ; Stage 15 W9 defect 12: this signature came from a `declare` — a prototype the
+  ; user ASSERTS — rather than from a `defn` whose body the compiler has seen.
+  ; Nucleus has no `...` spelling, so a C variadic function is declared with its
+  ; fixed parameters only and the extra arguments ride the call site
+  ; (docs/toplevel.md `declare`; `&rest`/`&optional` are refused in a
+  ; declaration). The call-arity rule therefore admits a LONGER argument list
+  ; against a declared signature; too FEW arguments is still an error. Set only
+  ; in emit-nuch-declare-import. A C-header-imported function is unaffected: it
+  ; carries a real `variadic` flag from the header and is checked exactly.
+  extern-decl:i32
+  ; Appended at the END deliberately: inserting a field mid-struct shifts the
+  ; GEP index of every field after it in every function that touches one, which
+  ; would bury this change's real bootstrap diff under hundreds of unrelated
+  ; index edits. Field order carries no meaning here — `new Sym` zero-fills and
+  ; access is by interned name through struct-field-index.
+  )
 
 ; One armed scope-exit cleanup (Stage 10 lifecycle, design/stage10/lifecycle.md).
 ; Stage 14 §14.6 (the defunion pilot): this was a defstruct whose doc-comment

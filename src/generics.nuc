@@ -3701,8 +3701,8 @@
         (when (and (!= (protocol-lookup typename) null) (= proto-nargs 0))
           (when (= (protocol-lookup proto-name) null)
             (die-at (node-line (as ptr proto-node) (ff line))
-              (fmt-s "extend: '%s' is a protocol, so its supertype '%s' must be a protocol too"
-                     typename proto-name)))
+              (fmt-2s "extend: '%s' is a protocol, so its supertype '%s' must be a protocol too"
+                      typename proto-name)))
           (proto-super-add typename proto-name)
           (return))
         ; Extending to a blanket protocol (Any/Struct) is redundant — conformance

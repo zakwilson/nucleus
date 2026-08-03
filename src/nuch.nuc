@@ -236,9 +236,11 @@
     ; `(declare myfn (a:i32 &rest xs:ptr):i32)` emitted
     ; `declare i32 @myfn(i32, i32, ptr)`, two phantom parameters and no rest
     ; folding at any call site. Refuse it rather than mistype it. (A C variadic
-    ; function needs no marker: call arity is not checked against a declaration,
-    ; so the extra arguments ride the call site, which is how the C ABI passes
-    ; them anyway. Importing the function's header is the precise route.)
+    ; function needs no marker: a DECLARED signature is open-tailed — Stage 15
+    ; W9 defect 12's call-arity check requires the fixed parameters and admits
+    ; any number of extra arguments after them, which is how the C ABI passes
+    ; them anyway. Importing the function's header is the precise route: it
+    ; carries a real `variadic` flag, so the fixed prefix is checked exactly.)
     (when (and (= (n kind) NODE-SYM)
                (or (= (n s) "&rest") (= (n s) "&optional")))
       (die-at line
@@ -342,6 +344,12 @@
             (let (link-ir:ptr (fmt-s "@%s" (ns-ir-base fname)))
             (let (dsym:ref:Sym (scope-define g-globals fname (as ptr ft)
                                 link-ir 0))
+              ; Stage 15 W9 defect 12: mark this as a DECLARED (prototype-only)
+              ; signature, so the new call-arity check admits the extra trailing
+              ; arguments a C variadic call needs — the idiom this very file's
+              ; `&rest`-in-a-declaration diagnostic points users at, and which
+              ; `docs/toplevel.md` documents. Too few arguments is still refused.
+              (.set! (as ptr:Sym dsym) extern-decl 1)
               (when (!= is-noreturn 0) (.set! (as ptr:Sym dsym) noreturn 1)))
             ; Emit LLVM declare, lowering struct-by-value params/return to the
             ; platform C ABI (sret / byval / register coercion) just like a defn.

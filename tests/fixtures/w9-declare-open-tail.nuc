@@ -1,0 +1,23 @@
+; Stage 15 W9 defect 12, the carve-out the new call-arity check must NOT swallow.
+;
+; A `declare` is a prototype the user ASSERTS, not a body the compiler has seen.
+; Nucleus has no `...` spelling and `&rest`/`&optional` are refused in a
+; declaration (src/nuch.nuc), so the documented way to call a C variadic function
+; is to declare its FIXED parameters and let the extra arguments ride the call
+; site (docs/toplevel.md, `declare`). Three tests in tests/run-tests.sh already
+; depend on exactly this shape (n6-nuch-link-and-run, sm3-import-resolves-mangled,
+; s1-nuch-link-and-run), each writing `(declare printf (fmt:CStr):i32)` and then
+; calling it with 3-6 arguments.
+;
+; So a DECLARED signature is open-tailed: more arguments than parameters is
+; legal, fewer is still an error (pinned by w9-declare-too-few.nuc). This must
+; compile clean — run_accepts, not run_reject.
+(exclude-prelude)
+
+(declare printf (fmt:CStr):i32)
+
+(defn main ():i32
+  (printf "none\n")
+  (printf "one %d\n" 1)
+  (printf "six %d %d %d %d %d\n" 1 2 3 4 5)
+  (return 0))

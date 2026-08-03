@@ -535,7 +535,7 @@
     ; which is unambiguously variadic. A fixed StrView value falls through to the
     ; generic struct ABI (COERCE2), exactly as it must.
     (when (and (!= (a is-lit) 0) (!= (type-is-strview (a type)) 0))
-      (return (fmt-2s "ptr %s" (a val))))
+      (return (fmt-s "ptr %s" (a val))))
     (when (= k ABI-DIRECT)
       (return (fmt-2s "%s %s" (type-to-ir (a type)) (a val))))
     (let (ty:ptr (type-to-ir (a type))
@@ -550,7 +550,7 @@
           ; x86_64: byval attribute
           (return (fmt-2s "%s %s" (fmt-sd "ptr byval(%s) align %d" ty (info align)) addr))
           ; aarch64 / AVR / riscv64: plain pointer
-          (return (fmt-2s "ptr %s" addr))))
+          (return (fmt-s "ptr %s" addr))))
       (when (= k ABI-COERCE1)
         (let (r:ptr (new-tmp))
           (fprintf g-body-stream "  %s = load %s, ptr %s\n" r (info reg0) addr)

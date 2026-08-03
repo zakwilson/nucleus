@@ -1,0 +1,10 @@
+; Stage 15 W9 defect 11, site 2 of 4: `BoxedFn call: expected %d args, got %d`,
+; same one-substitution-helper/two-substitutions mistake, same garbage-count
+; symptom ("got 115").
+(import-use "stdio.h")
+(import-use allocator)
+
+(defn main ():i32
+  (with (bf:(BoxedFn (i32) i32) (fn (x:i32):i32 (+ x 1)))
+    (printf "%d\n" (bf 10 20)))
+  (return 0))

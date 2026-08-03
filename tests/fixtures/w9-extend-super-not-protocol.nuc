@@ -1,0 +1,13 @@
+; Stage 15 W9 defect 11, site 4 of 4 — the one the recorded account did not have,
+; found by re-running the sweep across every format helper rather than `fmt-s`
+; alone. Both substitutions here are `%s`, so the garbage vararg is dereferenced
+; as a pointer: the pre-fix compiler SEGFAULTS with no output at all.
+;
+; `(extend A B)` where A is a protocol declares protocol inheritance, so B must
+; be a protocol too.
+(defprotocol Describe (describe ((self (ref Self))) i32))
+(defstruct Plain x:i32)
+
+(extend Describe Plain)
+
+(defn main ():i32 (return 0))

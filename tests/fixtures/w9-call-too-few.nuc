@@ -1,0 +1,9 @@
+; Stage 15 W9 defect 12, the other direction: too FEW arguments is an error too.
+; A missing trailing argument is the shape that actually bit the compiler's own
+; source (`generic-method-bind` called with 5 of its 6 arguments, and an
+; outer `make-cell` missing its `line`) — the callee read an uninitialized
+; register, which is silent at every layer below this check.
+(defn f (x:i32 y:i32):i32 (return (+ x y)))
+
+(defn main ():i32
+  (return (f 1)))

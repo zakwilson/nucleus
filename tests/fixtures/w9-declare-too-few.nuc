@@ -1,0 +1,9 @@
+; Stage 15 W9 defect 12: the open-tail carve-out for a `declare`d signature
+; (w9-declare-open-tail.nuc) admits EXTRA arguments only. Too few is still an
+; error — the fixed parameters are the part the prototype actually asserts.
+(exclude-prelude)
+
+(declare some-c-fn (a:i32 b:i32):i32)
+
+(defn main ():i32
+  (return (some-c-fn 1)))

@@ -1,0 +1,5 @@
+; Helper for tests/fixtures/w9-dyn-not-protocol.nuc: a single-method protocol
+; declared inside a NAMESPACE, so the importing unit spells it `dp/Describe`.
+(ns dp)
+
+(defprotocol Describe (describe ((self (ref Self))) i32))

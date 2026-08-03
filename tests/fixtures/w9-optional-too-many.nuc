@@ -1,0 +1,7 @@
+; Stage 15 W9 defect 12: an `&optional` callee has a legitimately VARIABLE
+; arity, so the shared rule admits `num-params - nopt` .. `num-params` and
+; rejects only outside that band. Here: one too many.
+(defn opt (a:i32 &optional (b:i32 2)):i32 (return (+ a b)))
+
+(defn main ():i32
+  (return (opt 1 2 3)))
