@@ -12,7 +12,7 @@ CFLAGS       := -std=c11 -Wall -Wextra -Wpedantic -O0 -g
 # `float 0x36A0000000000000`. The compiler performs no floating-point work of
 # its own, so fast-math bought nothing and cost correctness. Do not add it back;
 # a compiler must evaluate constants under strict IEEE semantics.
-NATIVE_OPT   := -march=native -O3
+NATIVE_OPT   :=-O3
 
 # LLVM detection: try llvm-config, then versioned names (Alpine: llvm21-config,
 # Debian: llvm-config-19). Fall back to -lLLVM monolithic shared lib if no

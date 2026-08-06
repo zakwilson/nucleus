@@ -530,7 +530,30 @@
   reg0:ptr     ; IR type string for eightbyte 0 (COERCE1/COERCE2), else null
   reg1:ptr     ; IR type string for eightbyte 1 (COERCE2), else null
   size:i32     ; struct ABI size in bytes (MEMORY/COERCE)
-  align:i32)   ; struct ABI alignment in bytes (MEMORY/COERCE)
+  align:i32    ; struct ABI alignment in bytes (MEMORY/COERCE)
+  ; Byte offset of reg1's data within the struct (COERCE2 only). 8 on the SysV
+  ; eightbyte path — reg1 IS the second eightbyte. A riscv64 lp64d flattened
+  ; aggregate puts its second member at that member's own offset instead (4 for
+  ; `{i32,f32}` / `{float[2]}`), so the five COERCE2 reconstruction sites GEP by
+  ; this rather than a literal 8. See design/stage14/riscv-fp-abi.md §3.
+  off1:i32)
+
+; Accumulator for the riscv64 lp64d flattening walk (Stage 14 RV-6,
+; design/stage14/riscv-fp-abi.md §1). The psABI's hard-float rules apply only to
+; an aggregate whose *flattened* scalar members number one or two, so the walk
+; records at most two and sets `cnt` past 2 the moment a third appears (or a
+; union is seen — a union is never flattened). Offsets are absolute within the
+; aggregate, which is what AbiInfo.off1 needs.
+(defstruct RvFlat
+  cnt:i32      ; flattened scalar count; > 2 means ineligible
+  fp0:i32      ; member 0 is a floating-point real
+  ir0:ptr      ; member 0 IR type string
+  pos0:i32     ; member 0 byte offset
+  sz0:i32      ; member 0 size
+  fp1:i32
+  ir1:ptr
+  pos1:i32
+  sz1:i32)
 
 ; A program-defined function's captured signature, so a macro/CT JIT module can
 ; reproduce its `declare`. ir-name is the emitted @symbol; ret + param Types
