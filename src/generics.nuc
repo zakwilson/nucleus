@@ -1189,7 +1189,16 @@
         ; protocol slot; guard the kind read before classifying.
         (if (and (!= (as ptr c0) null) (= (c0 kind) NODE-SYM))
           ; Plain protocol `(Proto V)`: no associated args.
-          (.set! rec proto (as CStr (c0 s)))
+          ; Stage 15 W9 defect 21: canonicalize the protocol reference HERE, where
+          ; it is written, not at each later lookup. A constraint is checked
+          ; (`generic-constraints-ok`, `constraint-proto-known`) long after
+          ; registration and often while a *different* namespace is current, so a
+          ; bare `Describe` written inside `(ns dp)` must be resolved to
+          ; `dp/Describe` now — `prescan-protocols` runs immediately before this
+          ; file's signature prescan, so its own protocols are registered. A
+          ; blanket name (`Any`/`Struct`/`Clone`), `Valid`, or a protocol not yet
+          ; registered passes through unchanged and re-canonicalizes at lookup.
+          (.set! rec proto (protocol-canon-name (as CStr (c0 s))))
           ; Protocol application `((Proto Arg…) V)`: element 0 is a list
           ; whose head names the protocol and whose tail are the argument
           ; patterns. Each Arg is a type-spelling node; any tyvar in it is
@@ -1206,7 +1215,7 @@
                   (let (argn:ptr (node-at (as ptr c0) (+ ai 1)))
                     (aset! (as ptr:ptr argv) ai argn)
                     (collect-constraint-arg-tyvars argn tyvars io-ntv)))
-                (.set! rec proto (as CStr (hn s)))
+                (.set! rec proto (protocol-canon-name (as CStr (hn s))))
                 (.set! rec args argv)
                 (.set! rec nargs na)))))
         (.set! rec var (as CStr (vn s)))
@@ -2632,15 +2641,73 @@
 ; verifies, after the whole-file prescan, that each required signature resolves
 ; to a concrete method with Self→Type substituted, and records the conformance.
 
-(defn protocol-lookup (name:CStr):?ptr:Protocol
+; ------------------------------------------------------------
+; Stage 15 W9 defect 21 — a PROTOCOL IS A NAMESPACED ENTITY
+; (design/stage12/namespaces.md, decision 9 superseded 2026-08-03)
+; ------------------------------------------------------------
+; Stage 12 decision 9 said a qualified *type* reference must resolve to the same
+; StructDef from any namespace, and the protocol registry was made bare-keyed
+; along with the type registry. That was wrong for protocols: it made every
+; protocol name effectively global, so two namespaces could not each declare a
+; `Describe`, and — because `conformance-*` stripped while `protocol-lookup` did
+; not — `(extend Cat dp/Describe)` recorded the conformance under bare
+; `Describe` while `(dyn dp/Describe)` looked the protocol up qualified and
+; reported "'dp/Describe' is not a declared protocol" for a protocol that was
+; both declared and conformed to.
+;
+; A protocol is now keyed by its namespace-qualified identity, exactly like a
+; global in `g-globals`: `qualify-name` produces the key at registration, and a
+; reference resolves through the same function. TYPE identity is unchanged —
+; `strip-ns-qualifier` still canonicalizes every *type* name reaching the
+; conformance registry, so decision 9's actual claim still holds.
+;
+; `protocol-key` is the storage key of a reference *as written here*: identity
+; under `user` for an unqualified spelling (the byte-identical hatch — no
+; allocation, no intern), else `qualify-name`.
+(defn protocol-key (name:CStr):CStr
+  (when (and (= (strchr (as ptr name) 47) null)
+             (= (strcmp (as ptr g-current-ns) (as ptr "user")) 0))
+    (return name))
+  (return (as CStr (qualify-name (as ptr name)))))
+
+; Exact registry probe: `key` must already be canonical. Registration uses this
+; (never `protocol-lookup`), for the same reason `generic-register-method` uses
+; `generic-lookup-exact` — a define's key is already final, and routing it
+; through the fallback-bearing resolver would fold a namespace's own `Describe`
+; into an unrelated `user` one it merely shadows.
+(defn protocol-lookup-exact (key:CStr):?ptr:Protocol
   (dotimes (i (unsafe/cast i32 (count g-protocols)))
     (let (p:ptr:Protocol (as ptr:Protocol (invoke g-protocols (as usize i))))
-      (when (= (p name) name) (return (as ptr p)))))
+      (when (= (p name) key) (return (as ptr p)))))
   (return null))
+
+; Resolve a protocol *reference* (a source spelling) to its Protocol record.
+; Two probes, qualified first — the same shape as W5e's private-name probe:
+;   1. the current namespace's own protocol (`Describe` inside `(ns dp)` →
+;      `dp/Describe`; `dp/Describe` from anywhere → itself, since qualify-name
+;      is idempotent on an already-qualified spelling);
+;   2. failing that, the bare spelling — so a namespaced file still sees the
+;      `user`-namespace protocols it imports (`Clone`, `Eq`, `Ord`, `Allocator`),
+;      which is what makes a namespaced library usable at all.
+; Under `user` the two probes are the same key, so this is one scan plus one
+; strcmp — and identical in behaviour to the pre-W9 bare-keyed lookup.
+; Note an *ambiguous* bare reference is correctly a miss: with `a/Describe` and
+; `b/Describe` registered, bare `Describe` in `user` resolves to neither and the
+; caller must qualify.
+(defn protocol-lookup (name:CStr):?ptr:Protocol
+  (let (key:CStr (protocol-key name)
+        hit:?ptr:Protocol (protocol-lookup-exact key))
+    (when (!= hit null) (return hit))
+    (when (!= key name) (return (protocol-lookup-exact name)))
+    (return null)))
 
 (defn protocol-new (name:CStr sigs:ptr num-sigs:i32):ref:Protocol
   (let (p:ptr:Protocol (new Protocol))
-    (.set! p name name)
+    ; The registry key is the namespace-qualified identity of the *defining*
+    ; namespace (identity under `user`). Everything downstream — the conformance
+    ; registry, the super-protocol edges, `(dyn P)`'s box type — keys off this
+    ; canonical name via `protocol-canon-name`.
+    (.set! p name (protocol-key name))
     (.set! p sigs sigs)
     (.set! p num-sigs num-sigs)
     (.set! p params null)
@@ -2723,18 +2790,25 @@
     (return (type-trivially-copyable ty)))
   (return 0))
 
-; Stage 12 N4 (decision 9): conformance/protocol facts are global, keyed on the
-; *bare* type and protocol identity. The type and protocol registries store bare
-; names, so a namespace-qualified spelling (`coll/Vector`, `coll/Seq`) reaching the
-; registry — from an `extend` written in another namespace, or a `&where`
-; constraint naming a qualified protocol — is canonicalized here so the extend site
-; and the dispatch site land on the same key. Under `user` (no slash) this is the
-; identity, so the bootstrap stays byte-identical. Centralizing the strip in
-; conformance-add/-lookup/-args covers every caller (extend, imported extend,
-; dispatch constraint check, A2 recovery) with one chokepoint.
+; Conformance facts are global, but the two halves of the key are canonicalized
+; DIFFERENTLY (Stage 12 N4 decision 9, as revised by Stage 15 W9 defect 21):
+;
+;   * the TYPE half is stripped to its bare identity — `strip-ns-qualifier`. The
+;     type registry is bare-keyed, so a qualified type reference (`coll/Vector`)
+;     resolves to the same StructDef from every namespace. This is decision 9's
+;     actual claim and it is unchanged.
+;   * the PROTOCOL half is resolved to the protocol's own namespaced identity —
+;     `protocol-canon-name`. A protocol is a namespaced entity, so bare
+;     `Describe` inside `(ns dp)` and `dp/Describe` from anywhere else are the
+;     same key `dp/Describe`, while `a/Describe` and `b/Describe` are different
+;     protocols that do not collide.
+;
+; Under `user` both are the identity, so the bootstrap stays byte-identical.
+; Centralizing both in conformance-add/-lookup/-args covers every caller (extend,
+; imported extend, dispatch constraint check, A2 recovery) with one chokepoint.
 (defn conformance-lookup (type-name:CStr proto-name:CStr):i32
   (set! type-name (strip-ns-qualifier type-name))
-  (set! proto-name (strip-ns-qualifier proto-name))
+  (set! proto-name (protocol-canon-name proto-name))
   (dotimes (i (unsafe/cast i32 (count g-conformances)))
     (let (c:ptr:Conformance (invoke g-conformances (as usize i)))
       (when (and (= (c type-name) type-name)
@@ -2755,9 +2829,10 @@
   (if (= v null) 0 (unsafe/cast i32 (count (unsafe/cast (ref (Vector CStr)) v)))))
 
 (defn conformance-args (type-name:CStr proto-name:CStr out-nargs:ptr):(raw (Vector CStr))
-  ; Stage 12 N4 (decision 9): canonicalize to the bare key, matching conformance-add.
+  ; Canonicalize to the same key conformance-add records: bare type, namespaced
+  ; protocol (see conformance-lookup's note).
   (set! type-name (strip-ns-qualifier type-name))
-  (set! proto-name (strip-ns-qualifier proto-name))
+  (set! proto-name (protocol-canon-name proto-name))
   (dotimes (i (unsafe/cast i32 (count g-conformances)))
     (let (c:ptr:Conformance (invoke g-conformances (as usize i)))
       (when (and (= (c type-name) type-name)
@@ -2795,10 +2870,11 @@
 ;     args arrive later (e.g. a stale conformance recorded before the args were
 ;     known). Conflict therefore fires only when both sides carry args and differ.
 (defn conformance-add (type-name:CStr proto-name:CStr args:ptr nargs:i32 line:i32):void
-  ; Stage 12 N4 (decision 9): record under the bare type/protocol identity so the
-  ; dispatch-site lookup (also stripped) matches. Identity under `user`.
+  ; Record under the bare TYPE identity and the namespaced PROTOCOL identity, so
+  ; the dispatch-site lookup (canonicalized the same way) matches. Identity under
+  ; `user`. See conformance-lookup's note for why the two halves differ.
   (set! type-name (strip-ns-qualifier type-name))
-  (set! proto-name (strip-ns-qualifier proto-name))
+  (set! proto-name (protocol-canon-name proto-name))
   ; Materialize the incoming args as a (Vector CStr) — null when there are none —
   ; so the retained representation is value-comparable (§14.4).
   (let (av:(raw (Vector CStr)) null)
@@ -3063,11 +3139,12 @@
 
 
 ; Record a protocol-inheritance edge: conforming to `sub` requires `super`.
-; Stage 12 N4 (decision 9): canonicalize both protocol names to their bare
-; registry identity, matching the conformance-registry keying. Identity under `user`.
+; BOTH names here are protocols (this is the `(extend Describe Show)` shape), so
+; both canonicalize through `protocol-canon-name` — never `strip-ns-qualifier`,
+; which is the *type* canonicalizer. Identity under `user`.
 (defn proto-super-add (sub:CStr super:CStr):void
-  (set! sub (strip-ns-qualifier sub))
-  (set! super (strip-ns-qualifier super))
+  (set! sub (protocol-canon-name sub))
+  (set! super (protocol-canon-name super))
   (dotimes (i (unsafe/cast i32 (count g-proto-supers)))
     (let (e:ptr:Conformance (invoke g-proto-supers (as usize i)))
       (when (and (= (e type-name) sub) (= (e proto-name) super))
@@ -3181,7 +3258,13 @@
           (when (!= (name-node kind) NODE-SYM)
             (die-at (name-node line) "defprotocol: name must be a symbol"))
           (set! pname (name-node s))))
-      (when (!= (protocol-lookup pname) null) (return))
+      ; Idempotence probe on the EXACT key this registration will use. Routing it
+      ; through `protocol-lookup` would consult that resolver's bare fallback and
+      ; silently treat an unrelated `user` protocol of the same bare name as
+      ; "already registered", so `(ns dp) (defprotocol Clone …)` would never
+      ; register `dp/Clone` — the same reason `generic-register-method` uses
+      ; `generic-lookup-exact`. A define's key is already final.
+      (when (!= (protocol-lookup-exact (protocol-key pname)) null) (return))
       (guard-name-kind pname (ff line) NK-PROTOCOL)
       (let (nsigs:i32 (- (node-len form) 2)
             sigs:ptr null)
@@ -3324,13 +3407,13 @@
 ; check=0 (trust the exporter). `pspellings` carries the concrete bindings for a
 ; parametric protocol (null for a plain Self-only protocol).
 (defn verify-conformance-params (typename:CStr proto-name:CStr pspellings:ptr npspellings:i32 line:i32 check:i32):void
-  ; Stage 12 N4 (decision 9): canonicalize the subject type and protocol to their
-  ; bare registry identity up front, so the protocol-lookup, the conformance
-  ; record, the super-edge match, and the diagnostics are all consistent even when
-  ; the `extend` (or its imported replay) names a qualified `coll/Seq`/`coll/Vector`.
+  ; Canonicalize the subject type (bare identity) and the protocol (namespaced
+  ; identity) up front, so the protocol-lookup, the conformance record, the
+  ; super-edge match, and the diagnostics are all consistent even when the
+  ; `extend` (or its imported replay) names a qualified `coll/Vector`/`dp/Seq`.
   ; Identity under `user` (no slash) → byte-identical.
   (set! typename (strip-ns-qualifier typename))
-  (set! proto-name (strip-ns-qualifier proto-name))
+  (set! proto-name (protocol-canon-name proto-name))
   ; A0: when a parametric protocol is re-extended, the coherence check (and any
   ; arg-upgrade of an arg-less record) lives in `conformance-add`, so the
   ; already-recorded case must still reach it. A plain protocol carries no args
@@ -3541,10 +3624,11 @@
           proto-node:ptr:Node (unsafe/cast ptr:Node (node-at form 2))
           proto-args:ptr null
           proto-nargs:i32 0
-          ; Stage 12 N4 (decision 9): the protocol may be written qualified
-          ; (`coll/Seq`) from another namespace; canonicalize to its bare registry
-          ; identity for every lookup/record below. Identity under `user`.
-          proto-name:CStr (strip-ns-qualifier
+          ; The protocol may be written qualified (`dp/Describe`) from another
+          ; namespace, or bare from inside its own; canonicalize to its namespaced
+          ; registry identity for every lookup/record below (Stage 15 W9 defect
+          ; 21 — a protocol is NOT stripped). Identity under `user`.
+          proto-name:CStr (protocol-canon-name
                            (extend-proto-name proto-node
                                               (as ptr:ptr (addr-of proto-args))
                                               (as ptr:i32 (addr-of proto-nargs))
@@ -3690,20 +3774,27 @@
       ; --- subject is a concrete type (symbol) ---
       (when (!= (type-node kind) NODE-SYM)
         (die-at (node-line (as ptr type-node) (ff line)) "extend: subject must be a symbol or struct template"))
-      ; Stage 12 N4 (decision 9): the subject type and protocol may be written
-      ; qualified (`coll/Vector`, `coll/Seq`) from another namespace; canonicalize
-      ; to the bare registry identity so every lookup below — and the recorded
-      ; conformance — matches the dispatch site. Identity under `user` (no slash).
+      ; The subject may be written qualified (`coll/Vector`) from another
+      ; namespace; canonicalize it to the bare TYPE identity so every lookup
+      ; below — and the recorded conformance — matches the dispatch site.
+      ; `proto-name` was already canonicalized as a PROTOCOL above; the two
+      ; canonicalizers are deliberately different (Stage 15 W9 defect 21).
+      ; Identity under `user` (no slash).
       (let (typename:CStr (strip-ns-qualifier (type-node s))
-            proto-name:CStr (strip-ns-qualifier proto-name))
+            ; The subject of a protocol-INHERITANCE extend is itself a protocol
+            ; name, so it resolves through the protocol registry (namespaced),
+            ; not through `typename` (the type canonicalization). Resolving the
+            ; raw spelling is what makes `(extend dp/Describe dp/Show)` — and
+            ; the bare-inside-`(ns dp)` spelling of the same edge — work.
+            subj-proto:?ptr:Protocol (protocol-lookup (type-node s)))
         ; Protocol-on-protocol: declare inheritance, no per-type check. Only the
         ; bare-symbol protocol form participates in inheritance.
-        (when (and (!= (protocol-lookup typename) null) (= proto-nargs 0))
+        (when (and (!= subj-proto null) (= proto-nargs 0))
           (when (= (protocol-lookup proto-name) null)
             (die-at (node-line (as ptr proto-node) (ff line))
               (fmt-2s "extend: '%s' is a protocol, so its supertype '%s' must be a protocol too"
-                      typename proto-name)))
-          (proto-super-add typename proto-name)
+                      (-> subj-proto (as ptr:Protocol _) (_ name)) proto-name)))
+          (proto-super-add (-> subj-proto (as ptr:Protocol _) (_ name)) proto-name)
           (return))
         ; Extending to a blanket protocol (Any/Struct) is redundant — conformance
         ; is automatic and structural — so accept it as a no-op.

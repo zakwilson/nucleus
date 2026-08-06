@@ -1,17 +1,29 @@
 ; Stage 15 W9 defect 11, site 3 of 4: `(dyn %s): '%s' is not a declared protocol`
 ; — two `%s` fed by a ONE-substitution helper, so the pre-fix compiler
-; SEGFAULTS with no output when it fires.
+; SEGFAULTED with no output when it fired. `fmt-2s` is the correct helper and
+; this fixture is what keeps it correct: a corrected format string that nothing
+; executes is one edit away from regressing.
 ;
-; Reaching it takes a namespace-qualified protocol, and that is itself a
-; separate, pre-existing inconsistency worth knowing about: `conformance-lookup`
-; canonicalizes its key with `strip-ns-qualifier` (Stage 12 N4 decision 9) while
-; `protocol-lookup` does not. So `(extend Cat dp/Describe)` registers the
-; conformance under the bare `Describe`, `admit-erased-conformance` finds it and
-; admits the box, and then `dyn-vtable-method-irname` looks the protocol up
-; under the QUALIFIED spelling and finds nothing. That mismatch is what makes
-; this diagnostic reachable at all; fixing it is out of scope here, and if it is
-; ever fixed this fixture must be re-pointed at whatever still reaches the
-; message rather than deleted.
+; RE-POINTED by Stage 15 W9 defect 21 (2026-08-03), per the instruction the
+; previous version of this comment left behind. It used to reach the message by
+; exploiting a bug: `conformance-*` canonicalized their keys with
+; `strip-ns-qualifier` (Stage 12 N4 decision 9) while `protocol-lookup` matched
+; the raw spelling, so `(extend Cat dp/Describe)` recorded the conformance under
+; the bare `Describe`, `admit-erased-conformance` found it and admitted the box,
+; and `dyn-vtable-method-irname` then looked the protocol up under the QUALIFIED
+; spelling and found nothing. Defect 21 fixed that — a protocol is a namespaced
+; entity, `dp/Describe` resolves from any namespace, and extend/box/dispatch
+; works end to end (examples/w9-dyn-ns.nuc pins the working path).
+;
+; What still legitimately reaches the message is a `dyn` position naming a
+; protocol that was never declared, which `emit-box-value` now asks about BEFORE
+; conformance (via the shared `dyn-require-protocol`) — otherwise an undeclared
+; protocol was reported as the misleading "type 'Cat' does not conform to the
+; protocol". The `extend` below is deliberately KEPT and now SUCCEEDS, so this
+; file still exercises the cross-namespace conformance path and proves the
+; diagnostic fires on the genuine case rather than on the old inconsistency.
+; `dp/Missing` is qualified so both `%s` substitutions still carry a non-trivial
+; string — a regression to `fmt-s` would still segfault here.
 (import-use "stdio.h")
 (import-use allocator)
 (import-prefixed w9-dynprotolib dp)
@@ -20,7 +32,7 @@
 (extend Cat dp/Describe)
 (defn describe ((self (ref Cat))):i32 (return (+ 100 (self n))))
 
-(defn boxed ():(dyn dp/Describe)
+(defn boxed ():(dyn dp/Missing)
   (return (Cat 5)))
 
 (defn main ():i32 (return 0))

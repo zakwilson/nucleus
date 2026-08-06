@@ -1,0 +1,24 @@
+; Stage 15 W9 defect 21: a single-method protocol declared inside a NAMESPACE,
+; so a consumer in another namespace must spell it `dp/Describe`.
+;
+; The conforming type, its method, and the `extend` all live here and reference
+; the protocol BARE — the "a reference from inside its own namespace" half of the
+; namespaced-protocol rule. The consumer (examples/w9-dyn-ns.nuc) spells the same
+; protocol qualified and boxes into `(dyn dp/Describe)`; both must land on the one
+; identity `dp/Describe`.
+;
+; Boxing itself deliberately happens in the consumer, not here: a file with an
+; explicit `(ns …)` cannot reach `default-allocator` (a separate, pre-existing
+; global-resolution gap — `scope-lookup` qualifies a global key and has no bare
+; fallback), so a namespaced file cannot construct a box at all today.
+
+(ns dp)
+
+(defprotocol Describe (describe ((self (ref Self))) i32))
+
+(defstruct Fox n:i32)
+
+(defn describe ((self (ref Fox))):i32 (return (+ 300 (_get self n))))
+
+; Bare reference to this namespace's OWN protocol.
+(extend Fox Describe)

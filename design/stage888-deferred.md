@@ -77,3 +77,17 @@ I really want strings to be Seq, or to add another protocol. It should be
 possible to `doseq` a string. (Today it takes an explicit iterator binding
 plus `doseq-iter` + `addr-of` ceremony: bind `(chars sv)` or `(bytes sv)`,
 then `(doseq-iter (c (addr-of it)) …)` — see examples/strview-read-test.nuc.)
+
+## Variadic declare
+
+  A declare is open-tailed — floor at num-params, no ceiling. A uniform exact rule compiled and self-hosted fine and a parser-aware sweep reported zero affected
+  sites, but three suite heredocs write (declare printf (fmt:CStr):i32) and call it with 3–6 arguments, docs/toplevel.md documents that idiom, and src/nuch.nuc's
+  own diagnostic actively recommends it. So a declare is a prototype the user asserts, and Nucleus has no ... spelling.
+
+  The agent stated the cost plainly rather than burying it: a .nuch-imported Nucleus defn is also open-tailed, so cross-module calls with too many arguments stay
+  undiagnosed. An explicit variadic marker for declare would make the open tail opt-in — that's the natural follow-up.
+
+  One implementation note that generalizes: the rule must not gate on kind == TY-FN, because a BoxedFn/(dyn P) handle carries its arity on a TY-STRUCT type. A
+  kind gate would have silently stopped checking that path.
+  
+  

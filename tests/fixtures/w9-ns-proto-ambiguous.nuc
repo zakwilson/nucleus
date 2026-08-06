@@ -1,0 +1,19 @@
+; Stage 15 W9 defect 21: with `dp/Describe` and `dp2/Describe` both in scope, a
+; BARE `Describe` written from `user` names neither — `protocol-lookup`'s two
+; probes are "this namespace's own protocol" then "a bare (user-namespace) one",
+; and there is no bare `Describe`. So the reference must be qualified, which is
+; the whole point of the ruling: two namespaces may each declare a protocol of
+; the same name and they do not collide (nor does one silently win).
+;
+; The complementary positive case — the same bare spelling written INSIDE
+; `(ns dp)`, where it resolves to `dp/Describe` — is pinned by lib/nsdescribe.nuc
+; and examples/w9-dyn-ns.nuc.
+(import-use "stdio.h")
+(import-prefixed nsdescribe dpx)
+(import-prefixed nsdescribe2 dpx2)
+
+(defstruct Cat n:i32)
+(defn describe ((self (ref Cat))):i32 (return (+ 100 (self n))))
+(extend Cat Describe)
+
+(defn main ():i32 (return 0))

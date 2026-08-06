@@ -24,8 +24,12 @@ no-initializer flip, closing [nullability.md](nullability.md) §1.5's remaining
 half) are both met. **W9 was reconciled against `global-init.md` §7 at stage
 close**: twenty defects were found across the whole effort; the reconciled
 open count was **eighteen**, and items 11 and 12 were then fixed together on
-2026-08-02, leaving **sixteen** — see the W9 section below for how the count
-was arrived at.
+2026-08-02, leaving **sixteen**. Fixing item 12's `w9-dyn-not-protocol`
+fixture then exposed **item 21** (`(dyn ns/Proto)` unusable across a
+namespace), fixed 2026-08-03 along with two further pre-existing defects it
+uncovered but did not fix (items 22, 23 and 24) — **twenty-four found, five
+fixed, nineteen open** — see the W9 section below for how the count was
+arrived at.
 
 **W4, W2 and W3 are complete** (W2a–d; W3a §1.6 opaque forward-declared C
 types; W3b §1.5 C type qualifiers + the `declare` validity gate — `SDL2/SDL.h`
@@ -835,7 +839,7 @@ escape hatch — reproduced by compiling `(defvar g:ptr:i32)` with
 
 ---
 
-## W9 — Reconciled at stage close: twenty defects found, four now fixed, sixteen open *(added 2026-08-01; extended through G-5's close 2026-08-02; reported except where marked FIXED)*
+## W9 — Reconciled at stage close: twenty-four defects found, five now fixed, nineteen open *(added 2026-08-01; extended through G-5's close 2026-08-02; items 21–24 added 2026-08-03; reported except where marked FIXED)*
 
 **The original six are enumerated in [../global-init.md](../global-init.md)
 §7. Four more (7–10) were found measuring G-1 and re-verifying G-0/G-1's test
@@ -857,8 +861,9 @@ did not arm the want channel) — none of which had been folded into this
 table. Cross-checking the two lists against each other, plus three more
 defects that were never filed in *either* list — documented only inline in
 `examples/fnptr-global.nuc`'s comments, found alongside the fn-pointer
-interlude and G-4 — gives a union of **twenty** unique items. **Four are now
-fixed**: the fn-pointer `defvar` collision (§7 #9, fixed in the interlude
+interlude and G-4 — gives a union of **twenty** unique items. **Four were fixed
+as of that pass** (see the 2026-08-03 extension below for items 21–23): the
+fn-pointer `defvar` collision (§7 #9, fixed in the interlude
 between G-3 and G-4), the `as` want-channel gap (§7 #12, fixed in G-5), and —
 on 2026-08-02, as the matched pair they were filed as — **items 11 and 12**,
 the format-helper arity violations and the missing solitary-`defn` call-arity
@@ -867,11 +872,32 @@ format violations, not three, and only two of them segfault — the other two
 printed a garbage *count*) and **disproved the recorded causal link between
 the two items**: defect 11's first site lives on the fn-pointer indirect call
 path, which defect 12 does not touch, so it was reachable all along.
-The reconciled **open** count is **sixteen**. Items 14–20 below are that
-reconciliation: 14/15/16/17 map onto `global-init.md` §7's #9/#10/#11/#12;
-18/19/20 are the three that were never filed anywhere but this table. All
-twenty are pre-existing and independent of W1–W7; all were hit while
-measuring, verifying, or documenting, not synthesized.
+The reconciled **open** count after that pass was **sixteen**. Items 14–20
+below are that reconciliation: 14/15/16/17 map onto `global-init.md` §7's
+#9/#10/#11/#12; 18/19/20 are the three that were never filed anywhere but this
+table.
+
+**Extension, 2026-08-03 — items 21–24, and the pattern they illustrate.**
+Item 11's fix left behind a fixture (`w9-dyn-not-protocol`) that reached its
+diagnostic only by *exploiting* an unrelated bug, and its own header said so
+and said what to do if that bug were ever fixed. Fixing it is **item 21**
+(`(dyn ns/Proto)` unusable across a namespace, a protocol/conformance key
+mismatch dating to Stage 12 N4), settled by a user ruling that protocols are
+namespaced entities. Building it surfaced **three more pre-existing defects,
+none fixed**: a file with an explicit `(ns …)` cannot box a value at all
+(item 22), two namespaces defining the same function name collapse into one
+generic (item 23), and `(dyn P)` cannot box a type whose implementation
+arrives through a `.nuch` `declare` (item 24, which is not namespace-specific
+at all — it reproduces in `user`). Items 21–23 are the *same underlying shape*:
+Stage 12 namespaced some registries (`g-globals`) and not others (`g-generics`,
+and until now `g-protocols`), so each un-namespaced registry is a latent
+cross-namespace defect — which is the useful generalization to carry forward.
+Item 24 is the sibling asymmetry rather than the namespace one: **two**
+registries answer a name (`g-globals` and `g-generics`), and any path that
+consults only one of them has a hole wherever the other is the sole registrar.
+Total **twenty-four**, of which **five** are fixed (items 11, 12, 14, 17, 21)
+and **nineteen** open. All are pre-existing and independent of W1–W7; all were
+hit while measuring, verifying, or documenting, not synthesized.
 
 | # | Defect | Note |
 |---|---|---|
@@ -895,6 +921,10 @@ measuring, verifying, or documenting, not synthesized.
 | 18 | **`(= h null)` on a function-pointer value does not compile**, found alongside the Interlude/G-4 | `emit-binop-vals`'s null-literal escape and its pointer-comparison arm both gate on `is-ptr-like`, which deliberately excludes `TY-FN`, so the comparison falls through to the numeric path and dies `= expects integer operands`. Pre-existing and general — reproduces identically for a fn-pointer *parameter* or *local*, not just the new global spelling; the explicit `(unsafe/cast ptr h)` reinterpret is the escape hatch. Documented inline in `examples/fnptr-global.nuc`'s header comment (`hook-unset`) before this reconciliation; not previously in either defect list |
 | 19 | **`type-size` has no `TY-FN` case**, found alongside the Interlude/G-4 | Falls through to the default `(return 1)` arm (`type-utils.nuc:359-360`), so every fn-pointer slot emits `align 1` — conservative, not a miscompile, since `abi-alignof`/`abi-sizeof` already answer correctly and struct layout is unaffected. Confirmed: `build/nucleusc --emit-llvm` on `(defvar hh:(fn i32)(i32) null)` emits `@hh = global ptr null, align 1`. Not previously in either defect list |
 | 20 | **`coerce-int-val` has no `raw`→`TY-FN` case**, found in G-5 | `(let (f:(fn i32)(i32) null) …)` still dies `let: init type mismatch for 'f'` (confirmed against `build/nucleusc`) though the identical spelling at a `defvar` now compiles cleanly since the Interlude. Not previously in either defect list |
+| 21 | **`(dyn ns/Proto)` is unusable across a namespace — FIXED 2026-08-03**, found building the defect-11 fixture | `conformance-add`/`-lookup`/`-args` canonicalized their keys with `strip-ns-qualifier` (Stage 12 N4 decision 9) while `protocol-lookup` matched the **raw** spelling, so `(extend Cat dp/Describe)` recorded the conformance under bare `Describe`, `admit-erased-conformance` found it and admitted the box, and `dyn-vtable-method-irname` then reported *"'dp/Describe' is not a declared protocol"* for a protocol that was both declared and conformed to. **The user's ruling picks the direction**: the two registries agree by making conformances keep the qualifier — a protocol is a namespaced entity — **not** by making `protocol-lookup` strip too, which would have made protocol names effectively global. **The crux is that decision 9's strip covered two different questions and only one of them was about types.** Of the nine `strip-ns-qualifier` sites, five are the TYPE half and are **unchanged** (`conformance-lookup`/`-args`/`-add`'s first argument, `verify-conformance-params`'s `typename`, `emit-extend`'s subject and its `(extend (Vector T) …)` template head, plus `union-registry.nuc:289`'s `lookup-struct`) — a qualified type reference still resolves to the same `StructDef` from any namespace, which is decision 9's actual claim. Four are the PROTOCOL half and now resolve through the namespaced registry instead (`conformance-*`'s second argument, `proto-super-add`'s **both** arguments, `verify-conformance-params`'s `proto-name`, `emit-extend`'s protocol). **`emit-extend`'s subject is both**: `(extend Describe Show)` puts a protocol in the type position, so the inheritance branch now resolves the raw spelling through `protocol-lookup` while `typename` keeps the type strip. Mechanism: `protocol-new` keys on `qualify-name` (identity under `user`); `protocol-lookup` probes qualified-then-bare (the same shape as W5e's private-name probe — the bare fallback is what lets a namespaced file still see `Clone`/`Eq`/`Ord`); registration uses an **exact** probe (`protocol-lookup-exact`) for the reason `generic-register-method` does, or `(ns dp) (defprotocol Clone …)` would fold into the prelude's; and one canonicalizer, `protocol-canon-name`, is what every protocol-keyed registry calls. It is placed in `nucleusc.nuc` rather than beside `protocol-lookup` because `union-registry.nuc` — imported *before* `generics.nuc` — needs it: **`dyn-type` must memoize on the canonical name**, or `(dyn Describe)` inside `(ns dp)` and `(dyn dp/Describe)` outside it would build two `StructDef`s and `type-eq` would call one protocol two incompatible types. `&where` constraint names are canonicalized where they are **written** (`parse-where-constraints`), not at each lookup, because a constraint is checked long afterwards under a different `g-current-ns`. **A second, smaller defect surfaced and is fixed with it**: once the two registries agreed, the "is not a declared protocol" message became unreachable — `emit-box-value` asks about *conformance* first, so `(dyn Nope)` reported the misleading `type 'Cat' does not conform to the protocol`. Both askers now CALL one `dyn-require-protocol`, and box construction asks existence first. `tests/fixtures/w9-dyn-not-protocol.nuc` was **re-pointed, not deleted**, exactly as its own header instructed: its `extend` now succeeds (it is the fix) and the `dyn` names an undeclared `dp/Missing`. **Census: no existing program changes** — every `defprotocol` in `src/`, `lib/`, `examples/` and `tests/` is in `user`, where `qualify-name` is the identity. `examples/w9-dyn-ns.nuc` links and runs, asserting the dispatched results `105/207/309`: a qualified reference under a *different* import prefix, a bare reference inside its own namespace, and two namespaces each declaring a `Describe` with one type conforming to both. Tests 421 → **424 PASS / 0 FAIL**; `make bootstrap` **byte-identical on the first pass** (predicted: protocol *method* ir-names come from `Generic.ir-prefix`, which this does not touch); sweep against a compiler built from HEAD's source: **223 byte-identical IR, 0 differing**, and across 133 rejecting programs **0 pre-existing diagnostics moved** — the one REGRESSED and one NEWLY-COMPILES entry are the new fixtures, and the REGRESSED one is the collision the ruling exists to create (the old compiler silently accepted a bare `Describe` with two in scope). `make abi-test`/`make layout-test`/`make avr-test` green. **Three unrelated pre-existing defects found in passing, none fixed — filed as items 22, 23 and 24** |
+| 22 | **A file with an explicit `(ns …)` cannot box a value at all**, found building item 21 | `emit-box-struct-move` gates on `(scope-lookup scope "default-allocator")`, and `scope-lookup` qualifies a *global* key against `g-current-ns` with **no bare fallback** — so inside `(ns dp)` it probes `dp/default-allocator`, misses, and dies `type-erasure: boxing a value requires (import-use allocator)` however many times the file imports it. Confirmed identical on the committed pre-fix compiler, so it is pre-existing and orthogonal to item 21 (which is why `examples/w9-dyn-ns.nuc` boxes in the consumer, not in the library). The general shape is broader than boxing: any compiler site that resolves a *known* global by name through `scope-lookup` is namespace-sensitive in a way its author did not intend. Note `generic-lookup` is unaffected — it keys on the raw name — which is why ordinary cross-namespace *calls* work and hides how narrow the working path is |
+| 23 | **Two namespaces defining the same function name collapse into one generic**, found building item 21 | `generic-lookup`/`generic-register-method` key on the **raw** name (unlike `scope-define`, which qualifies), so `(ns qa) (defn describe …)` and `(ns qb) (defn describe …)` become one `Generic` named `describe` with two methods — mangled under whichever namespace was seen *first*, emitting `@qa__describe` and `@qa__describe.pDog` for a method defined in `qb`. Confirmed identical on the committed pre-fix compiler. Whether the fix is to namespace the generic registry or to keep it raw and namespace only the mangling is a real design question, not a typo; item 21 deliberately did not touch it, and `lib/nsdescribe2.nuc` names its protocol method `tag-of` rather than `describe` specifically to keep the two concerns separate in the tests |
+| 24 | **`(dyn P)` cannot box a type whose implementation arrives through a `.nuch` `declare`**, found verifying item 21 | `dyn-vtable-method-irname` resolves the protocol method with `generic-lookup`, but `emit-nuch-declare-import` registers a solitary imported function as a **`Sym` in `g-globals` only** — it never creates a `Generic` — so the box site dies `(dyn Describe): no method 'describe' is defined` for a method that is declared, defined and linkable. Confirmed identical in the `user` namespace and on the committed pre-fix compiler, so it is pre-existing and orthogonal to item 21 (which the same probe *passes*: the protocol resolves, and the failure is one check later). Note the `.nuch` round-trip itself is correct — the producer emits `(ns dp)` ahead of the `defprotocol`/`extend`, and the importer re-registers the protocol under `dp/Describe`. The same two-registries-answer-one-name asymmetry `context/conventions.md` records for private names (`scope-lookup` vs `generic-lookup`) is the underlying shape |
 
 **Defect 4, with the precision that says what the fix is.** Independently
 confirmed: `(defstruct My-Rec (a-field i32))` + `(defn my-func (x:i32):i32 …)`

@@ -3357,14 +3357,18 @@
 ; Stage 12 N4: the bare (un-namespaced) name part of a source spelling — the text
 ; after the FIRST interior slash, mirroring qualify-name's split. A spelling with
 ; no interior slash (`Vector`, bare `/`, `_/`, leading-slash) is returned
-; unchanged. Used to resolve a *type/protocol* spelling (`coll/Vector`) against the
-; bare-keyed type and protocol registries (g-structs, g-protocols), which — unlike
-; g-globals — store names un-namespaced (register-struct/protocol-new use the raw
-; head symbol). Type identity is therefore global, so a qualified type reference
-; resolves to the same StructDef/Protocol regardless of the importing namespace —
-; exactly what cross-namespace conformance (decision 9) needs. The result is
-; interned so the registries' pointer-identity lookups match. Idempotent on a bare
-; name (no slash → returns the same interned pointer).
+; unchanged. Used to resolve a *type* spelling (`coll/Vector`) against the
+; bare-keyed type registry (g-structs), which — unlike g-globals — stores names
+; un-namespaced (register-struct uses the raw head symbol). Type identity is
+; therefore global, so a qualified type reference resolves to the same StructDef
+; regardless of the importing namespace — exactly what cross-namespace
+; conformance (decision 9) needs. The result is interned so the registry's
+; pointer-identity lookups match. Idempotent on a bare name (no slash → returns
+; the same interned pointer).
+;
+; Stage 15 W9 defect 21: this is the *type* half only. Protocol names are NO
+; longer stripped — a protocol is a namespaced entity and is canonicalized with
+; `protocol-canon-name` below. Do not re-extend this to protocol positions.
 (defn strip-ns-qualifier (spelling:ptr):ptr
   (let (slash:ptr (strchr spelling 47))
     (when (!= slash null)
@@ -3374,6 +3378,36 @@
         (when (and (> idx 0) (!= after 0))
           (return (intern-str (arena-strdup (unsafe/ptr+ (as ptr:i8 slash) 1)))))))
     (return spelling)))
+
+; Stage 15 W9 defect 21: the PROTOCOL half of what `strip-ns-qualifier` used to
+; do for both halves. Map a protocol *reference* (any source spelling) to the
+; canonical registry key of the protocol it names — i.e. that Protocol's own
+; `name`, which `protocol-new` set from `qualify-name`. Every registry that keys
+; on a protocol (the conformance registry, the super-protocol edges, `&where`
+; constraint records, `(dyn P)`'s box type) canonicalizes through this, so an
+; `extend` site and a dispatch site land on the same key no matter which
+; namespace each was written in.
+;
+; A spelling that names no registered protocol is returned UNCHANGED, and that
+; is load-bearing in three ways: the blanket protocol names (`Any`, `Struct`,
+; `Clone` before the prelude is reached) and the structural bound `Valid` live
+; outside `g-protocols` and must keep their bare spelling; a diagnostic about an
+; undeclared protocol must quote what the author actually wrote; and a reference
+; parsed before its protocol is registered degrades to the raw spelling, which
+; every consumer re-canonicalizes later (this function is idempotent on a
+; canonical key, so double application is free).
+;
+; Lives here rather than beside `protocol-lookup` in generics.nuc because
+; union-registry.nuc — imported *before* generics.nuc — needs it for `dyn-type`.
+; The ordinal import rule allows a module to call *up* into nucleusc.nuc
+; (`prescan-defn-signatures` registers every nucleusc.nuc signature before any
+; form is emitted); union-registry.nuc already up-calls `intern-str` and
+; `guard-name-kind` this way. This function's own body sits well below
+; `(import-use generics)`, so `protocol-lookup` resolves for it.
+(defn protocol-canon-name (spelling:CStr):CStr
+  (let (p:?ptr:Protocol (protocol-lookup spelling))
+    (when (= p null) (return spelling))
+    (return (-> p (as ptr:Protocol _) (_ name)))))
 
 ; Stage 12 N4: IR mangling (design/stage12/namespaces.md §"Implementation",
 ; decision 7). A namespace's source name (or a `set-ir-prefix` override) lowers to
@@ -6021,6 +6055,25 @@
     (let (mm:ptr:Method (as ptr:Method m))
       (return (mm ir-name)))))
 
+; The one place that answers "does `(dyn P)`'s P name a declared protocol?", and
+; the one place that phrases the answer. Stage 15 W9 defect 21 made this an
+; ordering question rather than a formatting one: box construction asks about
+; *conformance* first, so before the protocol registry and the conformance
+; registry agreed on their key, an undeclared `P` surfaced as the misleading
+; `(dyn Nope): type 'Cat' does not conform to the protocol`. Both askers —
+; `emit-box-value` (early, so the message is precise) and
+; `dyn-vtable-method-irname` (the backstop, reached through `ensure-vtable-for`)
+; — CALL this rather than re-deriving the test, which is the standing rule for a
+; predicate with a second asker (context/conventions.md, `binop-result-type`).
+; Protocol validation for a `(dyn P)` type deliberately happens here and not at
+; type-parse time: `dyn-type` may be reached during a prescan, before the
+; protocol's own file has registered it.
+(defn dyn-require-protocol (proto:CStr line:i32):ptr:Protocol
+  (let (pp:?ptr:Protocol (protocol-lookup proto))
+    (when (= pp null)
+      (die-at line (fmt-2s "(dyn %s): '%s' is not a declared protocol" proto proto)))
+    (return (as ptr:Protocol pp))))
+
 ; TE-6: the emitted concrete-impl symbol for the SOLE method of single-method
 ; protocol `proto` on concrete type `concrete-ty` — the `(dyn P)` analogue of
 ; vtable-invoke-irname (which resolves the env's structural `invoke`). Mirrors
@@ -6031,9 +6084,7 @@
 ; that the shared @__boxedfn_drop thunk reads verbatim. Dies on a missing protocol,
 ; a multi/parametric protocol (deferred), or a missing concrete impl.
 (defn dyn-vtable-method-irname (concrete-ty:(raw Type) proto:CStr line:i32):ptr
-  (let (pp:?ptr:Protocol (protocol-lookup proto))
-    (when (= pp null)
-      (die-at line (fmt-2s "(dyn %s): '%s' is not a declared protocol" proto proto)))
+  (let (pp:ptr:Protocol (dyn-require-protocol proto line))
     (let (ppp:ptr:Protocol (as ptr:Protocol pp))
       (when (!= (ppp num-sigs) 1)
         (die-at line (fmt-s "(dyn %s): only single-method protocols are boxable in v1" proto)))
@@ -6387,6 +6438,10 @@
       (die-at line "(dyn P): can only box a concrete struct value (a (ref Struct))"))
     (let (struct-ty:ptr (vt elem)
           struct-name:ptr (-> struct-ty (unsafe/cast ptr:Type _) (_ sdef) (unsafe/cast ptr:StructDef _) (_ name)))
+      ; (0) The protocol must exist before "does this type conform to it?" is a
+      ;     meaningful question — otherwise an undeclared `P` is reported as a
+      ;     conformance failure. Shared with dyn-vtable-method-irname's backstop.
+      (dyn-require-protocol proto line)
       ; (1) Nominal conformance admission (the dormant path in admit-erased-
       ;     conformance fires now that a protocol name is supplied).
       (when (= (admit-erased-conformance struct-ty box-ty proto line) 0)
