@@ -3418,9 +3418,14 @@ spawn run_reject_at w9-boxedfn-arity tests/fixtures/w9-boxedfn-arity.nuc \
   "tests/fixtures/w9-boxedfn-arity.nuc:9: error:" \
   "BoxedFn call: expected 1 args, got 2"
 # The two that SEGFAULTED before the fix (both substitutions are `%s`).
+# w9-dyn-not-protocol was RE-POINTED by defect 21 (see the fixture's own header):
+# it used to reach this message by exploiting the protocol/conformance key
+# mismatch that defect 21 fixed, and now reaches it the honest way — a `dyn`
+# position naming a protocol nothing declared. The `(extend Cat dp/Describe)`
+# above it now succeeds, which is the fix.
 spawn run_reject_at w9-dyn-not-protocol tests/fixtures/w9-dyn-not-protocol.nuc \
-  "tests/fixtures/w9-dyn-not-protocol.nuc:24: error:" \
-  "(dyn dp/Describe): 'dp/Describe' is not a declared protocol"
+  "tests/fixtures/w9-dyn-not-protocol.nuc:36: error:" \
+  "(dyn dp/Missing): 'dp/Missing' is not a declared protocol"
 spawn run_reject_at w9-extend-super-not-protocol tests/fixtures/w9-extend-super-not-protocol.nuc \
   "tests/fixtures/w9-extend-super-not-protocol.nuc:11: error:" \
   "extend: 'Describe' is a protocol, so its supertype 'Plain' must be a protocol too"
@@ -3452,6 +3457,37 @@ spawn run_accepts w9-declare-open-tail tests/fixtures/w9-declare-open-tail.nuc
 spawn run_reject_at w9-declare-too-few tests/fixtures/w9-declare-too-few.nuc \
   "tests/fixtures/w9-declare-too-few.nuc:9: error:" \
   "call to 'some-c-fn': expected at least 2 args, got 1"
+
+# --- Stage 15 W9 defect 21: protocols are namespaced entities -------------------
+# design/stage15-stress-test/progress.md W9 row 21; the ruling is recorded as a
+# dated supersession of Stage 12 decision 9 in design/stage12/namespaces.md.
+#
+# `(dyn ns/Proto)` was unusable across a namespace: the conformance registry
+# stripped the qualifier off BOTH the type and the protocol while
+# `protocol-lookup` matched the raw spelling, so `(extend Cat dp/Describe)`
+# recorded a fact `(dyn dp/Describe)` could never find. The fix keeps the strip
+# for the TYPE half (Stage 12's actual claim — a qualified type reference must
+# resolve to the same StructDef from any namespace) and replaces it for the
+# PROTOCOL half with resolution through the namespaced protocol registry.
+#
+# The positive, link-AND-RUN half is examples/w9-dyn-ns.nuc (dispatched by the
+# examples/*.nuc loop above against tests/expected/w9-dyn-ns.out): it asserts the
+# dispatched RESULTS 105/207/309, not an exit-0 compile. It pins all three halves
+# of the ruling at once — a qualified reference resolving cross-namespace under a
+# DIFFERENT import prefix, a bare reference inside its own namespace naming the
+# same identity, and two namespaces declaring a `Describe` apiece without
+# colliding. The committed pre-fix compiler rejects that program outright.
+#
+# The negative halves: conformance is still checked (and now names the protocol
+# by its namespaced identity, so a failure says *which* Describe), and a bare
+# reference that names no protocol in scope is still an error rather than
+# silently picking one.
+spawn run_reject_at w9-ns-proto-nonconform tests/fixtures/w9-ns-proto-nonconform.nuc \
+  "tests/fixtures/w9-ns-proto-nonconform.nuc:11: error:" \
+  "type 'Bad' does not conform to protocol 'dp/Describe'"
+spawn run_reject_at w9-ns-proto-ambiguous tests/fixtures/w9-ns-proto-ambiguous.nuc \
+  "tests/fixtures/w9-ns-proto-ambiguous.nuc:17: error:" \
+  "extend: unknown protocol 'Describe'"
 
 # --- Join + replay --------------------------------------------------------------
 # Wait for all remaining jobs (ignore per-job exit codes — PASS/FAIL is decided

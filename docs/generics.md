@@ -61,6 +61,43 @@ If a required method is missing, compilation fails with a diagnostic naming each
 
 **Cross-unit.** `defprotocol` and `extend` (type-conformance and protocol-inheritance) export verbatim through `.nuch`; an importing unit re-registers the protocol and trusts the recorded conformance (it does not re-check). See [.nuch Header Format](compiler.md#nuch-header-format).
 
+### Protocols are namespaced
+
+A protocol belongs to the namespace of the file that declares it, exactly as a `defn` or `defvar` does — see [`ns`](toplevel.md). Types are **not** namespaced (a struct name is global), so the two halves of an `extend` are spelled differently when they come from different places.
+
+```lisp
+; lib/shapes.nuc
+(ns shapes)
+(defprotocol Shape (area ((self (ref Self))) i32))
+```
+
+```lisp
+; a consumer, in the default `user` namespace
+(import-prefixed shapes sh)
+
+(defstruct Circle rad:i32)
+(defn area ((self (ref Circle))):i32 (return (* (self rad) 3)))
+
+(extend Circle shapes/Shape)          ; protocol qualified by its NAMESPACE
+(defn boxed ():(dyn shapes/Shape) …)  ; likewise in a `dyn` position
+```
+
+Four rules cover every spelling:
+
+* **Inside its own namespace, a protocol is named bare.** Within `(ns shapes)`, `Shape` means `shapes/Shape`.
+* **From anywhere else, qualify it with the namespace** — `shapes/Shape`. Both spellings denote the one protocol, so a conformance written bare inside the namespace is found by a `(dyn shapes/Shape)` written outside it.
+* **The qualifier is the namespace, not the import prefix.** In the example above the import prefix is `sh`, and `sh/Shape` would *not* resolve: a prefix aliases the functions and values a file contributed, and a protocol is not one of those. Protocol identity has to be the same in every file that mentions it, and an import prefix varies per importer. (`sh/area` is still how you would name the library's *function*.)
+* **A bare name falls back to the default `user` namespace.** That is why a file with an `(ns …)` of its own can still write `(extend MyType Clone)` against the prelude's protocols with no qualifier. If two namespaces each declare a `Describe` and neither is in `user`, a bare `Describe` names neither and is an error — qualify it.
+
+Two namespaces may therefore each declare a protocol of the same name without colliding, and one type may conform to both:
+
+```lisp
+(extend Cat a/Describe)   ; requires a/Describe's methods
+(extend Cat b/Describe)   ; a different protocol, different methods
+```
+
+**Limitation.** A file that declares `(ns …)` cannot currently construct a `BoxedFn` or `(dyn P)` box — the boxing path fails to find `default-allocator` from a non-`user` namespace. Declare the protocol and the conformance in the namespaced library and box the value in the consumer.
+
 *Not yet implemented (within protocols):* inline-`defn` sugar inside `extend`. The dynamic `(dyn Protocol)` form is implemented — see [Type erasure](#type-erasure-boxedfn-and-dyn-protocol) below. Conformance currently requires a concrete (non-generic) implementation.
 
 ## Parametric protocols
@@ -631,6 +668,16 @@ Note the surface difference: a `BoxedFn` is dispatched as a **callable value**
 ```
 
 See `examples/dyn-protocol.nuc` for the full working example.
+
+**Across a namespace.** `P` is a protocol reference, so it follows the naming
+rules in [Protocols are namespaced](#protocols-are-namespaced): bare inside the
+protocol's own namespace, `namespace/Name` from anywhere else, and never the
+import prefix. `(dyn shapes/Shape)` and a `(dyn Shape)` written inside
+`(ns shapes)` are the **same type** — the box's identity is the protocol's
+canonical name, not the spelling at the use site. If `P` names no protocol in
+scope the box site reports `(dyn P): 'P' is not a declared protocol`.
+`examples/w9-dyn-ns.nuc` is the worked cross-namespace example, including two
+namespaces that each declare a protocol of the same bare name.
 
 **v1 scope limits.** The following are not yet supported and produce clear
 compile-time diagnostics:

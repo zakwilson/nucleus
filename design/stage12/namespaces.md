@@ -68,6 +68,67 @@ Foreign (C-imported) symbols are exempt: their ir-name is fixed by the header an
 
 Protocol and conformance facts stay **global**, keyed on fully-qualified type and protocol identity. Coherence is inherently global, and dispatch must resolve a conformance (e.g. `(extend coll/Vector coll/Seq)`) no matter which namespace triggers it.
 
+> **Superseded in part — 2026-08-03, Stage 15 W9 defect 21 (user ruling).**
+> Decision 9 as *implemented* in N4 (see the N4 status note below) canonicalized
+> both halves of a conformance key with `strip-ns-qualifier`, i.e. it made a
+> protocol name **bare** — effectively global and un-namespaced — alongside the
+> type name. That is now split:
+>
+> * **The TYPE half is unchanged and remains decision 9's actual claim.** A
+>   qualified type reference must resolve to the same `StructDef` from any
+>   namespace; `strip-ns-qualifier` still canonicalizes every *type* name that
+>   reaches the conformance registry, and `emit-extend`'s subject, the template
+>   head, and `verify-conformance-params`' `typename` all keep it.
+> * **The PROTOCOL half is reversed. A protocol is a namespaced entity like any
+>   other**: `protocol-new` keys on `qualify-name`, so a `defprotocol` inside
+>   `(ns dp)` is `dp/Describe`. Conformances, super-protocol edges, `&where`
+>   constraint records and `(dyn P)`'s box type all key on that identity via the
+>   single canonicalizer `protocol-canon-name`.
+>
+> The paragraph above still holds where it says conformance facts are *global*
+> and *coherence is inherently global* — one conformance per (type, protocol),
+> resolvable from any namespace. What changed is only what "protocol identity"
+> denotes: `dp/Describe`, not `Describe`.
+>
+> **Why the reversal.** The two registries had disagreed since N4:
+> `conformance-*` stripped, `protocol-lookup` did not. So `(extend Cat
+> dp/Describe)` recorded the fact under bare `Describe`, the box was admitted on
+> it, and the vtable build then reported *"'dp/Describe' is not a declared
+> protocol"* for a protocol that was both declared and conformed to —
+> `(dyn ns/Proto)` was unusable across a namespace. There were two ways to make
+> them agree. Making `protocol-lookup` strip too was **rejected**: it would have
+> frozen protocol names as global, so two namespaces could never each declare a
+> `Describe`, and it would have made a namespace's own protocol silently
+> collide with an unrelated one of the same name — a wrong answer with no
+> diagnostic. Keeping the qualifier gives the opposite property, and it is now
+> pinned by test (`examples/w9-dyn-ns.nuc`, `tests/fixtures/w9-ns-proto-*.nuc`).
+>
+> **Resolution rule, and one deliberate non-feature.** A protocol reference
+> resolves by two probes, qualified first: the current namespace's own protocol,
+> then a bare (`user`-namespace) one. The fallback is what lets a namespaced
+> library still see `Clone`/`Eq`/`Ord`/`Allocator`; an *ambiguous* bare
+> reference (two namespaces, no bare protocol) correctly resolves to neither and
+> must be qualified. An **import prefix does not name a protocol**:
+> `(import-prefixed foo p)` aliases the `g-globals` entries the file
+> contributed, and a protocol has no `Sym`. A protocol is referenced by its
+> **namespace**, which is the only spelling consistent with keeping conformance
+> coherence global — an import prefix varies per importer, and a protocol
+> identity must not.
+>
+> **Not built, and what a future stage would need to scope.** Two sibling
+> registries are still un-namespaced and each is a latent cross-namespace
+> defect, recorded as W9 items 22 and 23 in
+> [../stage15-stress-test/progress.md](../stage15-stress-test/progress.md):
+> `scope-lookup` qualifies a *global* key with no bare fallback (so a file with
+> an explicit `(ns …)` cannot reach `default-allocator`, and therefore cannot
+> box a value at all), and `generic-lookup`/`generic-register-method` key on the
+> raw name (so two namespaces defining the same function name collapse into one
+> generic, mangled under whichever namespace was seen first). Both are
+> pre-existing — confirmed identical on the pre-fix compiler — and both were
+> left alone deliberately: the generic-registry one in particular is a real
+> design question (namespace the registry, or keep it raw and namespace only the
+> mangling?) rather than an oversight.
+
 ## Robot — implementation status
 
 **N1 (namespace core) — landed.** State, the `ns` form, and qualified resolution:
@@ -114,7 +175,7 @@ Decision sharpened: the **opaque-type warning** (a private type in a public sign
 - **`g-current-ns` initialization** moved to the top of `compiler-init` (before `init-generics`) to prevent a null-pointer crash in `ns-ir-prefix(g-current-ns)`.
 - **String-path `.nuc`/`.nuch` imports**: `do-import` now checks the extension when the name is a `NODE-STR`; `.nuc`/`.nuch` paths are processed as Nucleus files (same logic as the symbol-path branch), not as C headers. This enables `(import-prefixed "/abs/path/lib.nuc" prefix)` for cross-namespace libraries by absolute path.
 - **`import-alias-one` uses `strip-ns-qualifier`**: the alias key is `"prefix/bare-name"` (not `"prefix/ns/bare-name"`), so namespaced libraries imported via `import-prefixed` inject correct aliases.
-- **`strip-ns-qualifier` applied at `extend` / conformance sites** (decision 9): `emit-extend`, `verify-conformance-params` strip any namespace qualifier from type and protocol names before registry lookups, so `(extend Circle Area)` in namespace `shapes` resolves correctly.
+- **`strip-ns-qualifier` applied at `extend` / conformance sites** (decision 9): `emit-extend`, `verify-conformance-params` strip any namespace qualifier from type and protocol names before registry lookups, so `(extend Circle Area)` in namespace `shapes` resolves correctly. **(Superseded in part 2026-08-03 — see the box under decision 9 above. The strip stays for the TYPE name; the PROTOCOL name now resolves through the namespaced protocol registry. The protocol half of this bullet was also never actually consistent: `protocol-lookup` never stripped, which is the defect W9 item 21 fixed.)**
 - **`lib/nsgeom.nuc`**: new test library in the `geom` namespace, providing `area`/`perimeter` as `@geom__area`/`@geom__perimeter`.
 - **`examples/ns-mangle.nuc`**: exercises `import-prefixed nsgeom geom`, calls `geom/area` and `geom/perimeter` (cross-namespace), and a `user`-namespace function emits bare. IR confirms `@geom__area` and `@user-fn`.
 

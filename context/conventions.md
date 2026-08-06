@@ -2054,6 +2054,67 @@ Two things that make the scheme safe:
   `g-fn-attr-table`, and it is what lets a change to `scope-lookup` and
   `generic-lookup` (called on every name in every program) be provably free.
 
+## A namespace canonicalizer is per-REGISTRY, not per-string — and Stage 12 collapsed two of them
+
+Stage 15 W9 item 21. Stage 12 N4 gave the conformance registry one
+canonicalizer, `strip-ns-qualifier`, and applied it to *both* halves of its
+`(type, protocol)` key. That was right for the type half and wrong for the
+protocol half, and the two halves are not interchangeable:
+
+- **A TYPE name is bare-keyed and global.** `register-struct` stores the raw
+  head symbol, so `strip-ns-qualifier` is what makes a qualified type reference
+  resolve to the same `StructDef` from any namespace. **Do not re-extend this to
+  a protocol position** — `strip-ns-qualifier`'s comment now says so.
+- **A PROTOCOL name is namespace-keyed**, like a global in `g-globals`:
+  `protocol-new` keys on `qualify-name`, and `protocol-canon-name`
+  (`src/nucleusc.nuc`, beside `strip-ns-qualifier`) is the single canonicalizer
+  every protocol-keyed registry calls — the conformance registry, the
+  super-protocol edges, `&where` `Constraint.proto`, and `(dyn P)`'s box type.
+
+Four things about that generalize past protocols:
+
+- **Resolution is qualified-then-bare, and the fallback is load-bearing.**
+  `protocol-lookup` probes `<current-ns>/<name>` then the bare spelling — the
+  same shape as W5e's private-name probe. Without the fallback a namespaced file
+  could not see `Clone`/`Eq`/`Ord`/`Allocator` and every namespaced library
+  would be unusable. With it, an *ambiguous* bare reference (two namespaces, no
+  bare protocol) correctly resolves to neither.
+- **Registration must use an EXACT probe, never the resolver.** This is
+  `generic-register-method`/`generic-lookup-exact`'s rule again: a define's key
+  is already final, so routing the idempotence check through the
+  fallback-bearing resolver makes `(ns dp) (defprotocol Clone …)` see the
+  prelude's `Clone` and never register `dp/Clone`.
+- **Canonicalize a stored reference where it is WRITTEN, not where it is read.**
+  A `&where` constraint is checked long after registration and usually while a
+  *different* namespace is current, so `parse-where-constraints` canonicalizes
+  at parse time (`prescan-protocols` runs immediately before the same file's
+  signature prescan, so its own protocols are registered). The canonicalizer is
+  the identity for an unregistered name and idempotent on a canonical one, so a
+  reference parsed too early degrades to the raw spelling and re-canonicalizes
+  at every later lookup — which is exactly what keeps blanket names (`Any`,
+  `Struct`, `Clone`) and `Valid` bare.
+- **A memo keyed on a source spelling becomes a TYPE-IDENTITY bug the moment the
+  spelling stops being canonical.** `dyn-type` (`src/union-registry.nuc`)
+  memoizes `(dyn P)`'s `{data,vtable}` `StructDef` by protocol name; keyed on
+  the raw spelling, `(dyn Describe)` inside `(ns dp)` and `(dyn dp/Describe)`
+  outside it would build two `StructDef`s, and `type-eq` (sdef pointer identity)
+  would call one protocol two incompatible types. It canonicalizes at entry.
+  Note where the canonicalizer had to live for that: `union-registry.nuc` is
+  imported *before* `generics.nuc`, so it cannot call `protocol-lookup` — but it
+  may call *up* into `nucleusc.nuc` (it already up-calls `intern-str` and
+  `guard-name-kind`), and `protocol-canon-name` sits well below
+  `(import-use generics)` there. Prefer that to a fourth late-binding hook.
+
+**The remaining un-namespaced registry is `g-generics`, and it is a real design
+question, not an oversight.** `generic-lookup`/`generic-register-method` key on
+the **raw** name, so two namespaces defining the same function name collapse
+into one `Generic` mangled under whichever was seen first (`@qa__describe.pDog`
+for a method defined in `qb`). Conversely `scope-lookup` qualifies a global key
+with **no** bare fallback, which is why a file with an explicit `(ns …)` cannot
+reach `default-allocator` and therefore cannot box a value at all. Both are
+pre-existing (W9 items 22/23); know which registry answers your question before
+assuming a cross-namespace path works.
+
 **Two registries answer a name, not one.** `finalize-generics` binds a *solitary*
 generic into `g-globals` and `emit-dispatch` falls through to `scope-lookup` for
 it, while an *overloaded* one dispatches through `g-generics` and never touches

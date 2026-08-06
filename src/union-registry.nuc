@@ -512,6 +512,15 @@
 ; the same CE-3 COERCE2 ABI), differing only in the carried datum (protocol name vs
 ; Fn signature).
 (defn dyn-type (proto:ptr line:i32):ptr
+  ; Stage 15 W9 defect 21: memoize on the protocol's CANONICAL (namespaced)
+  ; identity, not on the source spelling, so `(dyn Describe)` written inside
+  ; `(ns dp)` and `(dyn dp/Describe)` written outside it produce the SAME box
+  ; StructDef — otherwise `type-eq` (sdef pointer identity) would make the two
+  ; spellings of one protocol two incompatible types. `protocol-canon-name` lives
+  ; in nucleusc.nuc precisely so this file — imported before generics.nuc — can
+  ; reach it; it is the identity for an unregistered name, which keeps the
+  ; deferred "protocol validation happens at box construction" behaviour intact.
+  (set! proto (as ptr (protocol-canon-name (as CStr proto))))
   (let (key:ptr (intern-str (fmt-s "dyn.%s" proto))
         hit:ptr (dyn-memo-lookup key))
     (when (!= hit null) (return hit))

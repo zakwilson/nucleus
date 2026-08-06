@@ -1,0 +1,18 @@
+; Stage 15 W9 defect 21: a SECOND namespace declaring a protocol with the same
+; bare name `Describe` as lib/nsdescribe.nuc's, and a different required method.
+;
+; This is the point of the ruling that protocols are namespaced: `dp/Describe`
+; and `dp2/Describe` are two protocols, one type may conform to both, and a
+; `(dyn dp/Describe)` box must dispatch `describe` while a `(dyn dp2/Describe)`
+; box of the same type dispatches `tag-of`. Under the pre-W9 bare keying the two
+; would have been one protocol and the second `defprotocol` a silent no-op.
+;
+; The required method is deliberately NOT named `describe`: two namespaces
+; defining a same-named *function* collapse into one generic mangled under the
+; first-seen namespace's ir-prefix, which is an unrelated (and still open)
+; function-namespacing gap. Keeping the method names distinct isolates this test
+; to protocol identity.
+
+(ns dp2)
+
+(defprotocol Describe (tag-of ((self (ref Self))) i32))

@@ -1,0 +1,13 @@
+; Stage 15 W9 defect 21: making protocols namespaced must not weaken the
+; conformance CHECK. `Bad` has no `describe`, so `(extend Bad dp/Describe)` is
+; still rejected — and the diagnostic names the protocol by its namespaced
+; identity, which is what a reader needs when two namespaces declare a
+; `Describe`. (Before defect 21 the same message said bare `Describe`, i.e. it
+; could not tell you which protocol you failed to implement.)
+(import-use "stdio.h")
+(import-prefixed nsdescribe dpx)
+
+(defstruct Bad n:i32)
+(extend Bad dp/Describe)
+
+(defn main ():i32 (return 0))
