@@ -374,6 +374,39 @@ as RV-2, which is *not* a code defect.
   does not flatten a struct that mixes an integer member), so `mixed_get`
   interoperates exactly. Scalar `f64` args stay `double` (scalar float ABI is
   unaffected — RV-3 touches aggregate classification only).
+
+  > **CORRECTION (2026-08-06) — the "fixtures never hit this" claim above is
+  > FALSE, measured on real riscv64 hardware.** `make abi-test` natively on
+  > riscv64 fails three lines: `mixed_get` (8.5 → **7.0**), `farr2_make`
+  > (1.50,2.25 → **2.25,0.00**) and `farr2_sum` (3.75 → **2.25**). Both halves
+  > of the claim are wrong, for different reasons:
+  >
+  > 1. **The `Mixed` reasoning applied x86_64 SysV rules to RISC-V.** The
+  >    riscv64 lp64d hard-float convention has an explicit rule SysV has no
+  >    analogue for: *a struct containing one floating-point real and one
+  >    integer, in either order, is passed in one FP register and one integer
+  >    register.* So C expects `Mixed{i:7, f:1.5}` as `7` in `a0` and `1.5` in
+  >    `fa0`; RV-3 packs both into a single `i64` in `a0`, `fa0` is never
+  >    loaded, and the callee computes `7 + 0.0 = 7.0` — which is exactly the
+  >    observed number. Eightbyte classification is a SysV concept; it does not
+  >    transfer.
+  > 2. **`Mixed` was not the only FP-bearing fixture — the claim went stale.**
+  >    `FArr2 {float[2]}` was added later by **Stage 15 W8 G-2** (see
+  >    `tests/abi/clib.c`'s header), after RV-3 was written, and nothing
+  >    re-examined this note. The psABI flattens a struct of two FP reals into
+  >    two FP registers (`fa0`,`fa1`), and flattening recurses through array
+  >    members, so `float[2]` qualifies. RV-3 returns it as one `i64` in `a0`,
+  >    hence `2.25,0.00`.
+  >
+  > Neither is a regression: RV-3's integer convention is behaving exactly as
+  > specified, and `make abi-test` is a *native* gate that no one could run
+  > until riscv64 hardware existed. The pure-integer and >16-byte cases
+  > (`pair`, `big`, `iarr2/4`, `abig`, `p2`) all pass, confirming the
+  > integer-convention half is correct. The lesson for the deferral note: an
+  > "our fixtures don't reach the gap" claim is a statement about a *corpus
+  > that other stages keep editing*, so it must be re-checked whenever the
+  > corpus changes — or, better, replaced by a fixture that pins the gap
+  > deliberately.
 - `make riscv-abi-test` → `tests/run-riscv-abi-test.sh` (new): the same
   three-direction interop as `tests/run-abi-test.sh` (Nucleus→C, Nucleus→Nucleus,
   C→Nucleus), reusing `tests/abi/{clib.c,interop.nuc,callee.nuc,driver.c,

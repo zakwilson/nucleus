@@ -270,6 +270,98 @@
     (return (fmt-i32 "i%d" (* n 8)))
     (return "i64")))
 
+; Record one flattened scalar member. Past two members the aggregate is
+; ineligible, so we only keep counting (the count is the eligibility test).
+(defn rv-flat-add (f:ptr:RvFlat isfp:i32 ir:ptr off:i32 sz:i32):void
+  (let (n:i32 (f cnt))
+    (when (= n 0)
+      (.set! f fp0 isfp) (.set! f ir0 ir) (.set! f pos0 off) (.set! f sz0 sz))
+    (when (= n 1)
+      (.set! f fp1 isfp) (.set! f ir1 ir) (.set! f pos1 off) (.set! f sz1 sz))
+    (.set! f cnt (+ n 1))))
+
+; Flatten `t` into scalar members at absolute offset `base`, accumulating into
+; `f`. Recurses through nested structs AND arrays — `struct { float v[2]; }`
+; flattens to two FP reals, which is what makes it an fa0/fa1 pair on riscv64
+; where x86_64 SysV packs it into one `<2 x float>` eightbyte. A union is never
+; flattened (psABI), so it poisons the count outright.
+(defn rv-flatten-type (t:raw:Type base:i32 f:ptr:RvFlat):void
+  (when (> (f cnt) 2) (return))
+  (let (tt:raw:Type t
+        k:i32 (tt kind))
+    (when (= k TY-UNION)
+      (.set! f cnt 99)
+      (return))
+    (when (= k TY-STRUCT)
+      (let (sd:raw:StructDef (tt sdef))
+        (let (sdd:raw:StructDef sd
+              nf:i32 (sdd num-fields)
+              off:i32 0)
+          (dotimes (i nf)
+            (let (ft:ptr ((field-at (sdd fields) i) type)
+                  fa:i32 (abi-alignof ft)
+                  fsz:i32 (abi-sizeof ft))
+              (set! off (abi-align-up off fa))
+              (rv-flatten-type ft (+ base off) f)
+              (set! off (+ off fsz))))))
+      (return))
+    (when (= k TY-ARRAY)
+      (let (et:raw:Type (tt elem)
+            esz:i32 (abi-sizeof (tt elem))
+            n:i32 (tt arr-len))
+        ; A zero-size element cannot occur (every representable type is ≥ 1
+        ; byte); the guard states it rather than looping on a 0 stride.
+        (when (<= esz 0)
+          (.set! f cnt 99)
+          (return))
+        (dotimes (i n)
+          (rv-flatten-type et (+ base (* i esz)) f)))
+      (return))
+    ; Scalar: type-to-ir already yields `float`/`double` for the FP kinds and the
+    ; natural `iN`/`ptr` for everything else, which is exactly the member type
+    ; clang coerces to.
+    (rv-flat-add f (if (!= (is-float-type t) 0) 1 0)
+                 (type-to-ir t) base (abi-sizeof t))))
+
+; riscv64 lp64d hard-float aggregate classification (Stage 14 RV-6,
+; design/stage14/riscv-fp-abi.md §1). Fills `info` and returns 1 when one of the
+; three flattening rules applies with the registers `gpr`/`fpr` still available;
+; returns 0 to fall through to RV-3's integer convention. `off1` carries the
+; second member's own offset — 4 for `{i32,f32}` and `{float[2]}`, NOT the
+; SysV second eightbyte.
+(defn abi-riscv-fp-classify (t:raw:Type info:ptr:AbiInfo gpr:i32 fpr:i32):i32
+  (let (f:ptr:RvFlat (as ptr:RvFlat (arena-alloc (sizeof RvFlat))))
+    (.set! f cnt 0)
+    (rv-flatten-type t 0 f)
+    (let (n:i32 (f cnt))
+      ; FLEN/XLEN are both 64 on lp64d: an over-wide member is ineligible.
+      (when (or (< n 1) (> n 2)) (return 0))
+      (when (and (!= (f fp0) 0) (> (f sz0) 8)) (return 0))
+      (when (and (= (f fp0) 0) (> (f sz0) 8)) (return 0))
+      ; Rule 1 — a lone FP real travels as that FP scalar.
+      (when (= n 1)
+        (when (= (f fp0) 0) (return 0))
+        (when (< fpr 1) (return 0))
+        (.set! info kind ABI-COERCE1)
+        (.set! info reg0 (f ir0))
+        (return 1))
+      (when (> (f sz1) 8) (return 0))
+      (let (nfp:i32 (+ (f fp0) (f fp1)))
+        ; Rule 2 — two FP reals in two FPRs. Rule 3 — one FP real and one
+        ; integer, EITHER order, in one FPR and one GPR. Member order is
+        ; preserved in reg0/reg1, so LLVM's RISC-V CC assigns fa0/a0 correctly
+        ; for both `{i32,f32}` and `{f32,i32}`.
+        (when (= nfp 2)
+          (when (< fpr 2) (return 0)))
+        (when (= nfp 1)
+          (when (or (< fpr 1) (< gpr 1)) (return 0)))
+        (when (= nfp 0) (return 0))
+        (.set! info kind ABI-COERCE2)
+        (.set! info reg0 (f ir0))
+        (.set! info reg1 (f ir1))
+        (.set! info off1 (f pos1))
+        (return 1)))))
+
 ; Classify a type for the SysV aggregate ABI. Returns an AbiInfo*. Non-struct
 ; types are ABI-DIRECT (byte-identical to pre-ABI codegen).
 (defn abi-classify (t:raw:Type):raw:AbiInfo
@@ -279,6 +371,7 @@
     (.set! info reg1 null)
     (.set! info size 0)
     (.set! info align 0)
+    (.set! info off1 8)   ; SysV: reg1 is the second eightbyte (riscv-fp-abi.md §3)
     ; Stage 15 W8 G-2 backstop. Every by-value parameter, argument and return
     ; funnels through here, and an `(array T N)` in any of those positions is
     ; refused at parse time (parse-type-from-node's g-array-ok gate) — but that
@@ -317,8 +410,18 @@
       (when (> sz 16)
         (.set! info kind ABI-MEMORY)
         (return info))
-      ; Stage 14 RV-3: on riscv64 every eightbyte is INTEGER (lp64d FP-flattening
-      ; deferred — see abi-is-riscv); skip the field-type walk and force class 3.
+      ; Stage 14 RV-6: riscv64 lp64d hard-float flattening, tried before the
+      ; integer convention. A flattenable aggregate is at most two ≤8-byte
+      ; members, hence ≤16 bytes, so the >16 MEMORY exit above cannot skip one.
+      ; Full availability (8 GPR / 8 FPR) is the correct assumption here: this
+      ; entry point classifies returns (a0/a1/fa0/fa1 are always free) and is the
+      ; all-registers-available baseline; argument positions go through
+      ; abi-classify-arg, which supplies the live counts.
+      (when (!= (abi-is-riscv) 0)
+        (when (!= (abi-riscv-fp-classify t info 8 8) 0)
+          (return info)))
+      ; Stage 14 RV-3: otherwise on riscv64 every eightbyte is INTEGER; skip the
+      ; field-type walk and force class 3.
       (let (n0:i32 (if (< sz 8) sz 8)
             c0:i32 (if (!= (abi-is-riscv) 0) 3 (abi-class-eightbyte sd 0 0)))
         (.set! info reg0 (abi-eightbyte-ir c0 n0)))
@@ -413,7 +516,7 @@
         (fprintf g-entry-stream "  store %s %%%s.arg.0, ptr %s\n"
           (info reg0) pname slot)
         (set! gp (new-tmp))
-        (fprintf g-entry-stream "  %s = getelementptr i8, ptr %s, i64 8\n" gp slot)
+        (fprintf g-entry-stream "  %s = getelementptr i8, ptr %s, i64 %d\n" gp slot (info off1))
         (fprintf g-entry-stream "  store %s %%%s.arg.1, ptr %s\n"
           (info reg1) pname gp)))
     (scope-define fn-scope pname ptype slot 1)))
@@ -461,7 +564,7 @@
                 a1:ptr null)
             (fprintf g-body-stream "  %s = load %s, ptr %s\n" r0 (info reg0) src)
             (set! gp (new-tmp))
-            (fprintf g-body-stream "  %s = getelementptr i8, ptr %s, i64 8\n" gp src)
+            (fprintf g-body-stream "  %s = getelementptr i8, ptr %s, i64 %d\n" gp src (info off1))
             (set! r1 (new-tmp))
             (fprintf g-body-stream "  %s = load %s, ptr %s\n" r1 (info reg1) gp)
             (set! a0 (new-tmp))
@@ -494,7 +597,7 @@
                 a1:ptr null)
             (fprintf g-body-stream "  %s = load %s, ptr %s\n" r0 (info reg0) tmp)
             (set! gp (new-tmp))
-            (fprintf g-body-stream "  %s = getelementptr i8, ptr %s, i64 8\n" gp tmp)
+            (fprintf g-body-stream "  %s = getelementptr i8, ptr %s, i64 %d\n" gp tmp (info off1))
             (set! r1 (new-tmp))
             (fprintf g-body-stream "  %s = load %s, ptr %s\n" r1 (info reg1) gp)
             (set! a0 (new-tmp))
@@ -561,7 +664,7 @@
             r1:ptr null)
         (fprintf g-body-stream "  %s = load %s, ptr %s\n" r0 (info reg0) addr)
         (set! gp (new-tmp))
-        (fprintf g-body-stream "  %s = getelementptr i8, ptr %s, i64 8\n" gp addr)
+        (fprintf g-body-stream "  %s = getelementptr i8, ptr %s, i64 %d\n" gp addr (info off1))
         (set! r1 (new-tmp))
         (fprintf g-body-stream "  %s = load %s, ptr %s\n" r1 (info reg1) gp)
         (return (fmt-2s "%s, %s"
@@ -609,7 +712,7 @@
         (fprintf g-body-stream "  %s = extractvalue %s %s, 0\n" e0 rty tmp)
         (fprintf g-body-stream "  store %s %s, ptr %s\n" (ii reg0) e0 slot)
         (set! gp (new-tmp))
-        (fprintf g-body-stream "  %s = getelementptr i8, ptr %s, i64 8\n" gp slot)
+        (fprintf g-body-stream "  %s = getelementptr i8, ptr %s, i64 %d\n" gp slot (ii off1))
         (set! e1 (new-tmp))
         (fprintf g-body-stream "  %s = extractvalue %s %s, 1\n" e1 rty tmp)
         (fprintf g-body-stream "  store %s %s, ptr %s\n" (ii reg1) e1 gp)
