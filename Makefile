@@ -136,17 +136,19 @@ layout-test: $(BIN)
 avr-test: $(BIN)
 	NUCLEUSC=$(BIN) ./tests/run-avr-test.sh
 
-# RISC-V cross-compilation acceptance test (Stage 14 RV-2 gate): compile+link
-# each example via the real compile-and-link path (riscv64-linux-gnu-gcc link
-# driver) and run it under qemu-riscv64, diffing tests/expected/. Not part of
-# `make test`; see design/stage14/riscv-linux.md §5 and
+# RISC-V compilation acceptance test (Stage 14 RV-2 gate): compile+link each
+# example via the real compile-and-link path and run it, diffing
+# tests/expected/. Two lanes keyed on `uname -m`: cross (riscv64-linux-gnu-gcc
+# link driver, run under qemu-riscv64) or native riscv64 (clang, run directly).
+# Not part of `make test`; see design/stage14/riscv-linux.md §5 and
 # tests/run-riscv-test.sh's header comment.
 riscv-test: $(BIN)
 	NUCLEUSC=$(BIN) ./tests/run-riscv-test.sh
 
 # RISC-V struct-ABI interop acceptance test (Stage 14 RV-3 gate): the three-
-# direction aggregate-ABI interop (Nucleus<->C, Nucleus<->Nucleus) cross-compiled
-# for riscv64 and run under qemu-riscv64. Not part of `make test`/`make abi-test`;
+# direction aggregate-ABI interop (Nucleus<->C, Nucleus<->Nucleus) built for
+# riscv64 — cross-compiled and run under qemu-riscv64, or built with clang and
+# run directly on a native riscv64 host. Not part of `make test`/`make abi-test`;
 # see design/stage14/riscv-linux.md §5 and tests/run-riscv-abi-test.sh's header.
 riscv-abi-test: $(BIN)
 	NUCLEUSC=$(BIN) ./tests/run-riscv-abi-test.sh
