@@ -13859,11 +13859,16 @@
           (when (= keep-obj 0)
             ; Build the link command: <driver> [-mmcu=<device>] <obj> -o <out>
             ;   [link-args...]. The driver defaults to clang for hosted triples,
-            ; avr-gcc for an AVR triple, and riscv64-linux-gnu-gcc for a
-            ; riscv64-linux triple (the Debian cross toolchain — it carries the
-            ; riscv64 sysroot + crt startup objects, which clang would need an
-            ; explicit --sysroot for; riscv64 needs no extra command-line flag
-            ; beyond the driver name, unlike AVR's -mmcu device selection).
+            ; avr-gcc for an AVR triple, and riscv64-linux-gnu-gcc when
+            ; CROSS-compiling to riscv64-linux (the Debian cross toolchain — it
+            ; carries the riscv64 sysroot + crt startup objects, which clang
+            ; would need an explicit --sysroot for; riscv64 needs no extra
+            ; command-line flag beyond the driver name, unlike AVR's -mmcu
+            ; device selection). The --sysroot need is a cross artifact only: on
+            ; a riscv64 HOST the sysroot is /, so the hosted clang default links
+            ; natively with no flag, and the triplet-prefixed cross name is a
+            ; Debian-family convention no other riscv64 distro guarantees. Hence
+            ; the host-triple guard; AVR is never a host, so it needs none.
             ; --linker=<cmd> overrides any of them (wins regardless of triple).
             ; On an AVR triple a -mmcu=<device> flag is inserted, the device
             ; being --mmcu if given else --mcpu (no device table — a family
@@ -13875,11 +13880,13 @@
             ; the --mcpu string). AVR and riscv64 triple prefixes are mutually
             ; exclusive, so the two set!s never both fire.
             (let (driver:ptr "clang"
+                  host-triple:ptr ((as ptr:Target g-host-target) triple)
                   is-avr:i32 (if (= (strncmp g-target-triple "avr" 3) 0) 1 0)
-                  is-riscv:i32 (if (= (strncmp g-target-triple "riscv64" 7) 0) 1 0))
+                  is-riscv:i32 (if (= (strncmp g-target-triple "riscv64" 7) 0) 1 0)
+                  host-is-riscv:i32 (if (= (strncmp host-triple "riscv64" 7) 0) 1 0))
               (when (!= is-avr 0)
                 (set! driver "avr-gcc"))
-              (when (!= is-riscv 0)
+              (when (and (!= is-riscv 0) (= host-is-riscv 0))
                 (set! driver "riscv64-linux-gnu-gcc"))
               (when (!= g-linker-override null)
                 (set! driver g-linker-override))

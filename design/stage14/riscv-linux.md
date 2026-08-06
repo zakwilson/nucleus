@@ -280,6 +280,53 @@ is *not* a code defect.
   (vendoring crt, `-nostartfiles`) — the code is correct and the SKIP is the
   right behavior until the package lands.
 
+**Amendment (2026-08-06) — the cross driver is now guarded on the HOST triple.**
+As first written, the `is-riscv` branch keyed on the *target* triple alone and
+never compared it against the host, so a **native riscv64 build** (no
+`--target=`, `g-target-triple` defaulted from `LLVMGetDefaultTargetTriple`) also
+reached for `riscv64-linux-gnu-gcc` instead of the hosted `clang` default. That
+is wrong on its own terms: the `--sysroot` problem this driver choice exists to
+dodge is a **cross artifact only** — on riscv64 hardware the sysroot is `/` and
+plain `clang`/`cc` links with no flag. It also imported a portability
+assumption the design never argued for: `riscv64-linux-gnu-gcc` is a
+**Debian-family** naming convention (Debian's *native* gcc package does ship the
+triplet-prefixed name — verified `/usr/bin/x86_64-linux-gnu-gcc ->
+x86_64-linux-gnu-gcc-14` on the x86_64 container — so Debian riscv64 would have
+worked by accident), but Fedora/Alpine/Arch riscv64 ship no such binary and the
+link would have failed `riscv64-linux-gnu-gcc: not found` on a correctly
+configured native machine.
+
+- `compile-and-link` (`src/nucleusc.nuc`) now binds
+  `host-is-riscv` from `((as ptr:Target g-host-target) triple)` and selects the
+  cross driver only under `(and (!= is-riscv 0) (= host-is-riscv 0))`. The
+  comparison is on the **arch prefix**, not the whole triple, so a normalization
+  difference between `riscv64-unknown-linux-gnu` and `riscv64-linux-gnu` cannot
+  misclassify a native build as a cross one. AVR keeps its unguarded branch —
+  AVR is never a host, so `host-is-avr` is identically 0 and the guard would be
+  dead code.
+- Both test lanes (`tests/run-riscv-test.sh`, `tests/run-riscv-abi-test.sh`)
+  now pick a lane from `uname -m`: **cross** is unchanged
+  (`riscv64-linux-gnu-gcc` + `qemu-riscv64`), **native riscv64** prefers `clang`,
+  runs binaries directly with no qemu, and requires no cross toolchain. The
+  native lane passes **no `--linker` at all** when clang is present — driver
+  choice stays the compiler's single source of truth rather than being
+  re-derived in shell — and falls back to `--linker=cc` only when clang is
+  absent. `run-riscv-abi-test.sh`'s reference C compiler follows the same
+  preference (`clang` → `cc` → SKIP); either implements the riscv64 psABI, which
+  is what the gate actually compares against.
+- Verified: `make` clean; `make test` **424/424**; `make bootstrap`
+  byte-identical first pass (`stage1.ll == stage2.ll`, no `update-bootstrap`);
+  `make abi-test` PASS; `make riscv-test` / `make riscv-abi-test` still SKIP with
+  the unchanged **cross-lane** crt-gap diagnostic. Cross routing re-proven
+  directly: `--target=riscv64-unknown-linux-gnu` still fails
+  `nucleusc: link step failed (riscv64-linux-gnu-gcc exit 256)` after
+  `ld: cannot find Scrt1.o`, and a hosted build still links via `clang` and runs.
+  The scripts' native lane was exercised with a `uname` shim and SKIPs
+  gracefully with the native-lane message. **The compiler's native-host branch
+  itself is not executable on this x86_64 container** — `host-is-riscv` is
+  structurally 0 here — so it remains verified by construction only, and is a
+  first-run item for whenever RV-4's real riscv64 hardware/guest appears.
+
 ### RV-3 — aggregate ABI (integer convention)
 
 - `abi-is-riscv` predicate beside `abi-is-aarch64`; classification branch

@@ -1291,6 +1291,51 @@ Found in Stage 14 AVR-7: `avr-reject-f64` (src/abi.nuc) checks `abi-is-avr` (its
 
 **When adding a compile-time diagnostic (or any target-conditional codegen choice) keyed on `g-target-triple` or a predicate built on it, always AND in `(= (in-jit-module) 0)`** unless the check is genuinely target-triple-driven pure IR-shape logic that's supposed to apply inside JIT modules too (e.g. `ptr-int-ir`, which correctly wants the *active* module's pointer width, not the outer target's). The distinguishing question: does this check describe "what target program will eventually run" (needs the `in-jit-module` guard — it should only fire for the real target module) or "what module is being emitted right now" (does not — `g-host-target`/`g-target` already track that correctly without help)?
 
+## A triple-keyed **toolchain** default must ask whether the build is CROSS, not just what arch the target names
+
+`g-target-triple` answers "what machine will this code run on". It does **not**
+answer "is an external tool needed to get there", and a default that shells out
+to a *host-installed program* — a link driver, an assembler, an objcopy — is
+asking the second question. `compile-and-link`'s riscv64 branch conflated them:
+it selected `riscv64-linux-gnu-gcc` on any `riscv64`-prefixed target triple,
+which is right when cross-compiling (the Debian cross toolchain carries the
+sysroot + crt objects that `clang` would need an explicit `--sysroot` for) and
+wrong on riscv64 **hardware**, where the sysroot is `/` and the hosted `clang`
+default links with no flag at all. `g-target-triple` defaults to
+`LLVMGetDefaultTargetTriple`, so a native riscv64 build reaches the branch with
+no `--target=` in sight.
+
+Two things make this class hard to notice:
+
+- **It fails only off-host, so no gate here can see it.** On an x86_64 container
+  the guard's condition is structurally constant, so the corrected branch is
+  unreachable and the bug's *symptom* is unreachable too. `make riscv-test`
+  SKIPping on a container gap is not evidence either way. Reason about the
+  predicate, not the test result.
+- **A wrong toolchain name can work by accident on the machine you'd first try
+  it on.** Debian's *native* gcc package ships the triplet-prefixed spelling
+  (`/usr/bin/x86_64-linux-gnu-gcc -> x86_64-linux-gnu-gcc-14` on this
+  container), so native Debian riscv64 would have linked fine and "confirmed"
+  the default; Fedora/Alpine/Arch riscv64 ship no such binary. A distro-specific
+  naming convention that happens to hold on the reference distro is exactly the
+  assumption a triple prefix hides.
+
+The fix shape: bind the host arch from `((as ptr:Target g-host-target) triple)`
+and gate the cross-tool selection on `(and (target-is-X) (= host-is-X 0))`,
+comparing **arch prefixes** rather than whole triples — `riscv64-unknown-linux-gnu`
+and `riscv64-linux-gnu` name the same machine, and a `strcmp` would call a native
+build cross. Note this is the *complement* of the `in-jit-module` rule above:
+there the question was "which module am I emitting right now", here it is "which
+machine is running the tool I am about to exec". Both are questions
+`g-target-triple` alone cannot answer. AVR needs no such guard — it is never a
+host, so its `host-is-avr` is identically 0 and the conjunct would be dead code;
+add the guard when the target is one a developer could plausibly *be sitting on*.
+
+The same split belongs in any test lane for such a target: pick cross-vs-native
+from `uname -m`, and in the native lane pass **no** `--linker` override, so the
+compiler's own guarded default stays the single source of truth instead of being
+re-derived in shell (`tests/run-riscv-test.sh` / `run-riscv-abi-test.sh`).
+
 ## A top-level definer's own NAME position is never desugared — the "silent misregistration" bug generalizes across every definer
 
 `desugar` only rewrites binding *positions* it explicitly lists (the `defn` name and param list, `defvar`/`extern`/`declare` names, `defstruct` fields, `let`/`with` binding names — see the `defn` bodies note above); a top-level definer's own name (`defconst`/`defenum`/`defprotocol`/`defmacro`/`defunion`/`deferror`) is not on that list. So a colon-typed spelling on one of these names (`(defconst K:i32 2)`) arrives as a single undesugared `NODE-SYM` whose spelling is *literally* `"K:i32"`, and unless the definer's emitter explicitly rejects it, it registers under that literal, unlookupable key — no diagnostic at the definition, and a disconnected failure (or nothing at all) wherever the name is actually used. Stage 15 W4b found this exact bug independently in `defconst`, `defenum`, `defprotocol`, `defmacro`, `defunion`, and `deferror` — six definers, one root cause. The fix is `reject-colon-in-def-name` (`src/nucleusc.nuc`, beside `split-typed`): call it first, before any other dispatch on the name (including a definer's own CELL/template-head check), in any top-level definer whose name is never legitimately annotated.
