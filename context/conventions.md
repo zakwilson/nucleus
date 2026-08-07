@@ -1139,16 +1139,36 @@ parameter. Two traps in it:
   `(ptr sret(%T) align 8...)`. The REPL redeclare loop had exactly this shape.
 - **`abi-print-param` hardcodes `g-out`.** The REPL preamble goes to
   `g-repl-preamble`, so it calls **`abi-print-param-to`** (the stream-parameterized
-  body; `abi-print-param` is now the `g-out` wrapper over it). Any future
-  emitter writing to a stream other than `g-out` needs the `-to` spelling —
-  redirecting `g-out` around a declare is not the idiom.
+  body; `abi-print-param` is now the `g-out` wrapper over it). Either spelling
+  works — `repl-declare-union-ctors` instead save/sets/restores `g-out` around
+  its loop — but prefer `-to` for a new emitter: it cannot leak a swapped
+  `g-out` down an early return.
 
-**A fourth site is still broken and is a different bug**: `jit-thunk-module`
-(`src/repl.nuc`) emits its thunk `define` with raw `type-to-ir` **and** into a
-module carrying no `%Name = type {…}` line, so a by-value struct in the REPL
-dies at `use of undefined type named 'Pt'` before any declare matters. By-value
-structs therefore do not work in the REPL at all today — which is also why the
-two REPL fixes above are correct-by-construction but cannot be exercised yet.
+**A fourth site was the same bug one layer down, and is also fixed**:
+`emit-fn-thunk` (`src/repl.nuc`) built the redefinition trampoline's signature
+from raw `type-to-ir`, so it disagreed with the impl's ABI-lowered `define`
+*and* named a `%Pt` that `jit-thunk-module`'s standalone module never defined —
+`use of undefined type named 'Pt'` before any declare mattered. By-value
+structs did not work in the REPL at all. Two fixes, and the second is the
+non-obvious one:
+
+- The thunk forwards its parameters untouched to a callee with the identical
+  lowered signature, so **the operand list is byte-for-byte the same in the
+  signature and in the forwarded call** — build it once into a memstream and
+  print it twice. `byval`/`sret` attributes are legal on a call operand, which
+  is what makes the verbatim reuse correct for the MEMORY cases too. A MEMORY
+  return lowers to `void` plus an sret operand, so it takes the same no-result
+  path a genuinely `void` function does.
+- `jit-thunk-module` now prepends **`g-repl-preamble`**, which is where the
+  session's accumulated `%Name = type {…}` lines live (`repl-jit-module-rt-rewrite`
+  already did this; the thunk module was the one module built without it).
+  Only an sret/byval aggregate actually names a type — COERCE1/COERCE2 lower to
+  `i64`/`double`/`<2 x float>` and need none — so this is invisible until a
+  struct over 16 bytes crosses the REPL boundary. The preamble holds only types,
+  `declare`s and `external global`s, so it cannot collide with the two symbols
+  the thunk module defines.
+
+`tests/repl/byval-structs.in` pins all three ABI classes plus redefinition.
 
 ## Argument-register state is AMBIENT: every parameter/argument walk must call `abi-args-begin` first
 
