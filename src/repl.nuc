@@ -674,31 +674,49 @@
 ; callers transparently dispatch to the latest implementation.
 ;
 ; ft is a (raw Type) with kind=TY-FN; type-to-ir handles each parameter and return.
+; The thunk's signature must be the SAME ABI lowering emit-defn gave the impl it
+; forwards to — raw type-to-ir declared a by-value struct as its aggregate type
+; (`define i32 @area(%Pt %a0)`), which disagreed with the impl's lowered
+; `define i32 @area.impl(i64 %p.arg)` and named a `%Pt` the thunk module did not
+; even define. Since the thunk forwards its parameters untouched and the callee
+; has the identical lowered signature, the operand list is byte-for-byte the
+; same in the signature and in the forwarded call — so it is built ONCE and
+; printed twice. byval/sret attributes are legal on a call operand, which is
+; what makes the verbatim reuse correct for the MEMORY cases too.
 (defn emit-fn-thunk (out:ptr fname:ptr ft:(raw Type)):void
   (let (ftt:(raw Type) ft
-        ret-ir:ptr (type-to-ir (ftt ret))
-        nparams:i32 (ftt num-params))
+        nparams:i32 (ftt num-params)
+        ret-info:ptr:AbiInfo (unsafe/cast ptr:AbiInfo (abi-classify (ftt ret)))
+        ret-ir:ptr (abi-ret-ir ret-info (ftt ret)))
     ; Global pointer holding the address of the current implementation.
     (fprintf out "@%s.tgt = global ptr null\n" fname)
-    (fprintf out "define %s @%s(" ret-ir fname)
-    (dotimes (i nparams)
-      (when (!= i 0) (fprintf out ", "))
-      (fprintf out "%s %%a%d" (type-to-ir ((field-at (ftt params) i) type)) i))
-    (fprintf out ") {\nentry:\n")
-    (fprintf out "  %%fp = load ptr, ptr @%s.tgt, align 8\n" fname)
-    (if (= ((ftt ret) kind) TY-VOID)
-      (do (fprintf out "  call void %%fp(")
-          (dotimes (i nparams)
-            (when (!= i 0) (fprintf out ", "))
-            (fprintf out "%s %%a%d"
-                     (type-to-ir ((field-at (ftt params) i) type)) i))
-          (fprintf out ")\n  ret void\n}\n\n"))
-      (do (fprintf out "  %%r = call %s %%fp(" ret-ir)
-          (dotimes (i nparams)
-            (when (!= i 0) (fprintf out ", "))
-            (fprintf out "%s %%a%d"
-                     (type-to-ir ((field-at (ftt params) i) type)) i))
-          (fprintf out ")\n  ret %s %%r\n}\n\n" ret-ir)))))
+    (let (obuf:ptr null  osz:i64 0
+          os:ptr (open_memstream (addr-of obuf) (as ptr (addr-of osz))))
+      (let (need-comma:i32 0)
+        (when (= ((as ptr:AbiInfo ret-info) kind) ABI-MEMORY)
+          (fprintf os "ptr sret(%s) align %d %%sret.arg"
+            (type-to-ir (ftt ret)) ((as ptr:AbiInfo ret-info) align))
+          (set! need-comma 1))
+        ; RV-6c: one walk over this signature's parameters.
+        (abi-args-begin ret-info)
+        (dotimes (i nparams)
+          (when (!= need-comma 0) (fprintf os ", "))
+          (abi-print-param-to os
+            (abi-classify-arg ((field-at (ftt params) i) type))
+            ((field-at (ftt params) i) type)
+            (fmt-i32 "a%d" i))
+          (set! need-comma 1)))
+      (fclose os)
+      (when (= obuf null) (set! obuf ""))
+      (fprintf out "define %s @%s(%s) {\nentry:\n" ret-ir fname obuf)
+      (fprintf out "  %%fp = load ptr, ptr @%s.tgt, align 8\n" fname)
+      ; A MEMORY return lowers to `void` + the sret operand, so it takes the
+      ; same no-result path a genuinely void function does.
+      (if (or (= ((ftt ret) kind) TY-VOID)
+              (= ((as ptr:AbiInfo ret-info) kind) ABI-MEMORY))
+        (fprintf out "  call void %%fp(%s)\n  ret void\n}\n\n" obuf)
+        (fprintf out "  %%r = call %s %%fp(%s)\n  ret %s %%r\n}\n\n"
+                 ret-ir obuf ret-ir)))))
 
 ; Build a tiny module containing the @fname thunk + @fname.tgt global, and add
 ; it to the JIT permanently (no resource tracker). This is the stable public
@@ -708,6 +726,15 @@
         s:ptr (open_memstream (addr-of buf) (as ptr (addr-of szp))))
     (fprintf s "; ModuleID = '<repl-thunk>'\n")
     (fprintf s "target triple = \"%s\"\n\n" ((as ptr:Target g-host-target) triple))
+    ; The accumulated preamble carries the `%Name = type {…}` lines for every
+    ; struct defined so far in the session. A thunk whose lowered signature
+    ; names one (an sret/byval aggregate) is otherwise emitted into a module
+    ; that never defined it — `use of undefined type named 'Pt'`. The preamble
+    ; holds only types, `declare`s and `external global`s, so pulling it in
+    ; cannot collide with the two symbols this module defines.
+    (fflush g-repl-preamble)
+    (when (and (!= g-repl-preamble-bufp null) (!= (char-at g-repl-preamble-bufp 0) 0))
+      (fputs g-repl-preamble-bufp s))
     (emit-fn-thunk s fname-ir ft)
     (fclose s)
     (when (and (!= buf null) (!= (char-at buf 0) 0))

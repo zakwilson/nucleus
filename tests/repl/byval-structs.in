@@ -1,0 +1,29 @@
+; By-value structs across REPL module boundaries. Every line here failed with
+; `use of undefined type named 'Pt'` before the thunk fix: emit-fn-thunk printed
+; raw type-to-ir for the trampoline's signature (disagreeing with the impl's
+; ABI-lowered define) and jit-thunk-module built its module without the
+; preamble, so a named aggregate in that signature was never defined.
+; Covers all three ABI classes plus redefinition.
+
+; COERCE1 — 8 bytes, one INTEGER eightbyte (i64).
+(defstruct Pt x:i32 y:i32)
+(defn mk ():Pt (let (p:ptr:Pt (alloca Pt)) (.set! p x 6) (.set! p y 7) @p))
+(defn area (p:Pt):i32 (let (q:ptr:Pt (addr-of p)) (* (q x) (q y))))
+(area (mk))
+
+; The thunk must keep dispatching after a redefinition.
+(defn area (p:Pt):i32 (let (q:ptr:Pt (addr-of p)) (+ (q x) (q y))))
+(area (mk))
+
+; ABI-MEMORY — 24 bytes: sret return + byval parameter. This is the case that
+; actually requires the preamble's `%Big = type {…}` line in the thunk module.
+(defstruct Big x:i64 y:i64 z:i64)
+(defn bmk ():Big (let (p:ptr:Big (alloca Big)) (.set! p x 10) (.set! p y 20) (.set! p z 30) @p))
+(defn bsum (b:Big):i64 (let (q:ptr:Big (addr-of b)) (+ (+ (q x) (q y)) (q z))))
+(bsum (bmk))
+
+; COERCE1 with an SSE eightbyte — {f32,f32} travels as <2 x float> on x86_64.
+(defstruct FP a:f32 b:f32)
+(defn fmk ():FP (let (p:ptr:FP (alloca FP)) (.set! p a 1.5) (.set! p b 2.25) @p))
+(defn fsum (v:FP):f64 (let (q:ptr:FP (addr-of v)) (as f64 (+ (q a) (q b)))))
+(fsum (fmk))
