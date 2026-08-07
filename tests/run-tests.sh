@@ -438,12 +438,20 @@ run_riscv_emit() {
 # RV-3's deferral note did. The x86_64 half is the anti-leak control: the same
 # structs must still lower as SysV, which is what the byte-identical bootstrap
 # would otherwise be the only witness for.
+#
+# BOTH lanes name their triple explicitly. Letting the SysV lane ride the default
+# target made the gate assert "the host is x86_64", so it fired on riscv64
+# hardware reporting correct riscv lowering as a leak. A cross-emission gate is
+# host-independent by construction; the triple is the thing under test, never an
+# ambient. (The x86_64 backend's availability is separately gated by
+# run_target_triple x86_64-pc-linux-gnu.)
 run_rv6_fp_abi() {
   local rv x86
   rv="$(mktemp)"; x86="$(mktemp)"
   ./build/nucleusc --target=riscv64-unknown-linux-gnu --emit-llvm \
     tests/fixtures/rv6-fp-abi.nuc > "$rv" 2>/dev/null || true
-  ./build/nucleusc --emit-llvm tests/fixtures/rv6-fp-abi.nuc > "$x86" 2>/dev/null || true
+  ./build/nucleusc --target=x86_64-pc-linux-gnu --emit-llvm \
+    tests/fixtures/rv6-fp-abi.nuc > "$x86" 2>/dev/null || true
 
   # §1: one FP real, two FP reals, an array/nested struct that flattens, and
   # rule 3 in both member orders — with the member order preserved in reg0/reg1.

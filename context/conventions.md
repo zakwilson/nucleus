@@ -1464,6 +1464,39 @@ from `uname -m`, and in the native lane pass **no** `--linker` override, so the
 compiler's own guarded default stays the single source of truth instead of being
 re-derived in shell (`tests/run-riscv-test.sh` / `run-riscv-abi-test.sh`).
 
+## A cross-emission test must name **both** triples explicitly — the omitted one is the host, and the gate silently becomes a host assertion
+
+The same "a triple is not a host" confusion recurs in the test harness, where it
+is easier to miss because the test *passes* on the machine it was written on.
+
+`run_rv6_fp_abi` (`tests/run-tests.sh`) compares riscv64 lowering against x86_64
+SysV lowering of the same fixture — an anti-leak control proving the riscv
+flattening rules did not reach the SysV path. The riscv lane named its triple;
+the x86_64 lane ran bare `--emit-llvm` and rode the default target. On x86_64
+that is x86_64 and the gate passes, so nothing flagged it for the whole of RV-6.
+On riscv64 hardware the default target is riscv64, so the "SysV" lane was
+compiled with the riscv rules and the gate reported **correct** riscv lowering as
+a leak: `FAIL rv6-x86-unchanged`, dumping `{ float, float }` where it wanted
+`<2 x float>`. A green suite on one host was not evidence the gate was sound.
+
+**Rule: in any test that asserts target-specific IR shape, the triple is the
+thing under test and must never be ambient.** Pass `--target=` on every lane,
+including the one that happens to match your host. `target-init` makes this
+airtight — with `--target=` set, `g-target` comes from
+`make-target-for-triple g-target-triple-override` and the host descriptor is
+never consulted, so both lanes are host-independent by construction. Backend
+availability for the extra triple is already gated separately by
+`run_target_triple`, so an explicit triple costs nothing.
+
+Deliberately left alone: `run_avr7_struct`'s host lane (asserting
+`define i16 @sum(i32 `) genuinely means "AVR versus whatever host this is" —
+contrast with the *real* host is its claim, so pinning a triple would change what
+it proves. It holds on riscv64 today because a 4-byte FP-free struct takes the
+integer convention and lowers to `i32` there too. If riscv-fp-abi.md §8's
+integer-convention spelling divergence is ever resolved toward clang's `i64`,
+that lane breaks on riscv64 only — the contrast is the point, so fix it then by
+asserting "not a plain `ptr`" rather than a literal lowered type.
+
 ## A top-level definer's own NAME position is never desugared — the "silent misregistration" bug generalizes across every definer
 
 `desugar` only rewrites binding *positions* it explicitly lists (the `defn` name and param list, `defvar`/`extern`/`declare` names, `defstruct` fields, `let`/`with` binding names — see the `defn` bodies note above); a top-level definer's own name (`defconst`/`defenum`/`defprotocol`/`defmacro`/`defunion`/`deferror`) is not on that list. So a colon-typed spelling on one of these names (`(defconst K:i32 2)`) arrives as a single undesugared `NODE-SYM` whose spelling is *literally* `"K:i32"`, and unless the definer's emitter explicitly rejects it, it registers under that literal, unlookupable key — no diagnostic at the definition, and a disconnected failure (or nothing at all) wherever the name is actually used. Stage 15 W4b found this exact bug independently in `defconst`, `defenum`, `defprotocol`, `defmacro`, `defunion`, and `deferror` — six definers, one root cause. The fix is `reject-colon-in-def-name` (`src/nucleusc.nuc`, beside `split-typed`): call it first, before any other dispatch on the name (including a definer's own CELL/template-head check), in any top-level definer whose name is never legitimately annotated.

@@ -292,3 +292,24 @@ cross-emitted `--target=riscv64-unknown-linux-gnu --emit-llvm` IR against the
 execution gate (`make abi-test` natively, or `make riscv-abi-test` under qemu
 once the container gains `libc6-dev-riscv64-cross`) must be run by the user on
 the riscv64 machine. Do not report this closed on cross-emission evidence alone.
+
+### Finding: the anti-leak control was itself host-dependent
+
+Running `make test` on the riscv64 machine produced `FAIL rv6-x86-unchanged` —
+a **test bug, not an ABI bug**. `run_rv6_fp_abi`'s SysV lane ran bare
+`--emit-llvm` and rode the default target, so on riscv64 hardware it compiled the
+fixture with the riscv rules and then reported correct riscv lowering
+(`{ float, float }`, two flattened operands) as a leak against its `<2 x float>`
+expectation. Every line in the failure dump is the riscv lowering this stage
+deliberately introduced.
+
+Fixed by naming `--target=x86_64-pc-linux-gnu` on that lane. The generalized rule
+is in `context/conventions.md`: in a cross-emission gate the triple is the thing
+under test and must never be ambient on *any* lane, including the one matching
+the author's host. This is the same "a triple is not a host" error as the RV-2
+link-driver guard, one layer out — and it is the more dangerous spelling, because
+the gate passes on the machine it was written on and so looks verified.
+
+Note what this does **not** tell us: the failure was raised by a `grep` against
+cross-emitted IR, so it is still not execution evidence. The `make abi-test`
+gate above remains open.
