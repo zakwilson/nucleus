@@ -536,7 +536,15 @@
   ; aggregate puts its second member at that member's own offset instead (4 for
   ; `{i32,f32}` / `{float[2]}`), so the five COERCE2 reconstruction sites GEP by
   ; this rather than a literal 8. See design/stage14/riscv-fp-abi.md §3.
-  off1:i32)
+  off1:i32
+  ; Which riscv64 lp64d hard-float flattening rule produced this lowering:
+  ; 0 none (every non-riscv target, and riscv's integer-convention fallback),
+  ; 1 a lone FP real (1 FPR), 2 two FP reals (2 FPRs), 3 one FP real + one
+  ; integer (1 FPR + 1 GPR). Recorded by the classifier so `abi-rv-consume`
+  ; (src/abi.nuc) can debit exactly what was spent instead of re-deriving it
+  ; from the reg0/reg1 IR strings — the "mirror a call, not the logic" rule
+  ; (context/conventions.md). See design/stage14/riscv-fp-abi.md §4.
+  rvfp:i32)
 
 ; Accumulator for the riscv64 lp64d flattening walk (Stage 14 RV-6,
 ; design/stage14/riscv-fp-abi.md §1). The psABI's hard-float rules apply only to

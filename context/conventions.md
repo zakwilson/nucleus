@@ -1112,6 +1112,114 @@ The `=` conformance (`lib/strview.nuc:152`) and `examples/comb-order.nuc:30`
 struct local is already an alloca (addressable directly); only **by-value
 parameters** need the explicit `addr-of`. (NS-5 adoption.)
 
+## Every `declare` emitter must ABI-lower exactly like the `define` — there are SIX, and three had silently drifted
+
+A `declare` and the `define` it names are the same function seen from two
+translation units, so a `declare` that prints raw `type-to-ir` for a by-value
+struct parameter or return disagrees with the ABI-lowered `define` **on every
+target** — not just riscv64. It is invisible until someone actually passes an
+aggregate across the boundary, which is why it survived for stages.
+
+Found while closing RV-6c, and fixed: `emit-nuch-defmethod-import`
+(`src/nuch.nuc` — an imported *overloaded* method, distinct from
+`emit-nuch-declare-import` right above it, which was always correct) and the
+REPL's two preamble emitters (`src/repl.nuc` — the first-definition declare and
+the global-redeclare loop). The repro is one library with two overloads, one
+taking a struct by value: the define emitted `define i32 @area.Pt(i64 %p.arg)`
+while the import emitted `declare i32 @area.Pt(%Pt)`.
+
+The shape to copy is `emit-nuch-declare-import`: classify the return, print
+`abi-ret-ir`, emit a `ptr sret(...) align N` first operand when the return is
+ABI-MEMORY, then `abi-args-begin` + `abi-classify-arg` + `abi-print-param` per
+parameter. Two traps in it:
+
+- **Track a `need-comma` flag; do not test `j != 0` or `num-params != 0`.** An
+  sret prefix already occupies the first operand slot, so at zero parameters a
+  `num-params`-based separator drops the comma before a `...` and emits
+  `(ptr sret(%T) align 8...)`. The REPL redeclare loop had exactly this shape.
+- **`abi-print-param` hardcodes `g-out`.** The REPL preamble goes to
+  `g-repl-preamble`, so it calls **`abi-print-param-to`** (the stream-parameterized
+  body; `abi-print-param` is now the `g-out` wrapper over it). Any future
+  emitter writing to a stream other than `g-out` needs the `-to` spelling —
+  redirecting `g-out` around a declare is not the idiom.
+
+**A fourth site is still broken and is a different bug**: `jit-thunk-module`
+(`src/repl.nuc`) emits its thunk `define` with raw `type-to-ir` **and** into a
+module carrying no `%Name = type {…}` line, so a by-value struct in the REPL
+dies at `use of undefined type named 'Pt'` before any declare matters. By-value
+structs therefore do not work in the REPL at all today — which is also why the
+two REPL fixes above are correct-by-construction but cannot be exercised yet.
+
+## Argument-register state is AMBIENT: every parameter/argument walk must call `abi-args-begin` first
+
+`abi-classify` was pure for its whole life, and on x86_64/aarch64/AVR it still
+is — the lowering of a by-value struct depends only on its type. **riscv64
+lp64d breaks that**: an FP-bearing aggregate is flattened into fa0-fa7 only
+while the registers that rule needs are still free, and falls back to the
+integer convention once they are not. So an *argument*'s classification depends
+on every argument before it.
+
+The split (Stage 14 RV-6c, `design/stage14/riscv-fp-abi.md` §4):
+
+- **`abi-classify (t)`** — pure, all registers available. Correct for every
+  non-riscv target and for **returns** everywhere (a0/a1/fa0/fa1 are always
+  free, which is why a return never falls back).
+- **`abi-classify-arg (t)`** — consults `g-abi-gpr-left`/`g-abi-fpr-left`/
+  `g-abi-varargs` (declared beside `g-form-line`, `src/nucleusc.nuc`),
+  classifies, and debits. On a non-riscv target it **tail-calls
+  `abi-classify` and touches nothing**, which is the whole reason hosted IR
+  stays byte-identical.
+
+The invariant, which is the part that silently drifts:
+
+> **Every walk over a function's parameter or argument list calls
+> `abi-args-begin` first, then `abi-classify-arg` once per element in
+> declaration order** — and `abi-args-varargs` when it crosses into the
+> variadic tail.
+
+There are seven such walks and they are *not* co-located: `emit-defn`'s
+`define` signature loop, `emit-defn`'s prologue loop, `emit-call-with-args`,
+`macro-jit-ensure-decl`, and the `.nuch` / C-header / REPL declare emitters.
+Note two of them walk the **same** signature — a `define`'s parameter list and
+its prologue are separate loops with the whole function body emitted between
+them — and each resets independently; they agree because they see the same
+types in the same order. Adding a new emitter that lowers parameters without
+`abi-args-begin` inherits whatever budget the previous walk left behind, and on
+a hosted target that is completely invisible.
+
+Four generalisable points from implementing it:
+
+- **The two functions that classify *internally* are where the invariant is
+  easiest to get wrong.** `abi-emit-param-prologue` and `abi-arg-frag` call
+  `abi-classify-arg` themselves, so it is their **caller's loop** that must
+  call `abi-args-begin` — the reset does not live next to the classification.
+- **Collapse redundant classification before making a classifier stateful.**
+  Three sites classified the same entity twice (once for `info`, once for
+  `kind`). That is merely wasteful against a pure function and *wrong* against
+  a consuming one — it charges every struct argument twice. Fixed first, as a
+  separate step.
+- **A short-circuit return that skips classification still spends registers.**
+  `abi-arg-frag`'s unmaterialized-StrView early return emits one pointer
+  operand; it now calls `(abi-classify-arg ty-ptr)` purely for the debit.
+  Classifying the StrView type there would have charged two GPRs for a
+  fragment that passes one.
+- **Record what the classifier decided; do not re-derive it.** `AbiInfo.rvfp`
+  holds which flattening rule fired, so the consumer debits from the decision.
+  The tempting alternative — `strcmp`-ing `reg0`/`reg1` against
+  `"float"`/`"double"` — is a second copy of the rule, the exact shape
+  `binop-result-type` exists to delete.
+
+Verification without the hardware: there is no riscv64 machine in the
+container, so the ABI evidence is a **clang comparison** — a header-free
+reference `.c` (no `#include`: there is no riscv64 sysroot, so any include
+fails) lowered with `clang --target=riscv64-unknown-linux-gnu -O0 -S
+-emit-llvm`, diffed against the same shapes through
+`nucleusc --target=riscv64-unknown-linux-gnu --emit-llvm`. That is what
+`tests/fixtures/rv6-fp-abi.nuc` + `run_rv6_fp_abi` pin permanently, together
+with an x86_64 control asserting the same structs still lower as SysV. It is
+**not** an execution gate; only a native `make abi-test` on riscv64 closes
+that.
+
 ## Prefer overloads (polymorphism) over `-sv`/`-by-val`/`-from-x` name variants
 
 Functions that perform the **same operation** and return the **same type** but

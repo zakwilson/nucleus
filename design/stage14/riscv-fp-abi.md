@@ -108,24 +108,57 @@ Consumption per classified argument (riscv only):
 - ABI-MEMORY → 1 GPR (the pointer)
 - anything with no registers left → stack; the counters floor at 0
 
+**CORRECTION (RV-6c, measured against clang).** The table above is missing one
+debit: **an ABI-MEMORY *return* spends a GPR before the first argument is
+classified**, because its hidden `sret` pointer is passed in a0. clang's
+`RISCVABIInfo::computeInfo` starts the argument walk from `NumArgGPRs - 1`
+when the return is indirect, for exactly this reason. The omission is not
+academic — it is the difference between
+
+```c
+struct Big sret7_mixed(long a,…,long g, struct Mixed m);   /* sret + 7 longs */
+```
+
+lowering `m` as `i64` (clang, and now Nucleus: sret + 7 = 8 GPRs spent, so
+rule 3 cannot take its GPR) and as `{i32,float}` (what the table as written
+predicts, since 8 − 7 = 1 GPR appears to remain). `abi-args-begin` therefore
+takes the return's `AbiInfo` — null when the caller does not have it — and
+starts from 7 rather than 8 for an ABI-MEMORY return.
+
+One clang rule is deliberately **not** implemented: a variadic argument whose
+alignment is `2 × XLEN` consumes an aligned even/odd GPR *pair*
+(`NeededArgGPRs = 2 + (ArgGPRsLeft % 2)`). No Nucleus type has 16-byte
+alignment — there is no `i128` and struct alignment maxes out at 8 — so the
+condition is unreachable. It becomes live the day a 16-byte-aligned scalar or
+aggregate exists.
+
 ## 5. Call-site inventory
 
 Walks that must adopt `abi-args-begin` + `abi-classify-arg`:
 
 | site | what it walks |
 |---|---|
-| `nucleusc.nuc` `emit-defn` signature loop | `define` parameters |
-| `nucleusc.nuc` prologue loop (`abi-emit-param-prologue`) | same params, second walk |
-| `nucleusc.nuc:10927` | param types for a declare |
-| `nucleusc.nuc:915` (ProgDefn declare) | captured signature |
+| `nucleusc.nuc` `emit-defn` signature loop (`abi-print-param`) | `define` parameters |
+| `nucleusc.nuc` `emit-defn` prologue loop (`abi-emit-param-prologue`) | same params, second walk |
+| `nucleusc.nuc` `macro-jit-ensure-decl` (ProgDefn declare) | captured signature |
 | `nucleusc.nuc` `emit-call-with-args` (`abi-arg-frag`) | call arguments |
-| `nuch.nuc:366` | `.nuch` declare params |
-| `cheader.nuc:945` | C header declare params |
-| `repl.nuc:737` | REPL declare params |
+| `nuch.nuc` `emit-nuch-declare-import` | `.nuch` declare params |
+| `cheader.nuc` C declare emitter | C header declare params |
+| `repl.nuc` `repl-declare-union-ctors` | REPL arm-constructor params |
+
+**RV-6c note:** the original table listed `nucleusc.nuc:10927` and the
+`emit-defn` signature loop as separate rows; they are the same loop, so there
+are **seven** walks, not eight. Locate them by function name — the line numbers
+were stale before this section was implemented.
 
 Return positions (`abi-ret-ir`, `g-fn-ret-abi`, `abi-emit-struct-call`'s info,
-`repl.nuc:721`, `nuch.nuc:356`, `cheader.nuc:931`, `nucleusc.nuc:903/4955`)
-keep plain `abi-classify` — returns always have their registers.
+`repl-declare-union-ctors`' `ret-info`, `emit-nuch-declare-import`'s `ret-info`,
+the cheader declare's `ret-info`, `macro-jit-ensure-decl`'s `ret-info`, and
+`emit-call-with-args`' own return classification) keep plain `abi-classify` —
+returns always have their registers. `emit-call-with-args` **hoisted** its
+return classification above the argument loop (RV-6c) so `abi-args-begin` can be
+told about the `sret` GPR; the value is reused verbatim at the call emission
+below, so the return is still classified exactly once.
 
 ## 6. Staging
 
@@ -153,12 +186,55 @@ keep plain `abi-classify` — returns always have their registers.
   byte-identical, `make test` 424/424, `make abi-test` PASS.
 - **RV-6c** — the ambient state, `abi-classify-arg`, and the §5 call sites.
   Gate: a fixture that exhausts the FP registers agrees with C.
-  **Status: NOT STARTED.** Until it lands, flattening is applied assuming full
-  register availability, so a call that exhausts fa0-fa7 (or a0-a7) before an
-  FP-bearing aggregate still diverges from C. That is the *remaining* half of
-  the correctness goal, not a new gap.
+  **Status: Done** (2026-08-07). `g-abi-gpr-left` / `g-abi-fpr-left` /
+  `g-abi-varargs` beside `g-form-line` (`src/nucleusc.nuc`), with the invariant
+  stated at the declaration. `abi-classify` is now a wrapper over
+  **`abi-classify-avail (t gpr fpr)`** (the former body) and stays pure;
+  **`abi-classify-arg`** consults the counters, classifies, and debits through
+  **`abi-rv-consume`**, and on a non-riscv target tail-calls `abi-classify` and
+  touches nothing. `abi-args-begin` / `abi-args-varargs` / `abi-take-regs`
+  complete the set, all in `src/abi.nuc`.
+
+  Three details worth keeping:
+
+  - **The variadic tail needed no separate code path.** "Integer convention, no
+    flattening, no FP registers" falls out of classifying with an FP
+    availability of **0**, because every rule in §1 needs at least one FPR.
+    `abi-classify-arg` computes `eff-fpr` once and passes it to both the
+    classifier and the consumer, so a vararg float cannot be charged an FPR the
+    classifier already refused it.
+  - **The register cost is read from the decision, not re-derived.** `AbiInfo`
+    gained `rvfp` (0 none / 1 / 2 / 3 = which §1 rule fired), set by
+    `abi-riscv-fp-classify` — which now *returns* that rule code rather than a
+    bare 1. The alternative, inferring FP-ness by `strcmp`-ing `reg0`/`reg1`
+    against `"float"`/`"double"`, would have been a second copy of the rule
+    (conventions.md's "mirror a call, not the logic").
+  - **The double-`abi-classify` collapse came first**, as planned: three sites
+    (`abi-emit-param-prologue`, `abi-arg-frag`, the ProgDefn declare emitter in
+    `nucleusc.nuc`) classified twice to get `info` and `kind`. A grep confirmed
+    there were no others. `abi-arg-frag`'s unmaterialized-StrView early return
+    is charged explicitly as one pointer (`(abi-classify-arg ty-ptr)`, result
+    discarded) — classifying the StrView type there would have charged two
+    GPRs for a fragment that passes one.
+
+  Verified: `make bootstrap` byte-identical, `make test` 428/428 (424 prior +
+  RV-6d's 4), `make abi-test` PASS, and a fresh clang comparison covering the
+  §2 table plus FPR exhaustion, GPR exhaustion, the sret debit and a variadic
+  call — every classification decision agrees (see §8 for the three
+  integer-convention *spellings* that still differ). The emitted riscv64 module
+  also round-trips through `llc -mtriple=riscv64 -mattr=+m,+a,+f,+d,+c`.
 - **RV-6d** — docs + a permanent fixture pinning the gap so §1's rules cannot
-  silently regress the way RV-3's deferral note did. **Status: not started.**
+  silently regress the way RV-3's deferral note did. **Status: Done**
+  (2026-08-07). `tests/fixtures/rv6-fp-abi.nuc` + `run_rv6_fp_abi`
+  (`tests/run-tests.sh`) cross-emit the fixture for riscv64 **and** x86_64 and
+  assert four groups: `rv6-flatten-rules` (§1's five shapes plus the
+  no-FP control), `rv6-register-counting` (FPR/GPR exhaustion and its
+  one-register-either-side controls, plus the sret debit),
+  `rv6-variadic-integer-convention` (no `float`/`double` operand may appear in
+  the variadic call), and `rv6-x86-unchanged` (the same structs still lower as
+  SysV — the anti-leak control). Every expected string was taken from clang's
+  own output for structurally identical C. `docs/compiler.md` and
+  `docs/structs-unions.md` no longer describe riscv64 as integer-convention-only.
 
 ## 8. Finding: a 12-byte integer aggregate diverges (RV-3 path, pre-existing)
 
@@ -178,6 +254,34 @@ case**. It is untested either way, so it is recorded here rather than
 "fixed" blind: aligning it is a riscv-only narrowing suppression in
 `abi-classify`, and it needs a hardware run to confirm which spelling is
 actually required.
+
+**RV-6c widened the observation to three sizes, and it is the same one rule.**
+The clang comparison run for RV-6c covered aggregates that reach the integer
+convention at 4, 8 and 16 bytes:
+
+| bytes | example | clang | Nucleus |
+|---|---|---|---|
+| 4 | `struct {float f;}` past FPR exhaustion, or as a vararg | `i64` | `i32` |
+| 8 | `struct {int a,b;}` | `i64` | `i64` |
+| 12 | `struct {float a,b,c;}` | `[2 x i64]` | `{i64, i32}` |
+| 16 | `struct {double a,b;}` past FPR exhaustion, or as a vararg | `[2 x i64]` | `{i64, i64}` |
+
+Only the 8-byte case agrees. The generalisation is that on riscv64 clang
+coerces an integer-convention aggregate to **whole XLEN units** — one `i64`, or
+`[N x i64]` — while `abi-eightbyte-ir` narrows each eightbyte to its exact
+width and `AbiKind` splits two eightbytes into two separate parameters. Both are
+right for x86_64 SysV; neither matches clang on riscv64 except by coincidence at
+exactly 8 bytes.
+
+The 4-byte and 16-byte rows are **newly reachable** because of RV-6c: before
+register counting, an FP-bearing aggregate never fell back to the integer
+convention, so only integer-only aggregates (the 8- and 12-byte rows) could get
+here. Nothing regressed — the rule is unchanged — but the population it applies
+to grew. Still out of scope for the same reason as before: no test in either
+direction, and the fix (suppress the narrowing and emit `[N x i64]` on riscv)
+needs a hardware run to confirm it is required rather than merely
+clang-shaped. `tests/fixtures/rv6-fp-abi.nuc` pins the current spelling, so a
+deliberate change to it will show up as a fixture edit rather than silently.
 
 ## 7. Verification constraint
 

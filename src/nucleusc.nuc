@@ -326,6 +326,34 @@
 ; holds (lib/node.nuc `node-line` + the enclosing form's line); this global is
 ; consumed in exactly one place, emit-node's NODE-SYM branch.
 (defvar g-form-line:i32 0)
+; Stage 14 RV-6c (design/stage14/riscv-fp-abi.md §4): the riscv64 argument
+; register budget still unspent while ONE parameter or argument list is being
+; lowered. riscv64's lp64d classification is register-sensitive — an FP-bearing
+; aggregate is flattened into fa0-fa7 only while the registers it needs are
+; free, and falls back to the integer convention once they are not — so unlike
+; every other target `abi-classify` alone cannot answer for an argument.
+;
+; Ambient rather than threaded because the deciding functions (`abi-arg-frag`,
+; `abi-emit-param-prologue`) classify internally and are reached from ~8
+; unrelated walks; a parameter would have to be plumbed through all of them and
+; through `abi-print-param`'s callers. The invariant that replaces the plumbing:
+;
+;   Every walk over a function's parameter or argument list calls
+;   `abi-args-begin` first, then `abi-classify-arg` once per element in
+;   declaration order — and `abi-args-varargs` when it crosses into the
+;   variadic tail.
+;
+; Two walks over the same signature (a `define`'s parameter list and its
+; prologue loop) each reset and re-derive independently; they agree because
+; they see the same types in the same order. Nothing reads these on a
+; non-riscv target — `abi-classify-arg` tail-calls the pure `abi-classify`
+; there — which is what keeps hosted IR byte-identical.
+(defvar g-abi-gpr-left:i32 8)
+(defvar g-abi-fpr-left:i32 8)
+; 1 once the walk has crossed into a variadic callee's `...` tail. A variadic
+; argument takes the integer convention regardless of type: no FP registers and
+; no flattening (psABI).
+(defvar g-abi-varargs:i32 0)
 ; Stage 15 W8 G-2 (design/global-init.md §5): "an `(array T N)` spelling is
 ; permitted at the very next type parse". An array is a STORAGE type — it is
 ; meaningful only as a `defvar` type and as a `defstruct`/`(struct …)` field
@@ -907,13 +935,18 @@
             (fprintf g-decl-out "ptr sret(%s) align %d"
               (type-to-ir (pd ret)) ((as ptr:AbiInfo ret-info) align))
             (set! need-comma 1))
+          ; RV-6c: one walk over this signature's parameters, so reset the
+          ; riscv64 register budget before it (design/stage14/riscv-fp-abi.md §4).
+          (abi-args-begin ret-info)
           (dotimes (j:i32 (pd nparams))
                    (when (!= need-comma 0) (fprintf g-decl-out ", "))
               ; abi-print-param writes to g-out (the def stream); format the
               ; declare's param types straight into g-decl-out instead.
+              ; RV-6c: classified ONCE (it used to classify twice, for `pinfo`
+              ; and `pk`) via abi-classify-arg, which debits the budget.
               (let (pty:ptr (aref (as ptr:ptr (pd ptypes)) j)
-                    pinfo:ptr:AbiInfo (unsafe/cast ptr:AbiInfo (abi-classify (aref (as ptr:ptr (pd ptypes)) j)))
-                    pk:i32 ((unsafe/cast ptr:AbiInfo (abi-classify (aref (as ptr:ptr (pd ptypes)) j))) kind))
+                    pinfo:ptr:AbiInfo (unsafe/cast ptr:AbiInfo (abi-classify-arg (aref (as ptr:ptr (pd ptypes)) j)))
+                    pk:i32 (pinfo kind))
                 (cond (= pk ABI-MEMORY)
                         (fprintf g-decl-out "ptr byval(%s) align %d"
                           (type-to-ir pty) (pinfo align))
@@ -4880,8 +4913,17 @@
                   (when (and (!= nc null) (!= nc (as ptr slot)))
                     (memcpy slot nc (sizeof Val))))))))
       (let (arglist:ptr (alloca i8 2048)
-            apos:i64 0)
+            apos:i64 0
+            ; RV-6c: the callee's return lowering, needed HERE rather than only
+            ; at the call emission below because an ABI-MEMORY return passes a
+            ; hidden sret pointer in a0 — a register the arguments do not get.
+            ; Reused verbatim by the non-variadic call path further down, so
+            ; the return is still classified exactly once.
+            call-ret-info:raw:AbiInfo (abi-classify (ft0 ret)))
         (aset! (as ptr:i8 arglist) 0 0)
+        ; RV-6c: one walk over this call's arguments, in order — reset the
+        ; riscv64 register budget before it (design/stage14/riscv-fp-abi.md §4).
+        (abi-args-begin call-ret-info)
         (set! i 0)
         (while (< i eff-nargs)
         (let (av:ptr:Val (as ptr:Val (unsafe/ptr+ (as ptr:Val args) i))
@@ -4898,6 +4940,12 @@
           ; vararg is handled by abi-arg-frag's is-lit guard. So this collapses only
           ; a genuine StrView VALUE at a variadic position. Dead for the compiler
           ; (no materialized StrView reaches a vararg in src/), so byte-identical.
+          ; RV-6c: mark the `...` boundary before this argument is classified —
+          ; a variadic argument takes the integer convention (no FP registers,
+          ; no flattening). Idempotent, so asserting it per trailing argument is
+          ; the same as detecting the crossing exactly once.
+          (when (and (!= (ft0 variadic) 0) (>= i (ft0 num-params)))
+            (abi-args-varargs))
           (when (and (!= (ft0 variadic) 0)
                      (>= i (ft0 num-params))
                      (!= (type-is-strview (av type)) 0)
@@ -4952,7 +5000,7 @@
                     tmp sig (ss ir-name) arglist)
                   (return (alloc-val (ft ret) tmp))))))
           (do
-            (let (ret-info:ptr:AbiInfo (unsafe/cast ptr:AbiInfo (abi-classify (ft ret))))
+            (let (ret-info:ptr:AbiInfo (unsafe/cast ptr:AbiInfo call-ret-info))
               (if (!= ((as ptr:AbiInfo ret-info) kind) ABI-DIRECT)
                 ; Struct return: emit the lowered call + reconstruction.
                 (return (abi-emit-struct-call ret-info (ft ret) (ss ir-name)
@@ -10832,6 +10880,11 @@
             (set! g-fn-sret-name "%.sret"))
           (let (fn-scope:ref:Scope (scope-new g-globals)
                 i:i32 0)
+            ; RV-6c: the prologue is one of the TWO independent walks over this
+            ; signature (the `define`'s parameter list below is the other); each
+            ; resets the riscv64 register budget for itself and they agree
+            ; because they see the same types in the same order.
+            (abi-args-begin (unsafe/cast raw:AbiInfo g-fn-ret-abi))
             (while (< i nparams)
               (abi-emit-param-prologue fn-scope
                 (aref (as ptr:ptr param-names) i)
@@ -10920,11 +10973,14 @@
                 (fprintf g-out "ptr sret(%s) align %d %s"
                   (type-to-ir ret) ((unsafe/cast ptr:AbiInfo g-fn-ret-abi) align) g-fn-sret-name)
                 (set! need-comma 1))
+              ; RV-6c: the second walk over this signature (see the prologue
+              ; loop above) — reset the riscv64 register budget for it.
+              (abi-args-begin (unsafe/cast raw:AbiInfo g-fn-ret-abi))
               (set! i 0)
               (while (< i nparams)
                 (when (!= need-comma 0) (fprintf g-out ", "))
                 (abi-print-param
-                  (abi-classify (aref (as ptr:ptr param-types) i))
+                  (abi-classify-arg (aref (as ptr:ptr param-types) i))
                   (aref (as ptr:ptr param-types) i)
                   (aref (as ptr:ptr param-names) i))
                 (set! need-comma 1)
