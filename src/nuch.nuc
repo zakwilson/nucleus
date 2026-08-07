@@ -360,10 +360,13 @@
                   (fprintf g-out "ptr sret(%s) align %d"
                     (type-to-ir ret) ((as ptr:AbiInfo ret-info) align))
                   (set! need-comma 1))
+                ; RV-6c: one walk over this declare's parameters — reset the
+                ; riscv64 register budget (design/stage14/riscv-fp-abi.md §4).
+                (abi-args-begin ret-info)
                 (dotimes (j nparams)
                   (when (!= need-comma 0) (fprintf g-out ", "))
                   (abi-print-param
-                   (abi-classify (aref (as ptr:ptr ptypes) j))
+                   (abi-classify-arg (aref (as ptr:ptr ptypes) j))
                    (aref (as ptr:ptr ptypes) j)
                    null)
                   (set! need-comma 1)))
@@ -400,11 +403,30 @@
           (let (g:ptr (generic-lookup fname))
             (.set! (as ptr:Generic g) mangled 1)
             (.set! (as ptr:Generic g) finalized 1))
-          (fprintf g-out "declare %s %s(" (type-to-ir ret) mangled)
-          (dotimes (j nparams)
-            (when (!= j 0) (fprintf g-out ", "))
-            (fprintf g-out "%s" (type-to-ir (aref (as ptr:ptr ptypes) j))))
-          (fprintf g-out ")\n"))))))
+          ; Lower struct-by-value params/return to the platform C ABI exactly as
+          ; emit-nuch-declare-import (above) and emit-defn do. Emitting raw
+          ; type-to-ir here declared a by-value struct as its aggregate type
+          ; while the defining unit's `define` lowered it (sret / byval /
+          ; register coercion), so the two disagreed on EVERY target — an
+          ; imported overloaded method taking or returning a struct by value.
+          (let (ret-info:ptr:AbiInfo (unsafe/cast ptr:AbiInfo (abi-classify ret)))
+            (fprintf g-out "declare %s %s(" (abi-ret-ir ret-info ret) mangled)
+            (let (need-comma:i32 0)
+              (when (= ((as ptr:AbiInfo ret-info) kind) ABI-MEMORY)
+                (fprintf g-out "ptr sret(%s) align %d"
+                  (type-to-ir ret) ((as ptr:AbiInfo ret-info) align))
+                (set! need-comma 1))
+              ; RV-6c: one walk over this declare's parameters — reset the
+              ; riscv64 register budget (design/stage14/riscv-fp-abi.md §4).
+              (abi-args-begin ret-info)
+              (dotimes (j nparams)
+                (when (!= need-comma 0) (fprintf g-out ", "))
+                (abi-print-param
+                  (abi-classify-arg (aref (as ptr:ptr ptypes) j))
+                  (aref (as ptr:ptr ptypes) j)
+                  null)
+                (set! need-comma 1)))
+            (fprintf g-out ")\n")))))))
 
 ; A defunion arriving via .nuch: register the type (or template) exactly as
 ; the defining unit did, but emit `declare`s for the arm constructors — their

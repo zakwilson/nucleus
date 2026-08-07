@@ -1,0 +1,72 @@
+; Stage 14 RV-6 (design/stage14/riscv-fp-abi.md) — the riscv64 lp64d hard-float
+; struct ABI, pinned by cross-emission because there is no riscv64 hardware in
+; the development container (§7). Every shape below was checked against
+; `clang --target=riscv64-unknown-linux-gnu -O0 -S -emit-llvm` on the
+; structurally identical C, and against x86_64 SysV for the same structs; the
+; assertions live in `run_rv6_fp_abi` (tests/run-tests.sh).
+;
+; This file is compiled, never run — the variadic call at the bottom passes
+; aggregates to printf, which is meaningless at runtime and is exactly the
+; construct that pins "a variadic argument takes the integer convention".
+
+(defstruct F1       f:f32)
+(defstruct DD       a:f64 b:f64)
+(defstruct FArr2    (v (array f32 2)))
+(defstruct Inner    f:f32)
+(defstruct Nest     i:Inner f:f32)
+(defstruct Mixed    i:i32 f:f32)
+(defstruct MixedRev f:f32 i:i32)
+(defstruct LongMix  l:i64 d:f64)
+(defstruct Pair     a:i32 b:i32)
+(defstruct Big      a:i64 b:i64 c:i64)
+
+; ---- §1 flattening rules, all registers available (RV-6b) ----
+(defn f_f1       (v:F1):F1             (return v))   ; rule 1: one FP real
+(defn f_dd       (v:DD):DD             (return v))   ; rule 2: two FP reals
+(defn f_farr2    (v:FArr2):FArr2       (return v))   ; an array flattens
+(defn f_nest     (v:Nest):Nest         (return v))   ; a nested struct flattens
+(defn f_mixed    (v:Mixed):Mixed       (return v))   ; rule 3: int then FP
+(defn f_mixedrev (v:MixedRev):MixedRev (return v))   ; rule 3: FP then int
+(defn f_longmix  (v:LongMix):LongMix   (return v))   ; rule 3 at full width
+(defn f_pair     (v:Pair):Pair         (return v))   ; no FP: integer convention
+
+; ---- §4 register counting (RV-6c) ----
+; 7 doubles leave fa7 free, so rule 3 still applies; 8 exhaust fa0-fa7 and the
+; aggregate falls back to the integer convention.
+(defn fpr7_mixed (a:f64 b:f64 c:f64 d:f64 e:f64 f:f64 g:f64 m:Mixed):i32
+  (return 0))
+(defn fpr8_mixed (a:f64 b:f64 c:f64 d:f64 e:f64 f:f64 g:f64 h:f64 m:Mixed):i32
+  (return 0))
+; Rule 2 needs TWO FPRs: six doubles leave enough, seven do not.
+(defn fpr6_dd (a:f64 b:f64 c:f64 d:f64 e:f64 f:f64 m:DD):i32
+  (return 0))
+(defn fpr7_dd (a:f64 b:f64 c:f64 d:f64 e:f64 f:f64 g:f64 m:DD):i32
+  (return 0))
+; Rule 3 needs one GPR as well, so integer exhaustion defeats it — while rules
+; 1 and 2 need no GPR at all and are undisturbed.
+(defn gpr7_mixed (a:i64 b:i64 c:i64 d:i64 e:i64 f:i64 g:i64 m:Mixed):i32
+  (return 0))
+(defn gpr8_mixed (a:i64 b:i64 c:i64 d:i64 e:i64 f:i64 g:i64 h:i64 m:Mixed):i32
+  (return 0))
+(defn gpr8_f1 (a:i64 b:i64 c:i64 d:i64 e:i64 f:i64 g:i64 h:i64 m:F1):i32
+  (return 0))
+(defn gpr8_dd (a:i64 b:i64 c:i64 d:i64 e:i64 f:i64 g:i64 h:i64 m:DD):i32
+  (return 0))
+; An ABI-MEMORY return passes its hidden sret pointer in a0, so it costs a GPR
+; before the first real argument: 6 longs still leave one, 7 do not.
+(defn sret6_mixed (a:i64 b:i64 c:i64 d:i64 e:i64 f:i64 m:Mixed):Big
+  (return (Big 0 0 0)))
+(defn sret7_mixed (a:i64 b:i64 c:i64 d:i64 e:i64 f:i64 g:i64 m:Mixed):Big
+  (return (Big 0 0 0)))
+
+; ---- §1 variadic tail: integer convention, no flattening, no FP registers ----
+(import-use "stdio.h")
+
+(defvar g_f1:F1       (F1 1.0))
+(defvar g_mixed:Mixed (Mixed 1 2.0))
+(defvar g_dd:DD       (DD 1.0 2.0))
+
+(defn rv6_variadic ():void
+  (printf "x" g_f1 g_mixed g_dd))
+
+(defn main ():i32 (return 0))

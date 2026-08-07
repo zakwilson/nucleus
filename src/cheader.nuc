@@ -938,11 +938,14 @@
                              (type-to-ir ret-type)
                              ((as ptr:AbiInfo ret-info) align))
                     (set! need-comma 1))
+                  ; RV-6c: one walk over this declare's parameters — reset the
+                  ; riscv64 register budget (design/stage14/riscv-fp-abi.md §4).
+                  (abi-args-begin (as raw:AbiInfo ret-info))
                   (let (j:i32 0)
                     (while (< j num-params)
                       (when (!= need-comma 0) (fprintf g-out ", "))
                       (abi-print-param
-                        (abi-classify (as raw:Type ((field-at (ft params) j) type)))
+                        (abi-classify-arg (as raw:Type ((field-at (ft params) j) type)))
                         (as raw:Type ((field-at (ft params) j) type))
                         null)
                       (set! need-comma 1)

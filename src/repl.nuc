@@ -346,13 +346,28 @@
                               (let (ft:ptr:Type (unsafe/cast ptr:Type (sym type)))
                                 (when (= (ft kind) TY-FN)
                                   (jit-thunk-module (f line) fname-ir (as ptr ft))
-                                  (fprintf g-repl-preamble "declare %s @%s("
-                                                (type-to-ir (ft ret)) fname-ir)
-                                  (dotimes (pi (ft num-params))
-                                    (when (!= pi 0) (fprintf g-repl-preamble ", "))
-                                    (fprintf g-repl-preamble "%s"
-                                             (type-to-ir ((field-at (ft params) pi) type))))
-                                  (fprintf g-repl-preamble ")\n"))))))
+                                  ; ABI-lower the preamble declare the same way
+                                  ; emit-defn lowered the define it names — raw
+                                  ; type-to-ir disagreed on any by-value struct
+                                  ; param/return, on every target.
+                                  (let (rinfo:ptr:AbiInfo
+                                          (unsafe/cast ptr:AbiInfo (abi-classify (ft ret))))
+                                    (fprintf g-repl-preamble "declare %s @%s("
+                                                  (abi-ret-ir rinfo (ft ret)) fname-ir)
+                                    (let (need-comma:i32 0)
+                                      (when (= ((as ptr:AbiInfo rinfo) kind) ABI-MEMORY)
+                                        (fprintf g-repl-preamble "ptr sret(%s) align %d"
+                                          (type-to-ir (ft ret)) ((as ptr:AbiInfo rinfo) align))
+                                        (set! need-comma 1))
+                                      (abi-args-begin rinfo)
+                                      (dotimes (pi (ft num-params))
+                                        (when (!= need-comma 0) (fprintf g-repl-preamble ", "))
+                                        (abi-print-param-to g-repl-preamble
+                                          (abi-classify-arg ((field-at (ft params) pi) type))
+                                          ((field-at (ft params) pi) type)
+                                          null)
+                                        (set! need-comma 1)))
+                                    (fprintf g-repl-preamble ")\n")))))))
                         ; JIT the impl module under a fresh tracker, renaming
                         ; the captured "@fname-ir(" to "@impl-name(".
                         (let (rt:ptr (LLVMOrcJITDylibCreateResourceTracker g-jit-dylib))
@@ -488,18 +503,34 @@
                                     (set! is-dup 1)))
                                 (inc! dj))
                               (when (= is-dup 0)
-                                (fprintf g-repl-preamble "declare %s %s("
-                                              (type-to-ir (ft ret))
-                                              (sym ir-name))
-                                (dotimes (pi (ft num-params))
-                                  (when (!= pi 0) (fprintf g-repl-preamble ", "))
-                                  (fprintf g-repl-preamble "%s"
-                                           (type-to-ir ((field-at (ft params) pi) type))))
-                                (when (!= (ft variadic) 0)
-                                  (let (sep:ptr "")
-                                    (when (!= (ft num-params) 0) (set! sep ", "))
-                                    (fprintf g-repl-preamble "%s..." sep)))
-                                (fprintf g-repl-preamble ")\n")))))
+                                ; ABI-lower exactly as the define does (see the
+                                ; first-definition declare above). need-comma
+                                ; rather than `pi != 0` / `num-params != 0`
+                                ; because an sret prefix already occupies the
+                                ; first operand slot even at zero parameters.
+                                (let (rinfo:ptr:AbiInfo
+                                        (unsafe/cast ptr:AbiInfo (abi-classify (ft ret))))
+                                  (fprintf g-repl-preamble "declare %s %s("
+                                                (abi-ret-ir rinfo (ft ret))
+                                                (sym ir-name))
+                                  (let (need-comma:i32 0)
+                                    (when (= ((as ptr:AbiInfo rinfo) kind) ABI-MEMORY)
+                                      (fprintf g-repl-preamble "ptr sret(%s) align %d"
+                                        (type-to-ir (ft ret)) ((as ptr:AbiInfo rinfo) align))
+                                      (set! need-comma 1))
+                                    (abi-args-begin rinfo)
+                                    (dotimes (pi (ft num-params))
+                                      (when (!= need-comma 0) (fprintf g-repl-preamble ", "))
+                                      (abi-print-param-to g-repl-preamble
+                                        (abi-classify-arg ((field-at (ft params) pi) type))
+                                        ((field-at (ft params) pi) type)
+                                        null)
+                                      (set! need-comma 1))
+                                    (when (!= (ft variadic) 0)
+                                      (let (sep:ptr "")
+                                        (when (!= need-comma 0) (set! sep ", "))
+                                        (fprintf g-repl-preamble "%s..." sep))))
+                                  (fprintf g-repl-preamble ")\n"))))))
                         (inc! si)))))
             true
               ; Expression — wrap in __repl_eval_N and JIT
@@ -732,9 +763,12 @@
               (fprintf g-out "ptr sret(%s) align %d"
                 (type-to-ir ret) ((as ptr:AbiInfo ret-info) align))
               (set! need-comma 1))
+            ; RV-6c: one walk over this constructor's parameters — reset the
+            ; riscv64 register budget (design/stage14/riscv-fp-abi.md §4).
+            (abi-args-begin (unsafe/cast raw:AbiInfo ret-info))
             (dotimes (j nf)
               (when (!= need-comma 0) (fprintf g-out ", "))
-              (abi-print-param (abi-classify (aref (as ptr:ptr ftypes) j))
+              (abi-print-param (abi-classify-arg (aref (as ptr:ptr ftypes) j))
                                (aref (as ptr:ptr ftypes) j) null)
               (set! need-comma 1)))
           (fprintf g-out ")\n")))

@@ -429,6 +429,84 @@ run_riscv_emit() {
   rm -f "$tmpfile"
 }
 
+# Stage 14 RV-6 (design/stage14/riscv-fp-abi.md): the riscv64 lp64d hard-float
+# struct ABI — §1's flattening rules and §4's register counting. There is no
+# riscv64 hardware in the container (§7), so this is a CROSS-EMISSION gate: each
+# expected shape below was derived from
+# `clang --target=riscv64-unknown-linux-gnu -O0 -S -emit-llvm` on structurally
+# identical C, and is pinned here so the rules cannot silently regress the way
+# RV-3's deferral note did. The x86_64 half is the anti-leak control: the same
+# structs must still lower as SysV, which is what the byte-identical bootstrap
+# would otherwise be the only witness for.
+run_rv6_fp_abi() {
+  local rv x86
+  rv="$(mktemp)"; x86="$(mktemp)"
+  ./build/nucleusc --target=riscv64-unknown-linux-gnu --emit-llvm \
+    tests/fixtures/rv6-fp-abi.nuc > "$rv" 2>/dev/null || true
+  ./build/nucleusc --emit-llvm tests/fixtures/rv6-fp-abi.nuc > "$x86" 2>/dev/null || true
+
+  # §1: one FP real, two FP reals, an array/nested struct that flattens, and
+  # rule 3 in both member orders — with the member order preserved in reg0/reg1.
+  if grep -q '^define float @f_f1(float %v\.arg)' "$rv" \
+     && grep -q '^define { double, double } @f_dd(double %v\.arg\.0, double %v\.arg\.1)' "$rv" \
+     && grep -q '^define { float, float } @f_farr2(float %v\.arg\.0, float %v\.arg\.1)' "$rv" \
+     && grep -q '^define { float, float } @f_nest(float %v\.arg\.0, float %v\.arg\.1)' "$rv" \
+     && grep -q '^define { i32, float } @f_mixed(i32 %v\.arg\.0, float %v\.arg\.1)' "$rv" \
+     && grep -q '^define { float, i32 } @f_mixedrev(float %v\.arg\.0, i32 %v\.arg\.1)' "$rv" \
+     && grep -q '^define { i64, double } @f_longmix(i64 %v\.arg\.0, double %v\.arg\.1)' "$rv" \
+     && grep -q '^define i64 @f_pair(i64 %v\.arg)' "$rv"; then
+    echo "PASS  rv6-flatten-rules"
+  else
+    echo "FAIL  rv6-flatten-rules (riscv64 lp64d flattening, riscv-fp-abi.md §1)"
+    grep -E '^define .*@f_' "$rv" | sed 's/^/    /'
+  fi
+
+  # §4: the same aggregate flattens while its registers are free and takes the
+  # integer convention once they are not — separately for FPRs, GPRs, and the
+  # GPR the hidden sret pointer spends before the first argument.
+  if grep -q '^define i32 @fpr7_mixed(.*double %g\.arg, i32 %m\.arg\.0, float %m\.arg\.1)' "$rv" \
+     && grep -q '^define i32 @fpr8_mixed(.*double %h\.arg, i64 %m\.arg)' "$rv" \
+     && grep -q '^define i32 @fpr6_dd(.*double %f\.arg, double %m\.arg\.0, double %m\.arg\.1)' "$rv" \
+     && grep -q '^define i32 @fpr7_dd(.*double %g\.arg, i64 %m\.arg\.0, i64 %m\.arg\.1)' "$rv" \
+     && grep -q '^define i32 @gpr7_mixed(.*i64 %g\.arg, i32 %m\.arg\.0, float %m\.arg\.1)' "$rv" \
+     && grep -q '^define i32 @gpr8_mixed(.*i64 %h\.arg, i64 %m\.arg)' "$rv" \
+     && grep -q '^define i32 @gpr8_f1(.*i64 %h\.arg, float %m\.arg)' "$rv" \
+     && grep -q '^define i32 @gpr8_dd(.*i64 %h\.arg, double %m\.arg\.0, double %m\.arg\.1)' "$rv" \
+     && grep -q '^define void @sret6_mixed(ptr sret(%Big).*i64 %f\.arg, i32 %m\.arg\.0, float %m\.arg\.1)' "$rv" \
+     && grep -q '^define void @sret7_mixed(ptr sret(%Big).*i64 %g\.arg, i64 %m\.arg)' "$rv"; then
+    echo "PASS  rv6-register-counting"
+  else
+    echo "FAIL  rv6-register-counting (riscv64 argument register budget, riscv-fp-abi.md §4)"
+    grep -E '^define .*@(fpr|gpr|sret)' "$rv" | sed 's/^/    /'
+  fi
+
+  # §1: a variadic argument is never flattened and never takes an FPR, so no
+  # float/double operand may appear in the printf call.
+  local vcall
+  vcall="$(grep -F 'call i32 (ptr, ...) @printf' "$rv" | head -1)"
+  if [ -n "$vcall" ] \
+     && ! printf '%s' "$vcall" | grep -qE '(float|double) %'; then
+    echo "PASS  rv6-variadic-integer-convention"
+  else
+    echo "FAIL  rv6-variadic-integer-convention (a vararg aggregate was flattened into FP registers)"
+    printf '%s\n' "$vcall" | sed 's/^/    /'
+  fi
+
+  # Anti-leak control: x86_64 SysV packs {float[2]} into one SSE eightbyte and
+  # {i32,f32} into one INTEGER eightbyte — the riscv rules must not reach it.
+  if grep -q '^define <2 x float> @f_farr2(<2 x float> %v\.arg)' "$x86" \
+     && grep -q '^define <2 x float> @f_nest(<2 x float> %v\.arg)' "$x86" \
+     && grep -q '^define i64 @f_mixed(i64 %v\.arg)' "$x86" \
+     && grep -q '^define i64 @f_mixedrev(i64 %v\.arg)' "$x86" \
+     && grep -q '^define i32 @fpr8_mixed(.*double %h\.arg, i64 %m\.arg)' "$x86"; then
+    echo "PASS  rv6-x86-unchanged"
+  else
+    echo "FAIL  rv6-x86-unchanged (riscv classification leaked into the SysV path)"
+    grep -E '^define .*@(f_|fpr8_mixed)' "$x86" | sed 's/^/    /'
+  fi
+  rm -f "$rv" "$x86"
+}
+
 # `long` ABI model (Phase D): C `long` resolves per the target's data model.
 # Parse a header with long/long long functions and check the emitted declares.
 abs_long_h="$(pwd)/tests/abi/long.h"
@@ -2613,6 +2691,11 @@ spawn run_avr7_struct
 # and the "features cliff" llc round-trip (hardware mul/fadd.d, no soft-float
 # libcalls).
 spawn run_riscv_emit
+
+# RV-6 gate: the lp64d hard-float struct ABI (flattening rules + register
+# counting + the variadic tail), cross-emitted and pinned against clang's own
+# lowering, plus the x86_64 anti-leak control.
+spawn run_rv6_fp_abi
 
 spawn check_long x86_64-pc-linux-gnu    i64 i64   # LP64
 spawn check_long aarch64-apple-darwin   i64 i64   # LP64
