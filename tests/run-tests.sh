@@ -4363,6 +4363,76 @@ spawn run_b5_private_definers
 spawn run_b5_did_you_mean
 spawn run_b5_export_kinds
 
+# --- Stage 15 B6: `(dyn P)` identity vs admission ------------------------------
+# The headline. A `(dyn P)` box's IDENTITY is now its protocol's canonical name,
+# so a library that writes `(dyn Describe)` bare inside `(ns b6dp)` and a
+# consumer that writes `(dyn dpx/Describe)` through its own import prefix land on
+# ONE StructDef. Before B6 they were two, and `type-eq` is StructDef-pointer
+# identity, so this whole program was unbuildable in both directions:
+#
+#   * the library's box returned into the consumer's annotation failed at the
+#     LLVM parser — `'%t6' defined with type '%__dyn.b6dp_Describe' but expected
+#     '%__dyn.dpx_Describe'` — with no source location;
+#   * a consumer value passed into the library's `(dyn Describe)` PARAMETER
+#     failed at box construction with `(dyn b6dp/Describe): 'b6dp/Describe' is
+#     not a declared protocol`, because admission was asked against the box's
+#     STORED name and a canonical name is not nameable through a prefix. That is
+#     the failure mode name-resolution.md §9.4 predicted for keying identity on
+#     the canonical name *without* moving admission, measured here.
+#
+# It LINKS AND RUNS, and the value is the point: 11 (Fox 7 through the library's
+# own vtable) + 16 (Cat 5, a CONSUMER type, dispatched through a vtable the
+# library's forwarder loads) = 27. A compile-only check would pass on two box
+# types that never meet.
+run_b6_dyn_cross_ns() {
+  local d
+  d="$(mktemp -d)"
+  cat > "$d/b6-dlib.nuc" <<'EOF'
+(ns b6dp)
+(import-use allocator)
+(defprotocol Describe (describe ((self (ref Self))) i32))
+(defstruct Fox n:i32)
+(defn describe ((self (ref Fox))):i32 (return (+ 3 (_get self n))))
+(extend Fox Describe)
+; Both directions across the boundary: a box this file MAKES and a box it TAKES.
+(defn make-fox ((n i32)):(dyn Describe) (return (Fox n)))
+(defn show ((b (dyn Describe))):i32 (return (+ 1 (describe b))))
+EOF
+  cat > "$d/b6-duse.nuc" <<'EOF'
+(import-use allocator)
+(import-prefixed b6-dlib dpx)
+(defstruct Cat n:i32)
+(defn describe ((self (ref Cat))):i32 (return (+ 10 (_get self n))))
+(extend Cat dpx/Describe)
+(defn main ():i32
+  (let (a:(dyn dpx/Describe) (dpx/make-fox 7))
+    (return (+ (dpx/show a) (dpx/show (Cat 5))))))
+EOF
+  w1_run b6-dyn-cross-ns "$d" "$d/b6-duse.nuc" 27
+  rm -rf "$d"
+}
+spawn run_b6_dyn_cross_ns
+
+# The tenth defect (`protocol-dyn-annot`). An annotation naming a protocol that
+# exists nowhere used to compile and fabricate a box type; admission now happens
+# at the annotation site, deferred to `drain-dyn-annots`. Nothing in this fixture
+# constructs a box, so only the annotation path can reach it.
+spawn run_reject_at b6-dyn-annot-unknown tests/fixtures/b6-dyn-annot-unknown.nuc \
+  "tests/fixtures/b6-dyn-annot-unknown.nuc:17: error:" \
+  "(dyn nope/Wholly-Absent): 'nope/Wholly-Absent' is not a declared protocol"
+# The erased-slot coercion's missing identity check, pinned at BOTH of its call
+# sites: the argument position (its own blocks in emit-call-with-args) and the
+# binding position (maybe-box-into-slot). The argument one is the one that
+# mattered — the SysV ABI splits the fat pointer into two i64s at the call, so
+# LLVM never saw the mismatch and the program linked and ran against the wrong
+# vtable.
+spawn run_reject_at b6-dyn-box-mismatch-arg tests/fixtures/b6-dyn-box-mismatch-arg.nuc \
+  "tests/fixtures/b6-dyn-box-mismatch-arg.nuc:30: error:" \
+  "type mismatch: a (dyn Pp) value cannot be used where (dyn Qq) is required"
+spawn run_reject_at b6-dyn-box-mismatch-let tests/fixtures/b6-dyn-box-mismatch-let.nuc \
+  "tests/fixtures/b6-dyn-box-mismatch-let.nuc:29: error:" \
+  "type mismatch: a (dyn Pp) value cannot be used where (dyn Qq) is required"
+
 # --- Join + replay --------------------------------------------------------------
 # Wait for all remaining jobs (ignore per-job exit codes — PASS/FAIL is decided
 # by scanning buffered output, since `set -e` does not propagate across `&`).

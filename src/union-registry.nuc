@@ -546,24 +546,23 @@
 ; Fn signature).
 (defn dyn-type (proto:ptr line:i32):ptr
   ; Stage 15 W9 defect 21: memoize on the protocol's CANONICAL (namespaced)
-  ; identity, not on the source spelling, so `(dyn Describe)` written inside
-  ; `(ns dp)` and `(dyn dp/Describe)` written outside it produce the SAME box
-  ; StructDef — otherwise `type-eq` (sdef pointer identity) would make the two
-  ; spellings of one protocol two incompatible types. `protocol-canon-name` lives
-  ; in nucleusc.nuc precisely so this file — imported before generics.nuc — can
-  ; reach it; it is the identity for an unregistered name, which keeps the
-  ; deferred "protocol validation happens at box construction" behaviour intact.
+  ; identity, not on the source spelling, so every legal spelling of one protocol
+  ; produces the SAME box StructDef — otherwise `type-eq` (sdef pointer identity)
+  ; makes two spellings of one protocol two incompatible types. The canonicaliser
+  ; lives in nucleusc.nuc precisely so this file — imported before generics.nuc —
+  ; can reach it; it is the identity for a name it cannot resolve, which keeps the
+  ; deferred "protocol validation happens later" behaviour intact.
   ;
-  ; Stage 15 B2a: deliberately `protocol-canon-name-ns`, the ENVIRONMENT-FREE
-  ; canonicalizer, not the reference resolver. This runs from a `defn` signature
-  ; during `prescan-defn-signatures` (where the file's import environment is empty
-  ; by construction) and again from the same signature at emission (where it is
-  ; not); a key that changed between those two moments would mint two StructDefs
-  ; for one protocol and reintroduce exactly the identity bug above. The scope
-  ; question — may THIS file name this protocol? — is asked once, at box
-  ; construction, by `dyn-require-protocol`. Identity and admission are different
-  ; questions.
-  (set! proto (as ptr (protocol-canon-name-ns (as CStr proto))))
+  ; Stage 15 B6: `dyn-proto-key` — the canonical name derived from the writing
+  ; file's IMPORT ENVIRONMENT rather than from the protocol registry, so
+  ; `(dyn Describe)` inside `(ns dp)` and `(dyn dpx/Describe)` outside it land on
+  ; one key and therefore one StructDef. It consults no registry precisely so it
+  ; answers identically during `prescan-defn-signatures` and at emission; see its
+  ; header for why that is the load-bearing property. Admission — may THIS file
+  ; name this protocol? — is a different question with different data, and is
+  ; recorded here and asked by `drain-dyn-annots` once the whole graph is in.
+  (dyn-annot-record (as CStr proto) line)
+  (set! proto (as ptr (dyn-proto-key (as CStr proto))))
   (let (key:ptr (intern-str (fmt-s "dyn.%s" proto))
         hit:ptr (dyn-memo-lookup key))
     (when (!= hit null) (return hit))

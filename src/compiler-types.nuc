@@ -1084,3 +1084,17 @@
   ty:(raw Type)  ; the memoised box Type*
   proto:ptr)     ; interned protocol-name string
 
+; Stage 15 B6 (name-resolution.md §9.5) — one deferred `(dyn P)` ANNOTATION-site
+; admission job. `dyn-type` mints the box's identity from the spelling but cannot
+; ask "may this file name this protocol?" there: it runs during
+; `prescan-defn-signatures`, before the imported protocol registry exists. The
+; question is therefore recorded with everything needed to ask it later *as that
+; file* — the spelling, its location, and the two globals that define the file's
+; name environment — and asked by `drain-dyn-annots` once the whole graph is in.
+(defstruct DynAnnot
+  spelling:ptr                              ; the protocol name the author wrote
+  path:ptr                                  ; source file of the annotation
+  line:i32
+  ns:ptr                                    ; g-current-ns at the annotation
+  imports:(raw (Vector (ref ImportBind))))  ; g-file-imports at the annotation
+

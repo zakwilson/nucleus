@@ -1,0 +1,19 @@
+; Stage 15 B6 — the tenth defect (`protocol-dyn-annot`), closed.
+;
+; Before B6 a `(dyn P)` in an ANNOTATION was never validated: `dyn-type` mints
+; the box type from the spelling and the scope/existence question was asked only
+; where a box was CONSTRUCTED, so this file compiled clean and emitted a
+; `%__dyn.nope_Wholly-Absent` type for a protocol that does not exist anywhere.
+;
+; The placement was forced rather than chosen: `dyn-type` runs from a `defn`
+; signature during `prescan-defn-signatures`, before any imported protocol is
+; registered, so refusing there rejects every legal reference. B6 records the
+; question instead — with the spelling, its line and the file's import
+; environment — and `drain-dyn-annots` asks it after the whole graph is in
+; (name-resolution.md §9.5).
+;
+; Nothing here constructs a box, which is the point: this is the annotation path
+; and nothing else can reach it.
+(defn takes-box ((box (dyn nope/Wholly-Absent))):i32 (return 0))
+
+(defn main ():i32 (return 0))

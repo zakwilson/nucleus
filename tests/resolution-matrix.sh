@@ -200,13 +200,22 @@ probe_spellings protocol-extend '(import-prefixed zzlib zx)
 (defn main ():i32 (return 0))
 '
 
-# The same protocol named by `(dyn …)`, in an ANNOTATION only. Nothing here
-# forces a registry probe: `dyn-type` deliberately does not validate at
-# type-parse time (it may run during a prescan, before the protocol's own file
-# has registered it — src/nucleusc.nuc, `dyn-require-protocol`'s header), so a
-# `(dyn nope/Zp)` parameter fabricates a `%__dyn.nope_Zp` box type and compiles.
-# Recorded as its own row because it is the reason §2's single "protocol" row
-# was ambiguous: the annotation and the box answer different questions.
+# The same protocol named by `(dyn …)`, in an ANNOTATION only. Recorded as its
+# own row because it is the reason §2's single "protocol" row was ambiguous: the
+# annotation and the box answer different questions.
+#
+# B0..B5: all four cells `ok`. `dyn-type` did not validate at type-parse time —
+# it may run during a prescan, before the protocol's own file has registered it —
+# so a `(dyn nope/Zp)` parameter fabricated a `%__dyn.nope_Zp` box type and
+# compiled. That was the tenth defect.
+#
+# B6: three cells moved to `err`. The question is now recorded at the annotation
+# site with the file's import environment and asked by `drain-dyn-annots` after
+# the whole-graph prescan (name-resolution.md §9.5). `zx/` stays `ok` and must:
+# it is the one spelling this consumer may write, and moving it would be the
+# false rejection the deferral exists to avoid. The row now matches
+# `protocol-dyn-box`, which is the point — an annotation and a construction of
+# the same protocol should not disagree about whether the name is in scope.
 probe_spellings protocol-dyn-annot '(import-prefixed zzlib zx)
 (defn zzp-use ((box (dyn @Q@Zp))):i32 (return 0))
 (defn main ():i32 (return 0))

@@ -1,16 +1,16 @@
 ; Stage 15 B2a — the `(dyn P)` half of tests/fixtures/b2a-ns-not-in-scope.nuc.
 ;
-; The scope gate for a box lives at CONSTRUCTION (`dyn-require-protocol`), not at
-; type-parse time, and the split is deliberate: `dyn-type` is reached from a
-; `defn` signature during `prescan-defn-signatures`, where the file's import
-; environment is empty by construction, so refusing there would reject every
-; legal prefixed spelling. It is also the honest split — an annotation names a
-; type, a box construction *uses* the protocol.
+; B2a put the scope gate at box CONSTRUCTION because `dyn-type` runs during
+; `prescan-defn-signatures`, where the import environment is empty.
 ;
-; The consequence, recorded rather than hidden: a `(dyn nope/Absent)` in an
-; ANNOTATION still compiles and still fabricates a box type (the tenth defect,
-; `protocol-dyn-annot` in tests/expected/resolution-matrix.baseline). That is the
-; pre-existing validation gap; what B2a closes is the construction path below.
+; Stage 15 B6 MOVED it to the annotation site — same rejection, same line,
+; reached differently: the question is recorded where the spelling is and asked
+; by `drain-dyn-annots` once the whole graph is in (name-resolution.md §9.5).
+; Box construction now does a KEY lookup and asks no scope question, because a
+; box carries its protocol's CANONICAL name and that is not nameable through a
+; prefix. The tenth defect this header used to record as open — a
+; `(dyn nope/Absent)` ANNOTATION fabricating a box type — closed with it;
+; b6-dyn-annot-unknown.nuc is its pin.
 ;
 ; The `extend` is spelled through the prefix this file binds, so the ONLY thing
 ; wrong here is the `(dyn …)` spelling — otherwise the conformance failure would
