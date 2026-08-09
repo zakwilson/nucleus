@@ -4259,6 +4259,56 @@ EOF
 }
 spawn run_b3_two_vectors
 
+# Stage 15 B3′a: a namespaced type must survive every SYNTHESIS region — the
+# places where the compiler renders a Type back to its CANONICAL spelling
+# (`type-spelling`) and re-parses it. Since B3′ a type spelling is a REFERENCE
+# resolved through the writing file's import environment, and a synthesized
+# spelling was written by no file: `gg/Pt` is not nameable in the consumer, which
+# only bound the prefix `gx`. Three regions were unarmed and each refused a legal
+# program (`unknown type: gg/Pt — 'gg' is not in scope in this file`):
+#
+#   * `tmpl-conformance-check-one`  — the per-instance check of a template-level
+#     `(extend (Vector T) (Seq T))`, run at STAMP time in the stamping file. This
+#     one is the widest: every collection in lib/ carries such an extend, so NO
+#     namespaced type could be a collection element.
+#   * `generic-instantiate`         — the stamped signature parse, before the body
+#     job is queued (`drain-mono-worklist` already armed the body).
+#   * `resolve-param-type-bound`    — the shared substitute-and-reparse helper
+#     behind `method-bound-ret-type` / `subst-param-types-bound`, which is how a
+#     return-only-tyvar generic (`vector-new`) resolves against a want.
+#
+# It LINKS AND RUNS and checks a value: the failures were compile-time, but a
+# wrongly-resolved element type would be a layout bug, which only running finds.
+run_b3a_ns_type_generic() {
+  local d
+  d="$(mktemp -d)"
+  cat > "$d/b3a-lib.nuc" <<'EOF'
+(ns b3ang)
+(defstruct Pt x:i32 y:i32)
+(defprotocol Areal (area ((self (ref Self))) i32))
+EOF
+  cat > "$d/b3a-use.nuc" <<'EOF'
+(import-use vector)
+(import-prefixed b3a-lib bx)
+; The subject is spelled through this file's prefix; `extend` canonicalizes it to
+; `b3ang/Pt` and must NOT then re-resolve that canonical name as a reference.
+(defn area ((self (ref bx/Pt))):i32 (return (* (_get self x) (_get self y))))
+(extend bx/Pt bx/Areal)
+(defn main ():i32
+  (with (v:(ref (Vector (ref bx/Pt))) (vector-new))
+    (let (a:(ref bx/Pt) (bx/Pt 3 4) b:(ref bx/Pt) (bx/Pt 5 6) t:i32 0)
+      (conj v a)
+      (conj v b)
+      (dotimes (i (unsafe/cast i32 (count v)))
+        (set! t (+ t (_get (invoke v (as usize i)) x))))
+      (return (+ t (area a))))))
+EOF
+  # 3 + 5 + (3*4) = 20
+  w1_run b3a-ns-type-in-collection "$d" "$d/b3a-use.nuc" 20
+  rm -rf "$d"
+}
+spawn run_b3a_ns_type_generic
+
 # Defect #7's other half, and defect #4. `strip-ns-qualifier` used to discard a
 # type spelling's qualifier without checking it, so a type was reachable from
 # anywhere under any qualifier — including one naming no namespace at all.

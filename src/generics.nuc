@@ -1670,8 +1670,20 @@
 ; type, or a parametric application still mentioning tyvars, e.g. `(Maybe T)`) is
 ; substituted with the bound spellings and parsed. Every tyvar in `bound` must be
 ; non-null (the callers guarantee this before invoking).
+; Stage 15 B3′a: the shared "substitute the bound tyvars' spellings and re-parse"
+; helper, and therefore a SYNTHESIS region — `type-spelling` renders a bound tyvar
+; as its type's CANONICAL name, which the *calling* file usually cannot name. It is
+; the chokepoint for `method-bound-ret-type` and `subst-param-types-bound`, so the
+; arm belongs here rather than at either caller.
 (defn resolve-param-type-bound (ptn:raw:Node tyvars:ptr bound:ptr ntv:i32 line:i32):?ptr:Type
   (when (= ptn null) (return null))
+  (let (saved:i32 g-type-key-ok)
+    (set! g-type-key-ok 1)
+    (let (r:?ptr:Type (resolve-param-type-bound-in ptn tyvars bound ntv line))
+      (set! g-type-key-ok saved)
+      (return r))))
+
+(defn resolve-param-type-bound-in (ptn:raw:Node tyvars:ptr bound:ptr ntv:i32 line:i32):?ptr:Type
   (let (pn:raw:Node ptn)
     (when (= (pn kind) NODE-SYM)
       (when (= (strchr (pn s) 58) null)
@@ -1881,7 +1893,20 @@
 ; Monomorphize a generic template for a concrete argument tuple: reuse a cached
 ; instantiation if present, else stamp a concrete method (registered now so the
 ; call site can name its symbol; its body is queued for later emission).
+; Stage 15 B3′a: stamping a generic instance is a SYNTHESIS region. The stamped
+; form's type operands are `type-spelling` output for every bound tyvar and the
+; template file's own spellings for the rest — never anything the *calling* file
+; wrote — and this runs at the call site, so resolving them as references asks the
+; wrong file. `drain-mono-worklist` already arms the body's emission; the signature
+; is parsed here, before the job is queued, and needed the same arm.
 (defn generic-instantiate (g:raw:Generic m:raw:Method bound:ptr argtypes:ptr nargs:i32 line:i32):ref:Method
+  (let (saved:i32 g-type-key-ok)
+    (set! g-type-key-ok 1)
+    (let (r:ref:Method (generic-instantiate-in g m bound argtypes nargs line))
+      (set! g-type-key-ok saved)
+      (return r))))
+
+(defn generic-instantiate-in (g:raw:Generic m:raw:Method bound:ptr argtypes:ptr nargs:i32 line:i32):ref:Method
   (let (gg:raw:Generic g
         mm:raw:Method m)
     (let (existing:?ptr:Method (generic-find-method-exact g argtypes nargs))
@@ -3635,7 +3660,22 @@
 ; if a conforming variable's conformance is not yet present (recover-assoc-into
 ; returns a soft 0), the check is *deferred* rather than erroring — the bottom-up
 ; stamping order (and the post-extend recheck, §4.5) records it on a later pass.
+; Stage 15 B3′a: a per-instance template conformance check is a SYNTHESIS region —
+; every type spelling it parses is a `type-spelling` of an already-parsed Type (the
+; stamp's arg spellings, the recovered associated tyvars), substituted into the
+; `extend`'s binding nodes. It runs at STAMP time, in whatever file first named the
+; instance, which is routinely not the file that wrote the `extend`. Without the arm
+; a namespaced stamp argument — `(Vector (ref gx/Pt))` — re-resolves `gg/Pt` as a
+; reference in the stamping file and is refused, i.e. no namespaced type could be a
+; type argument to any template carrying a parametric-protocol `extend`. See
+; `g-type-key-ok` (src/nucleusc.nuc).
 (defn tmpl-conformance-check-one (c:raw:TmplConformance st:raw:StructTemplate iname:CStr arg-spellings:ptr nargs:i32 line:i32):void
+  (let (saved:i32 g-type-key-ok)
+    (set! g-type-key-ok 1)
+    (tmpl-conformance-check-one-in c st iname arg-spellings nargs line)
+    (set! g-type-key-ok saved)))
+
+(defn tmpl-conformance-check-one-in (c:raw:TmplConformance st:raw:StructTemplate iname:CStr arg-spellings:ptr nargs:i32 line:i32):void
   (let (cc:raw:TmplConformance c
         stt:raw:StructTemplate st
         proto:raw:Protocol (cc proto)
@@ -3962,8 +4002,14 @@
                 (fmt-s "extend: unknown protocol '%s'" proto-spelling)
                 (as ptr proto-spelling))))
           ; Validate single-token subject types eagerly for a clean diagnostic.
-          (when (= (strchr typename 58) null)
-            (parse-type-name typename (node-line (as ptr type-node) (ff line))))
+          ; Stage 15 B3′a: on the SPELLING the author wrote, never on `typename` —
+          ; `type-canon-name` has already resolved the reference, and re-parsing its
+          ; canonical output asks the scope question a second time in a file that
+          ; usually cannot name the defining namespace (§9.2's "resolve once, at the
+          ; reference, then carry the record"). `(extend gx/Pt P)` canonicalizes to
+          ; `gg/Pt` and was then refused as an unknown type.
+          (when (= (strchr (type-node s) 58) null)
+            (parse-type-name (type-node s) (node-line (as ptr type-node) (ff line))))
           (when (!= proto-nargs (-> proto (unsafe/cast ptr:Protocol _) (_ num-params)))
             (die-at (node-line (as ptr proto-node) (ff line))
               (fmt-s "extend: protocol '%s' expects a different number of parameters" proto-name)))
