@@ -4,10 +4,17 @@
 ; identity, which is what a reader needs when two namespaces declare a
 ; `Describe`. (Before defect 21 the same message said bare `Describe`, i.e. it
 ; could not tell you which protocol you failed to implement.)
+;
+; Stage 15 B2a: the REFERENCE is now spelled through the prefix this file binds
+; (`dpx/`), because the library's own namespace `dp` is no longer in scope here
+; (name-resolution.md §8.3). The expected DIAGNOSTIC is unchanged, and that is
+; the point worth pinning: the reference resolves through the import
+; environment, but what it resolves *to* is still the protocol's namespaced
+; identity `dp/Describe`, which is what the message must name.
 (import-use "stdio.h")
 (import-prefixed nsdescribe dpx)
 
 (defstruct Bad n:i32)
-(extend Bad dp/Describe)
+(extend Bad dpx/Describe)
 
 (defn main ():i32 (return 0))

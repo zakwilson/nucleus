@@ -1,23 +1,45 @@
-; Stage 15 W9 defect 21 — `(dyn ns/Proto)` across a namespace, end to end.
+; Stage 15 W9 defect 21 + B2a — `(dyn P)` across a namespace, end to end, and
+; the acceptance fixture for name resolution's front half.
 ;
-; Before the fix this program could not compile at all: `conformance-add` keyed
-; the conformance under the BARE `Describe` (Stage 12 N4 stripped the qualifier
-; off both the type and the protocol) while `protocol-lookup` matched the raw
-; qualified spelling, so `(extend Fox dp/Describe)` recorded a fact that
+; Two rulings are pinned here at once.
+;
+; W9 defect 21 made a protocol a NAMESPACED entity. Before it, `conformance-add`
+; keyed the conformance under the BARE `Describe` (Stage 12 N4 stripped the
+; qualifier off both the type and the protocol) while `protocol-lookup` matched
+; the raw qualified spelling, so `(extend Fox Describe)` recorded a fact that
 ; `(dyn dp/Describe)` could never find — it reported
 ;   (dyn dp/Describe): 'dp/Describe' is not a declared protocol
-; for a protocol that was both declared and conformed to. A protocol is now a
-; namespaced entity: registered under `dp/Describe`, referenced bare from inside
-; `(ns dp)` and qualified from outside, and TYPE identity is untouched.
+; for a protocol that was both declared and conformed to.
+;
+; Stage 15 B2a (design/stage15-stress-test/name-resolution.md §8.3, R3/R7) then
+; fixed WHICH SPELLINGS reach it. An import prefix binds the library under the
+; prefix the consumer asked for and under nothing else; the library's own
+; namespace is not in scope unless the file imported it by name. So this program
+; spells the protocol `dpx/Describe` and `dpx2/Describe` — the prefixes its own
+; import forms bind — and `dp/Describe` is now a hard error:
+;   extend: unknown protocol 'dp/Describe'
+;     note: 'dp' is not in scope in this file — a prefixed import binds its
+;     library under the prefix it names and not under the library's own
+;     namespace … In scope here: dpx, dpx2.
+; (It is pinned as an error by tests/fixtures/b2a-ns-not-in-scope.nuc.) The
+; earlier version of this file spelled `dp/`, and its header comment explained
+; that an import prefix "aliases g-globals entries; it does not name protocols" —
+; documenting the defect as if it were the design.
 ;
 ; What each line pins:
-;   * `dp/Describe`  — a qualified protocol reference resolves cross-namespace,
-;     and the import prefix (`dpx`) is deliberately DIFFERENT from the namespace
-;     (`dp`), so this proves the reference resolves by NAMESPACE. (An import
-;     prefix aliases `g-globals` entries; it does not name protocols.)
-;   * `Fox` from lib/nsdescribe.nuc — its `(extend Fox Describe)` is written BARE
-;     inside `(ns dp)`, so the bare and qualified spellings must be one identity.
-;   * `Cat` conforming to BOTH `dp/Describe` and `dp2/Describe` — two protocols
+;   * `dpx/Describe` — a qualified protocol reference resolving through the
+;     file's IMPORT ENVIRONMENT: the prefix names the namespace, and the two are
+;     deliberately different (`dpx` vs `dp`), so this proves the resolution runs
+;     through the prefix binding rather than through a global namespace list.
+;   * `dpx/Fox` from lib/nsdescribe.nuc — its `(extend Fox Describe)` is written
+;     BARE inside `(ns dp)`, the current-namespace path, so the bare and prefixed
+;     spellings must land on one identity. Stage 15 B3′ (R1) made a TYPE name
+;     namespaced too, so the constructor here is `dpx/Fox`: before B3′ a type was
+;     bare-keyed and globally visible, and a plain `Fox` reached it from any file
+;     under any qualifier (defects #4/#7). That bare spelling is now an error —
+;     `unknown: Fox — not defined anywhere in this compilation unit` — and pinned
+;     as one by tests/fixtures/b3-type-ns-not-in-scope.nuc.
+;   * `Cat` conforming to BOTH `dpx/Describe` and `dpx2/Describe` — two protocols
 ;     that share the bare name `Describe` and do not collide; each box dispatches
 ;     its own protocol's method.
 ;
@@ -36,13 +58,13 @@
 (defn tag-of ((self (ref Cat))):i32 (return (+ 200 (self n))))
 
 ; Same bare protocol name, two namespaces, one conforming type.
-(extend Cat dp/Describe)
-(extend Cat dp2/Describe)
+(extend Cat dpx/Describe)
+(extend Cat dpx2/Describe)
 
 (defn main ():i32
-  (let (a:(dyn dp/Describe)  (Cat 5)
-        b:(dyn dp2/Describe) (Cat 7)
-        c:(dyn dp/Describe)  (Fox 9))
+  (let (a:(dyn dpx/Describe)  (Cat 5)
+        b:(dyn dpx2/Describe) (Cat 7)
+        c:(dyn dpx/Describe)  (dpx/Fox 9))
     (printf "%d\n" (describe a))
     (printf "%d\n" (tag-of b))
     ; `describe` is overloaded here (Cat and, from the library, Fox), so the

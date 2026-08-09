@@ -1,0 +1,20 @@
+; Stage 15 B3′ (design/stage15-stress-test/name-resolution.md §8.1, R1) — a TYPE
+; name is namespaced, pinned as an error.
+;
+; This file imports lib/nsdescribe.nuc with `(import-prefixed … dpx)`, so the one
+; qualifier it bound for that library is `dpx`. `Fox` is defined inside `(ns dp)`,
+; and before B3′ the type registry was keyed by the BARE name — so a bare `Fox`
+; reached it from anywhere, and so did `dp/Fox`, and so did `zzz/Fox`, because
+; `strip-ns-qualifier` discarded the qualifier without ever checking it (defects
+; #4 and #7). Under R1 the only spelling that resolves here is `dpx/Fox`, which
+; is what examples/w9-dyn-ns.nuc now writes.
+;
+; The assertion is that the failure is a *name* failure, at this file's line, and
+; that it does not claim the type is undefined-in-the-unit for a type that is
+; defined and reachable — the bare spelling simply is not in scope.
+(import-use "stdio.h")
+(import-prefixed nsdescribe dpx)
+
+(defn b3-take ((f (ref Fox))):i32 (return (_get f n)))
+
+(defn main ():i32 (return 0))

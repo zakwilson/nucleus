@@ -1,0 +1,16 @@
+; Stage 15 B3′ — defect #4, pinned. Before B3′ `strip-ns-qualifier` threw away a
+; type spelling's qualifier and looked the bare name up in a flat registry, so
+; ANY qualifier resolved — including one naming a namespace that does not exist
+; anywhere in the compilation unit:
+;
+;   (defn f2 ((x (ref zzz/Fox))):i32 (return (x n)))   ; compiled, linked, ran
+;
+; The qualifier is now resolved through this file's import environment like every
+; other name, so an unbound one resolves to nothing. `Cat` is defined right here,
+; which is the sharp version of the test: the type exists, the bare spelling
+; works, and only the bogus qualifier is refused.
+(defstruct Cat n:i32)
+
+(defn b3-take ((c (ref nope/Cat))):i32 (return (_get c n)))
+
+(defn main ():i32 (return 0))

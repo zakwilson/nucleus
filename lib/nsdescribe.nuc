@@ -7,10 +7,12 @@
 ; protocol qualified and boxes into `(dyn dp/Describe)`; both must land on the one
 ; identity `dp/Describe`.
 ;
-; Boxing itself deliberately happens in the consumer, not here: a file with an
-; explicit `(ns …)` cannot reach `default-allocator` (a separate, pre-existing
-; global-resolution gap — `scope-lookup` qualifies a global key and has no bare
-; fallback), so a namespaced file cannot construct a box at all today.
+; Boxing deliberately happens in the consumer, not here — the file stays a pure
+; single-protocol library. (It is no longer forced: until Stage 15 B2b a file
+; with an explicit `(ns …)` could not reach `default-allocator` at all, because
+; `scope-lookup` qualified a bare global key with the current namespace and had
+; no fallback. `globals-lookup-ref` now falls back to the flattened set and then
+; to `user`, so a namespaced file can construct a box.)
 
 (ns dp)
 

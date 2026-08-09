@@ -1008,13 +1008,19 @@ The `Drop` protocol is an ordinary Stage 9 protocol; conforming makes a type
 
 ## Unsafe operations
 
-Nucleus reserves the `unsafe/` prefix for operations whose contract the
-compiler cannot verify — the C-replacement escape hatches (Stage 14,
-`design/stage14/unsafe-namespace.md`). `unsafe/` is a **pseudo-namespace**: a
-reserved spelling in the special-form dispatch table, not a resolvable
-module — special forms dispatch on the raw interned head before namespace
-resolution ever runs, so `unsafe/cast` reads as one ordinary symbol with no
-reader change.
+Nucleus reserves `unsafe` for operations whose contract the compiler cannot
+verify — the C-replacement escape hatches (Stage 14,
+`design/stage14/unsafe-namespace.md`). It is a **built-in namespace**, bound in
+every file exactly the way a prefixed import binds: the roster below is
+reachable as `unsafe/<op>` and, because a prefix is never flattened, **not**
+under any bare name. That is the whole of why `cast` and `ptr+` are errors —
+they are not refused by a special case, they simply are not bound. `(ns unsafe)`
+is refused for the same reason: the name is already taken.
+
+The binding is what a *reference* resolves through; the ops themselves are
+special forms, dispatched on the raw interned head (`/` is an ordinary symbol
+character, so `unsafe/cast` reads as one symbol with no reader change), and
+their qualified spellings stay reserved so no definer can shadow one.
 
 The full roster:
 
@@ -1030,10 +1036,12 @@ Forms](special-forms.md#special-forms)) — it accepts everything the
 implicit-coercion machinery already accepts at an assignment boundary, plus
 pure pointer-contract weakening, and honors the nullability flow check that
 `unsafe/cast` does not. The bare (legacy) spellings — `cast`,
-`funcall-ptr-1`/`-i32`/`-i64`/`-ptr`, `ptr+`, and `unsafe-import-private`
-(without the `/`) — are **retired**: each is now a targeted hard error naming
-its `unsafe/`-prefixed (or `as`) replacement, rather than silently working as
-an alias.
+`funcall-ptr-1`/`-i32`/`-i64`/`-ptr`, and `ptr+` — do not resolve, because the
+`unsafe` namespace is bound prefixed and flattens nothing; each is reported with
+a message naming its `unsafe/`-prefixed (or `as`) replacement. The odd one out
+is `unsafe-import-private` (no `/`), whose bare spelling is not a member of the
+namespace under any name, so it keeps its own targeted refusal at the top-level
+dispatcher.
 
 **Audit command.** Because every unchecked operation in the compiler's own
 source now carries the `unsafe/` spelling, `grep -rn 'unsafe/' src lib`

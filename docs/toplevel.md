@@ -10,7 +10,7 @@
 | `defunion` | Define a tagged sum `(defunion Name (arm field:type ...) ... bare-arm)` or a template `(defunion (Name T ...) ...)`. Like `defconst`, a **bare** (non-template) name takes no type annotation — `(defunion U:i32 (a x:i32) b)` is rejected (`defunion: takes no type annotation; write (defunion U ...)`); a genuine template head is unaffected. See [Unions and tagged sums](structs-unions.md#unions-and-tagged-sums). | tagged `struct {int tag; union {...} payload;}` |
 | `defprotocol` | Define a protocol: a named set of required method signatures (types may mention `Self` and extra element parameters). Compile-time only; emits no code. Like `defconst`, a **bare** (non-parametric) name takes no type annotation — `(defprotocol P:i32 ...)` is rejected (`defprotocol: takes no type annotation; write (defprotocol P ...)`); a genuine parametric head such as `(Seq E)` is unaffected. See [Protocols](generics.md#protocols-defprotocol-and-extend) and [Parametric protocols](generics.md#parametric-protocols). | — (concept: interface/trait) |
 | `extend` | Assert conformance `(extend Type Protocol)` or parametric conformance `(extend (Name T) (Protocol T))`: checks that each required signature resolves, then records the fact. Code-free. See [Protocols](generics.md#protocols-defprotocol-and-extend) and [Parametric protocols](generics.md#parametric-protocols). | — |
-| `import` | **Prefix-qualified import** (the default, deliberate-API form). `(import lib [prefix])` exposes each public symbol of `lib` as `prefix/name`, pointing at the same definition (no new code; a foreign C symbol keeps its bare link name, so `c/printf` calls `@printf`). `lib` resolves `name.nuc` (source) or `name.nuch` (header) from source directory, `lib/`, `-I` paths, `$NUCLEUS_LIB`, or `/usr/local/share/nucleus/lib` (the install-time default used by `make install`); a string path imports a C header (`(import "stdio.h")`, preprocessed with `clang -E`) or an explicit `.nuc`/`.nuch` file by path. The prefix defaults to the lib's last dotted component (`foo.bar.baz` → `baz`); a string-path C header defaults to `c` (`(import "stdio.h" c)` → `c/printf`). The **same library** may be imported under **multiple** prefixes (aliasing); two different libraries **may not share** a prefix (error). Dedup is keyed on `(file, prefix)`. Source imports inline all definitions; header imports emit `declare` (extern) for functions. *(`import` and `import-prefixed` are synonyms.)* | — |
+| `import` | **Prefix-qualified import** (the default, deliberate-API form). `(import lib [prefix])` exposes each public symbol of `lib` as `prefix/name`, pointing at the same definition (no new code; a foreign C symbol keeps its bare link name, so `c/printf` calls `@printf`). `lib` resolves `name.nuc` (source) or `name.nuch` (header) from source directory, `lib/`, `-I` paths, `$NUCLEUS_LIB`, or `/usr/local/share/nucleus/lib` (the install-time default used by `make install`); a string path imports a C header (`(import "stdio.h")`, preprocessed with `clang -E`) or an explicit `.nuc`/`.nuch` file by path. The prefix defaults to the lib's last dotted component (`foo.bar.baz` → `baz`); a string-path C header defaults to `c` (`(import "stdio.h" c)` → `c/printf`). The **same library** may be imported under **multiple** prefixes (aliasing); two different libraries **may not share** a prefix (error). Dedup is keyed on `(file, prefix)`. **A prefix binds only in the file that declares the import** — see [Import prefixes are file-scoped](#import-prefixes-are-file-scoped). Source imports inline all definitions; header imports emit `declare` (extern) for functions. *(`import` and `import-prefixed` are synonyms.)* | — |
 | `import-use` | **Flatten import** — brings **every** symbol of a library or C header into the current namespace under its bare name, including private symbols (the opt-out from the prefixing discipline). Good for the REPL and for libraries; discouraged for deliberate API design. `(import-use name)` / `(import-use "hdr.h")`. The prelude is auto-`import-use`d into every unit. | — |
 | `import-prefixed` | Explicit spelling of the prefix-qualified `import` above: `(import-prefixed lib [prefix])`. Identical to `import`. | — |
 | `import-only` | Import a concrete list of symbols: `(import-only lib sym1 sym2 ...)`. The listed symbols are brought in under their bare names. *(Currently flattens like `import-use`; the restriction to only the listed symbols is enforced once private/visibility filtering lands.)* | — |
@@ -22,9 +22,9 @@
 | `defcast` | Register an implicit conversion `(defcast From To conv-fn)`. `conv-fn` must be a unary function with signature `To (From)` already in scope; the compiler emits a call to it whenever an arg of `From` is supplied where `To` is expected. Pairs already covered by built-in coercion (identity, int↔int, `f32`→`f64`) are rejected at registration. Rules are unidirectional and non-transitive — declare each direction explicitly, and chain through an intermediate type by writing the chain yourself. Exported in `.nuch` headers. | implicit conversion |
 | `def-rmacro` | Define a reader macro `(def-rmacro "prefix" symbol)`. When `prefix` appears at the start of a token, the reader wraps the next form: `(symbol form)`. Built-in reader macros: `'` (quote), `` ` `` (quasiquote), `~` (unquote), `~@` (unquote-splice), `@` (deref). | — |
 | `exclude-prelude` | Suppress the implicit `(import-use prelude)` for this source file. Must be the first top-level form; takes no arguments. Use when a file should compile against the bare language without the standard macros, `Node` struct, or `(import-use "string.h")` declarations. | — |
-| `ns` | Set the current namespace for this source file: `(ns name)`. `name` must be a slash-free symbol. Symbols defined after this form are stored under `namespace/name` qualified keys. A second `ns` in the same file warns at compile time (silent in the REPL). The default namespace is `user`, which stores bare keys — byte-identical to pre-namespace behavior. Conventionally the first form in a file. **What is and is not namespaced:** functions, values and **protocols** are (a protocol declared in `(ns shapes)` is `shapes/Shape` — see [Protocols are namespaced](generics.md#protocols-are-namespaced)); **type names are not** — a struct, union or enum name is global, so a qualified type reference resolves to the same type from every namespace. | — (concept: C++ `namespace` / Clojure `ns`) |
+| `ns` | Set the current namespace for this source file: `(ns name)`. `name` must be a slash-free symbol. Symbols defined after this form are stored under `namespace/name` qualified keys. A second `ns` in the same file warns at compile time (silent in the REPL). The default namespace is `user`, which stores bare keys — byte-identical to pre-namespace behavior. Conventionally the first form in a file. **Everything defined after `(ns …)` is namespaced**: functions, values, protocols and **types** alike — a `defstruct`/`defunion`/`defenum`/template declared in `(ns shapes)` defines `shapes/Circle`, exactly as a `defn` there defines `shapes/area` (see [Protocols are namespaced](generics.md#protocols-are-namespaced) and [Namespaced type names](types.md#namespaced-type-names)). Two namespaces may each declare a type of the same name — they are two distinct types — and a reference to either, bare or qualified, resolves through the writing file's own import environment exactly like any other name; see [What an import brings into scope](#what-an-import-brings-into-scope). | — (concept: C++ `namespace` / Clojure `ns`) |
 | `set-ir-prefix` | Override the IR-mangling prefix for the current namespace: `(set-ir-prefix "prefix")`. An empty string forces bare IR names regardless of the namespace (C-ABI escape hatch). A non-empty string replaces the namespace name in emitted IR identifiers. Applies to symbols defined after this directive. Typically placed immediately after `ns`. | — |
-| `export` | Re-export symbols from this namespace: `(export sym1 sym2 ...)`. Makes the listed symbols visible to importers of this namespace under their unqualified names (the part after the last `/`). Typically used in facade libraries to re-expose imported symbols without the importer needing to know the original source namespace. The symbols must already be in scope (via `import-prefixed` or defined in this file). No new IR is emitted — it adds alias entries to the module's export table. Example: `(export geom/area geom/perimeter)` in a `gfacade` namespace causes `(import-prefixed gfacade g)` to expose `g/area` and `g/perimeter` to the importer. | — (closest C analogue: a header that `extern`-declares symbols from another translation unit) |
+| `export` | Re-export symbols from this namespace: `(export sym1 sym2 ...)`. Makes the listed symbols visible to importers of this namespace under their unqualified names (the part after the last `/`). Typically used in facade libraries to re-expose imported symbols without the importer needing to know the original source namespace. The symbols must already be in scope (via `import-prefixed` or defined in this file). No new IR is emitted — it adds alias entries to the module's export table. Example: `(export geom/area geom/perimeter)` in a `gfacade` namespace causes `(import-prefixed gfacade g)` to expose `g/area` and `g/perimeter` to the importer. **Functions, values, protocols, structs, unions, enums and templates can be re-exported.** Types are on this list because type identity is namespaced (see [Namespaced type names](types.md#namespaced-type-names)): a facade that re-exports `geom/area` but not `geom/Pt` would export a function whose signature names a type the consumer has no way to spell. **A macro, a special form, or a built-in type name cannot** — each is identified by a single, globally-unique bare name rather than a per-namespace key, so a re-export would not change how it resolves. Naming one is refused with `export: 'X' is a macro — it is identified by a globally-unique bare name, so a re-export would not change how it resolves (name-resolution.md §11.6)` (the noun changes with the kind: "a special form", "a built-in type"). | — (closest C analogue: a header that `extern`-declares symbols from another translation unit) |
 | `fn-attr` | Attach one or more LLVM string function attributes to a `defn`: `(fn-attr name "attr" ...)`. `name` is a bare function-name symbol (not a string) matched against the target `defn`'s source name (equal to the emitted `@`-symbol in the default `user` namespace); each remaining argument must be a string literal. Attributes accumulate — several strings in one call, or several `fn-attr` calls naming the same function, all apply — and are stored/emitted verbatim (Nucleus does not validate the string; an unrecognized attribute is an LLVM-level error, not a compiler diagnostic). Emitted as a space-prefixed quoted attribute directly on that function's `define` line (e.g. `define void @tick() "signal" {`), coexisting with `noreturn` when both apply. **The `fn-attr` directive must appear before the `defn` it targets** — there is no forward-reference prescan for the attribute table (the same order-sensitive-directive pattern as `set-ir-prefix`, above, which likewise takes effect only for what follows it in source order). Deliberately generic: the first consumer is AVR interrupt handlers (the `"signal"`/`"interrupt"` attributes make the AVR backend emit the interrupt prologue/epilogue and `reti` instead of `ret`; see the block comment in `lib/avr.nuc` and `examples/avr-isr.nuc`), but any LLVM function-attribute string works the same way. A unit that never calls `fn-attr` is byte-identical to before this directive existed. | — (closest C analogue: `__attribute__((...))` on a function declaration) |
 | Private definers: `defn-` `defvar-` `defconst-` `defenum-` `defstruct-` `defunion-` `defmacro-` `defprotocol-` | The `-` suffix marks a definition as private. **In a file with no `(ns …)` the name is private to that file** (see [Private names are file-scoped](#private-names-are-file-scoped) below); in a file that declares a namespace it is private to that namespace. Private symbols are not placed in the module's export table and cannot be imported by other namespaces. For link-emitting forms (`defn-`, `defvar-`), the LLVM symbol also receives internal linkage (`define internal` / `internal global`), preventing link-time name collisions with other translation units — equivalent to C `static`. For compile-time-only forms (`defconst-`, `defenum-`, `defstruct-`, `defunion-`, `defmacro-`, `defprotocol-`), there is no linkage dimension; private means the name is invisible to importers. All other semantics (type checking, overloading, parametric templates, protocol conformance) are identical to the public form. | `static` function / `static` global (for `defn-` / `defvar-`); — for compile-time-only forms |
 
@@ -62,11 +62,170 @@ The rule and its edges:
   `defn-` there means "private to this namespace", which is a real, chosen scope.
   Two files sharing one `(ns …)` therefore still collide on a private name, and
   the diagnostic says so. Give one file its own namespace, or rename.
+* **Only four of the eight definers get file scope. The other four are always
+  namespace-scoped.** `defn-`, `defvar-`, `defconst-` and `defenum-` name
+  *values*, whose registry key can carry a synthetic per-file namespace, so in a
+  file with no `(ns …)` they are private to that file. `defstruct-`,
+  `defunion-`, `defmacro-` and `defprotocol-` name *types, macros and
+  protocols*, which have no per-file key space — `(ns …)` is what makes their
+  privacy mean anything — so in the default `user` namespace they are visible
+  to the whole unit, and a file that declares `(ns …)` is what actually hides
+  them. Reaching one from outside its namespace is an error at the reference —
+  a type reports `unknown type: Name`, a macro or value `unknown: name`, and a
+  protocol `extend: unknown protocol 'Name'`. **For a type**, since type
+  identity is namespaced (see
+  [Namespaced type names](types.md#namespaced-type-names)), that failure comes
+  in two tiers rather than one: a *bare* reference to a private type in another
+  namespace fails for the ordinary scope reason first — the same message a
+  *public* type in an unimported namespace gets, since the bare spelling was
+  never in scope to begin with — and only a *qualified* reference spelled
+  through a prefix that actually reaches the namespace gets as far as finding
+  the (hidden) entry, where privacy then refuses it: `unknown type: p/Name`,
+  using the qualified spelling. A macro has no qualified spelling at all (see
+  the `export` row above), so its privacy check has no scope tier to precede
+  it — a bare reference is the only kind there is.
 * Privacy affects only the *name*. The emitted symbol still exists (with internal
   linkage); it is simply spelled per-file, so nothing outside the file can name
   it and nothing collides at link time.
 * A namespace name may not begin with `#` — that shape is reserved for the
   implicit per-file scope this rule is built on.
+
+## Import prefixes are file-scoped
+
+**An import prefix binds only in the file whose own `import` form declares it.**
+Importing a library under a prefix somewhere in the unit does not make that
+prefix spellable everywhere:
+
+```lisp
+; mid.nuc
+(import-prefixed geometry gx)
+(defn mid-area (w:i32 h:i32):i32 (return (gx/area w h)))   ; fine — mid.nuc declared gx
+
+; main.nuc — imports mid, never declares gx
+(import-use mid)
+(defn main ():i32 (return (gx/area 3 4)))                  ; error
+```
+
+```
+main.nuc:2: error: unknown: gx/area — 'gx' is not in scope in this file
+  note: an import prefix is file-scoped: another file in this unit binds 'gx' to
+  lib/geometry.nuc, but a prefix reaches only the file whose own import declares
+  it. This file has no import qualifiers in scope.
+```
+
+The fix is to write the import you meant in the file that uses it — a repeated
+`(import-prefixed geometry gx)` is free (the library is loaded once; the second
+import only binds the name).
+
+This is a scope rule, not a reachability one. The definition is in the unit and
+the import graph reaches it, which is why the diagnostic says the *spelling* is
+out of scope rather than claiming the name is undefined. Note the two rules
+compose in the usual direction: a prefix declared in a library is invisible to
+that library's consumers, so a library's choice of prefix is its own business
+and can be changed without breaking anyone.
+
+Two edges:
+
+* The **same prefix in two files** for the same library is fine and common;
+  two *different* libraries may still not share one prefix within a unit.
+* A **namespace** qualifier is subject to the same file scope — see the next
+  section.
+
+## What an import brings into scope
+
+**A qualifier means something only in a file whose own import form bound it.**
+There is no ambient list of namespaces: an import declares what this file can
+spell, and that declaration is the whole answer.
+
+| Import form | What the file can spell |
+|---|---|
+| `(import-prefixed lib p)` / `(import lib p)` | `p/name` — **and not** the library's own namespace |
+| `(import-use lib)` | `name` (unqualified) **and** `<lib-namespace>/name` |
+| `(import-only lib a b)` | as `import-use` today; the filter is not yet built |
+| implicit prelude | as `import-use` — so `user/` and every bare prelude name are always in scope |
+| the file's own `(ns n)` | `name` and `n/name` |
+| implicit `unsafe` | as `import-prefixed` — `unsafe/cast`, `unsafe/ptr+`, `unsafe/funcall-ptr-*`, `unsafe/import-private`, and **nothing unqualified** |
+
+The second column of row 1 is the point: an import prefix *is* the API the
+consumer chose, so the library's internal namespace stays the library's business.
+Row 2's second clause is the escape hatch for a collision — when two flattened
+libraries both define `Vector`, `a/Vector` disambiguates without rewriting the
+import form.
+
+The last row is why bare `cast`, `ptr+` and `funcall-ptr-*` are errors: `unsafe`
+is a real built-in namespace, bound in every file the way a prefixed import
+binds — so it is never flattened, and there is nothing to write unqualified.
+`(ns unsafe)` is refused for the same reason: the name is already bound.
+
+```lisp
+(import-prefixed shapes sh)     ; lib/shapes.nuc declares (ns shapes)
+
+(extend Circle sh/Shape)        ; ok — sh is what this file bound
+(extend Circle shapes/Shape)    ; error — the namespace is not in scope here
+```
+
+```
+main.nuc:6: error: extend: unknown protocol 'shapes/Shape'
+  note: 'shapes' is not in scope in this file — a prefixed import binds its
+  library under the prefix it names and not under the library's own namespace,
+  and an unimported namespace is not nameable at all. In scope here: sh.
+```
+
+**Scope of the rule today.** It governs **protocol** references (`extend`,
+`(dyn P)`, `&where` constraints, protocol inheritance), every **global** —
+functions, `defvar`s, `defconst`s, enum members, `extern`s and `declare`d C
+functions — and every **type** — struct, union, enum and template names alike.
+`anything/Circle` no longer resolves the way it used to: a type reference needs
+its qualifier in scope in exactly the way a global or protocol reference does.
+One kind is still on the older path: an **overloaded** function name (a `defn`
+with two or more methods, dispatched by argument type) is still keyed bare and
+has no qualified spelling at all. A *solitary* `defn` resolves through the
+import environment like any other global; the moment a name gains a second
+overload it is reachable only bare, from anywhere in the unit.
+
+Two namespaces may therefore each define a type of the same name — they are
+genuinely distinct types, with distinct layouts and distinct conformances —
+and a consumer that imports both keeps them apart by the qualifier each was
+bound under:
+
+```lisp
+; lib/veca.nuc
+(ns va) (defstruct Vector x:i32 y:i32)
+
+; lib/vecb.nuc
+(ns vb) (defstruct Vector x:i32 y:i32 z:i32)
+
+; consumer
+(import-prefixed veca a) (import-prefixed vecb b)
+
+(defn main ():i32
+  (let (p:a/Vector (a/Vector 1 2)
+        q:b/Vector (b/Vector 1 2 3))
+    (return 0)))   ; p and q have unrelated layouts, though both read "Vector"
+```
+
+Three consequences of globals and types sharing this path, all new:
+
+* **A prefixed import reaches globals, constants, enum members and types**,
+  not just functions and protocols. It used to reach functions (and, more
+  recently, protocols) only — the prefix was implemented by copying entries
+  out of one registry, and the copy was filtered on fields that meant
+  something else (`defvar`s and constants were skipped by accident; types
+  were not keyed by namespace at all). There is no copy any more: the prefix
+  names a file, the file names a namespace, and the namespace composes the
+  key the library already registered — for a type as much as for a `defn`.
+* **A qualified reference needs its qualifier in scope even inside the unit.**
+  Cross-file *reachability* (next section) is unchanged for bare names, but
+  `otherns/thing` requires an import in **this** file that binds `otherns` —
+  either `(import-use otherlib)` or a prefix of your own. This applies to
+  `otherns/Circle` exactly as to `otherns/some-fn`.
+* **A bare type reference to a type defined in a namespace this file did not
+  import** gets a located diagnostic naming the defining namespace, plus a
+  note offering the spelling this file can actually write when it has bound
+  some prefix that reaches that namespace — see
+  [Namespaced type names](types.md#namespaced-type-names) for the exact
+  message. The same tier fires in head position too, so a bare struct
+  constructor for a type in an unimported namespace gets the same answer.
 
 ## Cross-file resolution: reachability, not import order
 
@@ -105,7 +264,7 @@ Consequences worth knowing:
   registered graph-wide before emission, every function, global, constant and
   enum-member reference inside the cycle resolves.
 
-  **Four things a cycle does not carry**, because they only exist once a file
+  **Three things a cycle does not carry**, because they only exist once a file
   has been *emitted*, and a cycle member's body is emitted before the rest of
   the file it back-imports. Each is refused with a located diagnostic naming the
   cycle, never a wrong answer:
@@ -115,7 +274,11 @@ Consequences worth knowing:
   | A `defmacro` the partner defines | `unknown: NAME — defined in a file this unit imports circularly` |
   | A `deferror` id or an `extern` declaration the partner defines | `undefined: NAME — defined in a file this unit imports circularly` |
   | A struct/union **layout** the partner defines — a field access, a struct literal, a by-value parameter/return/argument, or a by-value field of another struct | `<use>: 'S' has no layout at this point` |
-  | A `prefix/name` alias over a cycle member | `unknown: p/n — the prefix 'p' has no aliases here` |
+
+  A fourth used to be listed here — a `prefix/name` spelling over a cycle
+  member — and is gone: a prefix now names the imported *file*, whose namespace
+  and signatures the whole-graph prescan has already recorded, so it resolves
+  across a cycle like any other reference.
 
   What *does* work across a cycle: calling the partner's functions (the point of
   the feature), reading its globals, constants and enum members, naming its types

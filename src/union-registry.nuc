@@ -189,11 +189,40 @@
       (when (!= (pending-union-deps-ready sd) 0)
         (emit-union-ir-type sd)))))
 
+; Stage 15 B5: the visibility conjunct on this and the three lookups below is
+; the enforcement of `defstruct-`/`defunion-` privacy. `g-priv-bindings` is 0
+; unless the unit actually contains one of the four private definers that have
+; no `Sym`, so for every existing program this is one global compare and the
+; scan is unchanged. The rule itself lives in `binding-visible`
+; (src/nucleusc.nuc) — one function, six callers, per §13.3.
+; Stage 15 B3′: this is the KEY lookup — `name` must be a canonical registry key
+; (`qualify-name`'s output, or a compiler-minted name, which is `user` by
+; construction). A source *spelling* goes through `struct-lookup-ref` below. The
+; split is B2a's, per kind, and it is the whole of the per-kind work: a definer's
+; existence probe, a stamp memo and a `.nuch` replay all hold keys, while every
+; `:T` annotation holds a spelling.
 (defn lookup-struct (name:CStr):?ptr:StructDef
   (dotimes (i (unsafe/cast i32 (count g-structs)))
     (let (sd:ptr:StructDef (as ptr:StructDef (invoke g-structs (as usize i))))
-      (when (= (sd name) name)
+      (when (and (= (sd name) name)
+                 (or (= g-priv-bindings 0) (!= (binding-visible (sd priv) (sd src-ns)) 0)))
         (return (as ptr sd)))))
+  (return null))
+
+; Stage 15 B3′: the five REFERENCE resolvers. Each is the shared candidate-key
+; walk (`name-ref-key-count` / `name-ref-key-at`, src/nucleusc.nuc) plus this
+; registry's own two-line probe, then the re-export alias table, then the
+; synthesized-spelling key fallback (`g-type-key-ok`). A unit that declares no
+; namespace runs exactly one probe with exactly the key the pre-B3′ code used.
+(defn struct-lookup-ref (spelling:CStr):?ptr:StructDef
+  (dotimes (i (name-ref-key-count spelling))
+    (let (k:CStr (name-ref-key-at spelling i))
+      (when (!= k null)
+        (let (hit:?ptr:StructDef (lookup-struct k))
+          (when (!= hit null) (return hit))))))
+  (let (al:ptr (binding-alias-find spelling BK-STRUCT))
+    (when (!= al null) (return (as ptr:StructDef al))))
+  (when (!= g-type-key-ok 0) (return (lookup-struct (intern-str spelling))))
   (return null))
 
 (defn parse-type-name (name:CStr line:i32):ref:Type
@@ -204,7 +233,7 @@
   ; Result templates (prelude).
   (when (and (= (char-at name 0) 63) (= (char-at name 1) 33))
     (let (result-ty:ptr (parse-type-name (unsafe/ptr+ (as ptr:i8 name) 1) line)
-          ut:?ptr:UnionTemplate (union-template-lookup "Maybe"))
+          ut:?ptr:UnionTemplate (union-template-lookup-ref "Maybe"))
       (when (= ut null)
         (die-at line "?!T: value-Maybe template not in scope (import the prelude)"))
       (let (argts:ptr (arena-alloc (ptr-bytes)))
@@ -221,7 +250,7 @@
       (when (= (-> inner (unsafe/cast ptr:Type _) (_ kind)) TY-PTR)
         (return (unsafe/cast ref:Type (type-as-pkind inner PTR-MAYBE))))
       ; Value operand: stamp the value-Maybe template (E2 / errors.md §10).
-      (let (ut:?ptr:UnionTemplate (union-template-lookup "Maybe"))
+      (let (ut:?ptr:UnionTemplate (union-template-lookup-ref "Maybe"))
         (when (= ut null)
           (die-at line "?T: value-Maybe template not in scope (import the prelude)"))
         (let (argts:ptr (arena-alloc (ptr-bytes)))
@@ -233,7 +262,7 @@
   ; (Result i64 Err)). !?T composes for free: the rest "?T" recurses here.
   (when (= (char-at name 0) 33)
     (let (inner:ptr (parse-type-name (unsafe/ptr+ (as ptr:i8 name) 1) line)
-          ut:?ptr:UnionTemplate (union-template-lookup "Result"))
+          ut:?ptr:UnionTemplate (union-template-lookup-ref "Result"))
       (when (= ut null)
         (die-at line "!T: (Result T E) template not in scope (import the prelude)"))
       (let (argts:ptr (arena-alloc (* (as i64 2) (ptr-bytes))))
@@ -283,10 +312,14 @@
   (match (fnty-resolve name)
          ((some ft) (return ft))
          (none null))
-  ; Stage 12 N4: a struct/union type spelling may be namespace-qualified
-  ; (`coll/Vector`); the type registry is keyed by the bare name, so strip the
-  ; qualifier before lookup. Identity under `user` (no slash) → byte-identical.
-  (let (sd:ptr (lookup-struct (strip-ns-qualifier name)))
+  ; Stage 15 B3′ (name-resolution.md §8.1 step 1): a type spelling is a
+  ; REFERENCE — resolved through the writing file's import environment, exactly
+  ; like a global or a protocol. This replaces Stage 12 N4's `strip-ns-qualifier`,
+  ; which discarded the qualifier without ever checking it: that is defect #4 (any
+  ; qualifier, including one naming no namespace at all, resolved) and defect #7
+  ; (type identity was bare and global, so two namespaces could not both define
+  ; `Vector`) closing together. Identity under `user` → byte-identical.
+  (let (sd:ptr (struct-lookup-ref name))
     (when (!= sd null)
       ; A niche defunion (unions.md §6 rules 2/3) resolves to its bare-pointer
       ; niche type, not the (dead) backing struct — union-instance-type decides.
@@ -320,7 +353,7 @@
 ; two StrView Types compare equal. Identity of "StrView" is the interned symbol
 ; name, exactly how lookup-struct keys the registry (and type-is-strview matches).
 (defn strview-type ():?ptr:Type
-  (let (sd:ptr (lookup-struct ((as ptr:Node (intern-symbol "StrView")) s)))
+  (let (sd:ptr (struct-lookup-ref ((as ptr:Node (intern-symbol "StrView")) s)))
     (when (= sd null) (return null))
     (return (as ptr (type-for-sdef sd)))))
 
@@ -520,7 +553,17 @@
   ; in nucleusc.nuc precisely so this file — imported before generics.nuc — can
   ; reach it; it is the identity for an unregistered name, which keeps the
   ; deferred "protocol validation happens at box construction" behaviour intact.
-  (set! proto (as ptr (protocol-canon-name (as CStr proto))))
+  ;
+  ; Stage 15 B2a: deliberately `protocol-canon-name-ns`, the ENVIRONMENT-FREE
+  ; canonicalizer, not the reference resolver. This runs from a `defn` signature
+  ; during `prescan-defn-signatures` (where the file's import environment is empty
+  ; by construction) and again from the same signature at emission (where it is
+  ; not); a key that changed between those two moments would mint two StructDefs
+  ; for one protocol and reintroduce exactly the identity bug above. The scope
+  ; question — may THIS file name this protocol? — is asked once, at box
+  ; construction, by `dyn-require-protocol`. Identity and admission are different
+  ; questions.
+  (set! proto (as ptr (protocol-canon-name-ns (as CStr proto))))
   (let (key:ptr (intern-str (fmt-s "dyn.%s" proto))
         hit:ptr (dyn-memo-lookup key))
     (when (!= hit null) (return hit))
@@ -578,14 +621,38 @@
 (defn uniondef-lookup (name:CStr):?ptr:UnionDef
   (dotimes (i (unsafe/cast i32 (count g-uniondefs)))
     (let (ud:ptr:UnionDef (as ptr:UnionDef (invoke g-uniondefs (as usize i))))
-      (when (= (ud name) name)
+      (when (and (= (ud name) name)
+                 (or (= g-priv-bindings 0) (!= (binding-visible (ud priv) (ud src-ns)) 0)))
         (return (as ptr ud)))))
+  (return null))
+
+(defn uniondef-lookup-ref (spelling:CStr):?ptr:UnionDef
+  (dotimes (i (name-ref-key-count spelling))
+    (let (k:CStr (name-ref-key-at spelling i))
+      (when (!= k null)
+        (let (hit:?ptr:UnionDef (uniondef-lookup k))
+          (when (!= hit null) (return hit))))))
+  (let (al:ptr (binding-alias-find spelling BK-UNION))
+    (when (!= al null) (return (as ptr:UnionDef al))))
+  (when (!= g-type-key-ok 0) (return (uniondef-lookup (intern-str spelling))))
   (return null))
 
 (defn union-template-lookup (name:ptr):?ptr:UnionTemplate
   (doseq (ut g-union-templates (VecIter ref:UnionTemplate))
-         (when (= (ut name) name)
+         (when (and (= (ut name) name)
+                    (or (= g-priv-bindings 0) (!= (binding-visible (ut priv) (ut src-ns)) 0)))
                (return ut)))
+  (return null))
+
+(defn union-template-lookup-ref (spelling:CStr):?ptr:UnionTemplate
+  (dotimes (i (name-ref-key-count spelling))
+    (let (k:CStr (name-ref-key-at spelling i))
+      (when (!= k null)
+        (let (hit:?ptr:UnionTemplate (union-template-lookup (as ptr k)))
+          (when (!= hit null) (return hit))))))
+  (let (al:ptr (binding-alias-find spelling BK-UNION-TEMPLATE))
+    (when (!= al null) (return (as ptr:UnionTemplate al))))
+  (when (!= g-type-key-ok 0) (return (union-template-lookup (intern-str spelling))))
   (return null))
 
 ; Stage 11: look up a registered defstruct template by (interned) name. Mirror
@@ -593,8 +660,20 @@
 ; interned head symbol (parametric-structs.md §1).
 (defn struct-template-lookup (name:ptr):?ptr:StructTemplate
   (doseq (st g-struct-templates (VecIter ref:StructTemplate))
-           (when (= (st name) name)
+           (when (and (= (st name) name)
+                      (or (= g-priv-bindings 0) (!= (binding-visible (st priv) (st src-ns)) 0)))
                  (return st)))
+  (return null))
+
+(defn struct-template-lookup-ref (spelling:CStr):?ptr:StructTemplate
+  (dotimes (i (name-ref-key-count spelling))
+    (let (k:CStr (name-ref-key-at spelling i))
+      (when (!= k null)
+        (let (hit:?ptr:StructTemplate (struct-template-lookup (as ptr k)))
+          (when (!= hit null) (return hit))))))
+  (let (al:ptr (binding-alias-find spelling BK-STRUCT-TEMPLATE))
+    (when (!= al null) (return (as ptr:StructTemplate al))))
+  (when (!= g-type-key-ok 0) (return (struct-template-lookup (intern-str spelling))))
   (return null))
 
 ; The UnionDef behind a type, or null: a defunion value is TY-STRUCT whose
@@ -913,6 +992,16 @@
               (.set! ud layout layout)
               (.set! ud niche-elem niche-elem-box)
               (.set! ud src-line line)
+              ; Stage 15 B5: `defunion-`'s privacy, mirrored onto the backing
+              ; StructDef because `g-structs` is the registry a type REFERENCE
+              ; actually probes (the union name and its backing struct share one
+              ; key), so a filter that only knew about UnionDef would never fire.
+              (.set! ud priv g-defining-private)
+              (.set! ud src-ns g-current-ns)
+              (when (!= g-defining-private 0)
+                (.set! sd priv 1)
+                (.set! sd src-ns g-current-ns)
+                (set! g-priv-bindings 1))
               (.set! sd udef ud)
               (return (as ref:UnionDef ud))))))))))
 
@@ -932,7 +1021,12 @@
         name-node:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr head) 0)))
     (when (!= (name-node kind) NODE-SYM)
       (die-at (node-line (as ptr head) (ff line)) "defunion: template name must be a symbol"))
+    ; Stage 15 B3′: `name` is the SOURCE spelling (diagnostics, `guard-name-kind`);
+    ; `key` is the canonical registry key the template is stored and stamped under,
+    ; so a stamped instance inherits the template's namespace rather than the
+    ; stamping site's. Identity under `user`.
     (let (name:ptr (name-node s)
+          key:ptr (qualify-name (name-node s))
           ntv:i32 (- (node-len (as ptr head)) 1))
       (when (< ntv 1)
         (die-at (node-line (as ptr head) (ff line)) "defunion: template needs at least one type parameter"))
@@ -947,7 +1041,7 @@
         (die-at (node-line (as ptr head) (ff line))
           (fmt-s "defunion: takes no type annotation; write (defunion %s ...)" name)))
       ; Re-import of the same template (e.g. via .nuch) is a no-op.
-      (when (!= (union-template-lookup name) null) (return))
+      (when (!= (union-template-lookup key) null) (return))
       (guard-name-kind name (ff line) NK-TYPE)
       (when (>= (unsafe/cast i32 (count g-union-templates)) MAX-UNION-TEMPLATES)
         (die-at (ff line) "too many defunion templates"))
@@ -959,10 +1053,15 @@
             (aset! (as ptr:ptr tyvars) i (tv s))))
         (let (ut:ptr:UnionTemplate (as ptr:UnionTemplate (arena-alloc (sizeof UnionTemplate))))
           (conj g-union-templates ut)
-          (.set! ut name name)
+          (.set! ut name key)
           (.set! ut tyvars tyvars)
           (.set! ut ntv ntv)
-          (.set! ut form form))))))
+          (.set! ut form form)
+          ; Stage 15 B5: `defunion-`'s privacy. The caller (prescan-struct-names
+          ; / emit-defunion) arms g-defining-private for the private spelling.
+          (.set! ut priv g-defining-private)
+          (.set! ut src-ns g-current-ns)
+          (when (!= g-defining-private 0) (set! g-priv-bindings 1)))))))
 
 ; Stage 11: register `(defstruct (Name T ...) field-specs...)` as a template.
 ; Exact analogue of register-union-template — defines no type, emits no IR; a
@@ -977,6 +1076,7 @@
     (when (!= (name-node kind) NODE-SYM)
       (die-at (node-line (as ptr head) (ff line)) "defstruct: template name must be a symbol"))
     (let (name:ptr (name-node s)
+          key:ptr (qualify-name (name-node s))
           ntv:i32 (- (node-len (as ptr head)) 1))
       (when (< ntv 1)
         (die-at (node-line (as ptr head) (ff line)) "defstruct: template needs at least one type parameter — use a plain defstruct"))
@@ -992,7 +1092,7 @@
           (fmt-s "defstruct: takes no type annotation; write (defstruct %s ...)" name)))
       ; Re-import of the same template (e.g. via .nuch, or the idempotent prescan
       ; pass) is a no-op.
-      (when (!= (struct-template-lookup name) null) (return))
+      (when (!= (struct-template-lookup key) null) (return))
       (guard-name-kind name (ff line) NK-TYPE)
       (when (>= (unsafe/cast i32 (count g-struct-templates)) MAX-STRUCT-TEMPLATES)
         (die-at (ff line) "too many defstruct templates"))
@@ -1004,10 +1104,14 @@
             (aset! (as ptr:ptr tyvars) i (tv s))))
         (let (st:ptr:StructTemplate (as ptr:StructTemplate (arena-alloc (sizeof StructTemplate))))
           (conj g-struct-templates st)
-          (.set! st name name)
+          (.set! st name key)
           (.set! st tyvars tyvars)
           (.set! st ntv ntv)
-          (.set! st form form))))))
+          (.set! st form form)
+          ; Stage 15 B5: `defstruct-`'s privacy for the parametric spelling.
+          (.set! st priv g-defining-private)
+          (.set! st src-ns g-current-ns)
+          (when (!= g-defining-private 0) (set! g-priv-bindings 1)))))))
 
 ; Stamp (and memoize) a concrete instance of a defunion template from a type
 ; The Type a defunion instance resolves to. For a niche layout (unions.md §6
@@ -1048,6 +1152,18 @@
 ; node-driven `(Result A B)` path and the `!T` sugar (which has Type* operands,
 ; not nodes). Memoized by the mangled instance name.
 (defn union-template-stamp-types (ut:raw:UnionTemplate argts:ptr nargs:i32 line:i32):ref:Type
+; Stage 15 B3′: a template stamp is a SYNTHESIS region — every type spelling parsed inside it
+; was written by the compiler (a `type-spelling` of a bound tyvar, a `Self`
+; substitution), not by any file, so the type reference resolvers take an exact-key
+; fallback here. See `g-type-key-ok` (src/nucleusc.nuc) for why this is a scoped
+; permission rather than a global relaxation.
+  (let (saved:i32 g-type-key-ok)
+    (set! g-type-key-ok 1)
+    (let (t:ref:Type (union-template-stamp-types-in ut argts nargs line))
+      (set! g-type-key-ok saved)
+      (return t))))
+
+(defn union-template-stamp-types-in (ut:raw:UnionTemplate argts:ptr nargs:i32 line:i32):ref:Type
   (let (utt:raw:UnionTemplate ut)
     (when (!= nargs (utt ntv))
       (die-at line
@@ -1078,6 +1194,13 @@
 ;      at module-assembly boundaries, exactly like unions). The result IS an
 ;      ordinary monomorphic TY-STRUCT — no new layout/ABI code.
 (defn struct-template-stamp-types (st:raw:StructTemplate argts:ptr nargs:i32 line:i32):ref:Type
+  (let (saved:i32 g-type-key-ok)
+    (set! g-type-key-ok 1)
+    (let (t:ref:Type (struct-template-stamp-types-in st argts nargs line))
+      (set! g-type-key-ok saved)
+      (return t))))
+
+(defn struct-template-stamp-types-in (st:raw:StructTemplate argts:ptr nargs:i32 line:i32):ref:Type
   (let (stt:raw:StructTemplate st)
     (when (!= nargs (stt ntv))
       (die-at line
@@ -1320,13 +1443,13 @@
                   (when (= (-> inner (unsafe/cast ptr:Type _) (_ kind)) TY-PTR)
                     (return (unsafe/cast ref:Type (type-as-pkind inner PTR-MAYBE))))
                   ; Value operand: stamp the value-Maybe template (Phase F uniform ?).
-                  (let (ut:?ptr:UnionTemplate (union-template-lookup "Maybe"))
+                  (let (ut:?ptr:UnionTemplate (union-template-lookup-ref "Maybe"))
                     (when (= ut null)
                       (die-at line "?T: value-Maybe template not in scope (import the prelude)"))
                     (let (argts:ptr (arena-alloc (ptr-bytes)))
                       (aset! (as ptr:ptr argts) 0 inner)
                       (return (union-template-stamp-types (as ptr ut) argts 1 line)))))
-                (let (ut:?ptr:UnionTemplate (union-template-lookup "Result"))
+                (let (ut:?ptr:UnionTemplate (union-template-lookup-ref "Result"))
                   (when (= ut null)
                     (die-at line "!T: (Result T E) template not in scope (import the prelude)"))
                   (let (argts:ptr (arena-alloc (* (as i64 2) (ptr-bytes))))
@@ -1467,7 +1590,7 @@
       ; below with the inner (Vector i32) parsed via this same routine.
       (let (head:ptr:Node (unsafe/cast ptr:Node (n car)))
         (when (and (!= (as ptr head) null) (= (head kind) NODE-SYM))
-          (let (st:ptr (struct-template-lookup (head s)))
+          (let (st:ptr (struct-template-lookup-ref (head s)))
             (when (!= st null)
               (return (struct-template-stamp st (as ptr n) line))))))
       ; A parameterized defunion use: (Result A B) stamps (and memoizes) a
@@ -1477,7 +1600,7 @@
       (let (head:ptr:Node (unsafe/cast ptr:Node (n car)))
         (when (and (!= (as ptr head) null)
                    (= (head kind) NODE-SYM) (!= (head s) "Maybe"))
-          (let (ut:ptr (union-template-lookup (head s)))
+          (let (ut:ptr (union-template-lookup-ref (head s)))
             (when (!= ut null)
               (return (union-template-stamp ut (as ptr n) line))))))
       ; Check for pointer constructor: (ptr T) or (ptr ptr T) ...
@@ -1570,7 +1693,7 @@
                          (= (ptr-pkind inner) PTR-REF))
                 (return (unsafe/cast ref:Type (type-as-pkind inner PTR-MAYBE))))
               ; Any other payload: stamp the value-Maybe template.
-              (let (ut:?ptr:UnionTemplate (union-template-lookup "Maybe"))
+              (let (ut:?ptr:UnionTemplate (union-template-lookup-ref "Maybe"))
                 (when (= ut null)
                   (die-at line "(Maybe T): value-Maybe template not in scope (import the prelude)"))
                 (let (argts:ptr (arena-alloc (ptr-bytes)))

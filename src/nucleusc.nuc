@@ -203,6 +203,11 @@
 (defvar (g-special-form-set (ref (HashSet CStr))) (build-special-form-set))
 (defvar (g-primitive-type-set (ref (HashSet CStr))) (build-primitive-type-set))
 
+; Stage 15 B5: the shared binding table — one row per name-keyed registry, in
+; resolution priority order. See `build-binding-kinds` (beside `emit-dispatch`)
+; for the rows and for what each column's 0s mean.
+(defvar (g-binding-kinds (ref (Vector (ref BindingKind)))) (build-binding-kinds))
+
 ; String literal table. (Vector ptr) of StrLit* (each individually
 ; arena-allocated). The interned id is the element's position, so emit sites read
 ; back the StrLit by `(invoke g-strs id)` and emit `@.str.<id>`.
@@ -533,14 +538,6 @@
 ; different imports may not share a prefix (design decision 5); this enforces it
 ; (null = empty).
 (defvar g-import-prefixes:ptr)
-; Stage 12: when a C header is imported under a prefix, emit-c-include runs in
-; collect mode (g-cinclude-collecting != 0) and appends every function name it
-; parses — newly registered or already present — to g-cinclude-collected (a
-; Node string list). do-import then aliases each as prefix/name. This is needed
-; because a header may re-declare a symbol the prelude already surfaced, so the
-; g-globals delta alone would miss it.
-(defvar g-cinclude-collecting:i32)
-(defvar g-cinclude-collected:ptr)
 ; Stage 15 W3b/W3c: C-header function declarations the importer recognized but
 ; could not describe (cheader.md §1.4/§1.5). One Node cell per function name,
 ; deduplicated: `s` = the function name, `car` = a pre-formatted
@@ -548,8 +545,7 @@
 ; `cheader-record-skip`; read by `unresolved-name-message` (just below the
 ; globals block, well before `(import-use cheader)`) so a *use* of a skipped
 ; name says why it is missing instead of offering a spelling correction. The
-; global lives here rather than in cheader.nuc for exactly that ordering reason
-; — the same arrangement `g-cinclude-collected` above already uses.
+; global lives here rather than in cheader.nuc for exactly that ordering reason.
 (defvar (g-cheader-skipped (raw Node)))
 ; Stage 10: files whose types have already been pre-scanned for the signature
 ; prescan (so prelude types like Node/Result and the !T sugar resolve in the
@@ -576,13 +572,6 @@
 ; long after the cycle has unwound. Read only from diagnostic paths, so it can
 ; never move emitted IR.
 (defvar g-import-cycles:ptr)
-; Stage 15 W1d: prefixes whose alias injection was suppressed by a circular
-; skip. `s` = the prefix, `car` = the in-progress path it would have aliased.
-; A skipped re-entry has no global-scope slice (the partner is mid-emission), so
-; `prefix/name` cannot be bound; a *use* of such a prefix is diagnosed against
-; this list rather than falling through to a bare "not defined anywhere".
-(defvar g-cycle-prefixes:ptr)
-
 ; g-current-ns is declared near the top of the file (above g-generics, whose
 ; builder reads it through generic-new → ns-ir-prefix).
 ; Set once a leading `ns` directive has been consumed in the current unit. A
@@ -593,6 +582,16 @@
 ; `defprotocol-`). The emit-* handlers check this to mark the symbol private
 ; and, for link-emitting forms, to emit internal LLVM linkage.
 (defvar g-defining-private:i32 0)
+
+; Stage 15 B5: has this unit registered ANY private binding of a kind that has
+; no `Sym`? (`defstruct-` / `defunion-` / `defstruct-`-template / `defunion-`-
+; template / `defmacro-` / `defprotocol-`.) Privacy for those four definers was
+; accepted and enforced by nothing before B5 (name-resolution.md §13.2), and the
+; enforcement is a filter inside each kind's reference lookup — so this flag is
+; what keeps the filter provably inert: it is 0 for every build of this compiler
+; and every program in `lib/`, `examples/` and `tests/`, exactly as
+; `g-priv-files == null` short-circuits the W5e machinery.
+(defvar g-priv-bindings:i32 0)
 ; Stage 12 N3: set to 1 by `unsafe-import-private` so inject-import-aliases
 ; includes private symbols in the alias walk. Cleared after the import.
 (defvar g-import-include-private:i32 0)
@@ -610,6 +609,55 @@
 ; first `set-ir-prefix` — which is what `raw` means, and what makes the G-5 flip
 ; leave it alone.
 (defvar (g-ns-prefix-table (raw (Vector (ref NsPrefixEntry)))))
+
+; Stage 15 B1 (design/stage15-stress-test/name-resolution.md §5.2 B1): the import
+; environment of the file *currently being compiled* — one `ImportBind` per
+; import form that file wrote. `do-import` saves it, clears it and restores it
+; around every imported file, exactly as it already does for `g-current-ns` /
+; `g-ns-seen`; that save/restore is the whole of the file scoping. `raw` because
+; it is genuinely null for a file with no imports yet (the g-ns-prefix-table
+; precedent), which is also what keeps a unit with no prefixed import on exactly
+; the pre-B1 path.
+(defvar (g-file-imports (raw (Vector (ref ImportBind)))))
+
+; Stage 15 B2a (name-resolution.md §9.1): the unit-global `path → namespace` map
+; B1 deliberately did not materialise. An `ImportBind` records the *file* an
+; import bound, not its namespace; resolving a prefix to a namespace needs the
+; other half. Written by `emit-ns` — the single point at which any file's
+; namespace becomes known, and the one that also covers the already-loaded and
+; W1d cycle-skip paths, which never reach a load block. A path with no record is
+; in `user` (a file with no `(ns …)` never reaches `emit-ns`), so absence is a
+; meaningful answer and no eager registration is needed. Node cells: path in `s`,
+; interned namespace in `car`. Compared by CONTENT — `resolve-import` is free to
+; hand back a fresh buffer per call.
+(defvar g-file-ns:ptr)
+
+; Stage 15 B2a: has any file in this unit declared a namespace? Nothing but
+; `emit-ns` sets it, so it is 0 for every build of this compiler and for every
+; program in `lib/`. It gates the flattened-namespace probe in the bare-name
+; resolution path: with no namespace anywhere in the unit, every flattened import
+; is in `user`, whose key is the bare name the probe already tried. Same shape as
+; `g-priv-files` / `g-ns-prefix-table` — a feature table whose null/zero state is
+; a proof that the pre-feature path is unchanged.
+(defvar g-ns-declared:i32)
+
+; Stage 15 B3′: "the type spellings resolved under this dynamic extent are
+; compiler-generated KEYS, not source references." Since B3′ a type name resolves
+; through the writing file's import environment (R3), and a *synthesized* spelling
+; is not written by any file: `type-spelling` renders a stamped generic's tyvar
+; binding, a protocol's `Self` substitution and a `.nuch` signature as the type's
+; CANONICAL name (`dp/Fox`), which the stamping/importing file usually cannot name.
+; Resolving those as references is the B2a false-rejection; resolving *every*
+; qualified spelling as a key would put `type-annot zn/` back to `ok`.
+;
+; So the type reference resolvers (`struct-lookup-ref` and its four siblings) take
+; an exact-key fallback ONLY while this is armed, and it is armed by save/set/
+; restore around the synthesis regions — the template stampers, the monomorphized-
+; body drain, the protocol-signature substitution, the conformance-arg re-parse and
+; the `.nuch` replay. This is `g-defvar-soft`'s shape (soften one exit, leave every
+; other raise alone), not a global relaxation. 0 for every program in the tree that
+; declares no namespace, since the fallback only runs after a miss.
+(defvar g-type-key-ok:i32 0)
 
 ; Stage 15 W5e (design/stage15-stress-test/ergonomics.md §W5e): the file-private
 ; name table. One `PrivFile` per source file that used a private definer while
@@ -1670,7 +1718,7 @@
 ; CStr) guards it.
 (defn ty-raw-node ():(raw Type)
   (when (= g-ty-raw-node null)
-    (let (sd:(raw StructDef) (lookup-struct "Node"))
+    (let (sd:(raw StructDef) (struct-lookup-ref "Node"))
       (when (!= sd null)
         (let (t:ref:Type (make-type TY-PTR))
           (.set! t elem (parse-type-name "Node" 0))
@@ -2021,9 +2069,32 @@
       (free (as ptr cur)))
     (return result)))
 
+; Consider one candidate for the did-you-mean. `key` is the registry key; the
+; distance is measured against its BARE name (a namespace-qualified key would
+; otherwise never be near anything the author typed), and what is SUGGESTED is
+; the spelling this file could actually write for it — `binding-usable-spelling`
+; (Stage 15 B5), which consults the interface's `src-ns` column.
+;
+; This is defect #9. The suggester used to print the candidate's raw key, so a
+; library function reachable only as `zx/zfun` was offered as `zfun` — the exact
+; spelling that had just failed: `error: unknown: zfun (did you mean 'zfun'?)`.
+; Two rules follow, and the second is the belt to the first's braces: a
+; candidate this file cannot spell at all is not a suggestion, and a suggestion
+; identical to the input is never emitted.
+(defn suggest-better (name:CStr key:CStr kind:i32 payload:ptr limit:i32
+                      best:ptr:ptr bestd:ptr:i32):void
+  (let (bare:CStr (as CStr (strip-ns-qualifier (as ptr key)))
+        d:i32 (name-edit-distance name bare limit))
+    (when (>= d (aref bestd 0)) (return))
+    (let (sp:ptr (binding-usable-spelling kind payload bare))
+      (when (= sp null) (return))
+      (when (= (strcmp (as CStr sp) name) 0) (return))
+      (aset! bestd 0 d)
+      (aset! best 0 sp))))
+
 ; The closest registered spelling to `name`, or null when nothing is close
 ; enough (see name-suggest-limit). Searched over the same four registries
-; `name-existing-kind` consults — functions/multimethods, macros, struct and
+; `guard-name-kind` consults — functions/multimethods, macros, struct and
 ; union type names, and global values — which is exactly the set a reference in
 ; value or head position can resolve against. Returns `ptr`, not `CStr`: the
 ; result is null-checked by the caller, and a CStr null-check lowers to
@@ -2032,29 +2103,19 @@
   (let (limit:i32 (name-suggest-limit name))
     (when (= limit 0) (return null))
     (let (best:ptr null
-          best-d:i32 (+ limit 1))
+          best-d:i32 (+ limit 1)
+          bp:ptr:ptr (as ptr:ptr (addr-of best))
+          bd:ptr:i32 (as ptr:i32 (addr-of best-d)))
       (doseq (generic g-generics (VecIter ref:Generic))
-        (let (d:i32 (name-edit-distance name (generic name) limit))
-          (when (< d best-d)
-            (set! best-d d)
-            (set! best (as ptr (generic name))))))
+        (suggest-better name (generic name) BK-GENERIC (as ptr generic) limit bp bd))
       (doseq (macro g-macros (VecIter ref:MacroDef))
-        (let (d:i32 (name-edit-distance name (macro name) limit))
-          (when (< d best-d)
-            (set! best-d d)
-            (set! best (as ptr (macro name))))))
+        (suggest-better name (macro name) BK-MACRO (as ptr macro) limit bp bd))
       (doseq (struct g-structs (VecIter ref:StructDef))
-        (let (d:i32 (name-edit-distance name (struct name) limit))
-          (when (< d best-d)
-            (set! best-d d)
-            (set! best (as ptr (struct name))))))
+        (suggest-better name (struct name) BK-STRUCT (as ptr struct) limit bp bd))
       (let (sc:ptr:Scope (as ptr:Scope g-globals))
         (dotimes (i (sc len))
-          (let (sym:ptr:Sym (as ptr:Sym (unsafe/ptr+ (as ptr:Sym (sc syms)) i))
-                d:i32 (name-edit-distance name (sym name) limit))
-            (when (< d best-d)
-              (set! best-d d)
-              (set! best (as ptr (sym name)))))))
+          (let (sym:ptr:Sym (as ptr:Sym (unsafe/ptr+ (as ptr:Sym (sc syms)) i)))
+            (suggest-better name (sym name) BK-GLOBAL (as ptr sym) limit bp bd))))
       (return best))))
 
 ; ============================================================
@@ -2371,27 +2432,6 @@
 (defn import-cycle-advice ():CStr
   (return "break the cycle -- a cross-file reference does not require an import, so a common parent can import both files instead"))
 
-; Tier 2a: a `prefix/name` whose prefix names a file this unit imports
-; circularly. The skipped re-entry injected no aliases, so the qualified
-; spelling resolves nowhere even though the bare name does.
-(defn cycle-prefix-message (verb:CStr name:CStr):ptr
-  (when (= g-cycle-prefixes null) (return null))
-  (let (n:i64 (as i64 (strlen name))
-        slash:i64 -1)
-    (dotimes (i n)
-      (when (and (< slash 0) (= (char-at name i) 47))
-        (set! slash i)))
-    (when (<= slash 0) (return null))
-    (let (prefix:ptr (strndup name slash)
-          bare:ptr (arena-strdup (unsafe/ptr+ (as ptr:i8 name) (+ slash 1)))
-          path:ptr (cycle-suppressed-prefix-path (as CStr prefix)))
-      (when (= path null) (return null))
-      (let (head:ptr (fmt-3s "%s: %s — the prefix '%s' has no aliases here: it names a file this unit imports circularly, which was still being emitted when the back-import was reached"
-                             verb name prefix)
-            note:ptr (fmt-3s "  note: %s defines '%s'; refer to it unqualified (an import establishes reachability, not visibility), or %s"
-                             (as CStr path) bare (import-cycle-advice)))
-        (return (fmt-2s "%s\n%s" head note))))))
-
 ; Tier 2b: the name IS defined in this unit, by a file the unit imports
 ; circularly, but by a definer whose effect is emission-time.
 (defn cycle-definer-message (verb:CStr name:CStr):ptr
@@ -2438,7 +2478,45 @@
         (set! cur (e cdr)))))
   (return null))
 
+; Stage 15 B2b: a bare spelling that names an operation of the built-in `unsafe`
+; namespace. That namespace is bound PREFIXED in every file and never flattened,
+; so `cast` / `ptr+` / `funcall-ptr-*` do not resolve — which is the mechanism
+; UN-5 wanted and previously spelled as six hard-coded refusals in the dispatch
+; ladder (plus its mirror in `node-type-call`). The refusals are gone; the text
+; they carried lives on here, verbatim, as a did-you-mean tier.
+(defn unsafe-bare-message (name:CStr):ptr
+  (when (= (unsafe-op-named name) 0) (return null))
+  ; `import-private` is not a legacy bare spelling of anything — the retired
+  ; form was `unsafe-import-private`, a different string, still refused by its
+  ; own top-level arm.
+  (when (= (strcmp name "import-private") 0) (return null))
+  (when (= (strcmp name "cast") 0)
+    (return "'cast' was split in Stage 14: use 'as' (safe) or 'unsafe/cast' (unchecked)"))
+  (return (fmt-2s "'%s' was split in Stage 14: use 'unsafe/%s'" name name)))
+
+; The qualifier is in scope nowhere in this file. Not a reachability failure:
+; the definition is in the unit and the import graph reaches it; only the
+; spelling cannot be written here. `qualifier-scope-note` carries the two tiers
+; of explanation (B1's "another file binds that prefix" and B2a's general rule).
+(defn qualifier-scope-message (verb:CStr name:CStr):ptr
+  (let (note:ptr (qualifier-scope-note name))
+    (when (= note null) (return null))
+    (let (q:ptr (arena-strndup name (qualifier-len name)))
+      (return (fmt-2s "%s\n%s"
+                      (as CStr (fmt-3s "%s: %s — '%s' is not in scope in this file"
+                                       verb name (as CStr q)))
+                      (as CStr note))))))
+
 (defn unresolved-name-message (verb:CStr name:CStr):ptr
+  ; Stage 15 B2b: the retired bare `unsafe/` spellings first — the roster names
+  ; are reserved, so this cannot shadow a user name, and its answer is exact
+  ; where every tier below is a guess.
+  (let (unsafe-note:ptr (unsafe-bare-message name))
+    (when (!= unsafe-note null) (return unsafe-note)))
+  ; Then an out-of-scope qualifier, before every reachability tier below,
+  ; because it is the one failure here that is NOT about reachability.
+  (let (unbound:ptr (qualifier-scope-message verb name))
+    (when (!= unbound null) (return unbound)))
   ; Stage 15 W3c: a name whose C-header declaration was *skipped* is not merely
   ; unknown — the header declared it and the importer could not describe it. Say
   ; so, with the header, line and reason, rather than offering a did-you-mean
@@ -2451,13 +2529,19 @@
     (when (!= skipped null)
       (return (fmt-3s "%s: '%s' — its C header declaration was skipped (%s)"
                       verb name skipped))))
-  ; Stage 15 W1d, tier 2a/2b. Before blaming reachability, check the one way a
+  ; Stage 15 W1d, tier 2b. Before blaming reachability, check the one way a
   ; name can be *in* this unit and still not resolve: it comes from a file the
   ; unit imports circularly, and its definer only takes effect at emission time.
-  ; Both return null instantly when the unit has no skipped cycle. The prefix
-  ; tier runs first because a `prefix/name` never matches a definer scan.
-  (let (cyc:ptr (cycle-prefix-message verb name))
-    (when (!= cyc null) (return cyc)))
+  ; Returns null instantly when the unit has no skipped cycle.
+  ;
+  ; W1d's *prefix* tier (2a) is gone: it existed because a circular skip has no
+  ; global-scope slice, so `inject-import-aliases` injected no `prefix/name`
+  ; aliases and the qualified spelling resolved nowhere. B2b deletes the
+  ; injection, and a prefix now names a file rather than a slice — the W1a
+  ; whole-graph prescan has already registered the partner's signatures and
+  ; recorded its namespace — so `prefix/name` resolves across a cycle like any
+  ; other reference. That is one of the three emission-time couplings W1d
+  ; enumerated (macros, layouts, prefix aliases) removed rather than diagnosed.
   (let (cyc:ptr (cycle-definer-message verb name))
     (when (!= cyc null) (return cyc)))
   ; Stage 15 W1c, tier 2. The name resolved nowhere in the unit — but it may be
@@ -2471,6 +2555,11 @@
     (when (!= elsewhere null)
       (return (fmt-3s "%s: %s — not defined anywhere in this compilation unit\n  note: %s"
                       verb name (unreachable-file-note name (as CStr elsewhere))))))
+  ; Stage 15 B3′: R1's failure mode reaches head position too — a bare struct
+  ; constructor `(Zs 4)` for a type defined in a namespace this file did not
+  ; import. Same answer as the annotation position gives, so the same function.
+  (let (ns-note:ptr (type-in-other-namespace-message verb name))
+    (when (!= ns-note null) (return ns-note)))
   (let (near:ptr (closest-known-name name))
     (when (!= near null)
       (return (fmt-3s "%s: %s (did you mean '%s'?)" verb name near)))
@@ -2479,15 +2568,67 @@
     ; imported so far", and the old bare `unknown: <name>` did not say so.
     (return (fmt-2s "%s: %s — not defined anywhere in this compilation unit" verb name))))
 
+; Stage 15 B3′: a type whose BARE name matches `name`'s, registered under a
+; namespace this file did not import. This is R1's own failure mode and it is
+; distinct from every W1c tier: the type is defined, its file is reachable, and
+; the prescan already registered it — the reference is simply unspellable here.
+; Two answers, in order of usefulness: the spelling this file *can* write (a
+; prefix it already bound), else the namespace it would have to import.
+;
+; The scan is over `g-structs` only, which also covers every `defunion` (its
+; backing StructDef is registered under the same key). Error path only — the
+; caller is a `die-at` — so a linear scan is affordable.
+(defn type-in-other-namespace-message (verb:CStr name:CStr):ptr
+  (when (= g-ns-declared 0) (return null))
+  (let (bare:CStr (as CStr (strip-ns-qualifier (as ptr name))))
+    (dotimes (i (unsafe/cast i32 (count g-structs)))
+      (let (sd:ptr:StructDef (as ptr:StructDef (invoke g-structs (as usize i))))
+        (when (and (!= (qualifier-len (as ptr (sd name))) 0)
+                   (= (strcmp (as CStr (strip-ns-qualifier (as ptr (sd name)))) bare) 0))
+          (let (usable:ptr (binding-usable-spelling BK-STRUCT (as ptr sd) bare))
+            (when (and (!= usable null) (!= (strcmp (as CStr usable) name) 0))
+              (return (fmt-2s "%s\n  note: write '%s' here"
+                              (as CStr (fmt-3s "%s: %s — defined in namespace '%s'"
+                                               verb name (key-namespace (sd name))))
+                              (as CStr usable))))
+            (return (fmt-3s "%s: %s — defined in namespace '%s', which this file does not import"
+                            verb name (key-namespace (sd name))))))))
+    (return null)))
+
 ; Stage 15 W1c: the same treatment for §2.7's TYPE reachability constraint,
 ; which W1 deliberately does not remove — a struct/union/protocol named in a
 ; unit must still be defined in a reachable file. Raised by `parse-type-name`
 ; (src/union-registry.nuc), which calls up into this file.
+;
+; Stage 15 B3′ gave it the same TIER ORDER `unresolved-name-message` has, because
+; R1 gave a type the same two ways to fail a global had since B2b: a qualifier
+; that is not in scope here, and a name that is defined in the unit under a
+; namespace this file did not import. Both would otherwise degrade into "not
+; defined anywhere in this compilation unit", which for a type that is defined
+; *and* reachable is exactly the lie W1c exists to remove.
 (defn unknown-type-message (name:CStr):ptr
+  ; An out-of-scope qualifier is not a reachability failure, so it precedes
+  ; every reachability tier — B2b's ordering rule, applied to the type side.
+  (let (unbound:ptr (qualifier-scope-message "unknown type" name))
+    (when (!= unbound null) (return unbound)))
   (let (elsewhere:ptr (unreachable-definer-file name 1))
     (when (!= elsewhere null)
       (return (fmt-2s "unknown type: %s — not defined anywhere in this compilation unit\n  note: %s"
                       name (unreachable-file-note name (as CStr elsewhere))))))
+  ; The type may be in this unit under a namespace this file cannot name — R1's
+  ; new failure mode, and the one the reachability message describes wrongly.
+  (let (ns-note:ptr (type-in-other-namespace-message "unknown type" name))
+    (when (!= ns-note null) (return ns-note)))
+  ; The type may be in this unit under a namespace this file cannot name. The
+  ; did-you-mean renders a candidate through `binding-usable-spelling`, which
+  ; since B3′ knows the type rows — so a bare `Fox` from a library imported as
+  ; `dpx` is answered with `dpx/Fox`, the spelling that compiles.
+  ; Two conversions, two arguments: `fmt-3s` here would read a garbage vararg as
+  ; a pointer and segfault the compiler on a COLD path (conventions.md's
+  ; fixed-arity trap). `tests/fixtures/b3-type-typo.nuc` executes this line.
+  (let (near:ptr (closest-known-name name))
+    (when (!= near null)
+      (return (fmt-2s "unknown type: %s (did you mean '%s'?)" name (as CStr near)))))
   (return (fmt-s "unknown type: %s — not defined anywhere in this compilation unit" name)))
 
 (defn unknown-name-message (name:CStr):ptr
@@ -3387,21 +3528,25 @@
         (return (intern-str name-part)))
       (return (intern-str (fmt-2s "%s/%s" ns-part name-part))))))
 
-; Stage 12 N4: the bare (un-namespaced) name part of a source spelling — the text
-; after the FIRST interior slash, mirroring qualify-name's split. A spelling with
-; no interior slash (`Vector`, bare `/`, `_/`, leading-slash) is returned
-; unchanged. Used to resolve a *type* spelling (`coll/Vector`) against the
-; bare-keyed type registry (g-structs), which — unlike g-globals — stores names
-; un-namespaced (register-struct uses the raw head symbol). Type identity is
-; therefore global, so a qualified type reference resolves to the same StructDef
-; regardless of the importing namespace — exactly what cross-namespace
-; conformance (decision 9) needs. The result is interned so the registry's
-; pointer-identity lookups match. Idempotent on a bare name (no slash → returns
-; the same interned pointer).
+; Stage 12 N4: the bare (un-namespaced) name part of a spelling — the text after
+; the FIRST interior slash, mirroring qualify-name's split. A spelling with no
+; interior slash (`Vector`, bare `/`, `_/`, leading-slash) is returned unchanged.
+; The result is interned so pointer-identity comparisons match. Idempotent on a
+; bare name.
 ;
-; Stage 15 W9 defect 21: this is the *type* half only. Protocol names are NO
-; longer stripped — a protocol is a namespaced entity and is canonicalized with
-; `protocol-canon-name` below. Do not re-extend this to protocol positions.
+; This is a pure STRING operation, and since Stage 15 B3′ that is all it is. It
+; canonicalizes nothing:
+;   * W9 defect 21 removed protocols from it (a protocol is namespace-keyed and
+;     canonicalizes through `protocol-canon-name`);
+;   * B3′ removed TYPES from it (a type is namespace-keyed too, and canonicalizes
+;     through `type-canon-name`; a type *reference* resolves through
+;     `struct-lookup-ref` and friends). Stage 12 N4's "the type registry is
+;     bare-keyed, so discard the qualifier" is exactly defect #4 — the qualifier
+;     was never checked against anything, so `zzz/Fox` resolved.
+; What remains are the three jobs that genuinely want "the name without its
+; namespace": the ir-name base (`register-struct`, `ns-ir-base`), the re-export
+; bare name (`emit-export`), and a did-you-mean's edit-distance subject
+; (`suggest-better`). Do not re-extend it to a resolution position.
 (defn strip-ns-qualifier (spelling:ptr):ptr
   (let (slash:ptr (strchr spelling 47))
     (when (!= slash null)
@@ -3411,6 +3556,506 @@
         (when (and (> idx 0) (!= after 0))
           (return (intern-str (arena-strdup (unsafe/ptr+ (as ptr:i8 slash) 1)))))))
     (return spelling)))
+
+; ============================================================
+; Stage 15 B1 — the file's import environment
+; (design/stage15-stress-test/name-resolution.md §5.2 B1, §8.3).
+;
+; An import prefix is a FILE-scoped binding, not a unit-global one. Before B1 it
+; was neither: `inject-import-aliases` copied the imported slice of `g-globals`
+; under a second key `prefix/name`, and because `qualify-name` splits on the
+; first interior slash that key was the same string in every namespace — so a
+; prefix declared while compiling file A resolved from file B, which never
+; declared it (§2.4). `g-file-imports` is the authority: `do-import` records one
+; `ImportBind` per import form, and saves/clears/restores the table around every
+; imported file exactly as it does `g-current-ns`.
+;
+; Stage 15 B2b removed the alias injection this table was built to replace.
+; A qualified reference is resolved through the environment (`resolve-spelling`
+; → `globals-lookup-ref`), so the prefix now names a FILE, the file names a
+; NAMESPACE, and the namespace composes the key the library already registered.
+; `g-import-prefixes` survives for two unrelated jobs: enforcing "two imports may
+; not share a prefix" (a whole-unit rule), and naming the binding file in the
+; out-of-scope diagnostic's first tier.
+; ============================================================
+
+; The length of `spelling`'s namespace/prefix qualifier: the text before the
+; FIRST interior slash, mirroring `qualify-name`'s split ("interior" = neither
+; leading nor trailing). 0 when the spelling carries no qualifier. Returns a
+; length rather than a string so the hot path allocates nothing.
+(defn qualifier-len (spelling:ptr):i64
+  (let (slash:ptr (strchr spelling 47))
+    (when (= slash null) (return 0))
+    (let (idx:i64 (- (unsafe/cast i64 (as ptr:i8 slash)) (unsafe/cast i64 (as ptr:i8 spelling)))
+          after:i32 (as i32 (aref (as ptr:i8 slash) 1)))
+      (when (or (<= idx 0) (= after 0)) (return 0))
+      (return idx))))
+
+; Is the whole of `t` equal to the first `n` characters of `s`? Content
+; comparison — see ImportBind's note on why identity will not do.
+(defn qualifier-eq (s:ptr t:ptr n:i64):i32
+  (dotimes (i n)
+    (let (tc:i32 (char-at t i))
+      (when (= tc 0) (return 0))
+      (when (!= (char-at s i) tc) (return 0))))
+  (when (!= (char-at t n) 0) (return 0))
+  (return 1))
+
+; The file some import in this UNIT bound this qualifier to as a prefix, or null
+; if no import anywhere bound it. `g-import-prefixes` is the existing prefix →
+; file list (`s` = prefix, `car` = path).
+(defn unit-prefix-path (spelling:ptr n:i64):ptr
+  (let (cur:ptr g-import-prefixes)
+    (while (!= cur null)
+      (let (e:ptr:Node (unsafe/cast ptr:Node cur))
+        (when (!= (qualifier-eq spelling (e s) n) 0) (return (as ptr (e car))))
+        (set! cur (e cdr)))))
+  (return null))
+
+; Record what one import form bound in the file that wrote it. `prefix` is null
+; for a flattening `import-use`/`import-only`. Idempotent on (prefix, path) — a
+; file may write the same import twice, and `do-import`'s own dedup returns
+; before the load without reaching here a second time anyway.
+;
+; Stage 15 B2b: `private` is read from `g-import-include-private` rather than
+; passed, because that global IS the answer at exactly this moment —
+; `emit-unsafe-import-private` sets it around its `do-import` call and restores
+; it after. Resolution happens much later, so the binding has to carry it.
+(defn file-import-record (prefix:ptr path:ptr):void
+  (when (= g-file-imports null)
+    (set! g-file-imports (vector-new-in (addr-of g-arena-alloc))))
+  (let (tbl:(ref (Vector (ref ImportBind))) (unsafe/cast (ref (Vector (ref ImportBind))) g-file-imports))
+    (dotimes (i (unsafe/cast i32 (count tbl)))
+      (let (e:ref:ImportBind (invoke tbl (as usize i)))
+        ; Stage 15 B3′: the dedup compares CONTENT, not pointers. B1 could get
+        ; away with identity because `do-import` was the only writer and reached
+        ; each form once; `prescan-file-imports` now records the same form
+        ; earlier, and `resolve-import` is documented to hand back a fresh buffer
+        ; per call — so an identity dedup would stack a duplicate per import.
+        (when (and (or (and (= (e prefix) null) (= prefix null))
+                       (and (and (!= (e prefix) null) (!= prefix null))
+                            (= (strcmp (e prefix) prefix) 0)))
+                   (and (and (!= (e path) null) (!= path null))
+                        (= (strcmp (e path) path) 0)))
+          ; `private` is read from a TRANSIENT global (`g-import-include-private`,
+          ; set only around `unsafe/import-private`'s own `do-import` call), so
+          ; the prescan records the bind with it OFF and emission arrives later
+          ; with it ON. Upgrade rather than ignore, or a private prefixed import
+          ; loses its permission to the earlier record.
+          (when (!= g-import-include-private 0) (.set! e private 1))
+          (return))))
+    (let (rec:ref:ImportBind (new ImportBind))
+      (.set! rec prefix prefix)
+      (.set! rec path path)
+      (.set! rec private g-import-include-private)
+      (conj tbl rec))))
+
+; The prefixes bound in this file, comma-separated, or null when it binds none.
+; Diagnostic-only, so the quadratic concatenation is fine (and `fmt-2s` clamps).
+(defn file-prefixes-in-scope ():ptr
+  (when (= g-file-imports null) (return null))
+  (let (out:ptr null
+        tbl:(ref (Vector (ref ImportBind))) (unsafe/cast (ref (Vector (ref ImportBind))) g-file-imports))
+    (dotimes (i (unsafe/cast i32 (count tbl)))
+      (let (e:ref:ImportBind (invoke tbl (as usize i)))
+        (when (!= (e prefix) null)
+          (if (= out null)
+            (set! out (e prefix))
+            (set! out (fmt-2s "%s, %s" (as CStr out) (as CStr (e prefix))))))))
+    (return out)))
+
+; ============================================================
+; Stage 15 B2a — the canonicaliser
+; (design/stage15-stress-test/name-resolution.md §5.2 B2, §8.3, §12.1 step 1).
+;
+; ONE function maps a source *reference* to the registry key it denotes:
+; `resolve-spelling` splits at the first interior slash (`qualify-name`'s rule,
+; unchanged) and resolves the qualifier **only** through the file's import
+; environment (B1's `g-file-imports`) — never against a global list of
+; namespaces, which is precisely what let `dp/Describe` reach a library the
+; consumer imported as `dpx` (§2.1).
+;
+; §8.3's table, as implemented here:
+;   * `(import-prefixed lib p)` binds `p/` and NOT the library's namespace;
+;   * `(import-use lib)` / `(import-only lib …)` flatten, and the namespace's own
+;     name is also a legal qualifier — R2's escape hatch for a collision;
+;   * the file's own namespace is always a legal qualifier (a file may spell its
+;     own names either way, and `lib/nsdescribe.nuc`'s bare self-reference is the
+;     same rule with the qualifier omitted);
+;   * `user` is always legal: the prelude is flattened into every file, and
+;     `user` is the unqualified space itself.
+; Anything else is NR-UNBOUND — a hard "not in scope here", *not* a fall-through
+; to the raw spelling.
+;
+; This is the reference side only. A key already canonical — a stored
+; `Constraint.proto`, a `(dyn P)` box's protocol, a super-protocol edge, a
+; `.nuch` replay — is NOT a reference and must not come through here: it is
+; looked up exactly (`protocol-lookup-ns` / `protocol-lookup-exact`). The two
+; questions are genuinely different — "may this file name it?" versus "what does
+; this key denote?" — and conflating them is what made the defect expressible.
+; ============================================================
+
+; (`NR-BARE` / `NR-QUALIFIED` / `NR-UNBOUND` and `NameRef` live in
+; src/compiler-types.nuc, with the rest of the shared tags.)
+
+; The namespace recorded for a source path, or null when none was — which means
+; `user`, since a file with no `(ns …)` never reaches `emit-ns`. Content
+; comparison: `resolve-import` may hand back a fresh buffer per call, so the
+; pointer-identity idiom `import-list-find` uses is not safe here.
+(defn file-ns-of (path:ptr):ptr
+  (let (cur:ptr g-file-ns)
+    (while (!= cur null)
+      (let (e:ptr:Node (unsafe/cast ptr:Node cur))
+        (when (= (strcmp (e s) path) 0) (return (as ptr (e car))))
+        (set! cur (e cdr)))))
+  (return null))
+
+; Record (or re-record) a file's namespace. Called from `emit-ns` only, so a
+; second `ns` directive in one file updates rather than shadows.
+(defn file-ns-record (path:ptr ns:ptr):void
+  (when (= path null) (return))
+  (let (cur:ptr g-file-ns)
+    (while (!= cur null)
+      (let (e:ptr:Node (unsafe/cast ptr:Node cur))
+        (when (= (strcmp (e s) path) 0)
+          (.set! e car ns)
+          (return))
+        (set! cur (e cdr)))))
+  (let (n:ref:Node (new Node))
+    (.set! n kind NODE-STR)
+    (.set! n line 0)
+    (.set! n i 0)
+    (.set! n s path)
+    (.set! n car ns)
+    (.set! n cdr g-file-ns)
+    (set! g-file-ns (as ptr n))))
+
+; The registry key for `bare` in namespace `ns` — the composition `qualify-name`
+; performs for the *current* namespace, factored out so another namespace can be
+; named. `user` stores bare keys (the byte-identical hatch), so this is the
+; identity there. Interned, because every registry key compares by pointer.
+(defn ns-qualify-in (ns:ptr bare:ptr):ptr
+  (when (= (strcmp ns "user") 0) (return (intern-str bare)))
+  (return (intern-str (fmt-2s "%s/%s" ns bare))))
+
+; The namespace of an imported file: its recorded `(ns …)`, or `user` when it
+; declared none (which is why absence of a record is an answer, not a gap).
+(defn import-path-ns (path:ptr):ptr
+  (when (= path null) (return (intern-str "user")))
+  (let (ns:ptr (file-ns-of path))
+    (when (= ns null) (return (intern-str "user")))
+    (return ns)))
+
+; The file this file bound `spelling`'s qualifier to as a PREFIX, or null.
+; (B1's `file-prefix-bound` answers the yes/no; B2a needs the path, because the
+; path is what names the namespace.)
+(defn file-prefix-path (spelling:ptr n:i64):ptr
+  (when (= g-file-imports null) (return null))
+  (let (tbl:(ref (Vector (ref ImportBind))) (unsafe/cast (ref (Vector (ref ImportBind))) g-file-imports))
+    (dotimes (i (unsafe/cast i32 (count tbl)))
+      (let (e:ref:ImportBind (invoke tbl (as usize i)))
+        (when (and (!= (e prefix) null) (!= (qualifier-eq spelling (e prefix) n) 0))
+          (return (e path))))))
+  (return null))
+
+; The file this file bound `spelling`'s qualifier to as a PRIVATE prefix — i.e.
+; through `unsafe/import-private`, the one form that asks for the imported file's
+; file-private names as well as its public ones. Null for every other binding.
+(defn file-prefix-private-path (spelling:ptr n:i64):ptr
+  (when (= g-file-imports null) (return null))
+  (let (tbl:(ref (Vector (ref ImportBind))) (unsafe/cast (ref (Vector (ref ImportBind))) g-file-imports))
+    (dotimes (i (unsafe/cast i32 (count tbl)))
+      (let (e:ref:ImportBind (invoke tbl (as usize i)))
+        (when (and (!= (e prefix) null) (!= (e private) 0)
+                   (!= (qualifier-eq spelling (e prefix) n) 0))
+          (return (e path))))))
+  (return null))
+
+; How many import forms this file wrote — the iteration bound for the flattened
+; set. Paired with `file-flattened-ns-at`, which answers null for a prefixed one.
+(defn file-imports-count ():i32
+  (when (= g-file-imports null) (return 0))
+  (let (tbl:(ref (Vector (ref ImportBind))) (unsafe/cast (ref (Vector (ref ImportBind))) g-file-imports))
+    (return (unsafe/cast i32 (count tbl)))))
+
+; The namespace flattened by import form `i`, or null when that form bound a
+; prefix instead (a prefixed import flattens nothing — §8.3 row 2, the whole
+; point of the fix).
+(defn file-flattened-ns-at (i:i32):ptr
+  (when (= g-file-imports null) (return null))
+  (let (tbl:(ref (Vector (ref ImportBind))) (unsafe/cast (ref (Vector (ref ImportBind))) g-file-imports))
+    (when (>= i (unsafe/cast i32 (count tbl))) (return null))
+    (let (e:ref:ImportBind (invoke tbl (as usize i)))
+      (when (!= (e prefix) null) (return null))
+      (return (import-path-ns (e path))))))
+
+; Stage 15 B5: does this file flatten the namespace `ns` (given whole, not as a
+; qualifier prefix of a longer spelling)?
+(defn file-flattens-ns-named (ns:CStr):i32
+  (dotimes (i (file-imports-count))
+    (let (f:ptr (file-flattened-ns-at i))
+      (when (and (!= f null) (= (strcmp (as CStr f) ns) 0)) (return 1))))
+  (return 0))
+
+; Stage 15 B5: a prefix this file bound whose library lives in namespace `ns`,
+; or null. The inverse of `file-prefix-path` → `import-path-ns`, and the reason
+; a did-you-mean can offer `zx/zfun` instead of echoing `zfun`.
+(defn file-prefix-for-ns (ns:CStr):ptr
+  (when (= g-file-imports null) (return null))
+  (let (tbl:(ref (Vector (ref ImportBind))) (unsafe/cast (ref (Vector (ref ImportBind))) g-file-imports))
+    (dotimes (i (unsafe/cast i32 (count tbl)))
+      (let (e:ref:ImportBind (invoke tbl (as usize i)))
+        (when (!= (e prefix) null)
+          (let (pns:ptr (import-path-ns (e path)))
+            (when (and (!= pns null) (= (strcmp (as CStr pns) ns) 0))
+              (return (e prefix))))))))
+  (return null))
+
+; Does this file flatten a namespace spelled by `spelling`'s qualifier?
+(defn file-flattens-ns (spelling:ptr n:i64):i32
+  (dotimes (i (file-imports-count))
+    (let (ns:ptr (file-flattened-ns-at i))
+      (when (and (!= ns null) (!= (qualifier-eq spelling ns n) 0)) (return 1))))
+  (return 0))
+
+; THE canonicaliser. See the section header for the rules.
+(defn resolve-spelling (spelling:ptr):ref:NameRef
+  (let (r:ref:NameRef (new NameRef))
+    (.set! r spelling spelling)
+    (.set! r qual null)
+    (.set! r bare spelling)
+    (.set! r ns null)
+    (.set! r canonical null)
+    (.set! r status NR-BARE)
+    (let (n:i64 (qualifier-len spelling))
+      ; Unqualified: the current namespace's key. The caller walks the flattened
+      ; set itself, because the *probe* is per-registry and this is not.
+      (when (<= n 0)
+        (.set! r canonical (qualify-name spelling))
+        (return r))
+      (.set! r qual (arena-strndup spelling n))
+      (.set! r bare (intern-str (arena-strdup (unsafe/ptr+ (as ptr:i8 spelling) (+ n 1)))))
+      (.set! r status NR-UNBOUND)
+      (cond
+        ; A file may always name its own namespace, qualified or not.
+        (= (strcmp (r qual) g-current-ns) 0)
+          (.set! r ns g-current-ns)
+        ; `user` is the unqualified space and the prelude's namespace; it is
+        ; flattened into every file by construction.
+        (= (strcmp (r qual) "user") 0)
+          (.set! r ns (intern-str "user"))
+        ; Stage 15 B2b (§8.3's last row): `unsafe` is a BUILT-IN namespace, bound
+        ; as an implicit prefix in every file's environment. Bound *prefixed*, so
+        ; it is never flattened — which is what makes bare `cast`/`ptr+`/
+        ; `funcall-ptr-*` unreachable as a consequence of the binding rather than
+        ; as seven hard-coded refusals (UN-5's intent). `(ns unsafe)` stays
+        ; rejected because this binding pre-owns the name.
+        (= (strcmp (r qual) "unsafe") 0)
+          (.set! r ns (intern-str "unsafe"))
+        true
+          (let (p:ptr (file-prefix-path spelling n))
+            (if (!= p null)
+              (.set! r ns (import-path-ns p))
+              (when (!= (file-flattens-ns spelling n) 0)
+                (.set! r ns (intern-str (r qual)))))))
+      (when (= (r ns) null) (return r))
+      (.set! r status NR-QUALIFIED)
+      (.set! r canonical (ns-qualify-in (r ns) (r bare)))
+      (return r))))
+
+; ------------------------------------------------------------
+; Stage 15 B2b — globals cut over to the canonicaliser
+; (name-resolution.md §9, the B2b row; §12.1 step 2 for `g-globals`).
+;
+; This is the REFERENCE half of `scope-lookup`'s global-scope resolution; the
+; KEY half is `scope-lookup-key` (src/scope.nuc), which keeps the pre-B1 body
+; verbatim. The split is the per-kind work B2a's §9.2 flagged, and it is a
+; property of where the *string* came from, not of the registry: a name written
+; in the file being compiled is resolved through that file's import environment,
+; while a key this compiler itself computed and is about to write (or has
+; written) into `g-globals` must be looked up exactly.
+;
+; What replaced `inject-import-aliases`: a prefixed import no longer copies the
+; imported slice under a second `prefix/name` key. The prefix names a *file*, the
+; file names a *namespace*, and the namespace composes the key the library
+; already registered. That deletes the two accidental filters the copy carried —
+; `is-local` (every `defvar` sets it) and a null `ir-name` (every `defconst` and
+; enum member) — which is §1.1 defect #2 closing by deletion rather than by fix.
+; The one filter that was NOT accidental, `sym-private`, becomes a resolution
+; rule here instead: privacy is checked at the reference, where the binding that
+; asked for it (`ImportBind.private`) is still available.
+; ------------------------------------------------------------
+
+; Resolve a source REFERENCE against the global scope. `sc` is the global frame
+; (the unique null-parent Scope); `name` is the spelling as written.
+(defn globals-lookup-ref (sc:raw:Scope name:CStr):?ptr:Sym
+  (let (n:i64 (qualifier-len name))
+    (when (<= n 0)
+      ; Unqualified: the current namespace's key — the pre-B2b rule, unchanged,
+      ; and identity under `user`.
+      (let (hit:?ptr:Sym (scope-frame-find sc (qualify-name (priv-key-use name))))
+        (when (!= hit null) (return hit)))
+      ; No file in this unit declared a namespace ⇒ every flattened namespace is
+      ; `user`, `qualify-name` is the identity and the probes below are provably
+      ; the same scan that just missed. Every build of this compiler, and every
+      ; program in `lib/`, takes this exit — which is what makes the addition
+      ; below inert on emitted IR rather than merely believed to be.
+      (when (= g-ns-declared 0) (return null))
+      ; §8.3 row 1: `import-use`/`import-only` flatten the imported namespace
+      ; into the unqualified space. Public names only — a flattened namespace is
+      ; someone else's file.
+      (dotimes (i (file-imports-count))
+        (let (fns:ptr (file-flattened-ns-at i))
+          (when (and (!= fns null) (!= (strcmp fns g-current-ns) 0))
+            (let (hit:?ptr:Sym (scope-frame-find-public sc (ns-qualify-in fns name)))
+              (when (!= hit null) (return hit))))))
+      ; And `user` last: it is the unqualified space itself and the prelude's
+      ; namespace, flattened into every file by construction. Without this a file
+      ; with an explicit `(ns …)` cannot name `default-allocator` or `printf` at
+      ; all — the "global-resolution gap" lib/nsdescribe.nuc's header records.
+      (when (!= (strcmp g-current-ns "user") 0)
+        (return (scope-frame-find-public sc (intern-str name))))
+      (return null))
+    ; Qualified: the file's import environment is the only authority (R3).
+    (let (r:ref:NameRef (resolve-spelling name))
+      (when (= (r status) NR-UNBOUND) (return null))
+      (let (hit:?ptr:Sym null)
+        ; A file naming its own namespace sees its own private names; a name
+        ; reached through anyone else's does not.
+        (if (= (strcmp (r ns) g-current-ns) 0)
+          (set! hit (scope-frame-find sc (r canonical)))
+          (set! hit (scope-frame-find-public sc (r canonical))))
+        (when (!= hit null) (return hit)))
+      ; `unsafe/import-private` additionally reaches the imported file's
+      ; file-private key space (`#pN/name`), which is the whole of what
+      ; `g-import-include-private` used to buy in `inject-import-aliases`.
+      ; Deliberately NOT inside the else-branch above: an imported file with no
+      ; `(ns …)` is in `user`, so when the importer is also in `user` the two
+      ; namespaces compare equal and the public probe above is the *first* one,
+      ; not the only one. That is the ordinary case, not a corner.
+      (let (pp:ptr (file-prefix-private-path name n))
+        (when (= pp null) (return null))
+        (let (pns:ptr (priv-ns-of-path pp))
+          (when (= pns null) (return null))
+          (return (scope-frame-find sc (ns-qualify-in pns (r bare)))))))))
+
+; ------------------------------------------------------------
+; Stage 15 B3′ — the candidate-key policy, shared by the type registries
+; (name-resolution.md §8.1 step 1).
+;
+; B2b measured that only ~2 lines of `globals-lookup-ref` are registry-specific
+; (scan this frame for this key); everything else is *policy* — which keys to try
+; and in what order — and that policy is identical across kinds. So the six type
+; registries do not each grow their own copy of it: they walk this key sequence
+; and probe their own table with each key.
+;
+; The sequence, for an unqualified spelling, is exactly `globals-lookup-ref`'s:
+;   0            the current namespace's key (the pre-B3′ rule, and the identity
+;                under `user` — this is the ONLY probe when the unit declares no
+;                namespace, which is what makes B3′ byte-identical for the tree);
+;   1..n         each namespace an `import-use`/`import-only` in this file
+;                flattened (a prefixed import flattens nothing — §8.3 row 2);
+;   n+1          `user`, the unqualified space and the prelude's namespace. A
+;                namespaced file must still be able to name `StrView`, `Maybe`,
+;                `Node` and every C-header type, all of which key bare.
+; For a QUALIFIED spelling the file's import environment is the only authority
+; (R3): `resolve-spelling` answers one key, or none at all — which is defect #4
+; (`nope/Zs`) and defect #3 (`zn/Zs` from a file that imported the library under
+; a prefix) closing together.
+; ------------------------------------------------------------
+
+; How many keys `spelling` may denote here. 0 means "this file cannot name it".
+(defn name-ref-key-count (spelling:CStr):i32
+  (when (> (qualifier-len (as ptr spelling)) 0)
+    (when (= ((resolve-spelling (as ptr spelling)) status) NR-UNBOUND) (return 0))
+    (return 1))
+  (when (= g-ns-declared 0) (return 1))
+  (return (+ (file-imports-count) 2)))
+
+; The i-th candidate key, or null for a slot that names nothing (a prefixed
+; import flattens no namespace, so its slot is empty).
+(defn name-ref-key-at (spelling:CStr i:i32):CStr
+  (when (> (qualifier-len (as ptr spelling)) 0)
+    (let (r:ref:NameRef (resolve-spelling (as ptr spelling)))
+      (when (= (r status) NR-UNBOUND) (return null))
+      (return (as CStr (r canonical)))))
+  (when (= i 0) (return (as CStr (qualify-name (as ptr spelling)))))
+  (let (n:i32 (file-imports-count))
+    (when (<= i n)
+      (let (fns:ptr (file-flattened-ns-at (- i 1)))
+        (when (= fns null) (return null))
+        ; The current namespace was slot 0; re-probing it here would be a second
+        ; identical scan.
+        (when (= (strcmp fns g-current-ns) 0) (return null))
+        (return (as CStr (ns-qualify-in fns (as ptr spelling)))))))
+  (when (= (strcmp g-current-ns "user") 0) (return null))
+  (return (as CStr (intern-str spelling))))
+
+; The qualifiers legal in this file, comma-separated, or null when it has none
+; beyond `user`: every bound prefix, every flattened non-`user` namespace, and
+; the file's own namespace. Diagnostic-only.
+(defn file-qualifiers-in-scope ():ptr
+  (let (out:ptr null)
+    (when (!= (strcmp g-current-ns "user") 0)
+      (set! out g-current-ns))
+    (dotimes (i (file-imports-count))
+      (let (ns:ptr (file-flattened-ns-at i))
+        (when (and (!= ns null) (!= (strcmp ns "user") 0))
+          (if (= out null)
+            (set! out ns)
+            (set! out (fmt-2s "%s, %s" (as CStr out) (as CStr ns)))))))
+    (let (pre:ptr (file-prefixes-in-scope))
+      (when (!= pre null)
+        (if (= out null)
+          (set! out pre)
+          (set! out (fmt-2s "%s, %s" (as CStr out) (as CStr pre))))))
+    (return out)))
+
+; The note that turns a bare "unknown X" into a SCOPE diagnostic: null when
+; `spelling` is unqualified or its qualifier is in scope, else prose naming the
+; qualifier and what this file can actually spell.
+;
+; A name that is defined, reachable, and one import line away must not be
+; reported as "unknown", full stop.
+;
+; Stage 15 B2b folded B1's `unbound-prefix-message` in here, because B1's gate
+; (`prefix-out-of-scope`) and B2a's resolver had started to DISAGREE: with
+; globals still on the narrow gate, a file that `import-use`s a namespaced
+; library could name its protocols by namespace but was refused `geom/area`.
+; One gate (`resolve-spelling`) now decides, and this is the one place that
+; explains it — with two tiers, because "another file in this unit binds that
+; prefix" is strictly more actionable than the general rule and naming the file
+; is the whole fix.
+(defn qualifier-scope-note (spelling:ptr):ptr
+  (let (n:i64 (qualifier-len spelling))
+    (when (<= n 0) (return null))
+    (let (r:ref:NameRef (resolve-spelling spelling))
+      (when (!= (r status) NR-UNBOUND) (return null))
+      (let (tail:ptr "This file has no import qualifiers in scope."
+            inscope:ptr (file-qualifiers-in-scope))
+        (when (!= inscope null)
+          (set! tail (fmt-s "In scope here: %s." (as CStr inscope))))
+        ; Tier 1 (was B1's `unbound-prefix-message`): some OTHER file in this
+        ; unit binds this qualifier as an import prefix. Cannot collide with
+        ; W1d's cycle tier — that one fires for a prefix the file DID declare,
+        ; for which `resolve-spelling` returns NR-QUALIFIED and this returns null.
+        (let (path:ptr (unit-prefix-path spelling n))
+          (when (!= path null)
+            (return
+              (fmt-3s "  note: an import prefix is file-scoped: another file in this unit binds '%s' to %s, but a prefix reaches only the file whose own import declares it. %s"
+                      (as CStr (r qual)) (as CStr path) (as CStr tail)))))
+        ; Tier 2: the general rule.
+        (return
+          (fmt-2s "  note: '%s' is not in scope in this file — a prefixed import binds its library under the prefix it names and not under the library's own namespace, and an unimported namespace is not nameable at all. %s"
+                  (as CStr (r qual)) (as CStr tail)))))))
+
+; Append `qualifier-scope-note` to a diagnostic head, when there is one to
+; append. Every raise about an unresolved *reference* should go through this:
+; the head says what failed, the note says why the spelling could not reach it.
+(defn with-qualifier-note (head:ptr spelling:ptr):ptr
+  (let (note:ptr (qualifier-scope-note spelling))
+    (when (= note null) (return head))
+    (return (fmt-2s "%s\n%s" (as CStr head) (as CStr note)))))
 
 ; Stage 15 W9 defect 21: the PROTOCOL half of what `strip-ns-qualifier` used to
 ; do for both halves. Map a protocol *reference* (any source spelling) to the
@@ -3437,10 +4082,58 @@
 ; form is emitted); union-registry.nuc already up-calls `intern-str` and
 ; `guard-name-kind` this way. This function's own body sits well below
 ; `(import-use generics)`, so `protocol-lookup` resolves for it.
+; Stage 15 B2a: `protocol-lookup` is now the REFERENCE resolver, so this
+; canonicalizes through the file's import environment (§8.3). The
+; "unregistered → unchanged" contract above now covers a second case —
+; a qualifier that is not in scope here — and it is the same answer for the
+; same reason: this function must never invent a resolution the file cannot
+; spell. Note the consequence for the registries that call it on an ALREADY
+; canonical key (`conformance-lookup`, `proto-super-add`): the key passes through
+; unchanged, which is exactly right, because a canonical key is already the
+; answer. What must *not* be done is to hand such a key onward to a lookup that
+; re-resolves it as a reference — see `protocol-lookup-ns`.
 (defn protocol-canon-name (spelling:CStr):CStr
   (let (p:?ptr:Protocol (protocol-lookup spelling))
     (when (= p null) (return spelling))
     (return (-> p (as ptr:Protocol _) (_ name)))))
+
+; Stage 15 B2a: the ENVIRONMENT-FREE canonicalizer — the pre-B2a behaviour of
+; `protocol-canon-name`, resolving by namespace alone (current namespace, then
+; bare). It exists for exactly one caller, `dyn-type`, and the reason is timing:
+; a `(dyn P)` box type is minted from a *signature* during
+; `prescan-defn-signatures`, where the file's import environment is empty by
+; construction, and again from the same signature at emission, where it is not.
+; A memo key that changed between those two moments would mint two `StructDef`s
+; for one protocol, and `type-eq` is `StructDef`-pointer identity — the precise
+; bug W9 defect 21 removed. So the box's IDENTITY key stays namespace-derived and
+; phase-stable, and the scope question is asked separately, at box construction,
+; by `dyn-require-protocol`. Identity and admission are different questions; only
+; the second one is about what this file may name.
+(defn protocol-canon-name-ns (spelling:CStr):CStr
+  (let (p:?ptr:Protocol (protocol-lookup-ns spelling))
+    (when (= p null) (return spelling))
+    (return (-> p (as ptr:Protocol _) (_ name)))))
+
+; Stage 15 B3′: the TYPE half's canonicalizer — the exact counterpart of
+; `protocol-canon-name`, and what replaced Stage 12 N4's `strip-ns-qualifier` in
+; the conformance registry. A conformance key's type half arrives from two
+; provenances and this answers both idempotently:
+;
+;   * a SOURCE spelling (`extend`'s subject, `Cat` or `dpx/Fox`) resolves through
+;     the file's import environment and yields the StructDef's canonical name;
+;   * an already-canonical name (`type-spelling` at a dispatch site, a stored
+;     conformance arg, a `.nuch` replay) is looked up as a KEY and yields itself.
+;
+; A spelling that names no registered type — `i32`, `ptr:Node`, a blanket
+; protocol, a tyvar, a template application — passes through UNCHANGED, which is
+; what keeps the primitive and structural conformance keys working. Identity for
+; every `user` type, so every existing conformance key is byte-identical.
+(defn type-canon-name (spelling:CStr):CStr
+  (let (sd:?ptr:StructDef (struct-lookup-ref spelling))
+    (when (!= sd null) (return (-> sd (as ptr:StructDef _) (_ name))))
+    (let (sd2:?ptr:StructDef (lookup-struct (intern-str spelling)))
+      (when (!= sd2 null) (return (-> sd2 (as ptr:StructDef _) (_ name)))))
+    (return spelling)))
 
 ; Stage 12 N4: IR mangling (design/stage12/namespaces.md §"Implementation",
 ; decision 7). A namespace's source name (or a `set-ir-prefix` override) lowers to
@@ -3640,6 +4333,19 @@
       (set! g-priv-cache-path null)
       (set! g-priv-cache null)
       (return pf))))
+
+; The synthetic private namespace (`#pN`) already registered for `path`, or null.
+; Stage 15 B2b: deliberately NON-creating, unlike `priv-file-for-path` above —
+; this answers a *resolution* question ("does that file own private names?") and
+; minting a namespace for a file that declared none would both allocate on a
+; lookup path and make the answer stop being "no".
+(defn priv-ns-of-path (path:ptr):ptr
+  (when (= g-priv-files null) (return null))
+  (let (tbl:(ref (Vector (ref PrivFile))) (unsafe/cast (ref (Vector (ref PrivFile))) g-priv-files))
+    (dotimes (i (unsafe/cast i32 (count tbl)))
+      (let (pf:ref:PrivFile (invoke tbl (as usize i)))
+        (when (= (strcmp (pf path) path) 0) (return (pf ns))))))
+  (return null))
 
 ; The file component of `path`, without directories or extension, sanitized to a
 ; C-legal identifier fragment. Only ever used to make an emitted symbol readable.
@@ -6116,10 +6822,22 @@
 ; Protocol validation for a `(dyn P)` type deliberately happens here and not at
 ; type-parse time: `dyn-type` may be reached during a prescan, before the
 ; protocol's own file has registered it.
+;
+; Stage 15 B2a: this is also the `(dyn P)` SCOPE gate. `protocol-lookup` is the
+; reference resolver, so a box whose protocol this file cannot name — the
+; library's own namespace under a prefixed import, an unimported namespace, a
+; qualifier bound nowhere — is refused here rather than at type-parse time. That
+; placement is forced: `dyn-type` runs during a prescan with an empty import
+; environment, so refusing there would reject every legal prefixed spelling. It
+; is also where the question belongs — an annotation names a type, a box
+; construction *uses* the protocol.
 (defn dyn-require-protocol (proto:CStr line:i32):ptr:Protocol
   (let (pp:?ptr:Protocol (protocol-lookup proto))
     (when (= pp null)
-      (die-at line (fmt-2s "(dyn %s): '%s' is not a declared protocol" proto proto)))
+      (die-at line
+        (with-qualifier-note
+          (fmt-2s "(dyn %s): '%s' is not a declared protocol" proto proto)
+          (as ptr proto))))
     (return (as ptr:Protocol pp))))
 
 ; TE-6: the emitted concrete-impl symbol for the SOLE method of single-method
@@ -6132,6 +6850,17 @@
 ; that the shared @__boxedfn_drop thunk reads verbatim. Dies on a missing protocol,
 ; a multi/parametric protocol (deferred), or a missing concrete impl.
 (defn dyn-vtable-method-irname (concrete-ty:(raw Type) proto:CStr line:i32):ptr
+  ; Stage 15 B3′: a synthesis region. It substitutes `Self` in the protocol's
+  ; signature with `(type-spelling concrete-ty)`, which since B3′ is the type's
+  ; CANONICAL name (`dp/Fox`) — a key, not a spelling this file can necessarily
+  ; write. `examples/w9-dyn-ns.nuc` boxes exactly that case.
+  (let (saved:i32 g-type-key-ok)
+    (set! g-type-key-ok 1)
+    (let (r:ptr (dyn-vtable-method-irname-in concrete-ty proto line))
+      (set! g-type-key-ok saved)
+      (return r))))
+
+(defn dyn-vtable-method-irname-in (concrete-ty:(raw Type) proto:CStr line:i32):ptr
   (let (pp:ptr:Protocol (dyn-require-protocol proto line))
     (let (ppp:ptr:Protocol (as ptr:Protocol pp))
       (when (!= (ppp num-sigs) 1)
@@ -6419,8 +7148,7 @@
     (when (or (!= (vt kind) TY-PTR) (= (vt elem) null)
               (!= (-> (vt elem) (unsafe/cast ptr:Type _) (_ kind)) TY-STRUCT))
       (die-at line "BoxedFn: can only box a closure value (a capturing closure's (ref Env), or a bare `fn`)"))
-    (let (env-ty:ptr (vt elem)
-          env-name:ptr (-> env-ty (unsafe/cast ptr:Type _) (_ sdef) (unsafe/cast ptr:StructDef _) (_ name)))
+    (let (env-ty:ptr (vt elem))
       ; (1) Conformance admission (structural → nominal).
       (when (= (admit-erased-conformance env-ty box-ty (as ptr null) line) 0)
         (die-at line (fmt-s "BoxedFn: type '%s' has no invoke method (not a closure)"
@@ -6434,18 +7162,26 @@
         ; (3+4) Heap-move the env by value and build the fat pointer. The env is a
         ;       TY-STRUCT travelling by value into the heap box, exactly the move a
         ;       `(dyn P)` performs on a concrete struct — shared helper.
-        (return (emit-box-struct-move v env-name box-ty vname scope line))))))
+        (return (emit-box-struct-move v (unsafe/cast (raw StructDef) (-> env-ty (unsafe/cast ptr:Type _) (_ sdef)))
+                                      box-ty vname scope line))))))
 
 ; The shared payload move (TE-3 step 3+4): heap-allocate a fresh block through the
 ; process-default libc allocator and copy the concrete TY-STRUCT value `v` (a
 ; `(ref Struct)`) into it BY VALUE (the CE-3 typed load+store), then build the fat
-; pointer {data = heap block, vtable = vname}. `struct-name` is the sdef name (an
+; pointer {data = heap block, vtable = vname}. `sd` is the payload's StructDef (an
 ; env for a BoxedFn, the boxed value's struct for a `(dyn P)`). The box does NOT
 ; thread the source allocator (the fat pointer has no room for an AllocHandle); it
 ; boxes through default-allocator and @__boxedfn_drop frees through libc free — the
 ; symmetric recovery of the v1 allocator decision (no per-box handle, no leak).
-(defn emit-box-struct-move (v:(raw Val) struct-name:CStr box-ty:(raw Type) vname:ptr scope:ref:Scope line:i32):ref:Val
-  (let (vv:(raw Val) v)
+; Stage 15 B3′: takes the StructDef, not its name — since B3′ `(sd name)` is the
+; canonical KEY (`dp/Fox`) and `(sd ir-name)` the LLVM spelling (`%dp__Fox`), and
+; this function needs one of each. The `(sizeof <name>)` node it synthesizes is a
+; source-symbol construction over the key, so it is emitted with the synthesized-
+; spelling permission armed (see `g-type-key-ok`).
+(defn emit-box-struct-move (v:(raw Val) sd:(raw StructDef) box-ty:(raw Type) vname:ptr scope:ref:Scope line:i32):ref:Val
+  (let (vv:(raw Val) v
+        struct-name:CStr (sd name)
+        irn:CStr (sd ir-name))
     (when (= (scope-lookup scope "default-allocator") null)
       (die-at line "type-erasure: boxing a value requires (import-use allocator)"))
     (let (ahsym:?ptr:Sym (scope-lookup scope "alloc-handle-alloc"))
@@ -6456,7 +7192,11 @@
             sz-node:ptr (make-cell (as ptr (intern-symbol "sizeof"))
                           (make-cell (as ptr (intern-symbol struct-name)) null line)
                           line)
-            sz-val:ref:Val (emit-node sz-node scope)
+            saved-key-ok:i32 g-type-key-ok
+            sz-val:ref:Val (do (set! g-type-key-ok 1)
+                               (let (t:ref:Val (emit-node sz-node scope))
+                                 (set! g-type-key-ok saved-key-ok)
+                                 t))
             blk:ptr (new-tmp))
         (fprintf g-body-stream "  %s = call ptr %s(ptr %s, %s %s, %s 8)\n"
           blk ((unsafe/cast ptr:Sym ahsym) ir-name) (hv val)
@@ -6464,9 +7204,9 @@
         ; Copy the aggregate by value into the heap block (CE-3 path).
         (let (evec:ptr (new-tmp))
           (fprintf g-body-stream "  %s = load %%%s, ptr %s, align 8\n"
-            evec (ir-name-token struct-name) (vv val))
+            evec irn (vv val))
           (fprintf g-body-stream "  store %%%s %s, ptr %s, align 8\n"
-            (ir-name-token struct-name) evec blk))
+            irn evec blk))
         (return (build-fatptr-val blk vname box-ty))))))
 
 ; TE-6: box an arbitrary concrete VALUE into a `(dyn P)` fat pointer. Unlike a
@@ -6484,8 +7224,7 @@
     (when (or (!= (vt kind) TY-PTR) (= (vt elem) null)
               (!= (-> (vt elem) (unsafe/cast ptr:Type _) (_ kind)) TY-STRUCT))
       (die-at line "(dyn P): can only box a concrete struct value (a (ref Struct))"))
-    (let (struct-ty:ptr (vt elem)
-          struct-name:ptr (-> struct-ty (unsafe/cast ptr:Type _) (_ sdef) (unsafe/cast ptr:StructDef _) (_ name)))
+    (let (struct-ty:ptr (vt elem))
       ; (0) The protocol must exist before "does this type conform to it?" is a
       ;     meaningful question — otherwise an undeclared `P` is reported as a
       ;     conformance failure. Shared with dyn-vtable-method-irname's backstop.
@@ -6500,7 +7239,8 @@
         ; (TE-4) Register the box's Drop (shared @__boxedfn_drop thunk).
         (ensure-box-drop-fn box-ty line)
         ; (3+4) Heap-move the value by value and build the fat pointer.
-        (return (emit-box-struct-move v struct-name box-ty vname scope line))))))
+        (return (emit-box-struct-move v (unsafe/cast (raw StructDef) (-> struct-ty (unsafe/cast ptr:Type _) (_ sdef)))
+                                      box-ty vname scope line))))))
 
 ; Coercion chokepoint: if `target` is an erased slot — a `(BoxedFn …)` (structural
 ; closure box) or a `(dyn P)` (nominal value box) — and `v` is not already a box of
@@ -6669,7 +7409,8 @@
 (defn dyn-method-slot (box-ty:(raw Type) gname:CStr):i32
   (let (proto:ptr (dyn-proto-of box-ty))
     (when (= proto null) (return -1))
-    (let (pp:?ptr:Protocol (protocol-lookup proto))
+    ; B2a: downstream of the box-construction gate — see `protocol-resolve-any`.
+    (let (pp:?ptr:Protocol (protocol-resolve-any proto))
       (when (= pp null) (return -1))
       (let (ppp:ptr:Protocol (as ptr:Protocol pp))
         (dotimes (i (ppp num-sigs))
@@ -6691,7 +7432,8 @@
 ; non-receiver position — such a method makes the protocol non-boxable).
 (defn emit-dyn-forward (box-ty:(raw Type) args:ptr nargs:i32 slot:i32 line:i32):ref:Val
   (let (proto:ptr (dyn-proto-of box-ty)
-        pp:ptr:Protocol (unsafe/cast ptr:Protocol (protocol-lookup proto))
+        ; B2a: downstream of the box-construction gate (`protocol-resolve-any`).
+        pp:ptr:Protocol (unsafe/cast ptr:Protocol (protocol-resolve-any proto))
         sig:ptr (aref (as ptr:ptr (pp sigs)) slot)
         name-node:ptr (node-at sig 0)
         params-node:ptr (node-at sig 1)
@@ -8502,7 +9244,9 @@
 ; Find a macro definition by name, or null.
 (defn find-macro (name:CStr):?ptr:MacroDef
   (doseq (mdef g-macros (VecIter ref:MacroDef))
-           (when (= (mdef name) name)
+           (when (and (= (mdef name) name)
+                      (or (= g-priv-bindings 0)
+                          (!= (binding-visible (mdef priv) (mdef src-ns)) 0)))
                  (return (as ptr mdef))))
   (return null))
 
@@ -8756,9 +9500,361 @@
                                (aref (as ptr:ptr arg-nodes) 0) (aref (as ptr:ptr arg-nodes) 1)
                                binop scope (nn line))))))
 
+; ============================================================
+; Stage 15 B5 — THE SHARED BINDING INTERFACE
+; (design/stage15-stress-test/name-resolution.md §13.3 "B+", §13.4)
+; ============================================================
+;
+; §1 counted eleven name-keyed registries and two correctly-global name sets.
+; Each is one row here, and the ROW ORDER IS THE RESOLUTION PRIORITY ORDER —
+; the single answer to defect #8, which had the one-symbol-one-kind guard ranking
+; special > builtin > type > macro > function > value while `emit-dispatch`
+; probed generic → scope → struct → struct-template. Both now walk this table.
+;
+; Rows 0–2 (`macro`, `special form`, `built-in type`) are answered by
+; `emit-list`, which dispatches macros and then special forms by interned head
+; pointer before `emit-dispatch` is ever reached; `emit-dispatch` therefore
+; starts at `BK-DISPATCH-FIRST`. That split is stated, not accidental — and the
+; macro-before-special order `emit-list` uses is *provably* the same function as
+; this table's, because `guard-name-kind` refuses to register a macro over a
+; special form (so no name can be in both rows). See §13.3 in the design doc.
+;
+; The five operations §13.3 asked for, and where they live:
+;   probe(canonical)              `binding-probe`
+;   kind-noun                     `binding-noun` (row column, refined for globals)
+;   is-private(binding)           `binding-is-private`  → the rule: `binding-visible`
+;   src-ns(binding)               `binding-src-ns`
+;   re-register(binding, key)     `binding-re-register`
+;
+; Adding a kind means adding a row: the `collides` / `name-keyed` /
+; `reregisterable` columns make a kind that does NOT participate in a shared
+; concern a stated fact rather than a silent omission, which is exactly the
+; failure mode §13.2 found twice (NK-PROTOCOL never returned; four private
+; definers nothing enforced).
+
+(defn add-binding-kind (v:(ref (Vector (ref BindingKind)))
+                        kind:i32 noun:CStr nk:i32
+                        collides:i32 name-keyed:i32 reregisterable:i32):void
+  (let (r:ref:BindingKind (new BindingKind))
+    (.set! r kind kind)
+    (.set! r noun noun)
+    (.set! r nk nk)
+    (.set! r collides collides)
+    (.set! r name-keyed name-keyed)
+    (.set! r reregisterable reregisterable)
+    (conj v r)))
+
+; The table. Row i has `kind` == i, so `binding-row` is an index.
+;
+; `collides` is 1 for exactly the rows the one-symbol-one-kind guard probed
+; before B5,
+; PLUS protocols (the reported defect). The 0s are deliberate and are **B4's**:
+;   * BK-UNION / BK-ENUM / BK-FNTY — a `defunion` also registers its backing
+;     StructDef under the same key, so BK-STRUCT already answers for it; an
+;     enum name and a `__fnty_N` alias have never participated.
+;   * BK-CONFORMANCE has no single-name probe at all (see `name-keyed`).
+; `reregisterable` is 1 only for `g-globals`, which is what `export` re-binds
+; today. Every other row raises a located diagnostic — §11.6's conclusion that
+; a facade cannot re-export a type or protocol, now said in one place instead
+; of being unrepresentable. B3′ flips BK-STRUCT and friends when it re-keys
+; them.
+(defn build-binding-kinds ():(ref (Vector (ref BindingKind)))
+  (let (v:(ref (Vector (ref BindingKind))) (vector-new-in (addr-of g-arena-alloc)))
+    ;                kind                noun                 nk           col nk? rereg?
+    (add-binding-kind v BK-MACRO          "a macro"            NK-MACRO      1   1   0)
+    (add-binding-kind v BK-SPECIAL        "a special form"     NK-SPECIAL    1   1   0)
+    (add-binding-kind v BK-PRIMITIVE      "a built-in type"    NK-BUILTIN    1   1   0)
+    (add-binding-kind v BK-GENERIC        "a function"         NK-FUNCTION   1   1   0)
+    (add-binding-kind v BK-GLOBAL         "a value"            NK-VALUE      1   1   1)
+    (add-binding-kind v BK-PROTOCOL       "a protocol"         NK-PROTOCOL   1   1   1)
+    (add-binding-kind v BK-STRUCT         "a type"             NK-TYPE       1   1   1)
+    (add-binding-kind v BK-UNION          "a type"             NK-TYPE       0   1   1)
+    (add-binding-kind v BK-STRUCT-TEMPLATE "a struct template" NK-TYPE       1   1   1)
+    (add-binding-kind v BK-UNION-TEMPLATE "a type"             NK-TYPE       1   1   1)
+    (add-binding-kind v BK-ENUM           "an enumeration"     NK-TYPE       0   1   1)
+    ; BK-FNTY stays 0: a `__fnty_N` is minted by the compiler, has no source
+    ; spelling, and is not re-keyed by B3′ (see `binding-probe`).
+    (add-binding-kind v BK-FNTY           "a function type"    NK-TYPE       0   1   0)
+    (add-binding-kind v BK-CONFORMANCE    "a conformance"      NK-NONE       0   0   0)
+    (return v)))
+
+(defn binding-row (kind:i32):ref:BindingKind
+  (return (invoke g-binding-kinds (as usize kind))))
+
+; ------------------------------------------------------------
+; is-private / src-ns, and the ONE visibility rule they feed
+; ------------------------------------------------------------
+
+; THE rule, written once (§13.3: "privacy is implemented once against
+; `is-private` rather than once per kind"). A private binding is visible only
+; inside its defining NAMESPACE — W5e's deliberate split: `defn-`/`defvar-`/
+; `defconst-`/`defenum-` are additionally file-scoped inside `user` because
+; their keys can carry a synthetic namespace, while a type, protocol or macro
+; name is bare-keyed and globally identified (Stage 12 decision 9), so
+; file-scoping those is a separate, larger question.
+;
+; Every caller is short-circuited by `g-priv-bindings`, which no program in
+; `src/`, `lib/`, `examples/` or `tests/` ever sets — so this is provably inert
+; for the whole tree and can only ever refuse a name a `defstruct-`/`defunion-`/
+; `defmacro-`/`defprotocol-` created.
+(defn binding-visible (priv:i32 src-ns:CStr):i32
+  (when (= priv 0) (return 1))
+  (when (= src-ns null) (return 1))
+  (when (= (strcmp src-ns g-current-ns) 0) (return 1))
+  (return 0))
+
+; The namespace part of an already-composed registry key (`zn/zfun` → `zn`), or
+; `user` when the key is bare. `g-globals`, `g-protocols` and (since B3′) the six
+; type registries key this way. INTERNED, because `ns-ir-prefix-get` matches its
+; namespace column by pointer identity — B3′'s `register-struct` derives a type's
+; ir-prefix from its key through exactly that path.
+(defn key-namespace (key:CStr):CStr
+  (let (n:i64 (qualifier-len (as ptr key)))
+    (when (<= n 0) (return (as CStr (intern-str "user"))))
+    (return (as CStr (intern-str (arena-strndup (as ptr key) n))))))
+
+(defn binding-is-private (kind:i32 payload:ptr):i32
+  (when (= payload null) (return 0))
+  (case kind
+    BK-GLOBAL          (return ((as ptr:Sym payload) sym-private))
+    BK-GENERIC
+      (let (g:ptr:Generic (as ptr:Generic payload))
+        (when (= (unsafe/cast i32 (count (g methods))) 0) (return 0))
+        (return ((as ptr:Method (invoke (g methods) 0)) priv)))
+    BK-MACRO           (return ((as ptr:MacroDef payload) priv))
+    BK-PROTOCOL        (return ((as ptr:Protocol payload) priv))
+    BK-STRUCT          (return ((as ptr:StructDef payload) priv))
+    BK-UNION           (return ((as ptr:UnionDef payload) priv))
+    BK-STRUCT-TEMPLATE (return ((as ptr:StructTemplate payload) priv))
+    BK-UNION-TEMPLATE  (return ((as ptr:UnionTemplate payload) priv))
+    BK-ENUM            (return ((as ptr:EnumDef payload) priv))
+    0)
+  ; BK-SPECIAL / BK-PRIMITIVE / BK-FNTY / BK-CONFORMANCE: built-in or
+  ; compiler-minted, never private.
+  (return 0))
+
+(defn binding-src-ns (kind:i32 payload:ptr):CStr
+  (when (= payload null) (return null))
+  (case kind
+    BK-GLOBAL          (return (key-namespace ((as ptr:Sym payload) name)))
+    BK-GENERIC
+      (let (g:ptr:Generic (as ptr:Generic payload))
+        (when (= (unsafe/cast i32 (count (g methods))) 0) (return null))
+        (return ((as ptr:Method (invoke (g methods) 0)) src-ns)))
+    BK-MACRO           (return ((as ptr:MacroDef payload) src-ns))
+    BK-PROTOCOL        (return ((as ptr:Protocol payload) src-ns))
+    BK-STRUCT          (return ((as ptr:StructDef payload) src-ns))
+    BK-UNION           (return ((as ptr:UnionDef payload) src-ns))
+    BK-STRUCT-TEMPLATE (return ((as ptr:StructTemplate payload) src-ns))
+    BK-UNION-TEMPLATE  (return ((as ptr:UnionTemplate payload) src-ns))
+    BK-ENUM            (return ((as ptr:EnumDef payload) src-ns))
+    0)
+  ; No namespace: a special form, a primitive type name, a compiler-minted
+  ; `__fnty_N`, or the conformance relation.
+  (return null))
+
+; How the file being compiled would have to SPELL this binding, or null when it
+; cannot spell it at all. The `src-ns` column is the whole input: a binding in
+; the file's own namespace, in `user`, or in a namespace this file flattened is
+; named bare; one reached only through a bound prefix is named `p/bare`;
+; anything else is unreachable from here and must not be offered as a
+; suggestion. This is what closes defect #9 — see `suggest-better`.
+(defn binding-usable-spelling (kind:i32 payload:ptr bare:CStr):ptr
+  ; A binding this file may not see is not a suggestion. `binding-visible` is
+  ; the same rule the reference lookups apply, called here so the did-you-mean
+  ; cannot offer a `defstruct-`/`defmacro-` name the very next compile refuses.
+  (when (= (binding-visible (binding-is-private kind payload)
+                            (binding-src-ns kind payload)) 0)
+    (return null))
+  (let (ns:CStr (binding-src-ns kind payload))
+    ; No namespace at all: a special form, a primitive type name, a
+    ; compiler-minted `__fnty_N`. The bare spelling is the only spelling.
+    (when (= ns null) (return (as ptr bare)))
+    (when (= (strcmp ns g-current-ns) 0) (return (as ptr bare)))
+    (when (= (strcmp ns "user") 0) (return (as ptr bare)))
+    (when (!= (file-flattens-ns-named ns) 0) (return (as ptr bare)))
+    ; A `prefix/name` spelling is offered only for the registries where a
+    ; qualified reference actually resolves — `g-globals` (B2b), `g-protocols`
+    ; (B2a) and, since B3′, the five re-keyed type registries. A macro and a
+    ; generic are still bare-keyed, so `p/mac` would be a suggestion that fails
+    ; on the next compile: defects #1 and #5, which B4 owns. This is a stated
+    ; restriction rather than a silent wrong hint.
+    (when (or (or (= kind BK-GLOBAL) (= kind BK-PROTOCOL))
+              (or (or (= kind BK-STRUCT) (= kind BK-UNION))
+                  (or (= kind BK-STRUCT-TEMPLATE)
+                      (or (= kind BK-UNION-TEMPLATE) (= kind BK-ENUM)))))
+      (let (p:ptr (file-prefix-for-ns ns))
+        (when (!= p null) (return (fmt-2s "%s/%s" (as CStr p) bare)))))
+    (return null)))
+
+; ------------------------------------------------------------
+; probe
+; ------------------------------------------------------------
+
+; One row's probe. `name` is a spelling as written in the file being compiled;
+; each row applies its OWN registry's reference resolution, which after B2a/B2b
+; already routes through `resolve-spelling` for the two ns-keyed registries
+; (`g-globals`, `g-protocols`) and is the bare spelling for the rest. B3′ re-keys
+; the type rows, at which point their arms become the same two lines the ns-keyed
+; ones already are — the interface is the seam where that happens.
+;
+; `scope` is the local chain for a head-position lookup; null asks the global
+; frame only (what a definer's collision check wants).
+(defn binding-probe (kind:i32 name:CStr scope:raw:Scope):ptr
+  (when (= ((binding-row kind) name-keyed) 0) (return null))
+  (case kind
+    BK-MACRO      (return (as ptr (find-macro name)))
+    ; The two sets have no payload record; the spelling itself is the non-null
+    ; "yes". §13.2's payload-free binding, which is what B could not house.
+    BK-SPECIAL    (if (!= (special-form-named name) 0) (return (as ptr name)) (return null))
+    BK-PRIMITIVE  (if (!= (primitive-type-named name) 0) (return (as ptr name)) (return null))
+    BK-GENERIC    (return (as ptr (generic-lookup name)))
+    BK-GLOBAL     (if (= scope null)
+                    (return (as ptr (scope-lookup g-globals name)))
+                    (return (as ptr (scope-lookup scope name))))
+    BK-PROTOCOL   (return (as ptr (protocol-lookup name)))
+    ; Stage 15 B3′: rows 6–10 are now `resolve-spelling` + an exact probe, which
+    ; is exactly what BK-GLOBAL and BK-PROTOCOL already were — B5's prediction,
+    ; held. Row 11 (`__fnty_N`) is NOT re-keyed: its names are compiler-minted,
+    ; never source-spelled and unit-globally unique, so qualifying them would
+    ; only break `type-spelling`'s TY-FN round-trip.
+    BK-STRUCT     (return (as ptr (struct-lookup-ref name)))
+    BK-UNION      (return (as ptr (uniondef-lookup-ref name)))
+    BK-STRUCT-TEMPLATE (return (as ptr (struct-template-lookup-ref name)))
+    BK-UNION-TEMPLATE  (return (as ptr (union-template-lookup-ref name)))
+    BK-ENUM       (return (as ptr (enumdef-lookup-ref name)))
+    BK-FNTY       (return (as ptr (fnty-resolve name)))
+    0)
+  (return null))
+
+; Walk the table in priority order. `only-colliding` restricts it to the rows
+; that participate in the one-symbol-one-kind rule; `from` is the first row to
+; try (`emit-dispatch` starts past the rows `emit-list` already answered) and
+; `to` the first row NOT to try. The window is how `node-type-call` mirrors
+; `emit-dispatch` without re-deriving the order: it models the rows that produce
+; a value (through BK-GLOBAL) and stops, rather than probing rows whose only
+; answer is a diagnostic.
+;
+; `skip-nk` (NK-NONE = off) skips rows that report exactly that noun, which is
+; what turns this walk into the one-symbol-one-kind check: `guard-name-kind`
+; asks for the first binding whose kind is NOT the one it is about to define.
+; That question is order-INDEPENDENT — the table order then only chooses which
+; of several conflicting kinds to name — and it is the reason a single shared
+; order is possible at all. The pre-B5 `name-existing-kind` (now folded into
+; `guard-name-kind`) asked "what is the
+; highest-priority binding?", which is a different question and only agreed
+; with the answer by accident of its ordering: every definer registers itself
+; through a prescan BEFORE its own guard runs, so under the dispatch order
+; (generic first) a `defn` would find its own freshly-prescanned Generic,
+; report NK-FUNCTION, match, and never look at the protocol or struct it
+; actually collided with.
+(defn binding-find (name:CStr scope:raw:Scope from:i32 to:i32
+                    only-colliding:i32 skip-nk:i32):?ref:BindingHit
+  (let (i:i32 from)
+    (while (< i to)
+      (let (row:ref:BindingKind (binding-row i))
+        (when (or (= only-colliding 0) (!= (row collides) 0))
+          (let (p:ptr (binding-probe i name scope))
+            (when (and (!= p null)
+                       (or (= skip-nk NK-NONE) (!= (binding-nk i p) skip-nk)))
+              (let (hit:ref:BindingHit (new BindingHit))
+                (.set! hit kind i)
+                (.set! hit payload p)
+                (return hit))))))
+      (inc! i)))
+  (return null))
+
+; ------------------------------------------------------------
+; kind-noun
+; ------------------------------------------------------------
+
+; The row's noun, refined for `g-globals`: a `defn`/`extern` Sym is a function
+; and a `defvar`/`defconst`/enum member is a value, and the discriminator is the
+; same two-conjunct test `emit-dispatch` uses to decide a direct call.
+(defn binding-nk (kind:i32 payload:ptr):i32
+  (when (and (= kind BK-GLOBAL) (!= payload null))
+    (let (sym:ptr:Sym (as ptr:Sym payload))
+      (when (and (!= (sym type) null)
+                 (= (-> sym (_ type) (unsafe/cast ptr:Type _) (_ kind)) TY-FN)
+                 (= (sym is-local) 0))
+        (return NK-FUNCTION))
+      (return NK-VALUE)))
+  (return ((binding-row kind) nk)))
+
+; ------------------------------------------------------------
+; re-register
+; ------------------------------------------------------------
+
+; Stage 15 B3′: the alias table §11.6 needs. `g-globals` stores one entry per KEY,
+; so re-exporting into it is a second `scope-define`; every other registry stores
+; one record per THING and keys it by a field, so a second key has nowhere to go
+; inside it. Rather than teach six registries to hold two names — which would put
+; a "which name is this?" question at every read — one shared table maps the extra
+; key to the same payload, and each reference lookup consults it after its own
+; miss. Null until an `export` of a non-global kind, so the six extra probes cost
+; one global compare for every program that does not use one.
+(defvar g-binding-aliases:ptr)
+
+(defn binding-alias-add (key:CStr kind:i32 payload:ptr):void
+  (when (= g-binding-aliases null)
+    (set! g-binding-aliases (vector-new-in (addr-of g-arena-alloc))))
+  (let (tbl:(ref (Vector (ref BindingAlias))) (unsafe/cast (ref (Vector (ref BindingAlias))) g-binding-aliases))
+    (dotimes (i (unsafe/cast i32 (count tbl)))
+      (let (e:ref:BindingAlias (invoke tbl (as usize i)))
+        ; Idempotent: a facade re-exporting the same name twice (or a re-imported
+        ; facade) must not stack entries.
+        (when (and (= (e kind) kind) (= (strcmp (e key) key) 0)) (return))))
+    (let (rec:ref:BindingAlias (new BindingAlias))
+      (.set! rec key (as CStr (intern-str key)))
+      (.set! rec kind kind)
+      (.set! rec payload payload)
+      (conj tbl rec))))
+
+; The payload `spelling` names through a re-export, or null. `spelling` is a
+; source reference, so it is resolved through the file's import environment
+; exactly as the registry probes are — a facade's alias is reachable only from a
+; file that can name the facade.
+(defn binding-alias-find (spelling:CStr kind:i32):ptr
+  (when (= g-binding-aliases null) (return null))
+  (let (tbl:(ref (Vector (ref BindingAlias))) (unsafe/cast (ref (Vector (ref BindingAlias))) g-binding-aliases))
+    (dotimes (i (name-ref-key-count spelling))
+      (let (k:CStr (name-ref-key-at spelling i))
+        (when (!= k null)
+          (dotimes (j (unsafe/cast i32 (count tbl)))
+            (let (e:ref:BindingAlias (invoke tbl (as usize j)))
+              (when (and (= (e kind) kind) (= (strcmp (e key) k) 0))
+                (return (e payload)))))))))
+  (return null))
+
+; Bind an existing binding under a second, differently-namespaced key — what
+; `export` does, and what §11.6 concluded the resolver must be able to express
+; for types and protocols too. Unsupported rows RAISE (never a silent no-op):
+; the diagnostic names the kind, so `(export some-macro)` says why instead of
+; failing as "symbol not found".
+;
+; Stage 15 B3′ flipped `reregisterable` on the type and protocol rows. §11.6's
+; argument is that R1 forces it: once type identity is namespaced, a facade that
+; re-exports `geom/area` but cannot re-export `geom/Pt` exports a function whose
+; signature names a type the consumer has no way to spell.
+(defn binding-re-register (kind:i32 payload:ptr bare:CStr line:i32):void
+  (let (row:ref:BindingKind (binding-row kind))
+    (when (= (row reregisterable) 0)
+      (die-at line
+        (fmt-2s "export: '%s' is %s — it is identified by a globally-unique bare name, so a re-export would not change how it resolves (name-resolution.md §11.6)"
+                bare (row noun))))
+    ; `g-globals` is keyed per entry, so a re-export is a second `scope-define` —
+    ; and `scope-define` qualifies against the CURRENT namespace, which is the
+    ; facade's. Every other row goes through the shared alias table.
+    (when (= kind BK-GLOBAL)
+      (let (sym:ptr:Sym (as ptr:Sym payload))
+        (scope-define g-globals bare (sym type) (sym ir-name) 0))
+      (return))
+    (binding-alias-add (as CStr (ns-qualify-in g-current-ns (as ptr bare))) kind payload)))
+
 ; Unified dispatch tail for emit-list: the head symbol `h` is neither a macro
-; nor a special form. Resolve it through the generic registry — a pure operator
-; routes to emit-binop (byte-identical IR); an operator carrying user overloads
+; nor a special form. Resolve it through the shared binding table (above),
+; starting past the rows `emit-list` already answered — a pure operator routes
+; to emit-binop (byte-identical IR); an operator carrying user overloads
 ; resolves user-method-or-inline; overloaded sets dispatch on argument types;
 ; solitary names and C/extern functions fall through to the ordinary scope-bound
 ; call (also byte-identical).
@@ -8772,40 +9868,61 @@
           (when (!= (tsym owns) 0)
             (die-at ((unsafe/cast ptr:Node n) line)
               (fmt-2s "double drop: '%s' is dropped at `with` scope exit — use (move %s) to take ownership first" tname tname)))))))
-  (let (g:?ptr:Generic (generic-lookup h))
-    (when (!= g null)
-      (let (m:ptr:Method (as ptr:Method (invoke (g methods) 0)))
-        (when (= (m kind) METHOD-INTRINSIC)
-          (if (= (g mangled) 0)
-            (return (emit-binop n scope (m binop)))
-            (return (emit-operator-dispatch n scope g (m binop)))))
-        (when (!= (g mangled) 0)
-          (return (emit-generic-call n scope g))))))
-  ; A defn/extern symbol (is-local 0, TY-FN) is a direct call. Anything else in
-  ; head position is a value: emit it once, then route. A function-pointer value
-  ; (a local/global TY-FN variable) folds to an indirect call; a non-function
-  ; value routes to get (member access) / invoke (callable-values.md §4.1/§4.2).
-  ; (if-some rather than a null guard: the guard body would end in die-at,
-  ; which the narrowing engine cannot know is noreturn.)
-  (if-some (sym (scope-lookup scope h))
+  ; Stage 15 B5: ONE walk over the shared table, from the first row `emit-list`
+  ; has not already answered. The order — generic, global, protocol, struct,
+  ; union, struct-template, … — is `build-binding-kinds`', not a second copy of
+  ; it, and `guard-name-kind` and `node-type-call` walk the same rows.
+  (if-some (hit (binding-find h scope BK-DISPATCH-FIRST BINDING-KIND-COUNT 0 NK-NONE))
     (do
-      (when (and (-> sym (_ type) (unsafe/cast ptr:Type _) (_ kind) (= _ TY-FN))
-                 (= (sym is-local) 0))
-        (return (emit-call n scope sym)))
-      (return (emit-callable-value n scope (emit-symbol-ref head scope ((unsafe/cast ptr:Node n) line)))))
-    ; No symbol: struct-name-as-constructor (S init...) -> ptr:S compound
-    ; literal, else unknown.
-    (do
-      (let (sd:?ptr:StructDef (lookup-struct h))
-        (when (!= sd null)
-          (return (emit-struct-lit n scope sd))))
-      ; Stage 11: bare (Template arg ...) with a struct-template name in head
-      ; position is ambiguous (type arg vs first field value) and is an error.
-      ; Point at the explicit ((Template <type-args>) field0 ...) form.
-      (when (!= (as ptr (struct-template-lookup h)) null)
-        (die-at (node-line head ((unsafe/cast ptr:Node n) line))
-          (fmt-s "'%s' is a struct template; construct with the explicit form ((Template <type-args>) field0 field1 ...)" h)))
-      (die-at (node-line head ((unsafe/cast ptr:Node n) line)) (unknown-name-message h)))))
+      (when (= (hit kind) BK-GENERIC)
+        (let (g:ptr:Generic (as ptr:Generic (hit payload))
+              m:ptr:Method (as ptr:Method (invoke (g methods) 0)))
+          (when (= (m kind) METHOD-INTRINSIC)
+            (if (= (g mangled) 0)
+              (return (emit-binop n scope (m binop)))
+              (return (emit-operator-dispatch n scope g (m binop)))))
+          (when (!= (g mangled) 0)
+            (return (emit-generic-call n scope g)))
+          ; A solitary (unmangled, non-intrinsic) generic is ALSO bound in
+          ; g-globals under the same name, and that binding is what carries the
+          ; callable Sym — so this row falls through to the next one exactly as
+          ; the pre-B5 ladder did.
+          (if-some (h2 (binding-find h scope (+ BK-GENERIC 1) BINDING-KIND-COUNT 0 NK-NONE))
+            (return (emit-dispatch-hit n scope h h2 head))
+            (die-at (node-line head ((unsafe/cast ptr:Node n) line)) (unknown-name-message h)))))
+      (return (emit-dispatch-hit n scope h hit head)))
+    (die-at (node-line head ((unsafe/cast ptr:Node n) line)) (unknown-name-message h))))
+
+; Emit the head-position meaning of one table row's hit. Split out of
+; `emit-dispatch` so the solitary-generic fall-through above reuses it verbatim.
+(defn emit-dispatch-hit (n:(raw Node) scope:ref:Scope h:CStr
+                         hit:ref:BindingHit head:(raw Node)):ref:Val
+  (let (k:i32 (hit kind))
+    ; A defn/extern symbol (is-local 0, TY-FN) is a direct call. Anything else in
+    ; head position is a value: emit it once, then route. A function-pointer value
+    ; (a local/global TY-FN variable) folds to an indirect call; a non-function
+    ; value routes to get (member access) / invoke (callable-values.md §4.1/§4.2).
+    (when (= k BK-GLOBAL)
+      (let (sym:ptr:Sym (as ptr:Sym (hit payload)))
+        (when (and (-> sym (_ type) (unsafe/cast ptr:Type _) (_ kind) (= _ TY-FN))
+                   (= (sym is-local) 0))
+          (return (emit-call n scope sym)))
+        (return (emit-callable-value n scope (emit-symbol-ref head scope ((unsafe/cast ptr:Node n) line))))))
+    ; struct-name-as-constructor (S init...) -> ptr:S compound literal.
+    (when (= k BK-STRUCT)
+      (return (emit-struct-lit n scope (as ptr:StructDef (hit payload)))))
+    ; Stage 11: bare (Template arg ...) with a struct-template name in head
+    ; position is ambiguous (type arg vs first field value) and is an error.
+    ; Point at the explicit ((Template <type-args>) field0 ...) form.
+    (when (= k BK-STRUCT-TEMPLATE)
+      (die-at (node-line head ((unsafe/cast ptr:Node n) line))
+        (fmt-s "'%s' is a struct template; construct with the explicit form ((Template <type-args>) field0 field1 ...)" h)))
+    ; Every other row names something real that is not callable. Before B5 these
+    ; all reported "unknown: X — not defined anywhere in this compilation unit",
+    ; which is false: the name IS defined, in a registry with no head-position
+    ; meaning. This is the `kind-noun` column earning its keep.
+    (die-at (node-line head ((unsafe/cast ptr:Node n) line))
+      (fmt-2s "'%s' names %s, not a function" h ((binding-row k) noun)))))
 
 (defn emit-list (n:(raw Node) scope:ref:Scope):ref:Val
   (let (nn:ptr:Node (unsafe/cast ptr:Node n))
@@ -8824,36 +9941,33 @@
             (when (!= hcar null)
               (let (hcar-node:ptr:Node (unsafe/cast ptr:Node hcar))
                 (when (= (hcar-node kind) NODE-SYM)
-                  (when (!= (as ptr (struct-template-lookup (hcar-node s))) null)
+                  (when (!= (as ptr (struct-template-lookup-ref (hcar-node s))) null)
                     (let (stamped-ty:ptr (parse-type-from-node (as ptr head) (head line)))
                       (when (= ((as ptr:Type stamped-ty) kind) TY-STRUCT)
                         (return (emit-struct-lit n scope ((as ptr:Type stamped-ty) sdef)))))))))))
         (return (emit-callable-value n scope (emit-node (as ptr head) scope))))
       (let (h:ptr (head s)
             hp:ptr (as ptr head))
-        ; Check macro table before special forms.
-        (doseq (mdef g-macros (VecIter ref:MacroDef))
-               (when (= (mdef name) h)
-                     (return (emit-macro-expand n scope (as ptr mdef)))))
+        ; Check macro table before special forms. Stage 15 B5: through
+        ; `find-macro` rather than an inline scan, so `defmacro-`'s visibility
+        ; filter applies here — this is the site a macro reference actually
+        ; reaches. The two scans were otherwise identical (both first-match,
+        ; both content comparison).
+        (if-some (mdef (find-macro (as CStr h)))
+          (return (emit-macro-expand n scope (as ptr mdef)))
+          0)
         (when (and (= hp 'gensym) (= (node-len nn) 1))
           (let (tmp:ptr (new-tmp))
             (fprintf g-body-stream "  %s = call ptr @nucleus_gensym()\n" tmp)
             (return (alloc-val (ty-raw-node) tmp))))
-        ; Stage 14 UN-5: the bare `funcall-ptr-*` spellings are retired — each
-        ; now dies with a targeted error naming its `unsafe/`-prefixed
-        ; replacement (design/stage14/unsafe-namespace.md D6). The reserved-
-        ; namespace spelling keeps calling the exact same emitter as before.
-        (when (= hp 'funcall-ptr-1)
-          (die-at (node-line head (nn line)) "'funcall-ptr-1' was split in Stage 14: use 'unsafe/funcall-ptr-1'"))
+        ; Stage 14 UN-5 / Stage 15 B2b: the bare `funcall-ptr-*` spellings do not
+        ; resolve because the `unsafe` namespace is bound PREFIXED in every file
+        ; and never flattened — the binding is the mechanism, and the targeted
+        ; text is a did-you-mean tier in `unresolved-name-message`
+        ; (`unsafe-bare-message`). Nothing to refuse here any more.
         (when (= hp 'unsafe/funcall-ptr-1) (return (emit-funcall-ptr-1 n scope)))
-        (when (= hp 'funcall-ptr-i32)
-          (die-at (node-line head (nn line)) "'funcall-ptr-i32' was split in Stage 14: use 'unsafe/funcall-ptr-i32'"))
         (when (= hp 'unsafe/funcall-ptr-i32) (return (emit-funcall-ptr-i32 n scope)))
-        (when (= hp 'funcall-ptr-i64)
-          (die-at (node-line head (nn line)) "'funcall-ptr-i64' was split in Stage 14: use 'unsafe/funcall-ptr-i64'"))
         (when (= hp 'unsafe/funcall-ptr-i64) (return (emit-funcall-ptr-i64 n scope)))
-        (when (= hp 'funcall-ptr-ptr)
-          (die-at (node-line head (nn line)) "'funcall-ptr-ptr' was split in Stage 14: use 'unsafe/funcall-ptr-ptr'"))
         (when (= hp 'unsafe/funcall-ptr-ptr) (return (emit-funcall-ptr-ptr n scope)))
         (when (= hp 'return) (return (emit-return n scope)))
         (when (= hp 'do) (return (emit-do n scope)))
@@ -8874,11 +9988,6 @@
         (when (= hp 'not) (return (emit-not n scope)))
         (when (= hp '_and) (return (emit-short-circuit n scope 1)))
         (when (= hp '_or) (return (emit-short-circuit n scope 0)))
-        ; Stage 14 UN-5: bare `cast` is retired — it now dies naming both split
-        ; replacements (D6). `unsafe/cast` (D2 Class 1) keeps calling the same
-        ; emitter as before.
-        (when (= hp 'cast)
-          (die-at (node-line head (nn line)) "'cast' was split in Stage 14: use 'as' (safe) or 'unsafe/cast' (unchecked)"))
         (when (= hp 'unsafe/cast) (return (emit-cast n scope)))
         (when (= hp 'as) (return (emit-as n scope)))
         (when (= hp 'addr-of) (return (emit-addr-of n scope)))
@@ -8886,10 +9995,6 @@
         (when (= hp 'funcall) (return (emit-funcall n scope)))
         (when (= hp 'deref) (return (emit-deref n scope)))
         (when (= hp 'ptr-set!) (return (emit-ptr-set n scope)))
-        ; Stage 14 UN-5: bare `ptr+` is retired (D6); `unsafe/ptr+` (D2 Class 2)
-        ; keeps calling the same emitter as before.
-        (when (= hp 'ptr+)
-          (die-at (node-line head (nn line)) "'ptr+' was split in Stage 14: use 'unsafe/ptr+'"))
         (when (= hp 'unsafe/ptr+) (return (emit-ptr-add n scope)))
         (when (= hp '_get) (return (emit-field-get n scope)))
         (when (= hp '.) (return (emit-field-get n scope)))
@@ -8977,59 +10082,42 @@
 ; on whether a given table stores interned names.
 ; ============================================================
 
+; Stage 15 B2b: the roster of the built-in `unsafe` namespace, by BARE name
+; (design/stage14/unsafe-namespace.md D2 Class 1/2). It is a roster rather than
+; seven more entries in `g-special-form-set` because after B2b the members are
+; reached by *resolving* `unsafe/x` — `resolve-spelling` binds `unsafe` as an
+; implicit prefix in every file — and a set of whole qualified strings cannot
+; answer a resolved question.
+(defn unsafe-op-named (bare:CStr):i32
+  (when (= (strcmp bare "cast") 0) (return 1))
+  (when (= (strcmp bare "ptr+") 0) (return 1))
+  (when (= (strcmp bare "import-private") 0) (return 1))
+  (when (= (strcmp bare "funcall-ptr-1") 0) (return 1))
+  (when (= (strcmp bare "funcall-ptr-i32") 0) (return 1))
+  (when (= (strcmp bare "funcall-ptr-i64") 0) (return 1))
+  (when (= (strcmp bare "funcall-ptr-ptr") 0) (return 1))
+  (return 0))
+
+; Does `spelling` name a member of the built-in `unsafe` namespace, qualified?
+; The qualifier must resolve to `unsafe` through the ordinary environment, so a
+; user namespace could not answer yes even if one could be called `unsafe` —
+; which `emit-ns` refuses precisely because this binding pre-owns the name.
+(defn unsafe-qualified-op (spelling:CStr):i32
+  (let (n:i64 (qualifier-len spelling))
+    (when (<= n 0) (return 0))
+    (let (r:ref:NameRef (resolve-spelling spelling))
+      (when (= (r ns) null) (return 0))
+      (when (!= (strcmp (r ns) "unsafe") 0) (return 0))
+      (return (unsafe-op-named (as CStr (r bare)))))))
+
 (defn special-form-named (name:CStr):i32
-  (return (contains? g-special-form-set name)))
+  (when (!= (contains? g-special-form-set name) 0) (return 1))
+  ; The `unsafe/` roster left the set in B2b, but the spellings stay reserved:
+  ; a `defn`/`defvar`/… may not shadow one, exactly as before.
+  (return (unsafe-qualified-op name)))
 
 (defn primitive-type-named (name:CStr):i32
   (return (contains? g-primitive-type-set name)))
-
-; The kind currently associated with `name`, or NK-NONE. Highest-priority kind
-; wins; a lower-priority definer will see the higher kind and report the clash.
-(defn name-existing-kind (name:CStr):i32
-  (when (!= (special-form-named (as CStr name)) 0)
-        (return NK-SPECIAL))
-  (when (!= (primitive-type-named (as CStr name)) 0)
-        (return NK-BUILTIN))
-  (doseq (struct g-structs (VecIter ref:StructDef))
-         (when (= (struct name)
-                  (as CStr name))
-               (return NK-TYPE)))
-  (when (!= (as ptr (union-template-lookup name)) null)
-        (return NK-TYPE))
-  (doseq (macro g-macros (VecIter ref:MacroDef))
-         (when (= (macro name)
-                  (as CStr name))
-               (return NK-MACRO)))
-  (doseq (generic g-generics (VecIter ref:Generic))
-           (let (g:ptr:Generic generic)
-             (when (= (generic name)
-                      name)
-                   (return NK-FUNCTION))))
-  (let (sc:ptr:Scope (as ptr:Scope g-globals))
-    (dotimes (i (sc len))
-      (let (sym:ptr:Sym (as ptr:Sym (unsafe/ptr+ (as ptr:Sym (sc syms)) i)))
-        (when (= (strcmp (sym name) name) 0)
-          ; A TY-FN type alone does NOT make this binding a function: a
-          ; function-pointer-typed *global* (`(defvar g:(fn i32)(i32) …)`) is a
-          ; TY-FN-typed value. `is-local` is the discriminator every other site
-          ; already uses for exactly this question — `emit-dispatch`'s
-          ; "a defn/extern symbol (is-local 0, TY-FN) is a direct call" is the
-          ; same two-conjunct test — because `emit-defn`/`emit-extern`/the
-          ; `.nuch` and C-header declare paths all register a function with
-          ; is-local 0, while `emit-defvar` (and G-0's `prescan-defvar-name`)
-          ; register a global value with 1.
-          ;
-          ; Without the second conjunct a fn-pointer `defvar` collided with
-          ; ITSELF once G-0 started defining its Sym during the whole-graph
-          ; prescan: the prescan's Sym was already in `g-globals` when
-          ; `emit-defvar` ran its `guard-name-kind`, so the value was reported
-          ; as "already names a function".
-          (if (and (!= (sym type) null)
-                   (= (-> sym (_ type) (unsafe/cast ptr:Type _) (_ kind)) TY-FN)
-                   (= (sym is-local) 0))
-            (return NK-FUNCTION)
-            (return NK-VALUE))))))
-  (return NK-NONE))
 
 (defn kind-noun (k:i32):CStr
   (when (= k NK-SPECIAL)  (return "a special form"))
@@ -9041,13 +10129,47 @@
   (when (= k NK-VALUE)    (return "a value"))
   (return "something"))
 
+; The noun for one hit. The row supplies it, except for `g-globals`, whose two
+; nouns are decided per-Sym: a `defn`/`extern` symbol (is-local 0, TY-FN) is a
+; function, everything else a value. The second conjunct is load-bearing — a
+; function-pointer-typed `defvar` is a TY-FN *value*, and without `is-local` it
+; collided with ITSELF once W8 G-0 started registering value names in the
+; whole-graph prescan (the prescan's Sym was already in `g-globals` when
+; `emit-defvar` ran its own `guard-name-kind`).
+(defn binding-noun (kind:i32 payload:ptr):CStr
+  (when (= kind BK-GLOBAL) (return (kind-noun (binding-nk kind payload))))
+  (return ((binding-row kind) noun)))
+
 ; Error if `name` already names a different kind of thing than `newk`.
+;
+; Stage 15 B5: ONE walk over the shared table (`build-binding-kinds`, beside
+; `emit-dispatch`), restricted to the rows whose `collides` column is 1 — so the
+; enforcement order and the consumption order are the same list, which is
+; defect #8. It asks for the first binding whose kind is NOT `newk`; see
+; `binding-find`'s `skip-nk` note for why that, and not "the highest-priority
+; binding", is the question the one-symbol-one-kind rule actually poses. (This
+; replaced `name-existing-kind`, which asked the other question and had this as
+; its only caller.)
+;
+; Two things the walk changed. The globals row is now `scope-lookup`, the
+; reference resolver, rather than a raw strcmp over the frame — under `user`
+; with no namespace declared anywhere `qualify-name`/`priv-key-use` are the
+; identity and `g-ns-declared` is 0, so it is exactly the scan it replaced, and
+; in a namespaced file it is stricter and correct (`(ns zn) (defvar zg …)
+; (defstruct zg …)` used to miss, because the frame holds `zn/zg` and the guard
+; asked for `zg`). And BK-PROTOCOL is a genuinely new row: nothing here probed
+; `g-protocols`, so NK-PROTOCOL was declared, accepted as an input, and never
+; returned (name-resolution.md §13.2). It sits above BK-STRUCT so a
+; defprotocol/defstruct clash names the protocol; `prescan-protocols` moved
+; ahead of `prescan-struct-names` so the protocol is registered by the time the
+; struct's own guard runs (before that the struct prescan always won the race
+; and the clash was reported at the protocol's line as "a type").
 (defn guard-name-kind (name:CStr line:i32 newk:i32):void
-  (let (existing:i32 (name-existing-kind name))
-    (when (and (!= existing NK-NONE) (!= existing newk))
-      (die-at line
-        (fmt-2s "'%s' already names %s — a symbol may name only one kind of thing"
-                name (kind-noun existing))))))
+  (if-some (hit (binding-find name null 0 BINDING-KIND-COUNT 1 newk))
+    (die-at line
+      (fmt-2s "'%s' already names %s — a symbol may name only one kind of thing"
+              name (binding-noun (hit kind) (hit payload))))
+    0))
 
 ; Record the defining source location on a freshly-defined Sym (used by the
 ; REPL and for error attribution). Tolerates a null sym.
@@ -9372,7 +10494,7 @@
     (when (< (node-len (as ptr nn)) 1) (return 0))
     (let (hd:(raw Node) (node-at (as ptr nn) 0))
       (when (or (= hd null) (!= (hd kind) NODE-SYM)) (return 0))
-      (when (= (lookup-struct (hd s)) (as ptr sd)) (return 1))
+      (when (= (struct-lookup-ref (hd s)) (as ptr sd)) (return 1))
       (return 0))))
 
 ; Distribute an `(array T e…)` literal's elements into `slots` (length `n`,
@@ -10296,7 +11418,8 @@
             (return (err! malformed-form))))
       ; Re-import dedup: an existing Err constant of this name keeps its id, so
       ; .nuc re-imports never renumber (the name is the stable contract).
-      (let (existing:?ptr:Sym (scope-lookup g-globals (name-node s)))
+      ; B2b: a KEY question — the id this `deferror` would register under.
+      (let (existing:?ptr:Sym (scope-lookup-key g-globals (name-node s)))
         (when (and (!= existing null)
                    (!= (existing is-const) 0)
                    (= (-> existing (_ type) (unsafe/cast ptr:Type _) (_ kind)) TY-ERR))
@@ -10399,16 +11522,23 @@
     (let (en:ptr:Node (unsafe/cast ptr:Node (node-at cc 1)))
       (when (and (= (en kind) NODE-SYM)
                  (< (unsafe/cast i32 (count g-enumdefs)) MAX-ENUMS)
-                 (= (as ptr (enumdef-lookup (en s))) null))
+                 ; Stage 15 B3′: an existence probe on the key the definer is
+                 ; about to write, so `enumdef-lookup` (exact), never the
+                 ; reference resolver.
+                 (= (as ptr (enumdef-lookup (as CStr (qualify-name (en s))))) null))
         (let (n:i32 (- (node-len cc) 2)
               members:ptr (arena-alloc (* (as i64 n) (ptr-bytes)))
               ed:ptr:EnumDef (as ptr:EnumDef (arena-alloc (sizeof EnumDef))))
           (dotimes (j n)
             (aset! (as ptr:ptr members) j
                    (intern-str ((unsafe/cast ptr:Node (node-at cc (+ j 2))) s))))
-          (.set! ed name (en s))
+          (.set! ed name (as CStr (qualify-name (en s))))
           (.set! ed members members)
           (.set! ed num-members n)
+          ; Stage 15 B5: the enum NAME's own provenance. Its members already
+          ; carry `sym-private` on their Syms (the g-globals row).
+          (.set! ed priv g-defining-private)
+          (.set! ed src-ns g-current-ns)
           (conj g-enumdefs ed))))))
 
 (defn enumdef-lookup (name:CStr):?ptr:EnumDef
@@ -10416,6 +11546,19 @@
     (let (ed:ptr:EnumDef (invoke g-enumdefs (as usize i)))
       (when (= (ed name) name)
         (return (as ptr ed)))))
+  (return null))
+
+; Stage 15 B3′: the reference resolver for the enum NAME (its members are
+; ordinary `g-globals` entries and were cut over by B2b).
+(defn enumdef-lookup-ref (spelling:CStr):?ptr:EnumDef
+  (dotimes (i (name-ref-key-count spelling))
+    (let (k:CStr (name-ref-key-at spelling i))
+      (when (!= k null)
+        (let (hit:?ptr:EnumDef (enumdef-lookup k))
+          (when (!= hit null) (return hit))))))
+  (let (al:ptr (binding-alias-find spelling BK-ENUM))
+    (when (!= al null) (return (as ptr:EnumDef al))))
+  (when (!= g-type-key-ok 0) (return (enumdef-lookup (intern-str spelling))))
   (return null))
 
 (defn emit-defstruct (call:(raw Node)):void
@@ -10436,6 +11579,18 @@
       ; `(Vector i32)` in type position stamps a concrete instance.
       (when (= (name-node kind) NODE-CELL)
         (register-struct-template (as ptr cc))
+        ; Stage 15 B5: `defstruct-`'s privacy for a template. The registration
+        ; above is a no-op when prescan-struct-names already created the entry,
+        ; and that prescan runs under the wrong namespace (see its note), so the
+        ; provenance is written here, where `g-current-ns` is the defining file's.
+        (when (!= g-defining-private 0)
+          (let (base:(raw Node) (name-node car))
+            (when (and (!= base null) (= ((unsafe/cast ptr:Node base) kind) NODE-SYM))
+              (if-some (st (struct-template-lookup (qualify-name ((unsafe/cast ptr:Node base) s))))
+                (do (.set! st priv 1)
+                    (.set! st src-ns g-current-ns)
+                    (set! g-priv-bindings 1))
+                0))))
         (return))
       (when (!= (name-node kind) NODE-SYM)
         (die-at (name-node line) "defstruct: name must be symbol"))
@@ -10443,13 +11598,27 @@
       ; Reuse a StructDef pre-registered by prescan-struct-names (name only), or
       ; register fresh. Skip if its definition was already written to IR — covers
       ; redefinition (the prelude defines Node and some programs also do).
-      (let (existing:?ptr:StructDef (lookup-struct (name-node s)))
+      ; Stage 15 B3′: the definition side always holds a KEY — `qualify-name` of
+      ; its own name — never a reference. Routing it through `struct-lookup-ref`
+      ; would let a `defstruct Vector` inside `(ns coll)` find `user`'s `Vector`
+      ; through the flattened-prelude fallback and then *fill in the prelude's
+      ; StructDef*, which is the R1 collision reintroduced as memory corruption.
+      (let (key:CStr (as CStr (qualify-name (name-node s))))
+      (let (existing:?ptr:StructDef (lookup-struct key))
         (when (and (!= existing null) (!= (existing emitted) 0))
           (return)))
-      (let (sd:ref:StructDef (if-some (e (lookup-struct (name-node s)))
+      (let (sd:ref:StructDef (if-some (e (lookup-struct key))
                                e
-                               (register-struct (name-node s)))
+                               (register-struct key))
             nfields:i32 (- (node-len cc) 2))
+        ; Stage 15 B5: `defstruct-`'s privacy. Set here as well as in
+        ; prescan-struct-names because the prescan may have created the entry
+        ; and `register-struct` deliberately does not read g-defining-private
+        ; (it is also the anon/closure/cheader StructDef allocator).
+        (when (!= g-defining-private 0)
+          (.set! sd priv 1)
+          (.set! sd src-ns g-current-ns)
+          (set! g-priv-bindings 1))
         (check-ir-name-legal (name-node line) (name-node s) (sd ir-name))
         (let (fnm:ptr (arena-alloc (* (as i64 nfields) (ptr-bytes)))
               ftp:ptr (arena-alloc (* (as i64 nfields) (ptr-bytes))))
@@ -10483,7 +11652,7 @@
             (when (!= i 0) (fprintf g-out ", "))
             (fprintf g-out "%s" (type-to-ir (aref (as ptr:ptr ftp) i))))
           (fprintf g-out " }\n\n")
-          (.set! sd emitted 1))))))
+          (.set! sd emitted 1)))))))
 
 ; The synthesized constructor defn for one defunion arm (new-style signature):
 ;   (defn Shape-circle (r:f64) Shape (make Shape circle r))
@@ -10552,14 +11721,30 @@
       ; Parameterized head — a template; defines no type, emits no code.
       (when (= (name-node kind) NODE-CELL)
         (register-union-template (as ptr cc))
+        ; Stage 15 B5: `defunion-`'s privacy for a template — see the identical
+        ; note in emit-defstruct's template branch.
+        (when (!= g-defining-private 0)
+          (let (base:(raw Node) (name-node car))
+            (when (and (!= base null) (= ((unsafe/cast ptr:Node base) kind) NODE-SYM))
+              (if-some (ut (union-template-lookup (qualify-name ((unsafe/cast ptr:Node base) s))))
+                (do (.set! ut priv 1)
+                    (.set! ut src-ns g-current-ns)
+                    (set! g-priv-bindings 1))
+                0))))
         (return))
       (when (!= (name-node kind) NODE-SYM)
         (die-at (name-node line) "defunion: name must be a symbol"))
       ; Redefinition (e.g. the same unit re-imported) is a no-op, like defstruct.
-      (when (!= (uniondef-lookup (name-node s)) null) (return))
+      ; Stage 15 B3′: a definition-side existence probe holds a KEY.
+      (when (!= (uniondef-lookup (as CStr (qualify-name (name-node s)))) null) (return))
       (guard-name-kind (name-node s) (cc line) NK-TYPE)
+      ; `defunion-register` is handed the canonical KEY (it registers the backing
+      ; StructDef and the UnionDef under it); `union-ctor-form` below is handed the
+      ; SOURCE spelling, because what it builds is source — a `(defn Shape-circle
+      ; … Shape (make Shape circle …))` form re-parsed in this same file, where the
+      ; bare name resolves.
       (let (repr-box:i32 REPR-AUTO
-            ud:ref:UnionDef (defunion-register (name-node s)
+            ud:ref:UnionDef (defunion-register (as CStr (qualify-name (name-node s)))
                               (-> cc (_ cdr) (unsafe/cast ptr:Node _) (_ cdr)) (cc line))
             ; Strip &repr before generating constructors: it is a layout marker,
             ; not an arm (defunion-register strips it for layout independently).
@@ -10601,7 +11786,9 @@
       ; an already-bound extern is an idempotent no-op, so skip both the emission
       ; and the re-define. (Imports dedup whole files by path, but the same symbol
       ; declared in two different files still reaches here twice.)
-      (when (!= (scope-lookup g-globals name) null)
+      ; B2b: a KEY question, paired with the `scope-define` at the end of this
+      ; function — not a reference this file wrote.
+      (when (!= (scope-lookup-key g-globals name) null)
         (return))
       ; Stage 12 N6: a namespaced library's global re-resolves to its mangled link
       ; name. When this `extern` arrives from a `.nuch` whose leading `(ns NAME)`
@@ -10649,7 +11836,8 @@
                            hline hsig null)))
   (let (site:ptr (as ptr (cheader-explicit-declare-site fname)))
     (when (= site null) (return))
-    (if (= (scope-lookup g-globals fname) null)
+    ; B2b: "has the explicit declare been registered yet" — a KEY question.
+    (if (= (scope-lookup-key g-globals fname) null)
       ; The explicit declare has not been reached yet — emit it now. It records
       ; its own signature on the site and raises the conflict warning itself.
       (emit-nuch-declare-import ((as ptr:CDeclSite site) form))
@@ -11369,6 +12557,11 @@
             (.set! mdef jit-name jit-name)
             (.set! mdef num-params pcount)
             (.set! mdef variadic variadic)
+            ; Stage 15 B5: `defmacro-`'s privacy (§13.2 — nothing enforced it
+            ; before, because a macro has no Sym and Sym is where privacy lived).
+            (.set! mdef priv g-defining-private)
+            (.set! mdef src-ns g-current-ns)
+            (when (!= g-defining-private 0) (set! g-priv-bindings 1))
             (conj g-macros mdef))
 
           ; Flush main streams
@@ -11826,6 +13019,70 @@
 ; struct names + union templates (names only — no IR, no emission). Registration
 ; is idempotent, so the actual import later is unaffected. C-string imports
 ; (`"stdio.h"`) are skipped (no Nucleus types; reading would invoke clang).
+; Stage 15 B3′: fill THIS file's import environment before its own prescans run.
+;
+; B2a recorded that `prescan-defn-signatures` runs before any import form is
+; processed, so `g-file-imports` is empty there by construction — which was
+; harmless while only globals and protocols resolved through the environment
+; (neither appears in a type position). R1 makes it fatal: a `defn` signature is
+; the first place a namespaced type is named, and `(defn f ((x (ref dpx/Fox))) …)`
+; was refused as "'dpx' is not in scope in this file" in the file that bound
+; `dpx`. That would have made a namespaced type unusable in any signature, i.e.
+; unusable.
+;
+; This walks only the top-level import forms and records the same
+; `(prefix, path)` binds `do-import` records, doing none of the work: no file is
+; read, no symbol is registered, nothing is emitted. `do-import` still records
+; them later (the dedup above makes that a no-op), so the environment a form
+; declares is unchanged — only its availability moves earlier. It is also half of
+; B2a's "still open" item (b); the other half, moving the imported signature
+; prescan ahead of the root's own, is not needed for this.
+(defn prescan-file-imports (forms:(raw Node)):void
+  (let (fc:ptr forms)
+    (while (!= fc null)
+      (let (f:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node fc) car)))
+        (when (and (!= (as ptr f) null) (= (f kind) NODE-CELL)
+                   (>= (node-len (as ptr f)) 2)
+                   (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ kind) (= _ NODE-SYM)))
+          (let (ph:ptr (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ s))
+                prefix:ptr null
+                kind-ok:i32 0
+                priv-head:i32 0)
+            ; Classify the head first, then derive its prefix — because getting
+            ; the second wrong is INVISIBLE: a prefixing form recorded with a
+            ; null prefix silently becomes a FLATTENING bind, which leaks every
+            ; name the library defines into this file's bare namespace.
+            (when (or (= ph "unsafe-import-private") (= ph "unsafe/import-private"))
+              (set! kind-ok 1) (set! priv-head 1))
+            (when (or (or (= ph "import") (= ph "import-prefixed"))
+                      (or (= ph "import-use") (= ph "import-only")))
+              (set! kind-ok 1))
+            (when (!= priv-head 0)
+              ; `(unsafe-import-private lib prefix sym…)` — the prefix is always
+              ; explicit, at index 2, and the form may be longer than 3.
+              (when (>= (node-len (as ptr f)) 3)
+                (let (pn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr f) 2)))
+                  (when (= (pn kind) NODE-SYM) (set! prefix (pn s))))))
+            (when (and (= priv-head 0)
+                       (or (= ph "import") (= ph "import-prefixed")))
+              (set! prefix (import-form-prefix (as ptr f) (f line))))
+            ; A prefixing head whose prefix does not derive is malformed;
+            ; `emit-import-prefixed` reports it at its own line. Skip it here.
+            (when (and (= prefix null)
+                       (or (!= priv-head 0)
+                           (or (= ph "import") (= ph "import-prefixed"))))
+              (set! kind-ok 0))
+            (when (!= kind-ok 0)
+              (let (nn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr f) 1)))
+                (when (= (nn kind) NODE-STR)
+                  (file-import-record prefix (nn s)))
+                (when (= (nn kind) NODE-SYM)
+                  ; A missing library is diagnosed by `do-import`, at the import
+                  ; form's own line. Staying silent here keeps one diagnosis.
+                  (let (path:ptr (resolve-import (nn s) 0))
+                    (when (!= path null) (file-import-record prefix path)))))))))
+      (set! fc ((unsafe/cast ptr:Node fc) cdr)))))
+
 (defn prescan-imported-types (forms:(raw Node)):void
   (let (fc:ptr forms)
     (while (!= fc null)
@@ -11872,14 +13129,34 @@
                           save-line:i32 g-line
                           save-path:ptr g-source-path
                           save-peek:ptr g-peek
-                          save-peek-valid:i32 g-peek-valid)
+                          save-peek-valid:i32 g-peek-valid
+                          ; Stage 15 B3′: pass 1 crosses a file boundary, and
+                          ; since B3′ what it registers is KEYED by the defining
+                          ; file's namespace — so it must save/clear/restore the
+                          ; namespace exactly as `prescan-imported-signatures`
+                          ; (pass 2) already does, and apply the imported file's
+                          ; own leading `(ns …)`. Without this the prescan keys a
+                          ; namespaced library's types under the IMPORTER's
+                          ; namespace and `emit-defstruct` then registers a second
+                          ; StructDef under the right key — B5's §14.4 finding,
+                          ; recurring here as a key rather than as provenance.
+                          save-ns:ptr g-current-ns
+                          save-ns-seen:i32 g-ns-seen
+                          save-file-imports:(raw (Vector (ref ImportBind))) g-file-imports)
                       (let (src:ptr (read-file path))
                         (set! g-source-path path)
                         (set! g-src src)
                         (set! g-pos 0)
                         (set! g-line 1)
                         (set! g-peek-valid 0)
-                        (let (ifs:ptr (desugar (read-program-or-die)))
+                        (set! g-current-ns (intern-str "user"))
+                        (set! g-ns-seen 0)
+                        (set! g-file-imports null)
+                        (let (ifs:ptr (apply-leading-ns (desugar (read-program-or-die))))
+                          ; A leading `set-ir-prefix` must be applied before any
+                          ; type is registered: `register-struct` snapshots the
+                          ; namespace's ir-prefix into `StructDef.ir-prefix`.
+                          (apply-early-set-ir-prefix ifs)
                           (prescan-imported-types ifs)
                           (prescan-struct-names ifs))
                         (free src))
@@ -11888,7 +13165,10 @@
                       (set! g-pos save-pos)
                       (set! g-line save-line)
                       (set! g-peek save-peek)
-                      (set! g-peek-valid save-peek-valid))))))))))
+                      (set! g-peek-valid save-peek-valid)
+                      (set! g-current-ns save-ns)
+                      (set! g-ns-seen save-ns-seen)
+                      (set! g-file-imports save-file-imports))))))))))
       (set! fc ((unsafe/cast ptr:Node fc) cdr)))))
 
 (defn prescan-struct-names (forms:(raw Node)):void
@@ -11899,11 +13179,20 @@
                    (>= (node-len (as ptr f)) 2)
                    (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ kind) (= _ NODE-SYM)))
           (let (h:ptr (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ s)))
+            ; Stage 15 B5: this prescan records NO privacy provenance — the four
+            ; private definers write `priv`/`src-ns` at emission, and a prescan
+            ; entry is `priv` 0, so `binding-visible` returns early and never
+            ; consults `src-ns`. B5 needed that because pass 1 ran under the
+            ; IMPORTER's namespace; B3′ fixed *that* (pass 1 now applies the
+            ; imported file's leading `(ns …)`, because since B3′ the registry KEY
+            ; depends on it too), so the constraint is weaker than it was — but
+            ; capturing provenance at emission remains the rule, since emission is
+            ; the only point at which `g-defining-private` is armed.
             (when (or (= h "defstruct") (= h "defstruct-"))
               (let (nn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr f) 1)))
                 (if (= (nn kind) NODE-SYM)
-                  (when (= (as ptr (lookup-struct (nn s))) null)
-                    (register-struct (nn s)))
+                  (when (= (as ptr (lookup-struct (as CStr (qualify-name (nn s))))) null)
+                    (register-struct (as CStr (qualify-name (nn s)))))
                   ; Stage 11: a parameterized head — (defstruct (Vector T) ...) —
                   ; registers a template here so defn signatures naming
                   ; (Vector i32) resolve in the signature prescan that follows.
@@ -11915,8 +13204,8 @@
             (when (or (= h "defunion") (= h "defunion-"))
               (let (nn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr f) 1)))
                 (if (= (nn kind) NODE-SYM)
-                  (when (= (as ptr (lookup-struct (nn s))) null)
-                    (register-struct (nn s)))
+                  (when (= (as ptr (lookup-struct (as CStr (qualify-name (nn s))))) null)
+                    (register-struct (as CStr (qualify-name (nn s)))))
                   (when (= (nn kind) NODE-CELL)
                     (register-union-template (as ptr f)))))))))
       (set! fc ((unsafe/cast ptr:Node fc) cdr)))))
@@ -11929,8 +13218,9 @@
         name-node:ptr:Node (unsafe/cast ptr:Node (node-at form 1)))
     (when (!= (name-node kind) NODE-SYM) (return))   ; templates: no constructors
     ; Skip when already registered (re-import of the same unit).
-    (when (!= (uniondef-lookup (name-node s)) null) (return))
-    (let (sd:ptr (lookup-struct (name-node s)))
+    ; Stage 15 B3′: both probes are definition-side, so both hold the KEY.
+    (when (!= (uniondef-lookup (as CStr (qualify-name (name-node s)))) null) (return))
+    (let (sd:ptr (lookup-struct (as CStr (qualify-name (name-node s)))))
       (when (= sd null) (return))
       ; Strip &repr (a layout marker, not an arm) so it does not become a bogus
       ; constructor. The forward-declared return type is the backing struct; the
@@ -12267,7 +13557,14 @@
                           save-peek:ptr g-peek
                           save-peek-valid:i32 g-peek-valid
                           save-ns:ptr g-current-ns
-                          save-ns-seen:i32 g-ns-seen)
+                          save-ns-seen:i32 g-ns-seen
+                          ; Stage 15 B1: the prescan crosses a file boundary too,
+                          ; so it saves/clears the import environment for the same
+                          ; reason it saves the namespace. It never *fills* one —
+                          ; it walks import forms without calling `do-import` — so
+                          ; the honest state while prescanning file F is "F has no
+                          ; bindings yet", not "F inherits its importer's".
+                          save-file-imports:(raw (Vector (ref ImportBind))) g-file-imports)
                       (let (src:ptr (read-file path))
                         (set! g-source-path path)
                         (set! g-src src)
@@ -12276,8 +13573,13 @@
                         (set! g-peek-valid 0)
                         (set! g-current-ns (intern-str "user"))
                         (set! g-ns-seen 0)
+                        (set! g-file-imports null)
                         (let (ifs:ptr (apply-leading-ns (desugar (read-program-or-die))))
                           (apply-early-set-ir-prefix ifs)
+                          ; Stage 15 B3′: the imported file's own environment,
+                          ; so ITS signatures may name a namespaced type through
+                          ; a prefix it bound.
+                          (prescan-file-imports ifs)
                           (prescan-protocols ifs)
                           (prescan-defn-signatures ifs)
                           ; Stage 15 W8 G-0: the value half, registered under the
@@ -12292,7 +13594,8 @@
                       (set! g-peek save-peek)
                       (set! g-peek-valid save-peek-valid)
                       (set! g-current-ns save-ns)
-                      (set! g-ns-seen save-ns-seen))))))))))
+                      (set! g-ns-seen save-ns-seen)
+                      (set! g-file-imports save-file-imports))))))))))
       (set! fc ((unsafe/cast ptr:Node fc) cdr)))))
 
 (defn emit-def-rmacro (call:(raw Node)):void
@@ -12344,7 +13647,15 @@
                    (fmt-s "second ns directive; namespace re-set to '%s'"
                           (name-node s)))))
       (set! g-current-ns (intern-str (name-node s)))
-      (set! g-ns-seen 1))))
+      (set! g-ns-seen 1)
+      ; Stage 15 B2a (name-resolution.md §9.1): this is the one point at which a
+      ; file's namespace becomes known, and it is reached from every file entry —
+      ; the root, `do-import`'s two load blocks, and `prescan-imported-signatures`
+      ; (via `apply-leading-ns`). Recording here is what gives `resolve-spelling`
+      ; the prefix → namespace half `ImportBind` does not carry, including on the
+      ; already-loaded and W1d cycle-skip paths, which never enter a load block.
+      (file-ns-record g-source-path g-current-ns)
+      (set! g-ns-declared 1))))
 
 ; Stage 12 N4: `(set-ir-prefix "prefix")` overrides the IR-mangling prefix for the
 ; current namespace (design/stage12/namespaces.md §"Export", decision 7). A null or
@@ -12426,17 +13737,47 @@
         (let (arg:ptr:Node (unsafe/cast ptr:Node (node-at form i)))
           (when (!= (arg kind) NODE-SYM)
             (die-at (node-line (as ptr arg) (ff line)) "export: each argument must be a symbol"))
+          ; Stage 15 B5: resolve through the shared table, then re-register
+          ; through the interface. A name that IS defined but in a registry
+          ; `export` cannot re-bind (a macro, a special form) gets the §11.6
+          ; explanation from `binding-re-register` instead of the misleading
+          ; "symbol not found".
+          ;
+          ; Stage 15 B3′: take the first hit whose row is actually
+          ; `reregisterable`, falling through the rest — the same solitary-generic
+          ; fall-through `emit-dispatch` performs, and for the same reason: a
+          ; solitary `defn` answers on BOTH `g-generics` (row 3) and `g-globals`
+          ; (row 4), and only the second carries the Sym a re-export binds. Without
+          ; the fall-through a bare `(export f)` inside a facade that flattened the
+          ; library reported *"'f' is a function — only functions … can be
+          ; re-exported"*, a self-contradicting message; `lib/nsgfacade.nuc` never
+          ; hit it only because it spells its arguments qualified, and a qualified
+          ; spelling misses the bare-keyed generic registry.
           (let (spelling:ptr (arg s)
-                sym:?ptr:Sym (scope-lookup g-globals spelling))
-            (when (= sym null)
-              (die-at (node-line (as ptr arg) (ff line)) (fmt-s "export: symbol not found: '%s'" spelling)))
+                lin:i32 (node-line (as ptr arg) (ff line))
+                first:?ref:BindingHit (binding-find (as CStr spelling) g-globals
+                                                    0 BINDING-KIND-COUNT 0 NK-NONE)
+                hit:?ref:BindingHit null
+                k:i32 0)
+            (when (= (as ptr first) null)
+              (die-at lin (fmt-s "export: symbol not found: '%s'" spelling)))
+            (while (< k BINDING-KIND-COUNT)
+              (let (h2:?ref:BindingHit (binding-find (as CStr spelling) g-globals
+                                                     k BINDING-KIND-COUNT 0 NK-NONE))
+                (when (= (as ptr h2) null) (set! k BINDING-KIND-COUNT))
+                (when (!= (as ptr h2) null)
+                  (let (hh2:ptr:BindingHit (unsafe/cast ptr:BindingHit h2))
+                    (if (!= ((binding-row (hh2 kind)) reregisterable) 0)
+                      (do (set! hit h2) (set! k BINDING-KIND-COUNT))
+                      (set! k (+ (hh2 kind) 1)))))))
+            ; Nothing re-registerable: report against the FIRST hit, so the
+            ; diagnostic names the kind the author actually wrote.
+            (when (= (as ptr hit) null) (set! hit first))
             ; Strip the source namespace qualifier to get the bare name, then
-            ; let scope-define qualify it against g-current-ns.
-            (let (bare:ptr (strip-ns-qualifier spelling))
-              (scope-define g-globals bare
-                            ((unsafe/cast ptr:Sym sym) type)
-                            ((unsafe/cast ptr:Sym sym) ir-name)
-                            0))))
+            ; let the re-register qualify it against g-current-ns.
+            (let (bare:ptr (strip-ns-qualifier spelling)
+                  hh:ptr:BindingHit (unsafe/cast ptr:BindingHit hit))
+              (binding-re-register (hh kind) (hh payload) (as CStr bare) lin))))
         (inc! i)))))
 
 ; Consume a leading `(ns NAME)` directive, setting the current namespace for the
@@ -12600,6 +13941,9 @@
   ; Outermost unit only: pre-register imported types so this unit's defn
   ; signatures can name prelude types and the !T sugar (nested units' imports
   ; are already processed in dependency order by the time they are reached).
+  ; Stage 15 B3′: this file's own import environment, before any prescan that
+  ; resolves a NAME. Cheap (no file is read) and idempotent with `do-import`.
+  (prescan-file-imports forms)
   (when (= g-toplevel-depth 1)
     (prescan-imported-types forms))
   ; Stage 15 W3c: the unit's explicit `(declare …)` names, collected before any
@@ -12608,6 +13952,14 @@
   ; outermost: a source-imported library's declares outrank a header import that
   ; follows them, for the same reason.
   (prescan-explicit-declares forms)
+  ; Stage 15 B5: protocols BEFORE struct names. `prescan-struct-names` registers
+  ; a name-only StructDef and does not guard, so whichever of the two ran first
+  ; won every `defprotocol`/`defstruct` name clash — and the struct always ran
+  ; first, which is why the clash was reported at the PROTOCOL's line as
+  ; "already names a type" (§2.5). `protocol-register-form` stores its method
+  ; sigs verbatim and parses them lazily, so it needs no struct name to be
+  ; registered yet; the reorder is safe by construction.
+  (when (= sigs-done 0) (prescan-protocols forms))
   (prescan-struct-names forms)
   ; Stage 15 W1a: skip when the whole-graph walk already registered this file's
   ; protocols and signatures. `finalize-generics` still runs at exactly the point
@@ -12616,7 +13968,6 @@
   ; same moment as before — only the *registration* moved earlier.
   (if (= sigs-done 0)
     (do
-      (prescan-protocols forms)
       (prescan-defn-signatures forms)
       ; Stage 15 W8 G-0: this file's own value names, so a `defn` body may name a
       ; `defvar`/`defconst`/`defenum` member declared LATER in the same file. The
@@ -12838,14 +14189,17 @@
 
 ; Stage 15 W1d (Option 2). Record a circular import that was *skipped* rather
 ; than rejected: `path` is the cycle partner that is already mid-import, and the
-; file doing the importing is whatever `g-source-path` names right now. `prefix`
-; is non-null for the prefix-qualified spelling (`(import foo)`), whose alias
-; injection is necessarily suppressed — the partner has not finished emitting,
-; so it has no global-scope slice to alias over.
+; file doing the importing is whatever `g-source-path` names right now.
 ;
-; Both lists are diagnostic-only and grow at most once per cycle edge, so this
+; Stage 15 B2b dropped the second list this kept (prefix → suppressed path).
+; It existed because a skipped re-entry has no global-scope slice, so
+; `inject-import-aliases` injected nothing and a `prefix/name` spelling resolved
+; nowhere. With injection deleted, a prefix names the file rather than a slice
+; and resolves across a cycle like any other reference.
+;
+; The list is diagnostic-only and grows at most once per cycle edge, so this
 ; costs nothing on a compiling program and cannot perturb emitted IR.
-(defn note-import-cycle (path:CStr prefix:ptr line:i32):void
+(defn note-import-cycle (path:CStr line:i32):void
   (let (n:ref:Node (new Node))
     (.set! n kind NODE-STR)
     (.set! n line line)
@@ -12853,16 +14207,7 @@
     (.set! n s path)
     (.set! n car (unsafe/cast ptr:Node g-source-path))
     (.set! n cdr g-import-cycles)
-    (set! g-import-cycles (as ptr n)))
-  (when (!= prefix null)
-    (let (p:ref:Node (new Node))
-      (.set! p kind NODE-STR)
-      (.set! p line line)
-      (.set! p i 0)
-      (.set! p s prefix)
-      (.set! p car (unsafe/cast ptr:Node path))
-      (.set! p cdr g-cycle-prefixes)
-      (set! g-cycle-prefixes (as ptr p)))))
+    (set! g-import-cycles (as ptr n))))
 
 ; Is `path` a member of some import cycle this unit skipped? (Either end of the
 ; edge counts — a cycle is symmetric, and the diagnostics want to know "is this
@@ -12888,16 +14233,6 @@
         (when (and (!= (as ptr (e car)) null)
                    (= (as CStr (as ptr (e car))) path))
           (return (e s)))
-        (set! cur (e cdr)))))
-  (return null))
-
-; The in-progress path whose `prefix/…` aliases a circular skip suppressed, or
-; null if `prefix` was never suppressed.
-(defn cycle-suppressed-prefix-path (prefix:CStr):ptr
-  (let (cur:ptr g-cycle-prefixes)
-    (while (!= cur null)
-      (let (e:ptr:Node (unsafe/cast ptr:Node cur))
-        (when (= (as CStr (e s)) prefix) (return (as ptr (e car))))
         (set! cur (e cdr)))))
   (return null))
 
@@ -12985,70 +14320,6 @@
     (return path))
   (return (fmt-2s "%s\n%s" path prefix)))
 
-; Stage 12: inject a single `prefix/sym-name` alias into g-globals, pointing at
-; the *same* ir-name and type as the imported symbol (an alias is pure
-; resolution — no new code, and a foreign C symbol keeps its bare link name,
-; decision 8). The source spelling `prefix/sym-name` is qualified by scope-define
-; (so the alias key respects the importing namespace and the first-interior-slash
-; rule). Idempotent: a re-alias to the same ir-name is silently skipped; a
-; collision (two different symbols claiming one `prefix/name`) warns.
-(defn import-alias-one (sym-name:CStr sym-type:(raw Type) sym-ir-name:ptr prefix:ptr line:i32):void
-  ; Stage 12 N4: a namespaced library stores its symbols under qualified keys
-  ; (e.g. "geo/area"). Strip the qualifier so the alias is prefix/bare-name
-  ; ("geo/area") rather than prefix/qualified-name ("geo/geo/area"). Identity
-  ; for user-namespace (bare) symbols, so existing imports are unaffected.
-  (let (bare-name:ptr (strip-ns-qualifier sym-name)
-        spelling:ptr (fmt-2s "%s/%s" prefix bare-name)
-        existing:?ptr:Sym (scope-lookup g-globals spelling))
-    (when (!= existing null)
-      ; Already aliased (or a real definition shadows this name). Only warn on a
-      ; genuine collision — a different underlying symbol under the same key.
-      (when (!= ((unsafe/cast ptr:Sym existing) ir-name) sym-ir-name)
-        (when (= g-interactive 0)
-          (fprintf stderr "%s:%d: warning: %s\n" g-source-path line
-                   (fmt-s "import: alias collision on '%s'" spelling))))
-      (return))
-    (scope-define g-globals spelling sym-type sym-ir-name 0)))
-
-; Stage 12 N3: after a prefixed import has processed its file (registering the
-; imported unit's globals into g-globals under their own — for current libs,
-; bare — keys), walk the slice [start-len, end-len) of the global scope the file
-; contributed and inject a `prefix/name` alias for each public symbol. The end is
-; explicit (not the live `sc len`) so a second prefix import of an already-loaded
-; file aliases exactly the file's own slice — never the aliases a prior prefix
-; appended past it. Private symbols (sym-private=1) are skipped unless the
-; g-import-include-private flag is set (set by `unsafe-import-private`). The
-; ir-name is carried verbatim, so a `c/printf` alias still resolves to `@printf`.
-(defn inject-import-aliases (start-len:i32 end-len:i32 prefix:ptr line:i32):void
-  (let (sc:ptr:Scope (as ptr:Scope g-globals)
-        i:i32 start-len)
-    (while (< i end-len)
-      (let (sym:ptr:Sym (as ptr:Sym (unsafe/ptr+ (as ptr:Sym (sc syms)) i)))
-        ; Skip locals (defensive — import processing only adds globals) and any
-        ; entry without an ir-name (e.g. a bare forward signature carries one, but
-        ; guard regardless so the alias always points at a real link symbol).
-        ; Stage 12 N3: skip private symbols unless unsafe-import-private.
-        (when (and (= (sym is-local) 0)
-                   (!= (sym ir-name) null)
-                   (or (= (sym sym-private) 0) (!= g-import-include-private 0)))
-          (import-alias-one (sym name) (sym type) (sym ir-name) prefix line)))
-      (inc! i))))
-
-; Stage 12: alias every C-header function name collected during a prefixed
-; `(import "hdr.h" prefix)` as `prefix/name`. Each name resolves to the bare Sym
-; the header registrar created (or that the prelude already surfaced); the alias
-; carries that Sym's `@name` ir-name verbatim, so `c/printf` links to `@printf`.
-(defn alias-cinclude-collected (list:(raw Node) prefix:ptr line:i32):void
-  (let (cur:ptr list)
-    (while (!= cur null)
-      (let (entry:ptr:Node (unsafe/cast ptr:Node cur)
-            fname:ptr ((unsafe/cast ptr:Node cur) s)
-            sym:?ptr:Sym (scope-lookup g-globals fname))
-        (when (!= sym null)
-          (import-alias-one fname ((unsafe/cast ptr:Sym sym) type)
-                            ((unsafe/cast ptr:Sym sym) ir-name) prefix line))
-        (set! cur (entry cdr))))))
-
 ; Stage 12 core import driver. Reads, parses, and processes all top-level forms
 ; from an imported Nucleus file or C header into the current compilation.
 ;
@@ -13078,6 +14349,15 @@
             ; Jump to Nucleus file import logic (shared with NODE-SYM path).
             (when (= path null)
               (die-at line (fmt-s "import: cannot find '%s'" name)))
+            ; Stage 15 B1: bind in the importing FILE's environment before any
+            ; early return below. Every one of them — the (file, prefix) dedup,
+            ; the already-loaded flatten dedup and the W1d cycle skip — leaves
+            ; the import *declared here* even though it does no further work, and
+            ; a file that declared an import must be able to use its prefix. The
+            ; cycle case matters most: skipping the bind there would make
+            ; `unbound-prefix-message` answer a question W1d's
+            ; `cycle-prefix-message` already answers correctly.
+            (file-import-record prefix path)
             ; Prefix-level dedup: this exact (file, prefix) has already been aliased.
             (when (and (!= prefix null)
                        (!= (import-list-has g-import-aliased (import-key path prefix)) 0))
@@ -13108,7 +14388,7 @@
                     ; deliberately WITHOUT recording the path on g-imported,
                     ; which stays the "finished" list.
                     (when (!= (import-list-has g-importing path) 0)
-                      (note-import-cycle path prefix line)
+                      (note-import-cycle path line)
                       (return))
                     (set! start-len ((as ptr:Scope g-globals) len))
                     (let (save-src:ptr g-src
@@ -13118,7 +14398,11 @@
                           save-peek:ptr g-peek
                           save-peek-valid:i32 g-peek-valid
                           save-ns:ptr g-current-ns
-                          save-ns-seen:i32 g-ns-seen)
+                          save-ns-seen:i32 g-ns-seen
+                          ; Stage 15 B1: the imported file gets its OWN import
+                          ; environment — this save/clear/restore is what makes
+                          ; a prefix file-scoped rather than unit-scoped.
+                          save-file-imports:(raw (Vector (ref ImportBind))) g-file-imports)
                       (set! g-importing (import-list-push g-importing path))
                       (let (src:ptr (read-file path))
                         (set! g-source-path path)
@@ -13128,6 +14412,7 @@
                         (set! g-peek-valid 0)
                         (set! g-current-ns (intern-str "user"))
                         (set! g-ns-seen 0)
+                        (set! g-file-imports null)
                         (let (forms:ptr (desugar (read-program-or-die))
                               is-nuch:i32 (str-ends-with path ".nuch"))
                           (if (!= is-nuch 0)
@@ -13142,12 +14427,12 @@
                       (set! g-peek save-peek)
                       (set! g-peek-valid save-peek-valid)
                       (set! g-current-ns save-ns)
-                      (set! g-ns-seen save-ns-seen))
+                      (set! g-ns-seen save-ns-seen)
+                      (set! g-file-imports save-file-imports))
                     (set! end-len ((as ptr:Scope g-globals) len))
                     (set! g-imported
                           (import-list-push-slice g-imported path start-len end-len))))
                 (when (!= prefix null)
-                  (inject-import-aliases start-len end-len prefix line)
                   (set! g-import-aliased
                         (import-list-push g-import-aliased (import-key path prefix)))
                   (let (pn:ref:Node (new Node))
@@ -13163,22 +14448,22 @@
         ; A C header is re-preprocessed on each import; the extern registrar only
         ; adds a symbol to g-globals the FIRST time it sees it (and a header like
         ; <string.h> may already have surfaced `printf` via the prelude), so the
-        ; g-globals delta is not a reliable list of the header's symbols. For a
-        ; prefixed import, drive `emit-c-include` in collect mode: it records every
-        ; function name it parses (new or pre-existing) into g-cinclude-collect, and
-        ; we alias each by looking up its existing bare Sym. Foreign symbols keep
-        ; their bare `@name` ir-name (decision 8).
+        ; g-globals delta is not a reliable list of the header's symbols, which is
+        ; why the prefixed case used to drive `emit-c-include` in a collect mode
+        ; and alias each name it saw.
+        ;
+        ; Stage 15 B2b: none of that is needed. A C header declares its symbols
+        ; under bare `user` keys, and the header spelling has no `(ns …)`, so
+        ; `import-path-ns` answers `user` and `c/printf` canonicalises straight
+        ; back to `printf` — the same Sym, with its bare `@printf` ir-name
+        ; (decision 8) — through the one resolver. Collect mode is gone with it.
+        ;
+        ; Stage 15 B1: a C header binds in the importing file's environment too —
+        ; `(import-prefixed "stdio.h" c)` makes `c/` legal in *this* file only.
+        ; There is no imported-file body here, so no environment to save.
+        (file-import-record prefix spath)
         (set! g-out g-decl-stream)
-        (if (!= prefix null)
-          (let (save-on:i32 g-cinclude-collecting
-                save-list:ptr g-cinclude-collected)
-            (set! g-cinclude-collecting 1)
-            (set! g-cinclude-collected null)
-            (emit-c-include spath line)
-            (alias-cinclude-collected g-cinclude-collected prefix line)
-            (set! g-cinclude-collecting save-on)
-            (set! g-cinclude-collected save-list))
-          (emit-c-include spath line)))
+        (emit-c-include spath line))
       (return))
     (when (!= (nn kind) NODE-SYM)
       (die-at line "import: name must be a symbol or string path"))
@@ -13186,6 +14471,9 @@
           path:ptr (resolve-import name line))
       (when (= path null)
         (die-at line (fmt-s "import: cannot find '%s'" name)))
+      ; Stage 15 B1: bind in the importing FILE's environment before any early
+      ; return below — see the twin site in the string-path branch above.
+      (file-import-record prefix path)
       ; Prefix-level dedup: this exact (file, prefix) has already been aliased.
       (when (and (!= prefix null)
                  (!= (import-list-has g-import-aliased (import-key path prefix)) 0))
@@ -13219,7 +14507,7 @@
               ; cycle is legal and the re-entry is simply skipped; see the twin
               ; site in the string-path branch above for the reasoning.
               (when (!= (import-list-has g-importing path) 0)
-                (note-import-cycle path prefix line)
+                (note-import-cycle path line)
                 (return))
               (set! start-len ((as ptr:Scope g-globals) len))
               ; Save reader state
@@ -13234,7 +14522,11 @@
                     ; the importer's namespace is restored afterward, so neither
                     ; leaks across the boundary.
                     save-ns:ptr g-current-ns
-                    save-ns-seen:i32 g-ns-seen)
+                    save-ns-seen:i32 g-ns-seen
+                    ; Stage 15 B1: and its own import environment — the
+                    ; save/clear/restore below is what makes a prefix
+                    ; file-scoped rather than unit-scoped (§2.4).
+                    save-file-imports:(raw (Vector (ref ImportBind))) g-file-imports)
                 ; Push onto importing stack
                 (set! g-importing (import-list-push g-importing path))
                 ; Read and parse the imported file
@@ -13246,6 +14538,7 @@
                   (set! g-peek-valid 0)
                   (set! g-current-ns (intern-str "user"))
                   (set! g-ns-seen 0)
+                  (set! g-file-imports null)
                   (let (forms:ptr (desugar (read-program-or-die))
                         is-nuch:i32 (str-ends-with path ".nuch"))
                     ; Process imported forms
@@ -13264,7 +14557,8 @@
                 (set! g-peek save-peek)
                 (set! g-peek-valid save-peek-valid)
                 (set! g-current-ns save-ns)
-                (set! g-ns-seen save-ns-seen))
+                (set! g-ns-seen save-ns-seen)
+                (set! g-file-imports save-file-imports))
               (set! end-len ((as ptr:Scope g-globals) len))
               ; Record the loaded file and the slice it contributed.
               (set! g-imported
@@ -13273,7 +14567,6 @@
           ; record (file, prefix) so a re-import under this prefix is a no-op, plus
           ; the prefix → file binding so a clashing prefix on another file errors.
           (when (!= prefix null)
-            (inject-import-aliases start-len end-len prefix line)
             (set! g-import-aliased
                   (import-list-push g-import-aliased (import-key path prefix)))
             (let (pn:ref:Node (new Node))
@@ -13313,37 +14606,53 @@
 ; N7 flip the bare `import` keyword binds here (via `emit-import`); the
 ; `import-prefixed` keyword remains as an explicit synonym and underlies
 ; `unsafe-import-private`.
+; Stage 15 B3′: the prefix an `import`/`import-prefixed` form binds — the explicit
+; second argument, else the default derived from the library spelling. Extracted
+; from `emit-import-prefixed` so `prescan-file-imports` binds exactly what
+; emission binds; deriving a default prefix in two places is the drift the shared
+; -rule convention exists to prevent, and getting it wrong here is invisible (a
+; prescan bind with a null prefix silently turns a PREFIXED import into a
+; FLATTENING one, which leaks every name the library defines).
+;
+; Default prefix: a symbol defaults to its last dotted component (`foo.bar.baz` →
+; `baz`; `foo/bar` keeps its name). A string path defaults to `c` only when it is
+; a C HEADER — a `.nuc`/`.nuch` string path is a Nucleus file (do-import treats it
+; as one) and defaults from its basename, exactly as the symbol spelling does.
+;
+; Stage 15 W1d: before that split, EVERY string import defaulted to `c`, so a
+; second `.nuc` path import in one file died `prefix 'c' is already bound to
+; '<first path>'` — naming a prefix the author never wrote, for a conflict that
+; does not exist.
+;
+; Returns null only for a shape `emit-import-prefixed` goes on to reject.
+(defn import-form-prefix (form:(raw Node) line:i32):ptr
+  (let (n:i32 (node-len form))
+    (when (or (< n 2) (> n 3)) (return null))
+    (let (name-node:ptr:Node (unsafe/cast ptr:Node (node-at form 1)))
+      (when (= n 3)
+        (let (pn:ptr:Node (unsafe/cast ptr:Node (node-at form 2)))
+          (when (!= (pn kind) NODE-SYM) (return null))
+          (return (pn s))))
+      (when (= (name-node kind) NODE-STR)
+        (if (or (!= (str-ends-with (name-node s) ".nuc") 0)
+                (!= (str-ends-with (name-node s) ".nuch") 0))
+          (return (path-import-default-prefix (name-node s) line))
+          (return "c")))
+      (when (= (name-node kind) NODE-SYM)
+        (return (import-default-prefix (name-node s))))
+      (return null))))
+
 (defn emit-import-prefixed (form:(raw Node)):void
   (let (ff:ptr:Node (unsafe/cast ptr:Node form)
         n:i32 (node-len form))
     (when (or (< n 2) (> n 3))
       (die-at (ff line) "import: expected (import lib [prefix])"))
     (let (name-node:ptr:Node (unsafe/cast ptr:Node (node-at form 1))
-          prefix:ptr null)
-      ; Explicit prefix wins; otherwise default from the lib.
-      (if (= n 3)
+          prefix:ptr (import-form-prefix form (ff line)))
+      (when (= n 3)
         (let (pn:ptr:Node (unsafe/cast ptr:Node (node-at form 2)))
           (when (!= (pn kind) NODE-SYM)
-            (die-at (ff line) "import: prefix must be a symbol"))
-          (set! prefix (pn s)))
-        ; Default prefix: a symbol defaults to its last dotted component
-        ; (`foo.bar.baz` → `baz`; `foo/bar` keeps its name). A string path
-        ; defaults to `c` only when it is a C HEADER — a `.nuc`/`.nuch` string
-        ; path is a Nucleus file (do-import treats it as one) and defaults from
-        ; its basename, exactly as the symbol spelling does.
-        ;
-        ; Stage 15 W1d: before this, EVERY string import defaulted to `c`, so a
-        ; second `.nuc` path import in one file died `prefix 'c' is already bound
-        ; to '<first path>'` — naming a prefix the author never wrote, for a
-        ; conflict that does not exist. The two spellings of the same import now
-        ; derive the same prefix.
-        (if (= (name-node kind) NODE-STR)
-          (if (or (!= (str-ends-with (name-node s) ".nuc") 0)
-                  (!= (str-ends-with (name-node s) ".nuch") 0))
-            (set! prefix (path-import-default-prefix (name-node s) (ff line)))
-            (set! prefix "c"))
-          (when (= (name-node kind) NODE-SYM)
-            (set! prefix (import-default-prefix (name-node s))))))
+            (die-at (ff line) "import: prefix must be a symbol"))))
       (when (= prefix null)
         (die-at (ff line) "import: name must be a symbol or string path"))
       (when (!= (strchr prefix 47) null)
@@ -13650,10 +14959,13 @@
 ; §4.4 item 1. Each still allocates through g-arena-alloc and is never dropped
 ; (process lifetime).
 (defn build-special-form-set ():(ref (HashSet CStr))
-  ; --- special-form-named set (93 members; this count fell out of sync with
-  ; the actual list well before UN-2 — 86 actual vs a stale "73" comment — so
-  ; it is corrected here to the true count: 86 pre-UN-2 + the 7 new unsafe/*
-  ; entries below) ---
+  ; --- special-form-named set (86 members) ---
+  ; Stage 15 B2b removed the seven `unsafe/*` whole-string entries UN-2 added:
+  ; `unsafe` is a real built-in namespace now, so `special-form-named` answers
+  ; for them through `unsafe-qualified-op` (resolve the qualifier, then the
+  ; roster) instead of by string membership. The bare retired spellings (`cast`,
+  ; `ptr+`, `funcall-ptr-*`, `unsafe-import-private`) stay in the set, still
+  ; reserved so nothing may shadow them.
   (let (s:(ref (HashSet CStr))
           (unsafe/cast (ref (HashSet CStr))
             (alloc-handle-alloc (addr-of g-arena-alloc) (sizeof (HashSet CStr)) 8)))
@@ -13680,9 +14992,6 @@
        ; retired the bare aliases as dispatch-time hard errors (D6); the bare
        ; spellings stay in this set only so the names remain reserved (a defn/
        ; defvar/etc. still may not shadow them).
-       "unsafe/cast" "unsafe/ptr+" "unsafe/import-private"
-       "unsafe/funcall-ptr-1" "unsafe/funcall-ptr-i32"
-       "unsafe/funcall-ptr-i64" "unsafe/funcall-ptr-ptr"
        ; option / result
        "some" "as-ref" "unwrap" "unwrap-or" "if-some" "when-some"
        ; ownership / control

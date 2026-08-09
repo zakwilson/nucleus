@@ -2359,3 +2359,313 @@ at all — and the hedge, plus a subtler "only qualify on collision" variant wit
 real `finalized`-is-sticky hazard, both evaporated. Count before you hedge; and
 count with an anchored pattern (`grep -nE '^[[:space:]]*\(defn- '`), since a
 `-o` match of `(defn-` also hits every `(defn-parse-sig …)` call in the tree.
+
+## A per-FILE binding must be recorded before `do-import`'s early returns, not inside the load block
+
+Stage 15 B1 made an import prefix file-scoped
+(`design/stage15-stress-test/name-resolution.md` §2.4). The mechanism is the one
+`g-current-ns` already uses — save, clear, restore around each imported file —
+and the *only* subtlety is **where** the binding is written.
+
+`do-import` reaches its load block through three early returns, and every one of
+them leaves the import genuinely *declared in this file* while doing no further
+work:
+
+- the `(file, prefix)` dedup — a second file importing the same library under
+  the same prefix;
+- the already-loaded flatten dedup — `prefix == null` and the file is on
+  `g-imported`;
+- W1d's **cycle skip** — the partner is mid-emission higher up the stack.
+
+Recording the binding inside the load block therefore drops it in precisely the
+cases where a file legally re-declares an import the unit has already processed.
+The cycle case is the one with teeth: without the bind, the new "prefix not in
+scope here" diagnostic fires for a prefix the file *did* declare, and one failure
+gets two contradictory explanations (W1d's `cycle-prefix-message` already answers
+it correctly). Generalize as: **a per-file record belongs at the point the form's
+subject is known, not at the point the work happens** — dedup and cycle skips are
+short-circuits on the *work*, never on the *declaration*.
+
+Three more facts from the same step:
+
+- **`import-list-has` / `import-list-find` compare `(entry s)` by POINTER
+  identity**, and the prefixes on `g-import-prefixes` are *not* uniformly
+  interned: an explicit prefix comes from a `NODE-SYM` (interned), but a default
+  one comes from `import-default-prefix` / `path-import-default-prefix`, which
+  return `arena-strdup` / `strndup` buffers. So the existing "prefix is already
+  bound to another file" check is content-blind for a defaulted prefix. Any new
+  scan over that list must compare by **content**; do not assume the list is
+  interned because most of its entries happen to be.
+- **The gate belongs in `scope-lookup`'s null-parent branch and nowhere else.**
+  The global scope is the last link of the chain, so returning null there is the
+  whole answer; a local binding still shadows normally because the gate never
+  runs for a parented scope. It short-circuits on a null `g-import-prefixes`, so
+  a unit with no prefixed import — every build of this compiler — is provably
+  unchanged. (Same shape as `g-priv-files` / `g-ns-prefix-table`.)
+- **The REPL needs nothing.** A prefixed import routes through the ordinary
+  top-level dispatcher into `do-import`, and the session's environment is simply
+  the one nothing ever saves or restores — so bindings accumulate across
+  commands, which is what a session wants. `src/repl.nuc` intercepts only
+  `import-use`/`import-only` (for the declare-backfill) and those still reach
+  `do-import`.
+
+**And the diagnostic is half the deliverable.** A qualifier that no longer
+resolves must not fall through to W1c's "not defined anywhere in this compilation
+unit": the name *is* defined and the graph *does* reach it, so that message is a
+lie of exactly the class W1c exists to remove. A scope rule needs a scope
+diagnostic — name the qualifier, where it *is* bound, and what is in scope here —
+and it must be ordered **before** the reachability tiers in
+`unresolved-name-message`, since those tiers answer a different question and will
+happily answer it first.
+
+## A name-resolution rule has TWO entry points: a spelling and a key — and the same string arrives at both
+
+Stage 15 B2a cut protocols over to one canonicaliser (`resolve-spelling`,
+`src/nucleusc.nuc`, `design/stage15-stress-test/name-resolution.md` §9.2). The
+canonicaliser itself is small and kind-agnostic. **The work — and all of the
+risk — is that one lookup function was serving two different questions**, and
+splitting them is per-kind and manual.
+
+* A **source spelling** (`(extend Cat dpx/Describe)`, `(dyn dpx/Describe)`) must
+  be resolved through the *writing file's* import environment. That is the whole
+  fix: a prefixed import binds its prefix and **not** the library's namespace, so
+  `dp/Describe` must resolve to nothing even though `dp/Describe` is literally
+  the registry key.
+* An **already-canonical key** — a stored `Constraint.proto`, a super-protocol
+  edge, a `.nuch` replay's name, a `(dyn P)` box's protocol, the name a resolved
+  `extend` passes down its own call chain — is read back **in a different file
+  from the one that wrote it**, routinely. Resolving it as a reference is a false
+  rejection of a correct program.
+
+So `protocol-lookup` is the reference resolver, `protocol-lookup-ns` (the old
+body, renamed) is the key lookup, and `protocol-resolve-any` (reference, else
+key) serves positions downstream of a gate. Classifying the 13 existing call
+sites was hand work: `(protocol-lookup (crec proto))` and `(protocol-lookup
+(type-node s))` are the same expression over different provenance, and each
+wrong guess is either a false rejection or a silently unclosed hole. **Any
+future kind cut over to the canonicaliser needs the identical split and the
+identical audit** — and note the split is a property of where the *string* came
+from, not of the registry's shape, so it survives any later unification of the
+registries.
+
+Three sub-rules that fall out, each of which cost a wrong first design:
+
+- **Resolve once, at the reference, then carry the record.** `emit-extend` used
+  to `protocol-canon-name` the spelling and then look the *canonical name* up
+  again. Under a scoped resolver that asks the scope question twice and gets two
+  answers — the legal `dpx/Describe` canonicalises to `dp/Describe`, which the
+  second lookup then refuses. It now calls the resolver once, keeps the
+  `?ptr:Protocol`, and passes `(p name)` downward. Prefer this to
+  canonicalize-then-look-up anywhere a canonicaliser can *fail*.
+- **A memo key must be phase-stable; a permission check belongs where the
+  permission is known.** `dyn-type` mints `(dyn P)`'s `StructDef` from a `defn`
+  signature during `prescan-defn-signatures` — where `g-file-imports` is empty by
+  construction and imported protocols are not yet registered — and again from the
+  same signature at emission, where both are populated. An environment-dependent
+  key would differ between those two moments and mint **two** `StructDef`s for
+  one protocol, and `type-eq` is `StructDef`-pointer identity: exactly the W9
+  defect-21 bug. So the box's identity key stays on the environment-free
+  `protocol-canon-name-ns`, and the scope question is asked once, at box
+  construction, by `dyn-require-protocol`. Identity and admission are different
+  questions and only the second one is about what this file may name.
+- **Downstream of a gate, do not gate again.** `dyn-method-slot`,
+  `emit-dyn-forward` and `derive-closure-conformance` may run in a file that
+  never named the protocol (the box was constructed elsewhere). They use the
+  permissive `protocol-resolve-any`; the single gate is `emit-box-value`'s.
+
+**Where a file's namespace becomes known is `emit-ns`, and that is the only hook
+you need.** B2a's `path → ns` table (`g-file-ns`) is written there rather than at
+the end of `do-import`'s load block, and the difference matters: `emit-ns` is
+reached from *every* file entry (the root, both `do-import` load blocks, and
+`prescan-imported-signatures` via `apply-leading-ns`), and because the W1a
+whole-graph prescan runs before any form is emitted, every reachable file's
+namespace is recorded before the first import form is *processed*. The
+already-loaded and W1d cycle-skip paths — which never enter a load block, and
+which B1's report flagged as the hard cases — therefore need no special handling
+at all. A path with no record is in `user`, so absence is an answer rather than a
+gap.
+
+**And a feature table's null state is still the byte-identical proof.**
+`g-ns-declared` is set only by `emit-ns`, so it is 0 for every build of this
+compiler and every program in `lib/`; it gates the flattened-namespace probe,
+which is what keeps a unit with no namespaces on exactly one registry scan per
+bare lookup. Measured: a compiler built from a clean `HEAD` worktree and the
+B0+B1+B2a compiler emit `diff`-identical IR for all 182 files in `examples/` +
+`lib/`. That whole-tree sweep is the check that catches what `make bootstrap`
+cannot — bootstrap only proves the compiler is self-consistent, not that
+*programs* are unaffected.
+
+## Splitting a lookup into reference/key: the line is where the STRING came from, and one class of caller has no tell
+
+Stage 15 B2b cut `g-globals` over to the canonicaliser
+(`design/stage15-stress-test/name-resolution.md` §9.3) — the same
+reference-vs-key split B2a's note above describes for protocols, but at 59 call
+sites instead of 13. Three things generalise.
+
+**For a registry whose definers all go through one writer, the line is
+syntactically visible.** Every *key* site for `g-globals` is paired with a
+`scope-define`: it asks about the key the compiler is about to write, or has just
+written (the `.nuch` `declare` replay, the C-header registrar,
+`emit-deferror`/`emit-extern` dedup, `cheader-yield-to-explicit-declare`, the
+REPL's three redefinition probes — eight in all). Everything else is a reference.
+Look for that pairing first; it collapses most of the audit. Protocols had no
+equivalent tell, so do not assume the next kind will.
+
+**The residue is the dangerous part, and it is silent.** ~15 sites look up a
+string the *compiler itself* wrote — `"printf"`, `"fflush"`,
+`"default-allocator"`, `"alloc-handle-alloc"`, `"g-handler-top"`, and the
+`"fn"`/`"vfn"`/`"mfn"`/`"cfn"` shadow tests. These are neither a user's spelling
+nor a stored key, nothing in the code distinguishes them, and **both
+classifications compile and pass every test**. They are references: the question
+they ask is "is this reachable from the file being compiled". The only observable
+consequence is whether a file with an explicit `(ns …)` can reach a `user`
+global, which is why the wrong answer here stays invisible — it had been
+invisible since Stage 12, recorded as a comment in `lib/nsdescribe.nuc` rather
+than as a bug.
+
+**A `sym-private`-style filter cannot ride along with the thing you delete.**
+`inject-import-aliases` filtered the slice it copied on three fields. Two
+(`is-local`, a null `ir-name`) meant something else entirely and were the defect;
+the third (`sym-private`) was a real visibility rule. Deleting the copy deletes
+all three, so the real one has to be re-expressed where the reference is
+resolved — and the permission it depended on (`g-import-include-private`) is a
+*transient* global set only during the import, so it has to be recorded on the
+binding (`ImportBind.private`) at bind time. When you delete a mechanism, sort
+its guards into "accidental" and "load-bearing" before you delete, not after.
+
+The trap inside that re-expression: an imported file with no `(ns …)` is in
+`user`, so when the *importing* file is also in `user` the two namespaces compare
+equal and any "a file may see its own namespace's private names" shortcut fires
+first and swallows the private probe. That is the ordinary case for this
+compiler's own libraries, not a corner. Make the private probe a fallback of the
+whole qualified path, never of its else-branch.
+
+## `g-special-form-set` is a RESERVATION, not the dispatcher
+
+Worth knowing before touching either. `emit-list` (`src/nucleusc.nuc`) and
+`node-type-call` (`src/generics.nuc`) dispatch special forms by comparing the
+**interned head pointer** against quoted symbols (`(= hp 'unsafe/cast)`); they
+never consult `g-special-form-set`. The set has exactly **one** consumer,
+`special-form-named` → `name-existing-kind` → `guard-name-kind`, i.e. its whole
+job is "a definer may not shadow this name".
+
+The consequence bit Stage 15 B2b: `design/stage14/unsafe-namespace.md` §8.3
+described removing the seven `unsafe/*` entries as *"a dispatch change"*.
+Measured, it is not — it is a reservation change, and removing them without
+replacing the reservation would have made `(defn unsafe/cast …)` legal and
+permanently shadowed (the ladder still wins, so the definition would never
+fire). `special-form-named` now answers for that roster by resolving the
+qualifier and consulting `unsafe-op-named`.
+
+Two related facts from the same step:
+
+- **`unsafe` is a real built-in namespace**, bound as an implicit prefix in every
+  file's environment by `resolve-spelling`. Bound *prefixed*, so it is never
+  flattened, which is what makes bare `cast`/`ptr+`/`funcall-ptr-*` unresolvable
+  as a *consequence* rather than as hard-coded refusals. Six of UN-5's seven
+  refusals were therefore deleted — from **both** `emit-list` and
+  `node-type-call`, which is the lockstep; deleting from one alone makes the
+  non-emitting pass die where codegen no longer does. Their exact messages
+  survive as a tier of `unresolved-name-message` (`unsafe-bare-message`), so five
+  pinned diagnostics did not move.
+- **The seventh does not generalise.** `unsafe-import-private`'s bare spelling is
+  a *different string* from the member's bare name (`import-private`), so no
+  binding can refuse it and its own top-level arm stays. When a retirement is
+  meant to fall out of "the name is not bound", check that the retired spelling
+  really is the bound name minus its qualifier.
+
+## Privacy: `Sym` carries it for values, the four other definers now carry their own (B5)
+
+`defn-`/`defvar-`/`defconst-`/`defenum-` set `sym-private` on the `Sym` they
+register, and B2b's `scope-frame-find-public` (`src/scope.nuc`) enforces it at a
+reference. `defstruct-`/`defunion-`/`defmacro-`/`defprotocol-` register **no
+`Sym` at all** (`emit-toplevel-forms`' own comment says so), and until Stage 15
+B5 no other registry carried a private flag — so their privacy was accepted and
+enforced by nothing. B5 gave `StructDef`, `UnionDef`, `StructTemplate`,
+`UnionTemplate`, `MacroDef` and `Protocol` a `priv` + `src-ns` pair and one
+shared rule, `binding-visible` (`src/nucleusc.nuc`). Four things about it that
+generalise to any future visibility rule:
+
+- **The rule is one function; the *call sites* are per-kind and there are six.**
+  Enforcement lives in each kind's **reference** lookup — `lookup-struct`,
+  `uniondef-lookup`, `struct-template-lookup`, `union-template-lookup`,
+  `find-macro`, `protocol-lookup` — because those are what a source spelling
+  actually reaches. Putting the check only in the shared `binding-probe` looks
+  equivalent and is not: `parse-type-name` calls `lookup-struct` directly, so
+  every `:T` annotation in the language would have gone unguarded. Registration
+  and idempotence probes must keep using the **key** lookup
+  (`protocol-lookup-exact`), never the filtered one — a define must always find
+  its own entry.
+- **Capture provenance at EMISSION, never in a prescan.**
+  `prescan-struct-names` is reached from `prescan-imported-types`, which does
+  **not** apply an imported file's leading `(ns …)` — so `g-current-ns` there is
+  the *importer's*. Recording `src-ns` in that prescan wrote the wrong namespace,
+  and because the entry was also marked private it then became invisible to
+  `emit-defstruct`'s own `lookup-struct`, which registered a **second**
+  `StructDef` under the same name; the stale first entry stayed visible to
+  everyone and the whole filter silently did nothing. A prescan entry is `priv`
+  0, and `binding-visible` returns before consulting `src-ns`, which is what
+  makes leaving it blank safe.
+- **A registration that early-returns needs an explicit update.**
+  `register-struct-template` / `register-union-template` are no-ops once the
+  prescan created the entry, so `emit-defstruct`/`emit-defunion` set the
+  template's `priv`/`src-ns` by hand in their `NODE-CELL` branch.
+- **Gate the whole mechanism on a "does any exist?" flag.** `g-priv-bindings` is
+  0 for every program in `src/`, `lib/`, `examples/` and `tests/`, so the six
+  filters are provably inert rather than believed to be — the same shape W5e's
+  `g-priv-files == null` short-circuit uses.
+
+Scope, unchanged from W5e and worth restating: privacy for these four is
+**namespace-level, never file-level**. A type, macro or protocol name is
+bare-keyed and globally identified (Stage 12 decision 9), so in the default
+`user` namespace `defstruct-` still hides nothing.
+
+## One name-kind priority order: ask for a DIFFERENT kind, not the highest one
+
+Stage 15 B5 unified `name-existing-kind`'s enforcement order with
+`emit-dispatch`'s consumption order (name-resolution.md defect #8) into one
+table, `build-binding-kinds` (`src/nucleusc.nuc`), whose **row order is the
+order**. The trap is what "unify" has to mean.
+
+Picking `emit-dispatch`'s order and having the guard walk it **weakens the
+guard**, measurably. Every definer registers its own name in a prescan *before*
+its own guard runs, so with `g-generics` first a `(defn Shape …)` written over an
+existing `defprotocol Shape` finds the `Generic` its own signature prescan
+registered a moment earlier, reports `NK-FUNCTION`, matches what it is about to
+define, and never looks at the protocol. (It compiled clean before B5.)
+
+The fix is to change the **question**, not to pick a winner: `guard-name-kind`
+asks the table for the first binding whose kind is **not** the one being defined
+(`binding-find`'s `skip-nk`). That is order-*independent* for the verdict — the
+row order then only chooses which of several conflicting kinds to *name* — which
+is precisely what lets one order serve both callers. Two consequences to know:
+
+- A cross-kind clash is now reported at whichever definer is **emitted first**,
+  naming the other one's kind. Two long-standing pins moved blame line and noun
+  (`w8-fnptr-global-name-collision`, `g0-value-fn-collision-order2`); both still
+  assert rejection, and both carry the reason inline. If you see one of these
+  "regress", check the verdict before the text.
+- `node-type-call` mirrors `emit-dispatch` by calling the **same** `binding-find`
+  with a narrower upper bound (it models rows through `BK-GLOBAL`, the ones that
+  yield a type). A *window on one call* is the lockstep-safe way to have two
+  passes agree on part of an order; a second copy of the list is not.
+
+**A prescan had to move with it.** `prescan-protocols` now runs before
+`prescan-struct-names` in `emit-toplevel-forms`. The struct prescan registers a
+name-only `StructDef` and does **not** guard, so whichever ran first won every
+`defprotocol`/`defstruct` clash — and the struct always ran first, which is why
+the clash used to be reported at the *protocol's* line saying "already names a
+type". `protocol-register-form` stores its method sigs verbatim and parses them
+lazily, so it needs no struct name registered yet. Note the residue: for an
+**imported** file the two prescans still run in the old order (pass 1
+`prescan-imported-types` → `prescan-struct-names` for the whole graph, then
+`prescan-imported-signatures` → `prescan-protocols`).
+
+**A did-you-mean must offer a spelling the file can WRITE.** `closest-known-name`
+printed the candidate's raw registry key, and a generic is keyed *bare*, so a
+function reachable only as `zx/zfun` was suggested as `zfun` — the spelling that
+had just failed. Render through the binding's `src-ns`
+(`binding-usable-spelling`), drop a candidate the file cannot reach at all, and
+never emit a suggestion equal to the input. The same applies to any future
+"helpful alternative" text: a suggestion that does not compile is worse than
+none.
