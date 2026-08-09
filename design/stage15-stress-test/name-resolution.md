@@ -241,7 +241,8 @@ API-design knob that leaks into unrelated files.
    types/templates/enums in B3′, generics in B4. **Macros remain** — `g-macros`
    is keyed by the bare source name with no `qualify-name` anywhere, so `p/mac`
    cannot resolve and `binding-usable-spelling` will not suggest one. It is the
-   last of this defect; §9.6.)*
+   last of this defect. **Closed in B7** — §9.7; every name-keyed kind is now on
+   the canonicaliser.)*
 2. **`import-prefixed` skips globals, constants and enum members** — the
    `is-local`/`ir-name` filter (§1.1).
 3. **The defining namespace is always in scope**, whether or not the consumer
@@ -613,6 +614,8 @@ B3 is withdrawn (§8.1). The staging becomes:
 | ~~B3′~~ | re-key the type registries + `StructDef.ir-prefix` + ns-aware mangling token | #4, #7, R1 |
 | **B3′** | **Done 2026-08-09.** All six type rows (6–11) re-keyed on `resolve-spelling` in one step rather than the planned struct/union-first split — the audit found the rows share `parse-type-name` and could not be separated (§9.4). Five *reference* resolvers (`struct-lookup-ref` / `uniondef-lookup-ref` / `struct-template-lookup-ref` / `union-template-lookup-ref` / `enumdef-lookup-ref`) over the shared candidate-key walk, with the old bodies kept as the *key* lookups; `parse-type-name`'s `strip-ns-qualifier` deleted; `StructDef.ir-name`/`ir-prefix` derived from **the key's own namespace**, so `(ns dp) (defstruct Fox …)` emits `%dp__Fox`; conformance keys namespaced on **both** halves (`type-canon-name`); `export` generalised to the type and protocol rows (`reregisterable` flipped); `prescan-file-imports` added so a file's import environment exists before any prescan that resolves a name. The new mechanism is `g-type-key-ok`, a scoped *synthesis-region* permission (`g-defvar-soft`'s shape). `type-annot nope/` moved `ok` → `err` — the last wrongly-`ok` matrix cell. See §9.4 | #4, #7, R1 |
 | ~~B4~~ | per-kind collision rule; `Method.src-ns` filtering for qualified generic references | #5, R2 |
+| ~~B7~~ | macros: the last kind on the bare-keyed path. A qualified spelling (`p/mac`), an ns-composed `jit-name`, and `export` of a macro — the three things §11.6's refusal text asserts are impossible *because* of this gap | the rest of #1, §11.6 |
+| **B7** | **Done 2026-08-09.** `g-macros` keyed by `qualify-name`; `find-macro` split into a reference resolver over the shared candidate-key walk plus `find-macro-exact` (the key lookup B4's redefinition guard moved to). `BK-MACRO` gains `reregisterable` and joins `binding-usable-spelling`, so a facade re-exports a macro and a did-you-mean offers `p/mac`. The `jit-name` half of the plan was **wrong** — a JIT symbol is a unique label, not an identity, so it keeps deriving from the bare name and B3′ step 2's composition is not wanted. `binding-re-register`'s refusal rewritten: the surviving rows are refused for *not being keyed by namespace*, which is true, rather than for a "globally-unique bare name", which was the gap quoting itself. 492 tests; byte-identical across the tree. See §9.7 | the rest of #1, §11.6 |
 | **B4** | **Done 2026-08-09.** `generic-lookup-ref` (`src/generics.nuc`) resolves a qualified generic reference to the bare `Generic` with its method set **filtered by `Method.src-ns`** — R2's shape, and `BK-GENERIC`'s probe arm is the only consumer, as §14.7 predicted. Two provenance holes had to be closed first, neither of them predicted: `register-generic-template` never recorded `src-ns` at all (a METHOD-GENERIC filtered to nothing, so `p/tmpl` did not resolve), and a *stamp* records the CALL SITE's namespace, which had to be re-owned to the template's or the second call re-stamps. Plus R4's eager rule at ten definers, R2's `collides` policy measured per row (`BK-ENUM` was a real hole, `BK-UNION` redundant, `BK-FNTY` correctly 0), and the three tree casualties R4 found. One matrix cell moved: `overloaded-fn` `zx/` err → ok. See §9.6 | #5, R2, R4 |
 | ~~B6~~ | `(dyn P)` identity vs admission | #10 |
 | **B6** | **Done 2026-08-09.** `dyn-proto-key` (`src/nucleusc.nuc`) replaces `protocol-canon-name-ns` as the `(dyn P)` box's identity key: the canonical name derived from `resolve-spelling` and **no registry**, so one protocol has one box `StructDef` whichever legal spelling reached it. Admission moved to the annotation site — `dyn-annot-record` / `drain-dyn-annots` / `DynAnnot`, a deferred worklist carrying each spelling's `{path, line, ns, imports}` and drained at `emit-toplevel-forms` depth 1 after `drain-mono-worklist`; box construction downgraded to a key lookup (`dyn-resolve-protocol`). Plus `box-require-same-kind`, the `type-eq` the erased-slot coercion never had, called from **both** its call sites. Three `protocol-dyn-annot` cells moved `ok` → `err` (`zx/` stays `ok`, correctly); `examples/w9-dyn-ns.nuc`'s box types are renamed `dpx`/`dpx2` → `dp`/`dp2` and are the only IR that moved in the tree. See §9.5 | #10, #11 |
@@ -1525,7 +1528,7 @@ standalone-compilation artifacts `build.md` records).
   `p/mac` cannot resolve; `binding-usable-spelling` therefore still refuses to
   *suggest* one for `BK-MACRO`, which is now the only row it refuses. B4 makes a
   second macro of one name an error, so the gap is a missing spelling rather
-  than a silent shadow.
+  than a silent shadow. **Closed in B7 — §9.7.**
 * **A bare generic reference reaches namespaces the file imported PREFIXED.**
   §8.2 says "one `Generic` per bare name with methods merged from every
   *flattened* namespace"; the registry merges from every namespace, full stop, so
@@ -1536,6 +1539,117 @@ standalone-compilation artifacts `build.md` records).
   the two it measured. Wants its own audit of every `Method` writer first.
 * **`import-only` still filters nothing** (R5, §11.2). Unrelated to B4 and still
   unassigned.
+
+### 9.7 B7 — macros, the last bare-keyed kind
+
+**Scoped and done 2026-08-09.** Closes the remainder of defect #1 and removes
+the circular refusal §11.6's correction box describes. The plan below is kept as
+written, with what the build measured marked inline; the summary of what landed
+is at the end.
+
+**What is wrong today.** `g-macros` is keyed by the bare source spelling —
+`emit-defmacro` stores `(name-node s)` with no `qualify-name` anywhere — so a
+macro is one unit-global name no matter which namespace declares it. Three
+visible consequences, and they are one cause:
+
+1. `p/mac` does not resolve, from anywhere, ever.
+2. `binding-usable-spelling` refuses to *suggest* a qualified spelling for
+   `BK-MACRO`. Since B4 it is the only row it refuses.
+3. `export` of a macro is refused, with the text §11.6's box calls circular.
+
+**The shape, and why it is smaller than B3′ was.** The reference/key split
+conventions.md insists on for every cut-over is unusually clean here, because
+`find-macro` is the **single** reader. Eight call sites: seven are references
+(a head symbol in `emit-list`, `node-type-call`'s three mirrors, the arity
+pre-check, `BK-MACRO`'s probe arm, the REPL's head test) and exactly one is a
+key (B4's redefinition guard inside `emit-defmacro`, which asks about the key it
+is about to write). There is no second registry, no backing record in another
+table, and no conformance-style relation. The pieces:
+
+* **`find-macro` becomes the reference resolver** over the shared candidate-key
+  walk (`name-ref-key-count` / `name-ref-key-at`), exactly as
+  `enumdef-lookup-ref` and the other B3′ resolvers do, with `find-macro-exact`
+  kept as the key lookup for the definer.
+* ~~**`jit-name` needs the B3′ step-2 treatment.**~~ It is
+  `(fmt-sd "__macro_%s_%d" (sanitize-for-ir macro-name) …)`, and a namespaced key
+  puts a `/` into an LLVM symbol. The fix is the composition that already
+  exists — `ns-ir-prefix` of the key's own namespace, composed with
+  `ir-name-token` — **not** widening `sanitize-for-ir`, which maps hyphens to
+  `_` and carries a standing never-apply-blanket warning.
+  **Wrong, and the reason is worth keeping.** The `/` hazard is real but the
+  composition is not the fix, because a `jit-name` is not an identity — it is a
+  private JIT symbol already made unique by its `_%d` counter, so it never needs
+  to encode a namespace. Keying the registry while continuing to derive
+  `jit-name` from the **bare** name is both correct and byte-identical, and
+  `sanitize-for-ir` keeps seeing a spelling with no `/` in it. The general point:
+  B3′ needed ns composition for `StructDef.ir-name` because that name *is* the
+  type's identity across the module; before copying that step to another
+  registry, ask whether the emitted symbol is an identity or just a unique label.
+* **`reregisterable` flips to 1 for `BK-MACRO`**, through the same alias table
+  B3′ built. The refusal text then names only what genuinely has no owning
+  namespace: a special form and a built-in type name.
+* **`binding-usable-spelling` widens** to include `BK-MACRO`, at which point it
+  refuses no row that has a `src-ns`.
+
+**What B7 deliberately does NOT do: add a macro prescan.** Macros are the one
+kind whose registry entry is not merely a name — expanding a macro requires its
+body to have been **JIT-compiled**, so front-loading the registry is a
+code-generation step rather than a name registration. W1d already measured this
+and called it "its own stage" (it is why a `defmacro` a cycle partner defines is
+diagnosed rather than supported). B7 is the *spelling*, which needs no earlier
+registry than exists today: a qualified reference resolves through the file's
+import environment, and the environment is populated by `prescan-file-imports`
+well before any form is emitted. Anything that wants a macro visible *earlier*
+than its own emission is the separate stage, unchanged by this one.
+
+**Acceptance.** `p/mac` resolves and expands through an import prefix; the
+defining namespace does not (R3, as for every other kind); a macro is
+`export`able through a facade and reachable under the facade's prefix; the
+did-you-mean offers `p/mac`; emitted `__macro_*` symbols stay legal and the tree
+stays byte-identical, since `user` composes the empty prefix.
+
+**What B7 built — all of the above, plus one thing the plan did not name.**
+
+The split landed as scoped: `find-macro-exact` is the key lookup,
+`find-macro` the reference resolver over `name-ref-key-count` /
+`name-ref-key-at` with the `binding-alias-find` probe after it, `emit-defmacro`
+keys on `qualify-name` and its B4 redefinition guard moved to the *exact*
+lookup — routing that guard through the reference resolver would have let the
+flattened-namespace walk report an unrelated namespace's macro as a
+redefinition of this one. `BK-MACRO` is `reregisterable` 1 and is in
+`binding-usable-spelling`'s list, which after B7 excludes only the rows with no
+`src-ns` at all.
+
+**The refusal message was rewritten, not just narrowed.** It asserted that the
+kind "is identified by a globally-unique bare name" and cited §11.6. Both halves
+were wrong — §11.6 says no such thing, and for macros the claim was the gap
+quoting itself. The rows that stay 0 have a reason that is actually true and is
+now what the message says: *not keyed by namespace* — an overloaded name because
+R2 merges it across namespaces on purpose (§8.2), a special form / built-in type
+name / `__fnty_N` because no namespace owns them.
+
+**Two namespaces may now each declare a macro of one name.** Not stated as a
+goal above, but it is the direct consequence and it is what B4's redefinition
+rule would otherwise have made a hard error: before B7 there was one key per
+bare name unit-wide, so two libraries with a `b7-twice` could not be imported
+together at all.
+
+**Verification.** `make test` **492 PASS / 0 FAIL** (485 before B7, so 7 new —
+six for the resolution rules plus the inverted export pin, which now *runs* the
+re-exported macro rather than asserting a refusal). `make bootstrap`
+re-converges; the five auxiliary targets pass; the matrix is unchanged (it has
+no macro row — a gap worth noting rather than back-filling now). **Byte-identical
+across the tree**: a compiler built from a clean `HEAD` worktree and the B7
+compiler emit `diff`-identical IR for all 178 compilable files in `examples/` +
+`lib/`. That is inertness by construction, not by luck — **no macro anywhere in
+`src/`, `lib/` or `examples/` is declared inside a namespaced file**, so every
+key is `qualify-name`'s identity under `user`.
+
+**Still deliberately out of scope**, unchanged by B7: a macro must still be
+*emitted* before it can be expanded, so a `defmacro` a cycle partner defines is
+diagnosed rather than supported. That is the macro-prescan stage W1d named, and
+it is a code-generation question (the body has to be JIT-compiled), not a naming
+one.
 
 ## 10. Still open *(resolved by §11)*
 
@@ -1672,6 +1786,12 @@ but not a type, protocol, macro or template. `examples/export-test.nuc`
 exercises functions only. **This is a scope limit today and a blocker after
 R1** — see §11.6, which supersedes the "not a defect" reading.
 
+> **Status 2026-08-09.** R6 ruled on the facade *behaviour*, which is unchanged.
+> The scope limit in the second paragraph is not part of the ruling and was
+> never ruled on: B3′ lifted it for types, protocols and templates, and **B7**
+> lifts it for macros (§9.7). What remains genuinely unexportable after B7 is a
+> special form and a built-in type name, neither of which any namespace owns.
+
 ### 11.4 R7 — `examples/w9-dyn-ns.nuc` becomes invalid
 
 Confirmed. It is the acceptance fixture for **B2**: rewritten to spell
@@ -1714,7 +1834,27 @@ cannot avoid; B buys the same observable semantics — every defect in §3
 closed — with the registries left in place.** B5 (reconciling the two priority
 orders) is what recovers A's main non-cosmetic benefit without A's cost.
 
-### 11.6 Why a facade cannot re-export a type or protocol
+### 11.6 Why a facade *could* not re-export a type or protocol — a defect report, not a ruling
+
+> **Reclassified 2026-08-09, entering B7.** This section has been read twice as
+> though it settled something, and it settles nothing: it is a measurement, a
+> cause, and a plan. Its own text says so — *"it is not that re-export is hard
+> for these kinds; it is that `export` was written as a `g-globals` operation"* —
+> and B3′ then generalised `export` to types and protocols, which falsifies the
+> heading it was filed under. Two consequences:
+>
+> * **The heading was stale from B3′ and is corrected here.** Types, protocols
+>   and templates re-export today, through the alias table.
+> * **`binding-re-register`'s refusal text cites this section for a claim it
+>   does not make.** It tells the author a macro *"is identified by a
+>   globally-unique bare name, so a re-export would not change how it
+>   resolves (name-resolution.md §11.6)"*. Nothing here says that. What this
+>   section actually argues is that global reachability is the property R1 takes
+>   *away*, and that a kind which cannot be re-exported is a resolver carrying
+>   too little information. The sentence is also circular: a macro is
+>   bare-keyed because macros were never cut over to the canonicaliser, which is
+>   defect #1's remaining half — so the gap is being quoted as its own
+>   justification. **B7 owns both** (§9.7).
 
 Measured — both fail, identically:
 

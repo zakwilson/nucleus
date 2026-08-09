@@ -960,14 +960,18 @@ library.
 
 ---
 
-## B — Name resolution *(added 2026-08-08; B0, B1, B2a, B2b, B5, B3′, B6 and B4 done — the series is complete)*
+## B — Name resolution *(added 2026-08-08; B0, B1, B2a, B2b, B5, B3′, B6, B4 and B7 done — every name-keyed kind is on the canonicaliser)*
 
 Full design, measurements and rulings: [name-resolution.md](name-resolution.md).
 Staging is B0 (record the matrix) → B1 (file-scoped import environment) → B2
 (the canonicaliser, cut over kind by kind: **B2a protocols**, **B2b globals** +
 `unsafe` + deleting alias injection) → B3′ (re-key the type registries) → B4
 (collision policy) → B5 (the shared binding interface) → B6 (`(dyn P)` identity
-vs admission). **All of B0–B6 are done**, B4 last (2026-08-09).
+vs admission) → B7 (macros, the last bare-keyed kind). **All of B0–B7 are
+done**; B4 and then B7 closed it out on 2026-08-09. B7 was added late, when
+reviewing B4's leftovers showed that §11.6 — cited by the compiler as the reason
+a macro could not be re-exported — is a *defect report with a plan*, not a
+ruling, and that the reason it gave was circular.
 **B5 landed 2026-08-09 out of order**, because §13.4 upgraded it from
 "reconcile the two priority orders" to the interface of §13.3 — which makes it
 the *frame* B3′ and B4 fill in rather than a cleanup after them. The A-vs-B
@@ -1256,6 +1260,59 @@ marked inline.)*
   "only by LLVM's parser" holds for the binding position; in an ARGUMENT position
   the SysV ABI splits the fat pointer into two i64s at the call, so nothing
   catches it and the program runs against the wrong vtable.)**
+
+### B7 — macros, the last bare-keyed kind *(2026-08-09)*
+
+Closes the remainder of defect #1 and corrects §11.6's standing. Full account in
+[name-resolution.md](name-resolution.md) §9.7.
+
+* **`g-macros` is keyed by `qualify-name` and `find-macro` is a reference
+  resolver** over the same candidate-key walk the six type registries use, with
+  `find-macro-exact` as the key lookup. The reference/key audit conventions.md
+  demands for every cut-over was unusually cheap here: `find-macro` is the
+  registry's only reader, and of its eight call sites exactly **one** holds a key
+  — B4's redefinition guard, which had to move to the exact lookup or the
+  flattened-namespace walk would report an unrelated namespace's macro as a
+  redefinition of this one.
+* **The plan's `jit-name` step was wrong, and usefully so.** §9.7 predicted the
+  B3′ step-2 `ns-ir-prefix`/`ir-name-token` composition. Measured, a `jit-name`
+  is not an identity — it is a private JIT symbol already unique by its `_%d`
+  counter — so deriving it from the **bare** name is correct, keeps `/` out of
+  `sanitize-for-ir`'s input, and is byte-identical. Before copying B3′ step 2 to
+  another registry, ask whether the emitted symbol is an identity or a label.
+* **`BK-MACRO` is `reregisterable` 1**, so a facade re-exports a macro through
+  the alias table B3′ built, and it expands through the facade's prefix.
+* **The refusal message was rewritten, not narrowed.** It claimed the kind "is
+  identified by a globally-unique bare name" and cited §11.6 for it. §11.6 says
+  no such thing, and for macros the claim was the gap justifying itself. What
+  the surviving 0-rows actually share is that they are *not keyed by namespace*:
+  an overloaded name because R2 merges it across namespaces on purpose, a special
+  form / built-in type name / `__fnty_N` because no namespace owns them.
+* **Two namespaces may now each declare a macro of one name** — not a stated
+  goal, but the direct consequence, and the case B4's redefinition rule would
+  otherwise have turned into a hard error.
+
+### Test/bootstrap status after B7
+
+* `make test` → **492 PASS, 0 FAIL** (485 after B4, so 7 new: six resolution
+  rules — prefixed, flattened, namespace-refused, did-you-mean, three macro
+  sources at once from inside a namespace, two namespaces one name — plus the
+  inverted export pin).
+* One pin inverted: `b5-export-macro-refused` → `b7-export-macro-facade`, which
+  now **runs** the re-exported macro rather than asserting a refusal. A
+  compile-only check would have passed on a macro that resolved but expanded to
+  nothing. `b7-export-overload-refused` replaces it as the surviving refusal, and
+  it pins the *reason* as well as the verdict.
+* `make bootstrap` re-converges; `abi-test`, `layout-test`, `avr-test`,
+  `riscv-test`, `riscv-abi-test` all pass; the matrix is unchanged.
+* **Byte-identical across the tree** — HEAD-worktree compiler vs the B7 compiler,
+  `diff`-identical IR for all 178 compilable files in `examples/` + `lib/`. This
+  is inertness *by construction*: no macro anywhere in `src/`, `lib/` or
+  `examples/` is declared inside a namespaced file, so every key is
+  `qualify-name`'s identity under `user`.
+* Known gap, recorded rather than back-filled: `tests/resolution-matrix.sh` has
+  no macro row, so the matrix cannot show B7's cells moving. The six new tests
+  cover the same ground directly.
 
 ### B4 — a qualified spelling for generics, and R4's eager redefinition rule *(2026-08-09)*
 
