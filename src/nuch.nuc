@@ -293,8 +293,10 @@
           (when (!= ndi-new 0) (set! fname (-> name-node (unsafe/cast ptr:Node _) (_ s))))
           (when (= ret null)
             (die-at ((as ptr:Node name-node) line) (fmt-s "declare: missing :type on '%s'" fname)))
-          ; Skip if already defined (e.g. from include or c-include)
-          (when (!= (scope-lookup g-globals fname) null) (return))
+          ; Skip if already defined (e.g. from include or c-include).
+          ; B2b: a KEY question — this is the definition side of the `scope-define`
+          ; a few lines below, not a reference written in this file.
+          (when (!= (scope-lookup-key g-globals fname) null) (return))
           (let (nparams:i32 0
                 ptypes:ptr null)
           (when (!= params-node null)

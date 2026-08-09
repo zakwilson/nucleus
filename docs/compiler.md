@@ -15,7 +15,7 @@ By default `nucleusc <file.nuc>` produces a linked native executable (`a.out` un
 | `-ffast-math` | Emit `fast` flags on floating-point arithmetic (`fadd`/`fsub`/`fmul`/`fdiv`/`frem`), permitting reassociation, contraction, and no-signed-zero/no-NaN assumptions. This is what lets the optimizer vectorize FP **reductions** (e.g. `pi += …`); without it an FP reduction stays scalar even at `-O3` because reordering would change results. Comparisons are left unflagged. Changes numerical results — opt-in only. |
 | `-march=native` | Target the host CPU and its full feature set (via `LLVMGetHostCPUName` / `LLVMGetHostCPUFeatures`) instead of the generic baseline, so vectorized loops use the widest available registers (e.g. 256-bit AVX rather than 128-bit SSE2). Host-only — do not combine with `--target=`. Produces non-portable objects. |
 | `--emit-nuch` | Output a `.nuch` header instead of compiling. Extracts function signatures, struct definitions, constants, enums, and macros. |
-| `--emit-cheader` | Output a C header (`.h`) instead of compiling. Emits `#pragma once`, `#include <stdint.h>`, typedefs for structs, extern function declarations, `extern` declarations for `defvar` and `extern` globals, `#define` constants, and enums. For a namespaced library, function declarations use the C-legal mangled link name (`geom__area`, not the Nucleus name `geom/area`), so a C consumer links against the same symbol the library emits. |
+| `--emit-cheader` | Output a C header (`.h`) instead of compiling. Emits `#pragma once`, `#include <stdint.h>`, typedefs for structs, extern function declarations, `extern` declarations for `defvar` and `extern` globals, `#define` constants, and enums. For a namespaced library, function declarations use the C-legal mangled link name (`geom__area`, not the Nucleus name `geom/area`), so a C consumer links against the same symbol the library emits — and a struct's typedef name is mangled the same way (`} gt__Pt;`, not `} Pt;`), since two namespaces may each define a `Pt` and an unprefixed typedef would collide if both headers were included together. A `user`-namespace library's header is unaffected. See [Namespaced type names](types.md#namespaced-type-names). |
 | `-i` / `--interactive` | Start the REPL (interactive Read-Eval-Print Loop). |
 | `-I<path>` / `-I <path>` | Add a directory to the import search path. Searched after the source file's directory and `lib/`. |
 | `--repl-format=text\|json` | Format for REPL error output. Default `text` (legacy `  error: <msg>` lines). With `json`, each error is emitted as a single-line JSON object: `{"file":..,"line":..,"message":..}`. Suitable for agent-driven REPL sessions. |
@@ -59,7 +59,33 @@ form behind it; `undefined: <name>` is the same failure in value position. Since
 resolution is by [reachability, not import
 order](toplevel.md#cross-file-resolution-reachability-not-import-order), a name
 defined *anywhere in the compilation unit* resolves — so an unresolved name is
-one of three things, and the message says which.
+one of four things, and the message says which.
+
+**0. It is a `qualifier/name` whose qualifier is not in scope in this file.**
+[What an import brings into scope](toplevel.md#what-an-import-brings-into-scope)
+is the whole answer — another file's `(import-prefixed …)` does not make its
+prefix spellable here, and a namespace nobody imported is not spellable at all.
+This one is not a reachability failure — the definition is in the unit — so it
+is reported as what it is. When the qualifier is a prefix *some other* file
+bound, the note names that file, because that is the fix:
+
+```
+main.nuc:2: error: unknown: gx/area — 'gx' is not in scope in this file
+  note: an import prefix is file-scoped: another file in this unit binds 'gx' to
+  lib/geometry.nuc, but a prefix reaches only the file whose own import declares
+  it. This file has no import qualifiers in scope.
+```
+
+Otherwise the note gives the general rule and lists what this file *can* spell.
+A **protocol** reference reaches the same note through its own head ("unknown
+protocol" / "not a declared protocol") rather than through `unknown:`:
+
+```
+main.nuc:6: error: extend: unknown protocol 'shapes/Shape'
+  note: 'shapes' is not in scope in this file — a prefixed import binds its
+  library under the prefix it names and not under the library's own namespace,
+  and an unimported namespace is not nameable at all. In scope here: sh.
+```
 
 **1. The C header declared it, and the importer could not describe it.** The
 header, line and reason, instead of a spelling guess:
@@ -104,6 +130,46 @@ searched:
 ```
 t.nuc:4: error: unknown: qzx-frobnicate — not defined anywhere in this compilation unit
 ```
+
+**A suggestion is a spelling this file can write.** The candidate's own
+namespace decides how it is rendered: a name in this file's namespace, in
+`user`, or in a namespace this file flattened is offered bare; one reachable
+only through an import prefix is offered qualified; and a candidate this file
+cannot reach at all — including a private definition in another namespace — is
+not offered. So a library function imported as `(import-prefixed lib zx)` is
+suggested as `zx/zfun`, not as the bare `zfun` that just failed.
+
+### Not a function
+
+A name that *is* defined, but in a registry with no head-position meaning, says
+so instead of claiming to be unknown:
+
+```
+t.nuc:9: error: 'Shape' names a protocol, not a function
+t.nuc:11: error: 'Maybe' names a type, not a function
+```
+
+The same table drives the one-symbol-one-kind rule below, so the noun in this
+message and the noun in a collision diagnostic are the same answer.
+
+### One symbol, one kind
+
+A symbol may name only one kind of thing. Every top-level definer checks the
+name it is about to introduce against every registry — special forms, built-in
+type names, macros, functions, values, protocols, structs, unions and templates
+— and refuses a name that already denotes a *different* kind:
+
+```
+t.nuc:4: error: 'Shape' already names a protocol — a symbol may name only one kind of thing
+```
+
+Two properties are worth knowing. The check is for a binding of a **different**
+kind, not for the highest-priority binding, so it does not matter which registry
+would win in head position; and because every definer registers its own name in
+a prescan before any form is emitted, a cross-kind clash is reported at
+whichever of the two definitions is **emitted first**, naming the other one's
+kind. Same-kind reuse stays legal: an overloaded `defn`, a re-imported
+`defstruct`, a redefined macro.
 
 ### Call arity
 
@@ -275,3 +341,5 @@ When the source declares a namespace, its public symbols emit *mangled* link nam
 ```
 
 Importing this with `(import-prefixed "nsgeom.nuch" g)` makes `g/area` resolve to `@geom__area` — matching the link name in the library's `.o`. Overloaded methods already carry their fully-mangled symbol on the `defmethod` form (`@geom__area.i32.i32`), so they round-trip unchanged; the `(ns …)` line additionally fixes the link name of *solitary* `declare`d functions and `extern` globals (which the importer otherwise rebuilds from the bare name). A library in the default `user` namespace emits **no** `(ns …)` line and bare names, so its header is byte-identical to before.
+
+The same round trip applies to a namespaced **type**: the header's `(defstruct Pt ...)` line is unqualified, as it always was, but the leading `(ns gt)` directive tells the importer to re-register it as `gt/Pt` — so `(import-prefixed "nsgeom.nuch" g)` makes `g/Pt` resolve to the library's `%gt__Pt` LLVM type and, for `--emit-cheader`, its `gt__Pt` C typedef, exactly as `g/area` resolves to `@geom__area`. See [Namespaced type names](types.md#namespaced-type-names).

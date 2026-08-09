@@ -32,10 +32,16 @@
         (if (= (tt elem) null)
           (return "ptr")
           (return (fmt-s "p%s" (type-mangle-token (tt elem)))))
+      ; Stage 15 B3′ (name-resolution.md §8.1 step 2): the type's `ir-name`, not
+      ; its `name`. Since B3′ a namespaced type's registry key carries a `/`
+      ; (`dp/Fox`), which is illegal in an LLVM symbol; `ir-name` is the same
+      ; string composed through the defining namespace's ir-prefix (`dp__Fox`),
+      ; computed once at registration. `ir-name == name` for every `user` type,
+      ; so every mangled symbol in this compiler and in `lib/` is unchanged.
       TY-STRUCT
-        (return (-> tt (_ sdef) (unsafe/cast ptr:StructDef _) (_ name)))
+        (return (-> tt (_ sdef) (unsafe/cast ptr:StructDef _) (_ ir-name)))
       TY-UNION
-        (return (-> tt (_ sdef) (unsafe/cast ptr:StructDef _) (_ name)))
+        (return (-> tt (_ sdef) (unsafe/cast ptr:StructDef _) (_ ir-name)))
       TY-FN (return "fn")
       TY-CSTR (return "cstr")
       TY-CHAR (return "Char")

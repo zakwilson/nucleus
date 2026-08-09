@@ -9,6 +9,12 @@
 ; emit `@f = global ptr null` alongside `define i32 @f(i32)`. The plain
 ; (non-fn-typed) collision is pinned by g0-value-fn-collision-order1/2; this is
 ; the fn-typed shape, the one the fix touches.
+;
+; Stage 15 B5: the diagnostic moved to the `defn` below and names "a value".
+; Both definers now guard — before B5 the first one's guard was masked by its
+; own prescan registration — so the verdict is unchanged and the location is the
+; first of the two definitions rather than the second. Do NOT "fix" the expected
+; line back to the `defvar`'s.
 
 (defn f (x:i32):i32 (return x))
 

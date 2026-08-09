@@ -56,31 +56,81 @@
       (.set! sc len (+ (sc len) 1))
       (return (as ref:Sym sym)))))
 
+; One frame of the chain, scanned newest-first (`scope-define` appends, so the
+; backwards scan is what makes a redefinition shadow its predecessor — see the
+; DEFVAR-REACHED note in nucleusc.nuc). `key` is already final: no qualification,
+; no environment, no privacy rule. Extracted in Stage 15 B2b so the *policy*
+; (which keys to try, and whether a private symbol counts) lives in one place
+; and the *scan* in another.
+(defn scope-frame-find (sc:raw:Scope key:CStr):?ptr:Sym
+  (let (i:i32 (- (sc len) 1))
+    (while (>= i 0)
+      (let (sym:ptr:Sym (as ptr:Sym (unsafe/ptr+ (as ptr:Sym (sc syms)) i)))
+        (when (= (sym name) key)
+          (return (as ptr sym))))
+      (set! i (- i 1))))
+  (return null))
+
+; The same scan, restricted to public symbols. Stage 15 B2b: this is where
+; `inject-import-aliases`' `sym-private` filter went. A name reached through
+; another file's namespace — a bound prefix, or a namespace this file flattened —
+; must not see that file's private definitions; a name reached through the
+; file's OWN namespace must.
+(defn scope-frame-find-public (sc:raw:Scope key:CStr):?ptr:Sym
+  (let (i:i32 (- (sc len) 1))
+    (while (>= i 0)
+      (let (sym:ptr:Sym (as ptr:Sym (unsafe/ptr+ (as ptr:Sym (sc syms)) i)))
+        (when (and (= (sym name) key) (= (sym sym-private) 0))
+          (return (as ptr sym))))
+      (set! i (- i 1))))
+  (return null))
+
+; Resolve a source REFERENCE — a name as written in the file being compiled.
+; Local frames match the raw name, so a local binding shadows a global before
+; the qualifier is ever considered; the global frame is handed to
+; `globals-lookup-ref` (src/nucleusc.nuc), which is the one place the file's
+; import environment decides what a spelling may reach.
+;
+; Stage 15 B2b (name-resolution.md §9.2, §12.1): this is the reference half of
+; what used to be one function. The key half is `scope-lookup-key` below. Do not
+; route an already-canonical `g-globals` key through here — the file that reads
+; such a key is routinely not the file that wrote it, and a reference resolver
+; would refuse it.
 (defn scope-lookup (s:raw:Scope name:CStr):?ptr:Sym
   (let (cur:raw:Scope s)
     (while (!= cur null)
+      (let (sc:raw:Scope cur)
+        (when (= (sc parent) null)
+          (return (globals-lookup-ref sc name)))
+        (let (hit:?ptr:Sym (scope-frame-find sc name))
+          (when (!= hit null) (return hit)))
+        (set! cur (sc parent)))))
+  (return null))
+
+; Look up an already-canonical KEY: a name this compiler computed and is about
+; to write into `g-globals`, or has already written there. Definition-side
+; existence checks (`extern`/`deferror` dedup, the `.nuch` declare replay, the C
+; header registrar, the REPL's redefinition bookkeeping) all ask this question,
+; and asking the reference question instead would be wrong in both directions —
+; a bare definer name would additionally probe every flattened namespace and
+; report an *imported* symbol as a redefinition.
+;
+; This is the pre-B1 `scope-lookup` body verbatim: `qualify-name(priv-key-use …)`
+; on the global frame, the raw name on every inner one. Identity under `user`,
+; which is why the bootstrap does not move.
+(defn scope-lookup-key (s:raw:Scope name:CStr):?ptr:Sym
+  (let (cur:raw:Scope s)
+    (while (!= cur null)
       (let (sc:raw:Scope cur
-            i:i32 (- (sc len) 1)
             ; Stage 12: the global scope (the unique null-parent scope) keys its
-            ; symbols by fully-qualified name, so a bare reference in namespace
-            ; `foo` resolves to `foo/bar` and a qualified `foo/bar` resolves
-            ; directly. Inner (local) scopes match the raw name, so a local
-            ; binding still shadows a global before we ever reach the qualifier.
-            ; Under `user`, qualify-name is identity — bootstrap byte-identical.
+            ; symbols by fully-qualified name. Stage 15 W5e: a name this file
+            ; declared with a private definer keys under the file's own implicit
+            ; namespace, and `priv-key-use` is the identity when it owns none.
             key:CStr name)
-        ; Stage 15 W5e: a reference to a name this file declared with a private
-        ; definer resolves to that file's own key first — a file's private
-        ; definition shadows a public one elsewhere, exactly as a namespace-local
-        ; name shadows an imported one. priv-key-use is the identity when the
-        ; current file owns no private names (and a single null check when the
-        ; unit has none at all).
         (when (= (sc parent) null)
           (set! key (qualify-name (priv-key-use name))))
-        (while (>= i 0)
-          (let (sym:ptr:Sym (as ptr:Sym (unsafe/ptr+ (as ptr:Sym (sc syms)) i)))
-            (when (= (sym name) key)
-              (return (as ptr sym))))
-          (set! i (- i 1)))
+        (let (hit:?ptr:Sym (scope-frame-find sc key))
+          (when (!= hit null) (return hit)))
         (set! cur (sc parent)))))
   (return null))
 

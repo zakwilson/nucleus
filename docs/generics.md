@@ -63,7 +63,7 @@ If a required method is missing, compilation fails with a diagnostic naming each
 
 ### Protocols are namespaced
 
-A protocol belongs to the namespace of the file that declares it, exactly as a `defn` or `defvar` does — see [`ns`](toplevel.md). Types are **not** namespaced (a struct name is global), so the two halves of an `extend` are spelled differently when they come from different places.
+A protocol belongs to the namespace of the file that declares it, exactly as a `defn`, `defvar` or type does — see [`ns`](toplevel.md) and [Namespaced type names](types.md#namespaced-type-names). The two halves of an `extend` can still be spelled differently, but not because one is namespaced and the other is not — both are, and both resolve through the same import-scope rule. They typically look different because they are reached by different routes: in the example below, `Circle` is a type this file defines locally (so it is written bare), while `Shape` is a protocol pulled in from elsewhere (so it is written through whatever prefix this file imported it under).
 
 ```lisp
 ; lib/shapes.nuc
@@ -78,16 +78,16 @@ A protocol belongs to the namespace of the file that declares it, exactly as a `
 (defstruct Circle rad:i32)
 (defn area ((self (ref Circle))):i32 (return (* (self rad) 3)))
 
-(extend Circle shapes/Shape)          ; protocol qualified by its NAMESPACE
-(defn boxed ():(dyn shapes/Shape) …)  ; likewise in a `dyn` position
+(extend Circle sh/Shape)          ; the protocol, through the prefix THIS file bound
+(defn boxed ():(dyn sh/Shape) …)  ; likewise in a `dyn` position
 ```
 
 Four rules cover every spelling:
 
 * **Inside its own namespace, a protocol is named bare.** Within `(ns shapes)`, `Shape` means `shapes/Shape`.
-* **From anywhere else, qualify it with the namespace** — `shapes/Shape`. Both spellings denote the one protocol, so a conformance written bare inside the namespace is found by a `(dyn shapes/Shape)` written outside it.
-* **The qualifier is the namespace, not the import prefix.** In the example above the import prefix is `sh`, and `sh/Shape` would *not* resolve: a prefix aliases the functions and values a file contributed, and a protocol is not one of those. Protocol identity has to be the same in every file that mentions it, and an import prefix varies per importer. (`sh/area` is still how you would name the library's *function*.)
-* **A bare name falls back to the default `user` namespace.** That is why a file with an `(ns …)` of its own can still write `(extend MyType Clone)` against the prelude's protocols with no qualifier. If two namespaces each declare a `Describe` and neither is in `user`, a bare `Describe` names neither and is an error — qualify it.
+* **From anywhere else, spell it with a qualifier the file has in scope** — see [What an import brings into scope](toplevel.md#what-an-import-brings-into-scope). With `(import-prefixed shapes sh)` that is `sh/Shape`; with `(import-use shapes)` it is bare `Shape` or `shapes/Shape`. Every accepted spelling denotes the one protocol, so a conformance written bare inside the namespace is found by a `(dyn sh/Shape)` written outside it.
+* **A prefixed import does *not* put the library's own namespace in scope.** With `(import-prefixed shapes sh)`, `shapes/Shape` is an error: the prefix is the whole of what the import bound. The diagnostic says so and lists what *is* in scope.
+* **A bare name falls back to the default `user` namespace.** That is why a file with an `(ns …)` of its own can still write `(extend MyType Clone)` against the prelude's protocols with no qualifier. If two namespaces each declare a `Describe` and neither is flattened into this file, a bare `Describe` names neither and is an error — qualify it.
 
 Two namespaces may therefore each declare a protocol of the same name without colliding, and one type may conform to both:
 
@@ -671,11 +671,18 @@ See `examples/dyn-protocol.nuc` for the full working example.
 
 **Across a namespace.** `P` is a protocol reference, so it follows the naming
 rules in [Protocols are namespaced](#protocols-are-namespaced): bare inside the
-protocol's own namespace, `namespace/Name` from anywhere else, and never the
-import prefix. `(dyn shapes/Shape)` and a `(dyn Shape)` written inside
+protocol's own namespace, and from anywhere else a qualifier the file actually
+has in scope — the prefix a `(import-prefixed …)` bound, or the namespace name a
+`(import-use …)` flattened. `(dyn sh/Shape)` and a `(dyn Shape)` written inside
 `(ns shapes)` are the **same type** — the box's identity is the protocol's
-canonical name, not the spelling at the use site. If `P` names no protocol in
-scope the box site reports `(dyn P): 'P' is not a declared protocol`.
+canonical name, not the spelling at the use site.
+
+The check happens where the box is **constructed**, not where the type is
+written: `(dyn P)` in a plain annotation is not validated (a signature's types
+are resolved before the file's imports have been processed), so an unknown or
+out-of-scope `P` is reported at the first boxing, as
+`(dyn P): 'P' is not a declared protocol` — with a note naming the qualifier and
+what is in scope, when the reason is scope rather than existence.
 `examples/w9-dyn-ns.nuc` is the worked cross-namespace example, including two
 namespaces that each declare a protocol of the same bare name.
 

@@ -876,21 +876,12 @@
               (cheader-record-skip (as CStr fname) why
                                    (cheader-line-at buf decl-start) loud))
             (return 1)))
-        ; Stage 12: in collect mode (a prefixed C-header import), record every
-        ; parsed function name so the importer can alias it as prefix/name —
-        ; even one the prelude already registered, which the new/existing guard
-        ; below would otherwise skip.
-        (when (!= g-cinclude-collecting 0)
-          (set! g-cinclude-collected
-                (import-list-push g-cinclude-collected fname)))
         ; W3c precedence (cheader.md §1.4): an explicit `(declare …)` anywhere in
         ; this unit outranks the header's copy, whichever comes first. Record the
         ; header-derived signature for the conflict message and drop this
         ; declaration — registering it would make the *header* win when it
         ; precedes the declare, and emitting a second `declare` for the same
-        ; symbol is invalid IR even when the two agree. Placed after the
-        ; collect-mode push so a prefixed import still aliases `prefix/name` onto
-        ; the explicit declaration's Sym.
+        ; symbol is invalid IR even when the two agree.
         (when (!= (as ptr (cheader-explicit-declare-site (as CStr fname))) null)
           (cheader-yield-to-explicit-declare
             (as CStr fname)
@@ -903,8 +894,9 @@
           (.set! ft ret ret-type)
           (type-set-params ft param-types num-params)
           (.set! ft variadic is-variadic)
-          ; Only register if not already defined
-          (when (= (scope-lookup g-globals fname) null)
+          ; Only register if not already defined. B2b: a KEY question, paired
+          ; with the `scope-define` it guards.
+          (when (= (scope-lookup-key g-globals fname) null)
               (let (csym:ref:Sym (scope-define g-globals fname (as ptr ft)
                                   (fmt-s "@%s" fname) 0))
                 ; Stage 10 Phase F1: mark known-noreturn libc functions.
@@ -1761,7 +1753,10 @@
   ; ir-name-token must run before the blanket map, or `?` would collapse to `_`
   ; and collide (SM-3). For a name with no `?`/`!` ir-name-token is a pointer-
   ; identity no-op, so existing headers stay byte-identical.
-  (return (fmt-s "struct %s" (sanitize-for-c (ir-name-token name)))))
+  ; Stage 15 B3′: `ns-ir-base` (not bare `ir-name-token`) so a reference to a
+  ; namespaced type spells the same C identifier its typedef does — see
+  ; emit-cheader-defstruct. Identity under `user`.
+  (return (fmt-s "struct %s" (sanitize-for-c (ns-ir-base name)))))
 
 ; Convert a type AST node to a C type string. Handles SYM types and
 ; (ptr T) / (ptr ptr T) ... lists.
@@ -1887,7 +1882,14 @@
   (when (!= ((unsafe/cast ptr:Node (node-at form 1)) kind) NODE-SYM) (return))
   ; ir-name-token first (`?`→_QMARK / `!`→_BANG), then the blanket C sanitize; see
   ; type-name-to-c. A no-op for names without `?`/`!`, so headers stay byte-identical.
-  (let (name:ptr (sanitize-for-c (ir-name-token ((unsafe/cast ptr:Node (node-at form 1)) s)))
+  ;
+  ; Stage 15 B3′: `ns-ir-base` composes the library's namespace ir-prefix, exactly
+  ; as `emit-cheader-declare` already does for a function name. R1 makes it
+  ; necessary: two namespaces may now both define `Pt`, and without the prefix
+  ; their generated headers would both declare `typedef struct {…} Pt;` — a C
+  ; collision the moment a program includes both. Identity under `user`, so every
+  ; existing header is byte-identical.
+  (let (name:ptr (sanitize-for-c (ns-ir-base ((unsafe/cast ptr:Node (node-at form 1)) s)))
         nfields:i32 (- (node-len form) 2))
     (check-ir-name-legal ((unsafe/cast ptr:Node (node-at form 1)) line) ((unsafe/cast ptr:Node (node-at form 1)) s) name)
     (printf "typedef struct {\n")
@@ -1922,7 +1924,7 @@
     (let (head:ptr:Node (unsafe/cast ptr:Node (n car)))
       (when (= (as ptr head) null) (return 0))
       (when (!= (head kind) NODE-SYM) (return 0))
-      (when (!= (union-template-lookup (head s)) null) (return 1))
+      (when (!= (union-template-lookup-ref (head s)) null) (return 1))
       (return 0))))
 
 ; L8: detect a capturing-closure environment type OR a type-erased box type in a

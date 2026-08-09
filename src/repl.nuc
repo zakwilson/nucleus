@@ -229,10 +229,15 @@
               ; into the preamble for future modules.
               (do (open-module-streams)
                   (set! g-out g-type-stream)
+                  ; Stage 15 B3′: the definition side holds a KEY. `emit-defunion`
+                  ; below registers under `qualify-name`'s key, so pre-registering
+                  ; the bare name would mint a second StructDef the moment a REPL
+                  ; session declares a namespace. Identity in `user`, which is
+                  ; every session that does not.
                   (let (nn:ptr:Node (unsafe/cast ptr:Node (node-at form 1)))
                     (when (and (= (nn kind) NODE-SYM)
-                               (= (as ptr (lookup-struct (nn s))) null))
-                      (register-struct (nn s))))
+                               (= (as ptr (lookup-struct (as CStr (qualify-name (nn s))))) null))
+                      (register-struct (as CStr (qualify-name (nn s))))))
                   (prescan-union-ctors (as ptr f))
                   (finalize-generics)
                   (set! g-out g-def-stream)
@@ -290,7 +295,9 @@
                     ; which is precisely defn-ir-name's ns-ir-base fallback.
                     (let (fname-ir:ptr (ns-ir-base fname)
                           is-redef:i32 0
-                          old-sym:?ptr:Sym (scope-lookup g-globals fname))
+                          ; B2b: definition-side (is this a redefinition?), so
+                          ; the KEY lookup — same question `scope-define` answers.
+                          old-sym:?ptr:Sym (scope-lookup-key g-globals fname))
                       (when (!= old-sym null)
                         (set! is-redef 1)
                         (let (old-rt:ptr (old-sym tracker))
@@ -341,7 +348,9 @@
                         ; declare for @fname-ir to the preamble so subsequent
                         ; modules can call it.
                         (when (= is-redef 0)
-                          (let (sym:?ptr:Sym (scope-lookup g-globals fname))
+                          ; B2b: reads back the Sym `emit-defn` just wrote — a
+                          ; KEY, not a reference.
+                          (let (sym:?ptr:Sym (scope-lookup-key g-globals fname))
                             (when (!= sym null)
                               (let (ft:ptr:Type (unsafe/cast ptr:Type (sym type)))
                                 (when (= (ft kind) TY-FN)
@@ -377,7 +386,7 @@
                           ; the tracker on the latest Sym for the next
                           ; redefinition to remove.
                           (when (= (update-fn-tgt (f line) fname-ir impl-name) 0)
-                            (let (sym:?ptr:Sym (scope-lookup g-globals fname))
+                            (let (sym:?ptr:Sym (scope-lookup-key g-globals fname))
                               (when (!= sym null)
                                 (.set! sym tracker rt))))))
                       (if (!= is-redef 0)

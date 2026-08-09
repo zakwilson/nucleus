@@ -1,0 +1,14 @@
+; Stage 15 B3′ — the did-you-mean tier of `unknown-type-message`, executed.
+;
+; B3′ gave `unknown-type-message` the same tier order `unresolved-name-message`
+; has (out-of-scope qualifier → unreachable definer → other namespace →
+; did-you-mean). This fixture exists to RUN the last tier: it is a cold error
+; path, and conventions.md's fixed-arity rule is that a format helper called with
+; the wrong number of arguments on a path nothing executes is invisible forever.
+; The first cut of that line called `fmt-3s` with two arguments; the Stage 15 W9
+; call-arity check caught it at `make bootstrap`, and this keeps it caught.
+(defstruct Widget n:i32)
+
+(defn b3-take ((w (ref Widgat))):i32 (return (_get w n)))
+
+(defn main ():i32 (return 0))

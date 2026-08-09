@@ -1,0 +1,27 @@
+; Stage 15 B2a (design/stage15-stress-test/name-resolution.md §8.3 R3, §11.4 R7)
+; — the reported defect, pinned as an error.
+;
+; This file imports lib/nsdescribe.nuc with `(import-prefixed … dpx)`, so the
+; ONE qualifier it bound for that library is `dpx`. The library's own namespace
+; is `dp`, and before B2a `dp/Describe` resolved anyway — `protocol-lookup`
+; probed the raw spelling against a registry keyed by defining namespace, with
+; nothing consulting the import environment at all. That made an import prefix
+; an *addition* to the spellings in scope rather than the definition of them,
+; which is §3 defect #3.
+;
+; The positive half — the same protocol reached as `dpx/Describe`, boxed, and
+; dispatched — is examples/w9-dyn-ns.nuc, which asserts results rather than an
+; exit code. Here the assertion is that the diagnostic is a SCOPE diagnostic: it
+; names the qualifier, says what a prefixed import binds, and lists what this
+; file can actually spell. Degrading to "not defined anywhere in this compilation
+; unit" would be false — the protocol is defined, the import graph reaches it,
+; and one edit to the reference fixes it.
+(import-use "stdio.h")
+(import-prefixed nsdescribe dpx)
+
+(defstruct Cat n:i32)
+(defn describe ((self (ref Cat))):i32 (return (+ 100 (self n))))
+
+(extend Cat dp/Describe)
+
+(defn main ():i32 (return 0))

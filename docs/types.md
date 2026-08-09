@@ -45,6 +45,40 @@ The bindings are established in order (left to right); each init expression may 
 
 Macro output is desugared before compilation, so macro-generated code can use either form.
 
+## Namespaced type names
+
+**A `defstruct`, `defunion`, `defenum` or struct/union template defined inside `(ns n)` is keyed `n/Type`**, exactly like a `defn` or `defvar` declared there — see [`ns`](toplevel.md) and [What an import brings into scope](toplevel.md#what-an-import-brings-into-scope). Two namespaces may each define a type of the same name; they are two distinct types. Type identity (what `type-eq` checks for a struct or union) compares the underlying `StructDef`/`UnionDef` by pointer, so `(ns a) (defstruct Vector …)` and `(ns b) (defstruct Vector …)` are unrelated even when their field lists happen to match: distinct layouts, distinct field-access diagnostics (`no field 'c' on struct 'a/Vector'`), and distinct protocol conformances — extending `a/Vector` does not extend `b/Vector`.
+
+A type reference resolves through the writing file's own import environment exactly like any other name, per the table in [What an import brings into scope](toplevel.md#what-an-import-brings-into-scope): `(import-prefixed lib p)` makes the type spellable as `p/Type` only; `(import-use lib)` makes it spellable both bare and as `<lib-namespace>/Type`; a file's own `(ns n)` makes it spellable both bare and as `n/Type`. The prelude, every un-namespaced library, and every C-header type are always reachable bare — they live in `user`, which every namespaced file can still see unqualified.
+
+A qualifier that names no namespace in scope is refused rather than silently resolved — a mistyped or bogus prefix used to resolve to whatever type had that bare name, from any namespace, which is no longer true:
+
+```lisp
+(defstruct Cat n:i32)
+(defn take ((c (ref nope/Cat))):i32 (return (_get c n)))
+```
+
+```
+demo.nuc:2: error: unknown type: nope/Cat — 'nope' is not in scope in this file
+  note: 'nope' is not in scope in this file — a prefixed import binds its
+  library under the prefix it names and not under the library's own namespace,
+  and an unimported namespace is not nameable at all. This file has no import
+  qualifiers in scope.
+```
+
+A **bare** reference to a type that genuinely is defined in the compilation unit, but under a namespace this file never imported, gets a diagnostic that names the defining namespace rather than claiming the type does not exist anywhere — and, when this file has bound some prefix that reaches that namespace, a note offering the spelling it can actually write:
+
+```
+main.nuc:18: error: unknown type: Fox — defined in namespace 'dp'
+  note: write 'dpx/Fox' here
+```
+
+If the file has bound nothing for that namespace, the message ends `— defined in namespace 'dp', which this file does not import` instead of offering a spelling. The same check fires in head position too, so a bare struct constructor (`(Fox 9)`) for a type in an unimported namespace gets the identical answer — this is not only an annotation-position rule.
+
+**The emitted LLVM type name composes the namespace's IR prefix**, the same `<prefix>__<name>` composition a namespaced function or global already uses: a type declared in `(ns dp)` emits `%dp__Fox`, overridable with [`set-ir-prefix`](toplevel.md) exactly as for functions. A mangled overload token composes the same name, so an overloaded method on `dp/Fox` appears as `@f.dp__Fox` in a symbol. In the default `user` namespace nothing changes — `%Fox`, byte-identical to before namespaces existed.
+
+`--emit-cheader` composes the same prefix into the emitted C `typedef` name, for the same collision reason: two namespaces' `Pt` would otherwise both emit `typedef struct {…} Pt;`, and a program that includes both headers would fail to compile. A struct declared in `(ns gt)` emits `} gt__Pt;` in place of `} Pt;`; a `user`-namespace struct's header is unaffected. See [`--emit-cheader`](compiler.md#compiler-flags).
+
 ## Pointer kinds: `(ptr T)`, `(raw T)`, and `?T`
 
 Typed pointers carry a compile-time **kind**; all three lower to the same IR

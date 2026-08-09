@@ -34,7 +34,10 @@
                  TOK-CHAR)
 
 ; Name kinds for the one-symbol-one-meaning shadowing check (see
-; name-existing-kind / guard-name-kind). Ordered by lookup priority.
+; guard-name-kind / binding-noun). These are the *nouns a diagnostic
+; says*, not the registries — several registries report the same NK (every type
+; registry reports NK-TYPE). The registries themselves are the BK-* rows below;
+; priority now lives there, not in these ordinals.
 (defconst NK-NONE 0)
 (defconst NK-SPECIAL 1)
 (defconst NK-BUILTIN 2)   ; a primitive/built-in type name (i32, ptr, ...)
@@ -43,6 +46,89 @@
 (defconst NK-MACRO 5)
 (defconst NK-FUNCTION 6)
 (defconst NK-VALUE 7)     ; defvar / defconst / defenum member / extern
+
+; ============================================================
+; Stage 15 B5 — the shared binding interface
+; (design/stage15-stress-test/name-resolution.md §13.3 "B+")
+; ============================================================
+;
+; One row per name-keyed registry (§1's eleven, plus the two correctly-global
+; name SETS §1 lists separately). The row order IS the resolution priority
+; order — the single answer to defect #8, consumed by `guard-name-kind`,
+; `emit-dispatch` and `node-type-call` alike.
+;
+; ENCODING: a kind tag plus a `case` dispatch, deliberately NOT fn-pointer
+; struct fields. Three open W9 defects sit in the fn-pointer path — `(= h null)`
+; does not compile for a `TY-FN` value (`emit-binop-vals` gates on
+; `is-ptr-like`, which excludes `TY-FN`), `type-size` has no `TY-FN` case so a
+; fn-pointer slot emits `align 1`, and `coerce-int-val` has no `raw`→`TY-FN`
+; case — so a vtable-shaped table would have had to fix all three first, moving
+; the IR of every fn-pointer program to buy nothing this interface needs. A tag
+; is still exactly one table; the operations are `case`-dispatched beside it.
+(defconst BK-MACRO 0)            ; g-macros
+(defconst BK-SPECIAL 1)          ; g-special-form-set + the `unsafe/` roster
+(defconst BK-PRIMITIVE 2)        ; g-primitive-type-set
+(defconst BK-GENERIC 3)          ; g-generics
+(defconst BK-GLOBAL 4)           ; g-globals (a Scope)
+(defconst BK-PROTOCOL 5)         ; g-protocols
+(defconst BK-STRUCT 6)           ; g-structs
+(defconst BK-UNION 7)            ; g-uniondefs
+(defconst BK-STRUCT-TEMPLATE 8)  ; g-struct-templates
+(defconst BK-UNION-TEMPLATE 9)   ; g-union-templates
+(defconst BK-ENUM 10)            ; g-enumdefs
+(defconst BK-FNTY 11)            ; fn-type aliases (g-fnty)
+(defconst BK-CONFORMANCE 12)     ; the (Type, Protocol) conformance relation
+(defconst BINDING-KIND-COUNT 13)
+
+; The first row `emit-dispatch` probes. Rows 0–2 are answered earlier, by
+; `emit-list`'s macro loop and its interned-pointer special-form ladder; a
+; primitive type name in head position has no expression meaning and falls to
+; the unresolved-name tiers, which say more about it (`unsafe-bare-message`,
+; the retired-spelling text) than "not callable" would.
+(defconst BK-DISPATCH-FIRST 3)
+
+; One row of the table. `nk` is the noun this registry reports to
+; `guard-name-kind`; `noun` is the prose. The three flags say, per row, which
+; of the shared concerns this registry actually participates in — a row that
+; does not is a stated fact here rather than an omission somewhere else, which
+; is the whole reason the table exists (§13.2: NK-PROTOCOL and the four private
+; definers were both *silent* omissions).
+(defstruct BindingKind
+  kind:i32
+  noun:CStr
+  nk:i32
+  ; 1 = a binding of this kind participates in the one-symbol-one-kind rule
+  ; (`guard-name-kind` probes it). See `build-binding-kinds` for the rows
+  ; that are 0 today and what B4 has to do about them.
+  collides:i32
+  ; 1 = `binding-probe` can answer for this row at all. 0 for the conformance
+  ; relation, which is keyed by a PAIR of names and has no single-name probe.
+  name-keyed:i32
+  ; 1 = `binding-re-register` can bind this row's payload under a second key
+  ; (what `export` needs). 0 raises a located diagnostic naming the kind.
+  reregisterable:i32)
+
+; The result of `binding-probe`: a registry hit as a (kind, payload) pair. The
+; payload is a bare `ptr` because the eleven registries hold eleven different
+; record types; `kind` is what makes it a discriminated union, and every
+; consumer must `case` on `kind` before casting. This is the one place an
+; untyped pointer is the honest representation rather than an escape hatch.
+(defstruct BindingHit
+  kind:i32
+  payload:ptr)
+
+; Stage 15 B3′ (name-resolution.md §11.6): one re-export alias. `export` binds an
+; existing binding under a SECOND key in the facade's namespace, and for
+; `g-globals` that is a second `scope-define` — the registry stores one entry per
+; key. The other registries store one record per *thing* and key it by a field, so
+; a second key cannot live in them; this table is where it lives instead. Consulted
+; by each type/protocol reference lookup after its own miss, and gated on
+; `g-binding-aliases == null` — which it is for every program in the tree except
+; the one facade in `lib/`.
+(defstruct BindingAlias
+  key:CStr        ; the facade-namespace key, e.g. `gfacade/Pt`
+  kind:i32        ; the BK-* row this payload belongs to
+  payload:ptr)
 
 ; Stage 15 W8 G-4 (design/global-init.md §4.2): `Sym.defvar-state`, the answer
 ; to "has this global's `defvar` been REACHED yet?" — a question G-0 made
@@ -175,14 +261,27 @@
   (type (raw Type)))  ; field Type*
 
 (defstruct StructDef
+  ; Stage 15 B3′ (name-resolution.md §8.1 step 1): the CANONICAL registry key —
+  ; `<ns>/<bare>` for a type defined inside an explicit `(ns …)`, bare in `user`.
+  ; `lookup-struct` matches it by interned-pointer identity, so every writer must
+  ; hand it a key `qualify-name`/`ns-qualify-in` produced (or a compiler-minted
+  ; name, which is `user` by construction). A source *spelling* resolves to a key
+  ; through `struct-lookup-ref`; the two are different questions (§9.2).
   name:CStr
-  ; The LLVM-safe spelling of `name` for IR emission: `?`→`_QMARK`, `!`→`_BANG`
-  ; (ir-name-token), every other char (hyphens included) unchanged. `name` stays
-  ; the raw source spelling and remains the lookup key (lookup-struct matches by
-  ; interned-pointer identity against the source type token); `ir-name` is what
-  ; every `%Name` reference and definition prints so `%Full?` never reaches LLVM.
-  ; Computed once in register-struct — the single StructDef allocator (SM-4).
+  ; The LLVM-safe spelling of `name` for IR emission: the defining namespace's
+  ; ir-prefix composed onto the bare name with `?`→`_QMARK`, `!`→`_BANG`
+  ; (ir-name-token) — `dp/Fox` prints `%dp__Fox`. Every other char (hyphens
+  ; included) is unchanged, so `ir-name == name` for every `user` type and the
+  ; whole self-IR is byte-identical. `ir-name` is what every `%Name` reference and
+  ; definition prints, and (B3′) what `type-mangle-token` returns, so a mangled
+  ; symbol never carries a `/`. Computed once in register-struct — the single
+  ; StructDef allocator (SM-4).
   ir-name:CStr
+  ; The ir-prefix snapshot taken at REGISTRATION, exactly as `Generic.ir-prefix`
+  ; is and for the same reason: a stamp or a finalize may run while another
+  ; namespace is current, so the prefix must come from the key rather than from
+  ; `g-current-ns` at the point of use. Empty string for `user`.
+  ir-prefix:CStr
   ; The field table (was field-names + field-types parallel arrays). `(raw …)`
   ; because a name-only pre-registered struct (register-struct) has no fields
   ; yet — null until struct-set-fields populates it. All reads are guarded by the
@@ -219,7 +318,14 @@
   ; pattern `(Vector T)` against it. null/0 for an ordinary hand-written struct.
   (origin-template (raw StructTemplate)) ; StructTemplate* this instance was stamped from, or null
   origin-args:ptr     ; ptr array of concrete arg Type* (length origin-nargs), or null
-  origin-nargs:i32)
+  origin-nargs:i32
+  ; --- Stage 15 B5: the shared binding interface's `is-private` / `src-ns` ---
+  ; `defstruct-` had no carrier for its own privacy before B5 (§13.2), so
+  ; nothing enforced it. Privacy for a type is NAMESPACE-level, per W5e's
+  ; deliberate split: a type name is bare-keyed and globally identified
+  ; (Stage 12 decision 9), so file-scoping it is a separate, larger question.
+  priv:i32
+  src-ns:CStr)
 
 ; One arm of a defunion (Stage 14 §14.4). Replaces UnionDef's five parallel
 ; arm arrays (arm-names/arm-ptypes/arm-fnames/arm-ftypes/arm-nfields, formerly
@@ -247,7 +353,9 @@
   ; --- Stage 10 U4 niche layout (design/stage10/unions.md §6) ---
   layout:i32        ; LAYOUT-ENUM / NICHE-MAYBE / NICHE-ERRPTR / TAGGED
   (niche-elem (raw Type)) ; for NICHE-MAYBE/ERRPTR: the (ref T) payload's element Type*
-  src-line:i32)
+  src-line:i32
+  priv:i32          ; Stage 15 B5 — see StructDef.priv
+  src-ns:CStr)
 
 ; A parameterized defunion template: `(defunion (Result T E) ...)`. Defines no
 ; type itself; a fully-applied use `(Result A B)` stamps a concrete instance.
@@ -255,7 +363,9 @@
   name:CStr
   tyvars:ptr        ; ptr array of tyvar name strings
   ntv:i32
-  (form (raw Node))) ; retained (defunion (Name T ...) arms...) Node*
+  (form (raw Node)) ; retained (defunion (Name T ...) arms...) Node*
+  priv:i32          ; Stage 15 B5 — see StructDef.priv
+  src-ns:CStr)
 
 ; A parameterized defstruct template: `(defstruct (Vector T) ...)`. Defines no
 ; type itself; a fully-applied use `(Vector i32)` in type position stamps a
@@ -265,14 +375,18 @@
   name:CStr
   tyvars:ptr        ; ptr array of tyvar name strings
   ntv:i32
-  (form (raw Node))) ; retained (defstruct (Name T ...) field-specs...) Node*
+  (form (raw Node)) ; retained (defstruct (Name T ...) field-specs...) Node*
+  priv:i32          ; Stage 15 B5 — see StructDef.priv
+  src-ns:CStr)
 
 ; A defenum's member table, recorded so `match` can check exhaustiveness over
 ; enum constants (the §4 freebie). Member i's value is i.
 (defstruct EnumDef
   name:CStr
   members:ptr       ; ptr array of interned member name strings
-  num-members:i32)
+  num-members:i32
+  priv:i32          ; Stage 15 B5 — see StructDef.priv
+  src-ns:CStr)
 
 (defstruct Type
   kind:i32
@@ -691,7 +805,13 @@
   ; ...)` this is the one-element array {"E"}. Empty (null/0) for a plain
   ; `(defprotocol Name ...)`, which behaves exactly as before (Self-only).
   params:ptr        ; ptr array of extra-param name strings (beyond Self), or null
-  num-params:i32)
+  num-params:i32
+  ; --- Stage 15 B5 ---
+  ; `defprotocol-`'s privacy carrier. `name` is already namespace-qualified
+  ; (protocol-key), so `src-ns` is derivable from it — but the interface asks
+  ; every row the same question and a stored answer costs one word.
+  priv:i32
+  src-ns:CStr)
 
 ; A recorded (Type, Protocol) conformance fact. No code; consulted by the
 ; resolver (protocol-bound tier, later) and exported in .nuch.
@@ -776,7 +896,9 @@
   docstring:CStr
   ; Parameter names array (parallel to the user-declared param list, minus
   ; &rest/&optional keywords) for tooling. null if not captured.
-  param-names:ptr)
+  param-names:ptr
+  priv:i32          ; Stage 15 B5 — see StructDef.priv (`defmacro-`)
+  src-ns:CStr)
 
 (defstruct RMacro
   ; Both content-only: `prefix` is only ever byte-indexed (char-at) during the
@@ -847,6 +969,62 @@
 (defstruct NsPrefixEntry
   ns:ptr      ; interned namespace name
   prefix:ptr) ; interned ir-prefix string for that namespace
+
+; Stage 15 B1 (design/stage15-stress-test/name-resolution.md §5.2 B1, §8.3) — one
+; entry in the FILE-scoped import environment: what a single import form bound in
+; the file that wrote it. `prefix` is the qualifier an `import-prefixed` (or the
+; prefixed `import` / `unsafe/import-private`) bound, and is **null** for a
+; flattening `import-use`/`import-only` — the null-prefix entries are exactly the
+; "namespaces this file flattened" set §8.3 needs. `path` is the resolved file
+; path (or the header spelling for a C include), which is what B2 will map to the
+; imported file's namespace.
+;
+; Both compare by CONTENT, not pointer identity: a default prefix derived from a
+; dotted module path (`import-default-prefix`) or from a string path
+; (`path-import-default-prefix`) is arena-duplicated rather than interned, so an
+; identity scan would silently miss it. Stored as `ptr` for the same reason
+; NsPrefixEntry does — these are raw spellings, not owned strings.
+;
+; Stage 15 B2b: `private` is 1 only for `unsafe/import-private`, the one form
+; that asks to reach the imported file's *file-private* key space (`#pN/name`,
+; the W5e synthetic namespace) as well as its public one. Before B2b that
+; distinction lived in `inject-import-aliases`, which filtered the alias slice on
+; `sym-private` unless `g-import-include-private` was set; with injection gone
+; the filter has to be a property of the binding, because resolution happens long
+; after the flag has been restored.
+(defstruct ImportBind
+  prefix:ptr    ; bound qualifier, or null for a flattening import
+  path:ptr      ; resolved path of the imported file / header spelling
+  private:i32)  ; 1 iff this import asked for the file's private names too
+
+; Stage 15 B2a (design/stage15-stress-test/name-resolution.md §5.2 B2, §8.3) —
+; the result of `resolve-spelling`, the ONE canonicaliser on the *reference*
+; side. It replaces the ad-hoc splitting each registry used to do inline
+; (`qualify-name` / `strip-ns-qualifier` / `protocol-key`) with a single record
+; that says what the qualifier resolved to and what the registry key therefore
+; is.
+;
+; `status` distinguishes the three outcomes a reference can have, and callers
+; MUST branch on it — a null `canonical` is not the whole answer:
+;   NR-BARE      unqualified: `canonical` is the current namespace's key and the
+;                caller then probes the flattened set (file-flattened-ns-at);
+;   NR-QUALIFIED the qualifier resolved through this file's import environment;
+;                `canonical` is the one key to probe and there is no fallback;
+;   NR-UNBOUND   the qualifier is in scope nowhere in this file. `canonical` is
+;                null and the reference resolves to NOTHING — deliberately, even
+;                when the raw spelling happens to BE a registry key, which is
+;                exactly the `dp/Describe`-reaches-a-prefixed-import defect.
+(defconst NR-BARE 0)
+(defconst NR-QUALIFIED 1)
+(defconst NR-UNBOUND 2)
+
+(defstruct NameRef
+  spelling:ptr   ; the source spelling, as written
+  qual:ptr       ; the qualifier text, or null when unqualified
+  bare:ptr       ; the name part (== spelling when unqualified)
+  ns:ptr         ; the namespace the qualifier resolved to, or null
+  canonical:ptr  ; the registry key, or null when NR-UNBOUND
+  status:i32)
 
 ; Stage 15 W5e (design/stage15-stress-test/ergonomics.md §W5e) — one name a file
 ; declared with a private definer (`defn-`, `defvar-`, `defconst-`, `defenum-`)

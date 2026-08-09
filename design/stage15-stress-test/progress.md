@@ -955,3 +955,269 @@ than reopening this defect.
 multi-TU mode `global-init.md` §2.4 relies on for its finding that an
 initializer list reachable only from the consumer's `main` cannot initialize a
 library.
+
+---
+
+## B — Name resolution *(added 2026-08-08; B0, B1, B2a, B2b and B5 done)*
+
+Full design, measurements and rulings: [name-resolution.md](name-resolution.md).
+Staging is B0 (record the matrix) → B1 (file-scoped import environment) → B2
+(the canonicaliser, cut over kind by kind: **B2a protocols**, **B2b globals** +
+`unsafe` + deleting alias injection) → B3′ (re-key the type registries) → B4
+(collision policy) → B5 (the shared binding interface). B0–B2b are **done**, and
+**B5 landed 2026-08-09 out of order**, because §13.4 upgraded it from
+"reconcile the two priority orders" to the interface of §13.3 — which makes it
+the *frame* B3′ and B4 fill in rather than a cleanup after them. The A-vs-B
+decision (§12) was taken at the B3′ boundary and is recorded in §13.4: **B's
+path, with B5 as a shared interface (B+)**; the measured inputs to it are §12.6
+(after one kind), §12.7 (after the largest one) and §13.1.
+
+**B0 — the matrix, recorded.** `tests/resolution-matrix.sh` +
+`tests/expected/resolution-matrix.baseline`, 43 cells. It is a *recorder*, not a
+gate: each cell generates a library and a one-file consumer under a temp dir,
+compiles and **links** the probe, and records `ok` / `err` plus the first
+diagnostic. Later steps `--check` against the baseline and see exactly which
+cells moved. Three genuine regression tests went into `tests/run-tests.sh` for
+the cells that are already correct. Re-measuring by machine corrected one §2 row:
+the protocol row splits, `extend`/boxing with a bare name is `err` rather than
+"falls back", and a `(dyn …)` **annotation** validates nothing in any column —
+a tenth defect.
+
+**B1 — an import prefix is file-scoped.** `ImportBind {prefix, path}` in
+`src/compiler-types.nuc` plus `g-file-imports`, a
+`(Vector (ref ImportBind))` following the `NsPrefixEntry` small-table idiom.
+`do-import` records one bind per import form (prefix non-null for
+`import-prefixed` / `import` / `unsafe/import-private`, null for the flattening
+`import-use` / `import-only`) and saves/clears/restores the table around every
+imported file exactly as it already does `g-current-ns` / `g-ns-seen` — that
+save/restore *is* the file scoping. `scope-lookup`'s global-scope branch
+consults the new `prefix-out-of-scope` gate.
+
+Three implementation facts worth keeping:
+
+* **The bind is recorded before every early return**, not inside the load block.
+  `do-import` has three returns that precede the load — the `(file, prefix)`
+  dedup, the already-loaded flatten dedup, and W1d's cycle skip — and each one
+  leaves the import *declared in this file* while doing no further work. The
+  cycle case is the one with teeth: without the bind, B1's diagnostic would
+  answer a question `cycle-prefix-message` already answers correctly, and one
+  failure would have two contradictory explanations.
+* **The gate is deliberately narrow.** It fires only when the qualifier is a
+  prefix *another* file in the unit bound. A namespace qualifier still resolves
+  (that is defect #3, B2's), and a qualifier naming nothing still falls through
+  to the existing unresolved-name tiers. That is why exactly one matrix cell
+  moved — `xfile-prefix-leak zx/` `ok` → `err` — and nothing else did.
+* **The diagnostic is part of the deliverable.** An unbound qualifier must not
+  degrade into W1c's "not defined anywhere in this compilation unit": the name
+  *is* defined and the import graph *does* reach it, so that message would be a
+  lie of exactly the kind W1c exists to remove. `unbound-prefix-message` names
+  the prefix, the file that does bind it, and the prefixes in scope here.
+
+**B2a — one canonicaliser, protocols cut over.** The chunk that fixes the
+originally reported defect. `resolve-spelling(spelling) → ref:NameRef`
+(`src/nucleusc.nuc`, after B1's import-environment section; `NameRef` and the
+`NR-BARE`/`NR-QUALIFIED`/`NR-UNBOUND` tags in `src/compiler-types.nuc`) splits at
+the first interior slash and resolves the qualifier through `g-file-imports` and
+nothing else. A bound prefix names its library's namespace; an `import-use`d
+namespace may also be named by its own name (§8.3 row 1's second clause); the
+file's own namespace and `user` are always legal; **anything else resolves to
+nothing, even when the raw spelling is itself a registry key** — which is the
+fix. The prefix→namespace half B1 left open is `g-file-ns`, written by `emit-ns`.
+
+Protocols route through it: `protocol-lookup` is now the reference resolver,
+`protocol-lookup-ns` (the old body, renamed) is the key lookup for stored
+canonical names, and `protocol-resolve-any` serves the `(dyn P)` consumers that
+sit downstream of the box-construction gate. Registration is untouched — it still
+uses `protocol-lookup-exact` with an already-final key.
+
+Four things worth keeping (full versions in [name-resolution.md](name-resolution.md) §9.2):
+
+* **The reference/key split is the real per-kind work.** A canonical name read
+  back from a `.nuch`, a `Constraint`, a super-protocol edge or a `(dyn P)` box is
+  usually read in a *different file* from the one that wrote it, and B2a's rule is
+  that a file cannot name a namespace it did not import. Routing such a key
+  through the reference resolver is a false rejection; routing a source spelling
+  through the key lookup is the unclosed hole. Thirteen call sites, classified by
+  hand.
+* **Resolve once, at the reference, then carry the record.** `emit-extend` used
+  to canonicalize and then look the canonical name up again — under B2a that asks
+  the scope question twice and gets two answers. It now keeps `proto-rec` and
+  passes `(p name)` down.
+* **`(dyn P)` splits identity from admission.** `dyn-type` mints the box's
+  `StructDef` from a signature during `prescan-defn-signatures`, where the import
+  environment is empty by construction, and again at emission where it is not — so
+  its key must be phase-stable and stays on the environment-free
+  `protocol-canon-name-ns`. The scope question is asked once, at box construction,
+  by `dyn-require-protocol`. A memo key must be phase-stable; a permission check
+  belongs where the permission is known.
+* **A fixture that pins a defect becomes unreachable when it is fixed.** The
+  matrix's `protocol-dyn-box` row pinned its `extend` at `zn/Zp`, "the one
+  spelling that works" — which B2a makes an error. Re-pointing it to `zx/Zp` is
+  part of the change; without it the row would have measured the extend's failure
+  in all four cells.
+
+**B2b — globals, `unsafe`, and the end of alias injection.** The point of the
+whole series: the prefix stops being a post-hoc copy of one registry and becomes
+a resolution step. Full as-built in [name-resolution.md](name-resolution.md) §9.3.
+
+* **The split.** `scope-lookup` (`src/scope.nuc`) is now the *reference*
+  resolver — local frames match the raw name, and the global frame is handed to
+  `globals-lookup-ref` (`src/nucleusc.nuc`), which resolves a qualified spelling
+  through `resolve-spelling` and an unqualified one through the current
+  namespace, then the flattened set, then `user`. `scope-lookup-key` is the
+  pre-B1 body verbatim, for keys. Of 59 call sites: **8 key** (every one paired
+  with a `scope-define` — the `.nuch` replay, the C-header registrar,
+  `emit-deferror`/`emit-extern` dedup, `cheader-yield-to-explicit-declare`, the
+  REPL's three), **49 reference**, **2 deleted**.
+* **`inject-import-aliases`, `import-alias-one` and `alias-cinclude-collected`
+  are gone** (64 lines), with the C-header collect mode that existed only to
+  feed them. §1.1's `is-local`/`ir-name` filter closes **by deletion** — there is
+  no slice to filter — so a prefixed `defvar`, `defconst` and enum member all
+  resolve. The one filter that was not accidental, `sym-private`, became a
+  resolution rule: `ImportBind` carries `private`, `scope-frame-find-public` is
+  the filtered scan, and a private prefixed import additionally probes the
+  imported file's `#pN/` key space.
+* **One gate, not two.** B1's `prefix-out-of-scope` is deleted and
+  `unbound-prefix-message` folded into `qualifier-scope-note` as its first tier,
+  which removes the disagreement §9.2 measured (protocols resolved through the
+  environment while globals still went through B1's narrow prefix gate).
+* **`unsafe` is a built-in namespace**, bound as an implicit prefix in every
+  file. The seven `unsafe/*` strings left `g-special-form-set`; membership is now
+  "resolve the qualifier, then consult the roster". Six of the seven bare
+  retirement refusals were deleted from `emit-list` **and** `node-type-call`
+  (lockstep) and reproduce their exact messages from a did-you-mean tier.
+* **W1d lost a tier.** A `prefix/name` over a cycle member used to be diagnosed
+  because injection was suppressed; a prefix now names the *file*, whose
+  signatures and namespace the whole-graph prescan already recorded, so it
+  resolves. `cycle-prefix-message` / `g-cycle-prefixes` are gone and the probe
+  became an acceptance test.
+* **A documented gap closed on the way.** `lib/nsdescribe.nuc`'s header recorded
+  that a file with an explicit `(ns …)` could not reach `default-allocator` and
+  therefore could not construct a `(dyn P)` box. The bare path's `user` fallback
+  closes it; measured with a namespaced library that boxes and dispatches.
+
+**B5 — the shared binding interface.** §13.4's recommendation, built. One table
+(`build-binding-kinds`, `src/nucleusc.nuc`) with **thirteen rows** — §1's eleven
+name-keyed registries plus the two correctly-global name sets — each carrying a
+`noun`, the `NK-*` it reports, and three columns that state which shared
+concerns it participates in (`collides`, `name-keyed`, `reregisterable`). **The
+row order IS the resolution order**, walked by `name-existing-kind`,
+`emit-dispatch` and `node-type-call`. Full as-built in
+[name-resolution.md](name-resolution.md) §14; five things worth keeping here:
+
+* **Encoding: a kind tag + `case`, deliberately not fn-pointer struct fields.**
+  Three open W9 defects live in the fn-pointer path (`(= h null)` does not
+  compile for a `TY-FN` value; `type-size` has no `TY-FN` case so a fn-pointer
+  slot emits `align 1`; `coerce-int-val` has no `raw`→`TY-FN` case), so a
+  vtable-shaped table would have had to fix all three — moving the IR of every
+  fn-pointer program — to buy nothing a closed thirteen-row dispatch needs.
+* **Unifying the two orders required changing the QUESTION, not picking a
+  winner.** Taking `emit-dispatch`'s order directly *weakened* the guard:
+  every definer registers its own name in a prescan before its own guard runs,
+  so `(defn Shape …)` over an existing `defprotocol Shape` finds the `Generic`
+  it just registered, reports `NK-FUNCTION`, matches, and never looks further
+  (measured: it compiled clean before B5). `guard-name-kind` now asks for the
+  first binding whose kind is **not** the one being defined, which is
+  order-*independent* — the table order only chooses which conflicting kind to
+  name. Consequence, and the only two test expectations that moved: a cross-kind
+  clash is reported at whichever definer is **emitted first**, so
+  `w8-fnptr-global-name-collision` and `g0-value-fn-collision-order2` were
+  re-pointed (still rejections; different blame line and noun, reasoning inline).
+* **`NK-PROTOCOL` needed a prescan reorder as well as a row.**
+  `prescan-struct-names` registers a name-only `StructDef` without guarding, so
+  it won every `defprotocol`/`defstruct` race — which is exactly why §2.5
+  reported the clash at the *protocol's* line saying "a type".
+  `prescan-protocols` now runs first (its method sigs are stored verbatim and
+  parsed lazily, so it needs no struct name), and both source orders report at
+  the `defstruct`'s own line with "already names a protocol".
+* **The privacy hypothesis held, and verifying it turned up a third thing.**
+  `StructDef`/`UnionDef`/`StructTemplate`/`UnionTemplate`/`MacroDef`/`Protocol`
+  had no carrier at all, and the dispatch loop's own comment ("the private flag
+  is honored by prescan-protocols") was **false**. The rule is one function
+  (`binding-visible`, over `priv` + `src-ns`) called from the six *reference*
+  lookups — not from `binding-probe` alone, which would have left
+  `parse-type-name`, i.e. every `:T` annotation, unguarded. The third finding:
+  provenance must be captured at **emission**, never in `prescan-struct-names`,
+  because that prescan is reached from `prescan-imported-types`, which does not
+  apply an imported file's leading `(ns …)` — capturing there recorded the
+  importer's namespace, and the resulting private-but-wrongly-namespaced entry
+  hid itself from `emit-defstruct`'s own `lookup-struct`, which then registered a
+  **second** `StructDef` under the same name. Whole mechanism short-circuits on
+  `g-priv-bindings`, 0 for every program in the tree.
+* **The did-you-mean now renders through `src-ns`.** A candidate is offered in
+  the spelling *this file* can write (bare / `prefix/bare` / not at all), never
+  as the raw registry key — which is what produced `unknown: zfun (did you mean
+  'zfun'?)`, since a generic is keyed bare. Two stated restrictions: the
+  qualified form is offered only for `g-globals` and `g-protocols`, the two
+  registries where a qualified reference resolves today (B3′/B4 widen it), and a
+  private-and-invisible candidate is dropped so the suggester cannot leak a name
+  the resolver just hid.
+
+### Test/bootstrap status after B5
+
+* `make` clean; `make bootstrap` at its fixed point (`stage1.ll == stage2.ll`),
+  stage 2 compiles and runs `hello.nuc`; `make abi-test` / `make layout-test`
+  green.
+* `NUCLEUS_TEST_JOBS=1 make test` → **453 PASS, 0 FAIL** (441 + 12). The twelve:
+  three protocol-kind clashes (`b5-protocol-vs-struct`, `-order2`, `-vs-defn` —
+  the last did not error at all before B5), four private-definer rejections plus
+  two positive controls (a same-namespace file still sees all four, and a `user`
+  consumer still reaches the library's public names — run, not just compiled,
+  asserting 15), two did-you-mean checks (not an echo, and the suggestion
+  actually compiles and runs), and the `export`-a-type refusal.
+* **IR inertness**, against a compiler built from a clean `HEAD` worktree:
+  **181 of 182** files in `examples/`+`lib/` identical — 177 emit byte-identical
+  IR, 4 are refused by *both* compilers with byte-identical stderr and partial
+  output (`examples/comb-shapes.nuc`, `lib/arena.nuc`, `lib/node.nuc`,
+  `lib/reader.nuc`, all pre-existing). The 182nd is `examples/w9-dyn-ns.nuc`,
+  which `HEAD` rejects — B2a's artefact, unchanged.
+* `tests/resolution-matrix.sh --check` → **no cell changed status**. Two changed
+  message, both defect #9's fix: `plain-fn bare` `(did you mean 'zfun'?)` →
+  `'zx/zfun'`, and `defenum-member bare` gaining a `'zx/ZE-B'` suggestion it
+  could not previously produce (the candidate key `zn/ZE-B` was compared whole
+  and so was never near `ZE-B`). `defvar zg` / `defconst ZK` did not move — at
+  two characters they are under `name-suggest-limit`'s floor. Re-recorded.
+* Compile-time cost of the table walk, measured rather than assumed: committed
+  boot 738 ms vs B5 compiler 723 ms emitting IR for the *same*
+  `src/nucleusc.nuc`, best of three.
+
+### Test/bootstrap status after B0/B1/B2a/B2b
+
+* `make` clean; `make bootstrap` at its fixed point (`stage1.ll == stage2.ll`),
+  stage 2 compiles and runs `hello.nuc`.
+* `NUCLEUS_TEST_JOBS=1 make test` → **441 PASS, 0 FAIL** (438 after B2a, 434
+  after B1, 432 before it). B2b's three are `b2b-prefixed-values` (a prefixed
+  `defvar` + `defconst` + both enum members, run not just compiled),
+  `b2b-prefixed-values-ns-refused` (the defining namespace is out of scope) and
+  `b2b-unsafe-reserved` (the qualified `unsafe/` spellings stay reserved after
+  leaving the string set). Four existing probes were re-pointed rather than
+  re-baselined, each with its reasoning in the harness: `w1-ns-order1/2` and
+  `g0-ns-qualified-value`/`-internal-forward` named a namespace they had not
+  imported (R3 forbids it — the assertion they measure, prescan order
+  independence, is unchanged), `w1d-cycle-prefix-diagnosed` became
+  `w1d-cycle-prefix-resolves`, and `b1-prefix-not-visible-cross-file` follows
+  the folded diagnostic head.
+* B2b re-measured the IR sweep: **181/182** against a clean `HEAD` worktree (the
+  182nd is `examples/w9-dyn-ns.nuc`, which `HEAD` rejects — B2a's artefact), and
+  **182/182** against B2a's own post-fix IR, which isolates B2b as byte-for-byte
+  inert.
+* Older counts, for the record. B1's two are `b1-prefix-in-declaring-file` (the fix *scopes* the
+  prefix rather than deleting it) and `b1-prefix-not-visible-cross-file` (the
+  diagnostic, and that it does not degrade). B2a's four are
+  `b2a-extend-ns-not-in-scope`, `b2a-dyn-ns-not-in-scope`,
+  `b2a-scope-diagnostic` and `b2a-import-use-binds-namespace` (the last runs and
+  checks a value, because what it asserts is that a bare and a namespace-qualified
+  spelling land on **one** protocol identity).
+* `tests/resolution-matrix.sh --check` → exactly the four predicted cells moved
+  (`protocol-extend` and `protocol-dyn-box`, `zx/` err→ok and `zn/` ok→err), and
+  nothing else; re-recorded.
+* **Byte-for-byte inert on emitted IR**, measured rather than assumed: a compiler
+  built from a clean `HEAD` worktree and the working-tree compiler emit
+  `diff`-identical IR for all 182 files in `examples/` + `lib/`. The sole
+  difference is the exit code on `examples/w9-dyn-ns.nuc`, which the pre-fix
+  compiler now rejects because the file was rewritten to the spellings only the
+  fix accepts.
+* The four `import-prefixed` consumers in the tree — `examples/export-test.nuc`,
+  `examples/w9-dyn-ns.nuc`, `examples/import-prefix.nuc`,
+  `examples/ns-mangle.nuc` — all still build and run against their expected
+  output.

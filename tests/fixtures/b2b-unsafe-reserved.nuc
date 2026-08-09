@@ -1,0 +1,17 @@
+; Stage 15 B2b negative fixture: `unsafe/cast` is still a reserved spelling.
+;
+; B2b removed the seven `unsafe/*` whole-string entries from
+; `g-special-form-set` — `unsafe` became a real built-in namespace, bound as an
+; implicit prefix in every file's environment, and `special-form-named` answers
+; for its members by RESOLVING the qualifier and consulting the roster
+; (`unsafe-qualified-op`, src/nucleusc.nuc). The reservation must survive that
+; move: without it a definer could register a global under the `unsafe/cast`
+; key, which the dispatch ladder would then silently shadow forever.
+;
+; Compiling this must FAIL with:
+;   "'unsafe/cast' already names a special form"
+(defn unsafe/cast (x:i32):i32
+  (return x))
+
+(defn main ():i32
+  (return 0))

@@ -834,10 +834,10 @@
 (defn tyname-resolvable (name:CStr):i32
   (when (!= (primitive-type-named name) 0) (return 1))
   (when (or (= name "usize") (= name "ssize") (= name "raw")) (return 1))
-  (when (!= (as ptr (lookup-struct name)) null) (return 1))
-  (when (!= (as ptr (struct-template-lookup name)) null) (return 1))
-  (when (!= (as ptr (union-template-lookup name)) null) (return 1))
-  (when (!= (as ptr (enumdef-lookup name)) null) (return 1))
+  (when (!= (as ptr (struct-lookup-ref name)) null) (return 1))
+  (when (!= (as ptr (struct-template-lookup-ref name)) null) (return 1))
+  (when (!= (as ptr (union-template-lookup-ref name)) null) (return 1))
+  (when (!= (as ptr (enumdef-lookup-ref name)) null) (return 1))
   ; Stage 13 L7: a TY-FN spelling (interned "__fnty_<id>") resolves back to a
   ; concrete function-pointer Type* via fnty-resolve (mirroring parse-type-name),
   ; so a stamped generic body's template-arg spelling — e.g. (MapIter I __fnty_0) —
@@ -888,7 +888,7 @@
     (when (!= (n kind) NODE-CELL) (return null))
     (let (head:raw:Node (n car))
       (when (or (= head null) (!= (head kind) NODE-SYM)) (return null))
-      (return (struct-template-lookup (head s))))))
+      (return (struct-template-lookup-ref (head s))))))
 
 ; True if `node` is a pointer-wrapper list head: (ptr ...) / (raw ...) / (ref ...).
 (defn node-is-ptr-wrapper (node:raw:Node):i32
@@ -1391,11 +1391,17 @@
 ; of scope (assoc-types §5), so every stored spelling is a single (possibly
 ; colon-sugared) symbol, exactly what parse-type-from-node accepts from a SYM node.
 (defn conf-arg-to-type (spelling:CStr line:i32):ref:Type
-  (let (n:ptr:Node (as ptr:Node (alloc-node)))
+  (let (n:ptr:Node (as ptr:Node (alloc-node))
+        saved:i32 g-type-key-ok)
     (.set! n kind NODE-SYM)
     (.set! n line line)
     (.set! n s spelling)
-    (return (parse-type-from-node (as ptr n) line))))
+    ; Stage 15 B3′: a retained conformance arg is a stored canonical spelling —
+    ; a key, read back in a file that may not be the one that wrote it.
+    (set! g-type-key-ok 1)
+    (let (t:ref:Type (parse-type-from-node (as ptr n) line))
+      (set! g-type-key-ok saved)
+      (return t))))
 
 ; Assoc-types A2 (§3.5): after the positional unifier has bound the parameter
 ; tyvars in out-bound, recover or check the associated tyvars carried by each
@@ -2051,7 +2057,9 @@
         (dotimes (ci (mm num-constraints))
           (let (crec:ref:Constraint (constraints-at (mm constraints) ci))
            (when (= (crec var) tvname)
-            (let (proto:ptr (protocol-lookup (crec proto)))
+            ; B2a: `Constraint.proto` was canonicalized where it was WRITTEN
+            ; (parse-where-constraints), so this is a key, not a reference.
+            (let (proto:ptr (protocol-lookup-ns (crec proto)))
               (when (!= proto null)
                 (let (pp:ptr:Protocol (as ptr:Protocol proto))
                   (dotimes (si (pp num-sigs))
@@ -2613,6 +2621,17 @@
 ; persistent cursor makes recursive drains (during imports) never re-emit, and
 ; stamping inside a drained body simply extends the worklist this loop consumes.
 (defn drain-mono-worklist ():void
+; Stage 15 B3′: a monomorphized body is a SYNTHESIS region — every type spelling parsed inside it
+; was written by the compiler (a `type-spelling` of a bound tyvar, a `Self`
+; substitution), not by any file, so the type reference resolvers take an exact-key
+; fallback here. See `g-type-key-ok` (src/nucleusc.nuc) for why this is a scoped
+; permission rather than a global relaxation.
+  (let (saved:i32 g-type-key-ok)
+    (set! g-type-key-ok 1)
+    (drain-mono-worklist-in)
+    (set! g-type-key-ok saved)))
+
+(defn drain-mono-worklist-in ():void
   (while (< g-mono-drained (count g-mono-worklist))
     (let (job:ptr:MonoJob (as ptr:MonoJob (invoke g-mono-worklist g-mono-drained)))
       (inc! g-mono-drained)
@@ -2657,9 +2676,13 @@
 ;
 ; A protocol is now keyed by its namespace-qualified identity, exactly like a
 ; global in `g-globals`: `qualify-name` produces the key at registration, and a
-; reference resolves through the same function. TYPE identity is unchanged —
-; `strip-ns-qualifier` still canonicalizes every *type* name reaching the
-; conformance registry, so decision 9's actual claim still holds.
+; reference resolves through the same function.
+;
+; Stage 15 B3′ made the TYPE half namespaced too (R1), so the two halves are no
+; longer canonicalized by *different rules* — only by different functions, since
+; each has to consult its own registry. `type-canon-name` (below) is the type
+; half's canonicalizer and `protocol-canon-name` the protocol half's;
+; `strip-ns-qualifier` no longer participates in either.
 ;
 ; `protocol-key` is the storage key of a reference *as written here*: identity
 ; under `user` for an unqualified spelling (the byte-identical hatch — no
@@ -2681,8 +2704,8 @@
       (when (= (p name) key) (return (as ptr p)))))
   (return null))
 
-; Resolve a protocol *reference* (a source spelling) to its Protocol record.
-; Two probes, qualified first — the same shape as W5e's private-name probe:
+; Resolve a protocol KEY by namespace alone — the pre-B2a `protocol-lookup`.
+; Two probes, qualified first:
 ;   1. the current namespace's own protocol (`Describe` inside `(ns dp)` →
 ;      `dp/Describe`; `dp/Describe` from anywhere → itself, since qualify-name
 ;      is idempotent on an already-qualified spelling);
@@ -2691,15 +2714,85 @@
 ;      which is what makes a namespaced library usable at all.
 ; Under `user` the two probes are the same key, so this is one scan plus one
 ; strcmp — and identical in behaviour to the pre-W9 bare-keyed lookup.
-; Note an *ambiguous* bare reference is correctly a miss: with `a/Describe` and
-; `b/Describe` registered, bare `Describe` in `user` resolves to neither and the
-; caller must qualify.
-(defn protocol-lookup (name:CStr):?ptr:Protocol
+;
+; Stage 15 B2a: this is now the lookup for an ALREADY CANONICAL key — a stored
+; `Constraint.proto`, a super-protocol edge, a `.nuch` replay's protocol name,
+; the `proto-name` a resolved `extend` passes down. Those are not references and
+; must not be re-resolved against the importing file's environment: the file that
+; *reads* a canonical key is routinely not the file that wrote it, and B2a's
+; whole point is that a file cannot name a namespace it did not import. Every
+; genuine source spelling goes through `protocol-lookup` instead.
+(defn protocol-lookup-ns (name:CStr):?ptr:Protocol
   (let (key:CStr (protocol-key name)
         hit:?ptr:Protocol (protocol-lookup-exact key))
     (when (!= hit null) (return hit))
     (when (!= key name) (return (protocol-lookup-exact name)))
     (return null)))
+
+; Stage 15 B5: drop a hit whose `defprotocol-` privacy this file may not see.
+; Short-circuited by `g-priv-bindings` exactly as the type/macro lookups are.
+(defn protocol-visible (p:?ptr:Protocol):?ptr:Protocol
+  (when (= p null) (return null))
+  (when (= g-priv-bindings 0) (return p))
+  (let (pp:ptr:Protocol (unsafe/cast ptr:Protocol p))
+    (when (= (binding-visible (pp priv) (pp src-ns)) 0) (return null)))
+  (return p))
+
+; Stage 15 B2a — resolve a protocol *reference* (a source spelling) through the
+; file's import environment (name-resolution.md §8.3, the canonicaliser in
+; nucleusc.nuc). This is the protocol half of the cut-over: the qualifier is
+; resolved by `resolve-spelling` and nothing else, so
+;   * `(import-prefixed nsdescribe dpx)` makes `dpx/Describe` resolve and
+;     `dp/Describe` — the library's own namespace — NOT resolve, which is the
+;     reported defect (§2.1/§3 #3);
+;   * `(import-use lib)` makes both the bare name and `<lib-ns>/name` resolve
+;     (§8.3 row 1, R2's escape hatch);
+;   * a qualifier bound nowhere in this file resolves to nothing, even when the
+;     raw spelling happens to *be* a registry key.
+;
+; A bare name probes the current namespace, then the bare (`user`) key, then the
+; flattened set. The `user` probe is not a special case: the prelude is flattened
+; into every file, so `user` is always in the flattened set, and probing it
+; explicitly keeps a unit with no namespaces on exactly one registry scan — which
+; is why `g-ns-declared` gates the loop.
+;
+; Note an *ambiguous* bare reference is still correctly a miss under `user`: with
+; `a/Describe` and `b/Describe` registered and neither namespace flattened, bare
+; `Describe` resolves to neither and the caller must qualify.
+(defn protocol-lookup (name:CStr):?ptr:Protocol
+  (let (r:ref:NameRef (resolve-spelling (as ptr name)))
+    (when (= (r status) NR-UNBOUND) (return null))
+    ; Stage 15 B5: `defprotocol-`'s privacy is enforced HERE, in the reference
+    ; resolver, and not in `protocol-lookup-exact` — that one is the KEY lookup
+    ; registration itself uses, and a define must always find its own entry.
+    (let (hit:?ptr:Protocol (protocol-visible (protocol-lookup-exact (as CStr (r canonical)))))
+      (when (!= hit null) (return hit))
+      ; A qualified reference names exactly one namespace: no fallback.
+      (when (= (r status) NR-QUALIFIED) (return null))
+      (when (!= (r canonical) (r bare))
+        (let (h2:?ptr:Protocol (protocol-visible (protocol-lookup-exact (as CStr (r bare)))))
+          (when (!= h2 null) (return h2))))
+      (when (!= g-ns-declared 0)
+        (dotimes (i (file-imports-count))
+          (let (fns:ptr (file-flattened-ns-at i))
+            (when (!= fns null)
+              (let (k:ptr (ns-qualify-in fns (r bare)))
+                (when (and (!= k (r canonical)) (!= k (r bare)))
+                  (let (h3:?ptr:Protocol (protocol-visible (protocol-lookup-exact (as CStr k))))
+                    (when (!= h3 null) (return h3)))))))))
+      (return null))))
+
+; Stage 15 B2a — for a name that may be EITHER a live source spelling or an
+; already-canonical key, in a position that is downstream of the scope gate.
+; The `(dyn P)` consumers are the case: a box carries a protocol name minted from
+; whatever spelling created it, and by the time a method is dispatched through
+; its vtable the admission check at `emit-box-value` has already ruled on whether
+; this file may name the protocol. Asking again would be a second gate, and a
+; wrong one — the box may have been constructed in another file.
+(defn protocol-resolve-any (name:CStr):?ptr:Protocol
+  (let (hit:?ptr:Protocol (protocol-lookup name))
+    (when (!= hit null) (return hit))
+    (return (protocol-lookup-ns name))))
 
 (defn protocol-new (name:CStr sigs:ptr num-sigs:i32):ref:Protocol
   (let (p:ptr:Protocol (new Protocol))
@@ -2712,6 +2805,13 @@
     (.set! p num-sigs num-sigs)
     (.set! p params null)
     (.set! p num-params 0)
+    ; Stage 15 B5: `defprotocol-`'s privacy. `prescan-protocols` arms
+    ; g-defining-private for the private spelling; before B5 the flag was set
+    ; and then dropped on the floor, which is the second of §13.2's two
+    ; independently-found instances of one failure mode.
+    (.set! p priv g-defining-private)
+    (.set! p src-ns g-current-ns)
+    (when (!= g-defining-private 0) (set! g-priv-bindings 1))
     (conj g-protocols p)
     (return p)))
 
@@ -2726,8 +2826,11 @@
 ; A name usable as a `&where` constraint: a declared protocol, a blanket protocol
 ; (Any/Struct, §10.1), or the structural bound Valid (§10.2). Used to reject typos
 ; once all imports have registered their protocols (the A2 pass).
+; B2a: `name` is a stored `Constraint.proto` — canonical, or the raw spelling it
+; degraded to when the constraint was parsed before its protocol registered. Both
+; are keys by the time the A2 pass runs, so this is `-ns`, not the resolver.
 (defn constraint-proto-known (name:CStr):i32
-  (when (!= (protocol-lookup name) null) (return 1))
+  (when (!= (protocol-lookup-ns name) null) (return 1))
   (when (!= (blanket-lookup name) 0) (return 1))
   (when (= name "Valid") (return 1))
   (return 0))
@@ -2790,24 +2893,27 @@
     (return (type-trivially-copyable ty)))
   (return 0))
 
-; Conformance facts are global, but the two halves of the key are canonicalized
-; DIFFERENTLY (Stage 12 N4 decision 9, as revised by Stage 15 W9 defect 21):
+; Conformance facts are global, and BOTH halves of the key are canonicalized to
+; their own registry's namespaced identity. Stage 12 N4 decision 9 keyed the type
+; half bare; Stage 15 W9 defect 21 namespaced the protocol half; Stage 15 B3′ (R1)
+; namespaced the type half too, because two namespaces may now both define
+; `Vector` and a bare key would make one conformance fact stand for both.
 ;
-;   * the TYPE half is stripped to its bare identity — `strip-ns-qualifier`. The
-;     type registry is bare-keyed, so a qualified type reference (`coll/Vector`)
-;     resolves to the same StructDef from every namespace. This is decision 9's
-;     actual claim and it is unchanged.
-;   * the PROTOCOL half is resolved to the protocol's own namespaced identity —
-;     `protocol-canon-name`. A protocol is a namespaced entity, so bare
-;     `Describe` inside `(ns dp)` and `dp/Describe` from anywhere else are the
-;     same key `dp/Describe`, while `a/Describe` and `b/Describe` are different
-;     protocols that do not collide.
+;   * the TYPE half → `type-canon-name` (src/nucleusc.nuc), which resolves a
+;     source spelling through the file's import environment and passes an
+;     already-canonical name (or a primitive/structural spelling) through;
+;   * the PROTOCOL half → `protocol-canon-name`. Bare `Describe` inside `(ns dp)`
+;     and `dp/Describe` from anywhere else are the same key `dp/Describe`, while
+;     `a/Describe` and `b/Describe` are different protocols that do not collide.
+;
+; The two functions are different only because each consults its own registry;
+; the RULE is now the same for both, which is what R1 bought.
 ;
 ; Under `user` both are the identity, so the bootstrap stays byte-identical.
 ; Centralizing both in conformance-add/-lookup/-args covers every caller (extend,
 ; imported extend, dispatch constraint check, A2 recovery) with one chokepoint.
 (defn conformance-lookup (type-name:CStr proto-name:CStr):i32
-  (set! type-name (strip-ns-qualifier type-name))
+  (set! type-name (type-canon-name type-name))
   (set! proto-name (protocol-canon-name proto-name))
   (dotimes (i (unsafe/cast i32 (count g-conformances)))
     (let (c:ptr:Conformance (invoke g-conformances (as usize i)))
@@ -2829,9 +2935,9 @@
   (if (= v null) 0 (unsafe/cast i32 (count (unsafe/cast (ref (Vector CStr)) v)))))
 
 (defn conformance-args (type-name:CStr proto-name:CStr out-nargs:ptr):(raw (Vector CStr))
-  ; Canonicalize to the same key conformance-add records: bare type, namespaced
-  ; protocol (see conformance-lookup's note).
-  (set! type-name (strip-ns-qualifier type-name))
+  ; Canonicalize to the same key conformance-add records (see conformance-lookup's
+  ; note): both halves namespaced since B3′.
+  (set! type-name (type-canon-name type-name))
   (set! proto-name (protocol-canon-name proto-name))
   (dotimes (i (unsafe/cast i32 (count g-conformances)))
     (let (c:ptr:Conformance (invoke g-conformances (as usize i)))
@@ -2870,10 +2976,9 @@
 ;     args arrive later (e.g. a stale conformance recorded before the args were
 ;     known). Conflict therefore fires only when both sides carry args and differ.
 (defn conformance-add (type-name:CStr proto-name:CStr args:ptr nargs:i32 line:i32):void
-  ; Record under the bare TYPE identity and the namespaced PROTOCOL identity, so
-  ; the dispatch-site lookup (canonicalized the same way) matches. Identity under
-  ; `user`. See conformance-lookup's note for why the two halves differ.
-  (set! type-name (strip-ns-qualifier type-name))
+  ; Record under each half's own canonical identity, so the dispatch-site lookup
+  ; (canonicalized the same way) matches. Identity under `user`.
+  (set! type-name (type-canon-name type-name))
   (set! proto-name (protocol-canon-name proto-name))
   ; Materialize the incoming args as a (Vector CStr) — null when there are none —
   ; so the retained representation is value-comparable (§14.4).
@@ -2921,6 +3026,15 @@
       (return 0))))
 
 (defn derive-closure-conformance (cvtype:raw:Type proto:CStr line:i32):i32
+  ; Stage 15 B3′: a synthesis region — it substitutes `Self` with the concrete
+  ; type's CANONICAL spelling and re-parses the result.
+  (let (saved:i32 g-type-key-ok)
+    (set! g-type-key-ok 1)
+    (let (r:i32 (derive-closure-conformance-in cvtype proto line))
+      (set! g-type-key-ok saved)
+      (return r))))
+
+(defn derive-closure-conformance-in (cvtype:raw:Type proto:CStr line:i32):i32
   (let (cvspell:ptr (type-spelling cvtype)
         cv:raw:Type cvtype)
     ; Step 1: idempotent — already conforms.
@@ -2995,7 +3109,9 @@
         ; Steps 4-5: protocol must be single-method; parse its sig.  imp is the
         ; non-null source method (cast from the nullable imp-src above).
         (let (imp:ptr:Method (unsafe/cast ptr:Method imp-src)
-              pp:ptr:Protocol (unsafe/cast ptr:Protocol (protocol-lookup proto)))
+              ; B2a: `proto` arrives from a `(dyn P)` box, downstream of the
+              ; box-construction scope gate — see `protocol-resolve-any`.
+              pp:ptr:Protocol (unsafe/cast ptr:Protocol (protocol-resolve-any proto)))
           (when (= (as ptr pp) null) (return 0))
           (when (!= (pp num-sigs) 1) (return 0))
         (let (sig:ptr (aref (as ptr:ptr (pp sigs)) 0)
@@ -3297,8 +3413,16 @@
                         (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ kind) (= _ NODE-SYM))))
           (let (hh:ptr (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ s)))
             ; Stage 12 N3: also handle defprotocol- (private protocol).
+            ; Stage 15 B5: arm g-defining-private around the registration, the
+            ; same shape prescan-defn-signatures uses for `defn-`. Registration
+            ; happens here and nowhere else (the top-level dispatch arm for
+            ; `defprotocol-` is a no-op), so this is the one place the private
+            ; spelling can be recorded at all.
             (when (or (= hh "defprotocol") (= hh "defprotocol-"))
-              (protocol-register-form f)))))
+              (let (save-priv:i32 g-defining-private)
+                (set! g-defining-private (if (= hh "defprotocol-") 1 0))
+                (protocol-register-form f)
+                (set! g-defining-private save-priv))))))
       (set! fc (fc cdr)))))
 
 ; Built-in result type of an operator generic `g` applied to a same-typed pair
@@ -3369,6 +3493,18 @@
 ; The Self-only path passes nparams=0 — the substitution reduces to Self alone,
 ; byte-identical to the historical subst-self-node behavior.
 (defn proto-sigs-resolve (proto:raw:Protocol typename:CStr pspellings:ptr line:i32):i32
+; Stage 15 B3′: a protocol-signature substitution is a SYNTHESIS region — every type spelling parsed inside it
+; was written by the compiler (a `type-spelling` of a bound tyvar, a `Self`
+; substitution), not by any file, so the type reference resolvers take an exact-key
+; fallback here. See `g-type-key-ok` (src/nucleusc.nuc) for why this is a scoped
+; permission rather than a global relaxation.
+  (let (saved:i32 g-type-key-ok)
+    (set! g-type-key-ok 1)
+    (let (r:i32 (proto-sigs-resolve-in proto typename pspellings line))
+      (set! g-type-key-ok saved)
+      (return r))))
+
+(defn proto-sigs-resolve-in (proto:raw:Protocol typename:CStr pspellings:ptr line:i32):i32
   (let (pp:raw:Protocol proto
         missing:i32 0)
     (dotimes (i (pp num-sigs))
@@ -3412,7 +3548,7 @@
   ; super-edge match, and the diagnostics are all consistent even when the
   ; `extend` (or its imported replay) names a qualified `coll/Vector`/`dp/Seq`.
   ; Identity under `user` (no slash) → byte-identical.
-  (set! typename (strip-ns-qualifier typename))
+  (set! typename (type-canon-name typename))
   (set! proto-name (protocol-canon-name proto-name))
   ; A0: when a parametric protocol is re-extended, the coherence check (and any
   ; arg-upgrade of an arg-less record) lives in `conformance-add`, so the
@@ -3423,7 +3559,12 @@
     (when (> npspellings 0)
       (conformance-add typename proto-name pspellings npspellings line))
     (return))
-  (let (proto:ptr (protocol-lookup proto-name))
+  ; B2a: `proto-name` is canonical by now — `emit-extend` resolved the source
+  ; spelling and passed the Protocol's own name down, and the super-protocol
+  ; recursion below passes an edge key. Either way this is a key lookup; the
+  ; scope gate already fired at the reference. The raise stays as the backstop
+  ; for the import-replay path (check=0 returns instead).
+  (let (proto:ptr (protocol-lookup-ns proto-name))
     (when (= proto null)
       (when (!= check 0)
         (die-at line (fmt-s "extend: unknown protocol '%s'" proto-name)))
@@ -3624,15 +3765,25 @@
           proto-node:ptr:Node (unsafe/cast ptr:Node (node-at form 2))
           proto-args:ptr null
           proto-nargs:i32 0
-          ; The protocol may be written qualified (`dp/Describe`) from another
-          ; namespace, or bare from inside its own; canonicalize to its namespaced
-          ; registry identity for every lookup/record below (Stage 15 W9 defect
-          ; 21 — a protocol is NOT stripped). Identity under `user`.
-          proto-name:CStr (protocol-canon-name
-                           (extend-proto-name proto-node
-                                              (as ptr:ptr (addr-of proto-args))
-                                              (as ptr:i32 (addr-of proto-nargs))
-                                              (node-line (as ptr proto-node) (ff line)))))
+          ; The protocol may be written qualified (`dpx/Describe`, through an
+          ; import prefix) or bare from inside its own namespace. Stage 15 B2a:
+          ; resolve the REFERENCE exactly once, here, where the source spelling
+          ; and the file's import environment are both in hand — and then carry
+          ; the resolved record downward. Everything below wants the protocol's
+          ; canonical registry identity (W9 defect 21 — a protocol is NOT
+          ; stripped), and re-deriving it by looking the spelling up a second time
+          ; is what would ask the scope question twice and get two answers.
+          ; Identity under `user`.
+          proto-spelling:CStr (extend-proto-name proto-node
+                                                 (as ptr:ptr (addr-of proto-args))
+                                                 (as ptr:i32 (addr-of proto-nargs))
+                                                 (node-line (as ptr proto-node) (ff line)))
+          proto-rec:?ptr:Protocol (protocol-lookup proto-spelling)
+          ; Unresolved names pass through as written: a blanket protocol
+          ; (`Any`/`Struct`), `Valid`, and the spelling a diagnostic must quote.
+          proto-name:CStr (if (= proto-rec null)
+                            proto-spelling
+                            (-> proto-rec (as ptr:Protocol _) (_ name))))
       ; Stage 11 T4: the subject is a struct *template* `(extend (Vector T) (Seq T))`.
       ; Record a template-level conformance; the per-instance check fires at stamp
       ; time, and any already-stamped instance is rechecked now.
@@ -3643,13 +3794,16 @@
             (die-at (node-line (as ptr type-node) (ff line)) "extend: template subject name must be a symbol"))
           ; Stage 12 N4: a qualified template head (`coll/Vector`) resolves to the
           ; bare-keyed template registry. Identity under `user`.
-          (let (st:?ptr:StructTemplate (struct-template-lookup (strip-ns-qualifier (thead s))))
+          (let (st:?ptr:StructTemplate (struct-template-lookup-ref (thead s)))
             (when (= (as ptr st) null)
               (die-at (node-line (as ptr type-node) (ff line))
                 (fmt-s "extend: '%s' is not a struct template" (thead s))))
-            (let (proto:?ptr:Protocol (protocol-lookup proto-name))
+            (let (proto:?ptr:Protocol proto-rec)
               (when (= (as ptr proto) null)
-                (die-at (node-line (as ptr proto-node) (ff line)) (fmt-s "extend: unknown protocol '%s'" proto-name)))
+                (die-at (node-line (as ptr proto-node) (ff line))
+                  (with-qualifier-note
+                    (fmt-s "extend: unknown protocol '%s'" proto-spelling)
+                    (as ptr proto-spelling))))
               ; The protocol application must supply exactly the protocol's extra
               ; params, each bound positionally to one of the template's tyvars.
               (when (!= proto-nargs (-> proto (unsafe/cast ptr:Protocol _) (_ num-params)))
@@ -3780,7 +3934,7 @@
       ; `proto-name` was already canonicalized as a PROTOCOL above; the two
       ; canonicalizers are deliberately different (Stage 15 W9 defect 21).
       ; Identity under `user` (no slash).
-      (let (typename:CStr (strip-ns-qualifier (type-node s))
+      (let (typename:CStr (type-canon-name (type-node s))
             ; The subject of a protocol-INHERITANCE extend is itself a protocol
             ; name, so it resolves through the protocol registry (namespaced),
             ; not through `typename` (the type canonicalization). Resolving the
@@ -3790,18 +3944,23 @@
         ; Protocol-on-protocol: declare inheritance, no per-type check. Only the
         ; bare-symbol protocol form participates in inheritance.
         (when (and (!= subj-proto null) (= proto-nargs 0))
-          (when (= (protocol-lookup proto-name) null)
+          (when (= proto-rec null)
             (die-at (node-line (as ptr proto-node) (ff line))
-              (fmt-2s "extend: '%s' is a protocol, so its supertype '%s' must be a protocol too"
-                      (-> subj-proto (as ptr:Protocol _) (_ name)) proto-name)))
+              (with-qualifier-note
+                (fmt-2s "extend: '%s' is a protocol, so its supertype '%s' must be a protocol too"
+                        (-> subj-proto (as ptr:Protocol _) (_ name)) proto-spelling)
+                (as ptr proto-spelling))))
           (proto-super-add (-> subj-proto (as ptr:Protocol _) (_ name)) proto-name)
           (return))
         ; Extending to a blanket protocol (Any/Struct) is redundant — conformance
         ; is automatic and structural — so accept it as a no-op.
         (when (and (!= (blanket-lookup proto-name) 0) (= proto-nargs 0)) (return))
-        (let (proto:?ptr:Protocol (protocol-lookup proto-name))
+        (let (proto:?ptr:Protocol proto-rec)
           (when (= (as ptr proto) null)
-            (die-at (node-line (as ptr proto-node) (ff line)) (fmt-s "extend: unknown protocol '%s'" proto-name)))
+            (die-at (node-line (as ptr proto-node) (ff line))
+              (with-qualifier-note
+                (fmt-s "extend: unknown protocol '%s'" proto-spelling)
+                (as ptr proto-spelling))))
           ; Validate single-token subject types eagerly for a clean diagnostic.
           (when (= (strchr typename 58) null)
             (parse-type-name typename (node-line (as ptr type-node) (ff line))))
@@ -3855,7 +4014,9 @@
                                                   (as ptr:i32 (addr-of proto-nargs))
                                                   (form line)))
             ; A protocol-on-protocol inheritance edge keeps its plain-symbol shape.
-            (if (and (!= (protocol-lookup (type-node s)) null) (= proto-nargs 0))
+            ; B2a: a `.nuch` replay carries canonical names written by the
+            ; exporting unit, not spellings this file could name — key lookup.
+            (if (and (!= (protocol-lookup-ns (type-node s)) null) (= proto-nargs 0))
               (proto-super-add (type-node s) proto-name)
               (let (pspellings:ptr null)
                 (when (> proto-nargs 0)
@@ -4151,12 +4312,36 @@
     (when (= ct null) (return null))
     (return (callable-invoke-type ct n 2 (- (node-len n) 2) scope))))
 
+; The typing rule for one binding-table row that produces a value. Only
+; BK-GLOBAL does — a generic is handled by the resolver in `node-type-call`, and
+; every other row is a name emit REFUSES in head position, for which returning
+; null is the standing escape hatch (emit's own diagnostic stands).
+(defn node-type-binding (hit:ref:BindingHit n:raw:Node scope:ref:Scope):?ptr:Type
+  (when (!= (hit kind) BK-GLOBAL) (return null))
+  (let (sym:ptr:Sym (as ptr:Sym (hit payload))
+        ft:ptr:Type (unsafe/cast ptr:Type (sym type)))
+    ; A non-function value head is a callable value: mirror the get/invoke desugar.
+    (when (!= (ft kind) TY-FN) (return (callable-value-type ft n scope)))
+    (return (ft ret))))
+
 ; A call head (not a special form): mirror emit-dispatch. Operator → a matching
 ; user overload's return type, else i1 for comparisons / the first operand's type
 ; (the intrinsic peephole result); overloaded set → the exactly matched method's
 ; return type; solitary/extern → the bound function's return.
+;
+; Stage 15 B5: the WHICH-registry-answers question is now asked once, from the
+; shared binding table (`build-binding-kinds`, src/nucleusc.nuc), by
+; `emit-dispatch` and by this function — the node-type↔emit-node lockstep
+; applied to resolution order rather than to a typing rule (conventions.md:
+; mirroring the logic drifts, mirroring a call cannot). The window stops at
+; BK-GLOBAL because those are the rows that yield a type; beyond it emit only
+; produces a diagnostic.
 (defn node-type-call (n:raw:Node scope:ref:Scope h:CStr want:raw:Type):?ptr:Type
-  (let (g:?ptr:Generic (generic-lookup h))
+  (let (ghit:?ref:BindingHit (binding-find h scope BK-DISPATCH-FIRST (+ BK-GLOBAL 1) 0 NK-NONE))
+    (when (= (as ptr ghit) null) (return null))
+    (when (!= ((unsafe/cast ptr:BindingHit ghit) kind) BK-GENERIC)
+      (return (node-type-binding (unsafe/cast ref:BindingHit ghit) n scope)))
+  (let (g:?ptr:Generic (as ptr:Generic ((unsafe/cast ptr:BindingHit ghit) payload)))
     (when (!= g null)
       (let (m0:ptr:Method (as ptr:Method (invoke (g methods) 0)))
         (when (= (m0 kind) METHOD-INTRINSIC)
@@ -4234,12 +4419,12 @@
                           (if (!= want null) want g-want-type)))
               (when (= r 1) (return (-> wmethod (unsafe/cast ptr:Method _) (_ ret-type))))
               (when (= r 2) (return (method-bound-ret-type wmethod wbound 0)))))))))
-    (if-some (sym (scope-lookup scope h))
-      (let (ft:ptr:Type (unsafe/cast ptr:Type (sym type)))
-        ; A non-function value head is a callable value: mirror the get/invoke desugar.
-        (when (!= (ft kind) TY-FN) (return (callable-value-type ft n scope)))
-        (return (ft ret)))
-      (return null)))
+    ; A solitary (unmangled, non-intrinsic) generic — or a mangled one whose
+    ; resolution did not settle — falls through to the next table row, exactly
+    ; as emit-dispatch's own fall-through does.
+    (if-some (h2 (binding-find h scope (+ BK-GENERIC 1) (+ BK-GLOBAL 1) 0 NK-NONE))
+      (return (node-type-binding h2 n scope))
+      (return null))))
 
 (defn node-type (n:raw:Node scope:ref:Scope):?ptr:Type
   (when (= n null) (return ty-void))
@@ -4271,7 +4456,7 @@
       ; emit's own type stand (emit-keyword's synthetic call dies with a clear
       ; "undefined: keyword-intern" if the lib was not imported).
       NODE-KEYWORD
-        (let (sd:?ptr:StructDef (lookup-struct "Keyword"))
+        (let (sd:?ptr:StructDef (struct-lookup-ref "Keyword"))
           (when (!= sd null) (return (type-for-sdef sd)))
           (return null))
       0)
@@ -4285,20 +4470,15 @@
         ; Stage 14 MC-2: gensym yields a Node* — type it (raw Node) so it stays
         ; in lockstep with emit-list's gensym path (ty-raw-node).
         (when (= hp 'gensym) (return (ty-raw-node)))
-        ; Stage 14 UN-5: bare `funcall-ptr-*` is retired (D6); mirrors emit-list's
-        ; routing in nucleusc.nuc (lockstep — conventions.md). `unsafe/
-        ; funcall-ptr-*` keeps typing exactly as before.
-        (when (= hp 'funcall-ptr-1)
-          (die-at (node-line head (nn line)) "'funcall-ptr-1' was split in Stage 14: use 'unsafe/funcall-ptr-1'"))
+        ; Stage 14 UN-5 / Stage 15 B2b: the bare `funcall-ptr-*` spellings do not
+        ; resolve (the `unsafe` namespace is bound prefixed, never flattened), so
+        ; there is nothing to refuse here either. Mirrors emit-list's routing in
+        ; nucleusc.nuc — this pair is the node-type↔emit-node lockstep, and the
+        ; refusals had to leave both files together or the non-emitting pass
+        ; would die where codegen no longer does.
         (when (= hp 'unsafe/funcall-ptr-1) (return ty-ptr))
-        (when (= hp 'funcall-ptr-i32)
-          (die-at (node-line head (nn line)) "'funcall-ptr-i32' was split in Stage 14: use 'unsafe/funcall-ptr-i32'"))
         (when (= hp 'unsafe/funcall-ptr-i32) (return ty-i32))
-        (when (= hp 'funcall-ptr-i64)
-          (die-at (node-line head (nn line)) "'funcall-ptr-i64' was split in Stage 14: use 'unsafe/funcall-ptr-i64'"))
         (when (= hp 'unsafe/funcall-ptr-i64) (return ty-i64))
-        (when (= hp 'funcall-ptr-ptr)
-          (die-at (node-line head (nn line)) "'funcall-ptr-ptr' was split in Stage 14: use 'unsafe/funcall-ptr-ptr'"))
         (when (= hp 'unsafe/funcall-ptr-ptr) (return ty-ptr))
         (when (= hp 'return) (return ty-void))
         (when (= hp 'do)
@@ -4326,10 +4506,7 @@
         (when (= hp 'not) (return ty-i1))
         (when (= hp '_and) (return ty-i1))
         (when (= hp '_or) (return ty-i1))
-        ; Stage 14 UN-5: bare `cast` is retired (D6); `unsafe/cast` mirrors what
-        ; bare `cast` used to (lockstep).
-        (when (= hp 'cast)
-          (die-at (node-line head (nn line)) "'cast' was split in Stage 14: use 'as' (safe) or 'unsafe/cast' (unchecked)"))
+        ; `unsafe/cast` types exactly as the retired bare `cast` used to.
         (when (= hp 'unsafe/cast) (return (node-type-cast n)))
         (when (= hp 'as) (return (node-type-as n)))
         (when (= hp 'addr-of) (return (node-type-addr-of n scope)))
@@ -4339,8 +4516,6 @@
         (when (= hp 'ptr-set!) (return ty-void))
         ; Stage 14 UN-5: bare `ptr+` is retired (D6); `unsafe/ptr+` mirrors what
         ; bare `ptr+` used to (lockstep).
-        (when (= hp 'ptr+)
-          (die-at (node-line head (nn line)) "'ptr+' was split in Stage 14: use 'unsafe/ptr+'"))
         (when (= hp 'unsafe/ptr+) (return (node-type (node-at n 1) scope)))
         (when (= hp '_get) (return (node-type-field n scope)))
         (when (= hp '.set!) (return ty-void))

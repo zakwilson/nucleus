@@ -647,7 +647,7 @@
       (let (h:ptr (new-tmp)
             efh:ptr:Sym (unsafe/cast ptr:Sym (scope-lookup g-globals "err-find-handler"))
             ght:ptr:Sym (unsafe/cast ptr:Sym (scope-lookup g-globals "g-handler-top"))
-            hsd:ptr:StructDef (unsafe/cast ptr:StructDef (lookup-struct (intern-str "Handler")))
+            hsd:ptr:StructDef (unsafe/cast ptr:StructDef (struct-lookup-ref (intern-str "Handler")))
             id:i32 (new-label-id))
         (fprintf g-body-stream "  %s = call ptr %s(i32 %s, ptr %s)\n"
           h (efh ir-name) eid tok)
@@ -827,7 +827,7 @@
 ; type at an err site (errors.md §11.2). T is the !T's ok payload (a value type
 ; in v1; a (ref X) repair type — niche-encoded Maybe — is unsupported here).
 (defn stamp-maybe-type (t:raw:Type line:i32):ref:Type
-  (let (ut:?ptr:UnionTemplate (union-template-lookup "Maybe"))
+  (let (ut:?ptr:UnionTemplate (union-template-lookup-ref "Maybe"))
     (when (= ut null)
       (die-at line "err handler: value-Maybe template not in scope (import the prelude)"))
     (let (argts:ptr (arena-alloc (ptr-bytes)))
@@ -842,7 +842,7 @@
 (defn error-lib-in-scope ():i32
   (when (= (scope-lookup g-globals "g-handler-top") null) (return 0))
   (when (= (scope-lookup g-globals "err-find-handler") null) (return 0))
-  (when (= (as ptr (lookup-struct (intern-str "Handler"))) null) (return 0))
+  (when (= (as ptr (struct-lookup-ref (intern-str "Handler"))) null) (return 0))
   (return 1))
 
 ; True iff `ud`'s `err` arm is the `!T` shape: a single payload field of type

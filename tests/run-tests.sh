@@ -606,6 +606,50 @@ EOF
   else
     echo "FAIL  n6-nuch-link-and-run"
   fi
+
+  # 4. Stage 15 B3′: the same round trip for a namespaced TYPE. R1 gave a type a
+  #    namespace, so all three export surfaces have to agree on which name it
+  #    carries — the LLVM `%gt__Pt`, the C `typedef … gt__Pt` (two namespaces may
+  #    now both define `Pt`, so an unprefixed typedef would collide in any program
+  #    including both headers), and the `.nuch`, which carries `(ns gt)` plus the
+  #    BARE spelling so the importer re-keys it under `gt/` itself.
+  cat > "$ns6_dir/tylib.nuc" <<'EOF'
+(ns gt)
+(defstruct Pt x:i32 y:i32)
+(defn pt-sum ((p (ref Pt))):i32 (return (+ (_get p x) (_get p y))))
+EOF
+  ./build/nucleusc --emit-nuch    "$ns6_dir/tylib.nuc" > "$ns6_dir/tylib.nuch" 2>/dev/null || true
+  ./build/nucleusc --emit-cheader "$ns6_dir/tylib.nuc" > "$ns6_dir/tylib.h"    2>/dev/null || true
+  ./build/nucleusc --emit-llvm    "$ns6_dir/tylib.nuc" > "$ns6_dir/tylib.ll"   2>/dev/null || true
+  if grep -qF '%gt__Pt = type' "$ns6_dir/tylib.ll" \
+     && grep -qF '} gt__Pt;' "$ns6_dir/tylib.h" \
+     && grep -qF '(ns gt)' "$ns6_dir/tylib.nuch" \
+     && grep -qF '(defstruct Pt ' "$ns6_dir/tylib.nuch"; then
+    echo "PASS  b3-ns-type-export-surfaces"
+  else
+    echo "FAIL  b3-ns-type-export-surfaces"
+  fi
+
+  # …and the .nuch consumer resolves the type through the prefix it bound, links
+  # against the library object and runs. This is the whole re-keying chain end to
+  # end: `(ns gt)` in the header re-registers `gt/Pt`, `g/Pt` resolves to it
+  # through the import environment, and the call reaches @gt__pt-sum.
+  cat > "$ns6_dir/tymain.nuc" <<EOF
+(exclude-prelude)
+(import-prefixed "$ns6_dir/tylib.nuch" g)
+(declare printf (fmt:CStr):i32)
+(defn main () :i32
+  (let (p:(ref g/Pt) (g/Pt 20 22))
+    (printf "sum=%d\n" (g/pt-sum p)))
+  (return 0))
+EOF
+  ./build/nucleusc --emit-llvm "$ns6_dir/tymain.nuc" > "$ns6_dir/tymain.ll" 2>/dev/null || true
+  if clang "$ns6_dir/tylib.ll" "$ns6_dir/tymain.ll" -o "$ns6_dir/tybin" 2>/dev/null \
+     && [ "$("$ns6_dir/tybin")" = "sum=42" ]; then
+    echo "PASS  b3-ns-type-nuch-link-and-run"
+  else
+    echo "FAIL  b3-ns-type-nuch-link-and-run"
+  fi
   rm -rf "$ns6_dir"
 }
 
@@ -852,13 +896,22 @@ run_w1_mutual() {
 # Prescanning nsa under the importer's namespace would register `a-thing` under
 # the wrong key and mangle it under the wrong prefix; before W1a the
 # `(import nsa)`-first order failed with `unknown: beta/b-thing`.
+#
+# Stage 15 B2b re-pointed the SPELLINGS, not the assertion. R3 (name-resolution.md
+# §8.3) makes a namespace nameable only through an import that binds it, so
+# `w1-nsa` now imports `w1-nsb` to say `w1beta/`, and the two drivers use
+# `import-use` (which binds the namespace qualifier — §8.3 row 1) instead of the
+# prefixed `import` (which binds `w1-nsa/`, never `w1alpha/`). What the test
+# measures is unchanged and still fails without W1a: `a-thing`'s signature must
+# be prescan-registered under `w1alpha/a-thing` in BOTH import orders, which
+# only happens if the whole-graph prescan applies each visited file's own `(ns)`.
 run_w1_ns() {
   local d
   d="$(mktemp -d)"
-  printf '(ns w1alpha)\n(defn a-thing ():i32 (return (w1beta/b-thing)))\n' > "$d/w1-nsa.nuc"
+  printf '(ns w1alpha)\n(import-use w1-nsb)\n(defn a-thing ():i32 (return (w1beta/b-thing)))\n' > "$d/w1-nsa.nuc"
   printf '(ns w1beta)\n(defn b-thing ():i32 (return 42))\n' > "$d/w1-nsb.nuc"
-  printf '(import w1-nsa)\n(import w1-nsb)\n(defn main ():i32 (return (w1alpha/a-thing)))\n' > "$d/w1-nm1.nuc"
-  printf '(import w1-nsb)\n(import w1-nsa)\n(defn main ():i32 (return (w1alpha/a-thing)))\n' > "$d/w1-nm2.nuc"
+  printf '(import-use w1-nsa)\n(import-use w1-nsb)\n(defn main ():i32 (return (w1alpha/a-thing)))\n' > "$d/w1-nm1.nuc"
+  printf '(import-use w1-nsb)\n(import-use w1-nsa)\n(defn main ():i32 (return (w1alpha/a-thing)))\n' > "$d/w1-nm2.nuc"
   w1_run w1-ns-order1 "$d" "$d/w1-nm1.nuc" 42
   w1_run w1-ns-order2 "$d" "$d/w1-nm2.nuc" 42
   rm -rf "$d"
@@ -955,6 +1008,26 @@ run_w1_declare_cycle_breaker() {
 # Multi-file rejection: write files into <dir>, compile <main>, require <pattern>
 # in stderr and no `:0:` — the same location guarantee run_reject gives the
 # single-fixture rejections.
+# The same, with a location prefix as well as a message — for a multi-file unit
+# where the fixture path is a mktemp dir and cannot be spelled in a literal.
+# Stage 15 B5 added it: which of two definers is BLAMED is half of what the
+# protocol-kind tests assert, and a pattern-only check cannot see it.
+w1_reject_at() {  # <name> <dir> <main.nuc> <loc-prefix> <pattern>
+  local name="$1" d="$2" mainsrc="$3" loc="$4" pattern="$5" err
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$mainsrc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | grep -q ':0:'; then
+    echo "FAIL  $name (diagnostic reports line 0)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  elif printf '%s' "$err" | grep -qF "$loc" && printf '%s' "$err" | grep -qF "$pattern"; then
+    echo "PASS  $name"
+  else
+    echo "FAIL  $name"
+    echo "    expected location: $loc"
+    echo "    expected message:  $pattern"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+  fi
+}
+
 w1_reject_multi() {  # <name> <dir> <main.nuc> <pattern>
   local name="$1" d="$2" mainsrc="$3" pattern="$4" err
   err="$(./build/nucleusc -I "$d" --emit-llvm "$mainsrc" 2>&1 >/dev/null || true)"
@@ -1065,13 +1138,21 @@ run_w1d_cycle_diagnoses() {
   w1_reject_multi w1d-cycle-byval-diagnosed "$d" "$d/w1-bcm.nuc" \
     "defn parameter: 'W1BC' has no layout at this point"
 
-  # 4. A `prefix/name` over a cycle member. The skipped re-entry has no
-  # global-scope slice, so no aliases were injected; the bare name works.
+  # 4. A `prefix/name` over a cycle member. This one INVERTED in Stage 15 B2b
+  # and the probe is re-pointed rather than re-baselined: W1d diagnosed it
+  # because a skipped re-entry has no global-scope slice, so
+  # `inject-import-aliases` injected no `prefix/name` key and the qualified
+  # spelling resolved nowhere. B2b deletes the injection — a prefix names the
+  # FILE, the W1a prescan has already registered that file's signatures and
+  # `emit-ns` has already recorded its namespace — so the spelling now resolves
+  # and the program runs. That removes the third of W1d's three emission-time
+  # couplings (macros, layouts, prefix aliases) rather than diagnosing it, and
+  # `cycle-prefix-message` went with it. Asserting the ANSWER (6) is what makes
+  # this a test of resolution rather than of a diagnostic that no longer exists.
   printf '(import w1-pcb)\n(defn w1-pca (n:i32):i32 (return (+ n 1)))\n' > "$d/w1-pca.nuc"
   printf '(import w1-pca)\n(defn w1-pcb (n:i32):i32 (return (w1-pca/w1-pca n)))\n' > "$d/w1-pcb.nuc"
   printf '(import w1-pca)\n(defn main ():i32 (return (w1-pcb 5)))\n' > "$d/w1-pcm.nuc"
-  w1_reject_multi w1d-cycle-prefix-diagnosed "$d" "$d/w1-pcm.nuc" \
-    "the prefix 'w1-pca' has no aliases here"
+  w1_run w1d-cycle-prefix-resolves "$d" "$d/w1-pcm.nuc" 6
 
   # And the rule the skip must NOT relax: two files defining the same name+arity
   # are still a duplicate even when they are cycle partners. Silent last-wins
@@ -1410,10 +1491,14 @@ run_g0_value_scoping() {
   # The namespaced file's own constant is declared AFTER the function that reads
   # it, so the prescan is what resolves both the bare in-namespace reference and
   # the qualified cross-file one. 55 either way.
+  # Stage 15 B2b re-pointed the spellings for R3, exactly as run_w1_ns above:
+  # naming `g0alpha/` requires an import that binds it. The forward reference
+  # being measured — `g0-ns-get` reads `G0-NSK` declared BELOW it, and a second
+  # file reads the same constant across the namespace boundary — is untouched.
   printf '(ns g0alpha)\n(defn g0-ns-get ():i32 (return G0-NSK))\n(defconst G0-NSK 55)\n' > "$d/g0-nsa.nuc"
-  printf '(defn g0-ns-user ():i32 (return g0alpha/G0-NSK))\n' > "$d/g0-nsb.nuc"
-  printf '(import g0-nsb)\n(import g0-nsa)\n(defn main ():i32 (return (g0-ns-user)))\n' > "$d/g0-ns1.nuc"
-  printf '(import g0-nsb)\n(import g0-nsa)\n(defn main ():i32 (return (g0alpha/g0-ns-get)))\n' > "$d/g0-ns2.nuc"
+  printf '(import-use g0-nsa)\n(defn g0-ns-user ():i32 (return g0alpha/G0-NSK))\n' > "$d/g0-nsb.nuc"
+  printf '(import-use g0-nsb)\n(import-use g0-nsa)\n(defn main ():i32 (return (g0-ns-user)))\n' > "$d/g0-ns1.nuc"
+  printf '(import-use g0-nsb)\n(import-use g0-nsa)\n(defn main ():i32 (return (g0alpha/g0-ns-get)))\n' > "$d/g0-ns2.nuc"
   w1_run g0-ns-qualified-value "$d" "$d/g0-ns1.nuc" 55
   w1_run g0-ns-internal-forward "$d" "$d/g0-ns2.nuc" 55
 
@@ -1834,10 +1919,16 @@ run_g0_still_rejects() {
   printf '(defn g0-collide ():i32 (return 2))\n' > "$d/g0-kb.nuc"
   printf '(import g0-ka)\n(import g0-kb)\n(defn main ():i32 (return 0))\n' > "$d/g0-km1.nuc"
   printf '(import g0-kb)\n(import g0-ka)\n(defn main ():i32 (return 0))\n' > "$d/g0-km2.nuc"
+  # Stage 15 B5: the noun now depends on which definer is emitted first, because
+  # the guard asks for the first binding whose kind is NOT the one being defined
+  # rather than for the highest-priority binding (name-resolution.md §13.3).
+  # order1 emits the `defvar` first and names the function; order2 emits the
+  # `defn` first and names the value. Both still refuse, which is the property
+  # this pair exists to pin.
   w1_reject_multi g0-value-fn-collision-order1 "$d" "$d/g0-km1.nuc" \
     "'g0-collide' already names a function"
   w1_reject_multi g0-value-fn-collision-order2 "$d" "$d/g0-km2.nuc" \
-    "'g0-collide' already names a function"
+    "'g0-collide' already names a value"
   rm -rf "$d"
 }
 
@@ -2623,6 +2714,242 @@ run_w2d_dsp_bitexact() {
   rm -rf "$d"
 }
 
+# --- Stage 15 B0: the name-resolution cells that are already CORRECT ----------
+# design/stage15-stress-test/name-resolution.md §9 "B0".
+#
+# The behavioural matrix proper — 43 cells, most of them recording DEFECTS —
+# lives in tests/resolution-matrix.sh against
+# tests/expected/resolution-matrix.baseline. That harness is a *recorder*: B1/B2
+# diff against it to see which cells moved. It is deliberately not run from here,
+# because a recorded defect changing is the expected outcome of the next steps,
+# not a test failure.
+#
+# What follows is the opposite half: the handful of spellings that resolve
+# correctly today and that B1/B2 must preserve. Each compiles, LINKS and RUNS —
+# an exit-0 compile would not catch a call routed to the wrong symbol, which is
+# the failure mode a resolver rewrite actually risks.
+#
+# The third member of the set, the `export` facade path (examples/export-test.nuc
+# → lib/nsgfacade.nuc → lib/nsgeom.nuc, reaching `geom/area` through a *third*
+# name `g/area`), is already dispatched by the examples/*.nuc loop below against
+# tests/expected/export-test.out, so it is not duplicated here.
+
+# `import-use` flattens into the unqualified space: a bare function, global and
+# type from the imported file all resolve. §2's whole matrix is about the
+# *prefixed* import; this is the path 123 of the tree's 124 imports take, so it
+# is the one that must not move.
+run_b0_import_use_flatten() {
+  local d
+  d="$(mktemp -d)"
+  cat > "$d/b0-uselib.nuc" <<'EOF'
+(defstruct B0Point x:i32)
+(defvar b0-base:i32 40)
+(defn b0-add (a:i32 b:i32):i32 (return (+ a b)))
+EOF
+  cat > "$d/b0-use.nuc" <<'EOF'
+(import-use b0-uselib)
+(defn main ():i32
+  (let (p:(ref B0Point) (B0Point 2))
+    (return (b0-add b0-base (_get p x)))))
+EOF
+  w1_run b0-import-use-flatten "$d" "$d/b0-use.nuc" 42
+  rm -rf "$d"
+}
+
+# `import-prefixed` resolves `prefix/fn` for a solitary `defn` — the ONE cell of
+# §2's `zx/` column that is `ok` today, and the one every later step has to keep.
+# Two shapes, because they reach the alias by different routes: a library with an
+# explicit `(ns …)` (the emitted symbol is namespace-mangled) and one without
+# (the symbol is bare, and the alias is the only thing the prefix contributes).
+run_b0_import_prefixed_fn() {
+  local d
+  d="$(mktemp -d)"
+  cat > "$d/b0-nslib.nuc" <<'EOF'
+(ns b0ns)
+(defn b0-triple (x:i32):i32 (return (* 3 x)))
+EOF
+  cat > "$d/b0-pfx-ns.nuc" <<'EOF'
+(import-prefixed b0-nslib zp)
+(defn main ():i32 (return (zp/b0-triple 14)))
+EOF
+  w1_run b0-prefixed-fn-namespaced "$d" "$d/b0-pfx-ns.nuc" 42
+
+  cat > "$d/b0-plainlib.nuc" <<'EOF'
+(defn b0-double (x:i32):i32 (return (* 2 x)))
+EOF
+  cat > "$d/b0-pfx-plain.nuc" <<'EOF'
+(import-prefixed b0-plainlib q)
+(defn main ():i32 (return (q/b0-double 21)))
+EOF
+  w1_run b0-prefixed-fn-plain "$d" "$d/b0-pfx-plain.nuc" 42
+  rm -rf "$d"
+}
+
+# --- Stage 15 B1: an import prefix is FILE-scoped ------------------------------
+# design/stage15-stress-test/name-resolution.md §2.4, §5.2 B1.
+#
+# Before B1 a prefix was unit-global: `inject-import-aliases` wrote its
+# `prefix/name` key into the one global scope, and `qualify-name` splits on the
+# first interior slash, so that key was the same string in every namespace and in
+# every file. A prefix declared while compiling file A therefore resolved from
+# file B, which never declared it — the `xfile-prefix-leak` row of the recorded
+# matrix, which B1 flipped from `ok` to `err`.
+#
+# Both halves are pinned. The middle file, which DOES declare the prefix, must
+# still compile and run: the fix scopes the prefix, it does not delete it. And
+# the consumer, which does not, must be rejected by a diagnostic that says the
+# qualifier is out of scope — the assertion that carries the weight, because the
+# message it replaces is W1c's "not defined anywhere in this compilation unit",
+# which for a name that IS in the unit and IS reachable is simply false.
+run_b1_prefix_file_scope() {
+  local d err
+  d="$(mktemp -d)"
+  cat > "$d/b1-lib.nuc" <<'EOF'
+(ns b1ns)
+(defn b1-inc (x:i32):i32 (return (+ x 1)))
+EOF
+  cat > "$d/b1-mid.nuc" <<'EOF'
+(import-prefixed b1-lib zx)
+(defn b1-mid-call (x:i32):i32 (return (zx/b1-inc x)))
+EOF
+  cat > "$d/b1-ok.nuc" <<'EOF'
+(import-use b1-mid)
+(defn main ():i32 (return (b1-mid-call 41)))
+EOF
+  w1_run b1-prefix-in-declaring-file "$d" "$d/b1-ok.nuc" 42
+
+  cat > "$d/b1-leak.nuc" <<'EOF'
+(import-use b1-mid)
+(defn main ():i32 (return (zx/b1-inc 41)))
+EOF
+  # B2b: B1's own head ("… is not an import prefix in this file") folded into
+  # the one `qualifier-scope-message` head, because after B2b a refused
+  # qualifier may be a prefix OR a namespace and the gate can no longer be two
+  # functions (§9.2's "the two halves now disagree"). The prefix-specific
+  # sentence — the one that names the file that DOES bind it — survives as the
+  # note's first tier, which is the half that carries the fix.
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/b1-leak.nuc" 2>&1 >/dev/null || true)"
+  if ! printf '%s' "$err" | grep -qF "unknown: zx/b1-inc — 'zx' is not in scope in this file"; then
+    echo "FAIL  b1-prefix-not-visible-cross-file (wrong or missing diagnostic)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  elif ! printf '%s' "$err" | grep -qF "note: an import prefix is file-scoped:"; then
+    echo "FAIL  b1-prefix-not-visible-cross-file (missing the file-scope note)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  elif printf '%s' "$err" | grep -qF "not defined anywhere in this compilation unit"; then
+    echo "FAIL  b1-prefix-not-visible-cross-file (degraded to the reachability message)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  elif printf '%s' "$err" | grep -q ':0:'; then
+    echo "FAIL  b1-prefix-not-visible-cross-file (diagnostic reports line 0)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  else
+    echo "PASS  b1-prefix-not-visible-cross-file"
+  fi
+  rm -rf "$d"
+}
+
+# Stage 15 B2a: the rejection of an out-of-scope namespace qualifier must be a
+# SCOPE diagnostic. `run_reject_at` above already pins the head and the line; the
+# assertion that carries the weight is the note — without it the message says a
+# protocol that IS declared and IS reachable is "unknown", full stop, which sends
+# the reader looking for a missing definition instead of a wrong spelling. The
+# third check is the same anti-degradation guard B1 uses.
+run_b2a_scope_diagnostic() {
+  local err
+  err="$(./build/nucleusc --emit-llvm tests/fixtures/b2a-ns-not-in-scope.nuc 2>&1 >/dev/null || true)"
+  if ! printf '%s' "$err" | grep -qF "note: 'dp' is not in scope in this file"; then
+    echo "FAIL  b2a-scope-diagnostic (missing the out-of-scope note)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  elif ! printf '%s' "$err" | grep -qF "In scope here: dpx."; then
+    echo "FAIL  b2a-scope-diagnostic (note does not list the qualifiers in scope)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  elif printf '%s' "$err" | grep -qF "not defined anywhere in this compilation unit"; then
+    echo "FAIL  b2a-scope-diagnostic (degraded to the reachability message)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  else
+    echo "PASS  b2a-scope-diagnostic"
+  fi
+}
+
+# Stage 15 B2a, §8.3 row 1: `import-use` flattens a namespaced library AND binds
+# the namespace's own name as a qualifier (R2's escape hatch — the remedy for a
+# collision must not be "change how you imported"). Both spellings are new: before
+# B2a a bare `Describe` reached no protocol at all from `user` (there is no bare
+# `Describe` registered), and `dp/Describe` resolved only because nothing checked
+# the qualifier against anything. The pair is run, not just compiled, because the
+# thing being asserted is that both spellings land on ONE protocol identity — the
+# box dispatches `dp`'s `describe` on a `user` type that conformed under the bare
+# spelling.
+run_b2a_import_use_binds_namespace() {
+  local d
+  d="$(mktemp -d)"
+  cat > "$d/b2a-flat.nuc" <<'EOF'
+(import-use allocator)
+(import-use nsdescribe)
+(defstruct Cat n:i32)
+(defn describe ((self (ref Cat))):i32 (return (+ 40 (self n))))
+; Bare: the flattened set. Qualified by the library's own namespace: R2's hatch.
+(extend Cat Describe)
+(defn main ():i32
+  (let (a:(dyn dp/Describe) (Cat 2))
+    (return (describe a))))
+EOF
+  w1_run b2a-import-use-binds-namespace "$d" "$d/b2a-flat.nuc" 42
+  rm -rf "$d"
+}
+
+# --- Stage 15 B2b: globals resolve through the import environment -------------
+# design/stage15-stress-test/name-resolution.md §9, the B2b row.
+#
+# §1.1 defect #2: `inject-import-aliases` filtered the slice it copied on
+# `is-local` and a null `ir-name` — two fields that mean something else
+# entirely. `emit-defvar` sets is-local=1 and `defconst`/`defenum` members carry
+# no ir-name, so a prefixed import silently reached functions and nothing else.
+# The defect closes by DELETION: there is no slice and no filter, the prefix
+# names a file, and the file's namespace composes the key the library already
+# registered. All four kinds go through one path, so all four resolve.
+#
+# The run (not just a compile) is the point: an alias carried the ir-name
+# verbatim, so a wrong alias linked to the wrong symbol rather than failing.
+# Both enum members are named so both must resolve, even though they carry the
+# default 0 and 1: 40 (defvar) + 2 (defconst) + 0 + 1 = 43.
+run_b2b_prefixed_values() {
+  local d err
+  d="$(mktemp -d)"
+  cat > "$d/b2b-vlib.nuc" <<'EOF'
+(ns b2bns)
+(defn b2b-fn (x:i32):i32 (return x))
+(defvar b2b-gv:i32 40)
+(defconst B2B-K 2)
+(defenum B2BE B2B-A B2B-B)
+EOF
+  cat > "$d/b2b-vuse.nuc" <<'EOF'
+(import-prefixed b2b-vlib bv)
+(defn main ():i32
+  (return (bv/b2b-fn (+ (+ bv/b2b-gv bv/B2B-K)
+                        (+ bv/B2B-A bv/B2B-B)))))
+EOF
+  w1_run b2b-prefixed-values "$d" "$d/b2b-vuse.nuc" 43
+
+  # And the other half of §8.3 row 2, for the kinds that had no qualified
+  # spelling at all before B2b: the DEFINING namespace is out of scope, because
+  # the consumer asked for `bv`. Before B2b this compiled (defect #3).
+  cat > "$d/b2b-vns.nuc" <<'EOF'
+(import-prefixed b2b-vlib bv)
+(defn main ():i32 (return b2bns/b2b-gv))
+EOF
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/b2b-vns.nuc" 2>&1 >/dev/null || true)"
+  if ! printf '%s' "$err" | grep -qF "undefined: b2bns/b2b-gv — 'b2bns' is not in scope in this file"; then
+    echo "FAIL  b2b-prefixed-values-ns-refused (wrong or missing diagnostic)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  elif printf '%s' "$err" | grep -qF "not defined anywhere in this compilation unit"; then
+    echo "FAIL  b2b-prefixed-values-ns-refused (degraded to the reachability message)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  else
+    echo "PASS  b2b-prefixed-values-ns-refused"
+  fi
+  rm -rf "$d"
+}
+
 # --- Dispatch sequence (original top-to-bottom order) ---------------------------
 
 for src in examples/*.nuc; do
@@ -3210,9 +3537,18 @@ spawn run_reject_at w8-fnptr-null-still-gated tests/fixtures/w8-fnptr-null-still
 # Second, the `is-local` conjunct must not silence a real cross-kind collision.
 # g0-value-fn-collision-order1/2 pin the plain (i32-typed) shape; this is the
 # fn-typed one, i.e. exactly the shape the new conjunct changes the answer for.
+#
+# Stage 15 B5 re-pointed the LOCATION and the noun, not the verdict. The guard
+# now asks the shared binding table for the first binding whose kind is NOT the
+# one being defined (name-resolution.md §13.3), so the collision is reported at
+# whichever definer is EMITTED first — here the `defn`, naming the
+# `defvar` — instead of only at the second one. Before B5 the first definer's
+# own guard was silently masked by its own prescan registration, which is the
+# same class of hole this chunk exists to close; the pair is still refused, and
+# `run_reject_at` still proves no binary is produced.
 spawn run_reject_at w8-fnptr-global-name-collision tests/fixtures/w8-fnptr-global-name-collision.nuc \
-  "tests/fixtures/w8-fnptr-global-name-collision.nuc:15: error:" \
-  "'f' already names a function — a symbol may name only one kind of thing"
+  "tests/fixtures/w8-fnptr-global-name-collision.nuc:19: error:" \
+  "'f' already names a value — a symbol may name only one kind of thing"
 
 # --- Stage 15 W5d: array literal ergonomics ---------------------------------
 # design/stage15-stress-test/ergonomics.md §3.9 + §3.10. The positive matrix is
@@ -3574,11 +3910,408 @@ spawn run_reject_at w9-declare-too-few tests/fixtures/w9-declare-too-few.nuc \
 # reference that names no protocol in scope is still an error rather than
 # silently picking one.
 spawn run_reject_at w9-ns-proto-nonconform tests/fixtures/w9-ns-proto-nonconform.nuc \
-  "tests/fixtures/w9-ns-proto-nonconform.nuc:11: error:" \
+  "tests/fixtures/w9-ns-proto-nonconform.nuc:18: error:" \
   "type 'Bad' does not conform to protocol 'dp/Describe'"
 spawn run_reject_at w9-ns-proto-ambiguous tests/fixtures/w9-ns-proto-ambiguous.nuc \
   "tests/fixtures/w9-ns-proto-ambiguous.nuc:17: error:" \
   "extend: unknown protocol 'Describe'"
+
+# --- Stage 15 B0: name resolution — the cells that must NOT move ---------------
+# See the header on run_b0_import_use_flatten above. The recording harness for
+# the rest of the matrix is tests/resolution-matrix.sh (run separately).
+spawn run_b0_import_use_flatten
+spawn run_b0_import_prefixed_fn
+
+# --- Stage 15 B1: the cross-file prefix leak, now an error ---------------------
+spawn run_b1_prefix_file_scope
+
+# --- Stage 15 B2a: an import prefix DEFINES the spellings in scope -------------
+# The originally reported defect. `examples/w9-dyn-ns.nuc` is the positive half
+# (it spells `dpx/Describe` / `dpx2/Describe` and asserts the dispatched results
+# 105/207/309); these are the negative halves, plus the flatten half of §8.3's
+# table, which B2a is the first step to implement at all.
+spawn run_reject_at b2a-extend-ns-not-in-scope tests/fixtures/b2a-ns-not-in-scope.nuc \
+  "tests/fixtures/b2a-ns-not-in-scope.nuc:25: error:" \
+  "extend: unknown protocol 'dp/Describe'"
+spawn run_reject_at b2a-dyn-ns-not-in-scope tests/fixtures/b2a-dyn-ns-not-in-scope.nuc \
+  "tests/fixtures/b2a-dyn-ns-not-in-scope.nuc:27: error:" \
+  "(dyn dp/Describe): 'dp/Describe' is not a declared protocol"
+spawn run_b2a_scope_diagnostic
+spawn run_b2a_import_use_binds_namespace
+
+# --- Stage 15 B5: the shared binding interface --------------------------------
+# design/stage15-stress-test/name-resolution.md §13.3/§13.4. One table with a row
+# per name-keyed registry; the row order is the resolution priority order, walked
+# by `name-existing-kind`, `emit-dispatch` and `node-type-call` alike.
+#
+# (1) NK-PROTOCOL is now RETURNED. It was declared, accepted as an input to
+# `guard-name-kind`, and unreachable, because `name-existing-kind` never probed
+# `g-protocols`. Adding the row is what fixes it — and `prescan-protocols` had to
+# move ahead of `prescan-struct-names`, because the struct prescan registers a
+# name-only StructDef without guarding and so won every race: before B5 BOTH
+# orders below died at the PROTOCOL's line saying "already names a type", and
+# the `defn` shape did not error at all.
+run_b5_protocol_kind() {
+  local d err
+  d="$(mktemp -d)"
+  cat > "$d/b5-p1.nuc" <<'EOF'
+(defprotocol B5Shape
+  (b5-area ((self (ref Self))) i32))
+
+(defstruct B5Shape n:i32)
+
+(defn main ():i32 (return 0))
+EOF
+  cat > "$d/b5-p2.nuc" <<'EOF'
+(defstruct B5Shape n:i32)
+
+(defprotocol B5Shape
+  (b5-area ((self (ref Self))) i32))
+
+(defn main ():i32 (return 0))
+EOF
+  cat > "$d/b5-p3.nuc" <<'EOF'
+(defprotocol B5Shape
+  (b5-area ((self (ref Self))) i32))
+
+(defn B5Shape (x:i32):i32 (return x))
+
+(defn main ():i32 (return 0))
+EOF
+  # The struct is blamed, at its own line, and the noun is "a protocol".
+  w1_reject_at b5-protocol-vs-struct "$d" "$d/b5-p1.nuc" "$d/b5-p1.nuc:4: error:" \
+    "'B5Shape' already names a protocol"
+  w1_reject_at b5-protocol-vs-struct-order2 "$d" "$d/b5-p2.nuc" "$d/b5-p2.nuc:1: error:" \
+    "'B5Shape' already names a protocol"
+  # A `defn` over a protocol name compiled clean before B5: the guard asked for
+  # the highest-priority binding and found the Generic its own signature prescan
+  # had just registered, so it matched NK-FUNCTION and never looked further.
+  w1_reject_at b5-protocol-vs-defn "$d" "$d/b5-p3.nuc" "$d/b5-p3.nuc:4: error:" \
+    "'B5Shape' already names a protocol"
+  rm -rf "$d"
+}
+
+# (2) The privacy hole. `defstruct-`, `defunion-`, `defmacro-` and `defprotocol-`
+# were accepted spellings whose privacy nothing enforced — they have no `Sym`,
+# and before B5 `Sym` was the only carrier of `sym-private`. Measured zero uses
+# across src/, lib/ and examples/, so there was no behaviour to preserve and
+# nothing exercised them. Privacy here is NAMESPACE-level, per W5e's split (a
+# type/macro name is bare-keyed and globally identified, Stage 12 decision 9), so
+# each check needs a namespaced library and a consumer outside it — plus the
+# positive control that a file INSIDE the namespace still sees all four, and that
+# the library's public names are untouched.
+run_b5_private_definers() {
+  local d err
+  d="$(mktemp -d)"
+  cat > "$d/b5-plib.nuc" <<'EOF'
+(ns b5p)
+(defstruct- B5HiddenS n:i32)
+(defunion- B5HiddenU (UA n:i32) UB)
+(defmacro- b5-hidden-mac (x) x)
+(defprotocol- B5HiddenP (b5-hm ((self (ref Self))) i32))
+(defstruct B5PublicS n:i32)
+(defn b5-lib-ok ():i32 (return 7))
+EOF
+  # Stage 15 B3′ re-point: these spell the private names THROUGH THE PREFIX.
+  # Before B3′ a type name was bare-keyed and globally visible, so a bare
+  # `B5HiddenS` reached the library and privacy was the only thing that could
+  # refuse it. R1 makes the bare spelling fail for a *scope* reason (the prefix
+  # binds `bp/` and nothing else), which would leave these four asserting
+  # something they no longer test. Qualified, they still measure privacy: the
+  # prefix resolves, the entry is found, and `binding-visible` hides it.
+  cat > "$d/b5-cs.nuc" <<'EOF'
+(import-prefixed b5-plib bp)
+(defn b5-take ((h (ref bp/B5HiddenS))):i32 (return (h n)))
+(defn main ():i32 (return 0))
+EOF
+  cat > "$d/b5-cu.nuc" <<'EOF'
+(import-prefixed b5-plib bp)
+(defn b5-take ((u (raw bp/B5HiddenU))):i32 (return 0))
+(defn main ():i32 (return 0))
+EOF
+  cat > "$d/b5-cm.nuc" <<'EOF'
+(import-prefixed b5-plib bp)
+(defn main ():i32
+  (return (b5-hidden-mac 1)))
+EOF
+  cat > "$d/b5-cp.nuc" <<'EOF'
+(import-prefixed b5-plib bp)
+(defstruct B5Cs n:i32)
+(extend B5Cs bp/B5HiddenP
+  (defn b5-hm ((self (ref B5Cs))):i32 (return 1)))
+(defn main ():i32 (return 0))
+EOF
+  w1_reject_multi b5-private-struct   "$d" "$d/b5-cs.nuc" "unknown type: bp/B5HiddenS"
+  w1_reject_multi b5-private-union    "$d" "$d/b5-cu.nuc" "unknown type: bp/B5HiddenU"
+  w1_reject_multi b5-private-macro    "$d" "$d/b5-cm.nuc" "unknown: b5-hidden-mac"
+  w1_reject_multi b5-private-protocol "$d" "$d/b5-cp.nuc" "extend: unknown protocol 'bp/B5HiddenP'"
+
+  # Positive control. Without it the four rejections above would also pass if the
+  # filter simply hid everything: a file INSIDE the namespace still sees the
+  # private struct, union and macro, and a `user` consumer still reaches the
+  # library's PUBLIC names through the prefix.
+  # 1 (private struct field) + 2 (private union sizeof) + 4 (private macro)
+  # + 7 (public fn) + 1 (public struct field 6 - 5) = 15.
+  cat > "$d/b5-pin.nuc" <<'EOF'
+(ns b5p)
+(import-use b5-plib)
+
+(defn b5-inside-sum ():i32
+  (let (s:(ref B5HiddenS) (B5HiddenS 1)
+        usz:i32 (if (> (sizeof B5HiddenU) 0) 2 0)
+        m:i32 (b5-hidden-mac 4))
+    (return (+ (+ (s n) usz) m))))
+EOF
+  # B3′: the public struct is reached through the prefix here too — the bare
+  # spelling was the pre-R1 "types are globally visible" behaviour.
+  cat > "$d/b5-pmain.nuc" <<'EOF'
+(import-prefixed b5-pin bin)
+(import-prefixed b5-plib bp)
+
+(defn main ():i32
+  (let (p:(ref bp/B5PublicS) (bp/B5PublicS 6))
+    (return (+ (bin/b5-inside-sum) (+ (bp/b5-lib-ok) (- (p n) 5))))))
+EOF
+  w1_run b5-private-visible-inside "$d" "$d/b5-pmain.nuc" 15
+
+  # The protocol's positive control is the DIAGNOSTIC, not a run: from inside the
+  # namespace the name resolves, so `extend` gets as far as the conformance check
+  # instead of "unknown protocol". (That conformance then fails, but for an
+  # unrelated pre-existing reason — an `extend` written inside an explicit
+  # `(ns …)` does not conform even for a PUBLIC protocol, reproducible on the
+  # committed boot. What this pins is which of the two diagnostics fires.)
+  cat > "$d/b5-ppin.nuc" <<'EOF'
+(ns b5p)
+(import-use b5-plib)
+
+(defstruct B5InS n:i32)
+(extend B5InS B5HiddenP
+  (defn b5-hm ((self (ref B5InS))):i32 (return 1)))
+EOF
+  cat > "$d/b5-ppm.nuc" <<'EOF'
+(import-prefixed b5-ppin pi)
+(defn main ():i32 (return 0))
+EOF
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/b5-ppm.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | grep -qF "extend: unknown protocol"; then
+    echo "FAIL  b5-private-protocol-visible-inside (hidden from its own namespace)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  elif printf '%s' "$err" | grep -qF "does not conform to protocol 'b5p/B5HiddenP'"; then
+    echo "PASS  b5-private-protocol-visible-inside"
+  else
+    echo "FAIL  b5-private-protocol-visible-inside"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+  fi
+  rm -rf "$d"
+}
+
+# (3) Defect #9 — the did-you-mean echoed its input. A candidate reachable only
+# as `zx/zfun` was suggested as `zfun`, the very spelling that had just failed
+# (`error: unknown: zfun (did you mean 'zfun'?)`). A suggestion is now rendered
+# through the interface's `src-ns` column into a spelling THIS file can write,
+# and a candidate with no such spelling is not offered at all. The resolution
+# matrix pins the `plain-fn bare` cell; this pins that the suggestion is USABLE,
+# by compiling and running the program the suggestion asks for.
+run_b5_did_you_mean() {
+  local d err
+  d="$(mktemp -d)"
+  cat > "$d/b5-slib.nuc" <<'EOF'
+(ns b5s)
+(defn b5-suggest (x:i32):i32 (return (+ x 1)))
+EOF
+  cat > "$d/b5-sbad.nuc" <<'EOF'
+(import-prefixed b5-slib sx)
+(defn main ():i32 (return (b5-suggest 1)))
+EOF
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/b5-sbad.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | grep -qF "(did you mean 'b5-suggest'?)"; then
+    echo "FAIL  b5-did-you-mean-not-echo (suggested the spelling that just failed)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  elif printf '%s' "$err" | grep -qF "(did you mean 'sx/b5-suggest'?)"; then
+    echo "PASS  b5-did-you-mean-not-echo"
+  else
+    echo "FAIL  b5-did-you-mean-not-echo"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+  fi
+
+  # And the suggestion is not merely different — it works.
+  cat > "$d/b5-sgood.nuc" <<'EOF'
+(import-prefixed b5-slib sx)
+(defn main ():i32 (return (sx/b5-suggest 41)))
+EOF
+  w1_run b5-did-you-mean-usable "$d" "$d/b5-sgood.nuc" 42
+  rm -rf "$d"
+}
+
+# (4) `re-register`, and what it can now do. B5 made `export` explicit about the
+# rows it could not re-bind: `g-globals` was the only `reregisterable` row, and
+# every other one raised a located diagnostic naming the kind instead of failing
+# as "symbol not found". Stage 15 B3′ FLIPPED the type and protocol rows, because
+# §11.6's argument becomes load-bearing under R1: once type identity is
+# namespaced, a facade that re-exports `geom/area` but cannot re-export `geom/Pt`
+# exports a function whose signature names a type the consumer cannot spell.
+#
+# So the pin is re-pointed rather than re-baselined. The refusal is still
+# asserted — for a MACRO, a row that is still not re-exportable and whose
+# diagnostic is still the specification of the boundary — and the type case
+# became the positive test it now describes: the facade re-exports a type AND a
+# function over it, and the consumer names both through the facade's prefix,
+# links and runs. The other positive half is examples/export-test.nuc.
+run_b5_export_kinds() {
+  local d
+  d="$(mktemp -d)"
+  cat > "$d/b5-elib.nuc" <<'EOF'
+(ns b5e)
+(defstruct B5ExpS n:i32)
+(defn b5-exp-fn ((s (ref B5ExpS))):i32 (return (+ 1 (s n))))
+(defmacro b5-exp-mac (x) x)
+EOF
+  cat > "$d/b5-efac.nuc" <<'EOF'
+(ns b5facade)
+(import-use b5-elib)
+(export B5ExpS b5-exp-fn)
+EOF
+  cat > "$d/b5-emac.nuc" <<'EOF'
+(ns b5facade2)
+(import-use b5-elib)
+(export b5-exp-mac)
+EOF
+  cat > "$d/b5-em.nuc" <<'EOF'
+(import-prefixed b5-efac fac)
+(defn main ():i32
+  (let (v:(ref fac/B5ExpS) (fac/B5ExpS 40))
+    (return (fac/b5-exp-fn v))))
+EOF
+  cat > "$d/b5-emm.nuc" <<'EOF'
+(import-use b5-emac)
+(defn main ():i32 (return 0))
+EOF
+  # B3′: a facade re-exports a TYPE, and a function whose signature names it.
+  # Both are spelled through the facade's prefix in the consumer, which is the
+  # whole point — the library's own namespace `b5e` is not in scope here.
+  w1_run b5-export-type-facade "$d" "$d/b5-em.nuc" 41
+  # Still refused, and the diagnostic is still the specification: a macro is
+  # bare-keyed and globally identified, so re-exporting it would mean nothing.
+  w1_reject_multi b5-export-macro-refused "$d" "$d/b5-emm.nuc" \
+    "'b5-exp-mac' is a macro"
+  rm -rf "$d"
+}
+
+# --- Stage 15 B3′: type identity is namespaced (R1, defects #4 and #7) --------
+# The headline: two namespaces may both define `Vector`, and one unit may use
+# both. Before B3′ the type registry was keyed by the BARE name, so the second
+# `defstruct Vector` found the first through `lookup-struct` and either silently
+# won or filled in the other's StructDef. The test LINKS AND RUNS and checks a
+# value, because "it compiles" cannot distinguish two types from one: the two
+# `Vector`s here have different field counts, so a collapsed identity would read
+# the wrong offsets rather than fail.
+run_b3_two_vectors() {
+  local d
+  d="$(mktemp -d)"
+  cat > "$d/b3-veca.nuc" <<'EOF'
+(ns va)
+(defstruct Vector x:i32 y:i32)
+(defn sum-a ((v (ref Vector))):i32 (return (+ (_get v x) (_get v y))))
+EOF
+  cat > "$d/b3-vecb.nuc" <<'EOF'
+(ns vb)
+(defstruct Vector a:i32 b:i32 c:i32)
+(defn sum-b ((v (ref Vector))):i32
+  (return (+ (_get v a) (+ (_get v b) (_get v c)))))
+EOF
+  cat > "$d/b3-vmain.nuc" <<'EOF'
+(import-prefixed b3-veca va)
+(import-prefixed b3-vecb vb)
+(defn main ():i32
+  (let (p:(ref va/Vector) (va/Vector 1 2)
+        q:(ref vb/Vector) (vb/Vector 4 8 16))
+    (return (+ (va/sum-a p) (vb/sum-b q)))))
+EOF
+  w1_run b3-two-vectors "$d" "$d/b3-vmain.nuc" 31
+
+  # And they are two TYPES, not one name with two spellings. `type-eq` is
+  # StructDef-pointer identity, so a BY-VALUE slot of one initialized from the
+  # other must be refused; the run above already proves the layouts are distinct
+  # (2 fields vs 3), and this proves the identities are.
+  #
+  # A `(ref …)` slot is deliberately NOT used: the compiler does not today check
+  # a `(ref A)` value against a `(ref B)` slot or parameter (measured, and true
+  # of `HEAD` as well — a pre-existing gap unrelated to R1), so that spelling
+  # would have asserted nothing.
+  cat > "$d/b3-vmix.nuc" <<'EOF'
+(import-prefixed b3-veca va)
+(import-prefixed b3-vecb vb)
+(defn main ():i32
+  (let (q:vb/Vector (va/Vector 1 2))
+    (return 0)))
+EOF
+  w1_reject_multi b3-two-vectors-distinct "$d" "$d/b3-vmix.nuc" "let: init type mismatch for 'q'"
+  # The canonical name reaches diagnostics too: a field of the OTHER `Vector` is
+  # reported against the namespaced type name, not a bare one.
+  cat > "$d/b3-vfield.nuc" <<'EOF'
+(import-prefixed b3-veca va)
+(defn main ():i32
+  (let (p:(ref va/Vector) (va/Vector 1 2))
+    (return (_get p c))))
+EOF
+  w1_reject_multi b3-two-vectors-field "$d" "$d/b3-vfield.nuc" "no field 'c' on struct 'va/Vector'"
+  rm -rf "$d"
+}
+spawn run_b3_two_vectors
+
+# Defect #7's other half, and defect #4. `strip-ns-qualifier` used to discard a
+# type spelling's qualifier without checking it, so a type was reachable from
+# anywhere under any qualifier — including one naming no namespace at all.
+spawn run_reject_at b3-type-bogus-qualifier tests/fixtures/b3-type-bogus-qualifier.nuc \
+  "tests/fixtures/b3-type-bogus-qualifier.nuc:14: error:" "'nope' is not in scope in this file"
+# A bare type name from a prefixed import: the type is defined, its file is
+# reachable, the prescan registered it — so the diagnostic must NOT be the
+# reachability message (which would send the reader looking for a missing
+# definition instead of a wrong spelling). It names the defining namespace AND
+# the spelling this file can actually write, and the note is the actionable half.
+run_b3_ns_type_diagnostic() {
+  local err
+  err="$(./build/nucleusc --emit-llvm tests/fixtures/b3-type-ns-not-in-scope.nuc 2>&1 >/dev/null || true)"
+  if ! printf '%s' "$err" | grep -qF "tests/fixtures/b3-type-ns-not-in-scope.nuc:18: error: unknown type: Fox — defined in namespace 'dp'"; then
+    echo "FAIL  b3-type-ns-not-in-scope (wrong head or location)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  elif ! printf '%s' "$err" | grep -qF "note: write 'dpx/Fox' here"; then
+    echo "FAIL  b3-type-ns-not-in-scope (note does not offer the writable spelling)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  elif printf '%s' "$err" | grep -qF "not defined anywhere in this compilation unit"; then
+    echo "FAIL  b3-type-ns-not-in-scope (degraded to the reachability message)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  else
+    echo "PASS  b3-type-ns-not-in-scope"
+  fi
+}
+spawn run_b3_ns_type_diagnostic
+# B3′ gave `unknown-type-message` the did-you-mean tier `unresolved-name-message`
+# already had. The tier is a COLD error path, so it needs a test that EXECUTES it
+# — the first cut called `fmt-3s` with two arguments, which conventions.md's
+# fixed-arity rule says is invisible until something runs the line.
+spawn run_reject_at b3-type-typo tests/fixtures/b3-type-typo.nuc \
+  "tests/fixtures/b3-type-typo.nuc:12: error:" "unknown type: Widgat (did you mean 'Widget'?)"
+
+# --- Stage 15 B2b: globals + the `unsafe` built-in namespace -------------------
+spawn run_b2b_prefixed_values
+# `unsafe` is a namespace now, not seven strings in the special-form set. The
+# positive half (unsafe/cast, unsafe/ptr+, unsafe/funcall-ptr-i32 and
+# unsafe/import-private all compiling and RUNNING, the last of them reaching a
+# `defn-` through the prefix) is examples/unsafe-spellings.nuc, dispatched by
+# the examples loop above; the four `un5-bare-*` rejections above still pin the
+# retired bare spellings, which are now refused because the namespace is bound
+# PREFIXED and never flattened rather than by a hard-coded arm in the dispatch
+# ladder. This is the third half: the qualified spellings stay RESERVED even
+# though they left `g-special-form-set`.
+spawn run_reject b2b-unsafe-reserved tests/fixtures/b2b-unsafe-reserved.nuc \
+  "'unsafe/cast' already names a special form"
+
+# --- Stage 15 B5: the shared binding interface --------------------------------
+spawn run_b5_protocol_kind
+spawn run_b5_private_definers
+spawn run_b5_did_you_mean
+spawn run_b5_export_kinds
 
 # --- Join + replay --------------------------------------------------------------
 # Wait for all remaining jobs (ignore per-job exit codes — PASS/FAIL is decided

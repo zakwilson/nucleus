@@ -10,17 +10,18 @@
 ;
 ; These functions allocate with malloc. Cleanup is the caller's responsibility.
 ; Programs that don't use lists don't pay for them.
+;
+; `Node` itself comes from the prelude. This file used to redeclare it — with
+; `car:ptr`/`cdr:ptr` where the prelude has `(car (raw Node))`/`(cdr (raw Node))`
+; — which was silently discarded by `emit-defstruct`'s "already emitted" guard in
+; every build that had both (the compiler's own: src/type-mangle.nuc and
+; src/nuch.nuc `import-use` this file). Which declaration won was decided by
+; import order; the layouts happened to be ABI-identical, so nothing broke. See
+; design/stage15-stress-test/name-resolution.md §11.1 — it is the one casualty
+; eager collision reporting turns up in the whole tree.
 
 (import-use "stdlib.h")
 (import-use iterator)
-
-(defstruct Node
-  kind:i32
-  line:i32
-  i:i64
-  s:ptr
-  car:ptr
-  cdr:ptr)
 
 (defn cons (car:ptr cdr:ptr):ptr
   (let (c:ptr:Node (as ptr:Node (malloc (sizeof Node))))

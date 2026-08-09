@@ -1,0 +1,29 @@
+; Stage 15 B2a — the `(dyn P)` half of tests/fixtures/b2a-ns-not-in-scope.nuc.
+;
+; The scope gate for a box lives at CONSTRUCTION (`dyn-require-protocol`), not at
+; type-parse time, and the split is deliberate: `dyn-type` is reached from a
+; `defn` signature during `prescan-defn-signatures`, where the file's import
+; environment is empty by construction, so refusing there would reject every
+; legal prefixed spelling. It is also the honest split — an annotation names a
+; type, a box construction *uses* the protocol.
+;
+; The consequence, recorded rather than hidden: a `(dyn nope/Absent)` in an
+; ANNOTATION still compiles and still fabricates a box type (the tenth defect,
+; `protocol-dyn-annot` in tests/expected/resolution-matrix.baseline). That is the
+; pre-existing validation gap; what B2a closes is the construction path below.
+;
+; The `extend` is spelled through the prefix this file binds, so the ONLY thing
+; wrong here is the `(dyn …)` spelling — otherwise the conformance failure would
+; mask the scope failure.
+(import-use "stdio.h")
+(import-use allocator)
+(import-prefixed nsdescribe dpx)
+
+(defstruct Cat n:i32)
+(defn describe ((self (ref Cat))):i32 (return (+ 100 (self n))))
+(extend Cat dpx/Describe)
+
+(defn main ():i32
+  (let (a:(dyn dp/Describe) (Cat 5))
+    (printf "%d\n" (describe a)))
+  (return 0))
