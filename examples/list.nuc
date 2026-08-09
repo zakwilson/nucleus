@@ -1,17 +1,16 @@
 ; Demonstrates list manipulation primitives over the unified Node type.
-; The definitions here mirror lib/list.nuc; a proper import mechanism is TBD.
+;
+; Stage 15 B4 (name-resolution.md §11.1/§11.7): this file used to carry its own
+; `(defstruct Node kind:i32 line:i32 i:i64 s:ptr car:ptr cdr:ptr)`, shadowing the
+; prelude's — which declares `car`/`cdr` as `(raw Node)` rather than `ptr`. The
+; two are ABI-identical (six slots; a `(raw Node)` is a pointer) and the prelude
+; already won on import order, so the duplicate only ever decided declared
+; nullability. R4 makes two definitions of one name an error, so it is gone; the
+; prelude's `Node` is the one type.
 
 (import-use "stdio.h")
 (import-use "stdlib.h")
 (import-use iterator)
-
-(defstruct Node
-  kind:i32
-  line:i32
-  i:i64
-  s:ptr
-  car:ptr
-  cdr:ptr)
 
 (defn cons (car:ptr cdr:ptr):ptr
   (let (c:ptr:Node (as ptr:Node (malloc (sizeof Node))))

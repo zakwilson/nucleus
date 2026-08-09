@@ -841,7 +841,7 @@ escape hatch — reproduced by compiling `(defvar g:ptr:i32)` with
 
 ---
 
-## W9 — Reconciled at stage close: twenty-four defects found, five now fixed, nineteen open *(added 2026-08-01; extended through G-5's close 2026-08-02; items 21–24 added 2026-08-03; reported except where marked FIXED)*
+## W9 — Reconciled at stage close: twenty-four defects found, six now fixed, eighteen open *(added 2026-08-01; extended through G-5's close 2026-08-02; items 21–24 added 2026-08-03; item 16 fixed in B4 2026-08-09; reported except where marked FIXED)*
 
 **The original six are enumerated in [../global-init.md](../global-init.md)
 §7. Four more (7–10) were found measuring G-1 and re-verifying G-0/G-1's test
@@ -918,7 +918,7 @@ hit while measuring, verifying, or documenting, not synthesized.
 | 13 | **`parse-type-from-node` silently returns null for an unknown cell head** | its `die-at "unable to parse type expression"` is a label-less trailing arm of `case (n kind)`, reachable only for a `NodeKind` outside `{NODE-SYM, NODE-CELL}`; for an unrecognized `NODE-CELL` head (e.g. `(nosuch i32)`) the `NODE-CELL` arm's `do` block matches no shape and falls through to null instead, so `(defstruct S (xs (nosuch i32)))` reports the misleading `defstruct: field 'xs' missing :type` rather than a diagnostic naming `nosuch`. Empirically confirmed against `build/nucleusc`; pre-existing |
 | 14 | **Fn-pointer-typed `defvar` could not be declared at all — FIXED 2026-08-02**, found building G-3 | `(defvar g:(fn i32)(i32) null)` died `'g' already names a function`, a G-0 regression in `name-existing-kind` (it classified any `TY-FN`-typed global `Sym` as a function, and G-0's prescan defines that `Sym` before `emit-defvar` runs). Fixed in the interlude between G-3 and G-4 (commit `aa24eae`) with an `(= (sym is-local) 0)` conjunct, the same two-conjunct test `emit-dispatch` already used. `global-init.md` §7 #9 |
 | 15 | **`aref` emits a hardcoded `i64` GEP index on every target**, found building G-3 | On AVR (16-bit pointers) a narrower index produces IR the LLVM parser rejects (`'%t3' defined with type 'i32' but expected 'i64'`); does not route through `ptr-int-ir` (AVR-2's fix for exactly this class). Not array-specific — a plain `ptr:ui8` with an `i32` index reproduces it. Reproduces on the committed boot. `global-init.md` §7 #10 |
-| 16 | **A `defvar` may be declared twice in one unit with no diagnostic**, found in G-5 | Emits two `@g = global …` lines that the LLVM parser rejects with an unlocated error far from the cause. `guard-name-kind` compares NK-VALUE against NK-VALUE, finds them equal, and permits it — the same-kind allowance that exists for overloaded `defn` and REPL redefinition, applied where neither justification holds. `global-init.md` §7 #11 |
+| 16 | **A `defvar` may be declared twice in one unit with no diagnostic**, found in G-5 — **FIXED in B4 (2026-08-09)** | Emitted two `@g = global …` lines that the LLVM parser rejects with an unlocated error far from the cause. `guard-name-kind` compares NK-VALUE against NK-VALUE, finds them equal, and permits it — the same-kind allowance that exists for overloaded `defn` and REPL redefinition, applied where neither justification holds. The diagnosis was right and the scope was narrower than the defect: **every** non-function definer accepted a redefinition silently, with no agreed winner (a second `defstruct`/`defunion`/`defprotocol`/`defmacro`/template kept the FIRST, a second `defconst` kept the SECOND). R4's rule covers all of them; `emit-defvar` reads `Sym.defvar-state` (the same-kind question cannot be posed to the binding table — see name-resolution.md §9.6), and the two justifications the item names are preserved exactly: overloads still collide only on signature, and the REPL is exempt. `global-init.md` §7 #11 |
 | 17 | **`as` did not arm the want channel — FIXED in G-5**, found in G-5 | `emit-as` emitted its operand without setting `g-want-type`, so a return-only-tyvar generic in `as`-operand position resolved against whichever instance the unit had stamped first; silent in the `unsafe/cast` spelling, which takes the wrong instance with no diagnostic at all. Proven inert for the whole tree by G-5's old-vs-new sweep (218 byte-identical, 0 differing). `global-init.md` §7 #12 |
 | 18 | **`(= h null)` on a function-pointer value does not compile**, found alongside the Interlude/G-4 | `emit-binop-vals`'s null-literal escape and its pointer-comparison arm both gate on `is-ptr-like`, which deliberately excludes `TY-FN`, so the comparison falls through to the numeric path and dies `= expects integer operands`. Pre-existing and general — reproduces identically for a fn-pointer *parameter* or *local*, not just the new global spelling; the explicit `(unsafe/cast ptr h)` reinterpret is the escape hatch. Documented inline in `examples/fnptr-global.nuc`'s header comment (`hook-unset`) before this reconciliation; not previously in either defect list |
 | 19 | **`type-size` has no `TY-FN` case**, found alongside the Interlude/G-4 | Falls through to the default `(return 1)` arm (`type-utils.nuc:359-360`), so every fn-pointer slot emits `align 1` — conservative, not a miscompile, since `abi-alignof`/`abi-sizeof` already answer correctly and struct layout is unaffected. Confirmed: `build/nucleusc --emit-llvm` on `(defvar hh:(fn i32)(i32) null)` emits `@hh = global ptr null, align 1`. Not previously in either defect list |
@@ -960,14 +960,14 @@ library.
 
 ---
 
-## B — Name resolution *(added 2026-08-08; B0, B1, B2a, B2b, B5, B3′ and B6 done)*
+## B — Name resolution *(added 2026-08-08; B0, B1, B2a, B2b, B5, B3′, B6 and B4 done — the series is complete)*
 
 Full design, measurements and rulings: [name-resolution.md](name-resolution.md).
 Staging is B0 (record the matrix) → B1 (file-scoped import environment) → B2
 (the canonicaliser, cut over kind by kind: **B2a protocols**, **B2b globals** +
 `unsafe` + deleting alias injection) → B3′ (re-key the type registries) → B4
 (collision policy) → B5 (the shared binding interface) → B6 (`(dyn P)` identity
-vs admission). B0–B2b, **B5, B3′ and B6** are done; only **B4** remains.
+vs admission). **All of B0–B6 are done**, B4 last (2026-08-09).
 **B5 landed 2026-08-09 out of order**, because §13.4 upgraded it from
 "reconcile the two priority orders" to the interface of §13.3 — which makes it
 the *frame* B3′ and B4 fill in rather than a cleanup after them. The A-vs-B
@@ -1256,6 +1256,78 @@ marked inline.)*
   "only by LLVM's parser" holds for the binding position; in an ARGUMENT position
   the SysV ABI splits the fat pointer into two i64s at the call, so nothing
   catches it and the program runs against the wrong vtable.)**
+
+### B4 — a qualified spelling for generics, and R4's eager redefinition rule *(2026-08-09)*
+
+Closes defect #5 (generics unqualifiable), the generic half of #1, R2's per-kind
+`collides` policy and R4. Full account in [name-resolution.md](name-resolution.md) §9.6.
+
+* **The qualified spelling is a FILTER, not a key.** `generic-lookup-ref`
+  (`src/generics.nuc`) resolves `p/name` through `resolve-spelling` and then
+  restricts the bare generic's method set to the methods whose `Method.src-ns` is
+  the namespace `p` denotes. R2's ruling stands: `g-generics` stays keyed bare
+  with every namespace's methods merged, because that is what an open multimethod
+  needs. `BK-GENERIC`'s probe arm is the only consumer, so `emit-dispatch`,
+  `node-type-call` and `guard-name-kind` inherit it — §14.7's prediction, held.
+* **`Method.src-ns` was not provenance, and that was the work.** It had three
+  writers and one reader (a W5e diagnostic), so two of them could be wrong
+  indefinitely. `register-generic-template` never set it at all — a bounded-generic
+  template filtered to zero methods and `p/tmpl` reported "not defined anywhere in
+  this compilation unit". And a *stamp* recorded the **call site's** namespace,
+  though the line directly below already says the mangling must use the
+  template's; uncorrected, the second `p/tmpl` call from another namespace misses
+  `generic-find-method-exact`'s memo and the instance is emitted twice under one
+  symbol. Both fixed; the generalization is in `context/conventions.md`.
+* **`collides`, measured per row.** `BK-ENUM` was a genuine hole — an enum
+  registers its *members* and never its own name, so `(defenum Colour …)` plus
+  `(defn Colour …)` / `(defvar Colour …)` / `(defmacro Colour …)` all compiled.
+  `BK-UNION` was redundant (`BK-STRUCT` answers first for every union) and is 1
+  anyway, because the row is where participation is declared. `BK-FNTY` stays 0.
+* **R4 is ten definer sites and four different tells** — `emitted` for
+  `defstruct`; a defining `(file, line)` for the registrars that are legitimately
+  re-entered for one form (`defunion`, `defprotocol`, both templates, `defmacro`);
+  `Sym.defvar-state` for `defvar`; `(file, line)` plus a blame-the-later-one rule
+  for `defconst` and enum members, whose prescan Sym is indistinguishable from the
+  emitter's. The message is one function; the fact is per definer, which is why
+  §14.7's "extend the table" could not be the shape. `Protocol`,
+  `StructTemplate`, `UnionTemplate` and `EnumDef` gained `src-file`/`src-line`,
+  `UnionDef` gained `src-file`, and `MacroDef`'s two existed and had never been
+  written — that is what lets the diagnostic name **both** definitions.
+* **The REPL is exempt, via one predicate.** `same-definition-site` answers "same
+  definition" under `g-interactive`, so each definer falls back to *its own*
+  pre-B4 behaviour (four used to `return`, four to fall through). Verified by
+  diffing a REPL transcript against the pre-B4 compiler: byte-identical.
+* **Three tree casualties, all §11.1's class, all fixed rather than worked
+  around.** §11.1 predicted one from a scan of `src/` + `lib/`; `examples/` was
+  not in that scan. `examples/list.nuc` and `examples/quasiquote.nuc` each carried
+  another copy of the `Node` redefinition §11.7 removed from `lib/list.nuc`, and
+  `examples/defmacro.nuc` defined `when`/`unless` over the prelude's — where
+  `find-macro`'s first-match scan meant **neither definition in that example had
+  ever been expanded**. Renamed to `when1`/`unless1`; output unchanged.
+
+### Test/bootstrap status after B4
+
+* `make test` → **485 PASS, 0 FAIL**, counted with `NUCLEUS_TEST_JOBS=1` (467
+  before B4, so 18 new): four for the qualified-generic path — including a bounded
+  template stamped twice through a prefix, which is the only shape that reaches
+  both provenance holes — two for the `BK-ENUM` hole, ten rows of redefinition
+  table, plus a cross-file case and a diamond-import case that must stay legal.
+* `make bootstrap` → `stage1.ll == stage2.ll`, and the stage-2 compiler builds and
+  runs `hello.nuc`. `abi-test`, `layout-test`, `avr-test`, `riscv-test` and
+  `riscv-abi-test` all pass.
+* `tests/resolution-matrix.sh --check` → exactly one cell moved,
+  `overloaded-fn zx/` err → ok, which is defect #5. Re-recorded.
+* **Byte-for-byte inert on emitted IR.** A compiler built from a clean `HEAD`
+  worktree and the B4 compiler emit `diff`-identical IR for **all 178** compilable
+  files in `examples/` + `lib/`. The four that do not compile fail *identically*
+  under both and are the known standalone-compilation artifacts (`lib/reader.nuc`,
+  `lib/arena.nuc`, `lib/node.nuc`, `examples/comb-shapes.nuc`). Note this also
+  proves the three source fixes above are inert: both compilers were run over the
+  *edited* sources.
+* One existing pin moved text and kept its verdict:
+  `g0-duplicate-global-rejected` asserted LLVM's `redefinition of global
+  '@g0-dupg'`, emitted with no source location; the compiler now catches it at
+  `emit-defvar` and names both files.
 
 ### B6 — identity vs admission for `(dyn P)` *(2026-08-09)*
 

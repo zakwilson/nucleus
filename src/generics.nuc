@@ -38,6 +38,68 @@
         (when (!= pg null) (return pg)))))
   (return (generic-lookup-exact name)))
 
+; Does method `m` come from namespace `ns`? A `Method` with no `src-ns` is an
+; intrinsic operator seed (`build-generics`), which belongs to no file; `user` is
+; the unqualified space, so that is what it answers to.
+(defn method-in-ns (m:ptr:Method ns:CStr):i32
+  (let (s:CStr (m src-ns))
+    (when (= (as ptr s) null) (set! s "user"))
+    (when (= (strcmp s ns) 0) (return 1))
+    (return 0)))
+
+; `g` restricted to the methods namespace `ns` defined, or null when it defined
+; none. The common answers are the two that allocate nothing: all of them (the
+; generic is returned as it stands) or none.
+;
+; A filtered view is a fresh `Generic` over the SAME `Method` pointers, and it is
+; deliberately not registered and not memoized. Nothing downstream reads a
+; Generic by identity — `generic-resolve`, `emit-generic-call` and
+; `node-type-call` read `name` / `methods` / `mangled` — while a cached view
+; would go stale the moment a later import adds a method to the underlying
+; generic (`generic-add-method` exists precisely because that happens).
+(defn generic-filter-by-ns (g:ptr:Generic ns:CStr):?ptr:Generic
+  (let (gg:ptr:Generic g
+        n:i32 (unsafe/cast i32 (count (gg methods)))
+        keep:i32 0)
+    (dotimes (i n)
+      (when (!= (method-in-ns (as ptr:Method (invoke (gg methods) (as usize i))) ns) 0)
+        (inc! keep)))
+    (when (= keep 0) (return null))
+    (when (= keep n) (return (as ptr gg)))
+    (let (f:ref:Generic (generic-alloc (gg name)))
+      (.set! f finalized (gg finalized))
+      (.set! f mangled (gg mangled))
+      (.set! f ir-prefix (gg ir-prefix))
+      (dotimes (i n)
+        (let (m:ptr:Method (as ptr:Method (invoke (gg methods) (as usize i))))
+          (when (!= (method-in-ns m ns) 0) (conj (f methods) (as ref:Method m)))))
+      (return (as ptr f)))))
+
+; Stage 15 B4 — resolve a generic REFERENCE (a source spelling) through the
+; file's import environment (name-resolution.md §8.2's R2; defect #5, "generics
+; are unqualifiable").
+;
+; A generic is deliberately NOT re-keyed by namespace. R2 keeps one `Generic` per
+; bare name with the methods of every flattened namespace merged into it, because
+; that is what an open multimethod wants and it is what lets `(import-use dp)`
+; and `(import-use dq)` — each declaring a `describe` method — coexist at all.
+; The qualified spelling is recovered from `Method.src-ns` instead, the
+; provenance W5e already records for the duplicate-signature diagnostic: `zx/zov`
+; resolves to the bare `zov` generic with its method set filtered to `zn`, the
+; namespace the prefix `zx` names.
+;
+; `qualifier-len` is the only cost on the unqualified path, which is every head
+; symbol in this compiler and in `lib/`.
+(defn generic-lookup-ref (spelling:CStr):?ptr:Generic
+  (when (<= (qualifier-len (as ptr spelling)) 0) (return (generic-lookup spelling)))
+  (let (r:ref:NameRef (resolve-spelling (as ptr spelling)))
+    ; A qualifier this file did not bind names nothing (R3) — the same answer the
+    ; global, protocol and type resolvers give, so the diagnostic tiers agree.
+    (when (= (r status) NR-UNBOUND) (return null))
+    (let (g:?ptr:Generic (generic-lookup-exact (as CStr (r bare))))
+      (when (= g null) (return null))
+      (return (generic-filter-by-ns (unsafe/cast ptr:Generic g) (as CStr (r ns)))))))
+
 ; Allocate + initialise a Generic WITHOUT registering it. Split out in Stage 15
 ; W8 G-5 because `build-generics` — which is `g-generics`' own initializer —
 ; cannot append to `g-generics` while `g-generics` is still being computed.
@@ -1377,6 +1439,15 @@
               (.set! m num-constraints nc)
               ; Imported templates were checked by the exporting unit; skip A2.
               (.set! m checked trusted)
+              ; Stage 15 B4: provenance, which this site never recorded because
+              ; it does not go through `generic-register-method`. A generic is
+              ; keyed BARE (R2), so `Method.src-ns` is the only thing that says
+              ; which namespace a method came from — and without it a template
+              ; reached as `p/name` filtered to nothing and the name did not
+              ; resolve at all. Runs in `prescan-defn-signatures`, so
+              ; `g-current-ns`/`g-source-path` are the defining file's.
+              (.set! m src-ns g-current-ns)
+              (.set! m src-file g-source-path)
               (generic-add-method g m)))))))))
 
 ; Try to bind a generic template's type variables from a concrete argument
@@ -1962,6 +2033,14 @@
           ; Stage 14 LW-1: mark this as a stamped instance of the template `mm` so
           ; tier-2 widening resolution treats the two as one overload.
           (.set! newm origin-template mm)
+          ; Stage 15 B4: a stamp is owned by the TEMPLATE's namespace, not by the
+          ; call site's — the same distinction `(gg ir-prefix)` above already
+          ; makes for mangling. `generic-register-method` wrote `g-current-ns`,
+          ; which here is the calling file's. Without this correction the second
+          ; `p/tmpl` call in another namespace filters the first stamp out of the
+          ; method set, `generic-find-method-exact`'s memo probe misses, and the
+          ; instance is stamped (and emitted) twice under one symbol.
+          (.set! newm src-ns (mm src-ns))
           ; Record where this instantiation was requested, so a stamp-time emit
           ; error in the body points back here (g-source-path is the call site's).
           (.set! job form stamped)
@@ -3405,7 +3484,17 @@
       ; "already registered", so `(ns dp) (defprotocol Clone …)` would never
       ; register `dp/Clone` — the same reason `generic-register-method` uses
       ; `generic-lookup-exact`. A define's key is already final.
-      (when (!= (protocol-lookup-exact (protocol-key pname)) null) (return))
+      ; Stage 15 B4 (R4): the probe above stays an idempotence probe — this
+      ; registrar really is re-entered for one form — but a hit at a DIFFERENT
+      ; defining site is a second `defprotocol` of the name, which used to be a
+      ; silent no-op keeping the first.
+      (if-some (prev (protocol-lookup-exact (protocol-key pname)))
+        (do
+          (when (!= (same-definition-site (prev src-file) (prev src-line) (ff line)) 0)
+            (return))
+          (die-redefinition (as CStr pname) (ff line) BK-PROTOCOL
+                            (prev src-file) (prev src-line)))
+        0)
       (guard-name-kind pname (ff line) NK-PROTOCOL)
       (let (nsigs:i32 (- (node-len form) 2)
             sigs:ptr null)
@@ -3425,6 +3514,10 @@
                           (defn-name-only snn) (defn-name-only snn))))
               (aset! (as ptr:ptr sigs) i sig))))
         (let (p:ref:Protocol (protocol-new pname sigs nsigs))
+          ; Stage 15 B4 (R4): the defining site, which is both the redefinition
+          ; blame and the "same form, registered again" discriminator.
+          (.set! p src-file g-source-path)
+          (.set! p src-line (ff line))
           (when (> nparams 0)
             (.set! p params params)
             (.set! p num-params nparams)))))))

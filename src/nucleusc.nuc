@@ -9707,11 +9707,22 @@
 ; The table. Row i has `kind` == i, so `binding-row` is an index.
 ;
 ; `collides` is 1 for exactly the rows the one-symbol-one-kind guard probed
-; before B5,
-; PLUS protocols (the reported defect). The 0s are deliberate and are **B4's**:
-;   * BK-UNION / BK-ENUM / BK-FNTY — a `defunion` also registers its backing
-;     StructDef under the same key, so BK-STRUCT already answers for it; an
-;     enum name and a `__fnty_N` alias have never participated.
+; before B5, PLUS protocols (the reported defect), PLUS — since B4 — unions and
+; enums. What remains 0 is now stated as policy rather than as inheritance:
+;   * BK-UNION was 0 because `register-uniondef` also registers the union's
+;     backing StructDef under the same key, so BK-STRUCT (an earlier row) answers
+;     for every union name. It is 1 anyway: the row is where a kind's
+;     participation is DECLARED, and leaving it 0 made the rule depend on another
+;     registry's implementation detail. Measured inert — BK-STRUCT still answers
+;     first for every union in the tree.
+;   * BK-ENUM was 0 and that was a genuine hole, not a redundancy: an enum
+;     registers its MEMBERS in g-globals but never its own name, so nothing
+;     probed it and `(defenum E …) (defn E …)`, `(defvar E …)` and `(defmacro E …)`
+;     all compiled with `E` naming two things at once.
+;   * BK-FNTY stays 0 on the same ground as its `reregisterable`: a `__fnty_N` is
+;     minted by `fnty-intern`, has no source spelling, and cannot be the subject
+;     of a definer — so the row has no collision to report and probing it would
+;     cost every definer a hashmap lookup.
 ;   * BK-CONFORMANCE has no single-name probe at all (see `name-keyed`).
 ; `reregisterable` is 1 only for `g-globals`, which is what `export` re-binds
 ; today. Every other row raises a located diagnostic — §11.6's conclusion that
@@ -9728,10 +9739,10 @@
     (add-binding-kind v BK-GLOBAL         "a value"            NK-VALUE      1   1   1)
     (add-binding-kind v BK-PROTOCOL       "a protocol"         NK-PROTOCOL   1   1   1)
     (add-binding-kind v BK-STRUCT         "a type"             NK-TYPE       1   1   1)
-    (add-binding-kind v BK-UNION          "a type"             NK-TYPE       0   1   1)
+    (add-binding-kind v BK-UNION          "a type"             NK-TYPE       1   1   1)
     (add-binding-kind v BK-STRUCT-TEMPLATE "a struct template" NK-TYPE       1   1   1)
     (add-binding-kind v BK-UNION-TEMPLATE "a type"             NK-TYPE       1   1   1)
-    (add-binding-kind v BK-ENUM           "an enumeration"     NK-TYPE       0   1   1)
+    (add-binding-kind v BK-ENUM           "an enumeration"     NK-TYPE       1   1   1)
     ; BK-FNTY stays 0: a `__fnty_N` is minted by the compiler, has no source
     ; spelling, and is not re-keyed by B3′ (see `binding-probe`).
     (add-binding-kind v BK-FNTY           "a function type"    NK-TYPE       0   1   0)
@@ -9835,11 +9846,12 @@
     (when (!= (file-flattens-ns-named ns) 0) (return (as ptr bare)))
     ; A `prefix/name` spelling is offered only for the registries where a
     ; qualified reference actually resolves — `g-globals` (B2b), `g-protocols`
-    ; (B2a) and, since B3′, the five re-keyed type registries. A macro and a
-    ; generic are still bare-keyed, so `p/mac` would be a suggestion that fails
-    ; on the next compile: defects #1 and #5, which B4 owns. This is a stated
-    ; restriction rather than a silent wrong hint.
-    (when (or (or (= kind BK-GLOBAL) (= kind BK-PROTOCOL))
+    ; (B2a), the five type registries B3′ re-keyed, and `g-generics`, which B4
+    ; resolves through `Method.src-ns` rather than through a key. A MACRO is
+    ; still bare-keyed, so `p/mac` would be a suggestion that fails on the next
+    ; compile — the remaining half of defect #1, stated here rather than left as
+    ; a silent wrong hint.
+    (when (or (or (or (= kind BK-GLOBAL) (= kind BK-PROTOCOL)) (= kind BK-GENERIC))
               (or (or (= kind BK-STRUCT) (= kind BK-UNION))
                   (or (= kind BK-STRUCT-TEMPLATE)
                       (or (= kind BK-UNION-TEMPLATE) (= kind BK-ENUM)))))
@@ -9868,7 +9880,11 @@
     ; "yes". §13.2's payload-free binding, which is what B could not house.
     BK-SPECIAL    (if (!= (special-form-named name) 0) (return (as ptr name)) (return null))
     BK-PRIMITIVE  (if (!= (primitive-type-named name) 0) (return (as ptr name)) (return null))
-    BK-GENERIC    (return (as ptr (generic-lookup name)))
+    ; Stage 15 B4: a REFERENCE resolver, like the rows below it — but one that
+    ; recovers the qualified spelling from `Method.src-ns` rather than from a
+    ; namespaced key, because R2 keeps a generic's methods merged across every
+    ; flattened namespace (see `generic-lookup-ref`).
+    BK-GENERIC    (return (as ptr (generic-lookup-ref name)))
     BK-GLOBAL     (if (= scope null)
                     (return (as ptr (scope-lookup g-globals name)))
                     (return (as ptr (scope-lookup scope name))))
@@ -10330,6 +10346,87 @@
       (fmt-2s "'%s' already names %s — a symbol may name only one kind of thing"
               name (binding-noun (hit kind) (hit payload))))
     0))
+
+; Stage 15 B4 — R4's rule (name-resolution.md §11.1): two definitions of one
+; name reaching one scope. `guard-name-kind` above answers the CROSS-kind
+; question and deliberately skips its own kind, because every definer registers
+; its own name in a prescan before its own guard runs. The complementary
+; SAME-kind question cannot be a walk over the same table for exactly that
+; reason: only the definer can tell its own prescan stub from somebody else's
+; finished definition, and the tell is per registry (a `StructDef` carries
+; `emitted`; a `UnionDef` / `Protocol` / `MacroDef` / `EnumDef` / template record
+; is created only by its real definer). So the table supplies the noun, this
+; supplies the message, and each definer supplies the fact — §14.7's "the site,
+; not the table".
+;
+; What it replaces: silent acceptance with no agreed winner. Measured before B4,
+; a second `defstruct` / `defunion` / `defprotocol` / `defmacro` / template kept
+; the FIRST definition, a second `defconst` kept the second, and a second
+; `defvar` reached LLVM's own parser with no source location at all. §11.1's
+; measured casualty — `Node`, declared in both `lib/prelude.nuc` and
+; `lib/list.nuc` with different field nullability, the winner decided by import
+; order — was this class, and §11.7 cleared the tree of it ahead of the rule.
+; Is an existing record THIS definition, being registered again? Several
+; definers are legitimately re-entered for one form — `prescan-protocols` runs
+; over the whole import graph and again per file, `register-struct-template` is
+; reached from a prescan and from `emit-defstruct`, a `.nuch` replays what a
+; `.nuc` already declared, the REPL re-evaluates. For those registries "an entry
+; exists" therefore does NOT mean "a second definition"; only `defstruct` has a
+; state flag (`emitted`) that says so directly.
+;
+; The discriminator is the defining location. `g-source-path` is set per file
+; around every prescan and every load block, so (file, line) identifies a form,
+; and one form cannot be two definitions. A record carrying no location at all
+; predates B4's provenance or was minted by something other than a source
+; definer — treated as the same definition, so an unrecorded registrar keeps its
+; pre-B4 no-op rather than becoming a false rejection.
+(defn same-definition-site (prev-file:CStr prev-line:i32 line:i32):i32
+  ; R4 is a rule about a COMPILATION UNIT, and a REPL session is a sequence of
+  ; them typed one at a time — redefinition is the point of a REPL, and
+  ; `repl.nuc` already evicts a redefined `defn`'s old method rather than
+  ; refusing it. Answering "same definition" here turns every B4 check back into
+  ; the pre-B4 behaviour at each definer, which is what an interactive session
+  ; had and should keep.
+  (when (!= g-interactive 0) (return 1))
+  (when (= (as ptr prev-file) null) (return 1))
+  (when (= prev-line 0) (return 1))
+  (when (and (= prev-line line) (= (strcmp prev-file g-source-path) 0)) (return 1))
+  (return 0))
+
+; Stage 15 B4 (R4) — the value row's same-kind check for the two definers whose
+; binding is a compile-time CONSTANT: `defconst` and a `defenum` member. A
+; `defvar` has a stronger tell of its own (`Sym.defvar-state`, checked inline in
+; `emit-defvar`); a constant has none, because W8 G-0's prescan registers exactly
+; the Sym the emitter goes on to register — so the discriminator is the defining
+; site, as it is for the protocol / template / macro registrars.
+;
+; Restricted to `is-const` hits on purpose. `guard-name-kind` has already refused
+; a function, and an `extern`/`declare`/C-header global is a declaration of
+; storage that lives elsewhere, not a second definition of this constant.
+(defn guard-const-redefinition (name:CStr line:i32):void
+  (if-some (prev (scope-lookup-key g-globals name))
+    (do
+      (when (= (prev is-const) 0) (return))
+      (when (!= (same-definition-site (prev src-file) (prev src-line) line) 0) (return))
+      ; Blame the SECOND definition. W8 G-0's prescan registers every form's Sym
+      ; before any form is emitted, so `scope-lookup-key`'s backwards scan can
+      ; land on a LATER form's prescan entry while the earlier one is being
+      ; emitted — which would report the pair at the first definition's line. A
+      ; hit below this form in the same file is therefore skipped; the later form
+      ; finds the earlier one's emitted Sym when it reaches its own check.
+      (when (and (= (strcmp (prev src-file) g-source-path) 0)
+                 (> (prev src-line) line))
+        (return))
+      (die-redefinition name line BK-GLOBAL (prev src-file) (prev src-line)))
+    0))
+
+(defn die-redefinition (name:CStr line:i32 kind:i32 prev-file:CStr prev-line:i32):void
+  (let (where:CStr "earlier in this compilation unit")
+    (when (and (!= (as ptr prev-file) null) (> prev-line 0))
+      (set! where (fmt-sd "at %s:%d" (as ptr prev-file) prev-line)))
+    (die-at line
+      (fmt-3s "redefinition of '%s' — it already names %s defined %s\n  note: a name may be defined only once in a compilation unit. If two imported libraries both define it, rename one — or give one an (ns ...) of its own and import that library with `import-prefixed`."
+              (as ptr name) (as ptr ((binding-row kind) noun)) (as ptr where)))))
 
 ; Record the defining source location on a freshly-defined Sym (used by the
 ; REPL and for error attribution). Tolerates a null sym.
@@ -11373,6 +11470,23 @@
           (when (!= (bit-and attr-flags DECL-ATTR-VOLATILE) 0)
             (set! ty (as ptr (type-with-volatile (unsafe/cast ref:Type ty)))))
           (guard-name-kind name (cc line) NK-VALUE)
+          ; Stage 15 B4 (R4): a second `defvar` of one name. The tell here is
+          ; neither existence nor a location — W8 G-0 front-loads every reachable
+          ; file's `defvar` names into this same frame, so a Sym under this key is
+          ; the NORMAL state — it is `defvar-state`: the prescan's Sym says
+          ; DECLARED and only `emit-defvar` promotes one to REACHED, so REACHED
+          ; means another `defvar` form already emitted its `@g = global`. This
+          ; used to reach LLVM's own parser as two `@g = global` lines, which
+          ; reports without a source location at all.
+          ; The probe is the KEY lookup, not the reference resolver: this is the
+          ; key `scope-define` is about to write (conventions.md, "Splitting a
+          ; lookup into reference/key").
+          (if-some (prevv (scope-lookup-key g-globals name))
+            (when (and (= (prevv defvar-state) DEFVAR-REACHED)
+                       (= (same-definition-site (prevv src-file) (prevv src-line) (cc line)) 0))
+              (die-redefinition (as CStr name) (cc line) BK-GLOBAL
+                                (prevv src-file) (prevv src-line)))
+            0)
           ; G-5 step 4: a non-null typed-pointer global must be initialized.
           (when (= init-cell null)
             (defvar-require-init name (as raw:Type ty) (cc line)))
@@ -11520,6 +11634,7 @@
       (when (!= (val kind) NODE-INT)
         (die-at (val line) "defconst: value must be integer literal"))
       (guard-name-kind (name s) (cc line) NK-VALUE)
+      (guard-const-redefinition (name s) (cc line))
       ; Stage 15 W2b: the constant's type is the literal's *truthful* width
       ; (int-literal-type — emit-int's LW-4 rule, shared, not re-derived). This
       ; was hardcoded `ty-i32` while `const-val` carried the full decimal string,
@@ -11537,7 +11652,10 @@
         (.set! sym const-lit 1)
         (.set! sym const-lit-i64 (val i))
         ; Stage 12 N3: mark private when defined via `defconst-`.
-        (when (!= g-defining-private 0) (.set! sym sym-private 1))))))
+        (when (!= g-defining-private 0) (.set! sym sym-private 1))
+        ; Stage 15 B4 (R4): the defining site, which `guard-const-redefinition`
+        ; reads to tell this form's own prescan Sym from a second `defconst`.
+        (sym-set-src-loc (as ptr sym) (cc line))))))
 
 ; Stage 10 errors (design/stage10/errors.md §8). (deferror name "message")
 ; binds `name` as a compile-time Err constant whose value is a dense id (from 1)
@@ -11655,13 +11773,30 @@
         (let (base-node:(raw Node) (enum-name-node car))
           (when (and (!= base-node null) (= (base-node kind) NODE-SYM))
             (die-at (node-line (as ptr enum-name-node) (cc line))
-              (fmt-s "defenum: takes no type annotation; write (defenum %s ...)" (base-node s)))))))
+              (fmt-s "defenum: takes no type annotation; write (defenum %s ...)" (base-node s))))))
+      ; Stage 15 B4 (R4): checked BEFORE the member loop, so a second `defenum`
+      ; of one name is blamed at its own line rather than at whichever member
+      ; happens to collide first — and so an enum whose members are all fresh
+      ; (which used to skip the EnumDef registration silently, keeping the first
+      ; member table for `match` exhaustiveness) is refused at all.
+      (when (= (enum-name-node kind) NODE-SYM)
+        (if-some (preve (enumdef-lookup (as CStr (qualify-name (enum-name-node s)))))
+          (when (= (same-definition-site (preve src-file) (preve src-line) (cc line)) 0)
+            (die-redefinition (enum-name-node s) (cc line) BK-ENUM
+                              (preve src-file) (preve src-line)))
+          0)))
     (let (i:i32 2)
       (while (< i (node-len cc))
         (let (name:ptr:Node (unsafe/cast ptr:Node (node-at cc i)))
           (when (!= (name kind) NODE-SYM)
             (die-at (name line) "defenum: value must be symbol"))
           (guard-name-kind (name s) (cc line) NK-VALUE)
+          ; Stage 15 B4 (R4): two `defenum`s sharing a member name. The enum's own
+          ; NAME is checked above, before this loop; this catches the case the
+          ; name check cannot see — two differently-named enums that both declare
+          ; the member, which used to define it twice with the second's ordinal
+          ; silently winning at every use site.
+          (guard-const-redefinition (name s) (cc line))
           (let (sym:ref:Sym (scope-define g-globals (name s) ty-i32 null 0))
             (.set! sym is-const 1)
             (.set! sym const-val (fmt-i32 "%d" (- i 2)))
@@ -11675,7 +11810,9 @@
             (.set! sym const-lit 1)
             (.set! sym const-lit-i64 (as i64 (- i 2)))
             ; Stage 12 N3: mark private when defined via `defenum-`.
-            (when (!= g-defining-private 0) (.set! sym sym-private 1))))
+            (when (!= g-defining-private 0) (.set! sym sym-private 1))
+            ; Stage 15 B4 (R4): the defining site — see `guard-const-redefinition`.
+            (sym-set-src-loc (as ptr sym) (cc line))))
         (inc! i)))
     ; Record the member table so `match` can check exhaustiveness over the
     ; enum (unions.md §4 freebie). Re-registration (import dedup) is a no-op.
@@ -11699,6 +11836,9 @@
           ; carry `sym-private` on their Syms (the g-globals row).
           (.set! ed priv g-defining-private)
           (.set! ed src-ns g-current-ns)
+          ; Stage 15 B4 (R4): the defining site — see `same-definition-site`.
+          (.set! ed src-file g-source-path)
+          (.set! ed src-line (cc line))
           (conj g-enumdefs ed))))))
 
 (defn enumdef-lookup (name:CStr):?ptr:EnumDef
@@ -11756,16 +11896,23 @@
         (die-at (name-node line) "defstruct: name must be symbol"))
       (guard-name-kind (name-node s) (cc line) NK-TYPE)
       ; Reuse a StructDef pre-registered by prescan-struct-names (name only), or
-      ; register fresh. Skip if its definition was already written to IR — covers
-      ; redefinition (the prelude defines Node and some programs also do).
+      ; register fresh.
       ; Stage 15 B3′: the definition side always holds a KEY — `qualify-name` of
       ; its own name — never a reference. Routing it through `struct-lookup-ref`
       ; would let a `defstruct Vector` inside `(ns coll)` find `user`'s `Vector`
       ; through the flattened-prelude fallback and then *fill in the prelude's
       ; StructDef*, which is the R1 collision reintroduced as memory corruption.
       (let (key:CStr (as CStr (qualify-name (name-node s))))
+      ; Stage 15 B4 (R4): `emitted` is the tell that separates this defstruct's
+      ; OWN name-only prescan entry from a second definition of the name — which
+      ; is why §14.7 named this site. It used to be a silent `return`, so the
+      ; first definition won and which one that was depended on import order.
       (let (existing:?ptr:StructDef (lookup-struct key))
         (when (and (!= existing null) (!= (existing emitted) 0))
+          (when (= (same-definition-site (existing src-file) (existing src-line) (cc line)) 0)
+            (die-redefinition (name-node s) (cc line) BK-STRUCT
+                              (existing src-file) (existing src-line)))
+          ; Same form re-emitted, or an interactive session: the pre-B4 no-op.
           (return)))
       (let (sd:ref:StructDef (if-some (e (lookup-struct key))
                                e
@@ -11779,6 +11926,11 @@
           (.set! sd priv 1)
           (.set! sd src-ns g-current-ns)
           (set! g-priv-bindings 1))
+        ; Stage 15 B4: `register-struct` mints anon/closure/dyn-box/C-header
+        ; StructDefs too, so the SOURCE definition's location is recorded here,
+        ; where there is one. It is what the redefinition diagnostic blames.
+        (.set! sd src-file g-source-path)
+        (.set! sd src-line (cc line))
         (check-ir-name-legal (name-node line) (name-node s) (sd ir-name))
         (let (fnm:ptr (arena-alloc (* (as i64 nfields) (ptr-bytes)))
               ftp:ptr (arena-alloc (* (as i64 nfields) (ptr-bytes))))
@@ -11894,9 +12046,18 @@
         (return))
       (when (!= (name-node kind) NODE-SYM)
         (die-at (name-node line) "defunion: name must be a symbol"))
-      ; Redefinition (e.g. the same unit re-imported) is a no-op, like defstruct.
+      ; Stage 15 B4 (R4): a second definition of the name, which used to be a
+      ; silent no-op that kept the first. A `UnionDef` is created only by this
+      ; definer — there is no name-only prescan entry to confuse it with, so mere
+      ; existence is the tell (unlike `defstruct`, which needs `emitted`).
       ; Stage 15 B3′: a definition-side existence probe holds a KEY.
-      (when (!= (uniondef-lookup (as CStr (qualify-name (name-node s)))) null) (return))
+      (if-some (prev (uniondef-lookup (as CStr (qualify-name (name-node s)))))
+        (do
+          (when (= (same-definition-site (prev src-file) (prev src-line) (cc line)) 0)
+            (die-redefinition (name-node s) (cc line) BK-UNION
+                              (prev src-file) (prev src-line)))
+          (return))
+        0)
       (guard-name-kind (name-node s) (cc line) NK-TYPE)
       ; `defunion-register` is handed the canonical KEY (it registers the backing
       ; StructDef and the UnionDef under it); `union-ctor-form` below is handed the
@@ -12676,6 +12837,16 @@
       (when (= (node-is-list params-node) 0)
         (die-at (name-node line) "defmacro: params must be a list"))
       (guard-name-kind (name-node s) (ff line) NK-MACRO)
+      ; Stage 15 B4 (R4): a second `defmacro` of one name used to append a second
+      ; MacroDef that `find-macro`'s first-match scan could never reach — the
+      ; first definition won, silently. Macro names are bare-keyed (they are not
+      ; namespaced at all: the remaining half of defect #1), so this is also what
+      ; refuses two libraries' same-named macros.
+      (if-some (prevm (find-macro (name-node s)))
+        (when (= (same-definition-site (prevm src-file) (prevm src-line) (ff line)) 0)
+          (die-redefinition (name-node s) (ff line) BK-MACRO
+                            (prevm src-file) (prevm src-line)))
+        0)
       (let (macro-name:ptr (name-node s)
             num-params:i32 (node-len params-node)
             jit-name:ptr (fmt-sd "__macro_%s_%d" (sanitize-for-ir macro-name) (unsafe/cast i32 (count g-macros))))
@@ -12721,6 +12892,10 @@
             ; before, because a macro has no Sym and Sym is where privacy lived).
             (.set! mdef priv g-defining-private)
             (.set! mdef src-ns g-current-ns)
+            ; Stage 15 B4 (R4): the fields existed and nothing wrote them — see
+            ; `same-definition-site`.
+            (.set! mdef src-file g-source-path)
+            (.set! mdef src-line (ff line))
             (when (!= g-defining-private 0) (set! g-priv-bindings 1))
             (conj g-macros mdef))
 
@@ -13595,7 +13770,10 @@
         (.set! sym const-val (fmt-i64 "%ld" (val i)))
         (.set! sym const-lit 1)
         (.set! sym const-lit-i64 (val i))
-        (when (!= g-defining-private 0) (.set! sym sym-private 1))))))
+        (when (!= g-defining-private 0) (.set! sym sym-private 1))
+        ; Stage 15 B4 (R4): the site, so the emitter's own check can recognise
+        ; this prescan Sym as the same definition rather than an earlier one.
+        (sym-set-src-loc (as ptr sym) (cc line))))))
 
 ; The `defenum`/`defenum-` half: the MEMBER names (the enum's own type name is a
 ; type, and W1c deliberately keeps type reachability as it is). The EnumDef table
@@ -13614,7 +13792,9 @@
               (.set! sym const-val (fmt-i32 "%d" (- i 2)))
               (.set! sym const-lit 1)
               (.set! sym const-lit-i64 (as i64 (- i 2)))
-              (when (!= g-defining-private 0) (.set! sym sym-private 1)))))
+              (when (!= g-defining-private 0) (.set! sym sym-private 1))
+              ; Stage 15 B4 (R4): the site — see `guard-const-redefinition`.
+              (sym-set-src-loc (as ptr sym) (cc line)))))
         (inc! i)))))
 
 ; Pre-scan one file's top-level forms and register every value name it defines.

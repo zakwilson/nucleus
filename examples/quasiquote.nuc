@@ -1,11 +1,12 @@
 ; Quasiquote / unquote / unquote-splice demo.
 ; Under the hood these use builtin @__cons and @__append runtime helpers.
 
+; Stage 15 B4 (name-resolution.md §11.1/§11.7): the local `(defstruct Node …)`
+; that used to sit here shadowed the prelude's, differing only in declaring
+; `car`/`cdr` as `ptr` instead of `(raw Node)`. The prelude's already won on
+; import order; R4 makes the duplicate an error rather than a coin flip.
 (import-use "stdio.h")
 (import-use iterator)
-
-(defstruct Node
-  kind:i32 line:i32 i:i64 s:ptr car:ptr cdr:ptr)
 
 (defn first (n:ptr):ptr (return ((as ptr:Node n) car)))
 (defn rest  (n:ptr):ptr (return ((as ptr:Node n) cdr)))

@@ -177,11 +177,11 @@ functions, `defvar`s, `defconst`s, enum members, `extern`s and `declare`d C
 functions — and every **type** — struct, union, enum and template names alike.
 `anything/Circle` no longer resolves the way it used to: a type reference needs
 its qualifier in scope in exactly the way a global or protocol reference does.
-One kind is still on the older path: an **overloaded** function name (a `defn`
-with two or more methods, dispatched by argument type) is still keyed bare and
-has no qualified spelling at all. A *solitary* `defn` resolves through the
-import environment like any other global; the moment a name gains a second
-overload it is reachable only bare, from anywhere in the unit.
+**Overloaded** functions are on this path too, by a different mechanism — see
+[Qualifying an overloaded function](#qualifying-an-overloaded-function) below.
+One kind is still on the older path: a **macro** name is keyed bare, unit-wide,
+and has no qualified spelling — `p/my-macro` does not resolve, and a macro is
+named bare from wherever it is reachable.
 
 Two namespaces may therefore each define a type of the same name — they are
 genuinely distinct types, with distinct layouts and distinct conformances —
@@ -226,6 +226,83 @@ Three consequences of globals and types sharing this path, all new:
   [Namespaced type names](types.md#namespaced-type-names) for the exact
   message. The same tier fires in head position too, so a bare struct
   constructor for a type in an unimported namespace gets the same answer.
+
+### Qualifying an overloaded function
+
+An **overloaded** name — a `defn` with two or more methods, dispatched by
+argument type, which is also what every protocol method is — is stored
+differently from everything above. There is exactly **one** entry per bare name
+for the whole unit, with the methods of every namespace merged into it, because
+that is what an open multimethod needs: two libraries that each declare a
+`describe` method must be usable together rather than colliding on sight.
+
+A qualifier is therefore not a different key; it is a **filter**. `p/describe`
+means "the `describe` methods that came from the namespace `p` names":
+
+```lisp
+; lib/liba.nuc            ; lib/libb.nuc
+(ns na)                   (ns nb)
+(defn desc (x:i32):i32    (defn desc (x:i32 y:i32):i32
+  (return (+ x 100)))       (return (+ (+ x y) 20)))
+
+; consumer
+(import-prefixed liba pa)
+(import-prefixed libb pb)
+
+(pa/desc 1)      ; 101
+(pb/desc 1 2)    ; 23
+(pa/desc 1 2)    ; error: no matching method for overloaded 'desc'
+                 ;        with argument types (i32, i32)
+(na/desc 1)      ; error: 'na' is not in scope in this file
+```
+
+The third line is the point: the qualifier really does restrict the method set,
+so an overload another namespace contributed is not reachable through `pa/`.
+The fourth is the ordinary scope rule — a prefixed import binds the prefix, not
+the library's namespace.
+
+Two consequences of the merged registry, both deliberate:
+
+* **A bare call still sees every reachable overload**, including ones from a
+  library this file imported *prefixed*. Bare `desc` above resolves; the
+  qualifier is what narrows, not what enables.
+* **Two overloads with the same parameter types are still an error**, wherever
+  they come from — a merged registry with two identical signatures has no
+  dispatch answer. That is the function row of the redefinition rule below.
+
+Bounded-generic templates (`&where`) and their stamped instances follow the
+same rule: a stamp belongs to the namespace that declared the template, not to
+the file that triggered it.
+
+### One definition per name
+
+A name may be defined **once** in a compilation unit. A second `defstruct`,
+`defunion`, `defprotocol`, `defmacro`, `defenum`, `defvar`, `defconst`, enum
+member or `defstruct`/`defunion` template of the same name is an error that
+names both definitions:
+
+```
+b.nuc:1: error: redefinition of 'Node' — it already names a type defined at a.nuc:13
+  note: a name may be defined only once in a compilation unit. If two imported
+  libraries both define it, rename one — or give one an (ns ...) of its own and
+  import that library with `import-prefixed`.
+```
+
+For a **function** the rule is the same one it always was, and it is about the
+signature rather than the name: two `defn`s of one name are overloads, and only
+two overloads with the *same* parameter types collide (`duplicate definition of
+'f' — the same parameter types are already defined at …`).
+
+Notes on what this does and does not cover:
+
+* **It is a per-unit rule, so importing one file through several paths stays
+  legal.** The diamond every non-trivial program has — two libraries that both
+  import a third — is not a redefinition; the file is processed once.
+* **Giving one definition a namespace is the fix for a genuine clash**, and the
+  diagnostic says so: `(ns …)` in one library plus `import-prefixed` in the
+  consumer keeps both names alive under different qualifiers.
+* **The REPL is exempt.** An interactive session is a sequence of units typed
+  one at a time, and redefining a name is the point of it.
 
 ## Cross-file resolution: reachability, not import order
 

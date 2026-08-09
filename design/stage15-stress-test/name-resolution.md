@@ -126,7 +126,7 @@ Consumer: `(import-prefixed zzlib zx)`. So `zn` is the library's namespace and
 | type annotation `(ref Zs)` | ok | ok | ok | **ok** |
 | struct constructor `(Zs 4)` | **ok** | err | err | err |
 | plain fn `(zfun 1)` | err | **ok** | ok | err |
-| overloaded fn `(zov s)` | reaches the generic | **err** | **err** | err |
+| overloaded fn `(zov s)` | reaches the generic | **err** | ~~err~~ ok (B4) | err |
 | `defvar` `zg` | err | **ok** | **err** | err |
 | `defconst` `ZK` | err | **ok** | **err** | err |
 | `defenum` member `ZE-B` | err | **ok** | **err** | err |
@@ -237,13 +237,19 @@ API-design knob that leaks into unrelated files.
 ## 3. The defect list
 
 1. **Prefixes reach only `g-globals`.** Protocols, types, generics, macros,
-   templates and enums have no prefixed spelling.
+   templates and enums have no prefixed spelling. *(Protocols closed in B2a,
+   types/templates/enums in B3′, generics in B4. **Macros remain** — `g-macros`
+   is keyed by the bare source name with no `qualify-name` anywhere, so `p/mac`
+   cannot resolve and `binding-usable-spelling` will not suggest one. It is the
+   last of this defect; §9.6.)*
 2. **`import-prefixed` skips globals, constants and enum members** — the
    `is-local`/`ir-name` filter (§1.1).
 3. **The defining namespace is always in scope**, whether or not the consumer
    asked for it. `import-prefixed` adds a spelling; it removes none.
 4. **A qualifier on a type is never validated** (§2.2).
-5. **Generics are unqualifiable** (§2.3).
+5. **Generics are unqualifiable** (§2.3). *(Closed in B4 — §9.6. `p/name`
+   resolves to the bare generic with its method set filtered by
+   `Method.src-ns`; the registry stays bare-keyed, which is R2's ruling.)*
 6. **Prefixes are unit-scoped, not file-scoped** (§2.4).
 7. **Type identity is bare and global**, so two namespaces cannot both define
    `Vector`. (Distinct from #4: #4 is *resolution*, this is *identity*.)
@@ -606,7 +612,8 @@ B3 is withdrawn (§8.1). The staging becomes:
 | **B2b** | **Done 2026-08-08.** `scope-lookup` split into a reference resolver (its global frame delegating to `globals-lookup-ref`, `src/nucleusc.nuc`) and `scope-lookup-key` (the pre-B1 body, for the 8 definition-side sites). B1's `prefix-out-of-scope` / `unbound-prefix-message` folded into `resolve-spelling` / `qualifier-scope-note`, removing the §9.2 disagreement. `unsafe` bound as an implicit prefix in every file; the seven `unsafe/*` strings left the special-form set. `inject-import-aliases` / `import-alias-one` / `alias-cinclude-collected` **deleted** (64 lines), taking §1.1's `is-local`/`ir-name` filter with them. Seven matrix cells moved, exactly as predicted. See §9.3 | the rest of #1, #2, #3 |
 | ~~B3′~~ | re-key the type registries + `StructDef.ir-prefix` + ns-aware mangling token | #4, #7, R1 |
 | **B3′** | **Done 2026-08-09.** All six type rows (6–11) re-keyed on `resolve-spelling` in one step rather than the planned struct/union-first split — the audit found the rows share `parse-type-name` and could not be separated (§9.4). Five *reference* resolvers (`struct-lookup-ref` / `uniondef-lookup-ref` / `struct-template-lookup-ref` / `union-template-lookup-ref` / `enumdef-lookup-ref`) over the shared candidate-key walk, with the old bodies kept as the *key* lookups; `parse-type-name`'s `strip-ns-qualifier` deleted; `StructDef.ir-name`/`ir-prefix` derived from **the key's own namespace**, so `(ns dp) (defstruct Fox …)` emits `%dp__Fox`; conformance keys namespaced on **both** halves (`type-canon-name`); `export` generalised to the type and protocol rows (`reregisterable` flipped); `prescan-file-imports` added so a file's import environment exists before any prescan that resolves a name. The new mechanism is `g-type-key-ok`, a scoped *synthesis-region* permission (`g-defvar-soft`'s shape). `type-annot nope/` moved `ok` → `err` — the last wrongly-`ok` matrix cell. See §9.4 | #4, #7, R1 |
-| **B4** | per-kind collision rule; `Method.src-ns` filtering for qualified generic references | #5, R2 |
+| ~~B4~~ | per-kind collision rule; `Method.src-ns` filtering for qualified generic references | #5, R2 |
+| **B4** | **Done 2026-08-09.** `generic-lookup-ref` (`src/generics.nuc`) resolves a qualified generic reference to the bare `Generic` with its method set **filtered by `Method.src-ns`** — R2's shape, and `BK-GENERIC`'s probe arm is the only consumer, as §14.7 predicted. Two provenance holes had to be closed first, neither of them predicted: `register-generic-template` never recorded `src-ns` at all (a METHOD-GENERIC filtered to nothing, so `p/tmpl` did not resolve), and a *stamp* records the CALL SITE's namespace, which had to be re-owned to the template's or the second call re-stamps. Plus R4's eager rule at ten definers, R2's `collides` policy measured per row (`BK-ENUM` was a real hole, `BK-UNION` redundant, `BK-FNTY` correctly 0), and the three tree casualties R4 found. One matrix cell moved: `overloaded-fn` `zx/` err → ok. See §9.6 | #5, R2, R4 |
 | ~~B6~~ | `(dyn P)` identity vs admission | #10 |
 | **B6** | **Done 2026-08-09.** `dyn-proto-key` (`src/nucleusc.nuc`) replaces `protocol-canon-name-ns` as the `(dyn P)` box's identity key: the canonical name derived from `resolve-spelling` and **no registry**, so one protocol has one box `StructDef` whichever legal spelling reached it. Admission moved to the annotation site — `dyn-annot-record` / `drain-dyn-annots` / `DynAnnot`, a deferred worklist carrying each spelling's `{path, line, ns, imports}` and drained at `emit-toplevel-forms` depth 1 after `drain-mono-worklist`; box construction downgraded to a key lookup (`dyn-resolve-protocol`). Plus `box-require-same-kind`, the `type-eq` the erased-slot coercion never had, called from **both** its call sites. Three `protocol-dyn-annot` cells moved `ok` → `err` (`zx/` stays `ok`, correctly); `examples/w9-dyn-ns.nuc`'s box types are renamed `dpx`/`dpx2` → `dp`/`dp2` and are the only IR that moved in the tree. See §9.5 | #10, #11 |
 | ~~B5~~ | reconcile the two priority orders; add the missing `g-protocols` probe to `name-existing-kind`; fix the did-you-mean echo | #8, #9 |
@@ -1390,7 +1397,145 @@ from one memo, so `type-eq` is box identity exactly). Two findings:
   coercion, so it neither boxes nor type-checks. Pre-existing and unchanged;
   found while auditing the call sites of `maybe-box-into-slot`.
 * `collides` 0 on `BK-UNION`/`BK-ENUM`/`BK-FNTY`, and `Method.src-ns` filtering,
-  are still B4's and are untouched.
+  are still B4's and are untouched. *(All four done in B4 — §9.6.)*
+
+### 9.6 What B4 built — a qualified spelling for generics, and R4's eager rule
+
+**Status: done 2026-08-09.** Defect #5, the generic half of #1, R2's per-kind
+`collides` policy and R4's eager same-kind rule.
+
+**The generic half went exactly as §14.7 predicted, and its two prerequisites
+did not exist.** `generic-lookup-ref` (`src/generics.nuc`) is the reference
+resolver: a bare spelling is the old `generic-lookup` unchanged, a qualified one
+goes through `resolve-spelling` and then `generic-filter-by-ns`, which restricts
+the bare generic's method set to the methods whose `Method.src-ns` is the
+namespace the qualifier denotes. `BK-GENERIC`'s probe arm is the only consumer,
+so `emit-dispatch`, `node-type-call` and `guard-name-kind` inherit it from the
+one table — the prediction held. The filtered view is a fresh `Generic` over the
+same `Method` pointers, built per reference and deliberately not memoized: a
+cache would go stale the moment a later import adds a method (`generic-add-method`
+exists because that happens), and the two answers that matter allocate nothing
+(all methods match → the generic itself; none → null).
+
+**`Method.src-ns` was not provenance. It was a diagnostic field that happened to
+be set on one path.** Filtering on it exposed two writers that disagreed with it,
+and neither was visible from reading:
+
+1. **`register-generic-template` records nothing.** A bounded-generic template is
+   built with a bare `(new Method)` and never goes through
+   `generic-register-method`, so its `src-ns` was null. A qualified reference to
+   a template therefore filtered to *zero* methods and did not resolve at all —
+   `pg/b4-twice` reported "not defined anywhere in this compilation unit", the
+   same text a genuinely absent name gets.
+2. **A stamp is registered under the CALL SITE's namespace.** `generic-instantiate-in`
+   calls `generic-register-method`, which writes `g-current-ns` — and the line
+   immediately below it already says the *mangling* must use `(gg ir-prefix)`,
+   "the template's defining namespace, not the call site's". The same argument
+   applies to ownership and had not been made: without re-owning the stamp, the
+   second `p/tmpl` call in another namespace filters the first stamp out,
+   `generic-find-method-exact`'s memo probe in `generic-instantiate-in` misses,
+   and the instance is stamped and emitted **twice under one symbol** — a link
+   error, not a diagnostic.
+
+   The general rule, which is the finding worth keeping: *when a field starts
+   being read as provenance, audit every writer of it, not the canonical one.*
+   A field with three writers and one reader tolerates two of them being wrong.
+
+**R2's `collides` policy, measured per row** rather than argued. §14.2 listed
+three 0s and asked B4 to revisit them; they are not one question:
+
+* **`BK-UNION` was redundant, and is 1 anyway.** `register-uniondef` also
+  registers the union's backing `StructDef` under the same key and `BK-STRUCT` is
+  an earlier row, so it always answered first. Measured inert. Set to 1 because
+  the row is where a kind's participation is *declared*, and leaving it 0 made
+  the rule depend on another registry's implementation detail.
+* **`BK-ENUM` was a genuine hole.** An enum registers its *members* in
+  `g-globals` and never its own name, so nothing probed `g-enumdefs`:
+  `(defenum Colour …)` followed by `(defn Colour …)`, `(defvar Colour …)` or
+  `(defmacro Colour …)` all compiled, with `Colour` naming two things at once.
+* **`BK-FNTY` stays 0**, on the same ground as its `reregisterable`: a
+  `__fnty_N` is minted by `fnty-intern`, has no source spelling, and cannot be
+  the subject of a definer.
+
+**R4's eager rule needed ten sites and four different "is this a second
+definition?" tells.** §14.7 said the enumeration operation the interface lacks
+would have to live at the definer rather than in the table, and named
+`emit-defstruct`'s guard as *the* site. That was right about the shape and short
+by nine. The message is one function (`die-redefinition`, beside
+`guard-name-kind`, taking the row's `noun` from the table); what is per-kind is
+the fact, and the facts do not rhyme:
+
+| Definer | The tell | Why not the others |
+|---|---|---|
+| `defstruct` | `StructDef.emitted` | `prescan-struct-names` registers a name-only entry; existence means nothing |
+| `defunion`, `defprotocol`, `defstruct`/`defunion` template, `defmacro` | the defining **(file, line)** | these registrars are legitimately re-entered for one form — a whole-graph prescan and again per file, a `.nuch` replay — so existence means nothing either, and there is no state flag |
+| `defvar` | `Sym.defvar-state == DEFVAR-REACHED` | W8 G-0 front-loads every reachable file's `defvar` names into the same frame, so a Sym under the key is the *normal* state; only emission promotes one to REACHED |
+| `defconst`, `defenum` member | the defining **(file, line)**, plus "blame the later one" | the prescan registers *exactly* the Sym the emitter goes on to register, so there is no state difference at all |
+
+The last row carries a wrinkle worth stating because the first cut got it
+backwards: G-0's prescan registers **every** form's Sym before **any** form is
+emitted, and `scope-lookup-key` scans backwards — so while emitting the *first*
+`defconst` the probe lands on the *second* one's prescan entry, and the pair was
+reported at the first definition's line. A hit below this form in the same file
+is therefore skipped; the later form finds the earlier one's emitted Sym when it
+reaches its own check, and blames itself.
+
+`Protocol`, `StructTemplate`, `UnionTemplate` and `EnumDef` gained `src-file` /
+`src-line`, `UnionDef` gained `src-file`, and `MacroDef`'s two fields existed and
+had never been written. That is what lets the diagnostic name **both**
+definitions, which is the whole value in the cross-file case R4 was written for.
+
+**The REPL is a sequence of compilation units, and one predicate says so.**
+Every check routes through `same-definition-site`, which answers "same
+definition" whenever `g-interactive` is set — so each definer falls back to its
+own pre-B4 behaviour rather than to a shared no-op, which matters because four of
+them used to `return` and four used to fall through. Verified by diffing a REPL
+transcript (redefining a struct, a defvar, a macro, a defconst, an enum and a
+defn) against the pre-B4 compiler: **byte-identical**.
+
+**R4's casualty count was one; measured, it is three — and §11.1 says why.**
+That count came from a scan of `src/*.nuc` + `lib/*.nuc`, and `examples/` was
+not in it:
+
+* `examples/list.nuc` and `examples/quasiquote.nuc` each carried their own
+  `(defstruct Node … car:ptr cdr:ptr)` over the prelude's `(raw Node)` one —
+  the identical defect §11.7 removed from `lib/list.nuc`, twice more.
+* `examples/defmacro.nuc` defined `when` and `unless`, which the auto-imported
+  prelude already defines *with `&rest body`*. `find-macro` returns the first
+  match and the prelude registers first, so **neither definition in the example
+  was ever expanded**: the file demonstrated a macro it did not use. Renamed to
+  `when1`/`unless1`, output unchanged.
+
+All three are §11.1's class — a silent shadow whose winner is decided by import
+order — and all three were fixed rather than worked around, per §11.7.
+
+**Verification.** `make test` 485 PASS / 0 FAIL (467 before B4, so 18 new);
+`make bootstrap` re-converges (`stage1.ll == stage2.ll`); `abi-test`,
+`layout-test`, `avr-test`, `riscv-test`, `riscv-abi-test` all pass; the matrix
+moved exactly one cell. And the whole-tree sweep §9.2's note calls for: a
+compiler built from a clean `HEAD` worktree and the B4 compiler emit
+`diff`-identical IR for **all 178** compilable files in `examples/` + `lib/`
+(the four that do not compile fail identically under both, and are the known
+standalone-compilation artifacts `build.md` records).
+
+**What B4 leaves open, stated rather than omitted.**
+
+* **Macros still have no qualified spelling** — the last of defect #1.
+  `g-macros` is keyed by the bare source name with no `qualify-name` anywhere, so
+  `p/mac` cannot resolve; `binding-usable-spelling` therefore still refuses to
+  *suggest* one for `BK-MACRO`, which is now the only row it refuses. B4 makes a
+  second macro of one name an error, so the gap is a missing spelling rather
+  than a silent shadow.
+* **A bare generic reference reaches namespaces the file imported PREFIXED.**
+  §8.2 says "one `Generic` per bare name with methods merged from every
+  *flattened* namespace"; the registry merges from every namespace, full stop, so
+  `(import-prefixed lib p)` plus a bare call reaches `lib`'s overloads. Filtering
+  the bare path symmetrically is *not* the same one-line change as the qualified
+  path, and the reason is the second finding above: it would run on every head
+  symbol, and it would trust `Method.src-ns` on paths B4 only had to correct for
+  the two it measured. Wants its own audit of every `Method` writer first.
+* **`import-only` still filters nothing** (R5, §11.2). Unrelated to B4 and still
+  unassigned.
 
 ## 10. Still open *(resolved by §11)*
 
@@ -1435,6 +1580,15 @@ Conversion surface: **123 `import-use`** (31 `src/`, 92 `lib/`), **0
 
 So eager reporting costs **one** casualty — and it is not sloppy hygiene, it
 is a latent bug:
+
+> **Measured in B4, 2026-08-09: three, not one.** The table above scans
+> `src/*.nuc` + `lib/*.nuc`, and `examples/` is not in it. `examples/list.nuc`
+> and `examples/quasiquote.nuc` each carry the *same* `Node` redefinition
+> §11.7 removed from `lib/list.nuc`, and `examples/defmacro.nuc` redefines the
+> prelude's `when`/`unless` — where the consequence is sharper than a
+> nullability difference, because `find-macro` is first-match and the prelude
+> registers first, so neither definition in that example was ever expanded.
+> All three fixed rather than worked around; §9.6.
 
 **`Node` is defined twice, with different field types.**
 
@@ -2032,10 +2186,10 @@ rather than an escape hatch.
 | 4 | `BK-GLOBAL` | `g-globals` | 1 | 1 | **1** |
 | 5 | `BK-PROTOCOL` | `g-protocols` | **1 (new)** | 1 | 0 |
 | 6 | `BK-STRUCT` | `g-structs` | 1 | 1 | 0 |
-| 7 | `BK-UNION` | `g-uniondefs` | 0 | 1 | 0 |
+| 7 | `BK-UNION` | `g-uniondefs` | ~~0~~ **1 (B4)** | 1 | 0 |
 | 8 | `BK-STRUCT-TEMPLATE` | `g-struct-templates` | **1 (new)** | 1 | 0 |
 | 9 | `BK-UNION-TEMPLATE` | `g-union-templates` | 1 | 1 | 0 |
-| 10 | `BK-ENUM` | `g-enumdefs` | 0 | 1 | 0 |
+| 10 | `BK-ENUM` | `g-enumdefs` | ~~0~~ **1 (B4)** | 1 | 0 |
 | 11 | `BK-FNTY` | `g-fnty` | 0 | 1 | 0 |
 | 12 | `BK-CONFORMANCE` | the conformance relation | 0 | **0** | 0 |
 
@@ -2059,6 +2213,11 @@ Unsupported-by-design, stated rather than omitted:
   `BK-STRUCT-TEMPLATE` was turned **on** — `register-struct-template` already
   *guarded* as `NK-TYPE` while nothing probed it, the same one-directional
   asymmetry `BK-UNION-TEMPLATE` did not have.
+  *(B4 measured all three and they are not one question: `BK-UNION` was
+  redundant and is 1 anyway — the row is where participation is declared, not a
+  place to encode another registry's implementation detail; `BK-ENUM` was a
+  genuine hole, since an enum registers only its members; `BK-FNTY` stays 0.
+  §9.6.)*
 
 ### 14.3 The two priority orders: unified, with one site named
 
@@ -2250,23 +2409,37 @@ Kept as written, with the three corrections B3′ measured marked inline.
   and that needed its own tier order in `unknown-type-message` plus a fixture
   that *executes* the cold did-you-mean tier (§9.4).
 
-**B4** (R4's eager collision rule, R2's per-kind policy):
+**B4** (R4's eager collision rule, R2's per-kind policy) — **done 2026-08-09;
+§9.6 records what was built.** Kept as written, with what B4 measured marked
+inline.
 
 * The per-kind policy has a home: the `collides` column. R2's table (§8.2) maps
   onto it directly, and the three rows that are 0 today are enumerated in §14.2
-  with the reason.
+  with the reason. **Held**, and the three turned out to be three different
+  answers rather than one — see §14.2's inline note.
 * R4's "two definitions of one name reaching one scope" needs an *enumeration*
   operation the interface does not have — `probe` answers one key. That is the
   one place B4 will have to extend the table rather than consume it, and the
   honest note is that `emit-defstruct`'s `(when (and (!= existing null) (!= (existing emitted) 0)) (return))`
   guard (§11.1's `Node` finding) is the site, not the table.
+  **Right about the shape and short by nine.** It is ten definer sites, and the
+  "is this a second definition?" tell is different at four of them — `emitted`
+  is a state flag, most registrars are legitimately re-entered and need a
+  (file, line) identity instead, `defvar` needs `defvar-state`, and `defconst` /
+  enum members need (file, line) *plus* a rule about which of the pair to blame.
+  Nothing was enumerated: the table supplies the noun, each definer the fact.
 * R2's "recover the qualified spelling from `Method.src-ns`" is already the
   interface's `src-ns` for `BK-GENERIC` — it reads method 0. Filtering a
   generic's method set by `src-ns` is a change to `BK-GENERIC`'s probe arm and
-  nothing else.
+  nothing else. **Correct as a diff, and it was not the work.** The arm is two
+  lines; what it cost was discovering that `Method.src-ns` had three writers and
+  only one of them meant "the namespace that owns this method" (§9.6).
 * `guard-name-kind`'s question (first binding of a *different* kind) is what B4
   should extend, not replace: an eager same-kind collision is the complementary
-  query over the same walk.
+  query over the same walk. **Half right — complementary yes, same walk no.**
+  The walk skips its own kind precisely because every definer's prescan has
+  already registered it, so the same-kind query cannot be posed to the table at
+  all; it can only be posed where the definer knows its own entry.
 
 ### 14.8 Where the interface is a worse fit than eleven bespoke registries
 
