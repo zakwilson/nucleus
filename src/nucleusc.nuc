@@ -310,6 +310,19 @@
 ; g-init-drained is a persistent cursor, mirroring g-mono-drained.
 (defvar (g-init-worklist (ref (Vector (ref InitJob)))) (vector-new-in (addr-of g-arena-alloc)))
 (defvar g-init-drained:usize 0)
+
+; Stage 15 B6 (name-resolution.md §9.5): deferred `(dyn P)` annotation-site
+; admission. Same worklist+cursor shape as the two above and for the same reason
+; — the question cannot be answered where it is asked. `dyn-type` runs during
+; `prescan-defn-signatures`, so "is P a protocol this file may name?" would
+; reject every legal reference there; the job carries the spelling, its location
+; and the file's name environment, and `drain-dyn-annots` asks it after the
+; whole-graph prescan and every import has been emitted. The cursor is persistent
+; so appends during the drain (there are none today) are still processed exactly
+; once, which is also the completeness proof: the drain runs until the cursor
+; reaches the count.
+(defvar (g-dyn-annots (ref (Vector (ref DynAnnot)))) (vector-new-in (addr-of g-arena-alloc)))
+(defvar g-dyn-annots-drained:usize 0)
 ; Set to the current instantiation's context string while a stamped generic body
 ; is being emitted; die-at appends it as a note so a stamp-time error points back
 ; to the instantiation (and its requesting call site). Null otherwise.
@@ -4097,22 +4110,48 @@
     (when (= p null) (return spelling))
     (return (-> p (as ptr:Protocol _) (_ name)))))
 
-; Stage 15 B2a: the ENVIRONMENT-FREE canonicalizer — the pre-B2a behaviour of
-; `protocol-canon-name`, resolving by namespace alone (current namespace, then
-; bare). It exists for exactly one caller, `dyn-type`, and the reason is timing:
-; a `(dyn P)` box type is minted from a *signature* during
-; `prescan-defn-signatures`, where the file's import environment is empty by
-; construction, and again from the same signature at emission, where it is not.
-; A memo key that changed between those two moments would mint two `StructDef`s
-; for one protocol, and `type-eq` is `StructDef`-pointer identity — the precise
-; bug W9 defect 21 removed. So the box's IDENTITY key stays namespace-derived and
-; phase-stable, and the scope question is asked separately, at box construction,
-; by `dyn-require-protocol`. Identity and admission are different questions; only
-; the second one is about what this file may name.
-(defn protocol-canon-name-ns (spelling:CStr):CStr
-  (let (p:?ptr:Protocol (protocol-lookup-ns spelling))
-    (when (= p null) (return spelling))
-    (return (-> p (as ptr:Protocol _) (_ name)))))
+; Stage 15 B6 — the `(dyn P)` box's IDENTITY key (name-resolution.md §9.5), and
+; the one caller is `dyn-type`. B2a keyed it on `protocol-canon-name-ns`, which
+; resolved by namespace alone and therefore could not map an import *prefix* to a
+; namespace: `(dyn Describe)` inside `(ns dp)` keyed `dp/Describe` while
+; `(dyn dpx/Describe)` outside it keyed `dpx/Describe`, so one protocol got two
+; box `StructDef`s and — `type-eq` being StructDef-pointer identity — a library
+; taking the first could not be called with the second.
+;
+; The constraint that shaped B2a is unchanged and is why this resolves through
+; the ENVIRONMENT rather than through the registry: `dyn-type` runs from a `defn`
+; signature during `prescan-defn-signatures`, where an *imported* protocol is not
+; registered yet, and again from the same signature at emission, where it is. A
+; key that consulted `g-protocols` for those spellings would differ between the
+; two moments and mint two StructDefs for one protocol — W9 defect 21 in a new
+; shape. `resolve-spelling` consults only `g-file-imports` and `g-file-ns`, both
+; filled for the whole reachable graph before any prescan that resolves a name
+; (`prescan-file-imports`, `prescan-imported-types`), so it answers identically in
+; both phases.
+;
+;   * NR-QUALIFIED — the qualifier resolved here, so the canonical key is the
+;     answer, and every legal spelling of one protocol produces the same one.
+;   * NR-BARE — the current namespace's key when this file's OWN namespace
+;     declares it, else the bare spelling. The registry probe is `-exact` and on
+;     `qualify-name`'s key only, which is phase-stable for a different reason:
+;     a file's own protocols are registered by `prescan-protocols` before its own
+;     `prescan-defn-signatures`, in every prescan and at emission. This
+;     reproduces `protocol-canon-name-ns`'s answer for every bare spelling, so
+;     every namespace-free program keys byte-identically.
+;   * NR-UNBOUND — verbatim. In a `g-type-key-ok` synthesis region that string
+;     already IS the canonical key; outside one it is a scope error, reported by
+;     the deferred annotation check (`dyn-annot-record`) rather than here.
+;
+; The scope question — may THIS file name this protocol? — is deliberately not
+; asked here. Identity and admission need different data; admission is asked at
+; the annotation site, where the spelling the author wrote still exists.
+(defn dyn-proto-key (spelling:CStr):CStr
+  (let (r:ref:NameRef (resolve-spelling (as ptr spelling)))
+    (when (= (r status) NR-UNBOUND) (return spelling))
+    (when (= (r status) NR-QUALIFIED) (return (as CStr (r canonical))))
+    (when (!= (protocol-lookup-exact (as CStr (r canonical))) null)
+      (return (as CStr (r canonical))))
+    (return spelling)))
 
 ; Stage 15 B3′: the TYPE half's canonicalizer — the exact counterpart of
 ; `protocol-canon-name`, and what replaced Stage 12 N4's `strip-ns-qualifier` in
@@ -5577,21 +5616,32 @@
               ; boxing, slot holds the {data,vtable} value and the CE-3 block's
               ; TY-PTR guard is false, so abi-arg-frag lowers the box by value.
               ; Inert when ptype is not a box (the compiler never has one).
+              ;
+              ; Stage 15 B6: the argument position is a SECOND erased-slot
+              ; coercion, not a caller of `maybe-box-into-slot` — so the
+              ; already-a-box arm needs the identity check separately, and it
+              ; needs it more, because here the SysV ABI decomposes the fat
+              ; pointer into two words and even LLVM never sees the mismatch.
+              ; Both arms call `box-require-same-kind` rather than restating it.
               (let (bcanon:ptr (boxedfn-canonical ptype))
-                (when (and (!= bcanon null)
-                           (= (boxedfn-canonical (slot type)) null)
-                           (= ((slot type) kind) TY-PTR))
-                  (let (boxed:ref:Val (emit-box-closure (as ptr slot) bcanon scope (cc line)))
-                    (memcpy slot (as ptr boxed) (sizeof Val)))))
+                (when (!= bcanon null)
+                  (let (vcanon:ptr (boxedfn-canonical (slot type)))
+                    (if (!= vcanon null)
+                      (box-require-same-kind vcanon bcanon (cc line))
+                      (when (= ((slot type) kind) TY-PTR)
+                        (let (boxed:ref:Val (emit-box-closure (as ptr slot) bcanon scope (cc line)))
+                          (memcpy slot (as ptr boxed) (sizeof Val))))))))
               ; Stage 13 TE-6: symmetric path for a concrete value flowing into a
               ; `(dyn P)`-typed parameter — box it (the nominal value box) before the
               ; CE-3 normalization. Inert when ptype is not a dyn box.
               (let (dcanon:ptr (dyn-canonical ptype))
-                (when (and (!= dcanon null)
-                           (= (dyn-canonical (slot type)) null)
-                           (= ((slot type) kind) TY-PTR))
-                  (let (boxed:ref:Val (emit-box-value (as ptr slot) dcanon scope (cc line)))
-                    (memcpy slot (as ptr boxed) (sizeof Val)))))
+                (when (!= dcanon null)
+                  (let (vcanon:ptr (dyn-canonical (slot type)))
+                    (if (!= vcanon null)
+                      (box-require-same-kind vcanon dcanon (cc line))
+                      (when (= ((slot type) kind) TY-PTR)
+                        (let (boxed:ref:Val (emit-box-value (as ptr slot) dcanon scope (cc line)))
+                          (memcpy slot (as ptr boxed) (sizeof Val))))))))
               ; CE-3 (closure-enhancements.md §CE-3) fix (b), symmetric arg path:
               ; passing a struct *by value* — the parameter is a by-value struct
               ; (TY-STRUCT) but the argument is represented as a pointer to that
@@ -6823,14 +6873,17 @@
 ; type-parse time: `dyn-type` may be reached during a prescan, before the
 ; protocol's own file has registered it.
 ;
-; Stage 15 B2a: this is also the `(dyn P)` SCOPE gate. `protocol-lookup` is the
-; reference resolver, so a box whose protocol this file cannot name — the
-; library's own namespace under a prefixed import, an unimported namespace, a
-; qualifier bound nowhere — is refused here rather than at type-parse time. That
-; placement is forced: `dyn-type` runs during a prescan with an empty import
-; environment, so refusing there would reject every legal prefixed spelling. It
-; is also where the question belongs — an annotation names a type, a box
-; construction *uses* the protocol.
+; Stage 15 B2a: this is also the `(dyn P)` SCOPE gate — `protocol-lookup` is the
+; reference resolver, so a protocol this file cannot name is refused.
+;
+; Stage 15 B6: the ONE caller is now the annotation-site check
+; (`dyn-annot-check`), asked against the spelling the author wrote and in that
+; file's environment. It is no longer reachable from box construction, and must
+; not become so again: since B6 a box carries its protocol's CANONICAL name, and
+; a canonical `dp/Describe` is not nameable in a consumer that only bound the
+; prefix `dpx`, so asking the scope question there would refuse every legal box.
+; That is §9.2's "downstream of a gate, do not gate again" — box construction
+; wants `dyn-resolve-protocol` (a key lookup), not this.
 (defn dyn-require-protocol (proto:CStr line:i32):ptr:Protocol
   (let (pp:?ptr:Protocol (protocol-lookup proto))
     (when (= pp null)
@@ -6839,6 +6892,84 @@
           (fmt-2s "(dyn %s): '%s' is not a declared protocol" proto proto)
           (as ptr proto))))
     (return (as ptr:Protocol pp))))
+
+; The box-construction / vtable side of the same question. `proto` here is the
+; box's STORED name, i.e. the canonical key `dyn-proto-key` computed — a key, not
+; a reference — so it resolves with `protocol-resolve-any` (reference, else key)
+; and asks no scope question. Admission was already asked at the annotation site;
+; this is the existence backstop for a box reached through a re-derived type in a
+; file that never named the protocol at all.
+(defn dyn-resolve-protocol (proto:CStr line:i32):ptr:Protocol
+  (let (pp:?ptr:Protocol (protocol-resolve-any proto))
+    (when (= pp null)
+      (die-at line
+        (with-qualifier-note
+          (fmt-2s "(dyn %s): '%s' is not a declared protocol" proto proto)
+          (as ptr proto))))
+    (return (as ptr:Protocol pp))))
+
+; ------------------------------------------------------------
+; Stage 15 B6 — deferred `(dyn P)` annotation-site admission
+; (name-resolution.md §9.5).
+;
+; Every `(dyn P)` a *file* writes is admitted here and nowhere else. The check
+; cannot run where the spelling is parsed — `dyn-type` is reached from
+; `prescan-defn-signatures`, before any imported protocol is registered — so it
+; is recorded and drained once the whole graph is in. The two exits from
+; `dyn-annot-record` are the whole mechanism:
+;
+;   * `g-type-key-ok` armed — the spelling was synthesized by the compiler (a
+;     protocol-signature `Self` substitution, a `.nuch` replay, a stamped body),
+;     so there is no file to ask and no author to blame. Same permission, same
+;     arm sites, as the type reference resolvers use; grep them to enumerate.
+;   * a REPL form typed at the PROMPT (`g-toplevel-depth` 0 — no whole-unit walk
+;     is in progress, which happens only there). The session's registry is
+;     already complete and its environment is the one that is never
+;     saved/restored, so the question is answered on the spot and the answer
+;     lands on the form the user just typed. A REPL `(import-use …)` does NOT
+;     take this path: it runs `emit-toplevel-forms` at depth 1, so the imported
+;     file's annotations defer exactly as in batch and are drained there —
+;     without that distinction, an annotation naming a protocol from the
+;     library's OWN imports would be refused, since the signature prescan
+;     precedes the imported-signature prescan.
+; ------------------------------------------------------------
+
+; Ask the admission question for one annotation, in the caller's current
+; environment. Split out so the immediate and deferred paths cannot drift.
+(defn dyn-annot-check (spelling:CStr line:i32):void
+  (dyn-require-protocol spelling line))
+
+(defn dyn-annot-record (spelling:CStr line:i32):void
+  (when (!= g-type-key-ok 0) (return))
+  (when (and (!= g-interactive 0) (= g-toplevel-depth 0))
+    (dyn-annot-check spelling line)
+    (return))
+  (let (j:ref:DynAnnot (new DynAnnot))
+    (.set! j spelling (as ptr spelling))
+    (.set! j path g-source-path)
+    (.set! j line line)
+    (.set! j ns g-current-ns)
+    (.set! j imports g-file-imports)
+    (conj g-dyn-annots j)))
+
+; Ask every recorded question as the file that asked it. The three globals
+; restored per job are exactly `resolve-spelling`'s inputs plus `die-at`'s file
+; half; nothing else about the annotation's context is needed, because the
+; question is a pure name lookup.
+(defn drain-dyn-annots ():void
+  (let (save-path:ptr g-source-path
+        save-ns:ptr g-current-ns
+        save-imports:(raw (Vector (ref ImportBind))) g-file-imports)
+    (while (< g-dyn-annots-drained (count g-dyn-annots))
+      (let (j:ref:DynAnnot (invoke g-dyn-annots g-dyn-annots-drained))
+        (set! g-dyn-annots-drained (+ g-dyn-annots-drained (as usize 1)))
+        (set! g-source-path (j path))
+        (set! g-current-ns (j ns))
+        (set! g-file-imports (j imports))
+        (dyn-annot-check (as CStr (j spelling)) (j line))))
+    (set! g-source-path save-path)
+    (set! g-current-ns save-ns)
+    (set! g-file-imports save-imports)))
 
 ; TE-6: the emitted concrete-impl symbol for the SOLE method of single-method
 ; protocol `proto` on concrete type `concrete-ty` — the `(dyn P)` analogue of
@@ -6861,7 +6992,7 @@
       (return r))))
 
 (defn dyn-vtable-method-irname-in (concrete-ty:(raw Type) proto:CStr line:i32):ptr
-  (let (pp:ptr:Protocol (dyn-require-protocol proto line))
+  (let (pp:ptr:Protocol (dyn-resolve-protocol proto line))
     (let (ppp:ptr:Protocol (as ptr:Protocol pp))
       (when (!= (ppp num-sigs) 1)
         (die-at line (fmt-s "(dyn %s): only single-method protocols are boxable in v1" proto)))
@@ -7228,7 +7359,9 @@
       ; (0) The protocol must exist before "does this type conform to it?" is a
       ;     meaningful question — otherwise an undeclared `P` is reported as a
       ;     conformance failure. Shared with dyn-vtable-method-irname's backstop.
-      (dyn-require-protocol proto line)
+      ;     B6: a KEY lookup — `proto` is the box's canonical name, and the scope
+      ;     question was already asked at the annotation site.
+      (dyn-resolve-protocol proto line)
       ; (1) Nominal conformance admission (the dormant path in admit-erased-
       ;     conformance fires now that a protocol name is supplied).
       (when (= (admit-erased-conformance struct-ty box-ty proto line) 0)
@@ -7248,18 +7381,45 @@
 ; coercion site (let/with binding init, return, call-arg) immediately before
 ; coerce-int-val / safe-coerce-val so the boxed value then coerces as an identity
 ; (same TY-STRUCT box). Inert for any non-box target (the compiler has none).
+; A box type as the author would write it: `(dyn P)` for a nominal box (the
+; StructDef is named `__dyn.<P>`, which is an IR spelling, not a source one),
+; the ordinary type spelling otherwise.
+(defn box-spelling (canon:(raw Type)):ptr
+  (let (p:ptr (dyn-proto-of (as ptr canon)))
+    (when (!= p null) (return (fmt-s "(dyn %s)" p)))
+    (return (as ptr (type-spelling canon)))))
+
+; Stage 15 B6: the erased-slot coercion's missing type check. TE-3 returned an
+; existing box untouched whenever the target was *a* box of the same flavour,
+; never asking whether it was the same box — so a `(dyn P)` flowed into a
+; `(dyn Q)` slot, and a `(BoxedFn (i32) i32)` into a `(BoxedFn (f32) f32)`,
+; caught only by LLVM's parser (`'%t25' defined with type … but expected …`) with
+; no source location, or not at all when the SysV ABI happened to decompose the
+; fat pointer into two words at the call boundary. Both canonical Types come from
+; the same memo, so `type-eq` here is the box-identity question exactly.
+(defn box-require-same-kind (have:(raw Type) want:(raw Type) line:i32):void
+  (when (!= (type-eq have want) 0) (return))
+  (die-at line
+    (fmt-2s "type mismatch: a %s value cannot be used where %s is required"
+            (box-spelling have) (box-spelling want))))
+
 (defn maybe-box-into-slot (v:(raw Val) target:(raw Type) scope:ref:Scope line:i32):ref:Val
   (let (bcanon:ptr (boxedfn-canonical target))
     (when (!= bcanon null)
-      (let (vt:ptr (v type))
+      (let (vcanon:ptr (boxedfn-canonical (v type)))
         ; Already a box (re-binding / passing through an existing BoxedFn value).
-        (when (!= (boxedfn-canonical vt) null) (return (unsafe/cast ref:Val v)))
+        (when (!= vcanon null)
+          (box-require-same-kind vcanon bcanon line)
+          (return (unsafe/cast ref:Val v)))
         (return (emit-box-closure v bcanon scope line))))
     (let (dcanon:ptr (dyn-canonical target))
       (when (!= dcanon null)
-        (let (vt:ptr (v type))
-          ; Already a (dyn P) box of the same kind — pass through unchanged.
-          (when (!= (dyn-canonical vt) null) (return (unsafe/cast ref:Val v)))
+        (let (vcanon:ptr (dyn-canonical (v type)))
+          ; Already a (dyn P) box — pass through, but only if it is a box of the
+          ; SAME protocol.
+          (when (!= vcanon null)
+            (box-require-same-kind vcanon dcanon line)
+            (return (unsafe/cast ref:Val v)))
           (return (emit-box-value v dcanon scope line)))))
     (return (unsafe/cast ref:Val v))))
 
@@ -14128,6 +14288,13 @@
     (drain-init-worklist))
   ; Emit the bodies of any generic instantiations these forms triggered.
   (drain-mono-worklist)
+  ; Stage 15 B6: admit every `(dyn P)` a file wrote. Last, and depth 1 only —
+  ; by here every reachable file has been read (including one reached only
+  ; through a string-path import, which no prescan walks) and every protocol it
+  ; declares is registered, which is precisely what the annotation site did not
+  ; have. Emits nothing, so unlike `drain-init-worklist` it has no JIT hazard;
+  ; the REPL takes the immediate path in `dyn-annot-record` instead.
+  (when (= g-toplevel-depth 1) (drain-dyn-annots))
   (set! g-toplevel-depth (- g-toplevel-depth 1))))
 
 ; Check if a path is in a Node-based string list.
@@ -15471,5 +15638,14 @@
         ; Open module streams and compile
         (open-module-streams)
         (emit-toplevel-forms forms)
+        ; Stage 15 B6: the deferred-worklist completeness check, asserted rather
+        ; than argued. A dynamic-extent mechanism has no compile-time evidence
+        ; its extent is complete (name-resolution.md §9.4), and an undrained
+        ; `(dyn P)` admission job is a silently unclosed hole — the failure mode
+        ; that is invisible to a tree in which nothing exercises it.
+        (when (!= g-dyn-annots-drained (count g-dyn-annots))
+          (fprintf stderr "nucleusc: internal error: %d (dyn P) annotation checks were never drained\n"
+                   (unsafe/cast i32 (- (count g-dyn-annots) g-dyn-annots-drained)))
+          (exit 1))
         (flush-module-ir source-file))))
     (return 0)))

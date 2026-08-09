@@ -161,6 +161,8 @@ same way.
 >   qualifier. The baseline records it as the `protocol-dyn-annot` row, kept
 >   separate from `protocol-dyn-box` precisely because the two positions answer
 >   different questions.
+>   *(Closed in B6 — §9.5. The two positions now agree, which is the acceptance
+>   criterion: the row matches `protocol-dyn-box` cell for cell.)*
 >
 > The baseline also carries the §2.4 prefix leak and both §11.2 `import-only`
 > non-filtering cells as rows, so B1/B2 can diff them like any other cell.
@@ -252,6 +254,21 @@ API-design knob that leaks into unrelated files.
    *enforced* in one order and *consumed* in another.
 9. `NK-PROTOCOL` is unreachable; the did-you-mean suggester echoes its input
    (§2.5).
+
+Two more were found while implementing, and are numbered here so the staging
+table and the matrix can name them:
+
+10. **A `(dyn P)` in an ANNOTATION is never validated** — found in B2a (§9.2),
+    recorded as "the tenth defect" from then on. `(defn f ((b (dyn nope/X))) …)`
+    compiled and fabricated a box type for a protocol that exists nowhere.
+    *(Closed in B6 — §9.5.)*
+11. **A `(dyn P)` box's identity is keyed on a spelling-derived name** — found in
+    B3′ (§9.4). Two spellings of one protocol minted two `StructDef`s, and
+    `type-eq` is `StructDef`-pointer identity, so a library taking `(dyn P)` could
+    not be called from a consumer holding `(dyn prefix/P)`. Strictly this is #7
+    (identity) for the box type rather than a new defect, which is why §9.4
+    reported it as inherited work rather than adding a number.
+    *(Closed in B6 — §9.5.)*
 
 ---
 
@@ -590,6 +607,8 @@ B3 is withdrawn (§8.1). The staging becomes:
 | ~~B3′~~ | re-key the type registries + `StructDef.ir-prefix` + ns-aware mangling token | #4, #7, R1 |
 | **B3′** | **Done 2026-08-09.** All six type rows (6–11) re-keyed on `resolve-spelling` in one step rather than the planned struct/union-first split — the audit found the rows share `parse-type-name` and could not be separated (§9.4). Five *reference* resolvers (`struct-lookup-ref` / `uniondef-lookup-ref` / `struct-template-lookup-ref` / `union-template-lookup-ref` / `enumdef-lookup-ref`) over the shared candidate-key walk, with the old bodies kept as the *key* lookups; `parse-type-name`'s `strip-ns-qualifier` deleted; `StructDef.ir-name`/`ir-prefix` derived from **the key's own namespace**, so `(ns dp) (defstruct Fox …)` emits `%dp__Fox`; conformance keys namespaced on **both** halves (`type-canon-name`); `export` generalised to the type and protocol rows (`reregisterable` flipped); `prescan-file-imports` added so a file's import environment exists before any prescan that resolves a name. The new mechanism is `g-type-key-ok`, a scoped *synthesis-region* permission (`g-defvar-soft`'s shape). `type-annot nope/` moved `ok` → `err` — the last wrongly-`ok` matrix cell. See §9.4 | #4, #7, R1 |
 | **B4** | per-kind collision rule; `Method.src-ns` filtering for qualified generic references | #5, R2 |
+| ~~B6~~ | `(dyn P)` identity vs admission | #10 |
+| **B6** | **Done 2026-08-09.** `dyn-proto-key` (`src/nucleusc.nuc`) replaces `protocol-canon-name-ns` as the `(dyn P)` box's identity key: the canonical name derived from `resolve-spelling` and **no registry**, so one protocol has one box `StructDef` whichever legal spelling reached it. Admission moved to the annotation site — `dyn-annot-record` / `drain-dyn-annots` / `DynAnnot`, a deferred worklist carrying each spelling's `{path, line, ns, imports}` and drained at `emit-toplevel-forms` depth 1 after `drain-mono-worklist`; box construction downgraded to a key lookup (`dyn-resolve-protocol`). Plus `box-require-same-kind`, the `type-eq` the erased-slot coercion never had, called from **both** its call sites. Three `protocol-dyn-annot` cells moved `ok` → `err` (`zx/` stays `ok`, correctly); `examples/w9-dyn-ns.nuc`'s box types are renamed `dpx`/`dpx2` → `dp`/`dp2` and are the only IR that moved in the tree. See §9.5 | #10, #11 |
 | ~~B5~~ | reconcile the two priority orders; add the missing `g-protocols` probe to `name-existing-kind`; fix the did-you-mean echo | #8, #9 |
 | **B5** | **Done 2026-08-09**, and upgraded per §13.4 from "reconcile the two orders" to the **shared binding interface** of §13.3. One table, `build-binding-kinds` (`src/nucleusc.nuc`), thirteen rows — §1's eleven registries plus the two correctly-global name sets — each carrying `noun` / `nk` / `collides` / `name-keyed` / `reregisterable`, and the row order IS the resolution order, walked by `name-existing-kind`, `emit-dispatch` and `node-type-call`. `NK-PROTOCOL` is returned (a row plus a prescan reorder); privacy for the four `Sym`-less private definers is implemented once against `is-private`; the did-you-mean renders through `src-ns` instead of echoing its input; `export` re-registers through the interface. See §14 | #8, #9 |
 
@@ -709,6 +728,15 @@ answer, not a gap.
   construction, by `dyn-require-protocol`. Generalize: **a memo key must be
   phase-stable; a permission check must be asked where the permission is
   known.** Any kind whose registry key is computed during a prescan inherits this.
+  **The rule survived B6 intact and is what B6 was built on; only the two
+  placements moved (§9.5).** The key is still phase-stable but is now
+  environment-derived rather than namespace-derived, which is *more* phase-stable
+  — `protocol-canon-name-ns` consulted `g-protocols` and was stable only by
+  accident of import order. And the permission is asked where it is known, which
+  turned out to be the **annotation site**, not box construction: once identity is
+  canonical, the name a box stores is not a name the constructing file can
+  necessarily spell, so box construction is the one place the scope question must
+  *not* be asked.
 * **Downstream of a gate, do not gate again.** `protocol-resolve-any` (reference,
   else key) exists for the three `(dyn P)` consumers — `dyn-method-slot`,
   `emit-dyn-forward`, `derive-closure-conformance` — which run after
@@ -738,8 +766,9 @@ answer, not a gap.
 
 **Still open after B2a**, both reported rather than forced:
 
-* **The tenth defect stays open, and the blocker is prescan ordering, not the
-  canonicaliser.** `(dyn nope/Wholly-Absent)` in an *annotation* still compiles.
+* ~~**The tenth defect stays open, and the blocker is prescan ordering, not the
+  canonicaliser.**~~ *(Closed in B6 — §9.5.)* `(dyn nope/Wholly-Absent)` in an
+  *annotation* still compiles.
   Closing it means validating in `dyn-type`, and `dyn-type` runs inside
   `prescan-defn-signatures` — which for the unit's root file runs *before*
   `prescan-imported-signatures`, so no imported protocol is registered yet, and
@@ -749,6 +778,15 @@ answer, not a gap.
   prescan, or (b) fill the prescan's import environment and move the imported
   signature prescan ahead of the root's own. (b) is the better one and is
   adjacent to B3′, which re-keys registries the prescan also writes.
+  **B6 took (a), and (b) is now recorded as the wrong recommendation.** Moving
+  the imported-signature prescan ahead of the root's own reorders every
+  registration in the unit — the comment on `prescan-imported-signatures` says so
+  and the bootstrap enforces it — and, more decisively, it would still not be
+  enough: a `.nuc` imported by **string path** is walked by no prescan at all, so
+  no reordering of the prescans makes its protocols visible to one. (a) is not a
+  weaker substitute for (b); it is the only one of the two that terminates. What
+  B6 additionally found is that the drain must run after *emission*, not merely
+  after the prescans, for that same reason.
 * **B1's one imprecision is removed for protocols and remains for globals.** A
   qualifier that is both a namespace and another file's prefix now resolves
   correctly in a protocol position — `resolve-spelling` never consults
@@ -1076,12 +1114,22 @@ conventions.md's fixed-arity rule says is invisible forever otherwise.
 
 **What B3′b/B4 inherits.**
 
-* **The `(dyn P)` box's identity is still keyed on a spelling-derived name, and a
-  prefix spelling splits it.** Measured, and live in the tree:
+* ~~**The `(dyn P)` box's identity is still keyed on a spelling-derived name, and
+  a prefix spelling splits it.**~~ *(Closed in B6 — §9.5, which also corrects the
+  measurement below.)* Measured, and live in the tree:
   `examples/w9-dyn-ns.nuc` imports one library under two prefixes and emits
   **two** `{data,vtable}` `StructDef`s for one protocol (`%__dyn.dpx_Describe`
-  and `%__dyn.dpx2_Describe`), plus two vtables for one conformance. The
-  consequence is not cosmetic: a library that takes `(dyn Describe)` and a
+  and `%__dyn.dpx2_Describe`), plus two vtables for one conformance.
+  **Wrong, and B6 measured it.** That file imports **two different libraries**
+  (`nsdescribe` in `(ns dp)`, `nsdescribe2` in `(ns dp2)`) which declare two
+  different protocols that share the bare name `Describe`; two box types and two
+  vtables are *correct* there. What was actually wrong is that the two were named
+  after the consumer's **prefixes** rather than the protocols' namespaces, which
+  is the same keying defect seen from one file instead of two — and it is why the
+  file could be a witness for the naming and never for the split. The real
+  witness has to cross a file boundary, and B6's
+  `run_b6_dyn_cross_ns` is it.
+  The consequence is not cosmetic: a library that takes `(dyn Describe)` and a
   consumer that constructs `(dyn dpx/Describe)` is a **legal program that fails**
   — not with a diagnostic, but with `nucleusc: failed to parse generated IR:
   '%t25' defined with type '%__dyn.dp_Describe' but expected
@@ -1098,15 +1146,251 @@ conventions.md's fixed-arity rule says is invisible forever otherwise.
   is §9.2's fix (a) and it also closes the tenth defect (`protocol-dyn-annot`,
   all four cells still `ok`). Identity and admission need different data; the
   clean split is to ask admission where the spelling is.
-* **A `(dyn P)` value is accepted where `(dyn Q)` is required**, for genuinely
-  different `P`/`Q`, and is caught only by LLVM's parser with no source location.
-  Pre-existing (Stage 13 TE-3's box-to-box coercion returns its input untouched),
-  namespace-independent, and the reason the split above is not *louder*. Worth a
-  `type-eq` check at the erased-slot coercion.
+  **B6 did (a) and (b) together, which is what the paragraph above concludes
+  without quite saying: (b) alone leaves two box types, (a) alone refuses every
+  legal box. Two corrections: `prescan-file-imports` does NOT make (a)
+  phase-stable on its own — the canonicaliser has to consult no registry as well
+  — and "all four cells" is three: `zx/` is the legal spelling and must stay
+  `ok`.**
+* ~~**A `(dyn P)` value is accepted where `(dyn Q)` is required**~~ *(Closed in
+  B6.)* For genuinely different `P`/`Q`, and caught only by LLVM's parser with no
+  source location. Pre-existing (Stage 13 TE-3's box-to-box coercion returns its
+  input untouched), namespace-independent, and the reason the split above is not
+  *louder*. Worth a `type-eq` check at the erased-slot coercion. **Right about
+  the fix and understated about the reach: at an ARGUMENT position LLVM does not
+  catch it either, because the SysV ABI decomposes the fat pointer into two i64s
+  at the call — the program links and runs against the wrong vtable. And there
+  are two coercion sites, not one.**
 * **`collides` 0 on `BK-UNION`/`BK-ENUM`/`BK-FNTY`** is unchanged and still B4's.
 * **The `import-use`-flattened bare spelling of a namespaced protocol** takes the
   same `dyn-type` path as the prefix spelling and splits identically; it is one
-  case of the first bullet, not a separate one.
+  case of the first bullet, not a separate one. **Half right, and B6 leaves it
+  open on purpose — see §9.5's last section. It is not the same case: the prefix
+  spelling is resolvable from the environment alone, the flattened bare one needs
+  a registry probe, and a registry probe is exactly what cannot be phase-stable
+  here.**
+
+### 9.5 What B6 built — identity vs admission for `(dyn P)`
+
+**Status: done 2026-08-09.** §9.4's first two inherit-bullets, plus defects #10
+and #11.
+
+**The line fell exactly where §9.4 said it would, and the reason is worth stating
+as a rule.** A `(dyn P)` box asks two questions of one spelling and they need
+different data:
+
+* **identity** — *which* protocol is this? — must be answerable **identically at
+  every phase**, because the answer is a memo key and two keys mint two
+  `StructDef`s, and `type-eq` is `StructDef`-pointer identity. It is asked from a
+  `defn` signature during `prescan-defn-signatures` and again from the same
+  signature at emission.
+* **admission** — *may this file name it?* — must be asked **where the spelling
+  is**, because it is a question about the writing file's import environment, and
+  the canonical answer to the first question is routinely not a spelling that
+  file can write.
+
+B2a satisfied the first by keying on a namespace-only canonicaliser and the
+second by asking at box construction. That works only while the two questions
+have the same subject; the moment identity became canonical, box construction
+started asking "may this file name `dp/Describe`?" in a file that only bound
+`dpx`, and the answer is *no* for every legal box. So the two moved apart: the
+key became canonical and admission moved to the annotation site.
+
+**Identity: `dyn-proto-key`, and the load-bearing property is that it consults no
+registry.** §9.4 wrote that keying on `resolve-spelling`'s canonical name is "now
+phase-stable, since `prescan-file-imports` gives every prescan the environment".
+That is necessary and not sufficient, and the difference is the whole design.
+`prescan-file-imports` makes the *environment* available; a canonicaliser that
+went on to consult `g-protocols` would still answer differently in the two
+phases, because the root file's `prescan-defn-signatures` runs **before**
+`prescan-imported-signatures` (§9.2 recorded this) and the traversal is pre-order
+inside pass 2 as well, so a file's own signatures are prescanned before its
+imports' protocols are registered. A registry probe there returns *not found* at
+prescan and *found* at emission — which is worse than the bug being fixed,
+because the two keys then disagree **inside one program** and produce the very IR
+parse error the fix is for. So:
+
+* `NR-QUALIFIED` → the canonical name. Resolving a prefix needs `g-file-imports`
+  and `g-file-ns`, and both are complete for the whole reachable graph before any
+  prescan that resolves a name — `prescan-file-imports` for this file's own binds
+  (B3′), `prescan-imported-types`' recursion for every reachable file's `(ns …)`
+  via `apply-leading-ns` → `emit-ns`. No registry.
+* `NR-BARE` → `qualify-name`'s key when this file's own namespace declares the
+  protocol, else the bare spelling. This *is* a registry probe, and it is
+  phase-stable for a different and narrower reason: it is `-exact`, on the
+  current namespace's key only, and a file's own `prescan-protocols` runs before
+  its own `prescan-defn-signatures` in every prescan and before emission. It
+  reproduces `protocol-canon-name-ns`'s answer for **every** bare spelling, which
+  is why every namespace-free program keys byte-identically and 181 of 182 files
+  in the tree emit unchanged IR.
+* `NR-UNBOUND` → verbatim. In a `g-type-key-ok` synthesis region that string
+  already *is* the canonical key; outside one it is a scope error and the
+  annotation check reports it.
+
+`protocol-canon-name-ns` was deleted — it existed for this one caller.
+
+**Admission: a worklist, and how its completeness is checked.** `dyn-annot-record`
+(`src/nucleusc.nuc`, beside `dyn-require-protocol`) is called from `dyn-type` for
+every `(dyn P)` a file writes, and records `{spelling, path, line, ns, imports}`
+— a `DynAnnot`. `drain-dyn-annots` restores those three globals per job and calls
+`dyn-require-protocol` **on the spelling**, so the question is asked as the file
+that asked it and the diagnostic quotes what the author wrote. Two exits skip the
+record, and both are enumerable:
+
+* `g-type-key-ok` armed — the spelling was synthesized by the compiler, so there
+  is no file to ask. Same permission and same arm sites as B3′'s type reference
+  resolvers, which is the point: one flag now marks "compiler-written spelling"
+  for two mechanisms rather than each growing its own.
+* `g-interactive` **and** `g-toplevel-depth == 0` — a REPL form typed at the
+  prompt, answered on the spot so the error lands on the form just typed. The
+  depth test is not decoration: a REPL `(import-use …)` runs
+  `emit-toplevel-forms` at depth 1, and without it an imported library's
+  `(dyn ri/Ip)` — a protocol from the *library's own* import — would be refused,
+  because that library's signature prescan precedes its imported-signature
+  prescan. Measured before the test was added.
+
+The drain runs at `emit-toplevel-forms` depth 1, **after** `drain-mono-worklist`,
+i.e. after everything. That placement is forced by a file kind no prescan walks:
+a `.nuc` imported by **string path** (`(import-prefixed "lib/x.nuc" p)`) is read
+only at emission, so neither its namespace nor its protocols exist until then.
+Draining right after the whole-graph prescan — which is what §9.4 proposed —
+would falsely reject every `(dyn p/P)` naming such a library. The cost is that an
+annotation error is reported after the unit is emitted rather than before, which
+is invisible in output (nothing is written until `flush-module-ir`) and visible
+only in *which* of two errors a doubly-broken program reports first.
+
+Completeness is **asserted, not argued**: `main` checks
+`g-dyn-annots-drained == (count g-dyn-annots)` after `emit-toplevel-forms` and
+fails as an internal error otherwise. §9.4's honest weakness about dynamic-extent
+mechanisms — "a missing drain is a false rejection or a silently unclosed hole,
+invisible to the tree because nothing in it uses namespaced types across a
+boundary" — applies verbatim here, and a cursor-versus-count assertion is the one
+form of evidence a worklist can actually offer. The drain itself loops on the
+cursor rather than a snapshot, so a job appended during the drain is still
+processed exactly once.
+
+**What box construction became.** `dyn-require-protocol` is unchanged and now has
+exactly one caller, the annotation check. `emit-box-value` and
+`dyn-vtable-method-irname` call the new `dyn-resolve-protocol`, which is
+`protocol-resolve-any` (reference, else key) plus the same diagnostic — §9.2's
+"downstream of a gate, do not gate again", applied to the site that *was* the
+gate. The visible consequence is that `(dyn zn/Zp)` now *resolves* at box
+construction and is refused by the drain instead; same message, same line, and
+the matrix records no change for `protocol-dyn-box`.
+
+**The adjacent item made it in, and it is louder than §9.4 thought.**
+`box-require-same-kind` is a `type-eq` on the two canonical box Types (both come
+from one memo, so `type-eq` is box identity exactly). Two findings:
+
+* **There are two erased-slot coercions, not one.** `maybe-box-into-slot` covers
+  `let`/`with` init and `return`; the **argument** position has its own pair of
+  blocks in `emit-call-with-args`, added by Stage 13 TE-3/TE-6 and never routed
+  through the chokepoint. This is `coerce-int-val`'s lesson recurring exactly
+  (conventions.md: "one absent conversion is a rejection in eight positions and a
+  silent miscompile in the ninth") — and here the argument path was the *only*
+  one that mattered, because…
+* **…at an argument position LLVM never sees the mismatch.** The SysV ABI
+  decomposes a `{data,vtable}` fat pointer into two `i64`s at the call, so
+  `(takes-q p)` with `p:(dyn P)` linked and ran, dispatching against a vtable
+  built for the wrong protocol. §9.4 called this "caught only by LLVM's parser";
+  measured, that is true only for the binding path
+  (`tests/fixtures/b6-dyn-box-mismatch-let.nuc`), and
+  `b6-dyn-box-mismatch-arg.nuc` is the one that was silent. Both fixtures exist
+  for that reason.
+
+**What surprised me.**
+
+1. **`examples/w9-dyn-ns.nuc` was never a witness for the split.** §9.4 reads it
+   as "one library imported under two prefixes, two `StructDef`s for one
+   protocol". It is two *different* libraries (`nsdescribe`/`nsdescribe2`, in
+   namespaces `dp`/`dp2`) declaring two different protocols that share the bare
+   name `Describe`; two box types there are correct. What was wrong was the
+   *names* — `%__dyn.dpx_Describe` rather than `%__dyn.dp_Describe`, i.e. keyed on
+   the consumer's prefix. The generalisable half: **a defect about identity
+   across a boundary cannot be witnessed inside one file**, and a single-file
+   fixture will show you the naming symptom and hide the failure. The real
+   witness (`run_b6_dyn_cross_ns`) needed a second file and had to *run*.
+2. **The failing direction was the opposite of the documented one.** §9.4 quotes
+   an LLVM parse error for a box crossing *into* a consumer. Measured on a `HEAD`
+   compiler, the same program fails *earlier* and in the other direction: passing
+   a consumer's value into a library's `(dyn Describe)` **parameter** dies
+   `(dyn b6dp/Describe): 'b6dp/Describe' is not a declared protocol`, because
+   admission was already being asked against a name the consumer cannot spell.
+   That is fix (a)'s predicted failure mode — present in the tree *before*
+   anyone applied fix (a), because a library writing `(dyn P)` bare inside its
+   own namespace already stored a canonical name.
+3. **The `zx/` cell must not move.** The brief and §9.4 both say "all four
+   `protocol-dyn-annot` cells must move". Three must; the fourth is the one
+   spelling the consumer may legally write, and moving it would be precisely the
+   false rejection the deferral exists to prevent. The row now matches
+   `protocol-dyn-box` exactly, which is the real acceptance criterion: an
+   annotation and a construction of the same protocol must not disagree about
+   whether the name is in scope.
+
+**Verification.**
+
+* `make` clean from `make clean`; `make bootstrap` at its fixed point
+  (`stage1.ll == stage2.ll`) with **no reconverge** — the compiler's own source
+  spells no `(dyn P)`, so every new mechanism is inert for it. Stage 2 compiles
+  and runs `hello.nuc`. `make abi-test`, `make layout-test` green.
+* `make test` (parallel default) → **467 PASS, 0 FAIL** (463 + 4 new).
+* **IR inertness**, against a compiler built from the clean `HEAD` tree: of the
+  182 files in `examples/` + `lib/`, **181 byte-identical** (IR, stderr and exit
+  code). The 182nd is `examples/w9-dyn-ns.nuc`, and its whole diff is 70 lines of
+  one rename: `%__dyn.dpx_Describe` → `%__dyn.dp_Describe`,
+  `%__dyn.dpx2_Describe` → `%__dyn.dp2_Describe`, and the three `@__vt.*` symbols
+  that embed those names. That is the fix — a box is now named after the protocol
+  it erases, not after the prefix that reached it.
+* `tests/resolution-matrix.sh --check` → **exactly the three predicted cells
+  moved**, `protocol-dyn-annot` `bare`/`nope/`/`zn/` `ok` → `err`, with the
+  messages predicted; `zx/` stayed `ok`; nothing else changed status or message.
+  Re-recorded.
+* **Diagnostic sweep**: all **180** pre-existing fixtures compiled under both
+  compilers with byte-identical stderr and exit code. Nothing moved.
+  `b2a-dyn-ns-not-in-scope` is the one whose *reason* moved — the same rejection
+  at the same line now comes from the annotation drain rather than from box
+  construction — so its header was re-pointed inline rather than re-baselined,
+  along with the tenth-defect note it used to carry as open.
+* Each new test was checked to **fail on a `HEAD`-built compiler**:
+  `b6-dyn-cross-ns` (compile error), `b6-dyn-box-mismatch-let` (LLVM parse error
+  at link), `b6-dyn-annot-unknown` and `b6-dyn-box-mismatch-arg` (compiled,
+  linked and ran — the silent ones).
+
+**What the next unit inherits.**
+
+* **The `import-use`-flattened bare spelling of a namespaced protocol still keys
+  bare, and closing it needs a phase-complete protocol registry.** A consumer in
+  `user` that `import-use`s `(ns dp)` and writes `(dyn Describe)` keys
+  `Describe`, while the library's own `(dyn Describe)` keys `dp/Describe` — so
+  the two still split. Unlike the prefix case this is **not** resolvable from the
+  environment: which flattened namespace owns a bare name is a registry question,
+  and §9.5's whole argument is that a registry probe at `dyn-type` is unsound
+  while an imported protocol may not be registered yet. Two real options: register
+  every reachable file's protocols in **pass 1** (`prescan-imported-types` already
+  reads and `apply-leading-ns`es each file, and `protocol-register-form` is
+  idempotent — the risk is that `guard-name-kind` then runs in a different order
+  and a `defprotocol`/`defstruct` clash is reported at a different definer, or
+  not at all); or accept the split and rely on the net below. It is **not silent
+  any more** — `box-require-same-kind` turns the meeting point into a located
+  `type mismatch: a (dyn Describe) value cannot be used where (dyn Describe) is
+  required`, which is confusing but findable, and B4 or a successor should
+  either close the keying or make that message name the two namespaces.
+* **A `.nuc` imported by STRING path is walked by no prescan**, so its namespace
+  and its protocols do not exist until emission. B6 works around it by draining
+  last; the underlying gap is wider than `(dyn P)` — a `defn` signature naming a
+  namespaced *type* from such an import has the same problem (B3′'s territory).
+  Extending pass 1 and pass 2 to `.nuc` string paths is the root fix and was not
+  attempted here.
+* **Two files in one namespace, where the second writes `(dyn P)` for a protocol
+  the first declares**, key bare if the second is prescanned first. The
+  `NR-BARE` exact probe is phase-stable per *file*, not per *namespace*. No file
+  in the tree does this; pass-1 protocol registration would close it along with
+  the flattened case.
+* **`set!` / `.set!` into a box-typed slot** reaches neither erased-slot
+  coercion, so it neither boxes nor type-checks. Pre-existing and unchanged;
+  found while auditing the call sites of `maybe-box-into-slot`.
+* `collides` 0 on `BK-UNION`/`BK-ENUM`/`BK-FNTY`, and `Method.src-ns` filtering,
+  are still B4's and are untouched.
 
 ## 10. Still open *(resolved by §11)*
 

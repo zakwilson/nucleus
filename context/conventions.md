@@ -2723,19 +2723,81 @@ Three things about it that a future session will otherwise re-learn the hard way
   also the better diagnostic. This is §9.2's "resolve once, at the reference,
   then carry the record", and it is not protocol-shaped.
 
-**Related, and still open: a `(dyn P)` box's identity is keyed on a
-spelling-derived name.** `dyn-type` (`src/union-registry.nuc`) canonicalizes with
-the environment-free `protocol-canon-name-ns` — deliberately, so the key is
-phase-stable across the prescan and emission — and that canonicaliser cannot map
-an import *prefix* to a namespace. So `(dyn Describe)` inside `(ns dp)` and
-`(dyn dpx/Describe)` outside it mint **two** `{data,vtable}` `StructDef`s for one
-protocol (visible today in `examples/w9-dyn-ns.nuc`, which binds one library under
-two prefixes), and a library taking `(dyn Describe)` cannot be called from a
-consumer holding `(dyn dpx/Describe)`: it fails as
-`nucleusc: failed to parse generated IR: … '%__dyn.dp_Describe' but expected
-'%__dyn.dpx_Describe'`, with no source location. **Do not "fix" this by
-canonicalizing through the reference resolver** — `dyn-require-protocol` asks the
-*scope* question against the stored name, so a canonical `dp/Describe` becomes
-unnameable in the consumer and every legal box is refused. Identity and admission
-need different data; the fix is to ask admission at the annotation site, where the
-spelling is (name-resolution.md §9.4).
+## A memo key computed during a prescan may consult only what a prescan has
+
+Stage 15 B6 (`design/stage15-stress-test/name-resolution.md` §9.5) fixed the
+`(dyn P)` box's identity — `dyn-type` (`src/union-registry.nuc`) now keys on
+`dyn-proto-key` (`src/nucleusc.nuc`), the protocol's canonical name derived from
+`resolve-spelling` — and the reusable part is *why* that function consults **no
+registry**.
+
+`dyn-type` runs from a `defn` signature during `prescan-defn-signatures` and
+again from the same signature at emission. **Both the root file's own signature
+prescan and pass 2's per-file walk run before the imported protocols they name
+are registered** (`emit-toplevel-forms` runs `prescan-imported-signatures` last;
+pass 2's traversal is pre-order). So a key that probes `g-protocols` answers *not
+found* at prescan and *found* at emission — two keys, two `StructDef`s, and
+`type-eq` is `StructDef`-pointer identity, so one protocol becomes two
+incompatible types **inside one program**. That is strictly worse than the bug
+being fixed, because the mismatch then shows up as a raw LLVM parse error with no
+source location.
+
+What a prescan-time key *may* consult, because they are complete before any
+prescan that resolves a name: **`g-file-imports`** (filled by
+`prescan-file-imports`) and **`g-file-ns`** (filled for the whole reachable graph
+by `prescan-imported-types`' recursion through `apply-leading-ns` → `emit-ns`).
+The one registry probe `dyn-proto-key` keeps is `protocol-lookup-exact` on the
+**current namespace's** key only — phase-stable for a different and narrower
+reason, that a file's own `prescan-protocols` precedes its own
+`prescan-defn-signatures` everywhere. Anything wider is unsound here.
+
+Two structural consequences worth keeping:
+
+- **Identity and admission are different questions and must be asked in
+  different places.** Once a box stores the protocol's *canonical* name, asking
+  "may this file name it?" against the stored name refuses every legal box — a
+  canonical `dp/Describe` is not spellable in a consumer that bound only the
+  prefix `dpx`. So admission moved to the **annotation site**, where the author's
+  spelling still exists: `dyn-annot-record` / `DynAnnot` / `drain-dyn-annots`.
+  Box construction now does a key lookup (`dyn-resolve-protocol`, on
+  `protocol-resolve-any`) and asks no scope question at all. `dyn-require-protocol`
+  is the admission gate and has exactly one caller; keep it that way.
+- **A deferred check needs a drain point chosen by what is *loaded*, not by what
+  is prescanned.** The `(dyn P)` drain runs at `emit-toplevel-forms` depth 1
+  *after* `drain-mono-worklist`, not after the prescans, because a `.nuc`
+  imported by **string path** (`(import-prefixed "lib/x.nuc" p)`) is walked by no
+  prescan at all — pass 1 and pass 2 both take only the `NODE-SYM` branch — so its
+  namespace and its protocols do not exist until emission. Draining earlier
+  falsely rejects every `(dyn p/P)` naming such a library. Two skips keep the
+  worklist honest and both are greppable: a `g-type-key-ok` synthesis region (no
+  file wrote the spelling) and `g-interactive` **with `g-toplevel-depth == 0`**
+  (a REPL form typed at the prompt; a REPL `import-use` runs `emit-toplevel-forms`
+  at depth 1 and must defer exactly like batch). Completeness is asserted in
+  `main` — cursor versus count — rather than argued.
+
+## An erased-slot coercion has TWO sites — `maybe-box-into-slot` is not the chokepoint
+
+`maybe-box-into-slot` (`src/nucleusc.nuc`) reads like the one place a value is
+boxed into a `(BoxedFn …)` / `(dyn P)` slot. It is not: it covers `let`/`with`
+init and `return`, while the **argument** position has its own pair of blocks
+inside `emit-call-with-args` (added by Stage 13 TE-3/TE-6, ~1800 lines earlier).
+This is `coerce-int-val`'s lesson in a second subsystem — see that section — and
+Stage 15 B6 found the consequence: both sites had the "already a box, pass it
+through" arm and neither asked *which* box, so a `(dyn P)` flowed into a
+`(dyn Q)` slot.
+
+The argument site is the one that mattered, and the reason generalizes: **the
+SysV ABI decomposes a `{data,vtable}` fat pointer into two `i64`s at the call
+boundary**, so LLVM never sees a struct-type mismatch there either. A `(dyn P)`
+passed to a `(dyn Q)` parameter compiled, linked and *ran*, dispatching against
+the wrong vtable. The binding position, where the box is `store`d as an
+aggregate, failed at the IR parser instead — loudly, but with no source location.
+So the same defect was silent in one position and locationless in the other, and
+neither was a diagnostic.
+
+The check is `box-require-same-kind` (`src/nucleusc.nuc`, above
+`maybe-box-into-slot`): a `type-eq` on the two canonical box Types, which is box
+identity exactly because both come from one memo. Both sites **call** it. If you
+add a third position that assigns into a box-typed slot — `set!` and `.set!`
+reach neither today, so they neither box nor type-check — give it the same call,
+not a copy.

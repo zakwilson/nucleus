@@ -1,0 +1,30 @@
+; Stage 15 B6 — a `(dyn P)` box passed where a `(dyn Q)` box is required.
+;
+; Stage 13 TE-3's erased-slot coercion asked only "is the value already a box of
+; this FLAVOUR?" and returned it untouched if so, never asking whether it was the
+; same box. In an ARGUMENT position that is not merely unchecked, it is
+; invisible: the SysV ABI decomposes the two-word fat pointer into two i64s at
+; the call boundary, so LLVM never sees a type mismatch either. This file used to
+; compile, link and run — dispatching `qm` against a vtable built for `P`.
+;
+; The check is `box-require-same-kind`, a `type-eq` on the two canonical box
+; Types (both come from the one `(dyn P)` memo, so `type-eq` IS box identity).
+; The argument path is a second erased-slot coercion, not a caller of
+; `maybe-box-into-slot`, so it needs the call separately — see the sibling
+; fixture b6-dyn-box-mismatch-let.nuc for the binding path.
+(import-use allocator)
+
+(defprotocol Pp (pm ((self (ref Self))) i32))
+(defprotocol Qq (qm ((self (ref Self))) i32))
+
+(defstruct A n:i32)
+(defn pm ((self (ref A))):i32 (return 1))
+(defn qm ((self (ref A))):i32 (return 2))
+(extend A Pp)
+(extend A Qq)
+
+(defn takes-q ((b (dyn Qq))):i32 (return (qm b)))
+
+(defn main ():i32
+  (let (p:(dyn Pp) (A 1))
+    (return (takes-q p))))

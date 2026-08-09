@@ -96,16 +96,11 @@ Two namespaces may therefore each declare a protocol of the same name without co
 (extend Cat b/Describe)   ; a different protocol, different methods
 ```
 
-**Limitation — one `(dyn P)` box type per *spelling*, not per protocol.** A `(dyn P)` box's type identity is derived from the spelling of `P` at the annotation, resolved by namespace only, so an import **prefix** is not folded in: `(dyn Describe)` written inside `(ns dp)` and `(dyn dpx/Describe)` written in a file that imported it as `dpx` are two distinct box types for the one protocol. Each is a `{data, vtable}` pair with identical layout, so they interoperate at run time, but they do not type-check against each other — passing one where the other is expected fails late, at IR assembly, as
+**One `(dyn P)` box type per protocol, not per spelling.** A `(dyn P)` box's type identity is the protocol's **canonical name**, so every spelling a file may legally write denotes the one box type: `(dyn Describe)` written inside `(ns dp)` and `(dyn dpx/Describe)` written in a file that imported that library as `dpx` are the same type. A library may therefore take and return `(dyn P)` across the import boundary. (Before this was fixed the two were distinct types and the mismatch surfaced only at IR assembly, with no source location.)
 
-```
-nucleusc: failed to parse generated IR: '%t25' defined with type
-'%__dyn.dp_Describe' but expected '%__dyn.dpx_Describe'
-```
+**Limitation — a bare, `import-use`-flattened spelling of a *namespaced* protocol is still keyed bare.** If a library declares `(ns dp) (defprotocol Describe …)` and a consumer writes `(import-use thatlib)` followed by a bare `(dyn Describe)`, the consumer's box type is keyed `Describe` while the library's own is keyed `dp/Describe`, and the two do not type-check against each other. The reason is that resolving a bare name to *which* flattened namespace declares it needs the protocol registry, which is not yet complete when a `defn` signature is first read. Passing one where the other is expected is now a located error rather than a silent failure, but it is a confusing one (both boxes print as `(dyn Describe)`). **Use `(import-prefixed thatlib p)` and spell `p/Describe`** — the prefixed spelling resolves through the import environment alone and is folded correctly.
 
-with no source location. Until this is fixed, **keep a `(dyn P)` on one side of the import boundary**: either declare the protocol, the conformance *and* every signature mentioning `(dyn P)` inside the namespaced library (spelling `P` bare throughout, and returning concrete values across the boundary), or keep the whole `(dyn P)` surface in the consumer. A file that declares `(ns …)` *can* construct a box — that was a separate limitation, fixed.
-
-**Limitation — `(dyn P)` is not checked against `(dyn Q)`.** A box of one protocol assigned into a slot of another is not rejected by the compiler; it is caught only by the same late IR-assembly error above.
+**`(dyn P)` is checked against `(dyn Q)`.** A box of one protocol used where a box of another is required is rejected with a located `type mismatch: a (dyn P) value cannot be used where (dyn Q) is required`, at a binding, a `return` and a call argument alike.
 
 *Not yet implemented (within protocols):* inline-`defn` sugar inside `extend`. The dynamic `(dyn Protocol)` form is implemented — see [Type erasure](#type-erasure-boxedfn-and-dyn-protocol) below. Conformance currently requires a concrete (non-generic) implementation.
 
@@ -686,14 +681,18 @@ has in scope — the prefix a `(import-prefixed …)` bound, or the namespace na
 `(ns shapes)` are the **same type** — the box's identity is the protocol's
 canonical name, not the spelling at the use site.
 
-The check happens where the box is **constructed**, not where the type is
-written: `(dyn P)` in a plain annotation is not validated (a signature's types
-are resolved before the file's imports have been processed), so an unknown or
-out-of-scope `P` is reported at the first boxing, as
-`(dyn P): 'P' is not a declared protocol` — with a note naming the qualifier and
-what is in scope, when the reason is scope rather than existence.
-`examples/w9-dyn-ns.nuc` is the worked cross-namespace example, including two
-namespaces that each declare a protocol of the same bare name.
+The check happens where the type is **written**, including in a `defn` signature
+that never constructs a box: an unknown or out-of-scope `P` is reported at the
+annotation's own line as `(dyn P): 'P' is not a declared protocol` — with a note
+naming the qualifier and what is in scope, when the reason is scope rather than
+existence. Because a signature's types are read before the compilation unit's
+imports have all been processed, the question is *recorded* there and answered
+once every reachable file is in, so the diagnostic may appear after other output;
+its file and line are the annotation's.
+
+`examples/w9-dyn-ns.nuc` is the worked cross-namespace example: two libraries in
+two namespaces that each declare a protocol of the same bare name `Describe`, one
+type conforming to both, and each box dispatching its own protocol's method.
 
 **v1 scope limits.** The following are not yet supported and produce clear
 compile-time diagnostics:

@@ -1,0 +1,30 @@
+; Stage 15 B6 — the binding-position half of b6-dyn-box-mismatch-arg.nuc.
+;
+; `maybe-box-into-slot` is the erased-slot coercion for a `let`/`with` init and
+; for `return`; the argument position has its own pair of blocks in
+; `emit-call-with-args`. Both had the same hole and both now call
+; `box-require-same-kind`, so this fixture and its sibling pin the two paths
+; separately — the conventions rule for a predicate with a second asker is that
+; the *call* is mirrored, and a test per call site is what proves it.
+;
+; Here the mismatch does reach LLVM (a `store %__dyn.Qq %t, ptr %p.addr` of a
+; `%__dyn.Pp` value), so before B6 this failed as
+;   nucleusc: failed to parse generated IR: … '%t6' defined with type
+;   '%__dyn.Pp' but expected '%__dyn.Qq'
+; with no source location at all.
+(import-use allocator)
+
+(defprotocol Pp (pm ((self (ref Self))) i32))
+(defprotocol Qq (qm ((self (ref Self))) i32))
+
+(defstruct A n:i32)
+(defn pm ((self (ref A))):i32 (return 1))
+(defn qm ((self (ref A))):i32 (return 2))
+(extend A Pp)
+(extend A Qq)
+
+(defn make-p ((n i32)):(dyn Pp) (return (A n)))
+
+(defn main ():i32
+  (let (q:(dyn Qq) (make-p 1))
+    (return (qm q))))

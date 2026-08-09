@@ -46,6 +46,15 @@
 ; Boxing happens here rather than in the libraries because a file with an
 ; explicit `(ns …)` cannot currently reach `default-allocator` — see the note in
 ; lib/nsdescribe.nuc.
+;
+; What this file does NOT pin, and was once misread as pinning (§9.4 → §9.5):
+; the two box types it emits are for two DIFFERENT protocols in two different
+; libraries, so two `{data,vtable}` StructDefs here are correct. Stage 15 B6
+; changed only their NAMES — `%__dyn.dp_Describe` / `%__dyn.dp2_Describe` rather
+; than the consumer's prefixes — because a box's identity is now the protocol's
+; canonical name. The defect that renaming fixes is a cross-file one and cannot
+; be witnessed inside a single file; `run_b6_dyn_cross_ns` in tests/run-tests.sh
+; is the witness.
 
 (import-use "stdio.h")
 (import-use allocator)
