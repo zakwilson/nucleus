@@ -1,5 +1,29 @@
 # Macros
 
+## Macros belong to a namespace
+
+A macro belongs to the namespace of the file that declares it, and is spelled
+like every other kind — see [What an import brings into scope](toplevel.md#what-an-import-brings-into-scope):
+bare inside its own namespace, `p/name` through a prefix a file bound, bare or
+`ns/name` through `import-use`. A prefixed import does **not** put the library's
+own namespace in scope, and a macro reachable only through a prefix is offered
+as `p/name` by the did-you-mean rather than as a bare name that would fail again.
+
+Two consequences:
+
+* **Two namespaces may each declare a macro of the same name.** They are two
+  macros; each prefix reaches its own.
+* **A facade may re-export a macro** (`(export p/my-macro)`), and it expands
+  through the facade's prefix in the consumer.
+
+Within one namespace a name may be defined once — a second `defmacro` of the
+same name is an error naming both definitions, rather than the older behaviour
+where the first definition silently won and the second was unreachable.
+
+The prelude is flattened into every file, so `when`, `unless`, `dotimes` and the
+rest below are always available unqualified, including from inside a file with
+its own `(ns …)`.
+
 ## Standard Macros (`lib/macros.nuc`)
 
 Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defines the `Node` struct, the `NODE-*` enum, and `(import-use macros)`) into every program, so all of these are available without an explicit `(import-use macros)`. To opt out — e.g. when a source file should compile against the bare language with no macros, no `Node` type, and no `string` libc declarations — make `(exclude-prelude)` the first form in the file.

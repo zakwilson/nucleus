@@ -2886,3 +2886,41 @@ defining `when`/`unless` over the prelude's. That last one is the sharpest
 illustration of why the rule is worth having: `find-macro` returns the FIRST
 match and the prelude registers first, so **neither definition in that example
 had ever been expanded** — the file demonstrated a macro it did not use.
+
+## A "cannot" in a design doc may be a defect report wearing a ruling's clothes
+
+Stage 15 B7 (`name-resolution.md` §9.7) exists because §11.6 — titled *"Why a
+facade cannot re-export a type or protocol"* — was read twice as though it
+settled something. It settles nothing: it is a measurement, a cause and a plan,
+and its own body says *"it is not that re-export is hard for these kinds; it is
+that `export` was written as a `g-globals` operation."* B3′ then went and did it
+for types and protocols, which falsified the title while the title stayed.
+
+The damage was not the stale heading. `binding-re-register`'s refusal text told
+authors a macro *"is identified by a globally-unique bare name, so a re-export
+would not change how it resolves (name-resolution.md §11.6)"* — a claim that
+section never makes, attached to a citation that appears to authorise it. And
+for macros the claim was **circular**: a macro was bare-keyed only because
+macros had never been cut over to the canonicaliser, so the unfixed gap was
+being quoted as the reason not to fix it. Keying `g-macros` by namespace made
+the whole sentence false in an afternoon.
+
+Two habits this argues for:
+
+* **When a diagnostic cites a design section, check the section says it.** A
+  citation is load-bearing in a way prose is not — it converts "this is how it
+  works today" into "this was decided", and nobody re-derives it afterwards.
+* **State the property, not the status quo.** The rows that legitimately refuse
+  re-export share something real — they are *not keyed by namespace* (an
+  overloaded name is merged across namespaces on purpose; a special form, a
+  built-in type name and a `__fnty_N` have no owning namespace at all). That
+  reason survives a registry change; "identified by a globally-unique bare name"
+  was just a restatement of the gap.
+
+And one specific carry-over for any further cut-over: **B3′ step 2's
+`ns-ir-prefix`/`ir-name-token` composition is for names that are IDENTITIES.**
+`StructDef.ir-name` needs it because that symbol identifies the type across the
+module. A macro's `jit-name` does not: it is a private JIT symbol already made
+unique by a counter, so it keeps deriving from the **bare** name, which also
+keeps a `/` out of `sanitize-for-ir`'s input. §9.7 predicted the composition and
+was wrong. Ask which of the two you have before copying the step.

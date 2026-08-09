@@ -4181,6 +4181,20 @@ EOF
 (import-use b5-elib)
 (export b5-exp-mac)
 EOF
+  cat > "$d/b5-eovl.nuc" <<'EOF'
+(ns b5ov)
+(defn b5-exp-ov (x:i32):i32 (return x))
+(defn b5-exp-ov (x:i32 y:i32):i32 (return (+ x y)))
+EOF
+  cat > "$d/b5-eovfac.nuc" <<'EOF'
+(ns b5ovfacade)
+(import-use b5-eovl)
+(export b5-exp-ov)
+EOF
+  cat > "$d/b5-eovm.nuc" <<'EOF'
+(import-use b5-eovfac)
+(defn main ():i32 (return 0))
+EOF
   cat > "$d/b5-em.nuc" <<'EOF'
 (import-prefixed b5-efac fac)
 (defn main ():i32
@@ -4188,19 +4202,137 @@ EOF
     (return (fac/b5-exp-fn v))))
 EOF
   cat > "$d/b5-emm.nuc" <<'EOF'
-(import-use b5-emac)
-(defn main ():i32 (return 0))
+(import-prefixed b5-emac fac2)
+(defn main ():i32 (return (fac2/b5-exp-mac 41)))
 EOF
   # B3′: a facade re-exports a TYPE, and a function whose signature names it.
   # Both are spelled through the facade's prefix in the consumer, which is the
   # whole point — the library's own namespace `b5e` is not in scope here.
   w1_run b5-export-type-facade "$d" "$d/b5-em.nuc" 41
-  # Still refused, and the diagnostic is still the specification: a macro is
-  # bare-keyed and globally identified, so re-exporting it would mean nothing.
-  w1_reject_multi b5-export-macro-refused "$d" "$d/b5-emm.nuc" \
-    "'b5-exp-mac' is a macro"
+  # Stage 15 B7: a macro re-exports too, and it EXPANDS through the facade's
+  # prefix. This pin was inverted — it used to assert the refusal, whose stated
+  # reason ("identified by a globally-unique bare name") was circular: a macro
+  # was bare-keyed only because macros had never been cut over to the
+  # canonicaliser. The run is the point; a compile-only check would pass on a
+  # macro that resolved but expanded to nothing.
+  w1_run b7-export-macro-facade "$d" "$d/b5-emm.nuc" 41
+  # What genuinely stays unexportable, and now for a reason that is true: an
+  # OVERLOADED name is deliberately merged across namespaces (§8.2's R2), so it
+  # is not keyed by namespace and a re-export would change nothing.
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/b5-eovm.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | grep -q ':0:'; then
+    echo "FAIL  b7-export-overload-refused (diagnostic reports line 0)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  elif printf '%s' "$err" | grep -qF "'b5-exp-ov' is a function" \
+    && printf '%s' "$err" | grep -qF "that kind is not keyed by namespace"; then
+    echo "PASS  b7-export-overload-refused"
+  else
+    echo "FAIL  b7-export-overload-refused"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+  fi
   rm -rf "$d"
 }
+
+# --- Stage 15 B7: macros resolve through the import environment ---------------
+# name-resolution.md §9.7 — the last kind on the bare-keyed path, and the rest of
+# defect #1. `g-macros` is now keyed by `qualify-name` and `find-macro` is a
+# reference resolver over the same candidate-key walk the six type registries
+# use, so a macro obeys §8.3 exactly like every other kind.
+#
+# Nothing in the tree exercises this: no macro anywhere in `src/`, `lib/` or
+# `examples/` is declared inside a namespaced file, which is also why B7 is
+# byte-identical for the whole tree.
+run_b7_qualified_macro() {
+  local d err
+  d="$(mktemp -d)"
+  cat > "$d/b7-mlib.nuc" <<'EOF'
+(ns b7ns)
+(defmacro b7-twice (x) `(+ ~x ~x))
+EOF
+  cat > "$d/b7-mpre.nuc" <<'EOF'
+(import-prefixed b7-mlib pm)
+(defn main ():i32 (return (pm/b7-twice 21)))
+EOF
+  w1_run b7-macro-prefixed "$d" "$d/b7-mpre.nuc" 42
+
+  # `import-use` binds both the unqualified name and the library's namespace
+  # (§8.3 row 1) — for a macro exactly as for everything else.
+  cat > "$d/b7-mflat.nuc" <<'EOF'
+(import-use b7-mlib)
+(defn main ():i32 (return (+ (b7-twice 20) (b7ns/b7-twice 1))))
+EOF
+  w1_run b7-macro-flattened "$d" "$d/b7-mflat.nuc" 42
+
+  # R3 for macros: a prefixed import does NOT put the library's own namespace in
+  # scope. Before B7 this "worked" for the wrong reason — every macro was one
+  # unit-global bare name, so no qualifier resolved and no qualifier was needed.
+  cat > "$d/b7-mns.nuc" <<'EOF'
+(import-prefixed b7-mlib pm)
+(defn main ():i32 (return (b7ns/b7-twice 21)))
+EOF
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/b7-mns.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | grep -qF "unknown: b7ns/b7-twice — 'b7ns' is not in scope in this file"; then
+    echo "PASS  b7-macro-ns-refused"
+  else
+    echo "FAIL  b7-macro-ns-refused (wrong or missing diagnostic)"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+  fi
+
+  # The did-you-mean now offers a macro spelling that COMPILES. Before B7,
+  # `binding-usable-spelling` refused to suggest anything for BK-MACRO — it was
+  # the last row it refused — because `p/mac` would have failed on the next
+  # compile. Cold path, so it needs a test that executes it.
+  cat > "$d/b7-mbare.nuc" <<'EOF'
+(import-prefixed b7-mlib pm)
+(defn main ():i32 (return (b7-twice 21)))
+EOF
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/b7-mbare.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | grep -q ':0:'; then
+    echo "FAIL  b7-macro-did-you-mean (diagnostic reports line 0)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  elif printf '%s' "$err" | grep -qF "did you mean 'pm/b7-twice'?"; then
+    echo "PASS  b7-macro-did-you-mean"
+  else
+    echo "FAIL  b7-macro-did-you-mean"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+  fi
+
+  # Three macro sources at once from inside a namespace: the prelude's `when`
+  # (reached by the walk's final `user` probe — a namespaced file must not lose
+  # the prelude), the file's OWN macro (slot 0, the current-namespace key), and
+  # another namespace's through a prefix. This is the case a per-kind key walk
+  # gets wrong if any one of its three slots is dropped.
+  cat > "$d/b7-mmid.nuc" <<'EOF'
+(ns b7mid)
+(import-prefixed b7-mlib pm)
+(defmacro b7-mid-mac (x) `(+ ~x 1))
+(defn b7-mid (n:i32):i32
+  (let (x:i32 0)
+    (when (> n 3) (set! x (b7-mid-mac (pm/b7-twice n))))
+    (return x)))
+EOF
+  cat > "$d/b7-mmm.nuc" <<'EOF'
+(import-prefixed b7-mmid md)
+(defn main ():i32 (return (md/b7-mid 20)))
+EOF
+  w1_run b7-macro-three-sources "$d" "$d/b7-mmm.nuc" 41
+
+  # Two namespaces may now each declare a macro of one bare name — the thing a
+  # single unit-global key made impossible. Under B4's redefinition rule these
+  # would have collided; they are two keys now, and each prefix reaches its own.
+  cat > "$d/b7-mlib2.nuc" <<'EOF'
+(ns b7ns2)
+(defmacro b7-twice (x) `(* ~x 3))
+EOF
+  cat > "$d/b7-mboth.nuc" <<'EOF'
+(import-prefixed b7-mlib pa)
+(import-prefixed b7-mlib2 pb)
+(defn main ():i32 (return (+ (pa/b7-twice 10) (pb/b7-twice 7))))
+EOF
+  w1_run b7-macro-two-namespaces "$d" "$d/b7-mboth.nuc" 41
+  rm -rf "$d"
+}
+spawn run_b7_qualified_macro
 
 # --- Stage 15 B3′: type identity is namespaced (R1, defects #4 and #7) --------
 # The headline: two namespaces may both define `Vector`, and one unit may use

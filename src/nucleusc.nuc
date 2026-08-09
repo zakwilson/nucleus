@@ -9401,13 +9401,40 @@
 ; Macro expansion (calls JIT-compiled macro functions at compiler runtime)
 ; ============================================================
 
-; Find a macro definition by name, or null.
-(defn find-macro (name:CStr):?ptr:MacroDef
+; Stage 15 B7 — macros are the last kind cut over to the canonicaliser
+; (name-resolution.md §9.7), so they get the same reference/key split every
+; other kind has (conventions.md, "a name-resolution rule has TWO entry
+; points"). It is unusually clean here: `find-macro` is the registry's ONLY
+; reader, and of its call sites exactly one — `emit-defmacro`'s redefinition
+; guard — holds a key rather than a source spelling.
+;
+; The KEY lookup: `key` is already canonical (`qualify-name` of the definer's
+; own name). The visibility filter stays on this side as well as the reference
+; side, and a define always finds its own entry regardless, because its
+; `src-ns` is `g-current-ns` at the moment it asks.
+(defn find-macro-exact (key:CStr):?ptr:MacroDef
   (doseq (mdef g-macros (VecIter ref:MacroDef))
-           (when (and (= (mdef name) name)
+           (when (and (= (mdef name) key)
                       (or (= g-priv-bindings 0)
                           (!= (binding-visible (mdef priv) (mdef src-ns)) 0)))
                  (return (as ptr mdef))))
+  (return null))
+
+; The REFERENCE resolver: `spelling` is a head symbol as written in the file
+; being compiled. Same candidate-key walk as the six type registries B3′ cut
+; over — the current namespace's key, then each namespace this file flattened,
+; then `user` — and a qualified spelling resolves through the import
+; environment alone, so `p/mac` works and the library's own namespace does not
+; (R3). The alias probe is what makes `(export some-macro)` reachable through a
+; facade; it is a single global compare for any program with no facade.
+(defn find-macro (spelling:CStr):?ptr:MacroDef
+  (dotimes (i (name-ref-key-count spelling))
+    (let (k:CStr (name-ref-key-at spelling i))
+      (when (!= k null)
+        (let (hit:?ptr:MacroDef (find-macro-exact k))
+          (when (!= hit null) (return hit))))))
+  (let (al:ptr (binding-alias-find spelling BK-MACRO))
+    (when (!= al null) (return (as ptr:MacroDef al))))
   (return null))
 
 ; Run one expansion of a macro call: invoke the JIT-compiled macro function
@@ -9732,7 +9759,13 @@
 (defn build-binding-kinds ():(ref (Vector (ref BindingKind)))
   (let (v:(ref (Vector (ref BindingKind))) (vector-new-in (addr-of g-arena-alloc)))
     ;                kind                noun                 nk           col nk? rereg?
-    (add-binding-kind v BK-MACRO          "a macro"            NK-MACRO      1   1   0)
+    ; Stage 15 B7: `reregisterable` 1. It was 0 with the justification that a
+    ; macro "is identified by a globally-unique bare name" — which was true only
+    ; because macros had never been keyed by namespace, i.e. the gap was being
+    ; quoted as the reason not to close it (name-resolution.md §11.6's
+    ; correction box). Now that `g-macros` is ns-keyed, a facade re-exports a
+    ; macro through the same alias table types and protocols use.
+    (add-binding-kind v BK-MACRO          "a macro"            NK-MACRO      1   1   1)
     (add-binding-kind v BK-SPECIAL        "a special form"     NK-SPECIAL    1   1   0)
     (add-binding-kind v BK-PRIMITIVE      "a built-in type"    NK-BUILTIN    1   1   0)
     (add-binding-kind v BK-GENERIC        "a function"         NK-FUNCTION   1   1   0)
@@ -9844,15 +9877,16 @@
     (when (= (strcmp ns g-current-ns) 0) (return (as ptr bare)))
     (when (= (strcmp ns "user") 0) (return (as ptr bare)))
     (when (!= (file-flattens-ns-named ns) 0) (return (as ptr bare)))
-    ; A `prefix/name` spelling is offered only for the registries where a
-    ; qualified reference actually resolves — `g-globals` (B2b), `g-protocols`
-    ; (B2a), the five type registries B3′ re-keyed, and `g-generics`, which B4
-    ; resolves through `Method.src-ns` rather than through a key. A MACRO is
-    ; still bare-keyed, so `p/mac` would be a suggestion that fails on the next
-    ; compile — the remaining half of defect #1, stated here rather than left as
-    ; a silent wrong hint.
+    ; A `prefix/name` spelling is offered for every registry where a qualified
+    ; reference actually resolves — `g-globals` (B2b), `g-protocols` (B2a), the
+    ; five type registries B3′ re-keyed, `g-generics` (B4, through
+    ; `Method.src-ns` rather than through a key) and `g-macros` (B7). Since B7
+    ; that is every row that HAS a `src-ns`; the rows this excludes are the ones
+    ; with no owning namespace at all — a special form, a built-in type name, a
+    ; compiler-minted `__fnty_N` — whose bare spelling is their only spelling and
+    ; which returned above.
     (when (or (or (or (= kind BK-GLOBAL) (= kind BK-PROTOCOL)) (= kind BK-GENERIC))
-              (or (or (= kind BK-STRUCT) (= kind BK-UNION))
+              (or (or (or (= kind BK-STRUCT) (= kind BK-UNION)) (= kind BK-MACRO))
                   (or (= kind BK-STRUCT-TEMPLATE)
                       (or (= kind BK-UNION-TEMPLATE) (= kind BK-ENUM)))))
       (let (p:ptr (file-prefix-for-ns ns))
@@ -10014,9 +10048,17 @@
 ; signature names a type the consumer has no way to spell.
 (defn binding-re-register (kind:i32 payload:ptr bare:CStr line:i32):void
   (let (row:ref:BindingKind (binding-row kind))
+    ; Stage 15 B7: the reason is stated per what is actually true of the
+    ; remaining rows, rather than as one claim about "a globally-unique bare
+    ; name". That phrasing cited §11.6 — a defect report, which says no such
+    ; thing — and for macros it was circular: a macro was bare-keyed only
+    ; because macros had never been cut over, so the gap justified itself. The
+    ; rows still 0 are the ones genuinely not keyed by namespace: an overloaded
+    ; name is merged across namespaces on purpose (§8.2's R2), and a special
+    ; form, a built-in type name and a `__fnty_N` have no owning namespace at all.
     (when (= (row reregisterable) 0)
       (die-at line
-        (fmt-2s "export: '%s' is %s — it is identified by a globally-unique bare name, so a re-export would not change how it resolves (name-resolution.md §11.6)"
+        (fmt-2s "export: '%s' is %s — that kind is not keyed by namespace, so a re-export would not change how it resolves\n  note: an overloaded name is deliberately merged across namespaces (name-resolution.md §8.2); a special form and a built-in type name have no owning namespace"
                 bare (row noun))))
     ; `g-globals` is keyed per entry, so a re-export is a second `scope-define` —
     ; and `scope-define` qualifies against the CURRENT namespace, which is the
@@ -12839,16 +12881,28 @@
       (guard-name-kind (name-node s) (ff line) NK-MACRO)
       ; Stage 15 B4 (R4): a second `defmacro` of one name used to append a second
       ; MacroDef that `find-macro`'s first-match scan could never reach — the
-      ; first definition won, silently. Macro names are bare-keyed (they are not
-      ; namespaced at all: the remaining half of defect #1), so this is also what
-      ; refuses two libraries' same-named macros.
-      (if-some (prevm (find-macro (name-node s)))
+      ; first definition won, silently.
+      ; Stage 15 B7: the probe is the KEY lookup, not the reference resolver —
+      ; this asks about the key `defmacro` is about to write. Routing it through
+      ; `find-macro` would consult the flattened-namespace walk and report an
+      ; unrelated namespace's macro as a redefinition of this one.
+      (if-some (prevm (find-macro-exact (as CStr (qualify-name (name-node s)))))
         (when (= (same-definition-site (prevm src-file) (prevm src-line) (ff line)) 0)
           (die-redefinition (name-node s) (ff line) BK-MACRO
                             (prevm src-file) (prevm src-line)))
         0)
       (let (macro-name:ptr (name-node s)
+            ; Stage 15 B7: the registry KEY is namespace-qualified, exactly as
+            ; every other kind's is (identity under `user`, so the tree is
+            ; unaffected). The BARE name still feeds `jit-name` below.
+            macro-key:CStr (as CStr (qualify-name (name-node s)))
             num-params:i32 (node-len params-node)
+            ; Stage 15 B7: deliberately the BARE name, not the key. A `jit-name`
+            ; is a private JIT symbol already made unique by its `_%d` counter,
+            ; so it never needs to encode a namespace — which means B3′ step 2's
+            ; `ns-ir-prefix`/`ir-name-token` composition is not wanted here, and
+            ; `sanitize-for-ir` keeps seeing a spelling with no `/` in it. (§9.7
+            ; predicted this would need the composition; measured, it does not.)
             jit-name:ptr (fmt-sd "__macro_%s_%d" (sanitize-for-ir macro-name) (unsafe/cast i32 (count g-macros))))
         ; Detect &rest variadic parameter (must be second-to-last in param list).
         (let (variadic:i32 0
@@ -12884,7 +12938,7 @@
           (when (>= (unsafe/cast i32 (count g-macros)) 256)
             (die-at (ff line) "defmacro: macro table full"))
           (let (mdef:ptr:MacroDef (as ptr:MacroDef (arena-alloc (sizeof MacroDef))))
-            (.set! mdef name macro-name)
+            (.set! mdef name (as ptr macro-key))
             (.set! mdef jit-name jit-name)
             (.set! mdef num-params pcount)
             (.set! mdef variadic variadic)
