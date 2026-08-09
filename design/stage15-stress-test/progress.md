@@ -841,7 +841,7 @@ escape hatch — reproduced by compiling `(defvar g:ptr:i32)` with
 
 ---
 
-## W9 — Reconciled at stage close: twenty-four defects found, six now fixed, eighteen open *(added 2026-08-01; extended through G-5's close 2026-08-02; items 21–24 added 2026-08-03; item 16 fixed in B4 2026-08-09; reported except where marked FIXED)*
+## W9 — Reconciled at stage close: twenty-four defects found, **ten** now fixed, fourteen open *(added 2026-08-01; extended through G-5's close 2026-08-02; items 21–24 added 2026-08-03; items 10 and 16 closed and item 22 measured closed 2026-08-09; items 1 and 5 fixed 2026-08-09)*
 
 **The original six are enumerated in [../global-init.md](../global-init.md)
 §7. Four more (7–10) were found measuring G-1 and re-verifying G-0/G-1's test
@@ -897,17 +897,28 @@ cross-namespace defect — which is the useful generalization to carry forward.
 Item 24 is the sibling asymmetry rather than the namespace one: **two**
 registries answer a name (`g-globals` and `g-generics`), and any path that
 consults only one of them has a hole wherever the other is the sole registrar.
-Total **twenty-four**, of which **five** are fixed (items 11, 12, 14, 17, 21)
-and **nineteen** open. All are pre-existing and independent of W1–W7; all were
+Total **twenty-four**, of which **ten** are fixed (items 1, 5, 10, 11, 12, 14,
+16, 17, 21, 22) and **fourteen** open.
+
+> **Re-measured 2026-08-09, at the close of the B series.** The counts above
+> drifted three times because items were closed by *other* work and the table was
+> not re-read. Every open item was re-probed against the current compiler:
+> 3, 4, 5, 7, 8, 9, 13, 15, 18, 19, 20, 23 and 24 all still reproduce, verbatim.
+> **Item 22 is closed** — not by anyone working on it, but by B2b's `user`
+> fallback in `globals-lookup-ref`, which is exactly the missing "bare fallback"
+> the item names. **Item 23's symptom changed** and its status did not; see its
+> row. Items 1 and 2 were confirmed still broken while running `make lib-objs`
+> during B4. The lesson is the one the drift itself demonstrates: a defect table
+> maintained by hand goes stale silently, and re-probing costs minutes. All are pre-existing and independent of W1–W7; all were
 hit while measuring, verifying, or documenting, not synthesized.
 
 | # | Defect | Note |
 |---|---|---|
-| 1 | **`make lib-objs` / `make lib-so` broken**, reproducing on the committed boot compiler | `lib/arena.nuc` and `lib/node.nuc` die `duplicate definition of 'arena-init' / 'alloc-node'` (the auto-prepended prelude chain imports the entry file itself, and the entry file is on no dedup list); `lib/reader.nuc` dies `undefined: stderr` |
+| 1 | **`make lib-objs` / `make lib-headers` / `make lib-cheaders` broken — FIXED 2026-08-09** | `lib/arena.nuc` and `lib/node.nuc` died `duplicate definition of 'arena-init' / 'alloc-node'`; `lib/reader.nuc` died `undefined: stderr`; nine files died under `--emit-nuch`. See the W9-1 note below for the cause, which the recorded hypothesis had half right. **`make lib-so` still fails, for item 2's reasons only** |
 | 2 | **Two separately compiled Nucleus objects cannot be linked** | each inlines the whole prelude, so `build/lib/vector.o` and `build/lib/hashmap.o` share **7** duplicate public global definitions (`@g-arena`, `@g-intern-table`, …) and `ld` refuses. `exclude-prelude` works; a non-freestanding library is currently unlinkable |
 | 3 | **`--emit-cheader` does not export globals** | a `defvar` reaches the `.nuch` as `(extern …)` but gets no `extern T name;` line in the C header, so a C consumer cannot reach it |
 | 4 | **`--emit-cheader` emits hyphenated, invalid C identifiers** | see the precision note below |
-| 5 | **`(exclude-prelude)` in an *imported* file dies `unknown top-level form`** | rather than being ignored or diagnosed as "must be the first form of the unit". `strip-exclude-prelude` (`nucleusc.nuc:12375`) is consulted only for the entry file |
+| 5 | **`(exclude-prelude)` in an *imported* file dies `unknown top-level form` — FIXED 2026-08-09, as a prerequisite of item 1** | rather than being ignored or diagnosed as "must be the first form of the unit". `strip-exclude-prelude` is consulted only for the entry file. Item 1's root hoist **re-reads the root file**, so a root that opts out of the prelude reached this the moment the hoist fired — the directive belongs to the unit, not the file, and `emit-toplevel-forms`' dispatch now ignores it (the ruling the item's own note preferred). This is the only shape that made the fix mandatory rather than merely nice; a hand-written `(exclude-prelude)` library import hit it too |
 | 6 | **`undefined: X — not defined anywhere in this compilation unit`** for a name that *is* in the unit, merely unprocessed | **overlaps W8's G-0; not filed twice.** G-0 has since closed the cause for the two import shapes it covers (plain and `import-use` symbol imports); the residual surface is string-path `.nuc` imports and `.nuch` headers, filed under W1 |
 | 7 | **`pkind-flow-check`'s `CStr` carve-out accepts a null through a non-null `(ref T)`**, found measuring G-1 | only diagnoses a `TY-PTR` source, so `(defvar g:ptr:T (as CStr null))` compiles to a null in a non-null slot — and so does the identical *local*, by this compiler and the pre-G-1 boot alike; the renderer matches the chokepoint exactly, so the carve-out itself is what is wrong, in both positions at once |
 | 8 | **`emit-as`'s int→int rule ignores the literal value on the `Val`**, found measuring G-1 | `(as i8 5)` is refused as lossy even though 5 fits — the same over-strictness [../stage14/int-widening.md](../stage14/int-widening.md)'s LW-4 fixed elsewhere; a ~3-line shared fix, declined here because it would have made G-1's bootstrap diff unprovable |
@@ -924,8 +935,8 @@ hit while measuring, verifying, or documenting, not synthesized.
 | 19 | **`type-size` has no `TY-FN` case**, found alongside the Interlude/G-4 | Falls through to the default `(return 1)` arm (`type-utils.nuc:359-360`), so every fn-pointer slot emits `align 1` — conservative, not a miscompile, since `abi-alignof`/`abi-sizeof` already answer correctly and struct layout is unaffected. Confirmed: `build/nucleusc --emit-llvm` on `(defvar hh:(fn i32)(i32) null)` emits `@hh = global ptr null, align 1`. Not previously in either defect list |
 | 20 | **`coerce-int-val` has no `raw`→`TY-FN` case**, found in G-5 | `(let (f:(fn i32)(i32) null) …)` still dies `let: init type mismatch for 'f'` (confirmed against `build/nucleusc`) though the identical spelling at a `defvar` now compiles cleanly since the Interlude. Not previously in either defect list |
 | 21 | **`(dyn ns/Proto)` is unusable across a namespace — FIXED 2026-08-03**, found building the defect-11 fixture | `conformance-add`/`-lookup`/`-args` canonicalized their keys with `strip-ns-qualifier` (Stage 12 N4 decision 9) while `protocol-lookup` matched the **raw** spelling, so `(extend Cat dp/Describe)` recorded the conformance under bare `Describe`, `admit-erased-conformance` found it and admitted the box, and `dyn-vtable-method-irname` then reported *"'dp/Describe' is not a declared protocol"* for a protocol that was both declared and conformed to. **The user's ruling picks the direction**: the two registries agree by making conformances keep the qualifier — a protocol is a namespaced entity — **not** by making `protocol-lookup` strip too, which would have made protocol names effectively global. **The crux is that decision 9's strip covered two different questions and only one of them was about types.** Of the nine `strip-ns-qualifier` sites, five are the TYPE half and are **unchanged** (`conformance-lookup`/`-args`/`-add`'s first argument, `verify-conformance-params`'s `typename`, `emit-extend`'s subject and its `(extend (Vector T) …)` template head, plus `union-registry.nuc:289`'s `lookup-struct`) — a qualified type reference still resolves to the same `StructDef` from any namespace, which is decision 9's actual claim. Four are the PROTOCOL half and now resolve through the namespaced registry instead (`conformance-*`'s second argument, `proto-super-add`'s **both** arguments, `verify-conformance-params`'s `proto-name`, `emit-extend`'s protocol). **`emit-extend`'s subject is both**: `(extend Describe Show)` puts a protocol in the type position, so the inheritance branch now resolves the raw spelling through `protocol-lookup` while `typename` keeps the type strip. Mechanism: `protocol-new` keys on `qualify-name` (identity under `user`); `protocol-lookup` probes qualified-then-bare (the same shape as W5e's private-name probe — the bare fallback is what lets a namespaced file still see `Clone`/`Eq`/`Ord`); registration uses an **exact** probe (`protocol-lookup-exact`) for the reason `generic-register-method` does, or `(ns dp) (defprotocol Clone …)` would fold into the prelude's; and one canonicalizer, `protocol-canon-name`, is what every protocol-keyed registry calls. It is placed in `nucleusc.nuc` rather than beside `protocol-lookup` because `union-registry.nuc` — imported *before* `generics.nuc` — needs it: **`dyn-type` must memoize on the canonical name**, or `(dyn Describe)` inside `(ns dp)` and `(dyn dp/Describe)` outside it would build two `StructDef`s and `type-eq` would call one protocol two incompatible types. `&where` constraint names are canonicalized where they are **written** (`parse-where-constraints`), not at each lookup, because a constraint is checked long afterwards under a different `g-current-ns`. **A second, smaller defect surfaced and is fixed with it**: once the two registries agreed, the "is not a declared protocol" message became unreachable — `emit-box-value` asks about *conformance* first, so `(dyn Nope)` reported the misleading `type 'Cat' does not conform to the protocol`. Both askers now CALL one `dyn-require-protocol`, and box construction asks existence first. `tests/fixtures/w9-dyn-not-protocol.nuc` was **re-pointed, not deleted**, exactly as its own header instructed: its `extend` now succeeds (it is the fix) and the `dyn` names an undeclared `dp/Missing`. **Census: no existing program changes** — every `defprotocol` in `src/`, `lib/`, `examples/` and `tests/` is in `user`, where `qualify-name` is the identity. `examples/w9-dyn-ns.nuc` links and runs, asserting the dispatched results `105/207/309`: a qualified reference under a *different* import prefix, a bare reference inside its own namespace, and two namespaces each declaring a `Describe` with one type conforming to both. Tests 421 → **424 PASS / 0 FAIL**; `make bootstrap` **byte-identical on the first pass** (predicted: protocol *method* ir-names come from `Generic.ir-prefix`, which this does not touch); sweep against a compiler built from HEAD's source: **223 byte-identical IR, 0 differing**, and across 133 rejecting programs **0 pre-existing diagnostics moved** — the one REGRESSED and one NEWLY-COMPILES entry are the new fixtures, and the REGRESSED one is the collision the ruling exists to create (the old compiler silently accepted a bare `Describe` with two in scope). `make abi-test`/`make layout-test`/`make avr-test` green. **Three unrelated pre-existing defects found in passing, none fixed — filed as items 22, 23 and 24** |
-| 22 | **A file with an explicit `(ns …)` cannot box a value at all**, found building item 21 | `emit-box-struct-move` gates on `(scope-lookup scope "default-allocator")`, and `scope-lookup` qualifies a *global* key against `g-current-ns` with **no bare fallback** — so inside `(ns dp)` it probes `dp/default-allocator`, misses, and dies `type-erasure: boxing a value requires (import-use allocator)` however many times the file imports it. Confirmed identical on the committed pre-fix compiler, so it is pre-existing and orthogonal to item 21 (which is why `examples/w9-dyn-ns.nuc` boxes in the consumer, not in the library). The general shape is broader than boxing: any compiler site that resolves a *known* global by name through `scope-lookup` is namespace-sensitive in a way its author did not intend. Note `generic-lookup` is unaffected — it keys on the raw name — which is why ordinary cross-namespace *calls* work and hides how narrow the working path is |
-| 23 | **Two namespaces defining the same function name collapse into one generic**, found building item 21 | `generic-lookup`/`generic-register-method` key on the **raw** name (unlike `scope-define`, which qualifies), so `(ns qa) (defn describe …)` and `(ns qb) (defn describe …)` become one `Generic` named `describe` with two methods — mangled under whichever namespace was seen *first*, emitting `@qa__describe` and `@qa__describe.pDog` for a method defined in `qb`. Confirmed identical on the committed pre-fix compiler. Whether the fix is to namespace the generic registry or to keep it raw and namespace only the mangling is a real design question, not a typo; item 21 deliberately did not touch it, and `lib/nsdescribe2.nuc` names its protocol method `tag-of` rather than `describe` specifically to keep the two concerns separate in the tests |
+| 22 | **A file with an explicit `(ns …)` cannot box a value at all**, found building item 21 — **FIXED, measured 2026-08-09** (closed by B2b, not by work on this item) | `emit-box-struct-move` gates on `(scope-lookup scope "default-allocator")`, and `scope-lookup` qualifies a *global* key against `g-current-ns` with **no bare fallback** — so inside `(ns dp)` it probes `dp/default-allocator`, misses, and dies `type-erasure: boxing a value requires (import-use allocator)` however many times the file imports it. Confirmed identical on the committed pre-fix compiler, so it is pre-existing and orthogonal to item 21 (which is why `examples/w9-dyn-ns.nuc` boxes in the consumer, not in the library). The general shape is broader than boxing: any compiler site that resolves a *known* global by name through `scope-lookup` is namespace-sensitive in a way its author did not intend. Note `generic-lookup` is unaffected — it keys on the raw name — which is why ordinary cross-namespace *calls* work and hides how narrow the working path is | **Closed by B2b's cut-over of `g-globals` to the canonicaliser:** `globals-lookup-ref` probes the current namespace's key, then each flattened namespace, then **`user`** — and that last probe is precisely the "bare fallback" this item says is missing. Re-measured: a `(ns …)` library that constructs a `(dyn P)` box compiles, links and runs. |
+| 23 | **Two namespaces defining the same function name collapse into one generic**, found building item 21 | `generic-lookup`/`generic-register-method` key on the **raw** name (unlike `scope-define`, which qualifies), so `(ns qa) (defn describe …)` and `(ns qb) (defn describe …)` become one `Generic` named `describe` with two methods — mangled under whichever namespace was seen *first*, emitting `@qa__describe` and `@qa__describe.pDog` for a method defined in `qb`. Confirmed identical on the committed pre-fix compiler. Whether the fix is to namespace the generic registry or to keep it raw and namespace only the mangling is a real design question, not a typo; item 21 deliberately did not touch it, and `lib/nsdescribe2.nuc` names its protocol method `tag-of` rather than `describe` specifically to keep the two concerns separate in the tests | **Re-measured 2026-08-09: the symptom changed, the defect did not.** B4 gave generics a qualified spelling by *filtering* on `Method.src-ns` (R2 keeps one `Generic` per bare name with methods merged), so two namespaces whose `describe`s have **different** signatures now coexist and `qa/describe` / `qb/describe` each reach their own. Two with the **same** signature no longer collapse silently — they are a located `duplicate definition` error naming both files. Better than a silent wrong dispatch, and still not what the item wants: two namespaces genuinely cannot each define `describe (x:i32):i32`. Closing it means namespacing `g-generics`, which R2 ruled against on multimethod grounds — so this is a *ruling to revisit*, not a bug to fix. See name-resolution.md §8.2 and §9.6's last section. |
 | 24 | **`(dyn P)` cannot box a type whose implementation arrives through a `.nuch` `declare`**, found verifying item 21 | `dyn-vtable-method-irname` resolves the protocol method with `generic-lookup`, but `emit-nuch-declare-import` registers a solitary imported function as a **`Sym` in `g-globals` only** — it never creates a `Generic` — so the box site dies `(dyn Describe): no method 'describe' is defined` for a method that is declared, defined and linkable. Confirmed identical in the `user` namespace and on the committed pre-fix compiler, so it is pre-existing and orthogonal to item 21 (which the same probe *passes*: the protocol resolves, and the failure is one check later). Note the `.nuch` round-trip itself is correct — the producer emits `(ns dp)` ahead of the `defprotocol`/`extend`, and the importer re-registers the protocol under `dp/Describe`. The same two-registries-answer-one-name asymmetry `context/conventions.md` records for private names (`scope-lookup` vs `generic-lookup`) is the underlying shape |
 
 **Defect 4, with the precision that says what the fix is.** Independently
@@ -957,6 +968,96 @@ than reopening this defect.
 multi-TU mode `global-init.md` §2.4 relies on for its finding that an
 initializer list reachable only from the consumer's `main` cannot initialize a
 library.
+
+### W9 item 1 as fixed *(2026-08-09)* — the ROOT file joins the import graph
+
+`make lib-headers`, `make lib-cheaders` and `make lib-objs` all succeed;
+`make lib-so` still fails, for **item 2's reasons only** (each object inlines
+the whole prelude, so `vector.o` and `combinators.o` both define `vector-oom`,
+`next.pIntRangeIter`, …). Nothing here bears on item 2 — it stays an
+architectural question about how the prelude participates in a multi-TU build.
+
+**Cause.** The recorded hypothesis — "the auto-prepended prelude chain imports
+the entry file itself, and the entry file is on no dedup list" — is right about
+the *mechanism* and incomplete in three ways that each cost a separate fix:
+
+1. **It is two omissions, not one, and the recorded symptom is only the first.**
+   The root is absent from `g-prescan-sigs` (so `prescan-imported-signatures`
+   re-registered its signatures, and `generic-register-method` appends
+   unconditionally → `duplicate definition of 'arena-init'`, blamed at the file's
+   own line) **and** from `g-importing` (so `do-import` would then have read and
+   emitted the file a *second time*, duplicating every `define`). Only the first
+   was visible, because it fires first and aborts. The `g-importing` half is what
+   `w9-root-cycle-skip-single-emission` pins.
+2. **A cycle skip on the root is wrong, not merely conservative — and that is
+   where the design work was.** Pushing the root onto `g-importing` makes the
+   re-entry take W1d's existing cycle path, which fixed `arena`/`node` and
+   immediately *regressed* `lib/macros.nuc`: skipping macros' body means
+   `lib/arena.nuc` never sees `when`. A cycle deliberately does not carry macros
+   — but here the "cycle" is one the auto-prelude created, and the skipped file
+   is exactly the one holding what the rest of the chain is about to use. The
+   resolution is a **hoist**: `do-import` emits the root *there*, at the first
+   point the unit reaches it, and the depth-1 loop stops because its own path is
+   now on `g-imported`. It is guarded by a one-shot window (`g-root-hoist-ok`,
+   armed before the depth-1 loop, cleared after the loop's first iteration),
+   because hoisting after the root has emitted any of its own forms would emit
+   those forms twice. The auto-prelude import *is* that first iteration, which is
+   why the window is exactly wide enough and no wider. Outside it, the ordinary
+   cycle skip still applies.
+3. **`lib/reader.nuc` was not the same defect at all.** It is not a library: it
+   reads and writes `g-src`/`g-pos`/`g-line`/`g-source-path`/`g-peek`/
+   `g-interactive`/`g-mono-context`, which `src/nucleusc.nuc` defines — a fact
+   `context/build.md` had already recorded. It is now **`src/reader.nuc`**,
+   beside `repl.nuc`/`cheader.nuc`/`format.nuc`, which is the same call made for
+   the same reason. `lib/` means "compiles on its own"; that is precisely the
+   invariant `make lib-objs` asserts, and the new
+   `w9-lib-emit-llvm`/`-nuch`/`-cheader` units assert it for every file.
+
+**A fourth defect the record did not have: `make lib-headers` was broken for a
+completely different reason, and worse than reported.** The brief cited one file
+(`lib/char.nuc`, `(Result T E) template not in scope`); the real count was
+**nine**, and the cause is that `--emit-nuch` was *exempted from the prelude*
+and `emit-nuch-header` processed no imports at all. A `.nuch` exports
+signatures, and a signature names types — so `Node`, `StrView`, `String`,
+`(Maybe T)` and `!T`'s `(Result T E)` were all unresolvable. Fixed by dropping
+the exemption and giving `emit-nuch-header` the two prescans
+`emit-toplevel-forms` runs for the same reason (`prescan-file-imports`,
+`prescan-imported-types`). `--emit-cheader` keeps the exemption deliberately: it
+exports the C-representable subset, which cannot name a prelude type. The three
+committed headers (`lib/mathlib.nuch`, `lib/boxlib.nuch`) regenerate
+byte-identically.
+
+**Files.** `src/nucleusc.nuc` (the root push + hoist window + loop exit,
+`import-reentry-hoists-root`, the `exclude-prelude` dispatch case, the
+`--emit-nuch` prelude), `src/nuch.nuc` (two prescans), `lib/reader.nuc` →
+`src/reader.nuc`, `Makefile` (`COMPILER_DEPS`), `tests/run-tests.sh` (five new
+units, seven PASS lines).
+
+**Verification.** `make test` **499 PASS / 0 FAIL** (492 before, +7 new lines).
+`make bootstrap` reaches its fixed point (`stage1.ll == stage2.ll`) and stage 2
+compiles and runs `hello.nuc` — no reconverge needed, since the change moves no
+IR for any unit that compiled before. `make abi-test` / `make layout-test` /
+`make avr-test` green; `riscv-test` / `riscv-abi-test` SKIP (the container's
+known missing `libc6-dev-riscv64-cross`). `resolution-matrix.sh --check`
+unchanged (43 cells). **Sweep** against a compiler built from a clean `HEAD`
+worktree, over `examples/` + `lib/` + `src/reader.nuc` (182 files): **176
+byte-identical, 2 differing, 2 newly compiling (`lib/arena.nuc`,
+`lib/node.nuc`), 0 regressed, 2 failing under both.** Both differences are the
+*removal* of the double emission and nothing else: `lib/macros.nuc` loses 88
+lines, all of them `@.str.N` constants from the second copy of the file, with
+its 15 `define`s unchanged and zero added lines; `lib/prelude.nuc` loses exactly
+one blank separator line. The two still-failing files are
+`examples/comb-shapes.nuc` (`as: lossy conversion from usize to i32`,
+pre-existing and unrelated) and `src/reader.nuc` (not a library, by the ruling
+above — and no longer built by `make lib-objs`). A second sweep over the 185
+rejection fixtures' stderr: **185 identical, 0 changed**.
+
+**Known limit, deliberately not widened.** Path identity throughout the import
+machinery is string equality on the *spelling*, so a root compiled by an
+absolute path while its importers resolve a relative one is not recognised as
+the same file. That is pre-existing (`g-imported` has always keyed this way) and
+the fix inherits it rather than introducing it; canonicalising would move every
+path string in every diagnostic.
 
 ---
 

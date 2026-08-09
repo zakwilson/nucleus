@@ -1,0 +1,11 @@
+; .nuch header for lib/allocator.nuc
+(defprotocol Allocator (alloc ((self (ref Self)) size:usize align:usize) (raw ui8)) (realloc ((self (ref Self)) (p (raw ui8)) old:usize new:usize align:usize) (raw ui8)) (free ((self (ref Self)) (p (raw ui8)) size:usize align:usize) :void))
+(defenum AllocKind ALLOC-LIBC ALLOC-ARENA)
+(defstruct AllocHandle (kind i32) (data ptr))
+(declare alloc-handle-alloc ((h (ref AllocHandle)) (size usize) (align usize)) (raw ui8))
+(declare alloc-handle-realloc ((h (ref AllocHandle)) (p (raw ui8)) (old usize) (new usize) (align usize)) (raw ui8))
+(declare alloc-handle-free ((h (ref AllocHandle)) (p (raw ui8)) (size usize) (align usize)) :void)
+(extern (g-default-alloc AllocHandle))
+(declare default-allocator () :ref:AllocHandle)
+(declare libc-allocator ((h (ref AllocHandle))) :ref:AllocHandle)
+(declare arena-allocator ((h (ref AllocHandle))) :ref:AllocHandle)

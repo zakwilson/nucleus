@@ -1,0 +1,6 @@
+; .nuch header for lib/nsdescribe.nuc
+(ns dp)
+(defprotocol Describe (describe ((self (ref Self))) i32))
+(defstruct Fox (n i32))
+(declare describe ((self (ref Fox))) :i32)
+(extend Fox Describe)

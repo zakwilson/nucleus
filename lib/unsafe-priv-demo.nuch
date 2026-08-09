@@ -1,0 +1,2 @@
+; .nuch header for lib/unsafe-priv-demo.nuc
+(declare pub-double ((x i32)) :i32)

@@ -31,7 +31,7 @@ Documentation for the current state of the language lives in the docs directory.
 
 Add comments to compiler code only when necessary to explain why a particular implementation was chosen, so that future maintainers can make an informed decision about whether to revisit the decision, or to explain an implemantion that is non-obvious to a competent developer. Comments should be terse and use clear language.
 
-Prefer short references to design documents over a paragraph of explanation.
+**Keep comments terse**. Use a short sentence and a reference to a design document when possible.
 
 ## Context files
 

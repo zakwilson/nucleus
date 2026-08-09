@@ -1,6 +1,6 @@
 ; Stage 14 SM-5 negative fixture: the diagnostic backstop.
 ;
-; `%` is legal in a Nucleus symbol (lib/reader.nuc's is-sym-char is permissive
+; `%` is legal in a Nucleus symbol (src/reader.nuc's is-sym-char is permissive
 ; — only whitespace, parens, quote, semicolon, and []{} terminate a symbol —
 ; so `weird%name` lexes as one TOK-SYMBOL) but illegal in an unquoted LLVM
 ; identifier body ([A-Za-z0-9$._-] only). ir-name-token only maps `?`/`!`, so

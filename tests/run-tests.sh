@@ -1043,6 +1043,127 @@ w1_reject_multi() {  # <name> <dir> <main.nuc> <pattern>
   fi
 }
 
+# --- Stage 15 W9 item 1: the compilation unit's ROOT file joins the import
+# identity lists ------------------------------------------------------------
+# Nothing imports the entry point, so it used to be on neither `g-prescan-sigs`
+# nor `g-importing` — and the auto-prepended prelude reaches back into
+# `lib/node.nuc` / `lib/arena.nuc`, so compiling one of those as the entry file
+# paid for the omission twice: a second `prescan-defn-signatures` over the file
+# (a duplicate-overload error against its OWN definitions), and, past that, a
+# second emission of every `define` in it.
+#
+# The two units below pin the shape with hand-written files, so the guard is
+# tested independently of whatever the prelude happens to import. Both roots
+# carry an OVERLOADED name — that is what makes the prescan half observable, and
+# it is exactly how `lib/arena.nuc` failed. Both fail on the committed boot
+# compiler with `duplicate definition of 'dup-fn' … already defined at
+# <same file>:<same line>`.
+
+# Assert a program compiles, links, runs with the expected status, AND that its
+# module defines every symbol exactly once. The exit status alone would not
+# catch a double emission — LLVM would, but only at the link step, and the
+# duplicate-signature error fires first and hides it.
+w9_run_single_emission() {  # <name> <dir> <main.nuc> <expected-status>
+  local name="$1" d="$2" mainsrc="$3" want="$4" dup ll
+  w1_run "$name" "$d" "$mainsrc" "$want"
+  ll="$d/$name.ll"
+  if ! ./build/nucleusc -I "$d" --emit-llvm "$mainsrc" >"$ll" 2>/dev/null; then
+    echo "FAIL  $name-single-emission (compile error)"
+    return 0
+  fi
+  # `|| true` on each pipeline: `set -euo pipefail` is in force, and a grep that
+  # matches nothing exits 1, which would kill the unit mid-way and lose its
+  # second PASS line silently (the harness only flags a result file that is
+  # entirely empty).
+  dup="$(grep -oE '^define [^@]*@[-A-Za-z0-9_.$]+' "$ll" | sed 's/.*@//' | sort | uniq -d || true)"
+  dup="$dup$(grep -oE '^@[-A-Za-z0-9_.$]+ = (global|constant)' "$ll" | sed 's/ =.*//' | sort | uniq -d || true)"
+  if [ -z "$dup" ]; then
+    echo "PASS  $name-single-emission"
+  else
+    echo "FAIL  $name-single-emission (emitted twice: $(printf '%s' "$dup" | tr '\n' ' '))"
+  fi
+}
+
+# The re-entry lands while the root has emitted none of its own forms, so
+# `do-import` HOISTS the root: it is emitted there, and the depth-1 loop stops
+# because its own path is now on `g-imported`. This is the shape the auto-prelude
+# creates for `lib/macros.nuc` / `lib/arena.nuc`, where a plain cycle skip is not
+# merely suboptimal — the skipped file holds the macros the rest of the chain is
+# about to use. `(exclude-prelude)` is how a hand-written test reaches the same
+# window; with the prelude prepended, form 0 is the prelude import.
+run_w9_root_hoist() {
+  local d
+  d="$(mktemp -d)"
+  printf '(import-use w9h-main)\n(defn lib-fn ():i32 (return (dup-fn 2 3)))\n' > "$d/w9h-lib.nuc"
+  printf '(exclude-prelude)\n(import-use w9h-lib)\n(defn dup-fn (a:i32):i32 (return a))\n(defn dup-fn (a:i32 b:i32):i32 (return (_+ a b)))\n(defn main ():i32 (return (lib-fn)))\n' > "$d/w9h-main.nuc"
+  w9_run_single_emission w9-root-hoist "$d" "$d/w9h-main.nuc" 5
+  rm -rf "$d"
+}
+
+# The same cycle, with one of the root's own definitions emitted BEFORE the
+# back-import. Hoisting there would emit that definition a second time, so the
+# window is shut and the re-entry takes W1d's ordinary cycle skip instead — which
+# must still leave exactly one copy of everything. This is the half that would
+# regress if the hoist were widened without the guard.
+run_w9_root_cycle_skip() {
+  local d
+  d="$(mktemp -d)"
+  printf '(import-use w9c-main)\n(defn lib-fn ():i32 (return (dup-fn 2 4)))\n' > "$d/w9c-lib.nuc"
+  printf '(exclude-prelude)\n(defn dup-fn (a:i32):i32 (return a))\n(defn dup-fn (a:i32 b:i32):i32 (return (_+ a b)))\n(import-use w9c-lib)\n(defn main ():i32 (return (lib-fn)))\n' > "$d/w9c-main.nuc"
+  w9_run_single_emission w9-root-cycle-skip "$d" "$d/w9c-main.nuc" 6
+  rm -rf "$d"
+}
+
+# The real target: `make lib-objs` / `make lib-headers` / `make lib-cheaders`.
+# Every file in lib/ must compile ON ITS OWN in all three emit modes — that is
+# what makes lib/ a library directory rather than a pile of compiler fragments
+# (which is why the reader moved to src/). Four of these files are inside the
+# prelude's own import closure (prelude → macros, node → arena), so they are the
+# ones the root-reentry bug hit; the rest guard the `--emit-nuch` half, which
+# skipped the prelude entirely and so could not resolve `Node`, `StrView`,
+# `String`, `(Maybe T)` or the `!T` sugar's `(Result T E)` in an exported
+# signature.
+run_w9_lib_standalone() {
+  local f d bad body ll dup
+  d="$(mktemp -d)"
+
+  bad=0; body=""
+  for f in lib/*.nuc; do
+    ll="$d/$(basename "$f" .nuc).ll"
+    if ! ./build/nucleusc --emit-llvm "$f" >"$ll" 2>"$d/err"; then
+      bad=1; body="${body}    ${f}"$'\n'"$(sed 's/^/      /' "$d/err")"$'\n'
+      continue
+    fi
+    dup="$(grep -oE '^define [^@]*@[-A-Za-z0-9_.$]+' "$ll" | sed 's/.*@//' | sort | uniq -d || true)"
+    if [ -n "$dup" ]; then
+      bad=1
+      body="${body}    ${f} emitted twice: $(printf '%s' "$dup" | tr '\n' ' ')"$'\n'
+    fi
+  done
+  if [ "$bad" -eq 0 ]; then echo "PASS  w9-lib-emit-llvm"
+  else echo "FAIL  w9-lib-emit-llvm"; printf '%s' "$body"; fi
+
+  bad=0; body=""
+  for f in lib/*.nuc; do
+    if ! ./build/nucleusc --emit-nuch "$f" >/dev/null 2>"$d/err"; then
+      bad=1; body="${body}    ${f}"$'\n'"$(sed 's/^/      /' "$d/err")"$'\n'
+    fi
+  done
+  if [ "$bad" -eq 0 ]; then echo "PASS  w9-lib-emit-nuch"
+  else echo "FAIL  w9-lib-emit-nuch"; printf '%s' "$body"; fi
+
+  bad=0; body=""
+  for f in lib/*.nuc; do
+    if ! ./build/nucleusc --emit-cheader "$f" >/dev/null 2>"$d/err"; then
+      bad=1; body="${body}    ${f}"$'\n'"$(sed 's/^/      /' "$d/err")"$'\n'
+    fi
+  done
+  if [ "$bad" -eq 0 ]; then echo "PASS  w9-lib-emit-cheader"
+  else echo "FAIL  w9-lib-emit-cheader"; printf '%s' "$body"; fi
+
+  rm -rf "$d"
+}
+
 # The headline: two files that import each other, compiled from either end.
 # `w1-ca-fn 3` walks a→b→a→b and returns 2; `w1-cb-fn 3` walks b→a→b→a and
 # returns 1, so the two orders cannot pass by accident with one shared answer.
@@ -3600,6 +3721,10 @@ spawn run_w1d_cycle_diagnoses
 spawn run_w1d_path_prefix
 spawn run_w1_deferred_union_payload
 spawn run_w1_late_overload_symbol
+# W9 item 1: the unit's ROOT file is a member of the import graph too.
+spawn run_w9_root_hoist
+spawn run_w9_root_cycle_skip
+spawn run_w9_lib_standalone
 # W1c: the diagnostic surface. The did-you-mean tier it sits above is pinned by
 # w4a-suggest-spelling; the note deliberately suppresses that tier (they would
 # otherwise offer two diagnoses of one failure), which is why the suggestion
