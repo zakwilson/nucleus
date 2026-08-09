@@ -575,8 +575,19 @@
 ; skips its own protocol/signature prescan for a path on this list.
 (defvar g-prescan-sigs:ptr)
 ; Stage 15 W1c: the compilation unit's root source path, recorded by
-; `emit-toplevel-forms` at depth 1. Diagnostic-only — see `path-in-unit`.
+; `emit-toplevel-forms` at depth 1. Since W9 item 1 it is also load-bearing: the
+; root joins `g-prescan-sigs`/`g-importing`, and `do-import` compares against it
+; to decide whether a re-entry into the root may be hoisted (see below).
 (defvar g-unit-entry-path:ptr)
+; Stage 15 W9 item 1: may an import that re-enters the unit's ROOT file emit it
+; *there*, rather than taking W1d's cycle skip? Only while the root has emitted
+; none of its own top-level forms — otherwise the hoist would emit the forms
+; already processed at depth 1 a second time. `emit-toplevel-forms` arms it just
+; before its depth-1 loop and clears it at the end of the loop's first iteration;
+; the auto-prepended `(import-use prelude)` is that first iteration, which is
+; exactly the window the prelude's own libraries (`node`, `arena`, `macros`) need
+; when one of them is the file being compiled.
+(defvar g-root-hoist-ok:i32 0)
 ; Stage 15 W1d (Option 2): every circular import that `do-import` *skipped*
 ; instead of erroring. One Node cell per skip: `s` = the path that was already
 ; in progress (the cycle partner), `car` = the path of the file whose `import`
@@ -859,7 +870,11 @@
 ; `make-vec`/`mkvec`/`mkhash` cast-over-arena hole is retired).
 
 ; ============================================================
-; Reader — imported from lib/reader.nuc
+; Reader — imported from src/reader.nuc. It lives in src/, not lib/, for the
+; same reason repl.nuc and cheader.nuc do: it reads and writes the compiler's own
+; globals (g-src/g-pos/g-line/g-source-path/g-peek/g-interactive/g-mono-context),
+; so it is a fragment of this translation unit rather than a standalone library.
+; `lib/` means "compiles on its own" — that is what `make lib-objs` asserts.
 ; ============================================================
 
 (import-use reader)
@@ -14324,7 +14339,10 @@
   ; calls us; the outermost unit's own path is never on the list, since the walk
   ; only records *imported* files). Registration is not idempotent — see
   ; g-prescan-sigs — so the answer decides whether the two prescans run at all.
-  (let (sigs-done:i32 (import-list-has g-prescan-sigs g-source-path))
+  (let (sigs-done:i32 (import-list-has g-prescan-sigs g-source-path)
+        ; Set when THIS frame pushed the unit's root onto `g-importing` (see the
+        ; block below the prescans); popped symmetrically at the end.
+        root-pushed:i32 0)
   ; Stage 12: a leading `(ns NAME)` sets the unit's namespace BEFORE the
   ; prescans register any names, so global keys (and forward references) are
   ; qualified consistently from the first definition onward.
@@ -14370,6 +14388,33 @@
       ; takes the `sigs-done` branch and is not re-registered.
       (prescan-value-names forms))
     (finalize-generics))
+  ; Stage 15 W9 item 1: this file has now been prescanned, so record it on the
+  ; SAME two identity lists an imported file lands on. Nothing imports the unit's
+  ; root, so it was on neither (see "The compilation unit's ROOT file is on none
+  ; of the import lists"), and the auto-prepended prelude reaches back into
+  ; `lib/node.nuc`/`lib/arena.nuc` — so compiling one of those as the entry file
+  ; re-entered it as an import and paid twice:
+  ;   * `g-prescan-sigs` — a second `prescan-defn-signatures` over one file is a
+  ;     duplicate-overload error, because `generic-register-method` appends
+  ;     unconditionally (see that convention). The guard must stay a per-path
+  ;     skip; relaxing the duplicate check would stop catching two *different*
+  ;     files defining one name+arity.
+  ;   * `g-importing` — otherwise `do-import` reads and emits the root file a
+  ;     second time, duplicating every `define` in it. A re-entry into the root
+  ;     IS a cycle (root → prelude → … → root), so it takes W1d's existing cycle
+  ;     path and inherits its diagnostics rather than needing a second concept.
+  ; Skipped when the path is already on `g-importing`: a REPL `(import-use …)`
+  ; reaches depth 1 through `do-import`, which pushed it and will pop it.
+  (when (and (= sigs-done 0) (!= g-source-path null))
+    (set! g-prescan-sigs (import-list-push g-prescan-sigs (as CStr g-source-path)))
+    (when (= (import-list-has g-importing (as CStr g-source-path)) 0)
+      (set! g-importing (import-list-push g-importing (as CStr g-source-path)))
+      (set! root-pushed 1)
+      ; A cycle skip alone would be wrong for the prelude's own libraries: the
+      ; skipped file's macros/externs are exactly what the rest of the chain
+      ; needs (`lib/arena.nuc` uses `when` from `lib/macros.nuc`). Arm the hoist
+      ; instead — see `g-root-hoist-ok`.
+      (set! g-root-hoist-ok 1)))
   ; Stage 15 W1a: outermost unit only — register every reachable file's protocols
   ; and defn signatures now, so cross-file references resolve on reachability
   ; instead of import order. Runs AFTER this unit's own prescans so the whole
@@ -14398,6 +14443,14 @@
             'set-ir-prefix
               ; Stage 12 N4: override the current namespace's IR-mangling prefix.
               (emit-set-ir-prefix (as ptr f))
+            'exclude-prelude
+              ; A directive to the batch driver, which strips it from the ROOT's
+              ; form list (strip-exclude-prelude) before this loop ever sees one.
+              ; It survives into an *imported* copy of the same file — including
+              ; the re-read the W9 root hoist performs — where it means nothing,
+              ; since the prelude decision belongs to the unit, not the file.
+              ; Ignoring it beats "unknown top-level form: exclude-prelude".
+              0
             'fn-attr
               ; Stage 14 AVR-5: register LLVM string function attributes for a
               ; later `defn` (must precede that defn in the unit; consumed at
@@ -14507,7 +14560,18 @@
             'declare
               (do (set! g-out g-decl-stream) (emit-nuch-declare-import (as ptr f)))
             (die-at (f line) (fmt-s "unknown top-level form: %s" h)))))
-      (set! fc ((unsafe/cast ptr:Node fc) cdr))))
+      (set! fc ((unsafe/cast ptr:Node fc) cdr))
+      ; Stage 15 W9 item 1. Two things, both only for the unit's root frame:
+      ; close the hoist window (one form of the root has now been emitted, so a
+      ; hoist from here on would duplicate it), and stop if the hoist actually
+      ; happened — `g-imported` carrying our own path means an import read and
+      ; emitted this very file, so the forms left in this list are the ones it
+      ; already emitted.
+      (when (= g-toplevel-depth 1)
+        (set! g-root-hoist-ok 0)
+        (when (and (!= g-unit-entry-path null)
+                   (!= (import-list-has g-imported (as CStr g-unit-entry-path)) 0))
+          (set! fc null)))))
   ; A2: type-check generic template bodies against their abstract protocol
   ; interface. Only at the outermost level — every import has now registered its
   ; names/protocols/conformances and g-source-path is back to this unit — and
@@ -14529,6 +14593,10 @@
   ; have. Emits nothing, so unlike `drain-init-worklist` it has no JIT hazard;
   ; the REPL takes the immediate path in `dyn-annot-record` instead.
   (when (= g-toplevel-depth 1) (drain-dyn-annots))
+  ; Balance the root push above. By here every nested `do-import` has popped its
+  ; own entry, so ours is the head.
+  (when (!= root-pushed 0)
+    (set! g-importing (import-list-pop g-importing)))
   (set! g-toplevel-depth (- g-toplevel-depth 1))))
 
 ; Check if a path is in a Node-based string list.
@@ -14609,6 +14677,25 @@
     (.set! n car (unsafe/cast ptr:Node g-source-path))
     (.set! n cdr g-import-cycles)
     (set! g-import-cycles (as ptr n))))
+
+; Stage 15 W9 item 1. `path` is already on `g-importing`, so it is a cycle
+; re-entry. Answer whether it is the ONE re-entry that must be emitted rather
+; than skipped: the unit's root file, reached before the root has emitted any of
+; its own forms. That is the shape the auto-prepended prelude creates whenever
+; the file being compiled is one the prelude reaches (`lib/node.nuc`,
+; `lib/arena.nuc`, `lib/macros.nuc`, `lib/prelude.nuc` itself) — and a skip there
+; is not merely suboptimal but wrong, since the skipped file is the one holding
+; the macros and definitions the rest of the chain is about to use.
+;
+; Single-shot: the window closes on the first answer, so a file reached twice in
+; one chain hoists at most once and every later re-entry is an ordinary cycle.
+(defn import-reentry-hoists-root (path:CStr):i32
+  (when (= g-root-hoist-ok 0) (return 0))
+  (when (= g-unit-entry-path null) (return 0))
+  (when (= (as CStr g-unit-entry-path) path)
+    (set! g-root-hoist-ok 0)
+    (return 1))
+  (return 0))
 
 ; Is `path` a member of some import cycle this unit skipped? (Either end of the
 ; edge counts — a cycle is symmetric, and the diagnostics want to know "is this
@@ -14788,7 +14875,10 @@
                     ; satisfy (macros, layouts, prefix aliases) and return —
                     ; deliberately WITHOUT recording the path on g-imported,
                     ; which stays the "finished" list.
-                    (when (!= (import-list-has g-importing path) 0)
+                    ; Stage 15 W9 item 1: except for the unit's own root file,
+                    ; which is emitted here instead (import-reentry-hoists-root).
+                    (when (and (!= (import-list-has g-importing path) 0)
+                               (= (import-reentry-hoists-root path) 0))
                       (note-import-cycle path line)
                       (return))
                     (set! start-len ((as ptr:Scope g-globals) len))
@@ -14906,8 +14996,10 @@
               ; Cycle detection keys on the file alone — a file that is mid-import
               ; is circular regardless of prefix. Stage 15 W1d (Option 2): the
               ; cycle is legal and the re-entry is simply skipped; see the twin
-              ; site in the string-path branch above for the reasoning.
-              (when (!= (import-list-has g-importing path) 0)
+              ; site in the string-path branch above for the reasoning, and for
+              ; the W9 item 1 root-file hoist.
+              (when (and (!= (import-list-has g-importing path) 0)
+                         (= (import-reentry-hoists-root path) 0))
                 (note-import-cycle path line)
                 (return))
               (set! start-len ((as ptr:Scope g-globals) len))
@@ -15851,9 +15943,17 @@
       (let (forms:ptr (desugar raw-forms))
 
         ; Apply the standard prelude unless the source begins with
-        ; (exclude-prelude). Skipped for header-emit modes, which only need
-        ; declarations from the user's source.
-        (when (and (= g-emit-nuch 0) (= g-emit-cheader 0))
+        ; (exclude-prelude).
+        ;
+        ; Stage 15 W9 item 1: `--emit-nuch` is NOT exempt. A `.nuch` exports the
+        ; file's signatures, and a signature names types — `Node`, `StrView`,
+        ; `(Maybe T)`, the `!T` sugar's `(Result T E)` — that only the prelude
+        ; defines, so skipping it made `--emit-nuch` fail on nine of the library's
+        ; own files. `emit-nuch-header` ignores an `import-use` form, so the
+        ; prepended import costs one prescan and exports nothing extra.
+        ; `--emit-cheader` stays exempt: it exports the C-representable subset,
+        ; which cannot name a prelude type in the first place.
+        (when (= g-emit-cheader 0)
           (let (after:ptr (strip-exclude-prelude forms))
             (if (!= after null)
               (set! forms after)

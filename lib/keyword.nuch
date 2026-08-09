@@ -1,0 +1,13 @@
+; .nuch header for lib/keyword.nuc
+(defstruct Keyword (name (ptr StrView)) (id usize) (cached-hash usize))
+(defconst KEYWORD-MAX 256)
+(extern (g-keyword-table ptr))
+(extern (g-keyword-count usize))
+(declare keyword-overflow () :void)
+(declare keyword-intern ((cs CStr)) :Keyword)
+(declare keyword-name ((self (ref Keyword))) :ref:StrView)
+(extend Keyword Eq)
+(defmethod "@eq.Keyword.Keyword" = ((a Keyword) (b Keyword)) :i1)
+(defmethod "@ne.Keyword.Keyword" != ((a Keyword) (b Keyword)) :i1)
+(extend Keyword Hash)
+(declare hash ((self (ref Keyword))) :usize)

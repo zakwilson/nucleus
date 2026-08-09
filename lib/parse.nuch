@@ -1,0 +1,12 @@
+; .nuch header for lib/parse.nuc
+(deferror parse-int-error "invalid integer")
+(deferror parse-float-error "invalid float")
+(defprotocol (FromStr R) (from-str ((self Self) (sv (ref StrView))) :R))
+(defmacro parse (ty sv) (quasiquote (from-str (unsafe/cast (unquote ty) 0) (unquote sv))))
+(declare parse-nul-copy ((sv (ref StrView))) :ptr:ui8)
+(extend i32 (FromStr !i32))
+(defmethod "@from_str.i32.pStrView" from-str ((self i32) (sv (ref StrView))) :!i32)
+(extend i64 (FromStr !i64))
+(defmethod "@from_str.i64.pStrView" from-str ((self i64) (sv (ref StrView))) :!i64)
+(extend f64 (FromStr !f64))
+(defmethod "@from_str.f64.pStrView" from-str ((self f64) (sv (ref StrView))) :!f64)

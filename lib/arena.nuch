@@ -1,0 +1,11 @@
+; .nuch header for lib/arena.nuc
+(defconst ARENA-SIZE 16777216)
+(extern (g-arena ptr))
+(extern (g-arena-used i64))
+(extern (g-arena-cap i64))
+(declare arena-init () :void)
+(declare arena-grow ((min-size i64)) :void)
+(declare arena-alloc ((n i64)) :ptr)
+(defmacro new (T) (quasiquote (as (ref (unquote T)) (arena-alloc (sizeof (unquote T))))))
+(declare arena-strndup ((s ptr) (n i64)) :ptr)
+(declare arena-strdup ((s ptr)) :ptr)

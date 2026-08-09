@@ -1,0 +1,4 @@
+; .nuch header for lib/nsgeom.nuc
+(ns geom)
+(declare area ((w i32) (h i32)) :i32)
+(declare perimeter ((w i32) (h i32)) :i32)

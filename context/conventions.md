@@ -699,7 +699,7 @@ parser (`%Full?` → "expected comma after getelementptr's type"), not silently.
 
 ## Symbol nodes are interned singletons — they have **no line**, and you must never write one
 
-`lib/reader.nuc` `read-form` handles `TOK-SYMBOL` as
+`src/reader.nuc` `read-form` handles `TOK-SYMBOL` as
 `(return (ok (intern-symbol (t s))))`: every occurrence of a spelling anywhere
 in the program is the **same `Node`**, and `intern-symbol` sets its `line` to 0.
 Every other node kind (`NODE-INT`, `NODE-STR`, `NODE-CHAR`, `NODE-FLOAT`,
@@ -747,7 +747,7 @@ first and every enclosing one just propagates its `(err! parse-error)` through
 asserted the opposite; measured false.)
 
 Bracket balance is tracked in `next-tok` (`reader-open-bracket` /
-`reader-close-bracket`, `lib/reader.nuc`) as each bracket **token** is produced,
+`reader-close-bracket`, `src/reader.nuc`) as each bracket **token** is produced,
 covering `(`/`)`, `[`/`]`, `{`/`}`, `#{`/`}`. Two properties are load-bearing:
 the depth is **not clamped at zero** (a negative depth is exactly "this closer
 has no matching opener", which is what distinguishes a stray top-level `)` from
@@ -862,7 +862,7 @@ rule rather than two.
 
 `(fn ret)` and its parameter list are separate list elements
 (`((fn ret) (params))` canonical), so the colon-paren binding fuse
-(`fuse-colon-paren`, `lib/reader.nuc`) — which absorbs *one* paren form after a
+(`fuse-colon-paren`, `src/reader.nuc`) — which absorbs *one* paren form after a
 trailing-colon atom — cannot express a function-pointer type by itself.
 `fuse-fn-params` (added in W5f, called from `fuse-colon-paren` right after the
 first `read-form`) absorbs a **second, immediately-adjacent** group when the
@@ -2179,6 +2179,73 @@ answers "not in this unit" for the entry point. Stage 15 W1c added
 reset in `compiler-init`, diagnostic-only) for exactly this. Any future feature
 that asks "is this path part of the unit?" needs the fourth check too.
 
+**Stage 15 W9 item 1 made two of those lists load-bearing, because the root is
+not merely *unlisted* — it is REACHABLE.** The compiler auto-prepends
+`(import-use prelude)`, and the prelude's own closure is
+`prelude → macros, node → arena`, so compiling any of those four files as the
+entry point makes the unit import its own root. `emit-toplevel-forms` now
+records `g-source-path` on **`g-prescan-sigs`** (the second
+`prescan-defn-signatures` was a `duplicate definition of 'arena-init'` blamed at
+the file's own line — see the non-idempotency note above) and on
+**`g-importing`** (without which `do-import` read and emitted the file a second
+time, duplicating every `define`; that half was invisible because the prescan
+error fired first). The push is skipped when the path is already on
+`g-importing`, because a REPL `(import-use …)` reaches depth 1 *through*
+`do-import`, which pushed it and will pop it.
+
+**The interesting half is that a cycle SKIP on the root is wrong.** Pushing the
+root onto `g-importing` alone routes the re-entry into W1d's cycle path — which
+fixed `arena`/`node` and instantly broke `lib/macros.nuc`, because a cycle
+deliberately does not carry macros and `lib/arena.nuc` needs `when`. Here the
+skipped file is precisely the one holding what the rest of the chain is about to
+use. So `do-import` **hoists** instead: `import-reentry-hoists-root` lets the
+re-entry fall through to the ordinary read-and-emit, and the depth-1 loop then
+stops because its own path has appeared on `g-imported`. The safety condition is
+a one-shot window — `g-root-hoist-ok`, armed just before the depth-1 loop and
+cleared at the end of its **first iteration** — since hoisting after the root
+has emitted any of its own forms would emit those forms twice. The auto-prelude
+import *is* that first iteration, so the window is exactly wide enough and no
+wider; a user-written back-import later in the file still takes the cycle skip.
+Two consequences worth keeping:
+
+- **The hoist RE-READS the root file**, which is why `(exclude-prelude)` had to
+  become a no-op in `emit-toplevel-forms`' dispatch: `strip-exclude-prelude`
+  runs only in `main`, so the directive survives into the re-read (and into any
+  ordinary import of such a file, which died `unknown top-level form` — W9 item
+  5). A directive that belongs to the *unit* must be tolerated wherever a *file*
+  is processed.
+- **Path identity here is string equality on the spelling**, inherited from
+  `g-imported`. A root compiled by an absolute path whose importers resolve a
+  relative one is not recognised as the same file. Pre-existing; canonicalising
+  would move every path string in every diagnostic.
+
+## `lib/` means "compiles on its own"; a file that touches compiler globals belongs in `src/`
+
+The invariant `make lib-objs` / `make lib-headers` / `make lib-cheaders` assert
+is that every `lib/*.nuc` compiles as its own entry file in all three emit
+modes. The reader never did — it reads and writes `g-src` / `g-pos` /
+`g-line` / `g-source-path` / `g-peek` / `g-interactive` / `g-mono-context`,
+which `src/nucleusc.nuc` defines — so it moved to **`src/reader.nuc`** in W9
+item 1, beside `repl.nuc` / `cheader.nuc` / `format.nuc`, which are in `src/`
+for the same reason. Import resolution searches the importing file's own
+directory first, so `(import-use reader)` from `src/nucleusc.nuc` still finds
+it and the compiler's IR is byte-identical across the move. If you add a file
+under `lib/`, compile it standalone once; `run_w9_lib_standalone`
+(`tests/run-tests.sh`) will otherwise find it for you.
+
+**`--emit-nuch` was exempt from the prelude and processed no imports at all**,
+which is why nine library files could not produce a header: a `.nuch` exports
+signatures and a signature names types (`Node`, `StrView`, `String`,
+`(Maybe T)`, `!T`'s `(Result T E)`). `emit-nuch-header` (`src/nuch.nuc`) now
+runs `prescan-file-imports` + `prescan-imported-types` for the same reason
+`emit-toplevel-forms` does. **`--emit-cheader` keeps the exemption**: it exports
+the C-representable subset, which cannot name a prelude type.
+
+Note `make lib-headers` / `make lib-cheaders` write their outputs **into
+`lib/`**, over the committed `lib/mathlib.nuch` and `lib/boxlib.nuch` and
+leaving ~30 untracked files behind. Regenerate and diff those two rather than
+assuming; delete the rest when you are done.
+
 ## A C struct with an array member is registered OPAQUE — hand-declare and validate, don't field-access
 
 `c-parse-struct-decl` declines a `char d_name[256]`-shaped member, so W3a
@@ -2214,7 +2281,7 @@ is acceptable precisely because the result is phrased as a `note:` and the
 primary error text stays true on its own.
 
 The corollary that makes this affordable: **check that every caller is on a
-dying path before spending anything on a diagnostic.** `die-at` (lib/reader.nuc)
+dying path before spending anything on a diagnostic.** `die-at` (src/reader.nuc)
 carries `noreturn`, so a scan reached only from `die-at` call sites runs at most
 once per compile — a directory walk plus a file read per candidate is invisible
 (a failing fixture compiles in the same 0.135 s as a clean one). The same work

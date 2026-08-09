@@ -1,0 +1,4 @@
+; .nuch header for lib/string-protocols.nuc
+(defprotocol (ByteStr ByteI) (byte-len ((self (ref Self))) :usize) (byte-at ((self (ref Self)) i:usize) :!ui8) (bytes ((self (ref Self))) :ByteI) (as-view ((self (ref Self))) :StrView) (sub-bytes ((self (ref Self)) start:usize end:usize) :!ptr:StrView) (byte-find ((self (ref Self)) (needle (ref StrView))) (Maybe usize)))
+(defprotocol (Str CharI) (char-count ((self (ref Self))) :usize) (str-empty? ((self (ref Self))) :i32) (char-at ((self (ref Self)) i:usize) :!Char) (chars ((self (ref Self))) :CharI) (starts-with? ((self (ref Self)) (prefix (ref StrView))) :i32) (ends-with? ((self (ref Self)) (suffix (ref StrView))) :i32) (contains-str? ((self (ref Self)) (needle (ref StrView))) :i32))
+(extend Str Eq)

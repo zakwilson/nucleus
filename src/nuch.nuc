@@ -152,6 +152,15 @@
   ; override (left in the list, but the prescans don't process set-ir-prefix).
   (set! forms (apply-leading-ns forms))
   (apply-early-set-ir-prefix forms)
+  ; Stage 15 W9 item 1: this file's import environment and the type names its
+  ; imports (the auto-prepended prelude included) contribute. `emit-toplevel-forms`
+  ; runs both before its own prescans for the same reason — a `defn` signature is
+  ; the first place an imported or namespaced type is named, and the signature
+  ; prescan below is what resolves it. Without them every library whose exported
+  ; signatures mention `Node`/`StrView`/`String`/`(Maybe T)`/`!T` produced no
+  ; header at all.
+  (prescan-file-imports forms)
+  (prescan-imported-types forms)
   ; Populate the registries so overloaded names, mangled symbols, and protocols
   ; are known before emitting declarations.
   (prescan-struct-names forms)

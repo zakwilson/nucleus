@@ -1,0 +1,10 @@
+; .nuch header for lib/avr.nuc
+(declare reg8-read ((addr usize)) :ui8)
+(declare reg8-write ((addr usize) (val ui8)) :void)
+(declare reg16-read ((addr usize)) :ui16)
+(declare reg16-write ((addr usize) (val ui16)) :void)
+(declare bit-mask ((bit ui8)) :ui8)
+(declare reg8-test-bit ((addr usize) (bit ui8)) :ui8)
+(declare reg8-set-bit! ((addr usize) (bit ui8)) :void)
+(declare reg8-clear-bit! ((addr usize) (bit ui8)) :void)
+(declare reg8-toggle-bit! ((addr usize) (bit ui8)) :void)

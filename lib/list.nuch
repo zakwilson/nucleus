@@ -1,0 +1,9 @@
+; .nuch header for lib/list.nuc
+(declare cons ((car ptr) (cdr ptr)) :ptr)
+(declare first ((n ptr)) :ptr)
+(declare rest ((n ptr)) :ptr)
+(declare append ((a ptr) (b ptr)) :ptr)
+(defstruct ListIter (cur ptr))
+(extend ListIter (Iterator ptr))
+(declare next ((self (ref ListIter))) (Maybe ptr))
+(declare list-iter ((lst ptr)) :ListIter)

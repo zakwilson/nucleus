@@ -1,0 +1,4 @@
+; .nuch header for lib/testmacros.nuc
+(defmacro my-if (test then else) (quasiquote (cond (unquote test) (unquote then) true (unquote else))))
+(defmacro my-when (condition body) (quasiquote (cond (unquote condition) (unquote body))))
+(defmacro my-unless (condition body) (quasiquote (cond (not (unquote condition)) (unquote body))))
