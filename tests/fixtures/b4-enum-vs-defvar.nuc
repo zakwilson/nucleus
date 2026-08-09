@@ -1,0 +1,8 @@
+; Stage 15 B4 — the value half of the same hole (see b4-enum-vs-defn.nuc).
+; `(defvar Colour …)` over a `defenum Colour` also compiled clean before B4.
+
+(defenum Colour Colour-Red Colour-Green)
+
+(defvar Colour:i32 5)
+
+(defn main ():i32 (return Colour))

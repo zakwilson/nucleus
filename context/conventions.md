@@ -2801,3 +2801,88 @@ identity exactly because both come from one memo. Both sites **call** it. If you
 add a third position that assigns into a box-typed slot — `set!` and `.set!`
 reach neither today, so they neither box nor type-check — give it the same call,
 not a copy.
+
+## A provenance field with three writers and one reader tolerates two of them being wrong
+
+Stage 15 B4 gave generics a qualified spelling (`name-resolution.md` §9.6) by
+*filtering* a `Generic`'s method set on `Method.src-ns` — R2's ruling is that
+`g-generics` stays keyed by the bare name with every namespace's methods merged,
+so the qualifier is a filter and not a key. The arm is two lines. What it cost
+was that `src-ns` was **not provenance**: it was a diagnostic field
+(`duplicate-signature-message`, W5e) that happened to be set on one of its three
+write paths.
+
+* `generic-register-method` sets it. That is the path reading suggests is the
+  only one.
+* `register-generic-template` (`src/generics.nuc`) builds a METHOD-GENERIC with a
+  bare `(new Method)` and never called it — so a bounded-generic template had
+  `src-ns` null, filtered to *zero* methods, and `p/tmpl` reported "not defined
+  anywhere in this compilation unit", the text a genuinely absent name gets.
+* `generic-instantiate-in`'s stamp *does* call it, and therefore records
+  `g-current-ns` — **the call site's** namespace. The line directly below it
+  already says the mangling must use `(gg ir-prefix)`, "the template's defining
+  namespace, not the call site's"; the same argument applies to ownership and had
+  never been made. Left uncorrected, the second `p/tmpl` call from another
+  namespace filters the first stamp out, `generic-find-method-exact`'s memo probe
+  in `generic-instantiate-in` misses, and the instance is stamped and emitted
+  **twice under one symbol** — a link error with no source location.
+
+Generalize: **when a field starts being read as a decision input, audit every
+writer of it, not the canonical one.** A field only ever consumed by a
+diagnostic can be wrong on two paths for years without a symptom.
+
+Two smaller notes from the same step. A filtered view is a fresh `Generic` over
+the same `Method` pointers, built per reference and **not memoized** — a cache
+goes stale the moment a later import calls `generic-add-method`, which exists
+precisely because that happens; and the two answers that matter (all methods
+match, no methods match) allocate nothing. And nothing downstream reads a
+`Generic` by identity — `generic-resolve`, `emit-generic-call` and
+`node-type-call` read `name` / `methods` / `mangled` — which is what makes a
+view legal at all. Check that before building one for some other registry.
+
+## The same-kind redefinition question cannot be asked of the binding table
+
+`guard-name-kind` (`src/nucleusc.nuc`) asks the shared table for the first
+binding whose kind is **not** the one being defined, and the `skip-nk` section
+above explains why: every definer registers its own name in a prescan before its
+own guard runs. Stage 15 B4 added R4's complementary rule — *two definitions of
+one name reaching one scope* — and the tempting shape, "same walk, drop the
+skip", cannot work for exactly that reason: the walk would find the definer's own
+prescan entry every time.
+
+So the table supplies the **noun** (`die-redefinition` reads the row) and each
+definer supplies the **fact**. There are ten sites and four different tells, and
+the four do not rhyme:
+
+| Definer | Tell | Why not the others |
+|---|---|---|
+| `defstruct` | `StructDef.emitted` | `prescan-struct-names` registers a name-only entry, so existence means nothing |
+| `defunion`, `defprotocol`, both templates, `defmacro` | the defining **(file, line)** | these registrars are legitimately re-entered for ONE form — a whole-graph prescan and again per file, a `.nuch` replay — and carry no state flag |
+| `defvar` | `Sym.defvar-state == DEFVAR-REACHED` | W8 G-0 front-loads every reachable file's `defvar` names into the same frame; a Sym under the key is the normal state |
+| `defconst`, `defenum` member | (file, line) **plus "blame the later one"** | the prescan registers *exactly* the Sym the emitter goes on to register — no state difference at all |
+
+`same-definition-site` is the shared predicate for the (file, line) rows, and it
+is sound because `g-source-path` is set per file around every prescan and every
+load block. Two traps it encodes:
+
+* **Blame the second definition, not the first.** G-0's prescan registers every
+  form's Sym before *any* form is emitted and `scope-lookup-key` scans backwards,
+  so while emitting the FIRST `defconst` the probe lands on the SECOND's prescan
+  entry — the first cut reported the pair at the earlier line. A hit below this
+  form in the same file is skipped; the later form finds the earlier one's
+  emitted Sym when it reaches its own check.
+* **The REPL is a sequence of compilation units.** `same-definition-site` answers
+  "same definition" whenever `g-interactive` is set, so each definer falls back
+  to *its own* pre-B4 behaviour — which matters, because four of them used to
+  `return` and four used to fall through, and a shared no-op would have made
+  `emit-defstruct` re-emit `%T = type {…}`. Verified by diffing a REPL transcript
+  against the pre-change compiler, not by reasoning.
+
+**A rule like this finds bugs, so budget for fixing the tree.** `name-resolution.md`
+§11.1 predicted one casualty from a scan of `src/` + `lib/`; measured across
+`examples/` too it was three, all the same class — two more copies of the `Node`
+redefinition §11.7 removed from `lib/list.nuc`, and `examples/defmacro.nuc`
+defining `when`/`unless` over the prelude's. That last one is the sharpest
+illustration of why the rule is worth having: `find-macro` returns the FIRST
+match and the prelude registers first, so **neither definition in that example
+had ever been expanded** — the file demonstrated a macro it did not use.

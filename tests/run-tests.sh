@@ -1898,14 +1898,19 @@ run_g0_still_rejects() {
     printf '%s\n' "$err" | sed 's/^/    got: /'
   fi
 
-  # Two files, one global name. Both `@g0-dupg = global` lines are still
-  # emitted, so this is still rejected — the prescan registering the name twice
-  # must not turn it into a silent last-wins.
+  # Two files, one global name — still rejected, and since Stage 15 B4 (R4) by
+  # the compiler rather than by LLVM. Before B4 both `@g0-dupg = global` lines
+  # were emitted and the IR parser said `redefinition of global '@g0-dupg'` with
+  # no source location at all; `emit-defvar` now reads `Sym.defvar-state` and
+  # names BOTH definitions. The verdict is what this test pins — the text moved
+  # because the diagnostic got better, not because the rule changed.
   printf '(defvar g0-dupg:i32 1)\n' > "$d/g0-da.nuc"
   printf '(defvar g0-dupg:i32 2)\n' > "$d/g0-db.nuc"
   printf '(import g0-da)\n(import g0-db)\n(defn main ():i32 (return g0-dupg))\n' > "$d/g0-dm.nuc"
   err="$(./build/nucleusc -I "$d" -o "$d/g0-dm.bin" "$d/g0-dm.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -qF "redefinition of global '@g0-dupg'" && [ ! -x "$d/g0-dm.bin" ]; then
+  if printf '%s' "$err" | grep -qF "redefinition of 'g0-dupg'" \
+     && printf '%s' "$err" | grep -qF "$d/g0-da.nuc:1" \
+     && [ ! -x "$d/g0-dm.bin" ]; then
     echo "PASS  g0-duplicate-global-rejected"
   else
     echo "FAIL  g0-duplicate-global-rejected"
@@ -4432,6 +4437,227 @@ spawn run_reject_at b6-dyn-box-mismatch-arg tests/fixtures/b6-dyn-box-mismatch-a
 spawn run_reject_at b6-dyn-box-mismatch-let tests/fixtures/b6-dyn-box-mismatch-let.nuc \
   "tests/fixtures/b6-dyn-box-mismatch-let.nuc:29: error:" \
   "type mismatch: a (dyn Pp) value cannot be used where (dyn Qq) is required"
+
+# --- Stage 15 B4: generics get a qualified spelling ---------------------------
+# name-resolution.md §8.2 (R2) / defect #5. A generic is deliberately NOT re-keyed
+# by namespace — one Generic per bare name, methods merged, which is what keeps
+# `import-use` of two libraries that each declare a `describe` usable. The
+# qualified spelling is recovered from `Method.src-ns` instead, so `pa/name`
+# resolves to the bare generic FILTERED to the namespace `pa` denotes.
+#
+# The filtering is what has to be pinned, not just the lookup: two namespaces
+# each define a `b4-desc`, at different arities so both can live in one merged
+# method set, and each prefix must reach exactly its own.
+run_b4_qualified_generic() {
+  local d err
+  d="$(mktemp -d)"
+  cat > "$d/b4-glib-a.nuc" <<'EOF'
+(ns b4a)
+(defn b4-desc (x:i32):i32 (return (+ x 100)))
+EOF
+  cat > "$d/b4-glib-b.nuc" <<'EOF'
+(ns b4b)
+(defn b4-desc (x:i32 y:i32):i32 (return (+ (+ x y) 20)))
+EOF
+  cat > "$d/b4-guse.nuc" <<'EOF'
+(import-prefixed b4-glib-a pa)
+(import-prefixed b4-glib-b pb)
+(defn main ():i32 (return (+ (pa/b4-desc 1) (pb/b4-desc 1 2))))
+EOF
+  w1_run b4-qualified-generic "$d" "$d/b4-guse.nuc" 124
+
+  # The filter is real: `pa/` may not reach the arity `b4b` defined. Before B4
+  # this said "unknown: pa/b4-desc" (no qualified spelling at all); a lookup that
+  # merely ignored the qualifier would resolve it and return 23.
+  cat > "$d/b4-gwrong.nuc" <<'EOF'
+(import-prefixed b4-glib-a pa)
+(import-prefixed b4-glib-b pb)
+(defn main ():i32 (return (pa/b4-desc 1 2)))
+EOF
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/b4-gwrong.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | grep -qF "no matching method for overloaded 'b4-desc' with argument types (i32, i32)"; then
+    echo "PASS  b4-qualified-generic-filtered"
+  else
+    echo "FAIL  b4-qualified-generic-filtered (the qualifier did not restrict the method set)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  fi
+
+  # …and R3 still holds for generics: the DEFINING namespace is not in scope in a
+  # file that asked for a prefix.
+  cat > "$d/b4-gns.nuc" <<'EOF'
+(import-prefixed b4-glib-a pa)
+(import-prefixed b4-glib-b pb)
+(defn main ():i32 (return (b4a/b4-desc 1)))
+EOF
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/b4-gns.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | grep -qF "unknown: b4a/b4-desc — 'b4a' is not in scope in this file"; then
+    echo "PASS  b4-qualified-generic-ns-refused"
+  else
+    echo "FAIL  b4-qualified-generic-ns-refused (wrong or missing diagnostic)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  fi
+  rm -rf "$d"
+}
+spawn run_b4_qualified_generic
+
+# A bounded-generic TEMPLATE through a prefix, stamped twice for one concrete
+# type. Two things only this shape reaches: `register-generic-template` records
+# no provenance of its own (it does not go through `generic-register-method`), so
+# before B4 a METHOD-GENERIC filtered to nothing and `pg/b4-twice` did not resolve
+# at all; and a stamp is registered under the CALL SITE's namespace, so without
+# re-owning it to the template's the second call filters the first stamp out,
+# `generic-find-method-exact`'s memo misses, and the instance is emitted twice
+# under one symbol. Both are link-time failures, so the run is the check: two i32
+# stamps of one instance (3+3, 5+5) plus an i16 one (4+4) = 24.
+run_b4_qualified_template() {
+  local d
+  d="$(mktemp -d)"
+  cat > "$d/b4-tlib.nuc" <<'EOF'
+(ns b4g)
+(defprotocol B4Num (b4-zero (self:Self):i32))
+(defn b4-zero (x:i32):i32 (return x))
+(defn b4-zero (x:i16):i32 (return (as i32 x)))
+(extend i32 B4Num)
+(extend i16 B4Num)
+(defn b4-twice (x:T &where (B4Num T)):i32
+  (return (+ (b4-zero x) (b4-zero x))))
+EOF
+  cat > "$d/b4-tuse.nuc" <<'EOF'
+(import-prefixed b4-tlib pg)
+(defn main ():i32
+  (let (s:i16 4)
+    (return (+ (pg/b4-twice 3) (+ (pg/b4-twice 5) (pg/b4-twice s))))))
+EOF
+  w1_run b4-qualified-template "$d" "$d/b4-tuse.nuc" 24
+  rm -rf "$d"
+}
+spawn run_b4_qualified_template
+
+# The per-kind collision rule (§8.2's table, §14.2's `collides` column). Of the
+# three rows that were 0, only `BK-ENUM` hid a real hole: a `defunion` also
+# registers a backing StructDef under the same key so `BK-STRUCT` already
+# answered for it, and `__fnty_N` has no source spelling — but an enum registers
+# only its MEMBERS, so its own name collided with nothing.
+spawn run_reject_at b4-enum-vs-defn tests/fixtures/b4-enum-vs-defn.nuc \
+  "tests/fixtures/b4-enum-vs-defn.nuc:13: error:" \
+  "'Colour' already names an enumeration — a symbol may name only one kind of thing"
+spawn run_reject_at b4-enum-vs-defvar tests/fixtures/b4-enum-vs-defvar.nuc \
+  "tests/fixtures/b4-enum-vs-defvar.nuc:6: error:" \
+  "'Colour' already names an enumeration — a symbol may name only one kind of thing"
+
+# R4's eager rule (§11.1): two definitions of one name reaching one scope. Every
+# kind measured before B4 accepted this silently and with no agreed winner — a
+# second defstruct/defunion/defprotocol/defmacro/template kept the FIRST, a
+# second defconst kept the SECOND, and a second defvar reached LLVM's own parser
+# with no source location. One case per row of §8.2's table, checked as a table
+# so a kind that stops reporting is visible as one line.
+run_b4_redefinition() {
+  local d err name body pat n
+  d="$(mktemp -d)"
+  cat > "$d/b4r-struct.nuc" <<'EOF'
+(defstruct RdS a:i32)
+(defstruct RdS b:i32 c:i32)
+(defn main ():i32 (return 0))
+EOF
+  cat > "$d/b4r-union.nuc" <<'EOF'
+(defunion RdU (ra x:i32) (rb y:i32))
+(defunion RdU (rc x:i32))
+(defn main ():i32 (return 0))
+EOF
+  cat > "$d/b4r-proto.nuc" <<'EOF'
+(defprotocol RdP (rm (self:Self):i32))
+(defprotocol RdP (rn (self:Self):i32))
+(defn main ():i32 (return 0))
+EOF
+  cat > "$d/b4r-macro.nuc" <<'EOF'
+(defmacro rd-m (x) x)
+(defmacro rd-m (x) 99)
+(defn main ():i32 (return (rd-m 0)))
+EOF
+  cat > "$d/b4r-enum.nuc" <<'EOF'
+(defenum RdE rd-a rd-b)
+(defenum RdE rd-c rd-d)
+(defn main ():i32 (return 0))
+EOF
+  cat > "$d/b4r-enum-member.nuc" <<'EOF'
+(defenum RdE1 rd-x rd-y)
+(defenum RdE2 rd-y rd-z)
+(defn main ():i32 (return rd-y))
+EOF
+  cat > "$d/b4r-tmpl.nuc" <<'EOF'
+(defstruct (RdBox T) v:T)
+(defstruct (RdBox T) w:T)
+(defn main ():i32 (return 0))
+EOF
+  cat > "$d/b4r-utmpl.nuc" <<'EOF'
+(defunion (RdRes T) (rok v:T) (rno))
+(defunion (RdRes T) (ryes v:T))
+(defn main ():i32 (return 0))
+EOF
+  cat > "$d/b4r-var.nuc" <<'EOF'
+(defvar rd-v:i32 1)
+(defvar rd-v:i32 2)
+(defn main ():i32 (return rd-v))
+EOF
+  cat > "$d/b4r-const.nuc" <<'EOF'
+(defconst RD-K 1)
+(defconst RD-K 2)
+(defn main ():i32 (return RD-K))
+EOF
+  while read -r name pat; do
+    [ -n "$name" ] || continue
+    err="$(./build/nucleusc -I "$d" --emit-llvm "$d/$name.nuc" 2>&1 >/dev/null || true)"
+    if printf '%s' "$err" | grep -q ':0:'; then
+      echo "FAIL  $name (diagnostic reports line 0)"
+      printf '%s\n' "$err" | sed 's/^/    /'
+    elif printf '%s' "$err" | grep -qF "redefinition of '$pat'" \
+      && printf '%s' "$err" | grep -qF "$d/$name.nuc:2: error:"; then
+      echo "PASS  $name"
+    else
+      echo "FAIL  $name (no located redefinition diagnostic)"
+      printf '%s\n' "$err" | sed 's/^/    got: /'
+    fi
+  done <<'ROWS'
+b4r-struct RdS
+b4r-union RdU
+b4r-proto RdP
+b4r-macro rd-m
+b4r-enum RdE
+b4r-enum-member rd-y
+b4r-tmpl RdBox
+b4r-utmpl RdRes
+b4r-var rd-v
+b4r-const RD-K
+ROWS
+
+  # The shape R4 was actually written for (§11.1): the two definitions are in two
+  # different FILES and neither file can see the other. `lib/prelude.nuc` and
+  # `lib/list.nuc` both defining `Node` with different field nullability was this,
+  # and the winner was decided by import order. The diagnostic must name the other
+  # file, which is the whole reason the definition records carry `src-file`.
+  printf '(defstruct RdX n:i32)\n' > "$d/b4r-fa.nuc"
+  printf '(defstruct RdX n:i32 m:i32)\n' > "$d/b4r-fb.nuc"
+  printf '(import b4r-fa)\n(import b4r-fb)\n(defn main ():i32 (return 0))\n' > "$d/b4r-fm.nuc"
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/b4r-fm.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | grep -qF "redefinition of 'RdX'" \
+     && printf '%s' "$err" | grep -qF "$d/b4r-fa.nuc:1"; then
+    echo "PASS  b4-redefinition-cross-file"
+  else
+    echo "FAIL  b4-redefinition-cross-file (did not name the other file)"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+  fi
+
+  # The rule is per compilation unit, so re-importing one file through two paths
+  # — the diamond every non-trivial program has — must stay legal. This is what
+  # `same-definition-site` protects: the registrars really are re-entered.
+  printf '(defstruct RdD n:i32)\n(defunion RdDU (da x:i32) (db))\n(defprotocol RdDP (dm (self:Self):i32))\n(defmacro rd-dm (x) x)\n(defenum RdDE rd-da rd-db)\n(defconst RD-DK 3)\n(defstruct (RdDBox T) v:T)\n' > "$d/b4r-diamond.nuc"
+  printf '(import b4r-diamond)\n(defn rd-l ():i32 (return RD-DK))\n' > "$d/b4r-dl.nuc"
+  printf '(import b4r-diamond)\n(defn rd-r ():i32 (return rd-da))\n' > "$d/b4r-dr.nuc"
+  printf '(import b4r-dl)\n(import b4r-dr)\n(import b4r-diamond)\n(defn main ():i32 (return (+ (rd-l) (rd-r))))\n' > "$d/b4r-dm.nuc"
+  w1_run b4-redefinition-diamond-ok "$d" "$d/b4r-dm.nuc" 3
+  rm -rf "$d"
+}
+spawn run_b4_redefinition
 
 # --- Join + replay --------------------------------------------------------------
 # Wait for all remaining jobs (ignore per-job exit codes — PASS/FAIL is decided

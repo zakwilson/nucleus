@@ -1,11 +1,19 @@
 (import-use "stdio.h")
 
-; Basic macro: when (one-armed if)
-(defmacro when (condition body)
+; Stage 15 B4 (name-resolution.md §11.1): these two were spelled `when` and
+; `unless`, which the auto-imported prelude (lib/macros.nuc) already defines —
+; with `&rest body`, so the versions here were strictly weaker. `find-macro`
+; returns the FIRST match and the prelude registers first, so neither definition
+; below was ever expanded: the example demonstrated a macro it did not use. R4
+; makes a second definition of one name an error; they are renamed so the example
+; demonstrates its own.
+
+; Basic macro: a one-armed conditional.
+(defmacro when1 (condition body)
   `(cond ~condition ~body))
 
-; Basic macro: unless (negated when)
-(defmacro unless (condition body)
+; Basic macro: the negated form.
+(defmacro unless1 (condition body)
   `(cond (not ~condition) ~body))
 
 ; Macro with arithmetic
@@ -21,8 +29,8 @@
 
 (defn main ():i32
   (let (x:i32 5)
-    (when (> x 3) (printf "when: ok\n"))
-    (unless (> x 10) (printf "unless: ok\n"))
+    (when1 (> x 3) (printf "when: ok\n"))
+    (unless1 (> x 10) (printf "unless: ok\n"))
     (printf "square(4) = %d\n" (square 4))
     (assert-eq 42 42)
     (assert-eq (+ 1 2) 3))

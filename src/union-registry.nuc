@@ -991,6 +991,8 @@
               (.set! ud layout layout)
               (.set! ud niche-elem niche-elem-box)
               (.set! ud src-line line)
+              ; Stage 15 B4 (R4): the file half of the redefinition blame.
+              (.set! ud src-file g-source-path)
               ; Stage 15 B5: `defunion-`'s privacy, mirrored onto the backing
               ; StructDef because `g-structs` is the registry a type REFERENCE
               ; actually probes (the union name and its backing struct share one
@@ -1039,8 +1041,15 @@
                  (= (-> head (node-at _ 1) (unsafe/cast ptr:Node _) (_ kind)) NODE-CELL))
         (die-at (node-line (as ptr head) (ff line))
           (fmt-s "defunion: takes no type annotation; write (defunion %s ...)" name)))
-      ; Re-import of the same template (e.g. via .nuch) is a no-op.
-      (when (!= (union-template-lookup key) null) (return))
+      ; Re-import of the same template (e.g. via .nuch) is a no-op. Stage 15 B4
+      ; (R4): a hit from a DIFFERENT defining site is a second definition.
+      (if-some (prevt (union-template-lookup key))
+        (do
+          (when (!= (same-definition-site (prevt src-file) (prevt src-line) (ff line)) 0)
+            (return))
+          (die-redefinition (as CStr name) (ff line) BK-UNION-TEMPLATE
+                            (prevt src-file) (prevt src-line)))
+        0)
       (guard-name-kind name (ff line) NK-TYPE)
       (when (>= (unsafe/cast i32 (count g-union-templates)) MAX-UNION-TEMPLATES)
         (die-at (ff line) "too many defunion templates"))
@@ -1060,6 +1069,9 @@
           ; / emit-defunion) arms g-defining-private for the private spelling.
           (.set! ut priv g-defining-private)
           (.set! ut src-ns g-current-ns)
+          ; Stage 15 B4 (R4): the defining site — see `same-definition-site`.
+          (.set! ut src-file g-source-path)
+          (.set! ut src-line (ff line))
           (when (!= g-defining-private 0) (set! g-priv-bindings 1)))))))
 
 ; Stage 11: register `(defstruct (Name T ...) field-specs...)` as a template.
@@ -1090,8 +1102,15 @@
         (die-at (node-line (as ptr head) (ff line))
           (fmt-s "defstruct: takes no type annotation; write (defstruct %s ...)" name)))
       ; Re-import of the same template (e.g. via .nuch, or the idempotent prescan
-      ; pass) is a no-op.
-      (when (!= (struct-template-lookup key) null) (return))
+      ; pass) is a no-op. Stage 15 B4 (R4): a hit from a DIFFERENT defining site
+      ; is a second template of the name, which used to be the same silent no-op.
+      (if-some (prevt (struct-template-lookup key))
+        (do
+          (when (!= (same-definition-site (prevt src-file) (prevt src-line) (ff line)) 0)
+            (return))
+          (die-redefinition (as CStr name) (ff line) BK-STRUCT-TEMPLATE
+                            (prevt src-file) (prevt src-line)))
+        0)
       (guard-name-kind name (ff line) NK-TYPE)
       (when (>= (unsafe/cast i32 (count g-struct-templates)) MAX-STRUCT-TEMPLATES)
         (die-at (ff line) "too many defstruct templates"))
@@ -1110,6 +1129,9 @@
           ; Stage 15 B5: `defstruct-`'s privacy for the parametric spelling.
           (.set! st priv g-defining-private)
           (.set! st src-ns g-current-ns)
+          ; Stage 15 B4 (R4): the defining site — see `same-definition-site`.
+          (.set! st src-file g-source-path)
+          (.set! st src-line (ff line))
           (when (!= g-defining-private 0) (set! g-priv-bindings 1)))))))
 
 ; Stamp (and memoize) a concrete instance of a defunion template from a type

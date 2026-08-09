@@ -1,0 +1,15 @@
+; Stage 15 B4 (name-resolution.md §8.2's per-kind rule, §14.2's `collides`
+; column). An enum registers its MEMBERS in `g-globals` but never its own name,
+; so `BK-ENUM` carried `collides` 0 and nothing in the one-symbol-one-kind walk
+; ever probed `g-enumdefs`. This file compiled clean before B4, with `Colour`
+; naming both a type usable in an annotation and a function.
+;
+; The blame lands on the `defn`, not the `defenum`: `guard-name-kind` reports at
+; whichever definer is emitted second (conventions.md, "One name-kind priority
+; order").
+
+(defenum Colour Colour-Red Colour-Green)
+
+(defn Colour ():i32 (return 1))
+
+(defn main ():i32 (return (Colour)))

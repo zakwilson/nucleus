@@ -355,7 +355,8 @@
   (niche-elem (raw Type)) ; for NICHE-MAYBE/ERRPTR: the (ref T) payload's element Type*
   src-line:i32
   priv:i32          ; Stage 15 B5 — see StructDef.priv
-  src-ns:CStr)
+  src-ns:CStr
+  src-file:CStr)    ; Stage 15 B4 — see StructDef.src-file (redefinition blame)
 
 ; A parameterized defunion template: `(defunion (Result T E) ...)`. Defines no
 ; type itself; a fully-applied use `(Result A B)` stamps a concrete instance.
@@ -365,7 +366,12 @@
   ntv:i32
   (form (raw Node)) ; retained (defunion (Name T ...) arms...) Node*
   priv:i32          ; Stage 15 B5 — see StructDef.priv
-  src-ns:CStr)
+  src-ns:CStr
+  ; Stage 15 B4 (R4): where this name was defined, so a redefinition names the
+  ; definition it collides with. Zero/null when the record was minted by
+  ; something other than a source definer, which `die-redefinition` handles.
+  src-file:CStr
+  src-line:i32)
 
 ; A parameterized defstruct template: `(defstruct (Vector T) ...)`. Defines no
 ; type itself; a fully-applied use `(Vector i32)` in type position stamps a
@@ -377,7 +383,9 @@
   ntv:i32
   (form (raw Node)) ; retained (defstruct (Name T ...) field-specs...) Node*
   priv:i32          ; Stage 15 B5 — see StructDef.priv
-  src-ns:CStr)
+  src-ns:CStr
+  src-file:CStr     ; Stage 15 B4 — see UnionTemplate.src-file
+  src-line:i32)
 
 ; A defenum's member table, recorded so `match` can check exhaustiveness over
 ; enum constants (the §4 freebie). Member i's value is i.
@@ -386,7 +394,9 @@
   members:ptr       ; ptr array of interned member name strings
   num-members:i32
   priv:i32          ; Stage 15 B5 — see StructDef.priv
-  src-ns:CStr)
+  src-ns:CStr
+  src-file:CStr     ; Stage 15 B4 — see UnionTemplate.src-file
+  src-line:i32)
 
 (defstruct Type
   kind:i32
@@ -811,7 +821,9 @@
   ; (protocol-key), so `src-ns` is derivable from it — but the interface asks
   ; every row the same question and a stored answer costs one word.
   priv:i32
-  src-ns:CStr)
+  src-ns:CStr
+  src-file:CStr     ; Stage 15 B4 — see UnionTemplate.src-file
+  src-line:i32)
 
 ; A recorded (Type, Protocol) conformance fact. No code; consulted by the
 ; resolver (protocol-bound tier, later) and exported in .nuch.
