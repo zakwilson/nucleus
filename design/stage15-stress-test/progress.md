@@ -182,12 +182,14 @@ previously-valid program).
   compile-time-diagnostic facility for macro authors (e.g. exposing
   `report-at` through the prelude, or a dedicated `(macro-error line msg)`
   builtin) would be new scope, not a W4 fix. Found during W4d.
-* **`context/build.md`'s parallel-test-suite timing figure (`~8.5s`) is
-  stale** — measured baseline is now `~18.8s` (16-core host), predating the
-  AVR/RISC-V gates and the W4a–W4d fixture batches. Found during W4e's
-  generated-table sub-part; left uncorrected there and here, since it's
-  session-continuity material outside this stage's `docs/`-truthfulness scope
-  — flagged for whoever next audits `context/build.md`.
+* ~~**`context/build.md`'s parallel-test-suite timing figure (`~8.5s`) is
+  stale**~~ — **corrected 2026-08-09.** Measured `~18.8s` here (16-core host),
+  predating the AVR/RISC-V gates and the W4a–W4d fixture batches; now `~36s`
+  parallel vs `~144s` serial at 463 tests. `build.md` carries the current
+  figures and the corrected 4× ratio (it had claimed 7×). Found during W4e's
+  generated-table sub-part and left for "whoever next audits `context/build.md`";
+  that audit happened alongside W9 item 10's closure, which is the same
+  measurement.
 * **The literal-left binop mistyping** (`(_+ 1 x)`-shaped code mistypes to the
   literal's default `i32` instead of adapting to the non-literal operand's
   type) is live and was re-confirmed during W4a's incidental-finds pass. This
@@ -910,7 +912,7 @@ hit while measuring, verifying, or documenting, not synthesized.
 | 7 | **`pkind-flow-check`'s `CStr` carve-out accepts a null through a non-null `(ref T)`**, found measuring G-1 | only diagnoses a `TY-PTR` source, so `(defvar g:ptr:T (as CStr null))` compiles to a null in a non-null slot — and so does the identical *local*, by this compiler and the pre-G-1 boot alike; the renderer matches the chokepoint exactly, so the carve-out itself is what is wrong, in both positions at once |
 | 8 | **`emit-as`'s int→int rule ignores the literal value on the `Val`**, found measuring G-1 | `(as i8 5)` is refused as lossy even though 5 fits — the same over-strictness [../stage14/int-widening.md](../stage14/int-widening.md)'s LW-4 fixed elsewhere; a ~3-line shared fix, declined here because it would have made G-1's bootstrap diff unprovable |
 | 9 | **`(defvar g:i1 5)` emits `global i1 5`, silently truncated to `true` by LLVM**, found measuring G-1 | `int-literal-fits` returns 1 at width ≤ 1; pre-existing — the old boot emits the identical line for the bare literal — G-1 merely gives it a second spelling |
-| 10 | **`tests/run-tests.sh` PASS counts are unreliable by ±1**, a test-harness finding unrelated to W8's design | parallel unit stdout can interleave, splitting a `PASS  <name>` line across two lines — measured: three consecutive runs of the same tree all reported 361, but earlier runs reported 346 vs 347 and 360 vs 361 for what was the same tree, and a bare `w1d` token appeared alone on output line 314 in one capture; does not affect FAIL detection (0 FAIL held every time) but could in principle mask a dropped unit |
+| 10 | ~~**`tests/run-tests.sh` PASS counts are unreliable by ±1**~~ — **closed 2026-08-09, and it was already closed when this item was written** | parallel unit stdout can interleave, splitting a `PASS  <name>` line across two lines — measured: three consecutive runs of the same tree all reported 361, but earlier runs reported 346 vs 347 and 360 vs 361 for what was the same tree, and a bare `w1d` token appeared alone on output line 314 in one capture; does not affect FAIL detection (0 FAIL held every time) but could in principle mask a dropped unit. **Correction.** Interleaving is impossible by construction: `spawn` (`tests/run-tests.sh`) redirects each unit's *entire* stdout+stderr into its own `$RESULTS_DIR/<id>.out` and the files are replayed in dispatch order after the join, so one unit's output cannot split another's line. That buffering landed in `cb864fa` (2026-07-05, "Parallelize tests") — **a month before this item was recorded on 2026-08-02** — so the ±1 evidence above was gathered against the pre-buffering harness and the item was never re-verified against the current one. Re-measured 2026-08-09 on the 16-core host: three consecutive parallel runs and one serial run of the same tree all report **463 PASS / 0 FAIL**, 35–38 s parallel vs 144 s serial (**4×**, not `build.md`'s stated 7×). The mechanism is the argument, not the sample size — this item's own note records three agreeing runs while the bug was believed live. **Consequence:** `NUCLEUS_TEST_JOBS=1` is no longer needed to count, and the convention of recording every verification with it — followed by every entry in this document from G-2 onward — is cargo. Use the parallel default |
 | 11 | **Format-helper arity violations — FIXED 2026-08-02**, found building G-2 | **There were SEVEN, not three.** The recorded three were found by grepping `fmt-s` alone; sweeping *every* helper against its own parameter count found four more. Two directions, two failure modes. **Over-supplied** (format has more conversions than the helper feeds — the [conventions.md](../../context/conventions.md) trap): `call: expected %d args, got %d` (`nucleusc.nuc`), `BoxedFn call: expected %d args, got %d`, `(dyn %s): '%s' is not a declared protocol`, and a **fourth the record did not have** — `extend: '%s' is a protocol, so its supertype '%s' must be a protocol too` (`generics.nuc`). **Under-supplied** (fewer arguments than the helper has parameters, so it read an uninitialized register): `(fmt-sd "%%tc3.mat.%d" g-tmp)` and two `(fmt-2s "ptr %s" x)` in `abi.nuc`. **The recorded symptom is only half right, and the half it gets wrong is load-bearing**: only the two `%s %s` sites segfault (the garbage vararg is dereferenced as a pointer — both confirmed SIGSEGV with no output on the committed `bin/nucleusc`). The two `%d %d` sites do **not** crash — they print a garbage COUNT (`expected 2 args, got 100`; `expected 1 args, got 115`), a *silently misleading diagnostic*, which is worse for a user than a crash. **That also falsifies the recorded link to defect 12**: `call: expected %d args, got %d` lives in `emit-funcall-value`, the fn-pointer *indirect* call path, and has always been reachable — it was firing with a garbage number, not failing to fire. Each of the four diagnostics now has a test that would have crashed or misprinted before the fix (`tests/fixtures/w9-fnptr-arity`, `-boxedfn-arity`, `-dyn-not-protocol`, `-extend-super-not-protocol`); a corrected format string nothing executes is one edit away from regressing. All seven would also have been caught by defect 12's new check — every one is a wrong-arity call to a solitary `defn` |
 | 12 | **A wrong-arity call to a solitary `defn` is not diagnosed — FIXED 2026-08-02**, found building G-2 | `(f 1 2)` against a one-parameter `f` emitted `call i32 @f(i32 1, i32 2)`, linked and ran. **The mechanism, precisely**: `emit-dispatch` (`nucleusc.nuc`) routes an overloaded name to `emit-generic-call`, where `generic-resolve` only matches a method at `num-params == nargs`, so a wrong count falls out as *no matching method*; a solitary name goes to `emit-call` → `emit-call-with-args`, which resolves the callee **by name** and never compared the counts at all. Fixed with the [conventions.md](../../context/conventions.md) shape — **one rule function both sides CALL**, not a second copy: `call-arity-ok` / `check-call-arity` (`nucleusc.nuc`, above `emit-funcall-value`) now serve the direct path, the fn-pointer indirect path and the BoxedFn/`dyn` box path, and `emit-call`'s own `&optional` `too few args`/`too many args` pair — which re-derived the band — was deleted rather than left beside it. The rule must NOT gate on `kind == TY-FN`: a box carries its signature on a **TY-STRUCT** Type (`boxedfn-type`), so a kind gate would have silently stopped checking that path. **Rulings on the variable-arity shapes**: `&optional` is a band (`num-params - nopt` … `num-params`), `&rest` is a floor (`num-params - 1`), a C-header `variadic` signature is a floor at its fixed prefix, an overloaded/multimethod/protocol/generic call is untouched (resolution already diagnoses it), and **too few arguments is an error in every shape**. **One carve-out, and it is load-bearing**: a hand-written `declare` is *open-tailed* — Nucleus has no `...` spelling and `&rest` is refused in a declaration, so the documented way to call a C variadic is to declare its fixed parameters and let the extras ride the call site, and **three existing tests already depend on exactly that** (`n6-nuch-link-and-run`, `sm3-import-resolves-mangled`, `s1-nuch-link-and-run`, each writing `(declare printf (fmt:CStr):i32)` and calling it with 3–6 arguments). Carried as `Sym.extern-decl`, set only in `emit-nuch-declare-import`, and **appended at the END of `Sym`** so no existing field's GEP index shifts and the bootstrap diff stays readable. **The check found TWO latent wrong-arity calls in the compiler's own source**, both silent reads of an uninitialized register: `generic-resolve-nullable` called `generic-method-bind` with 5 of its 6 arguments (the callee then read a garbage `arg-nodes` array), and `fn-rewrite-captures`' `.set!` branch built its OUTER `make-cell` without its `line` (every sibling passes it), so a rewritten closure-capture store carried a garbage source line. Zero elsewhere in `lib/`, `examples/` or `tests/fixtures/` — measured with a **warn-only compiler in a scratch worktree**, not by first-error iteration. Tests 410 → **421 PASS / 0 FAIL**; `make bootstrap` **byte-identical on the first pass** (no reconverge needed — the change alters no emitted IR); per-function normalized diff of `build/nucleusc.ll` against a compiler built from HEAD's source: 1050 byte-identical, 10 changed (exactly the ten edited), 0 removed, 2 added (`call-arity-ok`, `check-call-arity`); sweep: 218 byte-identical IR / 0 differing / 0 regressed, plus 123 rejecting programs with 0 diagnostics changed; `make abi-test`/`make layout-test`/`make avr-test` green |
 | 13 | **`parse-type-from-node` silently returns null for an unknown cell head** | its `die-at "unable to parse type expression"` is a label-less trailing arm of `case (n kind)`, reachable only for a `NodeKind` outside `{NODE-SYM, NODE-CELL}`; for an unrecognized `NODE-CELL` head (e.g. `(nosuch i32)`) the `NODE-CELL` arm's `do` block matches no shape and falls through to null instead, so `(defstruct S (xs (nosuch i32)))` reports the misleading `defstruct: field 'xs' missing :type` rather than a diagnostic naming `nosuch`. Empirically confirmed against `build/nucleusc`; pre-existing |
@@ -958,13 +960,14 @@ library.
 
 ---
 
-## B — Name resolution *(added 2026-08-08; B0, B1, B2a, B2b and B5 done)*
+## B — Name resolution *(added 2026-08-08; B0, B1, B2a, B2b, B5 and B3′ done)*
 
 Full design, measurements and rulings: [name-resolution.md](name-resolution.md).
 Staging is B0 (record the matrix) → B1 (file-scoped import environment) → B2
 (the canonicaliser, cut over kind by kind: **B2a protocols**, **B2b globals** +
 `unsafe` + deleting alias injection) → B3′ (re-key the type registries) → B4
-(collision policy) → B5 (the shared binding interface). B0–B2b are **done**, and
+(collision policy) → B5 (the shared binding interface). B0–B2b, **B5 and B3′** are
+done; only **B4** remains.
 **B5 landed 2026-08-09 out of order**, because §13.4 upgraded it from
 "reconcile the two priority orders" to the interface of §13.3 — which makes it
 the *frame* B3′ and B4 fill in rather than a cleanup after them. The A-vs-B
@@ -1152,6 +1155,99 @@ row order IS the resolution order**, walked by `name-existing-kind`,
   registries where a qualified reference resolves today (B3′/B4 widen it), and a
   private-and-invisible candidate is dropped so the suggester cannot leak a name
   the resolver just hid.
+
+**B3′ — type identity is namespaced (R1, defects #4 and #7).** All six type rows
+of B5's table (`g-structs`, `g-uniondefs`, the two template registries,
+`g-enumdefs`, `g-fnty`) re-keyed on the canonicaliser. **The planned struct/union-
+first split was abandoned after the audit and is the chunk's first finding:**
+`parse-type-name` is the single entry for every `:T` spelling in the language and
+its cascade consults all six registries in one function, so cutting one over alone
+would have left `(ref zzz/Fox)` refused while `(ref zzz/Shape)` still resolved —
+defect #4 half-closed with no way to say which half. Five *reference* resolvers
+(`struct-lookup-ref` and siblings) share one candidate-key walk; the old bodies
+are the *key* lookups; `BK-FNTY` stays bare on purpose (a `__fnty_N` has no source
+spelling). `parse-type-name`'s `strip-ns-qualifier` is deleted, the conformance
+registry's type half goes through `type-canon-name`, `register-struct` derives
+`ir-name`/`ir-prefix` from **the key's own namespace** (never `g-current-ns` — a
+stamp or an import runs under someone else's), so `(ns dp) (defstruct Fox …)`
+emits `%dp__Fox` and `--emit-cheader` composes the same prefix. `export` is
+generalised to the type and protocol rows, but **not** by re-registering: a type's
+payload *is* its identity, so a second `StructDef` would make the facade's name a
+second type; it is a re-export **alias** table mapping the facade's name to the
+same payload (§11.6 corrected in place).
+
+The new mechanism is **`g-type-key-ok`**, a scoped *synthesis-region* permission
+on W8 G-3's `g-defvar-soft` shape: `type-spelling` renders a `Type` back to its
+canonical name, and the compiler re-parses that string in regions (a template
+stamp, a monomorphized body, a `Self` substitution, a stored conformance arg, a
+`.nuch` replay) whose file is routinely not the file that produced it. Those are
+not call sites to classify but dynamic extents, so the five resolvers take an
+exact-key fallback **only while armed**, and only after the reference walk misses.
+Zero for every program in the tree that declares no namespace.
+
+**The honest weakness, recorded because it cost three defects.** A permission with
+a dynamic extent has no compile-time evidence that its extent is complete, and a
+*missing* arm is a false rejection of a legal program with a diagnostic that reads
+like a user error. Three arms were missing and all three were found by running a
+namespaced type through ordinary idioms, not by reading:
+`tmpl-conformance-check-one` (the per-instance check of a template-level
+`(extend (Vector T) (Seq T))`, run at stamp time — the widest, since every
+collection in `lib/` carries one, so **no namespaced type could be a collection
+element**; its sibling branch *was* armed), `generic-instantiate` (the stamped
+signature parse — `drain-mono-worklist` armed the stamped *body*), and
+`resolve-param-type-bound` (the shared substitute-and-reparse helper, so a
+return-only-tyvar generic like `vector-new` resolves against a want). A fourth fix
+was not an arm but §9.2's rule reasserting itself: `emit-extend` canonicalized its
+subject and then re-parsed the *canonical* name "for a clean diagnostic", which
+asks the scope question twice — `(extend gx/Pt P)` canonicalised to `b3ang/Pt` and
+was then refused as an unknown type. It validates the authored spelling now.
+
+### Test/bootstrap status after B3′
+
+* `make` clean from `make clean`; `make bootstrap` at its fixed point
+  (`stage1.ll == stage2.ll`) with **no reconverge**, stage 2 compiles and runs
+  `hello.nuc`; `make abi-test` / `make layout-test` green.
+* `NUCLEUS_TEST_JOBS=1 make test` → **463 PASS, 0 FAIL**. Ten of the new ones came
+  with the re-keying itself (`b3-two-vectors` — two namespaces each defining
+  `Vector`, linked and run so a collapsed identity would read the wrong offsets;
+  `b3-two-vectors-distinct`; `b3-two-vectors-field`; `b3-type-bogus-qualifier`;
+  `b3-type-ns-not-in-scope`; `b3-type-typo`, which exists to *execute* the cold
+  did-you-mean tier; `b3-ns-type-export-surfaces` and
+  `b3-ns-type-nuch-link-and-run`; the re-pointed `b5-export-type-facade`). The
+  eleventh, **`b3a-ns-type-in-collection`**, pins the three missing arms in one
+  linked-and-run program (a namespaced struct as a `Vector` element, reached
+  through generic dispatch, with a cross-namespace `extend` over it) — verified to
+  *fail* on a compiler built from `HEAD` and to return 20 on this one.
+* **IR inertness**, against a compiler built from a clean `HEAD` worktree:
+  **182 of 182** files in `examples/`+`lib/` accounted for — 178 emit
+  byte-identical IR and 4 are refused by *both* compilers with byte-identical
+  stderr and byte-identical partial output. Zero differ, zero regress, zero newly
+  compile. (182/182 rather than B5's 181/182 because `HEAD` now contains B2a's
+  rewritten `examples/w9-dyn-ns.nuc`, which removes that standing artefact.)
+* **Diagnostic sweep**, the half the IR sweep cannot see: all **180**
+  `tests/fixtures/*.nuc` produce byte-identical stderr, stdout and exit status
+  under both compilers, so no pre-existing diagnostic's text or line moved.
+* `tests/resolution-matrix.sh --check` → **unchanged (43 cells)**. `type-annot
+  nope/` — the last wrongly-`ok` cell — moved `ok` → `err` with the re-keying
+  itself and is already recorded in the committed baseline.
+
+**Open, and measured rather than suspected** (details and both candidate fixes in
+§9.4's "What B3′b/B4 inherits"):
+
+* **A `(dyn P)` box's identity is keyed on a spelling-derived name, so a *prefix*
+  spelling splits it.** Live in the tree: `examples/w9-dyn-ns.nuc` imports one
+  library under two prefixes and emits **two** `{data,vtable}` `StructDef`s for
+  one protocol. The consequence is a legal program that fails —
+  `nucleusc: failed to parse generated IR: '%t25' defined with type
+  '%__dyn.dp_Describe' but expected '%__dyn.dpx_Describe'`, with no source
+  location. `dyn-type` keys on the environment-free `protocol-canon-name-ns`
+  deliberately (§9.2), and that canonicaliser cannot map a prefix to a namespace.
+  Fixing it means moving *admission* to the annotation site, where the spelling
+  is, which is §9.2's deferred-validation fix and also closes the tenth defect.
+* **A `(dyn P)` value is accepted where `(dyn Q)` is required** for genuinely
+  different protocols, and is caught only by LLVM's parser. Pre-existing
+  (Stage 13 TE-3's box-to-box coercion returns its input untouched),
+  namespace-independent, and the reason the split above is not louder.
 
 ### Test/bootstrap status after B5
 

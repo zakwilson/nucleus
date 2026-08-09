@@ -96,7 +96,16 @@ Two namespaces may therefore each declare a protocol of the same name without co
 (extend Cat b/Describe)   ; a different protocol, different methods
 ```
 
-**Limitation.** A file that declares `(ns …)` cannot currently construct a `BoxedFn` or `(dyn P)` box — the boxing path fails to find `default-allocator` from a non-`user` namespace. Declare the protocol and the conformance in the namespaced library and box the value in the consumer.
+**Limitation — one `(dyn P)` box type per *spelling*, not per protocol.** A `(dyn P)` box's type identity is derived from the spelling of `P` at the annotation, resolved by namespace only, so an import **prefix** is not folded in: `(dyn Describe)` written inside `(ns dp)` and `(dyn dpx/Describe)` written in a file that imported it as `dpx` are two distinct box types for the one protocol. Each is a `{data, vtable}` pair with identical layout, so they interoperate at run time, but they do not type-check against each other — passing one where the other is expected fails late, at IR assembly, as
+
+```
+nucleusc: failed to parse generated IR: '%t25' defined with type
+'%__dyn.dp_Describe' but expected '%__dyn.dpx_Describe'
+```
+
+with no source location. Until this is fixed, **keep a `(dyn P)` on one side of the import boundary**: either declare the protocol, the conformance *and* every signature mentioning `(dyn P)` inside the namespaced library (spelling `P` bare throughout, and returning concrete values across the boundary), or keep the whole `(dyn P)` surface in the consumer. A file that declares `(ns …)` *can* construct a box — that was a separate limitation, fixed.
+
+**Limitation — `(dyn P)` is not checked against `(dyn Q)`.** A box of one protocol assigned into a slot of another is not rejected by the compiler; it is caught only by the same late IR-assembly error above.
 
 *Not yet implemented (within protocols):* inline-`defn` sugar inside `extend`. The dynamic `(dyn Protocol)` form is implemented — see [Type erasure](#type-erasure-boxedfn-and-dyn-protocol) below. Conformance currently requires a concrete (non-generic) implementation.
 

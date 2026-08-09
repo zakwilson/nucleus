@@ -473,6 +473,12 @@ and a **mangling token**, nothing more. R1 therefore decomposes into:
    instead of the raw head symbol. `strip-ns-qualifier`'s 10 call sites go
    away with it — the qualifier stops being discarded, which is #4 fixed as a
    side effect rather than as its own mechanism.
+   *(B3′, measured: the policy claim held, the count did not. The function
+   stays, with 6 live call sites, none of them a resolution — a did-you-mean
+   edit distance, the "same bare name, other namespace" diagnostic scan,
+   `strip-priv-qualifier`, `export`'s bare-name derivation and
+   `register-struct`'s ir-name base. It stopped being a canonicaliser; it did
+   not go away. §9.4.)*
 2. **An IR-legal namespaced token.** `type-mangle-token`'s `TY-STRUCT`/
    `TY-UNION` arms return `(sd name)` verbatim (`src/type-mangle.nuc:36`).
    With a qualified name that emits a `/` into an LLVM symbol. The fix is the
@@ -581,7 +587,8 @@ B3 is withdrawn (§8.1). The staging becomes:
 | **B2a** | **Done 2026-08-08.** `resolve-spelling` (`src/nucleusc.nuc`) + `NameRef`/`NR-*` (`src/compiler-types.nuc`) — one canonicaliser, resolving a qualifier through `g-file-imports` and nothing else — plus the `path → ns` record B1 left open (`g-file-ns`, written by `emit-ns`). **Protocols cut over**; types and globals still on the old path. Four matrix cells moved, exactly as predicted: `protocol-extend`/`protocol-dyn-box` `zx/` err→ok and `zn/` ok→err. `examples/w9-dyn-ns.nuc` rewritten to `dpx/`. See §9.2 | #1, #3, R3 — for protocols |
 | ~~B2b~~ | globals; `unsafe` as a built-in namespace; delete `inject-import-aliases` | the rest of #1, #2, #3 |
 | **B2b** | **Done 2026-08-08.** `scope-lookup` split into a reference resolver (its global frame delegating to `globals-lookup-ref`, `src/nucleusc.nuc`) and `scope-lookup-key` (the pre-B1 body, for the 8 definition-side sites). B1's `prefix-out-of-scope` / `unbound-prefix-message` folded into `resolve-spelling` / `qualifier-scope-note`, removing the §9.2 disagreement. `unsafe` bound as an implicit prefix in every file; the seven `unsafe/*` strings left the special-form set. `inject-import-aliases` / `import-alias-one` / `alias-cinclude-collected` **deleted** (64 lines), taking §1.1's `is-local`/`ir-name` filter with them. Seven matrix cells moved, exactly as predicted. See §9.3 | the rest of #1, #2, #3 |
-| **B3′** | re-key the type registries + `StructDef.ir-prefix` + ns-aware mangling token | #4, #7, R1 |
+| ~~B3′~~ | re-key the type registries + `StructDef.ir-prefix` + ns-aware mangling token | #4, #7, R1 |
+| **B3′** | **Done 2026-08-09.** All six type rows (6–11) re-keyed on `resolve-spelling` in one step rather than the planned struct/union-first split — the audit found the rows share `parse-type-name` and could not be separated (§9.4). Five *reference* resolvers (`struct-lookup-ref` / `uniondef-lookup-ref` / `struct-template-lookup-ref` / `union-template-lookup-ref` / `enumdef-lookup-ref`) over the shared candidate-key walk, with the old bodies kept as the *key* lookups; `parse-type-name`'s `strip-ns-qualifier` deleted; `StructDef.ir-name`/`ir-prefix` derived from **the key's own namespace**, so `(ns dp) (defstruct Fox …)` emits `%dp__Fox`; conformance keys namespaced on **both** halves (`type-canon-name`); `export` generalised to the type and protocol rows (`reregisterable` flipped); `prescan-file-imports` added so a file's import environment exists before any prescan that resolves a name. The new mechanism is `g-type-key-ok`, a scoped *synthesis-region* permission (`g-defvar-soft`'s shape). `type-annot nope/` moved `ok` → `err` — the last wrongly-`ok` matrix cell. See §9.4 | #4, #7, R1 |
 | **B4** | per-kind collision rule; `Method.src-ns` filtering for qualified generic references | #5, R2 |
 | ~~B5~~ | reconcile the two priority orders; add the missing `g-protocols` probe to `name-existing-kind`; fix the did-you-mean echo | #8, #9 |
 | **B5** | **Done 2026-08-09**, and upgraded per §13.4 from "reconcile the two orders" to the **shared binding interface** of §13.3. One table, `build-binding-kinds` (`src/nucleusc.nuc`), thirteen rows — §1's eleven registries plus the two correctly-global name sets — each carrying `noun` / `nk` / `collides` / `name-keyed` / `reregisterable`, and the row order IS the resolution order, walked by `name-existing-kind`, `emit-dispatch` and `node-type-call`. `NK-PROTOCOL` is returned (a row plus a prescan reorder); privacy for the four `Sym`-less private definers is implemented once against `is-private`; the did-you-mean renders through `src-ns` instead of echoing its input; `export` re-registers through the interface. See §14 | #8, #9 |
@@ -915,6 +922,191 @@ protocols, and a file that binds neither is refused both, with one explanation.
   `g-globals` — the same machinery `import-only`'s filter (R5) needs. Neither is
   B2b's.
 * **`type-annot nope/` is still `ok`** — the type registries are B3′.
+  *(Closed in B3′ — §9.4.)*
+
+### 9.4 What B3′ built
+
+**Status: done 2026-08-09.** R1 as §8.1 decomposed it, plus §11.6's `export`
+generalisation, plus one mechanism §8.1 did not anticipate.
+
+**The planned split did not survive the audit, and that is the first finding.**
+The staging assumed types could be cut over the way protocols and globals were:
+one kind at a time, each with its own reference/key split. Measured, the six type
+rows (6–11) are **not separable**, and the reason is structural rather than
+incidental: `parse-type-name` (`src/union-registry.nuc`) is the single entry point
+for every `:T` spelling in the language, and its resolution cascade consults
+`g-structs`, `g-uniondefs`, `g-struct-templates`, `g-union-templates`,
+`g-enumdefs` and `g-fnty` **in one function**. Cutting `g-structs` over alone
+would have left `(ref zzz/Fox)` refused while `(ref zzz/Shape)` — a union
+template — still resolved, i.e. defect #4 half-closed with no way to say which
+half. So B3′ re-keyed all six, and the reference resolvers are five near-identical
+functions sharing one candidate-key walk (`name-ref-key-count` /
+`name-ref-key-at`, `src/nucleusc.nuc`). `BK-FNTY` is the exception and is left
+bare on purpose: a `__fnty_N` is minted by the compiler, has no source spelling,
+and nothing can write a qualified one.
+
+That confirms §12.7's measurement from the other direction. The per-registry
+probe is ~2 lines; the *policy* — which keys to try, in what order — is one
+shared function; and the audit is the work. What changes for types is only where
+the audit's line falls (below).
+
+**The reference/key line, and whether types had a tell.** Globals had one (a key
+site is paired with a `scope-define`); protocols had none (§12.6). Types have a
+**third** shape, and it is the one worth recording: the line is not a property of
+the *call site* at all but of the **dynamic extent** the call happens in.
+
+* A `:T` annotation, a `defstruct` field, an `extend` subject, a `(sizeof T)`
+  operand — every spelling a *file* wrote — is a reference, and they all arrive
+  at `parse-type-name`. There is no second call site to classify.
+* But `type-spelling` renders a `Type` back to its **canonical** name, and the
+  compiler re-parses that string in five places: a template stamp, a
+  monomorphized body, a protocol-signature `Self` substitution, a stored
+  conformance argument, and a `.nuch` replay. Those strings were written by no
+  file, and the file they are re-parsed *in* is routinely not the file that
+  produced them.
+
+Classifying those per call site was tried and abandoned: they are not call sites,
+they are whole *regions* — `drain-mono-worklist` re-parses arbitrarily many
+spellings through `emit-node`, and threading a "this is a key" flag down every
+emitter is the shape the codebase already rejects. The mechanism is therefore a
+scoped permission, **`g-type-key-ok`** (`src/nucleusc.nuc`), armed with
+save/set/restore around each synthesis region; the five reference resolvers take
+an **exact-key fallback only while it is armed**, and only *after* the reference
+walk has missed. This is W8 G-3's `g-defvar-soft` shape — soften one exit, leave
+every other raise alone — and it inherits its two properties: the default is
+refuse, and the permitted set is enumerable by grepping the arm sites. It is 0
+for every program in the tree that declares no namespace, and the fallback runs
+only after a miss, so the whole mechanism is provably inert there.
+
+**What that mechanism costs, stated plainly, because it is the honest weakness of
+this chunk.** A permission with a dynamic extent has no compile-time evidence
+that its extent is complete. A *missing* arm is not a wrong answer in some corner
+— it is a **false rejection of a legal program**, with a diagnostic that reads
+like a user error (`unknown type: gg/Pt — 'gg' is not in scope in this file`) and
+that nothing in the tree reproduces, because the tree has no namespaced type used
+across a namespace boundary. Three arms were missing when B3′ was first measured
+end to end, and all three were found by *running a namespaced type through the
+ordinary idioms*, not by reading:
+
+* **`tmpl-conformance-check-one` (`src/generics.nuc`)** — the per-instance check of
+  a template-level `(extend (Vector T) (Seq T))`, which runs at **stamp** time in
+  the stamping file. This is the widest one: every collection in `lib/` carries
+  such an `extend`, so **no namespaced type could be a collection element at all**
+  — `(Vector (ref gx/Pt))` was refused at `lib/vector.nuc`'s own `extend` line.
+  Note the near miss: the sibling branch of the same function (`conf-arg-to-type`,
+  the assoc-types path) *was* armed. One of two branches.
+* **`generic-instantiate` (`src/generics.nuc`)** — the stamped **signature** parse.
+  `drain-mono-worklist` already armed the stamped **body**; the signature is
+  parsed earlier, before the job is queued, and was outside it. So the arm existed
+  for the half of stamping that was easy to see.
+* **`resolve-param-type-bound` (`src/generics.nuc`)** — the shared
+  substitute-the-bound-tyvars-and-reparse helper behind `method-bound-ret-type`
+  and `subst-param-types-bound`, i.e. how a return-only-tyvar generic
+  (`vector-new`, the whole `*-new` family) resolves against a want. Armed at the
+  helper, not at its two callers, for the reason W2a gives: mirroring a call
+  cannot drift.
+
+Generalise: **when a permission is scoped to a dynamic extent, the arm sites are
+not "the functions that parse" but "the functions that produce a spelling nobody
+wrote", and those are found by exercise, not by grep.** `tests/run-tests.sh`'s
+`b3a-ns-type-in-collection` links and runs the composite idiom (a namespaced
+struct as a `Vector` element, reached through generic dispatch, with a
+cross-namespace `extend` over it) precisely because each of the three was
+invisible to every other test.
+
+**One fix was not an arm, and it is the §9.2 rule reasserting itself.**
+`emit-extend` computed `typename = (type-canon-name (type-node s))` and then, a
+few lines down, re-parsed *`typename`* to "validate single-token subject types
+eagerly for a clean diagnostic". That is canonicalize-then-look-up-again — the
+exact shape B2a removed from the protocol half — and under a scoped resolver it
+asks the scope question twice and gets two answers: `(extend gx/Pt P)`
+canonicalises to `b3ang/Pt` and is then refused as an unknown type. The
+validation now runs on **the spelling the author wrote**, which is also a better
+diagnostic (it quotes the source text). The lesson §9.2 recorded for protocols is
+not protocol-shaped: any canonicaliser that can *fail* makes
+`canonicalize → re-resolve` wrong, and the second half of the pair is easy to add
+years later because it looks like a local validity check.
+
+**What `strip-ns-qualifier` became.** §8.1 predicted its "10 call sites go away".
+Measured: the function stays and has **6** live call sites, none of which is a
+resolution any more. `parse-type-name`'s call — the one that discarded a
+qualifier without checking it, i.e. defects #4 and #7 — is deleted, and the
+conformance registry's type half now goes through `type-canon-name`. What remains
+is `strip-ns-qualifier` as a pure **string** operation: the bare-name basis for a
+did-you-mean edit distance (`suggest-better`), the "same bare name, other
+namespace" diagnostic scan (`type-in-other-namespace-message`, twice),
+`strip-priv-qualifier`, `export`'s bare-name derivation, and `register-struct`'s
+ir-name base. The prediction was right about the *policy* and wrong about the
+*count*; the accurate statement is that it stopped being a canonicaliser.
+
+**The mangling half was already inert-correct and only had to be switched on.**
+`StructDef` carries `ir-name` and `ir-prefix`, and `register-struct` derives the
+prefix from **the key's own namespace** (`key-namespace` → `ns-ir-prefix` →
+`ns-compose`) rather than from `g-current-ns`. That distinction is load-bearing
+and is the `Generic.ir-prefix` precedent: a template instance is stamped, and an
+imported type is registered, while some *other* namespace is current. `user`
+composes the empty prefix and `ns-compose` is the identity on it, so every type in
+`src/` and `lib/` is byte-identical; `(ns dp) (defstruct Fox …)` now emits
+`%dp__Fox`, and `--emit-cheader` composes the same prefix for the same collision
+reason (two namespaces' `Pt` would otherwise emit the same C typedef).
+
+**`export` for types (§11.6), and the shape it forced.** B5 left `reregisterable`
+as a stated 0 with a located diagnostic; B3′ flips it for the type and protocol
+rows. The mechanism is *not* a second registration in the host namespace — a type
+is identified by its `StructDef` pointer, so re-registering would mint a second
+identity, which is R1's whole point inverted. It is a **re-export alias table**
+(`binding-alias-find`, consulted by each reference resolver after its key walk and
+before the synthesis fallback): the facade's name maps to the *same* payload. That
+is the honest reading of §13.3's `re-register(binding, new-canonical)` for a kind
+whose identity is a pointer, and it is why §11.6's "re-register under the host
+namespace" needed rewording rather than implementing.
+
+**Two things §14.7 got right and one it did not.** `src-ns` at emission and the
+`type-annot nope/` cell both landed as predicted. The third bullet —
+"`binding-usable-spelling`'s `BK-GLOBAL`/`BK-PROTOCOL` restriction is a one-line
+widening" — was correct as a *diff* and incomplete as a *plan*: widening it is
+what makes the `unknown type: Fox — defined in namespace 'dp' / note: write
+'dpx/Fox' here` diagnostic possible, and that diagnostic needed its own tier
+order in `unknown-type-message` (out-of-scope qualifier → unreachable definer →
+other namespace → did-you-mean) to avoid degrading into W1c's "not defined
+anywhere in this compilation unit" for a type that is defined and reachable. The
+tier is a cold path, so it also needed a fixture that *executes* it
+(`b3-type-typo`) — the first cut called `fmt-3s` with two arguments, which
+conventions.md's fixed-arity rule says is invisible forever otherwise.
+
+**What B3′b/B4 inherits.**
+
+* **The `(dyn P)` box's identity is still keyed on a spelling-derived name, and a
+  prefix spelling splits it.** Measured, and live in the tree:
+  `examples/w9-dyn-ns.nuc` imports one library under two prefixes and emits
+  **two** `{data,vtable}` `StructDef`s for one protocol (`%__dyn.dpx_Describe`
+  and `%__dyn.dpx2_Describe`), plus two vtables for one conformance. The
+  consequence is not cosmetic: a library that takes `(dyn Describe)` and a
+  consumer that constructs `(dyn dpx/Describe)` is a **legal program that fails**
+  — not with a diagnostic, but with `nucleusc: failed to parse generated IR:
+  '%t25' defined with type '%__dyn.dp_Describe' but expected
+  '%__dyn.dpx_Describe'`, no source location. The cause is exactly §9.2's rule
+  working as designed: `dyn-type` keys on the environment-free
+  `protocol-canon-name-ns`, which cannot map a *prefix* to a namespace. Two fixes
+  were designed and both are larger than an arm, which is why neither is here:
+  (a) key on `resolve-spelling`'s canonical name — now phase-stable, since
+  `prescan-file-imports` gives every prescan the environment — but that breaks
+  **admission**, because `dyn-require-protocol` asks the scope question against
+  the *stored* name and a canonical `dp/Describe` is not nameable in the
+  consumer; or (b) move admission to the annotation site, where the spelling is,
+  via a deferred-validation worklist drained after the whole-graph prescan. (b)
+  is §9.2's fix (a) and it also closes the tenth defect (`protocol-dyn-annot`,
+  all four cells still `ok`). Identity and admission need different data; the
+  clean split is to ask admission where the spelling is.
+* **A `(dyn P)` value is accepted where `(dyn Q)` is required**, for genuinely
+  different `P`/`Q`, and is caught only by LLVM's parser with no source location.
+  Pre-existing (Stage 13 TE-3's box-to-box coercion returns its input untouched),
+  namespace-independent, and the reason the split above is not *louder*. Worth a
+  `type-eq` check at the erased-slot coercion.
+* **`collides` 0 on `BK-UNION`/`BK-ENUM`/`BK-FNTY`** is unchanged and still B4's.
+* **The `import-use`-flattened bare spelling of a namespaced protocol** takes the
+  same `dyn-type` path as the prefix spelling and splits identically; it is one
+  case of the first bullet, not a separate one.
 
 ## 10. Still open *(resolved by §11)*
 
@@ -1121,6 +1313,16 @@ host namespace in *whichever* registry the kind names. That is the same
 one-path shape as everything else in this document, and it is a good check on
 it — a resolver that cannot express "re-register this binding under a
 different name" is not carrying enough information.
+
+> **Corrected by B3′ (2026-08-09), §9.4.** "Re-registers under the host
+> namespace" is right for `g-globals`, whose payload is a `Sym` that may be
+> duplicated, and wrong for a type, whose payload *is* its identity: a second
+> `StructDef` under `facade/Pt` would make `facade/Pt` and `geom/Pt` two types,
+> which is R1 inverted. The implemented shape is a **re-export alias table** —
+> the facade's name maps to the *same* payload, consulted by each reference
+> resolver after its key walk. The paragraph's conclusion survives (the resolver
+> must be able to express the operation); only the word "re-register" was
+> load-bearing in a way it should not have been.
 
 ### 11.7 The duplicate `Node` — fixed, not worked around
 
@@ -1730,22 +1932,39 @@ dropped, so the suggester cannot leak a name the resolver just hid.
 ### 14.7 For B3′ and B4
 
 **B3′** (re-key the type registries, `StructDef.ir-prefix`, an ns-aware mangling
-token, generalise `export`):
+token, generalise `export`) — **done 2026-08-09; §9.4 records what was built.**
+Kept as written, with the three corrections B3′ measured marked inline.
 
 * The rows to re-key are 6–11. Each one's `binding-probe` arm is the *only*
   place its key policy is expressed for the shared concerns, so re-keying is:
   change the arm to `resolve-spelling` + an exact probe (exactly what `BK-GLOBAL`
   and `BK-PROTOCOL` already are), and delete the corresponding
   `strip-ns-qualifier` call in `parse-type-name`.
+  **Wrong on both counts.** The arm is *not* the only place the key policy is
+  expressed — `parse-type-name` calls each registry's lookup **directly**, which
+  is the same fact §14.4 recorded for privacy ("a check inside `binding-probe`
+  alone would have left `parse-type-name` unguarded"), reappearing for keying.
+  And the rows are not separable: `parse-type-name`'s cascade consults all six in
+  one function, so cutting one over alone half-closes defect #4 with no way to
+  say which half. All six moved together, with the reference resolvers as the
+  per-kind unit and `binding-probe` a consumer of them (§9.4).
 * `export` is already routed through `binding-re-register`; generalising it is
   flipping `reregisterable` to 1 on those rows and adding their arm. The
   diagnostic it currently raises is the specification of what has to appear.
+  **Half right.** The flag and the arm are the diff, but the arm cannot
+  *re-register* — a type is identified by its `StructDef` pointer, so a second
+  registration under the host namespace mints a second identity. It is an alias
+  table mapping the facade's name to the same payload (§9.4).
 * Two things B3′ inherits from §14.4 rather than discovers: `src-ns` must be
   captured at **emission** (pass 1's `prescan-struct-names` runs under the
   importer's namespace), and re-keying will *also* fix `type-annot nope/`, the
-  last matrix cell still wrongly `ok`.
+  last matrix cell still wrongly `ok`. **Both held.**
 * `binding-usable-spelling`'s `BK-GLOBAL`/`BK-PROTOCOL` restriction is a
   one-line widening once types have a qualified spelling that resolves.
+  **Correct as a diff, incomplete as a plan** — widening it is what makes the
+  "defined in namespace 'dp' / note: write 'dpx/Fox' here" diagnostic possible,
+  and that needed its own tier order in `unknown-type-message` plus a fixture
+  that *executes* the cold did-you-mean tier (§9.4).
 
 **B4** (R4's eager collision rule, R2's per-kind policy):
 

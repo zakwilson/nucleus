@@ -2669,3 +2669,73 @@ had just failed. Render through the binding's `src-ns`
 never emit a suggestion equal to the input. The same applies to any future
 "helpful alternative" text: a suggestion that does not compile is worse than
 none.
+
+## A type spelling is now a REFERENCE — so every place the compiler *writes* one is a synthesis region, and a missing arm is a false rejection
+
+Stage 15 B3′ re-keyed the six type registries on `resolve-spelling`
+(`design/stage15-stress-test/name-resolution.md` §9.4), so `(ref dpx/Fox)`
+resolves through the writing file's import environment exactly like a global or a
+protocol. That is the fix for defects #4/#7 — and it creates a new obligation
+that nothing in the tree exercises, because no program in `src/`, `lib/` or
+`examples/` uses a namespaced type across a namespace boundary.
+
+**`type-spelling` renders a `Type` back to its CANONICAL name** (`dp/Fox`), and
+the compiler re-parses that string in five regions: a template stamp, a
+monomorphized body, a protocol-signature `Self` substitution, a stored
+conformance argument, and a `.nuch` replay. The file those are re-parsed *in* is
+routinely not the file that produced them, so resolving them as references asks
+the wrong file and refuses a legal program. The permission is **`g-type-key-ok`**
+(`src/nucleusc.nuc`), armed save/set/restore around each region; the five
+reference resolvers (`struct-lookup-ref`, `uniondef-lookup-ref`,
+`struct-template-lookup-ref`, `union-template-lookup-ref`, `enumdef-lookup-ref`)
+take an exact-key fallback **only while it is armed, and only after the reference
+walk misses**. Same shape as `g-defvar-soft` and `g-array-ok`: default refuse,
+permitted set enumerable by grepping the arm sites.
+
+Three things about it that a future session will otherwise re-learn the hard way:
+
+- **A missing arm is a false rejection with a diagnostic that reads like a user
+  error**: `unknown type: gg/Pt — 'gg' is not in scope in this file`, pointing at
+  a library's own line or at line 0. Nothing in the test suite reproduces it,
+  because it needs a namespaced type crossing a namespace boundary.
+  `tests/run-tests.sh`'s `b3a-ns-type-in-collection` is the one program that
+  does — a namespaced struct as a `Vector` element, reached through generic
+  dispatch, with a cross-namespace `extend` over it. Keep it running.
+- **The arm sites are not "the functions that parse a type" but "the functions
+  that produce a spelling nobody wrote", and they are found by exercise, not by
+  grep.** B3′ shipped with three missing, each adjacent to one that was present:
+  `tmpl-conformance-check-one` (the per-instance check of a template-level
+  `(extend (Vector T) (Seq T))`, run at *stamp* time — its sibling branch,
+  `conf-arg-to-type`, was armed), `generic-instantiate` (the stamped *signature*
+  parse — `drain-mono-worklist` armed the stamped *body*), and
+  `resolve-param-type-bound` (the shared substitute-and-reparse helper, armed at
+  the helper rather than at `method-bound-ret-type` / `subst-param-types-bound`,
+  per W2a's rule). The widest was the first: every collection in `lib/` carries a
+  template-level `extend`, so **no namespaced type could be a collection element
+  at all**.
+- **A canonicaliser that can FAIL makes `canonicalize → re-resolve` wrong**, and
+  the second half is easy to add later because it looks like a local validity
+  check. `emit-extend` computed `typename = (type-canon-name (type-node s))` and
+  then re-parsed *`typename`* "to validate single-token subject types eagerly for
+  a clean diagnostic"; under a scoped resolver that asks the scope question twice
+  and gets two answers, so `(extend gx/Pt P)` canonicalised to `b3ang/Pt` and was
+  refused as an unknown type. Validate **the spelling the author wrote** — it is
+  also the better diagnostic. This is §9.2's "resolve once, at the reference,
+  then carry the record", and it is not protocol-shaped.
+
+**Related, and still open: a `(dyn P)` box's identity is keyed on a
+spelling-derived name.** `dyn-type` (`src/union-registry.nuc`) canonicalizes with
+the environment-free `protocol-canon-name-ns` — deliberately, so the key is
+phase-stable across the prescan and emission — and that canonicaliser cannot map
+an import *prefix* to a namespace. So `(dyn Describe)` inside `(ns dp)` and
+`(dyn dpx/Describe)` outside it mint **two** `{data,vtable}` `StructDef`s for one
+protocol (visible today in `examples/w9-dyn-ns.nuc`, which binds one library under
+two prefixes), and a library taking `(dyn Describe)` cannot be called from a
+consumer holding `(dyn dpx/Describe)`: it fails as
+`nucleusc: failed to parse generated IR: … '%__dyn.dp_Describe' but expected
+'%__dyn.dpx_Describe'`, with no source location. **Do not "fix" this by
+canonicalizing through the reference resolver** — `dyn-require-protocol` asks the
+*scope* question against the stored name, so a canonical `dp/Describe` becomes
+unnameable in the consumer and every legal box is refused. Identity and admission
+need different data; the fix is to ask admission at the annotation site, where the
+spelling is (name-resolution.md §9.4).
