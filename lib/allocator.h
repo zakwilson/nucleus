@@ -16,7 +16,7 @@ typedef struct AllocHandle {
 } AllocHandle;
 
 void* alloc_handle_alloc(void* h, size_t size, size_t align) asm("alloc-handle-alloc");
-void* alloc_handle_realloc(void* h, void* p, size_t old, size_t new, size_t align) asm("alloc-handle-realloc");
+void* alloc_handle_realloc(void* h, void* p, size_t old, size_t new_, size_t align) asm("alloc-handle-realloc");
 void alloc_handle_free(void* h, void* p, size_t size, size_t align) asm("alloc-handle-free");
 extern struct AllocHandle g_default_alloc asm("g-default-alloc");
 void* default_allocator(void) asm("default-allocator");

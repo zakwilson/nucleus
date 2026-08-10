@@ -5966,6 +5966,119 @@ EOF
 }
 spawn run_w9_cheader_overload_symbols
 
+# The twenty-eighth defect. `sanitize-for-c` maps illegal *characters*, so a
+# Nucleus name that happens to be a C or C++ reserved word — `union`, `signed`,
+# `class`, `delete` — reached the header intact and it did not parse. Each is
+# renamed with a trailing `_` and re-bound with an asm label, so the symbol is
+# unchanged and only the C spelling moves. The fixture puts a keyword in every
+# position the emitter produces an identifier for: a function, a parameter, a
+# struct field, a struct tag used by value in both parameter and return position,
+# a global, and an enum whose members are keywords behind a prefix.
+run_w9_cheader_reserved_words() {
+  local d out miss sym
+  d="$(mktemp -d)"
+  cat > "$d/kwlib.nuc" <<'EOF'
+(defstruct Box class:i32 signed:i32)
+(defstruct class x:i32)
+(defenum Kind auto static default)
+(defconst SIGNED-LIMIT 7)
+(defvar delete:i32 41)
+(defn union (a:i32 b:i32):i32 (return (bit-or a b)))
+(defn xor (a:i32 default:i32):i32 (return (bit-xor a default)))
+(defn plain (b:(ref Box)):i32 (return (+ (b class) (b signed))))
+(defn bump (v:class):class
+  (let (l:class v)
+    (.set! (addr-of l) x (+ ((addr-of l) x) 1))
+    (return l)))
+EOF
+  if ! ./build/nucleusc --emit-cheader "$d/kwlib.nuc" > "$d/kwlib.h" 2>"$d/err"; then
+    echo "FAIL  w9-cheader-reserved-words (--emit-cheader failed)"; sed 's/^/    /' "$d/err"; rm -rf "$d"; return 0
+  fi
+
+  # The tag and the by-value reference to it must move together, or the header
+  # parses and then names a type it never defines.
+  if grep -qxF '    int32_t class_;' "$d/kwlib.h" \
+     && grep -qxF '    int32_t signed_;' "$d/kwlib.h" \
+     && grep -qxF 'typedef struct class_ {' "$d/kwlib.h" \
+     && grep -qxF 'struct class_ bump(struct class_ v);' "$d/kwlib.h" \
+     && grep -qxF 'extern int32_t delete_ asm("delete");' "$d/kwlib.h" \
+     && grep -qxF 'int32_t union_(int32_t a, int32_t b) asm("union");' "$d/kwlib.h" \
+     && grep -qxF 'int32_t xor_(int32_t a, int32_t default_) asm("xor");' "$d/kwlib.h" \
+     && grep -qxF 'int32_t plain(void* b);' "$d/kwlib.h"; then
+    echo "PASS  w9-cheader-reserved-escaped"
+  else
+    echo "FAIL  w9-cheader-reserved-escaped"; sed 's/^/    /' "$d/kwlib.h" | sed -n '7,40p'
+  fi
+
+  # A prefixed member is already an identifier; escaping the fragment would
+  # rename `Kind_default` for no reason. The escape belongs on the join.
+  if grep -qxF '    Kind_default = 2' "$d/kwlib.h"; then
+    echo "PASS  w9-cheader-reserved-join-not-fragment"
+  else
+    echo "FAIL  w9-cheader-reserved-join-not-fragment"; grep -n 'Kind' "$d/kwlib.h" | sed 's/^/    /'
+  fi
+
+  if ! ./build/nucleusc -c -o "$d/kwlib.o" "$d/kwlib.nuc" 2>"$d/err"; then
+    echo "FAIL  w9-cheader-reserved-symbol-defined (compile failed)"; sed 's/^/    /' "$d/err" | head -5
+  else
+    # Renaming the C identifier must not move the symbol.
+    nm -g --defined-only "$d/kwlib.o" | awk '$2!="U"{print $3}' | sort -u > "$d/syms"
+    miss=""
+    for sym in $(grep -oE 'asm\("[^"]+"\)' "$d/kwlib.h" | sed 's/asm("//;s/")//'); do
+      grep -qxF "$sym" "$d/syms" || miss="$miss $sym"
+    done
+    if [ -z "$miss" ]; then
+      echo "PASS  w9-cheader-reserved-symbol-defined"
+    else
+      echo "FAIL  w9-cheader-reserved-symbol-defined (header names undefined symbols:$miss)"
+    fi
+
+    cat > "$d/main.c" <<'EOF'
+#include <stdio.h>
+#include "kwlib.h"
+int main(void) {
+    Box b = {3, 4};
+    class_ c = {8};
+    printf("u=%d x=%d p=%d n=%d k=%d d=%d s=%d\n",
+           union_(8, 1), xor_(6, 3), plain(&b), bump(c).x,
+           (int)Kind_default, delete_, SIGNED_LIMIT);
+    return 0;
+}
+EOF
+    if clang -Wall -Werror -I "$d" "$d/main.c" "$d/kwlib.o" -o "$d/kwmain" 2>"$d/err"; then
+      out="$("$d/kwmain")"
+      if [ "$out" = "u=9 x=5 p=7 n=9 k=2 d=41 s=7" ]; then
+        echo "PASS  w9-cheader-reserved-c-consumer"
+      else
+        echo "FAIL  w9-cheader-reserved-c-consumer (want 'u=9 x=5 p=7 n=9 k=2 d=41 s=7', got '$out')"
+      fi
+    else
+      echo "FAIL  w9-cheader-reserved-c-consumer (build failed)"; sed 's/^/    /' "$d/err" | head -8
+    fi
+
+    # Why the table carries C++'s keywords too: a generated header is routinely
+    # read through `extern "C"` from C++, where `class` and `delete` are as fatal
+    # as `union` is in C.
+    if ! command -v c++ >/dev/null 2>&1; then
+      echo "SKIP  w9-cheader-reserved-cxx-consumer (no c++ in PATH)"
+    else
+      sed 's|#include "kwlib.h"|extern "C" {\n#include "kwlib.h"\n}|' "$d/main.c" > "$d/main.cpp"
+      if c++ -Wall -Werror -I "$d" "$d/main.cpp" "$d/kwlib.o" -o "$d/kwmainxx" 2>"$d/err"; then
+        out="$("$d/kwmainxx")"
+        if [ "$out" = "u=9 x=5 p=7 n=9 k=2 d=41 s=7" ]; then
+          echo "PASS  w9-cheader-reserved-cxx-consumer"
+        else
+          echo "FAIL  w9-cheader-reserved-cxx-consumer (want 'u=9 x=5 p=7 n=9 k=2 d=41 s=7', got '$out')"
+        fi
+      else
+        echo "FAIL  w9-cheader-reserved-cxx-consumer (build failed)"; sed 's/^/    /' "$d/err" | head -8
+      fi
+    fi
+  fi
+  rm -rf "$d"
+}
+spawn run_w9_cheader_reserved_words
+
 # The tenth defect (`protocol-dyn-annot`). An annotation naming a protocol that
 # exists nowhere used to compile and fabricate a box type; admission now happens
 # at the annotation site, deferred to `drain-dyn-annots`. Nothing in this fixture

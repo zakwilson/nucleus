@@ -1728,19 +1728,70 @@
 ; C header emission (--emit-cheader)
 ; ============================================================
 
+; Non-zero when `s` is a word C or C++ reserves, so it cannot be spelled as an
+; identifier. Stage 15 W9 item 28: `sanitize-for-c` maps illegal *characters* and
+; has no notion of a reserved word, so `union`, `int` and `default` — all ordinary
+; Nucleus names — passed through intact and the header did not parse.
+;
+; C++ is included, not only C. A generated header is routinely consumed through
+; `extern "C"` from C++, and `new`, `delete`, `try`, `class`, `template`,
+; `operator` and `namespace` are all names a Nucleus library plausibly defines;
+; `try` is a Nucleus form. The iso646 spellings (`and`, `or`, `not`, `xor`, …) are
+; here for the same reason — they are C++ keywords, and macros in C once
+; <iso646.h> is included.
+;
+; One space-delimited string per family searched with `strstr`, rather than an
+; array of literals: the padded needle makes the membership test exact, and each
+; family stays one greppable line.
+(defn cheader-reserved-word (s:ptr):i32
+  (when (= s null) (return 0))
+  (when (= (strlen s) 0) (return 0))
+  (let (needle:ptr (fmt-s " %s " s))
+    (when (!= (strstr " alignas alignof auto bool break case char const constexpr continue default do double else enum extern false float for goto if inline int long nullptr register restrict return short signed sizeof static static_assert struct switch thread_local true typedef typeof typeof_unqual union unsigned void volatile while _Alignas _Alignof _Atomic _BitInt _Bool _Complex _Generic _Imaginary _Noreturn _Static_assert _Thread_local " needle) null)
+      (return 1))
+    (when (!= (strstr " and and_eq asm bitand bitor catch char8_t char16_t char32_t class compl concept consteval constinit const_cast co_await co_return co_yield decltype delete dynamic_cast explicit export friend mutable namespace new noexcept not not_eq operator or or_eq private protected public reinterpret_cast requires static_cast template this throw try typeid typename using virtual wchar_t xor xor_eq " needle) null)
+      (return 1))
+    (return 0)))
+
+; `s` with a trailing `_` when it is reserved, `s` unchanged otherwise. No
+; reserved word ends in `_`, so one suffix always suffices — no loop. A
+; collision with a real `union_` in the same header is possible in principle and
+; would be a duplicate declaration, which the C compiler reports; silently
+; emitting the keyword is the failure this avoids.
+(defn cheader-escape-reserved (s:ptr):ptr
+  (when (= (cheader-reserved-word s) 0) (return s))
+  (return (fmt-s "%s_" s)))
+
 ; Stage 15 W9 item 4: the C spelling of a Nucleus name. `sanitize-for-c` maps
 ; every character C does not allow in an identifier to `_`, so `a-field` becomes
 ; `a_field`. Null-safe because several callers read a name out of a malformed
 ; form and print whatever they got.
 ;
+; W9 item 28: and then escapes a reserved word, because a legal identifier is
+; more than a legal character sequence. Every complete C identifier this emitter
+; prints goes through here — including a struct/union tag, via the `ns-ir-base`
+; callers — so the rule holds in one place instead of per call site.
+;
 ; This is the spelling for names the LINKER NEVER SEES — struct fields, function
 ; parameters, `defunion` arm names, enum tags, `#define` constants. For a name the
 ; linker does resolve, sanitizing alone silently breaks the binding; use
-; `cheader-asm-label` with it. See the W9 item 4 note in
+; `cheader-asm-label` with it, which then picks up the `_` escape for free (the
+; escaped spelling differs from the symbol, so the label appears exactly when it
+; must). See the W9 item 4 and 28 notes in
 ; design/stage15-stress-test/progress.md.
 (defn cheader-c-ident (name:(raw i8)):ptr
   (when (= name null) (return (as ptr name)))
-  (return (sanitize-for-c (as ptr name))))
+  (return (cheader-escape-reserved (sanitize-for-c (as ptr name)))))
+
+; The C spelling of a name that is emitted as one identifier JOINED from two
+; parts — `enum Color { Color_red }`, and a defunion's `Foo_arm` tag constants.
+; The escape belongs on the join, not on either part: `Color_default` is a
+; perfectly good identifier, and escaping the fragment would rename it for no
+; reason. The join can still land on a keyword (`and` + `eq`), so it is tested.
+(defn cheader-c-ident-join (prefix:ptr member:(raw i8)):ptr
+  (when (= member null) (return prefix))
+  (return (cheader-escape-reserved
+            (fmt-2s "%s_%s" prefix (sanitize-for-c (as ptr member))))))
 
 ; The `asm("…")` suffix that re-binds a sanitized C declaration to the symbol the
 ; object actually defines, or "" when the sanitized spelling IS the symbol.
@@ -1826,7 +1877,10 @@
   ; Stage 15 B3′: `ns-ir-base` (not bare `ir-name-token`) so a reference to a
   ; namespaced type spells the same C identifier its typedef does — see
   ; emit-cheader-defstruct. Identity under `user`.
-  (return (fmt-s "struct %s" (sanitize-for-c (ns-ir-base name)))))
+  ; W9 item 28: through `cheader-c-ident`, so a type named `union` or `class` is
+  ; escaped here exactly as at its definition. A tag is an identifier too, and
+  ; `struct union {…}` does not parse.
+  (return (fmt-s "struct %s" (cheader-c-ident (as raw:i8 (ns-ir-base name))))))
 
 ; Convert a type AST node to a C type string. Handles SYM types and
 ; (ptr T) / (ptr ptr T) ... lists.
@@ -1967,7 +2021,9 @@
   ; their generated headers would both declare `typedef struct {…} Pt;` — a C
   ; collision the moment a program includes both. Identity under `user`, so every
   ; existing header is byte-identical.
-  (let (name:ptr (sanitize-for-c (ns-ir-base ((unsafe/cast ptr:Node (node-at form 1)) s)))
+  ; W9 item 28: `cheader-c-ident` — the tag and typedef of a struct named `union`
+  ; must be escaped, in lockstep with every reference to it (type-name-to-c).
+  (let (name:ptr (cheader-c-ident (as raw:i8 (ns-ir-base ((unsafe/cast ptr:Node (node-at form 1)) s))))
         nfields:i32 (- (node-len form) 2))
     (check-ir-name-legal ((unsafe/cast ptr:Node (node-at form 1)) line) ((unsafe/cast ptr:Node (node-at form 1)) s) name)
     ; Stage 15 W9 item 25: TAG the struct. `type-name-to-c` spells every reference
@@ -2228,9 +2284,9 @@
           ; `type-node-to-c` answers `void*` for every cell head it does not
           ; recognize, which is SIZE-CORRECT for a pointer and silently wrong for
           ; anything else — `(defvar m:(Maybe i32) …)` would declare a
-          ; pointer-sized object over a struct. (The two skips above do not catch
-          ; it: `--emit-cheader` is deliberately exempt from the prelude, so
-          ; `Maybe` is not a registered template here.) A *declaration* the C
+          ; pointer-sized object over a struct. (The two skips above catch a
+          ; template instance only where the registry knows the template; this
+          ; arm does not depend on that.) A *declaration* the C
           ; compiler trusts and gets wrong is worse than an omission, so this arm
           ; emits only what that function genuinely spells: a plain type name, or
           ; a pointer under any of its three spellings.
@@ -2264,8 +2320,8 @@
         n:i32 (- (node-len form) 2))
     (printf "enum %s {\n" name)
     (dotimes (i n)
-      (let (variant:ptr (cheader-c-ident (as raw:i8 ((unsafe/cast ptr:Node (node-at form (+ i 2))) s))))
-        (printf "    %s_%s = %d" name variant i)
+      (let (variant:ptr (cheader-c-ident-join name (as raw:i8 ((unsafe/cast ptr:Node (node-at form (+ i 2))) s))))
+        (printf "    %s = %d" variant i)
         (when (< i (- n 1)) (printf ","))
         (printf "\n")))
     (printf "};\n\n")))
@@ -2282,7 +2338,8 @@
     ; that to `emit-cheader-defstruct` and `type-name-to-c` but not here, so a
     ; namespaced union's definition and every reference to it spelled different C
     ; identifiers. Identity under `user`.
-    (let (name:ptr (sanitize-for-c (ns-ir-base (name-node s)))
+    ; W9 item 28: `cheader-c-ident`, as emit-cheader-defstruct — see there.
+    (let (name:ptr (cheader-c-ident (as raw:i8 (ns-ir-base (name-node s))))
           narms:i32 (- (node-len form) 2)
           npay:i32 0)
       (check-ir-name-legal (name-node line) (name-node s) name)
@@ -2323,10 +2380,10 @@
       (printf "enum %s_tag {\n" name)
       (dotimes (i narms)
         (let (arm:ptr:Node (unsafe/cast ptr:Node (node-at form (+ i 2)))
-              aname:ptr (cheader-c-ident (as raw:i8
+              aname:ptr (cheader-c-ident-join name (as raw:i8
                           (if (= (arm kind) NODE-SYM) (arm s)
                             ((unsafe/cast ptr:Node (node-at (as ptr arm) 0)) s)))))
-          (printf "    %s_%s = %d" name aname i)
+          (printf "    %s = %d" aname i)
           (when (< i (- narms 1)) (printf ","))
           (printf "\n")))
       (printf "};\n\n"))))
