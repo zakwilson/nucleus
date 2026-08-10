@@ -3019,3 +3019,37 @@ module. A macro's `jit-name` does not: it is a private JIT symbol already made
 unique by a counter, so it keeps deriving from the **bare** name, which also
 keeps a `/` out of `sanitize-for-ir`'s input. §9.7 predicted the composition and
 was wrong. Ask which of the two you have before copying the step.
+
+## A generated name is rewritten for one of TWO reasons — ask which before picking the mapping
+
+`--emit-cheader` rewrites every Nucleus name it exports, because `-` is ordinary
+in a Nucleus name and illegal in a C identifier. There are two rules, and using
+the wrong one is silent:
+
+- **The linker resolves this name** (a `defn`, a `defvar`): the declaration must
+  be a C identifier *and* name the symbol the object defines, which one token
+  cannot be. Sanitized spelling **plus** `asm("real-symbol")` —
+  `cheader-asm-label`. Sanitizing *alone* turns a header that fails to parse into
+  one that parses and fails to **link**, moving the error away from its cause.
+- **Nothing links against this name** (struct field, parameter, `defunion` arm,
+  enum tag, `#define` constant, a typedef name): plain `sanitize-for-c` —
+  `cheader-c-ident`. An `asm` label here is meaningless.
+
+Two traps this shape has already sprung:
+
+- **`sanitize-for-ir` mangles hyphens; `ir-name-token` does not.** `ir-name-token`
+  maps only `?`→`_QMARK` / `!`→`_BANG` and passes everything else, hyphens
+  included, so a link name keeps them — which is *why* the label is needed.
+  `op-name-token`'s fallback is `(sanitize-for-ir (ir-name-token name))`, a
+  different answer again. Three similarly-named functions, three alphabets.
+- **A verbatim name in one emitter must be sanitized in lockstep with its
+  definition in another.** `cheader-array-extent` exports a non-folding
+  `(array T N)` length as the bare constant name on the premise that
+  `emit-cheader-defconst` exports the matching `#define`; sanitizing either alone
+  gives `int32_t xs[MY-LEN];` against `#define MY_LEN 4`.
+
+And the check that actually catches a miss: sweep **all** generated headers for a
+stray character rather than re-reading a list of call sites. W9 item 4's recorded
+census enumerated six sites and was three short — `defconst` names, `defenum`'s
+own tag, parameter names and the inline-`(union …)` members emitted from inside
+`type-node-to-c` were all missing from it.

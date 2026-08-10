@@ -14,4 +14,4 @@ typedef struct {
 } ListIter;
 
 void* next(void* self);
-struct ListIter list-iter(void* lst);
+struct ListIter list_iter(void* lst) asm("list-iter");

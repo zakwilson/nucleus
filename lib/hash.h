@@ -5,8 +5,8 @@
 
 /* Generated from lib/hash.nuc by nucleusc --emit-cheader */
 
-int64_t fnv1a-byte(int64_t h, int64_t b);
-int64_t fnv1a-int(int64_t h, int64_t v, int32_t n);
+int64_t fnv1a_byte(int64_t h, int64_t b) asm("fnv1a-byte");
+int64_t fnv1a_int(int64_t h, int64_t v, int32_t n) asm("fnv1a-int");
 size_t hash(void* self);
 size_t hash(void* self);
 size_t hash(void* self);

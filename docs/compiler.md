@@ -371,7 +371,7 @@ extern int64_t tick_count asm("tick-count");
 
 Three rules are worth knowing:
 
-* **A hyphenated name gets an `asm` label.** A global's link symbol keeps the name exactly as written — `tick-count` emits `@tick-count` — and that is not a C identifier. The declaration therefore uses a sanitized C spelling plus an `asm("…")` label naming the real symbol. Sanitizing *without* the label would produce a header that compiles and then fails to link, which hides the cause. The label is emitted **only** when the sanitized spelling differs from the link name, so a library whose names are already C-legal gets a fully portable header with no compiler extension in it.
+* **A hyphenated name gets an `asm` label.** See [Hyphenated names in a C header](#hyphenated-names-in-a-c-header) below — the rule is the same for a global and a function.
 * **`:const` becomes C's `const`.** It is the same read-only-storage guarantee.
 * **`defvar-` is not exported**, the same as every other private definer.
 
@@ -382,6 +382,42 @@ A global whose type has no faithful C spelling is **omitted with a comment** rat
 ```
 
 This covers `(array T N)`, union-template instances like `(Maybe i32)`, closure and type-erased box types. The reason it is an omission rather than a best effort is that the fallback spelling would be `void*` — pointer-sized, which is right for a pointer and silently wrong for anything else, and a declaration the C compiler trusts and gets wrong is worse than one that is missing. Pointer-typed globals *are* exported under all three spellings (`ptr:T`, `raw:T`, `ref:T`); the latter two currently widen to `void*`, as they already do in function signatures.
+
+## Hyphenated names in a C header
+
+`-` is an ordinary character in a Nucleus name and is illegal in a C identifier, so every name a header exports is rewritten. Which rewrite depends on **whether the linker resolves the name**:
+
+| Kind of name | C spelling | Why |
+|---|---|---|
+| `defn`, `defvar` | sanitized **+ `asm("real-symbol")`** | The object defines `@my-func`; the header must both spell an identifier and name that symbol, and one token cannot do both. |
+| struct field, function parameter, `defunion` arm, enum tag, `#define` from `defconst` | sanitized | Nothing links against these — the name only has to parse. |
+| struct / union type name | sanitized | Same: a typedef name is not a symbol. |
+
+```nucleus
+(defconst BUF-LEN 4)
+(defstruct My-Rec a-field:i32 xs:(array i32 BUF-LEN))
+(defn my-bump (n-arg:i32):i32 (return (+ n-arg 1)))
+(defn plain (n:i32):i32 (return n))
+```
+
+```c
+#define BUF_LEN 4
+typedef struct {
+    int32_t a_field;
+    int32_t xs[BUF_LEN];
+} My_Rec;
+int32_t my_bump(int32_t n_arg) asm("my-bump");
+int32_t plain(int32_t n);
+```
+
+Sanitizing a linked name *without* the label gives a header that parses and then fails to **link** — strictly worse than one that fails to parse, because the error moves away from its cause. The label is emitted only where the sanitized spelling differs from the link name, so `plain` above carries none and a library with C-legal names gets a fully portable header.
+
+Two consequences worth knowing:
+
+* **`asm` labels are a GCC/Clang extension.** A library with hyphenated public names produces a header that needs one of those compilers; a library that names its exports in C-legal form does not.
+* **Sanitizing is not injective.** `foo-bar` and `foo_bar` both spell `foo_bar`. This is caught loudly at the consumer (`conflicting asm label`, or a duplicate member), never silently mis-bound, but the fix is to rename in Nucleus.
+
+An **overloaded** function, or one named with an operator, is exported wrongly today: its real symbols are mangled per signature (`=` on `String` is `@eq.String.String`), while the header declares the bare name — which no object defines, and which collides when two overloads share it. Affects `lib/string.h`, `lib/strview.h` and `lib/parse.h`.
 
 `usize` and `ssize` map to `size_t` and `ptrdiff_t` (hence the `<stddef.h>` include).
 

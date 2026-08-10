@@ -571,6 +571,16 @@ C header for an un-stamped template should say at all.
 > than the `sanitize-for-c` call site its own note records (sanitizing a name the
 > linker resolves turns a parse failure into a link failure). See
 > [progress.md](progress.md)'s W9 item 3 note.
+>
+> **Update 2026-08-10 (W9 item 4).** The **hyphen half is now fixed too** — no
+> hyphen reaches a generated header outside an `asm("…")` label, swept across all
+> 181 of them. Committed `lib/*.h` parsing under `clang -fsyntax-only`: **13 → 27
+> of 34**. The `struct T` tyvar half of the paragraph above is still open and is
+> now filed as its own defect, W9 item 27, together with the three other measured
+> causes of the remaining seven failures (items 25, 26, 28) — none of which is a
+> hyphen. Note this paragraph's own aside is confirmed by that measurement: the
+> hyphenated declarations really were masking the rest, which is why fixing them
+> is what made the other four causes visible and countable.
 
 The important half of the check did pass: `make lib-cheaders`'s output is
 **byte-identical** before and after W3b, so nothing about the generated headers

@@ -8,15 +8,15 @@
 typedef struct {
     uint8_t* buf;
     size_t rem;
-    uint8_t* sep-data;
-    size_t sep-len;
+    uint8_t* sep_data;
+    size_t sep_len;
     int32_t done;
     struct StrView cur;
 } SplitIter;
 
-int32_t split-iter-done(void* it);
-struct StrView split-iter-next(void* it);
-struct SplitIter strview-split(void* sv, void* sep);
+int32_t split_iter_done(void* it) asm("split-iter-done");
+struct StrView split_iter_next(void* it) asm("split-iter-next");
+struct SplitIter strview_split(void* sv, void* sep) asm("strview-split");
 void* next(void* self);
 typedef struct {
     uint8_t* buf;
@@ -25,7 +25,7 @@ typedef struct {
     struct StrView cur;
 } LineIter;
 
-int32_t lines-iter-done(void* it);
-struct StrView lines-iter-next(void* it);
-struct LineIter strview-lines(void* sv);
+int32_t lines_iter_done(void* it) asm("lines-iter-done");
+struct StrView lines_iter_next(void* it) asm("lines-iter-next");
+struct LineIter strview_lines(void* sv) asm("strview-lines");
 void* next(void* self);
