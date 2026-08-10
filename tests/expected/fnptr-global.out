@@ -3,6 +3,10 @@ h-zero  before = 1
 h-null  after  = 0
 h-null  (21)   = 42
 h-null  funcall= 100
+h-null  is twice= 1
+h-null  = h-zero= 1
 h-null  (21)   = -21
+h-null  is twice= 0
+h-null  = h-zero= 0
 h-zero  (16)   = 32
 h-init  ()     = 42
