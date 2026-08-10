@@ -5547,6 +5547,109 @@ EOF
 }
 spawn run_b6_dyn_cross_ns
 
+# Stage 15 W9 item 23. A namespace's emitted symbols must be a property of the
+# NAMESPACE, not of whatever else the compilation unit happens to contain.
+# R2 (name-resolution.md §8.2) keeps one bare-keyed `Generic` per name with every
+# namespace's methods merged into it, and mangling used to ask that generic two
+# questions that are per-namespace facts: which prefix (it answered with
+# whichever namespace created it first) and whether to suffix at all (it answered
+# yes, because the merged set looked overloaded). So `w23b.nuc` — which is
+# `(ns w23b)` and merely IMPORTS a library that happens to define `describe` too
+# — emitted `@w23b__describe.i64` for its own function and `@w23b__describe.i32`
+# for the OTHER namespace's, while its `.nuch` and its C header both declared
+# `@w23b__describe`: a consumer of either failed to link with
+# `undefined reference to 'w23b__describe'`. Swapping the two import lines
+# renamed every symbol.
+run_w9_ns_symbol_ownership() {
+  local d
+  d="$(mktemp -d)"
+  cat > "$d/w23a.nuc" <<'EOF'
+(ns w23a)
+(defn describe (x:i32):i32 (return (+ x 1)))
+EOF
+  cat > "$d/w23b.nuc" <<EOF
+(ns w23b)
+(import "$d/w23a.nuc")
+(defn describe (x:i64):i64 (return (+ (unsafe/cast i64 (w23a/describe 1)) x)))
+EOF
+  ./build/nucleusc --emit-llvm  "$d/w23b.nuc" > "$d/w23b.ll"   2>/dev/null || true
+  ./build/nucleusc --emit-nuch  "$d/w23b.nuc" > "$d/w23b.nuch" 2>/dev/null || true
+  ./build/nucleusc --emit-llvm  "$d/w23a.nuc" > "$d/w23a.ll"   2>/dev/null || true
+
+  # 1. Each definition emits under its OWN namespace. Stated as the invariant
+  #    rather than as two literals: the symbol `w23a` exports is the same string
+  #    whether or not `w23b` is in the unit. A literal check would still pass if
+  #    a future change moved both names somewhere else in lockstep.
+  grep -o '@w23a__describe[^ (]*' "$d/w23a.ll" | sort -u > "$d/alone.syms"
+  grep -o '@w23a__describe[^ (]*' "$d/w23b.ll" | sort -u > "$d/together.syms"
+  if [ -s "$d/alone.syms" ] && cmp -s "$d/alone.syms" "$d/together.syms" \
+     && grep -q '^define .*@w23b__describe(' "$d/w23b.ll"; then
+    echo "PASS  w9-ns-symbol-ownership"
+  else
+    echo "FAIL  w9-ns-symbol-ownership"
+  fi
+
+  # 2. Neither namespace's method is suffixed: one method from one namespace is
+  #    not an overload of anything, however the merged generic looks.
+  if ! grep -qE '^define .*@w23[ab]__describe\.' "$d/w23b.ll"; then
+    echo "PASS  w9-ns-no-phantom-overload"
+  else
+    echo "FAIL  w9-ns-no-phantom-overload"
+  fi
+
+  # 3. The export surfaces name a symbol the object actually defines — the
+  #    original end-to-end failure. The consumer excludes the prelude (w23b.ll
+  #    already provides it) so the two objects link.
+  cat > "$d/cons.nuc" <<EOF
+(exclude-prelude)
+(import "$d/w23b.nuch")
+(declare printf (fmt:CStr):i32)
+(defn main ():i32
+  (printf "d=%lld\n" (w23b/describe 20))
+  (return 0))
+EOF
+  ./build/nucleusc --emit-llvm "$d/cons.nuc" > "$d/cons.ll" 2>/dev/null || true
+  if clang "$d/w23b.ll" "$d/cons.ll" -o "$d/bin" 2>/dev/null \
+     && [ "$("$d/bin")" = "d=22" ]; then
+    echo "PASS  w9-ns-nuch-link-and-run"
+  else
+    echo "FAIL  w9-ns-nuch-link-and-run"
+  fi
+  # The header was never the wrong half — it always declared the solitary form;
+  # this pins the other side of the equality gate 3 exercises, so a future change
+  # cannot "fix" a mismatch by moving the header to meet a suffixed object.
+  if ./build/nucleusc --emit-cheader "$d/w23b.nuc" 2>/dev/null \
+       | grep -q 'w23b__describe(int64_t'; then
+    echo "PASS  w9-ns-cheader-matches-object"
+  else
+    echo "FAIL  w9-ns-cheader-matches-object"
+  fi
+
+  # 4. Import order does not rename anything. Two consumers that import the same
+  #    two namespaces in opposite orders must reference the same symbols.
+  cat > "$d/ord1.nuc" <<EOF
+(import "$d/w23a.nuc")
+(import "$d/w23b.nuc")
+(defn main ():i32 (return (+ (w23a/describe 1) (unsafe/cast i32 (w23b/describe 2)))))
+EOF
+  cat > "$d/ord2.nuc" <<EOF
+(import "$d/w23b.nuc")
+(import "$d/w23a.nuc")
+(defn main ():i32 (return (+ (w23a/describe 1) (unsafe/cast i32 (w23b/describe 2)))))
+EOF
+  ./build/nucleusc --emit-llvm "$d/ord1.nuc" 2>/dev/null \
+    | grep -o '@w23[ab]__describe[^ (]*' | sort -u > "$d/ord1.syms"
+  ./build/nucleusc --emit-llvm "$d/ord2.nuc" 2>/dev/null \
+    | grep -o '@w23[ab]__describe[^ (]*' | sort -u > "$d/ord2.syms"
+  if [ "$(wc -l < "$d/ord1.syms")" = "2" ] && cmp -s "$d/ord1.syms" "$d/ord2.syms"; then
+    echo "PASS  w9-ns-symbols-order-independent"
+  else
+    echo "FAIL  w9-ns-symbols-order-independent"
+  fi
+  rm -rf "$d"
+}
+spawn run_w9_ns_symbol_ownership
+
 # The tenth defect (`protocol-dyn-annot`). An annotation naming a protocol that
 # exists nowhere used to compile and fabricate a box type; admission now happens
 # at the annotation site, deferred to `drain-dyn-annots`. Nothing in this fixture

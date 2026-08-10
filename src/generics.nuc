@@ -345,6 +345,44 @@
       (set! acc (fmt-2s "%s.%s" acc (type-mangle-token (aref (as ptr:ptr param-types) i)))))
     (return acc)))
 
+; Stage 15 W9 item 23: the ir-prefix `m`'s symbol must carry. `Generic.ir-prefix`
+; is snapshotted when the generic is CREATED, and R2 (name-resolution.md §8.2)
+; keeps one `Generic` per bare name with the methods of every namespace merged
+; into it — so that field names whichever namespace got there first, and is right
+; only for the methods that namespace defined. A prefix is a property of the
+; DEFINING NAMESPACE, so ask the method: `Method.src-ns` has been provenance
+; since B4 (§9.6), which audited its writers for exactly this reason.
+;
+; A file-private key (`#p1/helper`) is the one exception and keeps the generic's
+; prefix: W5e puts the synthetic per-file namespace in the KEY, while `src-ns`
+; records the enclosing real namespace (`user`, for precisely these). Every
+; method of such a generic comes from one file by construction, so the one
+; snapshot is right for all of them.
+(defn method-ir-prefix (g:raw:Generic m:raw:Method):CStr
+  (let (gg:raw:Generic g
+        mm:raw:Method m
+        pq:CStr (priv-qualifier-of (gg name)))
+    (when (!= (as ptr pq) null) (return (gg ir-prefix)))
+    (let (ns:CStr (mm src-ns))
+      ; No src-ns is an intrinsic operator seed, which belongs to no file — the
+      ; same convention method-in-ns states. Those are never mangled here.
+      (when (= (as ptr ns) null) (return (gg ir-prefix)))
+      (return (as CStr (ns-ir-prefix (as ptr ns)))))))
+
+; How many METHOD-USER methods of `g` would emit under `prefix`? Grouping by the
+; emitted PREFIX rather than by the namespace name is deliberate: two namespaces
+; that `set-ir-prefix` to the same string genuinely share one symbol space, and
+; that is exactly when their same-named methods must take mangled names.
+(defn generic-user-methods-with-prefix (g:raw:Generic prefix:CStr):i32
+  (let (gg:raw:Generic g
+        n:i32 0)
+    (dotimes (i (unsafe/cast i32 (count (gg methods))))
+      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) (as usize i))))
+        (when (and (= (m kind) METHOD-USER)
+                   (= (strcmp (method-ir-prefix g (as raw:Method m)) prefix) 0))
+          (inc! n))))
+    (return n)))
+
 (defn generic-find-method-exact (g:raw:Generic param-types:ptr nparams:i32):?ptr:Method
   (let (gg:raw:Generic g)
     (dotimes (i (unsafe/cast i32 (count (gg methods))))
@@ -568,7 +606,7 @@
                   ; the synthetic prefix (snapshotted into gg ir-prefix by
                   ; generic-new) supplies `a_p1__`. strip-priv-qualifier is the
                   ; identity for every non-private key.
-                  (.set! m0 ir-name (fmt-s "@%s" (ns-compose (gg ir-prefix)
+                  (.set! m0 ir-name (fmt-s "@%s" (ns-compose (method-ir-prefix gg (as raw:Method m0))
                                                    (ir-name-token (strip-priv-qualifier (gg name))))))
                   (scope-define g-globals (gg name) (m0 fn-type) (m0 ir-name) 0))
                 (do
@@ -588,9 +626,32 @@
                                   (die-at (-> mi (_ body) (unsafe/cast ptr:Node _) (_ line))
                                     (duplicate-signature-message gg mi mj))))
                               (inc! j)))
-                          (.set! mi ir-name
-                            (mangle-fn-name (gg ir-prefix) (strip-priv-qualifier (gg name))
-                                            (mi param-types) (mi num-params)))))
+                          ; Stage 15 W9 item 23: the prefix is the METHOD's, and
+                          ; so is the decision to suffix at all. `mangled` on the
+                          ; Generic means "dispatch through the registry", not
+                          ; "every method's symbol carries `.tok`s" — the same
+                          ; distinction fn-force-generic-mangled (nucleusc.nuc)
+                          ; already relies on. A namespace that contributes ONE
+                          ; method to this bare name is not overloading anything,
+                          ; so its symbol is the solitary `@ns__name` it would
+                          ; have had if the other namespace did not exist. That
+                          ; is what makes a namespace's exported symbols a
+                          ; property of the namespace rather than of whoever
+                          ; else the compilation unit happens to contain: the
+                          ; `.nuch` and the C header both declare the solitary
+                          ; form, and before this they declared a symbol the
+                          ; object did not define. Templates and operator seeds
+                          ; keep the whole-generic test (has-generic /
+                          ; has-intrinsic): a stamp is always suffixed.
+                          (let (pfx:CStr (method-ir-prefix gg (as raw:Method mi)))
+                            (if (and (= has-intrinsic 0) (= has-generic 0)
+                                     (= (generic-user-methods-with-prefix gg pfx) 1))
+                              (.set! mi ir-name
+                                (fmt-s "@%s" (ns-compose pfx
+                                               (ir-name-token (strip-priv-qualifier (gg name))))))
+                              (.set! mi ir-name
+                                (mangle-fn-name pfx (strip-priv-qualifier (gg name))
+                                                (mi param-types) (mi num-params)))))))
                       (inc! i)))))
               (.set! gg finalized 1)))))
       (inc! gi))))
@@ -2025,9 +2086,14 @@
           (set! nargs (defn-params-count stamped-params)))
         (let (newm:ref:Method (generic-register-method (gg name) sret ptypes nargs 0 0 stamped)
               ; Stage 12 N4: mangle the stamped concrete method under the
-              ; template's *defining* namespace (gg ir-prefix), not the call
-              ; site's current namespace.
-              mangled:ptr (mangle-fn-name (gg ir-prefix) (gg name) ptypes nargs)
+              ; template's *defining* namespace, not the call site's current one.
+              ; Stage 15 W9 item 23: that is the TEMPLATE method's namespace, not
+              ; the generic's — `gg ir-prefix` names whichever namespace created
+              ; the bare-keyed generic first, which is the template's only when
+              ; no other namespace defines the same name. Same source of truth as
+              ; the `(mm src-ns)` re-ownership four lines below.
+              mangled:ptr (mangle-fn-name (method-ir-prefix gg (as raw:Method mm))
+                                          (gg name) ptypes nargs)
               job:ptr:MonoJob (new MonoJob))
           (.set! newm ir-name mangled)
           ; Stage 14 LW-1: mark this as a stamped instance of the template `mm` so

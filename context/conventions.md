@@ -2978,6 +2978,57 @@ match, no methods match) allocate nothing. And nothing downstream reads a
 `node-type-call` read `name` / `methods` / `mangled` — which is what makes a
 view legal at all. Check that before building one for some other registry.
 
+## A merged registry can answer dispatch questions and cannot answer symbol questions
+
+Same registry as the entry above, one layer up, and the natural sequel to it.
+R2 keeps one `Generic` per **bare** name with every namespace's methods merged
+into it, because that is what an open multimethod wants. `Generic` therefore
+carries two fields that are *not* properties of a merged set:
+
+* `ir-prefix` — snapshotted at `generic-alloc` from whichever namespace happened
+  to create the generic first;
+* `mangled` — one flag for a whole method set, used both as "dispatch through
+  the registry" (correct, it is a unit-wide fact) and as "every method's symbol
+  takes `.tok` suffixes" (wrong, that is per namespace).
+
+Read off the generic, both give a namespace's function a symbol decided by
+*whoever else is in the compilation unit* (W9 item 23). `(ns qb)` importing a
+library that happens to define `describe` emitted `@qb__describe.i64` for its
+own function and `@qb__describe.i32` for the **other namespace's**, while its
+`.nuch` and its C header — written from the library alone, where neither
+condition holds — both declared `@qb__describe`. A consumer of either failed to
+link. Swapping two import lines renamed every symbol in the object.
+
+The fix is to ask the method: `method-ir-prefix` for the prefix (from
+`Method.src-ns`, which the entry above made trustworthy) and a count of the user
+methods sharing that prefix for the suffix. Note the two halves of `mangled`
+were *already* separated elsewhere and the precedent was there to be found —
+`fn-force-generic-mangled` (`src/nucleusc.nuc`) sets `mangled` without
+re-mangling, and its comment says why. **When one field answers two questions and
+only one of them is a whole-set fact, the split is already latent; find whoever
+needed it first rather than adding a second flag.**
+
+Two things worth carrying:
+
+- **Group by the emitted prefix, not the namespace name.** Two namespaces that
+  `set-ir-prefix` to the same string genuinely share one symbol space, and that
+  is exactly when their same-named methods must be suffixed. The name is a
+  proxy; the prefix is the thing.
+- **The invariant to assert is an equality, not a literal.** The gate compares
+  the symbol a namespace exports compiled *alone* against the same symbol
+  compiled *together* with the other namespace. A pair of literal names would
+  still pass if a later change moved both in lockstep — and moving both in
+  lockstep is precisely the failure.
+
+`src/*.nuc` declares no `(ns …)`, so every prefix in the compiler is empty and
+self-compilation cannot witness this class either — the bootstrap stayed a fixed
+point and 742 of 1184 functions came out byte-identical (the other 440 differ
+only by `@.str.N` renumbering from one added literal). Only four files in the
+tree use a namespace at all, and `lib/nsdescribe2.nuc` names its protocol method
+`tag-of` *specifically* to avoid tripping this — a rename in a test fixture that
+exists to dodge a defect is a bug report; check for those before believing the
+corpus.
+
 ## The same-kind redefinition question cannot be asked of the binding table
 
 `guard-name-kind` (`src/nucleusc.nuc`) asks the shared table for the first
