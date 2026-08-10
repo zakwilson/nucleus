@@ -410,6 +410,31 @@ elem-less bare `ptr` have. Note the distinction from the *wrapper* spellings:
 function pointer, are non-null like any other typed pointer, and reject a `null`
 initializer.
 
+`null` initializes or assigns a function-pointer slot in **every** position — a
+`defvar`, a `let`/`with` binding, a `set!`, a `.set!` field store and an explicit
+`return` — and costs no instruction, since both sides are one `ptr` register:
+
+```lisp
+(defvar g-hook:(fn i32)(i32) null)
+(defn no-hook ():(fn i32)(i32) (return null))
+(defn main ():i32
+  (let (loc:(fn i32)(i32) null
+        h:ptr:Hooks (alloca Hooks))
+    (.set! h before null)
+    (set! loc add1)
+    (set! loc null)                  ; and back again
+    (return 0)))
+```
+
+Only the **literal** does this. A `raw`/`ptr`/`CStr` *value* is refused, because
+turning an arbitrary data pointer into something callable is `unsafe/cast`'s job
+— spell the function type in an extra pair of parentheses so it is a single
+form:
+
+```lisp
+(let (f:(fn i32)(i32) (unsafe/cast ((fn i32)(i32)) some-raw-pointer)) …)
+```
+
 A hook filled by a [run-time initializer](toplevel.md#run-time-initializers) is
 subject to the ordering rule like any other global, and calling *through* a hook
 counts as reading it: `(defvar g-v:i32 (g-late 3))` above `(defvar g-late:(fn

@@ -315,6 +315,41 @@ run_w9_fnptr_align() {
   rm -f "$ir" "$ir32" "$bin"
 }
 
+# Stage 15 W9 item 20: the literal `null` reaches a fn-pointer slot in every
+# position, not just `defvar`. The IR check pins that this costs no instruction
+# -- the literal is a retype, so the field store is a plain `store ptr null` --
+# and the exit code carries the semantics.
+run_w9_fnptr_null_init() {
+  local ir bin rc
+  ir="$(mktemp)"; bin="$(mktemp)"
+  ./build/nucleusc --emit-llvm tests/fixtures/w9-fnptr-null-init.nuc > "$ir" 2>/dev/null || true
+
+  if ! llvm-as "$ir" -o /dev/null 2>/dev/null; then
+    echo "FAIL  w9-fnptr-null-init-ir (LLVM rejected the emitted IR)"
+    llvm-as "$ir" -o /dev/null 2>&1 | sed 's/^/    /' | head -4
+  elif grep -q '^@g-hook = global ptr null' "$ir" \
+    && grep -q 'store ptr null, ptr %loc.addr' "$ir" \
+    && grep -q 'ret ptr null' "$ir"; then
+    echo "PASS  w9-fnptr-null-init-ir"
+  else
+    echo "FAIL  w9-fnptr-null-init-ir (the null literal did not reach a fn slot as a plain null)"
+    grep -nE 'store ptr null|ret ptr null|^@g-hook' "$ir" | head -6 | sed 's/^/    /'
+  fi
+
+  # `-x ir`: the mktemp path has no .ll suffix for clang to infer the language from.
+  if clang -w -x ir "$ir" -o "$bin" 2>/dev/null; then
+    "$bin" >/dev/null 2>&1 && rc=0 || rc=$?
+    if [ "$rc" -eq 38 ]; then
+      echo "PASS  w9-fnptr-null-init-run"
+    else
+      echo "FAIL  w9-fnptr-null-init-run (slots summed to $rc, expected 38)"
+    fi
+  else
+    echo "FAIL  w9-fnptr-null-init-run (link failed)"
+  fi
+  rm -f "$ir" "$bin"
+}
+
 # Stage 14 AVR-3 (design/stage14/avr-targets.md §5): the link driver + build
 # flow. This is the first *end-to-end* AVR gate — a real link, not just IR/llc.
 # On an AVR triple the compiler drives `avr-gcc -mmcu=<device>` (not `clang`) and
@@ -4454,6 +4489,16 @@ spawn run_reject_at w9-fnptr-cstr-compare tests/fixtures/w9-fnptr-cstr-compare.n
 # W9 item 19, the storage half of the same sentence: one `ptr` register is one
 # TARGET pointer wide, so no fn-pointer slot may claim `align 1`.
 spawn run_w9_fnptr_align
+# W9 item 20: the literal `null` reaches a fn-pointer slot in every position
+# (let init, set!, field store, explicit return), not just `defvar`. The exit
+# code is a bitmask of the five "is it unset?" answers plus two round-trips, so
+# a slot that compiles but holds the wrong value fails rather than passing.
+spawn run_w9_fnptr_null_init
+# ...but ONLY the literal. Gating item 20 on `is-ptr-repr` instead of on
+# Val.is-nlit would compile the line below and make any data pointer callable.
+spawn run_reject_at w9-fnptr-null-launder tests/fixtures/w9-fnptr-null-launder.nuc \
+  "tests/fixtures/w9-fnptr-null-launder.nuc:17: error:" \
+  "let: init type mismatch for 'f'"
 #
 # Acceptances: every NULLABLE or contract-free pointer destination stays legal --
 # elem-less bare `ptr` (with and without an init), `(raw T)` / `raw:T`, `?ptr:T`,
