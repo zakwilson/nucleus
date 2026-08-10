@@ -34,7 +34,8 @@ again by work done that day and the next; item 4's fix (2026-08-10) measured fou
 further pre-existing causes of an unparseable C header and filed them as items
 25–28, item 8's fix (2026-08-10) split its float counterpart out as item 30,
 and item 9's fix (2026-08-10) filed the i1 *signedness* defect beside it as item
-31: **thirty-one found, sixteen fixed (item 6 in part), fifteen open**.
+31; item 13 fixed 2026-08-10: **thirty-one found, seventeen fixed (item 6 in part),
+fourteen open**.
 
 **W4, W2 and W3 are complete** (W2a–d; W3a §1.6 opaque forward-declared C
 types; W3b §1.5 C type qualifiers + the `declare` validity gate — `SDL2/SDL.h`
@@ -846,7 +847,7 @@ escape hatch — reproduced by compiling `(defvar g:ptr:i32)` with
 
 ---
 
-## W9 — Reconciled at stage close: thirty-one defects found, **sixteen** now fixed (item 6 in part), fifteen open *(added 2026-08-01; extended through G-5's close 2026-08-02; items 21–24 added 2026-08-03; items 10 and 16 closed and item 22 measured closed 2026-08-09; items 1, 5 and 2 fixed 2026-08-09; items 3 and 4 fixed 2026-08-10, the latter adding items 25–28; item 6's string-path half fixed 2026-08-10, splitting its `.nuch` half out as item 29; item 7 fixed 2026-08-10; item 8 fixed 2026-08-10, splitting its float counterpart out as item 30; item 9 fixed 2026-08-10, filing the i1 signedness defect beside it as item 31)*
+## W9 — Reconciled at stage close: thirty-one defects found, **seventeen** now fixed (item 6 in part), fourteen open *(added 2026-08-01; extended through G-5's close 2026-08-02; items 21–24 added 2026-08-03; items 10 and 16 closed and item 22 measured closed 2026-08-09; items 1, 5 and 2 fixed 2026-08-09; items 3 and 4 fixed 2026-08-10, the latter adding items 25–28; item 6's string-path half fixed 2026-08-10, splitting its `.nuch` half out as item 29; item 7 fixed 2026-08-10; item 8 fixed 2026-08-10, splitting its float counterpart out as item 30; item 9 fixed 2026-08-10, filing the i1 signedness defect beside it as item 31; item 13 fixed 2026-08-10)*
 
 **The original six are enumerated in [../global-init.md](../global-init.md)
 §7. Four more (7–10) were found measuring G-1 and re-verifying G-0/G-1's test
@@ -932,7 +933,7 @@ hit while measuring, verifying, or documenting, not synthesized.
 | 10 | ~~**`tests/run-tests.sh` PASS counts are unreliable by ±1**~~ — **closed 2026-08-09, and it was already closed when this item was written** | parallel unit stdout can interleave, splitting a `PASS  <name>` line across two lines — measured: three consecutive runs of the same tree all reported 361, but earlier runs reported 346 vs 347 and 360 vs 361 for what was the same tree, and a bare `w1d` token appeared alone on output line 314 in one capture; does not affect FAIL detection (0 FAIL held every time) but could in principle mask a dropped unit. **Correction.** Interleaving is impossible by construction: `spawn` (`tests/run-tests.sh`) redirects each unit's *entire* stdout+stderr into its own `$RESULTS_DIR/<id>.out` and the files are replayed in dispatch order after the join, so one unit's output cannot split another's line. That buffering landed in `cb864fa` (2026-07-05, "Parallelize tests") — **a month before this item was recorded on 2026-08-02** — so the ±1 evidence above was gathered against the pre-buffering harness and the item was never re-verified against the current one. Re-measured 2026-08-09 on the 16-core host: three consecutive parallel runs and one serial run of the same tree all report **463 PASS / 0 FAIL**, 35–38 s parallel vs 144 s serial (**4×**, not `build.md`'s stated 7×). The mechanism is the argument, not the sample size — this item's own note records three agreeing runs while the bug was believed live. **Consequence:** `NUCLEUS_TEST_JOBS=1` is no longer needed to count, and the convention of recording every verification with it — followed by every entry in this document from G-2 onward — is cargo. Use the parallel default |
 | 11 | **Format-helper arity violations — FIXED 2026-08-02**, found building G-2 | **There were SEVEN, not three.** The recorded three were found by grepping `fmt-s` alone; sweeping *every* helper against its own parameter count found four more. Two directions, two failure modes. **Over-supplied** (format has more conversions than the helper feeds — the [conventions.md](../../context/conventions.md) trap): `call: expected %d args, got %d` (`nucleusc.nuc`), `BoxedFn call: expected %d args, got %d`, `(dyn %s): '%s' is not a declared protocol`, and a **fourth the record did not have** — `extend: '%s' is a protocol, so its supertype '%s' must be a protocol too` (`generics.nuc`). **Under-supplied** (fewer arguments than the helper has parameters, so it read an uninitialized register): `(fmt-sd "%%tc3.mat.%d" g-tmp)` and two `(fmt-2s "ptr %s" x)` in `abi.nuc`. **The recorded symptom is only half right, and the half it gets wrong is load-bearing**: only the two `%s %s` sites segfault (the garbage vararg is dereferenced as a pointer — both confirmed SIGSEGV with no output on the committed `bin/nucleusc`). The two `%d %d` sites do **not** crash — they print a garbage COUNT (`expected 2 args, got 100`; `expected 1 args, got 115`), a *silently misleading diagnostic*, which is worse for a user than a crash. **That also falsifies the recorded link to defect 12**: `call: expected %d args, got %d` lives in `emit-funcall-value`, the fn-pointer *indirect* call path, and has always been reachable — it was firing with a garbage number, not failing to fire. Each of the four diagnostics now has a test that would have crashed or misprinted before the fix (`tests/fixtures/w9-fnptr-arity`, `-boxedfn-arity`, `-dyn-not-protocol`, `-extend-super-not-protocol`); a corrected format string nothing executes is one edit away from regressing. All seven would also have been caught by defect 12's new check — every one is a wrong-arity call to a solitary `defn` |
 | 12 | **A wrong-arity call to a solitary `defn` is not diagnosed — FIXED 2026-08-02**, found building G-2 | `(f 1 2)` against a one-parameter `f` emitted `call i32 @f(i32 1, i32 2)`, linked and ran. **The mechanism, precisely**: `emit-dispatch` (`nucleusc.nuc`) routes an overloaded name to `emit-generic-call`, where `generic-resolve` only matches a method at `num-params == nargs`, so a wrong count falls out as *no matching method*; a solitary name goes to `emit-call` → `emit-call-with-args`, which resolves the callee **by name** and never compared the counts at all. Fixed with the [conventions.md](../../context/conventions.md) shape — **one rule function both sides CALL**, not a second copy: `call-arity-ok` / `check-call-arity` (`nucleusc.nuc`, above `emit-funcall-value`) now serve the direct path, the fn-pointer indirect path and the BoxedFn/`dyn` box path, and `emit-call`'s own `&optional` `too few args`/`too many args` pair — which re-derived the band — was deleted rather than left beside it. The rule must NOT gate on `kind == TY-FN`: a box carries its signature on a **TY-STRUCT** Type (`boxedfn-type`), so a kind gate would have silently stopped checking that path. **Rulings on the variable-arity shapes**: `&optional` is a band (`num-params - nopt` … `num-params`), `&rest` is a floor (`num-params - 1`), a C-header `variadic` signature is a floor at its fixed prefix, an overloaded/multimethod/protocol/generic call is untouched (resolution already diagnoses it), and **too few arguments is an error in every shape**. **One carve-out, and it is load-bearing**: a hand-written `declare` is *open-tailed* — Nucleus has no `...` spelling and `&rest` is refused in a declaration, so the documented way to call a C variadic is to declare its fixed parameters and let the extras ride the call site, and **three existing tests already depend on exactly that** (`n6-nuch-link-and-run`, `sm3-import-resolves-mangled`, `s1-nuch-link-and-run`, each writing `(declare printf (fmt:CStr):i32)` and calling it with 3–6 arguments). Carried as `Sym.extern-decl`, set only in `emit-nuch-declare-import`, and **appended at the END of `Sym`** so no existing field's GEP index shifts and the bootstrap diff stays readable. **The check found TWO latent wrong-arity calls in the compiler's own source**, both silent reads of an uninitialized register: `generic-resolve-nullable` called `generic-method-bind` with 5 of its 6 arguments (the callee then read a garbage `arg-nodes` array), and `fn-rewrite-captures`' `.set!` branch built its OUTER `make-cell` without its `line` (every sibling passes it), so a rewritten closure-capture store carried a garbage source line. Zero elsewhere in `lib/`, `examples/` or `tests/fixtures/` — measured with a **warn-only compiler in a scratch worktree**, not by first-error iteration. Tests 410 → **421 PASS / 0 FAIL**; `make bootstrap` **byte-identical on the first pass** (no reconverge needed — the change alters no emitted IR); per-function normalized diff of `build/nucleusc.ll` against a compiler built from HEAD's source: 1050 byte-identical, 10 changed (exactly the ten edited), 0 removed, 2 added (`call-arity-ok`, `check-call-arity`); sweep: 218 byte-identical IR / 0 differing / 0 regressed, plus 123 rejecting programs with 0 diagnostics changed; `make abi-test`/`make layout-test`/`make avr-test` green |
-| 13 | **`parse-type-from-node` silently returns null for an unknown cell head** | its `die-at "unable to parse type expression"` is a label-less trailing arm of `case (n kind)`, reachable only for a `NodeKind` outside `{NODE-SYM, NODE-CELL}`; for an unrecognized `NODE-CELL` head (e.g. `(nosuch i32)`) the `NODE-CELL` arm's `do` block matches no shape and falls through to null instead, so `(defstruct S (xs (nosuch i32)))` reports the misleading `defstruct: field 'xs' missing :type` rather than a diagnostic naming `nosuch`. Empirically confirmed against `build/nucleusc`; pre-existing |
+| 13 | **`parse-type-from-node` silently returns null for an unknown cell head — FIXED 2026-08-10** | its `die-at "unable to parse type expression"` is a label-less trailing arm of `case (n kind)`, reachable only for a `NodeKind` outside `{NODE-SYM, NODE-CELL}`; for an unrecognized `NODE-CELL` head (e.g. `(nosuch i32)`) the `NODE-CELL` arm's `do` block matches no shape and falls through to null instead, so `(defstruct S (xs (nosuch i32)))` reports the misleading `defstruct: field 'xs' missing :type` rather than a diagnostic naming `nosuch`. Empirically confirmed against `build/nucleusc`; pre-existing. **The recorded diagnosis was exact and understated the blast radius twice over**: five caller positions shared the null, the everyday trigger is a forgotten `import-use` rather than a typo, and a second mistake class (a doubled annotation) reaches the same fall-through and needs a *different* message. See the W9-13 note below |
 | 14 | **Fn-pointer-typed `defvar` could not be declared at all — FIXED 2026-08-02**, found building G-3 | `(defvar g:(fn i32)(i32) null)` died `'g' already names a function`, a G-0 regression in `name-existing-kind` (it classified any `TY-FN`-typed global `Sym` as a function, and G-0's prescan defines that `Sym` before `emit-defvar` runs). Fixed in the interlude between G-3 and G-4 (commit `aa24eae`) with an `(= (sym is-local) 0)` conjunct, the same two-conjunct test `emit-dispatch` already used. `global-init.md` §7 #9 |
 | 15 | **`aref` emits a hardcoded `i64` GEP index on every target**, found building G-3 | On AVR (16-bit pointers) a narrower index produces IR the LLVM parser rejects (`'%t3' defined with type 'i32' but expected 'i64'`); does not route through `ptr-int-ir` (AVR-2's fix for exactly this class). Not array-specific — a plain `ptr:ui8` with an `i32` index reproduces it. Reproduces on the committed boot. `global-init.md` §7 #10 |
 | 16 | **A `defvar` may be declared twice in one unit with no diagnostic**, found in G-5 — **FIXED in B4 (2026-08-09)** | Emitted two `@g = global …` lines that the LLVM parser rejects with an unlocated error far from the cause. `guard-name-kind` compares NK-VALUE against NK-VALUE, finds them equal, and permits it — the same-kind allowance that exists for overloaded `defn` and REPL redefinition, applied where neither justification holds. The diagnosis was right and the scope was narrower than the defect: **every** non-function definer accepted a redefinition silently, with no agreed winner (a second `defstruct`/`defunion`/`defprotocol`/`defmacro`/template kept the FIRST, a second `defconst` kept the SECOND). R4's rule covers all of them; `emit-defvar` reads `Sym.defvar-state` (the same-kind question cannot be posed to the binding table — see name-resolution.md §9.6), and the two justifications the item names are preserved exactly: overloads still collide only on signature, and the REPL is exempt. `global-init.md` §7 #11 |
@@ -971,6 +972,92 @@ It breaks C interop for any hyphenated name, which is most of them.
 > its members, function *parameter* names, and the inline `(union …)` member
 > names `type-node-to-c` emits. And "a missed call site" holds only for names
 > nothing links against — for a `defn` it is a *ruling*, taken by item 3.
+
+### W9 item 13 as fixed *(2026-08-10)* — one null meaning both "absent" and "malformed"
+
+`parse-type-from-node`'s `NODE-CELL` arm is a long chain of shape probes —
+`ptr`, `ref`, `fn`, `array`, `struct`, `union`, `Maybe`, `BoxedFn`, `dyn`,
+struct templates, union templates. When every probe missed, the `do` block ran
+off its end and the function returned null. The `die-at "unable to parse type
+expression"` that looks like the fall-through is `case`'s label-less default
+arm, reachable only for a `NodeKind` outside `{NODE-SYM, NODE-CELL}` — so a
+malformed *list* never reached it.
+
+**The blast radius was understated twice.** The item names `defstruct`, where it
+was found. But the null is the shared return of the type parser, and **no
+caller can tell it from "no annotation was written"** — which is the other thing
+a null means at every one of those call sites. Five positions carried the same
+wrong message:
+
+| written | reported before |
+|---|---|
+| `(defstruct S (xs (nosuch i32)))` | `defstruct: field 'xs' missing :type` |
+| `(defn f (x:(nosuch i32)) …)` | `defn: missing :type on param 'x'` |
+| `(defvar g:(nosuch i32) 0)` | `defvar: missing :type on 'g'` |
+| `(let (a:(nosuch i32) 0) …)` | `let: missing :type on 'a'` |
+| `(defn f ():(nosuch i32) …)` | `defn: missing :type on 'f'`, **at `:0:`** |
+
+Every one of them blames the annotation for being absent while it sits in the
+source being pointed at.
+
+**The everyday trigger is not a typo — it is a forgotten import.** `(defn f
+(x:(Vector i32)) …)` without `(import-use vector)` produced `defn: missing :type
+on param 'x'`. That is the single most likely way a user meets this defect, and
+the message sends them to inspect the one part of the line that is
+unambiguously correct. It now reports:
+
+```
+unknown type: Vector — not defined anywhere in this compilation unit
+  note: 'Vector' is defined in lib/vector.nuch, which no import in this unit reaches
+```
+
+which is W1c's reachability note, arriving here for free because the fix calls
+`unknown-type-message` rather than inventing a local string — the same tiered
+message `parse-type-name` has given a *bare* unknown type since W1c, now given
+to the parametric spelling as well.
+
+**Two mistake classes reach the fall-through, and one message would lie about
+one of them.** A doubled annotation desugars to a list whose head is a real
+type: `x:i32:i32` is `(i32 i32)`. Routing that through `unknown-type-message`
+prints "unknown type: i32 — not defined anywhere in this compilation unit",
+which is false, and worse than the message it replaced — *this was measured
+after the first version of the fix, not predicted*. Telling the classes apart
+needs a lookup that answers without dying, and `parse-type-name` ends in
+`die-at`, so it cannot serve as one. Rather than write a second copy of the
+built-in name list, the list was **extracted** from `parse-type-name` as
+`builtin-type-name` (a pure `name -> ?ptr:Type`), leaving `parse-type-name`
+shorter and giving the probe the same list by construction. `avr-reject-f64`
+deliberately stayed behind in `parse-type-name`: the probe must not die.
+`struct-lookup-ref` covers user types, so `(P i32)` for a `defstruct P` gets the
+same message.
+
+**`diagnostics.md` recorded the doubled-annotation message as *correct*** ("a
+multi-colon chain that doesn't resolve to a real type is rightly rejected").
+The rejection was right and the message was not; that row is amended in place
+rather than deleted, since the reasoning it records is what a later reader would
+otherwise re-derive.
+
+**The `:0:` half fixed itself, and the gate had a hole.** The return-type
+position reported line 0 — the class W4a exists to keep extinct — because the
+caller's fallback had no node to blame. Dying at the type node, which has a
+line, removes it. `run_no_line_zero` sweeps every `tests/fixtures/*.nuc`, so it
+would have caught this the moment a fixture spelled an unparseable type; none
+did. `w9-unknown-type-ctor-return.nuc` is now that fixture, and `run_reject`
+fails on `:0:` independently of the message text.
+
+**Verification.** Corpus sweep against the pre-item-13 compiler (rebuilt from
+`fadee9a`'s committed boot IR, since `bin/nucleusc` had already advanced):
+**376 IR byte-identical, 0 differing, 0 new rejections, 0 stderr differences** —
+so no caller anywhere in the tree used the null as a soft "not a type" probe,
+the one risk that could have made this fix unshippable. The compiler's own IR
+moved, as extracting a function must: a per-function diff showed 454 changed,
+which is **`@.str.N` renumbering**, not behaviour — normalizing the string
+indices collapses it to exactly **2 changed (`parse-type-name`,
+`parse-type-from-node`) + 1 added (`builtin-type-name`)**, with 1178 functions
+byte-identical. `make bootstrap` held the fixed point on the first pass. Tests
+535 → **540 PASS / 0 FAIL**; `abi-test`/`layout-test`/`avr-test` green;
+`check-headers` clean (69 headers regenerate identically, which exercises the
+`--emit-nuch` / `--emit-cheader` type paths this parser also serves).
 
 ### W9 item 9 as fixed *(2026-08-10)* — the comment stated the rule the code never implemented
 

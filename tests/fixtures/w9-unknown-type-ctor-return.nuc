@@ -1,0 +1,14 @@
+; Stage 15 W9 item 13 in RETURN-type position, which had a second symptom: the
+; caller's fallback reported `:0:` — a line-zero diagnostic, the class W4a
+; exists to keep extinct. It escaped the `w4a-no-line-zero` sweep only because
+; no fixture spelled an unparseable type; this file is that fixture, and
+; `run_reject` fails on `:0:` independently of the message text.
+;
+; Compiling this must FAIL with:
+;   "unknown type: nosuch — not defined anywhere in this compilation unit"
+; located at a real line, not `:0:`.
+(defn f ():(nosuch i32)
+  (return 0))
+
+(defn main ():i32
+  (return 0))

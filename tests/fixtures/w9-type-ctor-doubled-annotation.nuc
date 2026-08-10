@@ -1,0 +1,16 @@
+; Stage 15 W9 item 13's second mistake class, and the one that keeps the fix
+; honest. A doubled annotation desugars to a list whose head is a real type —
+; `x:i32:i32` is `(i32 i32)` — so it reaches the same fall-through as
+; `(nosuch i32)`. Routing every head through `unknown-type-message` would print
+; "unknown type: i32 — not defined anywhere in this compilation unit", which is
+; simply false, and worse than the "missing :type" message it replaced.
+;
+; `diagnostics.md` §"defvar" recorded the old message as acceptable; this
+; fixture pins the message that names the actual mistake instead.
+;
+; Compiling this must FAIL with:
+;   "'i32' is a type, not a type constructor"
+(defvar x:i32:i32 3)
+
+(defn main ():i32
+  (return 0))
