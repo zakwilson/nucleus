@@ -761,6 +761,31 @@ condition. Leave `emitted` **0** when you skip the write — the flag means "alr
 in the type buffer", and setting it while writing nothing would suppress the real
 emission if one ever followed.
 
+## A legal C identifier is more than legal characters — and the escape goes on the JOIN
+
+`sanitize-for-c` maps illegal *characters*. It has no notion of a reserved word,
+so `union`, `signed`, `default` and `class` — all ordinary Nucleus names — reached
+the generated header intact and it did not parse (W9 item 28).
+`cheader-c-ident` now appends a `_` to a word C **or C++** reserves; C++ because a
+generated header is routinely read through `extern "C"`, and because `new`, `try`,
+`template` and `operator` are names a library plausibly defines.
+
+Three things to keep in mind if you touch this:
+
+* **Every complete C identifier goes through `cheader-c-ident`**, including a
+  struct/union tag. The tag is an identifier (`struct union {…}` does not parse),
+  and its *definition* and every *reference* must escape in lockstep — the same
+  three-site lockstep (`type-name-to-c`, `emit-cheader-defstruct`,
+  `emit-cheader-defunion`) that B3′ and W9 item 25 each had to repair.
+* **Escape the join, not the fragment.** `Color_default` is already a fine
+  identifier; escaping `default` inside it renames a C constant for no reason.
+  `cheader-c-ident-join` tests the finished string — which can still land on a
+  keyword (`and` + `eq`).
+* **The `asm` label follows for free.** `cheader-asm-label` emits a label exactly
+  when the C spelling differs from the link name, so a rename re-binds itself and
+  the symbol never moves. Never rename an identifier without routing it through
+  that comparison.
+
 ## `?`/`!` in names map to `_QMARK`/`_BANG` in emitted symbols
 
 A `defn`, struct, or union name may contain `?`/`!` (`full?`, `push!`, `Full?`)
