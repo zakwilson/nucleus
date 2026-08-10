@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 /* Generated from lib/iterator.nuc by nucleusc --emit-cheader */
 
@@ -12,8 +13,8 @@ typedef struct {
 void* next(void* self);
 typedef struct {
     int64_t* data;
-    struct usize pos;
-    struct usize len;
+    size_t pos;
+    size_t len;
 } I64ArrayIter;
 
 void* next(void* self);

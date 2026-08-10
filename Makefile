@@ -230,6 +230,17 @@ lib-headers: $(LIB_NUCHS)
 lib-cheaders: $(LIB_HS)
 lib-objs: $(LIB_OBJS)
 
+# Verify the committed lib/*.nuch and lib/*.h still match what this compiler
+# emits. They are generated-and-committed, and the build never reads the
+# committed copies (the rules above overwrite them), so a change to src/nuch.nuc
+# or src/cheader.nuc invalidates them silently. Runs as part of `make test` (the
+# `headers-generated` unit in tests/run-tests.sh); this target is the convenience
+# entry point. `scripts/check-headers.sh --fix` regenerates -- including
+# lib/mapiterlib.nuch, which $(LIB_NUCHS) cannot reach because its source is
+# tests/fixtures/mapiterlib.nuc.
+check-headers: $(BIN)
+	NUCLEUSC=$(BIN) ./scripts/check-headers.sh
+
 # Build shared library from all library .o files
 $(BUILD)/lib/libnucleus.so: $(LIB_OBJS)
 	$(CC) -shared $^ -o $@
@@ -272,4 +283,4 @@ uninstall:
 	rm -f $(BINDIR)/nucleusc
 	rm -rf $(DESTDIR)$(PREFIX)/share/nucleus
 
-.PHONY: test abi-test layout-test avr-test riscv-test riscv-abi-test gen-stdlib-table clean bootstrap boot-binary update-bootstrap windows-boot ensure-boot lib-headers lib-cheaders lib-objs lib-so lib install uninstall
+.PHONY: test abi-test layout-test avr-test riscv-test riscv-abi-test gen-stdlib-table clean bootstrap boot-binary update-bootstrap windows-boot ensure-boot lib-headers lib-cheaders check-headers lib-objs lib-so lib install uninstall

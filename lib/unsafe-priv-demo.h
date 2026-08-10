@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 /* Generated from lib/unsafe-priv-demo.nuc by nucleusc --emit-cheader */
 

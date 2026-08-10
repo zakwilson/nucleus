@@ -29,7 +29,9 @@ fixture then exposed **item 21** (`(dyn ns/Proto)` unusable across a
 namespace), fixed 2026-08-03 along with two further pre-existing defects it
 uncovered but did not fix (items 22, 23 and 24) — **twenty-four found, five
 fixed, nineteen open** — see the W9 section below for how the count was
-arrived at.
+arrived at. Re-measured at the close of the B series (2026-08-09) and moved
+again by work done that day and the next: **twenty-four found, twelve fixed,
+twelve open**.
 
 **W4, W2 and W3 are complete** (W2a–d; W3a §1.6 opaque forward-declared C
 types; W3b §1.5 C type qualifiers + the `declare` validity gate — `SDL2/SDL.h`
@@ -841,7 +843,7 @@ escape hatch — reproduced by compiling `(defvar g:ptr:i32)` with
 
 ---
 
-## W9 — Reconciled at stage close: twenty-four defects found, **ten** now fixed, fourteen open *(added 2026-08-01; extended through G-5's close 2026-08-02; items 21–24 added 2026-08-03; items 10 and 16 closed and item 22 measured closed 2026-08-09; items 1 and 5 fixed 2026-08-09)*
+## W9 — Reconciled at stage close: twenty-four defects found, **twelve** now fixed, twelve open *(added 2026-08-01; extended through G-5's close 2026-08-02; items 21–24 added 2026-08-03; items 10 and 16 closed and item 22 measured closed 2026-08-09; items 1, 5 and 2 fixed 2026-08-09; item 3 fixed 2026-08-10)*
 
 **The original six are enumerated in [../global-init.md](../global-init.md)
 §7. Four more (7–10) were found measuring G-1 and re-verifying G-0/G-1's test
@@ -897,8 +899,8 @@ cross-namespace defect — which is the useful generalization to carry forward.
 Item 24 is the sibling asymmetry rather than the namespace one: **two**
 registries answer a name (`g-globals` and `g-generics`), and any path that
 consults only one of them has a hole wherever the other is the sole registrar.
-Total **twenty-four**, of which **ten** are fixed (items 1, 5, 10, 11, 12, 14,
-16, 17, 21, 22) and **fourteen** open.
+Total **twenty-four**, of which **twelve** are fixed (items 1, 2, 3, 5, 10, 11,
+12, 14, 16, 17, 21, 22) and **twelve** open.
 
 > **Re-measured 2026-08-09, at the close of the B series.** The counts above
 > drifted three times because items were closed by *other* work and the table was
@@ -908,15 +910,16 @@ Total **twenty-four**, of which **ten** are fixed (items 1, 5, 10, 11, 12, 14,
 > fallback in `globals-lookup-ref`, which is exactly the missing "bare fallback"
 > the item names. **Item 23's symptom changed** and its status did not; see its
 > row. Items 1 and 2 were confirmed still broken while running `make lib-objs`
-> during B4. The lesson is the one the drift itself demonstrates: a defect table
+> during B4, and both were **fixed later that day** (see their notes below).
+> The lesson is the one the drift itself demonstrates: a defect table
 > maintained by hand goes stale silently, and re-probing costs minutes. All are pre-existing and independent of W1–W7; all were
 hit while measuring, verifying, or documenting, not synthesized.
 
 | # | Defect | Note |
 |---|---|---|
-| 1 | **`make lib-objs` / `make lib-headers` / `make lib-cheaders` broken — FIXED 2026-08-09** | `lib/arena.nuc` and `lib/node.nuc` died `duplicate definition of 'arena-init' / 'alloc-node'`; `lib/reader.nuc` died `undefined: stderr`; nine files died under `--emit-nuch`. See the W9-1 note below for the cause, which the recorded hypothesis had half right. **`make lib-so` still fails, for item 2's reasons only** |
-| 2 | **Two separately compiled Nucleus objects cannot be linked** | each inlines the whole prelude, so `build/lib/vector.o` and `build/lib/hashmap.o` share **7** duplicate public global definitions (`@g-arena`, `@g-intern-table`, …) and `ld` refuses. `exclude-prelude` works; a non-freestanding library is currently unlinkable |
-| 3 | **`--emit-cheader` does not export globals** | a `defvar` reaches the `.nuch` as `(extern …)` but gets no `extern T name;` line in the C header, so a C consumer cannot reach it |
+| 1 | **`make lib-objs` / `make lib-headers` / `make lib-cheaders` broken — FIXED 2026-08-09** | `lib/arena.nuc` and `lib/node.nuc` died `duplicate definition of 'arena-init' / 'alloc-node'`; `lib/reader.nuc` died `undefined: stderr`; nine files died under `--emit-nuch`. See the W9-1 note below for the cause, which the recorded hypothesis had half right. **`make lib-so` closed with item 2, the same day** |
+| 2 | **Two separately compiled Nucleus objects cannot be linked — FIXED 2026-08-09** | each inlines the whole prelude, so `build/lib/vector.o` and `build/lib/hashmap.o` share duplicate public definitions (`@g-arena`, `@g-intern-table`, `arena-init`, `next.pIntRangeIter`, …) and `ld` refuses. `exclude-prelude` works; a non-freestanding library was unlinkable. **Fixed by giving a definition the unit only carries a COPY of `weak_odr` linkage** — see the W9-2 note below. `make lib-so` is green |
+| 3 | **`--emit-cheader` does not export globals — FIXED 2026-08-10** | a `defvar` reached the `.nuch` as `(extern …)` but got no `extern T name;` line in the C header, so a C consumer could reach a library's functions and none of its state. `emit-cheader-header`'s dispatch had no `defvar` arm at all — while **both** `docs/compiler.md`'s flag table and `docs/toplevel.md` already documented the behaviour as present. See the W9-3 note below; the fix turns on the NAME, not the missing arm |
 | 4 | **`--emit-cheader` emits hyphenated, invalid C identifiers** | see the precision note below |
 | 5 | **`(exclude-prelude)` in an *imported* file dies `unknown top-level form` — FIXED 2026-08-09, as a prerequisite of item 1** | rather than being ignored or diagnosed as "must be the first form of the unit". `strip-exclude-prelude` is consulted only for the entry file. Item 1's root hoist **re-reads the root file**, so a root that opts out of the prelude reached this the moment the hoist fired — the directive belongs to the unit, not the file, and `emit-toplevel-forms`' dispatch now ignores it (the ruling the item's own note preferred). This is the only shape that made the fix mandatory rather than merely nice; a hand-written `(exclude-prelude)` library import hit it too |
 | 6 | **`undefined: X — not defined anywhere in this compilation unit`** for a name that *is* in the unit, merely unprocessed | **overlaps W8's G-0; not filed twice.** G-0 has since closed the cause for the two import shapes it covers (plain and `import-use` symbol imports); the residual surface is string-path `.nuc` imports and `.nuch` headers, filed under W1 |
@@ -967,15 +970,19 @@ than reopening this defect.
 **Defects 1 and 2 are directly relevant to W8**, not incidental: they are the
 multi-TU mode `global-init.md` §2.4 relies on for its finding that an
 initializer list reachable only from the consumer's `main` cannot initialize a
-library.
+library. Both are fixed as of 2026-08-09, so that mode now works for a library
+built from ordinary (non-`exclude-prelude`) sources; the residue W9 item 2's note
+records is that a *run-time* initializer in an inlined file runs once per object
+rather than once per program.
 
 ### W9 item 1 as fixed *(2026-08-09)* — the ROOT file joins the import graph
 
 `make lib-headers`, `make lib-cheaders` and `make lib-objs` all succeed;
-`make lib-so` still fails, for **item 2's reasons only** (each object inlines
-the whole prelude, so `vector.o` and `combinators.o` both define `vector-oom`,
-`next.pIntRangeIter`, …). Nothing here bears on item 2 — it stays an
-architectural question about how the prelude participates in a multi-TU build.
+`make lib-so` still failed at this point, for **item 2's reasons only** (each
+object inlines the whole prelude, so `vector.o` and `combinators.o` both define
+`vector-oom`, `next.pIntRangeIter`, …). Nothing here bore on item 2 — it stayed
+an architectural question about how the prelude participates in a multi-TU
+build, and was **closed later the same day**; see the W9 item 2 note below.
 
 **Cause.** The recorded hypothesis — "the auto-prepended prelude chain imports
 the entry file itself, and the entry file is on no dedup list" — is right about
@@ -1058,6 +1065,388 @@ absolute path while its importers resolve a relative one is not recognised as
 the same file. That is pre-existing (`g-imported` has always keyed this way) and
 the fix inherits it rather than introducing it; canonicalising would move every
 path string in every diagnostic.
+
+### W9 item 2 as fixed *(2026-08-09)* — a definition the unit does not OWN is `weak_odr`
+
+`make lib-so` builds `build/lib/libnucleus.so` from all 34 library objects, and
+two separately compiled Nucleus objects link and share their state. The item's
+own framing — "an open architectural question about how the prelude participates
+in a multi-TU build" — had the question right; the answer is that **it does not
+need to**. A `.nuc` import is *inlined*, so a copy of the prelude in every object
+is not a bug to remove but a fact to give the right linkage, which is exactly
+C++'s `inline`/template rule.
+
+**The rule, and it is ownership, not privacy or reachability.** One classifier,
+`def-linkage` (`src/nucleusc.nuc`), answers for both emitters — `emit-defn`'s
+`define` and `emit-defvar`'s `@g = global`, which previously each carried their
+own two-branch `internal`-or-not `if`. `internal` when private (unchanged),
+`weak_odr` when the unit only carries a **copy**, external otherwise. A copy is:
+a form written in a file this unit *imports* (`g-source-path` ≠
+`g-unit-entry-path`, by string equality — `do-import` resolves a path afresh per
+import form, so the root re-entered through the auto-prelude is an equal but
+distinct string), or a **monomorphized stamp**. The linkage word carries its own
+trailing space and is one `%s`, so every pre-existing shape is byte-identical.
+
+**A stamp belongs to no file, and the call site's path answers the wrong
+question.** `lib/string.nuc` and `lib/combinators.nuc` each stamp
+`vector_init.pVector.u8`, both while their own file is the root — so the obvious
+"is `g-source-path` the root?" test makes both copies external and they collide
+exactly as before. `drain-mono-worklist` arms `g-emitting-copy` around the one
+`emit-defn` that emits a stamped body instead. This is the same distinction B4
+already had to make for the stamp's *namespace* (`generic-instantiate-in`'s
+`(.set! newm src-ns (mm src-ns))`), reached from the other direction.
+
+**`weak_odr`, not `linkonce_odr` — and the difference is not cosmetic.** The two
+merge identically at link time and are equally non-interposable, so
+`linkonce_odr` was the first choice. It is also **discardable when unreferenced**,
+and `clang -O3` deleted every imported function it had fully inlined: the
+compiler's own `make bootstrap` died `JIT session error: Symbols not found:
+[ alloc-node ]` with `define linkonce_odr ptr @alloc-node()` plainly present in
+`stage2.ll`. Macros are JIT-compiled *during* compilation and resolve callees by
+name against the running program's dynamic symbol table (`-rdynamic`), so the
+optimizer removing a definition is a compile-time failure, and it is reachable
+from any user program whose macro calls an imported function — not a
+compiler-only accident. The price of `weak_odr` is that an unused imported
+function is no longer dead-stripped: `build/nucleusc` grows 812,264 → 820,312
+bytes (**+1.0 %**), recoverable with `-ffunction-sections`/`--gc-sections`, which
+is a link-flag question rather than a linkage-word one. Recorded in
+[conventions.md](../../context/conventions.md).
+
+**One synthesized global is genuinely per-unit and had to go the other way.**
+`@nuc_err_names` / `@nuc_err_messages` were emitted `constant` with external
+linkage and collided across 11 of the 34 library objects. They cannot be
+`weak_odr`: `deferror` ids are assigned per compilation unit, so the *contents*
+differ between two objects of one program and merging them would be a real ODR
+violation rather than a harmless one. They are now `internal` — every reference
+is a GEP emitted into the same module (`union-emit.nuc`, `emit-err-field`), so
+nothing outside needs the symbol. Cross-unit id *agreement* is a separate,
+pre-existing hole this does not touch.
+
+**Verification.** `make test` **501 PASS / 1 FAIL** (498 before; +3 new lines).
+One FAIL at that point, `b3-type-ns-not-in-scope`, was **pre-existing and
+unrelated** — reproduced identically on a compiler built from this working tree
+with only these edits reverted, which is how every count here was attributed
+rather than assumed. It was then diagnosed and fixed too; see the follow-up
+below. Final: **504 PASS / 0 FAIL**.
+
+`make bootstrap` **deliberately moved and was reconverged.** Before reconverging,
+the new compiler was shown to be a fixed point independent of any committed
+artefact (stage2 compiles itself byte-identically), then the whole stage1→stage2
+move was characterised: normalizing away the linkage token alone leaves a
+**6-line** diff, which is the two `@nuc_err_*` lines gaining `internal`. Nothing
+else in 142,000 lines changed. 722 `define`s and 24 globals gained `weak_odr`.
+
+**Sweep** against a compiler built from this tree with the edits reverted, over
+`examples/` + `lib/` + `src/nucleusc.nuc` (182 files): **181 normalized-identical,
+0 differing, 0 regressed, 0 newly-compiling, 1 failing under both**
+(`examples/comb-shapes.nuc`, the same pre-existing `as: lossy conversion` W9-1
+recorded). A second sweep over the 185 rejection fixtures' stderr: **185
+identical, 0 changed**. `make abi-test` / `make layout-test` / `make avr-test`
+green; `resolution-matrix.sh --check` unchanged (43 cells).
+
+**Tests.** `run_w9_multi_object` is deliberately not a "does it link" test — a
+linker that kept two *private* copies of `g-arena` would also link, and every
+object would then have its own arena and its own intern table. Two objects bump a
+shared counter from opposite sides and the third read must be `1 + 2 = 3`, which
+is reachable only if the copies merged; a companion assertion confirms both
+objects really do carry a weak `arena-init`, without which the first proves
+nothing. `w9-linkage-ownership` pins all three answers from one `--emit-llvm`
+(root external / imported `weak_odr` / private `internal`). Two existing units
+that pinned a linkage word by exact match — `w1-late-overload-symbol` and
+`s1-nuch-template-stamps` — were **updated to assert the new word**, not loosened
+to accept either: the word is the unit's answer to "do I own this", and a silent
+flip back is the multi-object link failure returning.
+
+**Known limit, not fixed here — and the once-guard is a trap, measured.** A
+`defvar` whose initializer the compiler cannot fold to a constant is initialized
+from its unit's `@__nucleus_init` constructor (G-3). When several objects each
+inline the file declaring it, each object's constructor initializes the
+now-shared global, so such an initializer runs **once per object**: measured, a
+two-object link whose initializer bumps a counter observes **2**, not 1. No file
+in `lib/` has one today (zero `llvm.global_ctors` across all 34 library objects),
+so this is latent rather than live.
+
+"Then guard it so it runs once" does not work, for a reason that is in the queue
+rather than in the guard. **The initializer queue is strictly source order across
+the whole unit, and ownership interleaves within it.** Measured, all three legal
+and all three accepted by G-4's ordering check: a root-owned `gx-x`; then an
+*imported* `gb-y` reading `gx-x`; then a root-owned `gx-z` reading `gb-y`. So:
+
+* **Grouping the shared initializers** (all copies first, then the unit's own)
+  reorders them against exactly those cross-ownership reads. `gb-y` would run
+  before `gx-x` and silently read 0. This is not an edge case — reading *across*
+  the boundary in both directions is the normal shape, which is why the queue is
+  one list in source order to begin with.
+* **Guarding each contiguous shared run in place** preserves order inside one
+  object and breaks it *between* objects. Object B skips the shared run (A
+  claimed the flag) but still runs its own initializers in place — and
+  `.init_array` order across objects is link-order dependent, which no Nucleus
+  rule controls. If B's constructor runs first, B reads a shared global A has not
+  written yet. That trades a **leak** (double init: loud enough to find, and a
+  no-op for any idempotent initializer) for a **silent use-before-init**, which
+  is the failure class this whole work stream exists to remove. Strictly worse.
+* **G-4's diagnostic would stop describing run time.** `defvar-check-init-order`
+  reasons about *queue* position — "already reached" — to reject a forward read.
+  A guard changes run-time order without the check knowing, so the compiler would
+  keep accepting programs on a premise that no longer held.
+
+The shape that genuinely gives once-per-program *and* correct order is
+per-**variable** lazy initialization — a flag tested at every read — which is
+precisely the hand-rolled `ensure-*` pattern [../global-init.md](../global-init.md)
+§0 correction 3 measured and set out to remove (21 of them in the Doom port, 20
+needing no runtime initialization at all). It is also the problem C++ does not
+solve: an `inline` variable gets a guard per variable and its order relative to
+other translation units stays unspecified.
+
+**So the rule, not the mechanism, is the place to fix this**, and G-1/G-2 already
+made the rule affordable: a constant initializer covers named constants,
+`(sizeof T)`, `(as T x)`, addresses, and constant struct/array aggregates, so
+most library globals can be written that way — and one that is costs *less*, since
+no constructor is emitted at all.
+
+**The diagnostic was then built** (`warn-shared-runtime-inits`), which is the
+half of the condition the compiler can actually prove. Two rulings, each with one
+reason:
+
+* **Warning, not error.** A single Nucleus object linked against C is supported
+  and there the initializer runs exactly once — refusing it would break
+  `run_g3_library`, the case §2.4 says nothing else covers.
+* **`-c` only.** `-c` is the one flag that says "relocatable object bound for a
+  link with other objects". A default build is whole-program and correct by
+  construction. `--emit-llvm` says nothing about the eventual link — it is
+  equally how a whole program is inspected, and G-4's own cross-file fixtures are
+  exactly that shape, so warning there would be a false positive on programs that
+  are fine. The compiler cannot see the other half (does another object also
+  inline this file?), so it reports the property it can prove and names the fix.
+
+Pinned by `run_w9_shared_init_warning`, whose three *silent* arms carry the
+weight: the owning object, `--emit-llvm`, and a whole-program build — the last
+asserted **by value** (the initializer runs once, exit 1), so a future change
+that silenced the warning by suppressing the constructor would fail here rather
+than pass quietly. A fourth arm measures the limit itself by value (two objects,
+exit 2), so if it ever becomes 1 the test fails and `docs/compiler.md` is what
+needs updating. Separately, `run_w9_lib_standalone` now **gates the invariant for
+`lib/`**: no library file may carry a run-time initializer for a global it does
+not own, since `make lib-so` links all 34 objects. True today — adding one is now
+a test failure rather than a silent double init.
+
+### Follow-up, same day: source out-ranks header — and the first cause recorded for it was wrong
+
+The pre-existing `b3-type-ns-not-in-scope` failure above was recorded as "a
+generated `lib/foo.nuch` **shadows** `lib/foo.nuc`, so the fixture imports the
+header". **That is false, and it was falsified by reading the code the ruling
+would have changed.** `resolve-import` already tries `.nuc` across *every* search
+directory before it tries `.nuch` in any of them — measured, not inferred: the
+probe emits `define weak_odr i32 @dp__describe`, an inlined definition, so the
+import took the source with the header sitting beside it. The user's ruling
+(*source out-ranks header*) was therefore **already the behaviour on the import
+side**; what needed it was the diagnostic side.
+
+**The real cause.** `path-in-unit` keyed on the exact path spelling, so
+`lib/nsdescribe.nuch` was a *different* file from the `lib/nsdescribe.nuc` the
+unit imports — hence "outside the unit", hence a legitimate answer for W1c's
+unreachable-definer scan (`nuc-source-name` accepts both extensions, correctly).
+`unknown-type-message` runs that scan **before** B3′'s
+`type-in-other-namespace-message`, so the moment `make lib-headers` had been run,
+a truthful and actionable "unknown type: Fox — defined in namespace 'dp' / note:
+write 'dpx/Fox' here" was displaced by "defined in lib/nsdescribe.nuch, which no
+import in this unit reaches" — naming, as an unreachable file, the very library
+the author was already importing.
+
+**The fix is the ruling, applied where it bites.** `import-sibling-path` pairs
+the two spellings of one library and `path-in-unit` consults both. Symmetric on
+purpose: a unit that imports the `.nuch` must not be told about the `.nuc`
+either. The tier ORDER is left alone — the scan is right to precede the namespace
+tier for a name genuinely outside the unit; it was the membership test that was
+wrong, and fixing the membership test is what keeps this from being a
+special-case reshuffle.
+
+**Verified as a regression test, not just as a green suite.**
+`run_w9_source_outranks_header` builds the shape from scratch (a `(ns shn)`
+library, its generated sibling header, a prefixed importer writing the bare name)
+rather than depending on which artefacts happen to sit in `lib/`, and asserts
+both halves: the import resolves to the source (an inlined `define`), and the
+diagnostic neither names the sibling header nor loses the namespace tier. On the
+pre-fix compiler it produces the reachability message; on this one, "defined in
+namespace 'shn' / note: write 'shp/W9Rec' here".
+
+**A defect this found in the item-2 work itself.** `run_w9_multi_object`'s
+comment claimed `w9side` resolved to the header "because only `$d/inc` has it" —
+which the ranking above makes false: the sibling `.nuc` was on the consumer's
+search path and won, so main.o inlined it and *nothing crossed the object
+boundary*. The unit still passed, because both objects then carried weak copies
+and the shared counter still read 3 — a test passing for a reason its author did
+not intend. Restructured into `share/` + `side/` + `inc/` so `w9side.nuc` is on
+no path the consumer searches, and the cross-object call is now **asserted**
+(`nm` must show `U w9-side-bump` in main.o), not assumed.
+
+Fixture-diagnostic sweep after this change: **184 identical, 1 changed** — the
+one changed is `b3-type-ns-not-in-scope`, which is the fix. IR sweep re-run: 181
+normalized-identical, 0 differing, 0 regressed. `make test` **504 PASS / 0
+FAIL**; `make bootstrap` reconverged again and green; `resolution-matrix --check`
+unchanged (43 cells).
+
+**Files.** `src/nucleusc.nuc` (`g-emitting-copy`, `def-linkage`, both emitters,
+the two `@nuc_err_*` lines, `path-in-unit-exact` / `import-sibling-path` /
+`path-in-unit`, `warn-shared-runtime-inits`), `src/generics.nuc`
+(`drain-mono-worklist-in`),
+`tests/run-tests.sh` (`run_w9_multi_object`, `run_w9_source_outranks_header`,
+`run_w9_shared_init_warning`, the `lib/` shared-init gate, +12 PASS lines; two
+updated assertions), `docs/compiler.md`, `context/build.md`,
+`context/conventions.md`, and the reconverged `bin/nucleusc` / `boot/nucleusc.ll`
+/ the two Windows boot IRs.
+
+---
+
+### W9 item 3 as fixed *(2026-08-10)* — a global's C name is not its sanitized name
+
+`--emit-cheader` exports a public `defvar` as `extern T name;`, and a C program
+that `#include`s the generated header reads the globals, calls in to mutate one,
+and sees the new value. `emit-cheader-header`'s dispatch simply had no `defvar`
+arm — while **both** `docs/compiler.md`'s flag table ("`extern` declarations for
+`defvar` and `extern` globals") and `docs/toplevel.md` ("visible to C consumers
+(`extern T name;`)") already described the behaviour as present. Documented and
+unimplemented in two places is worse than undocumented: nobody re-checks a
+sentence that reads like a statement of fact.
+
+**The missing arm was the easy half. The design is the NAME.** A global's link
+symbol keeps its hyphens — `(defvar tick-count:i64 41)` emits `@tick-count`, and
+`nm` shows `D tick-count` — and `tick-count` is not a C identifier. Measured, both
+directions:
+
+* sanitizing to `tick_count` produces a header that **parses and then fails to
+  link** (`undefined reference to 'tick_count'`);
+* `extern int64_t tick_count asm("tick-count");` **reaches the real symbol** (the
+  C consumer reads 41).
+
+So a name that needs sanitizing carries an `asm` label, and — deliberately — one
+that does not carries none, so a library with C-legal names still gets a fully
+portable header and the GCC/Clang extension appears exactly where it is
+load-bearing.
+
+**This falsifies W9 item 4's recorded cause**, which says "The fix is a missed
+call site, not a missing mechanism" and lists the sites where `sanitize-for-c` is
+not called. That holds for **type names, field names, `defunion` arm names and
+enum tags** — none of which the linker resolves, which is why sanitizing the
+struct *type* name was correct and complete. It does **not** hold for function
+names or global names: adding `sanitize-for-c` there would convert a header that
+fails to *parse* into one that parses and fails to *link*, moving the error away
+from its cause. Item 4 is therefore not a missed call site; it is the same
+`asm`-label decision this item just made and proved, applied to `defn`. That
+makes it small and mechanical now, but it is a **ruling** (a GCC/Clang extension
+in every generated header for a hyphenated library) rather than an oversight, so
+it is left for its own item rather than folded in here.
+
+**Two rulings on which globals get a line at all.**
+
+1. **A declaration the C compiler trusts and gets wrong is worse than an
+   omission.** `type-node-to-c` answers `void*` for every cell head it does not
+   recognise — size-correct for a pointer, silently wrong for anything else, so
+   `(defvar m:(Maybe i32) …)` would have declared a pointer-sized object over a
+   struct. (The two skips `emit-cheader-declare` already had do not catch it:
+   `--emit-cheader` is deliberately exempt from the prelude, so `Maybe` is not a
+   registered template here.) `cheader-defvar-type-ok` admits only what that
+   function genuinely spells — a plain type name, or a pointer under any of
+   `ptr`/`raw`/`ref` — and everything else gets a located `/* … not exported */`
+   comment.
+2. **By value, a user type's C spelling is the typedef name, not `struct NAME`.**
+   `emit-cheader-defstruct` emits an *anonymous* `typedef struct { … } NAME;`, so
+   `struct NAME` is a different, incomplete tag: `extern struct SR s;` compiles
+   until the first `s.a` and then fails with "incomplete definition of type
+   'struct SR'" (measured). Harmless behind a pointer, which is why the
+   pre-existing prototype path never noticed. `cheader-by-value-c` strips the
+   prefix `type-node-to-c` just added rather than re-deciding builtin-vs-struct,
+   so the builtin list stays in one place.
+
+**One pre-existing defect had to be fixed for this item to emit a correct line.**
+`type-name-to-c` had no `usize`/`ssize` case, so both fell through its "assume
+struct" arm and emitted `struct usize` — a type that does not exist. This was
+already recorded in [cheader.md](cheader.md) as a known `--emit-cheader` defect
+and **14 of the 34 committed `lib/*.h` carried it**, silently unparsed. Item 3
+turned it from latent into load-bearing: `lib/keyword.nuc`'s `g-keyword-count` is
+a `usize` **global**, so the choice was to fix the mapping or knowingly emit a
+broken `extern`. Now `size_t` / `ptrdiff_t` (these are the types of counts and
+indices, which is what usize/ssize are used for, and both are pointer-sized on
+every supported target), with `<stddef.h>` added to the generated preamble.
+
+**Regenerated artefacts.** All 34 committed `lib/*.h` change: every one gains the
+`<stddef.h>` line, 14 lose `struct usize`, and 5 gain the `extern` global lines
+this item is about (`arena.h`, `allocator.h`, `error.h`, `keyword.h`, `node.h`).
+They were verified **not stale first** — the committed headers were byte-identical
+to what the pre-change compiler generates — so the whole diff is attributable to
+this change.
+
+**Verification.** `make test` **515 PASS / 0 FAIL** (510 before, +5). Emitted
+*program* IR is untouched, as it must be for a header-only change: 181
+normalized-identical, 0 differing; 184/185 fixture diagnostics identical (the one
+difference is the W9-2 follow-up's own fix, unchanged here). `make bootstrap`
+reconverged; `abi-test` / `layout-test` / `avr-test` green; resolution matrix
+unchanged (43 cells).
+
+The tests compile and **run** a C consumer rather than grepping the header —
+`grep` cannot tell a correct `asm` label from a broken one. `rec_val.a` is read
+through the by-value struct spelling (ruling 2 above would fail there, not at the
+header), and the private global is asserted unreachable by a consumer that names
+it **failing to compile**, not by its absence from the text.
+
+**Not fixed here, and now measured rather than assumed.** A `defn` whose name is
+hyphenated still emits `int32_t ch-get(void);`, so a header for such a library
+still does not parse as a whole — that is item 4, whose fix is the `asm` label
+above. `raw:T`/`ref:T` widen to `void*` (pre-existing and shared with function
+parameters). `!T`/`?T` error types emit `struct _BANGui8`-shaped spellings, the
+same family as the `usize` defect but with no obvious C mapping.
+
+**Files.** `src/cheader.nuc` (`emit-cheader-defvar`, `cheader-defvar-type-ok`,
+`cheader-by-value-c`, the dispatch arm, `type-name-to-c`'s usize/ssize cases, the
+`<stddef.h>` preamble line), `tests/run-tests.sh`
+(`run_w9_cheader_globals`, +5 PASS lines), all 34 `lib/*.h`, `docs/compiler.md`,
+`docs/toplevel.md`, and the reconverged boot artefacts.
+
+### Follow-up, same day: the committed headers had no gate at all *(2026-08-10)*
+
+Regenerating all 34 `lib/*.h` above made the actual hazard visible: **nothing
+checks that a committed generated header still matches the compiler.** Everything
+else generated-and-committed in this repo is gated — `boot/*.ll` by `make
+bootstrap`'s fixed-point diff, `docs/stdlib.md` by `stdlib-table-generated` — but
+the 69 `lib/*.nuch` + `lib/*.h` were not. The build never reads the committed
+copies (`make lib-headers` / `make lib-cheaders` overwrite them), so a change to
+`src/nuch.nuc` or `src/cheader.nuc` invalidates all of them with **no failure
+anywhere**; it surfaces only when a consumer trusts a declaration that no longer
+describes the library. That is precisely how the `usize` defect above sat in 14
+committed headers unnoticed.
+
+Now gated by `scripts/check-headers.sh` — `make check-headers`, plus the
+`headers-generated` unit inside `make test`.
+
+**Byte-exact, unlike `stdlib-table-generated`.** That check is deliberately loose
+because availability is host/libc-dependent by construction. Header emission is a
+pure function of the source with no host probing, so the same looseness would buy
+nothing and hide real drift. Confirmed before committing to exact: all 69
+regenerate byte-identically.
+
+**Provenance-driven, not a file list.** Each generated header names its own source
+on its first line (`src/nuch.nuc:169`, `src/cheader.nuc:2252`), and the check
+reads that. So it covers `lib/mapiterlib.nuch`, whose source is
+`tests/fixtures/mapiterlib.nuc` and which no `make` target can reach
+(`LIB_NUCHS` is `$(wildcard lib/*.nuc)`); a hand-written header such as
+`src/llvm.nuch` is out of scope by construction rather than by an exclusion list
+that would go stale; and a newly generated header is picked up with no edit to
+the checker.
+
+**Content drift is only one of four failures, and the check found one on its
+first run.** `lib/mapiterlib.nuch` recorded an **absolute** source path
+(`/home/zak/code/nucleus/tests/fixtures/…`) — the generator echoes the path it was
+given, so this is an artefact that regenerates only on the machine that produced
+it. Rejecting absolute provenance is not fastidiousness: without it the check
+would *pass on the one machine that broke reproducibility and fail on every
+other*, which is worse than no check. Fixed by regenerating from the repo root.
+The other two: a `lib/*.nuc` with no committed header at all (drift of the header
+*set*, which a content diff cannot see), and a header whose recorded source is
+gone. All four verified to fire, and the tree restored by regeneration, not git.
+
+**Files.** `scripts/check-headers.sh` (new), `Makefile` (`check-headers`),
+`tests/run-tests.sh` (`run_headers_generated`, +1 PASS), `lib/mapiterlib.nuch`
+(relative provenance), `docs/compiler.md`, `context/build.md`.
 
 ---
 

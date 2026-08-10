@@ -1,14 +1,15 @@
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 /* Generated from lib/string-split.nuc by nucleusc --emit-cheader */
 
 typedef struct {
     uint8_t* buf;
-    struct usize rem;
+    size_t rem;
     uint8_t* sep-data;
-    struct usize sep-len;
+    size_t sep-len;
     int32_t done;
     struct StrView cur;
 } SplitIter;
@@ -19,7 +20,7 @@ struct SplitIter strview-split(void* sv, void* sep);
 void* next(void* self);
 typedef struct {
     uint8_t* buf;
-    struct usize rem;
+    size_t rem;
     int32_t done;
     struct StrView cur;
 } LineIter;

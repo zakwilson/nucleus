@@ -516,6 +516,34 @@ function(s). The design docs' "byte-identical (additive)" claims for TC-1/2/3 re
 *not* to the literal `nucleusc.ll` diff — which a careful read of those phases shows also
 shifted (new `tc3-*` functions, etc.) and was reconciled by the same `make bootstrap` gate.
 
+## Emitted linkage: `weak_odr`, never `linkonce_odr` — the macro JIT resolves against the linked program
+
+`def-linkage` (`src/nucleusc.nuc`) is the single place that decides a top-level
+definition's LLVM linkage: `internal` when private, `weak_odr` when the unit only
+carries a *copy* of the definition (any imported file's form, and every
+monomorphized stamp — `drain-mono-worklist` arms `g-emitting-copy` for those),
+external otherwise. Both emitters call it; do not re-derive the word at a new
+emission site.
+
+The trap is the choice of ODR variant. `linkonce_odr` and `weak_odr` merge
+identically at link time and are equally non-interposable, so `linkonce_odr`
+looks like the obvious pick — but it is **discardable when unreferenced**, and
+`clang -O3` duly deletes every imported function it has fully inlined. Macros and
+`ct-` functions are JIT-compiled *during* compilation and resolve their callees
+by name against the running program's dynamic symbol table (`-rdynamic`), so a
+deleted definition is unfindable: with `linkonce_odr` the compiler's own
+`make bootstrap` dies `JIT session error: Symbols not found: [ alloc-node ]`
+while `alloc-node` is plainly present in `stage2.ll`. The same failure is
+reachable from any user program whose macro calls an imported function.
+`weak_odr` may not be discarded, which is the whole reason to prefer it; the
+price is that an unused imported function is no longer dead-stripped (~1% on the
+compiler binary), recoverable with `-ffunction-sections` / `--gc-sections` if it
+ever matters.
+
+Consequence for measuring a codegen change: normalize `weak_odr` away before
+diffing IR, exactly as you strip SSA names (see the bootstrap-gate section
+above), or every multi-file program looks like it moved.
+
 ## The want channel: target-typed construction (TC-1..TC-5)
 
 A one-shot, downward expected-type ("want") flows from declared-type positions into
