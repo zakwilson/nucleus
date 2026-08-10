@@ -1,0 +1,34 @@
+; Stage 15 W9 item 8: `as` narrows a LITERAL that fits the destination.
+;
+; The safe cast used to refuse every narrowing on the two widths alone, so
+; `(as i8 5)` was rejected as "lossy conversion from i32 to i8" while the
+; implicit coercion at the identical slot — `(let (a:i8 5) …)` — accepted it
+; and emitted the very same `trunc i32 5 to i8`. The explicit spelling of a
+; conversion must never be stricter than the implicit one it makes explicit.
+;
+; Self-checking: each binding is compared against the value it must hold, so a
+; wrong-value regression (a sign error in the range test, a bad truncation)
+; fails here rather than passing on an exit-0 compile. Every literal below sits
+; on or inside its destination's exact bound.
+
+(defconst W9AS-SMALL 7)
+
+; The constant-folder path (`const-fold-int`), which decides the same question
+; by hand and so gets the same literal channel.
+(defvar w9as-g:i8 (as i8 9))
+
+(defn main ():i32
+  (let (a:i8 (as i8 5)                ; plain literal
+        b:i8 (as i8 W9AS-SMALL)       ; defconst provenance (W2b's is-lit)
+        c:ui8 (as ui8 200)            ; unsigned target, above the signed bound
+        hi:i8 (as i8 127)             ; the signed upper bound exactly
+        lo:i8 (as i8 -128)            ; the signed lower bound exactly
+        w:ui16 (as ui16 65535))       ; the unsigned upper bound exactly
+    (when (!= (as i32 a) 5) (return 1))
+    (when (!= (as i32 b) 7) (return 2))
+    (when (!= (as i32 c) 200) (return 3))
+    (when (!= (as i32 w9as-g) 9) (return 4))
+    (when (!= (as i32 hi) 127) (return 5))
+    (when (!= (as i32 lo) -128) (return 6))
+    (when (!= (as i32 w) 65535) (return 7)))
+  (return 0))

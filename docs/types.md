@@ -425,8 +425,11 @@ The following conversions are applied automatically in assignment contexts (`let
     only to literals with a known value (`(take8 300)`, `(let (b:i8 200) …)`,
     `(< u:ui8 300)`); narrowing a typed *value* still truncates (its runtime
     value is unknown). To deliberately wrap a literal, cast it explicitly with
-    `unsafe/cast` (narrowing is lossy, outside `as`'s safe set):
-    `(unsafe/cast i8 200)` is `-56`.
+    `unsafe/cast`: `(unsafe/cast i8 200)` is `-56`.
+    A literal that *does* fit is not lossy, so the explicit `as` spelling
+    accepts it too — `(as i8 5)` and `(let (a:i8 5) …)` are the same conversion
+    and emit the same IR. Only the narrowing of a *value* is outside `as`'s
+    safe set.
 - **Float ↔ float**:
   - Widening `f32` → `f64`: `fpext`.
   - Narrowing `f64` → `f32`: `fptrunc` for a *value*, and for a float **literal**
@@ -476,9 +479,14 @@ Explicit `(unsafe/cast ...)` is also still required for cross-kind conversions: 
 `f64 → f32` is a special case: the **implicit** coercion at a typed slot performs
 it (silently for a value, exactly as an `i64 → i32` assignment does), but the
 **explicit** `(as f32 d)` still refuses it as lossy and routes you to
-`(unsafe/cast f32 d)`. That asymmetry is not float-specific — `(as i32 n:i64)`
-is refused for the same reason while `(let (a:i32 n) …)` truncates — and is a
-standing question about implicit narrowing in general, not about floats.
+`(unsafe/cast f32 d)`. For a *value* that asymmetry is not float-specific —
+`(as i32 n:i64)` is refused for the same reason while `(let (a:i32 n) …)`
+truncates — and is a standing question about implicit narrowing in general.
+For a *literal* the two have parted: `(as i8 5)` is accepted, because the value
+is known to fit and the conversion is therefore lossless, while `(as f32 1.5)`
+is still refused even though that literal is likewise exactly representable.
+Both spellings work implicitly. The remaining float gap is a known defect, not a
+rule.
 
 **Multimethod dispatch is stricter than assignment.** A float *literal* adapts
 to a narrower float parameter when selecting an overload (`(over 0.1)` picks

@@ -221,6 +221,20 @@ Rejected by `as`, with error messages that route to the right tool:
 - **ptr↔int, fn↔ptr, element-retyping ptr↔ptr** — "reinterpretation: use
   `unsafe/cast`".
 
+> **Amended 2026-08-10 by Stage 15 W9 item 8** (see
+> `design/stage15-stress-test/progress.md`, the W9-8 note). The first rejection
+> row was too broad: an integer narrowing whose operand is a **literal that fits
+> the target** is not lossy, and refusing it made the safe cast strictly
+> stricter than the implicit coercion it exists to make explicit — `(as i8 5)`
+> was an error while `(let (a:i8 5) …)` compiled and emitted the same
+> `trunc i32 5 to i8`. `as` now accepts that case, at both askers
+> (`emit-as` and the global-initializer constant folder), gated by the same
+> `int-literal-fits` predicate the implicit path uses, so the two accept exactly
+> the same set of literals. Narrowing a *value* is still rejected here, which is
+> the distinction the rejection row should have drawn from the start. **`f64` →
+> `f32` of an exactly-representable float literal is the unfixed counterpart** —
+> see W9 item 30.
+
 Implementation: `emit-as` = parse target type, run `safe-coerce-val` extended
 with the two weakening rules; `node-type-as` mirrors `node-type-cast`
 (the **node-type↔emit-node lockstep** applies — conventions.md). `as`

@@ -1426,6 +1426,14 @@ record of what W5c decided; the supersession belongs at the stage level.
   position — measured: `(as f32 1.5)` dies `as: lossy conversion from f64 to f32`,
   because a float literal is f64 and `as` never narrows. So a float `as` fold
   could only have *diverged* from the value path.
+  **Amended 2026-08-10 (Stage 15 W9 item 8).** "`as` never narrows" no longer
+  holds for integers: `as` now narrows a literal that provably fits, and the
+  two askers were kept in step by giving `as-int-narrowing` the literal channel
+  (`const-fold-int` passes the folded value unconditionally, since everything
+  reaching it is a known constant). The float clause above is still accurate as
+  written — `(as f32 1.5)` is still rejected — and is now filed as W9 item 30,
+  where the remark that a float fold "could only have diverged" becomes the
+  argument for fixing the value path first.
 * **Comparisons, `and`, `or`, `not`.** They produce `i1`, a second value domain
   the folder does not model, and `_and`/`_or` are short-circuit special forms
   rather than binops. `(defvar g:bool true)` is the spelling.

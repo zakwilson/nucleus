@@ -3550,12 +3550,14 @@
                 tmp (type-to-ir dst) (cr ir-name) (type-to-ir src) (v val))
               (return (alloc-val dst tmp)))))
         ; 5. int -> int: widening (zext/sext) and same-width sign reinterpret are
-        ; safe (coerce-int-val emits them / no IR); narrowing is lossy.
+        ; safe (coerce-int-val emits them / no IR); narrowing is lossy — unless
+        ; the operand is a literal that FITS the destination (Stage 15 W9 item 8),
+        ; which is exactly the set `coerce-int-val` already admits implicitly.
         ; The narrowing test lives in `as-int-narrowing` (src/type-utils.nuc) so
         ; the constant folder in `defvar-init-ir` (Stage 15 W8 G-1) asks the same
         ; question of the same rule rather than mirroring this comparison.
         (when (and (!= (is-int-type src) 0) (!= (is-int-type dst) 0))
-          (when (!= (as-int-narrowing src dst) 0)
+          (when (!= (as-int-narrowing src dst (v is-lit) (v lit-i64)) 0)
             (die-at (cc line)
               (fmt-2s "as: lossy conversion from %s to %s -- use unsafe/cast"
                 (type-spelling src) (type-spelling dst))))
@@ -10773,7 +10775,10 @@
         ; (src/type-utils.nuc), the same call `emit-as` step 5 makes, so the two
         ; positions cannot drift on what `as` may narrow. The source type is the
         ; folded value's truthful width (`int-literal-type`, W2b's shared rule).
-        ; A non-integer T is left to defvar-init-ir's own `as` branch.
+        ; A non-integer T is left to defvar-init-ir's own `as` branch. Everything
+        ; that reaches here folded to a KNOWN value, so the literal channel is
+        ; unconditionally armed (W9 item 8) — a folded constant that fits the
+        ; destination narrows exactly as the value path's literal does.
         (when (and (= hd 'as) (= nargs 2))
           (let (dst:(raw Type) (parse-type-from-node (node-at (as ptr ee) 1) nl))
             (when (= (is-int-type dst) 0) (return 0))
@@ -10782,7 +10787,7 @@
                                        (as ptr:i64 (addr-of v)) nl) 0)
                 (return 0))
               (let (src:(raw Type) (int-literal-type v))
-                (when (!= (as-int-narrowing src dst) 0)
+                (when (!= (as-int-narrowing src dst 1 v) 0)
                   (die-at nl
                     (fmt-2s "as: lossy conversion from %s to %s -- use unsafe/cast"
                       (type-spelling src) (type-spelling dst)))))

@@ -1472,7 +1472,7 @@ The following conversions are applied automatically in assignment contexts (`let
 
 Binary operators **do** unify their operands — an untyped integer or float literal (or a `defconst`/`defenum` name standing for one) adapts to the other operand's type, and two typed operands of the same kind widen to the wider. Genuinely mismatched operands (float against integer, mixed-sign integers) are still compile errors at the operator. See [Types](types.md#implicit-type-coercion) for the authoritative rule.
 
-Explicit `(unsafe/cast ...)` is also still required for cross-kind conversions: `int ↔ ptr`, `int ↔ float`, and `ptr ↔ float`. `f64 → f32` is accepted implicitly at a typed slot but still refused by the explicit `as`.
+Explicit `(unsafe/cast ...)` is also still required for cross-kind conversions: `int ↔ ptr`, `int ↔ float`, and `ptr ↔ float`. Narrowing a *value* is likewise implicit-only — the explicit `as` refuses it. A narrowing **integer literal** that fits its target is the exception in both directions: it is lossless, so `(as i8 5)` is accepted and emits exactly what `(let (a:i8 5) …)` emits. The float counterpart has not followed — `f64 → f32` is accepted implicitly at a typed slot but still refused by the explicit `as`, even for a literal like `1.5` that is exactly representable.
 
 ## Libc Bindings
 
