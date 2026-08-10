@@ -1,0 +1,9 @@
+; Stage 15 W9 item 7, the LOCAL position of w9-cstr-into-ref-defvar.nuc. Both
+; had to be fixed at once: the defvar constant renderer calls the same
+; `pkind-flow-check` the local path calls, so the carve-out was one hole showing
+; in two places.
+(defstruct W9C7L n:i32)
+
+(defn main ():i32
+  (let (p:ptr:W9C7L (as CStr null))
+    (return (p n))))

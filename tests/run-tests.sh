@@ -2050,6 +2050,74 @@ run_g0_value_order() {
   rm -rf "$d"
 }
 
+# W9 item 6's remaining surface, closed for the STRING-PATH spelling.
+# `(import-use foo)` and `(import-use "…/foo.nuc")` name the same file and are
+# the same import, but both prescan passes walked NODE-SYM only — so the string
+# spelling registered nothing and every name in that file resolved on import
+# ORDER, reporting `not defined anywhere in this compilation unit` for a name
+# that is in the unit. Both passes now derive the path through one rule
+# (`import-form-path`), which is also what `do-import` does with the string.
+#
+# All four name kinds the two passes cover are exercised, each USED BEFORE the
+# import form so an order-dependent resolution cannot pass; and each links and
+# runs, since an exit-0 compile would not catch a name bound to the wrong thing.
+run_w9_string_path_prescan() {
+  local d out
+  d="$(mktemp -d)"; mkdir -p "$d/sub"
+  cat > "$d/sub/sp.nuc" <<'EOF'
+(defconst SP-K 7)
+(defenum SpColor sp-red sp-green)
+(defstruct SpRec n:i32)
+(defvar sp-gv:i32 30)
+(defn sp-add (a:i32):i32 (return (+ a SP-K)))
+EOF
+
+  # Pass 2 (signatures + values) and pass 1 (type NAMES), all used BEFORE the
+  # import: a call, a constant, an enum member, a global, and the struct named in
+  # a signature. 5 + 7 = 12, + 30 = 42, + 1 (sp-green) = 43.
+  #
+  # A field ACCESS before the import is deliberately not here: pass 1 registers
+  # struct names, not layouts, so `(_get r n)` fails ahead of the import for the
+  # SYMBOL spelling too (measured). That is the W1d name-vs-layout split, not
+  # this item — and the claim being pinned is that the two spellings agree.
+  cat > "$d/spmain.nuc" <<EOF
+(defn sp-use (r:ptr:SpRec):i32
+  (return (+ (+ (sp-add 5) sp-gv) sp-green)))
+(import-use "$d/sub/sp.nuc")
+(defn main ():i32
+  (let (r:ref:SpRec (SpRec 2))
+    (return (sp-use (as ptr:SpRec r)))))
+EOF
+  w1_run w9-string-path-use-before-import "$d" "$d/spmain.nuc" 43
+
+  # The point of the fix is that the two spellings agree. Same program, symbol
+  # spelling, same answer — a regression in either direction fails here.
+  cp "$d/sub/sp.nuc" "$d/sp.nuc"
+  cat > "$d/spsym.nuc" <<'EOF'
+(defn sp-use (r:ptr:SpRec):i32
+  (return (+ (+ (sp-add 5) sp-gv) sp-green)))
+(import-use sp)
+(defn main ():i32
+  (let (r:ref:SpRec (SpRec 2))
+    (return (sp-use (as ptr:SpRec r)))))
+EOF
+  w1_run w9-string-path-matches-symbol-spelling "$d" "$d/spsym.nuc" 43
+
+  # The two spellings must also agree on a MISSING file. The string branch's
+  # `(= path null)` test could never fire (the path is the string verbatim), so
+  # the error fell through to `read-file`'s unlocated `perror` while the symbol
+  # spelling reported `import: cannot find` at the import's own line.
+  printf '(import-use "%s/sub/nosuch.nuc")\n(defn main ():i32 (return 0))\n' "$d" > "$d/spbad.nuc"
+  out="$(./build/nucleusc --emit-llvm "$d/spbad.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$out" | grep -q 'spbad.nuc:1: error: import: cannot find'; then
+    echo "PASS  w9-string-path-missing-file-located"
+  else
+    echo "FAIL  w9-string-path-missing-file-located (want a located 'import: cannot find')"
+    printf '%s\n' "$out" | sed 's/^/    /' | head -3
+  fi
+  rm -rf "$d"
+}
+
 # W1b's half of G-0: `scope-define` qualifies a global's key against
 # `g-current-ns`, so the prescan must apply each visited file's own leading
 # `(ns …)`. Prescanning a namespaced file under the IMPORTER's namespace would
@@ -4115,6 +4183,23 @@ spawn run_reject_at w6-defvar-null-ref tests/fixtures/w6-defvar-null-ref.nuc \
   "tests/fixtures/w6-defvar-null-ref.nuc:8: error:" \
   "defvar: raw pointer where non-null (ref ...) is required"
 #
+# Stage 15 W9 item 7: the same rule, for the source kind it never reached. A
+# `CStr` is `TY-CSTR`, so `pkind-flow-check`'s `TY-PTR`-only guard let it launder
+# a null into a typed non-null slot — global and local alike, since the defvar
+# renderer calls the same predicate — and `as-ptr-convert` carried a second copy
+# of the premise. Measured before the fix: all three of these compiled clean and
+# segfaulted; the corpus contained exactly ONE conversion that this rejects
+# (lib/hash.nuc's CStr Hash conformance), now null-guarded.
+spawn run_reject_at w9-cstr-into-ref-defvar tests/fixtures/w9-cstr-into-ref-defvar.nuc \
+  "tests/fixtures/w9-cstr-into-ref-defvar.nuc:17: error:" \
+  "defvar: raw pointer where non-null (ref ...) is required"
+spawn run_reject_at w9-cstr-into-ref-let tests/fixtures/w9-cstr-into-ref-let.nuc \
+  "tests/fixtures/w9-cstr-into-ref-let.nuc:8: error:" \
+  "assignment: raw pointer where non-null (ref ...) is required"
+spawn run_reject_at w9-cstr-as-typed-ptr tests/fixtures/w9-cstr-as-typed-ptr.nuc \
+  "tests/fixtures/w9-cstr-as-typed-ptr.nuc:16: error:" \
+  "as: raw pointer CStr where non-null ptr:W9C7A is required"
+#
 # Acceptances: every NULLABLE or contract-free pointer destination stays legal --
 # elem-less bare `ptr` (with and without an init), `(raw T)` / `raw:T`, `?ptr:T`,
 # and `CStr`. The bare-`ptr` cases are the load-bearing ones: `ptr` is PTR-REF
@@ -4227,6 +4312,7 @@ spawn run_w1c_unreachable_type
 # still-rejects unit is the regression guard, and the same-file forward
 # reference is examples/g0-forward-value.nuc.
 spawn run_g0_value_order
+spawn run_w9_string_path_prescan
 spawn run_g0_value_scoping
 spawn run_g0_cycle_values
 spawn run_g0_still_rejects

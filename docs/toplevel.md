@@ -387,12 +387,16 @@ Consequences worth knowing:
   compiler can see on the import search path, the diagnostic says so and names
   it, so the fix is a one-line import — see
   [Unresolved names](compiler.md#unresolved-names).
-* **Two import spellings are outside the graph walk, and stay ordinal.** A file
-  imported by *string path* (`(import-use "lib/foo.nuc")`) and a `.nuch` header
-  are both left to emission order — for functions and values alike, so there is
-  no asymmetry between the two kinds of name. Prefer the symbol spelling
-  wherever the file is on the search path; with a `.nuch`, import the header
-  before the file that uses it.
+* **A `.nuch` header is outside the graph walk, and stays ordinal.** The names a
+  header contributes — a `declare`d function, an `extern` global, a `defconst`,
+  a `defenum` member — register when the header is imported, so **import the
+  header before the file that uses it**. This holds for functions and values
+  alike, so there is no asymmetry between the two kinds of name. Its *types* are
+  not affected: a `defstruct` in a header is pre-registered like any other, so a
+  signature may name it before the import.
+  *(A `.nuc` file imported by string path — `(import-use "lib/foo.nuc")` — used
+  to have the same limit and no longer does: both spellings of an import are
+  walked identically.)*
 * **A name overloaded anywhere in the unit gets the mangled symbol everywhere.**
   Whether a `defn` keeps the plain `@name` LLVM symbol or gets an overload-mangled
   one is decided from the *whole* unit's method set, before any function is

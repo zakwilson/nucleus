@@ -921,11 +921,11 @@
   ; ir-name (undefined symbol at parse). Same failure mode as the __fnty_N
   ; case above (Stage 13 L7); recurses so ptr:ptr:Foo resolves.
   (when (and (= (strncmp name "ptr:" 4) 0)
-             (!= (tyname-resolvable (unsafe/ptr+ (as ptr:i8 name) 4)) 0))
+             (!= (tyname-resolvable (unsafe/ptr+ (as raw:i8 name) 4)) 0))
     (return 1))
   (when (and (or (= (strncmp name "ref:" 4) 0)
                  (= (strncmp name "raw:" 4) 0))
-             (!= (tyname-resolvable (unsafe/ptr+ (as ptr:i8 name) 4)) 0))
+             (!= (tyname-resolvable (unsafe/ptr+ (as raw:i8 name) 4)) 0))
     (return 1))
   (return 0))
 

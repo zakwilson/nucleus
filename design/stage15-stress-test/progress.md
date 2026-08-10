@@ -32,7 +32,7 @@ fixed, nineteen open** — see the W9 section below for how the count was
 arrived at. Re-measured at the close of the B series (2026-08-09) and moved
 again by work done that day and the next; item 4's fix (2026-08-10) measured four
 further pre-existing causes of an unparseable C header and filed them as items
-25–28: **twenty-eight found, thirteen fixed, fifteen open**.
+25–28: **twenty-nine found, fourteen fixed (item 6 in part), fifteen open**.
 
 **W4, W2 and W3 are complete** (W2a–d; W3a §1.6 opaque forward-declared C
 types; W3b §1.5 C type qualifiers + the `declare` validity gate — `SDL2/SDL.h`
@@ -844,7 +844,7 @@ escape hatch — reproduced by compiling `(defvar g:ptr:i32)` with
 
 ---
 
-## W9 — Reconciled at stage close: twenty-eight defects found, **thirteen** now fixed, fifteen open *(added 2026-08-01; extended through G-5's close 2026-08-02; items 21–24 added 2026-08-03; items 10 and 16 closed and item 22 measured closed 2026-08-09; items 1, 5 and 2 fixed 2026-08-09; items 3 and 4 fixed 2026-08-10, the latter adding items 25–28)*
+## W9 — Reconciled at stage close: twenty-nine defects found, **fourteen** now fixed (item 6 in part), fifteen open *(added 2026-08-01; extended through G-5's close 2026-08-02; items 21–24 added 2026-08-03; items 10 and 16 closed and item 22 measured closed 2026-08-09; items 1, 5 and 2 fixed 2026-08-09; items 3 and 4 fixed 2026-08-10, the latter adding items 25–28; item 6's string-path half fixed 2026-08-10, splitting its `.nuch` half out as item 29; item 7 fixed 2026-08-10)*
 
 **The original six are enumerated in [../global-init.md](../global-init.md)
 §7. Four more (7–10) were found measuring G-1 and re-verifying G-0/G-1's test
@@ -923,8 +923,8 @@ hit while measuring, verifying, or documenting, not synthesized.
 | 3 | **`--emit-cheader` does not export globals — FIXED 2026-08-10** | a `defvar` reached the `.nuch` as `(extern …)` but got no `extern T name;` line in the C header, so a C consumer could reach a library's functions and none of its state. `emit-cheader-header`'s dispatch had no `defvar` arm at all — while **both** `docs/compiler.md`'s flag table and `docs/toplevel.md` already documented the behaviour as present. See the W9-3 note below; the fix turns on the NAME, not the missing arm |
 | 4 | **`--emit-cheader` emits hyphenated, invalid C identifiers — FIXED 2026-08-10** | every name a header exports was emitted verbatim except the struct/union *type* name, so fields, parameters, `defunion` arms, enum tags, `#define`s and prototypes were all invalid C. Measured: **13 of the 34 committed `lib/*.h` parsed** under `clang -fsyntax-only`; now **27**. See the W9-4 note below — the recorded cause ("a missed call site") is wrong for the two kinds the linker resolves, and four *other* causes of an unparseable header were measured and filed as items 25–28 |
 | 5 | **`(exclude-prelude)` in an *imported* file dies `unknown top-level form` — FIXED 2026-08-09, as a prerequisite of item 1** | rather than being ignored or diagnosed as "must be the first form of the unit". `strip-exclude-prelude` is consulted only for the entry file. Item 1's root hoist **re-reads the root file**, so a root that opts out of the prelude reached this the moment the hoist fired — the directive belongs to the unit, not the file, and `emit-toplevel-forms`' dispatch now ignores it (the ruling the item's own note preferred). This is the only shape that made the fix mandatory rather than merely nice; a hand-written `(exclude-prelude)` library import hit it too |
-| 6 | **`undefined: X — not defined anywhere in this compilation unit`** for a name that *is* in the unit, merely unprocessed | **overlaps W8's G-0; not filed twice.** G-0 has since closed the cause for the two import shapes it covers (plain and `import-use` symbol imports); the residual surface is string-path `.nuc` imports and `.nuch` headers, filed under W1 |
-| 7 | **`pkind-flow-check`'s `CStr` carve-out accepts a null through a non-null `(ref T)`**, found measuring G-1 | only diagnoses a `TY-PTR` source, so `(defvar g:ptr:T (as CStr null))` compiles to a null in a non-null slot — and so does the identical *local*, by this compiler and the pre-G-1 boot alike; the renderer matches the chokepoint exactly, so the carve-out itself is what is wrong, in both positions at once |
+| 6 | **`undefined: X — not defined anywhere in this compilation unit`** for a name that *is* in the unit, merely unprocessed — **string-path half FIXED 2026-08-10** | **overlaps W8's G-0; not filed twice.** G-0 closed the cause for the two import shapes it covers (plain and `import-use` symbol imports). Of the residue it named, **string-path `.nuc` imports are now closed** — both prescan passes looked at `NODE-SYM` only, so `(import-use "lib/foo.nuc")` and `(import-use foo)` named the same file and resolved differently; see the W9-6 note below. The `.nuch` half remains and is now filed with a cause, as **item 29** |
+| 7 | **`pkind-flow-check`'s `CStr` carve-out accepts a null through a non-null `(ref T)` — FIXED 2026-08-10**, found measuring G-1 | only diagnoses a `TY-PTR` source, so `(defvar g:ptr:T (as CStr null))` compiles to a null in a non-null slot — and so does the identical *local*, by this compiler and the pre-G-1 boot alike; the renderer matches the chokepoint exactly, so the carve-out itself is what is wrong, in both positions at once. **Confirmed by segfault** in both positions and in the realistic `getenv` shape. Fixed at the two sites that each carried the premise (`pkind-flow-check`, `as-ptr-convert`); see the W9-7 note below |
 | 8 | **`emit-as`'s int→int rule ignores the literal value on the `Val`**, found measuring G-1 | `(as i8 5)` is refused as lossy even though 5 fits — the same over-strictness [../stage14/int-widening.md](../stage14/int-widening.md)'s LW-4 fixed elsewhere; a ~3-line shared fix, declined here because it would have made G-1's bootstrap diff unprovable |
 | 9 | **`(defvar g:i1 5)` emits `global i1 5`, silently truncated to `true` by LLVM**, found measuring G-1 | `int-literal-fits` returns 1 at width ≤ 1; pre-existing — the old boot emits the identical line for the bare literal — G-1 merely gives it a second spelling |
 | 10 | ~~**`tests/run-tests.sh` PASS counts are unreliable by ±1**~~ — **closed 2026-08-09, and it was already closed when this item was written** | parallel unit stdout can interleave, splitting a `PASS  <name>` line across two lines — measured: three consecutive runs of the same tree all reported 361, but earlier runs reported 346 vs 347 and 360 vs 361 for what was the same tree, and a bare `w1d` token appeared alone on output line 314 in one capture; does not affect FAIL detection (0 FAIL held every time) but could in principle mask a dropped unit. **Correction.** Interleaving is impossible by construction: `spawn` (`tests/run-tests.sh`) redirects each unit's *entire* stdout+stderr into its own `$RESULTS_DIR/<id>.out` and the files are replayed in dispatch order after the join, so one unit's output cannot split another's line. That buffering landed in `cb864fa` (2026-07-05, "Parallelize tests") — **a month before this item was recorded on 2026-08-02** — so the ±1 evidence above was gathered against the pre-buffering harness and the item was never re-verified against the current one. Re-measured 2026-08-09 on the 16-core host: three consecutive parallel runs and one serial run of the same tree all report **463 PASS / 0 FAIL**, 35–38 s parallel vs 144 s serial (**4×**, not `build.md`'s stated 7×). The mechanism is the argument, not the sample size — this item's own note records three agreeing runs while the bug was believed live. **Consequence:** `NUCLEUS_TEST_JOBS=1` is no longer needed to count, and the convention of recording every verification with it — followed by every entry in this document from G-2 onward — is cargo. Use the parallel default |
@@ -946,6 +946,7 @@ hit while measuring, verifying, or documenting, not synthesized.
 | 26 | **An overloaded or operator-named `defn` is exported under a bare name no object defines**, found fixing item 4 | `emit-cheader-declare` derives the symbol as `ns-ir-base fname`, which is the real symbol **only** for a solitary, non-operator function. An overload is mangled per signature and an operator goes through `op-name-token` even when solitary — measured: `lib/string.nuc`'s `=` on `String` links as `@eq.String.String`, and `nm lib/string.o` has **no** bare `=`; `lib/parse.nuc`'s three `from-str` are `from-str.i32.pStrView` &c. So the header both declares a symbol that does not exist and declares it two or three times under one C name. Pre-existing and equally wrong before item 4 (it read `_Bool =(…)`, invalid C, failing at the parser instead of the linker); item 4 makes it explicit by attaching `asm("=")`. The fix is a ruling — give each method its own C name and its own mangled label, or skip overloads honestly the way the three existing `/* … not exported */` paths do. Breaks `parse.h`, `string.h`, `strview.h` |
 | 27 | **A template tyvar is exported as a concrete C type**, found fixing item 4 | `lib/hashset.h` declares `void set_remove(void* self, struct T elem);` — `T` is the template's type variable, emitted as though it were a struct. `cheader-template-instance` catches an instance type like `(Result i64 i32)` but nothing catches a bare tyvar in a parameter position. `defn-is-generic-template` already answers this question for the *whole form*; the gap is that a method on a parametric struct is not itself a generic template |
 | 28 | **A C keyword is emitted as an identifier**, found fixing item 4 | `lib/hashset.nuc` defines `union`, a perfectly ordinary Nucleus name, and the header emits `void union(void* self, void* other);`. `sanitize-for-c` maps illegal *characters* and has no notion of a reserved word, so the name passes through intact and the header does not parse. The same applies to `int`, `return`, `default`, `switch`, `class` and the rest. Item 4's asm-label mechanism makes this trivially fixable (rename to `union_` and label it `asm("union")`, exactly as a hyphenated name is handled) but it is a naming ruling, not a missed call site |
+| 29 | **A `.nuch` header's functions and values register at import time, so they stay order-dependent**, split out of item 6 (2026-08-10) | A `declare`d function, an `extern` global, a `defconst` or a `defenum` member from a header resolves only if the header is imported *above* the use; otherwise `not defined anywhere in this compilation unit` for a name that is in the unit. Pass 2 (`prescan-imported-signatures`) skips `.nuch` paths **for a stated reason**: `emit-nuch-import-forms` gives declares/defmethods/templates each their own registration path, so re-running the signature prescan there would double-register. Note pass 1 does **not** skip them — a header's `defstruct` IS pre-registered, so this is specifically the value/function half. Closing it needs a registration-without-emission pass over header forms and a **ruling** on the kinds whose registrars are not idempotent (`generic-register-method` would build the same Generic twice — G-0's note says so explicitly, in contrast to `scope-define`, which is inert on a repeat). The project's established shape for this is G-3's one-shot `g-defvar-soft` flag armed around a single call, not a second implementation of the registrars |
 
 **Defect 4, with the precision that says what the fix is.** Independently
 confirmed: `(defstruct My-Rec (a-field i32))` + `(defn my-func (x:i32):i32 …)`
@@ -966,6 +967,142 @@ It breaks C interop for any hyphenated name, which is most of them.
 > its members, function *parameter* names, and the inline `(union …)` member
 > names `type-node-to-c` emits. And "a missed call site" holds only for names
 > nothing links against — for a `defn` it is a *ruling*, taken by item 3.
+
+### W9 item 7 as fixed *(2026-08-10)* — a premise about a literal, applied to a type
+
+`pkind-flow-check` fired only when the SOURCE was `TY-PTR`. A `CStr` is
+`TY-CSTR`, so `ptr-pkind` answers PTR-RAW for it and it fell out of the check
+entirely. Measured, all three compiling clean and then **segfaulting**:
+
+```
+(defvar g:ptr:P (as CStr null))          ; @g = global ptr null   → SIGSEGV
+(let (p:ptr:P (as CStr null)) …)         ; store ptr null         → SIGSEGV
+(let (e:CStr (getenv "UNSET")            ; the realistic shape
+      p:ptr:P (as ptr:P e)) …)           ;                        → SIGSEGV
+```
+
+**The exemption was justified by a claim that is true of a string LITERAL and
+false of the type.** `as-ptr-convert` stated it outright — *"CStr is
+ref-compatible (a C string is a non-null constant)"* — and
+[nullability.md](../stage10/nullability.md) §9.1 calls it "the direct analogue"
+of the elem-less-destination refinement. It is the opposite of that analogue.
+The `void*` exemption is sound **because the destination cannot be
+dereferenced**, so a non-null obligation on it protects nothing; here the
+destination is a typed pointer and is dereferenced on the next line. `getenv`
+returns a `CStr` and returns null.
+
+**Two sites, one premise, and the second is why `as` had to change too.** The
+chokepoint (`pkind-flow-check`, `TY-PTR` → any `is-ptr-like` source) covers
+binding, `set!`, argument, return and — since W6 routed the constant renderer
+through the same predicate — the global position. But `as-ptr-convert` held its
+own copy: a `sk == TY-CSTR` arm returning the retyped value *before* the flow
+rule ran. Deleting that arm needed no replacement, because a CStr names no
+pointee and so falls into the elem-less (`void*`) hatch below it — which already
+applies the flow rule. One rule, one place.
+
+**The direction is the whole of the surviving carve-out.** A null INTO a `CStr`
+slot is ordinary C and stays legal; `tests/fixtures/w5c-cstr-null-exempt.nuc`
+pins it and its comment now says which direction it guards.
+
+**Blast radius, measured rather than estimated: 17 sites, all of them the same
+shape.** One in `lib/`, sixteen in the compiler's own source — every one a byte
+walk or offset over a C string (`(as ptr:i8 name)` for a suffix compare, a prefix
+strip, a segment extract). Fifteen of the sixteen became `(as raw:i8 …)`: the
+pointer really is contract-free, `aref`/`unsafe/ptr+` through a `raw` is the
+documented unchecked waiver, and the emitted IR is identical — so the fix is to
+stop *claiming* non-null, not to assert it.
+
+The two that got more than a respelling are the ones where the claim was
+load-bearing:
+
+* `lib/hash.nuc`'s `Hash` conformance for `CStr` walked the key's bytes through a
+  `ptr:i8`. The key comes from the CALLER — `(assoc m k 1)` with a null `k` used
+  to segfault inside the fold — and `hash` has no error channel, so it now
+  guards and reports `hash: null CStr`, following `vector-bounds`' precedent for
+  exactly this situation. Verified by running it.
+* `src/union-registry.nuc`'s `fnv-str` is the same algorithm with three internal
+  callers that pass registry names, non-null by construction; it takes the
+  respelling with a comment saying why it needs no guard where `lib/hash.nuc`
+  does.
+
+**A finding about my own verification, worth recording.** The corpus sweep
+(`examples/` + `lib/` + `tests/fixtures/` = 366 programs) went to **zero changed
+diagnostics** after the one `lib/` fix — and that was misleading, because it does
+not compile `src/`. All sixteen compiler-source violations surfaced only at
+`make bootstrap`'s **stage 2**, where the new compiler compiles the compiler;
+`make` itself passes, because stage 1 is built by the committed boot binary,
+which does not have the new rule. For any change that tightens a rule, the
+corpus sweep is not the measurement — stage 2 is.
+
+**Verification.** `make test` **526 PASS / 0 FAIL** (523 before, +3). IR sweep
+180 normalized-identical / 0 differing; **185/188 fixtures byte-identical
+stderr**, the three differences being the new rejection fixtures, which is the
+hole. `make bootstrap` reconverged; `abi-test` / `layout-test` / `avr-test`
+green; `check-headers` clean — it caught `lib/hash.{h,nuch}` going stale, its
+second real catch.
+
+**Files.** `src/type-utils.nuc` (`pkind-flow-check`), `src/nucleusc.nuc`
+(`as-ptr-convert` + 8 respellings), `src/union-registry.nuc` (`fnv-str` + 4),
+`src/generics.nuc` (2), `src/nuch.nuc` (1), `lib/hash.nuc` (guard + `stderr`
+import), three new fixtures + `w5c-cstr-null-exempt.nuc`'s comment,
+`tests/run-tests.sh`, `design/stage10/nullability.md`, `docs/types.md`, and the
+reconverged boot artefacts.
+
+### W9 item 6's string-path half as fixed *(2026-08-10)* — one import, two spellings, two answers
+
+`(import-use foo)` and `(import-use "sub/foo.nuc")` name the same file and are
+the same import. Both prescan passes — `prescan-imported-types` (types) and
+`prescan-imported-signatures` (signatures + G-0's values) — walked the
+**`NODE-SYM` spelling only**, so the string spelling registered nothing and every
+name in that file resolved on import ORDER. Measured, all four failing before and
+passing after, each with the symbol spelling of the identical program as the
+control:
+
+| Used before the import | String path, before | Symbol, before |
+|---|---|---|
+| a `defn` | `unknown: helper` | ok |
+| a `defconst` | `undefined: HELP-K` | ok |
+| a `prefix/name` | `unknown: helper/helper` | ok |
+| a struct in a signature | `unknown type: TyRec` | ok |
+
+**The fix is one rule, not two arms.** `import-form-path` answers the path for
+either spelling — a symbol resolves through the search path, a `.nuc`/`.nuch`
+string *is* the path — and both passes call it. That is not a new convention:
+`do-import`'s own `NODE-STR` branch takes the string verbatim with no search, so
+the prescan now derives exactly what emission will use. The comment the old code
+left in pass 1 (*"a `.nuc`/`.nuch` string path … is left to the symbol branch's
+shape"*) was a restatement of the gap, not a reason for it — unlike pass 2's
+`.nuch` skip, which gives one and is item 29.
+
+**A second disagreement between the spellings, found writing the guard and
+fixed with it.** The prescan must not call `read-file` on a path that may not
+exist — it would `perror`+exit from a call site with no line. Guarding it with
+`file-exists` raised the question of what the *existing* diagnostic was, and the
+answer was that `do-import`'s string branch could not diagnose a missing file at
+all: its `(when (= path null) (die-at …))` tests a value assigned two lines
+above as `(nn s)`, so it was **provably dead**, and a missing file fell through
+to `read-file`'s unlocated `perror` — while the symbol spelling of the same
+mistake says `import: cannot find 'x'` at the import's own line. Same mistake,
+same diagnostic now. Pinned by `w9-string-path-missing-file-located`.
+
+**One thing deliberately NOT claimed.** A field *access* before the import still
+fails — `_get: no field 'n' on struct 'SpRec'` — because pass 1 registers struct
+NAMES, not layouts. Measured identical for the symbol spelling, so it is the
+W1d name-vs-layout split, not this item; the test says so and stays off it.
+
+**Verification.** `make test` **523 PASS / 0 FAIL** (520 before, +3). Emitted IR
+unmoved: 180 normalized-identical / 0 differing against the pre-change compiler,
+and **185/185 rejection fixtures produce byte-identical stderr** — the sweep that
+matters here, since the change is to name resolution and to a diagnostic.
+`make bootstrap` was byte-identical on the first pass before reconverging (the
+compiler's own source uses only the symbol spelling, so nothing about its
+emission could move); `abi-test` / `layout-test` / `avr-test` green;
+`check-headers` clean.
+
+**Files.** `src/nucleusc.nuc` (`import-form-path`, both prescan passes,
+`do-import`'s string branch), `tests/run-tests.sh`
+(`run_w9_string_path_prescan`, +3 PASS), `docs/toplevel.md`, and the reconverged
+boot artefacts.
 
 **Defect 6 and W8's G-0 — closed at the cause, 2026-08-01.** G-0 fixes the
 *cause* rather than the message: value names now resolve on reachability

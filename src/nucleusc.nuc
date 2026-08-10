@@ -2234,9 +2234,9 @@
 (defn nuc-source-name (fname:CStr):i32
   (let (n:i64 (as i64 (strlen fname)))
     (when (or (< n 5) (> n 250)) (return 0))
-    (when (= (as CStr (unsafe/ptr+ (as ptr:i8 fname) (- n 4))) ".nuc") (return 1))
+    (when (= (as CStr (unsafe/ptr+ (as raw:i8 fname) (- n 4))) ".nuc") (return 1))
     (when (and (> n 5)
-               (= (as CStr (unsafe/ptr+ (as ptr:i8 fname) (- n 5))) ".nuch"))
+               (= (as CStr (unsafe/ptr+ (as raw:i8 fname) (- n 5))) ".nuch"))
       (return 1))
     (return 0)))
 
@@ -2396,9 +2396,9 @@
 ; spellings — so the paired spelling, or null for anything else.
 (defn import-sibling-path (path:CStr):ptr
   (let (n:i64 (as i64 (strlen path)))
-    (when (and (> n 5) (= (as CStr (unsafe/ptr+ (as ptr:i8 path) (- n 5))) ".nuch"))
+    (when (and (> n 5) (= (as CStr (unsafe/ptr+ (as raw:i8 path) (- n 5))) ".nuch"))
       (return (strndup path (- n 1))))
-    (when (and (> n 4) (= (as CStr (unsafe/ptr+ (as ptr:i8 path) (- n 4))) ".nuc"))
+    (when (and (> n 4) (= (as CStr (unsafe/ptr+ (as raw:i8 path) (- n 4))) ".nuc"))
       (return (fmt-s "%sh" path)))
     (return null)))
 
@@ -3469,13 +3469,18 @@
     (when (= dk TY-CSTR)
       (return (as-retype v dst)))
     ; here dst is a TYPED pointer (TY-PTR, elem != null).
-    ; CStr -> typed pointer: CStr is ref-compatible (a C string is a non-null
-    ; constant, mirroring pkind-flow-check's CStr refinement).
-    (when (= sk TY-CSTR)
-      (return (as-retype v dst)))
-    ; elem-less bare `ptr` (void*) -> typed pointer: the void* hatch, gated by the
-    ; same flow rule pkind-flow-check applies (bare `ptr` is PTR-REF and passes; a
-    ; bare `raw`/Maybe void* into a non-null slot launders).
+    ; Stage 15 W9 item 7: the CStr arm that used to sit here — "CStr is
+    ; ref-compatible (a C string is a non-null constant)" — was wrong about the
+    ; TYPE (true of a literal; `getenv` returns a null `CStr`) and let
+    ; `(as ptr:T some-cstr)` launder a null into a dereferenceable slot. A CStr
+    ; carries no pointee either, so deleting it drops CStr into the elem-less
+    ; hatch below, which is where an opaque pointer belongs and which applies the
+    ; flow rule.
+    ;
+    ; elem-less bare `ptr` (void*) or CStr -> typed pointer: the void* hatch,
+    ; gated by the same flow rule pkind-flow-check applies (bare `ptr` is PTR-REF
+    ; and passes; a bare `raw`/Maybe void*, or any CStr, into a non-null slot
+    ; launders).
     (when (= (src elem) null)
       (when (and (= (ptr-pkind dst) PTR-REF) (!= (ptr-pkind src) PTR-REF))
         (as-die-flow src dst line))
@@ -4419,7 +4424,7 @@
   (when (= (char-at name 0) 35) ; '#'
     (let (slash:ptr (strchr name 47))
       (when (!= slash null)
-        (let (idx:i64 (- (unsafe/cast i64 (as ptr:i8 slash)) (unsafe/cast i64 (as ptr:i8 name)))
+        (let (idx:i64 (- (unsafe/cast i64 (as raw:i8 slash)) (unsafe/cast i64 (as raw:i8 name)))
               after:i32 (as i32 (aref (as ptr:i8 slash) 1)))
           (when (and (> idx 0) (!= after 0))
             (return (intern-str (arena-strndup name idx))))))))
@@ -4493,7 +4498,7 @@
     ; A dotfile or an empty basename leaves nothing to name it with; fall back to
     ; the whole path (sanitizing makes the separators legal).
     (when (<= end start) (set! start 0) (set! end n))
-    (return (ns-prefix-sanitize (arena-strndup (unsafe/ptr+ (as ptr:i8 path) start)
+    (return (ns-prefix-sanitize (arena-strndup (unsafe/ptr+ (as raw:i8 path) start)
                                                (- end start))))))
 
 ; The PrivFile of the file currently being processed, or null. Memoized on the
@@ -13284,7 +13289,7 @@
     (while (<= i slen)
       (when (or (= i slen) (= (char-at s i) 58))
          (let (seg-len:i64 (- i start)
-                  seg:ptr (arena-strndup (unsafe/ptr+ (as ptr:i8 s) start) seg-len)
+                  seg:ptr (arena-strndup (unsafe/ptr+ (as raw:i8 s) start) seg-len)
                   n:ptr (intern-symbol seg))
               (let (cell:ptr (make-cell n null line))
                 (when (= tail null) (set! result cell))
@@ -13564,6 +13569,34 @@
                     (when (!= path null) (file-import-record prefix path)))))))))
       (set! fc ((unsafe/cast ptr:Node fc) cdr)))))
 
+; Stage 15 W9 item 6: the file path an import form names, for the two prescan
+; passes below — or null when this pass has nothing to walk.
+;
+; ONE rule for both spellings, which is the whole point. A symbol resolves
+; through the search path; a `.nuc`/`.nuch` STRING *is* the path, which is
+; exactly what `do-import` does with it (its NODE-STR branch takes `(nn s)`
+; verbatim, with no search). Both passes previously looked at NODE-SYM only, so
+; `(import-use "lib/foo.nuc")` registered nothing and every name in that file
+; resolved on import ORDER — reporting `not defined anywhere in this compilation
+; unit` for a name that is in the unit, the defect item 6 records, while the
+; symbol spelling of the same import worked.
+;
+; A non-Nucleus string is a C header and belongs to neither Nucleus prescan
+; (pass 1 handles it separately, via cheader-prescan-opaque).
+;
+; Silent on a path that does not exist, rather than reaching `read-file` (which
+; would `perror`+exit here, from a call site with no line to report): `do-import`
+; owns that diagnosis and gives it the import form's own line.
+(defn import-form-path (name-node:(raw Node) line:i32):ptr
+  (let (nn:ptr:Node (unsafe/cast ptr:Node name-node))
+    (when (= (nn kind) NODE-SYM) (return (resolve-import (nn s) line)))
+    (when (and (= (nn kind) NODE-STR)
+               (or (!= (str-ends-with (nn s) ".nuc") 0)
+                   (!= (str-ends-with (nn s) ".nuch") 0))
+               (!= (file-exists (as CStr (nn s))) 0))
+      (return (nn s)))
+    (return null)))
+
 (defn prescan-imported-types (forms:(raw Node)):void
   (let (fc:ptr forms)
     (while (!= fc null)
@@ -13593,15 +13626,16 @@
               ; (`m:ptr:Mix_Music`) — the signature prescan below runs before any
               ; import is processed, so import-time registration is too late. A
               ; `.nuc`/`.nuch` string path is a Nucleus file (do-import treats it
-              ; as one) and is left to the symbol branch's shape.
+              ; as one) and goes to `import-form-path` below, with the symbol
+              ; spelling (Stage 15 W9 item 6 — it used to go nowhere).
               (when (and (= (nn kind) NODE-STR)
                          (= (str-ends-with (nn s) ".nuc") 0)
                          (= (str-ends-with (nn s) ".nuch") 0)
                          (= (import-list-has g-prescan-visited (nn s)) 0))
                 (set! g-prescan-visited (import-list-push g-prescan-visited (nn s)))
                 (cheader-prescan-opaque (nn s)))
-              (when (= (nn kind) NODE-SYM)
-                (let (path:ptr (resolve-import (nn s) (f line)))
+              (do
+                (let (path:ptr (import-form-path (as raw:Node nn) (f line)))
                   (when (and (!= path null)
                              (= (import-list-has g-prescan-visited path) 0))
                     (set! g-prescan-visited (import-list-push g-prescan-visited path))
@@ -14010,10 +14044,15 @@
 ;     whose signatures are therefore already registered;
 ;   * a `.nuch` header — its importer (`emit-nuch-import-forms`) deliberately does
 ;     NOT run `prescan-defn-signatures`; declares/defmethods/templates each have
-;     their own registration path, so prescanning here would double-register;
+;     their own registration path, so prescanning here would double-register.
+;     THIS SKIP IS W9 ITEM 6'S REMAINING HALF: a `declare`d function or a header
+;     `defconst` still resolves on import order. Closing it needs a
+;     registration-without-emission pass over header forms, and a ruling on the
+;     kinds whose registrars are NOT idempotent (`defmethod` → the same Generic
+;     twice) — filed as item 29, not bodged here;
 ;   * a C-header string import — reading one shells out to clang (pass 1's rule).
-; Only the NODE-SYM spelling is walked, matching pass 1 (a `.nuc`/`.nuch` *string*
-; path import is left to emission, as it is today).
+; Stage 15 W9 item 6: both spellings are walked, via `import-form-path` — the
+; `.nuc` STRING path used to be silently skipped here and in pass 1.
 (defn prescan-imported-signatures (forms:(raw Node)):void
   (let (fc:ptr forms)
     (while (!= fc null)
@@ -14029,8 +14068,8 @@
                      (= ph "unsafe-import-private")
                      (= ph "unsafe/import-private"))
             (let (nn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr f) 1)))
-              (when (= (nn kind) NODE-SYM)
-                (let (path:ptr (resolve-import (nn s) (f line)))
+              (do
+                (let (path:ptr (import-form-path (as raw:Node nn) (f line)))
                   (when (and (!= path null)
                              (= (str-ends-with path ".nuch") 0)
                              (= (import-list-has g-prescan-sigs path) 0)
@@ -14951,8 +14990,12 @@
           ; Synthesize a fake sym-name by stripping leading directories.
           (let (name:ptr (nn s)
                 path:ptr (nn s))
-            ; Jump to Nucleus file import logic (shared with NODE-SYM path).
-            (when (= path null)
+            ; Stage 15 W9 item 6: `path` is the string verbatim (no search), so
+            ; the old `(= path null)` test here could never fire and a missing
+            ; file fell through to `read-file`'s unlocated `perror` — while the
+            ; symbol spelling of the same mistake says `import: cannot find 'x'`
+            ; at the import's own line. Same mistake, same diagnostic now.
+            (when (= (file-exists (as CStr path)) 0)
               (die-at line (fmt-s "import: cannot find '%s'" name)))
             ; Stage 15 B1: bind in the importing FILE's environment before any
             ; early return below. Every one of them — the (file, prefix) dedup,
@@ -15280,7 +15323,7 @@
       (when (= (char-at name i) 46)
         (set! last-dot i)))
     (when (< last-dot 0) (return name))
-    (return (arena-strdup (unsafe/ptr+ (as ptr:i8 name) (+ last-dot 1))))))
+    (return (arena-strdup (unsafe/ptr+ (as raw:i8 name) (+ last-dot 1))))))
 
 ; Stage 15 W1d: default prefix for a `.nuc`/`.nuch` STRING-path import — the
 ; basename with its extension removed, then the same last-dotted-component rule
@@ -15303,7 +15346,7 @@
     (when (<= end base)
       (die-at line
         (fmt-2s "import: cannot derive a prefix from path '%s' -- give one explicitly, as (import \"%s\" name)" path path)))
-    (let (stem:ptr (strndup (unsafe/ptr+ (as ptr:i8 path) base) (- end base)))
+    (let (stem:ptr (strndup (unsafe/ptr+ (as raw:i8 path) base) (- end base)))
       (return (import-default-prefix (as CStr stem))))))
 
 ; `import-only` — import a concrete list of symbols (design decision 5).

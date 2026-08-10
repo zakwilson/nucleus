@@ -1,0 +1,17 @@
+; Stage 15 W9 item 7 at the `as` chokepoint. `as-ptr-convert` had its own copy of
+; the same false premise — a CStr arm returning the retyped value before the flow
+; rule could run — so `(as ptr:T c)` laundered a nullable C string into a
+; dereferenceable non-null slot. `getenv` is the realistic shape: it returns null
+; whenever the variable is unset.
+;
+; A CStr names no pointee, so removing that arm drops it into the elem-less
+; (`void*`) hatch, which is where an opaque pointer belongs and which applies the
+; flow rule. `unsafe/cast` remains the audited assertion for a caller that knows.
+(import-use "stdlib.h")
+
+(defstruct W9C7A n:i32)
+
+(defn main ():i32
+  (let (e:CStr (getenv "W9_ITEM7_NOT_SET")
+        p:ptr:W9C7A (as ptr:W9C7A e))
+    (return (p n))))

@@ -540,8 +540,21 @@
   ; `ptr` slot names no pointee and cannot be deref'd, so a non-null obligation
   ; on it protects nothing. The flip's teeth stay on typed (ref T)/(ptr T) slots.
   (when (= (dst elem) null) (return))
+  ; Stage 15 W9 item 7: every POINTER-LIKE source, not `TY-PTR` alone. A `CStr`
+  ; is `TY-CSTR`, so `ptr-pkind` answers PTR-RAW for it and it used to fall out
+  ; of this check entirely — `(defvar g:ptr:T (as CStr null))`, and the identical
+  ; local, compiled clean and segfaulted on first use.
+  ;
+  ; The exemption was recorded as "CStr is ref-compatible (a C string is a
+  ; non-null constant)" and as the analogue of the elem-less-destination
+  ; refinement above. Neither holds. It is true of a string LITERAL and false of
+  ; the type: `getenv` returns `CStr` and returns null. And the void* refinement
+  ; is sound for the opposite reason — an elem-less destination cannot be
+  ; dereferenced, so a non-null obligation on it protects nothing, whereas the
+  ; destination here is typed and fully dereferenceable. See design/stage10/
+  ; nullability.md §9.1 and the W9 item 7 note in the stress-test progress doc.
   (let (sk:i32 (src kind))
-    (when (= sk TY-PTR)
+    (when (!= (is-ptr-like src) 0)
       (if (= (ptr-pkind src) PTR-MAYBE)
         (die-at line (fmt-s "%s: value may be null where non-null (ref ...) is required — narrow with if-some/when-some, unwrap, or a null guard" ctx))
         (die-at line (fmt-s "%s: raw pointer where non-null (ref ...) is required — launder with (as-ref ...) + narrowing, or assert with (unsafe/cast (ref T) ...)" ctx))))))

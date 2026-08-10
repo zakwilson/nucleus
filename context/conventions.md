@@ -3053,3 +3053,79 @@ stray character rather than re-reading a list of call sites. W9 item 4's recorde
 census enumerated six sites and was three short — `defconst` names, `defenum`'s
 own tag, parameter names and the inline-`(union …)` members emitted from inside
 `type-node-to-c` were all missing from it.
+
+## A prescan that walks imports must derive the path the way `do-import` does
+
+The two whole-graph prescans (`prescan-imported-types`, then
+`prescan-imported-signatures`) exist so a name resolves on *reachability* rather
+than import order. That guarantee is only as wide as the set of import forms they
+walk, and a form they skip silently reverts to order-dependence — surfacing as
+`not defined anywhere in this compilation unit` for a name that **is** in the
+unit (W9 item 6).
+
+Both passes walked the `NODE-SYM` spelling only, so `(import-use "sub/foo.nuc")`
+and `(import-use foo)` named one file and behaved differently. The rule now lives
+in one function, `import-form-path`, and mirrors emission: a symbol goes through
+`resolve-import`; a `.nuc`/`.nuch` **string is the path verbatim**, because
+`do-import`'s `NODE-STR` branch does no search either. If you add an import
+spelling, add it there, or it is outside the guarantee.
+
+Three specifics worth keeping:
+
+- **A prescan must not be the one to report a missing file.** It runs from a call
+  site with no line; `read-file` would `perror`+exit and lose the diagnostic
+  `do-import` gives at the import form's own line. Guard with `file-exists` and
+  stay silent.
+- **Pass 1 and pass 2 do not agree about `.nuch`, on purpose.** Pass 1 walks
+  headers (a header's `defstruct` is pre-registered); pass 2 skips them, because
+  `emit-nuch-import-forms` already gives declares/defmethods/templates their own
+  registration path and re-running the signature prescan would double-register.
+  So a header's *types* resolve early and its *functions and values* do not.
+- **"Registered by a prescan" is not "laid out".** Pass 1 registers struct NAMES;
+  a signature may name the type before the import, a field access may not. Same
+  split W1d records for cycles — do not let a test conflate them.
+
+## An exemption is justified by the DESTINATION's capability, not the source's reputation
+
+Phase F's non-null flow check has exactly one sound exemption on the destination
+side: an **elem-less** `ptr` (`void*`) names no pointee and cannot be
+dereferenced, so a non-null obligation on it would protect nothing.
+
+A second exemption sat beside it for a year — `CStr` — recorded in
+design/stage10/nullability.md §9.1 as "the direct analogue", and it was the
+opposite of one. It exempted the **source**, and the destination it fed was a
+typed, fully dereferenceable pointer. `(defvar g:ptr:T (as CStr null))`, the
+identical local, and `(as ptr:T (getenv "X"))` all compiled clean and segfaulted
+(W9 item 7). The justification given — *"a C string is a non-null constant"* — is
+a true statement about a string **literal** promoted to a claim about the
+**type**. When an exemption's stated reason is a property of some values of a
+type, it is not a property of the type.
+
+Two working notes from fixing it:
+
+- **`CStr` is `TY-CSTR`, not `TY-PTR`, so `ptr-pkind` answers PTR-RAW for it and
+  any check written as `(= (t kind) TY-PTR)` silently skips it.** Use
+  `is-ptr-like` when the question is "does this pointer-shaped value carry a
+  contract". The same trap is one `case` arm away in every pointer-kind check.
+- **Fixing such a site usually means removing a false claim, not adding an
+  assertion.** Fifteen of the seventeen violations were `(as ptr:i8 s)` on a
+  C string being walked byte by byte; the honest spelling is `(as raw:i8 s)` —
+  identical IR, and `aref`/`unsafe/ptr+` through a `raw` is the documented
+  unchecked waiver. Reach for `unsafe/cast` only where the non-null claim is
+  actually load-bearing, and add a runtime guard where the value comes from a
+  caller (`lib/hash.nuc`'s `Hash` conformance) rather than from an internal
+  registry (`src/union-registry.nuc`'s `fnv-str`).
+
+## Tightening a rule? The corpus sweep is not the measurement — stage 2 is
+
+Sweeping `examples/` + `lib/` + `tests/fixtures/` (366 programs) reported **zero**
+changed diagnostics for W9 item 7 after one `lib/` fix. The compiler's own source
+had **sixteen** violations. `make` does not catch them: stage 1 is built by the
+committed `bin/nucleusc`, which predates the new rule. They appear only at
+`make bootstrap`'s **stage 2**, where the new compiler compiles the compiler.
+
+So for any change that makes the compiler reject more: run `make bootstrap` (or
+just `./build/nucleusc --emit-llvm src/nucleusc.nuc`) before believing a
+zero-blast-radius result. Iterating that one command is also the fastest way to
+enumerate the sites — it needs no rebuild between fixes, because the rule lives
+in the binary and the violations live in the source.
