@@ -140,9 +140,9 @@
     ; abi-struct-align performs, so it is shared.
     (when (= k TY-UNION)
       (return (abi-struct-align (t sdef))))
-    (when (= k TY-PTR)  (return g-target-ptr-bytes))
-    (when (= k TY-CSTR) (return g-target-ptr-bytes))
-    (when (= k TY-FN)   (return g-target-ptr-bytes))
+    ; TY-PTR / TY-CSTR / TY-FN had an arm each here; all three are the one rule
+    ; `type-size` now answers via `is-ptr-repr` (W9 item 19), so they fall
+    ; through to it below.
     ; Stage 15 W8 G-2: C's rule — an array's alignment is its element's.
     (when (= k TY-ARRAY) (return (abi-alignof (t elem))))
     (return (type-size t))))
@@ -156,7 +156,7 @@
       (return (abi-struct-size (t sdef))))
     (when (= k TY-UNION)
       (return (abi-union-size (t sdef))))
-    (when (= k TY-FN) (return g-target-ptr-bytes))
+    ; The TY-FN arm that stood here is `type-size`'s answer since W9 item 19.
     ; Stage 15 W8 G-2: C's rule — N * sizeof(T), where sizeof(T) already
     ; includes T's own tail padding, so no extra rounding is needed (an array's
     ; alignment equals its element's, so the total is already a multiple of it).
