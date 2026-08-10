@@ -1610,32 +1610,15 @@
       (let (nv:ref:Val (emit-node (node-at cc 2) scope))
         (when (= (is-int-type (nv type)) 0)
           (die-at (cc line) "ptr+: offset must be integer"))
-        (let (idx:ptr (nv val)
-              pii:ptr (ptr-int-ir)
-              piw:i32 (type-size (ptr-int-type))
-              ow:i32 (type-size (nv type)))
-          ; The GEP index must be a pointer-sized integer (ptr-int-ir), and the
-          ; index register's width must match that annotation. Coerce the offset
-          ; to ptr-int width: sext if narrower, trunc if wider. On LP64 ptr-int
-          ; is i64, so this reproduces the historical `sext i32 -> i64` (the
-          ; trunc branch is dead — no offset type is wider than i64); on a target
-          ; whose ptr-int is narrower than the offset (16-bit AVR once ptr-int-ir
-          ; goes ternary) the trunc keeps value and annotation consistent.
-          (when (< ow piw)
-            (let (t:ptr (new-tmp))
-              (fprintf g-body-stream "  %s = sext %s %s to %s\n"
-                t (type-to-ir (nv type)) (nv val) pii)
-              (set! idx t)))
-          (when (> ow piw)
-            (let (t:ptr (new-tmp))
-              (fprintf g-body-stream "  %s = trunc %s %s to %s\n"
-                t (type-to-ir (nv type)) (nv val) pii)
-              (set! idx t)))
+        ; The GEP index must be a pointer-sized integer and the register must
+        ; match that annotation — `gep-index-ir` is that rule, shared with aref
+        ; and aset! (Stage 15 W9 item 15).
+        (let (idx:ptr (gep-index-ir nv))
           (let (elem:ptr (-> p (_ type) (unsafe/cast ptr:Type _) (_ elem))
                 tmp:ptr (new-tmp))
             (fprintf g-body-stream
               "  %s = getelementptr inbounds %s, ptr %s, %s %s\n"
-              tmp (type-to-ir elem) (p val) pii idx)
+              tmp (type-to-ir elem) (p val) (ptr-int-ir) idx)
             ; An interior pointer aliases the resource: keep the taint
             ; (lifecycle.md §2.2) and, Stage 13 L1, the frame-region flag.
             (let (rv:ref:Val (alloc-val (p type) tmp))

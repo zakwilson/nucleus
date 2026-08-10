@@ -309,6 +309,18 @@ pointer arithmetic is emitted at i64 width — valid, `llc` legalizes it, but th
 i16 optimization remains **AVR-2's** job (bullet 1); AVR-2 flipping `ptr-int-ir`
 to i16 is exactly what activates the new trunc branch.
 
+> **Amendment (2026-08-10, Stage 15 W9 item 15).** The diagnosis above is exact
+> and the fix is correct — but it landed in `emit-ptr-add` *only*, and the same
+> rule had two other homes. `aref` and `aset!` (`src/nucleusc.nuc`) each carried
+> their own copy with the identical `i64` hardcoding, and kept it. `ptr+` was
+> the one that got fixed because the auto-emitted node/arena runtime uses it, so
+> it blocked every AVR program; `aref`/`aset!` are user-facing and no AVR
+> example reached them. `examples/avr-global-init.nuc` was later written with an
+> `(unsafe/cast i64 …)` on its index to route around the surviving half, which
+> is why `make avr-test` stayed green over it. All three now share one function,
+> `gep-index-ir` — see the W9 item 15 note in
+> [../stage15-stress-test/progress.md](../stage15-stress-test/progress.md).
+
 **Gate verification.** `--target=avr --mcpu=attiny1634 --emit-llvm examples/
 arith.nuc` emits `target datalayout = "e-P1-p:16:8-…"` / `target triple =
 "avr"`; piping through `llc -mtriple=avr -mcpu=attiny1634 -filetype=obj`

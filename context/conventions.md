@@ -3210,3 +3210,46 @@ Two structural traps in this area:
   lookup (`builtin-type-name`) and have the resolver call it, rather than
   writing a second copy of the built-in list that will drift. Keep side effects
   like `avr-reject-f64` in the resolver — a probe must answer, not raise.
+
+## An IR type written as a literal in a format string is a target assumption in disguise
+
+`aref`, `aset!` and `unsafe/ptr+` each ended their emission with
+
+```
+"  %s = getelementptr inbounds %s, ptr %s, i64 %s\n"
+```
+
+That `i64` is not punctuation — it is the claim "the target's pointer-sized
+integer is 64 bits", stated somewhere no target audit will grep for. On AVR
+(pointer-int `i16`) the annotation names a register the compiler defined as i16
+and the LLVM parser refuses the module outright: `'%t1' defined with type 'i16'
+but expected 'i64'`. **Any width baked into an emitted-IR string literal —
+`i64`, `align 8`, a size, an index type — belongs behind `ptr-int-ir` /
+`ptr-int-type` / `abi-sizeof` unless it is genuinely fixed by LLVM** (a struct
+field index in a GEP really is always `i32`).
+
+The louder lesson is about where such a rule lives. AVR-1 had already found this
+exact bug and fixed it — in `emit-ptr-add` alone, because the auto-emitted
+node/arena runtime uses `unsafe/ptr+` and so it stood between AVR and every
+program. `aref`/`aset!` are user-facing, no AVR example reached them, and their
+identical copies survived for two more stages (W9 item 15). **When a fix is a
+*rule* rather than a repair, extract it and convert every asker in the same
+change** — here `gep-index-ir`, one function, three callers.
+
+Two things this class does to hide:
+
+- **Half of it parses.** An index *narrower* than the pointer was widened to a
+  real i64, which is well-formed, `llc` legalizes it, and it emits 64-bit
+  software arithmetic on an 8-bit MCU. A gate that only asks "does the IR
+  parse?" is blind to it — assert the absence of the wrong width too, not just
+  the presence of valid syntax.
+- **A workaround can be committed in an example and keep the suite green.**
+  `examples/avr-global-init.nuc` carried `(unsafe/cast i64 …)` on its index,
+  with a comment naming the defect, so `make avr-test` passed over a broken
+  `aref` for two stages. A cast in an example that exists to satisfy the
+  compiler is a bug report; delete it as part of the fix and let the gate run.
+
+Host evidence and target evidence point opposite ways here, and it is the host
+that must not move: on LP64 `ptr-int-ir` is `"i64"`, so a correct fix to this
+class is **byte-identical everywhere on x86-64** and the corpus sweep showing
+zero diffs is the proof the change is confined to the targets it was for.

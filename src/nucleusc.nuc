@@ -5152,6 +5152,27 @@
             slot (type-to-ir ty) (type-size ty)))
         (return (alloc-val pt slot))))))
 
+; Coerce an integer index register to the target's pointer-sized integer and
+; return its name, ready to be paired with `(ptr-int-ir)` as the GEP index.
+;
+; A GEP index carries its own IR type, so the annotation and the register must
+; agree, and the width an address computation wants is the pointer's. Writing
+; `i64` satisfied both only by accident of LP64: on AVR (ptr-int i16) an
+; ordinary `usize` index emitted `i64 %t` for a register defined as i16, which
+; the LLVM parser rejects outright — Stage 15 W9 item 15. Shared by aref, aset!
+; and ptr+ so the rule has one home; each of the three had written it out.
+(defn gep-index-ir (idx:(raw Val)):ptr
+  (let (iw:i32 (type-size (idx type)))
+    (when (= iw g-target-ptr-bytes) (return (idx val)))
+    (let (t:ptr (new-tmp))
+      ; Widen signed (the historical LP64 behaviour, kept: an unsigned index
+      ; wider than the pointer is a separate defect, W9 item 32). Narrowing is
+      ; a trunc — unreachable on LP64, where nothing is wider than i64.
+      (fprintf g-body-stream "  %s = %s %s %s to %s\n"
+        t (if (< iw g-target-ptr-bytes) "sext" "trunc")
+        (type-to-ir (idx type)) (idx val) (ptr-int-ir))
+      (return t))))
+
 (defn emit-aref (call:(raw Node) scope:ref:Scope):ref:Val
   (let (cc:(raw Node) call)
     (when (!= (node-len cc) 3) (die-at (cc line) "aref expects 2 args"))
@@ -5163,19 +5184,12 @@
       (let (idx:ref:Val (emit-node (node-at cc 2) scope))
         (when (= (is-int-type (idx type)) 0)
           (die-at (cc line) "aref: index must be integer"))
-        (let (idx64:ptr (idx val))
-          ; Extend the index to i64 for the GEP unless it is already pointer-wide
-          ; (i64 on LP64, i32 on ILP32). usize/ssize are pointer-sized so no sext.
-          (when (< (type-size (idx type)) g-target-ptr-bytes)
-            (let (t:ptr (new-tmp))
-              (fprintf g-body-stream "  %s = sext %s %s to i64\n"
-                t (type-to-ir (idx type)) (idx val))
-              (set! idx64 t)))
+        (let (idxp:ptr (gep-index-ir idx))
           (let (elem:(raw Type) ((p type) elem)
                 gep:ptr (new-tmp))
             (fprintf g-body-stream
-              "  %s = getelementptr inbounds %s, ptr %s, i64 %s\n"
-              gep (type-to-ir elem) (p val) idx64)
+              "  %s = getelementptr inbounds %s, ptr %s, %s %s\n"
+              gep (type-to-ir elem) (p val) (ptr-int-ir) idxp)
             (let (val:ptr (new-tmp))
               (fprintf g-body-stream "  %s = load %s, ptr %s, align %d\n"
                 val (type-to-ir elem) gep (type-size elem))
@@ -5192,13 +5206,7 @@
       (let (idx:ref:Val (emit-node (node-at cc 2) scope))
         (when (= (is-int-type (idx type)) 0)
           (die-at (cc line) "aset!: index must be integer"))
-        (let (idx64:ptr (idx val))
-          ; Same pointer-width guard as emit-aref: skip sext when already i64.
-          (when (< (type-size (idx type)) g-target-ptr-bytes)
-            (let (t:ptr (new-tmp))
-              (fprintf g-body-stream "  %s = sext %s %s to i64\n"
-                t (type-to-ir (idx type)) (idx val))
-              (set! idx64 t)))
+        (let (idxp:ptr (gep-index-ir idx))
           (let (elem:(raw Type) ((p type) elem)
                 v:ref:Val (emit-node (node-at cc 3) scope)
                 coerced:ptr (coerce-int-val v elem (cc line)))
@@ -5208,8 +5216,8 @@
             (let (cv:ptr:Val (unsafe/cast ptr:Val coerced)
                   gep:ptr (new-tmp))
               (fprintf g-body-stream
-                "  %s = getelementptr inbounds %s, ptr %s, i64 %s\n"
-                gep (type-to-ir elem) (p val) idx64)
+                "  %s = getelementptr inbounds %s, ptr %s, %s %s\n"
+                gep (type-to-ir elem) (p val) (ptr-int-ir) idxp)
               (fprintf g-body-stream "  store %s %s, ptr %s, align %d\n"
                 (type-to-ir elem) (cv val) gep (type-size elem))
               (return (alloc-val ty-void null)))))))))
