@@ -13,20 +13,20 @@ typedef struct ByteIter {
     size_t len;
 } ByteIter;
 
-void* next(void* self);
+/* next: uses a defunion-template instance type; not exported */
 size_t strview_hash(void* sv) asm("strview-hash");
 struct StrView* strview_from_cstr(const char* cs) asm("strview-from-cstr");
 const char* strview_to_cstr(void* sv) asm("strview-to-cstr");
-size_t hash(void* self);
-_Bool _(struct StrView a, struct StrView b) asm("=");
-_Bool _BANG_(struct StrView a, struct StrView b) asm("_BANG=");
+size_t hash_pStrView(void* self) asm("hash.pStrView");
+_Bool eq_StrView_StrView(struct StrView a, struct StrView b) asm("eq.StrView.StrView");
+_Bool ne_StrView_StrView(struct StrView a, struct StrView b) asm("ne.StrView.StrView");
 typedef struct CharIter {
     uint8_t* buf;
     size_t pos;
     size_t len;
 } CharIter;
 
-void* next(void* self);
+/* next: uses a defunion-template instance type; not exported */
 size_t strview_byte_len(void* sv) asm("strview-byte-len");
 struct _BANGui8 strview_byte_at(void* sv, size_t i) asm("strview-byte-at");
 struct ByteIter strview_bytes(void* sv) asm("strview-bytes");
@@ -34,7 +34,7 @@ struct StrView strview_as_view(void* sv) asm("strview-as-view");
 struct ByteIter cstr_bytes(const char* cs) asm("cstr-bytes");
 struct CharIter cstr_chars(const char* cs) asm("cstr-chars");
 void* strview_sub_bytes(void* sv, size_t start, size_t end) asm("strview-sub-bytes");
-void* strview_byte_find(void* sv, void* needle) asm("strview-byte-find");
+/* strview-byte-find: uses a defunion-template instance type; not exported */
 size_t strview_char_count(void* sv) asm("strview-char-count");
 struct _BANGChar strview_char_at(void* sv, size_t i) asm("strview-char-at");
 struct CharIter strview_chars(void* sv) asm("strview-chars");
@@ -47,7 +47,7 @@ struct StrView strview_trim_start(void* sv) asm("strview-trim-start");
 struct StrView strview_trim_end(void* sv) asm("strview-trim-end");
 struct StrView strview_trim(void* sv) asm("strview-trim");
 int32_t strview_cmp_raw(void* a, void* b) asm("strview-cmp-raw");
-_Bool _(struct StrView a, struct StrView b) asm("<");
-_Bool __(struct StrView a, struct StrView b) asm("<=");
-_Bool _(struct StrView a, struct StrView b) asm(">");
-_Bool __(struct StrView a, struct StrView b) asm(">=");
+_Bool lt_StrView_StrView(struct StrView a, struct StrView b) asm("lt.StrView.StrView");
+_Bool le_StrView_StrView(struct StrView a, struct StrView b) asm("le.StrView.StrView");
+_Bool gt_StrView_StrView(struct StrView a, struct StrView b) asm("gt.StrView.StrView");
+_Bool ge_StrView_StrView(struct StrView a, struct StrView b) asm("ge.StrView.StrView");

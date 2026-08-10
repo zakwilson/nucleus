@@ -17,7 +17,7 @@ typedef struct SplitIter {
 int32_t split_iter_done(void* it) asm("split-iter-done");
 struct StrView split_iter_next(void* it) asm("split-iter-next");
 struct SplitIter strview_split(void* sv, void* sep) asm("strview-split");
-void* next(void* self);
+/* next: uses a defunion-template instance type; not exported */
 typedef struct LineIter {
     uint8_t* buf;
     size_t rem;
@@ -28,4 +28,4 @@ typedef struct LineIter {
 int32_t lines_iter_done(void* it) asm("lines-iter-done");
 struct StrView lines_iter_next(void* it) asm("lines-iter-next");
 struct LineIter strview_lines(void* sv) asm("strview-lines");
-void* next(void* self);
+/* next: uses a defunion-template instance type; not exported */

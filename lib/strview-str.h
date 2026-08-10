@@ -10,7 +10,7 @@ struct _BANGui8 byte_at(void* self, size_t i) asm("byte-at");
 struct ByteIter bytes(void* self);
 struct StrView as_view(void* self) asm("as-view");
 void* sub_bytes(void* self, size_t start, size_t end) asm("sub-bytes");
-void* byte_find(void* self, void* needle) asm("byte-find");
+/* byte-find: uses a defunion-template instance type; not exported */
 size_t char_count(void* self) asm("char-count");
 int32_t str_empty_QMARK(void* self) asm("str-empty_QMARK");
 struct _BANGChar char_at(void* self, size_t i) asm("char-at");

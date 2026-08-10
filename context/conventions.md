@@ -680,8 +680,12 @@ codegen accepted.
 
 `type-to-c` (`src/type-utils.nuc`) is keyed on a resolved `Type` and switches over
 `TY-*`. `type-name-to-c` (`src/cheader.nuc`) is keyed on a type *name string* and
-runs down a list of `(when (= name "…"))` arms. `--emit-cheader` uses the second
-one exclusively, because it never resolves types — it walks the form AST.
+runs down a list of `(when (= name "…"))` arms. `--emit-cheader` renders through
+the second one exclusively: it walks the form AST and spells each declaration from
+the type *node* the source wrote. (Since W9 item 26 the pass does resolve the
+unit's signatures — it has to, to know each function's symbol — so the two
+renderers are now reachable from the same pass, which makes them agreeing more
+load-bearing, not less.)
 
 The second's last arm is **"assume struct"**: any name it does not recognize is
 rendered `struct NAME`. So a builtin the list forgets is not a compile error and
@@ -714,6 +718,48 @@ separate C namespaces, so sharing the spelling is legal and makes both `Rec` and
 `struct Rec` correct, which means no *reference* site needs a special case. The
 alternative — teaching each reference site to drop the `struct ` prefix — was
 tried locally (`cheader-by-value-c`) and is what the tag replaced.
+
+## An exported symbol is a REGISTRY answer, not a spelling rule — ask, do not re-derive
+
+`ns-ir-base fname` looks like "the symbol for this function" and is one only for a
+**solitary, non-operator** `defn`. An overloaded name takes a per-signature
+mangled symbol; an operator name takes one *even when it is the sole user method*,
+because its generic always carries the intrinsic seed beside it — so `=` on a
+struct links as `eq.Pt.Pt` and there is no `=` in the object at all. Both
+decisions are made in `finalize-generics` (`src/generics.nuc`) and recorded on the
+`Method`; `defn-form-mangled-name` reads them back, answering null exactly when
+`ns-ir-base` is right.
+
+W9 item 26 was the C header emitter deriving that answer itself. 100 of the 236
+symbols the committed `lib/*.h` bound named nothing any object defined, and a
+`defn` whose C name sanitized to `_` (every operator does) was declared twice
+under one identifier. The `.nuch` emitter beside it never had the defect, because
+it asked.
+
+Whether a name is overloaded is a property of the **compilation unit**, not of the
+file — a library that contributes one `hash` to a name the prelude also defines
+still exports `hash.pString`. So an export pass must run the whole prescan
+sequence, `prescan-imported-signatures` included, not just prescan its own forms.
+Prescanning the file alone makes every such name look solitary, which is the same
+wrong answer arrived at more expensively.
+
+## A prescan runs with NO module stream open — an eager `fprintf` there is a null deref
+
+`open-module-streams` is called only on the compile path; `--emit-nuch` and
+`--emit-cheader` return before it. So `g-type-stream`/`g-decl-stream`/`g-def-stream`
+are null for the whole of a header emission, and any code a *prescan* can reach
+must not write IR. `lookup-or-make-anon-struct` (`src/union-registry.nuc`) was the
+one eager writer among the anonymous-type constructors — its sibling
+`lookup-or-make-anon-union` queues to `g-pending-unions` instead — so
+`--emit-nuch` segfaulted on any anonymous struct in a signature, from the day it
+was written until W9 item 26 (which is also how `--emit-cheader` acquired the
+crash: it started prescanning).
+
+Guard on the stream, not on a mode flag: the `!T` payload path at the bottom of
+`union-registry.nuc` already reads `(!= g-type-stream null)` and that is the honest
+condition. Leave `emitted` **0** when you skip the write — the flag means "already
+in the type buffer", and setting it while writing nothing would suppress the real
+emission if one ever followed.
 
 ## `?`/`!` in names map to `_QMARK`/`_BANG` in emitted symbols
 
