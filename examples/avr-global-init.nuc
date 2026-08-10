@@ -39,11 +39,10 @@
 (defn main ():i32
   (reg8-set-bit! DDRB 0)
   (while true
-    ; The index is widened to i64 deliberately: `aref` emits its GEP index as a
-    ; hardcoded `i64` on every target (it does not go through `ptr-int-ir`), so
-    ; a narrower index produces IR the LLVM parser rejects on AVR. Pre-existing
-    ; and unrelated to global initialization -- see the G-3 as-built record.
-    (reg8-write PORTB (aref g-pattern (unsafe/cast i64 g-step)))
+    ; The index needs no widening cast: `aref` sizes its GEP index by the
+    ; target pointer (W9 item 15), so a `ui8` counter indexes correctly here
+    ; and on a host alike.
+    (reg8-write PORTB (aref g-pattern g-step))
     (set! g-step (bit-and (_+ g-step 1) 3))
     (delay g-limit))
   (return 0))

@@ -171,6 +171,59 @@ run_avr2_16bit() {  # <cpu>
   rm -f "$tmpfile"
 }
 
+# Stage 15 W9 item 15: a GEP index is sized by the target pointer, not written
+# as a literal `i64`. Two assertions, because the old code failed two ways and
+# only one of them is a parse error:
+#
+#   (a) llvm-as must accept the AVR IR. An index at or above the pointer width
+#       was passed through unwidened while the annotation still read `i64`, so
+#       `getelementptr … i64 %t1` named a register defined as i16 — rejected
+#       outright ("'%t1' defined with type 'i16' but expected 'i64'"). This is
+#       the half that made `usize`, the natural index type, unusable on AVR.
+#
+#   (b) No `i64` may appear at all. A NARROWER index was widened to a real i64,
+#       which parses fine and would sail past (a) while emitting 64-bit
+#       arithmetic on an 8-bit MCU. Grepping for the absence is the only way to
+#       see it.
+#
+# The host arm asserts the annotation FOLLOWS the target rather than having been
+# swapped for a different constant: the same fixture must read `i64` there.
+run_w9_gep_index_width() {
+  local avr_ir host_ir
+  avr_ir="$(mktemp)"; host_ir="$(mktemp)"
+  ./build/nucleusc --target=avr --mcpu=attiny1634 --emit-llvm \
+    tests/fixtures/w9-gep-index-width.nuc > "$avr_ir" 2>/dev/null || true
+  ./build/nucleusc --emit-llvm \
+    tests/fixtures/w9-gep-index-width.nuc > "$host_ir" 2>/dev/null || true
+
+  if ! llvm-as "$avr_ir" -o /dev/null 2>/dev/null; then
+    echo "FAIL  w9-gep-index-width-avr-parses (LLVM rejected the emitted AVR IR)"
+    llvm-as "$avr_ir" -o /dev/null 2>&1 | sed 's/^/    /' | head -4
+  elif [ "$(grep -c 'getelementptr inbounds i8, ptr %t[0-9]*, i16 ' "$avr_ir")" -eq 6 ]; then
+    echo "PASS  w9-gep-index-width-avr-parses"
+  else
+    echo "FAIL  w9-gep-index-width-avr-parses (expected 6 pointer-sized i16 GEP indices)"
+    grep -n 'getelementptr' "$avr_ir" | sed 's/^/    /'
+  fi
+
+  # Instruction lines only: the AVR datalayout line names i64 as a legal scalar
+  # width, which says nothing about whether any instruction uses one.
+  if grep -q '^  .*i64' "$avr_ir"; then
+    echo "FAIL  w9-gep-index-width-avr-no-i64 (64-bit index arithmetic on a 16-bit target)"
+    grep -n '^  .*i64' "$avr_ir" | sed 's/^/    /' | head -4
+  else
+    echo "PASS  w9-gep-index-width-avr-no-i64"
+  fi
+
+  if [ "$(grep -c 'getelementptr inbounds i8, ptr %t[0-9]*, i64 ' "$host_ir")" -eq 6 ]; then
+    echo "PASS  w9-gep-index-width-host"
+  else
+    echo "FAIL  w9-gep-index-width-host (host GEP index is not pointer-sized i64)"
+    grep -n 'getelementptr' "$host_ir" | sed 's/^/    /'
+  fi
+  rm -f "$avr_ir" "$host_ir"
+}
+
 # Stage 14 AVR-3 (design/stage14/avr-targets.md §5): the link driver + build
 # flow. This is the first *end-to-end* AVR gate — a real link, not just IR/llc.
 # On an AVR triple the compiler drives `avr-gcc -mmcu=<device>` (not `clang`) and
@@ -3710,6 +3763,8 @@ spawn run_avr2_16bit avrxmega3
 # AVR-3 end-to-end link gate: drive avr-gcc to a linked .elf for both reference
 # devices — attiny1634 (mcpu==device) and avr32dd20 (avrxmega3 family core +
 # explicit --mmcu). Requires the avr-gcc toolchain (SKIPs otherwise).
+spawn run_w9_gep_index_width
+
 spawn run_avr3_link attiny1634 attiny1634
 spawn run_avr3_link avr32dd20 avrxmega3 avr32dd20
 

@@ -948,8 +948,8 @@ expression yields `void` (e.g., a side-effect or no-return call like
 | `sizeof` | Size of a type | `sizeof(T)` |
 | `alloca` | Stack-allocate memory | `alloca()` / VLA |
 | `char` | `(char "x")` — a `Char` value (codepoint) from a single-byte string; sugar for the `\x` char literal. See [Char literals](types.md#char-literals--a). | `(Char)'c'` |
-| `aref` | Array element access | `arr[i]` |
-| `aset!` | Array element assignment; yields the stored value | `arr[i] = val` |
+| `aref` | Array element access. The index may be any integer type; it is converted to the target's pointer-int width (`usize`) for the address computation, so no cast is needed on a 16- or 32-bit target. | `arr[i]` |
+| `aset!` | Array element assignment; yields the stored value. Same index rule as `aref`. | `arr[i] = val` |
 | `(StructName init...)` | Compound struct literal. Each `init` is either `(field val)` for a designated initializer or a bare value for a positional one (positional inits fill the next field that has not been designated). Unspecified fields are zero-initialized. Yields `ptr:StructName`, alloca-backed (stack lifetime is the enclosing function). Defining a function with the same name as a struct is a compile-time error (the function would shadow the constructor). | `(struct S){.f = v, ...}` |
 | `array` | `(array ElemType init...)` — array compound literal. Each `init` is either `(index val)` (designated) or a bare value (positional). Length is implicit: `max(positional-count, max-designated-index + 1)`. Unspecified slots are zero-initialized (including struct and `CStr` element types). Yields `ptr:ElemType`, alloca-backed. When `ElemType` is a struct, an element may be written as a bare `(ElemType …)` compound literal — it is loaded into the slot, so the older `(deref (ElemType …))` spelling is no longer required (both are accepted and emit the same IR). A binding annotated with the bare, elem-less `:ptr` takes `ptr:ElemType` from the literal, so `(aref a i)` works without a cast. | `(T[]){1, 2, [3] = 99}` |
 | `quote` | Yields its argument as a `Node*` (reader sugar: `'x` → `(quote x)`). Quoted symbols are interned — see [Symbols](#symbols). | — |
