@@ -847,7 +847,7 @@ escape hatch — reproduced by compiling `(defvar g:ptr:i32)` with
 
 ---
 
-## W9 — Reconciled at stage close: thirty-two defects found, **nineteen** now fixed (item 6 in part), thirteen open *(added 2026-08-01; extended through G-5's close 2026-08-02; items 21–24 added 2026-08-03; items 10 and 16 closed and item 22 measured closed 2026-08-09; items 1, 5 and 2 fixed 2026-08-09; items 3 and 4 fixed 2026-08-10, the latter adding items 25–28; item 6's string-path half fixed 2026-08-10, splitting its `.nuch` half out as item 29; item 7 fixed 2026-08-10; item 8 fixed 2026-08-10, splitting its float counterpart out as item 30; item 9 fixed 2026-08-10, filing the i1 signedness defect beside it as item 31; item 13 fixed 2026-08-10; item 15 fixed 2026-08-10, filing the index-signedness defect it measured as item 32; item 18 fixed 2026-08-10)*
+## W9 — Reconciled at stage close: thirty-two defects found, **twenty** now fixed (item 6 in part), twelve open *(added 2026-08-01; extended through G-5's close 2026-08-02; items 21–24 added 2026-08-03; items 10 and 16 closed and item 22 measured closed 2026-08-09; items 1, 5 and 2 fixed 2026-08-09; items 3 and 4 fixed 2026-08-10, the latter adding items 25–28; item 6's string-path half fixed 2026-08-10, splitting its `.nuch` half out as item 29; item 7 fixed 2026-08-10; item 8 fixed 2026-08-10, splitting its float counterpart out as item 30; item 9 fixed 2026-08-10, filing the i1 signedness defect beside it as item 31; item 13 fixed 2026-08-10; item 15 fixed 2026-08-10, filing the index-signedness defect it measured as item 32; items 18 and 19 fixed 2026-08-10)*
 
 **The original six are enumerated in [../global-init.md](../global-init.md)
 §7. Four more (7–10) were found measuring G-1 and re-verifying G-0/G-1's test
@@ -939,7 +939,7 @@ hit while measuring, verifying, or documenting, not synthesized.
 | 16 | **A `defvar` may be declared twice in one unit with no diagnostic**, found in G-5 — **FIXED in B4 (2026-08-09)** | Emitted two `@g = global …` lines that the LLVM parser rejects with an unlocated error far from the cause. `guard-name-kind` compares NK-VALUE against NK-VALUE, finds them equal, and permits it — the same-kind allowance that exists for overloaded `defn` and REPL redefinition, applied where neither justification holds. The diagnosis was right and the scope was narrower than the defect: **every** non-function definer accepted a redefinition silently, with no agreed winner (a second `defstruct`/`defunion`/`defprotocol`/`defmacro`/template kept the FIRST, a second `defconst` kept the SECOND). R4's rule covers all of them; `emit-defvar` reads `Sym.defvar-state` (the same-kind question cannot be posed to the binding table — see name-resolution.md §9.6), and the two justifications the item names are preserved exactly: overloads still collide only on signature, and the REPL is exempt. `global-init.md` §7 #11 |
 | 17 | **`as` did not arm the want channel — FIXED in G-5**, found in G-5 | `emit-as` emitted its operand without setting `g-want-type`, so a return-only-tyvar generic in `as`-operand position resolved against whichever instance the unit had stamped first; silent in the `unsafe/cast` spelling, which takes the wrong instance with no diagnostic at all. Proven inert for the whole tree by G-5's old-vs-new sweep (218 byte-identical, 0 differing). `global-init.md` §7 #12 |
 | 18 | **`(= h null)` on a function-pointer value does not compile — FIXED 2026-08-10**, found alongside the Interlude/G-4 | `emit-binop-vals`'s null-literal escape and its pointer-comparison arm both gate on `is-ptr-like`, which deliberately excludes `TY-FN`, so the comparison falls through to the numeric path and dies `= expects integer operands`. Pre-existing and general — reproduces identically for a fn-pointer *parameter* or *local*, not just the new global spelling; the explicit `(unsafe/cast ptr h)` reinterpret is the escape hatch. Documented inline in `examples/fnptr-global.nuc`'s header comment (`hook-unset`) before this reconciliation; not previously in either defect list. **The diagnosis was exact and the missing piece was that the convention itself was the defect generator**: `conventions.md` prescribed writing the `is-ptr-like`-plus-`TY-FN` arm out by hand at each site, three sites had done so, and these two never got their copy. See the W9-18 note below |
-| 19 | **`type-size` has no `TY-FN` case**, found alongside the Interlude/G-4 | Falls through to the default `(return 1)` arm (`type-utils.nuc:359-360`), so every fn-pointer slot emits `align 1` — conservative, not a miscompile, since `abi-alignof`/`abi-sizeof` already answer correctly and struct layout is unaffected. Confirmed: `build/nucleusc --emit-llvm` on `(defvar hh:(fn i32)(i32) null)` emits `@hh = global ptr null, align 1`. Not previously in either defect list |
+| 19 | **`type-size` has no `TY-FN` case — FIXED 2026-08-10**, found alongside the Interlude/G-4 | Fell through to the default `(return 1)` arm, so every fn-pointer slot emitted `align 1`. Recorded as "conservative, not a miscompile" — true, and it also cost roughly 7–20× on every fn-pointer load on a strict-alignment target, which the note had not measured (see the W9-19 note below). Fixed by asking `is-ptr-repr` instead of listing `TY-PTR`/`TY-CSTR` as arms and forgetting `TY-FN`; `abi-alignof`/`abi-sizeof` lost their own hand-written copies and fall through to it. Not previously in either defect list |
 | 20 | **`coerce-int-val` has no `raw`→`TY-FN` case**, found in G-5 | `(let (f:(fn i32)(i32) null) …)` still dies `let: init type mismatch for 'f'` (confirmed against `build/nucleusc`) though the identical spelling at a `defvar` now compiles cleanly since the Interlude. Not previously in either defect list |
 | 21 | **`(dyn ns/Proto)` is unusable across a namespace — FIXED 2026-08-03**, found building the defect-11 fixture | `conformance-add`/`-lookup`/`-args` canonicalized their keys with `strip-ns-qualifier` (Stage 12 N4 decision 9) while `protocol-lookup` matched the **raw** spelling, so `(extend Cat dp/Describe)` recorded the conformance under bare `Describe`, `admit-erased-conformance` found it and admitted the box, and `dyn-vtable-method-irname` then reported *"'dp/Describe' is not a declared protocol"* for a protocol that was both declared and conformed to. **The user's ruling picks the direction**: the two registries agree by making conformances keep the qualifier — a protocol is a namespaced entity — **not** by making `protocol-lookup` strip too, which would have made protocol names effectively global. **The crux is that decision 9's strip covered two different questions and only one of them was about types.** Of the nine `strip-ns-qualifier` sites, five are the TYPE half and are **unchanged** (`conformance-lookup`/`-args`/`-add`'s first argument, `verify-conformance-params`'s `typename`, `emit-extend`'s subject and its `(extend (Vector T) …)` template head, plus `union-registry.nuc:289`'s `lookup-struct`) — a qualified type reference still resolves to the same `StructDef` from any namespace, which is decision 9's actual claim. Four are the PROTOCOL half and now resolve through the namespaced registry instead (`conformance-*`'s second argument, `proto-super-add`'s **both** arguments, `verify-conformance-params`'s `proto-name`, `emit-extend`'s protocol). **`emit-extend`'s subject is both**: `(extend Describe Show)` puts a protocol in the type position, so the inheritance branch now resolves the raw spelling through `protocol-lookup` while `typename` keeps the type strip. Mechanism: `protocol-new` keys on `qualify-name` (identity under `user`); `protocol-lookup` probes qualified-then-bare (the same shape as W5e's private-name probe — the bare fallback is what lets a namespaced file still see `Clone`/`Eq`/`Ord`); registration uses an **exact** probe (`protocol-lookup-exact`) for the reason `generic-register-method` does, or `(ns dp) (defprotocol Clone …)` would fold into the prelude's; and one canonicalizer, `protocol-canon-name`, is what every protocol-keyed registry calls. It is placed in `nucleusc.nuc` rather than beside `protocol-lookup` because `union-registry.nuc` — imported *before* `generics.nuc` — needs it: **`dyn-type` must memoize on the canonical name**, or `(dyn Describe)` inside `(ns dp)` and `(dyn dp/Describe)` outside it would build two `StructDef`s and `type-eq` would call one protocol two incompatible types. `&where` constraint names are canonicalized where they are **written** (`parse-where-constraints`), not at each lookup, because a constraint is checked long afterwards under a different `g-current-ns`. **A second, smaller defect surfaced and is fixed with it**: once the two registries agreed, the "is not a declared protocol" message became unreachable — `emit-box-value` asks about *conformance* first, so `(dyn Nope)` reported the misleading `type 'Cat' does not conform to the protocol`. Both askers now CALL one `dyn-require-protocol`, and box construction asks existence first. `tests/fixtures/w9-dyn-not-protocol.nuc` was **re-pointed, not deleted**, exactly as its own header instructed: its `extend` now succeeds (it is the fix) and the `dyn` names an undeclared `dp/Missing`. **Census: no existing program changes** — every `defprotocol` in `src/`, `lib/`, `examples/` and `tests/` is in `user`, where `qualify-name` is the identity. `examples/w9-dyn-ns.nuc` links and runs, asserting the dispatched results `105/207/309`: a qualified reference under a *different* import prefix, a bare reference inside its own namespace, and two namespaces each declaring a `Describe` with one type conforming to both. Tests 421 → **424 PASS / 0 FAIL**; `make bootstrap` **byte-identical on the first pass** (predicted: protocol *method* ir-names come from `Generic.ir-prefix`, which this does not touch); sweep against a compiler built from HEAD's source: **223 byte-identical IR, 0 differing**, and across 133 rejecting programs **0 pre-existing diagnostics moved** — the one REGRESSED and one NEWLY-COMPILES entry are the new fixtures, and the REGRESSED one is the collision the ruling exists to create (the old compiler silently accepted a bare `Describe` with two in scope). `make abi-test`/`make layout-test`/`make avr-test` green. **Three unrelated pre-existing defects found in passing, none fixed — filed as items 22, 23 and 24** |
 | 22 | **A file with an explicit `(ns …)` cannot box a value at all**, found building item 21 — **FIXED, measured 2026-08-09** (closed by B2b, not by work on this item) | `emit-box-struct-move` gates on `(scope-lookup scope "default-allocator")`, and `scope-lookup` qualifies a *global* key against `g-current-ns` with **no bare fallback** — so inside `(ns dp)` it probes `dp/default-allocator`, misses, and dies `type-erasure: boxing a value requires (import-use allocator)` however many times the file imports it. Confirmed identical on the committed pre-fix compiler, so it is pre-existing and orthogonal to item 21 (which is why `examples/w9-dyn-ns.nuc` boxes in the consumer, not in the library). The general shape is broader than boxing: any compiler site that resolves a *known* global by name through `scope-lookup` is namespace-sensitive in a way its author did not intend. Note `generic-lookup` is unaffected — it keys on the raw name — which is why ordinary cross-namespace *calls* work and hides how narrow the working path is | **Closed by B2b's cut-over of `g-globals` to the canonicaliser:** `globals-lookup-ref` probes the current namespace's key, then each flattened namespace, then **`user`** — and that last probe is precisely the "bare fallback" this item says is missing. Re-measured: a `(ns …)` library that constructs a `(dyn P)` box compiles, links and runs. |
@@ -1037,6 +1037,69 @@ pass. Tests 543 → **546 PASS / 0 FAIL**; `avr-test` 8/8, `abi-test`,
 must be initialized from an existing fn-pointer value, because `coerce-int-val`
 has no `raw`→`TY-FN` case, so `(let (f:(fn i32)(i32) null) …)` is still refused.
 Different chokepoint, different rule.
+
+### W9 item 19 as fixed *(2026-08-10)* — the third site of the same rule, and self-compilation cannot see it
+
+Item 18 named the rule. Item 19 is the site that was still missing it:
+`type-size` listed `TY-PTR` and `TY-CSTR` as arms and had no `TY-FN` case, so a
+function pointer fell to the default `(return 1)` and every fn-pointer global,
+alloca, load and store was emitted `align 1`. The fix is one line — ask
+`is-ptr-repr` before the `case` — and it lets `abi-alignof` and `abi-sizeof`
+drop the hand-written `TY-FN` arms they had each been given instead. Final
+tally on this rule: **five correct copies, three missing ones**.
+
+**The recorded severity was right but incomplete.** "Conservative, not a
+miscompile" is true — `align 1` under-promises, and x86-64 tolerates unaligned
+access, which is why nothing ever failed. But a strict-alignment backend must
+*honour* the claim. Measured, not inferred, on `(defn get-hh ():(fn i32)(i32)
+(return hh))`:
+
+| target | before | after |
+|---|---|---|
+| armv7 `+strict-align` | 4 × `ldrb` + 3 × `orr` | 1 × `ldr` |
+| rv64 | 8 × `lbu` + shifts/ors | 1 × `ld` |
+| x86-64 | `movq` | `movq` (unchanged) |
+
+So the cost was ~7–20 instructions per fn-pointer load on exactly the targets
+the AVR and RISC-V tracks are heading for, and zero on the one target anybody
+was measuring. Note the *storage* was never actually misaligned — on both
+armv7 and x86-64 the `align 1` global still came out at its natural alignment
+(`.p2align 2`; offset 0x28 in `.bss`), because the AsmPrinter raises it. It was
+only the load and store instructions that claimed not to know, and that claim
+alone is enough to force the byte-wise lowering above.
+
+**The blind spot is the reusable finding.** `src/nucleusc.nuc` contains no
+`TY-FN` slot, so the compiler's own IR is **byte-identical** across this fix —
+self-compilation, the project's strongest routine check, is structurally
+incapable of witnessing this class of defect. Confirmed both ways: the same
+source compiled by the pre- and post-fix compilers gives identical IR, and the
+`boot/nucleusc.ll` diff contains **zero** `align` changes (its 153/197 line
+delta is entirely the three edited function bodies). Any defect confined to a
+construct the compiler does not use itself needs a fixture or it is invisible;
+that is what `tests/fixtures/w9-fnptr-align.nuc` is for, and its gate asserts
+the **invariant** (no `ptr`-valued slot claims `align 1`) rather than a count,
+plus the width on a 32-bit target — item 15's rule applied to item 19's operand,
+since a slot width hardcoded to 8 would be the same defect one tier over.
+
+**Evidence.** Corpus sweep against the pre-fix compiler over `examples/*.nuc
+tests/fixtures/*.nuc lib/*.nuc`: 187 IR byte-identical, **41 differing, 156
+rejected by both with byte-identical stderr, 0 new acceptances, 0 new
+rejections**. The 41 differing files are checked line by line: **all 139 changed
+lines are `align 1` → `align 8` on a `ptr`** — 65 loads, 22 loads-from-global,
+16 allocas, 30 stores, 6 globals — with the instruction text otherwise
+identical, so nothing but the alignment moved. (The convention note had named
+three affected examples; the real number is 41, because closures, `BoxedFn` and
+`dyn` all carry `TY-FN` slots, as does most of the string library.) Per-function
+diff of the compiler: **3 changed — `type-size`, `abi-alignof`, `abi-sizeof` —
+1181 identical, none added or removed**. `make bootstrap` held the fixed point.
+Tests 546 → **549 PASS / 0 FAIL**; `avr-test` 8/8, `abi-test`, `layout-test`
+green, 69 headers regenerate identically.
+
+**AVR is exempt by construction, not by luck**: `avr-reject-fn-value` (AVR-6)
+refuses to materialize a function as a data pointer at all, since AVR functions
+live in address space 1 — so a `TY-FN` slot cannot exist on that target, and the
+16-bit width this rule now respects is unobservable there. The 32-bit gate uses
+`i386` for that reason.
 
 ### W9 item 15 as fixed *(2026-08-10)* — the rule was written correctly once, in one of its three homes
 

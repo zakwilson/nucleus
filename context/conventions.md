@@ -969,23 +969,38 @@ So the representation question has its own predicate, `is-ptr-repr`
 (`src/type-utils.nuc`) = `is-ptr-like` ∪ {`TY-FN`}: *is this value one `ptr`
 register?* Ask it for storage, constant and comparison decisions; ask
 `is-ptr-like` for coercion and string decisions. **This rule cost two defects
-before it had a name.** The convention used to read "admit `TY-FN` by name at
-each site", and by W9 it had been hand-written at three storage sites
-(`emit-zero-store`, `type-zero-const-ir`, `defvar-init-ir`) — while the two
-*comparison* gates in `emit-binop-vals` simply never got their copy, so
-`(= hook null)` fell into the numeric path and died `= expects integer operands`
-for a fn pointer in every position (W9 item 18). That is the same shape as W9
-item 15's GEP index width, and the same lesson: **"write the extra arm at each
-site" is not a convention, it is deferred drift.** A predicate whose doc comment
-states what it is *not* for is the way to keep two rules separate — not four
-copies of one of them.
+before it had a name** (W9 items 18 and 19). The convention used to read "admit
+`TY-FN` by name at each site", and by W9 it had been hand-written at three
+storage sites (`emit-zero-store`, `type-zero-const-ir`, `defvar-init-ir`) and
+two ABI sites (`abi-alignof`, `abi-sizeof`) — while the two *comparison* gates
+in `emit-binop-vals` and `type-size` itself simply never got their copy. So
+`(= hook null)` died `= expects integer operands` for a fn pointer in every
+position (item 18), and every fn-pointer slot claimed `align 1` (item 19). Five
+correct copies, three missing ones. That is the same shape as W9 item 15's GEP
+index width, and the same lesson: **"write the extra arm at each site" is not a
+convention, it is deferred drift.** A predicate whose doc comment states what it
+is *not* for is the way to keep two rules separate — not eight copies of one of
+them.
 
-Note that `abi-alignof`/`abi-sizeof` already answer `g-target-ptr-bytes`
-for `TY-FN` while **`type-size` does not** — it falls through to `1`, so every
-fn-pointer global/local/field slot is emitted `align 1`. Valid but conservative
-IR; if you fix it, know that it moves the IR of every fn-pointer-slot program
-(`examples/fnptr.nuc`, `fn-ptr-union.nuc`, `l7-probe.nuc`) though not the
-compiler's own, which contains no `TY-FN` slot.
+**`type-size` is the one home for "how wide is a slot", and it asks
+`is-ptr-repr`** (W9 item 19). It used to list `TY-PTR` and `TY-CSTR` as arms and
+omit `TY-FN`, which therefore fell to the default `(return 1)` — so every
+fn-pointer global, alloca, load and store was emitted `align 1`. That is not a
+miscompile but it is not free either: x86-64 tolerates unaligned access, which
+is why it survived, but a strict-alignment backend must honour the claim and
+splits the access byte-wise — one `ldr` became four `ldrb` plus three `orr` on
+armv7, eight `lbu` plus shifts on rv64, for *every* fn-pointer load. `abi-alignof`
+and `abi-sizeof` had each been given their own hand-written `TY-FN` arm (a third
+and fourth copy of the rule) and now fall through to `type-size` instead.
+
+Two facts worth keeping if you touch slot width again: the change moved 139 IR
+lines across 41 corpus files and **every one of them was `align 1` → `align 8`
+on a `ptr`** — nothing else, so a diff with any other shape in it means you
+changed more than the alignment. And it moved **none** of the compiler's own IR:
+`src/nucleusc.nuc` contains no `TY-FN` slot, so self-compilation cannot witness
+this class of defect. `tests/fixtures/w9-fnptr-align.nuc` exists because of that
+blind spot; its gate asserts the invariant (*no* `ptr`-valued slot claims
+`align 1`) rather than a count, and asserts the width on a 32-bit target too.
 
 **And `TY-FN` is not a pointer *kind* either — `ptr-pkind` answers `PTR-RAW` for
 it, like every non-`TY-PTR` kind.** So a fn pointer is outside the Phase-F

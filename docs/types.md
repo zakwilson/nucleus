@@ -433,8 +433,10 @@ comparison: `(= g-hook some-cstr)` is a compile error rather than a `strcmp` of
 a function's machine code. Ordering (`<`, `<=`, …) is permitted and compares
 addresses, as it does for `raw`.
 
-One current rough edge: a function-pointer slot is emitted with `align 1` rather
-than the pointer alignment. This is valid but conservative IR, not a miscompile.
+A function-pointer slot is one target pointer wide, like any other pointer: a
+global, a local, a parameter and a struct field each get the target's pointer
+alignment (`align 8` on x86-64, `align 4` on a 32-bit target), and it is the
+*target*'s width, not the host's.
 
 ## Implicit Type Coercion
 

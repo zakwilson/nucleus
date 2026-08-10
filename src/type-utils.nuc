@@ -326,8 +326,20 @@
 (defn ptr-bytes ():i64
   (as i64 g-host-ptr-bytes))
 
+; Slot size/alignment in bytes. Every caller feeds an `align N` operand, so the
+; answer must be a power of two (see the TY-ARRAY note below).
+;
+; Stage 15 W9 item 19: one `ptr` register is one target pointer wide, whichever
+; type spells it — so this asks `is-ptr-repr` rather than listing TY-PTR and
+; TY-CSTR as arms and (as it did) forgetting TY-FN, which fell to the default
+; `(return 1)`. That made every fn-pointer slot, load and store claim `align 1`:
+; free on x86-64, but on a strict-alignment target it forces byte-wise access —
+; one `ldr` becomes four `ldrb` plus three `orr` on armv7, eight `lbu` plus
+; shifts on rv64. `abi-alignof`/`abi-sizeof` had each been given their own
+; hand-written TY-FN arm instead; both now fall through to here.
 (defn type-size (t:raw:Type):i32
   (let (tt:raw:Type t)
+    (when (!= (is-ptr-repr tt) 0) (return g-target-ptr-bytes))
     (case (tt kind)
       TY-I1   (return 1)
       TY-I8   (return 1)
@@ -338,8 +350,6 @@
       TY-UI16 (return 2)
       TY-UI32 (return 4)
       TY-UI64 (return 8)
-      TY-PTR  (return g-target-ptr-bytes)
-      TY-CSTR (return g-target-ptr-bytes)
       TY-CHAR  (return 4)
       TY-ERR   (return 4)
       TY-F32   (return 4)

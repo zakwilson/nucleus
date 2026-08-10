@@ -1,0 +1,61 @@
+; Stage 15 W9 item 19: a function-pointer slot is one target pointer wide.
+;
+; `type-size` had no TY-FN case and fell through to its default `(return 1)`,
+; so every global, alloca, load and store of a fn-pointer claimed `align 1`.
+; Free on x86-64 (unaligned access is legal there, which is why it went
+; unnoticed), but a strict-alignment backend must honour the claim: one `ldr`
+; became four `ldrb` plus three `orr` on armv7, eight `lbu` plus shifts on rv64.
+;
+; Every position a TY-FN slot can occupy is present below, because the align
+; operand is emitted at four independent sites (defvar-init-ir, emit-zero-store,
+; the let/alloca path and the struct-field store path) and item 19's whole point
+; is that a rule copied per-site drifts. The harness asserts the IR shape; the
+; exit code asserts the program still computes what it did before.
+
+(defn twice (x:i32):i32 (return (* x 2)))
+(defn thrice (x:i32):i32 (return (* x 3)))
+
+; global slot -- `@fn-global = global ptr null, align <ptr>`
+(defvar fn-global:(fn i32)(i32) null)
+
+; struct field slot -- the field's alignment comes from abi-alignof, which used
+; to carry its own hand-written TY-FN arm and now falls through to type-size.
+(defstruct Hooks
+  (before (fn i32)(i32))
+  (after  (fn i32)(i32))
+  (count  i32))
+
+(defvar hooks:Hooks)
+
+; parameter slot -- abi-emit-param-prologue reads type-size directly for the
+; ABI-DIRECT alloca/store pair.
+(defn apply-hook (h:(fn i32)(i32) x:i32):i32
+  (return (h x)))
+
+(defn main ():i32
+  ; local slot
+  (let (loc:(fn i32)(i32) twice
+        hp:ptr:Hooks (addr-of hooks)
+        total:i32 0)
+    (set! fn-global thrice)
+    (.set! hp before twice)
+    (.set! hp after thrice)
+    (.set! hp count 2)
+
+    (set! total (+ total (loc 1)))                        ; 2
+    (set! total (+ total (fn-global 1)))                  ; 3
+    (set! total (+ total (apply-hook twice 1)))           ; 2
+    (set! total (+ total ((hp before) 1)))                ; 2
+    (set! total (+ total ((hp after) 1)))                 ; 3
+    (set! total (+ total (hp count)))                     ; 2
+
+    ; round-trip through every slot: load from one, store to another
+    (set! loc (hp after))
+    (set! fn-global (hp before))
+    (set! total (+ total (loc 1)))                        ; 3
+    (set! total (+ total (fn-global 1)))                  ; 2
+
+    ; 2+3+2+2+3+2+3+2 = 19, which the harness checks as the exit code, so a
+    ; slot that loads or stores the wrong value fails here rather than passing
+    ; as "still compiles".
+    (return total)))

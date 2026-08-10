@@ -261,6 +261,60 @@ run_w9_fnptr_compare() {
   rm -f "$ir" "$bin"
 }
 
+# Stage 15 W9 item 19: a function-pointer slot is one TARGET pointer wide.
+# `type-size` had no TY-FN case, so every fn-pointer global/alloca/load/store
+# claimed `align 1` -- free on x86-64, but a strict-alignment backend honours
+# the claim and splits the access byte-wise (one `ldr` -> four `ldrb` + three
+# `orr` on armv7). The first check is the invariant rather than a count: NO
+# `ptr`-valued slot may claim `align 1`. Matching on the *value* type keeps
+# `store i1 %x, ptr %y, align 1` (correct: i1 is one byte) out of it.
+run_w9_fnptr_align() {
+  local ir ir32 bin rc under
+  ir="$(mktemp)"; ir32="$(mktemp)"; bin="$(mktemp)"
+  ./build/nucleusc --emit-llvm tests/fixtures/w9-fnptr-align.nuc > "$ir" 2>/dev/null || true
+  ./build/nucleusc --target=i386-unknown-linux-gnu --emit-llvm \
+    tests/fixtures/w9-fnptr-align.nuc > "$ir32" 2>/dev/null || true
+
+  under='(alloca ptr, align 1$|load ptr, ptr [^,]*, align 1$'
+  under="$under"'|store ptr [^,]*, ptr [^,]*, align 1$|^@[^ ]* = global ptr .*, align 1$)'
+  if ! llvm-as "$ir" -o /dev/null 2>/dev/null; then
+    echo "FAIL  w9-fnptr-align-ir (LLVM rejected the emitted IR)"
+    llvm-as "$ir" -o /dev/null 2>&1 | sed 's/^/    /' | head -4
+  elif [ "$(grep -cE "$under" "$ir")" -ne 0 ]; then
+    echo "FAIL  w9-fnptr-align-ir ($(grep -cE "$under" "$ir") ptr slots claim align 1)"
+    grep -nE "$under" "$ir" | head -6 | sed 's/^/    /'
+  elif grep -q '^@fn-global = global ptr null, align 8' "$ir" \
+    && grep -q '%loc.addr.[0-9]* = alloca ptr, align 8' "$ir" \
+    && grep -q '%h.addr = alloca ptr, align 8' "$ir"; then
+    echo "PASS  w9-fnptr-align-ir"
+  else
+    echo "FAIL  w9-fnptr-align-ir (a global/local/param fn-pointer slot is not pointer-aligned)"
+    grep -nE '^@fn-global |\.addr[0-9.]* = alloca ptr' "$ir" | head -6 | sed 's/^/    /'
+  fi
+
+  # Item 15's rule, on item 19's operand: the width is the TARGET's, not 8.
+  if grep -q '^@fn-global = global ptr null, align 4' "$ir32" \
+    && grep -q '%loc.addr.[0-9]* = alloca ptr, align 4' "$ir32"; then
+    echo "PASS  w9-fnptr-align-target-width"
+  else
+    echo "FAIL  w9-fnptr-align-target-width (32-bit target did not use a 4-byte fn-pointer slot)"
+    grep -nE '^@fn-global |%loc\.addr' "$ir32" | head -4 | sed 's/^/    /'
+  fi
+
+  # `-x ir`: the mktemp path has no .ll suffix for clang to infer the language from.
+  if clang -w -x ir "$ir" -o "$bin" 2>/dev/null; then
+    "$bin" >/dev/null 2>&1 && rc=0 || rc=$?
+    if [ "$rc" -eq 19 ]; then
+      echo "PASS  w9-fnptr-align-run"
+    else
+      echo "FAIL  w9-fnptr-align-run (slots summed to $rc, expected 19)"
+    fi
+  else
+    echo "FAIL  w9-fnptr-align-run (link failed)"
+  fi
+  rm -f "$ir" "$ir32" "$bin"
+}
+
 # Stage 14 AVR-3 (design/stage14/avr-targets.md §5): the link driver + build
 # flow. This is the first *end-to-end* AVR gate — a real link, not just IR/llc.
 # On an AVR triple the compiler drives `avr-gcc -mmcu=<device>` (not `clang`) and
@@ -4397,6 +4451,9 @@ spawn run_w9_fnptr_compare
 spawn run_reject_at w9-fnptr-cstr-compare tests/fixtures/w9-fnptr-cstr-compare.nuc \
   "tests/fixtures/w9-fnptr-cstr-compare.nuc:15: error:" \
   "=: a CStr compares only with a CStr or pointer"
+# W9 item 19, the storage half of the same sentence: one `ptr` register is one
+# TARGET pointer wide, so no fn-pointer slot may claim `align 1`.
+spawn run_w9_fnptr_align
 #
 # Acceptances: every NULLABLE or contract-free pointer destination stays legal --
 # elem-less bare `ptr` (with and without an init), `(raw T)` / `raw:T`, `?ptr:T`,
