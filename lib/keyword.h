@@ -8,15 +8,15 @@
 typedef struct {
     struct StrView* name;
     size_t id;
-    size_t cached-hash;
+    size_t cached_hash;
 } Keyword;
 
-#define KEYWORD-MAX 256
+#define KEYWORD_MAX 256
 extern void* g_keyword_table asm("g-keyword-table");
 extern size_t g_keyword_count asm("g-keyword-count");
-void keyword-overflow(void);
-struct Keyword keyword-intern(const char* cs);
-void* keyword-name(void* self);
-_Bool =(struct Keyword a, struct Keyword b);
-_Bool _BANG=(struct Keyword a, struct Keyword b);
+void keyword_overflow(void) asm("keyword-overflow");
+struct Keyword keyword_intern(const char* cs) asm("keyword-intern");
+void* keyword_name(void* self) asm("keyword-name");
+_Bool _(struct Keyword a, struct Keyword b) asm("=");
+_Bool _BANG_(struct Keyword a, struct Keyword b) asm("_BANG=");
 size_t hash(void* self);

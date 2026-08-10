@@ -1459,6 +1459,103 @@ EOF
   rm -rf "$d"
 }
 
+# W9 item 4: no hyphen may reach a generated C header. A Nucleus name is legal
+# with `-` in it, C's is not, and `sanitize-for-c` reached the struct/union TYPE
+# name only — so every field name, `defunion` arm, enum tag, `#define`, parameter
+# and prototype came out as invalid C. Measured before the fix: 13 of the 34
+# committed lib/*.h parsed with `clang -fsyntax-only`; after, 27.
+#
+# The split is the design, and it is item 3's rule applied to the rest of the
+# surface. A name the LINKER resolves (a `defn`, a `defvar`) needs both a C
+# identifier and the real symbol, which one token cannot be, so it carries an
+# `asm("…")` label; a name the linker never sees (fields, arms, tags, `#define`s,
+# parameters) is just sanitized. Verified by compiling and RUNNING a C consumer —
+# grep cannot tell a correct asm label from one naming a symbol that does not
+# exist, which is exactly the residue this item leaves for overloads.
+run_w9_cheader_identifiers() {
+  local d out
+  d="$(mktemp -d)"
+  cat > "$d/hlib.nuc" <<'EOF'
+(defconst BUF-LEN 4)
+(defenum My-Col my-red my-green)
+(defstruct My-Rec a-field:i32 xs:(array i32 BUF-LEN) (data (union as-int:i64 as-flt:f64)))
+(defunion My-Uni (uni-a x-val:i32) (uni-b p-one:i32 p-two:i32))
+(defvar my-count:i64 41)
+(defn my-bump (n-arg:i32):i32 (return (+ n-arg 1)))
+(defn my-rec-sum (r:ptr:My-Rec):i32 (return (+ (r a-field) 100)))
+(defn plain (n:i32):i32 (return n))
+EOF
+  if ! ./build/nucleusc --emit-cheader "$d/hlib.nuc" > "$d/hlib.h" 2>"$d/err"; then
+    echo "FAIL  w9-cheader-identifiers (--emit-cheader failed)"; sed 's/^/    /' "$d/err"; rm -rf "$d"; return 0
+  fi
+
+  # The whole claim, in one assertion: outside the provenance comment and the
+  # asm labels (which MUST keep the real hyphenated symbol), no hyphen survives.
+  if [ -z "$(grep -v '^/\* Generated from' "$d/hlib.h" | sed 's/asm("[^"]*")//g' | grep -n '[-]')" ]; then
+    echo "PASS  w9-cheader-no-stray-hyphen"
+  else
+    echo "FAIL  w9-cheader-no-stray-hyphen"
+    grep -v '^/\* Generated from' "$d/hlib.h" | sed 's/asm("[^"]*")//g' | grep -n '[-]' | sed 's/^/    /'
+  fi
+
+  # A label appears only where it is load-bearing, so a C-legal library still gets
+  # a portable header: `plain` has no label, `my-bump` does.
+  if grep -qxF 'int32_t my_bump(int32_t n_arg) asm("my-bump");' "$d/hlib.h" \
+     && grep -qxF 'int32_t plain(int32_t n);' "$d/hlib.h" \
+     && grep -qxF '#define BUF_LEN 4' "$d/hlib.h" \
+     && grep -qF 'int32_t xs[BUF_LEN];' "$d/hlib.h" \
+     && grep -qF 'My_Uni_uni_b = 1' "$d/hlib.h" \
+     && grep -qF 'My_Col_my_green = 1' "$d/hlib.h"; then
+    echo "PASS  w9-cheader-label-only-where-needed"
+  else
+    echo "FAIL  w9-cheader-label-only-where-needed"
+    grep -nE 'my_bump|plain|BUF_LEN|uni_b|my_green' "$d/hlib.h" | sed 's/^/    /'
+  fi
+
+  # End to end. Every sanitized kind is exercised through a real link: the asm
+  # label on a call and on a global read, a struct field, an array extent that
+  # must agree with the #define, an inline-union member, a defunion arm field and
+  # its tag constant, and an enum member.
+  cat > "$d/main.c" <<'EOF'
+#include <stdio.h>
+#include "hlib.h"
+int main(void) {
+    My_Rec r; r.a_field = 5; r.xs[BUF_LEN - 1] = 9; r.data.as_int = 7;
+    My_Uni u; u.tag = My_Uni_uni_b; u.payload.uni_b.p_two = 3;
+    printf("%d %d %lld %d %d %d %lld\n",
+           my_bump(1), my_rec_sum(&r), (long long)my_count,
+           (int)My_Col_my_green, u.payload.uni_b.p_two, r.xs[BUF_LEN - 1],
+           (long long)r.data.as_int);
+    return 0;
+}
+EOF
+  if ./build/nucleusc -c -o "$d/hlib.o" "$d/hlib.nuc" 2>"$d/err" \
+     && clang -I "$d" "$d/main.c" "$d/hlib.o" -o "$d/hmain" 2>>"$d/err"; then
+    out="$("$d/hmain")"
+    if [ "$out" = "2 105 41 1 3 9 7" ]; then
+      echo "PASS  w9-cheader-c-consumer-hyphenated-names"
+    else
+      echo "FAIL  w9-cheader-c-consumer-hyphenated-names (want '2 105 41 1 3 9 7', got '$out')"
+    fi
+  else
+    echo "FAIL  w9-cheader-c-consumer-hyphenated-names (build failed)"
+    sed 's/^/    /' "$d/err" | head -8
+  fi
+
+  # The label must name what the object actually defines — the reason a sanitized
+  # name alone is not enough. `nm` is the independent witness that the C-side
+  # identifier and the ELF symbol really are different strings.
+  if [ -f "$d/hlib.o" ] && nm "$d/hlib.o" | grep -qE ' T my-bump$' \
+     && nm "$d/hlib.o" | grep -qE ' D my-count$' \
+     && ! nm "$d/hlib.o" | grep -qE ' (T|D) my_bump$'; then
+    echo "PASS  w9-cheader-symbols-keep-hyphens"
+  else
+    echo "FAIL  w9-cheader-symbols-keep-hyphens"
+    [ -f "$d/hlib.o" ] && nm "$d/hlib.o" | grep -E 'my.bump|my.count' | sed 's/^/    /'
+  fi
+  rm -rf "$d"
+}
+
 # SOURCE OUT-RANKS HEADER, asserted on both sides of the ruling. `resolve-import`
 # already tries `.nuc` in every directory before any `.nuch`, so an import takes
 # the source — but `path-in-unit` keyed on the exact path spelling, so the
@@ -2906,8 +3003,9 @@ run_closure_cheader() {
     echo "FAIL  l8-cheader-omits-closure"
   fi
 
-  # 2. the plain fn-pointer defn IS emitted to the header.
-  if grep -q 'plain-fn(int32_t x, int32_t y)' "$ch_dir/lib.h"; then
+  # 2. the plain fn-pointer defn IS emitted to the header. W9 item 4: under its
+  # sanitized C name, with the asm label that binds it back to `@plain-fn`.
+  if grep -qxF 'int32_t plain_fn(int32_t x, int32_t y) asm("plain-fn");' "$ch_dir/lib.h"; then
     echo "PASS  l8-cheader-emits-fnptr"
   else
     echo "FAIL  l8-cheader-emits-fnptr"
@@ -2949,8 +3047,9 @@ run_box_cheader() {
     echo "FAIL  l13-cheader-omits-dyn"
   fi
 
-  # 6. the plain fn-pointer defn IS emitted to the header.
-  if grep -q 'plain-fn(int32_t x, int32_t y)' "$bch_dir/lib.h"; then
+  # 6. the plain fn-pointer defn IS emitted to the header. W9 item 4: under its
+  # sanitized C name, with the asm label that binds it back to `@plain-fn`.
+  if grep -qxF 'int32_t plain_fn(int32_t x, int32_t y) asm("plain-fn");' "$bch_dir/lib.h"; then
     echo "PASS  l13-cheader-emits-fnptr"
   else
     echo "FAIL  l13-cheader-emits-fnptr"
@@ -4111,6 +4210,7 @@ spawn run_w9_multi_object
 spawn run_w9_source_outranks_header
 spawn run_w9_shared_init_warning
 spawn run_w9_cheader_globals
+spawn run_w9_cheader_identifiers
 # W1c: the diagnostic surface. The did-you-mean tier it sits above is pinned by
 # w4a-suggest-spelling; the note deliberately suppresses that tier (they would
 # otherwise offer two diagnoses of one failure), which is why the suggestion

@@ -30,8 +30,9 @@ namespace), fixed 2026-08-03 along with two further pre-existing defects it
 uncovered but did not fix (items 22, 23 and 24) — **twenty-four found, five
 fixed, nineteen open** — see the W9 section below for how the count was
 arrived at. Re-measured at the close of the B series (2026-08-09) and moved
-again by work done that day and the next: **twenty-four found, twelve fixed,
-twelve open**.
+again by work done that day and the next; item 4's fix (2026-08-10) measured four
+further pre-existing causes of an unparseable C header and filed them as items
+25–28: **twenty-eight found, thirteen fixed, fifteen open**.
 
 **W4, W2 and W3 are complete** (W2a–d; W3a §1.6 opaque forward-declared C
 types; W3b §1.5 C type qualifiers + the `declare` validity gate — `SDL2/SDL.h`
@@ -843,7 +844,7 @@ escape hatch — reproduced by compiling `(defvar g:ptr:i32)` with
 
 ---
 
-## W9 — Reconciled at stage close: twenty-four defects found, **twelve** now fixed, twelve open *(added 2026-08-01; extended through G-5's close 2026-08-02; items 21–24 added 2026-08-03; items 10 and 16 closed and item 22 measured closed 2026-08-09; items 1, 5 and 2 fixed 2026-08-09; item 3 fixed 2026-08-10)*
+## W9 — Reconciled at stage close: twenty-eight defects found, **thirteen** now fixed, fifteen open *(added 2026-08-01; extended through G-5's close 2026-08-02; items 21–24 added 2026-08-03; items 10 and 16 closed and item 22 measured closed 2026-08-09; items 1, 5 and 2 fixed 2026-08-09; items 3 and 4 fixed 2026-08-10, the latter adding items 25–28)*
 
 **The original six are enumerated in [../global-init.md](../global-init.md)
 §7. Four more (7–10) were found measuring G-1 and re-verifying G-0/G-1's test
@@ -920,7 +921,7 @@ hit while measuring, verifying, or documenting, not synthesized.
 | 1 | **`make lib-objs` / `make lib-headers` / `make lib-cheaders` broken — FIXED 2026-08-09** | `lib/arena.nuc` and `lib/node.nuc` died `duplicate definition of 'arena-init' / 'alloc-node'`; `lib/reader.nuc` died `undefined: stderr`; nine files died under `--emit-nuch`. See the W9-1 note below for the cause, which the recorded hypothesis had half right. **`make lib-so` closed with item 2, the same day** |
 | 2 | **Two separately compiled Nucleus objects cannot be linked — FIXED 2026-08-09** | each inlines the whole prelude, so `build/lib/vector.o` and `build/lib/hashmap.o` share duplicate public definitions (`@g-arena`, `@g-intern-table`, `arena-init`, `next.pIntRangeIter`, …) and `ld` refuses. `exclude-prelude` works; a non-freestanding library was unlinkable. **Fixed by giving a definition the unit only carries a COPY of `weak_odr` linkage** — see the W9-2 note below. `make lib-so` is green |
 | 3 | **`--emit-cheader` does not export globals — FIXED 2026-08-10** | a `defvar` reached the `.nuch` as `(extern …)` but got no `extern T name;` line in the C header, so a C consumer could reach a library's functions and none of its state. `emit-cheader-header`'s dispatch had no `defvar` arm at all — while **both** `docs/compiler.md`'s flag table and `docs/toplevel.md` already documented the behaviour as present. See the W9-3 note below; the fix turns on the NAME, not the missing arm |
-| 4 | **`--emit-cheader` emits hyphenated, invalid C identifiers** | see the precision note below |
+| 4 | **`--emit-cheader` emits hyphenated, invalid C identifiers — FIXED 2026-08-10** | every name a header exports was emitted verbatim except the struct/union *type* name, so fields, parameters, `defunion` arms, enum tags, `#define`s and prototypes were all invalid C. Measured: **13 of the 34 committed `lib/*.h` parsed** under `clang -fsyntax-only`; now **27**. See the W9-4 note below — the recorded cause ("a missed call site") is wrong for the two kinds the linker resolves, and four *other* causes of an unparseable header were measured and filed as items 25–28 |
 | 5 | **`(exclude-prelude)` in an *imported* file dies `unknown top-level form` — FIXED 2026-08-09, as a prerequisite of item 1** | rather than being ignored or diagnosed as "must be the first form of the unit". `strip-exclude-prelude` is consulted only for the entry file. Item 1's root hoist **re-reads the root file**, so a root that opts out of the prelude reached this the moment the hoist fired — the directive belongs to the unit, not the file, and `emit-toplevel-forms`' dispatch now ignores it (the ruling the item's own note preferred). This is the only shape that made the fix mandatory rather than merely nice; a hand-written `(exclude-prelude)` library import hit it too |
 | 6 | **`undefined: X — not defined anywhere in this compilation unit`** for a name that *is* in the unit, merely unprocessed | **overlaps W8's G-0; not filed twice.** G-0 has since closed the cause for the two import shapes it covers (plain and `import-use` symbol imports); the residual surface is string-path `.nuc` imports and `.nuch` headers, filed under W1 |
 | 7 | **`pkind-flow-check`'s `CStr` carve-out accepts a null through a non-null `(ref T)`**, found measuring G-1 | only diagnoses a `TY-PTR` source, so `(defvar g:ptr:T (as CStr null))` compiles to a null in a non-null slot — and so does the identical *local*, by this compiler and the pre-G-1 boot alike; the renderer matches the chokepoint exactly, so the carve-out itself is what is wrong, in both positions at once |
@@ -941,6 +942,10 @@ hit while measuring, verifying, or documenting, not synthesized.
 | 22 | **A file with an explicit `(ns …)` cannot box a value at all**, found building item 21 — **FIXED, measured 2026-08-09** (closed by B2b, not by work on this item) | `emit-box-struct-move` gates on `(scope-lookup scope "default-allocator")`, and `scope-lookup` qualifies a *global* key against `g-current-ns` with **no bare fallback** — so inside `(ns dp)` it probes `dp/default-allocator`, misses, and dies `type-erasure: boxing a value requires (import-use allocator)` however many times the file imports it. Confirmed identical on the committed pre-fix compiler, so it is pre-existing and orthogonal to item 21 (which is why `examples/w9-dyn-ns.nuc` boxes in the consumer, not in the library). The general shape is broader than boxing: any compiler site that resolves a *known* global by name through `scope-lookup` is namespace-sensitive in a way its author did not intend. Note `generic-lookup` is unaffected — it keys on the raw name — which is why ordinary cross-namespace *calls* work and hides how narrow the working path is | **Closed by B2b's cut-over of `g-globals` to the canonicaliser:** `globals-lookup-ref` probes the current namespace's key, then each flattened namespace, then **`user`** — and that last probe is precisely the "bare fallback" this item says is missing. Re-measured: a `(ns …)` library that constructs a `(dyn P)` box compiles, links and runs. |
 | 23 | **Two namespaces defining the same function name collapse into one generic**, found building item 21 | `generic-lookup`/`generic-register-method` key on the **raw** name (unlike `scope-define`, which qualifies), so `(ns qa) (defn describe …)` and `(ns qb) (defn describe …)` become one `Generic` named `describe` with two methods — mangled under whichever namespace was seen *first*, emitting `@qa__describe` and `@qa__describe.pDog` for a method defined in `qb`. Confirmed identical on the committed pre-fix compiler. Whether the fix is to namespace the generic registry or to keep it raw and namespace only the mangling is a real design question, not a typo; item 21 deliberately did not touch it, and `lib/nsdescribe2.nuc` names its protocol method `tag-of` rather than `describe` specifically to keep the two concerns separate in the tests | **Re-measured 2026-08-09: the symptom changed, the defect did not.** B4 gave generics a qualified spelling by *filtering* on `Method.src-ns` (R2 keeps one `Generic` per bare name with methods merged), so two namespaces whose `describe`s have **different** signatures now coexist and `qa/describe` / `qb/describe` each reach their own. Two with the **same** signature no longer collapse silently — they are a located `duplicate definition` error naming both files. Better than a silent wrong dispatch, and still not what the item wants: two namespaces genuinely cannot each define `describe (x:i32):i32`. Closing it means namespacing `g-generics`, which R2 ruled against on multimethod grounds — so this is a *ruling to revisit*, not a bug to fix. See name-resolution.md §8.2 and §9.6's last section. |
 | 24 | **`(dyn P)` cannot box a type whose implementation arrives through a `.nuch` `declare`**, found verifying item 21 | `dyn-vtable-method-irname` resolves the protocol method with `generic-lookup`, but `emit-nuch-declare-import` registers a solitary imported function as a **`Sym` in `g-globals` only** — it never creates a `Generic` — so the box site dies `(dyn Describe): no method 'describe' is defined` for a method that is declared, defined and linkable. Confirmed identical in the `user` namespace and on the committed pre-fix compiler, so it is pre-existing and orthogonal to item 21 (which the same probe *passes*: the protocol resolves, and the failure is one check later). Note the `.nuch` round-trip itself is correct — the producer emits `(ns dp)` ahead of the `defprotocol`/`extend`, and the importer re-registers the protocol under `dp/Describe`. The same two-registries-answer-one-name asymmetry `context/conventions.md` records for private names (`scope-lookup` vs `generic-lookup`) is the underlying shape |
+| 25 | **A user struct has no complete C tag, so it cannot be used by value from C**, found fixing item 4 | `emit-cheader-defstruct` emits an ANONYMOUS `typedef struct { … } Name;`, so `struct Name` is a different, never-completed tag. Every by-value use fails: a field (`struct Char c;` — "field has incomplete type"), and a parameter, where `struct My_Rec* r` even warns *"declaration of 'struct My_Rec' will not be visible outside of this function"*. Item 3 met the same wall for a `defvar` and worked around it locally (`cheader-by-value-c` strips the `struct ` prefix); the general fix is one word — emit `typedef struct Name { … } Name;` — after which both spellings work everywhere and `cheader-by-value-c` can go. Breaks 3 of the 34 `lib/*.h` (`char.h`, `error.h`, `string-split.h`) |
+| 26 | **An overloaded or operator-named `defn` is exported under a bare name no object defines**, found fixing item 4 | `emit-cheader-declare` derives the symbol as `ns-ir-base fname`, which is the real symbol **only** for a solitary, non-operator function. An overload is mangled per signature and an operator goes through `op-name-token` even when solitary — measured: `lib/string.nuc`'s `=` on `String` links as `@eq.String.String`, and `nm lib/string.o` has **no** bare `=`; `lib/parse.nuc`'s three `from-str` are `from-str.i32.pStrView` &c. So the header both declares a symbol that does not exist and declares it two or three times under one C name. Pre-existing and equally wrong before item 4 (it read `_Bool =(…)`, invalid C, failing at the parser instead of the linker); item 4 makes it explicit by attaching `asm("=")`. The fix is a ruling — give each method its own C name and its own mangled label, or skip overloads honestly the way the three existing `/* … not exported */` paths do. Breaks `parse.h`, `string.h`, `strview.h` |
+| 27 | **A template tyvar is exported as a concrete C type**, found fixing item 4 | `lib/hashset.h` declares `void set_remove(void* self, struct T elem);` — `T` is the template's type variable, emitted as though it were a struct. `cheader-template-instance` catches an instance type like `(Result i64 i32)` but nothing catches a bare tyvar in a parameter position. `defn-is-generic-template` already answers this question for the *whole form*; the gap is that a method on a parametric struct is not itself a generic template |
+| 28 | **A C keyword is emitted as an identifier**, found fixing item 4 | `lib/hashset.nuc` defines `union`, a perfectly ordinary Nucleus name, and the header emits `void union(void* self, void* other);`. `sanitize-for-c` maps illegal *characters* and has no notion of a reserved word, so the name passes through intact and the header does not parse. The same applies to `int`, `return`, `default`, `switch`, `class` and the rest. Item 4's asm-label mechanism makes this trivially fixable (rename to `union_` and label it `asm("union")`, exactly as a hyphenated name is handled) but it is a naming ruling, not a missed call site |
 
 **Defect 4, with the precision that says what the fix is.** Independently
 confirmed: `(defstruct My-Rec (a-field i32))` + `(defn my-func (x:i32):i32 …)`
@@ -954,6 +959,13 @@ three sites (`cheader.nuc:1761` `type-name-to-c`, `:1852` `defstruct` type name,
 routes through `ns-ir-base` for the namespace prefix but never through
 `sanitize-for-c`). **The fix is a missed call site, not a missing mechanism.**
 It breaks C interop for any hyphenated name, which is most of them.
+
+> **Fixed 2026-08-10; the census above was three sites short and its
+> one-line conclusion is wrong for half the surface.** See the W9-4 note below.
+> Also missing from it: `defconst` `#define` names, `defenum`'s own tag name and
+> its members, function *parameter* names, and the inline `(union …)` member
+> names `type-node-to-c` emits. And "a missed call site" holds only for names
+> nothing links against — for a `defn` it is a *ruling*, taken by item 3.
 
 **Defect 6 and W8's G-0 — closed at the cause, 2026-08-01.** G-0 fixes the
 *cause* rather than the message: value names now resolve on reachability
@@ -1447,6 +1459,85 @@ gone. All four verified to fire, and the tree restored by regeneration, not git.
 **Files.** `scripts/check-headers.sh` (new), `Makefile` (`check-headers`),
 `tests/run-tests.sh` (`run_headers_generated`, +1 PASS), `lib/mapiterlib.nuch`
 (relative provenance), `docs/compiler.md`, `context/build.md`.
+
+### W9 item 4 as fixed *(2026-08-10)* — two rewrites, chosen by who resolves the name
+
+The defect is one sentence — `-` is ordinary in a Nucleus name and illegal in a C
+identifier — and the fix is two rules, not one, because a name is rewritten for
+**one of two different reasons**:
+
+* a name the **linker resolves** (`defn`, `defvar`) must be both a C identifier
+  *and* the symbol the object defines, which one token cannot be: sanitized
+  spelling **plus** an `asm("real-symbol")` label. This is item 3's ruling,
+  applied to the rest of the surface;
+* a name the linker **never sees** (struct field, function parameter, `defunion`
+  arm, enum tag, `#define` from a `defconst`, inline-`(union …)` member) only has
+  to parse: plain `sanitize-for-c`.
+
+Two functions carry those rules — `cheader-c-ident` and `cheader-asm-label` — and
+`emit-cheader-defvar`'s inline `strcmp`-and-branch from item 3 was **replaced by a
+call**, not left beside them.
+
+**The recorded census was three sites short, and the census is how the item was
+scoped.** Beyond the six sites its note lists, hyphens also reached `defconst`
+`#define` names, `defenum`'s own tag name *and* its members, function **parameter**
+names, and the inline-union member names emitted from inside `type-node-to-c`
+(not from `emit-cheader-defstruct`, which is why enumerating the `defstruct` path
+missed them). Found by sweeping all 181 generated headers for a stray hyphen
+rather than by re-reading the list — the sweep is now the test's own assertion.
+
+**One coupling the census could not have shown.** `cheader-array-extent` exports a
+non-folding `(array T N)` length as the bare constant NAME, on the explicit
+premise that `emit-cheader-defconst` exports the matching `#define`. Sanitizing
+one without the other yields `int32_t xs[MY-LEN];` against `#define MY_LEN 4` —
+so the two are sanitized together, and the test pins the pair by *indexing with*
+`BUF_LEN`, not by grepping for it.
+
+**Verified by compiling and RUNNING a C consumer.** `grep` cannot tell a correct
+asm label from one naming a symbol that does not exist — which is exactly the
+residue this item leaves (items 26 below). The consumer calls through a label,
+reads a global through another, and touches a struct field, an array element
+indexed by the `#define`, an inline-union member, a `defunion` arm field, its tag
+constant and an enum member; `nm` is the independent witness that the C
+identifier and the ELF symbol really are different strings (`T my-bump`, and no
+`my_bump`).
+
+**Measured, before and after: 13 → 27 of the 34 committed `lib/*.h` parse** under
+`clang -fsyntax-only`. Not 34 — and the remaining seven fail for **four causes,
+none of them a hyphen**, each now measured and filed as its own item rather than
+folded in here:
+
+| Header(s) | Cause | Filed |
+|---|---|---|
+| `char.h`, `error.h`, `string-split.h` | `struct Char` is an incomplete tag — the typedef is anonymous | 25 |
+| `parse.h`, `string.h`, `strview.h` | an overloaded/operator `defn` is exported under its bare name, which no object defines | 26 |
+| `hashset.h` | a template tyvar exported as a concrete type (`struct T elem`) | 27 |
+| `hashset.h` | a C **keyword** as a function name (`void union(…)`) | 28 |
+
+Item 26 is worth stating plainly because this item makes it *visible*: the header
+now says `_Bool _(…) asm("=")`, and `nm lib/string.o` has no bare `=` — the real
+symbol is `eq.String.String`. That declaration was equally false before (it read
+`_Bool =(…)`, which merely failed earlier, at the parser). Every one of the four
+fails **loudly** at the C consumer, so none is a silent mis-binding.
+
+**Two tests pinned the defect and were updated, not deleted**:
+`l8-cheader-emits-fnptr` and `l13-cheader-emits-fnptr` asserted
+`plain-fn(int32_t x, int32_t y)` — the broken spelling — and now assert the whole
+line including its label.
+
+**Verification.** `make test` **520 PASS / 0 FAIL** (516 before: +4 new, and the
+two above went from FAIL to PASS). Emitted *program* IR is untouched, as a
+header-only change requires: 181 normalized-identical, 0 differing against the
+pre-change compiler (`examples/comb-shapes.nuc` compiles on neither — the
+pre-existing `as: lossy conversion` from W9-1). `make bootstrap` reconverged;
+`abi-test` / `layout-test` / `avr-test` green. 21 of the 34 `lib/*.h` change —
+and the `headers-generated` gate added the day before **caught them**, which is
+the first time that check has done its job.
+
+**Files.** `src/cheader.nuc` (`cheader-c-ident`, `cheader-asm-label`, and the
+eight emission sites), `tests/run-tests.sh`
+(`run_w9_cheader_identifiers`, two updated units), 21 `lib/*.h`,
+`docs/compiler.md`, and the reconverged boot artefacts.
 
 ---
 

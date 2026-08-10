@@ -14,4 +14,4 @@ typedef struct {
 } Handler;
 
 extern void* g_handler_top asm("g-handler-top");
-void* err-find-handler(struct Err eid, void* token);
+void* err_find_handler(struct Err eid, void* token) asm("err-find-handler");

@@ -5,8 +5,8 @@
 
 /* Generated from lib/node.nuc by nucleusc --emit-cheader */
 
-void* alloc-node(void);
-void* make-cell(void* car, void* cdr, int32_t line);
+void* alloc_node(void) asm("alloc-node");
+void* make_cell(void* car, void* cdr, int32_t line) asm("make-cell");
 typedef struct {
     void* spelling;
     void* node;
@@ -15,11 +15,11 @@ typedef struct {
 extern void* g_intern_table asm("g-intern-table");
 extern int32_t g_intern_cap asm("g-intern-cap");
 extern int32_t g_intern_len asm("g-intern-len");
-int64_t intern-hash(void* s);
-void intern-raw-insert(void* table, int32_t cap, void* sp, void* nd);
-void intern-grow(void);
-void* intern-symbol(void* s);
-void* node-at(void* n, int32_t i);
-int32_t node-len(void* n);
-int32_t node-line(void* n, int32_t encl);
-int32_t node-is-list(void* n);
+int64_t intern_hash(void* s) asm("intern-hash");
+void intern_raw_insert(void* table, int32_t cap, void* sp, void* nd) asm("intern-raw-insert");
+void intern_grow(void) asm("intern-grow");
+void* intern_symbol(void* s) asm("intern-symbol");
+void* node_at(void* n, int32_t i) asm("node-at");
+int32_t node_len(void* n) asm("node-len");
+int32_t node_line(void* n, int32_t encl) asm("node-line");
+int32_t node_is_list(void* n) asm("node-is-list");

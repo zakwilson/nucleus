@@ -5,5 +5,5 @@
 
 /* Generated from lib/boxlib.nuc by nucleusc --emit-cheader */
 
-struct T box-get(void** b);
-void box-set(void** b, struct T v);
+struct T box_get(void** b) asm("box-get");
+void box_set(void** b, struct T v) asm("box-set");

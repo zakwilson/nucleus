@@ -5,8 +5,8 @@
 
 /* Generated from lib/strview.nuc by nucleusc --emit-cheader */
 
-size_t strview-len(void* sv);
-int32_t strview-eq(void* a, void* b);
+size_t strview_len(void* sv) asm("strview-len");
+int32_t strview_eq(void* a, void* b) asm("strview-eq");
 typedef struct {
     uint8_t* buf;
     size_t pos;
@@ -14,12 +14,12 @@ typedef struct {
 } ByteIter;
 
 void* next(void* self);
-size_t strview-hash(void* sv);
-struct StrView* strview-from-cstr(const char* cs);
-const char* strview-to-cstr(void* sv);
+size_t strview_hash(void* sv) asm("strview-hash");
+struct StrView* strview_from_cstr(const char* cs) asm("strview-from-cstr");
+const char* strview_to_cstr(void* sv) asm("strview-to-cstr");
 size_t hash(void* self);
-_Bool =(struct StrView a, struct StrView b);
-_Bool _BANG=(struct StrView a, struct StrView b);
+_Bool _(struct StrView a, struct StrView b) asm("=");
+_Bool _BANG_(struct StrView a, struct StrView b) asm("_BANG=");
 typedef struct {
     uint8_t* buf;
     size_t pos;
@@ -27,27 +27,27 @@ typedef struct {
 } CharIter;
 
 void* next(void* self);
-size_t strview-byte-len(void* sv);
-struct _BANGui8 strview-byte-at(void* sv, size_t i);
-struct ByteIter strview-bytes(void* sv);
-struct StrView strview-as-view(void* sv);
-struct ByteIter cstr-bytes(const char* cs);
-struct CharIter cstr-chars(const char* cs);
-void* strview-sub-bytes(void* sv, size_t start, size_t end);
-void* strview-byte-find(void* sv, void* needle);
-size_t strview-char-count(void* sv);
-struct _BANGChar strview-char-at(void* sv, size_t i);
-struct CharIter strview-chars(void* sv);
-int32_t strview-empty(void* sv);
-int32_t strview-starts-with(void* sv, void* prefix);
-int32_t strview-ends-with(void* sv, void* suffix);
-int32_t strview-contains-str(void* sv, void* needle);
-int32_t strview-is-ascii-ws(uint8_t b);
-struct StrView strview-trim-start(void* sv);
-struct StrView strview-trim-end(void* sv);
-struct StrView strview-trim(void* sv);
-int32_t strview-cmp-raw(void* a, void* b);
-_Bool <(struct StrView a, struct StrView b);
-_Bool <=(struct StrView a, struct StrView b);
-_Bool >(struct StrView a, struct StrView b);
-_Bool >=(struct StrView a, struct StrView b);
+size_t strview_byte_len(void* sv) asm("strview-byte-len");
+struct _BANGui8 strview_byte_at(void* sv, size_t i) asm("strview-byte-at");
+struct ByteIter strview_bytes(void* sv) asm("strview-bytes");
+struct StrView strview_as_view(void* sv) asm("strview-as-view");
+struct ByteIter cstr_bytes(const char* cs) asm("cstr-bytes");
+struct CharIter cstr_chars(const char* cs) asm("cstr-chars");
+void* strview_sub_bytes(void* sv, size_t start, size_t end) asm("strview-sub-bytes");
+void* strview_byte_find(void* sv, void* needle) asm("strview-byte-find");
+size_t strview_char_count(void* sv) asm("strview-char-count");
+struct _BANGChar strview_char_at(void* sv, size_t i) asm("strview-char-at");
+struct CharIter strview_chars(void* sv) asm("strview-chars");
+int32_t strview_empty(void* sv) asm("strview-empty");
+int32_t strview_starts_with(void* sv, void* prefix) asm("strview-starts-with");
+int32_t strview_ends_with(void* sv, void* suffix) asm("strview-ends-with");
+int32_t strview_contains_str(void* sv, void* needle) asm("strview-contains-str");
+int32_t strview_is_ascii_ws(uint8_t b) asm("strview-is-ascii-ws");
+struct StrView strview_trim_start(void* sv) asm("strview-trim-start");
+struct StrView strview_trim_end(void* sv) asm("strview-trim-end");
+struct StrView strview_trim(void* sv) asm("strview-trim");
+int32_t strview_cmp_raw(void* a, void* b) asm("strview-cmp-raw");
+_Bool _(struct StrView a, struct StrView b) asm("<");
+_Bool __(struct StrView a, struct StrView b) asm("<=");
+_Bool _(struct StrView a, struct StrView b) asm(">");
+_Bool __(struct StrView a, struct StrView b) asm(">=");

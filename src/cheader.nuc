@@ -1728,6 +1728,37 @@
 ; C header emission (--emit-cheader)
 ; ============================================================
 
+; Stage 15 W9 item 4: the C spelling of a Nucleus name. `sanitize-for-c` maps
+; every character C does not allow in an identifier to `_`, so `a-field` becomes
+; `a_field`. Null-safe because several callers read a name out of a malformed
+; form and print whatever they got.
+;
+; This is the spelling for names the LINKER NEVER SEES — struct fields, function
+; parameters, `defunion` arm names, enum tags, `#define` constants. For a name the
+; linker does resolve, sanitizing alone silently breaks the binding; use
+; `cheader-asm-label` with it. See the W9 item 4 note in
+; design/stage15-stress-test/progress.md.
+(defn cheader-c-ident (name:(raw i8)):ptr
+  (when (= name null) (return (as ptr name)))
+  (return (sanitize-for-c (as ptr name))))
+
+; The `asm("…")` suffix that re-binds a sanitized C declaration to the symbol the
+; object actually defines, or "" when the sanitized spelling IS the symbol.
+;
+; A Nucleus link name keeps its hyphens (`(defn ch-get …)` emits `@ch-get`, and
+; `nm` shows `T ch-get`), so a C declaration must both spell an identifier and
+; name that symbol — two requirements one token cannot meet. Sanitizing alone
+; yields a header that parses and then fails to LINK, which is strictly worse than
+; one that fails to parse: the error moves away from its cause. The GCC/Clang
+; asm-label extension is the only way C can name a hyphenated symbol.
+;
+; Deliberately empty when no mangling was needed, so a library whose names are
+; already C-legal gets a fully portable header and the extension appears exactly
+; where it is load-bearing.
+(defn cheader-asm-label (link:ptr cname:ptr):ptr
+  (when (= (strcmp cname link) 0) (return ""))
+  (return (fmt-s " asm(\"%s\")" link)))
+
 (defn type-name-to-c (name:ptr):ptr
   (when (= name "void")  (return "void"))
   (when (= name "i1")    (return "_Bool"))
@@ -1822,8 +1853,12 @@
                       mtname:ptr null)
                   (extract-name-type member (as ptr:ptr (addr-of mname)) (as ptr:ptr (addr-of mtname)))
                   (let (mtnode:ptr (extract-type-node member ((unsafe/cast ptr:Node member) line)))
+                    ; W9 item 4: an inline union's member names are emitted here
+                    ; rather than by emit-cheader-defstruct, so they need the same
+                    ; sanitize its named fields get.
                     (set! acc (fmt-2s "%s%s" acc
-                                (fmt-2s "%s %s; " (type-node-to-c mtnode) mname)))))
+                                (fmt-2s "%s %s; " (type-node-to-c mtnode)
+                                  (cheader-c-ident (as raw:i8 mname)))))))
                 (set! cur ((unsafe/cast ptr:Node cur) cdr)))
               (return (fmt-s "%s}" acc)))))
       0)
@@ -1883,8 +1918,11 @@
                               (as ptr:i64 (addr-of len))
                               lline) 0)
       (return (as CStr (fmt-i64 "%ld" len))))
+    ; W9 item 4: sanitized, because this extent must name the `#define`
+    ; emit-cheader-defconst emits — and that one is sanitized too. A hyphenated
+    ; constant would otherwise give `int32_t xs[MY-LEN];` against `#define MY_LEN`.
     (let (ln:ptr:Node (unsafe/cast ptr:Node lnn))
-      (when (= (ln kind) NODE-SYM) (return (as CStr (ln s)))))
+      (when (= (ln kind) NODE-SYM) (return (as CStr (cheader-c-ident (as raw:i8 (ln s)))))))
     (die-at lline "--emit-cheader: (array T N): length must be a literal, a named constant, or a constant expression over them")
     (return c"")))
 
@@ -1914,15 +1952,14 @@
           (when (!= tnode null)
             ; Stage 15 W8 G-2: C's array declarator is postfix, so an
             ; `(array T N)` field is `T name[N];` — the element type before the
-            ; name and the extent after it. Nothing else about this line changes;
-            ; in particular `fname` is still emitted unsanitized (W9 defect 4 is
-            ; a separate item and is neither fixed nor worsened here).
-            (let (an:ptr (cheader-array-field-node tnode))
+            ; name and the extent after it.
+            (let (an:ptr (cheader-array-field-node tnode)
+                  fc:ptr (cheader-c-ident (as raw:i8 fname)))
               (if (!= an null)
                 (printf "    %s %s[%s];\n"
-                  (type-node-to-c (node-at an 1)) fname
+                  (type-node-to-c (node-at an 1)) fc
                   (cheader-array-extent an ((unsafe/cast ptr:Node field) line)))
-                (printf "    %s %s;\n" (type-node-to-c tnode) fname)))))))
+                (printf "    %s %s;\n" (type-node-to-c tnode) fc)))))))
     (printf "} %s;\n\n" name)))
 
 ; A defunion-template instance type ((Result i64 i32)) has no C spelling yet —
@@ -2033,29 +2070,37 @@
       (when (!= skip-cl 0)
         (printf "/* %s: exposes a closure or type-erased box type; not C-callable, omitted */\n" fname)
         (return)))
-    (let (rtnode:ptr (cheader-defn-ret-node form)
-          ret-c:ptr "void")
-      (when (!= rtnode null) (set! ret-c (type-node-to-c rtnode)))
-      ; Stage 12 N6: emit the C-legal mangled link name (`geom__area`) for a
-      ; namespaced library. ns-ir-base composes g-current-ns's ir-prefix onto the
-      ; bare name; identity under `user`, so existing headers are byte-identical.
-      (printf "%s %s(" ret-c (ns-ir-base fname)))
-    (let (params:ptr (node-at form 2)
-          n:i32 (node-len params))
-      (when (= n 0) (printf "void"))
-      (dotimes (i n)
-        (when (!= i 0) (printf ", "))
-        (let (p:ptr (node-at params i)
-              pname:ptr null
-              ptname:ptr null)
-          (extract-name-type p (as ptr:ptr (addr-of pname)) (as ptr:ptr (addr-of ptname)))
-          (let (ptnode:ptr (extract-type-node p ((unsafe/cast ptr:Node p) line)))
-            (if (!= ptnode null)
-              (printf "%s %s" (type-node-to-c ptnode) pname)
-              ; Complex type (e.g. function pointer) — emit as void*
-              (when (!= pname null)
-                (printf "void* %s" pname)))))))
-    (printf ");\n")))
+    ; Stage 12 N6: emit the C-legal mangled link name (`geom__area`) for a
+    ; namespaced library. ns-ir-base composes g-current-ns's ir-prefix onto the
+    ; bare name; identity under `user`, so existing headers are byte-identical.
+    ;
+    ; W9 item 4: the declaration's two halves — the opening `ret name(` and the
+    ; closing `) asm("link");` — are emitted many lines apart with the parameters
+    ; streamed between them, so both spellings are computed HERE, once. Deriving
+    ; the label's copy separately is exactly how the two would drift.
+    (let (link:ptr (ns-ir-base fname)
+          cname:ptr (cheader-c-ident (as raw:i8 link)))
+      (let (rtnode:ptr (cheader-defn-ret-node form)
+            ret-c:ptr "void")
+        (when (!= rtnode null) (set! ret-c (type-node-to-c rtnode)))
+        (printf "%s %s(" ret-c cname))
+      (let (params:ptr (node-at form 2)
+            n:i32 (node-len params))
+        (when (= n 0) (printf "void"))
+        (dotimes (i n)
+          (when (!= i 0) (printf ", "))
+          (let (p:ptr (node-at params i)
+                pname:ptr null
+                ptname:ptr null)
+            (extract-name-type p (as ptr:ptr (addr-of pname)) (as ptr:ptr (addr-of ptname)))
+            (let (ptnode:ptr (extract-type-node p ((unsafe/cast ptr:Node p) line))
+                  pc:ptr (cheader-c-ident (as raw:i8 pname)))
+              (if (!= ptnode null)
+                (printf "%s %s" (type-node-to-c ptnode) pc)
+                ; Complex type (e.g. function pointer) — emit as void*
+                (when (!= pname null)
+                  (printf "void* %s" pc)))))))
+      (printf ")%s;\n" (cheader-asm-label link cname)))))
 
 ; Non-zero when this type node is one `type-node-to-c` would answer for by
 ; falling through to its `void*` default — i.e. a cell head it does not handle.
@@ -2158,25 +2203,30 @@
           (let (cst:ptr (if (!= (bit-and attr-flags DECL-ATTR-CONST) 0) "const " "")
                 link:ptr (ns-ir-base vname)
                 ctype:ptr (cheader-by-value-c tnode))
-            (let (cname:ptr (sanitize-for-c link))
-              (if (= (strcmp cname link) 0)
-                (printf "extern %s%s %s;\n" cst ctype cname)
-                (printf "extern %s%s %s asm(\"%s\");\n" cst ctype cname link)))))))))
+            (let (cname:ptr (cheader-c-ident (as raw:i8 link)))
+              (printf "extern %s%s %s%s;\n" cst ctype cname
+                (cheader-asm-label link cname)))))))))
 
+; W9 item 4: a `#define` is a preprocessor token with no link name, so the plain
+; sanitized spelling is the whole answer. `cheader-array-extent` emits the same
+; spelling for a symbolic `(array T N)` length, which is what keeps the two agreeing.
 (defn emit-cheader-defconst (form:ptr):void
-  (let (name:ptr ((unsafe/cast ptr:Node (node-at form 1)) s)
+  (let (name:ptr (cheader-c-ident (as raw:i8 ((unsafe/cast ptr:Node (node-at form 1)) s)))
         val-node:ptr:Node (unsafe/cast ptr:Node (node-at form 2)))
     (case (val-node kind)
       NODE-INT (printf "#define %s %ld\n" name (val-node i))
       NODE-STR (printf "#define %s \"%s\"\n" name (val-node s))
       0)))
 
+; W9 item 4: both the enum tag name and each member constant are sanitized —
+; neither is a link name (a `defenum` member is a compile-time integer, not a
+; symbol), so no asm label applies to either.
 (defn emit-cheader-defenum (form:ptr):void
-  (let (name:ptr ((unsafe/cast ptr:Node (node-at form 1)) s)
+  (let (name:ptr (cheader-c-ident (as raw:i8 ((unsafe/cast ptr:Node (node-at form 1)) s)))
         n:i32 (- (node-len form) 2))
     (printf "enum %s {\n" name)
     (dotimes (i n)
-      (let (variant:ptr ((unsafe/cast ptr:Node (node-at form (+ i 2))) s))
+      (let (variant:ptr (cheader-c-ident (as raw:i8 ((unsafe/cast ptr:Node (node-at form (+ i 2))) s))))
         (printf "    %s_%s = %d" name variant i)
         (when (< i (- n 1)) (printf ","))
         (printf "\n")))
@@ -2204,7 +2254,7 @@
         (dotimes (i narms)
           (let (arm:ptr:Node (unsafe/cast ptr:Node (node-at form (+ i 2))))
             (when (= (arm kind) NODE-CELL)
-              (let (aname:ptr ((unsafe/cast ptr:Node (node-at (as ptr arm) 0)) s)
+              (let (aname:ptr (cheader-c-ident (as raw:i8 ((unsafe/cast ptr:Node (node-at (as ptr arm) 0)) s)))
                     nf:i32 (- (node-len (as ptr arm)) 1))
                 (if (= nf 1)
                   ; One field → the payload is just that field, named by the arm.
@@ -2220,7 +2270,8 @@
                         (extract-name-type field (as ptr:ptr (addr-of fname))
                                                   (as ptr:ptr (addr-of ftname)))
                         (let (tnode:ptr (extract-type-node field ((unsafe/cast ptr:Node field) line)))
-                          (printf "%s %s; " (type-node-to-c tnode) fname))))
+                          (printf "%s %s; " (type-node-to-c tnode)
+                            (cheader-c-ident (as raw:i8 fname))))))
                     (printf "} %s;\n" aname)))))))
         (printf "    } payload;\n"))
       (printf "} %s;\n\n" name)
@@ -2228,8 +2279,9 @@
       (printf "enum %s_tag {\n" name)
       (dotimes (i narms)
         (let (arm:ptr:Node (unsafe/cast ptr:Node (node-at form (+ i 2)))
-              aname:ptr (if (= (arm kind) NODE-SYM) (arm s)
-                          ((unsafe/cast ptr:Node (node-at (as ptr arm) 0)) s)))
+              aname:ptr (cheader-c-ident (as raw:i8
+                          (if (= (arm kind) NODE-SYM) (arm s)
+                            ((unsafe/cast ptr:Node (node-at (as ptr arm) 0)) s)))))
           (printf "    %s_%s = %d" name aname i)
           (when (< i (- narms 1)) (printf ","))
           (printf "\n")))

@@ -25,7 +25,7 @@
 /* sort: generic template; not exported */
 /* sort-by: generic template; not exported */
 /* emit-joined: generic template; not exported */
-void join-push-cstr(void* s, const char* cs);
+void join_push_cstr(void* s, const char* cs) asm("join-push-cstr");
 /* join: generic template; not exported */
 /* keep-last: generic template; not exported */
 /* compose: generic template; not exported */
