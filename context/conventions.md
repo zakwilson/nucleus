@@ -676,6 +676,45 @@ one that bit — it independently re-parses the type operand, so it needed both
 the decay *and* the permission arm, or the non-emitting pass rejected what
 codegen accepted.
 
+## There are TWO type→C renderers, keyed differently, and only one of them is on the header path
+
+`type-to-c` (`src/type-utils.nuc`) is keyed on a resolved `Type` and switches over
+`TY-*`. `type-name-to-c` (`src/cheader.nuc`) is keyed on a type *name string* and
+runs down a list of `(when (= name "…"))` arms. `--emit-cheader` uses the second
+one exclusively, because it never resolves types — it walks the form AST.
+
+The second's last arm is **"assume struct"**: any name it does not recognize is
+rendered `struct NAME`. So a builtin the list forgets is not a compile error and
+not a `/* unknown */` — it is a plausible-looking `struct usize`, `struct Char`,
+`struct Err` naming a tag no header defines. Three separate defects have now been
+one instance of this: `usize`/`ssize` (14 committed headers, W9 item 3), then
+`Char`/`Err` (W9 item 25). Each time, `type-to-c` had the right answer all along.
+
+**When you add a builtin scalar type, add it to both.** The lists are not merely
+similar, they answer the same question, and the one that is easy to forget is the
+one nothing in the build exercises — a wrong header is discovered by a C consumer,
+not by `make bootstrap` or `make test`. `scripts/check-headers.sh` only proves the
+committed headers match the compiler; it cannot tell you they are *correct*, and
+it will happily lock in a wrong spelling. The check that finds this is compiling a
+generated header with `clang -fsyntax-only`, which the `w9-cheader-*` gates do.
+
+## In C, a typedef is not a tag — emit both, and give them the same spelling
+
+`typedef struct { … } Rec;` defines a typedef named `Rec` and **no** struct tag, so
+`struct Rec` is a different, never-completed type. This was W9 item 25: the header
+emitter used the anonymous form while `type-name-to-c` spells every reference to a
+user type `struct Rec`, so the generated header could not use its own types by
+value — a nested field or a by-value parameter both failed "incomplete type" —
+while pointers kept working, because an incomplete tag is legal behind a pointer.
+That asymmetry is why it survived: the pointer-shaped uses that dominate a C API
+gave no sign.
+
+`typedef struct Rec { … } Rec;` is the form to emit. Tag and typedef live in
+separate C namespaces, so sharing the spelling is legal and makes both `Rec` and
+`struct Rec` correct, which means no *reference* site needs a special case. The
+alternative — teaching each reference site to drop the `struct ` prefix — was
+tried locally (`cheader-by-value-c`) and is what the tag replaced.
+
 ## `?`/`!` in names map to `_QMARK`/`_BANG` in emitted symbols
 
 A `defn`, struct, or union name may contain `?`/`!` (`full?`, `push!`, `Full?`)

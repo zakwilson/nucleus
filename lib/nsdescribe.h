@@ -5,7 +5,7 @@
 
 /* Generated from lib/nsdescribe.nuc by nucleusc --emit-cheader */
 
-typedef struct {
+typedef struct dp__Fox {
     int32_t n;
 } dp__Fox;
 

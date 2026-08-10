@@ -5,7 +5,7 @@
 
 /* Generated from lib/string.nuc by nucleusc --emit-cheader */
 
-typedef struct {
+typedef struct String {
     void* bytes;
 } String;
 
@@ -14,7 +14,7 @@ struct String string_new(void) asm("string-new");
 struct String string_new_alloc(void* a) asm("string-new-alloc");
 struct String string_with_capacity(size_t n) asm("string-with-capacity");
 void string_push_bytes_raw(void* self, uint8_t* p, size_t n) asm("string-push-bytes-raw");
-void string_push_char(void* self, struct Char c) asm("string-push-char");
+void string_push_char(void* self, uint32_t c) asm("string-push-char");
 struct _BANGi32 string_push_str(void* self, void* s) asm("string-push-str");
 void* string_pop_char(void* self) asm("string-pop-char");
 void string_clear(void* self) asm("string-clear");

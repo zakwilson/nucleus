@@ -847,7 +847,7 @@ escape hatch — reproduced by compiling `(defvar g:ptr:i32)` with
 
 ---
 
-## W9 — Reconciled at stage close: thirty-six defects found, **twenty-three** now fixed (items 6 and 23 in part), thirteen open *(added 2026-08-01; extended through G-5's close 2026-08-02; items 21–24 added 2026-08-03; items 10 and 16 closed and item 22 measured closed 2026-08-09; items 1, 5 and 2 fixed 2026-08-09; items 3 and 4 fixed 2026-08-10, the latter adding items 25–28; item 6's string-path half fixed 2026-08-10, splitting its `.nuch` half out as item 29; item 7 fixed 2026-08-10; item 8 fixed 2026-08-10, splitting its float counterpart out as item 30; item 9 fixed 2026-08-10, filing the i1 signedness defect beside it as item 31; item 13 fixed 2026-08-10; item 15 fixed 2026-08-10, filing the index-signedness defect it measured as item 32; items 18 and 19 fixed 2026-08-10; item 20 fixed 2026-08-10, filing the two argument-position holes it measured as items 33 and 34; item 23's symbol half fixed 2026-08-10, splitting its dispatch half out as item 35; item 24 fixed 2026-08-10, filing the header-shadowing defect it measured as item 36)*
+## W9 — Reconciled at stage close: thirty-eight defects found, **twenty-four** now fixed (items 6 and 23 in part), fourteen open *(added 2026-08-01; extended through G-5's close 2026-08-02; items 21–24 added 2026-08-03; items 10 and 16 closed and item 22 measured closed 2026-08-09; items 1, 5 and 2 fixed 2026-08-09; items 3 and 4 fixed 2026-08-10, the latter adding items 25–28; item 6's string-path half fixed 2026-08-10, splitting its `.nuch` half out as item 29; item 7 fixed 2026-08-10; item 8 fixed 2026-08-10, splitting its float counterpart out as item 30; item 9 fixed 2026-08-10, filing the i1 signedness defect beside it as item 31; item 13 fixed 2026-08-10; item 15 fixed 2026-08-10, filing the index-signedness defect it measured as item 32; items 18 and 19 fixed 2026-08-10; item 20 fixed 2026-08-10, filing the two argument-position holes it measured as items 33 and 34; item 23's symbol half fixed 2026-08-10, splitting its dispatch half out as item 35; item 24 fixed 2026-08-10, filing the header-shadowing defect it measured as item 36; item 25 fixed 2026-08-10, closing the builtin-scalar spelling beside it and filing the two residual causes of its own named headers as items 37 and 38)*
 
 **The original six are enumerated in [../global-init.md](../global-init.md)
 §7. Four more (7–10) were found measuring G-1 and re-verifying G-0/G-1's test
@@ -945,7 +945,7 @@ hit while measuring, verifying, or documenting, not synthesized.
 | 22 | **A file with an explicit `(ns …)` cannot box a value at all**, found building item 21 — **FIXED, measured 2026-08-09** (closed by B2b, not by work on this item) | `emit-box-struct-move` gates on `(scope-lookup scope "default-allocator")`, and `scope-lookup` qualifies a *global* key against `g-current-ns` with **no bare fallback** — so inside `(ns dp)` it probes `dp/default-allocator`, misses, and dies `type-erasure: boxing a value requires (import-use allocator)` however many times the file imports it. Confirmed identical on the committed pre-fix compiler, so it is pre-existing and orthogonal to item 21 (which is why `examples/w9-dyn-ns.nuc` boxes in the consumer, not in the library). The general shape is broader than boxing: any compiler site that resolves a *known* global by name through `scope-lookup` is namespace-sensitive in a way its author did not intend. Note `generic-lookup` is unaffected — it keys on the raw name — which is why ordinary cross-namespace *calls* work and hides how narrow the working path is  **Closed by B2b's cut-over of `g-globals` to the canonicaliser:** `globals-lookup-ref` probes the current namespace's key, then each flattened namespace, then **`user`** — and that last probe is precisely the "bare fallback" this item says is missing. Re-measured: a `(ns …)` library that constructs a `(dyn P)` box compiles, links and runs. |
 | 23 | **Two namespaces defining the same function name collapse into one generic — the symbol half FIXED 2026-08-10**, found building item 21 | `generic-lookup`/`generic-register-method` key on the **raw** name (unlike `scope-define`, which qualifies), so `(ns qa) (defn describe …)` and `(ns qb) (defn describe …)` become one `Generic` named `describe` with two methods — mangled under whichever namespace was seen *first*, emitting `@qa__describe` and `@qa__describe.pDog` for a method defined in `qb`. Confirmed identical on the committed pre-fix compiler. Whether the fix is to namespace the generic registry or to keep it raw and namespace only the mangling is a real design question, not a typo; item 21 deliberately did not touch it, and `lib/nsdescribe2.nuc` names its protocol method `tag-of` rather than `describe` specifically to keep the two concerns separate in the tests  **Re-measured 2026-08-09: the symptom changed, the defect did not.** B4 gave generics a qualified spelling by *filtering* on `Method.src-ns` (R2 keeps one `Generic` per bare name with methods merged), so two namespaces whose `describe`s have **different** signatures now coexist and `qa/describe` / `qb/describe` each reach their own. Two with the **same** signature no longer collapse silently — they are a located `duplicate definition` error naming both files. **Fixed 2026-08-10, the second way: keep the registry raw and namespace the mangling.** The item's own evidence is the symbol, and it was worse than recorded — not only the prefix but the `.tok` suffix was read off the merged generic, so a namespace's exported symbol depended on what else the compilation unit contained *and* on import order. Measured end to end: a `(ns qb)` library that merely imports a `(ns qa)` one defining the same bare name emitted `@qb__describe.i64` for its own function and `@qb__describe.i32` for **qa's**, while its `.nuch` and C header both declared `@qb__describe` — `undefined reference to 'qb__describe'` at link. `method-ir-prefix` + a per-prefix user-method count move both decisions to the method; `Generic.mangled` keeps its other meaning (dispatch through the registry), the split `fn-force-generic-mangled` already relied on. A namespace's symbols are now identical compiled alone or together, in either order. See the note below and `run_w9_ns_symbol_ownership`. **The dispatch half is split out as item 35** — two namespaces still cannot each define `describe (x:i32):i32`, and that is R4/R2, not mangling. |
 | 24 | **`(dyn P)` cannot box a type whose implementation arrives through a `.nuch` `declare` — FIXED 2026-08-10**, found verifying item 21 | `dyn-vtable-method-irname` resolves the protocol method with `generic-lookup`, but `emit-nuch-declare-import` registers a solitary imported function as a **`Sym` in `g-globals` only** — it never creates a `Generic` — so the box site dies `(dyn Describe): no method 'describe' is defined` for a method that is declared, defined and linkable. Confirmed identical in the `user` namespace and on the committed pre-fix compiler, so it is pre-existing and orthogonal to item 21 (which the same probe *passes*: the protocol resolves, and the failure is one check later). Note the `.nuch` round-trip itself is correct — the producer emits `(ns dp)` ahead of the `defprotocol`/`extend`, and the importer re-registers the protocol under `dp/Describe`. The same two-registries-answer-one-name asymmetry `context/conventions.md` records for private names (`scope-lookup` vs `generic-lookup`) is the underlying shape  **Fixed by restoring the invariant rather than by patching the asker.** `emit-defn` writes BOTH registries even for a solitary function, and that second write is the only reason a conformance, a drop thunk or a `(dyn P)` vtable resolves at all; `declare` was the sole producer writing one. It now registers the method too, `ir-fixed` so the producing unit's symbol is never re-mangled. **A second asker was measured and is fixed with it**: `method-satisfies-sig`, so `(extend lib/Fox MyProto)` in a consumer reported a conforming type as non-conforming. Calls were unaffected throughout (they ask `g-globals`), which is what hid it. Two consequences handled: `Method.ir-fixed` (else one local overload renames a symbol another object defines), and R4's duplicate-*definition* check, which began firing between two headers from different namespaces over definitions neither importing file makes — it now asks only about local pairs, leaving item 35 exactly as it was. See the note below and `run_w9_nuch_declare_generic`. **Filing item 36**, the pre-existing shadowing this measured |
-| 25 | **A user struct has no complete C tag, so it cannot be used by value from C**, found fixing item 4 | `emit-cheader-defstruct` emits an ANONYMOUS `typedef struct { … } Name;`, so `struct Name` is a different, never-completed tag. Every by-value use fails: a field (`struct Char c;` — "field has incomplete type"), and a parameter, where `struct My_Rec* r` even warns *"declaration of 'struct My_Rec' will not be visible outside of this function"*. Item 3 met the same wall for a `defvar` and worked around it locally (`cheader-by-value-c` strips the `struct ` prefix); the general fix is one word — emit `typedef struct Name { … } Name;` — after which both spellings work everywhere and `cheader-by-value-c` can go. Breaks 3 of the 34 `lib/*.h` (`char.h`, `error.h`, `string-split.h`) |
+| 25 | **A user struct has no complete C tag, so it cannot be used by value from C — FIXED 2026-08-10**, found fixing item 4 | `emit-cheader-defstruct` emitted an ANONYMOUS `typedef struct { … } Name;`, so `struct Name` was a different, never-completed tag. Every by-value use failed: a field (`struct Rec r;` — "field has incomplete type"), and a parameter. Item 3 met the same wall for a `defvar` and worked around it locally (`cheader-by-value-c`, which stripped the `struct ` prefix). Fixed as recorded — emit `typedef struct Name { … } Name;`, applied to `emit-cheader-defunion` too, and `cheader-by-value-c` is gone. **Its "breaks `char.h`, `error.h`, `string-split.h`" attribution was wrong**: those three break for two *other* reasons, one of which (builtin `Char`/`Err` spelled as structs) was closed alongside and one of which (a header naming another library's type without including it) is now **item 37**. Corpus: 340→349 of 375 generated headers compile, 0 regressed. See the W9-25 note below |
 | 26 | **An overloaded or operator-named `defn` is exported under a bare name no object defines**, found fixing item 4 | `emit-cheader-declare` derives the symbol as `ns-ir-base fname`, which is the real symbol **only** for a solitary, non-operator function. An overload is mangled per signature and an operator goes through `op-name-token` even when solitary — measured: `lib/string.nuc`'s `=` on `String` links as `@eq.String.String`, and `nm lib/string.o` has **no** bare `=`; `lib/parse.nuc`'s three `from-str` are `from-str.i32.pStrView` &c. So the header both declares a symbol that does not exist and declares it two or three times under one C name. Pre-existing and equally wrong before item 4 (it read `_Bool =(…)`, invalid C, failing at the parser instead of the linker); item 4 makes it explicit by attaching `asm("=")`. The fix is a ruling — give each method its own C name and its own mangled label, or skip overloads honestly the way the three existing `/* … not exported */` paths do. Breaks `parse.h`, `string.h`, `strview.h` |
 | 27 | **A template tyvar is exported as a concrete C type**, found fixing item 4 | `lib/hashset.h` declares `void set_remove(void* self, struct T elem);` — `T` is the template's type variable, emitted as though it were a struct. `cheader-template-instance` catches an instance type like `(Result i64 i32)` but nothing catches a bare tyvar in a parameter position. `defn-is-generic-template` already answers this question for the *whole form*; the gap is that a method on a parametric struct is not itself a generic template |
 | 28 | **A C keyword is emitted as an identifier**, found fixing item 4 | `lib/hashset.nuc` defines `union`, a perfectly ordinary Nucleus name, and the header emits `void union(void* self, void* other);`. `sanitize-for-c` maps illegal *characters* and has no notion of a reserved word, so the name passes through intact and the header does not parse. The same applies to `int`, `return`, `default`, `switch`, `class` and the rest. Item 4's asm-label mechanism makes this trivially fixable (rename to `union_` and label it `asm("union")`, exactly as a hyphenated name is handled) but it is a naming ruling, not a missed call site |
@@ -957,6 +957,8 @@ hit while measuring, verifying, or documenting, not synthesized.
 | 34 | **The argument-coercion guard compares IR type *strings*, so a mismatch between two types that lower to `ptr` is never even checked**, found fixing item 20 (2026-08-10) | The same loop guards on `(!= (strcmp (type-to-ir (slot type)) (type-to-ir ptype)) 0)`. Every pointer flavour lowers to `ptr`, so a `CStr`, a `raw` or a `(ref T)` flowing into a `(fn …)` parameter compares equal, the guard is false, and no coercion is attempted at all — `(take c)` passes a string where a function pointer is expected and the callee calls it. Distinct from item 33 (there the guard fires and the *result* is dropped; here the guard never fires), and it is why item 20 looked half-broken: `(take null)` was never accepted, only unchecked. Note `pkind-flow-check` runs unconditionally just above and does catch the nullability subset, which is why `raw`→`(ref T)` arguments *are* diagnosed — the hole is the type identity, not the contract |
 | 35 | **Two namespaces cannot each define one name with the same signature**, split out of item 23 (2026-08-10) | With item 23's symbol half fixed the two definitions no longer *collide* — `@qa__describe` and `@qb__describe` are distinct symbols, and a qualified `qa/describe` filters to its own method. What refuses them is R4's eager same-kind check in `finalize-generics`, whose note still says "a public name must be unique across the whole compilation unit" — true of one flat namespace, and the thing namespaces exist to stop being true. The obstacle is the **bare** reference: one `Generic` per bare name (R2) means `(describe 10)` has two equally good methods and nothing to choose between them. The honest rule is R2 §8.2's own first recommendation, which R4 later overrode — allow the definitions, report ambiguity at the first ambiguous *use*, naming both candidates. That is a ruling change, and it sits on top of the audit B4 explicitly deferred (§9.6: a bare reference currently reaches namespaces the file imported *prefixed*, and filtering it symmetrically "wants its own audit of every `Method` writer first"). Not a typo, not a one-liner, and the diagnostic today is located and names both files — so this is a real limitation with a good error message, not a silent wrong answer |
 | 36 | **A `.nuch` `declare` is silently discarded when the importing unit defines the same name, and even a QUALIFIED call to the library's function then reaches the local one**, found fixing item 24 (2026-08-10) | `emit-nuch-declare-import` returns early on `(scope-lookup-key g-globals fname)`, and the unit's own signature prescan has already bound every local `defn` by the time the import form is emitted — so the header entry is dropped whole: no global binding, no LLVM `declare`, no generic method. Measured: a library exporting `helper (x:i32):i32`, a consumer defining `helper (x:i64):i64`, and `(lib2/helper 3)` emits `call i64 @helper` — the **local** function, under a spelling that names the library's. There is no diagnostic, and the two are not even the same type. Byte-identical on the pre-fix compiler, so it is pre-existing and untouched by item 24, whose registration simply inherits the early return. The skip's stated purpose is idempotence ("already defined (e.g. from include or c-include)"), which a diamond import genuinely needs; what it cannot distinguish is a re-declaration of the same function from a *different* function that happens to share the name. Neighbour of item 29 (both are `.nuch` registration order) and of item 33 (both silently accept a wrong-typed call) |
+| 37 | **A generated C header names a type from an imported library and emits no `#include` for it**, split out of item 25 (2026-08-10) | `lib/string-split.h` declares `struct StrView cur;` — a real user struct, defined in `lib/prelude.nuc` and typedef'd in `lib/prelude.h`, which `string-split.h` neither includes nor forward-declares, so it fails "field has incomplete type" no matter how the *defining* header spells the type. This is the **whole** residual cause of item 25's `string-split.h`, and the last cheader defect that is not a naming ruling. `--emit-cheader` already knows the import set (`emit-cheader-header` walks the forms), so the mechanism exists; the ruling needed is what to emit — `#include "prelude.h"` presumes a filename and a search path the Nucleus import never had, and a forward declaration (`struct StrView;`) is enough for a pointer but not for the by-value field this actually is. Neighbour of item 26/27/28 only in file, not in kind |
+| 38 | **`--emit-cheader` segfaults on a malformed form that every other pipeline diagnoses**, found fixing item 25 (2026-08-10) | Measured on 4 corpus files (`tests/fixtures/s1-missing-ret.nuc`, `w5f-empty-defunion-arm.nuc`, `w5f-empty-param.nuc`, `w5f-empty-union-member.nuc`), identically on the pre- and post-item-25 compiler, so it is pre-existing and independent. `--emit-llvm` on the same input reports `w5f-empty-param.nuc:7: error: expected a name:type declaration, found the empty list '()'`; `--emit-cheader` dies with SIGSEGV and no output. The cause is structural rather than one missing check: the cheader pass walks the form AST directly and reads `(node-at form N)` positions without the arity/shape validation the real parser performs, so any shape the parser would have rejected is dereferenced as though it were well-formed. A crash is the worst diagnosis of a syntax error the compiler can give, and these fixtures exist *because* the syntax is invalid |
 
 **Defect 4, with the precision that says what the fix is.** Independently
 confirmed: `(defstruct My-Rec (a-field i32))` + `(defn my-func (x:i32):i32 …)`
@@ -1041,6 +1043,94 @@ pass. Tests 543 → **546 PASS / 0 FAIL**; `avr-test` 8/8, `abi-test`,
 must be initialized from an existing fn-pointer value, because `coerce-int-val`
 has no `raw`→`TY-FN` case, so `(let (f:(fn i32)(i32) null) …)` is still refused.
 Different chokepoint, different rule.
+
+### W9 item 25 as fixed *(2026-08-10)* — the cause was right and the blast radius was somebody else's
+
+**The recorded cause reproduced exactly, and the recorded consequence belonged to
+two different defects.**
+
+The cause, verbatim from the item and confirmed on a fresh probe:
+`emit-cheader-defstruct` emitted `typedef struct { … } Rec;`, while
+`type-name-to-c` spells *every* reference to a user type `struct Rec`. Tag and
+typedef are different things in C, so nothing ever completed the tag, and every
+by-value use of a library's own type failed against the header the compiler
+generated for that library — a nested field and a by-value parameter alike:
+
+```
+rec.h:14: error: field has incomplete type 'struct Rec'
+u.c:2:  error: argument type 'struct Rec' is incomplete
+```
+
+The fix is the one word the item predicted — `typedef struct Rec { … } Rec;` —
+applied at both producers, since `emit-cheader-defunion` was anonymous for the
+same reason and `type-name-to-c` answers `struct NAME` for a union name too. A tag
+and a typedef may share a spelling (separate C namespaces), so `Rec` and
+`struct Rec` now both name the completed type and no reference site needs a case.
+`cheader-by-value-c` — item 3's local workaround, which stripped the `struct `
+prefix so a `defvar` could at least be spelled — is deleted, and the one remaining
+spelling is correct in both positions. End to end, on a C consumer that nests the
+struct, reads the nested field and passes one by value: `sum=107 hold=309`, where
+before the same program did not compile.
+
+While there, `emit-cheader-defunion` was switched from bare `ir-name-token` to
+`ns-ir-base`. B3′ gave the defstruct emitter and `type-name-to-c` the namespace
+prefix and missed this one, so a namespaced union's definition and every reference
+to it spelled different C identifiers. Identity under `user`.
+
+**The item's "breaks `char.h`, `error.h`, `string-split.h`" was wrong**, and the
+way it was wrong is the reusable part: those three were attributed to this defect
+by inspection — they contained `struct X` fields that would not compile — without
+checking *which* `X`. Regenerating all 34 committed headers after the fix left all
+three still broken, for two causes that are not this one:
+
+| header | actual cause | disposition |
+|---|---|---|
+| `char.h`, `error.h` | `Char` and `Err` are **builtin scalars**, not structs | fixed here, 2 lines |
+| `string-split.h` | `StrView` is a real struct **from another library**, never included | filed as item 37 |
+
+`Char` and `Err` resolve by name in `union-registry.nuc` and lower to `i32`
+(verified in the IR: `define i64 @char-utf8-len(i32 %c.arg)`). The *Type*-keyed
+renderer `type-to-c` has always answered `uint32_t` / `int32_t` for them; the
+*name*-keyed `type-name-to-c` that the cheader pass actually uses had no case for
+either, so both fell through its "assume struct" arm. That is the identical trap
+its own comment already records for `usize`/`ssize` — the third instance of one
+rule living in two functions that must agree, so the fix went next to the second
+instance rather than at a call site. `lib/char.h` improves from `struct Char c` to
+`uint32_t c`, which is also the first time it was ABI-honest.
+
+**Corpus, measured rather than argued.** Every `.nuc` in `examples/`,
+`tests/fixtures/`, `lib/`, `src/`, both compilers:
+
+- IR: **231 identical, 0 differing**; 170 rejected identically, 0 rejected
+  differently; 0 new acceptances, 0 new rejections. The change cannot reach codegen
+  — `type-name-to-c` and `type-node-to-c` have no caller outside `cheader.nuc` —
+  and the sweep says so rather than the reasoning.
+- Headers: 287 identical, 114 differing, **0 status changes**. Of the 375 corpus
+  files that emit a header, **340 compiled before and 349 after, with none
+  regressed**. Item 4 took the committed `lib/*.h` from 13 of 34 to 27; this takes
+  it to 29.
+
+The remaining 5 are the three still-open cheader defects: 26 (overloaded and
+operator names — `parse.h`, `string.h`, `strview.h`), 27 + 28 (tyvar and C keyword
+— `hashset.h`), and the newly split item 37 (`string-split.h`).
+
+**Filed, not fixed: item 38.** The sweep found `--emit-cheader` **segfaults** on 4
+malformed fixtures that `--emit-llvm` rejects with a located message. Identical on
+both compilers, so pre-existing and unrelated; recorded because a crash is the
+worst possible diagnosis of a syntax error and the fixtures exist precisely
+because the syntax is invalid.
+
+**Verification.** 566 PASS / 0 FAIL (+5: `w9-cheader-struct-tagged`,
+`-builtin-scalar-not-struct`, `-struct-by-value-c-consumer`,
+`-no-anonymous-typedef`, `-lib-corpus-compiles`); the first three FAIL on the
+pre-fix compiler. Stage 1 == stage 2 on the first pass; `make update-bootstrap`
+then `make clean && make && make bootstrap` re-converged. `abi-test`,
+`layout-test`, `avr-test` green; `check-headers` 69/69 after regenerating the 12
+that drifted; `riscv-test` SKIP (container missing cross-libc). One existing gate
+changed on purpose: `w9-cheader-global-lines` asserted `extern CRec rec_val`, the
+typedef spelling `cheader-by-value-c` produced, and now asserts
+`extern struct CRec rec_val` — the assertion encoded the missing tag as the
+expected behaviour.
 
 ### W9 item 24 as fixed *(2026-08-10)* — a producer that wrote one of the two registries
 

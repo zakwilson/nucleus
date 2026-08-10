@@ -1570,7 +1570,7 @@ EOF
   if grep -qxF 'extern int32_t counter;' "$d/clib.h" \
      && grep -qxF 'extern const int32_t limit;' "$d/clib.h" \
      && grep -qxF 'extern int64_t tick_count asm("tick-count");' "$d/clib.h" \
-     && grep -qxF 'extern CRec rec_val asm("rec-val");' "$d/clib.h" \
+     && grep -qxF 'extern struct CRec rec_val asm("rec-val");' "$d/clib.h" \
      && ! grep -q 'hidden' "$d/clib.h"; then
     echo "PASS  w9-cheader-global-lines"
   else
@@ -1590,8 +1590,9 @@ EOF
   # The whole point, end to end: a C program that #includes the header reads the
   # globals BY VALUE, calls in to mutate one, and sees the new value — so the
   # asm-labelled declaration and the plain one both reach the real symbol, and
-  # `rec_val` proves the by-value struct spelling is the typedef (`struct CRec`
-  # would be an incomplete tag and fail the moment `.a` is touched).
+  # `rec_val` proves the by-value struct spelling works the moment `.a` is
+  # touched. That spelling was the typedef name until W9 item 25 tagged the
+  # struct; `struct CRec` was an incomplete tag then and is the one spelling now.
   cat > "$d/main.c" <<'EOF'
 #include <stdio.h>
 #include "clib.h"
@@ -5754,6 +5755,111 @@ EOF
   rm -rf "$d"
 }
 spawn run_w9_nuch_declare_generic
+
+# W9 item 25: a generated C header must define a struct TAG, not just a typedef.
+# `type-name-to-c` spells every reference to a user type `struct NAME`, so while
+# `emit-cheader-defstruct` emitted an anonymous `typedef struct { … } NAME;` the
+# tag was never completed and every BY-VALUE use of a library's own type failed —
+# a field ("field has incomplete type 'struct Rec'") and a parameter alike.
+#
+# Measured alongside it, and a SECOND cause of the same broken headers: `Char`
+# and `Err` are builtin scalars that lower to `i32`, and this name-keyed renderer
+# had no case for either (the Type-keyed `type-to-c` always did), so they were
+# emitted as `struct Char` / `struct Err` — the reason tagging alone left
+# `lib/char.h` and `lib/error.h` uncompilable.
+#
+# Asserted by compiling and RUNNING a C consumer that nests the struct, reads the
+# nested field and passes one by value: a header that merely parses could still
+# disagree about layout, and `sum`/`hold` are wrong if it does.
+run_w9_cheader_struct_tag() {
+  local d out
+  d="$(mktemp -d)"
+  cat > "$d/tlib.nuc" <<'EOF'
+(defstruct Rec a:i32 b:i32)
+(defstruct Holder r:Rec n:i32)
+(defunion Shape (circle r:i32) (square s:i32))
+(defn rec-sum (r:Rec):i32
+  (let (q:ptr:Rec (alloca Rec))
+    (ptr-set! q r)
+    (return (+ (q a) (q b)))))
+(defn holder-sum (h:(ref Holder)):i32
+  (let (q:ptr:Rec (alloca Rec))
+    (ptr-set! q (h r))
+    (return (+ (+ (q a) (q b)) (h n)))))
+(defn ch-echo (c:Char):Char (return c))
+EOF
+  if ! ./build/nucleusc --emit-cheader "$d/tlib.nuc" > "$d/tlib.h" 2>"$d/err"; then
+    echo "FAIL  w9-cheader-struct-tag (--emit-cheader failed)"; sed 's/^/    /' "$d/err"; rm -rf "$d"; return 0
+  fi
+
+  # Tag and typedef share a spelling — legal C, separate namespaces — so both
+  # `Rec` and `struct Rec` name the completed type. A defunion is tagged for the
+  # same reason: `type-name-to-c` answers `struct NAME` for a union name too.
+  if grep -qxF 'typedef struct Rec {' "$d/tlib.h" \
+     && grep -qxF 'typedef struct Holder {' "$d/tlib.h" \
+     && grep -qxF 'typedef struct Shape {' "$d/tlib.h"; then
+    echo "PASS  w9-cheader-struct-tagged"
+  else
+    echo "FAIL  w9-cheader-struct-tagged"; grep -n 'typedef struct' "$d/tlib.h" | sed 's/^/    /'
+  fi
+
+  # A builtin scalar is not a struct. `Char` lowers to i32 (verified in the IR:
+  # `define i64 @char-utf8-len(i32 %c.arg)`), so the C spelling is uint32_t.
+  if grep -qxF 'uint32_t ch_echo(uint32_t c) asm("ch-echo");' "$d/tlib.h" \
+     && ! grep -q 'struct Char' "$d/tlib.h"; then
+    echo "PASS  w9-cheader-builtin-scalar-not-struct"
+  else
+    echo "FAIL  w9-cheader-builtin-scalar-not-struct"; grep -n 'ch_echo\|struct Char' "$d/tlib.h" | sed 's/^/    /'
+  fi
+
+  cat > "$d/main.c" <<'EOF'
+#include <stdio.h>
+#include "tlib.h"
+int main(void) {
+    Holder h;
+    h.r.a = 100; h.r.b = 7; h.n = 202;
+    struct Rec byval = h.r;
+    printf("sum=%d hold=%d ch=%u\n", rec_sum(byval), holder_sum(&h), ch_echo(0x1F600u));
+    return 0;
+}
+EOF
+  if ./build/nucleusc -c -o "$d/tlib.o" "$d/tlib.nuc" 2>"$d/err" \
+     && clang -Wall -Werror -I "$d" "$d/main.c" "$d/tlib.o" -o "$d/tmain" 2>>"$d/err"; then
+    out="$("$d/tmain")"
+    if [ "$out" = "sum=107 hold=309 ch=128512" ]; then
+      echo "PASS  w9-cheader-struct-by-value-c-consumer"
+    else
+      echo "FAIL  w9-cheader-struct-by-value-c-consumer (want 'sum=107 hold=309 ch=128512', got '$out')"
+    fi
+  else
+    echo "FAIL  w9-cheader-struct-by-value-c-consumer (build failed)"; sed 's/^/    /' "$d/err" | head -8
+  fi
+
+  # The committed corpus is the real regression surface, asserted two ways that
+  # do not move when the three still-open cheader defects (26/27/28) are closed.
+  # First: no committed header may reintroduce an anonymous typedef, which is the
+  # defect itself and is checkable without compiling anything.
+  if ! grep -l 'typedef struct {' lib/*.h >/dev/null 2>&1; then
+    echo "PASS  w9-cheader-no-anonymous-typedef"
+  else
+    echo "FAIL  w9-cheader-no-anonymous-typedef"; grep -l 'typedef struct {' lib/*.h | sed 's/^/    /'
+  fi
+
+  # Second: the two headers this item takes from broken to compiling. Item 4
+  # measured 27 of the 34 lib/*.h parsing; these make it 29.
+  local bad=""
+  for hdr in char error; do
+    printf '#include "%s.h"\nint main(void){return 0;}\n' "$hdr" > "$d/inc.c"
+    clang -fsyntax-only -I lib "$d/inc.c" 2>/dev/null || bad="$bad $hdr.h"
+  done
+  if [ -z "$bad" ]; then
+    echo "PASS  w9-cheader-lib-corpus-compiles"
+  else
+    echo "FAIL  w9-cheader-lib-corpus-compiles (still broken:$bad)"
+  fi
+  rm -rf "$d"
+}
+spawn run_w9_cheader_struct_tag
 
 # The tenth defect (`protocol-dyn-annot`). An annotation naming a protocol that
 # exists nowhere used to compile and fabricate a box type; admission now happens

@@ -5,8 +5,8 @@
 
 /* Generated from lib/error.nuc by nucleusc --emit-cheader */
 
-typedef struct {
-    struct Err what;
+typedef struct Handler {
+    int32_t what;
     void* rty;
     void* hfn;
     void* ctx;
@@ -14,4 +14,4 @@ typedef struct {
 } Handler;
 
 extern void* g_handler_top asm("g-handler-top");
-void* err_find_handler(struct Err eid, void* token) asm("err-find-handler");
+void* err_find_handler(int32_t eid, void* token) asm("err-find-handler");

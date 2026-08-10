@@ -1786,6 +1786,16 @@
   ; pointer-sized on every target the compiler supports.
   (when (= name "usize") (return "size_t"))
   (when (= name "ssize") (return "ptrdiff_t"))
+  ; Stage 15 W9 item 25 (measured, a SECOND cause of the same broken headers):
+  ; `Char` and `Err` are builtin scalars — `union-registry.nuc` resolves both by
+  ; name and they lower to `i32` (verified: `define i64 @char-utf8-len(i32 %c.arg)`).
+  ; The Type-keyed renderer `type-to-c` has always answered `uint32_t`/`int32_t`
+  ; for them; this name-keyed one did not, so the fallthrough assumed "struct" and
+  ; every signature mentioning one emitted `struct Char` / `struct Err` — a tag no
+  ; header defines, which is why tagging the typedef does not rescue `char.h` or
+  ; `error.h`. Same trap as usize/ssize above; the two renderers must agree.
+  (when (= name "Char")  (return "uint32_t"))
+  (when (= name "Err")   (return "int32_t"))
   (when (= name "CStr")  (return "const char*"))
   (when (= name "ptr")   (return "void*"))
   ; Assume struct type — sanitize the name for C. `ir-name-token` first maps the
@@ -1942,7 +1952,14 @@
   (let (name:ptr (sanitize-for-c (ns-ir-base ((unsafe/cast ptr:Node (node-at form 1)) s)))
         nfields:i32 (- (node-len form) 2))
     (check-ir-name-legal ((unsafe/cast ptr:Node (node-at form 1)) line) ((unsafe/cast ptr:Node (node-at form 1)) s) name)
-    (printf "typedef struct {\n")
+    ; Stage 15 W9 item 25: TAG the struct. `type-name-to-c` spells every reference
+    ; to a user type `struct NAME`, so an anonymous typedef leaves `struct NAME` a
+    ; never-completed tag and every BY-VALUE use of the type fails — a field
+    ; (`struct Rec r;` — "field has incomplete type") and a parameter alike, in a
+    ; header the compiler emitted for exactly that purpose. Tag and typedef may
+    ; share a spelling (separate C namespaces), so both work afterwards and the
+    ; reference spelling needs no special case.
+    (printf "typedef struct %s {\n" name)
     (dotimes (i nfields)
       (let (field:ptr (node-at form (+ i 2))
             fname:ptr null
@@ -2122,20 +2139,11 @@
         (when (= h "union") (return 0))
         (return 1)))))
 
-; The BY-VALUE C spelling of a type node. `type-node-to-c` answers `struct NAME`
-; for a user type, which is right behind a pointer (an incomplete tag is legal
-; there) and wrong by value: `emit-cheader-defstruct` emits an ANONYMOUS
-; `typedef struct { … } NAME;`, so `struct NAME` names a different, incomplete
-; tag and `extern struct SR s;` fails to compile the moment a field is touched
-; (measured: "incomplete definition of type 'struct SR'"). The typedef name alone
-; is the by-value spelling. Derived by stripping the prefix `type-node-to-c` just
-; added, rather than by re-deciding builtin-vs-struct here — one list of builtin
-; names, in one place (conventions.md: a rule belongs in ONE function).
-(defn cheader-by-value-c (tn:ptr):ptr
-  (let (c:ptr (type-node-to-c tn))
-    (when (= (strncmp c "struct " 7) 0)
-      (return (as ptr (unsafe/ptr+ (as ptr:i8 c) 7))))
-    (return c)))
+; Item 3 needed a BY-VALUE spelling here (`cheader-by-value-c`, which stripped the
+; `struct ` prefix) because the typedef was anonymous, so `struct NAME` was an
+; incomplete tag and `extern struct SR s;` failed the moment a field was touched.
+; Item 25 tagged the typedef, so `type-node-to-c`'s one answer is now correct in
+; both positions and the second spelling is gone.
 
 ; Stage 15 W9 item 3: export a public `defvar` as `extern T name;`, which is what
 ; docs/toplevel.md has always CLAIMED a global does ("visible to C consumers
@@ -2202,7 +2210,7 @@
           ; AVR-6: `:const` selects LLVM `constant` storage, which is C's `const`.
           (let (cst:ptr (if (!= (bit-and attr-flags DECL-ATTR-CONST) 0) "const " "")
                 link:ptr (ns-ir-base vname)
-                ctype:ptr (cheader-by-value-c tnode))
+                ctype:ptr (type-node-to-c tnode))
             (let (cname:ptr (cheader-c-ident (as raw:i8 link)))
               (printf "extern %s%s %s%s;\n" cst ctype cname
                 (cheader-asm-label link cname)))))))))
@@ -2240,7 +2248,11 @@
     (when (!= (name-node kind) NODE-SYM) (return))
     ; ir-name-token first (`?`→_QMARK / `!`→_BANG), then the blanket C sanitize; see
     ; type-name-to-c. A no-op for names without `?`/`!`, so headers stay byte-identical.
-    (let (name:ptr (sanitize-for-c (ir-name-token (name-node s)))
+    ; Stage 15 W9 item 25: `ns-ir-base`, not bare `ir-name-token` — B3′ applied
+    ; that to `emit-cheader-defstruct` and `type-name-to-c` but not here, so a
+    ; namespaced union's definition and every reference to it spelled different C
+    ; identifiers. Identity under `user`.
+    (let (name:ptr (sanitize-for-c (ns-ir-base (name-node s)))
           narms:i32 (- (node-len form) 2)
           npay:i32 0)
       (check-ir-name-legal (name-node line) (name-node s) name)
@@ -2248,7 +2260,9 @@
       (dotimes (i narms)
         (when (= ((unsafe/cast ptr:Node (node-at form (+ i 2))) kind) NODE-CELL)
           (inc! npay)))
-      (printf "typedef struct {\n    int32_t tag;\n")
+      ; Tagged for the same reason a defstruct is (item 25): `type-name-to-c`
+      ; spells a reference to a union type `struct NAME` too.
+      (printf "typedef struct %s {\n    int32_t tag;\n" name)
       (when (> npay 0)
         (printf "    union {\n")
         (dotimes (i narms)
