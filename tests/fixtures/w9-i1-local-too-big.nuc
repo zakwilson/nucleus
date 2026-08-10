@@ -1,0 +1,12 @@
+; Stage 15 W9 item 9 at the LOCAL position. `int-literal-fits` is shared, so
+; fixing the global initializer fixed `coerce-int-val`'s chokepoint at the same
+; time — let/set!/field-store/aset!/return/call-argument all route through it.
+; A global-only fixture would not have caught a fix applied only to
+; `defvar-init-ir`.
+;
+; Compiling this must FAIL with:
+;   "integer literal 5 does not fit i1"
+(defn main ():i32
+  (let (a:i1 5)
+    (when a (return 1)))
+  (return 0))

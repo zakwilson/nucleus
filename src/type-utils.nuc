@@ -441,7 +441,18 @@
 ; compiler before LW-4's widening lands).
 (defn int-literal-fits (v:i64 t:raw:Type):i32
   (let (w:i32 (int-width t))
-    (when (<= w 1) (return 1))
+    ; Stage 15 W9 item 9: i1/bool holds {0, 1} — the two values `false` and
+    ; `true` denote — not a 1-bit two's complement range. This arm used to
+    ; `(return 1)` for every value, so `(defvar g:i1 5)` reached LLVM as
+    ; `global i1 5` and was silently truncated to true. Falling through to the
+    ; signed branch below would be wrong the other way: it computes [-1, 0] and
+    ; would reject 1. `true`/`false` are NODE-SYM literals and never arrive
+    ; here, so this arm sees only the numeric spelling. Every caller gates on
+    ; `is-int-type`, whose kind list is exactly `int-width`'s, so w is never 0
+    ; in practice — and a caller that did not gate now gets a diagnosed error
+    ; rather than a silent truncation.
+    (when (<= w 1)
+      (if (or (= v 0) (= v 1)) (return 1) (return 0)))
     (when (>= w 64) (return 1))
     (let (wi:i64 (as i64 w)
           one:i64 1)

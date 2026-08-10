@@ -3157,3 +3157,26 @@ Two related traps:
   permissive change (371 of 372 programs byte-identical, the one difference
   being the new accept fixture) and stage 2 the strong evidence for a
   restrictive one. Know which kind you are making.
+
+## `i1` is a bool over `{0, 1}`, not a 1-bit integer
+
+Every other integer type in the language is a two's complement range, so the
+reflex when handling `i1` generically is to treat width 1 the same way. That
+range is `[-1, 0]` — it accepts `-1` and **rejects `1`**, the value `true`
+denotes. Any width-driven rule that reaches `i1` will therefore be wrong in one
+of two directions, and both have already happened:
+
+- `int-literal-fits` short-circuited `(when (<= w 1) (return 1))` — "anything
+  fits" — so `(defvar g:i1 5)` reached LLVM as `global i1 5` and was silently
+  truncated to `true` (W9 item 9). Fixed with an explicit `{0, 1}` arm; the
+  fall-through to the signed branch would have been the opposite error.
+- `is-unsigned` has no `TY-I1` arm and falls through to "signed", so `true`
+  widens with `sext` (`(as i32 true)` is **−1**) and comparisons use `icmp slt`,
+  which makes `(< false true)` and `(> true false)` *both* false (W9 item 31,
+  open).
+
+When adding a rule keyed on `int-width` or `is-unsigned`, check what it does at
+width 1 before assuming the generic path covers it. `true`/`false` are
+`NODE-SYM` literals that emit `true`/`false` directly and never reach the
+integer-literal predicates, so a test written only with the named spellings will
+not exercise any of this — use the numeric one.
