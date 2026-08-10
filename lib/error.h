@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 /* Generated from lib/error.nuc by nucleusc --emit-cheader */
 
@@ -12,4 +13,5 @@ typedef struct {
     void* prev;
 } Handler;
 
+extern void* g_handler_top asm("g-handler-top");
 void* err-find-handler(struct Err eid, void* token);

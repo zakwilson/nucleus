@@ -607,6 +607,48 @@
 ; and, for link-emitting forms, to emit internal LLVM linkage.
 (defvar g-defining-private:i32 0)
 
+; Stage 15 W9 item 2: set to 1 while emitting a definition that is a per-unit
+; COPY rather than one of the unit's own forms — a monomorphized template stamp
+; or a synthesized protocol forwarder. Both are re-derived identically by every
+; unit that needs them, so neither is owned by any file. `drain-mono-worklist`
+; arms it around the one `emit-defn` that emits such a body. See `def-linkage`.
+(defvar g-emitting-copy:i32 0)
+
+; Stage 15 W9 item 2 (design/stage15-stress-test/progress.md). The LLVM linkage
+; word for a top-level definition, WITH its trailing space — "" for the ordinary
+; external case, so every caller is one `%s` and the pre-existing output is
+; byte-identical.
+;
+; A `.nuc` import is inlined, so every object built from a file that imports
+; `lib/vector.nuc` carries its own copy of the whole prelude closure, and two
+; such objects could not be linked. A copy is identical in every unit that has
+; it — that is C++'s `inline`/template rule — so a definition the unit does not
+; OWN is emitted `weak_odr` and the linker keeps exactly one. Ownership is the
+; file the definition was written in: the unit's root owns its own forms; every
+; imported file's definitions, and every synthesized stamp, are copies.
+; Private (`internal`) wins over both: it is not a symbol at all.
+;
+; `weak_odr`, NOT `linkonce_odr`: the two merge identically at link time and both
+; are non-interposable (so nothing about inlining or constant-folding changes),
+; but `linkonce_odr` may be DISCARDED when unreferenced, and `-O3` duly deleted
+; every imported function it had fully inlined. That breaks the macro/CT JIT,
+; which resolves a macro's callees against the running program's dynamic symbol
+; table (`-rdynamic`): the compiler's own `make bootstrap` died `Symbols not
+; found: [ alloc-node ]`. `weak_odr` keeps the definition. The cost is that an
+; unused imported function is no longer dead-stripped from the IR; recovering
+; that needs `-ffunction-sections`/`--gc-sections`, which is a link-flag
+; question, not a linkage-word one.
+(defn def-linkage ():CStr
+  (when (!= g-defining-private 0) (return "internal "))
+  (when (!= g-emitting-copy 0) (return "weak_odr "))
+  (when (= g-unit-entry-path null) (return ""))
+  (when (= g-source-path null) (return ""))
+  ; String equality, not pointer identity: `do-import` resolves a path afresh per
+  ; import form, so the root re-entered through the auto-prelude carries an equal
+  ; but distinct string. Inherits `g-imported`'s spelling-equality limit (W9-1).
+  (when (= (as CStr g-source-path) (as CStr g-unit-entry-path)) (return ""))
+  (return "weak_odr "))
+
 ; Stage 15 B5: has this unit registered ANY private binding of a kind that has
 ; no `Sym`? (`defstruct-` / `defunion-` / `defstruct-`-template / `defunion-`-
 ; template / `defmacro-` / `defprotocol-`.) Privacy for those four definers was
@@ -2341,13 +2383,41 @@
 ; The unit's ROOT is on none of them (nothing imports it), which is what the last
 ; two checks are for — `g-source-path` covers it only while the root is the file
 ; being emitted, so `g-unit-entry-path` covers the rest of the compile.
-(defn path-in-unit (path:CStr):i32
+(defn path-in-unit-exact (path:CStr):i32
   (when (!= (import-list-has g-prescan-visited path) 0) (return 1))
   (when (!= (import-list-has g-prescan-sigs path) 0) (return 1))
   (when (!= (import-list-has g-imported path) 0) (return 1))
   (when (= path (as CStr g-source-path)) (return 1))
   (when (and (!= g-unit-entry-path null) (= path (as CStr g-unit-entry-path)))
     (return 1))
+  (return 0))
+
+; `lib/foo.nuch` is the HEADER FOR `lib/foo.nuc` — one library under two
+; spellings — so the paired spelling, or null for anything else.
+(defn import-sibling-path (path:CStr):ptr
+  (let (n:i64 (as i64 (strlen path)))
+    (when (and (> n 5) (= (as CStr (unsafe/ptr+ (as ptr:i8 path) (- n 5))) ".nuch"))
+      (return (strndup path (- n 1))))
+    (when (and (> n 4) (= (as CStr (unsafe/ptr+ (as ptr:i8 path) (- n 4))) ".nuc"))
+      (return (fmt-s "%sh" path)))
+    (return null)))
+
+; Stage 15 W9 item 2 follow-up: SOURCE OUT-RANKS HEADER, and the two spellings of
+; one library are the same file for this question. `resolve-import` already
+; encodes the ranking on the import side (it tries every directory for `.nuc`
+; before any for `.nuch`); this is the same ruling on the diagnostic side.
+; Without it, a generated `lib/foo.nuch` sitting beside the `lib/foo.nuc` the
+; unit already imports is "outside the unit" by exact-path keying, so the
+; unreachable-file scan reports the library the author is *already using* as one
+; "no import in this unit reaches" — advice they cannot act on, and it out-ranks
+; better tiers (measured: it displaced B3′'s "defined in namespace 'dp'" for
+; `tests/fixtures/b3-type-ns-not-in-scope.nuc` the moment `make lib-headers` had
+; been run). Symmetric on purpose: a unit that imports the `.nuch` must not be
+; told about the `.nuc` either.
+(defn path-in-unit (path:CStr):i32
+  (when (!= (path-in-unit-exact path) 0) (return 1))
+  (let (sib:ptr (import-sibling-path path))
+    (when (!= sib null) (return (path-in-unit-exact (as CStr sib)))))
   (return 0))
 
 ; Scan one directory (non-recursive) for a `.nuc`/`.nuch` file outside the unit
@@ -11619,7 +11689,9 @@
             ; rule rather than a copy of it.
             (when (and (= init-ir null) (or (= init-node null) (!= runtime-init 0)))
               (set! init-ir (type-zero-const-ir ty)))
-            ; Stage 12 N3: private defvar emits `internal` LLVM linkage.
+            ; Stage 12 N3 (`internal` for a private defvar) and W9 item 2
+            ; (`weak_odr` for an imported file's global, so two objects that
+            ; both inline it share one) are both `def-linkage`'s answer.
             ; AVR-6: `:const` selects the LLVM `constant` storage class over
             ; `global` (read-only; on mapped-flash AVR parts it stays out of RAM).
             ; Four combinations: private/public × global/constant. `storage` binds
@@ -11633,9 +11705,7 @@
             ; a `fmt-*`-accumulated table would silently clamp at ~1KB
             ; (context/conventions.md, format-helper buffer sizes).
             (let (storage:ptr (if (!= (bit-and attr-flags DECL-ATTR-CONST) 0) "constant" "global"))
-              (if (!= g-defining-private 0)
-                (fprintf g-out "%s = internal %s %s " ir-name storage (type-to-ir ty))
-                (fprintf g-out "%s = %s %s " ir-name storage (type-to-ir ty)))
+              (fprintf g-out "%s = %s%s %s " ir-name (def-linkage) storage (type-to-ir ty))
               (if (!= init-ir null)
                 (fprintf g-out "%s" init-ir)
                 (defvar-write-const init-node ty (cc line)))
@@ -12522,12 +12592,12 @@
             ; Close streams and emit function
             (fclose g-entry-stream)
             (fclose g-body-stream)
-            ; Stage 12 N3: private defn emits `internal` LLVM linkage.
-            (if (!= g-defining-private 0)
-              (fprintf g-out "define internal %s %s("
-                (abi-ret-ir g-fn-ret-abi ret) (defn-ir-name fname param-types nparams))
-              (fprintf g-out "define %s %s("
-                (abi-ret-ir g-fn-ret-abi ret) (defn-ir-name fname param-types nparams)))
+            ; Stage 12 N3 (`internal` for a private defn) and W9 item 2
+            ; (`weak_odr` for a definition this unit only carries a copy of)
+            ; are the same decision, taken once in `def-linkage`.
+            (fprintf g-out "define %s%s %s("
+              (def-linkage)
+              (abi-ret-ir g-fn-ret-abi ret) (defn-ir-name fname param-types nparams))
             ; Record so a macro/CT JIT module can re-declare it (the define lives
             ; only here in the program module). param-types/nparams are exactly
             ; the signature emitted above (rest param already folded to ptr).
@@ -13150,18 +13220,25 @@
 ; "no error"). The accessors GEP into these by element type, so no length is
 ; needed at the call site. Emitted only when errors are in play, keeping
 ; error-free programs (incl. the compiler's own bootstrap) byte-identical.
+;
+; W9 item 2: `internal`, because error ids are assigned per compilation unit, so
+; the CONTENTS differ between two objects of one program — this is the one
+; synthesized global that is genuinely per-unit rather than a shareable copy, and
+; two library objects collided on it. Every reference is a GEP emitted into the
+; same module (union-emit.nuc, emit-err-field), so nothing outside needs the
+; symbol. Cross-unit id agreement is a separate, pre-existing hole.
 (defn emit-deferror-table (out:ptr):void
   ; count == 1 means only the reserved placeholder (no real deferrors).
   (when (and (= (count g-deferror-name-sids) 1) (= g-err-table-used 0)) (return))
   (let (n:i32 (unsafe/cast i32 (count g-deferror-name-sids)))
-    (fprintf out "@nuc_err_names = constant [%d x ptr] [" n)
+    (fprintf out "@nuc_err_names = internal constant [%d x ptr] [" n)
     (dotimes (i n)
       (when (> i 0) (fprintf out ", "))
       (if (= i 0)
           (fprintf out "ptr null")
           (fprintf out "ptr @.str.%d" (invoke g-deferror-name-sids (as usize i)))))
     (fprintf out "]\n")
-    (fprintf out "@nuc_err_messages = constant [%d x ptr] [" n)
+    (fprintf out "@nuc_err_messages = internal constant [%d x ptr] [" n)
     (dotimes (i n)
       (when (> i 0) (fprintf out ", "))
       (if (= i 0)
@@ -14285,6 +14362,45 @@
   (set! g-body-bufp null)
   (return 1))
 
+; Stage 15 W9 item 2 follow-up. A `defvar` whose initializer cannot be folded to
+; a constant is initialized by its unit's `@__nucleus_init`. Since item 2 gave an
+; imported file's globals `weak_odr`, N objects that each inline that file share
+; ONE global but each still carry a constructor for it — so its initializer runs
+; once per object, not once per program (measured: a counter-bumping initializer
+; in a two-object link observes 2).
+;
+; This is a warning, and it fires only under `-c`, for one reason each:
+;
+;   * **Warning, not error.** A single Nucleus object linked against C code is a
+;     supported shape, and there the initializer runs exactly once — refusing it
+;     would break `run_g3_library`, which is the case §2.4 says nothing else
+;     covers.
+;   * **`-c` only.** `-c` is the one flag that says "a relocatable object bound
+;     for a link with other objects". A default build is whole-program and
+;     correct by construction; `--emit-llvm` says nothing about the eventual
+;     link — it is equally the way a whole program is inspected, so warning there
+;     would fire on `examples/`-style single-unit programs where the initializer
+;     is fine (G-4's own cross-file fixtures are exactly that shape).
+;
+; The compiler cannot see the other half of the condition — whether some *other*
+; object also inlines the same file — so this reports the property it can prove
+; and names the fix. Not guarded away behind a once-flag: see the progress note
+; for why a guard trades this leak for a silent use-before-init.
+(defn warn-shared-runtime-inits ():void
+  (when (= g-emit-obj 0) (return))
+  (when (= g-unit-entry-path null) (return))
+  (let (i:i32 g-init-drained
+        n:i32 (unsafe/cast i32 (count g-init-worklist)))
+    (while (< i n)
+      (let (job:ptr:InitJob (as ptr:InitJob (invoke g-init-worklist (as usize i))))
+        (when (!= (as CStr (job path)) (as CStr g-unit-entry-path))
+          ; The location prefix already names the declaring file and line, so the
+          ; sentence does not repeat the path.
+          (fprintf stderr "%s:%d: warning: %s\n" (job path) (job line)
+            (fmt-s "defvar: '%s' has a run-time initializer, and this object only imports the file that declares it -- every object that imports that file runs the initializer again on the one shared global. Give it a compile-time constant initializer, or move it into the object that owns it"
+                   (job name))))
+        (inc! i)))))
+
 ; The batch drain, called once per compilation at `emit-toplevel-forms` depth 1
 ; — the one point at which every top-level form of every reachable file has been
 ; walked, so "is the queue empty?" is EXACT rather than an over- or
@@ -14312,6 +14428,7 @@
       (die-at (job line)
         (fmt-2s "defvar: '%s' needs a run-time initializer, and target '%s' has no startup-constructor mechanism -- give it a compile-time constant initializer, or declare it without one and assign it explicitly"
           (job name) g-target-triple))))
+  (warn-shared-runtime-inits)
   (set! g-out g-def-stream)
   (when (!= (init-emit-function "__nucleus_init" 1) 0)
     ; The registration global, appended right here. This is the whole of

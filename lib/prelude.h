@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 /* Generated from lib/prelude.nuc by nucleusc --emit-cheader */
 
@@ -25,6 +26,6 @@ enum NodeKind {
 
 typedef struct {
     uint8_t* data;
-    struct usize len;
+    size_t len;
 } StrView;
 

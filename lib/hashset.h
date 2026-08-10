@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 /* Generated from lib/hashset.nuc by nucleusc --emit-cheader */
 
@@ -10,11 +11,11 @@ void hashset-init-alloc(void* s, void* a);
 void* hashset-new(void);
 void* hashset-new-alloc(void* a);
 void* hashset-new-in(void* a);
-void hashset-resize(void* s, struct usize new-cap);
+void hashset-resize(void* s, size_t new-cap);
 void insert(void* self, struct T elem);
 int32_t contains_QMARK(void* self, struct T elem);
 void set-remove(void* self, struct T elem);
-struct usize count(void* self);
+size_t count(void* self);
 int32_t empty_QMARK(void* self);
 void conj(void* self, struct T elem);
 void union(void* self, void* other);

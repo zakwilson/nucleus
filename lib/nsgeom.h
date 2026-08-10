@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 /* Generated from lib/nsgeom.nuc by nucleusc --emit-cheader */
 

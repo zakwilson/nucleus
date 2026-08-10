@@ -560,6 +560,18 @@ not C identifiers, and those declarations are silently unparsed, which is why th
 `--emit-cheader`'s bug, not the importer's, and fixing it means deciding what a
 C header for an un-stamped template should say at all.
 
+> **Update 2026-08-10 (W9 item 3).** The `struct usize` half of that paragraph is
+> **fixed**: `type-name-to-c` had no `usize`/`ssize` case, so both fell through
+> its "assume struct" arm; they now map to `size_t`/`ptrdiff_t` and the generated
+> preamble includes `<stddef.h>`. 14 of the 34 committed `lib/*.h` carried the
+> broken spelling. It became load-bearing because `lib/keyword.nuc`'s
+> `g-keyword-count` is a `usize` **global**, and W9 item 3 started exporting
+> globals. The `struct T` tyvar half and the hyphen half are **unchanged** — the
+> latter is W9 item 4, whose fix is now known to be an `asm("…")` label rather
+> than the `sanitize-for-c` call site its own note records (sanitizing a name the
+> linker resolves turns a parse failure into a link failure). See
+> [progress.md](progress.md)'s W9 item 3 note.
+
 The important half of the check did pass: `make lib-cheaders`'s output is
 **byte-identical** before and after W3b, so nothing about the generated headers
 changed.

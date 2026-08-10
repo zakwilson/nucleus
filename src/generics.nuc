@@ -2742,7 +2742,17 @@
       (set! g-out g-def-stream)
       ; Attach the instantiation context to any error raised while emitting.
       (set! g-mono-context (job context))
-      (emit-defn (job form))
+      ; Stage 15 W9 item 2: a stamp belongs to no file. It is derived from the
+      ; template and the concrete argument tuple, so any unit that instantiates
+      ; it produces the same body under the same symbol — including two library
+      ; objects that each use `(Vector u8)`. `def-linkage` reads this to emit
+      ; `weak_odr`; the call site's `g-source-path` would answer the wrong
+      ; question, exactly as it did for the stamp's namespace (see
+      ; `generic-instantiate-in`'s `src-ns` correction).
+      (let (saved-copy:i32 g-emitting-copy)
+        (set! g-emitting-copy 1)
+        (emit-defn (job form))
+        (set! g-emitting-copy saved-copy))
       (set! g-mono-context null))))
 
 

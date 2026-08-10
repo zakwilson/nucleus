@@ -1161,6 +1161,356 @@ run_w9_lib_standalone() {
   if [ "$bad" -eq 0 ]; then echo "PASS  w9-lib-emit-cheader"
   else echo "FAIL  w9-lib-emit-cheader"; printf '%s' "$body"; fi
 
+  # W9 item 2's known limit, gated for lib/ rather than merely documented: no
+  # library file may carry a run-time initializer for a global it does not own,
+  # because `make lib-so` links all 34 objects and each would run it again on the
+  # one shared global. True today (zero constructors across the whole of lib/);
+  # this is what makes adding one a test failure instead of a silent double init.
+  bad=0; body=""
+  for f in lib/*.nuc; do
+    if ! ./build/nucleusc -c -o "$d/gate.o" "$f" >/dev/null 2>"$d/err"; then
+      continue   # standalone compilation is the loops above's assertion, not this one
+    fi
+    if grep -q "run-time initializer" "$d/err"; then
+      bad=1; body="${body}    ${f}"$'\n'"$(sed 's/^/      /' "$d/err")"$'\n'
+    fi
+  done
+  if [ "$bad" -eq 0 ]; then echo "PASS  w9-lib-no-shared-runtime-init"
+  else echo "FAIL  w9-lib-no-shared-runtime-init"; printf '%s' "$body"; fi
+
+  rm -rf "$d"
+}
+
+# W9 item 2: two separately compiled Nucleus objects must LINK. A `.nuc` import
+# is inlined, so each object carries the whole prelude closure and the two used
+# to collide on `arena-init`, `g-arena`, `intern-symbol`, … — `make lib-so` could
+# not be built at all. Definitions the unit only carries a COPY of are now
+# `weak_odr`; the linker keeps one.
+#
+# "It links" is the weaker half and cannot be the whole test: a linker that kept
+# two private copies of `g-arena` would also link, and every object would then
+# have its own arena and its own intern table. So the counter is bumped from BOTH
+# objects and read back through the third — 1 + 2 = 3 is reachable only if the
+# two objects share one `w9-count`, which is the property that actually matters.
+run_w9_multi_object() {
+  local d
+  d="$(mktemp -d)"; mkdir -p "$d/share" "$d/side" "$d/inc" "$d/main"
+  cat > "$d/share/w9share.nuc" <<'EOF'
+(defvar w9-count:i32 0)
+(defn w9-bump ():void (set! w9-count (+ w9-count 1)))
+(defn w9-get ():i32 (return w9-count))
+EOF
+  cat > "$d/side/w9side.nuc" <<'EOF'
+(import w9share)
+(defn w9-side-bump ():void (w9-bump) (w9-bump))
+EOF
+  # The directory split is load-bearing. `w9side.nuc` is on NO search path main
+  # uses, so `w9side` can only resolve to the header in $d/inc and the call
+  # genuinely crosses the object boundary (asserted by nm below); `w9share.nuc`
+  # is on one, so both objects inline it — that is the duplication under test.
+  # Putting the two in one directory instead makes `resolve-import` take the
+  # source for both (it tries `.nuc` in every directory before any `.nuch`) and
+  # the unit quietly stops testing a cross-object call.
+  cat > "$d/main/w9main.nuc" <<'EOF'
+(import w9share)
+(import w9side)
+(defn main ():i32
+  (w9-bump)
+  (w9-side-bump)
+  (return (w9-get)))
+EOF
+  if ! ./build/nucleusc --emit-nuch -I "$d/share" "$d/side/w9side.nuc" > "$d/inc/w9side.nuch" 2>"$d/err" \
+     || ! ./build/nucleusc -c -o "$d/side.o" -I "$d/share" "$d/side/w9side.nuc" 2>>"$d/err" \
+     || ! ./build/nucleusc -c -o "$d/main.o" -I "$d/inc" -I "$d/share" "$d/main/w9main.nuc" 2>>"$d/err"; then
+    echo "FAIL  w9-multi-object-link (compile failed)"; sed 's/^/    /' "$d/err"; rm -rf "$d"; return 0
+  fi
+  if ! clang "$d/main.o" "$d/side.o" -o "$d/prog" 2>"$d/err"; then
+    echo "FAIL  w9-multi-object-link (link failed — the item 2 defect)"
+    sed 's/^/    /' "$d/err" | head -8; rm -rf "$d"; return 0
+  fi
+  set +e; "$d/prog"; local got=$?; set -e
+  if [ "$got" = 3 ]; then
+    echo "PASS  w9-multi-object-link"
+  else
+    echo "FAIL  w9-multi-object-link (want 3, got $got — the two objects do not share w9-count)"
+  fi
+
+  # Two properties this unit would be hollow without: the prelude closure really
+  # is duplicated in both objects (else there was no collision to fix), and the
+  # `w9-side-bump` call really is undefined in main.o (else nothing crosses the
+  # object boundary and the shared counter proves only that one object works).
+  if [ "$(nm "$d/main.o" "$d/side.o" 2>/dev/null | grep -cE ' [WV] arena-init$')" = 2 ] \
+     && nm "$d/main.o" 2>/dev/null | grep -qE '^ +U w9-side-bump$'; then
+    echo "PASS  w9-multi-object-weak-prelude"
+  else
+    echo "FAIL  w9-multi-object-weak-prelude (want a weak arena-init in both, and an undefined w9-side-bump in main.o)"
+    nm "$d/main.o" "$d/side.o" 2>/dev/null | grep -E 'arena-init|w9-side-bump' | sed 's/^/    /'
+  fi
+
+  # Ownership is per definition, not per unit: the root's own forms stay
+  # external (they are what a library EXPORTS), imported ones are copies, and
+  # `internal` still wins for a private definer. One `--emit-llvm` decides all
+  # three, so a rule that answered any of them wrongly fails here.
+  cat > "$d/main/w9own.nuc" <<'EOF'
+(import w9share)
+(defn- w9-secret ():i32 (return 9))
+(defn w9-own ():i32 (return (+ (w9-get) (w9-secret))))
+(defn main ():i32 (return (w9-own)))
+EOF
+  ./build/nucleusc --emit-llvm -I "$d/share" "$d/main/w9own.nuc" > "$d/own.ll" 2>/dev/null || true
+  if grep -qE '^define i32 @w9-own\(' "$d/own.ll" \
+     && grep -qE '^define weak_odr i32 @w9-get\(' "$d/own.ll" \
+     && grep -qE '^@w9-count = weak_odr global ' "$d/own.ll" \
+     && grep -qE '^define internal i32 @w9own_p[0-9]+__w9-secret\(' "$d/own.ll"; then
+    echo "PASS  w9-linkage-ownership"
+  else
+    echo "FAIL  w9-linkage-ownership (root/imported/private must be external/weak_odr/internal)"
+    grep -E '^(define|@w9-count)' "$d/own.ll" | grep -E 'w9-' | sed 's/^/    /'
+  fi
+  rm -rf "$d"
+}
+
+# W9 item 2's known limit, made loud instead of latent. Since imported globals
+# are `weak_odr`, N objects that each inline the declaring file share ONE global
+# but each still carry a constructor for it, so its run-time initializer runs
+# once per object (measured below: 2). The compiler cannot see the other half —
+# whether another object also inlines that file — so it warns on the half it can
+# prove, and only under `-c`, the one flag that says "relocatable object".
+#
+# All four arms matter, and three of them are the ones that keep it from being
+# noise: the owning object is silent, a whole-program build is silent AND runs
+# the initializer exactly once, and `--emit-llvm` is silent because it is equally
+# how a whole program is inspected.
+run_w9_shared_init_warning() {
+  local d out got
+  d="$(mktemp -d)"; mkdir -p "$d/share" "$d/side" "$d/inc" "$d/main"
+  cat > "$d/share/dshare.nuc" <<'EOF'
+(defvar d-calls:i32 0)
+(defn d-next ():i32 (set! d-calls (+ d-calls 1)) (return d-calls))
+(defvar d-runs:i32 (d-next))
+(defn d-calls-get ():i32 (return d-calls))
+EOF
+  cat > "$d/side/dside.nuc" <<'EOF'
+(import dshare)
+(defn d-side ():i32 (return (d-calls-get)))
+EOF
+  cat > "$d/main/dmain.nuc" <<'EOF'
+(import dshare)
+(import dside)
+(defn main ():i32 (return (d-calls-get)))
+EOF
+  printf '(import dshare)\n(defn main ():i32 (return (d-calls-get)))\n' > "$d/main/dwhole.nuc"
+  # dmain.nuc imports dside through the header, so it must exist before the
+  # first compile below — not only before the link at the end.
+  if ! ./build/nucleusc --emit-nuch -I "$d/share" "$d/side/dside.nuc" > "$d/inc/dside.nuch" 2>"$d/err"; then
+    echo "FAIL  w9-shared-init-warns-under-c (--emit-nuch failed)"; sed 's/^/    /' "$d/err"; rm -rf "$d"; return 0
+  fi
+
+  out="$(./build/nucleusc -c -o "$d/main.o" -I "$d/inc" -I "$d/share" "$d/main/dmain.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$out" | grep -qF "dshare.nuc:3: warning: defvar: 'd-runs' has a run-time initializer"; then
+    echo "PASS  w9-shared-init-warns-under-c"
+  else
+    echo "FAIL  w9-shared-init-warns-under-c"; printf '%s\n' "$out" | sed 's/^/    /'
+  fi
+
+  out="$(./build/nucleusc -c -o "$d/own.o" -I "$d/share" "$d/share/dshare.nuc" 2>&1 >/dev/null || true)"
+  if [ -z "$out" ]; then
+    echo "PASS  w9-shared-init-silent-for-owner"
+  else
+    echo "FAIL  w9-shared-init-silent-for-owner (the object that OWNS the global must be silent)"
+    printf '%s\n' "$out" | sed 's/^/    /'
+  fi
+
+  out="$(./build/nucleusc --emit-llvm -I "$d/share" "$d/main/dwhole.nuc" 2>&1 >/dev/null || true)"
+  if [ -z "$out" ]; then
+    echo "PASS  w9-shared-init-silent-under-emit-llvm"
+  else
+    echo "FAIL  w9-shared-init-silent-under-emit-llvm (says nothing about the eventual link)"
+    printf '%s\n' "$out" | sed 's/^/    /'
+  fi
+
+  # A whole-program build is silent *and* correct — the initializer runs once.
+  # Asserted by value, so a future change that suppressed the constructor to
+  # silence the warning would fail here rather than pass quietly.
+  out="$(./build/nucleusc -o "$d/whole" -I "$d/share" "$d/main/dwhole.nuc" 2>&1 >/dev/null || true)"
+  set +e; "$d/whole"; got=$?; set -e
+  if [ -z "$out" ] && [ "$got" = 1 ]; then
+    echo "PASS  w9-shared-init-whole-program-runs-once"
+  else
+    echo "FAIL  w9-shared-init-whole-program-runs-once (want silence and 1, got '$out' / $got)"
+  fi
+
+  # And the thing the warning is about, by value: two objects, one shared global,
+  # initializer observed running twice. This is the measurement behind the
+  # "known limit" in docs/compiler.md — if a future change ever makes it 1, this
+  # fails and the doc is what needs updating.
+  if ./build/nucleusc -c -o "$d/side.o" -I "$d/share" "$d/side/dside.nuc" 2>/dev/null \
+     && clang "$d/main.o" "$d/side.o" -o "$d/dprog" 2>/dev/null; then
+    set +e; "$d/dprog"; got=$?; set -e
+    if [ "$got" = 2 ]; then
+      echo "PASS  w9-shared-init-runs-once-per-object"
+    else
+      echo "FAIL  w9-shared-init-runs-once-per-object (want 2, got $got)"
+    fi
+  else
+    echo "FAIL  w9-shared-init-runs-once-per-object (build failed)"
+  fi
+  rm -rf "$d"
+}
+
+# W9 item 3: `--emit-cheader` exports a public `defvar` as `extern T name;`. The
+# dispatch had no `defvar` arm at all, so a C consumer could reach a library's
+# functions and none of its state — while docs/toplevel.md already promised
+# "visible to C consumers (`extern T name;`)" and `--emit-nuch` already did the
+# Nucleus half.
+#
+# The load-bearing part is the NAME. A global's link symbol keeps its hyphens
+# (`@ch-count`), which is not a C identifier; sanitizing it to `ch_count` yields a
+# header that parses and then fails to link, so a name needing sanitization
+# carries an `asm("…")` label and one that does not stays plain, portable C.
+# Asserted by actually compiling and running a C consumer against the object —
+# `grep`ping the header could not tell a correct label from a broken one.
+run_w9_cheader_globals() {
+  local d out
+  d="$(mktemp -d)"
+  cat > "$d/clib.nuc" <<'EOF'
+(defvar counter:i32 7)
+(defvar :const limit:i32 99)
+(defvar tick-count:i64 41)
+(defvar- hidden:i32 5)
+(defstruct CRec (a i32))
+(defvar rec-val:CRec)
+(defvar m-skip:(Maybe i32) (none))
+(defvar arr-skip:(array i32 4))
+(defn bump ():i32 (set! counter (+ counter 1)) (return counter))
+EOF
+  if ! ./build/nucleusc --emit-cheader "$d/clib.nuc" > "$d/clib.h" 2>"$d/err"; then
+    echo "FAIL  w9-cheader-globals (--emit-cheader failed)"; sed 's/^/    /' "$d/err"; rm -rf "$d"; return 0
+  fi
+
+  if grep -qxF 'extern int32_t counter;' "$d/clib.h" \
+     && grep -qxF 'extern const int32_t limit;' "$d/clib.h" \
+     && grep -qxF 'extern int64_t tick_count asm("tick-count");' "$d/clib.h" \
+     && grep -qxF 'extern CRec rec_val asm("rec-val");' "$d/clib.h" \
+     && ! grep -q 'hidden' "$d/clib.h"; then
+    echo "PASS  w9-cheader-global-lines"
+  else
+    echo "FAIL  w9-cheader-global-lines"; grep -nE 'extern|hidden' "$d/clib.h" | sed 's/^/    /'
+  fi
+
+  # A declaration the C compiler trusts and gets wrong is worse than an omission:
+  # `type-node-to-c` answers `void*` for any cell head it does not know, which
+  # would declare a pointer-sized object over a `(Maybe i32)` or an array.
+  if grep -qF '/* m-skip: type has no C spelling here; not exported */' "$d/clib.h" \
+     && grep -qF '/* arr-skip: type has no C spelling here; not exported */' "$d/clib.h"; then
+    echo "PASS  w9-cheader-global-skips-unspellable"
+  else
+    echo "FAIL  w9-cheader-global-skips-unspellable"; grep -n 'skip' "$d/clib.h" | sed 's/^/    /'
+  fi
+
+  # The whole point, end to end: a C program that #includes the header reads the
+  # globals BY VALUE, calls in to mutate one, and sees the new value — so the
+  # asm-labelled declaration and the plain one both reach the real symbol, and
+  # `rec_val` proves the by-value struct spelling is the typedef (`struct CRec`
+  # would be an incomplete tag and fail the moment `.a` is touched).
+  cat > "$d/main.c" <<'EOF'
+#include <stdio.h>
+#include "clib.h"
+int main(void) {
+    int b = bump();
+    printf("%d %d %lld %d %d\n", counter, limit, (long long)tick_count, b, rec_val.a);
+    return 0;
+}
+EOF
+  if ./build/nucleusc -c -o "$d/clib.o" "$d/clib.nuc" 2>"$d/err" \
+     && clang -Wall -Werror -I "$d" "$d/main.c" "$d/clib.o" -o "$d/cmain" 2>>"$d/err"; then
+    out="$("$d/cmain")"
+    if [ "$out" = "8 99 41 8 0" ]; then
+      echo "PASS  w9-cheader-c-consumer-reads-globals"
+    else
+      echo "FAIL  w9-cheader-c-consumer-reads-globals (want '8 99 41 8 0', got '$out')"
+    fi
+  else
+    echo "FAIL  w9-cheader-c-consumer-reads-globals (build failed)"; sed 's/^/    /' "$d/err" | head -8
+  fi
+
+  # A private global must not be reachable from C at all — asserted by a consumer
+  # that names it FAILING to compile, not merely by its absence from the header.
+  printf '#include "clib.h"\nint main(void){ return hidden; }\n' > "$d/priv.c"
+  if clang -c -o /dev/null -I "$d" "$d/priv.c" 2>/dev/null; then
+    echo "FAIL  w9-cheader-private-global-not-exported (a defvar- reached C)"
+  else
+    echo "PASS  w9-cheader-private-global-not-exported"
+  fi
+
+  # usize/ssize map to size_t/ptrdiff_t. Before W9 item 3 they fell through the
+  # "assume struct" arm and emitted `struct usize`, which does not exist —
+  # 14 of the committed lib/*.h carried it, and a `usize` GLOBAL is what turned
+  # a latent defect into a broken `extern` line.
+  printf '(defvar kc:usize 3)\n(defn take (n:usize):ssize (return (as ssize n)))\n' > "$d/sz.nuc"
+  ./build/nucleusc --emit-cheader "$d/sz.nuc" > "$d/sz.h" 2>/dev/null || true
+  if grep -qxF 'extern size_t kc;' "$d/sz.h" \
+     && grep -qxF 'ptrdiff_t take(size_t n);' "$d/sz.h" \
+     && ! grep -q 'struct usize' "$d/sz.h"; then
+    echo "PASS  w9-cheader-usize-maps-to-size-t"
+  else
+    echo "FAIL  w9-cheader-usize-maps-to-size-t"; grep -nE 'kc|take' "$d/sz.h" | sed 's/^/    /'
+  fi
+  rm -rf "$d"
+}
+
+# SOURCE OUT-RANKS HEADER, asserted on both sides of the ruling. `resolve-import`
+# already tries `.nuc` in every directory before any `.nuch`, so an import takes
+# the source — but `path-in-unit` keyed on the exact path spelling, so the
+# `foo.nuch` generated beside the `foo.nuc` the unit imports counted as a
+# DIFFERENT file, outside the unit. The unreachable-file scan then reported the
+# library the author is already using as one "no import in this unit reaches",
+# and, being an earlier tier, it displaced the diagnostic that was actually true.
+# Reproduced in-tree the moment `make lib-headers` had been run (it made
+# b3-type-ns-not-in-scope fail); this unit builds the same shape from scratch so
+# it does not depend on which artefacts happen to be sitting in lib/.
+run_w9_source_outranks_header() {
+  local d ir err
+  d="$(mktemp -d)"; mkdir -p "$d/l"
+  cat > "$d/l/w9sh.nuc" <<'EOF'
+(ns shn)
+(defstruct W9Rec (n i32))
+(defn w9sh-get ((r (ref W9Rec))):i32 (return (_get r n)))
+EOF
+  cat > "$d/w9shuse.nuc" <<'EOF'
+(import-prefixed w9sh shp)
+(defn w9-take ((r (ref W9Rec))):i32 (return (w9sh-get r)))
+(defn main ():i32 (return 0))
+EOF
+  ./build/nucleusc --emit-nuch -I "$d/l" "$d/l/w9sh.nuc" > "$d/l/w9sh.nuch" 2>/dev/null || true
+  if [ ! -s "$d/l/w9sh.nuch" ]; then
+    echo "FAIL  w9-source-outranks-header (could not generate the sibling header)"; rm -rf "$d"; return 0
+  fi
+
+  # 1. The import takes the SOURCE even with the header beside it: an inlined
+  #    definition, not a link-time `declare`.
+  printf '(import w9sh)\n(defn main ():i32 (return 0))\n' > "$d/w9shok.nuc"
+  ir="$(./build/nucleusc --emit-llvm -I "$d/l" "$d/w9shok.nuc" 2>/dev/null || true)"
+  if printf '%s' "$ir" | grep -qE '^define .*@shn__w9sh-get\(' ; then
+    echo "PASS  w9-import-prefers-source"
+  else
+    echo "FAIL  w9-import-prefers-source (header won, or the symbol moved)"
+    printf '%s' "$ir" | grep -E 'w9sh-get' | sed 's/^/    /' | head -4
+  fi
+
+  # 2. The diagnostic side of the same ruling: the sibling header must not be
+  #    named as an unreachable definer, and the better tier must survive.
+  err="$(./build/nucleusc --emit-llvm -I "$d/l" "$d/w9shuse.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | grep -qF "w9sh.nuch"; then
+    echo "FAIL  w9-sibling-header-not-unreachable (named the header for a library the unit imports)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  elif printf '%s' "$err" | grep -qF "defined in namespace 'shn'" \
+       && printf '%s' "$err" | grep -qF "note: write 'shp/W9Rec' here"; then
+    echo "PASS  w9-sibling-header-not-unreachable"
+  else
+    echo "FAIL  w9-sibling-header-not-unreachable (expected the namespace tier)"
+    printf '%s\n' "$err" | sed 's/^/    /'
+  fi
   rm -rf "$d"
 }
 
@@ -1463,8 +1813,12 @@ run_w1_late_overload_symbol() {
     (return 0)))
 EOF
   ir="$(./build/nucleusc --emit-llvm "$d/w1-late.nuc" 2>/dev/null || true)"
-  if printf '%s' "$ir" | grep -q '^define ptr @append\.ptr\.ptr(' \
-     && ! printf '%s' "$ir" | grep -qE '^define ptr @append\(' ; then
+  # `append` is written in lib/list.nuc, which this unit IMPORTS, so W9 item 2
+  # gives it `weak_odr`. The linkage word is matched, not skipped: it is the
+  # unit's answer to "do I own this definition", and a silent flip to external
+  # would be the multi-object link failure item 2 fixed.
+  if printf '%s' "$ir" | grep -q '^define weak_odr ptr @append\.ptr\.ptr(' \
+     && ! printf '%s' "$ir" | grep -qE '^define ([a-z_]+ )?ptr @append\(' ; then
     echo "PASS  w1-late-overload-symbol"
   else
     echo "FAIL  w1-late-overload-symbol (definition and call sites disagree on the mangled name)"
@@ -2698,9 +3052,13 @@ EOF
   (printf "gmax32=%d gmax64=%ld\n" (gmax 8 3) (gmax (as i64 4) (as i64 9)))
   (return 0))
 EOF
+  # W9 item 2: a stamp belongs to no file — any unit that instantiates the same
+  # template at the same types re-derives the identical body under the identical
+  # symbol — so it is `weak_odr`, which is what lets two objects that both
+  # use `(gmax i32 i32)` link. Asserted here rather than matched loosely.
   ./build/nucleusc --emit-llvm "$s1_dir/tmain.nuc" > "$s1_dir/tmain.ll" 2>/dev/null || true
-  if grep -qF 'define i32 @gmax.i32.i32(' "$s1_dir/tmain.ll" \
-     && grep -qF 'define i64 @gmax.i64.i64(' "$s1_dir/tmain.ll" \
+  if grep -qF 'define weak_odr i32 @gmax.i32.i32(' "$s1_dir/tmain.ll" \
+     && grep -qF 'define weak_odr i64 @gmax.i64.i64(' "$s1_dir/tmain.ll" \
      && grep -qF 'call i32 @gmax.i32.i32(' "$s1_dir/tmain.ll"; then
     echo "PASS  s1-nuch-template-stamps"
   else
@@ -2739,6 +3097,29 @@ run_stdlib_table() {
     echo "FAIL  stdlib-table-generated"
   fi
   printf '%s\n' "$out" | sed 's/^/    /'
+}
+
+# The other generated-and-committed artifacts: lib/*.nuch and lib/*.h. Nothing in
+# the build reads the committed copies -- `make lib-headers` / `make lib-cheaders`
+# overwrite them -- so a change to src/nuch.nuc or src/cheader.nuc leaves them
+# describing a library that no longer exists, with no failure anywhere. This is
+# the gate; scripts/check-headers.sh's header explains the four failure classes.
+#
+# Byte-exact, unlike stdlib-table-generated above: header emission is a pure
+# function of the source, with no host probing, so any difference is real drift.
+run_headers_generated() {
+  # `|| ec=$?` rather than a bare assignment then `$?`: under this script's
+  # `set -e` a failing command substitution in an assignment kills the unit
+  # outright, which would report the failure as an empty result file and lose
+  # the list of drifted headers.
+  local out ec=0
+  out="$(NUCLEUSC=./build/nucleusc ./scripts/check-headers.sh 2>&1)" || ec=$?
+  if [ "$ec" -eq 0 ]; then
+    echo "PASS  headers-generated"
+  else
+    echo "FAIL  headers-generated"
+    printf '%s\n' "$out" | sed 's/^/    /'
+  fi
 }
 
 # Stage 15 W2a: `(* 2 cl)` and `(* cl 2)` must be indistinguishable. The two
@@ -3582,6 +3963,7 @@ spawn run_reject_at w3c-declare-rest tests/fixtures/w3c-declare-rest.nuc \
 
 # --- Stage 15 W4e: docs/stdlib.md's availability table is generated ---------
 spawn run_stdlib_table
+spawn run_headers_generated
 
 # --- Stage 15 W5c: a `defvar` global may be typed CStr ----------------------
 # design/stage15-stress-test/ergonomics.md §W5c (findings §3.7). The positive
@@ -3725,6 +4107,10 @@ spawn run_w1_late_overload_symbol
 spawn run_w9_root_hoist
 spawn run_w9_root_cycle_skip
 spawn run_w9_lib_standalone
+spawn run_w9_multi_object
+spawn run_w9_source_outranks_header
+spawn run_w9_shared_init_warning
+spawn run_w9_cheader_globals
 # W1c: the diagnostic surface. The did-you-mean tier it sits above is pinned by
 # w4a-suggest-spelling; the note deliberately suppresses that tier (they would
 # otherwise offer two diagnoses of one failure), which is why the suggestion

@@ -1743,6 +1743,18 @@
   (when (= name "f32")   (return "float"))
   (when (= name "f64")   (return "double"))
   (when (= name "bool")  (return "_Bool"))
+  ; Stage 11 T0's pointer-sized integers. Without these the fallthrough below
+  ; assumed "struct", so every signature naming one emitted `struct usize` — a
+  ; type that does not exist, silently unparseable, and recorded as a known
+  ; `--emit-cheader` defect in design/stage15-stress-test/cheader.md (14 of the
+  ; committed lib/*.h carried it). W9 item 3 made it load-bearing rather than
+  ; merely latent: `lib/keyword.nuc`'s `g-keyword-count` is a `usize` GLOBAL, and
+  ; a broken `extern` line is exactly what that item exists to stop emitting.
+  ; `size_t`/`ptrdiff_t` rather than `uintptr_t`/`intptr_t` — these are the types
+  ; of counts and indices, which is what usize/ssize are used for; both are
+  ; pointer-sized on every target the compiler supports.
+  (when (= name "usize") (return "size_t"))
+  (when (= name "ssize") (return "ptrdiff_t"))
   (when (= name "CStr")  (return "const char*"))
   (when (= name "ptr")   (return "void*"))
   ; Assume struct type — sanitize the name for C. `ir-name-token` first maps the
@@ -2045,6 +2057,112 @@
                 (printf "void* %s" pname)))))))
     (printf ");\n")))
 
+; Non-zero when this type node is one `type-node-to-c` would answer for by
+; falling through to its `void*` default — i.e. a cell head it does not handle.
+; A NODE-SYM is always fine (scalar, or a struct typedef name); a pointer cell is
+; fine under all three spellings (`ptr` is spelled exactly, `raw`/`ref` land on
+; `void*`, which is the right size and ABI). Every other cell — `(array T N)`, a
+; struct/union template instance, a bare `(fn …)` — is refused.
+(defn cheader-defvar-type-ok (tn:ptr):i32
+  (let (n:ptr:Node (unsafe/cast ptr:Node tn))
+    (when (= (n kind) NODE-SYM) (return 0))
+    (when (!= (n kind) NODE-CELL) (return 1))
+    (let (head:ptr (n car))
+      (when (= head null) (return 1))
+      (when (!= ((unsafe/cast ptr:Node head) kind) NODE-SYM) (return 1))
+      (let (h:ptr ((unsafe/cast ptr:Node head) s))
+        (when (= h "ptr") (return 0))
+        (when (= h "raw") (return 0))
+        (when (= h "ref") (return 0))
+        (when (= h "union") (return 0))
+        (return 1)))))
+
+; The BY-VALUE C spelling of a type node. `type-node-to-c` answers `struct NAME`
+; for a user type, which is right behind a pointer (an incomplete tag is legal
+; there) and wrong by value: `emit-cheader-defstruct` emits an ANONYMOUS
+; `typedef struct { … } NAME;`, so `struct NAME` names a different, incomplete
+; tag and `extern struct SR s;` fails to compile the moment a field is touched
+; (measured: "incomplete definition of type 'struct SR'"). The typedef name alone
+; is the by-value spelling. Derived by stripping the prefix `type-node-to-c` just
+; added, rather than by re-deciding builtin-vs-struct here — one list of builtin
+; names, in one place (conventions.md: a rule belongs in ONE function).
+(defn cheader-by-value-c (tn:ptr):ptr
+  (let (c:ptr (type-node-to-c tn))
+    (when (= (strncmp c "struct " 7) 0)
+      (return (as ptr (unsafe/ptr+ (as ptr:i8 c) 7))))
+    (return c)))
+
+; Stage 15 W9 item 3: export a public `defvar` as `extern T name;`, which is what
+; docs/toplevel.md has always CLAIMED a global does ("visible to C consumers
+; (`extern T name;`)") and what `--emit-nuch` has always done for the Nucleus side
+; (`(extern (g i32))`). The dispatch had no `defvar` arm at all, so a C consumer
+; could reach a library's functions and none of its state.
+;
+; **The C name is not simply the sanitized name, and this is the whole design.**
+; A global's link symbol keeps its hyphens — `(defvar ch-count:i32 7)` emits
+; `@ch-count`, and `nm` shows `D ch-count` — while `ch-count` is not a C
+; identifier. Sanitizing it to `ch_count` produces a header that PARSES and then
+; fails to link (`undefined reference to 'ch_count'`, measured), which is strictly
+; worse than one that fails to parse: the error moves away from its cause. So a
+; name that needs sanitizing carries an `asm("…")` label, which is what makes the
+; C spelling reach the real symbol (measured: the C consumer reads 7).
+;
+; The label is emitted ONLY when the sanitized name differs from the link name, so
+; a library whose names are already C-legal gets a fully portable header and the
+; GCC/Clang extension appears exactly where it is load-bearing. Note this is the
+; opposite conclusion from W9 item 4's recorded one ("the fix is a missed call
+; site") — which holds for type/field/arm/enum names, since those have no linkage,
+; and does not hold for anything the linker resolves.
+(defn emit-cheader-defvar (form:ptr):void
+  (let (fc:ptr:Node (unsafe/cast ptr:Node form)
+        attr-flags:i32 0)
+    ; The name may be preceded by declaration attributes (`(defvar :const g:i32 1)`),
+    ; so the name node comes off the advanced cursor rather than a fixed index —
+    ; the same chokepoint `emit-defvar` uses, not a second reading of the grammar.
+    (let (decl:ptr (parse-decl-attrs (as ptr (fc cdr))
+                     (as ptr:i32 (addr-of attr-flags)) (fc line)))
+      (when (= decl null) (return))
+      (let (name-node:ptr ((unsafe/cast ptr:Node decl) car)
+            vname:ptr null
+            vtname:ptr null)
+        (extract-name-type name-node (as ptr:ptr (addr-of vname))
+                                     (as ptr:ptr (addr-of vtname)))
+        (when (= vname null) (return))
+        (let (tnode:ptr (extract-type-node name-node
+                          ((unsafe/cast ptr:Node name-node) line)))
+          (when (= tnode null)
+            (printf "/* %s: no type annotation; not exported */\n" vname)
+            (return))
+          ; The same two un-C-representable classes `emit-cheader-declare` skips,
+          ; for the same reasons: a defunion-template instance has no C spelling,
+          ; and a closure env / erased box is not C-constructible.
+          (when (!= (cheader-template-instance tnode) 0)
+            (printf "/* %s: uses a defunion-template instance type; not exported */\n" vname)
+            (return))
+          (when (!= (cheader-mentions-closure tnode) 0)
+            (printf "/* %s: exposes a closure or type-erased box type; not C-callable, omitted */\n" vname)
+            (return))
+          ; `type-node-to-c` answers `void*` for every cell head it does not
+          ; recognize, which is SIZE-CORRECT for a pointer and silently wrong for
+          ; anything else — `(defvar m:(Maybe i32) …)` would declare a
+          ; pointer-sized object over a struct. (The two skips above do not catch
+          ; it: `--emit-cheader` is deliberately exempt from the prelude, so
+          ; `Maybe` is not a registered template here.) A *declaration* the C
+          ; compiler trusts and gets wrong is worse than an omission, so this arm
+          ; emits only what that function genuinely spells: a plain type name, or
+          ; a pointer under any of its three spellings.
+          (when (!= (cheader-defvar-type-ok tnode) 0)
+            (printf "/* %s: type has no C spelling here; not exported */\n" vname)
+            (return))
+          ; AVR-6: `:const` selects LLVM `constant` storage, which is C's `const`.
+          (let (cst:ptr (if (!= (bit-and attr-flags DECL-ATTR-CONST) 0) "const " "")
+                link:ptr (ns-ir-base vname)
+                ctype:ptr (cheader-by-value-c tnode))
+            (let (cname:ptr (sanitize-for-c link))
+              (if (= (strcmp cname link) 0)
+                (printf "extern %s%s %s;\n" cst ctype cname)
+                (printf "extern %s%s %s asm(\"%s\");\n" cst ctype cname link)))))))))
+
 (defn emit-cheader-defconst (form:ptr):void
   (let (name:ptr ((unsafe/cast ptr:Node (node-at form 1)) s)
         val-node:ptr:Node (unsafe/cast ptr:Node (node-at form 2)))
@@ -2128,7 +2246,9 @@
   (apply-early-set-ir-prefix forms)
   (printf "#pragma once\n")
   (printf "#include <stdint.h>\n")
-  (printf "#include <stdbool.h>\n\n")
+  (printf "#include <stdbool.h>\n")
+  ; size_t / ptrdiff_t, for usize / ssize (type-name-to-c).
+  (printf "#include <stddef.h>\n\n")
   (printf "/* Generated from %s by nucleusc --emit-cheader */\n\n" source-file)
   ; Register defunion templates first so declares can recognize (and skip)
   ; signatures that mention template-instance types.
@@ -2152,6 +2272,9 @@
             (cond (= h "defstruct") (emit-cheader-defstruct (as ptr f))
                   (= h "defunion")  (emit-cheader-defunion (as ptr f))
                   (= h "defn")      (emit-cheader-declare (as ptr f))
+                  ; W9 item 3. `defvar-` is a different head, so privacy needs no
+                  ; test here — the same way every other arm gets it.
+                  (= h "defvar")    (emit-cheader-defvar (as ptr f))
                   (= h "defconst")  (emit-cheader-defconst (as ptr f))
                   (= h "defenum")   (emit-cheader-defenum (as ptr f))
                   true                         0))))

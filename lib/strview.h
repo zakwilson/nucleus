@@ -1,41 +1,42 @@
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 /* Generated from lib/strview.nuc by nucleusc --emit-cheader */
 
-struct usize strview-len(void* sv);
+size_t strview-len(void* sv);
 int32_t strview-eq(void* a, void* b);
 typedef struct {
     uint8_t* buf;
-    struct usize pos;
-    struct usize len;
+    size_t pos;
+    size_t len;
 } ByteIter;
 
 void* next(void* self);
-struct usize strview-hash(void* sv);
+size_t strview-hash(void* sv);
 struct StrView* strview-from-cstr(const char* cs);
 const char* strview-to-cstr(void* sv);
-struct usize hash(void* self);
+size_t hash(void* self);
 _Bool =(struct StrView a, struct StrView b);
 _Bool _BANG=(struct StrView a, struct StrView b);
 typedef struct {
     uint8_t* buf;
-    struct usize pos;
-    struct usize len;
+    size_t pos;
+    size_t len;
 } CharIter;
 
 void* next(void* self);
-struct usize strview-byte-len(void* sv);
-struct _BANGui8 strview-byte-at(void* sv, struct usize i);
+size_t strview-byte-len(void* sv);
+struct _BANGui8 strview-byte-at(void* sv, size_t i);
 struct ByteIter strview-bytes(void* sv);
 struct StrView strview-as-view(void* sv);
 struct ByteIter cstr-bytes(const char* cs);
 struct CharIter cstr-chars(const char* cs);
-void* strview-sub-bytes(void* sv, struct usize start, struct usize end);
+void* strview-sub-bytes(void* sv, size_t start, size_t end);
 void* strview-byte-find(void* sv, void* needle);
-struct usize strview-char-count(void* sv);
-struct _BANGChar strview-char-at(void* sv, struct usize i);
+size_t strview-char-count(void* sv);
+struct _BANGChar strview-char-at(void* sv, size_t i);
 struct CharIter strview-chars(void* sv);
 int32_t strview-empty(void* sv);
 int32_t strview-starts-with(void* sv, void* prefix);
