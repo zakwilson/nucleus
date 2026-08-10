@@ -5,13 +5,13 @@
 
 /* Generated from lib/iterator.nuc by nucleusc --emit-cheader */
 
-typedef struct {
+typedef struct IntRangeIter {
     int32_t start;
     int32_t end;
 } IntRangeIter;
 
 void* next(void* self);
-typedef struct {
+typedef struct I64ArrayIter {
     int64_t* data;
     size_t pos;
     size_t len;

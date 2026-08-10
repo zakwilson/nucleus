@@ -7,7 +7,7 @@
 
 void* alloc_node(void) asm("alloc-node");
 void* make_cell(void* car, void* cdr, int32_t line) asm("make-cell");
-typedef struct {
+typedef struct InternEntry {
     void* spelling;
     void* node;
 } InternEntry;

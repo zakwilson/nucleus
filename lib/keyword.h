@@ -5,7 +5,7 @@
 
 /* Generated from lib/keyword.nuc by nucleusc --emit-cheader */
 
-typedef struct {
+typedef struct Keyword {
     struct StrView* name;
     size_t id;
     size_t cached_hash;

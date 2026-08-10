@@ -7,7 +7,7 @@
 
 size_t strview_len(void* sv) asm("strview-len");
 int32_t strview_eq(void* a, void* b) asm("strview-eq");
-typedef struct {
+typedef struct ByteIter {
     uint8_t* buf;
     size_t pos;
     size_t len;
@@ -20,7 +20,7 @@ const char* strview_to_cstr(void* sv) asm("strview-to-cstr");
 size_t hash(void* self);
 _Bool _(struct StrView a, struct StrView b) asm("=");
 _Bool _BANG_(struct StrView a, struct StrView b) asm("_BANG=");
-typedef struct {
+typedef struct CharIter {
     uint8_t* buf;
     size_t pos;
     size_t len;

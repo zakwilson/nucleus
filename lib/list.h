@@ -9,7 +9,7 @@ void* cons(void* car, void* cdr);
 void* first(void* n);
 void* rest(void* n);
 void* append(void* a, void* b);
-typedef struct {
+typedef struct ListIter {
     void* cur;
 } ListIter;
 

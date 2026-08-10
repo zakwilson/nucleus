@@ -5,7 +5,7 @@
 
 /* Generated from lib/prelude.nuc by nucleusc --emit-cheader */
 
-typedef struct {
+typedef struct Node {
     int32_t kind;
     int32_t line;
     int64_t i;
@@ -24,7 +24,7 @@ enum NodeKind {
     NodeKind_NODE_CHAR = 6
 };
 
-typedef struct {
+typedef struct StrView {
     uint8_t* data;
     size_t len;
 } StrView;

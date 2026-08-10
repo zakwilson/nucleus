@@ -5,7 +5,7 @@
 
 /* Generated from lib/string-split.nuc by nucleusc --emit-cheader */
 
-typedef struct {
+typedef struct SplitIter {
     uint8_t* buf;
     size_t rem;
     uint8_t* sep_data;
@@ -18,7 +18,7 @@ int32_t split_iter_done(void* it) asm("split-iter-done");
 struct StrView split_iter_next(void* it) asm("split-iter-next");
 struct SplitIter strview_split(void* sv, void* sep) asm("strview-split");
 void* next(void* self);
-typedef struct {
+typedef struct LineIter {
     uint8_t* buf;
     size_t rem;
     int32_t done;
