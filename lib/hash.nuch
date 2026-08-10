@@ -8,5 +8,6 @@
 (defmethod "@hash.pi64" hash ((self (ref i64))) :usize)
 (extend usize Hash)
 (defmethod "@hash.pusize" hash ((self (ref usize))) :usize)
+(declare hash-null-cstr () :void)
 (extend CStr Hash)
 (defmethod "@hash.pcstr" hash ((self (ref CStr))) :usize)

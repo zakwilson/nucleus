@@ -1,0 +1,20 @@
+; Stage 15 W9 item 7: a `CStr` carries NO non-null contract, so it may not flow
+; into a typed non-null slot.
+;
+; `pkind-flow-check` fired only for a `TY-PTR` source. `CStr` is `TY-CSTR`, so it
+; fell out of the check entirely and this line compiled clean, stored a null in a
+; slot whose type says it can never be null, and segfaulted on first use — in the
+; GLOBAL position here and in the identical local (w9-cstr-into-ref-let.nuc).
+;
+; The exemption this replaces was recorded as "a C string is a non-null
+; constant". That is true of a string LITERAL and false of the type: `getenv`
+; returns a `CStr` and returns null.
+;
+; The other direction is still legal and is pinned by w5c-cstr-null-exempt.nuc:
+; a null INTO a `CStr` slot is ordinary C.
+(defstruct W9C7 n:i32)
+
+(defvar g-bad:ptr:W9C7 (as CStr null))
+
+(defn main ():i32
+  (return (g-bad n)))

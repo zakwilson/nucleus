@@ -290,9 +290,20 @@ The deferred default-flip from §6 is done; build plan in
   `void*` locals. Resolution: `pkind-flow-check` **exempts an elem-less
   destination** — a `void*` names no pointee, can't be deref'd (`aref`/field
   access dies on "operand must be typed pointer"), so a non-null obligation on
-  it protects nothing. This is the direct analogue of the CStr-is-ref-compatible
-  refinement and lands the flip's teeth exactly on typed pointers, where
-  `null`/raw/Maybe → `(ref T)` is still an error. (The friction-finding-1
+  it protects nothing. It lands the flip's teeth exactly on typed pointers, where
+  `null`/raw/Maybe → `(ref T)` is still an error.
+
+  > **Correction (Stage 15 W9 item 7, 2026-08-10).** This bullet used to call the
+  > `void*` refinement "the direct analogue of the CStr-is-ref-compatible
+  > refinement". It is the opposite of that. The `void*` exemption is sound
+  > *because the destination cannot be dereferenced*; the CStr exemption let a
+  > possibly-null `CStr` flow into a typed, fully dereferenceable `(ref T)` — and
+  > `(defvar g:ptr:T (as CStr null))`, its local twin, and `(as ptr:T (getenv …))`
+  > all compiled clean and segfaulted. `CStr` carries **no** non-null contract:
+  > "a C string is a non-null constant" is true of a string literal and false of
+  > the type. A `CStr` **source** into a typed non-null destination is now checked
+  > like any other contract-free pointer. The exemption that remains is the other
+  > direction — a null INTO a `CStr` slot, which is ordinary C. (The friction-finding-1
   `noreturn die-at` enabler had already landed at Stage-1; with the `void*`
   exemption the remaining typed-pointer conversion was already complete, so no
   per-site `raw`/narrow churn was needed.)

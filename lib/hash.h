@@ -10,4 +10,5 @@ int64_t fnv1a_int(int64_t h, int64_t v, int32_t n) asm("fnv1a-int");
 size_t hash(void* self);
 size_t hash(void* self);
 size_t hash(void* self);
+void hash_null_cstr(void) asm("hash-null-cstr");
 size_t hash(void* self);

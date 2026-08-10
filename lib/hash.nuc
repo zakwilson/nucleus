@@ -39,7 +39,12 @@
 ; ---------------------------------------------------------------------------
 
 (import-use "stdio.h")
+(import-use "stdlib.h")
 (import-use "string.h")
+
+; `stderr` is a libc global, not a function — C header parsing imports functions
+; only, so it must be declared explicitly (the same line lib/vector.nuc carries).
+(extern stderr:ptr)
 
 ; Fold one byte `b` (0..255, passed as i64) into the running hash `h`.
 ; The * is the FNV prime 0x100000001b3 = 1099511628211.
@@ -91,10 +96,21 @@
   (let (h:i64 -3750763034362895579)
     (return (as usize (fnv1a-int h (as i64 (deref self)) 8)))))
 
+(defn hash-null-cstr ():void
+  (fprintf stderr "hash: null CStr\n")
+  (exit 1))
+
 (extend CStr Hash)
+; The receiver is a non-null `(ref CStr)`, but the CStr VALUE it points at can be
+; null — `CStr` carries no non-null contract (Stage 15 W9 item 7: it used to be
+; exempt from the flow check, so this line converted a possibly-null CStr into a
+; non-null `ptr:i8` silently and a null key segfaulted inside the loop below).
+; There is no error channel on `hash`, so this follows `vector-bounds`: report
+; the caller's bug and stop, rather than fault on the first `aref`.
 (defn hash ((self (ref CStr))):usize
+  (when (= (as raw:i8 (deref self)) null) (hash-null-cstr))
   (let (h:i64 -3750763034362895579
-        s:ptr:i8 (as ptr:i8 (deref self))
+        s:ptr:i8 (unsafe/cast ptr:i8 (deref self))
         i:i64 0)
     (let (c:i32 (bit-and (as i32 (aref s 0)) 255))
       (while (!= c 0)

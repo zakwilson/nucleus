@@ -13,13 +13,19 @@
   (set! h (* h 1099511628211))
   (return h))
 
+; Stage 15 W9 item 7: `raw:i8`, not `ptr:i8`. A `CStr` carries no non-null
+; contract, so converting one to a non-null `ptr:i8` is a claim this function
+; cannot make about its argument; `aref` through a `raw` is the documented
+; unchecked waiver and emits the identical IR. All three callers pass a registry
+; name that is non-null by construction, which is why no guard is added here —
+; unlike lib/hash.nuc's `Hash` conformance, whose key comes from the caller.
 (defn fnv-str (h:i64 s:CStr):i64
   (let (i:i64 0
-        c:i32 (bit-and (as i32 (aref (as ptr:i8 s) 0)) 255))
+        c:i32 (bit-and (as i32 (aref (as raw:i8 s) 0)) 255))
     (while (!= c 0)
       (set! h (fnv-byte h (as i64 c)))
       (set! i (+ i 1))
-      (set! c (bit-and (as i32 (aref (as ptr:i8 s) i)) 255)))
+      (set! c (bit-and (as i32 (aref (as raw:i8 s) i)) 255)))
     (return h)))
 
 (defn hash-type (h:i64 t:raw:Type):i64
@@ -232,7 +238,7 @@
   ; a niche pointer. Checked before the plain ? below. Needs the value-Maybe and
   ; Result templates (prelude).
   (when (and (= (char-at name 0) 63) (= (char-at name 1) 33))
-    (let (result-ty:ptr (parse-type-name (unsafe/ptr+ (as ptr:i8 name) 1) line)
+    (let (result-ty:ptr (parse-type-name (unsafe/ptr+ (as raw:i8 name) 1) line)
           ut:?ptr:UnionTemplate (union-template-lookup-ref "Maybe"))
       (when (= ut null)
         (die-at line "?!T: value-Maybe template not in scope (import the prelude)"))
@@ -246,7 +252,7 @@
   ; own source spells every nullable-pointer Maybe ?ptr:Foo, so no bare value
   ; ?Foo remains there (byte-identical); value ?Foo now means the value-Maybe.
   (when (= (char-at name 0) 63)
-    (let (inner:ptr (parse-type-name (unsafe/ptr+ (as ptr:i8 name) 1) line))
+    (let (inner:ptr (parse-type-name (unsafe/ptr+ (as raw:i8 name) 1) line))
       (when (= (-> inner (unsafe/cast ptr:Type _) (_ kind)) TY-PTR)
         (return (unsafe/cast ref:Type (type-as-pkind inner PTR-MAYBE))))
       ; Value operand: stamp the value-Maybe template (E2 / errors.md §10).
@@ -261,7 +267,7 @@
   ; ? — takes the payload as written (A1's arbitrary payloads: !i64 is
   ; (Result i64 Err)). !?T composes for free: the rest "?T" recurses here.
   (when (= (char-at name 0) 33)
-    (let (inner:ptr (parse-type-name (unsafe/ptr+ (as ptr:i8 name) 1) line)
+    (let (inner:ptr (parse-type-name (unsafe/ptr+ (as raw:i8 name) 1) line)
           ut:?ptr:UnionTemplate (union-template-lookup-ref "Result"))
       (when (= ut null)
         (die-at line "!T: (Result T E) template not in scope (import the prelude)"))
@@ -1457,7 +1463,7 @@
           (let (hs:ptr (-> head0 (unsafe/cast ptr:Node _) (_ s))
                 c0:i32 (char-at hs 0))
             (when (or (= c0 63) (= c0 33))
-              (let (stripped:ptr (as ptr (intern-symbol (unsafe/ptr+ (as ptr:i8 hs) 1)))
+              (let (stripped:ptr (as ptr (intern-symbol (unsafe/ptr+ (as raw:i8 hs) 1)))
                     inner-list:ptr (make-cell stripped (n cdr) line)
                     inner:ptr (parse-type-from-node inner-list line))
                 (when (= c0 63)

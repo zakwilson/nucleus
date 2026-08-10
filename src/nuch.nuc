@@ -214,7 +214,7 @@
   (let (slen:i64 (as i64 (strlen s))
         suflen:i64 (as i64 (strlen suffix)))
     (when (> suflen slen) (return 0))
-    (when (= (unsafe/ptr+ (as ptr:i8 s) (- slen suflen)) suffix)
+    (when (= (unsafe/ptr+ (as raw:i8 s) (- slen suflen)) suffix)
       (return 1))
     (return 0)))
 

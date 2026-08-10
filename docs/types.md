@@ -128,6 +128,13 @@ The two carve-outs in that list are `pkind-flow-check`'s own, not extra
 exceptions invented for globals: a bare `ptr` (`void*`) carries no non-null
 contract because it names no pointee, and `CStr` is its own type kind.
 
+Both are about the **destination**. A `CStr` *source* carries no non-null
+contract either, so it may **not** flow into a typed non-null slot — `(defvar
+g:ptr:T (as CStr null))` and `(as ptr:T (getenv "X"))` are both errors, for the
+same reason a `raw` is. Use `as-ref` and narrow, or `unsafe/cast` to assert. This
+is not a special case for `CStr`: it is the ordinary rule, which `CStr` used to
+escape.
+
 **Uniform `?` (Maybe)**: `?T` ≡ `(Maybe T)` with no
 auto-`ref` injection. For a **pointer** operand it niche-encodes
 (`?ptr:T` / `?ref:T` ≡ `(Maybe (ref T))`, one pointer, `null` = none); for a

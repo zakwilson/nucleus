@@ -14,6 +14,13 @@
 ; `void*` outside the Phase-F non-null regime by context/conventions.md's
 ; string-type lattice. If this file ever fails to compile, that carve-out has
 ; been lost.
+;
+; Stage 15 W9 item 7 narrowed which carve-out that is, and the DIRECTION is the
+; whole of it. A null into a `CStr` DESTINATION — every line below — is ordinary
+; C and stays legal. A `CStr` SOURCE into a typed non-null destination is not,
+; and no longer compiles: `CStr` carries no non-null contract of its own, so
+; `(defvar g:ptr:T (as CStr null))` used to store a null in a slot whose type
+; forbids it (tests/fixtures/w9-cstr-into-ref-*.nuc).
 (defvar g-null:CStr null)
 (defvar g-noinit:CStr)
 
