@@ -1,0 +1,46 @@
+; Stage 15 W9 item 18: comparing a function-pointer VALUE.
+;
+; `emit-binop-vals`' null-literal escape and its pointer-identity arm both gated
+; on `is-ptr-like`, which deliberately excludes TY-FN, so every shape below fell
+; past both into the numeric path and died `= expects integer operands`. Both now
+; ask `is-ptr-repr` — "is this operand one `ptr` register?" — which is the
+; question an identity comparison actually has.
+;
+; All four positions a function pointer can occupy are here, because the defect
+; was general: the global was merely the newest spelling.
+(defn twice (x:i32):i32 (return (* 2 x)))
+(defn negate (x:i32):i32 (return (- 0 x)))
+
+(defvar hook:(fn i32)(i32) null)
+(defvar hook2:(fn i32)(i32) null)
+
+; 1: a GLOBAL slot against the null literal, both operand orders.
+(defn global-unset ():i32
+  (if (= hook null) (return 1) (return 0)))
+(defn global-set ():i32
+  (if (!= null hook) (return 1) (return 0)))
+
+; 2: a PARAMETER — the shape that was broken before fn-pointer globals existed.
+(defn param-unset (h:(fn i32)(i32)):i32
+  (if (= h null) (return 1) (return 0)))
+
+; 3: a LOCAL. Initialized from the global, not from `null`: `coerce-int-val` has
+; no raw→TY-FN case, so `(let (f:(fn i32)(i32) null) …)` is still refused — W9
+; item 20, a separate defect at a different chokepoint.
+(defn local-unset ():i32
+  (let (f:(fn i32)(i32) hook)
+    (if (= f null) (return 1) (return 0))))
+
+; 4: identity against a function used as a VALUE, and against another slot —
+; "is the default hook still installed?", which is what a hook table asks.
+(defn is-twice (h:(fn i32)(i32)):i32
+  (if (= h twice) (return 1) (return 0)))
+(defn same-hook ():i32
+  (if (= hook hook2) (return 1) (return 0)))
+
+(defn main ():i32
+  (set! hook twice)
+  (set! hook2 negate)
+  (return (+ (+ (global-unset) (global-set))
+             (+ (+ (param-unset hook) (local-unset))
+                (+ (is-twice hook) (same-hook))))))

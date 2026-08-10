@@ -956,16 +956,31 @@ you add one, the question is never "is this `TY-PTR`" but "what does this type
 lower to" — and for zero-fill specifically, remember the third bucket: scalars
 (`0`), pointers-of-any-flavour (`null`), and aggregates (`zeroinitializer`).
 
-**`TY-FN` is NOT in `is-ptr-like`, and it is not going to be — admit it by name.**
-The exclusion is deliberate and load-bearing (`is-ptr-like` also gates the free
-`ptr`↔`CStr` value coercion and the `=`/`!=` strcmp lowering, neither of which a
-function pointer should join), so every site that needs "lowers to `ptr`" in the
-*storage/constant* sense spells it as an extra arm beside the predicate:
-`emit-zero-store` has `(when (= (ft kind) TY-FN) (set! zero "null"))` next to its
-`is-ptr-like` line, `type-zero-const-ir` has the same, and W8's fn-pointer-global
-fix added the third — `defvar-init-ir`'s `null` gate. Widening `is-ptr-like`
-itself to "fix" the next one would silently make `(= some-fn-ptr some-cstr)` a
-`strcmp`. Note that `abi-alignof`/`abi-sizeof` already answer `g-target-ptr-bytes`
+**`TY-FN` is NOT in `is-ptr-like`, and it is not going to be. Ask
+`is-ptr-repr`.** The exclusion is deliberate and load-bearing: `is-ptr-like`
+means three things at once — "lowers to `ptr`", "participates in the free
+`ptr`↔`CStr` value coercion", and "`=`/`!=` lower to `strcmp`" — and only the
+first is true of a function pointer. Widening it to "fix" the next hole would
+silently make `(= some-fn-ptr some-cstr)` a `strcmp` of a function's machine
+code. `tests/fixtures/w9-fnptr-cstr-compare.nuc` is the tripwire for exactly
+that; it must stay a diagnostic.
+
+So the representation question has its own predicate, `is-ptr-repr`
+(`src/type-utils.nuc`) = `is-ptr-like` ∪ {`TY-FN`}: *is this value one `ptr`
+register?* Ask it for storage, constant and comparison decisions; ask
+`is-ptr-like` for coercion and string decisions. **This rule cost two defects
+before it had a name.** The convention used to read "admit `TY-FN` by name at
+each site", and by W9 it had been hand-written at three storage sites
+(`emit-zero-store`, `type-zero-const-ir`, `defvar-init-ir`) — while the two
+*comparison* gates in `emit-binop-vals` simply never got their copy, so
+`(= hook null)` fell into the numeric path and died `= expects integer operands`
+for a fn pointer in every position (W9 item 18). That is the same shape as W9
+item 15's GEP index width, and the same lesson: **"write the extra arm at each
+site" is not a convention, it is deferred drift.** A predicate whose doc comment
+states what it is *not* for is the way to keep two rules separate — not four
+copies of one of them.
+
+Note that `abi-alignof`/`abi-sizeof` already answer `g-target-ptr-bytes`
 for `TY-FN` while **`type-size` does not** — it falls through to `1`, so every
 fn-pointer global/local/field slot is emitted `align 1`. Valid but conservative
 IR; if you fix it, know that it moves the IR of every fn-pointer-slot program
@@ -1048,8 +1063,9 @@ body for `(= name null)`/`(!= name null)`, not just the field's read sites.
 **Correction (Stage 15 W5c): the `= null` half of this trap is FIXED — a
 comparison against the `null` literal no longer lowers to `strcmp`.**
 `emit-binop-vals` now suppresses the strcmp branch when either *operand node*
-is the symbol `null` and the other operand is `is-ptr-like`, emitting the
-`icmp eq ptr` identity test instead. `strcmp(x, NULL)` is undefined behaviour
+is the symbol `null` and the other operand is `is-ptr-repr` (W9 item 18
+widened that gate from `is-ptr-like` so a function pointer qualifies too),
+emitting the `icmp eq ptr` identity test instead. `strcmp(x, NULL)` is undefined behaviour
 in C and segfaulted under glibc, so no correct program could depend on the old
 lowering; the fix is strictly a bug fix. Consequence for the paragraph above:
 `(when (= irn null) …)` in a `CStr`-typed parameter's body is now **safe**, and

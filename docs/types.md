@@ -416,11 +416,25 @@ counts as reading it: `(defvar g-v:i32 (g-late 3))` above `(defvar g-late:(fn
 i32)(i32) …)` is refused with both sites named, since `g-late` would still be
 `null` when `g-v`'s initializer ran.
 
-Two current rough edges. `(= h null)` on a function pointer does not compile
-(`= expects integer operands`) — test it with an explicit reinterpret,
-`(= (unsafe/cast ptr h) null)`. And a function-pointer slot is emitted with
-`align 1` rather than the pointer alignment; this is valid but conservative IR,
-not a miscompile.
+**Function pointers compare by identity.** `=` and `!=` on a function pointer
+are machine identity — the same `icmp` a plain pointer gets — in every position
+(global, parameter, local) and against any of: the `null` literal, another
+function-pointer value, or a `defn` name used as a value.
+
+```lisp
+(if (= g-hook null) …)      ; not wired yet
+(if (!= g-hook null) …)
+(if (= g-hook add1) …)      ; still the default hook?
+(if (= g-hook g-other) …)   ; two slots pointing at the same function
+```
+
+A function pointer is deliberately **not** admitted to the `CStr` content
+comparison: `(= g-hook some-cstr)` is a compile error rather than a `strcmp` of
+a function's machine code. Ordering (`<`, `<=`, …) is permitted and compares
+addresses, as it does for `raw`.
+
+One current rough edge: a function-pointer slot is emitted with `align 1` rather
+than the pointer alignment. This is valid but conservative IR, not a miscompile.
 
 ## Implicit Type Coercion
 

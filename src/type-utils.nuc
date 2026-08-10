@@ -211,12 +211,11 @@
 (defn type-zero-const-ir (ty:(raw Type)):CStr
   (let (tt:(raw Type) ty
         tk:i32 (tt kind))
-    (when (!= (is-ptr-like ty) 0) (return "null"))
+    (when (!= (is-ptr-repr ty) 0) (return "null"))
     (when (or (= tk TY-F32) (= tk TY-F64)) (return "0.0"))
     (when (= tk TY-I1) (return "false"))
     (when (or (= tk TY-STRUCT) (= tk TY-UNION) (= tk TY-ARRAY))
       (return "zeroinitializer"))
-    (when (= tk TY-FN) (return "null"))
     (return "0")))
 
 ; Refuse an `(array T N)` where only a first-class value type is meaningful.
@@ -399,6 +398,24 @@
       TY-PTR (return 1)
       TY-CSTR (return 1)
       (return 0))))
+
+; A type whose IR *representation* is one `ptr` register: `is-ptr-like` plus
+; TY-FN. Distinct from `is-ptr-like` on purpose — that predicate carries two
+; further meanings a function pointer must never acquire (the free ptr<->CStr
+; value coercion, and the strcmp lowering of `=`), which is why TY-FN stays out
+; of it. Ask THIS one for representation questions: what constant spells zero,
+; which instruction compares two operands. Ask `is-ptr-like` for coercion and
+; string questions. Widening either into the other silently makes
+; `(= some-fn-ptr some-cstr)` a strcmp; see context/conventions.md.
+;
+; Stage 15 W9 item 18 gave the rule a name. It had been written out by hand at
+; each of its three storage sites (`type-zero-const-ir` below, `emit-zero-store`
+; and `defvar-init-ir`), and the comparison sites in `emit-binop-vals` were
+; simply missing it — the shape W9 item 15 found for the GEP index width.
+(defn is-ptr-repr (t:raw:Type):i32
+  (when (!= (is-ptr-like t) 0) (return 1))
+  (when (= (t kind) TY-FN) (return 1))
+  (return 0))
 
 (defn int-width (t:raw:Type):i32
   (let (k:i32 (t kind))

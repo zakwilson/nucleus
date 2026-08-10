@@ -224,6 +224,43 @@ run_w9_gep_index_width() {
   rm -f "$avr_ir" "$host_ir"
 }
 
+# Stage 15 W9 item 18: comparing a function-pointer value lowers to `icmp … ptr`.
+# The exit code carries the assertion — it is the sum of six comparisons across
+# all four positions a function pointer occupies (global/param/local, and
+# identity against a function symbol and against another slot), so a comparison
+# that compiles but answers wrongly fails here rather than passing as "accepted".
+# The two greps pin the shapes that cannot be produced by any other lowering:
+# identity against a function SYMBOL, and the null literal in LEFT position.
+run_w9_fnptr_compare() {
+  local ir bin rc
+  ir="$(mktemp)"; bin="$(mktemp)"
+  ./build/nucleusc --emit-llvm tests/fixtures/w9-fnptr-compare.nuc > "$ir" 2>/dev/null || true
+
+  if ! llvm-as "$ir" -o /dev/null 2>/dev/null; then
+    echo "FAIL  w9-fnptr-compare-ir (LLVM rejected the emitted IR)"
+    llvm-as "$ir" -o /dev/null 2>&1 | sed 's/^/    /' | head -4
+  elif grep -q 'icmp eq ptr %t[0-9]*, @twice' "$ir" \
+    && grep -q 'icmp ne ptr null, %t[0-9]*' "$ir"; then
+    echo "PASS  w9-fnptr-compare-ir"
+  else
+    echo "FAIL  w9-fnptr-compare-ir (fn-pointer identity did not lower to icmp on ptr)"
+    grep -n 'icmp [a-z]* ptr ' "$ir" | tail -8 | sed 's/^/    /'
+  fi
+
+  # `-x ir`: the mktemp path has no .ll suffix for clang to infer the language from.
+  if clang -w -x ir "$ir" -o "$bin" 2>/dev/null; then
+    "$bin" >/dev/null 2>&1 && rc=0 || rc=$?
+    if [ "$rc" -eq 2 ]; then
+      echo "PASS  w9-fnptr-compare-run"
+    else
+      echo "FAIL  w9-fnptr-compare-run (six comparisons summed to $rc, expected 2)"
+    fi
+  else
+    echo "FAIL  w9-fnptr-compare-run (link failed)"
+  fi
+  rm -f "$ir" "$bin"
+}
+
 # Stage 14 AVR-3 (design/stage14/avr-targets.md §5): the link driver + build
 # flow. This is the first *end-to-end* AVR gate — a real link, not just IR/llc.
 # On an AVR triple the compiler drives `avr-gcc -mmcu=<device>` (not `clang`) and
@@ -4351,6 +4388,15 @@ spawn run_reject_at w9-cstr-into-ref-let tests/fixtures/w9-cstr-into-ref-let.nuc
 spawn run_reject_at w9-cstr-as-typed-ptr tests/fixtures/w9-cstr-as-typed-ptr.nuc \
   "tests/fixtures/w9-cstr-as-typed-ptr.nuc:16: error:" \
   "as: raw pointer CStr where non-null ptr:W9C7A is required"
+# W9 item 18: a function pointer is one `ptr` register, so `=` / `!=` against
+# null, against another slot, or against a function symbol is machine identity.
+spawn run_w9_fnptr_compare
+# ...but it is NOT admitted to the strcmp lowering. This is the tripwire against
+# "fixing" item 18 by widening `is-ptr-like` to contain TY-FN, which would turn
+# the line below into strcmp(hook, msg) — a function's code read as text.
+spawn run_reject_at w9-fnptr-cstr-compare tests/fixtures/w9-fnptr-cstr-compare.nuc \
+  "tests/fixtures/w9-fnptr-cstr-compare.nuc:15: error:" \
+  "=: a CStr compares only with a CStr or pointer"
 #
 # Acceptances: every NULLABLE or contract-free pointer destination stays legal --
 # elem-less bare `ptr` (with and without an init), `(raw T)` / `raw:T`, `?ptr:T`,

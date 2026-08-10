@@ -49,15 +49,21 @@
 ; is the shape a combined declaration+initialization of a compiler hook takes.
 (defvar h-init:(fn i32)() (pick-hook))
 
-; Is a function-pointer slot currently null? `(= h null)` does not compile yet —
-; `emit-binop-vals`' null-literal escape and its pointer-comparison arm both
-; gate on `is-ptr-like`, which excludes TY-FN, so the comparison falls through
-; to the numeric path and dies "= expects integer operands". That gap is
-; pre-existing and general (a fn-pointer *parameter* or *local* null-checks the
-; same way), independent of this fix; the explicit reinterpret is the escape
-; hatch until it is closed.
+; Is a function-pointer slot currently null? Until W9 item 18 this needed an
+; explicit `(= (unsafe/cast ptr h) null)` reinterpret: `emit-binop-vals`' null
+; escape and its identity arm both gated on `is-ptr-like`, which excludes TY-FN,
+; so the comparison fell past both into the numeric path and died "= expects
+; integer operands". Both now ask `is-ptr-repr` ("is this one `ptr` register?"),
+; and the direct spelling below is the proof — a fn-pointer parameter is the
+; shape that was broken, not just the global.
 (defn hook-unset (h:(fn i32)(i32)):i32
-  (if (= (unsafe/cast ptr h) null) (return 1) (return 0)))
+  (if (= h null) (return 1) (return 0)))
+
+; Which function is a hook wired to? The same identity arm answers this, and it
+; is the question a hook table actually gets asked ("is the default still
+; installed?"). Note `twice` here is a function used as a VALUE, not called.
+(defn hook-is-twice (h:(fn i32)(i32)):i32
+  (if (= h twice) (return 1) (return 0)))
 
 (defn main ():i32
   ; A null hook reads back null — the point of allowing the spelling.
@@ -72,9 +78,17 @@
   (printf "h-null  (21)   = %d\n" (h-null 21))
   (printf "h-null  funcall= %d\n" (funcall h-null 50))
 
+  ; Which function is it wired to? Identity against a function used as a value,
+  ; and identity against another fn-pointer *slot* — both are `icmp eq ptr`.
+  (printf "h-null  is twice= %d\n" (hook-is-twice h-null))
+  (set! h-zero twice)
+  (printf "h-null  = h-zero= %d\n" (if (= h-null h-zero) 1 0))
+
   ; Reassign: the global is a mutable slot, not a second name for `twice`.
   (set! h-null negate)
   (printf "h-null  (21)   = %d\n" (h-null 21))
+  (printf "h-null  is twice= %d\n" (hook-is-twice h-null))
+  (printf "h-null  = h-zero= %d\n" (if (= h-null h-zero) 1 0))
 
   (set! h-zero twice)
   (printf "h-zero  (16)   = %d\n" (h-zero 16))

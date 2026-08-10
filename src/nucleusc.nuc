@@ -3209,13 +3209,21 @@
     ; global spellable, so the trap became reachable by ordinary code and is
     ; closed here rather than documented as a footgun.
     ;
-    ; Restricted to a ptr-like partner: a `StrView` is a 16-byte struct and can
-    ; never be null, so `(= sv null)` is left exactly as it was (out of scope).
+    ; Restricted to a partner that IS one `ptr` register: a `StrView` is a
+    ; 16-byte struct and can never be null, so `(= sv null)` is left exactly as
+    ; it was (out of scope).
+    ;
+    ; Stage 15 W9 item 18: `is-ptr-repr`, not `is-ptr-like` — a function pointer
+    ; is a `ptr` register too, and `(= hook null)` is the one question a "not
+    ; wired yet" hook exists to be asked. Under `is-ptr-like` it fell past both
+    ; this escape and the identity arm below into the numeric path and died
+    ; `= expects integer operands`; the workaround was to reinterpret through
+    ; `(unsafe/cast ptr h)`, which is documented in examples/fnptr-global.nuc.
     (let (a-null:i32 (node-is-null-sym a-node)
           b-null:i32 (node-is-null-sym b-node)
           null-cmp:i32 0)
-      (when (and (!= a-null 0) (!= (is-ptr-like (bv type)) 0)) (set! null-cmp 1))
-      (when (and (!= b-null 0) (!= (is-ptr-like (av type)) 0)) (set! null-cmp 1))
+      (when (and (!= a-null 0) (!= (is-ptr-repr (bv type)) 0)) (set! null-cmp 1))
+      (when (and (!= b-null 0) (!= (is-ptr-repr (av type)) 0)) (set! null-cmp 1))
     (let (av-sv:i32 (type-is-strview (av type))
           bv-sv:i32 (type-is-strview (bv type))
           av-cstr:i32 (= ((av type) kind) TY-CSTR)
@@ -3240,14 +3248,22 @@
               (when (= op-name "!=") (set! icmp-op "ne"))
               (fprintf g-body-stream "  %s = icmp %s i32 %s, 0\n" r icmp-op c)
               (return (alloc-val ty-i1 r))))))))
-    ; Pointer comparison.
-    ; Stage 15 W5c: `is-ptr-like`, not TY-PTR — the only way a `CStr` operand
-    ; reaches here is the null-literal escape above (any other CStr comparison
-    ; already returned from the strcmp branch), so this admits exactly
+    ; Pointer comparison — both operands are one `ptr` register, so the
+    ; comparison is machine identity.
+    ; Stage 15 W5c: a representation test, not TY-PTR — the only way a `CStr`
+    ; operand reaches here is the null-literal escape above (any other CStr
+    ; comparison already returned from the strcmp branch), so this admits exactly
     ; `(= cstr-value null)` and lowers it to the `icmp eq ptr` identity test it
     ; always should have been. Both-`ptr` behaviour is unchanged.
-    (when (and (!= (is-ptr-like (av type)) 0)
-             (!= (is-ptr-like (bv type)) 0))
+    ;
+    ; Stage 15 W9 item 18: `is-ptr-repr` also admits TY-FN, so `(= hook null)`,
+    ; `(= hook other-hook)` and `(= hook some-fn-name)` are the identity tests
+    ; they read as. A `CStr` partner is NOT swept in with them — TY-FN is absent
+    ; from the strcmp branch's operand check above, which still rejects
+    ; `(= hook cstr)` rather than silently comparing a function pointer's
+    ; address as text. That asymmetry is the reason `is-ptr-like` stays narrow.
+    (when (and (!= (is-ptr-repr (av type)) 0)
+             (!= (is-ptr-repr (bv type)) 0))
       (when (!= (bop is-cmp) 0)
         (let (tmp:ptr (new-tmp))
           (fprintf g-body-stream "  %s = %s ptr %s, %s\n"
@@ -9044,15 +9060,16 @@
   (let (ft:ptr:Type (unsafe/cast ptr:Type field-type)
         ir:ptr (type-to-ir field-type)
         zero:ptr "0")
-    ; Stage 15 W5d: the pointer test is `is-ptr-like`, not a bare TY-PTR kind —
-    ; a `CStr` (and a `TY-FN` function pointer) lowers to `ptr` in IR, and
+    ; Stage 15 W5d: the pointer test is a representation test, not a bare TY-PTR
+    ; kind — a `CStr` (and a `TY-FN` function pointer) lowers to `ptr` in IR, and
     ; `store ptr 0` is an LLVM parse error ("integer constant must have integer
     ; type"). This is the exact TY-PTR-vs-is-ptr-like trap conventions.md
     ; documents, found via an unfilled slot in `(array CStr (1 c"x"))` and an
     ; omitted `CStr` field in a struct literal. Behaviour for TY-PTR itself is
     ; unchanged ("null"), so every zero-fill that worked before is byte-identical.
-    (when (!= (is-ptr-like ft) 0) (set! zero "null"))
-    (when (= (ft kind) TY-FN) (set! zero "null"))
+    ; W9 item 18 replaced the hand-written `is-ptr-like`-plus-TY-FN pair here
+    ; with `is-ptr-repr`, which is that pair; inert.
+    (when (!= (is-ptr-repr ft) 0) (set! zero "null"))
     (when (= (ft kind) TY-F32) (set! zero "0.000000e+00"))
     (when (= (ft kind) TY-F64) (set! zero "0.000000e+00"))
     ; Stage 15 W8 G-2: an array slot is an aggregate, so it takes the same
@@ -11214,9 +11231,10 @@
         (when (= ty-kind TY-CSTR) (return "null"))
         ; --- ptr (all pkinds) + TY-FN -----------------------------------------
         ; `is-ptr-like` is {TY-PTR, TY-CSTR}: TY-FN is deliberately NOT a member
-        ; (src/type-utils.nuc), so it is admitted by name here rather than by
-        ; widening that predicate — exactly how `emit-zero-store` and
-        ; `type-zero-const-ir` already spell the same three-way rule.
+        ; (src/type-utils.nuc), so this asks `is-ptr-repr` — that pair, under a
+        ; name — rather than widening `is-ptr-like` itself. W9 item 18 gave the
+        ; rule that name; before it, this site and the two other storage sites
+        ; (`emit-zero-store`, `type-zero-const-ir`) each wrote it out by hand.
         ;
         ; A function pointer is `ptr` in IR and its slot's implicit zero is
         ; ALREADY `null` (`type-zero-const-ir`'s TY-FN arm), so rejecting the
@@ -11232,7 +11250,7 @@
         ; PTR-REF, and still reject null through the `pkind-flow-check` below.
         ; So the non-null contract that exists is untouched; TY-FN simply never
         ; carried one, like `CStr` and the elem-less `void*` ptr.
-        (when (and (= (is-ptr-like ty) 0) (!= ty-kind TY-FN))
+        (when (= (is-ptr-repr ty) 0)
           (die-at (node-line init encl)
             (fmt-s "defvar: null requires ptr, CStr or a function-pointer type, not %s"
               (type-spelling ty))))

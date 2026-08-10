@@ -1,0 +1,15 @@
+; Stage 15 W9 item 18, the other half: a function pointer must NOT be admitted
+; to the string comparison.
+;
+; This is the tripwire that keeps `is-ptr-like` narrow. `=` / `!=` on a `CStr`
+; operand lowers to `strcmp`, so if TY-FN were folded into `is-ptr-like` — the
+; obvious way to "fix" item 18 — this line would compile into
+; `strcmp(hook, msg)`, reading a function's machine code as text. Item 18 added
+; the separate `is-ptr-repr` predicate for the representation question instead,
+; and left the strcmp branch's operand check on `is-ptr-like`, so this stays a
+; diagnostic.
+(defvar hook:(fn i32)(i32) null)
+(defvar msg:CStr null)
+
+(defn main ():i32
+  (if (= hook msg) (return 1) (return 0)))
