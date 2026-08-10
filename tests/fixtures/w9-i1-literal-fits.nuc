@@ -1,0 +1,36 @@
+; Stage 15 W9 item 9: `i1`/bool holds exactly {0, 1} — the two values `false`
+; and `true` denote — so both numeric spellings are legal and mean what the
+; named ones mean. Anything else is now rejected (w9-i1-literal-too-big,
+; w9-i1-literal-negative, w9-i1-local-too-big).
+;
+; `int-literal-fits` used to answer "fits" for EVERY value at width 1, so
+; `(defvar g:i1 5)` reached LLVM as `global i1 5` and was silently truncated to
+; true — a wrong value with no diagnostic anywhere.
+;
+; Self-checking: each binding is tested as a condition, so a wrong VALUE fails
+; here rather than passing on an exit-0 compile. `true`/`false` are NODE-SYM
+; literals that never reach the range predicate; they are included to pin that
+; the numeric and named spellings agree.
+
+(defvar w9i1-one:i1 1)
+(defvar w9i1-zero:i1 0)
+(defvar w9i1-true:i1 true)
+(defvar w9i1-false:i1 false)
+
+(defn main ():i32
+  (let (a:i1 1                  ; the implicit coercion path
+        b:i1 0
+        c:i1 (as i1 1)          ; the safe-cast path (W9 item 8's channel)
+        d:i1 (as i1 0))
+    ; Every false must read false.
+    (when b (return 1))
+    (when d (return 2))
+    (when w9i1-zero (return 3))
+    (when w9i1-false (return 4))
+    ; Every true must read true.
+    (when a
+      (when c
+        (when w9i1-one
+          (when w9i1-true
+            (return 0)))))
+    (return 5)))

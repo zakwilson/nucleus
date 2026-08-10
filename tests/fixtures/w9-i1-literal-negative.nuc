@@ -1,0 +1,12 @@
+; Stage 15 W9 item 9's other boundary, and the one that pins WHICH rule was
+; chosen: `i1` is a bool over {0, 1}, not a 1-bit two's complement integer.
+; Reading it as the latter gives the range [-1, 0], which would accept -1 here
+; and reject `1` — the value `true` denotes — so this fixture fails if the
+; width-1 arm is ever "fixed" by letting it fall through to the signed branch.
+;
+; Compiling this must FAIL with:
+;   "defvar: integer literal -1 does not fit i1"
+(defvar w9i1-neg:i1 -1)
+
+(defn main ():i32
+  (return 0))

@@ -2145,6 +2145,25 @@ run_w9_as_literal_narrowing() {
   rm -rf "$d"
 }
 
+# W9 item 9: `i1`/bool holds {0, 1}, and both numeric spellings must survive
+# the range check that now rejects everything else. The IR assertion is the
+# half a run cannot make: an initializer wrongly emitted as `global i1 true`
+# for the written `1` would still exit 0.
+run_w9_i1_literal_range() {
+  local d ir
+  d="$(mktemp -d)"
+  w1_run w9-i1-literal-fits "$d" tests/fixtures/w9-i1-literal-fits.nuc 0
+  ir="$(./build/nucleusc --emit-llvm tests/fixtures/w9-i1-literal-fits.nuc 2>/dev/null || true)"
+  if printf '%s' "$ir" | grep -qF '@w9i1-one = global i1 1' \
+     && printf '%s' "$ir" | grep -qF '@w9i1-zero = global i1 0'; then
+    echo "PASS  w9-i1-literal-emits-written-value"
+  else
+    echo "FAIL  w9-i1-literal-emits-written-value"
+    echo "    want '@w9i1-one = global i1 1' and '@w9i1-zero = global i1 0'"
+  fi
+  rm -rf "$d"
+}
+
 # W1b's half of G-0: `scope-define` qualifies a global's key against
 # `g-current-ns`, so the prescan must apply each visited file's own leading
 # `(ns …)`. Prescanning a namespaced file under the IMPORTER's namespace would
@@ -3844,6 +3863,19 @@ spawn run_reject w9-as-literal-too-big tests/fixtures/w9-as-literal-too-big.nuc 
 spawn run_reject w9-as-literal-signed-into-unsigned \
   tests/fixtures/w9-as-literal-signed-into-unsigned.nuc \
   "as: lossy conversion from i32 to ui8 -- use unsafe/cast"
+
+# W9 item 9: the width-1 arm of `int-literal-fits`. `i1` is a bool over {0, 1},
+# so 5 and -1 are both out of range — the negative case is what pins the rule,
+# since reading i1 as a 1-bit two's complement integer gives [-1, 0] and would
+# invert both answers. The local fixture pins that the fix landed in the shared
+# predicate rather than in `defvar-init-ir` alone.
+spawn run_w9_i1_literal_range
+spawn run_reject w9-i1-literal-too-big tests/fixtures/w9-i1-literal-too-big.nuc \
+  "defvar: integer literal 5 does not fit i1"
+spawn run_reject w9-i1-literal-negative tests/fixtures/w9-i1-literal-negative.nuc \
+  "defvar: integer literal -1 does not fit i1"
+spawn run_reject w9-i1-local-too-big tests/fixtures/w9-i1-local-too-big.nuc \
+  "integer literal 5 does not fit i1"
 
 # Stage 14 unsafe-namespace.md UN-2 — `unsafe` is a reserved pseudo-namespace
 # (D1): no user code may declare `(ns unsafe)`, which would make `unsafe/foo`

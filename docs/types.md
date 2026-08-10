@@ -430,6 +430,12 @@ The following conversions are applied automatically in assignment contexts (`let
     accepts it too — `(as i8 5)` and `(let (a:i8 5) …)` are the same conversion
     and emit the same IR. Only the narrowing of a *value* is outside `as`'s
     safe set.
+  - **`i1`/`bool` holds `{0, 1}`**, not a 1-bit two's-complement range, so the
+    range check above admits exactly those two values: `(defvar g:i1 1)` and
+    `(let (a:i1 0) …)` mean what `true` and `false` mean, while `(defvar g:i1
+    5)` and `(defvar g:i1 -1)` are compile-time errors rather than a silent
+    truncation to `true`. (`true`/`false` are their own literals and are not
+    range-checked.)
 - **Float ↔ float**:
   - Widening `f32` → `f64`: `fpext`.
   - Narrowing `f64` → `f32`: `fptrunc` for a *value*, and for a float **literal**
@@ -523,6 +529,11 @@ The same width rule and the same range check apply to a **named** constant. A
 5000000000)` is `i64`, so `(let (x:i64 BIG) …)` yields `5000000000`, while
 `(let (x:i32 BIG) …)` and `(defvar g:i32 BIG)` are compile-time errors rather
 than a silent 32-bit wrap. Enum members are always small enough to be `i32`.
+
+The narrowest destination is `i1`/`bool`, whose value set is `{0, 1}` — the two
+values `false` and `true` denote. `1` and `0` are legal numeric spellings of
+them; every other literal, including `-1`, is rejected. Reading `i1` as a 1-bit
+*integer* would give the range `[-1, 0]`, which is not the type Nucleus has.
 
 ## String literal escapes — `\n`, `\xHH`
 

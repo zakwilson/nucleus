@@ -1,0 +1,10 @@
+; Stage 15 W9 item 9: a value outside {0, 1} does not fit `i1`. This used to
+; compile to `@w9i1-bad = global i1 5`, which LLVM accepts and silently
+; truncates to true.
+;
+; Compiling this must FAIL with:
+;   "defvar: integer literal 5 does not fit i1"
+(defvar w9i1-bad:i1 5)
+
+(defn main ():i32
+  (return 0))
