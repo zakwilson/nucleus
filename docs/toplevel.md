@@ -397,12 +397,15 @@ Consequences worth knowing:
   *(A `.nuc` file imported by string path — `(import-use "lib/foo.nuc")` — used
   to have the same limit and no longer does: both spellings of an import are
   walked identically.)*
-* **A name overloaded anywhere in the unit gets the mangled symbol everywhere.**
-  Whether a `defn` keeps the plain `@name` LLVM symbol or gets an overload-mangled
-  one is decided from the *whole* unit's method set, before any function is
-  emitted — so it no longer depends on where in the import order the second
-  overload happens to appear. If you link C against a Nucleus function, make sure
-  no other reachable file overloads its name (or expose a uniquely named wrapper).
+* **A name overloaded anywhere in its namespace gets the mangled symbol
+  everywhere in that namespace.** Whether a `defn` keeps the plain `@name` LLVM
+  symbol or gets an overload-mangled one is decided from the *whole* unit's
+  method set for that namespace, before any function is emitted — so it no longer
+  depends on where in the import order the second overload happens to appear.
+  Another namespace defining the same name is not an overload of yours and does
+  not affect your symbol (see [symbol mangling](generics.md#polymorphism-overloaded-defn-multimethods)).
+  If you link C against a Nucleus function, make sure no other reachable file *in
+  its namespace* overloads its name (or expose a uniquely named wrapper).
 * Everything else about a name — visibility (`defn-`), namespaces, and prefix
   qualification — is unchanged; only *when* a file's signatures and value names
   become visible moved. In particular a **private** value (`defvar-`,
