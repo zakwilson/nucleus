@@ -387,16 +387,22 @@ Consequences worth knowing:
   compiler can see on the import search path, the diagnostic says so and names
   it, so the fix is a one-line import — see
   [Unresolved names](compiler.md#unresolved-names).
-* **A `.nuch` header is outside the graph walk, and stays ordinal.** The names a
-  header contributes — a `declare`d function, an `extern` global, a `defconst`,
-  a `defenum` member — register when the header is imported, so **import the
-  header before the file that uses it**. This holds for functions and values
-  alike, so there is no asymmetry between the two kinds of name. Its *types* are
-  not affected: a `defstruct` in a header is pre-registered like any other, so a
-  signature may name it before the import.
-  *(A `.nuc` file imported by string path — `(import-use "lib/foo.nuc")` — used
-  to have the same limit and no longer does: both spellings of an import are
-  walked identically.)*
+* **A `.nuch` header is inside the graph walk, like any other file.** The names a
+  header contributes — a `declare`d function, an `extern` global, a `defconst`, a
+  `defenum` member, and each arm of an exported overload set — are registered by
+  the same whole-graph prescan, so the import form may sit anywhere in the file,
+  and a library reached only through a header behaves exactly as one reached
+  through its source. Its *types* were always registered this way.
+  *(Both of these used to be ordinal: a `.nuc` file imported by string path —
+  `(import-use "lib/foo.nuc")` — and every `.nuch`.)*
+* **Three kinds still need the import above the use, in either spelling.** A
+  `defmacro`, a `defunion` arm constructor, and a struct's *layout* — a literal,
+  a field access, a by-value parameter/return/field — exist only once the
+  defining file has been emitted, which is the same reason the cycle table above
+  lists them. The prescan registers a struct's **name**, not its fields, so a
+  literal above the import reports `too many initializers for struct 'S'` rather
+  than an unresolved name. This is a property of the prescan, not of the file's
+  extension: `.nuc` and `.nuch` behave identically here.
 * **A name overloaded anywhere in its namespace gets the mangled symbol
   everywhere in that namespace.** Whether a `defn` keeps the plain `@name` LLVM
   symbol or gets an overload-mangled one is decided from the *whole* unit's

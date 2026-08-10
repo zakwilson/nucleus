@@ -761,6 +761,56 @@ condition. Leave `emitted` **0** when you skip the write — the flag means "alr
 in the type buffer", and setting it while writing nothing would suppress the real
 emission if one ever followed.
 
+The other way out of this is to make the prescan *have* nothing to write:
+`prescan-nuch-signatures` (W9 item 29) registers a header's names and emits no IR
+at all, which is why it needs no stream guard and is correct in all three modes.
+Prefer that shape when you can have it.
+
+## A `.nuch` import is REGISTER + EMIT — split it by mode, and prove registration before emitting alone
+
+`emit-nuch-declare-import`, `emit-nuch-defmethod-import` and `emit-extern` each do
+both halves in one pass. The whole-graph prescan (W9 item 29) may only do the
+**registration** half: hoisting the emission too would move every `declare` /
+`external global` line to the top of `g-decl-stream` and change the IR of every
+module that imports a header — `src/llvm.nuch`, so the compiler's own. Hence the
+`NUCH-BOTH` / `NUCH-REG` / `NUCH-AFTER` parameter on all three.
+
+Two traps in the emit-only half:
+
+* **"Registered" is per NAME, not per header.** Every one of the three has an
+  "already defined → return" skip (two headers declaring one `stderr`; the unit
+  defining the name itself, W9 item 36), so the prescan may have registered some
+  of a header's names and not others. Emitting the whole header on the strength
+  of "this header was prescanned" writes `@x = external global` twice, which LLVM
+  rejects. `g-nuch-registered` records `(path, name)` pairs and the emit-only path
+  asks per name, falling back to register-and-emit when the answer is no.
+* **Re-registering is an ERROR, not a no-op.** `generic-register-method` appends
+  unconditionally, so a second pass over one `defmethod` makes `finalize-generics`
+  report a duplicate overload. The per-path `g-prescan-sigs` guard —
+  the same list `emit-toplevel-forms` reads for a `.nuc` file — is what stops it;
+  `do-import` has set `g-source-path` to the header's own path by then.
+
+A header cannot `import` (there is no `import` arm in `emit-nuch-import-forms`),
+so the prescan does not recurse into one.
+
+## `tests/run-tests.sh`: `qgrep`, never `grep -q`
+
+The harness runs under `set -o pipefail`. `grep -q` exits at its first match,
+which SIGPIPEs the process feeding it, and that non-zero status becomes the
+pipeline's — so an assertion that **matched** reads as false. It is one-sided (a
+real non-match never trips it: grep then reads to the end), so it surfaces as a
+few tests failing at random rather than as a consistent wrong answer, and it only
+bites once the producer's output outgrows a stdio buffer. Measured on the 54KB of
+IR `w1-late-overload-symbol` greps: 186 of 200 identical runs said "no match" for
+a pattern that is present. `qgrep` (defined at the top of the file) is
+`grep "$@" >/dev/null` — same exit status, reads its input to the end.
+
+A second trap when writing a test *about* headers: `resolve-import` tries
+`NAME.nuc` in every directory before any `NAME.nuch`, so a header sitting beside
+its source is never imported (that ruling is pinned by `w9-import-prefers-source`).
+Put the generated `.nuch` in a directory of its own and point `-I` at that, or the
+test silently exercises the source instead.
+
 ## A legal C identifier is more than legal characters — and the escape goes on the JOIN
 
 `sanitize-for-c` maps illegal *characters*. It has no notion of a reserved word,

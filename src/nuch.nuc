@@ -261,6 +261,12 @@
     (return (parse-type-from-node (as ptr node) line))))
 
 (defn emit-nuch-declare-import (form:(raw Node)):void
+  (nuch-declare-import form NUCH-BOTH))
+
+; Stage 15 W9 item 29: split by NUCH-* mode. The prescan registers a header's
+; declares (NUCH-REG) so they resolve on reachability; the import emits their
+; LLVM `declare` lines (NUCH-AFTER) from exactly where it always has.
+(defn nuch-declare-import (form:(raw Node) mode:i32):void
   (let (ff:ptr:Node (unsafe/cast ptr:Node form))
     ; Stage 10 Phase F1: an optional trailing `noreturn` keyword (carried
     ; verbatim by desugar) marks the declared/extern function as never
@@ -268,6 +274,7 @@
     ; length with that keyword stripped, so the param-list index logic below is
     ; unchanged; is-noreturn drives the Sym flag and the LLVM attribute.
     (let (is-noreturn:i32 0
+          m:i32 mode
           eff-len:i32 (node-len form))
       (when (>= (node-len form) 3)
         (let (last:ptr (node-at form (- (node-len form) 1)))
@@ -302,10 +309,19 @@
           (when (!= ndi-new 0) (set! fname (-> name-node (unsafe/cast ptr:Node _) (_ s))))
           (when (= ret null)
             (die-at ((as ptr:Node name-node) line) (fmt-s "declare: missing :type on '%s'" fname)))
+          ; W9 item 29: emit-only is a promise the prescan registered THIS name
+          ; from THIS header. It registers nothing the skip below already
+          ; refused, so ask before assuming; a name it skipped is still a plain
+          ; register-and-emit.
+          (when (= m NUCH-AFTER)
+            (when (= (import-list-has g-nuch-registered
+                       (nuch-reg-key (as CStr g-source-path) (as CStr fname))) 0)
+              (set! m NUCH-BOTH)))
           ; Skip if already defined (e.g. from include or c-include).
           ; B2b: a KEY question — this is the definition side of the `scope-define`
           ; a few lines below, not a reference written in this file.
-          (when (!= (scope-lookup-key g-globals fname) null) (return))
+          (when (and (!= m NUCH-AFTER)
+                     (!= (scope-lookup-key g-globals fname) null)) (return))
           (let (nparams:i32 0
                 ptypes:ptr null)
           (when (!= params-node null)
@@ -324,27 +340,6 @@
               (when (= pty null)
                 (set! pty (declare-param-type (as raw:Node p) pline)))
               (aset! (as ptr:ptr ptypes) j pty)))
-          ; Stage 15 W3c declaration precedence (cheader.md §1.4). Record this
-          ; declaration's rendered signature on its prescanned site, so a C
-          ; header import LATER in the unit can compare against it; and if a
-          ; header import EARLIER already stood down for this name, compare now
-          ; and warn. Only a top-level `(declare …)` in a .nuc unit has a site
-          ; (prescan-explicit-declares); a .nuch-borne declare has none and is
-          ; unaffected.
-          (let (site:ptr (as ptr (cheader-explicit-declare-site (as CStr fname))))
-            (when (!= site null)
-              (let (msig:ptr (c-fn-sig-render (as raw:Type ret) ptypes nparams 0)
-                    shadow:ptr (as ptr (cdecl-site-find g-cheader-shadowed
-                                                        (as CStr fname))))
-                (.set! (as ptr:CDeclSite site) sig msig)
-                (when (and (!= shadow null)
-                           (!= (as CStr ((as ptr:CDeclSite shadow) sig)) (as CStr msig)))
-                  (cheader-warn-decl-conflict (as raw:CDeclSite site)
-                                              (as raw:CDeclSite shadow))))))
-          (let (ft:ptr:Type (as ptr:Type (make-type TY-FN)))
-            (.set! ft ret ret)
-            (type-set-params ft ptypes nparams)
-            (.set! ft variadic 0)
             ; Stage 12 N6: a solitary symbol from a namespaced header re-resolves
             ; to its mangled link name. The header's leading `(ns NAME)` has set
             ; g-current-ns, so ns-ir-base composes the namespace ir-prefix onto the
@@ -352,16 +347,40 @@
             ; ran in emit-defvar / defn-ir-name. scope-define qualifies the *key*
             ; against g-current-ns (`geom/area`) independently. Identity under
             ; `user`, so non-namespaced headers stay byte-identical.
-            (let (link-ir:ptr (fmt-s "@%s" (ns-ir-base fname)))
-            (let (dsym:ref:Sym (scope-define g-globals fname (as ptr ft)
-                                link-ir 0))
-              ; Stage 15 W9 defect 12: mark this as a DECLARED (prototype-only)
-              ; signature, so the new call-arity check admits the extra trailing
-              ; arguments a C variadic call needs — the idiom this very file's
-              ; `&rest`-in-a-declaration diagnostic points users at, and which
-              ; `docs/toplevel.md` documents. Too few arguments is still refused.
-              (.set! (as ptr:Sym dsym) extern-decl 1)
-              (when (!= is-noreturn 0) (.set! (as ptr:Sym dsym) noreturn 1)))
+            ; W9 item 29: computed for both halves — the emit-only pass needs the
+            ; symbol, and it is a pure function of the name and the namespace.
+          (let (link-ir:ptr (fmt-s "@%s" (ns-ir-base fname)))
+          (when (!= m NUCH-AFTER)
+            ; Stage 15 W3c declaration precedence (cheader.md §1.4). Record this
+            ; declaration's rendered signature on its prescanned site, so a C
+            ; header import LATER in the unit can compare against it; and if a
+            ; header import EARLIER already stood down for this name, compare now
+            ; and warn. Only a top-level `(declare …)` in a .nuc unit has a site
+            ; (prescan-explicit-declares); a .nuch-borne declare has none and is
+            ; unaffected.
+            (let (site:ptr (as ptr (cheader-explicit-declare-site (as CStr fname))))
+              (when (!= site null)
+                (let (msig:ptr (c-fn-sig-render (as raw:Type ret) ptypes nparams 0)
+                      shadow:ptr (as ptr (cdecl-site-find g-cheader-shadowed
+                                                          (as CStr fname))))
+                  (.set! (as ptr:CDeclSite site) sig msig)
+                  (when (and (!= shadow null)
+                             (!= (as CStr ((as ptr:CDeclSite shadow) sig)) (as CStr msig)))
+                    (cheader-warn-decl-conflict (as raw:CDeclSite site)
+                                                (as raw:CDeclSite shadow))))))
+            (let (ft:ptr:Type (as ptr:Type (make-type TY-FN)))
+              (.set! ft ret ret)
+              (type-set-params ft ptypes nparams)
+              (.set! ft variadic 0)
+              (let (dsym:ref:Sym (scope-define g-globals fname (as ptr ft)
+                                  link-ir 0))
+                ; Stage 15 W9 defect 12: mark this as a DECLARED (prototype-only)
+                ; signature, so the new call-arity check admits the extra trailing
+                ; arguments a C variadic call needs — the idiom this very file's
+                ; `&rest`-in-a-declaration diagnostic points users at, and which
+                ; `docs/toplevel.md` documents. Too few arguments is still refused.
+                (.set! (as ptr:Sym dsym) extern-decl 1)
+                (when (!= is-noreturn 0) (.set! (as ptr:Sym dsym) noreturn 1))))
             ; Stage 15 W9 item 24: and in the generic registry, which is where
             ; every OTHER producer of a callable name puts it — `emit-defn`
             ; registers even a solitary function, and that is why a protocol
@@ -377,6 +396,11 @@
             (let (dm:ptr (generic-register-method fname ret ptypes nparams 0 0 null))
               (.set! (as ptr:Method dm) ir-name link-ir)
               (.set! (as ptr:Method dm) ir-fixed 1))
+            (when (= m NUCH-REG)
+              (set! g-nuch-registered
+                    (import-list-push g-nuch-registered
+                      (nuch-reg-key (as CStr g-source-path) (as CStr fname))))))
+          (when (!= m NUCH-REG)
             ; Emit LLVM declare, lowering struct-by-value params/return to the
             ; platform C ABI (sret / byval / register coercion) just like a defn.
             (let (ret-info:ptr:AbiInfo (unsafe/cast ptr:AbiInfo (abi-classify ret)))
@@ -405,6 +429,12 @@
 ; in the generic registry so calls in the importing unit dispatch to it, and
 ; emit an LLVM declare under the mangled symbol (resolved at link time).
 (defn emit-nuch-defmethod-import (form:(raw Node)):void
+  (nuch-defmethod-import form NUCH-BOTH))
+
+; Stage 15 W9 item 29: split by NUCH-* mode, as nuch-declare-import. This one
+; needs no per-name list — it has no "already defined" skip, so the prescan
+; registers every `defmethod` in the header and the import emits every one.
+(defn nuch-defmethod-import (form:(raw Node) mode:i32):void
   (let (ff:ptr:Node (unsafe/cast ptr:Node form))
     ; S3: new-style entry `(defmethod "@sym" NAME (params) :ret)` — the mangled
     ; symbol (1), a bare name (2), the params (3) and the return operand (4).
@@ -423,18 +453,20 @@
         (let (nparams:i32 (defn-params-count params-node)
               ptypes:ptr (defn-params-to-types params-node)
               has-rest:i32 (if (< (defn-params-count params-node)
-                                  (node-len params-node)) 1 0)
-              m:ptr (generic-register-method fname ret ptypes nparams has-rest 0 null))
-          (.set! (as ptr:Method m) ir-name mangled)
-          ; Stage 15 W9 item 24: the producing unit emitted this symbol, so
-          ; finalize-generics may not rename it. Until now that held only by
-          ; coincidence — a re-mangle recomputed the same string — and stopped
-          ; holding the moment a local overload joined the set and shifted the
-          ; per-prefix count.
-          (.set! (as ptr:Method m) ir-fixed 1)
-          (let (g:ptr (generic-lookup fname))
-            (.set! (as ptr:Generic g) mangled 1)
-            (.set! (as ptr:Generic g) finalized 1))
+                                  (node-len params-node)) 1 0))
+          (when (!= mode NUCH-AFTER)
+            (let (m:ptr (generic-register-method fname ret ptypes nparams has-rest 0 null))
+              (.set! (as ptr:Method m) ir-name mangled)
+              ; Stage 15 W9 item 24: the producing unit emitted this symbol, so
+              ; finalize-generics may not rename it. Until now that held only by
+              ; coincidence — a re-mangle recomputed the same string — and stopped
+              ; holding the moment a local overload joined the set and shifted the
+              ; per-prefix count.
+              (.set! (as ptr:Method m) ir-fixed 1))
+            (let (g:ptr (generic-lookup fname))
+              (.set! (as ptr:Generic g) mangled 1)
+              (.set! (as ptr:Generic g) finalized 1)))
+          (when (!= mode NUCH-REG)
           ; Lower struct-by-value params/return to the platform C ABI exactly as
           ; emit-nuch-declare-import (above) and emit-defn do. Emitting raw
           ; type-to-ir here declared a by-value struct as its aggregate type
@@ -458,7 +490,7 @@
                   (aref (as ptr:ptr ptypes) j)
                   null)
                 (set! need-comma 1)))
-            (fprintf g-out ")\n")))))))
+            (fprintf g-out ")\n"))))))))
 
 ; A defunion arriving via .nuch: register the type (or template) exactly as
 ; the defining unit did, but emit `declare`s for the arm constructors — their
@@ -500,6 +532,15 @@
         (die-at (name-node line) "defunion: name must be a symbol")))))
 
 (defn emit-nuch-import-forms (forms:(raw Node)):void
+  ; Stage 15 W9 item 29: did the whole-graph prescan already register this
+  ; header? It keys on the SAME list `emit-toplevel-forms` reads for a `.nuc`
+  ; file, and `do-import` has set g-source-path to the header's own path. When it
+  ; did, the three registering arms below emit only — re-registering would append
+  ; a second Method for every `defmethod`, which `finalize-generics` then reports
+  ; as a duplicate overload.
+  (let (mode:i32 (if (and (!= g-source-path null)
+                          (!= (import-list-has g-prescan-sigs (as CStr g-source-path)) 0))
+                   NUCH-AFTER NUCH-BOTH))
   (let (it:ListIter (list-iter forms))
     (doseq-iter (fc (addr-of it))
       (let (f:ptr:Node (unsafe/cast ptr:Node fc))
@@ -524,9 +565,9 @@
               "defunion"
                 (do (set! g-out g-type-stream) (emit-defunion-import (as ptr f)))
               "declare"
-                (do (set! g-out g-decl-stream) (emit-nuch-declare-import (as ptr f)))
+                (do (set! g-out g-decl-stream) (nuch-declare-import (as ptr f) mode))
               "defmethod"
-                (do (set! g-out g-decl-stream) (emit-nuch-defmethod-import (as ptr f)))
+                (do (set! g-out g-decl-stream) (nuch-defmethod-import (as ptr f) mode))
               "defn"
                 ; Only bounded-generic templates are exported as whole defns;
                 ; register (exporter-verified, so trusted) so calls in this
@@ -539,7 +580,7 @@
               "defcast"
                 (emit-defcast (as ptr f))
               "extern"
-                (do (set! g-out g-decl-stream) (emit-extern (as ptr f)))
+                (do (set! g-out g-decl-stream) (emit-extern-mode (as ptr f) mode))
               "defconst"
                 (emit-defconst (as ptr f))
               "defenum"
@@ -551,4 +592,46 @@
               0)))))
   ; Finalize any newly-imported generic templates so their names dispatch
   ; through the registry (imported concrete methods finalize themselves).
-  (finalize-generics)))
+  (finalize-generics))))
+
+; Stage 15 W9 item 29: register — without emitting — everything a `.nuch` header
+; contributes to the VALUE and FUNCTION namespaces, so one of its names resolves
+; on reachability rather than on where the import form happens to sit. This is
+; the header counterpart of `prescan-defn-signatures` + `prescan-value-names`,
+; and it covers exactly the kinds those two cover for a `.nuc` library: a
+; `declare` is that library's `defn`, an `extern` its `defvar`, and a `defmethod`
+; one member of an overload set. Types need nothing here — pass 1
+; (`prescan-imported-types`) walks a header like any other file.
+;
+; REGISTRATION ONLY, deliberately. Every LLVM `declare` / `external global` line
+; stays exactly where `emit-nuch-import-forms` has always written it, which is
+; what keeps each module's IR byte-identical; only the moment the NAME becomes
+; known moves. It also means this pass needs no output stream, so it is equally
+; correct under `--emit-nuch` / `--emit-cheader`, which return before
+; `open-module-streams`.
+(defn prescan-nuch-signatures (forms:(raw Node)):void
+  (let (it:ListIter (list-iter forms))
+    (doseq-iter (fc (addr-of it))
+      (let (f:ptr:Node (unsafe/cast ptr:Node fc))
+        (when (and (!= (as ptr f) null) (= (f kind) NODE-CELL)
+                   (> (node-len (as ptr f)) 0)
+                   (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ kind) (= _ NODE-SYM)))
+          (let (h:ptr (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ s)))
+            (case h
+              "declare"
+                (nuch-declare-import (as ptr f) NUCH-REG)
+              "defmethod"
+                (nuch-defmethod-import (as ptr f) NUCH-REG)
+              "extern"
+                (emit-extern-mode (as ptr f) NUCH-REG)
+              ; The two constant kinds already have a registration-only pass —
+              ; the very one a `.nuc` file's own `defconst`/`defenum` gets. The
+              ; full emitters still run at import time and must: only
+              ; `emit-defenum` builds the EnumDef table `match` exhaustiveness
+              ; reads, and `guard-const-redefinition` recognises this prescan's
+              ; Sym as the same definition by its site.
+              "defconst"
+                (prescan-defconst-name (as ptr f))
+              "defenum"
+                (prescan-defenum-names (as ptr f))
+              0)))))))
