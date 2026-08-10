@@ -466,8 +466,22 @@
 ; instruction stream to emit into and so decides the same question by hand).
 ; context/conventions.md's standing rule for exactly this shape: mirroring the
 ; *logic* in two places drifts, mirroring a *call* cannot.
-(defn as-int-narrowing (src:raw:Type dst:raw:Type):i32
-  (if (< (int-width dst) (int-width src)) (return 1) (return 0)))
+;
+; Stage 15 W9 item 8: "narrowing" is a property of the VALUE where the value is
+; known, not of the two widths alone. `(as i8 5)` was refused as lossy while the
+; implicit coercion at the identical slot — `(let (a:i8 5) …)` — accepted it and
+; emitted the very same `trunc i32 5 to i8`, so the safe cast was strictly
+; stricter than the machinery it exists to make explicit. `is-lit`/`lit` carry
+; the caller's literal knowledge (`Val.is-lit`/`lit-i64` on the value path; the
+; folded constant itself in `const-fold-int`, which is always known); a literal
+; that FITS the destination is not a narrowing. `int-literal-fits` is the same
+; range predicate `coerce-int-val` gates the implicit path with, so the two
+; paths now accept exactly the same set. Pass `is-lit` 0 to ask about the widths
+; alone.
+(defn as-int-narrowing (src:raw:Type dst:raw:Type is-lit:i32 lit:i64):i32
+  (when (>= (int-width dst) (int-width src)) (return 0))
+  (when (and (!= is-lit 0) (!= (int-literal-fits lit dst) 0)) (return 0))
+  (return 1))
 
 ; Stage 10: pointer kinds (design/stage10/nullability.md)
 ; ============================================================

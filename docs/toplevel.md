@@ -488,8 +488,10 @@ an arbitrary expression over the above:
   `bit-not`;
 * `(sizeof T)`, for any type with a known layout;
 * `(as T x)`, subject to the same rule `as` obeys in an expression: a widening
-  or same-width reinterpret is fine, a narrowing must be spelled
-  `unsafe/cast`.
+  or same-width reinterpret is fine, and so is a narrowing whose value fits the
+  target (`(as i8 5)`); a narrowing that does not fit must be spelled
+  `unsafe/cast`. Every operand here has folded to a known constant, so the
+  "does it fit" question always has an answer.
 
 ```lisp
 (defconst WIDTH 320)

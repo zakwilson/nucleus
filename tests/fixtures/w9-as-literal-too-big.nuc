@@ -1,0 +1,10 @@
+; Stage 15 W9 item 8's boundary: `as` narrows a literal only when the literal
+; FITS. 300 does not fit i8, so this stays lossy and must be spelled
+; `unsafe/cast` — the range test is `int-literal-fits`, the same predicate the
+; implicit path is gated with, so the two accept exactly the same set.
+;
+; Compiling this must FAIL with:
+;   "as: lossy conversion from i32 to i8 -- use unsafe/cast"
+(defn main ():i32
+  (let (a:i8 (as i8 300))
+    (return (as i32 a))))

@@ -1,0 +1,10 @@
+; Stage 15 W9 item 8: the literal channel must not lose the SIGN. -1 is
+; representable in every signed target and in none of the unsigned ones, so
+; `(as ui8 -1)` is refused even though its magnitude is tiny — a range test that
+; compared magnitudes would wrap it to 255 silently.
+;
+; Compiling this must FAIL with:
+;   "as: lossy conversion from i32 to ui8 -- use unsafe/cast"
+(defn main ():i32
+  (let (a:ui8 (as ui8 -1))
+    (return (as i32 a))))

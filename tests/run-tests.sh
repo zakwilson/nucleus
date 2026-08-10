@@ -2118,6 +2118,33 @@ EOF
   rm -rf "$d"
 }
 
+# Stage 15 W9 item 8: the safe cast `as` decided "narrowing" from the two WIDTHS
+# alone, so `(as i8 5)` was refused as lossy while the implicit coercion at the
+# identical slot accepted it and emitted the very same `trunc i32 5 to i8` — the
+# explicit spelling of a conversion was strictly stricter than the machinery it
+# exists to make explicit. The fixture is self-checking (it compares every
+# binding against the value it must hold and returns a distinct code per
+# mismatch), so it is RUN, not merely compiled: the risk in a value-aware range
+# test is a wrong value, not a failed compile.
+#
+# The IR assertion is the "no stricter than implicit" claim stated directly —
+# the accepted form must lower to the same one instruction the implicit spelling
+# emits, with no cast rule, no helper call and no widened temporary.
+run_w9_as_literal_narrowing() {
+  local d ir
+  d="$(mktemp -d)"
+  w1_run w9-as-literal-fits "$d" tests/fixtures/w9-as-literal-fits.nuc 0
+  ir="$(./build/nucleusc --emit-llvm tests/fixtures/w9-as-literal-fits.nuc 2>/dev/null || true)"
+  if printf '%s' "$ir" | grep -qF 'trunc i32 5 to i8' \
+     && printf '%s' "$ir" | grep -qF '@w9as-g = global i8 9'; then
+    echo "PASS  w9-as-literal-lowers-like-implicit"
+  else
+    echo "FAIL  w9-as-literal-lowers-like-implicit"
+    echo "    want 'trunc i32 5 to i8' (value path) and '@w9as-g = global i8 9' (fold path)"
+  fi
+  rm -rf "$d"
+}
+
 # W1b's half of G-0: `scope-define` qualifies a global's key against
 # `g-current-ns`, so the prescan must apply each visited file's own leading
 # `(ns …)`. Prescanning a namespaced file under the IMPORTER's namespace would
@@ -3804,6 +3831,19 @@ spawn run_reject as-raw-to-ref-rejected tests/fixtures/as-raw-to-ref.nuc \
   "where non-null ptr:Rec is required -- use as-ref (checked) or unsafe/cast"
 spawn run_reject as-reinterpret-rejected tests/fixtures/as-reinterpret.nuc \
   "as: reinterpretation from ptr:Sym to ptr:Rec -- use unsafe/cast"
+#
+# Stage 15 W9 item 8 refines the FIRST category only: a narrowing whose operand
+# is a literal that provably fits is not lossy. `as-lossy.nuc` above narrows a
+# parameter — an unknown runtime value — and so is unaffected, which is the
+# distinction being pinned. The accept side RUNS (an exit-0 compile would not
+# catch a sign error in the range test); the two rejects hold the boundary at
+# magnitude and at sign.
+spawn run_w9_as_literal_narrowing
+spawn run_reject w9-as-literal-too-big tests/fixtures/w9-as-literal-too-big.nuc \
+  "as: lossy conversion from i32 to i8 -- use unsafe/cast"
+spawn run_reject w9-as-literal-signed-into-unsigned \
+  tests/fixtures/w9-as-literal-signed-into-unsigned.nuc \
+  "as: lossy conversion from i32 to ui8 -- use unsafe/cast"
 
 # Stage 14 unsafe-namespace.md UN-2 — `unsafe` is a reserved pseudo-namespace
 # (D1): no user code may declare `(ns unsafe)`, which would make `unsafe/foo`

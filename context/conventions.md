@@ -3129,3 +3129,31 @@ just `./build/nucleusc --emit-llvm src/nucleusc.nuc`) before believing a
 zero-blast-radius result. Iterating that one command is also the fastest way to
 enumerate the sites — it needs no rebuild between fixes, because the rule lives
 in the binary and the violations live in the source.
+
+## An explicit conversion form must never reject what the implicit one accepts
+
+`as` exists to write down a conversion the coercion machinery would otherwise
+perform silently. So a value that `(let (a:T x) …)` accepts and `(as T x)`
+refuses is not a strictness *policy* — it is the explicit form failing at its
+only job, and it pushes users to `unsafe/cast` for a conversion that was
+provably safe. W9 item 8: `(as i8 5)` was an error while `(let (a:i8 5) …)`
+compiled and emitted the identical `trunc i32 5 to i8`.
+
+The cause is generic enough to look for elsewhere: the safe form asked a
+question about **types** (`is (int-width dst) < (int-width src)`) where the
+coercion path asks it about the **value** (`int-literal-fits`). Whenever the two
+paths answer with different predicates they will drift, so route both at the
+same one — `Val.is-lit`/`lit-i64` is how the value path carries the answer, and
+a constant folder can pass its folded value unconditionally.
+
+Two related traps:
+
+- **`Val.is-lit` is overloaded.** With a `StrView` type it means "unmaterialized
+  string literal", not "integer literal". Read it only after the type kind is
+  known (in `emit-as` the StrView case has already returned).
+- **A relaxation holds the bootstrap fixed point on the first pass**, unlike the
+  tightening described in the section above — nothing that compiled compiles
+  differently. That makes the corpus IR sweep the strong evidence for a
+  permissive change (371 of 372 programs byte-identical, the one difference
+  being the new accept fixture) and stage 2 the strong evidence for a
+  restrictive one. Know which kind you are making.
