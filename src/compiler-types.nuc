@@ -793,7 +793,15 @@
   ; `Method.body` Node carries a line but no file.
   src-file:CStr
   src-ns:CStr
-  priv:i32)
+  priv:i32
+  ; --- Stage 15 W9 item 24: the symbol is a fact from another translation unit ---
+  ; Set on a method registered from a `declare`/`defmethod` — its `ir-name` is
+  ; the symbol some other object file already defines, so `finalize-generics`
+  ; may decide this generic's DISPATCH but may not rename this method. The
+  ; principle is `fn-force-generic-mangled`'s ("no already-emitted symbol is
+  ; renamed"), stated per method instead of by freezing the whole generic, so a
+  ; local overload added afterwards still gets a mangled name of its own.
+  ir-fixed:i32)
 
 (defstruct Generic
   name:CStr

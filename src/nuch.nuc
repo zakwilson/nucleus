@@ -362,6 +362,21 @@
               ; `docs/toplevel.md` documents. Too few arguments is still refused.
               (.set! (as ptr:Sym dsym) extern-decl 1)
               (when (!= is-noreturn 0) (.set! (as ptr:Sym dsym) noreturn 1)))
+            ; Stage 15 W9 item 24: and in the generic registry, which is where
+            ; every OTHER producer of a callable name puts it — `emit-defn`
+            ; registers even a solitary function, and that is why a protocol
+            ; method, a `drop`/`invoke` thunk and a `(dyn P)` vtable can be
+            ; resolved at all. A `declare` was the one exception, so a function
+            ; that arrives through a header was invisible to every asker that
+            ; poses the question by NAME AND SIGNATURE rather than by name:
+            ; `method-satisfies-sig` (so `extend` reported a conforming type as
+            ; non-conforming) and `dyn-vtable-method-irname` (so boxing died
+            ; "no method 'describe' is defined" for a method that is declared,
+            ; defined and linkable). `ir-fixed` because the producing unit
+            ; already chose this symbol — see finalize-generics.
+            (let (dm:ptr (generic-register-method fname ret ptypes nparams 0 0 null))
+              (.set! (as ptr:Method dm) ir-name link-ir)
+              (.set! (as ptr:Method dm) ir-fixed 1))
             ; Emit LLVM declare, lowering struct-by-value params/return to the
             ; platform C ABI (sret / byval / register coercion) just like a defn.
             (let (ret-info:ptr:AbiInfo (unsafe/cast ptr:AbiInfo (abi-classify ret)))
@@ -411,6 +426,12 @@
                                   (node-len params-node)) 1 0)
               m:ptr (generic-register-method fname ret ptypes nparams has-rest 0 null))
           (.set! (as ptr:Method m) ir-name mangled)
+          ; Stage 15 W9 item 24: the producing unit emitted this symbol, so
+          ; finalize-generics may not rename it. Until now that held only by
+          ; coincidence — a re-mangle recomputed the same string — and stopped
+          ; holding the moment a local overload joined the set and shifted the
+          ; per-prefix count.
+          (.set! (as ptr:Method m) ir-fixed 1)
           (let (g:ptr (generic-lookup fname))
             (.set! (as ptr:Generic g) mangled 1)
             (.set! (as ptr:Generic g) finalized 1))

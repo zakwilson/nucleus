@@ -3029,6 +3029,55 @@ tree use a namespace at all, and `lib/nsdescribe2.nuc` names its protocol method
 exists to dodge a defect is a bug report; check for those before believing the
 corpus.
 
+## A callable name has TWO registries, and a producer that writes one of them is half-registered
+
+Third entry on the same registry, and the one that says what has to be *put in*
+it. Every name you can call is written twice: into `g-globals`, which answers
+"what symbol does this name have", and into `g-generics`, which answers "which
+method of this name matches these argument types". `emit-defn` writes both even
+for a **solitary** function — that second write looks redundant, and it is the
+only reason a protocol conformance, a drop thunk or a `(dyn P)` vtable can be
+resolved at all.
+
+`emit-nuch-declare-import` (`src/nuch.nuc`) wrote only the first, so a function
+that arrived through a `.nuch` was half-registered (W9 item 24). Calls worked —
+the ordinary path asks `g-globals` — which is exactly why it survived: **the gap
+is invisible to the asker that motivated the registry and visible only to the
+askers that came later.** Those are the ones that pose the question by name *and
+signature*: `method-satisfies-sig` reported a conforming type as non-conforming,
+and `dyn-vtable-method-irname` died `no method 'describe' is defined` for a
+method that was declared, defined and linkable.
+
+When you add a producer of a callable name, enumerate the registries the
+*existing* producers write and match them; do not infer the set from the one
+consumer you are currently looking at.
+
+Two consequences of letting methods arrive from another translation unit, both
+of which had to be handled before the corpus stayed still:
+
+- **An imported symbol is a fact, not a decision.** `finalize-generics` names
+  every method it sees, which is right while every method is one this unit
+  emits. `Method.ir-fixed` marks the ones that are not. Without it, adding a
+  single local overload of an imported name re-mangles a symbol another object
+  file already defines — a link error, and the same hazard
+  `fn-force-generic-mangled` describes ("no already-emitted symbol is renamed")
+  stated per method instead of by freezing the whole generic, so a local
+  overload added afterwards still gets a mangled name of its own.
+- **New entries in a merged registry make new PAIRS meet there.** R4's
+  duplicate-*definition* check started firing between two `.nuch` headers from
+  different namespaces — over definitions neither importing file makes, and over
+  two distinct symbols that had always been legal together. A predicate over a
+  merged set must say which members it is about; "the same name is already
+  present" is not the same claim as "this unit defines it twice".
+
+Note what still blocks the other half. A `declare` returns early when the name
+is already bound (`scope-lookup-key g-globals`), and the unit's own signature
+prescan runs first — so a local `defn` of an imported name silently discards the
+whole header entry, and even a *qualified* `lib/f` call then resolves to the
+local function. That is pre-existing, byte-identical before and after item 24,
+and filed as its own defect; it is also why the "imported declare + local
+definition" pair is unreachable and only the two-header pair above is real.
+
 ## The same-kind redefinition question cannot be asked of the binding table
 
 `guard-name-kind` (`src/nucleusc.nuc`) asks the shared table for the first

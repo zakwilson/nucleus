@@ -564,6 +564,19 @@
                           bare)))
       (return (fmt-2s "%s\n  note: %s" head note)))))
 
+; Stage 15 W9 item 24: where to point a two-definition diagnostic. A method
+; registered from a `.nuch` `declare`/`defmethod` has no body, so it has no Node
+; and no line; report the other definition's instead. Both files are named in the
+; message either way, which is the part that identifies the pair.
+(defn method-pair-line (later:raw:Method earlier:raw:Method):i32
+  (let (a:raw:Method later
+        b:raw:Method earlier)
+    (when (!= (as ptr (a body)) null)
+      (return (-> a (_ body) (unsafe/cast ptr:Node _) (_ line))))
+    (when (!= (as ptr (b body)) null)
+      (return (-> b (_ body) (unsafe/cast ptr:Node _) (_ line))))
+    (return 0)))
+
 ; Decide mangling for every not-yet-finalized user generic. A solitary concrete
 ; name keeps its unmangled @name and is bound in g-globals (so forward references
 ; and the byte-identical single-function path keep working). An overloaded set —
@@ -606,9 +619,14 @@
                   ; the synthetic prefix (snapshotted into gg ir-prefix by
                   ; generic-new) supplies `a_p1__`. strip-priv-qualifier is the
                   ; identity for every non-private key.
-                  (.set! m0 ir-name (fmt-s "@%s" (ns-compose (method-ir-prefix gg (as raw:Method m0))
-                                                   (ir-name-token (strip-priv-qualifier (gg name))))))
-                  (scope-define g-globals (gg name) (m0 fn-type) (m0 ir-name) 0))
+                  ; Stage 15 W9 item 24: an imported method's symbol was decided
+                  ; by the unit that DEFINED it, and its `g-globals` binding was
+                  ; made by the declare with flags this rebind would drop
+                  ; (extern-decl, noreturn). Nothing here is ours to decide.
+                  (when (= (m0 ir-fixed) 0)
+                    (.set! m0 ir-name (fmt-s "@%s" (ns-compose (method-ir-prefix gg (as raw:Method m0))
+                                                     (ir-name-token (strip-priv-qualifier (gg name))))))
+                    (scope-define g-globals (gg name) (m0 fn-type) (m0 ir-name) 0)))
                 (do
                   (.set! gg mangled 1)
                   (let (i:i32 0)
@@ -618,12 +636,21 @@
                           (let (j:i32 0)
                             (while (< j i)
                               (let (mj:ptr:Method (as ptr:Method (invoke (gg methods) (as usize j))))
+                                ; Stage 15 W9 item 24: two DEFINITIONS in this
+                                ; unit is the question; an imported method is a
+                                ; reference to one somewhere else. Two headers
+                                ; from different namespaces declaring the same
+                                ; signature name two distinct symbols and were
+                                ; always legal — they only meet here because the
+                                ; registry is bare-keyed (R2). Item 35 is the
+                                ; open half: two LOCAL definitions.
                                 (when (and (= (mj kind) METHOD-USER)
+                                           (= (mi ir-fixed) 0) (= (mj ir-fixed) 0)
                                            (= (mi num-params) (mj num-params))
                                            (!= (params-type-eq (mi param-types)
                                                                (mj param-types)
                                                                (mi num-params)) 0))
-                                  (die-at (-> mi (_ body) (unsafe/cast ptr:Node _) (_ line))
+                                  (die-at (method-pair-line (as raw:Method mi) (as raw:Method mj))
                                     (duplicate-signature-message gg mi mj))))
                               (inc! j)))
                           ; Stage 15 W9 item 23: the prefix is the METHOD's, and
@@ -643,15 +670,21 @@
                           ; object did not define. Templates and operator seeds
                           ; keep the whole-generic test (has-generic /
                           ; has-intrinsic): a stamp is always suffixed.
-                          (let (pfx:CStr (method-ir-prefix gg (as raw:Method mi)))
-                            (if (and (= has-intrinsic 0) (= has-generic 0)
-                                     (= (generic-user-methods-with-prefix gg pfx) 1))
-                              (.set! mi ir-name
-                                (fmt-s "@%s" (ns-compose pfx
-                                               (ir-name-token (strip-priv-qualifier (gg name))))))
-                              (.set! mi ir-name
-                                (mangle-fn-name pfx (strip-priv-qualifier (gg name))
-                                                (mi param-types) (mi num-params)))))))
+                          ; Stage 15 W9 item 24: an imported method keeps the
+                          ; symbol its defining unit emitted. It still COUNTS
+                          ; above — a local overload sharing its prefix really
+                          ; does share the name and must be mangled — so only
+                          ; the rename is skipped, not the tally.
+                          (when (= (mi ir-fixed) 0)
+                            (let (pfx:CStr (method-ir-prefix gg (as raw:Method mi)))
+                              (if (and (= has-intrinsic 0) (= has-generic 0)
+                                       (= (generic-user-methods-with-prefix gg pfx) 1))
+                                (.set! mi ir-name
+                                  (fmt-s "@%s" (ns-compose pfx
+                                                 (ir-name-token (strip-priv-qualifier (gg name))))))
+                                (.set! mi ir-name
+                                  (mangle-fn-name pfx (strip-priv-qualifier (gg name))
+                                                  (mi param-types) (mi num-params))))))))
                       (inc! i)))))
               (.set! gg finalized 1)))))
       (inc! gi))))
