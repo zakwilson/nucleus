@@ -5650,6 +5650,111 @@ EOF
 }
 spawn run_w9_ns_symbol_ownership
 
+# Stage 15 W9 item 24. Every producer of a callable name registers it in the
+# generic registry — `emit-defn` does so even for a SOLITARY function, and that
+# is why a protocol method, a drop thunk and a `(dyn P)` vtable can be resolved
+# at all. A `.nuch` `declare` was the one exception: it bound the name in
+# `g-globals` and nowhere else, so a function arriving through a header was
+# invisible to every asker that poses the question by name AND SIGNATURE rather
+# than by name alone. `(dyn P)` died `no method 'describe' is defined` for a
+# method that is declared, defined and linkable, and `extend` called a
+# conforming type non-conforming. Calls were unaffected throughout, which is
+# what hid it: the ordinary path asks `g-globals`.
+run_w9_nuch_declare_generic() {
+  local d
+  d="$(mktemp -d)"
+  # The library excludes the prelude so its object and the consumer's link
+  # together; that is also why its body avoids `+`.
+  cat > "$d/w24lib.nuc" <<'EOF'
+(exclude-prelude)
+(ns w24)
+(defprotocol Describe (describe ((self (ref Self))) i32))
+(defstruct Fox n:i32)
+(defn describe ((self (ref Fox))):i32 (return (_get self n)))
+(extend Fox Describe)
+EOF
+  cat > "$d/w24use.nuc" <<EOF
+(import-use "stdio.h")
+(import-use allocator)
+(import "$d/w24lib.nuch" wx)
+(defn main ():i32
+  (let (b:(dyn wx/Describe) (wx/Fox 309))
+    (printf "d=%d\n" (wx/describe b)))
+  (return 0))
+EOF
+  ./build/nucleusc --emit-llvm "$d/w24lib.nuc" > "$d/w24lib.ll"   2>/dev/null || true
+  ./build/nucleusc --emit-nuch "$d/w24lib.nuc" > "$d/w24lib.nuch" 2>/dev/null || true
+  ./build/nucleusc --emit-llvm "$d/w24use.nuc" > "$d/w24use.ll"   2>/dev/null || true
+
+  # 1. The item's own failure, end to end: box a type whose implementation
+  #    arrives through a header, dispatch through the box, link, run.
+  if clang "$d/w24lib.ll" "$d/w24use.ll" -o "$d/bin" 2>/dev/null \
+     && [ "$("$d/bin")" = "d=309" ]; then
+    echo "PASS  w9-nuch-declare-dyn-box"
+  else
+    echo "FAIL  w9-nuch-declare-dyn-box"
+  fi
+
+  # 2. …through the symbol the LIBRARY defines, not merely some symbol that
+  #    resolves. Slot 0 of the vtable is what the box calls through.
+  if grep -q 'internal constant { ptr, ptr } { ptr @w24__describe,' "$d/w24use.ll"; then
+    echo "PASS  w9-nuch-declare-vtable-symbol"
+  else
+    echo "FAIL  w9-nuch-declare-vtable-symbol"
+  fi
+
+  # 3. The other asker: `method-satisfies-sig`, so a consumer's own protocol can
+  #    be satisfied by a method it imported.
+  cat > "$d/w24ext.nuc" <<EOF
+(import "$d/w24lib.nuch" wx)
+(defprotocol Show (describe ((self (ref Self))) i32))
+(extend wx/Fox Show)
+(defn main ():i32 (return 0))
+EOF
+  if ./build/nucleusc --emit-llvm "$d/w24ext.nuc" > /dev/null 2>&1; then
+    echo "PASS  w9-nuch-declare-extend-conforms"
+  else
+    echo "FAIL  w9-nuch-declare-extend-conforms"
+  fi
+
+  # 4. Two headers from different namespaces declaring the same signature are
+  #    two distinct symbols, not a collision. They meet in one Generic only
+  #    because the registry is bare-keyed (R2), and a duplicate-DEFINITION error
+  #    there would be about definitions neither of these files makes. This
+  #    worked before item 24 (the two declares never met) and must keep working.
+  cat > "$d/w24na.nuc" <<'EOF'
+(exclude-prelude)
+(ns w24na)
+(defn helper (x:i32):i32 (return x))
+EOF
+  cat > "$d/w24nb.nuc" <<'EOF'
+(exclude-prelude)
+(ns w24nb)
+(defn helper (x:i32):i32 (return x))
+EOF
+  cat > "$d/w24two.nuc" <<EOF
+(import-use "stdio.h")
+(import "$d/w24na.nuch")
+(import "$d/w24nb.nuch")
+(defn main ():i32
+  (printf "h=%d\n" (+ (w24na/helper 1) (w24nb/helper 20)))
+  (return 0))
+EOF
+  for n in w24na w24nb; do
+    ./build/nucleusc --emit-llvm "$d/$n.nuc" > "$d/$n.ll"   2>/dev/null || true
+    ./build/nucleusc --emit-nuch "$d/$n.nuc" > "$d/$n.nuch" 2>/dev/null || true
+  done
+  ./build/nucleusc --emit-llvm "$d/w24two.nuc" > "$d/w24two.ll" 2>/dev/null || true
+  if clang "$d/w24na.ll" "$d/w24nb.ll" "$d/w24two.ll" -o "$d/twobin" 2>/dev/null \
+     && [ "$("$d/twobin")" = "h=21" ]; then
+    echo "PASS  w9-nuch-declare-two-namespaces"
+  else
+    echo "FAIL  w9-nuch-declare-two-namespaces"
+  fi
+  rm -rf "$d"
+}
+spawn run_w9_nuch_declare_generic
+
 # The tenth defect (`protocol-dyn-annot`). An annotation naming a protocol that
 # exists nowhere used to compile and fabricate a box type; admission now happens
 # at the annotation site, deferred to `drain-dyn-annots`. Nothing in this fixture

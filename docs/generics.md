@@ -63,6 +63,8 @@ If a required method is missing, compilation fails with a diagnostic naming each
 
 **Cross-unit.** `defprotocol` and `extend` (type-conformance and protocol-inheritance) export verbatim through `.nuch`; an importing unit re-registers the protocol and trusts the recorded conformance (it does not re-check). See [.nuch Header Format](compiler.md#nuch-header-format).
 
+An imported method is an ordinary method. A `declare` from a header joins the same overload registry a local `defn` joins, so an implementation that arrives through a header can satisfy the importing unit's *own* protocol — `(extend lib/Fox MyProto)` resolves against `lib`'s methods — and can be boxed as `(dyn P)` there. What it does **not** do is change any symbol: the defining unit chose the method's link name, and the importing unit's mangling decisions leave it alone (see **Symbol mangling** above).
+
 ### Protocols are namespaced
 
 A protocol belongs to the namespace of the file that declares it, exactly as a `defn`, `defvar` or type does — see [`ns`](toplevel.md) and [Namespaced type names](types.md#namespaced-type-names). The two halves of an `extend` can still be spelled differently, but not because one is namespaced and the other is not — both are, and both resolve through the same import-scope rule. They typically look different because they are reached by different routes: in the example below, `Circle` is a type this file defines locally (so it is written bare), while `Shape` is a protocol pulled in from elsewhere (so it is written through whatever prefix this file imported it under).
