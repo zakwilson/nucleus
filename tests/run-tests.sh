@@ -32,6 +32,22 @@ spawn() {
   done
 }
 
+# qgrep — `grep -q` that does not race with the process feeding it.
+#
+# `grep -q` exits at its FIRST match, closing the pipe on the producer; under
+# `set -o pipefail` (line 2) the producer's SIGPIPE becomes the pipeline's exit
+# status, so an assertion that MATCHED reads as false. The race is one-sided —
+# a genuine non-match never trips it, because grep then reads its input to the
+# end — which is why it surfaced as a handful of tests failing at random rather
+# than as a consistent wrong answer. Measured on the 54KB of IR
+# `w1-late-overload-symbol` greps: 186 of 200 identical runs reported "no
+# match" for a pattern that is present; 0 of 200 with pipefail off.
+#
+# Reading the input to completion and discarding the output removes the race and
+# keeps pipefail's real value (a producer that CRASHES still fails the
+# assertion, because grep then matches nothing). The exit status is grep's own.
+qgrep() { grep "$@" >/dev/null; }
+
 # --- Per-group unit functions ---------------------------------------------------
 # Each unit is self-contained: it owns its own mktemp space, compiles, checks,
 # and echoes its PASS/FAIL line(s) to stdout. A unit is treated as the atomic
@@ -95,7 +111,7 @@ run_target_triple() {  # <triple>
   local triple="$1" tmpfile
   tmpfile="$(mktemp)"
   ./build/nucleusc --target="$triple" --emit-llvm examples/hello.nuc > "$tmpfile" 2>/dev/null || true
-  if grep -q "target triple = \"$triple\"" "$tmpfile"; then
+  if qgrep "target triple = \"$triple\"" "$tmpfile"; then
     echo "PASS  target-$triple"
   else
     echo "FAIL  target-$triple"
@@ -114,8 +130,8 @@ run_avr_emit() {  # <cpu>
   tmpfile="$(mktemp)"
   ./build/nucleusc --target=avr --mcpu="$cpu" --emit-llvm examples/arith.nuc \
     > "$tmpfile" 2>/dev/null || true
-  if grep -q 'target triple = "avr"' "$tmpfile" \
-     && grep -q 'target datalayout = "e-P1-p:16:8-' "$tmpfile"; then
+  if qgrep 'target triple = "avr"' "$tmpfile" \
+     && qgrep 'target datalayout = "e-P1-p:16:8-' "$tmpfile"; then
     echo "PASS  avr-emit-$cpu"
   else
     echo "FAIL  avr-emit-$cpu (datalayout/triple)"
@@ -149,11 +165,11 @@ run_avr2_16bit() {  # <cpu>
     > "$tmpfile" 2>/dev/null || true
   # 16-bit correctness in the emitted text: AVR datalayout, sizeof/usize as i16
   # (ptrtoint to i16), and the qq-helper Node cell as malloc(i64 22) / align 1.
-  if grep -q 'target datalayout = "e-P1-p:16:8-' "$tmpfile" \
-     && grep -q 'ptrtoint ptr .* to i16' "$tmpfile" \
-     && grep -q 'call ptr @malloc(i64 22)' "$tmpfile" \
-     && grep -q 'store ptr %a, ptr %p4, align 1' "$tmpfile" \
-     && ! grep -q 'call ptr @malloc(i64 40)' "$tmpfile"; then
+  if qgrep 'target datalayout = "e-P1-p:16:8-' "$tmpfile" \
+     && qgrep 'ptrtoint ptr .* to i16' "$tmpfile" \
+     && qgrep 'call ptr @malloc(i64 22)' "$tmpfile" \
+     && qgrep 'store ptr %a, ptr %p4, align 1' "$tmpfile" \
+     && ! qgrep 'call ptr @malloc(i64 40)' "$tmpfile"; then
     echo "PASS  avr2-16bit-$cpu"
   else
     echo "FAIL  avr2-16bit-$cpu (16-bit width / qq-helper malloc size or align)"
@@ -208,7 +224,7 @@ run_w9_gep_index_width() {
 
   # Instruction lines only: the AVR datalayout line names i64 as a legal scalar
   # width, which says nothing about whether any instruction uses one.
-  if grep -q '^  .*i64' "$avr_ir"; then
+  if qgrep '^  .*i64' "$avr_ir"; then
     echo "FAIL  w9-gep-index-width-avr-no-i64 (64-bit index arithmetic on a 16-bit target)"
     grep -n '^  .*i64' "$avr_ir" | sed 's/^/    /' | head -4
   else
@@ -239,8 +255,8 @@ run_w9_fnptr_compare() {
   if ! llvm-as "$ir" -o /dev/null 2>/dev/null; then
     echo "FAIL  w9-fnptr-compare-ir (LLVM rejected the emitted IR)"
     llvm-as "$ir" -o /dev/null 2>&1 | sed 's/^/    /' | head -4
-  elif grep -q 'icmp eq ptr %t[0-9]*, @twice' "$ir" \
-    && grep -q 'icmp ne ptr null, %t[0-9]*' "$ir"; then
+  elif qgrep 'icmp eq ptr %t[0-9]*, @twice' "$ir" \
+    && qgrep 'icmp ne ptr null, %t[0-9]*' "$ir"; then
     echo "PASS  w9-fnptr-compare-ir"
   else
     echo "FAIL  w9-fnptr-compare-ir (fn-pointer identity did not lower to icmp on ptr)"
@@ -283,9 +299,9 @@ run_w9_fnptr_align() {
   elif [ "$(grep -cE "$under" "$ir")" -ne 0 ]; then
     echo "FAIL  w9-fnptr-align-ir ($(grep -cE "$under" "$ir") ptr slots claim align 1)"
     grep -nE "$under" "$ir" | head -6 | sed 's/^/    /'
-  elif grep -q '^@fn-global = global ptr null, align 8' "$ir" \
-    && grep -q '%loc.addr.[0-9]* = alloca ptr, align 8' "$ir" \
-    && grep -q '%h.addr = alloca ptr, align 8' "$ir"; then
+  elif qgrep '^@fn-global = global ptr null, align 8' "$ir" \
+    && qgrep '%loc.addr.[0-9]* = alloca ptr, align 8' "$ir" \
+    && qgrep '%h.addr = alloca ptr, align 8' "$ir"; then
     echo "PASS  w9-fnptr-align-ir"
   else
     echo "FAIL  w9-fnptr-align-ir (a global/local/param fn-pointer slot is not pointer-aligned)"
@@ -293,8 +309,8 @@ run_w9_fnptr_align() {
   fi
 
   # Item 15's rule, on item 19's operand: the width is the TARGET's, not 8.
-  if grep -q '^@fn-global = global ptr null, align 4' "$ir32" \
-    && grep -q '%loc.addr.[0-9]* = alloca ptr, align 4' "$ir32"; then
+  if qgrep '^@fn-global = global ptr null, align 4' "$ir32" \
+    && qgrep '%loc.addr.[0-9]* = alloca ptr, align 4' "$ir32"; then
     echo "PASS  w9-fnptr-align-target-width"
   else
     echo "FAIL  w9-fnptr-align-target-width (32-bit target did not use a 4-byte fn-pointer slot)"
@@ -327,9 +343,9 @@ run_w9_fnptr_null_init() {
   if ! llvm-as "$ir" -o /dev/null 2>/dev/null; then
     echo "FAIL  w9-fnptr-null-init-ir (LLVM rejected the emitted IR)"
     llvm-as "$ir" -o /dev/null 2>&1 | sed 's/^/    /' | head -4
-  elif grep -q '^@g-hook = global ptr null' "$ir" \
-    && grep -q 'store ptr null, ptr %loc.addr' "$ir" \
-    && grep -q 'ret ptr null' "$ir"; then
+  elif qgrep '^@g-hook = global ptr null' "$ir" \
+    && qgrep 'store ptr null, ptr %loc.addr' "$ir" \
+    && qgrep 'ret ptr null' "$ir"; then
     echo "PASS  w9-fnptr-null-init-ir"
   else
     echo "FAIL  w9-fnptr-null-init-ir (the null literal did not reach a fn slot as a plain null)"
@@ -381,7 +397,7 @@ run_avr3_link() {  # <name> <cpu> [<mmcu>]
     ./build/nucleusc --target=avr --mcpu="$cpu" \
       tests/fixtures/avr3-link.nuc -o "$elf" 2>/dev/null || true
   fi
-  if [ -s "$elf" ] && file "$elf" 2>/dev/null | grep -q 'Atmel AVR 8-bit'; then
+  if [ -s "$elf" ] && file "$elf" 2>/dev/null | qgrep 'Atmel AVR 8-bit'; then
     # avr-size Berkeley columns: text data bss. A freestanding blink is tens of
     # bytes of data, not the hundreds/kilobytes a host runtime would add; text is
     # dominated by the device crt/vector table (a few hundred bytes), so a
@@ -420,7 +436,7 @@ run_avr5_isr() {
   rm -f "$elf"
   ./build/nucleusc --target=avr --mcpu=atmega328p \
     examples/avr-isr.nuc -o "$elf" 2>/dev/null || true
-  if [ ! -s "$elf" ] || ! file "$elf" 2>/dev/null | grep -q 'Atmel AVR 8-bit'; then
+  if [ ! -s "$elf" ] || ! file "$elf" 2>/dev/null | qgrep 'Atmel AVR 8-bit'; then
     echo "FAIL  avr5-isr (no linked .elf produced)"
     rm -f "$elf"
     return 0
@@ -429,8 +445,8 @@ run_avr5_isr() {
   # (a) the vector table jumps to our handler; (b) the handler ends in reti.
   # The reti check inspects only the __vector_13 function body (from its label to
   # the next blank line) so a stray reti elsewhere can't spoof the result.
-  if printf '%s\n' "$dis" | grep -q 'jmp.*<__vector_13>' \
-     && printf '%s\n' "$dis" | awk '/<__vector_13>:/{f=1} f&&/\treti/{print;exit}' | grep -q 'reti'; then
+  if printf '%s\n' "$dis" | qgrep 'jmp.*<__vector_13>' \
+     && printf '%s\n' "$dis" | awk '/<__vector_13>:/{f=1} f&&/\treti/{print;exit}' | qgrep 'reti'; then
     echo "PASS  avr5-isr (vector jump + reti epilogue)"
   else
     echo "FAIL  avr5-isr (missing vector jump to __vector_13 or reti epilogue)"
@@ -455,7 +471,7 @@ run_avr6_fnvalue() {
   else
     host_ok=0
   fi
-  if printf '%s' "$avr_err" | grep -qF "cannot use function 'add' as a value on this target" \
+  if printf '%s' "$avr_err" | qgrep -F "cannot use function 'add' as a value on this target" \
      && [ "$host_ok" -eq 1 ]; then
     echo "PASS  avr6-fnvalue-diagnostic"
   else
@@ -469,8 +485,8 @@ run_avr6_fnvalue() {
 run_avr6_const() {
   local ir
   ir="$(./build/nucleusc --emit-llvm tests/fixtures/avr6-const.nuc 2>/dev/null || true)"
-  if printf '%s' "$ir" | grep -q '@answer = constant i32 42' \
-     && printf '%s' "$ir" | grep -q '@mutable-count = global i32 0'; then
+  if printf '%s' "$ir" | qgrep '@answer = constant i32 42' \
+     && printf '%s' "$ir" | qgrep '@mutable-count = global i32 0'; then
     echo "PASS  avr6-const-global"
   else
     echo "FAIL  avr6-const-global (:const must emit 'constant'; plain defvar must stay 'global')"
@@ -493,17 +509,17 @@ run_avr7_f64() {
   # 1. explicit :f64 annotation — AVR rejects, host accepts.
   annot_avr="$(./build/nucleusc --target=avr --mcpu=attiny1634 --emit-llvm \
     tests/fixtures/avr7-f64-annot.nuc 2>&1 >/dev/null || true)"
-  printf '%s' "$annot_avr" | grep -qF "$msg" || pass=0
+  printf '%s' "$annot_avr" | qgrep -F "$msg" || pass=0
   ./build/nucleusc --emit-llvm tests/fixtures/avr7-f64-annot.nuc >/dev/null 2>&1 || pass=0
   # 2. "double" spelling — AVR rejects.
   dbl_avr="$(./build/nucleusc --target=avr --mcpu=attiny1634 --emit-llvm \
     tests/fixtures/avr7-f64-annot.nuc 2>&1 >/dev/null || true)"
-  printf '%s' "$dbl_avr" | grep -qF "$msg" || pass=0
+  printf '%s' "$dbl_avr" | qgrep -F "$msg" || pass=0
   # 3. bare float literal default (no f64 text) — AVR rejects via emit-float,
   #    host accepts.
   lit_avr="$(./build/nucleusc --target=avr --mcpu=attiny1634 --emit-llvm \
     tests/fixtures/avr7-f64-literal.nuc 2>&1 >/dev/null || true)"
-  printf '%s' "$lit_avr" | grep -qF "$msg" || pass=0
+  printf '%s' "$lit_avr" | qgrep -F "$msg" || pass=0
   ./build/nucleusc --emit-llvm tests/fixtures/avr7-f64-literal.nuc >/dev/null 2>&1 || pass=0
   if [ "$pass" -eq 1 ]; then
     echo "PASS  avr7-f64-rejected (annotation + bare literal; host accepts)"
@@ -512,14 +528,14 @@ run_avr7_f64() {
   fi
   # 4. f32 is allowed on AVR (emits `float`).
   if ./build/nucleusc --target=avr --mcpu=attiny1634 --emit-llvm \
-       tests/fixtures/avr7-f32.nuc 2>/dev/null | grep -q 'float'; then
+       tests/fixtures/avr7-f32.nuc 2>/dev/null | qgrep 'float'; then
     echo "PASS  avr7-f32-allowed"
   else
     echo "FAIL  avr7-f32-allowed (f32 must compile on AVR)"
   fi
   # 5. i64 is allowed on AVR (emits an i64 multiply; libgcc __muldi3 at link).
   if ./build/nucleusc --target=avr --mcpu=attiny1634 --emit-llvm \
-       tests/fixtures/avr7-i64.nuc 2>/dev/null | grep -q 'mul nsw i64'; then
+       tests/fixtures/avr7-i64.nuc 2>/dev/null | qgrep 'mul nsw i64'; then
     echo "PASS  avr7-i64-allowed"
   else
     echo "FAIL  avr7-i64-allowed (i64 must compile on AVR)"
@@ -541,12 +557,12 @@ run_avr7_struct() {
     tests/fixtures/avr7-struct.nuc 2>/dev/null || true)"
   host_ir="$(./build/nucleusc --emit-llvm tests/fixtures/avr7-struct.nuc 2>/dev/null || true)"
   # AVR: plain-pointer MEMORY param, sret return, no byval.
-  printf '%s' "$avr_ir" | grep -q 'define i16 @sum(ptr ' || pass=0
-  printf '%s' "$avr_ir" | grep -q 'sret(%Point)' || pass=0
-  printf '%s' "$avr_ir" | grep -q 'byval' && pass=0
+  printf '%s' "$avr_ir" | qgrep 'define i16 @sum(ptr ' || pass=0
+  printf '%s' "$avr_ir" | qgrep 'sret(%Point)' || pass=0
+  printf '%s' "$avr_ir" | qgrep 'byval' && pass=0
   # Host: the same <=16-byte struct is register-coerced (eightbyte model active),
   # proving the AVR bypass is target-keyed (host param is NOT a plain ptr).
-  printf '%s' "$host_ir" | grep -q 'define i16 @sum(i32 ' || pass=0
+  printf '%s' "$host_ir" | qgrep 'define i16 @sum(i32 ' || pass=0
   if [ "$pass" -eq 1 ]; then
     echo "PASS  avr7-struct-abi (AVR plain-ptr MEMORY + sret; host register-coerced)"
   else
@@ -583,9 +599,9 @@ run_riscv_emit() {
   tmpfile="$(mktemp)"
   ./build/nucleusc --target=riscv64-unknown-linux-gnu --emit-llvm \
     tests/fixtures/riscv-features.nuc > "$tmpfile" 2>/dev/null || true
-  if grep -q 'target triple = "riscv64-unknown-linux-gnu"' "$tmpfile" \
-     && grep -q 'target datalayout = "e-m:e-p:64:64-' "$tmpfile" \
-     && grep -q '!"target-abi", !"lp64d"' "$tmpfile"; then
+  if qgrep 'target triple = "riscv64-unknown-linux-gnu"' "$tmpfile" \
+     && qgrep 'target datalayout = "e-m:e-p:64:64-' "$tmpfile" \
+     && qgrep '!"target-abi", !"lp64d"' "$tmpfile"; then
     echo "PASS  riscv-emit"
   else
     echo "FAIL  riscv-emit (datalayout/triple/module-flags)"
@@ -595,10 +611,10 @@ run_riscv_emit() {
     # The asm mnemonic column is tab-indented; anchor at line start so a `.globl`
     # of a symbol containing "mul" can't false-match the multiply instruction.
     if llc -mtriple=riscv64 -mattr=+m,+a,+f,+d,+c -filetype=asm "$tmpfile" -o "$asm" 2>/dev/null \
-       && grep -qE '^[[:space:]]*mul[[:space:]]' "$asm" \
-       && grep -q 'fadd\.d' "$asm" \
-       && ! grep -q '__muldi3' "$asm" \
-       && ! grep -q '__adddf3' "$asm"; then
+       && qgrep -E '^[[:space:]]*mul[[:space:]]' "$asm" \
+       && qgrep 'fadd\.d' "$asm" \
+       && ! qgrep '__muldi3' "$asm" \
+       && ! qgrep '__adddf3' "$asm"; then
       echo "PASS  riscv-llc-features"
     else
       echo "FAIL  riscv-llc-features (features cliff: libcalls instead of hardware mul/fadd.d)"
@@ -634,14 +650,14 @@ run_rv6_fp_abi() {
 
   # §1: one FP real, two FP reals, an array/nested struct that flattens, and
   # rule 3 in both member orders — with the member order preserved in reg0/reg1.
-  if grep -q '^define float @f_f1(float %v\.arg)' "$rv" \
-     && grep -q '^define { double, double } @f_dd(double %v\.arg\.0, double %v\.arg\.1)' "$rv" \
-     && grep -q '^define { float, float } @f_farr2(float %v\.arg\.0, float %v\.arg\.1)' "$rv" \
-     && grep -q '^define { float, float } @f_nest(float %v\.arg\.0, float %v\.arg\.1)' "$rv" \
-     && grep -q '^define { i32, float } @f_mixed(i32 %v\.arg\.0, float %v\.arg\.1)' "$rv" \
-     && grep -q '^define { float, i32 } @f_mixedrev(float %v\.arg\.0, i32 %v\.arg\.1)' "$rv" \
-     && grep -q '^define { i64, double } @f_longmix(i64 %v\.arg\.0, double %v\.arg\.1)' "$rv" \
-     && grep -q '^define i64 @f_pair(i64 %v\.arg)' "$rv"; then
+  if qgrep '^define float @f_f1(float %v\.arg)' "$rv" \
+     && qgrep '^define { double, double } @f_dd(double %v\.arg\.0, double %v\.arg\.1)' "$rv" \
+     && qgrep '^define { float, float } @f_farr2(float %v\.arg\.0, float %v\.arg\.1)' "$rv" \
+     && qgrep '^define { float, float } @f_nest(float %v\.arg\.0, float %v\.arg\.1)' "$rv" \
+     && qgrep '^define { i32, float } @f_mixed(i32 %v\.arg\.0, float %v\.arg\.1)' "$rv" \
+     && qgrep '^define { float, i32 } @f_mixedrev(float %v\.arg\.0, i32 %v\.arg\.1)' "$rv" \
+     && qgrep '^define { i64, double } @f_longmix(i64 %v\.arg\.0, double %v\.arg\.1)' "$rv" \
+     && qgrep '^define i64 @f_pair(i64 %v\.arg)' "$rv"; then
     echo "PASS  rv6-flatten-rules"
   else
     echo "FAIL  rv6-flatten-rules (riscv64 lp64d flattening, riscv-fp-abi.md §1)"
@@ -651,16 +667,16 @@ run_rv6_fp_abi() {
   # §4: the same aggregate flattens while its registers are free and takes the
   # integer convention once they are not — separately for FPRs, GPRs, and the
   # GPR the hidden sret pointer spends before the first argument.
-  if grep -q '^define i32 @fpr7_mixed(.*double %g\.arg, i32 %m\.arg\.0, float %m\.arg\.1)' "$rv" \
-     && grep -q '^define i32 @fpr8_mixed(.*double %h\.arg, i64 %m\.arg)' "$rv" \
-     && grep -q '^define i32 @fpr6_dd(.*double %f\.arg, double %m\.arg\.0, double %m\.arg\.1)' "$rv" \
-     && grep -q '^define i32 @fpr7_dd(.*double %g\.arg, i64 %m\.arg\.0, i64 %m\.arg\.1)' "$rv" \
-     && grep -q '^define i32 @gpr7_mixed(.*i64 %g\.arg, i32 %m\.arg\.0, float %m\.arg\.1)' "$rv" \
-     && grep -q '^define i32 @gpr8_mixed(.*i64 %h\.arg, i64 %m\.arg)' "$rv" \
-     && grep -q '^define i32 @gpr8_f1(.*i64 %h\.arg, float %m\.arg)' "$rv" \
-     && grep -q '^define i32 @gpr8_dd(.*i64 %h\.arg, double %m\.arg\.0, double %m\.arg\.1)' "$rv" \
-     && grep -q '^define void @sret6_mixed(ptr sret(%Big).*i64 %f\.arg, i32 %m\.arg\.0, float %m\.arg\.1)' "$rv" \
-     && grep -q '^define void @sret7_mixed(ptr sret(%Big).*i64 %g\.arg, i64 %m\.arg)' "$rv"; then
+  if qgrep '^define i32 @fpr7_mixed(.*double %g\.arg, i32 %m\.arg\.0, float %m\.arg\.1)' "$rv" \
+     && qgrep '^define i32 @fpr8_mixed(.*double %h\.arg, i64 %m\.arg)' "$rv" \
+     && qgrep '^define i32 @fpr6_dd(.*double %f\.arg, double %m\.arg\.0, double %m\.arg\.1)' "$rv" \
+     && qgrep '^define i32 @fpr7_dd(.*double %g\.arg, i64 %m\.arg\.0, i64 %m\.arg\.1)' "$rv" \
+     && qgrep '^define i32 @gpr7_mixed(.*i64 %g\.arg, i32 %m\.arg\.0, float %m\.arg\.1)' "$rv" \
+     && qgrep '^define i32 @gpr8_mixed(.*i64 %h\.arg, i64 %m\.arg)' "$rv" \
+     && qgrep '^define i32 @gpr8_f1(.*i64 %h\.arg, float %m\.arg)' "$rv" \
+     && qgrep '^define i32 @gpr8_dd(.*i64 %h\.arg, double %m\.arg\.0, double %m\.arg\.1)' "$rv" \
+     && qgrep '^define void @sret6_mixed(ptr sret(%Big).*i64 %f\.arg, i32 %m\.arg\.0, float %m\.arg\.1)' "$rv" \
+     && qgrep '^define void @sret7_mixed(ptr sret(%Big).*i64 %g\.arg, i64 %m\.arg)' "$rv"; then
     echo "PASS  rv6-register-counting"
   else
     echo "FAIL  rv6-register-counting (riscv64 argument register budget, riscv-fp-abi.md §4)"
@@ -672,7 +688,7 @@ run_rv6_fp_abi() {
   local vcall
   vcall="$(grep -F 'call i32 (ptr, ...) @printf' "$rv" | head -1)"
   if [ -n "$vcall" ] \
-     && ! printf '%s' "$vcall" | grep -qE '(float|double) %'; then
+     && ! printf '%s' "$vcall" | qgrep -E '(float|double) %'; then
     echo "PASS  rv6-variadic-integer-convention"
   else
     echo "FAIL  rv6-variadic-integer-convention (a vararg aggregate was flattened into FP registers)"
@@ -681,11 +697,11 @@ run_rv6_fp_abi() {
 
   # Anti-leak control: x86_64 SysV packs {float[2]} into one SSE eightbyte and
   # {i32,f32} into one INTEGER eightbyte — the riscv rules must not reach it.
-  if grep -q '^define <2 x float> @f_farr2(<2 x float> %v\.arg)' "$x86" \
-     && grep -q '^define <2 x float> @f_nest(<2 x float> %v\.arg)' "$x86" \
-     && grep -q '^define i64 @f_mixed(i64 %v\.arg)' "$x86" \
-     && grep -q '^define i64 @f_mixedrev(i64 %v\.arg)' "$x86" \
-     && grep -q '^define i32 @fpr8_mixed(.*double %h\.arg, i64 %m\.arg)' "$x86"; then
+  if qgrep '^define <2 x float> @f_farr2(<2 x float> %v\.arg)' "$x86" \
+     && qgrep '^define <2 x float> @f_nest(<2 x float> %v\.arg)' "$x86" \
+     && qgrep '^define i64 @f_mixed(i64 %v\.arg)' "$x86" \
+     && qgrep '^define i64 @f_mixedrev(i64 %v\.arg)' "$x86" \
+     && qgrep '^define i32 @fpr8_mixed(.*double %h\.arg, i64 %m\.arg)' "$x86"; then
     echo "PASS  rv6-x86-unchanged"
   else
     echo "FAIL  rv6-x86-unchanged (riscv classification leaked into the SysV path)"
@@ -706,8 +722,8 @@ check_long() {  # <triple> <expected-lfn-ir> <expected-llfn-ir>
   printf '(import-use "%s")\n(defn use () :i64 (return (lfn 1)))\n' "$abs_long_h" > "$probe"
   local tmpfile; tmpfile="$(mktemp)"
   ./build/nucleusc --target="$triple" --emit-llvm "$probe" > "$tmpfile" 2>/dev/null || true
-  if grep -q "declare $want_l @lfn(" "$tmpfile" \
-     && grep -q "declare $want_ll @llfn(" "$tmpfile"; then
+  if qgrep "declare $want_l @lfn(" "$tmpfile" \
+     && qgrep "declare $want_ll @llfn(" "$tmpfile"; then
     echo "PASS  long-abi-$triple"
   else
     echo "FAIL  long-abi-$triple (want lfn:$want_l llfn:$want_ll)"
@@ -741,14 +757,14 @@ run_ns6() {
   ./build/nucleusc --emit-llvm    "$ns6_lib" > "$ns6_dir/lib.ll"    2>/dev/null || true
 
   # 1. The .nuch carries the namespace directive so the importer can re-mangle.
-  if grep -q '^(ns geom)' "$ns6_dir/lib.nuch"; then
+  if qgrep '^(ns geom)' "$ns6_dir/lib.nuch"; then
     echo "PASS  n6-nuch-carries-ns"
   else
     echo "FAIL  n6-nuch-carries-ns"
   fi
 
   # 2. The cheader emits the C-legal mangled name, never the slash form.
-  if grep -q 'geom__area' "$ns6_dir/lib.h" && ! grep -q 'geom/area' "$ns6_dir/lib.h"; then
+  if qgrep 'geom__area' "$ns6_dir/lib.h" && ! qgrep 'geom/area' "$ns6_dir/lib.h"; then
     echo "PASS  n6-cheader-c-legal"
   else
     echo "FAIL  n6-cheader-c-legal"
@@ -774,7 +790,7 @@ run_ns6() {
   (return 0))
 EOF
   ./build/nucleusc --emit-llvm "$ns6_dir/main.nuc" > "$ns6_dir/main.ll" 2>/dev/null || true
-  if grep -q 'call i32 @geom__area' "$ns6_dir/main.ll"; then
+  if qgrep 'call i32 @geom__area' "$ns6_dir/main.ll"; then
     echo "PASS  n6-import-resolves-mangled"
   else
     echo "FAIL  n6-import-resolves-mangled"
@@ -800,10 +816,10 @@ EOF
   ./build/nucleusc --emit-nuch    "$ns6_dir/tylib.nuc" > "$ns6_dir/tylib.nuch" 2>/dev/null || true
   ./build/nucleusc --emit-cheader "$ns6_dir/tylib.nuc" > "$ns6_dir/tylib.h"    2>/dev/null || true
   ./build/nucleusc --emit-llvm    "$ns6_dir/tylib.nuc" > "$ns6_dir/tylib.ll"   2>/dev/null || true
-  if grep -qF '%gt__Pt = type' "$ns6_dir/tylib.ll" \
-     && grep -qF '} gt__Pt;' "$ns6_dir/tylib.h" \
-     && grep -qF '(ns gt)' "$ns6_dir/tylib.nuch" \
-     && grep -qF '(defstruct Pt ' "$ns6_dir/tylib.nuch"; then
+  if qgrep -F '%gt__Pt = type' "$ns6_dir/tylib.ll" \
+     && qgrep -F '} gt__Pt;' "$ns6_dir/tylib.h" \
+     && qgrep -F '(ns gt)' "$ns6_dir/tylib.nuch" \
+     && qgrep -F '(defstruct Pt ' "$ns6_dir/tylib.nuch"; then
     echo "PASS  b3-ns-type-export-surfaces"
   else
     echo "FAIL  b3-ns-type-export-surfaces"
@@ -851,29 +867,29 @@ run_sm3() {
   # 1. The .nuch round-trips both name kinds: solitary `?`/`!` as (declare ...) and
   #    the overloaded `?` pair as (defmethod "@even_QMARK.<tok>" ...) carrying the
   #    stored mangled string verbatim.
-  if grep -qF '(declare full? ((n i32)) :i32)' "$sm3_dir/lib.nuch" \
-     && grep -qF '(declare push! ((n i32)) :i32)' "$sm3_dir/lib.nuch" \
-     && grep -qF '(defmethod "@even_QMARK.i32"' "$sm3_dir/lib.nuch" \
-     && grep -qF '(defmethod "@even_QMARK.i64"' "$sm3_dir/lib.nuch"; then
+  if qgrep -F '(declare full? ((n i32)) :i32)' "$sm3_dir/lib.nuch" \
+     && qgrep -F '(declare push! ((n i32)) :i32)' "$sm3_dir/lib.nuch" \
+     && qgrep -F '(defmethod "@even_QMARK.i32"' "$sm3_dir/lib.nuch" \
+     && qgrep -F '(defmethod "@even_QMARK.i64"' "$sm3_dir/lib.nuch"; then
     echo "PASS  sm3-nuch-roundtrip"
   else
     echo "FAIL  sm3-nuch-roundtrip"
   fi
 
   # 2. The lib object defines the mnemonic-mangled symbols.
-  if grep -qF 'define i32 @full_QMARK' "$sm3_dir/lib.ll" \
-     && grep -qF 'define i32 @push_BANG' "$sm3_dir/lib.ll" \
-     && grep -qF 'define i32 @even_QMARK.i32' "$sm3_dir/lib.ll" \
-     && grep -qF 'define i32 @even_QMARK.i64' "$sm3_dir/lib.ll"; then
+  if qgrep -F 'define i32 @full_QMARK' "$sm3_dir/lib.ll" \
+     && qgrep -F 'define i32 @push_BANG' "$sm3_dir/lib.ll" \
+     && qgrep -F 'define i32 @even_QMARK.i32' "$sm3_dir/lib.ll" \
+     && qgrep -F 'define i32 @even_QMARK.i64' "$sm3_dir/lib.ll"; then
     echo "PASS  sm3-lib-symbols"
   else
     echo "FAIL  sm3-lib-symbols"
   fi
 
   # 3. The cheader names the real C-legal function symbols, never the illegal `full?`.
-  if grep -qF 'full_QMARK(' "$sm3_dir/lib.h" \
-     && grep -qF 'push_BANG(' "$sm3_dir/lib.h" \
-     && ! grep -qF 'full?' "$sm3_dir/lib.h"; then
+  if qgrep -F 'full_QMARK(' "$sm3_dir/lib.h" \
+     && qgrep -F 'push_BANG(' "$sm3_dir/lib.h" \
+     && ! qgrep -F 'full?' "$sm3_dir/lib.h"; then
     echo "PASS  sm3-cheader-fn-legal"
   else
     echo "FAIL  sm3-cheader-fn-legal"
@@ -894,10 +910,10 @@ run_sm3() {
   (return 0))
 EOF
   ./build/nucleusc --emit-llvm "$sm3_dir/main.nuc" > "$sm3_dir/main.ll" 2>/dev/null || true
-  if grep -qF 'call i32 @full_QMARK' "$sm3_dir/main.ll" \
-     && grep -qF 'call i32 @push_BANG' "$sm3_dir/main.ll" \
-     && grep -qF 'call i32 @even_QMARK.i32' "$sm3_dir/main.ll" \
-     && grep -qF 'call i32 @even_QMARK.i64' "$sm3_dir/main.ll"; then
+  if qgrep -F 'call i32 @full_QMARK' "$sm3_dir/main.ll" \
+     && qgrep -F 'call i32 @push_BANG' "$sm3_dir/main.ll" \
+     && qgrep -F 'call i32 @even_QMARK.i32' "$sm3_dir/main.ll" \
+     && qgrep -F 'call i32 @even_QMARK.i64' "$sm3_dir/main.ll"; then
     echo "PASS  sm3-import-resolves-mangled"
   else
     echo "FAIL  sm3-import-resolves-mangled"
@@ -913,10 +929,10 @@ EOF
   #    SM-3 fix proper), across all three call sites: the defstruct typedef name, the
   #    defunion typedef name, and a `struct <name>` reference in a param.
   ./build/nucleusc --emit-cheader tests/fixtures/sm3-typenames.nuc > "$sm3_dir/types.h" 2>/dev/null || true
-  if grep -qF '} Full_QMARK;' "$sm3_dir/types.h" \
-     && grep -qF '} Push_BANG;' "$sm3_dir/types.h" \
-     && grep -qF '} Shape_QMARK;' "$sm3_dir/types.h" \
-     && grep -qF 'struct Full_QMARK* f' "$sm3_dir/types.h"; then
+  if qgrep -F '} Full_QMARK;' "$sm3_dir/types.h" \
+     && qgrep -F '} Push_BANG;' "$sm3_dir/types.h" \
+     && qgrep -F '} Shape_QMARK;' "$sm3_dir/types.h" \
+     && qgrep -F 'struct Full_QMARK* f' "$sm3_dir/types.h"; then
     echo "PASS  sm3-cheader-typenames"
   else
     echo "FAIL  sm3-cheader-typenames"
@@ -926,17 +942,17 @@ EOF
 
 # Single-fixture rejection checks: compiling <fixture> must FAIL with <pattern>
 # on stderr. Each is independent (its own nucleusc invocation), so each is its
-# own job. grep -qF is safe for all patterns below (none carry regex metachars).
+# own job. qgrep -F is safe for all patterns below (none carry regex metachars).
 run_reject() {  # <name> <fixture> <pattern>
   local name="$1" fixture="$2" pattern="$3" err
   err="$(./build/nucleusc --emit-llvm "$fixture" 2>&1 >/dev/null || true)"
   # Stage 15 W4a: a rejection that reports `:0:` is a regression even when the
   # message text is right. Checked here so every existing and future rejection
   # test carries the location guarantee for free.
-  if printf '%s' "$err" | grep -q ':0:'; then
+  if printf '%s' "$err" | qgrep ':0:'; then
     echo "FAIL  $name (diagnostic reports line 0)"
     printf '%s\n' "$err" | sed 's/^/    /'
-  elif printf '%s' "$err" | grep -qF "$pattern"; then
+  elif printf '%s' "$err" | qgrep -F "$pattern"; then
     echo "PASS  $name"
   else
     echo "FAIL  $name"
@@ -951,7 +967,7 @@ run_reject() {  # <name> <fixture> <pattern>
 run_reject_at() {  # <name> <fixture> <loc-prefix> <pattern>
   local name="$1" fixture="$2" loc="$3" pattern="$4" err
   err="$(./build/nucleusc --emit-llvm "$fixture" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -qF "$loc" && printf '%s' "$err" | grep -qF "$pattern"; then
+  if printf '%s' "$err" | qgrep -F "$loc" && printf '%s' "$err" | qgrep -F "$pattern"; then
     echo "PASS  $name"
   else
     echo "FAIL  $name"
@@ -987,7 +1003,7 @@ run_no_line_zero() {
   bad=0
   for f in tests/fixtures/*.nuc; do
     err="$(./build/nucleusc --emit-llvm "$f" 2>&1 >/dev/null || true)"
-    if printf '%s' "$err" | grep -q ':0:'; then
+    if printf '%s' "$err" | qgrep ':0:'; then
       bad=1
       body="${body}    ${f}"$'\n'
       body="${body}$(printf '%s' "$err" | grep ':0:' | sed 's/^/      /')"$'\n'
@@ -1013,10 +1029,10 @@ run_w4a_sibling_forward() {
   printf '(defn y-later ():i32\n  (return 7))\n' > "$d/w4a-sib-y.nuc"
   printf '(import w4a-sib-x)\n(import w4a-sib-y)\n(defn main ():i32\n  (return (x-uses)))\n' > "$d/w4a-sib-main.nuc"
   err="$(./build/nucleusc -I "$d" --emit-llvm "$d/w4a-sib-main.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -q ':0:'; then
+  if printf '%s' "$err" | qgrep ':0:'; then
     echo "FAIL  w4a-sibling-forward (diagnostic reports line 0)"
     printf '%s\n' "$err" | sed 's/^/    /'
-  elif [ -z "$err" ] || printf '%s' "$err" | grep -q 'w4a-sib-x.nuc:2:'; then
+  elif [ -z "$err" ] || printf '%s' "$err" | qgrep 'w4a-sib-x.nuc:2:'; then
     echo "PASS  w4a-sibling-forward"
   else
     echo "FAIL  w4a-sibling-forward"
@@ -1134,7 +1150,7 @@ run_w1_still_rejects() {
   printf '(defn w1-dupe (n:i32):i32 (return (+ n 1)))\n' > "$d/w1-dup-b.nuc"
   printf '(import w1-dup-a)\n(import w1-dup-b)\n(defn main ():i32 (return (w1-dupe 1)))\n' > "$d/w1-dup.nuc"
   err="$(./build/nucleusc -I "$d" --emit-llvm "$d/w1-dup.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -q "duplicate definition of 'w1-dupe'"; then
+  if printf '%s' "$err" | qgrep "duplicate definition of 'w1-dupe'"; then
     echo "PASS  w1-duplicate-rejected"
   else
     echo "FAIL  w1-duplicate-rejected"
@@ -1143,7 +1159,7 @@ run_w1_still_rejects() {
 
   printf '(import w1-dup-a)\n(defn main ():i32 (return (w1-nowhere)))\n' > "$d/w1-missing.nuc"
   err="$(./build/nucleusc -I "$d" --emit-llvm "$d/w1-missing.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -q 'unknown: w1-nowhere'; then
+  if printf '%s' "$err" | qgrep 'unknown: w1-nowhere'; then
     echo "PASS  w1-missing-rejected"
   else
     echo "FAIL  w1-missing-rejected"
@@ -1194,10 +1210,10 @@ run_w1_declare_cycle_breaker() {
 w1_reject_at() {  # <name> <dir> <main.nuc> <loc-prefix> <pattern>
   local name="$1" d="$2" mainsrc="$3" loc="$4" pattern="$5" err
   err="$(./build/nucleusc -I "$d" --emit-llvm "$mainsrc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -q ':0:'; then
+  if printf '%s' "$err" | qgrep ':0:'; then
     echo "FAIL  $name (diagnostic reports line 0)"
     printf '%s\n' "$err" | sed 's/^/    /'
-  elif printf '%s' "$err" | grep -qF "$loc" && printf '%s' "$err" | grep -qF "$pattern"; then
+  elif printf '%s' "$err" | qgrep -F "$loc" && printf '%s' "$err" | qgrep -F "$pattern"; then
     echo "PASS  $name"
   else
     echo "FAIL  $name"
@@ -1210,10 +1226,10 @@ w1_reject_at() {  # <name> <dir> <main.nuc> <loc-prefix> <pattern>
 w1_reject_multi() {  # <name> <dir> <main.nuc> <pattern>
   local name="$1" d="$2" mainsrc="$3" pattern="$4" err
   err="$(./build/nucleusc -I "$d" --emit-llvm "$mainsrc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -q ':0:'; then
+  if printf '%s' "$err" | qgrep ':0:'; then
     echo "FAIL  $name (diagnostic reports line 0)"
     printf '%s\n' "$err" | sed 's/^/    /'
-  elif printf '%s' "$err" | grep -qF "$pattern"; then
+  elif printf '%s' "$err" | qgrep -F "$pattern"; then
     echo "PASS  $name"
   else
     echo "FAIL  $name"
@@ -1350,7 +1366,7 @@ run_w9_lib_standalone() {
     if ! ./build/nucleusc -c -o "$d/gate.o" "$f" >/dev/null 2>"$d/err"; then
       continue   # standalone compilation is the loops above's assertion, not this one
     fi
-    if grep -q "run-time initializer" "$d/err"; then
+    if qgrep "run-time initializer" "$d/err"; then
       bad=1; body="${body}    ${f}"$'\n'"$(sed 's/^/      /' "$d/err")"$'\n'
     fi
   done
@@ -1419,7 +1435,7 @@ EOF
   # `w9-side-bump` call really is undefined in main.o (else nothing crosses the
   # object boundary and the shared counter proves only that one object works).
   if [ "$(nm "$d/main.o" "$d/side.o" 2>/dev/null | grep -cE ' [WV] arena-init$')" = 2 ] \
-     && nm "$d/main.o" 2>/dev/null | grep -qE '^ +U w9-side-bump$'; then
+     && nm "$d/main.o" 2>/dev/null | qgrep -E '^ +U w9-side-bump$'; then
     echo "PASS  w9-multi-object-weak-prelude"
   else
     echo "FAIL  w9-multi-object-weak-prelude (want a weak arena-init in both, and an undefined w9-side-bump in main.o)"
@@ -1437,10 +1453,10 @@ EOF
 (defn main ():i32 (return (w9-own)))
 EOF
   ./build/nucleusc --emit-llvm -I "$d/share" "$d/main/w9own.nuc" > "$d/own.ll" 2>/dev/null || true
-  if grep -qE '^define i32 @w9-own\(' "$d/own.ll" \
-     && grep -qE '^define weak_odr i32 @w9-get\(' "$d/own.ll" \
-     && grep -qE '^@w9-count = weak_odr global ' "$d/own.ll" \
-     && grep -qE '^define internal i32 @w9own_p[0-9]+__w9-secret\(' "$d/own.ll"; then
+  if qgrep -E '^define i32 @w9-own\(' "$d/own.ll" \
+     && qgrep -E '^define weak_odr i32 @w9-get\(' "$d/own.ll" \
+     && qgrep -E '^@w9-count = weak_odr global ' "$d/own.ll" \
+     && qgrep -E '^define internal i32 @w9own_p[0-9]+__w9-secret\(' "$d/own.ll"; then
     echo "PASS  w9-linkage-ownership"
   else
     echo "FAIL  w9-linkage-ownership (root/imported/private must be external/weak_odr/internal)"
@@ -1486,7 +1502,7 @@ EOF
   fi
 
   out="$(./build/nucleusc -c -o "$d/main.o" -I "$d/inc" -I "$d/share" "$d/main/dmain.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$out" | grep -qF "dshare.nuc:3: warning: defvar: 'd-runs' has a run-time initializer"; then
+  if printf '%s' "$out" | qgrep -F "dshare.nuc:3: warning: defvar: 'd-runs' has a run-time initializer"; then
     echo "PASS  w9-shared-init-warns-under-c"
   else
     echo "FAIL  w9-shared-init-warns-under-c"; printf '%s\n' "$out" | sed 's/^/    /'
@@ -1567,11 +1583,11 @@ EOF
     echo "FAIL  w9-cheader-globals (--emit-cheader failed)"; sed 's/^/    /' "$d/err"; rm -rf "$d"; return 0
   fi
 
-  if grep -qxF 'extern int32_t counter;' "$d/clib.h" \
-     && grep -qxF 'extern const int32_t limit;' "$d/clib.h" \
-     && grep -qxF 'extern int64_t tick_count asm("tick-count");' "$d/clib.h" \
-     && grep -qxF 'extern struct CRec rec_val asm("rec-val");' "$d/clib.h" \
-     && ! grep -q 'hidden' "$d/clib.h"; then
+  if qgrep -xF 'extern int32_t counter;' "$d/clib.h" \
+     && qgrep -xF 'extern const int32_t limit;' "$d/clib.h" \
+     && qgrep -xF 'extern int64_t tick_count asm("tick-count");' "$d/clib.h" \
+     && qgrep -xF 'extern struct CRec rec_val asm("rec-val");' "$d/clib.h" \
+     && ! qgrep 'hidden' "$d/clib.h"; then
     echo "PASS  w9-cheader-global-lines"
   else
     echo "FAIL  w9-cheader-global-lines"; grep -nE 'extern|hidden' "$d/clib.h" | sed 's/^/    /'
@@ -1583,8 +1599,8 @@ EOF
   # `m-skip` names the more specific reason since W9 item 26 gave the pass the
   # union-template registry: `(Maybe i32)` is recognized as a template instance
   # rather than merely unspellable. Either way it is an omission with a comment.
-  if grep -qF '/* m-skip: uses a defunion-template instance type; not exported */' "$d/clib.h" \
-     && grep -qF '/* arr-skip: type has no C spelling here; not exported */' "$d/clib.h"; then
+  if qgrep -F '/* m-skip: uses a defunion-template instance type; not exported */' "$d/clib.h" \
+     && qgrep -F '/* arr-skip: type has no C spelling here; not exported */' "$d/clib.h"; then
     echo "PASS  w9-cheader-global-skips-unspellable"
   else
     echo "FAIL  w9-cheader-global-skips-unspellable"; grep -n 'skip' "$d/clib.h" | sed 's/^/    /'
@@ -1632,9 +1648,9 @@ EOF
   # a latent defect into a broken `extern` line.
   printf '(defvar kc:usize 3)\n(defn take (n:usize):ssize (return (as ssize n)))\n' > "$d/sz.nuc"
   ./build/nucleusc --emit-cheader "$d/sz.nuc" > "$d/sz.h" 2>/dev/null || true
-  if grep -qxF 'extern size_t kc;' "$d/sz.h" \
-     && grep -qxF 'ptrdiff_t take(size_t n);' "$d/sz.h" \
-     && ! grep -q 'struct usize' "$d/sz.h"; then
+  if qgrep -xF 'extern size_t kc;' "$d/sz.h" \
+     && qgrep -xF 'ptrdiff_t take(size_t n);' "$d/sz.h" \
+     && ! qgrep 'struct usize' "$d/sz.h"; then
     echo "PASS  w9-cheader-usize-maps-to-size-t"
   else
     echo "FAIL  w9-cheader-usize-maps-to-size-t"; grep -nE 'kc|take' "$d/sz.h" | sed 's/^/    /'
@@ -1683,12 +1699,12 @@ EOF
 
   # A label appears only where it is load-bearing, so a C-legal library still gets
   # a portable header: `plain` has no label, `my-bump` does.
-  if grep -qxF 'int32_t my_bump(int32_t n_arg) asm("my-bump");' "$d/hlib.h" \
-     && grep -qxF 'int32_t plain(int32_t n);' "$d/hlib.h" \
-     && grep -qxF '#define BUF_LEN 4' "$d/hlib.h" \
-     && grep -qF 'int32_t xs[BUF_LEN];' "$d/hlib.h" \
-     && grep -qF 'My_Uni_uni_b = 1' "$d/hlib.h" \
-     && grep -qF 'My_Col_my_green = 1' "$d/hlib.h"; then
+  if qgrep -xF 'int32_t my_bump(int32_t n_arg) asm("my-bump");' "$d/hlib.h" \
+     && qgrep -xF 'int32_t plain(int32_t n);' "$d/hlib.h" \
+     && qgrep -xF '#define BUF_LEN 4' "$d/hlib.h" \
+     && qgrep -F 'int32_t xs[BUF_LEN];' "$d/hlib.h" \
+     && qgrep -F 'My_Uni_uni_b = 1' "$d/hlib.h" \
+     && qgrep -F 'My_Col_my_green = 1' "$d/hlib.h"; then
     echo "PASS  w9-cheader-label-only-where-needed"
   else
     echo "FAIL  w9-cheader-label-only-where-needed"
@@ -1728,9 +1744,9 @@ EOF
   # The label must name what the object actually defines — the reason a sanitized
   # name alone is not enough. `nm` is the independent witness that the C-side
   # identifier and the ELF symbol really are different strings.
-  if [ -f "$d/hlib.o" ] && nm "$d/hlib.o" | grep -qE ' T my-bump$' \
-     && nm "$d/hlib.o" | grep -qE ' D my-count$' \
-     && ! nm "$d/hlib.o" | grep -qE ' (T|D) my_bump$'; then
+  if [ -f "$d/hlib.o" ] && nm "$d/hlib.o" | qgrep -E ' T my-bump$' \
+     && nm "$d/hlib.o" | qgrep -E ' D my-count$' \
+     && ! nm "$d/hlib.o" | qgrep -E ' (T|D) my_bump$'; then
     echo "PASS  w9-cheader-symbols-keep-hyphens"
   else
     echo "FAIL  w9-cheader-symbols-keep-hyphens"
@@ -1771,7 +1787,7 @@ EOF
   #    definition, not a link-time `declare`.
   printf '(import w9sh)\n(defn main ():i32 (return 0))\n' > "$d/w9shok.nuc"
   ir="$(./build/nucleusc --emit-llvm -I "$d/l" "$d/w9shok.nuc" 2>/dev/null || true)"
-  if printf '%s' "$ir" | grep -qE '^define .*@shn__w9sh-get\(' ; then
+  if printf '%s' "$ir" | qgrep -E '^define .*@shn__w9sh-get\(' ; then
     echo "PASS  w9-import-prefers-source"
   else
     echo "FAIL  w9-import-prefers-source (header won, or the symbol moved)"
@@ -1781,15 +1797,133 @@ EOF
   # 2. The diagnostic side of the same ruling: the sibling header must not be
   #    named as an unreachable definer, and the better tier must survive.
   err="$(./build/nucleusc --emit-llvm -I "$d/l" "$d/w9shuse.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -qF "w9sh.nuch"; then
+  if printf '%s' "$err" | qgrep -F "w9sh.nuch"; then
     echo "FAIL  w9-sibling-header-not-unreachable (named the header for a library the unit imports)"
     printf '%s\n' "$err" | sed 's/^/    /'
-  elif printf '%s' "$err" | grep -qF "defined in namespace 'shn'" \
-       && printf '%s' "$err" | grep -qF "note: write 'shp/W9Rec' here"; then
+  elif printf '%s' "$err" | qgrep -F "defined in namespace 'shn'" \
+       && printf '%s' "$err" | qgrep -F "note: write 'shp/W9Rec' here"; then
     echo "PASS  w9-sibling-header-not-unreachable"
   else
     echo "FAIL  w9-sibling-header-not-unreachable (expected the namespace tier)"
     printf '%s\n' "$err" | sed 's/^/    /'
+  fi
+  rm -rf "$d"
+}
+
+# Stage 15 W9 item 29: a `.nuch` header's functions and values resolve on
+# REACHABILITY, like the `.nuc` spelling of the same library, not on whether the
+# import form happens to sit above the use. Registration is hoisted into the
+# whole-graph prescan (`prescan-nuch-signatures`) and emission left where
+# `emit-nuch-import-forms` always wrote it, so the same program's IR does not
+# move — which is what the third and fourth checks below are for. The library's
+# source is deliberately OUT of the include path: with both beside each other an
+# import takes the `.nuc` (w9-import-prefers-source), and nothing here would be
+# exercising a header at all.
+run_w9_nuch_import_order() {
+  local d ir
+  d="$(mktemp -d)"; mkdir -p "$d/l" "$d/h"
+  cat > "$d/l/w9no.nuc" <<'EOF'
+(defconst W9NO-BASE 40)
+(defenum W9NoKind w9no-red w9no-green w9no-blue)
+(defvar w9no-counter:i32 7)
+(defn w9no-add ((a i32) (b i32)):i32 (return (+ a b)))
+(defn w9no-two ((a i32)):i32 (return (* a 2)))
+(defn w9no-two ((a i64)):i64 (return (* a 2)))
+EOF
+  ./build/nucleusc --emit-nuch "$d/l/w9no.nuc" > "$d/h/w9no.nuch" 2>/dev/null || true
+  if [ ! -s "$d/h/w9no.nuch" ]; then
+    echo "FAIL  w9-nuch-import-order (could not generate the header)"; rm -rf "$d"; return 0
+  fi
+  # One use of every kind a header carries: a `declare`, an `extern`, a
+  # `defconst`, a `defenum` member and one arm of an overload set (`defmethod`).
+  cat > "$d/body.txt" <<'EOF'
+(defn main ():i32
+  (printf "%d %d %d %d %d\n" (w9no-add 1 2) W9NO-BASE (as i32 w9no-blue) w9no-counter (w9no-two 21))
+  (return 0))
+EOF
+  { cat "$d/body.txt"; echo '(import-use w9no)'; } > "$d/below.nuc"
+  { echo '(import-use w9no)'; cat "$d/body.txt"; } > "$d/above.nuc"
+
+  # 1. The import BELOW every use compiles at all. This is the whole defect: on
+  #    the committed boot compiler it is `not defined anywhere in this
+  #    compilation unit` for five names that are in the unit.
+  if ./build/nucleusc --emit-llvm -I "$d/h" "$d/below.nuc" > "$d/below.ll" 2>"$d/below.err"; then
+    echo "PASS  w9-nuch-import-below-use"
+  else
+    echo "FAIL  w9-nuch-import-below-use"
+    sed 's/^/    /' "$d/below.err" | head -4
+  fi
+
+  # 2. …and LINKS and RUNS against the library's object, which is the only proof
+  #    that the `declare` / `external global` lines were still emitted, exactly
+  #    once, under the symbols the library actually exports.
+  ./build/nucleusc -c "$d/l/w9no.nuc" -o "$d/w9no.o" >/dev/null 2>&1
+  local ok=1
+  for v in above below; do
+    ./build/nucleusc -c -I "$d/h" "$d/$v.nuc" -o "$d/$v.o" >/dev/null 2>&1 || ok=0
+    clang "$d/$v.o" "$d/w9no.o" -o "$d/$v.bin" >/dev/null 2>&1 || ok=0
+    [ "$ok" = 1 ] && [ "$("$d/$v.bin")" = "3 40 2 7 42" ] || ok=0
+  done
+  if [ "$ok" = 1 ]; then
+    echo "PASS  w9-nuch-import-order-links-and-runs"
+  else
+    echo "FAIL  w9-nuch-import-order-links-and-runs"
+    for v in above below; do [ -x "$d/$v.bin" ] && printf '    %s: %s\n' "$v" "$("$d/$v.bin" 2>&1)"; done
+  fi
+
+  # 3. Emission did not move: one `declare` per function, one `external global`
+  #    per variable. The prescan registers without emitting precisely so that
+  #    these counts stay 1 — a second copy of either is invalid IR.
+  ir="$(cat "$d/below.ll" 2>/dev/null || true)"
+  if [ "$(printf '%s\n' "$ir" | grep -c '^declare i32 @w9no-add(i32, i32)$')" = 1 ] \
+     && [ "$(printf '%s\n' "$ir" | grep -c '^@w9no-counter = external global i32$')" = 1 ] \
+     && [ "$(printf '%s\n' "$ir" | grep -c '^declare i32 @w9no_two\.i32(i32)$')" = 1 ] \
+     && [ "$(printf '%s\n' "$ir" | grep -c '^declare i64 @w9no_two\.i64(i64)$')" = 1 ]; then
+    echo "PASS  w9-nuch-declares-emitted-once"
+  else
+    echo "FAIL  w9-nuch-declares-emitted-once"
+    printf '%s\n' "$ir" | grep -E '^(declare|@w9no)' | sed 's/^/    /' | head -8
+  fi
+
+  # 4. Two headers declaring ONE global. The prescan registers it for whichever
+  #    header it reaches first and skips it for the second — so the emit-only
+  #    pass must ask per name whether registration happened, not assume it did
+  #    for the whole header. Assuming would write `@w9no-shared` twice, which
+  #    LLVM rejects. Both declares must still be there.
+  printf '(extern (w9no-shared i32))\n(declare w9no-a ((x i32)) :i32)\n' > "$d/h/w9noa.nuch"
+  printf '(extern (w9no-shared i32))\n(declare w9no-b ((x i32)) :i32)\n' > "$d/h/w9nob.nuch"
+  cat > "$d/two.nuc" <<'EOF'
+(defn main ():i32
+  (printf "%d %d %d\n" (w9no-a 1) (w9no-b 2) w9no-shared)
+  (return 0))
+(import-use w9noa)
+(import-use w9nob)
+EOF
+  ir="$(./build/nucleusc --emit-llvm -I "$d/h" "$d/two.nuc" 2>/dev/null || true)"
+  if [ "$(printf '%s\n' "$ir" | grep -c '^@w9no-shared = external global i32$')" = 1 ] \
+     && [ "$(printf '%s\n' "$ir" | grep -c '^declare i32 @w9no-a(i32)$')" = 1 ] \
+     && [ "$(printf '%s\n' "$ir" | grep -c '^declare i32 @w9no-b(i32)$')" = 1 ]; then
+    echo "PASS  w9-nuch-shared-global-declared-once"
+  else
+    echo "FAIL  w9-nuch-shared-global-declared-once"
+    printf '%s\n' "$ir" | grep -E '^(declare|@w9no)' | sed 's/^/    /' | head -8
+  fi
+
+  # 5. The other half of the same rule: when the UNIT defines the name a header
+  #    declares, the header entry is still dropped whole (item 36's behaviour,
+  #    unchanged) — one `define`, no `declare` competing with it.
+  cat > "$d/shadow.nuc" <<'EOF'
+(import-use w9no)
+(defn w9no-add ((a i32) (b i32)):i32 (return (- a b)))
+(defn main ():i32 (printf "%d\n" (w9no-add 5 2)) (return 0))
+EOF
+  ir="$(./build/nucleusc --emit-llvm -I "$d/h" "$d/shadow.nuc" 2>/dev/null || true)"
+  if [ "$(printf '%s\n' "$ir" | grep -c '^define .*@w9no-add(')" = 1 ] \
+     && [ "$(printf '%s\n' "$ir" | grep -c '^declare .*@w9no-add(')" = 0 ]; then
+    echo "PASS  w9-nuch-local-definition-still-wins"
+  else
+    echo "FAIL  w9-nuch-local-definition-still-wins"
+    printf '%s\n' "$ir" | grep -E '@w9no-add' | sed 's/^/    /' | head -6
   fi
   rm -rf "$d"
 }
@@ -1978,13 +2112,13 @@ run_w5e_still_rejects() {
   printf '(defn w5e-pub ():i32 (return 2))\n' > "$d/w5e-cb.nuc"
   printf '(import-use w5e-ca)\n(import-use w5e-cb)\n(defn main ():i32 (return (w5e-pub)))\n' > "$d/w5e-c1.nuc"
   err="$(./build/nucleusc -I "$d" --emit-llvm "$d/w5e-c1.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -q ':0:'; then
+  if printf '%s' "$err" | qgrep ':0:'; then
     echo "FAIL  w5e-public-collision-rejected (diagnostic reports line 0)"
     printf '%s\n' "$err" | sed 's/^/    /'
-  elif printf '%s' "$err" | grep -qF "duplicate definition of 'w5e-pub'" \
-    && printf '%s' "$err" | grep -qF "$d/w5e-ca.nuc:1" \
-    && printf '%s' "$err" | grep -qF "$d/w5e-cb.nuc:1" \
-    && printf '%s' "$err" | grep -qF 'a public name must be unique'; then
+  elif printf '%s' "$err" | qgrep -F "duplicate definition of 'w5e-pub'" \
+    && printf '%s' "$err" | qgrep -F "$d/w5e-ca.nuc:1" \
+    && printf '%s' "$err" | qgrep -F "$d/w5e-cb.nuc:1" \
+    && printf '%s' "$err" | qgrep -F 'a public name must be unique'; then
     echo "PASS  w5e-public-collision-rejected"
   else
     echo "FAIL  w5e-public-collision-rejected"
@@ -1996,14 +2130,14 @@ run_w5e_still_rejects() {
   printf '(ns w5eg)\n(defn- w5e-nsh ():i32 (return 2))\n(defn w5e-nb ():i32 (return (w5e-nsh)))\n' > "$d/w5e-nb.nuc"
   printf '(import-use w5e-na)\n(import-use w5e-nb)\n(defn main ():i32 (return 0))\n' > "$d/w5e-n1.nuc"
   err="$(./build/nucleusc -I "$d" --emit-llvm "$d/w5e-n1.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -q ':0:'; then
+  if printf '%s' "$err" | qgrep ':0:'; then
     echo "FAIL  w5e-ns-private-collision-rejected (diagnostic reports line 0)"
     printf '%s\n' "$err" | sed 's/^/    /'
-  elif printf '%s' "$err" | grep -qF "duplicate definition of 'w5e-nsh'" \
-    && printf '%s' "$err" | grep -qF "$d/w5e-na.nuc:2" \
-    && printf '%s' "$err" | grep -qF "$d/w5e-nb.nuc:2" \
-    && printf '%s' "$err" | grep -qF "private to its NAMESPACE" \
-    && printf '%s' "$err" | grep -qF "namespace 'w5eg'"; then
+  elif printf '%s' "$err" | qgrep -F "duplicate definition of 'w5e-nsh'" \
+    && printf '%s' "$err" | qgrep -F "$d/w5e-na.nuc:2" \
+    && printf '%s' "$err" | qgrep -F "$d/w5e-nb.nuc:2" \
+    && printf '%s' "$err" | qgrep -F "private to its NAMESPACE" \
+    && printf '%s' "$err" | qgrep -F "namespace 'w5eg'"; then
     echo "PASS  w5e-ns-private-collision-rejected"
   else
     echo "FAIL  w5e-ns-private-collision-rejected"
@@ -2037,7 +2171,7 @@ run_w1d_path_prefix() {
   printf '(import "%s/w1-ppa.nuc")\n(import "%s/sub/w1-ppa.nuc")\n(defn main ():i32 (return 0))\n' \
     "$d" "$d" > "$d/w1-ppdup.nuc"
   err="$(./build/nucleusc --emit-llvm "$d/w1-ppdup.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -qF "import: prefix 'w1-ppa' is already bound to"; then
+  if printf '%s' "$err" | qgrep -F "import: prefix 'w1-ppa' is already bound to"; then
     echo "PASS  w1d-path-prefix-collision"
   else
     echo "FAIL  w1d-path-prefix-collision"
@@ -2063,7 +2197,7 @@ run_w1_deferred_union_payload() {
 (defn main ():i32 (return 0))
 EOF
   err="$(./build/nucleusc --emit-llvm "$d/w1-ctdefer.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -q 'undefined type'; then
+  if printf '%s' "$err" | qgrep 'undefined type'; then
     echo "FAIL  w1-deferred-union-payload"
     printf '%s\n' "$err" | sed 's/^/    got: /'
   else
@@ -2097,8 +2231,8 @@ EOF
   # gives it `weak_odr`. The linkage word is matched, not skipped: it is the
   # unit's answer to "do I own this definition", and a silent flip to external
   # would be the multi-object link failure item 2 fixed.
-  if printf '%s' "$ir" | grep -q '^define weak_odr ptr @append\.ptr\.ptr(' \
-     && ! printf '%s' "$ir" | grep -qE '^define ([a-z_]+ )?ptr @append\(' ; then
+  if printf '%s' "$ir" | qgrep '^define weak_odr ptr @append\.ptr\.ptr(' \
+     && ! printf '%s' "$ir" | qgrep -E '^define ([a-z_]+ )?ptr @append\(' ; then
     echo "PASS  w1-late-overload-symbol"
   else
     echo "FAIL  w1-late-overload-symbol (definition and call sites disagree on the mangled name)"
@@ -2124,11 +2258,11 @@ run_w1c_unreachable_file() {
   printf '(defn w1c-elsewhere ():i32 (return 7))\n' > "$d/w1c-other.nuc"
   printf '(defn main ():i32 (return (w1c-elsewhere)))\n' > "$d/w1c-main.nuc"
   err="$(./build/nucleusc -I "$d" --emit-llvm "$d/w1c-main.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -q ':0:'; then
+  if printf '%s' "$err" | qgrep ':0:'; then
     echo "FAIL  w1c-unreachable-file (diagnostic reports line 0)"
     printf '%s\n' "$err" | sed 's/^/    /'
-  elif printf '%s' "$err" | grep -qF 'unknown: w1c-elsewhere — not defined anywhere in this compilation unit' \
-     && printf '%s' "$err" | grep -qF "note: 'w1c-elsewhere' is defined in $d/w1c-other.nuc, which no import in this unit reaches"; then
+  elif printf '%s' "$err" | qgrep -F 'unknown: w1c-elsewhere — not defined anywhere in this compilation unit' \
+     && printf '%s' "$err" | qgrep -F "note: 'w1c-elsewhere' is defined in $d/w1c-other.nuc, which no import in this unit reaches"; then
     echo "PASS  w1c-unreachable-file"
   else
     echo "FAIL  w1c-unreachable-file"
@@ -2151,8 +2285,8 @@ run_w1c_defined_nowhere() {
   d="$(mktemp -d)"
   printf '(defn main ():i32 (return (w1c-absent-everywhere)))\n' > "$d/w1c-none.nuc"
   err="$(./build/nucleusc -I "$d" --emit-llvm "$d/w1c-none.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -qF 'unknown: w1c-absent-everywhere — not defined anywhere in this compilation unit' \
-     && ! printf '%s' "$err" | grep -q 'note:'; then
+  if printf '%s' "$err" | qgrep -F 'unknown: w1c-absent-everywhere — not defined anywhere in this compilation unit' \
+     && ! printf '%s' "$err" | qgrep 'note:'; then
     echo "PASS  w1c-defined-nowhere"
   else
     echo "FAIL  w1c-defined-nowhere"
@@ -2170,11 +2304,11 @@ run_w1c_unreachable_type() {
   printf '(defstruct W1cWidget (a i32))\n' > "$d/w1c-ty.nuc"
   printf '(defn w1c-take (w:ptr:W1cWidget):i32 (return 0))\n(defn main ():i32 (return 0))\n' > "$d/w1c-tymain.nuc"
   err="$(./build/nucleusc -I "$d" --emit-llvm "$d/w1c-tymain.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -q ':0:'; then
+  if printf '%s' "$err" | qgrep ':0:'; then
     echo "FAIL  w1c-unreachable-type (diagnostic reports line 0)"
     printf '%s\n' "$err" | sed 's/^/    /'
-  elif printf '%s' "$err" | grep -qF 'unknown type: W1cWidget — not defined anywhere in this compilation unit' \
-     && printf '%s' "$err" | grep -qF "note: 'W1cWidget' is defined in $d/w1c-ty.nuc, which no import in this unit reaches"; then
+  elif printf '%s' "$err" | qgrep -F 'unknown type: W1cWidget — not defined anywhere in this compilation unit' \
+     && printf '%s' "$err" | qgrep -F "note: 'W1cWidget' is defined in $d/w1c-ty.nuc, which no import in this unit reaches"; then
     echo "PASS  w1c-unreachable-type"
   else
     echo "FAIL  w1c-unreachable-type"
@@ -2292,7 +2426,7 @@ EOF
   # spelling reported `import: cannot find` at the import's own line.
   printf '(import-use "%s/sub/nosuch.nuc")\n(defn main ():i32 (return 0))\n' "$d" > "$d/spbad.nuc"
   out="$(./build/nucleusc --emit-llvm "$d/spbad.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$out" | grep -q 'spbad.nuc:1: error: import: cannot find'; then
+  if printf '%s' "$out" | qgrep 'spbad.nuc:1: error: import: cannot find'; then
     echo "PASS  w9-string-path-missing-file-located"
   else
     echo "FAIL  w9-string-path-missing-file-located (want a located 'import: cannot find')"
@@ -2318,8 +2452,8 @@ run_w9_as_literal_narrowing() {
   d="$(mktemp -d)"
   w1_run w9-as-literal-fits "$d" tests/fixtures/w9-as-literal-fits.nuc 0
   ir="$(./build/nucleusc --emit-llvm tests/fixtures/w9-as-literal-fits.nuc 2>/dev/null || true)"
-  if printf '%s' "$ir" | grep -qF 'trunc i32 5 to i8' \
-     && printf '%s' "$ir" | grep -qF '@w9as-g = global i8 9'; then
+  if printf '%s' "$ir" | qgrep -F 'trunc i32 5 to i8' \
+     && printf '%s' "$ir" | qgrep -F '@w9as-g = global i8 9'; then
     echo "PASS  w9-as-literal-lowers-like-implicit"
   else
     echo "FAIL  w9-as-literal-lowers-like-implicit"
@@ -2337,8 +2471,8 @@ run_w9_i1_literal_range() {
   d="$(mktemp -d)"
   w1_run w9-i1-literal-fits "$d" tests/fixtures/w9-i1-literal-fits.nuc 0
   ir="$(./build/nucleusc --emit-llvm tests/fixtures/w9-i1-literal-fits.nuc 2>/dev/null || true)"
-  if printf '%s' "$ir" | grep -qF '@w9i1-one = global i1 1' \
-     && printf '%s' "$ir" | grep -qF '@w9i1-zero = global i1 0'; then
+  if printf '%s' "$ir" | qgrep -F '@w9i1-one = global i1 1' \
+     && printf '%s' "$ir" | qgrep -F '@w9i1-zero = global i1 0'; then
     echo "PASS  w9-i1-literal-emits-written-value"
   else
     echo "FAIL  w9-i1-literal-emits-written-value"
@@ -2376,7 +2510,7 @@ run_g0_value_scoping() {
   # namespace would make this compile, which is the exact W1b failure.
   printf '(import g0-nsa)\n(defn main ():i32 (return G0-NSK))\n' > "$d/g0-ns3.nuc"
   err="$(./build/nucleusc -I "$d" --emit-llvm "$d/g0-ns3.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -q 'undefined: G0-NSK'; then
+  if printf '%s' "$err" | qgrep 'undefined: G0-NSK'; then
     echo "PASS  g0-ns-value-not-leaked"
   else
     echo "FAIL  g0-ns-value-not-leaked"
@@ -2401,7 +2535,7 @@ run_g0_value_scoping() {
   printf '(defconst- G0-OTHER-SECRET 3)\n(defn g0-pc ():i32 (return G0-OTHER-SECRET))\n' > "$d/g0-pc.nuc"
   printf '(import g0-pc)\n(defn main ():i32 (return G0-OTHER-SECRET))\n' > "$d/g0-p3.nuc"
   err="$(./build/nucleusc -I "$d" --emit-llvm "$d/g0-p3.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -q 'undefined: G0-OTHER-SECRET'; then
+  if printf '%s' "$err" | qgrep 'undefined: G0-OTHER-SECRET'; then
     echo "PASS  g0-private-const-stays-private"
   else
     echo "FAIL  g0-private-const-stays-private"
@@ -2516,7 +2650,7 @@ G2EOF
   fi
   # The declarator must be postfix C: `int32_t cells[4];`, and a named extent
   # must survive as the name (the header exports `#define G2N 3` beside it).
-  if ! grep -q 'int32_t cells\[4\];' "$d/g2h.h" || ! grep -q 'names\[G2N\];' "$d/g2h.h"; then
+  if ! qgrep 'int32_t cells\[4\];' "$d/g2h.h" || ! qgrep 'names\[G2N\];' "$d/g2h.h"; then
     echo "FAIL  g2-cheader-array-field (declarator not postfix C)"
     grep -n 'cells\|names' "$d/g2h.h" | sed 's/^/    /'
     rm -rf "$d"; return 0
@@ -2563,10 +2697,10 @@ G2EOF
   if ! ./build/nucleusc --emit-nuch "$d/g2lib.nuc" > "$d/g2lib.nuch" 2>"$d/err"; then
     echo "FAIL  g2-nuch-array-field (--emit-nuch failed)"; sed 's/^/    /' "$d/err"; rm -rf "$d"; return 0
   fi
-  if ! grep -q '(array i32 G2K)' "$d/g2lib.nuch"; then
+  if ! qgrep '(array i32 G2K)' "$d/g2lib.nuch"; then
     echo "FAIL  g2-nuch-array-field (array field not exported)"; sed 's/^/    /' "$d/g2lib.nuch"; rm -rf "$d"; return 0
   fi
-  if ! grep -q '(extern (g2tab (array i32 4)))' "$d/g2lib.nuch"; then
+  if ! qgrep '(extern (g2tab (array i32 4)))' "$d/g2lib.nuch"; then
     echo "FAIL  g2-nuch-array-field (array-typed defvar not exported as an extern)"; sed 's/^/    /' "$d/g2lib.nuch"; rm -rf "$d"; return 0
   fi
   # 7 + 9 + sizeof(G2Box) + g2tab[1] = 7 + 9 + 16 + 200 = 232
@@ -2612,7 +2746,7 @@ G3EOF
   if ! ./build/nucleusc --emit-llvm "$d/g3zc.nuc" > "$ll" 2>"$d/err"; then
     echo "FAIL  g3-zero-cost (compile failed)"; sed 's/^/    /' "$d/err"; rm -rf "$d"; return 0
   fi
-  if grep -qE '__nucleus_init|global_ctors' "$ll"; then
+  if qgrep -E '__nucleus_init|global_ctors' "$ll"; then
     echo "FAIL  g3-zero-cost (a constant-only unit emitted startup-constructor machinery)"
     grep -nE '__nucleus_init|global_ctors' "$ll" | sed 's/^/    /'
     rm -rf "$d"; return 0
@@ -2625,8 +2759,8 @@ G3EOF
   if ! ./build/nucleusc --emit-llvm "$d/g3rt.nuc" > "$d/g3rt.ll" 2>"$d/err"; then
     echo "FAIL  g3-zero-cost (runtime-initializer variant failed to compile)"; sed 's/^/    /' "$d/err"; rm -rf "$d"; return 0
   fi
-  if ! grep -q 'define internal void @__nucleus_init()' "$d/g3rt.ll" \
-     || ! grep -q '@llvm.global_ctors = appending global' "$d/g3rt.ll"; then
+  if ! qgrep 'define internal void @__nucleus_init()' "$d/g3rt.ll" \
+     || ! qgrep '@llvm.global_ctors = appending global' "$d/g3rt.ll"; then
     echo "FAIL  g3-zero-cost (one runtime initializer did NOT produce the machinery)"
     rm -rf "$d"; return 0
   fi
@@ -2667,7 +2801,7 @@ G3EOF
   if ! ./build/nucleusc --emit-nuch "$d/libsrc/g3lib.nuc" > "$d/inc/g3lib.nuch" 2>"$d/err"; then
     echo "FAIL  g3-library-nuch (--emit-nuch failed)"; sed 's/^/    /' "$d/err"; rm -rf "$d"; return 0
   fi
-  if ! grep -q '(extern (g3-lib-n i32))' "$d/inc/g3lib.nuch"; then
+  if ! qgrep '(extern (g3-lib-n i32))' "$d/inc/g3lib.nuch"; then
     echo "FAIL  g3-library-nuch (global not exported)"; sed 's/^/    /' "$d/inc/g3lib.nuch"; rm -rf "$d"; return 0
   fi
   if ! ./build/nucleusc -c -o "$d/g3lib.o" "$d/libsrc/g3lib.nuc" 2>"$d/err"; then
@@ -2713,8 +2847,8 @@ run_g4_order() {
   printf '(import g4xb)\n(import g4xa)\n(defn main ():i32 (return (g4-xget)))\n' > "$d/g4-bad.nuc"
   w1_run g4-cross-file-order "$d" "$d/g4-ok.nuc" 42
   err="$(./build/nucleusc -I "$d" --emit-llvm "$d/g4-bad.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -qF "$d/g4xb.nuc:1: error: defvar: the initializer for 'g4-xderived' names global 'g4-xbase'" \
-     && printf '%s' "$err" | grep -qF "note: 'g4-xbase' is declared at $d/g4xa.nuc:2"; then
+  if printf '%s' "$err" | qgrep -F "$d/g4xb.nuc:1: error: defvar: the initializer for 'g4-xderived' names global 'g4-xbase'" \
+     && printf '%s' "$err" | qgrep -F "note: 'g4-xbase' is declared at $d/g4xa.nuc:2"; then
     echo "PASS  g4-cross-file-both-sites"
   else
     echo "FAIL  g4-cross-file-both-sites (the diagnostic must name both files at real lines)"
@@ -2744,8 +2878,8 @@ run_g0_still_rejects() {
 
   printf '(defn main ():i32 (return g0-absent-everywhere))\n' > "$d/g0-none.nuc"
   err="$(./build/nucleusc -I "$d" --emit-llvm "$d/g0-none.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -qF 'undefined: g0-absent-everywhere — not defined anywhere in this compilation unit' \
-     && ! printf '%s' "$err" | grep -q 'note:'; then
+  if printf '%s' "$err" | qgrep -F 'undefined: g0-absent-everywhere — not defined anywhere in this compilation unit' \
+     && ! printf '%s' "$err" | qgrep 'note:'; then
     echo "PASS  g0-value-defined-nowhere"
   else
     echo "FAIL  g0-value-defined-nowhere"
@@ -2756,11 +2890,11 @@ run_g0_still_rejects() {
   printf '(defconst G0-UNREACHED 5)\n' > "$d/g0-far.nuc"
   printf '(defn main ():i32 (return G0-UNREACHED))\n' > "$d/g0-farmain.nuc"
   err="$(./build/nucleusc -I "$d" --emit-llvm "$d/g0-farmain.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -q ':0:'; then
+  if printf '%s' "$err" | qgrep ':0:'; then
     echo "FAIL  g0-value-unreachable-file (diagnostic reports line 0)"
     printf '%s\n' "$err" | sed 's/^/    /'
-  elif printf '%s' "$err" | grep -qF 'undefined: G0-UNREACHED — not defined anywhere in this compilation unit' \
-     && printf '%s' "$err" | grep -qF "note: 'G0-UNREACHED' is defined in $d/g0-far.nuc, which no import in this unit reaches"; then
+  elif printf '%s' "$err" | qgrep -F 'undefined: G0-UNREACHED — not defined anywhere in this compilation unit' \
+     && printf '%s' "$err" | qgrep -F "note: 'G0-UNREACHED' is defined in $d/g0-far.nuc, which no import in this unit reaches"; then
     echo "PASS  g0-value-unreachable-file"
   else
     echo "FAIL  g0-value-unreachable-file"
@@ -2777,8 +2911,8 @@ run_g0_still_rejects() {
   printf '(defvar g0-dupg:i32 2)\n' > "$d/g0-db.nuc"
   printf '(import g0-da)\n(import g0-db)\n(defn main ():i32 (return g0-dupg))\n' > "$d/g0-dm.nuc"
   err="$(./build/nucleusc -I "$d" -o "$d/g0-dm.bin" "$d/g0-dm.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -qF "redefinition of 'g0-dupg'" \
-     && printf '%s' "$err" | grep -qF "$d/g0-da.nuc:1" \
+  if printf '%s' "$err" | qgrep -F "redefinition of 'g0-dupg'" \
+     && printf '%s' "$err" | qgrep -F "$d/g0-da.nuc:1" \
      && [ ! -x "$d/g0-dm.bin" ]; then
     echo "PASS  g0-duplicate-global-rejected"
   else
@@ -2821,7 +2955,7 @@ run_g0_still_rejects() {
 run_w3a_opaque_provenance() {
   local err
   err="$(./build/nucleusc --emit-llvm tests/fixtures/w3a-opaque-sizeof.nuc 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -qE 'declared at [^ ]*tests/fixtures/cheader-opaque\.h:11;'; then
+  if printf '%s' "$err" | qgrep -E 'declared at [^ ]*tests/fixtures/cheader-opaque\.h:11;'; then
     echo "PASS  w3a-opaque-provenance"
   else
     echo "FAIL  w3a-opaque-provenance"
@@ -2854,19 +2988,19 @@ run_w3a_sdl_mixer() {
   if [ -n "$err" ]; then
     echo "FAIL  w3a-sdl-mixer (compile error)"
     printf '%s\n' "$err" | sed 's/^/    /'
-  elif ! grep -q '^%Mix_Chunk = type' "$ir"; then
+  elif ! qgrep '^%Mix_Chunk = type' "$ir"; then
     echo "FAIL  w3a-sdl-mixer (defined Mix_Chunk has no LLVM layout)"
-  elif ! grep -q '^%Mix_Chunk = type { i32, ptr, i32, i8 }$' "$ir"; then
+  elif ! qgrep '^%Mix_Chunk = type { i32, ptr, i32, i8 }$' "$ir"; then
     # W3c: `alen` (Uint32) and `volume` (Uint8) are typedefs of builtin
     # integers. Before the typedef chain was followed they were `ptr`, giving
     # `{ i32, ptr, ptr, ptr }` — a wrong layout, silently.
     echo "FAIL  w3a-sdl-mixer (Mix_Chunk field types did not resolve through their typedefs)"
     grep '^%Mix_Chunk = type' "$ir" | sed 's/^/    got: /'
-  elif ! grep -q 'getelementptr inbounds %Mix_Chunk' "$ir"; then
+  elif ! qgrep 'getelementptr inbounds %Mix_Chunk' "$ir"; then
     echo "FAIL  w3a-sdl-mixer (Mix_Chunk field access not emitted)"
-  elif ! grep -q 'call void @Mix_FreeMusic(ptr ' "$ir"; then
+  elif ! qgrep 'call void @Mix_FreeMusic(ptr ' "$ir"; then
     echo "FAIL  w3a-sdl-mixer (opaque handle not passed as a plain pointer)"
-  elif grep -q '%Mix_Music' "$ir"; then
+  elif qgrep '%Mix_Music' "$ir"; then
     echo "FAIL  w3a-sdl-mixer (opaque Mix_Music leaked into IR as an aggregate type)"
   else
     echo "PASS  w3a-sdl-mixer"
@@ -2954,12 +3088,12 @@ run_w3b_skip() {
   ir="$(mktemp)"
   err="$(./build/nucleusc --emit-llvm tests/fixtures/w3b-skip.nuc 2>&1 >"$ir" || true)"
   bad=0
-  if ! grep -q '^declare void @w3b_keep(ptr)$' "$ir"; then
+  if ! qgrep '^declare void @w3b_keep(ptr)$' "$ir"; then
     echo "FAIL  w3b-skip (representable declaration was not imported)"
     bad=1
   fi
   for sym in w3b_skip_byval w3b_skip_void w3b_skip_many; do
-    if grep -q "@$sym" "$ir"; then
+    if qgrep "@$sym" "$ir"; then
       echo "FAIL  w3b-skip ($sym reached the IR instead of being skipped)"
       bad=1
     fi
@@ -2968,7 +3102,7 @@ run_w3b_skip() {
   # clang -E's linemarkers, so an off-by-N in that tracking fails here.
   while IFS='|' read -r line want; do
     [ -z "$line" ] && continue
-    if ! printf '%s' "$err" | grep -qF "w3b-skip.h:$line: warning: skipping C declaration $want"; then
+    if ! printf '%s' "$err" | qgrep -F "w3b-skip.h:$line: warning: skipping C declaration $want"; then
       echo "FAIL  w3b-skip (missing warning at line $line: $want)"
       printf '%s\n' "$err" | sed 's/^/    got: /'
       bad=1
@@ -3023,7 +3157,7 @@ run_w3b_sdl() {
   # skipping the declaration instead of parsing it.
   ir="$(mktemp)"
   ./build/nucleusc --emit-llvm tests/fixtures/w3b-sdl.nuc >"$ir" 2>/dev/null || true
-  if ! grep -q '^declare void @_mm_clflush(ptr)$' "$ir"; then
+  if ! qgrep '^declare void @_mm_clflush(ptr)$' "$ir"; then
     echo "FAIL  w3b-sdl (_mm_clflush not imported as a single pointer parameter)"
     grep -n '_mm_clflush' "$ir" | sed 's/^/    got: /'
   elif [ -n "$err" ]; then
@@ -3089,21 +3223,21 @@ w3c_f_noextern_u|declare ptr @w3c_f_noextern_u(i32)
 EOF
   # A by-value use of an array typedef has no Nucleus representation: skipped,
   # never given the element type's ABI.
-  if grep -q '@w3c_f_vec' "$ir"; then
+  if qgrep '@w3c_f_vec' "$ir"; then
     echo "FAIL  w3c-typedef (by-value array typedef reached the IR)"
     bad=1
   fi
   # ... and a *use* of the skipped name says why, naming the header and line —
   # this is where the skip is reported, instead of a warning on every build.
   got="$(printf '(import-use "./tests/fixtures/w3c-typedef.h")\n(defn main ():i32 (return (w3c_f_vec null)))\n' > "$ir.use.nuc"; ./build/nucleusc --emit-llvm "$ir.use.nuc" 2>&1 >/dev/null || true)"
-  if ! printf '%s' "$got" | grep -q "w3c_f_vec' — its C header declaration was skipped (.*w3c-typedef.h:"; then
+  if ! printf '%s' "$got" | qgrep "w3c_f_vec' — its C header declaration was skipped (.*w3c-typedef.h:"; then
     echo "FAIL  w3c-typedef (use of a skipped declaration was not diagnosed)"
     printf '%s\n' "$got" | sed 's/^/    got: /'
     bad=1
   fi
   # Struct FIELD types resolve through their typedefs too — the shape W3a
   # recorded as newly observed (Mix_Chunk.volume, a Uint8, typed as ptr).
-  if ! grep -q '^%w3c_fields = type { i8, i32, i64, ptr }$' "$ir"; then
+  if ! qgrep '^%w3c_fields = type { i8, i32, i64, ptr }$' "$ir"; then
     echo "FAIL  w3c-typedef (struct field types did not resolve through typedefs)"
     grep '^%w3c_fields = type' "$ir" | sed 's/^/    got: /'
     bad=1
@@ -3138,13 +3272,13 @@ run_w3c_precedence() {
       bad=1
     fi
     # ...and it is the author's, not the header's (i32 whence).
-    if ! grep -q '^declare i64 @lseek(i32, i64, i64)$' "$ir"; then
+    if ! qgrep '^declare i64 @lseek(i32, i64, i64)$' "$ir"; then
       echo "FAIL  w3c-precedence ($n: the header declaration won)"
       grep -n '@lseek' "$ir" | sed 's/^/    got: /'
       bad=1
     fi
     # The conflict warns, blamed on the .nuc declaration and naming the header.
-    if ! printf '%s' "$err" | grep -q "w3c-prec-$n.nuc:.*declaration of 'lseek' as i64 (i32, i64, i64) conflicts with .*unistd.h:.*declares it as i64 (i32, i64, i32); the explicit declaration wins"; then
+    if ! printf '%s' "$err" | qgrep "w3c-prec-$n.nuc:.*declaration of 'lseek' as i64 (i32, i64, i64) conflicts with .*unistd.h:.*declares it as i64 (i32, i64, i32); the explicit declaration wins"; then
       echo "FAIL  w3c-precedence ($n: conflict not diagnosed naming both sources)"
       printf '%s\n' "$err" | sed 's/^/    got: /'
       bad=1
@@ -3158,12 +3292,12 @@ run_w3c_precedence() {
   # explicit signature.
   err="$(./build/nucleusc --emit-llvm tests/fixtures/w3c-prec-use.nuc 2>&1 >"$ir" || true)"
   if [ "$(grep -c '^declare .*@strchr(' "$ir")" != "1" ] \
-     || ! grep -q '^declare ptr @strchr(ptr, i64)$' "$ir"; then
+     || ! qgrep '^declare ptr @strchr(ptr, i64)$' "$ir"; then
     echo "FAIL  w3c-precedence (use-before-declare: wrong or duplicated strchr declaration)"
     grep -n '^declare .*@strchr(' "$ir" | sed 's/^/    got: /'
     bad=1
   fi
-  if ! grep -qE 'call ptr @strchr\(ptr [^,]+, i64 ' "$ir"; then
+  if ! qgrep -E 'call ptr @strchr\(ptr [^,]+, i64 ' "$ir"; then
     echo "FAIL  w3c-precedence (use-before-declare: call did not resolve to the explicit signature)"
     bad=1
   fi
@@ -3259,7 +3393,7 @@ run_w3c_declare_header() {
     bad=1
   fi
   if [ "$(grep -c '^declare .*@lseek(' "$ir")" != "1" ] \
-     || ! grep -q '^declare i64 @lseek(i32, i64, i32)$' "$ir"; then
+     || ! qgrep '^declare i64 @lseek(i32, i64, i32)$' "$ir"; then
     echo "FAIL  w3c-declare-header (match: wrong or duplicated lseek declaration)"
     grep -n '^declare .*@lseek(' "$ir" | sed 's/^/    got: /'
     bad=1
@@ -3270,13 +3404,13 @@ run_w3c_declare_header() {
   fi
 
   err="$(./build/nucleusc --emit-llvm tests/fixtures/w3c-declare-header-conflict.nuc 2>&1 >"$ir" || true)"
-  if ! printf '%s' "$err" | grep -q "w3c-declare-header-conflict.nuc:.*declaration of 'lseek' as i64 (i32, i64, i64) conflicts with .*unistd.h:.*declares it as i64 (i32, i64, i32); the explicit declaration wins"; then
+  if ! printf '%s' "$err" | qgrep "w3c-declare-header-conflict.nuc:.*declaration of 'lseek' as i64 (i32, i64, i64) conflicts with .*unistd.h:.*declares it as i64 (i32, i64, i32); the explicit declaration wins"; then
     echo "FAIL  w3c-declare-header (conflict: a real mismatch was not diagnosed)"
     printf '%s\n' "$err" | sed 's/^/    got: /'
     bad=1
   fi
   if [ "$(grep -c '^declare .*@lseek(' "$ir")" != "1" ] \
-     || ! grep -q '^declare i64 @lseek(i32, i64, i64)$' "$ir"; then
+     || ! qgrep '^declare i64 @lseek(i32, i64, i64)$' "$ir"; then
     echo "FAIL  w3c-declare-header (conflict: the explicit declaration did not win)"
     grep -n '^declare .*@lseek(' "$ir" | sed 's/^/    got: /'
     bad=1
@@ -3293,8 +3427,8 @@ run_closure_cheader() {
   ch_warn="$(./build/nucleusc --emit-llvm tests/fixtures/closure-cheader.nuc 2>&1 >/dev/null || true)"
 
   # 1. closure-typed prototype is OMITTED, with the explanatory comment in place.
-  if grep -q 'apply-closure: exposes a closure or type-erased box type; not C-callable, omitted' "$ch_dir/lib.h" \
-     && ! grep -q 'apply-closure(' "$ch_dir/lib.h"; then
+  if qgrep 'apply-closure: exposes a closure or type-erased box type; not C-callable, omitted' "$ch_dir/lib.h" \
+     && ! qgrep 'apply-closure(' "$ch_dir/lib.h"; then
     echo "PASS  l8-cheader-omits-closure"
   else
     echo "FAIL  l8-cheader-omits-closure"
@@ -3302,14 +3436,14 @@ run_closure_cheader() {
 
   # 2. the plain fn-pointer defn IS emitted to the header. W9 item 4: under its
   # sanitized C name, with the asm label that binds it back to `@plain-fn`.
-  if grep -qxF 'int32_t plain_fn(int32_t x, int32_t y) asm("plain-fn");' "$ch_dir/lib.h"; then
+  if qgrep -xF 'int32_t plain_fn(int32_t x, int32_t y) asm("plain-fn");' "$ch_dir/lib.h"; then
     echo "PASS  l8-cheader-emits-fnptr"
   else
     echo "FAIL  l8-cheader-emits-fnptr"
   fi
 
   # 3. the definition site warns on stderr.
-  if printf '%s' "$ch_warn" | grep -q "warning: 'apply-closure' exposes a closure or type-erased box type"; then
+  if printf '%s' "$ch_warn" | qgrep "warning: 'apply-closure' exposes a closure or type-erased box type"; then
     echo "PASS  l8-cheader-warns"
   else
     echo "FAIL  l8-cheader-warns"
@@ -3329,16 +3463,16 @@ run_box_cheader() {
   bch_warn="$(./build/nucleusc --emit-llvm tests/fixtures/box-cheader.nuc 2>&1 >/dev/null || true)"
 
   # 4. BoxedFn-typed prototype is OMITTED, with the explanatory comment in place.
-  if grep -q 'make-boxed: exposes a closure or type-erased box type; not C-callable, omitted' "$bch_dir/lib.h" \
-     && ! grep -q 'make-boxed(' "$bch_dir/lib.h"; then
+  if qgrep 'make-boxed: exposes a closure or type-erased box type; not C-callable, omitted' "$bch_dir/lib.h" \
+     && ! qgrep 'make-boxed(' "$bch_dir/lib.h"; then
     echo "PASS  l13-cheader-omits-boxedfn"
   else
     echo "FAIL  l13-cheader-omits-boxedfn"
   fi
 
   # 5. dyn-typed prototype is OMITTED, with the explanatory comment in place.
-  if grep -q 'use-dyn: exposes a closure or type-erased box type; not C-callable, omitted' "$bch_dir/lib.h" \
-     && ! grep -q 'use-dyn(' "$bch_dir/lib.h"; then
+  if qgrep 'use-dyn: exposes a closure or type-erased box type; not C-callable, omitted' "$bch_dir/lib.h" \
+     && ! qgrep 'use-dyn(' "$bch_dir/lib.h"; then
     echo "PASS  l13-cheader-omits-dyn"
   else
     echo "FAIL  l13-cheader-omits-dyn"
@@ -3346,14 +3480,14 @@ run_box_cheader() {
 
   # 6. the plain fn-pointer defn IS emitted to the header. W9 item 4: under its
   # sanitized C name, with the asm label that binds it back to `@plain-fn`.
-  if grep -qxF 'int32_t plain_fn(int32_t x, int32_t y) asm("plain-fn");' "$bch_dir/lib.h"; then
+  if qgrep -xF 'int32_t plain_fn(int32_t x, int32_t y) asm("plain-fn");' "$bch_dir/lib.h"; then
     echo "PASS  l13-cheader-emits-fnptr"
   else
     echo "FAIL  l13-cheader-emits-fnptr"
   fi
 
   # 7. the definition site warns on stderr (at least one box-typed defn fires).
-  if printf '%s' "$bch_warn" | grep -q "warning:.*exposes a closure or type-erased box type"; then
+  if printf '%s' "$bch_warn" | qgrep "warning:.*exposes a closure or type-erased box type"; then
     echo "PASS  l13-cheader-warns"
   else
     echo "FAIL  l13-cheader-warns"
@@ -3375,10 +3509,10 @@ run_box_cheader() {
 run_s1_sugar_rets() {
   local s1_sugar_ll; s1_sugar_ll="$(mktemp)"
   ./build/nucleusc --emit-llvm tests/fixtures/s1-sugar-rets.nuc > "$s1_sugar_ll" 2>/dev/null || true
-  if grep -qF 'define ptr @lookup(' "$s1_sugar_ll" \
-     && grep -qF 'define i64 @checked(' "$s1_sugar_ll" \
-     && grep -qF 'define ptr @maybe-pt(' "$s1_sugar_ll" \
-     && grep -qF 'define void @spin(ptr %m.arg) noreturn {' "$s1_sugar_ll"; then
+  if qgrep -F 'define ptr @lookup(' "$s1_sugar_ll" \
+     && qgrep -F 'define i64 @checked(' "$s1_sugar_ll" \
+     && qgrep -F 'define ptr @maybe-pt(' "$s1_sugar_ll" \
+     && qgrep -F 'define void @spin(ptr %m.arg) noreturn {' "$s1_sugar_ll"; then
     echo "PASS  s1-sugar-rets-and-noreturn"
   else
     echo "FAIL  s1-sugar-rets-and-noreturn"
@@ -3400,9 +3534,9 @@ run_s1_block() {
   # 3a. The .nuch (S3) emits solitary/overloaded defns in the new-style signature
   #     `NAME (params) :ret` its declare/defmethod readers consume, and exports the
   #     generic template verbatim (also new style).
-  if grep -qF '(declare twice ((x i32)) :i32)' "$s1_dir/lib.nuch" \
-     && grep -qF '(defmethod "@scale.i32" scale ((x i32)) :i32)' "$s1_dir/lib.nuch" \
-     && grep -qF '(defn gmax ((a T) (b T) &where (Ord T)) :T' "$s1_dir/lib.nuch"; then
+  if qgrep -F '(declare twice ((x i32)) :i32)' "$s1_dir/lib.nuch" \
+     && qgrep -F '(defmethod "@scale.i32" scale ((x i32)) :i32)' "$s1_dir/lib.nuch" \
+     && qgrep -F '(defn gmax ((a T) (b T) &where (Ord T)) :T' "$s1_dir/lib.nuch"; then
     echo "PASS  s1-nuch-export-shapes"
   else
     echo "FAIL  s1-nuch-export-shapes"
@@ -3412,10 +3546,10 @@ run_s1_block() {
   #     overloaded one the way the .nuch above already did (W9 item 26). The old
   #     `int32_t scale(int32_t x);` asserted a symbol the object never defines:
   #     `scale` is overloaded, so its methods are `@scale.i32` / `@scale.i64`.
-  if grep -qF 'int32_t twice(int32_t x);' "$s1_dir/lib.h" \
-     && grep -qF 'int32_t add3(int32_t a, int32_t b, int32_t c);' "$s1_dir/lib.h" \
-     && grep -qF 'int32_t scale_i32(int32_t x) asm("scale.i32");' "$s1_dir/lib.h" \
-     && grep -qF 'int64_t scale_i64(int64_t x) asm("scale.i64");' "$s1_dir/lib.h"; then
+  if qgrep -F 'int32_t twice(int32_t x);' "$s1_dir/lib.h" \
+     && qgrep -F 'int32_t add3(int32_t a, int32_t b, int32_t c);' "$s1_dir/lib.h" \
+     && qgrep -F 'int32_t scale_i32(int32_t x) asm("scale.i32");' "$s1_dir/lib.h" \
+     && qgrep -F 'int64_t scale_i64(int64_t x) asm("scale.i64");' "$s1_dir/lib.h"; then
     echo "PASS  s1-cheader-plain-prototypes"
   else
     echo "FAIL  s1-cheader-plain-prototypes"
@@ -3457,9 +3591,9 @@ EOF
   # symbol — so it is `weak_odr`, which is what lets two objects that both
   # use `(gmax i32 i32)` link. Asserted here rather than matched loosely.
   ./build/nucleusc --emit-llvm "$s1_dir/tmain.nuc" > "$s1_dir/tmain.ll" 2>/dev/null || true
-  if grep -qF 'define weak_odr i32 @gmax.i32.i32(' "$s1_dir/tmain.ll" \
-     && grep -qF 'define weak_odr i64 @gmax.i64.i64(' "$s1_dir/tmain.ll" \
-     && grep -qF 'call i32 @gmax.i32.i32(' "$s1_dir/tmain.ll"; then
+  if qgrep -F 'define weak_odr i32 @gmax.i32.i32(' "$s1_dir/tmain.ll" \
+     && qgrep -F 'define weak_odr i64 @gmax.i64.i64(' "$s1_dir/tmain.ll" \
+     && qgrep -F 'call i32 @gmax.i32.i32(' "$s1_dir/tmain.ll"; then
     echo "PASS  s1-nuch-template-stamps"
   else
     echo "FAIL  s1-nuch-template-stamps"
@@ -3736,16 +3870,16 @@ EOF
   # sentence — the one that names the file that DOES bind it — survives as the
   # note's first tier, which is the half that carries the fix.
   err="$(./build/nucleusc -I "$d" --emit-llvm "$d/b1-leak.nuc" 2>&1 >/dev/null || true)"
-  if ! printf '%s' "$err" | grep -qF "unknown: zx/b1-inc — 'zx' is not in scope in this file"; then
+  if ! printf '%s' "$err" | qgrep -F "unknown: zx/b1-inc — 'zx' is not in scope in this file"; then
     echo "FAIL  b1-prefix-not-visible-cross-file (wrong or missing diagnostic)"
     printf '%s\n' "$err" | sed 's/^/    /'
-  elif ! printf '%s' "$err" | grep -qF "note: an import prefix is file-scoped:"; then
+  elif ! printf '%s' "$err" | qgrep -F "note: an import prefix is file-scoped:"; then
     echo "FAIL  b1-prefix-not-visible-cross-file (missing the file-scope note)"
     printf '%s\n' "$err" | sed 's/^/    /'
-  elif printf '%s' "$err" | grep -qF "not defined anywhere in this compilation unit"; then
+  elif printf '%s' "$err" | qgrep -F "not defined anywhere in this compilation unit"; then
     echo "FAIL  b1-prefix-not-visible-cross-file (degraded to the reachability message)"
     printf '%s\n' "$err" | sed 's/^/    /'
-  elif printf '%s' "$err" | grep -q ':0:'; then
+  elif printf '%s' "$err" | qgrep ':0:'; then
     echo "FAIL  b1-prefix-not-visible-cross-file (diagnostic reports line 0)"
     printf '%s\n' "$err" | sed 's/^/    /'
   else
@@ -3763,13 +3897,13 @@ EOF
 run_b2a_scope_diagnostic() {
   local err
   err="$(./build/nucleusc --emit-llvm tests/fixtures/b2a-ns-not-in-scope.nuc 2>&1 >/dev/null || true)"
-  if ! printf '%s' "$err" | grep -qF "note: 'dp' is not in scope in this file"; then
+  if ! printf '%s' "$err" | qgrep -F "note: 'dp' is not in scope in this file"; then
     echo "FAIL  b2a-scope-diagnostic (missing the out-of-scope note)"
     printf '%s\n' "$err" | sed 's/^/    /'
-  elif ! printf '%s' "$err" | grep -qF "In scope here: dpx."; then
+  elif ! printf '%s' "$err" | qgrep -F "In scope here: dpx."; then
     echo "FAIL  b2a-scope-diagnostic (note does not list the qualifiers in scope)"
     printf '%s\n' "$err" | sed 's/^/    /'
-  elif printf '%s' "$err" | grep -qF "not defined anywhere in this compilation unit"; then
+  elif printf '%s' "$err" | qgrep -F "not defined anywhere in this compilation unit"; then
     echo "FAIL  b2a-scope-diagnostic (degraded to the reachability message)"
     printf '%s\n' "$err" | sed 's/^/    /'
   else
@@ -3845,10 +3979,10 @@ EOF
 (defn main ():i32 (return b2bns/b2b-gv))
 EOF
   err="$(./build/nucleusc -I "$d" --emit-llvm "$d/b2b-vns.nuc" 2>&1 >/dev/null || true)"
-  if ! printf '%s' "$err" | grep -qF "undefined: b2bns/b2b-gv — 'b2bns' is not in scope in this file"; then
+  if ! printf '%s' "$err" | qgrep -F "undefined: b2bns/b2b-gv — 'b2bns' is not in scope in this file"; then
     echo "FAIL  b2b-prefixed-values-ns-refused (wrong or missing diagnostic)"
     printf '%s\n' "$err" | sed 's/^/    /'
-  elif printf '%s' "$err" | grep -qF "not defined anywhere in this compilation unit"; then
+  elif printf '%s' "$err" | qgrep -F "not defined anywhere in this compilation unit"; then
     echo "FAIL  b2b-prefixed-values-ns-refused (degraded to the reachability message)"
     printf '%s\n' "$err" | sed 's/^/    /'
   else
@@ -4601,6 +4735,7 @@ spawn run_w9_root_cycle_skip
 spawn run_w9_lib_standalone
 spawn run_w9_multi_object
 spawn run_w9_source_outranks_header
+spawn run_w9_nuch_import_order
 spawn run_w9_shared_init_warning
 spawn run_w9_cheader_globals
 spawn run_w9_cheader_identifiers
@@ -5103,10 +5238,10 @@ EOF
 (defn main ():i32 (return 0))
 EOF
   err="$(./build/nucleusc -I "$d" --emit-llvm "$d/b5-ppm.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -qF "extend: unknown protocol"; then
+  if printf '%s' "$err" | qgrep -F "extend: unknown protocol"; then
     echo "FAIL  b5-private-protocol-visible-inside (hidden from its own namespace)"
     printf '%s\n' "$err" | sed 's/^/    /'
-  elif printf '%s' "$err" | grep -qF "does not conform to protocol 'b5p/B5HiddenP'"; then
+  elif printf '%s' "$err" | qgrep -F "does not conform to protocol 'b5p/B5HiddenP'"; then
     echo "PASS  b5-private-protocol-visible-inside"
   else
     echo "FAIL  b5-private-protocol-visible-inside"
@@ -5134,10 +5269,10 @@ EOF
 (defn main ():i32 (return (b5-suggest 1)))
 EOF
   err="$(./build/nucleusc -I "$d" --emit-llvm "$d/b5-sbad.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -qF "(did you mean 'b5-suggest'?)"; then
+  if printf '%s' "$err" | qgrep -F "(did you mean 'b5-suggest'?)"; then
     echo "FAIL  b5-did-you-mean-not-echo (suggested the spelling that just failed)"
     printf '%s\n' "$err" | sed 's/^/    /'
-  elif printf '%s' "$err" | grep -qF "(did you mean 'sx/b5-suggest'?)"; then
+  elif printf '%s' "$err" | qgrep -F "(did you mean 'sx/b5-suggest'?)"; then
     echo "PASS  b5-did-you-mean-not-echo"
   else
     echo "FAIL  b5-did-you-mean-not-echo"
@@ -5225,11 +5360,11 @@ EOF
   # OVERLOADED name is deliberately merged across namespaces (§8.2's R2), so it
   # is not keyed by namespace and a re-export would change nothing.
   err="$(./build/nucleusc -I "$d" --emit-llvm "$d/b5-eovm.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -q ':0:'; then
+  if printf '%s' "$err" | qgrep ':0:'; then
     echo "FAIL  b7-export-overload-refused (diagnostic reports line 0)"
     printf '%s\n' "$err" | sed 's/^/    /'
-  elif printf '%s' "$err" | grep -qF "'b5-exp-ov' is a function" \
-    && printf '%s' "$err" | grep -qF "that kind is not keyed by namespace"; then
+  elif printf '%s' "$err" | qgrep -F "'b5-exp-ov' is a function" \
+    && printf '%s' "$err" | qgrep -F "that kind is not keyed by namespace"; then
     echo "PASS  b7-export-overload-refused"
   else
     echo "FAIL  b7-export-overload-refused"
@@ -5276,7 +5411,7 @@ EOF
 (defn main ():i32 (return (b7ns/b7-twice 21)))
 EOF
   err="$(./build/nucleusc -I "$d" --emit-llvm "$d/b7-mns.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -qF "unknown: b7ns/b7-twice — 'b7ns' is not in scope in this file"; then
+  if printf '%s' "$err" | qgrep -F "unknown: b7ns/b7-twice — 'b7ns' is not in scope in this file"; then
     echo "PASS  b7-macro-ns-refused"
   else
     echo "FAIL  b7-macro-ns-refused (wrong or missing diagnostic)"
@@ -5292,10 +5427,10 @@ EOF
 (defn main ():i32 (return (b7-twice 21)))
 EOF
   err="$(./build/nucleusc -I "$d" --emit-llvm "$d/b7-mbare.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -q ':0:'; then
+  if printf '%s' "$err" | qgrep ':0:'; then
     echo "FAIL  b7-macro-did-you-mean (diagnostic reports line 0)"
     printf '%s\n' "$err" | sed 's/^/    /'
-  elif printf '%s' "$err" | grep -qF "did you mean 'pm/b7-twice'?"; then
+  elif printf '%s' "$err" | qgrep -F "did you mean 'pm/b7-twice'?"; then
     echo "PASS  b7-macro-did-you-mean"
   else
     echo "FAIL  b7-macro-did-you-mean"
@@ -5464,13 +5599,13 @@ spawn run_reject_at b3-type-bogus-qualifier tests/fixtures/b3-type-bogus-qualifi
 run_b3_ns_type_diagnostic() {
   local err
   err="$(./build/nucleusc --emit-llvm tests/fixtures/b3-type-ns-not-in-scope.nuc 2>&1 >/dev/null || true)"
-  if ! printf '%s' "$err" | grep -qF "tests/fixtures/b3-type-ns-not-in-scope.nuc:18: error: unknown type: Fox — defined in namespace 'dp'"; then
+  if ! printf '%s' "$err" | qgrep -F "tests/fixtures/b3-type-ns-not-in-scope.nuc:18: error: unknown type: Fox — defined in namespace 'dp'"; then
     echo "FAIL  b3-type-ns-not-in-scope (wrong head or location)"
     printf '%s\n' "$err" | sed 's/^/    /'
-  elif ! printf '%s' "$err" | grep -qF "note: write 'dpx/Fox' here"; then
+  elif ! printf '%s' "$err" | qgrep -F "note: write 'dpx/Fox' here"; then
     echo "FAIL  b3-type-ns-not-in-scope (note does not offer the writable spelling)"
     printf '%s\n' "$err" | sed 's/^/    /'
-  elif printf '%s' "$err" | grep -qF "not defined anywhere in this compilation unit"; then
+  elif printf '%s' "$err" | qgrep -F "not defined anywhere in this compilation unit"; then
     echo "FAIL  b3-type-ns-not-in-scope (degraded to the reachability message)"
     printf '%s\n' "$err" | sed 's/^/    /'
   else
@@ -5591,7 +5726,7 @@ EOF
   grep -o '@w23a__describe[^ (]*' "$d/w23a.ll" | sort -u > "$d/alone.syms"
   grep -o '@w23a__describe[^ (]*' "$d/w23b.ll" | sort -u > "$d/together.syms"
   if [ -s "$d/alone.syms" ] && cmp -s "$d/alone.syms" "$d/together.syms" \
-     && grep -q '^define .*@w23b__describe(' "$d/w23b.ll"; then
+     && qgrep '^define .*@w23b__describe(' "$d/w23b.ll"; then
     echo "PASS  w9-ns-symbol-ownership"
   else
     echo "FAIL  w9-ns-symbol-ownership"
@@ -5599,7 +5734,7 @@ EOF
 
   # 2. Neither namespace's method is suffixed: one method from one namespace is
   #    not an overload of anything, however the merged generic looks.
-  if ! grep -qE '^define .*@w23[ab]__describe\.' "$d/w23b.ll"; then
+  if ! qgrep -E '^define .*@w23[ab]__describe\.' "$d/w23b.ll"; then
     echo "PASS  w9-ns-no-phantom-overload"
   else
     echo "FAIL  w9-ns-no-phantom-overload"
@@ -5627,7 +5762,7 @@ EOF
   # this pins the other side of the equality gate 3 exercises, so a future change
   # cannot "fix" a mismatch by moving the header to meet a suffixed object.
   if ./build/nucleusc --emit-cheader "$d/w23b.nuc" 2>/dev/null \
-       | grep -q 'w23b__describe(int64_t'; then
+       | qgrep 'w23b__describe(int64_t'; then
     echo "PASS  w9-ns-cheader-matches-object"
   else
     echo "FAIL  w9-ns-cheader-matches-object"
@@ -5705,7 +5840,7 @@ EOF
 
   # 2. …through the symbol the LIBRARY defines, not merely some symbol that
   #    resolves. Slot 0 of the vtable is what the box calls through.
-  if grep -q 'internal constant { ptr, ptr } { ptr @w24__describe,' "$d/w24use.ll"; then
+  if qgrep 'internal constant { ptr, ptr } { ptr @w24__describe,' "$d/w24use.ll"; then
     echo "PASS  w9-nuch-declare-vtable-symbol"
   else
     echo "FAIL  w9-nuch-declare-vtable-symbol"
@@ -5802,9 +5937,9 @@ EOF
   # Tag and typedef share a spelling — legal C, separate namespaces — so both
   # `Rec` and `struct Rec` name the completed type. A defunion is tagged for the
   # same reason: `type-name-to-c` answers `struct NAME` for a union name too.
-  if grep -qxF 'typedef struct Rec {' "$d/tlib.h" \
-     && grep -qxF 'typedef struct Holder {' "$d/tlib.h" \
-     && grep -qxF 'typedef struct Shape {' "$d/tlib.h"; then
+  if qgrep -xF 'typedef struct Rec {' "$d/tlib.h" \
+     && qgrep -xF 'typedef struct Holder {' "$d/tlib.h" \
+     && qgrep -xF 'typedef struct Shape {' "$d/tlib.h"; then
     echo "PASS  w9-cheader-struct-tagged"
   else
     echo "FAIL  w9-cheader-struct-tagged"; grep -n 'typedef struct' "$d/tlib.h" | sed 's/^/    /'
@@ -5812,8 +5947,8 @@ EOF
 
   # A builtin scalar is not a struct. `Char` lowers to i32 (verified in the IR:
   # `define i64 @char-utf8-len(i32 %c.arg)`), so the C spelling is uint32_t.
-  if grep -qxF 'uint32_t ch_echo(uint32_t c) asm("ch-echo");' "$d/tlib.h" \
-     && ! grep -q 'struct Char' "$d/tlib.h"; then
+  if qgrep -xF 'uint32_t ch_echo(uint32_t c) asm("ch-echo");' "$d/tlib.h" \
+     && ! qgrep 'struct Char' "$d/tlib.h"; then
     echo "PASS  w9-cheader-builtin-scalar-not-struct"
   else
     echo "FAIL  w9-cheader-builtin-scalar-not-struct"; grep -n 'ch_echo\|struct Char' "$d/tlib.h" | sed 's/^/    /'
@@ -5894,10 +6029,10 @@ EOF
 
   # Each method gets its own C name and its own label; the solitary one keeps
   # its bare name and needs no label at all.
-  if grep -qxF 'int32_t scale_pPt_i32(void* p, int32_t k) asm("scale.pPt.i32");' "$d/ovlib.h" \
-     && grep -qxF 'int32_t scale_i32_i32(int32_t a, int32_t k) asm("scale.i32.i32");' "$d/ovlib.h" \
-     && grep -qxF '_Bool eq_Pt_Pt(struct Pt a, struct Pt b) asm("eq.Pt.Pt");' "$d/ovlib.h" \
-     && grep -qxF 'int32_t solo(int32_t n);' "$d/ovlib.h"; then
+  if qgrep -xF 'int32_t scale_pPt_i32(void* p, int32_t k) asm("scale.pPt.i32");' "$d/ovlib.h" \
+     && qgrep -xF 'int32_t scale_i32_i32(int32_t a, int32_t k) asm("scale.i32.i32");' "$d/ovlib.h" \
+     && qgrep -xF '_Bool eq_Pt_Pt(struct Pt a, struct Pt b) asm("eq.Pt.Pt");' "$d/ovlib.h" \
+     && qgrep -xF 'int32_t solo(int32_t n);' "$d/ovlib.h"; then
     echo "PASS  w9-cheader-overload-distinct-symbols"
   else
     echo "FAIL  w9-cheader-overload-distinct-symbols"; grep -n 'scale\|eq_\|solo' "$d/ovlib.h" | sed 's/^/    /'
@@ -5911,7 +6046,7 @@ EOF
     nm -g --defined-only "$d/ovlib.o" | awk '$2=="T"||$2=="W"{print $3}' | sort -u > "$d/syms"
     miss=""
     for sym in $(grep -oE 'asm\("[^"]+"\)' "$d/ovlib.h" | sed 's/asm("//;s/")//'); do
-      grep -qxF "$sym" "$d/syms" || miss="$miss $sym"
+      qgrep -xF "$sym" "$d/syms" || miss="$miss $sym"
     done
     if [ -z "$miss" ]; then
       echo "PASS  w9-cheader-symbol-defined"
@@ -5945,7 +6080,7 @@ EOF
   # The committed corpus. An operator's C name sanitized to `_` is the defect's
   # signature — two of them in one header is what made `string.h`/`strview.h`
   # unparseable — and no header may bind a label C could not have produced.
-  if ! grep -qE '^[A-Za-z_].* _\(' lib/*.h && ! grep -qE 'asm\("[<>=!+*/%-]+"\)' lib/*.h; then
+  if ! qgrep -E '^[A-Za-z_].* _\(' lib/*.h && ! qgrep -E 'asm\("[<>=!+*/%-]+"\)' lib/*.h; then
     echo "PASS  w9-cheader-no-operator-c-name"
   else
     echo "FAIL  w9-cheader-no-operator-c-name"; grep -nE '^[A-Za-z_].* _\(|asm\("[<>=!+*/%-]+"\)' lib/*.h | sed 's/^/    /'
@@ -5997,14 +6132,14 @@ EOF
 
   # The tag and the by-value reference to it must move together, or the header
   # parses and then names a type it never defines.
-  if grep -qxF '    int32_t class_;' "$d/kwlib.h" \
-     && grep -qxF '    int32_t signed_;' "$d/kwlib.h" \
-     && grep -qxF 'typedef struct class_ {' "$d/kwlib.h" \
-     && grep -qxF 'struct class_ bump(struct class_ v);' "$d/kwlib.h" \
-     && grep -qxF 'extern int32_t delete_ asm("delete");' "$d/kwlib.h" \
-     && grep -qxF 'int32_t union_(int32_t a, int32_t b) asm("union");' "$d/kwlib.h" \
-     && grep -qxF 'int32_t xor_(int32_t a, int32_t default_) asm("xor");' "$d/kwlib.h" \
-     && grep -qxF 'int32_t plain(void* b);' "$d/kwlib.h"; then
+  if qgrep -xF '    int32_t class_;' "$d/kwlib.h" \
+     && qgrep -xF '    int32_t signed_;' "$d/kwlib.h" \
+     && qgrep -xF 'typedef struct class_ {' "$d/kwlib.h" \
+     && qgrep -xF 'struct class_ bump(struct class_ v);' "$d/kwlib.h" \
+     && qgrep -xF 'extern int32_t delete_ asm("delete");' "$d/kwlib.h" \
+     && qgrep -xF 'int32_t union_(int32_t a, int32_t b) asm("union");' "$d/kwlib.h" \
+     && qgrep -xF 'int32_t xor_(int32_t a, int32_t default_) asm("xor");' "$d/kwlib.h" \
+     && qgrep -xF 'int32_t plain(void* b);' "$d/kwlib.h"; then
     echo "PASS  w9-cheader-reserved-escaped"
   else
     echo "FAIL  w9-cheader-reserved-escaped"; sed 's/^/    /' "$d/kwlib.h" | sed -n '7,40p'
@@ -6012,7 +6147,7 @@ EOF
 
   # A prefixed member is already an identifier; escaping the fragment would
   # rename `Kind_default` for no reason. The escape belongs on the join.
-  if grep -qxF '    Kind_default = 2' "$d/kwlib.h"; then
+  if qgrep -xF '    Kind_default = 2' "$d/kwlib.h"; then
     echo "PASS  w9-cheader-reserved-join-not-fragment"
   else
     echo "FAIL  w9-cheader-reserved-join-not-fragment"; grep -n 'Kind' "$d/kwlib.h" | sed 's/^/    /'
@@ -6025,7 +6160,7 @@ EOF
     nm -g --defined-only "$d/kwlib.o" | awk '$2!="U"{print $3}' | sort -u > "$d/syms"
     miss=""
     for sym in $(grep -oE 'asm\("[^"]+"\)' "$d/kwlib.h" | sed 's/asm("//;s/")//'); do
-      grep -qxF "$sym" "$d/syms" || miss="$miss $sym"
+      qgrep -xF "$sym" "$d/syms" || miss="$miss $sym"
     done
     if [ -z "$miss" ]; then
       echo "PASS  w9-cheader-reserved-symbol-defined"
@@ -6136,7 +6271,7 @@ EOF
 (defn main ():i32 (return (pa/b4-desc 1 2)))
 EOF
   err="$(./build/nucleusc -I "$d" --emit-llvm "$d/b4-gwrong.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -qF "no matching method for overloaded 'b4-desc' with argument types (i32, i32)"; then
+  if printf '%s' "$err" | qgrep -F "no matching method for overloaded 'b4-desc' with argument types (i32, i32)"; then
     echo "PASS  b4-qualified-generic-filtered"
   else
     echo "FAIL  b4-qualified-generic-filtered (the qualifier did not restrict the method set)"
@@ -6151,7 +6286,7 @@ EOF
 (defn main ():i32 (return (b4a/b4-desc 1)))
 EOF
   err="$(./build/nucleusc -I "$d" --emit-llvm "$d/b4-gns.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -qF "unknown: b4a/b4-desc — 'b4a' is not in scope in this file"; then
+  if printf '%s' "$err" | qgrep -F "unknown: b4a/b4-desc — 'b4a' is not in scope in this file"; then
     echo "PASS  b4-qualified-generic-ns-refused"
   else
     echo "FAIL  b4-qualified-generic-ns-refused (wrong or missing diagnostic)"
@@ -6268,11 +6403,11 @@ EOF
   while read -r name pat; do
     [ -n "$name" ] || continue
     err="$(./build/nucleusc -I "$d" --emit-llvm "$d/$name.nuc" 2>&1 >/dev/null || true)"
-    if printf '%s' "$err" | grep -q ':0:'; then
+    if printf '%s' "$err" | qgrep ':0:'; then
       echo "FAIL  $name (diagnostic reports line 0)"
       printf '%s\n' "$err" | sed 's/^/    /'
-    elif printf '%s' "$err" | grep -qF "redefinition of '$pat'" \
-      && printf '%s' "$err" | grep -qF "$d/$name.nuc:2: error:"; then
+    elif printf '%s' "$err" | qgrep -F "redefinition of '$pat'" \
+      && printf '%s' "$err" | qgrep -F "$d/$name.nuc:2: error:"; then
       echo "PASS  $name"
     else
       echo "FAIL  $name (no located redefinition diagnostic)"
@@ -6300,8 +6435,8 @@ ROWS
   printf '(defstruct RdX n:i32 m:i32)\n' > "$d/b4r-fb.nuc"
   printf '(import b4r-fa)\n(import b4r-fb)\n(defn main ():i32 (return 0))\n' > "$d/b4r-fm.nuc"
   err="$(./build/nucleusc -I "$d" --emit-llvm "$d/b4r-fm.nuc" 2>&1 >/dev/null || true)"
-  if printf '%s' "$err" | grep -qF "redefinition of 'RdX'" \
-     && printf '%s' "$err" | grep -qF "$d/b4r-fa.nuc:1"; then
+  if printf '%s' "$err" | qgrep -F "redefinition of 'RdX'" \
+     && printf '%s' "$err" | qgrep -F "$d/b4r-fa.nuc:1"; then
     echo "PASS  b4-redefinition-cross-file"
   else
     echo "FAIL  b4-redefinition-cross-file (did not name the other file)"
@@ -6330,7 +6465,7 @@ fail=0
 for id in "${UNIT_NAMES[@]}"; do
   out="$RESULTS_DIR/${id}.out"
   cat "$out"
-  if grep -q '^FAIL' "$out" || [ ! -s "$out" ]; then
+  if qgrep '^FAIL' "$out" || [ ! -s "$out" ]; then
     fail=1
   fi
 done

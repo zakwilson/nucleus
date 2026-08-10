@@ -574,6 +574,32 @@
 ; signatures look like a duplicate overload. `emit-toplevel-forms` therefore
 ; skips its own protocol/signature prescan for a path on this list.
 (defvar g-prescan-sigs:ptr)
+; Stage 15 W9 item 29: how much of a `.nuch` form's work to do. A header's
+; functions and values used to be registered by the same walk that emits their
+; LLVM `declare`s, so one of its names resolved only if the import form sat
+; ABOVE the use — while the `.nuc` spelling of the same library resolved on
+; reachability (W1a). Registration is now hoisted into the whole-graph prescan
+; and emission left exactly where it was, which is what keeps every module's IR
+; byte-identical.
+;   NUCH-BOTH  — register and emit: a header the prescan never reached.
+;   NUCH-REG   — register only: the prescan.
+;   NUCH-AFTER — emit only: importing a header the prescan already registered.
+(defconst NUCH-BOTH 0)
+(defconst NUCH-REG 1)
+(defconst NUCH-AFTER 2)
+; The (header path, name) pairs the prescan actually registered. NUCH-AFTER is a
+; promise that registration already happened, and the prescan deliberately does
+; NOT register a name something else had already bound — two headers declaring
+; one `stderr`, or the unit's own definition of the name (item 36). A second
+; `declare` for those would be invalid IR, so the emit-only pass asks this list
+; per name instead of assuming the whole header was registered.
+(defvar g-nuch-registered:ptr)
+
+; The identity of one name within one header — see g-nuch-registered. A newline
+; can appear in neither a file path nor a Nucleus name, so the pair is
+; unambiguous (the rule `import-key` already uses for (file, prefix)).
+(defn nuch-reg-key (path:CStr name:CStr):ptr
+  (return (fmt-2s "%s\n%s" path name)))
 ; Stage 15 W1c: the compilation unit's root source path, recorded by
 ; `emit-toplevel-forms` at depth 1. Since W9 item 1 it is also load-bearing: the
 ; root joins `g-prescan-sigs`/`g-importing`, and `do-import` compares against it
@@ -12252,11 +12278,18 @@
         (set! g-out saved-out)))))
 
 (defn emit-extern (call:(raw Node)):void
+  (emit-extern-mode call NUCH-BOTH))
+
+; Stage 15 W9 item 29: the same, split by NUCH-* mode so a `.nuch` header's
+; globals can be registered by the whole-graph prescan while their
+; `external global` lines stay where the import has always written them.
+(defn emit-extern-mode (call:(raw Node) mode:i32):void
   (let (cc:ptr:Node (unsafe/cast ptr:Node call))
     (when (!= (node-len cc) 2)
       (die-at (cc line) "extern: expects name:type"))
     (let (arg1:ptr (node-at cc 1)
           name:ptr null
+          m:i32 mode
           ty:ptr null)
       ; G-2: `--emit-nuch` exports an array-typed `defvar` as
       ; `(extern (g (array i32 3)))`, so this — the import side of that export —
@@ -12269,6 +12302,13 @@
         (die-at ((unsafe/cast ptr:Node arg1) line)
           (fmt-s "extern: missing :type on '%s'" name)))
       (guard-name-kind name (cc line) NK-VALUE)
+      ; W9 item 29: emit-only is a promise the prescan registered THIS name from
+      ; THIS header. It registers nothing the dedup below already refused, so ask
+      ; before assuming; a name it skipped is still a plain register-and-emit.
+      (when (= m NUCH-AFTER)
+        (when (= (import-list-has g-nuch-registered
+                   (nuch-reg-key (as CStr g-source-path) (as CStr name))) 0)
+          (set! m NUCH-BOTH)))
       ; Dedup: an `(extern X)` re-declared by a second imported library (e.g. two
       ; collection libs both declaring `stderr`) must emit `@X = external global`
       ; only once — LLVM rejects a duplicate global definition. A redeclaration of
@@ -12277,7 +12317,7 @@
       ; declared in two different files still reaches here twice.)
       ; B2b: a KEY question, paired with the `scope-define` at the end of this
       ; function — not a reference this file wrote.
-      (when (!= (scope-lookup-key g-globals name) null)
+      (when (and (!= m NUCH-AFTER) (!= (scope-lookup-key g-globals name) null))
         (return))
       ; Stage 12 N6: a namespaced library's global re-resolves to its mangled link
       ; name. When this `extern` arrives from a `.nuch` whose leading `(ns NAME)`
@@ -12286,8 +12326,14 @@
       ; `(extern stderr)` and the bootstrap stay byte-identical.
       (let (ir-name:ptr (fmt-s "@%s" (ns-ir-base name)))
         (check-ir-name-legal (cc line) name ir-name)
-        (fprintf g-out "%s = external global %s\n\n" ir-name (type-to-ir ty))
-        (scope-define g-globals name ty ir-name 1)))))
+        (when (!= m NUCH-REG)
+          (fprintf g-out "%s = external global %s\n\n" ir-name (type-to-ir ty)))
+        (when (!= m NUCH-AFTER)
+          (scope-define g-globals name ty ir-name 1)
+          (when (= m NUCH-REG)
+            (set! g-nuch-registered
+                  (import-list-push g-nuch-registered
+                    (nuch-reg-key (as CStr g-source-path) (as CStr name))))))))))
 
 ; ============================================================
 ; C header handling — imported from src/cheader.nuc
@@ -14078,15 +14124,13 @@
 ;   * a path already on `g-imported` — the REPL processes one import per command,
 ;     so a later command's walk can reach a file the session has already loaded,
 ;     whose signatures are therefore already registered;
-;   * a `.nuch` header — its importer (`emit-nuch-import-forms`) deliberately does
-;     NOT run `prescan-defn-signatures`; declares/defmethods/templates each have
-;     their own registration path, so prescanning here would double-register.
-;     THIS SKIP IS W9 ITEM 6'S REMAINING HALF: a `declare`d function or a header
-;     `defconst` still resolves on import order. Closing it needs a
-;     registration-without-emission pass over header forms, and a ruling on the
-;     kinds whose registrars are NOT idempotent (`defmethod` → the same Generic
-;     twice) — filed as item 29, not bodged here;
 ;   * a C-header string import — reading one shells out to clang (pass 1's rule).
+; A `.nuch` header is NOT skipped (Stage 15 W9 item 29 — it used to be, which is
+; why a `declare`d function or a header `defconst` still resolved on import
+; order). It takes `prescan-nuch-signatures` instead of the four passes below:
+; the header's own registrars are the ones that must run, and they run in
+; register-only mode so their `declare` lines stay where the import emits them.
+; A header cannot import, so there is nothing to recurse into.
 ; Stage 15 W9 item 6: both spellings are walked, via `import-form-path` — the
 ; `.nuc` STRING path used to be silently skipped here and in pass 1.
 (defn prescan-imported-signatures (forms:(raw Node)):void
@@ -14107,7 +14151,6 @@
               (do
                 (let (path:ptr (import-form-path (as raw:Node nn) (f line)))
                   (when (and (!= path null)
-                             (= (str-ends-with path ".nuch") 0)
                              (= (import-list-has g-prescan-sigs path) 0)
                              (= (as ptr (import-list-find g-imported path)) null))
                     (set! g-prescan-sigs (import-list-push g-prescan-sigs path))
@@ -14137,16 +14180,21 @@
                         (set! g-file-imports null)
                         (let (ifs:ptr (apply-leading-ns (desugar (read-program-or-die))))
                           (apply-early-set-ir-prefix ifs)
-                          ; Stage 15 B3′: the imported file's own environment,
-                          ; so ITS signatures may name a namespaced type through
-                          ; a prefix it bound.
-                          (prescan-file-imports ifs)
-                          (prescan-protocols ifs)
-                          (prescan-defn-signatures ifs)
-                          ; Stage 15 W8 G-0: the value half, registered under the
-                          ; same per-path guard and the same applied namespace.
-                          (prescan-value-names ifs)
-                          (prescan-imported-signatures ifs))
+                          (if (!= (str-ends-with path ".nuch") 0)
+                            ; W9 item 29: a header's own registrars, in
+                            ; register-only mode. See prescan-nuch-signatures.
+                            (prescan-nuch-signatures ifs)
+                            (do
+                              ; Stage 15 B3′: the imported file's own environment,
+                              ; so ITS signatures may name a namespaced type through
+                              ; a prefix it bound.
+                              (prescan-file-imports ifs)
+                              (prescan-protocols ifs)
+                              (prescan-defn-signatures ifs)
+                              ; Stage 15 W8 G-0: the value half, registered under the
+                              ; same per-path guard and the same applied namespace.
+                              (prescan-value-names ifs)
+                              (prescan-imported-signatures ifs))))
                         (free src))
                       (set! g-source-path save-path)
                       (set! g-src save-src)
