@@ -1,0 +1,13 @@
+; Stage 15 W9 item 13, the position it was filed at: an unrecognized list head
+; in a type position. `parse-type-from-node` matched no shape and fell off the
+; end of its NODE-CELL arm returning null, and `defstruct` reads that null as
+; "no :type was written" — so the diagnostic blamed the missing annotation
+; instead of naming `nosuch`.
+;
+; Compiling this must FAIL with:
+;   "unknown type: nosuch — not defined anywhere in this compilation unit"
+; and specifically NOT with "defstruct: field 'xs' missing :type".
+(defstruct S (xs (nosuch i32)))
+
+(defn main ():i32
+  (return 0))

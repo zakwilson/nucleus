@@ -1,0 +1,16 @@
+; Stage 15 W9 item 13's everyday manifestation, and the reason the fix routes
+; through `unknown-type-message` instead of inventing a message here: a
+; parametric type whose template is real but whose file was never imported.
+; `(Vector i32)` without `(import-use vector)` reported "missing :type on param
+; 'x'" — blaming the one thing that is unambiguously present in the source.
+;
+; Reusing the tiered message means this spelling gets the reachability note for
+; free, the same note a bare unknown type has had since W1c.
+;
+; Compiling this must FAIL naming the file that does define it:
+;   "'Vector' is defined in lib/vector.nuch, which no import in this unit reaches"
+(defn f (x:(Vector i32)):i32
+  (return 0))
+
+(defn main ():i32
+  (return 0))

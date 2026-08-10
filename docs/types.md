@@ -75,6 +75,19 @@ main.nuc:18: error: unknown type: Fox — defined in namespace 'dp'
 
 If the file has bound nothing for that namespace, the message ends `— defined in namespace 'dp', which this file does not import` instead of offering a spelling. The same check fires in head position too, so a bare struct constructor (`(Fox 9)`) for a type in an unimported namespace gets the identical answer — this is not only an annotation-position rule.
 
+**A parametric spelling gets the same answers.** `(Vector i32)`, `(Result i64 i32)` and any other `(Template Arg …)` type resolve their head through the same ladder, so an unimported template names the file that defines it:
+
+```
+demo.nuc:1: error: unknown type: Vector — not defined anywhere in this compilation unit
+  note: 'Vector' is defined in lib/vector.nuch, which no import in this unit reaches
+```
+
+Writing a type where a type *constructor* belongs is a distinct error, since the head is a real type. The usual way to reach it is a doubled annotation — `x:i32:i32` means `(i32 i32)`:
+
+```
+demo.nuc:1: error: 'i32' is a type, not a type constructor -- (i32 ...) is not a type; a doubled annotation like x:T:T desugars to exactly this
+```
+
 **The emitted LLVM type name composes the namespace's IR prefix**, the same `<prefix>__<name>` composition a namespaced function or global already uses: a type declared in `(ns dp)` emits `%dp__Fox`, overridable with [`set-ir-prefix`](toplevel.md) exactly as for functions. A mangled overload token composes the same name, so an overloaded method on `dp/Fox` appears as `@f.dp__Fox` in a symbol. In the default `user` namespace nothing changes — `%Fox`, byte-identical to before namespaces existed.
 
 `--emit-cheader` composes the same prefix into the emitted C `typedef` name, for the same collision reason: two namespaces' `Pt` would otherwise both emit `typedef struct {…} Pt;`, and a program that includes both headers would fail to compile. A struct declared in `(ns gt)` emits `} gt__Pt;` in place of `} Pt;`; a `user`-namespace struct's header is unaffected. See [`--emit-cheader`](compiler.md#compiler-flags).

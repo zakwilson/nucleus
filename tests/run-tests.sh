@@ -3877,6 +3877,31 @@ spawn run_reject w9-i1-literal-negative tests/fixtures/w9-i1-literal-negative.nu
 spawn run_reject w9-i1-local-too-big tests/fixtures/w9-i1-local-too-big.nuc \
   "integer literal 5 does not fit i1"
 
+# W9 item 13: an unrecognized list head in type position used to fall out of
+# `parse-type-from-node` as null, which every caller reads as "no annotation was
+# written". Four positions, one shared fall-through — if a future change patches
+# a single caller instead of the predicate, the other three fixtures fail. The
+# `-unimported` case is the everyday one (a forgotten `import-use`) and pins
+# that the fix reuses `unknown-type-message`'s tiers rather than a local string;
+# the `-return` case pins the `:0:` half, which `run_reject` checks on its own.
+spawn run_reject w9-unknown-type-ctor-field \
+  tests/fixtures/w9-unknown-type-ctor-field.nuc \
+  "unknown type: nosuch — not defined anywhere in this compilation unit"
+spawn run_reject w9-unknown-type-ctor-param \
+  tests/fixtures/w9-unknown-type-ctor-param.nuc \
+  "unknown type: nosuch — not defined anywhere in this compilation unit"
+spawn run_reject w9-unknown-type-ctor-return \
+  tests/fixtures/w9-unknown-type-ctor-return.nuc \
+  "unknown type: nosuch — not defined anywhere in this compilation unit"
+spawn run_reject w9-unknown-type-ctor-unimported \
+  tests/fixtures/w9-unknown-type-ctor-unimported.nuc \
+  "'Vector' is defined in lib/vector.nuch, which no import in this unit reaches"
+# The other mistake class at the same fall-through: a head that IS a type. One
+# message for both would lie about this one.
+spawn run_reject w9-type-ctor-doubled-annotation \
+  tests/fixtures/w9-type-ctor-doubled-annotation.nuc \
+  "'i32' is a type, not a type constructor"
+
 # Stage 14 unsafe-namespace.md UN-2 — `unsafe` is a reserved pseudo-namespace
 # (D1): no user code may declare `(ns unsafe)`, which would make `unsafe/foo`
 # ambiguous between a reserved op and a real namespace member. (The positive

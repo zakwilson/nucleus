@@ -405,11 +405,25 @@ names are always bare symbols).
 | `defunion` | `(defunion U:(i32) (A x:i32) B)` | `defunion: type parameter must be a symbol` (located, reads as arity) | same annotation message | confusing but located |
 | `defunion` | `(defunion (Wrap T) (some v:T) none)` (genuine template) | compiles fine | unchanged | — regression check |
 | `deferror` | `(deferror MyErr:i32 "bad")` + `(err! MyErr)` | compiles with **no diagnostic at all** at the definition; the use fails with the unrelated `undefined: MyErr` | `deferror: takes no type annotation; write (deferror MyErr "message")` at the `deferror` line | silent |
-| `defvar` | `(defvar x:i32:i32 3)` (double annotation) | `defvar: missing :type on 'x'` (correct — `defvar` legitimately takes ONE annotation, and a multi-colon chain that doesn't resolve to a real type is rightly rejected) | unchanged | — not a bug (defvar's annotation is legitimate) |
+| `defvar` | `(defvar x:i32:i32 3)` (double annotation) | ~~`defvar: missing :type on 'x'` (correct — …)~~ **superseded, see the amendment below** | `'i32' is a type, not a type constructor -- (i32 ...) is not a type; a doubled annotation like x:T:T desugars to exactly this` | **was a bug after all** (W9 item 13) |
 | `defvar` | `(defvar x:i32 3 4)` (extra arg) | `defvar: expects name and optional init` at the `defvar` line | unchanged | already correct |
 | `defvar` | `(defvar x 3)` (no annotation — `defvar` is the one definer where an annotation is *required*, so its "plausible mistake" is *omitting* one) | `defvar: missing :type on 'x'` reported at **line 0** — correct message, wrong location (`name-node` is a bare `NODE-SYM`, and `emit-defvar` read `(name-node line)` directly instead of borrowing the enclosing form's line) | same message at the correct line (`node-line` fix) | **found via the sweep, not silent — a stray line-0 regression, same class as W4a** |
 | `defenum`/`defprotocol`/`defunion`/`defmacro`/`deferror` arity mistakes (missing members/sigs/arms/body/message; extra args) | one probe each | all already correctly located with clear messages | unchanged | already correct |
 | `defconst-` (private variant) | `(defconst- K:i32 2)` | shares `emit-defconst` — same silent bug | same fix (shared code path) | silent, fixed for free |
+
+> **Amended 2026-08-10 by Stage 15 W9 item 13.** The `(defvar x:i32:i32 3)` row
+> above judged `defvar: missing :type on 'x'` *correct*, on the reasoning that
+> the chain "doesn't resolve to a real type" and is "rightly rejected". The
+> rejection was right; the message was not. It is the same defect as W9 item 13
+> one layer down: `parse-type-from-node` returned null for a type expression it
+> could not parse, and `emit-defvar` cannot tell that null from the one meaning
+> "no annotation was written" — so it reported an annotation as *missing* that
+> is plainly present in the source. The message now names the actual mistake.
+>
+> This row is also why the item-13 fix does not route every unrecognized head
+> through `unknown-type-message`: `x:i32:i32` desugars to `(i32 i32)`, and
+> "unknown type: i32 — not defined anywhere in this compilation unit" would be
+> false. `tests/fixtures/w9-type-ctor-doubled-annotation.nuc` pins it.
 
 ### A premise this task's brief did not anticipate
 

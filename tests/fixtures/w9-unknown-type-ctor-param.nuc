@@ -1,0 +1,15 @@
+; Stage 15 W9 item 13 at a PARAMETER, the position a user hits most. Filed
+; against `defstruct`, but the null return is the shared fall-through of
+; `parse-type-from-node`, so every caller that reads null as "no annotation"
+; carried the same wrong message — param, `let`, `defvar` and return alike.
+; Fixing it in one place fixed all of them; this fixture pins that the fix is
+; the shared one and not a per-caller patch.
+;
+; Compiling this must FAIL with:
+;   "unknown type: nosuch — not defined anywhere in this compilation unit"
+; and specifically NOT with "defn: missing :type on param 'x'".
+(defn f (x:(nosuch i32)):i32
+  (return 0))
+
+(defn main ():i32
+  (return 0))

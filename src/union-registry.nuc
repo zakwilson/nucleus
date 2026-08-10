@@ -231,6 +231,39 @@
   (when (!= g-type-key-ok 0) (return (lookup-struct (intern-str spelling))))
   (return null))
 
+; The built-in type names, as a pure name -> Type lookup that answers null for a
+; name that is not built in. Extracted from `parse-type-name` (Stage 15 W9 item
+; 13) so that "is this list head a type rather than a type CONSTRUCTOR" can be
+; asked without dying — `parse-type-name` itself ends in `die-at`, so it cannot
+; serve as a probe, and a second copy of this list would drift from it.
+(defn builtin-type-name (name:CStr):?ptr:Type
+  (when (= name "int") (return (as ptr ty-i32)))
+  (when (= name "Err") (return (as ptr ty-err)))
+  (when (= name "i1") (return (as ptr ty-i1)))
+  (when (= name "i8") (return (as ptr ty-i8)))
+  (when (= name "i16") (return (as ptr ty-i16)))
+  (when (= name "i32") (return (as ptr ty-i32)))
+  (when (= name "i64") (return (as ptr ty-i64)))
+  (when (= name "bool") (return (as ptr ty-i1)))
+  (when (= name "ptr") (return (as ptr ty-ptr)))
+  (when (= name "raw") (return (as ptr ty-raw)))
+  (when (= name "CStr") (return (as ptr ty-cstr)))
+  (when (= name "Char") (return (as ptr ty-char)))
+  (when (= name "void") (return (as ptr ty-void)))
+  (when (= name "ui8") (return (as ptr ty-ui8)))
+  (when (= name "ui16") (return (as ptr ty-ui16)))
+  (when (= name "ui32") (return (as ptr ty-ui32)))
+  (when (= name "ui64") (return (as ptr ty-ui64)))
+  ; Stage 11: pointer-sized integer aliases. usize is unsigned (size_t),
+  ; ssize is signed (ssize_t/ptrdiff_t). Size follows g-target-ptr-bytes.
+  (when (= name "usize") (return (as ptr ty-usize)))
+  (when (= name "ssize") (return (as ptr ty-ssize)))
+  (when (= name "f32") (return (as ptr ty-f32)))
+  (when (= name "f64") (return (as ptr ty-f64)))
+  (when (= name "float") (return (as ptr ty-f32)))
+  (when (= name "double") (return (as ptr ty-f64)))
+  (return null))
+
 (defn parse-type-name (name:CStr line:i32):ref:Type
   ; Stage 10 errors sugar: ?!T => (Maybe (Result T Err)) — a fallible result
   ; that may be absent. The leading ?! reads as a *value* Maybe over the Result
@@ -281,36 +314,14 @@
   ; inert for the existing flow.
   (when (!= (strchr name 58) null)
     (return (parse-type-from-node (split-colon-segments name line) line)))
-  (when (= name "int") (return ty-i32))
-  (when (= name "Err") (return ty-err))
-  (when (= name "i1") (return ty-i1))
-  (when (= name "i8") (return ty-i8))
-  (when (= name "i16") (return ty-i16))
-  (when (= name "i32") (return ty-i32))
-  (when (= name "i64") (return ty-i64))
-  (when (= name "bool") (return ty-i1))
-  (when (= name "ptr") (return ty-ptr))
-  (when (= name "raw") (return ty-raw))
-  (when (= name "CStr") (return ty-cstr))
-  (when (= name "Char") (return ty-char))
-  (when (= name "void") (return ty-void))
-  (when (= name "ui8") (return ty-ui8))
-  (when (= name "ui16") (return ty-ui16))
-  (when (= name "ui32") (return ty-ui32))
-  (when (= name "ui64") (return ty-ui64))
-  ; Stage 11: pointer-sized integer aliases. usize is unsigned (size_t),
-  ; ssize is signed (ssize_t/ptrdiff_t). Size follows g-target-ptr-bytes.
-  (when (= name "usize") (return ty-usize))
-  (when (= name "ssize") (return ty-ssize))
-  (when (= name "f32") (return ty-f32))
   ; Stage 14 AVR-7: an explicit `:f64`/`double` annotation is a compile-time
   ; error on AVR (no hardware double). Checked before the resolution below so an
   ; annotated f64 never reaches codegen; the bare-float-literal default is caught
   ; separately in emit-float. `f32`/`float` are unaffected. Inert off AVR.
+  ; Deliberately NOT inside `builtin-type-name`, which must answer without dying.
   (when (or (= name "f64") (= name "double")) (avr-reject-f64 line))
-  (when (= name "f64") (return ty-f64))
-  (when (= name "float") (return ty-f32))
-  (when (= name "double") (return ty-f64))
+  (let (bt:?ptr:Type (builtin-type-name name))
+    (when (!= bt null) (return (unsafe/cast ref:Type bt))))
   ; Stage 13 L7: a TY-FN spelling (interned "__fnty_<id>" from type-spelling)
   ; resolves back to the original function-pointer Type*. This is what lets a
   ; stamped generic body's `(ref __fnty_3)` re-parse to the fn's TY-FN, so the
@@ -1825,5 +1836,36 @@
                  (.set! ft params null)
                  (.set! ft num-params 0)
                  (.set! ft variadic 0)
-                 (return ft)))))))
+                 (return ft))))))
+      ; Stage 15 W9 item 13: every probe above failed, so this list is not a type.
+      ; Falling off the end returned null, and NO caller distinguishes "no
+      ; annotation was written" from "an annotation was written and is not a
+      ; type" — so `(defn f (x:(Vector i32)) …)` without `(import-use vector)`
+      ; reported `missing :type on param 'x'`, blaming the one thing that is
+      ; unambiguously present. The trailing `die-at` below cannot cover this: it
+      ; is `case`'s label-less default arm, reachable only for a NodeKind outside
+      ; {NODE-SYM, NODE-CELL}.
+      ;
+      ; Two different mistakes reach here, and one message for both would lie
+      ; about one of them:
+      ;   - the head names a real TYPE used where a constructor belongs. This is
+      ;     what a doubled annotation desugars to — `x:i32:i32` is `(i32 i32)` —
+      ;     and `unknown type: i32` would be simply false.
+      ;   - the head names nothing reachable. That is the genuine unknown-type
+      ;     case, so it routes through `unknown-type-message`, the same tiered
+      ;     message `parse-type-name` gives a bare unknown type: the
+      ;     out-of-scope-qualifier, defined-in-an-unimported-file note,
+      ;     wrong-namespace and did-you-mean tiers all apply here too, and are
+      ;     worth more than a second, poorer message invented locally.
+      (let (head:ptr (n car))
+        (when (and (!= head null)
+                   (= (-> head (unsafe/cast ptr:Node _) (_ kind)) NODE-SYM))
+          (let (hs:ptr (-> head (unsafe/cast ptr:Node _) (_ s)))
+            (when (or (!= (builtin-type-name hs) null)
+                      (!= (struct-lookup-ref hs) null))
+              (die-at line
+                (fmt-2s "'%s' is a type, not a type constructor -- (%s ...) is not a type; a doubled annotation like x:T:T desugars to exactly this"
+                        hs hs)))
+            (die-at line (unknown-type-message hs))))
+        (die-at line "unable to parse type expression")))
     (die-at line "unable to parse type expression"))))

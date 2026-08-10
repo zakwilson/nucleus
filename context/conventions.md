@@ -3180,3 +3180,33 @@ width 1 before assuming the generic path covers it. `true`/`false` are
 `NODE-SYM` literals that emit `true`/`false` directly and never reach the
 integer-literal predicates, so a test written only with the named spellings will
 not exercise any of this — use the numeric one.
+
+## A parser's null must not mean both "absent" and "malformed"
+
+`parse-type-from-node` returned null when it could not parse a type expression.
+Every caller already read null as *no annotation was written* — the other thing
+it means at a type-annotation site — so `(defn f (x:(Vector i32)) …)` with the
+import forgotten reported `defn: missing :type on param 'x'`, blaming the one
+part of the line that is unambiguously present (W9 item 13). Five caller
+positions carried the same wrong message from the one shared return.
+
+The rule: a helper whose result distinguishes "nothing was there" from "what was
+there is wrong" must not encode both as the same value. Diagnose the malformed
+case *at the parser*, where the offending node and its line are still in hand;
+the caller has neither, which is also why the return-type position reported
+`:0:`.
+
+Two structural traps in this area:
+
+- **A `die-at` at the end of a `case` is the label-less DEFAULT arm, not a
+  fall-through of the arm above it.** `parse-type-from-node`'s trailing "unable
+  to parse type expression" reads like the catch-all for a failed parse; it is
+  reachable only for a `NodeKind` outside `{NODE-SYM, NODE-CELL}`, so a
+  malformed *list* — the common case — flowed past it and off the end of the
+  function. Check which arm a terminal raise actually belongs to before trusting
+  it to cover anything.
+- **`parse-type-name` ends in `die-at`, so it cannot be used as a probe.** When
+  a caller needs to ask "is this name a type?" without dying, extract the
+  lookup (`builtin-type-name`) and have the resolver call it, rather than
+  writing a second copy of the built-in list that will drift. Keep side effects
+  like `avr-reject-f64` in the resolver — a probe must answer, not raise.
