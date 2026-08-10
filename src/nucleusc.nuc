@@ -16147,13 +16147,18 @@
         ; defines, so skipping it made `--emit-nuch` fail on nine of the library's
         ; own files. `emit-nuch-header` ignores an `import-use` form, so the
         ; prepended import costs one prescan and exports nothing extra.
-        ; `--emit-cheader` stays exempt: it exports the C-representable subset,
-        ; which cannot name a prelude type in the first place.
-        (when (= g-emit-cheader 0)
-          (let (after:ptr (strip-exclude-prelude forms))
-            (if (!= after null)
-              (set! forms after)
-              (set! forms (prepend-prelude-import forms)))))
+        ;
+        ; Stage 15 W9 item 26: `--emit-cheader` is not exempt either. Its
+        ; exemption rested on "it exports the C-representable subset, which cannot
+        ; name a prelude type in the first place" — false as written (`lib/parse.h`
+        ; declares the `!i32` Result struct, `lib/string-split.h` a `StrView`), and
+        ; irrelevant to why the prelude is needed here: a C header must name the
+        ; symbol each `defn` actually links as, which only the generic registry
+        ; knows, and populating it means resolving every signature's types.
+        (let (after:ptr (strip-exclude-prelude forms))
+          (if (!= after null)
+            (set! forms after)
+            (set! forms (prepend-prelude-import forms))))
 
         ; .nuch header mode — emit declarations and exit
         (when (!= g-emit-nuch 0)

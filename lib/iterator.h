@@ -10,14 +10,14 @@ typedef struct IntRangeIter {
     int32_t end;
 } IntRangeIter;
 
-void* next(void* self);
+/* next: uses a defunion-template instance type; not exported */
 typedef struct I64ArrayIter {
     int64_t* data;
     size_t pos;
     size_t len;
 } I64ArrayIter;
 
-void* next(void* self);
+/* next: uses a defunion-template instance type; not exported */
 /* next: generic template; not exported */
 /* next: generic template; not exported */
 /* reduce: generic template; not exported */

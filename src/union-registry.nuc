@@ -68,14 +68,25 @@
       (set! sd (register-struct synth))
       (let (sd2:ptr:StructDef (as ptr:StructDef sd))
         (struct-set-fields sd2 field-names field-types nfields)
-        (.set! sd2 emitted 1)
+        ; Stage 15 W9 item 26: this is the ONE eager writer among the anonymous
+        ; type constructors — `lookup-or-make-anon-union` queues instead — and it
+        ; is reachable from the signature prescan, which the header-emit modes run
+        ; with no module stream open. `fprintf` to a null `FILE*` segfaulted, so
+        ; `--emit-nuch` has always died on an anonymous struct in a signature;
+        ; `--emit-cheader` inherited it the moment it started prescanning. Nothing
+        ; is codegen'd in those modes, so there is nothing to write — and
+        ; `emitted` must then stay 0, since the flag means "already in the type
+        ; buffer". Same guard the `!T` payload path at the bottom of this file
+        ; already uses.
+        (when (!= g-type-stream null)
+          (.set! sd2 emitted 1)
+          (fprintf g-type-stream "%%%s = type { " synth)
+          (dotimes (i nfields)
+            (when (!= i 0) (fprintf g-type-stream ", "))
+            (fprintf g-type-stream "%s" (type-to-ir (aref (as ptr:ptr field-types) i))))
+          (fprintf g-type-stream " }\n\n"))
         (.set! sd2 src-file g-source-path)
-        (.set! sd2 src-line 0))
-      (fprintf g-type-stream "%%%s = type { " synth)
-      (dotimes (i nfields)
-        (when (!= i 0) (fprintf g-type-stream ", "))
-        (fprintf g-type-stream "%s" (type-to-ir (aref (as ptr:ptr field-types) i))))
-      (fprintf g-type-stream " }\n\n"))
+        (.set! sd2 src-line 0)))
     ; Both arms leave sd non-null, but the set!-kill is sticky across the join
     ; (nullability.md §4) — assert rather than re-test.
     (return (as ref:StructDef sd))))

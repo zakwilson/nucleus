@@ -1580,7 +1580,10 @@ EOF
   # A declaration the C compiler trusts and gets wrong is worse than an omission:
   # `type-node-to-c` answers `void*` for any cell head it does not know, which
   # would declare a pointer-sized object over a `(Maybe i32)` or an array.
-  if grep -qF '/* m-skip: type has no C spelling here; not exported */' "$d/clib.h" \
+  # `m-skip` names the more specific reason since W9 item 26 gave the pass the
+  # union-template registry: `(Maybe i32)` is recognized as a template instance
+  # rather than merely unspellable. Either way it is an omission with a comment.
+  if grep -qF '/* m-skip: uses a defunion-template instance type; not exported */' "$d/clib.h" \
      && grep -qF '/* arr-skip: type has no C spelling here; not exported */' "$d/clib.h"; then
     echo "PASS  w9-cheader-global-skips-unspellable"
   else
@@ -3405,10 +3408,14 @@ run_s1_block() {
     echo "FAIL  s1-nuch-export-shapes"
   fi
 
-  # 3b. The cheader names the plain new-style prototypes correctly.
+  # 3b. The cheader names the plain new-style prototypes correctly — and names an
+  #     overloaded one the way the .nuch above already did (W9 item 26). The old
+  #     `int32_t scale(int32_t x);` asserted a symbol the object never defines:
+  #     `scale` is overloaded, so its methods are `@scale.i32` / `@scale.i64`.
   if grep -qF 'int32_t twice(int32_t x);' "$s1_dir/lib.h" \
      && grep -qF 'int32_t add3(int32_t a, int32_t b, int32_t c);' "$s1_dir/lib.h" \
-     && grep -qF 'int32_t scale(int32_t x);' "$s1_dir/lib.h"; then
+     && grep -qF 'int32_t scale_i32(int32_t x) asm("scale.i32");' "$s1_dir/lib.h" \
+     && grep -qF 'int64_t scale_i64(int64_t x) asm("scale.i64");' "$s1_dir/lib.h"; then
     echo "PASS  s1-cheader-plain-prototypes"
   else
     echo "FAIL  s1-cheader-plain-prototypes"
@@ -5860,6 +5867,104 @@ EOF
   rm -rf "$d"
 }
 spawn run_w9_cheader_struct_tag
+
+# W9 item 26: the C header must name the symbol each `defn` actually links as.
+# `ns-ir-base` is that symbol only for a solitary, non-operator function — an
+# overload is mangled per signature, and an operator goes through
+# `op-name-token` even when it is the sole user method (its generic always
+# carries an intrinsic seed). The header used to derive the solitary form
+# unconditionally, so it declared symbols no object defines, twice under one C
+# name. The invariant is checked against `nm`, not against a hardcoded list.
+run_w9_cheader_overload_symbols() {
+  local d out miss sym
+  d="$(mktemp -d)"
+  cat > "$d/ovlib.nuc" <<'EOF'
+(defstruct Pt x:i32 y:i32)
+(defn scale (p:(ref Pt) k:i32):i32 (return (* (+ (p x) (p y)) k)))
+(defn scale (a:i32 k:i32):i32 (return (* a k)))
+(defn = (a:Pt b:Pt):i1
+  (let (la:Pt a lb:Pt b)
+    (return (if (and (= ((addr-of la) x) ((addr-of lb) x))
+                     (= ((addr-of la) y) ((addr-of lb) y))) true false))))
+(defn solo (n:i32):i32 (return (+ n 1)))
+EOF
+  if ! ./build/nucleusc --emit-cheader "$d/ovlib.nuc" > "$d/ovlib.h" 2>"$d/err"; then
+    echo "FAIL  w9-cheader-overload-symbols (--emit-cheader failed)"; sed 's/^/    /' "$d/err"; rm -rf "$d"; return 0
+  fi
+
+  # Each method gets its own C name and its own label; the solitary one keeps
+  # its bare name and needs no label at all.
+  if grep -qxF 'int32_t scale_pPt_i32(void* p, int32_t k) asm("scale.pPt.i32");' "$d/ovlib.h" \
+     && grep -qxF 'int32_t scale_i32_i32(int32_t a, int32_t k) asm("scale.i32.i32");' "$d/ovlib.h" \
+     && grep -qxF '_Bool eq_Pt_Pt(struct Pt a, struct Pt b) asm("eq.Pt.Pt");' "$d/ovlib.h" \
+     && grep -qxF 'int32_t solo(int32_t n);' "$d/ovlib.h"; then
+    echo "PASS  w9-cheader-overload-distinct-symbols"
+  else
+    echo "FAIL  w9-cheader-overload-distinct-symbols"; grep -n 'scale\|eq_\|solo' "$d/ovlib.h" | sed 's/^/    /'
+  fi
+
+  if ! ./build/nucleusc -c -o "$d/ovlib.o" "$d/ovlib.nuc" 2>"$d/err"; then
+    echo "FAIL  w9-cheader-symbol-defined (compile failed)"; sed 's/^/    /' "$d/err" | head -5
+  else
+    # The invariant, stated against the object rather than against a list: every
+    # symbol the header binds to must be one the object defines.
+    nm -g --defined-only "$d/ovlib.o" | awk '$2=="T"||$2=="W"{print $3}' | sort -u > "$d/syms"
+    miss=""
+    for sym in $(grep -oE 'asm\("[^"]+"\)' "$d/ovlib.h" | sed 's/asm("//;s/")//'); do
+      grep -qxF "$sym" "$d/syms" || miss="$miss $sym"
+    done
+    if [ -z "$miss" ]; then
+      echo "PASS  w9-cheader-symbol-defined"
+    else
+      echo "FAIL  w9-cheader-symbol-defined (header names undefined symbols:$miss)"
+    fi
+
+    cat > "$d/main.c" <<'EOF'
+#include <stdio.h>
+#include "ovlib.h"
+int main(void) {
+    Pt p = {3, 4};
+    Pt q = {3, 4};
+    printf("a=%d b=%d eq=%d solo=%d\n",
+           scale_pPt_i32(&p, 10), scale_i32_i32(6, 7), (int)eq_Pt_Pt(p, q), solo(41));
+    return 0;
+}
+EOF
+    if clang -Wall -Werror -I "$d" "$d/main.c" "$d/ovlib.o" -o "$d/ovmain" 2>"$d/err"; then
+      out="$("$d/ovmain")"
+      if [ "$out" = "a=70 b=42 eq=1 solo=42" ]; then
+        echo "PASS  w9-cheader-overload-c-consumer"
+      else
+        echo "FAIL  w9-cheader-overload-c-consumer (want 'a=70 b=42 eq=1 solo=42', got '$out')"
+      fi
+    else
+      echo "FAIL  w9-cheader-overload-c-consumer (link failed)"; sed 's/^/    /' "$d/err" | head -8
+    fi
+  fi
+
+  # The committed corpus. An operator's C name sanitized to `_` is the defect's
+  # signature — two of them in one header is what made `string.h`/`strview.h`
+  # unparseable — and no header may bind a label C could not have produced.
+  if ! grep -qE '^[A-Za-z_].* _\(' lib/*.h && ! grep -qE 'asm\("[<>=!+*/%-]+"\)' lib/*.h; then
+    echo "PASS  w9-cheader-no-operator-c-name"
+  else
+    echo "FAIL  w9-cheader-no-operator-c-name"; grep -nE '^[A-Za-z_].* _\(|asm\("[<>=!+*/%-]+"\)' lib/*.h | sed 's/^/    /'
+  fi
+
+  # The four headers this item takes from broken to compiling.
+  local bad=""
+  for hdr in parse string strview keyword; do
+    printf '#include "%s.h"\nint main(void){return 0;}\n' "$hdr" > "$d/inc.c"
+    clang -fsyntax-only -I lib "$d/inc.c" 2>/dev/null || bad="$bad $hdr.h"
+  done
+  if [ -z "$bad" ]; then
+    echo "PASS  w9-cheader-overload-lib-corpus-compiles"
+  else
+    echo "FAIL  w9-cheader-overload-lib-corpus-compiles (still broken:$bad)"
+  fi
+  rm -rf "$d"
+}
+spawn run_w9_cheader_overload_symbols
 
 # The tenth defect (`protocol-dyn-annot`). An annotation naming a protocol that
 # exists nowhere used to compile and fabricate a box type; admission now happens

@@ -15,7 +15,7 @@ By default `nucleusc <file.nuc>` produces a linked native executable (`a.out` un
 | `-ffast-math` | Emit `fast` flags on floating-point arithmetic (`fadd`/`fsub`/`fmul`/`fdiv`/`frem`), permitting reassociation, contraction, and no-signed-zero/no-NaN assumptions. This is what lets the optimizer vectorize FP **reductions** (e.g. `pi += …`); without it an FP reduction stays scalar even at `-O3` because reordering would change results. Comparisons are left unflagged. Changes numerical results — opt-in only. |
 | `-march=native` | Target the host CPU and its full feature set (via `LLVMGetHostCPUName` / `LLVMGetHostCPUFeatures`) instead of the generic baseline, so vectorized loops use the widest available registers (e.g. 256-bit AVX rather than 128-bit SSE2). Host-only — do not combine with `--target=`. Produces non-portable objects. |
 | `--emit-nuch` | Output a `.nuch` header instead of compiling. Extracts function signatures, struct definitions, constants, enums, and macros. The prelude and the file's own imports are prescanned first (types only — nothing is emitted), so an exported signature may name an imported type: `Node`, `StrView`, `String`, `(Maybe T)`, the `!T` sugar. |
-| `--emit-cheader` | Output a C header (`.h`) instead of compiling. Emits `#pragma once`, `#include <stdint.h>` / `<stdbool.h>` / `<stddef.h>`, tagged typedefs for structs and unions (`typedef struct Pt { … } Pt;`, so both `Pt` and `struct Pt` work), extern function declarations, `extern` declarations for public `defvar` globals (see [Reaching a library's globals from C](#reaching-a-librarys-globals-from-c)), `#define` constants, and enums. For a namespaced library, function declarations use the C-legal mangled link name (`geom__area`, not the Nucleus name `geom/area`), so a C consumer links against the same symbol the library emits — and a struct's typedef name is mangled the same way (`} gt__Pt;`, not `} Pt;`), since two namespaces may each define a `Pt` and an unprefixed typedef would collide if both headers were included together. A `user`-namespace library's header is unaffected. See [Namespaced type names](types.md#namespaced-type-names). |
+| `--emit-cheader` | Output a C header (`.h`) instead of compiling. Emits `#pragma once`, `#include <stdint.h>` / `<stdbool.h>` / `<stddef.h>`, tagged typedefs for structs and unions (`typedef struct Pt { … } Pt;`, so both `Pt` and `struct Pt` work), extern function declarations, `extern` declarations for public `defvar` globals (see [Reaching a library's globals from C](#reaching-a-librarys-globals-from-c)), `#define` constants, and enums. For a namespaced library, function declarations use the C-legal mangled link name (`geom__area`, not the Nucleus name `geom/area`), so a C consumer links against the same symbol the library emits — and a struct's typedef name is mangled the same way (`} gt__Pt;`, not `} Pt;`), since two namespaces may each define a `Pt` and an unprefixed typedef would collide if both headers were included together. A `user`-namespace library's header is unaffected. An **overloaded** or **operator-named** function is declared under the per-signature symbol it really links as, each method with its own C name (see [Overloaded and operator-named functions in a C header](#overloaded-and-operator-named-functions-in-a-c-header)). Header emission resolves the whole unit's signatures, so a source that does not compile produces the compiler's ordinary error rather than a header. See [Namespaced type names](types.md#namespaced-type-names). |
 | `-i` / `--interactive` | Start the REPL (interactive Read-Eval-Print Loop). |
 | `-I<path>` / `-I <path>` | Add a directory to the import search path. Searched after the source file's directory and `lib/`. |
 | `--repl-format=text\|json` | Format for REPL error output. Default `text` (legacy `  error: <msg>` lines). With `json`, each error is emitted as a single-line JSON object: `{"file":..,"line":..,"message":..}`. Suitable for agent-driven REPL sessions. |
@@ -423,6 +423,47 @@ Two consequences worth knowing:
 
 * **`asm` labels are a GCC/Clang extension.** A library with hyphenated public names produces a header that needs one of those compilers; a library that names its exports in C-legal form does not.
 * **Sanitizing is not injective.** `foo-bar` and `foo_bar` both spell `foo_bar`. This is caught loudly at the consumer (`conflicting asm label`, or a duplicate member), never silently mis-bound, but the fix is to rename in Nucleus.
+
+## Overloaded and operator-named functions in a C header
+
+The "real symbol" above is not always the function's name. A name that carries
+more than one method is [mangled per signature](generics.md#polymorphism-overloaded-defn-multimethods),
+and an **operator** name is mangled even when it carries only one — its generic
+always holds the intrinsic seed method beside the user's, so `=` on a struct
+links as `eq.Pt.Pt`, never `=`. C gets one declaration per method, each with its
+own identifier and its own label:
+
+```nucleus
+(defstruct Pt x:i32 y:i32)
+(defn scale (p:(ref Pt) k:i32):i32 …)     ; overloaded…
+(defn scale (a:i32 k:i32):i32 …)          ; …two methods, one name
+(defn = (a:Pt b:Pt):i1 …)                 ; operator
+(defn solo (n:i32):i32 …)                 ; solitary, non-operator
+```
+
+```c
+int32_t scale_pPt_i32(void* p, int32_t k) asm("scale.pPt.i32");
+int32_t scale_i32_i32(int32_t a, int32_t k) asm("scale.i32.i32");
+_Bool eq_Pt_Pt(struct Pt a, struct Pt b) asm("eq.Pt.Pt");
+int32_t solo(int32_t n);
+```
+
+Only the solitary non-operator function keeps its bare name and needs no label.
+The C identifier is the mangled symbol with its dots sanitized, so it is distinct
+for each method by construction, and the label is the symbol verbatim. Whether a
+name is overloaded is a property of the whole compilation unit rather than of the
+file, so header emission runs the same signature prescan a real compilation does
+— a library that contributes one `hash` to a name the prelude also defines still
+exports it as `hash.pString`, which is what its object file defines.
+
+A **bounded-generic template** — a `&where` clause, or a receiver over a
+parametric struct such as `(Vector T)` — is not exported at all: it has no symbol
+until a call site stamps it. Those become comments, the same way an
+un-C-representable signature does:
+
+```c
+/* insert: generic template; not exported */
+```
 
 An **overloaded** function, or one named with an operator, is exported wrongly today: its real symbols are mangled per signature (`=` on `String` is `@eq.String.String`), while the header declares the bare name — which no object defines, and which collides when two overloads share it. Affects `lib/string.h`, `lib/strview.h` and `lib/parse.h`.
 

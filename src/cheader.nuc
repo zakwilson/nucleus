@@ -1759,6 +1759,23 @@
   (when (= (strcmp cname link) 0) (return ""))
   (return (fmt-s " asm(\"%s\")" link)))
 
+; The linker symbol behind an ir-name: the same string without its leading `@`
+; sigil. Stage 15 W9 item 26 — the generic registry stores ir-names (`@eq.String
+; .String`), the C `asm` label wants the bare symbol, and no caller may hand a
+; sigil through to a declaration.
+(defn cheader-strip-sigil (irname:ptr):ptr
+  (when (= irname null) (return null))
+  (let (n:i64 (strlen irname))
+    (when (or (= n 0) (!= (bit-and (as i32 (aref (as ptr:i8 irname) 0)) 255) 64))
+      (return irname))
+    (let (s:ptr (arena-alloc n)
+          i:i64 1)
+      (while (< i n)
+        (aset! (as ptr:i8 s) (- i 1) (aref (as ptr:i8 irname) i))
+        (set! i (+ i 1)))
+      (aset! (as ptr:i8 s) (- n 1) 0)
+      (return s))))
+
 (defn type-name-to-c (name:ptr):ptr
   (when (= name "void")  (return "void"))
   (when (= name "i1")    (return "_Bool"))
@@ -1915,11 +1932,12 @@
 ; Tries the SAME constant folder the type parser uses, so a literal (and any
 ; constant that is registered by the time the header is emitted) exports as a
 ; number. A bare NAME that does not fold is exported VERBATIM rather than
-; refused: `--emit-cheader` does not run the emitter, so a `defconst` is never
-; entered in the value scope during this pass — but it IS exported as a
-; `#define` by emit-cheader-defconst, so `int32_t names[N];` is correct C and
-; keeps the symbolic size the source wrote. Anything else (a computed length
-; whose constants this pass cannot see) is a located error, never a guess.
+; refused: this file's own `defconst`s are deliberately not prescanned into the
+; value scope (see emit-cheader-header), and each IS exported as a `#define` by
+; emit-cheader-defconst, so `int32_t names[N];` is correct C and keeps the
+; symbolic size the source wrote. An imported constant does fold, which is the
+; right answer for one this header cannot `#define`. Anything else (a computed
+; length whose constants this pass cannot see) is a located error, never a guess.
 (defn cheader-array-extent (an:ptr encl:i32):CStr
   (let (len:i64 0
         lnn:ptr (node-at an 2)
@@ -2095,8 +2113,20 @@
     ; closing `) asm("link");` — are emitted many lines apart with the parameters
     ; streamed between them, so both spellings are computed HERE, once. Deriving
     ; the label's copy separately is exactly how the two would drift.
-    (let (link:ptr (ns-ir-base fname)
-          cname:ptr (cheader-c-ident (as raw:i8 link)))
+    ;
+    ; W9 item 26: ASK the registry, do not re-derive. `ns-ir-base` is the symbol
+    ; only for a solitary non-operator `defn`; an overload takes a per-signature
+    ; mangled name and an operator goes through `op-name-token` even when it is
+    ; the sole user method (its generic always carries an intrinsic seed), so
+    ; `lib/string.nuc`'s `=` links as `eq.String.String`. The registry decided
+    ; that in `finalize-generics` and is the only thing that knows it; deriving a
+    ; second answer here is how the header came to declare symbols no object
+    ; defines. `defn-form-mangled-name` answers null for a solitary name, which is
+    ; exactly when `ns-ir-base` is right.
+    (let (link:ptr (cheader-strip-sigil (defn-form-mangled-name (as raw:Node form)))
+          cname:ptr null)
+      (when (= link null) (set! link (ns-ir-base fname)))
+      (set! cname (cheader-c-ident (as raw:i8 link)))
       (let (rtnode:ptr (cheader-defn-ret-node form)
             ret-c:ptr "void")
         (when (!= rtnode null) (set! ret-c (type-node-to-c rtnode)))
@@ -2310,6 +2340,39 @@
   ; Identity under `user`, so an un-namespaced library's header is byte-identical.
   (set! forms (apply-leading-ns forms))
   (apply-early-set-ir-prefix forms)
+  ; Stage 15 W9 item 26: the same prescan sequence `emit-nuch-header` runs, and
+  ; for the same reason — the symbol a `defn` links as is decided by
+  ; `finalize-generics` (at the end of prescan-defn-signatures), not by its
+  ; spelling. Without this the header could only guess, and it guessed the
+  ; solitary non-operator form for every function: an operator or an overload was
+  ; declared under a symbol no object defines. Emission still walks THIS file's
+  ; forms only, so nothing an import contributes is exported.
+  ; Protocols before struct names, per B5 — the reverse order reports a
+  ; `defprotocol`/`defstruct` name clash at the wrong line.
+  ;
+  ; `prescan-imported-signatures` is not optional here: whether a name is
+  ; overloaded is a property of the whole compilation unit, and a library's own
+  ; file usually contributes ONE method to a name the prelude also defines
+  ; (`hash`, `drop`, `next`). Prescanning this file alone makes every such name
+  ; look solitary, and the header would declare `@hash` where the object defines
+  ; `hash.pString`. This file's own path goes on `g-prescan-sigs` first — the list
+  ; that walk guards on — so an import cycle back to it is skipped rather than
+  ; re-read.
+  (prescan-file-imports forms)
+  (prescan-imported-types forms)
+  (prescan-protocols forms)
+  (prescan-struct-names forms)
+  (prescan-defn-signatures forms)
+  ; NOT `prescan-value-names` for this file. Nothing here emits a body, so the
+  ; only thing it would change is `cheader-array-extent`'s constant fold: a local
+  ; `(array i32 BUF-LEN)` would export as `xs[4]` instead of `xs[BUF_LEN]`, losing
+  ; the symbolic size against the `#define BUF_LEN` this same header emits beside
+  ; it. An IMPORTED constant still folds — `prescan-imported-signatures` registers
+  ; those — which is right, since the header cannot `#define` a name it does not
+  ; export.
+  (when (!= g-source-path null)
+    (set! g-prescan-sigs (import-list-push g-prescan-sigs (as CStr g-source-path))))
+  (prescan-imported-signatures forms)
   (printf "#pragma once\n")
   (printf "#include <stdint.h>\n")
   (printf "#include <stdbool.h>\n")
