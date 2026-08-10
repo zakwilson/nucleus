@@ -1002,6 +1002,18 @@ this class of defect. `tests/fixtures/w9-fnptr-align.nuc` exists because of that
 blind spot; its gate asserts the invariant (*no* `ptr`-valued slot claims
 `align 1`) rather than a count, and asserts the width on a 32-bit target too.
 
+**`null` into a `TY-FN` slot is gated on `Val.is-nlit`, not on a type test — and
+it cannot be otherwise.** The literal `null` is typed `ty-raw`, and `raw`
+resolves to that *same singleton* (`union-registry.nuc`), so a `raw`-declared
+binding and the literal are indistinguishable by type. Any type-directed rule
+admits both or neither, and admitting both makes every data pointer silently
+callable. Hence a third literal flag on `Val` (W9 item 20), following exactly
+the precedent W2d set when it added `is-flit` rather than overloading `is-lit` —
+one flag, one meaning. The escape hatch stays explicit and *is* spellable, in an
+extra pair of parens so the function type is one form:
+`(unsafe/cast ((fn i32)(i32)) p)`. `tests/fixtures/w9-fnptr-null-launder.nuc` is
+the tripwire for re-gating this on `is-ptr-repr`.
+
 **And `TY-FN` is not a pointer *kind* either — `ptr-pkind` answers `PTR-RAW` for
 it, like every non-`TY-PTR` kind.** So a fn pointer is outside the Phase-F
 non-null regime by construction and `null` is its honest zero; the non-null

@@ -1,0 +1,49 @@
+; Stage 15 W9 item 20: the literal `null` reaches a function-pointer slot in
+; every position, not just `defvar`.
+;
+; `coerce-int-val` had no case for it, so the four positions that funnel through
+; that chokepoint -- let/with init, `set!`, a `.set!` field store and an explicit
+; `return` -- each died "type mismatch", while `(defvar g:(fn i32)(i32) null)`
+; compiled (it has its own constant-initializer path, given a TY-FN arm by item
+; 14). Comparing against null had worked since item 18, so a hook could be tested
+; for "not wired yet" but not set to it, which is the shape this fixture pins.
+;
+; The refusal half lives in tests/fixtures/w9-fnptr-null-launder.nuc: only the
+; LITERAL is admitted. A `raw` value carries the same type as `null` (both are
+; the `ty-raw` singleton), and letting one through would make any data pointer
+; silently callable.
+
+(defn twice (x:i32):i32 (return (* x 2)))
+
+(defstruct Hooks
+  (before (fn i32)(i32))
+  (after  (fn i32)(i32)))
+
+(defvar g-hook:(fn i32)(i32) null)          ; worked since item 14
+
+; explicit `return` of the literal from a fn-returning function
+(defn no-hook ():(fn i32)(i32)
+  (return null))
+
+(defn main ():i32
+  (let (loc:(fn i32)(i32) null                ; let init
+        h:ptr:Hooks (alloca Hooks)
+        total:i32 0)
+    (.set! h before null)                     ; field store
+    (.set! h after twice)
+
+    ; each unset slot answers the question item 18 made askable
+    (when (= loc null)        (set! total (+ total 1)))
+    (when (= g-hook null)     (set! total (+ total 2)))
+    (when (= (h before) null) (set! total (+ total 4)))
+    (when (= (no-hook) null)  (set! total (+ total 8)))
+    (when (!= (h after) null) (set! total (+ total 16)))
+
+    ; and round-trip: set from the literal, then to a real function and back
+    (set! loc twice)                          ; set! to a function
+    (set! total (+ total (loc 1)))            ; 2  -> 33
+    (set! loc null)                           ; set! to the literal
+    (when (= loc null) (set! total (+ total 5)))
+
+    ; 1+2+4+8+16 = 31, +2 = 33, +5 = 38
+    (return total)))

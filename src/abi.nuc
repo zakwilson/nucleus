@@ -922,6 +922,19 @@
           (let (tmp:ptr (new-tmp))
             (emit-load tmp (type-to-ir target) (vv val) target)
             (return (alloc-val target tmp))))))
+    ; Stage 15 W9 item 20: the literal `null` adapts to a function-pointer slot,
+    ; with no IR — both are one `ptr` register and `null` is a fn pointer's
+    ; honest zero (it is outside the Phase-F non-null regime by construction:
+    ; `ptr-pkind` answers PTR-RAW for every non-TY-PTR kind). `defvar` has
+    ; accepted this spelling since item 14 and `(= h null)` since item 18, so
+    ; refusing `(let (f:(fn i32)(i32) null) …)` was the odd one out.
+    ;
+    ; The gate is `is-nlit`, NOT `is-ptr-repr src`: an arbitrary `raw`/`ptr`/
+    ; `CStr` value must still be refused here, because `fn`<->`ptr` is
+    ; unsafe/cast's job (docs/types.md) — the whole point of the flag is to
+    ; separate the literal from a loaded data pointer, which share a type.
+    (when (and (!= (vv is-nlit) 0) (= dk TY-FN))
+      (return (alloc-val target (vv val))))
     ; CStr is an opaque char* — freely interconvertible with a plain pointer,
     ; no IR (both lower to `ptr`). Keeps string literals (CStr) usable wherever a
     ; ptr is expected, and a ptr usable where a CStr slot is declared.

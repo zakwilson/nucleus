@@ -1,0 +1,18 @@
+; Stage 15 W9 item 20, the refusal half: only the LITERAL `null` reaches a
+; function-pointer slot. A `raw` value does not.
+;
+; This is the tripwire for the tempting one-line version of item 20's fix --
+; gating on `is-ptr-repr src` instead of on `Val.is-nlit`. That would compile the
+; line below, and with it every `(let (f:(fn …) some-data-pointer) …)`: an
+; arbitrary data pointer becomes callable with no cast at the call site and no
+; diagnostic anywhere. `fn`<->`ptr` is `unsafe/cast`'s job (docs/types.md).
+;
+; The flag exists precisely because the two cannot be told apart by type: `null`
+; is typed `ty-raw`, and `raw` resolves to that same singleton, so a
+; type-directed rule admits both or neither.
+
+(defvar r:raw null)
+
+(defn main ():i32
+  (let (f:(fn i32)(i32) r)
+    (return 0)))

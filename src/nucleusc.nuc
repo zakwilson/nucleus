@@ -2742,7 +2742,12 @@
 ; Stage 15 W4a: before this, every raise below reported `:0:`.
 (defn emit-symbol-ref (n:(raw Node) scope:ref:Scope line:i32):ref:Val
   (let (nn:(raw Node) n)
-    (when (= n 'null)  (return (alloc-val ty-raw "null")))
+    ; W9 item 20: tag the literal so the coercion chokepoint can tell it from a
+    ; loaded `raw` pointer — both carry the ty-raw singleton. See Val.is-nlit.
+    (when (= n 'null)
+      (let (nv:ref:Val (alloc-val ty-raw "null"))
+        (.set! nv is-nlit 1)
+        (return nv)))
     (when (= n 'true)  (return (alloc-val ty-i1 "1")))
     (when (= n 'false) (return (alloc-val ty-i1 "0")))
     (when (= n 'none)  (return (alloc-val ty-maybe-ptr "null")))
