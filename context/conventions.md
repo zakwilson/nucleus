@@ -3313,7 +3313,78 @@ only by `@.str.N` renumbering from one added literal). Only four files in the
 tree use a namespace at all, and `lib/nsdescribe2.nuc` names its protocol method
 `tag-of` *specifically* to avoid tripping this — a rename in a test fixture that
 exists to dodge a defect is a bug report; check for those before believing the
-corpus.
+corpus. (That one was read as a bug report: its header comment named the
+remaining half as "an unrelated and still open function-namespacing gap", which
+became W9 item 35 and is now closed. The method keeps its distinct name, but for
+the honest reason — it isolates the test to protocol identity.)
+
+## Deferred work must carry the environment it was created in — and a template body's environment is the LIBRARY's
+
+Fourth entry on the same registry, and the one that generalizes past it. Three
+records defer a `defn` form to a later drain. Two of them carry the environment
+they were created in and say why; the third did not, and the difference was a
+live defect (W9 item 43).
+
+| record | drained by | carries |
+|---|---|---|
+| `DynAnnot` | `drain-dyn-annots` | `ns`, `path`, `imports` |
+| `InitJob` | the `@__nucleus_init` drain | `ns`, `path`, `line` |
+| `MonoJob` | `drain-mono-worklist` | *nothing* (before item 43) |
+
+`resolve-spelling`'s inputs are exactly `g-current-ns` + `g-file-imports`, plus
+`g-source-path` for `priv-key-use` and the file half of a diagnostic. A drain
+runs long after the form was queued, so a record that does not restore those
+three resolves its body's names in whatever file the drain happens to be in.
+
+**The direction is not the same for all three.** `DynAnnot` and `InitJob` defer a
+question whose answer is the **asking** file's — that is why they snapshot
+`g-current-ns` at creation. A monomorphized template body is the reverse: it is
+the *library's* source text, so its names must resolve as the library's file did.
+`MonoJob` restores `Method.src-ns` / `src-file` / `src-imports` from the
+**template**, not from `mono-job-here`'s call-site snapshot. Same three globals,
+opposite source of truth — decide which one a deferred body is before copying
+the pattern.
+
+Two things that made this hard to see, both worth remembering:
+
+- **A merged bare-keyed registry hides an environment bug.** Before item 43 a
+  bare *overloaded* name resolved from any namespace (nothing filtered), while a
+  *solitary* name or a global went through `globals-lookup-ref`, which has
+  filtered since B2b. So a template calling its own namespace's functions worked
+  or failed depending on **how many overloads the callee happened to have**.
+  `tests/run-tests.sh`'s `b4-qualified-template` was passing on the strength of
+  that accident — delete one overload from its fixture and it fails. When a test
+  covers a path with a merged registry on it, check whether it is passing for the
+  reason it claims.
+- **Fixing the environment also fixes the attribution.** The old drain reported
+  `<caller>.nuc:<library line>` — a file/line pair that in the probe program does
+  not exist — and reported the *resolution* failure the wrong environment caused
+  instead of the real error in the body. A diagnostic naming a line the blamed
+  file does not have is the tell for this whole class.
+
+## A key stops being a key the moment the thing it identified is allowed to vary
+
+W9 item 35, and the sequel to the two entries above. `generic-find-method-exact`
+looked a method up by `(generic name, param-types, nparams)`. That pair really
+did identify a method — but only because `finalize-generics` refused two
+same-signature definitions outright. Relaxing that refusal (so two namespaces may
+each define `describe (x:i32)`) silently invalidated every caller that had been
+relying on it: `defn-ir-name` asked the two-part question while emitting *each*
+file, got the first-registered namespace's method both times, and emitted
+`define @qa__describe` twice — a duplicate symbol produced by the very change
+meant to give the two namespaces two distinct ones.
+
+**When you loosen a uniqueness rule, the audit is not "what did this rule
+prevent" but "what has been using it as a key".** Grep for the lookups, not for
+the diagnostic.
+
+The split that came out of it is the same one `binding-probe` documents for
+every other registry: `generic-find-method-exact-in-ns` (three parts) is the
+**definition** side — which method is in front of the emitter — and the two-part
+form stays the **reference** side, because a reference asks which method to
+*call* and answers that with the visibility filter plus overload resolution. If
+you add a discriminator to a lookup, expect to need both forms, not to replace
+one with the other.
 
 ## A callable name has TWO registries, and a producer that writes one of them is half-registered
 

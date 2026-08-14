@@ -793,6 +793,12 @@
   ; `Method.body` Node carries a line but no file.
   src-file:CStr
   src-ns:CStr
+  ; Stage 15 W9 item 43: `g-file-imports` at registration — the third of the
+  ; three globals that define a file's name environment, recorded for the same
+  ; reason `DynAnnot` records all three. Only a TEMPLATE needs it (its body is
+  ; re-emitted, once per instantiation, from whichever file happens to call it),
+  ; but it is written wherever the other two are so the trio cannot drift.
+  (src-imports (raw (Vector (ref ImportBind))))
   priv:i32
   ; --- Stage 15 W9 item 24: the symbol is a fact from another translation unit ---
   ; Set on a method registered from a `declare`/`defmethod` — its `ir-name` is
@@ -897,9 +903,20 @@
 ; A queued generic instantiation: the stamped concrete defn form awaiting body
 ; emission, plus a human-readable context ("while instantiating @name.toks…
 ; requested at file:line") attached to any compile error raised while emitting it.
+; Stage 15 W9 item 43: the three globals that define a file's name environment,
+; carried per job for the same reason `DynAnnot` and `InitJob` carry them — the
+; drain runs later, and a `defn` form is a body of arbitrary source names. For a
+; monomorphized template that environment is the TEMPLATE's, not the requesting
+; call site's: the body is the library's text, and it must resolve the way the
+; library's own file did. That is the same argument `g-emitting-copy` and the
+; `src-ns` re-ownership already make about the stamp's linkage and its namespace,
+; carried one layer further into where its names are looked up.
 (defstruct MonoJob
   (form (raw Node))
-  context:CStr)
+  context:CStr
+  ns:CStr
+  path:CStr
+  (imports (raw (Vector (ref ImportBind)))))
 
 ; Stage 15 W8 G-3 (design/global-init.md §5): a queued *runtime* global
 ; initializer — a `defvar` whose initializer G-1/G-2 could not render as a

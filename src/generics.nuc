@@ -47,9 +47,51 @@
     (when (= (strcmp s ns) 0) (return 1))
     (return 0)))
 
-; `g` restricted to the methods namespace `ns` defined, or null when it defined
-; none. The common answers are the two that allocate nothing: all of them (the
-; generic is returned as it stands) or none.
+; A queued deferred `defn` emission, capturing the environment its body's names
+; must resolve in. Stage 15 W9 item 43: every creator goes through this, so a job
+; can never be queued without one — the four synthesized bodies (a lifted lambda,
+; a closure `invoke`/`drop`, a derived forwarder) are written by the compiler in
+; the file being compiled, so `here` is theirs; `generic-instantiate-in` then
+; overrides all three with the template's, which is the only case where the body
+; came from somewhere else.
+(defn mono-job-here (form:raw:Node context:CStr):ptr:MonoJob
+  (let (job:ptr:MonoJob (new MonoJob))
+    (.set! job form form)
+    (.set! job context context)
+    (.set! job ns g-current-ns)
+    (.set! job path g-source-path)
+    (.set! job imports g-file-imports)
+    (return job)))
+
+; Stage 15 W9 item 43 — the namespaces this file may name WITHOUT a qualifier.
+; This is `name-ref-key-at`'s candidate-key sequence stated as a predicate rather
+; than as a list of keys, and it is stated that way because a generic is the one
+; registry R2 keys BARE: there is no per-namespace key to withhold, so the import
+; environment has to be applied to the method SET instead. The three members are
+; that function's three slots — the current namespace, each namespace an
+; `import-use`/`import-only` in this file flattened, and `user`.
+(defn ns-reachable-bare (ns:CStr):i32
+  ; `user` is the unqualified space and the prelude's namespace, flattened into
+  ; every file by construction.
+  (when (= (strcmp ns "user") 0) (return 1))
+  (when (= (strcmp ns g-current-ns) 0) (return 1))
+  (return (file-flattens-ns-named ns)))
+
+; Is `m` reachable through the spelling that asked for it? `ns` names the one
+; namespace a QUALIFIED spelling denotes; null asks the bare question.
+(defn method-visible-as (m:ptr:Method ns:CStr):i32
+  (when (!= (as ptr ns) null) (return (method-in-ns m ns)))
+  (let (s:CStr (m src-ns))
+    ; An intrinsic operator seed belongs to no file, so no import can put it out
+    ; of reach — `+` must work in a namespaced file that imports nothing.
+    (when (= (as ptr s) null) (return 1))
+    (return (ns-reachable-bare s))))
+
+; `g` restricted to the methods reachable through the spelling that asked for it
+; — namespace `ns` for a qualified one, the unqualified set (`ns-reachable-bare`)
+; when `ns` is null — or null when that leaves none. The common answers are the
+; two that allocate nothing: all of them (the generic is returned as it stands)
+; or none.
 ;
 ; A filtered view is a fresh `Generic` over the SAME `Method` pointers, and it is
 ; deliberately not registered and not memoized. Nothing downstream reads a
@@ -62,7 +104,7 @@
         n:i32 (unsafe/cast i32 (count (gg methods)))
         keep:i32 0)
     (dotimes (i n)
-      (when (!= (method-in-ns (as ptr:Method (invoke (gg methods) (as usize i))) ns) 0)
+      (when (!= (method-visible-as (as ptr:Method (invoke (gg methods) (as usize i))) ns) 0)
         (inc! keep)))
     (when (= keep 0) (return null))
     (when (= keep n) (return (as ptr gg)))
@@ -72,7 +114,7 @@
       (.set! f ir-prefix (gg ir-prefix))
       (dotimes (i n)
         (let (m:ptr:Method (as ptr:Method (invoke (gg methods) (as usize i))))
-          (when (!= (method-in-ns m ns) 0) (conj (f methods) (as ref:Method m)))))
+          (when (!= (method-visible-as m ns) 0) (conj (f methods) (as ref:Method m)))))
       (return (as ptr f)))))
 
 ; Stage 15 B4 — resolve a generic REFERENCE (a source spelling) through the
@@ -90,8 +132,27 @@
 ;
 ; `qualifier-len` is the only cost on the unqualified path, which is every head
 ; symbol in this compiler and in `lib/`.
+;
+; Stage 15 W9 item 43 — the bare path filters too, and B4 deferring that is what
+; let a PREFIXED import silently overrule the importing file's own definition: a
+; file defining `helper (x:i64)` and calling `(helper 3)` emitted a call to a
+; library's `helper (x:i32)` reached through a prefix the call never spells,
+; because the merge R2 performs is over every namespace rather than over the
+; flattened ones §8.2 actually names. The two paths now ask the same question of
+; the same field — one namespace for a qualified spelling, the unqualified set
+; for a bare one — which is what makes a prefix bind names under the prefix and
+; under nothing else, for a generic as for every other kind (R3).
 (defn generic-lookup-ref (spelling:CStr):?ptr:Generic
-  (when (<= (qualifier-len (as ptr spelling)) 0) (return (generic-lookup spelling)))
+  (when (<= (qualifier-len (as ptr spelling)) 0)
+    (let (g:?ptr:Generic (generic-lookup spelling))
+      (when (= g null) (return null))
+      ; No file in this unit declared a namespace ⇒ every `src-ns` is `user` and
+      ; the filter is provably the identity. Every build of this compiler and
+      ; every program in `lib/` takes this exit — the same hatch
+      ; `globals-lookup-ref` and `name-ref-key-count` take, and what makes this
+      ; byte-identical rather than merely believed to be.
+      (when (= g-ns-declared 0) (return g))
+      (return (generic-filter-by-ns (unsafe/cast ptr:Generic g) (as CStr null)))))
   (let (r:ref:NameRef (resolve-spelling (as ptr spelling)))
     ; A qualifier this file did not bind names nothing (R3) — the same answer the
     ; global, protocol and type resolvers give, so the diagnostic tiers agree.
@@ -393,6 +454,33 @@
           (return (as ptr m)))))
     (return null)))
 
+; Stage 15 W9 item 35: the exact-signature method DEFINED BY namespace `ns`.
+;
+; Once two namespaces may each define one name with one signature, `(name,
+; param-types)` stops being a key on the DEFINITION side — `(name, param-types,
+; src-ns)` is the one that is. `defn-ir-name` asked the two-part question and got
+; the first-registered namespace's method for both files, so `(ns qa)` and
+; `(ns qb)` each emitted `define @qa__describe` and LLVM rejected the second: a
+; duplicate symbol produced by the very change that was meant to give them two.
+;
+; A REFERENCE is unaffected and deliberately keeps the two-part lookup: it asks
+; which method to CALL, and answers with the visibility filter (item 43) plus
+; ordinary overload resolution.
+(defn generic-find-method-exact-in-ns (g:raw:Generic param-types:ptr nparams:i32 ns:CStr):?ptr:Method
+  (let (gg:raw:Generic g)
+    (dotimes (i (unsafe/cast i32 (count (gg methods))))
+      (let (m:ptr:Method (as ptr:Method (invoke (gg methods) (as usize i))))
+        (when (and (= (m kind) METHOD-USER)
+                   (= (m num-params) nparams)
+                   (!= (method-in-ns m ns) 0)
+                   (!= (params-type-eq (m param-types) param-types nparams) 0))
+          (return (as ptr m)))))
+    ; No method of this namespace has that signature: fall back to the unfiltered
+    ; answer, which is what every caller got before. The fallback cannot
+    ; reintroduce the collision above — that one needs TWO namespaces to own the
+    ; signature, and then each finds its own on the first pass.
+    (return (generic-find-method-exact g param-types nparams))))
+
 ; Stage 11 T4: would a *generic* (METHOD-GENERIC) method of `g` resolve for the
 ; concrete `param-types`? Mirrors generic-resolve's tier-1 — bind the tyvars, then
 ; check the &where constraints — but does NOT instantiate (no MonoJob queued, no
@@ -525,6 +613,7 @@
         ; public or private.
         (.set! m src-file g-source-path)
         (.set! m src-ns g-current-ns)
+        (.set! m src-imports g-file-imports)
         (.set! m priv g-defining-private)
         (generic-add-method g m)
         (return m)))))
@@ -564,6 +653,21 @@
                           bare)))
       (return (fmt-2s "%s\n  note: %s" head note)))))
 
+; Stage 15 W9 item 35: would these two methods of `g` emit into the SAME symbol
+; space? Two same-signature definitions are a duplicate exactly when they are,
+; and the test is the emitted ir-prefix rather than the namespace NAME for the
+; reason `generic-user-methods-with-prefix` already states: two namespaces that
+; `set-ir-prefix` to one string genuinely share a symbol space, and a pair there
+; really would emit one `define` twice — which is the concrete harm R4's rule
+; existed to prevent, stated as itself instead of as a proxy for itself.
+(defn methods-share-symbol-space (g:raw:Generic a:ptr:Method b:ptr:Method):i32
+  (let (ap:CStr (method-ir-prefix g (as raw:Method a))
+        bp:CStr (method-ir-prefix g (as raw:Method b)))
+    (when (= (as ptr ap) null) (return 1))
+    (when (= (as ptr bp) null) (return 1))
+    (when (= (strcmp ap bp) 0) (return 1))
+    (return 0)))
+
 ; Stage 15 W9 item 24: where to point a two-definition diagnostic. A method
 ; registered from a `.nuch` `declare`/`defmethod` has no body, so it has no Node
 ; and no line; report the other definition's instead. Both files are named in the
@@ -576,6 +680,39 @@
     (when (!= (as ptr (b body)) null)
       (return (-> b (_ body) (unsafe/cast ptr:Node _) (_ line))))
     (return 0)))
+
+; `file:line` of the definition `m` came from, for a two-candidate diagnostic.
+(defn method-def-site (m:ptr:Method):CStr
+  (let (f:CStr (m src-file)
+        node:(raw Node) (m body)
+        line:i32 0)
+    (when (= (as ptr f) null) (set! f "<unknown file>"))
+    (when (!= (as ptr node) null) (set! line ((unsafe/cast ptr:Node node) line)))
+    (return (fmt-sd "%s:%d" f line))))
+
+; Stage 15 W9 item 35: the message for a bare reference that two namespaces
+; answer equally well — the diagnostic that replaces R4's refusal of the pair at
+; its definitions, moved to the only place that can tell whether it is a problem.
+;
+; Each candidate is named `<ns>/<name>`, which is a spelling this file can
+; actually use: a candidate only reaches here if it survived the bare-visibility
+; filter (item 43), so its namespace is this file's own, one it flattened — for
+; which `<ns>/name` resolves as well as the bare name does (§8.3 row 1) — or
+; `user`, which `resolve-spelling` binds in every file.
+(defn ambiguous-method-message (g:raw:Generic a:ptr:Method b:ptr:Method):CStr
+  (let (gg:raw:Generic g
+        bare:CStr (strip-priv-qualifier (gg name))
+        ans:CStr (a src-ns)
+        bns:CStr (b src-ns))
+    (when (= (as ptr ans) null) (set! ans "user"))
+    (when (= (as ptr bns) null) (set! bns "user"))
+    (let (acand:CStr (fmt-2s "'%s' (defined at %s)"
+                       (fmt-2s "%s/%s" ans bare) (method-def-site a))
+          bcand:CStr (fmt-2s "'%s' (defined at %s)"
+                       (fmt-2s "%s/%s" bns bare) (method-def-site b)))
+      (return (fmt-2s "%s\n  note: %s"
+                (fmt-s "ambiguous call to '%s' — two namespaces define it for these argument types" bare)
+                (fmt-2s "%s and %s both match; qualify the call to choose one" acand bcand))))))
 
 ; Decide mangling for every not-yet-finalized user generic. A solitary concrete
 ; name keeps its unmangled @name and is bound in g-globals (so forward references
@@ -642,9 +779,24 @@
                                 ; from different namespaces declaring the same
                                 ; signature name two distinct symbols and were
                                 ; always legal — they only meet here because the
-                                ; registry is bare-keyed (R2). Item 35 is the
-                                ; open half: two LOCAL definitions.
+                                ; registry is bare-keyed (R2).
+                                ;
+                                ; Stage 15 W9 item 35: and so are two DEFINITIONS,
+                                ; for the identical reason — `@qa__describe` and
+                                ; `@qb__describe` are two symbols, and refusing
+                                ; them enforced "a public name must be unique
+                                ; across the whole compilation unit", which is
+                                ; true of one flat namespace and is the thing
+                                ; namespaces exist to stop being true. What R4
+                                ; was really protecting is the BARE reference,
+                                ; and that is now answered where the ambiguity
+                                ; actually arises: a bare spelling sees only the
+                                ; namespaces this file can name unqualified
+                                ; (item 43), and `generic-resolve` reports the
+                                ; pair that survives at the use. R2 §8.2's own
+                                ; first recommendation, which R4 overrode.
                                 (when (and (= (mj kind) METHOD-USER)
+                                           (= (methods-share-symbol-space gg mi mj) 1)
                                            (= (mi ir-fixed) 0) (= (mj ir-fixed) 0)
                                            (= (mi num-params) (mj num-params))
                                            (!= (params-type-eq (mi param-types)
@@ -771,6 +923,19 @@
         (when (and (= (m kind) METHOD-USER)
                    (= (m num-params) nargs)
                    (!= (params-type-eq (m param-types) argtypes nargs) 0))
+          ; Stage 15 W9 item 35: two tier-0 matches that emit into DIFFERENT
+          ; symbol spaces are two different functions, and this reference names
+          ; both equally well. Reporting it here is the other half of allowing
+          ; the definitions: R4 refused the pair at the definition so that this
+          ; loop could keep silently taking the last one, and the honest split is
+          ; R2 §8.2's — define freely, and answer at the ambiguous USE, which is
+          ; the only place that knows which namespaces the asking file flattened.
+          ; A pair sharing a symbol space is one function declared twice (a file
+          ; importing its own `.nuch`), so it is not a choice at all.
+          (when (and (!= found null)
+                     (= (methods-share-symbol-space gg (unsafe/cast ptr:Method found)
+                                                    (as ptr m)) 0))
+            (die-at line (ambiguous-method-message gg (unsafe/cast ptr:Method found) (as ptr m))))
           (set! found (as ptr m)))))
     (when (!= found null) (return found))
     ; tier 1: bounded-generic templates.
@@ -867,10 +1032,16 @@
 ; The emitted symbol for a defn being codegen'd: the mangled name for an
 ; overloaded method, else the unmangled @name (also the fallback when no
 ; generic was registered, e.g. compile-time/REPL defns).
+;
+; W9 item 35: the DEFINING namespace is part of the question — this names the
+; definition in front of the emitter, not a same-signature one another namespace
+; happens to own. `g-current-ns` is the authority and is correct for a stamped
+; template body too, because `drain-mono-worklist` restores the template's
+; environment (item 43).
 (defn defn-ir-name (fname:CStr param-types:ptr nparams:i32):ptr
   (let (g:ptr (generic-lookup fname))
     (when (!= g null)
-      (let (m:ptr (generic-find-method-exact g param-types nparams))
+      (let (m:ptr (generic-find-method-exact-in-ns g param-types nparams (as CStr g-current-ns)))
         (when (and (!= m null) (!= (-> m (unsafe/cast ptr:Method _) (_ ir-name)) null))
           (return (-> m (unsafe/cast ptr:Method _) (_ ir-name)))))))
   ; Stage 12 N4: a solitary (non-overloaded) defn keeps `@name` but, in a
@@ -899,8 +1070,11 @@
       (when (= g null) (return null))
       (when (= (-> g (as ptr:Generic _) (_ mangled)) 0) (return null))
       (let (params-node:ptr (node-at form 2)
-            m:ptr (generic-find-method-exact g (defn-params-to-types params-node)
-                                             (defn-params-count params-node)))
+            ; W9 item 35: the exported symbol is this namespace's, for the same
+            ; reason `defn-ir-name` above asks the three-part question.
+            m:ptr (generic-find-method-exact-in-ns g (defn-params-to-types params-node)
+                                                   (defn-params-count params-node)
+                                                   (as CStr g-current-ns)))
         (when (= m null) (return null))
         (return (-> m (unsafe/cast ptr:Method _) (_ ir-name)))))))
 
@@ -1542,6 +1716,11 @@
               ; `g-current-ns`/`g-source-path` are the defining file's.
               (.set! m src-ns g-current-ns)
               (.set! m src-file g-source-path)
+              ; W9 item 43: and its import environment, because a TEMPLATE is the
+              ; one method whose body is emitted somewhere else — `prescan-file-
+              ; imports` has already filled this file's, which is why the value
+              ; here is the defining file's and not its importer's.
+              (.set! m src-imports g-file-imports)
               (generic-add-method g m)))))))))
 
 ; Try to bind a generic template's type variables from a concrete argument
@@ -2127,7 +2306,9 @@
               ; the `(mm src-ns)` re-ownership four lines below.
               mangled:ptr (mangle-fn-name (method-ir-prefix gg (as raw:Method mm))
                                           (gg name) ptypes nargs)
-              job:ptr:MonoJob (new MonoJob))
+              job:ptr:MonoJob (mono-job-here stamped
+                                (fmt-2s-i "while instantiating %s (requested at %s:%d)"
+                                          mangled g-source-path line)))
           (.set! newm ir-name mangled)
           ; Stage 14 LW-1: mark this as a stamped instance of the template `mm` so
           ; tier-2 widening resolution treats the two as one overload.
@@ -2140,12 +2321,19 @@
           ; method set, `generic-find-method-exact`'s memo probe misses, and the
           ; instance is stamped (and emitted) twice under one symbol.
           (.set! newm src-ns (mm src-ns))
-          ; Record where this instantiation was requested, so a stamp-time emit
-          ; error in the body points back here (g-source-path is the call site's).
-          (.set! job form stamped)
-          (.set! job context
-                 (fmt-2s-i "while instantiating %s (requested at %s:%d)"
-                           mangled g-source-path line))
+          (.set! newm src-imports (mm src-imports))
+          ; Stage 15 W9 item 43: and the body resolves its names as the TEMPLATE's
+          ; file, not as this one. `mono-job-here` captured the call site's
+          ; environment, which is the right default for a body the compiler
+          ; synthesizes here and the wrong one for a body the library wrote: a
+          ; bare name in it means what the library meant by it. Before this the
+          ; answer depended on how many overloads the callee happened to have —
+          ; a merged bare-keyed generic (R2) resolved from any namespace, while a
+          ; solitary name or a global went through the environment and reported
+          ; `unknown: <name>` against the CALLER's file at the LIBRARY's line.
+          (.set! job ns (mm src-ns))
+          (.set! job path (mm src-file))
+          (.set! job imports (mm src-imports))
           (conj g-mono-worklist job)
           (return newm)))))))
 
@@ -2848,9 +3036,24 @@
       ; `weak_odr`; the call site's `g-source-path` would answer the wrong
       ; question, exactly as it did for the stamp's namespace (see
       ; `generic-instantiate-in`'s `src-ns` correction).
-      (let (saved-copy:i32 g-emitting-copy)
+      ; Stage 15 W9 item 43: and emit it AS the file whose text it is — the same
+      ; three globals `drain-dyn-annots` restores per job, for the same reason
+      ; (the drain runs long after the form was queued, and `resolve-spelling`
+      ; reads exactly these). `g-source-path` is restored too, so an error in a
+      ; template body names the library's file to go with the library's line;
+      ; `job context` still says which call site asked for the instantiation.
+      (let (saved-copy:i32 g-emitting-copy
+            save-ns:ptr g-current-ns
+            save-path:ptr g-source-path
+            save-imports:(raw (Vector (ref ImportBind))) g-file-imports)
         (set! g-emitting-copy 1)
+        (when (!= (as ptr (job ns)) null) (set! g-current-ns (as ptr (job ns))))
+        (when (!= (as ptr (job path)) null) (set! g-source-path (as ptr (job path))))
+        (set! g-file-imports (job imports))
         (emit-defn (job form))
+        (set! g-file-imports save-imports)
+        (set! g-source-path save-path)
+        (set! g-current-ns save-ns)
         (set! g-emitting-copy saved-copy))
       (set! g-mono-context null))))
 
@@ -3455,12 +3658,10 @@
                     (.set! newm ir-name mangled)
                     (fn-force-generic-mangled method-name)
                     (when (= already 0)
-                      (let (job:ptr:MonoJob (new MonoJob))
-                        (.set! job form defn-form)
-                        (.set! job context
-                               (fmt-2s-i "while deriving closure conformance to %s (at %s:%d)"
-                                         proto g-source-path line))
-                        (conj g-mono-worklist job)))
+                      (conj g-mono-worklist
+                            (mono-job-here defn-form
+                              (fmt-2s-i "while deriving closure conformance to %s (at %s:%d)"
+                                        proto g-source-path line))))
                     ; Step 10: record the conformance with the recovered args.
                     (conformance-add cvspell proto args npp line)
                     ; Step 11: success.

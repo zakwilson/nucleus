@@ -2113,6 +2113,286 @@ EOF
   rm -rf "$d"
 }
 
+# W9 item 43 — A PREFIXED IMPORT MUST NOT CHANGE WHAT A BARE CALL MEANS.
+#
+# A generic is the one registry R2 keys BARE, and B4 filtered only the QUALIFIED
+# path through `Method.src-ns`, deferring the bare half (§9.6). So a file that
+# defined `w43-helper (x:i64)` and called `(w43-helper 3)` emitted a call to a
+# LIBRARY's `w43-helper (x:i32)`, reached through a prefix the call never spells:
+# nothing was unresolved, the wrong candidate simply scored better on the literal.
+#
+# Three cells, and the middle one is the point — the same program, the same line,
+# two answers depending only on whether an unrelated import form is present.
+run_w9_bare_ref_prefix() {
+  local d ir
+  d="$(mktemp -d)"
+  cat > "$d/w43lib.nuc" <<'EOF'
+(ns w43n)
+(defn w43-helper (x:i32):i32 (return (+ x 100)))
+EOF
+  # 1. Alone: the file's own definition, as the baseline.
+  cat > "$d/w43alone.nuc" <<'EOF'
+(defn w43-helper (x:i64):i32 (return (unsafe/cast i32 (+ x 7))))
+(defn main ():i32 (return (w43-helper 3)))
+EOF
+  # 2. Plus a PREFIXED import of a library that also exports the name. The
+  #    unchanged line must still mean the file's own function.
+  cat > "$d/w43pfx.nuc" <<'EOF'
+(import-prefixed w43lib wx)
+(defn w43-helper (x:i64):i32 (return (unsafe/cast i32 (+ x 7))))
+(defn main ():i32 (return (w43-helper 3)))
+EOF
+  # 3. …and the prefix still reaches the library's, so nothing was hidden —
+  #    only the unqualified space was left alone.
+  cat > "$d/w43qual.nuc" <<'EOF'
+(import-prefixed w43lib wx)
+(defn w43-helper (x:i64):i32 (return (unsafe/cast i32 (+ x 7))))
+(defn main ():i32 (return (wx/w43-helper 3)))
+EOF
+  # 4. `import-use` FLATTENS, which is R2 §8.2's escape hatch: there the two
+  #    overloads genuinely merge and the i32 one wins the literal. Pinned so the
+  #    filter cannot quietly grow into a ban on flattened overloading.
+  cat > "$d/w43flat.nuc" <<'EOF'
+(import-use w43lib)
+(defn w43-helper (x:i64):i32 (return (unsafe/cast i32 (+ x 7))))
+(defn main ():i32 (return (w43-helper 3)))
+EOF
+  w1_run w9-bare-ref-alone      "$d" "$d/w43alone.nuc" 10
+  w1_run w9-bare-ref-prefix-inert "$d" "$d/w43pfx.nuc"  10
+  w1_run w9-bare-ref-qualified  "$d" "$d/w43qual.nuc" 103
+  w1_run w9-bare-ref-flattened  "$d" "$d/w43flat.nuc" 103
+
+  # And the emitted call names the file's own symbol, not the library's — the
+  # exact artefact the row reports.
+  ir="$(./build/nucleusc -I "$d" --emit-llvm "$d/w43pfx.nuc" 2>/dev/null || true)"
+  if printf '%s' "$ir" | qgrep -E 'call i32 @w43-helper\(i64 ' \
+     && ! printf '%s' "$ir" | qgrep -E 'call .*@w43n__w43-helper\('; then
+    echo "PASS  w9-bare-ref-prefix-symbol"
+  else
+    echo "FAIL  w9-bare-ref-prefix-symbol (bare call reached the prefixed library)"
+    printf '%s' "$ir" | grep -E 'w43-helper' | sed 's/^/    /' | head -6
+  fi
+  rm -rf "$d"
+}
+spawn run_w9_bare_ref_prefix
+
+# W9 item 43, the half the filter uncovered — A TEMPLATE BODY IS THE LIBRARY'S
+# TEXT, so its names resolve in the LIBRARY's environment.
+#
+# `MonoJob` was the one deferred-work record that did not restore the environment
+# it was created in (`DynAnnot` and `InitJob` both do, for the stated reason that
+# the drain runs later), so a stamped body was emitted in the environment of
+# whichever file happened to instantiate it. On the pre-item-43 compiler this
+# program failed with `unknown: w43t-solo — not defined anywhere in this
+# compilation unit`, blaming the CALLER's file at the LIBRARY's line — while the
+# very same program with a second `w43t-solo` overload compiled, because an
+# overloaded name reached the merged bare-keyed generic and a solitary one went
+# through the import environment. Correctness by overload count.
+#
+# The library's namespace is reached from the template body three ways at once —
+# a solitary function, a global, and a protocol method — none of which the
+# caller's file can name.
+run_w9_template_env() {
+  local d err got
+  d="$(mktemp -d)"
+  cat > "$d/w43tlib.nuc" <<'EOF'
+(ns w43t)
+(defprotocol W43Num (w43t-zero (self:Self):i32))
+(defn w43t-zero (x:i32):i32 (return x))
+(extend i32 W43Num)
+(defn w43t-solo (x:i32):i32 (return (* x 10)))
+(defvar w43t-gv:i32 5)
+(defn w43t-twice (x:T &where (W43Num T)):i32
+  (return (+ (w43t-solo (w43t-zero x)) w43t-gv)))
+EOF
+  # The caller imports it under a PREFIX, so none of `w43t-solo`, `w43t-gv` or
+  # `w43t-zero` is nameable here — only inside the library that wrote them.
+  cat > "$d/w43tuse.nuc" <<'EOF'
+(import-prefixed w43tlib pg)
+(defn main ():i32 (return (pg/w43t-twice 3)))
+EOF
+  w1_run w9-template-body-library-env "$d" "$d/w43tuse.nuc" 35
+
+  # And a genuine error in a template body is reported against the LIBRARY's
+  # file, to go with the library's line — the `job context` note still says which
+  # call site asked. Before this the pair was `<caller>.nuc:<library line>`, a
+  # location that in this program does not exist (the caller has two lines), and
+  # the reported error was the resolution failure the wrong environment caused
+  # rather than the type error actually in the body.
+  cat > "$d/w43blib.nuc" <<'EOF'
+(ns w43b)
+(defprotocol W43B (w43b-zero (self:Self):i32))
+(defn w43b-zero (x:i32):i32 (return x))
+(extend i32 W43B)
+(defn w43b-take (x:i32):i32 (return x))
+(defn w43b-tw (x:T &where (W43B T)):i32
+  (return (+ (w43b-zero x) (w43b-take "not an int"))))
+EOF
+  cat > "$d/w43buse.nuc" <<'EOF'
+(import-prefixed w43blib pg)
+(defn main ():i32 (return (pg/w43b-tw 3)))
+EOF
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/w43buse.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | qgrep -E 'w43blib\.nuc:7: error:' \
+     && printf '%s' "$err" | qgrep -F "does not match parameter type i32" \
+     && printf '%s' "$err" | qgrep -F "while instantiating"; then
+    echo "PASS  w9-template-error-blames-library"
+  else
+    echo "FAIL  w9-template-error-blames-library"
+    printf '%s\n' "$err" | sed 's/^/    got: /' | head -3
+  fi
+
+  # The realistic library shape: the template is declared in a generated `.nuch`
+  # and instantiated from a SEPARATELY COMPILED object. `src-imports` is captured
+  # wherever `src-ns`/`src-file` are, and a header replay reaches
+  # `register-generic-template` with the header file's own environment already
+  # filled, so the stamped body resolves `tz-solo`/`tz-zero` in the library's
+  # namespace and the two objects link. Pre-item-43 this failed to compile at all.
+  cat > "$d/w43ntl.nuc" <<'EOF'
+(ns w43z)
+(defprotocol W43Z (w43z-zero (self:Self):i32))
+(defn w43z-zero (x:i32):i32 (return x))
+(extend i32 W43Z)
+(defn w43z-solo (x:i32):i32 (return (* x 10)))
+(defn w43z-tw (x:T &where (W43Z T)):i32 (return (w43z-solo (w43z-zero x))))
+EOF
+  cat > "$d/w43ntu.nuc" <<'EOF'
+(import w43ntl w43p)
+(defn main ():i32 (return (w43p/w43z-tw 3)))
+EOF
+  ./build/nucleusc --emit-nuch -I "$d" "$d/w43ntl.nuc" > "$d/w43ntl.nuch" 2>/dev/null || true
+  # Compile the consumer against the HEADER only (the `.nuc` is moved aside, so
+  # `resolve-import` cannot prefer the source), then link the library object.
+  mv "$d/w43ntl.nuc" "$d/w43ntl.nuc.src"
+  if ./build/nucleusc -c -I "$d" -o "$d/w43ntu.o" "$d/w43ntu.nuc" 2>"$d/nerr" \
+     && mv "$d/w43ntl.nuc.src" "$d/w43ntl.nuc" \
+     && ./build/nucleusc -c -I "$d" -o "$d/w43ntl.o" "$d/w43ntl.nuc" 2>>"$d/nerr" \
+     && clang "$d/w43ntu.o" "$d/w43ntl.o" -o "$d/w43nt" 2>>"$d/nerr"; then
+    set +e; "$d/w43nt"; got=$?; set -e
+    if [ "$got" = "30" ]; then
+      echo "PASS  w9-template-nuch-separate-compilation"
+    else
+      echo "FAIL  w9-template-nuch-separate-compilation (expected exit 30, got $got)"
+    fi
+  else
+    echo "FAIL  w9-template-nuch-separate-compilation (compile/link error)"
+    sed 's/^/    /' "$d/nerr" | head -4
+  fi
+  rm -rf "$d"
+}
+spawn run_w9_template_env
+
+# W9 item 35 — TWO NAMESPACES MAY EACH DEFINE ONE NAME WITH ONE SIGNATURE.
+#
+# R4's eager rule refused the pair with "a public name must be unique across the
+# whole compilation unit" — true of one flat namespace, and the thing namespaces
+# exist to stop being true. What it was really protecting is the BARE reference,
+# so the refusal moves to where the ambiguity is: item 43's filter decides which
+# candidates a file can see at all, and `generic-resolve` reports the pair that
+# survives. R2 §8.2's own first recommendation, which R4 overrode.
+#
+# Four cells, one per import environment, plus the rule R4 keeps.
+run_w9_two_ns_one_name() {
+  local d ir err
+  d="$(mktemp -d)"
+  cat > "$d/w35qa.nuc" <<'EOF'
+(ns w35qa)
+(defn w35-desc (x:i32):i32 (return (+ x 1)))
+EOF
+  cat > "$d/w35qb.nuc" <<'EOF'
+(ns w35qb)
+(defn w35-desc (x:i32):i32 (return (+ x 2)))
+EOF
+  # 1. Both prefixed, both calls qualified: two definitions, two symbols, and
+  #    each qualified spelling reaches its own.
+  cat > "$d/w35both.nuc" <<'EOF'
+(import-prefixed w35qa a)
+(import-prefixed w35qb b)
+(defn main ():i32 (return (+ (a/w35-desc 10) (b/w35-desc 20))))
+EOF
+  w1_run w9-two-ns-one-name "$d" "$d/w35both.nuc" 33
+
+  ir="$(./build/nucleusc -I "$d" --emit-llvm "$d/w35both.nuc" 2>/dev/null || true)"
+  if printf '%s' "$ir" | qgrep -E '^define .*@w35qa__w35-desc\(' \
+     && printf '%s' "$ir" | qgrep -E '^define .*@w35qb__w35-desc\('; then
+    echo "PASS  w9-two-ns-distinct-symbols"
+  else
+    echo "FAIL  w9-two-ns-distinct-symbols (the pair did not emit two defines)"
+    printf '%s' "$ir" | grep -E 'w35-desc' | sed 's/^/    /' | head -6
+  fi
+
+  # 2. Flatten exactly one: the bare call is not ambiguous at all, because only
+  #    one candidate is in this file's unqualified space.
+  cat > "$d/w35one.nuc" <<'EOF'
+(import-use w35qa)
+(import-prefixed w35qb b)
+(defn main ():i32 (return (w35-desc 10)))
+EOF
+  w1_run w9-two-ns-bare-picks-flattened "$d" "$d/w35one.nuc" 11
+
+  # 3. Flatten BOTH: now the bare call really does name two functions, and that
+  #    is the use R4 was refusing the definitions to prevent. Located, and both
+  #    candidates named with a spelling that resolves.
+  cat > "$d/w35amb.nuc" <<'EOF'
+(import-use w35qa)
+(import-use w35qb)
+(defn main ():i32 (return (w35-desc 10)))
+EOF
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/w35amb.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | qgrep -F "ambiguous call to 'w35-desc'" \
+     && printf '%s' "$err" | qgrep -F "'w35qa/w35-desc'" \
+     && printf '%s' "$err" | qgrep -F "'w35qb/w35-desc'" \
+     && printf '%s' "$err" | qgrep -E 'w35amb\.nuc:3: error:'; then
+    echo "PASS  w9-two-ns-ambiguous-use"
+  else
+    echo "FAIL  w9-two-ns-ambiguous-use"
+    printf '%s\n' "$err" | sed 's/^/    got: /' | head -4
+  fi
+
+  # 4. Neither flattened: the name is not in the unqualified space, and the
+  #    message says where it IS and what to write instead of guessing.
+  cat > "$d/w35none.nuc" <<'EOF'
+(import-prefixed w35qa a)
+(import-prefixed w35qb b)
+(defn main ():i32 (return (w35-desc 10)))
+EOF
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/w35none.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | qgrep -F "defined in namespaces 'w35qa' and 'w35qb'" \
+     && printf '%s' "$err" | qgrep -F "write 'a/w35-desc' or 'b/w35-desc' here"; then
+    echo "PASS  w9-two-ns-unqualified-unreachable"
+  else
+    echo "FAIL  w9-two-ns-unqualified-unreachable"
+    printf '%s\n' "$err" | sed 's/^/    got: /' | head -4
+  fi
+
+  # 5. And R4's rule survives where its reason does: ONE namespace still may not
+  #    define one signature twice, because that pair really would emit a symbol
+  #    twice. The test is the emitted PREFIX, not the namespace name, so two
+  #    files sharing a namespace are still a duplicate.
+  cat > "$d/w35dupa.nuc" <<'EOF'
+(ns w35dup)
+(defn w35-dup (x:i32):i32 (return x))
+EOF
+  cat > "$d/w35dupb.nuc" <<'EOF'
+(ns w35dup)
+(defn w35-dup (x:i32):i32 (return (+ x 1)))
+EOF
+  cat > "$d/w35dupm.nuc" <<'EOF'
+(import-use w35dupa)
+(import-use w35dupb)
+(defn main ():i32 (return 0))
+EOF
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/w35dupm.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | qgrep -F "duplicate definition of 'w35-dup'"; then
+    echo "PASS  w9-one-ns-still-refuses-duplicate"
+  else
+    echo "FAIL  w9-one-ns-still-refuses-duplicate"
+    printf '%s\n' "$err" | sed 's/^/    got: /' | head -4
+  fi
+  rm -rf "$d"
+}
+spawn run_w9_two_ns_one_name
+
 # SOURCE OUT-RANKS HEADER, asserted on both sides of the ruling. `resolve-import`
 # already tries `.nuc` in every directory before any `.nuch`, so an import takes
 # the source — but `path-in-unit` keyed on the exact path spelling, so the
@@ -5913,6 +6193,14 @@ EOF
 # and a candidate with no such spelling is not offered at all. The resolution
 # matrix pins the `plain-fn bare` cell; this pins that the suggestion is USABLE,
 # by compiling and running the program the suggestion asks for.
+#
+# Stage 15 W9 item 43 re-pointed the first half at the wording rather than at the
+# tier. This program is item 43's own shape — a prefixed import plus a bare call
+# — so it now reaches `generic-in-other-namespace-message`, which states the fact
+# ("defined in namespace 'b5s'") ahead of guessing at a spelling, exactly as
+# `type-in-other-namespace-message` has for a type since B3′. What defect #9 is
+# actually about is unchanged and is what is asserted: the offered spelling is
+# qualified, and it is never the one that just failed.
 run_b5_did_you_mean() {
   local d err
   d="$(mktemp -d)"
@@ -5928,7 +6216,7 @@ EOF
   if printf '%s' "$err" | qgrep -F "(did you mean 'b5-suggest'?)"; then
     echo "FAIL  b5-did-you-mean-not-echo (suggested the spelling that just failed)"
     printf '%s\n' "$err" | sed 's/^/    /'
-  elif printf '%s' "$err" | qgrep -F "(did you mean 'sx/b5-suggest'?)"; then
+  elif printf '%s' "$err" | qgrep -F "sx/b5-suggest"; then
     echo "PASS  b5-did-you-mean-not-echo"
   else
     echo "FAIL  b5-did-you-mean-not-echo"
