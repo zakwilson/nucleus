@@ -1984,6 +1984,135 @@ EOF
   rm -rf "$d"
 }
 
+# W9 item 39. LLVM's unquoted identifier has TWO rules — a body character class
+# and a first-position rule — and the compiler applied only the first, only to
+# global symbols. Both halves of that reached LLVM raw and died at IR-parse time
+# on a message naming a line of generated IR and nothing in the user's source:
+#
+#   define i32 @add_QMARK(i32 %ok?.arg, i32 %n!.arg)
+#
+# — the function name mangled, the parameter three tokens away from it not. So
+# this asserts the two halves separately: every position a name can occupy with a
+# leading DIGIT (which no path escaped), and `?`/`!` in the positions inside a
+# function body (which the global path escaped and the local one did not). Each is
+# compiled, LINKED and RUN, because "the module parses" is not the claim — the
+# claim is that a `goto` still reaches its label and a match binder still reads
+# the field it was bound to after both were renamed.
+run_w9_ir_name_positions() {
+  local d out
+  d="$(mktemp -d)"
+  # Type name, union arm, global, constant, function, parameter, `let` binding,
+  # match binder and `label`/`goto` target — every one digit-leading.
+  cat > "$d/w39dlib.nuc" <<'EOF'
+(defstruct 2Pair a:i32 b:i32)
+(defunion 2Shape (2circle r:i32) (2square s:i32))
+(defvar 2count:i32 100)
+(defconst 2LIM 9)
+(defn 2fast (2n:i32):i32
+  (let (2acc:i32 0)
+    (set! 2acc (* 2n 2))
+    2acc))
+(defn 2pick (sh:2Shape):i32
+  (match sh ((2circle 2v) 2v) ((2square 2w) (* 2w 10))))
+(defn 2loop ():i32
+  (let (i:i32 0)
+    (label 2top)
+    (set! i (+ i 1))
+    (when (< i 3) (goto 2top))
+    i))
+EOF
+  cat > "$d/w39dig.nuc" <<'EOF'
+(import-use "stdio.h")
+(import-use w39dlib)
+(defn main ():i32
+  (let (p:ptr:2Pair (2Pair 3 4))
+    (printf "%d %d %d %d %d %d\n"
+      (2fast 20) 2count 2LIM (. p a) (2pick (make 2Shape 2circle 7)) (2loop)))
+  0)
+EOF
+  if ./build/nucleusc -I "$d" "$d/w39dig.nuc" -o "$d/dig" 2>"$d/err"; then
+    out="$("$d/dig")"
+    if [ "$out" = "40 100 9 3 7 3" ]; then
+      echo "PASS  w9-ir-name-digit-every-position"
+    else
+      echo "FAIL  w9-ir-name-digit-every-position (want '40 100 9 3 7 3', got '$out')"
+    fi
+  else
+    echo "FAIL  w9-ir-name-digit-every-position (build failed)"
+    sed 's/^/    /' "$d/err" | head -8
+  fi
+
+  # The other half, and the one that was NOT latent: `?` and `!` are legal in a
+  # Nucleus symbol and `(defn even? …)` has worked since SM-1 mangled it to
+  # `@even_QMARK` — but the same character in a parameter, a `let` binding, a
+  # match binder or a label went to LLVM verbatim.
+  cat > "$d/w39chr.nuc" <<'EOF'
+(import-use "stdio.h")
+(defunion Sh! (circ! r:i32) (sq? s:i32))
+(defn add? (ok?:i32 n!:i32):i32
+  (let (acc!:i32 0)
+    (set! acc! (+ ok? n!))
+    acc!))
+(defn peek! (sh:Sh!):i32
+  (match sh ((circ! v?) v?) ((sq? w!) (* w! 10))))
+(defn spin? ():i32
+  (let (i!:i32 0)
+    (label top!)
+    (set! i! (+ i! 1))
+    (when (< i! 3) (goto top!))
+    i!))
+(defn main ():i32
+  (printf "%d %d %d\n" (add? 1 20) (peek! (make Sh! circ! 7)) (spin?))
+  0)
+EOF
+  if ./build/nucleusc "$d/w39chr.nuc" -o "$d/chr" 2>>"$d/err"; then
+    out="$("$d/chr")"
+    if [ "$out" = "21 7 3" ]; then
+      echo "PASS  w9-ir-name-body-chars-in-locals"
+    else
+      echo "FAIL  w9-ir-name-body-chars-in-locals (want '21 7 3', got '$out')"
+    fi
+  else
+    echo "FAIL  w9-ir-name-body-chars-in-locals (build failed)"
+    sed 's/^/    /' "$d/err" | head -8
+  fi
+
+  # C has the identical first-position rule, so `sanitize-for-c` escapes with the
+  # same `_`. That is what makes the C spelling and the link symbol AGREE — hence
+  # no `asm()` label — and only linking and running a C consumer can show it: a
+  # header whose declarations merely parse would still fail at the linker. The
+  # comment line carries this directory's path, so it is dropped before the scan.
+  ./build/nucleusc --emit-cheader "$d/w39dlib.nuc" > "$d/w39dlib.h" 2>>"$d/err" || true
+  cat > "$d/dmain.c" <<'EOF'
+#include <stdio.h>
+#include "w39dlib.h"
+int main(void) {
+    struct _2Pair p = { 3, 4 };
+    struct _2Shape c;
+    c.tag = _2Shape_2circle;
+    c.payload._2circle = 7;
+    printf("%d %d %d %d %d %d\n",
+           _2fast(20), _2count, _2LIM, p.a, _2pick(c), _2loop());
+    return 0;
+}
+EOF
+  if ! grep -v '^/\*' "$d/w39dlib.h" | qgrep -E '\b[0-9]+[A-Za-z_]' \
+     && ./build/nucleusc -c -o "$d/w39dlib.o" "$d/w39dlib.nuc" 2>>"$d/err" \
+     && clang -I "$d" "$d/dmain.c" "$d/w39dlib.o" -o "$d/cmain" 2>>"$d/err"; then
+    out="$("$d/cmain")"
+    if [ "$out" = "40 100 9 3 7 3" ]; then
+      echo "PASS  w9-ir-name-digit-header-c-callable"
+    else
+      echo "FAIL  w9-ir-name-digit-header-c-callable (want '40 100 9 3 7 3', got '$out')"
+    fi
+  else
+    echo "FAIL  w9-ir-name-digit-header-c-callable"
+    sed 's/^/    /' "$d/w39dlib.h" | tail -8
+    sed 's/^/    /' "$d/err" | head -6
+  fi
+  rm -rf "$d"
+}
+
 # SOURCE OUT-RANKS HEADER, asserted on both sides of the ruling. `resolve-import`
 # already tries `.nuc` in every directory before any `.nuch`, so an import takes
 # the source — but `path-in-unit` keyed on the exact path spelling, so the
@@ -5265,6 +5394,7 @@ spawn run_w9_cheader_globals
 spawn run_w9_cheader_identifiers
 spawn run_w9_cheader_imported_types
 spawn run_w9_cheader_niche_types
+spawn run_w9_ir_name_positions
 # W1c: the diagnostic surface. The did-you-mean tier it sits above is pinned by
 # w4a-suggest-spelling; the note deliberately suppresses that tier (they would
 # otherwise offer two diagnoses of one failure), which is why the suggestion

@@ -545,11 +545,17 @@
 ; trap, conventions.md).
 (defn abi-print-param-to (out:ptr info:raw:AbiInfo ptype:raw:Type name:ptr):void
   (let (ii:raw:AbiInfo info
-        k:i32 (info kind))
+        k:i32 (info kind)
+        ; W9 item 39: a parameter name becomes an LLVM local identifier, so it
+        ; needs the same transform a defn name gets. Applied here and in
+        ; abi-emit-param-prologue, the only two producers of `%<param>.arg`, and
+        ; nowhere else — `scope-define` still keys on the SOURCE name.
+        nm:ptr name)
+    (when (!= name null) (set! nm (ir-name-token name)))
     (when (= k ABI-DIRECT)
       (if (= name null)
         (fprintf out "%s" (type-to-ir ptype))
-        (fprintf out "%s %%%s.arg" (type-to-ir ptype) name))
+        (fprintf out "%s %%%s.arg" (type-to-ir ptype) nm))
       (return))
     (when (= k ABI-MEMORY)
       ; x86_64 uses a `byval` attribute; aarch64, AVR (Stage 14 AVR-7) AND
@@ -560,21 +566,21 @@
         ; x86_64: byval attribute
         (if (= name null)
           (fprintf out "ptr byval(%s) align %d" (type-to-ir ptype) (ii align))
-          (fprintf out "ptr byval(%s) align %d %%%s.arg" (type-to-ir ptype) (ii align) name))
+          (fprintf out "ptr byval(%s) align %d %%%s.arg" (type-to-ir ptype) (ii align) nm))
         ; aarch64 / AVR / riscv64: plain pointer
         (if (= name null)
           (fprintf out "ptr")
-          (fprintf out "ptr %%%s.arg" name)))
+          (fprintf out "ptr %%%s.arg" nm)))
       (return))
     (when (= k ABI-COERCE1)
       (if (= name null)
         (fprintf out "%s" (ii reg0))
-        (fprintf out "%s %%%s.arg" (ii reg0) name))
+        (fprintf out "%s %%%s.arg" (ii reg0) nm))
       (return))
     ; COERCE2
     (if (= name null)
       (fprintf out "%s, %s" (ii reg0) (ii reg1))
-      (fprintf out "%s %%%s.arg.0, %s %%%s.arg.1" (ii reg0) name (ii reg1) name))))
+      (fprintf out "%s %%%s.arg.0, %s %%%s.arg.1" (ii reg0) nm (ii reg1) nm))))
 
 ; The g-out spelling, which is every batch-emission caller. The REPL's preamble
 ; declares go to g-repl-preamble instead and call abi-print-param-to directly.
@@ -593,8 +599,10 @@
 (defn abi-emit-param-prologue (fn-scope:ref:Scope pname:CStr ptype:raw:Type):void
   (let (info:raw:AbiInfo (abi-classify-arg ptype)
         k:i32 (info kind)
-        slot:ptr (fmt-s "%%%s.addr" pname)
-        arg:ptr (fmt-s "%%%s.arg" pname))
+        ; W9 item 39: must spell the parameter exactly as abi-print-param-to did.
+        mn:ptr (ir-name-token (as ptr pname))
+        slot:ptr (fmt-s "%%%s.addr" mn)
+        arg:ptr (fmt-s "%%%s.arg" mn))
     (when (= k ABI-DIRECT)
       (let (palign:i32 (type-size ptype))
         (fprintf g-entry-stream "  %s = alloca %s, align %d\n" slot (type-to-ir ptype) palign)
@@ -611,11 +619,11 @@
       (fprintf g-entry-stream "  store %s %s, ptr %s\n" (info reg0) arg slot)
       (let (gp:ptr null)
         (fprintf g-entry-stream "  store %s %%%s.arg.0, ptr %s\n"
-          (info reg0) pname slot)
+          (info reg0) mn slot)
         (set! gp (new-tmp))
         (fprintf g-entry-stream "  %s = getelementptr i8, ptr %s, i64 %d\n" gp slot (info off1))
         (fprintf g-entry-stream "  store %s %%%s.arg.1, ptr %s\n"
-          (info reg1) pname gp)))
+          (info reg1) mn gp)))
     (scope-define fn-scope pname ptype slot 1)))
 
 ; Emit a struct return for the current function per g-fn-ret-abi. `v` is the
@@ -1054,7 +1062,15 @@
         (aset! (as ptr:i8 cbuf) 1 0)
         (die-at line
           (fmt-3s "illegal character '%s' in generated symbol for '%s' (ir-name '%s') — LLVM identifiers allow only [A-Za-z0-9$._-]"
-                  cbuf orig-name ir-name))))))
+                  cbuf orig-name ir-name)))))
+  ; W9 item 39: the position half of the same rule. ir-name-token escapes a
+  ; leading digit, so reaching here means an ir-name was produced on a path that
+  ; skipped it — report it against the definition rather than letting LLVM
+  ; report it against the generated IR.
+  (when (!= (ir-name-leading-digit (as ptr ir-name)) 0)
+    (die-at line
+      (fmt-2s "generated symbol for '%s' (ir-name '%s') begins with a digit — an LLVM identifier may not"
+              orig-name ir-name))))
 
 (defn register-struct (name:CStr):ref:StructDef
   (when (>= (unsafe/cast i32 (count g-structs)) MAX-STRUCTS)

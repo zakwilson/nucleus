@@ -396,7 +396,10 @@
         (let (mv:ref:Val (emit-node (node-at (as ptr binder) 1) scope))
           (when (!= (ptr-pkind (mv type)) PTR-MAYBE)
             (die-at (cc line) (fmt-s "%s: value must be (Maybe (ref ...)) — launder a raw pointer with (as-ref ...)" tag)))
-          (let (slot:ptr (fmt-sd "%%%s.addr.%d" (xnode s) g-tmp))
+          ; W9 item 39: a binder name becomes an LLVM local identifier, so it takes
+          ; the same transform a defn name does. Every `%<binder>.addr.N` producer
+          ; in this file applies it; `scope-define` still keys on the source name.
+          (let (slot:ptr (fmt-sd "%%%s.addr.%d" (ir-name-token (xnode s)) g-tmp))
             (inc! g-tmp)
             (fprintf g-entry-stream "  %s = alloca ptr, align 8\n" slot)
             (fprintf g-body-stream "  store ptr %s, ptr %s, align 8\n" (mv val) slot)
@@ -983,7 +986,7 @@
             (if (= (b kind) NODE-SYM)
               ; By value: load the field into an ordinary local slot.
               (let (tmp:ptr (new-tmp)
-                    slot:ptr (fmt-sd "%%%s.addr.%d" (b s) g-tmp))
+                    slot:ptr (fmt-sd "%%%s.addr.%d" (ir-name-token (b s)) g-tmp))
                 (inc! g-tmp)
                 (emit-load tmp (type-to-ir ftype) fa ftype)
                 (fprintf g-entry-stream "  %s = alloca %s, align %d\n"
@@ -1001,7 +1004,7 @@
                 (let (xn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr b) 1)))
                   (when (!= (xn kind) NODE-SYM)
                     (die-at (b line) "match: (ref name) needs a symbol"))
-                  (let (slot:ptr (fmt-sd "%%%s.addr.%d" (xn s) g-tmp))
+                  (let (slot:ptr (fmt-sd "%%%s.addr.%d" (ir-name-token (xn s)) g-tmp))
                     (inc! g-tmp)
                     (fprintf g-entry-stream "  %s = alloca ptr, align 8\n" slot)
                     (fprintf g-body-stream "  store ptr %s, ptr %s, align 8\n" fa slot)
@@ -1277,7 +1280,7 @@
           (let (b:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node err-bind) car)))
             (when (and (= (b kind) NODE-SYM) (!= (b s) "_"))
               (let (pineg:ptr (new-tmp) eid:ptr (new-tmp) idtr:ptr eid
-                    slot:ptr (fmt-sd "%%%s.addr.%d" (b s) g-tmp))
+                    slot:ptr (fmt-sd "%%%s.addr.%d" (ir-name-token (b s)) g-tmp))
                 (inc! g-tmp)
                 (fprintf g-body-stream "  %s = ptrtoint ptr %s to %s\n" pineg rval (ptr-int-ir))
                 (fprintf g-body-stream "  %s = sub %s 0, %s\n" eid (ptr-int-ir) pineg)
@@ -1298,7 +1301,7 @@
           (let (b:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node ok-bind) car)))
             (when (and (= (b kind) NODE-SYM) (!= (b s) "_"))
               (let (rt:ptr:Type (as ptr:Type (make-type TY-PTR))
-                    slot:ptr (fmt-sd "%%%s.addr.%d" (b s) g-tmp))
+                    slot:ptr (fmt-sd "%%%s.addr.%d" (ir-name-token (b s)) g-tmp))
                 (inc! g-tmp)
                 (.set! rt elem elem)
                 (.set! rt pkind PTR-REF)
@@ -1404,7 +1407,7 @@
           (let (b:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node some-bind) car)))
             (when (and (= (b kind) NODE-SYM) (!= (b s) "_"))
               (let (rt:ptr:Type (as ptr:Type (make-type TY-PTR))
-                    slot:ptr (fmt-sd "%%%s.addr.%d" (b s) g-tmp))
+                    slot:ptr (fmt-sd "%%%s.addr.%d" (ir-name-token (b s)) g-tmp))
                 (inc! g-tmp)
                 (.set! rt elem elem)
                 (.set! rt pkind PTR-REF)

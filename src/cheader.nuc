@@ -1770,6 +1770,25 @@
   (when (= (cheader-reserved-word s) 0) (return s))
   (return (fmt-s "%s_" s)))
 
+; `s` with one leading `_` when it begins with a digit. Stage 15 W9 item 39: a C
+; identifier is `[A-Za-z_][A-Za-z0-9_]*` — the same first-POSITION rule LLVM has,
+; and `sanitize-for-c`'s per-character map can no more express it than the LLVM
+; character class could, so `2fast` passed through and the header did not parse.
+;
+; `_` is deliberately the escape `ir-name-token` uses for LLVM's identical rule:
+; the C spelling and the link symbol then agree, so `cheader-asm-label` emits no
+; label — correctly, since nothing was renamed beyond the prefix both sides share.
+;
+; Applied to a COMPLETE identifier only, never to a fragment — same reasoning as
+; cheader-escape-reserved's placement on the join: `2circle` joined after
+; `_2Shape_` is not at position 0, and escaping it there would spell
+; `_2Shape__2circle` where `_2Shape_2circle` is already legal (and `__` is
+; reserved to the implementation in C++, which these headers target through
+; `extern "C"`).
+(defn cheader-escape-leading-digit (s:ptr):ptr
+  (when (= (ir-name-leading-digit s) 0) (return s))
+  (return (fmt-s "_%s" s)))
+
 ; Stage 15 W9 item 4: the C spelling of a Nucleus name. `sanitize-for-c` maps
 ; every character C does not allow in an identifier to `_`, so `a-field` becomes
 ; `a_field`. Null-safe because several callers read a name out of a malformed
@@ -1789,7 +1808,8 @@
 ; design/stage15-stress-test/progress.md.
 (defn cheader-c-ident (name:(raw i8)):ptr
   (when (= name null) (return (as ptr name)))
-  (return (cheader-escape-reserved (sanitize-for-c (as ptr name)))))
+  (return (cheader-escape-reserved
+            (cheader-escape-leading-digit (sanitize-for-c (as ptr name))))))
 
 ; The C spelling of a name that is emitted as one identifier JOINED from two
 ; parts — `enum Color { Color_red }`, and a defunion's `Foo_arm` tag constants.

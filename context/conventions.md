@@ -929,7 +929,7 @@ Three things to keep in mind if you touch this:
   the symbol never moves. Never rename an identifier without routing it through
   that comparison.
 
-## `?`/`!` in names map to `_QMARK`/`_BANG` in emitted symbols
+## `?`/`!` in names map to `_QMARK`/`_BANG` in emitted symbols — in EVERY name position, not just the exported ones
 
 A `defn`, struct, or union name may contain `?`/`!` (`full?`, `push!`, `Full?`)
 — `ir-name-token` (`src/format.nuc`) maps each `?`→`_QMARK` and each `!`→`_BANG`
@@ -941,6 +941,36 @@ character, hyphens included, is untouched. A residual illegal character
 (anything outside `[A-Za-z0-9$._-]`) is caught at define/declare emission with
 a clean source-level diagnostic (`check-ir-name-legal`, `src/abi.nuc`) instead
 of a raw LLVM parse error.
+
+**W9 item 39: the rule is "this becomes an LLVM identifier", not "this is a
+global symbol".** Until that item the transform was applied only at the
+global-symbol and type-name layers, so a **parameter**, a `let`/`with` binding,
+a `match` binder and a `label`/`goto` target went out verbatim and LLVM rejected
+the module the compiler had just written — `define i32 @add_QMARK(i32 %ok?.arg)`,
+the function name mangled and the parameter three tokens away from it not. If
+you add a construct that turns a user name into a `%…` local, it must call
+`ir-name-token`. The current producers are `abi-print-param-to` +
+`abi-emit-param-prologue` (two spellings of one `%<param>.arg`, so they must
+agree), six `%<binder>.addr.N` sites in `union-emit.nuc`, `emit-let`/`emit-with`
+and the drop-handle slot, the macro prologue, and the five producers of
+`%lbl.<name>` (`emit-label`, `emit-goto`, `emit-label-addr`'s `blockaddress`,
+`emit-goto-ptr`'s `indirectbr` list). **`scope-define` keys on the SOURCE name at
+every one of them** — only the emitted slot string carries the escape.
+
+**A leading digit is the other half of the rule, and a character class cannot
+express it.** LLVM's unquoted identifier is `[%@][-a-zA-Z$._][-a-zA-Z$._0-9]*`:
+a body character class *and* a first-position restriction. `ir-name-illegal-char`
+tests only the class, and a digit is in it, so `(defn 2fast …)` passed every
+front-end check and died at IR-parse time. `ir-name-token` now prefixes one `_`
+(`@_2fast`, `%_2Pair`); `ir-name-leading-digit` is the matching predicate and
+`check-ir-name-legal` reports it as its own message rather than as an "illegal
+character", which would name a character its own list of legal ones contains.
+C has the identical restriction — but the escape there goes in `cheader-c-ident`
+(via `cheader-escape-leading-digit`), **not** in `sanitize-for-c`, for the reason
+in the "escape goes on the JOIN" note above: `sanitize-for-c` also runs on
+fragments, and `2circle` joined after `_2Shape_` is not at position 0. Use the
+same `_` on both sides deliberately — that is what makes the C spelling equal the
+link symbol, so `cheader-asm-label` emits nothing.
 
 If the compiler's own source (`src/`, `lib/`) ever adopts `?`/`!`-suffixed
 names internally — beyond the lib helpers that already do (`contains?`/
