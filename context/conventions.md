@@ -3759,3 +3759,53 @@ would still hold if both positions regressed to accepting everything. A future
 rule change then moves both together or fails loudly, which a hardcoded list of
 diagnostics cannot do.
 
+
+## An idempotence skip needs a discriminator, and the honest one is often PROVENANCE
+
+`nuch-declare-import` skipped a declaration whose name was already bound, for
+idempotence — *"already defined (e.g. from include or c-include)"*. A diamond
+import genuinely needs that. What it could not distinguish (W9 item 36) was a
+re-declaration of the **same** function from a **different** function that
+happens to share the name, so a `.nuch` entry naming a function the importing
+unit also *defines* was dropped whole — no `g-globals` binding, no LLVM
+`declare`, no generic method — and a **qualified** `(lib/helper 3)` silently
+called the unit's own `helper`, at whatever type that one had.
+
+**The intuitive discriminator — compare the signatures — is wrong here, and it
+passes both of the usual gates.** It survived 396 corpus programs at 0 diffs and
+a byte-identical bootstrap. It still broke `w1-declare-cycle-breaker`: W1e's
+cross-file `(declare f …)` is a declaration of a function the unit *does*
+define, and being a no-op is its entire job. Worse, the pre-existing test that
+had *recorded* this defect (`run_w9_nuch_import_order` case 5, written while item
+29 was fixed) uses **identical** signatures on both sides — so a signature test
+cannot see the case at all.
+
+What actually separates them is where the declaration is written:
+
+* a top-level `declare` in a **`.nuc`** — a forward declaration *of* this unit's
+  own function; must stay a no-op;
+* an entry in a **`.nuch`** — some *other* unit's exports; a name this unit
+  defines is a conflict.
+
+And that holds by construction, not by luck: **`--emit-nuch` never re-exports a
+top-level `declare`** (verify before relying on it — one command), so a header
+entry can never *be* such a forward declaration. A second question — does this
+unit `defn` the name, which only a body can answer — keeps the libc diamond
+silent.
+
+Two transferable rules. **When a skip means "this is the same thing", name the
+property that makes it the same thing and test that property directly**; a proxy
+that merely correlates (here: the signature) will admit the case the proxy cannot
+express. And **a green corpus sweep plus a green bootstrap is not sufficient
+evidence for a rule change** — neither reaches the generated multi-file fixtures
+in `tests/run-tests.sh`, which is where cross-file rulings actually live. Run the
+suite before believing a resolution change is inert (see "Tightening a rule? The
+corpus sweep is not the measurement — stage 2 is", of which this is the
+cross-file half).
+
+**A characterization test is a defect report, not a specification.** Case 5 above
+was labelled *"item 36's behaviour, unchanged"* — it existed to pin the status
+quo while a neighbouring item was fixed. When the item it names is the one being
+fixed, the test is the thing to *invert*, and its comment is the best available
+statement of what the fix must achieve. Grep the progress table's item number
+before assuming a passing test endorses what it asserts.

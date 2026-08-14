@@ -1820,7 +1820,7 @@ EOF
 # import takes the `.nuc` (w9-import-prefers-source), and nothing here would be
 # exercising a header at all.
 run_w9_nuch_import_order() {
-  local d ir
+  local d ir err
   d="$(mktemp -d)"; mkdir -p "$d/l" "$d/h"
   cat > "$d/l/w9no.nuc" <<'EOF'
 (defconst W9NO-BASE 40)
@@ -1909,21 +1909,24 @@ EOF
     printf '%s\n' "$ir" | grep -E '^(declare|@w9no)' | sed 's/^/    /' | head -8
   fi
 
-  # 5. The other half of the same rule: when the UNIT defines the name a header
-  #    declares, the header entry is still dropped whole (item 36's behaviour,
-  #    unchanged) — one `define`, no `declare` competing with it.
+  # 5. The other half of the same rule, and the case this test was written to
+  #    RECORD rather than endorse: when the unit defines the name a header
+  #    declares, the header entry used to be dropped whole — one `define`, no
+  #    `declare`, and nothing left that reaches the library's function. Item 36
+  #    reports it instead. Note the signatures here are IDENTICAL, which is why
+  #    the discriminator cannot be a signature comparison: what makes these two
+  #    different functions is that one is a header's and one is this unit's.
   cat > "$d/shadow.nuc" <<'EOF'
 (import-use w9no)
 (defn w9no-add ((a i32) (b i32)):i32 (return (- a b)))
 (defn main ():i32 (printf "%d\n" (w9no-add 5 2)) (return 0))
 EOF
-  ir="$(./build/nucleusc --emit-llvm -I "$d/h" "$d/shadow.nuc" 2>/dev/null || true)"
-  if [ "$(printf '%s\n' "$ir" | grep -c '^define .*@w9no-add(')" = 1 ] \
-     && [ "$(printf '%s\n' "$ir" | grep -c '^declare .*@w9no-add(')" = 0 ]; then
-    echo "PASS  w9-nuch-local-definition-still-wins"
+  err="$(./build/nucleusc --emit-llvm -I "$d/h" "$d/shadow.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | qgrep "already defines 'w9no-add'"; then
+    echo "PASS  w9-nuch-local-definition-reported"
   else
-    echo "FAIL  w9-nuch-local-definition-still-wins"
-    printf '%s\n' "$ir" | grep -E '@w9no-add' | sed 's/^/    /' | head -6
+    echo "FAIL  w9-nuch-local-definition-reported"
+    printf '%s\n' "$err" | sed 's/^/    /' | head -6
   fi
   rm -rf "$d"
 }
@@ -6189,6 +6192,136 @@ EOF
   rm -rf "$d"
 }
 spawn run_w9_nuch_declare_generic
+
+# Stage 15 W9 item 36. `nuch-declare-import` skipped a header entry whose name was
+# already bound, for idempotence — a diamond import, or a C header and a `.nuch`
+# both naming one libc function. What it could not distinguish was a re-DECLARATION
+# of the same function from a different function that happens to share the name, so
+# a header entry the importing unit also DEFINES was dropped whole: no global
+# binding, no LLVM `declare`, no generic method. Measured pre-fix: `(lib2/helper 3)`
+# — a QUALIFIED call, naming the library — emitted `call i64 @helper`, the unit's
+# own function, at a type the library's never had, with no diagnostic.
+#
+# The discriminator is "does this unit DEFINE the name", not "do the signatures
+# differ": only a `defn` has a body, so a declaration answers no. Cases 1 and 2
+# are the two halves that split on, and 2 is the one a signature comparison would
+# have missed.
+run_w9_nuch_declare_shadowed() {
+  local d
+  d="$(mktemp -d)"
+  # The library excludes the prelude so its object and each consumer's link
+  # together; that is also why its bodies are constants rather than arithmetic.
+  cat > "$d/w36lib.nuc" <<'EOF'
+(exclude-prelude)
+(defn helper (x:i32):i32 (return 10))
+(defn only-there (x:i32):i32 (return 4))
+EOF
+  ./build/nucleusc --emit-nuch "$d/w36lib.nuc" > "$d/w36lib.nuch" 2>/dev/null || true
+  ./build/nucleusc --emit-llvm "$d/w36lib.nuc" > "$d/w36lib.ll"   2>/dev/null || true
+
+  # 1. The item's own measured case: the local definition has a DIFFERENT type.
+  cat > "$d/w36diff.nuc" <<EOF
+(import-use "stdio.h")
+(import "$d/w36lib.nuch" lib2)
+(defn helper (x:i64):i64 (return (* 1000 x)))
+(defn main ():i32 (printf "%d\n" (lib2/helper 3)) (return 0))
+EOF
+  local out out2
+  out2="$(./build/nucleusc --emit-llvm "$d/w36diff.nuc" 2>&1 >/dev/null || true)"
+  out="$out2"
+  if printf '%s' "$out" | qgrep "already defines 'helper'" \
+     && printf '%s' "$out" | qgrep "the header declares helper(i32):i32, the unit has helper(i64):i64"; then
+    echo "PASS  w9-nuch-shadowed-declare-reported"
+  else
+    echo "FAIL  w9-nuch-shadowed-declare-reported"
+    printf '%s\n' "$out" | sed 's/^/    /'
+  fi
+
+  # 2. The half a signature comparison would miss: same signature, still two
+  #    different functions, still nothing that reaches the header's.
+  cat > "$d/w36same.nuc" <<EOF
+(import-use "stdio.h")
+(import "$d/w36lib.nuch" lib2)
+(defn helper (x:i32):i32 (return 1000))
+(defn main ():i32 (printf "%d\n" (lib2/helper 3)) (return 0))
+EOF
+  # `|| true` inside the capture: the compiler exits 1 here by design, and under
+  # `set -o pipefail` a bare pipeline would hand the `if` that status, not grep's.
+  out="$(./build/nucleusc --emit-llvm "$d/w36same.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$out" | qgrep "already defines 'helper'"; then
+    echo "PASS  w9-nuch-shadowed-same-signature-reported"
+  else
+    echo "FAIL  w9-nuch-shadowed-same-signature-reported"
+  fi
+
+  # 3. The message is located on the header entry AND names the definition it
+  #    collides with — a bare "duplicate" would leave the author with two files
+  #    and no line.
+  if printf '%s' "$out2" | qgrep "w36lib.nuch:2: error: declare 'helper': this compilation unit already defines 'helper', at .*w36diff.nuc:3"; then
+    echo "PASS  w9-nuch-shadowed-both-sites-named"
+  else
+    echo "FAIL  w9-nuch-shadowed-both-sites-named"
+    printf '%s\n' "$out2" | sed 's/^/    /'
+  fi
+
+  # 4. ACCEPTING half A: the idempotent re-declaration the skip exists for must
+  #    stay silent. `strlen` is declared by BOTH string.h and lib/string.nuch, and
+  #    is one of the ten such pairs this repo compiles today.
+  cat > "$d/w36dia.nuc" <<'EOF'
+(import-use "string.h")
+(import-use string)
+(defn main ():i32 (return (unsafe/cast i32 (strlen "abc"))))
+EOF
+  if ./build/nucleusc --emit-llvm "$d/w36dia.nuc" > /dev/null 2>&1; then
+    echo "PASS  w9-nuch-redeclare-still-silent"
+  else
+    echo "FAIL  w9-nuch-redeclare-still-silent"
+  fi
+
+  # 5. ACCEPTING half B: a name the unit does NOT define is untouched — the
+  #    library's other export still declares, links and runs.
+  cat > "$d/w36ok.nuc" <<EOF
+(import-use "stdio.h")
+(import "$d/w36lib.nuch" lib2)
+(defn helper2 (x:i64):i64 (return 1000))
+(defn main ():i32 (printf "o=%d\n" (lib2/only-there 3)) (return 0))
+EOF
+  ./build/nucleusc --emit-llvm "$d/w36ok.nuc" > "$d/w36ok.ll" 2>/dev/null || true
+  if clang "$d/w36lib.ll" "$d/w36ok.ll" -o "$d/okbin" 2>/dev/null \
+     && [ "$("$d/okbin")" = "o=4" ]; then
+    echo "PASS  w9-nuch-unshadowed-declare-runs"
+  else
+    echo "FAIL  w9-nuch-unshadowed-declare-runs"
+  fi
+
+  # 6. The escape route the diagnostic RECOMMENDS has to work, or the note is
+  #    bad advice: under an (ns ...) the header's exports key as `w36n/helper` and
+  #    link as `@w36n__helper`, so the two functions coexist and both are callable.
+  cat > "$d/w36nlib.nuc" <<'EOF'
+(exclude-prelude)
+(ns w36n)
+(defn helper (x:i32):i32 (return 30))
+EOF
+  cat > "$d/w36nuse.nuc" <<EOF
+(import-use "stdio.h")
+(import "$d/w36nlib.nuch" nx)
+(defn helper (x:i64):i64 (return 3000))
+(defn main ():i32
+  (printf "n=%d %d\n" (nx/helper 3) (helper (as i64 3)))
+  (return 0))
+EOF
+  ./build/nucleusc --emit-nuch "$d/w36nlib.nuc" > "$d/w36nlib.nuch" 2>/dev/null || true
+  ./build/nucleusc --emit-llvm "$d/w36nlib.nuc" > "$d/w36nlib.ll"   2>/dev/null || true
+  ./build/nucleusc --emit-llvm "$d/w36nuse.nuc" > "$d/w36nuse.ll"   2>/dev/null || true
+  if clang "$d/w36nlib.ll" "$d/w36nuse.ll" -o "$d/nbin" 2>/dev/null \
+     && [ "$("$d/nbin")" = "n=30 3000" ]; then
+    echo "PASS  w9-nuch-namespaced-library-coexists"
+  else
+    echo "FAIL  w9-nuch-namespaced-library-coexists"
+  fi
+  rm -rf "$d"
+}
+spawn run_w9_nuch_declare_shadowed
 
 # W9 item 25: a generated C header must define a struct TAG, not just a typedef.
 # `type-name-to-c` spells every reference to a user type `struct NAME`, so while
