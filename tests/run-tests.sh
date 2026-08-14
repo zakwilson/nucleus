@@ -2577,6 +2577,118 @@ run_w9_unsigned_index() {
   rm -rf "$d"
 }
 
+# W9 item 33: `emit-call-with-args`' coercion loop discarded `safe-coerce-val`'s
+# null return, so an argument no conversion reaches was passed untouched. The
+# fixture is the ACCEPTING half — the guard against over-correcting, since the
+# failure mode of this fix is refusing a conversion the language performs.
+#
+# The refusing half is generated here, one program per case: compilation stops
+# at the first error, and llvm-as accepts every one of these programs' IR
+# because a call site carries its own signature. `(take-f64 3)` is the case that
+# was not merely unchecked but wrong on ordinary-looking code: it printed
+# 0.000000.
+run_w9_arg_coerce() {
+  local d out
+  d="$(mktemp -d)"
+  w1_run w9-arg-coerce "$d" tests/fixtures/w9-arg-coerce.nuc 0
+
+  w9ac_case() {
+    local label="$1" body="$2" out
+    printf '%b' "$body" > "$d/w9ac.nuc"
+    out="$(./build/nucleusc --emit-llvm "$d/w9ac.nuc" 2>&1 >/dev/null || true)"
+    if printf '%s' "$out" | qgrep -F 'does not match parameter type'; then
+      echo "PASS  $label"
+    else
+      echo "FAIL  $label"
+      echo "    wanted an argument type-mismatch error, got: ${out:-<none>}"
+    fi
+  }
+
+  w9ac_case w9-arg-coerce-rejects-int-into-ptr \
+    '(defstruct W9S a:i32)\n(defn f (p:ptr:W9S):i32 (return 1))\n(defn main ():i32 (return (f 7)))\n'
+  w9ac_case w9-arg-coerce-rejects-cstr-into-int \
+    '(defn f (x:i32):i32 (return x))\n(defn main ():i32 (let (c:CStr "hi") (return (f c))))\n'
+  w9ac_case w9-arg-coerce-rejects-float-into-int \
+    '(defn f (x:i32):i32 (return x))\n(defn main ():i32 (return (f 1.5)))\n'
+  w9ac_case w9-arg-coerce-rejects-int-into-float \
+    '(defn f (x:f64):f64 (return x))\n(defn main ():i32 (f 3)\n  (return 0))\n'
+
+  # The diagnostic locates the CALL and names the callee, the position and both
+  # spellings — the last program written above is the int-into-float one.
+  out="$(./build/nucleusc --emit-llvm "$d/w9ac.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$out" | qgrep -F 'w9ac.nuc:2: error: f: argument 1 has type i32, which does not match parameter type f64'; then
+    echo "PASS  w9-arg-coerce-diagnostic-locates-and-names"
+  else
+    echo "FAIL  w9-arg-coerce-diagnostic-locates-and-names"
+    echo "    got: ${out:-<none>}"
+  fi
+  rm -rf "$d"
+}
+
+# W9 item 41: TE-6's `(dyn P)` vtable forwarding lives in `emit-generic-call`,
+# which a method with exactly ONE conformer never reaches — it stays a solitary
+# `defn`. The fixture's run is the witness (a method with a second parameter
+# receives the box's vtable word in it); the assertions below cover what the run
+# cannot: that no call to a protocol method from a box is direct, and that the
+# QUALIFIED spelling of a namespaced protocol's method reaches its slot, which
+# needs the bare-name match `dyn-method-slot` only makes after checking the
+# qualifier against the protocol's own namespace.
+run_w9_dyn_solitary() {
+  local d ir
+  d="$(mktemp -d)"
+  w1_run w9-dyn-solitary "$d" tests/fixtures/w9-dyn-solitary.nuc 0
+
+  ir="$(./build/nucleusc --emit-llvm tests/fixtures/w9-dyn-solitary.nuc 2>/dev/null || true)"
+  if printf '%s' "$ir" | qgrep -E 'call i32 @(add-k|name-of)\('; then
+    echo "FAIL  w9-dyn-solitary-dispatches-indirectly"
+    echo "    a boxed receiver reached the concrete method directly"
+    printf '%s' "$ir" | grep -nE 'call i32 @(add-k|name-of)\(' | head -4 | sed 's/^/    /'
+  else
+    echo "PASS  w9-dyn-solitary-dispatches-indirectly"
+  fi
+
+  cat > "$d/w41lib.nuc" <<'EOF'
+(exclude-prelude)
+(ns w41)
+(defprotocol Describe (describe ((self (ref Self))) i32))
+(defstruct Fox n:i32)
+(defn describe ((self (ref Fox))):i32 (return (_get self n)))
+(extend Fox Describe)
+EOF
+  # The library excludes the prelude so its object and the consumer's link
+  # together — the same separate-compilation shape run_w9_nuch_declare_generic
+  # uses, which is also the only way to spell a QUALIFIED call to a method.
+  cat > "$d/w41use.nuc" <<EOF
+(import-use "stdio.h")
+(import-use allocator)
+(import "$d/w41lib.nuch" wx)
+(defn main ():i32
+  (let (b:(dyn wx/Describe) (wx/Fox 309))
+    (printf "d=%d\n" (wx/describe b)))
+  (return 0))
+EOF
+  ./build/nucleusc --emit-llvm "$d/w41lib.nuc" > "$d/w41lib.ll"   2>/dev/null || true
+  ./build/nucleusc --emit-nuch "$d/w41lib.nuc" > "$d/w41lib.nuch" 2>/dev/null || true
+  ./build/nucleusc --emit-llvm "$d/w41use.nuc" > "$d/w41use.ll"   2>/dev/null || true
+  ir="$(cat "$d/w41use.ll")"
+  # An empty module would pass a purely negative assertion, so require the
+  # indirect call to be there as well as the direct one to be gone.
+  if printf '%s' "$ir" | qgrep -E '^  %[A-Za-z0-9_.]+ = call i32 %[A-Za-z0-9_.]+\(ptr ' \
+     && ! printf '%s' "$ir" | qgrep -F 'call i32 @w41__describe('; then
+    echo "PASS  w9-dyn-solitary-qualified-reaches-slot"
+  else
+    echo "FAIL  w9-dyn-solitary-qualified-reaches-slot"
+    echo "    the qualified spelling did not dispatch through the vtable"
+  fi
+  if clang "$d/w41lib.ll" "$d/w41use.ll" -o "$d/w41bin" 2>/dev/null \
+     && [ "$("$d/w41bin")" = "d=309" ]; then
+    echo "PASS  w9-dyn-solitary-qualified-runs"
+  else
+    echo "FAIL  w9-dyn-solitary-qualified-runs"
+  fi
+  rm -rf "$d"
+}
+
 # W1b's half of G-0: `scope-define` qualifies a global's key against
 # `g-current-ns`, so the prescan must apply each visited file's own leading
 # `(ns …)`. Prescanning a namespaced file under the IMPORTER's namespace would
@@ -4307,6 +4419,8 @@ spawn run_reject w9-as-float-global-inexact \
 spawn run_w9_i1_literal_range
 spawn run_w9_i1_unsigned
 spawn run_w9_unsigned_index
+spawn run_w9_arg_coerce
+spawn run_w9_dyn_solitary
 spawn run_reject w9-i1-literal-too-big tests/fixtures/w9-i1-literal-too-big.nuc \
   "defvar: integer literal 5 does not fit i1"
 spawn run_reject w9-i1-literal-negative tests/fixtures/w9-i1-literal-negative.nuc \

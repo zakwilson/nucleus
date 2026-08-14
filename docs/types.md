@@ -521,7 +521,24 @@ The following conversions are applied automatically in assignment contexts (`let
     the explicit `(unsafe/cast f32 3.14)` spelling has always done. In practice
     this agrees with C's `3.14f` for essentially every constant, and `f32`
     arithmetic is otherwise bit-exact with C `float`.
-- **User-registered**: any pair declared with `(defcast From To conv-fn)` (see [Top-level forms](toplevel.md)). The compiler emits a call to `conv-fn`. Built-in coercion always wins; `defcast` cannot shadow `sext`/`zext`/`fpext`.
+- **User-registered**: any pair declared with `(defcast From To conv-fn)` (see [Top-level forms](toplevel.md)). The compiler emits a call to `conv-fn`. Built-in coercion always wins; `defcast` cannot shadow `sext`/`zext`/`fpext`. A rule is looked up on the **exact** pair, and a bare integer literal is `i32`, so a rule registered `i64 → ptr` is not reached by `(take 0)` — write `(take (as i64 0))`. Built-in widening does not compose with a `defcast`.
+
+**Outside this set, a call argument is a compile-time error**, named and located
+the way every other typed slot's mismatch is: `f: argument 1 has type i32, which
+does not match parameter type f64`. `int`↔`float` is *not* in the set in either
+direction, so `(take 3)` against `(defn take (x:f64) …)` is refused rather than
+converted — the same refusal `(let (a:f64 3) …)` gives, and the reason to write
+`3.0`. (Until Stage 15 a failed argument conversion was discarded silently and
+the argument passed untouched: that call emitted `call double @take(i32 3)` and
+printed `0.000000`. LLVM accepts such a module, because a call site carries its
+own signature and is never checked against the callee's definition.)
+
+Two argument mismatches are still not diagnosed, both because the check compares
+*lowered IR* types: any two pointer flavours (a `CStr` where a `(fn …)` is
+expected) compare equal and are never checked at all, and a mismatch that
+survives to the ABI's decomposition of an aggregate is invisible to LLVM as
+well. Nullability is checked separately and does fire on the pointer cases it
+covers (`raw`/`?T` into a `(ref T)` parameter).
 
 **Binary operators unify their two operands** by exactly one rule, and the
 result type is that unified type (a comparison always yields `bool`). The rule is

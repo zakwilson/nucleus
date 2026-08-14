@@ -1,0 +1,63 @@
+; Stage 15 W9 item 41 — a `(dyn P)` method call whose method name has exactly
+; ONE definition. TE-6's vtable forwarding lives in `emit-generic-call`, so a
+; single conformer (the method stays a solitary `defn`, never a Generic) took
+; the ordinary call path and passed the fat pointer straight to the concrete
+; method.
+;
+; The receiver alone cannot witness that: SysV decomposes the two-word box into
+; two integer registers, the data word lands in the first one, and a callee
+; expecting `(ref Self)` reads it correctly. A method with ONE MORE parameter is
+; what makes it observable — the box's vtable word occupies the register the
+; second argument was supposed to use, so `k` arrives as the vtable address.
+; This file printed 885001780 instead of 105 before the fix.
+;
+; The two-conformer spelling is deliberately here too: it already dispatched
+; correctly through emit-generic-call, and its IR must not move.
+
+(import-use allocator)
+
+(defprotocol Adder (add-k ((self (ref Self)) k:i32):i32))
+
+(defstruct Acc n:i32)
+(defn add-k ((self (ref Acc)) k:i32):i32 (return (+ (self n) k)))
+(extend Acc Adder)
+
+; One conformer: `add-k` is a solitary defn, so this is the item's path.
+(defn via-box ((b (dyn Adder))):i32 (return (add-k b 5)))
+
+; A protocol whose method takes no extra argument — the shape that used to give
+; the right answer by luck, kept so the fix is exercised on both.
+(defprotocol Namer (name-of ((self (ref Self))):i32))
+(defstruct Tag t:i32)
+(defn name-of ((self (ref Tag))):i32 (return (* 3 (self t))))
+(extend Tag Namer)
+(defn via-box2 ((b (dyn Namer))):i32 (return (name-of b)))
+
+; Two conformers: `speak` IS a Generic, so this goes through emit-generic-call's
+; own forwarding. Both routes must reach the vtable.
+(defprotocol Speaker (speak ((self (ref Self))):i32))
+(defstruct Cow c:i32)
+(defstruct Hen h:i32)
+(defn speak ((self (ref Cow))):i32 (return (+ 10 (self c))))
+(defn speak ((self (ref Hen))):i32 (return (+ 20 (self h))))
+(extend Cow Speaker)
+(extend Hen Speaker)
+(defn via-box3 ((b (dyn Speaker))):i32 (return (speak b)))
+
+; A plain function taking a box must NOT be re-routed to a vtable slot: its name
+; is not one of the protocol's methods, and it is the caller of via-box below.
+(defn twice ((b (dyn Adder))):i32 (return (+ (via-box b) (via-box b))))
+
+(defn main ():i32
+  (let (a:(dyn Adder) (Acc 100))
+    ; The witness: 100 + 5. A direct call reads the vtable address as `k`.
+    (when (!= (via-box a) 105) (return 1))
+    (when (!= (twice a) 210) (return 2)))
+  (let (t:(dyn Namer) (Tag 7))
+    (when (!= (via-box2 t) 21) (return 3)))
+  (let (c:(dyn Speaker) (Cow 1)
+        h:(dyn Speaker) (Hen 2))
+    (when (!= (via-box3 c) 11) (return 4))
+    (when (!= (via-box3 h) 22) (return 5)))
+  (printf "w9-dyn-solitary ok\n")
+  (return 0))

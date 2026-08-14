@@ -643,8 +643,12 @@ conformance in scope at the boxing site. Structural derivation (function-protoco
 inference) does not apply to `(dyn P)`; use `BoxedFn` for closure boxes.
 
 **Dispatch.** A method call `(method-name box args…)` where `box` has type
-`(dyn P)` lowers to an indirect vtable call: load slot 0 from the vtable,
-call `slot(data, args…)`.
+`(dyn P)` lowers to an indirect vtable call: load the method's slot from the
+vtable, call `slot(data, args…)`. This holds **however many types conform** — a
+protocol with a single implementation dispatches through its vtable exactly like
+one with ten, and so does a call written with a qualifier (`(lib/describe box)`
+against `lib`'s protocol). Nothing about the box's representation or the call it
+emits depends on the conformer count.
 
 Note the surface difference: a `BoxedFn` is dispatched as a **callable value**
 `(box args…)`; a `(dyn P)` is dispatched as a **named method call**

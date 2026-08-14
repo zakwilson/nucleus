@@ -32,6 +32,10 @@
   (show-i64 42)
   ; f32 widens to f64 implicitly.
   (show-f64 (unsafe/cast f32 2.5))
-  ; defcast fires: i64 → ptr via id_to_ptr.
-  (show-ptr 0)
+  ; defcast fires: i64 → ptr via id_to_ptr. The `(as i64 ...)` is required —
+  ; a bare literal is i32, and a defcast rule is looked up on the exact pair,
+  ; so no rule matches (W9 item 42). This line read `(show-ptr 0)` until W9
+  ; item 33 made an unconvertible argument an error rather than a silent
+  ; pass-through, which is what showed that the cast had never fired.
+  (show-ptr (as i64 0))
   (return 0))

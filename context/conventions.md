@@ -3193,6 +3193,9 @@ add a third position that assigns into a box-typed slot — `set!` and `.set!`
 reach neither today, so they neither box nor type-check — give it the same call,
 not a copy.
 
+The *dispatch* out of a box splits the same way and along a different seam — see
+"`(dyn P)` dispatch was keyed on the CONFORMER COUNT" near the end of this file.
+
 ## A provenance field with three writers and one reader tolerates two of them being wrong
 
 Stage 15 B4 gave generics a qualified spelling (`name-resolution.md` §9.6) by
@@ -3657,3 +3660,65 @@ home does not make the rule right — it makes the next correction one line. If
 you are writing a conversion, the two questions are always **how wide** and
 **which sign**, and answering one of them in a shared helper is exactly the
 moment the other looks answered too.
+
+## Removing a silent fallback: budget for the casualties to be the COMPILER's bugs
+
+`emit-call-with-args`' coercion loop called `safe-coerce-val` and discarded a
+null return, with a comment saying so. Turning that into a `die-at` (W9 item 33)
+is five lines, and the interesting part is what the corpus then rejected:
+**three programs, none of them a wrong call.** Two were `(dyn P)` method calls
+exposing a dispatch defect (item 41, next section) and one was an *example whose
+stated purpose was to demonstrate `defcast`*, calling `(show-ptr 0)` under the
+comment "defcast fires: i64 → ptr" — it never had, because a bare literal is
+`i32` and a rule is keyed on the exact pair (item 42).
+
+So the rule: a silent pass-through does not only hide the *program's* bug, it
+hides the *compiler's*, and it hides them in the places you are least likely to
+look — a committed example, a green fixture. When you switch one on, read every
+new rejection as a possible compiler defect before "fixing" the source, and
+budget for the fix to grow: item 41 had to be repaired in the same change,
+because leaving it would have made canonical `(dyn P)` code stop compiling.
+
+Two riders:
+
+- **Check the sibling slots before ruling.** The question "should this be an
+  error or a new coercion?" is already answered by `let`, `set!` and `return` if
+  the same pair reaches them. `(let (a:f64 3) …)` was `let: init type mismatch`,
+  so the argument position was the outlier and item 33 is a consistency repair,
+  not a new rule. Had `let` accepted it, the fix would have been the coercion.
+- **The compiler is a poor witness for a call-site defect.** Its own calls are
+  type-correct, so a swallowed failure never had anything to swallow — the
+  bootstrap held on the first pass and no `boot/` artifact moved. Self-hosting
+  gates what the compiler *does*, never what it *tolerates*.
+
+## `(dyn P)` dispatch was keyed on the CONFORMER COUNT — a solitary method never reaches `emit-generic-call`
+
+Stage 13 TE-6 put the boxed-receiver vtable forwarding inside
+`emit-generic-call`. A method with **one** conforming type is not a `Generic` —
+it stays a solitary `defn` — so `(m box)` took the ordinary call path and passed
+the `{data,vtable}` fat pointer straight to the concrete method (W9 item 41,
+fixed 2026-08-14 by hoisting the same three pieces — `dyn-canonical`,
+`dyn-method-slot`, `emit-dyn-forward` — into `emit-call-with-args`, where the box
+is still a first-class aggregate).
+
+The general form is worth more than the instance: **anything you attach to the
+overloaded-call path is invisible to a one-implementation name.** Adding a
+second conformer changes which emitter runs. When you add a rule to
+`emit-generic-call`, ask what the solitary path does with the same input — and
+vice versa, since the two now both forward and must keep agreeing.
+
+- **A receiver-only method cannot witness a fat-pointer ABI bug.** SysV puts the
+  box's `data` word in the first integer register, so a callee expecting
+  `(ref Self)` reads it correctly and returns the right answer. Give the method
+  **one more parameter**: the vtable word takes the register that argument
+  wanted, and `(add-k b 5)` computes `100 + <vtable address>`. That is the whole
+  design of `tests/fixtures/w9-dyn-solitary.nuc`, and it is the same shape as
+  W9 item 32's "keep both addresses mapped" — construct the case where being
+  wrong is *observable*, because the natural one is accidentally right.
+- **Matching a qualified name against a bare-keyed table needs the qualifier
+  CHECKED, not dropped.** A protocol declared inside `(ns …)` stores its sigs
+  bare, so `(wx/describe b)` matched no slot. `strip-ns-qualifier`'s own comment
+  says not to re-extend it to a resolution position — the way through is to
+  compare the qualifier against the *protocol's* namespace first
+  (`same-ns-qualifier`) and only then strip. A blanket strip would dispatch an
+  unrelated namespace's same-named function through this vtable.

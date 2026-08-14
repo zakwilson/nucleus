@@ -1,0 +1,52 @@
+; Stage 15 W9 item 33, the ACCEPTING half: every implicit conversion that a
+; call argument is still entitled to. The refusing half is generated inside
+; `run_w9_arg_coerce` — one program per rejection, because compilation stops at
+; the first.
+;
+; This file is the guard against over-correcting. Item 33 turned
+; `safe-coerce-val`'s null return from a silent pass-through into an error, and
+; the failure mode of that change is refusing a conversion the language does
+; perform: an int widening, a float widening, a `defcast` rule, or a StrView
+; literal collapsing into a CStr parameter. Each one below produced wrong IR or
+; no IR at all if the guard fires where it should not.
+;
+; The values matter as much as the acceptance — a coercion that is *skipped*
+; still compiles (that was the defect), so each check compares the result, not
+; just the exit status.
+
+(defn take-i64 (x:i64):i64 (return x))
+(defn take-ui64 (x:ui64):ui64 (return x))
+(defn take-f64 (x:f64):f64 (return x))
+(defn take-i32 (x:i32):i32 (return x))
+
+; A user-registered defcast is the third arm of safe-coerce-val, and the only
+; one a program can add. `(as i64 ...)` is required at the call: a bare literal
+; is i32 and the rule is keyed on the exact pair (W9 item 42).
+(defn w9ac-to-ptr (x:i64):ptr (return (unsafe/cast ptr x)))
+(defcast i64 ptr w9ac-to-ptr)
+(defn take-ptr (p:ptr):i64 (return (unsafe/cast i64 p)))
+
+; A CStr parameter taking a string literal: the literal is a StrView until it
+; lands in a typed slot, so its IR type differs from the parameter's and it
+; reaches the same coercion loop. It must collapse, not raise.
+(defn take-cstr (s:CStr):i64 (return (as i64 (strlen s))))
+
+(defn main ():i32
+  ; i32 -> i64, signed: the sext must happen, so a negative value survives.
+  (when (!= (take-i64 -7) -7) (return 1))
+  ; i32 -> ui64: the width conversion malloc's size argument depends on.
+  (when (!= (take-ui64 40) (as ui64 40)) (return 2))
+  ; f32 -> f64: the widening arm, which must still fold to one fpext.
+  (let (g:f32 2.5)
+    (when (!= (take-f64 g) 2.5) (return 3)))
+  ; f64 literal into an f64 parameter, unchanged by the guard.
+  (when (!= (take-f64 1.25) 1.25) (return 4))
+  ; A local of the parameter's own type is never coerced at all.
+  (let (n:i32 91)
+    (when (!= (take-i32 n) 91) (return 5)))
+  ; defcast: i64 -> ptr through the registered conversion function.
+  (when (!= (take-ptr (as i64 4096)) 4096) (return 6))
+  ; String literal into a CStr parameter.
+  (when (!= (take-cstr "abcde") 5) (return 7))
+  (printf "w9-arg-coerce ok\n")
+  (return 0))
