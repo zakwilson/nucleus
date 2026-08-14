@@ -495,6 +495,30 @@
             (return 0)
             (return 1)))))))
 
+; Stage 15 W9 item 30: is the f64 literal value `d` exactly representable in
+; float type `t`? The float counterpart of `int-literal-fits` above, and the
+; predicate was already written elsewhere: `f32-const-ir` (src/nucleusc.nuc)
+; renders a literal at single precision by computing
+; `(as f64 (unsafe/cast f32 d))` — one round-to-nearest down, then an exact
+; widening back — so "does this literal survive the trip" is that value compared
+; against the original. A literal Val is always f64 (`emit-float`), so an f64
+; destination is exact by construction.
+;
+; NaN is exactly representable and does NOT compare equal to itself (`=` on
+; floats is `fcmp oeq`), so it is answered before the round trip; ±inf needs no
+; arm, since it round-trips and compares equal.
+;
+; This evaluates target arithmetic in the COMPILER's own process, so it inherits
+; W2d's standing constraint that `build/nucleusc` is never built with
+; `-ffast-math`: FTZ/DAZ would flush a denormal single to zero and this would
+; then call the conversion exact.
+(defn float-literal-fits (d:f64 t:raw:Type):i32
+  (let (k:i32 (t kind))
+    (when (= k TY-F64) (return 1))
+    (when (!= k TY-F32) (return 0))
+    (when (!= d d) (return 1))
+    (if (= (as f64 (unsafe/cast f32 d)) d) (return 1) (return 0))))
+
 ; ============================================================
 ; Stage 15 W8 G-1 (design/global-init.md §5 "G-1"): THE int->int rule for the
 ; safe cast `as` — a widening (or a same-width sign reinterpret) is safe, a
@@ -519,6 +543,30 @@
 (defn as-int-narrowing (src:raw:Type dst:raw:Type is-lit:i32 lit:i64):i32
   (when (>= (int-width dst) (int-width src)) (return 0))
   (when (and (!= is-lit 0) (!= (int-literal-fits lit dst) 0)) (return 0))
+  (return 1))
+
+; Stage 15 W9 item 30: THE float->float rule for `as`, the counterpart of
+; `as-int-narrowing` above and settled the same way. `emit-as` rejected every
+; f64->f32 on the two KINDS alone, so `(as f32 1.5)` died "lossy conversion"
+; while the implicit coercion at the identical slot — `(let (a:f32 1.5) …)` —
+; accepted it and emitted the very same `float` constant with no instruction at
+; all (W2d). That left the safe cast stricter than the machinery it exists to
+; make explicit, in the one position item 8 did not close.
+;
+; The ruling is the STRICTER of the two the item offered: `as` admits a literal
+; only when it round-trips EXACTLY, so `(as f32 1.5)` compiles and
+; `(as f32 3.14)` keeps its diagnostic. `as` promises no loss; the implicit
+; path's silent rounding at a typed slot is Option A of the W2d design note, a
+; deliberately different promise, and widening `as` to match it would delete the
+; only spelling that says "this conversion is exact". A non-literal narrowing is
+; unchanged — still lossy, still `unsafe/cast`.
+;
+; `float-width` lives in nucleusc.nuc; calling *up* into it from an imported
+; module is the ordinary direction (abi.nuc's float branch does the same).
+; Pass `is-flit` 0 to ask about the widths alone.
+(defn as-float-narrowing (src:raw:Type dst:raw:Type is-flit:i32 lit:f64):i32
+  (when (>= (float-width dst) (float-width src)) (return 0))
+  (when (and (!= is-flit 0) (!= (float-literal-fits lit dst) 0)) (return 0))
   (return 1))
 
 ; Stage 10: pointer kinds (design/stage10/nullability.md)

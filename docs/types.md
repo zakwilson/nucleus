@@ -285,7 +285,7 @@ Float literals: `1.5`, `-0.25`, `1e10`, `1.5e-3`, `.5`. Special values use Schem
 
 A bare float literal with no target is `f64`, so `(let (b 0.1) …)` and `(let (b:f64 0.1) …)` are both `f64`; adaptation never makes an unrequested `f32`. Two *typed* float operands of different width widen to the wider (`f32 * f64` is `f64`). Mixing float and integer operands without an explicit `unsafe/cast` is a compile error — a float literal adapts only to a *float* target, never to an integer one (`(let (a:i32 1.5) …)` is rejected).
 
-A `f64` **value** (not a literal) narrows into an `f32` target implicitly and silently, with an `fptrunc`, the same way an `i64` value narrows into an `i32` slot; the explicit `(as f32 d)` spelling still refuses it as lossy and routes you to `(unsafe/cast f32 d)`. See [Implicit Type Coercion](#implicit-type-coercion) below for the full rule.
+A `f64` **value** (not a literal) narrows into an `f32` target implicitly and silently, with an `fptrunc`, the same way an `i64` value narrows into an `i32` slot; the explicit `(as f32 d)` spelling still refuses it as lossy and routes you to `(unsafe/cast f32 d)`. A float **literal** is different: `(as f32 1.5)` is accepted, because 1.5 is exactly representable in single precision, and it emits the same constant the implicit spelling emits — while `(as f32 3.14)` is still refused, because that literal does not survive the round trip. See [Implicit Type Coercion](#implicit-type-coercion) below for the full rule.
 
 **`f64` is unsupported when `--target=avr`**: AVR has no hardware double, so `f64`/`double` is a compile-time error, whether written as an explicit type annotation or reached only through a bare float literal's default type (`(let (x 1.5) …)` is rejected even with no `f64` text in the source). The error names the `-mdouble=64` avr-gcc multilib escape hatch for a custom AVR build with software double support. `f32` *types* are unaffected, and `i64` remains fully supported (arithmetic links libgcc's software routines, e.g. `__muldi3`). **A float *literal* is rejected on AVR even in an `f32` position** (`(let (a:f32 1.5) …)`), because the check fires when the literal is emitted, before its target width is known; this predates the W2d literal adaptation — `(unsafe/cast f32 1.5)` was rejected at the same point — so an AVR program currently cannot spell a floating-point constant at all. Lifting it is AVR work, not literal-typing work. This check applies only to the AVR target module itself — compile-time/macro code always runs on the host regardless of `--target=`, so ordinary `f64` arithmetic inside a `defmacro`/`compile-time` body compiling *for* an AVR program is unaffected.
 
@@ -483,7 +483,8 @@ The following conversions are applied automatically in assignment contexts (`let
     A literal that *does* fit is not lossy, so the explicit `as` spelling
     accepts it too — `(as i8 5)` and `(let (a:i8 5) …)` are the same conversion
     and emit the same IR. Only the narrowing of a *value* is outside `as`'s
-    safe set.
+    safe set. The float narrowing below follows the same rule, with a stricter
+    notion of "fits" — see there.
   - **`i1`/`bool` holds `{0, 1}`**, not a 1-bit two's-complement range, so the
     range check above admits exactly those two values: `(defvar g:i1 1)` and
     `(let (a:i1 0) …)` mean what `true` and `false` mean, while `(defvar g:i1
@@ -502,6 +503,12 @@ The following conversions are applied automatically in assignment contexts (`let
     same way a narrowing integer assignment is silent (see the `trunc` bullet
     above); unlike the integer case there is no range check, because float
     overflow saturates to `±inf` by IEEE rule rather than wrapping.
+    The explicit `as` spelling accepts a literal narrowing only when the literal
+    is **exactly representable** at the target width — `(as f32 1.5)` and
+    `(as f32 -0.25)` compile and emit the same constant the implicit spelling
+    emits, `(as f32 3.14)` is `lossy conversion from f64 to f32`. The implicit
+    path has no such condition: it rounds. That is the one place the two
+    deliberately differ, and it is what `as` means.
   - Rounding is decimal → `f64` → `f32` (two roundings), which is exactly what
     the explicit `(unsafe/cast f32 3.14)` spelling has always done. In practice
     this agrees with C's `3.14f` for essentially every constant, and `f32`
@@ -542,11 +549,17 @@ it (silently for a value, exactly as an `i64 → i32` assignment does), but the
 `(unsafe/cast f32 d)`. For a *value* that asymmetry is not float-specific —
 `(as i32 n:i64)` is refused for the same reason while `(let (a:i32 n) …)`
 truncates — and is a standing question about implicit narrowing in general.
-For a *literal* the two have parted: `(as i8 5)` is accepted, because the value
-is known to fit and the conversion is therefore lossless, while `(as f32 1.5)`
-is still refused even though that literal is likewise exactly representable.
-Both spellings work implicitly. The remaining float gap is a known defect, not a
-rule.
+For a *literal* the two agree, and integers and floats agree with each other:
+`(as i8 5)` and `(as f32 1.5)` are both accepted, because the value is known and
+the conversion is therefore lossless.
+
+The float rule is stricter than the integer one in one respect, and
+deliberately so. `as` admits a float literal only when it round-trips
+**exactly**, so `(as f32 3.14)` is still `lossy conversion from f64 to f32`
+even though `(let (a:f32 3.14) …)` compiles — the implicit path rounds to the
+nearest single silently, which is what an assignment does everywhere, and `as`
+is the spelling that promises it did not lose anything. Write
+`(unsafe/cast f32 3.14)` when the rounding is what you want.
 
 **Multimethod dispatch is stricter than assignment.** A float *literal* adapts
 to a narrower float parameter when selecting an overload (`(over 0.1)` picks

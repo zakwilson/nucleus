@@ -1,0 +1,14 @@
+; Stage 15 W9 item 30 negative fixture: a NON-literal f64->f32 narrowing is
+; unchanged — still lossy, still routed to `unsafe/cast`.
+;
+; The item makes "narrowing" a property of the VALUE where the value is known.
+; A parameter is an unknown runtime value, so nothing about it fits, and this is
+; the boundary that separates the fix from a blanket relaxation of the rule.
+;
+; Compiling this must FAIL with:
+;   "as: lossy conversion from f64 to f32 -- use unsafe/cast"
+(defn narrow (d:f64):f32
+  (return (as f32 d)))
+
+(defn main ():i32
+  (return (as i32 (as f64 (narrow 1.5)))))

@@ -2462,6 +2462,35 @@ run_w9_as_literal_narrowing() {
   rm -rf "$d"
 }
 
+# Stage 15 W9 item 30: the float half of the same rule. `emit-as` decided
+# "lossy" from the two KINDS alone, so `(as f32 1.5)` was refused while
+# `(let (a:f32 1.5) …)` accepted it and emitted the very same constant with no
+# instruction at all. The fixture is self-checking (a distinct exit code per
+# mismatch), so it is RUN: the risk in a round-trip test is a wrong value — a
+# literal re-rendered at the wrong width — not a failed compile.
+#
+# The IR assertion is the "no stricter than implicit" claim stated directly, and
+# it is stronger here than in the integer case: the accepted form must cost NO
+# instruction at all. An `fptrunc` anywhere in the fixture's `main` would mean
+# the cast was lowered as a conversion rather than folded to a constant.
+run_w9_as_float_literal_narrowing() {
+  local d ir
+  d="$(mktemp -d)"
+  w1_run w9-as-float-literal-fits "$d" tests/fixtures/w9-as-float-literal-fits.nuc 0
+  ir="$(./build/nucleusc --emit-llvm tests/fixtures/w9-as-float-literal-fits.nuc 2>/dev/null || true)"
+  if printf '%s' "$ir" | qgrep -F 'store float 0x3FF8000000000000' \
+     && printf '%s' "$ir" | qgrep -F '@w9asf-g = global float 0x3FF8000000000000' \
+     && printf '%s' "$ir" | qgrep -F '@w9asf-gd = global double 3.5' \
+     && ! printf '%s' "$ir" | qgrep -F 'fptrunc'; then
+    echo "PASS  w9-as-float-literal-lowers-like-implicit"
+  else
+    echo "FAIL  w9-as-float-literal-lowers-like-implicit"
+    echo "    want the folded constant in both positions and NO fptrunc"
+    printf '%s' "$ir" | grep -nE 'fptrunc|@w9asf-' | head -6 | sed 's/^/    /'
+  fi
+  rm -rf "$d"
+}
+
 # W9 item 9: `i1`/bool holds {0, 1}, and both numeric spellings must survive
 # the range check that now rejects everything else. The IR assertion is the
 # half a run cannot make: an initializer wrongly emitted as `global i1 true`
@@ -4186,6 +4215,22 @@ spawn run_reject w9-as-literal-too-big tests/fixtures/w9-as-literal-too-big.nuc 
 spawn run_reject w9-as-literal-signed-into-unsigned \
   tests/fixtures/w9-as-literal-signed-into-unsigned.nuc \
   "as: lossy conversion from i32 to ui8 -- use unsafe/cast"
+
+# W9 item 30 does the same for f64->f32, and the two rejects hold the two edges
+# the ruling draws. `-inexact` is the VALUE edge: 3.14 is a literal that does not
+# round-trip, so admitting it would make `as` round silently. `-runtime` is the
+# KNOWLEDGE edge: a parameter is unknown, so the widths alone decide and the
+# original rule stands. `-global-inexact` pins that `defvar-init-ir`'s fold
+# reaches the same verdict with the same wording — it is a second asker of the
+# rule, and a second asker that re-derives is what this stage keeps finding.
+spawn run_w9_as_float_literal_narrowing
+spawn run_reject w9-as-float-inexact tests/fixtures/w9-as-float-inexact.nuc \
+  "as: lossy conversion from f64 to f32 -- use unsafe/cast"
+spawn run_reject w9-as-float-runtime tests/fixtures/w9-as-float-runtime.nuc \
+  "as: lossy conversion from f64 to f32 -- use unsafe/cast"
+spawn run_reject w9-as-float-global-inexact \
+  tests/fixtures/w9-as-float-global-inexact.nuc \
+  "as: lossy conversion from f64 to f32 -- use unsafe/cast"
 
 # W9 item 9: the width-1 arm of `int-literal-fits`. `i1` is a bool over {0, 1},
 # so 5 and -1 are both out of range — the negative case is what pins the rule,

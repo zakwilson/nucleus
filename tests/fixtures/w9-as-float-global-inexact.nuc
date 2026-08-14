@@ -1,0 +1,15 @@
+; Stage 15 W9 item 30 negative fixture: the CONSTANT-FOLDER path applies the
+; same rule as the value path.
+;
+; `defvar-init-ir` renders a global's initializer by hand — it has no
+; instruction stream — so it is a second asker of "may `as` narrow this?" and
+; would drift if it re-derived the answer. It calls `as-float-narrowing`
+; instead, so this global is refused with the identical wording the local
+; spelling gets (w9-as-float-inexact.nuc).
+;
+; Compiling this must FAIL with:
+;   "as: lossy conversion from f64 to f32 -- use unsafe/cast"
+(defvar w9asf-bad:f32 (as f32 3.14))
+
+(defn main ():i32
+  (return 0))

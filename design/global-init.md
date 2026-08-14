@@ -1434,6 +1434,19 @@ record of what W5c decided; the supersession belongs at the stage level.
   written — `(as f32 1.5)` is still rejected — and is now filed as W9 item 30,
   where the remark that a float fold "could only have diverged" becomes the
   argument for fixing the value path first.
+  **Amended again 2026-08-14 (Stage 15 W9 item 30), and the prediction held
+  exactly.** The value path now accepts a float literal that round-trips
+  exactly, so `(as f32 1.5)` compiles — and the moment it did, the fold's
+  absence *became* the divergence this clause was written to avoid:
+  `(defvar g:f32 (as f32 1.5))` fell through to G-3's runtime-initializer queue
+  and stored into `@g` from `@__nucleus_init`, while `(defvar g:f32 1.5)` stayed
+  a constant, which is a live difference on any target whose ctors do not run
+  (§4.6). So `defvar-init-ir`'s `as` branch gained a float arm in the same
+  change, calling the same `as-float-narrowing` — the shape item 8 used.
+  `(+ 1.0 2.0)` still does not fold, and the `-ffast-math` hazard is unchanged
+  and now has a second dependent: `float-literal-fits` decides
+  "exactly representable" by performing the round trip in the compiler process,
+  so FTZ/DAZ would make it call a flushed denormal exact.
 * **Comparisons, `and`, `or`, `not`.** They produce `i1`, a second value domain
   the folder does not model, and `_and`/`_or` are short-circuit special forms
   rather than binops. `(defvar g:bool true)` is the spelling.

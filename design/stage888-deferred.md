@@ -90,4 +90,9 @@ then `(doseq-iter (c (addr-of it)) …)` — see examples/strview-read-test.nuc.
   One implementation note that generalizes: the rule must not gate on kind == TY-FN, because a BoxedFn/(dyn P) handle carries its arity on a TY-STRUCT type. A
   kind gate would have silently stopped checking that path.
   
-  
+## Possible bugs
+
+~~`as` rejects float literals that round, but an implicit cast may be allowed. Investigate surprising behaviors.~~ **Resolved 2026-08-14** as W9 item 30 — see
+design/stage15-stress-test/progress.md. `as` now admits a float literal that round-trips exactly, so `(as f32 1.5)` matches what `(let (a:f32 1.5) …)` already
+accepted. One asymmetry survives on purpose: the implicit path still *rounds* `3.14` silently (W2d Option A) where `as` refuses it, because if `as` rounded too
+then nothing in the language would mean "this conversion is exact".
