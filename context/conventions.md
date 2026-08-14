@@ -3722,3 +3722,40 @@ vice versa, since the two now both forward and must keep agreeing.
   compare the qualifier against the *protocol's* namespace first
   (`same-ns-qualifier`) and only then strip. A blanket strip would dispatch an
   unrelated namespace's same-named function through this vtable.
+
+## A guard that compares LOWERED types asks a question the language never asked
+
+`emit-call-with-args` decided whether to coerce an argument with
+`(!= (strcmp (type-to-ir (slot type)) (type-to-ir ptype)) 0)`. That is not "are
+these the same type", it is "do these print the same in the IR" — and `ptr`,
+`ptr:T`, `CStr` and `(fn …)` all print `ptr`. So no pointer-flavour mismatch was
+ever checked, and a `CStr` reached a function-pointer parameter (W9 item 34;
+fixed 2026-08-14 by asking `type-eq` instead). The rule: **`type-to-ir` is for
+emission, `type-eq` is for decisions.** A comparison on lowered forms silently
+inherits every distinction the lowering throws away, and pointers throw away the
+most.
+
+Two riders, both from the same fix:
+
+- **A widened guard needs an answer, not just a question.** Once `type-eq` let
+  the pointer pairs through, `safe-coerce-val` had to say `CStr`↔`ptr` is free
+  and `null`-into-a-fn-slot is allowed — which `coerce-int-val` had known since
+  item 20. The fix was to delegate to it (`safe-coerce-val`'s final
+  `(return null)` became `(return (coerce-int-val v target line))`), not to
+  restate the rules. If a position has its own coercion entry point, expect the
+  ruling you need to already exist at the shared one.
+- **The IR-string guard hid a second distinction: sign.** `i32`/`ui32` print the
+  same, so an argument never reached the literal range check every other slot
+  performs, and `(take-ui32 -1)` silently passed `4294967295` while
+  `(let (a:ui32 -1) …)` had always been an error. When you fix a lowered-form
+  comparison, enumerate *every* distinction the lowering erases, not the one in
+  the bug report.
+
+**Gate it with a parity assertion, not a list of messages.** The claim these
+items make is that the argument position is the one typed slot not asking what
+`let` asks. `run_w9_fnslot_arg` compiles each spelling in *both* positions and
+requires the verdicts to agree **and** to match the expected one — parity alone
+would still hold if both positions regressed to accepting everything. A future
+rule change then moves both together or fails loudly, which a hardcoded list of
+diagnostics cannot do.
+

@@ -37,8 +37,8 @@ and item 9's fix (2026-08-10) filed the i1 *signedness* defect beside it as item
 31; item 13 fixed 2026-08-10: **thirty-one found, seventeen fixed (item 6 in part),
 fourteen open**. That running tally stops there; every count in this paragraph
 is a snapshot of the day it was written, and the **current** one lives in the W9
-section's own heading — **forty-two found, thirty-three fixed, nine open** as of
-2026-08-14 (item 33, which filed items 41 and 42). Read that heading, not this sentence, and re-probe before
+section's own heading — **forty-two found, thirty-four fixed, eight open** as of
+2026-08-14 (item 34). Read that heading, not this sentence, and re-probe before
 trusting either: this table has gone stale by hand three times, which item 10's
 row and the B-series re-measurement both record.
 
@@ -852,7 +852,7 @@ escape hatch — reproduced by compiling `(defvar g:ptr:i32)` with
 
 ---
 
-## W9 — Reconciled at stage close: forty-two defects found, **thirty-three** now fixed (items 23 and 38 in part), nine open *(added 2026-08-01; extended through G-5's close 2026-08-02; items 21–24 added 2026-08-03; items 10 and 16 closed and item 22 measured closed 2026-08-09; items 1, 5 and 2 fixed 2026-08-09; items 3 and 4 fixed 2026-08-10, the latter adding items 25–28; item 6's string-path half fixed 2026-08-10, splitting its `.nuch` half out as item 29; item 7 fixed 2026-08-10; item 8 fixed 2026-08-10, splitting its float counterpart out as item 30; item 9 fixed 2026-08-10, filing the i1 signedness defect beside it as item 31; item 13 fixed 2026-08-10; item 15 fixed 2026-08-10, filing the index-signedness defect it measured as item 32; items 18 and 19 fixed 2026-08-10; item 20 fixed 2026-08-10, filing the two argument-position holes it measured as items 33 and 34; item 23's symbol half fixed 2026-08-10, splitting its dispatch half out as item 35; item 24 fixed 2026-08-10, filing the header-shadowing defect it measured as item 36; item 25 fixed 2026-08-10, closing the builtin-scalar spelling beside it and filing the two residual causes of its own named headers as items 37 and 38; item 26 fixed 2026-08-10, closing item 27 with the same cause and most of item 38 as a consequence; item 28 fixed 2026-08-10, filing the digit-leading-name defect it measured as item 39; item 29 fixed 2026-08-10, closing item 6's remaining half and filing the order-dependence it measured as SHARED by both spellings as item 40; item 30 fixed 2026-08-14, which supplied its own second asker — `defvar-init-ir`'s float `as` fold, newly reachable *because* the value path started accepting — and closed it in the same change; item 31 fixed 2026-08-14, the first W9 fix to move the bootstrap — one `TY-I1` arm, 24 `sext i1`→`zext i1` sites across the whole corpus and nothing else; item 32 fixed 2026-08-14, which did **not** move the bootstrap although it predicted it would — the compiler indexes exclusively with signed and `usize` values, so its own IR is byte-identical and the whole corpus moved by five lines; item 33 fixed 2026-08-14, whose five lines of diagnostic surfaced two defects that the silence had been hiding — the `(dyn P)` single-conformer bypass, fixed with it as item 41, and an unreachable `defcast` rule that an example had been documenting as working since it was written, filed as item 42)*
+## W9 — Reconciled at stage close: forty-two defects found, **thirty-four** now fixed (items 23 and 38 in part), eight open *(added 2026-08-01; extended through G-5's close 2026-08-02; items 21–24 added 2026-08-03; items 10 and 16 closed and item 22 measured closed 2026-08-09; items 1, 5 and 2 fixed 2026-08-09; items 3 and 4 fixed 2026-08-10, the latter adding items 25–28; item 6's string-path half fixed 2026-08-10, splitting its `.nuch` half out as item 29; item 7 fixed 2026-08-10; item 8 fixed 2026-08-10, splitting its float counterpart out as item 30; item 9 fixed 2026-08-10, filing the i1 signedness defect beside it as item 31; item 13 fixed 2026-08-10; item 15 fixed 2026-08-10, filing the index-signedness defect it measured as item 32; items 18 and 19 fixed 2026-08-10; item 20 fixed 2026-08-10, filing the two argument-position holes it measured as items 33 and 34; item 23's symbol half fixed 2026-08-10, splitting its dispatch half out as item 35; item 24 fixed 2026-08-10, filing the header-shadowing defect it measured as item 36; item 25 fixed 2026-08-10, closing the builtin-scalar spelling beside it and filing the two residual causes of its own named headers as items 37 and 38; item 26 fixed 2026-08-10, closing item 27 with the same cause and most of item 38 as a consequence; item 28 fixed 2026-08-10, filing the digit-leading-name defect it measured as item 39; item 29 fixed 2026-08-10, closing item 6's remaining half and filing the order-dependence it measured as SHARED by both spellings as item 40; item 30 fixed 2026-08-14, which supplied its own second asker — `defvar-init-ir`'s float `as` fold, newly reachable *because* the value path started accepting — and closed it in the same change; item 31 fixed 2026-08-14, the first W9 fix to move the bootstrap — one `TY-I1` arm, 24 `sext i1`→`zext i1` sites across the whole corpus and nothing else; item 32 fixed 2026-08-14, which did **not** move the bootstrap although it predicted it would — the compiler indexes exclusively with signed and `usize` values, so its own IR is byte-identical and the whole corpus moved by five lines; item 33 fixed 2026-08-14, whose five lines of diagnostic surfaced two defects that the silence had been hiding — the `(dyn P)` single-conformer bypass, fixed with it as item 41, and an unreachable `defcast` rule that an example had been documenting as working since it was written, filed as item 42; item 34 fixed 2026-08-14, its sibling two lines away in the same loop — the guard now compares TYPES rather than what they lower to and answers through `coerce-int-val`, so the argument position's refusal matrix matches `let`'s row for row, at 0 IR diffs corpus-wide)*
 
 **The original six are enumerated in [../global-init.md](../global-init.md)
 §7. Four more (7–10) were found measuring G-1 and re-verifying G-0/G-1's test
@@ -959,7 +959,7 @@ hit while measuring, verifying, or documenting, not synthesized.
 | 31 | — FIXED 2026-08-14 — **`i1` is treated as a *signed* 1-bit integer, so `true` widens to −1 and `(< false true)` and `(> true false)` are BOTH false**, split out of item 9 (2026-08-10) | Measured, pre-existing, and independent of item 9's fix (the corpus sweep for that fix was IR byte-identical across all 373 programs, this path included). `(as i32 true)` and `(as i64 true)` are **−1**, contradicting [../../docs/types.md](../../docs/types.md)'s own literal table (`true` → `1`) and the `bool`→`_Bool` C mapping, where `(int)true` is 1. The comparison half is worse than surprising, it is **self-contradictory**: `icmp slt i1` reads `true`'s bit as −1, so `false < true` is `0 < -1` = false *and* `true > false` is `-1 > 0` = false — for two distinct values exactly one must hold. **Single cause**: `is-unsigned` (`src/type-utils.nuc:421`) has no `TY-I1` arm and falls through to `(return 0)`, so every consumer picks the signed instruction — `sext` over `zext` at `nucleusc.nuc:3409` and `abi.nuc:973`, and the signed comparison at `nucleusc.nuc:3311`. **The ruling**: `{0, 1}` makes unsigned the only coherent reading of `i1`, and one `TY-I1 (return 1)` arm fixes all three consumers at once — but `is-unsigned` has 22 call sites, including `binop-result-type`'s signedness-match test (`nucleusc.nuc:3124`, `:3304`) and generic parameter matching (`generics.nuc:626`), so unlike item 9 this **will** move the bootstrap and needs its own sweep. The narrower alternative — an `is-bool` test at the two ext sites only — fixes the widening and leaves the comparison, and is not recommended. **Fixed as ruled**: the one `TY-I1 (return 1)` arm. The estimate was right that it moves the bootstrap and wrong about how far it reaches — the whole corpus moved by exactly 24 `sext i1`→`zext i1` sites and nothing else, and the 22 risky call sites cost zero diagnostics. It also caught a *third* consequence the item did not list: a mixed `bool`/`i32` binop had been **accepted**, silently answering `(< true 1)` = true |
 | 32 | — FIXED 2026-08-14 — **An unsigned index is SIGN-extended, so `(aref p i)` with `i:ui32 ≥ 2^31` reads backwards from `p`**, split out of item 15 (2026-08-10) | Measured end to end, not inferred: with `i:ui32` at `4294967295`, `(aref (unsafe/ptr+ buf 1) i)` returns `buf[0]` — the index became `-1`. Pre-existing and independent of item 15, whose fix is width-only and byte-identical on the host. Now a **one-line** fix, because item 15 gave the widening a single home (`gep-index-ir`, `nucleusc.nuc`): pick `zext` when `is-unsigned` answers for the index type. It also **costs code size** today — dropping the `unsafe/cast i64` workaround from `examples/avr-global-init.nuc` grew the ATtiny1634 image by 4 bytes, exactly the sign-extension of a `ui8` counter that `zext` would not emit. Two cautions: `is-unsigned` had no TY-I1 arm (**item 31**, fixed 2026-08-14 — it now answers `1` for `i1`, so this caution is discharged), and this changes host IR wherever an unsigned index is used, so unlike item 15 it needs its own sweep and will move the bootstrap  **Fixed as ruled, in the one line predicted — and the second caution was wrong, which is the finding.** It does not move the bootstrap: the compiler's own IR is **byte-identical**, because nothing in it indexes with an unsigned narrow type (signed `i32` and pointer-width `usize` only, and `usize` needs no instruction at all). The whole corpus moved by **five lines**, four of them in the new fixture. The code-size claim was exact — the ATtiny1634 image gave the 4 bytes back, 942 → 938. See the W9-32 note below |
 | 33 | — FIXED 2026-08-14 — **A failed argument coercion is silently discarded, so a call may pass an argument of the wrong type with no diagnostic**, found fixing item 20 (2026-08-10) | `emit-call-with-args`' coercion loop (`nucleusc.nuc`) calls `safe-coerce-val` and **ignores a null return** — the comment there says so outright ("no safe conversion exists, the argument is left untouched — preserving the prior pass-through behavior"). So `(f-ptr 7)` against `(defn f-ptr (p:ptr:S) …)` emits `call i32 @f-ptr(i32 7)`, `(f-i32 c)` with `c:CStr` emits `call i32 @f-i32(ptr %t)`, and `(f-i32 1.5)` emits `call i32 @f-i32(double 1.5)` — all accepted, all UB, and `llvm-as` accepts the IR because a call site carries its own signature. Measured identical on the pre-session compiler (5f4989e), so pre-existing. This is the **type** half of item 12, whose arity half was fixed 2026-08-02, and W2d already fixed one *instance* of it (the f32 narrowing miscompile) by adding a coercion rule rather than closing the hole. Overloaded/multimethod calls are unaffected — resolution must match a signature to pick a method, so it rejects earlier and for a different reason; this is the **solitary-`defn`** path only  **Fixed as filed, in five lines: report what the loop was discarding, with the same shape the return site already used (LW-3 calls `coerce-int-val`, checks null, dies with both `type-spelling`s).** Two things the item did not say. Its three examples are all *deliberate* type errors; the case that matters is `(take-f64 3)` — ordinary-looking code, silently miscompiled to `call double @take-f64(i32 3)`, printing `0.000000`. `int`↔`float` is in neither direction of the coercion set, and `(let (a:f64 3) …)` already refused it, so the argument position was the sole outlier and the fix is a *consistency* repair, not a new rule. Second, one line of error surfaced **two further defects** that had been invisible behind the silence: items 41 and 42. Corpus: 233 accepted before and after, 0 status changes, 0 diagnostics moved; the two IR diffs are item 41's fix and the one-line source repair item 42 forced |
-| 34 | **The argument-coercion guard compares IR type *strings*, so a mismatch between two types that lower to `ptr` is never even checked**, found fixing item 20 (2026-08-10) | The same loop guards on `(!= (strcmp (type-to-ir (slot type)) (type-to-ir ptype)) 0)`. Every pointer flavour lowers to `ptr`, so a `CStr`, a `raw` or a `(ref T)` flowing into a `(fn …)` parameter compares equal, the guard is false, and no coercion is attempted at all — `(take c)` passes a string where a function pointer is expected and the callee calls it. Distinct from item 33 (there the guard fires and the *result* is dropped; here the guard never fires), and it is why item 20 looked half-broken: `(take null)` was never accepted, only unchecked. Note `pkind-flow-check` runs unconditionally just above and does catch the nullability subset, which is why `raw`→`(ref T)` arguments *are* diagnosed — the hole is the type identity, not the contract. **Still open with item 33 fixed (2026-08-14), and now the only silent one left in that loop**: item 33's `die-at` sits *inside* this guard, so every pair the `strcmp` calls equal still reaches the callee unchecked — `(take c)` with a `CStr` into a `(fn …)` parameter is unchanged. The two are one loop and two lines apart, and fixing 33 first was deliberate: it is the half that needs no ruling |
+| 34 | — FIXED 2026-08-14 — **The argument-coercion guard compares IR type *strings*, so a mismatch between two types that lower to `ptr` is never even checked**, found fixing item 20 (2026-08-10) | The same loop guards on `(!= (strcmp (type-to-ir (slot type)) (type-to-ir ptype)) 0)`. Every pointer flavour lowers to `ptr`, so a `CStr`, a `raw` or a `(ref T)` flowing into a `(fn …)` parameter compares equal, the guard is false, and no coercion is attempted at all — `(take c)` passes a string where a function pointer is expected and the callee calls it. Distinct from item 33 (there the guard fires and the *result* is dropped; here the guard never fires), and it is why item 20 looked half-broken: `(take null)` was never accepted, only unchecked. Note `pkind-flow-check` runs unconditionally just above and does catch the nullability subset, which is why `raw`→`(ref T)` arguments *are* diagnosed — the hole is the type identity, not the contract. **Still open with item 33 fixed (2026-08-14), and now the only silent one left in that loop**: item 33's `die-at` sits *inside* this guard, so every pair the `strcmp` calls equal still reaches the callee unchecked — `(take c)` with a `CStr` into a `(fn …)` parameter is unchanged. The two are one loop and two lines apart, and fixing 33 first was deliberate: it is the half that needs no ruling  **Fixed 2026-08-14, and the ruling turned out to be already written.** The guard now asks `type-eq`, and `safe-coerce-val` answers the pairs that newly reach it by delegating to `coerce-int-val` — the chokepoint every *other* typed slot already funnels through, which knows CStr↔ptr is free, that the literal `null` reaches a fn slot (item 20) and that a data pointer does not. So "what does the argument position accept?" stopped being a separate answer. **The item understated the hole**: as filed, an int literal and a string literal reached a `(fn …)` parameter too — all eight spellings in item 20's refusal matrix were accepted at an argument while `let` refused six. Those two have differing IR strings, so item 33 closed them on its own; the four that lower to `ptr` are item 34's, and the measured split is tabulated in the note below. It also had a second half nobody had filed: two types that lower to the same string but differ in SIGN were never compared either, so `(take-ui32 -1)` passed 4294967295 where `(let (a:ui32 -1) …)` had always been `integer literal -1 does not fit ui32`. Corpus: **0 IR diffs, 0 diagnostic diffs, 0 status changes** over 396 programs, and the bootstrap held on the first pass — replacing a lowered-type comparison with a type-identity one moved nothing that was already correct |
 | 35 | **Two namespaces cannot each define one name with the same signature**, split out of item 23 (2026-08-10) | With item 23's symbol half fixed the two definitions no longer *collide* — `@qa__describe` and `@qb__describe` are distinct symbols, and a qualified `qa/describe` filters to its own method. What refuses them is R4's eager same-kind check in `finalize-generics`, whose note still says "a public name must be unique across the whole compilation unit" — true of one flat namespace, and the thing namespaces exist to stop being true. The obstacle is the **bare** reference: one `Generic` per bare name (R2) means `(describe 10)` has two equally good methods and nothing to choose between them. The honest rule is R2 §8.2's own first recommendation, which R4 later overrode — allow the definitions, report ambiguity at the first ambiguous *use*, naming both candidates. That is a ruling change, and it sits on top of the audit B4 explicitly deferred (§9.6: a bare reference currently reaches namespaces the file imported *prefixed*, and filtering it symmetrically "wants its own audit of every `Method` writer first"). Not a typo, not a one-liner, and the diagnostic today is located and names both files — so this is a real limitation with a good error message, not a silent wrong answer |
 | 36 | **A `.nuch` `declare` is silently discarded when the importing unit defines the same name, and even a QUALIFIED call to the library's function then reaches the local one**, found fixing item 24 (2026-08-10) | `emit-nuch-declare-import` returns early on `(scope-lookup-key g-globals fname)`, and the unit's own signature prescan has already bound every local `defn` by the time the import form is emitted — so the header entry is dropped whole: no global binding, no LLVM `declare`, no generic method. Measured: a library exporting `helper (x:i32):i32`, a consumer defining `helper (x:i64):i64`, and `(lib2/helper 3)` emits `call i64 @helper` — the **local** function, under a spelling that names the library's. There is no diagnostic, and the two are not even the same type. Byte-identical on the pre-fix compiler, so it is pre-existing and untouched by item 24, whose registration simply inherits the early return. The skip's stated purpose is idempotence ("already defined (e.g. from include or c-include)"), which a diamond import genuinely needs; what it cannot distinguish is a re-declaration of the same function from a *different* function that happens to share the name. Neighbour of item 29 (both are `.nuch` registration order) and of item 33 (both silently accept a wrong-typed call) |
 | 37 | **A generated C header names a type from an imported library and emits no `#include` for it**, split out of item 25 (2026-08-10) | `lib/string-split.h` declares `struct StrView cur;` — a real user struct, defined in `lib/prelude.nuc` and typedef'd in `lib/prelude.h`, which `string-split.h` neither includes nor forward-declares, so it fails "field has incomplete type" no matter how the *defining* header spells the type. This is the **whole** residual cause of item 25's `string-split.h`, and the last cheader defect that is not a naming ruling. `--emit-cheader` already knows the import set (`emit-cheader-header` walks the forms), so the mechanism exists; the ruling needed is what to emit — `#include "prelude.h"` presumes a filename and a search path the Nucleus import never had, and a forward declaration (`struct StrView;`) is enough for a pointer but not for the by-value field this actually is. Neighbour of item 26/27/28 only in file, not in kind |
@@ -988,6 +988,77 @@ It breaks C interop for any hyphenated name, which is most of them.
 > its members, function *parameter* names, and the inline `(union …)` member
 > names `type-node-to-c` emits. And "a missed call site" holds only for names
 > nothing links against — for a `defn` it is a *ruling*, taken by item 3.
+
+### W9 item 34 as fixed *(2026-08-14)* — a guard that compared LOWERED types asked a question the language never asked
+
+`emit-call-with-args`' coercion guard was
+`(!= (strcmp (type-to-ir (slot type)) (type-to-ir ptype)) 0)`. Every pointer
+flavour lowers to `ptr`, so `CStr`, `raw`, `(ref T)` and `(fn …)` were all the
+same string and the coercion below — including item 33's brand-new error — was
+never entered for any pair of them. The fix is one word in the guard and one
+line in `safe-coerce-val`:
+
+* the guard asks **`type-eq`**, which is the question the rest of the compiler
+  asks. It already knows the identities the string comparison was standing in
+  for (any two `TY-FN` are equal, and a bare fn equals a `(ref fn)`), so what
+  newly arrives below is exactly the pairs that genuinely differ;
+* `safe-coerce-val`'s final `(return null)` becomes
+  `(return (coerce-int-val v target line))` — the chokepoint every *other* typed
+  slot funnels through. It already knew CStr↔ptr is free, that the literal
+  `null` reaches a fn slot (item 20) and that a loaded data pointer does not.
+
+**The ruling the item asked for was already written**, in `coerce-int-val`, and
+had been since item 20. Nothing new had to be decided about what "the same type"
+means once `ptr` has erased the distinction — the argument position simply had
+to stop answering it on its own.
+
+**The item understated the hole, and item 20's own matrix is the measurement.**
+That matrix ends with "**argument** `(take null)` — 'OK' — still unchecked", and
+unchecked turns out to mean *all eight rows*:
+
+| into a `(fn i32)(i32)` slot | argument, as filed | after item 33 | after item 34 | `let`, throughout |
+|---|---|---|---|---|
+| `null` | OK | OK | OK | OK |
+| a `CStr` | **OK** | **OK** | refused | refused |
+| a `ptr` | **OK** | **OK** | refused | refused |
+| a `raw` | **OK** | **OK** | refused | refused |
+| a `(ref T)` | **OK** | **OK** | refused | refused |
+| an int literal | **OK** | refused | refused | refused |
+| a string literal | **OK** | refused | refused | refused |
+| a real fn value | OK | OK | OK | OK |
+
+The two middle columns are the split, measured rather than reasoned: an int
+literal and a string literal in a function-pointer parameter are not
+pointer-flavour confusions at all (`i32` and `%StrView` against `ptr` — different
+IR strings), so the old guard *did* fire for them and item 33's error alone
+closed those two rows. The four that lower to `ptr` needed item 34. Item 20's
+matrix recorded the whole column as one word, "unchecked", and it was two
+defects.
+
+**It had a second half nobody had filed.** Two types that lower to the same
+string but differ in **sign** were never compared either, so the literal range
+check (LW-4) that every other slot performs was unreachable from an argument:
+
+```lisp
+(take-ui32 -1)          ; passed 4294967295, silently
+(let (a:ui32 -1) …)     ; integer literal -1 does not fit ui32
+```
+
+Now both say the same thing. This is the third time in three items that the
+argument position turned out to be the one slot not asking a question the
+language had already settled (33: `int`↔`float`; 34: fn slots, then literal
+range) — the shared cause is that it had its own coercion entry point rather
+than the shared one.
+
+**Evidence.** Corpus (396 programs): **0 IR diffs, 0 diagnostic diffs, 0 status
+changes** — every pair that newly reaches `safe-coerce-val` in real code is
+answered identically, with no instruction. `make bootstrap` held the fixed point
+on the first pass and no `boot/` artifact moved. Tests 602 → **606 PASS / 0
+FAIL**; `abi-test`, `layout-test`, `avr-test` (8 units incl. simavr) green. The
+gate is a **parity** assertion rather than a list of expected messages: each of
+the eight spellings is compiled in an argument and in a `let` and the two
+verdicts must agree *and* match the expected one — parity alone would still hold
+if both positions regressed to accepting everything.
 
 ### W9 item 33 as fixed *(2026-08-14)* — five lines of diagnostic, and the two defects the silence was hiding
 
@@ -1872,7 +1943,7 @@ across every position:
 | `set!` | `set!: type mismatch` | OK |
 | `.set!` field store | `.set!: type mismatch for field` | OK |
 | explicit `return null` | `return type mismatch … __fnty_0` | OK |
-| **argument** `(take null)` | "OK" | **still unchecked — see items 33/34** |
+| **argument** `(take null)` | "OK" | **was unchecked — items 33/34, both fixed 2026-08-14; every other row of this table now reads the same in an argument as in a `let`** |
 
 So it was never `let`-specific: it was every site funnelling through
 `coerce-int-val`. And the argument position "worked" for a reason worth more
@@ -1918,14 +1989,20 @@ This is the solitary-`defn` path only, which is also why self-compilation never
 caught it — the compiler's own calls are type-correct, so a swallowed failure
 never has anything to swallow.
 
-> **Item 33 fixed 2026-08-14; item 34 still open.** The four measured calls
-> above split exactly along the two defects: the first three now raise
-> `argument N has type X, which does not match parameter type Y`, and `(take c)`
-> — the pointer pair — still compiles, because item 33's check sits *inside* the
-> `strcmp` guard that item 34 is about. The list also understates the damage:
-> the case worth fixing is not a deliberate type error but `(take-f64 3)`, which
-> printed `0.000000`. See the W9-33 note below, and items 41 and 42, which this
-> fix's error surfaced.
+> **Items 33 and 34 both fixed 2026-08-14, in that order and for a reason.**
+> The four measured calls above split exactly along the two defects: item 33
+> made the first three raise `argument N has type X, which does not match
+> parameter type Y`, and `(take c)` — the pointer pair — kept compiling, because
+> item 33's check sits *inside* the `strcmp` guard that item 34 is about. Item
+> 34 replaced that guard with `type-eq` and routed the answer through
+> `coerce-int-val`. The split between them is sharper than "the guard fires or
+> it does not" suggests: `(take-fn 7)` — an *int literal* in a function-pointer
+> slot, which item 20's matrix never listed — has differing IR strings, so the
+> old guard did fire and item 33 alone closed it. Item 34 is the four spellings
+> that lower to `ptr`. The list also understates the
+> damage: the case worth fixing was not a deliberate type error but
+> `(take-f64 3)`, which printed `0.000000`. See the W9-33 and W9-34 notes below,
+> and items 41 and 42, which item 33's error surfaced.
 
 **Evidence.** Corpus sweep against the pre-fix compiler: **229 IR
 byte-identical, 0 differing, 156 rejected by both with identical stderr, 0 new

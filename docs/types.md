@@ -533,12 +533,17 @@ the argument passed untouched: that call emitted `call double @take(i32 3)` and
 printed `0.000000`. LLVM accepts such a module, because a call site carries its
 own signature and is never checked against the callee's definition.)
 
-Two argument mismatches are still not diagnosed, both because the check compares
-*lowered IR* types: any two pointer flavours (a `CStr` where a `(fn …)` is
-expected) compare equal and are never checked at all, and a mismatch that
-survives to the ABI's decomposition of an aggregate is invisible to LLVM as
-well. Nullability is checked separately and does fire on the pointer cases it
-covers (`raw`/`?T` into a `(ref T)` parameter).
+The check is on the **types**, not on what they lower to. That distinction is
+the whole of it for pointers, since `ptr`, `ptr:T`, `CStr` and `(fn …)` are one
+`ptr` register apiece: the pointer family stays freely interconvertible as the
+bullets above say, and `fn` ↔ `ptr` stays `unsafe/cast`'s job — so a `CStr`, a
+`raw`, a `(ref T)`, an int literal or a string literal in a `(fn …)` parameter
+is refused, exactly as it is in a `let`, a `set!` and a `return`. The literal
+`null` is the one spelling a function-pointer slot takes, in every position.
+(Until Stage 15 the argument position compared *lowered* types, so all of those
+compared equal to a function pointer, nothing was checked, and the callee called
+whatever arrived.) Nullability is checked separately, before the type identity,
+and reports the `raw`/`?T`-into-`(ref T)` case in its own words.
 
 **Binary operators unify their two operands** by exactly one rule, and the
 result type is that unified type (a comparison always yields `bool`). The rule is
