@@ -445,9 +445,18 @@
       TY-CHAR  (return 32)
       (return 0))))
 
+; Stage 15 W9 item 31: i1/bool is UNSIGNED. It holds {0, 1} — the two values
+; `false` and `true` denote — not a 1-bit two's complement range, so unsigned is
+; the only reading under which `true` widens to 1 and `false < true`. Missing
+; this arm made all three consumers pick the signed instruction at once: `sext`
+; here and in abi.nuc turned `(as i32 true)` into -1, and `icmp slt i1` read
+; `true`'s bit as -1, so `(< false true)` and `(> true false)` were BOTH false —
+; self-contradictory for two distinct values. The same {0, 1} reading is why
+; `int-literal-fits` special-cases width 1 (W9 item 9); keep the two together.
 (defn is-unsigned (t:raw:Type):i32
   (let (k:i32 (t kind))
     (case k
+      TY-I1    (return 1)
       TY-UI8   (return 1)
       TY-UI16  (return 1)
       TY-UI32  (return 1)
