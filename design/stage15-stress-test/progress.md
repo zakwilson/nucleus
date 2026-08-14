@@ -35,7 +35,12 @@ further pre-existing causes of an unparseable C header and filed them as items
 25–28, item 8's fix (2026-08-10) split its float counterpart out as item 30,
 and item 9's fix (2026-08-10) filed the i1 *signedness* defect beside it as item
 31; item 13 fixed 2026-08-10: **thirty-one found, seventeen fixed (item 6 in part),
-fourteen open**.
+fourteen open**. That running tally stops there; every count in this paragraph
+is a snapshot of the day it was written, and the **current** one lives in the W9
+section's own heading — **forty found, twenty-nine fixed, eleven open** as of
+2026-08-14 (item 30). Read that heading, not this sentence, and re-probe before
+trusting either: this table has gone stale by hand three times, which item 10's
+row and the B-series re-measurement both record.
 
 **W4, W2 and W3 are complete** (W2a–d; W3a §1.6 opaque forward-declared C
 types; W3b §1.5 C type qualifiers + the `declare` validity gate — `SDL2/SDL.h`
@@ -847,7 +852,7 @@ escape hatch — reproduced by compiling `(defvar g:ptr:i32)` with
 
 ---
 
-## W9 — Reconciled at stage close: forty defects found, **twenty-eight** now fixed (items 23 and 38 in part), twelve open *(added 2026-08-01; extended through G-5's close 2026-08-02; items 21–24 added 2026-08-03; items 10 and 16 closed and item 22 measured closed 2026-08-09; items 1, 5 and 2 fixed 2026-08-09; items 3 and 4 fixed 2026-08-10, the latter adding items 25–28; item 6's string-path half fixed 2026-08-10, splitting its `.nuch` half out as item 29; item 7 fixed 2026-08-10; item 8 fixed 2026-08-10, splitting its float counterpart out as item 30; item 9 fixed 2026-08-10, filing the i1 signedness defect beside it as item 31; item 13 fixed 2026-08-10; item 15 fixed 2026-08-10, filing the index-signedness defect it measured as item 32; items 18 and 19 fixed 2026-08-10; item 20 fixed 2026-08-10, filing the two argument-position holes it measured as items 33 and 34; item 23's symbol half fixed 2026-08-10, splitting its dispatch half out as item 35; item 24 fixed 2026-08-10, filing the header-shadowing defect it measured as item 36; item 25 fixed 2026-08-10, closing the builtin-scalar spelling beside it and filing the two residual causes of its own named headers as items 37 and 38; item 26 fixed 2026-08-10, closing item 27 with the same cause and most of item 38 as a consequence; item 28 fixed 2026-08-10, filing the digit-leading-name defect it measured as item 39; item 29 fixed 2026-08-10, closing item 6's remaining half and filing the order-dependence it measured as SHARED by both spellings as item 40)*
+## W9 — Reconciled at stage close: forty defects found, **twenty-nine** now fixed (items 23 and 38 in part), eleven open *(added 2026-08-01; extended through G-5's close 2026-08-02; items 21–24 added 2026-08-03; items 10 and 16 closed and item 22 measured closed 2026-08-09; items 1, 5 and 2 fixed 2026-08-09; items 3 and 4 fixed 2026-08-10, the latter adding items 25–28; item 6's string-path half fixed 2026-08-10, splitting its `.nuch` half out as item 29; item 7 fixed 2026-08-10; item 8 fixed 2026-08-10, splitting its float counterpart out as item 30; item 9 fixed 2026-08-10, filing the i1 signedness defect beside it as item 31; item 13 fixed 2026-08-10; item 15 fixed 2026-08-10, filing the index-signedness defect it measured as item 32; items 18 and 19 fixed 2026-08-10; item 20 fixed 2026-08-10, filing the two argument-position holes it measured as items 33 and 34; item 23's symbol half fixed 2026-08-10, splitting its dispatch half out as item 35; item 24 fixed 2026-08-10, filing the header-shadowing defect it measured as item 36; item 25 fixed 2026-08-10, closing the builtin-scalar spelling beside it and filing the two residual causes of its own named headers as items 37 and 38; item 26 fixed 2026-08-10, closing item 27 with the same cause and most of item 38 as a consequence; item 28 fixed 2026-08-10, filing the digit-leading-name defect it measured as item 39; item 29 fixed 2026-08-10, closing item 6's remaining half and filing the order-dependence it measured as SHARED by both spellings as item 40; item 30 fixed 2026-08-14, which supplied its own second asker — `defvar-init-ir`'s float `as` fold, newly reachable *because* the value path started accepting — and closed it in the same change)*
 
 **The original six are enumerated in [../global-init.md](../global-init.md)
 §7. Four more (7–10) were found measuring G-1 and re-verifying G-0/G-1's test
@@ -950,7 +955,7 @@ hit while measuring, verifying, or documenting, not synthesized.
 | 27 | **A template tyvar is exported as a concrete C type — FIXED 2026-08-10 by item 26**, found fixing item 4 | `lib/hashset.h` declared `void set_remove(void* self, struct T elem);` — `T` is the template's type variable, emitted as though it were a struct. **The recorded cause was wrong in an instructive way.** It reads "`defn-is-generic-template` already answers this question for the *whole form*; the gap is that a method on a parametric struct is not itself a generic template" — but that predicate answers correctly, and a method on a parametric struct *is* a template to it (`defn-has-receiver-tyvars`). It was returning 0 for a different reason: `collect-pattern-tyvars` finds a tyvar **only** through `node-template-of`, the struct-template registry, and the header pass had never populated it, so `(HashSet T)` was not a template application and `T` was not a tyvar. One missing prescan, not a missing case. Item 26 ran the prescans; `set-remove` and fourteen others in `hashset.h`/`hashmap.h` now read `/* …: generic template; not exported */`, which is what they are — a template has no symbol until a call site stamps it. Gated by `w9-cheader-symbol-defined` and the corpus assertions beside it |
 | 28 | **A C keyword is emitted as an identifier — FIXED 2026-08-10**, found fixing item 4 | `lib/hashset.nuc` defines `union`, a perfectly ordinary Nucleus name, and the header emitted `void union(void* self, void* other);`. `sanitize-for-c` maps illegal *characters* and has no notion of a reserved word, so the name passed through intact and the header did not parse. The same applied to `int`, `return`, `default`, `switch`, `class` and the rest. **Ruled as the item proposed** — rename to `union_` and label it `asm("union")`, exactly as a hyphenated name is handled — with three refinements the corpus forced. (a) **C++'s keywords count too.** The only committed header this defect touched was `lib/allocator.h`, whose `alloc-handle-realloc` takes a parameter named `new`: legal C, fatal C++, and a generated header is routinely read through `extern "C"`. Committed `lib/*.h` parsing as C++ went **32/34 → 33/34** (only `string-split.h`, item 37); as C it stays 33/34, since a C-only table would have left `allocator.h` broken and measured nothing. The iso646 spellings (`and`, `or`, `not`, `xor`) are in the table for the same reason. (b) **A struct tag is an identifier**, so `typedef struct union {…}` fails as surely as the function did; the escape had to go on `type-name-to-c` *and* both definition sites, in the same three-way lockstep B3′ and item 25 each had to repair. (c) **Escape the join, not the fragment.** `Color_default` is already legal, and escaping the fragment would have renamed every prefixed enum constant in the corpus for no reason — `cheader-c-ident-join` tests the finished string, which can still land on a keyword (`and` + `eq`). Everything is one `_` suffix and the existing `cheader-asm-label` comparison picks up the rebinding for free, so no symbol moves: verified end to end by compiling **and linking** a C and a C++ consumer against a nucleusc-built object whose exports are `union`, `xor`, `delete`, a `class` struct passed and returned by value, and fields named `class`/`signed`. Corpus effect measured, not asserted: 362 of 364 headers byte-identical, the two that moved being `lib/allocator.nuc` (`new` → `new_`) and `src/compiler-types.nuc` (fields `template`, `private`); IR 231 identical, 0 differing |
 | 29 | **A `.nuch` header's functions and values registered at import time, so they stayed order-dependent — FIXED 2026-08-10**, split out of item 6 (2026-08-10) | A `declare`d function, an `extern` global, a `defconst` or a `defenum` member from a header resolved only if the header was imported *above* the use; otherwise `not defined anywhere in this compilation unit` for a name that is in the unit. Measured against the `.nuc` spelling of the same library, which resolves on reachability (W1a): `declare`/`extern`/`defconst`/`defenum` all failed, and so did a `defmethod` — the item's list of four was one short, because real parity with a `defn` includes each arm of an overload set. **Ruled as the item proposed**: a registration-without-emission pass over header forms (`prescan-nuch-signatures`), armed by the same per-path `g-prescan-sigs` guard `emit-toplevel-forms` already reads, rather than a second implementation of the registrars. The half the item did not anticipate is *where the line between the halves falls*. Hoisting emission too would move every `declare` / `external global` to the top of `g-decl-stream` and change the IR of every module that imports a header — `src/llvm.nuch`, so the compiler's own — so registration moves and emission does not, via a `NUCH-BOTH`/`NUCH-REG`/`NUCH-AFTER` mode on the three importers. That in turn makes "already registered" a per-NAME question, not a per-header one: all three importers have an "already defined → return" skip (two headers declaring one `stderr`; item 36's local definition), so an emit-only pass that assumed the whole header was registered would write `@x = external global` twice and LLVM would reject the module — hence `g-nuch-registered`, keyed on (path, name). Registration-only also means the pass writes no IR, so it needs no stream guard and is correct under `--emit-nuch`/`--emit-cheader`, which return before `open-module-streams`. Measured: IR **231 identical / 0 differing / 0 status changes** across the corpus, `--emit-nuch` 367 identical, `--emit-cheader` 364 identical; the header import now compiles, links and runs identically from either position, and transitively through a `.nuc` library. What did NOT change is the residue, and it is **symmetric with `.nuc`** — see item 40 |
-| 30 | **`(as f32 1.5)` is refused although the literal is exactly representable**, split out of item 8 (2026-08-10) | The float counterpart of item 8, and the *only* place the safe cast is still stricter than the implicit coercion for a literal. `emit-as` step 7 rejects every `f64`→`f32` on the two kinds alone, so `(as f32 1.5)` dies `lossy conversion from f64 to f32` while `(let (a:f32 1.5) …)` compiles and emits a plain `float 1.5` constant with no instruction (W2d). [../global-init.md](../global-init.md) records the rejection as expected behaviour, which is why item 8 did not quietly widen into it — this is a **ruling**, not a missed call site. The predicate is already written: `f32-const-ir` computes `(as f64 (unsafe/cast f32 d))`, so "does this literal round-trip exactly" is that comparison, and it is the precise analogue of `int-literal-fits`. The ruling to make is whether `as` accepts only exact round-trips (1.5 yes, 3.14 no — `as` keeps its no-loss promise, and is *stricter* than the implicit path's deliberate Option A rounding) or follows the implicit path wholesale. Recommend the former; ~6 lines either way |
+| 30 | **`(as f32 1.5)` is refused although the literal is exactly representable — FIXED 2026-08-14**, split out of item 8 (2026-08-10) | The float counterpart of item 8, and the *only* place the safe cast is still stricter than the implicit coercion for a literal. `emit-as` step 7 rejects every `f64`→`f32` on the two kinds alone, so `(as f32 1.5)` dies `lossy conversion from f64 to f32` while `(let (a:f32 1.5) …)` compiles and emits a plain `float 1.5` constant with no instruction (W2d). [../global-init.md](../global-init.md) records the rejection as expected behaviour, which is why item 8 did not quietly widen into it — this is a **ruling**, not a missed call site. The predicate is already written: `f32-const-ir` computes `(as f64 (unsafe/cast f32 d))`, so "does this literal round-trip exactly" is that comparison, and it is the precise analogue of `int-literal-fits`. The ruling to make is whether `as` accepts only exact round-trips (1.5 yes, 3.14 no — `as` keeps its no-loss promise, and is *stricter* than the implicit path's deliberate Option A rounding) or follows the implicit path wholesale. Recommend the former; ~6 lines either way  **Ruled the recommended way and built as described — and the estimate was right for the rule and wrong for the item.** The three-line predicate is the whole of it, but landing it *created* a second asker inside the same change: with `(as f32 1.5)` legal, `(defvar g:f32 (as f32 1.5))` stopped being an error and became a `@__nucleus_init` store while `(defvar g:f32 1.5)` stayed a constant — the exact divergence `global-init.md`'s "a float `as` fold could only have diverged" clause was written to prevent, arriving from the other direction. See the W9-30 note below |
 | 31 | **`i1` is treated as a *signed* 1-bit integer, so `true` widens to −1 and `(< false true)` and `(> true false)` are BOTH false**, split out of item 9 (2026-08-10) | Measured, pre-existing, and independent of item 9's fix (the corpus sweep for that fix was IR byte-identical across all 373 programs, this path included). `(as i32 true)` and `(as i64 true)` are **−1**, contradicting [../../docs/types.md](../../docs/types.md)'s own literal table (`true` → `1`) and the `bool`→`_Bool` C mapping, where `(int)true` is 1. The comparison half is worse than surprising, it is **self-contradictory**: `icmp slt i1` reads `true`'s bit as −1, so `false < true` is `0 < -1` = false *and* `true > false` is `-1 > 0` = false — for two distinct values exactly one must hold. **Single cause**: `is-unsigned` (`src/type-utils.nuc:421`) has no `TY-I1` arm and falls through to `(return 0)`, so every consumer picks the signed instruction — `sext` over `zext` at `nucleusc.nuc:3409` and `abi.nuc:973`, and the signed comparison at `nucleusc.nuc:3311`. **The ruling**: `{0, 1}` makes unsigned the only coherent reading of `i1`, and one `TY-I1 (return 1)` arm fixes all three consumers at once — but `is-unsigned` has 22 call sites, including `binop-result-type`'s signedness-match test (`nucleusc.nuc:3124`, `:3304`) and generic parameter matching (`generics.nuc:626`), so unlike item 9 this **will** move the bootstrap and needs its own sweep. The narrower alternative — an `is-bool` test at the two ext sites only — fixes the widening and leaves the comparison, and is not recommended |
 | 32 | **An unsigned index is SIGN-extended, so `(aref p i)` with `i:ui32 ≥ 2^31` reads backwards from `p`**, split out of item 15 (2026-08-10) | Measured end to end, not inferred: with `i:ui32` at `4294967295`, `(aref (unsafe/ptr+ buf 1) i)` returns `buf[0]` — the index became `-1`. Pre-existing and independent of item 15, whose fix is width-only and byte-identical on the host. Now a **one-line** fix, because item 15 gave the widening a single home (`gep-index-ir`, `nucleusc.nuc`): pick `zext` when `is-unsigned` answers for the index type. It also **costs code size** today — dropping the `unsafe/cast i64` workaround from `examples/avr-global-init.nuc` grew the ATtiny1634 image by 4 bytes, exactly the sign-extension of a `ui8` counter that `zext` would not emit. Two cautions: `is-unsigned` has no TY-I1 arm (**item 31**), and this changes host IR wherever an unsigned index is used, so unlike item 15 it needs its own sweep and will move the bootstrap |
 | 33 | **A failed argument coercion is silently discarded, so a call may pass an argument of the wrong type with no diagnostic**, found fixing item 20 (2026-08-10) | `emit-call-with-args`' coercion loop (`nucleusc.nuc`) calls `safe-coerce-val` and **ignores a null return** — the comment there says so outright ("no safe conversion exists, the argument is left untouched — preserving the prior pass-through behavior"). So `(f-ptr 7)` against `(defn f-ptr (p:ptr:S) …)` emits `call i32 @f-ptr(i32 7)`, `(f-i32 c)` with `c:CStr` emits `call i32 @f-i32(ptr %t)`, and `(f-i32 1.5)` emits `call i32 @f-i32(double 1.5)` — all accepted, all UB, and `llvm-as` accepts the IR because a call site carries its own signature. Measured identical on the pre-session compiler (5f4989e), so pre-existing. This is the **type** half of item 12, whose arity half was fixed 2026-08-02, and W2d already fixed one *instance* of it (the f32 narrowing miscompile) by adding a coercion rule rather than closing the hole. Overloaded/multimethod calls are unaffected — resolution must match a signature to pick a method, so it rejects earlier and for a different reason; this is the **solitary-`defn`** path only |
@@ -981,6 +986,88 @@ It breaks C interop for any hyphenated name, which is most of them.
 > its members, function *parameter* names, and the inline `(union …)` member
 > names `type-node-to-c` emits. And "a missed call site" holds only for names
 > nothing links against — for a `defn` it is a *ruling*, taken by item 3.
+
+### W9 item 30 as fixed *(2026-08-14)* — closing the value path opened the second asker
+
+The item's diagnosis was exact and its estimate was right about the *rule*:
+`as-float-narrowing` + `float-literal-fits` (`src/type-utils.nuc`, beside their
+integer twins `as-int-narrowing` / `int-literal-fits`) are six lines between
+them, and the predicate really was already written — `f32-const-ir`'s
+`(as f64 (unsafe/cast f32 d))` is the round trip, so "exactly representable" is
+that value compared against the original.
+
+**The ruling is the stricter of the two the item offered**: `as` admits a float
+literal only when it round-trips exactly, so `(as f32 1.5)` compiles and
+`(as f32 3.14)` keeps its diagnostic. The argument for it is not symmetry with
+the implicit path but the opposite — a literal `as` accepts must be one no
+conversion happened to. The implicit path's rounding is W2d's Option A, taken
+deliberately and unchanged here; if `as` rounded too, nothing in the language
+would say "this conversion is exact", and `unsafe/cast` would be the only
+spelling with a meaning. So `as` is now *stricter* than assignment for a float
+literal and *equal* to it for an integer one, and that asymmetry is the ruling,
+not an oversight.
+
+**The finding is that the fix supplied its own second asker, inside the same
+change.** Item 8's fix had to reach two positions because `const-fold-int`
+already asked the integer question. The float question had exactly one asker
+while the answer was always "no" — and the moment `emit-as` started saying yes,
+`(defvar g:f32 (as f32 1.5))` stopped being an error and started being a
+**runtime** initializer: G-3's soft-mode fall-through queued it for
+`@__nucleus_init` and stored into `@g` at start-up, while `(defvar g:f32 1.5)`
+one line above stayed `global float 0x3FF8000000000000`. That is a live
+difference on any target whose constructors do not run (`global-init.md` §4.6,
+the AVR rule), reached by *fixing* something. `defvar-init-ir`'s `as` branch
+gained a float arm in the same change, calling the same `as-float-narrowing`,
+so the two positions cannot drift. The generalisable form: **a rule with one
+asker because it always refuses acquires its other askers the moment it starts
+accepting** — enumerate them when you relax a rule, not when you write it.
+`global-init.md`'s "a float `as` fold could only have *diverged* from the value
+path" clause predicted this precisely, from the other direction, and is amended
+there.
+
+**A duplication fell out on the way.** `emit-as` step 6 hand-wrote
+`  %s = fpext float %s to double\n` for the f32→f64 widening — text
+`coerce-int-val`'s float branch already emits character for character. The new
+step 6 covers all of float→float and delegates the emission to the chokepoint,
+which is the shape step 5 had already adopted for integers; the proof that the
+two really were identical is that the corpus IR did not move by one byte.
+`sk`/`dk` were step 6's only readers and are gone with it.
+
+**What the item does NOT cover, and why that bounds it.** `(as f32 5)` — an
+*integer* literal at a float target — is still `lossy conversion from i32 to
+f32`, and correctly so: the implicit path refuses it too (`(let (a:f32 5) …)` is
+`let: init type mismatch for 'a'`), so `as` is not stricter than the coercion it
+makes explicit and there is no asymmetry to close. The item is exactly the
+float→float literal, which was the one remaining position where the safe cast
+was stricter than the machinery it exists to make explicit.
+
+**One arm the round trip needs.** `=` on floats is `fcmp oeq`, so a NaN literal
+fails its own round-trip test; `float-literal-fits` answers NaN before the
+comparison. `±inf` needs no arm — it round-trips and compares equal. And the
+`-ffast-math` prohibition W2d put on the compiler's own link line now has a
+second dependent: this predicate performs target arithmetic in the compiler
+process, so FTZ/DAZ would make it call a flushed denormal exactly representable.
+
+**Tests.** `tests/fixtures/w9-as-float-literal-fits.nuc` is self-checking and
+RUN, not merely compiled (the risk in a round-trip rule is a wrong *value* — a
+literal re-rendered at the wrong width — which an exit-0 compile would not
+catch), and its IR assertion is stronger than item 8's: the accepted form must
+cost **no instruction at all**, so any `fptrunc` in the fixture fails it. Three
+rejects hold the three edges: `-inexact` (a literal that does not round-trip),
+`-runtime` (a *value*, where the widths alone still decide), and
+`-global-inexact` (the fold path reaching the same verdict with the same
+wording).
+
+**Measured.** Tests **586 PASS / 0 FAIL**, five of them new. `make bootstrap`
+**byte-identical on the first pass**. Per-function normalized diff of
+`build/nucleusc.ll` against a compiler built from HEAD's source: **1193
+byte-identical, 2 changed** (exactly `emit-as` and `defvar-init-ir`), 0 removed,
+2 added (`float-literal-fits`, `as-float-narrowing`). Corpus sweep over
+`lib/`, `examples/`, `tests/fixtures/` and `src/`: **234 byte-identical IR, 0
+differing, 0 regressed**, 1 newly-compiles — the new fixture, which is the whole
+of the intended change — and across the 173 programs both compilers reject,
+**0 diagnostics moved**. `make abi-test` / `make layout-test` / `make avr-test`
+green.
 
 ### W9 item 18 as fixed *(2026-08-10)* — the convention was the defect generator
 

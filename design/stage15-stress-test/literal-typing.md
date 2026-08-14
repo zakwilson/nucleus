@@ -662,6 +662,24 @@ slots, and if it is ever revisited it must be revisited at `coerce-int-val` for
 both kinds at once, not for floats alone. Documented in `docs/types.md` rather
 than quietly resolved in one direction.
 
+> **Resolved for LITERALS, 2026-08-14 (W9 items 8 and 30); still open for
+> values, and the split is the point.** The paragraph above treats "as refuses,
+> the slot accepts" as one question, and it is two. For a **value** it stands
+> verbatim — `(as i32 n:i64)` and `(as f32 d:f64)` are both still refused while
+> the annotated slot truncates, and that remains the one language-wide question
+> to revisit at `coerce-int-val` for both kinds at once. For a **literal** the
+> premise it rests on — that `as` cannot know whether anything was lost — is
+> simply false, and the two items closed it in the same shape: item 8 gave
+> `as-int-narrowing` the literal's value and `int-literal-fits`, item 30 gave
+> `as-float-narrowing` the literal's value and `float-literal-fits`.
+>
+> The float half needed a ruling the integer half did not, because "fits" is
+> not "rounds to". `as` admits `1.5` and refuses `3.14`, so it is **stricter**
+> than Option A's implicit rounding rather than merely equal to it — a literal
+> `as` accepts is one no conversion happened to, which is what makes the
+> spelling worth writing. Option A itself is untouched: every implicit position
+> still rounds silently, and `(let (a:f32 3.14) …)` still compiles.
+
 **Multimethod dispatch is deliberately stricter than assignment.** `arg-adapts`
 (`src/generics.nuc`) now admits a float *literal* into a narrower float
 parameter — without it a solitary `(defn take (x:f32) …)` accepted `(take 0.1)`

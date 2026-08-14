@@ -1,0 +1,13 @@
+; Stage 15 W9 item 30 negative fixture: `as` still refuses a float literal that
+; does NOT round-trip exactly.
+;
+; This is the half of the ruling that keeps `as` meaningful. 3.14 is not
+; representable in single precision, so admitting it would make the safe cast
+; round silently — which is what the implicit path at a typed slot deliberately
+; does (W2d Option A) and what `as` exists to say it is not doing.
+;
+; Compiling this must FAIL with:
+;   "as: lossy conversion from f64 to f32 -- use unsafe/cast"
+(defn main ():i32
+  (let (a:f32 (as f32 3.14))
+    (return (as i32 (as f64 a)))))

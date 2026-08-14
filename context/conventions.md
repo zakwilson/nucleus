@@ -180,7 +180,9 @@ by emitting instructions — `defvar-init-ir` renders a literal directly into th
 `@g = global …` line and re-derives, by hand, whatever rules the chokepoint
 applies to the same value in a *local* slot. Every rule it forgets is a silent
 divergence between `(defvar g:T lit)` and `(let (x:T lit) …)`, and this has now
-bitten **three** times, each found while working on something else:
+bitten **five** times — the first four found while working on something else,
+the fifth (recorded after the list) created by a fix and caught in the same
+change:
 
 - **W2b, integer narrowing.** The decimal string went straight to LLVM, which
   truncates `i32 5000000000` to `705032704` without complaint, while the local
@@ -204,6 +206,22 @@ bitten **three** times, each found while working on something else:
   elem-less-bare-`ptr` carve-outs come along for free. A hand-written
   `(= (ty kind) TY-PTR)` test here would have rejected ~1550 legitimate bare
   `:ptr` globals in this compiler's own source.
+
+**A fifth bite, W9 item 30, arrives by the opposite route and is the one to
+remember when you RELAX a rule.** The other four are rules the renderer forgot
+to copy. This one is a rule that had exactly one asker *because it always said
+no*: `emit-as` refused every `f64`→`f32`, so no float `as` could ever reach a
+global initializer and `defvar-init-ir` needed no float arm —
+`design/global-init.md` says so explicitly, and was right at the time. The
+moment `as` started accepting an exactly-representable literal,
+`(defvar g:f32 (as f32 1.5))` became legal and fell through to G-3's soft-mode
+exit as a **runtime** initializer, storing from `@__nucleus_init` while
+`(defvar g:f32 1.5)` one line above stayed a constant — a live difference on any
+target whose ctors do not run (§4.6's AVR rule). Generalize as: **a rule with
+one asker because it always refuses acquires its other askers the moment it
+starts accepting.** Enumerate the positions when you relax a rejection, not when
+you write it; and treat "position X can't reach this, it's always refused" in a
+design note as a claim with an expiry date.
 
 **Since Stage 15 W8 G-1 the renderer also FOLDS**: an integer destination
 accepts an arbitrary constant expression (arithmetic/bit ops over literals,

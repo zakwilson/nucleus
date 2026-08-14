@@ -3566,9 +3566,7 @@
                         (let (vv:ref:Val (emit-node (node-at cc 2) scope))
                           (set! g-want-type save-want)
                           vv))
-            src:(raw Type) (v type)
-            sk:i32 (src kind)
-            dk:i32 (dst kind))
+            src:(raw Type) (v type))
         ; 1. StrView source (chameleon literal or value): the coercer collapses a
         ; literal to ptr/CStr with no IR, materializes a StrView target, or returns
         ; null for an unrelated struct target (a reinterpretation).
@@ -3609,14 +3607,27 @@
               (fmt-2s "as: lossy conversion from %s to %s -- use unsafe/cast"
                 (type-spelling src) (type-spelling dst))))
           (return (unsafe/cast ref:Val (coerce-int-val v dst (cc line)))))
-        ; 6. f32 -> f64 (fpext) is safe (widening).
-        (when (and (= sk TY-F32) (= dk TY-F64))
-          (let (tmp:ptr (new-tmp))
-            (fprintf g-body-stream "  %s = fpext float %s to double\n" tmp (v val))
-            (return (alloc-val dst tmp))))
-        ; 7. remaining float conversions (f64->f32, float<->int) are lossy.
-        (when (or (and (!= (is-float-type src) 0) (!= (is-float-type dst) 0))
-                  (and (!= (is-float-type src) 0) (!= (is-int-type dst) 0))
+        ; 6. float -> float: a widening (fpext) is safe, and so is a narrowing
+        ; whose operand is a LITERAL that round-trips exactly (Stage 15 W9 item
+        ; 30) — precisely the set `coerce-int-val` already re-renders as a
+        ; constant with no instruction. The rule lives in `as-float-narrowing`
+        ; (src/type-utils.nuc) beside its integer twin, for the same reason: the
+        ; question has more than one asker and mirroring the logic drifts.
+        ; The EMISSION is `coerce-int-val`'s float branch rather than a second
+        ; `fpext` written here — this arm used to spell the widening out itself,
+        ; which is the duplication step 5 had already stopped making, and the
+        ; text it produced is character-for-character what the chokepoint emits.
+        (when (and (!= (is-float-type src) 0) (!= (is-float-type dst) 0))
+          (when (!= (as-float-narrowing src dst (v is-flit) (v lit-f64)) 0)
+            (die-at (cc line)
+              (fmt-2s "as: lossy conversion from %s to %s -- use unsafe/cast"
+                (type-spelling src) (type-spelling dst))))
+          (return (unsafe/cast ref:Val (coerce-int-val v dst (cc line)))))
+        ; 7. float <-> int, either direction, is lossy. Unlike the float->float
+        ; case above there is no asymmetry to close here: the implicit path
+        ; refuses it too (`(let (a:f32 5) …)` is a `let: init type mismatch`),
+        ; so `as` is not stricter than the coercion it makes explicit.
+        (when (or (and (!= (is-float-type src) 0) (!= (is-int-type dst) 0))
                   (and (!= (is-int-type src) 0) (!= (is-float-type dst) 0)))
           (die-at (cc line)
             (fmt-2s "as: lossy conversion from %s to %s -- use unsafe/cast"
@@ -11372,7 +11383,35 @@
                   ; outside soft mode, where the recursion cannot return null.
                   (when (= rendered null) (return null))
                   (pkind-flow-check dst ty (node-line init encl) "defvar")
-                  (return rendered)))))
+                  (return rendered)))
+              ; `(as FloatT lit)` at a FLOAT destination (Stage 15 W9 item 30).
+              ; Unreachable before that item — `emit-as` refused every f64->f32,
+              ; so the runtime lowering this would otherwise fall through to
+              ; died. Now that the safe cast admits an exactly-representable
+              ; literal, the two spellings of the same global must agree: without
+              ; this arm `(defvar g:f32 (as f32 1.5))` became a `@__nucleus_init`
+              ; store while `(defvar g:f32 1.5)` stayed `global float 0x3FF8…`,
+              ; which is a live difference on any target whose ctors do not run
+              ; (global-init.md §4.6) and precisely the class of divergence
+              ; context/conventions.md records this renderer for.
+              ;
+              ; Only a written float LITERAL folds: `emit-float` types every one
+              ; f64, and a float `defconst` is not foldable here (the constant
+              ; branch above requires an integer type), so the source width is
+              ; f64 by construction. `as-float-narrowing` is the same call
+              ; `emit-as` step 6 makes — `(as f32 3.14)` is refused in both
+              ; positions — and the literal is then rendered at the DESTINATION
+              ; global's width, which is exact for either width precisely
+              ; because the rule accepted the round trip.
+              (when (and (!= (is-float-type dst) 0) (!= (is-float-type ty) 0))
+                (let (arg:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr nn) 2)))
+                  (when (= (arg kind) NODE-FLOAT)
+                    (when (!= (as-float-narrowing ty-f64 dst 1
+                                (float-literal-value (arg s))) 0)
+                      (die-at (node-line init encl)
+                        (fmt-2s "as: lossy conversion from %s to %s -- use unsafe/cast"
+                          (type-spelling ty-f64) (type-spelling dst))))
+                    (return (float-literal-ir-at (arg s) ty)))))))
           ; `(addr-of g)` — the address of another global.
           (when (and (= hd0 'addr-of) (= nargs0 1))
             (return (defvar-addr-of-ir (node-at (as ptr nn) 1) ty (node-line init encl)))))))

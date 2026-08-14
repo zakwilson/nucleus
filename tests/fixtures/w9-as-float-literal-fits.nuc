@@ -1,0 +1,41 @@
+; Stage 15 W9 item 30: `as` narrows a FLOAT literal that round-trips exactly.
+;
+; The safe cast used to refuse every f64->f32 on the two kinds alone, so
+; `(as f32 1.5)` was rejected as "lossy conversion from f64 to f32" while the
+; implicit coercion at the identical slot — `(let (a:f32 1.5) …)` — accepted it
+; and emitted the very same `float 0x3FF8000000000000` constant with no
+; instruction at all (W2d). The explicit spelling of a conversion must never be
+; stricter than the implicit one it makes explicit; this is the float half of
+; the rule item 8 settled for integers.
+;
+; The ruling is the stricter of the two available: only an EXACT round trip is
+; admitted, so `(as f32 3.14)` keeps its diagnostic (w9-as-float-inexact.nuc).
+; `as` promises no loss; the implicit path's silent rounding at a typed slot is
+; a deliberately different promise.
+;
+; Self-checking: each binding is compared against the value it must hold, so a
+; wrong-value regression (a round trip that rounds instead of rejecting, a
+; literal re-rendered at the wrong width) fails here rather than passing on an
+; exit-0 compile.
+
+; The constant-folder path (`defvar-init-ir`'s `as` branch), which decides the
+; same question by hand and so makes the same `as-float-narrowing` call. The
+; second global narrows at the CAST and then widens into the global's own type,
+; which is exact precisely because the rule accepted the round trip.
+(defvar w9asf-g:f32 (as f32 1.5))
+(defvar w9asf-gd:f64 (as f32 3.5))
+
+(defn main ():i32
+  (let (a:f32 (as f32 1.5)              ; plain literal, exactly representable
+        b:f32 (as f32 -0.25)            ; negative, a power of two
+        c:f32 (as f32 0.0)              ; zero
+        d:f64 (as f64 2.5)              ; f64 -> f64 is the identity (step 3)
+        w:f64 (as f64 (as f32 8.5)))    ; f32 -> f64 widening (fpext)
+    (when (!= (as f64 a) 1.5) (return 1))
+    (when (!= (as f64 b) -0.25) (return 2))
+    (when (!= (as f64 c) 0.0) (return 3))
+    (when (!= d 2.5) (return 4))
+    (when (!= w 8.5) (return 5))
+    (when (!= (as f64 w9asf-g) 1.5) (return 6))
+    (when (!= w9asf-gd 3.5) (return 7)))
+  (return 0))
