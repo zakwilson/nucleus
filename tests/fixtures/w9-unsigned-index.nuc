@@ -1,0 +1,58 @@
+; Stage 15 W9 item 32: a GEP index is widened by its own signedness, so an
+; unsigned index with its high bit set addresses FORWARD, not backwards.
+;
+; Every check below keeps both the right and the wrong address inside a live
+; allocation, so a regression reads the wrong value instead of faulting — the
+; failure names itself through the return code rather than through a signal.
+; The `ui32`-at-2^31 case the item was filed from cannot be written this way
+; (four billion elements is not addressable), so it is asserted on the emitted
+; instruction instead, in run-tests.sh.
+(import "prelude")
+
+(defn main ():i32
+  ; --- ui8 index, 200: sext reads it as -56 ---------------------------------
+  (let (b:ptr:i32 (unsafe/cast ptr:i32 (malloc (_* 300 4))))
+    (let (p:ptr:i32 (unsafe/ptr+ b 60))
+      (aset! p 200 12345)       ; b[260] -- where an UNSIGNED 200 lands
+      (aset! p -56 999)         ; b[4]   -- where a SIGNED 200 lands
+      (let (i:ui8 200)
+        (when (!= (aref p i) 12345) (return 1))
+        ; aset! shares the same widening, so the store must land there too.
+        (aset! p i 54321)
+        (when (!= (aref p 200) 54321) (return 2))
+        (when (!= (aref p -56) 999) (return 3))
+        ; ...and so must unsafe/ptr+, the third caller of gep-index-ir.
+        (let (q:ptr:i32 (unsafe/ptr+ p i))
+          (when (!= (aref q 0) 54321) (return 4))))
+      (free (unsafe/cast ptr b))))
+
+  ; --- ui16 index, 40000: sext reads it as -25536 ---------------------------
+  (let (b:ptr:ui8 (unsafe/cast ptr:ui8 (malloc 70000)))
+    (let (p:ptr:ui8 (unsafe/ptr+ b 25600))
+      (aset! p 40000 77)        ; b[65600] -- unsigned
+      (aset! p -25536 33)       ; b[64]    -- signed
+      (let (i:ui16 40000)
+        (when (!= (aref p i) 77) (return 5)))
+      (free (unsafe/cast ptr b))))
+
+  ; --- a SIGNED index must still sign-extend --------------------------------
+  ; The fix is signedness-directed, not a blanket zext: a negative i32 index
+  ; still has to reach backwards.
+  (let (b:ptr:i32 (unsafe/cast ptr:i32 (malloc (_* 8 4))))
+    (let (p:ptr:i32 (unsafe/ptr+ b 4))
+      (aset! b 1 4242)
+      (let (i:i32 -3)
+        (when (!= (aref p i) 4242) (return 6)))
+      (free (unsafe/cast ptr b))))
+
+  ; --- a pointer-width index is untouched -----------------------------------
+  ; usize already matches the pointer, so gep-index-ir emits no instruction at
+  ; all for it; this only guards that the new branch did not disturb that.
+  (let (b:ptr:i32 (unsafe/cast ptr:i32 (malloc (_* 8 4))))
+    (aset! b 3 7)
+    (let (i:usize 3)
+      (when (!= (aref b i) 7) (return 7)))
+    (free (unsafe/cast ptr b)))
+
+  (printf "w9-unsigned-index ok\n")
+  (return 0))

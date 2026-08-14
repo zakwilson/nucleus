@@ -570,6 +570,45 @@ Related: the fix moves the bootstrap, so it needs the converge cycle in
 "this touches 22 call sites" into the measured "24 `sext i1`→`zext i1` sites,
 0 diagnostics moved".
 
+**And do not estimate the blast radius from the call-site count.** W9 item 32
+read the *same* 22-call-site `is-unsigned` through one consumer and moved five
+lines corpus-wide, leaving the compiler's own IR byte-identical and the
+bootstrap untouched. Item 31 moved it because `i1` is pervasive in a compiler —
+every comparison makes one; item 32 did not because an unsigned *narrow* index
+is something embedded code writes and a compiler does not (it indexes with
+signed `i32` and pointer-width `usize`, and `usize` emits no instruction at
+all). **Blast radius follows the type's idiom in the code being compiled, not
+the helper's fan-out.** Sweep to find out; do not reason it out.
+
+## Testing a wrong-ADDRESS defect: keep both addresses mapped, or the test reports a signal
+
+The natural repro for a bad index is the extreme one — W9 item 32 was filed from
+`(aref p i)` with `i:ui32` at `4294967295`, which under `sext` read `p[-1]` and
+returned the neighbouring element. That repro is perfect for *finding* the
+defect and useless as a regression test: once fixed, the correct address is four
+billion elements out and the program segfaults. A suite entry that passes by
+crashing asserts nothing about the value, and it cannot tell a fixed compiler
+from a differently-broken one.
+
+**Construct the fixture so the right address and the wrong address are both
+inside a live allocation.** Item 32's uses a `ui8` index of 200 against a pointer
+60 elements into a 300-element buffer: unsigned lands on `[+200]`, signed on
+`[-56]`, both mapped, both pre-seeded with distinct sentinels. A regression then
+reads a *wrong value* and returns an exit code naming the check, which is a claim
+a test can make. Same technique for the `ui16` case at 40000.
+
+Two riders:
+
+- **Cover the unrepresentable case on the instruction instead.** The `ui32`-at-2^31
+  case that started the item cannot be written as a running check at all, so it
+  is a `zext i32 … to i64` grep in `run-tests.sh`. Pair "what the program
+  computed" with "what the compiler emitted" whenever the interesting input is
+  out of reach.
+- **Assert the branch you did *not* take.** A signedness fix is one `if`, and a
+  blanket `zext` passes every unsigned check in the fixture. The signed index at
+  −3 that must still reach backwards is what makes the test about the rule
+  rather than about one direction of it.
+
 ## Emitted linkage: `weak_odr`, never `linkonce_odr` — the macro JIT resolves against the linked program
 
 `def-linkage` (`src/nucleusc.nuc`) is the single place that decides a top-level
@@ -3610,3 +3649,11 @@ Host evidence and target evidence point opposite ways here, and it is the host
 that must not move: on LP64 `ptr-int-ir` is `"i64"`, so a correct fix to this
 class is **byte-identical everywhere on x86-64** and the corpus sweep showing
 zero diffs is the proof the change is confined to the targets it was for.
+
+**Width was only half the rule.** `gep-index-ir` then widened everything with
+`sext`, so an unsigned index with its high bit set addressed *backwards* (W9
+item 32; fixed 2026-08-14 by asking `is-unsigned`). Extracting a rule into one
+home does not make the rule right — it makes the next correction one line. If
+you are writing a conversion, the two questions are always **how wide** and
+**which sign**, and answering one of them in a shared helper is exactly the
+moment the other looks answered too.

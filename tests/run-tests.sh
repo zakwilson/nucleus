@@ -2532,6 +2532,51 @@ run_w9_i1_unsigned() {
   rm -rf "$d"
 }
 
+# W9 item 32: `gep-index-ir` widened every index with `sext`, so an unsigned
+# index with its high bit set addressed BACKWARDS from the pointer. The fixture
+# is the semantic gate — it keeps both the right and the wrong address inside a
+# live allocation, so it returns a naming exit code rather than faulting.
+#
+# The IR assertions cover what a running program cannot. A `ui32` at 2^31 is the
+# case the item was filed from and four billion elements is not addressable, so
+# it is checked on the instruction; and the `sext` for a SIGNED index must still
+# be there, or the fix would be a blanket zext that breaks `(aref p -1)`.
+run_w9_unsigned_index() {
+  local d ir uir
+  d="$(mktemp -d)"
+  w1_run w9-unsigned-index "$d" tests/fixtures/w9-unsigned-index.nuc 0
+
+  ir="$(./build/nucleusc --emit-llvm tests/fixtures/w9-unsigned-index.nuc 2>/dev/null || true)"
+  if printf '%s' "$ir" | qgrep -E 'sext i(8|16) %[A-Za-z0-9_.]+ to i64'; then
+    echo "FAIL  w9-unsigned-index-widens-unsigned-with-zext"
+    echo "    an unsigned index was sign-extended to pointer width"
+    printf '%s' "$ir" | grep -nE 'sext i(8|16) %[A-Za-z0-9_.]+ to i64' | head -4 | sed 's/^/    /'
+  else
+    echo "PASS  w9-unsigned-index-widens-unsigned-with-zext"
+  fi
+
+  # A signed index still sign-extends: the fix is signedness-directed, not a
+  # blanket zext.
+  if printf '%s' "$ir" | qgrep -E 'sext i32 %[A-Za-z0-9_.]+ to i64'; then
+    echo "PASS  w9-unsigned-index-keeps-sext-for-signed"
+  else
+    echo "FAIL  w9-unsigned-index-keeps-sext-for-signed"
+    echo "    no signed index sign-extended; a blanket zext would break (aref p -1)"
+  fi
+
+  # The ui32-at-2^31 case from the item, which only the IR can witness.
+  printf '(import "prelude")\n(defn f (p:ptr:i32 i:ui32):i32 (return (aref p i)))\n(defn main ():i32 (return 0))\n' > "$d/w9ui32.nuc"
+  uir="$(./build/nucleusc --emit-llvm "$d/w9ui32.nuc" 2>/dev/null || true)"
+  if printf '%s' "$uir" | qgrep -E 'zext i32 %[A-Za-z0-9_.]+ to i64'; then
+    echo "PASS  w9-unsigned-index-ui32"
+  else
+    echo "FAIL  w9-unsigned-index-ui32"
+    echo "    a ui32 index was not zero-extended; at >=2^31 it addresses backwards"
+    printf '%s' "$uir" | grep -nE '(s|z)ext i32 %[A-Za-z0-9_.]+ to i64' | head -4 | sed 's/^/    /'
+  fi
+  rm -rf "$d"
+}
+
 # W1b's half of G-0: `scope-define` qualifies a global's key against
 # `g-current-ns`, so the prescan must apply each visited file's own leading
 # `(ns …)`. Prescanning a namespaced file under the IMPORTER's namespace would
@@ -4261,6 +4306,7 @@ spawn run_reject w9-as-float-global-inexact \
 # predicate rather than in `defvar-init-ir` alone.
 spawn run_w9_i1_literal_range
 spawn run_w9_i1_unsigned
+spawn run_w9_unsigned_index
 spawn run_reject w9-i1-literal-too-big tests/fixtures/w9-i1-literal-too-big.nuc \
   "defvar: integer literal 5 does not fit i1"
 spawn run_reject w9-i1-literal-negative tests/fixtures/w9-i1-literal-negative.nuc \

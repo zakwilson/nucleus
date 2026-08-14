@@ -5223,11 +5223,13 @@
   (let (iw:i32 (type-size (idx type)))
     (when (= iw g-target-ptr-bytes) (return (idx val)))
     (let (t:ptr (new-tmp))
-      ; Widen signed (the historical LP64 behaviour, kept: an unsigned index
-      ; wider than the pointer is a separate defect, W9 item 32). Narrowing is
+      ; Widen by the index type's own signedness — Stage 15 W9 item 32. `sext`
+      ; unconditionally read a `ui32` at 2^31 as a negative offset, so an index
+      ; past half the range addressed *backwards* from the pointer. Narrowing is
       ; a trunc — unreachable on LP64, where nothing is wider than i64.
       (fprintf g-body-stream "  %s = %s %s %s to %s\n"
-        t (if (< iw g-target-ptr-bytes) "sext" "trunc")
+        t (if (>= iw g-target-ptr-bytes) "trunc"
+            (if (= (is-unsigned (idx type)) 0) "sext" "zext"))
         (type-to-ir (idx type)) (idx val) (ptr-int-ir))
       (return t))))
 
