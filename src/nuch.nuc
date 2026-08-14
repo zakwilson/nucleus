@@ -166,6 +166,13 @@
   (prescan-struct-names forms)
   (prescan-protocols forms)
   (prescan-defn-signatures forms)
+  ; W9 item 38: the same validation `emit-cheader-header` runs, for the same
+  ; reason — this mode runs the prescans and never the emitter they defer their
+  ; diagnoses to. It does not crash where the C header does (it `print-node`s a
+  ; parameter rather than walking it), which is worse rather than better: it
+  ; exported `(declare foo ((x i32)))` — a declaration with no return type — for
+  ; a program that does not compile, and a consumer would link against it.
+  (validate-header-forms forms)
   (printf "; .nuch header for %s\n" source-file)
   ; Stage 12 N6: a namespaced library carries its namespace into the header so an
   ; importer's do-import re-runs the SAME ns-ir-base computation when it
@@ -601,8 +608,7 @@
 ; definitions live in the exporting unit's object file.
 (defn emit-defunion-import (form:(raw Node)):void
   (let (ff:ptr:Node (unsafe/cast ptr:Node form))
-    (when (< (node-len ff) 3)
-      (die-at (ff line) "defunion: expects a name and at least one arm"))
+    (require-defunion-form (as ptr ff))
     (let (name-node:ptr:Node (unsafe/cast ptr:Node (node-at form 1)))
       (case (name-node kind)
         NODE-CELL

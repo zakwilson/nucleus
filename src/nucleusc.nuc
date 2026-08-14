@@ -1214,6 +1214,16 @@
     (set! g-array-ok 0)
     (return t)))
 
+; The located diagnostic for a NULL declaration node — an empty list `()` where a
+; name:type belongs. `extract-name-and-type` below is where the real pipeline
+; raises it, and every declaration in a body-emitting compile reaches that
+; chokepoint. Split out because the HEADER modes cannot route through it: they
+; read the declaration AST without ever resolving a type, so W9 item 38's
+; validation raises this message from its own walk, and must raise the identical
+; words at the identical line rather than keep a second copy of them.
+(defn die-empty-decl (line:i32):void
+  (die-at line "expected a name:type declaration, found the empty list '()'"))
+
 (defn extract-name-and-type (node:(raw Node) out-name:ptr:ptr line:i32):(raw Type)
   ; W5f: an empty list `()` in a declaration position reads as a NULL node
   ; (read-list returns null for a zero-element list, and read-list then wraps it
@@ -1223,7 +1233,7 @@
   ; Diagnose with the enclosing form's line instead of faulting.
   (when (= node null)
     (ptr-set! out-name null)
-    (die-at line "expected a name:type declaration, found the empty list '()'"))
+    (die-empty-decl line))
   (let (n:(raw Node) node)
     ; AT-1 (design/stage14/attributes.md): an attribute-annotated declaration is a
     ; cell whose head is a keyword literal — `(:volatile status:i32)` for a struct
@@ -1384,6 +1394,69 @@
           (fmt-2s "defn '%s': legacy 'name:ret' syntax is no longer supported — write (defn %s (params):ret …)"
                   (defn-name-only name-node) (defn-name-only name-node)))
         (return 0)))))
+
+; ============================================================
+; The leading arity guard each top-level definer runs before it dereferences a
+; node position. Each was a single line at the top of its own emitter; they live
+; here because W9 item 38 needs the HEADER modes — which run the prescans and no
+; emitter at all — to make the identical refusal in the identical words. Nine
+; copied messages would be nine chances to drift, which is the failure this
+; codebase keeps re-learning (`--emit-cheader` declaring a symbol no object
+; defines, item 26). The emitter and `validate-header-forms` are the callers;
+; `defunion` has two emitter callers, `emit-defunion` and the `.nuch` replay path
+; `emit-defunion-import`, which carried its own copy of the check until now.
+;
+; `deferror` is deliberately absent: its check `report-at`s and returns `!i32`
+; rather than dying, so it is a recoverable path with a different contract.
+; `emit-defvar`'s two OTHER uses of its message also stay put — they ask different
+; questions (a null declaration after attribute stripping, trailing junk after
+; the init), and only the leading arity test belongs here.
+; ============================================================
+
+(defn require-defvar-form (form:ptr):void
+  (when (< (node-len form) 2)
+    (die-at ((unsafe/cast ptr:Node form) line) "defvar: expects name and optional init")))
+
+(defn require-defconst-form (form:ptr):void
+  (when (!= (node-len form) 3)
+    (die-at ((unsafe/cast ptr:Node form) line) "defconst: expects name and value")))
+
+(defn require-defenum-form (form:ptr):void
+  (when (< (node-len form) 2)
+    (die-at ((unsafe/cast ptr:Node form) line) "defenum: missing name")))
+
+(defn require-defstruct-form (form:ptr):void
+  (when (< (node-len form) 2)
+    (die-at ((unsafe/cast ptr:Node form) line) "defstruct: missing name")))
+
+(defn require-defunion-form (form:ptr):void
+  (when (< (node-len form) 3)
+    (die-at ((unsafe/cast ptr:Node form) line) "defunion: expects a name and at least one arm")))
+
+(defn require-defmacro-form (form:ptr):void
+  (when (< (node-len form) 4)
+    (die-at ((unsafe/cast ptr:Node form) line) "defmacro: expects name, params, and body")))
+
+(defn require-defcast-form (form:ptr):void
+  (when (!= (node-len form) 4)
+    (die-at ((unsafe/cast ptr:Node form) line) "defcast: expects (defcast From To conv-fn)")))
+
+(defn require-extend-form (form:ptr):void
+  (when (< (node-len form) 3)
+    (die-at ((unsafe/cast ptr:Node form) line) "extend: expected (extend Subject Protocol)")))
+
+; The one guard that is not a bare arity test: a bare-name `defn` that stops
+; before its return operand gets S1's targeted message, every other short shape
+; gets "bad form". Moved verbatim out of `emit-defn`.
+(defn require-defn-form (form:ptr):void
+  (let (cc:ptr:Node (unsafe/cast ptr:Node form))
+    (when (< (node-len form) 4)
+      (if (and (>= (node-len form) 2) (!= (sig-name-is-bare (node-at form 1)) 0))
+        (die-at (cc line)
+          (fmt-2s "defn '%s': expected return type after the parameter list, e.g. (defn %s (params):i32 …)"
+                  (-> (node-at form 1) (unsafe/cast ptr:Node _) (_ s))
+                  (-> (node-at form 1) (unsafe/cast ptr:Node _) (_ s))))
+        (die-at (cc line) "defn: bad form")))))
 
 ; Normalize a return-type node so a new-style NODE-KEYWORD ret (`:T`, `:i32`)
 ; reads as the equivalent NODE-SYM — making it structurally identical to a legacy
@@ -3108,8 +3181,7 @@
 
 (defn emit-defcast (call:(raw Node)):void
   (let (cc:(raw Node) call)
-    (when (!= (node-len cc) 4)
-      (die-at (cc line) "defcast: expects (defcast From To conv-fn)"))
+    (require-defcast-form (as ptr cc))
     (let (from-node:(raw Node) (node-at cc 1)
           to-node:(raw Node)   (node-at cc 2)
           fn-node:(raw Node) (node-at cc 3)
@@ -11803,8 +11875,7 @@
 
 (defn emit-defvar (call:(raw Node)):void
   (let (cc:ptr:Node (unsafe/cast ptr:Node call))
-    (when (< (node-len cc) 2)
-      (die-at (cc line) "defvar: expects name and optional init"))
+    (require-defvar-form call)
     ; AT-1 (design/stage14/attributes.md §2): the attribute slot sits between the
     ; `defvar` head and the name — `(defvar :volatile trap-zero:i32 0)`. Strip and
     ; validate leading keywords, then read the name/init off the advanced cursor.
@@ -11968,7 +12039,7 @@
 
 (defn emit-defconst (call:(raw Node)):void
   (let (cc:ptr:Node (unsafe/cast ptr:Node call))
-    (when (!= (node-len cc) 3) (die-at (cc line) "defconst: expects name and value"))
+    (require-defconst-form call)
     (let (name:ptr:Node (unsafe/cast ptr:Node (node-at cc 1))
           val:ptr:Node (unsafe/cast ptr:Node (node-at cc 2)))
       ; W4b (design/stage15-stress-test/diagnostics.md): `defconst` takes no
@@ -12127,7 +12198,7 @@
 
 (defn emit-defenum (call:(raw Node)):void
   (let (cc:ptr:Node (unsafe/cast ptr:Node call))
-    (when (< (node-len cc) 2) (die-at (cc line) "defenum: missing name"))
+    (require-defenum-form call)
     (let (enum-name-node:ptr:Node (unsafe/cast ptr:Node (node-at cc 1)))
       (reject-colon-in-def-name (as raw:Node enum-name-node) "defenum" (cc line))
       ; W4b sibling sweep: defenum has no template/parametric-name concept
@@ -12233,7 +12304,7 @@
 
 (defn emit-defstruct (call:(raw Node)):void
   (let (cc:ptr:Node (unsafe/cast ptr:Node call))
-    (when (< (node-len cc) 2) (die-at (cc line) "defstruct: missing name"))
+    (require-defstruct-form call)
     (let (name-node:ptr:Node (unsafe/cast ptr:Node (node-at cc 1)))
       ; W4b sibling sweep: a bare colon-typed name ("S:i32") used to sail past
       ; the `!= NODE-SYM` check below unchanged and register a StructDef under
@@ -12393,8 +12464,7 @@
 ; typing construct them — so stamping is collision-free across units.
 (defn emit-defunion (call:(raw Node)):void
   (let (cc:ptr:Node (unsafe/cast ptr:Node call))
-    (when (< (node-len cc) 3)
-      (die-at (cc line) "defunion: expects a name and at least one arm"))
+    (require-defunion-form call)
     (let (name-node:ptr:Node (unsafe/cast ptr:Node (node-at cc 1)))
       ; W4b sibling sweep: a bare colon-typed name ("U:i32") used to sail past
       ; the `!= NODE-SYM` check below unchanged and register the UnionDef
@@ -12572,13 +12642,7 @@
       ; legacy spelling receives in Phase S4. Every other malformed shape (including
       ; a bodyless legacy `name:ret`) keeps the generic "bad form". Error-path only;
       ; no valid defn has < 4 elements, so bootstrap IR is unaffected.
-      (when (< (node-len cc) 4)
-        (if (and (>= (node-len cc) 2) (!= (sig-name-is-bare (node-at cc 1)) 0))
-          (die-at (cc line)
-            (fmt-2s "defn '%s': expected return type after the parameter list, e.g. (defn %s (params):i32 …)"
-                    (-> (node-at cc 1) (unsafe/cast ptr:Node _) (_ s))
-                    (-> (node-at cc 1) (unsafe/cast ptr:Node _) (_ s))))
-          (die-at (cc line) "defn: bad form")))
+      (require-defn-form (as ptr cc))
     (let (name-node:ptr (node-at cc 1)
           params-node:ptr (node-at cc 2))
       (when (= (node-is-list params-node) 0)
@@ -13212,8 +13276,7 @@
 (defn emit-defmacro (form:(raw Node)):void
   ; (defmacro name (params...) body...)
   (let (ff:ptr:Node (unsafe/cast ptr:Node form))
-    (when (< (node-len ff) 4)
-      (die-at (ff line) "defmacro: expects name, params, and body"))
+    (require-defmacro-form form)
     (let (name-node:ptr:Node (unsafe/cast ptr:Node (node-at ff 1))
           params-node:ptr (node-at ff 2))
       ; W4b sibling sweep: a bare colon-typed name ("m:i32") used to sail past
@@ -13857,6 +13920,160 @@
                (!= (file-exists (as CStr (nn s))) 0))
       (return (nn s)))
     (return null)))
+
+; The one diagnostic for an import that names nothing. `do-import` raises it for
+; both spellings (W9 item 6 made the string path say the same words as the symbol
+; path); W9 item 38's header validation is the third caller, because a header
+; mode never runs `do-import` and so never asked.
+(defn die-import-not-found (name:CStr line:i32):void
+  (die-at line (fmt-s "import: cannot find '%s'" name)))
+
+; ============================================================
+; Stage 15 W9 item 38 — declaration validation for the header modes.
+;
+; `--emit-cheader` and `--emit-nuch` run the compiler's PRESCAN layer and never
+; its EMISSION layer, and every prescan deliberately defers its diagnosis to
+; emission: `defn-params-to-types` says "the located diagnostic is emit-defn's
+; job", `prescan-file-imports` says "a missing library is diagnosed by
+; do-import". With no emitter downstream nothing ever asked, so a malformed
+; declaration reached a raw `(node-at form N)` dereference and the compiler died
+; with SIGSEGV and no output — the worst diagnosis of a syntax error available —
+; while an unresolvable import exited 0 and printed a header that silently
+; omitted everything the library would have supplied.
+;
+; The rule these functions restore: a header mode refuses every program whose
+; DECLARATIONS the real pipeline refuses. Not every program the real pipeline
+; refuses — a body type error (`examples/comb-shapes.nuc`) is out of scope by
+; construction, since no body is read here, and closing that gap would mean
+; running the emitter. Declarations are exactly what a header describes, so that
+; is the honest line, and it is the one that makes the four measured symptoms of
+; this item a single defect rather than four.
+;
+; Every message comes from the chokepoint the real pipeline uses —
+; `die-empty-decl`, `die-import-not-found`, and the nine `require-<head>-form`
+; guards each emitter now calls — never from a copy of the words here.
+; ============================================================
+
+; A declaration node the reader gave as NULL is the empty list `()`. Recurses
+; into the type, because an inline `(union …)` / `(struct …)` member is itself a
+; declaration and reaches `extract-name-and-type` on the same terms in emission —
+; with the FIELD's own line, which is what `--emit-llvm` reports for it.
+(defn validate-decl-node (node:ptr line:i32):void
+  (when (= node null) (die-empty-decl line))
+  (let (own:i32 (node-line node line))
+    (validate-type-node (extract-type-node node own) own)))
+
+; Walk a type node for inline aggregates. Under a `(union …)` / `(struct …)` head
+; every tail element is a DECLARATION; under any other head it is another type
+; node, which is what reaches the members of `(ptr (union … ()))` — measured
+; segfaulting when this walk only looked at the outermost head. Recursing costs
+; nothing on a non-aggregate: only a null under a union/struct head is ever
+; refused, so `(array T N)`, `(fn …)` and a template instance pass through.
+(defn validate-type-node (tn:ptr line:i32):void
+  (when (= tn null) (return))
+  (let (n:ptr:Node (unsafe/cast ptr:Node tn))
+    (when (!= (n kind) NODE-CELL) (return))
+    (let (head:ptr:Node (unsafe/cast ptr:Node (n car))
+          agg:i32 0)
+      (when (!= (as ptr head) null)
+        (when (= (head kind) NODE-SYM)
+          (when (or (= (head s) "union") (= (head s) "struct")) (set! agg 1))))
+      (let (cur:ptr (n cdr))
+        (while (!= cur null)
+          (if (!= agg 0)
+            (validate-decl-node ((unsafe/cast ptr:Node cur) car) line)
+            (validate-type-node ((unsafe/cast ptr:Node cur) car) line))
+          (set! cur ((unsafe/cast ptr:Node cur) cdr)))))))
+
+; A `defn` / `defn-`, validated exactly as far as `emit-defn` validates it before
+; reading a body: the S1 arity check and the params-is-list check, then each
+; parameter as a declaration.
+(defn validate-header-defn (form:ptr):void
+  ; Skip what the emitters skip. A bounded-generic template exports verbatim
+  ; (.nuch) or not at all (C), and `--emit-llvm` only checks its body when a call
+  ; site stamps it — so refusing one here would be STRICTER than the real
+  ; pipeline, which is the one way this walk could do harm.
+  ; Arity first: `(defn)` has no name node at all, so `defn-parse-sig` below would
+  ; take its legacy branch and dereference the null.
+  (require-defn-form form)
+  (when (!= (defn-is-generic-template form) 0) (return))
+  (let (ff:ptr:Node (unsafe/cast ptr:Node form)
+        fname:ptr null
+        vd-ret:ptr null
+        vd-params:ptr null
+        vd-bstart:i32 3)
+    (defn-parse-sig form (as ptr:ptr (addr-of fname)) (as ptr:ptr (addr-of vd-ret))
+                    (as ptr:ptr (addr-of vd-params)) (as ptr:i32 (addr-of vd-bstart)))
+    (let (params:ptr (node-at form 2))
+      (when (= (node-is-list params) 0)
+        (die-at (node-line (node-at form 1) (ff line)) "defn: params must be list"))
+      (dotimes (i (node-len params))
+        (validate-decl-node (node-at params i) (ff line)))
+      ; The return operand is a type position too: `:(union a:i32 ())`.
+      (validate-type-node vd-ret (ff line)))))
+
+(defn validate-header-defstruct (form:ptr):void
+  (require-defstruct-form form)
+  ; A parametric template — a list at position 1 — defines no concrete type; both
+  ; header emitters skip it and its fields are checked when it is stamped.
+  (let (nn:ptr (node-at form 1))
+    (when (= nn null) (return))
+    (when (!= ((unsafe/cast ptr:Node nn) kind) NODE-SYM) (return)))
+  (let (ff:ptr:Node (unsafe/cast ptr:Node form))
+    (dotimes (i (- (node-len form) 2))
+      (validate-decl-node (node-at form (+ i 2)) (ff line)))))
+
+; Run by `emit-cheader-header` and `emit-nuch-header` after the prescans and
+; BEFORE any output, so a refused program produces no partial header — which is
+; what `--emit-llvm` does with the same input.
+(defn validate-header-forms (forms:(raw Node)):void
+  (let (fc:ptr forms)
+    (while (!= fc null)
+      (let (f:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node fc) car)))
+        ; Length 1 is enough to reach here: `(defn)` names a definer and carries
+        ; nothing else, and refusing it is the whole point.
+        (when (and (!= (as ptr f) null) (= (f kind) NODE-CELL)
+                   (>= (node-len (as ptr f)) 1)
+                   (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ kind) (= _ NODE-SYM)))
+          (let (ph:ptr (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ s)))
+            ; An import that names nothing changes what every declaration below it
+            ; means, so it is a declaration error in the strongest sense. The head
+            ; set is `prescan-imported-types`', which is the pass that would have
+            ; supplied those names. A C-header string import is left alone —
+            ; `emit-c-include` owns its diagnosis and the header modes do run it.
+            (when (>= (node-len (as ptr f)) 2)
+              (when (or (and (= ph "import") (= (node-len (as ptr f)) 2))
+                        (= ph "import-use")
+                        (= ph "import-only")
+                        (= ph "import-prefixed")
+                        (= ph "unsafe-import-private")
+                        (= ph "unsafe/import-private"))
+                (let (nn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr f) 1)))
+                  (when (= (nn kind) NODE-SYM)
+                    (when (= (import-form-path (as raw:Node nn) (f line)) null)
+                      (die-import-not-found (as CStr (nn s)) (f line)))))))
+            (when (or (= ph "defn") (= ph "defn-"))
+              (validate-header-defn (as ptr f)))
+            (when (or (= ph "defstruct") (= ph "defstruct-"))
+              (validate-header-defstruct (as ptr f)))
+            ; The rest need only their own arity guard: their emitters do not
+            ; walk a declaration list the header pass re-walks, so the shape the
+            ; guard admits is one both header emitters already read safely — with
+            ; the one exception of a `defvar`'s type, which may be an inline
+            ; aggregate exactly as a field's may.
+            (when (or (= ph "defvar") (= ph "defvar-"))
+              (require-defvar-form (as ptr f))
+              (validate-type-node (extract-type-node (node-at (as ptr f) 1) (f line))
+                                  (node-line (node-at (as ptr f) 1) (f line))))
+            (when (or (= ph "defconst") (= ph "defconst-"))
+              (require-defconst-form (as ptr f)))
+            (when (= ph "defenum") (require-defenum-form (as ptr f)))
+            (when (or (= ph "defunion") (= ph "defunion-"))
+              (require-defunion-form (as ptr f)))
+            (when (= ph "defmacro") (require-defmacro-form (as ptr f)))
+            (when (= ph "defcast") (require-defcast-form (as ptr f)))
+            (when (= ph "extend") (require-extend-form (as ptr f))))))
+      (set! fc ((unsafe/cast ptr:Node fc) cdr)))))
 
 (defn prescan-imported-types (forms:(raw Node)):void
   (let (fc:ptr forms)
@@ -15263,7 +15480,7 @@
             ; symbol spelling of the same mistake says `import: cannot find 'x'`
             ; at the import's own line. Same mistake, same diagnostic now.
             (when (= (file-exists (as CStr path)) 0)
-              (die-at line (fmt-s "import: cannot find '%s'" name)))
+              (die-import-not-found (as CStr name) line))
             ; Stage 15 B1: bind in the importing FILE's environment before any
             ; early return below. Every one of them — the (file, prefix) dedup,
             ; the already-loaded flatten dedup and the W1d cycle skip — leaves
@@ -15388,7 +15605,7 @@
     (let (name:ptr (nn s)
           path:ptr (resolve-import name line))
       (when (= path null)
-        (die-at line (fmt-s "import: cannot find '%s'" name)))
+        (die-import-not-found (as CStr name) line))
       ; Stage 15 B1: bind in the importing FILE's environment before any early
       ; return below — see the twin site in the string-path branch above.
       (file-import-record prefix path)
