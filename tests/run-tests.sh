@@ -1755,6 +1755,124 @@ EOF
   rm -rf "$d"
 }
 
+# W9 item 37: a generated C header that NAMES a type another unit defines must
+# `#include` that unit's header. `type-name-to-c` spells every reference to a
+# user type `struct NAME`, and a tag C never completes is not a usable
+# declaration: a by-value FIELD does not compile at all ("field has incomplete
+# type" — this is what made the committed `lib/string-split.h` unusable), and a
+# by-value PARAMETER parses and then cannot be called, which is worse for being
+# silent. A forward declaration would not do; the definition has to arrive.
+#
+# The include set is the set of references the header actually EMITS, not the
+# import list: a type used only inside a function body, or only by a form the
+# emitter skips, is not a dependency of the header. Both directions are asserted
+# below, because an over-eager rule would have named a header for every import.
+run_w9_cheader_imported_types() {
+  local d out
+  d="$(mktemp -d)"
+  cat > "$d/w37base.nuc" <<'EOF'
+(defstruct Pt (x i32) (y i32))
+(defn pt-make (a:i32 b:i32):Pt
+  (let ((p (ref Pt)) (alloca Pt))
+    (.set! p x a)
+    (.set! p y b)
+    (return p)))
+EOF
+  # Names Pt by value in an exported struct field AND in an exported return type.
+  cat > "$d/w37use.nuc" <<'EOF'
+(import-use w37base)
+(defstruct Seg (a Pt) (b Pt))
+(defn seg-make (n:i32):Seg
+  (let ((s (ref Seg)) (alloca Seg))
+    (.set! s a (pt-make n 1))
+    (.set! s b (pt-make n 2))
+    (return s)))
+EOF
+  # Imports the same library and uses Pt only INSIDE a body: nothing it exports
+  # mentions the type, so its header depends on nothing.
+  cat > "$d/w37quiet.nuc" <<'EOF'
+(import-use w37base)
+(defn plain (n:i32):i32
+  (let ((p (ref Pt)) (alloca Pt))
+    (.set! p x n)
+    (return (p x))))
+EOF
+  ./build/nucleusc --emit-cheader "$d/w37base.nuc"  > "$d/w37base.h"  2>"$d/err" || true
+  ./build/nucleusc --emit-cheader "$d/w37use.nuc"   > "$d/w37use.h"   2>>"$d/err" || true
+  ./build/nucleusc --emit-cheader "$d/w37quiet.nuc" > "$d/w37quiet.h" 2>>"$d/err" || true
+
+  # The defining unit is a sibling, so the include is its basename alone — the
+  # spelling a quoted include resolves against the including file's own
+  # directory, which is where the build writes it (`lib/%.h: lib/%.nuc`).
+  if qgrep -xF '#include "w37base.h"' "$d/w37use.h" \
+     && ! qgrep -F 'w37base.h' "$d/w37quiet.h"; then
+    echo "PASS  w9-cheader-imported-type-included"
+  else
+    echo "FAIL  w9-cheader-imported-type-included"
+    grep -n 'include' "$d/w37use.h" "$d/w37quiet.h" | sed 's/^/    /'
+  fi
+
+  # The include is load-bearing, not decorative: the SAME consumer against a
+  # header with that one line removed reproduces the original defect verbatim.
+  cat > "$d/main.c" <<'EOF'
+#include <stdio.h>
+#include "w37use.h"
+int main(void) {
+    Seg s = seg_make(5);
+    struct Pt p = s.a;          /* by-value copy of an imported struct */
+    printf("%d %d %d\n", p.x, p.y, s.b.y);
+    return 0;
+}
+EOF
+  grep -v '#include "w37base.h"' "$d/w37use.h" > "$d/stripped.h"
+  sed 's/w37use\.h/stripped.h/' "$d/main.c" > "$d/mainstrip.c"
+  out="$(clang -fsyntax-only -I "$d" "$d/mainstrip.c" 2>&1 || true)"
+  if printf '%s' "$out" | qgrep -F "field has incomplete type 'struct Pt'"; then
+    echo "PASS  w9-cheader-include-is-load-bearing"
+  else
+    echo "FAIL  w9-cheader-include-is-load-bearing (stripping the include did not break it)"
+    printf '%s' "$out" | head -4 | sed 's/^/    /'
+  fi
+
+  # End to end, which is the only thing that can tell a correct include from a
+  # plausible one: compile both units, link, and read the imported struct by
+  # value through the generated header.
+  if ./build/nucleusc -c -o "$d/w37base.o" "$d/w37base.nuc" 2>>"$d/err" \
+     && ./build/nucleusc -c -o "$d/w37use.o" "$d/w37use.nuc" 2>>"$d/err" \
+     && clang -I "$d" "$d/main.c" "$d/w37use.o" "$d/w37base.o" -o "$d/cmain" 2>>"$d/err"; then
+    out="$("$d/cmain")"
+    if [ "$out" = "5 1 2" ]; then
+      echo "PASS  w9-cheader-imported-type-c-consumer"
+    else
+      echo "FAIL  w9-cheader-imported-type-c-consumer (want '5 1 2', got '$out')"
+    fi
+  else
+    echo "FAIL  w9-cheader-imported-type-c-consumer (build failed)"
+    sed 's/^/    /' "$d/err" | head -8
+  fi
+
+  # The reported artifact itself. `lib/string-split.h` declares `struct StrView
+  # cur;` — a real user struct defined in lib/prelude.nuc — and was the one
+  # committed header that would not compile at all. Uses the COMMITTED copies,
+  # so this also fails if they are regenerated wrong.
+  cat > "$d/libmain.c" <<'EOF'
+#include "lib/string-split.h"
+int main(void) {
+    SplitIter it;
+    struct StrView cur = it.cur;   /* by-value field of an imported struct */
+    (void)cur;
+    return 0;
+}
+EOF
+  if clang -fsyntax-only -I. "$d/libmain.c" 2>"$d/liberr"; then
+    echo "PASS  w9-cheader-committed-header-usable"
+  else
+    echo "FAIL  w9-cheader-committed-header-usable"
+    sed 's/^/    /' "$d/liberr" | head -6
+  fi
+  rm -rf "$d"
+}
+
 # SOURCE OUT-RANKS HEADER, asserted on both sides of the ruling. `resolve-import`
 # already tries `.nuc` in every directory before any `.nuch`, so an import takes
 # the source — but `path-in-unit` keyed on the exact path spelling, so the
@@ -5034,6 +5152,7 @@ spawn run_w9_nuch_import_order
 spawn run_w9_shared_init_warning
 spawn run_w9_cheader_globals
 spawn run_w9_cheader_identifiers
+spawn run_w9_cheader_imported_types
 # W1c: the diagnostic surface. The did-you-mean tier it sits above is pinned by
 # w4a-suggest-spelling; the note deliberately suppresses that tier (they would
 # otherwise offer two diagnoses of one failure), which is why the suggestion

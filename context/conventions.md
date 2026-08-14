@@ -3809,3 +3809,60 @@ quo while a neighbouring item was fixed. When the item it names is the one being
 fixed, the test is the thing to *invert*, and its comment is the best available
 statement of what the fix must achieve. Grep the progress table's item number
 before assuming a passing test endorses what it asserts.
+
+## Provenance fields are written at EMISSION, so a non-emitting mode sees null
+
+`StructDef.src-file` / `src-line` are documented as "source file where defined",
+and every writer of them is a definition-time writer (`emit-defstruct`,
+`emit-defunion`, the closure/anon/dyn-box minters, the C-header parser).
+`--emit-cheader` and `--emit-nuch` run the *prescans* and then emit no struct at
+all, so in those modes the field was null for **every** type — including the
+file's own. Any question of the form "which unit does this come from?" is
+therefore unanswerable there until the pre-registration site records it too
+(W9 item 37 added it to `prescan-struct-names`, where `prescan-imported-types`
+has already swapped `g-source-path` across the file boundary, so an imported type
+carries its own file's path with no extra plumbing).
+
+Two things follow. **Probe the field before designing on it** — the whole first
+design for item 37 assumed provenance was available and the probe printed
+`src-file=(null)` ten times. And **check who reads it before writing it earlier**:
+here the only pre-existing consumer (`reject-opaque-type`) reads it solely for
+`opaque` StructDefs, which only the C-header parser mints and which already set
+it — which is why recording it at pre-registration moved 0 diagnostics across 396
+programs. Had a consumer read it for ordinary types, filling it in earlier would
+have changed messages.
+
+## A pre-pass that mirrors an emitter must mirror its SKIPS, not just its walk
+
+When output ordering forces a discovery pass before emission (item 37: the
+`#include` lines must precede the first use of what they complete), share the
+*rendering* — call the emitter's own `type-node-to-c`, so the answer cannot
+drift — but the "is this exported at all?" decisions have to be replicated by
+hand. Miss them and the pass discovers dependencies of things that are never
+emitted: `lib/vector.h` and `lib/combinators.h`, which spell no `struct`
+anywhere, took includes for a parametric `defstruct`'s field and a generic
+template's return type. The four that mattered were `defn-is-generic-template`, a
+non-`NODE-SYM` name node (parametric head), `cheader-template-instance` and
+`cheader-mentions-closure` — plus simply not walking the `-` (private) heads,
+which `emit-cheader-header`'s dispatch does not list either.
+
+The tell is quantitative and worth measuring deliberately: the change touched 10
+generated headers before the skips and 5 after, and 5 is the number that
+independently name a type they do not define. "Roughly the imports" and "exactly
+the references" look the same in a passing test suite.
+
+## A generated C header that COMPILES can still be unusable
+
+`clang -fsyntax-only` over a generated header under-reports, because C requires a
+complete type only where a value is formed. Before W9 item 37, `lib/strview.h`
+passed that check while declaring `_Bool eq_StrView_StrView(struct StrView a,
+struct StrView b)` over a tag nothing defines — the declaration parses and no
+caller can ever write the call. Only `lib/string-split.h`, which used the type in
+a by-value *field*, failed outright.
+
+So test the two separately: parse the header, **and** form a value of every type
+it names. The cheap static version of the same question is "which `struct X` does
+this file name without a `struct X {` of its own?", which found seven headers
+where the compile test found one. The same asymmetry is why item 44 (`!T` returns
+exported as `struct _BANGT`, over a value the IR returns as `i64`) sat in five
+committed headers unnoticed.

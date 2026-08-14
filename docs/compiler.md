@@ -15,7 +15,7 @@ By default `nucleusc <file.nuc>` produces a linked native executable (`a.out` un
 | `-ffast-math` | Emit `fast` flags on floating-point arithmetic (`fadd`/`fsub`/`fmul`/`fdiv`/`frem`), permitting reassociation, contraction, and no-signed-zero/no-NaN assumptions. This is what lets the optimizer vectorize FP **reductions** (e.g. `pi += …`); without it an FP reduction stays scalar even at `-O3` because reordering would change results. Comparisons are left unflagged. Changes numerical results — opt-in only. |
 | `-march=native` | Target the host CPU and its full feature set (via `LLVMGetHostCPUName` / `LLVMGetHostCPUFeatures`) instead of the generic baseline, so vectorized loops use the widest available registers (e.g. 256-bit AVX rather than 128-bit SSE2). Host-only — do not combine with `--target=`. Produces non-portable objects. |
 | `--emit-nuch` | Output a `.nuch` header instead of compiling. Extracts function signatures, struct definitions, constants, enums, and macros. The prelude and the file's own imports are prescanned first (types only — nothing is emitted), so an exported signature may name an imported type: `Node`, `StrView`, `String`, `(Maybe T)`, the `!T` sugar. |
-| `--emit-cheader` | Output a C header (`.h`) instead of compiling. Emits `#pragma once`, `#include <stdint.h>` / `<stdbool.h>` / `<stddef.h>`, tagged typedefs for structs and unions (`typedef struct Pt { … } Pt;`, so both `Pt` and `struct Pt` work), extern function declarations, `extern` declarations for public `defvar` globals (see [Reaching a library's globals from C](#reaching-a-librarys-globals-from-c)), `#define` constants, and enums. For a namespaced library, function declarations use the C-legal mangled link name (`geom__area`, not the Nucleus name `geom/area`), so a C consumer links against the same symbol the library emits — and a struct's typedef name is mangled the same way (`} gt__Pt;`, not `} Pt;`), since two namespaces may each define a `Pt` and an unprefixed typedef would collide if both headers were included together. A `user`-namespace library's header is unaffected. An **overloaded** or **operator-named** function is declared under the per-signature symbol it really links as, each method with its own C name (see [Overloaded and operator-named functions in a C header](#overloaded-and-operator-named-functions-in-a-c-header)). A name that is a **word C or C++ reserves** (`union`, `signed`, `class`, `delete`) is renamed with a trailing `_` and re-bound with an `asm` label, so only its C spelling moves (see [Names C reserves](#names-c-reserves)). Header emission resolves the whole unit's signatures, so a source that does not compile produces the compiler's ordinary error rather than a header. See [Namespaced type names](types.md#namespaced-type-names). |
+| `--emit-cheader` | Output a C header (`.h`) instead of compiling. Emits `#pragma once`, `#include <stdint.h>` / `<stdbool.h>` / `<stddef.h>`, tagged typedefs for structs and unions (`typedef struct Pt { … } Pt;`, so both `Pt` and `struct Pt` work), extern function declarations, `extern` declarations for public `defvar` globals (see [Reaching a library's globals from C](#reaching-a-librarys-globals-from-c)), `#define` constants, and enums. For a namespaced library, function declarations use the C-legal mangled link name (`geom__area`, not the Nucleus name `geom/area`), so a C consumer links against the same symbol the library emits — and a struct's typedef name is mangled the same way (`} gt__Pt;`, not `} Pt;`), since two namespaces may each define a `Pt` and an unprefixed typedef would collide if both headers were included together. A `user`-namespace library's header is unaffected. An **overloaded** or **operator-named** function is declared under the per-signature symbol it really links as, each method with its own C name (see [Overloaded and operator-named functions in a C header](#overloaded-and-operator-named-functions-in-a-c-header)). A name that is a **word C or C++ reserves** (`union`, `signed`, `class`, `delete`) is renamed with a trailing `_` and re-bound with an `asm` label, so only its C spelling moves (see [Names C reserves](#names-c-reserves)). A type defined in **another** unit gets an `#include` of that unit's generated header, so a by-value use of it compiles (see [Types a header borrows from another unit](#types-a-header-borrows-from-another-unit)). Header emission resolves the whole unit's signatures, so a source that does not compile produces the compiler's ordinary error rather than a header. See [Namespaced type names](types.md#namespaced-type-names). |
 | `-i` / `--interactive` | Start the REPL (interactive Read-Eval-Print Loop). |
 | `-I<path>` / `-I <path>` | Add a directory to the import search path. Searched after the source file's directory and `lib/`. |
 | `--repl-format=text\|json` | Format for REPL error output. Default `text` (legacy `  error: <msg>` lines). With `json`, each error is emitted as a single-line JSON object: `{"file":..,"line":..,"message":..}`. Suitable for agent-driven REPL sessions. |
@@ -516,6 +516,57 @@ An identifier built by **joining** two parts is tested as a whole rather than
 part by part, so a `defenum`'s members keep the spelling their prefix already
 makes legal: `(defenum Kind auto static default)` exports `Kind_default`, not
 `Kind_default_`.
+
+## Types a header borrows from another unit
+
+A reference to a user type is spelled `struct NAME` in the generated header, and
+a tag alone is not a definition. When the type is defined in **another** unit,
+the header emits an `#include` for that unit's generated header, so the
+definition arrives before the first use:
+
+```nucleus
+; w37base.nuc
+(defstruct Pt (x i32) (y i32))
+```
+```nucleus
+; w37use.nuc
+(import-use w37base)
+(defstruct Seg (a Pt) (b Pt))
+```
+```c
+/* w37use.h */
+#pragma once
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include "w37base.h"
+
+typedef struct Seg {
+    struct Pt a;
+    struct Pt b;
+} Seg;
+```
+
+Without the include, `struct Pt` is a tag C never completes: the field above
+fails to compile outright (*"field has incomplete type"*), and a by-value
+**parameter** of such a type parses and then cannot be called — silently, which
+is worse. The build generates `lib/foo.h` beside `lib/foo.nuc`, and a quoted
+include resolves against the including file's own directory, so a sibling is
+named by basename alone. A defining unit in another directory keeps the path as
+the compiler resolved it (`#include "lib/prelude.h"`), which needs a matching
+`-I` on the C side; there is no include search path for the emitter to consult.
+
+The includes are the types the header **actually names**, not the unit's import
+list. A type used only inside a function body, or only by a form the header does
+not export — a generic template, a parametric `defstruct`, a `defn-` — is not a
+dependency of the header and produces no include.
+
+Two limits remain. A type this unit defines but that comes from a **C** header
+(`(import-use "SDL.h")`) is not included: the C declaration is already reachable
+through whatever the consumer includes for it. And an **error-union return type**
+(`:!i32`, `:!Char`) is still declared as `struct _BANGi32` — a tag no header
+defines, over a value that is really a niche-encoded scalar. Those declarations
+are not usable from C; see Stage 15 W9 item 44.
 
 ## Separate compilation and symbol linkage
 

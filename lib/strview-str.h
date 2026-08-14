@@ -2,6 +2,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include "strview.h"
+#include "prelude.h"
 
 /* Generated from lib/strview-str.nuc by nucleusc --emit-cheader */
 
