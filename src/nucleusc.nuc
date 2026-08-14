@@ -3720,6 +3720,21 @@
           (return (intern-str (arena-strdup (unsafe/ptr+ (as ptr:i8 slash) 1)))))))
     (return spelling)))
 
+; Do two spellings carry the same namespace qualifier? Both bare counts as same.
+; The companion `strip-ns-qualifier` needs when matching a qualified name against
+; a bare-keyed table (W9 item 41's vtable slots): checking the qualifier here is
+; what keeps the strip out of a blind resolution position.
+(defn same-ns-qualifier (a:ptr b:ptr):i32
+  (let (sa:ptr (strchr a 47)
+        sb:ptr (strchr b 47))
+    (when (and (= sa null) (= sb null)) (return 1))
+    (when (or (= sa null) (= sb null)) (return 0))
+    (let (la:i64 (- (unsafe/cast i64 (as ptr:i8 sa)) (unsafe/cast i64 (as ptr:i8 a)))
+          lb:i64 (- (unsafe/cast i64 (as ptr:i8 sb)) (unsafe/cast i64 (as ptr:i8 b))))
+      (when (!= la lb) (return 0))
+      (when (= (strncmp a b la) 0) (return 1))
+      (return 0))))
+
 ; ============================================================
 ; Stage 15 B1 — the file's import environment
 ; (design/stage15-stress-test/name-resolution.md §5.2 B1, §8.3).
@@ -5696,6 +5711,22 @@
     ; list and replace them with a single ptr arg pointing at the list.
     (let (eff-nargs:i32 nargs
           ft0:(raw Type) (ss type))
+      ; W9 item 41: `(dyn P)` dispatch on a method name with exactly ONE
+      ; definition. emit-generic-call forwards a boxed receiver through the
+      ; vtable, but a single conformer leaves the method a solitary `defn`, so
+      ; the call never reached that path and passed the fat pointer straight to
+      ; the concrete method — right answer by luck on SysV (the data word lands
+      ; in the first register), wrong ABI everywhere. Same three pieces as TE-6,
+      ; at the site that has the box still first-class. A callee that DECLARES a
+      ; `(dyn P)` parameter wants the box itself and is left alone.
+      (when (and (= (ft0 kind) TY-FN) (> nargs 0) (> (ft0 num-params) 0))
+        (let (a0:ptr:Val (as ptr:Val (unsafe/ptr+ (as ptr:Val args) 0))
+              dbox:ptr (dyn-canonical (a0 type)))
+          (when (and (!= dbox null)
+                     (= (dyn-canonical ((field-at (ft0 params) 0) type)) null))
+            (let (slot:i32 (dyn-method-slot dbox (ss name)))
+              (when (>= slot 0)
+                (return (emit-dyn-forward dbox args nargs slot (cc line))))))))
       (when (and (= (ft0 kind) TY-FN) (!= (ft0 has-rest) 0))
         (let (fixed:i32 (- (ft0 num-params) 1))
           (when (< nargs fixed)
@@ -5747,8 +5778,10 @@
             (set! eff-nargs (+ fixed 1)))))
       ; Stage 8 implicit casts: coerce each fixed argument whose IR type differs
       ; from its parameter's via safe-coerce-val (int widen, f32→f64, defcast).
-      ; When the IR types already match, or no safe conversion exists, the
-      ; argument is left untouched — preserving the prior pass-through behavior.
+      ; When the IR types already match the argument is left untouched; when no
+      ; safe conversion exists it is an error (W9 item 33 — it used to pass
+      ; through silently). Two types that lower to the same IR string are still
+      ; not compared at all: W9 item 34, open.
       (let (ncoerce:i32 (ft0 num-params))
         (when (!= (ft0 has-rest) 0) (set! ncoerce (- (ft0 num-params) 1)))
         (when (> ncoerce eff-nargs) (set! ncoerce eff-nargs))
@@ -5826,7 +5859,19 @@
               (pkind-flow-check (slot type) ptype (cc line) "argument")
               (when (!= (strcmp (type-to-ir (slot type)) (type-to-ir ptype)) 0)
                 (let (nc:ptr (safe-coerce-val (as ptr slot) ptype (cc line)))
-                  (when (and (!= nc null) (!= nc (as ptr slot)))
+                  ; Stage 15 W9 item 33: a null return means no safe conversion
+                  ; exists. Discarding it passed the argument untouched, and
+                  ; llvm-as accepts that because a call site carries its own
+                  ; signature — `(f-f64 3)` emitted `call double @f-f64(i32 3)`
+                  ; and printed 0.000000. Report it, exactly as the return site
+                  ; does (LW-3) and as every other typed slot already did.
+                  (when (= nc null)
+                    (die-at (cc line)
+                      (fmt-3s "%s has type %s, which does not match parameter type %s"
+                        (fmt-sd "%s: argument %d" (ss name) (+ ci 1))
+                        (type-spelling (slot type))
+                        (type-spelling (as ptr:Type ptype)))))
+                  (when (!= nc (as ptr slot))
                     (memcpy slot nc (sizeof Val))))))))
       (let (arglist:ptr (alloca i8 2048)
             apos:i64 0
@@ -7729,6 +7774,16 @@
 (defn dyn-method-slot (box-ty:(raw Type) gname:CStr):i32
   (let (proto:ptr (dyn-proto-of box-ty))
     (when (= proto null) (return -1))
+    ; W9 item 41: a protocol declared inside `(ns …)` stores its sigs BARE, so a
+    ; call spelled `ns/m` matched no slot and fell through to the concrete
+    ; method. Strip the qualifier — but only after checking it against the
+    ; protocol's own namespace, so a same-named function in an unrelated
+    ; namespace is not dispatched through this vtable (strip-ns-qualifier's own
+    ; warning about resolution positions).
+    (let (mkey:ptr (as ptr gname))
+      (when (!= (strchr mkey 47) null)
+        (when (= (same-ns-qualifier mkey proto) 0) (return -1))
+        (set! mkey (strip-ns-qualifier mkey)))
     ; B2a: downstream of the box-construction gate — see `protocol-resolve-any`.
     (let (pp:?ptr:Protocol (protocol-resolve-any proto))
       (when (= pp null) (return -1))
@@ -7738,8 +7793,8 @@
                 name-node:ptr (node-at sig 0)
                 mname:ptr null)
             (extract-name-and-type name-node (as ptr:ptr (addr-of mname)) 0)
-            (when (and (!= mname null) (= (strcmp mname gname) 0)) (return i))))
-        (return -1)))))
+            (when (and (!= mname null) (= (strcmp mname (as CStr mkey)) 0)) (return i))))
+        (return -1))))))
 
 ; TE-6: forward a `(dyn P)` method call `(method box args…)` through the box's
 ; vtable (§(e)). `args` holds the PRE-EMITTED argument Vals (args[0] = the box,
