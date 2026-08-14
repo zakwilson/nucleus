@@ -262,18 +262,57 @@ so an overload another namespace contributed is not reachable through `pa/`.
 The fourth is the ordinary scope rule — a prefixed import binds the prefix, not
 the library's namespace.
 
-Two consequences of the merged registry, both deliberate:
+The registry is merged, but **the merge is not what a bare call sees**. A bare
+name is filtered too, by the same rule every other kind of name obeys: it
+reaches the namespaces this file can name *without* a qualifier — its own, each
+one it flattened with `import-use`/`import-only`, and `user`. A prefixed import
+binds its library under the prefix and under nothing else, for an overloaded
+function exactly as for a type or a global.
 
-* **A bare call still sees every reachable overload**, including ones from a
-  library this file imported *prefixed*. Bare `desc` above resolves; the
-  qualifier is what narrows, not what enables.
-* **Two overloads with the same parameter types are still an error**, wherever
-  they come from — a merged registry with two identical signatures has no
-  dispatch answer. That is the function row of the redefinition rule below.
+So in the example above `(pa/desc 1)` works and a bare `(desc 1)` does not
+resolve at all:
+
+```
+c.nuc:9: error: unknown: desc — defined in namespaces 'na' and 'nb'
+  note: write 'pa/desc' or 'pb/desc' here
+```
+
+This matters most when the importing file has a definition of its own. A file
+defining `helper (x:i64)` and calling `(helper 3)` calls **its own** function;
+adding `(import-prefixed somelib w)`, where `somelib` also exports
+`helper (x:i32)`, does not change that. Before this rule the library's method
+joined the same bare set, scored better on the untyped literal, and the
+unchanged call silently became a call to a function reached through a prefix it
+never spelled.
+
+Two further consequences, both deliberate:
+
+* **`import-use` really does merge.** Flattening a namespace puts its overloads
+  in the unqualified space on purpose — that is what makes two libraries'
+  `describe` methods usable together, and it is the escape hatch to reach for
+  when you want the merged multimethod rather than the qualified one.
+* **Two namespaces may each define one name with the same parameter types.**
+  They are two functions and two symbols (`@na__desc`, `@nb__desc`), so the
+  definitions are fine; what cannot be answered is a *bare call* that sees both,
+  and that is where the error is reported:
+
+  ```
+  c.nuc:3: error: ambiguous call to 'desc' — two namespaces define it for these argument types
+    note: 'na/desc' (defined at liba.nuc:2) and 'nb/desc' (defined at libb.nuc:2)
+    both match; qualify the call to choose one
+  ```
+
+  Flatten only one of them and there is nothing to report. Within **one**
+  namespace two identical signatures are still an error at the definition — that
+  pair really would emit one symbol twice, and it is the function row of the
+  redefinition rule below.
 
 Bounded-generic templates (`&where`) and their stamped instances follow the
 same rule: a stamp belongs to the namespace that declared the template, not to
-the file that triggered it.
+the file that triggered it. So does the template's **body** — the names in it
+are resolved in the library's import environment, not in the environment of
+whichever file instantiated it, so a template may freely call anything its own
+file can see.
 
 ### One definition per name
 
@@ -289,10 +328,15 @@ b.nuc:1: error: redefinition of 'Node' — it already names a type defined at a.
   import that library with `import-prefixed`.
 ```
 
-For a **function** the rule is the same one it always was, and it is about the
-signature rather than the name: two `defn`s of one name are overloads, and only
-two overloads with the *same* parameter types collide (`duplicate definition of
-'f' — the same parameter types are already defined at …`).
+For a **function** the rule is about the signature rather than the name, and it
+is scoped to one namespace: two `defn`s of one name are overloads, and two
+overloads with the *same* parameter types collide only when they would emit the
+same symbol — that is, when they are in the same namespace, or in two namespaces
+that `set-ir-prefix` to the same string (`duplicate definition of 'f' — the same
+parameter types are already defined at …`). Two *different* namespaces may each
+define `f (x:i32)`; see [Qualifying an overloaded
+function](#qualifying-an-overloaded-function) for where that pair is reported
+instead.
 
 Notes on what this does and does not cover:
 

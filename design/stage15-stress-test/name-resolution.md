@@ -1537,6 +1537,9 @@ standalone-compilation artifacts `build.md` records).
   path, and the reason is the second finding above: it would run on every head
   symbol, and it would trust `Method.src-ns` on paths B4 only had to correct for
   the two it measured. Wants its own audit of every `Method` writer first.
+  **Closed in W9 items 43 and 35 — §9.8.** The audit found the field sound at
+  every one of its writers; what it did *not* have was an environment to be read
+  in, which is where the real work was.
 * **`import-only` still filters nothing** (R5, §11.2). Unrelated to B4 and still
   unassigned.
 
@@ -1650,6 +1653,103 @@ key is `qualify-name`'s identity under `user`.
 diagnosed rather than supported. That is the macro-prescan stage W1d named, and
 it is a code-generation question (the body has to be JIT-compiled), not a naming
 one.
+
+### 9.8 W9 items 43 and 35 — the bare half of the filter, and what it uncovered
+
+**Done 2026-08-14.** Closes B4's deferred bare-reference audit (§9.6, last
+bullet) and R4's override of §8.2's first recommendation.
+
+**The audit B4 asked for came back clean, and that is the finding.** Five
+`(new Method)` sites; three register on a generic and two are one-shot
+descriptors that never enter a `Generic.methods` vector (a `derive-closure-
+conformance` synthetic `imp-src`, `with-drop-method`'s `@__boxedfn_drop` short
+circuit) and so are out of scope by construction. Of the three, `build-generics`
+leaves `src-ns` null *deliberately* — an intrinsic operator seed belongs to no
+file — `generic-register-method` writes `g-current-ns` at the definition, and
+`generic-instantiate-in` re-owns the stamp to the template's. B4 corrected the
+only two writers that were wrong, and no third appeared.
+
+**So the filter itself is small, and its byte-identical hatch is the one every
+other resolver already has.** `generic-lookup-ref`'s bare path returns
+`generic-filter-by-ns` with a null `ns`, which means "the unqualified set" —
+`ns-reachable-bare`: the current namespace, each namespace this file flattened,
+and `user`. That is `name-ref-key-at`'s three slots stated as a predicate rather
+than as keys, and it has to be a predicate because a generic is the one registry
+R2 keys BARE: there is no per-namespace key to withhold, so the environment is
+applied to the method SET. When `g-ns-declared` is 0 every `src-ns` is `user`
+and the filter is provably the identity, which is why this compiler and every
+program in `lib/` are untouched.
+
+**What was actually hard was somewhere else: a monomorphized template body was
+resolved in the CALLER's import environment.** `b4-qualified-template` — a
+prefixed import plus `(pg/b4-twice 3)`, whose body calls a bare `b4-zero` — was
+passing, and the filter broke it. Measured against a `HEAD` compiler, it was
+passing **by accident**: delete one of `b4-zero`'s two overloads and the
+identical program fails there with `unknown: bz4 — not defined anywhere in this
+compilation unit`. A merged bare-keyed generic resolved from anywhere; a
+solitary name or a global went through `globals-lookup-ref`, which has filtered
+since B2b. Whether a template could call its own namespace's functions depended
+on **how many overloads the callee happened to have**.
+
+`MonoJob` was the one deferred-work record that carried no environment.
+`DynAnnot` carries `ns`/`path`/`imports` and `InitJob` carries `ns`/`path`/`line`,
+both with the same stated reason — the drain runs later — and both were written
+for questions whose answer is the *asking* file's. A stamped body is the reverse:
+it is the library's text, so the three restored globals are the **template's**,
+recovered from `Method.src-ns` / `src-file` and a new `Method.src-imports`
+captured where the other two already were. `drain-mono-worklist` now saves and
+restores exactly what `drain-dyn-annots` does. This is the same argument
+`g-emitting-copy` and B4's own `src-ns` re-ownership already make about a
+stamp's linkage and its namespace, carried one layer further into where its
+names are looked up — and it fixes the misattribution too: an error in a
+template body reported `<caller>.nuc:<library line>`, a location that in the
+test program does not exist.
+
+**Item 35 then costs one guard and one message, plus a key that had rotted.**
+R4's eager check becomes conditional on `methods-share-symbol-space` — the
+emitted ir-prefix, not the namespace *name*, for the reason
+`generic-user-methods-with-prefix` already gives: two namespaces that
+`set-ir-prefix` to one string genuinely share a symbol space and a pair there
+really would emit one `define` twice. That states the concrete harm instead of a
+proxy for it. The refusal moves to `generic-resolve`'s tier 0, which had been
+silently keeping the **last** of several exact matches.
+
+The rotted key is the one part that was not predicted: once two namespaces may
+each own one signature, `(name, param-types)` stops identifying a method on the
+DEFINITION side, and `defn-ir-name` asked exactly that — so both files emitted
+`define @qa__describe` and LLVM rejected the second. `generic-find-method-exact-in-ns`
+adds `src-ns`; a reference keeps the two-part lookup, because a reference asks
+which method to *call* and answers that with the filter plus overload
+resolution. The general shape is §9.6's own finding one level up: *when a field
+starts being read as identity, audit every key that was unique only because it
+could not vary.*
+
+**Unqualified-and-unreachable needed its own diagnostic tier**, because item 43
+turns a silently-wrong call into an unresolved name and
+"not defined anywhere in this compilation unit" is a lie about a name defined
+twice in it. `generic-in-other-namespace-message` is the generic analogue of
+B3′'s `type-in-other-namespace-message`, placed ahead of `unreachable-definer-file`
+on the ground that a fact about a definition in *this* unit beats a same-named
+file the import graph never reaches. It names both namespaces when two answer,
+which is where item 35's "name both candidates" is delivered.
+
+**Verification.** `make bootstrap` byte-identical on the first pass; 637 PASS /
+0 FAIL (623 before, so 14 new); `abi-test`, `layout-test`, `avr-test`,
+`check-headers` (69/69) all pass. A `HEAD`-worktree compiler and this one emit
+`diff`-identical IR, diagnostics, exit status **and generated C headers** for all
+396 programs in `examples/` + `tests/fixtures/` + `lib/` — the three known
+`--emit-cheader` segfaults (item 38) unchanged in count and identity. Each new
+test was run against that worktree: 103-vs-10 on the bare call, a hard error on
+the template body, a hard refusal on the two definitions.
+
+**The `.nuch` path was expected to be a residue and measured as working.**
+`Method.src-imports` is captured wherever `src-ns`/`src-file` are, and a header
+replay reaches `register-generic-template` through `prescan-nuch-signatures`
+with the header file's own environment already filled — so a template *declared
+in a `.nuch` and instantiated from another object* resolves its body's names in
+the library's namespace and links. That is the realistic separate-compilation
+shape, and it fails on the `HEAD` compiler with `unknown: tz-solo`, so it is
+pinned (`w9-template-nuch-separate-compilation`) rather than assumed.
 
 ## 10. Still open *(resolved by §11)*
 

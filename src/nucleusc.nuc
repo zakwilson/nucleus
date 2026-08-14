@@ -2668,6 +2668,13 @@
   ; enumerated (macros, layouts, prefix aliases) removed rather than diagnosed.
   (let (cyc:ptr (cycle-definer-message verb name))
     (when (!= cyc null) (return cyc)))
+  ; Stage 15 W9 items 43/35: the name is defined in THIS unit, in a namespace
+  ; this file did not flatten. Before the tier below, which looks outside the
+  ; unit: a fact about a definition that is right here beats a same-named file
+  ; the import graph never reaches, and after item 43 that is a reachable
+  ; failure rather than a hypothetical one.
+  (let (gen-ns:ptr (generic-in-other-namespace-message verb name))
+    (when (!= gen-ns null) (return gen-ns)))
   ; Stage 15 W1c, tier 2. The name resolved nowhere in the unit — but it may be
   ; defined in a file the import graph never reaches. Naming that file is
   ; strictly more actionable than a spelling guess (it says which import to
@@ -2691,6 +2698,60 @@
     ; what was checked — post-W1a that is the whole unit, not "everything
     ; imported so far", and the old bare `unknown: <name>` did not say so.
     (return (fmt-2s "%s: %s — not defined anywhere in this compilation unit" verb name))))
+
+; Stage 15 W9 items 43/35 — the generic analogue of the type tier below, and the
+; message item 43's filter made necessary: a bare call that used to reach a
+; prefixed import's method now reaches nothing, and "not defined anywhere in this
+; compilation unit" would be a lie about a name defined twice in it.
+;
+; A generic is the one registry R2 keys BARE, so there is no qualified key to
+; scan for the way `type-in-other-namespace-message` scans `g-structs`. The
+; namespaces that answer to this name live on its METHODS instead, and the ones
+; that make this reference fail are exactly the ones `ns-reachable-bare`
+; withheld. Both are offered when two of them answer — item 35's "name both
+; candidates", delivered here rather than at the definitions.
+;
+; Error path only (the caller is a `die-at`), so a linear scan is affordable.
+(defn generic-in-other-namespace-message (verb:CStr name:CStr):ptr
+  (when (= g-ns-declared 0) (return null))
+  (when (!= (qualifier-len (as ptr name)) 0) (return null))
+  (let (g:?ptr:Generic (generic-lookup name))
+    (when (= g null) (return null))
+    (let (gg:ptr:Generic (unsafe/cast ptr:Generic g)
+          ns1:CStr null
+          ns2:CStr null
+          sp1:ptr null
+          sp2:ptr null)
+      (dotimes (i (unsafe/cast i32 (count (gg methods))))
+        (let (m:ptr:Method (as ptr:Method (invoke (gg methods) (as usize i)))
+              mns:CStr (m src-ns))
+          (when (and (!= (as ptr mns) null) (= (ns-reachable-bare mns) 0))
+            (let (fresh:i32 1)
+              (when (and (!= (as ptr ns1) null) (= (strcmp ns1 mns) 0)) (set! fresh 0))
+              (when (and (!= (as ptr ns2) null) (= (strcmp ns2 mns) 0)) (set! fresh 0))
+              (when (!= fresh 0)
+                (let (p:ptr (file-prefix-for-ns mns))
+                  (if (= (as ptr ns1) null)
+                    (do (set! ns1 mns)
+                        (when (!= p null) (set! sp1 (fmt-2s "%s/%s" (as CStr p) name))))
+                    (when (= (as ptr ns2) null)
+                      (set! ns2 mns)
+                      (when (!= p null) (set! sp2 (fmt-2s "%s/%s" (as CStr p) name)))))))))))
+      (when (= (as ptr ns1) null) (return null))
+      ; A prefix this file already bound is the spelling that compiles; the
+      ; namespace name alone is what it would have to import. Same two answers,
+      ; in the same order of usefulness, as the type tier below.
+      (when (!= sp1 null)
+        (when (!= sp2 null)
+          (return (fmt-2s "%s\n  note: write %s here"
+                          (as CStr (fmt-3s "%s: %s — defined in namespaces %s" verb name
+                                     (as CStr (fmt-2s "'%s' and '%s'" ns1 ns2))))
+                          (as CStr (fmt-2s "'%s' or '%s'" (as CStr sp1) (as CStr sp2))))))
+        (return (fmt-2s "%s\n  note: write '%s' here"
+                        (as CStr (fmt-3s "%s: %s — defined in namespace '%s'" verb name ns1))
+                        (as CStr sp1))))
+      (return (fmt-3s "%s: %s — defined in namespace '%s', which this file does not import"
+                      verb name ns1)))))
 
 ; Stage 15 B3′: a type whose BARE name matches `name`'s, registered under a
 ; namespace this file did not import. This is R1's own failure mode and it is
@@ -6382,13 +6443,11 @@
                     after-ret:ptr (make-cell ret-node body-list line)
                     after-params:ptr (make-cell params-node after-ret line)
                     after-name:ptr (make-cell name-sym after-params line)
-                    defn-form:ptr (make-cell defn-sym after-name line)
-                    job:ptr:MonoJob (new MonoJob))
-                (.set! job form defn-form)
-                (.set! job context
-                       (fmt-2s-i "while emitting lambda %s (defined at %s:%d)"
-                                 lifted g-source-path line))
-                (conj g-mono-worklist job)
+                    defn-form:ptr (make-cell defn-sym after-name line))
+                (conj g-mono-worklist
+                      (mono-job-here defn-form
+                        (fmt-2s-i "while emitting lambda %s (defined at %s:%d)"
+                                  lifted g-source-path line)))
                 ; The expression's value: the lifted function pointer.
                 (return (alloc-val (as ptr ft) irn))))))))))
 
@@ -6859,17 +6918,15 @@
         ; deterministic mangled ir-name. defn-ir-name finds this method at emit
         ; time and returns the same name, so the define and the call agree.
         (let (newm:ref:Method (generic-register-method "invoke" ret mtypes total 0 0 defn-form)
-              mangled:ptr (mangle-fn-name "" "invoke" mtypes total)
-              job:ptr:MonoJob (new MonoJob))
+              mangled:ptr (mangle-fn-name "" "invoke" mtypes total))
           (.set! newm ir-name mangled)
           ; Route `invoke` by argument type so the closure's `invoke` doesn't
           ; hijack (or get hijacked by) any solitary user `invoke`.
           (fn-force-generic-mangled "invoke")
-          (.set! job form defn-form)
-          (.set! job context
-                 (fmt-2s-i "while emitting closure invoke %s (defined at %s:%d)"
-                           mangled g-source-path line))
-          (conj g-mono-worklist job))))))
+          (conj g-mono-worklist
+                (mono-job-here defn-form
+                  (fmt-2s-i "while emitting closure invoke %s (defined at %s:%d)"
+                            mangled g-source-path line))))))))
 
 ; Synthesize, register, and queue the closure's `drop` method for an OWNING env.
 ; mode 0/1 (vfn/mfn — at least one field is a Drop type):
@@ -6975,18 +7032,16 @@
       ; Record the conformance so with-drop-method finds (Env, Drop).
       (conformance-add (sd name) "Drop" null 0 line)
       (let (newm:ref:Method (generic-register-method "drop" ty-void mtypes 1 0 0 defn-form)
-            mangled:ptr (mangle-fn-name "" "drop" mtypes 1)
-            job:ptr:MonoJob (new MonoJob))
+            mangled:ptr (mangle-fn-name "" "drop" mtypes 1))
         (.set! newm ir-name mangled)
         ; Route `drop` by argument type so the env's drop and each field type's
         ; own drop (e.g. a solitary `@drop`) coexist without one re-binding the
         ; other's bare `@drop` symbol.
         (fn-force-generic-mangled "drop")
-        (.set! job form defn-form)
-        (.set! job context
-               (fmt-2s-i "while emitting closure drop %s (defined at %s:%d)"
-                         mangled g-source-path line))
-        (conj g-mono-worklist job)))))
+        (conj g-mono-worklist
+              (mono-job-here defn-form
+                (fmt-2s-i "while emitting closure drop %s (defined at %s:%d)"
+                          mangled g-source-path line)))))))
 
 ; ============================================================
 ; Stage 13 type-erasure (TE-2): static per-concrete-type vtable synthesis.
