@@ -13900,7 +13900,9 @@
               (let (nn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr f) 1)))
                 (if (= (nn kind) NODE-SYM)
                   (when (= (as ptr (lookup-struct (as CStr (qualify-name (nn s))))) null)
-                    (register-struct (as CStr (qualify-name (nn s)))))
+                    (let (sd:ref:StructDef (register-struct (as CStr (qualify-name (nn s)))))
+                      (.set! sd src-file g-source-path)
+                      (.set! sd src-line (f line))))
                   ; Stage 11: a parameterized head — (defstruct (Vector T) ...) —
                   ; registers a template here so defn signatures naming
                   ; (Vector i32) resolve in the signature prescan that follows.
@@ -13913,7 +13915,9 @@
               (let (nn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr f) 1)))
                 (if (= (nn kind) NODE-SYM)
                   (when (= (as ptr (lookup-struct (as CStr (qualify-name (nn s))))) null)
-                    (register-struct (as CStr (qualify-name (nn s)))))
+                    (let (sd:ref:StructDef (register-struct (as CStr (qualify-name (nn s)))))
+                      (.set! sd src-file g-source-path)
+                      (.set! sd src-line (f line))))
                   (when (= (nn kind) NODE-CELL)
                     (register-union-template (as ptr f)))))))))
       (set! fc ((unsafe/cast ptr:Node fc) cdr)))))

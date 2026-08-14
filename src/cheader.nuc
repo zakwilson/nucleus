@@ -66,6 +66,14 @@
 ; two are reported differently.
 (defvar g-cheader-unrep-quiet:i32 0)
 
+; Stage 15 W9 item 37: the source files whose type definitions this header
+; REFERENCES but does not contain, as a Node string list (import-list-push /
+; -has, the same shape every other path list in the compiler uses). Recorded by
+; `type-name-to-c` — the single place a `struct NAME` reference is spelled — and
+; emitted as `#include` lines in the preamble. Reset at the top of
+; emit-cheader-header rather than initialized here, per g-cheader-file above.
+(defvar g-cheader-includes:ptr)
+
 (defn cheader-mark-unrep (why:ptr quiet:i32):void
   (set! g-cheader-unrep 1)
   (set! g-cheader-unrep-why why)
@@ -1827,6 +1835,82 @@
       (aset! (as ptr:i8 s) (- n 1) 0)
       (return s))))
 
+; Stage 15 W9 item 37. A type this unit does not define needs the defining unit's
+; generated header included, or the reference is to a tag C never completes:
+; a by-value FIELD fails outright ("field has incomplete type" — `lib/string-split.h`
+; was unusable for exactly this), and a by-value PARAMETER parses but cannot be
+; called, which is worse, being silent. Recorded here because `type-name-to-c`'s
+; fallthrough is the one place a reference to a user type is spelled, so the set
+; is exactly the set of references that were actually emitted.
+;
+; `src-file` is readable in this mode only because `prescan-struct-names` records
+; it at NAME pre-registration; the definition-time writers never run here, since
+; --emit-cheader emits no struct. `prescan-imported-types` swaps g-source-path
+; while it walks an imported file, so an imported type carries that file's path.
+(defn cheader-note-type-file (name:CStr):void
+  (when (= g-source-path null) (return))
+  (let (sd:?ptr:StructDef (struct-lookup-ref name))
+    (when (= sd null) (return))
+    (let (f:CStr ((as ptr:StructDef sd) src-file))
+      (when (= (as ptr f) null) (return))
+      ; Only a Nucleus unit, whose header the build generates beside it by the
+      ; same rule (`lib/%.h: lib/%.nuc`). A C header's opaque type is already
+      ; reachable through the `#include` the SOURCE wrote, and a compiler-minted
+      ; type (a closure env, a stamped instance) has no header to name at all.
+      (when (and (= (str-ends-with f ".nuc") 0) (= (str-ends-with f ".nuch") 0))
+        (return))
+      (when (= (strcmp f (as CStr g-source-path)) 0) (return))
+      (let (k:CStr (as CStr (intern-str (as ptr f))))
+        (when (= (import-list-has g-cheader-includes k) 0)
+          (set! g-cheader-includes (import-list-push g-cheader-includes k)))))))
+
+; The `#include` spelling for a defining source file, relative to the header
+; being generated. The build writes `lib/foo.h` beside `lib/foo.nuc`, and a
+; QUOTED include resolves against the including file's own directory — so a
+; sibling is named by basename alone, which is also the only spelling that keeps
+; working wherever the tree is checked out. A defining file in another directory
+; keeps its path as written: there is no include search path to consult, and
+; inventing one would be a guess (the C compiler needs a matching `-I`).
+(defn cheader-include-spelling (src:CStr):ptr
+  (let (n:i64 (as i64 (strlen src))
+        base:i64 0
+        end:i64 (as i64 (strlen src))
+        selfbase:i64 0)
+    (dotimes (i n) (when (= (char-at (as ptr src) i) 47) (set! base (+ i 1))))
+    (if (!= (str-ends-with src ".nuch") 0)
+      (set! end (- end 5))
+      (when (!= (str-ends-with src ".nuc") 0) (set! end (- end 4))))
+    (let (m:i64 (as i64 (strlen (as CStr g-source-path))))
+      (dotimes (i m)
+        (when (= (char-at (as ptr g-source-path) i) 47) (set! selfbase (+ i 1)))))
+    (when (or (!= selfbase base)
+              (and (> base 0) (!= (strncmp src (as CStr g-source-path) base) 0)))
+      (set! base 0))
+    (return (fmt-s "%s.h" (strndup (unsafe/ptr+ (as raw:i8 src) base) (- end base))))))
+
+; The recorded includes, in DISCOVERY order (import-list-push prepends, so the
+; list is walked into an array and replayed). Discovery order is emission order,
+; which is a deterministic function of the source — `make check-headers` compares
+; the committed headers byte for byte, so a stable order is required, not merely
+; tidy.
+(defn cheader-emit-includes ():void
+  (let (n:i32 0
+        cur:ptr g-cheader-includes)
+    (while (!= cur null)
+      (set! n (+ n 1))
+      (set! cur ((unsafe/cast ptr:Node cur) cdr)))
+    (when (= n 0) (return))
+    (let (arr:ptr (arena-alloc (* (as i64 n) (ptr-bytes)))
+          i:i32 n)
+      (set! cur g-cheader-includes)
+      (while (!= cur null)
+        (set! i (- i 1))
+        (aset! (as ptr:ptr arr) i ((unsafe/cast ptr:Node cur) s))
+        (set! cur ((unsafe/cast ptr:Node cur) cdr)))
+      (dotimes (j n)
+        (printf "#include \"%s\"\n"
+          (cheader-include-spelling (as CStr (aref (as ptr:ptr arr) j))))))))
+
 (defn type-name-to-c (name:ptr):ptr
   (when (= name "void")  (return "void"))
   (when (= name "i1")    (return "_Bool"))
@@ -1880,6 +1964,8 @@
   ; W9 item 28: through `cheader-c-ident`, so a type named `union` or `class` is
   ; escaped here exactly as at its definition. A tag is an identifier too, and
   ; `struct union {…}` does not parse.
+  ; W9 item 37: record the defining unit, so the preamble can include its header.
+  (cheader-note-type-file (as CStr name))
   (return (fmt-s "struct %s" (cheader-c-ident (as raw:i8 (ns-ir-base name))))))
 
 ; Convert a type AST node to a C type string. Handles SYM types and
@@ -2388,6 +2474,88 @@
           (printf "\n")))
       (printf "};\n\n"))))
 
+; W9 item 37: render one type node for its RECORDING side effect only. The
+; `(array T N)` split mirrors emit-cheader-defstruct — `type-node-to-c` answers
+; `void*` for an array cell and would never reach the element type — but the
+; extent is deliberately not evaluated here: `cheader-array-extent` can `die-at`,
+; and a diagnostic must keep coming from the emitter, at its own point.
+;
+; The two "has no C spelling" predicates are the emitters' own, and they are
+; applied here for the same reason those apply them: a declaration they reject is
+; never emitted, so a type reachable only through one is not a dependency of this
+; header. Without them `lib/combinators.h` — which spells no `struct` at all —
+; picked up an include for the `String` return type of a generic template.
+(defn cheader-scan-type-node (tn:ptr):void
+  (when (= tn null) (return))
+  (when (!= (cheader-template-instance (as raw:Node tn)) 0) (return))
+  (when (!= (cheader-mentions-closure (as raw:Node tn)) 0) (return))
+  (let (an:ptr (cheader-array-field-node (as raw:Node tn))
+        rendered:ptr null)
+    (if (!= an null)
+      (set! rendered (type-node-to-c (node-at an 1)))
+      (set! rendered (type-node-to-c tn)))))
+
+; W9 item 37: the type nodes a generated header would RENDER, visited before the
+; preamble is printed so the `#include` lines can precede the first use of what
+; they complete. Signature positions only — a defn's BODY is never emitted, so a
+; type used solely inside one is not a dependency of the header.
+;
+; This re-reads the positions the emitters read; it does not re-implement what
+; they do with them, since the rendering goes through `type-node-to-c` itself.
+; So the worst a drift here can cost is a missing or a surplus `#include`, never
+; a wrong type. The heads are the same six `emit-cheader-header` dispatches on —
+; the `-` (private) spellings are absent from both, which is what keeps a private
+; definition from contributing a dependency nothing exported can need.
+(defn cheader-scan-form-types (form:ptr):void
+  (let (f:ptr:Node (unsafe/cast ptr:Node form))
+    (when (or (!= (f kind) NODE-CELL) (< (node-len form) 2)) (return))
+    (let (h0:ptr:Node (unsafe/cast ptr:Node (node-at form 0)))
+      (when (!= (h0 kind) NODE-SYM) (return))
+      (let (h:ptr (h0 s))
+        (when (= h "defn")
+          ; A generic template exports nothing — a bare tyvar has no C spelling —
+          ; so its signature names no dependency of this header.
+          (when (!= (defn-is-generic-template form) 0) (return))
+          (when (>= (node-len form) 3)
+            (let (params:ptr:Node (unsafe/cast ptr:Node (node-at form 2)))
+              (when (and (!= (as ptr params) null) (= (params kind) NODE-CELL))
+                (dotimes (i (node-len (as ptr params)))
+                  (let (p:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr params) i)))
+                    (cheader-scan-type-node
+                      (extract-type-node (as raw:Node p) (p line)))))))
+            ; Guarded exactly as cheader-defn-ret-node dereferences: the legacy
+            ; spelling reads the name node, the S1 spelling index 3.
+            (when (or (= (sig-name-is-bare (node-at form 1)) 0) (>= (node-len form) 4))
+              (cheader-scan-type-node (cheader-defn-ret-node (as raw:Node form)))))
+          (return))
+        (when (= h "defstruct")
+          ; A parametric head — `(defstruct (Vector T) …)` — defines no concrete
+          ; C type and is skipped by the emitter at its first line, so its fields
+          ; name no dependency either. Without this, `lib/vector.h` (which spells
+          ; no `struct` at all) took an include for the template's allocator field.
+          (when (!= ((unsafe/cast ptr:Node (node-at form 1)) kind) NODE-SYM) (return))
+          (dotimes (i (- (node-len form) 2))
+            (let (fl:ptr:Node (unsafe/cast ptr:Node (node-at form (+ i 2))))
+              (cheader-scan-type-node (extract-type-node (as raw:Node fl) (fl line)))))
+          (return))
+        (when (= h "defunion")
+          (when (!= ((unsafe/cast ptr:Node (node-at form 1)) kind) NODE-SYM) (return))
+          (dotimes (i (- (node-len form) 2))
+            (let (arm:ptr:Node (unsafe/cast ptr:Node (node-at form (+ i 2))))
+              (when (= (arm kind) NODE-CELL)
+                (dotimes (fi (- (node-len (as ptr arm)) 1))
+                  (let (fl:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr arm) (+ fi 1))))
+                    (cheader-scan-type-node (extract-type-node (as raw:Node fl) (fl line))))))))
+          (return))
+        ; `defvar` puts the name after any declaration attributes, so every
+        ; operand is offered to extract-type-node rather than a fixed index being
+        ; read — a keyword or a literal answers null. Avoids calling
+        ; `parse-decl-attrs`, which can die, before the preamble is printed.
+        (when (= h "defvar")
+          (dotimes (i (- (node-len form) 1))
+            (let (op:ptr:Node (unsafe/cast ptr:Node (node-at form (+ i 1))))
+              (cheader-scan-type-node (extract-type-node (as raw:Node op) (op line))))))))))
+
 (defn emit-cheader-header (forms:ptr source-file:ptr):void
   ; Stage 12 N6: a namespaced library's public symbols carry a mangled link name
   ; (`@geom__area`), so the C declarations must use that C-legal spelling — never
@@ -2430,11 +2598,22 @@
   (when (!= g-source-path null)
     (set! g-prescan-sigs (import-list-push g-prescan-sigs (as CStr g-source-path))))
   (prescan-imported-signatures forms)
+  ; W9 item 37: discover the cross-unit type references BEFORE the preamble, so
+  ; the `#include` that completes each one can precede it. A header that names a
+  ; type it does not define is not merely untidy — a by-value field of one does
+  ; not compile at all, which is what made `lib/string-split.h` unusable.
+  (set! g-cheader-includes null)
+  (let (sc:ptr forms)
+    (while (!= sc null)
+      (cheader-scan-form-types ((unsafe/cast ptr:Node sc) car))
+      (set! sc ((unsafe/cast ptr:Node sc) cdr))))
   (printf "#pragma once\n")
   (printf "#include <stdint.h>\n")
   (printf "#include <stdbool.h>\n")
   ; size_t / ptrdiff_t, for usize / ssize (type-name-to-c).
-  (printf "#include <stddef.h>\n\n")
+  (printf "#include <stddef.h>\n")
+  (cheader-emit-includes)
+  (printf "\n")
   (printf "/* Generated from %s by nucleusc --emit-cheader */\n\n" source-file)
   ; Register defunion templates first so declares can recognize (and skip)
   ; signatures that mention template-instance types.
