@@ -37,8 +37,8 @@ and item 9's fix (2026-08-10) filed the i1 *signedness* defect beside it as item
 31; item 13 fixed 2026-08-10: **thirty-one found, seventeen fixed (item 6 in part),
 fourteen open**. That running tally stops there; every count in this paragraph
 is a snapshot of the day it was written, and the **current** one lives in the W9
-section's own heading — **forty found, thirty fixed, ten open** as of
-2026-08-14 (item 30). Read that heading, not this sentence, and re-probe before
+section's own heading — **forty found, thirty-one fixed, nine open** as of
+2026-08-14 (item 32). Read that heading, not this sentence, and re-probe before
 trusting either: this table has gone stale by hand three times, which item 10's
 row and the B-series re-measurement both record.
 
@@ -852,7 +852,7 @@ escape hatch — reproduced by compiling `(defvar g:ptr:i32)` with
 
 ---
 
-## W9 — Reconciled at stage close: forty defects found, **thirty** now fixed (items 23 and 38 in part), ten open *(added 2026-08-01; extended through G-5's close 2026-08-02; items 21–24 added 2026-08-03; items 10 and 16 closed and item 22 measured closed 2026-08-09; items 1, 5 and 2 fixed 2026-08-09; items 3 and 4 fixed 2026-08-10, the latter adding items 25–28; item 6's string-path half fixed 2026-08-10, splitting its `.nuch` half out as item 29; item 7 fixed 2026-08-10; item 8 fixed 2026-08-10, splitting its float counterpart out as item 30; item 9 fixed 2026-08-10, filing the i1 signedness defect beside it as item 31; item 13 fixed 2026-08-10; item 15 fixed 2026-08-10, filing the index-signedness defect it measured as item 32; items 18 and 19 fixed 2026-08-10; item 20 fixed 2026-08-10, filing the two argument-position holes it measured as items 33 and 34; item 23's symbol half fixed 2026-08-10, splitting its dispatch half out as item 35; item 24 fixed 2026-08-10, filing the header-shadowing defect it measured as item 36; item 25 fixed 2026-08-10, closing the builtin-scalar spelling beside it and filing the two residual causes of its own named headers as items 37 and 38; item 26 fixed 2026-08-10, closing item 27 with the same cause and most of item 38 as a consequence; item 28 fixed 2026-08-10, filing the digit-leading-name defect it measured as item 39; item 29 fixed 2026-08-10, closing item 6's remaining half and filing the order-dependence it measured as SHARED by both spellings as item 40; item 30 fixed 2026-08-14, which supplied its own second asker — `defvar-init-ir`'s float `as` fold, newly reachable *because* the value path started accepting — and closed it in the same change; item 31 fixed 2026-08-14, the first W9 fix to move the bootstrap — one `TY-I1` arm, 24 `sext i1`→`zext i1` sites across the whole corpus and nothing else)*
+## W9 — Reconciled at stage close: forty defects found, **thirty-one** now fixed (items 23 and 38 in part), nine open *(added 2026-08-01; extended through G-5's close 2026-08-02; items 21–24 added 2026-08-03; items 10 and 16 closed and item 22 measured closed 2026-08-09; items 1, 5 and 2 fixed 2026-08-09; items 3 and 4 fixed 2026-08-10, the latter adding items 25–28; item 6's string-path half fixed 2026-08-10, splitting its `.nuch` half out as item 29; item 7 fixed 2026-08-10; item 8 fixed 2026-08-10, splitting its float counterpart out as item 30; item 9 fixed 2026-08-10, filing the i1 signedness defect beside it as item 31; item 13 fixed 2026-08-10; item 15 fixed 2026-08-10, filing the index-signedness defect it measured as item 32; items 18 and 19 fixed 2026-08-10; item 20 fixed 2026-08-10, filing the two argument-position holes it measured as items 33 and 34; item 23's symbol half fixed 2026-08-10, splitting its dispatch half out as item 35; item 24 fixed 2026-08-10, filing the header-shadowing defect it measured as item 36; item 25 fixed 2026-08-10, closing the builtin-scalar spelling beside it and filing the two residual causes of its own named headers as items 37 and 38; item 26 fixed 2026-08-10, closing item 27 with the same cause and most of item 38 as a consequence; item 28 fixed 2026-08-10, filing the digit-leading-name defect it measured as item 39; item 29 fixed 2026-08-10, closing item 6's remaining half and filing the order-dependence it measured as SHARED by both spellings as item 40; item 30 fixed 2026-08-14, which supplied its own second asker — `defvar-init-ir`'s float `as` fold, newly reachable *because* the value path started accepting — and closed it in the same change; item 31 fixed 2026-08-14, the first W9 fix to move the bootstrap — one `TY-I1` arm, 24 `sext i1`→`zext i1` sites across the whole corpus and nothing else; item 32 fixed 2026-08-14, which did **not** move the bootstrap although it predicted it would — the compiler indexes exclusively with signed and `usize` values, so its own IR is byte-identical and the whole corpus moved by five lines)*
 
 **The original six are enumerated in [../global-init.md](../global-init.md)
 §7. Four more (7–10) were found measuring G-1 and re-verifying G-0/G-1's test
@@ -957,7 +957,7 @@ hit while measuring, verifying, or documenting, not synthesized.
 | 29 | **A `.nuch` header's functions and values registered at import time, so they stayed order-dependent — FIXED 2026-08-10**, split out of item 6 (2026-08-10) | A `declare`d function, an `extern` global, a `defconst` or a `defenum` member from a header resolved only if the header was imported *above* the use; otherwise `not defined anywhere in this compilation unit` for a name that is in the unit. Measured against the `.nuc` spelling of the same library, which resolves on reachability (W1a): `declare`/`extern`/`defconst`/`defenum` all failed, and so did a `defmethod` — the item's list of four was one short, because real parity with a `defn` includes each arm of an overload set. **Ruled as the item proposed**: a registration-without-emission pass over header forms (`prescan-nuch-signatures`), armed by the same per-path `g-prescan-sigs` guard `emit-toplevel-forms` already reads, rather than a second implementation of the registrars. The half the item did not anticipate is *where the line between the halves falls*. Hoisting emission too would move every `declare` / `external global` to the top of `g-decl-stream` and change the IR of every module that imports a header — `src/llvm.nuch`, so the compiler's own — so registration moves and emission does not, via a `NUCH-BOTH`/`NUCH-REG`/`NUCH-AFTER` mode on the three importers. That in turn makes "already registered" a per-NAME question, not a per-header one: all three importers have an "already defined → return" skip (two headers declaring one `stderr`; item 36's local definition), so an emit-only pass that assumed the whole header was registered would write `@x = external global` twice and LLVM would reject the module — hence `g-nuch-registered`, keyed on (path, name). Registration-only also means the pass writes no IR, so it needs no stream guard and is correct under `--emit-nuch`/`--emit-cheader`, which return before `open-module-streams`. Measured: IR **231 identical / 0 differing / 0 status changes** across the corpus, `--emit-nuch` 367 identical, `--emit-cheader` 364 identical; the header import now compiles, links and runs identically from either position, and transitively through a `.nuc` library. What did NOT change is the residue, and it is **symmetric with `.nuc`** — see item 40 |
 | 30 | **`(as f32 1.5)` is refused although the literal is exactly representable — FIXED 2026-08-14**, split out of item 8 (2026-08-10) | The float counterpart of item 8, and the *only* place the safe cast is still stricter than the implicit coercion for a literal. `emit-as` step 7 rejects every `f64`→`f32` on the two kinds alone, so `(as f32 1.5)` dies `lossy conversion from f64 to f32` while `(let (a:f32 1.5) …)` compiles and emits a plain `float 1.5` constant with no instruction (W2d). [../global-init.md](../global-init.md) records the rejection as expected behaviour, which is why item 8 did not quietly widen into it — this is a **ruling**, not a missed call site. The predicate is already written: `f32-const-ir` computes `(as f64 (unsafe/cast f32 d))`, so "does this literal round-trip exactly" is that comparison, and it is the precise analogue of `int-literal-fits`. The ruling to make is whether `as` accepts only exact round-trips (1.5 yes, 3.14 no — `as` keeps its no-loss promise, and is *stricter* than the implicit path's deliberate Option A rounding) or follows the implicit path wholesale. Recommend the former; ~6 lines either way  **Ruled the recommended way and built as described — and the estimate was right for the rule and wrong for the item.** The three-line predicate is the whole of it, but landing it *created* a second asker inside the same change: with `(as f32 1.5)` legal, `(defvar g:f32 (as f32 1.5))` stopped being an error and became a `@__nucleus_init` store while `(defvar g:f32 1.5)` stayed a constant — the exact divergence `global-init.md`'s "a float `as` fold could only have diverged" clause was written to prevent, arriving from the other direction. See the W9-30 note below |
 | 31 | — FIXED 2026-08-14 — **`i1` is treated as a *signed* 1-bit integer, so `true` widens to −1 and `(< false true)` and `(> true false)` are BOTH false**, split out of item 9 (2026-08-10) | Measured, pre-existing, and independent of item 9's fix (the corpus sweep for that fix was IR byte-identical across all 373 programs, this path included). `(as i32 true)` and `(as i64 true)` are **−1**, contradicting [../../docs/types.md](../../docs/types.md)'s own literal table (`true` → `1`) and the `bool`→`_Bool` C mapping, where `(int)true` is 1. The comparison half is worse than surprising, it is **self-contradictory**: `icmp slt i1` reads `true`'s bit as −1, so `false < true` is `0 < -1` = false *and* `true > false` is `-1 > 0` = false — for two distinct values exactly one must hold. **Single cause**: `is-unsigned` (`src/type-utils.nuc:421`) has no `TY-I1` arm and falls through to `(return 0)`, so every consumer picks the signed instruction — `sext` over `zext` at `nucleusc.nuc:3409` and `abi.nuc:973`, and the signed comparison at `nucleusc.nuc:3311`. **The ruling**: `{0, 1}` makes unsigned the only coherent reading of `i1`, and one `TY-I1 (return 1)` arm fixes all three consumers at once — but `is-unsigned` has 22 call sites, including `binop-result-type`'s signedness-match test (`nucleusc.nuc:3124`, `:3304`) and generic parameter matching (`generics.nuc:626`), so unlike item 9 this **will** move the bootstrap and needs its own sweep. The narrower alternative — an `is-bool` test at the two ext sites only — fixes the widening and leaves the comparison, and is not recommended. **Fixed as ruled**: the one `TY-I1 (return 1)` arm. The estimate was right that it moves the bootstrap and wrong about how far it reaches — the whole corpus moved by exactly 24 `sext i1`→`zext i1` sites and nothing else, and the 22 risky call sites cost zero diagnostics. It also caught a *third* consequence the item did not list: a mixed `bool`/`i32` binop had been **accepted**, silently answering `(< true 1)` = true |
-| 32 | **An unsigned index is SIGN-extended, so `(aref p i)` with `i:ui32 ≥ 2^31` reads backwards from `p`**, split out of item 15 (2026-08-10) | Measured end to end, not inferred: with `i:ui32` at `4294967295`, `(aref (unsafe/ptr+ buf 1) i)` returns `buf[0]` — the index became `-1`. Pre-existing and independent of item 15, whose fix is width-only and byte-identical on the host. Now a **one-line** fix, because item 15 gave the widening a single home (`gep-index-ir`, `nucleusc.nuc`): pick `zext` when `is-unsigned` answers for the index type. It also **costs code size** today — dropping the `unsafe/cast i64` workaround from `examples/avr-global-init.nuc` grew the ATtiny1634 image by 4 bytes, exactly the sign-extension of a `ui8` counter that `zext` would not emit. Two cautions: `is-unsigned` had no TY-I1 arm (**item 31**, fixed 2026-08-14 — it now answers `1` for `i1`, so this caution is discharged), and this changes host IR wherever an unsigned index is used, so unlike item 15 it needs its own sweep and will move the bootstrap |
+| 32 | — FIXED 2026-08-14 — **An unsigned index is SIGN-extended, so `(aref p i)` with `i:ui32 ≥ 2^31` reads backwards from `p`**, split out of item 15 (2026-08-10) | Measured end to end, not inferred: with `i:ui32` at `4294967295`, `(aref (unsafe/ptr+ buf 1) i)` returns `buf[0]` — the index became `-1`. Pre-existing and independent of item 15, whose fix is width-only and byte-identical on the host. Now a **one-line** fix, because item 15 gave the widening a single home (`gep-index-ir`, `nucleusc.nuc`): pick `zext` when `is-unsigned` answers for the index type. It also **costs code size** today — dropping the `unsafe/cast i64` workaround from `examples/avr-global-init.nuc` grew the ATtiny1634 image by 4 bytes, exactly the sign-extension of a `ui8` counter that `zext` would not emit. Two cautions: `is-unsigned` had no TY-I1 arm (**item 31**, fixed 2026-08-14 — it now answers `1` for `i1`, so this caution is discharged), and this changes host IR wherever an unsigned index is used, so unlike item 15 it needs its own sweep and will move the bootstrap  **Fixed as ruled, in the one line predicted — and the second caution was wrong, which is the finding.** It does not move the bootstrap: the compiler's own IR is **byte-identical**, because nothing in it indexes with an unsigned narrow type (signed `i32` and pointer-width `usize` only, and `usize` needs no instruction at all). The whole corpus moved by **five lines**, four of them in the new fixture. The code-size claim was exact — the ATtiny1634 image gave the 4 bytes back, 942 → 938. See the W9-32 note below |
 | 33 | **A failed argument coercion is silently discarded, so a call may pass an argument of the wrong type with no diagnostic**, found fixing item 20 (2026-08-10) | `emit-call-with-args`' coercion loop (`nucleusc.nuc`) calls `safe-coerce-val` and **ignores a null return** — the comment there says so outright ("no safe conversion exists, the argument is left untouched — preserving the prior pass-through behavior"). So `(f-ptr 7)` against `(defn f-ptr (p:ptr:S) …)` emits `call i32 @f-ptr(i32 7)`, `(f-i32 c)` with `c:CStr` emits `call i32 @f-i32(ptr %t)`, and `(f-i32 1.5)` emits `call i32 @f-i32(double 1.5)` — all accepted, all UB, and `llvm-as` accepts the IR because a call site carries its own signature. Measured identical on the pre-session compiler (5f4989e), so pre-existing. This is the **type** half of item 12, whose arity half was fixed 2026-08-02, and W2d already fixed one *instance* of it (the f32 narrowing miscompile) by adding a coercion rule rather than closing the hole. Overloaded/multimethod calls are unaffected — resolution must match a signature to pick a method, so it rejects earlier and for a different reason; this is the **solitary-`defn`** path only |
 | 34 | **The argument-coercion guard compares IR type *strings*, so a mismatch between two types that lower to `ptr` is never even checked**, found fixing item 20 (2026-08-10) | The same loop guards on `(!= (strcmp (type-to-ir (slot type)) (type-to-ir ptype)) 0)`. Every pointer flavour lowers to `ptr`, so a `CStr`, a `raw` or a `(ref T)` flowing into a `(fn …)` parameter compares equal, the guard is false, and no coercion is attempted at all — `(take c)` passes a string where a function pointer is expected and the callee calls it. Distinct from item 33 (there the guard fires and the *result* is dropped; here the guard never fires), and it is why item 20 looked half-broken: `(take null)` was never accepted, only unchecked. Note `pkind-flow-check` runs unconditionally just above and does catch the nullability subset, which is why `raw`→`(ref T)` arguments *are* diagnosed — the hole is the type identity, not the contract |
 | 35 | **Two namespaces cannot each define one name with the same signature**, split out of item 23 (2026-08-10) | With item 23's symbol half fixed the two definitions no longer *collide* — `@qa__describe` and `@qb__describe` are distinct symbols, and a qualified `qa/describe` filters to its own method. What refuses them is R4's eager same-kind check in `finalize-generics`, whose note still says "a public name must be unique across the whole compilation unit" — true of one flat namespace, and the thing namespaces exist to stop being true. The obstacle is the **bare** reference: one `Generic` per bare name (R2) means `(describe 10)` has two equally good methods and nothing to choose between them. The honest rule is R2 §8.2's own first recommendation, which R4 later overrode — allow the definitions, report ambiguity at the first ambiguous *use*, naming both candidates. That is a ruling change, and it sits on top of the audit B4 explicitly deferred (§9.6: a bare reference currently reaches namespaces the file imported *prefixed*, and filtering it symmetrically "wants its own audit of every `Method` writer first"). Not a typo, not a one-liner, and the diagnostic today is located and names both files — so this is a real limitation with a good error message, not a silent wrong answer |
@@ -986,6 +986,76 @@ It breaks C interop for any hyphenated name, which is most of them.
 > its members, function *parameter* names, and the inline `(union …)` member
 > names `type-node-to-c` emits. And "a missed call site" holds only for names
 > nothing links against — for a `defn` it is a *ruling*, taken by item 3.
+
+### W9 item 32 as fixed *(2026-08-14)* — the one line, and the prediction it disproved
+
+The fix is the line item 15 made possible, in the single home item 15 gave the
+rule (`gep-index-ir`, `src/nucleusc.nuc`): widen by the index type's own
+signedness rather than always `sext`.
+
+```
+t (if (< iw g-target-ptr-bytes) "sext" "trunc")            ; before
+t (if (>= iw g-target-ptr-bytes) "trunc"                   ; after
+    (if (= (is-unsigned (idx type)) 0) "sext" "zext"))
+```
+
+Reproduced before the change, not inferred: `(aref (unsafe/ptr+ buf 1) i)` with
+`i:ui32` at `4294967295` returned `buf[0]` — the emitted `sext i32 %t to i64`
+made the index −1. After it, the same program emits `zext` and *faults*, which
+is the right answer: four billion elements past a 16-byte buffer is not an
+address.
+
+**That is also why the fixture is written the way it is.** A test whose failure
+mode is a segfault reports a signal, not a claim. `tests/fixtures/w9-unsigned-
+index.nuc` keeps both the correct and the sign-extended address inside a live
+allocation — a `ui8` index of 200 against a pointer 60 elements in, so the wrong
+answer is `[-56]` and the right one is `[+200]` and both are mapped — so a
+regression reads a *wrong value* and returns a code that names the check. It
+covers all three callers of `gep-index-ir` (`aref`, `aset!`, `unsafe/ptr+`), a
+`ui16` at 40000, a **signed** index at −3 that must still reach backwards, and a
+`usize` index that must still emit no instruction at all. Verified to fail on
+the pre-fix compiler (exit 1, the first check) and pass after. The `ui32`-at-2^31
+case that started the item cannot be written this way, so it is asserted on the
+emitted instruction in `run-tests.sh` instead — with the `sext`-for-signed
+assertion beside it, since a blanket `zext` would pass every other check here.
+
+**The second caution was wrong, and that is the finding.** The item predicted
+this "changes host IR wherever an unsigned index is used, so … will move the
+bootstrap". Measured over `examples/` + `tests/fixtures/` + `lib/`, pre- vs
+post-fix: **231 IR byte-identical, 2 differing, 160 rejected by both, 0
+accept/reject changes, 0 diagnostics moved**. The two that differ are the new
+fixture and `examples/avr-global-init.nuc`, and the total movement across the
+whole corpus is **five lines, every one of them `sext`→`zext` on an unsigned
+index**. The compiler's own IR is **byte-identical** — `make bootstrap` held the
+fixed point on the first pass, and no `boot/` artifact needed regenerating.
+
+The reason is worth keeping, because it is the same shape as item 31's and
+points the opposite way. Item 31 moved the bootstrap because `i1` is *pervasive*
+in the compiler — every comparison produces one. Item 32 does not, because the
+compiler indexes exclusively with signed `i32` and with pointer-width `usize`,
+and `usize` already matches the pointer so `gep-index-ir` emits nothing for it.
+An unsigned *narrow* index is a thing embedded code writes and a compiler does
+not. **A fix's blast radius follows the type's idiom, not its call-site count** —
+the same 22-call-site `is-unsigned` was read here through exactly one consumer.
+
+The code-size claim in the item was exact. It recorded that dropping the
+`unsafe/cast i64` workaround from `examples/avr-global-init.nuc` had *cost* 4
+bytes on the ATtiny1634, "exactly the sign-extension of a `ui8` counter that
+`zext` would not emit". Measured after: flash **942 → 938**, and the other four
+AVR examples unchanged to the byte. The one line in that file's host IR that
+moved is the same `ui8` counter — `sext i8 %t2 to i64` → `zext`.
+
+Gates: `make test` 588 → **592 PASS / 0 FAIL** (the fixture plus three IR
+assertions); `make bootstrap` PASS on the first pass; `make abi-test`,
+`make layout-test`, `make avr-test` all green, the last including the simavr
+run. Docs updated where the rule is stated — `docs/builtins.md`'s `aref` row and
+`docs/avr.md`'s indexing bullet, which now records the 4 bytes as a reason to
+prefer an unsigned counter rather than a hazard to cast around.
+
+**Not covered.** The index rule is now signedness-correct, but it is still
+unchecked — nothing diagnoses an index that is out of bounds, and nothing warns
+when a `ui32` index is *wider* than the addressable space. Both are the
+deliberate `unsafe/`-tier bargain, not residue of this item.
 
 ### W9 item 31 as fixed *(2026-08-14)* — one arm, and the sweep the item asked for
 
@@ -1915,6 +1985,12 @@ addresses *backwards*. Demonstrated with a running program, not inferred. It is
 now a one-line fix precisely because item 15 gave the rule a single home — but
 it is a different rule (signedness, not width), it moves host IR, and item 15's
 value as evidence rests on the host not moving at all.
+
+> **Fixed 2026-08-14 as the predicted one line, and the host did not move
+> either**: 231 IR byte-identical / 2 differing over the same corpus, the
+> compiler's own IR byte-identical, `make bootstrap` holding on the first pass.
+> The clean separation this paragraph wanted turned out to be free. See the
+> W9-32 note above.
 
 ### W9 item 13 as fixed *(2026-08-10)* — one null meaning both "absent" and "malformed"
 

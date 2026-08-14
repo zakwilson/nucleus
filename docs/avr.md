@@ -124,8 +124,11 @@ example — behaviorally verified under `simavr`.
 - Pointer indexing — `aref`, `aset!` and `unsafe/ptr+` — at the target pointer
   width. The index may be any integer type: one narrower than a pointer is
   widened to 16 bits, one wider (`i32`, `i64`) is narrowed to 16, and `usize`
-  is already the right width. No cast is needed at the call site, and none of
-  the three emits 64-bit arithmetic on your behalf.
+  is already the right width. The widening follows the index type's signedness
+  (`zext` unsigned, `sext` signed), which on AVR is also the cheaper
+  instruction: a `ui8` loop counter costs 4 bytes less than the sign-extension
+  it used to emit. No cast is needed at the call site, and none of the three
+  emits 64-bit arithmetic on your behalf.
 - Structs and unions, passed and returned by value through the AVR aggregate
   ABI convention: **every** struct/union (any size) uses the plain-pointer
   `ABI-MEMORY` convention (no `byval`, since AVR has no such calling-convention
