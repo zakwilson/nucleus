@@ -260,6 +260,101 @@
     (when (= (n kind) NODE-KEYWORD) (return (parse-type-name (n s) line)))
     (return (parse-type-from-node (as ptr node) line))))
 
+; A `declare`'s parameter list as a flat Type array, with the count written back
+; through `io-n`. Extracted from nuch-declare-import so item 36's conflict message
+; can render the declared signature by calling the very parse the import runs,
+; rather than a second copy of it.
+(defn declare-param-types (params-node:ptr line:i32 io-n:ptr:i32):ptr
+  (let (nparams:i32 0)
+    (when (!= params-node null) (set! nparams (node-len params-node)))
+    (aset! io-n 0 nparams)
+    (when (<= nparams 0) (return null))
+    (let (ptypes:ptr (arena-alloc (* (as i64 nparams) (ptr-bytes))))
+      (dotimes (j nparams)
+        ; A parameter node is either an annotated `name:type` (a colon symbol, or
+        ; the `(name type)` cell desugar produces) or a bare type operand. The line
+        ; must be borrowed from the enclosing form: an unannotated parameter is an
+        ; interned NODE-SYM, whose own line is always 0 (W4a).
+        (let (p:ptr (node-at params-node j)
+              pn:ptr null
+              pline:i32 (node-line p line)
+              pty:ptr (extract-name-and-type p (as ptr:ptr (addr-of pn)) pline))
+          (when (= pty null)
+            (set! pty (declare-param-type (as raw:Node p) pline)))
+          (aset! (as ptr:ptr ptypes) j pty)))
+      (return ptypes))))
+
+; A function type's parameter Types as the flat array `fn-sig-spelling` takes —
+; the same shape `declare-param-types` builds from source.
+(defn fn-type-param-array (ft:ptr:Type):ptr
+  (when (<= (ft num-params) 0) (return null))
+  (let (a:ptr (arena-alloc (* (as i64 (ft num-params)) (ptr-bytes))))
+    (dotimes (j (ft num-params))
+      (aset! (as ptr:ptr a) j (unsafe/cast ptr ((field-at (ft params) j) type))))
+    (return a)))
+
+; `(i32):i32` — a signature in SOURCE spellings, for a diagnostic. Deliberately
+; not `c-fn-sig-render`, which lowers through `type-to-ir`: every pointer flavour
+; would print `ptr` (W9 item 34), and a declaration conflict is precisely a
+; question about the types, not about what they lower to.
+(defn fn-sig-spelling (ret:ptr ptypes:ptr nparams:i32):ptr
+  (let (acc:ptr "(")
+    (dotimes (j nparams)
+      (when (!= j 0) (set! acc (fmt-s "%s, " acc)))
+      (set! acc (fmt-2s "%s%s" acc
+                  (type-spelling (unsafe/cast raw:Type (aref (as ptr:ptr ptypes) j))))))
+    (return (fmt-2s "%s):%s" acc (type-spelling (unsafe/cast raw:Type ret))))))
+
+; `file:line` of a DEFINITION of `fname` in this unit, or null if it has none —
+; the second of the two questions the skip below asks (Stage 15 W9 item 36). Only
+; a `defn` carries a body, so only a definition is located here: a C-header import
+; and an imported `declare` both answer null, which is the case the skip is FOR.
+; Same provenance `duplicate-signature-message` uses.
+(defn nuch-definition-site (fname:ptr):ptr
+  (let (g:?ptr:Generic (generic-lookup (as CStr fname)))
+    (when (= g null) (return null))
+    (let (gg:ptr:Generic (as ptr:Generic g)
+          i:i32 0)
+      (while (< i (unsafe/cast i32 (count (gg methods))))
+        (let (mi:ptr:Method (as ptr:Method (invoke (gg methods) (as usize i))))
+          (when (and (= (mi kind) METHOD-USER) (!= (as ptr (mi body)) null))
+            (let (f:ptr (mi src-file))
+              (when (= f null) (set! f "<unknown file>"))
+              (return (fmt-sd "%s:%d" (as CStr f)
+                        (-> mi (_ body) (unsafe/cast ptr:Node _) (_ line)))))))
+        (inc! i))
+      (return null))))
+
+; Item 36's message. Both signatures are printed — they are usually different
+; types as well as different functions, and seeing both is what makes the clash
+; obvious — and the note states the mechanism: one name is one key, so the
+; header's function has no spelling left that reaches it, not even a qualified
+; one. Giving the library an `(ns …)` is a real fix rather than advice: its
+; exports then key as `lib/helper` and link as `@lib__helper`, and the two coexist
+; (the skip never fires, because the keys differ).
+(defn nuch-declare-conflict-message (fname:ptr site:ptr params-node:ptr
+                                     ret:ptr line:i32):CStr
+  (let (nparams:i32 0
+        ptypes:ptr (declare-param-types params-node line (as ptr:i32 (addr-of nparams)))
+        prev:ptr (as ptr (scope-lookup-key g-globals fname))
+        theirs:ptr "a value of another kind")
+    (when (!= prev null)
+      (let (pt:raw:Type ((as ptr:Sym prev) type))
+        (when (!= pt null)
+          (let (ft:ptr:Type (unsafe/cast ptr:Type pt))
+            (when (= (ft kind) TY-FN)
+              (set! theirs (fmt-2s "%s%s" (as CStr fname)
+                             (as CStr (fn-sig-spelling (unsafe/cast ptr (ft ret))
+                                        (fn-type-param-array ft) (ft num-params))))))))))
+    (return (as CStr
+      (fmt-2s "%s\n  note: %s"
+        (fmt-3s "declare '%s': this compilation unit already defines '%s', at %s"
+                (as CStr fname) (as CStr fname) (as CStr site))
+        (fmt-3s "the header declares %s%s, the unit has %s. One name is one key here, so nothing — not even a qualified call — would reach the header's. Rename one, or give the library an (ns ...) so its exports key and link under it."
+                (as CStr fname)
+                (as CStr (fn-sig-spelling ret ptypes nparams))
+                (as CStr theirs)))))))
+
 (defn emit-nuch-declare-import (form:(raw Node)):void
   (nuch-declare-import form NUCH-BOTH))
 
@@ -320,26 +415,35 @@
           ; Skip if already defined (e.g. from include or c-include).
           ; B2b: a KEY question — this is the definition side of the `scope-define`
           ; a few lines below, not a reference written in this file.
+          ; Stage 15 W9 item 36: but a bound name is one of two different things,
+          ; and the skip used to assume it was always the first. Either the same
+          ; function named twice — the diamond above, or W1e's cross-file
+          ; cycle-breaker `(declare f …)`, whose whole job is to be a no-op once
+          ; the prescan reaches the real `defn` — or a DIFFERENT function that
+          ; happens to share the name, in which case dropping the header entry
+          ; whole (no binding, no `declare`, no method) left even a qualified
+          ; `lib/helper` reaching the unit's own `helper`, silently and at whatever
+          ; type the local one had.
+          ;
+          ; Two questions separate them, and both are needed. WHERE the declare is
+          ; written: a `.nuch` describes some OTHER unit's exports, and `--emit-nuch`
+          ; never re-exports a top-level `declare`, so a header entry is never a
+          ; forward declaration of a function this unit defines — while a `.nuc`
+          ; declare always may be. And whether this unit DEFINES the name: only a
+          ; `defn` carries a body, so the libc diamond (a C header and a `.nuch`
+          ; both naming `strlen`) answers no, which is every occurrence in this repo.
           (when (and (!= m NUCH-AFTER)
-                     (!= (scope-lookup-key g-globals fname) null)) (return))
+                     (!= (scope-lookup-key g-globals fname) null))
+            (when (and (!= g-source-path null)
+                       (!= (str-ends-with (as CStr g-source-path) ".nuch") 0))
+              (let (site:ptr (nuch-definition-site fname))
+                (when (!= site null)
+                  (die-at (ff line)
+                    (nuch-declare-conflict-message fname site params-node ret (ff line))))))
+            (return))
           (let (nparams:i32 0
-                ptypes:ptr null)
-          (when (!= params-node null)
-            (set! nparams (node-len params-node)))
-          (when (> nparams 0)
-            (set! ptypes (arena-alloc (* (as i64 nparams) (ptr-bytes)))))
-          (dotimes (j nparams)
-            ; A parameter node is either an annotated `name:type` (a colon symbol,
-            ; or the `(name type)` cell desugar produces) or a bare type operand.
-            ; The line must be borrowed from the enclosing form: an unannotated
-            ; parameter is an interned NODE-SYM, whose own line is always 0 (W4a).
-            (let (p:ptr (node-at params-node j)
-                  pn:ptr null
-                  pline:i32 (node-line p (ff line))
-                  pty:ptr (extract-name-and-type p (as ptr:ptr (addr-of pn)) pline))
-              (when (= pty null)
-                (set! pty (declare-param-type (as raw:Node p) pline)))
-              (aset! (as ptr:ptr ptypes) j pty)))
+                ptypes:ptr (declare-param-types params-node (ff line)
+                             (as ptr:i32 (addr-of nparams))))
             ; Stage 12 N6: a solitary symbol from a namespaced header re-resolves
             ; to its mangled link name. The header's leading `(ns NAME)` has set
             ; g-current-ns, so ns-ir-base composes the namespace ir-prefix onto the
