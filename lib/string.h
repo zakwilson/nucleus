@@ -17,25 +17,25 @@ struct String string_new_alloc(void* a) asm("string-new-alloc");
 struct String string_with_capacity(size_t n) asm("string-with-capacity");
 void string_push_bytes_raw(void* self, uint8_t* p, size_t n) asm("string-push-bytes-raw");
 void string_push_char(void* self, uint32_t c) asm("string-push-char");
-struct _BANGi32 string_push_str(void* self, void* s) asm("string-push-str");
+/* string-push-str: uses an error-union or option type; not exported */
 /* string-pop-char: uses a defunion-template instance type; not exported */
 void string_clear(void* self) asm("string-clear");
-struct _BANGi32 string_truncate(void* self, size_t byte_len) asm("string-truncate");
+/* string-truncate: uses an error-union or option type; not exported */
 void string_reserve(void* self, size_t extra) asm("string-reserve");
 void string_shrink_to_fit(void* self) asm("string-shrink-to-fit");
-struct _BANGString string_from_view(void* sv) asm("string-from-view");
+/* string-from-view: uses an error-union or option type; not exported */
 struct String string_from_cstr_unchecked(const char* cs) asm("string-from-cstr-unchecked");
-struct _BANGString string_from_cstr(const char* cs) asm("string-from-cstr");
+/* string-from-cstr: uses an error-union or option type; not exported */
 void drop_pString(struct String* self) asm("drop.pString");
 size_t byte_len_pString(void* self) asm("byte_len.pString");
-struct _BANGui8 byte_at_pString_usize(void* self, size_t i) asm("byte_at.pString.usize");
+/* byte-at: uses an error-union or option type; not exported */
 struct ByteIter bytes_pString(void* self) asm("bytes.pString");
 struct StrView as_view_pString(void* self) asm("as_view.pString");
 void* sub_bytes_pString_usize_usize(void* self, size_t start, size_t end) asm("sub_bytes.pString.usize.usize");
 /* byte-find: uses a defunion-template instance type; not exported */
 size_t char_count_pString(void* self) asm("char_count.pString");
 int32_t str_empty_QMARK_pString(void* self) asm("str_empty_QMARK.pString");
-struct _BANGChar char_at_pString_usize(void* self, size_t i) asm("char_at.pString.usize");
+/* char-at: uses an error-union or option type; not exported */
 struct CharIter chars_pString(void* self) asm("chars.pString");
 int32_t starts_with_QMARK_pString_pStrView(void* self, void* prefix) asm("starts_with_QMARK.pString.pStrView");
 int32_t ends_with_QMARK_pString_pStrView(void* self, void* suffix) asm("ends_with_QMARK.pString.pStrView");

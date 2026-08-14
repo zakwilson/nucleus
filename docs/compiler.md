@@ -15,7 +15,7 @@ By default `nucleusc <file.nuc>` produces a linked native executable (`a.out` un
 | `-ffast-math` | Emit `fast` flags on floating-point arithmetic (`fadd`/`fsub`/`fmul`/`fdiv`/`frem`), permitting reassociation, contraction, and no-signed-zero/no-NaN assumptions. This is what lets the optimizer vectorize FP **reductions** (e.g. `pi += …`); without it an FP reduction stays scalar even at `-O3` because reordering would change results. Comparisons are left unflagged. Changes numerical results — opt-in only. |
 | `-march=native` | Target the host CPU and its full feature set (via `LLVMGetHostCPUName` / `LLVMGetHostCPUFeatures`) instead of the generic baseline, so vectorized loops use the widest available registers (e.g. 256-bit AVX rather than 128-bit SSE2). Host-only — do not combine with `--target=`. Produces non-portable objects. |
 | `--emit-nuch` | Output a `.nuch` header instead of compiling. Extracts function signatures, struct definitions, constants, enums, and macros. The prelude and the file's own imports are prescanned first (types only — nothing is emitted), so an exported signature may name an imported type: `Node`, `StrView`, `String`, `(Maybe T)`, the `!T` sugar. |
-| `--emit-cheader` | Output a C header (`.h`) instead of compiling. Emits `#pragma once`, `#include <stdint.h>` / `<stdbool.h>` / `<stddef.h>`, tagged typedefs for structs and unions (`typedef struct Pt { … } Pt;`, so both `Pt` and `struct Pt` work), extern function declarations, `extern` declarations for public `defvar` globals (see [Reaching a library's globals from C](#reaching-a-librarys-globals-from-c)), `#define` constants, and enums. For a namespaced library, function declarations use the C-legal mangled link name (`geom__area`, not the Nucleus name `geom/area`), so a C consumer links against the same symbol the library emits — and a struct's typedef name is mangled the same way (`} gt__Pt;`, not `} Pt;`), since two namespaces may each define a `Pt` and an unprefixed typedef would collide if both headers were included together. A `user`-namespace library's header is unaffected. An **overloaded** or **operator-named** function is declared under the per-signature symbol it really links as, each method with its own C name (see [Overloaded and operator-named functions in a C header](#overloaded-and-operator-named-functions-in-a-c-header)). A name that is a **word C or C++ reserves** (`union`, `signed`, `class`, `delete`) is renamed with a trailing `_` and re-bound with an `asm` label, so only its C spelling moves (see [Names C reserves](#names-c-reserves)). A type defined in **another** unit gets an `#include` of that unit's generated header, so a by-value use of it compiles (see [Types a header borrows from another unit](#types-a-header-borrows-from-another-unit)). Header emission resolves the whole unit's signatures, so a source that does not compile produces the compiler's ordinary error rather than a header. See [Namespaced type names](types.md#namespaced-type-names). |
+| `--emit-cheader` | Output a C header (`.h`) instead of compiling. Emits `#pragma once`, `#include <stdint.h>` / `<stdbool.h>` / `<stddef.h>`, tagged typedefs for structs and unions (`typedef struct Pt { … } Pt;`, so both `Pt` and `struct Pt` work), extern function declarations, `extern` declarations for public `defvar` globals (see [Reaching a library's globals from C](#reaching-a-librarys-globals-from-c)), `#define` constants, and enums. For a namespaced library, function declarations use the C-legal mangled link name (`geom__area`, not the Nucleus name `geom/area`), so a C consumer links against the same symbol the library emits — and a struct's typedef name is mangled the same way (`} gt__Pt;`, not `} Pt;`), since two namespaces may each define a `Pt` and an unprefixed typedef would collide if both headers were included together. A `user`-namespace library's header is unaffected. An **overloaded** or **operator-named** function is declared under the per-signature symbol it really links as, each method with its own C name (see [Overloaded and operator-named functions in a C header](#overloaded-and-operator-named-functions-in-a-c-header)). A name that is a **word C or C++ reserves** (`union`, `signed`, `class`, `delete`) is renamed with a trailing `_` and re-bound with an `asm` label, so only its C spelling moves (see [Names C reserves](#names-c-reserves)). A type defined in **another** unit gets an `#include` of that unit's generated header, so a by-value use of it compiles (see [Types a header borrows from another unit](#types-a-header-borrows-from-another-unit)). A signature mentioning an **error-union or option type over a non-pointer payload** (`:!i32`, `?Char`) is not declared at all — the value is niche-encoded, not a struct — and a comment says so in its place; the pointer niches `!ptr:T` / `!ref:T` are bare pointers and stay declared (see [Error-union and option types in a C header](#error-union-and-option-types-in-a-c-header)). Header emission resolves the whole unit's signatures, so a source that does not compile produces the compiler's ordinary error rather than a header. See [Namespaced type names](types.md#namespaced-type-names). |
 | `-i` / `--interactive` | Start the REPL (interactive Read-Eval-Print Loop). |
 | `-I<path>` / `-I <path>` | Add a directory to the import search path. Searched after the source file's directory and `lib/`. |
 | `--repl-format=text\|json` | Format for REPL error output. Default `text` (legacy `  error: <msg>` lines). With `json`, each error is emitted as a single-line JSON object: `{"file":..,"line":..,"message":..}`. Suitable for agent-driven REPL sessions. |
@@ -561,12 +561,45 @@ list. A type used only inside a function body, or only by a form the header does
 not export — a generic template, a parametric `defstruct`, a `defn-` — is not a
 dependency of the header and produces no include.
 
-Two limits remain. A type this unit defines but that comes from a **C** header
-(`(import-use "SDL.h")`) is not included: the C declaration is already reachable
-through whatever the consumer includes for it. And an **error-union return type**
-(`:!i32`, `:!Char`) is still declared as `struct _BANGi32` — a tag no header
-defines, over a value that is really a niche-encoded scalar. Those declarations
-are not usable from C; see Stage 15 W9 item 44.
+One limit remains: a type this unit defines but that comes from a **C** header
+(`(import-use "SDL.h")`) is not included, because the C declaration is already
+reachable through whatever the consumer includes for it.
+
+## Error-union and option types in a C header
+
+A function whose signature mentions an error-union or option type over a
+**non-pointer** payload — `:!i32`, `:!Char`, `:!String`, `?ui8` — is not
+declared. In its place the header carries a comment saying so:
+
+```c
+/* strview-byte-at: uses an error-union or option type; not exported */
+```
+
+`!T` is a `(Result T Err)` **template instance**, and a template instance has no
+generated C typedef to declare against — the same reason an explicitly spelled
+`(Result i64 i32)` is not exported either. The emitter used to name it
+`struct _BANGui8` anyway: a tag no header defines, and none can.
+
+The tag is not merely cosmetic. The instance really is `{int32_t tag; union
+payload;}`, so a C author who declares a struct of the **right** shape reads the
+value correctly; one who guesses the shape from the tag's name gets a program
+that compiles, links, runs and reads the wrong number. A declaration C trusts and
+gets wrong is worse than an omission it reports at the call site — the same
+ruling `defvar` follows for a global whose type has no C spelling. Restoring
+these declarations means exporting template instances in general, not
+special-casing the sugar.
+
+The rule applies to every signature position: a `!T` **parameter**, or a `defvar`
+of `!T`, refuses the declaration exactly as a return type does.
+
+**Pointer niches are exempt and stay callable.** `!ptr:T` / `!ref:T` are
+niche-encoded *in the pointer itself* — `(ok p)` is `p`, an error is a sentinel
+in the reserved top page — so the whole value is a bare pointer, ABI-identical to
+a C `T*`, and it is declared as one.
+
+The escape route for a C caller is a companion function that cannot fail:
+`lib/string.h` omits `string-from-cstr` (`:!String`) and declares
+`string_from_cstr_unchecked`, which returns a plain `struct String`.
 
 ## Separate compilation and symbol linkage
 

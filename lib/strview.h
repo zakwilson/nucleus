@@ -29,7 +29,7 @@ typedef struct CharIter {
 
 /* next: uses a defunion-template instance type; not exported */
 size_t strview_byte_len(void* sv) asm("strview-byte-len");
-struct _BANGui8 strview_byte_at(void* sv, size_t i) asm("strview-byte-at");
+/* strview-byte-at: uses an error-union or option type; not exported */
 struct ByteIter strview_bytes(void* sv) asm("strview-bytes");
 struct StrView strview_as_view(void* sv) asm("strview-as-view");
 struct ByteIter cstr_bytes(const char* cs) asm("cstr-bytes");
@@ -37,7 +37,7 @@ struct CharIter cstr_chars(const char* cs) asm("cstr-chars");
 void* strview_sub_bytes(void* sv, size_t start, size_t end) asm("strview-sub-bytes");
 /* strview-byte-find: uses a defunion-template instance type; not exported */
 size_t strview_char_count(void* sv) asm("strview-char-count");
-struct _BANGChar strview_char_at(void* sv, size_t i) asm("strview-char-at");
+/* strview-char-at: uses an error-union or option type; not exported */
 struct CharIter strview_chars(void* sv) asm("strview-chars");
 int32_t strview_empty(void* sv) asm("strview-empty");
 int32_t strview_starts_with(void* sv, void* prefix) asm("strview-starts-with");

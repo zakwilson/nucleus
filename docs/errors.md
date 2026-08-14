@@ -106,6 +106,14 @@ The representation depends on the payload:
 Nothing propagates across a function boundary by a mechanism C doesn't
 understand.
 
+`--emit-cheader` does not yet *declare* the non-pointer case, though: `!T` is a
+`(Result T Err)` template instance, and the header emits no typedef for a
+template instance to declare against, so a function returning or taking one is
+omitted with a comment in its place. The layout above is still the contract — a
+C declaration written by hand against it works — but the header will not write
+it for you. Pointer niches are declared normally. See
+[Error-union and option types in a C header](compiler.md#error-union-and-option-types-in-a-c-header).
+
 ## Handler-aware `err` and `with-handler` (E3)
 
 When `(import-use error)` is in scope, returning `(err E)` from a `!T` function

@@ -2187,6 +2187,56 @@
           (return 0))))
     (return 0)))
 
+; W9 item 44: an error-union / option type over a NON-pointer payload — `!ui8`,
+; `!i32`, `!String`, `?Char` — is a `(Result T Err)` TEMPLATE INSTANCE wearing a
+; sugar spelling, and `cheader-template-instance` above already rules that a
+; template instance is not exported. It slipped past only because the sugar is a
+; NODE-SYM, not a `(Result …)` cell, so `niche-sym-to-c` answered null and
+; `type-name-to-c`'s "assume struct" fallthrough spelled `struct _BANGui8` — a tag
+; nothing defines, and nothing here can define, since the header emits no typedef
+; for a template instance. This makes the two spellings of one type agree, which
+; is the same trap items 3 and 25 fixed (the Type-keyed and name-keyed renderers
+; must give one answer).
+;
+; Not a cosmetic tag: the instance really is `{i32 tag; union payload}` (measured
+; `%Result.u8.Err`), so a C author who writes a struct of the RIGHT shape reads
+; the value correctly — and one who guesses the shape from the tag's name gets a
+; program that compiles, links, runs and reads the wrong number (measured: 0
+; where Nucleus reads 65). A declaration C trusts and gets wrong is worse than an
+; omission — W9 item 3's ruling for `defvar`. Restoring these wants the general
+; feature `cheader-template-instance` is waiting on, not a special case here.
+;
+; The POINTER niches stay: `!ptr:T` / `!ref:T` are niche-encoded in the pointer
+; itself (design/stage10/unions.md §6 rule 3), so the whole value is a bare
+; pointer, ABI-identical to a C `T*`, and niche-sym-to-c spells it as one.
+; Unwraps `(ptr T)` / `(ref T)` exactly as cheader-mentions-closure does, so
+; `ptr:!ui8` — which rendered `struct _BANGui8*` — is refused with the rest.
+(defn cheader-niche-no-c (tn:(raw Node)):i32
+  (let (cur:ptr tn)
+    (while (!= cur null)
+      (let (n:ptr:Node (unsafe/cast ptr:Node cur))
+        (case (n kind)
+          NODE-SYM
+            (do
+              (when (and (!= (char-at (n s) 0) 33) (!= (char-at (n s) 0) 63)) (return 0))
+              (when (!= (niche-sym-to-c (n s)) null) (return 0))
+              (return 1))
+          NODE-CELL
+            (let (head:ptr:Node (unsafe/cast ptr:Node (n car)))
+              (when (or (= (as ptr head) null) (!= (head kind) NODE-SYM)) (return 0))
+              (let (hs:ptr (head s))
+                ; A `!ptr`/`!ref` HEAD is the pointer niche in list form; it lands
+                ; on `void*`, which is size- and ABI-correct. Only ptr/ref wrappers
+                ; are unwrapped to look further in.
+                (when (and (!= hs "ptr") (!= hs "ref")) (return 0))
+                (let (rest:ptr (n cdr))
+                  (when (= rest null) (return 0))
+                  (if (= ((unsafe/cast ptr:Node rest) cdr) null)
+                    (set! cur ((unsafe/cast ptr:Node rest) car))
+                    (set! cur rest)))))
+          (return 0))))
+    (return 0)))
+
 ; The C-header return-type node of a defn form, honoring both signature styles:
 ; legacy (`name:ret` / `(name ret)`) recovers it from the name node; new style
 ; (S1) takes the index-3 operand, normalized so a keyword ret reads as a symbol
@@ -2206,46 +2256,77 @@
         (return (normalize-ret-node (as ptr rn))))
       (return (as ptr rn)))))
 
+; Why `emit-cheader-declare` would refuse this defn, or 0 to export it:
+;   1 generic template   2 defunion-template instance
+;   3 closure / erased box   4 error-union or option type with no C spelling
+; The reason CODE rather than a message, because the two callers need different
+; things from the same question: the emitter names the class in the comment it
+; prints in the declaration's place, while item 37's include pre-pass only needs
+; to know that the declaration is refused — a type reachable solely through a
+; refused declaration is not a dependency of this header, so scanning its other
+; signature positions would record an `#include` nothing in the file needs.
+; Asking it in one place is what stops those two from drifting apart, which is
+; the failure mode item 37 hit when the pre-pass replicated the tests by hand.
+(defn cheader-defn-skip-reason (form:ptr):i32
+  ; A generic template (the same predicate the prescan/emit-defn skip already use
+  ; — src/generics.nuc): a bare tyvar has no C spelling, so emitting one here
+  ; produced garbage C in both defn-signature styles (defn-signature.md follow-up).
+  (when (!= (defn-is-generic-template form) 0) (return 1))
+  (let (params:ptr (node-at form 2)
+        np:i32 (node-len (node-at form 2))
+        ret:ptr null)
+    ; Guarded exactly as cheader-defn-ret-node dereferences — the legacy spelling
+    ; recovers the type from the name node, the S1 spelling from index 3 — because
+    ; the include pre-pass asks this question before any prescan has vetted the
+    ; form's shape. A null ret reads as "no return type", which every check below
+    ; already answers 0 for.
+    (when (or (= (sig-name-is-bare (node-at form 1)) 0) (>= (node-len form) 4))
+      (set! ret (cheader-defn-ret-node form)))
+    ; Signatures mentioning template-instance types (no C spelling yet).
+    (let (skip:i32 (cheader-template-instance ret))
+      (dotimes (pi np)
+        (when (!= (cheader-template-instance
+                    (extract-type-node (node-at params pi)
+                                       ((unsafe/cast ptr:Node (node-at params pi)) line))) 0)
+          (set! skip 1)))
+      (when (!= skip 0) (return 2)))
+    ; L8: a signature exposing a capturing-closure env type (__vfn_env_N) or a
+    ; type-erased box type (BoxedFn/dyn) is not C-callable. A plain fn pointer is.
+    (let (skip-cl:i32 (cheader-mentions-closure ret))
+      (dotimes (clpi np)
+        (when (!= (cheader-mentions-closure
+                    (extract-type-node (node-at params clpi)
+                                       ((unsafe/cast ptr:Node (node-at params clpi)) line))) 0)
+          (set! skip-cl 1)))
+      (when (!= skip-cl 0) (return 3)))
+    ; W9 item 44: a niche-encoded `!T` / `?T` over a non-pointer payload.
+    (let (skip-ni:i32 (cheader-niche-no-c ret))
+      (dotimes (nipi np)
+        (when (!= (cheader-niche-no-c
+                    (extract-type-node (node-at params nipi)
+                                       ((unsafe/cast ptr:Node (node-at params nipi)) line))) 0)
+          (set! skip-ni 1)))
+      (when (!= skip-ni 0) (return 4)))
+    (return 0)))
+
 (defn emit-cheader-declare (form:ptr):void
   ; (defn name:rettype (params...) ...)  /  (defn name (params...) rettype ...)
   (let (name-node:ptr (node-at form 1)
         fname:ptr null
         ret-name:ptr null)
     (extract-name-type name-node (as ptr:ptr (addr-of fname)) (as ptr:ptr (addr-of ret-name)))
-    ; Skip generic templates (the same predicate the prescan/emit-defn skip
-    ; already use — src/generics.nuc): a bare tyvar has no C spelling, so
-    ; emitting one here previously produced garbage C in both defn-signature
-    ; styles (defn-signature.md follow-up).
-    (when (!= (defn-is-generic-template form) 0)
-      (printf "/* %s: generic template; not exported */\n" fname)
-      (return))
-    ; Skip signatures mentioning template-instance types (no C spelling yet).
-    (let (skip:i32 (cheader-template-instance
-                     (cheader-defn-ret-node form))
-          params0:ptr (node-at form 2)
-          np:i32 (node-len (node-at form 2)))
-      (dotimes (pi np)
-        (when (!= (cheader-template-instance
-                    (extract-type-node (node-at params0 pi)
-                                       ((unsafe/cast ptr:Node (node-at params0 pi)) line))) 0)
-          (set! skip 1)))
-      (when (!= skip 0)
+    (let (why:i32 (cheader-defn-skip-reason form))
+      (when (= why 1)
+        (printf "/* %s: generic template; not exported */\n" fname)
+        (return))
+      (when (= why 2)
         (printf "/* %s: uses a defunion-template instance type; not exported */\n" fname)
-        (return)))
-    ; L8: exclude public defns whose signature exposes a capturing-closure env
-    ; type (__vfn_env_N) or a type-erased box type (BoxedFn/dyn) — not C-callable.
-    ; A plain fn pointer is fine.
-    (let (skip-cl:i32 (cheader-mentions-closure
-                        (cheader-defn-ret-node form))
-          clparams:ptr (node-at form 2)
-          clnp:i32 (node-len (node-at form 2)))
-      (dotimes (clpi clnp)
-        (when (!= (cheader-mentions-closure
-                    (extract-type-node (node-at clparams clpi)
-                                       ((unsafe/cast ptr:Node (node-at clparams clpi)) line))) 0)
-          (set! skip-cl 1)))
-      (when (!= skip-cl 0)
+        (return))
+      (when (= why 3)
         (printf "/* %s: exposes a closure or type-erased box type; not C-callable, omitted */\n" fname)
+        (return))
+      (when (= why 4)
+        (printf "/* %s: uses an error-union or option type; not exported */\n" fname)
         (return)))
     ; Stage 12 N6: emit the C-legal mangled link name (`geom__area`) for a
     ; namespaced library. ns-ir-base composes g-current-ns's ir-prefix onto the
@@ -2366,6 +2447,14 @@
             (return))
           (when (!= (cheader-mentions-closure tnode) 0)
             (printf "/* %s: exposes a closure or type-erased box type; not C-callable, omitted */\n" vname)
+            (return))
+          ; W9 item 44: and a niche-encoded `!T` / `?T` over a non-pointer payload,
+          ; which `cheader-defvar-type-ok` below cannot see — it is a plain SYM, so
+          ; that arm passes it and `type-name-to-c` spells an undefined struct tag.
+          ; A `!T` global is real (`@g = global %Result.u8.Err`), which is exactly
+          ; why the wrong spelling here would be linked against.
+          (when (!= (cheader-niche-no-c tnode) 0)
+            (printf "/* %s: uses an error-union or option type; not exported */\n" vname)
             (return))
           ; `type-node-to-c` answers `void*` for every cell head it does not
           ; recognize, which is SIZE-CORRECT for a pointer and silently wrong for
@@ -2489,6 +2578,7 @@
   (when (= tn null) (return))
   (when (!= (cheader-template-instance (as raw:Node tn)) 0) (return))
   (when (!= (cheader-mentions-closure (as raw:Node tn)) 0) (return))
+  (when (!= (cheader-niche-no-c (as raw:Node tn)) 0) (return))
   (let (an:ptr (cheader-array-field-node (as raw:Node tn))
         rendered:ptr null)
     (if (!= an null)
@@ -2513,9 +2603,12 @@
       (when (!= (h0 kind) NODE-SYM) (return))
       (let (h:ptr (h0 s))
         (when (= h "defn")
-          ; A generic template exports nothing — a bare tyvar has no C spelling —
-          ; so its signature names no dependency of this header.
-          (when (!= (defn-is-generic-template form) 0) (return))
+          ; A declaration the emitter refuses names no dependency of this header,
+          ; and it refuses the WHOLE declaration on any one of its signature
+          ; positions — so ask once, of the whole form, rather than per type node.
+          ; W9 item 44: this is what keeps `lib/char.h` from including `prelude.h`
+          ; for the `Char` payload of a `!Char` return that is no longer declared.
+          (when (!= (cheader-defn-skip-reason form) 0) (return))
           (when (>= (node-len form) 3)
             (let (params:ptr:Node (unsafe/cast ptr:Node (node-at form 2)))
               (when (and (!= (as ptr params) null) (= (params kind) NODE-CELL))
