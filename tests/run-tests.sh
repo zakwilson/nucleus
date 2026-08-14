@@ -2529,6 +2529,119 @@ EOF
 }
 spawn run_w9_header_validation
 
+# W9 item 45 — `()` IN A POSITION THAT REQUIRES A NAME.
+#
+# `()` reads as a NULL node (W5f: read-list returns null for a zero-element
+# list), and nearly every top-level definer read `(node-at form N)` and
+# dereferenced it. The item was filed for four heads measured by hand; probing
+# every top-level head found the same crash in twenty-odd shapes across all three
+# modes — the head's own name, an enum member, a protocol signature, an `extend`
+# operand, a template head.
+#
+# The fix is not twenty new messages. Every one of these positions ALREADY owned
+# the right diagnostic for a wrong-kind name (`ns: namespace must be a symbol`,
+# `defenum: value must be symbol`, `import: name must be a symbol or string
+# path`) — the kind test that would have fired it crashed first. `node-kind`
+# (lib/node.nuc) answers NODE-NIL for a null node, so each site's own test fires.
+#
+# Asserted through `w9_header_agrees`, so each case pins BOTH halves at once:
+# exit 1 rather than 139 in every mode, and stderr identical across the three.
+run_w9_empty_name_position() {
+  local d
+  d="$(mktemp -d)"
+  w45_case() {
+    printf '%s\n' "$2" > "$d/w45p.nuc"
+    w9_header_agrees "$1" "$d/w45p.nuc" -I "$d"
+  }
+  # The four heads item 45 was filed for: each died SIGSEGV under plain
+  # --emit-llvm, which is what separated it from item 38.
+  w45_case w45-empty-name-defstruct    '(defstruct ())'
+  w45_case w45-empty-name-defunion     '(defunion () (A i32))'
+  w45_case w45-empty-name-defenum      '(defenum ())'
+  w45_case w45-empty-name-defprotocol  '(defprotocol ())'
+  # The rest of the class, found by probing rather than by report. A bare
+  # `(defn)`/`(defvar)` is caught by an arity guard, so the name position is only
+  # reached once the form is long enough — which is why these carry a body.
+  w45_case w45-empty-name-defn         '(defn () (x:i32):i32 (return x))'
+  w45_case w45-empty-name-defvar       '(defvar () 0)'
+  w45_case w45-empty-name-defconst     '(defconst () 7)'
+  w45_case w45-empty-name-defmacro     '(defmacro () (x) x)'
+  w45_case w45-empty-name-defcast      '(defcast () i32 f)'
+  w45_case w45-empty-name-extern       '(extern ())'
+  w45_case w45-empty-name-declare      '(declare ())'
+  w45_case w45-empty-name-export       '(export ())'
+  w45_case w45-empty-name-ns           '(ns ())'
+  w45_case w45-empty-name-set-ir-prefix '(set-ir-prefix ())'
+  w45_case w45-empty-name-import       '(import ())'
+  w45_case w45-empty-name-import-use   '(import-use ())'
+  # Not the name: an operand, a member, a signature, a template head. Same NULL,
+  # same cause, and each already had the message it should give.
+  w45_case w45-empty-defcast-target    '(defcast i32 () f)'
+  w45_case w45-empty-extend-subject    '(extend () Eq)'
+  w45_case w45-empty-extend-protocol   '(extend i32 ())'
+  w45_case w45-empty-defenum-member    '(defenum E A () B)'
+  w45_case w45-empty-defprotocol-sig   '(defprotocol P ())'
+  w45_case w45-empty-defstruct-template '(defstruct (()) (f i32))'
+  w45_case w45-empty-defprotocol-template '(defprotocol (()) (m (s:ptr):i32))'
+  # CONTROLS. These two already refused correctly at 0dd0e34 — a struct field and
+  # a union arm route through `extract-name-and-type` / the arm walk, both of
+  # which W5f and the unions work had already made null-safe. They are here to
+  # pin that this change did not move them, not as cases it fixed.
+  w45_case w45-empty-defstruct-field   '(defstruct S (f i32) ())'
+  w45_case w45-empty-defunion-arm      '(defunion U (A i32) ())'
+
+  # THE BOUNDARY, asserted rather than assumed. Two heads are refused by
+  # --emit-llvm and stay silent in the header modes, both for reasons item 38
+  # recorded: `deferror`'s checks `report-at` and return `!i32` — a recoverable
+  # contract the validation deliberately does not join — and `def-rmacro` is a
+  # reader directive, not a declaration a header describes. What matters is that
+  # neither CRASHES any more. `deferror` did at 0dd0e34 and is load-bearing;
+  # `def-rmacro` already refused there and is a control for the head set.
+  w45_llvm_refuses() {
+    local out st
+    printf '%s\n' "$2" > "$d/w45r.nuc"
+    set +e
+    out="$(./build/nucleusc -I "$d" --emit-llvm "$d/w45r.nuc" 2>&1 >/dev/null)"; st=$?
+    set -e
+    if [ "$st" = "1" ] && printf '%s' "$out" | qgrep -F "w45r.nuc:1: error:"; then
+      echo "PASS  $1"
+    else
+      echo "FAIL  $1 (exit=$st)"
+      printf '%s\n' "$out" | sed 's/^/    /' | head -3
+    fi
+  }
+  w45_llvm_refuses w45-empty-name-deferror   '(deferror () "boom")'
+  w45_llvm_refuses w45-empty-name-def-rmacro '(def-rmacro ())'
+
+  # NEGATIVE CONTROL: the same heads, spelled correctly, still compile and still
+  # reach both headers. `node-kind` returning NODE-NIL only for a null node is
+  # what makes that true by construction, but a guard added at twenty sites is
+  # exactly the kind of change that could quietly refuse a valid program.
+  cat > "$d/w45ok.nuc" <<'EOF'
+(ns w45ns)
+(defenum W45E W45A W45B)
+(defstruct W45Pt (x i32) (y i32))
+(defunion W45U (w45-some v:i32) w45-none)
+(defprotocol W45Z (w45z-zero (self:Self):i32))
+(defn w45z-zero (x:i32):i32 (return x))
+(extend i32 W45Z)
+(defconst W45K 7)
+(defvar w45-g:i32 0)
+(defn w45-add (a:i32 b:i32):i32 (return (+ a b)))
+(defn main ():i32 (return (w45-add W45K (w45z-zero 0))))
+EOF
+  if ./build/nucleusc -I "$d" --emit-llvm "$d/w45ok.nuc" >/dev/null 2>&1 \
+     && ./build/nucleusc -I "$d" --emit-cheader "$d/w45ok.nuc" 2>/dev/null | qgrep -F "w45ns__w45_add" \
+     && ./build/nucleusc -I "$d" --emit-nuch "$d/w45ok.nuc" 2>/dev/null | qgrep -F "w45-add"; then
+    echo "PASS  w45-valid-unit-unaffected"
+  else
+    echo "FAIL  w45-valid-unit-unaffected"
+    ./build/nucleusc -I "$d" --emit-llvm "$d/w45ok.nuc" 2>&1 >/dev/null | sed 's/^/    /' | head -3
+  fi
+  rm -rf "$d"
+}
+spawn run_w9_empty_name_position
+
 # SOURCE OUT-RANKS HEADER, asserted on both sides of the ruling. `resolve-import`
 # already tries `.nuc` in every directory before any `.nuch`, so an import takes
 # the source — but `path-in-unit` keyed on the exact path spelling, so the

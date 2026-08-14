@@ -3711,6 +3711,42 @@ Two structural traps in this area:
   writing a second copy of the built-in list that will drift. Keep side effects
   like `avr-reject-f64` in the resolver — a probe must answer, not raise.
 
+## `()` is not an empty node — it is NO node, and `(x kind)` on it is a null deref
+
+`read-list` returns null for a zero-element list, so `()` anywhere in a program
+arrives as a null `Node*` (W5f). `node-at` says so in its type — it returns
+`?ptr:Node` — and nearly every caller launders that with
+`(unsafe/cast ptr:Node (node-at form 1))` and then reads `kind` or `s` off it.
+Every one of those is a segfault on `()`, which was W9 item 45: twenty-three
+shapes across the three modes, from `(defstruct ())` to `(ns ())` to
+`(defenum E A () B)`.
+
+**Use the null-safe accessors, which is what they are for.** `lib/node.nuc` has
+three: `node-line` (borrows the enclosing line), `node-is-list`, and — since
+item 45 — `node-kind`, which answers `NODE-NIL` (−1, deliberately outside
+`NodeKind`'s range) for a null node. Write `(= (node-kind x) NODE-SYM)`, never
+`(= (x kind) NODE-SYM)`, for anything that came out of `node-at`. Same for the
+line in a `die-at` argument: `(node-line x (encl line))`, not `(x line)` — the
+argument is evaluated before the call, so a `die-at` whose *line* dereferences
+the node crashes on exactly the input it exists to diagnose.
+
+Two things this makes easy to get wrong:
+
+- **The message you need is probably already written.** Almost every position
+  that can be spelled `()` already refuses a name of the wrong kind — `ns:
+  namespace must be a symbol`, `defenum: value must be symbol`, `import: name
+  must be a symbol or string path`. `()` deserves that same message, and
+  substituting `node-kind` is what lets the existing test raise it. Reach for a
+  new diagnostic only where the position has none (a `defn` name, whose
+  fall-through quoted the null as `'(null)'`).
+- **A prescan must SKIP, not die.** `prescan-struct-names` and friends already
+  ignore every name kind they cannot use; `node-kind` makes a null one more of
+  those, and the emitter still diagnoses it in source order. See "A prescan is
+  DELIBERATELY permissive" above — and remember its consequence: if the prescan
+  stops crashing, a header mode that runs no emitter goes *silent* rather than
+  refusing, which item 38 rates as worse than the crash. Fixing a prescan crash
+  means re-asking the question in `validate-header-forms` in the same breath.
+
 ## An IR type written as a literal in a format string is a target assumption in disguise
 
 `aref`, `aset!` and `unsafe/ptr+` each ended their emission with

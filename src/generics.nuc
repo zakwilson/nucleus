@@ -1101,7 +1101,11 @@
 ; The bare function name from a defn name node, without parsing its return type
 ; (which may mention a type variable). Handles both `name:T` and desugared
 ; `(name T)` forms.
+; W9 item 45: a name spelled `()` is a NULL node (W5f) and answers `null` here —
+; "no name I can read", which is what every caller already tests for. Reading
+; `(n kind)` off it is what made `(defprotocol P ())` segfault.
 (defn defn-name-only (name-node:raw:Node):ptr
+  (when (= name-node null) (return null))
   (let (n:raw:Node name-node)
     (case (n kind)
       NODE-SYM
@@ -1110,7 +1114,7 @@
           (return nm))
       NODE-CELL
         (let (c:raw:Node (n car))
-          (when (= (c kind) NODE-SYM) (return (c s))))
+          (when (= (node-kind (as ptr c)) NODE-SYM) (return (c s))))
       0)
     (return null)))
 
@@ -3761,7 +3765,9 @@
       ; protocol name, the rest are the extra parameter names (beyond Self).
       (if (= (name-node kind) NODE-CELL)
         (let (head:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr name-node) 0)))
-          (when (!= (head kind) NODE-SYM)
+          ; W9 item 45: `node-kind`, so a head spelled `(())` reaches this
+          ; message rather than dereferencing the NULL node `()` reads as.
+          (when (!= (node-kind (as ptr head)) NODE-SYM)
             (die-at (name-node line) "defprotocol: protocol name must be a symbol"))
           (set! pname (head s))
           (set! nparams (- (node-len (as ptr name-node)) 1))
@@ -3775,14 +3781,15 @@
           ; message here rather than falling into the generic, misleading
           ; "protocol parameter must be a symbol" below.
           (when (and (= nparams 1)
-                     (= (-> name-node (node-at _ 1) (unsafe/cast ptr:Node _) (_ kind)) NODE-CELL))
+                     (= (node-kind (node-at (as ptr name-node) 1)) NODE-CELL))
             (die-at (name-node line)
               (fmt-s "defprotocol: takes no type annotation; write (defprotocol %s ...)" (head s))))
           (set! params (arena-alloc (* (as i64 nparams) (ptr-bytes))))
           (dotimes (pi nparams)
             (let (pv:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr name-node) (+ pi 1))))
-              (when (!= (pv kind) NODE-SYM)
-                (die-at (pv line) "defprotocol: protocol parameter must be a symbol"))
+              (when (!= (node-kind (as ptr pv)) NODE-SYM)
+                (die-at (node-line (as ptr pv) (name-node line))
+                  "defprotocol: protocol parameter must be a symbol"))
               (aset! (as ptr:ptr params) pi (pv s)))))
         (do
           (when (!= (name-node kind) NODE-SYM)
@@ -3813,6 +3820,14 @@
           (dotimes (i nsigs)
             (let (sig:ptr (node-at form (+ i 2))
                   snn:ptr (node-at (node-at form (+ i 2)) 0))
+              ; W9 item 45: a sig that is not a list carries no name to store and
+              ; no params to parse lazily. `()` reads as NULL and `5` reads as an
+              ; int; both used to reach `defn-name-only` and segfault, and a
+              ; stored non-sig would have failed much later, at the `extend` that
+              ; tried to satisfy it.
+              (when (!= (node-kind sig) NODE-CELL)
+                (die-at (node-line sig (ff line))
+                  "defprotocol: method signature must be a list, e.g. (name (params):ret)"))
               ; S4: reject a legacy `name:ret` / list-head `(name ret)` method sig
               ; at registration (protocol sigs are stored verbatim and parsed
               ; lazily, so this is the one def-time chokepoint). New-style sigs put
@@ -4176,6 +4191,11 @@
 ; bare symbol `Seq` or a parametric application `(Seq T...)`. Returns the name and
 ; writes the application's arg nodes + count through `out-args`/`out-nargs`.
 (defn extend-proto-name (proto-node:raw:Node out-args:ptr:ptr out-nargs:ptr:i32 line:i32):ptr
+  ; W9 item 45: `()` in the protocol position is a NULL node (W5f). It is no more
+  ; a protocol than `5` is, so it gets the same message as `5` — from the
+  ; caller's line, since there is no node to blame, and through the guard the
+  ; header validation shares.
+  (require-extend-protocol proto-node line)
   (let (pn:raw:Node proto-node)
     (case (pn kind)
       NODE-SYM
@@ -4185,7 +4205,7 @@
           (return (pn s)))
       NODE-CELL
         (let (head:ptr:Node (unsafe/cast ptr:Node (node-at pn 0)))
-          (when (!= (head kind) NODE-SYM)
+          (when (!= (node-kind (as ptr head)) NODE-SYM)
             (die-at (pn line) "extend: protocol name must be a symbol"))
           (let (na:i32 (- (node-len pn) 1)
                 args:ptr null)
@@ -4229,10 +4249,13 @@
       ; Stage 11 T4: the subject is a struct *template* `(extend (Vector T) (Seq T))`.
       ; Record a template-level conformance; the per-instance check fires at stamp
       ; time, and any already-stamped instance is rechecked now.
-      (case (type-node kind)
+      ; W9 item 45: `node-kind` — a subject spelled `()` is a NULL node, and takes
+      ; the non-template path below, where `parse-type-from-node` reports that it
+      ; names no type.
+      (case (node-kind (as ptr type-node))
         NODE-CELL
         (let (thead:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr type-node) 0)))
-          (when (!= (thead kind) NODE-SYM)
+          (when (!= (node-kind (as ptr thead)) NODE-SYM)
             (die-at (node-line (as ptr type-node) (ff line)) "extend: template subject name must be a symbol"))
           ; Stage 12 N4: a qualified template head (`coll/Vector`) resolves to the
           ; bare-keyed template registry. Identity under `user`.
@@ -4368,8 +4391,7 @@
               (return))))
       0)
       ; --- subject is a concrete type (symbol) ---
-      (when (!= (type-node kind) NODE-SYM)
-        (die-at (node-line (as ptr type-node) (ff line)) "extend: subject must be a symbol or struct template"))
+      (require-extend-subject (as raw:Node type-node) (ff line))
       ; The subject may be written qualified (`coll/Vector`) from another
       ; namespace; canonicalize it to the bare TYPE identity so every lookup
       ; below — and the recorded conformance — matches the dispatch site.

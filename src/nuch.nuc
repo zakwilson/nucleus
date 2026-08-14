@@ -395,6 +395,10 @@
       (let (name-node:ptr (node-at form 1)
             ndi-new:i32 (sig-name-is-bare (node-at form 1))
             params-node:ptr null)
+        ; W9 item 45: a name spelled `()` is a NULL node (W5f). It is not a legacy
+        ; signature — the message below would quote it as '(null)' — it is no name
+        ; at all, so it gets the wording every other definer uses for that.
+        (require-declare-name (as raw:Node name-node) (ff line))
         (if (!= ndi-new 0)
           (do
             (when (!= eff-len 4)

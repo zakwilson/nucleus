@@ -1048,7 +1048,8 @@
   (let (ff:ptr:Node (unsafe/cast ptr:Node form)
         head:ptr:Node (unsafe/cast ptr:Node (node-at form 1))
         name-node:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr head) 0)))
-    (when (!= (name-node kind) NODE-SYM)
+    ; W9 item 45: `node-kind` — see register-struct-template below.
+    (when (!= (node-kind (as ptr name-node)) NODE-SYM)
       (die-at (node-line (as ptr head) (ff line)) "defunion: template name must be a symbol"))
     ; Stage 15 B3′: `name` is the SOURCE spelling (diagnostics, `guard-name-kind`);
     ; `key` is the canonical registry key the template is stored and stamped under,
@@ -1066,7 +1067,7 @@
       ; message here rather than falling into the generic, misleading "type
       ; parameter must be a symbol" below.
       (when (and (= ntv 1)
-                 (= (-> head (node-at _ 1) (unsafe/cast ptr:Node _) (_ kind)) NODE-CELL))
+                 (= (node-kind (node-at (as ptr head) 1)) NODE-CELL))
         (die-at (node-line (as ptr head) (ff line))
           (fmt-s "defunion: takes no type annotation; write (defunion %s ...)" name)))
       ; Re-import of the same template (e.g. via .nuch) is a no-op. Stage 15 B4
@@ -1084,7 +1085,7 @@
       (let (tyvars:ptr (arena-alloc (* (as i64 ntv) (ptr-bytes))))
         (dotimes (i ntv)
           (let (tv:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr head) (+ i 1))))
-            (when (!= (tv kind) NODE-SYM)
+            (when (!= (node-kind (as ptr tv)) NODE-SYM)
               (die-at (node-line (as ptr tv) (ff line)) "defunion: type parameter must be a symbol"))
             (aset! (as ptr:ptr tyvars) i (tv s))))
         (let (ut:ptr:UnionTemplate (as ptr:UnionTemplate (arena-alloc (sizeof UnionTemplate))))
@@ -1112,7 +1113,9 @@
   (let (ff:ptr:Node (unsafe/cast ptr:Node form)
         head:ptr:Node (unsafe/cast ptr:Node (node-at form 1))
         name-node:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr head) 0)))
-    (when (!= (name-node kind) NODE-SYM)
+    ; W9 item 45: `node-kind`, so a head spelled `(())` reaches this message
+    ; instead of dereferencing the NULL node `()` reads as.
+    (when (!= (node-kind (as ptr name-node)) NODE-SYM)
       (die-at (node-line (as ptr head) (ff line)) "defstruct: template name must be a symbol"))
     (let (name:ptr (name-node s)
           key:ptr (qualify-name (name-node s))
@@ -1126,7 +1129,7 @@
       ; message here rather than falling into the generic, misleading "type
       ; parameter must be a symbol" below.
       (when (and (= ntv 1)
-                 (= (-> head (node-at _ 1) (unsafe/cast ptr:Node _) (_ kind)) NODE-CELL))
+                 (= (node-kind (node-at (as ptr head) 1)) NODE-CELL))
         (die-at (node-line (as ptr head) (ff line))
           (fmt-s "defstruct: takes no type annotation; write (defstruct %s ...)" name)))
       ; Re-import of the same template (e.g. via .nuch, or the idempotent prescan
@@ -1145,7 +1148,7 @@
       (let (tyvars:ptr (arena-alloc (* (as i64 ntv) (ptr-bytes))))
         (dotimes (i ntv)
           (let (tv:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr head) (+ i 1))))
-            (when (!= (tv kind) NODE-SYM)
+            (when (!= (node-kind (as ptr tv)) NODE-SYM)
               (die-at (node-line (as ptr tv) (ff line)) "defstruct: type parameter must be a symbol"))
             (aset! (as ptr:ptr tyvars) i (tv s))))
         (let (st:ptr:StructTemplate (as ptr:StructTemplate (arena-alloc (sizeof StructTemplate))))
@@ -1459,6 +1462,12 @@
 ;   - list node (ptr T) or (ptr ptr ... T): builds TY-PTR
 ;   - list node ((fn ret-type) (param-types...)) or (fn ret-type): builds TY-FN
 (defn parse-type-from-node (node:ptr line:i32):ref:Type
+  ; W9 item 45: `()` in a type position is a NULL node (W5f), and it names no
+  ; type — the same answer this function gives any other node it cannot read,
+  ; from the caller's line since there is no node to blame. One guard here is
+  ; what covers every type position at once: a `defcast` operand, a return type,
+  ; an `extend` subject, a field type.
+  (when (= node null) (die-at line "unable to parse type expression"))
   (let (n:ptr:Node (unsafe/cast ptr:Node node)
         ; Stage 15 W8 G-2: consume the one-shot `(array T N)` permission (see
         ; g-array-ok, src/nucleusc.nuc). Read-and-clear on entry, so every
