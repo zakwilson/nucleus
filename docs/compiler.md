@@ -307,7 +307,7 @@ Functions can be redefined. Redefining a `defn` confirms with `redefined` (vs. `
 Limitations:
 - Functions need explicit `(return ...)` to return values (same as batch mode).
 - Redefining a function with a different signature is allowed by the REPL but existing callers were compiled against the old signature; calls through them have undefined behavior. Restart the session if the type changes.
-- `(import-use node)` brings in the AST utilities (`make-cell`, `node-at`, `node-len`, `node-is-list`); they allocate via `arena-alloc` and the arena initializes lazily on first call.
+- `(import-use node)` brings in the AST utilities (`make-cell`, `node-at`, `node-len`, `node-is-list`, `node-line`, `node-kind`); they allocate via `arena-alloc` and the arena initializes lazily on first call. `node-at` returns a *nullable* node — `()` reads as null (see [Empty lists in a declaration](#empty-lists-in-a-declaration)) — so read its result's kind with `node-kind`, which answers `NODE-NIL` instead of faulting, and its line with `node-line`.
 - stdout from JIT'd code is line-buffered (`setvbuf(stdout, NULL, _IOLBF, 0)` is called on REPL startup) so printf output appears immediately in both terminal and pipe-driven sessions.
 
 ## .nuch Header Format
@@ -357,11 +357,14 @@ $ nucleusc --emit-llvm bad.nuc
 bad.nuc:4: error: defn 'foo': expected return type after the parameter list, e.g. (defn foo (params):i32 …)
 ```
 
-That covers three kinds of mistake:
+That covers four kinds of mistake:
 
 - **A definer that stops too early** — `(defn f (x:i32))` with no return operand, `(defstruct)`, `(defunion U)`, `(defconst K)`, and the same for `defvar`, `defenum`, `defmacro`, `defcast` and `extend`. Each gets the message its own emitter gives.
 - **An empty list `()` where a declaration belongs** — a parameter, a struct field, a member of an inline `(union …)` / `(struct …)`, or a `defvar`'s type, at any nesting depth: `(ptr (union a:i32 ()))` is caught as readily as a bare field.
+- **An empty list `()` where a name belongs** — `(defstruct ())`, `(defenum ())`, `(defn () (x:i32):i32 …)`, `(ns ())`, `(import ())`, an `extend` operand, an enum member, a `defprotocol` method signature, a template head. `()` reads as *no node at all* (see [Empty lists in a declaration](#empty-lists-in-a-declaration) below), so each of these gets the message that position already gives a name of the wrong kind — `(defstruct ())` and `(defstruct 5 …)` differ only in whether the message says "missing name" or "name must be symbol".
 - **An `import` naming a library that does not resolve.** This one matters most in a header mode: a missing import supplies no names, so *every* declaration below it would be described against the wrong information — and before this was checked, the header was emitted anyway, silently missing whatever the library would have contributed.
+
+What is *not* checked here, deliberately: `deferror`, whose checks report and recover rather than abort (a different contract the header validation does not join); `def-rmacro`, a reader directive rather than a declaration a header describes; and whether an `(export sym)` names something that exists, which is a whole-unit registry question the emitter answers — `(export nosuch)` still reaches a header, exactly as a body error does.
 
 A **body** is not read here, so an error inside a function body is not detected and the header is still written:
 
@@ -372,6 +375,19 @@ body.nuc:2: error: as: lossy conversion from i64 to i32 -- use unsafe/cast
 ```
 
 This is a property of the mode, not an oversight: emitting a header does not emit bodies, and checking them would mean compiling the unit twice. Run an ordinary compile to check a unit completely; a successful header emission says the unit's interface is well-formed, not that the unit builds.
+
+### Empty lists in a declaration
+
+`()` is not an empty node — it is *no node*. The reader returns null for a zero-element list, so an `()` written where a name, a type or a declaration belongs arrives as a null `Node*`:
+
+```
+$ nucleusc --emit-llvm empty.nuc
+empty.nuc:1: error: defstruct: missing name
+empty.nuc:2: error: ns: namespace must be a symbol
+empty.nuc:3: error: defenum: value must be symbol
+```
+
+Each message is the one that position gives for any unusable name, which is the point: `()` is refused the same way `5` is, in every top-level form and in all three of `--emit-llvm`, `--emit-cheader` and `--emit-nuch`. If you work on the compiler, this is why `node-kind` (`lib/node.nuc`) exists — it answers `NODE-NIL` for a null node, so a `(= (node-kind x) NODE-SYM)` test survives an `()` that a bare `(x kind)` would fault on.
 
 ## Regenerating committed headers
 

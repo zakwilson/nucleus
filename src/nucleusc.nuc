@@ -1126,6 +1126,13 @@
 ; annotated. It is a no-op for a CELL name (a legitimate template head, or
 ; handled by the caller) and for a plain symbol with no colon.
 (defn reject-colon-in-def-name (name:(raw Node) word:CStr fallback-line:i32):void
+  ; W9 item 45: `()` in the name position is a NULL node (W5f), and every caller
+  ; reaches this before it touches its name — so this is where the five heads
+  ; that route through it are refused rather than segfaulting. The wording
+  ; matches `defstruct`/`defenum`'s own arity guards, which say exactly this for
+  ; the name that is absent instead of empty.
+  (when (= name null)
+    (die-at fallback-line (fmt-s "%s: missing name" word)))
   (let (nn:(raw Node) name)
     (when (= (nn kind) NODE-SYM)
       (let (base:ptr null tyname:ptr null)
@@ -1354,6 +1361,10 @@
 ; symbol) the type recovered by desugaring the symbol first. Null if the name
 ; carries no return type.
 (defn legacy-ret-node (name-node:(raw Node)):(raw Node)
+  ; W9 item 45: a name spelled `()` is a NULL node (W5f) and carries no return
+  ; type, which is this function's own "null" answer — the same null-safety
+  ; `sig-name-is-bare` above already has, and for the same callers.
+  (when (= name-node null) (return null))
   (let (nn:(raw Node) name-node)
     (when (= (nn kind) NODE-CELL) (return (binding-type-node name-node)))
     (when (and (= (nn kind) NODE-SYM) (!= (strchr (nn s) 58) null))
@@ -1370,6 +1381,10 @@
                           out-params:ptr:ptr out-body-start:ptr:i32):i32
   (let (ff:(raw Node) form
         name-node:(raw Node) (node-at form 1))
+    ; W9 item 45: `()` in the name position is a NULL node (W5f). It is not a
+    ; legacy signature — the S4 message below would quote it as '(null)' — it is
+    ; no name at all, so it gets the wording every other definer uses for that.
+    (when (= name-node null) (die-at (ff line) "defn: missing name"))
     (ptr-set! out-params (node-at form 2))
     (if (!= (sig-name-is-bare name-node) 0)
       ; New style: bare name, ret at index 3, body at 4.
@@ -1396,17 +1411,18 @@
         (return 0)))))
 
 ; ============================================================
-; The leading arity guard each top-level definer runs before it dereferences a
-; node position. Each was a single line at the top of its own emitter; they live
-; here because W9 item 38 needs the HEADER modes — which run the prescans and no
-; emitter at all — to make the identical refusal in the identical words. Nine
-; copied messages would be nine chances to drift, which is the failure this
-; codebase keeps re-learning (`--emit-cheader` declaring a symbol no object
-; defines, item 26). The emitter and `validate-header-forms` are the callers;
-; `defunion` has two emitter callers, `emit-defunion` and the `.nuch` replay path
-; `emit-defunion-import`, which carried its own copy of the check until now.
+; The guards each top-level definer runs before it dereferences a node position:
+; the leading arity test (W9 item 38) and, below them, the name/member/operand
+; tests (W9 item 45). Each was a single line at the top of its own emitter; they
+; live here because the HEADER modes — which run the prescans and no emitter at
+; all — must make the identical refusal in the identical words. A copied message
+; is a chance to drift, which is the failure this codebase keeps re-learning
+; (`--emit-cheader` declaring a symbol no object defines, item 26). The emitter
+; and `validate-header-forms` are the callers; `defunion` has two emitter
+; callers, `emit-defunion` and the `.nuch` replay path `emit-defunion-import`,
+; which carried its own copy of the check until item 38.
 ;
-; `deferror` is deliberately absent: its check `report-at`s and returns `!i32`
+; `deferror` is deliberately absent: its checks `report-at` and return `!i32`
 ; rather than dying, so it is a recoverable path with a different contract.
 ; `emit-defvar`'s two OTHER uses of its message also stay put — they ask different
 ; questions (a null declaration after attribute stripping, trailing junk after
@@ -1436,6 +1452,51 @@
 (defn require-defmacro-form (form:ptr):void
   (when (< (node-len form) 4)
     (die-at ((unsafe/cast ptr:Node form) line) "defmacro: expects name, params, and body")))
+
+; W9 item 45: the name, member and operand questions whose answer used to live
+; inline in one emitter. Extracted for the same reason the arity guards above
+; were: the header modes must refuse `()` in these positions in the same words,
+; and a second copy of the words is a second chance to drift.
+(defn require-defconst-name (name:(raw Node) line:i32):void
+  (when (!= (node-kind (as ptr name)) NODE-SYM)
+    (die-at (node-line (as ptr name) line) "defconst: name must be symbol")))
+
+(defn require-defenum-member (member:(raw Node) line:i32):void
+  (when (!= (node-kind (as ptr member)) NODE-SYM)
+    (die-at (node-line (as ptr member) line) "defenum: value must be symbol")))
+
+(defn require-import-name (name:(raw Node) line:i32):void
+  (when (and (!= (node-kind (as ptr name)) NODE-SYM)
+             (!= (node-kind (as ptr name)) NODE-STR))
+    (die-at line "import: name must be a symbol or string path")))
+
+(defn require-extern-form (form:ptr):void
+  (when (!= (node-len form) 2)
+    (die-at ((unsafe/cast ptr:Node form) line) "extern: expects name:type")))
+
+(defn require-export-form (form:ptr):void
+  (when (< (node-len form) 2)
+    (die-at ((unsafe/cast ptr:Node form) line) "export: expected (export sym ...)")))
+
+(defn require-export-arg (arg:(raw Node) line:i32):void
+  (when (!= (node-kind (as ptr arg)) NODE-SYM)
+    (die-at (node-line (as ptr arg) line) "export: each argument must be a symbol")))
+
+(defn require-declare-name (name:(raw Node) line:i32):void
+  (when (= name null) (die-at line "declare: missing name")))
+
+; The two `extend` operand questions. The subject guard carries the general test
+; because `emit-extend` asks it in a position a template head has already left;
+; the header validation asks it only of a null, which is the one answer both
+; positions share.
+(defn require-extend-subject (tn:(raw Node) line:i32):void
+  (when (!= (node-kind (as ptr tn)) NODE-SYM)
+    (die-at (node-line (as ptr tn) line)
+      "extend: subject must be a symbol or struct template")))
+
+(defn require-extend-protocol (pn:(raw Node) line:i32):void
+  (when (= pn null)
+    (die-at line "extend: protocol must be a symbol or (Protocol args...)")))
 
 (defn require-defcast-form (form:ptr):void
   (when (!= (node-len form) 4)
@@ -12057,23 +12118,25 @@
       ; the colon-paren-fused CELL shape ("K:(i32)" -> (K (i32)), produced by
       ; `fuse-colon-paren` in lib/reader.nuc) which would otherwise fall into
       ; the generic, misleading "name must be symbol" die below.
-      (when (= (name kind) NODE-SYM)
+      ; W9 item 45: every kind test here is `node-kind`, so a name or a value
+      ; spelled `()` — a NULL node (W5f) — reaches the two refusals below instead
+      ; of being dereferenced by the first test that looks at it.
+      (when (= (node-kind (as ptr name)) NODE-SYM)
         (let (base:ptr null tyname:ptr null)
           (split-typed (name s) (as ptr:ptr (addr-of base)) (as ptr:ptr (addr-of tyname)))
           (when (!= tyname null)
             (die-at (cc line)
               (fmt-sd "defconst: takes no type annotation; write (defconst %s %d)"
-                      base (if (= (val kind) NODE-INT) (unsafe/cast i32 (val i)) 0))))))
-      (when (= (name kind) NODE-CELL)
+                      base (if (= (node-kind (as ptr val)) NODE-INT) (unsafe/cast i32 (val i)) 0))))))
+      (when (= (node-kind (as ptr name)) NODE-CELL)
         (let (base-node:(raw Node) (name car))
           (when (and (!= base-node null) (= (base-node kind) NODE-SYM))
             (die-at (node-line (as ptr name) (cc line))
               (fmt-sd "defconst: takes no type annotation; write (defconst %s %d)"
-                      (base-node s) (if (= (val kind) NODE-INT) (unsafe/cast i32 (val i)) 0))))))
-      (when (!= (name kind) NODE-SYM)
-        (die-at (name line) "defconst: name must be symbol"))
-      (when (!= (val kind) NODE-INT)
-        (die-at (val line) "defconst: value must be integer literal"))
+                      (base-node s) (if (= (node-kind (as ptr val)) NODE-INT) (unsafe/cast i32 (val i)) 0))))))
+      (require-defconst-name (as raw:Node name) (cc line))
+      (when (!= (node-kind (as ptr val)) NODE-INT)
+        (die-at (node-line (as ptr val) (cc line)) "defconst: value must be integer literal"))
       (guard-name-kind (name s) (cc line) NK-VALUE)
       (guard-const-redefinition (name s) (cc line))
       ; Stage 15 W2b: the constant's type is the literal's *truthful* width
@@ -12122,18 +12185,22 @@
       ; malformed-form) rather than die-at (its own established non-aborting
       ; convention, per the comment above emit-deferror), so this is a bespoke
       ; check rather than a call to the shared die-at-based helper.
-      (when (= (name-node kind) NODE-SYM)
+      ; W9 item 45: `node-kind` — a name spelled `()` is a NULL node (W5f) and is
+      ; refused by the second test below, in this function's own non-aborting
+      ; style, rather than crashing the first test that reads it.
+      (when (= (node-kind (as ptr name-node)) NODE-SYM)
         (let (base:ptr null tyname:ptr null)
           (split-typed (name-node s) (as ptr:ptr (addr-of base)) (as ptr:ptr (addr-of tyname)))
           (when (!= tyname null)
             (do (report-at (cc line)
                   (fmt-s "deferror: takes no type annotation; write (deferror %s \"message\")" base))
                 (return (err! malformed-form))))))
-      (when (!= (name-node kind) NODE-SYM)
-        (do (report-at (name-node line) "deferror: name must be a symbol")
+      (when (!= (node-kind (as ptr name-node)) NODE-SYM)
+        (do (report-at (node-line (as ptr name-node) (cc line)) "deferror: name must be a symbol")
             (return (err! malformed-form))))
-      (when (!= (msg-node kind) NODE-STR)
-        (do (report-at (msg-node line) "deferror: message must be a string literal")
+      (when (!= (node-kind (as ptr msg-node)) NODE-STR)
+        (do (report-at (node-line (as ptr msg-node) (cc line))
+                       "deferror: message must be a string literal")
             (return (err! malformed-form))))
       ; Re-import dedup: an existing Err constant of this name keeps its id, so
       ; .nuc re-imports never renumber (the name is the stable contract).
@@ -12229,8 +12296,10 @@
     (let (i:i32 2)
       (while (< i (node-len cc))
         (let (name:ptr:Node (unsafe/cast ptr:Node (node-at cc i)))
-          (when (!= (name kind) NODE-SYM)
-            (die-at (name line) "defenum: value must be symbol"))
+          ; W9 item 45: a member spelled `()` is a NULL node (W5f) and is no more
+          ; a member name than `5` is, so it gets the same words — from the guard
+          ; the header validation shares.
+          (require-defenum-member (as raw:Node name) (cc line))
           (guard-name-kind (name s) (cc line) NK-VALUE)
           ; Stage 15 B4 (R4): two `defenum`s sharing a member name. The enum's own
           ; NAME is checked above, before this loop; this catches the case the
@@ -12531,8 +12600,7 @@
 ; `external global` lines stay where the import has always written them.
 (defn emit-extern-mode (call:(raw Node) mode:i32):void
   (let (cc:ptr:Node (unsafe/cast ptr:Node call))
-    (when (!= (node-len cc) 2)
-      (die-at (cc line) "extern: expects name:type"))
+    (require-extern-form (as ptr call))
     (let (arg1:ptr (node-at cc 1)
           name:ptr null
           m:i32 mode
@@ -12542,10 +12610,14 @@
       ; is a declaration position and grants the same permission emit-defvar
       ; does. Without it a library with an array global emits a header its own
       ; consumer cannot read.
+      ; W9 item 45: `node-line`, not `(arg1 line)` — `(extern ())` is a NULL node,
+      ; and the line it is blamed at must be computed without dereferencing it.
+      ; `extract-decl-name-and-type` then raises `die-empty-decl`, the same words
+      ; `(defvar ())` gets, because an extern's operand is that same declaration.
       (set! ty (extract-decl-name-and-type arg1 (as ptr:ptr (addr-of name))
-                                      ((unsafe/cast ptr:Node arg1) line)))
+                                      (node-line arg1 (cc line))))
       (when (= ty null)
-        (die-at ((unsafe/cast ptr:Node arg1) line)
+        (die-at (node-line arg1 (cc line))
           (fmt-s "extern: missing :type on '%s'" name)))
       (guard-name-kind name (cc line) NK-VALUE)
       ; W9 item 29: emit-only is a promise the prescan registered THIS name from
@@ -13872,7 +13944,7 @@
               ; explicit, at index 2, and the form may be longer than 3.
               (when (>= (node-len (as ptr f)) 3)
                 (let (pn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr f) 2)))
-                  (when (= (pn kind) NODE-SYM) (set! prefix (pn s))))))
+                  (when (= (node-kind (as ptr pn)) NODE-SYM) (set! prefix (pn s))))))
             (when (and (= priv-head 0)
                        (or (= ph "import") (= ph "import-prefixed")))
               (set! prefix (import-form-prefix (as ptr f) (f line))))
@@ -13884,9 +13956,13 @@
               (set! kind-ok 0))
             (when (!= kind-ok 0)
               (let (nn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr f) 1)))
-                (when (= (nn kind) NODE-STR)
+                ; W9 item 45: `node-kind` — `(import ())` names no library, and
+                ; this pass records nothing for it. `emit-import` diagnoses it at
+                ; the form's own line, the same deferral the missing-library case
+                ; below already makes.
+                (when (= (node-kind (as ptr nn)) NODE-STR)
                   (file-import-record prefix (nn s)))
-                (when (= (nn kind) NODE-SYM)
+                (when (= (node-kind (as ptr nn)) NODE-SYM)
                   ; A missing library is diagnosed by `do-import`, at the import
                   ; form's own line. Staying silent here keeps one diagnosis.
                   (let (path:ptr (resolve-import (nn s) 0))
@@ -13913,8 +13989,10 @@
 ; owns that diagnosis and gives it the import form's own line.
 (defn import-form-path (name-node:(raw Node) line:i32):ptr
   (let (nn:ptr:Node (unsafe/cast ptr:Node name-node))
-    (when (= (nn kind) NODE-SYM) (return (resolve-import (nn s) line)))
-    (when (and (= (nn kind) NODE-STR)
+    ; W9 item 45: `node-kind` — `(import ())` names no path, which is this
+    ; function's existing "null" answer for a name it cannot read.
+    (when (= (node-kind (as ptr nn)) NODE-SYM) (return (resolve-import (nn s) line)))
+    (when (and (= (node-kind (as ptr nn)) NODE-STR)
                (or (!= (str-ends-with (nn s) ".nuc") 0)
                    (!= (str-ends-with (nn s) ".nuch") 0))
                (!= (file-exists (as CStr (nn s))) 0))
@@ -14014,10 +14092,15 @@
 
 (defn validate-header-defstruct (form:ptr):void
   (require-defstruct-form form)
+  ; W9 item 45: the name position, asked through the chokepoint `emit-defstruct`
+  ; asks it at — so `()` (and a colon-typed name) is refused here in the words the
+  ; real pipeline uses. Before this the header emitters skipped a name they could
+  ; not read and wrote a header for a program that does not compile.
+  (reject-colon-in-def-name (as raw:Node (node-at form 1)) "defstruct"
+                            ((unsafe/cast ptr:Node form) line))
   ; A parametric template — a list at position 1 — defines no concrete type; both
   ; header emitters skip it and its fields are checked when it is stamped.
   (let (nn:ptr (node-at form 1))
-    (when (= nn null) (return))
     (when (!= ((unsafe/cast ptr:Node nn) kind) NODE-SYM) (return)))
   (let (ff:ptr:Node (unsafe/cast ptr:Node form))
     (dotimes (i (- (node-len form) 2))
@@ -14049,30 +14132,78 @@
                         (= ph "unsafe-import-private")
                         (= ph "unsafe/import-private"))
                 (let (nn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr f) 1)))
-                  (when (= (nn kind) NODE-SYM)
+                  ; W9 item 45: `(import ())` names no library. Asked through
+                  ; `do-import`'s own guard, which a header mode never reaches.
+                  (require-import-name (as raw:Node nn) (f line))
+                  (when (= (node-kind (as ptr nn)) NODE-SYM)
                     (when (= (import-form-path (as raw:Node nn) (f line)) null)
                       (die-import-not-found (as CStr (nn s)) (f line)))))))
             (when (or (= ph "defn") (= ph "defn-"))
               (validate-header-defn (as ptr f)))
             (when (or (= ph "defstruct") (= ph "defstruct-"))
               (validate-header-defstruct (as ptr f)))
-            ; The rest need only their own arity guard: their emitters do not
-            ; walk a declaration list the header pass re-walks, so the shape the
-            ; guard admits is one both header emitters already read safely — with
-            ; the one exception of a `defvar`'s type, which may be an inline
-            ; aggregate exactly as a field's may.
+            ; The rest need their own arity guard, and — W9 item 45 — the name
+            ; position each of their emitters reads first. Their emitters do not
+            ; walk a declaration list the header pass re-walks, so nothing deeper
+            ; is asked here; the one exception is a `defvar`'s type, which may be
+            ; an inline aggregate exactly as a field's may, and which
+            ; `validate-decl-node` covers together with the name.
             (when (or (= ph "defvar") (= ph "defvar-"))
               (require-defvar-form (as ptr f))
-              (validate-type-node (extract-type-node (node-at (as ptr f) 1) (f line))
-                                  (node-line (node-at (as ptr f) 1) (f line))))
+              (validate-decl-node (node-at (as ptr f) 1) (f line)))
             (when (or (= ph "defconst") (= ph "defconst-"))
-              (require-defconst-form (as ptr f)))
-            (when (= ph "defenum") (require-defenum-form (as ptr f)))
+              (require-defconst-form (as ptr f))
+              ; Only the NULL case. `emit-defconst` asks two narrower questions
+              ; first — a colon-typed and a colon-paren-fused name, both of which
+              ; quote the constant's VALUE in the message — so asking the general
+              ; kind question here would answer a shape they own with different
+              ; words. `()` is not a shape they recognize.
+              (when (= (node-at (as ptr f) 1) null)
+                (require-defconst-name null (f line))))
+            (when (or (= ph "defenum") (= ph "defenum-"))
+              (require-defenum-form (as ptr f))
+              (reject-colon-in-def-name (as raw:Node (node-at (as ptr f) 1))
+                                        "defenum" (f line))
+              (dotimes (i (- (node-len (as ptr f)) 2))
+                (require-defenum-member (as raw:Node (node-at (as ptr f) (+ i 2)))
+                                        (f line))))
             (when (or (= ph "defunion") (= ph "defunion-"))
-              (require-defunion-form (as ptr f)))
-            (when (= ph "defmacro") (require-defmacro-form (as ptr f)))
-            (when (= ph "defcast") (require-defcast-form (as ptr f)))
-            (when (= ph "extend") (require-extend-form (as ptr f))))))
+              (require-defunion-form (as ptr f))
+              (reject-colon-in-def-name (as raw:Node (node-at (as ptr f) 1))
+                                        "defunion" (f line)))
+            ; W9 item 45: `defmacro-` too — the private spelling is a separate
+            ; head, and every other arm here already names both.
+            (when (or (= ph "defmacro") (= ph "defmacro-"))
+              (require-defmacro-form (as ptr f))
+              (reject-colon-in-def-name (as raw:Node (node-at (as ptr f) 1))
+                                        "defmacro" (f line)))
+            (when (= ph "defcast")
+              (require-defcast-form (as ptr f))
+              ; Both operands are type positions. Asked by handing the null to the
+              ; type parser — the owner of the words — rather than repeating them;
+              ; a non-null operand is left alone, because resolving a type here
+              ; would ask a question this pass has no import environment for.
+              (dotimes (i 2)
+                (when (= (node-at (as ptr f) (+ i 1)) null)
+                  (parse-type-from-node null (f line)))))
+            (when (= ph "extend")
+              (require-extend-form (as ptr f))
+              (when (= (node-at (as ptr f) 1) null)
+                (require-extend-subject null (f line)))
+              (require-extend-protocol (as raw:Node (node-at (as ptr f) 2)) (f line)))
+            (when (= ph "extern")
+              (require-extern-form (as ptr f))
+              (validate-decl-node (node-at (as ptr f) 1) (f line)))
+            ; `export`'s SHAPE only. Whether the name it re-exports resolves is a
+            ; whole-unit registry question, and answering it here would need the
+            ; emitter this mode does not run — so `(export nosuch)` still reaches
+            ; a header, exactly as a body error does.
+            (when (= ph "export")
+              (require-export-form (as ptr f))
+              (dotimes (i (- (node-len (as ptr f)) 1))
+                (require-export-arg (as raw:Node (node-at (as ptr f) (+ i 1))) (f line))))
+            (when (= ph "declare")
+              (require-declare-name (as raw:Node (node-at (as ptr f) 1)) (f line))))))
       (set! fc ((unsafe/cast ptr:Node fc) cdr)))))
 
 (defn prescan-imported-types (forms:(raw Node)):void
@@ -14106,7 +14237,10 @@
               ; `.nuc`/`.nuch` string path is a Nucleus file (do-import treats it
               ; as one) and goes to `import-form-path` below, with the symbol
               ; spelling (Stage 15 W9 item 6 — it used to go nowhere).
-              (when (and (= (nn kind) NODE-STR)
+              ; W9 item 45: `node-kind` — `(import ())` names no library; both this
+              ; branch and `import-form-path` below answer "nothing to walk", and
+              ; the form is diagnosed by its own emitter.
+              (when (and (= (node-kind (as ptr nn)) NODE-STR)
                          (= (str-ends-with (nn s) ".nuc") 0)
                          (= (str-ends-with (nn s) ".nuch") 0)
                          (= (import-list-has g-prescan-visited (nn s)) 0))
@@ -14181,9 +14315,14 @@
             ; depends on it too), so the constraint is weaker than it was — but
             ; capturing provenance at emission remains the rule, since emission is
             ; the only point at which `g-defining-private` is armed.
+            ; W9 item 45: `node-kind`, not `(nn kind)` — a name spelled `()` is a
+            ; NULL node, and a prescan is not where it is diagnosed (see
+            ; conventions.md: a prescan defers to the emitter, which reaches
+            ; `reject-colon-in-def-name`). Both arms simply fail to match, which
+            ; is what this pass already does for every other unusable name kind.
             (when (or (= h "defstruct") (= h "defstruct-"))
               (let (nn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr f) 1)))
-                (if (= (nn kind) NODE-SYM)
+                (if (= (node-kind (as ptr nn)) NODE-SYM)
                   (when (= (as ptr (lookup-struct (as CStr (qualify-name (nn s))))) null)
                     (let (sd:ref:StructDef (register-struct (as CStr (qualify-name (nn s)))))
                       (.set! sd src-file g-source-path)
@@ -14191,19 +14330,19 @@
                   ; Stage 11: a parameterized head — (defstruct (Vector T) ...) —
                   ; registers a template here so defn signatures naming
                   ; (Vector i32) resolve in the signature prescan that follows.
-                  (when (= (nn kind) NODE-CELL)
+                  (when (= (node-kind (as ptr nn)) NODE-CELL)
                     (register-struct-template (as ptr f))))))
             ; defunion/defunion-: pre-register the backing struct's name (monomorphic)
             ; or the template, so defn signatures mentioning the type resolve in
             ; the signature prescan that follows.
             (when (or (= h "defunion") (= h "defunion-"))
               (let (nn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr f) 1)))
-                (if (= (nn kind) NODE-SYM)
+                (if (= (node-kind (as ptr nn)) NODE-SYM)
                   (when (= (as ptr (lookup-struct (as CStr (qualify-name (nn s))))) null)
                     (let (sd:ref:StructDef (register-struct (as CStr (qualify-name (nn s)))))
                       (.set! sd src-file g-source-path)
                       (.set! sd src-line (f line))))
-                  (when (= (nn kind) NODE-CELL)
+                  (when (= (node-kind (as ptr nn)) NODE-CELL)
                     (register-union-template (as ptr f)))))))))
       (set! fc ((unsafe/cast ptr:Node fc) cdr)))))
 
@@ -14213,7 +14352,9 @@
 (defn prescan-union-ctors (form:(raw Node)):void
   (let (ff:ptr:Node (unsafe/cast ptr:Node form)
         name-node:ptr:Node (unsafe/cast ptr:Node (node-at form 1)))
-    (when (!= (name-node kind) NODE-SYM) (return))   ; templates: no constructors
+    ; W9 item 45: `node-kind` — a name spelled `()` registers no constructors
+    ; here, exactly as a template name does not; `emit-defunion` refuses the form.
+    (when (!= (node-kind (as ptr name-node)) NODE-SYM) (return))   ; templates: no constructors
     ; Skip when already registered (re-import of the same unit).
     ; Stage 15 B3′: both probes are definition-side, so both hold the KEY.
     (when (!= (uniondef-lookup (as CStr (qualify-name (name-node s)))) null) (return))
@@ -14632,7 +14773,8 @@
     (when (!= (node-len form) 2)
       (die-at (ff line) "ns: expected (ns name)"))
     (let (name-node:ptr:Node (unsafe/cast ptr:Node (node-at form 1)))
-      (when (!= (name-node kind) NODE-SYM)
+      ; W9 item 45: `node-kind` — `(ns ())` is a NULL node, refused here.
+      (when (!= (node-kind (as ptr name-node)) NODE-SYM)
         (die-at (ff line) "ns: namespace must be a symbol"))
       (when (!= (strchr (name-node s) 47) null)
         (die-at (ff line) "ns: namespace name may not contain a slash"))
@@ -14682,9 +14824,11 @@
           prefix:ptr "")
       ; Accept a string literal (the common form) or the bare symbol/nil for the
       ; empty escape hatch. A string literal is the documented spelling.
+      ; W9 item 45: `node-kind` — `(set-ir-prefix ())` is a NULL node, refused by
+      ; the `true` arm below.
       (cond
-        (= (arg kind) NODE-STR) (set! prefix (arg s))
-        (and (= (arg kind) NODE-SYM) (= (arg s) "null")) (set! prefix "")
+        (= (node-kind (as ptr arg)) NODE-STR) (set! prefix (arg s))
+        (and (= (node-kind (as ptr arg)) NODE-SYM) (= (arg s) "null")) (set! prefix "")
         true (die-at (ff line) "set-ir-prefix: argument must be a string literal"))
       ; Empty → bare; otherwise sanitize the override to a C-legal prefix. Both are
       ; interned so the table key/value compare by pointer identity downstream.
@@ -14738,14 +14882,13 @@
 ; re-export of the same symbol.
 (defn emit-export (form:(raw Node)):void
   (let (ff:ptr:Node (unsafe/cast ptr:Node form))
-    (when (< (node-len form) 2)
-      (die-at (ff line) "export: expected (export sym ...)"))
+    (require-export-form (as ptr form))
     (let (i:i32 1
           n:i32 (node-len form))
       (while (< i n)
         (let (arg:ptr:Node (unsafe/cast ptr:Node (node-at form i)))
-          (when (!= (arg kind) NODE-SYM)
-            (die-at (node-line (as ptr arg) (ff line)) "export: each argument must be a symbol"))
+          ; W9 item 45: `(export ())` is a NULL node, refused by the shared guard.
+          (require-export-arg (as raw:Node arg) (ff line))
           ; Stage 15 B5: resolve through the shared table, then re-register
           ; through the interface. A name that IS defined but in a registry
           ; `export` cannot re-bind (a macro, a special form) gets the §11.6
@@ -15463,9 +15606,13 @@
 ; prefix for a string import is `c` (handled by the callers).
 (defn do-import (form:(raw Node) name-node:(raw Node) prefix:ptr line:i32):void
   (let (nn:ptr:Node (unsafe/cast ptr:Node name-node))
+    ; W9 item 45: `(import-use ())` is a NULL node (W5f) and names no library.
+    ; Asked once, up front, because every import spelling routes its name through
+    ; here — and shared with the header validation, which never runs this.
+    (require-import-name name-node line)
     ; String path → C header (for .h paths) or Nucleus file (for .nuc/.nuch).
     ; C extern symbols keep bare `@name` ir-names; a prefix only adds aliases.
-    (when (= (nn kind) NODE-STR)
+    (when (= (node-kind (as ptr nn)) NODE-STR)
       (let (spath:ptr (nn s))
         ; A .nuc or .nuch string path is a Nucleus file import. Fall through to
         ; the symbol-path branch using the string value directly as the path.
@@ -15600,8 +15747,6 @@
         (set! g-out g-decl-stream)
         (emit-c-include spath line))
       (return))
-    (when (!= (nn kind) NODE-SYM)
-      (die-at line "import: name must be a symbol or string path"))
     (let (name:ptr (nn s)
           path:ptr (resolve-import name line))
       (when (= path null)
@@ -15766,16 +15911,19 @@
   (let (n:i32 (node-len form))
     (when (or (< n 2) (> n 3)) (return null))
     (let (name-node:ptr:Node (unsafe/cast ptr:Node (node-at form 1)))
+      ; W9 item 45: `node-kind` throughout — `(import ())` is a NULL node, which
+      ; derives no prefix, which is the "null" this function already documents as
+      ; "a shape emit-import-prefixed goes on to reject".
       (when (= n 3)
         (let (pn:ptr:Node (unsafe/cast ptr:Node (node-at form 2)))
-          (when (!= (pn kind) NODE-SYM) (return null))
+          (when (!= (node-kind (as ptr pn)) NODE-SYM) (return null))
           (return (pn s))))
-      (when (= (name-node kind) NODE-STR)
+      (when (= (node-kind (as ptr name-node)) NODE-STR)
         (if (or (!= (str-ends-with (name-node s) ".nuc") 0)
                 (!= (str-ends-with (name-node s) ".nuch") 0))
           (return (path-import-default-prefix (name-node s) line))
           (return "c")))
-      (when (= (name-node kind) NODE-SYM)
+      (when (= (node-kind (as ptr name-node)) NODE-SYM)
         (return (import-default-prefix (name-node s))))
       (return null))))
 
@@ -15788,7 +15936,7 @@
           prefix:ptr (import-form-prefix form (ff line)))
       (when (= n 3)
         (let (pn:ptr:Node (unsafe/cast ptr:Node (node-at form 2)))
-          (when (!= (pn kind) NODE-SYM)
+          (when (!= (node-kind (as ptr pn)) NODE-SYM)
             (die-at (ff line) "import: prefix must be a symbol"))))
       (when (= prefix null)
         (die-at (ff line) "import: name must be a symbol or string path"))

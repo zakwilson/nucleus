@@ -143,3 +143,18 @@
   (when (= n null) (return 1))
   (when (= ((as ptr:Node n) kind) NODE-CELL) (return 1))
   (return 0))
+
+; The kind of a NULL node. Deliberately outside NodeKind's 0..n range, so a
+; `(= (node-kind x) NODE-SYM)` test answers false rather than matching a real
+; kind by accident.
+(defconst NODE-NIL -1)
+
+; `(n kind)`, null-safe. `()` reads as a NULL node — `read-list` returns null for
+; a zero-element list (W5f) — so every `(x kind)` on a node a program may spell
+; `()` is a null dereference. That was W9 item 45: the diagnostic each site wants
+; ("name must be a symbol") already existed at the site, and the kind test that
+; would have fired it crashed first. Use this wherever the node came from
+; `node-at`, whose return type is `?ptr:Node` and says so.
+(defn node-kind (n:ptr):i32
+  (when (= n null) (return NODE-NIL))
+  (return ((as ptr:Node n) kind)))

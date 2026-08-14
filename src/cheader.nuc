@@ -257,7 +257,10 @@
                    (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ kind) (= _ NODE-SYM))
                    (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ s) (= _ "declare")))
           (let (nn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr f) 1)))
-            (when (and (= (nn kind) NODE-SYM)
+            ; W9 item 45: `node-kind` — `(declare ())` names nothing to record,
+            ; and this prescan skips it exactly as it skips any other name kind
+            ; it cannot use. `emit-declare` diagnoses the form.
+            (when (and (= (node-kind (as ptr nn)) NODE-SYM)
                        (= (as ptr (cheader-explicit-declare-site (as CStr (nn s)))) null))
               (set! g-explicit-declares
                     (cdecl-site-push g-explicit-declares (nn s)
@@ -2117,7 +2120,10 @@
 (defn emit-cheader-defstruct (form:ptr):void
   ; Skip parametric templates: (defstruct (Name T...) ...) has a list at
   ; position 1, not a sym. Templates define no concrete C type.
-  (when (!= ((unsafe/cast ptr:Node (node-at form 1)) kind) NODE-SYM) (return))
+  ; W9 item 45: `node-kind`, so a name spelled `()` — a NULL node (W5f) — is
+  ; skipped here too rather than dereferenced. `validate-header-forms` is what
+  ; refuses the form, before any output.
+  (when (!= (node-kind (node-at form 1)) NODE-SYM) (return))
   ; ir-name-token first (`?`→_QMARK / `!`→_BANG), then the blanket C sanitize; see
   ; type-name-to-c. A no-op for names without `?`/`!`, so headers stay byte-identical.
   ;
@@ -2263,14 +2269,20 @@
 ; type node for type-node-to-c.
 (defn cheader-defn-ret-node (form:(raw Node)):ptr
   (let (name-node:ptr (node-at form 1))
+    ; W9 item 45: `node-line`/`node-kind` — a name or a return operand spelled
+    ; `()` is a NULL node (W5f), and this accessor answers with the null node
+    ; itself rather than dereferencing it; the form is refused by
+    ; `validate-header-forms`, which runs before any of this.
     (when (= (sig-name-is-bare name-node) 0)
-      (return (extract-type-node name-node ((unsafe/cast ptr:Node name-node) line))))
+      (return (extract-type-node name-node
+                (node-line name-node ((unsafe/cast ptr:Node form) line)))))
     ; New style: the return operand is at index 3. type-node-to-c needs the nested
     ; type-node form, so a colon-chain spelling (`ptr:Pt`) is split into `(ptr Pt)`
     ; exactly as the legacy desugar path yields it; a plain spelling stays a symbol
     ; node; a parenthesized list-form return is used verbatim.
     (let (rn:ptr:Node (unsafe/cast ptr:Node (node-at form 3)))
-      (when (or (= (rn kind) NODE-KEYWORD) (= (rn kind) NODE-SYM))
+      (when (or (= (node-kind (as ptr rn)) NODE-KEYWORD)
+                (= (node-kind (as ptr rn)) NODE-SYM))
         (when (!= (strchr (rn s) 58) null)
           (return (split-colon-segments (rn s) (rn line))))
         (return (normalize-ret-node (as ptr rn))))
@@ -2500,9 +2512,12 @@
 ; sanitized spelling is the whole answer. `cheader-array-extent` emits the same
 ; spelling for a symbolic `(array T N)` length, which is what keeps the two agreeing.
 (defn emit-cheader-defconst (form:ptr):void
+  ; W9 item 45: a name spelled `()` is a NULL node (W5f) and defines no macro;
+  ; `validate-header-forms` refuses the form before this emitter is reached.
+  (when (!= (node-kind (node-at form 1)) NODE-SYM) (return))
   (let (name:ptr (cheader-c-ident (as raw:i8 ((unsafe/cast ptr:Node (node-at form 1)) s)))
         val-node:ptr:Node (unsafe/cast ptr:Node (node-at form 2)))
-    (case (val-node kind)
+    (case (node-kind (as ptr val-node))
       NODE-INT (printf "#define %s %ld\n" name (val-node i))
       NODE-STR (printf "#define %s \"%s\"\n" name (val-node s))
       0)))
@@ -2511,6 +2526,13 @@
 ; neither is a link name (a `defenum` member is a compile-time integer, not a
 ; symbol), so no asm label applies to either.
 (defn emit-cheader-defenum (form:ptr):void
+  ; W9 item 45: a name spelled `()` is a NULL node (W5f) and names no C enum.
+  ; `validate-header-forms` refuses the form before any output; this guard is what
+  ; keeps the emitter from reading the name to find that out — the same guard
+  ; `emit-cheader-defunion` below already has.
+  (when (!= (node-kind (node-at form 1)) NODE-SYM) (return))
+  (dotimes (mi (- (node-len form) 2))
+    (when (!= (node-kind (node-at form (+ mi 2))) NODE-SYM) (return)))
   (let (name:ptr (cheader-c-ident (as raw:i8 ((unsafe/cast ptr:Node (node-at form 1)) s)))
         n:i32 (- (node-len form) 2))
     (printf "enum %s {\n" name)
@@ -2526,7 +2548,9 @@
 ; define no type and are skipped.
 (defn emit-cheader-defunion (form:ptr):void
   (let (name-node:ptr:Node (unsafe/cast ptr:Node (node-at form 1)))
-    (when (!= (name-node kind) NODE-SYM) (return))
+    ; W9 item 45: `node-kind` — a name spelled `()` is a NULL node (W5f), skipped
+    ; here as a template name is; `validate-header-forms` refuses the form.
+    (when (!= (node-kind (as ptr name-node)) NODE-SYM) (return))
     ; ir-name-token first (`?`→_QMARK / `!`→_BANG), then the blanket C sanitize; see
     ; type-name-to-c. A no-op for names without `?`/`!`, so headers stay byte-identical.
     ; Stage 15 W9 item 25: `ns-ir-base`, not bare `ir-name-token` — B3′ applied
@@ -2635,7 +2659,7 @@
                 (dotimes (i (node-len (as ptr params)))
                   (let (p:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr params) i)))
                     (cheader-scan-type-node
-                      (extract-type-node (as raw:Node p) (p line)))))))
+                      (extract-type-node (as raw:Node p) (node-line (as ptr p) (f line))))))))
             ; Guarded exactly as cheader-defn-ret-node dereferences: the legacy
             ; spelling reads the name node, the S1 spelling index 3.
             (when (or (= (sig-name-is-bare (node-at form 1)) 0) (>= (node-len form) 4))
@@ -2646,19 +2670,25 @@
           ; C type and is skipped by the emitter at its first line, so its fields
           ; name no dependency either. Without this, `lib/vector.h` (which spells
           ; no `struct` at all) took an include for the template's allocator field.
-          (when (!= ((unsafe/cast ptr:Node (node-at form 1)) kind) NODE-SYM) (return))
+          ; W9 item 45: `node-kind`/`node-line` throughout this scan — every
+          ; position it walks may be spelled `()`, which is a NULL node (W5f), and
+          ; a scan that only collects include dependencies has nothing to say
+          ; about one. `validate-header-forms` is what refuses the form.
+          (when (!= (node-kind (node-at form 1)) NODE-SYM) (return))
           (dotimes (i (- (node-len form) 2))
             (let (fl:ptr:Node (unsafe/cast ptr:Node (node-at form (+ i 2))))
-              (cheader-scan-type-node (extract-type-node (as raw:Node fl) (fl line)))))
+              (cheader-scan-type-node
+                (extract-type-node (as raw:Node fl) (node-line (as ptr fl) (f line))))))
           (return))
         (when (= h "defunion")
-          (when (!= ((unsafe/cast ptr:Node (node-at form 1)) kind) NODE-SYM) (return))
+          (when (!= (node-kind (node-at form 1)) NODE-SYM) (return))
           (dotimes (i (- (node-len form) 2))
             (let (arm:ptr:Node (unsafe/cast ptr:Node (node-at form (+ i 2))))
-              (when (= (arm kind) NODE-CELL)
+              (when (= (node-kind (as ptr arm)) NODE-CELL)
                 (dotimes (fi (- (node-len (as ptr arm)) 1))
                   (let (fl:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr arm) (+ fi 1))))
-                    (cheader-scan-type-node (extract-type-node (as raw:Node fl) (fl line))))))))
+                    (cheader-scan-type-node
+                      (extract-type-node (as raw:Node fl) (node-line (as ptr fl) (f line)))))))))
           (return))
         ; `defvar` puts the name after any declaration attributes, so every
         ; operand is offered to extract-type-node rather than a fixed index being
@@ -2667,7 +2697,8 @@
         (when (= h "defvar")
           (dotimes (i (- (node-len form) 1))
             (let (op:ptr:Node (unsafe/cast ptr:Node (node-at form (+ i 1))))
-              (cheader-scan-type-node (extract-type-node (as raw:Node op) (op line))))))))))
+              (cheader-scan-type-node
+                (extract-type-node (as raw:Node op) (node-line (as ptr op) (f line)))))))))))
 
 (defn emit-cheader-header (forms:ptr source-file:ptr):void
   ; Stage 12 N6: a namespaced library's public symbols carry a mangled link name
@@ -2742,7 +2773,9 @@
                    (and (> (node-len (as ptr f)) 1)
                         (and (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ kind) (= _ NODE-SYM))
                              (and (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ s) (= _ "defunion"))
-                                  (-> f (node-at _ 1) (unsafe/cast ptr:Node _) (_ kind) (= _ NODE-CELL))))))
+                                  ; W9 item 45: `node-kind` — a name spelled `()`
+                                  ; registers no template here.
+                                  (= (node-kind (node-at (as ptr f) 1)) NODE-CELL)))))
           (register-union-template (as ptr f))))
       (set! fc0 ((unsafe/cast ptr:Node fc0) cdr))))
   (let (fc:ptr forms)
