@@ -2689,6 +2689,69 @@ EOF
   rm -rf "$d"
 }
 
+# W9 item 34: the coercion guard compared LOWERED IR type strings, and every
+# pointer flavour lowers to `ptr`, so a mismatch between two of them was never
+# checked at all — a `CStr` reached a `(fn …)` parameter and the callee called
+# it. The item's claim is a PARITY claim: the argument was the one typed slot
+# that did not check what `let` checks. So the gate asserts the parity spelling
+# by spelling, and the expected verdict beside it — parity alone would still
+# hold if both positions regressed to accepting everything.
+run_w9_fnslot_arg() {
+  local d hdr case src want got_arg got_let ok
+  d="$(mktemp -d)"
+  w1_run w9-fnslot-arg "$d" tests/fixtures/w9-fnslot-arg.nuc 0
+
+  hdr='(defstruct RS a:i32)
+(defn fscb (x:i32):i32 (return (* 2 x)))
+(defn take-fn (f:(fn i32)(i32)):i32 (return (funcall f 21)))
+'
+  ok=1
+  # spelling:expected — `null` and a real fn value are the two a fn slot takes.
+  for case in 'null:ok' 'c:no' 'p:no' 'r:no' 'rf:no' '7:no' '"s":no' 'g:ok'; do
+    src="${case%:*}"
+    want="${case##*:}"
+    printf '%s(defn main ():i32\n  (let (c:CStr "hi" p:ptr (unsafe/cast ptr c) r:raw (unsafe/cast raw c) rf:ptr:RS (RS 1) g:(fn i32)(i32) fscb)\n    (return (take-fn %s))))\n' "$hdr" "$src" > "$d/fs-arg.nuc"
+    printf '%s(defn main ():i32\n  (let (c:CStr "hi" p:ptr (unsafe/cast ptr c) r:raw (unsafe/cast raw c) rf:ptr:RS (RS 1) g:(fn i32)(i32) fscb)\n    (let (f:(fn i32)(i32) %s) (return 0))))\n' "$hdr" "$src" > "$d/fs-let.nuc"
+    if ./build/nucleusc --emit-llvm "$d/fs-arg.nuc" >/dev/null 2>&1; then got_arg=ok; else got_arg=no; fi
+    if ./build/nucleusc --emit-llvm "$d/fs-let.nuc" >/dev/null 2>&1; then got_let=ok; else got_let=no; fi
+    if [ "$got_arg" != "$want" ] || [ "$got_let" != "$want" ]; then
+      ok=0
+      echo "    $src into a (fn ...) slot: argument=$got_arg let=$got_let, wanted $want"
+    fi
+  done
+  if [ "$ok" = 1 ]; then
+    echo "PASS  w9-fnslot-arg-matches-let"
+  else
+    echo "FAIL  w9-fnslot-arg-matches-let"
+  fi
+
+  # The diagnostic names the fn type the way every other slot's does — the
+  # interned `__fnty_<id>` spelling, which is type-spelling's identity-bearing
+  # name for a function pointer, not a pretty-printed signature.
+  printf '%s(defn main ():i32\n  (let (c:CStr "hi") (return (take-fn c))))\n' "$hdr" > "$d/fs-msg.nuc"
+  got_arg="$(./build/nucleusc --emit-llvm "$d/fs-msg.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$got_arg" | qgrep -F "take-fn: argument 1 has type CStr, which does not match parameter type __fnty_"; then
+    echo "PASS  w9-fnslot-arg-diagnostic"
+  else
+    echo "FAIL  w9-fnslot-arg-diagnostic"
+    echo "    got: ${got_arg:-<none>}"
+  fi
+
+  # The other half of the widened guard: two types that lower to the same IR
+  # string but differ in SIGN now reach the literal range check, so an
+  # out-of-range literal argument is refused instead of wrapping silently —
+  # again exactly what `let` does with it.
+  printf '(defn take-ui32 (x:ui32):ui32 (return x))\n(defn main ():i32 (return (as i32 (take-ui32 -1))))\n' > "$d/fs-neg.nuc"
+  got_arg="$(./build/nucleusc --emit-llvm "$d/fs-neg.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$got_arg" | qgrep -F 'integer literal -1 does not fit ui32'; then
+    echo "PASS  w9-fnslot-arg-samewidth-sign-checked"
+  else
+    echo "FAIL  w9-fnslot-arg-samewidth-sign-checked"
+    echo "    got: ${got_arg:-<none>}"
+  fi
+  rm -rf "$d"
+}
+
 # W1b's half of G-0: `scope-define` qualifies a global's key against
 # `g-current-ns`, so the prescan must apply each visited file's own leading
 # `(ns …)`. Prescanning a namespaced file under the IMPORTER's namespace would
@@ -4421,6 +4484,7 @@ spawn run_w9_i1_unsigned
 spawn run_w9_unsigned_index
 spawn run_w9_arg_coerce
 spawn run_w9_dyn_solitary
+spawn run_w9_fnslot_arg
 spawn run_reject w9-i1-literal-too-big tests/fixtures/w9-i1-literal-too-big.nuc \
   "defvar: integer literal 5 does not fit i1"
 spawn run_reject w9-i1-literal-negative tests/fixtures/w9-i1-literal-negative.nuc \

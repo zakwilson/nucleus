@@ -1,0 +1,52 @@
+; Stage 15 W9 item 34, the ACCEPTING half: what a function-pointer parameter
+; and a pointer parameter must still take. The refusing half, and the parity
+; with `let` that is the item's actual claim, are in `run_w9_fnslot_arg`.
+;
+; The coercion guard in `emit-call-with-args` compared LOWERED IR type strings,
+; and every pointer flavour lowers to `ptr` — so a `CStr`, a `raw`, a `(ref T)`,
+; an int literal and a string literal all compared *equal* to a `(fn …)`
+; parameter, no coercion was attempted, and the callee called whatever arrived.
+; Measured pre-fix: all eight spellings below and in the test were accepted at
+; an argument while `let` refused six of them.
+;
+; This file is the guard against fixing that by refusing too much: `null` and a
+; real function value must still reach a fn parameter, and the pointer family
+; must stay freely interconvertible (docs/types.md — `ptr` ↔ `ptr:T` ↔ `CStr`),
+; because `type-eq` says those pairs are *different types* and it is
+; `coerce-int-val` that has to say they are compatible ones.
+
+(defstruct FSRec a:i32)
+
+(defn fs-double (x:i32):i32 (return (* 2 x)))
+(defn fs-triple (x:i32):i32 (return (* 3 x)))
+
+(defn take-fn (f:(fn i32)(i32)):i32 (return (funcall f 21)))
+(defn take-fn-or-null (f:(fn i32)(i32)):i32
+  (when (= f null) (return -1))
+  (return (funcall f 10)))
+
+(defn take-ptr (p:ptr):i64 (return (unsafe/cast i64 p)))
+(defn take-cstr (s:CStr):i64 (return (as i64 (strlen s))))
+(defn take-rec (r:ptr:FSRec):i32 (return (r a)))
+
+(defn main ():i32
+  ; A function value reaches a fn parameter, and the callee calls it.
+  (let (g:(fn i32)(i32) fs-double
+        h:(fn i32)(i32) fs-triple)
+    (when (!= (take-fn g) 42) (return 1))
+    (when (!= (take-fn h) 63) (return 2))
+    (when (!= (take-fn-or-null g) 20) (return 3)))
+  ; The literal `null` reaches one too (item 20), and is distinguishable there.
+  (when (!= (take-fn-or-null null) -1) (return 4))
+  ; The pointer family stays interconvertible at an argument: these pairs are
+  ; not `type-eq`, so each one now reaches the coercion and must be admitted.
+  (let (c:CStr "abcde"
+        p:ptr (unsafe/cast ptr c)
+        r:ptr:FSRec (FSRec 77))
+    (when (!= (take-cstr p) 5) (return 5))
+    (when (!= (take-ptr c) (take-ptr p)) (return 6))
+    ; ptr:FSRec into a bare ptr parameter, and back into its own.
+    (when (= (take-ptr r) 0) (return 7))
+    (when (!= (take-rec r) 77) (return 8)))
+  (printf "w9-fnslot-arg ok\n")
+  (return 0))

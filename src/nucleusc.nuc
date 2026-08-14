@@ -3036,7 +3036,14 @@
           (fprintf g-body-stream "  %s = call %s %s(%s %s)\n"
             tmp (type-to-ir target) (cr ir-name) (type-to-ir src) (vv val))
           (return (alloc-val target tmp)))))
-    (return null)))
+    ; Stage 15 W9 item 34: the call-argument guard used to compare LOWERED IR
+    ; type strings, so every pointer flavour compared equal and this function was
+    ; never asked about any of them. Now that it is asked, answer with the
+    ; chokepoint every OTHER typed slot already funnels through — `coerce-int-val`
+    ; knows CStr↔ptr (free, no IR), the `null` literal into a `(fn …)` slot (item
+    ; 20), and a StrView's borrow, and it returns null for exactly the pair this
+    ; item is about: a data pointer into a function-pointer slot.
+    (return (coerce-int-val v target line))))
 
 (defn emit-defcast (call:(raw Node)):void
   (let (cc:(raw Node) call)
@@ -5854,10 +5861,18 @@
                   (.set! slot type ptype)
                   (.set! slot val fc)))
               ; Stage 10: pointer-kind contract on arguments — raw/Maybe may
-              ; not flow into a (ref T) parameter. Checked independently of IR
-              ; coercion (all pointer flavors share the IR type `ptr`).
+              ; not flow into a (ref T) parameter. Checked independently of the
+              ; coercion below, which answers about type identity, not contract.
               (pkind-flow-check (slot type) ptype (cc line) "argument")
-              (when (!= (strcmp (type-to-ir (slot type)) (type-to-ir ptype)) 0)
+              ; W9 item 34: ask whether the two TYPES are the same, not whether
+              ; they lower to the same IR string. Every pointer flavour lowers to
+              ; `ptr`, so `CStr`, `raw` and `(ref T)` all compared equal to a
+              ; `(fn …)` parameter and no coercion was attempted at all — the
+              ; callee then called a string. `type-eq` admits the identities the
+              ; string comparison was standing in for (any two `TY-FN`, a bare fn
+              ; and a `(ref fn)`), so what newly arrives below is exactly the
+              ; pairs that differ, and safe-coerce-val now answers for them.
+              (when (= (type-eq (slot type) (as ptr:Type ptype)) 0)
                 (let (nc:ptr (safe-coerce-val (as ptr slot) ptype (cc line)))
                   ; Stage 15 W9 item 33: a null return means no safe conversion
                   ; exists. Discarding it passed the argument untouched, and
