@@ -4202,8 +4202,7 @@
 
 (defn emit-extend (form:raw:Node):void
   (let (ff:raw:Node form)
-    (when (< (node-len form) 3)
-      (die-at (ff line) "extend: expected (extend Subject Protocol)"))
+    (require-extend-form (as ptr form))
     (let (type-node:ptr:Node (unsafe/cast ptr:Node (node-at form 1))
           proto-node:ptr:Node (unsafe/cast ptr:Node (node-at form 2))
           proto-args:ptr null

@@ -2393,6 +2393,142 @@ EOF
 }
 spawn run_w9_two_ns_one_name
 
+# W9 item 38 — A HEADER MODE REFUSES THE DECLARATIONS THE REAL PIPELINE REFUSES.
+#
+# `--emit-cheader` / `--emit-nuch` run the compiler's PRESCAN layer and never its
+# EMISSION layer, and every prescan deliberately defers its diagnosis to emission
+# (`defn-params-to-types`: "the located diagnostic is emit-defn's job";
+# `prescan-file-imports`: "a missing library is diagnosed by do-import"). With no
+# emitter downstream nothing ever asked, so three fixtures reached a raw
+# `(node-at form N)` dereference and the compiler died with SIGSEGV and no output
+# — the worst diagnosis of a syntax error available — while an unresolvable
+# import exited 0 and printed a header that silently omitted its every name.
+#
+# Each case asserts the header mode's stderr is IDENTICAL to `--emit-llvm`'s,
+# rather than matching a string quoted here. The fix routes all three modes
+# through one chokepoint, and comparing them is what pins that; a copied message
+# would drift and a quoted assertion would not notice.
+w9_header_agrees() {
+  local name file want got_c got_n out_c out_n sc sn
+  name="$1"; file="$2"; shift 2
+  want="$(./build/nucleusc "$@" --emit-llvm "$file" 2>&1 >/dev/null || true)"
+  set +e
+  out_c="$(./build/nucleusc "$@" --emit-cheader "$file" 2>/dev/null)"; sc=$?
+  out_n="$(./build/nucleusc "$@" --emit-nuch "$file" 2>/dev/null)"; sn=$?
+  set -e
+  got_c="$(./build/nucleusc "$@" --emit-cheader "$file" 2>&1 >/dev/null || true)"
+  got_n="$(./build/nucleusc "$@" --emit-nuch "$file" 2>&1 >/dev/null || true)"
+  # Exit 1, not 139: a segfault also produces no stdout, so the status is what
+  # separates "refused" from "crashed".
+  if [ -n "$want" ] && [ "$got_c" = "$want" ] && [ "$got_n" = "$want" ] \
+     && [ -z "$out_c" ] && [ -z "$out_n" ] && [ "$sc" = "1" ] && [ "$sn" = "1" ]; then
+    echo "PASS  $name"
+  else
+    echo "FAIL  $name (cheader exit=$sc nuch exit=$sn)"
+    printf '    llvm   : %s\n' "$want"
+    printf '    cheader: %s\n' "$got_c"
+    printf '    nuch   : %s\n' "$got_n"
+  fi
+}
+
+run_w9_header_validation() {
+  local d hdr nuch
+  # The three fixtures that segfaulted. Each is a shape the prescan accepts and
+  # the header emitter then dereferenced: a missing return operand, an empty-list
+  # parameter, and an empty-list member of an inline union.
+  w9_header_agrees w9-cheader-missing-ret       tests/fixtures/s1-missing-ret.nuc
+  w9_header_agrees w9-cheader-empty-param       tests/fixtures/w5f-empty-param.nuc
+  w9_header_agrees w9-cheader-empty-union-member tests/fixtures/w5f-empty-union-member.nuc
+
+  d="$(mktemp -d)"
+  # The residue: an import that names nothing. Not a crash but a wrong ANSWER,
+  # which is the worse half — the header described a unit it could not see, and
+  # `--emit-nuch`'s copy would have been committed and linked against.
+  cat > "$d/w38imp.nuc" <<'EOF'
+(import-use w38nosuchlib)
+(defn w38-f (x:i32):i32 (return x))
+EOF
+  w9_header_agrees w9-header-unresolvable-import "$d/w38imp.nuc" -I "$d"
+
+  # The three fixtures were only the shapes the CORPUS happened to contain.
+  # Probing every head the two header emitters dispatch on found ten crashing
+  # shapes, not three — a truncated form of each definer, and an inline aggregate
+  # reached through a pointer, an array or a `defvar` rather than a struct field.
+  # Each is the same defect, so each gets the same assertion.
+  w38_case() {
+    printf '%s\n' "$2" > "$d/w38p.nuc"
+    w9_header_agrees "$1" "$d/w38p.nuc" -I "$d"
+  }
+  w38_case w9-header-truncated-defn      '(defn)'
+  w38_case w9-header-truncated-defstruct '(defstruct)'
+  w38_case w9-header-truncated-defunion  '(defunion U)'
+  w38_case w9-header-truncated-defvar    '(defvar)'
+  w38_case w9-header-truncated-defconst  '(defconst K)'
+  w38_case w9-header-truncated-defenum   '(defenum)'
+  w38_case w9-header-truncated-defmacro  '(defmacro)'
+  w38_case w9-header-truncated-defcast   '(defcast)'
+  w38_case w9-header-truncated-extend    '(extend)'
+  w38_case w9-header-union-under-ptr     '(defstruct A (f (ptr (union a:i32 ()))))'
+  w38_case w9-header-union-under-array   '(defstruct A (f (array (union a:i32 ()) 4)))'
+  w38_case w9-header-union-in-defvar     '(defvar v:(union a:i32 ()) 0)'
+  # Twelve of the thirteen above crash or silently succeed on a compiler built at
+  # 447e25f. This one already refused correctly there — it is a CONTROL that the
+  # return position stays covered by the walk, not a case this change fixed.
+  w38_case w9-header-union-in-ret        '(defn f (x:i32):(union a:i32 ()) (return 0))'
+
+  # NEGATIVE CONTROL, and the point of the whole ruling: the walk must refuse
+  # only what --emit-llvm refuses. A valid unit — including a bounded-generic
+  # template, whose body --emit-llvm checks only when a call site stamps it, so
+  # refusing one here would make the header mode STRICTER than the compiler —
+  # still emits both headers.
+  cat > "$d/w38ok.nuc" <<'EOF'
+(defprotocol W38Z (w38z-zero (self:Self):i32))
+(defn w38z-zero (x:i32):i32 (return x))
+(extend i32 W38Z)
+(defn w38-tw (x:T &where (W38Z T)):i32 (return (+ (w38z-zero x) 1)))
+(defstruct W38Box (v (union as-int:i64 as-ptr:ptr)))
+(defn w38-plain (b:ptr:W38Box):i64 (return 7))
+(defn main ():i32 (return (w38-tw 41)))
+EOF
+  if ./build/nucleusc -I "$d" --emit-llvm "$d/w38ok.nuc" >/dev/null 2>&1; then
+    echo "PASS  w9-header-validation-control-compiles"
+  else
+    echo "FAIL  w9-header-validation-control-compiles (the negative control must be a VALID program)"
+    ./build/nucleusc -I "$d" --emit-llvm "$d/w38ok.nuc" 2>&1 >/dev/null | sed 's/^/    /' | head -3
+  fi
+  hdr="$(./build/nucleusc -I "$d" --emit-cheader "$d/w38ok.nuc" 2>/dev/null || true)"
+  nuch="$(./build/nucleusc -I "$d" --emit-nuch "$d/w38ok.nuc" 2>/dev/null || true)"
+  if printf '%s' "$hdr" | qgrep -F "w38_plain" \
+     && printf '%s' "$hdr" | qgrep -F "union {" \
+     && printf '%s' "$nuch" | qgrep -F "w38-tw" \
+     && printf '%s' "$nuch" | qgrep -F "w38-plain"; then
+    echo "PASS  w9-header-validation-passes-valid-unit"
+  else
+    echo "FAIL  w9-header-validation-passes-valid-unit"
+    printf '%s\n' "$hdr" | sed 's/^/    h: /' | head -6
+    printf '%s\n' "$nuch" | sed 's/^/    n: /' | head -6
+  fi
+
+  # And the boundary, asserted rather than assumed: a BODY error is out of scope
+  # by construction — no body is read — so the header modes still succeed where
+  # --emit-llvm fails. Stating it here is what stops a later reader from taking
+  # the residue for a regression.
+  cat > "$d/w38body.nuc" <<'EOF'
+(defn w38-body (x:i64):i32 (return (as i32 x)))
+EOF
+  set +e
+  ./build/nucleusc -I "$d" --emit-llvm "$d/w38body.nuc" >/dev/null 2>&1; local bl=$?
+  ./build/nucleusc -I "$d" --emit-cheader "$d/w38body.nuc" >/dev/null 2>&1; local bc=$?
+  set -e
+  if [ "$bl" != "0" ] && [ "$bc" = "0" ]; then
+    echo "PASS  w9-header-validation-body-error-out-of-scope"
+  else
+    echo "FAIL  w9-header-validation-body-error-out-of-scope (llvm=$bl cheader=$bc)"
+  fi
+  rm -rf "$d"
+}
+spawn run_w9_header_validation
+
 # SOURCE OUT-RANKS HEADER, asserted on both sides of the ruling. `resolve-import`
 # already tries `.nuc` in every directory before any `.nuch`, so an import takes
 # the source — but `path-in-unit` keyed on the exact path spelling, so the

@@ -2711,6 +2711,11 @@
   (when (!= g-source-path null)
     (set! g-prescan-sigs (import-list-push g-prescan-sigs (as CStr g-source-path))))
   (prescan-imported-signatures forms)
+  ; W9 item 38: ask the questions the prescans deferred to an emitter this mode
+  ; never runs. Before any output, so a refused program produces no partial
+  ; header — three fixtures used to segfault here with no output at all, and an
+  ; unresolvable import printed a header that silently omitted its every name.
+  (validate-header-forms forms)
   ; W9 item 37: discover the cross-unit type references BEFORE the preamble, so
   ; the `#include` that completes each one can precede it. A header that names a
   ; type it does not define is not merely untidy — a by-value field of one does
