@@ -8676,7 +8676,11 @@
               ; pointer allocas/stores identically); see array-lit-binding-type
               ; (generics.nuc), which node-type-block calls too — the lockstep.
               (set! ty (array-lit-binding-type ty bval-node))
-              (let (slot:ptr (fmt-sd "%%%s.addr.%d" name g-tmp)
+              ; W9 item 39: a `let` binding becomes an LLVM local identifier, so it
+              ; takes the same transform a defn name does — the rule is about
+              ; becoming an LLVM name, not about being a global one. `scope-define`
+              ; below still keys on the SOURCE name; only the slot string changes.
+              (let (slot:ptr (fmt-sd "%%%s.addr.%d" (ir-name-token name) g-tmp)
                     align:i32 (type-size ty))
                 (inc! g-tmp)
                 (fprintf g-entry-stream "  %s = alloca %s, align %d\n"
@@ -8770,7 +8774,7 @@
               ; W5d (§3.10), mirror of emit-let: an `(array T …)` initializer
               ; refines an elem-less declared pointer to `ptr:T`.
               (set! ty (array-lit-binding-type ty bval-node))
-              (let (slot:ptr (fmt-sd "%%%s.addr.%d" name g-tmp)
+              (let (slot:ptr (fmt-sd "%%%s.addr.%d" (ir-name-token name) g-tmp)
                     align:i32 (type-size ty)
                     autofree:i32 (is-libc-alloc bval-node))
                 (inc! g-tmp)
@@ -8841,7 +8845,7 @@
                           (!= (as ptr dm) null)
                             (let (cslot:ptr slot)
                               (when (= (-> ty (unsafe/cast ptr:Type _) (_ kind)) TY-STRUCT)
-                                (set! cslot (fmt-sd "%%%s.drophandle.%d" name g-tmp))
+                                (set! cslot (fmt-sd "%%%s.drophandle.%d" (ir-name-token name) g-tmp))
                                 (inc! g-tmp)
                                 (fprintf g-entry-stream "  %s = alloca ptr, align 8\n" cslot)
                                 (fprintf g-body-stream "  store ptr %s, ptr %s, align 8\n" slot cslot))
@@ -9317,10 +9321,16 @@
           (lbl-add-occurrence (nm s))
           (set! e (unsafe/cast ptr:LabelEntry (lbl-find (nm s)))))
         (.set! e seen (+ (e seen) 1))
+        ; W9 item 39: the `lbl.` prefix already saves a digit-leading label from
+        ; LLVM's first-position rule, but not a `?`/`!` in the body, so the label
+        ; name takes the same transform as every other name that becomes an LLVM
+        ; identifier. All five producers of `%lbl.<name>` — here, emit-goto,
+        ; emit-label-addr's blockaddress and emit-goto-ptr's indirectbr list —
+        ; must spell it identically or the branch targets a block that is not there.
         (let (bb-name:ptr null)
           (if (= (e seen) (e total))
-            (set! bb-name (fmt-s "lbl.%s" (nm s)))
-            (set! bb-name (fmt-sd "lbl.%s.dead%d" (nm s) (e seen))))
+            (set! bb-name (fmt-s "lbl.%s" (ir-name-token (nm s))))
+            (set! bb-name (fmt-sd "lbl.%s.dead%d" (ir-name-token (nm s)) (e seen))))
           (when (= g-block-term 0)
             (fprintf g-body-stream "  br label %%%s\n" bb-name))
           (fprintf g-body-stream "%s:\n" bb-name)
@@ -9336,7 +9346,7 @@
       (let (e:ptr:LabelEntry (unsafe/cast ptr:LabelEntry (lbl-find (nm s))))
         (when (= (as ptr e) null)
           (die-at (node-line (as ptr nm) (cc line)) (fmt-s "goto: no such label '%s' in function" (nm s))))
-        (fprintf g-body-stream "  br label %%lbl.%s\n" (nm s))
+        (fprintf g-body-stream "  br label %%lbl.%s\n" (ir-name-token (nm s)))
         ; Start a fresh dead BB so subsequent forms in a do/let body have a valid
         ; insertion point. LLVM eliminates it (no predecessors).
         (let (dead:ptr (fmt-i32 "goto.dead%d" (new-label-id)))
@@ -9359,7 +9369,7 @@
         ; getelementptr offset 0 is a no-op binding the blockaddress to an SSA name.
         (fprintf g-body-stream
           "  %s = getelementptr i8, ptr blockaddress(@%s, %%lbl.%s), i64 0\n"
-          tmp g-cur-fname (nm s))
+          tmp g-cur-fname (ir-name-token (nm s)))
         (return (alloc-val ty-ptr tmp))))))
 
 (defn emit-goto-ptr (call:(raw Node) scope:ref:Scope):ref:Val
@@ -9378,7 +9388,7 @@
             (let (e:ref:LabelEntry (invoke g-lbl-tbl i))
               (when (= first 0) (fprintf g-body-stream ","))
               (set! first 0)
-              (fprintf g-body-stream " label %%lbl.%s" (e name)))
+              (fprintf g-body-stream " label %%lbl.%s" (ir-name-token (e name))))
             (set! i (+ i 1))))
         (fprintf g-body-stream " ]\n"))
       (let (dead:ptr (fmt-i32 "goto-ptr.dead%d" (new-label-id)))
@@ -13272,16 +13282,19 @@
                   (.set! raw-node-ty elem (parse-type-name "Node" 0))
                   (.set! raw-node-ty pkind PTR-RAW)
                   (dotimes (ei pcount)
-                    (let (pname:ptr (aref (as ptr:ptr pnames) ei))
-                      (fprintf g-entry-stream "  %%%s.addr = alloca ptr, align 8\n" pname)
+                    (let (pname:ptr (aref (as ptr:ptr pnames) ei)
+                          ; W9 item 39: the macro's own parameter slots are LLVM
+                          ; locals too. scope-define still keys on `pname`.
+                          mn:ptr (ir-name-token (aref (as ptr:ptr pnames) ei)))
+                      (fprintf g-entry-stream "  %%%s.addr = alloca ptr, align 8\n" mn)
                       (fprintf g-entry-stream "  %%__ap%d = load ptr, ptr %%__args.addr, align 8\n" ei)
                       (fprintf g-entry-stream "  %%__ag%d = getelementptr ptr, ptr %%__ap%d, i32 %d\n" ei ei ei)
                       (fprintf g-entry-stream "  %%__av%d = load ptr, ptr %%__ag%d, align 8\n" ei ei)
-                      (fprintf g-entry-stream "  store ptr %%__av%d, ptr %%%s.addr, align 8\n" ei pname)
+                      (fprintf g-entry-stream "  store ptr %%__av%d, ptr %%%s.addr, align 8\n" ei mn)
                       (scope-define fn-scope
                                     pname
                                     (as ptr raw-node-ty)
-                                    (fmt-s "%%%s.addr" pname) 1))))
+                                    (fmt-s "%%%s.addr" mn) 1))))
 
                 ; Compile body forms; last result is return value
                 (let (last-val:ptr "null"

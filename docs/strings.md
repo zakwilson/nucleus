@@ -75,7 +75,7 @@ Returned by `char-decode-utf8`. `ch` and `nbytes` are valid only when `ok = 1`. 
 
 ### Classification (ASCII-only, no `?` suffix)
 
-The `?` character is invalid in LLVM IR identifiers for non-generic `defn` names, so these functions use the `char-is-*` prefix without a `?` suffix.
+These functions use the `char-is-*` prefix without a `?` suffix. That is now a naming convention, not a restriction: `?` and `!` are legal in any Nucleus name and are mangled (`?` → `_QMARK`, `!` → `_BANG`) wherever a name becomes an LLVM identifier — see [`?`/`!` in names](generics.md#polymorphism-overloaded-defn-multimethods).
 
 | Function | Signature | Returns 1 when… |
 |----------|-----------|----------------|
@@ -526,7 +526,7 @@ All of these conform to the `Err` type and are usable with `(err-name e)`, `try`
 
 ## Gotchas and constraints
 
-- **`?` in function names.** Classification functions use `char-is-ascii` etc. without a `?` suffix — `?` is invalid in LLVM IR identifiers for non-generic `defn` names. The `?` suffix is only valid in protocol method names, where the generics machinery sanitizes it.
+- **`?` in function names.** Classification functions use `char-is-ascii` etc. without a `?` suffix. This is a convention of this library only — `?` and `!` are legal in every name position and are mangled to `_QMARK`/`_BANG` in the emitted symbol (see [`?`/`!` in names](generics.md#polymorphism-overloaded-defn-multimethods)).
 - **`string-push-str` and `string-truncate` return `!i32`.** The compiler does not yet support `!void`. Check for `(ok 0)` / `(err e)` or use `try` to propagate.
 - **`sub-bytes` returns `!ptr:StrView`.** The caller owns the `ptr:StrView` wrapper and must `free` it. The bytes are borrowed from the source StrView; do not free `data`.
 - **`SplitIter`/`LineIter` are not `Iterator StrView`.** The `(Maybe StrView)` union type cannot be compiled in JIT macro modules. They instead conform to `(Iterator ptr)`, yielding each segment as a `(ref StrView)` niche-encoded as a bare `ptr`; the `doseq-split` macro decodes it. The `*-iter-done`/`*-iter-next` pair is still available.

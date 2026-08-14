@@ -101,6 +101,12 @@
 ; name))` (SM-3). sanitize-for-c does not call ir-name-token itself because
 ; format.nuc is imported before generics.nuc, so ir-name-token is not yet in scope
 ; here; the three cheader.nuc call sites compose the two in the correct order.
+;
+; Purely the CHARACTER half of the C-identifier rule; the first-position half
+; (no leading digit) is `cheader-escape-leading-digit`, applied one layer up in
+; cheader.nuc for the reason cheader-c-ident-join already gives for the reserved
+; escape — it belongs on a complete identifier, and a fragment about to be joined
+; after a prefix is never at position 0. W9 item 39.
 (defn sanitize-for-c (name:ptr):ptr
   (let (n:i64 (strlen name)
         s:ptr (arena-alloc (+ n 1))
@@ -145,18 +151,38 @@
 ; the compiler's own hyphenated symbols and break the byte-identical bootstrap
 ; (§1.3). Fast path: a name with neither character is returned pointer-unchanged,
 ; so non-`?`/`!` names are a strict no-op.
+;
+; Stage 15 W9 item 39: LLVM's unquoted identifier is
+; `[%@][-a-zA-Z$._][-a-zA-Z$._0-9]*` — a body character class, which the `?`/`!`
+; map above covers, AND a rule about the FIRST position that no character class
+; can express: it may not be a digit. `(defn 2fast …)` therefore passed every
+; front-end check (a digit is in the legal *set*) and emitted `define i32 @2fast`,
+; which LLVM reads as the numeric global id `@2` and rejects while parsing the
+; module the compiler just wrote — a diagnostic naming a line of generated IR and
+; nothing in the user's source. One leading `_` fixes the position, keeps the
+; escape greppable, and stays a legal C identifier so `sanitize-for-c` (which
+; applies the identical rule, C having the same restriction) agrees with it. The
+; collision hazard is the `_QMARK` one exactly: a user's own `_2fast` now shares
+; this name. That is the accepted cost of a targeted map — the blanket
+; alternative renames every hyphenated symbol the compiler defines and breaks the
+; byte-identical bootstrap (§1.3).
 (defn ir-name-token (name:ptr):ptr
   (let (n:i64 (strlen name)
         special:i32 0
+        lead:i32 0
         i:i64 0)
+    (when (> n 0)
+      (when (!= (isdigit (bit-and (as i32 (aref (as ptr:i8 name) 0)) 255)) 0)
+        (set! lead 1)))
     (while (< i n)
       (let (c:i32 (bit-and (as i32 (aref (as ptr:i8 name) i)) 255))
         (when (or (= c 63) (= c 33)) (set! special 1)))
       (set! i (+ i 1)))
-    (when (= special 0) (return name))
+    (when (and (= special 0) (= lead 0)) (return name))
     ; Sizing pass: `?`→6 bytes (_QMARK), `!`→5 bytes (_BANG), else 1.
     (let (outn:i64 0
           j:i64 0)
+      (when (!= lead 0) (set! outn 1))
       (while (< j n)
         (let (c:i32 (bit-and (as i32 (aref (as ptr:i8 name) j)) 255))
           (cond (= c 63) (set! outn (+ outn 6))
@@ -166,6 +192,9 @@
       (let (s:ptr (arena-alloc (+ outn 1))
             si:i64 0
             k:i64 0)
+        (when (!= lead 0)
+          (aset! (as ptr:i8 s) 0 95)
+          (set! si 1))
         (while (< k n)
           (let (c:i32 (bit-and (as i32 (aref (as ptr:i8 name) k)) 255))
             (cond (= c 63) (set! si (ir-name-append s si "_QMARK"))
@@ -207,3 +236,23 @@
         (when (= ok 0) (return c)))
       (set! i (+ i 1)))
     (return -1)))
+
+; Non-zero when the identifier body of `name` (after any leading `@`/`%` sigil)
+; begins with a digit — the other half of LLVM's identifier rule, about the first
+; POSITION rather than the character set. W9 item 39.
+;
+; A separate predicate rather than a case inside ir-name-illegal-char because the
+; two answer different questions and need different messages: a digit is legal in
+; every position but the first, so reporting one as an "illegal character" would
+; name a character that the same message's list of legal characters contains.
+; ir-name-token now escapes this before it reaches emission, so this is purely
+; the backstop for a future path that skips that transform.
+(defn ir-name-leading-digit (name:ptr):i32
+  (let (n:i64 (strlen name)
+        i:i64 0)
+    (when (= n 0) (return 0))
+    (let (c0:i32 (bit-and (as i32 (aref (as ptr:i8 name) 0)) 255))
+      (when (or (= c0 64) (= c0 37)) (set! i 1)))
+    (when (>= i n) (return 0))
+    (when (!= (isdigit (bit-and (as i32 (aref (as ptr:i8 name) i)) 255)) 0) (return 1))
+    (return 0)))
