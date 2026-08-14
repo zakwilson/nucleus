@@ -534,6 +534,42 @@ function(s). The design docs' "byte-identical (additive)" claims for TC-1/2/3 re
 *not* to the literal `nucleusc.ll` diff — which a careful read of those phases shows also
 shifted (new `tc3-*` functions, etc.) and was reconciled by the same `make bootstrap` gate.
 
+## A wrong value that only reaches a truthiness test is invisible to every gate
+
+The bootstrap fixed point proves the compiler is *self-consistent*, not that it is
+*right* — and the gap has a specific shape worth recognizing. Stage 15 W9 item 31:
+`is-unsigned` had no `TY-I1` arm, so `i1` was read as signed, `(as i32 true)` was
+`−1`, and `(< false true)` and `(> true false)` were BOTH false. It survived every
+bootstrap for the whole project. The reason is that the compiler's own source held
+that value in exactly six places, all of the shape `(let (x:i32 <comparison>) …)`,
+and **every one of their consumers tests `(!= x 0)` or `(= x 0)`** — a predicate
+`−1` and `1` satisfy identically. The compiler was carrying the defect and could
+not observe it, so `stage1.ll == stage2.ll` held, `make test` was green, and the
+corpus IR was stable.
+
+Generalize it: **a wrong value leaves no trace in any fixed point if it only ever
+flows into a truthiness test.** Boolean-ish `i32` flags are the common carrier
+(that is the whole idiom in this codebase), but the same holds for any value whose
+consumers only distinguish zero from non-zero, or non-null from null.
+
+Two consequences for how to test:
+
+- **Assert on the instruction, not only on the run.** `sext i1` and `zext i1`
+  differ only above bit 0, so a run that checks `(if b …)` passes under both. The
+  item-31 unit greps the emitted IR for `sext i1` / signed `icmp` on `i1` /
+  `sitofp i1` precisely because the run cannot make that claim.
+- **Distrust an expected-output file that looks odd.** Two of them had baselined
+  the defect (`tests/expected/logic.out` said `(and) = -1` while
+  `examples/logic.nuc`'s own header comment says `(and) => true`). A recorded
+  expectation is evidence of what the compiler *did*, never of what it *should*
+  do; when a fix moves one, read the source's own documentation before assuming
+  the fix is wrong.
+
+Related: the fix moves the bootstrap, so it needs the converge cycle in
+[build.md](build.md) §"After a codegen change" — and the sweep is what turns
+"this touches 22 call sites" into the measured "24 `sext i1`→`zext i1` sites,
+0 diagnostics moved".
+
 ## Emitted linkage: `weak_odr`, never `linkonce_odr` — the macro JIT resolves against the linked program
 
 `def-linkage` (`src/nucleusc.nuc`) is the single place that decides a top-level

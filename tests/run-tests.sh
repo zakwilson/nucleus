@@ -2510,6 +2510,28 @@ run_w9_i1_literal_range() {
   rm -rf "$d"
 }
 
+# W9 item 31: `i1`/bool is unsigned, so every consumer of `is-unsigned` must
+# pick the unsigned instruction for it. The run covers the values; the IR
+# assertion covers the instruction, and it is the half a run cannot make on
+# this host — `sext i1` and `zext i1` differ only in the bit pattern above
+# bit 0, and every consumer in the compiler's own source tests `(!= x 0)`,
+# which -1 and 1 both satisfy. That is exactly why the defect survived every
+# bootstrap until it was measured directly.
+run_w9_i1_unsigned() {
+  local d ir
+  d="$(mktemp -d)"
+  w1_run w9-i1-unsigned "$d" tests/fixtures/w9-i1-unsigned.nuc 0
+  ir="$(./build/nucleusc --emit-llvm tests/fixtures/w9-i1-unsigned.nuc 2>/dev/null || true)"
+  if ! printf '%s' "$ir" | qgrep -E 'sext i1|icmp s(lt|gt|le|ge) i1|sitofp i1'; then
+    echo "PASS  w9-i1-unsigned-picks-unsigned-instructions"
+  else
+    echo "FAIL  w9-i1-unsigned-picks-unsigned-instructions"
+    echo "    an i1 operand reached a signed instruction"
+    printf '%s' "$ir" | grep -nE 'sext i1|icmp s(lt|gt|le|ge) i1|sitofp i1' | head -6 | sed 's/^/    /'
+  fi
+  rm -rf "$d"
+}
+
 # W1b's half of G-0: `scope-define` qualifies a global's key against
 # `g-current-ns`, so the prescan must apply each visited file's own leading
 # `(ns …)`. Prescanning a namespaced file under the IMPORTER's namespace would
@@ -4238,6 +4260,7 @@ spawn run_reject w9-as-float-global-inexact \
 # invert both answers. The local fixture pins that the fix landed in the shared
 # predicate rather than in `defvar-init-ir` alone.
 spawn run_w9_i1_literal_range
+spawn run_w9_i1_unsigned
 spawn run_reject w9-i1-literal-too-big tests/fixtures/w9-i1-literal-too-big.nuc \
   "defvar: integer literal 5 does not fit i1"
 spawn run_reject w9-i1-literal-negative tests/fixtures/w9-i1-literal-negative.nuc \

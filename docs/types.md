@@ -472,7 +472,12 @@ The following conversions are applied automatically in assignment contexts (`let
 - **`ptr:S` → by-value `S`** (`S` a struct): one `load` of the pointee — the implicit form of `(deref p)`. This is what lets a `(S …)` compound literal, which is alloca-backed and evaluates to `(ref S)`, be written directly wherever a by-value `S` is expected: an element of an `(array S …)`, a struct-typed field in another struct literal, a `let`/`with` binding declared `:S`, an `aset!`/`ptr-set!` element store, and an implicit or explicit `return` from an `S`-returning function. Argument positions have always accepted it. The element type must match exactly (a compound literal of a *different* struct is still a type mismatch), and because the conversion is a `deref` it carries `deref`'s obligation: a `?T` source must be narrowed first. The explicit `(deref (S …))` spelling remains valid and emits byte-identical IR.
 - **Integer ↔ integer**:
   - Same width, different sign (e.g. `i32` ↔ `ui32`): reinterpret, no IR.
-  - Widening: `sext` for signed source, `zext` for unsigned source.
+  - Widening: `sext` for signed source, `zext` for unsigned source. `i1`/`bool`
+    counts as **unsigned**, so `(as i32 true)` is `1` and `(as i64 true)` is
+    `1` — matching this page's literal table and the `bool` → `_Bool` C mapping,
+    where `(int)true` is `1`. The same reading makes `i1` order correctly under
+    the comparison operators: `(< false true)` is true and `(> true false)` is
+    false.
   - Narrowing: `trunc` — **except** that a narrowing of an integer *literal*
     whose value does not fit the target type is a **compile-time error**
     (`integer literal 300 does not fit ui8`), never a silent wrap. This applies
@@ -490,7 +495,10 @@ The following conversions are applied automatically in assignment contexts (`let
     `(let (a:i1 0) …)` mean what `true` and `false` mean, while `(defvar g:i1
     5)` and `(defvar g:i1 -1)` are compile-time errors rather than a silent
     truncation to `true`. (`true`/`false` are their own literals and are not
-    range-checked.)
+    range-checked.) The same `{0, 1}` reading is why `i1` is treated as
+    **unsigned** everywhere the signedness of a type is asked: widening picks
+    `zext`, comparison picks the unsigned `icmp`, and a conversion to a float
+    picks `uitofp`.
 - **Float ↔ float**:
   - Widening `f32` → `f64`: `fpext`.
   - Narrowing `f64` → `f32`: `fptrunc` for a *value*, and for a float **literal**
@@ -533,7 +541,9 @@ result type is that unified type (a comparison always yields `bool`). The rule i
   `(+ i32-value i64-value)` is `i64`, `(+ f32-value f64-value)` is `f64`.
 - Everything else is a compile error at the operator: a float operand against an
   integer operand (`float and non-float operands`), mixed-sign integers such as
-  `i32 + ui32` (`mixed signed/unsigned operands`), and a typed `Char` against a
+  `i32 + ui32` or `bool` against `i32` (`mixed signed/unsigned operands`) — `i1`
+  is unsigned, so a `bool` operand needs the same explicit cast any other
+  unsigned type would — and a typed `Char` against a
   typed non-`Char` integer (`operand type mismatch`). Fix these with an explicit
   `(as ...)` (widening / same-width sign reinterpret) or `(unsafe/cast ...)`
   (narrowing, `float`↔`int`) on the binop side — the compiler will not
@@ -600,7 +610,9 @@ than a silent 32-bit wrap. Enum members are always small enough to be `i32`.
 The narrowest destination is `i1`/`bool`, whose value set is `{0, 1}` — the two
 values `false` and `true` denote. `1` and `0` are legal numeric spellings of
 them; every other literal, including `-1`, is rejected. Reading `i1` as a 1-bit
-*integer* would give the range `[-1, 0]`, which is not the type Nucleus has.
+*signed* integer would give the range `[-1, 0]`, which is not the type Nucleus
+has — and would make `true` widen to `-1` and sit *below* `false` in a
+comparison. `i1` is unsigned; see the widening rule above.
 
 ## String literal escapes — `\n`, `\xHH`
 
