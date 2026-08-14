@@ -16,7 +16,7 @@ size_t char_encode_utf8(uint32_t c, uint8_t* buf) asm("char-encode-utf8");
 struct DecodeResult decode_err(void) asm("decode-err");
 struct DecodeResult char_decode_utf8(uint8_t* p, size_t len) asm("char-decode-utf8");
 uint32_t char_to_u32(uint32_t c) asm("char-to-u32");
-struct _BANGChar char_from_u32(uint32_t n) asm("char-from-u32");
+/* char-from-u32: uses an error-union or option type; not exported */
 int32_t char_is_ascii(uint32_t c) asm("char-is-ascii");
 int32_t char_is_digit(uint32_t c) asm("char-is-digit");
 int32_t char_is_alpha(uint32_t c) asm("char-is-alpha");

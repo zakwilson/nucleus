@@ -1873,6 +1873,117 @@ EOF
   rm -rf "$d"
 }
 
+# W9 item 44. A niche-encoded `!T` / `?T` over a NON-pointer payload was declared
+# `struct _BANGui8` — a tag no header defines and none can, because the value is
+# not an aggregate (`define i64 @strview-byte-at(ptr, i64)`). The declaration is
+# wrong twice and the second way is the dangerous one: a C author who completes
+# the tag by hand gets a program that compiles, links, runs and reads the wrong
+# value (measured: 0 where Nucleus reads 65). So it is omitted with a comment
+# saying why, the ruling W9 item 3 already wrote down for `defvar`.
+#
+# The POINTER niches must survive: `!ptr:T` really is a `T*`, so over-skipping
+# would drop working declarations. That half is asserted by linking and RUNNING a
+# C consumer against them, not by reading the header.
+run_w9_cheader_niche_types() {
+  local d out
+  d="$(mktemp -d)"
+  cat > "$d/w44niche.nuc" <<'EOF'
+(import-use prelude)
+(import-use error)
+(deferror w44-range "index out of range")
+(defstruct W44Pt (x i32) (y i32))
+(defvar g-w44-flag:!ui8)
+(defn w44-byte (i:i32):!ui8
+  (when (< i 0) (return (err w44-range)))
+  (return (ok (unsafe/cast ui8 i))))
+(defn w44-takes (b:!ui8):i32 0)
+(defn w44-find (p:ptr:W44Pt i:i32):!ptr:W44Pt
+  (when (!= i 0) (return (err w44-range)))
+  (return (ok (as ref:W44Pt p))))
+(defn w44-show (r:!ptr:W44Pt):i32
+  (match r ((ok q) (return (q x))) ((err e) (return -1))))
+EOF
+  ./build/nucleusc --emit-cheader "$d/w44niche.nuc" > "$d/w44niche.h" 2>"$d/err" || true
+
+  # No `struct _BANG…`/`struct _QMARK…` tag survives anywhere in the header —
+  # return position, PARAMETER position (w44-takes) and `defvar` alike, since a
+  # niche is no more constructible by a C caller than it is decodable.
+  if ! qgrep -E 'struct _(BANG|QMARK)' "$d/w44niche.h" \
+     && qgrep -F '/* w44-byte: uses an error-union or option type; not exported */' "$d/w44niche.h" \
+     && qgrep -F '/* w44-takes: uses an error-union or option type; not exported */' "$d/w44niche.h" \
+     && qgrep -F '/* g-w44-flag: uses an error-union or option type; not exported */' "$d/w44niche.h"; then
+    echo "PASS  w9-cheader-niche-scalar-not-declared"
+  else
+    echo "FAIL  w9-cheader-niche-scalar-not-declared"
+    sed 's/^/    /' "$d/w44niche.h" | tail -8
+  fi
+
+  # The other side of the ruling: a pointer niche is ABI-identical to a C `T*`
+  # (design/stage10/unions.md §6 rule 3), so it stays declared and stays callable.
+  # Compiled, linked and RUN — the only check that can tell a kept declaration
+  # from a plausible one.
+  cat > "$d/main.c" <<'EOF'
+#include <stdio.h>
+#include "w44niche.h"
+int main(void) {
+    struct W44Pt pt = {7, 9};
+    struct W44Pt* q = (struct W44Pt*)w44_find(&pt, 0);
+    printf("%d %d %d\n", q->x, q->y, w44_show(q));
+    return 0;
+}
+EOF
+  if ./build/nucleusc -c -o "$d/w44niche.o" "$d/w44niche.nuc" 2>>"$d/err" \
+     && clang -I "$d" "$d/main.c" "$d/w44niche.o" -o "$d/cmain" 2>>"$d/err"; then
+    out="$("$d/cmain")"
+    if [ "$out" = "7 9 7" ]; then
+      echo "PASS  w9-cheader-niche-pointer-still-callable"
+    else
+      echo "FAIL  w9-cheader-niche-pointer-still-callable (want '7 9 7', got '$out')"
+    fi
+  else
+    echo "FAIL  w9-cheader-niche-pointer-still-callable (build failed)"
+    sed 's/^/    /' "$d/err" | head -8
+  fi
+
+  # W9 item 37 interaction: a type named ONLY by a refused declaration is not a
+  # dependency of the header, so no `#include` is emitted for the unit defining
+  # it. The emitter refuses the whole declaration on any one signature position,
+  # so the include pre-pass has to ask that question of the whole form.
+  cat > "$d/w44base.nuc" <<'EOF'
+(defstruct W44Only (x i32))
+EOF
+  cat > "$d/w44only.nuc" <<'EOF'
+(import-use prelude)
+(import-use error)
+(import-use w44base)
+(deferror w44-only-bad "bad")
+(defn w44-probe (p:ptr:W44Only):!ui8
+  (when (< (p x) 0) (return (err w44-only-bad)))
+  (return (ok (unsafe/cast ui8 1))))
+EOF
+  ./build/nucleusc --emit-cheader "$d/w44only.nuc" > "$d/w44only.h" 2>>"$d/err" || true
+  if ! qgrep -F 'w44base.h' "$d/w44only.h" \
+     && ! qgrep -F 'struct W44Only' "$d/w44only.h"; then
+    echo "PASS  w9-cheader-niche-refused-decl-adds-no-include"
+  else
+    echo "FAIL  w9-cheader-niche-refused-decl-adds-no-include"
+    sed 's/^/    /' "$d/w44only.h" | head -10
+  fi
+
+  # The reported artefact: 14 declarations across 5 committed headers carried the
+  # undefined tag. Uses the COMMITTED copies, so this also fails if they are
+  # regenerated wrong. `string-from-cstr-unchecked` returns a real `struct String`
+  # and must remain — it is the escape route a C caller is meant to take.
+  if ! grep -lE 'struct _(BANG|QMARK)[A-Za-z]' lib/*.h > "$d/tags" 2>/dev/null \
+     && qgrep -F 'struct String string_from_cstr_unchecked' lib/string.h; then
+    echo "PASS  w9-cheader-committed-headers-no-niche-tag"
+  else
+    echo "FAIL  w9-cheader-committed-headers-no-niche-tag"
+    sed 's/^/    /' "$d/tags" | head -6
+  fi
+  rm -rf "$d"
+}
+
 # SOURCE OUT-RANKS HEADER, asserted on both sides of the ruling. `resolve-import`
 # already tries `.nuc` in every directory before any `.nuch`, so an import takes
 # the source — but `path-in-unit` keyed on the exact path spelling, so the
@@ -5153,6 +5264,7 @@ spawn run_w9_shared_init_warning
 spawn run_w9_cheader_globals
 spawn run_w9_cheader_identifiers
 spawn run_w9_cheader_imported_types
+spawn run_w9_cheader_niche_types
 # W1c: the diagnostic surface. The did-you-mean tier it sits above is pinned by
 # w4a-suggest-spelling; the note deliberately suppresses that tier (they would
 # otherwise offer two diagnoses of one failure), which is why the suggestion

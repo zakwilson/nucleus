@@ -3863,6 +3863,47 @@ a by-value *field*, failed outright.
 So test the two separately: parse the header, **and** form a value of every type
 it names. The cheap static version of the same question is "which `struct X` does
 this file name without a `struct X {` of its own?", which found seven headers
-where the compile test found one. The same asymmetry is why item 44 (`!T` returns
-exported as `struct _BANGT`, over a value the IR returns as `i64`) sat in five
-committed headers unnoticed.
+where the compile test found one. The same asymmetry is why item 44 (`!T`
+signatures exported as `struct _BANGT`, a tag the emitter never defines) sat in
+five committed headers unnoticed.
+
+Item 44 added the converse trap on the *skips* section above: `emit-cheader-declare`
+refuses a whole declaration on any ONE of its signature positions, which a
+per-type-node pre-pass structurally cannot see — it will happily record a
+dependency for the surviving parameters of a declaration that is never emitted.
+Ask the refusal question once, of the whole form, and let both callers read the
+answer: `cheader-defn-skip-reason` returns a reason *code*, the emitter maps it to
+the comment it prints, the pre-pass only tests it against zero. Replicating four
+predicates by hand in two places is the drift; one function with two readings is
+not.
+
+## `define i64 @f(...)` is not evidence that the return type is a scalar
+
+SysV coerces a small by-value struct into registers, so an 8-byte
+`{i32 tag; union}` returns as a plain `i64` in the IR — indistinguishable at a
+glance from a genuinely scalar return. W9 item 44's row was filed on exactly that
+misreading ("`!ui8` is a niche-encoded scalar, not an aggregate"; the fix was
+right, the reason was not). The check that settles it costs one command: declare
+the struct shape you believe in from C, link against the committed object, and
+print the fields — `struct ResU8 {int32_t tag; uint8_t v;}` reads `tag=0 v=65`,
+which no scalar return could produce.
+
+Corollary for header emission: a value being *expressible* in C is not the same
+as the emitter having a spelling to emit. `!T` is expressible and still cannot be
+declared, because it is a `(Result T Err)` template instance and no typedef is
+generated for one.
+
+## A sugar spelling escapes a ruling keyed on the desugared shape
+
+`cheader-template-instance` refuses any type whose `NODE-CELL` head is a
+registered union template, and has since Stage 11. `!ui8` is a
+`(Result ui8 Err)` — but it reaches the emitter as a `NODE-SYM`, so the cell test
+never fires and it fell through to the "assume struct" arm three functions away.
+The header ended up with two different answers for two spellings of one type, and
+they shipped side by side in `lib/strview-str.h`:
+`/* byte-find: uses a defunion-template instance type; not exported */` two lines
+above `struct _BANGui8 byte_at(...)`.
+
+When adding a sugar spelling, grep for the predicates that key on the shape it
+desugars *from*, not just the ones that build it. The same shape is why W9 items
+3 (`usize`) and 25 (`Char`/`Err`) existed: two renderers, one type, two answers.
