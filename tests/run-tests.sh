@@ -2697,6 +2697,141 @@ EOF
   rm -rf "$d"
 }
 
+# Stage 15 W9 item 40: a struct's LAYOUT and a `defunion`'s registration resolve
+# on REACHABILITY, like their names (W1a), their signatures and their value names
+# (W8 G-0). Before this a field access below the import reported "no field 'x' on
+# struct 'S'" for a struct that has that field, a literal reported "too many
+# initializers", and a by-value parameter compiled to `define … @f(i0 %v.arg)` —
+# a SILENT miscompile, which is why every case here links and RUNS rather than
+# just compiling. Registration only: the `%Name = type {…}` lines still come from
+# `emit-defstruct`, which check 5 pins by comparing the two import orders' IR.
+run_w9_layout_reachability() {
+  local d ir
+  d="$(mktemp -d)"; mkdir -p "$d/l" "$d/h"
+  cat > "$d/l/w9lay.nuc" <<'EOF'
+(defconst W9LAY-N 3)
+(defstruct W9LayBox (a i32) (b i32))
+(defstruct W9LayArr (xs (array i32 W9LAY-N)) n:i32)
+(defunion W9LayOpt (W9LaySome x:i32) W9LayNone)
+(defmacro w9lay-mac (x) `(+ ~x 100))
+EOF
+  # Every use ABOVE the import: a literal, a field read, a by-value parameter
+  # (the silent one), an array-field struct whose extent is a same-file
+  # `defconst`, and a union built with `make` and taken apart with `match`.
+  cat > "$d/below.nuc" <<'EOF'
+(defn w9lay-byval ((v W9LayBox)):i32 (return (+ (_get (addr-of v) a) (_get (addr-of v) b))))
+(defn main ():i32
+  (let (bx (W9LayBox 3 4)
+        ar:ptr:W9LayArr (alloca W9LayArr)
+        u (make W9LayOpt W9LaySome 5))
+    (aset! (ar xs) 2 6)
+    (.set! ar n 7)
+    (printf "%d %d %d %d %d\n"
+      (_get bx a) (w9lay-byval bx) (aref (ar xs) 2) (_get ar n)
+      (match u ((W9LaySome x) x) (W9LayNone 0))))
+  (return 0))
+(import-use w9lay)
+EOF
+  sed '$d' "$d/below.nuc" > "$d/above.nuc.body"
+  { echo '(import-use w9lay)'; cat "$d/above.nuc.body"; } > "$d/above.nuc"
+
+  if ./build/nucleusc -I "$d/l" "$d/below.nuc" -o "$d/below.bin" 2>"$d/err" \
+     && [ "$("$d/below.bin")" = "3 7 6 7 5" ]; then
+    echo "PASS  w9-layout-below-use-runs"
+  else
+    echo "FAIL  w9-layout-below-use-runs"
+    sed 's/^/    /' "$d/err" | head -4
+    [ -x "$d/below.bin" ] && printf '    got: %s\n' "$("$d/below.bin")"
+  fi
+
+  # The by-value parameter, read off the IR rather than the exit status: `i0` is
+  # what an unlaid-out struct classified to, and it is the shape LLVM rejects
+  # with no source location at all.
+  ir="$(./build/nucleusc --emit-llvm -I "$d/l" "$d/below.nuc" 2>/dev/null || true)"
+  if printf '%s\n' "$ir" | qgrep -F 'define i32 @w9lay-byval(i64 ' ; then
+    echo "PASS  w9-layout-byval-classified"
+  else
+    echo "FAIL  w9-layout-byval-classified"
+    printf '%s\n' "$ir" | grep -F '@w9lay-byval(' | sed 's/^/    /' | head -2
+  fi
+
+  # The same shape inside ONE file: `(defn f (v:S))` textually above
+  # `(defstruct S …)`. Recorded as latent-and-unfixed since W1d — the layout
+  # prescan closes it with the cross-file case, since neither is about imports.
+  cat > "$d/fwd.nuc" <<'EOF'
+(defn w9lay-fwd ((v W9LayFwd)):i32 (return (+ (_get (addr-of v) p) (_get (addr-of v) q))))
+(defstruct W9LayFwd (p i32) (q i32))
+(defn main ():i32 (return (w9lay-fwd (W9LayFwd 2 3))))
+EOF
+  if ./build/nucleusc "$d/fwd.nuc" -o "$d/fwd.bin" 2>"$d/err"; then
+    set +e; "$d/fwd.bin"; got=$?; set -e
+    [ "$got" = 5 ] && echo "PASS  w9-layout-same-file-forward" \
+                   || echo "FAIL  w9-layout-same-file-forward (expected 5, got $got)"
+  else
+    echo "FAIL  w9-layout-same-file-forward (compile/link error)"
+    sed 's/^/    /' "$d/err" | head -3
+  fi
+
+  # A `.nuch` header is a file in the graph like any other: its `defstruct`
+  # reaches the very same `emit-defstruct`, so its layout hoists too. The
+  # library's source is deliberately out of the include path (an import prefers
+  # the `.nuc` when both are there — w9-import-prefers-source).
+  ./build/nucleusc --emit-nuch "$d/l/w9lay.nuc" > "$d/h/w9lay.nuch" 2>/dev/null || true
+  cat > "$d/hbelow.nuc" <<'EOF'
+(defn main ():i32
+  (let (bx (W9LayBox 8 9))
+    (printf "%d\n" (+ (_get bx a) (_get bx b))))
+  (return 0))
+(import-use w9lay)
+EOF
+  if ./build/nucleusc --emit-llvm -I "$d/h" "$d/hbelow.nuc" >/dev/null 2>"$d/err"; then
+    echo "PASS  w9-layout-nuch-below-use"
+  else
+    echo "FAIL  w9-layout-nuch-below-use"
+    sed 's/^/    /' "$d/err" | head -3
+  fi
+
+  # Registration moved; EMISSION did not. Each type is DEFINED exactly once — a
+  # prescan that wrote a `%Name = type` line of its own would double it, which
+  # the LLVM parser rejects — and the two import orders carry the same set of
+  # top-level definitions, so nothing was gained or lost by moving the import.
+  # (The lines themselves are compared as a SET: their position within the type
+  # section is order-dependent and inert, and the string pool renumbers.)
+  ./build/nucleusc --emit-llvm -I "$d/l" "$d/above.nuc" > "$d/above.ll" 2>/dev/null || true
+  ./build/nucleusc --emit-llvm -I "$d/l" "$d/below.nuc" > "$d/below.ll" 2>/dev/null || true
+  if [ "$(grep -c '^%W9LayBox = type ' "$d/below.ll")" = 1 ] \
+     && [ "$(grep -c '^%W9LayArr = type ' "$d/below.ll")" = 1 ] \
+     && [ "$(grep -c '^%W9LayOpt = type ' "$d/below.ll")" = 1 ] \
+     && [ "$(grep -E '^(%[A-Za-z0-9_.]+ = type|define|declare) ' "$d/above.ll" | sort | md5sum)" \
+        = "$(grep -E '^(%[A-Za-z0-9_.]+ = type|define|declare) ' "$d/below.ll" | sort | md5sum)" ]; then
+    echo "PASS  w9-layout-emission-unmoved"
+  else
+    echo "FAIL  w9-layout-emission-unmoved"
+    grep -n '^%W9Lay' "$d/below.ll" | sed 's/^/    /' | head -6
+    diff <(grep -E '^(%[A-Za-z0-9_.]+ = type|define|declare) ' "$d/above.ll" | sort) \
+         <(grep -E '^(%[A-Za-z0-9_.]+ = type|define|declare) ' "$d/below.ll" | sort) \
+      | sed 's/^/    /' | head -6
+  fi
+
+  # The residue, pinned so it is a decision rather than an oversight: a
+  # `defmacro` is a COMPILED function, not a registration — `emit-defmacro` runs
+  # codegen and materializes a JIT module — so it stays where the emitter is and
+  # still needs the import above the use.
+  cat > "$d/mac.nuc" <<'EOF'
+(defn main ():i32 (return (w9lay-mac 1)))
+(import-use w9lay)
+EOF
+  if ./build/nucleusc --emit-llvm -I "$d/l" "$d/mac.nuc" >/dev/null 2>"$d/err"; then
+    echo "FAIL  w9-layout-macro-still-needs-import-above (it compiled)"
+  elif qgrep -F "unknown: w9lay-mac" "$d/err"; then
+    echo "PASS  w9-layout-macro-still-needs-import-above"
+  else
+    echo "FAIL  w9-layout-macro-still-needs-import-above (wrong diagnostic)"
+    sed 's/^/    /' "$d/err" | head -3
+  fi
+  rm -rf "$d"
+}
+
 # Stage 15 W9 item 29: a `.nuch` header's functions and values resolve on
 # REACHABILITY, like the `.nuc` spelling of the same library, not on whether the
 # import form happens to sit above the use. Registration is hoisted into the
@@ -2850,15 +2985,19 @@ run_w1d_cycle_accepts() {
   rm -rf "$d"
 }
 
-# The couplings a legal cycle still cannot satisfy. Each is emission-time — a
-# cycle member's body is emitted BEFORE the rest of the file it back-imports, so
-# anything that file defines after its own `import` has not run yet. Every one
-# of these used to fail with a message that blamed the wrong thing:
+# The couplings a legal cycle cannot satisfy, and the ones it no longer has to.
+# Each was emission-time — a cycle member's body is emitted BEFORE the rest of the
+# file it back-imports, so anything that file defines after its own `import` had
+# not run yet — and each used to fail with a message that blamed the wrong thing:
 #   macro/const/enum → "not defined anywhere in this compilation unit" (it is);
 #   layout           → "no field 'x' on struct 'S'" (it has that field), or, for
 #                      a by-value struct at an ABI boundary, an `i0` aggregate
 #                      and an UNLOCATED "failed to parse generated IR";
 #   prefix alias     → "not defined anywhere" for a name that is in the unit.
+# Three of the five have since been fixed rather than diagnosed (const/enum in
+# W8 G-0, prefix aliases in B2b, layouts in W9 item 40) and their cases below
+# assert the answer; what stays diagnosed is what a prescan genuinely cannot
+# carry, i.e. what only an EMITTER produces: a macro and a `deferror` id.
 run_w1d_cycle_diagnoses() {
   local d
   d="$(mktemp -d)"
@@ -2888,30 +3027,32 @@ run_w1d_cycle_diagnoses() {
   w1_reject_multi w1d-cycle-deferror-diagnosed "$d" "$d/w1-dfm.nuc" \
     "undefined: W1Boom — defined in a file this unit imports circularly"
 
-  # 3a. A field access on a struct the partner has not laid out yet.
+  # 3. The three LAYOUT couplings — a field access, a struct literal and a
+  # by-value parameter over a struct the cycle partner defines. These INVERTED in
+  # Stage 15 W9 item 40, the same way case 4 below inverted in B2b and the same
+  # way `w1d-cycle-defconst-diagnosed` inverted in W8 G-0: the layout prescan
+  # registers every reachable file's field tables before any form is emitted, so
+  # the "'S' has no layout at this point" rejection these three pinned can no
+  # longer fire for them. They are re-pointed rather than re-baselined, and each
+  # asserts the ANSWER — the third one especially, since its old failure was a
+  # SILENT miscompile (`define … @f(i0 %v.arg)`) that an exit-0 compile of a
+  # never-called function would not have caught. `reject-cycle-pending-layout`
+  # itself stays: an array field whose length this early pass cannot fold leaves
+  # its struct un-laid-out, and that struct is still a cycle's problem.
   printf '(import w1-scb)\n(defstruct W1SC\n  x:i32\n  y:i32)\n(defn w1-sca ():i32 (return 1))\n' > "$d/w1-sca.nuc"
   printf '(import w1-sca)\n(defn w1-scb (p:ptr:W1SC):i32 (.set! p x 11) (return (p x)))\n' > "$d/w1-scb.nuc"
-  printf '(import w1-sca)\n(defn main ():i32 (return 0))\n' > "$d/w1-scm.nuc"
-  w1_reject_multi w1d-cycle-layout-diagnosed "$d" "$d/w1-scm.nuc" \
-    "field assignment: 'W1SC' has no layout at this point"
+  printf '(import w1-sca)\n(defn main ():i32 (let (s:ptr:W1SC (alloca W1SC)) (return (w1-scb s))))\n' > "$d/w1-scm.nuc"
+  w1_run w1d-cycle-layout-resolves "$d" "$d/w1-scm.nuc" 11
 
-  # 3b. A struct literal — nfields is 0, so every initializer looked like one
-  # too many.
   printf '(import w1-lcb)\n(defstruct W1LC\n  x:i32\n  y:i32)\n(defn w1-lca ():i32 (return 1))\n' > "$d/w1-lca.nuc"
-  printf '(import w1-lca)\n(defn w1-lcb ():i32 (let (v:W1LC (W1LC 1 2)) (return 0)))\n' > "$d/w1-lcb.nuc"
-  printf '(import w1-lca)\n(defn main ():i32 (return 0))\n' > "$d/w1-lcm.nuc"
-  w1_reject_multi w1d-cycle-structlit-diagnosed "$d" "$d/w1-lcm.nuc" \
-    "struct literal: 'W1LC' has no layout at this point"
+  printf '(import w1-lca)\n(defn w1-lcb ():i32 (let (v:W1LC (W1LC 3 4)) (return (+ (_get (addr-of v) x) (_get (addr-of v) y)))))\n' > "$d/w1-lcb.nuc"
+  printf '(import w1-lca)\n(defn main ():i32 (return (w1-lcb)))\n' > "$d/w1-lcm.nuc"
+  w1_run w1d-cycle-structlit-resolves "$d" "$d/w1-lcm.nuc" 7
 
-  # 3c. The silent one: a by-value struct parameter. abi-classify sized the
-  # unlaid-out struct at 0 and emitted `define … @f(i0 %v.arg)` against a call
-  # site that passed two i64s. The only symptom was an unlocated LLVM parse
-  # error thousands of lines away.
   printf '(import w1-bcb)\n(defstruct W1BC\n  x:i32\n  y:i32\n  z:i32\n  w:i32)\n(defn w1-bca ():i32 (return 1))\n' > "$d/w1-bca.nuc"
-  printf '(import w1-bca)\n(defn w1-bcb (v:W1BC):i32 (return 7))\n' > "$d/w1-bcb.nuc"
-  printf '(import w1-bca)\n(defn main ():i32 (return 0))\n' > "$d/w1-bcm.nuc"
-  w1_reject_multi w1d-cycle-byval-diagnosed "$d" "$d/w1-bcm.nuc" \
-    "defn parameter: 'W1BC' has no layout at this point"
+  printf '(import w1-bca)\n(defn w1-bcb (v:W1BC):i32 (return (+ (_get (addr-of v) x) (_get (addr-of v) w))))\n' > "$d/w1-bcb.nuc"
+  printf '(import w1-bca)\n(defn main ():i32 (let (v:W1BC (W1BC 1 2 3 4)) (return (w1-bcb v))))\n' > "$d/w1-bcm.nuc"
+  w1_run w1d-cycle-byval-resolves "$d" "$d/w1-bcm.nuc" 5
 
   # 4. A `prefix/name` over a cycle member. This one INVERTED in Stage 15 B2b
   # and the probe is re-pointed rather than re-baselined: W1d diagnosed it
@@ -5918,6 +6059,7 @@ spawn run_w9_lib_standalone
 spawn run_w9_multi_object
 spawn run_w9_source_outranks_header
 spawn run_w9_nuch_import_order
+spawn run_w9_layout_reachability
 spawn run_w9_shared_init_warning
 spawn run_w9_cheader_globals
 spawn run_w9_cheader_identifiers

@@ -1011,6 +1011,7 @@
                   (.set! sd emitted 1))))
             (let (ud:ptr:UnionDef (new UnionDef))
               (conj g-uniondefs ud)
+              (.set! ud ctors-emitted 0)
               (.set! ud name name)
               (.set! ud sdef sd)
               (.set! ud union-sd union-sd)
@@ -1551,6 +1552,22 @@
                 lline:i32 (node-line lnn line)
                 et:ptr (as ptr (parse-type-from-node etn (node-line etn line)))
                 len:i64 0)
+            ; Mode 3 = W9 item 40's layout prescan, which must diagnose nothing
+            ; and must never guess a length: report "not settled yet" and let
+            ; `defstruct-fill-layout` abandon the struct, so `emit-defstruct`
+            ; asks all three questions below with their own words and lines.
+            (when (= array-ok 3)
+              (when (or (!= (opaque-sdef-of et) null)
+                        (!= (cycle-pending-sdef et) null)
+                        (= (const-fold-int lnn (as ptr:i64 (addr-of len)) lline) 0))
+                (set! g-layout-defer 1)
+                (return (array-type et 0)))
+              ; A length that folds to something the emitter will refuse is
+              ; deferred too, so no rejected layout is ever registered.
+              (when (or (<= len 0) (> (* len (as i64 (abi-sizeof et))) 2147483647))
+                (set! g-layout-defer 1)
+                (return (array-type et 0)))
+              (return (array-type et (unsafe/cast i32 len))))
             ; An element with no layout would give the array a wrong size and
             ; the enclosing struct wrong offsets — the same two obligations a
             ; by-value defstruct field carries (W3a / W1d).

@@ -42,6 +42,9 @@
         (conj fields-vec rec)))
     (.set! sd fields fields-vec)
     (.set! sd num-fields nfields)
+    ; W9 item 40: and this is what "has a layout" means from here on — see
+    ; StructDef.laid-out. Same chokepoint argument as `opaque` below.
+    (.set! sd laid-out 1)
     ; W3a: giving a StructDef its layout is exactly what stops it being opaque.
     ; This is the single chokepoint every field-populating path funnels through
     ; (emit-defstruct, the .nuch import, the cheader struct-body parser, the
@@ -1091,6 +1094,7 @@
                              (ir-name-token (strip-ns-qualifier (as ptr name)))))))
     (.set! sd num-fields 0)
     (.set! sd emitted 0)
+    (.set! sd laid-out 0)
     ; W3a: a fresh registration is not opaque — `opaque` marks a type whose
     ; layout is known to be *unavailable* (a C forward declaration), which only
     ; the cheader parser sets. A name-only pre-registration by

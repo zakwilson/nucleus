@@ -386,7 +386,7 @@ Consequences worth knowing:
   registered graph-wide before emission, every function, global, constant and
   enum-member reference inside the cycle resolves.
 
-  **Three things a cycle does not carry**, because they only exist once a file
+  **Two things a cycle does not carry**, because they only exist once a file
   has been *emitted*, and a cycle member's body is emitted before the rest of
   the file it back-imports. Each is refused with a located diagnostic naming the
   cycle, never a wrong answer:
@@ -395,18 +395,21 @@ Consequences worth knowing:
   |---|---|
   | A `defmacro` the partner defines | `unknown: NAME — defined in a file this unit imports circularly` |
   | A `deferror` id or an `extern` declaration the partner defines | `undefined: NAME — defined in a file this unit imports circularly` |
-  | A struct/union **layout** the partner defines — a field access, a struct literal, a by-value parameter/return/argument, or a by-value field of another struct | `<use>: 'S' has no layout at this point` |
 
-  A fourth used to be listed here — a `prefix/name` spelling over a cycle
-  member — and is gone: a prefix now names the imported *file*, whose namespace
-  and signatures the whole-graph prescan has already recorded, so it resolves
-  across a cycle like any other reference.
+  Two more used to be listed here and are gone. A `prefix/name` spelling over a
+  cycle member: a prefix now names the imported *file*, whose namespace and
+  signatures the whole-graph prescan has already recorded, so it resolves across
+  a cycle like any other reference. And a struct/union **layout** the partner
+  defines: field tables are registered graph-wide before emission too, so a field
+  access, a struct literal and a by-value parameter/return/argument all work
+  across a cycle. The `'S' has no layout at this point` diagnostic remains for
+  the one case that still cannot be settled early — a struct with an `(array T
+  N)` field whose extent is a macro-expanded expression, since macros are
+  registered by the emitter (see the row above).
 
   What *does* work across a cycle: calling the partner's functions (the point of
-  the feature), reading its globals, constants and enum members, naming its types
-  **behind a pointer** (`ptr:S`, `(ref S)`), and `(sizeof S)` / `(alloca S)` —
-  those lower to a GEP over the LLVM named type, which is resolved from the
-  definition emitted later in the same module.
+  the feature), reading its globals, constants and enum members, using its
+  structs and unions by value or by pointer, and `(sizeof S)` / `(alloca S)`.
 
   If you hit one of these, the fix is the common-parent spelling above, or
   moving the shared macro/error/type into a third file both import.
@@ -453,14 +456,20 @@ Consequences worth knowing:
   a C header and a `.nuch` is affected: the first is a forward declaration *of*
   this unit's own function — the cross-file cycle-breaker above — and the second
   really is one function named twice. Both stay silent no-ops.
-* **Three kinds still need the import above the use, in either spelling.** A
-  `defmacro`, a `defunion` arm constructor, and a struct's *layout* — a literal,
-  a field access, a by-value parameter/return/field — exist only once the
-  defining file has been emitted, which is the same reason the cycle table above
-  lists them. The prescan registers a struct's **name**, not its fields, so a
-  literal above the import reports `too many initializers for struct 'S'` rather
-  than an unresolved name. This is a property of the prescan, not of the file's
-  extension: `.nuc` and `.nuch` behave identically here.
+* **A `defmacro` still needs the import above the use, in either spelling.** A
+  macro is not a registration but a *compiled function* — defining one runs
+  codegen and materializes a JIT module — so it exists only once the defining
+  file has been emitted, which is the same reason the cycle table above lists it.
+  A use above the import reports `unknown: NAME`. This is a property of what a
+  macro is, not of the file's extension: `.nuc` and `.nuch` behave identically.
+
+  Struct and union **layouts** used to be listed here beside it and are not any
+  more: a literal, a field access, a by-value parameter/return/field and
+  `make`/`match` over an imported union all resolve on reachability, in both
+  spellings. Two narrow cases still need the import above the use: a struct
+  whose `(array T N)` field extent is a **macro-expanded** expression (`(array
+  i32 (* K 2))` — plain constants and arithmetic-free extents are fine), and a
+  `defunion` reached through a **`.nuch`** header rather than its `.nuc` source.
 * **A name overloaded anywhere in its namespace gets the mangled symbol
   everywhere in that namespace.** Whether a `defn` keeps the plain `@name` LLVM
   symbol or gets an overload-mangled one is decided from the *whole* unit's
@@ -687,10 +696,12 @@ refused — see the list after next.
   and is the supported route).
 * **A scalar at an aggregate slot.** `(defvar p:P 5)` names what would work
   rather than being treated as a run-time initializer.
-* **A type whose layout the current import cycle has not produced yet.**
-  `(sizeof S)` answers from the compiler's layout table here rather than from
-  LLVM, so across an import cycle it is refused with the same message a by-value
-  use gets, instead of silently folding to zero.
+* **A type whose layout has not been produced yet.** `(sizeof S)` answers from
+  the compiler's layout table here rather than from LLVM, so it is refused with
+  the same message a by-value use gets, instead of silently folding to zero.
+  Layouts are now registered graph-wide before emission, so this is reachable
+  only for the residue listed under [Order](#order) — a macro-expanded `(array T
+  N)` extent, across an import cycle.
 * **An initializer that names a global whose own `defvar` has not been reached
   yet** — including the two-global cycle. The error names both sites; see
   [Order](#order), which also states exactly which forward references the

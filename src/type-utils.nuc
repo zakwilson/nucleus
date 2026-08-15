@@ -81,18 +81,19 @@
 ; with no source location at all, and a field access reports "no field 'x'" for
 ; a struct that does have that field.
 ;
-; `emitted == 0` (not merely `num-fields == 0`) is what distinguishes "never laid
-; out" from "laid out and empty", so a legitimate `(defstruct Empty)` is never
-; misdiagnosed. `opaque` belongs to the C-forward-declaration machinery above and
-; is left to it. The `g-import-cycles` gate makes the whole check dead code for
-; any unit without a skipped cycle — i.e. for every program that compiled before
-; W1d, since a cycle was a hard error.
+; `laid-out` is the question, and it is asked directly since Stage 15 W9 item 40
+; gave it its own bit: before that this read `emitted == 0 && num-fields == 0`,
+; an approximation of "has a layout" that was exact only while emission was the
+; one thing that produced one, and that misdiagnosed a legitimate
+; `(defstruct Empty)`. `opaque` belongs to the C-forward-declaration machinery
+; above and is left to it. The `g-import-cycles` gate makes the whole check dead
+; code for any unit without a skipped cycle — i.e. for every program that
+; compiled before W1d, since a cycle was a hard error.
 (defn sdef-layout-pending (sd:(raw StructDef)):i32
   (when (= g-import-cycles null) (return 0))
   (when (= sd null) (return 0))
   (when (!= (sd opaque) 0) (return 0))
-  (when (!= (sd emitted) 0) (return 0))
-  (when (!= (sd num-fields) 0) (return 0))
+  (when (!= (sd laid-out) 0) (return 0))
   (return 1))
 
 (defn cycle-pending-sdef (t:raw:Type):(raw StructDef)
