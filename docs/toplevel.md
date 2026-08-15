@@ -466,10 +466,12 @@ Consequences worth knowing:
   Struct and union **layouts** used to be listed here beside it and are not any
   more: a literal, a field access, a by-value parameter/return/field and
   `make`/`match` over an imported union all resolve on reachability, in both
-  spellings. Two narrow cases still need the import above the use: a struct
-  whose `(array T N)` field extent is a **macro-expanded** expression (`(array
-  i32 (* K 2))` — plain constants and arithmetic-free extents are fine), and a
-  `defunion` reached through a **`.nuch`** header rather than its `.nuc` source.
+  spellings — a `.nuch` header's `defunion` included, which was the last case
+  listed here and now behaves exactly like its `.nuc` source, namespaced or not.
+  One narrow case still needs the import above the use: a struct whose `(array
+  T N)` field extent is a **macro-expanded** expression (`(array i32 (* K 2))` —
+  plain constants and arithmetic-free extents are fine), which follows from the
+  macro rule above rather than from anything about layouts.
 * **A name overloaded anywhere in its namespace gets the mangled symbol
   everywhere in that namespace.** Whether a `defn` keeps the plain `@name` LLVM
   symbol or gets an overload-mangled one is decided from the *whole* unit's

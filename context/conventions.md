@@ -4167,11 +4167,30 @@ is worth copying whenever the next registration is hoisted:
 thing on item 40's list and it is *not* hoistable by this technique: defining a
 macro runs full codegen into a fresh JIT module and materializes it, so
 "registering" one IS emitting one — there is no half that writes no IR. The
-`.nuch` spelling of a `defunion` is left out for an unrelated reason:
-`emit-defunion-import` keys the registry on the BARE name while `emit-defstruct`
+`.nuch` spelling of a `defunion` was left out for an unrelated reason —
+`emit-defunion-import` keyed the registry on the BARE name while `emit-defstruct`
 (and every other definition-side probe, per B3′) keys on `qualify-name`, so a
 prescan using the canonical key would file a namespaced header's union where its
-own importer never looks. Fix the key first; the hoist is three lines after that.
+own importer never looks. **Fixed as W9 item 46 (2026-08-15), and the hoist was
+three lines after that, as predicted**: `prescan-union-layouts` now runs in
+`prescan-nuch-signatures` beside `prescan-struct-layouts`, and the importer's
+skip moved from "a UnionDef exists" to `ctors-emitted` — for the header path that
+flag means "the arm `declare`s are in the stream", and keying it wrongly drops
+them (link failure) or repeats them (invalid IR), so test a diamond import.
+
+**B3′'s rule needs re-checking at every *second* implementation of a definer, not
+just the first.** "A definition-side existence probe holds a KEY" was written
+down, obeyed by `emit-defunion`, and stated in a comment directly above the lines
+that split key from spelling — *and* the `.nuch` twin of that same definer, one
+`case` arm from an `emit-defstruct` that does it correctly, used the source
+spelling for both for its whole life. It survived because under `user` the key
+and the spelling are the same string, so all 69 generated headers and every test
+exercised the path in agreement; only a `(ns …)` header separates them. When a
+form has two emitters (`.nuc` and `.nuch`, or emitter and REPL), the invariant
+audit is per emitter. And note which half is safe to leave bare: what
+`union-ctor-form` builds is *source* re-parsed in the current file, so it takes
+the SOURCE spelling and the qualification happens downstream — passing it a key
+would be the mirror-image bug.
 
 ## A "safe conversion" question has two answers, and only one of them is a chokepoint
 

@@ -619,10 +619,25 @@
           (do (register-union-template (as ptr ff)) (return))
         NODE-SYM
           (do
-            (when (!= (uniondef-lookup (name-node s)) null) (return))
+            ; Stage 15 W9 item 46: the registry takes the canonical KEY and
+            ; `union-ctor-form` below takes the SOURCE spelling — the same split
+            ; `emit-defunion` documents, and the reason this arm was wrong is that
+            ; it used the source spelling for both. `emit-defstruct`, one `case`
+            ; arm away in this very walk, has always keyed on `qualify-name`, so a
+            ; header carrying `(ns nsu)` registered the backing struct as `nsu/Opt`
+            ; and the UnionDef as `Opt`, where no reference looks.
+            ; And, exactly as in `emit-defunion`, mere existence is no longer the
+            ; tell now that `prescan-union-layouts` creates a UnionDef for this
+            ; same form: the discriminator is `ctors-emitted`, which here means
+            ; the arm `declare`s below are already in the stream. Keying the
+            ; skip on existence would drop them and link against nothing.
+            (if-some (prev (uniondef-lookup (as CStr (qualify-name (name-node s)))))
+              (when (!= (prev ctors-emitted) 0) (return))
+              0)
             (guard-name-kind (name-node s) (ff line) NK-TYPE)
-            (let (arms:ptr (-> ff (_ cdr) (unsafe/cast ptr:Node _) (_ cdr)))
-              (defunion-register (name-node s) arms (ff line))
+            (let (arms:ptr (-> ff (_ cdr) (unsafe/cast ptr:Node _) (_ cdr))
+                  ud:ref:UnionDef (defunion-register (as CStr (qualify-name (name-node s)))
+                                    arms (ff line)))
               ; Constructor declares: (declare Name-arm:Name (fields...)).
               (let (saved-out:ptr g-out)
                 (set! g-out g-decl-stream)
@@ -642,6 +657,7 @@
                               (ff line))
                             (ff line))
                           (ff line))))))
+                (.set! ud ctors-emitted 1)
                 (set! g-out saved-out))))
         (die-at (name-node line) "defunion: name must be a symbol")))))
 
@@ -752,7 +768,11 @@
   ; Stage 15 W9 item 40: and a header's struct LAYOUTS, after its `defconst`s
   ; above (an `(array T N)` field length is a constant expression). A header's
   ; `defstruct` reaches the very same `emit-defstruct`, so this is the identical
-  ; register-now/emit-later split a `.nuc` library gets. Its `defunion` does not —
-  ; `emit-defunion-import` keys on the bare spelling — so unions are left to the
-  ; import (see `prescan-union-layouts`).
-  (prescan-struct-layouts forms))
+  ; register-now/emit-later split a `.nuc` library gets. W9 item 46: and its
+  ; `defunion`s too, which item 40 had to leave out because
+  ; `emit-defunion-import` keyed the registry on the bare spelling and this
+  ; prescan on `qualify-name`, so the two filed the same union in two places.
+  ; Now that both use the key, the header path is the `.nuc` path: register
+  ; here, and let the import emit the arm `declare`s (`ctors-emitted`).
+  (prescan-struct-layouts forms)
+  (prescan-union-layouts forms))

@@ -2697,6 +2697,128 @@ EOF
   rm -rf "$d"
 }
 
+# Stage 15 W9 item 46: a `.nuch` header's `defunion` inside a namespace. The
+# registry takes the canonical KEY and `union-ctor-form` takes the SOURCE
+# spelling — the split `emit-defunion` documents and `emit-defunion-import` did
+# not honour, so a header carrying `(ns …)` filed its backing struct under the
+# key and its UnionDef under the bare name, where no reference looks. The same
+# library's `.nuc` source has always worked, so every case here is run BOTH ways
+# and the two are required to agree.
+run_w9_nuch_ns_union() {
+  local d ok v
+  d="$(mktemp -d)"; mkdir -p "$d/l" "$d/h"
+  cat > "$d/l/w9nu.nuc" <<'EOF'
+(ns w9nu)
+(defunion Opt (Some x:i32) None)
+(defn opt-or (o:Opt d:i32):i32
+  (return (match o ((Some x) x) (None d))))
+EOF
+  ./build/nucleusc --emit-nuch "$d/l/w9nu.nuc" > "$d/h/w9nu.nuch" 2>/dev/null || true
+  if [ ! -s "$d/h/w9nu.nuch" ]; then
+    echo "FAIL  w9-nuch-ns-union (could not generate the header)"; rm -rf "$d"; return 0
+  fi
+  ./build/nucleusc -c "$d/l/w9nu.nuc" -o "$d/w9nu.o" >/dev/null 2>&1
+
+  # `make`, `match` and a by-value union parameter, with the import above the
+  # uses and below them. Below-use is item 40's `.nuch` residue, which could not
+  # be closed until this key agreed.
+  cat > "$d/body.txt" <<'EOF'
+(defn go ():i32
+  (let (a (make w9nu/Opt Some 41)
+        b (make w9nu/Opt None))
+    (return (+ (w9nu/opt-or a 0) (w9nu/opt-or b 1)))))
+(defn main ():i32 (printf "%d\n" (go)) (return 0))
+EOF
+  { echo '(import-use w9nu)'; cat "$d/body.txt"; } > "$d/above.nuc"
+  { cat "$d/body.txt"; echo '(import-use w9nu)'; } > "$d/below.nuc"
+
+  ok=1
+  for v in above below; do
+    ./build/nucleusc -c -I "$d/h" "$d/$v.nuc" -o "$d/$v.o" 2>"$d/$v.err" || ok=0
+    clang "$d/$v.o" "$d/w9nu.o" -o "$d/$v.bin" >/dev/null 2>&1 || ok=0
+    [ "$ok" = 1 ] && [ "$("$d/$v.bin")" = "42" ] || ok=0
+  done
+  if [ "$ok" = 1 ]; then
+    echo "PASS  w9-nuch-ns-union-links-and-runs"
+  else
+    echo "FAIL  w9-nuch-ns-union-links-and-runs"
+    for v in above below; do sed "s/^/    $v: /" "$d/$v.err" 2>/dev/null | head -2; done
+  fi
+
+  # The same source compiled against the library's `.nuc` rather than its header
+  # must produce the same answer — the header is the only thing under test.
+  if ./build/nucleusc -I "$d/l" "$d/above.nuc" -o "$d/src.bin" >/dev/null 2>&1 \
+     && [ "$("$d/src.bin")" = "42" ]; then
+    echo "PASS  w9-nuch-ns-union-agrees-with-source"
+  else
+    echo "FAIL  w9-nuch-ns-union-agrees-with-source"
+  fi
+
+  # The arm constructors are the mangling half: `union-ctor-form` is handed the
+  # bare spelling on purpose, and the `declare` it produces must still come out
+  # under the namespaced symbol the library's object actually exports. Exactly
+  # one declare each — the prescan registers without emitting so this stays 1.
+  local ir n
+  ir="$(./build/nucleusc --emit-llvm -I "$d/h" "$d/below.nuc" 2>/dev/null || true)"
+  n="$(printf '%s\n' "$ir" | grep -cE '^declare .*@w9nu__Opt-(Some|None)\(')"
+  if [ "$n" = 2 ] && printf '%s\n' "$ir" | qgrep -F '@w9nu__Opt-Some'; then
+    echo "PASS  w9-nuch-ns-union-ctor-symbols"
+  else
+    echo "FAIL  w9-nuch-ns-union-ctor-symbols (declare count $n)"
+    printf '%s\n' "$ir" | grep -E '^declare .*Opt' | sed 's/^/    /' | head -4
+  fi
+
+  # A diamond: two headers each importing w9nu, both imported here. The union is
+  # registered once and its arm declares emitted once — the guard that used to
+  # key on "a UnionDef exists" now keys on `ctors-emitted`, and getting that
+  # wrong drops the declares (link failure) or repeats them (invalid IR).
+  for m in a b; do
+    printf '(ns w9nu%s)\n(import-use w9nu)\n(defn tag-%s ():i32 (return (w9nu/opt-or (make w9nu/Opt Some 1) 0)))\n' "$m" "$m" > "$d/l/w9nu$m.nuc"
+    ./build/nucleusc --emit-nuch -I "$d/h" "$d/l/w9nu$m.nuc" > "$d/h/w9nu$m.nuch" 2>/dev/null || true
+    ./build/nucleusc -c -I "$d/h" "$d/l/w9nu$m.nuc" -o "$d/w9nu$m.o" >/dev/null 2>&1
+  done
+  cat > "$d/diamond.nuc" <<'EOF'
+(import-use w9nua)
+(import-use w9nub)
+(defn main ():i32
+  (printf "%d\n" (+ (w9nua/tag-a) (w9nub/tag-b)))
+  (return 0))
+EOF
+  if ./build/nucleusc -c -I "$d/h" "$d/diamond.nuc" -o "$d/diamond.o" 2>"$d/dia.err" \
+     && clang "$d/diamond.o" "$d/w9nua.o" "$d/w9nub.o" "$d/w9nu.o" -o "$d/diamond.bin" >/dev/null 2>&1 \
+     && [ "$("$d/diamond.bin")" = "2" ]; then
+    echo "PASS  w9-nuch-ns-union-diamond"
+  else
+    echo "FAIL  w9-nuch-ns-union-diamond"
+    sed 's/^/    /' "$d/dia.err" 2>/dev/null | head -3
+  fi
+
+  # A header with no `(ns …)` keys bare on both sides, which is why this was
+  # invisible for so long. Pin it so the fix stays a re-keying, not a rename.
+  cat > "$d/l/w9nub0.nuc" <<'EOF'
+(defunion W9NuBare (W9NuOne x:i32) W9NuZero)
+(defn w9nu-bare-or (o:W9NuBare d:i32):i32
+  (return (match o ((W9NuOne x) x) (W9NuZero d))))
+EOF
+  ./build/nucleusc --emit-nuch "$d/l/w9nub0.nuc" > "$d/h/w9nub0.nuch" 2>/dev/null || true
+  ./build/nucleusc -c "$d/l/w9nub0.nuc" -o "$d/w9nub0.o" >/dev/null 2>&1
+  cat > "$d/bare.nuc" <<'EOF'
+(import-use w9nub0)
+(defn main ():i32
+  (printf "%d\n" (w9nu-bare-or (make W9NuBare W9NuOne 9) 0))
+  (return 0))
+EOF
+  if ./build/nucleusc -c -I "$d/h" "$d/bare.nuc" -o "$d/bare.o" >/dev/null 2>&1 \
+     && clang "$d/bare.o" "$d/w9nub0.o" -o "$d/bare.bin" >/dev/null 2>&1 \
+     && [ "$("$d/bare.bin")" = "9" ]; then
+    echo "PASS  w9-nuch-union-bare-unchanged"
+  else
+    echo "FAIL  w9-nuch-union-bare-unchanged"
+  fi
+
+  rm -rf "$d"
+}
+
 # Stage 15 W9 items 42 and 47: where a `defcast` rule is reached, and where the
 # conversions stop. 47 is the defect — the registry was consulted from
 # `safe-coerce-val`, which only the call-argument and `as` paths call, so a rule
@@ -6180,6 +6302,7 @@ spawn run_w9_source_outranks_header
 spawn run_w9_nuch_import_order
 spawn run_w9_layout_reachability
 spawn run_w9_defcast_reach
+spawn run_w9_nuch_ns_union
 spawn run_w9_shared_init_warning
 spawn run_w9_cheader_globals
 spawn run_w9_cheader_identifiers
