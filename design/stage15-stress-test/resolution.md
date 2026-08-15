@@ -440,6 +440,19 @@ situation.
 > program (see conventions.md, "Front-loading a prescan reorders the type
 > section"), so it cannot be additive the way W1a's signature prescan was.
 >
+> > **Built 2026-08-15 as W9 item 40, and the sentence above is wrong in exactly
+> > one word: *emission*.** The layout prescan front-loads `defstruct`
+> > **registration** and not its emission — `emit-defstruct` splits at the line
+> > where it starts writing IR, so every `%Name = type {…}` line is still printed
+> > by the definer at the point it always was. Measured over 396 programs: 0 new
+> > errors, 0 changed error texts, and 17 files whose only diff is a *stamped
+> > instance's* type line moving within the type section, with the line multiset
+> > identical — the inert class, not a new one. Items 2 and 4 are closed, and so
+> > is item 3's remaining half, so what a cycle cannot carry is down to a
+> > `defmacro` and a `deferror` id: the two things that only an EMITTER produces.
+> > Item 1 keeps its scoping note above and is now **ruled** rather than open —
+> > registering a macro *is* emitting one, so it is not this technique's shape.
+>
 > **Tests.** `run_w1_circular_still_errors` is replaced — not deleted — by
 > `run_w1d_cycle_accepts` (5 units: both orders, `import-use`, three-file,
 > self-import; each compiles, links, runs and asserts an exit status),

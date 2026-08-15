@@ -289,6 +289,14 @@
   (fields (raw (Vector (ref Field))))
   num-fields:i32    ; == (count fields); cached length for i32 loops (hot: struct-field-index/ABI)
   emitted:i32       ; type definition already written to IR (vs. name-only pre-registration)
+  ; Stage 15 W9 item 40: the field table has been populated. `emitted` used to
+  ; answer this too, because the two happened in one statement; the layout
+  ; prescan separates them (it lays a struct out and writes no IR), so "has a
+  ; layout" needs its own bit. Set by `struct-set-fields`, the single chokepoint
+  ; every field-populating path funnels through, so no builder can miss it.
+  ; Unlike `num-fields != 0` it distinguishes a legitimate `(defstruct Empty)`
+  ; from a name-only pre-registration.
+  laid-out:i32
   src-file:CStr     ; source file where defined (cheader/anon struct provenance)
   src-line:i32
   ; --- Stage 15 W3a: opaque (forward-declared) C types ---
@@ -356,7 +364,13 @@
   src-line:i32
   priv:i32          ; Stage 15 B5 — see StructDef.priv
   src-ns:CStr
-  src-file:CStr)    ; Stage 15 B4 — see StructDef.src-file (redefinition blame)
+  src-file:CStr     ; Stage 15 B4 — see StructDef.src-file (redefinition blame)
+  ; Stage 15 W9 item 40: the arm CONSTRUCTORS have been emitted. A UnionDef used
+  ; to be created only by `emit-defunion`, so its mere existence meant both "this
+  ; type is registered" and "its constructors are compiled"; the layout prescan
+  ; separates them, and `emit-defunion` reads this to tell its own prescan entry
+  ; (register, keep going) from a REPL re-emission of the same form (no-op).
+  ctors-emitted:i32)
 
 ; A parameterized defunion template: `(defunion (Result T E) ...)`. Defines no
 ; type itself; a fully-applied use `(Result A B)` stamps a concrete instance.

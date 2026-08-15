@@ -2300,12 +2300,16 @@ defines after its own `import` form has not run yet. Therefore:
   type, and LLVM resolves `%S` from the `%S = type {…}` line emitted later in the
   same module. A named struct type may be forward-referenced in textual IR. Do
   not "fix" these; a rejection there is a false diagnostic.
-- **Anything reading the compiler's OWN field table or `abi-sizeof` does not.**
-  That is field get/set/address, struct literals, a by-value field of another
-  struct, and by-value parameters/returns/arguments. The last was a *silent
-  miscompile*: `abi-classify` sized the unlaid-out struct at 0 and emitted
-  `define i32 @f(i0 %v.arg)` against a call site passing two `i64`s, whose only
-  symptom was an unlocated `failed to parse generated IR`.
+- **Anything reading the compiler's OWN field table or `abi-sizeof` DOES, since
+  Stage 15 W9 item 40** — `prescan-struct-layouts` / `prescan-union-layouts`
+  register every reachable file's field table before any form is emitted, so
+  field get/set/address, struct literals, by-value fields and by-value
+  parameters/returns/arguments all work across a cycle. The last of those had
+  been a *silent miscompile*: `abi-classify` sized the unlaid-out struct at 0 and
+  emitted `define i32 @f(i0 %v.arg)` against a call site passing two `i64`s,
+  whose only symptom was an unlocated `failed to parse generated IR`. What is
+  left for `reject-cycle-pending-layout` is the one layout a prescan cannot
+  settle: an `(array T N)` field whose extent is a macro-expanded expression.
 - **Macros, `deferror` ids and `extern` declarations do not** (registered by
   their emitters), and **`prefix/name` aliases do not** (no slice for a skipped
   re-entry). Note the bare `(import foo)` spelling *is* the prefixed one, so a
@@ -2329,9 +2333,13 @@ Two implementation notes worth reusing:
   the definition side *and* the call side. Sites with a real node still check
   first (`emit-defn` params/return) so the message gets an exact line rather
   than the ambient `g-form-line`.
-- **`emitted == 0`, not `num-fields == 0`, is "has no layout".** A legitimate
-  `(defstruct Empty)` has zero fields *after* emission; only `emitted`
-  distinguishes it from a name-only pre-registration. `sdef-layout-pending` /
+- **`StructDef.laid-out`, not `emitted` and not `num-fields`, is "has a
+  layout".** `emitted` answered it only while emission was the one thing that
+  produced a layout; W9 item 40's prescan lays a struct out and writes no IR, so
+  the two questions separated and the bit is set by `struct-set-fields`, the
+  single chokepoint every field-populating path funnels through. (`num-fields`
+  was never the right test either — a legitimate `(defstruct Empty)` has zero
+  fields after a real layout.) `sdef-layout-pending` /
   `reject-cycle-pending-layout` / `reject-cycle-pending-sdef` live in
   `src/type-utils.nuc` beside `reject-opaque-type` and mirror its site list —
   `type-utils` precedes `abi` in the import order, so `abi.nuc` can call them
@@ -2342,11 +2350,11 @@ Everything W1d added is gated on `g-import-cycles != null`, which is why
 `--emit-llvm` sweep over `examples/` + `lib/` was 168/168 identical: a cycle was
 a hard error before, so no *compiling* program can reach any of it.
 
-**Latent, still unfixed:** the same `i0` miscompile is reachable *without* a
+**Fixed by W9 item 40:** the same `i0` miscompile was reachable *without* a
 cycle — `(defn f (v:S) …)` textually before `(defstruct S …)` in one file — since
-`prescan-struct-names` registers the name and emission fills the layout later.
-W1d deliberately did not ungate the check for it (the bootstrap risk is real and
-the shape is not what W1d was scoped for).
+`prescan-struct-names` registered the name and emission filled the layout later.
+It is the same defect as the cycle one and it fell to the same fix, which is why
+the layout prescan was not scoped to cycles: neither shape is about imports.
 
 ## Signature registration is NOT idempotent — a second prescan of one file is a duplicate-overload error
 
@@ -4113,3 +4121,54 @@ above `struct _BANGui8 byte_at(...)`.
 When adding a sugar spelling, grep for the predicates that key on the shape it
 desugars *from*, not just the ones that build it. The same shape is why W9 items
 3 (`usize`) and 25 (`Char`/`Err`) existed: two renderers, one type, two answers.
+
+## Hoisting a registration means splitting its definer, and the split line is "does it write IR?"
+
+Stage 15 W9 item 40 moved struct and union LAYOUTS into the prescans, the way W1a
+moved signatures and W8 G-0 moved value names. The shape that made it tractable
+is worth copying whenever the next registration is hoisted:
+
+- **Split the definer at the IR boundary, not at the diagnostic boundary.**
+  `emit-defstruct` became `defstruct-fill-layout` (parse the fields, call
+  `struct-set-fields`) plus four lines that print `%Name = type {…}` and set
+  `emitted`. The prescan calls the first half and the emitter calls both, so
+  **every type line stays exactly where it always was** — which is what keeps a
+  program's IR unmoved and made the corpus sweep a set-equality check rather than
+  an argument. Everything the emitter still owns (`guard-name-kind`,
+  `check-ir-name-legal`, the redefinition probe, privacy) stayed with it.
+- **The shared half needs a `strict` flag, and the permissive branch ABANDONS
+  rather than degrades.** A layout must be exact or absent: a provisional one
+  gives the enclosing struct a wrong size, which is a miscompile, not a warning.
+  So the prescan returns null (leaving `laid-out` 0) on anything it cannot settle
+  — a missing `:type`, an opaque C field, an unfoldable array extent — and the
+  emitter then asks the same question with its own words and its own line. That
+  also means **no diagnostic moved**: the prescan raises none of them.
+- **A `ref`-returning parser cannot report "not settled" — use a one-way flag.**
+  `parse-type-from-node` returns a non-null `ref:Type` three frames down, so
+  `g-array-ok` gained mode 3 ("fold if you can, else arm `g-layout-defer`") and
+  `defstruct-fill-layout` reads-and-clears it. Mode 3 also defers on a length
+  that folds to something the emitter would *refuse*, so no rejected layout is
+  ever registered.
+- **The definer's own no-op guard must be re-keyed on the half only IT does.**
+  `emit-defunion` returned early whenever a `UnionDef` for the name existed —
+  correct while it was the only producer, and "constructors are never emitted"
+  the moment a prescan produces one. The new key is `UnionDef.ctors-emitted`,
+  exactly as `defstruct` keys on `StructDef.emitted`. Grep for every
+  already-registered? early return before hoisting a registration past it; this
+  is the same trap `name-existing-kind` fell into for W8 G-0.
+- **Layouts want a POST-order walk, and the three passes above them stay
+  pre-order.** A field's `(array T N)` extent is a constant expression, so a
+  file's layouts need its own and its imports' `defconst`s already registered.
+  `prescan-imported-signatures` therefore runs layouts *after* it recurses, and
+  `emit-toplevel-forms` runs the root's after the whole-graph walk. Nothing else
+  a prescan registers depends on a layout, so nothing pre-order needs is lost.
+
+**Where it stops, and why the line is where it is.** A `defmacro` was the third
+thing on item 40's list and it is *not* hoistable by this technique: defining a
+macro runs full codegen into a fresh JIT module and materializes it, so
+"registering" one IS emitting one — there is no half that writes no IR. The
+`.nuch` spelling of a `defunion` is left out for an unrelated reason:
+`emit-defunion-import` keys the registry on the BARE name while `emit-defstruct`
+(and every other definition-side probe, per B3′) keys on `qualify-name`, so a
+prescan using the canonical key would file a namespaced header's union where its
+own importer never looks. Fix the key first; the hoist is three lines after that.

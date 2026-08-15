@@ -1517,6 +1517,10 @@ the compiler's own field table via `abi-sizeof`. That is exactly the split
 **`reject-cycle-pending-layout`** as well as `reject-opaque-type` — without it a
 `(sizeof S)` across an import cycle would have silently folded to **0**. Verified:
 it now reports `sizeof: 'CA' has no layout at this point` with W1d's cycle note.
+*(Stage 15 W9 item 40 registers struct layouts graph-wide before emission, so the
+probe used here — a plain `defstruct` across a cycle — now folds correctly. The
+check stays and still guards the residue: a struct whose `(array T N)` extent only
+a macro can fold, which no prescan can settle.)*
 
 **Cross-compilation.** `abi-sizeof`/`type-size` key off `g-target-ptr-bytes`, the
 **output** target, so the fold is target-correct by construction — measured:

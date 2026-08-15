@@ -748,4 +748,11 @@
                 (prescan-defconst-name (as ptr f))
               "defenum"
                 (prescan-defenum-names (as ptr f))
-              0)))))))
+              0))))))
+  ; Stage 15 W9 item 40: and a header's struct LAYOUTS, after its `defconst`s
+  ; above (an `(array T N)` field length is a constant expression). A header's
+  ; `defstruct` reaches the very same `emit-defstruct`, so this is the identical
+  ; register-now/emit-later split a `.nuc` library gets. Its `defunion` does not —
+  ; `emit-defunion-import` keys on the bare spelling — so unions are left to the
+  ; import (see `prescan-union-layouts`).
+  (prescan-struct-layouts forms))

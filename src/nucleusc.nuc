@@ -387,11 +387,17 @@
 ; `(Vector (array i32 4))` and every other nesting, with no per-constructor
 ; check. Armed with strict save/set/restore (`g-array-ok` is 0 everywhere else).
 ;
-; Three states, because the type is resolved TWICE for a `defvar` — once by
-; G-0's `prescan-value-names` and once by `emit-defvar`:
+; Four states, because the type is resolved TWICE for a `defvar` — once by
+; G-0's `prescan-value-names` and once by `emit-defvar` — and twice again for a
+; `defstruct` field since W9 item 40's layout prescan:
 ;   0  refused
 ;   1  permitted; the length is folded (emission)
 ;   2  permitted, PROVISIONAL; the length is left 0 (prescan)
+;   3  permitted; folded when it can be, and `g-layout-defer` armed when it
+;      cannot (W9 item 40's layout prescan). A struct's layout must be exact or
+;      absent — a provisional length would give the enclosing struct a wrong size
+;      — so mode 3 reports "ask again at emission" instead of guessing, and
+;      `defstruct-fill-layout` abandons the whole struct on it.
 ; Mode 2 exists because the length is a constant expression and `const-fold-int`
 ; goes through `macroexpand-form`, while macros are registered only when their
 ; file is EMITTED (the same structural property W1d and G-0 record). So
@@ -403,6 +409,13 @@
 ; asserts that a provisional length never reaches IR, so the invariant is
 ; checked rather than merely asserted in this comment.
 (defvar g-array-ok:i32 0)
+; Stage 15 W9 item 40: "this layout cannot be settled yet — leave it to the
+; emitter". Armed by `g-array-ok` mode 3 (above) when an array field's length
+; will not fold this early, and read (then cleared) by `defstruct-fill-layout`.
+; A one-way flag rather than a return value because the answer comes from three
+; frames down, inside `parse-type-from-node`, whose return type is a non-null
+; `ref:Type`.
+(defvar g-layout-defer:i32 0)
 ; Stage 15 W8 G-3: "this initializer may turn out not to be constant". Armed
 ; (save/set/restore) only around `defvar-const-init-ir`'s single classifying
 ; call into `defvar-init-ir`, where it turns that function's terminal
@@ -1217,6 +1230,15 @@
 ; alone.
 (defn extract-decl-name-and-type-provisional (node:(raw Node) out-name:ptr:ptr line:i32):(raw Type)
   (set! g-array-ok 2)
+  (let (t:(raw Type) (extract-name-and-type node out-name line))
+    (set! g-array-ok 0)
+    (return t)))
+
+; The LAYOUT prescan's variant (W9 item 40): an array length is folded when it
+; can be and `g-layout-defer` is armed when it cannot (g-array-ok mode 3). Used
+; by `defstruct-fill-layout` alone.
+(defn extract-decl-name-and-type-layout (node:(raw Node) out-name:ptr:ptr line:i32):(raw Type)
+  (set! g-array-ok 3)
   (let (t:(raw Type) (extract-name-and-type node out-name line))
     (set! g-array-ok 0)
     (return t)))
@@ -12371,6 +12393,64 @@
   (when (!= g-type-key-ok 0) (return (enumdef-lookup (intern-str spelling))))
   (return null))
 
+; Stage 15 W9 item 40: parse a `defstruct` form's field declarations and give the
+; StructDef its layout, WITHOUT writing its `%Name = type {…}` line. Returns the
+; field-type array (the caller's material for that line) or null when nothing was
+; registered. Splitting the two is what lets a struct's layout be registered by a
+; prescan while its type line stays exactly where `emit-defstruct` writes it.
+;
+; `strict` 1 is emission: a field with no `:type`, an opaque C type by value and a
+; layout a cycle has not produced yet are each diagnosed here. `strict` 0 is the
+; layout prescan, which diagnoses nothing (conventions.md: a prescan defers to the
+; emitter) — it abandons the struct on any of the three, leaving `emit-defstruct`
+; to ask the same questions with the same words, and in the opaque case to succeed
+; once the C import has upgraded the entry in place.
+(defn defstruct-fill-layout (sd:(raw StructDef) form:(raw Node) strict:i32):ptr
+  (let (cc:ptr:Node (unsafe/cast ptr:Node form)
+        nfields:i32 (- (node-len (as ptr form)) 2))
+    (set! g-layout-defer 0)
+    (let (fnm:ptr (arena-alloc (* (as i64 nfields) (ptr-bytes)))
+          ftp:ptr (arena-alloc (* (as i64 nfields) (ptr-bytes))))
+      (dotimes (i nfields)
+        ; W5f: `field` may be NULL — an empty list `()` in the field list
+        ; reads as a null node — so its line must come from the null-safe
+        ; `node-line` (which also upgrades an interned symbol field's line-0
+        ; to the defstruct's own line), never a raw `(field line)` deref.
+        (let (field:ptr (node-at cc (+ i 2))
+                        fname:ptr null
+                        ; G-2: a defstruct field's type may be `(array T N)`
+                        ; — the second (and, per the port's Major finding,
+                        ; the load-bearing) storage position.
+                        fty:ptr (if (= strict 0)
+                                  (extract-decl-name-and-type-layout field (as ptr:ptr (addr-of fname))
+                                                       (node-line field (cc line)))
+                                  (extract-decl-name-and-type field (as ptr:ptr (addr-of fname))
+                                                       (node-line field (cc line)))))
+          (when (= fty null)
+            (when (= strict 0) (return null))
+            (die-at (node-line field (cc line)) (fmt-s "defstruct: field '%s' missing :type" fname)))
+          (if (= strict 0)
+            (do
+              ; The prescan's half of the two rules below, plus the array-length
+              ; verdict mode 3 leaves on `g-layout-defer`: the same questions,
+              ; answered by abandoning rather than by dying.
+              (when (!= g-layout-defer 0) (set! g-layout-defer 0) (return null))
+              (when (!= (opaque-sdef-of fty) null) (return null))
+              (when (!= (cycle-pending-sdef fty) null) (return null)))
+            (do
+              ; W3a: a by-value field of an opaque C type has no size, so the
+              ; enclosing struct has no layout either. `ptr:Foo` is the fix.
+              (reject-opaque-type fty
+                (node-line (as ptr field) (cc line)) "defstruct field")
+              ; W1d: a by-value field whose type the cycle has not laid out yet
+              ; would give THIS struct a wrong size and wrong offsets.
+              (reject-cycle-pending-layout fty
+                (node-line (as ptr field) (cc line)) "defstruct field")))
+          (aset! (as ptr:ptr fnm) i (intern-str fname))
+          (aset! (as ptr:ptr ftp) i fty)))
+      (struct-set-fields sd fnm ftp nfields)
+      (return ftp))))
+
 (defn emit-defstruct (call:(raw Node)):void
   (let (cc:ptr:Node (unsafe/cast ptr:Node call))
     (require-defstruct-form call)
@@ -12442,33 +12522,7 @@
         (.set! sd src-file g-source-path)
         (.set! sd src-line (cc line))
         (check-ir-name-legal (name-node line) (name-node s) (sd ir-name))
-        (let (fnm:ptr (arena-alloc (* (as i64 nfields) (ptr-bytes)))
-              ftp:ptr (arena-alloc (* (as i64 nfields) (ptr-bytes))))
-          (dotimes (i nfields)
-            ; W5f: `field` may be NULL — an empty list `()` in the field list
-            ; reads as a null node — so its line must come from the null-safe
-            ; `node-line` (which also upgrades an interned symbol field's line-0
-            ; to the defstruct's own line), never a raw `(field line)` deref.
-            (let (field:ptr (node-at cc (+ i 2))
-                            fname:ptr null
-                            ; G-2: a defstruct field's type may be `(array T N)`
-                            ; — the second (and, per the port's Major finding,
-                            ; the load-bearing) storage position.
-                            fty:ptr (extract-decl-name-and-type field (as ptr:ptr (addr-of fname))
-                                                           (node-line field (cc line))))
-              (when (= fty null)
-                    (die-at (node-line field (cc line)) (fmt-s "defstruct: field '%s' missing :type" fname)))
-              ; W3a: a by-value field of an opaque C type has no size, so the
-              ; enclosing struct has no layout either. `ptr:Foo` is the fix.
-              (reject-opaque-type fty
-                (node-line (as ptr field) (cc line)) "defstruct field")
-              ; W1d: a by-value field whose type the cycle has not laid out yet
-              ; would give THIS struct a wrong size and wrong offsets.
-              (reject-cycle-pending-layout fty
-                (node-line (as ptr field) (cc line)) "defstruct field")
-              (aset! (as ptr:ptr fnm) i (intern-str fname))
-              (aset! (as ptr:ptr ftp) i fty)))
-          (struct-set-fields sd fnm ftp nfields)
+        (let (ftp:ptr (defstruct-fill-layout (as raw:StructDef sd) (as raw:Node cc) 1))
           (fprintf g-out "%%%s = type { " (sd ir-name))
           (dotimes (i nfields)
             (when (!= i 0) (fprintf g-out ", "))
@@ -12556,16 +12610,18 @@
       (when (!= (name-node kind) NODE-SYM)
         (die-at (name-node line) "defunion: name must be a symbol"))
       ; Stage 15 B4 (R4): a second definition of the name, which used to be a
-      ; silent no-op that kept the first. A `UnionDef` is created only by this
-      ; definer — there is no name-only prescan entry to confuse it with, so mere
-      ; existence is the tell (unlike `defstruct`, which needs `emitted`).
+      ; silent no-op that kept the first. Stage 15 W9 item 40: mere existence is
+      ; no longer the tell — the layout prescan creates a UnionDef for this very
+      ; form — so the discriminator is `ctors-emitted`, the half of `defunion`
+      ; only this function performs. Same shape as `defstruct`'s `emitted`.
       ; Stage 15 B3′: a definition-side existence probe holds a KEY.
       (if-some (prev (uniondef-lookup (as CStr (qualify-name (name-node s)))))
         (do
           (when (= (same-definition-site (prev src-file) (prev src-line) (cc line)) 0)
             (die-redefinition (name-node s) (cc line) BK-UNION
                               (prev src-file) (prev src-line)))
-          (return))
+          ; Same form re-emitted, or an interactive session: the pre-B4 no-op.
+          (when (!= (prev ctors-emitted) 0) (return)))
         0)
       (guard-name-kind (name-node s) (cc line) NK-TYPE)
       ; `defunion-register` is handed the canonical KEY (it registers the backing
@@ -12590,6 +12646,7 @@
           (while (!= cur null)
             (emit-defn (union-ctor-form (name-node s) ((unsafe/cast ptr:Node cur) car) (cc line)))
             (set! cur ((unsafe/cast ptr:Node cur) cdr))))
+        (.set! ud ctors-emitted 1)
         (set! g-out saved-out)))))
 
 (defn emit-extern (call:(raw Node)):void
@@ -14346,6 +14403,120 @@
                     (register-union-template (as ptr f)))))))))
       (set! fc ((unsafe/cast ptr:Node fc) cdr)))))
 
+; Stage 15 W9 item 40: give every `defstruct` in this form list its LAYOUT.
+; `prescan-struct-names` (above) registers the NAME; this registers the fields, so
+; a struct literal, a field access and a by-value parameter/return/field resolve
+; on reachability like a function signature (W1a) and a value name (W8 G-0) — the
+; last of which was a silent miscompile, not a diagnostic: `abi-classify` sized an
+; unlaid-out struct at 0 and emitted `define i32 @f(i0 %v.arg)`.
+;
+; Registration only. Every `%Name = type {…}` line stays exactly where
+; `emit-defstruct` writes it, which is what keeps a program's IR unmoved; only the
+; moment the layout becomes known changes. Runs after pass 1 has registered every
+; reachable file's type names, so a field may name any type in the unit no matter
+; which file defines it — that is why layouts want their own sweep rather than a
+; slot inside pass 1's walk.
+;
+; The two skips are the prescan contract, not shortcuts: a template head and a
+; non-symbol name register nothing here for the same reason they register no name
+; above, and a struct whose entry is already laid out (its own second prescan, a
+; `.nuch` replay, a REPL redefinition) is left alone so the definer's own
+; registration wins.
+(defn prescan-struct-layouts (forms:(raw Node)):void
+  (let (fc:ptr forms)
+    (while (!= fc null)
+      (let (f:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node fc) car)))
+        (when (and (!= (as ptr f) null) (= (f kind) NODE-CELL)
+                   (>= (node-len (as ptr f)) 2)
+                   (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ kind) (= _ NODE-SYM)))
+          (let (h:ptr (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ s)))
+            (when (or (= h "defstruct") (= h "defstruct-"))
+              ; W9 item 45: `node-kind` — a name spelled `()` is a NULL node.
+              (let (nn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr f) 1)))
+                (when (= (node-kind (as ptr nn)) NODE-SYM)
+                  (if-some (sd (lookup-struct (as CStr (qualify-name (nn s)))))
+                    (when (and (= (sd laid-out) 0) (= (sd opaque) 0))
+                      (defstruct-fill-layout (as raw:StructDef sd) (as raw:Node f) 0))
+                    0)))))))
+      (set! fc ((unsafe/cast ptr:Node fc) cdr)))))
+
+; Stage 15 W9 item 40: may the layout prescan hand this `defunion` form to
+; `defunion-register`, or must it leave the whole thing to `emit-defunion`?
+; 1 = defer. `defunion-register` diagnoses a malformed arm, and unlike
+; `emit-defstruct` it has no `reject-opaque-type` — a by-value arm field of a C
+; header's forward-declared type would be silently sized here and never revisited,
+; because the emitter's `defunion-register` finds the UnionDef and returns. Both
+; are answered by shape, before anything is registered.
+(defn defunion-layout-deferred (form:(raw Node) line:i32):i32
+  ; A colon-annotated name (`U:i32`) is `emit-defunion`'s first rejection and
+  ; `reject-colon-in-def-name` owns its words; registering it here would reach
+  ; `check-ir-name-legal` first and blame the generated symbol instead.
+  (let (base:ptr null tyname:ptr null)
+    (split-typed (-> (unsafe/cast ptr:Node form) (node-at _ 1) (unsafe/cast ptr:Node _) (_ s))
+                 (as ptr:ptr (addr-of base)) (as ptr:ptr (addr-of tyname)))
+    (when (!= tyname null) (return 1)))
+  (let (cur:ptr (-> (unsafe/cast ptr:Node form) (_ cdr) (unsafe/cast ptr:Node _) (_ cdr))
+        repr-box:i32 REPR-AUTO)
+    (set! cur (defunion-strip-repr cur (as ptr:i32 (addr-of repr-box)) line))
+    (when (= cur null) (return 1))
+    (while (!= cur null)
+      (let (arm:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node cur) car)))
+        (when (= (as ptr arm) null) (return 1))
+        (when (!= (arm kind) NODE-SYM)
+          (when (or (!= (arm kind) NODE-CELL) (= (node-len (as ptr arm)) 0)) (return 1))
+          (when (!= (node-kind (node-at (as ptr arm) 0)) NODE-SYM) (return 1))
+          (dotimes (fi (- (node-len (as ptr arm)) 1))
+            (let (field:ptr (node-at (as ptr arm) (+ fi 1))
+                  fname:ptr null)
+              (when (= field null) (return 1))
+              (let (fty:ptr (extract-name-and-type field (as ptr:ptr (addr-of fname))
+                                                   (node-line field line)))
+                (when (= fty null) (return 1))
+                (when (!= (opaque-sdef-of fty) null) (return 1))
+                (when (!= (cycle-pending-sdef fty) null) (return 1)))))))
+      (set! cur ((unsafe/cast ptr:Node cur) cdr))))
+  (return 0))
+
+; Stage 15 W9 item 40: give every monomorphic `defunion` in this form list its
+; LAYOUT — the arm table, the payload union and the backing struct — so `make`,
+; `match` and a by-value use resolve on reachability, exactly as a `defstruct`'s
+; fields now do. The arm CONSTRUCTORS stay with `emit-defunion`: they are ordinary
+; function definitions, and where their IR lands is not a layout question. Their
+; *signatures* were already hoisted, by `prescan-union-ctors` in the signature
+; prescan, which is why `(U-arm 3)` alone worked before this and `(make U arm 3)`
+; did not.
+;
+; Kept separate from `prescan-struct-layouts` because the two run at different
+; sets of sites: a `.nuch` header's `defstruct` reaches `emit-defstruct` and keys
+; on `qualify-name` like every other definition, while its `defunion` reaches
+; `emit-defunion-import`, which keys on the bare spelling. Registering a
+; namespaced header's union here would file it under a key its own importer never
+; probes, so the header path takes struct layouts only.
+(defn prescan-union-layouts (forms:(raw Node)):void
+  (let (fc:ptr forms)
+    (while (!= fc null)
+      (let (f:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node fc) car)))
+        (when (and (!= (as ptr f) null) (= (f kind) NODE-CELL)
+                   (>= (node-len (as ptr f)) 3)
+                   (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ kind) (= _ NODE-SYM)))
+          (let (h:ptr (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ s)))
+            (when (or (= h "defunion") (= h "defunion-"))
+              ; W9 item 45: `node-kind` — a name spelled `()` is a NULL node.
+              (let (nn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr f) 1)))
+                (when (and (= (node-kind (as ptr nn)) NODE-SYM)
+                           (= (uniondef-lookup (as CStr (qualify-name (nn s)))) null)
+                           (= (defunion-layout-deferred (as raw:Node f) (f line)) 0))
+                  ; W5e: privacy must be armed around the registration, exactly as
+                  ; the top-level dispatch loop arms it around the emitter — the
+                  ; emitter's own `defunion-register` finds this entry and returns,
+                  ; so this is the only chance a `defunion-` gets to record it.
+                  (let (save-priv:i32 g-defining-private)
+                    (set! g-defining-private (if (= h "defunion-") 1 0))
+                    (defunion-register (as CStr (qualify-name (nn s)))
+                      (-> f (_ cdr) (unsafe/cast ptr:Node _) (_ cdr)) (f line))
+                    (set! g-defining-private save-priv))))))))
+      (set! fc ((unsafe/cast ptr:Node fc) cdr)))))
+
 ; Register the constructor signatures of a (monomorphic) defunion form:
 ; per arm, `Name-arm : Name (field types...)`. Runs in the signature prescan,
 ; after prescan-struct-names registered the backing struct's name.
@@ -14735,7 +14906,17 @@
                               ; Stage 15 W8 G-0: the value half, registered under the
                               ; same per-path guard and the same applied namespace.
                               (prescan-value-names ifs)
-                              (prescan-imported-signatures ifs))))
+                              (prescan-imported-signatures ifs)
+                              ; Stage 15 W9 item 40: layouts LAST, and therefore
+                              ; POST-order while the three passes above stay
+                              ; pre-order. A field's `(array T N)` length is a
+                              ; constant expression, so this file's layouts want
+                              ; its own `defconst`s (the line above) and its
+                              ; imports' (the line above that) already registered.
+                              ; Nothing else registered here depends on a layout,
+                              ; so nothing pre-order needs is lost.
+                              (prescan-struct-layouts ifs)
+                              (prescan-union-layouts ifs))))
                         (free src))
                       (set! g-source-path save-path)
                       (set! g-src save-src)
@@ -15206,6 +15387,14 @@
   ; therefore stays where it is.
   (when (= g-toplevel-depth 1)
     (prescan-imported-signatures forms))
+  ; Stage 15 W9 item 40: this file's own struct and union layouts, last of the
+  ; prescans for the same reason the graph walk runs them last — a field's
+  ; `(array T N)` length is a constant expression, so every `defconst` this file
+  ; and its imports define must already be registered. Both passes are idempotent
+  ; (`StructDef.laid-out`; an existing `UnionDef`), so they run unguarded by
+  ; `sigs-done`: an imported file re-entered at depth 2 finds its layouts done.
+  (prescan-struct-layouts forms)
+  (prescan-union-layouts forms)
   (let (fc:ptr forms)
     (while (!= fc null)
       (let (f:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node fc) car)))
