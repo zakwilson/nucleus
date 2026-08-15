@@ -33,9 +33,16 @@
   ; f32 widens to f64 implicitly.
   (show-f64 (unsafe/cast f32 2.5))
   ; defcast fires: i64 → ptr via id_to_ptr. The `(as i64 ...)` is required —
-  ; a bare literal is i32, and a defcast rule is looked up on the exact pair,
-  ; so no rule matches (W9 item 42). This line read `(show-ptr 0)` until W9
-  ; item 33 made an unconvertible argument an error rather than a silent
-  ; pass-through, which is what showed that the cast had never fired.
+  ; a bare literal is i32, a rule is looked up on the exact pair, and implicit
+  ; conversions do not compose, so widening does not run first to reach it
+  ; (W9 item 42; `(show-ptr 0)` reports that, and names this rule in a note).
+  ; This line read `(show-ptr 0)` until W9 item 33 made an unconvertible
+  ; argument an error rather than a silent pass-through, which is what showed
+  ; that the cast had never fired.
   (show-ptr (as i64 0))
+  ; The same rule at a non-argument slot. Until W9 item 47 the registry was only
+  ; consulted for call arguments and `as`, so this binding was a type error on
+  ; the rule's own exact pair.
+  (let (p:ptr (as i64 7))
+    (show-ptr p))
   (return 0))

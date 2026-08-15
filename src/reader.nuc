@@ -44,6 +44,12 @@
   ; site). g-mono-context is null except during the monomorphization drain.
   (when (!= g-mono-context null)
     (fprintf stderr "  note: %s\n" g-mono-context))
+  ; W9 item 42: a note the diagnosing site staged before calling. Cleared here so
+  ; an interactive session, where repl_throw unwinds instead of exiting, cannot
+  ; carry it onto an unrelated later error.
+  (when (!= g-diag-note null)
+    (fprintf stderr "  note: %s\n" g-diag-note)
+    (set! g-diag-note null))
   (when (!= g-interactive 0)
     (repl_throw))
   (exit 1))
@@ -54,7 +60,10 @@
 (defn report-at (line:i32 msg:ptr):void
   (fprintf stderr "%s:%d: error: %s\n" g-source-path line msg)
   (when (!= g-mono-context null)
-    (fprintf stderr "  note: %s\n" g-mono-context)))
+    (fprintf stderr "  note: %s\n" g-mono-context))
+  (when (!= g-diag-note null)
+    (fprintf stderr "  note: %s\n" g-diag-note)
+    (set! g-diag-note null)))
 
 ; ============================================================
 ; Bracket-balance tracking (Stage 15 W4c)

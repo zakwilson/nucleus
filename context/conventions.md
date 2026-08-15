@@ -4172,3 +4172,53 @@ macro runs full codegen into a fresh JIT module and materializes it, so
 (and every other definition-side probe, per B3′) keys on `qualify-name`, so a
 prescan using the canonical key would file a namespaced header's union where its
 own importer never looks. Fix the key first; the hoist is three lines after that.
+
+## A "safe conversion" question has two answers, and only one of them is a chokepoint
+
+W9 items 42/47 (`design/stage15-stress-test/implicit-conversions.md`). The
+`defcast` registry was consulted from exactly one function, `safe-coerce-val`,
+and exactly two code paths call it — the call-argument loop and `as`. Every
+other typed slot (`let`/`with` init, explicit and implicit `return`, `set!`/
+`.set!`, `aset!`, struct-literal field, union payload) calls `coerce-int-val`
+instead, which knows every *built-in* conversion and nothing about the user's.
+A rule was therefore refused **on its own exact registered pair** at seven of
+nine positions, and the surface symptom looked like a literal-typing problem
+(item 42's original framing) rather than a missing-lookup one.
+
+- **Two coercion functions, and the difference is who they serve.**
+  `coerce-int-val` (`src/abi.nuc`) is the chokepoint every typed slot funnels
+  through; `safe-coerce-val` (`src/nucleusc.nuc`) is a call-site wrapper that
+  short-circuits on equal type *kinds* and then falls through to it. Do not
+  "simplify" a slot by routing it through `safe-coerce-val`: that kind-equality
+  short-circuit would let a `(ptr Foo)` value initialize a `(ptr Bar)` binding.
+  Anything that should apply to **every** implicit position belongs at the tail
+  of `coerce-int-val`, after the built-ins, where a `null` return means "the
+  caller is about to die anyway" — that placement is what makes such a change
+  provably additive (0/365 corpus programs changed IR).
+- **Only the FINAL fallthrough means "nothing applies."** `coerce-int-val` has
+  earlier `(return null)`s that are deliberate refusals of a specific pair (a
+  StrView into an unrelated by-value struct). Extending "no conversion found"
+  behaviour must attach to the last line, not to every null return.
+- **A note must follow its error, and `die-at` is `noreturn`.** Stage the text in
+  a global (`g-diag-note`) that `die-at`/`report-at` render and clear, exactly as
+  `g-mono-context` already does. The defvar must sit above the file that *reads*
+  it (`nucleusc.nuc:329`, read by `reader.nuc`). Nesting a second `fmt-*` call
+  into the `die-at` argument is safe on its own terms — the helpers `alloca`
+  per-call buffers, they do NOT share one — but it makes every raising site know
+  the note's wording.
+
+**A forward up-call into `nucleusc.nuc` from an earlier-inlined file resolves —
+re-measure before believing otherwise.** Two comments in this file (the
+`reject-opaque-type` entry) and one in `coerce-int-val` itself state that a call
+from an earlier import up into a later one is "an unresolved cross-import
+forward reference". That is not what the compiler does now: `union-registry.nuc`
+(inlined at `nucleusc.nuc:1038`) up-calls `intern-str` (defined at 3873), and
+W9 item 47 up-calls `coerce-via-cast-rule` (~3220) from `abi.nuc` (1036) — both
+compiled by the **committed boot compiler** on the first attempt, because the
+signature prescan registers a `defn` long before any body emits. The affected
+comments predate that prescan. Their *code* is still fine (spelling a `type-eq`
+rule inline is correct, just not forced); what is stale is the reason. If an
+import-order constraint is the deciding factor in a design, test it with one
+call rather than inheriting the claim — this is the third documented case in
+this stage of a hand-written ordering note going stale (see also `toplevel.md`'s
+cycle table, W9 item 40).

@@ -2,3 +2,4 @@ malloc-ok=1
 i64=42
 f64=2.50
 ptr=0
+ptr=7

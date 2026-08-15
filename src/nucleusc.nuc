@@ -327,6 +327,16 @@
 ; is being emitted; die-at appends it as a note so a stamp-time error points back
 ; to the instantiation (and its requesting call site). Null otherwise.
 (defvar g-mono-context:ptr)
+; Stage 15 W9 item 42: one pending diagnostic note, rendered by die-at/report-at
+; immediately after the error they print and cleared there. Same mechanism as
+; g-mono-context above, and it exists for the same reason: a note has to follow
+; its error, and die-at is noreturn, so the only way to append is to hand it the
+; text beforehand. (Nesting a second fmt-* call into each die-at argument would
+; also work — the helpers alloca their own buffers — but the five sites that
+; raise this note have five different message shapes and arities, and none of
+; them should have to know how the note is worded.) Null except in the window
+; between a diagnosing site setting it and the die-at on the next line.
+(defvar g-diag-note:ptr)
 ; Stage 15 W4a: the source line of the innermost enclosing form currently being
 ; emitted — the "line half" of a diagnostic location, ambient exactly like
 ; `g-source-path` is its file half (both are read by die-at/report-at).
@@ -3216,6 +3226,40 @@
                (return cr)))
   (return null))
 
+; Stage 15 W9 item 47: the USER half of the coercion chokepoint, up-called from
+; `coerce-int-val`'s final fallthrough (abi.nuc) so that every typed slot reaches
+; a `defcast` rule — not just the two positions that happened to call
+; `safe-coerce-val`. Built-in coercion runs first and is untouched, so this can
+; only convert what previously died; that order is also the documented one
+; ("built-in coercion always wins", docs/types.md).
+(defn coerce-via-cast-rule (v:(raw Val) target:(raw Type)):?ptr:Val
+  (let (vv:(raw Val) v
+        src:(raw Type) (vv type)
+        rule:(raw CastRule) (lookup-cast-rule src target))
+    (when (= rule null) (return null))
+    (let (cr:(raw CastRule) rule
+          tmp:ptr (new-tmp))
+      (fprintf g-body-stream "  %s = call %s %s(%s %s)\n"
+        tmp (type-to-ir target) (cr ir-name) (type-to-ir src) (vv val))
+      (return (alloc-val target tmp)))))
+
+; W9 item 42: implicit conversions do NOT compose — one conversion, built-in or
+; user, never both (design/stage15-stress-test/implicit-conversions.md). That
+; ruling is defensible but invisible: a bare integer literal is `i32`, so someone
+; who registers `(defcast i64 ptr …)` and writes `(f 0)` is told the types do not
+; match and never learns the rule they wrote is one `(as i64 …)` away. Name the
+; near miss wherever a conversion fails with a rule to that same target on file.
+(defn note-cast-rule-near-miss (src:(raw Type) target:(raw Type)):void
+  (when (= src null) (return))
+  (when (= target null) (return))
+  (doseq (cr g-cast-rules (VecIter ref:CastRule))
+    (when (and (!= (type-eq (cr to) target) 0)
+               (= (type-eq (cr from) src) 0))
+      (set! g-diag-note
+        (fmt-3s "a defcast rule converts %s to %s, but implicit conversions do not compose — write (as %s …) on the operand to reach it"
+          (type-spelling (cr from)) (type-spelling (cr to)) (type-spelling (cr from))))
+      (return))))
+
 ; Coerce a Val to a target type at a call site (or any implicit context):
 ; same-kind identity, int↔int via coerce-int-val, f32→f64 fpext, and any
 ; user-registered defcast rule. Returns null when no safe conversion applies.
@@ -3246,13 +3290,11 @@
     ; to double` text), so existing f32→f64 argument passing is unchanged.
     (when (and (!= (is-float-type src) 0) (!= (is-float-type target) 0))
       (return (coerce-int-val v target line)))
-    (let (rule:(raw CastRule) (lookup-cast-rule src target))
-      (when (!= rule null)
-        (let (cr:(raw CastRule) rule
-              tmp:ptr (new-tmp))
-          (fprintf g-body-stream "  %s = call %s %s(%s %s)\n"
-            tmp (type-to-ir target) (cr ir-name) (type-to-ir src) (vv val))
-          (return (alloc-val target tmp)))))
+    ; W9 item 47: the defcast lookup used to be spelled out here, and ONLY here,
+    ; which is why a rule was reachable from an argument and from `as` but from
+    ; no other typed slot. It now lives at the tail of `coerce-int-val`, which
+    ; this function already falls through to — so the rule fires for the same
+    ; pairs, in the same order (built-in first), emitting the same IR.
     ; Stage 15 W9 item 34: the call-argument guard used to compare LOWERED IR
     ; type strings, so every pointer flavour compared equal and this function was
     ; never asked about any of them. Now that it is asked, answer with the
@@ -3856,7 +3898,10 @@
             (fmt-2s "as: lossy conversion from %s to %s -- use unsafe/cast"
               (type-spelling src) (type-spelling dst))))
         ; 8. everything else — ptr<->int, fn<->ptr, unrelated structs — is a
-        ; reinterpretation: route to unsafe/cast.
+        ; reinterpretation: route to unsafe/cast. W9 item 42: unless a defcast
+        ; rule reaches this target from a neighbouring type, in which case
+        ; "use unsafe/cast" is the wrong advice and the note says so.
+        (note-cast-rule-near-miss src dst)
         (die-at (cc line)
           (fmt-2s "as: reinterpretation from %s to %s -- use unsafe/cast"
             (type-spelling src) (type-spelling dst)))))))
@@ -6097,6 +6142,7 @@
                   ; and printed 0.000000. Report it, exactly as the return site
                   ; does (LW-3) and as every other typed slot already did.
                   (when (= nc null)
+                    (note-cast-rule-near-miss (slot type) (as ptr:Type ptype))
                     (die-at (cc line)
                       (fmt-3s "%s has type %s, which does not match parameter type %s"
                         (fmt-sd "%s: argument %d" (ss name) (+ ci 1))
@@ -8675,6 +8721,7 @@
           (fprintf g-body-stream "  ret %s %s\n" (type-to-ir (v type)) (v val))
           (let (coerced:ptr (coerce-int-val (as ptr v) g-fn-ret-type (cc line)))
             (when (= coerced null)
+              (note-cast-rule-near-miss (v type) g-fn-ret-type)
               (die-at (cc line)
                 (fmt-2s "return type mismatch — returned value of type %s does not match declared return type %s"
                         (type-spelling (v type)) (type-spelling g-fn-ret-type))))
@@ -8910,6 +8957,7 @@
                                     (maybe-box-into-slot v ty inner (node-line bval-node (cc line)))
                                     ty (node-line bval-node (cc line))))
                   (when (= coerced null)
+                    (note-cast-rule-near-miss (v type) ty)
                     (die-at (node-line bval-node (cc line))
                       (fmt-s "let: init type mismatch for '%s'" name)))
                   (let (cv:ptr:Val (unsafe/cast ptr:Val coerced))
@@ -9004,6 +9052,7 @@
                                     (maybe-box-into-slot v ty inner (node-line bval-node (cc line)))
                                     ty (node-line bval-node (cc line))))
                   (when (= coerced null)
+                    (note-cast-rule-near-miss (v type) ty)
                     (die-at (node-line bval-node (cc line))
                       (fmt-s "with: init type mismatch for '%s'" name)))
                   (let (cv:ptr:Val (unsafe/cast ptr:Val coerced))
