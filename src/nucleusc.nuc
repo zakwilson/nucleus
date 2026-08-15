@@ -264,7 +264,18 @@
 ; Current output stream for top-level emission
 (defvar g-out:ptr)
 (defvar g-decl-out:ptr)
+; "This body built a list with the __cons/__append helpers." Gates emitting
+; those helper definitions (emit-qq-helpers into the program module,
+; `define private` into a CT/macro JIT module). Set by emit-qq-list only.
 (defvar g-qq-used:i32 0)
+; "This body called the node constructors." Distinct from g-qq-used because
+; `emit-quote-tree` — reached by a plain `'x` and by a quasiquote of an ATOM
+; (`` `1 ``, `` `foo ``) — emits @alloc-node / @make-cell / @intern-symbol
+; without ever touching __cons/__append. Gating their `declare`s on g-qq-used
+; left a macro body whose whole expansion is an atom emitting calls to symbols
+; the JIT module never declared ("use of undefined value '@alloc-node'"); the
+; program module is unaffected either way, since it *defines* all three.
+(defvar g-node-ctor-used:i32 0)
 
 ; Main module streams (global so emit-compile-time can access them mid-compilation)
 (defvar g-type-stream:ptr)
@@ -506,6 +517,22 @@
 ; registration order). The element index is also the macro's JIT-name uniquifier.
 (defvar (g-macros (ref (Vector (ref MacroDef)))) (vector-new-in (addr-of g-arena-alloc)))
 (defvar g-gensym-id:i32 0)
+
+; Stage 16 `macrolet` (design/stage16-ergonomics/macrolet.md §5.3). Lexically
+; scoped macro bindings, innermost last — scanned BACK to front and consulted
+; BEFORE g-macros, which is what makes a binding shadow a global macro of the
+; same spelling. These MacroDefs never enter g-macros: they have no
+; namespace-qualified key, no privacy and no reachable name outside their body,
+; so `find-macrolet` matches on the bare spelling alone.
+;
+; The invariant is that this is empty at the start of every top-level form.
+; `die-at` exits the process in batch mode; the REPL's recovery arm longjmps
+; past emit-macrolet's pop and truncates it there.
+(defvar (g-macrolet-stack (ref (Vector (ref MacroDef)))) (vector-new-in (addr-of g-arena-alloc)))
+; JIT-name uniquifier. Monotonic rather than `(count g-macrolet-stack)` — the
+; stack pops, and a macrolet inside a generic template body is compiled once per
+; monomorphization.
+(defvar g-macrolet-id:i32 0)
 
 ; Reader macro table
 ; Reader macro table. (Vector ptr) of RMacro* (each individually arena-allocated,
@@ -1078,6 +1105,18 @@
 ; g-macro-decls. The declare reproduces emit-defn's ABI-lowered signature from
 ; the captured ProgDefn (the Sym's type may carry no usable param array); the
 ; symbol resolves from the -rdynamic host binary at JIT link time.
+; Write a hand-written `declare` line into a macro/CT JIT module's decl stream
+; unless `irn` is already declared there. Shares `g-macro-decls` with
+; macro-jit-ensure-decl, so a macro body that both quotes and calls one of the
+; node constructors by name cannot emit two `declare`s for the one symbol —
+; LLVM rejects the redefinition, and the collision is otherwise invisible until
+; someone writes that macro.
+(defn macro-jit-declare-raw (out:ptr irn:CStr proto:CStr):void
+  (doseq (m g-macro-decls (VecIter CStr))
+    (when (= (strcmp m irn) 0) (return)))
+  (conj g-macro-decls (as CStr (intern-str irn)))
+  (fputs proto out))
+
 (defn macro-jit-ensure-decl (ss:(raw Sym)):void
   (when (= (in-jit-module) 0) (return))
   (let (s:(raw Sym) ss
@@ -1910,6 +1949,8 @@
 ; - NODE-INT/STR/FLOAT: alloc-node, then store the relevant fields
 (defn emit-quote-tree (n:(raw Node)):CStr
   (when (= n null) (return "null"))
+  ; Every non-null branch below emits a node-constructor call.
+  (set! g-node-ctor-used 1)
   (let (nn:(raw Node) n)
     (when (= (nn kind) NODE-SYM)
       (let (sid:i32 (intern-string (nn s) (unsafe/cast i32 (strlen (nn s))))
@@ -2008,6 +2049,8 @@
 (defn emit-qq-list (list:(raw Node) scope:ref:Scope):ref:Val
   (when (= list null) (return (alloc-val (ty-raw-node) "null")))
   (set! g-qq-used 1)
+  ; `__cons` calls @malloc; the element path may or may not reach
+  ; emit-quote-tree (`` `(~x) `` never does), so the two flags are independent.
   (let (lc:(raw Node) list
         elem:(raw Node) (lc car))
     (when (!= (qq-is-tagged elem 'unquote-splice) 0)
@@ -9927,7 +9970,27 @@
 ; environment alone, so `p/mac` works and the library's own namespace does not
 ; (R3). The alias probe is what makes `(export some-macro)` reachable through a
 ; facade; it is a single global compare for any program with no facade.
+; Stage 16 `macrolet`: the innermost lexical binding of `spelling`, or null.
+; Back-to-front so an inner macrolet shadows an outer one. Bare-spelling
+; comparison only — a macrolet binding is never qualified, exported or aliased.
+; For a program with no macrolet this is one `count == 0` test.
+(defn find-macrolet (spelling:CStr):?ptr:MacroDef
+  (let (n:i32 (unsafe/cast i32 (count g-macrolet-stack))
+        i:i32 (- n 1))
+    (while (>= i 0)
+      (let (mdef:ref:MacroDef (invoke g-macrolet-stack (as usize i)))
+        (when (= (mdef name) spelling) (return (as ptr mdef))))
+      (dec! i)))
+  (return null))
+
 (defn find-macro (spelling:CStr):?ptr:MacroDef
+  ; Stage 16: lexical bindings win over the global registry. `find-macro` is the
+  ; registry's only reader, so this one probe covers emit-list's dispatch,
+  ; node-type, gcheck, valid-walk and the BK-MACRO name-kind lookup at once.
+  ; `find-macro-exact` (the redefinition guard) is deliberately not probed: a
+  ; macrolet binding redefines nothing.
+  (let (local:?ptr:MacroDef (find-macrolet spelling))
+    (when (!= local null) (return local)))
   (dotimes (i (name-ref-key-count spelling))
     (let (k:CStr (name-ref-key-at spelling i))
       (when (!= k null)
@@ -10689,6 +10752,9 @@
         (when (= hp 'unsafe/funcall-ptr-ptr) (return (emit-funcall-ptr-ptr n scope)))
         (when (= hp 'return) (return (emit-return n scope)))
         (when (= hp 'do) (return (emit-do n scope)))
+        ; Stage 16: lexically scoped macros. A block form — the bindings are
+        ; compiled and pushed, the body emits as a `do`, the bindings pop.
+        (when (= hp 'macrolet) (return (emit-macrolet n scope)))
         (when (= hp 'let) (return (emit-let n scope)))
         (when (= hp 'with) (return (emit-with n scope)))
         (when (= hp 'cond) (return (emit-cond n scope)))
@@ -13262,8 +13328,10 @@
       ; Redirect global state to CT streams.
       (let (saved-g-out:ptr g-out
             saved-decl-out:ptr g-decl-out
-            saved-qq-used:i32 g-qq-used)
+            saved-qq-used:i32 g-qq-used
+            saved-node-ctor:i32 g-node-ctor-used)
         (set! g-qq-used 0)
+        (set! g-node-ctor-used 0)
         (set! g-decl-out ct-decl)
         ; Fresh per-module declare set (see emit-defmacro / macro-jit-ensure-decl).
         (set! g-macro-decls (unsafe/cast (ref (Vector CStr)) (vector-new-in (addr-of g-arena-alloc))))
@@ -13368,19 +13436,25 @@
           (set! g-entry-bufp null)
           (set! g-body-bufp null)
 
-          (let (ct-qq:i32 g-qq-used)
+          (let (ct-qq:i32 g-qq-used
+                ct-nodes:i32 g-node-ctor-used)
             ; Restore global state.
             (set! g-out saved-g-out)
             (set! g-decl-out saved-decl-out)
             (set! g-qq-used saved-qq-used)
+            (set! g-node-ctor-used saved-node-ctor)
 
-            ; If CT used quasiquote, add private helpers and declare the
-            ; host-defined helpers (alloc-node, make-cell, intern-symbol).
+            ; Declare the host-defined node constructors if the body built any
+            ; node at all — a plain `'x` or a quasiquoted atom reaches
+            ; emit-quote-tree without ever setting ct-qq.
+            (when (!= ct-nodes 0)
+              (macro-jit-declare-raw ct-decl "@alloc-node" "declare ptr @alloc-node()\n")
+              (macro-jit-declare-raw ct-decl "@make-cell" "declare ptr @make-cell(ptr, ptr, i32)\n")
+              (macro-jit-declare-raw ct-decl "@intern-symbol" "declare ptr @intern-symbol(ptr)\n"))
+            ; If CT used quasiquote LISTS, add the private __cons/__append
+            ; helpers; only they need @malloc.
             (when (!= ct-qq 0)
-               (fprintf ct-decl "declare ptr @malloc(i64)\n")
-                  (fprintf ct-decl "declare ptr @alloc-node()\n")
-                  (fprintf ct-decl "declare ptr @make-cell(ptr, ptr, i32)\n")
-                  (fprintf ct-decl "declare ptr @intern-symbol(ptr)\n")
+               (macro-jit-declare-raw ct-decl "@malloc" "declare ptr @malloc(i64)\n")
                   (fprintf ct-def "define private ptr @__cons(ptr %%a, ptr %%b) {\n")
                   (fprintf ct-def "  %%c = call ptr @malloc(i64 40)\n")
                   (fprintf ct-def "  %%p0 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 0\n")
@@ -13451,6 +13525,58 @@
 ; defmacro top-level form
 ; ============================================================
 
+; Parse a macro parameter list. Returns the parameter count *excluding* the
+; `&rest` keyword; writes the name array through `out-names` and the variadic
+; flag through `out-variadic`. `what` names the definer in diagnostics and
+; `encl` supplies the line for the params that have none of their own.
+;
+; Stage 16: shared by `defmacro` and `macrolet` so the `&rest` rule has one
+; home (design/stage16-ergonomics/macrolet.md §5.1).
+(defn macro-parse-params (params-node:ptr what:CStr encl:i32
+                          out-names:ptr:ptr out-variadic:ptr:i32):i32
+  (let (num-params:i32 (node-len params-node)
+        variadic:i32 0
+        pcount:i32 (node-len params-node))
+    ; Detect &rest variadic parameter (must be second-to-last in param list).
+    (dotimes (vi num-params)
+      ; W5f: a NULL (empty-list `()`) param is not `&rest`; the loop below
+      ; raises the located "param must be a symbol" diagnostic for it.
+      ;
+      ; The NODE-SYM test is load-bearing, not belt-and-braces: `Node.s` is null
+      ; on an INT/FLOAT/CELL node, and the `=` below is a CONTENT compare — so
+      ; `(defmacro m (5) …)` used to reach `strcmp(null, "&rest")` and segfault
+      ; the compiler instead of reaching the located diagnostic this comment
+      ; already promised. Same null-guard class as the `()` case beside it.
+      (let (vp:(raw Node) (as raw:Node (node-at params-node vi)))
+        (when (and (!= vp null) (= (vp kind) NODE-SYM) (= (vp s) "&rest"))
+              (when (!= vi (- num-params 2))
+                    (die-at (node-line (as ptr vp) encl)
+                            (fmt-s "%s: &rest must be second-to-last param" what)))
+              (set! variadic 1)
+              (set! pcount (- num-params 1)))))
+    ; Collect param names, skipping &rest keyword.
+    (let (pnames:ptr null
+          pi:i32 0
+          ai:i32 0)
+      (when (> pcount 0)
+        (set! pnames (arena-alloc (* (as i64 pcount) (ptr-bytes)))))
+      (while (< pi num-params)
+        (let (p:(raw Node) (as raw:Node (node-at params-node pi)))
+          ; W5f: `()` reads as a NULL node — same user error as a non-symbol
+          ; param, reported at the enclosing form's line (a null node has none).
+          (when (= p null)
+            (die-at encl (fmt-s "%s: param must be a symbol" what)))
+          (when (!= (p kind) NODE-SYM)
+            (die-at (node-line (as ptr p) encl)
+                    (fmt-s "%s: param must be a symbol" what)))
+          (when (!= (p s) "&rest")
+              (aset! (as ptr:ptr pnames) ai (p s))
+              (inc! ai)))
+        (inc! pi))
+      (ptr-set! out-names pnames)
+      (ptr-set! out-variadic variadic)
+      (return pcount))))
+
 (defn emit-defmacro (form:(raw Node)):void
   ; (defmacro name (params...) body...)
   (let (ff:ptr:Node (unsafe/cast ptr:Node form))
@@ -13493,36 +13619,13 @@
             ; `sanitize-for-ir` keeps seeing a spelling with no `/` in it. (§9.7
             ; predicted this would need the composition; measured, it does not.)
             jit-name:ptr (fmt-sd "__macro_%s_%d" (sanitize-for-ir macro-name) (unsafe/cast i32 (count g-macros))))
-        ; Detect &rest variadic parameter (must be second-to-last in param list).
+        ; Stage 16: the &rest rule and the name collection are shared with
+        ; `macrolet` (design/stage16-ergonomics/macrolet.md §5.1).
         (let (variadic:i32 0
-              pcount:i32 num-params)
-          (dotimes (vi num-params)
-            ; W5f: a NULL (empty-list `()`) param is not `&rest`; the loop below
-            ; raises the located "param must be a symbol" diagnostic for it.
-            (let (vp:(raw Node) (as raw:Node (node-at params-node vi)))
-              (when (and (!= vp null) (= (vp s) "&rest"))
-                    (when (!= vi (- num-params 2))
-                          (die-at (node-line (as ptr vp) (ff line)) "defmacro: &rest must be second-to-last param"))
-                    (set! variadic 1)
-                    (set! pcount (- num-params 1)))))
-        ; Collect param names, skipping &rest keyword.
-        (let (pnames:ptr null
-              pi:i32 0
-              ai:i32 0)
-          (when (> pcount 0)
-            (set! pnames (arena-alloc (* (as i64 pcount) (ptr-bytes)))))
-          (while (< pi num-params)
-            (let (p:(raw Node) (as raw:Node (node-at params-node pi)))
-              ; W5f: `()` reads as a NULL node — same user error as a non-symbol
-              ; param, reported at the defmacro's line (a null node has none).
-              (when (= p null)
-                (die-at (ff line) "defmacro: param must be a symbol"))
-              (when (!= (p kind) NODE-SYM)
-                (die-at (node-line (as ptr p) (ff line)) "defmacro: param must be a symbol"))
-              (when (!= (p s) "&rest")
-                  (aset! (as ptr:ptr pnames) ai (p s))
-                  (inc! ai)))
-            (inc! pi))
+              pnames:ptr null
+              pcount:i32 (macro-parse-params params-node "defmacro" (ff line)
+                                             (as ptr:ptr (addr-of pnames))
+                                             (as ptr:i32 (addr-of variadic))))
           ; Register in macro table
           (when (>= (unsafe/cast i32 (count g-macros)) 256)
             (die-at (ff line) "defmacro: macro table full"))
@@ -13542,6 +13645,22 @@
             (when (!= g-defining-private 0) (set! g-priv-bindings 1))
             (conj g-macros mdef))
 
+          ; Stage 16: the body compiler is shared with `macrolet`
+          ; (design/stage16-ergonomics/macrolet.md §5.1). Everything above this
+          ; line is registration — the half a macrolet binding does NOT do.
+          (compile-macro-body jit-name macro-name pnames pcount form 3))))))
+
+; Compile a macro body into its own JIT module and add it to the JIT. Shared by
+; `emit-defmacro` (body-start 3, over the whole `(defmacro name (params) …)`
+; form) and `emit-macrolet` (body-start 2, over one `(name (params) …)` binding).
+; Emits no program IR: everything lands in a fresh module resolved against the
+; running compiler.
+;
+; NOTE this calls `reset-function-state` (via the streams it opens below) — see
+; `push-function-state`, which every mid-function caller must bracket it with.
+(defn compile-macro-body (jit-name:ptr macro-name:ptr pnames:ptr pcount:i32
+                          form:(raw Node) body-start:i32):void
+  (let (ff:ptr:Node (unsafe/cast ptr:Node form))
           ; Flush main streams
           (fflush g-type-stream)
           (fflush g-decl-stream)
@@ -13555,8 +13674,10 @@
             ; Redirect global state
             (let (saved-g-out:ptr g-out
                   saved-decl-out:ptr g-decl-out
-                  saved-qq-used:i32 g-qq-used)
+                  saved-qq-used:i32 g-qq-used
+                  saved-node-ctor:i32 g-node-ctor-used)
               (set! g-qq-used 0)
+              (set! g-node-ctor-used 0)
               (set! g-decl-out ct-decl)
               (set! g-out ct-def)
               ; Fresh per-module declare set: macro bodies that call ordinary
@@ -13594,7 +13715,7 @@
 
                 ; Compile body forms; last result is return value
                 (let (last-val:ptr "null"
-                      bi:i32 3)
+                      bi:i32 body-start)
                   (while (< bi (node-len ff))
                     (let (bv:ref:Val (emit-node (node-at ff bi) fn-scope))
                       (when (and (!= (as ptr bv) null)
@@ -13604,11 +13725,13 @@
                     (inc! bi))
                   (fprintf g-body-stream "  ret ptr %s\n" last-val))
 
-                (let (macro-qq:i32 g-qq-used)
+                (let (macro-qq:i32 g-qq-used
+                      macro-nodes:i32 g-node-ctor-used)
                   ; Restore global state
                   (set! g-out saved-g-out)
                   (set! g-decl-out saved-decl-out)
                   (set! g-qq-used saved-qq-used)
+                  (set! g-node-ctor-used saved-node-ctor)
 
                   ; Finalize the function
                   (fclose g-entry-stream)
@@ -13625,15 +13748,21 @@
                   (set! g-entry-bufp null)
                   (set! g-body-bufp null)
 
-                  ; Add QQ helpers if needed.
-                  ; Only emit malloc declaration if it's not already in g-decl-bufp
-                  ; (e.g. from an earlier (import-use "stdlib.h")).
+                  ; Declare the host-defined node constructors if the body built
+                  ; any node. Keyed on macro-nodes, NOT macro-qq: a body whose
+                  ; whole expansion is an atom (`` `1 ``, `` `foo ``, `'x`) goes
+                  ; through emit-quote-tree and never sets macro-qq, and used to
+                  ; emit `call @alloc-node` into a module that declared nothing.
+                  (when (!= macro-nodes 0)
+                    (macro-jit-declare-raw ct-decl "@alloc-node" "declare ptr @alloc-node()\n")
+                    (macro-jit-declare-raw ct-decl "@make-cell" "declare ptr @make-cell(ptr, ptr, i32)\n")
+                    (macro-jit-declare-raw ct-decl "@intern-symbol" "declare ptr @intern-symbol(ptr)\n"))
+                  ; Add QQ list helpers if needed. Only these need @malloc, and
+                  ; only if it is not already in g-decl-bufp (e.g. from an
+                  ; earlier (import-use "stdlib.h")).
                   (when (!= macro-qq 0)
                      (when (= g-malloc-decl-done 0)
-                          (fprintf ct-decl "declare ptr @malloc(i64)\n"))
-                        (fprintf ct-decl "declare ptr @alloc-node()\n")
-                        (fprintf ct-decl "declare ptr @make-cell(ptr, ptr, i32)\n")
-                        (fprintf ct-decl "declare ptr @intern-symbol(ptr)\n")
+                          (macro-jit-declare-raw ct-decl "@malloc" "declare ptr @malloc(i64)\n"))
                         (fprintf ct-def "define private ptr @__cons(ptr %%a, ptr %%b) {\n")
                         (fprintf ct-def "  %%c = call ptr @malloc(i64 40)\n")
                         (fprintf ct-def "  %%p0 = getelementptr inbounds { i32, i32, i64, ptr, ptr, ptr }, ptr %%c, i32 0, i32 0\n")
@@ -13701,7 +13830,107 @@
                     (jit-add-module ir-bufp (ff line))
                     (free ct-decl-bufp)
                     (free ct-def-bufp)
-                    (free ir-bufp))))))))))))
+                    (free ir-bufp))))))))
+
+; ============================================================
+; macrolet (Stage 16, design/stage16-ergonomics/macrolet.md)
+; ============================================================
+
+; Compile one `(name (params) body...)` binding and push it onto the lexical
+; macro stack. Bindings are pushed as they are compiled, so a later binding sees
+; an earlier one — sequential, like Nucleus `let`, and unlike Common Lisp's
+; parallel `macrolet`. A binding is visible inside its own body too, matching
+; `defmacro`, which registers before it compiles.
+(defn macrolet-bind (b:(raw Node) encl:i32):void
+  ; W5f: `()` reads as a NULL node — blame the enclosing macrolet's line.
+  (when (= b null)
+    (die-at encl "macrolet: binding must be (name (params) body...)"))
+  (let (bline:i32 (node-line (as ptr b) encl)
+        bn:ptr:Node (unsafe/cast ptr:Node b))
+    (when (or (!= (bn kind) NODE-CELL) (< (node-len (as ptr b)) 3))
+      (die-at bline "macrolet: binding must be (name (params) body...)"))
+    (let (name-node:(raw Node) (as raw:Node (node-at bn 0))
+          params-node:ptr (node-at bn 1))
+      (when (= name-node null)
+        (die-at bline "macrolet: binding must be (name (params) body...)"))
+      (let (nn:ptr:Node (unsafe/cast ptr:Node name-node))
+        (when (!= (nn kind) NODE-SYM)
+          (die-at bline "macrolet: macro name must be a symbol"))
+        ; W4b's rule (see reject-colon-in-def-name): a definer's own name never
+        ; takes a `:type`, and `desugar` does not rewrite it, so the annotated
+        ; spelling would register as one unlookupable key. Spelled out here
+        ; rather than routed through that helper only because the *fix* differs
+        ; — this is a binding-list element, so the repair is `(m (params) …)`,
+        ; not `(macrolet m …)`. The test itself is the same `split-typed` call.
+        (let (base:ptr null tyname:ptr null)
+          (split-typed (as CStr (nn s)) (as ptr:ptr (addr-of base))
+                       (as ptr:ptr (addr-of tyname)))
+          (when (!= tyname null)
+            (die-at bline (fmt-s "macrolet: a binding name takes no type annotation; write (%s (params) ...)" base))))
+        (when (= (node-is-list params-node) 0)
+          (die-at bline "macrolet: params must be a list"))
+        (let (mname:ptr (nn s))
+          ; The macro table is consulted BEFORE special forms (emit-list), so a
+          ; binding named `let` would silently take `let` over for the whole
+          ; body. Refuse rather than shadow.
+          (when (!= (special-form-named (as CStr mname)) 0)
+            (die-at bline (fmt-s "macrolet: '%s' is a special form and may not be shadowed" mname)))
+          (let (variadic:i32 0
+                pnames:ptr null
+                pcount:i32 (macro-parse-params params-node "macrolet" bline
+                                               (as ptr:ptr (addr-of pnames))
+                                               (as ptr:i32 (addr-of variadic)))
+                jit-name:ptr (fmt-sd "__macrolet_%s_%d" (sanitize-for-ir mname) g-macrolet-id)
+                mdef:ptr:MacroDef (as ptr:MacroDef (arena-alloc (sizeof MacroDef))))
+            (inc! g-macrolet-id)
+            ; The BARE spelling is the key — find-macrolet matches on it alone.
+            (.set! mdef name (as ptr mname))
+            (.set! mdef jit-name jit-name)
+            (.set! mdef num-params pcount)
+            (.set! mdef variadic variadic)
+            ; No privacy: a macrolet binding has no name reachable outside its
+            ; body, so `g-defining-private` — still 1 throughout a `defn-` body,
+            ; since the top-level dispatcher brackets the whole emit-defn call —
+            ; must not leak in here.
+            (.set! mdef priv 0)
+            (.set! mdef src-ns g-current-ns)
+            (.set! mdef src-file g-source-path)
+            (.set! mdef src-line bline)
+            (conj g-macrolet-stack mdef)
+            ; The push/pop bracket is what makes compiling a macro *mid-function*
+            ; safe; compile-macro-body calls reset-function-state, which would
+            ; otherwise clobber the enclosing function's entry/body streams.
+            (let (saved:ref:FnState (push-function-state))
+              (compile-macro-body jit-name mname pnames pcount b 2)
+              (pop-function-state saved))))))))
+
+(defn emit-macrolet (call:(raw Node) scope:ref:Scope):ref:Val
+  ; (macrolet ((name (params) body...) ...) body-form...)
+  (let (cc:ptr:Node (unsafe/cast ptr:Node call))
+    (when (< (node-len cc) 3)
+      (die-at (cc line) "macrolet: expects a binding list and at least one body form"))
+    (let (binds:ptr (node-at cc 1))
+      (when (= (node-is-list binds) 0)
+        (die-at (cc line) "macrolet: bindings must be a list"))
+      (let (nb:i32 (node-len binds))
+        (dotimes (i nb)
+          (macrolet-bind (as raw:Node (node-at binds i)) (cc line)))
+        ; The body emits as a `do`: same value, same want re-arm for the tail.
+        (let (last:ref:Val (alloc-val ty-void null)
+              my-want:ptr g-want-type
+              bi:i32 2)
+          (while (< bi (node-len cc))
+            (let (cur:ptr (node-at cc bi))
+              (when (= bi (- (node-len cc) 1))
+                (set! g-want-type my-want)
+                (set! cur (union-target-rewrite cur my-want)))
+              (set! last (emit-node cur scope)))
+            (inc! bi))
+          ; Pop innermost-first, restoring any outer binding of the same name.
+          (dotimes (i nb)
+            (remove-at g-macrolet-stack
+                       (as usize (- (unsafe/cast i32 (count g-macrolet-stack)) 1))))
+          (return last))))))
 
 ; ============================================================
 ; String table emission
@@ -16482,7 +16711,7 @@
 ; §4.4 item 1. Each still allocates through g-arena-alloc and is never dropped
 ; (process lifetime).
 (defn build-special-form-set ():(ref (HashSet CStr))
-  ; --- special-form-named set (86 members) ---
+  ; --- special-form-named set (87 members) ---
   ; Stage 15 B2b removed the seven `unsafe/*` whole-string entries UN-2 added:
   ; `unsafe` is a real built-in namespace now, so `special-form-named` answers
   ; for them through `unsafe-qualified-op` (resolve the qualifier, then the
@@ -16496,6 +16725,9 @@
   (into s
     #{ ; control flow / binding
        "let" "with" "do" "cond" "return" "while"
+       ; Stage 16: lexically scoped macros (a reservation — nothing may shadow
+       ; it, and macrolet-bind refuses to shadow anything else in this set).
+       "macrolet"
        ; mutation
        "set!" "inc!" "dec!"
        ; memory / pointers

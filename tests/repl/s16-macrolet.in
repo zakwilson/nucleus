@@ -1,0 +1,20 @@
+; Stage 16 macrolet in the REPL (design/stage16-ergonomics/macrolet.md §5.6).
+; The point of the middle form is the recovery path: `die-at` exits the process
+; in batch mode, but the REPL longjmps past emit-macrolet's pop, so the lexical
+; binding stack would leak into every later form. Everything after the error
+; must still behave.
+;
+; One form per line — the REPL reads a line at a time.
+
+(defn f ():i32 (macrolet ((m (x) `(_* ~x 7))) (m 6)))
+(f)
+
+; A macrolet whose body cannot compile: recovered, and nothing is left pushed.
+(macrolet ((bad () (this-does-not-exist))) 1)
+
+(f)
+
+; A binding shadows a global macro inside the body only: 6 + 20 + 6 = 32.
+(defmacro trip (x) `(_* 3 ~x))
+(defn g ():i32 (let (r:i32 (trip 2)) (macrolet ((trip (x) `(_* 10 ~x))) (set! r (_+ r (trip 2)))) (_+ r (trip 2))))
+(g)

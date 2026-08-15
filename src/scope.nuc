@@ -206,6 +206,70 @@
   (set! g-body-stream (open_memstream (addr-of g-body-bufp)
                                       (as ptr (addr-of g-body-sizep)))))
 
+; Stage 16 (design/stage16-ergonomics/macrolet.md §5.2). Snapshot the state a
+; nested emission is about to destroy. `macrolet` compiles a macro body while a
+; function is mid-emission, which the mono-worklist answer ("emit a function on
+; demand from a call site" -> defer to a drain) cannot serve: the macro must
+; exist before the body it scopes over is emitted.
+;
+; Snapshot only — it does NOT call `reset-function-state`. The nested emission
+; does that itself (compile-macro-body opens its own entry/body streams), and
+; resetting here as well would open a memstream pair that nothing ever closes.
+;
+; Kept adjacent to `reset-function-state` deliberately — a global added there
+; and not here is the drift this placement exists to make obvious.
+(defn push-function-state ():ref:FnState
+  (let (s:ref:FnState (as ref:FnState (arena-alloc (sizeof FnState))))
+    (.set! s tmp g-tmp)
+    (.set! s label g-label)
+    (.set! s block-term g-block-term)
+    (.set! s lbl-tbl g-lbl-tbl)
+    (.set! s cur-fname g-cur-fname)
+    (.set! s fn-ret-abi g-fn-ret-abi)
+    (.set! s fn-sret-name g-fn-sret-name)
+    (.set! s fn-ret-type g-fn-ret-type)
+    (.set! s loop-depth g-loop-depth)
+    (.set! s nundo g-nundo)
+    (.set! s entry-stream g-entry-stream)
+    (.set! s entry-bufp g-entry-bufp)
+    (.set! s entry-sizep g-entry-sizep)
+    (.set! s body-stream g-body-stream)
+    (.set! s body-bufp g-body-bufp)
+    (.set! s body-sizep g-body-sizep)
+    (.set! s abi-gpr-left g-abi-gpr-left)
+    (.set! s abi-fpr-left g-abi-fpr-left)
+    (.set! s abi-varargs g-abi-varargs)
+    (.set! s want-type g-want-type)
+    (.set! s form-line g-form-line)
+    (return s)))
+
+; Restore what push-function-state saved. The nested emission is responsible for
+; closing and freeing the entry/body streams `reset-function-state` opened for
+; it (emit-defmacro's body compiler already does); this only re-points the
+; globals at the outer function's still-open pair.
+(defn pop-function-state (s:ref:FnState):void
+  (set! g-tmp (s tmp))
+  (set! g-label (s label))
+  (set! g-block-term (s block-term))
+  (set! g-lbl-tbl (s lbl-tbl))
+  (set! g-cur-fname (s cur-fname))
+  (set! g-fn-ret-abi (s fn-ret-abi))
+  (set! g-fn-sret-name (s fn-sret-name))
+  (set! g-fn-ret-type (s fn-ret-type))
+  (set! g-loop-depth (s loop-depth))
+  (set! g-nundo (s nundo))
+  (set! g-entry-stream (s entry-stream))
+  (set! g-entry-bufp (s entry-bufp))
+  (set! g-entry-sizep (s entry-sizep))
+  (set! g-body-stream (s body-stream))
+  (set! g-body-bufp (s body-bufp))
+  (set! g-body-sizep (s body-sizep))
+  (set! g-abi-gpr-left (s abi-gpr-left))
+  (set! g-abi-fpr-left (s abi-fpr-left))
+  (set! g-abi-varargs (s abi-varargs))
+  (set! g-want-type (s want-type))
+  (set! g-form-line (s form-line)))
+
 ; True while codegen is redirected into a macro/compile-time JIT module rather
 ; than the main program module (g-decl-out is swapped away from g-decl-stream).
 (defn in-jit-module ():i32

@@ -1,0 +1,9 @@
+Nucleus REPL (type Ctrl-D to exit)
+nuc> nuc> nuc> nuc> nuc> nuc> nuc> nuc> nuc>   defined
+nuc>   42
+nuc> nuc> nuc> <repl>:1: error: unknown: this-does-not-exist — not defined anywhere in this compilation unit
+nuc> nuc>   42
+nuc> nuc> nuc>   defined
+nuc>   defined
+nuc>   32
+nuc> 

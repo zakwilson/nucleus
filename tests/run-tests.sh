@@ -8189,6 +8189,184 @@ ROWS
 }
 spawn run_b4_redefinition
 
+# --- Stage 16: macrolet (design/stage16-ergonomics/macrolet.md) -----------------
+# Lexically scoped macros. The exit code is a bitmask of FAILED checks, so a
+# regression names itself instead of reporting one anonymous wrong number.
+run_s16_macrolet() {
+  local d
+  d="$(mktemp -d)"
+  cat > "$d/s16-ml.nuc" <<'EOF'
+(defmacro dbl (x) `(_* 2 ~x))
+
+; A binding shadows a global macro for the body and only for the body.
+(defn ml-shadow ():i32
+  (let (r:i32 0)
+    (set! r (dbl 5))
+    (macrolet ((dbl (x) `(_* 3 ~x)))
+      (set! r (_+ r (dbl 5))))
+    (_+ r (dbl 5))))
+
+; Bindings are sequential (like Nucleus `let`, unlike Common Lisp's parallel
+; macrolet): `two` sees `one`.
+(defn ml-seq ():i32
+  (macrolet ((one () `1)
+             (two () `(_+ (one) (one))))
+    (two)))
+
+; An inner binding shadows an outer one of the same name; the outer is restored
+; after the inner body. This is the pop.
+(defn ml-nest ():i32
+  (macrolet ((m () `10))
+    (_+ (macrolet ((m () `100)) (m))
+        (m))))
+
+(defn ml-rest ():i32
+  (macrolet ((sum3 (a &rest more) `(_+ ~a (_+ ~@more))))
+    (sum3 1 2 3)))
+
+; The enclosing function's entry/body streams must survive the nested macro
+; compilation — a macrolet inside a loop body is the cheapest proof.
+(defn ml-loop ():i32
+  (let (acc:i32 0 i:i32 0)
+    (while (< i 4)
+      (macrolet ((bump () `(set! acc (_+ acc i))))
+        (bump))
+      (inc! i))
+    acc))
+
+(defn main ():i32
+  (let (bad:i32 0)
+    (when (!= (ml-shadow) 35) (set! bad (_+ bad 1)))
+    (when (!= (ml-seq)     2) (set! bad (_+ bad 2)))
+    (when (!= (ml-nest)  110) (set! bad (_+ bad 4)))
+    (when (!= (ml-rest)    6) (set! bad (_+ bad 8)))
+    (when (!= (ml-loop)    6) (set! bad (_+ bad 16)))
+    (return bad)))
+EOF
+  w1_run s16-macrolet "$d" "$d/s16-ml.nuc" 0
+
+  # A macrolet in ARGUMENT position sits mid-argument-walk, so the ambient
+  # argument-register budget (g-abi-gpr-left/…) has to survive the nested
+  # emission — by-value structs of both ABI classes make that observable.
+  # Plus: a macrolet in a `cond` arm, and one inside a generic template body
+  # (compiled once per monomorphization, hence the monotonic jit-name counter).
+  cat > "$d/s16-ml2.nuc" <<'EOF'
+(import-use numeric)
+(defstruct Big a:i64 b:i64 c:i64)
+(defstruct Pair x:i64 y:i64)
+
+(defn take6 (p:Pair q:Pair b:Big n:i32 m:i32):i64
+  (let (pp:ptr:Pair (addr-of p) qq:ptr:Pair (addr-of q) bb:ptr:Big (addr-of b))
+    (_+ (_+ (pp x) (qq y)) (_+ (bb c) (as i64 (_+ n m))))))
+
+(defn ml-argpos ():i64
+  (let (p:Pair (Pair 1 2) q:Pair (Pair 3 4) b:Big (Big 5 6 7))
+    (take6 p q b 10 (macrolet ((twenty () `20)) (twenty)))))
+
+(defn ml-cond (n:i32):i32
+  (cond (= n 0) (macrolet ((z () `100)) (z))
+        (= n 1) (macrolet ((o (k) `(_* ~k 3))) (o 7))
+        true    (macrolet ((d () `(_- 0 1))) (d))))
+
+(defn ml-maxish (a:T b:T &where (Ord T)):T
+  (macrolet ((pick (x y) `(if (< ~x ~y) ~y ~x)))
+    (pick a b)))
+
+(defn main ():i32
+  (let (bad:i32 0)
+    (when (!= (ml-argpos) (as i64 42)) (set! bad (_+ bad 1)))
+    (when (!= (ml-cond 0) 100) (set! bad (_+ bad 2)))
+    (when (!= (ml-cond 1)  21) (set! bad (_+ bad 4)))
+    (when (!= (ml-cond 2)  -1) (set! bad (_+ bad 8)))
+    (when (!= (ml-maxish 21 9) 21) (set! bad (_+ bad 16)))
+    (when (!= (ml-maxish (as i64 50) (as i64 77)) (as i64 77)) (set! bad (_+ bad 32)))
+    (return bad)))
+EOF
+  w1_run s16-macrolet-abi "$d" "$d/s16-ml2.nuc" 0
+
+  # A macrolet inside a `defmacro` BODY: one macro JIT module compiled while
+  # another is compiling. The hoist-to-a-pre-pass alternative could not do this;
+  # push-function-state can. `(a car)` on the INT node `5` is null, so `pick`
+  # expands to its second argument.
+  cat > "$d/s16-ml3.nuc" <<'EOF'
+(defmacro pick (a b)
+  (macrolet ((first-of (x) `(~x car)))
+    (if (= (first-of a) null) b a)))
+(defn main ():i32 (return (pick 5 6)))
+EOF
+  w1_run s16-macrolet-in-defmacro "$d" "$d/s16-ml3.nuc" 6
+  rm -rf "$d"
+}
+spawn run_s16_macrolet
+
+# Every malformed spelling has a located message, and none of them crashes.
+# The special-form row is the load-bearing one: emit-list consults the macro
+# table BEFORE special forms, so a binding named `let` would silently take over
+# `let` for the whole body if this were not refused.
+run_s16_macrolet_refused() {
+  local d src err want n
+  d="$(mktemp -d)"
+  n=0
+  while IFS='|' read -r name src want; do
+    [ -n "$name" ] || continue
+    printf '%s\n' "$src" > "$d/$name.nuc"
+    err="$(./build/nucleusc --emit-llvm "$d/$name.nuc" 2>&1 >/dev/null || true)"
+    if printf '%s' "$err" | qgrep -F "$want"; then
+      echo "PASS  s16-macrolet-refused-$name"
+    else
+      echo "FAIL  s16-macrolet-refused-$name (wrong or missing diagnostic)"
+      printf '%s\n' "$err" | sed 's/^/    got: /'
+    fi
+  done <<'EOF'
+noargs|(defn main ():i32 (macrolet) 0)|macrolet: expects a binding list and at least one body form
+nobody|(defn main ():i32 (macrolet ((m () `1))) 0)|macrolet: expects a binding list and at least one body form
+badbind|(defn main ():i32 (macrolet (m) 0))|macrolet: binding must be (name (params) body...)
+badname|(defn main ():i32 (macrolet ((5 () `1)) 0))|macrolet: macro name must be a symbol
+badparams|(defn main ():i32 (macrolet ((m 5 `1)) 0))|macrolet: params must be a list
+badparam|(defn main ():i32 (macrolet ((m (5) `1)) 0))|macrolet: param must be a symbol
+special|(defn main ():i32 (macrolet ((let (x) `1)) 0))|macrolet: 'let' is a special form and may not be shadowed
+restpos|(defn main ():i32 (macrolet ((m (&rest a b) `1)) 0))|macrolet: &rest must be second-to-last param
+colon|(defn main ():i32 (macrolet ((m:i32 () `1)) 0))|macrolet: a binding name takes no type annotation; write (m (params) ...)
+toplevel|(macrolet ((m () `1)) (m))|unknown top-level form: macrolet
+EOF
+  rm -rf "$d"
+}
+spawn run_s16_macrolet_refused
+
+# A macro whose whole expansion is an ATOM. `emit-quote-tree` emits
+# @alloc-node / @make-cell / @intern-symbol without ever touching the
+# __cons/__append helpers, so gating their `declare`s on the quasiquote-LIST
+# flag left the JIT module with "use of undefined value '@alloc-node'". A
+# pre-existing defmacro bug (it reproduced on the stage-15 boot compiler);
+# found via macrolet, where one-atom bodies are the common case. The non-symbol
+# param row is the sibling crash: Node.s is null on an INT node and the &rest
+# probe is a content compare, so `(defmacro m (5) …)` segfaulted the compiler.
+run_s16_atom_macro() {
+  local d err
+  d="$(mktemp -d)"
+  cat > "$d/s16-atom.nuc" <<'EOF'
+(defmacro one () `1)
+(defmacro sym-of () `x)
+(defmacro quoted () 'y)
+(defn main ():i32
+  (let (x:i32 40 y:i32 2)
+    (macrolet ((two () `2))
+      (return (_+ (one) (_+ (two) (_+ (sym-of) (quoted))))))))
+EOF
+  w1_run s16-atom-macro "$d" "$d/s16-atom.nuc" 45
+
+  printf '(defmacro m (5) `1)\n(defn main ():i32 0)\n' > "$d/s16-badparam.nuc"
+  err="$(./build/nucleusc --emit-llvm "$d/s16-badparam.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | qgrep -F "defmacro: param must be a symbol"; then
+    echo "PASS  s16-defmacro-nonsym-param"
+  else
+    echo "FAIL  s16-defmacro-nonsym-param (crashed, or wrong diagnostic)"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+  fi
+  rm -rf "$d"
+}
+spawn run_s16_atom_macro
+
 # --- Join + replay --------------------------------------------------------------
 # Wait for all remaining jobs (ignore per-job exit codes — PASS/FAIL is decided
 # by scanning buffered output, since `set -e` does not propagate across `&`).

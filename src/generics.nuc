@@ -2678,6 +2678,11 @@
           (let (last:ptr null j:i32 1 cl:i32 (node-len n))
             (while (< j cl) (set! last (gcheck (node-at n j) scope m)) (inc! j))
             (return last)))
+        ; Stage 16 `macrolet`: defer (null). Its bindings are compiled at
+        ; emission, so during the A2 walk the body's local macro calls cannot be
+        ; expanded and would read as unknown functions. Checked at
+        ; monomorphization instead, which is where they do expand.
+        (when (= hp 'macrolet) (return null))
         ; cond / _and / _or / not / set! / inc! / return / while and the structural
         ; special forms: walk compound children; result type is not modeled.
         (when (!= (gcheck-special-form hp) 0)
@@ -2953,6 +2958,9 @@
           (let (last:ptr null j:i32 1 cl:i32 (node-len n))
             (while (< j cl) (set! last (valid-walk (node-at n j) scope gname cty line)) (inc! j))
             (return last)))
+        ; Stage 16 `macrolet`: defer, for the same reason gcheck does — the
+        ; bindings do not exist yet, so the body's local calls are unresolvable.
+        (when (= hp 'macrolet) (return null))
         (when (!= (gcheck-special-form hp) 0)
           (valid-walk-children n scope gname cty line)
           (return (node-type n scope)))
@@ -4955,6 +4963,10 @@
           (if (> (node-len n) 1)
             (return (node-type (node-at n (- (node-len n) 1)) scope))
             (return ty-void)))
+        ; Stage 16 `macrolet`: expansion-dependent, so unmodelled — the same
+        ; escape hatch `cond`, macros and `quasiquote` take. Codegen keeps its
+        ; own type. (node-type↔emit-node lockstep: emit-macrolet, nucleusc.nuc.)
+        (when (= hp 'macrolet) (return null))
         (when (= hp 'let) (return (node-type-block n scope)))
         (when (= hp 'with) (return (node-type-block n scope)))
         (when (= hp 'cond) (return null))
