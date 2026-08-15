@@ -39,21 +39,31 @@ landed anyway (see §0 and §4 below).
 | **W6** — Nullability flow typing | Design document **written** ([nullability.md](nullability.md)); its **§3.4 triage item landed** (a `null` global initializer into a typed non-null pointer is rejected like the identical local). Flow typing proper (§4 onward of the design) remains **design-only**, as scoped — no narrowing engine changes shipped in this stage. |
 | **W7** — The bare-symbol selector always means "field name" | **Done** (options B + D + E; provenance: the author's own stress testing, not the Doom port — no `§` number) |
 | **W8** — Combined declaration and initialization | **Done.** All six steps (G-0 through G-5) landed 2026-08-01/2026-08-02, plus one regression fix between G-3 and G-4. `compiler-init` is eliminated (52 statements → 0) and `(defvar g:ptr:T)` with no initializer is now rejected. Spec: [../global-init.md](../global-init.md). Added to the stage 2026-08-01. |
-| **W9** — Defects found while measuring W8's design | **Reconciled at stage close: twenty found, two now fixed, eighteen open.** Reported except where fixed. [../global-init.md](../global-init.md) §7 and [progress.md](progress.md) are both source lists; `progress.md`'s W9 table is the reconciled union. Added to the stage 2026-08-01. |
+| **W9** — Defects found while measuring W8's design | **Closed 2026-08-15: forty-seven found, forty-seven fixed, none open.** The "twenty found, two fixed, eighteen open" reconciliation this row carried was the state at W8's close (2026-08-02); items 21–47 were filed and fixed between 2026-08-03 and 2026-08-15. [progress.md](progress.md)'s W9 table is the reconciled union and the only current list — [../global-init.md](../global-init.md) §7 is the original six only. Added to the stage 2026-08-01. |
+| **B** — Name resolution *(added 2026-08-08, after this table was first written)* | **Done** — B0–B7, closed 2026-08-09. Every name-keyed kind is on one canonicaliser; an import prefix is file-scoped; R4 makes a second definition of one name a located error rather than a silent winner. Spec and measurements: [name-resolution.md](name-resolution.md); staging record in [progress.md](progress.md)'s "B — Name resolution" section. |
 
 **Gate for W1–W7 at the time they closed:** `make test` **328 PASS / 0 FAIL**;
 `make bootstrap` byte-identical on the first pass; `make abi-test` and
-`make layout-test` green. **Gate for the whole stage, now that W8 has also
-landed:** `make test` **410 PASS / 0 FAIL** (`NUCLEUS_TEST_JOBS=1`);
-`make bootstrap` reconverged and passing; `make abi-test`, `make layout-test`
-and `make avr-test` green.
+`make layout-test` green. **Gate when W8 landed:** `make test` **410 PASS /
+0 FAIL** (`NUCLEUS_TEST_JOBS=1`); `make bootstrap` reconverged and passing;
+`make abi-test`, `make layout-test` and `make avr-test` green. **Gate for the
+whole stage as it now stands (2026-08-15, after B0–B7 and W9 items 21–47):**
+`make test` **704 PASS / 0 FAIL**; `make bootstrap` "stage1.ll == stage2.ll";
+`make abi-test`, `make layout-test` and `make check-headers` green (69
+generated headers match).
 
 **The external regression — the only test that proves the stage achieved its
-purpose (§6) — passed on 2026-08-01.** The Doom port at
-`/home/zak/code/nuc-doom-claude` rebuilt against the finished compiler with
-both named workarounds deleted, and both demo gates are bit-exact. Two
+purpose (§6) — passed on 2026-08-01, and was re-run on 2026-08-15.** The Doom
+port at `/home/zak/code/nuc-doom-claude` rebuilt against the finished compiler
+with both named workarounds deleted, and both demo gates are bit-exact. Two
 findings came out of that run and are recorded in §3 and §7 below, and in full
 in [progress.md](progress.md)'s "The external Doom-port regression" section.
+**The re-run is the important one:** the port as committed no longer *builds*
+against the current compiler, and after a mechanical migration both gates are
+bit-exact again — so nothing here regressed the generated code, and three
+deliberate rulings taken after 2026-08-01 have a migration cost this stage had
+never measured on code outside this repo. See progress.md's "The external
+Doom-port regression, re-run" section; the port itself was **not** modified.
 
 ---
 
@@ -352,15 +362,17 @@ Three things about it that a dispatcher should know before reading the spec:
   to be incompatible with zero-cost-when-unused. Both corrections are recorded
   in place, per this stage's practice.
 
-### W9 — Defects found while measuring W8's design *(added 2026-08-01; reconciled 2026-08-02 to twenty found, two now fixed, eighteen open)*
+### W9 — Defects found while measuring W8's design *(added 2026-08-01; reconciled 2026-08-02 to twenty found, two fixed; **closed 2026-08-15 at forty-seven found, forty-seven fixed, none open**)*
 
 **The original six, below, are enumerated in [../global-init.md](../global-init.md)
 §7.** All six are pre-existing, none was introduced by W1–W7, and all were hit
 while measuring — not synthesized. Building the rest of W8 (G-1 through G-5)
-found fourteen more, two of which are now fixed (a fn-pointer-typed `defvar`
-collision, and `emit-as` not arming the want channel for a return-only-tyvar
-generic); [progress.md](progress.md)'s W9 table is the full, reconciled
-twenty-item account and is the one to read for the current state — this
+found fourteen more, two of which were fixed at the time (a fn-pointer-typed
+`defvar` collision, and `emit-as` not arming the want channel for a
+return-only-tyvar generic). Twenty-seven further items were filed and fixed
+between 2026-08-03 and 2026-08-15, most of them found *while fixing an earlier
+one*; [progress.md](progress.md)'s W9 table is the full, reconciled
+forty-seven-item account and is the one to read for the current state — this
 section is kept as the record of the original six:
 
 1. **`make lib-objs` / `make lib-so` are broken**, and reproduce on the
@@ -489,6 +501,21 @@ section is kept as the record of the original six:
   finding, recorded per §7 below and in full in
   [progress.md](progress.md)'s Doom-port-regression section.
 
+  **Re-verified 2026-08-15, and this is where the criterion earns its keep.**
+  The port as committed no longer compiles against the current compiler: the
+  three semantic tightenings taken *after* 2026-08-01 — B4's R4 (a second
+  definition of one name is an error, even a same-valued `defconst`), W8 G-5's
+  flip (a non-null global needs an initializer) and the `as` refusal of a raw
+  pointer into a non-null one — reject it at 5 file pairs, 13 globals and 6
+  casts respectively. After a mechanical migration in a scratch copy, **both
+  gates are bit-exact again**, byte-for-byte the output above. So the criterion
+  splits in two: *the generated code is undisturbed* (met, and that is the
+  regression half), while *a program written against the stage's own
+  mid-point compiler needs a migration* (a finding, not a defect — but the
+  migration cost was never measured outside this repo, which is exactly what an
+  external gate exists to catch). Full account in progress.md's "The external
+  Doom-port regression, re-run" section.
+
 ---
 
 ## 7. Explicitly out of scope (not built here; candidates for the next stage)
@@ -537,4 +564,15 @@ section is kept as the record of the original six:
   cross-file struct prescan, typed function pointers + `funcall`, arity
   overloading, `f32` bit-exactness, duplicate same-value `defconst`, `.set!`
   struct copies, compile speed. Verified undisturbed by the external
-  regression run.
+  regression run. **One entry has since been deliberately withdrawn:**
+  duplicate same-value `defconst` is an **error** as of B4's R4 (2026-08-09) —
+  a name may be defined once in a compilation unit, and equality of value is
+  not a licence, because the rule exists to stop two *different* definitions
+  from being resolved by import order. The re-run of 2026-08-15 found the port
+  relying on it at five file pairs (`SEEK_SET`/`SEEK_END`, `MF_SHADOW`/
+  `MF_TRANSLATION`/`MF_TRANSSHIFT`, `ML_TWOSIDED`, `ANG90`), two of them
+  carrying a source comment that named the other copy. R4's blast-radius
+  measurement covered `src/`, `lib/` and `examples/`, where the count was zero;
+  it is 7 in the first external program to meet it. That is not an argument
+  against the ruling — it is an argument for measuring a naming rule against
+  code the compiler's authors did not write.

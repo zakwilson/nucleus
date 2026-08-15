@@ -348,6 +348,14 @@ Notes on what this does and does not cover:
   consumer keeps both names alive under different qualifiers.
 * **The REPL is exempt.** An interactive session is a sequence of units typed
   one at a time, and redefining a name is the point of it.
+* **Defining the same value twice is still a redefinition.** Two files that
+  each write `(defconst SEEK_SET 0)` collide, and the equal value is not an
+  exemption: the rule exists so that no name's meaning is decided by import
+  order, and a compiler that let equal values through would be deciding which
+  collisions matter. A constant two files both need belongs in one of them (or
+  in a third), reached by `import` — which, per [Cross-file
+  resolution](#cross-file-resolution-reachability-not-import-order), works from
+  anywhere in the unit.
 
 ## Cross-file resolution: reachability, not import order
 

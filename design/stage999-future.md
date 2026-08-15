@@ -31,8 +31,7 @@ deferred.
 ## Base features
 
 * `addr-of` probably needs a reader macro; likewise a sigil/reader macro for `ref` in type signatures
-* `defvar` inits are limited to literals (and `defconst`/`defenum` folds) — no constant-expression folding
-* `set!` should take multiple pairs like `let` and/or be polymorphic
+/* `set!` should take multiple pairs like `let` and/or be polymorphic
 * `inc!`/`dec!` predate macros; they should probably become macros over `set!`
 
 ## macrolet

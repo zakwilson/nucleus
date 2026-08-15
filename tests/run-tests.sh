@@ -8151,6 +8151,32 @@ ROWS
     printf '%s\n' "$err" | sed 's/^/    got: /'
   fi
 
+  # Equal values are NOT an exemption. The first external program to meet R4 —
+  # the Doom port, 2026-08-15 — collided on seven same-valued `defconst`s in
+  # five file pairs, two of them commented as deliberate copies, so this is the
+  # shape a future relaxation would be tempted by. Pinned because the rule is
+  # about a name having one meaning, not about detecting disagreement: letting
+  # equal values through means the compiler decides which collisions matter.
+  printf '(defconst RD-EQ 7)\n' > "$d/b4r-eqa.nuc"
+  printf '(defconst RD-EQ 7)\n' > "$d/b4r-eqb.nuc"
+  printf '(import b4r-eqa)\n(import b4r-eqb)\n(defn main ():i32 (return RD-EQ))\n' > "$d/b4r-eqm.nuc"
+  err="$(./build/nucleusc -I "$d" --emit-llvm "$d/b4r-eqm.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | qgrep -F "redefinition of 'RD-EQ'" \
+     && printf '%s' "$err" | qgrep -F "$d/b4r-eqa.nuc:1"; then
+    echo "PASS  b4-redefinition-same-value"
+  else
+    echo "FAIL  b4-redefinition-same-value (equal values were accepted, or the other file was not named)"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+  fi
+
+  # …and the fix the diagnostic recommends has to work: one owner, reached by
+  # `import`. This is the migration the port took, and it is the half of the
+  # ruling that makes it liveable rather than merely strict.
+  printf '(defconst RD-OWN 7)\n' > "$d/b4r-owna.nuc"
+  printf '(import b4r-owna)\n(defn rd-own-b ():i32 (return RD-OWN))\n' > "$d/b4r-ownb.nuc"
+  printf '(import b4r-owna)\n(import b4r-ownb)\n(defn main ():i32 (return (+ RD-OWN (rd-own-b))))\n' > "$d/b4r-ownm.nuc"
+  w1_run b4-redefinition-same-value-fix "$d" "$d/b4r-ownm.nuc" 14
+
   # The rule is per compilation unit, so re-importing one file through two paths
   # — the diamond every non-trivial program has — must stay legal. This is what
   # `same-definition-site` protects: the registrars really are re-entered.
