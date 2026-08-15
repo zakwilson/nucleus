@@ -443,7 +443,10 @@ types — `r:(Result i64 i32)` (and the chain form `r:ref:(…)`) read directly
 in binding positions, equivalent to the list form `(name (Result i64 i32))`.
 
 `.nuch` headers export `defunion` forms verbatim (template or monomorphic);
-importers re-register the type and stamp their own instances. `--emit-cheader`
+importers re-register the type — under the header's own namespace, so a union
+declared in `(ns shapes)` is imported as `shapes/Opt` and its arm constructors
+link against `@shapes__Opt-Some`, exactly as compiling that library's `.nuc`
+source would give you — and stamp their own instances. `--emit-cheader`
 exports monomorphic defunions as the tagged struct + tag enum; functions whose
 signatures mention template instances are skipped with a comment (no C
 spelling for instances yet).
