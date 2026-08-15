@@ -51,6 +51,34 @@ an all-C reference build**, never from the Nucleus output being tested — write
 throwaway C `main` against `tests/abi/clib.c`, run it, and paste its lines in;
 the print ORDER must match `interop.nuc`'s, since the harness diffs.
 
+## The external gate: the Doom port (what no in-repo gate can catch)
+
+`make test` / `make bootstrap` only ever compile code this repo owns, so a
+semantics change is measured against code its own author wrote. The Doom port
+at **`/home/zak/code/nuc-doom-claude`** (~25,000 lines, one translation unit) is
+the counterweight, and it is stage 15's stated definition of success. Run it
+after any change to what the front end *accepts* — naming/collision rules,
+nullability, coercion:
+
+```
+cd /home/zak/code/nuc-doom-claude
+./build.sh src/test_demo.nuc && SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./build/test_demo
+./build.sh src/test_demo_monsters.nuc && SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./build/test_demo_monsters
+```
+
+`build.sh` invokes `/home/zak/code/nucleus/build/nucleusc` directly, so it tests
+whatever was last built here — no install step. Both gates print `BIT-EXACT`
+and check against the real engine's recorded state, so a **codegen** regression
+shows as a failed tic rather than a compile error.
+
+Two standing cautions. **The port is a separate repository — do not commit to
+it**; measure migrations in a copy (`cp -r src …`) and report what they cost.
+And **it is not on `make test`'s clock**: it drifts out of buildability as the
+language tightens, which is data, not breakage — the 2026-08-15 re-run found 26
+sites across three deliberate rulings and both gates still bit-exact
+(`design/stage15-stress-test/progress.md`, "The external Doom-port regression,
+re-run"). Read that section before concluding a fresh failure is a regression.
+
 ## Windows build (Phase F, untested on this Linux host)
 
 - `build.ps1` is the PowerShell counterpart of the Makefile/`build.sh` flow: compile `repl_shim` → ensure a boot compiler exists (build from committed Windows boot IR if `bin\nucleusc.exe` is missing) → self-host (`--emit-llvm` → clang link). `bootstrap.bat [mingw|msvc]` is a cmd.exe wrapper over `build.ps1 -Bootstrap`.

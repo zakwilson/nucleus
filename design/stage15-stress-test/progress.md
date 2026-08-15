@@ -652,6 +652,96 @@ prescan never claimed to cover.
 
 ---
 
+## The external Doom-port regression, re-run *(2026-08-15)* — the generated code is undisturbed; the source no longer compiles
+
+The run above happened on **2026-08-01**, at the stage's mid-point. Everything
+that landed afterwards — W8's G-0…G-5, B0–B7, and W9 items 21–47, several of
+which moved codegen corpus-wide — has never been through it. Re-running it is
+the only check in this stage that asks a program the compiler's authors did not
+write, so it is where a semantics change with a migration cost shows up.
+
+**The result, in one line: the port as committed does not build against the
+current compiler, and after a mechanical migration both gates are bit-exact
+again — byte-for-byte the output recorded above.**
+
+```
+== test_demo: 182 checks passed, 0 failed ==
+ALL 35 TICS BIT-EXACT
+
+== test_demo_monsters: 1654 checks passed, 0 failed ==
+ALL 150 TICS BIT-EXACT (WITH MONSTERS, vs the real engine)
+```
+
+That split is the finding. **No codegen regressed** — 25,000 lines of ported C,
+two demos, 1,836 checks, and every tic still matches the real engine. What
+changed is what the *front end accepts*, in three deliberate rulings, each of
+which the port trips:
+
+| Ruling | Where it landed | Sites in the port |
+|---|---|---|
+| **B4 R4** — a name may be defined once in a compilation unit, and *equal values are not a licence* | 2026-08-09, [name-resolution.md](name-resolution.md) §11.1 | **7**, across 5 file pairs: `SEEK_SET`/`SEEK_END` (`g_game`↔`w_file`), `MF_SHADOW`/`MF_TRANSLATION`/`MF_TRANSSHIFT` (`p_mobj`↔`r_things`), `ML_TWOSIDED` (`p_setup`↔`p_map`), `ANG90` (`tables`↔each test entry) |
+| **W8 G-5's flip** — a non-null global needs an initializer | 2026-08-02 | **13** — exactly the 13 `(defvar- g-X:ptr:T null)` singletons the 2026-08-01 run named, which that run resolved by *deleting the redundant `null`*. The flip closed the spelling they were moved to |
+| **`as` refuses a raw pointer into a non-null one** | Stage 10 safety, reached here through the coercion work | **6** — `(as ptr:ui8 query)` on a `CStr`, in `doomdata`, `wad` (×3) and `r_data` (×2) |
+
+**The migration is mechanical and small: 15 files, 47 changed lines.** Delete
+the duplicate `defconst` and import the file that owns it (2 new `import`
+lines); `(as ptr:T x)` → `(unsafe/cast ptr:T x)`; `g-X:ptr:T` → `g-X:raw:T` for
+each lazily-initialized singleton, which then needs `unsafe/cast` at the **10**
+accessors that hand the pointer back as non-null (`mobjinfo-at`, `state-at`,
+`players-at`, …). It was carried out in a scratch copy — **the port repository
+was not modified**; it is external and not this repo's to commit to.
+
+Three things worth keeping from the run:
+
+* **`defconst` duplication was listed as a thing that *worked*.** The findings
+  report's §7 names "duplicate same-value `defconst`" among the language's
+  successes, and `prompt.md` §7 recorded it as verified undisturbed. R4
+  withdrew it on purpose and with good reason — the rule exists so that two
+  *different* definitions cannot be resolved by import order, and admitting
+  equal values would mean the compiler decides which collisions matter. But
+  R4's blast radius was measured on `src/` + `lib/` + `examples/`, where the
+  `defconst` count was **0**. It is 7 in the first program from outside. Two of
+  those sites carry a source comment naming the other copy (`; also in
+  r_things.nuc`), so this is an idiom the port adopted deliberately, not an
+  accident. **The lesson is about the measurement, not the ruling:** a naming
+  rule is the one class of change whose cost lands entirely on code the author
+  of the rule does not have.
+* **G-5's flip cost exactly what it was predicted to cost, one step later.**
+  The 2026-08-01 run recorded 13 sites and resolved them by deleting the
+  redundant `null` — which was only available *because the no-init spelling was
+  still accepted*, and that section said so, flagging it as the asymmetry to
+  close. G-5 closed it the next day. The 13 sites are the same 13; the answer
+  the port now needs is `raw`, i.e. "this genuinely may be null before first
+  use", which is what the idiom always meant.
+* **The better end state is not the migration above.** These singletons are
+  process-lifetime constant tables copied from a stack `(array …)` into
+  `malloc`; W8's **G-2** made `(array T N)` a global type with a constant
+  initializer, so the lazy-init dance can go away entirely rather than be
+  re-spelled as nullable. That is a port-side refactor, recorded here as the
+  recommendation, not done.
+
+**One gap the run exposed in this repo's own tests, now closed.** `b4r-const`
+and `b4-redefinition-cross-file` both pin the rule with *different* values
+(`1` vs `2`), so nothing pinned the case the port actually hit — and a future
+relaxation ("they agree, so let it through") would have passed every test.
+Added: **`b4-redefinition-same-value`**, two files defining `(defconst RD-EQ
+7)`, asserting the diagnostic names the other file; and
+**`b4-redefinition-same-value-fix`**, the migration the diagnostic recommends
+— one owner, reached by `import`, used from two files — which *runs* and
+returns `14`, because a rule this strict is only liveable if its recommended
+fix is verified rather than assumed. `docs/toplevel.md`'s redefinition notes
+gained the matching sentence.
+
+**Reproducing it:** `./build.sh src/test_demo.nuc` then `./build/test_demo` in
+the port tree, with `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy`; likewise
+`src/test_demo_monsters.nuc`. `context/build.md` carries the recipe and the
+caution that the port is a separate repository. The compiler's own gates at the
+same commit: `make test` **704 PASS / 0 FAIL** (702 + the two pins above),
+`make bootstrap` a byte-identical fixed point,
+`make abi-test`/`make layout-test`/`make check-headers` green.
+
+---
+
 ## W8 — Combined declaration and initialization *(added 2026-08-01; all six steps G-0 through G-5 done, 2026-08-01/2026-08-02)*
 
 **Spec: [../global-init.md](../global-init.md)** — the source of truth. This
