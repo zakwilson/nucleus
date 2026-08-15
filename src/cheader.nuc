@@ -21,11 +21,9 @@
 ; by name. A statement-position call to one terminates its block, so a
 ; (when (= x null) (exit 1)) / (abort) guard narrows the tested binding past it.
 (defn c-fn-noreturn (fname:CStr):i32
-  (when (or (= fname "exit") (= fname "abort")) (return 1))
-  (when (or (= fname "_exit") (= fname "_Exit")) (return 1))
-  (when (or (= fname "quick_exit") (= fname "abort_handler_s")) (return 1))
-  (when (or (= fname "longjmp") (= fname "siglongjmp")) (return 1))
-  (return 0))
+  (return (contains? #{"exit" "abort" "_exit" "_Exit" "quick_exit"
+                       "abort_handler_s" "longjmp" "siglongjmp"}
+                      fname)))
 
 ; ============================================================
 ; C header parsing (clang -E)
@@ -425,21 +423,13 @@
             (when (= (as i64 (strlen tok)) 0) (set! done 1))
             (when (= done 0)
               (cond
-                (= tok "const")      (set! pos tok-end)
-                (= tok "volatile")   (set! pos tok-end)
-                (= tok "restrict")   (set! pos tok-end)
-                (= tok "__restrict") (set! pos tok-end)
-                (= tok "_Atomic")    (set! pos tok-end)
-                (= tok "extern")     (set! pos tok-end)
-                (= tok "static")     (set! pos tok-end)
-                (= tok "inline")     (set! pos tok-end)
-                (= tok "__inline")   (set! pos tok-end)
-                (= tok "__inline__") (set! pos tok-end)
-                (= tok "__extension__") (set! pos tok-end)
-                (= tok "_Noreturn")  (set! pos tok-end)
+                (contains? #{"const" "volatile" "restrict" "__restrict" "_Atomic"
+                             "extern" "static" "inline" "__inline" "__inline__"
+                             "__extension__" "_Noreturn" "signed"}
+                            (as CStr tok))
+                  (set! pos tok-end)
                 (= tok "unsigned")
                   (do (set! is-unsigned 1) (set! pos tok-end))
-                (= tok "signed")     (set! pos tok-end)
                 (= tok "long")
                   (do (set! is-long (+ is-long 1))
                       (set! pos tok-end)
@@ -1237,11 +1227,11 @@
         te:i64 0
         tok:ptr (c-read-ident buf pos len (as ptr:i64 (addr-of te))))
     (cond
-      (= (strcmp tok "typedef") 0)
+      (= tok "typedef")
         (do (set! is-typedef 1) (set! pos te))
-      (= (strcmp tok "struct") 0)
+      (= tok"struct" )
         (set! pos te)
-      (= (strcmp tok "union") 0)
+      (= tok "union")
         (do (set! is-union 1) (set! pos te))
       true
         (do (ptr-set! out-end pos) (return 0)))
@@ -1250,8 +1240,8 @@
       (let (te2:i64 0
             t2:ptr (c-read-ident buf pos len (as ptr:i64 (addr-of te2))))
         (cond
-          (= (strcmp t2 "struct") 0) 0
-          (= (strcmp t2 "union") 0) (set! is-union 1)
+          (= t2 "struct") 0
+          (= t2 "union" ) (set! is-union 1)
           true (do (ptr-set! out-end pos) (return 0)))
         (set! pos te2)))
     ; After 'struct': optional tag, then optional body.
@@ -1469,17 +1459,17 @@
         done:i32 0)
     (while (and (= done 0) (< p len))
       (let (c:i32 (as i32 (char-at buf p)))
-        (cond
-          (= c 123) (do (inc! depth) (set! p (+ p 1)))
-          (= c 125) (do (when (> depth 0) (set! depth (- depth 1)))
+        (case c
+          123 (do (inc! depth) (set! p (+ p 1)))
+          125 (do (when (> depth 0) (set! depth (- depth 1)))
                         (set! p (+ p 1)))
-          (= c 59)  (do (set! p (+ p 1)) (when (= depth 0) (set! done 1)))
-          (= c 35)  (let (dstart:i64 p)
+          59  (do (set! p (+ p 1)) (when (= depth 0) (set! done 1)))
+          35  (let (dstart:i64 p)
                       (while (and (< p len) (!= (char-at buf p) 10))
                         (set! p (+ p 1)))
                       (when (< p len) (set! p (+ p 1)))
                       (cheader-note-linemarker buf dstart p len))
-          true      (set! p (+ p 1)))))
+          (set! p (+ p 1)))))
     (return p)))
 
 ; Skip a balanced `{ … }` starting at `pos` (which must be at `{`). Returns the
@@ -1934,62 +1924,35 @@
         (printf "#include \"%s\"\n"
           (cheader-include-spelling (as CStr (aref (as ptr:ptr arr) j))))))))
 
+; Every builtin scalar MUST have a row here. A missing row does not fail loudly:
+; it falls through to the "assume struct" branch below.
 (defn type-name-to-c (name:ptr):ptr
-  (when (= name "void")  (return "void"))
-  (when (= name "i1")    (return "_Bool"))
-  (when (= name "i8")    (return "int8_t"))
-  (when (= name "i16")   (return "int16_t"))
-  (when (= name "i32")   (return "int32_t"))
-  (when (= name "int")   (return "int32_t"))
-  (when (= name "i64")   (return "int64_t"))
-  (when (= name "ui8")   (return "uint8_t"))
-  (when (= name "ui16")  (return "uint16_t"))
-  (when (= name "ui32")  (return "uint32_t"))
-  (when (= name "ui64")  (return "uint64_t"))
-  (when (= name "f32")   (return "float"))
-  (when (= name "f64")   (return "double"))
-  (when (= name "bool")  (return "_Bool"))
-  ; Stage 11 T0's pointer-sized integers. Without these the fallthrough below
-  ; assumed "struct", so every signature naming one emitted `struct usize` — a
-  ; type that does not exist, silently unparseable, and recorded as a known
-  ; `--emit-cheader` defect in design/stage15-stress-test/cheader.md (14 of the
-  ; committed lib/*.h carried it). W9 item 3 made it load-bearing rather than
-  ; merely latent: `lib/keyword.nuc`'s `g-keyword-count` is a `usize` GLOBAL, and
-  ; a broken `extern` line is exactly what that item exists to stop emitting.
-  ; `size_t`/`ptrdiff_t` rather than `uintptr_t`/`intptr_t` — these are the types
-  ; of counts and indices, which is what usize/ssize are used for; both are
-  ; pointer-sized on every target the compiler supports.
-  (when (= name "usize") (return "size_t"))
-  (when (= name "ssize") (return "ptrdiff_t"))
-  ; Stage 15 W9 item 25 (measured, a SECOND cause of the same broken headers):
-  ; `Char` and `Err` are builtin scalars — `union-registry.nuc` resolves both by
-  ; name and they lower to `i32` (verified: `define i64 @char-utf8-len(i32 %c.arg)`).
-  ; The Type-keyed renderer `type-to-c` has always answered `uint32_t`/`int32_t`
-  ; for them; this name-keyed one did not, so the fallthrough assumed "struct" and
-  ; every signature mentioning one emitted `struct Char` / `struct Err` — a tag no
-  ; header defines, which is why tagging the typedef does not rescue `char.h` or
-  ; `error.h`. Same trap as usize/ssize above; the two renderers must agree.
-  (when (= name "Char")  (return "uint32_t"))
-  (when (= name "Err")   (return "int32_t"))
-  (when (= name "CStr")  (return "const char*"))
-  (when (= name "ptr")   (return "void*"))
-  ; Assume struct type — sanitize the name for C. `ir-name-token` first maps the
-  ; two LLVM/C-illegal-but-Nucleus-legal symbol chars (`?`→_QMARK, `!`→_BANG) so a
-  ; `?`/`!`-named struct references its real linkable symbol; `sanitize-for-c` then
-  ; blanket-maps the remaining C-illegal chars (dots from stamped parametric
-  ; instances like Vector.i32 become underscores: Vector_i32). Order matters:
-  ; ir-name-token must run before the blanket map, or `?` would collapse to `_`
-  ; and collide (SM-3). For a name with no `?`/`!` ir-name-token is a pointer-
-  ; identity no-op, so existing headers stay byte-identical.
-  ; Stage 15 B3′: `ns-ir-base` (not bare `ir-name-token`) so a reference to a
-  ; namespaced type spells the same C identifier its typedef does — see
-  ; emit-cheader-defstruct. Identity under `user`.
-  ; W9 item 28: through `cheader-c-ident`, so a type named `union` or `class` is
-  ; escaped here exactly as at its definition. A tag is an identifier too, and
-  ; `struct union {…}` does not parse.
-  ; W9 item 37: record the defining unit, so the preamble can include its header.
-  (cheader-note-type-file (as CStr name))
-  (return (fmt-s "struct %s" (cheader-c-ident (as raw:i8 (ns-ir-base name))))))
+  (let ((mapping (ref (HashMap CStr CStr)))
+        {"void" "void"
+         "i1" "_Bool"
+         "i8" "int8_t"
+         "i16" "int16_t"
+         "i32" "int32_t"
+         "int" "int32_t"
+         "i64" "int64_t"
+         "ui8" "uint8_t"
+         "ui16" "uint16_t"
+         "ui32" "uint32_t"
+         "ui64" "uint64_t"
+         "f32" "float"
+         "f64" "double"
+         "bool" "_Bool"
+         "usize" "size_t"
+         "ssize" "ptrdiff_t"
+         "Char" "uint32_t"
+         "Err" "int32_t"
+         "CStr" "const char*"
+         "ptr" "void*"})
+    (match (mapping (as CStr name))
+      ((some n) (return n))
+      (none
+       (do (cheader-note-type-file (as CStr name))
+         (return (fmt-s "struct %s" (cheader-c-ident (as raw:i8 (ns-ir-base name))))))))))
 
 ; Convert a type AST node to a C type string. Handles SYM types and
 ; (ptr T) / (ptr ptr T) ... lists.
@@ -2348,18 +2311,14 @@
         ret-name:ptr null)
     (extract-name-type name-node (as ptr:ptr (addr-of fname)) (as ptr:ptr (addr-of ret-name)))
     (let (why:i32 (cheader-defn-skip-reason form))
-      (when (= why 1)
-        (printf "/* %s: generic template; not exported */\n" fname)
-        (return))
-      (when (= why 2)
-        (printf "/* %s: uses a defunion-template instance type; not exported */\n" fname)
-        (return))
-      (when (= why 3)
-        (printf "/* %s: exposes a closure or type-erased box type; not C-callable, omitted */\n" fname)
-        (return))
-      (when (= why 4)
-        (printf "/* %s: uses an error-union or option type; not exported */\n" fname)
-        (return)))
+      (macrolet ((result (x output)
+                         `(when (= why ~x)
+                            (printf ~output fname)
+                            (return))))
+                (result 1 "/* %s: generic template; not exported */\n")
+                (result 2 "/* %s: uses a defunion-template instance type; not exported */\n")
+                (result 3 "/* %s: exposes a closure or type-erased box type; not C-callable, omitted */\n")
+                (result 4 "/* %s: uses an error-union or option type; not exported */\n")))
     ; Stage 12 N6: emit the C-legal mangled link name (`geom__area`) for a
     ; namespaced library. ns-ir-base composes g-current-ns's ir-prefix onto the
     ; bare name; identity under `user`, so existing headers are byte-identical.
@@ -2785,13 +2744,12 @@
                    (and (> (node-len (as ptr f)) 0)
                         (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ kind) (= _ NODE-SYM))))
           (let (h:ptr (-> f (node-at _ 0) (unsafe/cast ptr:Node _) (_ s)))
-            (cond (= h "defstruct") (emit-cheader-defstruct (as ptr f))
-                  (= h "defunion")  (emit-cheader-defunion (as ptr f))
-                  (= h "defn")      (emit-cheader-declare (as ptr f))
-                  ; W9 item 3. `defvar-` is a different head, so privacy needs no
-                  ; test here — the same way every other arm gets it.
-                  (= h "defvar")    (emit-cheader-defvar (as ptr f))
-                  (= h "defconst")  (emit-cheader-defconst (as ptr f))
-                  (= h "defenum")   (emit-cheader-defenum (as ptr f))
-                  true                         0))))
+            (case h
+                  "defstruct" (emit-cheader-defstruct (as ptr f))
+                  "defunion"  (emit-cheader-defunion (as ptr f))
+                  "defn"      (emit-cheader-declare (as ptr f))
+                  "defvar"    (emit-cheader-defvar (as ptr f))
+                  "defconst"  (emit-cheader-defconst (as ptr f))
+                  "defenum"   (emit-cheader-defenum (as ptr f))
+                  0))))
       (set! fc ((unsafe/cast ptr:Node fc) cdr)))))
