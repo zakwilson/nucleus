@@ -160,7 +160,7 @@
   (conj self elem))
 
 ; contains?: linear scan with =, 1 if found else 0. (Scalar element types.)
-(defn contains? ((self (ref (Vector T))) elem:T):i32
+(defn contains? ((self (ref (Vector T))) elem:T):i1
   (let (i:usize 0)
     (while (< i (_get self len))
       (when (= (aref (as ptr:T (as ptr (_get self data))) (as i64 i)) elem)
