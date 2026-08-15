@@ -14,7 +14,7 @@
 (defn empty? ((self (ref (Vector T)))) :i32 (return (if (= (_get self len) 0) 1 0)))
 (defn invoke ((self (ref (Vector T))) (i usize)) :T (when (>= i (_get self len)) (vector-bounds "get" i (_get self len))) (return (aref (as ptr:T (as ptr (_get self data))) (as i64 i))))
 (defn append ((self (ref (Vector T))) (elem T)) :void (conj self elem))
-(defn contains? ((self (ref (Vector T))) (elem T)) :i32 (let (i:usize 0) (while (< i (_get self len)) (when (= (aref (as ptr:T (as ptr (_get self data))) (as i64 i)) elem) (return 1)) (set! i (+ i 1))) (return 0)))
+(defn contains? ((self (ref (Vector T))) (elem T)) :i1 (let (i:usize 0) (while (< i (_get self len)) (when (= (aref (as ptr:T (as ptr (_get self data))) (as i64 i)) elem) (return 1)) (set! i (+ i 1))) (return 0)))
 (defn insert ((self (ref (Vector T))) (i usize) (elem T)) :void (when (> i (_get self len)) (vector-bounds "insert" i (_get self len))) (when (>= (_get self len) (_get self cap)) (vector-grow self)) (let (buf:ptr:T (as ptr:T (as ptr (_get self data))) j:usize (_get self len)) (while (> j i) (aset! buf (as i64 j) (aref buf (as i64 (- j 1)))) (set! j (- j 1))) (aset! buf (as i64 i) elem)) (.set! self len (+ (_get self len) 1)))
 (defn remove-at ((self (ref (Vector T))) (i usize)) :void (when (>= i (_get self len)) (vector-bounds "remove-at" i (_get self len))) (let (buf:ptr:T (as ptr:T (as ptr (_get self data))) j:usize i) (while (< (+ j 1) (_get self len)) (aset! buf (as i64 j) (aref buf (as i64 (+ j 1)))) (set! j (+ j 1)))) (.set! self len (- (_get self len) 1)))
 (defn capacity ((self (ref (Vector T)))) :usize (return (_get self cap)))

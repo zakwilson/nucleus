@@ -228,7 +228,7 @@
 ; contains?: 1 if elem is in the set, else 0. Skips tombstones, stops on
 ; empty. Set conformance.
 ; ---------------------------------------------------------------------------
-(defn contains? ((self (ref (HashSet T))) elem:T):i32
+(defn contains? ((self (ref (HashSet T))) elem:T):i1
   (let (kbuf:ptr:T (as ptr:T (as ptr (self keys)))
         sbuf:ptr:ui8 (as ptr:ui8 (as ptr (self states)))
         mask:usize (- (self cap) 1)

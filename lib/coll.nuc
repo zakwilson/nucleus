@@ -68,7 +68,7 @@
 (defprotocol (Seq E)
   (invoke      ((self (ref Self)) i:usize):E)
   (append   ((self (ref Self)) elem:E):void)
-  (contains? ((self (ref Self)) elem:E):i32)
+  (contains? ((self (ref Self)) elem:E):i1)
   (insert   ((self (ref Self)) i:usize elem:E):void))
 
 ; ---------------------------------------------------------------------------
@@ -113,7 +113,7 @@
   (union        ((self (ref Self)) (other (ref Self))):void)
   (difference   ((self (ref Self)) (other (ref Self))):void)
   (intersection ((self (ref Self)) (other (ref Self))):void)
-  (contains?     ((self (ref Self)) elem:E):i32))
+  (contains?     ((self (ref Self)) elem:E):i1))
 
 ; ---------------------------------------------------------------------------
 ; Drop — the Stage 10 lifecycle protocol. An owning collection conforms so a
