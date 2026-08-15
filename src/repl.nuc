@@ -396,7 +396,16 @@
               (do (open-module-streams)
                   (emit-compile-time (as ptr f)))
             (and (!= h null) (= h "defmacro"))
-              (do (emit-defmacro (as ptr f))
+              ; open-module-streams first, exactly as the `compile-time` arm
+              ; above does and for the same reason: compile-macro-body starts by
+              ; flushing g-type-stream/g-decl-stream, and between REPL forms
+              ; those FILE*s are closed — so a user `defmacro` typed at the
+              ; prompt aborted the session with "glibc detected an invalid stdio
+              ; handle" (pre-Stage-16 behaviour; reproduced on the stage-15
+              ; boot). The prelude's own macros never hit this: they are loaded
+              ; through repl-preload-macros, not this arm.
+              (do (open-module-streams)
+                  (emit-defmacro (as ptr f))
                   (fprintf stderr "  defined\n"))
             (and (!= h null) (= h "def-rmacro"))
               (do (emit-def-rmacro (as ptr f))
@@ -1007,6 +1016,13 @@
                       (while (!= fc null)
                         (let (f:ptr ((unsafe/cast ptr:Node fc) car))
                           (when (!= (repl_try) 0)
+                            ; Stage 16: a longjmp out of emit-macrolet skips its
+                            ; pop, so lexical macro bindings would leak into the
+                            ; next form. The invariant is an empty stack at the
+                            ; start of every top-level form; restore it here.
+                            (while (!= (count g-macrolet-stack) 0)
+                              (remove-at g-macrolet-stack
+                                         (as usize (- (unsafe/cast i32 (count g-macrolet-stack)) 1))))
                             (repl-error ((as ptr:Node f) line) "error (recovered)"))
                           (when (= (repl_try) 0)
                             (repl-eval-form f)))

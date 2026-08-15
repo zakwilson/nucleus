@@ -4241,3 +4241,96 @@ import-order constraint is the deciding factor in a design, test it with one
 call rather than inheriting the claim — this is the third documented case in
 this stage of a hand-written ordering note going stale (see also `toplevel.md`'s
 cycle table, W9 item 40).
+
+## Compiling a function mid-emission: the worklist answer has an exception, and it is `push-function-state`
+
+"Emitting a function mid-emission needs the worklist, not a direct `emit-defn`"
+(above) is the rule for a *program* function: register now, queue the body,
+drain when no emission is in progress. Stage 16's `macrolet`
+(design/stage16-ergonomics/macrolet.md) is the case that rule cannot serve — a
+lexically scoped macro must **exist before the body it scopes over is emitted**,
+so there is no later drain to defer to.
+
+The answer is `push-function-state` / `pop-function-state` (`src/scope.nuc`,
+deliberately adjacent to `reset-function-state`), which snapshot the per-function
+codegen state into an `FnState` and restore it after the nested compilation. The
+push **snapshots only** — the nested emission calls `reset-function-state` itself,
+and resetting in both places opens a memstream pair nothing ever closes. Three
+things generalize:
+
+- **The inventory is larger than `reset-function-state`.** It also needs the
+  three ambient argument-register globals (`g-abi-gpr-left` / `g-abi-fpr-left` /
+  `g-abi-varargs` — see "Argument-register state is AMBIENT"), because a
+  `macrolet` in *argument* position sits mid-argument-walk, plus `g-want-type`
+  and `g-form-line`. `g-out` / `g-decl-out` / `g-qq-used` / `g-macro-decls` are
+  saved by the body compiler itself. The test that catches a miss here is a call
+  with by-value struct arguments of both ABI classes *and* the nested form in an
+  argument slot; nothing smaller observes the budget.
+- **Adjacency is the anti-drift mechanism.** The pair's only real risk is a
+  global added to `reset-function-state` and not to it. Putting all three
+  functions in one block makes that visible at the point of the edit; a
+  save/restore living next to its *caller* would not.
+- **It beats hoisting because of the nested case.** The alternative — a pre-pass
+  that compiles every `macrolet`'s macros before its enclosing top-level form
+  emits — cannot express `macrolet` *inside a `defmacro` body* (one macro JIT
+  module compiled while another is compiling), needs node-identity keying, and
+  cannot see a form produced by a macro expansion. Re-entrancy with an explicit
+  snapshot was smaller and had no such holes.
+
+## One flag answering two questions: `g-qq-used` and the node constructors
+
+A macro/CT JIT module resolves `@alloc-node` / `@make-cell` / `@intern-symbol`
+against the **running compiler**, so it must `declare` them. That was gated on
+`g-qq-used` — which `emit-qq-list` sets. But `emit-quote-tree`, reached by a
+plain `'x` **and by a quasiquote of an ATOM** (`` `1 ``, `` `foo ``), emits
+exactly those calls and never touches the `__cons`/`__append` helpers
+`g-qq-used` is actually about. So `` (defmacro one () `1) `` emitted
+`call ptr @alloc-node()` into a module that declared nothing, and died in the
+IR parser. Latent since macros existed; `macrolet` made it the common case,
+because a one-atom body is what a small local macro looks like.
+
+The fix is the general shape: when a flag's name describes a *mechanism*
+(`qq`) but its readers ask a *capability* question ("does this module need the
+node constructors?"), split it. `g-node-ctor-used` gates the three constructor
+declares; `g-qq-used` keeps gating the helper *definitions* and `@malloc`,
+which only they need. Both are per-module (saved/reset/restored around each CT
+and macro body). The program module is unaffected by either — it *defines* all
+three — which is why the whole class is invisible outside a JIT module and why
+the fix is IR-inert.
+
+Related, same change: hand-written `declare` lines in a JIT module must go
+through `macro-jit-declare-raw`, which shares the `g-macro-decls` dedup set with
+`macro-jit-ensure-decl`. A macro body that both quotes *and* calls a node
+constructor by name would otherwise emit two `declare`s for one symbol, which
+LLVM rejects.
+
+## A null-check is not a kind-check — `Node.s` is null on every non-symbol node
+
+`(defmacro m (5) …)` segfaulted the compiler for its whole life. The `&rest`
+scan null-checked its parameter node and then read `(vp s)`, and the `=` beside
+it is a **content** compare — so an INT node's null `s` reached
+`strcmp(null, "&rest")`. The comment directly above the loop already promised
+the located "param must be a symbol" diagnostic that the crash pre-empted; the
+guard for `()` (a NULL *node*, W5f) had been added without noticing that a
+*non-null node of the wrong kind* is the same hazard one field deeper.
+
+Whenever a walk reads `Node.s`, the guard is `(= (n kind) NODE-SYM)`, not
+`(!= n null)`. Same for `Node.i` / `Node.car` / `Node.cdr` against their own
+kinds. Found via `macrolet`, fixed once in `macro-parse-params` — the parameter
+parser extracted so `defmacro` and `macrolet` share it, which is what made one
+edit fix both definers.
+
+## A REPL arm that compiles anything needs `open-module-streams` first
+
+A user `defmacro` typed at `nucleusc -i` aborted the session with
+`Fatal error: glibc detected an invalid stdio handle`. Between REPL forms the
+module streams (`g-type-stream`/`g-decl-stream`/`g-def-stream`) are **closed**;
+`repl-eval-form`'s `defn` and `compile-time` arms open a fresh set first, and the
+`defmacro` arm did not — while the macro body compiler opens by flushing two of
+them.
+
+The tell that this class hides well: the prelude's own macros load through
+`repl-preload-macros`, a different path, so the REPL could expand `when`,
+`dotimes` and `->` perfectly while dying on the first macro a user wrote. When
+adding a `repl-eval-form` arm, ask whether the emitter it calls writes to a
+module stream — and if so, open one, as its neighbours do.

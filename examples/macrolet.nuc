@@ -1,0 +1,53 @@
+; macrolet — lexically scoped macros (Stage 16).
+;
+; `let`, but for macros. A macro whose expansion deliberately captures locals of
+; the surrounding function is the most reliable way to abstract a repeated
+; pattern; `defmacro` would put that name in the global namespace, where it does
+; not belong. A `macrolet` binding exists for its body and nowhere else.
+;
+; Shape:  (macrolet ((name (params) body...) ...) body-form...)
+;
+; See design/stage16-ergonomics/macrolet.md and docs/macros.md.
+
+(defstruct Point x:i32 y:i32)
+
+; Deliberate capture. `take` names `total` and `p` — locals of this function —
+; because it is written for this function.
+(defn point-sum ((p (ref Point))):i32
+  (let (total:i32 0)
+    (macrolet ((take (f) `(set! total (+ total (. p ~f)))))
+      (take x)
+      (take y))
+    total))
+
+; Bindings are sequential, like Nucleus `let` (Common Lisp's macrolet is
+; parallel): `emit` below sees `prefix`.
+(defn report (n:i32):i32
+  (macrolet ((prefix () `"item")
+             (emit (v) `(printf "%s %d\n" (prefix) ~v)))
+    (emit n)
+    (emit (* n 2))
+    0))
+
+; A binding shadows a global macro of the same name for the body only.
+(defmacro scale (x) `(* 2 ~x))
+
+(defn shadowing ():i32
+  (let (r:i32 (scale 5)) ; the global: 10
+    (macrolet ((scale (x) `(* 3 ~x)))
+      (set! r (+ r (scale 5)))) ; the local: 15
+    (+ r (scale 5)))) ; the global again: 10
+
+; `&rest` works exactly as in `defmacro` — the parameter list is parsed by the
+; same code.
+(defn variadic ():i32
+  (macrolet ((sum-of (first &rest more) `(+ ~first (+ ~@more))))
+    (sum-of 1 2 3 4)))
+
+(defn main ():i32
+  (let (p:Point (Point 3 4))
+    (printf "point-sum  %d\n" (point-sum (addr-of p))))
+  (report 7)
+  (printf "shadowing  %d\n" (shadowing))
+  (printf "variadic   %d\n" (variadic))
+  (return 0))

@@ -984,6 +984,39 @@
   total:i32
   seen:i32)
 
+; Stage 16 (design/stage16-ergonomics/macrolet.md §5.2): a snapshot of every
+; global `reset-function-state` writes, plus the ambient argument-register
+; budget and the want channel — the state a *nested* function emission would
+; otherwise clobber. `macrolet` compiles a macro body mid-function, so unlike
+; the mono worklist it cannot defer the nested emission to a drain.
+;
+; Fields track `reset-function-state` (src/scope.nuc) one-for-one; the pair that
+; reads this struct lives directly below it so the two drift together.
+(defstruct FnState
+  tmp:i32
+  label:i32
+  block-term:i32
+  (lbl-tbl (ref (Vector (ref LabelEntry))))
+  cur-fname:ptr
+  fn-ret-abi:ptr
+  fn-sret-name:ptr
+  fn-ret-type:ptr
+  loop-depth:i32
+  (nundo (ref (Vector (ref NarrowUndo))))
+  entry-stream:ptr
+  entry-bufp:ptr
+  entry-sizep:i64
+  body-stream:ptr
+  body-bufp:ptr
+  body-sizep:i64
+  ; Ambient argument-register budget (conventions.md, "Argument-register state
+  ; is AMBIENT"): a macrolet in argument position sits mid-walk.
+  abi-gpr-left:i32
+  abi-fpr-left:i32
+  abi-varargs:i32
+  want-type:ptr
+  form-line:i32)
+
 ; A user-asserted implicit conversion (defcast From To conv-fn). Applied at call
 ; sites by safe-coerce-val when an argument's type differs from the parameter's.
 (defstruct CastRule

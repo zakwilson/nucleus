@@ -81,6 +81,67 @@ Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defin
 
 The binary `_and`/`_or` i1-check both operands and short-circuit left-to-right (`_and` stops at the first false, `_or` at the first true). Because the macro right-nests, each operand in an N-ary chain narrows under all prior ones (cumulative narrowing — a later `(m field)` typechecks after an earlier `(!= m null)`). See the [`and`/`or`/`_and`/`_or`](special-forms.md#special-forms) rows for the full short-circuit and narrowing semantics.
 
+## `macrolet` — lexically scoped macros
+
+`let`, but for macros. A `macrolet` binding exists for the body of the form and
+nowhere else, which is what makes a deliberately capturing macro — the reliable
+way to abstract a repeated pattern inside one function — affordable: the name
+never reaches the global namespace.
+
+```
+(macrolet (BINDING BINDING ...) BODY-FORM ...)
+
+BINDING ::= (NAME (PARAM ...) MACRO-BODY-FORM ...)
+```
+
+```lisp
+(defn point-sum ((p (ref Point))):i32
+  (let (total:i32 0)
+    (macrolet ((take (f) `(set! total (+ total (. p ~f)))))
+      (take x)
+      (take y))
+    total))
+```
+
+`take` names `total` and `p` — locals of the enclosing function. There is no
+hygiene, exactly as with `defmacro`: names in the expansion resolve at the call
+site, which is the point. `gensym` is available in a `macrolet` body for the
+cases that want a fresh name instead.
+
+The full example is [`examples/macrolet.nuc`](../examples/macrolet.nuc).
+
+**Rules.**
+
+* **A binding is an expression form**, not a definer: `macrolet` may appear
+  wherever an expression may, and a top-level `(macrolet …)` is refused with
+  `unknown top-level form: macrolet`.
+* **The body is a `do`.** Its value is the last form's, it introduces no new
+  variable scope, and `let`/`defer` inside it behave as they would inside a `do`.
+* **Bindings are sequential**, like Nucleus `let` — a later binding's body sees
+  an earlier one. (Common Lisp's `macrolet` is parallel; Nucleus follows its own
+  `let` instead.) A binding is also visible inside its own body, matching
+  `defmacro`.
+* **A binding shadows** a global macro, function or local of the same spelling
+  in head position, for the body only; an inner `macrolet` shadows an outer one
+  and the outer is restored afterwards.
+* **A binding may not shadow a special form.** The macro table is consulted
+  before special forms, so a binding named `let` would take over `let` for the
+  whole body; it is refused instead
+  (`macrolet: 'let' is a special form and may not be shadowed`).
+* **`&rest` works** exactly as in `defmacro` — the parameter list is parsed by
+  the same code, and the same "second-to-last param" rule applies.
+* **The binding name takes no type annotation**, like every other definer name.
+* Bindings are not exported, not namespace-qualified, and not visible to
+  `macroexpand` from outside the body. Reader macros (`def-rmacro`) remain
+  global.
+
+A `macrolet` body is compiled and JIT'd exactly as a `defmacro` body is, so it
+has the same compile-time requirements — the `Node` type and the node
+constructors, which the prelude provides. It works anywhere an expression does,
+including inside a loop, inside a `cond` arm, in argument position, inside a
+generic template body (compiled once per monomorphization), and inside a
+`defmacro` body.
+
 ## Macros and pass-through arguments
 
 Macro parameters are typed `(raw Node)` — the macro sees AST. Because the
