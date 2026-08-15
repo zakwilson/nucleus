@@ -2697,6 +2697,125 @@ EOF
   rm -rf "$d"
 }
 
+# Stage 15 W9 items 42 and 47: where a `defcast` rule is reached, and where the
+# conversions stop. 47 is the defect — the registry was consulted from
+# `safe-coerce-val`, which only the call-argument and `as` paths call, so a rule
+# was invisible at every other typed slot even on the EXACT pair it was
+# registered for. 42 is the ruling that survives the fix: implicit conversions do
+# not compose, so a bare `i32` literal still does not reach an `i64` rule, and
+# the compiler now says so instead of leaving the user to guess.
+run_w9_defcast_reach() {
+  local d out
+  d="$(mktemp -d)"
+
+  # Every typed slot, all on the rule's exact pair, linked and RUN — the
+  # baseline compiles none of these past the first one.
+  cat > "$d/slots.nuc" <<'EOF'
+(import-use "stdio.h")
+(defn i2p (x:i64):ptr (return (unsafe/cast ptr x)))
+(defcast i64 ptr i2p)
+(defstruct Bx p:ptr)
+(defn show (p:ptr):i64 (return (unsafe/cast i64 p)))
+(defn mk ():ptr (return (as i64 3)))
+(defn mk2 ():ptr (as i64 4))
+(defn main ():int
+  (let (a:i64 (show (as i64 1))
+        l:ptr (as i64 2)
+        b:ptr:Bx (alloca Bx)
+        arr:ptr (alloca ptr 2))
+    (.set! b p (as i64 5))
+    (aset! (as ptr:ptr arr) 0 (as i64 6))
+    (printf "%lld %lld %lld %lld %lld %lld\n"
+      a (show l) (show (mk)) (show (mk2)) (show (b p))
+      (show (aref (as ptr:ptr arr) 0))))
+  (return 0))
+EOF
+  if ./build/nucleusc "$d/slots.nuc" -o "$d/slots.bin" 2>"$d/err" \
+     && [ "$("$d/slots.bin")" = "1 2 3 4 5 6" ]; then
+    echo "PASS  w9-defcast-every-slot"
+  else
+    echo "FAIL  w9-defcast-every-slot"
+    sed 's/^/    /' "$d/err" | head -3
+    [ -x "$d/slots.bin" ] && printf '    got: %s\n' "$("$d/slots.bin")"
+  fi
+
+  # The ruling: built-in widening does NOT chain into a user rule. A bare
+  # literal is i32; the i64 rule stays out of reach, in argument position...
+  cat > "$d/nocompose.nuc" <<'EOF'
+(defn i2p (x:i64):ptr (return (unsafe/cast ptr x)))
+(defcast i64 ptr i2p)
+(defn take (p:ptr):void (return))
+(defn main ():int (take 0) (return 0))
+EOF
+  out="$(./build/nucleusc "$d/nocompose.nuc" -o "$d/nocompose.bin" 2>&1 || true)"
+  if printf '%s\n' "$out" | qgrep -F 'argument 1 has type i32'; then
+    echo "PASS  w9-defcast-no-composition"
+  else
+    echo "FAIL  w9-defcast-no-composition"
+    printf '%s\n' "$out" | sed 's/^/    /' | head -3
+  fi
+
+  # ...and the refusal now names the rule that ALMOST applies, with the spelling
+  # that reaches it. Without this the ruling is indistinguishable from the rule
+  # never having been registered.
+  if printf '%s\n' "$out" | qgrep -F 'note: a defcast rule converts i64 to ptr' \
+     && printf '%s\n' "$out" | qgrep -F '(as i64'; then
+    echo "PASS  w9-defcast-note-names-rule"
+  else
+    echo "FAIL  w9-defcast-note-names-rule"
+    printf '%s\n' "$out" | sed 's/^/    /' | head -3
+  fi
+
+  # The `as` position is the one where the bare diagnostic was actively wrong:
+  # "use unsafe/cast" throws away the safety the defcast was written to buy.
+  cat > "$d/asnote.nuc" <<'EOF'
+(defn i2p (x:i64):ptr (return (unsafe/cast ptr x)))
+(defcast i64 ptr i2p)
+(defn main ():int (let (q:ptr (as ptr 0)) (return 0)))
+EOF
+  out="$(./build/nucleusc "$d/asnote.nuc" -o "$d/asnote.bin" 2>&1 || true)"
+  if printf '%s\n' "$out" | qgrep -F 'note: a defcast rule converts i64 to ptr'; then
+    echo "PASS  w9-defcast-note-on-as"
+  else
+    echo "FAIL  w9-defcast-note-on-as"
+    printf '%s\n' "$out" | sed 's/^/    /' | head -3
+  fi
+
+  # No rule to that target => no note. Pins the note against firing on every
+  # unrelated type mismatch in a file that happens to contain a defcast.
+  cat > "$d/nonote.nuc" <<'EOF'
+(defn i2p (x:i64):ptr (return (unsafe/cast ptr x)))
+(defcast i64 ptr i2p)
+(defn take (x:f64):void (return))
+(defn main ():int (take (unsafe/cast ptr 0)) (return 0))
+EOF
+  out="$(./build/nucleusc "$d/nonote.nuc" -o "$d/nonote.bin" 2>&1 || true)"
+  if printf '%s\n' "$out" | qgrep -F 'error:' \
+     && ! printf '%s\n' "$out" | qgrep -F 'note: a defcast rule'; then
+    echo "PASS  w9-defcast-note-only-on-near-miss"
+  else
+    echo "FAIL  w9-defcast-note-only-on-near-miss"
+    printf '%s\n' "$out" | sed 's/^/    /' | head -3
+  fi
+
+  # Built-in coercion still wins: a rule may not be registered for a pair the
+  # compiler already converts, so "which fires first" can never be observed.
+  cat > "$d/shadow.nuc" <<'EOF'
+(defn widen (x:i32):i64 (return (as i64 x)))
+(defcast i32 i64 widen)
+(defn main ():int (return 0))
+EOF
+  out="$(./build/nucleusc "$d/shadow.nuc" -o "$d/shadow.bin" 2>&1 || true)"
+  if printf '%s\n' "$out" | qgrep -F 'handled by built-in coercion'; then
+    echo "PASS  w9-defcast-builtin-wins"
+  else
+    echo "FAIL  w9-defcast-builtin-wins"
+    printf '%s\n' "$out" | sed 's/^/    /' | head -3
+  fi
+
+  rm -rf "$d"
+}
+
 # Stage 15 W9 item 40: a struct's LAYOUT and a `defunion`'s registration resolve
 # on REACHABILITY, like their names (W1a), their signatures and their value names
 # (W8 G-0). Before this a field access below the import reported "no field 'x' on
@@ -6060,6 +6179,7 @@ spawn run_w9_multi_object
 spawn run_w9_source_outranks_header
 spawn run_w9_nuch_import_order
 spawn run_w9_layout_reachability
+spawn run_w9_defcast_reach
 spawn run_w9_shared_init_warning
 spawn run_w9_cheader_globals
 spawn run_w9_cheader_identifiers

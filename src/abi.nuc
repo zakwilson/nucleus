@@ -1037,8 +1037,15 @@
         (fprintf g-body-stream "  %s = %s %s %s to %s\n"
           tmp instr (type-to-ir src) (vv val) (type-to-ir target))
         (return (alloc-val target tmp))))
-    ; Not compatible
-    (return null)))
+    ; Nothing built-in applies. Last resort is the user's own `defcast` registry
+    ; (W9 item 47) — reached by an up-call because `lookup-cast-rule` needs
+    ; `type-eq`, which lives further down the inlined stream. Placed HERE, at the
+    ; one chokepoint every typed slot already funnels through, rather than at the
+    ; nine call sites: hand-wiring the argument position and forgetting the other
+    ; eight is precisely the defect this fixes. Only the final fallthrough gets
+    ; it — the earlier `(return null)`s above are deliberate refusals of a
+    ; specific pair, not "no built-in applies".
+    (return (coerce-via-cast-rule v target))))
 
 ; SM-5 diagnostic backstop (design/stage14/symbol-mangling.md): validate a
 ; FINAL ir-name at the point a defn/defvar/struct/union is defined or declared,

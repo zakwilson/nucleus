@@ -521,7 +521,16 @@ The following conversions are applied automatically in assignment contexts (`let
     the explicit `(unsafe/cast f32 3.14)` spelling has always done. In practice
     this agrees with C's `3.14f` for essentially every constant, and `f32`
     arithmetic is otherwise bit-exact with C `float`.
-- **User-registered**: any pair declared with `(defcast From To conv-fn)` (see [Top-level forms](toplevel.md)). The compiler emits a call to `conv-fn`. Built-in coercion always wins; `defcast` cannot shadow `sext`/`zext`/`fpext`. A rule is looked up on the **exact** pair, and a bare integer literal is `i32`, so a rule registered `i64 → ptr` is not reached by `(take 0)` — write `(take (as i64 0))`. Built-in widening does not compose with a `defcast`.
+- **User-registered**: any pair declared with `(defcast From To conv-fn)` (see [Top-level forms](toplevel.md)). The compiler emits a call to `conv-fn`. A rule applies at **every** implicit position — call argument, `let`/`with` init, explicit and implicit `return`, `set!`/`.set!`, `aset!`, struct-literal field, union payload, and `as` — not just at call sites. Built-in coercion always wins; `defcast` cannot shadow `sext`/`zext`/`fpext`, and registering a rule for a pair the compiler already converts is rejected outright.
+
+  A rule is looked up on the **exact** pair, and **implicit conversions do not compose** — one conversion, built-in or user, never both. A bare integer literal is `i32`, so a rule registered `i64 → ptr` is not reached by `(take 0)`; write `(take (as i64 0))`, or register the rule from `i32` instead. When a conversion fails and a rule reaches that same target from another type, the compiler names it:
+
+  ```
+  a.nuc:5: error: show-ptr: argument 1 has type i32, which does not match parameter type ptr
+    note: a defcast rule converts i64 to ptr, but implicit conversions do not compose — write (as i64 …) on the operand to reach it
+  ```
+
+  See [implicit-conversions.md](../design/stage15-stress-test/implicit-conversions.md) for why composition is refused.
 
 **Outside this set, a call argument is a compile-time error**, named and located
 the way every other typed slot's mismatch is: `f: argument 1 has type i32, which
