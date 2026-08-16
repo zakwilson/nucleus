@@ -1,0 +1,91 @@
+; Stage 16 — symbols as collection elements and keys.
+;
+; `intern-symbol` keeps one canonical Node per spelling, so pointer identity IS
+; symbol identity: `'alpha` written twice is one value. `=` already compared
+; correctly; Stage 16 added the missing `hash` and stopped over-typing the quote.
+;
+; A quoted SYMBOL types `(ref Node)` — non-null, because it lowers to an
+; `intern-symbol` call whose signature says so. A quoted LIST stays `(raw Node)`:
+; it builds cells, and `'()` IS null.
+;
+; `Node` comes from lib/prelude.nuc, so — unlike `Keyword` — symbol keys need no
+; import beyond the collections themselves.
+;
+; See design/stage16-ergonomics/container-literal-elements.md §3.
+
+(import-use "stdio.h")
+(import-use numeric)
+(import-use hash)
+(import-use allocator)
+(import-use coll)
+(import-use iterator)
+(import-use hashset)
+(import-use hashmap)
+(import-use vector)
+
+(defn main ():i32
+  ; Set membership. The repeated 'alpha dedupes: interning made them one value.
+  (with ((s (ref (HashSet (ref Node)))) (alloca (HashSet (ref Node))))
+    (hashset-init s)
+    (conj s 'alpha)
+    (conj s 'alpha)
+    (conj s 'beta)
+    (printf "set n=%llu\n" (as ui64 (count s)))          ; set n=2
+    (printf "set alpha=%d\n" (contains? s 'alpha))        ; set alpha=1
+    (printf "set zeta=%d\n" (contains? s 'zeta)))         ; set zeta=0
+
+  ; Symbol -> value map.
+  ;
+  ; Lookup MUST be spelled `(invoke m 'k)`, not `(m 'k)`. In head position a
+  ; selector is a field name first, and the quote is not what distinguishes them
+  ; — `(m 'count)` reads HashMap's `count` FIELD and returns a wrong answer
+  ; rather than an error. `invoke` is the always-a-value escape hatch.
+  (with ((m (ref (HashMap (ref Node) i32))) (alloca (HashMap (ref Node) i32)))
+    (hashmap-init m)
+    (assoc m 'width 640)
+    (assoc m 'height 480)
+    (match (invoke m 'width)  ((some v) (printf "map width=%d\n" v))  (none (printf "map width=?\n")))
+    (match (invoke m 'height) ((some v) (printf "map height=%d\n" v)) (none (printf "map height=?\n")))
+    (match (invoke m 'depth)  ((some v) (printf "map depth=%d\n" v))  (none (printf "map depth=none\n"))))
+
+  ; Ordered, duplicates kept.
+  (with ((v (ref (Vector (ref Node)))) (alloca (Vector (ref Node))))
+    (vector-init v)
+    (conj v 'x) (conj v 'y) (conj v 'x)
+    (printf "vec n=%llu\n" (as ui64 (count v)))          ; vec n=3
+    (printf "vec x=%d\n" (contains? v 'x)))               ; vec x=1
+
+  ; Identity, not spelling equality: a symbol reached through a binding is the
+  ; same value as one written inline.
+  (let (k:(ref Node) 'alpha)
+    (with ((s2 (ref (HashSet (ref Node)))) (alloca (HashSet (ref Node))))
+      (hashset-init s2)
+      (conj s2 'alpha)
+      (printf "interned=%d\n" (contains? s2 k))))         ; interned=1
+
+  ; A quoted list is still (raw Node) — nullable, and not an interned identity.
+  (let (l:(raw Node) '(a b))
+    (printf "list-nonnull=%d\n" (if (= (as ptr l) null) 0 1)))
+
+  ; Container literals take quoted symbols, inferring `(ref Node)` the way an
+  ; integer literal infers `i32`. Admitted by a shape check for `(quote <symbol>)`
+  ; specifically: `'(a b)`, `'1` and a bare `a` are all still refused.
+  (with ((ls (ref (HashSet (ref Node)))) #{'red 'green 'red})
+    (printf "lit-set n=%llu red=%d blue=%d\n" (as ui64 (count ls))
+      (contains? ls 'red) (contains? ls 'blue)))     ; lit-set n=2 red=1 blue=0
+
+  (with ((lv (ref (Vector (ref Node)))) ['one 'two 'one])
+    (printf "lit-vec n=%llu one=%d\n" (as ui64 (count lv))
+      (contains? lv 'one)))                          ; lit-vec n=3 one=1
+
+  ; Symbols on either side of a map literal; each side infers independently.
+  (with ((lm (ref (HashMap (ref Node) i32))) {'width 640 'height 480})
+    (match (invoke lm 'height) ((some v) (printf "lit-map height=%d\n" v))
+                               (none (printf "lit-map height=?\n"))))
+
+  (with ((vm (ref (HashMap i32 (ref Node)))) {1 'first 2 'second})
+    (match (invoke vm 2) ((some v) (printf "lit-map val-is-sym=%d\n" (if (= (v kind) NODE-SYM) 1 0)))
+                         (none (printf "lit-map val=?\n"))))
+
+  (printf "done\n")
+  (return 0))

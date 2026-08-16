@@ -78,6 +78,7 @@
 ; i64 — fold the 8 bytes.
 ; usize — fold the target-pointer-sized value as 8 bytes (the high bytes are
 ;         zero on a 32-bit target, which is harmless: a zero byte still folds).
+; f64/f32 — fold the bit pattern, with -0.0 normalised to +0.0.
 ; CStr — fold each character byte up to (not including) the NUL terminator.
 ; ---------------------------------------------------------------------------
 
@@ -95,6 +96,38 @@
 (defn hash ((self (ref usize))):usize
   (let (h:i64 -3750763034362895579)
     (return (as usize (fnv1a-int h (as i64 (deref self)) 8)))))
+
+; f64 / f32 — fold the BIT PATTERN, read back through the receiver. `(as i64 x)`
+; would convert the value and round the fraction away, so equal-but-unequal
+; floats would collide wholesale.
+;
+; IEEE-754 forces one correction: `0.0` and `-0.0` are `=` but differ in bits, so
+; zero folds as the +0.0 pattern or a `-0.0` key would never be found. NaN needs
+; none — it is `=` to nothing, itself included, so a NaN key is unfindable
+; whatever it hashes to.
+(extend f64 Hash)
+(defn hash ((self (ref f64))):usize
+  (let (h:i64 -3750763034362895579
+        bits:i64 (if (= (deref self) 0.0) 0 (deref (unsafe/cast ptr:i64 self))))
+    (return (as usize (fnv1a-int h bits 8)))))
+
+(extend f32 Hash)
+(defn hash ((self (ref f32))):usize
+  (let (h:i64 -3750763034362895579
+        bits:i64 (if (= (deref self) 0.0) 0 (as i64 (deref (unsafe/cast ptr:i32 self)))))
+    (return (as usize (fnv1a-int h bits 4)))))
+
+; `(ref Node)` — a symbol. `intern-symbol` keeps one canonical Node per spelling,
+; so pointer identity IS symbol identity and `=` already compares correctly; only
+; `hash` was missing. Folded rather than returned raw: arena nodes sit a fixed
+; stride apart and the table masks on low bits, so raw pointers would cluster.
+;
+; No `(extend (ref Node) Hash)` — `extend` takes a struct template, not a pointer
+; type. The bare overload resolves on its own; the conformance record only feeds
+; `&where` bounds, which nothing here needs.
+(defn hash ((self (ref (ref Node)))):usize
+  (let (h:i64 -3750763034362895579)
+    (return (as usize (fnv1a-int h (unsafe/cast i64 (as ptr (deref self))) 8)))))
 
 (defn hash-null-cstr ():void
   (fprintf stderr "hash: null CStr\n")

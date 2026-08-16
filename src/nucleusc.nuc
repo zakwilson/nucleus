@@ -105,6 +105,8 @@
 ; `(gensym)` results (all produce a Node*). Built lazily on first use once the
 ; `Node` struct is registered (see ty-raw-node); null until then.
 (defvar g-ty-raw-node:ptr)
+; Stage 16: the same singleton at PTR-REF, for a quoted symbol (see ty-ref-node).
+(defvar g-ty-ref-node:ptr)
 
 ; Target descriptor. The compiler emits code for a single target, described
 ; here so the "a pointer is i64" assumption lives in one place instead of being
@@ -2029,11 +2031,35 @@
           (set! g-ty-raw-node (as ptr t))))))
   (if (= g-ty-raw-node null) ty-ptr g-ty-raw-node))
 
+; `(ref Node)` counterpart of ty-raw-node, for a quoted SYMBOL: `emit-quote-tree`
+; lowers one to a call to `intern-symbol`, whose signature already returns
+; `ref:Node`, so the non-null type is the honest one rather than a laundering.
+; Same lazy build + fallback discipline as ty-raw-node.
+(defn ty-ref-node ():(raw Type)
+  (when (= g-ty-ref-node null)
+    (let (sd:(raw StructDef) (struct-lookup-ref "Node"))
+      (when (!= sd null)
+        (let (t:ref:Type (make-type TY-PTR))
+          (.set! t elem (parse-type-name "Node" 0))
+          (.set! t pkind PTR-REF)
+          (set! g-ty-ref-node (as ptr t))))))
+  (if (= g-ty-ref-node null) ty-ptr g-ty-ref-node))
+
+; The quote type depends on the quoted DATUM, not on `quote` itself: only a bare
+; symbol is an intern-symbol result. `(quote (a b))` builds cells and `(quote ())`
+; IS null, so both must stay (raw Node). Keep in lockstep with node-type's quote
+; arm (src/generics.nuc) — conventions.md.
+(defn quoted-datum-type (d:(raw Node)):(raw Type)
+  (when (= d null) (return (ty-raw-node)))
+  (let (dd:(raw Node) d)
+    (when (= (dd kind) NODE-SYM) (return (ty-ref-node))))
+  (return (ty-raw-node)))
+
 (defn emit-quote (call:(raw Node)):ref:Val
   (let (cc:(raw Node) call)
     (when (!= (node-len call) 2) (die-at (cc line) "quote: expects 1 arg"))
     (let (ref:CStr (emit-quote-tree (node-at call 1)))
-      (return (alloc-val (ty-raw-node) ref)))))
+      (return (alloc-val (quoted-datum-type (node-at call 1)) ref)))))
 
 (defn qq-is-tagged (n:(raw Node) tag:(raw Node)):i32
   (when (= n null) (return 0))

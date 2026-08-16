@@ -128,6 +128,17 @@ This updates `boot/nucleusc.ll` (IR), `bin/nucleusc` (binary), **and** the Windo
 - **Renaming a special form whose name a new `defmacro` wants to shadow.** `guard-name-kind` (nucleusc.nuc) calls `die-at` when a `defmacro` name is already `NK-SPECIAL` (checked first via `special-form-named`/`g-special-form-set`). The OLD boot's runtime set is built from *its own* source, so it still has the old name → it rejects the new `(defmacro <old-name> ...)`. (Stage 13 variadic `and`/`or`: adding `(defmacro and ...)` while the OLD boot still has `and` as a special form died with "'and' already names a special form".)
 - **A new special-form dispatch symbol the OLD boot doesn't know.** Special forms dispatch through the *static* `(when (= hp 'foo) …)` chain hardcoded in the binary, so the OLD boot can't lower a form whose head is a brand-new special-form symbol. This is unlike **binops** (`_+ _- _* _/`), which are *runtime-registered* via `add-binop` at startup — the OLD boot already dispatches them, which is why the `_+`/`+` split is bootstrap-inert but a `_and`/`and` split is not.
 
+**If `build/nucleusc` is ALSO unusable, build C0 from the committed HEAD tree.**
+The shortcut below (reuse `build/nucleusc` as C0) assumes it runs; it may not —
+this container's LLVM soname flipped under a built tree, leaving both binaries
+needing a `libLLVM.so.N` that no longer exists. The recipe that needs neither a
+working binary nor an edit to the working tree, since HEAD carries the feature's
+*support* while only the working tree carries its first *use*:
+`git archive HEAD | tar -x -C $TMP`, compile `$TMP/src/nucleusc.nuc` with the
+boot binary, link that IR as C0, install it as `bin/nucleusc` (gitignored, so
+purely local), then `make` normally. Used 2026-08-15 when `src/cheader.nuc`
+began using `macrolet` while `boot/nucleusc.ll` still predated it.
+
 A third root cause, found in Stage 15 W8 G-5: **a new `defvar` initializer form
 the old boot's `defvar-init-ir` cannot render.** The committed boot predates
 G-1/G-3, so the moment `src/` gained runtime initializers it died *"defvar: init

@@ -8367,6 +8367,131 @@ EOF
 }
 spawn run_s16_atom_macro
 
+# Stage 16 — keyword elements in container literals, and the error surface around
+# them. The success paths live in examples/keyword-lit-test.nuc; what needs a
+# fixture is the refusals, which had NO coverage before this item (recorded in
+# design/stage16-ergonomics/container-literal-elements.md §1).
+#
+# The import row is the load-bearing one. `Keyword` is defined in lib/keyword.nuc
+# rather than reached transitively from the collection import, so it is the first
+# bracket literal whose element type a plausible import set does not supply — the
+# diagnostic has to name the file, or the reader's expansion looks like a
+# compiler bug to whoever wrote `#{:a :b}`.
+run_s16_keyword_literal_refused() {
+  local d src err want n
+  d="$(mktemp -d)"
+  n=0
+  while IFS='|' read -r name src want; do
+    [ -n "$name" ] || continue
+    printf '(import-use "stdio.h")\n(import-use strview)\n(import-use hash)\n(import-use keyword)\n(import-use allocator)\n(import-use coll)\n(import-use iterator)\n(import-use hashset)\n(import-use hashmap)\n(import-use vector)\n%s\n' "$src" > "$d/$name.nuc"
+    err="$(./build/nucleusc --emit-llvm "$d/$name.nuc" 2>&1 >/dev/null || true)"
+    if printf '%s' "$err" | qgrep -F "$want"; then
+      echo "PASS  s16-kwlit-refused-$name"
+    else
+      echo "FAIL  s16-kwlit-refused-$name (wrong or missing diagnostic)"
+      printf '%s\n' "$err" | sed 's/^/    got: /'
+    fi
+  done <<'EOF'
+mix-set|(defn main ():i32 (with ((s (ref (HashSet Keyword))) #{:a "b"}) 0) 0)|set literal: mixed element types
+mix-vec|(defn main ():i32 (with ((v (ref (Vector Keyword))) [:a 1]) 0) 0)|vector literal: mixed element types
+mix-key|(defn main ():i32 (with ((m (ref (HashMap Keyword i32))) {:a 1 "b" 2}) 0) 0)|map literal: mixed key types
+mix-val|(defn main ():i32 (with ((m (ref (HashMap Keyword Keyword))) {:a :x :b 2}) 0) 0)|map literal: mixed value types
+mix-sym|(defn main ():i32 (with ((s (ref (HashSet (ref Node)))) #{'a "b"}) 0) 0)|set literal: mixed element types
+EOF
+  # Element kinds that are still refused. `'foo` is admitted by a SHAPE check for
+  # `(quote <symbol>)` specifically, so these pin the edges of that shape: a
+  # quoted list is not a symbol, a quoted int is not a symbol, and a bare symbol
+  # is still a variable reference rather than a value.
+  while IFS='|' read -r name src; do
+    [ -n "$name" ] || continue
+    printf '(import-use "stdio.h")\n(import-use numeric)\n(import-use hash)\n(import-use allocator)\n(import-use coll)\n(import-use iterator)\n(import-use hashset)\n(defn main ():i32 (with ((s (ref (HashSet (ref Node)))) %s) 0) 0)\n' "$src" > "$d/$name.nuc"
+    err="$(./build/nucleusc --emit-llvm "$d/$name.nuc" 2>&1 >/dev/null || true)"
+    if printf '%s' "$err" | qgrep -F 'must be scalar literals (int, float, string, keyword, or quoted symbol)'; then
+      echo "PASS  s16-symlit-refused-$name"
+    else
+      echo "FAIL  s16-symlit-refused-$name (a non-symbol datum was admitted)"
+      printf '%s\n' "$err" | sed 's/^/    got: /' | head -3
+    fi
+  done <<'EOF'
+qlist|#{'(a b) '(c d)}
+qint|#{'1 '2}
+bare|#{a b}
+call|#{(f x)}
+EOF
+  # Without (import-use keyword) the expansion names a type the unit cannot see.
+  # The note must point at the file, not merely say the type is unknown.
+  printf '(import-use "stdio.h")\n(import-use allocator)\n(import-use coll)\n(import-use iterator)\n(import-use hashset)\n(defn main ():i32 (with ((s (ref (HashSet Keyword))) #{:a :b}) 0) 0)\n' > "$d/noimp.nuc"
+  err="$(./build/nucleusc --emit-llvm "$d/noimp.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | qgrep -F "unknown type: Keyword" \
+     && printf '%s' "$err" | qgrep -F "lib/keyword.nuc"; then
+    echo "PASS  s16-kwlit-missing-import-names-file"
+  else
+    echo "FAIL  s16-kwlit-missing-import-names-file"
+    printf '%s\n' "$err" | sed 's/^/    got: /'
+  fi
+  rm -rf "$d"
+}
+spawn run_s16_keyword_literal_refused
+
+# Stage 16 — symbols as first-class values (design/stage16-ergonomics/
+# container-literal-elements.md §3.2, "make Node respectable as a value").
+#
+# Two halves. `hash` over `(ref (ref Node))` in lib/hash.nuc makes symbol-keyed
+# sets and maps work at all; the behavioural side is examples/symbol-keys-test.nuc.
+# What needs its own fixture is the TYPING change, because it is conditional and
+# the condition is the thing that can rot: `emit-quote` types a quoted SYMBOL
+# `(ref Node)` (it lowers to `intern-symbol`, whose signature returns `ref:Node`)
+# but must leave every other datum `(raw Node)` — `'(a b)` builds cells and `'()`
+# IS null. A blanket flip would type null as non-null and the flow checker would
+# stop catching it, silently.
+#
+# This is a node-type<->emit-node lockstep pair (conventions.md): the rule lives
+# in `quoted-datum-type` and BOTH sites call it. `make bootstrap` is the gate on
+# the pair agreeing; these rows are the gate on the rule itself.
+run_s16_symbol_values() {
+  local d err ir
+  d="$(mktemp -d)"
+
+  printf '(defn main ():i32 (let (l:(ref Node) (quote a)) (return 0)))\n' > "$d/sym.nuc"
+  printf '(defn main ():i32 (let (l:(ref Node) (quote (a b))) (return 0)))\n' > "$d/lst.nuc"
+  printf '(defn main ():i32 (let (l:(raw Node) (quote a)) (return 0)))\n' > "$d/raw.nuc"
+
+  # A quoted symbol is non-null: it fits a (ref Node) slot with no cast.
+  if ./build/nucleusc --emit-llvm "$d/sym.nuc" >/dev/null 2>&1; then
+    echo "PASS  s16-quoted-symbol-is-ref"
+  else
+    echo "FAIL  s16-quoted-symbol-is-ref"
+    ./build/nucleusc --emit-llvm "$d/sym.nuc" 2>&1 >/dev/null | sed 's/^/    /' | head -3
+  fi
+
+  # ...and it really is the intern-symbol call, not a laundered raw pointer.
+  ir="$(./build/nucleusc --emit-llvm "$d/sym.nuc" 2>/dev/null || true)"
+  if printf '%s' "$ir" | qgrep -F 'call ptr @intern-symbol'; then
+    echo "PASS  s16-quoted-symbol-lowers-to-intern"
+  else
+    echo "FAIL  s16-quoted-symbol-lowers-to-intern"
+  fi
+
+  # A quoted LIST must stay nullable. If this ever passes, the conditional has
+  # been flattened and `'()` is being typed non-null.
+  err="$(./build/nucleusc --emit-llvm "$d/lst.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | qgrep -F 'raw pointer where non-null'; then
+    echo "PASS  s16-quoted-list-stays-raw"
+  else
+    echo "FAIL  s16-quoted-list-stays-raw (a non-symbol datum was typed non-null)"
+    printf '%s\n' "$err" | sed 's/^/    got: /' | head -3
+  fi
+
+  # Non-null narrows into a nullable slot, so pre-Stage-16 spellings still build.
+  if ./build/nucleusc --emit-llvm "$d/raw.nuc" >/dev/null 2>&1; then
+    echo "PASS  s16-quoted-symbol-still-fits-raw"
+  else
+    echo "FAIL  s16-quoted-symbol-still-fits-raw (the change was not backward compatible)"
+  fi
+  rm -rf "$d"
+}
+spawn run_s16_symbol_values
+
 # --- Join + replay --------------------------------------------------------------
 # Wait for all remaining jobs (ignore per-job exit codes — PASS/FAIL is decided
 # by scanning buffered output, since `set -e` does not propagate across `&`).

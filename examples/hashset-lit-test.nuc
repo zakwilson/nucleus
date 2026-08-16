@@ -26,5 +26,18 @@
     (printf "has-20=%d\n" (contains? n 20))               ; has-20=1
     (printf "has-99=%d\n" (contains? n 99)))              ; has-99=0
 
+  ; Float element set. `f64` gained a Hash conformance in Stage 16; before that
+  ; a float set literal read fine and then failed to instantiate `insert`.
+  (with ((f (ref (HashSet f64))) #{1.5 2.5 1.5})
+    (printf "fcount=%llu\n" (as ui64 (count f)))        ; fcount=2
+    (printf "has-1.5=%d\n" (contains? f 1.5))             ; has-1.5=1
+    (printf "has-9.5=%d\n" (contains? f 9.5)))            ; has-9.5=0
+
+  ; `0.0` and `-0.0` are `=` but differ in bits, so hash normalises zero: they
+  ; dedupe to one entry and the negative spelling still finds it.
+  (with ((z (ref (HashSet f64))) #{0.0 -0.0})
+    (printf "zcount=%llu\n" (as ui64 (count z)))        ; zcount=1
+    (printf "find-neg=%d\n" (contains? z -0.0)))          ; find-neg=1
+
   (printf "done\n")
   (return 0))

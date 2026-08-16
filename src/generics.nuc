@@ -375,23 +375,25 @@
 ; sanitize handles any remaining stragglers. Used when a name carrying an
 ; operator method is overloaded and its methods must take mangled symbols (§10.3).
 (defn op-name-token (name:CStr):CStr
-  (when (= name "_+") (return "add"))
-  (when (= name "_-") (return "sub"))
-  (when (= name "_*") (return "mul"))
-  (when (= name "_/") (return "div"))
-  (when (= name "%")  (return "rem"))
-  (when (= name "=")  (return "eq"))
-  (when (= name "!=") (return "ne"))
-  (when (= name "<")  (return "lt"))
-  (when (= name "<=") (return "le"))
-  (when (= name ">")  (return "gt"))
-  (when (= name ">=") (return "ge"))
-  (when (= name "bit-and") (return "band"))
-  (when (= name "bit-or")  (return "bor"))
-  (when (= name "bit-xor") (return "bxor"))
-  (when (= name "bit-shl") (return "bshl"))
-  (when (= name "bit-shr") (return "bshr"))
-  (return (sanitize-for-ir (ir-name-token name))))
+  (match (invoke {"_+" "add"
+                  "_-" "sub"
+                  "_*" "mul"
+                  "_/" "div"
+                  "%" "rem"
+                  "=" "eq"
+                  "!=" "ne"
+                  "<" "lt"
+                  "<=" "le"
+                  ">" "gt"
+                  ">=" "ge"
+                  "bit-and" "band"
+                  "bit-or" "bor"
+                  "bit-xor" "bxor"
+                  "bit-shl" "bshl"
+                  "bit-shr" "bshr"}
+                 name)
+    ((some res) (return res))
+    (none (return (sanitize-for-ir (ir-name-token name))))))
 
 ; "@prefix__name.tok1.tok2..." for an overloaded method. Stage 12 N4: the base
 ; token is the operator mnemonic of `fname` (so `=` → `eq`); the defining
@@ -2519,36 +2521,19 @@
 ; not a string kind, so this `=` is a plain `icmp eq ptr` regardless of hp's
 ; declared pointer kind — (raw Node) here costs nothing (unlike the CStr/
 ; Node.s identity trap for genuine *string* params elsewhere in this file).
-(defn gcheck-special-form (hp:raw:Node):i32
-  (when (or (= hp 'let) (= hp 'with)) (return 1))
-  (when (or (= hp 'do) (= hp 'cond)) (return 1))
-  (when (or (= hp 'return) (= hp 'while)) (return 1))
-  (when (or (= hp 'set!) (= hp 'inc!)) (return 1))
-  (when (or (= hp 'quote) (= hp 'quasiquote)) (return 1))
-  (when (or (= hp 'not)  (= hp '_and) (= hp '_or)) (return 1))
-  (when (or (= hp 'cast) (= hp 'addr-of)) (return 1))
-  (when (or (= hp 'deref) (= hp 'ptr-set!) (= hp 'ptr+)) (return 1))
-  (when (or (= hp '_get) (= hp '.set!)) (return 1))
-  (when (or (= hp 'sizeof) (= hp 'alloca) (= hp 'char)) (return 1))
-  (when (or (= hp 'aref) (= hp 'aset!) (= hp 'gensym)) (return 1))
-  (when (or (= hp 'funcall) (= hp 'funcall-void)) (return 1))
-  (when (or (= hp 'funcall-ptr-1) (= hp 'funcall-ptr-i32)) (return 1))
-  (when (or (= hp 'funcall-ptr-i64) (= hp 'funcall-ptr-ptr)) (return 1))
-  ; Stage 14 UN-4: the unsafe namespace's roster is reachable from generic
-  ; template bodies too (e.g. vector-new-in's heap-placement cast) — without
-  ; these, the A2 walk below misreads `(unsafe/cast T x)`/`(as T x)` as an
-  ; unresolved function call ("in generic body: unknown function 'unsafe/cast'").
-  (when (or (= hp 'as) (= hp 'unsafe/cast)) (return 1))
-  (when (or (= hp 'unsafe/ptr+) (= hp 'unsafe/funcall-ptr-1)) (return 1))
-  (when (or (= hp 'unsafe/funcall-ptr-i32) (= hp 'unsafe/funcall-ptr-i64)) (return 1))
-  (when (= hp 'unsafe/funcall-ptr-ptr) (return 1))
-  (when (or (= hp 'some) (= hp 'as-ref) (= hp 'unwrap)) (return 1))
-  (when (or (= hp 'unwrap-or) (= hp 'if-some) (= hp 'when-some)) (return 1))
-  (when (or (= hp 'move) (= hp 'defer)) (return 1))
-  (when (or (= hp 'err-name) (= hp 'err-message) (= hp 'match)) (return 1))
-  (when (or (= hp 'make) (= hp 'err!) (= hp 'type-token)) (return 1))
-  (when (= hp 'signal) (return 1))
-  (return 0))
+(defn gcheck-special-form (hp:raw:Node):i1
+  (if-some (head (as-ref hp))
+           (contains? #{'let 'with 'do 'cond 'return 'while 'set! 'inc! 'quote 'quasiquote
+                        'not '_and '_or 'cast 'addr-of 'deref 'ptr-set! 'ptr+ '_get '.set!
+                        'sizeof 'alloca 'char 'aref 'aset! 'gensym 'funcall 'funcall-void
+                        'funcall-ptr-1 'funcall-ptr-i32 'funcall-ptr-i64 'funcall-ptr-ptr
+                        'as 'unsafe/cast 'unsafe/ptr+ 'unsafe/funcall-ptr-1 
+                        'unsafe/funcall-ptr-i32 'unsafe/funcall-ptr-i64
+                        'unsafe/funcall-ptr-ptr 'some 'as-ref 'unwrap
+                        'unwrap-or 'if-some 'when-some 'move 'defer 'err-name 'err-message
+                        'match 'make 'err! 'type-token 'signal}
+                       head)
+           0))
 
 ; Declared type of a let/with binding name in a generic body. Handles both the
 ; un-desugared colon symbol ("r:T") and the desugared (name type) cell. Returns
@@ -4971,10 +4956,12 @@
         (when (= hp 'with) (return (node-type-block n scope)))
         (when (= hp 'cond) (return null))
         ; Stage 14 MC-2: plain `quote` yields a Node* — type it (raw Node), in
-        ; lockstep with emit-quote (ty-raw-node). `quasiquote` stays unmodelled
-        ; (null): its result type is expansion-dependent (an unquote can inject
-        ; any type), so emit-qq-form's own (raw Node) type propagates.
-        (when (= hp 'quote) (return (ty-raw-node)))
+        ; lockstep with emit-quote. Stage 16: a quoted SYMBOL is an intern-symbol
+        ; result, so it types (ref Node); `quoted-datum-type` is the shared rule
+        ; and both sites must call it. `quasiquote` stays unmodelled (null): its
+        ; result type is expansion-dependent (an unquote can inject any type), so
+        ; emit-qq-form's own (raw Node) type propagates.
+        (when (= hp 'quote) (return (quoted-datum-type (node-at n 1))))
         (when (= hp 'quasiquote) (return null))
         (when (= hp 'while) (return ty-void))
         (when (= hp 'set!)
