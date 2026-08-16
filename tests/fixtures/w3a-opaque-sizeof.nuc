@@ -1,6 +1,7 @@
 ; Stage 15 W3a: `(sizeof T)` on an opaque C type has no answer — refuse it
 ; rather than emitting a GEP over an LLVM type that was never defined, or
 ; (worse) a plausible-looking number that would misize an allocation.
+(import-use "stdio.h")
 (import-use "tests/fixtures/cheader-opaque.h")
 
 (defn main ():i32

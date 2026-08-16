@@ -17,6 +17,12 @@
 ; `(import error)`.
 
 (import-use "string.h")
+; `with-handler`'s body calls `node-at` to destructure its spec — a COMPILE-time
+; use, since the macro is JIT'd against the compiler process. `import-ct` asks
+; for exactly that: the signature registers, no node/arena runtime is emitted,
+; and a program that uses error handling pays nothing for it.
+; design/stage16-ergonomics/compile-time-imports.md §4a.
+(import-ct node)
 
 ; The panic-tier debugger hook (errors.md §4 "the panic tier gets a hook for
 ; free", phase C3). `die-at` and `unwrap`-on-`err` `signal` this condition before
@@ -66,7 +72,7 @@
 ; `defer` makes the pop reliable across early returns). The repair type is
 ; declared explicitly and mangled to its token by the `type-token` builtin, so
 ; it matches the token the err site computes for its own T.
-(defmacro with-handler (spec &rest body)
+(defmacro with-handler (spec :rest body)
   (let (h:ptr (gensym))
     ; List binding form `(~h (ptr Handler))`, not `~h:ptr:Handler`: the reader
     ; tokenizes a colon-typed gensym binding as one symbol and the type is lost

@@ -15,10 +15,8 @@
 ; compiler-builtin special forms (`let`/`while`/`set!`/`deref`/`ptr-set!`/
 ; `unsafe/cast`/`return`) and builtin binops (`bit-and`/`bit-or`/`bit-xor`/
 ; `bit-shl`). That keeps it usable from an `(exclude-prelude)` freestanding
-; program — the AVR examples must exclude the prelude, whose auto-emitted
-; intern/arena/node runtime references host-only libc symbols (`perror`/`malloc`)
-; that do not exist in freestanding avr-libc (see AVR-1/AVR-3). Nothing here
-; drags that runtime in.
+; program. Since Stage 16 the prelude emits no IR, so excluding it is optional;
+; this file stays prelude-free anyway, so it is usable either way.
 ;
 ; Addresses are `usize` (the target pointer-int width — 16-bit on AVR), so the
 ; `unsafe/cast` to a pointer is a clean same-width `inttoptr`.

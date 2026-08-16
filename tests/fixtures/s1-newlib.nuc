@@ -25,5 +25,5 @@
 ; re-registered by the importer, and stamped at the consumer's call site. Body uses
 ; only the `if` special form + the imported `less` method, so it stamps cleanly in a
 ; consumer that excludes the prelude.
-(defn gmax (a:T b:T &where (Ord T)):T
+(defn gmax (a:T b:T :where (Ord T)):T
   (if (less a b) b a))

@@ -6,6 +6,8 @@
 ; pointer elements, so a `ptr:i32` argument does not match a `ptr` parameter)
 ; across every such binding. This fixture pins that boundary: a bare `:ptr`
 ; bound from an `alloca` stays elem-less, so `aref` on it is still an error.
+
+(import-use "stdio.h")
 (defn main ():i32
   (let (p:ptr (alloca i32 4))
     (printf "%d\n" (aref p 0)))

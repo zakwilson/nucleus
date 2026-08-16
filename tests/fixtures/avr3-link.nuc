@@ -6,11 +6,11 @@
 ; kilobytes a pulled-in host runtime would add.
 ;
 ; A freestanding MCU program: no stdio/printf (avr-libc wires stdio to nothing
-; without custom UART setup), and `(exclude-prelude)` so the intern/arena/node
-; runtime — which references host-only `perror`/`malloc` and would fail to link
-; against avr-libc — is not force-emitted. Only compiler-builtin special forms
-; and binops (`let`/`while`/`deref`/`ptr-set!`/`bit-xor`/`unsafe/cast`) are used,
-; all available without the prelude.
+; without custom UART setup), and `(exclude-prelude)` — which since Stage 16 is a
+; choice rather than a requirement (the prelude no longer emits the node/arena
+; runtime), kept here because this fixture's byte-count assertions are what pin
+; the prelude-free floor. Only compiler-builtin special forms and binops
+; (`let`/`while`/`deref`/`ptr-set!`/`bit-xor`/`unsafe/cast`) are used.
 ;
 ; The program toggles a memory-mapped I/O port through a volatile pointer, the
 ; way an MCU blinks a GPIO, spinning forever. The port address (0x25 =

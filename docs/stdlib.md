@@ -27,181 +27,11 @@ docstring for the exact (deliberately host-tolerant) pass/fail rule.
 
 <!-- BEGIN GENERATED: availability (scripts/gen-stdlib-table.py) -->
 
-## stdio
-
-| Function | Signature | C Header |
-|----------|-----------|----------|
-| `asprintf` | `(ptr, ptr, ...) -> i32` | `<stdio.h>` |
-| `clearerr` | `(ptr) -> void` | `<stdio.h>` |
-| `clearerr_unlocked` | `(ptr) -> void` | `<stdio.h>` |
-| `ctermid` | `(ptr) -> ptr` | `<stdio.h>` |
-| `dprintf` | `(i32, ptr, ...) -> i32` | `<stdio.h>` |
-| `fclose` | `(ptr) -> i32` | `<stdio.h>` |
-| `fdopen` | `(i32, ptr) -> ptr` | `<stdio.h>` |
-| `feof` | `(ptr) -> i32` | `<stdio.h>` |
-| `feof_unlocked` | `(ptr) -> i32` | `<stdio.h>` |
-| `ferror` | `(ptr) -> i32` | `<stdio.h>` |
-| `ferror_unlocked` | `(ptr) -> i32` | `<stdio.h>` |
-| `fflush` | `(ptr) -> i32` | `<stdio.h>` |
-| `fflush_unlocked` | `(ptr) -> i32` | `<stdio.h>` |
-| `fgetc` | `(ptr) -> i32` | `<stdio.h>` |
-| `fgetc_unlocked` | `(ptr) -> i32` | `<stdio.h>` |
-| `fgetpos` | `(ptr, ptr) -> i32` | `<stdio.h>` |
-| `fgets` | `(ptr, i32, ptr) -> ptr` | `<stdio.h>` |
-| `fileno` | `(ptr) -> i32` | `<stdio.h>` |
-| `fileno_unlocked` | `(ptr) -> i32` | `<stdio.h>` |
-| `flockfile` | `(ptr) -> void` | `<stdio.h>` |
-| `fmemopen` | `(ptr, i64, ptr) -> ptr` | `<stdio.h>` |
-| `fopen` | `(ptr, ptr) -> ptr` | `<stdio.h>` |
-| `fprintf` | `(ptr, ptr, ...) -> i32` | `<stdio.h>` |
-| `fputc` | `(i32, ptr) -> i32` | `<stdio.h>` |
-| `fputc_unlocked` | `(i32, ptr) -> i32` | `<stdio.h>` |
-| `fputs` | `(ptr, ptr) -> i32` | `<stdio.h>` |
-| `fread` | `(ptr, i64, i64, ptr) -> i64` | `<stdio.h>` |
-| `fread_unlocked` | `(ptr, i64, i64, ptr) -> i64` | `<stdio.h>` |
-| `freopen` | `(ptr, ptr, ptr) -> ptr` | `<stdio.h>` |
-| `fscanf` | `(ptr, ptr, ...) -> i32` | `<stdio.h>` |
-| `fseek` | `(ptr, i64, i32) -> i32` | `<stdio.h>` |
-| `fseeko` | `(ptr, i64, i32) -> i32` | `<stdio.h>` |
-| `fsetpos` | `(ptr, ptr) -> i32` | `<stdio.h>` |
-| `ftell` | `(ptr) -> i64` | `<stdio.h>` |
-| `ftello` | `(ptr) -> i64` | `<stdio.h>` |
-| `ftrylockfile` | `(ptr) -> i32` | `<stdio.h>` |
-| `funlockfile` | `(ptr) -> void` | `<stdio.h>` |
-| `fwrite` | `(ptr, i64, i64, ptr) -> i64` | `<stdio.h>` |
-| `fwrite_unlocked` | `(ptr, i64, i64, ptr) -> i64` | `<stdio.h>` |
-| `getc` | `(ptr) -> i32` | `<stdio.h>` |
-| `getc_unlocked` | `(ptr) -> i32` | `<stdio.h>` |
-| `getchar` | `() -> i32` | `<stdio.h>` |
-| `getchar_unlocked` | `() -> i32` | `<stdio.h>` |
-| `getdelim` | `(ptr, ptr, i32, ptr) -> i64` | `<stdio.h>` |
-| `getline` | `(ptr, ptr, ptr) -> i64` | `<stdio.h>` |
-| `getw` | `(ptr) -> i32` | `<stdio.h>` |
-| `open_memstream` | `(ptr, ptr) -> ptr` | `<stdio.h>` |
-| `pclose` | `(ptr) -> i32` | `<stdio.h>` |
-| `perror` | `(ptr) -> void` | `<stdio.h>` |
-| `popen` | `(ptr, ptr) -> ptr` | `<stdio.h>` |
-| `printf` | `(ptr, ...) -> i32` | `<stdio.h>` |
-| `putc` | `(i32, ptr) -> i32` | `<stdio.h>` |
-| `putc_unlocked` | `(i32, ptr) -> i32` | `<stdio.h>` |
-| `putchar` | `(i32) -> i32` | `<stdio.h>` |
-| `putchar_unlocked` | `(i32) -> i32` | `<stdio.h>` |
-| `puts` | `(ptr) -> i32` | `<stdio.h>` |
-| `putw` | `(i32, ptr) -> i32` | `<stdio.h>` |
-| `remove` | `(ptr) -> i32` | `<stdio.h>` |
-| `rename` | `(ptr, ptr) -> i32` | `<stdio.h>` |
-| `renameat` | `(i32, ptr, i32, ptr) -> i32` | `<stdio.h>` |
-| `rewind` | `(ptr) -> void` | `<stdio.h>` |
-| `scanf` | `(ptr, ...) -> i32` | `<stdio.h>` |
-| `setbuf` | `(ptr, ptr) -> void` | `<stdio.h>` |
-| `setbuffer` | `(ptr, ptr, i64) -> void` | `<stdio.h>` |
-| `setlinebuf` | `(ptr) -> void` | `<stdio.h>` |
-| `setvbuf` | `(ptr, ptr, i32, i64) -> i32` | `<stdio.h>` |
-| `snprintf` | `(ptr, i64, ptr, ...) -> i32` | `<stdio.h>` |
-| `sprintf` | `(ptr, ptr, ...) -> i32` | `<stdio.h>` |
-| `sscanf` | `(ptr, ptr, ...) -> i32` | `<stdio.h>` |
-| `tempnam` | `(ptr, ptr) -> ptr` | `<stdio.h>` |
-| `tmpfile` | `() -> ptr` | `<stdio.h>` |
-| `tmpnam` | `(ptr) -> ptr` | `<stdio.h>` |
-| `tmpnam_r` | `(ptr) -> ptr` | `<stdio.h>` |
-| `ungetc` | `(i32, ptr) -> i32` | `<stdio.h>` |
-
 ## stdlib
 
 | Function | Signature | C Header |
 |----------|-----------|----------|
-| `a64l` | `(ptr) -> i64` | `<stdlib.h>` |
-| `abort` | `() -> void` | `<stdlib.h>` |
-| `abs` | `(i32) -> i32` | `<stdlib.h>` |
-| `aligned_alloc` | `(i64, i64) -> ptr` | `<stdlib.h>` |
 | `alloca` | `(i64) -> ptr` | `<stdlib.h>` |
-| `arc4random` | `() -> i32` | `<stdlib.h>` |
-| `arc4random_buf` | `(ptr, i64) -> void` | `<stdlib.h>` |
-| `arc4random_uniform` | `(i32) -> i32` | `<stdlib.h>` |
-| `at_quick_exit` | `(ptr) -> i32` | `<stdlib.h>` |
-| `atexit` | `(ptr) -> i32` | `<stdlib.h>` |
-| `atof` | `(ptr) -> f64` | `<stdlib.h>` |
-| `atoi` | `(ptr) -> i32` | `<stdlib.h>` |
-| `atol` | `(ptr) -> i64` | `<stdlib.h>` |
-| `atoll` | `(ptr) -> i64` | `<stdlib.h>` |
-| `bsearch` | `(ptr, ptr, i64, i64, ptr) -> ptr` | `<stdlib.h>` |
-| `calloc` | `(i64, i64) -> ptr` | `<stdlib.h>` |
-| `clearenv` | `() -> i32` | `<stdlib.h>` |
-| `drand48` | `() -> f64` | `<stdlib.h>` |
-| `drand48_r` | `(ptr, ptr) -> i32` | `<stdlib.h>` |
-| `ecvt` | `(f64, i32, ptr, ptr) -> ptr` | `<stdlib.h>` |
-| `ecvt_r` | `(f64, i32, ptr, ptr, ptr, i64) -> i32` | `<stdlib.h>` |
-| `erand48` | `(ptr) -> f64` | `<stdlib.h>` |
-| `erand48_r` | `(ptr, ptr, ptr) -> i32` | `<stdlib.h>` |
-| `exit` | `(i32) -> void` | `<stdlib.h>` |
-| `fcvt` | `(f64, i32, ptr, ptr) -> ptr` | `<stdlib.h>` |
-| `fcvt_r` | `(f64, i32, ptr, ptr, ptr, i64) -> i32` | `<stdlib.h>` |
-| `free` | `(ptr) -> void` | `<stdlib.h>` |
-| `gcvt` | `(f64, i32, ptr) -> ptr` | `<stdlib.h>` |
-| `getenv` | `(ptr) -> ptr` | `<stdlib.h>` |
-| `getloadavg` | `(ptr, i32) -> i32` | `<stdlib.h>` |
-| `getsubopt` | `(ptr, ptr, ptr) -> i32` | `<stdlib.h>` |
-| `initstate` | `(i32, ptr, i64) -> ptr` | `<stdlib.h>` |
-| `initstate_r` | `(i32, ptr, i64, ptr) -> i32` | `<stdlib.h>` |
-| `jrand48` | `(ptr) -> i64` | `<stdlib.h>` |
-| `jrand48_r` | `(ptr, ptr, ptr) -> i32` | `<stdlib.h>` |
-| `l64a` | `(i64) -> ptr` | `<stdlib.h>` |
-| `labs` | `(i64) -> i64` | `<stdlib.h>` |
-| `lcong48` | `(ptr) -> void` | `<stdlib.h>` |
-| `lcong48_r` | `(ptr, ptr) -> i32` | `<stdlib.h>` |
-| `llabs` | `(i64) -> i64` | `<stdlib.h>` |
-| `lrand48` | `() -> i64` | `<stdlib.h>` |
-| `lrand48_r` | `(ptr, ptr) -> i32` | `<stdlib.h>` |
-| `malloc` | `(i64) -> ptr` | `<stdlib.h>` |
-| `mblen` | `(ptr, i64) -> i32` | `<stdlib.h>` |
-| `mbstowcs` | `(ptr, ptr, i64) -> i64` | `<stdlib.h>` |
-| `mbtowc` | `(ptr, ptr, i64) -> i32` | `<stdlib.h>` |
-| `mkdtemp` | `(ptr) -> ptr` | `<stdlib.h>` |
-| `mkstemp` | `(ptr) -> i32` | `<stdlib.h>` |
-| `mkstemps` | `(ptr, i32) -> i32` | `<stdlib.h>` |
-| `mktemp` | `(ptr) -> ptr` | `<stdlib.h>` |
-| `mrand48` | `() -> i64` | `<stdlib.h>` |
-| `mrand48_r` | `(ptr, ptr) -> i32` | `<stdlib.h>` |
-| `nrand48` | `(ptr) -> i64` | `<stdlib.h>` |
-| `nrand48_r` | `(ptr, ptr, ptr) -> i32` | `<stdlib.h>` |
-| `on_exit` | `(ptr, ptr) -> i32` | `<stdlib.h>` |
-| `posix_memalign` | `(ptr, i64, i64) -> i32` | `<stdlib.h>` |
-| `pselect` | `(i32, ptr, ptr, ptr, ptr, ptr) -> i32` | `<stdlib.h>` |
-| `putenv` | `(ptr) -> i32` | `<stdlib.h>` |
-| `qsort` | `(ptr, i64, i64, ptr) -> void` | `<stdlib.h>` |
-| `quick_exit` | `(i32) -> void` | `<stdlib.h>` |
-| `rand` | `() -> i32` | `<stdlib.h>` |
-| `rand_r` | `(ptr) -> i32` | `<stdlib.h>` |
-| `random` | `() -> i64` | `<stdlib.h>` |
-| `random_r` | `(ptr, ptr) -> i32` | `<stdlib.h>` |
-| `realloc` | `(ptr, i64) -> ptr` | `<stdlib.h>` |
-| `reallocarray` | `(ptr, i64, i64) -> ptr` | `<stdlib.h>` |
-| `realpath` | `(ptr, ptr) -> ptr` | `<stdlib.h>` |
-| `rpmatch` | `(ptr) -> i32` | `<stdlib.h>` |
-| `seed48` | `(ptr) -> ptr` | `<stdlib.h>` |
-| `seed48_r` | `(ptr, ptr) -> i32` | `<stdlib.h>` |
-| `select` | `(i32, ptr, ptr, ptr, ptr) -> i32` | `<stdlib.h>` |
-| `setenv` | `(ptr, ptr, i32) -> i32` | `<stdlib.h>` |
-| `setstate` | `(ptr) -> ptr` | `<stdlib.h>` |
-| `setstate_r` | `(ptr, ptr) -> i32` | `<stdlib.h>` |
-| `srand` | `(i32) -> void` | `<stdlib.h>` |
-| `srand48` | `(i64) -> void` | `<stdlib.h>` |
-| `srand48_r` | `(i64, ptr) -> i32` | `<stdlib.h>` |
-| `srandom` | `(i32) -> void` | `<stdlib.h>` |
-| `srandom_r` | `(i32, ptr) -> i32` | `<stdlib.h>` |
-| `strtod` | `(ptr, ptr) -> f64` | `<stdlib.h>` |
-| `strtof` | `(ptr, ptr) -> f32` | `<stdlib.h>` |
-| `strtol` | `(ptr, ptr, i32) -> i64` | `<stdlib.h>` |
-| `strtoll` | `(ptr, ptr, i32) -> i64` | `<stdlib.h>` |
-| `strtoq` | `(ptr, ptr, i32) -> i64` | `<stdlib.h>` |
-| `strtoul` | `(ptr, ptr, i32) -> i64` | `<stdlib.h>` |
-| `strtoull` | `(ptr, ptr, i32) -> i64` | `<stdlib.h>` |
-| `strtouq` | `(ptr, ptr, i32) -> i64` | `<stdlib.h>` |
-| `system` | `(ptr) -> i32` | `<stdlib.h>` |
-| `unsetenv` | `(ptr) -> i32` | `<stdlib.h>` |
-| `valloc` | `(i64) -> ptr` | `<stdlib.h>` |
-| `wcstombs` | `(ptr, ptr, i64) -> i64` | `<stdlib.h>` |
-| `wctomb` | `(ptr, i32) -> i32` | `<stdlib.h>` |
 
 ## string
 
@@ -263,6 +93,7 @@ docstring for the exact (deliberately host-tolerant) pass/fail rule.
 | `strxfrm_l` | `(ptr, ptr, i64, ptr) -> i64` | `<string.h>` |
 
 <!-- END GENERATED -->
+
 
 
 ---

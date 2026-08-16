@@ -2,25 +2,26 @@
 ;
 ; `Any` is the no-constraint constraint: a type variable with no obligations.
 ; Type variables stay declared-only (a name is a tyvar iff it is bound in a
-; &where), so `Any` is how a fully generic function names its variable while a
+; :where), so `Any` is how a fully generic function names its variable while a
 ; misspelled type (e.g. `x:Circel`) still errors instead of silently becoming a
 ; tyvar. `Struct` holds for any struct type (its member-access `get` method is
 ; supplied once callable-values lands); here it just gates a generic to structs.
 
 (import-use "stdio.h")
+(import-use "stdlib.h")
 
 ; Identity over any type at all.
-(defn id (x:T &where (Any T)):T
+(defn id (x:T :where (Any T)):T
   (return x))
 
 ; Pick the first of two same-typed values — again over any type.
-(defn first2 (a:T b:T &where (Any T)):T
+(defn first2 (a:T b:T :where (Any T)):T
   (return a))
 
 (defstruct Point x:i32 y:i32)
 
 ; Gated to struct (pointer) types via the Struct blanket protocol.
-(defn boxed (s:T &where (Struct T)):i32
+(defn boxed (s:T :where (Struct T)):i32
   (return 1))
 
 (defn main ():i32

@@ -5,6 +5,7 @@
 ; geom/area and geom/perimeter in user namespace.  The user namespace itself
 ; keeps bare ir-names (@user-fn), proving the byte-identical escape hatch.
 
+(import-use "stdio.h")
 (import-prefixed nsgeom geom)
 
 (defn user-fn (x:i32):i32 (return (* x x)))

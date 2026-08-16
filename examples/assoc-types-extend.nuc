@@ -1,10 +1,10 @@
 ; Stage 11 assoc-types (A4.2/A4.4) — extend-site associated-type recovery.
 ;
 ; A generic combinator can now ITSELF conform to the protocol it implements via a
-; `&where` clause on the `extend` form, with the protocol-application arg recovered
+; `:where` clause on the `extend` form, with the protocol-application arg recovered
 ; at stamp time from the combinator's own field conformances:
 ;
-;   (extend (MapIter I F) (Iterator E) &where ((Iterator S) I) ((UnaryFn S E) F))
+;   (extend (MapIter I F) (Iterator E) :where ((Iterator S) I) ((UnaryFn S E) F))
 ;
 ; reads "(MapIter I F) conforms to (Iterator E), where I yields S and F maps S→E";
 ; `E` (the element MapIter yields) is recovered from F's UnaryFn conformance when a

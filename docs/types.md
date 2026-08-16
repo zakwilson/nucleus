@@ -768,7 +768,7 @@ A symbol is a `Node*` with `kind = NODE-SYM` and `s` pointing to its spelling. S
   (= h 'defn))             ; true iff the head symbol of `form` spells "defn"
 ```
 
-The interning is global to the process. The reader interns at lex time, and `quote` of a symbol calls `intern-symbol` at runtime so a quoted symbol and a reader-produced symbol with the same spelling are bit-identical pointers. The intern table lives in `lib/node.nuc` (auto-imported via `lib/prelude.nuc`); user code never has to touch it directly.
+The interning is global to the process. The reader interns at lex time, and `quote` of a symbol calls `intern-symbol` at runtime so a quoted symbol and a reader-produced symbol with the same spelling are bit-identical pointers. The intern table lives in `lib/node.nuc`, which a program that writes a quote imports with `(import-use node)` — the prelude registers the `Node` *type* but no longer emits the runtime (see [The node runtime is a library](toplevel.md#the-node-runtime-is-a-library)). Beyond the import, user code never has to touch the table directly.
 
 `gensym` deliberately bypasses the intern table — `(gensym)` always returns a fresh unique `Node*` whose spelling (e.g. `__gs_0`) does not collide with anything else, so it is safe in hygienic macros.
 

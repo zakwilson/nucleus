@@ -9,7 +9,7 @@
 ; 1. Castless variadic operator — mirrors the now-castless + / * in lib/macros.nuc.
 ;    The single-arg base case returns the bare macro param `(args car)`, a
 ;    (raw Node), joined with the quasiquote branches (also (raw Node)) — no cast.
-(defmacro sum (&rest args)
+(defmacro sum (:rest args)
   (cond (= args null)
           `0
         (= (args cdr) null)

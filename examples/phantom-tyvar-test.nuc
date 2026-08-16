@@ -3,7 +3,7 @@
 ; REGRESSION TEST — kept to validate phantom-param recovery, an orthogonal
 ; feature from associated types. New code should NOT use the four-param verbose
 ; form demonstrated here; prefer the two-param `(MapIter I F)` in
-; `lib/iterator.nuc`, which recovers element types via `&where` constraints on
+; `lib/iterator.nuc`, which recovers element types via `:where` constraints on
 ; `extend` (A0–A4, see docs/generics.md and design/stage11/assoc-types.md §4.2).
 ; The `MapIterVerbose` struct below is superseded by associated types.
 ;

@@ -18,7 +18,7 @@
 ;   `invoke` and `invoke2` dispatch statically to the concrete method based on
 ;   the first argument's type. There is no runtime vtable dispatch. MapIter and
 ;   FilterIter are parametric on their function-object types (F) so the concrete
-;   invoke method is selected at stamp time. reduce uses &where to declare its
+;   invoke method is selected at stamp time. reduce uses :where to declare its
 ;   fold tyvar G as bounded by FoldFn and element type S recovered from I.
 
 (import-use "stdio.h")
@@ -91,7 +91,7 @@
   f:F)
 
 (defn next ((self (ref (MapIter I F)))
-                        &where ((Iterator S) I)
+                        :where ((Iterator S) I)
                                ((UnaryFn S E) F)) (Maybe E)
   (let ((res (Maybe S)) (next (.& self source)))
     (match res
@@ -99,7 +99,7 @@
       (none (return none)))))
 
 (extend (MapIter I F) (Iterator E)
-        &where ((Iterator S) I)
+        :where ((Iterator S) I)
                ((UnaryFn S E) F))
 
 ; ---------------------------------------------------------------------------
@@ -111,7 +111,7 @@
   pred:F)
 
 (defn next ((self (ref (FilterIter I F)))
-                        &where ((Iterator S) I)
+                        :where ((Iterator S) I)
                                ((UnaryFn S i32) F)) (Maybe S)
   (let (done:i32 0)
     (while (= done 0)
@@ -124,14 +124,14 @@
     (return none)))
 
 (extend (FilterIter I F) (Iterator S)
-        &where ((Iterator S) I)
+        :where ((Iterator S) I)
                ((UnaryFn S i32) F))
 
 ; ---------------------------------------------------------------------------
 ; 8. Generic reduce over any Iterator.
 ; ---------------------------------------------------------------------------
 (defn reduce ((g (ref G)) (init Acc) (it (ref I))
-                  &where ((Iterator S) I)
+                  :where ((Iterator S) I)
                          ((FoldFn Acc S) G)):Acc
   (let (acc:Acc init)
     (let (done:i32 0)

@@ -10,18 +10,19 @@
 ;
 ; The other variable-arity shape — a hand-written `(declare printf (fmt:CStr))`
 ; called with extra arguments, which is the documented way to reach a C variadic
-; function (Nucleus has no `...` spelling, and `&rest` is refused in a
+; function (Nucleus has no `...` spelling, and `:rest` is refused in a
 ; declaration) — needs a unit with no header-derived `printf` to shadow, so it
 ; is pinned separately by `tests/fixtures/w9-declare-open-tail.nuc`.
 (import-use "stdio.h")
 (import-use allocator)
+(import-use node)   ; count-rest is :rest — the call builds Node cells
 
-; --- 1: &optional — 1, 2 or 3 arguments are all legal -------------------------
-(defn opt3 (a:i32 &optional (b:i32 20) (c:i32 300)):i32
+; --- 1: :optional — 1, 2 or 3 arguments are all legal -------------------------
+(defn opt3 (a:i32 :optional (b:i32 20) (c:i32 300)):i32
   (return (+ a (+ b c))))
 
-; --- 2: &rest — the fixed prefix is num-params-1, the tail folds --------------
-(defn count-rest (base:i32 &rest xs:i64):i32
+; --- 2: :rest — the fixed prefix is num-params-1, the tail folds --------------
+(defn count-rest (base:i32 :rest xs:i64):i32
   (let (n:i32 0
         cur:ptr xs)
     (while (!= cur null)
@@ -34,7 +35,7 @@
 (defn kind-of (x:i64):i32 (return 2))
 
 ; --- 4: bounded-generic template — stamped per instantiation ------------------
-(defn ident (x:T &where (Any T)):T
+(defn ident (x:T :where (Any T)):T
   (return x))
 
 ; --- 5: protocol method — dispatched through the generic registry -------------
@@ -47,9 +48,9 @@
 (defn add2 (a:i32 b:i32):i32 (return (+ a b)))
 
 (defn main ():i32
-  ; &optional at each admissible arity
+  ; :optional at each admissible arity
   (printf "opt3   %d %d %d\n" (opt3 1) (opt3 1 2) (opt3 1 2 3))
-  ; &rest at the fixed prefix and above
+  ; :rest at the fixed prefix and above
   (printf "rest   %d %d %d\n" (count-rest 0) (count-rest 0 7) (count-rest 0 7 8 9))
   ; overloaded defn
   (printf "over   %d %d\n" (kind-of 1) (kind-of (as i64 1)))

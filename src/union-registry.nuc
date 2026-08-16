@@ -770,8 +770,8 @@
     (return (if (= (pty kind) TY-ERR) 1 0))))
 
 ; The layout engine (design/stage10/unions.md §6) — the U4/A2 convergence step.
-; Given a fully-built arm table and the parsed &repr mode, decide the layout in
-; rule order. `&repr tagged` forces rule 4; `&repr niche` requires a niche.
+; Given a fully-built arm table and the parsed :repr mode, decide the layout in
+; rule order. `:repr tagged` forces rule 4; `:repr niche` requires a niche.
 ; The two niche rules need a *typed* (ref T) ok payload (arm-is-typed-ref) — the
 ; void* exemption keeps the reader's elem-less !ptr TAGGED and the bootstrap
 ; byte-identical. Returns LAYOUT-* ; on a niche, *niche-elem-out (a ptr:ptr) is
@@ -786,7 +786,7 @@
       (when (!= ((invoke arms (as usize i)) nfields) 0) (set! all-payloadless 0)))
     (when (!= all-payloadless 0)
       (when (= repr REPR-NICHE)
-        (die-at line "&repr niche: an all-payload-less union is an enum, not a niche"))
+        (die-at line ":repr niche: an all-payload-less union is an enum, not a niche"))
       (return LAYOUT-ENUM)))
   ; Rules 2 & 3 are two-arm shapes (order-independent in the arms).
   (when (= narms 2)
@@ -812,7 +812,7 @@
           (return LAYOUT-NICHE-ERRPTR)))))
   ; Rule 4: the §3 tagged struct.
   (when (= repr REPR-NICHE)
-    (die-at line "&repr niche: arms are not nicheable (need 2 arms: a typed (ref T) and a payload-less or Err arm)"))
+    (die-at line ":repr niche: arms are not nicheable (need 2 arms: a typed (ref T) and a payload-less or Err arm)"))
   (return LAYOUT-TAGGED))
 
 ; Register a tagged sum under `name` from its arm forms (a Node chain of
@@ -820,9 +820,9 @@
 ; instances and .nuch re-imports reuse the first registration. Emits the
 ; backing struct's IR type; the payload union's own definition is deferred
 ; (drain-pending-union-irs) because member layouts may not be final yet.
-; Strip a trailing `&repr <mode>` marker (unions.md §6, §9) out of a defunion
-; arm chain: `&repr` is a non-arm token (like &where/&rest elsewhere), followed
-; by its mode (`tagged` or `niche`). Returns the filtered arm chain (the &repr
+; Strip a trailing `:repr <mode>` marker (unions.md §6, §9) out of a defunion
+; arm chain: `:repr` is a non-arm token (like :where/:rest elsewhere), followed
+; by its mode (`tagged` or `niche`). Returns the filtered arm chain (the :repr
 ; pair removed) and writes the parsed REPR-* mode to *repr-out. With no marker,
 ; returns the chain unchanged and REPR-AUTO.
 (defn defunion-strip-repr (arms:ptr repr-out:ptr line:i32):ptr
@@ -836,20 +836,23 @@
       (when (= ((unsafe/cast ptr:Node scur) car) null)
         (die-at line "defunion: arm cannot be the empty list '()' -- write `name` or `(name field:type ...)`"))
       (let (a:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node scur) car)))
-        (if (and (= (a kind) NODE-SYM) (= (strcmp (a s) "&repr") 0))
+        ; An arm chain is not desugared — its own chokepoint for the retired
+        ; `&repr` spelling, which would otherwise register as a payload-less arm.
+        (reject-legacy-marker (as raw:Node a) line)
+        (if (!= (marker-named (as raw:Node a) "repr") 0)
           (let (mcell:ptr ((unsafe/cast ptr:Node scur) cdr))
             ; A missing mode, or an empty-list `()` mode (a NULL node), are the
             ; same user error; neither may reach the NODE-SYM check below.
             (when (or (= mcell null) (= ((unsafe/cast ptr:Node mcell) car) null))
-              (die-at line "defunion: &repr needs a mode (tagged or niche)"))
+              (die-at line "defunion: :repr needs a mode (tagged or niche)"))
             (let (m:ptr:Node (unsafe/cast ptr:Node ((unsafe/cast ptr:Node mcell) car)))
               (when (!= (m kind) NODE-SYM)
-                (die-at (m line) "defunion: &repr mode must be a symbol"))
+                (die-at (m line) "defunion: :repr mode must be a symbol"))
               (if (= (strcmp (m s) "tagged") 0)
                 (aset! (as ptr:i32 repr-out) 0 REPR-TAGGED)
                 (if (= (strcmp (m s) "niche") 0)
                   (aset! (as ptr:i32 repr-out) 0 REPR-NICHE)
-                  (die-at (node-line (as ptr m) line) "defunion: &repr mode must be `tagged` or `niche`"))))
+                  (die-at (node-line (as ptr m) line) "defunion: :repr mode must be `tagged` or `niche`"))))
             (set! scur mcell))   ; advance past the mode; the cdr step skips it
           (let (cell:ptr (make-cell (as ptr a) null line))
             (when (= head null) (set! head cell))
@@ -925,7 +928,7 @@
         (set! cur ((unsafe/cast ptr:Node cur) cdr)))
       ; Classify the layout (unions.md §6 — the U4/A2 convergence). The arm
       ; table is now complete; the engine applies rules 1–4 in order, honoring
-      ; &repr. Stage 1 records the decision on the UnionDef; the niche layouts
+      ; :repr. Stage 1 records the decision on the UnionDef; the niche layouts
       ; (rules 2/3) are produced by the Type-returning callers (rule 2/3 codegen).
       (let (niche-elem-box:ptr null
             layout:i32 (union-layout-classify arms-vec

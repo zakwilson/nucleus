@@ -1,5 +1,7 @@
 ; Stage 15 W4a: did-you-mean over the registered-name table. `printfx` is one
-; edit from the imported `printf`, so the message names it. Reported at line 4.
+; edit from the imported `printf`, so the message names it. Reported at line 6.
+
+(import-use "stdio.h")
 (defn main ():i32
   (printfx "hi\n")
   (return 0))

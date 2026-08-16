@@ -17,6 +17,7 @@
 (import-use "stdio.h")
 (import-use "stdlib.h")
 (import-use iterator)
+(import-use node)   ; a user `get` interns its selector at run time
 
 (defstruct Point x:i32 y:i32)
 

@@ -857,7 +857,7 @@
     ; This module's types
     (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp 0) 0))
       (fputs g-type-bufp irs))
-    (emit-string-table irs)
+    (emit-string-table irs 0)
     ; This module's declarations
     (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp 0) 0))
       (fputs g-decl-bufp irs))

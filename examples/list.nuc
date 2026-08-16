@@ -11,6 +11,7 @@
 (import-use "stdio.h")
 (import-use "stdlib.h")
 (import-use iterator)
+(import-use node)   ; '(a b c) below builds cells at run time
 
 (defn cons (car:ptr cdr:ptr):ptr
   (let (c:ptr:Node (as ptr:Node (malloc (sizeof Node))))

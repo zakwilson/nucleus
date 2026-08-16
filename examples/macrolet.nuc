@@ -9,6 +9,8 @@
 ;
 ; See design/stage16-ergonomics/macrolet.md and docs/macros.md.
 
+(import-use "stdio.h")
+
 (defstruct Point x:i32 y:i32)
 
 ; Deliberate capture. `take` names `total` and `p` — locals of this function —
@@ -38,10 +40,10 @@
       (set! r (+ r (scale 5)))) ; the local: 15
     (+ r (scale 5)))) ; the global again: 10
 
-; `&rest` works exactly as in `defmacro` — the parameter list is parsed by the
+; `:rest` works exactly as in `defmacro` — the parameter list is parsed by the
 ; same code.
 (defn variadic ():i32
-  (macrolet ((sum-of (first &rest more) `(+ ~first (+ ~@more))))
+  (macrolet ((sum-of (first :rest more) `(+ ~first (+ ~@more))))
     (sum-of 1 2 3 4)))
 
 (defn main ():i32

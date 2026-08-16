@@ -9,6 +9,10 @@
 ;     not the host `malloc(i64 40)` / `align 8`.
 ;
 ; Round-trips through `llc` for both reference devices (attiny1634, avrxmega3).
+;
+; IR-only, so it can afford the node runtime the quasiquote needs; a fixture that
+; LINKS for AVR still cannot (avr3-link.nuc).
+(import-use node)
 
 (defunion Shape
   (circle r:i32)

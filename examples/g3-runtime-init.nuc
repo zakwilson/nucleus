@@ -11,6 +11,7 @@
 ; constructor did not run, every line below prints the zero.
 
 (import-use "stdio.h")
+(import-use "stdlib.h")
 
 (defconst BASE 100)
 

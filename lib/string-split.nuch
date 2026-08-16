@@ -11,4 +11,4 @@
 (declare strview-lines ((sv (ref StrView))) :LineIter)
 (extend LineIter (Iterator ptr))
 (defmethod "@next.pLineIter" next ((self (ref LineIter))) (Maybe ptr))
-(defmacro doseq-split (binding &rest body) (let (var-sym:ptr ((unsafe/cast ptr:Node binding) car) iter-ref:ptr ((unsafe/cast ptr:Node ((unsafe/cast ptr:Node binding) cdr)) car) raw-sym:ptr (gensym)) (quasiquote (doseq-iter ((unquote raw-sym) (unquote iter-ref)) (let (((unquote var-sym) (ref StrView)) (as ptr:StrView (unquote raw-sym))) (unquote-splice body))))))
+(defmacro doseq-split (binding :rest body) (let (var-sym:ptr ((unsafe/cast ptr:Node binding) car) iter-ref:ptr ((unsafe/cast ptr:Node ((unsafe/cast ptr:Node binding) cdr)) car) raw-sym:ptr (gensym)) (quasiquote (doseq-iter ((unquote raw-sym) (unquote iter-ref)) (let (((unquote var-sym) (ref StrView)) (as ptr:StrView (unquote raw-sym))) (unquote-splice body))))))

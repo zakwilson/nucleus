@@ -6,6 +6,7 @@
 ; Num/Eq/Ord protocols and use operators directly on the abstract type variable.
 
 (import-use "stdio.h")
+(import-use "stdlib.h")
 (import-use numeric)
 
 ; ---- A user numeric type: rationals reduced to a common scale (here /100). ----
@@ -36,11 +37,11 @@
 ; ---- Generics bounded by the standard protocols, using operators directly. ----
 
 ; Max over any Ord type — returns the abstract type variable (B1 return).
-(defn maxv (a:T b:T &where (Ord T)):T
+(defn maxv (a:T b:T :where (Ord T)):T
   (if (< a b) b a))
 
 ; Sum of three over any Num type.
-(defn sum3 (a:T b:T c:T &where (Num T)):T
+(defn sum3 (a:T b:T c:T :where (Num T)):T
   (+ a (+ b c)))
 
 (defn main ():i32

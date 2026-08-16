@@ -25,7 +25,7 @@ failure.
 | Name | Description | C Equivalent |
 |------|-------------|--------------|
 | `do` | Sequence multiple expressions; yields the last | `{ ... }` block |
-| `macrolet` | Bind macros over a body: `(macrolet ((name (params) body...) ...) body-form...)`. The bindings exist for the body and nowhere else, so a deliberately capturing macro need not become a global `defmacro`. The body emits as a `do` (same value, no new variable scope). Bindings are **sequential** like Nucleus `let` — a later binding's body sees an earlier one — and a binding is visible inside its own body, like `defmacro`. A binding shadows a global macro/function/local of the same spelling in head position, and an inner `macrolet` shadows an outer one; it may **not** shadow a special form (the macro table is consulted first, so this is refused rather than allowed). `&rest` works as in `defmacro`. Not a top-level form. See [macrolet](macros.md#macrolet--lexically-scoped-macros). | Common Lisp `macrolet` |
+| `macrolet` | Bind macros over a body: `(macrolet ((name (params) body...) ...) body-form...)`. The bindings exist for the body and nowhere else, so a deliberately capturing macro need not become a global `defmacro`. The body emits as a `do` (same value, no new variable scope). Bindings are **sequential** like Nucleus `let` — a later binding's body sees an earlier one — and a binding is visible inside its own body, like `defmacro`. A binding shadows a global macro/function/local of the same spelling in head position, and an inner `macrolet` shadows an outer one; it may **not** shadow a special form (the macro table is consulted first, so this is refused rather than allowed). `:rest` works as in `defmacro`. Not a top-level form. See [macrolet](macros.md#macrolet--lexically-scoped-macros). | Common Lisp `macrolet` |
 | `let` | Bind local variables; yields the body's last expression | local variable declaration |
 | `with` | Like `let`, but **owns** any binding whose init is a libc allocator (`malloc`/`calloc`/`realloc`/`strdup`, possibly through `as`) or whose declared type conforms to the `Drop` protocol. Owned bindings are released at scope exit (libc → `free`; Drop → statically dispatched `(drop b)`, null-guarded) in reverse binding order, on fall-through and on early `return`. The compiler verifies at compile time that an owned resource does not **escape** the scope — see [Pointer lifecycle](#pointer-lifecycle-escape-analysis). Use `(move b)` to transfer ownership out. | `let` + scoped `free` / RAII |
 | `cond` | Multi-way conditional; yields the matched branch's value (strict-typed across branches) | `if` / `else if` / `else` chain |
@@ -379,7 +379,7 @@ element/key types), the literal retries once collapsed to `CStr`:
 ```
 
 The value-keyed override is found even when it is a parametric (generic) method:
-the resolver binds the method's type variables and checks its `&where` constraints
+the resolver binds the method's type variables and checks its `:where` constraints
 before selecting it. If no `get` method matches the selector's type, the call
 falls back to the struct intrinsic (a `ptr`-typed computed selector takes the
 homogeneous computed-field branch; any other type is an error). This is how a

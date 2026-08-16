@@ -26,7 +26,7 @@ its own `(ns …)`.
 
 ## Standard Macros (`lib/macros.nuc`)
 
-Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defines the `Node` struct, the `NODE-*` enum, and `(import-use macros)`) into every program, so all of these are available without an explicit `(import-use macros)`. To opt out — e.g. when a source file should compile against the bare language with no macros, no `Node` type, and no `string` libc declarations — make `(exclude-prelude)` the first form in the file.
+Defined via `defmacro`. The compiler auto-imports `lib/prelude.nuc` (which defines the `Node` struct, the `NODE-*` enum, and `(import-use macros)`) into every program, so all of these are available without an explicit `(import-use macros)`. **Defining or using a macro costs a program nothing**: a macro body becomes its own JIT module and resolves the node constructors against the compiler process, so no runtime is emitted for it. To opt out — e.g. when a source file should compile against the bare language with no macros, no `Node` type, and no `string` libc declarations — make `(exclude-prelude)` the first form in the file.
 
 | Name | Signature | Expands To |
 |------|-----------|------------|
@@ -128,7 +128,7 @@ The full example is [`examples/macrolet.nuc`](../examples/macrolet.nuc).
   before special forms, so a binding named `let` would take over `let` for the
   whole body; it is refused instead
   (`macrolet: 'let' is a special form and may not be shadowed`).
-* **`&rest` works** exactly as in `defmacro` — the parameter list is parsed by
+* **`:rest` works** exactly as in `defmacro` — the parameter list is parsed by
   the same code, and the same "second-to-last param" rule applies.
 * **The binding name takes no type annotation**, like every other definer name.
 * Bindings are not exported, not namespace-qualified, and not visible to
@@ -136,8 +136,9 @@ The full example is [`examples/macrolet.nuc`](../examples/macrolet.nuc).
   global.
 
 A `macrolet` body is compiled and JIT'd exactly as a `defmacro` body is, so it
-has the same compile-time requirements — the `Node` type and the node
-constructors, which the prelude provides. It works anywhere an expression does,
+has the same compile-time requirements — the `Node` type, which the prelude
+provides, and the node constructors, which its JIT module resolves against the
+compiler process (so neither body needs `(import-use node)`). It works anywhere an expression does,
 including inside a loop, inside a `cond` arm, in argument position, inside a
 generic template body (compiled once per monomorphization), and inside a
 `defmacro` body.
@@ -159,6 +160,12 @@ this rule needs changing.
 
 `quasiquote` stays `(raw Node)` throughout: an unquote can inject any value, so
 its result type is expansion-dependent.
+
+**In ordinary code a quote is a run-time call**, so a program that writes one
+needs `(import-use node)` — the prelude registers the `Node` type but no longer
+emits the constructors. Inside a `defmacro`/`macrolet`/`compile-time` body it
+needs nothing: that body is a JIT module resolved against the compiler process.
+See [The node runtime is a library](toplevel.md#the-node-runtime-is-a-library).
 
 ## Macros and pass-through arguments
 
@@ -230,7 +237,7 @@ or a macro parameter:
 
 ; A variadic-operator macro: the single-arg branch returns the element node,
 ; the others are quasiquoted forms — both join to (raw Node).
-(defmacro * (&rest args)
+(defmacro * (:rest args)
   (cond (= args null)
           `1
         (= (args cdr) null)

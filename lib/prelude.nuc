@@ -7,6 +7,12 @@
 ;   - Standard macros from lib/macros.nuc (variadic +, -, *, /; if, when,
 ;     unless, zero?, null?, for, dotimes, ->).
 ;   - libc string functions (needed by the macros' JIT'd bodies).
+;
+; Every form here is compile-time only: a type, a template, a protocol or a
+; macro, none of which emit IR. The node/arena RUNTIME is not here — see
+; design/stage16-ergonomics/compile-time-imports.md §4b. A program that quotes
+; or calls a :rest function needs `(import-use node)`, which the compiler
+; demands by name.
 
 (import-use "string.h")
 
@@ -41,7 +47,7 @@
 (import-use macros)
 
 ; Stage 13 L2 (design/stage13/lambda.md §"The Clone protocol"): the Clone
-; protocol, always available so `(&where (Clone T))` bounds resolve and `vfn`
+; protocol, always available so `(:where (Clone T))` bounds resolve and `vfn`
 ; clone-capture has a protocol to require. `clone` returns a fresh, independently
 ; owned Self given a reference to the source. A trivially-copyable type — a
 ; primitive or a Drop-free aggregate — conforms AUTOMATICALLY with a bitwise copy
@@ -67,9 +73,3 @@
 (defunion (Maybe T)
   (some v:T)
   none)
-
-; Brings in alloc-node, make-cell, and intern-symbol — needed by any
-; program that uses 'X or `(...) so that quoted symbols share identity
-; with reader-produced ones. Imported after macros because node.nuc
-; (and the arena it pulls in) use `when`/`if` from macros.nuc.
-(import-use node)

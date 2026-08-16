@@ -154,7 +154,7 @@ Unlike `numeric.nuc`'s code-free operator conformances, these are real method bo
 
 ### Symbols as keys
 
-`'foo` is an interned symbol: `intern-symbol` keeps one canonical `Node` per spelling, so pointer identity is symbol identity, `=` already compared correctly, and Stage 16 supplied the missing `hash`. A quoted symbol types `(ref Node)` (see [the quote table](macros.md#the-type-of-a-quoted-form)), so it drops straight into a collection with no cast — and because `Node` comes from `lib/prelude.nuc`, symbol keys need **no import** beyond the collections themselves, unlike `Keyword`.
+`'foo` is an interned symbol: `intern-symbol` keeps one canonical `Node` per spelling, so pointer identity is symbol identity, `=` already compared correctly, and Stage 16 supplied the missing `hash`. A quoted symbol types `(ref Node)` (see [the quote table](macros.md#the-type-of-a-quoted-form)), so it drops straight into a collection with no cast — the `Node` *type* comes from `lib/prelude.nuc`, but `'foo` calls `intern-symbol` at run time, so symbol keys need `(import-use node)` — exactly as `:foo` needs `keyword` (see [The node runtime is a library](toplevel.md#the-node-runtime-is-a-library)).
 
 ```lisp
 (with ((s (ref (HashSet (ref Node)))) #{'alpha 'beta})

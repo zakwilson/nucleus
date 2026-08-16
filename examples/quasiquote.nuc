@@ -7,6 +7,7 @@
 ; import order; R4 makes the duplicate an error rather than a coin flip.
 (import-use "stdio.h")
 (import-use iterator)
+(import-use node)   ; a runtime quasiquote calls intern-symbol/make-cell
 
 (defn first (n:ptr):ptr (return ((as ptr:Node n) car)))
 (defn rest  (n:ptr):ptr (return ((as ptr:Node n) cdr)))

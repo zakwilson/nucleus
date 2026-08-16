@@ -1,5 +1,5 @@
-; Stage 9 rung 4: bounded generic defn (named type variable + &where).
-; A defn whose parameter list carries a `&where` clause is a generic template:
+; Stage 9 rung 4: bounded generic defn (named type variable + :where).
+; A defn whose parameter list carries a `:where` clause is a generic template:
 ; its type variables are bound at each call site, the body is monomorphized for
 ; the concrete types, and protocol-typed operations resolve per instantiation.
 
@@ -21,13 +21,13 @@
 ; (B1: an abstract return bound by a parameter), and (less a b) dispatches to the
 ; concrete method for whichever type T is instantiated to. The body is stamped
 ; once per concrete type and cached.
-(defn maxv (a:T b:T &where (Ord T)):T
+(defn maxv (a:T b:T :where (Ord T)):T
   (let (r:T a)
     (when (less a b) (set! r b))
     (return r)))
 
 ; Same constraint, a different generic: clamp x up to a lower bound.
-(defn clamp-lo (x:T lo:T &where (Ord T)):T
+(defn clamp-lo (x:T lo:T :where (Ord T)):T
   (let (r:T x)
     (when (less x lo) (set! r lo))
     (return r)))
