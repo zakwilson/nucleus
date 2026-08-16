@@ -91,7 +91,7 @@
 ; A solitary function exports as a plain (declare ...); an overloaded one
 ; exports a (defmethod ...) per method so each keeps its distinct symbol. A
 ; bounded-generic template exports verbatim so importers can monomorphize it.
-; "Bounded-generic" covers both an explicit `&where` clause and a method whose
+; "Bounded-generic" covers both an explicit `:where` clause and a method whose
 ; receiver/return is over a parametric struct (`(Vector T)`, §4): both carry free
 ; tyvars, so defn-form-mangled-name's concrete param-type parse would die
 ; `unknown type: T`. defn-is-generic-template is the same predicate the prescan
@@ -113,11 +113,11 @@
   (printf "\n"))
 
 ; Export every node of the form, not just the subject (1) and protocol (2). A
-; template-subject extend may carry a trailing `&where` clause (assoc-types-
-; extend.md §10): `(extend (MapIter I F) (Iterator E) &where ((Iterator S) I)
+; template-subject extend may carry a trailing `:where` clause (assoc-types-
+; extend.md §10): `(extend (MapIter I F) (Iterator E) :where ((Iterator S) I)
 ; ((UnaryFn S E) F))`. The clause is needed so the importer can re-run the
 ; determination fixpoint and recover the associated args at stamp time in its
-; own unit (register-imported-conformance → emit-extend). For a `&where`-free
+; own unit (register-imported-conformance → emit-extend). For a `:where`-free
 ; extend (node-len == 3) this prints `(extend Subject Protocol)`, byte-identical
 ; to the previous subject+protocol-only emission.
 (defn emit-nuch-extend (form:ptr):void
@@ -246,10 +246,10 @@
 (defn declare-param-type (node:(raw Node) line:i32):(raw Type)
   (when (= node null) (die-at line "declare: empty parameter"))
   (let (n:(raw Node) node)
-    ; `&rest`/`&optional` are defn-only, and none of the machinery a declaration
+    ; `:rest`/`:optional` are defn-only, and none of the machinery a declaration
     ; would need exists: `variadic` is hardcoded 0 here and `has-rest` is never
     ; set, so the marker was simply counted as an ordinary (i32) parameter —
-    ; `(declare myfn (a:i32 &rest xs:ptr):i32)` emitted
+    ; `(declare myfn (a:i32 :rest xs:ptr):i32)` emitted
     ; `declare i32 @myfn(i32, i32, ptr)`, two phantom parameters and no rest
     ; folding at any call site. Refuse it rather than mistype it. (A C variadic
     ; function needs no marker: a DECLARED signature is open-tailed — Stage 15
@@ -257,11 +257,12 @@
     ; any number of extra arguments after them, which is how the C ABI passes
     ; them anyway. Importing the function's header is the precise route: it
     ; carries a real `variadic` flag, so the fixed prefix is checked exactly.)
-    (when (and (= (n kind) NODE-SYM)
-               (or (= (n s) "&rest") (= (n s) "&optional")))
+    ; Must precede the NODE-KEYWORD arm below, which would otherwise read
+    ; `:rest` as a type spelling and report `unknown type: rest`.
+    (when (or (!= (marker-named n "rest") 0) (!= (marker-named n "optional") 0))
       (die-at line
         (fmt-s "declare: '%s' is not supported in a declaration -- declare the fixed parameters only (extra arguments are passed positionally at the call site)"
-               (n s))))
+               (marker-spelling n))))
     ; A keyword operand (`:i64`) carries the spelling without the colon, exactly
     ; as a return operand does (fn-parse-ret-type).
     (when (= (n kind) NODE-KEYWORD) (return (parse-type-name (n s) line)))
@@ -492,7 +493,7 @@
                 ; Stage 15 W9 defect 12: mark this as a DECLARED (prototype-only)
                 ; signature, so the new call-arity check admits the extra trailing
                 ; arguments a C variadic call needs — the idiom this very file's
-                ; `&rest`-in-a-declaration diagnostic points users at, and which
+                ; `:rest`-in-a-declaration diagnostic points users at, and which
                 ; `docs/toplevel.md` documents. Too few arguments is still refused.
                 (.set! (as ptr:Sym dsym) extern-decl 1)
                 (when (!= is-noreturn 0) (.set! (as ptr:Sym dsym) noreturn 1))))

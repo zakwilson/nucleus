@@ -243,7 +243,7 @@
 ; `var` is bound to a (ref StrView) borrowing the iterator's `cur` slot (valid
 ; until the next step). iter-ref is a (ref SplitIter)/(ref LineIter).
 ; ---------------------------------------------------------------------------
-(defmacro doseq-split (binding &rest body)
+(defmacro doseq-split (binding :rest body)
   (let (var-sym:ptr  ((unsafe/cast ptr:Node binding) car)
         iter-ref:ptr ((unsafe/cast ptr:Node ((unsafe/cast ptr:Node binding) cdr)) car)
         raw-sym:ptr  (gensym))

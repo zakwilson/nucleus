@@ -1,16 +1,17 @@
 ; Stage 9 §10.2: Valid — inferred structural bounds.
 ;
-; `&where (Valid T)` does not name a protocol; instead the required interface is
+; `:where (Valid T)` does not name a protocol; instead the required interface is
 ; inferred from the body. At each call site the concrete type is substituted and
 ; the body is type-checked without emitting (the per-call-site non-emitting
 ; stamp), so a type that cannot support an operation is rejected at the call site
 ; — including operations on values *derived* from T — with no protocol declared.
 
 (import-use "stdio.h")
+(import-use "stdlib.h")
 (import-use numeric)
 
 ; clampv uses only < and >, so it is valid for any ordered/comparable type.
-(defn clampv (x:T lo:T hi:T &where (Valid T)):T
+(defn clampv (x:T lo:T hi:T :where (Valid T)):T
   (if (< x lo) lo (if (> x hi) hi x)))
 
 ; A user numeric type, to show Valid is not limited to built-ins.
@@ -23,7 +24,7 @@
 
 ; A derived-value chain: (twice x) is a value derived from T whose own use must
 ; also resolve. For i32, twice→i32 then + → i32; the whole chain is checked.
-(defn twice (x:T &where (Valid T)):T (+ x x))
+(defn twice (x:T :where (Valid T)):T (+ x x))
 
 (defn main ():i32
   ; Built-in numerics.

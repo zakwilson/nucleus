@@ -20,10 +20,9 @@
 ; emit-defn time; there is no forward-reference prescan for the attribute table).
 ; See the block comment in lib/avr.nuc for the convention.
 ;
-; `(exclude-prelude)`: the prelude auto-emits the intern/arena/node runtime, which
-; references host-only libc (`perror`/`malloc`) absent from freestanding avr-libc
-; and would fail to link (AVR-1/AVR-3). This program needs none of it. Every call
-; here is direct (no function *values*, an addrspace(1) verifier error on AVR).
+; `(exclude-prelude)` is no longer required (Stage 16 took the node/arena runtime
+; out of the prelude); it is kept because this example also pins that path. Every
+; call here is direct (no function *values*, an addrspace(1) verifier error on AVR).
 ;
 ; Build + link for the ATmega328P (a real link via the avr-gcc driver, AVR-3):
 ;   nucleusc --target=avr --mcpu=atmega328p examples/avr-isr.nuc -o isr.elf

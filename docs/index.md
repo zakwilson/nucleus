@@ -57,11 +57,20 @@ Source files contain top-level forms (`defn`, `defvar`, `defstruct`, etc.). A `m
 **Generics** — use protocols and bounded `defn`:
 ```lisp
 (import-use numeric)
-(defn maxv (a:T b:T &where (Ord T)):T
+(defn maxv (a:T b:T :where (Ord T)):T
   (if (< a b) b a))
 (maxv 3 9)    ; → 9 (stamps @maxv.i32.i32)
 (maxv 2.5 1.5) ; → 2.5 (stamps @maxv.f64.f64)
 ```
+
+**Markers are keywords** — the four positional markers a definition form can
+carry are `:rest`, `:optional` ([`defn`](builtins.md#defn) / [`defmacro`](macros.md)),
+`:where` ([bounded generics](generics.md#bounded-generic-defn) and
+[`extend`](generics.md#conforming-combinators-where-on-extend)) and `:repr`
+([union layout](structs-unions.md#niche-layout-and-repr-stage-10-c4)), matching
+the declaration attributes `:const` and `:volatile`. They were once spelled
+`&rest` / `&optional` / `&where` / `&repr`; the ampersand forms are now a
+compile-time error naming their replacement.
 
 **Errors** — fallible functions return `!T` (= `(Result T Err)`):
 ```lisp
@@ -84,7 +93,7 @@ Source files contain top-level forms (`defn`, `defvar`, `defstruct`, etc.). A `m
 | [Structs and unions](structs-unions.md) | Anonymous structs, passing by value, `defunion`, `match`, niche layout, parametric struct templates |
 | [Special forms](special-forms.md) | Control flow, memory ops, `with`/`move`/`defer`, binary operators, callable values (`get`/`invoke`) |
 | [Macros](macros.md) | Standard macros (`if`, `when`, `for`, `dotimes`, `->`), variadic arithmetic, writing macros |
-| [Generics](generics.md) | Multimethods, `defprotocol`/`extend`, parametric protocols, bounded `&where` generics |
+| [Generics](generics.md) | Multimethods, `defprotocol`/`extend`, parametric protocols, bounded `:where` generics |
 | [Error handling](errors.md) | `deferror`, `!T`, `try`/`unwrap`, `with-handler`, `signal` |
 | [Standard library](stdlib.md) | Pre-declared libc bindings (stdio, stdlib, string, ctype, unistd); `StrView` byte-slice substrate (`lib/strview.nuc`); `Keyword` interned names (`lib/keyword.nuc`) |
 | [Allocators](allocators.md) | `Allocator` protocol, `AllocHandle`, libc/arena backends (`lib/allocator.nuc`) |
@@ -100,10 +109,16 @@ The prelude (`lib/prelude.nuc`) is auto-imported into every program and provides
 - All standard macros (`if`, `when`, `unless`, `for`, `dotimes`, `->`, `case`, etc.)
 - `(import-use "string.h")` declarations for `strlen`, `strcmp`, `memcpy`, etc.
 
+Every one of those emits no IR, so a prelude-only program emits exactly one
+definition: its own `main`. The node/arena **runtime** is not in the prelude — a
+program that quotes, calls a `:rest` function, or writes `printf`/`malloc` imports
+what it uses. See [The node runtime is a library](toplevel.md#the-node-runtime-is-a-library).
+
 Additional libraries available via `import-use`:
 - `(import-use macros)` — standard macros (already in prelude)
 - `(import-use numeric)` — `Eq`, `Ord`, `Num` protocols for operators
 - `(import-use error)` — `try`, `with-handler`, `signal`, `err-find-handler`
+- `(import-use node)` — `alloc-node`, `make-cell`, `intern-symbol`: the runtime behind `'sym`, `` `(…) `` and a `:rest` call
 - `(import-use arena)` — arena allocator + `(new T)` convenience macro
 - `(import-use allocator)` — `Allocator` protocol and `AllocHandle`
 - `(import-use iterator)` — `Iterator` protocol and concrete iterators

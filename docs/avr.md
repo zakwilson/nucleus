@@ -60,11 +60,21 @@ emitting the object file.
 `examples/avr-blink.nuc` (ATtiny1634) and `examples/avr-blink-dx.nuc`
 (AVR32DD20) are the same program — drive one GPIO pin as an output and
 toggle it in a busy-wait loop — written against each device's own register
-idiom. Both start with `(exclude-prelude)`: the auto-imported prelude
-force-emits an intern/arena runtime that references host-only libc symbols
-(`perror`, `malloc`) absent from freestanding avr-libc, so any AVR program
-that needs to link must opt out (see
-[The v1 profile and its exclusions](#the-v1-profile-and-its-exclusions)).
+idiom. Both start with `(exclude-prelude)`, which **Stage 16 made optional**:
+the prelude used to force-emit an intern/arena runtime referencing host-only
+libc symbols (`perror`, `malloc`) absent from freestanding avr-libc, so any AVR
+program that needed to link had to opt out — and thereby gave up `if`, `when`,
+`unless`, `->` and the variadic operators too. The prelude now emits no IR at
+all ([The node runtime is a library](toplevel.md#the-node-runtime-is-a-library)),
+so an AVR program may keep it: measured on `avr-blink` with the directive
+removed, the ATtiny1634 link succeeds at 626 bytes of text against 604 with it,
+with zero `.data` either way. The two examples keep `(exclude-prelude)` because
+they also pin that path; a new AVR program does not need it. The string table
+used to cost 126 bytes of `.data` in that measurement — it is emitted into the
+program module whole, macro-only entries included — and is now collected at the
+link along with every unreferenced definition (see
+[Separate compilation and symbol linkage](compiler.md#separate-compilation-and-symbol-linkage));
+`avr-gcc` gets the same `-Wl,--gc-sections` every other ELF target does.
 
 **ATtiny1634** — `--mcpu` alone suffices, since `attiny1634` already names
 the exact device for both codegen and the link line:
@@ -73,7 +83,7 @@ the exact device for both codegen and the link line:
 nucleusc --target=avr --mcpu=attiny1634 examples/avr-blink.nuc -o blink.elf
 avr-size blink.elf
 #    text    data     bss     dec     hex filename
-#     858       0       0     858     35a blink.elf
+#     604       0       0     604     25c blink.elf
 avr-objdump -d blink.elf | less   # sanity-check the disassembly
 avr-objcopy -O ihex blink.elf blink.hex   # optional: Intel-hex for a programmer
 ```
@@ -87,7 +97,7 @@ nucleusc --target=avr --mcpu=avrxmega3 --mmcu=avr32dd20 \
          examples/avr-blink-dx.nuc -o blink-dx.elf
 avr-size blink-dx.elf
 #    text    data     bss     dec     hex filename
-#     890       0       0     890     37a blink-dx.elf
+#     346       0       0     346     15a blink-dx.elf
 ```
 
 Both link to a genuine `ELF … Atmel AVR 8-bit` executable with **zero** data/
@@ -157,9 +167,9 @@ example — behaviorally verified under `simavr`.
   (`__cons`/`__append`) is 16-bit-correct on AVR and only needs `malloc`
   (avr-libc provides it). A quasiquote that constructs *quoted-symbol*
   leaves additionally pulls in the interning/arena runtime (which needs
-  `perror`, unavailable freestanding) — the same prelude-exclusion
-  constraint every AVR program already has to navigate, not something
-  specific to qq.
+  `perror`, unavailable freestanding). Since Stage 16 that is an explicit
+  `(import-use node)` rather than something the prelude did behind your back,
+  so the cost is opt-in and a program that does not quote never pays it.
 
 **Not supported in v1** (each a targeted compile-time diagnostic, never a
 silent miscompilation or an opaque LLVM verifier crash — the "raw-first,

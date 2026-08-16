@@ -147,12 +147,12 @@ at most one record per `(type, protocol)` pair), so a generic function bounded o
 a parametric protocol can recover those parameters from the conforming variable
 without threading them explicitly. The conformance record retains the bound
 arguments (`(extend IntRangeIter (Iterator i32))` records `args = {i32}`), and a
-`&where` bound names them. See [Associated-type bounds](#associated-type-bounds-where-protocol-arg--var)
+`:where` bound names them. See [Associated-type bounds](#associated-type-bounds-where-protocol-arg--var)
 below and `design/stage11/assoc-types.md`.
 
 ## Bounded generic `defn`
 
-A `defn` whose parameter list carries a `&where` clause is a **bounded generic
+A `defn` whose parameter list carries a `:where` clause is a **bounded generic
 template**: it is generic over one or more named type variables, each constrained
 to a protocol. The body is *monomorphized* — re-emitted with the variables
 substituted by concrete types — once per distinct instantiation, and cached.
@@ -161,7 +161,7 @@ Statically dispatched, zero runtime overhead.
 ```lisp
 (import-use numeric)                      ; Eq / Ord / Num over the operators
 
-(defn maxv (a:T b:T &where (Ord T)):T     ; T is a type variable bounded by Ord
+(defn maxv (a:T b:T :where (Ord T)):T     ; T is a type variable bounded by Ord
   (if (< a b) b a))                       ; operators dispatch on T directly
 
 (maxv 3 9)        ; → stamps @maxv.i32.i32; (< a b) is an inline icmp
@@ -171,22 +171,22 @@ Statically dispatched, zero runtime overhead.
 Because operators are generic methods, the body uses `<` directly and the
 constraint is the standard `Ord`; built-in numeric types conform automatically.
 
-- **`&where`** follows all value parameters; each constraint is a 2-element list
+- **`:where`** follows all value parameters; each constraint is a 2-element list
   whose tail is the conforming variable. The head is **either** a bare protocol
   name — `(Protocol Var)` — **or** a protocol *application* `((Protocol Arg…) Var)`
   for a parametric protocol (see [Associated-type bounds](#associated-type-bounds-where-protocol-arg--var)).
-  Multiple constraints are allowed (e.g. `&where (Ord T) (Show U)`).
+  Multiple constraints are allowed (e.g. `:where (Ord T) (Show U)`).
 - **Type variables are declared-only:** a name is a type variable iff it is bound
-  in a `&where` constraint. Any other unknown type identifier is still an
+  in a `:where` constraint. Any other unknown type identifier is still an
   `unknown type` error, so typos stay caught.
 - **Binding** gathers the concrete type at every bare occurrence of a variable
   among the arguments and requires they agree; the bound type must conform
   (nominally, via `extend`) to the variable's protocol(s). There is no unifier:
   variables appear only in **bare** parameter/return positions. A nested position
-  (`(ptr T)`, etc.) in a plain `&where` generic is rejected. For a parametric
+  (`(ptr T)`, etc.) in a plain `:where` generic is rejected. For a parametric
   struct receiver, the type variable **is** permitted in nested positions like
   `(ptr T)` and `(ref T)` — those tyvars are inferred from the receiver, not
-  supplied via `&where`. See [Parametric struct templates](structs-unions.md#parametric-struct-templates-defstruct-name-t-).
+  supplied via `:where`. See [Parametric struct templates](structs-unions.md#parametric-struct-templates-defstruct-name-t-).
 - **Abstract return (B1).** The return type may be a type variable bound by a
   parameter (`maxv:T` above); the concrete return is known per instantiation.
   A return variable bound by *no* parameter (Haskell `read`) is rejected — it
@@ -196,12 +196,12 @@ constraint is the standard `Ord`; built-in numeric types conform automatically.
 - **Def-time checking (A2).** A template body is type-checked **once at its
   definition** against the abstract protocol interface, *before* any call. A value
   of type variable `T` is typed abstractly; a call on it that resolves to a method
-  of `T`'s `&where` protocols (with `Self → T`), or to another generic whose
+  of `T`'s `:where` protocols (with `Self → T`), or to another generic whose
   constraints `T`'s constraints satisfy, is checked precisely (and yields a precise
   result type). The check is **lenient**: the only hard def-time error is a
   genuinely unknown function name (a typo) —
   ```lisp
-  (defn maxv (a:T b:T &where (Ord T)):T
+  (defn maxv (a:T b:T :where (Ord T)):T
     (when (greater a b) …))   ; error at the defn: unknown function 'greater'
   ```
   A *known* operation that the abstract interface can't confirm — an operator
@@ -216,7 +216,7 @@ constraint is the standard `Ord`; built-in numeric types conform automatically.
   ```
   The constraint protocol's existence is also checked at the `defn`.
 - **Cross-unit.** A generic template exports verbatim through `.nuch`
-  (`(defn maxv ((a T) (b T) &where (Ord T)) :T …)`); an importing unit
+  (`(defn maxv ((a T) (b T) :where (Ord T)) :T …)`); an importing unit
   re-registers it (trusting the exporter's A2 check) and stamps its own
   instantiations locally, calling the exporter's concrete protocol methods by
   their mangled symbols.
@@ -231,7 +231,7 @@ names/protocols/conformances are registered, typing the body with parameters
 bound to abstract `TY-TYVAR` types — which never reach codegen, since templates
 emit only after monomorphization.
 
-### Associated-type bounds: `&where ((Protocol Arg…) Var)`
+### Associated-type bounds: `:where ((Protocol Arg…) Var)`
 
 When the bound names a **parametric protocol**, the constraint head is a protocol
 *application* — the same spelling `extend` uses — and each argument is either
@@ -247,7 +247,7 @@ When the bound names a **parametric protocol**, the constraint head is a protoco
 (defstruct (MapIter I F) source:I f:F)   ; no phantom params
 
 (defn next ((self (ref (MapIter I F)))
-                        &where ((Iterator S) I)      ; recover S := I's element
+                        :where ((Iterator S) I)      ; recover S := I's element
                                ((UnaryFn S E) F)) (Maybe E)    ; check S, recover E := F's result
   (let ((res (Maybe S)) (next (.& self source)))
     (match res
@@ -268,10 +268,10 @@ When the bound names a **parametric protocol**, the constraint head is a protoco
 - **The conforming variable may be a free type parameter or a recovered tyvar.**
   It does not have to come from a struct-template application in the parameter list.
   A bare type parameter used directly as a parameter type — `C` in `(c (ref C))` —
-  can be the conforming variable: `&where ((IterColl It) C)` recovers `It` from
+  can be the conforming variable: `:where ((IterColl It) C)` recovers `It` from
   `C`'s `IterColl` conformance, with `C` itself bound from the call argument at
   dispatch. A tyvar recovered by an earlier constraint can in turn be the conforming
-  variable of a later one: `&where ((IterColl It) C) ((Iterator E) It)` first
+  variable of a later one: `:where ((IterColl It) C) ((Iterator E) It)` first
   recovers `It`, then uses it to recover `E`. The fixpoint and the dispatch-time
   binding handle both; see `examples/assoc-iter-return.nuc`.
 - **Coherence makes this sound:** a type conforms to a given protocol at most once
@@ -287,16 +287,16 @@ This replaces the older "phantom param" workaround, where the source and result
 element types had to be declared as extra struct parameters and threaded by every
 call site. See `design/stage11/assoc-types.md` for the full design.
 
-### Conforming combinators: `&where` on `extend`
+### Conforming combinators: `:where` on `extend`
 
 A generic combinator struct can itself **conform** to the protocol it implements
-by placing a `&where` clause on the `extend` form. The protocol-application
+by placing a `:where` clause on the `extend` form. The protocol-application
 argument is recovered at stamp time from the combinator's field conformances,
 using the same fixpoint A2 runs at dispatch.
 
 ```lisp
 (extend (MapIter I F) (Iterator E)
-        &where ((Iterator S) I)        ; I yields S
+        :where ((Iterator S) I)        ; I yields S
                ((UnaryFn S E) F))      ; F maps S -> E; recover E
 ```
 
@@ -305,8 +305,8 @@ yielding `S` and `F` maps `S → E`." `E` is neither a struct parameter nor
 concrete — it is recovered from `F`'s `UnaryFn` conformance when a concrete
 `(MapIter IntRangeIter SqFn)` is stamped.
 
-**Syntax.** The `&where` clause is appended to the `extend` form using the
-identical spelling used on `defn`. A `&where`-free `extend` is unchanged:
+**Syntax.** The `:where` clause is appended to the `extend` form using the
+identical spelling used on `defn`. A `:where`-free `extend` is unchanged:
 
 ```lisp
 (extend (Vector T) (Seq T))            ; T is a template param — unchanged
@@ -314,7 +314,7 @@ identical spelling used on `defn`. A `&where`-free `extend` is unchanged:
 ```
 
 **Determination.** Every type variable appearing in the protocol application or
-in any `&where` constraint must be *determined*:
+in any `:where` constraint must be *determined*:
 
 1. **Seed.** The subject template's own parameters (`I`, `F`) are always
    determined — they are the stamp arguments.
@@ -324,10 +324,10 @@ in any `&where` constraint must be *determined*:
 3. **Check.** Every tyvar in the protocol application must be determined after
    convergence. An undetermined tyvar is an error:
    ```
-   extend: protocol parameter 'E' is not determined by the subject or any &where constraint
+   extend: protocol parameter 'E' is not determined by the subject or any :where constraint
    ```
 
-Worked example — `(extend (MapIter I F) (Iterator E) &where ((Iterator S) I) ((UnaryFn S E) F))`:
+Worked example — `(extend (MapIter I F) (Iterator E) :where ((Iterator S) I) ((UnaryFn S E) F))`:
 
 | pass | determined set | reason |
 |---|---|---|
@@ -347,13 +347,13 @@ The result — e.g. `Conformance{Iterator, args=[i32]}` — is recorded in the
 conformance registry exactly as if the `extend` had been written with a concrete
 arg. The stamped combinator is thereafter a first-class `Iterator`.
 
-**Cross-unit.** A `&where`-bearing template `extend` exports through `.nuch` with
-its `&where` clause intact. The exporter cannot serialize the per-instance
+**Cross-unit.** A `:where`-bearing template `extend` exports through `.nuch` with
+its `:where` clause intact. The exporter cannot serialize the per-instance
 recovered args for instances it never stamped, so an importing unit re-runs the
-template `extend` (parsing the `&where` clause, re-running the determination
+template `extend` (parsing the `:where` clause, re-running the determination
 fixpoint, and re-registering the template conformance); the stamp-time recovery
 then fires in the importing unit when it stamps a concrete instance such as
-`(MapIter IntRangeIter SqFn)`. A `&where`-free template `extend`
+`(MapIter IntRangeIter SqFn)`. A `:where`-free template `extend`
 (`(extend (Vector T) (Seq T))`) is re-registered the same way. The conforming
 variables' conformances (here `IntRangeIter`'s `Iterator`, `SqFn`'s `UnaryFn`)
 must be in scope in the importing unit when it stamps the instance. See
@@ -367,12 +367,12 @@ combinator's recovery reads it:
 ```lisp
 ; FilterIter conforms to (Iterator S), recovering S from the source's conformance.
 (extend (FilterIter I F) (Iterator S)
-        &where ((Iterator S) I)
+        :where ((Iterator S) I)
                ((UnaryFn S i32) F))
 
 ; A generic reduce over any Iterator, element type recovered from its conformance.
 (defn reduce ((g (ref G)) (init Acc) (it (ref I))
-                  &where ((Iterator S) I)
+                  :where ((Iterator S) I)
                          ((FoldFn Acc S) G)):Acc
   ...)
 
@@ -391,7 +391,7 @@ chain (`FilterIter` over `MapIter`) is handled by the bottom-up stamp recursion
 already built into `struct-template-stamp`.
 
 **Cross-unit combinators** are fully supported. The exporting unit serializes the
-complete `extend` form (including its `&where` clause) through `.nuch`; the
+complete `extend` form (including its `:where` clause) through `.nuch`; the
 importing unit re-runs the template `extend` via `emit-extend`, reconstructing the
 `TmplConformance` and its constraint clause. Stamp-time recovery then fires in the
 importing unit when a concrete instance is stamped there. See
@@ -400,7 +400,7 @@ importing unit when a concrete instance is stamped there. See
 
 ### Bound kinds: named protocols, blanket (`Any`/`Struct`), and `Valid`
 
-A `&where` constraint names one of three kinds of bound (a name is still a type
+A `:where` constraint names one of three kinds of bound (a name is still a type
 variable iff it appears in a constraint, so every kind keeps tyvars declared-only
 and typos caught):
 
@@ -412,7 +412,7 @@ and typos caught):
 
 - **`Any`** is the no-constraint constraint — every type conforms, no methods
   required. It lets a fully generic function name its variable: `(defn id (x:T
-  &where (Any T)):T (return x))`. Operations on an `Any`-bound value are deferred to
+  :where (Any T)):T (return x))`. Operations on an `Any`-bound value are deferred to
   stamp time.
 - **`Struct`** holds for any struct type or pointer-to-struct. (Its member-access
   `get` method is supplied by callable-values; see `design/stage9/callable-values.md`.)
@@ -424,12 +424,12 @@ and typos caught):
   type that can't support an operation is rejected **at the call site**, and so are
   uses of values *derived* from `T`:
   ```lisp
-  (defn twice (x:T &where (Valid T)):T (+ x x))
+  (defn twice (x:T :where (Valid T)):T (+ x x))
   (twice 21)        ; ok — i32 supports +
   (twice some-ptr)  ; error at this call: 'ptr:Blob' does not satisfy the Valid bound of 'twice'
   ```
   `Valid` is itself written explicitly (it *nominates* structural checking); a bare
-  `&where (T)` with no protocol remains an error.
+  `:where (T)` with no protocol remains an error.
   
 Using `Valid` with a public API is risky whether it's inside the library code or a user
 method on a library function because it may unexpectedly match unowned call sites. 
@@ -454,7 +454,7 @@ numerics use for `Eq`/`Ord`:
   …), or an aggregate (struct / untagged union) that does **not** conform to `Drop`.
   No `extend` is written; the conformance is recognized by a structural predicate
   alongside `Any`/`Struct` (`blanket-conforms`), so a Drop-free value satisfies a
-  `&where (Clone T)` bound with no boilerplate and the closure that captures it owns
+  `:where (Clone T)` bound with no boilerplate and the closure that captures it owns
   nothing.
 - **Hand-written (nominal).** An owning (`Drop`) type is *excluded* from the
   automatic rule — a bitwise copy of an owned resource would double-free — so it
@@ -465,7 +465,7 @@ numerics use for `Eq`/`Ord`:
   exists.
 
 A `Drop` type with **no** `Clone` conformance — neither automatic (it is `Drop`,
-hence excluded) nor hand-written — is **not** `Clone`: a `&where (Clone T)` bound
+hence excluded) nor hand-written — is **not** `Clone`: a `:where (Clone T)` bound
 rejects it at the call site. (Stage 13's `vfn` turns that rejection into a directed
 "use `mfn` to move it instead" diagnostic.) Drop-ness is the same nominal,
 transitively-recorded fact the `with` cleanup uses: a wrapper struct that owns a
@@ -475,7 +475,7 @@ transitive answer.
 ### Structural function-protocol conformance (closures)
 
 A closure, or a bare function pointer, is **never pre-declared** to conform to a
-function protocol. Instead, when one flows into a `&where ((P …) V)` bound, the
+function protocol. Instead, when one flows into a `:where ((P …) V)` bound, the
 compiler **structurally matches** the value's `invoke` (or, for a function
 pointer, its signature) against `P`'s single required method and **synthesizes a
 forwarding conformance**, reading the bound type arguments straight off the
@@ -485,7 +485,7 @@ inline to a generic combinator such as `map`/`reduce`
 function-object struct:
 
 ```lisp
-; reduce bounds its fold operand g with &where ((FoldFn Acc S) G).
+; reduce bounds its fold operand g with :where ((FoldFn Acc S) G).
 ; Each closure literal below gets a synthesized (closure, FoldFn) conformance
 ; derived from its invoke, recovering Acc and S off invoke's signature.
 (reduce (fn  (acc i32 x i32):i32 (return (+ acc (* x x))))      0 r)   ; bare fn ptr
@@ -518,7 +518,7 @@ object. See `design/stage13/lambda.md` §"Representation and calling" and
 `examples/closures.nuc`.
 
 *Not yet implemented:* same-name overloading that mixes imported and
-locally-defined methods; `&rest` together with `&where`; REPL generic
+locally-defined methods; `:rest` together with `:where`; REPL generic
 instantiation; non-type/const parameters in parametric generics; higher-kinded
 or partially applied type parameters.
 

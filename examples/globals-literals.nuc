@@ -1,5 +1,7 @@
 ; Exercise the literal forms accepted by `defvar`.
 
+(import-use "stdio.h")
+
 (defvar g-int:i32 42)
 (defvar g-i64:i64 1234567890123)
 (defvar g-neg:i32 -7)

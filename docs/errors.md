@@ -100,8 +100,8 @@ The representation depends on the payload:
   directly; `err` values occupy the top-page range
   `[ptrtoint(-4095), ptrtoint(-1)]` (ids 1–4095). C code that understands the
   ERR_PTR convention can consume it directly. `sizeof(!ptr:T) == sizeof(T*)`.
-  Use `&repr tagged` on the `defunion` to opt out and force the struct layout
-  when a C consumer needs it unconditionally (see [Niche layout and `&repr`](structs-unions.md#niche-layout-and-repr-stage-10-c4)).
+  Use `:repr tagged` on the `defunion` to opt out and force the struct layout
+  when a C consumer needs it unconditionally (see [Niche layout and `:repr`](structs-unions.md#niche-layout-and-repr-stage-10-c4)).
 
 Nothing propagates across a function boundary by a mechanism C doesn't
 understand.

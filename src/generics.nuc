@@ -485,7 +485,7 @@
 
 ; Stage 11 T4: would a *generic* (METHOD-GENERIC) method of `g` resolve for the
 ; concrete `param-types`? Mirrors generic-resolve's tier-1 — bind the tyvars, then
-; check the &where constraints — but does NOT instantiate (no MonoJob queued, no
+; check the :where constraints — but does NOT instantiate (no MonoJob queued, no
 ; emission), so it is a pure side-effect-free conformance probe. Used by
 ; method-satisfies-sig so a required protocol method written generically over a
 ; parametric struct (`get`/`count` over `(Vector T)`) counts as satisfied for a
@@ -494,7 +494,7 @@
 ; the tyvars substituted) so the caller can verify it against a required return.
 ; arg-nodes (LW-6): the call-site argument nodes, or null when this probe has no
 ; real call site (method-satisfies-sig's signature-only check) — threaded to
-; generic-method-bind so a literal argument defers to &where assoc-recovery here
+; generic-method-bind so a literal argument defers to :where assoc-recovery here
 ; exactly as it does on the emit side (node-type↔emit-node lockstep; otherwise
 ; node-type-call's probe below dies on a widened call before emission ever runs).
 (defn generic-binds-for (g:raw:Generic param-types:ptr nparams:i32 out-ret:ptr:ptr line:i32 arg-nodes:ptr):i32
@@ -516,22 +516,21 @@
     (return 0)))
 
 ; Fixed parameter count of a defn param list: the raw count, minus one if a
-; &rest marker is present (the marker itself is not a parameter).
+; :rest marker is present (the marker itself is not a parameter).
 (defn defn-params-count (params-node:raw:Node):i32
   (let (raw:i32 (node-len params-node)
         n:i32 (node-len params-node))
     (dotimes (i raw)
       ; W5f: a malformed parameter may be NULL (an empty list `()` reads as a
-      ; null node). It is certainly not an &rest/&optional marker; the located
-      ; diagnostic is emit-defn's job, so just don't dereference it here.
+      ; null node). `marker-named` is null-safe; the located diagnostic for a
+      ; malformed parameter is emit-defn's job, not this counter's.
       (let (sp:(raw Node) (as raw:Node (node-at params-node i)))
-        (when (and (!= sp null) (= (sp kind) NODE-SYM))
-          (when (= (sp s) "&rest") (set! n (- n 1)))
-          (when (= (sp s) "&optional") (set! n (- n 1))))))
+        (when (!= (marker-named sp "rest") 0) (set! n (- n 1)))
+        (when (!= (marker-named sp "optional") 0) (set! n (- n 1)))))
     (return n)))
 
-; The fixed parameter types of a defn param list as a ptr-array (&rest-aware:
-; the &rest marker is skipped and the rest parameter is typed ptr). Shared by
+; The fixed parameter types of a defn param list as a ptr-array (:rest-aware:
+; the :rest marker is skipped and the rest parameter is typed ptr). Shared by
 ; prescan, .nuch export, and method lookup so the three stay consistent.
 (defn defn-params-to-types (params-node:raw:Node):ptr
   (let (raw:i32 (node-len params-node)
@@ -542,9 +541,8 @@
       ; W5f: see defn-params-count — a NULL (empty-list) parameter is not a
       ; marker and must not be dereferenced during the prescan.
       (let (sp:(raw Node) (as raw:Node (node-at params-node si)))
-        (when (and (!= sp null) (= (sp kind) NODE-SYM))
-          (when (= (sp s) "&rest") (set! has-rest 1) (set! rest-idx si))
-          (when (= (sp s) "&optional") (set! opt-idx si)))))
+        (when (!= (marker-named sp "rest") 0) (set! has-rest 1) (set! rest-idx si))
+        (when (!= (marker-named sp "optional") 0) (set! opt-idx si))))
     (let (nparams:i32 raw)
       (when (!= has-rest 0) (set! nparams (- nparams 1)))
       (when (!= opt-idx -1) (set! nparams (- nparams 1)))
@@ -911,7 +909,7 @@
 ; Select the method of a generic for a concrete argument-type tuple.
 ; Tier 0: an exact concrete method (type-eq on every param) — concrete beats
 ; generic (§8.6). Tier 1: a bounded-generic template whose type variables bind
-; consistently and whose bound types satisfy the &where protocol constraints;
+; consistently and whose bound types satisfy the :where protocol constraints;
 ; on a unique tier-1 match the template is monomorphized (stamped + cached) and
 ; the resulting concrete method returned. Tier 2: a concrete method reachable by
 ; a safe widen / untyped-int-literal adaptation on every argument (§10.3); the
@@ -1083,20 +1081,20 @@
 ; ============================================================
 ; Bounded generic defn (Stage 9 rung 4)
 ; ============================================================
-; A generic defn carries a `&where` clause in its parameter list:
-;   (defn max:T (a:T b:T &where (Ord T)) ...)
+; A generic defn carries a `:where` clause in its parameter list:
+;   (defn max:T (a:T b:T :where (Ord T)) ...)
 ; Type variables are declared-only (named in a constraint). The template body is
 ; retained and monomorphized — substitute concrete types, stamp, cache — at each
 ; call site whose argument types bind the variables and satisfy the constraints.
 
-; Index of the `&where` marker in a (desugared) parameter list, or -1.
+; Index of the `:where` marker in a (desugared) parameter list, or -1.
 (defn params-where-index (params-node:raw:Node):i32
   (let (raw:i32 (node-len params-node))
     (dotimes (i raw)
       ; W5f: an empty list `()` among the params is a NULL node — never a
-      ; `&where` marker, and not to be dereferenced.
+      ; `:where` marker, and not to be dereferenced. `marker-named` is null-safe.
       (let (e:(raw Node) (as raw:Node (node-at params-node i)))
-        (when (and (!= e null) (= (e kind) NODE-SYM) (= (e s) "&where"))
+        (when (!= (marker-named e "where") 0)
           (return i))))
     (return -1)))
 
@@ -1155,13 +1153,13 @@
 ; ============================================================
 ; A method written over a parametric struct — `(defn count:usize
 ; ((self (ref (Vector T)))) ...)` — declares its tyvars implicitly through the
-; receiver instead of an explicit `&where`. The free symbol `T` appearing as an
+; receiver instead of an explicit `:where`. The free symbol `T` appearing as an
 ; argument of the registered template application `(Vector T)` is the method's
 ; type variable, inferred from the receiver (parametric-structs.md §4). These
 ; helpers (a) decide whether a symbol names a concrete type (else it is a tyvar),
 ; (b) collect such tyvars from a parameter/return type node, and (c) structurally
 ; unify a type-pattern node against a concrete argument Type* to bind them — the
-; exact equivalent of an `&where`-declared tyvar list, so the method is recorded
+; exact equivalent of an `:where`-declared tyvar list, so the method is recorded
 ; and stamped through the unchanged rung-4 monomorphizer.
 
 ; Does `name` name a concrete (non-tyvar) type? Mirrors parse-type-name's
@@ -1374,7 +1372,7 @@
 
 ; Does this defn signature mention a registered struct template applied to free
 ; (tyvar) symbols in any parameter or return type? If so it is a receiver-inferred
-; generic method (parametric-structs.md §4), recorded like an `&where` template.
+; generic method (parametric-structs.md §4), recorded like an `:where` template.
 (defn defn-has-receiver-tyvars (form:raw:Node):i32
   (let (name-node:ptr (node-at form 1)
         params-node:ptr (node-at form 2))
@@ -1397,9 +1395,8 @@
         ; W5f: a NULL (empty-list `()`) parameter is not a marker; skip the
         ; dereference and let emit-defn diagnose it.
         (let (p:(raw Node) (as raw:Node (node-at params-node i)))
-          ; Skip &where / &rest / &optional markers and their constraint lists.
-          (when (and (!= p null) (= (p kind) NODE-SYM)
-                     (or (= (p s) "&where") (= (p s) "&rest") (= (p s) "&optional")))
+          ; Skip :where / :rest / :optional markers and their constraint lists.
+          (when (!= (marker-any p) 0)
             (return (if (> ntv 0) 1 0)))
           (collect-pattern-tyvars (binding-type-node (node-at params-node i))
                                   tyvars (as ptr:i32 (addr-of ntv))))
@@ -1408,7 +1405,7 @@
       (return (if (> ntv 0) 1 0))))))
 
 ; A defn is a bounded-generic template — recorded for on-demand monomorphization
-; rather than emitted concretely — if it carries an explicit `&where` clause OR
+; rather than emitted concretely — if it carries an explicit `:where` clause OR
 ; its receiver/return mentions a parametric struct over free tyvars (§4). Both
 ; routing sites (prescan registration, emit-defn skip) consult this so the two
 ; never disagree about whether a defn is a template.
@@ -1491,7 +1488,7 @@
       0)
     (return 0)))
 
-; Parse a `&where` constraint list into the `constraints` Vector (assoc-types A1,
+; Parse a `:where` constraint list into the `constraints` Vector (assoc-types A1,
 ; factored out for A4 so `emit-extend` can reuse it — design assoc-types-extend.md
 ; §5). `params-node` holds the constraint nodes starting at index `base`; there are
 ; `nc` of them. Appends, for each constraint i in [0,nc), one `(ref Constraint)`:
@@ -1509,7 +1506,7 @@
   (dotimes (ci nc)
     (let (cnode:ptr (node-at params-node (+ base ci)))
       (when (or (= (node-is-list cnode) 0) (!= (node-len cnode) 2))
-        (die-at line "defn: each &where constraint must be (Protocol Var)"))
+        (die-at line "defn: each :where constraint must be (Protocol Var)"))
       ; Element 0 is the protocol slot: either a bare symbol (plain
       ; protocol, unchanged path) or a list `(Proto Arg…)` (a protocol
       ; application — assoc-types A1). Element 1 is always the conforming
@@ -1520,7 +1517,7 @@
         (.set! rec args null)
         (.set! rec nargs 0)
         (when (!= (vn kind) NODE-SYM)
-          (die-at line "defn: &where constraint must name a protocol and a variable"))
+          (die-at line "defn: :where constraint must name a protocol and a variable"))
         ; Element 0 may be null when written as the empty list `()` in the
         ; protocol slot; guard the kind read before classifying.
         (if (and (!= (as ptr c0) null) (= (c0 kind) NODE-SYM))
@@ -1541,10 +1538,10 @@
           ; collected (recovered/constrained at dispatch — A2).
           (do
             (when (or (= (node-is-list (as ptr c0)) 0) (< (node-len (as ptr c0)) 1))
-              (die-at line "defn: &where constraint protocol application must be (Protocol Arg...)"))
+              (die-at line "defn: :where constraint protocol application must be (Protocol Arg...)"))
             (let (hn:ptr:Node (unsafe/cast ptr:Node (node-at (as ptr c0) 0)))
               (when (!= (hn kind) NODE-SYM)
-                (die-at line "defn: &where constraint protocol application head must be a protocol name"))
+                (die-at line "defn: :where constraint protocol application head must be a protocol name"))
               (let (na:i32 (- (node-len (as ptr c0)) 1)
                     argv:ptr (if (> na 0) (arena-alloc (* (as i64 na) (ptr-bytes))) null))
                 (dotimes (ai na)
@@ -1562,11 +1559,11 @@
 
 ; Register a bounded-generic defn as a METHOD-GENERIC template (Stage 9 rung 4).
 ; Tyvars come from two sources, merged (parametric-structs.md §4):
-;   - explicit `&where (Protocol Var)` constraints (the variable is declared and
+;   - explicit `:where (Protocol Var)` constraints (the variable is declared and
 ;     carries an extra bound);
 ;   - receiver inference — a free symbol appearing as an argument of a registered
 ;     struct-template application in a parameter/return type (`(ref (Vector T))`).
-; A method may have receiver-inferred tyvars and no `&where` at all. Every
+; A method may have receiver-inferred tyvars and no `:where` at all. Every
 ; declared tyvar must be determined by some parameter through the structural
 ; unifier; the body is retained and monomorphized per concrete call site.
 (defn register-generic-defn (form:raw:Node trusted:i32):void
@@ -1588,11 +1585,11 @@
           nparams:i32 (if (>= wi 0) wi (defn-params-count params-node)))
       (dotimes (i nparams)
         (let (p:ptr:Node (unsafe/cast ptr:Node (node-at params-node i)))
-          (when (and (= (p kind) NODE-SYM) (= (p s) "&rest"))
-            (die-at (node-line (as ptr p) (ff line)) "defn: &rest combined with a generic method is not supported yet"))))
+          (when (!= (marker-named (as raw:Node p) "rest") 0)
+            (die-at (node-line (as ptr p) (ff line)) "defn: :rest combined with a generic method is not supported yet"))))
       (let (nc:i32 (if (>= wi 0) (- raw (+ wi 1)) 0))
         (when (and (!= has-where 0) (< nc 1))
-          (die-at (ff line) "defn: &where requires at least one (Protocol Var) constraint"))
+          (die-at (ff line) "defn: :where requires at least one (Protocol Var) constraint"))
         ; Capacity: constraint vars + a conservative upper bound on receiver-
         ; inferred tyvars across every parameter and the return type. A single
         ; parameter applying a struct template `(Two I F S E)` contributes one
@@ -1620,7 +1617,7 @@
               (constraints (ref (Vector (ref Constraint)))) (vector-new-in (addr-of g-arena-alloc))
               tyvars:ptr     (arena-alloc (* (as i64 cap) (ptr-bytes)))
               ntv:i32 0)
-          ; Parse the &where constraint list into the `constraints` Vector and
+          ; Parse the :where constraint list into the `constraints` Vector and
           ; collect constraint variables + Arg tyvars (assoc-types A1). Shared with
           ; emit-extend (A4) via parse-where-constraints.
           (parse-where-constraints params-node (+ wi 1) nc
@@ -1690,7 +1687,7 @@
             ; method-undetermined-tyvar for the dedicated diagnostic.
             )
           ; Constraint protocols are validated in the A2 pass (check-generic-
-          ; template), which runs after all imports — so a &where may name a
+          ; template), which runs after all imports — so a :where may name a
           ; protocol that an `import` provides, while a genuine typo is still
           ; caught (just at the outermost top-level rather than at the prescan).
           ; Register the template.
@@ -1755,7 +1752,7 @@
 
 ; Assoc-types A2 (§3.5): after the positional unifier has bound the parameter
 ; tyvars in out-bound, recover or check the associated tyvars carried by each
-; parametric `&where` constraint `((Proto Arg…) V)`. A fixpoint, because one
+; parametric `:where` constraint `((Proto Arg…) V)`. A fixpoint, because one
 ; constraint's recovered tyvar (S from `((Iterator S) I)`) can be another's input
 ; (`((UnaryFn S E) F)`).
 ;
@@ -1780,7 +1777,7 @@
 ; Operates on an explicit constraint tuple (assoc-types A4, factored out of the
 ; Method* so emit-extend can reuse the same fixpoint — assoc-types-extend.md §5):
 ;   tyvar-names / num-tyvars — the declared tyvars and their count;
-;   constraints — the parsed &where clause (Vector (ref Constraint));
+;   constraints — the parsed :where clause (Vector (ref Constraint));
 ;   ci — the constraint index; out-bound — the bound[tyvar-index] = Type* array;
 ;   io-changed — a ptr:i32 box set to 1 on a RECOVER; line — diagnostic line for
 ;     the hard-error cases (stale args / arity mismatch).
@@ -1861,7 +1858,7 @@
 
 ; Assoc-types A2 (§3.5): after the positional unifier has bound the parameter
 ; tyvars in out-bound, recover or check the associated tyvars carried by each
-; parametric `&where` constraint `((Proto Arg…) V)`. A fixpoint, because one
+; parametric `:where` constraint `((Proto Arg…) V)`. A fixpoint, because one
 ; constraint's recovered tyvar (S from `((Iterator S) I)`) can be another's input
 ; (`((UnaryFn S E) F)`). Returns 0 (a soft no-match) when a determined V does not
 ; conform to Proto; 1 otherwise. A plain protocol (the constraint's nargs == 0) is skipped,
@@ -1871,7 +1868,7 @@
 ; constraint tuple, so emit-extend can run the identical fixpoint at stamp time:
 ;   tyvar-names / num-tyvars — declared tyvars and count;
 ;   out-bound — mutable bound[tyvar-index] = Type* array (seeded by the caller);
-;   constraints — the parsed &where clause (Vector (ref Constraint));
+;   constraints — the parsed :where clause (Vector (ref Constraint));
 ;   num-constraints — count; line — diagnostic line for hard errors.
 (defn recover-assoc-into (tyvar-names:ptr out-bound:ptr num-tyvars:i32
                               (constraints (raw (Vector (ref Constraint))))
@@ -1898,7 +1895,7 @@
           ntv:i32 (mm num-tyvars)
           ; LW-6 (int-widening.md follow-up, found while wrapping up the LW-5
           ; sweep): a literal argument whose param is a bare, still-unbound
-          ; tyvar is deferred past assoc-recovery below, so a &where
+          ; tyvar is deferred past assoc-recovery below, so a :where
           ; constraint's conformance (a real declared type) gets first claim
           ; on the tyvar instead of the literal's naive i32 — fixes `reduce`'s
           ; FoldFn Acc/T binding from a literal accumulator (e.g.
@@ -1938,7 +1935,7 @@
               (when (= (unify-tpat ptn at (mm tyvars) ntv out-bound
                                    ((unsafe/cast ptr:Node ptn) line)) 0)
                 (return 0))))))
-      ; Recover/check associated tyvars from the parametric &where constraints
+      ; Recover/check associated tyvars from the parametric :where constraints
       ; (assoc-types A2). A soft 0 here means a constraint's conforming variable
       ; does not conform — reject this candidate before the all-bound check.
       ; recover-assoc-into runs the shared fixpoint over the Method's fields.
@@ -1979,7 +1976,7 @@
         (when (= (aref (as ptr:ptr out-bound) k) null) (return 0)))
       (return 1))))
 
-; Check that each &where constraint is satisfied: the type bound to its variable
+; Check that each :where constraint is satisfied: the type bound to its variable
 ; must conform (nominally, via `extend`) to the named protocol.
 (defn generic-constraints-ok (m:raw:Method bound:ptr line:i32):i32
   (let (mm:raw:Method m
@@ -2124,7 +2121,7 @@
           (dotimes (k ntv)
             (when (= (aref (as ptr:ptr out-bound) k) null) (set! complete 0)))
           (when (!= complete 0) (return 0))))
-      ; Recover associated tyvars from parametric &where constraints, then require
+      ; Recover associated tyvars from parametric :where constraints, then require
       ; every tyvar bound by the exactly-matched parameters (adaptation never binds
       ; a tyvar, so a tyvar reachable only through a deferred parameter stays null).
       (when (= (recover-assoc-into (mm tyvars) out-bound ntv
@@ -2222,7 +2219,7 @@
     (return 1)))
 
 ; Build a concrete defn form from a generic template + a type-variable binding:
-; substitute the variables throughout, then drop the &where clause.
+; substitute the variables throughout, then drop the :where clause.
 (defn monomorphize-form (form:raw:Node tyvars:ptr spellings:ptr ntv:i32 nparams:i32):raw:Node
   (let (ff:raw:Node form
         line:i32 (ff line)
@@ -2348,7 +2345,7 @@
 ; ============================================================
 ; Type-check a generic template body ONCE at its definition against the abstract
 ; protocol interface: a value of type variable T (an abstract `TY-TYVAR`) admits
-; only the operations its `&where` protocols declare (with Self → T) — plus calls
+; only the operations its `:where` protocols declare (with Self → T) — plus calls
 ; to other generics whose own constraints T's constraints satisfy. A use the
 ; constraints don't provide errors at the `defn`, not at the first instantiation.
 ; This never emits and only ever manufactures TY-TYVAR types, which codegen never
@@ -2728,14 +2725,14 @@
         params-node:ptr (node-at form 2)
         scope:ref:Scope (scope-new g-globals)
         nparams:i32 (mm num-params))
-    ; Every &where constraint must name a known protocol/blanket/Valid — checked
+    ; Every :where constraint must name a known protocol/blanket/Valid — checked
     ; here (not at prescan) so an imported protocol is already registered.
     (dotimes (ci (mm num-constraints))
       (let (crec:ref:Constraint (constraints-at (mm constraints) ci)
             pnm:CStr (crec proto))
         (when (= (constraint-proto-known pnm) 0)
           (die-at (form line)
-            (fmt-s "defn: &where names unknown protocol '%s'" pnm)))))
+            (fmt-s "defn: :where names unknown protocol '%s'" pnm)))))
     (dotimes (i nparams)
       (let (pnode:ptr (node-at params-node i)
             pty:ptr (gbind-decl-type pnode m (form line))
@@ -2758,7 +2755,7 @@
 ; (gbind-decl-type) only models flat tyvar parameters; a nested receiver type
 ; cannot be parsed against an abstract element, so such a template defers all body
 ; type-checking to stamp time (the concrete monomorphized body goes through the
-; ordinary emit/type pass). A plain flat-tyvar `&where` template returns 0 here
+; ordinary emit/type pass). A plain flat-tyvar `:where` template returns 0 here
 ; and is A2-checked exactly as before (byte-identical).
 (defn method-has-nested-tyvar (m:raw:Method):i32
   (let (mm:raw:Method m
@@ -2792,7 +2789,7 @@
 ; ============================================================
 ; Valid: inferred structural bounds (Stage 9 §10.2)
 ; ============================================================
-; `&where (Valid T)` bounds T structurally: instead of naming a protocol, the
+; `:where (Valid T)` bounds T structurally: instead of naming a protocol, the
 ; required interface is whatever the body does to T-typed values. Per the
 ; designer (open Q3), this is realized as a per-call-site non-emitting stamp —
 ; at each instantiation (T := C known) the body is substituted and the rung-3
@@ -3023,7 +3020,9 @@
   (while (< g-mono-drained (count g-mono-worklist))
     (let (job:ptr:MonoJob (as ptr:MonoJob (invoke g-mono-worklist g-mono-drained)))
       (inc! g-mono-drained)
-      (set! g-out g-def-stream)
+      ; Not `g-def-stream`: an `import-ct` in progress has that pointing at a
+      ; sink, and a stamp belongs to no file — the program may be what calls it.
+      (set! g-out g-def-stream-program)
       ; Attach the instantiation context to any error raised while emitting.
       (set! g-mono-context (job context))
       ; Stage 15 W9 item 2: a stamp belongs to no file. It is derived from the
@@ -3236,7 +3235,7 @@
     (when (= (invoke g-blanket (as usize i)) name) (return 1)))
   (return 0))
 
-; A name usable as a `&where` constraint: a declared protocol, a blanket protocol
+; A name usable as a `:where` constraint: a declared protocol, a blanket protocol
 ; (Any/Struct, §10.1), or the structural bound Valid (§10.2). Used to reject typos
 ; once all imports have registered their protocols (the A2 pass).
 ; B2a: `name` is a stored `Constraint.proto` — canonical, or the raw spelling it
@@ -3274,7 +3273,7 @@
 ; nothing. An owning (Drop) aggregate is excluded — it must hand-write `clone`
 ; (an `(extend <S> Clone)`), which the nominal conformance registry serves. A
 ; TY-TYVAR is abstract and never structurally trivial here (its Clone-ness comes
-; from its own `&where` bound), so it returns 0.
+; from its own `:where` bound), so it returns 0.
 (defn type-trivially-copyable (ty:raw:Type):i32
   (let (tt:raw:Type ty
         k:i32 (tt kind))
@@ -4027,9 +4026,9 @@
 ; and `bindings` the proto-application args (`T`) positionally bound to the
 ; protocol's extra params (`E`). Idempotent on (template, proto). The per-instance
 ; check is deferred to stamp time (tmpl-conformance-check-instance).
-; Stage 11 assoc-types (A4): also carries the parsed trailing `&where` clause
+; Stage 11 assoc-types (A4): also carries the parsed trailing `:where` clause
 ; (tyvars/num-tyvars + the constraints Vector + num-constraints).
-; A &where-free extend passes the template's own tyvars/ntv, null constraint
+; A :where-free extend passes the template's own tyvars/ntv, null constraint
 ; arrays, and num-constraints = 0 — identical downstream behaviour to T4.
 (defn tmpl-conformance-add (template:raw:StructTemplate proto:raw:Protocol bindings:ptr nbindings:i32
                                  tyvars:ptr num-tyvars:i32
@@ -4058,8 +4057,8 @@
 ; method resolves for `iname`, recording the concrete conformance so a Seq-bounded
 ; generic call over `Vector.i32` finds it through the ordinary conformance lookup.
 ;
-; Stage 11 assoc-types (A4.2): a `&where`-bearing extend
-; `(extend (MapIter I F) (Iterator E) &where ((Iterator S) I) ((UnaryFn S E) F))`
+; Stage 11 assoc-types (A4.2): a `:where`-bearing extend
+; `(extend (MapIter I F) (Iterator E) :where ((Iterator S) I) ((UnaryFn S E) F))`
 ; names a protocol-application arg (`E`) that is neither a template parameter nor
 ; concrete — it is recovered from this instance's own conformances (`F`'s
 ; `(UnaryFn S E)`). For such a conformance (num-constraints > 0) the binding map is
@@ -4093,9 +4092,9 @@
         nb:i32 (cc nbindings)
         pspellings:ptr null
         ; The tyvar-name array and the concrete spellings used to substitute the
-        ; protocol binding nodes. For a &where-free extend these are the template's
+        ; protocol binding nodes. For a :where-free extend these are the template's
         ; own tyvars and the instance's stamp arg spellings (the unchanged T4 path).
-        ; For a &where-bearing extend (set below) they are the conformance's full
+        ; For a :where-bearing extend (set below) they are the conformance's full
         ; tyvar set (template + associated) and the recovered spellings.
         subst-tyvars:ptr (stt tyvars)
         subst-spellings:ptr arg-spellings
@@ -4114,7 +4113,7 @@
         (dotimes (si nargs)
           (aset! (as ptr:ptr out-bound) si
                  (conf-arg-to-type (aref (as ptr:ptr arg-spellings) si) line)))
-        ; Run the A2 fixpoint over the conformance's &where clause. A soft 0 means
+        ; Run the A2 fixpoint over the conformance's :where clause. A soft 0 means
         ; a conforming variable's conformance is not yet recorded for this instance
         ; — defer (a later pass / recheck-stamped will catch it), do not error.
         (when (= (recover-assoc-into (cc tyvars) out-bound ntv
@@ -4267,36 +4266,38 @@
               (when (!= proto-nargs (-> proto (unsafe/cast ptr:Protocol _) (_ num-params)))
                 (die-at (node-line (as ptr proto-node) (ff line))
                   (fmt-s "extend: protocol '%s' expects a different number of parameters" proto-name)))
-              ; Stage 11 assoc-types (A4.1): parse a trailing `&where` clause, if
+              ; Stage 11 assoc-types (A4.1): parse a trailing `:where` clause, if
               ; present, into the conformance's constraint arrays and run the
               ; determination fixpoint (assoc-types-extend.md §3). The clause is
-              ; spelled identically to a defn's &where and parsed by the shared
+              ; spelled identically to a defn's :where and parsed by the shared
               ; parse-where-constraints (A4.0). `form` is `(extend Subject (Proto
-              ; Arg…) &where C…)`: node 0 = `extend`, 1 = subject, 2 = proto app,
-              ; 3 = `&where` marker, 4… = constraints. A &where-free extend
+              ; Arg…) :where C…)`: node 0 = `extend`, 1 = subject, 2 = proto app,
+              ; 3 = `:where` marker, 4… = constraints. A :where-free extend
               ; (node-len <= 3) keeps num-constraints = 0 and behaves exactly as T4.
               (let (stt:ptr:StructTemplate (unsafe/cast ptr:StructTemplate st)
                     base-ntv:i32 (stt ntv)
                     nc:i32 0
                     where-i:i32 -1)
-                ; Detect the trailing &where marker at node 3.
+                ; Detect the trailing :where marker at node 3.
                 (when (> (node-len form) 3)
                   (let (m:ptr:Node (unsafe/cast ptr:Node (node-at form 3)))
-                    (when (and (= (m kind) NODE-SYM) (= (m s) "&where"))
+                    ; An extend form is not desugared — its own chokepoint.
+                    (reject-legacy-marker (as raw:Node m) (ff line))
+                    (when (!= (marker-named (as raw:Node m) "where") 0)
                       (set! where-i 3)
                       (set! nc (- (node-len form) 4)))))
                 (when (and (>= where-i 0) (< nc 1))
-                  (die-at (ff line) "extend: &where requires at least one (Protocol Var) constraint"))
+                  (die-at (ff line) "extend: :where requires at least one (Protocol Var) constraint"))
                 (if (= nc 0)
-                  ; --- &where-free extend: the unchanged T4 path ---
+                  ; --- :where-free extend: the unchanged T4 path ---
                   (tmpl-conformance-add (as ptr st) (as ptr proto) proto-args proto-nargs
                                         (stt tyvars) base-ntv null 0)
-                  ; --- &where-bearing extend: parse + determine (A4.1) ---
+                  ; --- :where-bearing extend: parse + determine (A4.1) ---
                   (do
                     ; Capacity: the template's own tyvars seed the array; each
                     ; constraint may introduce more (its conforming var + arg
                     ; tyvars), and the protocol application `(Iterator E)` may name
-                    ; a tyvar (E) bound only by the &where clause. Size the
+                    ; a tyvar (E) bound only by the :where clause. Size the
                     ; additional slots by the node-walk of each constraint's
                     ; element 0 plus each protocol-application arg — never less
                     ; than the collectible tyvar count — mirroring
@@ -4319,14 +4320,14 @@
                         (dotimes (si base-ntv)
                           (aset! (as ptr:ptr tyvars) si (aref (as ptr:ptr (stt tyvars)) si)))
                         (set! ntv base-ntv)
-                        ; Parse the &where constraints (constraints start at node 4),
+                        ; Parse the :where constraints (constraints start at node 4),
                         ; collecting constraint vars + Arg tyvars after the seeds.
                         (parse-where-constraints form 4 nc
                                                  constraints
                                                  tyvars (as ptr:i32 (addr-of ntv)) (ff line))
                         ; Collect tyvars appearing in the protocol application
                         ; `(Iterator E)` too, so the §3 determination check can see
-                        ; an E that no &where constraint introduces. A concrete arg
+                        ; an E that no :where constraint introduces. A concrete arg
                         ; (`i32`) or a template tyvar (already seeded) is skipped;
                         ; only a fresh bare tyvar (`E`) is added — initially
                         ; undetermined, so it must be reached by the fixpoint.
@@ -4371,7 +4372,7 @@
                                 (when (and (= (aref (as ptr:i32 determined) ti) 0)
                                            (!= (node-mentions-tyvar-named argn (aref (as ptr:ptr tyvars) ti)) 0))
                                   (die-at (node-line (as ptr proto-node) (ff line))
-                                    (fmt-s "extend: protocol parameter '%s' is not determined by the subject or any &where constraint"
+                                    (fmt-s "extend: protocol parameter '%s' is not determined by the subject or any :where constraint"
                                            (aref (as ptr:ptr tyvars) ti))))))))
                         (tmpl-conformance-add (as ptr st) (as ptr proto) proto-args proto-nargs
                                               tyvars ntv constraints nc))))))
@@ -4450,10 +4451,10 @@
 ; associated-type bound (A2) on an imported type recovers them. The exporter
 ; already verified the methods, so we pass check=0 (trust) and only record.
 ; A template-subject extend (`(extend (Vector T) (Seq T))`, or A4.3's
-; `&where`-bearing `(extend (MapIter I F) (Iterator E) &where …)`) re-registers
+; `:where`-bearing `(extend (MapIter I F) (Iterator E) :where …)`) re-registers
 ; the `TmplConformance` in the importing unit by replaying the *same*
 ; `emit-extend` template branch the defining unit ran (assoc-types-extend.md §10).
-; That branch parses any trailing `&where`, runs the determination fixpoint, and
+; That branch parses any trailing `:where`, runs the determination fixpoint, and
 ; records the `TmplConformance` (with its constraint clause); the per-instance
 ; `Conformance` — with the recovered associated args — is then produced at stamp
 ; time when the importing unit stamps a concrete instance (A4.2's stamp-time
@@ -4465,7 +4466,7 @@
     (let (type-node:ptr:Node (unsafe/cast ptr:Node (node-at form 1))
           proto-node:ptr:Node (unsafe/cast ptr:Node (node-at form 2)))
       ; Template subject: delegate to emit-extend (registers the
-      ; TmplConformance + &where clause; recovery fires at stamp time here).
+      ; TmplConformance + :where clause; recovery fires at stamp time here).
       (case (type-node kind)
         NODE-CELL
           (do (emit-extend form) (return))

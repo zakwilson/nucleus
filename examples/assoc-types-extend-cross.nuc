@@ -1,13 +1,13 @@
-; Stage 11 assoc-types (A4.3/A4.4) — cross-unit `.nuch` round-trip of a `&where` extend.
+; Stage 11 assoc-types (A4.3/A4.4) — cross-unit `.nuch` round-trip of a `:where` extend.
 ;
-; After A4.4: UnaryFn, FoldFn, MapIter (with its &where extend), FilterIter, and
+; After A4.4: UnaryFn, FoldFn, MapIter (with its :where extend), FilterIter, and
 ; reduce are all in lib/iterator.nuc. The mapiterlib fixture now just re-exports
 ; them through the .nuch import path, testing that the TmplConformance survives
 ; --emit-nuch round-trip across the lib/iterator.nuc -> mapiterlib chain.
 ;
 ; This unit stamps `(MapIter IntRangeIter SqFn)` and passes it to `reduce` from
 ; lib/iterator.nuc, bounded on `((Iterator S) I)`. Resolving that bound requires
-; the stamped MapIter to be a first-class Iterator — i.e. the &where extend must
+; the stamped MapIter to be a first-class Iterator — i.e. the :where extend must
 ; have recovered E = i32 at stamp time, here, across the unit boundary.
 ;
 ; Output:

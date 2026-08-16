@@ -8,12 +8,12 @@
 ; Build + link for the ATtiny1634 (a real link via the avr-gcc driver, AVR-3):
 ;   nucleusc --target=avr --mcpu=attiny1634 examples/avr-blink.nuc -o blink.elf
 ;
-; `(exclude-prelude)`: the prelude auto-emits the intern/arena/node runtime,
-; which references host-only libc (`perror`/`malloc`) absent from freestanding
-; avr-libc, so it would fail to link (AVR-1/AVR-3). This program needs none of
-; it — only the AVR MMIO helpers and the device register file, both of which are
-; likewise prelude-free. It also avoids function *values* (an addrspace(1)
-; verifier error on AVR, ground truth §1.4); every call here is direct.
+; `(exclude-prelude)` is no longer required — Stage 16 took the node/arena
+; runtime out of the prelude, and this program links with it (882 bytes of text
+; against 858). It is kept because this example is also what pins the
+; prelude-free path. A new AVR program does not need it.
+; It also avoids function *values* (an addrspace(1) verifier error on AVR,
+; ground truth §1.4); every call here is direct.
 
 (exclude-prelude)
 

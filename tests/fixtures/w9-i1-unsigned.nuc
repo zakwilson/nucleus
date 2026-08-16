@@ -1,6 +1,7 @@
 ; Stage 15 W9 item 31: i1/bool is unsigned — it holds {0, 1}, so `true` widens
 ; to 1 and orders above `false`. Each check returns a distinct code so a failure
 ; names itself.
+(import-use "stdio.h")
 (import "prelude")
 
 (defn main ():i32

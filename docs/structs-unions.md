@@ -456,7 +456,7 @@ spelling for instances yet).
 live arm) unless the union itself conforms to `Drop` — write the tag switch
 in its `drop` method with `match`.
 
-### Niche layout and `&repr` (Stage 10 C4)
+### Niche layout and `:repr` (Stage 10 C4)
 
 The layout engine applies four rules in strict order to decide a `defunion`'s
 representation:
@@ -480,7 +480,7 @@ object address is never in the top page, so the two ranges never overlap. The
 whole niche-ERRPTR value is ABI-identical to a `T*` — no discriminant word, no
 struct wrapper; `sizeof(!ptr:T) == sizeof(T*)`.
 
-**`&repr` attribute.** An optional trailing `&repr mode` in a `defunion` arm
+**`:repr` attribute.** An optional trailing `:repr mode` in a `defunion` arm
 list overrides the automatic rule selection:
 
 ```lisp
@@ -489,19 +489,19 @@ list overrides the automatic rule selection:
 (defunion (MaybeRef T)
   (some v:(ref T))
   none
-  &repr tagged)
+  :repr tagged)
 
 ; Require a niche — compile error if the arms are not nicheable.
 (defunion (Nullable T)
   (ok  v:(ref T))
   (err e:Err)
-  &repr niche)
+  :repr niche)
 ```
 
-- `&repr tagged` — always produce rule-4 layout regardless of arm shapes.
-- `&repr niche` — require niche layout; die at compile time if the arms do not
+- `:repr tagged` — always produce rule-4 layout regardless of arm shapes.
+- `:repr niche` — require niche layout; die at compile time if the arms do not
   qualify (error: "arms are not nicheable").
-- No `&repr` marker — automatic: apply rules 1–4 in order.
+- No `:repr` marker — automatic: apply rules 1–4 in order.
 
 **All elimination forms are representation-transparent.** `match`, `try`,
 `unwrap`, and `unwrap-or` all accept a niche-layout value and dispatch on the
@@ -607,7 +607,7 @@ colon-paren fuse closed that gap.)
 
 A `defn` whose parameter or return type mentions a registered struct template
 applied to free symbols infers those symbols as the method's type variables —
-bound by the parametric receiver, not by `&where`. The body is monomorphized
+bound by the parametric receiver, not by `:where`. The body is monomorphized
 once per distinct concrete receiver type, reusing the rung-4 monomorphizer.
 
 ```lisp
@@ -623,8 +623,8 @@ The method call `(count v)` with `v:(ref Vector.i32)` resolves to a direct
 `call` (inlinable, zero dispatch overhead). Field access `(v len)` on a stamped
 instance is a static GEP+load — byte-identical to any hand-written struct.
 
-`&where` remains available for **extra bounds** on the type variable:
-`&where (T Ord)` constrains `T` beyond what the receiver alone asserts.
+`:where` remains available for **extra bounds** on the type variable:
+`:where (T Ord)` constrains `T` beyond what the receiver alone asserts.
 
 A receiver type variable is bound **positionally** from the stamped receiver, so
 a template's trailing type parameters that appear in **no field** ("phantom"
@@ -645,7 +645,7 @@ type" combinator pattern (e.g. a `MapIter I F S E` carrying source/result elemen
 types as phantom params) expressible with a single implementation. Associated types
 (A0–A4, see [Generics](generics.md#associated-type-bounds-where-protocol-arg--var))
 supersede this pattern for new code: the two-param `(MapIter I F)` recovers the
-element type via `&where` constraints on `extend`, requiring no phantom params.
+element type via `:where` constraints on `extend`, requiring no phantom params.
 The four-param verbose form is kept as a regression test
 (`examples/phantom-tyvar-test.nuc`) but is not the recommended approach.
 

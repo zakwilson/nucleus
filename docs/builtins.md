@@ -55,7 +55,7 @@ For tooling and interactive use, the REPL recognizes these forms in addition to 
 |------|-------------|
 | `(defined? sym)` | Print `1` if the symbol is bound (fn / var / const / macro / struct), else `0`. |
 | `(kind-of sym)` | Print one of `fn`, `macro`, `rmacro`, `var`, `const`, `struct`, or `<unbound>`. |
-| `(type-of expr)` | Print the static type of an expression in Nucleus syntax (e.g. `i32`, `ptr:Node`). For functions defined via `defn`, prints the full signature `(fn ret name0:t0 name1:t1 ... &rest &optional ...)` with the original parameter names; for function-pointer types and other sources that don't preserve names, positional `pN` is used. Routes through the type-checker without committing IR to the JIT. |
+| `(type-of expr)` | Print the static type of an expression in Nucleus syntax (e.g. `i32`, `ptr:Node`). For functions defined via `defn`, prints the full signature `(fn ret name0:t0 name1:t1 ... :rest :optional ...)` with the original parameter names; for function-pointer types and other sources that don't preserve names, positional `pN` is used. Routes through the type-checker without committing IR to the JIT. |
 | `(dir)` | List every known name (globals, macros, structs) with a one-line summary. Functions show signatures with parameter names; consts show values. |
 | `(apropos "needle")` | Substring search across known names AND docstrings; prints summaries (and the docstring) for matches. The arg may be a string or symbol. |
 | `(complete "prefix")` | Prefix search; prints just the matching names — useful for editor completion. |
@@ -100,7 +100,7 @@ Importing a `.nuch` with `defmethod` forms registers the methods for dispatch in
 
 | Name | Description | C Equivalent |
 |------|-------------|--------------|
-| `defn` | Define a function. Supports `&rest` for variadic functions: `(defn name (a:t &rest xs:elem) ...)`. The rest parameter receives a `Node*` cons-list head built at the call site (so each call site emits `@make-cell` calls and the program must define a compatible `make-cell`). The element type annotation is documentation only — non-`ptr` args are `inttoptr`'d into `Node.car`. `&rest` functions are not directly C-callable; calling through a function pointer requires manually constructing the rest list. `&rest` must be the second-to-last param. Supports `&optional` for trailing parameters with defaults: `(defn name (a:t &optional (b:t default) ...) ...)`. Each `&optional` param must be a 2-element list `(name:type default-expr)`. Defaults are evaluated at the call site in the caller's scope (Common Lisp semantics), so non-constant defaults like `(next-counter)` produce a fresh value per call. Implicit casts apply to defaults. The compiled function has fixed maximum arity at the LLVM/C ABI level — calling through a function pointer or from C requires supplying every argument including the optional ones. `&optional` cannot be combined with `&rest`. A struct-by-value parameter or return is lowered to the platform C ABI (see [Passing and returning structs by value](#passing-and-returning-structs-by-value)). **Docstring**: if the first body form is a string literal AND there is at least one more form after it, that string is captured as the function's docstring (visible via `(doc fn)` and `(apropos)`); a function whose body is a single string literal is treated as returning the string, not as having a docstring. The same convention applies to `defmacro`. **Overloadable:** defining `defn` again with the same name but different parameter types adds a method — see [Polymorphism](#polymorphism-overloaded-defn-multimethods). | function definition |
+| `defn` | Define a function. Supports `:rest` for variadic functions: `(defn name (a:t :rest xs:elem) ...)`. The rest parameter receives a `Node*` cons-list head built at the call site (so each call site emits `@make-cell` calls and the program must define a compatible `make-cell`). The element type annotation is documentation only — non-`ptr` args are `inttoptr`'d into `Node.car`. `:rest` functions are not directly C-callable; calling through a function pointer requires manually constructing the rest list. `:rest` must be the second-to-last param. Supports `:optional` for trailing parameters with defaults: `(defn name (a:t :optional (b:t default) ...) ...)`. Each `:optional` param must be a 2-element list `(name:type default-expr)`. Defaults are evaluated at the call site in the caller's scope (Common Lisp semantics), so non-constant defaults like `(next-counter)` produce a fresh value per call. Implicit casts apply to defaults. The compiled function has fixed maximum arity at the LLVM/C ABI level — calling through a function pointer or from C requires supplying every argument including the optional ones. `:optional` cannot be combined with `:rest`. A struct-by-value parameter or return is lowered to the platform C ABI (see [Passing and returning structs by value](#passing-and-returning-structs-by-value)). **Docstring**: if the first body form is a string literal AND there is at least one more form after it, that string is captured as the function's docstring (visible via `(doc fn)` and `(apropos)`); a function whose body is a single string literal is treated as returning the string, not as having a docstring. The same convention applies to `defmacro`. **Overloadable:** defining `defn` again with the same name but different parameter types adds a method — see [Polymorphism](#polymorphism-overloaded-defn-multimethods). | function definition |
 | `defconst` | Define a compile-time constant. The name behaves exactly like the integer literal it stands for: typed by its value (`i32`, or `i64` when it does not fit), adapting to the other operand of a binary operator, and rejected rather than wrapped where the value does not fit its slot. See [`defconst`](toplevel.md) and [Integer literals](types.md#integer-literals). | `#define` / `enum` constant |
 | `defenum` | Define an enumeration. Each member is a named integer literal (its 0-based ordinal) and adapts at a use site exactly as `defconst` does. | `enum` |
 | `defvar` | Define a global variable `(defvar name:type [init])`. The optional init is preferably a **compile-time constant**: a literal, a name bound by `defconst` / `defenum`, or a constant *expression* over them (arithmetic and bit operations, `(sizeof T)`, `(as T x)` including `(as CStr "…")`, `(char "x")`, `(addr-of other-global)`, and constant array/struct aggregates) — see [Global initializers](toplevel.md#global-initializers) for the full grammar, the overflow / divide-by-zero rules, and what is still refused. An initializer the compiler cannot fold runs at **startup, before `main`**, as an ordinary assignment — see [Run-time initializers](toplevel.md#run-time-initializers). An integer initializer, literal, named or folded, that does not fit the declared type is a compile-time error rather than a silent truncation. Omitted inits default to zero / `null` / `false`; a global of **aggregate** type (struct or union) with no init is zero-filled (`zeroinitializer`), so e.g. `(defvar g:MyStruct)` is valid. `set!` works on the result. The symbol is exported with default linkage and is visible to C consumers (`extern T name;`) and other Nucleus modules (`(extern name:type)`). Storage class specifiers (`static`, `register`, `thread_local`) are deferred — see `design/stage888-deferred.md`. | global variable definition |
@@ -115,7 +115,7 @@ Importing a `.nuch` with `defmethod` forms registers the methods for dispatch in
 | `unsafe-import-private` | Prefix-qualified import that also reaches a library's private symbols: `(unsafe-import-private lib prefix sym...)`. | — |
 | `declare` | Declare an external function signature `(declare name (params...) :rettype)`. Used in `.nuch` header files and at the top level. A parameter may be written named (`fd:i32`) or unnamed, as its bare type (`i32`) — both carry the type, and a list may mix them. See [Top-level forms](toplevel.md) for the full parameter grammar. | function prototype |
 | `extern` | Declare a foreign global variable `(extern name:type)`. The compiler emits `@name = external global T`, leaving storage and initialization to the linker. Works for both C-defined and Nucleus-defined producers; the matching `defvar` may live in another `.o` file. | `extern` declaration |
-| `defmacro` | Define a compile-time macro `(defmacro name (params...) body...)`. Supports `&rest` for variadic macros: `(defmacro name (a b &rest rest) ...)` — `rest` receives a cons list of remaining args. Parameters (and the `&rest` list) are typed `(raw Node)` inside the body, so `(p car)`, `(p cdr)`, chains like `((p cdr) car)`, `(p kind)`, and `(p s)` work directly with no `(cast ptr:Node ...)`. The macro can splice a parameter into a quasiquote regardless of the value type the user-supplied expression evaluates to at the call site — see [Macros and pass-through arguments](#macros-and-pass-through-arguments) below (note the `cond`/`if` branch-unification sharp edge). | macro |
+| `defmacro` | Define a compile-time macro `(defmacro name (params...) body...)`. Supports `:rest` for variadic macros: `(defmacro name (a b :rest rest) ...)` — `rest` receives a cons list of remaining args. Parameters (and the `:rest` list) are typed `(raw Node)` inside the body, so `(p car)`, `(p cdr)`, chains like `((p cdr) car)`, `(p kind)`, and `(p s)` work directly with no `(cast ptr:Node ...)`. The macro can splice a parameter into a quasiquote regardless of the value type the user-supplied expression evaluates to at the call site — see [Macros and pass-through arguments](#macros-and-pass-through-arguments) below (note the `cond`/`if` branch-unification sharp edge). | macro |
 | `defcast` | Register an implicit conversion `(defcast From To conv-fn)`. `conv-fn` must be a unary function with signature `To (From)` already in scope; the compiler emits a call to it whenever an arg of `From` is supplied where `To` is expected. Pairs already covered by built-in coercion (identity, int↔int, `f32`→`f64`) are rejected at registration. Rules are unidirectional and non-transitive — declare each direction explicitly, and chain through an intermediate type by writing the chain yourself. Exported in `.nuch` headers. | implicit conversion |
 | `def-rmacro` | Define a reader macro `(def-rmacro "prefix" symbol)`. When `prefix` appears at the start of a token, the reader wraps the next form: `(symbol form)`. Built-in reader macros: `'` (quote), `` ` `` (quasiquote), `~` (unquote), `~@` (unquote-splice), `@` (deref). | — |
 | `exclude-prelude` | Suppress the implicit `(import-use prelude)` for this source file. Must be the first top-level form; takes no arguments. Use when a file should compile against the bare language without the standard macros, `Node` struct, or `(import-use "string.h")` declarations. The directive applies to the **compilation unit's entry file only** — the prelude is a property of the unit, not of a file — so a copy of it in a file that is *imported* is ignored rather than being an error. | — |
@@ -351,7 +351,7 @@ spelling for instances yet).
 live arm) unless the union itself conforms to `Drop` — write the tag switch
 in its `drop` method with `match`.
 
-### Niche layout and `&repr` (Stage 10 C4)
+### Niche layout and `:repr` (Stage 10 C4)
 
 The layout engine applies four rules in strict order to decide a `defunion`'s
 representation:
@@ -375,7 +375,7 @@ object address is never in the top page, so the two ranges never overlap. The
 whole niche-ERRPTR value is ABI-identical to a `T*` — no discriminant word, no
 struct wrapper; `sizeof(!ptr:T) == sizeof(T*)`.
 
-**`&repr` attribute.** An optional trailing `&repr mode` in a `defunion` arm
+**`:repr` attribute.** An optional trailing `:repr mode` in a `defunion` arm
 list overrides the automatic rule selection:
 
 ```lisp
@@ -384,19 +384,19 @@ list overrides the automatic rule selection:
 (defunion (MaybeRef T)
   (some v:(ref T))
   none
-  &repr tagged)
+  :repr tagged)
 
 ; Require a niche — compile error if the arms are not nicheable.
 (defunion (Nullable T)
   (ok  v:(ref T))
   (err e:Err)
-  &repr niche)
+  :repr niche)
 ```
 
-- `&repr tagged` — always produce rule-4 layout regardless of arm shapes.
-- `&repr niche` — require niche layout; die at compile time if the arms do not
+- `:repr tagged` — always produce rule-4 layout regardless of arm shapes.
+- `:repr niche` — require niche layout; die at compile time if the arms do not
   qualify (error: "arms are not nicheable").
-- No `&repr` marker — automatic: apply rules 1–4 in order.
+- No `:repr` marker — automatic: apply rules 1–4 in order.
 
 **All elimination forms are representation-transparent.** `match`, `try`,
 `unwrap`, and `unwrap-or` all accept a niche-layout value and dispatch on the
@@ -502,7 +502,7 @@ colon-paren fuse closed that gap.)
 
 A `defn` whose parameter or return type mentions a registered struct template
 applied to free symbols infers those symbols as the method's type variables —
-bound by the parametric receiver, not by `&where`. The body is monomorphized
+bound by the parametric receiver, not by `:where`. The body is monomorphized
 once per distinct concrete receiver type, reusing the rung-4 monomorphizer.
 
 ```lisp
@@ -518,8 +518,8 @@ The method call `(count v)` with `v:(ref Vector.i32)` resolves to a direct
 `call` (inlinable, zero dispatch overhead). Field access `(v len)` on a stamped
 instance is a static GEP+load — byte-identical to any hand-written struct.
 
-`&where` remains available for **extra bounds** on the type variable:
-`&where (T Ord)` constrains `T` beyond what the receiver alone asserts.
+`:where` remains available for **extra bounds** on the type variable:
+`:where (T Ord)` constrains `T` beyond what the receiver alone asserts.
 
 ### `.nuch` export and C ABI
 
@@ -571,8 +571,8 @@ checking.
 
 **Associated types** are supported. A parametric protocol's parameters are
 functionally determined by the conforming type (one conformance per
-`(type, protocol)` pair), so a `&where` bound may name a parametric protocol via a
-protocol application — `&where ((Seq E) Self)` — and recover the element type from
+`(type, protocol)` pair), so a `:where` bound may name a parametric protocol via a
+protocol application — `:where ((Seq E) Self)` — and recover the element type from
 the conforming variable's conformance instead of re-spelling it at every use. Each
 argument is recovered when it is an unbound type variable and constrained
 (checked) when concrete. See the *Associated-type bounds* section of
@@ -669,8 +669,8 @@ machinery.
   directly; `err` values occupy the top-page range
   `[ptrtoint(-4095), ptrtoint(-1)]` (ids 1–4095). C code that understands the
   ERR_PTR convention can consume it directly. `sizeof(!ptr:T) == sizeof(T*)`.
-  Use `&repr tagged` on the `defunion` to opt out and force the struct layout
-  when a C consumer needs it unconditionally (see [Niche layout and `&repr`](#niche-layout-and-repr-stage-10-c4)).
+  Use `:repr tagged` on the `defunion` to opt out and force the struct layout
+  when a C consumer needs it unconditionally (see [Niche layout and `:repr`](#niche-layout-and-repr-stage-10-c4)).
 
 Nothing propagates across a function boundary by a mechanism C doesn't
 understand.
@@ -1150,7 +1150,7 @@ If a required method is missing, compilation fails with a diagnostic naming each
 
 ## Bounded generic `defn`
 
-A `defn` whose parameter list carries a `&where` clause is a **bounded generic
+A `defn` whose parameter list carries a `:where` clause is a **bounded generic
 template**: it is generic over one or more named type variables, each constrained
 to a protocol. The body is *monomorphized* — re-emitted with the variables
 substituted by concrete types — once per distinct instantiation, and cached.
@@ -1159,7 +1159,7 @@ Statically dispatched, zero runtime overhead.
 ```lisp
 (import-use numeric)                      ; Eq / Ord / Num over the operators
 
-(defn maxv (a:T b:T &where (Ord T)):T     ; T is a type variable bounded by Ord
+(defn maxv (a:T b:T :where (Ord T)):T     ; T is a type variable bounded by Ord
   (if (< a b) b a))                       ; operators dispatch on T directly
 
 (maxv 3 9)        ; → stamps @maxv.i32.i32; (< a b) is an inline icmp
@@ -1169,19 +1169,19 @@ Statically dispatched, zero runtime overhead.
 Because operators are generic methods (§10.3), the body uses `<` directly and the
 constraint is the standard `Ord`; built-in numeric types conform automatically.
 
-- **`&where`** follows all value parameters; each constraint is single-variable
-  `(Protocol Var)`. Multiple constraints are allowed (e.g. `&where (Ord T) (Show U)`).
+- **`:where`** follows all value parameters; each constraint is single-variable
+  `(Protocol Var)`. Multiple constraints are allowed (e.g. `:where (Ord T) (Show U)`).
 - **Type variables are declared-only:** a name is a type variable iff it is bound
-  in a `&where` constraint. Any other unknown type identifier is still an
+  in a `:where` constraint. Any other unknown type identifier is still an
   `unknown type` error, so typos stay caught.
 - **Binding** gathers the concrete type at every bare occurrence of a variable
   among the arguments and requires they agree; the bound type must conform
   (nominally, via `extend`) to the variable's protocol(s). There is no unifier:
   variables appear only in **bare** parameter/return positions. A nested position
-  (`(ptr T)`, etc.) in a plain `&where` generic is rejected. For a parametric
+  (`(ptr T)`, etc.) in a plain `:where` generic is rejected. For a parametric
   struct receiver, the type variable **is** permitted in nested positions like
   `(ptr T)` and `(ref T)` — those tyvars are inferred from the receiver, not
-  supplied via `&where`. See [Parametric struct templates](#parametric-struct-templates-defstruct-name-t-).
+  supplied via `:where`. See [Parametric struct templates](#parametric-struct-templates-defstruct-name-t-).
 - **Abstract return (B1).** The return type may be a type variable bound by a
   parameter (`maxv:T` above); the concrete return is known per instantiation.
   A return variable bound by *no* parameter (Haskell `read`) is rejected — it
@@ -1191,12 +1191,12 @@ constraint is the standard `Ord`; built-in numeric types conform automatically.
 - **Def-time checking (A2).** A template body is type-checked **once at its
   definition** against the abstract protocol interface, *before* any call. A value
   of type variable `T` is typed abstractly; a call on it that resolves to a method
-  of `T`'s `&where` protocols (with `Self → T`), or to another generic whose
+  of `T`'s `:where` protocols (with `Self → T`), or to another generic whose
   constraints `T`'s constraints satisfy, is checked precisely (and yields a precise
   result type). The check is **lenient**: the only hard def-time error is a
   genuinely unknown function name (a typo) —
   ```lisp
-  (defn maxv (a:T b:T &where (Ord T)):T
+  (defn maxv (a:T b:T :where (Ord T)):T
     (when (greater a b) …))   ; error at the defn: unknown function 'greater'
   ```
   A *known* operation that the abstract interface can't confirm — an operator
@@ -1211,7 +1211,7 @@ constraint is the standard `Ord`; built-in numeric types conform automatically.
   ```
   The constraint protocol's existence is also checked at the `defn`.
 - **Cross-unit.** A generic template exports verbatim through `.nuch`
-  (`(defn maxv ((a T) (b T) &where (Ord T)) T …)`); an importing unit
+  (`(defn maxv ((a T) (b T) :where (Ord T)) T …)`); an importing unit
   re-registers it (trusting the exporter's A2 check) and stamps its own
   instantiations locally, calling the exporter's concrete protocol methods by
   their mangled symbols.
@@ -1228,7 +1228,7 @@ emit only after monomorphization.
 
 ### Bound kinds: named protocols, blanket (`Any`/`Struct`), and `Valid`
 
-A `&where` constraint names one of three kinds of bound (a name is still a type
+A `:where` constraint names one of three kinds of bound (a name is still a type
 variable iff it appears in a constraint, so every kind keeps tyvars declared-only
 and typos caught):
 
@@ -1240,7 +1240,7 @@ and typos caught):
 
 - **`Any`** is the no-constraint constraint — every type conforms, no methods
   required. It lets a fully generic function name its variable: `(defn id (x:T
-  &where (Any T)):T (return x))`. Operations on an `Any`-bound value are deferred to
+  :where (Any T)):T (return x))`. Operations on an `Any`-bound value are deferred to
   stamp time.
 - **`Struct`** holds for any struct type or pointer-to-struct. (Its member-access
   `get` method is supplied by callable-values; see `design/stage9/callable-values.md`.)
@@ -1252,19 +1252,19 @@ and typos caught):
   type that can't support an operation is rejected **at the call site**, and so are
   uses of values *derived* from `T`:
   ```lisp
-  (defn twice (x:T &where (Valid T)):T (+ x x))
+  (defn twice (x:T :where (Valid T)):T (+ x x))
   (twice 21)        ; ok — i32 supports +
   (twice some-ptr)  ; error at this call: 'ptr:Blob' does not satisfy the Valid bound of 'twice'
   ```
   `Valid` is itself written explicitly (it *nominates* structural checking); a bare
-  `&where (T)` with no protocol remains an error.
+  `:where (T)` with no protocol remains an error.
   
 Using `Valid` with a public API is risky whether it's inside the library code or a user
 method on a library function because it may unexpectedly match unowned call sites. 
 It's safer to prefer named protocols and treat `Valid` as an escape hatch.
 
 *Not yet implemented:* same-name overloading that mixes imported and
-locally-defined methods; `&rest` together with `&where`; REPL generic
+locally-defined methods; `:rest` together with `:where`; REPL generic
 instantiation; non-type/const parameters in parametric generics; higher-kinded
 or partially applied type parameters.
 
@@ -1324,7 +1324,7 @@ selector's *actual* type, so a parametric `get` override can index by a real key
 ```
 
 The value-keyed override is found even when it is a parametric (generic) method:
-the resolver binds the method's type variables and checks its `&where` constraints
+the resolver binds the method's type variables and checks its `:where` constraints
 before selecting it. If no `get` method matches the selector's type, the call
 falls back to the struct intrinsic (a `ptr`-typed computed selector takes the
 homogeneous computed-field branch; any other type is an error). This value-keyed
@@ -1395,7 +1395,7 @@ A symbol is a `Node*` with `kind = NODE-SYM` and `s` pointing to its spelling. S
   (= h 'defn))             ; true iff the head symbol of `form` spells "defn"
 ```
 
-The interning is global to the process. The reader interns at lex time, and `quote` of a symbol calls `intern-symbol` at runtime so a quoted symbol and a reader-produced symbol with the same spelling are bit-identical pointers. The intern table lives in `lib/node.nuc` (auto-imported via `lib/prelude.nuc`); user code never has to touch it directly.
+The interning is global to the process. The reader interns at lex time, and `quote` of a symbol calls `intern-symbol` at runtime so a quoted symbol and a reader-produced symbol with the same spelling are bit-identical pointers. The intern table lives in `lib/node.nuc`, which a program that writes a quote imports with `(import-use node)` — the prelude registers the `Node` *type* but no longer emits the runtime (see [The node runtime is a library](toplevel.md#the-node-runtime-is-a-library)). Beyond the import, user code never has to touch the table directly.
 
 `gensym` deliberately bypasses the intern table — `(gensym)` always returns a fresh unique `Node*` whose spelling (e.g. `__gs_0`) does not collide with anything else, so it is safe in hygienic macros.
 
@@ -1602,7 +1602,7 @@ See `design/stage11/progress.md` (M1) for the details and the deferred compiler 
 `(import-use iterator)` provides the `Iterator` parametric protocol, two concrete
 iterator structs (`IntRangeIter`, `I64ArrayIter`), generic function-object
 protocols (`UnaryFn`, `FoldFn`), generic lazy combinators (`MapIter`, `FilterIter`),
-and a generic `reduce`. The combinators conform to `Iterator` via `&where` on
+and a generic `reduce`. The combinators conform to `Iterator` via `:where` on
 `extend` (extend-site associated-type recovery), so they chain freely and can
 be passed to any generic function bounded on `Iterator`.
 

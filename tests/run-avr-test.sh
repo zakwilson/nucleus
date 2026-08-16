@@ -28,9 +28,11 @@ fi
 
 FAILED=0
 
-# Generous flash/RAM ceilings. All four known-good examples link to 858-1070
+# Generous flash/RAM ceilings. All four known-good examples link to 346-862
 # bytes text / 0 bytes data+bss (design/stage14/avr-targets.md AVR-3/4/5
-# entries). This is a ceiling, not an exact byte match, so the gate isn't
+# entries; the 858-1070 they used to occupy came down with the per-definition
+# sections + --gc-sections of design/stage16-ergonomics/compile-time-imports.md
+# §4d). This is a ceiling, not an exact byte match, so the gate isn't
 # brittle to harmless future size shifts but still catches a real regression
 # (e.g. a pulled-in host runtime, which would balloon to kilobytes).
 FLASH_CEILING=4096

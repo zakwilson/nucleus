@@ -124,7 +124,7 @@
 ;
 ; No `(extend (ref Node) Hash)` — `extend` takes a struct template, not a pointer
 ; type. The bare overload resolves on its own; the conformance record only feeds
-; `&where` bounds, which nothing here needs.
+; `:where` bounds, which nothing here needs.
 (defn hash ((self (ref (ref Node)))):usize
   (let (h:i64 -3750763034362895579)
     (return (as usize (fnv1a-int h (unsafe/cast i64 (as ptr (deref self))) 8)))))

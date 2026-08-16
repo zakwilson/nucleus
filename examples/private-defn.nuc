@@ -7,6 +7,7 @@
 ; - public defn is unaffected
 
 (import-use prelude)
+(import-use "stdio.h")
 
 (defn- helper-add (a:i32 b:i32):i32
   (return (+ a b)))

@@ -2,6 +2,8 @@
 ; Exercises printable scalars (\a), named control codes (\newline), the
 ; \u{XXXX} hex form, `=`/`!=` dispatch on Char, and same-width cast to ui32.
 
+(import-use "stdio.h")
+
 (defn main ():i32
   ; A printable scalar literal is a Char; cast to ui32 yields its codepoint.
   (printf "A=%u\n" (as ui32 \A))            ; 65

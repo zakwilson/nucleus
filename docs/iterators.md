@@ -135,8 +135,8 @@ non-zero (truthy). `I` must conform to `(Iterator S)`; `F` must conform to
 `(UnaryFn S i32)`. The element type is unchanged: `(FilterIter I F)` conforms
 to `(Iterator S)`.
 
-Both combinators conform to `Iterator` via `extend` with a `&where` clause —
-see [Conforming combinators: `&where` on `extend`](generics.md#conforming-combinators-where-on-extend).
+Both combinators conform to `Iterator` via `extend` with a `:where` clause —
+see [Conforming combinators: `:where` on `extend`](generics.md#conforming-combinators-where-on-extend).
 This means they are first-class `Iterator` values and can be nested or passed to
 any generic function bounded on `Iterator`.
 
@@ -157,7 +157,7 @@ To call `next` on a field stored by value inside a struct, use
 
 ```lisp
 (defn next ((self (ref (MapIter I F)))
-                        &where ((Iterator S) I)
+                        :where ((Iterator S) I)
                                ((UnaryFn S E) F)) (Maybe E)
   (let ((res (Maybe S)) (next (.& self source)))
     ...))
@@ -167,7 +167,7 @@ To call `next` on a field stored by value inside a struct, use
 
 ```lisp
 (defn reduce ((g (ref G)) (init Acc) (it (ref I))
-                  &where ((Iterator S) I)
+                  :where ((Iterator S) I)
                          ((FoldFn Acc S) G)):Acc
   ...)
 ```

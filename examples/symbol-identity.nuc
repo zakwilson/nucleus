@@ -1,6 +1,7 @@
 ; Symbol identity: two symbols with the same spelling are the same Node*.
 
 (import-use "stdio.h")
+(import-use node)   ; 'foo lowers to a call to intern-symbol
 
 (defn show (label:ptr eq:bool):void
   (if eq (printf "%s: yes\n" label) (printf "%s: no\n" label)))

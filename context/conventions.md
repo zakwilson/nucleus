@@ -326,7 +326,7 @@ The trap this bit (design/stage14/defn-signature.md S3): a **new-style body-star
 of 4 vs the legacy 3** must be recomputed anywhere the body is walked from the
 form. The generic-template A2 checker (`check-generic-template`) and the Valid
 instance walk (`valid-check-instance`) both hardcoded `j:i32 3`; with a new-style
-CELL return (e.g. `(defn constantly ((v V) &where (Ord V)) (BoxedFn (V) V) …)`)
+CELL return (e.g. `(defn constantly ((v V) :where (Ord V)) (BoxedFn (V) V) …)`)
 that walked the return `(BoxedFn (V) V)` as a body form and read its `(V …)` as a
 call to an unknown function `V`. Fix: `j = (if (sig-name-is-bare (node-at form 1))
 4 3)`. A bare-symbol or keyword return survives a legacy walk harmlessly (it's just
@@ -629,9 +629,14 @@ deleted definition is unfindable: with `linkonce_odr` the compiler's own
 while `alloc-node` is plainly present in `stage2.ll`. The same failure is
 reachable from any user program whose macro calls an imported function.
 `weak_odr` may not be discarded, which is the whole reason to prefer it; the
-price is that an unused imported function is no longer dead-stripped (~1% on the
-compiler binary), recoverable with `-ffunction-sections` / `--gc-sections` if it
-ever matters.
+price is that an unused imported function is no longer dead-stripped, and that
+is now recovered at the link instead — one ELF section per definition
+(`write-ir-section`, gated by `ir-sections-on`) plus `-Wl,--gc-sections` on the
+link line. Two rules if you add an emission site: the section name must be the
+symbol's, since MC merges same-named sections and a merged one survives if any
+definition in it does; and LLVM keys SHT_NOBITS off the **name**, so `.bss.` is
+a hard error with a non-zero initializer and `.data.` on a zero one newly costs
+file bytes (`global-section-prefix` is the single decision).
 
 Consequence for measuring a codegen change: normalize `weak_odr` away before
 diffing IR, exactly as you strip SSA names (see the bootstrap-gate section
@@ -1154,8 +1159,8 @@ Two rules when you touch a loop over user-written list elements:
   Note the trap this hides: the line argument is evaluated **before** the callee
   runs, so a null guard inside `extract-name-and-type` does not save a caller
   that dereferenced the node to build that callee's `line` argument.
-- **Guard before a `kind`/`s` test in a marker scan.** `&rest`/`&optional`/
-  `&where`/`&repr` scans run over the raw element list before any validation, so
+- **Guard before a `kind`/`s` test in a marker scan.** `:rest`/`:optional`/
+  `:where`/`:repr` scans run over the raw element list before any validation, so
   they see the null first. Bind the element as `(raw Node)` and `(and (!= e null)
   (= (e kind) NODE-SYM))`.
 
@@ -1223,11 +1228,11 @@ exactly like `TY-PTR`:** `type-to-ir` → `ptr`, `type-size` → 8, zero-init �
 already a pointer). A bare `(= (. t kind) TY-PTR)` ABI check therefore *misses*
 `CStr` — use the `is-ptr-like` predicate ({`TY-PTR`, `TY-CSTR`}; `TY-FN`
 deliberately excluded, `StrView` is a struct not a pointer). This bit the
-`&rest` arg-folding (`emit-call-with-args`), which `inttoptr`'d any non-`TY-PTR`
+`:rest` arg-folding (`emit-call-with-args`), which `inttoptr`'d any non-`TY-PTR`
 arg and produced invalid `inttoptr ptr→ptr` for a `CStr` rest arg. When adding a
 new pointer/integer ABI decision, branch on `is-ptr-like`.
 
-This trap has now been hit **three** times: the `&rest` folding above, W5c's
+This trap has now been hit **three** times: the `:rest` folding above, W5c's
 `defvar-init-ir` string-literal/`null` gates, and W5d's `emit-zero-store`, which
 filled an unspecified slot with the scalar `0` for anything that was not
 `TY-PTR`/`TY-F32`/`TY-F64` — so a `CStr` or `TY-FN` slot got `store ptr 0` and a
@@ -2204,9 +2209,9 @@ Test programs are not all files. `tests/run-tests.sh` writes several `.nuc`
 consumers inline with `cat > … <<EOF`, so a `grep -r` over `*.nuc`/`*.nuch` —
 however careful — reports zero uses of a construct that three tests depend on.
 Stage 15's `declare` fix hit exactly this: a scan concluded nothing used
-`&rest` in a `declare`, and `make test` then failed five assertions in the
+`:rest` in a `declare`, and `make test` then failed five assertions in the
 `n6` / `sm3` / `s1` `.nuch` link-and-run consumers, all three of which generate
-`(declare printf (fmt:CStr &rest args:i32) :i32)` from a heredoc. Grep
+`(declare printf (fmt:CStr :rest args:i32) :i32)` from a heredoc. Grep
 `tests/run-tests.sh` itself (and any other harness that generates sources)
 before concluding a spelling is unused — or just treat `make test` as the
 authority, which is what it is.
@@ -2217,7 +2222,7 @@ declaration.** `(declare printf (fmt:CStr):i32)` followed by
 `call i32 @printf(ptr %t0, i32 42, i32 26)` — the call site's own signature
 governs codegen, so extra arguments ride through. That is how the three
 harness sites call a C variadic without a variadic-`declare` spelling (Nucleus
-has none), and it is why the `&rest` marker they used was contributing nothing
+has none), and it is why the `:rest` marker they used was contributing nothing
 but phantom parameters.
 
 ## The deferred type queue has a contract: a `%Name = type {…}` line may not name a type that is not already in the buffer
@@ -2704,7 +2709,7 @@ protocol half, and the two halves are not interchangeable:
   `protocol-new` keys on `qualify-name`, and `protocol-canon-name`
   (`src/nucleusc.nuc`, beside `strip-ns-qualifier`) is the single canonicalizer
   every protocol-keyed registry calls — the conformance registry, the
-  super-protocol edges, `&where` `Constraint.proto`, and `(dyn P)`'s box type.
+  super-protocol edges, `:where` `Constraint.proto`, and `(dyn P)`'s box type.
 
 Four things about that generalize past protocols:
 
@@ -2720,7 +2725,7 @@ Four things about that generalize past protocols:
   fallback-bearing resolver makes `(ns dp) (defprotocol Clone …)` see the
   prelude's `Clone` and never register `dp/Clone`.
 - **Canonicalize a stored reference where it is WRITTEN, not where it is read.**
-  A `&where` constraint is checked long after registration and usually while a
+  A `:where` constraint is checked long after registration and usually while a
   *different* namespace is current, so `parse-where-constraints` canonicalizes
   at parse time (`prescan-protocols` runs immediately before the same file's
   signature prescan, so its own protocols are registered). The canonicalizer is
@@ -4306,10 +4311,10 @@ LLVM rejects.
 
 ## A null-check is not a kind-check — `Node.s` is null on every non-symbol node
 
-`(defmacro m (5) …)` segfaulted the compiler for its whole life. The `&rest`
+`(defmacro m (5) …)` segfaulted the compiler for its whole life. The `:rest`
 scan null-checked its parameter node and then read `(vp s)`, and the `=` beside
 it is a **content** compare — so an INT node's null `s` reached
-`strcmp(null, "&rest")`. The comment directly above the loop already promised
+`strcmp(null, ":rest")`. The comment directly above the loop already promised
 the located "param must be a symbol" diagnostic that the crash pre-empted; the
 guard for `()` (a NULL *node*, W5f) had been added without noticing that a
 *non-null node of the wrong kind* is the same hazard one field deeper.
@@ -4334,3 +4339,156 @@ The tell that this class hides well: the prelude's own macros load through
 `dotimes` and `->` perfectly while dying on the first macro a user wrote. When
 adding a `repl-eval-form` arm, ask whether the emitter it calls writes to a
 module stream — and if so, open one, as its neighbours do.
+
+## A transitive import is an undeclared dependency, and only shows up when the middle is removed
+
+Stage 16 dropped `(import-use node)` from `lib/prelude.nuc`. `lib/node.nuc`
+imports `lib/arena.nuc`, which imports `stdio.h`, `stdlib.h` and `string.h` — so
+for as long as the prelude carried node, **every program in the tree was handed
+`printf` and `malloc` for free**. Twelve examples, seven fixtures and several
+inline heredoc fixtures in `tests/run-tests.sh` used one without importing it,
+and all nineteen broke the moment the middle of the chain went away.
+
+Nothing about the change touched libc. Expect this shape whenever an import is
+removed or a library is split: the diagnostics that appear name symbols with no
+apparent relationship to the edit, because the edit deleted a *path*, not a
+declaration. Reading the removed library's own imports predicts the whole set.
+
+The same reasoning applies before adding one: an `(import-use x)` added to a
+widely-imported library silently widens what every consumer can spell, and the
+day it is removed is the day that becomes visible.
+
+## Redirecting an emission stream falsifies every "already emitted" latch
+
+`import-ct` (Stage 16) discards a library's definitions by pointing
+`g-def-stream` at a throwaway memstream. The first attempt redirected the
+declaration stream too, and `lib/arena.nuc`'s own `defmacro` then JIT'd a
+`call @malloc` into a module whose `declare` had been thrown away.
+
+The cause generalizes past that one flag. The compiler keeps a family of
+booleans meaning *"this line is in the module, do not write it again"* —
+`g-malloc-decl-done`, `g-trap-declared`, `g-boxdrop-emitted`, `g-nuch-registered`,
+`StructDef.emitted`, `g-mono-drained`. Every one of them is a claim about a
+buffer. Point that buffer somewhere else and the claim is false, and the symptom
+lands far away: in a *different* module, at a line nobody edited.
+
+Two rules that follow:
+
+* **Redirect the narrowest stream that achieves the goal.** Types and declares
+  cost nothing at run time, so `import-ct` sends only definitions to the sink and
+  every latch stays truthful. A saving that requires lying to a memo is not worth
+  taking.
+* **Output that belongs to no file must not follow the redirect.** A template
+  stamp is re-derived identically by every unit that instantiates it, is memoized
+  as emitted by `g-mono-drained`, and the *program* may be what calls it — so
+  `drain-mono-worklist` writes to `g-def-stream-program`, which always names the
+  module's own stream, rather than to `g-def-stream`, which may be a sink.
+
+## A "discard this file" mode is per FILE, and must be set in both directions
+
+The same feature's second defect. `emit-import-forms` bumped a depth counter
+around a compile-time-only import and left it alone for ordinary imports, so an
+`(import-use vector)` reached *through* a ct-imported library inherited the sink:
+`lib/vector.nuc` was imported for real by the program and still had every
+definition marked compile-time-only, and the program was refused at its own
+`[1 2 3]`.
+
+A mode that answers "does this file's output count?" is a property of the file,
+not of the stack that reached it. Set it explicitly on both branches — hand an
+ordinary import back the real stream and a zero flag — rather than treating
+"unset" as a depth that nesting can only increase.
+
+## `g-imported` means EMITTED — a register-only import may not claim it
+
+`do-import`'s flatten dedup returns early when the path is on `g-imported`, and
+the W1d cycle skip deliberately does *not* push there because that list means
+*finished*. A compile-time-only import registers a file and emits nothing, so it
+records on `g-ct-imported` instead; otherwise a later real `(import-use node)`
+was deduplicated away and the program was refused at its own quote — correct in
+one import order and silently wrong in the other.
+
+**The order-independent answer came from a walk that already exists.**
+`prescan-imported-signatures` runs at depth 1 before any form is emitted and
+follows every import form *except* `import-ct`, so the set of paths it visited
+**is** "reachable through ordinary imports". `g-real-reachable` snapshots
+`g-prescan-sigs` right after it (the import lists are prepend-only, so holding
+the head is a genuine snapshot) and `ct-sink-here` asks per file. Before adding a
+whole-graph question, check whether one of the existing prescans already answers
+it as a side effect of what it walks.
+
+## Relinking a stage IR is the cheapest escape from a stale-boot chicken-and-egg
+
+`context/build.md` documents the 2-stage manual bootstrap for "the source now
+uses a feature the committed boot does not have". There is a shorter route
+whenever `build/stage2.ll` (or `build/nucleusc.ll`) is newer than the breaking
+change and only the *binary* is unusable — which is what an LLVM soname flip
+under a built tree leaves behind:
+
+```
+clang build/stage2.ll build/repl_shim.o -L/usr/lib/llvm-N/lib -lLLVM-N \
+      -ldl -rdynamic -o /tmp/c0
+cp /tmp/c0 bin/nucleusc && make
+```
+
+No source is elided and no committed artifact is touched (`bin/nucleusc` is
+gitignored). Used 2026-08-16, when the container moved from LLVM 22 to 19 while
+`boot/nucleusc.ll` predated the symbol-literal commit: the boot binary could not
+compile `src/generics.nuc`'s `#{'let 'with …}` and the stage binaries could not
+load `libLLVM.so.22.1`, but `build/stage2.ll` had both. **Check `build/*.ll`
+before reaching for the 2-stage dance** — and note that a failed `make` truncates
+`build/nucleusc.ll` through the shell redirect, so `build/stage2.ll` is usually
+the surviving copy.
+
+## Parameter-list markers are keywords, and `&` is still not free
+
+`:rest` / `:where` / `:optional` / `:repr` (Stage 16,
+design/stage16-ergonomics/keyword-markers.md). One predicate answers for all
+four — `marker-named (node bare-name)` in `src/nucleusc.nuc`, beside
+`print-node` — and callers pass the **bare** word (`"rest"`), never a sigil.
+That is what keeps the roster from being re-spelled at each of the fourteen
+recognition sites; it also folds in the kind test and the null guard, so
+`marker-named` is safe on the NULL node an empty list `()` reads as and on an
+INT param whose `Node.s` is null. `marker-any` is the three that terminate a
+parameter walk (`:repr` marks a defunion arm chain, never a parameter list);
+`marker-spelling` puts a keyword's stripped colon back for a diagnostic that
+quotes it.
+
+Four things worth knowing before touching this:
+
+- **A retired `&x` needs a chokepoint per FORM SHAPE, not per marker.**
+  `reject-legacy-marker` lives at `desugar-params` (defn/declare/defstruct),
+  `macro-parse-params` (defmacro/macrolet), `emit-extend`'s node-3 check, and
+  `defunion-strip-repr`. `desugar-params` rather than `emit-defn`'s own scan
+  because desugar runs straight off the reader: a `&where` defn no longer
+  registers as a template, so the prescan reaches `parse-type-from-node` and
+  dies `unknown type: T` first. The other three shapes are not desugared at all.
+- **A marker keyword must be tested before any "is this a type?" or "is this a
+  symbol?" arm.** `declare-param-type` (`src/nuch.nuc`) reads a `NODE-KEYWORD`
+  operand as a *type* (`:i64`), and `macro-parse-params` rejects a non-`NODE-SYM`
+  param outright — both would swallow `:rest` and report something unrelated.
+- **`&` is NOT freed by this.** `.&` (field-address) is a live special form with
+  ~200 uses, and `&` is illegal in any *definition* name anyway
+  (`ir-name-illegal-char` / `check-ir-name-legal`). Only the prefix sigil is
+  free.
+- **`.nuch` is a serialization format for these.** `emit-nuch-defmacro` /
+  `emit-nuch-defn` (templates) / `emit-nuch-extend` print marker-bearing forms
+  verbatim via `print-node`, which emits `:name` for a `NODE-KEYWORD`. Any
+  change to marker spelling must regenerate the committed headers
+  (`scripts/check-headers.sh --fix` — it reaches `lib/mapiterlib.nuch`, which
+  `$(LIB_NUCHS)` cannot).
+
+## A test unit that dies before its first `echo` is invisible, not failing
+
+`tests/run-tests.sh` buffers each unit to a file and decides PASS/FAIL by
+scanning the replayed output. An empty result file *is* counted
+(`[ ! -s "$out" ] && fail=1`), but nothing is printed for it — so a unit killed
+by `set -e` before its first `echo` shows up only in the script's **exit code**,
+and a run that reports "755 PASS, zero FAIL" can be exiting 1.
+
+The killer is almost always the one `run_headers_generated` documents:
+`out="$(cmd)"` as a bare assignment is fatal under `set -e` when `cmd` fails —
+use `out="$(cmd)" || ec=$?`. Found in `run_stdlib_table` (Stage 16), where it
+had been hiding a genuine regression for the whole of the prelude-split work:
+165 libc names had left the no-import set and `docs/stdlib.md` still claimed
+them. **When `make test` exits non-zero with no `FAIL` line, look for an empty
+result file, not a flake.**

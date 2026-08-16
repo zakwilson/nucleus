@@ -50,7 +50,7 @@
 ; map — apply g to every element, collecting the results into a new (Vector E).
 ; g : (UnaryFn S E). Returns the new Vector by value (caller drops it).
 (defn map ((g (ref G)) (it (ref I))
-                        &where ((Iterator S) I)
+                        :where ((Iterator S) I)
                                ((UnaryFn S E) G)) (Vector E)
   (let ((out (ref (Vector E))) (alloca (Vector E)))
     (vector-init out)
@@ -64,7 +64,7 @@
 ; filter — keep every element for which pred is truthy, into a new (Vector S).
 ; pred : (UnaryFn S i32). Returns the new Vector by value (caller drops it).
 (defn filter ((pred (ref P)) (it (ref I))
-                           &where ((Iterator S) I)
+                           :where ((Iterator S) I)
                                   ((UnaryFn S i32) P)) (Vector S)
   (let ((out (ref (Vector S))) (alloca (Vector S)))
     (vector-init out)
@@ -78,7 +78,7 @@
 ; remove-if — the complement of filter: keep every element for which pred is
 ; FALSE. pred : (UnaryFn S i32). Returns a new (Vector S) by value.
 (defn remove-if ((pred (ref P)) (it (ref I))
-                              &where ((Iterator S) I)
+                              :where ((Iterator S) I)
                                      ((UnaryFn S i32) P)) (Vector S)
   (let ((out (ref (Vector S))) (alloca (Vector S)))
     (vector-init out)
@@ -92,7 +92,7 @@
 ; for-each — apply f to every element for side effects, discarding each result.
 ; f : (UnaryFn S R) for any R. Returns void.
 (defn for-each ((f (ref F)) (it (ref I))
-                     &where ((Iterator S) I)
+                     :where ((Iterator S) I)
                             ((UnaryFn S R) F)):void
   (let (done:i32 0)
     (while (= done 0)
@@ -108,7 +108,7 @@
 ; dropped after its elements are copied out. Returns the new Vector by value
 ; (caller drops it). E must be a matchable scalar (it rides It).
 (defn flat-map ((g (ref G)) (it (ref I))
-                             &where ((Iterator S) I)
+                             :where ((Iterator S) I)
                                     ((UnaryFn S R) G)
                                     ((Coll E It) R)
                                     ((Iterator E) It)) (Vector E)
@@ -136,7 +136,7 @@
 ; find — the first element for which pred is truthy, or none. Stops early.
 ; pred : (UnaryFn S i32). Returns (Maybe S) (S must be a matchable scalar).
 (defn find ((pred (ref P)) (it (ref I))
-                        &where ((Iterator S) I)
+                        :where ((Iterator S) I)
                                ((UnaryFn S i32) P)) (Maybe S)
   (let (done:i32 0)
     (while (= done 0)
@@ -148,7 +148,7 @@
 ; find-index — the index of the first element for which pred is truthy, or -1.
 ; Stops early. pred : (UnaryFn S i32).
 (defn find-index ((pred (ref P)) (it (ref I))
-                      &where ((Iterator S) I)
+                      :where ((Iterator S) I)
                              ((UnaryFn S i32) P)):i32
   (let (idx:i32 0
         done:i32 0)
@@ -161,7 +161,7 @@
   (return -1))
 
 ; ===========================================================================
-; Quantifiers. These are GENERIC (they carry &where), so their monomorphised
+; Quantifiers. These are GENERIC (they carry :where), so their monomorphised
 ; names route through `sanitize-for-ir` (`?` -> `_`) and never emit a bare
 ; `@any?`/`@every?` that LLVM would reject — exactly like `reduce`.
 ; ===========================================================================
@@ -169,7 +169,7 @@
 ; any? — 1 if pred is truthy for any element, else 0. Stops early on the first
 ; truthy element. pred : (UnaryFn S i32).
 (defn any? ((pred (ref P)) (it (ref I))
-                &where ((Iterator S) I)
+                :where ((Iterator S) I)
                        ((UnaryFn S i32) P)):i32
   (let (done:i32 0)
     (while (= done 0)
@@ -180,14 +180,14 @@
 
 ; exists? — alias of any?.
 (defn exists? ((pred (ref P)) (it (ref I))
-                   &where ((Iterator S) I)
+                   :where ((Iterator S) I)
                           ((UnaryFn S i32) P)):i32
   (return (any? pred it)))
 
 ; every? — 1 if pred is truthy for every element (vacuously 1 for empty), else 0.
 ; Stops early on the first FALSE element. pred : (UnaryFn S i32).
 (defn every? ((pred (ref P)) (it (ref I))
-                  &where ((Iterator S) I)
+                  :where ((Iterator S) I)
                          ((UnaryFn S i32) P)):i32
   (let (done:i32 0)
     (while (= done 0)
@@ -198,7 +198,7 @@
 
 ; all? — alias of every?.
 (defn all? ((pred (ref P)) (it (ref I))
-                &where ((Iterator S) I)
+                :where ((Iterator S) I)
                        ((UnaryFn S i32) P)):i32
   (return (every? pred it)))
 
@@ -206,7 +206,7 @@
 ; cannot stop early). Named `count-if` (not `count`) so it does not overload the
 ; `(Coll E It)` `count` method. pred : (UnaryFn S i32).
 (defn count-if ((pred (ref P)) (it (ref I))
-                    &where ((Iterator S) I)
+                    :where ((Iterator S) I)
                            ((UnaryFn S i32) P)):i32
   (let (n:i32 0
         done:i32 0)
@@ -226,7 +226,7 @@
 ; Vector, then folded from the back. g : (FoldFn Acc S). S must be a matchable
 ; scalar (it rides a VecIter S).
 (defn foldr ((g (ref G)) (init Acc) (it (ref I))
-                 &where ((Iterator S) I)
+                 :where ((Iterator S) I)
                         ((FoldFn Acc S) G)):Acc
   (let ((buf (ref (Vector S))) (alloca (Vector S)))
     (vector-init buf)
@@ -245,7 +245,7 @@
       (return acc))))
 
 ; sum — add every element, seeded at 0. S must be a numeric scalar.
-(defn sum ((it (ref I)) &where ((Iterator S) I)):S
+(defn sum ((it (ref I)) :where ((Iterator S) I)):S
   (let (acc:S (as S 0)
         done:i32 0)
     (while (= done 0)
@@ -255,7 +255,7 @@
     (return acc)))
 
 ; product — multiply every element, seeded at 1. S must be a numeric scalar.
-(defn product ((it (ref I)) &where ((Iterator S) I)):S
+(defn product ((it (ref I)) :where ((Iterator S) I)):S
   (let (acc:S (as S 1)
         done:i32 0)
     (while (= done 0)
@@ -265,7 +265,7 @@
     (return acc)))
 
 ; min — the least element (by `<`), or 0 for an empty sequence. S scalar.
-(defn min ((it (ref I)) &where ((Iterator S) I)):S
+(defn min ((it (ref I)) :where ((Iterator S) I)):S
   (let (acc:S (as S 0)
         seen:i32 0
         done:i32 0)
@@ -279,7 +279,7 @@
     (return acc)))
 
 ; max — the greatest element (by `<`), or 0 for an empty sequence. S scalar.
-(defn max ((it (ref I)) &where ((Iterator S) I)):S
+(defn max ((it (ref I)) :where ((Iterator S) I)):S
   (let (acc:S (as S 0)
         seen:i32 0
         done:i32 0)
@@ -300,7 +300,7 @@
 ; cmp : (BinaryFn T i32) — truthy when its first argument should come BEFORE its
 ; second. T is the Vector's element type.
 (defn sort ((cmp (ref C)) (v (ref (Vector T)))
-                 &where ((BinaryFn T i32) C)):void
+                 :where ((BinaryFn T i32) C)):void
   (let (n:usize (count v)
         buf:ptr:T (as ptr:T (as ptr (_get v data))))
     (let (i:usize 1)
@@ -316,7 +316,7 @@
 ; sort-by — in-place ascending insertion sort keyed by a projection. keyf maps
 ; each element to a `<`-comparable key. keyf : (UnaryFn T K).
 (defn sort-by ((keyf (ref F)) (v (ref (Vector T)))
-                    &where ((UnaryFn T K) F)):void
+                    :where ((UnaryFn T K) F)):void
   (let (n:usize (count v)
         buf:ptr:T (as ptr:T (as ptr (_get v data))))
     (let (i:usize 1)
@@ -339,7 +339,7 @@
 ; the print-with-separator workhorse the IR-printing loops use. emitf : (UnaryFn
 ; S R) for any R (its result is discarded).
 (defn emit-joined ((emitf (ref EF)) sep:CStr (it (ref I))
-                        &where ((Iterator S) I)
+                        :where ((Iterator S) I)
                                ((UnaryFn S R) EF)):void
   (let (first:i32 1
         done:i32 0)
@@ -362,7 +362,7 @@
 ; CStr) (its result is borrowed only for the duration of the append). Returns the
 ; new String by value (caller drops it).
 (defn join ((renderf (ref RF)) sep:CStr (it (ref I))
-                   &where ((Iterator S) I)
+                   :where ((Iterator S) I)
                           ((UnaryFn S CStr) RF)):String
   (let (out:String (string-new)
         first:i32 1
@@ -384,7 +384,7 @@
 ; an empty sequence). The combinator form of a loop whose value is its final
 ; per-iteration expression. f : (UnaryFn S R).
 (defn keep-last ((f (ref F)) (init R) (it (ref I))
-                   &where ((Iterator S) I)
+                   :where ((Iterator S) I)
                           ((UnaryFn S R) F)):R
   (let (acc:R init
         done:i32 0)
@@ -398,7 +398,7 @@
 ; Names the "implicit progn, keep the last value" idiom explicitly. (A Nucleus
 ; `do` already yields its last value; `do-last` is the named, intention-revealing
 ; spelling used when a counted/imperative loop is refactored to keep one value.)
-(defmacro do-last (&rest body)
+(defmacro do-last (:rest body)
   `(do ~@body))
 
 ; ===========================================================================
@@ -451,33 +451,33 @@
 ; compose — `(compose g f)` → a box `x → (g (f x))`. g : (UnaryFn B C), f : (UnaryFn
 ; A B). Both operands are bare fn pointers captured by value (null env-drop slot).
 (defn compose ((g (ref G)) (f (ref F))
-                                  &where ((UnaryFn B C) G)
+                                  :where ((UnaryFn B C) G)
                                          ((UnaryFn A B) F)) (BoxedFn (A) C)
   (return (vfn (x:A) C (apply g (apply f x)))))
 
 ; comp — alias of compose.
 (defn comp ((g (ref G)) (f (ref F))
-                               &where ((UnaryFn B C) G)
+                               :where ((UnaryFn B C) G)
                                       ((UnaryFn A B) F)) (BoxedFn (A) C)
   (return (compose g f)))
 
 ; complement — `(complement pred)` → a box `x → ¬(pred x)` (i32: 1 when pred is
 ; falsy, 0 when truthy). pred : (UnaryFn A i32), a bare predicate fn pointer.
 (defn complement ((pred (ref P))
-                                       &where ((UnaryFn A i32) P)) (BoxedFn (A) i32)
+                                       :where ((UnaryFn A i32) P)) (BoxedFn (A) i32)
   (return (vfn (x:A) i32 (if (!= (apply pred x) 0) 0 1))))
 
 ; conjoin — `(conjoin p q)` → a box `x → (p x) ∧ (q x)` (i32: 1 when both truthy).
 ; p, q : (UnaryFn A i32), bare predicate fn pointers.
 (defn conjoin ((p (ref P)) (q (ref Q))
-                                    &where ((UnaryFn A i32) P)
+                                    :where ((UnaryFn A i32) P)
                                            ((UnaryFn A i32) Q)) (BoxedFn (A) i32)
   (return (vfn (x:A) i32 (if (!= (apply p x) 0) (if (!= (apply q x) 0) 1 0) 0))))
 
 ; disjoin — `(disjoin p q)` → a box `x → (p x) ∨ (q x)` (i32: 1 when either truthy).
 ; p, q : (UnaryFn A i32), bare predicate fn pointers.
 (defn disjoin ((p (ref P)) (q (ref Q))
-                                    &where ((UnaryFn A i32) P)
+                                    :where ((UnaryFn A i32) P)
                                            ((UnaryFn A i32) Q)) (BoxedFn (A) i32)
   (return (vfn (x:A) i32 (if (!= (apply p x) 0) 1 (if (!= (apply q x) 0) 1 0)))))
 
@@ -486,7 +486,7 @@
 ; make-adder's int). The box's input type is V (the value's type): the ignored
 ; argument must be V-typed. V is Ord-bounded only so the tyvar is collected (see
 ; the operand-model note above).
-(defn constantly ((v V) &where (Ord V)) (BoxedFn (V) V)
+(defn constantly ((v V) :where (Ord V)) (BoxedFn (V) V)
   (return (vfn (ignored:V) V v)))
 
 ; partial — `(partial f a)` → a box `x → (f a x)` (partial application of the
@@ -496,5 +496,5 @@
 ; e.g. `(partial + n)`); a general `(A, X) → R` binary protocol is deferred. a is
 ; captured by value; f is captured as a bare fn pointer (null env-drop slot).
 (defn partial ((f (ref F)) (a A)
-                                  &where ((FoldFn A X) F)) (BoxedFn (X) A)
+                                  :where ((FoldFn A X) F)) (BoxedFn (X) A)
   (return (vfn (x:X) A (fold f a x))))

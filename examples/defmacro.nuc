@@ -2,7 +2,7 @@
 
 ; Stage 15 B4 (name-resolution.md §11.1): these two were spelled `when` and
 ; `unless`, which the auto-imported prelude (lib/macros.nuc) already defines —
-; with `&rest body`, so the versions here were strictly weaker. `find-macro`
+; with `:rest body`, so the versions here were strictly weaker. `find-macro`
 ; returns the FIRST match and the prelude registers first, so neither definition
 ; below was ever expanded: the example demonstrated a macro it did not use. R4
 ; makes a second definition of one name an error; they are renamed so the example

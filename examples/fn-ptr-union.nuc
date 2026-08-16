@@ -13,6 +13,8 @@
 ; group to be *adjacent* to `(fn ret)` (no space), exactly like the colon-paren
 ; type sugar itself; the canonical list form `(name (fn ret) (params))` also works.
 
+(import-use "stdio.h")
+
 ; ---- the actions the union slot can hold -------------------------------------
 
 (defn tick ():void

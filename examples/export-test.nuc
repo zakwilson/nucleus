@@ -6,6 +6,7 @@
 ; prefix `g` and calls g/area and g/perimeter, which should resolve to the
 ; original @geom__area and @geom__perimeter ir-names.
 
+(import-use "stdio.h")
 (import-prefixed nsgfacade g)
 
 (defn main ():i32

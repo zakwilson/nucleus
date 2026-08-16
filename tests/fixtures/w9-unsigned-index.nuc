@@ -7,6 +7,8 @@
 ; The `ui32`-at-2^31 case the item was filed from cannot be written this way
 ; (four billion elements is not addressable), so it is asserted on the emitted
 ; instruction instead, in run-tests.sh.
+(import-use "stdio.h")
+(import-use "stdlib.h")
 (import "prelude")
 
 (defn main ():i32

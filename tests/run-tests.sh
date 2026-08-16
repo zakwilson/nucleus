@@ -299,7 +299,7 @@ run_w9_fnptr_align() {
   elif [ "$(grep -cE "$under" "$ir")" -ne 0 ]; then
     echo "FAIL  w9-fnptr-align-ir ($(grep -cE "$under" "$ir") ptr slots claim align 1)"
     grep -nE "$under" "$ir" | head -6 | sed 's/^/    /'
-  elif qgrep '^@fn-global = global ptr null, align 8' "$ir" \
+  elif qgrep -E '^@fn-global = global ptr null,( section "[^"]*",)? align 8' "$ir" \
     && qgrep '%loc.addr.[0-9]* = alloca ptr, align 8' "$ir" \
     && qgrep '%h.addr = alloca ptr, align 8' "$ir"; then
     echo "PASS  w9-fnptr-align-ir"
@@ -309,7 +309,7 @@ run_w9_fnptr_align() {
   fi
 
   # Item 15's rule, on item 19's operand: the width is the TARGET's, not 8.
-  if qgrep '^@fn-global = global ptr null, align 4' "$ir32" \
+  if qgrep -E '^@fn-global = global ptr null,( section "[^"]*",)? align 4' "$ir32" \
     && qgrep '%loc.addr.[0-9]* = alloca ptr, align 4' "$ir32"; then
     echo "PASS  w9-fnptr-align-target-width"
   else
@@ -778,9 +778,9 @@ run_ns6() {
   # printf is declared with its FIXED parameter only: Nucleus has no variadic-
   # `declare` spelling, call arity is not checked against a declaration, and the
   # extra arguments ride the call site — which is how the C ABI passes them. (This
-  # and the two sibling sites below used to write `(fmt:CStr &rest args:i32)`,
+  # and the two sibling sites below used to write `(fmt:CStr :rest args:i32)`,
   # which did nothing but add two phantom i32 parameters to the declaration: the
-  # calls here pass 3-6 arguments to it. `&rest` in a declaration is now refused.)
+  # calls here pass 3-6 arguments to it. `:rest` in a declaration is now refused.)
   cat > "$ns6_dir/main.nuc" <<EOF
 (exclude-prelude)
 (import-prefixed "$ns6_dir/lib.nuch" g)
@@ -1430,16 +1430,20 @@ EOF
     echo "FAIL  w9-multi-object-link (want 3, got $got — the two objects do not share w9-count)"
   fi
 
-  # Two properties this unit would be hollow without: the prelude closure really
-  # is duplicated in both objects (else there was no collision to fix), and the
+  # Two properties this unit would be hollow without: the imported file really is
+  # duplicated in both objects (else there was no collision to fix), and the
   # `w9-side-bump` call really is undefined in main.o (else nothing crosses the
   # object boundary and the shared counter proves only that one object works).
-  if [ "$(nm "$d/main.o" "$d/side.o" 2>/dev/null | grep -cE ' [WV] arena-init$')" = 2 ] \
+  # Asserted on `w9-bump`, this fixture's OWN inlined import, not on the prelude's
+  # `arena-init`: since the Stage 16 split the prelude emits no runtime at all
+  # (compile-time-imports.md §4b), and a duplication test must name something the
+  # unit under test actually duplicates.
+  if [ "$(nm "$d/main.o" "$d/side.o" 2>/dev/null | grep -cE ' [WV] w9-bump$')" = 2 ] \
      && nm "$d/main.o" 2>/dev/null | qgrep -E '^ +U w9-side-bump$'; then
     echo "PASS  w9-multi-object-weak-prelude"
   else
-    echo "FAIL  w9-multi-object-weak-prelude (want a weak arena-init in both, and an undefined w9-side-bump in main.o)"
-    nm "$d/main.o" "$d/side.o" 2>/dev/null | grep -E 'arena-init|w9-side-bump' | sed 's/^/    /'
+    echo "FAIL  w9-multi-object-weak-prelude (want a weak w9-bump in both, and an undefined w9-side-bump in main.o)"
+    nm "$d/main.o" "$d/side.o" 2>/dev/null | grep -E 'w9-bump|w9-side-bump' | sed 's/^/    /'
   fi
 
   # Ownership is per definition, not per unit: the root's own forms stay
@@ -2202,7 +2206,7 @@ run_w9_template_env() {
 (extend i32 W43Num)
 (defn w43t-solo (x:i32):i32 (return (* x 10)))
 (defvar w43t-gv:i32 5)
-(defn w43t-twice (x:T &where (W43Num T)):i32
+(defn w43t-twice (x:T :where (W43Num T)):i32
   (return (+ (w43t-solo (w43t-zero x)) w43t-gv)))
 EOF
   # The caller imports it under a PREFIX, so none of `w43t-solo`, `w43t-gv` or
@@ -2225,7 +2229,7 @@ EOF
 (defn w43b-zero (x:i32):i32 (return x))
 (extend i32 W43B)
 (defn w43b-take (x:i32):i32 (return x))
-(defn w43b-tw (x:T &where (W43B T)):i32
+(defn w43b-tw (x:T :where (W43B T)):i32
   (return (+ (w43b-zero x) (w43b-take "not an int"))))
 EOF
   cat > "$d/w43buse.nuc" <<'EOF'
@@ -2254,7 +2258,7 @@ EOF
 (defn w43z-zero (x:i32):i32 (return x))
 (extend i32 W43Z)
 (defn w43z-solo (x:i32):i32 (return (* x 10)))
-(defn w43z-tw (x:T &where (W43Z T)):i32 (return (w43z-solo (w43z-zero x))))
+(defn w43z-tw (x:T :where (W43Z T)):i32 (return (w43z-solo (w43z-zero x))))
 EOF
   cat > "$d/w43ntu.nuc" <<'EOF'
 (import w43ntl w43p)
@@ -2485,7 +2489,7 @@ EOF
 (defprotocol W38Z (w38z-zero (self:Self):i32))
 (defn w38z-zero (x:i32):i32 (return x))
 (extend i32 W38Z)
-(defn w38-tw (x:T &where (W38Z T)):i32 (return (+ (w38z-zero x) 1)))
+(defn w38-tw (x:T :where (W38Z T)):i32 (return (+ (w38z-zero x) 1)))
 (defstruct W38Box (v (union as-int:i64 as-ptr:ptr)))
 (defn w38-plain (b:ptr:W38Box):i64 (return 7))
 (defn main ():i32 (return (w38-tw 41)))
@@ -2723,6 +2727,7 @@ EOF
   # uses and below them. Below-use is item 40's `.nuch` residue, which could not
   # be closed until this key agreed.
   cat > "$d/body.txt" <<'EOF'
+(import-use "stdio.h")
 (defn go ():i32
   (let (a (make w9nu/Opt Some 41)
         b (make w9nu/Opt None))
@@ -2778,6 +2783,7 @@ EOF
     ./build/nucleusc -c -I "$d/h" "$d/l/w9nu$m.nuc" -o "$d/w9nu$m.o" >/dev/null 2>&1
   done
   cat > "$d/diamond.nuc" <<'EOF'
+(import-use "stdio.h")
 (import-use w9nua)
 (import-use w9nub)
 (defn main ():i32
@@ -2803,6 +2809,7 @@ EOF
   ./build/nucleusc --emit-nuch "$d/l/w9nub0.nuc" > "$d/h/w9nub0.nuch" 2>/dev/null || true
   ./build/nucleusc -c "$d/l/w9nub0.nuc" -o "$d/w9nub0.o" >/dev/null 2>&1
   cat > "$d/bare.nuc" <<'EOF'
+(import-use "stdio.h")
 (import-use w9nub0)
 (defn main ():i32
   (printf "%d\n" (w9nu-bare-or (make W9NuBare W9NuOne 9) 0))
@@ -2960,6 +2967,7 @@ EOF
   # (the silent one), an array-field struct whose extent is a same-file
   # `defconst`, and a union built with `make` and taken apart with `match`.
   cat > "$d/below.nuc" <<'EOF'
+(import-use "stdio.h")
 (defn w9lay-byval ((v W9LayBox)):i32 (return (+ (_get (addr-of v) a) (_get (addr-of v) b))))
 (defn main ():i32
   (let (bx (W9LayBox 3 4)
@@ -3019,6 +3027,7 @@ EOF
   # the `.nuc` when both are there — w9-import-prefers-source).
   ./build/nucleusc --emit-nuch "$d/l/w9lay.nuc" > "$d/h/w9lay.nuch" 2>/dev/null || true
   cat > "$d/hbelow.nuc" <<'EOF'
+(import-use "stdio.h")
 (defn main ():i32
   (let (bx (W9LayBox 8 9))
     (printf "%d\n" (+ (_get bx a) (_get bx b))))
@@ -3100,6 +3109,7 @@ EOF
   # One use of every kind a header carries: a `declare`, an `extern`, a
   # `defconst`, a `defenum` member and one arm of an overload set (`defmethod`).
   cat > "$d/body.txt" <<'EOF'
+(import-use "stdio.h")
 (defn main ():i32
   (printf "%d %d %d %d %d\n" (w9no-add 1 2) W9NO-BASE (as i32 w9no-blue) w9no-counter (w9no-two 21))
   (return 0))
@@ -3156,6 +3166,7 @@ EOF
   printf '(extern (w9no-shared i32))\n(declare w9no-a ((x i32)) :i32)\n' > "$d/h/w9noa.nuch"
   printf '(extern (w9no-shared i32))\n(declare w9no-b ((x i32)) :i32)\n' > "$d/h/w9nob.nuch"
   cat > "$d/two.nuc" <<'EOF'
+(import-use "stdio.h")
 (defn main ():i32
   (printf "%d %d %d\n" (w9no-a 1) (w9no-b 2) w9no-shared)
   (return 0))
@@ -3493,6 +3504,7 @@ run_w1_late_overload_symbol() {
   cat > "$d/w1-late.nuc" <<'EOF'
 (import-use "lib/list.nuc")
 (import-use vector)
+(import-use node)   ; make-cell is a runtime call since the prelude split
 (defn main ():i32
   (let (c:ptr (make-cell null null 0)
         r:ptr (append c c))
@@ -5055,7 +5067,7 @@ run_s1_sugar_rets() {
   if qgrep -F 'define ptr @lookup(' "$s1_sugar_ll" \
      && qgrep -F 'define i64 @checked(' "$s1_sugar_ll" \
      && qgrep -F 'define ptr @maybe-pt(' "$s1_sugar_ll" \
-     && qgrep -F 'define void @spin(ptr %m.arg) noreturn {' "$s1_sugar_ll"; then
+     && qgrep -E '^define void @spin\(ptr %m\.arg\) noreturn( |$)' "$s1_sugar_ll"; then
     echo "PASS  s1-sugar-rets-and-noreturn"
   else
     echo "FAIL  s1-sugar-rets-and-noreturn"
@@ -5079,7 +5091,7 @@ run_s1_block() {
   #     generic template verbatim (also new style).
   if qgrep -F '(declare twice ((x i32)) :i32)' "$s1_dir/lib.nuch" \
      && qgrep -F '(defmethod "@scale.i32" scale ((x i32)) :i32)' "$s1_dir/lib.nuch" \
-     && qgrep -F '(defn gmax ((a T) (b T) &where (Ord T)) :T' "$s1_dir/lib.nuch"; then
+     && qgrep -F '(defn gmax ((a T) (b T) :where (Ord T)) :T' "$s1_dir/lib.nuch"; then
     echo "PASS  s1-nuch-export-shapes"
   else
     echo "FAIL  s1-nuch-export-shapes"
@@ -5165,9 +5177,13 @@ EOF
 # fewer available names than committed. See
 # scripts/gen-stdlib-table.py's `check_against_committed` for the exact rule.
 run_stdlib_table() {
-  local out ec
-  out="$(python3 scripts/gen-stdlib-table.py --check 2>&1)"
-  ec=$?
+  # `|| ec=$?`, for the reason spelled out on run_headers_generated below: a
+  # bare assignment from a failing command substitution is fatal under this
+  # script's `set -e`, so the unit died before its FAIL line and the harness
+  # saw only an empty result file. That is how the prelude split's 165 dropped
+  # libc names sat undetected behind a "zero FAIL" run.
+  local out ec=0
+  out="$(python3 scripts/gen-stdlib-table.py --check 2>&1)" || ec=$?
   if [ "$ec" -eq 0 ]; then
     echo "PASS  stdlib-table-generated"
   else
@@ -5908,7 +5924,7 @@ spawn run_reject_at w2d-dispatch-no-narrow tests/fixtures/w2d-dispatch-no-narrow
 spawn run_reject_at w4a-undefined-value tests/fixtures/w4a-undefined-value.nuc \
   "tests/fixtures/w4a-undefined-value.nuc:8: error:" "undefined: missing-thing"
 spawn run_reject_at w4a-suggest-spelling tests/fixtures/w4a-suggest-spelling.nuc \
-  "tests/fixtures/w4a-suggest-spelling.nuc:4: error:" "unknown: printfx (did you mean 'printf'?)"
+  "tests/fixtures/w4a-suggest-spelling.nuc:6: error:" "unknown: printfx (did you mean 'printf'?)"
 spawn run_reject_at w4a-let-null-ref tests/fixtures/w4a-let-null-ref.nuc \
   "tests/fixtures/w4a-let-null-ref.nuc:7: error:" "raw pointer where non-null (ref ...) is required"
 spawn run_reject_at w4a-bare-cast-head tests/fixtures/w4a-bare-cast-head.nuc \
@@ -6048,7 +6064,7 @@ spawn run_reject_at w4d-macro-too-few-args tests/fixtures/w4d-macro-too-few-args
 # fopen/fprintf/fgets round trip through `ptr:FILE`, plus forward-declaration-
 # then-definition upgrades); the rejections are pinned here.
 spawn run_reject_at w3a-opaque-sizeof tests/fixtures/w3a-opaque-sizeof.nuc \
-  "tests/fixtures/w3a-opaque-sizeof.nuc:8: error:" \
+  "tests/fixtures/w3a-opaque-sizeof.nuc:9: error:" \
   "sizeof: 'CHOpaque' is an opaque type declared at "
 spawn run_reject_at w3a-opaque-alloca tests/fixtures/w3a-opaque-alloca.nuc \
   "tests/fixtures/w3a-opaque-alloca.nuc:6: error:" \
@@ -6104,13 +6120,13 @@ spawn run_w3c_precedence
 spawn run_w3c_declare_params
 spawn run_w3c_declare_header
 # A parameter spelling that names no type is a located error, not a default —
-# and `&rest`/`&optional` are defn-only (the marker used to be counted as an
+# and `:rest`/`:optional` are defn-only (the marker used to be counted as an
 # extra i32 parameter, so the declared arity silently disagreed).
 spawn run_reject_at w3c-declare-unknown-type tests/fixtures/w3c-declare-unknown-type.nuc \
   "tests/fixtures/w3c-declare-unknown-type.nuc:4: error:" "unknown type: NoSuchDeclParamType"
 spawn run_reject_at w3c-declare-rest tests/fixtures/w3c-declare-rest.nuc \
   "tests/fixtures/w3c-declare-rest.nuc:6: error:" \
-  "declare: '&rest' is not supported in a declaration"
+  "declare: ':rest' is not supported in a declaration"
 
 # --- Stage 15 W4e: docs/stdlib.md's availability table is generated ---------
 spawn run_stdlib_table
@@ -6275,7 +6291,7 @@ spawn run_reject_at w5d-struct-slot-maybe-null tests/fixtures/w5d-struct-slot-ma
   "tests/fixtures/w5d-struct-slot-maybe-null.nuc:12: error:" \
   "assignment: value may be null"
 spawn run_reject_at w5d-elemless-not-inferred tests/fixtures/w5d-elemless-not-inferred.nuc \
-  "tests/fixtures/w5d-elemless-not-inferred.nuc:11: error:" \
+  "tests/fixtures/w5d-elemless-not-inferred.nuc:13: error:" \
   "aref: operand must be typed pointer"
 
 # --- Stage 15 W1: whole-unit signature resolution ----------------------------
@@ -6583,7 +6599,7 @@ spawn run_reject_at w9-call-too-many tests/fixtures/w9-call-too-many.nuc \
 spawn run_reject_at w9-call-too-few tests/fixtures/w9-call-too-few.nuc \
   "tests/fixtures/w9-call-too-few.nuc:9: error:" \
   "call to 'f': expected 2 args, got 1"
-# The legitimately variable arities: `&optional` is a band, `&rest` is a floor.
+# The legitimately variable arities: `:optional` is a band, `:rest` is a floor.
 spawn run_reject_at w9-optional-too-many tests/fixtures/w9-optional-too-many.nuc \
   "tests/fixtures/w9-optional-too-many.nuc:7: error:" \
   "call to 'opt': expected at most 2 args, got 3"
@@ -8023,7 +8039,7 @@ run_b4_qualified_template() {
 (defn b4-zero (x:i16):i32 (return (as i32 x)))
 (extend i32 B4Num)
 (extend i16 B4Num)
-(defn b4-twice (x:T &where (B4Num T)):i32
+(defn b4-twice (x:T :where (B4Num T)):i32
   (return (+ (b4-zero x) (b4-zero x))))
 EOF
   cat > "$d/b4-tuse.nuc" <<'EOF'
@@ -8221,7 +8237,7 @@ run_s16_macrolet() {
         (m))))
 
 (defn ml-rest ():i32
-  (macrolet ((sum3 (a &rest more) `(_+ ~a (_+ ~@more))))
+  (macrolet ((sum3 (a :rest more) `(_+ ~a (_+ ~@more))))
     (sum3 1 2 3)))
 
 ; The enclosing function's entry/body streams must survive the nested macro
@@ -8268,7 +8284,7 @@ EOF
         (= n 1) (macrolet ((o (k) `(_* ~k 3))) (o 7))
         true    (macrolet ((d () `(_- 0 1))) (d))))
 
-(defn ml-maxish (a:T b:T &where (Ord T)):T
+(defn ml-maxish (a:T b:T :where (Ord T)):T
   (macrolet ((pick (x y) `(if (< ~x ~y) ~y ~x)))
     (pick a b)))
 
@@ -8325,7 +8341,7 @@ badname|(defn main ():i32 (macrolet ((5 () `1)) 0))|macrolet: macro name must be
 badparams|(defn main ():i32 (macrolet ((m 5 `1)) 0))|macrolet: params must be a list
 badparam|(defn main ():i32 (macrolet ((m (5) `1)) 0))|macrolet: param must be a symbol
 special|(defn main ():i32 (macrolet ((let (x) `1)) 0))|macrolet: 'let' is a special form and may not be shadowed
-restpos|(defn main ():i32 (macrolet ((m (&rest a b) `1)) 0))|macrolet: &rest must be second-to-last param
+restpos|(defn main ():i32 (macrolet ((m (:rest a b) `1)) 0))|macrolet: :rest must be second-to-last param
 colon|(defn main ():i32 (macrolet ((m:i32 () `1)) 0))|macrolet: a binding name takes no type annotation; write (m (params) ...)
 toplevel|(macrolet ((m () `1)) (m))|unknown top-level form: macrolet
 EOF
@@ -8339,7 +8355,7 @@ spawn run_s16_macrolet_refused
 # flag left the JIT module with "use of undefined value '@alloc-node'". A
 # pre-existing defmacro bug (it reproduced on the stage-15 boot compiler);
 # found via macrolet, where one-atom bodies are the common case. The non-symbol
-# param row is the sibling crash: Node.s is null on an INT node and the &rest
+# param row is the sibling crash: Node.s is null on an INT node and the :rest
 # probe is a content compare, so `(defmacro m (5) …)` segfaulted the compiler.
 run_s16_atom_macro() {
   local d err
@@ -8452,9 +8468,12 @@ run_s16_symbol_values() {
   local d err ir
   d="$(mktemp -d)"
 
-  printf '(defn main ():i32 (let (l:(ref Node) (quote a)) (return 0)))\n' > "$d/sym.nuc"
-  printf '(defn main ():i32 (let (l:(ref Node) (quote (a b))) (return 0)))\n' > "$d/lst.nuc"
-  printf '(defn main ():i32 (let (l:(raw Node) (quote a)) (return 0)))\n' > "$d/raw.nuc"
+  # `(import-use node)` because a quote is a RUNTIME call since the prelude split
+  # (compile-time-imports.md §4b) — without it `lst.nuc` would fail for the wrong
+  # reason and the nullability assertion below would pass vacuously.
+  printf '(import-use node)(defn main ():i32 (let (l:(ref Node) (quote a)) (return 0)))\n' > "$d/sym.nuc"
+  printf '(import-use node)(defn main ():i32 (let (l:(ref Node) (quote (a b))) (return 0)))\n' > "$d/lst.nuc"
+  printf '(import-use node)(defn main ():i32 (let (l:(raw Node) (quote a)) (return 0)))\n' > "$d/raw.nuc"
 
   # A quoted symbol is non-null: it fits a (ref Node) slot with no cast.
   if ./build/nucleusc --emit-llvm "$d/sym.nuc" >/dev/null 2>&1; then
@@ -8491,6 +8510,459 @@ run_s16_symbol_values() {
   rm -rf "$d"
 }
 spawn run_s16_symbol_values
+
+# --- Stage 16: the prelude no longer emits the node runtime -------------------
+# design/stage16-ergonomics/compile-time-imports.md §4b. `lib/prelude.nuc` had
+# `(import-use node)`, so EVERY program — a `defmacro` was never what pulled it
+# in — carried alloc-node / make-cell / intern-symbol / the intern table and the
+# arena that backs them: sixteen definitions and 4569 bytes of .text for a
+# program that reaches none of it, and an unlinkable one for freestanding AVR.
+#
+# The prelude now holds only forms that emit no IR (the `Node` TYPE, the macros,
+# Clone, Result, Maybe) and the runtime is a library like any other. What makes
+# that safe to assert here rather than leave to `make bootstrap` is that the two
+# halves fail in opposite directions: too little and a quoting program has no
+# `@intern-symbol` to call (a LINK error, unlocated), too much and the saving is
+# silently gone with every test still green.
+run_s16_prelude_split() {
+  local d ir err
+  d="$(mktemp -d)"
+
+  printf '(import-use "stdio.h")\n(defn main ():i32 (printf "hi\\n") (return 0))\n' > "$d/plain.nuc"
+  printf '(import-use "stdio.h")\n(defmacro twice (x) `(_+ ~x ~x))\n(defn main ():i32 (let (a:i32 21) (printf "%%d\\n" (twice a))) (return 0))\n' > "$d/mac.nuc"
+  printf '(defn main ():i32 (let (s:(ref Node) (quote a)) (return 0)))\n' > "$d/quote.nuc"
+  printf '(import-use node)\n(defn main ():i32 (let (s:(ref Node) (quote a)) (return 0)))\n' > "$d/quote-ok.nuc"
+  printf '(defn takes (:rest xs:i64):i32 (return 0))\n(defn main ():i32 (return (takes 1 2)))\n' > "$d/rest.nuc"
+  printf '(defn f ((n (raw Node))):i32 (return (n kind)))\n(defn main ():i32 (return 0))\n' > "$d/type.nuc"
+
+  # 1. The measured case: no node/arena definition survives into a program that
+  #    never asked for one. Matched on `define`, not on the symbol — a `declare`
+  #    would be free, and it is the emitted BODIES that cost the bytes.
+  ir="$(./build/nucleusc --emit-llvm "$d/plain.nuc" 2>/dev/null || true)"
+  if ! printf '%s\n' "$ir" | qgrep -E '^define .*@(alloc-node|make-cell|intern-symbol|arena-alloc|arena-init)\('; then
+    echo "PASS  s16-prelude-emits-no-node-runtime"
+  else
+    echo "FAIL  s16-prelude-emits-no-node-runtime"
+    printf '%s\n' "$ir" | grep -E '^define .*@(alloc-node|make-cell|intern-symbol|arena-)' | sed 's/^/    /' | head -4
+  fi
+
+  # 2. The premise the design note had to correct: defining a macro costs
+  #    nothing, because a macro body is JIT'd against the COMPILER's copies. The
+  #    two programs must emit the same set of definitions, macro or no macro.
+  if [ "$(./build/nucleusc --emit-llvm "$d/plain.nuc" 2>/dev/null | grep -cE '^define ')" \
+     = "$(./build/nucleusc --emit-llvm "$d/mac.nuc" 2>/dev/null | grep -cE '^define ')" ]; then
+    echo "PASS  s16-defmacro-costs-no-runtime"
+  else
+    echo "FAIL  s16-defmacro-costs-no-runtime"
+    diff <(./build/nucleusc --emit-llvm "$d/plain.nuc" 2>/dev/null | grep -E '^define ') \
+         <(./build/nucleusc --emit-llvm "$d/mac.nuc" 2>/dev/null | grep -E '^define ') \
+      | sed 's/^/    /' | head -6
+  fi
+
+  # 3. …and it still RUNS, which is the half a definition count cannot see: the
+  #    macro expands, and its expansion is ordinary arithmetic needing no runtime.
+  if ./build/nucleusc "$d/mac.nuc" -o "$d/mac.bin" >/dev/null 2>&1 \
+     && [ "$("$d/mac.bin")" = "42" ]; then
+    echo "PASS  s16-defmacro-still-expands-without-node"
+  else
+    echo "FAIL  s16-defmacro-still-expands-without-node"
+  fi
+
+  # 4. A quote is a runtime call, so it is refused by NAME rather than left to
+  #    fail at link time with no location.
+  err="$(./build/nucleusc --emit-llvm "$d/quote.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | qgrep -F 'quote needs the node runtime — add (import-use node)'; then
+    echo "PASS  s16-quote-demands-node-import"
+  else
+    echo "FAIL  s16-quote-demands-node-import"
+    printf '%s\n' "$err" | sed 's/^/    got: /' | head -3
+  fi
+
+  # 5. The same program with the import compiles — the diagnostic names a fix
+  #    that works, which is the half a rejection test alone never checks.
+  if ./build/nucleusc --emit-llvm "$d/quote-ok.nuc" >/dev/null 2>&1; then
+    echo "PASS  s16-quote-import-is-the-fix"
+  else
+    echo "FAIL  s16-quote-import-is-the-fix"
+    ./build/nucleusc --emit-llvm "$d/quote-ok.nuc" 2>&1 >/dev/null | sed 's/^/    /' | head -3
+  fi
+
+  # 6. The SECOND emission site, and the one that is easy to miss: a `:rest`
+  #    call folds its tail into Node cells at the call site, nowhere near
+  #    emit-quote-tree. A check on quote alone leaves this a link error.
+  err="$(./build/nucleusc --emit-llvm "$d/rest.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | qgrep -F 'a :rest call needs the node runtime'; then
+    echo "PASS  s16-rest-call-demands-node-import"
+  else
+    echo "FAIL  s16-rest-call-demands-node-import"
+    printf '%s\n' "$err" | sed 's/^/    got: /' | head -3
+  fi
+
+  # 7. What the split must NOT take away: `Node` is a type, the prelude still
+  #    registers it, and reading a field off one emits no call at all.
+  if ./build/nucleusc --emit-llvm "$d/type.nuc" >/dev/null 2>&1; then
+    echo "PASS  s16-node-type-survives-without-runtime"
+  else
+    echo "FAIL  s16-node-type-survives-without-runtime"
+    ./build/nucleusc --emit-llvm "$d/type.nuc" 2>&1 >/dev/null | sed 's/^/    /' | head -3
+  fi
+  rm -rf "$d"
+}
+spawn run_s16_prelude_split
+
+# --- Stage 16: (import-ct …) — compile-time-only imports ----------------------
+# design/stage16-ergonomics/compile-time-imports.md §4a. The split above is only
+# half the answer: `lib/error.nuc`'s `with-handler` calls `node-at` to
+# destructure its spec, which is a COMPILE-time use — the macro body is JIT'd
+# against the compiler process — but nothing let a file ask for a library's
+# compile-time surface alone, so every error-handling program paid for the node
+# runtime it never calls.
+#
+# `import-ct` registers types, signatures, constants and macros and discards the
+# definitions. Two properties decide whether it is sound, and neither is visible
+# in a program that merely compiles:
+#   * the promise is kept — a program that reaches a withheld definition is told
+#     so, at the use, instead of failing to link with no location;
+#   * compile-time-only is a property of the UNIT, not of one import edge, so a
+#     library that only wants the compile-time surface can never take the runtime
+#     away from a program that imports the same library for real. Both orders.
+run_s16_import_ct() {
+  local d ir err
+  d="$(mktemp -d)"; mkdir -p "$d/l"
+
+  printf '(import-ct node)\n(defn main ():i32 (return 0))\n' > "$d/plain.nuc"
+  printf '(import-ct node)\n(defn main ():i32 (let (s:(ref Node) (quote a)) (return 0)))\n' > "$d/quote.nuc"
+  printf '(import-ct node)\n(defn main ():i32 (return (node-len null)))\n' > "$d/call.nuc"
+  # Both orders of "a library wants it compile-time, the program wants it for real".
+  printf '(import-use error)\n(import-use node)\n(defn main ():i32 (let (s:(ref Node) (quote a)) (return 0)))\n' > "$d/ct-first.nuc"
+  printf '(import-use node)\n(import-use error)\n(defn main ():i32 (let (s:(ref Node) (quote a)) (return 0)))\n' > "$d/real-first.nuc"
+
+  # 1. The definitions really are gone: one `define`, for `main`.
+  ir="$(./build/nucleusc --emit-llvm "$d/plain.nuc" 2>/dev/null || true)"
+  if [ "$(printf '%s\n' "$ir" | grep -cE '^define ')" = 1 ]; then
+    echo "PASS  s16-import-ct-emits-no-definitions"
+  else
+    echo "FAIL  s16-import-ct-emits-no-definitions"
+    printf '%s\n' "$ir" | grep -E '^define ' | sed 's/^/    /' | head -6
+  fi
+
+  # 2. The promise is kept at the two kinds of use: the compiler-synthesized one
+  #    (a quote lowers to @intern-symbol) and the ordinary one (a direct call).
+  err="$(./build/nucleusc --emit-llvm "$d/quote.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | qgrep -F 'quote needs the node runtime'; then
+    echo "PASS  s16-import-ct-quote-refused"
+  else
+    echo "FAIL  s16-import-ct-quote-refused"
+    printf '%s\n' "$err" | sed 's/^/    got: /' | head -3
+  fi
+
+  err="$(./build/nucleusc --emit-llvm "$d/call.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | qgrep -F 'imported compile-time-only'; then
+    echo "PASS  s16-import-ct-call-refused"
+  else
+    echo "FAIL  s16-import-ct-call-refused"
+    printf '%s\n' "$err" | sed 's/^/    got: /' | head -3
+  fi
+
+  # 3. …and it is a REFUSAL, not a link error: the message names a location in
+  #    the user's file, which is the whole reason the check exists.
+  if printf '%s' "$err" | qgrep -F "$d/call.nuc:2:"; then
+    echo "PASS  s16-import-ct-refusal-is-located"
+  else
+    echo "FAIL  s16-import-ct-refusal-is-located"
+    printf '%s\n' "$err" | sed 's/^/    got: /' | head -2
+  fi
+
+  # 4. Order independence. `lib/error.nuc` does `(import-ct node)`, so a program
+  #    that uses error handling AND quotes must get the runtime either way round.
+  #    Getting this wrong is silent in one order and a refusal in the other.
+  for v in ct-first real-first; do
+    ir="$(./build/nucleusc --emit-llvm "$d/$v.nuc" 2>/dev/null || true)"
+    if printf '%s\n' "$ir" | qgrep -E '^define .*@intern-symbol\('; then
+      echo "PASS  s16-import-ct-real-import-wins-$v"
+    else
+      echo "FAIL  s16-import-ct-real-import-wins-$v (the ct import withheld a runtime the program imported)"
+      ./build/nucleusc --emit-llvm "$d/$v.nuc" 2>&1 >/dev/null | sed 's/^/    /' | head -2
+    fi
+  done
+
+  # 5. The unit-level rule reaches THROUGH a ct-imported library: `ctlib` is
+  #    compile-time-only, but the `vector` it pulls in is one the program itself
+  #    imports, so vector must stay real — and, because a template stamp belongs
+  #    to no file, `(Vector i32)` must still be instantiated into the program.
+  #    Measured before the fix: every vector definition came out ct-only and the
+  #    program was refused at its own `[1 2 3]`.
+  cat > "$d/l/ctlib.nuc" <<'EOF'
+(import-use vector)
+(defn ctlib-count ((v (ref (Vector i32)))):usize (return (count v)))
+EOF
+  cat > "$d/nested.nuc" <<'EOF'
+(import-use "stdio.h")
+(import-ct ctlib)
+(import-use vector)
+(defn main ():i32
+  (with ((v (ref (Vector i32))) [1 2 3])
+    (printf "%d\n" (unsafe/cast i32 (count v))))
+  (return 0))
+EOF
+  if ./build/nucleusc -I "$d/l" "$d/nested.nuc" -o "$d/nested.bin" 2>"$d/nested.err" \
+     && [ "$("$d/nested.bin")" = "3" ]; then
+    echo "PASS  s16-import-ct-nested-real-import-survives"
+  else
+    echo "FAIL  s16-import-ct-nested-real-import-survives"
+    sed 's/^/    /' "$d/nested.err" | head -3
+  fi
+
+  # 6. What `import-ct` is FOR: the compile-time surface is really registered, so
+  #    a macro body may call the library's functions. `with-handler` (lib/error)
+  #    is the in-tree case — it calls `node-at` under `(import-ct node)` — and it
+  #    must still expand in a program carrying no node runtime at all.
+  cat > "$d/mac.nuc" <<'EOF'
+(import-use "stdio.h")
+(import-use error)
+(deferror EGone "gone")
+(defn probe ((e Err) (ctx ptr)):(Maybe i32) (return (some 7)))
+(defn risky (x:i32):!i32 (if (< x 0) (return (err EGone)) (return (ok x))))
+(defn main ():i32
+  (with-handler (EGone i32 probe null)
+    (match (risky -1) ((ok v) (printf "%d\n" v)) ((err e) (printf "unrepaired\n"))))
+  (return 0))
+EOF
+  if ./build/nucleusc "$d/mac.nuc" -o "$d/mac.bin" 2>"$d/mac.err" \
+     && [ "$("$d/mac.bin")" = "7" ]; then
+    ir="$(./build/nucleusc --emit-llvm "$d/mac.nuc" 2>/dev/null || true)"
+    if ! printf '%s\n' "$ir" | qgrep -E '^define .*@(alloc-node|make-cell|intern-symbol|arena-alloc)\('; then
+      echo "PASS  s16-import-ct-macro-runs-with-no-runtime"
+    else
+      echo "FAIL  s16-import-ct-macro-runs-with-no-runtime (the runtime came back)"
+      printf '%s\n' "$ir" | grep -E '^define .*@(alloc-node|make-cell|intern-symbol|arena-)' | sed 's/^/    /' | head -4
+    fi
+  else
+    echo "FAIL  s16-import-ct-macro-runs-with-no-runtime (with-handler did not expand or run)"
+    sed 's/^/    /' "$d/mac.err" | head -3
+  fi
+
+  # 7. Arity, so a typo is a diagnostic rather than a silent no-op.
+  printf '(import-ct)\n(defn main ():i32 (return 0))\n' > "$d/bad.nuc"
+  err="$(./build/nucleusc --emit-llvm "$d/bad.nuc" 2>&1 >/dev/null || true)"
+  if printf '%s' "$err" | qgrep -F 'import-ct: expected (import-ct name)'; then
+    echo "PASS  s16-import-ct-arity"
+  else
+    echo "FAIL  s16-import-ct-arity"
+    printf '%s\n' "$err" | sed 's/^/    got: /' | head -2
+  fi
+  rm -rf "$d"
+}
+spawn run_s16_import_ct
+
+# Stage 16, compile-time-imports.md §4d: an imported `defn` the program never
+# calls is emitted `weak_odr` and `weak_odr` may not be discarded, so nothing
+# removed it — and the string table goes into the program module whole,
+# including entries only a macro's JIT module used. Both are reclaimed at the
+# LINK now: one section per definition plus `-Wl,--gc-sections`.
+#
+# The section name is not cosmetic. LLVM keys SHT_NOBITS off the NAME, so a
+# `.bss` name with a non-zero initializer is a hard error and a zero one under
+# `.data` newly costs file bytes — which is why the prefix is pinned per storage
+# class here, in both directions.
+run_s16_gc_sections() {
+  local d ir nogc
+  d="$(mktemp -d)"; mkdir -p "$d/lib"
+  cat > "$d/lib/gclib.nuc" <<'EOF'
+(defn gc-used (x:i32):i32 (return (+ x 1)))
+(defn gc-never-called (x:i32):i32 (return (* x 7)))
+EOF
+  cat > "$d/main.nuc" <<'EOF'
+(import-use "stdio.h")
+(import-use gclib)
+(defvar gc-zero:i32 0)
+(defvar gc-nonzero:i32 5)
+(defvar :const gc-ro:i32 9)
+(defn main ():i32 (printf "%d\n" (gc-used gc-nonzero)) (return gc-zero))
+EOF
+  ir="$d/main.ll"
+  ./build/nucleusc --emit-llvm -I "$d/lib" "$d/main.nuc" > "$ir" 2>/dev/null || true
+
+  # 1. Every storage class lands under the prefix its content requires, and LLVM
+  #    accepts the result (llvm-as is what would reject a .bss/non-zero pairing).
+  if llvm-as "$ir" -o /dev/null 2>/dev/null \
+     && qgrep -F 'define i32 @main() section ".text.main"' "$ir" \
+     && qgrep -F 'define weak_odr i32 @gc-used(i32 %x.arg) section ".text.gc-used"' "$ir" \
+     && qgrep -F '@gc-zero = global i32 0, section ".bss.gc-zero"' "$ir" \
+     && qgrep -F '@gc-nonzero = global i32 5, section ".data.gc-nonzero"' "$ir" \
+     && qgrep -F '@gc-ro = constant i32 9, section ".rodata.gc-ro"' "$ir" \
+     && qgrep -E '^@\.str\.0 = private unnamed_addr constant .*, section "\.rodata\.\.str\.0"' "$ir"; then
+    echo "PASS  s16-sections-per-definition"
+  else
+    echo "FAIL  s16-sections-per-definition (a definition is missing its section, or LLVM rejected the IR)"
+    llvm-as "$ir" -o /dev/null 2>&1 | sed 's/^/    /' | head -3
+    grep -nE '^(define|@gc-|@\.str\.0)' "$ir" | head -8 | sed 's/^/    /'
+  fi
+
+  # 2. The section spelling is ELF's. A Mach-O specifier is "SEGMENT,section" and
+  #    LLVM rejects a bare name outright; COFF collects with /OPT:REF, not
+  #    --gc-sections. Neither target may see one.
+  if [ "$(./build/nucleusc --target=x86_64-apple-darwin --emit-llvm -I "$d/lib" \
+            "$d/main.nuc" 2>/dev/null | grep -c 'section "')" = 0 ] \
+     && [ "$(./build/nucleusc --target=x86_64-pc-windows-msvc --emit-llvm -I "$d/lib" \
+            "$d/main.nuc" 2>/dev/null | grep -c 'section "')" = 0 ]; then
+    echo "PASS  s16-sections-elf-only"
+  else
+    echo "FAIL  s16-sections-elf-only (a non-ELF target emitted an ELF section name)"
+  fi
+
+  # 3. The half that actually reclaims anything. `gc-never-called` is in the
+  #    linked object either way (weak_odr, not discardable); only the link drops
+  #    it — and `--link-arg=-Wl,--no-gc-sections` must be able to put it back,
+  #    since that is the documented escape hatch.
+  nogc="$d/main.nogc"
+  if ./build/nucleusc -I "$d/lib" "$d/main.nuc" -o "$d/main.bin" 2>/dev/null \
+     && ./build/nucleusc -I "$d/lib" --link-arg=-Wl,--no-gc-sections \
+          "$d/main.nuc" -o "$nogc" 2>/dev/null \
+     && [ "$("$d/main.bin"; echo "rc=$?")" = "$(printf '6\nrc=0')" ] \
+     && ! nm "$d/main.bin" 2>/dev/null | qgrep ' gc-never-called$' \
+     && nm "$nogc" 2>/dev/null | qgrep ' gc-never-called$'; then
+    echo "PASS  s16-gc-sections-drops-unused-import"
+  else
+    echo "FAIL  s16-gc-sections-drops-unused-import (an uncalled imported defn survived the link, or --no-gc-sections did not restore it)"
+    nm "$d/main.bin" 2>/dev/null | grep 'gc-' | sed 's/^/    linked: /' | head -4
+  fi
+  rm -rf "$d"
+}
+spawn run_s16_gc_sections
+
+# Stage 16 (design/stage16-ergonomics/keyword-markers.md): the four parameter-
+# list / arm-chain markers are keywords. `:repr` had NO coverage at all before
+# this unit — it was documented in docs/structs-unions.md and used by nothing.
+run_s16_keyword_markers() {
+  local d out
+  d="$(mktemp -d)"
+
+  # 1. All four markers, plus the two shapes that could have collided with one:
+  #    `:where(Ord T)` with no separating space (the reader's colon-paren fuse
+  #    keys on a TRAILING colon, so a keyword must not trigger it), and an
+  #    `:optional` default that is itself a keyword VALUE one level down.
+  #    `Ord3`/`less3` rather than `Ord`/`less`: lib/numeric.nuc defines those and
+  #    `import-use keyword` reaches it, so the obvious names are a redefinition.
+  cat > "$d/ok.nuc" <<'EOF'
+(import-use "stdio.h")
+(import-use node)
+(import-use keyword)
+(defprotocol Ord3 (less3 (a:Self b:Self):i1))
+(defn less3 (a:i32 b:i32):i1 (return (< a b)))
+(extend i32 Ord3)
+(defstruct Point x:i32 y:i32)
+(defunion Shape (circle p:(ref Point)) none :repr tagged)
+(defn sum (:rest args:i64):i64
+  (let (total:i64 0)
+    (while (!= args null)
+      (set! total (+ total (unsafe/cast i64 ((unsafe/cast ptr:Node args) car))))
+      (set! args ((unsafe/cast ptr:Node args) cdr)))
+    total))
+(defn maxv (a:T b:T :where (Ord3 T)):T (return (if (less3 a b) b a)))
+(defn minv (a:T b:T :where(Ord3 T)):T (return (if (less3 b a) b a)))
+(defn kw-default (n:i32 :optional (k:Keyword :fallback)):i32 (return n))
+(defn greet (n:i32 :optional (m:i32 7)):i32 (return (+ n m)))
+(defmacro twice (x :rest r) `(+ ~x ~x))
+(defn main ():i32
+  (printf "%ld %d %d %d %d %d\n"
+    (sum 1 2 3 4) (maxv 3 9) (minv 3 9) (greet 1) (greet 1 2) (twice 5))
+  (return (kw-default 0)))
+EOF
+  ./build/nucleusc "$d/ok.nuc" -o "$d/ok.bin" 2>"$d/ok.err" || true
+  out="$("$d/ok.bin" 2>/dev/null || true)"
+  if [ "$out" = "10 9 3 8 3 10" ]; then
+    echo "PASS  s16-keyword-markers-accepted"
+  else
+    echo "FAIL  s16-keyword-markers-accepted (got '$out')"
+    sed 's/^/    /' "$d/ok.err" | head -3
+  fi
+
+  # 2. Every retired `&x` spelling names its replacement, from the definer that
+  #    owns it. Without this each one falls through as an ordinary symbol and
+  #    surfaces as `missing :type on param '&rest'` or `unknown type: T`.
+  legacy_says() {   # legacy_says <file-body> <expected-substring>
+    printf '%s\n' "$1" > "$d/leg.nuc"
+    ./build/nucleusc --emit-llvm "$d/leg.nuc" >/dev/null 2>"$d/leg.err"
+    qgrep -F "$2" "$d/leg.err"
+  }
+  if legacy_says '(defn f (a:i32 &rest xs:i64):i64 (return 0))' \
+        "'&rest' is no longer a marker -- write ':rest'" \
+     && legacy_says '(defn f (n:i32 &optional (m:i32 7)):i32 (return n))' \
+        "'&optional' is no longer a marker -- write ':optional'" \
+     && legacy_says '(defprotocol Ord (less (a:Self b:Self):i1))
+(defn maxv (a:T b:T &where (Ord T)):T (return a))' \
+        "'&where' is no longer a marker -- write ':where'" \
+     && legacy_says '(defprotocol Show (shout (a:Self):i32))
+(defstruct (Box T) v:T)
+(extend (Box T) Show &where (Show T))' \
+        "'&where' is no longer a marker -- write ':where'" \
+     && legacy_says '(defstruct Point x:i32)
+(defunion Shape (circle p:(ref Point)) none &repr tagged)' \
+        "'&repr' is no longer a marker -- write ':repr'" \
+     && legacy_says '(defmacro twice (x &rest r) `(+ ~x ~x))' \
+        "'&rest' is no longer a marker -- write ':rest'" \
+     && legacy_says '(declare printf (fmt:CStr &rest args:i32) :i32)' \
+        "'&rest' is no longer a marker -- write ':rest'"; then
+    echo "PASS  s16-keyword-markers-legacy-rejected"
+  else
+    echo "FAIL  s16-keyword-markers-legacy-rejected (a retired &x spelling did not name its replacement)"
+    sed 's/^/    /' "$d/leg.err" | head -3
+  fi
+
+  # 3. The keyword spelling did not weaken any rule the symbol spelling enforced.
+  refuses() {   # refuses <file-body> <expected-substring>
+    printf '%s\n' "$1" > "$d/ref.nuc"
+    ./build/nucleusc --emit-llvm "$d/ref.nuc" >/dev/null 2>"$d/ref.err"
+    qgrep -F "$2" "$d/ref.err"
+  }
+  if refuses '(defn f (:rest xs:i64 a:i32):i64 (return 0))' \
+        'defn: :rest must be second-to-last param' \
+     && refuses '(defn f (a:i32 :optional (m:i32 1) :rest xs:i64):i64 (return 0))' \
+        'defn: :optional cannot be combined with :rest' \
+     && refuses '(declare printf (fmt:CStr :rest args:i32) :i32)' \
+        "declare: ':rest' is not supported in a declaration" \
+     && refuses '(defprotocol Ord (less (a:Self b:Self):i1))
+(defn maxv (a:T b:T :rest xs:i64 :where (Ord T)):T (return a))' \
+        'defn: :rest combined with a generic method is not supported yet' \
+     && refuses '(defmacro m (x :rest r y) `~x)' \
+        'defmacro: :rest must be second-to-last param'; then
+    echo "PASS  s16-keyword-markers-rules-preserved"
+  else
+    echo "FAIL  s16-keyword-markers-rules-preserved (a marker rule stopped firing under the keyword spelling)"
+    sed 's/^/    /' "$d/ref.err" | head -3
+  fi
+
+  # 4. `.nuch` is a serialization format: print-node must round-trip a marker
+  #    keyword with its colon, or a header exports a form its importer cannot
+  #    re-read. Assert on the emitted text AND on a real import of it.
+  mkdir -p "$d/lib"
+  cat > "$d/lib/mklib.nuc" <<'EOF'
+(defprotocol Ord2 (less2 (a:Self b:Self):i1))
+(defn less2 (a:i32 b:i32):i1 (return (< a b)))
+(extend i32 Ord2)
+(defn mk-max (a:T b:T :where (Ord2 T)):T (return (if (less2 a b) b a)))
+(defmacro mk-first (x :rest r) `~x)
+EOF
+  ./build/nucleusc --emit-nuch "$d/lib/mklib.nuc" > "$d/lib/mklib.nuch" 2>/dev/null
+  cat > "$d/use.nuc" <<'EOF'
+(import-use "stdio.h")
+(import-use mklib)
+(defn main ():i32 (printf "%d\n" (mk-max 4 11)) (return 0))
+EOF
+  if qgrep -F ':where (Ord2 T)' "$d/lib/mklib.nuch" \
+     && qgrep -F '(x :rest r)' "$d/lib/mklib.nuch" \
+     && ! qgrep -F '&' "$d/lib/mklib.nuch" \
+     && [ "$(./build/nucleusc -I "$d/lib" "$d/use.nuc" -o "$d/use.bin" 2>/dev/null \
+             && "$d/use.bin")" = "11" ]; then
+    echo "PASS  s16-keyword-markers-nuch-roundtrip"
+  else
+    echo "FAIL  s16-keyword-markers-nuch-roundtrip (a marker did not survive .nuch export/import)"
+    sed 's/^/    /' "$d/lib/mklib.nuch" | head -6
+  fi
+  rm -rf "$d"
+}
+spawn run_s16_keyword_markers
 
 # --- Join + replay --------------------------------------------------------------
 # Wait for all remaining jobs (ignore per-job exit codes — PASS/FAIL is decided

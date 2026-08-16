@@ -12,6 +12,8 @@
 ; §3.10 An `(array T …)` initializer refines an elem-less `:ptr` annotation to
 ;       `ptr:T`, so `(aref a i)` works on the local without an `unsafe/cast`.
 
+(import-use "stdio.h")
+
 (defstruct P (x i32) (y i32))
 (defstruct Row (p P) (n i32))
 (defstruct Named (s CStr) (n i32))

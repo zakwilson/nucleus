@@ -220,10 +220,10 @@
 (defconst LAYOUT-NICHE-MAYBE 1)
 (defconst LAYOUT-NICHE-ERRPTR 2)
 (defconst LAYOUT-TAGGED 3)
-; &repr modes parsed off a defunion form (unions.md §6, §9).
+; :repr modes parsed off a defunion form (unions.md §6, §9).
 (defconst REPR-AUTO 0)    ; default: the layout engine decides
-(defconst REPR-TAGGED 1)  ; &repr tagged: force the §3 struct (C-consumer opt-out)
-(defconst REPR-NICHE 2)   ; &repr niche: require a niche, error if not nicheable
+(defconst REPR-TAGGED 1)  ; :repr tagged: force the §3 struct (C-consumer opt-out)
+(defconst REPR-NICHE 2)   ; :repr niche: require a niche, error if not nicheable
 
 ; Declaration attributes (Stage 14 AT-1, design/stage14/attributes.md). An
 ; attribute is a leading keyword literal (`:volatile`) qualifying the declaration
@@ -431,13 +431,13 @@
   (elem (raw Type))
   (sdef (raw StructDef))
   ; --- Stage 8 additions ---
-  nopt:i32          ; number of trailing &optional params (TY-FN)
+  nopt:i32          ; number of trailing :optional params (TY-FN)
   ; A *ragged tail* array of length `nopt` (NOT `num-params`): the default-value
-  ; Node* forms for only the trailing `nopt` &optional params, indexed 0..nopt-1
+  ; Node* forms for only the trailing `nopt` :optional params, indexed 0..nopt-1
   ; (slot k ↔ param index `required + k`, where required = num-params - nopt).
   ; Because it is not a parallel array to `params`, it stays a raw ptr[] (like
   ; Constraint.args / Arm.fnames) rather than folding into the Field record.
-  opt-defaults:ptr  ; array of ptr:Node default forms for the trailing &optional params
+  opt-defaults:ptr  ; array of ptr:Node default forms for the trailing :optional params
   ; Volatile qualifier: when set, loads/stores at this type's storage site are
   ; emitted as `load volatile`/`store volatile`. Primitive singletons are shared,
   ; so volatility is represented by cloning the Type via type-with-volatile.
@@ -537,12 +537,18 @@
   ; user ASSERTS — rather than from a `defn` whose body the compiler has seen.
   ; Nucleus has no `...` spelling, so a C variadic function is declared with its
   ; fixed parameters only and the extra arguments ride the call site
-  ; (docs/toplevel.md `declare`; `&rest`/`&optional` are refused in a
+  ; (docs/toplevel.md `declare`; `:rest`/`:optional` are refused in a
   ; declaration). The call-arity rule therefore admits a LONGER argument list
   ; against a declared signature; too FEW arguments is still an error. Set only
   ; in emit-nuch-declare-import. A C-header-imported function is unaffected: it
   ; carries a real `variadic` flag from the header and is checked exactly.
   extern-decl:i32
+  ; Stage 16: bound while an `(import-ct …)` was in progress, so the definition
+  ; behind it was registered but never emitted. Program code may not reference
+  ; one; a macro/CT JIT module may, because it resolves against the compiler
+  ; process. Set only in `scope-define`, read only by `reject-ct-only`.
+  ; design/stage16-ergonomics/compile-time-imports.md §4a.
+  ct-only:i32
   ; Appended at the END deliberately: inserting a field mid-struct shifts the
   ; GEP index of every field after it in every function that touches one, which
   ; would bury this change's real bootstrap diff under hundreds of unrelated
@@ -745,7 +751,7 @@
 ; Dispatch among concrete methods is on the whole argument tuple.
 (defenum MethodKind METHOD-INTRINSIC METHOD-USER METHOD-GENERIC)
 
-; Stage 14 §14.4: one parsed `&where` constraint — either a plain `(Protocol Var)`
+; Stage 14 §14.4: one parsed `:where` constraint — either a plain `(Protocol Var)`
 ; or the parametric `((Protocol Arg…) Var)` (assoc-types A1). Replaces the former
 ; parallel con-protos/con-vars/con-args/con-nargs arrays on Method and
 ; TmplConformance with a single indexable record held in a
@@ -782,10 +788,10 @@
   ; --- METHOD-GENERIC only (Stage 9 rung 4): a bounded generic defn template ---
   tyvars:ptr        ; array of ptr (distinct type-variable name strings)
   num-tyvars:i32
-  ; --- Stage 11 assoc-types (A1) / Stage 14 §14.4: parsed &where constraints ---
+  ; --- Stage 11 assoc-types (A1) / Stage 14 §14.4: parsed :where constraints ---
   ; Each `(Protocol Var)` or parametric `((Proto Arg…) V)` constraint is one
   ; `(ref Constraint)` record; the whole clause is a `(Vector (ref Constraint))`
-  ; (null for a non-generic method or a template with no &where). `num-constraints`
+  ; (null for a non-generic method or a template with no :where). `num-constraints`
   ; is the cached count — the shared length, kept so every
   ; `(dotimes (i (mm num-constraints)))` loop stays intact rather than becoming a
   ; null-guarded `(count …)`.
@@ -891,28 +897,28 @@
 ; protocol's extra params. At stamp time the template tyvars in each binding are
 ; substituted to the concrete instance args to obtain concrete param spellings.
 ; Stage 11 assoc-types (A4): a template-level conformance may now carry a trailing
-; `&where` clause `(extend (MapIter I F) (Iterator E) &where ((Iterator S) I)
+; `:where` clause `(extend (MapIter I F) (Iterator E) :where ((Iterator S) I)
 ; ((UnaryFn S E) F))`, whose constraints recover the protocol-application args
 ; (`E`) from the instance's own arg conformances at stamp time (A4.2). The clause
-; is parsed identically to a `defn`'s &where (parse-where-constraints) and stored
+; is parsed identically to a `defn`'s :where (parse-where-constraints) and stored
 ; here, mirroring the Method `constraints` field (a (Vector (ref Constraint))).
-; A `&where`-free extend records `num-constraints = 0`; nothing
+; A `:where`-free extend records `num-constraints = 0`; nothing
 ; downstream changes for it (the bootstrap stays byte-identical, §9). `num-tyvars`
 ; is the count of the conformance's tyvars (the template tyvars plus any assoc
-; tyvars introduced by the &where clause), needed to size A4.2's recovery bound
-; array; for a &where-free extend it equals the template's own tyvar count.
+; tyvars introduced by the :where clause), needed to size A4.2's recovery bound
+; array; for a :where-free extend it equals the template's own tyvar count.
 (defstruct TmplConformance
   (template (raw StructTemplate))
   (proto (raw Protocol))
   bindings:ptr      ; ptr array of Node* (the proto-app args), or null if none
   nbindings:i32
-  ; --- Stage 11 assoc-types (A4): trailing &where clause, or empty ---
+  ; --- Stage 11 assoc-types (A4): trailing :where clause, or empty ---
   tyvars:ptr        ; ptr array of tyvar name strings (template tyvars + assoc), or null
-  num-tyvars:i32    ; count of tyvars above (template ntv for a &where-free extend)
-  ; Stage 14 §14.4: the parsed &where clause as a (Vector (ref Constraint)),
-  ; mirroring Method; null for a &where-free extend (num-constraints = 0).
+  num-tyvars:i32    ; count of tyvars above (template ntv for a :where-free extend)
+  ; Stage 14 §14.4: the parsed :where clause as a (Vector (ref Constraint)),
+  ; mirroring Method; null for a :where-free extend (num-constraints = 0).
   (constraints (raw (Vector (ref Constraint))))
-  num-constraints:i32)  ; 0 for a &where-free extend
+  num-constraints:i32)  ; 0 for a :where-free extend
 
 ; A queued generic instantiation: the stamped concrete defn form awaiting body
 ; emission, plus a human-readable context ("while instantiating @name.toks…
@@ -960,7 +966,7 @@
   ; literal (with at least one form following it). null otherwise.
   docstring:CStr
   ; Parameter names array (parallel to the user-declared param list, minus
-  ; &rest/&optional keywords) for tooling. null if not captured.
+  ; :rest/:optional keywords) for tooling. null if not captured.
   param-names:ptr
   priv:i32          ; Stage 15 B5 — see StructDef.priv (`defmacro-`)
   src-ns:CStr)

@@ -1,7 +1,7 @@
 ; Stage 15 W9 defect 12, the carve-out the new call-arity check must NOT swallow.
 ;
 ; A `declare` is a prototype the user ASSERTS, not a body the compiler has seen.
-; Nucleus has no `...` spelling and `&rest`/`&optional` are refused in a
+; Nucleus has no `...` spelling and `:rest`/`:optional` are refused in a
 ; declaration (src/nuch.nuc), so the documented way to call a C variadic function
 ; is to declare its FIXED parameters and let the extra arguments ride the call
 ; site (docs/toplevel.md, `declare`). Three tests in tests/run-tests.sh already

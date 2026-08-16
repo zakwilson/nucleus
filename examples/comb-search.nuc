@@ -2,7 +2,7 @@
 ; every? / all? / count-if. All early-stop except count-if (a count must visit
 ; every element). Each is exercised with an inline closure AND a named (CE-1) one.
 ;
-; The quantifier names carry `?` but are GENERIC (they have &where), so their
+; The quantifier names carry `?` but are GENERIC (they have :where), so their
 ; monomorphised names route through sanitize-for-ir (`?` -> `_`) — no bare
 ; `@any?`/`@every?`/`@exists?`/`@all?` ever reaches the IR (LLVM would reject it).
 

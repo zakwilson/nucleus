@@ -741,39 +741,29 @@
       (let (gs:ptr (nucleus_gensym))
         ; (Vector E)  — built fresh for the ref and the alloca positions.
         (let (coll-ty1:ptr (lit-list2 (lit-sym "Vector") (lit-type-node ek line) line)
-              coll-ty2:ptr (lit-list2 (lit-sym "Vector") (lit-type-node ek line) line))
-          ; binding list: ( (gs (ref (Vector E)))  (alloca (Vector E)) )
-          (let (decl:ptr (lit-list2 gs (lit-ref coll-ty1 line) line)
-                bindings:ptr (lit-list2 decl (lit-alloca coll-ty2 line) line))
-            ; Body chain, built back-to-front so it ends with the gs symbol.
-            ; Start with the trailing `gs` then prepend each (conj gs e), then
-            ; finally the (vector-init gs).
-            (let (body:ptr (as ptr (make-cell gs null line)))
-              ; Walk elements in reverse is awkward with a forward list, so build
-              ; a forward conj-chain into a temp and splice it. Simpler: collect
-              ; conj cells forward, then append the trailing gs.
-              (let (chead:ptr null
-                    ctail:ptr null
-                    cur2:ptr head)
-                (while (!= cur2 null)
-                  (let (elem:ptr ((as ptr:Node cur2) car)
-                        conj-form:ptr (lit-list3 (lit-sym "conj") gs elem line)
-                        cell:ptr (make-cell conj-form null line))
-                    (when (= ctail null) (set! chead cell))
-                    (when (!= ctail null) (.set! (as ptr:Node ctail) cdr cell))
-                    (set! ctail cell))
-                  (set! cur2 (as ptr ((as ptr:Node cur2) cdr))))
-                ; Append trailing `gs` cell to the conj-chain.
-                (let (gscell:ptr (make-cell gs null line))
-                  (when (= ctail null) (set! chead gscell))
-                  (when (!= ctail null) (.set! (as ptr:Node ctail) cdr gscell))
-                  ; Prepend (vector-init gs) to the chain.
-                  (let (init-form:ptr (lit-list2 (lit-sym "vector-init") gs line)
-                        full-body:ptr (make-cell init-form chead line))
-                    ; (let <bindings> <full-body...>)
-                    (return (ok (make-cell (lit-sym "let")
-                                  (make-cell bindings full-body line)
-                                  line)))))))))))))
+              coll-ty2:ptr (lit-list2 (lit-sym "Vector") (lit-type-node ek line) line)
+              decl:ptr (lit-list2 gs (lit-ref coll-ty1 line) line)
+              bindings:ptr (lit-list2 decl (lit-alloca coll-ty2 line) line)
+              chead:ptr null
+              ctail:ptr null
+              cur2:ptr head)
+          (while (!= cur2 null)
+            (let (elem:ptr ((as ptr:Node cur2) car)
+                  conj-form:ptr (lit-list3 (lit-sym "conj") gs elem line)
+                  cell:ptr (make-cell conj-form null line))
+              (when (= ctail null) (set! chead cell))
+              (when (!= ctail null) (.set! (as ptr:Node ctail) cdr cell))
+              (set! ctail cell))
+            (set! cur2 (as ptr ((as ptr:Node cur2) cdr))))
+          ; The chain ends in a bare `gs` so the emitted `let` yields the vector.
+          (let (gscell:ptr (make-cell gs null line))
+            (when (= ctail null) (set! chead gscell))
+            (when (!= ctail null) (.set! (as ptr:Node ctail) cdr gscell))
+            (let (init-form:ptr (lit-list2 (lit-sym "vector-init") gs line)
+                  full-body:ptr (make-cell init-form chead line))
+              (return (ok (make-cell (lit-sym "let")
+                            (make-cell bindings full-body line)
+                            line))))))))))
 
 ; `#{e1 e2 …}` -> HashSet literal. Same shape as the Vector literal but stamps
 ; (HashSet E), calls hashset-init, and inserts with `conj` (which == insert).
@@ -787,28 +777,28 @@
                         "set literal: mixed element types")))
       (let (gs:ptr (nucleus_gensym))
         (let (coll-ty1:ptr (lit-list2 (lit-sym "HashSet") (lit-type-node ek line) line)
-              coll-ty2:ptr (lit-list2 (lit-sym "HashSet") (lit-type-node ek line) line))
-          (let (decl:ptr (lit-list2 gs (lit-ref coll-ty1 line) line)
-                bindings:ptr (lit-list2 decl (lit-alloca coll-ty2 line) line))
-            (let (chead:ptr null
-                  ctail:ptr null
-                  cur2:ptr head)
-              (while (!= cur2 null)
-                (let (elem:ptr ((as ptr:Node cur2) car)
-                      conj-form:ptr (lit-list3 (lit-sym "conj") gs elem line)
-                      cell:ptr (make-cell conj-form null line))
-                  (when (= ctail null) (set! chead cell))
-                  (when (!= ctail null) (.set! (as ptr:Node ctail) cdr cell))
-                  (set! ctail cell))
-                (set! cur2 (as ptr ((as ptr:Node cur2) cdr))))
-              (let (gscell:ptr (make-cell gs null line))
-                (when (= ctail null) (set! chead gscell))
-                (when (!= ctail null) (.set! (as ptr:Node ctail) cdr gscell))
-                (let (init-form:ptr (lit-list2 (lit-sym "hashset-init") gs line)
-                      full-body:ptr (make-cell init-form chead line))
-                  (return (ok (make-cell (lit-sym "let")
-                                (make-cell bindings full-body line)
-                                line))))))))))))
+              coll-ty2:ptr (lit-list2 (lit-sym "HashSet") (lit-type-node ek line) line)
+              decl:ptr (lit-list2 gs (lit-ref coll-ty1 line) line)
+              bindings:ptr (lit-list2 decl (lit-alloca coll-ty2 line) line)
+              chead:ptr null
+              ctail:ptr null
+              cur2:ptr head)
+          (while (!= cur2 null)
+            (let (elem:ptr ((as ptr:Node cur2) car)
+                  conj-form:ptr (lit-list3 (lit-sym "conj") gs elem line)
+                  cell:ptr (make-cell conj-form null line))
+              (when (= ctail null) (set! chead cell))
+              (when (!= ctail null) (.set! (as ptr:Node ctail) cdr cell))
+              (set! ctail cell))
+            (set! cur2 (as ptr ((as ptr:Node cur2) cdr))))
+          (let (gscell:ptr (make-cell gs null line))
+            (when (= ctail null) (set! chead gscell))
+            (when (!= ctail null) (.set! (as ptr:Node ctail) cdr gscell))
+            (let (init-form:ptr (lit-list2 (lit-sym "hashset-init") gs line)
+                  full-body:ptr (make-cell init-form chead line))
+              (return (ok (make-cell (lit-sym "let")
+                            (make-cell bindings full-body line)
+                            line))))))))))
 
 ; `{k1 v1 k2 v2 …}` -> HashMap literal. Elements come in key/value pairs; an odd
 ; count is an error. Keys infer K, values infer V (each set must agree). Stamps

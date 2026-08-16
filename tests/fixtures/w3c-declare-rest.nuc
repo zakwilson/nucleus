@@ -1,8 +1,8 @@
-; Stage 15 W3c fallout: `&rest`/`&optional` are defn-only — they are expanded at
+; Stage 15 W3c fallout: `:rest`/`:optional` are defn-only — they are expanded at
 ; the call site, and a declaration has no body to expand against. The marker used
 ; to be counted as an ordinary parameter and typed `i32`, so
-; `(declare myfn (a:i32 &rest xs:ptr):i32)` emitted `declare i32 @myfn(i32, i32,
+; `(declare myfn (a:i32 :rest xs:ptr):i32)` emitted `declare i32 @myfn(i32, i32,
 ; ptr)` and every call passed three plain arguments. Diagnose instead.
-(declare w3d_rest (a:i32 &rest xs:ptr):i32)
+(declare w3d_rest (a:i32 :rest xs:ptr):i32)
 
 (defn main ():i32 (return 0))

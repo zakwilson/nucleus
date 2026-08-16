@@ -118,6 +118,11 @@
 (defvar g-target-triple:ptr)
 (defvar g-target-ptr-bytes:i32 8)
 
+; Stage 16: 1 when the target's object format is ELF, which is the only format
+; the per-definition `section` clauses below are spelled for (see
+; `write-ir-section`). Set by target-init from the triple.
+(defvar g-elf-sections:i32 0)
+
 ; Stage 8 cross-compilation: g-target is the resolved Target (triple + datalayout
 ; + pointer size from LLVM). g-host-target is always the native platform — the
 ; macro/CT JIT runs in-process, so its modules use the host. g-target-triple and
@@ -283,6 +288,13 @@
 (defvar g-type-stream:ptr)
 (defvar g-decl-stream:ptr)
 (defvar g-def-stream:ptr)
+; The module's own definition stream, which `g-def-stream` may be standing in
+; front of while an `import-ct` discards a library's definitions. A template
+; stamp belongs to no file — every unit that instantiates it re-derives the same
+; body — so it must land here even when the instantiating form is one whose own
+; definitions are being thrown away, or the memo says "emitted" for a body that
+; went to the sink.
+(defvar g-def-stream-program:ptr)
 (defvar g-type-bufp:ptr)
 (defvar g-decl-bufp:ptr)
 (defvar g-def-bufp:ptr)
@@ -595,6 +607,32 @@
 ; Each is a linked list of (path-string . next) pairs using Node cells.
 (defvar g-imported:ptr)     ; already-imported resolved paths (null = empty)
 (defvar g-importing:ptr)   ; currently-importing stack for cycle detection (null = empty)
+; Stage 16: the import graph as it stood before any form was emitted — every file
+; reachable from the root through ORDINARY imports. `import-ct` consults it so a
+; library asking for a compile-time surface never withholds a runtime the unit
+; needs anyway, and so no file is ever imported twice. A snapshot of
+; `g-prescan-sigs`, which keeps growing as files are emitted; the lists are
+; prepend-only, so holding the head is enough.
+(defvar g-real-reachable:ptr)
+; Stage 16: paths imported compile-time-only and not (yet) for real. Deliberately
+; kept OFF `g-imported`, which means "this unit has emitted the file": a library
+; asking for a compile-time surface must never deny the program the runtime, so a
+; real import of one of these still reads and emits it. A second `import-ct` of
+; the same path stops on this list instead.
+(defvar g-ct-imported:ptr)
+; Stage 16: nesting depth of the file whose definitions are actually being
+; discarded. Distinct from `g-import-ct`, which only says a compile-time-only
+; import was ASKED for: a library the unit imports for real stays real even when
+; a ct-imported library is what pulled it in, so the decision is per file (see
+; `ct-sink-here`). This is the one the marking and the diagnostics read.
+(defvar g-ct-emitting:i32 0)
+; Stage 16: nesting depth of an `(import-ct …)` in progress. Non-zero means the
+; forms now being processed must REGISTER but emit nothing — the streams are
+; redirected to a throwaway and `scope-define` stamps `ct-only` on every global
+; it binds. A depth rather than a flag because the imported file has imports of
+; its own, and all of them inherit the mode.
+; See design/stage16-ergonomics/compile-time-imports.md §4a.
+(defvar g-import-ct:i32 0)
 ; Stage 12: (file, prefix) records for prefixed imports — a re-import under the
 ; same prefix is a no-op, while the same file under a new prefix re-injects
 ; aliases over the file's already-loaded symbols (null = empty).
@@ -713,9 +751,8 @@
 ; which resolves a macro's callees against the running program's dynamic symbol
 ; table (`-rdynamic`): the compiler's own `make bootstrap` died `Symbols not
 ; found: [ alloc-node ]`. `weak_odr` keeps the definition. The cost is that an
-; unused imported function is no longer dead-stripped from the IR; recovering
-; that needs `-ffunction-sections`/`--gc-sections`, which is a link-flag
-; question, not a linkage-word one.
+; unused imported function is no longer dead-stripped from the IR; it is
+; reclaimed at the link instead, by `ir-sections-on`/`write-ir-section`.
 (defn def-linkage ():CStr
   (when (!= g-defining-private 0) (return "internal "))
   (when (!= g-emitting-copy 0) (return "weak_odr "))
@@ -1056,6 +1093,65 @@
 
 (defn print-node (n:(raw Node)):void
   (fprint-node (as ptr stdout) n))
+
+; ============================================================
+; Parameter-list / arm-chain markers
+; ============================================================
+;
+; Stage 16: the markers are keywords (`:rest` `:where` `:optional` `:repr`),
+; replacing the `&x` special symbols that predated keywords
+; (design/stage16-ergonomics/keyword-markers.md).
+;
+; Callers pass the BARE name ("rest"), never a sigil, so the marker roster is
+; not re-spelled at each of the fourteen recognition sites.
+(defn marker-named (n:(raw Node) name:CStr):i32
+  (when (= n null) (return 0))
+  (let (nn:(raw Node) n
+        s:ptr (nn s))
+    ; `Node.s` is null on an INT/CELL node — reaching strcmp with it segfaults
+    ; the compiler (the W4d `(defmacro m (5) …)` crash).
+    (when (= s null) (return 0))
+    (when (!= (nn kind) NODE-KEYWORD) (return 0))
+    (return (if (= (strcmp s name) 0) 1 0))))
+
+; The marker as the user wrote it, for a diagnostic that quotes it back: the
+; lexer strips a keyword's leading colon, so it has to be put back.
+(defn marker-spelling (n:(raw Node)):CStr
+  (let (nn:(raw Node) n)
+    (when (= (nn kind) NODE-KEYWORD) (return (fmt-s ":%s" (nn s))))
+    (return (nn s))))
+
+; The bare name of a retired `&x` marker, or null. `&x` is still a perfectly
+; legal symbol, so without this the retired spelling surfaces as a confusing
+; downstream error — `missing :type on param '&rest'`, or `unknown type: T` on
+; a `&where` template that no longer registers as one.
+(defn legacy-marker-name (n:(raw Node)):ptr
+  (when (= n null) (return null))
+  (let (nn:(raw Node) n
+        s:ptr (nn s))
+    (when (= s null) (return null))
+    (when (!= (nn kind) NODE-SYM) (return null))
+    (when (!= (char-at s 0) 38) (return null))
+    (let (tail:ptr (unsafe/ptr+ (as ptr:i8 s) 1))
+      (when (= (strcmp tail "rest") 0) (return tail))
+      (when (= (strcmp tail "where") 0) (return tail))
+      (when (= (strcmp tail "optional") 0) (return tail))
+      (when (= (strcmp tail "repr") 0) (return tail))
+      (return null))))
+
+(defn reject-legacy-marker (n:(raw Node) encl:i32):void
+  (let (nm:ptr (legacy-marker-name n))
+    (when (= nm null) (return))
+    (die-at (node-line (as ptr n) encl)
+            (fmt-2s "'&%s' is no longer a marker -- write ':%s'" nm nm))))
+
+; The three markers that terminate a parameter walk. `:repr` is deliberately
+; absent — it marks a defunion arm chain, never a parameter list.
+(defn marker-any (n:(raw Node)):i32
+  (when (!= (marker-named n "where") 0) (return 1))
+  (when (!= (marker-named n "rest") 0) (return 1))
+  (when (!= (marker-named n "optional") 0) (return 1))
+  (return 0))
 
 (import-use type-utils)
 
@@ -1943,6 +2039,77 @@
                      line))
       (return (emit-node call scope)))))
 
+; Is the IR being written now going to reach the linked program? A macro/CT JIT
+; module resolves against the compiler process, and an `import-ct` in progress is
+; emitting into a sink — in neither case can a missing definition become a link
+; error, which is what the two checks below exist to predict.
+(defn emitting-program-ir ():i32
+  (when (!= (in-jit-module) 0) (return 0))
+  (when (!= g-ct-emitting 0) (return 0))
+  (return 1))
+
+; `-ffunction-sections` / `-fdata-sections`, spelled in the IR because the LLVM C
+; API exposes no TargetOptions switch for either: one section per definition, so
+; the `-Wl,--gc-sections` on the link line can drop what nothing reaches. That is
+; the only thing that reclaims an unused imported `defn` (emitted non-discardable
+; `weak_odr` — see `def-linkage`) or a string-table entry only a macro's JIT
+; module used. design/stage16-ergonomics/compile-time-imports.md §4d.
+;
+; JIT modules are excluded because they are built for the HOST while the section
+; spelling follows the TARGET: cross-compiling to ELF from a Mach-O host would
+; otherwise feed an invalid specifier to the in-process JIT.
+(defn ir-sections-on ():i32
+  (when (= g-elf-sections 0) (return 0))
+  (return (emitting-program-ir)))
+
+; Write ` section "<prefix>.<sym>"` for an emitted definition, minus the `@`
+; sigil. The name must be the symbol's, not a shared one: two same-named
+; sections in one module are merged by MC, and a merged section is collected
+; only when every definition in it is dead.
+(defn write-ir-section (out:ptr prefix:CStr sym:ptr):void
+  (when (= sym null) (return))
+  (let (n:ptr sym)
+    (when (= (char-at n 0) 64) (set! n (unsafe/ptr+ (as ptr:i8 n) 1)))
+    (fprintf out " section \"%s.%s\"" prefix n)))
+
+; Section prefix for a global's storage class. `.bss` is claimed ONLY for an
+; initializer this compiler rendered as the type's zero: LLVM keys SHT_NOBITS off
+; the section NAME, so a `.bss` name with a non-zero initializer is a hard error
+; and a zero one under `.data` newly costs file bytes (and, on AVR, flash).
+(defn global-section-prefix (is-const:i32 init-ir:ptr ty:(raw Type)):CStr
+  (when (!= is-const 0) (return ".rodata"))
+  (when (= init-ir null) (return ".data"))
+  (when (= (strcmp init-ir (type-zero-const-ir ty)) 0) (return ".bss"))
+  (return ".data"))
+
+; Refuse a program-module reference to a name that `import-ct` registered but
+; never emitted.
+(defn reject-ct-only (sym:(raw Sym) line:i32):void
+  (when (= sym null) (return))
+  (when (= (emitting-program-ir) 0) (return))
+  (let (ss:(raw Sym) sym)
+    (when (= (ss ct-only) 0) (return))
+    (die-at line
+      (fmt-s "'%s' was imported compile-time-only — it has no definition in this program (import-ct)"
+        (ss name)))))
+
+; Refuse a program-module node-constructor call when lib/node.nuc is not in the
+; unit. The prelude registers the `Node` TYPE but no longer emits the runtime
+; (design/stage16-ergonomics/compile-time-imports.md §4b).
+;
+; A ct-only `make-cell` does not count: it is registered and undefined, which is
+; the promise §4a says the form must be held to.
+;
+; Exempt: the REPL's quote handling is independently broken (same doc §7).
+(defn require-node-runtime (line:i32 what:CStr):void
+  (when (= (emitting-program-ir) 0) (return))
+  (when (!= g-interactive 0) (return))
+  (let (mc:?ptr:Sym (scope-lookup g-globals "make-cell"))
+    (when (!= (as ptr mc) null)
+      (let (ms:(raw Sym) (as (raw Sym) mc))
+        (when (= (ms ct-only) 0) (return)))))
+  (die-at line (fmt-s "%s needs the node runtime — add (import-use node)" what)))
+
 ; Build a quoted Node tree at runtime so that quoted symbols share Node
 ; identity with reader-produced ones. Returns a body-stream tmp ref.
 ;
@@ -1953,6 +2120,7 @@
   (when (= n null) (return "null"))
   ; Every non-null branch below emits a node-constructor call.
   (set! g-node-ctor-used 1)
+  (require-node-runtime (node-line (as ptr n) g-form-line) "quote")
   (let (nn:(raw Node) n)
     (when (= (nn kind) NODE-SYM)
       (let (sid:i32 (intern-string (nn s) (unsafe/cast i32 (strlen (nn s))))
@@ -3096,6 +3264,12 @@
                 (.set! cv is-lit 1)
                 (.set! cv lit-i64 (sym const-lit-i64)))
               (return cv)))
+          ; After the is-const branch on purpose: a ct-imported `defconst` is a
+          ; compile-time SUBSTITUTION with no storage, so it survives the import
+          ; that dropped every definition. Everything below reads a global or
+          ; materializes a function — both need a symbol that was emitted.
+          (when (= (sym is-local) 0)
+            (reject-ct-only (as (raw Sym) sym) (node-line n line)))
           (when (= (sym is-local) 0)
             (when (-> sym (_ type) (unsafe/cast ptr:Type _) (_ kind) (= _ TY-FN))
               ; AVR-6 Harvard hazard: on a target whose program memory is a
@@ -3408,7 +3582,7 @@
           (when (!= (ft variadic) 0)
             (die-at (node-line (as ptr fn-node) (cc line)) (fmt-s "defcast: '%s' must not be variadic" (fn-node s))))
           (when (!= (ft has-rest) 0)
-            (die-at (node-line (as ptr fn-node) (cc line)) (fmt-s "defcast: '%s' must not use &rest" (fn-node s))))
+            (die-at (node-line (as ptr fn-node) (cc line)) (fmt-s "defcast: '%s' must not use :rest" (fn-node s))))
           (let (param0:ptr ((field-at (ft params) 0) type))
             (when (= (type-eq param0 from) 0)
               (die-at (node-line (as ptr fn-node) (cc line))
@@ -4576,7 +4750,7 @@
 ; do for both halves. Map a protocol *reference* (any source spelling) to the
 ; canonical registry key of the protocol it names — i.e. that Protocol's own
 ; `name`, which `protocol-new` set from `qualify-name`. Every registry that keys
-; on a protocol (the conformance registry, the super-protocol edges, `&where`
+; on a protocol (the conformance registry, the super-protocol edges, `:where`
 ; constraint records, `(dyn P)`'s box type) canonicalizes through this, so an
 ; `extend` site and a dispatch site land on the same key no matter which
 ; namespace each was written in.
@@ -5227,7 +5401,7 @@
 ; non-dying generic resolve for callsites where an unmatched generic is a normal
 ; fallback case (e.g. value-keyed `get`, where a miss means "use the struct
 ; intrinsic" not "error"). Mirrors generic-resolve's tier 0 (exact METHOD-USER)
-; and tier 1 (METHOD-GENERIC: bind tyvars, check &where constraints, instantiate
+; and tier 1 (METHOD-GENERIC: bind tyvars, check :where constraints, instantiate
 ; the winning candidate). Tier 2 (untyped-literal widening) is intentionally
 ; omitted: this resolver is only used for value-keyed dispatch where an exact or
 ; constrained-generic match is required to override the intrinsic, and a partial
@@ -5245,7 +5419,7 @@
                    (!= (params-type-eq (m param-types) argtypes nargs) 0))
           (set! found m))))
     (when (!= found null) (return found))
-    ; tier 1: bounded-generic templates — bind the tyvars then check &where.
+    ; tier 1: bounded-generic templates — bind the tyvars then check :where.
     (let (cand:ptr null
           cand-bound:ptr null
           ncand:i32 0)
@@ -5781,12 +5955,12 @@
 ;              the compiler has seen. Nucleus has no `...` spelling, so a C
 ;              variadic function is declared with its fixed parameters only and
 ;              the extra arguments ride the call site (docs/toplevel.md, and the
-;              very idiom nuch.nuc's `&rest`-in-a-declaration diagnostic points
+;              very idiom nuch.nuc's `:rest`-in-a-declaration diagnostic points
 ;              at). Same rule as `variadic`; carried separately because it is a
 ;              property of the SYMBOL, not of the signature.
-;   &rest:     the trailing parameter is the folded Node list, so the fixed
+;   :rest:     the trailing parameter is the folded Node list, so the fixed
 ;              prefix is num-params-1 and anything at or above it is legal.
-;   &optional: the trailing `nopt` parameters may be omitted; `emit-call` then
+;   :optional: the trailing `nopt` parameters may be omitted; `emit-call` then
 ;              fills each from its default expression.
 ;   otherwise: exactly num-params.
 ; A zero-filled non-fn Type answers variadic/has-rest/nopt = 0 and num-params 0,
@@ -5990,7 +6164,7 @@
         ft0:(raw Type) (ss type)
         nargs:i32 (- (node-len cc) 1)
         max-args:i32 (- (node-len cc) 1))
-    ; &optional callee: the arg buffer may need to grow up to num-params.
+    ; :optional callee: the arg buffer may need to grow up to num-params.
     (when (and (!= ft0 null) (= (ft0 kind) TY-FN))
       (when (> (ft0 num-params) max-args) (set! max-args (ft0 num-params))))
     ; Stage 15 W9 defect 12: the solitary-`defn` call path had NO arity check at
@@ -6000,7 +6174,7 @@
     ; matching method"); this path resolves the callee by NAME, so nothing ever
     ; compared the counts. Checked here, before any argument is emitted, so the
     ; diagnostic is the first thing reported and no argument's own errors mask
-    ; it. `&rest` / `&optional` / a variadic `declare` are all admitted by the
+    ; it. `:rest` / `:optional` / a variadic `declare` are all admitted by the
     ; shared rule — the check is one CALL, not a second copy of the rule.
     (check-call-arity "call" (ss name) ft0 nargs (ss extern-decl) (cc line))
     ; Stage 10 escape analysis (lifecycle.md §2.3): manually freeing a
@@ -6019,9 +6193,9 @@
         (let (v:ref:Val (emit-node (node-at cc (+ i 1)) scope))
           (memcpy (unsafe/ptr+ (as ptr:Val args) i) v (sizeof Val)))
         (inc! i))
-      ; Fill defaults for missing trailing &optional args, emitting each default
+      ; Fill defaults for missing trailing :optional args, emitting each default
       ; expression in the caller's scope. The former `too few args` / `too many
-      ; args` pair that stood here re-derived the &optional bounds; the shared
+      ; args` pair that stood here re-derived the :optional bounds; the shared
       ; `check-call-arity` above now owns that rule and has already rejected
       ; both, so `required <= nargs <= np` holds by the time we get here.
       (when (and (= (ft0 kind) TY-FN) (!= (ft0 nopt) 0))
@@ -6038,13 +6212,16 @@
 
 ; Emit a call given already-emitted argument Vals. Shared by the ordinary call
 ; path and the multimethod dispatch path (which must resolve the method from
-; argument types before the call can be emitted). Handles &rest folding, the
+; argument types before the call can be emitted). Handles :rest folding, the
 ; variadic signature, and void/non-void returns.
 (defn emit-call-with-args (call:(raw Node) scope:ref:Scope sym:ref:Sym args:ptr nargs:i32):ref:Val
   (let (cc:(raw Node) call
         ss:ref:Sym sym
         i:i32 0)
-    ; If the callee has &rest, fold trailing args into a runtime Node cons
+    ; Every direct and multimethod call funnels through here, so one check covers
+    ; both. A ct-only callee has no @name to call — diagnose it, don't emit it.
+    (reject-ct-only (as (raw Sym) sym) (cc line))
+    ; If the callee has :rest, fold trailing args into a runtime Node cons
     ; list and replace them with a single ptr arg pointing at the list.
     (let (eff-nargs:i32 nargs
           ft0:(raw Type) (ss type))
@@ -6068,9 +6245,10 @@
         (let (fixed:i32 (- (ft0 num-params) 1))
           (when (< nargs fixed)
             (die-at (cc line)
-              (fmt-s "%s: too few args for &rest function" (ss name))))
+              (fmt-s "%s: too few args for :rest function" (ss name))))
           ; Build list right-to-left: prev = null; for i = nargs-1..fixed:
           ;   cell = make-cell(arg-as-ptr, prev, 0); prev = cell.
+          (require-node-runtime (cc line) "a :rest call")
           (let (prev-name:ptr "null"
                 ri:i32 nargs)
             (while (> ri fixed)
@@ -6078,7 +6256,7 @@
               (let (av:ptr:Val (as ptr:Val (unsafe/ptr+ (as ptr:Val args) ri))
                     av-val:ptr (av val)
                     aty:ptr:Type (unsafe/cast ptr:Type (av type)))
-                ; Stage 14 NS-3: a string-literal &rest arg collapses to CStr so it
+                ; Stage 14 NS-3: a string-literal :rest arg collapses to CStr so it
                 ; folds into Node.car as a plain pointer — its `val` is already the
                 ; bare data GEP, exactly as a CStr literal did before the flip (no
                 ; inttoptr). Re-read the type after the in-place collapse.
@@ -6662,7 +6840,7 @@
           (fn-capture-check (node-at cc bi) scope bound line)
           (inc! bi)))
       ; Parse the param types/names (mirrors emit-defn's required-param path; the
-      ; lambda forms take only plain required params — no &rest/&optional).
+      ; lambda forms take only plain required params — no :rest/:optional).
       (let (nparams:i32 (node-len params-node)
             ret:ptr (fn-parse-ret-type ret-node line)
             param-types:ptr null
@@ -7607,10 +7785,14 @@
                                                (type-mangle-token concrete-ty) proto))
             vname:ptr (intern-str (fmt-s "@%s" vbare)))
         (if (= drp null)
-          (fprintf g-out "%s = internal constant { ptr, ptr } { ptr %s, ptr null }\n\n"
+          (fprintf g-out "%s = internal constant { ptr, ptr } { ptr %s, ptr null }"
                    vname inv)
-          (fprintf g-out "%s = internal constant { ptr, ptr } { ptr %s, ptr %s }\n\n"
+          (fprintf g-out "%s = internal constant { ptr, ptr } { ptr %s, ptr %s }"
                    vname inv drp))
+        (when (!= (ir-sections-on) 0)
+          (fprintf g-out ",")
+          (write-ir-section g-out ".rodata" vname))
+        (fprintf g-out "\n\n")
         (vtable-memo-put key vname)
         (return vname)))))
 
@@ -7741,7 +7923,9 @@
       (fprintf g-out "define internal %s %s(ptr %%data" ret-ir fwd)
       (dotimes (i np)
         (fprintf g-out ", %s %%a%d" (type-to-ir ((field-at (bt params) i) type)) i))
-      (fprintf g-out ") {\nentry:\n")
+      (fprintf g-out ")")
+      (when (!= (ir-sections-on) 0) (write-ir-section g-out ".text" fwd))
+      (fprintf g-out " {\nentry:\n")
       (fprintf g-out "  %%fp = load ptr, ptr %%data, align 8\n")
       (if (= (-> ret (unsafe/cast ptr:Type _) (_ kind)) TY-VOID)
         (do
@@ -7756,7 +7940,11 @@
            (when (!= i 0) (fprintf g-out ", "))
            (fprintf g-out "%s %%a%d" (type-to-ir ((field-at (bt params) i) type)) i))
           (fprintf g-out ")\n  ret %s %%r\n}\n\n" ret-ir)))
-      (fprintf g-out "%s = internal constant { ptr, ptr } { ptr %s, ptr null }\n\n" vtname fwd)
+      (fprintf g-out "%s = internal constant { ptr, ptr } { ptr %s, ptr null }" vtname fwd)
+      (when (!= (ir-sections-on) 0)
+        (fprintf g-out ",")
+        (write-ir-section g-out ".rodata" vtname))
+      (fprintf g-out "\n\n")
       (vtable-memo-put key vtname)
       (return vtname))))
 
@@ -8012,7 +8200,10 @@
           (conformance-add sd-name "Drop" (as ptr null) 0 line))))
     (when (= g-boxdrop-emitted 0)
       (set! g-boxdrop-emitted 1)
-      (fprintf g-out "define internal void @__boxedfn_drop(ptr %%self) {\n")
+      (fprintf g-out "define internal void @__boxedfn_drop(ptr %%self)")
+      (when (!= (ir-sections-on) 0)
+        (fprintf g-out " section \".text.__boxedfn_drop\""))
+      (fprintf g-out " {\n")
       (fprintf g-out "entry:\n")
       (fprintf g-out "  %%data = load ptr, ptr %%self, align 8\n")
       (fprintf g-out "  %%dnull = icmp eq ptr %%data, null\n")
@@ -11600,6 +11791,11 @@
           data-name:ptr (fmt-s "%s.data" ir-name))
       (fprintf g-out "%s = internal global %s " data-name (type-to-ir at))
       (defvar-write-const init at encl)
+      ; `.data`, never `.bss`: the elements are streamed, so nothing here has
+      ; seen whether they are all zero (global-section-prefix's rule).
+      (when (!= (ir-sections-on) 0)
+        (fprintf g-out ",")
+        (write-ir-section g-out ".data" data-name))
       (fprintf g-out ", align %d\n" (type-size at))
       ; Same call the `(addr-of g)` branch makes, with the same PTR-REF source:
       ; the flow rule lives in one predicate, never re-derived here.
@@ -12247,8 +12443,15 @@
               (if (!= init-ir null)
                 (fprintf g-out "%s" init-ir)
                 (defvar-write-const init-node ty (cc line)))
+              (when (!= (ir-sections-on) 0)
+                (fprintf g-out ",")
+                (write-ir-section g-out
+                  (global-section-prefix (bit-and attr-flags DECL-ATTR-CONST)
+                                         init-ir (as raw:Type ty))
+                  ir-name))
               (fprintf g-out ", align %d\n\n" align))
             (let (vsym:ref:Sym (scope-define g-globals name ty ir-name 1))
+              (when (!= g-ct-emitting 0) (.set! (unsafe/cast ptr:Sym vsym) ct-only 1))
               (when (!= g-defining-private 0) (.set! (unsafe/cast ptr:Sym vsym) sym-private 1))
               ; AVR-6 gap fix: mark the Sym so `set!` can reject writes to
               ; this `constant`-storage global at compile time (emit-set).
@@ -12773,7 +12976,7 @@
       (let (repr-box:i32 REPR-AUTO
             ud:ref:UnionDef (defunion-register (as CStr (qualify-name (name-node s)))
                               (-> cc (_ cdr) (unsafe/cast ptr:Node _) (_ cdr)) (cc line))
-            ; Strip &repr before generating constructors: it is a layout marker,
+            ; Strip :repr before generating constructors: it is a layout marker,
             ; not an arm (defunion-register strips it for layout independently).
             arms:ptr (defunion-strip-repr (-> cc (_ cdr) (unsafe/cast ptr:Node _) (_ cdr))
                        (as ptr:i32 (addr-of repr-box)) (cc line))
@@ -12917,7 +13120,7 @@
           params-node:ptr (node-at cc 2))
       (when (= (node-is-list params-node) 0)
         (die-at ((unsafe/cast ptr:Node name-node) line) "defn: params must be list"))
-      ; A bounded-generic template — `&where` or a parametric-struct receiver —
+      ; A bounded-generic template — `:where` or a parametric-struct receiver —
 
       ; emits no code itself; it is registered in prescan and monomorphized per
       ; call site.
@@ -12994,33 +13197,31 @@
               rest-idx:i32 -1
               opt-idx:i32 -1
               nopt:i32 0)
-          ; Scan for &rest and &optional. &rest must be second-to-last so the rest
-          ; param itself is the trailing entry. &optional comes after all required
-          ; params; everything after it (until end or &rest) is an optional spec.
+          ; Scan for :rest and :optional. :rest must be second-to-last so the rest
+          ; param itself is the trailing entry. :optional comes after all required
+          ; params; everything after it (until end or :rest) is an optional spec.
           (dotimes (si raw-nparams)
             ; W5f: a parameter may be NULL — an empty list `()` in the parameter
-            ; list reads as a null node. It is not an &rest/&optional marker;
-            ; the param loop below raises the located diagnostic for it.
+            ; list reads as a null node. `marker-named` is null-safe.
             (let (sp:(raw Node) (as raw:Node (node-at params-node si)))
-              (when (and (!= sp null) (= (sp kind) NODE-SYM))
-                    (when (= (sp s) "&rest")
-                          (when (!= si (- raw-nparams 2))
-                                (die-at (node-line (as ptr sp) (cc line)) "defn: &rest must be second-to-last param"))
-                          (when (!= has-rest 0)
-                                (die-at (node-line (as ptr sp) (cc line)) "defn: multiple &rest in params"))
-                          (set! has-rest 1)
-                          (set! rest-idx si))
-                    (when (= (sp s) "&optional")
-                          (when (!= opt-idx -1)
-                                (die-at (node-line (as ptr sp) (cc line)) "defn: multiple &optional in params"))
-                          (set! opt-idx si)))))
+              (when (!= (marker-named sp "rest") 0)
+                    (when (!= si (- raw-nparams 2))
+                          (die-at (node-line (as ptr sp) (cc line)) "defn: :rest must be second-to-last param"))
+                    (when (!= has-rest 0)
+                          (die-at (node-line (as ptr sp) (cc line)) "defn: multiple :rest in params"))
+                    (set! has-rest 1)
+                    (set! rest-idx si))
+              (when (!= (marker-named sp "optional") 0)
+                    (when (!= opt-idx -1)
+                          (die-at (node-line (as ptr sp) (cc line)) "defn: multiple :optional in params"))
+                    (set! opt-idx si))))
           (when (and (!= opt-idx -1) (!= has-rest 0))
             (die-at ((unsafe/cast ptr:Node (node-at params-node opt-idx)) line)
-                    "defn: &optional cannot be combined with &rest"))
+                    "defn: :optional cannot be combined with :rest"))
           (when (!= opt-idx -1)
             (when (= opt-idx (- raw-nparams 1))
               (die-at ((unsafe/cast ptr:Node (node-at params-node opt-idx)) line)
-                      "defn: &optional must be followed by at least one param"))
+                      "defn: :optional must be followed by at least one param"))
             (set! nopt (- (- raw-nparams 1) opt-idx)))
           (let (nparams:i32 raw-nparams)
             (when (!= has-rest 0) (set! nparams (- nparams 1)))
@@ -13051,7 +13252,7 @@
                           ; Optional param: a 2-element list (name:type default).
                           (when (or (= (node-is-list p) 0) (!= (node-len p) 2))
                             (die-at (node-line p (cc line))
-                              "defn: &optional param must be (name:type default)"))
+                              "defn: :optional param must be (name:type default)"))
                           (set! spec (node-at p 0))
                           (set! default-node (node-at p 1)))
                         ; W5f: `spec`/`p` may be NULL (an empty list `()` in the
@@ -13068,7 +13269,7 @@
                             (node-line (as ptr spec) (cc line)) "defn parameter")
                           (reject-cycle-pending-layout pty
                             (node-line (as ptr spec) (cc line)) "defn parameter")
-                          ; The &rest parameter receives a Node* cons-list head.
+                          ; The :rest parameter receives a Node* cons-list head.
                           ; The user's declared type annotates element type only;
                           ; the actual param is always ptr.
                           (when (and (!= has-rest 0) (= di (- nparams 1)))
@@ -13094,6 +13295,11 @@
               (check-ir-name-legal (cc line) fname (defn-ir-name fname param-types nparams))
               (let (fsym:ref:Sym (scope-define g-globals fname (as ptr ft)
                                   (defn-ir-name fname param-types nparams) 0))
+                ; Stage 16: the `define` below is going to a sink, so this name is
+                ; registered and undefined. Marked HERE rather than in
+                ; `scope-define` because that is what ct-only means — a C header's
+                ; or a `.nuch`'s names still have real definitions to link against.
+                (when (!= g-ct-emitting 0) (.set! (unsafe/cast ptr:Sym fsym) ct-only 1))
                 (when (!= is-noreturn 0) (.set! (unsafe/cast ptr:Sym fsym) noreturn 1))
                 ; Stage 12 N3: mark private when defined via `defn-`.
                 (when (!= g-defining-private 0) (.set! (unsafe/cast ptr:Sym fsym) sym-private 1)))))
@@ -13229,6 +13435,9 @@
             (fprintf g-out ")")
             (when (!= is-noreturn 0) (fprintf g-out " noreturn"))
             (emit-fn-attrs-for fname)
+            (when (!= (ir-sections-on) 0)
+              (write-ir-section g-out ".text"
+                (defn-ir-name fname param-types nparams)))
             (fprintf g-out " {\n")
             (fprintf g-out "entry:\n")
             (when (and (!= g-entry-bufp null) (!= (char-at g-entry-bufp 0) 0))
@@ -13528,7 +13737,7 @@
               (when (and (!= ct-type-bufp null) (!= (char-at ct-type-bufp 0) 0))
                 (fputs ct-type-bufp irs))
               ; String constants (shared)
-              (emit-string-table irs)
+              (emit-string-table irs 0)
               ; Declarations: main-so-far + CT-specific
               (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp 0) 0))
                 (fputs g-decl-bufp irs))
@@ -13552,35 +13761,33 @@
 ; ============================================================
 
 ; Parse a macro parameter list. Returns the parameter count *excluding* the
-; `&rest` keyword; writes the name array through `out-names` and the variadic
+; `:rest` keyword; writes the name array through `out-names` and the variadic
 ; flag through `out-variadic`. `what` names the definer in diagnostics and
 ; `encl` supplies the line for the params that have none of their own.
 ;
-; Stage 16: shared by `defmacro` and `macrolet` so the `&rest` rule has one
+; Stage 16: shared by `defmacro` and `macrolet` so the `:rest` rule has one
 ; home (design/stage16-ergonomics/macrolet.md §5.1).
 (defn macro-parse-params (params-node:ptr what:CStr encl:i32
                           out-names:ptr:ptr out-variadic:ptr:i32):i32
   (let (num-params:i32 (node-len params-node)
         variadic:i32 0
         pcount:i32 (node-len params-node))
-    ; Detect &rest variadic parameter (must be second-to-last in param list).
+    ; Detect the :rest variadic parameter (must be second-to-last in param list).
+    ; `marker-named` is null-safe: a NULL (empty-list `()`) param and an INT
+    ; param both carry a null `Node.s`, and reaching a content compare with it
+    ; segfaulted the compiler on `(defmacro m (5) …)` — the loop below is what
+    ; raises the located "param must be a symbol" diagnostic for them.
     (dotimes (vi num-params)
-      ; W5f: a NULL (empty-list `()`) param is not `&rest`; the loop below
-      ; raises the located "param must be a symbol" diagnostic for it.
-      ;
-      ; The NODE-SYM test is load-bearing, not belt-and-braces: `Node.s` is null
-      ; on an INT/FLOAT/CELL node, and the `=` below is a CONTENT compare — so
-      ; `(defmacro m (5) …)` used to reach `strcmp(null, "&rest")` and segfault
-      ; the compiler instead of reaching the located diagnostic this comment
-      ; already promised. Same null-guard class as the `()` case beside it.
       (let (vp:(raw Node) (as raw:Node (node-at params-node vi)))
-        (when (and (!= vp null) (= (vp kind) NODE-SYM) (= (vp s) "&rest"))
+        ; A macro param list is not desugared, so this is its own chokepoint.
+        (reject-legacy-marker vp encl)
+        (when (!= (marker-named vp "rest") 0)
               (when (!= vi (- num-params 2))
                     (die-at (node-line (as ptr vp) encl)
-                            (fmt-s "%s: &rest must be second-to-last param" what)))
+                            (fmt-s "%s: :rest must be second-to-last param" what)))
               (set! variadic 1)
               (set! pcount (- num-params 1)))))
-    ; Collect param names, skipping &rest keyword.
+    ; Collect param names, skipping the marker.
     (let (pnames:ptr null
           pi:i32 0
           ai:i32 0)
@@ -13588,16 +13795,18 @@
         (set! pnames (arena-alloc (* (as i64 pcount) (ptr-bytes)))))
       (while (< pi num-params)
         (let (p:(raw Node) (as raw:Node (node-at params-node pi)))
-          ; W5f: `()` reads as a NULL node — same user error as a non-symbol
-          ; param, reported at the enclosing form's line (a null node has none).
-          (when (= p null)
-            (die-at encl (fmt-s "%s: param must be a symbol" what)))
-          (when (!= (p kind) NODE-SYM)
-            (die-at (node-line (as ptr p) encl)
-                    (fmt-s "%s: param must be a symbol" what)))
-          (when (!= (p s) "&rest")
-              (aset! (as ptr:ptr pnames) ai (p s))
-              (inc! ai)))
+          ; The marker test precedes the symbol check: a `:rest` marker is a
+          ; NODE-KEYWORD, which that check would otherwise reject outright.
+          (when (= (marker-named p "rest") 0)
+            ; W5f: `()` reads as a NULL node — same user error as a non-symbol
+            ; param, reported at the enclosing form's line (a null node has none).
+            (when (= p null)
+              (die-at encl (fmt-s "%s: param must be a symbol" what)))
+            (when (!= (p kind) NODE-SYM)
+              (die-at (node-line (as ptr p) encl)
+                      (fmt-s "%s: param must be a symbol" what)))
+            (aset! (as ptr:ptr pnames) ai (p s))
+            (inc! ai)))
         (inc! pi))
       (ptr-set! out-names pnames)
       (ptr-set! out-variadic variadic)
@@ -13645,7 +13854,7 @@
             ; `sanitize-for-ir` keeps seeing a spelling with no `/` in it. (§9.7
             ; predicted this would need the composition; measured, it does not.)
             jit-name:ptr (fmt-sd "__macro_%s_%d" (sanitize-for-ir macro-name) (unsafe/cast i32 (count g-macros))))
-        ; Stage 16: the &rest rule and the name collection are shared with
+        ; Stage 16: the :rest rule and the name collection are shared with
         ; `macrolet` (design/stage16-ergonomics/macrolet.md §5.1).
         (let (variadic:i32 0
               pnames:ptr null
@@ -13845,7 +14054,7 @@
                             (fputs g-repl-preamble-bufp irs)))
                     (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp 0) 0))
                       (fputs g-type-bufp irs))
-                    (emit-string-table irs)
+                    (emit-string-table irs 0)
                     (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp 0) 0))
                       (fputs g-decl-bufp irs))
                     (when (and (!= ct-decl-bufp null) (!= (char-at ct-decl-bufp 0) 0))
@@ -13962,7 +14171,10 @@
 ; String table emission
 ; ============================================================
 
-(defn emit-string-table (out:ptr):void
+; `sections` is passed rather than read from `ir-sections-on` because the table
+; is written at module-assembly time, after the stream swaps that predicate reads
+; have been undone — a CT/macro module would look like the program module here.
+(defn emit-string-table (out:ptr sections:i32):void
   (doseq (sl g-strs (VecIter ref:StrLit))
     (let (ir-len:i32 (+ (sl len) 1))
       (fprintf out "@.str.%d = private unnamed_addr constant [%d x i8] c\""
@@ -13974,7 +14186,10 @@
                   (< c 32) (>= c 127))
             (fprintf out "\\%02X" c)
             (fputc c out))))
-      (fprintf out "\\00\", align 1\n")))
+      (fprintf out "\\00\"")
+      (when (!= sections 0)
+        (fprintf out ", section \".rodata..str.%d\"" (sl id)))
+      (fprintf out ", align 1\n")))
   (when (!= (count g-strs) 0) (fputc 10 out)))
 
 ; Stage 10 errors: the deferror descriptor table (design/stage10/errors.md §8).
@@ -13999,14 +14214,20 @@
       (if (= i 0)
           (fprintf out "ptr null")
           (fprintf out "ptr @.str.%d" (invoke g-deferror-name-sids (as usize i)))))
-    (fprintf out "]\n")
+    (fprintf out "]")
+    (when (!= g-elf-sections 0)
+      (fprintf out ", section \".rodata.nuc_err_names\""))
+    (fprintf out "\n")
     (fprintf out "@nuc_err_messages = internal constant [%d x ptr] [" n)
     (dotimes (i n)
       (when (> i 0) (fprintf out ", "))
       (if (= i 0)
           (fprintf out "ptr null")
           (fprintf out "ptr @.str.%d" (invoke g-deferror-msg-sids (as usize i)))))
-    (fprintf out "]\n\n")))
+    (fprintf out "]")
+    (when (!= g-elf-sections 0)
+      (fprintf out ", section \".rodata.nuc_err_messages\""))
+    (fprintf out "\n\n")))
 
 ; ============================================================
 ; Driver
@@ -14089,10 +14310,15 @@
     (return node)))
 
 ; Desugar a parameter list: each element that is a typed symbol gets split.
+;
+; Also the earliest chokepoint for a retired `&x` marker: desugar runs on every
+; defn/declare/defstruct param list straight off the reader, before any prescan
+; can mistake `&where` for a parameter and die `unknown type: T` instead.
 (defn desugar-params (params:(raw Node) encl:i32):ptr
   (when (= params null) (return null))
   (let (n:ptr:Node (unsafe/cast ptr:Node params))
     (when (!= (n kind) NODE-CELL) (return params))
+    (reject-legacy-marker (n car) (node-line (as ptr params) encl))
     (let (new-car:ptr (desugar-typed (n car) (node-line (as ptr params) encl))
           new-cdr:ptr (desugar-params (n cdr) encl))
       (when (and (= new-car (n car)) (= new-cdr (n cdr)))
@@ -14835,7 +15061,7 @@
     (when (!= (uniondef-lookup (as CStr (qualify-name (name-node s)))) null) (return))
     (let (sd:ptr (lookup-struct (as CStr (qualify-name (name-node s)))))
       (when (= sd null) (return))
-      ; Strip &repr (a layout marker, not an arm) so it does not become a bogus
+      ; Strip :repr (a layout marker, not an arm) so it does not become a bogus
       ; constructor. The forward-declared return type is the backing struct; the
       ; real signature (niche pointer for rules 2/3) is set by emit-defunion's
       ; emit-defn, which re-resolves `:Name` once the layout is registered —
@@ -14907,7 +15133,7 @@
           (let (name-node:ptr (node-at (as ptr f) 1)
                 params-node:ptr (node-at (as ptr f) 2))
             (when (!= (node-is-list params-node) 0)
-              ; A `&where` clause OR a receiver over a parametric struct marks a
+              ; A `:where` clause OR a receiver over a parametric struct marks a
               ; bounded-generic template: retain it for on-demand monomorphization
               ; rather than parsing its (free-tyvar) parameter/return types now.
               (if (!= (defn-is-generic-template (as ptr f)) 0)
@@ -15014,6 +15240,7 @@
           (set! ty (as ptr (type-with-volatile (unsafe/cast ref:Type ty)))))
         (let (vsym:ref:Sym (scope-define g-globals name ty
                              (fmt-s "@%s" (def-ir-base name)) 1))
+          (when (!= g-ct-emitting 0) (.set! (unsafe/cast ptr:Sym vsym) ct-only 1))
           (when (!= g-defining-private 0)
             (.set! (unsafe/cast ptr:Sym vsym) sym-private 1))
           ; AVR-6: a `:const` global is not assignable; emit-set reads this flag,
@@ -15690,7 +15917,11 @@
   ; header comment); pass 1 (types) above must precede this unit's signatures and
   ; therefore stays where it is.
   (when (= g-toplevel-depth 1)
-    (prescan-imported-signatures forms))
+    (prescan-imported-signatures forms)
+    ; The walk above followed every import form EXCEPT `import-ct`, so what it
+    ; visited is precisely "reachable for real". Sampled here, before the first
+    ; form is emitted, because emission pushes onto the same list.
+    (set! g-real-reachable g-prescan-sigs))
   ; Stage 15 W9 item 40: this file's own struct and union layouts, last of the
   ; prescans for the same reason the graph walk runs them last — a field's
   ; `(array T N)` length is a constant expression, so every `defconst` this file
@@ -15823,6 +16054,8 @@
               (emit-import (as ptr f))
             'import-use
               (emit-import-use (as ptr f))
+            'import-ct
+              (emit-import-ct (as ptr f))
             'import-only
               (emit-import-only (as ptr f))
             'import-prefixed
@@ -16071,6 +16304,51 @@
     (when (!= nuch-path null) (return nuch-path)))
   (return null))
 
+; Are THIS file's definitions what an enclosing `(import-ct …)` asked to withhold?
+;
+; Only when no ordinary import in the unit reaches it. Compile-time-only is a
+; property of the unit, not of one import edge: a library the program imports for
+; real stays real even when a ct-imported library is what pulled it in. Getting
+; this wrong is not a missed saving — it would import that library twice, once to
+; the sink and once for real, and a second pass over a file's `extend` forms
+; re-registers conformances the first pass already recorded.
+; design/stage16-ergonomics/compile-time-imports.md §4a.
+(defn ct-sink-here (path:ptr):i32
+  (when (= g-import-ct 0) (return 0))
+  (when (!= (import-list-has g-real-reachable (as CStr path)) 0) (return 0))
+  (return 1))
+
+; Emit an imported file's forms, discarding its DEFINITIONS when this import is
+; compile-time-only. Only the definition stream is redirected — see
+; `emit-import-ct` for why the other two must stay real.
+;
+; Both directions are set explicitly, because the mode belongs to the FILE and not
+; to the nesting: an ordinary import reached THROUGH a compile-time-only one is
+; still ordinary, and leaving it in the sink would discard a library the program
+; does use. (Measured: `lib/vector.nuc`, imported for real by the program and also
+; by a ct-imported library, had every definition marked ct-only.)
+(defn emit-import-forms (forms:(raw Node) is-nuch:i32 ct:i32):void
+  (let (saved-def:ptr g-def-stream
+        saved-out:ptr g-out
+        saved-ct:i32 g-ct-emitting
+        sink-bufp:ptr null  sink-sizep:i64 0
+        sink:ptr null)
+    (if (!= ct 0)
+      (do (set! sink (open_memstream (addr-of sink-bufp) (as ptr (addr-of sink-sizep))))
+          (set! g-def-stream sink)
+          (set! g-out sink)
+          (set! g-ct-emitting 1))
+      (do (set! g-def-stream g-def-stream-program)
+          (set! g-out g-def-stream-program)
+          (set! g-ct-emitting 0)))
+    (if (!= is-nuch 0) (emit-nuch-import-forms forms) (emit-toplevel-forms forms))
+    (set! g-ct-emitting saved-ct)
+    (set! g-def-stream saved-def)
+    (set! g-out saved-out)
+    (when (!= sink null)
+      (fclose sink)
+      (free sink-bufp))))
+
 ; Stage 12 (design/stage12/namespaces.md §"Import"): import dedup is keyed on
 ; (file, prefix), not file alone — the same library may be imported under two
 ; prefixes (aliasing), but the same prefix from two imports is an error and a
@@ -16141,6 +16419,11 @@
                   (die-at line
                     (fmt-2s "import: prefix '%s' is already bound to '%s'"
                             prefix ((unsafe/cast ptr:Node bound) car))))))
+            ; A second `import-ct` of a path whose compile-time surface is already
+            ; registered has nothing left to do.
+            (when (and (!= (ct-sink-here path) 0)
+                       (!= (import-list-has g-ct-imported path) 0))
+              (return))
             (let (loaded:ptr (import-list-find g-imported path))
               (when (and (= prefix null) (!= loaded null))
                 (return))
@@ -16188,11 +16471,8 @@
                         (set! g-current-ns (intern-str "user"))
                         (set! g-ns-seen 0)
                         (set! g-file-imports null)
-                        (let (forms:ptr (desugar (read-program-or-die))
-                              is-nuch:i32 (str-ends-with path ".nuch"))
-                          (if (!= is-nuch 0)
-                            (emit-nuch-import-forms forms)
-                            (emit-toplevel-forms forms))
+                        (let (forms:ptr (desugar (read-program-or-die)))
+                          (emit-import-forms forms (str-ends-with path ".nuch") (ct-sink-here path))
                           (free src)))
                       (set! g-importing (import-list-pop g-importing))
                       (set! g-source-path save-path)
@@ -16205,8 +16485,13 @@
                       (set! g-ns-seen save-ns-seen)
                       (set! g-file-imports save-file-imports))
                     (set! end-len ((as ptr:Scope g-globals) len))
-                    (set! g-imported
-                          (import-list-push-slice g-imported path start-len end-len))))
+                    ; `g-imported` means EMITTED. A compile-time-only import wrote
+                    ; its definitions to a sink, so it records elsewhere and a later
+                    ; real import of the same path still reads and emits the file.
+                    (if (!= (ct-sink-here path) 0)
+                      (set! g-ct-imported (import-list-push g-ct-imported path))
+                      (set! g-imported
+                            (import-list-push-slice g-imported path start-len end-len)))))
                 (when (!= prefix null)
                   (set! g-import-aliased
                         (import-list-push g-import-aliased (import-key path prefix)))
@@ -16261,6 +16546,11 @@
             (die-at line
               (fmt-2s "import: prefix '%s' is already bound to '%s'"
                       prefix ((unsafe/cast ptr:Node bound) car))))))
+      ; A second `import-ct` of a path whose compile-time surface is already
+      ; registered has nothing left to do.
+      (when (and (!= (ct-sink-here path) 0)
+                 (!= (import-list-has g-ct-imported path) 0))
+        (return))
       ; Flatten-level dedup (byte-identical to pre-namespaces): the file is
       ; already loaded and there is no prefix to alias under, so nothing to do.
       (let (loaded:ptr (import-list-find g-imported path))
@@ -16314,12 +16604,9 @@
                   (set! g-current-ns (intern-str "user"))
                   (set! g-ns-seen 0)
                   (set! g-file-imports null)
-                  (let (forms:ptr (desugar (read-program-or-die))
-                        is-nuch:i32 (str-ends-with path ".nuch"))
+                  (let (forms:ptr (desugar (read-program-or-die)))
                     ; Process imported forms
-                    (if (!= is-nuch 0)
-                      (emit-nuch-import-forms forms)
-                      (emit-toplevel-forms forms))
+                    (emit-import-forms forms (str-ends-with path ".nuch") (ct-sink-here path))
                     ; Free imported source buffer
                     (free src)))
                 ; Pop from importing stack
@@ -16335,9 +16622,13 @@
                 (set! g-ns-seen save-ns-seen)
                 (set! g-file-imports save-file-imports))
               (set! end-len ((as ptr:Scope g-globals) len))
-              ; Record the loaded file and the slice it contributed.
-              (set! g-imported
-                    (import-list-push-slice g-imported path start-len end-len))))
+              ; Record the loaded file and the slice it contributed — or, for a
+              ; compile-time-only import, only that its surface is registered:
+              ; `g-imported` means EMITTED, and this one wrote to a sink.
+              (if (!= (ct-sink-here path) 0)
+                (set! g-ct-imported (import-list-push g-ct-imported path))
+                (set! g-imported
+                      (import-list-push-slice g-imported path start-len end-len)))))
           ; Prefixed import: inject `prefix/name` aliases over the file's slice and
           ; record (file, prefix) so a re-import under this prefix is a no-op, plus
           ; the prefix → file binding so a clashing prefix on another file errors.
@@ -16363,6 +16654,34 @@
     (when (!= (node-len form) 2)
       (die-at (ff line) "import-use: expected (import-use name)"))
     (do-import form (node-at form 1) null (ff line))))
+
+; `(import-ct NAME)` — import a library for its COMPILE-TIME surface alone:
+; types, signatures, constants and macros register exactly as `import-use`
+; registers them, and nothing the library defines is emitted into the program.
+;
+; Implemented by redirecting the DEFINITION stream rather than by a register-only
+; walk, because a walk that mirrors the emitter has to mirror its skips and
+; inherits none of its diagnoses (conventions.md). The emitter runs unchanged;
+; the `define`s and `@g = global`s it writes are thrown away.
+;
+; Only that one stream. The other two carry no run-time cost and redirecting
+; either would make the compiler lie to itself: a `%Name = type {…}` line is free
+; and a later reference to `%Name` needs it, and every "already declared" latch
+; (`g-malloc-decl-done`, `g-trap-declared`, `g-nuch-registered`) records a
+; `declare` the module is then assumed to hold — send those to a sink and the
+; latch is set for a line nothing has. Measured: with the decl stream redirected,
+; `lib/arena.nuc`'s own `defmacro` JIT'd a `@malloc` call into a module whose
+; declare had been discarded.
+(defn emit-import-ct (form:(raw Node)):void
+  (let (ff:ptr:Node (unsafe/cast ptr:Node form))
+    (when (!= (node-len form) 2)
+      (die-at (ff line) "import-ct: expected (import-ct name)"))
+    ; The mode only ASKS; `ct-sink-here` decides it per file, once the path is
+    ; resolved. A C-header path never sinks — its declares resolve from libc
+    ; either way, so there is nothing to withhold.
+    (set! g-import-ct (+ g-import-ct 1))
+    (do-import form (node-at form 1) null (ff line))
+    (set! g-import-ct (- g-import-ct 1))))
 
 ; `import` keyword — the prefix-qualified import (Stage 12 N7 flip). The bare
 ; `import` keyword now means what `import-prefixed` means: it injects the
@@ -16585,6 +16904,17 @@
 (defn reloc-for-triple (triple:ptr):i32
   (if (= (strncmp triple "avr" 3) 0) 0 2))
 
+; Object format for a triple, as a yes/no on ELF — every backend this compiler
+; registers is ELF everywhere except Apple (Mach-O) and Windows (COFF). Only ELF
+; accepts the bare `section ".text.foo"` spelling `write-ir-section` emits: a
+; Mach-O specifier is "SEGMENT,section" and LLVM rejects anything else, and COFF
+; garbage collection is /OPT:REF rather than --gc-sections.
+(defn elf-object-format (triple:ptr):i32
+  (when (!= (strstr triple "windows") null) (return 0))
+  (when (!= (strstr triple "apple") null) (return 0))
+  (when (!= (strstr triple "darwin") null) (return 0))
+  (return 1))
+
 ; The three triple-keyed target descriptor defaults for the "features cliff"
 ; (design/stage14/riscv-linux.md §1.2): with an empty CPU/features string LLVM
 ; codegens bare RV64I with a soft-float ABI that is *silently* incompatible with
@@ -16724,6 +17054,7 @@
         hg:ptr:Target (as ptr:Target g-host-target))
     (set! g-target-triple (tg triple))
     (set! g-target-ptr-bytes (tg ptr-size))
+    (set! g-elf-sections (elf-object-format (tg triple)))
     (set! g-host-ptr-bytes (hg ptr-size))))
 
 ; Build the two name-kind membership sets used by special-form-named and
@@ -16912,6 +17243,7 @@
   (set! g-type-stream (open_memstream (addr-of g-type-bufp) (as ptr (addr-of g-type-sizep))))
   (set! g-decl-stream (open_memstream (addr-of g-decl-bufp) (as ptr (addr-of g-decl-sizep))))
   (set! g-def-stream  (open_memstream (addr-of g-def-bufp)  (as ptr (addr-of g-def-sizep))))
+  (set! g-def-stream-program g-def-stream)
   (set! g-decl-out g-decl-stream)
   (set! g-macro-decls (unsafe/cast (ref (Vector CStr)) (vector-new-in (addr-of g-arena-alloc))))
   (set! g-program-defns (vector-new-in (addr-of g-arena-alloc))))
@@ -16942,7 +17274,7 @@
     (fprintf irs "\n")
     (when (and (!= g-type-bufp null) (!= (char-at g-type-bufp 0) 0))
       (fputs g-type-bufp irs))
-    (emit-string-table irs)
+    (emit-string-table irs g-elf-sections)
     (emit-deferror-table irs)
     (when (and (!= g-decl-bufp null) (!= (char-at g-decl-bufp 0) 0))
       (fputs g-decl-bufp irs))
@@ -17045,6 +17377,12 @@
                     (when (!= device null)
                       (fprintf cmds " -mmcu=%s" device))))
                 (fprintf cmds " %s -o %s" obj-path out-path)
+                ; The other half of the per-definition sections `write-ir-section`
+                ; emitted; without it they only add section headers. Placed BEFORE
+                ; the user's link args so `--link-arg=-Wl,--no-gc-sections` can
+                ; turn it back off (last of the pair wins).
+                (when (!= g-elf-sections 0)
+                  (fprintf cmds " -Wl,--gc-sections"))
                 (dotimes (j (unsafe/cast i32 (count g-link-args)))
                   (fprintf cmds " %s" (invoke g-link-args (as usize j))))
                 (fclose cmds)

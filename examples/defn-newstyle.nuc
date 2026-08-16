@@ -37,7 +37,7 @@
 (extend i64 Ord)
 
 ; generic template with a tyvar return in new style; stamped at i32 and i64
-(defn my-min (a:T b:T &where (Ord T)):T
+(defn my-min (a:T b:T :where (Ord T)):T
   (let (r:T a)
     (when (less b a) (set! r b))
     (return r)))

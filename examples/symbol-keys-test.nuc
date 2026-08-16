@@ -8,12 +8,15 @@
 ; `intern-symbol` call whose signature says so. A quoted LIST stays `(raw Node)`:
 ; it builds cells, and `'()` IS null.
 ;
-; `Node` comes from lib/prelude.nuc, so — unlike `Keyword` — symbol keys need no
-; import beyond the collections themselves.
+; The `Node` TYPE comes from lib/prelude.nuc, but `'alpha` calls `intern-symbol`
+; at run time, so the program needs `(import-use node)` for the runtime half —
+; exactly as `:foo` needs `keyword`.
 ;
-; See design/stage16-ergonomics/container-literal-elements.md §3.
+; See design/stage16-ergonomics/container-literal-elements.md §3 and
+; design/stage16-ergonomics/compile-time-imports.md §4b.
 
 (import-use "stdio.h")
+(import-use node)
 (import-use numeric)
 (import-use hash)
 (import-use allocator)

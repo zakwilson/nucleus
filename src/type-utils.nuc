@@ -257,7 +257,7 @@
 ; the bare data GEP) to a plain CStr in place — a no-IR retype, since the literal's
 ; data pointer already IS `val`. Used at every site where a Val's TYPE, not a
 ; coercion, drives IR that references its `val`: a cond/match/if-some phi (a
-; `%StrView` phi over bare-ptr operands is malformed) and the &rest fold (which
+; `%StrView` phi over bare-ptr operands is malformed) and the :rest fold (which
 ; `inttoptr`s a non-ptr-like arg). There the literal must contribute exactly as a
 ; CStr literal did before the flip — a plain pointer. A genuine (materialized)
 ; StrView value (is-lit=0), whose `val` is a real first-class struct, is left

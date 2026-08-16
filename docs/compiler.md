@@ -23,7 +23,7 @@ By default `nucleusc <file.nuc>` produces a linked native executable (`a.out` un
 | `--mcpu=<cpu>` | The target CPU/device passed to LLVM's `TargetMachine` (e.g. `--target=avr --mcpu=attiny1634`). Only meaningful with `--target=`; the host target always uses the empty (generic) CPU. For AVR, use the device name when LLVM lists it (`attiny1634`) or the family core for a device LLVM doesn't know (`avrxmega3` covers the AVR-Dx parts). Currently the datalayout for a given triple is CPU-independent, so `--mcpu` selects the codegen ISA, not the ABI. For `riscv64`, `--mcpu` overrides only the CPU (default `generic-rv64`); the `+m,+a,+f,+d,+c` features and `lp64d` ABI module flag are fixed per-triple defaults, unaffected by `--mcpu`. |
 | `--mmcu=<device>` | The AVR device name passed to the link driver as `-mmcu=<device>` (e.g. `--target=avr --mcpu=avrxmega3 --mmcu=avr32dd20`). Only consulted on an AVR triple; ignored otherwise. Distinct from `--mcpu`: `--mcpu` picks the LLVM codegen ISA/family (`avrxmega3` covers a whole AVR-Dx family core), while `--mmcu` picks the exact device for avr-gcc's device-specific linker script and startup code. When `--mmcu` is not given, the link step falls back to the `--mcpu` value — sufficient when `--mcpu` already names an exact device (e.g. `attiny1634`), but a bare family core like `avrxmega3` still links (a generic family layout) rather than erroring, so pass `--mmcu=<device>` explicitly whenever the target is a specific chip. |
 | `--linker=<cmd>` | Override the link-driver command/path used for the final link step. Wins over the triple-based default (`clang` for hosted targets, `avr-gcc` for an AVR `--target=`, `riscv64-linux-gnu-gcc` for a `riscv64` `--target=` **when cross-compiling**) regardless of triple. On a riscv64 *host* the sysroot is `/`, so a `riscv64` target keeps the plain `clang` default rather than reaching for the triplet-prefixed cross driver — the latter is a Debian-family naming convention that other riscv64 distros do not ship. Pass `--linker=cc` (or `--linker=gcc`) if the native host has no `clang`. |
-| `--link-arg=<arg>` | Pass one verbatim argument to the link driver, appended after the object file. Generalizes `-l<lib>`/`-L<dir>` (which route through the same mechanism) to arbitrary linker flags. |
+| `--link-arg=<arg>` | Pass one verbatim argument to the link driver, appended after the object file — and after the compiler's own `-Wl,--gc-sections` (see [Separate compilation and symbol linkage](#separate-compilation-and-symbol-linkage)), so `--link-arg=-Wl,--no-gc-sections` turns that off. Generalizes `-l<lib>`/`-L<dir>` (which route through the same mechanism) to arbitrary linker flags. |
 
 ## Diagnostics
 
@@ -179,8 +179,8 @@ what the callee's signature says:
 | Callee | Admissible argument count |
 |---|---|
 | an ordinary `defn` / `extern` | exactly `num-params` |
-| a `defn` with `&optional` | `num-params - <optional count>` … `num-params` |
-| a `defn` with `&rest` | at least `num-params - 1` (the rest slot folds the tail) |
+| a `defn` with `:optional` | `num-params - <optional count>` … `num-params` |
+| a `defn` with `:rest` | at least `num-params - 1` (the rest slot folds the tail) |
 | a function imported from a C header, declared variadic (`printf`) | at least the fixed prefix |
 | a hand-written `declare` | at least `num-params` — see below |
 | a function-pointer value called indirectly | exactly `num-params` |
@@ -195,7 +195,7 @@ t.nuc:7: error: call to 'r': expected at least 2 args, got 1
 
 **A hand-written `declare` is open-tailed.** A `declare` is a prototype you
 *assert*, not a body the compiler has seen, and Nucleus has no `...` spelling
-(`&rest` / `&optional` are `defn`-only and are [rejected in a
+(`:rest` / `:optional` are `defn`-only and are [rejected in a
 declaration](toplevel.md)). So declaring a C variadic function means declaring
 its fixed parameters and letting the extra arguments ride the call site, and the
 arity check admits that: more arguments than parameters is legal against a
@@ -289,7 +289,7 @@ For tooling and interactive use, the REPL recognizes these forms in addition to 
 |------|-------------|
 | `(defined? sym)` | Print `1` if the symbol is bound (fn / var / const / macro / struct), else `0`. |
 | `(kind-of sym)` | Print one of `fn`, `macro`, `rmacro`, `var`, `const`, `struct`, or `<unbound>`. |
-| `(type-of expr)` | Print the static type of an expression in Nucleus syntax (e.g. `i32`, `ptr:Node`). For functions defined via `defn`, prints the full signature `(fn ret name0:t0 name1:t1 ... &rest &optional ...)` with the original parameter names; for function-pointer types and other sources that don't preserve names, positional `pN` is used. Routes through the type-checker without committing IR to the JIT. |
+| `(type-of expr)` | Print the static type of an expression in Nucleus syntax (e.g. `i32`, `ptr:Node`). For functions defined via `defn`, prints the full signature `(fn ret name0:t0 name1:t1 ... :rest :optional ...)` with the original parameter names; for function-pointer types and other sources that don't preserve names, positional `pN` is used. Routes through the type-checker without committing IR to the JIT. |
 | `(dir)` | List every known name (globals, macros, structs) with a one-line summary. Functions show signatures with parameter names; consts show values. |
 | `(apropos "needle")` | Substring search across known names AND docstrings; prints summaries (and the docstring) for matches. The arg may be a string or symbol. |
 | `(complete "prefix")` | Prefix search; prints just the matching names — useful for editor completion. |
@@ -327,7 +327,7 @@ Supported forms: `declare` (function signatures), `defstruct`, `defconst`, `defe
 (defmethod "@area.pRect"   (area i32) ((s (ptr Rect))))
 ```
 
-Importing a `.nuch` with `declare` or `defmethod` forms registers the function both as a global binding (so it can be called) and as a method in the overload registry (so it can be *resolved by signature* — a protocol conformance the importing unit asserts, a `(dyn P)` vtable slot). This is the same pair of registrations a local `defn` makes. The one difference is that the imported method's symbol is a fact, not a decision: the defining unit emitted it, so the importing unit's mangling never renames it, however many local overloads of the name join the set. Imported `defprotocol` forms re-register the protocol; imported `extend` forms with a *concrete* subject record the conformance fact without re-checking it (the exporting unit already verified it). An imported `extend` whose subject is a struct *template* (`(extend (Vector T) (Seq T))`, or an associated-type combinator `(extend (MapIter I F) (Iterator E) &where …)`) is re-run as a template conformance: the exporter cannot serialize the recovered args for instances it never stamped, so the importer re-registers the template conformance (carrying any `&where` clause, which is exported verbatim on the `extend` form) and recovers the per-instance args at stamp time when it stamps a concrete instance locally. Imported `defcast` forms re-register the cast rule; imported `extern` forms emit an `external global`. See [Polymorphism](generics.md#polymorphism-overloaded-defn-multimethods) and [Protocols](generics.md#protocols-defprotocol-and-extend).
+Importing a `.nuch` with `declare` or `defmethod` forms registers the function both as a global binding (so it can be called) and as a method in the overload registry (so it can be *resolved by signature* — a protocol conformance the importing unit asserts, a `(dyn P)` vtable slot). This is the same pair of registrations a local `defn` makes. The one difference is that the imported method's symbol is a fact, not a decision: the defining unit emitted it, so the importing unit's mangling never renames it, however many local overloads of the name join the set. Imported `defprotocol` forms re-register the protocol; imported `extend` forms with a *concrete* subject record the conformance fact without re-checking it (the exporting unit already verified it). An imported `extend` whose subject is a struct *template* (`(extend (Vector T) (Seq T))`, or an associated-type combinator `(extend (MapIter I F) (Iterator E) :where …)`) is re-run as a template conformance: the exporter cannot serialize the recovered args for instances it never stamped, so the importer re-registers the template conformance (carrying any `:where` clause, which is exported verbatim on the `extend` form) and recovers the per-instance args at stamp time when it stamps a concrete instance locally. Imported `defcast` forms re-register the cast rule; imported `extern` forms emit an `external global`. See [Polymorphism](generics.md#polymorphism-overloaded-defn-multimethods) and [Protocols](generics.md#protocols-defprotocol-and-extend).
 
 Registration and emission happen at different moments, and the split is what makes a header import order-free. The whole-graph prescan registers the header's `declare`s, `extern`s, `defconst`s, `defenum` members and `defmethod`s before any form of the unit is emitted — so they resolve on [reachability, not import order](toplevel.md#cross-file-resolution-reachability-not-import-order), exactly as a `.nuc` library's `defn`s do — while the `declare` / `external global` lines are still written where the import form sits, so a program's IR does not depend on it either. A name the prescan does *not* claim, because something else in the unit already bound it, keeps the older rule: the header's entry is dropped whole, definition and declaration together.
 
@@ -503,7 +503,7 @@ file, so header emission runs the same signature prescan a real compilation does
 — a library that contributes one `hash` to a name the prelude also defines still
 exports it as `hash.pString`, which is what its object file defines.
 
-A **bounded-generic template** — a `&where` clause, or a receiver over a
+A **bounded-generic template** — a `:where` clause, or a receiver over a
 parametric struct such as `(Vector T)` — is not exported at all: it has no symbol
 until a call site stamps it. Those become comments, the same way an
 un-C-representable signature does:
@@ -664,7 +664,7 @@ Linkage follows *ownership*, which is the file a definition was written in:
 Two consequences worth knowing:
 
 * A **duplicate definition across two Nucleus objects is not a link error** for anything but a root-owned name — the copies merge silently, which is the point. Duplicates *within* a unit are still rejected by the compiler, so this does not weaken the one-name-one-definition rule inside a compilation unit.
-* An imported function that the program never calls is **not** dead-stripped from the IR, because `weak_odr` may not be discarded. This is deliberate: macros are JIT-compiled during compilation and resolve their callees against the running program's symbol table, so a definition the optimizer had removed would be unfindable. Recovering the size costs a link flag (`-ffunction-sections` plus `--gc-sections`), not a change here.
+* An imported function that the program never calls is **not** dead-stripped from the IR, because `weak_odr` may not be discarded. This is deliberate: macros are JIT-compiled during compilation and resolve their callees against the running program's symbol table, so a definition the optimizer had removed would be unfindable. It is reclaimed at the **link** instead: on an ELF target every definition is emitted into its own section (`.text.<name>`, `.rodata.<name>`, `.data.<name>`, `.bss.<name>` — what `-ffunction-sections -fdata-sections` produce, spelled in the IR because the LLVM C API exposes no switch for them) and the link line carries `-Wl,--gc-sections`. Both halves are automatic and target-gated: a Windows (COFF) or Apple (Mach-O) target gets neither, since a Mach-O section specifier is `SEGMENT,section` and COFF collects with `/OPT:REF`. To turn the collection off — a program that looks its own symbols up with `dlsym` needs to — pass `--link-arg=-Wl,--no-gc-sections`; it is appended after the compiler's flag, and the last of the pair wins.
 
 An `(exclude-prelude)` library avoids the copies entirely — it imports nothing, so its object contains only its own definitions.
 
