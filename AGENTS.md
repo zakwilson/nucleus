@@ -29,9 +29,25 @@ Documentation for the current state of the language lives in the docs directory.
 
 ## Comments
 
-Add comments to compiler code only when necessary to explain why a particular implementation was chosen, so that future maintainers can make an informed decision about whether to revisit the decision, or to explain an implemantion that is non-obvious to a competent developer. Comments should be terse and use clear language.
+Comment compiler code only to say **why** — a decision a future maintainer might
+revisit, or an implementation a competent developer would misread. Never restate
+what the code does.
 
-**Keep comments terse**. Use a short sentence and a reference to a design document when possible.
+**Budget: one or two lines.** Write the shortest comment that prevents the
+mistake, then stop. Length must be argued for, not assumed: "every line is true
+and non-obvious" does not earn a third line. If you are still typing at line
+four, you are writing the wrong artifact.
+
+That artifact is a design document. Put the reasoning in `design/` and leave one
+line inline — the claim, plus the path. Per-entry rationale (why each row of a
+table is what it is), measurements, dates, and stage/item numbers go there, not
+in the source.
+
+Two habits produce a long comment with no decision ever taken to write one:
+- **Porting a comment through a refactor.** Rewriting the code is the moment to
+  cut its comment to the load-bearing line, not to carry the old block across.
+- **Restoring a deleted comment.** If someone deleted it, it stays deleted unless
+  the code still depends on the fact — and then it returns as one line.
 
 ## Context files
 
